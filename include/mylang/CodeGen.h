@@ -195,6 +195,7 @@ private:
     llvm::Value* generateThisExpr(const ThisExpr& expr);
     llvm::Value* generateAssignment(const AssignmentExpr& expr);
     llvm::Value* generateTernary(const TernaryExpr& expr);
+    llvm::Value* generateRange(const RangeExpr& expr);
 
     // ---- Helper ----
     TypeInfo builtinTypeToInfo(BuiltinType bt) const;

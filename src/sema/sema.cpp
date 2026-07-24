@@ -365,18 +365,25 @@ Sema::StmtResult Sema::visitBlock(BlockStmt& stmt) {
 Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
     auto decl_type = typeNodeToTypeInfo(decl.type);
 
-    if (symbol_table_.lookup(decl.name)) {
-        error(decl.range, "duplicate variable '" + decl.name + "'");
-        return {};
-    }
-
-    if (decl.init_expr) {
+    // Handle `var` type inference
+    if (decl.type.is_inferred) {
+        if (!decl.init_expr) {
+            error(decl.range, "'var' declaration requires an initializer");
+            return {};
+        }
+        decl_type = visitExpr(*decl.init_expr);
+    } else if (decl.init_expr) {
         auto init_type = visitExpr(*decl.init_expr);
         if (!typesCompatible(decl_type, init_type)) {
             error(decl.range, "cannot initialize variable '" + decl.name +
                   "' of type '" + typeName(decl_type) +
                   "' with value of type '" + typeName(init_type) + "'");
         }
+    }
+
+    if (symbol_table_.lookup(decl.name)) {
+        error(decl.range, "duplicate variable '" + decl.name + "'");
+        return {};
     }
 
     symbol_table_.declare(decl.name, decl_type);
@@ -489,6 +496,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             break;
         case ExprKind::Ternary:
             result = visitTernary(static_cast<TernaryExpr&>(expr));
+            break;
+        case ExprKind::Range:
+            result = visitRange(static_cast<RangeExpr&>(expr));
             break;
     }
     return result;
@@ -846,6 +856,16 @@ TypeInfo Sema::visitThisExpr(ThisExpr& expr) {
     TypeInfo result(TypeKind::Class);
     result.class_name = current_class_name_;
     return result;
+}
+
+TypeInfo Sema::visitRange(RangeExpr& expr) {
+    auto start_type = visitExpr(*expr.start);
+    auto end_type = visitExpr(*expr.end);
+    if (!expectNumeric(start_type, expr.start->range) ||
+        !expectNumeric(end_type, expr.end->range)) {
+        return TypeInfo(TypeKind::Int);
+    }
+    return TypeInfo(TypeKind::Int); // Range evaluates to int
 }
 
 TypeInfo Sema::visitTernary(TernaryExpr& expr) {

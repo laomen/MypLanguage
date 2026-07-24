@@ -39,6 +39,7 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Keyword_this:       return "this";
         case TokenKind::Keyword_new:        return "new";
         case TokenKind::Keyword_void:       return "void";
+        case TokenKind::Keyword_var:        return "var";
         case TokenKind::Keyword_static:     return "static";
 
         case TokenKind::Type_byte:          return "byte";
@@ -81,6 +82,7 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Question:           return "?";
         case TokenKind::Comma:              return ",";
         case TokenKind::Dot:                return ".";
+        case TokenKind::DoubleDot:          return "..";
         case TokenKind::Arrow:              return "->";
         case TokenKind::At:                 return "@";
         case TokenKind::DoubleColon:        return "::";

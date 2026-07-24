@@ -912,6 +912,16 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
     // Detect struct type — allocate inline on stack
     bool is_struct = !d.type.class_name.empty() && getStructType(d.type.class_name) != nullptr;
+
+    // Handle `var` type inference: use init expression's type
+    if (d.type.is_inferred && d.init_expr) {
+        auto* init_val = generateExpr(*d.init_expr);
+        auto* a = createEntryBlockAlloca(current_function_, init_val->getType(), d.name);
+        setNamedValue(d.name, a);
+        builder_.CreateStore(init_val, a);
+        return;
+    }
+
     llvm::Type* lt;
     if (is_struct) {
         lt = getStructType(d.type.class_name);
@@ -1097,6 +1107,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::ThisExpr:       return generateThisExpr(static_cast<const ThisExpr&>(e));
         case ExprKind::Assignment:     return generateAssignment(static_cast<const AssignmentExpr&>(e));
         case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
+        case ExprKind::Range:          return generateRange(static_cast<const RangeExpr&>(e));
     }
     return nullptr;
 }
@@ -1615,6 +1626,11 @@ void CodeGen::generateBreakStmt(const BreakStmt&) {
 void CodeGen::generateContinueStmt(const ContinueStmt&) {
     if (loop_context_.empty()) return;
     builder_.CreateBr(loop_context_.back().continue_bb);
+}
+
+llvm::Value* CodeGen::generateRange(const RangeExpr& e) {
+    // Range evaluation: returns the start value (for use in for loops mainly)
+    return generateExpr(*e.start);
 }
 
 llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {

@@ -64,6 +64,12 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
 # ---- Compiler Executable ----
 add_executable(mypc ${SOURCES})
 
+# Mapping visualizer tool (uses same parser)
+add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
+    src/ast/ast.cpp src/parser/parser.cpp
+    src/SourceLocation.cpp)
+target_link_libraries(myp_viz PRIVATE ${LLVM_LIBS})
+
 target_link_libraries(mypc
     PRIVATE
     ${myp_llvm_libs}

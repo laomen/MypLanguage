@@ -55,7 +55,13 @@ void Lexer::scanToken() {
             }
             break;
         case ',': tokens_.emplace_back(TokenKind::Comma, currentRange()); break;
-        case '.': tokens_.emplace_back(TokenKind::Dot, currentRange()); break;
+        case '.':
+            if (match('.')) {
+                tokens_.emplace_back(TokenKind::DoubleDot, currentRange());
+            } else {
+                tokens_.emplace_back(TokenKind::Dot, currentRange());
+            }
+            break;
         case '@': tokens_.emplace_back(TokenKind::At, currentRange()); break;
         case '?': tokens_.emplace_back(TokenKind::Question, currentRange()); break;
 
@@ -272,6 +278,8 @@ Token Lexer::scanNumber() {
     while (std::isdigit(peek()) || peek() == '.') {
         if (peek() == '.') {
             if (is_float) break; // second dot -> stop
+            // Check for ".." range operator — don't consume if followed by another dot
+            if (source_[offset_] == '.' && source_[offset_ + 1] == '.') break;
             is_float = true;
         }
         value += advance();
@@ -327,6 +335,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "this")     kind = TokenKind::Keyword_this;
     else if (value == "new")      kind = TokenKind::Keyword_new;
     else if (value == "void")     kind = TokenKind::Keyword_void;
+    else if (value == "var")      kind = TokenKind::Keyword_var;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

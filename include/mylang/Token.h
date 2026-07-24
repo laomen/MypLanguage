@@ -43,6 +43,7 @@ enum class TokenKind : uint16_t {
     Keyword_this,
     Keyword_new,
     Keyword_void,
+    Keyword_var,
 
     // ----- Types (also keywords) -----
     Type_byte,
@@ -102,6 +103,7 @@ enum class TokenKind : uint16_t {
     Question,       // ?
     Comma,          // ,
     Dot,            // .
+    DoubleDot,      // ..
     Arrow,          // ->
 
     // Annotation

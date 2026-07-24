@@ -69,6 +69,7 @@ private:
     std::unique_ptr<Expr> parseEquality();
     std::unique_ptr<Expr> parseRelational();
     std::unique_ptr<Expr> parseAdditive();
+    std::unique_ptr<Expr> parseRange();
     std::unique_ptr<Expr> parseMultiplicative();
     std::unique_ptr<Expr> parseUnary();
     std::unique_ptr<Expr> parsePostfix();

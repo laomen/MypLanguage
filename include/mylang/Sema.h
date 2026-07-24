@@ -56,6 +56,7 @@ private:
     TypeInfo visitThisExpr(ThisExpr& expr);
     TypeInfo visitAssignment(AssignmentExpr& expr);
     TypeInfo visitTernary(TernaryExpr& expr);
+    TypeInfo visitRange(RangeExpr& expr);
 
     // ---- Type utilities ----
     TypeInfo typeNodeToTypeInfo(const TypeNode& node) const;

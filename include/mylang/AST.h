@@ -34,6 +34,7 @@ struct TypeNode {
     TypeNode(const TypeNode& other)
         : basic_type(other.basic_type), class_name(other.class_name),
           range(other.range), array_size(other.array_size),
+          is_inferred(other.is_inferred),
           element_type(other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr) {}
     TypeNode& operator=(const TypeNode& other) {
         if (this != &other) {
@@ -41,6 +42,7 @@ struct TypeNode {
             class_name = other.class_name;
             range = other.range;
             array_size = other.array_size;
+            is_inferred = other.is_inferred;
             element_type = other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr;
         }
         return *this;
@@ -48,6 +50,7 @@ struct TypeNode {
 
     bool isArray() const { return element_type != nullptr; }
     bool isClass() const { return !class_name.empty(); }
+    bool is_inferred = false; // true if declared with 'var'
 };
 
 // ---- Declarations ----
@@ -156,6 +159,7 @@ enum class ExprKind {
     ThisExpr,
     Assignment,
     Ternary,
+    Range,
 };
 
 struct Expr {
@@ -275,6 +279,13 @@ struct TernaryExpr : Expr {
                 std::unique_ptr<Expr> f, SourceRange range_)
         : Expr(ExprKind::Ternary, range_),
           condition(std::move(c)), true_expr(std::move(t)), false_expr(std::move(f)) {}
+};
+
+struct RangeExpr : Expr {
+    std::unique_ptr<Expr> start;
+    std::unique_ptr<Expr> end;
+    RangeExpr(std::unique_ptr<Expr> s, std::unique_ptr<Expr> e, SourceRange range_)
+        : Expr(ExprKind::Range, range_), start(std::move(s)), end(std::move(e)) {}
 };
 
 // ---- Statements ----

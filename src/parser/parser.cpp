@@ -770,7 +770,7 @@ std::unique_ptr<Expr> Parser::parseRelational() {
 }
 
 std::unique_ptr<Expr> Parser::parseAdditive() {
-    auto expr = parseMultiplicative();
+    auto expr = parseRange();
     while (true) {
         if (match(TokenKind::Plus)) {
             auto rhs = parseMultiplicative();
@@ -783,6 +783,16 @@ std::unique_ptr<Expr> Parser::parseAdditive() {
         } else {
             break;
         }
+    }
+    return expr;
+}
+
+// Range: expr ".." expr  (lower precedence than additive)
+std::unique_ptr<Expr> Parser::parseRange() {
+    auto expr = parseMultiplicative();
+    if (match(TokenKind::DoubleDot)) {
+        auto end = parseRange();
+        return std::make_unique<RangeExpr>(std::move(expr), std::move(end), previous().range);
     }
     return expr;
 }
@@ -907,6 +917,53 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return std::make_unique<BoolLiteralExpr>(false, previous().range);
     }
     if (match(TokenKind::StringLiteral)) {
+        auto val = previous().value;
+        // Check for string interpolation: "Hello, $name"
+        auto dollar_pos = val.find('$');
+        if (dollar_pos != std::string::npos) {
+            // Expand into concatenation
+            std::unique_ptr<Expr> result;
+            size_t pos = 0;
+            while (pos < val.size()) {
+                auto dpos = val.find('$', pos);
+                if (dpos == std::string::npos) {
+                    // Remaining literal text
+                    auto part = val.substr(pos);
+                    auto lit = std::make_unique<StringLiteralExpr>(part, previous().range);
+                    if (result)
+                        result = std::make_unique<BinaryOpExpr>(
+                            std::move(result), BinaryOpKind::Add, std::move(lit), previous().range);
+                    else
+                        result = std::move(lit);
+                    break;
+                }
+                if (dpos > pos) {
+                    // Text before $
+                    auto part = val.substr(pos, dpos - pos);
+                    auto lit = std::make_unique<StringLiteralExpr>(part, previous().range);
+                    if (result)
+                        result = std::make_unique<BinaryOpExpr>(
+                            std::move(result), BinaryOpKind::Add, std::move(lit), previous().range);
+                    else
+                        result = std::move(lit);
+                }
+                // Variable name after $
+                pos = dpos + 1;
+                size_t end = pos;
+                while (end < val.size() && (std::isalnum(val[end]) || val[end] == '_')) end++;
+                if (end > pos) {
+                    auto var_name = val.substr(pos, end - pos);
+                    auto var_expr = std::make_unique<IdentifierExpr>(var_name, previous().range);
+                    if (result)
+                        result = std::make_unique<BinaryOpExpr>(
+                            std::move(result), BinaryOpKind::Add, std::move(var_expr), previous().range);
+                    else
+                        result = std::move(var_expr);
+                }
+                pos = end;
+            }
+            if (result) return result;
+        }
         return std::make_unique<StringLiteralExpr>(previous().value, previous().range);
     }
     if (match(TokenKind::CharLiteral)) {
@@ -970,6 +1027,11 @@ TypeNode Parser::parseType() {
     else if (match(TokenKind::Type_bool))  node.basic_type = BuiltinType::Bool;
     else if (match(TokenKind::Type_string))node.basic_type = BuiltinType::String;
     else if (match(TokenKind::Keyword_void)) node.basic_type = BuiltinType::Void;
+    else if (match(TokenKind::Keyword_var)) {
+        // var — type inference marker (actual type resolved in Sema)
+        node.basic_type = BuiltinType::Int; // placeholder
+        node.is_inferred = true;
+    }
     else if (check(TokenKind::Identifier)) {
         node.class_name = parseIdentifier("expected type name");
         // Check for qualified name: ClassName::StructName
@@ -1035,6 +1097,7 @@ bool Parser::checkType() const {
         case TokenKind::Type_string:
         case TokenKind::Identifier:
         case TokenKind::Keyword_void:
+        case TokenKind::Keyword_var:
             return true;
         default:
             return false;
