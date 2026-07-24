@@ -12,3 +12,7 @@
 # Temp
 /tmp/
 core.*
+*.o
+*.out
+test_io.txt
+/tmp/
