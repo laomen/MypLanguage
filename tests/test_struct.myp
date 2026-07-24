@@ -1,0 +1,37 @@
+// Test: struct field access + function: section via this.
+import env;
+
+struct Vec2 {
+    double x;
+    double y;
+}
+
+class Calculator {
+    action:
+        @startup void run() {
+            Console c = new Console();
+
+            Vec2 v;
+            v.x = 3.0;
+            v.y = 4.0;
+            c.writeString("v.x: ");
+            c.writeFloat(v.x);
+            c.writeLine("");
+
+            this.internalCalc(10, 20);
+        }
+
+    function:
+        int internalCalc(int a, int b) {
+            Console c = new Console();
+            c.writeString("internal: ");
+            c.writeLong(a + b);
+            c.writeLine("");
+            return a + b;
+        }
+}
+
+int main() {
+    Calculator calc = new Calculator();
+    return 0;
+}

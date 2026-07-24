@@ -1,0 +1,14 @@
+# Build output
+/build/
+*.o
+*.out
+*.ll
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Temp
+/tmp/
+core.*

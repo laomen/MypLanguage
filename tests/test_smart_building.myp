@@ -1,0 +1,84 @@
+// Pure MYP Event-Driven Style Test
+// main 中只有：实例化 + mapping，无任何 fire 调用
+// 所有计算通过 event chain 驱动
+import env;
+
+class MathCalculator {
+    action:
+        int factorial(int n) {
+            if (n <= 1) return 1;
+            return n * this.factorial(n - 1);
+        }
+        int gcd(int a, int b) {
+            while (b != 0) { int t = b; b = a % b; a = t; }
+            return a;
+        }
+        int isPrime(int n) {
+            if (n < 2) return 0; if (n == 2) return 1;
+            if (n % 2 == 0) return 0;
+            int i = 3; while (i * i <= n) { if (n % i == 0) return 0; i = i + 2; }
+            return 1;
+        }
+        int countPrimes(int limit) {
+            int c = 0; int i = 2;
+            while (i <= limit) { if (this.isPrime(i) != 0) c = c + 1; i = i + 1; }
+            return c;
+        }
+        int fib(int n) {
+            if (n <= 1) return n;
+            int a = 0; int b = 1; int i = 2;
+            while (i <= n) { int c = a + b; a = b; b = c; i = i + 1; }
+            return b;
+        }
+        int sumRange(int s, int e) {
+            int sum = 0; int i = s;
+            while (i <= e) { sum = sum + i; i = i + 1; }
+            return sum;
+        }
+    event:
+        computeFactorial(int n);
+        resultReady(int val);
+    property:
+        int lastResult;
+}
+
+class Counter {
+    action:
+        void init(int s) { this.count = s; }
+        void increment() { this.count = this.count + 1; }
+        void add(int v) { this.count = this.count + v; }
+        int getCount() { return this.count; }
+    property:
+        int count;
+}
+
+class TestRunner {
+    action:
+        @startup void runAll() {
+            runfactorial(10);
+            runGcd(1071,462);
+            runIsPrime(97);
+            runCountPrimes(100);
+        }
+    event:
+        runfactorial(int);
+        runGcd(int,int);
+        runIsPrime(int);
+        runCountPrimes(int);
+}
+
+mapping() { 
+    TestRunner.runfactorial->MathCalculator.factorial->Console.write;
+    TestRunner.runGcd->MathCalculator.gcd->Console.write;
+    TestRunner.runIsPrime->MathCalculator.isPrime->Console.write;
+    TestRunner.runCountPrimes->MathCalculator.countPrimes->Console.write;
+}
+
+int main() {
+    Console c = new Console();
+    MathCalculator m = new MathCalculator();
+    Counter ct = new Counter();
+    TestRunner runner = new TestRunner();
+
+    return 1;
+}

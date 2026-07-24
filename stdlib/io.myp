@@ -1,0 +1,33 @@
+// io.myp — MYP 标准库：文件 I/O
+// __myp_io_* 是编译器内置函数（intrinsic），仅 stdlib 可用
+
+class File {
+    action:
+        // 打开文件，返回 0 表示成功
+        int open(string path, string mode) {
+            return __myp_io_fopen(path, mode);
+        }
+        // 关闭文件
+        void close() {
+            __myp_io_fclose();
+        }
+        // 读取一行（不含换行符），返回空字符串表示结束
+        string readLine() {
+            return __myp_io_read_line();
+        }
+        // 写入文本（不含换行符）
+        void write(string text) {
+            __myp_io_write(text);
+        }
+        // 写入文本 + 换行
+        void writeLine(string text) {
+            __myp_io_write_line(text);
+        }
+        // 检查是否还有更多内容（返回 0=无，1=有）
+        int hasNext() {
+            return __myp_io_has_next();
+        }
+    property:
+        string path;
+        bool isOpen;
+}

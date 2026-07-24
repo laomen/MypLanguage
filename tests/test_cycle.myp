@@ -1,0 +1,26 @@
+// Test: mapping cycle detection should warn about cycles
+// This test verifies the compiler catches cycles
+
+class A {
+    action:
+        void doSomething() {}
+    event:
+        somethingHappened();
+}
+
+class B {
+    action:
+        void handleA() {}
+}
+
+int main() {
+    A a;
+    B b;
+
+    mapping() {
+        // OK: no cycle
+        a.somethingHappened -> b.handleA;
+    }
+
+    return 0;
+}

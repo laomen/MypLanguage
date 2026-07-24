@@ -1,0 +1,34 @@
+// Test: Timeline timer events
+// Verifies timer creation API works from within @startup
+
+import env;
+import timeline;
+
+class Tester {
+    action:
+        @startup void go() {
+            Console c = new Console();
+            Timeline t = new Timeline();
+            c.writeLine("started");
+            // Create a timeout timer (one-shot, 50ms)
+            int r1 = t.startTimeout(50);
+            c.writeString("timeout created: ");
+            c.writeLong(r1);
+            c.writeLine("");
+
+            // Create an interval timer (repeating, 30ms)
+            int r2 = t.startInterval(30);
+            c.writeString("interval created: ");
+            c.writeLong(r2);
+            c.writeLine("");
+
+            // Sleep for timers to fire
+            t.sleep(200);
+            c.writeLine("done");
+        }
+}
+
+int main() {
+    Tester tester = new Tester();
+    return 0;
+}

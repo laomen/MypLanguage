@@ -1,0 +1,36 @@
+import env;
+
+class Sensor {
+    action:
+        void setValue(int v) {
+            this.value = v;
+        }
+    event:
+        valueReady(int v);
+    property:
+        int value;
+}
+
+class Display {
+    action:
+        void show(int v) {
+            printInt(v);
+        }
+    property:
+        int lastValue;
+}
+
+mapping() {
+    Sensor.valueReady -> Display.show;
+}
+
+int main() {
+    Sensor s;
+    Display d;
+    s = new Sensor();
+    d = new Display();
+    s.setValue(42);
+    int result = s.value;
+    printInt(result);
+    return result;
+}

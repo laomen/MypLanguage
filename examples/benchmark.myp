@@ -1,0 +1,178 @@
+// MYP 综合性能与正确性测试
+// 测试：函数、循环、分支、运算符、递归、嵌套调用
+
+import env;
+
+// ---- 数论函数 ----
+
+// 最大公约数 (欧几里得算法)
+int gcd(int a, int b) {
+    while (b != 0) {
+        int t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+// 最小公倍数
+int lcm(int a, int b) {
+    int g = gcd(a, b);
+    return a / g * b;
+}
+
+// 判断素数 (试除法)
+int isPrime(int n) {
+    if (n < 2) {
+        return 0;
+    }
+    if (n == 2) {
+        return 1;
+    }
+    if (n % 2 == 0) {
+        return 0;
+    }
+    int i = 3;
+    while (i * i <= n) {
+        if (n % i == 0) {
+            return 0;
+        }
+        i = i + 2;
+    }
+    return 1;
+}
+
+// 统计素数个数
+int countPrimes(int limit) {
+    int count = 0;
+    int n = 2;
+    while (n <= limit) {
+        if (isPrime(n) != 0) {
+            count = count + 1;
+        }
+        n = n + 1;
+    }
+    return count;
+}
+
+// 数位之和
+int sumDigits(int n) {
+    int sum = 0;
+    while (n > 0) {
+        sum = sum + n % 10;
+        n = n / 10;
+    }
+    return sum;
+}
+
+// 数字反转
+int reverseNum(int n) {
+    int rev = 0;
+    while (n > 0) {
+        rev = rev * 10 + n % 10;
+        n = n / 10;
+    }
+    return rev;
+}
+
+// 阶乘 (迭代)
+int factorial(int n) {
+    int result = 1;
+    int i = 1;
+    while (i <= n) {
+        result = result * i;
+        i = i + 1;
+    }
+    return result;
+}
+
+// 斐波那契 (递归)
+int fib(int n) {
+    if (n <= 1) {
+        return n;
+    }
+    return fib(n - 1) + fib(n - 2);
+}
+
+// 斐波那契 (迭代)
+int fibIter(int n) {
+    if (n <= 1) {
+        return n;
+    }
+    int a = 0;
+    int b = 1;
+    int i = 2;
+    while (i <= n) {
+        int c = a + b;
+        a = b;
+        b = c;
+        i = i + 1;
+    }
+    return b;
+}
+
+// 等差数列求和
+int sumRange(int start, int end) {
+    int sum = 0;
+    int i = start;
+    while (i <= end) {
+        sum = sum + i;
+        i = i + 1;
+    }
+    return sum;
+}
+
+// 阶乘和: 1! + 2! + ... + n!
+int sumFactorials(int n) {
+    int sum = 0;
+    int i = 1;
+    while (i <= n) {
+        sum = sum + factorial(i);
+        i = i + 1;
+    }
+    return sum;
+}
+
+// 勒让德符号 / 阶乘中质因子 p 的指数
+int legendre(int n, int p) {
+    int count = 0;
+    int power = p;
+    while (power <= n) {
+        count = count + n / power;
+        power = power * p;
+    }
+    return count;
+}
+
+int main() {
+    // ---- 数论测试 ----
+    printInt(gcd(12, 8));
+    printInt(gcd(1071, 462));
+    printInt(lcm(6, 8));
+    printInt(lcm(12, 18));
+
+    // ---- 素数测试 ----
+    printInt(isPrime(2));
+    printInt(isPrime(97));
+    printInt(isPrime(100));
+    printInt(countPrimes(100));
+
+    // ---- 数字操作 ----
+    printInt(sumDigits(12345));
+    printInt(reverseNum(12345));
+
+    // ---- 递归测试 ----
+    printInt(fib(20));
+    printInt(factorial(10));
+
+    // ---- 迭代测试 ----
+    printInt(fibIter(20));
+    printInt(sumRange(1, 100));
+
+    // ---- 综合测试 ----
+    printInt(sumFactorials(5));
+    printInt(legendre(100, 5));
+
+    // 返回素数计数 (1~100 有 25 个素数)
+    return countPrimes(100);
+}

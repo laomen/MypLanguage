@@ -1,0 +1,22 @@
+// Test: static class methods
+import env;
+import math;
+
+class Tester {
+    action:
+        @startup void go() {
+            // Static methods — no new, no this
+            Console.writeLine("hello from static");
+            Console.writeString("sqrt(64) = ");
+            Console.writeFloat(Math.sqrt(64.0));
+            Console.writeLine("");
+            Console.writeString("max(10, 20) = ");
+            Console.writeLong(Math.max(10, 20));
+            Console.writeLine("");
+        }
+}
+
+int main() {
+    Tester t = new Tester();
+    return 0;
+}

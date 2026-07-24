@@ -1,0 +1,29 @@
+// @thread 多线程测试
+// Worker 在独立线程中运行，main 和 Worker 并发执行
+import env;
+import timeline;
+
+class Worker {
+    action:
+        @startup void run() {
+            // Worker 线程独立输出
+            output(10);
+            output(20);
+            output(30);
+        }
+    event:
+        output(int v);
+}
+
+mapping() {
+    Worker.output -> Console.write;
+}
+
+int main() {
+    Console c = new Console();
+    Worker w = new Worker() @thread;
+
+    // Worker 在独立线程中通过 @startup + mapping 输出
+    // main 退出时自动清理线程（join 等待 Worker 完成）
+    return 0;
+}

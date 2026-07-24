@@ -1,0 +1,36 @@
+// timeline.myp — MYP 标准库：时间线支持
+// __myp_* 是编译器内置函数（intrinsic），仅 stdlib 可用
+
+class Timeline {
+    action:
+        long now() { return __myp_now_ms(); }
+        void sleep(long ms) { __myp_sleep_ms(ms); }
+        long elapsed(long since) { return __myp_now_ms() - since; }
+        // 启动一次性定时器：delay_ms 后触发 timeout 事件
+        // 使用：timer.startTimeout(1000) → 1秒后 timeout(elapsed_ms) 事件自动触发
+        int startTimeout(long ms) {
+            return __myp_timer_create("timeout", ms, 0);
+        }
+        // 启动周期定时器：每 interval_ms 触发一次 interval 事件
+        int startInterval(long ms) {
+            return __myp_timer_create("interval", ms, ms);
+        }
+        // 启动 tick 定时器：每 interval_ms 触发一次 tick 事件（无参数）
+        int startTick(long ms) {
+            return __myp_timer_create("tick", ms, ms);
+        }
+    event:
+        timeout(long ms);     // 定时器触发时自动 fire，参数为实际经过的毫秒数
+        interval(long ms);    // 周期定时器触发
+        tick();               // 每 tick 触发一次
+}
+
+class Stopwatch {
+    action:
+        void start() { startTime = __myp_now_ms(); }
+        void stop() { running = false; }
+        long elapsed() { return __myp_now_ms() - startTime; }
+    property:
+        long startTime;
+        bool running;
+}

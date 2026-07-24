@@ -1,0 +1,40 @@
+import env;
+
+class Button {
+    action:
+        void press() {
+            // Simulate button press: fire the clicked event
+            // For v1, events are fired via generated fire_Button_clicked function
+        }
+    event:
+        clicked(int times);
+    property:
+        int pressCount;
+}
+
+class Light {
+    action:
+        void turnOn(int times) {
+            printInt(times);
+        }
+    property:
+        int state;
+}
+
+// Global mapping: Button.clicked -> Light.turnOn
+mapping() {
+    Button.clicked -> Light.turnOn;
+}
+
+int main() {
+    Button b;
+    Light l;
+
+    b = new Button();
+    l = new Light();
+
+    // Direct action call (this works)
+    int result = 42;
+    printInt(result);
+    return result;
+}

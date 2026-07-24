@@ -1,0 +1,6 @@
+import env;
+
+int main() {
+    Console c = new Console();
+    return 0;
+}

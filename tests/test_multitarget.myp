@@ -1,0 +1,42 @@
+// Test: multi-target mapping
+// event -> action1, action2;
+import env;
+
+class Sensor {
+    action:
+        @startup void run() {
+            Console.writeLine("sensor start");
+            valueRead(42);
+        }
+    event:
+        valueRead(int v);
+}
+
+class Display {
+    action:
+        void show(int v) {
+            Console.writeString("display: ");
+            Console.writeLong(v);
+            Console.writeLine("");
+        }
+}
+
+class Logger {
+    action:
+        void log(int v) {
+            Console.writeString("log: ");
+            Console.writeLong(v);
+            Console.writeLine("");
+        }
+}
+
+mapping() {
+    Sensor.valueRead -> Display.show, Logger.log;
+}
+
+int main() {
+    Display display = new Display();
+    Logger logger = new Logger();
+    Sensor sensor = new Sensor();
+    return 0;
+}
