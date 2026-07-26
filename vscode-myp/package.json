@@ -1,0 +1,81 @@
+{
+  "name": "vscode-myp",
+  "displayName": "MYP Language",
+  "description": "MYP language support — syntax highlighting, diagnostics, code completion, hover info, and document symbols via LSP",
+  "version": "0.1.0",
+  "publisher": "myp-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Language Packs"
+  ],
+  "activationEvents": [
+    "onLanguage:myp"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "myp",
+        "aliases": [
+          "MYP",
+          "myp"
+        ],
+        "extensions": [
+          ".myp"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "myp",
+        "scopeName": "source.myp",
+        "path": "./syntaxes/myp.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "myp.restartLsp",
+        "title": "MYP: Restart Language Server"
+      }
+    ]
+  },
+  "configuration": {
+    "title": "MYP",
+    "properties": {
+      "myp.compilerPath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to the mypc compiler executable (for stdlib resolution). Leave empty to auto-detect from extension path."
+      },
+      "myp.stdlibPath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to the MYP stdlib directory. Leave empty to auto-detect."
+      },
+      "myp.lspPath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to the myp_lsp executable. Leave empty to auto-detect."
+      },
+      "myp.trace.server": {
+        "type": "string",
+        "enum": [
+          "off",
+          "messages",
+          "verbose"
+        ],
+        "default": "off",
+        "description": "Enable LSP trace logging."
+      }
+    }
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.0"
+  }
+}

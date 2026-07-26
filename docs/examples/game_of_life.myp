@@ -1,0 +1,183 @@
+// ============================================================
+// Conway's Game of Life — MYP Language Demo
+// ============================================================
+//
+// Controls (while running):
+//   Space     — pause / resume
+//   R         — randomize
+//   C         — clear all cells
+//   + / =     — speed up
+//   - / _     — slow down
+//   Q         — quit
+//
+// Rules:
+//   1. Live cell with <2 neighbors → dies (underpopulation)
+//   2. Live cell with 2-3 neighbors → lives
+//   3. Live cell with >3 neighbors → dies (overpopulation)
+//   4. Dead cell with 3 neighbors   → born (reproduction)
+// ============================================================
+
+import env;
+
+class GameOfLife {
+    action:
+        @startup void run() {
+            cols = 40;
+            rows = 20;
+            speed = 150;    // ms per generation
+            running = 1;
+
+            randomize();
+
+            Console.writeLine("  == Game of Life ==");
+            Console.writeLine("  SPACE=pause  R=random  C=clear  +/-=speed  Q=quit");
+            Console.flush();
+
+            while (true) {
+                // ---- Handle input ----
+                while (Console.kbhit() != 0) {
+                    var ch = Console.getch();
+                    if      (ch == 'q' || ch == 'Q') { return; }
+                    else if (ch == ' ')              { running = 1 - running; }
+                    else if (ch == 'r' || ch == 'R') { randomize(); }
+                    else if (ch == 'c' || ch == 'C') { clearAll(); }
+                    else if (ch == '+' || ch == '=') {
+                        speed = speed - 30;
+                        if (speed < 30) speed = 30;
+                    }
+                    else if (ch == '-' || ch == '_') {
+                        speed = speed + 30;
+                        if (speed > 500) speed = 500;
+                    }
+                }
+
+                if (running != 0) {
+                    nextGen();
+                }
+
+                draw();
+                Console.flush();
+                __myp_sleep_ms(speed);
+            }
+        }
+
+        // ---- Randomize ----
+        void randomize() {
+            int seed = 12345;
+            int y = 0;
+            while (y < rows) {
+                int x = 0;
+                while (x < cols) {
+                    seed = (seed * 1103515245 + 12345) % 2147483647;
+                    var idx = y * cols + x;
+                    if (seed % 7 < 3) grid[idx] = 1;
+                    else              grid[idx] = 0;
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+        }
+
+        // ---- Clear ----
+        void clearAll() {
+            int i = 0;
+            while (i < cols * rows) { grid[i] = 0; i = i + 1; }
+        }
+
+        // ---- Count live neighbors (toroidal wrap) ----
+        int countNeighbors(int cx, int cy) {
+            int n = 0;
+            int dy = -1;
+            while (dy <= 1) {
+                int dx = -1;
+                while (dx <= 1) {
+                    if (!(dx == 0 && dy == 0)) {
+                        int nx = cx + dx;
+                        int ny = cy + dy;
+                        if (nx < 0)   nx = cols - 1;
+                        if (nx >= cols) nx = 0;
+                        if (ny < 0)   ny = rows - 1;
+                        if (ny >= rows) ny = 0;
+                        if (grid[ny * cols + nx] != 0) n = n + 1;
+                    }
+                    dx = dx + 1;
+                }
+                dy = dy + 1;
+            }
+            return n;
+        }
+
+        // ---- Next generation ----
+        void nextGen() {
+            int y = 0;
+            while (y < rows) {
+                int x = 0;
+                while (x < cols) {
+                    var idx = y * cols + x;
+                    var n = countNeighbors(x, y);
+                    if (grid[idx] != 0) {
+                        if (n < 2 || n > 3) next[idx] = 0;
+                        else                next[idx] = 1;
+                    } else {
+                        if (n == 3) next[idx] = 1;
+                        else        next[idx] = 0;
+                    }
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+            // Swap
+            int i = 0;
+            while (i < cols * rows) {
+                grid[i] = next[i];
+                i = i + 1;
+            }
+        }
+
+        // ---- Render ----
+        void draw() {
+            Console.writeString("\033[H");
+
+            int x = 0;
+            while (x < cols + 2) { Console.writeString("#"); x = x + 1; }
+            Console.writeLine("");
+
+            int y = 0;
+            while (y < rows) {
+                Console.writeString("#");
+                x = 0;
+                while (x < cols) {
+                    if (grid[y * cols + x] != 0) Console.writeString("O");
+                    else                         Console.writeString(" ");
+                    x = x + 1;
+                }
+                Console.writeString("#");
+                Console.writeLine("");
+                y = y + 1;
+            }
+
+            x = 0;
+            while (x < cols + 2) { Console.writeString("#"); x = x + 1; }
+            Console.writeLine("");
+
+            Console.writeString("  Speed: ");
+            Console.writeLong(1100 - speed);
+            Console.writeString(" gen/s  ");
+            if (running != 0) Console.writeString("[RUNNING]");
+            else              Console.writeString("[PAUSED] ");
+            Console.writeLine("");
+        }
+
+    property:
+        int[800] grid;    // current generation  (40*20)
+        int[800] next;    // next generation buffer
+        int cols;
+        int rows;
+        int speed;
+        int running;      // 1=running 0=paused
+}
+
+int main() {
+    GameOfLife g = new GameOfLife();
+    return 0;
+}

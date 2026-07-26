@@ -11,6 +11,12 @@
 
 namespace mylang {
 
+struct Diagnostic {
+    SourceRange range;
+    std::string message;
+    int severity; // 1=error, 2=warning, 3=info
+};
+
 enum class Severity : uint8_t {
     Note,
     Warning,
@@ -53,10 +59,18 @@ public:
     uint32_t errorCount() const { return error_count_; }
 
     /// Reset error count.
-    void reset() { error_count_ = 0; }
+    void reset() { error_count_ = 0; diagnostics_.clear(); }
+
+    /// Get all diagnostics (for LSP).
+    const std::vector<Diagnostic>& getDiagnostics() const { return diagnostics_; }
+
+    /// Get all errors (legacy).
+    const std::vector<Diagnostic>& getErrors() const { return diagnostics_; }
 
 private:
     void printDiagnostic(SourceRange range, Severity severity, const std::string& message) {
+        diagnostics_.push_back({range, message, severity == Severity::Error ? 1 : severity == Severity::Warning ? 2 : 3});
+
         const auto& filename = source_mgr_.filename();
         auto line = range.begin.line;
         auto col = range.begin.column;
@@ -84,6 +98,7 @@ private:
 
     SourceManager& source_mgr_;
     uint32_t error_count_ = 0;
+    std::vector<Diagnostic> diagnostics_;
 };
 
 } // namespace mylang

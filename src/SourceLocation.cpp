@@ -25,6 +25,18 @@ bool SourceManager::loadFile(const std::string& filename) {
     return true;
 }
 
+bool SourceManager::loadString(const std::string& content, const std::string& filename) {
+    source_ = content;
+    filename_ = filename;
+    line_count_ = 1;
+    for (auto c : source_) {
+        if (c == '\n') ++line_count_;
+    }
+    positions_built_ = false;
+    line_offsets_.clear();
+    return true;
+}
+
 SourcePosition SourceManager::positionFromOffset(uint32_t offset) const {
     if (!positions_built_) {
         // Build line offset cache

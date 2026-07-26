@@ -1,0 +1,15 @@
+[Struct 验证]
+p = (10
+,20
+) P1
+p.x + p.y = 30
+
+after p.x*2 = 20
+
+q = (5
+,15
+) P2
+r.x = p.x = 20
+, r.y = q.y = 15
+
+[OK] Struct 验证通过

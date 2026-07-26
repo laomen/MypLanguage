@@ -1,6 +1,6 @@
 # MYP 语言设计文档
 
-> 版本: 1.0 | 日期: 2026-07-24
+> 版本: 2.1 | 日期: 2026-07-26
 
 ---
 
@@ -432,11 +432,35 @@ class Sensor {
 | `action:` | 方法（有返回类型） | 允许 `;` 声明或 `{ }` 定义 |
 | `event:` | 事件（无返回类型） | 仅 `;` 声明 |
 | `property:` | 成员变量 | 仅变量声明 |
+| `function:` | 内部方法（不参与 mapping） | `{ }` 定义 |
+| `static:` | 静态方法（无需实例，`import` 即可调用） | `{ }` 定义 |
+| `struct:` | 嵌套结构体 | 字段/方法定义 |
+
+**注解：** Action 前可加 `@startup` 注解，表示实例创建后自动执行；变量声明后可加 `@thread` 注解，表示该实例在独立线程运行。
 
 ### 6.3 Interface（接口）
 
-MYP **不支持接口多态**。组件间通信通过 `mapping()` 声明式连接，不需要统一接口类型——这是天然的 duck typing。
-`interface` 关键字保留，无运行时语义。
+MYP 支持基于**编译期检查**的接口。通过 `interface class` 声明类实现了某个接口，编译器会验证类是否包含接口声明的所有 action 和 event：
+
+```myp
+interface IShape {
+    double area();
+    double perimeter();
+}
+
+class Circle {
+    interface class IShape;  // 声明实现 IShape
+    action:
+        double area() { return 3.14159 * radius * radius; }
+        double perimeter() { return 2.0 * 3.14159 * radius; }
+    property:
+        double radius;
+}
+```
+
+- 缺少接口成员 → **编译错误**
+- 不要求接口多态（无 vtable），仅编译期类型检查
+- 组件间通信仍通过 `mapping()` 声明式连接，这是天然的 duck typing
 
 ### 6.4 访问控制
 
@@ -453,9 +477,43 @@ MYP 是**事件驱动组件**语言，访问控制规则服务于解耦目标：
 - 架构完全由 `mapping()` 声明可见
 - 重构时只需修改 mapping，无需搜索属性使用点
 
-### 6.5 继承与多态
+### 6.5 继承、多态与 @startup 生命周期
 
-MYP **不支持类继承和接口多态**。在事件驱动模型中：
+#### @startup 自动初始化
+
+任何 action 前加 `@startup` 注解，当实例通过 `new` 创建时自动调用：
+
+```myp
+class Sensor {
+    action:
+        @startup void init() { id = 1; threshold = 100; }
+        float readValue();
+    property:
+        int id;
+        float threshold;
+}
+
+int main() {
+    Sensor s = new Sensor();  // 自动调用 init()
+    return 0;
+}
+```
+
+- 每个 class 可以有多个 `@startup` 方法
+- `@startup` 是**显式声明**而非构造函数——名称自定义，逻辑可见
+- 对于 `@thread` 实例，`@startup` 在目标线程执行
+
+#### @thread 线程注解
+
+```myp
+Worker w = new Worker() @thread;  // 在独立线程运行
+```
+
+详见[并发模型](#8-并发模型)。
+
+#### 继承与多态
+
+MYP **不支持类继承**。在事件驱动模型中：
 - 继承带来紧耦合，与解耦哲学冲突
 - 组件间通信通过 `mapping()` 声明式连接，无需统一接口类型——天然 duck typing
 - 代码复用通过 **mapping 组合**实现：将一个组件通过 mapping 连接到另一个组件的 action/event
@@ -698,9 +756,17 @@ mapping() {
 - 跨线程共享时，**由程序员保证线程安全**
 - 未来可引入 `@synchronized` 或 `@mutex` 注解
 
-### 8.5 当前状态
+### 8.5 已实现的功能
 
-`@thread` + 事件链 + 每线程独立队列 + 跨线程异步投递**已在当前版本实现**，超出原路线图范围。
+| 功能 | 状态 | 说明 |
+|------|------|------|
+| `@thread` 注解 | ✅ 已实现 | 实例在独立 pthread 线程运行 |
+| 每线程独立事件队列 | ✅ 已实现 | ring buffer + mutex 保护 |
+| 跨线程异步投递 | ✅ 已实现 | `myp_thread_for_instance` 查询 + 队列推送 |
+| 定时器系统 | ✅ 已实现 | `__myp_timer_create` + `myp_timer_check` 事件循环 |
+| 每线程独立定时器 | ✅ 已实现 | 定时器在所属线程的事件循环中触发 |
+| 线程生命周期管理 | ✅ 已实现 | `myp_thread_create`/`destroy`/`stop`/`join` |
+| `@threadpool` 注解 | ⚠️ 部分 | file-level 数组支持待完善 |
 
 ---
 
@@ -718,8 +784,10 @@ import "/abs/path/lib.myp"; // 用户文件导入（绝对路径）
 | 语法 | `import 标识符;` 或 `import "路径";` |
 | 标准库 | 无引号、无扩展名，在 `stdlib/` 目录查找 |
 | 用户文件 | 双引号字符串路径，支持相对/绝对路径 |
-| 路径搜索 | 自动查找：`--stdlib` 指定目录 → 可执行文件所在目录的 `../stdlib/` → 源文件所在目录的 `stdlib/` |
+| 路径搜索 | `--stdlib` 指定目录 → 可执行文件所在目录的 `../stdlib/` → 源文件所在目录的 `stdlib/` → `--package-path` 指定目录 |
 | `--stdlib` | 编译器选项，指定标准库路径 |
+| `--package-path` | 编译器选项，指定本地包搜索路径（支持冒号分隔多路径、`MYP_PACKAGE_PATH` 环境变量） |
+| 包格式 | `myp_packages/<name>/src/<name>.myp` 或 `myp_packages/<name>/<name>.myp`，附带 `package.myp` 元数据 |
 | 去重 | 同一文件不会重复导入（基于路径去重） |
 | 递归 | 导入的文件中的 `import` 也会被递归加载 |
 | 命名空间 | 扁平结构，无嵌套 |
@@ -753,14 +821,14 @@ printInt(42);   // 全局函数——不是事件驱动
 
 ```
 stdlib/
-├── env.myp         # Console 类（write/writeString/writeLine/writeFloat/writeBool/writeLong）
-├── timeline.myp    # Timeline / Stopwatch 类（now/sleep/elapsed/timeout/interval）
-├── math.myp        # Math 类（sqrt/abs/sin/cos/tan/exp/log/pow/absInt/min/max）
-├── io.myp          # 文件 I/O（后续）
-└── ...
+├── env.myp         # Console 类（write/writeString/writeLine/writeFloat/writeBool/writeLong/readString/kbhit/getch/flush）
+├── timeline.myp    # Timeline / Stopwatch 类（now/sleep/elapsed/startTimeout/startInterval/startTick）
+├── math.myp        # Math 类（sqrt/abs/floor/ceil/sin/cos/tan/exp/log/pow/absInt/min/max）
+└── io.myp          # File I/O 类（open/close/readLine/write/hasNext）
 ```
 
-> **当前状态**：所有 stdlib 文件均已实现为纯 MYP class（`static:` 方式），通过 `import` 加载，无需 `new` 实例化。
+> **当前状态**：所有 stdlib 文件均已实现为纯 MYP class，通过 `import` 加载。
+> `static:` 区定义静态方法，无需 `new` 即可调用：`Console.writeLine("hello");`
 
 ### 10.3 `import env` — Console 类
 
@@ -855,20 +923,40 @@ int main() {
 
 | 库 | 功能 | 当前状态 |
 |----|------|---------|
-| `env` | `Console` 类（write/writeString/writeLine/writeFloat/writeBool/writeLong） | ✅ 已实现：stdlib/env.myp |
+| `env` | `Console` 类（write/writeString/writeLine/writeFloat/writeBool/writeLong/readString/kbhit/getch/flush） | ✅ 已实现：stdlib/env.myp |
 | `timeline` | `Timeline` 类（now/sleep/elapsed/startTimeout/startInterval/startTick）、`Stopwatch` 类 | ✅ 已实现：定时器系统支持 timeout/interval/tick 事件 |
 | `math` | `Math` 类（sqrt/abs/floor/ceil/sin/cos/tan/exp/log/pow/absInt/min/max） | ✅ 已实现 |
 | `io` | `File` 类（open/close/readLine/write/writeLine/hasNext） | ✅ 已实现 |
 
+### 10.6 编译器 intrinsics 系统
 
-### 10.6 当前状态：纯 MYP class
+标准库底层的 C 运行时函数通过 **编译器 intrinsics** 暴露给 MYP 代码，用户代码中直接调用 `__myp_*` 函数：
 
-编译器通过 `import env;` 从 `stdlib/env.myp` 加载 `Console` 类，所有功能通过 `static:` 方法提供，无需 `new`：
+```myp
+__myp_print("hello");              // 打印字符串（无换行）
+__myp_print_int(42);               // 打印整数 + 换行
+__myp_print_float(3.14);           // 打印浮点数
+__myp_sleep_ms(100);               // 休眠 100ms
+__myp_now_ms();                    // 当前时间戳
+__myp_timer_create("tick", 20, 20); // 创建周期定时器
+__myp_io_fopen("file", "rb");      // 打开文件
+__myp_io_read_byte();              // 读 1 字节
+__myp_io_read_i32be();             // 读 4 字节大端
+__myp_io_write_byte(c);            // 写 1 字节
+__myp_io_write_i32be(v);           // 写 4 字节大端
+__myp_io_write_double(v);          // 写 8 字节 double
+__myp_io_read_double();            // 读 8 字节 double
+```
+
+intrinsics 在 `sema.cpp` 的 `registerIntrinsics()` 中注册类型签名，在 `codegen.cpp` 的 `getIntrinsic()` 中映射到 LLVM external function declarations。
+
+### 10.7 当前状态：纯 MYP class
+
+编译器通过 `import env;` 从 `stdlib/env.myp` 加载 `Console` 类：
 
 ```myp
 import env;
-Console.writeLine("hello");       // ✅ 直接调用，无需实例
-Console.write(42);                 // ✅
+Console.writeLine("hello");       // ✅ 直接调用
 mapping() { ... -> Console.write; } // ✅ mapping 连接
 ```
 
@@ -909,6 +997,7 @@ Phase 6: 运行时库 ─── 对象模型 + 标准库
 
 ```
 MYPLanguage/
+├── myp                  # 包管理 CLI（Python 脚本：init/build/install/run）
 ├── CMakeLists.txt
 ├── docs/
 │   ├── design.md
@@ -942,15 +1031,34 @@ MYPLanguage/
 │   └── runtime/
 │       └── runtime.c
 ├── stdlib/
-│   ├── env.myp
-│   └── timeline.myp
+│   ├── env.myp       # Console 类（I/O + 键盘）
+│   ├── timeline.myp  # Timeline / Stopwatch
+│   ├── math.myp      # Math 类（数学函数）
+│   └── io.myp        # File I/O 类
 ├── tests/
-│   ├── test_smart_building.myp
+│   ├── run_tests.sh           # 回归测试框架
+│   ├── fuzz_test.py           # 模糊测试
+│   ├── expected/              # 预期输出
+│   ├── negative/              # 负测试
+│   ├── struct_linkedlist/     # struct 验证
+│   ├── interface_shape/       # interface 验证
+│   ├── hanoi/                 # 递归验证
+│   ├── cli_args/              # 命令行参数验证
+│   ├── mapping_chain/         # 事件链验证
 │   ├── test_thread.myp
-│   ├── test_fixes.myp
-│   └── test_simple.myp
+│   ├── test_struct.myp
+│   └── test_full.myp
+├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP 客户端）
+├── deeplearning/
+│   ├── code/                  # MLP + MNIST 训练/推理
+│   └── data/                  # MNIST IDX 数据集
+├── docs/
+│   ├── examples/              # 示例：snake, gol, dungeon, neural_net, 并行, 定时器
+│   └── ...
 └── build/
-    └── mypc              # 编译产物
+    ├── mypc              # MYP 编译器
+    ├── myp_lsp           # MYP 语言服务器
+    └── myp_viz           # Mapping 可视化工具
 ```
 
 ### 11.4 第一版范围（核心先行）
@@ -967,38 +1075,95 @@ Runtime  → print/println + 基本运行时
 
 ### 11.5 当前状态与后续计划
 
-**当前已实现（超出原 v1 范围）：**
-- ✅ 事件运行时 + mapping 调度器（事件链、每线程队列、跨线程异步投递）
-- ✅ 多线程 `@thread` + 线程退出清理
-- ✅ 访问控制（property 私有）
-- ✅ `break`/`continue` 完整支持
-- ✅ 编译期映射环路检测
-- ✅ 用户跨文件 import（`import "./file.myp"`）
-- ✅ 定时器事件系统（`Timeline.startTimeout`/`startInterval`/`startTick`）
-- ✅ 标准库：env（Console）、timeline（Timeline/Stopwatch）、math（Math）、io（File）
-- ✅ `--stdlib` 编译器选项 + 自动路径检测
+**当前全部已实现：**
+
+#### 语言核心
+- ✅ 完整词法/语法/语义分析
+- ✅ LLVM IR 代码生成 + 链接
+- ✅ `--emit-llvm` 导出 IR
+- ✅ 多文件编译（合并 AST 后单次 sema/codegen 通过）
+- ✅ 错误恢复（解析错误后继续）
+- ✅ `-o`, `-O[0123]` 编译选项
+
+#### Class 系统
+- ✅ 三段式 class（action/event/property）
+- ✅ `@startup` 自动初始化
+- ✅ `function:` 内部方法段
+- ✅ `static:` 静态方法段
+- ✅ `struct:` 嵌套结构体段
+- ✅ `interface class` 编译期接口检查
+- ✅ 访问控制（property 外部不可写）
+
+#### 类型系统
+- ✅ 全部基本类型（byte/short/int/long/ubyte/ushort/uint/ulong/char/float/double/bool/string）
 - ✅ `struct` 值类型 + 嵌套 struct
-- ✅ `function:` 段（class 内部方法，不参与 mapping）
-- ✅ `static:` 段（静态类方法，无需实例化）
+- ✅ 数组类型（`Type[]`, `Type[N]`）
+- ✅ 数字自动提升
+- ✅ 字符串拼接 `+`
+- ✅ 字符串比较 `==` `!=`（内容比较）
+
+#### 控制流
+- ✅ `if/else`、`while`、`for(;;)`
+- ✅ `break`/`continue`
+- ✅ `return`
 - ✅ 复合赋值 `+= -= *= /= %=`
 - ✅ 自增/减 `++` `--`（前缀和后缀）
 - ✅ 三元运算符 `? :`
-- ✅ 字符串拼接 `+`
-- ✅ char 字面量 `'A'` `'\n'`
-- ✅ 编译选项 `-o` `-O[0123]` `--trace`
+
+#### 事件与并发
+- ✅ 事件运行时 + mapping 调度器
+- ✅ 事件链（A.e → B.a → C.a，返回值自动传递）
+- ✅ 编译期映射环路检测
+- ✅ `@thread` 多线程（pthread 独立线程 + 事件循环）
+- ✅ 每线程独立事件队列（ring buffer + mutex）
+- ✅ 跨线程异步事件投递
+- ✅ 定时器事件系统（`__myp_timer_create`）
+- ✅ 多线程独立定时器
+- ✅ 线程生命周期管理
+
+#### 标准库
+- ✅ `env`：Console（write/writeString/writeLine/writeFloat/writeBool/writeLong/readString/kbhit/getch/flush）
+- ✅ `timeline`：Timeline/Stopwatch（定时器事件）
+- ✅ `math`：Math（sqrt/abs/floor/ceil/sin/cos/tan/exp/log/pow/absInt/min/max）
+- ✅ `io`：File（open/close/readLine/write/hasNext）
+- ✅ `--stdlib` 编译器选项 + 自动路径检测
+
+#### 运行时
+- ✅ 终端原始模式 + 非阻塞键盘输入（kbhit/getch）
+- ✅ 二进制文件 I/O（read_byte/read_i32be/write_byte/write_i32be/write_double/read_double）
+- ✅ 权重持久化（深度学习模型保存/加载）
+- ✅ ARC 内存管理（每个线程独立 alloc 链表）
+- ✅ `atexit` 清理
+
+#### 测试基础设施
+- ✅ 回归测试框架 `tests/run_tests.sh`（编译+运行+输出比对）
+- ✅ 负测试集 `tests/negative/`（编译错误验证）
+- ✅ 模糊测试 `tests/fuzz_test.py`（随机代码生成 + 编译器稳定性）
+
+#### 验证示例
+- ✅ 贪吃蛇游戏（实时键盘输入 + 帧渲染）
+- ✅ 康威生命游戏（40×20 网格 + 演化）
+- ✅ 地牢探险 Roguelike
+- ✅ XOR 神经网络（2→2→1 推理）
+- ✅ 多层感知器训练（784→64→10 MNIST 97% 准确率）
+- ✅ 多线程并行计数
+- ✅ 多线程独立定时器
 
 **后续版本：**
 
 | 版本 | 特性 |
 |------|------|
-| **v2** | 字符串插值 `"Hello, $name"`、类型推断 `var x = 42`、Range `0..10` |
-| **v2** | `myp viz` 可视化工具（mapping 关系图） |
-| **v2** | `--trace` 运行时事件追踪 |
-| **v3** | 泛型、枚举 + 模式匹配、Lambda/闭包 |
-| **v4** | FFI、包管理器、LSP 语言服务器 |
-| **未来** | 自举、JIT、宏/元编程 |
-
-**原则**：核心编译流水线跑通前，不添加任何语法糖特性。
+| **v3** | 字符串插值 `"Hello, $name"`、类型推断 `var x = 42`、Range `0..10` | ✅ 已实现 |
+| **v3** | `myp viz` 可视化工具（mapping 关系图 + Graphviz） | ✅ 已实现 |
+| **v3** | `--trace` 运行时事件追踪 | ✅ 已实现 |
+| **v4** | 泛型（含 monomorphization：`Box<int>`/`Box<double>` 独立代码生成） | ✅ 已实现 |
+| **v4** | 枚举 + 模式匹配 | ✅ 已实现 |
+| **v4** | Lambda/闭包（`(int x) => { return x*2; }` 编译为隐藏类 `__lambda_N`） | ✅ 已实现 |
+| **v5** | FFI | ✅ 已实现 |
+| **v5** | 包管理器（myp init/build/install/run + --package-path 导入搜索） | ✅ 已实现 |
+| **v5** | LSP 语言服务器（诊断/补全/悬停/符号/跳转定义/引用查找） | ✅ 已实现 |
+| **v5** | VS Code 扩展（语法高亮 + LSP 集成） | ✅ 已实现 |
+| **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
 ---
 

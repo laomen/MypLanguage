@@ -1,0 +1,84 @@
+// ============================================================
+// Neural Network — MYP Language Demo
+// ============================================================
+// 2-layer feedforward network for XOR.
+//   2 inputs → 2 hidden (sigmoid) → 1 output (sigmoid)
+//
+// Forward propagation with hardcoded pre-trained weights.
+// ============================================================
+
+import env;
+import math;
+
+double sigmoid(double x) {
+    double neg = 0.0 - x;
+    double denom = 1.0 + Math.exp(neg);
+    return 1.0 / denom;
+}
+
+class NeuralNet {
+    action:
+        @startup void run() {
+            // Hidden layer: 2 neurons, 2 inputs each
+            // h0 detects (x0=1, x1=0): w = [20, -20], b = -10
+            // h1 detects (x0=0, x1=1): w = [-20, 20], b = -10
+            w_h[0] = 20.0;  w_h[1] = -20.0;
+            w_h[2] = -20.0; w_h[3] = 20.0;
+            b_h[0] = -10.0; b_h[1] = -10.0;
+
+            // Output: XOR = h0 OR h1
+            // w = [20, 20], b = -10
+            w_o[0] = 20.0; w_o[1] = 20.0;
+            b_o[0] = -10.0;
+
+            Console.writeLine("  XOR Neural Network");
+            Console.writeLine("  In -> Out  (expected)");
+            Console.writeLine("  --------------------");
+
+            int t = 0;
+            while (t < 4) {
+                double x0 = 0.0; double x1 = 0.0;
+                if      (t == 0) { x0 = 0.0; x1 = 0.0; }
+                else if (t == 1) { x0 = 0.0; x1 = 1.0; }
+                else if (t == 2) { x0 = 1.0; x1 = 0.0; }
+                else             { x0 = 1.0; x1 = 1.0; }
+
+                double out = forward(x0, x1);
+                int expected = 0;
+                if (t == 1 || t == 2) expected = 1;
+
+                Console.writeString("  ");
+                if (x0 < 0.5) Console.writeString("0"); else Console.writeString("1");
+                Console.writeString(" ");
+                if (x1 < 0.5) Console.writeString("0"); else Console.writeString("1");
+                Console.writeString(" -> ");
+                Console.writeFloat(out);
+                Console.writeString("  (exp ");
+                if (expected == 0) Console.writeString("0"); else Console.writeString("1");
+                Console.writeString(")");
+                Console.writeLine("");
+
+                t = t + 1;
+            }
+
+            Console.writeLine("  (threshold: out >= 0.5 = 1)");
+            Console.flush();
+        }
+
+        double forward(double x0, double x1) {
+            double h0 = sigmoid(w_h[0]*x0 + w_h[1]*x1 + b_h[0]);
+            double h1 = sigmoid(w_h[2]*x0 + w_h[3]*x1 + b_h[1]);
+            return sigmoid(w_o[0]*h0 + w_o[1]*h1 + b_o[0]);
+        }
+
+    property:
+        double[4] w_h;   // [2][2]
+        double[2] b_h;
+        double[2] w_o;   // [2]
+        double[1] b_o;
+}
+
+int main() {
+    NeuralNet n = new NeuralNet();
+    return 0;
+}

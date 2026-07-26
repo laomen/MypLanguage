@@ -1,0 +1,194 @@
+// MLP + MNIST loader
+import env; import math; import io;
+
+double sig(double x) {
+    double neg = 0.0 - x;
+    return 1.0 / (1.0 + Math.exp(neg));
+}
+double sig_d(double x) {
+    double s = sig(x);
+    return s * (1.0 - s);
+}
+
+class MLP {
+    action:
+        void init(int ni, int nh, int no) {
+            nIn = ni; nHid = nh; nOut = no;
+            int i = 0;
+            while (i < 20000) { w[i] = 0.0; i = i + 1; }
+            i = 0; while (i < 100) { b[i] = 0.0; i = i + 1; }
+            i = 0; while (i < 300) { p[i] = 0.0; a[i] = 0.0; d[i] = 0.0; i = i + 1; }
+        }
+
+        void randomW() {
+            double sc1 = Math.sqrt(6.0 / (nIn + nHid));
+            double sc2 = Math.sqrt(6.0 / (nHid + nOut));
+            int i = 0; int j = 0;
+            while (i < nIn * nHid) {
+                double r = ((i * 37 + 13) % 1000) / 1000.0;
+                w[i] = (r * 2.0 - 1.0) * sc1;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < nHid * nOut) {
+                double r = ((i * 73 + 7) % 1000) / 1000.0;
+                w[nIn * nHid + i] = (r * 2.0 - 1.0) * sc2;
+                i = i + 1;
+            }
+            i = 0; while (i < nHid + nOut) { b[i] = 0.0; i = i + 1; }
+        }
+
+        double gw(int l, int i, int j) {
+            if (l == 0) return w[i * nIn + j];
+            return w[nIn * nHid + i * nHid + j];
+        }
+        void sw(int l, int i, int j, double v) {
+            if (l == 0) w[i * nIn + j] = v;
+            else w[nIn * nHid + i * nHid + j] = v;
+        }
+
+        void forward(double xi0, double xi1, double xi2, double xi3,
+                     double xi4, double xi5, double xi6, double xi7) {
+            // Simplified: use setInput then fwd
+            int i = 0; int j = 0;
+            // Copy input (from individual params for now)
+            // For MNIST we'll pass 8 values at a time
+        }
+
+        void setInp(double[] inp) {
+            int j = 0;
+            while (j < nIn) { a[j] = inp[j]; j = j + 1; }
+        }
+
+        void fwd() {
+            int i = 0; int j = 0;
+            while (i < nHid) {
+                double sum = b[i];
+                j = 0;
+                while (j < nIn) { sum = sum + gw(0, i, j) * a[j]; j = j + 1; }
+                p[nIn + i] = sum;
+                a[nIn + i] = sig(sum);
+                i = i + 1;
+            }
+            i = 0;
+            while (i < nOut) {
+                double sum = b[nHid + i];
+                j = 0;
+                while (j < nHid) { sum = sum + gw(1, i, j) * a[nIn + j]; j = j + 1; }
+                p[nIn + nHid + i] = sum;
+                a[nIn + nHid + i] = sig(sum);
+                i = i + 1;
+            }
+        }
+
+        double out(int i) { return a[nIn + nHid + i]; }
+
+        void bwd(double t0, double lr) {
+            int L = nIn + nHid; int i = 0; int j = 0;
+
+            while (i < nOut) {
+                double o = a[L + i];
+                double t = t0;
+                if (i == 1) t = 0.0; if (i == 2) t = 0.0;
+                d[L + i] = (o - t) * sig_d(p[L + i]);
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < nHid) {
+                double sum = 0.0;
+                j = 0;
+                while (j < nOut) { sum = sum + gw(1, j, i) * d[L + j]; j = j + 1; }
+                d[nIn + i] = sum * sig_d(p[nIn + i]);
+                i = i + 1;
+            }
+
+            // Update weights
+            i = 0;
+            while (i < nOut) {
+                j = 0;
+                while (j < nHid) {
+                    double g = d[L + i] * a[nIn + j];
+                    sw(1, i, j, gw(1, i, j) - lr * g);
+                    j = j + 1;
+                }
+                b[nHid + i] = b[nHid + i] - lr * d[L + i];
+                i = i + 1;
+            }
+
+            i = 0;
+            while (i < nHid) {
+                j = 0;
+                while (j < nIn) {
+                    double g = d[nIn + i] * a[j];
+                    sw(0, i, j, gw(0, i, j) - lr * g);
+                    j = j + 1;
+                }
+                b[i] = b[i] - lr * d[nIn + i];
+                i = i + 1;
+            }
+        }
+
+        void train(double t0, double lr) {
+            fwd(); bwd(t0, lr);
+        }
+
+        int predict() {
+            fwd();
+            double best = out(0); int bestIdx = 0;
+            int i = 1;
+            while (i < nOut) {
+                if (out(i) > best) { best = out(i); bestIdx = i; }
+                i = i + 1;
+            }
+            return bestIdx;
+        }
+
+    property:
+        int nIn; int nHid; int nOut;
+        double[20000] w; double[100] b;
+        double[300] p; double[300] a; double[300] d;
+}
+
+// MNIST Loader
+class MNISTLoader {
+    action:
+        int loadImages(string path, double[] pixels, int maxCount) {
+            File f; f.open(path, "rb");
+            if (f.hasNext() == 0) return -1;
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            int rows = __myp_io_read_i32be();
+            int cols = __myp_io_read_i32be();
+            if (count > maxCount) count = maxCount;
+            int imgSize = rows * cols;
+            int i = 0;
+            while (i < count) {
+                int j = 0;
+                while (j < imgSize) {
+                    int b = __myp_io_read_byte();
+                    if (b < 0) { f.close(); return i; }
+                    pixels[i * imgSize + j] = b / 255.0;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            f.close(); return count;
+        }
+
+        int loadLabels(string path, int[] labels, int maxCount) {
+            File f; f.open(path, "rb");
+            if (f.hasNext() == 0) return -1;
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            if (count > maxCount) count = maxCount;
+            int i = 0;
+            while (i < count) {
+                int b = __myp_io_read_byte();
+                if (b < 0) { f.close(); return i; }
+                labels[i] = b;
+                i = i + 1;
+            }
+            f.close(); return count;
+        }
+}

@@ -1,0 +1,271 @@
+// ============================================================
+// Dungeon Explorer — MYP Language Demo
+// ============================================================
+// Terminal roguelike. WASD=move SPACE=attack Q=quit
+// #=wall @=player g=goblin $=treasure >=exit
+// ============================================================
+
+import env;
+
+class DungeonGame {
+    action:
+        @startup void run() {
+            COLS = 40; ROWS = 15;
+            level = 1; score = 0; gameOver = 0;
+            hp = 20; maxHp = 20; dirX = 1; dirY = 0;
+
+            buildLevel();
+
+            Console.writeString("  WASD move | SPACE attack | Q quit");
+            Console.writeLine("");
+            Console.flush();
+
+            while (gameOver == 0) {
+                int dx = 0; int dy = 0; int wantAttack = 0;
+
+                while (Console.kbhit() != 0) {
+                    var ch = Console.getch();
+                    if      (ch == 'w' || ch == 'W') { dx = 0;  dy = -1; }
+                    else if (ch == 's' || ch == 'S') { dx = 0;  dy = 1;  }
+                    else if (ch == 'a' || ch == 'A') { dx = -1; dy = 0;  }
+                    else if (ch == 'd' || ch == 'D') { dx = 1;  dy = 0;  }
+                    else if (ch == ' ')              { wantAttack = 1; }
+                    else if (ch == 'q' || ch == 'Q') { gameOver = 1; }
+                }
+                if (gameOver != 0) break;
+
+                if (wantAttack != 0)          { doAttack(dirX, dirY); }
+                else if (dx != 0 || dy != 0)  { dirX = dx; dirY = dy; doMove(dx, dy); }
+
+                doMonsters();
+                if (hp <= 0) gameOver = 1;
+
+                render();
+                Console.flush();
+                __myp_sleep_ms(150);
+            }
+
+            render();
+            Console.writeLine("  Thanks for playing!  Score: ");
+            Console.writeLong(score);
+            Console.writeLine("");
+            Console.flush();
+        }
+
+        void buildLevel() {
+            // Clear map
+            int total = COLS * ROWS;
+            int i = 0;
+            while (i < total) { map[i] = 0; i = i + 1; }
+
+            // Border walls
+            int x = 0;
+            while (x < COLS) {
+                map[x] = 1; map[(ROWS-1)*COLS + x] = 1;
+                x = x + 1;
+            }
+            int y = 0;
+            while (y < ROWS) {
+                map[y*COLS] = 1; map[y*COLS + COLS-1] = 1;
+                y = y + 1;
+            }
+
+            // Random pillars (simple deterministic seed >= 0)
+            int r = level * 54321 + 9999;
+            y = 2;
+            while (y < ROWS - 2) {
+                x = 2;
+                while (x < COLS - 2) {
+                    if (x % 5 == 0 || y % 4 == 0) {
+                        r = (r * 13 + 7) % 999999937;
+                        if (r % 3 != 0) map[y * COLS + x] = 1;
+                    }
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+
+            px = 1; py = 1;
+            exitX = COLS - 2; exitY = ROWS - 2;
+
+            // Place monsters
+            monsterCount = level + 2;
+            if (monsterCount > 20) monsterCount = 20;
+            int m = 0;
+            while (m < monsterCount) {
+                r = (r * 13 + 7) % 999999937;
+                placeMonster(m, r);
+                m = m + 1;
+            }
+
+            // Place treasure
+            r = (r * 13 + 7) % 999999937;
+            placeItem(r);
+
+            map[exitY * COLS + exitX] = 6;
+        }
+
+        void placeMonster(int idx, int sd) {
+            int tries = 0;
+            while (tries < 100) {
+                sd = (sd * 13 + 7) % 999999937;
+                int mx = (sd % (COLS - 4)) + 2;
+                sd = (sd * 13 + 7) % 999999937;
+                int my = (sd % (ROWS - 4)) + 2;
+                int pos = my * COLS + mx;
+                if (map[pos] == 0) {
+                    if (mx == 1 && my == 1) { tries = tries + 1; continue; }
+                    if (mx == exitX && my == exitY) { tries = tries + 1; continue; }
+                    monsterX[idx] = mx; monsterY[idx] = my;
+                    monsterHp[idx] = 3; map[pos] = 3;
+                    return;
+                }
+                tries = tries + 1;
+            }
+        }
+
+        void placeItem(int sd) {
+            int tries = 0;
+            while (tries < 100) {
+                sd = (sd * 13 + 7) % 999999937;
+                int ix = (sd % (COLS - 4)) + 2;
+                sd = (sd * 13 + 7) % 999999937;
+                int iy = (sd % (ROWS - 4)) + 2;
+                int pos = iy * COLS + ix;
+                if (map[pos] == 0) { map[pos] = 4; return; }
+                tries = tries + 1;
+            }
+        }
+
+        void doMove(int dx, int dy) {
+            int nx = px + dx; int ny = py + dy;
+            if (nx < 0 || nx >= COLS || ny < 0 || ny >= ROWS) return;
+            int npos = ny * COLS + nx;
+            if (map[npos] == 1) return;
+
+            // Bump monster
+            int mi = 0;
+            while (mi < monsterCount) {
+                if (monsterX[mi] == nx && monsterY[mi] == ny && monsterHp[mi] > 0) {
+                    monsterHp[mi] = monsterHp[mi] - 2;
+                    if (monsterHp[mi] <= 0) { map[npos] = 0; score = score + 10; }
+                    hp = hp - 1;
+                    if (hp <= 0) gameOver = 1;
+                    return;
+                }
+                mi = mi + 1;
+            }
+
+            if (map[npos] == 4) { score = score + 5; map[npos] = 0; }
+            else if (map[npos] == 6) {
+                level = level + 1;
+                if (level > 9) { gameOver = 1; return; }
+                buildLevel(); return;
+            }
+
+            map[py * COLS + px] = 0;
+            px = nx; py = ny;
+            map[py * COLS + px] = 2;
+        }
+
+        void doAttack(int dx, int dy) {
+            int tx = px + dx; int ty = py + dy;
+            if (tx < 0 || tx >= COLS || ty < 0 || ty >= ROWS) return;
+            int mi = 0;
+            while (mi < monsterCount) {
+                if (monsterX[mi] == tx && monsterY[mi] == ty && monsterHp[mi] > 0) {
+                    monsterHp[mi] = monsterHp[mi] - 3;
+                    if (monsterHp[mi] <= 0) { map[ty*COLS+tx] = 0; score = score + 10; }
+                    return;
+                }
+                mi = mi + 1;
+            }
+        }
+
+        void doMonsters() {
+            int mi = 0;
+            while (mi < monsterCount) {
+                if (monsterHp[mi] > 0) {
+                    int r = (mi * 777 + level * 333) % 4;
+                    if (r < 0) r = -r;
+                    int mdx = 0; int mdy = 0;
+                    if      (r == 0) { mdx = -1; }
+                    else if (r == 1) { mdx = 1;  }
+                    else if (r == 2) { mdy = -1; }
+                    else             { mdy = 1;  }
+
+                    int mx = monsterX[mi] + mdx;
+                    int my = monsterY[mi] + mdy;
+                    if (mx >= 0 && mx < COLS && my >= 0 && my < ROWS) {
+                        int mpos = my * COLS + mx;
+                        if (map[mpos] == 0) {
+                            map[monsterY[mi]*COLS + monsterX[mi]] = 0;
+                            monsterX[mi] = mx; monsterY[mi] = my;
+                            map[mpos] = 3;
+                        }
+                    }
+
+                    int pdx = px - monsterX[mi];
+                    int pdy = py - monsterY[mi];
+                    if ((pdx == 0 && (pdy == 1 || pdy == -1)) ||
+                        (pdy == 0 && (pdx == 1 || pdx == -1))) {
+                        hp = hp - 1;
+                    }
+                }
+                mi = mi + 1;
+            }
+        }
+
+        void render() {
+            string buf = "\033[H";
+            int x = 0;
+            while (x < COLS + 2) { buf = buf + "#"; x = x + 1; }
+            buf = buf + "\n";
+            int y = 0;
+            while (y < ROWS) {
+                buf = buf + "#";
+                x = 0;
+                while (x < COLS) {
+                    int c = map[y * COLS + x];
+                    if      (c == 0) buf = buf + " ";
+                    else if (c == 1) buf = buf + "#";
+                    else if (c == 2) buf = buf + "@";
+                    else if (c == 3) buf = buf + "g";
+                    else if (c == 4) buf = buf + "$";
+                    else if (c == 6) buf = buf + ">";
+                    else             buf = buf + " ";
+                    x = x + 1;
+                }
+                buf = buf + "#\n";
+                y = y + 1;
+            }
+            x = 0;
+            while (x < COLS + 2) { buf = buf + "#"; x = x + 1; }
+            buf = buf + "\n";
+            buf = buf + "  Lv ";
+            buf = buf + level;
+            buf = buf + "  HP ";
+            buf = buf + hp;
+            buf = buf + "/";
+            buf = buf + maxHp;
+            buf = buf + "  Score ";
+            buf = buf + score;
+            buf = buf + "\n";
+            Console.writeString(buf);
+        }
+
+    property:
+        int COLS; int ROWS;
+        int level; int score; int gameOver;
+        int[800] map;
+        int px; int py; int hp; int maxHp;
+        int dirX; int dirY;
+        int exitX; int exitY;
+        int[20] monsterX; int[20] monsterY; int[20] monsterHp;
+        int monsterCount;
+}
+
+int main() {
+    DungeonGame g = new DungeonGame();
+    return 0;
+}

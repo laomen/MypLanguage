@@ -21,6 +21,7 @@ public:
 private:
     // Utility
     const Token& peek() const;
+    const Token& peekNext() const;
     const Token& previous() const;
     Token advance();
     bool check(TokenKind kind) const;
@@ -40,6 +41,13 @@ private:
     std::unique_ptr<InterfaceDecl> parseInterface();
     std::unique_ptr<MappingDecl> parseMapping();
     std::unique_ptr<FuncDecl> parseFunction(bool allow_void_return = true);
+    std::unique_ptr<EnumDecl> parseEnumDecl();
+    std::unique_ptr<FFIDecl> parseFFIDecl();
+    std::vector<std::string> parseTypeParamList();
+    std::vector<TypeNode> parseTypeArgList();
+    std::unique_ptr<Stmt> parseMatchStmt();
+    std::unique_ptr<Expr> parseLambdaExpr();
+    bool isGenericIdentifier();
 
     // Class internals
     void parseClassSection(ClassDecl& cls);

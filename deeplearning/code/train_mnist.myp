@@ -1,0 +1,362 @@
+// MNIST MLP — ReLU + Softmax + Cross-Entropy, with weight save/load
+// 784→64→10 MLP
+
+import env; import math;
+
+double relu(double x) { return x>0 ? x : 0.0; }
+double relu_d(double x) { return x>0 ? 1.0 : 0.0; }
+
+class Trainer {
+    action:
+        @startup void run() {
+            nIn=784; nHid=64; nOut=10;
+            string wpath="./deeplearning/data/mnist_weights.bin";
+
+            // Try loading saved weights
+            int fd=__myp_io_fopen(wpath,"rb");
+            if(fd>=0){
+                int c1=__myp_io_read_i32be();
+                int c2=__myp_io_read_i32be();
+                int c3=__myp_io_read_i32be();
+                if(c1==50176 && c2==640 && c3==74){
+                    int i=0; while(i<50176){wh[i]=__myp_io_read_double();i=i+1;}
+                    i=0; while(i<640){wo[i]=__myp_io_read_double();i=i+1;}
+                    i=0; while(i<74){bh[i]=__myp_io_read_double();i=i+1;}
+                    __myp_io_fclose();
+                    Console.writeLine("Loaded saved weights, skipping training");
+                }else{
+                    __myp_io_fclose();
+                    Console.writeLine("Weight file format mismatch, retraining");
+                    trainFromScratch(wpath);
+                }
+            }else{
+                Console.writeLine("No saved weights found, training from scratch");
+                trainFromScratch(wpath);
+            }
+
+            // Load test data and evaluate
+            loadTestImages();
+            loadTestLabels();
+            Console.writeLine(""); Console.flush();
+
+            // Show 10 test samples
+            Console.writeLine("=== Inference Demo ==="); Console.flush();
+            int d=0;
+            while(d<10){
+                int si=0;
+                while(si<numTest && testLabels[si]!=d){si=si+1;}
+                if(si<numTest) showDigit(si, d);
+                d=d+1;
+            }
+
+            // Full test set accuracy
+            Console.writeLine("=== Test Set ==="); Console.flush();
+            int totalCorrect=0;
+            int sii=0;
+            while(sii<numTest){
+                copyInp(sii, 1);
+                fwd();
+                if(predict()==testLabels[sii])totalCorrect=totalCorrect+1;
+                sii=sii+1;
+            }
+            int tpct=totalCorrect*100/numTest;
+            Console.writeString("Test accuracy: "); Console.writeLong(tpct);
+            Console.writeString("% ("); Console.writeLong(totalCorrect);
+            Console.writeString("/"); Console.writeLong(numTest);
+            Console.writeLine(")"); Console.flush();
+        }
+
+        void trainFromScratch(string wpath){
+            initWeights();
+            loadTrainImages();
+            loadTrainLabels();
+            Console.writeString("Training on "); Console.writeLong(numTrain);
+            Console.writeLine(" samples..."); Console.flush();
+
+            int epochs=10;
+            double lr=0.1;
+            int e=0;
+            while(e<epochs){
+                int correct=0;
+                int s=0;
+                while(s<numTrain){
+                    copyInp(s, 0);
+                    fwd();
+                    int pred=predict();
+                    if(pred==trainLabels[s])correct=correct+1;
+                    int j=0; while(j<nOut){tgt[j]=0.0;j=j+1;}
+                    tgt[trainLabels[s]]=1.0;
+                    bwd(lr);
+                    s=s+1;
+                }
+                int pct=correct*100/numTrain;
+                Console.writeString("  Epoch "); Console.writeLong(e);
+                Console.writeString("  train acc "); Console.writeLong(pct);
+                Console.writeLine("%"); Console.flush();
+                e=e+1;
+            }
+            Console.writeLine("  Training done!"); Console.flush();
+
+            // Save weights
+            int fd=__myp_io_fopen(wpath,"wb");
+            if(fd<0){
+                Console.writeLine("  Cannot save weights!"); Console.flush();
+                return;
+            }
+            __myp_io_write_i32be(50176);
+            __myp_io_write_i32be(640);
+            __myp_io_write_i32be(74);
+            int i=0; while(i<50176){__myp_io_write_double(wh[i]);i=i+1;}
+            i=0; while(i<640){__myp_io_write_double(wo[i]);i=i+1;}
+            i=0; while(i<74){__myp_io_write_double(bh[i]);i=i+1;}
+            __myp_io_fclose();
+            Console.writeLine("  Weights saved!"); Console.flush();
+        }
+
+        void initWeights(){
+            int i=0; while(i<51000){wh[i]=0.0;i=i+1;}
+            i=0; while(i<650){wo[i]=0.0;i=i+1;}
+            i=0; while(i<75){bh[i]=0.0;i=i+1;}
+            double sc1=Math.sqrt(6.0/(nIn+nHid));
+            double sc2=Math.sqrt(6.0/(nHid+nOut));
+            i=0;
+            while(i<nIn*nHid){
+                double r=((i*37+13)%1000)/1000.0;
+                wh[i]=(r*2.0-1.0)*sc1; i=i+1;
+            }
+            i=0;
+            while(i<nHid*nOut){
+                double r=((i*73+7)%1000)/1000.0;
+                wo[i]=(r*2.0-1.0)*sc2; i=i+1;
+            }
+        }
+
+        void copyInp(int idx, int mode){
+            int j=0;
+            while(j<nIn){
+                if(mode==0) inp[j]=trainPixels[idx*nIn+j];
+                else        inp[j]=testPixels[idx*nIn+j];
+                j=j+1;
+            }
+        }
+
+        // ===== Data loaders =====
+        void loadTrainImages() {
+            string p="./deeplearning/data/train-images-idx3-ubyte/train-images.idx3-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0){Console.writeLine("  Cannot open train images");return;}
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            int rows=__myp_io_read_i32be();
+            int cols=__myp_io_read_i32be();
+            if(count>500)count=500;
+            numTrain=count;
+            int i=0;
+            while(i<count){
+                int j=0;
+                while(j<784){
+                    int b=__myp_io_read_byte();
+                    if(b<0){numTrain=i;__myp_io_fclose();return;}
+                    trainPixels[i*784+j]=b/255.0;
+                    j=j+1;
+                }
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTrainLabels() {
+            string p="./deeplearning/data/train-labels-idx1-ubyte/train-labels.idx1-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0)return;
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            if(count>numTrain)count=numTrain;
+            int i=0;
+            while(i<count){
+                int b=__myp_io_read_byte();
+                if(b<0)break;
+                trainLabels[i]=b;
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTestImages() {
+            string p="./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0){Console.writeLine("  Cannot open test images");return;}
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            int rows=__myp_io_read_i32be();
+            int cols=__myp_io_read_i32be();
+            if(count>100)count=100;
+            numTest=count;
+            int i=0;
+            while(i<count){
+                int j=0;
+                while(j<784){
+                    int b=__myp_io_read_byte();
+                    if(b<0){numTest=i;__myp_io_fclose();return;}
+                    testPixels[i*784+j]=b/255.0;
+                    j=j+1;
+                }
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTestLabels() {
+            string p="./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0)return;
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            if(count>numTest)count=numTest;
+            int i=0;
+            while(i<count){
+                int b=__myp_io_read_byte();
+                if(b<0)break;
+                testLabels[i]=b;
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        // ===== Network: ReLU hidden + Softmax output =====
+        void fwd(){
+            // Hidden layer (ReLU)
+            int i=0;int j=0;
+            while(i<nHid){
+                double s=bh[i];j=0;
+                while(j<nIn){s=s+wh[i*nIn+j]*inp[j];j=j+1;}
+                zh[i]=s; ah[i]=relu(s);
+                i=i+1;
+            }
+            // Output layer (Softmax)
+            i=0;
+            double maxv=0.0;
+            while(i<nOut){
+                double s=bh[nHid+i];j=0;
+                while(j<nHid){s=s+wo[i*nHid+j]*ah[j];j=j+1;}
+                zo[i]=s;
+                if(i==0 || s>maxv) maxv=s;
+                i=i+1;
+            }
+            double sumexp=0.0;
+            i=0;
+            while(i<nOut){
+                double e=Math.exp(zo[i]-maxv);  // numerical stability
+                ao[i]=e;
+                sumexp=sumexp+e;
+                i=i+1;
+            }
+            i=0;
+            while(i<nOut){ao[i]=ao[i]/sumexp;i=i+1;}
+        }
+
+        int predict(){
+            double b=ao[0];int bi=0;int i=1;
+            while(i<nOut){if(ao[i]>b){b=ao[i];bi=i;}i=i+1;}
+            return bi;
+        }
+
+        // Backprop: Cross-Entropy + Softmax → dL/dz = ao - tgt
+        // Hidden: ReLU derivative
+        void bwd(double lr){
+            // Output gradient: softmax - target
+            int i=0;int j=0;
+            while(i<nOut){do_[i]=ao[i]-tgt[i];i=i+1;}
+
+            // Hidden gradient (ReLU derivative)
+            i=0;
+            while(i<nHid){
+                double s=0.0;j=0;
+                while(j<nOut){s=s+wo[j*nHid+i]*do_[j];j=j+1;}
+                dh[i]=s*relu_d(zh[i]);
+                i=i+1;
+            }
+
+            // Update wo and output biases
+            i=0;
+            while(i<nOut){
+                j=0;
+                while(j<nHid){wo[i*nHid+j]-=lr*do_[i]*ah[j];j=j+1;}
+                bh[nHid+i]-=lr*do_[i];
+                i=i+1;
+            }
+
+            // Update wh and hidden biases
+            i=0;
+            while(i<nHid){
+                j=0;
+                while(j<nIn){wh[i*nIn+j]-=lr*dh[i]*inp[j];j=j+1;}
+                bh[i]-=lr*dh[i];
+                i=i+1;
+            }
+        }
+
+        // ===== Visualization =====
+        void showDigit(int idx, int actualLabel){
+            Console.writeString("--- Sample "); Console.writeLong(idx);
+            Console.writeString(" (actual="); Console.writeLong(actualLabel);
+            Console.writeLine(") ---"); Console.flush();
+
+            int row=0;
+            while(row<28){
+                string line="";
+                int col=0;
+                while(col<28){
+                    double px=testPixels[idx*784+row*28+col];
+                    if(px>0.6)      line=line+"##";
+                    else if(px>0.3) line=line+"..";
+                    else            line=line+"  ";
+                    col=col+1;
+                }
+                Console.writeLine(line); Console.flush();
+                row=row+1;
+            }
+
+            copyInp(idx, 1);
+            fwd();
+            int pred=predict();
+
+            // Show output confidences
+            Console.writeString("  Predict: ");
+            int i=0;
+            while(i<nOut){
+                double conf=ao[i]*100;
+                if(i==pred){
+                    Console.writeString("["); __myp_print_float(conf); Console.writeString("]");
+                }else{
+                    Console.writeString(" "); __myp_print_float(conf); Console.writeString(" ");
+                }
+                i=i+1;
+            }
+            Console.writeLine(""); Console.flush();
+
+            if(pred==actualLabel){
+                Console.writeLine("  CORRECT"); Console.flush();
+            }else{
+                Console.writeString("  WRONG (pred="); Console.writeLong(pred);
+                Console.writeLine(")"); Console.flush();
+            }
+            Console.writeLine(""); Console.flush();
+        }
+
+    property:
+        int nIn;int nHid;int nOut;
+        int numTrain;int numTest;
+
+        double[50200]wh; double[640]wo; double[74]bh;
+        double[784]inp;
+        double[64]ah; double[64]zh; double[64]dh;
+        double[10]ao; double[10]zo; double[10]do_; double[10]tgt;
+
+        double[392000]trainPixels;
+        int[500]trainLabels;
+        double[78400]testPixels;
+        int[100]testLabels;
+}
+
+int main(){Trainer t=new Trainer();return 0;}

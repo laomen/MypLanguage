@@ -27,6 +27,7 @@ private:
     void visitStructDecl(StructDecl& decl);
     void visitInterfaceDecl(InterfaceDecl& decl);
     void visitFuncDecl(FuncDecl& decl);
+    void visitEnumDecl(EnumDecl& decl);
 
     // ---- Pass 2: Type-check bodies ----
     void visitFuncBody(FuncDecl& decl);
@@ -38,6 +39,7 @@ private:
     StmtResult visitWhileStmt(WhileStmt& stmt);
     StmtResult visitForStmt(ForStmt& stmt);
     StmtResult visitReturnStmt(ReturnStmt& stmt);
+    StmtResult visitMatchStmt(MatchStmt& stmt);
 
     // ---- Expression type checking ----
     TypeInfo visitExpr(Expr& expr);
@@ -57,9 +59,20 @@ private:
     TypeInfo visitAssignment(AssignmentExpr& expr);
     TypeInfo visitTernary(TernaryExpr& expr);
     TypeInfo visitRange(RangeExpr& expr);
+    TypeInfo visitEnumVariant(EnumVariantExpr& expr);
 
     // ---- Type utilities ----
-    TypeInfo typeNodeToTypeInfo(const TypeNode& node) const;
+    TypeInfo typeNodeToTypeInfo(const TypeNode& node);
+    TypeNode substituteTypeNode(const TypeNode& node,
+                                const std::vector<std::string>& type_params,
+                                const std::vector<TypeNode>& type_args) const;
+    TypeInfo visitLambda(LambdaExpr& expr);
+    void visitFFI(FFIDecl& decl);
+    int lambda_counter_ = 0;
+
+    TypeInfo substituteTypeParams(const TypeNode& node,
+                                  const std::vector<std::string>& type_params,
+                                  const std::vector<TypeInfo>& type_args);
     std::string typeName(const TypeInfo& type) const;
     bool typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const;
 
@@ -74,6 +87,9 @@ private:
 
     // ---- Struct method type-checking ----
     void checkStructMethods(const StructDecl& decl);
+
+    // ---- Interface validation ----
+    void checkInterfaceImpl(const ClassDecl& cls);
 
     // ---- Built-in modules ----
     void registerIntrinsics();
@@ -93,6 +109,18 @@ private:
     bool in_class_method_ = false;
     bool in_main_function_ = false;
     std::string current_class_name_;
+
+    // ---- Enum info tracking ----
+    struct EnumInfo {
+        std::vector<EnumVariant> variants;
+    };
+    std::unordered_map<std::string, EnumInfo> enum_info_;
+
+    // ---- Generic class tracking ----
+    struct GenericInfo {
+        int tu_index = -1; // index into current_tu_->classes
+    };
+    std::unordered_map<std::string, GenericInfo> generic_classes_;
 
 };
 

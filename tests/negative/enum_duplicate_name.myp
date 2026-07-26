@@ -1,0 +1,4 @@
+// EXPECT ERROR: duplicate enum name
+enum Foo { A; B; }
+enum Foo { C; D; }
+int main(){return 0;}

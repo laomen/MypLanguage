@@ -1,0 +1,60 @@
+// 枚举 + 模式匹配验证
+import env;
+
+// 简单枚举
+enum Color {
+    Red; Green; Blue;
+}
+
+// 带数据的枚举
+enum Option {
+    Some(int value);
+    None;
+}
+
+// 多属性的枚举
+enum Shape {
+    Circle(double radius);
+    Rect(double width, double height);
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[枚举验证]\n");
+
+            // 1. 简单枚举
+            Color c = Color.Red;
+            match (c) {
+                Color.Red => { __myp_print("  Color: Red\n"); }
+                Color.Green => { __myp_print("  Color: Green\n"); }
+                Color.Blue => { __myp_print("  Color: Blue\n"); }
+            }
+
+            // 2. 所有变体
+            Color c2 = Color.Green;
+            match (c2) {
+                Color.Red => { __myp_print("  Color: Red\n"); }
+                Color.Green => { __myp_print("  Color: Green (correct)\n"); }
+                Color.Blue => { __myp_print("  Color: Blue\n"); }
+            }
+
+            // 3. 带数据的枚举
+            Option opt = Option.Some(42);
+            match (opt) {
+                Option.Some(v) => { __myp_print("  Option.Some: index=0 data(v)="); __myp_print_int(v); __myp_print("\n"); }
+                Option.None => { __myp_print("  Option.None\n"); }
+            }
+
+            // 4. 多属性枚举
+            Shape s = Shape.Circle(5.0);
+            match (s) {
+                Shape.Circle(r) => { __myp_print("  Shape: Circle variant=0 radius="); __myp_print_float(r); __myp_print("\n"); }
+                Shape.Rect(w,h) => { __myp_print("  Shape: Rect variant=1\n"); }
+            }
+
+            __myp_print("[OK] 枚举验证通过\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}

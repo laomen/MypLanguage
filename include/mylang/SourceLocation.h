@@ -30,6 +30,9 @@ public:
     /// Load a source file. Returns false if file cannot be opened.
     bool loadFile(const std::string& filename);
 
+    /// Load from a string (for LSP).
+    bool loadString(const std::string& content, const std::string& filename = "<unknown>");
+
     /// Get the filename of the loaded source.
     const std::string& filename() const { return filename_; }
 

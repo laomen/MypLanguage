@@ -1,0 +1,5 @@
+// EXPECT ERROR: expected ';'
+class M {
+    action: @startup void run() { int a = 5 int b = 10 }
+}
+int main(){M m=new M();return 0;}

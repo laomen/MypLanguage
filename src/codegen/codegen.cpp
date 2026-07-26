@@ -19,6 +19,15 @@ namespace mylang {
 CodeGen::CodeGen(DiagnosticEngine& diag) : diag_(diag), builder_(ctx_) {}
 CodeGen::~CodeGen() = default;
 
+bool CodeGen::saveIR(const std::string& path) const {
+    std::error_code ec;
+    llvm::raw_fd_ostream dest(path, ec);
+    if (ec) return false;
+    module_->print(dest, nullptr);
+    dest.flush();
+    return true;
+}
+
 std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn, int opt_level) {
     llvm::InitializeNativeTarget();
     llvm::InitializeNativeTargetAsmPrinter();
@@ -40,6 +49,19 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
         diag_.error(SourceRange{}, "LLVM verify failed: " + err_str);
         return "";
     }
+
+    // --emit-llvm: save IR text and skip object output
+    if (emit_llvm_) {
+        std::string ll_path = output_fn + ".ll";
+        std::error_code ec;
+        llvm::raw_fd_ostream dest(ll_path, ec, llvm::sys::fs::OF_None);
+        if (!ec) {
+            module_->print(dest, nullptr);
+            dest.flush();
+        }
+        return ll_path;  // Return .ll path instead of .o
+    }
+
     std::string obj_path = output_fn + ".o";
     return writeObjectFile(obj_path, opt_level) ? obj_path : "";
 }
@@ -50,7 +72,7 @@ void CodeGen::buildClassStructTypes(TranslationUnit& tu) {
         std::vector<llvm::Type*> members;
         unsigned idx = 0;
         for (auto& prop : cls.properties) {
-            members.push_back(getLLVMType(builtinTypeToInfo(prop.type.basic_type)));
+            members.push_back(typeNodeToLLVMType(prop.type));
             property_indices_[cls.name][prop.name] = idx++;
         }
         class_structs_[cls.name] = llvm::StructType::create(ctx_, members, cls.name);
@@ -66,7 +88,7 @@ void CodeGen::buildStructTypes(TranslationUnit& tu) {
         std::vector<llvm::Type*> members;
         unsigned idx = 0;
         for (auto& prop : st.properties) {
-            members.push_back(getLLVMType(builtinTypeToInfo(prop.type.basic_type)));
+            members.push_back(typeNodeToLLVMType(prop.type));
             struct_field_indices_[key][prop.name] = idx++;
         }
         struct_types_[key] = llvm::StructType::create(ctx_, members, key);
@@ -103,7 +125,7 @@ bool CodeGen::getStructFieldIndex(const std::string& sn, const std::string& fn, 
 
 llvm::Type* CodeGen::getStructFieldType(const StructDecl& st, const std::string& fn) {
     for (auto& p : st.properties)
-        if (p.name == fn) return getLLVMType(builtinTypeToInfo(p.type.basic_type));
+        if (p.name == fn) return typeNodeToLLVMType(p.type);
     return llvm::Type::getInt32Ty(ctx_);
 }
 
@@ -140,8 +162,20 @@ bool CodeGen::getPropertyIndex(const std::string& cn, const std::string& pn, uns
 
 llvm::Type* CodeGen::getPropertyType(const ClassDecl& cls, const std::string& pn) {
     for (auto& p : cls.properties)
-        if (p.name == pn) return getLLVMType(builtinTypeToInfo(p.type.basic_type));
+        if (p.name == pn) return typeNodeToLLVMType(p.type);
     return llvm::Type::getInt32Ty(ctx_);
+}
+
+llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
+    // Check for array type
+    if (tn.isArray() && tn.element_type) {
+        auto* elem = typeNodeToLLVMType(*tn.element_type);
+        if (tn.array_size > 0)
+            return llvm::ArrayType::get(elem, tn.array_size);
+        return llvm::PointerType::get(ctx_, 0);
+    }
+    // Basic or class type
+    return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
 
 const ClassDecl* CodeGen::findClass(const std::string& n) {
@@ -192,7 +226,17 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
             (void)st;
             return llvm::PointerType::get(ctx_, 0);
         }
-        case TypeKind::Array: return llvm::PointerType::get(ctx_, 0);
+        case TypeKind::Struct:
+            return getStructType(t.class_name);
+        case TypeKind::Enum:
+            return llvm::Type::getInt32Ty(ctx_);
+        case TypeKind::Array: {
+            if (t.array_size > 0 && t.element_type) {
+                auto* elem = getLLVMType(*t.element_type);
+                return llvm::ArrayType::get(elem, t.array_size);
+            }
+            return llvm::PointerType::get(ctx_, 0);
+        }
     }
     return llvm::Type::getVoidTy(ctx_);
 }
@@ -248,22 +292,14 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         }
     }
 
-    // Generate function bodies
-    for (auto& f : tu.functions) generateFuncDecl(f);
-    for (auto& c : tu.classes) generateClass(c);
-
-    // Generate struct method functions (file-level)
-    for (auto& st : tu.structs) {
-        generateStructMethods(st);
-    }
-    // Generate struct method functions (nested in classes)
-    for (auto& cls : tu.classes) {
-        for (auto& st : cls.structs) {
-            generateStructMethods(st);
-        }
+    // Generate FFI function declarations
+    for (auto& ff : current_tu_->ffis) {
+        generateFFIDecl(ff);
     }
 
     // Create global instance pointers for classes used in mappings
+    // MUST be done before generateClass() so @thread variables can store
+    // instance pointers that mapping handlers need
     for (auto& m : tu.mappings) {
         for (auto& chain : m.chains) {
             for (auto& node : chain.nodes) {
@@ -276,6 +312,28 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
                     class_instance_globals_[node.source_name] = gv;
                 }
             }
+        }
+    }
+
+    // Forward-declare ALL struct methods so they can be called from class bodies
+    // (must be done BEFORE generateClass)
+    for (auto& st : tu.structs) declareStructMethods(st);
+    for (auto& cls : tu.classes) {
+        for (auto& st : cls.structs) declareStructMethods(st);
+    }
+
+    // Generate function bodies
+    for (auto& f : tu.functions) generateFuncDecl(f);
+    for (auto& c : tu.classes) generateClass(c);
+
+    // Generate struct method function bodies (file-level)
+    for (auto& st : tu.structs) {
+        generateStructMethods(st);
+    }
+    // Generate struct method function bodies (nested in classes)
+    for (auto& cls : tu.classes) {
+        for (auto& st : cls.structs) {
+            generateStructMethods(st);
         }
     }
 }
@@ -453,6 +511,28 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
 }
 
 // -- Generate struct methods --
+void CodeGen::declareStructMethods(const StructDecl& st) {
+    std::string type_key = st.parent_class.empty()
+        ? st.name : st.parent_class + "::" + st.name;
+    auto* st_type = getStructType(type_key);
+    if (!st_type) return;
+
+    for (auto& method : st.functions) {
+        if (!method.body) continue;
+        std::string fn = "struct_" + type_key + "_" + method.name;
+        if (module_->getFunction(fn)) continue;
+
+        std::vector<llvm::Type*> pts;
+        pts.push_back(llvm::PointerType::get(ctx_, 0)); // struct ptr
+        for (auto& p : method.params)
+            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+
+        TypeInfo rt = builtinTypeToInfo(method.return_type.basic_type);
+        auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
+        llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
+    }
+}
+
 void CodeGen::generateStructMethods(const StructDecl& st) {
     std::string type_key = st.parent_class.empty()
         ? st.name : st.parent_class + "::" + st.name;
@@ -524,6 +604,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
         TypeInfo pt;
         if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
             pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
+        } else if (!p.type.class_name.empty() && getStructType(p.type.class_name)) {
+            pt = TypeInfo(TypeKind::Struct); pt.class_name = p.type.class_name;
         } else {
             pt = builtinTypeToInfo(p.type.basic_type);
         }
@@ -548,6 +630,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
         TypeInfo pt;
         if (!fn_decl.params[i].type.class_name.empty() && getClassStruct(fn_decl.params[i].type.class_name)) {
             pt = TypeInfo(TypeKind::Class); pt.class_name = fn_decl.params[i].type.class_name;
+        } else if (!fn_decl.params[i].type.class_name.empty() && getStructType(fn_decl.params[i].type.class_name)) {
+            pt = TypeInfo(TypeKind::Struct); pt.class_name = fn_decl.params[i].type.class_name;
         } else {
             pt = builtinTypeToInfo(fn_decl.params[i].type.basic_type);
         }
@@ -569,6 +653,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         TypeInfo pt;
         if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
             pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
+        } else if (!p.type.class_name.empty() && getStructType(p.type.class_name)) {
+            pt = TypeInfo(TypeKind::Struct); pt.class_name = p.type.class_name;
         } else {
             pt = builtinTypeToInfo(p.type.basic_type);
         }
@@ -612,6 +698,9 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         else builder_.CreateRet(llvm::ConstantInt::get(getLLVMType(rt), 0));
     }
     popScope();
+    if (decl.name == "main") {
+        in_main_ = false;
+    }
 }
 
 // -- Mapping --
@@ -767,6 +856,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::BreakStmt:   generateBreakStmt(static_cast<const BreakStmt&>(s)); break;
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;
         case StmtKind::MappingStmt: generateMappingDecl(static_cast<const MappingStmt&>(s).decl, builder_.GetInsertBlock()); break;
+        case StmtKind::MatchStmt: generateMatchStmt(static_cast<const MatchStmt&>(s)); break;
         default: break;
     }
 }
@@ -800,9 +890,24 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             // Store in global for mapping handler access
             if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
                 auto& ne = static_cast<const NewExpr&>(*d.init_expr);
+
+                // Store to class-name global (used by mapping handlers)
                 auto git = class_instance_globals_.find(ne.class_name);
                 if (git != class_instance_globals_.end())
                     builder_.CreateStore(instance_ptr, git->second);
+
+                // Also try variable name
+                git = class_instance_globals_.find(d.name);
+                if (git != class_instance_globals_.end())
+                    builder_.CreateStore(instance_ptr, git->second);
+
+                // Also try main class name global (if this is a @startup class)
+                if (d.name == ne.class_name) {
+                    std::string cls = ne.class_name;
+                    git = class_instance_globals_.find(cls);
+                    if (git != class_instance_globals_.end())
+                        builder_.CreateStore(instance_ptr, git->second);
+                }
 
                 // Find @startup action — the thread will call it, not main
                 for (auto& cls : current_tu_->classes) {
@@ -928,7 +1033,29 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
-            vt = TypeInfo(TypeKind::Class); vt.class_name = d.type.class_name;
+            std::string cls_name = d.type.class_name;
+            // Mangle name for generic classes: Box<int> → Box_int_inst
+            if (!d.type.type_args.empty()) {
+                cls_name = d.type.class_name;
+                for (auto& ta : d.type.type_args) {
+                    cls_name += "_";
+                    switch (ta.basic_type) {
+                        case BuiltinType::Byte: cls_name += "byte"; break;
+                        case BuiltinType::Short: cls_name += "short"; break;
+                        case BuiltinType::Int: cls_name += "int"; break;
+                        case BuiltinType::Long: cls_name += "long"; break;
+                        case BuiltinType::Double: cls_name += "double"; break;
+                        case BuiltinType::Float: cls_name += "float"; break;
+                        case BuiltinType::Bool: cls_name += "bool"; break;
+                        case BuiltinType::String: cls_name += "string"; break;
+                        default: cls_name += "unknown"; break;
+                    }
+                }
+                cls_name += "_inst";
+            }
+            vt = TypeInfo(TypeKind::Class); vt.class_name = cls_name;
+            // Track variable → class mapping for method resolution
+            var_class_map_[d.name] = cls_name;
         }
         lt = getLLVMType(vt);
     }
@@ -960,7 +1087,20 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
             auto& ne = static_cast<const NewExpr&>(*d.init_expr);
             // Store instance in global for mapping handler access
+            // Check both by class name and variable name
             auto git = class_instance_globals_.find(ne.class_name);
+            if (git == class_instance_globals_.end())
+                git = class_instance_globals_.find(d.name);
+            if (git == class_instance_globals_.end()) {
+                // Create global on-the-fly for function-level mapping access
+                auto* gv = new llvm::GlobalVariable(*module_,
+                    llvm::PointerType::get(ctx_, 0), false,
+                    llvm::GlobalValue::InternalLinkage,
+                    llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
+                    "__myp_inst_" + d.name);
+                class_instance_globals_[d.name] = gv;
+                git = class_instance_globals_.find(d.name);
+            }
             if (git != class_instance_globals_.end()) {
                 auto* loaded = builder_.CreateLoad(lt, a, d.name);
                 builder_.CreateStore(loaded, git->second);
@@ -1108,6 +1248,8 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::Assignment:     return generateAssignment(static_cast<const AssignmentExpr&>(e));
         case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
         case ExprKind::Range:          return generateRange(static_cast<const RangeExpr&>(e));
+        case ExprKind::Lambda:         return generateLambda(static_cast<const LambdaExpr&>(e));
+        case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
     }
     return nullptr;
 }
@@ -1163,6 +1305,18 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_io_write_ && e.name == "__myp_io_write") return runtime_io_write_;
         if (runtime_io_write_line_ && e.name == "__myp_io_write_line") return runtime_io_write_line_;
         if (runtime_io_has_next_ && e.name == "__myp_io_has_next") return runtime_io_has_next_;
+        if (runtime_io_read_byte_ && e.name == "__myp_io_read_byte") return runtime_io_read_byte_;
+        if (runtime_io_read_i32be_ && e.name == "__myp_io_read_i32be") return runtime_io_read_i32be_;
+        if (runtime_io_seek_ && e.name == "__myp_io_seek") return runtime_io_seek_;
+        if (runtime_io_write_byte_ && e.name == "__myp_io_write_byte") return runtime_io_write_byte_;
+        if (runtime_io_write_i32be_ && e.name == "__myp_io_write_i32be") return runtime_io_write_i32be_;
+        if (runtime_io_write_double_ && e.name == "__myp_io_write_double") return runtime_io_write_double_;
+        if (runtime_io_read_double_ && e.name == "__myp_io_read_double") return runtime_io_read_double_;
+        if (runtime_read_line_ && e.name == "__myp_read_line") return runtime_read_line_;
+        if (runtime_kbhit_ && e.name == "__myp_kbhit") return runtime_kbhit_;
+        if (runtime_getch_ && e.name == "__myp_getch") return runtime_getch_;
+        if (runtime_flush_ && e.name == "__myp_flush") return runtime_flush_;
+        if (runtime_atof_ && e.name == "__myp_atof") return runtime_atof_;
         // Try class property via 'this'
         if (!current_class_name_.empty() && current_tu_) {
             for (auto& cls : current_tu_->classes) {
@@ -1176,6 +1330,8 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
                         if (st) {
                             auto* gep = builder_.CreateStructGEP(st, tp, pi);
                             auto* pt = getPropertyType(cls, e.name);
+                            // Array-typed properties: return GEP pointer (cannot load array value)
+                            if (pt->isArrayTy()) return gep;
                             return builder_.CreateLoad(pt, gep);
                         }
                     }
@@ -1212,17 +1368,57 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     auto fp = l->getType()->isFloatingPointTy();
     // String concatenation with +
     bool is_str_concat = (e.op == BinaryOpKind::Add) &&
-                          l->getType()->isPointerTy() && r->getType()->isPointerTy();
+                          (l->getType()->isPointerTy() || r->getType()->isPointerTy());
     if (is_str_concat) {
-        // Call runtime myp_strcat(l, r) which returns a new allocated string
+        // Ensure both operands are strings
+        auto* ptr_type = llvm::PointerType::get(ctx_, 0);
+        if (!l->getType()->isPointerTy()) {
+            // Convert non-string to string
+            auto fn_name = std::string("myp_to_string_") +
+                (l->getType()->isIntegerTy(32) ? "i32" :
+                 l->getType()->isIntegerTy(64) ? "i64" :
+                 l->getType()->isDoubleTy() ? "double" : "i32");
+            auto* conv_fn = module_->getFunction(fn_name);
+            if (!conv_fn) {
+                auto* ft = llvm::FunctionType::get(ptr_type,
+                    {l->getType()}, false);
+                conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+            }
+            l = builder_.CreateCall(conv_fn, {l});
+        }
+        if (!r->getType()->isPointerTy()) {
+            auto fn_name = std::string("myp_to_string_") +
+                (r->getType()->isIntegerTy(32) ? "i32" :
+                 r->getType()->isIntegerTy(64) ? "i64" :
+                 r->getType()->isDoubleTy() ? "double" : "i32");
+            auto* conv_fn = module_->getFunction(fn_name);
+            if (!conv_fn) {
+                auto* ft = llvm::FunctionType::get(ptr_type,
+                    {r->getType()}, false);
+                conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+            }
+            r = builder_.CreateCall(conv_fn, {r});
+        }
+        // Call runtime myp_strcat(l, r)
         auto* sc = module_->getFunction("myp_strcat");
         if (!sc) {
-            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
-                {llvm::PointerType::get(ctx_, 0), llvm::PointerType::get(ctx_, 0)}, false);
+            auto* ft = llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false);
             sc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_strcat", module_.get());
         }
         return builder_.CreateCall(sc, {l, r}, "strcat");
     }
+
+    // For string equality (== / !=), use myp_str_eq for content comparison
+    if (runtime_str_eq_ && (e.op == BinaryOpKind::Eq || e.op == BinaryOpKind::Ne) &&
+        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp) {
+        auto* result = builder_.CreateCall(runtime_str_eq_, {l, r}, "streq");
+        if (e.op == BinaryOpKind::Ne) {
+            return builder_.CreateICmpEQ(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+        } else {
+            return builder_.CreateICmpNE(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+        }
+    }
+
     switch (e.op) {
         case BinaryOpKind::Add: return fp ? builder_.CreateFAdd(l, r) : builder_.CreateAdd(l, r);
         case BinaryOpKind::Sub: return fp ? builder_.CreateFSub(l, r) : builder_.CreateSub(l, r);
@@ -1257,8 +1453,41 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
-        // Find the correct class by matching function name AND arg count
+
+        // Enum variant construction: Option.Some(42) → return variant index
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            if (current_tu_) {
+                for (auto& en : current_tu_->enums) {
+                    if (en.name == oi.name) {
+                        for (size_t vi = 0; vi < en.variants.size(); vi++) {
+                            if (en.variants[vi].name == ma.member_name) {
+                                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), vi);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find the correct class by matching function name AND arg count (fallback)
         std::string best_class;
+
+        // First, try to resolve by variable→class map for identifier objects
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto vit = var_class_map_.find(oi.name);
+            if (vit != var_class_map_.end()) {
+                std::string fn = vit->second + "_" + ma.member_name;
+                callee = module_->getFunction(fn);
+                if (callee) {
+                    mthis = generateExpr(*ma.object);
+                    is_method = true;
+                    goto call_ready;
+                }
+            }
+        }
+
         size_t num_args = e.args.size();
         if (current_tu_) {
             for (auto& cls : current_tu_->classes) {
@@ -1525,7 +1754,40 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     return builder_.CreateCall(cf->getFunctionType(), cf, args, isv ? "" : "calltmp");
 }
 
+void CodeGen::generateFFIDecl(const FFIDecl& decl) {
+    std::vector<llvm::Type*> pts;
+    for (auto& p : decl.params)
+        pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+    auto* rt = getLLVMType(builtinTypeToInfo(decl.return_type.basic_type));
+    auto* ft = llvm::FunctionType::get(rt, pts, false);
+    llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
+}
+
+llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
+    // Create instance of hidden class: new __lambda_N()
+    NewExpr ne(e.hidden_class_name, {}, {}, e.range);
+    auto* obj = generateNewExpr(ne);
+    // Also call @startup if any
+    return obj;
+}
+
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // Enum variant access: Color.Red → i32 constant
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        if (current_tu_) {
+            for (auto& en : current_tu_->enums) {
+                if (en.name == oi.name) {
+                    for (size_t vi = 0; vi < en.variants.size(); vi++) {
+                        if (en.variants[vi].name == e.member_name) {
+                            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), vi);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Struct field access: v.field  (struct is value type, allocated on stack)
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
@@ -1541,6 +1803,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                 if (getStructFieldIndex(st_name, e.member_name, fi)) {
                     auto* gep = builder_.CreateStructGEP(st, oa, fi);
                     auto* field_type = st->getElementType(fi);
+                    if (field_type->isArrayTy()) return gep;
                     return builder_.CreateLoad(field_type, gep);
                 }
             } else {
@@ -1578,19 +1841,85 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
 llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
     auto* a = generateExpr(*e.array);
     auto* i = generateExpr(*e.index);
-    // Derive element type from the pointer type
-    auto* ptr_ty = llvm::dyn_cast<llvm::PointerType>(a->getType());
-    if (!ptr_ty) {
-        diag_.error(e.range, "cannot subscript non-pointer type");
-        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    // With opaque pointers in LLVM 21, we determine the element type
+    // from the source-level type info rather than the pointer type.
+    // If the array expression is a property or variable of known type,
+    // we try to access it as a pointer to the element type.
+    // Default: assume i32 elements with a simple GEP.
+    llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);
+
+    // Try to determine the actual element type from the array expression
+    if (e.array->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.array);
+        // Check class properties
+        if (!current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name == id.name && p.type.isArray()) {
+                        // Get the element type from the property's type node
+                        elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                        goto do_gep;
+                    }
+                }
+            }
+        }
+        // Check local variables
+        auto* va = getNamedValue(id.name);
+        if (va) {
+            auto* at = llvm::cast<llvm::AllocaInst>(va)->getAllocatedType();
+            if (at->isArrayTy()) {
+                elem_ty = at->getArrayElementType();
+            } else if (at->isPointerTy()) {
+                // Look up the type from codegen's type info (assume int for now)
+                elem_ty = llvm::Type::getInt32Ty(ctx_);
+            }
+        }
+    } else if (e.array->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != oi.name && cls.name != current_class_name_) continue;
+                    for (auto& p : cls.properties) {
+                        if (p.name == ma.member_name && p.type.isArray()) {
+                            elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                            goto do_gep;
+                        }
+                    }
+                }
+            }
+        }
     }
-    auto* elem_ty = ptr_ty->getArrayElementType();
+
+do_gep:
     auto* p = builder_.CreateGEP(elem_ty, a, i);
     return builder_.CreateLoad(elem_ty, p);
 }
 
 llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
-    auto* st = getClassStruct(e.class_name);
+    std::string cls_name = e.class_name;
+    // Mangle name for generic classes: new Box<int>() → Box_int_inst
+    if (!e.type_args.empty()) {
+        cls_name = e.class_name;
+        for (auto& ta : e.type_args) {
+            cls_name += "_";
+            switch (ta.basic_type) {
+                case BuiltinType::Byte: cls_name += "byte"; break;
+                case BuiltinType::Short: cls_name += "short"; break;
+                case BuiltinType::Int: cls_name += "int"; break;
+                case BuiltinType::Long: cls_name += "long"; break;
+                case BuiltinType::Double: cls_name += "double"; break;
+                case BuiltinType::Float: cls_name += "float"; break;
+                case BuiltinType::Bool: cls_name += "bool"; break;
+                case BuiltinType::String: cls_name += "string"; break;
+                default: cls_name += "unknown"; break;
+            }
+        }
+        cls_name += "_inst";
+    }
+    auto* st = getClassStruct(cls_name);
     if (!st) {
         // Struct type not found — allocate 1 byte (minimum valid pointer)
         // The struct has no properties, so no real storage is needed
@@ -1708,6 +2037,55 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         builder_.CreateStore(v, a);
         return v;
     }
+    // arr[i] = value
+    if (e.target->kind == ExprKind::Subscript) {
+        auto& ss = static_cast<const SubscriptExpr&>(*e.target);
+        auto* a = generateExpr(*ss.array);
+        auto* i = generateExpr(*ss.index);
+        llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);
+
+        // Determine element type from the array expression (see generateSubscript)
+        if (ss.array->kind == ExprKind::Identifier) {
+            auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+            if (!current_class_name_.empty() && current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != current_class_name_) continue;
+                    for (auto& p : cls.properties) {
+                        if (p.name == id.name && p.type.isArray()) {
+                            elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                            goto assign_gep;
+                        }
+                    }
+                }
+            }
+        } else if (ss.array->kind == ExprKind::MemberAccess) {
+            auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != oi.name && cls.name != current_class_name_) continue;
+                        for (auto& p : cls.properties) {
+                            if (p.name == ma.member_name && p.type.isArray()) {
+                                elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                                goto assign_gep;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+assign_gep:
+        auto* p = builder_.CreateGEP(elem_ty, a, i);
+        auto* v = generateExpr(*e.value);
+        if (v->getType() != elem_ty) {
+            if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
+                v = builder_.CreateIntCast(v, elem_ty, true);
+        }
+        builder_.CreateStore(v, p);
+        return v;
+    }
     // obj.prop = value  (only allowed via this.prop — properties are private)
     if (e.target->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.target);
@@ -1774,26 +2152,96 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         diag_.error(e.range, "unknown property '" + ma.member_name + "'");
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
     }
-    // arr[i] = value
-    if (e.target->kind == ExprKind::Subscript) {
-        auto& ss = static_cast<const SubscriptExpr&>(*e.target);
-        auto* a = generateExpr(*ss.array);
-        auto* i = generateExpr(*ss.index);
-        auto* ptr_ty = llvm::dyn_cast<llvm::PointerType>(a->getType());
-        if (ptr_ty) {
-            auto* elem_ty = ptr_ty->getArrayElementType();
-            auto* gep = builder_.CreateGEP(elem_ty, a, i);
-            auto* v = generateExpr(*e.value);
-            if (v->getType() != elem_ty) {
-                if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
-                    v = builder_.CreateIntCast(v, elem_ty, true);
-            }
-            builder_.CreateStore(v, gep);
-            return v;
-        }
-    }
     diag_.error(e.range, "not a valid assignment target");
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+}
+
+// -- Enum variant codegen: enum variant ref → i32 constant (variant index) --
+llvm::Value* CodeGen::generateEnumVariant(const EnumVariantExpr& e) {
+    // Enum variants are represented as i32 constants holding the variant index
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), e.variant_index, false);
+}
+
+// -- Match statement codegen: if/else chain comparing i32 --
+void CodeGen::generateMatchStmt(const MatchStmt& s) {
+    auto* subject_val = generateExpr(*s.subject);
+    auto* func = builder_.GetInsertBlock()->getParent();
+
+    // Ensure subject is i32 for comparison
+    if (!subject_val->getType()->isIntegerTy(32)) {
+        if (subject_val->getType()->isIntegerTy())
+            subject_val = builder_.CreateIntCast(subject_val, llvm::Type::getInt32Ty(ctx_), false);
+        else
+            subject_val = builder_.CreatePtrToInt(subject_val, llvm::Type::getInt32Ty(ctx_));
+    }
+
+    size_t n = s.arms.size();
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, "match_end", func);
+
+    if (n == 0) {
+        // No arms — just continue
+        return;
+    }
+
+    // Create arm blocks
+    std::vector<llvm::BasicBlock*> arm_blocks;
+    for (size_t i = 0; i < n; i++) {
+        arm_blocks.push_back(llvm::BasicBlock::Create(ctx_,
+            "match_arm" + std::to_string(i), func));
+    }
+
+    // Create the first comparison block and branch to it from current position
+    auto* start_bb = llvm::BasicBlock::Create(ctx_, "match_check_0", func);
+    builder_.CreateBr(start_bb);
+
+    for (size_t i = 0; i < n; i++) {
+        auto& arm = s.arms[i];
+        builder_.SetInsertPoint(start_bb);
+
+        auto* variant_const = llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(ctx_), (uint64_t)arm.variant_index, false);
+        auto* cmp = builder_.CreateICmpEQ(subject_val, variant_const, "match_cmp");
+
+        llvm::BasicBlock* next_bb = nullptr;
+        if (i + 1 < n) {
+            next_bb = llvm::BasicBlock::Create(ctx_,
+                "match_check" + std::to_string(i + 1), func);
+        } else {
+            next_bb = merge_bb;
+        }
+
+        builder_.CreateCondBr(cmp, arm_blocks[i], next_bb);
+
+        // Generate arm body
+        builder_.SetInsertPoint(arm_blocks[i]);
+
+        // If arm has data bindings, introduce variables for them in a scope
+        pushScope();
+        if (!arm.bindings.empty()) {
+            // For enum variants with data — allocate local variables for bindings
+            // The data is the subject value itself (which is just the i32 discriminant).
+            // Data-carrying enum variants would require heap-allocated data,
+            // but for now we just create the bindings as variables.
+            for (auto& bname : arm.bindings) {
+                auto* a = createEntryBlockAlloca(func,
+                    llvm::Type::getInt32Ty(ctx_), bname);
+                builder_.CreateStore(
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0), a);
+                setNamedValue(bname, a);
+            }
+        }
+
+        if (arm.body) generateStmt(*arm.body);
+
+        // Branch to merge block if body didn't return/break/continue
+        if (!builder_.GetInsertBlock()->getTerminator())
+            builder_.CreateBr(merge_bb);
+        popScope();
+
+        start_bb = next_bb;
+    }
+
+    builder_.SetInsertPoint(merge_bb);
 }
 
 // -- Runtime --
@@ -1835,6 +2283,31 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_io_write_ = llvm::Function::Create(llvm::FunctionType::get(v, {i8ptr}, false), llvm::Function::ExternalLinkage, "myp_io_write", module_.get());
     runtime_io_write_line_ = llvm::Function::Create(llvm::FunctionType::get(v, {i8ptr}, false), llvm::Function::ExternalLinkage, "myp_io_write_line", module_.get());
     runtime_io_has_next_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_io_has_next", module_.get());
+
+    // Binary I/O
+    runtime_io_read_byte_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_io_read_byte", module_.get());
+    runtime_io_read_i32be_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_io_read_i32be", module_.get());
+    runtime_io_seek_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i32, i32}, false), llvm::Function::ExternalLinkage, "myp_io_seek", module_.get());
+    runtime_io_write_byte_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i32}, false), llvm::Function::ExternalLinkage, "myp_io_write_byte", module_.get());
+    runtime_io_write_i32be_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i32}, false), llvm::Function::ExternalLinkage, "myp_io_write_i32be", module_.get());
+    runtime_io_write_double_ = llvm::Function::Create(llvm::FunctionType::get(i32, {d}, false), llvm::Function::ExternalLinkage, "myp_io_write_double", module_.get());
+    runtime_io_read_double_ = llvm::Function::Create(llvm::FunctionType::get(d, {}, false), llvm::Function::ExternalLinkage, "myp_io_read_double", module_.get());
+
+    // Read line from stdin
+    runtime_read_line_ = llvm::Function::Create(llvm::FunctionType::get(p, {}, false), llvm::Function::ExternalLinkage, "myp_read_line", module_.get());
+
+    // String equality
+    runtime_str_eq_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p, p}, false), llvm::Function::ExternalLinkage, "myp_str_eq", module_.get());
+
+    // Non-blocking keyboard
+    runtime_kbhit_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_kbhit", module_.get());
+    runtime_getch_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_getch", module_.get());
+
+    // Flush
+    runtime_flush_ = llvm::Function::Create(llvm::FunctionType::get(v, {}, false), llvm::Function::ExternalLinkage, "myp_flush", module_.get());
+
+    // String to double
+    runtime_atof_ = llvm::Function::Create(llvm::FunctionType::get(d, {p}, false), llvm::Function::ExternalLinkage, "myp_atof", module_.get());
 
     // Event system
     runtime_event_register_ = llvm::Function::Create(
@@ -1906,6 +2379,18 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_io_write"] = runtime_io_write_;
     intrinsic_map_["__myp_io_write_line"] = runtime_io_write_line_;
     intrinsic_map_["__myp_io_has_next"] = runtime_io_has_next_;
+    intrinsic_map_["__myp_io_read_byte"] = runtime_io_read_byte_;
+    intrinsic_map_["__myp_io_read_i32be"] = runtime_io_read_i32be_;
+    intrinsic_map_["__myp_io_seek"] = runtime_io_seek_;
+    intrinsic_map_["__myp_io_write_byte"] = runtime_io_write_byte_;
+    intrinsic_map_["__myp_io_write_i32be"] = runtime_io_write_i32be_;
+    intrinsic_map_["__myp_io_write_double"] = runtime_io_write_double_;
+    intrinsic_map_["__myp_io_read_double"] = runtime_io_read_double_;
+    intrinsic_map_["__myp_read_line"] = runtime_read_line_;
+    intrinsic_map_["__myp_kbhit"] = runtime_kbhit_;
+    intrinsic_map_["__myp_getch"] = runtime_getch_;
+    intrinsic_map_["__myp_flush"] = runtime_flush_;
+    intrinsic_map_["__myp_atof"] = runtime_atof_;
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
 }

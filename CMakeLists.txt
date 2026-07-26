@@ -70,6 +70,28 @@ add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
     src/SourceLocation.cpp)
 target_link_libraries(myp_viz PRIVATE ${LLVM_LIBS})
 
+# ---- LSP Server ----
+add_executable(myp_lsp
+    src/lsp/main.cpp
+    src/lsp/lsp_server.cpp
+    src/token.cpp
+    src/lexer/lexer.cpp
+    src/ast/ast.cpp
+    src/parser/parser.cpp
+    src/sema/sema.cpp
+    src/sema/type.cpp
+    src/sema/symbol_table.cpp
+    src/SourceLocation.cpp
+)
+
+target_include_directories(myp_lsp
+    PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${LLVM_INCLUDE_DIRS}
+)
+
+target_link_libraries(myp_lsp PRIVATE pthread)
+
 target_link_libraries(mypc
     PRIVATE
     ${myp_llvm_libs}

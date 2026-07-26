@@ -119,6 +119,11 @@ void Lexer::scanToken() {
         case '=':
             if (match('=')) {
                 tokens_.emplace_back(TokenKind::EqualEqual, currentRange());
+            } else if (peek() == '>') {
+                // => (fat arrow) — note: we consume both chars here
+                // advance past '>' since peek() already sees it without consuming
+                advance();
+                tokens_.emplace_back(TokenKind::FatArrow, currentRange());
             } else {
                 tokens_.emplace_back(TokenKind::Equal, currentRange());
             }
@@ -336,6 +341,9 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "new")      kind = TokenKind::Keyword_new;
     else if (value == "void")     kind = TokenKind::Keyword_void;
     else if (value == "var")      kind = TokenKind::Keyword_var;
+    else if (value == "enum")     kind = TokenKind::Keyword_enum;
+    else if (value == "match")    kind = TokenKind::Keyword_match;
+    else if (value == "ffi")      kind = TokenKind::Keyword_ffi;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

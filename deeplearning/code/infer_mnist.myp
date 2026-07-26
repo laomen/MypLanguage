@@ -1,0 +1,176 @@
+// MNIST Inference Only — load saved weights, no training
+// ReLU + Softmax + Cross-Entropy
+
+import env; import math;
+
+double relu(double x){return x>0?x:0.0;}
+
+class Inference {
+    action:
+        @startup void run() {
+            nIn=784; nHid=64; nOut=10;
+            string wpath="./deeplearning/data/mnist_weights.bin";
+
+            // Load weights
+            int fd=__myp_io_fopen(wpath,"rb");
+            if(fd<0){Console.writeLine("No saved weights! Run train_mnist first.");return;}
+            int c1=__myp_io_read_i32be();
+            int c2=__myp_io_read_i32be();
+            int c3=__myp_io_read_i32be();
+            if(c1!=50176||c2!=640||c3!=74){
+                Console.writeLine("Weight file format mismatch");__myp_io_fclose();return;
+            }
+            int i=0; while(i<50176){wh[i]=__myp_io_read_double();i=i+1;}
+            i=0; while(i<640){wo[i]=__myp_io_read_double();i=i+1;}
+            i=0; while(i<74){bh[i]=__myp_io_read_double();i=i+1;}
+            __myp_io_fclose();
+            Console.writeLine("Loaded weights!");Console.flush();
+
+            // Load test data
+            loadTestImages();
+            loadTestLabels();
+
+            // Show 10 test samples (one per digit)
+            Console.writeLine("");Console.flush();
+            Console.writeLine("=== Inference Demo ===");Console.flush();
+            int d=0;
+            while(d<10){
+                int si=0;
+                while(si<numTest && testLabels[si]!=d){si=si+1;}
+                if(si<numTest) showDigit(si,d);
+                d=d+1;
+            }
+
+            // Full test accuracy
+            Console.writeLine("=== Test Set ===");Console.flush();
+            int correct=0;
+            int sii=0;
+            while(sii<numTest){
+                copyInp(sii);
+                fwd();
+                if(predict()==testLabels[sii])correct=correct+1;
+                sii=sii+1;
+            }
+            int pct=correct*100/numTest;
+            Console.writeString("Accuracy: ");Console.writeLong(pct);
+            Console.writeString("% (");Console.writeLong(correct);
+            Console.writeString("/");Console.writeLong(numTest);
+            Console.writeLine(")");Console.flush();
+        }
+
+        void copyInp(int idx){
+            int j=0;while(j<nIn){inp[j]=testPixels[idx*nIn+j];j=j+1;}
+        }
+
+        void loadTestImages(){
+            string p="./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0)return;
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            int rows=__myp_io_read_i32be();
+            int cols=__myp_io_read_i32be();
+            if(count>100)count=100;
+            numTest=count;
+            int i=0;
+            while(i<count){
+                int j=0;
+                while(j<784){
+                    int b=__myp_io_read_byte();
+                    if(b<0){numTest=i;__myp_io_fclose();return;}
+                    testPixels[i*784+j]=b/255.0;
+                    j=j+1;
+                }
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTestLabels(){
+            string p="./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte";
+            int fd=__myp_io_fopen(p,"rb");
+            if(fd<0)return;
+            int magic=__myp_io_read_i32be();
+            int count=__myp_io_read_i32be();
+            if(count>numTest)count=numTest;
+            int i=0;
+            while(i<count){
+                int b=__myp_io_read_byte();
+                if(b<0)break;
+                testLabels[i]=b;
+                i=i+1;
+            }
+            __myp_io_fclose();
+        }
+
+        void fwd(){
+            int i=0;int j=0;
+            while(i<nHid){
+                double s=bh[i];j=0;
+                while(j<nIn){s=s+wh[i*nIn+j]*inp[j];j=j+1;}
+                ah[i]=relu(s);i=i+1;
+            }
+            i=0;
+            double maxv=0.0;
+            while(i<nOut){
+                double s=bh[nHid+i];j=0;
+                while(j<nHid){s=s+wo[i*nHid+j]*ah[j];j=j+1;}
+                zo[i]=s;
+                if(i==0||s>maxv)maxv=s;
+                i=i+1;
+            }
+            double sumexp=0.0;
+            i=0;
+            while(i<nOut){
+                double e=Math.exp(zo[i]-maxv);
+                ao[i]=e;sumexp=sumexp+e;
+                i=i+1;
+            }
+            i=0;
+            while(i<nOut){ao[i]=ao[i]/sumexp;i=i+1;}
+        }
+
+        int predict(){
+            double b=ao[0];int bi=0;int i=1;
+            while(i<nOut){if(ao[i]>b){b=ao[i];bi=i;}i=i+1;}
+            return bi;
+        }
+
+        void showDigit(int idx,int actualLabel){
+            Console.writeString("--- #");Console.writeLong(idx);
+            Console.writeString(" actual=");Console.writeLong(actualLabel);
+            Console.writeLine(" ---");Console.flush();
+
+            int row=0;
+            while(row<28){
+                string line="";int col=0;
+                while(col<28){
+                    double px=testPixels[idx*784+row*28+col];
+                    if(px>0.6)line=line+"##";
+                    else if(px>0.3)line=line+"..";
+                    else line=line+"  ";
+                    col=col+1;
+                }
+                Console.writeLine(line);Console.flush();
+                row=row+1;
+            }
+
+            copyInp(idx);fwd();
+            int pred=predict();
+            Console.writeString("  -> ");Console.writeLong(pred);
+            if(pred==actualLabel)Console.writeLine(" CORRECT");
+            else Console.writeLine(" WRONG");
+            Console.writeLine("");Console.flush();
+        }
+
+    property:
+        int nIn;int nHid;int nOut;int numTest;
+        double[50200]wh;double[640]wo;double[74]bh;
+        double[784]inp;
+        double[64]ah;
+        double[10]ao;double[10]zo;
+        double[78400]testPixels;
+        int[100]testLabels;
+}
+
+int main(){Inference inf=new Inference();return 0;}

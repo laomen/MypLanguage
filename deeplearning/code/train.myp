@@ -1,0 +1,149 @@
+// ============================================================
+// Train MLP on XOR — MYP Deep Learning Demo
+// ============================================================
+// Trains a 2-layer MLP (2->4->1) on XOR using gradient descent.
+// ============================================================
+
+import env;
+import math;
+
+double sig(double x) {
+    double neg = 0.0 - x;
+    return 1.0 / (1.0 + Math.exp(neg));
+}
+double sig_d(double x) {
+    double s = sig(x);
+    return s * (1.0 - s);
+}
+
+// ========================
+// Fixed 2->4->1 MLP
+// ========================
+class MLP {
+    action:
+        void init() {
+            int i = 0;
+            while (i < 12) { w[i] = 0.0; i = i + 1; }
+            i = 0; while (i < 5) { b[i] = 0.0; i = i + 1; }
+        }
+
+        void randomW() {
+            double sc = Math.sqrt(6.0 / 6.0);
+            int i = 0;
+            while (i < 12) {
+                double r = ((i * 37 + 13) % 1000) / 1000.0;
+                w[i] = (r * 2.0 - 1.0) * sc;
+                i = i + 1;
+            }
+            i = 0; while (i < 5) { b[i] = 0.0; i = i + 1; }
+        }
+
+        double fwd(double x0, double x1) {
+            double h0 = sig(w[0]*x0 + w[1]*x1 + b[0]);
+            double h1 = sig(w[2]*x0 + w[3]*x1 + b[1]);
+            double h2 = sig(w[4]*x0 + w[5]*x1 + b[2]);
+            double h3 = sig(w[6]*x0 + w[7]*x1 + b[3]);
+            return sig(w[8]*h0 + w[9]*h1 + w[10]*h2 + w[11]*h3 + b[4]);
+        }
+
+        void fwdCache(double x0, double x1) {
+            xi[0] = x0; xi[1] = x1;
+            z0 = w[0]*x0 + w[1]*x1 + b[0]; a0 = sig(z0);
+            z1 = w[2]*x0 + w[3]*x1 + b[1]; a1 = sig(z1);
+            z2 = w[4]*x0 + w[5]*x1 + b[2]; a2 = sig(z2);
+            z3 = w[6]*x0 + w[7]*x1 + b[3]; a3 = sig(z3);
+            zo = w[8]*a0 + w[9]*a1 + w[10]*a2 + w[11]*a3 + b[4];
+            ao = sig(zo);
+        }
+
+        void backward(double tar, double lr) {
+            double do_ = (ao - tar) * sig_d(zo);
+            double d0 = do_ * w[8] * sig_d(z0);
+            double d1 = do_ * w[9] * sig_d(z1);
+            double d2 = do_ * w[10] * sig_d(z2);
+            double d3 = do_ * w[11] * sig_d(z3);
+
+            w[8]  = w[8]  - lr * do_ * a0;
+            w[9]  = w[9]  - lr * do_ * a1;
+            w[10] = w[10] - lr * do_ * a2;
+            w[11] = w[11] - lr * do_ * a3;
+            b[4]  = b[4]  - lr * do_;
+
+            w[0] = w[0] - lr * d0 * xi[0]; w[1] = w[1] - lr * d0 * xi[1]; b[0] = b[0] - lr * d0;
+            w[2] = w[2] - lr * d1 * xi[0]; w[3] = w[3] - lr * d1 * xi[1]; b[1] = b[1] - lr * d1;
+            w[4] = w[4] - lr * d2 * xi[0]; w[5] = w[5] - lr * d2 * xi[1]; b[2] = b[2] - lr * d2;
+            w[6] = w[6] - lr * d3 * xi[0]; w[7] = w[7] - lr * d3 * xi[1]; b[3] = b[3] - lr * d3;
+        }
+
+        void train(double x0, double x1, double target, double lr) {
+            fwdCache(x0, x1);
+            backward(target, lr);
+        }
+
+        int predict(double x0, double x1) {
+            if (fwd(x0, x1) >= 0.5) return 1;
+            return 0;
+        }
+
+    property:
+        double[12] w; double[5] b;
+        double[2] xi;
+        double z0; double a0; double z1; double a1; double z2; double a2; double z3; double a3; double zo; double ao;
+}
+
+// ========================
+// Trainer
+// ========================
+class Trainer {
+    action:
+        @startup void run() {
+            MLP net = new MLP();
+            net.init();
+            net.randomW();
+
+            int epochs = 5000;
+            double lr = 0.5;
+
+            Console.writeLine("  Training MLP on XOR (2->4->1)");
+            Console.writeLine("  Epochs: 5000  LR: 0.5");
+            Console.writeLine("  ---------------------------");
+
+            int e = 0;
+            while (e < epochs) {
+                net.train(0.0, 0.0, 0.0, lr);
+                net.train(0.0, 1.0, 1.0, lr);
+                net.train(1.0, 0.0, 1.0, lr);
+                net.train(1.0, 1.0, 0.0, lr);
+
+                if (e % 1000 == 0) {
+                    Console.writeString("  Epoch ");
+                    Console.writeLong(e);
+                    Console.writeString(": ");
+                    Console.writeLong(net.predict(0.0,0.0));
+                    Console.writeString(" ");
+                    Console.writeLong(net.predict(0.0,1.0));
+                    Console.writeString(" ");
+                    Console.writeLong(net.predict(1.0,0.0));
+                    Console.writeString(" ");
+                    Console.writeLong(net.predict(1.0,1.0));
+                    Console.writeLine("");
+                    Console.flush();
+                }
+                e = e + 1;
+            }
+
+            Console.writeLine("  ---------------------------");
+            Console.writeLine("  Final outputs:");
+
+            Console.writeString("  0,0 -> "); Console.writeFloat(net.fwd(0.0,0.0)); Console.writeLine("");
+            Console.writeString("  0,1 -> "); Console.writeFloat(net.fwd(0.0,1.0)); Console.writeLine("");
+            Console.writeString("  1,0 -> "); Console.writeFloat(net.fwd(1.0,0.0)); Console.writeLine("");
+            Console.writeString("  1,1 -> "); Console.writeFloat(net.fwd(1.0,1.0)); Console.writeLine("");
+            Console.flush();
+        }
+}
+
+int main() {
+    Trainer t = new Trainer();
+    return 0;
+}

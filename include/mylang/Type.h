@@ -19,6 +19,7 @@ enum class TypeKind : uint8_t {
     Null,
     Class,
     Struct,
+    Enum,
     Array,
     Function,
 };
@@ -28,9 +29,11 @@ struct TypeInfo {
 
     // For Class types
     std::string class_name;
+    std::vector<TypeInfo> type_args; // generic type arguments
 
     // For Array types (use shared_ptr for copyability)
     std::shared_ptr<TypeInfo> element_type;
+    int array_size = 0; // >0 for fixed-size arrays like int[200]
 
     // For Function types
     std::shared_ptr<TypeInfo> return_type;

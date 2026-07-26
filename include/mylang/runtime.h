@@ -29,6 +29,17 @@ void myp_sleep_ms(int64_t ms);
 
 // ---- String ----
 char* myp_strcat(const char* a, const char* b);
+int32_t myp_str_eq(const char* a, const char* b);
+
+// ---- Flush stdout ----
+void myp_flush(void);
+
+// ---- String to double ----
+double myp_atof(const char* s);
+
+// ---- Keyboard Input (non-blocking) ----
+int32_t myp_kbhit(void);
+int32_t myp_getch(void);
 
 // ---- Timer System ----
 // Create a timer that fires event_id on instance after delay_ms.
@@ -104,6 +115,13 @@ const char* myp_io_read_line(void);
 void myp_io_write(const char* text);
 void myp_io_write_line(const char* text);
 int32_t myp_io_has_next(void);
+int32_t myp_io_read_byte(void);
+int32_t myp_io_read_i32be(void);
+int32_t myp_io_seek(int32_t offset, int32_t whence);
+int32_t myp_io_write_byte(int32_t c);
+int32_t myp_io_write_i32be(int32_t val);
+int32_t myp_io_write_double(double val);
+double myp_io_read_double(void);
 
 #ifdef __cplusplus
 }

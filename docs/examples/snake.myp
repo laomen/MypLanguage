@@ -1,0 +1,165 @@
+// ============================================================
+// Snake Game — MYP Language Demo
+// ============================================================
+// Real-time interactive snake game.
+//
+// Controls:
+//   W / ↑  — move up
+//   S / ↓  — move down
+//   A / ←  — move left
+//   D / →  — move right
+//   Q      — quit
+//
+// Snake moves forward every 200 ms. Key presses are
+// non-blocking — hold a direction to keep going.
+// ============================================================
+
+import env;
+
+class SnakeGame {
+    action:
+        @startup void run() {
+            boardW = 24;
+            boardH = 16;
+            dir  = 1;        // 0=up  1=right  2=down  3=left
+            len  = 3;
+            foodX = 14;
+            foodY = 8;
+            step = 0;
+
+            bodyX[0] = 5; bodyY[0] = 8;
+            bodyX[1] = 4; bodyY[1] = 8;
+            bodyX[2] = 3; bodyY[2] = 8;
+
+            // ---- Input / game loop ----
+            Console.writeLine("  === SNAKE ===");
+            Console.writeLine("  WASD to move, Q to quit");
+
+            while (true) {
+                int wantQuit = 0;
+                int newDir = 0;
+                int gotCmd = 0;
+
+                while (Console.kbhit() != 0) {
+                    var ch = Console.getch();
+                    if      (ch == 'q' || ch == 'Q')          { wantQuit = 1; }
+                    else if ((ch == 'w' || ch == 'W') && dir != 2) { newDir = 0; gotCmd = 1; }
+                    else if ((ch == 's' || ch == 'S') && dir != 0) { newDir = 2; gotCmd = 1; }
+                    else if ((ch == 'a' || ch == 'A') && dir != 1) { newDir = 3; gotCmd = 1; }
+                    else if ((ch == 'd' || ch == 'D') && dir != 3) { newDir = 1; gotCmd = 1; }
+                }
+
+                if (wantQuit != 0) break;
+                if (gotCmd != 0) dir = newDir;
+
+                // ---- Advance ----
+                step = step + 1;
+                int i = len - 1;
+                while (i > 0) {
+                    bodyX[i] = bodyX[i - 1];
+                    bodyY[i] = bodyY[i - 1];
+                    i = i - 1;
+                }
+
+                if      (dir == 0) bodyY[0] = bodyY[0] - 1;
+                else if (dir == 1) bodyX[0] = bodyX[0] + 1;
+                else if (dir == 2) bodyY[0] = bodyY[0] + 1;
+                else               bodyX[0] = bodyX[0] - 1;
+
+                if (bodyX[0] < 0)        bodyX[0] = boardW - 1;
+                if (bodyX[0] >= boardW)  bodyX[0] = 0;
+                if (bodyY[0] < 0)        bodyY[0] = boardH - 1;
+                if (bodyY[0] >= boardH)  bodyY[0] = 0;
+
+                if (bodyX[0] == foodX && bodyY[0] == foodY) {
+                    len = len + 1;
+                    bodyX[len - 1] = bodyX[len - 2];
+                    bodyY[len - 1] = bodyY[len - 2];
+                    foodX = ((step * 7 + 3) % (boardW - 2)) + 1;
+                    foodY = ((step * 13 + 5) % (boardH - 2)) + 1;
+                }
+
+                int dead = 0;
+                i = 1;
+                while (i < len) {
+                    if (bodyX[0] == bodyX[i] && bodyY[0] == bodyY[i]) dead = 1;
+                    i = i + 1;
+                }
+
+                if (dead != 0) {
+                    draw();
+                    Console.writeLine("");
+                    Console.writeLine("  GAME OVER — you crashed!");
+                    Console.writeLine("");
+                    break;
+                }
+
+                draw();
+                __myp_sleep_ms(200);
+            }
+
+            // ---- Goodbye ----
+            draw();
+            Console.writeLine("");
+            Console.writeLine("  Score: ");
+            Console.writeLong((len - 3) * 10);
+            Console.writeLine("");
+            Console.writeLine("  Thanks for playing!");
+        }
+
+        // ---- Render ----
+        void draw() {
+            Console.writeString("\033[H");
+
+            int x = 0;
+            while (x < boardW + 2) { Console.writeString("#"); x = x + 1; }
+            Console.writeLine("");
+
+            int y = 0;
+            while (y < boardH) {
+                Console.writeString("#");
+                x = 0;
+                while (x < boardW) {
+                    if      (x == bodyX[0] && y == bodyY[0]) Console.writeString("O");
+                    else if (x == foodX     && y == foodY)   Console.writeString("*");
+                    else {
+                        int isBody = 0;
+                        int bi = 1;
+                        while (bi < len) {
+                            if (x == bodyX[bi] && y == bodyY[bi]) isBody = 1;
+                            bi = bi + 1;
+                        }
+                        if (isBody != 0) Console.writeString("o");
+                        else             Console.writeString(" ");
+                    }
+                    x = x + 1;
+                }
+                Console.writeString("#");
+                Console.writeLine("");
+                y = y + 1;
+            }
+
+            x = 0;
+            while (x < boardW + 2) { Console.writeString("#"); x = x + 1; }
+            Console.writeLine("");
+
+            // Flush once — all output appears atomically, no flicker
+            Console.flush();
+        }
+
+    property:
+        int[400] bodyX;
+        int[400] bodyY;
+        int len;
+        int dir;
+        int foodX;
+        int foodY;
+        int boardW;
+        int boardH;
+        int step;
+}
+
+int main() {
+    SnakeGame g = new SnakeGame();
+    return 0;
+}

@@ -1,0 +1,4 @@
+// EXPECT ERROR: interface 'IShape' not fully implemented
+interface IShape { double area(); double perim(); }
+class BadShape { interface class IShape; action: double area(){return 0.0;} }
+int main(){return 0;}

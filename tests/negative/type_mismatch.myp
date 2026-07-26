@@ -1,0 +1,5 @@
+// EXPECT ERROR: cannot assign int to string
+class M {
+    action: @startup void run() { string s = 42; }
+}
+int main(){M m=new M();return 0;}

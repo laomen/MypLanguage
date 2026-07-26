@@ -1,0 +1,54 @@
+// 多线程定时器演示
+// 两个 @thread 线程各自有独立定时器，交替触发证明并发
+
+import env;
+
+class AWorker {
+    action:
+        @startup void run() {
+            __myp_timer_create("tick",20,20);
+        }
+        void onTick(){
+            c=c+1;
+            __myp_print("[A] "); __myp_print_int(c); __myp_print("\n");
+            if(c>=6){__myp_print("[A] DONE\n");done();}
+        }
+    event:
+        tick();done();
+    property:
+        int c=0;
+}
+
+mapping() { AWorker.tick -> AWorker.onTick; }
+
+class BWorker {
+    action:
+        @startup void run() {
+            __myp_timer_create("tick",35,35);
+        }
+        void onTick(){
+            c=c+1;
+            __myp_print("  [B] "); __myp_print_int(c); __myp_print("\n");
+            if(c>=6){__myp_print("  [B] DONE\n");done();}
+        }
+    event:
+        tick();done();
+    property:
+        int c=0;
+}
+
+mapping() { BWorker.tick -> BWorker.onTick; }
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[Main] Starting two timer threads...\n");
+            __myp_print("[Main] A @20ms  B @35ms\n");
+            AWorker aw=new AWorker() @thread;
+            BWorker bw=new BWorker() @thread;
+            __myp_sleep_ms(500);
+            __myp_print("[Main] Done\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}

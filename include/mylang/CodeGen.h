@@ -108,6 +108,25 @@ private:
     llvm::Function* runtime_io_write_ = nullptr;
     llvm::Function* runtime_io_write_line_ = nullptr;
     llvm::Function* runtime_io_has_next_ = nullptr;
+    llvm::Function* runtime_io_read_byte_ = nullptr;
+    llvm::Function* runtime_io_read_i32be_ = nullptr;
+    llvm::Function* runtime_io_seek_ = nullptr;    llvm::Function* runtime_io_write_byte_ = nullptr;
+    llvm::Function* runtime_io_write_i32be_ = nullptr;
+    llvm::Function* runtime_io_write_double_ = nullptr;
+    llvm::Function* runtime_io_read_double_ = nullptr;
+    // ---- Read line from stdin ----
+    llvm::Function* runtime_read_line_ = nullptr;
+
+    // ---- String comparison ----
+    llvm::Function* runtime_str_eq_ = nullptr;
+
+    // ---- Non-blocking keyboard ----
+    llvm::Function* runtime_kbhit_ = nullptr;
+    llvm::Function* runtime_getch_ = nullptr;
+    llvm::Function* runtime_flush_ = nullptr;
+
+    // ---- String to double ----
+    llvm::Function* runtime_atof_ = nullptr;
 
     // ---- Timer runtime functions ----
     llvm::Function* runtime_timer_create_ = nullptr;
@@ -120,6 +139,9 @@ private:
 
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;
+
+    // ---- Variable name → class name map (for method resolution) ----
+    std::unordered_map<std::string, std::string> var_class_map_;
 
     // ---- Global event ID map: "ClassName::eventName" -> int ----
     std::unordered_map<std::string, int> event_id_map_;
@@ -142,6 +164,7 @@ private:
 
     // ---- Type mapping ----
     llvm::Type* getLLVMType(const TypeInfo& type);
+    llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
 
     // ---- Symbol table helpers ----
     void pushScope();
@@ -162,6 +185,7 @@ private:
     void generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_decl);
     void generateEventFire(const ClassDecl& cls, const EventDecl& ev, int event_id);
     void generateStructMethods(const StructDecl& st);
+    void declareStructMethods(const StructDecl& st);
     void generateFuncDecl(const FuncDecl& decl);
     void generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* insert_bb = nullptr);
     void createInitFunction();
@@ -196,6 +220,12 @@ private:
     llvm::Value* generateAssignment(const AssignmentExpr& expr);
     llvm::Value* generateTernary(const TernaryExpr& expr);
     llvm::Value* generateRange(const RangeExpr& expr);
+    llvm::Value* generateEnumVariant(const EnumVariantExpr& expr);
+    llvm::Value* generateLambda(const LambdaExpr& expr);
+    void generateFFIDecl(const FFIDecl& decl);
+
+    // ---- Match codegen ----
+    void generateMatchStmt(const MatchStmt& stmt);
 
     // ---- Helper ----
     TypeInfo builtinTypeToInfo(BuiltinType bt) const;
@@ -211,6 +241,13 @@ private:
 
     // ---- Intrinsic name→function map ----
     std::unordered_map<std::string, llvm::Function*> intrinsic_map_;
+
+    // ---- Flags ----
+    bool emit_llvm_ = false;
+
+public:
+    void setEmitLLVM(bool v) { emit_llvm_ = v; }
+    bool saveIR(const std::string& path) const;
 
     // ---- Helper: find struct decl ----
     const StructDecl* findStruct(const std::string& name) const;

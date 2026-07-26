@@ -1,0 +1,31 @@
+// 泛型验证 (Monomorphization)
+import env;
+
+class Box<T> {
+    action:
+        void set(T val) { value = val; }
+        T get() { return value; }
+    property:
+        T value;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[泛型验证]\n");
+
+            Box<int> bi = new Box<int>();
+            bi.set(42);
+            int vi = bi.get();
+            __myp_print("  Box<int>: "); __myp_print_int(vi); __myp_print("\n");
+
+            Box<double> bd = new Box<double>();
+            bd.set(3.14);
+            double vd = bd.get();
+            __myp_print("  Box<double>: "); __myp_print_float(vd); __myp_print("\n");
+
+            __myp_print("[OK] 泛型验证通过\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}

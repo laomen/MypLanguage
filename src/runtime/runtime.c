@@ -7,6 +7,58 @@
 #include <errno.h>
 #include <string.h>
 #include <time.h>
+#include <termios.h>
+#include <unistd.h>
+#include <sys/select.h>
+
+// ======================
+// Terminal raw mode (for real-time keyboard input)
+// ======================
+
+static struct termios myp_orig_term;
+static int myp_raw_mode = 0;
+
+static void myp_enable_raw(void) {
+    if (!myp_raw_mode) {
+        struct termios raw;
+        if (tcgetattr(0, &myp_orig_term) != 0) {
+            // Not a terminal (e.g. pipe) — skip raw mode
+            myp_raw_mode = 0;
+            return;
+        }
+        raw = myp_orig_term;
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;
+        raw.c_cc[VTIME] = 0;
+        tcsetattr(0, TCSANOW, &raw);
+        myp_raw_mode = 1;
+    }
+}
+
+static void myp_restore_term(void) {
+    if (myp_raw_mode) {
+        tcsetattr(0, TCSANOW, &myp_orig_term);
+        myp_raw_mode = 0;
+    }
+}
+
+// Check if a key is available (non-blocking)
+int32_t myp_kbhit(void) {
+    myp_enable_raw();
+    struct timeval tv = {0, 0};
+    fd_set fds;
+    FD_ZERO(&fds);
+    FD_SET(0, &fds);
+    return select(1, &fds, NULL, NULL, &tv) > 0 ? 1 : 0;
+}
+
+// Read one character (non-blocking, raw mode). Returns 0 if no key available.
+int32_t myp_getch(void) {
+    myp_enable_raw();
+    char c = 0;
+    if (read(0, &c, 1) > 0) return (int32_t)(unsigned char)c;
+    return 0;
+}
 
 // ======================
 // File I/O
@@ -50,16 +102,93 @@ int32_t myp_io_has_next(void) {
     return !feof(myp_io_fp);
 }
 
+// Binary file I/O for IDX parsing
+#include <stdint.h>
+int32_t myp_io_read_byte(void) {
+    if (!myp_io_fp) return -1;
+    unsigned char c;
+    if (fread(&c, 1, 1, myp_io_fp) != 1) return -1;
+    return (int32_t)c;
+}
+
+int32_t myp_io_read_i32be(void) {
+    if (!myp_io_fp) return -1;
+    unsigned char buf[4];
+    if (fread(buf, 1, 4, myp_io_fp) != 4) return -1;
+    return ((int32_t)buf[0] << 24) | ((int32_t)buf[1] << 16) |
+           ((int32_t)buf[2] << 8) | (int32_t)buf[3];
+}
+
+int32_t myp_io_seek(int32_t offset, int32_t whence) {
+    if (!myp_io_fp) return -1;
+    return fseek(myp_io_fp, offset, whence) == 0 ? 0 : -1;
+}
+
+// Binary file I/O for weight save/load
+int32_t myp_io_write_byte(int32_t c) {
+    if (!myp_io_fp) return -1;
+    unsigned char byte = (unsigned char)(c & 0xFF);
+    if (fwrite(&byte, 1, 1, myp_io_fp) != 1) return -1;
+    return 0;
+}
+
+int32_t myp_io_write_i32be(int32_t val) {
+    if (!myp_io_fp) return -1;
+    unsigned char buf[4];
+    buf[0] = (unsigned char)((val >> 24) & 0xFF);
+    buf[1] = (unsigned char)((val >> 16) & 0xFF);
+    buf[2] = (unsigned char)((val >> 8) & 0xFF);
+    buf[3] = (unsigned char)(val & 0xFF);
+    if (fwrite(buf, 1, 4, myp_io_fp) != 4) return -1;
+    return 0;
+}
+
+int32_t myp_io_write_double(double val) {
+    if (!myp_io_fp) return -1;
+    if (fwrite(&val, sizeof(double), 1, myp_io_fp) != 1) return -1;
+    return 0;
+}
+
+double myp_io_read_double(void) {
+    if (!myp_io_fp) return 0.0;
+    double val;
+    if (fread(&val, sizeof(double), 1, myp_io_fp) != 1) return 0.0;
+    return val;
+}
+
 // ======================
 // Basic I/O
 // ======================
 
 void myp_print(const char* str) { printf("%s", str); }
-void myp_println(const char* str) { printf("%s\n", str); }
-void myp_print_int(int32_t val) { printf("%d\n", val); }
-void myp_print_long(int64_t val) { printf("%ld\n", val); }
-void myp_print_float(double val) { printf("%g", val); }
-void myp_print_bool(int32_t val) { printf(val ? "true" : "false"); }
+void myp_println(const char* str) { printf("%s\n", str); fflush(stdout); }
+void myp_print_int(int32_t val) { printf("%d\n", val); fflush(stdout); }
+void myp_print_long(int64_t val) { printf("%ld\n", val); fflush(stdout); }
+void myp_print_float(double val) { printf("%g", val); fflush(stdout); }
+void myp_print_bool(int32_t val) { printf(val ? "true" : "false"); fflush(stdout); }
+
+void myp_flush(void) { fflush(stdout); }
+
+// Read a line from stdin (for interactive input)
+const char* myp_read_line(void) {
+    static char buf[256];
+    if (!fgets(buf, sizeof(buf), stdin)) return NULL;
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    return buf;
+}
+
+// String equality comparison (content, not pointer)
+int32_t myp_str_eq(const char* a, const char* b) {
+    if (!a || !b) return a == b ? 1 : 0;
+    return strcmp(a, b) == 0 ? 1 : 0;
+}
+
+// String to double (for parsing data files)
+double myp_atof(const char* s) {
+    if (!s) return 0.0;
+    return atof(s);
+}
 
 // ======================
 // Memory — Thread-Local Allocation Tracking
@@ -114,6 +243,8 @@ void myp_free(void* ptr) {
 }
 
 void myp_free_all(void) {
+    // Restore terminal if we changed it to raw mode
+    myp_restore_term();
     // Trigger the pthread key destructor which calls myp_free_alloc_list
     pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
     myp_alloc_node_t* head = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
@@ -158,6 +289,26 @@ char* myp_strcat(const char* a, const char* b) {
         result[la + lb] = '\0';
     }
     return result;
+}
+
+// Convert a value to string (for string concatenation with non-strings)
+char* myp_to_string_i32(int32_t val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%d", val);
+    return myp_strcat(buf, "");
+}
+char* myp_to_string_i64(int64_t val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%ld", val);
+    return myp_strcat(buf, "");
+}
+char* myp_to_string_double(double val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%g", val);
+    return myp_strcat(buf, "");
+}
+char* myp_to_string_bool(int32_t val) {
+    return myp_strcat(val ? "true" : "false", "");
 }
 
 // ======================
@@ -236,7 +387,10 @@ int myp_timer_check(void) {
             pthread_mutex_unlock(&myp_timer_mutex);
 
             // Fire the event (this may re-enter timer code, so unlock first)
+            // Since param data (pval) is stack-local, process it now
             myp_event_fire(eid, inst, &pval);
+            // Process this event immediately so pval is still valid
+            myp_event_process_one();
 
             pthread_mutex_lock(&myp_timer_mutex);
             fired++;

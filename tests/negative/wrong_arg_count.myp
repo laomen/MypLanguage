@@ -1,0 +1,4 @@
+// EXPECT ERROR: wrong number of arguments
+import env;
+class M { action: @startup void run() { __myp_sleep_ms(10, 20); } }
+int main(){M m=new M();return 0;}

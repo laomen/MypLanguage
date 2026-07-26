@@ -1,0 +1,267 @@
+#!/usr/bin/env python3
+"""
+MYP Package Manager & Build Tool
+=================================
+A CLI wrapper around the mypc compiler providing:
+  myp init <name>          — Create a new MYP package
+  myp build [opts]         — Build the current package
+  myp install <pkg>        — Install a package from path
+  myp run [opts]           — Build and run the current package
+  myp <file.myp> [opts]    — Directly compile a single file (legacy)
+
+Package structure:
+  <name>/
+    package.myp            — Package metadata
+    src/
+      <name>.myp           — Main source file
+    myp_packages/          — Installed dependencies (auto-managed)
+
+Environment variables:
+  MYP_PACKAGE_PATH          — Additional package search paths (colon-separated)
+"""
+
+import os
+import sys
+import shutil
+import subprocess
+import json
+
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+BUILD_DIR = os.path.join(PROJECT_ROOT, "build")
+COMPILER = os.path.join(BUILD_DIR, "mypc")
+STDLIB = os.path.join(PROJECT_ROOT, "stdlib")
+
+
+def find_compiler():
+    """Locate the mypc compiler binary."""
+    if os.path.exists(COMPILER):
+        return COMPILER
+    # Try build subdirs
+    for root, dirs, files in os.walk(BUILD_DIR):
+        if "mypc" in files:
+            return os.path.join(root, "mypc")
+    # Fall back to PATH
+    which = shutil.which("mypc")
+    if which:
+        return which
+    print("Error: mypc compiler not found. Build the project first with: cmake --build build", file=sys.stderr)
+    sys.exit(1)
+
+
+def resolve_package_path(cwd):
+    """Resolve package search paths: local myp_packages + env var + --package-path."""
+    paths = []
+    local_pkg = os.path.join(cwd, "myp_packages")
+    if os.path.isdir(local_pkg):
+        paths.append(local_pkg)
+    env_path = os.environ.get("MYP_PACKAGE_PATH", "")
+    if env_path:
+        paths.extend(env_path.split(":"))
+    return ":".join(paths)
+
+
+def load_package_meta(dir_path):
+    """Load package.myp from a directory and return metadata dict."""
+    meta_file = os.path.join(dir_path, "package.myp")
+    if not os.path.isfile(meta_file):
+        return None
+    meta = {"name": os.path.basename(dir_path), "version": "0.1.0", "deps": []}
+    with open(meta_file) as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith("#") or not line:
+                continue
+            if ":" in line:
+                key, val = line.split(":", 1)
+                key = key.strip().lower()
+                val = val.strip().strip('"').strip("'")
+                if key == "name":
+                    meta["name"] = val
+                elif key == "version":
+                    meta["version"] = val
+                elif key == "depends":
+                    for dep in val.split(","):
+                        dep = dep.strip()
+                        if dep:
+                            meta["deps"].append(dep)
+    return meta
+
+
+def cmd_init(args):
+    """myp init <name> — Create a new MYP package scaffold."""
+    if not args:
+        print("Usage: myp init <package-name>", file=sys.stderr)
+        sys.exit(1)
+    name = args[0]
+    if not name.isidentifier():
+        print(f"Error: '{name}' is not a valid package name (must be a valid identifier)", file=sys.stderr)
+        sys.exit(1)
+    dst = os.path.join(os.getcwd(), name)
+    if os.path.exists(dst):
+        print(f"Error: '{dst}' already exists", file=sys.stderr)
+        sys.exit(1)
+
+    src_dir = os.path.join(dst, "src")
+    os.makedirs(src_dir)
+
+    # package.myp
+    with open(os.path.join(dst, "package.myp"), "w") as f:
+        f.write(f'# MYP Package\n')
+        f.write(f'name: {name}\n')
+        f.write(f'version: 0.1.0\n')
+        f.write(f'# depends: other_package\n')
+
+    # src/<name>.myp
+    class_name = name[0].upper() + name[1:]
+    with open(os.path.join(src_dir, f"{name}.myp"), "w") as f:
+        f.write(f'// {name} package — main module\n')
+        f.write(f'class {class_name} {{\n')
+        f.write(f'    @startup\n')
+        f.write(f'    action run() {{\n')
+        f.write(f'        printf("Hello from {name} v0.1.0!\\n");\n')
+        f.write(f'    }}\n')
+        f.write(f'}}\n')
+
+    print(f"Created package '{name}' in {dst}/")
+    print(f"  {dst}/package.myp")
+    print(f"  {dst}/src/{name}.myp")
+
+
+def cmd_build(args):
+    """myp build [opts] — Build the current package."""
+    cwd = os.getcwd()
+    meta = load_package_meta(cwd)
+    if not meta:
+        print("Error: no package.myp found in current directory", file=sys.stderr)
+        sys.exit(1)
+
+    src_file = os.path.join(cwd, "src", f"{meta['name']}.myp")
+    if not os.path.isfile(src_file):
+        print(f"Error: source file not found at '{src_file}'", file=sys.stderr)
+        sys.exit(1)
+
+    compiler = find_compiler()
+    pkg_path = resolve_package_path(cwd)
+
+    # Install dependencies
+    for dep in meta.get("deps", []):
+        install_dep(cwd, dep)
+
+    output = os.path.join(cwd, f"{meta['name']}.out")
+    cmd = [compiler, src_file, "-o", output, "--stdlib", STDLIB]
+    if pkg_path:
+        cmd.extend(["--package-path", pkg_path])
+    # Forward -O, --trace etc.
+    extra = [a for a in args if a.startswith("-")]
+    cmd.extend(extra)
+
+    print(f"Building {meta['name']} v{meta['version']}...")
+    result = subprocess.run(cmd, cwd=cwd)
+    if result.returncode == 0:
+        print(f"Build successful: {output}")
+    return result.returncode
+
+
+def install_dep(cwd, dep_name):
+    """Install a dependency by name: search myp_packages/<dep>."""
+    pkg_dir = os.path.join(cwd, "myp_packages", dep_name)
+    if os.path.isdir(pkg_dir):
+        return  # already installed
+    print(f"  Dependency '{dep_name}' not found in myp_packages/")
+    print(f"  Use: myp install <path-to-{dep_name}>")
+    return
+
+
+def cmd_install(args):
+    """myp install <path> — Install a package into myp_packages/."""
+    if not args:
+        print("Usage: myp install <package-path>", file=sys.stderr)
+        sys.exit(1)
+    src = os.path.abspath(args[0])
+    meta = load_package_meta(src)
+    if not meta:
+        print(f"Error: no package.myp found at '{src}'", file=sys.stderr)
+        sys.exit(1)
+    cwd = os.getcwd()
+    dst_dir = os.path.join(cwd, "myp_packages")
+    os.makedirs(dst_dir, exist_ok=True)
+    dst = os.path.join(dst_dir, meta["name"])
+    if os.path.exists(dst):
+        print(f"Updating {meta['name']} in myp_packages/")
+        shutil.rmtree(dst)
+    shutil.copytree(src, dst)
+    print(f"Installed {meta['name']} v{meta['version']} to myp_packages/")
+
+
+def cmd_run(args):
+    """myp run [opts] — Build and run the current package."""
+    build_args = [a for a in args if a.startswith("-")]
+    ret = cmd_build(build_args)
+    if ret != 0:
+        return ret
+    cwd = os.getcwd()
+    meta = load_package_meta(cwd)
+    executable = os.path.join(cwd, f"{meta['name']}.out")
+    if not os.path.isfile(executable):
+        print(f"Error: executable not found: {executable}", file=sys.stderr)
+        return 1
+    run_args = [a for a in args if not a.startswith("-")]
+    print(f"Running {meta['name']}...")
+    result = subprocess.run([executable] + run_args, cwd=cwd)
+    return result.returncode
+
+
+def cmd_help():
+    print("Usage: myp <command> [options]")
+    print()
+    print("Commands:")
+    print("  init <name>       Create a new MYP package scaffold")
+    print("  build [opts]      Build the current package")
+    print("  install <path>    Install a package from local path")
+    print("  run [opts]        Build and run the current package")
+    print("  <file.myp> [opts] Compile a single file (legacy mode)")
+    print()
+    print("Options (build/run):")
+    print("  -O[0123]          Optimization level")
+    print("  --trace           Enable runtime event tracing")
+    print("  --emit-llvm       Save LLVM IR to .ll file")
+    print()
+    print("Environment:")
+    print("  MYP_PACKAGE_PATH  Colon-separated package search paths")
+
+
+def main():
+    if len(sys.argv) < 2:
+        cmd_help()
+        sys.exit(1)
+
+    command = sys.argv[1]
+    args = sys.argv[2:]
+
+    if command == "init":
+        sys.exit(cmd_init(args))
+    elif command == "build":
+        sys.exit(cmd_build(args))
+    elif command == "install":
+        sys.exit(cmd_install(args))
+    elif command == "run":
+        sys.exit(cmd_run(args))
+    elif command in ("--help", "-h"):
+        cmd_help()
+        sys.exit(0)
+    else:
+        # Legacy mode: treat first arg as a .myp file path
+        src = command
+        if not src.endswith(".myp") or not os.path.isfile(src):
+            print(f"Error: unknown command or file not found: {command}", file=sys.stderr)
+            cmd_help()
+            sys.exit(1)
+
+        compiler = find_compiler()
+        cmd = [compiler, src, "--stdlib", STDLIB] + args
+        result = subprocess.run(cmd, cwd=os.getcwd())
+        sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

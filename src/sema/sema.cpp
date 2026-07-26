@@ -117,6 +117,55 @@ void Sema::checkStructMethods(const StructDecl& decl) {
     }
 }
 
+void Sema::checkInterfaceImpl(const ClassDecl& cls) {
+    // Find the interface
+    InterfaceDecl* iface = nullptr;
+    for (auto& ifd : current_tu_->interfaces) {
+        if (ifd.name == cls.interface_class_name) {
+            iface = &ifd;
+            break;
+        }
+    }
+    if (!iface) {
+        error(cls.range, "interface '" + cls.interface_class_name + "' not found");
+        return;
+    }
+    // Check all interface actions exist in the class
+    for (auto& ia : iface->actions) {
+        bool found = false;
+        for (auto& ca : cls.actions) {
+            if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            for (auto& ca : cls.static_actions) {
+                if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) {
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            error(cls.range, "class '" + cls.name + "' does not implement action '" + ia.name + "' from interface '" + iface->name + "'");
+        }
+    }
+    // Check all interface events exist in the class
+    for (auto& ie : iface->events) {
+        bool found = false;
+        for (auto& ce : cls.events) {
+            if (ce.name == ie.name) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            error(cls.range, "class '" + cls.name + "' does not implement event '" + ie.name + "' from interface '" + iface->name + "'");
+        }
+    }
+}
+
 // ==============================
 // Pass 1: Collect declarations
 // ==============================
@@ -128,6 +177,14 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     for (auto& st : tu.structs) {
         visitStructDecl(st);
     }
+    // Register generic class templates
+    for (size_t i = 0; i < tu.classes.size(); i++) {
+        if (!tu.classes[i].type_params.empty()) {
+            GenericInfo info;
+            info.tu_index = i;
+            generic_classes_[tu.classes[i].name] = info;
+        }
+    }
     // Also register nested structs inside classes
     for (auto& cls : tu.classes) {
         for (auto& st : cls.structs) {
@@ -135,8 +192,20 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
         }
     }
 
+    for (auto& ff : tu.ffis) {
+        visitFFI(ff);
+    }
+    for (auto& en : tu.enums) {
+        visitEnumDecl(en);
+    }
     for (auto& cls : tu.classes) {
         visitClassDecl(cls);
+    }
+    // Check interface implementations
+    for (auto& cls : tu.classes) {
+        if (!cls.interface_class_name.empty()) {
+            checkInterfaceImpl(cls);
+        }
     }
     for (auto& iface : tu.interfaces) {
         visitInterfaceDecl(iface);
@@ -144,6 +213,22 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     for (auto& func : tu.functions) {
         visitFuncDecl(func);
     }
+}
+
+void Sema::visitEnumDecl(EnumDecl& decl) {
+    if (symbol_table_.lookup(decl.name)) {
+        error(decl.range, "duplicate enum name '" + decl.name + "'");
+        return;
+    }
+    // Register the enum type
+    TypeInfo enum_type(TypeKind::Enum);
+    enum_type.class_name = decl.name;
+    symbol_table_.declare(decl.name, enum_type);
+
+    // Store enum info for later reference
+    EnumInfo info;
+    info.variants = decl.variants;
+    enum_info_[decl.name] = info;
 }
 
 void Sema::visitStructDecl(StructDecl& decl) {
@@ -179,6 +264,15 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     TypeInfo class_type(TypeKind::Class);
     class_type.class_name = decl.name;
     symbol_table_.declare(decl.name, class_type);
+
+    // Register generic type parameters as valid types within the class scope
+    for (auto& tp : decl.type_params) {
+        TypeInfo tp_type(TypeKind::Int);
+        symbol_table_.declare(tp, tp_type);
+    }
+
+    // Set current class name for member type resolution
+    current_class_name_ = decl.name;
 
     // Enter class scope to register members
     symbol_table_.enterScope();
@@ -349,6 +443,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return {};
         case StmtKind::MappingStmt:
             return {};
+        case StmtKind::MatchStmt:
+            return visitMatchStmt(static_cast<MatchStmt&>(stmt));
     }
     return {};
 }
@@ -364,6 +460,12 @@ Sema::StmtResult Sema::visitBlock(BlockStmt& stmt) {
 
 Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
     auto decl_type = typeNodeToTypeInfo(decl.type);
+
+    // Check for unknown class/type
+    if (decl_type.kind == TypeKind::Void && !decl.type.class_name.empty()) {
+        error(decl.range, "unknown type '" + decl.type.class_name + "'");
+        return {};
+    }
 
     // Handle `var` type inference
     if (decl.type.is_inferred) {
@@ -446,6 +548,65 @@ Sema::StmtResult Sema::visitReturnStmt(ReturnStmt& stmt) {
 }
 
 // ==============================
+// Match statement type checking
+// ==============================
+
+Sema::StmtResult Sema::visitMatchStmt(MatchStmt& stmt) {
+    auto subject_type = visitExpr(*stmt.subject);
+
+    // The subject must be an enum type (represented as int)
+    if (subject_type.kind != TypeKind::Int) {
+        // For now, just check it can be compared as integer
+    }
+
+    // Resolve variant indices and type-check each arm
+    for (auto& arm : stmt.arms) {
+        // Find the enum declaration
+        auto eit = enum_info_.find(arm.enum_name);
+        if (eit == enum_info_.end()) {
+            error(arm.range, "unknown enum type '" + arm.enum_name + "'");
+            continue;
+        }
+        auto& variants = eit->second.variants;
+
+        // Find variant by name
+        int found_idx = -1;
+        for (size_t i = 0; i < variants.size(); i++) {
+            if (variants[i].name == arm.variant_name) {
+                found_idx = (int)i;
+                arm.variant_index = (int)i;
+                break;
+            }
+        }
+        if (found_idx < 0) {
+            error(arm.range, "unknown variant '" + arm.variant_name +
+                  "' in enum '" + arm.enum_name + "'");
+            continue;
+        }
+
+        // Type-check bindings against variant params
+        auto& variant = variants[found_idx];
+        if (arm.bindings.size() != variant.params.size()) {
+            error(arm.range, "variant '" + variant.name + "' expects " +
+                  std::to_string(variant.params.size()) + " data fields, got " +
+                  std::to_string(arm.bindings.size()));
+        }
+
+        // Enter a scope for the bindings
+        symbol_table_.enterScope();
+        for (size_t i = 0; i < arm.bindings.size() && i < variant.params.size(); i++) {
+            symbol_table_.declare(arm.bindings[i], typeNodeToTypeInfo(variant.params[i].type));
+        }
+
+        // Type-check the arm body
+        if (arm.body) visitStmt(*arm.body);
+        symbol_table_.leaveScope();
+    }
+
+    return {};
+}
+
+// ==============================
 // Expression type checking
 // ==============================
 
@@ -499,6 +660,12 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             break;
         case ExprKind::Range:
             result = visitRange(static_cast<RangeExpr&>(expr));
+            break;
+        case ExprKind::Lambda:
+            result = visitLambda(static_cast<LambdaExpr&>(expr));
+            break;
+        case ExprKind::EnumVariant:
+            result = visitEnumVariant(static_cast<EnumVariantExpr&>(expr));
             break;
     }
     return result;
@@ -589,8 +756,8 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
 
     switch (expr.op) {
         case BinaryOpKind::Add: {
-            // String concatenation: string + string → string
-            if (lhs_type.kind == TypeKind::String && rhs_type.kind == TypeKind::String)
+            // String concatenation: string + any → string
+            if (lhs_type.kind == TypeKind::String || rhs_type.kind == TypeKind::String)
                 return TypeInfo(TypeKind::String);
             // Numeric addition
             if (!expectNumeric(lhs_type, expr.lhs->range) ||
@@ -741,6 +908,35 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         return TypeInfo(TypeKind::Void);
     }
 
+    // Enum variant access — Color.Red
+    if (obj_type.kind == TypeKind::Enum) {
+        // Find the enum and variant
+        auto eit = enum_info_.find(obj_type.class_name);
+        if (eit == enum_info_.end()) {
+            error(expr.range, "unknown enum '" + obj_type.class_name + "'");
+            return TypeInfo(TypeKind::Void);
+        }
+        for (size_t vi = 0; vi < eit->second.variants.size(); vi++) {
+            if (eit->second.variants[vi].name == expr.member_name) {
+                // Return function type if variant has data, else just the enum type
+                if (eit->second.variants[vi].params.empty()) {
+                    return obj_type;
+                } else {
+                    // Variant with data: return a function type (constructs the variant)
+                    TypeInfo ft(TypeKind::Function);
+                    ft.return_type = std::make_shared<TypeInfo>(obj_type);
+                    for (auto& p : eit->second.variants[vi].params) {
+                        ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                    }
+                    return ft;
+                }
+            }
+        }
+        error(expr.range, "enum '" + obj_type.class_name +
+              "' has no variant '" + expr.member_name + "'");
+        return TypeInfo(TypeKind::Void);
+    }
+
     if (obj_type.kind != TypeKind::Class) {
         error(expr.range, "cannot access member of non-class type '" +
               typeName(obj_type) + "'");
@@ -834,6 +1030,15 @@ TypeInfo Sema::visitSubscript(SubscriptExpr& expr) {
 }
 
 TypeInfo Sema::visitNewExpr(NewExpr& expr) {
+    // Check if this is a generic instantiation
+    if (!expr.type_args.empty()) {
+        // Construct a temporary TypeNode to trigger monomorphization
+        TypeNode tn;
+        tn.class_name = expr.class_name;
+        tn.type_args = expr.type_args;
+        return typeNodeToTypeInfo(tn);
+    }
+
     bool found = false;
     if (current_tu_) {
         for (auto& cls : current_tu_->classes) {
@@ -868,6 +1073,12 @@ TypeInfo Sema::visitRange(RangeExpr& expr) {
     return TypeInfo(TypeKind::Int); // Range evaluates to int
 }
 
+TypeInfo Sema::visitEnumVariant(EnumVariantExpr& expr) {
+    // Enum variants are represented as i32 constants
+    TypeInfo result(TypeKind::Int);
+    return result;
+}
+
 TypeInfo Sema::visitTernary(TernaryExpr& expr) {
     auto cond_type = visitExpr(*expr.condition);
     expectBool(cond_type, expr.condition->range);
@@ -896,21 +1107,165 @@ TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
 // Type utilities
 // ==============================
 
-TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) const {
+TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
     if (node.isArray()) {
         TypeInfo arr_type(TypeKind::Array);
+        arr_type.array_size = node.array_size;
         if (node.element_type)
             arr_type.element_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(*node.element_type));
         return arr_type;
     }
     if (node.isClass()) {
-        // Check if this is a struct type by looking up the symbol table
         std::string lookup_name = node.class_name;
+
+        // Check if this is a generic class instantiation
+        if (!node.type_args.empty() && generic_classes_.count(node.class_name)) {
+            // Monomorphization: create a concrete class with type params substituted
+            std::string mangled = node.class_name;
+            for (auto& a : node.type_args)
+                mangled += "_" + typeName(typeNodeToTypeInfo(a));
+            mangled += "_inst";
+            // Check if already instantiated
+            TypeInfo result(TypeKind::Class);
+            result.class_name = mangled;
+            if (symbol_table_.lookup(mangled)) return result;
+
+            // Find and clone the generic class
+            auto& gen = generic_classes_[node.class_name];
+            if (gen.tu_index < 0 || !current_tu_) return result;
+
+            ClassDecl& original = current_tu_->classes[gen.tu_index];
+            ClassDecl inst;
+            inst.name = mangled;
+            inst.range = original.range;
+
+            // Substitute properties
+            for (auto& prop : original.properties) {
+                PropertyDecl p;
+                p.name = prop.name;
+                p.type = substituteTypeNode(prop.type, original.type_params, node.type_args);
+                p.range = prop.range;
+                inst.properties.push_back(std::move(p));
+            }
+
+            // Substitute actions (share body)
+            for (auto& action : original.actions) {
+                ActionDecl a;
+                a.name = action.name;
+                a.return_type = substituteTypeNode(action.return_type, original.type_params, node.type_args);
+                for (auto& param : action.params) {
+                    ParamDecl p;
+                    p.name = param.name;
+                    p.type = substituteTypeNode(param.type, original.type_params, node.type_args);
+                    p.range = param.range;
+                    a.params.push_back(std::move(p));
+                }
+                a.body = action.body; // share body
+                a.has_startup = action.has_startup;
+                a.range = action.range;
+                inst.actions.push_back(std::move(a));
+            }
+
+            // Copy static actions
+            for (auto& action : original.static_actions) {
+                ActionDecl a;
+                a.name = action.name;
+                a.return_type = substituteTypeNode(action.return_type, original.type_params, node.type_args);
+                for (auto& param : action.params) {
+                    ParamDecl p;
+                    p.name = param.name;
+                    p.type = substituteTypeNode(param.type, original.type_params, node.type_args);
+                    p.range = param.range;
+                    a.params.push_back(std::move(p));
+                }
+                a.body = action.body;
+                a.range = action.range;
+                inst.static_actions.push_back(std::move(a));
+            }
+
+            // Copy events
+            for (auto& ev : original.events) {
+                EventDecl e;
+                e.name = ev.name;
+                for (auto& param : ev.params) {
+                    ParamDecl p;
+                    p.name = param.name;
+                    p.type = substituteTypeNode(param.type, original.type_params, node.type_args);
+                    p.range = param.range;
+                    e.params.push_back(std::move(p));
+                }
+                e.range = ev.range;
+                inst.events.push_back(std::move(e));
+            }
+
+            // Copy function: section (skip body — not needed for type checking)
+            for (auto& func : original.functions) {
+                FuncDecl f;
+                f.name = func.name;
+                f.return_type = substituteTypeNode(func.return_type, original.type_params, node.type_args);
+                for (auto& param : func.params) {
+                    ParamDecl p;
+                    p.name = param.name;
+                    p.type = substituteTypeNode(param.type, original.type_params, node.type_args);
+                    p.range = param.range;
+                    f.params.push_back(std::move(p));
+                }
+                // function: section bodies are not needed for instantiation
+                f.range = func.range;
+                inst.functions.push_back(std::move(f));
+            }
+
+            // Register and add to TU — visitClassDecl will declare the type
+            current_tu_->classes.push_back(std::move(inst));
+            visitClassDecl(current_tu_->classes.back());
+            // Now it's registered; look up the result
+            auto* lookup_result = symbol_table_.lookup(mangled);
+            if (lookup_result) result = *lookup_result;
+            return result;
+        }
+
         auto* existing = symbol_table_.lookup(lookup_name);
+        if (existing) return *existing;
+        if (!current_class_name_.empty()) {
+            for (auto& cls : current_tu_->classes) {
+                for (auto& tp : cls.type_params) {
+                    if (tp == lookup_name) {
+                        TypeInfo tp_type(TypeKind::Int);
+                        return tp_type;
+                    }
+                }
+            }
+        }
+
+        // Check if this is a generic class instantiation
+        if (!node.type_args.empty() && generic_classes_.count(node.class_name)) {
+            // For now, return a simple class type (actual monomorphization TBD)
+            TypeInfo result(TypeKind::Class);
+            result.class_name = node.class_name;
+            return result;
+        }
+        // Check if this is an enum type
+        if (existing && (existing->kind == TypeKind::Enum)) {
+            return *existing;
+        }
+
+        // Check if this is a struct type by looking up the symbol table
         if (existing && existing->kind == TypeKind::Struct) {
             TypeInfo st_type(TypeKind::Struct);
             st_type.class_name = lookup_name;
             return st_type;
+        }
+        // Verify class exists
+        bool class_found = false;
+        if (current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name == node.class_name) { class_found = true; break; }
+            }
+        }
+        if (!class_found) {
+            // Return a clear error type — the caller will report it
+            TypeInfo err_type(TypeKind::Void);
+            return err_type;
         }
         TypeInfo cls_type(TypeKind::Class);
         cls_type.class_name = node.class_name;
@@ -1035,6 +1390,9 @@ bool Sema::expectNumeric(const TypeInfo& type, const SourceRange& range) {
 void Sema::checkMappingCycles(const MappingDecl& decl) {
     for (auto& chain : decl.chains) {
         if (chain.nodes.size() < 2) continue;
+        // Allow intentional self-triggering (event → action on same instance)
+        // Only flag cycles in chains longer than 2 nodes
+        if (chain.nodes.size() <= 2) continue;
         std::string event_source = chain.nodes.front().source_name;
         for (size_t i = 1; i < chain.nodes.size(); i++) {
             if (chain.nodes[i].source_name == event_source) {
@@ -1078,8 +1436,98 @@ void Sema::checkMappingTypes(const MappingDecl& decl) {
 }
 
 // ==============================
+// ==============================
+// Type parameter substitution
+// ==============================
+
+TypeInfo Sema::substituteTypeParams(const TypeNode& node,
+                                    const std::vector<std::string>& type_params,
+                                    const std::vector<TypeInfo>& type_args) {
+    // Check if this node's class name is a type parameter
+    if (node.isClass() && !node.class_name.empty()) {
+        for (size_t i = 0; i < type_params.size() && i < type_args.size(); i++) {
+            if (node.class_name == type_params[i]) {
+                return type_args[i];
+            }
+        }
+    }
+    // For array types, substitute element type
+    if (node.isArray() && node.element_type) {
+        TypeInfo result(TypeKind::Array);
+        result.array_size = node.array_size;
+        result.element_type = std::make_shared<TypeInfo>(
+            substituteTypeParams(*node.element_type, type_params, type_args));
+        return result;
+    }
+    // Default: resolve normally
+    return typeNodeToTypeInfo(node);
+}
+
+TypeNode Sema::substituteTypeNode(const TypeNode& node,
+                                   const std::vector<std::string>& type_params,
+                                   const std::vector<TypeNode>& type_args) const {
+    // Check if this node's class name is a type parameter
+    if (node.isClass() && !node.class_name.empty()) {
+        for (size_t i = 0; i < type_params.size() && i < type_args.size(); i++) {
+            if (node.class_name == type_params[i]) {
+                return type_args[i];
+            }
+        }
+    }
+    // For array types, substitute element type
+    if (node.isArray() && node.element_type) {
+        TypeNode result;
+        result.basic_type = node.basic_type;
+        result.array_size = node.array_size;
+        result.element_type = std::make_shared<TypeNode>(
+            substituteTypeNode(*node.element_type, type_params, type_args));
+        return result;
+    }
+    return node;
+}
+
 // Built-in modules
 // ==============================
+
+void Sema::visitFFI(FFIDecl& decl) {
+    // Register FFI function in symbol table as a function type
+    TypeInfo ft(TypeKind::Function);
+    ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(decl.return_type));
+    for (auto& p : decl.params)
+        ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+    symbol_table_.declare(decl.name, ft);
+}
+
+TypeInfo Sema::visitLambda(LambdaExpr& expr) {
+    // Create a hidden class: __lambda_N
+    std::string cls_name = "__lambda_" + std::to_string(lambda_counter_++);
+    expr.hidden_class_name = cls_name;
+
+    ClassDecl cls;
+    cls.name = cls_name;
+    cls.range = expr.range;
+
+    ActionDecl action;
+    action.name = "__call";
+    action.return_type = TypeNode(); // default Int (will be inferred from body)
+    if (!expr.params.empty()) {
+        // Use the last param's type as return type (default void)
+        action.params = expr.params;
+    }
+    action.body = expr.body;
+    action.range = expr.range;
+    cls.actions.push_back(std::move(action));
+
+    // Register class and add to TU
+    if (current_tu_) {
+        current_tu_->classes.push_back(std::move(cls));
+        visitClassDecl(current_tu_->classes.back());
+    }
+
+    TypeInfo result(TypeKind::Class);
+    result.class_name = cls_name;
+    return result;
+}
 
 void Sema::registerIntrinsics() {
     // Intrinsic functions for stdlib use (__myp_ prefix = internal)
@@ -1126,6 +1574,23 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_io_write", TypeKind::Void, {TypeKind::String});
     add_intrinsic("__myp_io_write_line", TypeKind::Void, {TypeKind::String});
     add_intrinsic("__myp_io_has_next", TypeKind::Int, {});
+    add_intrinsic("__myp_io_read_byte", TypeKind::Int, {});
+    add_intrinsic("__myp_io_read_i32be", TypeKind::Int, {});
+    add_intrinsic("__myp_io_seek", TypeKind::Int, {TypeKind::Int, TypeKind::Int});
+    add_intrinsic("__myp_io_write_byte", TypeKind::Int, {TypeKind::Int});
+    add_intrinsic("__myp_io_write_i32be", TypeKind::Int, {TypeKind::Int});
+    add_intrinsic("__myp_io_write_double", TypeKind::Int, {TypeKind::Double});
+    add_intrinsic("__myp_io_read_double", TypeKind::Double, {});
+
+    // stdin read line
+    add_intrinsic("__myp_read_line", TypeKind::String, {});
+    // stdout flush
+    add_intrinsic("__myp_flush", TypeKind::Void, {});
+    // string to double
+    add_intrinsic("__myp_atof", TypeKind::Double, {TypeKind::String});
+    // non-blocking keyboard
+    add_intrinsic("__myp_kbhit", TypeKind::Int, {});
+    add_intrinsic("__myp_getch", TypeKind::Int, {});
 }
 
 } // namespace mylang

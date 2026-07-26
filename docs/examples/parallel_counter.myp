@@ -1,0 +1,54 @@
+// 并行计数器 — 验证 @thread 多线程
+// Worker A 和 Worker B 在各自线程中独立计数
+// 输出交替出现证明真正的并发执行
+
+import env;
+
+class CounterA {
+    action:
+        @startup void run() {
+            int i=0;
+            while(i<10){
+                __myp_print("[A] count=");
+                __myp_print_int(i);
+                __myp_sleep_ms(10);
+                i=i+1;
+            }
+            __myp_print("[A] DONE\n");
+            done();
+        }
+    event:
+        done();
+}
+
+class CounterB {
+    action:
+        @startup void run() {
+            int i=0;
+            while(i<10){
+                __myp_print("  [B] count=");
+                __myp_print_int(i);
+                __myp_sleep_ms(10);
+                i=i+1;
+            }
+            __myp_print("  [B] DONE\n");
+            done();
+        }
+    event:
+        done();
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[Main] Starting two threads...\n");
+            CounterA a = new CounterA() @thread;
+            CounterB b = new CounterB() @thread;
+
+            // 等待线程完成（给线程时间执行）
+            __myp_sleep_ms(300);
+            __myp_print("[Main] Both threads completed\n");
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

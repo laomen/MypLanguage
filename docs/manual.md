@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 2.0 | 事件驱动组件语言
+> 版本 2.1 | 事件驱动组件语言
 
 ---
 
@@ -62,6 +62,7 @@ mypc -o myapp <file.myp>         # 指定输出文件名
 mypc -O2 <file.myp>              # 优化级别
 mypc --trace <file.myp>          # 启用运行时事件追踪
 mypc --stdlib <path> <file.myp>  # 指定标准库路径
+mypc --package-path <path> <file.myp>  # 指定本地包搜索路径
 ```
 
 ---
@@ -577,7 +578,8 @@ import "/abs/lib.myp";    // 用户文件（绝对路径）
 - 用户文件支持相对/绝对路径
 - 自动去重（同一文件不会重复导入）
 - 递归加载（导入的文件中的 `import` 也被加载）
-- 搜索路径：`--stdlib` → 可执行文件 `../stdlib/` → 源文件 `./stdlib/`
+- 搜索路径：`--stdlib` → 可执行文件 `../stdlib/` → 源文件 `./stdlib/` → `--package-path` 指定目录
+- 包导入：`import mylib;` 会在包路径下查找 `mylib/src/mylib.myp` 或 `mylib/mylib.myp`
 
 ### 项目组织建议
 
@@ -680,6 +682,55 @@ file.close();
 # 事件追踪
 ./build/mypc --trace myapp.myp
 ./myapp.out 2>trace.log
+
+# 指定包路径
+./build/mypc --package-path myp_packages myapp.myp
+```
+
+### myp — 包管理工具
+
+`myp` 是 MYP 的包管理命令行工具，提供项目初始化、构建和依赖管理：
+
+```bash
+# 创建新包
+myp init mylib
+# 输出：
+#   mylib/package.myp
+#   mylib/src/mylib.myp
+
+# 构建当前包
+cd myapp
+myp build
+
+# 安装依赖
+myp install /path/to/mylib
+# → 复制到 myp_packages/mylib/
+
+# 构建并运行
+myp run
+```
+
+### 包结构
+
+```
+mypackage/              # 包根目录
+├── package.myp          # 包元数据
+│   name: mypackage
+│   version: 0.1.0
+│   depends: other_lib
+├── src/
+│   └── mypackage.myp    # 主源文件
+└── myp_packages/        # 安装的依赖（自动管理）
+    └── other_lib/
+        ├── package.myp
+        └── src/
+            └── other_lib.myp
+```
+
+### 环境变量
+
+```bash
+export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more
 ```
 
 ### myp_viz — 可视化工具
@@ -695,7 +746,51 @@ dot -Tpng graph.dot -o graph.png
 ./build/myp_viz myapp.myp | dot -Tpng -o graph.png
 ```
 
----
+### myp_lsp — 语言服务器
+
+`myp_lsp` 是 MYP 的 LSP（Language Server Protocol）实现，为编辑器提供智能编辑功能：
+
+```bash
+# 启动语言服务器（供编辑器调用）
+./build/myp_lsp --stdlib ./stdlib
+
+# 调试：输出 LSP 通信日志
+./build/myp_lsp --stdlib ./stdlib 2>lsp.log
+```
+
+**编辑器支持**：
+
+| LSP 能力 | 说明 |
+|----------|------|
+| 实时诊断 | 打开/编辑文件时自动显示编译错误 |
+| 代码补全 | 关键字、类名、方法名、属性名自动弹出 |
+| 悬停信息 | 鼠标悬停显示类型签名 |
+| 文档符号 | 大纲视图显示类、函数、枚举 |
+| 跳转定义 | 按住 Ctrl 点击跳转到定义 |
+
+### VS Code 扩展
+
+MYP 提供了 VS Code 扩展（`vscode-myp/`），安装后即获得语法高亮和 LSP 智能编辑：
+
+```bash
+# 方法 1：复制到扩展目录
+cp -r vscode-myp ~/.vscode/extensions/myp-lang.vscode-myp
+# 重启 VS Code 后生效
+
+# 方法 2：打包安装（需要 @vscode/vsce）
+cd vscode-myp
+npm install
+npx vsce package
+code --install-extension vscode-myp-*.vsix
+```
+
+扩展配置（VS Code 设置中搜索 `myp`）：
+
+| 设置 | 说明 |
+|------|------|
+| `myp.lspPath` | `myp_lsp` 路径（默认自动查找） |
+| `myp.stdlibPath` | 标准库路径（默认自动查找） |
+| `myp.trace.server` | LSP 通信日志级别 |
 
 ## 13. 完整示例
 

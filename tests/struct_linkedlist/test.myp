@@ -1,0 +1,55 @@
+// Struct 验证
+// 验证：struct 定义、字段读写、struct 数组
+
+import env;
+
+struct Point {
+    int x;
+    int y;
+    string name;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[Struct 验证]\n");
+
+            Point p;
+            p.x = 10;
+            p.y = 20;
+            p.name = "P1";
+            __myp_print("p = ("); __myp_print_int(p.x);
+            __myp_print(","); __myp_print_int(p.y);
+            __myp_print(") "); __myp_print(p.name); __myp_print("\n");
+
+            // 字段运算
+            int sum = p.x + p.y;
+            __myp_print("p.x + p.y = "); __myp_print_int(sum); __myp_print("\n");
+
+            // 修改字段
+            p.x = p.x * 2;
+            __myp_print("after p.x*2 = "); __myp_print_int(p.x); __myp_print("\n");
+
+            // 多个 struct 独立
+            Point q;
+            q.x = 5;
+            q.y = 15;
+            q.name = "P2";
+            __myp_print("q = ("); __myp_print_int(q.x);
+            __myp_print(","); __myp_print_int(q.y);
+            __myp_print(") "); __myp_print(q.name); __myp_print("\n");
+
+            // struct 字段拷贝
+            Point r;
+            r.x = p.x;
+            r.y = q.y;
+            r.name = "P3";
+            __myp_print("r.x = p.x = "); __myp_print_int(r.x);
+            __myp_print(", r.y = q.y = "); __myp_print_int(r.y);
+            __myp_print("\n");
+
+            __myp_print("[OK] Struct 验证通过\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}

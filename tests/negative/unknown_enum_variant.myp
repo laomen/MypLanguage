@@ -1,0 +1,4 @@
+// EXPECT ERROR: no variant 'Xyz'
+enum Color { Red; Green; Blue; }
+class M { action: @startup void run() { Color c = Color.Xyz; } }
+int main(){M m=new M();return 0;}

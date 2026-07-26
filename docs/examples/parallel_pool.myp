@@ -1,0 +1,44 @@
+// 线程池演示 — @threadpool 并行工作
+// 创建 4 个工作线程，每个独立计数，证明线程池并发
+
+import env;
+
+class PoolWorker {
+    action:
+        @startup void run() {
+            // 每个 worker 独立计数
+            int i=1;
+            while(i<=5){
+                __myp_print("  [pool#");
+                __myp_print_int(id);
+                __myp_print("] step ");
+                __myp_print_int(i);
+                __myp_print("\n");
+                __myp_sleep_ms(30);
+                i=i+1;
+            }
+            __myp_print("  [pool#");
+            __myp_print_int(id);
+            __myp_print("] DONE\n");
+            done();
+        }
+    event:
+        done();
+    property:
+        int id=0;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[Main] Starting thread pool...\n");
+            // 创建线程池（4个线程），每个独立运行
+            PoolWorker[4] pool @threadpool;
+
+            // 给线程一些时间运行
+            __myp_sleep_ms(500);
+            __myp_print("[Main] Pool done\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}

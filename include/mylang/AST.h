@@ -25,7 +25,9 @@ enum class BuiltinType {
 
 struct TypeNode {
     BuiltinType basic_type = BuiltinType::Int;
-    std::string class_name;   // non-empty if user-defined type
+    std::string class_name;
+    std::vector<TypeNode> type_args; // generic arguments
+    bool is_generic_param = false;   // true if this is a type param reference   // non-empty if user-defined type
     std::shared_ptr<TypeNode> element_type; // non-null if array type
     int array_size = 0;       // >0 if fixed-size array like Type[10]
     SourceRange range;
@@ -33,6 +35,7 @@ struct TypeNode {
     TypeNode() = default;
     TypeNode(const TypeNode& other)
         : basic_type(other.basic_type), class_name(other.class_name),
+          type_args(other.type_args), is_generic_param(other.is_generic_param),
           range(other.range), array_size(other.array_size),
           is_inferred(other.is_inferred),
           element_type(other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr) {}
@@ -40,6 +43,8 @@ struct TypeNode {
         if (this != &other) {
             basic_type = other.basic_type;
             class_name = other.class_name;
+            type_args = other.type_args;
+            is_generic_param = other.is_generic_param;
             range = other.range;
             array_size = other.array_size;
             is_inferred = other.is_inferred;
@@ -107,6 +112,7 @@ struct StructDecl {
 // ---- Class ----
 struct ClassDecl {
     std::string name;
+    std::vector<std::string> type_params; // generic type params
     std::vector<ActionDecl> actions;
     std::vector<ActionDecl> static_actions; // static: section
     std::vector<EventDecl> events;
@@ -122,6 +128,27 @@ struct InterfaceDecl {
     std::string name;
     std::vector<ActionDecl> actions;
     std::vector<EventDecl> events;
+    SourceRange range;
+};
+
+// ---- Enum ----
+struct EnumVariant {
+    std::string name;
+    std::vector<ParamDecl> params; // data fields (empty for simple variants)
+    SourceRange range;
+};
+
+struct EnumDecl {
+    std::string name;
+    std::vector<EnumVariant> variants;
+    SourceRange range;
+};
+
+// ---- FFI ----
+struct FFIDecl {
+    std::string name;
+    TypeNode return_type;
+    std::vector<ParamDecl> params;
     SourceRange range;
 };
 
@@ -160,6 +187,8 @@ enum class ExprKind {
     Assignment,
     Ternary,
     Range,
+    EnumVariant,
+    Lambda,
 };
 
 struct Expr {
@@ -254,9 +283,10 @@ struct SubscriptExpr : Expr {
 
 struct NewExpr : Expr {
     std::string class_name;
+    std::vector<TypeNode> type_args; // generic type arguments
     std::vector<std::unique_ptr<Expr>> args;
-    NewExpr(std::string cn, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
-        : Expr(ExprKind::NewExpr, range_), class_name(std::move(cn)), args(std::move(a)) {}
+    NewExpr(std::string cn, std::vector<TypeNode> ta, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
+        : Expr(ExprKind::NewExpr, range_), class_name(std::move(cn)), type_args(std::move(ta)), args(std::move(a)) {}
 };
 
 struct ThisExpr : Expr {
@@ -288,6 +318,22 @@ struct RangeExpr : Expr {
         : Expr(ExprKind::Range, range_), start(std::move(s)), end(std::move(e)) {}
 };
 
+struct LambdaExpr : Expr {
+    std::vector<ParamDecl> params;
+    std::shared_ptr<Stmt> body;
+    std::string hidden_class_name;
+    LambdaExpr(std::vector<ParamDecl> p, std::shared_ptr<Stmt> b, SourceRange r)
+        : Expr(ExprKind::Lambda, r), params(std::move(p)), body(std::move(b)) {}
+};
+
+struct EnumVariantExpr : Expr {
+    std::string enum_name;
+    int variant_index;
+    std::vector<std::unique_ptr<Expr>> args;
+    EnumVariantExpr(std::string en, int vi, std::vector<std::unique_ptr<Expr>> a, SourceRange r)
+        : Expr(ExprKind::EnumVariant, r), enum_name(std::move(en)), variant_index(vi), args(std::move(a)) {}
+};
+
 // ---- Statements ----
 enum class StmtKind {
     Block,
@@ -300,6 +346,7 @@ enum class StmtKind {
     BreakStmt,
     ContinueStmt,
     MappingStmt,
+    MatchStmt,
 };
 
 struct Stmt {
@@ -375,6 +422,22 @@ struct MappingStmt : Stmt {
         : Stmt(StmtKind::MappingStmt, r), decl(std::move(d)) {}
 };
 
+struct MatchArm {
+    std::string enum_name;
+    std::string variant_name;  // name of the variant (used during Sema resolution)
+    int variant_index;
+    std::vector<std::string> bindings; // variable names for destructured data
+    std::shared_ptr<Stmt> body;
+    SourceRange range;
+};
+
+struct MatchStmt : Stmt {
+    std::unique_ptr<Expr> subject;
+    std::vector<MatchArm> arms;
+    MatchStmt(std::unique_ptr<Expr> s, std::vector<MatchArm> a, SourceRange r)
+        : Stmt(StmtKind::MatchStmt, r), subject(std::move(s)), arms(std::move(a)) {}
+};
+
 // ---- Top-level Declaration ----
 struct FuncDecl {
     std::string name;
@@ -399,6 +462,8 @@ struct TranslationUnit {
     std::vector<InterfaceDecl> interfaces;
     std::vector<MappingDecl> mappings;
     std::vector<FuncDecl> functions;
+    std::vector<EnumDecl> enums;
+    std::vector<FFIDecl> ffis;
 };
 
 } // namespace mylang

@@ -1,0 +1,4 @@
+// EXPECT ERROR: duplicate class name
+class Foo { action: void x(){} }
+class Foo { action: void y(){} }
+int main(){return 0;}

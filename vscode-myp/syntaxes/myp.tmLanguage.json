@@ -1,0 +1,62 @@
+{
+  "name": "MYP",
+  "scopeName": "source.myp",
+  "fileTypes": [".myp"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#annotations" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#operators" },
+    { "include": "#sections" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "begin": "//", "end": "$", "name": "comment.line.double-slash.myp" },
+        { "begin": "/\\*", "end": "\\*/", "name": "comment.block.myp" }
+      ]
+    },
+    "keywords": {
+      "match": "\\b(if|else|while|for|return|break|continue|import|mapping|new|this|null|true|false|var|class|interface|struct|enum|match|ffi)\\b",
+      "name": "keyword.control.myp"
+    },
+    "types": {
+      "match": "\\b(void|byte|short|int|long|ubyte|ushort|uint|ulong|char|float|double|bool|string)\\b",
+      "name": "storage.type.primitive.myp"
+    },
+    "annotations": {
+      "match": "@\\w+",
+      "name": "entity.other.attribute-name.myp"
+    },
+    "sections": {
+      "match": "\\b(action|event|property|function|static|struct)\\s*:",
+      "name": "entity.name.section.myp"
+    },
+    "strings": {
+      "patterns": [
+        { "begin": "\"", "end": "\"", "name": "string.quoted.double.myp",
+          "patterns": [
+            { "match": "\\\\[ntr0\"\\\\]", "name": "constant.character.escape.myp" },
+            { "match": "\\$\\w+", "name": "variable.other.interpolation.myp" }
+          ]
+        },
+        { "begin": "'", "end": "'", "name": "string.quoted.single.myp",
+          "patterns": [
+            { "match": "\\\\[ntr0'\\\\]", "name": "constant.character.escape.myp" }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "match": "\\b(0[xX][0-9a-fA-F]+|\\d+\\.\\d*([eE][+-]?\\d+)?|\\d+)\\b",
+      "name": "constant.numeric.myp"
+    },
+    "operators": {
+      "match": "(->|=>|\\+\\+|--|&&|\\|\\||==|!=|<=|>=|\\+=|-=|\\*=|/=|%=|\\+|-|\\*|/|%|<|>|=|!|\\?|:)",
+      "name": "keyword.operator.myp"
+    }
+  }
+}

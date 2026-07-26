@@ -1,0 +1,5 @@
+// EXPECT ERROR: unknown identifier 'x'
+class M {
+    action: @startup void run() { int y = x; }
+}
+int main(){M m=new M();return 0;}

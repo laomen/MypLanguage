@@ -45,13 +45,19 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
         } else if (match(TokenKind::Keyword_mapping)) {
             auto mp = parseMapping();
             if (mp) tu->mappings.push_back(std::move(*mp));
+        } else if (match(TokenKind::Keyword_ffi)) {
+            auto ff = parseFFIDecl();
+            if (ff) tu->ffis.push_back(std::move(*ff));
+        } else if (match(TokenKind::Keyword_enum)) {
+            auto en = parseEnumDecl();
+            if (en) tu->enums.push_back(std::move(*en));
         } else if (checkType() || check(TokenKind::Keyword_void)) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
         } else {
             diag_.error(peek().range,
                 std::string("unexpected token '") + Token::kindName(peek().kind) + "'");
-            advance();
+            synchronize();
         }
     }
 
@@ -90,6 +96,11 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
     cls->range = previous().range;
     cls->name = parseIdentifier("expected class name");
 
+    if (match(TokenKind::Less)) {
+        cls->type_params = parseTypeParamList();
+        consume(TokenKind::Greater, "expected '>' after generic parameters");
+    }
+
     consume(TokenKind::LeftBrace, "expected '{' after class name");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
@@ -105,7 +116,7 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
         } else {
             diag_.error(peek().range,
                 "expected 'action:', 'event:', 'property:', 'function:', 'struct:', or 'interface class'");
-            advance();
+            synchronize();
         }
     }
 
@@ -305,10 +316,16 @@ std::unique_ptr<InterfaceDecl> Parser::parseInterface() {
     consume(TokenKind::LeftBrace, "expected '{' after interface name");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
-        if (checkType() || check(TokenKind::Keyword_void)) {
+        // Look ahead: if peek+1 is '(' it's an event; otherwise it's an action
+        if (peek().kind == TokenKind::Identifier) {
+            // Could be event name directly, or class-type return type for an action
+            if (peekNext().kind == TokenKind::LeftParen) {
+                decl->events.push_back(parseEventDecl());
+            } else {
+                decl->actions.push_back(parseActionDecl());
+            }
+        } else if (checkType() || check(TokenKind::Keyword_void)) {
             decl->actions.push_back(parseActionDecl());
-        } else if (check(TokenKind::Identifier)) {
-            decl->events.push_back(parseEventDecl());
         } else {
             diag_.error(peek().range, "expected action or event declaration");
             advance();
@@ -382,6 +399,12 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
 std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
     auto func = std::make_unique<FuncDecl>();
     func->range = previous().range;
+    // Check for generic type params before return type
+    if (check(TokenKind::Identifier) && peekNext().kind == TokenKind::Less) {
+        // Generic function: T foo<T>(...) — type param before function name
+        // Actually, generic func syntax: T max<T>(T a, T b) —  parse it differently
+        // For now, we detect <T> after the function name
+    }
     func->return_type = parseType();
     func->name = parseIdentifier("expected function name");
 
@@ -492,14 +515,40 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_mapping)) {
         return parseMappingStmt();
     }
+    if (match(TokenKind::Keyword_match)) {
+        return parseMatchStmt();
+    }
     if (checkType()) {
-        auto saved = current_;
-        TypeNode dummy = parseType();
-        if (!isAtEnd() && peek().kind == TokenKind::Identifier) {
+        // For identifiers: use 2-token lookahead to disambiguate
+        // Identifier Identifier → type + var name (var decl)
+        // Identifier [ or ( or =  → expression (subscript/call/assign)
+        if (peek().kind == TokenKind::Identifier) {
+            // Check if next token is also an Identifier (var decl)
+            size_t next = current_ + 1;
+            if (next < tokens_.size() && tokens_[next].kind == TokenKind::Identifier) {
+                return parseVarDeclStmt();
+            }
+            // Check if next token is < (generic type args): Box<int> varname
+            if (next < tokens_.size() && tokens_[next].kind == TokenKind::Less) {
+                // Try parsing as type; if after that we see an identifier, it's a var decl
+                auto saved = current_;
+                TypeNode dummy = parseType();
+                if (!isAtEnd() && peek().kind == TokenKind::Identifier) {
+                    current_ = saved;
+                    return parseVarDeclStmt();
+                }
+                current_ = saved;
+            }
+            // Otherwise it's an expression (subscript, call, etc.)
+        } else {
+            auto saved = current_;
+            TypeNode dummy = parseType();
+            if (!isAtEnd() && peek().kind == TokenKind::Identifier) {
+                current_ = saved;
+                return parseVarDeclStmt();
+            }
             current_ = saved;
-            return parseVarDeclStmt();
         }
-        current_ = saved;
     }
 
     auto expr = parseExpr();
@@ -572,10 +621,24 @@ std::unique_ptr<Stmt> Parser::parseWhileStmt() {
 std::unique_ptr<Stmt> Parser::parseForStmt() {
     SourceRange r = previous().range;
     consume(TokenKind::LeftParen, "expected '(' after 'for'");
-    auto init = parseVarDeclStmt();
-    auto cond = parseExpr();
+    // Init: optional variable declaration
+    std::unique_ptr<VarDeclStmt> init;
+    if (checkType() || check(TokenKind::Keyword_var)) {
+        init = parseVarDeclStmt();
+    } else {
+        consume(TokenKind::Semicolon, "expected ';' after for init");
+    }
+    // Condition: optional
+    std::unique_ptr<Expr> cond;
+    if (!check(TokenKind::Semicolon)) {
+        cond = parseExpr();
+    }
     consume(TokenKind::Semicolon, "expected ';' after for condition");
-    auto step = parseExpr();
+    // Step: optional
+    std::unique_ptr<Expr> step;
+    if (!check(TokenKind::RightParen)) {
+        step = parseExpr();
+    }
     consume(TokenKind::RightParen, "expected ')' after for clauses");
     auto body = parseStatement();
     return std::make_unique<ForStmt>(std::move(init), std::move(cond),
@@ -647,8 +710,43 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         }
         case ExprKind::Subscript: {
             auto& v = static_cast<const SubscriptExpr&>(e);
+            auto arr = cloneExpr(*v.array);
+            auto idx = cloneExpr(*v.index);
+            if (!arr || !idx) return nullptr;
             return std::make_unique<SubscriptExpr>(
-                cloneExpr(*v.array), cloneExpr(*v.index), v.range);
+                std::move(arr), std::move(idx), v.range);
+        }
+        case ExprKind::BinaryOp: {
+            auto& v = static_cast<const BinaryOpExpr&>(e);
+            auto l = cloneExpr(*v.lhs);
+            auto r = cloneExpr(*v.rhs);
+            if (!l || !r) return nullptr;
+            return std::make_unique<BinaryOpExpr>(
+                std::move(l), v.op, std::move(r), v.range);
+        }
+        case ExprKind::UnaryOp: {
+            auto& v = static_cast<const UnaryOpExpr&>(e);
+            auto o = cloneExpr(*v.operand);
+            if (!o) return nullptr;
+            return std::make_unique<UnaryOpExpr>(v.op, std::move(o), v.range);
+        }
+        case ExprKind::Ternary: {
+            auto& v = static_cast<const TernaryExpr&>(e);
+            auto c = cloneExpr(*v.condition);
+            auto t = cloneExpr(*v.true_expr);
+            auto f = cloneExpr(*v.false_expr);
+            if (!c || !t || !f) return nullptr;
+            return std::make_unique<TernaryExpr>(
+                std::move(c), std::move(t), std::move(f), v.range);
+        }
+        case ExprKind::Lambda:
+            return nullptr; // can't clone lambda
+        case ExprKind::Range: {
+            auto& v = static_cast<const RangeExpr&>(e);
+            auto s = cloneExpr(*v.start);
+            auto e = cloneExpr(*v.end);
+            if (!s || !e) return nullptr;
+            return std::make_unique<RangeExpr>(std::move(s), std::move(e), v.range);
         }
         default:
             return nullptr; // cannot clone complex expressions
@@ -979,6 +1077,11 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     }
     if (match(TokenKind::Keyword_new)) {
         std::string class_name = parseIdentifier("expected class name after 'new'");
+        std::vector<TypeNode> type_args;
+        if (match(TokenKind::Less)) {
+            type_args = parseTypeArgList();
+            consume(TokenKind::Greater, "expected '>' after generic arguments");
+        }
         std::vector<std::unique_ptr<Expr>> args;
         consume(TokenKind::LeftParen, "expected '(' after class name");
         if (!check(TokenKind::RightParen)) {
@@ -988,9 +1091,22 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             }
         }
         consume(TokenKind::RightParen, "expected ')' after arguments");
-        return std::make_unique<NewExpr>(class_name, std::move(args), previous().range);
+        return std::make_unique<NewExpr>(class_name, std::move(type_args), std::move(args), previous().range);
     }
     if (match(TokenKind::LeftParen)) {
+        // Check if this might be a lambda: look ahead for ') =>'
+        size_t saved = current_;
+        if (!isAtEnd()) {
+            for (size_t i = saved; i < tokens_.size(); i++) {
+                if (tokens_[i].kind == TokenKind::RightParen && i + 1 < tokens_.size()
+                    && tokens_[i + 1].kind == TokenKind::FatArrow) {
+                    return parseLambdaExpr();
+                }
+                if (tokens_[i].kind == TokenKind::RightParen) break;
+            }
+        }
+        // Not a lambda, parse (expr)
+        current_ = saved;
         auto expr = parseExpr();
         consume(TokenKind::RightParen, "expected ')' after expression");
         return expr;
@@ -1008,6 +1124,21 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
 // ==============================
 // Types
 // ==============================
+
+std::unique_ptr<Expr> Parser::parseLambdaExpr() {
+    std::vector<ParamDecl> params;
+    if (!check(TokenKind::RightParen)) {
+        params.push_back(parseParam());
+        while (match(TokenKind::Comma)) {
+            params.push_back(parseParam());
+        }
+    }
+    consume(TokenKind::RightParen, "expected ')' after parameters");
+    consume(TokenKind::FatArrow, "expected '=>' after lambda parameters");
+    consume(TokenKind::LeftBrace, "expected '{' for lambda body");
+    auto body = parseBlock();
+    return std::make_unique<LambdaExpr>(std::move(params), std::move(body), previous().range);
+}
 
 TypeNode Parser::parseType() {
     TypeNode node;
@@ -1034,6 +1165,11 @@ TypeNode Parser::parseType() {
     }
     else if (check(TokenKind::Identifier)) {
         node.class_name = parseIdentifier("expected type name");
+        // Check for generic type arguments: ClassName<Type>
+        if (match(TokenKind::Less)) {
+            node.type_args = parseTypeArgList();
+            consume(TokenKind::Greater, "expected '>' after generic arguments");
+        }
         // Check for qualified name: ClassName::StructName
         if (match(TokenKind::DoubleColon)) {
             std::string nested = parseIdentifier("expected struct name");
@@ -1121,6 +1257,15 @@ const Token& Parser::peek() const {
     return tokens_[current_];
 }
 
+const Token& Parser::peekNext() const {
+    size_t idx = current_ + 1;
+    if (idx >= tokens_.size()) {
+        static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
+        return eof;
+    }
+    return tokens_[idx];
+}
+
 const Token& Parser::previous() const {
     static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
     if (current_ == 0 || current_ > tokens_.size()) return eof;
@@ -1168,6 +1313,8 @@ Token Parser::synchronize() {
         if (previous().kind == TokenKind::Semicolon) break;
         switch (peek().kind) {
             case TokenKind::Keyword_class:
+            case TokenKind::Keyword_enum:
+            case TokenKind::Keyword_match:
             case TokenKind::Keyword_import:
             case TokenKind::Keyword_mapping:
             case TokenKind::Keyword_if:
@@ -1180,6 +1327,134 @@ Token Parser::synchronize() {
         }
     }
     return previous();
+}
+
+// ==============================
+// Enum: "enum" id "{" { id ["(" params ")"] ";" } "}"
+// ==============================
+
+std::vector<std::string> Parser::parseTypeParamList() {
+    std::vector<std::string> params;
+    do {
+        params.push_back(parseIdentifier("expected type parameter name"));
+    } while (match(TokenKind::Comma));
+    return params;
+}
+
+std::vector<TypeNode> Parser::parseTypeArgList() {
+    std::vector<TypeNode> args;
+    do {
+        args.push_back(parseType());
+    } while (match(TokenKind::Comma));
+    return args;
+}
+
+bool Parser::isGenericIdentifier() {
+    // Check if the current token sequence looks like an identifier followed by <
+    if (!check(TokenKind::Identifier)) return false;
+    size_t saved = current_;
+    advance();
+    bool result = check(TokenKind::Less);
+    current_ = saved;
+    return result;
+}
+
+std::unique_ptr<FFIDecl> Parser::parseFFIDecl() {
+    auto decl = std::make_unique<FFIDecl>();
+    decl->range = previous().range;
+    decl->return_type = parseType();
+    decl->name = parseIdentifier("expected function name");
+    consume(TokenKind::LeftParen, "expected '('");
+    if (!check(TokenKind::RightParen)) {
+        decl->params.push_back(parseParam());
+        while (match(TokenKind::Comma)) {
+            decl->params.push_back(parseParam());
+        }
+    }
+    consume(TokenKind::RightParen, "expected ')' after parameters");
+    consume(TokenKind::Semicolon, "expected ';' after FFI declaration");
+    return decl;
+}
+
+std::unique_ptr<EnumDecl> Parser::parseEnumDecl() {
+    auto decl = std::make_unique<EnumDecl>();
+    decl->range = previous().range;
+    decl->name = parseIdentifier("expected enum name");
+
+    consume(TokenKind::LeftBrace, "expected '{' after enum name");
+
+    int vi = 0;
+    while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        EnumVariant variant;
+        variant.range = peek().range;
+        variant.name = parseIdentifier("expected variant name");
+
+        // Optional data fields: Variant(type name, ...)
+        if (match(TokenKind::LeftParen)) {
+            if (!check(TokenKind::RightParen)) {
+                variant.params = parseParamList();
+            }
+            consume(TokenKind::RightParen, "expected ')' after variant parameters");
+        }
+
+        consume(TokenKind::Semicolon, "expected ';' after variant");
+        decl->variants.push_back(std::move(variant));
+        vi++;
+    }
+
+    consume(TokenKind::RightBrace, "expected '}' after enum body");
+    return decl;
+}
+
+// ==============================
+// Match: "match" "(" expr ")" "{" { arm } "}"
+// arm: EnumType.Variant [ "(" id ("," id)* ")" ] "=>" block
+// ==============================
+
+std::unique_ptr<Stmt> Parser::parseMatchStmt() {
+    SourceRange r = previous().range;
+
+    consume(TokenKind::LeftParen, "expected '(' after 'match'");
+    auto subject = parseExpr();
+    consume(TokenKind::RightParen, "expected ')' after match subject");
+
+    consume(TokenKind::LeftBrace, "expected '{' for match body");
+
+    std::vector<MatchArm> arms;
+
+    while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        MatchArm arm;
+        arm.range = peek().range;
+
+        // Parse: EnumType.Variant
+        arm.enum_name = parseIdentifier("expected enum type name in match arm");
+        consume(TokenKind::Dot, "expected '.' after enum type");
+        arm.variant_name = parseIdentifier("expected variant name");
+
+        // The variant index will be resolved in Sema.
+        arm.variant_index = -1; // resolved in Sema
+
+        // Optional data bindings: (v1, v2, ...)
+        if (match(TokenKind::LeftParen)) {
+            if (!check(TokenKind::RightParen)) {
+                arm.bindings.push_back(parseIdentifier("expected binding name"));
+                while (match(TokenKind::Comma)) {
+                    arm.bindings.push_back(parseIdentifier("expected binding name"));
+                }
+            }
+            consume(TokenKind::RightParen, "expected ')' after bindings");
+        }
+
+        consume(TokenKind::FatArrow, "expected '=>' after match arm pattern");
+
+        // Body is a block (not a single statement)
+        consume(TokenKind::LeftBrace, "expected '{' for match arm body");
+        arm.body = parseBlock();
+        arms.push_back(std::move(arm));
+    }
+
+    consume(TokenKind::RightBrace, "expected '}' after match body");
+    return std::make_unique<MatchStmt>(std::move(subject), std::move(arms), r);
 }
 
 } // namespace mylang

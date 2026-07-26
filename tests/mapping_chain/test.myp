@@ -1,0 +1,64 @@
+// Mapping 事件链验证
+// 验证：mapping() 事件链、多 target、事件参数传递
+
+import env;
+
+// 传感器：产生数据
+class Sensor {
+    action:
+        @startup void run() {
+            __myp_print("[Sensor] started, generating data...\n");
+            // 触发数据事件
+            dataReady(42);
+            dataReady(99);
+            __myp_print("[Sensor] done\n");
+            done();
+        }
+    event:
+        dataReady(int value);
+        done();
+}
+
+// 处理器：接收数据并处理
+class Processor {
+    action:
+        int process(int val) {
+            int result = val * 2;
+            __myp_print("  [Processor] received "); __myp_print_int(val);
+            __myp_print(" -> "); __myp_print_int(result);
+            __myp_print("\n");
+            return result;
+        }
+}
+
+// 输出器：接收处理后的结果
+class Output {
+    action:
+        void show(int val) {
+            __myp_print("  [Output] final result = "); __myp_print_int(val);
+            __myp_print("\n");
+        }
+}
+
+// 事件链：Sensor.dataReady -> Processor.process -> Output.show
+// 先处理数据，再把结果传给输出
+mapping() {
+    Sensor.dataReady -> Processor.process -> Output.show;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            __myp_print("[Mapping 事件链验证]\n\n");
+
+            Sensor s = new Sensor();
+            Processor p = new Processor();
+            Output o = new Output();
+
+            // 主线程休眠等 Sensor 跑完
+            __myp_sleep_ms(100);
+            __myp_print("\n[OK] Mapping 事件链验证通过\n");
+        }
+}
+
+int main(){Main m=new Main();return 0;}
