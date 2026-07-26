@@ -16,3 +16,6 @@ core.*
 *.out
 test_io.txt
 /tmp/
+node_modules/
+*.bin
+deeplearning/data/
