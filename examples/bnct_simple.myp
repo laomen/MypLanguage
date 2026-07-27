@@ -1,0 +1,65 @@
+// BNCT 简单蒙特卡洛粒子输运模拟
+// 模拟中子穿过含硼组织切片，统计硼俘获事件
+import env;
+import math;
+import random;
+
+double rnd() {
+    int r = rand();
+    return r / 2147483647.0;
+}
+
+class NeutronSim {
+    action:
+        @startup void run() {
+            srand(12345);
+            double sigmaT = 0.5;    // 总截面 cm^-1
+            double sigmaB = 0.05;   // 硼俘获截面 cm^-1
+            double sigmaS = 0.45;   // 散射截面 cm^-1
+            double slabThick = 5.0; // 组织厚度 cm
+            int nParticles = 10000;
+            int nCaptured = 0;
+            double totalEnergy = 0.0;
+
+            for (int i = 0; i < nParticles; i = i + 1) {
+                double x = 0.0;     // 位置
+                double weight = 1.0;
+
+                while (x < slabThick) {
+                    // 抽样自由程
+                    double d = -Math.log(rnd()) / sigmaT;
+                    x = x + d;
+
+                    if (x >= slabThick) {
+                        break;  // 逃逸
+                    }
+
+                    // 碰撞：决定反应类型
+                    double xi = rnd();
+                    if (xi < sigmaB / sigmaT) {
+                        // 硼俘获
+                        nCaptured = nCaptured + 1;
+                        totalEnergy = totalEnergy + 2.33;   // MeV
+                        break;
+                    }
+                    // 散射 — 继续输运
+                }
+            }
+
+            Console.writeString("=== BNCT 简单模拟结果 ===\n");
+            Console.writeString("粒子数: ");
+            Console.write(nParticles);
+            Console.writeString("硼俘获: ");
+            Console.write(nCaptured);
+            Console.writeString("俘获率: ");
+            Console.writeFloat(nCaptured * 100.0 / nParticles);
+            Console.writeString("总能量沉积: ");
+            Console.writeFloat(totalEnergy);
+            Console.writeString(" MeV\n");
+        }
+}
+
+int main() {
+    NeutronSim sim = new NeutronSim();
+    return 0;
+}
