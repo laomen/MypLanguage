@@ -414,8 +414,11 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
     switch (stmt.kind) {
         case StmtKind::Block:
             return visitBlock(static_cast<BlockStmt&>(stmt));
-        case StmtKind::VarDeclStmt:
-            return visitVarDecl(static_cast<VarDeclStmt&>(stmt).decl);
+        case StmtKind::VarDeclStmt: {
+            auto& vds = static_cast<VarDeclStmt&>(stmt);
+            for (auto& d : vds.decls) visitVarDecl(d);
+            return {};
+        }
         case StmtKind::ExprStmt: {
             auto& es = static_cast<ExprStmt&>(stmt);
             if (es.expression) {

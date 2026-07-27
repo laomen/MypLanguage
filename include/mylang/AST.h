@@ -409,9 +409,12 @@ struct TryStmt : Stmt {
 };
 
 struct VarDeclStmt : Stmt {
-    VarDecl decl;
-    VarDeclStmt(VarDecl d, SourceRange r)
-        : Stmt(StmtKind::VarDeclStmt, r), decl(std::move(d)) {}
+    std::vector<VarDecl> decls;
+    VarDeclStmt() : Stmt(StmtKind::VarDeclStmt, {}) {}
+    explicit VarDeclStmt(VarDecl d)
+        : Stmt(StmtKind::VarDeclStmt, d.range) { decls.push_back(std::move(d)); }
+    VarDeclStmt(std::vector<VarDecl> d, SourceRange r)
+        : Stmt(StmtKind::VarDeclStmt, r), decls(std::move(d)) {}
 };
 
 struct ExprStmt : Stmt {
@@ -438,11 +441,11 @@ struct WhileStmt : Stmt {
 };
 
 struct ForStmt : Stmt {
-    std::unique_ptr<VarDeclStmt> init;
+    std::unique_ptr<Stmt> init;
     std::unique_ptr<Expr> condition;
     std::unique_ptr<Expr> step;
     std::unique_ptr<Stmt> body;
-    ForStmt(std::unique_ptr<VarDeclStmt> i, std::unique_ptr<Expr> cond,
+    ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
             std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
           step(std::move(s)), body(std::move(b)) {}

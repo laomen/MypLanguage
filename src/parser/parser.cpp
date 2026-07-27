@@ -670,30 +670,50 @@ std::unique_ptr<BlockStmt> Parser::parseBlock() {
     return std::make_unique<BlockStmt>(std::move(stmts), r);
 }
 
-std::unique_ptr<VarDeclStmt> Parser::parseVarDeclStmt() {
-    VarDecl decl;
-    decl.range = peek().range;
-    decl.type = parseType();
-    decl.name = parseIdentifier("expected variable name");
+std::unique_ptr<Stmt> Parser::parseVarDeclStmt() {
+    // Parse the shared type first
+    TypeNode shared_type = parseType();
 
-    if (match(TokenKind::Equal)) {
-        decl.init_expr = parseExpr();
-    }
+    std::vector<VarDecl> decls;
 
-    if (match(TokenKind::At)) {
-        std::string annot = parseIdentifier("expected annotation name");
-        if (annot == "thread") {
-            decl.has_thread_annotation = true;
-        } else if (annot == "threadpool") {
-            decl.has_threadpool_annotation = true;
-        } else {
-            diag_.error(previous().range,
-                std::string("unknown annotation '@" + annot + "'"));
+    // Parse one or more comma-separated variable names
+    do {
+        VarDecl decl;
+        decl.range = peek().range;
+        decl.type = shared_type;
+        decl.name = parseIdentifier("expected variable name");
+
+        // Init expression only allowed on the first variable
+        // (or on each? C allows int a=1, b=2; — support that too)
+        if (match(TokenKind::Equal)) {
+            decl.init_expr = parseExpr();
         }
-    }
+
+        // Annotation (@thread, @threadpool)
+        if (match(TokenKind::At)) {
+            std::string annot = parseIdentifier("expected annotation name");
+            if (annot == "thread") {
+                decl.has_thread_annotation = true;
+            } else if (annot == "threadpool") {
+                decl.has_threadpool_annotation = true;
+            } else {
+                diag_.error(previous().range,
+                    std::string("unknown annotation '@" + annot + "'"));
+            }
+        }
+
+        decls.push_back(std::move(decl));
+    } while (match(TokenKind::Comma));
 
     consume(TokenKind::Semicolon, "expected ';' after variable declaration");
-    return std::make_unique<VarDeclStmt>(decl, decl.range);
+
+    // If only one decl, return it directly
+    if (decls.size() == 1) {
+        return std::make_unique<VarDeclStmt>(std::move(decls[0]));
+    }
+
+    // Multiple decls: single VarDeclStmt with all decls
+    return std::make_unique<VarDeclStmt>(std::move(decls), shared_type.range);
 }
 
 std::unique_ptr<Stmt> Parser::parseIfStmt() {
@@ -723,7 +743,7 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
     SourceRange r = previous().range;
     consume(TokenKind::LeftParen, "expected '(' after 'for'");
     // Init: optional variable declaration
-    std::unique_ptr<VarDeclStmt> init;
+    std::unique_ptr<Stmt> init;
     if (checkType() || check(TokenKind::Keyword_var)) {
         init = parseVarDeclStmt();
     } else {

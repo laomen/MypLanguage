@@ -1207,7 +1207,11 @@ void CodeGen::emitInitMappingCalls() {
 void CodeGen::generateStmt(const Stmt& s) {
     switch (s.kind) {
         case StmtKind::Block: generateBlock(static_cast<const BlockStmt&>(s)); break;
-        case StmtKind::VarDeclStmt: generateVarDecl(static_cast<const VarDeclStmt&>(s).decl); break;
+        case StmtKind::VarDeclStmt: {
+            auto& vds = static_cast<const VarDeclStmt&>(s);
+            for (auto& d : vds.decls) generateVarDecl(d);
+            break;
+        }
         case StmtKind::ExprStmt:
             if (static_cast<const ExprStmt&>(s).expression) generateExpr(*static_cast<const ExprStmt&>(s).expression);
             break;

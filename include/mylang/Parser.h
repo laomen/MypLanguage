@@ -61,7 +61,7 @@ private:
     // Statements
     std::unique_ptr<Stmt> parseStatement();
     std::unique_ptr<BlockStmt> parseBlock();
-    std::unique_ptr<VarDeclStmt> parseVarDeclStmt();
+    std::unique_ptr<Stmt> parseVarDeclStmt();
     std::unique_ptr<Stmt> parseIfStmt();
     std::unique_ptr<Stmt> parseWhileStmt();
     std::unique_ptr<Stmt> parseForStmt();
