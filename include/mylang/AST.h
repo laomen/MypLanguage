@@ -155,8 +155,9 @@ struct FFIDecl {
 
 // ---- Mapping ----
 struct MappingNode {
-    std::string source_name;  // instance or class name
-    std::string member_name;  // event or action name
+    std::string source_name;  // instance or class name, or function name if is_function
+    std::string member_name;  // event or action name (empty if is_function)
+    bool is_function = false; // true if this node is a file-level function
     SourceRange range;
 };
 

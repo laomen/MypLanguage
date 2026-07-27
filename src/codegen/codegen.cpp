@@ -851,29 +851,40 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
 
         for (size_t i = 1; i < chain.nodes.size(); ++i) {
             auto& tgt = chain.nodes[i];
-            std::string tf = tgt.source_name + "_" + tgt.member_name;
-            auto* callee = module_->getFunction(tf);
+            llvm::Function* callee = nullptr;
+
+            if (tgt.is_function) {
+                // File-level function: look up by name directly
+                callee = module_->getFunction(tgt.source_name);
+            } else {
+                // Class action: look up with ClassName_actionName
+                std::string tf = tgt.source_name + "_" + tgt.member_name;
+                callee = module_->getFunction(tf);
+            }
 
             if (callee) {
                 std::vector<llvm::Value*> call_args;
 
-                // Check if target is a static action (→ no instance pointer needed)
-                auto sit = is_static_action_.find(tf);
-                bool is_static = (sit != is_static_action_.end() && sit->second);
+                if (!tgt.is_function) {
+                    // Check if target is a static action (→ no instance pointer needed)
+                    std::string tf = tgt.source_name + "_" + tgt.member_name;
+                    auto sit = is_static_action_.find(tf);
+                    bool is_static = (sit != is_static_action_.end() && sit->second);
 
-                if (!is_static) {
-                    // Instance pointer: use global if available, otherwise fallback
-                    auto git = class_instance_globals_.find(tgt.source_name);
-                    if (git != class_instance_globals_.end()) {
-                        auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), git->second, "tgt_inst");
-                        call_args.push_back(inst_p);
-                    } else {
-                        auto* inst_a = getNamedValue(tgt.source_name);
-                        if (inst_a) {
-                            auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), inst_a, "tgt");
+                    if (!is_static) {
+                        // Instance pointer: use global if available, otherwise fallback
+                        auto git = class_instance_globals_.find(tgt.source_name);
+                        if (git != class_instance_globals_.end()) {
+                            auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), git->second, "tgt_inst");
                             call_args.push_back(inst_p);
                         } else {
-                            call_args.push_back(handler->getArg(0));
+                            auto* inst_a = getNamedValue(tgt.source_name);
+                            if (inst_a) {
+                                auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), inst_a, "tgt");
+                                call_args.push_back(inst_p);
+                            } else {
+                                call_args.push_back(handler->getArg(0));
+                            }
                         }
                     }
                 }

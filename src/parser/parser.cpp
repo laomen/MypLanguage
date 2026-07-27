@@ -470,14 +470,23 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
             ev_node.member_name = first_node.member_name;
             chain.nodes.push_back(std::move(ev_node));
 
-            // Parse target: instance.action
+            // Parse target: instance.action or functionName
             // Support chained targets: source.e -> t1.a1 -> t2.a2, t3.a3;
+            // Also: source.e -> processData -> output.show;
             while (true) {
                 MappingNode target_node;
                 target_node.range = peek().range;
-                target_node.source_name = parseIdentifier("expected target instance/class name");
-                consume(TokenKind::Dot, "expected '.' after target");
-                target_node.member_name = parseIdentifier("expected action name");
+                target_node.source_name = parseIdentifier("expected target name in mapping");
+
+                if (match(TokenKind::Dot)) {
+                    // instance.action — class method call
+                    target_node.member_name = parseIdentifier("expected action name");
+                    target_node.is_function = false;
+                } else {
+                    // Bare identifier — file-level function call
+                    target_node.is_function = true;
+                }
+
                 chain.nodes.push_back(std::move(target_node));
 
                 if (match(TokenKind::Arrow)) {
