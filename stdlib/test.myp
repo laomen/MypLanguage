@@ -1,0 +1,29 @@
+// test.myp — MYP 标准库：测试断言工具
+// 用法：
+//   import test;
+//   Test.assert(1 == 1);
+//   Test.assertEq(2 + 2, 4);
+//   Test.report("my_test", true);
+
+class Test {
+    static:
+        // 布尔断言
+        void assert(bool cond) {
+            __myp_assert(cond);
+        }
+
+        // 整数相等断言
+        void assertEq(int a, int b) {
+            __myp_assert_eq(a, b);
+        }
+
+        // 字符串相等断言
+        void assertStrEq(string a, string b) {
+            __myp_assert_str_eq(a, b);
+        }
+
+        // 报告测试结果
+        void report(string name, bool passed) {
+            __myp_test_report(name, passed);
+        }
+}

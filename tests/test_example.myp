@@ -1,22 +1,24 @@
 // test_example.myp — 测试框架示例
-// 运行: ./build/mypc --test tests/test_example.myp && ./a.out
+// 运行: ./build/mypc --test tests/test_example.myp && ./tests/test_example.out
+
+import test;
 
 // 基本断言测试
 @test void test_assertions() {
-    __myp_assert(1 == 1);
-    __myp_assert_eq(2 + 2, 4);
-    __myp_assert_eq(100 - 1, 99);
-    __myp_assert_str_eq("hello", "hello");
-    __myp_test_report("test_assertions", true);
+    Test.assert(1 == 1);
+    Test.assertEq(2 + 2, 4);
+    Test.assertEq(100 - 1, 99);
+    Test.assertStrEq("hello", "hello");
+    Test.report("test_assertions", true);
 }
 
 // 数学运算测试
 @test void test_math() {
-    __myp_assert_eq(2 * 3, 6);
-    __myp_assert_eq(10 / 2, 5);
-    __myp_assert(10 > 5);
-    __myp_assert(3 <= 3);
-    __myp_test_report("test_math", true);
+    Test.assertEq(2 * 3, 6);
+    Test.assertEq(10 / 2, 5);
+    Test.assert(10 > 5);
+    Test.assert(3 <= 3);
+    Test.report("test_math", true);
 }
 
 // 字符串测试
@@ -24,15 +26,15 @@
     string a = "Hello";
     string b = "Hello";
     string c = "World";
-    __myp_assert_str_eq(a, b);
-    __myp_assert(a != c);
-    __myp_assert_str_eq(a + " " + c, "Hello World");
-    __myp_test_report("test_strings", true);
+    Test.assertStrEq(a, b);
+    Test.assert(a != c);
+    Test.assertStrEq(a + " " + c, "Hello World");
+    Test.report("test_strings", true);
 }
 
 // 带返回值的测试函数
 @test int test_return() {
-    __myp_assert_eq(1 + 1, 2);
-    __myp_test_report("test_return", true);
+    Test.assertEq(1 + 1, 2);
+    Test.report("test_return", true);
     return 0;
 }

@@ -736,14 +736,16 @@ string result = sb.toString();  // "Hello, World"
 # === MYP Tests Complete ===
 ```
 
-使用 `@test` 注解标记测试函数和 action，支持内置断言：
+使用 `@test` 注解标记测试函数和 action，配合 `Test` 类使用断言：
 
 ```myp
+import test;
+
 @test void test_example() {
-    __myp_assert(1 == 1);
-    __myp_assert_eq(2 + 2, 4);
-    __myp_assert_str_eq("hello", "hello");
-    __myp_test_report("test_example", true);
+    Test.assert(1 == 1);
+    Test.assertEq(2 + 2, 4);
+    Test.assertStrEq("hello", "hello");
+    Test.report("test_example", true);
 }
 ```
 
