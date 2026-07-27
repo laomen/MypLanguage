@@ -237,6 +237,7 @@ private:
     void generateReturnStmt(const ReturnStmt& stmt);
     void generateBreakStmt(const BreakStmt& stmt);
     void generateContinueStmt(const ContinueStmt& stmt);
+    void generateAwaitStmt(const AwaitStmt& stmt);
 
     // ---- Expression generation ----
     llvm::Value* generateExpr(const Expr& expr);

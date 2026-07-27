@@ -451,6 +451,11 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                 error(stmt.range, "break/continue outside loop");
             }
             return {};
+        case StmtKind::AwaitStmt: {
+            auto& as = static_cast<AwaitStmt&>(stmt);
+            if (as.expr) visitExpr(*as.expr);
+            return {};
+        }
         case StmtKind::MappingStmt: {
             auto& ms = static_cast<MappingStmt&>(stmt);
             // Process lambda expressions and where clauses inside mapping chains

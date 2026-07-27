@@ -1,0 +1,16 @@
+ffi int  myp_barrier_create(int count);
+ffi int  myp_barrier_wait(int handle);
+ffi void myp_barrier_destroy(int handle);
+
+class Barrier {
+    static:
+        int create(int count) {
+            return myp_barrier_create(count);
+        }
+        int wait(int handle) {
+            return myp_barrier_wait(handle);
+        }
+        void destroy(int handle) {
+            myp_barrier_destroy(handle);
+        }
+}

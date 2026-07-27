@@ -227,6 +227,7 @@ ActionDecl Parser::parseActionDecl() {
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "startup") decl.has_startup = true;
         if (annot == "test") decl.has_test = true;
+        if (annot == "coro") decl.has_coro = true;
     }
 
     decl.return_type = parseType();
@@ -580,6 +581,9 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_continue)) {
         return parseContinueStmt();
     }
+    if (match(TokenKind::Keyword_await)) {
+        return parseAwaitStmt();
+    }
     if (match(TokenKind::Keyword_mapping)) {
         return parseMappingStmt();
     }
@@ -786,6 +790,13 @@ std::unique_ptr<Stmt> Parser::parseContinueStmt() {
     SourceRange r = previous().range;
     consume(TokenKind::Semicolon, "expected ';' after continue");
     return std::make_unique<ContinueStmt>(r);
+}
+
+std::unique_ptr<Stmt> Parser::parseAwaitStmt() {
+    SourceRange r = previous().range;
+    auto expr = parseExpr();
+    consume(TokenKind::Semicolon, "expected ';' after await expression");
+    return std::make_unique<AwaitStmt>(std::move(expr), r);
 }
 
 std::unique_ptr<Stmt> Parser::parseMappingStmt() {

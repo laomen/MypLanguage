@@ -82,6 +82,7 @@ struct ActionDecl {
     SourceRange range;
     bool has_startup = false;
     bool has_test = false;
+    bool has_coro = false;
 };
 
 struct EventDecl {
@@ -376,6 +377,7 @@ enum class StmtKind {
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
+    AwaitStmt,
     MappingStmt,
     MatchStmt,
     TryStmt,
@@ -463,6 +465,12 @@ struct BreakStmt : Stmt {
 
 struct ContinueStmt : Stmt {
     ContinueStmt(SourceRange r) : Stmt(StmtKind::ContinueStmt, r) {}
+};
+
+struct AwaitStmt : Stmt {
+    std::unique_ptr<Expr> expr;
+    AwaitStmt(std::unique_ptr<Expr> e, SourceRange r)
+        : Stmt(StmtKind::AwaitStmt, r), expr(std::move(e)) {}
 };
 
 struct MappingStmt : Stmt {

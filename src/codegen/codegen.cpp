@@ -1221,6 +1221,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::ReturnStmt: generateReturnStmt(static_cast<const ReturnStmt&>(s)); break;
         case StmtKind::BreakStmt:   generateBreakStmt(static_cast<const BreakStmt&>(s)); break;
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;
+        case StmtKind::AwaitStmt: generateAwaitStmt(static_cast<const AwaitStmt&>(s)); break;
         case StmtKind::MappingStmt: generateMappingDecl(static_cast<const MappingStmt&>(s).decl, builder_.GetInsertBlock()); break;
         case StmtKind::MatchStmt: generateMatchStmt(static_cast<const MatchStmt&>(s)); break;
         case StmtKind::TryStmt: generateTryStmt(static_cast<const TryStmt&>(s)); break;
@@ -2667,6 +2668,18 @@ void CodeGen::generateBreakStmt(const BreakStmt&) {
 void CodeGen::generateContinueStmt(const ContinueStmt&) {
     if (loop_context_.empty()) return;
     builder_.CreateBr(loop_context_.back().continue_bb);
+}
+
+void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
+    // await expr; — yield coroutine, expr is the value to pass back
+    if (s.expr) generateExpr(*s.expr);
+    // Call __myp_coro_yield() to yield back to scheduler
+    auto* yield_fn = module_->getFunction("__myp_coro_yield");
+    if (!yield_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
+        yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "__myp_coro_yield", module_.get());
+    }
+    builder_.CreateCall(yield_fn, {});
 }
 
 llvm::Value* CodeGen::generateRange(const RangeExpr& e) {

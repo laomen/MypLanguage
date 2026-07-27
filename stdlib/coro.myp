@@ -1,0 +1,6 @@
+ffi int  __myp_coro_create();
+ffi void __myp_coro_set_func(int fn_ptr, int arg_ptr);
+ffi void __myp_coro_yield();
+ffi int  __myp_coro_resume(int handle);
+ffi int  __myp_coro_is_active(int handle);
+ffi void __myp_coro_destroy(int handle);

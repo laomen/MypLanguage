@@ -1,0 +1,20 @@
+ffi int  myp_future_create();
+ffi void myp_future_set(int handle, int value);
+ffi int  myp_future_get(int handle);
+ffi void myp_future_destroy(int handle);
+
+class Future {
+    static:
+        int create() {
+            return myp_future_create();
+        }
+        void set(int handle, int value) {
+            myp_future_set(handle, value);
+        }
+        int get(int handle) {
+            return myp_future_get(handle);
+        }
+        void destroy(int handle) {
+            myp_future_destroy(handle);
+        }
+}

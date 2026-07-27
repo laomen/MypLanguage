@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include "mylang/runtime.h"
 
 #include <math.h>
@@ -892,5 +893,90 @@ void myp_future_destroy(int32_t handle) {
         pthread_mutex_destroy(&myp_futures[handle].mutex);
         pthread_cond_destroy(&myp_futures[handle].cond);
         myp_futures[handle].used = 0;
+    }
+}
+
+// ======================
+// Coroutine (基于 ucontext 的用户态纤程)
+// ======================
+
+#include <ucontext.h>
+#include <stdint.h>
+
+#define MYP_CORO_STACK_SIZE (256 * 1024)
+#define MYP_MAX_COROS 1024
+
+typedef struct {
+    ucontext_t ctx;
+    char* stack;
+    int active;
+    void (*fn)(void); // entry function for this coroutine
+} myp_coro_t;
+
+static myp_coro_t myp_coros[MYP_MAX_COROS];
+static int myp_coro_count = 0;
+static int myp_coro_current = -1;
+static ucontext_t myp_coro_sched_ctx;
+
+// Trampoline: called by makecontext with coroutine index as arg
+// Calls the coroutine's entry function, then deactivates it
+static void __myp_coro_trampoline(int id) {
+    if (id >= 0 && id < myp_coro_count && myp_coros[id].fn) {
+        myp_coros[id].fn();
+    }
+    if (id >= 0 && id < myp_coro_count) {
+        myp_coros[id].active = 0;
+    }
+}
+
+int32_t __myp_coro_create(void) {
+    if (myp_coro_count >= MYP_MAX_COROS) return -1;
+    int idx = myp_coro_count;
+    // Note: fn must be set BEFORE calling create, via __myp_coro_set_entry
+    myp_coro_t* c = &myp_coros[idx];
+    c->stack = (char*)malloc(MYP_CORO_STACK_SIZE);
+    if (!c->stack) return -1;
+    if (getcontext(&c->ctx) == -1) { free(c->stack); return -1; }
+    c->ctx.uc_link = &myp_coro_sched_ctx;
+    c->ctx.uc_stack.ss_sp = c->stack;
+    c->ctx.uc_stack.ss_size = MYP_CORO_STACK_SIZE;
+    makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
+    c->active = 1;
+    myp_coro_count++;
+    return idx;
+}
+
+void __myp_coro_set_entry(int32_t handle, int32_t fn_ptr) {
+    if (handle >= 0 && handle < MYP_MAX_COROS) {
+        myp_coros[handle].fn = (void (*)(void))(uintptr_t)fn_ptr;
+    }
+}
+
+void __myp_coro_yield(void) {
+    if (myp_coro_current < 0) return;
+    int saved = myp_coro_current;
+    myp_coro_current = -1;
+    swapcontext(&myp_coros[saved].ctx, &myp_coro_sched_ctx);
+    myp_coro_current = saved;
+}
+
+int32_t __myp_coro_resume(int32_t handle) {
+    if (handle < 0 || handle >= myp_coro_count) return -1;
+    if (!myp_coros[handle].active) return -1;
+    myp_coro_current = handle;
+    swapcontext(&myp_coro_sched_ctx, &myp_coros[handle].ctx);
+    return 0;
+}
+
+int32_t __myp_coro_is_active(int32_t handle) {
+    if (handle < 0 || handle >= myp_coro_count) return 0;
+    return myp_coros[handle].active ? 1 : 0;
+}
+
+void __myp_coro_destroy(int32_t handle) {
+    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle].stack) {
+        myp_coros[handle].active = 0;
+        free(myp_coros[handle].stack);
+        myp_coros[handle].stack = NULL;
     }
 }

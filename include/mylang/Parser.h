@@ -68,6 +68,7 @@ private:
     std::unique_ptr<Stmt> parseReturnStmt();
     std::unique_ptr<Stmt> parseBreakStmt();
     std::unique_ptr<Stmt> parseContinueStmt();
+    std::unique_ptr<Stmt> parseAwaitStmt();
     std::unique_ptr<Stmt> parseMappingStmt();
 
     // Expressions (precedence climbing)
