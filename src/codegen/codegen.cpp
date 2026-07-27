@@ -231,6 +231,11 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
             (void)st;
             return llvm::PointerType::get(ctx_, 0);
         }
+        case TypeKind::Interface: {
+            // Fat pointer: { ptr data, ptr vtable }
+            auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+            return llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+        }
         case TypeKind::Struct:
             return getStructType(t.class_name);
         case TypeKind::Enum:
@@ -267,6 +272,16 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
             TypeInfo result(TypeKind::Struct);
             result.class_name = node.class_name;
             return result;
+        }
+        // Check if this is an interface type
+        if (current_tu_) {
+            for (auto& ifd : current_tu_->interfaces) {
+                if (ifd.name == node.class_name) {
+                    TypeInfo result(TypeKind::Interface);
+                    result.class_name = node.class_name;
+                    return result;
+                }
+            }
         }
     }
     return builtinTypeToInfo(node.basic_type);
@@ -309,7 +324,7 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             std::vector<llvm::Type*> pts;
             pts.push_back(llvm::PointerType::get(ctx_, 0)); // instance ptr
             for (auto& p : ev.params)
-                pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+                pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
             auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), pts, false);
             llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
         }
@@ -426,7 +441,7 @@ void CodeGen::generateEventFire(const ClassDecl& cls, const EventDecl& ev, int e
         std::vector<llvm::Type*> pts;
         pts.push_back(llvm::PointerType::get(ctx_, 0));
         for (auto& p : ev.params)
-            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+            pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
         auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), pts, false);
         func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
     } else {
@@ -438,7 +453,7 @@ void CodeGen::generateEventFire(const ClassDecl& cls, const EventDecl& ev, int e
     if (!ev.params.empty()) {
         std::vector<llvm::Type*> data_types;
         for (size_t i = 0; i < ev.params.size(); i++)
-            data_types.push_back(getLLVMType(builtinTypeToInfo(ev.params[i].type.basic_type)));
+            data_types.push_back(getLLVMType(typeNodeToCodegenType(ev.params[i].type)));
         auto* data_struct = llvm::StructType::create(ctx_, data_types, fn + "_data");
         auto* data_alloca = builder_.CreateAlloca(data_struct);
         for (size_t i = 0; i < ev.params.size(); i++) {
@@ -485,13 +500,20 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(action.params[i].name, a);
+        // Record array element type for subscript access
+        if (action.params[i].type.isArray() && action.params[i].type.element_type) {
+            array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
+        }
     }
 
     // Generate action body (stdlib actions use __myp_* intrinsics in their source code)
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
-    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        if (scope_functions_.count(func))
+            builder_.CreateCall(runtime_event_pop_scope_, {});
         builder_.CreateRetVoid();
+    }
     popScope();
 }
 
@@ -512,12 +534,19 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i), a);
         setNamedValue(action.params[i].name, a);
+        // Record array element type for subscript access
+        if (action.params[i].type.isArray() && action.params[i].type.element_type) {
+            array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
+        }
     }
 
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
-    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        if (scope_functions_.count(func))
+            builder_.CreateCall(runtime_event_pop_scope_, {});
         builder_.CreateRetVoid();
+    }
     popScope();
 }
 
@@ -694,6 +723,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     if (decl.body) generateBlock(*decl.body);
 
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        if (scope_functions_.count(func))
+            builder_.CreateCall(runtime_event_pop_scope_, {});
         if (rt.kind == TypeKind::Void) builder_.CreateRetVoid();
         else builder_.CreateRet(llvm::ConstantInt::get(getLLVMType(rt), 0));
     }
@@ -812,16 +843,30 @@ void CodeGen::generateTestRunner() {
 void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* insert_bb) {
     if (!runtime_event_register_) return;
 
+    // If @scope: push a scope marker BEFORE registrations so that pop_scope
+    // restores to this count, effectively unregistering all handlers below.
+    if (decl.has_scope && runtime_event_push_scope_) {
+        builder_.CreateCall(runtime_event_push_scope_, {});
+        if (current_function_)
+            scope_functions_.insert(current_function_);
+    }
+
     for (auto& chain : decl.chains) {
         if (chain.nodes.size() < 2) continue;
         auto& src = chain.nodes[0];
 
         // Find source class and event to determine data struct layout
+        // First try to resolve source_name as a variable → class name
         const ClassDecl* src_cls = nullptr;
         const EventDecl* src_ev = nullptr;
         int event_id = 0;
+        std::string src_class = src.source_name;
         if (current_tu_) {
+            auto vcit = var_class_map_.find(src.source_name);
+            if (vcit != var_class_map_.end())
+                src_class = vcit->second;
             for (auto& cls : current_tu_->classes) {
+                if (cls.name != src_class) continue;
                 for (auto& ev : cls.events) {
                     if (ev.name == src.member_name) {
                         src_cls = &cls; src_ev = &ev;
@@ -829,6 +874,20 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
                         auto eit = event_id_map_.find(ekey);
                         if (eit != event_id_map_.end()) event_id = eit->second;
                         goto ev_found;
+                    }
+                }
+            }
+            // Fallback: search all classes by event name
+            if (!src_cls) {
+                for (auto& cls : current_tu_->classes) {
+                    for (auto& ev : cls.events) {
+                        if (ev.name == src.member_name) {
+                            src_cls = &cls; src_ev = &ev;
+                            auto ekey = cls.name + "::" + ev.name;
+                            auto eit = event_id_map_.find(ekey);
+                            if (eit != event_id_map_.end()) event_id = eit->second;
+                            goto ev_found;
+                        }
                     }
                 }
             }
@@ -849,16 +908,169 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
         // Store the previous call result for chain forwarding
         llvm::Value* prev_result = handler->getArg(1); // event data as default
 
+        // ---- Where clause: evaluate condition, skip if false ----
+        if (chain.where_expr && src_ev && !src_ev->params.empty()) {
+            pushScope();
+            // Unpack event data into named values for the where expression
+            std::vector<llvm::Type*> ev_types;
+            for (auto& p : src_ev->params)
+                ev_types.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+            auto* ev_struct = llvm::StructType::create(ctx_, ev_types, "evdata_w");
+            auto* ev_ptr = builder_.CreateBitCast(handler->getArg(1),
+                llvm::PointerType::get(ctx_, 0));
+            for (size_t pi = 0; pi < src_ev->params.size(); pi++) {
+                auto* gep = builder_.CreateStructGEP(ev_struct, ev_ptr, pi);
+                auto* loaded = builder_.CreateLoad(ev_types[pi], gep);
+                auto* a = createEntryBlockAlloca(handler, ev_types[pi], src_ev->params[pi].name);
+                builder_.CreateStore(loaded, a);
+                setNamedValue(src_ev->params[pi].name, a);
+            }
+            // Evaluate the where expression
+            auto* cond_val = generateExpr(*chain.where_expr);
+            popScope();
+            if (cond_val) {
+                auto* cond_i1 = cond_val->getType()->isIntegerTy(1)
+                    ? cond_val : builder_.CreateICmpNE(cond_val,
+                        llvm::ConstantInt::get(cond_val->getType(), 0));
+                auto* cont_bb = llvm::BasicBlock::Create(ctx_, "w_cont", handler);
+                auto* skip_bb = llvm::BasicBlock::Create(ctx_, "w_skip", handler);
+                builder_.CreateCondBr(cond_i1, cont_bb, skip_bb);
+                builder_.SetInsertPoint(skip_bb);
+                builder_.CreateRetVoid();
+                builder_.SetInsertPoint(cont_bb);
+            }
+        }
+
         for (size_t i = 1; i < chain.nodes.size(); ++i) {
             auto& tgt = chain.nodes[i];
             llvm::Function* callee = nullptr;
+
+            // --- Lambda node: call the hidden class __call method ---
+            if (tgt.is_lambda && tgt.lambda) {
+                std::string cls_name = tgt.lambda->hidden_class_name;
+                std::string fn_name = cls_name + "___call";
+                callee = module_->getFunction(fn_name);
+                if (callee) {
+                    std::vector<llvm::Value*> call_args;
+
+                    // Load lambda instance from global
+                    std::string lg = "__myp_lambda_" + cls_name;
+                    auto* lgv = module_->getGlobalVariable(lg);
+                    if (!lgv) {
+                        lgv = new llvm::GlobalVariable(*module_,
+                            llvm::PointerType::get(ctx_, 0), false,
+                            llvm::GlobalValue::InternalLinkage,
+                            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), lg);
+                    }
+                    auto* li = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), lgv, "li");
+                    call_args.push_back(li);
+
+                    // Forward input (prev_result or event data)
+                    auto* ft = callee->getFunctionType();
+                    if (ft->getNumParams() > (unsigned)call_args.size()) {
+                        if (i == 1 && src_ev && src_ev->params.size() > 0) {
+                            // First target: unpack event data
+                            std::vector<llvm::Type*> ev_param_types;
+                            for (auto& p : src_ev->params)
+                                ev_param_types.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+                            auto* ev_struct = llvm::StructType::create(ctx_, ev_param_types, "evdata");
+                            auto* ev_ptr = builder_.CreateBitCast(handler->getArg(1),
+                                llvm::PointerType::get(ctx_, 0));
+                            for (size_t pi = 0; pi < src_ev->params.size() && call_args.size() < ft->getNumParams(); pi++) {
+                                auto* gep = builder_.CreateStructGEP(ev_struct, ev_ptr, pi);
+                                auto* loaded = builder_.CreateLoad(getLLVMType(typeNodeToCodegenType(src_ev->params[pi].type)), gep);
+                                call_args.push_back(loaded);
+                            }
+                        } else if (prev_result) {
+                            auto* expected_type = ft->getParamType(call_args.size());
+                            auto* arg = prev_result;
+                            if (arg->getType() != expected_type) {
+                                if (expected_type->isIntegerTy() && arg->getType()->isIntegerTy())
+                                    arg = builder_.CreateIntCast(arg, expected_type, true);
+                                else if (expected_type->isPointerTy())
+                                    arg = builder_.CreateBitCast(arg, expected_type);
+                            }
+                            call_args.push_back(arg);
+                        }
+                    }
+
+                    auto* result = builder_.CreateCall(callee, call_args);
+                    if (!result->getType()->isVoidTy()) prev_result = result;
+                }
+                continue;
+            }
+
+            // --- Transformer node: delay(ms) or throttle(ms) ---
+            if (tgt.is_transformer) {
+                if (tgt.transformer_kind == 0) {
+                    // delay(ms): sleep before forwarding
+                    auto* sleep_fn = module_->getFunction("myp_sleep_ms");
+                    if (sleep_fn) {
+                        builder_.CreateCall(sleep_fn, {
+                            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), tgt.transformer_param)
+                        });
+                    }
+                } else if (tgt.transformer_kind == 1) {
+                    // throttle(ms): skip if too soon since last fire
+                    std::string gname = "__myp_throttle_" + hname;
+                    auto* gv = module_->getGlobalVariable(gname);
+                    if (!gv) {
+                        gv = new llvm::GlobalVariable(*module_,
+                            llvm::Type::getInt64Ty(ctx_), false,
+                            llvm::GlobalValue::InternalLinkage,
+                            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0), gname);
+                    }
+                    auto* now_fn = module_->getFunction("myp_now_ms");
+                    if (now_fn) {
+                        auto* now = builder_.CreateCall(now_fn, {});
+                        auto* last = builder_.CreateLoad(llvm::Type::getInt64Ty(ctx_), gv, "thr_last");
+                        auto* diff = builder_.CreateSub(now, last, "thr_diff");
+                        auto* thr_ms = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), tgt.transformer_param);
+                        auto* enough = builder_.CreateICmpSGE(diff, thr_ms, "thr_enough");
+                        auto* hf = handler;
+                        auto* fire_bb = llvm::BasicBlock::Create(ctx_, "thr_fire", hf);
+                        auto* drop_bb = llvm::BasicBlock::Create(ctx_, "thr_drop", hf);
+                        builder_.CreateCondBr(enough, fire_bb, drop_bb);
+                        builder_.SetInsertPoint(drop_bb);
+                        builder_.CreateRetVoid();
+                        builder_.SetInsertPoint(fire_bb);
+                        builder_.CreateStore(now, gv);
+                    }
+                }
+                // Unpack event data into prev_result so the next node receives the value
+                if (i == 1 && src_ev && src_ev->params.size() > 0) {
+                    std::vector<llvm::Type*> ev_param_types;
+                    for (auto& p : src_ev->params)
+                        ev_param_types.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+                    auto* ev_struct = llvm::StructType::create(ctx_, ev_param_types, "evdata");
+                    auto* ev_ptr = builder_.CreateBitCast(handler->getArg(1),
+                        llvm::PointerType::get(ctx_, 0));
+                    for (size_t pi = 0; pi < src_ev->params.size(); pi++) {
+                        auto* gep = builder_.CreateStructGEP(ev_struct, ev_ptr, pi);
+                        auto* loaded = builder_.CreateLoad(ev_param_types[pi], gep);
+                        // If transformer is the first target, store unpacked value as prev_result
+                        if (pi == 0) prev_result = loaded;
+                    }
+                }
+                continue;
+            }
+
+            // --- Normal (non-lambda, non-transformer) target ---
+            // Resolve target: for class-level mappings, source_name is the class name.
+            // For function-level mappings (local variables), resolve variable → class.
+            std::string tgt_class = tgt.source_name;
+            if (!tgt.is_function) {
+                auto vcit = var_class_map_.find(tgt.source_name);
+                if (vcit != var_class_map_.end())
+                    tgt_class = vcit->second;
+            }
 
             if (tgt.is_function) {
                 // File-level function: look up by name directly
                 callee = module_->getFunction(tgt.source_name);
             } else {
                 // Class action: look up with ClassName_actionName
-                std::string tf = tgt.source_name + "_" + tgt.member_name;
+                std::string tf = tgt_class + "_" + tgt.member_name;
                 callee = module_->getFunction(tf);
             }
 
@@ -867,13 +1079,16 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
 
                 if (!tgt.is_function) {
                     // Check if target is a static action (→ no instance pointer needed)
-                    std::string tf = tgt.source_name + "_" + tgt.member_name;
+                    std::string tf = tgt_class + "_" + tgt.member_name;
                     auto sit = is_static_action_.find(tf);
                     bool is_static = (sit != is_static_action_.end() && sit->second);
 
                     if (!is_static) {
                         // Instance pointer: use global if available, otherwise fallback
+                        // Try variable name first, then class name
                         auto git = class_instance_globals_.find(tgt.source_name);
+                        if (git == class_instance_globals_.end())
+                            git = class_instance_globals_.find(tgt_class);
                         if (git != class_instance_globals_.end()) {
                             auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), git->second, "tgt_inst");
                             call_args.push_back(inst_p);
@@ -899,14 +1114,14 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
                         // Reconstruct the struct type to GEP into it
                         std::vector<llvm::Type*> param_types;
                         for (auto& p : src_ev->params)
-                            param_types.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+                            param_types.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
                         auto* data_struct = llvm::StructType::create(ctx_, param_types, "evdata");
                         auto* data_ptr = builder_.CreateBitCast(handler->getArg(1),
                             llvm::PointerType::get(ctx_, 0));
 
                         for (size_t pi = 0; pi < src_ev->params.size() && call_args.size() < num_expected; pi++) {
                             auto* gep = builder_.CreateStructGEP(data_struct, data_ptr, pi);
-                            auto* loaded = builder_.CreateLoad(getLLVMType(builtinTypeToInfo(src_ev->params[pi].type.basic_type)), gep);
+                            auto* loaded = builder_.CreateLoad(getLLVMType(typeNodeToCodegenType(src_ev->params[pi].type)), gep);
                             call_args.push_back(loaded);
                         }
                     } else if (prev_result) {
@@ -938,6 +1153,31 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
             llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
             builder_.CreateBitCast(handler, llvm::PointerType::get(ctx_, 0))
         });
+
+        // Allocate lambda instances used in this mapping chain
+        for (auto& node : chain.nodes) {
+            if (!node.is_lambda || !node.lambda) continue;
+            std::string cls_name = node.lambda->hidden_class_name;
+            if (cls_name.empty()) continue;
+            auto* cls_st = class_structs_[cls_name];
+            if (!cls_st) continue;
+            auto* lgv = module_->getGlobalVariable("__myp_lambda_" + cls_name);
+            if (!lgv) {
+                lgv = new llvm::GlobalVariable(*module_,
+                    llvm::PointerType::get(ctx_, 0), false,
+                    llvm::GlobalValue::InternalLinkage,
+                    llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
+                    "__myp_lambda_" + cls_name);
+            }
+            auto sz = module_->getDataLayout().getTypeAllocSize(cls_st);
+            auto* inst = builder_.CreateCall(runtime_alloc_, {
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1)
+            });
+            if (sz > 0)
+                builder_.CreateMemSet(inst, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+                                      sz, llvm::Align(8));
+            builder_.CreateStore(inst, lgv);
+        }
     }
 }
 
@@ -1147,9 +1387,164 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
         vt = TypeInfo(TypeKind::Class); vt.class_name = d.type.class_name;
     }
+    // Detect interface type
+    bool is_interface = false;
+    if (!d.type.class_name.empty() && current_tu_) {
+        for (auto& ifd : current_tu_->interfaces) {
+            if (ifd.name == d.type.class_name) {
+                vt = TypeInfo(TypeKind::Interface); vt.class_name = d.type.class_name;
+                is_interface = true;
+                break;
+            }
+        }
+    }
 
     // Detect struct type — allocate inline on stack
     bool is_struct = !d.type.class_name.empty() && getStructType(d.type.class_name) != nullptr;
+
+    // --- Interface variable: fat pointer {ptr data, ptr vtable} ---
+    if (is_interface) {
+        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+        auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+        auto* a = createEntryBlockAlloca(current_function_, fat_ty, d.name);
+        setNamedValue(d.name, a);
+
+        // Zero-init
+        auto* zero = llvm::ConstantAggregateZero::get(fat_ty);
+        builder_.CreateStore(zero, a);
+
+        if (d.init_expr && d.init_expr->kind == ExprKind::NewExpr) {
+            auto& ne = static_cast<const NewExpr&>(*d.init_expr);
+            std::string cls_name = ne.class_name;
+
+            // Record concrete class name so mapping handlers can resolve it
+            var_class_map_[d.name] = cls_name;
+
+            // Create concrete instance
+            auto* inst = generateExpr(*d.init_expr);
+
+            // Store concrete instance in global for mapping handler access
+            auto iface_git = class_instance_globals_.find(cls_name);
+            if (iface_git == class_instance_globals_.end())
+                iface_git = class_instance_globals_.find(d.name);
+            if (iface_git == class_instance_globals_.end()) {
+                auto* gv = new llvm::GlobalVariable(*module_,
+                    llvm::PointerType::get(ctx_, 0), false,
+                    llvm::GlobalValue::InternalLinkage,
+                    llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
+                    "__myp_inst_" + d.name);
+                class_instance_globals_[d.name] = gv;
+                iface_git = class_instance_globals_.find(d.name);
+            }
+            if (iface_git != class_instance_globals_.end())
+                builder_.CreateStore(inst, iface_git->second);
+
+            // Get or create vtable for (interface, class) pair
+            llvm::GlobalVariable* vgv = nullptr;
+            std::string vkey = vt.class_name + "_" + cls_name;
+            vgv = module_->getGlobalVariable("__myp_vtable_" + vkey);
+            if (!vgv) {
+                const InterfaceDecl* iface = nullptr;
+                for (auto& ifd : current_tu_->interfaces)
+                    if (ifd.name == vt.class_name) { iface = &ifd; break; }
+                if (iface) {
+                    std::vector<llvm::Constant*> func_ptrs;
+                    for (auto& ia : iface->actions) {
+                        std::string fn = cls_name + "_" + ia.name;
+                        auto* callee = module_->getFunction(fn);
+                        if (callee)
+                            func_ptrs.push_back(llvm::ConstantExpr::getPointerCast(callee, ptr_ty));
+                        else
+                            func_ptrs.push_back(llvm::ConstantPointerNull::get(ptr_ty));
+                    }
+                    auto* arr_type = llvm::ArrayType::get(ptr_ty, func_ptrs.size());
+                    auto* arr_init = llvm::ConstantArray::get(arr_type, func_ptrs);
+                    vgv = new llvm::GlobalVariable(*module_, arr_type, true,
+                        llvm::GlobalValue::InternalLinkage, arr_init,
+                        "__myp_vtable_" + vkey);
+                }
+            }
+
+            // Store instance ptr and vtable ptr in the fat pointer
+            auto* data_ptr = builder_.CreateStructGEP(fat_ty, a, 0);
+            builder_.CreateStore(inst, data_ptr);
+
+            if (vgv) {
+                auto* vtable_ptr = builder_.CreateStructGEP(fat_ty, a, 1);
+                auto* bitcast_vt = builder_.CreateBitCast(vgv, ptr_ty);
+                builder_.CreateStore(bitcast_vt, vtable_ptr);
+            }
+
+            // Auto-call @startup for the concrete instance
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != cls_name) continue;
+                    for (auto& act : cls.actions) {
+                        if (act.has_startup) {
+                            auto fn = cls.name + "_" + act.name;
+                            auto* sf = module_->getFunction(fn);
+                            if (sf) builder_.CreateCall(sf, {inst});
+                        }
+                    }
+                }
+            }
+        } else if (d.init_expr) {
+            // Assign from an existing concrete variable: IFoo f = impl;
+            auto* inst = generateExpr(*d.init_expr);
+            std::string cls_name;
+            if (d.init_expr->kind == ExprKind::Identifier) {
+                auto& id = static_cast<const IdentifierExpr&>(*d.init_expr);
+                auto vit = var_class_map_.find(id.name);
+                if (vit != var_class_map_.end()) cls_name = vit->second;
+            }
+            // Look up or find class name from the expression type
+            if (cls_name.empty() && d.init_expr->kind == ExprKind::Identifier) {
+                auto& id = static_cast<const IdentifierExpr&>(*d.init_expr);
+                auto vit = var_class_map_.find(id.name);
+                if (vit != var_class_map_.end()) cls_name = vit->second;
+            }
+            if (!cls_name.empty()) {
+                var_class_map_[d.name] = cls_name;
+                // Build vtable
+                llvm::GlobalVariable* vgv = nullptr;
+                std::string vkey = vt.class_name + "_" + cls_name;
+                vgv = module_->getGlobalVariable("__myp_vtable_" + vkey);
+                if (!vgv) {
+                    const InterfaceDecl* iface = nullptr;
+                    for (auto& ifd : current_tu_->interfaces)
+                        if (ifd.name == vt.class_name) { iface = &ifd; break; }
+                    if (iface) {
+                        std::vector<llvm::Constant*> func_ptrs;
+                        for (auto& ia : iface->actions) {
+                            std::string fn = cls_name + "_" + ia.name;
+                            auto* callee = module_->getFunction(fn);
+                            if (callee)
+                                func_ptrs.push_back(llvm::ConstantExpr::getPointerCast(callee, ptr_ty));
+                            else
+                                func_ptrs.push_back(llvm::ConstantPointerNull::get(ptr_ty));
+                        }
+                        auto* arr_type = llvm::ArrayType::get(ptr_ty, func_ptrs.size());
+                        auto* arr_init = llvm::ConstantArray::get(arr_type, func_ptrs);
+                        vgv = new llvm::GlobalVariable(*module_, arr_type, true,
+                            llvm::GlobalValue::InternalLinkage, arr_init,
+                            "__myp_vtable_" + vkey);
+                    }
+                }
+                auto* data_ptr = builder_.CreateStructGEP(fat_ty, a, 0);
+                builder_.CreateStore(inst, data_ptr);
+                if (vgv) {
+                    auto* vtable_ptr = builder_.CreateStructGEP(fat_ty, a, 1);
+                    auto* bitcast_vt = builder_.CreateBitCast(vgv, ptr_ty);
+                    builder_.CreateStore(bitcast_vt, vtable_ptr);
+                }
+            } else {
+                // Unknown concrete type — just store instance, null vtable
+                auto* data_ptr = builder_.CreateStructGEP(fat_ty, a, 0);
+                builder_.CreateStore(inst, data_ptr);
+            }
+        }
+        return;
+    }
 
     // Handle `var` type inference: use init expression's type
     if (d.type.is_inferred && d.init_expr) {
@@ -1285,13 +1680,20 @@ void CodeGen::generateIfStmt(const IfStmt& s) {
     builder_.CreateCondBr(c, tbb, ebb);
     builder_.SetInsertPoint(tbb);
     if (s.then_block) generateStmt(*s.then_block);
-    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(mbb);
+    bool then_terminated = (builder_.GetInsertBlock()->getTerminator() != nullptr);
+    if (!then_terminated) builder_.CreateBr(mbb);
     f->insert(f->end(), ebb);
     builder_.SetInsertPoint(ebb);
     if (s.else_block) generateStmt(*s.else_block);
-    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(mbb);
-    f->insert(f->end(), mbb);
-    builder_.SetInsertPoint(mbb);
+    bool else_terminated = (builder_.GetInsertBlock()->getTerminator() != nullptr);
+    if (!else_terminated) builder_.CreateBr(mbb);
+    if (then_terminated && else_terminated) {
+        // Both branches terminated — mbb is unreachable; leave inserter at else block
+        // (it's already terminated, so subsequent code will handle it)
+    } else {
+        f->insert(f->end(), mbb);
+        builder_.SetInsertPoint(mbb);
+    }
 }
 
 void CodeGen::generateWhileStmt(const WhileStmt& s) {
@@ -1628,6 +2030,74 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         // First, try to resolve by variable→class map for identifier objects
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+
+            // Check if this is an interface variable → vtable dispatch
+            auto* obj_val = getNamedValue(oi.name);
+            if (obj_val) {
+                auto* allocated_ty = llvm::cast<llvm::AllocaInst>(obj_val)->getAllocatedType();
+                if (allocated_ty->isStructTy()) {
+                    auto* st = llvm::cast<llvm::StructType>(allocated_ty);
+                    std::string st_name = st->getName().str();
+                    // {ptr, ptr} = interface fat pointer
+                    if (st->getNumElements() == 2 && st->getElementType(0)->isPointerTy()
+                        && st->getElementType(1)->isPointerTy()) {
+                        // Interface dispatch: load vtable, index method, call indirect
+                        auto* data_ptr = builder_.CreateStructGEP(st, obj_val, 0);
+                        auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), data_ptr, "iface_data");
+                        auto* vt_ptr = builder_.CreateStructGEP(st, obj_val, 1);
+                        auto* vt = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), vt_ptr, "iface_vt");
+
+                        // Find method index in the interface
+                        int method_idx = -1;
+                        for (auto& ifd : current_tu_->interfaces) {
+                            for (size_t mi = 0; mi < ifd.actions.size(); mi++) {
+                                if (ifd.actions[mi].name == ma.member_name) {
+                                    method_idx = (int)mi;
+                                    goto iface_method_found;
+                                }
+                            }
+                        }
+                        iface_method_found:
+
+                        if (method_idx >= 0) {
+                            // Vtable is [N x ptr], load function pointer by index
+                            auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                            auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                                "iface_method");
+                            auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+
+                            // Determine return type from interface method declaration
+                            llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                            for (auto& ifd : current_tu_->interfaces) {
+                                if ((size_t)method_idx < ifd.actions.size() &&
+                                    ifd.actions[method_idx].name == ma.member_name) {
+                                    ret_ty = getLLVMType(typeNodeToCodegenType(
+                                        ifd.actions[method_idx].return_type));
+                                    break;
+                                }
+                            }
+
+                            // Build call args: instance + explicit args
+                            std::vector<llvm::Value*> call_args;
+                            call_args.push_back(data); // 'this' pointer
+                            for (auto& arg : e.args)
+                                call_args.push_back(generateExpr(*arg));
+
+                            // Build parameter types
+                            std::vector<llvm::Type*> param_types;
+                            param_types.push_back(ptr_ty);
+                            for (auto& arg : e.args)
+                                param_types.push_back(generateExpr(*arg)->getType());
+
+                            auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                            auto* result = builder_.CreateCall(ft, func_ptr, call_args);
+                            return result;
+                        }
+                    }
+                }
+            }
+
             auto vit = var_class_map_.find(oi.name);
             if (vit != var_class_map_.end()) {
                 std::string fn = vit->second + "_" + ma.member_name;
@@ -2053,9 +2523,14 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            // Resolve variable name to class name via var_class_map_
+            std::string obj_class = oi.name;
+            auto vcit = var_class_map_.find(oi.name);
+            if (vcit != var_class_map_.end())
+                obj_class = vcit->second;
             if (current_tu_) {
                 for (auto& cls : current_tu_->classes) {
-                    if (cls.name != oi.name && cls.name != current_class_name_) continue;
+                    if (cls.name != obj_class && cls.name != current_class_name_) continue;
                     for (auto& p : cls.properties) {
                         if (p.name == ma.member_name && p.type.isArray()) {
                             elem_ty = typeNodeToLLVMType(*p.type.element_type);
@@ -2242,9 +2717,14 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                // Resolve variable name to class name via var_class_map_
+                std::string obj_class = oi.name;
+                auto vcit = var_class_map_.find(oi.name);
+                if (vcit != var_class_map_.end())
+                    obj_class = vcit->second;
                 if (current_tu_) {
                     for (auto& cls : current_tu_->classes) {
-                        if (cls.name != oi.name && cls.name != current_class_name_) continue;
+                        if (cls.name != obj_class && cls.name != current_class_name_) continue;
                         for (auto& p : cls.properties) {
                             if (p.name == ma.member_name && p.type.isArray()) {
                                 elem_ty = typeNodeToLLVMType(*p.type.element_type);
@@ -2568,6 +3048,12 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_event_process_all_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
         llvm::Function::ExternalLinkage, "myp_event_process_all", module_.get());
+    runtime_event_push_scope_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {}, false),
+        llvm::Function::ExternalLinkage, "myp_event_push_scope", module_.get());
+    runtime_event_pop_scope_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {}, false),
+        llvm::Function::ExternalLinkage, "myp_event_pop_scope", module_.get());
 
     // Thread system: myp_thread_create(startup_fn, startup_arg) -> thread*
     runtime_thread_create_ = llvm::Function::Create(

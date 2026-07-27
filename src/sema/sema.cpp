@@ -26,6 +26,13 @@ bool Sema::analyze(TranslationUnit& tu) {
     for (auto& m : tu.mappings) {
         checkMappingCycles(m);
         checkMappingTypes(m);
+        // Process lambda expressions used as mapping chain nodes
+        for (auto& chain : m.chains) {
+            for (auto& node : chain.nodes) {
+                if (node.is_lambda && node.lambda)
+                    visitLambda(*node.lambda);
+            }
+        }
     }
     if (diag_.hasErrors()) return false;
 
@@ -441,8 +448,34 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                 error(stmt.range, "break/continue outside loop");
             }
             return {};
-        case StmtKind::MappingStmt:
+        case StmtKind::MappingStmt: {
+            auto& ms = static_cast<MappingStmt&>(stmt);
+            // Process lambda expressions and where clauses inside mapping chains
+            for (auto& chain : ms.decl.chains) {
+                for (auto& node : chain.nodes) {
+                    if (node.is_lambda && node.lambda)
+                        visitLambda(*node.lambda);
+                }
+                // Visit where expression with event params in scope
+                if (chain.where_expr && current_tu_) {
+                    auto& ev_node = chain.nodes[0];
+                    for (auto& cls : current_tu_->classes) {
+                        for (auto& ev : cls.events) {
+                            if (ev.name == ev_node.member_name) {
+                                symbol_table_.enterScope();
+                                for (auto& p : ev.params)
+                                    symbol_table_.declare(p.name, typeNodeToTypeInfo(p.type));
+                                visitExpr(*chain.where_expr);
+                                symbol_table_.leaveScope();
+                                goto where_done;
+                            }
+                        }
+                    }
+                    where_done:;
+                }
+            }
             return {};
+        }
         case StmtKind::MatchStmt:
             return visitMatchStmt(static_cast<MatchStmt&>(stmt));
         case StmtKind::TryStmt:
@@ -850,6 +883,41 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     auto obj_type = visitExpr(*expr.object);
 
+    // Interface member access — look up method in interface declaration
+    if (obj_type.kind == TypeKind::Interface) {
+        if (current_tu_) {
+            for (auto& ifd : current_tu_->interfaces) {
+                if (ifd.name != obj_type.class_name) continue;
+                // Check actions (methods)
+                for (auto& act : ifd.actions) {
+                    if (act.name == expr.member_name) {
+                        TypeInfo ft(TypeKind::Function);
+                        ft.return_type = std::make_shared<TypeInfo>(
+                            typeNodeToTypeInfo(act.return_type));
+                        for (auto& p : act.params)
+                            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        return ft;
+                    }
+                }
+                // Check events
+                for (auto& ev : ifd.events) {
+                    if (ev.name == expr.member_name) {
+                        TypeInfo ft(TypeKind::Function);
+                        ft.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
+                        for (auto& p : ev.params)
+                            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        return ft;
+                    }
+                }
+                error(expr.range, "interface '" + obj_type.class_name +
+                    "' has no member '" + expr.member_name + "'");
+                return TypeInfo(TypeKind::Void);
+            }
+        }
+        error(expr.range, "unknown interface '" + obj_type.class_name + "'");
+        return TypeInfo(TypeKind::Void);
+    }
+
     // Struct member access — fields are PUBLIC
     if (obj_type.kind == TypeKind::Struct) {
         // Search all struct definitions (file-level + nested in classes)
@@ -1114,6 +1182,17 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
     if (node.isClass()) {
         std::string lookup_name = node.class_name;
 
+        // Check if this is an interface type
+        if (current_tu_) {
+            for (auto& ifd : current_tu_->interfaces) {
+                if (ifd.name == lookup_name) {
+                    TypeInfo if_type(TypeKind::Interface);
+                    if_type.class_name = lookup_name;
+                    return if_type;
+                }
+            }
+        }
+
         // Check if this is a generic class instantiation
         if (!node.type_args.empty() && generic_classes_.count(node.class_name)) {
             // Monomorphization: create a concrete class with type params substituted
@@ -1305,6 +1384,7 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Void:   return "void";
         case TypeKind::Null:   return "null";
         case TypeKind::Class:  return type.class_name;
+        case TypeKind::Interface: return type.class_name;
         case TypeKind::Array:
             if (type.element_type) return typeName(*type.element_type) + "[]";
             return "array";
@@ -1322,6 +1402,15 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
             return !lhs.element_type && !rhs.element_type;
         }
         return true;
+    }
+    // Interface compatibility: rhs (concrete class) implements lhs (interface)
+    if (lhs.kind == TypeKind::Interface && rhs.kind == TypeKind::Class) {
+        if (!current_tu_) return false;
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != rhs.class_name) continue;
+            if (cls.interface_class_name == lhs.class_name) return true;
+        }
+        return false;
     }
     if (rhs.kind == TypeKind::Null && lhs.kind == TypeKind::Class) return true;
 
@@ -1418,6 +1507,14 @@ void Sema::checkMappingTypes(const MappingDecl& decl) {
         for (auto& cls : current_tu_->classes) {
             for (auto& ev : cls.events) {
                 if (ev.name == ev_node.member_name) {
+                    // Visit where expression with event params in scope
+                    if (chain.where_expr) {
+                        symbol_table_.enterScope();
+                        for (auto& p : ev.params)
+                            symbol_table_.declare(p.name, typeNodeToTypeInfo(p.type));
+                        visitExpr(*chain.where_expr);
+                        symbol_table_.leaveScope();
+                    }
                     // Check subsequent action nodes for parameter compatibility
                     for (size_t i = 1; i < chain.nodes.size(); i++) {
                         auto& act_node = chain.nodes[i];

@@ -1,0 +1,137 @@
+// stream.myp — MYP 标准库：流式数据源
+//
+// 用法示例:
+//   import stream;
+//
+//   mapping() {
+//       RangeStream.valueEmitted -> process -> Console.writeLine;
+//   }
+
+// ============================================================
+// RangeStream — 整数范围 [start, end) 逐值发射
+// ============================================================
+class RangeStream {
+    action:
+        @startup void init() {}
+
+        void run(int start, int end) {
+            int i = start;
+            while (i < end) {
+                valueEmitted(i);
+                i = i + 1;
+            }
+        }
+
+    event:
+        valueEmitted(int value);
+}
+
+
+// ============================================================
+// IntStream — int[] 数组逐元素遍历
+// ============================================================
+class IntStream {
+    action:
+        @startup void init() {}
+
+        void run(int[] data, int n) {
+            int i = 0; while (i < n) {
+                valueEmitted(data[i]);
+                i = i + 1;
+            }
+        }
+
+    event:
+        valueEmitted(int value);
+}
+
+
+// ============================================================
+// DoubleStream — double[] 数组逐元素遍历
+// ============================================================
+class DoubleStream {
+    action:
+        @startup void init() {}
+
+        void run(double[] data, int n) {
+            int i = 0; while (i < n) {
+                valueEmitted(data[i]);
+                i = i + 1;
+            }
+        }
+
+    event:
+        valueEmitted(double value);
+}
+
+
+// ============================================================
+// 自定义 Stream 模板
+// ============================================================
+// MYP 不支持继承，但编写自定义流只需复制"三个要素"：
+//
+//   1. event:   valueEmitted(T value);  —— 定义发射的数据类型
+//   2. run()    —— 遍历数据源，每拿到一个值就调用 valueEmitted()
+//   3. @startup void init() {}  —— 占位（编译器要求，空实现即可）
+//
+// 映射到 mapping() 链时，只要 event 类型匹配就能对接。
+//
+// ----------------------------------------------------------
+// 示例 1: 自定义文件行流（逐行读文件）
+// ----------------------------------------------------------
+// class FileLineStream {
+//     action:
+//         @startup void init() {}
+//
+//         void run() {
+//             // 每次读取一行
+//             string line = Console.readString();
+//             while (/* 有更多行 */) {
+//                 valueEmitted(line);
+//                 line = Console.readString();
+//             }
+//         }
+//     event:
+//         valueEmitted(string line);
+// }
+//
+// 使用:
+//   FileLineStream fls = new FileLineStream();
+//   Processor p = new Processor();
+//   mapping() {
+//       fls.lineRead -> p.handleLine;
+//   }
+//   fls.run();
+//
+// ----------------------------------------------------------
+// 示例 2: 自定义 Collatz 序列流
+// ----------------------------------------------------------
+// class CollatzStream {
+//     action:
+//         @startup void init() {}
+//
+//         void run(int start) {
+//             int n = start;
+//             while (n > 1) {
+//                 valueEmitted(n);
+//                 if (n % 2 == 0) n = n / 2;
+//                 else n = n * 3 + 1;
+//             }
+//             valueEmitted(1);
+//         }
+//     event:
+//         valueEmitted(int value);
+// }
+// 
+// 使用:
+//   CollatzStream cs = new CollatzStream();
+//   mapping() {
+//       cs.valueEmitted -> Console.write;
+//   }
+//   cs.run(27);
+//
+// ==================== 关键约定 ====================
+// 1. event 名必须叫 valueEmitted（与 stdlib 一致，便于记忆）
+// 2. run() 里每产生一个数据就调用 valueEmitted()
+// 3. 数据类型可以是 int, double, string, bool, long 等基本类型
+// 4. run() 可以带任意参数来控制数据生成逻辑

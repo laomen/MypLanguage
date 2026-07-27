@@ -63,6 +63,10 @@ typedef void (*myp_handler_fn)(void*, void*);
 // Register a handler for an event type
 void myp_event_register(int event_id, void* instance, myp_handler_fn handler);
 
+// Scope-based handler management for mapping() @scope
+void myp_event_push_scope(void);
+void myp_event_pop_scope(void);
+
 // Fire an event: pushes to queue and dispatches
 void myp_event_fire(int event_id, void* sender, void* event_data);
 

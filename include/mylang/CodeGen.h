@@ -8,6 +8,9 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/DerivedTypes.h>
 #include <llvm/IR/Function.h>
+
+#include <set>
+#include <map>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -35,6 +38,7 @@ private:
 
     // ---- Variable scope stack ----
     std::vector<std::unordered_map<std::string, llvm::Value*>> named_values_;
+    std::set<llvm::Function*> scope_functions_; // functions with @scope mappings
 
     // ---- Class struct tracking ----
     // Maps class name → LLVM struct type
@@ -81,12 +85,17 @@ private:
     llvm::Function* runtime_event_register_ = nullptr;
     llvm::Function* runtime_event_fire_ = nullptr;
     llvm::Function* runtime_event_process_all_ = nullptr;
+    llvm::Function* runtime_event_push_scope_ = nullptr;
+    llvm::Function* runtime_event_pop_scope_ = nullptr;
     // Thread system
     llvm::Function* runtime_thread_create_ = nullptr;
     llvm::Function* runtime_thread_run_loop_ = nullptr;
     llvm::Function* runtime_thread_stop_ = nullptr;
     llvm::Function* runtime_thread_destroy_ = nullptr;
     llvm::Function* runtime_thread_assoc_instance_ = nullptr;
+
+    // ---- Vtable tracking for interface dispatch ----
+    std::map<std::string, llvm::GlobalVariable*> vtables_; // key: "iface_class"
 
     // ---- Math runtime functions ----
     llvm::Function* runtime_math_sqrt_ = nullptr;

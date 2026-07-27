@@ -154,20 +154,49 @@ struct FFIDecl {
 };
 
 // ---- Mapping ----
+struct LambdaExpr; // forward decl for MappingNode
 struct MappingNode {
     std::string source_name;  // instance or class name, or function name if is_function
     std::string member_name;  // event or action name (empty if is_function)
     bool is_function = false; // true if this node is a file-level function
+    bool is_lambda = false;   // true if this node is a lambda expression
+    std::shared_ptr<LambdaExpr> lambda; // non-null if is_lambda
+    bool is_transformer = false; // true if this is delay(ms)/throttle(ms)
+    int transformer_kind = 0;    // 0=delay, 1=throttle
+    int transformer_param = 0;   // ms value
     SourceRange range;
+
+    MappingNode() = default;
+    MappingNode(const MappingNode& other)
+        : source_name(other.source_name), member_name(other.member_name),
+          is_function(other.is_function), is_lambda(other.is_lambda),
+          lambda(other.lambda), is_transformer(other.is_transformer),
+          transformer_kind(other.transformer_kind),
+          transformer_param(other.transformer_param),
+          range(other.range) {}
+    MappingNode& operator=(const MappingNode& other) {
+        source_name = other.source_name;
+        member_name = other.member_name;
+        is_function = other.is_function;
+        is_lambda = other.is_lambda;
+        lambda = other.lambda;
+        is_transformer = other.is_transformer;
+        transformer_kind = other.transformer_kind;
+        transformer_param = other.transformer_param;
+        range = other.range;
+        return *this;
+    }
 };
 
 struct MappingChain {
     std::vector<MappingNode> nodes;
+    std::shared_ptr<Expr> where_expr; // non-null if 'where expr' clause
     SourceRange range;
 };
 
 struct MappingDecl {
     std::vector<MappingChain> chains;
+    bool has_scope = false;  // true if @scope annotation: auto-unregister on scope exit
     SourceRange range;
 };
 

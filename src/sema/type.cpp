@@ -14,6 +14,7 @@ bool TypeInfo::operator==(const TypeInfo& other) const {
             return true;
         case TypeKind::Struct:
         case TypeKind::Enum:
+        case TypeKind::Interface:
             return class_name == other.class_name && kind == other.kind;
         case TypeKind::Array:
             return *element_type == *other.element_type;

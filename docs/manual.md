@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 2.2 | 事件驱动组件语言
+> 版本 2.3 | 事件驱动组件语言
 
 ---
 
@@ -337,6 +337,31 @@ class Sensor {
 | `function:` | 内部方法 | 仅类内部可调用 |
 | `static:` | 静态方法 | 无需实例，`ClassName.method()` 调用 |
 
+### Interface 接口多态 (v2.3)
+
+Interface 定义一组 action 签名，类通过 `interface class InterfaceName;` 声明实现：
+
+```myp
+interface IShape {
+    double area();
+    double perimeter();
+}
+
+class Circle {
+    interface class IShape;
+    action:
+        double area() { return 3.14 * r * r; }
+        double perimeter() { return 2 * 3.14 * r; }
+    property: double r = 1.0;
+}
+
+// 接口变量：胖指针 {ptr data, ptr vtable}
+IShape s = new Circle();
+double a = s.area();        // 虚表分派 → Circle_area
+```
+
+适合算子模式实现自动微分（见 `examples/ad.myp`）。
+
 ### 访问控制
 
 ```myp
@@ -501,6 +526,53 @@ mapping() {
 - 多个事件可映射到同一个动作
 - mapping 在运行时建立事件总线
 - 同线程 = 同步处理，跨线程 = 异步投递
+
+### 作用域管理 `@scope` (v2.3)
+
+默认 mapping 永久有效。`@scope` 将 handler 生命周期绑定到函数作用域：
+
+```myp
+void run() {
+    Sensor s;
+    mapping() @scope {
+        s.ready -> log.write;
+    }
+}  // 函数退出时 handler 自动解注册
+```
+
+### 条件过滤 `where` (v2.3)
+
+只有满足条件的事件才会被转发：
+
+```myp
+mapping() {
+    rs.valueEmitted where value >= 3 -> Console.write;
+}
+```
+
+`where` 表达式可使用事件参数名，支持比较和算术运算。
+
+### Lambda 变换节点 (v2.3)
+
+在 mapping 链中用 lambda 做内联数据变换：
+
+```myp
+mapping() {
+    rs.valueEmitted -> (int v) => { return v * 2; } -> display.show;
+}
+```
+
+### 定时变换器 (v2.3)
+
+- `delay(ms)` — 延迟转发
+- `throttle(ms)` — 限频
+
+```myp
+mapping() {
+    sensor.data -> delay(100) -> display.update;
+    sensor.data -> throttle(50) -> logger.write;
+}
+```
 
 ---
 

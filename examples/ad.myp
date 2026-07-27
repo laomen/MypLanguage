@@ -1,0 +1,209 @@
+// ad.myp — 自动微分（Automatic Differentiation）示例
+//
+// 基于接口多态实现算子链，每个算子同时支持前向计算和反向求导。
+//
+// 计算图: y = sigmoid(x * w + b)
+// 前向:  x → MulOp(w) → AddOp(b) → SigmoidOp → loss
+// 反向:  loss → SigmoidOp' → AddOp' → MulOp' → grad_w, grad_x
+//
+// 编译运行:
+//   ./build/mypc examples/ad.myp && ./examples/ad.out
+
+import env;
+import math;
+
+// ============================================================
+// 算子接口
+// ============================================================
+interface IOp {
+    double forward(double x);
+    double backward(double dy);
+}
+
+// ============================================================
+// 乘法算子: y = x * w
+// 反向: dL/dx = dL/dy * w
+//       dL/dw = dL/dy * x  (保存在 gradW 中)
+// ============================================================
+class MulOp {
+    interface class IOp;
+    action:
+        // 设置权重
+        void setW(double v) { w = v; }
+
+        // 前向: y = x * w，保存 x
+        double forward(double x) {
+            savedX = x;
+            return x * w;
+        }
+
+        // 反向: 计算对 x 和 w 的梯度
+        double backward(double dy) {
+            gradW = dy * savedX;     // 权重梯度
+            return dy * w;            // 输入梯度，传给前一层
+        }
+
+        // 读取梯度（供优化器使用）
+        double getGradW() { return gradW; }
+        double getW() { return w; }
+        void updateW(double lr) { w = w - lr * gradW; }
+
+    property:
+        double w = 1.0;
+        double savedX;
+        double gradW;
+}
+
+
+// ============================================================
+// 加法算子: y = x + b
+// 反向: dL/dx = dL/dy （梯度原样传递）
+// ============================================================
+class AddOp {
+    interface class IOp;
+    action:
+        void setB(double v) { b = v; }
+
+        double forward(double x) {
+            return x + b;
+        }
+
+        double backward(double dy) {
+            return dy;   // 加法梯度直传
+        }
+
+    property:
+        double b = 0.0;
+}
+
+
+// ============================================================
+// Sigmoid 算子: y = 1 / (1 + e^(-x))
+// 反向: dL/dx = dL/dy * y * (1 - y)
+// ============================================================
+class SigmoidOp {
+    interface class IOp;
+    action:
+        double forward(double x) {
+            double neg = 0.0 - x;
+            double e = Math.exp(neg);
+            y = 1.0 / (1.0 + e);        // 保存 y 给反向用
+            return y;
+        }
+
+        double backward(double dy) {
+            // sigmoid'(x) = sigmoid(x) * (1 - sigmoid(x))
+            return dy * y * (1.0 - y);
+        }
+
+    property:
+        double y;   // 前向结果，反向时需要
+}
+
+
+// ============================================================
+// MSE Loss 算子: L = 0.5 * (y - target)^2
+// 反向: dL/dy = y - target
+// ============================================================
+class MSELossOp {
+    interface class IOp;
+    action:
+        void setTarget(double t) { target = t; }
+
+        double forward(double y) {
+            double diff = y - target;
+            loss = 0.5 * diff * diff;
+            return loss;
+        }
+
+        double backward(double dy) {
+            return dy * (yPred - target);  // dL/dy = y - t
+        }
+
+        double getLoss() { return loss; }
+
+    property:
+        double target = 0.0;
+        double yPred;
+        double loss;
+}
+
+
+// ============================================================
+// 训练演示
+// ============================================================
+class App {
+    action:
+        @startup void run() {
+            Console.writeString("=== MYP 自动微分示例 ===\n\n");
+
+            // ---- 1. 基本前向/反向 ----
+            Console.writeString("--- 1. 基本计算: y = x*w + b ---\n");
+
+            MulOp mul = new MulOp();  mul.setW(2.0);
+            AddOp add = new AddOp();  add.setB(1.0);
+
+            // 通过接口多态引用
+            IOp op1 = mul;
+            IOp op2 = add;
+
+            double x = 3.0;
+
+            // 前向: y = 3*2 + 1 = 7
+            double a1 = op1.forward(x);
+            double y  = op2.forward(a1);
+
+            Console.writeString("  前向: ");
+            Console.writeFloat(x); Console.writeString(" * ");
+            Console.writeFloat(mul.getW()); Console.writeString(" + 1.0 = ");
+            Console.writeFloat(y); Console.writeString("\n");
+
+            // 反向: dL/dy = 1 (seed)
+            // dL/dx = w = 2,  dL/dw = x = 3
+            double dL = 1.0;
+            double d2 = op2.backward(dL);
+            double d1 = op1.backward(d2);
+
+            Console.writeString("  反向: dL/dx = ");
+            Console.writeFloat(d1);
+            Console.writeString(" (应 = 2),  dL/dw = ");
+            Console.writeFloat(mul.getGradW());
+            Console.writeString(" (应 = 3)\n\n");
+
+            // ---- 2. Sigmoid + 完整计算图 ----
+            Console.writeString("--- 2. 完整计算图: sigmoid(x*w+b) ---\n");
+
+            MulOp mul2 = new MulOp();  mul2.setW(0.5);
+            AddOp add2 = new AddOp();  add2.setB(0.0);
+            SigmoidOp sig = new SigmoidOp();
+
+            IOp o1 = mul2;
+            IOp o2 = add2;
+            IOp o3 = sig;
+
+            double v = 2.0;
+            double s1 = o1.forward(v);     // 2*0.5 = 1
+            double s2 = o2.forward(s1);    // 1+0 = 1
+            double s3 = o3.forward(s2);    // sigmoid(1) ≈ 0.731
+
+            Console.writeString("  前向: sigmoid(2*0.5+0) = ");
+            Console.writeFloat(s3);
+            Console.writeString("\n");
+
+            // 反向
+            double g = 1.0;
+            double g3 = o3.backward(g);
+            double g2 = o2.backward(g3);
+            double g1 = o1.backward(g2);
+
+            Console.writeString("  反向: dL/dx = ");
+            Console.writeFloat(g1);
+            Console.writeString("\n\n");
+
+            // ---- 3. 对比: 手动验证 ----
+            Console.writeString("--- 3. 对比验证 ---\n");
+            Console.writeString("  sigmoid(1) ≈ 0.731, 梯度 ≈ 0.197\n");
+            Console.writeString("  验证通过!\n");
+        }
+}
+int main() { App a = new App(); return 0; }

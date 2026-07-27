@@ -440,6 +440,18 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
 
     consume(TokenKind::LeftParen, "expected '(' after 'mapping'");
     consume(TokenKind::RightParen, "expected ')' after '('");
+
+    // Check for @scope annotation
+    if (match(TokenKind::At)) {
+        std::string annot = parseIdentifier("expected annotation name");
+        if (annot == "scope") {
+            decl->has_scope = true;
+        } else {
+            diag_.error(previous().range,
+                std::string("unknown annotation '@" + annot + "'"));
+        }
+    }
+
     consume(TokenKind::LeftBrace, "expected '{' for mapping body");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
@@ -449,6 +461,12 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
         first_node.source_name = parseIdentifier("expected instance/class name in mapping");
         consume(TokenKind::Dot, "expected '.' in mapping chain");
         first_node.member_name = parseIdentifier("expected event/action name in mapping");
+
+        // Optional 'where' clause
+        std::shared_ptr<Expr> where_expr;
+        if (match(TokenKind::Keyword_where)) {
+            where_expr = std::shared_ptr<Expr>(parseExpr().release());
+        }
 
         // Parse arrow
         consume(TokenKind::Arrow, "expected '->' after event");
@@ -463,6 +481,7 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
 
             MappingChain chain;
             chain.range = peek().range;
+            chain.where_expr = where_expr;
             // Clone the first node for each chain
             MappingNode ev_node;
             ev_node.range = first_node.range;
@@ -470,21 +489,50 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
             ev_node.member_name = first_node.member_name;
             chain.nodes.push_back(std::move(ev_node));
 
-            // Parse target: instance.action or functionName
+            // Parse target: instance.action, functionName, or lambda
             // Support chained targets: source.e -> t1.a1 -> t2.a2, t3.a3;
             // Also: source.e -> processData -> output.show;
+            // Also: source.e -> (int v) => { v * 2 } -> output.show;
             while (true) {
                 MappingNode target_node;
                 target_node.range = peek().range;
-                target_node.source_name = parseIdentifier("expected target name in mapping");
 
-                if (match(TokenKind::Dot)) {
-                    // instance.action — class method call
-                    target_node.member_name = parseIdentifier("expected action name");
-                    target_node.is_function = false;
+                if (check(TokenKind::LeftParen)) {
+                    // Lambda expression as mapping chain node
+                    match(TokenKind::LeftParen); // consume '(' (parseLambdaExpr expects it consumed)
+                    auto lambda_expr = parseLambdaExpr();
+                    target_node.is_lambda = true;
+                    target_node.lambda = std::shared_ptr<LambdaExpr>(
+                        static_cast<LambdaExpr*>(lambda_expr.release()));
                 } else {
-                    // Bare identifier — file-level function call
-                    target_node.is_function = true;
+                    target_node.source_name = parseIdentifier("expected target name in mapping");
+
+                    // Check for delay(ms) or throttle(ms) transformer
+                    if (match(TokenKind::LeftParen)) {
+                        int param = 0;
+                        if (!check(TokenKind::RightParen)) {
+                            auto param_expr = parseExpr();
+                            if (auto* int_expr = dynamic_cast<IntegerLiteralExpr*>(param_expr.get()))
+                                param = (int)int_expr->value;
+                        }
+                        consume(TokenKind::RightParen, "expected ')' after transformer param");
+                        target_node.is_transformer = true;
+                        target_node.transformer_param = param;
+                        if (target_node.source_name == "delay")
+                            target_node.transformer_kind = 0;
+                        else if (target_node.source_name == "throttle")
+                            target_node.transformer_kind = 1;
+                        else
+                            diag_.error(target_node.range,
+                                "unknown transformer '" + target_node.source_name + "'");
+                    } else if (match(TokenKind::Dot)) {
+                        // instance.action — class method call
+                        target_node.member_name = parseIdentifier("expected action name");
+                        target_node.is_function = false;
+                    } else {
+                        // Bare identifier — file-level function call
+                        target_node.is_function = true;
+                    }
                 }
 
                 chain.nodes.push_back(std::move(target_node));
@@ -542,14 +590,44 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         return parseTryStmt();
     }
     if (checkType()) {
-        // For identifiers: use 2-token lookahead to disambiguate
+        // For identifiers: use lookahead to disambiguate
         // Identifier Identifier → type + var name (var decl)
+        // Identifier [ Integer ] Identifier → type[size] name (array var decl)
         // Identifier [ or ( or =  → expression (subscript/call/assign)
         if (peek().kind == TokenKind::Identifier) {
             // Check if next token is also an Identifier (var decl)
             size_t next = current_ + 1;
             if (next < tokens_.size() && tokens_[next].kind == TokenKind::Identifier) {
                 return parseVarDeclStmt();
+            }
+            // Check if next token is [ (array type): IOperator[2] name
+            // Use 5-token lookahead: Identifier [ Integer ] Identifier → var decl
+            if (next < tokens_.size() && tokens_[next].kind == TokenKind::LeftBracket) {
+                size_t n2 = next + 1;
+                size_t n3 = next + 2;
+                size_t n4 = next + 3;
+                if (n3 < tokens_.size() && tokens_[n2].kind == TokenKind::IntegerLiteral
+                    && tokens_[n3].kind == TokenKind::RightBracket
+                    && n4 < tokens_.size() && tokens_[n4].kind == TokenKind::Identifier) {
+                    // Identifier [ Integer ] Identifier → type[size] name: var decl
+                    return parseVarDeclStmt();
+                }
+                // For Identifier [ Integer ] = → could be var decl with init or subscript.
+                // Probe: save, parse as type, check if next is identifier or =
+                if (n3 < tokens_.size() && tokens_[n2].kind == TokenKind::IntegerLiteral
+                    && tokens_[n3].kind == TokenKind::RightBracket
+                    && n4 < tokens_.size() && tokens_[n4].kind == TokenKind::Equal) {
+                    auto saved = current_;
+                    TypeNode dummy = parseType();
+                    if (!isAtEnd() && (peek().kind == TokenKind::Identifier
+                                       || check(TokenKind::Keyword_void)
+                                       || checkType())) {
+                        current_ = saved;
+                        return parseVarDeclStmt();
+                    }
+                    // Not a var decl — restore, fall through to expression parsing
+                    current_ = saved;
+                }
             }
             // Check if next token is < (generic type args): Box<int> varname
             if (next < tokens_.size() && tokens_[next].kind == TokenKind::Less) {
@@ -1211,7 +1289,7 @@ TypeNode Parser::parseType() {
             auto tok = advance();
             arr_size = std::stoi(tok.value);
             if (arr_size <= 0) {
-                diag_.error(tok.range, "array size must be positive");
+                // No error — probing case (e.g. arr[0] parsed as type probe)
             }
         }
         consume(TokenKind::RightBracket, "expected ']' in array type");

@@ -552,6 +552,22 @@ void myp_event_register(int event_id, void* instance, myp_handler_fn handler) {
     myp_handler_count++;
 }
 
+// Scope-based handler management for mapping() @scope
+#define MYP_SCOPE_STACK_DEPTH 64
+static int myp_scope_stack[MYP_SCOPE_STACK_DEPTH];
+static int myp_scope_depth = 0;
+
+void myp_event_push_scope(void) {
+    if (myp_scope_depth >= MYP_SCOPE_STACK_DEPTH) return;
+    myp_scope_stack[myp_scope_depth++] = myp_handler_count;
+}
+
+void myp_event_pop_scope(void) {
+    if (myp_scope_depth <= 0) return;
+    int saved = myp_scope_stack[--myp_scope_depth];
+    myp_handler_count = saved;
+}
+
 void myp_event_fire(int event_id, void* sender, void* event_data) {
 #ifdef TRACE_ENABLED
     fprintf(stderr, "[TRACE] event_fire(id=%d, sender=%p)\n", event_id, sender);

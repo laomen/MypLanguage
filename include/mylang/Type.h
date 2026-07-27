@@ -20,6 +20,7 @@ enum class TypeKind : uint8_t {
     Class,
     Struct,
     Enum,
+    Interface,
     Array,
     Function,
 };

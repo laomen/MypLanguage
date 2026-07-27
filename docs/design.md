@@ -1,6 +1,6 @@
 # MYP 语言设计文档
 
-> 版本: 2.2 | 日期: 2026-07-27
+> 版本: 2.3 | 日期: 2026-07-27
 
 ---
 
@@ -9,7 +9,7 @@
 1. [概述](#1-概述)
 2. [设计哲学](#2-设计哲学)
 3. [范式分析](#3-范式分析)
-   - 3.5 [未来展望](#35-未来展望)
+   - 3.5 [接口多态与自动微分](#35-接口多态与自动微分)
 4. [语法规范](#4-语法规范)
 5. [类型系统](#5-类型系统)
 6. [Class 系统](#6-class-系统)
@@ -36,7 +36,13 @@
 
 ### 核心创新
 
-MYP 的核心是一种 **事件-动作解耦模型**：
+MYP 的核心是一种 **事件-动作解耦模型**，结合**接口多态**实现声明式算子链：
+
+```
+a.event -> b.action;
+IOperator op = new ConcreteOp();
+double y = op.forward(x);
+```
 
 ```
 a.event -> b.action;
@@ -132,7 +138,36 @@ mapping() {
 | 数值计算/算法 | ⭐ 差 | 过程式更直接 |
 | 系统编程/驱动 | ⭐⭐ 好 | 事件驱动适合硬件中断处理 |
 
-### 3.5 未来展望
+### 3.5 接口多态与自动微分
+
+✅ **接口多态** — 已实现。
+
+interface 变量以 Go 风格胖指针 `{ptr data, ptr vtable}` 存储，方法调用通过虚表分派。类通过 `interface class InterfaceName;` 声明实现某个接口。
+
+```c
+interface IOp {
+    double forward(double x);
+    double backward(double dy);
+}
+
+class MulOp {
+    interface class IOp;
+    action:
+        double forward(double x) { saved = x; return x * w; }
+        double backward(double dy) { gradW = dy * saved; return dy * w; }
+    property: double w, saved, gradW;
+}
+
+// 接口多态引用：IOp 变量可指向任何实现 IOp 的类
+IOp op = new MulOp();
+double y = op.forward(3.0);   // 虚表分派 → MulOp_forward
+```
+
+每个算子前向保存输入，反向用链式法则计算梯度，构成声明式自动微分。示例见 `examples/ad.myp`。
+
+---
+
+### 3.6 未来展望
 
 #### 众核架构的天然适配
 
@@ -583,6 +618,64 @@ mapping() {
 
 ### 7.4 Mapping 语义
 
+#### 7.4.1 作用域管理 @scope
+
+默认 mapping 永久有效。`@scope` 标记将 mapping 的 handler 生命周期绑定到函数作用域：
+
+```
+void run() {
+    Sensor s;
+    mapping() @scope {
+        s.dataReady -> log.write;
+    }
+}  // ← 函数退出时 handler 自动解注册
+```
+
+#### 7.4.2 条件过滤 where
+
+在事件源后加 `where 表达式`，只有满足条件的事件才会被转发：
+
+```
+mapping() {
+    rs.valueEmitted where value >= 3 -> Console.write;   // 只转发 >=3 的
+}
+```
+
+`where` 表达式可使用事件参数名（如 `value`），支持完整的比较和算术运算。
+
+#### 7.4.3 Lambda 变换节点
+
+在 mapping 链中用 lambda 表达式做内联数据变换：
+
+```
+mapping() {
+    rs.valueEmitted -> (int v) => { return v * 2; } -> Console.write;
+    rs.valueEmitted where value % 2 == 0 -> (int v) => { return v * 10; } -> output.save;
+}
+```
+
+#### 7.4.4 定时变换器
+
+- `delay(ms)` — 事件转发前阻塞等待指定毫秒
+- `throttle(ms)` — 限频：间隔内到达的事件丢弃
+
+```
+mapping() {
+    sensor.valueEmitted -> delay(100) -> display.update;     // 延迟 100ms
+    sensor.valueEmitted -> throttle(50) -> logger.write;      // 50ms 限频
+}
+```
+
+### 7.5 完整 Mapping 语法
+
+```
+mapping() [@scope] {
+    source.event  [where 条件表达式] -> target1.action -> target2.action, ...;
+    source.event2 -> lambda -> target.action;
+    source.event3 -> delay(ms) -> target.action;
+    source.event4 -> throttle(ms) -> target.action;
+}
+
 - 一个事件可以映射到多个动作
 - 多个事件可以映射到同一个动作
 - mapping 在运行时建立事件总线，事件触发时自动分发到所有绑定的动作
@@ -970,36 +1063,37 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 
 ---
 
-## 11. 实现计划
+## 11. 实现状态
 
-### 11.1 技术栈
+### ✅ 已完成功能
 
-| 组件 | 选择 |
-|------|------|
-| 解析器 | 手写递归下降 + 优先级攀爬 (Pratt) |
-| 后端 | LLVM C++ API |
-| 中间表示 | 直接使用 LLVM IR |
-| 内存管理 | ARC（自动引用计数，第一版简化版） |
-| 构建系统 | CMake |
-| 对象模型 | struct 布局 + vtable |
+| 功能 | 版本 | 说明 |
+|------|------|------|
+| 基础类型系统 | 1.0 | int, double, string, bool, long 等 |
+| Class + action/event/property | 1.0 | 组件模型三要素 |
+| 事件触发 + 同步派发 | 1.0 | event → mapping → action |
+| @thread / @threadpool | 1.0 | 每个实例独立线程 + 线程池 |
+| 链式 mapping | 1.5 | 多节点链，前一个返回值传递给下一个 |
+| 导入系统 | 1.5 | import + stdlib 路径搜索 |
+| FFI | 1.5 | 直接调用 C 函数 |
+| 泛型 | 2.0 | 类级别类型参数 + 单态化 |
+| 枚举 + 模式匹配 | 2.0 | sealed enum + match 表达式 |
+| Lambda 表达式 | 2.0 | 隐藏类 + __call 方法 |
+| 包管理系统 (myp) | 2.0 | init/build/install/run |
+| LSP 服务器 | 2.0 | 补全/悬停/跳转定义 |
+| try/catch/throw | 2.1 | setjmp/longjmp 异常处理 |
+| 共享/静态库输出 | 2.1 | --shared / --static |
+| @test 测试框架 | 2.2 | --test 自动发现并运行 @test |
+| myp fmt 格式化 | 2.2 | 独立格式化工具 |
+| Stream 流类型 | 2.3 | RangeStream, IntStream, DoubleStream |
+| mapping @scope | 2.3 | 作用域生命周期绑定 |
+| mapping where | 2.3 | 条件过滤 |
+| mapping lambda | 2.3 | lambda 作为链节点 |
+| delay / throttle | 2.3 | 定时变换器 |
+| 接口多态 | 2.3 | 基于胖指针的虚表分派 |
+| 数组事件参数 | 2.3 | double[] 等作为事件参数 |
 
-### 11.2 阶段划分
-
-```
-Phase 1: 项目骨架 ─── CMake + 目录结构 + 基础数据结构
-     │
-Phase 2: 词法分析 ─── Token 定义 + Lexer
-     │
-Phase 3: 语法分析 ─── AST + 递归下降 Parser
-     │
-Phase 4: 语义分析 ─── 符号表 + 类型检查
-     │
-Phase 5: 代码生成 ─── LLVM IR 生成 + 链接
-     │
-Phase 6: 运行时库 ─── 对象模型 + 标准库
-```
-
-### 11.3 目录结构
+### 技术栈
 
 ```
 MYPLanguage/
