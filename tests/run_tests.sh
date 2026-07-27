@@ -151,16 +151,63 @@ if [ $NEG_PASS -eq 0 ] && [ $NEG_FAIL -eq 0 ]; then
 fi
 
 # =============================================
-# 第3部分: 总结
+# 第3部分: 测试框架测试 (@test + --test)
+# =============================================
+echo ""
+echo "--- [3/4] 测试框架 (Test Framework) ---"
+echo ""
+
+TFPASS=0
+TFFAIL=0
+
+test_file="tests/test_example.myp"
+if [ -f "$test_file" ]; then
+    name=$(basename "$test_file" .myp)
+    printf "  %-25s " "$name"
+
+    compile_output=$($MYPCC --test "$test_file" 2>&1)
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}COMPILE FAIL${NC}"
+        echo "$compile_output" | head -5
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS $name(test-compile)"
+    else
+        binary_file="${test_file%.myp}.out"
+        if [ ! -f "$binary_file" ]; then
+            binary_file="./a.out"
+        fi
+        run_output=$(timeout $TIMEOUT_SEC "$binary_file" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}RUNTIME FAIL${NC}"
+            echo "$run_output" | head -5
+            TFFAIL=$((TFFAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS $name(test-runtime)"
+        elif echo "$run_output" | grep -q "FAIL"; then
+            echo -e "${RED}TEST FAIL${NC}"
+            echo "$run_output"
+            TFFAIL=$((TFFAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS $name(test-fail)"
+        else
+            echo -e "${GREEN}PASS${NC}"
+            TFPASS=$((TFPASS + 1))
+        fi
+    fi
+else
+    echo "  (no test framework files found)"
+fi
+
+# =============================================
+# 第4部分: 总结
 # =============================================
 echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
+echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
 echo "  总计:     ${TOTAL_PASS} 通过, ${TOTAL_FAIL} 失败"
 
 if [ $TOTAL_FAIL -gt 0 ]; then

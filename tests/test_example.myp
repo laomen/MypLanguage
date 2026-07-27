@@ -1,0 +1,38 @@
+// test_example.myp — 测试框架示例
+// 运行: ./build/mypc --test tests/test_example.myp && ./a.out
+
+// 基本断言测试
+@test void test_assertions() {
+    __myp_assert(1 == 1);
+    __myp_assert_eq(2 + 2, 4);
+    __myp_assert_eq(100 - 1, 99);
+    __myp_assert_str_eq("hello", "hello");
+    __myp_test_report("test_assertions", true);
+}
+
+// 数学运算测试
+@test void test_math() {
+    __myp_assert_eq(2 * 3, 6);
+    __myp_assert_eq(10 / 2, 5);
+    __myp_assert(10 > 5);
+    __myp_assert(3 <= 3);
+    __myp_test_report("test_math", true);
+}
+
+// 字符串测试
+@test void test_strings() {
+    string a = "Hello";
+    string b = "Hello";
+    string c = "World";
+    __myp_assert_str_eq(a, b);
+    __myp_assert(a != c);
+    __myp_assert_str_eq(a + " " + c, "Hello World");
+    __myp_test_report("test_strings", true);
+}
+
+// 带返回值的测试函数
+@test int test_return() {
+    __myp_assert_eq(1 + 1, 2);
+    __myp_test_report("test_return", true);
+    return 0;
+}
