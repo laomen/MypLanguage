@@ -55,6 +55,21 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             // @ annotation at top level → parse as function (@test, @startup)
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
+        } else if (match(TokenKind::Keyword_const)) {
+            // File-level const: const Type name = value;
+            // Treat as function returning the value so sema/codegen handles it
+            TypeNode ct = parseType();
+            std::string cn = parseIdentifier("expected constant name");
+            consume(TokenKind::Equal, "expected '=' in const declaration");
+            auto ie = parseExpr();
+            consume(TokenKind::Semicolon, "expected ';' after const declaration");
+            FuncDecl fd;
+            fd.name = cn;
+            fd.return_type = ct;
+            std::vector<std::unique_ptr<Stmt>> fb;
+            fb.push_back(std::make_unique<ReturnStmt>(std::move(ie), SourceRange{}));
+            fd.body = std::make_unique<BlockStmt>(std::move(fb), SourceRange{});
+            tu->functions.push_back(std::move(fd));
         } else if (checkType() || check(TokenKind::Keyword_void)) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
@@ -593,6 +608,10 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_try)) {
         return parseTryStmt();
     }
+    if (match(TokenKind::Keyword_const)) {
+        // const Type name [= expr]; — consume const, parse rest normally
+        return parseVarDeclStmt();
+    }
     if (checkType()) {
         // For identifiers: use lookahead to disambiguate
         // Identifier Identifier → type + var name (var decl)
@@ -748,7 +767,7 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
     consume(TokenKind::LeftParen, "expected '(' after 'for'");
     // Init: optional variable declaration
     std::unique_ptr<Stmt> init;
-    if (checkType() || check(TokenKind::Keyword_var)) {
+    if (checkType() || check(TokenKind::Keyword_var) || check(TokenKind::Keyword_const)) {
         init = parseVarDeclStmt();
     } else {
         consume(TokenKind::Semicolon, "expected ';' after for init");

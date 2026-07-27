@@ -70,6 +70,7 @@ struct VarDecl {
     TypeNode type;
     std::shared_ptr<Expr> init_expr;
     SourceRange range;
+    bool is_const = false;
     bool has_thread_annotation = false;
     bool has_threadpool_annotation = false;
 };

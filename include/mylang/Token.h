@@ -53,6 +53,7 @@ enum class TokenKind : uint16_t {
     Keyword_throw,
     Keyword_where,
     Keyword_await,
+    Keyword_const,
 
     // ----- Types (also keywords) -----
     Type_byte,

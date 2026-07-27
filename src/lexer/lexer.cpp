@@ -352,6 +352,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "throw")    kind = TokenKind::Keyword_throw;
     else if (value == "where")    kind = TokenKind::Keyword_where;
     else if (value == "await")   kind = TokenKind::Keyword_await;
+    else if (value == "const")   kind = TokenKind::Keyword_const;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;
