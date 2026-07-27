@@ -1,0 +1,65 @@
+import sdl;
+
+class App {
+    action:
+        @startup void run() {
+            // Direct FFI calls (no SDL class wrapper)
+            int result = myp_sdl_init("MYP SDL Demo", 800, 600);
+            if (result != 0) {
+                return;
+            }
+            int bx = 200;
+            int by = 200;
+            int bsize = 60;
+
+            while (true) {
+                // Check quit events
+                if (myp_sdl_has_quit_event() != 0) {
+                    myp_sdl_quit();
+                    return;
+                }
+                myp_sdl_clear(20, 24, 82, 255);
+                myp_sdl_draw_rect(30, 30, 120, 80, 255, 50, 50, 255);
+                myp_sdl_draw_rect_outline(30, 30, 120, 80, 100, 255, 100, 255);
+                myp_sdl_draw_circle(650, 100, 60, 0, 200, 200, 255);
+                myp_sdl_draw_line(30, 30, 770, 570, 255, 255, 0, 255);
+
+                int key = myp_sdl_get_key();
+                if (key == 82) {
+                    by = by - 5;
+                }
+                if (key == 81) {
+                    by = by + 5;
+                }
+                if (key == 80) {
+                    bx = bx - 5;
+                }
+                if (key == 79) {
+                    bx = bx + 5;
+                }
+                if (bx < 0) {
+                    bx = 0;
+                }
+                if (by < 0) {
+                    by = 0;
+                }
+                if (bx > 740) {
+                    bx = 740;
+                }
+                if (by > 540) {
+                    by = 540;
+                }
+                myp_sdl_draw_rect(bx, by, bsize, bsize, 255, 165, 0, 255);
+                myp_sdl_draw_rect_outline(bx, by, bsize, bsize, 255, 255, 255, 255);
+
+                if (key == 41) {
+                    myp_sdl_quit();
+                    return;
+                }
+                myp_sdl_present();
+                myp_sdl_delay(16);
+            }
+        }
+}
+
+int main() { return 0; }

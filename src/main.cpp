@@ -256,14 +256,33 @@ static bool loadModule(const std::string& module_name,
         return false;
     }
 
+    // Build SDL bridge object (if exists)
+    std::string sdl_obj;
+    std::string sdl_libs;
+    std::string sdl_c;
+    if (fileExists("src/runtime/sdl_bridge.c"))
+        sdl_c = "src/runtime/sdl_bridge.c";
+    else if (fileExists(runtime_dir + "/src/runtime/sdl_bridge.c"))
+        sdl_c = runtime_dir + "/src/runtime/sdl_bridge.c";
+    if (!sdl_c.empty()) {
+        sdl_obj = "/tmp/myp_sdl_" + std::to_string(std::rand()) + ".o";
+        std::string sdl_cflags = "-I/usr/include/SDL2 -D_REENTRANT";
+        sdl_libs = "-lSDL2";
+        std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
+        if (std::system(compile_sdl.c_str()) != 0) {
+            std::cerr << "Failed to compile SDL bridge\n";
+            return false;
+        }
+    }
+
     std::string link_cmd;
     if (shared_lib) {
         // Shared library: -shared -fPIC
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj
-                 + " -o " + output_name + " -lpthread -lm 2>&1";
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj
+                 + " -o " + output_name + " -lpthread -lm " + sdl_libs + " 2>&1";
     } else if (static_lib) {
         // Static library: archive with ar
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + sdl_obj + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -273,8 +292,8 @@ static bool loadModule(const std::string& module_name,
         return true;
     } else {
         // Normal executable
-        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj
-                 + " -o " + output_name + " -lpthread -lm 2>&1";
+        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj
+                 + " -o " + output_name + " -lpthread -lm " + sdl_libs + " 2>&1";
     }
 
     int link_result = std::system(link_cmd.c_str());

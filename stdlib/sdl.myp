@@ -1,0 +1,14 @@
+ffi int  myp_sdl_init(string title, int w, int h);
+ffi void myp_sdl_quit();
+ffi int  myp_sdl_should_close();
+ffi void myp_sdl_clear(int r, int g, int b, int a);
+ffi void myp_sdl_present();
+ffi void myp_sdl_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a);
+ffi void myp_sdl_draw_rect_outline(int x, int y, int w, int h, int r, int g, int b, int a);
+ffi void myp_sdl_draw_circle(int cx, int cy, int radius, int r, int g, int b, int a);
+ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int a);
+ffi int  myp_sdl_get_key();
+ffi int  myp_sdl_has_quit_event();
+ffi int  myp_sdl_width();
+ffi int  myp_sdl_height();
+ffi int  myp_sdl_delay(int ms);
