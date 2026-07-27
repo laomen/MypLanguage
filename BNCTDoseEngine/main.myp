@@ -1,0 +1,102 @@
+// main.myp — BNCT 剂量引擎
+import env;
+import math;
+
+// ── 单粒子输运 ──
+class Transport {
+    action:
+        // 所有参数都是基本类型, 结果存在属性中
+        void run(long rngState, double slabThick,
+                 double totalXs, double captureXs) {
+            captured = false;
+            escaped = false;
+            eDep = 0.0;
+
+            double x = 0.0;
+            int iter = 0;
+
+            while (true) {
+                iter = iter + 1;
+                if (iter > 1000) { escaped = true; break; }
+
+                rngState = rngState * 6364136223846793005 + 1442695040888963407;
+                long r1 = rngState;
+                r1 = (r1 ^ (r1 >> 30)) * 2685821657736338717;
+                r1 = (r1 ^ (r1 >> 27)) * 88172645463325252;
+                r1 = r1 ^ (r1 >> 31);
+                if (r1 < 0) { r1 = -r1; }
+                double xi1 = r1 * 1.0842021724855044e-19;
+                double d = -Math.log(xi1) / totalXs;
+
+                x = x + d;
+                if (x >= slabThick || x < 0.0) { escaped = true; break; }
+
+                rngState = rngState * 6364136223846793005 + 1442695040888963407;
+                long r2 = rngState;
+                r2 = (r2 ^ (r2 >> 30)) * 2685821657736338717;
+                r2 = (r2 ^ (r2 >> 27)) * 88172645463325252;
+                r2 = r2 ^ (r2 >> 31);
+                if (r2 < 0) { r2 = -r2; }
+                double xi2 = r2 * 1.0842021724855044e-19;
+
+                if (xi2 < captureXs / totalXs) {
+                    captured = true;
+                    eDep = 2.33e6;
+                    break;
+                }
+            }
+        }
+        bool isCaptured() { return captured; }
+        double getEnergy() { return eDep; }
+    property:
+        bool captured;
+        bool escaped;
+        double eDep;
+}
+
+// ── 主控制 ──
+class Controller {
+    action:
+        @startup void run() {
+            int nP = 5000;
+            double boronPPM = 35.0;
+            double slabThick = 5.0;
+
+            // 计算截面 (直接计算, 不用 class)
+            double elasticXs = 0.36;
+            double captureXs = 0.012 + boronPPM * 1.0e-6 * 0.1 * 0.199 * 3837.0 * 1.0e-24;
+            double totalXs = elasticXs + captureXs;
+
+            __myp_print("=== BNCT 剂量引擎 ===\n");
+            __myp_print("粒子: ");
+            __myp_print_int(nP);
+            __myp_print("\n");
+
+            int totalCap = 0;
+            double totalDose = 0.0;
+            Transport t = new Transport();
+
+            for (int i = 0; i < nP; i = i + 1) {
+                long seed = i * 152917 + 1;
+                t.run(seed, slabThick, totalXs, captureXs);
+
+                if (t.isCaptured()) { totalCap = totalCap + 1; }
+                totalDose = totalDose + t.getEnergy();
+            }
+
+            double rate = totalCap * 100.0 / nP;
+            __myp_print("俘获: ");
+            __myp_print_int(totalCap);
+            __myp_print(" (");
+            __myp_print_float(rate);
+            __myp_print("%)\n");
+            __myp_print("能量: ");
+            __myp_print_float(totalDose / 1.0e6);
+            __myp_print(" MeV\n");
+        }
+}
+
+int main() {
+    Controller ctrl = new Controller();
+    return 0;
+}

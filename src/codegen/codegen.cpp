@@ -1989,19 +1989,50 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::Mul: return fp ? builder_.CreateFMul(l, r) : builder_.CreateMul(l, r);
         case BinaryOpKind::Div: return fp ? builder_.CreateFDiv(l, r) : builder_.CreateSDiv(l, r);
         case BinaryOpKind::Mod: return fp ? builder_.CreateFRem(l, r) : builder_.CreateSRem(l, r);
-        case BinaryOpKind::Eq:  return fp ? builder_.CreateFCmpOEQ(l, r) : builder_.CreateICmpEQ(l, r);
-        case BinaryOpKind::Ne:  return fp ? builder_.CreateFCmpONE(l, r) : builder_.CreateICmpNE(l, r);
-        case BinaryOpKind::Lt:  return fp ? builder_.CreateFCmpOLT(l, r) : builder_.CreateICmpSLT(l, r);
-        case BinaryOpKind::Gt:  return fp ? builder_.CreateFCmpOGT(l, r) : builder_.CreateICmpSGT(l, r);
-        case BinaryOpKind::Le:  return fp ? builder_.CreateFCmpOLE(l, r) : builder_.CreateICmpSLE(l, r);
-        case BinaryOpKind::Ge:  return fp ? builder_.CreateFCmpOGE(l, r) : builder_.CreateICmpSGE(l, r);
+        case BinaryOpKind::Eq:
+        case BinaryOpKind::Ne:
+        case BinaryOpKind::Lt:
+        case BinaryOpKind::Gt:
+        case BinaryOpKind::Le:
+        case BinaryOpKind::Ge: {
+            // Ensure both operands have same type for comparison
+            if (!fp && l->getType() != r->getType()) {
+                auto* i32 = llvm::Type::getInt32Ty(ctx_);
+                auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                if (l->getType() == i64 && r->getType() == i32)
+                    r = builder_.CreateSExt(r, i64);
+                else if (l->getType() == i32 && r->getType() == i64)
+                    l = builder_.CreateSExt(l, i64);
+            }
+            if (e.op == BinaryOpKind::Eq)
+                return fp ? builder_.CreateFCmpOEQ(l, r) : builder_.CreateICmpEQ(l, r);
+            if (e.op == BinaryOpKind::Ne)
+                return fp ? builder_.CreateFCmpONE(l, r) : builder_.CreateICmpNE(l, r);
+            if (e.op == BinaryOpKind::Lt)
+                return fp ? builder_.CreateFCmpOLT(l, r) : builder_.CreateICmpSLT(l, r);
+            if (e.op == BinaryOpKind::Gt)
+                return fp ? builder_.CreateFCmpOGT(l, r) : builder_.CreateICmpSGT(l, r);
+            if (e.op == BinaryOpKind::Le)
+                return fp ? builder_.CreateFCmpOLE(l, r) : builder_.CreateICmpSLE(l, r);
+            if (e.op == BinaryOpKind::Ge)
+                return fp ? builder_.CreateFCmpOGE(l, r) : builder_.CreateICmpSGE(l, r);
+        }
         case BinaryOpKind::And: return builder_.CreateAnd(l, r);
         case BinaryOpKind::Or:  return builder_.CreateOr(l, r);
         case BinaryOpKind::BitAnd: return builder_.CreateAnd(l, r);
         case BinaryOpKind::BitOr:  return builder_.CreateOr(l, r);
         case BinaryOpKind::BitXor: return builder_.CreateXor(l, r);
-        case BinaryOpKind::Shl:    return builder_.CreateShl(l, r);
-        case BinaryOpKind::Shr:    return builder_.CreateAShr(l, r);
+        case BinaryOpKind::Shl: {
+            // Shift amount must match value type
+            if (r->getType() != l->getType())
+                r = builder_.CreateZExt(r, l->getType());
+            return builder_.CreateShl(l, r);
+        }
+        case BinaryOpKind::Shr: {
+            if (r->getType() != l->getType())
+                r = builder_.CreateZExt(r, l->getType());
+            return builder_.CreateAShr(l, r);
+        }
     }
     return nullptr;
 }
