@@ -793,3 +793,104 @@ void myp_test_report(const char* name, int passed) {
         printf("  FAIL: %s\n", name);
     }
 }
+
+// ======================
+// Barrier 同步 (pthread_barrier 封装)
+// ======================
+
+#define MYP_MAX_BARRIERS 64
+static pthread_barrier_t myp_barriers[MYP_MAX_BARRIERS];
+static int myp_barrier_used[MYP_MAX_BARRIERS] = {0};
+static pthread_mutex_t myp_barrier_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_barrier_create(int32_t count) {
+    pthread_mutex_lock(&myp_barrier_mutex);
+    for (int32_t i = 0; i < MYP_MAX_BARRIERS; i++) {
+        if (!myp_barrier_used[i]) {
+            if (pthread_barrier_init(&myp_barriers[i], NULL, (unsigned int)count) != 0) {
+                pthread_mutex_unlock(&myp_barrier_mutex);
+                return -1;
+            }
+            myp_barrier_used[i] = 1;
+            pthread_mutex_unlock(&myp_barrier_mutex);
+            return i; // return handle
+        }
+    }
+    pthread_mutex_unlock(&myp_barrier_mutex);
+    return -1; // no free slot
+}
+
+int32_t myp_barrier_wait(int32_t handle) {
+    if (handle < 0 || handle >= MYP_MAX_BARRIERS || !myp_barrier_used[handle])
+        return -1;
+    int32_t ret = pthread_barrier_wait(&myp_barriers[handle]);
+    return (ret == 0 || ret == PTHREAD_BARRIER_SERIAL_THREAD) ? 0 : -1;
+}
+
+void myp_barrier_destroy(int32_t handle) {
+    if (handle >= 0 && handle < MYP_MAX_BARRIERS && myp_barrier_used[handle]) {
+        pthread_barrier_destroy(&myp_barriers[handle]);
+        myp_barrier_used[handle] = 0;
+    }
+}
+
+// ======================
+// Future/Promise (条件变量封装)
+// ======================
+
+#define MYP_MAX_FUTURES 64
+typedef struct {
+    int32_t value;
+    int32_t ready;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    int32_t used;
+} myp_future_t;
+
+static myp_future_t myp_futures[MYP_MAX_FUTURES];
+static pthread_mutex_t myp_future_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_future_create(void) {
+    pthread_mutex_lock(&myp_future_mutex);
+    for (int32_t i = 0; i < MYP_MAX_FUTURES; i++) {
+        if (!myp_futures[i].used) {
+            myp_futures[i].used = 1;
+            myp_futures[i].ready = 0;
+            myp_futures[i].value = 0;
+            pthread_mutex_init(&myp_futures[i].mutex, NULL);
+            pthread_cond_init(&myp_futures[i].cond, NULL);
+            pthread_mutex_unlock(&myp_future_mutex);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_future_mutex);
+    return -1;
+}
+
+void myp_future_set(int32_t handle, int32_t value) {
+    if (handle < 0 || handle >= MYP_MAX_FUTURES || !myp_futures[handle].used) return;
+    pthread_mutex_lock(&myp_futures[handle].mutex);
+    myp_futures[handle].value = value;
+    myp_futures[handle].ready = 1;
+    pthread_cond_broadcast(&myp_futures[handle].cond);
+    pthread_mutex_unlock(&myp_futures[handle].mutex);
+}
+
+int32_t myp_future_get(int32_t handle) {
+    if (handle < 0 || handle >= MYP_MAX_FUTURES || !myp_futures[handle].used) return 0;
+    pthread_mutex_lock(&myp_futures[handle].mutex);
+    while (!myp_futures[handle].ready) {
+        pthread_cond_wait(&myp_futures[handle].cond, &myp_futures[handle].mutex);
+    }
+    int32_t val = myp_futures[handle].value;
+    pthread_mutex_unlock(&myp_futures[handle].mutex);
+    return val;
+}
+
+void myp_future_destroy(int32_t handle) {
+    if (handle >= 0 && handle < MYP_MAX_FUTURES && myp_futures[handle].used) {
+        pthread_mutex_destroy(&myp_futures[handle].mutex);
+        pthread_cond_destroy(&myp_futures[handle].cond);
+        myp_futures[handle].used = 0;
+    }
+}
