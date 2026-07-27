@@ -2,16 +2,17 @@
 // 验证：mapping() 事件链、多 target、事件参数传递
 
 import env;
+import time;
 
 // 传感器：产生数据
 class Sensor {
     action:
         @startup void run() {
-            __myp_print("[Sensor] started, generating data...\n");
+            Console.writeString("[Sensor] started, generating data...\n");
             // 触发数据事件
             dataReady(42);
             dataReady(99);
-            __myp_print("[Sensor] done\n");
+            Console.writeString("[Sensor] done\n");
             done();
         }
     event:
@@ -24,9 +25,9 @@ class Processor {
     action:
         int process(int val) {
             int result = val * 2;
-            __myp_print("  [Processor] received "); __myp_print_int(val);
-            __myp_print(" -> "); __myp_print_int(result);
-            __myp_print("\n");
+            Console.writeString("  [Processor] received "); Console.write(val);
+            Console.writeString(" -> "); Console.write(result);
+            Console.writeString("\n");
             return result;
         }
 }
@@ -35,8 +36,8 @@ class Processor {
 class Output {
     action:
         void show(int val) {
-            __myp_print("  [Output] final result = "); __myp_print_int(val);
-            __myp_print("\n");
+            Console.writeString("  [Output] final result = "); Console.write(val);
+            Console.writeString("\n");
         }
 }
 
@@ -49,15 +50,15 @@ mapping() {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[Mapping 事件链验证]\n\n");
+            Console.writeString("[Mapping 事件链验证]\n\n");
 
             Sensor s = new Sensor();
             Processor p = new Processor();
             Output o = new Output();
 
             // 主线程休眠等 Sensor 跑完
-            __myp_sleep_ms(100);
-            __myp_print("\n[OK] Mapping 事件链验证通过\n");
+            Time.sleep(100);
+            Console.writeString("\n[OK] Mapping 事件链验证通过\n");
         }
 }
 

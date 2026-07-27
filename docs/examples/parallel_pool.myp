@@ -2,6 +2,7 @@
 // 创建 4 个工作线程，每个独立计数，证明线程池并发
 
 import env;
+import time;
 
 class PoolWorker {
     action:
@@ -9,17 +10,17 @@ class PoolWorker {
             // 每个 worker 独立计数
             int i=1;
             while(i<=5){
-                __myp_print("  [pool#");
-                __myp_print_int(id);
-                __myp_print("] step ");
-                __myp_print_int(i);
-                __myp_print("\n");
-                __myp_sleep_ms(30);
+                Console.writeString("  [pool#");
+                Console.write(id);
+                Console.writeString("] step ");
+                Console.write(i);
+                Console.writeString("\n");
+                Time.sleep(30);
                 i=i+1;
             }
-            __myp_print("  [pool#");
-            __myp_print_int(id);
-            __myp_print("] DONE\n");
+            Console.writeString("  [pool#");
+            Console.write(id);
+            Console.writeString("] DONE\n");
             done();
         }
     event:
@@ -31,13 +32,13 @@ class PoolWorker {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[Main] Starting thread pool...\n");
+            Console.writeString("[Main] Starting thread pool...\n");
             // 创建线程池（4个线程），每个独立运行
             PoolWorker[4] pool @threadpool;
 
             // 给线程一些时间运行
-            __myp_sleep_ms(500);
-            __myp_print("[Main] Pool done\n");
+            Time.sleep(500);
+            Console.writeString("[Main] Pool done\n");
         }
 }
 

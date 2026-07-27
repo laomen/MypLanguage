@@ -327,9 +327,9 @@ class Trainer {
             while(i<nOut){
                 double conf=ao[i]*100;
                 if(i==pred){
-                    Console.writeString("["); __myp_print_float(conf); Console.writeString("]");
+                    Console.writeString("["); Console.writeFloat(conf); Console.writeString("]");
                 }else{
-                    Console.writeString(" "); __myp_print_float(conf); Console.writeString(" ");
+                    Console.writeString(" "); Console.writeFloat(conf); Console.writeString(" ");
                 }
                 i=i+1;
             }

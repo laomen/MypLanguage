@@ -12,19 +12,19 @@ class Box<T> {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[泛型验证]\n");
+            Console.writeString("[泛型验证]\n");
 
             Box<int> bi = new Box<int>();
             bi.set(42);
             int vi = bi.get();
-            __myp_print("  Box<int>: "); __myp_print_int(vi); __myp_print("\n");
+            Console.writeString("  Box<int>: "); Console.write(vi); Console.writeString("\n");
 
             Box<double> bd = new Box<double>();
             bd.set(3.14);
             double vd = bd.get();
-            __myp_print("  Box<double>: "); __myp_print_float(vd); __myp_print("\n");
+            Console.writeString("  Box<double>: "); Console.writeFloat(vd); Console.writeString("\n");
 
-            __myp_print("[OK] 泛型验证通过\n");
+            Console.writeString("[OK] 泛型验证通过\n");
         }
 }
 

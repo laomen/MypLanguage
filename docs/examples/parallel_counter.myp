@@ -3,18 +3,19 @@
 // 输出交替出现证明真正的并发执行
 
 import env;
+import time;
 
 class CounterA {
     action:
         @startup void run() {
             int i=0;
             while(i<10){
-                __myp_print("[A] count=");
-                __myp_print_int(i);
-                __myp_sleep_ms(10);
+                Console.writeString("[A] count=");
+                Console.write(i);
+                Time.sleep(10);
                 i=i+1;
             }
-            __myp_print("[A] DONE\n");
+            Console.writeString("[A] DONE\n");
             done();
         }
     event:
@@ -26,12 +27,12 @@ class CounterB {
         @startup void run() {
             int i=0;
             while(i<10){
-                __myp_print("  [B] count=");
-                __myp_print_int(i);
-                __myp_sleep_ms(10);
+                Console.writeString("  [B] count=");
+                Console.write(i);
+                Time.sleep(10);
                 i=i+1;
             }
-            __myp_print("  [B] DONE\n");
+            Console.writeString("  [B] DONE\n");
             done();
         }
     event:
@@ -41,13 +42,13 @@ class CounterB {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[Main] Starting two threads...\n");
+            Console.writeString("[Main] Starting two threads...\n");
             CounterA a = new CounterA() @thread;
             CounterB b = new CounterB() @thread;
 
             // 等待线程完成（给线程时间执行）
-            __myp_sleep_ms(300);
-            __myp_print("[Main] Both threads completed\n");
+            Time.sleep(300);
+            Console.writeString("[Main] Both threads completed\n");
         }
 }
 

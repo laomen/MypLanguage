@@ -27,6 +27,34 @@ class File {
         int hasNext() {
             return __myp_io_has_next();
         }
+        // 读取一个字节（返回 -1 表示结束）
+        int readByte() {
+            return __myp_io_read_byte();
+        }
+        // 读取一个 32 位大端整数
+        int readI32BE() {
+            return __myp_io_read_i32be();
+        }
+        // 读取一个 64 位双精度浮点数
+        double readDouble() {
+            return __myp_io_read_double();
+        }
+        // 写入一个字节
+        int writeByte(int v) {
+            return __myp_io_write_byte(v);
+        }
+        // 写入一个 32 位大端整数
+        int writeI32BE(int v) {
+            return __myp_io_write_i32be(v);
+        }
+        // 写入一个 64 位双精度浮点数
+        int writeDouble(double v) {
+            return __myp_io_write_double(v);
+        }
+        // 定位到文件位置（whence: 0=SET, 1=CUR, 2=END）
+        int seek(int offset, int whence) {
+            return __myp_io_seek(offset, whence);
+        }
     property:
         string path;
         bool isOpen;

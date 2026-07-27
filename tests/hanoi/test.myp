@@ -6,14 +6,14 @@ import env;
 // 递归汉诺塔
 void hanoi(int n, string from, string to, string aux) {
     if(n == 1){
-        __myp_print("  Move disk 1 from "); __myp_print(from);
-        __myp_print(" to "); __myp_print(to); __myp_print("\n");
+        Console.writeString("  Move disk 1 from "); Console.writeString(from);
+        Console.writeString(" to "); Console.writeString(to); Console.writeString("\n");
         return;
     }
     hanoi(n-1, from, aux, to);
-    __myp_print("  Move disk "); __myp_print_int(n);
-    __myp_print(" from "); __myp_print(from);
-    __myp_print(" to "); __myp_print(to); __myp_print("\n");
+    Console.writeString("  Move disk "); Console.write(n);
+    Console.writeString(" from "); Console.writeString(from);
+    Console.writeString(" to "); Console.writeString(to); Console.writeString("\n");
     hanoi(n-1, aux, to, from);
 }
 
@@ -32,33 +32,33 @@ int fib(int n) {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[递归验证]\n\n");
+            Console.writeString("[递归验证]\n\n");
 
             // 1. 阶乘
-            __myp_print("阶乘:\n");
+            Console.writeString("阶乘:\n");
             int i=1;
             while(i<=7){
-                __myp_print("  "); __myp_print_int(i);
-                __myp_print("! = "); __myp_print_int(fact(i));
-                __myp_print("\n");
+                Console.writeString("  "); Console.write(i);
+                Console.writeString("! = "); Console.write(fact(i));
+                Console.writeString("\n");
                 i=i+1;
             }
 
             // 2. 斐波那契
-            __myp_print("\n斐波那契:\n");
+            Console.writeString("\n斐波那契:\n");
             i=1;
             while(i<=10){
-                __myp_print("  fib("); __myp_print_int(i);
-                __myp_print(") = "); __myp_print_int(fib(i));
-                __myp_print("\n");
+                Console.writeString("  fib("); Console.write(i);
+                Console.writeString(") = "); Console.write(fib(i));
+                Console.writeString("\n");
                 i=i+1;
             }
 
             // 3. 汉诺塔（3层）
-            __myp_print("\n汉诺塔(3层):\n");
+            Console.writeString("\n汉诺塔(3层):\n");
             hanoi(3, "A", "C", "B");
 
-            __myp_print("\n[OK] 递归验证通过\n");
+            Console.writeString("\n[OK] 递归验证通过\n");
         }
 }
 

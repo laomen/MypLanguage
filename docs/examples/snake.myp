@@ -1,3 +1,4 @@
+import time;
 // ============================================================
 // Snake Game — MYP Language Demo
 // ============================================================
@@ -15,6 +16,7 @@
 // ============================================================
 
 import env;
+import time;
 
 class SnakeGame {
     action:
@@ -95,7 +97,7 @@ class SnakeGame {
                 }
 
                 draw();
-                __myp_sleep_ms(200);
+                Time.sleep(200);
             }
 
             // ---- Goodbye ----

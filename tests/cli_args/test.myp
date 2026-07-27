@@ -7,10 +7,10 @@ import env;
 class Main {
     action:
         @startup void run() {
-            __myp_print("[命令行参数验证]\n");
-            __myp_print("  此测试验证 main(argc, argv) 语法编译通过\n");
-            __myp_print("  编译: OK\n");
-            __myp_print("[OK] main(argc, argv) 验证通过\n");
+            Console.writeString("[命令行参数验证]\n");
+            Console.writeString("  此测试验证 main(argc, argv) 语法编译通过\n");
+            Console.writeString("  编译: OK\n");
+            Console.writeString("[OK] main(argc, argv) 验证通过\n");
         }
 }
 

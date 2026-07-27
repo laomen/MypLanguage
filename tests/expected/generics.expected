@@ -2,4 +2,5 @@
   Box<int>: 42
 
   Box<double>: 3.14
+
 [OK] 泛型验证通过

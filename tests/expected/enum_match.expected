@@ -4,4 +4,5 @@
   Option.Some: index=0 data(v)=0
 
   Shape: Circle variant=0 radius=0
+
 [OK] 枚举验证通过

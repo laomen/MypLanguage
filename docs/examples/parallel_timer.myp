@@ -2,6 +2,7 @@
 // 两个 @thread 线程各自有独立定时器，交替触发证明并发
 
 import env;
+import timeline;
 
 class AWorker {
     action:
@@ -10,8 +11,8 @@ class AWorker {
         }
         void onTick(){
             c=c+1;
-            __myp_print("[A] "); __myp_print_int(c); __myp_print("\n");
-            if(c>=6){__myp_print("[A] DONE\n");done();}
+            Console.writeString("[A] "); Console.write(c); Console.writeString("\n");
+            if(c>=6){Console.writeString("[A] DONE\n");done();}
         }
     event:
         tick();done();
@@ -28,8 +29,8 @@ class BWorker {
         }
         void onTick(){
             c=c+1;
-            __myp_print("  [B] "); __myp_print_int(c); __myp_print("\n");
-            if(c>=6){__myp_print("  [B] DONE\n");done();}
+            Console.writeString("  [B] "); Console.write(c); Console.writeString("\n");
+            if(c>=6){Console.writeString("  [B] DONE\n");done();}
         }
     event:
         tick();done();
@@ -42,12 +43,12 @@ mapping() { BWorker.tick -> BWorker.onTick; }
 class Main {
     action:
         @startup void run() {
-            __myp_print("[Main] Starting two timer threads...\n");
-            __myp_print("[Main] A @20ms  B @35ms\n");
+            Console.writeString("[Main] Starting two timer threads...\n");
+            Console.writeString("[Main] A @20ms  B @35ms\n");
             AWorker aw=new AWorker() @thread;
             BWorker bw=new BWorker() @thread;
             __myp_sleep_ms(500);
-            __myp_print("[Main] Done\n");
+            Console.writeString("[Main] Done\n");
         }
 }
 

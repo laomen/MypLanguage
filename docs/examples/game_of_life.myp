@@ -1,3 +1,4 @@
+import time;
 // ============================================================
 // Conway's Game of Life — MYP Language Demo
 // ============================================================
@@ -18,6 +19,7 @@
 // ============================================================
 
 import env;
+import time;
 
 class GameOfLife {
     action:
@@ -57,7 +59,7 @@ class GameOfLife {
 
                 draw();
                 Console.flush();
-                __myp_sleep_ms(speed);
+                Time.sleep(speed);
             }
         }
 

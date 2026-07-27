@@ -35,21 +35,21 @@ class Rectangle {
 class Main {
     action:
         @startup void run() {
-            __myp_print("[Interface 验证]\n");
+            Console.writeString("[Interface 验证]\n");
 
             Circle c = new Circle();
             double ca = c.area();
             double cp = c.perimeter();
-            __myp_print("Circle: area="); __myp_print_float(ca);
-            __myp_print(" perim="); __myp_print_float(cp); __myp_print("\n");
+            Console.writeString("Circle: area="); Console.writeFloat(ca);
+            Console.writeString(" perim="); Console.writeFloat(cp); Console.writeString("\n");
 
             Rectangle r = new Rectangle();
             double ra = r.area();
             double rp = r.perimeter();
-            __myp_print("Rect: area="); __myp_print_float(ra);
-            __myp_print(" perim="); __myp_print_float(rp); __myp_print("\n");
+            Console.writeString("Rect: area="); Console.writeFloat(ra);
+            Console.writeString(" perim="); Console.writeFloat(rp); Console.writeString("\n");
 
-            __myp_print("[OK] Interface 验证通过\n");
+            Console.writeString("[OK] Interface 验证通过\n");
         }
 }
 
