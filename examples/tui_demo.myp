@@ -73,4 +73,7 @@ class CounterApp {
         }
 }
 
-int main() { return 0; }
+int main() {
+    CounterApp app = new CounterApp();
+    return 0;
+}

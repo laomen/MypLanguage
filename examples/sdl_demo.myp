@@ -62,4 +62,7 @@ class App {
         }
 }
 
-int main() { return 0; }
+int main() {
+    App app = new App();
+    return 0;
+}
