@@ -11,4 +11,31 @@ ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_width();
 ffi int  myp_sdl_height();
-ffi int  myp_sdl_delay(int ms);
+ffi void myp_sdl_delay(int ms);
+
+class SDL {
+    static:
+        int open(string title, int w, int h) {
+            return myp_sdl_init(title, w, h);
+        }
+        void close() { myp_sdl_quit(); }
+        bool running() { return myp_sdl_has_quit_event() == 0; }
+        void clear(int r, int g, int b, int a) { myp_sdl_clear(r, g, b, a); }
+        void present() { myp_sdl_present(); }
+        void drawRect(int x, int y, int w, int h, int r, int g, int b, int a) {
+            myp_sdl_draw_rect(x, y, w, h, r, g, b, a);
+        }
+        void drawOutline(int x, int y, int w, int h, int r, int g, int b, int a) {
+            myp_sdl_draw_rect_outline(x, y, w, h, r, g, b, a);
+        }
+        void drawCircle(int cx, int cy, int radius, int r, int g, int b, int a) {
+            myp_sdl_draw_circle(cx, cy, radius, r, g, b, a);
+        }
+        void drawLine(int x1, int y1, int x2, int y2, int r, int g, int b, int a) {
+            myp_sdl_draw_line(x1, y1, x2, y2, r, g, b, a);
+        }
+        int getKey() { return myp_sdl_get_key(); }
+        int width()  { return myp_sdl_width(); }
+        int height() { return myp_sdl_height(); }
+        void delay(int ms) { myp_sdl_delay(ms); }
+}
