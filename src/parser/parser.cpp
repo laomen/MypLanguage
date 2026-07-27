@@ -965,11 +965,41 @@ std::unique_ptr<Expr> Parser::parseLogicalOr() {
 }
 
 std::unique_ptr<Expr> Parser::parseLogicalAnd() {
-    auto expr = parseEquality();
+    auto expr = parseBitwiseOr();
     while (match(TokenKind::AndAnd)) {
-        auto rhs = parseEquality();
+        auto rhs = parseBitwiseOr();
         expr = std::make_unique<BinaryOpExpr>(
             std::move(expr), BinaryOpKind::And, std::move(rhs), previous().range);
+    }
+    return expr;
+}
+
+std::unique_ptr<Expr> Parser::parseBitwiseOr() {
+    auto expr = parseBitwiseXor();
+    while (match(TokenKind::Pipe)) {
+        auto rhs = parseBitwiseXor();
+        expr = std::make_unique<BinaryOpExpr>(
+            std::move(expr), BinaryOpKind::BitOr, std::move(rhs), previous().range);
+    }
+    return expr;
+}
+
+std::unique_ptr<Expr> Parser::parseBitwiseXor() {
+    auto expr = parseBitwiseAnd();
+    while (match(TokenKind::Caret)) {
+        auto rhs = parseBitwiseAnd();
+        expr = std::make_unique<BinaryOpExpr>(
+            std::move(expr), BinaryOpKind::BitXor, std::move(rhs), previous().range);
+    }
+    return expr;
+}
+
+std::unique_ptr<Expr> Parser::parseBitwiseAnd() {
+    auto expr = parseEquality();
+    while (match(TokenKind::Amp)) {
+        auto rhs = parseEquality();
+        expr = std::make_unique<BinaryOpExpr>(
+            std::move(expr), BinaryOpKind::BitAnd, std::move(rhs), previous().range);
     }
     return expr;
 }
@@ -993,24 +1023,42 @@ std::unique_ptr<Expr> Parser::parseEquality() {
 }
 
 std::unique_ptr<Expr> Parser::parseRelational() {
-    auto expr = parseAdditive();
+    auto expr = parseShift();
     while (true) {
         if (match(TokenKind::Less)) {
-            auto rhs = parseAdditive();
+            auto rhs = parseShift();
             expr = std::make_unique<BinaryOpExpr>(
                 std::move(expr), BinaryOpKind::Lt, std::move(rhs), previous().range);
         } else if (match(TokenKind::Greater)) {
-            auto rhs = parseAdditive();
+            auto rhs = parseShift();
             expr = std::make_unique<BinaryOpExpr>(
                 std::move(expr), BinaryOpKind::Gt, std::move(rhs), previous().range);
         } else if (match(TokenKind::LessEqual)) {
-            auto rhs = parseAdditive();
+            auto rhs = parseShift();
             expr = std::make_unique<BinaryOpExpr>(
                 std::move(expr), BinaryOpKind::Le, std::move(rhs), previous().range);
         } else if (match(TokenKind::GreaterEqual)) {
-            auto rhs = parseAdditive();
+            auto rhs = parseShift();
             expr = std::make_unique<BinaryOpExpr>(
                 std::move(expr), BinaryOpKind::Ge, std::move(rhs), previous().range);
+        } else {
+            break;
+        }
+    }
+    return expr;
+}
+
+std::unique_ptr<Expr> Parser::parseShift() {
+    auto expr = parseAdditive();
+    while (true) {
+        if (match(TokenKind::LessLess)) {
+            auto rhs = parseAdditive();
+            expr = std::make_unique<BinaryOpExpr>(
+                std::move(expr), BinaryOpKind::Shl, std::move(rhs), previous().range);
+        } else if (match(TokenKind::GreaterGreater)) {
+            auto rhs = parseAdditive();
+            expr = std::make_unique<BinaryOpExpr>(
+                std::move(expr), BinaryOpKind::Shr, std::move(rhs), previous().range);
         } else {
             break;
         }

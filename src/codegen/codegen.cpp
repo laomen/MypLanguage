@@ -1814,12 +1814,13 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
 }
 
 llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
-    // Use the type determined by Sema if available, else default to i32
-    if (e.type) {
-        auto* lt = getLLVMType(builtinTypeToInfo(e.type->basic_type));
-        if (lt) return llvm::ConstantInt::get(lt, e.value, true);
+    auto val = e.value;
+    // Determine integer width from value range (same logic as sema)
+    bool fits_i32 = (val >= -2147483648LL && val <= 2147483647LL);
+    if (fits_i32) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), val, true);
     }
-    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), e.value, true);
+    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), val, true);
 }
 llvm::Value* CodeGen::generateFloatLiteral(const FloatLiteralExpr& e) {
     return llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx_), e.value);
@@ -1996,6 +1997,11 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::Ge:  return fp ? builder_.CreateFCmpOGE(l, r) : builder_.CreateICmpSGE(l, r);
         case BinaryOpKind::And: return builder_.CreateAnd(l, r);
         case BinaryOpKind::Or:  return builder_.CreateOr(l, r);
+        case BinaryOpKind::BitAnd: return builder_.CreateAnd(l, r);
+        case BinaryOpKind::BitOr:  return builder_.CreateOr(l, r);
+        case BinaryOpKind::BitXor: return builder_.CreateXor(l, r);
+        case BinaryOpKind::Shl:    return builder_.CreateShl(l, r);
+        case BinaryOpKind::Shr:    return builder_.CreateAShr(l, r);
     }
     return nullptr;
 }

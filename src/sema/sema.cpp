@@ -722,6 +722,12 @@ TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {
     else if (val >= -2147483648LL && val <= 2147483647LL) result = TypeInfo(TypeKind::Int);
     else                                      result = TypeInfo(TypeKind::Long);
     // Store resolved type on the expression for codegen to use
+    if (expr.type == nullptr) {
+        // Allocate a persistent TypeNode
+        static TypeNode long_type, int_type, short_type, byte_type;
+        // Use a simple approach: store the type in a static map by expr pointer
+        // For now, rely on codegen to re-derive from value
+    }
     return result;
 }
 
@@ -830,6 +836,18 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
             expectBool(lhs_type, expr.lhs->range);
             expectBool(rhs_type, expr.rhs->range);
             return TypeInfo(TypeKind::Bool);
+
+        case BinaryOpKind::BitAnd: case BinaryOpKind::BitOr:
+        case BinaryOpKind::BitXor: case BinaryOpKind::Shl:
+        case BinaryOpKind::Shr:
+            if (!expectNumeric(lhs_type, expr.lhs->range) ||
+                !expectNumeric(rhs_type, expr.rhs->range)) {
+                return TypeInfo(TypeKind::Int);
+            }
+            // Bitwise on integer types: promote to int/long
+            if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long)
+                return TypeInfo(TypeKind::Long);
+            return TypeInfo(TypeKind::Int);
     }
     return TypeInfo(TypeKind::Void);
 

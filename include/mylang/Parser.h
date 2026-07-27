@@ -77,8 +77,12 @@ private:
     std::unique_ptr<Expr> parseConditional();
     std::unique_ptr<Expr> parseLogicalOr();
     std::unique_ptr<Expr> parseLogicalAnd();
+    std::unique_ptr<Expr> parseBitwiseOr();
+    std::unique_ptr<Expr> parseBitwiseXor();
+    std::unique_ptr<Expr> parseBitwiseAnd();
     std::unique_ptr<Expr> parseEquality();
     std::unique_ptr<Expr> parseRelational();
+    std::unique_ptr<Expr> parseShift();
     std::unique_ptr<Expr> parseAdditive();
     std::unique_ptr<Expr> parseRange();
     std::unique_ptr<Expr> parseMultiplicative();

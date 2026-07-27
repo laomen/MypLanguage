@@ -272,6 +272,7 @@ enum class BinaryOpKind {
     Add, Sub, Mul, Div, Mod,
     Eq, Ne, Lt, Gt, Le, Ge,
     And, Or,
+    BitAnd, BitOr, BitXor, Shl, Shr,
 };
 
 struct BinaryOpExpr : Expr {

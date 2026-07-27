@@ -131,6 +131,8 @@ void Lexer::scanToken() {
         case '<':
             if (match('=')) {
                 tokens_.emplace_back(TokenKind::LessEqual, currentRange());
+            } else if (match('<')) {
+                tokens_.emplace_back(TokenKind::LessLess, currentRange());
             } else {
                 tokens_.emplace_back(TokenKind::Less, currentRange());
             }
@@ -138,6 +140,8 @@ void Lexer::scanToken() {
         case '>':
             if (match('=')) {
                 tokens_.emplace_back(TokenKind::GreaterEqual, currentRange());
+            } else if (match('>')) {
+                tokens_.emplace_back(TokenKind::GreaterGreater, currentRange());
             } else {
                 tokens_.emplace_back(TokenKind::Greater, currentRange());
             }
@@ -146,15 +150,18 @@ void Lexer::scanToken() {
             if (match('&')) {
                 tokens_.emplace_back(TokenKind::AndAnd, currentRange());
             } else {
-                diag_.error(currentRange(), "expected '&&'");
+                tokens_.emplace_back(TokenKind::Amp, currentRange());
             }
             break;
         case '|':
             if (match('|')) {
                 tokens_.emplace_back(TokenKind::OrOr, currentRange());
             } else {
-                diag_.error(currentRange(), "expected '||'");
+                tokens_.emplace_back(TokenKind::Pipe, currentRange());
             }
+            break;
+        case '^':
+            tokens_.emplace_back(TokenKind::Caret, currentRange());
             break;
 
         // String literals

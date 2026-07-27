@@ -87,6 +87,13 @@ enum class TokenKind : uint16_t {
     LessEqual,      // <=
     GreaterEqual,   // >=
 
+    // Bitwise
+    LessLess,       // <<
+    GreaterGreater, // >>
+    Amp,            // &
+    Caret,          // ^
+    Pipe,           // |
+
     // Logical
     AndAnd,         // &&
     OrOr,           // ||
