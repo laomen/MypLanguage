@@ -1,8 +1,9 @@
 // xor.myp — 组件化 XOR 训练示例
 //
-// 每个算子为独立组件，Trainer 编排训练循环。
-// 注意：MYP 当前不支持反向传播所需的全微分操作，
-// 故训练逻辑内联在 Trainer 中演示。
+// MYP 现已支持：
+//   ✅ 公共属性 — 同层内直接读写 input_[i] / output_[i]
+//   ✅ 数组参数 — double[] 批量传递层间数据
+//   ⚠ 跨类属性访问（o.w_[i]）仍需 getter/setter（编译器限制）
 //
 // 运行: ./build/mypc deeplearning/component/xor.myp
 //        && ./deeplearning/component/xor.out
@@ -11,7 +12,6 @@ import env;
 import math;
 import "./layers.myp";
 
-// 辅助函数：Sigmoid 和其导数
 double sig(double x) {
     double neg = 0.0 - x;
     return 1.0 / (1.0 + Math.exp(neg));
@@ -21,25 +21,19 @@ double sig_d(double x) {
     return s * (1.0 - s);
 }
 
-// ============================================================
-// Trainer — 训练控制器（含前向 + 反向传播）
-// ============================================================
 class Trainer {
     action:
         @startup void run() {
-            // 训练数据: XOR
-            x0_[0]=0.0; x0_[1]=0.0; x0_[2]=1.0; x0_[3]=1.0;
-            x1_[0]=0.0; x1_[1]=1.0; x1_[2]=0.0; x1_[3]=1.0;
-            targets_[0]=0.0; targets_[1]=1.0; targets_[2]=1.0; targets_[3]=0.0;
+            double[4] x0; x0[0]=0.0; x0[1]=0.0; x0[2]=1.0; x0[3]=1.0;
+            double[4] x1; x1[0]=0.0; x1[1]=1.0; x1[2]=0.0; x1[3]=1.0;
+            double[4] t; t[0]=0.0; t[1]=1.0; t[2]=1.0; t[3]=0.0;
 
             Console.writeLine("=== 组件化 XOR 训练 2->4->1 ===");
 
-            // 创建并配置组件
             Dense h = new Dense(2, 4); h.configure(2, 4);
             Sigmoid hs = new Sigmoid(4); hs.configure(4);
             Dense o = new Dense(4, 1); o.configure(4, 1);
             Sigmoid os = new Sigmoid(1); os.configure(1);
-            LossMSE loss = new LossMSE(1);
             h.initW(); o.initW();
 
             double lr = 0.5;
@@ -49,95 +43,63 @@ class Trainer {
             while (ep < epochs) {
                 int s = 0;
                 while (s < 4) {
-                    // ====== 前向传播 ======
-                    h.setInput(0, x0_[s]); h.setInput(1, x1_[s]); h.forward();
+                    // 前向（直接读写公共属性 + 数组参数批量拷贝）
+                    h.input_[0] = x0[s]; h.input_[1] = x1[s]; h.forward();
+                    hs.setInputFrom(h.output_); hs.forward();
+                    o.setInputFrom(hs.output_); o.forward();
+                    os.input_[0] = o.output_[0]; os.forward();
 
-                    hs.setInput(0, h.getOutput(0)); hs.setInput(1, h.getOutput(1));
-                    hs.setInput(2, h.getOutput(2)); hs.setInput(3, h.getOutput(3)); hs.forward();
-
-                    o.setInput(0, hs.getOutput(0)); o.setInput(1, hs.getOutput(1));
-                    o.setInput(2, hs.getOutput(2)); o.setInput(3, hs.getOutput(3)); o.forward();
-
-                    os.setInput(0, o.getOutput(0)); os.forward();
-
-                    // ====== 反向传播（内联，因组件不支持自动微分）======
-
-                    // 输出层误差
-                    double pred = os.getOutput(0);
-                    double target = targets_[s];
-                    double d_out = (pred - target) * sig_d(o.getOutput(0));
-
-                    // 隐藏层误差
+                    // 反向（跨类权重访问用 getter/setter）
+                    double pred = os.output_[0];
+                    double d_out = (pred - t[s]) * sig_d(o.output_[0]);
                     int j = 0; while (j < 4) {
-                        d_hid_[j] = d_out * o.getW(0, j) * sig_d(h.getOutput(j));
+                        d_hid_[j] = d_out * o.getW(0, j) * sig_d(h.output_[j]);
                         j = j + 1;
                     }
-
-                    // 更新输出层权重 (4->1)
                     j = 0; while (j < 4) {
-                        double g = d_out * hs.getOutput(j);
-                        o.setW(0, j, o.getW(0, j) - lr * g);
+                        o.setW(0, j, o.getW(0, j) - lr * d_out * hs.output_[j]);
                         j = j + 1;
                     }
                     o.setB(0, o.getB(0) - lr * d_out);
-
-                    // 更新隐藏层权重 (2->4)
                     j = 0; while (j < 4) {
-                        double dj = d_hid_[j];
-                        double g0 = dj * x0_[s];
-                        double g1 = dj * x1_[s];
-                        // 隐藏层有 4 个输出神经元，每个有 2 个输入权重
-                        // 需要通过多次 setW 调用来更新
-                        h.setW(0, j, h.getW(0, j) - lr * g0);  // w_j0
-                        h.setW(1, j, h.getW(1, j) - lr * g1);  // w_j1
-                        j = j + 1;
-                    }
-                    // 更新隐藏层偏置
-                    j = 0; while (j < 4) {
+                        h.setW(0, j, h.getW(0, j) - lr * d_hid_[j] * x0[s]);
+                        h.setW(1, j, h.getW(1, j) - lr * d_hid_[j] * x1[s]);
                         h.setB(j, h.getB(j) - lr * d_hid_[j]);
                         j = j + 1;
                     }
-
                     s = s + 1;
                 }
 
-                // 每 1000 轮打印预测
                 if (ep % 1000 == 0) {
                     Console.writeString("  Ep "); Console.writeLong(ep); Console.writeString(" -> ");
-                    int t = 0; while (t < 4) {
-                        h.setInput(0, x0_[t]); h.setInput(1, x1_[t]); h.forward();
-                        hs.setInput(0, h.getOutput(0)); hs.setInput(1, h.getOutput(1));
-                        hs.setInput(2, h.getOutput(2)); hs.setInput(3, h.getOutput(3)); hs.forward();
-                        o.setInput(0, hs.getOutput(0)); o.setInput(1, hs.getOutput(1));
-                        o.setInput(2, hs.getOutput(2)); o.setInput(3, hs.getOutput(3)); o.forward();
-                        os.setInput(0, o.getOutput(0)); os.forward();
-                        if (os.getOutput(0) >= 0.5) Console.writeString("1 "); else Console.writeString("0 ");
-                        t = t + 1;
+                    int t2 = 0; while (t2 < 4) {
+                        h.input_[0]=x0[t2]; h.input_[1]=x1[t2]; h.forward();
+                        hs.setInputFrom(h.output_); hs.forward();
+                        o.setInputFrom(hs.output_); o.forward();
+                        os.input_[0]=o.output_[0]; os.forward();
+                        if (os.output_[0] >= 0.5) Console.writeString("1 "); else Console.writeString("0 ");
+                        t2 = t2 + 1;
                     }
                     Console.writeLine("");
                 }
                 ep = ep + 1;
             }
 
-            // 最终输出
             Console.writeLine("  最终输出:");
-            int t = 0; while (t < 4) {
-                h.setInput(0, x0_[t]); h.setInput(1, x1_[t]); h.forward();
-                hs.setInput(0, h.getOutput(0)); hs.setInput(1, h.getOutput(1));
-                hs.setInput(2, h.getOutput(2)); hs.setInput(3, h.getOutput(3)); hs.forward();
-                o.setInput(0, hs.getOutput(0)); o.setInput(1, hs.getOutput(1));
-                o.setInput(2, hs.getOutput(2)); o.setInput(3, hs.getOutput(3)); o.forward();
-                os.setInput(0, o.getOutput(0)); os.forward();
-                Console.writeString("  "); Console.writeFloat(x0_[t]);
-                Console.writeString(", "); Console.writeFloat(x1_[t]);
-                Console.writeString(" -> "); Console.writeFloat(os.getOutput(0)); Console.writeLine("");
-                t = t + 1;
+            int t2 = 0; while (t2 < 4) {
+                h.input_[0]=x0[t2]; h.input_[1]=x1[t2]; h.forward();
+                hs.setInputFrom(h.output_); hs.forward();
+                o.setInputFrom(hs.output_); o.forward();
+                os.input_[0]=o.output_[0]; os.forward();
+                Console.writeString("  "); Console.writeFloat(x0[t2]);
+                Console.writeString(", "); Console.writeFloat(x1[t2]);
+                Console.writeString(" -> "); Console.writeFloat(os.output_[0]); Console.writeLine("");
+                t2 = t2 + 1;
             }
         }
 
     property:
-        double[4] x0_; double[4] x1_; double[4] targets_;
-        double[4] d_hid_;  // hidden layer gradients
+        double[4] d_hid_;
 }
 
 int main() {

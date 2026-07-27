@@ -948,15 +948,9 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     if (current_tu_) {
         for (auto& cls : current_tu_->classes) {
             if (cls.name == obj_type.class_name) {
-                // Properties are private — only accessible via 'this'
+                // Properties — accessible from anywhere
                 for (auto& prop : cls.properties) {
                     if (prop.name == expr.member_name) {
-                        bool is_this = expr.object->kind == ExprKind::ThisExpr;
-                        if (!is_this) {
-                            error(expr.range, "cannot access property '" + prop.name +
-                                  "' from outside class '" + cls.name + "'");
-                            return TypeInfo(TypeKind::Void);
-                        }
                         return typeNodeToTypeInfo(prop.type);
                     }
                 }

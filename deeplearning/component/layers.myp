@@ -1,12 +1,11 @@
 // layers.myp — 组件化神经网络算子
 //
-// 每个算子是一个独立 class：
-//   Dense     — 全连接层 y = Wx + b
-//   Sigmoid   — 激活函数
-//   LossMSE   — 均方误差损失
+// MYP 现已支持：
+//   ✅ 公共属性 — 可直接读写 layer.output_[idx]
+//   ✅ 数组参数 — 可直接传递 double[] 数组
 
 // ============================================================
-// Dense — 全连接层
+// Dense — 全连接层 y = Wx + b
 // ============================================================
 class Dense {
     action:
@@ -27,14 +26,19 @@ class Dense {
             i = 0; while (i < nOut_) { b_[i] = 0.0; i = i + 1; }
         }
 
-        void setInput(int idx, double v) { input_[idx] = v; }
-        double getOutput(int idx) { return output_[idx]; }
+        // 批量设置输入（直接传递数组）
+        void setInputFrom(double[] src) {
+            int i = 0; while (i < nIn_) { input_[i] = src[i]; i = i + 1; }
+        }
+        // 批量拷贝输出
+        void copyOutputTo(double[] dst) {
+            int i = 0; while (i < nOut_) { dst[i] = output_[i]; i = i + 1; }
+        }
 
         double getW(int i, int j) { return w_[i * nIn_ + j]; }
         void setW(int i, int j, double v) { w_[i * nIn_ + j] = v; }
         double getB(int idx) { return b_[idx]; }
         void setB(int idx, double v) { b_[idx] = v; }
-
         void forward() {
             int i = 0;
             while (i < nOut_) {
@@ -48,10 +52,8 @@ class Dense {
             }
         }
 
-        int nIn() { return nIn_; }
-        int nOut() { return nOut_; }
-
     property:
+        // 公共属性 — 可直接读写
         int nIn_ = 0; int nOut_ = 0;
         double[1024] input_; double[1024] output_;
         double[65536] w_; double[1024] b_;
@@ -59,15 +61,19 @@ class Dense {
 
 
 // ============================================================
-// Sigmoid — 激活函数
+// Sigmoid — 激活函数（逐元素）
 // ============================================================
 class Sigmoid {
     action:
         @startup void init() {}
-
         void configure(int n) { n_ = n; }
-        void setInput(int idx, double v) { input_[idx] = v; }
-        double getOutput(int idx) { return output_[idx]; }
+
+        void setInputFrom(double[] src) {
+            int i = 0; while (i < n_) { input_[i] = src[i]; i = i + 1; }
+        }
+        void copyOutputTo(double[] dst) {
+            int i = 0; while (i < n_) { dst[i] = output_[i]; i = i + 1; }
+        }
 
         void forward() {
             int i = 0; while (i < n_) {
@@ -80,23 +86,4 @@ class Sigmoid {
     property:
         int n_ = 0;
         double[1024] input_; double[1024] output_;
-}
-
-
-// ============================================================
-// LossMSE — 均方误差损失
-// ============================================================
-class LossMSE {
-    action:
-        @startup void init() {}
-
-        double getLoss() { return loss_; }
-        void compute(double pred, double target) {
-            double diff = pred - target;
-            loss_ = 0.5 * diff * diff;
-        }
-
-    property:
-        double[1024] target_;
-        double loss_;
 }

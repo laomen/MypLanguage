@@ -240,10 +240,36 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
                 auto* elem = getLLVMType(*t.element_type);
                 return llvm::ArrayType::get(elem, t.array_size);
             }
+            // Unsized array (int[]) — pass as pointer
             return llvm::PointerType::get(ctx_, 0);
         }
     }
     return llvm::Type::getVoidTy(ctx_);
+}
+
+/// Convert a TypeNode (from AST) to TypeInfo for codegen use.
+/// Properly handles array types (both sized and unsized).
+TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
+    if (node.isArray() && node.element_type) {
+        TypeInfo result(TypeKind::Array);
+        result.array_size = node.array_size;
+        result.element_type = std::make_shared<TypeInfo>(
+            typeNodeToCodegenType(*node.element_type));
+        return result;
+    }
+    if (!node.class_name.empty()) {
+        if (getClassStruct(node.class_name)) {
+            TypeInfo result(TypeKind::Class);
+            result.class_name = node.class_name;
+            return result;
+        }
+        if (getStructType(node.class_name)) {
+            TypeInfo result(TypeKind::Struct);
+            result.class_name = node.class_name;
+            return result;
+        }
+    }
+    return builtinTypeToInfo(node.basic_type);
 }
 
 // -- Symbol table --
@@ -347,15 +373,10 @@ void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& acti
     if (module_->getFunction(fn)) return;
     std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};
     for (auto& p : action.params) {
-        TypeInfo pt;
-        if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
-        } else {
-            pt = builtinTypeToInfo(p.type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(p.type);
         pts.push_back(getLLVMType(pt));
     }
-    auto* ft = llvm::FunctionType::get(getLLVMType(builtinTypeToInfo(action.return_type.basic_type)), pts, false);
+    auto* ft = llvm::FunctionType::get(getLLVMType(typeNodeToCodegenType(action.return_type)), pts, false);
     llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
     // Track if this is a static action for later use
     is_static_action_[fn] = false;
@@ -366,15 +387,10 @@ void CodeGen::createStaticActionDecl(const ClassDecl& cls, const ActionDecl& act
     if (module_->getFunction(fn)) return;
     std::vector<llvm::Type*> pts;
     for (auto& p : action.params) {
-        TypeInfo pt;
-        if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
-        } else {
-            pt = builtinTypeToInfo(p.type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(p.type);
         pts.push_back(getLLVMType(pt));
     }
-    auto* ft = llvm::FunctionType::get(getLLVMType(builtinTypeToInfo(action.return_type.basic_type)), pts, false);
+    auto* ft = llvm::FunctionType::get(getLLVMType(typeNodeToCodegenType(action.return_type)), pts, false);
     llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
     is_static_action_[fn] = true;
 }
@@ -465,12 +481,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     setNamedValue("this", this_a);
 
     for (size_t i = 0; i < action.params.size(); ++i) {
-        TypeInfo pt;
-        if (!action.params[i].type.class_name.empty() && getClassStruct(action.params[i].type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = action.params[i].type.class_name;
-        } else {
-            pt = builtinTypeToInfo(action.params[i].type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(action.params[i].name, a);
@@ -497,12 +508,7 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     pushScope();
 
     for (size_t i = 0; i < action.params.size(); ++i) {
-        TypeInfo pt;
-        if (!action.params[i].type.class_name.empty() && getClassStruct(action.params[i].type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = action.params[i].type.class_name;
-        } else {
-            pt = builtinTypeToInfo(action.params[i].type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i), a);
         setNamedValue(action.params[i].name, a);
@@ -606,18 +612,10 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 
     std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};
     for (auto& p : fn_decl.params) {
-        TypeInfo pt;
-        if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
-        } else if (!p.type.class_name.empty() && getStructType(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Struct); pt.class_name = p.type.class_name;
-        } else {
-            pt = builtinTypeToInfo(p.type.basic_type);
-        }
-        pts.push_back(getLLVMType(pt));
+        pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
     }
 
-    TypeInfo rt = builtinTypeToInfo(fn_decl.return_type.basic_type);
+    TypeInfo rt = typeNodeToCodegenType(fn_decl.return_type);
     auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
     auto* func = llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
 
@@ -632,14 +630,7 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     setNamedValue("this", this_a);
 
     for (size_t i = 0; i < fn_decl.params.size(); ++i) {
-        TypeInfo pt;
-        if (!fn_decl.params[i].type.class_name.empty() && getClassStruct(fn_decl.params[i].type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = fn_decl.params[i].type.class_name;
-        } else if (!fn_decl.params[i].type.class_name.empty() && getStructType(fn_decl.params[i].type.class_name)) {
-            pt = TypeInfo(TypeKind::Struct); pt.class_name = fn_decl.params[i].type.class_name;
-        } else {
-            pt = builtinTypeToInfo(fn_decl.params[i].type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(fn_decl.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), fn_decl.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(fn_decl.params[i].name, a);
@@ -655,18 +646,11 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     std::vector<llvm::Type*> pts;
     for (auto& p : decl.params) {
-        TypeInfo pt;
-        if (!p.type.class_name.empty() && getClassStruct(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Class); pt.class_name = p.type.class_name;
-        } else if (!p.type.class_name.empty() && getStructType(p.type.class_name)) {
-            pt = TypeInfo(TypeKind::Struct); pt.class_name = p.type.class_name;
-        } else {
-            pt = builtinTypeToInfo(p.type.basic_type);
-        }
+        TypeInfo pt = typeNodeToCodegenType(p.type);
         pts.push_back(getLLVMType(pt));
     }
 
-    TypeInfo rt = builtinTypeToInfo(decl.return_type.basic_type);
+    TypeInfo rt = typeNodeToCodegenType(decl.return_type);
     auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
     auto* func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
 
@@ -681,9 +665,14 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     i = 0;
     for (auto& arg : func->args()) {
         if (i < decl.params.size()) {
-            auto* a = createEntryBlockAlloca(func, arg.getType(), decl.params[i].name);
+            TypeInfo pt = typeNodeToCodegenType(decl.params[i].type);
+            auto* a = createEntryBlockAlloca(func, getLLVMType(pt), decl.params[i].name);
             builder_.CreateStore(&arg, a);
             setNamedValue(decl.params[i].name, a);
+            // Record array element type for subscript access
+            if (decl.params[i].type.isArray() && decl.params[i].type.element_type) {
+                array_elem_types_[decl.params[i].name] = getLLVMType(typeNodeToCodegenType(*decl.params[i].type.element_type));
+            }
         }
         ++i;
     }
@@ -1163,6 +1152,25 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     llvm::Type* lt;
     if (is_struct) {
         lt = getStructType(d.type.class_name);
+    } else if (d.type.isArray() && d.type.element_type) {
+        // Array type: allocate as array, store pointer to element 0
+        TypeInfo arr_ti = typeNodeToCodegenType(d.type);
+        lt = getLLVMType(arr_ti);
+        auto* arr_a = createEntryBlockAlloca(current_function_, lt, d.name + "_arr");
+        // Zero-init the array
+        auto arr_sz = module_->getDataLayout().getTypeAllocSize(lt);
+        if (arr_sz > 0)
+            builder_.CreateMemSet(arr_a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+                                  arr_sz, llvm::Align(8));
+        // Store pointer to first element as the variable's value
+        auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        auto* elem_ptr = builder_.CreateGEP(lt, arr_a, {zero, zero});
+        auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
+        builder_.CreateStore(elem_ptr, ptr_a);
+        setNamedValue(d.name, ptr_a);
+        // Record element type for subscript access
+        array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
+        return;
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
@@ -2021,8 +2029,13 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
             if (at->isArrayTy()) {
                 elem_ty = at->getArrayElementType();
             } else if (at->isPointerTy()) {
-                // Look up the type from codegen's type info (assume int for now)
-                elem_ty = llvm::Type::getInt32Ty(ctx_);
+                // Check if this variable has a recorded array element type
+                auto eit = array_elem_types_.find(id.name);
+                if (eit != array_elem_types_.end()) {
+                    elem_ty = eit->second;
+                } else {
+                    elem_ty = llvm::Type::getInt32Ty(ctx_);
+                }
             }
         }
     } else if (e.array->kind == ExprKind::MemberAccess) {
@@ -2207,6 +2220,12 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         }
                     }
                 }
+            }
+            // Check local array variables
+            auto eit = array_elem_types_.find(id.name);
+            if (eit != array_elem_types_.end()) {
+                elem_ty = eit->second;
+                goto assign_gep;
             }
         } else if (ss.array->kind == ExprKind::MemberAccess) {
             auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);

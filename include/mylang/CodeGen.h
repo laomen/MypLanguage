@@ -156,6 +156,8 @@ private:
 
     // ---- Variable name → class name map (for method resolution) ----
     std::unordered_map<std::string, std::string> var_class_map_;
+    /// Track element types for local array variables (for subscript codegen).
+    std::unordered_map<std::string, llvm::Type*> array_elem_types_;
 
     // ---- Global event ID map: "ClassName::eventName" -> int ----
     std::unordered_map<std::string, int> event_id_map_;
@@ -178,6 +180,8 @@ private:
 
     // ---- Type mapping ----
     llvm::Type* getLLVMType(const TypeInfo& type);
+    /// Convert a TypeNode (from AST) to TypeInfo, preserving array info.
+    TypeInfo typeNodeToCodegenType(const TypeNode& node);
     llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
 
     // ---- Symbol table helpers ----
