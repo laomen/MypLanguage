@@ -894,7 +894,7 @@ class BankAccount {
 | 定时器系统 | ✅ 已实现 | `__myp_timer_create` + `myp_timer_check` 事件循环 |
 | 每线程独立定时器 | ✅ 已实现 | 定时器在所属线程的事件循环中触发 |
 | 线程生命周期管理 | ✅ 已实现 | `myp_thread_create`/`destroy`/`stop`/`join` |
-| `@threadpool` 注解 | ⚠️ 部分 | file-level 数组支持待完善 |
+| `@threadpool` 注解 | ✅ 已实现 | 函数内 `Worker[N] pool @threadpool` 可用；不支持文件级声明（需在函数中初始化，通常放 `@startup` 或 `main()`） |
 
 ---
 
@@ -1061,6 +1061,7 @@ int main() {
 | `io` | `File` 类（open/close/readLine/write/writeLine/hasNext） | ✅ 已实现 |
 | `collections` | `ArrayList<T>` 动态数组、`Queue<T>` 队列（泛型，固定容量） | ✅ 已实现 |
 | `text` | `StringBuilder` 字符串构建器 | ✅ 已实现 |
+| `ui` | 终端 TUI 框架（Window/Label/Button/TextBox/ProgressBar），纯 MYP 实现，基于 ANSI escape codes 渲染 | ✅ 已实现：stdlib/ui.myp |
 
 ### 10.6 编译器 intrinsics 系统
 
@@ -1072,6 +1073,11 @@ __myp_print_int(42);               // 打印整数 + 换行
 __myp_print_float(3.14);           // 打印浮点数
 __myp_sleep_ms(100);               // 休眠 100ms
 __myp_now_ms();                    // 当前时间戳
+__myp_flush();                     // 刷新 stdout
+__myp_term_width();                // 终端宽度
+__myp_term_height();               // 终端高度
+__myp_strlen("hi");                // 字串长度 → 2
+__myp_chr(65);                     // ASCII 码 → 单字符串 "A"
 __myp_timer_create("tick", 20, 20); // 创建周期定时器
 __myp_io_fopen("file", "rb");      // 打开文件
 __myp_io_read_byte();              // 读 1 字节
@@ -1127,6 +1133,10 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 | delay / throttle | 2.3 | 定时变换器 |
 | 接口多态 | 2.3 | 基于胖指针的虚表分派 |
 | 数组事件参数 | 2.3 | double[] 等作为事件参数 |
+| TUI 库 (ui.myp) | 2.3 | 纯 MYP 终端 UI 框架：Window/Label/Button/TextBox/ProgressBar，ANSI escape codes 渲染 |
+| `\e` 转义 | 2.3 | lexer 支持 `\e` → ESC 0x1B，用于 ANSI 控制序列 |
+| `__myp_strlen` / `__myp_chr` | 2.3 | 字串长度和字符→字串转换 intrinsics |
+| `__myp_term_width/height` | 2.3 | 终端尺寸查询 intrinsics |
 
 ### 技术栈
 
@@ -1304,7 +1314,10 @@ Runtime  → print/println + 基本运行时
 | **v5** | 共享库/静态库输出（--shared/--static） | ✅ 已实现 |
 | **v5** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
 | **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
-| **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O 等） | ✅ 已实现 |
+| **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O、Atomic 等） | ✅ 已实现 |
+| **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；await 表达式挂起/恢复 | 🔜 规划中 |
+| **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
+| **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
 | **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
 ---
@@ -1328,7 +1341,7 @@ NullLiteral      ::= "null"
 Letter           ::= "A".."Z" | "a".."z"
 Digit            ::= "0".."9"
 HexDigit         ::= Digit | "A".."F" | "a".."f"
-Escape           ::= "\" ( "n" | "t" | "\" | '"' | "'" | "0" )
+Escape           ::= "\" ( "n" | "t" | "e" | "\" | '"' | "'" | "0" )
 ```
 
 ### 语法规则

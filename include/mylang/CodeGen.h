@@ -134,6 +134,14 @@ private:
     llvm::Function* runtime_getch_ = nullptr;
     llvm::Function* runtime_flush_ = nullptr;
 
+    // ---- Terminal size (TUI) ----
+    llvm::Function* runtime_term_width_ = nullptr;
+    llvm::Function* runtime_term_height_ = nullptr;
+
+    // ---- String utilities ----
+    llvm::Function* runtime_strlen_ = nullptr;
+    llvm::Function* runtime_chr_ = nullptr;
+
     // ---- String to double ----
     llvm::Function* runtime_atof_ = nullptr;
 

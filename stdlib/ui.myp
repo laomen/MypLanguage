@@ -1,0 +1,248 @@
+// ui.myp — MYP 标准库：终端 UI (TUI) 框架
+//
+// 纯 MYP 实现，基于 ANSI escape codes 渲染。
+// property 通过 setter action 从外部配置。
+//
+// 依赖: env, __myp_print, __myp_term_width/height, __myp_strlen, __myp_chr
+
+class Screen {
+    static:
+        void clear() { __myp_print("\e[2J\e[H"); }
+        void gotoXY(int row, int col) {
+            __myp_print("\e[" + (row + 1) + ";" + (col + 1) + "H");
+        }
+        void setFG(int c) { __myp_print("\e[38;5;" + c + "m"); }
+        void setBG(int c) { __myp_print("\e[48;5;" + c + "m"); }
+        void resetAttr() { __myp_print("\e[0m"); }
+        void hideCursor() { __myp_print("\e[?25l"); }
+        void showCursor() { __myp_print("\e[?25h"); }
+        void write(string s) { __myp_print(s); }
+        void flush() { __myp_flush(); }
+        int width() { return __myp_term_width(); }
+        int height() { return __myp_term_height(); }
+
+        void fillRect(int row, int col, int h, int w, int bg) {
+            Screen.setBG(bg);
+            for (int r = 0; r < h; r = r + 1) {
+                Screen.gotoXY(row + r, col);
+                for (int c = 0; c < w; c = c + 1) __myp_print(" ");
+            }
+            Screen.resetAttr();
+        }
+
+        void drawBorder(int row, int col, int h, int w, int fg, int bg) {
+            if (h < 2 || w < 2) return;
+            Screen.setFG(fg); Screen.setBG(bg);
+            Screen.gotoXY(row, col); __myp_print("┌");
+            for (int c = 1; c < w - 1; c = c + 1) __myp_print("─");
+            __myp_print("┐");
+            for (int r = 1; r < h - 1; r = r + 1) {
+                Screen.gotoXY(row + r, col); __myp_print("│");
+                Screen.gotoXY(row + r, col + w - 1); __myp_print("│");
+            }
+            Screen.gotoXY(row + h - 1, col); __myp_print("└");
+            for (int c = 1; c < w - 1; c = c + 1) __myp_print("─");
+            __myp_print("┘");
+            Screen.resetAttr();
+        }
+
+        void writeText(int row, int col, string label, int fg, int bg, int maxW) {
+            Screen.setFG(fg); Screen.setBG(bg);
+            Screen.gotoXY(row, col);
+            __myp_print(label);
+            int sl = __myp_strlen(label);
+            for (int i = sl; i < maxW; i = i + 1) __myp_print(" ");
+            Screen.resetAttr();
+        }
+}
+
+// ─── Window ───
+
+class Window {
+    action:
+        void pos(int px, int py, int pw, int ph) { x = px; y = py; w = pw; h = ph; }
+        void setTitle(string t) { title = t; }
+        void show() { visible = true; }
+        void hide() { visible = false; }
+        void setColors(int bg, int border, int titleFg) {
+            bgColor = bg; borderColor = border; titleFgColor = titleFg;
+        }
+        void draw() {
+            if (!visible) return;
+            Screen.drawBorder(y, x, h, w, borderColor, bgColor);
+            Screen.fillRect(y + 1, x + 1, h - 2, w - 2, bgColor);
+            if (title != "") {
+                int avail = w - 2;
+                int tc = x + (avail - __myp_strlen(title)) / 2;
+                if (tc < x + 1) tc = x + 1;
+                Screen.writeText(y, tc, title, titleFgColor, bgColor, avail);
+            }
+        }
+    property:
+        int x;
+        int y;
+        int w;
+        int h;
+        string title;
+        bool visible;
+        int fgColor;
+        int bgColor;
+        int borderColor;
+        int titleFgColor;
+}
+
+// ─── Label ───
+
+class Label {
+    action:
+        void pos(int px, int py) { x = px; y = py; }
+        void setText(string t) { text = t; }
+        void setColors(int fg, int bg) { fgColor = fg; bgColor = bg; }
+        void draw() {
+            if (text == "") return;
+            Screen.setFG(fgColor);
+            Screen.setBG(bgColor);
+            Screen.gotoXY(y, x);
+            __myp_print(text);
+            Screen.resetAttr();
+        }
+    property:
+        int x;
+        int y;
+        string text;
+        int fgColor;
+        int bgColor;
+}
+
+// ─── Button ───
+
+class Button {
+    action:
+        void pos(int px, int py, int pw, int ph) { x = px; y = py; w = pw; h = ph; }
+        void setLabel(string s) { label = s; }
+        void setColors(int fg, int bg, int border, int focus) {
+            fgColor = fg; bgColor = bg; borderColor = border; focusColor = focus;
+        }
+        void draw() {
+            if (label == "") return;
+            if (h < 3) h = 3;
+            if (w < 4) w = 4;
+            Screen.fillRect(y, x, h, w, bgColor);
+            Screen.drawBorder(y, x, h, w, borderColor, bgColor);
+            int lr = y + (h - 1) / 2;
+            int avail = w - 2;
+            int pad = (avail - __myp_strlen(label)) / 2;
+            if (pad < 0) pad = 0;
+            Screen.setFG(focused ? focusColor : fgColor);
+            Screen.setBG(bgColor);
+            Screen.gotoXY(lr, x + 1);
+            for (int i = 0; i < pad; i = i + 1) __myp_print(" ");
+            __myp_print(label);
+            Screen.resetAttr();
+        }
+    event:
+        clicked();
+    property:
+        int x;
+        int y;
+        int w;
+        int h;
+        string label;
+        bool focused;
+        int fgColor;
+        int bgColor;
+        int borderColor;
+        int focusColor;
+}
+
+// ─── TextBox ───
+
+class TextBox {
+    action:
+        void pos(int px, int py, int pw) { x = px; y = py; w = pw; }
+        void setColors(int fg, int bg, int cursor) {
+            fgColor = fg; bgColor = bg; cursorColor = cursor;
+        }
+        void focus() { focused = true; }
+        void blur() { focused = false; }
+        void draw() {
+            if (w < 1) w = 10;
+            Screen.fillRect(y, x, 1, w, bgColor);
+            Screen.setFG(fgColor);
+            Screen.setBG(bgColor);
+            Screen.gotoXY(y, x);
+            __myp_print(text);
+            int tl = __myp_strlen(text);
+            for (int i = tl; i < w; i = i + 1) __myp_print(" ");
+            if (focused) {
+                int cx = cursorPos;
+                if (cx >= w) cx = w - 1;
+                Screen.gotoXY(y, x + cx);
+                Screen.setBG(cursorColor);
+                __myp_print(" ");
+            }
+            Screen.resetAttr();
+        }
+        void handleKey(int key) {
+            if (!focused) return;
+            if (key == 127 || key == 8) {
+                text = "";
+                cursorPos = 0;
+            } else if (key >= 32 && key <= 126) {
+                text = text + __myp_chr(key);
+                cursorPos = cursorPos + 1;
+            }
+            changed(text);
+        }
+        string getText() { return text; }
+    event:
+        changed(string text);
+    property:
+        int x;
+        int y;
+        int w;
+        string text;
+        bool focused;
+        int cursorPos;
+        int fgColor;
+        int bgColor;
+        int cursorColor;
+}
+
+// ─── ProgressBar ───
+
+class ProgressBar {
+    action:
+        void pos(int px, int py, int pw) { x = px; y = py; w = pw; }
+        void setColors(int fg, int bg, int fill) {
+            fgColor = fg; bgColor = bg; fillColor = fill;
+        }
+        void setValue(int v) { value = v; }
+        void draw() {
+            if (value < 0) value = 0;
+            if (value > 100) value = 100;
+            int fill = (value * (w - 2)) / 100;
+            if (fill < 0) fill = 0;
+            if (fill > w - 2) fill = w - 2;
+            Screen.gotoXY(y, x);
+            Screen.setBG(bgColor); __myp_print("[");
+            Screen.setBG(fillColor);
+            for (int i = 0; i < fill; i = i + 1) __myp_print(" ");
+            Screen.setBG(bgColor);
+            for (int i = fill; i < w - 2; i = i + 1) __myp_print(" ");
+            __myp_print("]");
+            Screen.resetAttr();
+            Screen.setFG(fgColor);
+            Screen.gotoXY(y, x + w + 1);
+            __myp_print("" + value + "%");
+            Screen.resetAttr();
+        }
+    property:
+        int x;
+        int y;
+        int w;
+        int value;
+        int fgColor;
+        int bgColor;
+        int fillColor;
+}

@@ -10,6 +10,7 @@
 #include <time.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 
 // ======================
@@ -170,12 +171,40 @@ void myp_print_bool(int32_t val) { printf(val ? "true" : "false"); fflush(stdout
 
 void myp_flush(void) { fflush(stdout); }
 
+// Terminal size (for TUI rendering)
+int32_t myp_term_width(void) {
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_col > 0)
+        return (int32_t)w.ws_col;
+    return 80; // fallback
+}
+int32_t myp_term_height(void) {
+    struct winsize w;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &w) == 0 && w.ws_row > 0)
+        return (int32_t)w.ws_row;
+    return 24; // fallback
+}
+
 // Read a line from stdin (for interactive input)
 const char* myp_read_line(void) {
     static char buf[256];
     if (!fgets(buf, sizeof(buf), stdin)) return NULL;
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    return buf;
+}
+
+// String length
+int32_t myp_strlen(const char* s) {
+    if (!s) return 0;
+    return (int32_t)strlen(s);
+}
+
+// Convert a character code to a single-character string
+const char* myp_chr(int32_t code) {
+    static char buf[2];
+    buf[0] = (char)(code & 0xFF);
+    buf[1] = '\0';
     return buf;
 }
 

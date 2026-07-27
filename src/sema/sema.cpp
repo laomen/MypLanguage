@@ -1651,6 +1651,13 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_now_ms", TypeKind::Long, {});
     add_intrinsic("__myp_sleep_ms", TypeKind::Void, {TypeKind::Long});
 
+    // Terminal size intrinsics (TUI)
+    add_intrinsic("__myp_term_width", TypeKind::Int, {});
+    add_intrinsic("__myp_term_height", TypeKind::Int, {});
+    // String utilities (for TUI)
+    add_intrinsic("__myp_strlen", TypeKind::Int, {TypeKind::String});
+    add_intrinsic("__myp_chr", TypeKind::String, {TypeKind::Int});
+
     // Timer intrinsics
     // __myp_timer_create(event_name, delay_ms, interval_ms)
     // Codegen resolves event_name to event_id using the current class context.

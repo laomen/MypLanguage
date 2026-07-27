@@ -1,0 +1,76 @@
+// tui_demo.myp — TUI 框架演示
+// 编译: mypc examples/tui_demo.myp -o tui_demo --stdlib stdlib
+// 运行: ./tui_demo
+// 按键: '+' 加1, '-' 减1, 'q' 退出
+
+import env;
+import ui;
+
+class CounterApp {
+    action:
+        @startup void run() {
+            Screen.hideCursor();
+
+            Window win = new Window();
+            win.pos(2, 1, 36, 10);
+            win.setTitle(" TUI Demo ");
+            win.setColors(4, 15, 11);
+            win.show();
+
+            Label titleLbl = new Label();
+            titleLbl.pos(5, 3);
+            titleLbl.setText("Counter Demo");
+            titleLbl.setColors(11, 4);
+
+            Label countLbl = new Label();
+            countLbl.pos(5, 5);
+            countLbl.setColors(15, 4);
+
+            ProgressBar prog = new ProgressBar();
+            prog.pos(5, 7, 26);
+            prog.setColors(15, 0, 2);
+
+            Label hint = new Label();
+            hint.pos(5, 9);
+            hint.setText("+:up  -:down  q:quit");
+            hint.setColors(7, 4);
+
+            bool running = true;
+            int count = 0;
+            prog.setValue(0);
+
+            while (running) {
+                Screen.clear();
+                win.draw();
+                titleLbl.draw();
+                countLbl.setText("Count: " + count);
+                countLbl.draw();
+                prog.draw();
+                hint.draw();
+                Screen.flush();
+
+                if (Console.kbhit() != 0) {
+                    int key = Console.getch();
+                    if (key == 'q') {
+                        running = false;
+                    } else if (key == '+') {
+                        count = count + 1;
+                        if (count > 100) count = 100;
+                        prog.setValue(count);
+                    } else if (key == '-') {
+                        count = count - 1;
+                        if (count < 0) count = 0;
+                        prog.setValue(count);
+                    }
+                }
+
+                __myp_sleep_ms(33);
+            }
+
+            Screen.clear();
+            Screen.showCursor();
+            Console.writeLine("Final count: " + count);
+        }
+}
+
+int main() { return 0; }

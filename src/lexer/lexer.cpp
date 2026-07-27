@@ -178,6 +178,7 @@ void Lexer::scanToken() {
                     case 't':  ch = '\t'; break;
                     case '\\': ch = '\\'; break;
                     case '\'': ch = '\''; break;
+                    case 'e':  ch = '\x1B'; break;
                     case '0':  ch = '\0'; break;
                     default:
                         diag_.error(currentRange(), "unknown escape sequence in char literal");
@@ -237,6 +238,7 @@ Token Lexer::scanString() {
                 case 't':  value += '\t'; break;
                 case '\\': value += '\\'; break;
                 case '"':  value += '"';  break;
+                case 'e':  value += '\x1B'; break;
                 case '0':  value += '\0'; break;
                 default:
                     diag_.error(currentRange(), "unknown escape sequence");
