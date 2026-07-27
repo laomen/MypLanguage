@@ -1,0 +1,224 @@
+// collections.myp — MYP 标准库：集合类型
+//
+// ArrayList<T>   — 动态数组（泛型，固定容量 1024）
+// HashMap<K,V>   — 哈希表（线性探测，固定容量 1024）
+
+// ============================================================
+// ArrayList<T> — 动态数组
+// ============================================================
+class ArrayList<T> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+        }
+
+        void add(T val) {
+            data_[cnt_] = val;
+            cnt_ = cnt_ + 1;
+        }
+
+        T get(int index) {
+            return data_[index];
+        }
+
+        void set(int index, T val) {
+            data_[index] = val;
+        }
+
+        int size() {
+            return cnt_;
+        }
+
+        bool isEmpty() {
+            return cnt_ == 0;
+        }
+
+        void clear() {
+            cnt_ = 0;
+        }
+
+    property:
+        T[1024] data_;
+        int cnt_;
+}
+
+
+// ============================================================
+// HashMap<K,V> — 哈希表（线性探测法）
+//   固定容量 1024。键必须支持 % 和 == 运算。
+// ============================================================
+class HashMap<K, V> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+        void put(K key, V val) {
+            int idx = key % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    values_[idx] = val;
+                    return;
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+            keys_[idx] = key;
+            values_[idx] = val;
+            occupied_[idx] = true;
+            cnt_ = cnt_ + 1;
+        }
+
+        V get(K key, V default_val) {
+            int idx = key % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    return values_[idx];
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return default_val;
+            }
+            return default_val;
+        }
+
+        bool contains(K key) {
+            int idx = key % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) return true;
+                idx = (idx + 1) % 1024;
+                if (idx == start) return false;
+            }
+            return false;
+        }
+
+        void remove(K key) {
+            int idx = key % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    occupied_[idx] = false;
+                    cnt_ = cnt_ - 1;
+                    int next = (idx + 1) % 1024;
+                    while (occupied_[next]) {
+                        K re_key = keys_[next];
+                        V re_val = values_[next];
+                        occupied_[next] = false;
+                        cnt_ = cnt_ - 1;
+                        int ri = re_key % 1024;
+                        while (occupied_[ri]) {
+                            ri = (ri + 1) % 1024;
+                        }
+                        keys_[ri] = re_key;
+                        values_[ri] = re_val;
+                        occupied_[ri] = true;
+                        cnt_ = cnt_ + 1;
+                        next = (next + 1) % 1024;
+                    }
+                    return;
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+        }
+
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+    property:
+        K[1024] keys_;
+        V[1024] values_;
+        bool[1024] occupied_;
+        int cnt_;
+}
+
+// ============================================================
+// Set<T> — 基于开放寻址哈希表的集合
+//   固定容量 1024。元素必须支持 % 和 == 运算。
+// ============================================================
+class Set<T> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+        void add(T val) {
+            int idx = val % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (data_[idx] == val) return;
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+            data_[idx] = val;
+            occupied_[idx] = true;
+            cnt_ = cnt_ + 1;
+        }
+
+        bool contains(T val) {
+            int idx = val % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (data_[idx] == val) return true;
+                idx = (idx + 1) % 1024;
+                if (idx == start) return false;
+            }
+            return false;
+        }
+
+        void remove(T val) {
+            int idx = val % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (data_[idx] == val) {
+                    occupied_[idx] = false;
+                    cnt_ = cnt_ - 1;
+                    int next = (idx + 1) % 1024;
+                    while (occupied_[next]) {
+                        T re_val = data_[next];
+                        occupied_[next] = false;
+                        cnt_ = cnt_ - 1;
+                        int ri = re_val % 1024;
+                        while (occupied_[ri]) {
+                            ri = (ri + 1) % 1024;
+                        }
+                        data_[ri] = re_val;
+                        occupied_[ri] = true;
+                        cnt_ = cnt_ + 1;
+                        next = (next + 1) % 1024;
+                    }
+                    return;
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+        }
+
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+    property:
+        T[1024] data_;
+        bool[1024] occupied_;
+        int cnt_;
+}

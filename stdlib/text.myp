@@ -1,0 +1,45 @@
+// text.myp — MYP 标准库：文本处理
+//
+// StringBuilder — 字符串构建器（固定容量）
+//   将多个字符串片段收集后一次性拼接，减少中间对象。
+//
+// 用法：
+//   StringBuilder sb = new StringBuilder();
+//   sb.append("Hello");
+//   sb.append(" World");
+//   string result = sb.toString();  // "Hello World"
+
+class StringBuilder {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+        }
+
+        // 追加字符串
+        void append(string s) {
+            parts_[cnt_] = s;
+            cnt_ = cnt_ + 1;
+        }
+
+        // 清空缓冲区
+        void clear() {
+            cnt_ = 0;
+        }
+
+        // 构建最终字符串（拼接所有片段）
+        string toString() {
+            string result = "";
+            for (int i = 0; i < cnt_; i = i + 1) {
+                result = result + parts_[i];
+            }
+            return result;
+        }
+
+        int count() {
+            return cnt_;
+        }
+
+    property:
+        string[256] parts_;
+        int cnt_;
+}

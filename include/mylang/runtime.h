@@ -123,6 +123,21 @@ int32_t myp_io_write_i32be(int32_t val);
 int32_t myp_io_write_double(double val);
 double myp_io_read_double(void);
 
+// ---- Error handling ----
+// setjmp/longjmp are generated directly in LLVM IR (not through C wrappers)
+// These are helper functions called from generated try/catch code
+void myp_error_setup(void);
+void myp_throw(const char* msg);
+const char* myp_get_error(void);
+int myp_error_is_active(void);
+void myp_error_clear(void);
+
+// ---- Test framework ----
+void myp_assert(int cond);
+void myp_assert_eq(int a, int b);
+void myp_assert_str_eq(const char* a, const char* b);
+void myp_test_report(const char* name, int passed);
+
 #ifdef __cplusplus
 }
 #endif

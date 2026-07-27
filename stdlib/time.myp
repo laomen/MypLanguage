@@ -1,0 +1,43 @@
+// time.myp — MYP 标准库：时间与定时器
+//
+// 用法：
+//   long t = Time.nowMs();
+//   Time.sleep(1000);
+//   Timer tmr = new Timer("myEvent", 500, 1000);
+
+// ============================================================
+// Time — 时间工具（静态类）
+// ============================================================
+class Time {
+    static:
+        // 当前系统时间（毫秒）
+        long nowMs() {
+            return __myp_now_ms();
+        }
+
+        // 休眠指定毫秒数
+        void sleep(long ms) {
+            __myp_sleep_ms(ms);
+        }
+}
+
+
+// ============================================================
+// Timer — 单次/循环定时器
+//   创建后自动注册事件回调。
+//   delay_ms: 首次触发延迟
+//   interval_ms: 重复间隔（0 表示只触发一次）
+// ============================================================
+class Timer {
+    action:
+        @startup void init(string eventName, long delayMs, long intervalMs) {
+            id_ = __myp_timer_create(eventName, delayMs, intervalMs);
+        }
+
+        int getId() {
+            return id_;
+        }
+
+    property:
+        int id_;
+}

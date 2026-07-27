@@ -22,6 +22,7 @@ private:
     // Utility
     const Token& peek() const;
     const Token& peekNext() const;
+    const Token& peekNext2() const;
     const Token& previous() const;
     Token advance();
     bool check(TokenKind kind) const;
@@ -46,6 +47,7 @@ private:
     std::vector<std::string> parseTypeParamList();
     std::vector<TypeNode> parseTypeArgList();
     std::unique_ptr<Stmt> parseMatchStmt();
+    std::unique_ptr<Stmt> parseTryStmt();
     std::unique_ptr<Expr> parseLambdaExpr();
     bool isGenericIdentifier();
 

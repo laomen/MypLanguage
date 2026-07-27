@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 2.1 | 事件驱动组件语言
+> 版本 2.2 | 事件驱动组件语言
 
 ---
 
@@ -63,6 +63,8 @@ mypc -O2 <file.myp>              # 优化级别
 mypc --trace <file.myp>          # 启用运行时事件追踪
 mypc --stdlib <path> <file.myp>  # 指定标准库路径
 mypc --package-path <path> <file.myp>  # 指定本地包搜索路径
+mypc --shared <file.myp>              # 编译为共享库 (.so)
+mypc --static <file.myp>              # 编译为静态库 (.a)
 ```
 
 ---
@@ -611,9 +613,42 @@ import env;
 Console.writeLine("hello");     // 输出字符串 + 换行
 Console.writeString("text");    // 输出字符串（无换行）
 Console.write(42);              // 输出整数
-Console.writeLong(1234567890);  // 输出长整数
+Console.writeLong(1234567890L); // 输出长整数
 Console.writeFloat(3.14);       // 输出浮点数
 Console.writeBool(true);        // 输出布尔值
+Console.readString();           // 从 stdin 读一行
+Console.kbhit();                // 非阻塞键盘检测
+Console.getch();                // 非阻塞读一个字符
+```
+
+### `import collections` — 集合类型
+
+```myp
+import collections;
+
+// ArrayList<T> — 动态数组（容量 1024）
+ArrayList<int> list = new ArrayList<int>();
+list.add(10);
+list.add(20);
+int first = list.get(0);   // 10
+list.set(1, 30);
+int n = list.size();        // 2
+
+// HashMap<K,V> — 哈希表（容量 1024，线性探测）
+HashMap<int, string> map = new HashMap<int, string>();
+map.put(1, "one");
+map.put(2, "two");
+string v = map.get(1, "?");  // "one"
+bool has = map.contains(2);  // true
+map.remove(1);
+
+// Set<T> — 哈希集合（容量 1024）
+Set<int> s = new Set<int>();
+s.add(42);
+s.add(17);
+bool b = s.contains(42);     // true
+s.remove(17);
+int sz = s.size();
 ```
 
 ### `import math` — 数学函数
@@ -621,46 +656,48 @@ Console.writeBool(true);        // 输出布尔值
 ```myp
 import math;
 
-var r = Math.sqrt(64.0);      // 8.0
-var a = Math.abs(-3.5);       // 3.5
-var s = Math.sin(3.14159);    // ~0
-var c = Math.cos(3.14159);    // ~-1
-var p = Math.pow(2.0, 10.0); // 1024.0
-var m = Math.max(10, 20);     // 20
+Math.sqrt(64.0);        // 8.0
+Math.abs(-3.5);         // 3.5
+Math.sin(3.14159);      // ~0
+Math.cos(3.14159);      // ~-1
+Math.pow(2.0, 10.0);    // 1024.0
+Math.max(10, 20);       // 20
+Math.min(10, 20);       // 10
+Math.absInt(-42);       // 42
 ```
 
-### `import timeline` — 时间与定时器
+### `import time` — 时间与定时器
 
 ```myp
-import timeline;
+import time;
 
-var now = Timeline.now();          // 当前时间 (ms)
-Timeline.sleep(1000);              // 等待 1 秒
-var elapsed = Timeline.now();      // 经过时间
+long t = Time.nowMs();        // 当前时间（毫秒）
+Time.sleep(1000);             // 休眠 1 秒
 
-// 定时器事件
-Timeline timer;
-timer.startTimeout(500);           // 500ms 后触发 timeout 事件
-timer.startInterval(1000);         // 每秒触发 interval 事件
-
-mapping() {
-    timer.timeout -> handler.onTimeout;
-    timer.interval -> handler.onInterval;
-}
+// 定时器（与 mapping 配合使用）
+// Timer(eventName, delayMs, intervalMs)
+// intervalMs = 0 表示单次触发
 ```
 
-### `import io` — 文件 I/O
+### `import random` — 随机数
 
 ```myp
-import io;
+import random;
 
-File file;
-file.open("data.txt", "r");
-if (file.hasNext()) {
-    var line = file.readLine();
-    Console.writeLine(line);
-}
-file.close();
+Random.init(12345);           // 设置种子
+int r = Random.next();         // [0, RAND_MAX]
+int d = Random.below(10);      // [0, 10)
+```
+
+### `import text` — 文本处理
+
+```myp
+import text;
+
+StringBuilder sb = new StringBuilder();
+sb.append("Hello");
+sb.append(", World");
+string result = sb.toString();  // "Hello, World"
 ```
 
 ---
@@ -686,6 +723,44 @@ file.close();
 # 指定包路径
 ./build/mypc --package-path myp_packages myapp.myp
 ```
+
+### 测试框架
+
+```bash
+# 编译并生成测试运行器
+./build/mypc --test mytests.myp && ./a.out
+# 输出:
+# === MYP Test Runner ===
+#   RUN: test_math
+#   PASS: test_math
+# === MYP Tests Complete ===
+```
+
+使用 `@test` 注解标记测试函数和 action，支持内置断言：
+
+```myp
+@test void test_example() {
+    __myp_assert(1 == 1);
+    __myp_assert_eq(2 + 2, 4);
+    __myp_assert_str_eq("hello", "hello");
+    __myp_test_report("test_example", true);
+}
+```
+
+### 代码格式化
+
+```bash
+# 格式化文件（原地修改）
+./build/mypc fmt source.myp
+
+# 仅检查格式
+./build/mypc fmt --check source.myp
+
+# 独立格式化工具
+./build/myp_fmt [--check|--stdout] source.myp
+```
+
+### myp — 包管理工具
 
 ### myp — 包管理工具
 

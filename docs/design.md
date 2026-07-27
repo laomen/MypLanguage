@@ -1,6 +1,6 @@
 # MYP 语言设计文档
 
-> 版本: 2.1 | 日期: 2026-07-26
+> 版本: 2.2 | 日期: 2026-07-27
 
 ---
 
@@ -786,7 +786,11 @@ import "/abs/path/lib.myp"; // 用户文件导入（绝对路径）
 | 用户文件 | 双引号字符串路径，支持相对/绝对路径 |
 | 路径搜索 | `--stdlib` 指定目录 → 可执行文件所在目录的 `../stdlib/` → 源文件所在目录的 `stdlib/` → `--package-path` 指定目录 |
 | `--stdlib` | 编译器选项，指定标准库路径 |
+| `--shared` | 编译为共享库 (.so)，无 main 要求 |
+| `--static` | 编译为静态库 (.a)，无 main 要求 |
 | `--package-path` | 编译器选项，指定本地包搜索路径（支持冒号分隔多路径、`MYP_PACKAGE_PATH` 环境变量） |
+| `--shared` | 编译为共享库 (.so)，无需 main 函数 |
+| `--static` | 编译为静态库 (.a)，无需 main 函数 |
 | 包格式 | `myp_packages/<name>/src/<name>.myp` 或 `myp_packages/<name>/<name>.myp`，附带 `package.myp` 元数据 |
 | 去重 | 同一文件不会重复导入（基于路径去重） |
 | 递归 | 导入的文件中的 `import` 也会被递归加载 |
@@ -927,6 +931,8 @@ int main() {
 | `timeline` | `Timeline` 类（now/sleep/elapsed/startTimeout/startInterval/startTick）、`Stopwatch` 类 | ✅ 已实现：定时器系统支持 timeout/interval/tick 事件 |
 | `math` | `Math` 类（sqrt/abs/floor/ceil/sin/cos/tan/exp/log/pow/absInt/min/max） | ✅ 已实现 |
 | `io` | `File` 类（open/close/readLine/write/writeLine/hasNext） | ✅ 已实现 |
+| `collections` | `ArrayList<T>` 动态数组、`Queue<T>` 队列（泛型，固定容量） | ✅ 已实现 |
+| `text` | `StringBuilder` 字符串构建器 | ✅ 已实现 |
 
 ### 10.6 编译器 intrinsics 系统
 
@@ -1034,7 +1040,9 @@ MYPLanguage/
 │   ├── env.myp       # Console 类（I/O + 键盘）
 │   ├── timeline.myp  # Timeline / Stopwatch
 │   ├── math.myp      # Math 类（数学函数）
-│   └── io.myp        # File I/O 类
+│   ├── io.myp        # File I/O 类
+│   ├── collections.myp  # 集合类（ArrayList, Queue）
+│   └── text.myp      # 文本处理（StringBuilder）
 ├── tests/
 │   ├── run_tests.sh           # 回归测试框架
 │   ├── fuzz_test.py           # 模糊测试
@@ -1163,6 +1171,11 @@ Runtime  → print/println + 基本运行时
 | **v5** | 包管理器（myp init/build/install/run + --package-path 导入搜索） | ✅ 已实现 |
 | **v5** | LSP 语言服务器（诊断/补全/悬停/符号/跳转定义/引用查找） | ✅ 已实现 |
 | **v5** | VS Code 扩展（语法高亮 + LSP 集成） | ✅ 已实现 |
+| **v5** | 错误处理（try/catch/throw + setjmp/longjmp） | ✅ 已实现 |
+| **v5** | 共享库/静态库输出（--shared/--static） | ✅ 已实现 |
+| **v5** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
+| **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
+| **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O 等） | ✅ 已实现 |
 | **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
 ---

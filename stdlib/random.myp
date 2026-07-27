@@ -1,0 +1,29 @@
+// random.myp — MYP 标准库：随机数
+//
+// 用法：
+//   Random.init(12345);        // 设置种子
+//   int r = Random.next();     // 0..RAND_MAX
+//   int d = Random.below(6);   // 0..5
+
+// FFI 声明到 C 标准库的 rand/srand
+ffi int rand();
+ffi void srand(int seed);
+
+class Random {
+    static:
+        // 初始化随机数种子
+        void init(int seed) {
+            srand(seed);
+        }
+
+        // 返回 [0, RAND_MAX] 范围内的随机整数
+        int next() {
+            return rand();
+        }
+
+        // 返回 [0, max) 范围内的随机整数
+        int below(int max) {
+            if (max <= 0) return 0;
+            return rand() % max;
+        }
+}

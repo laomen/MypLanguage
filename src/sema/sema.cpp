@@ -445,6 +445,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return {};
         case StmtKind::MatchStmt:
             return visitMatchStmt(static_cast<MatchStmt&>(stmt));
+        case StmtKind::TryStmt:
+            return visitTryStmt(static_cast<TryStmt&>(stmt));
     }
     return {};
 }
@@ -1162,6 +1164,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
                 }
                 a.body = action.body; // share body
                 a.has_startup = action.has_startup;
+                a.has_test = action.has_test;
                 a.range = action.range;
                 inst.actions.push_back(std::move(a));
             }
@@ -1473,6 +1476,15 @@ TypeNode Sema::substituteTypeNode(const TypeNode& node,
                 return type_args[i];
             }
         }
+        // Recursively substitute type arguments (e.g. HashMap<T, bool> where T is a type param)
+        if (!node.type_args.empty()) {
+            TypeNode result = node;
+            result.type_args.clear();
+            for (auto& arg : node.type_args) {
+                result.type_args.push_back(substituteTypeNode(arg, type_params, type_args));
+            }
+            return result;
+        }
     }
     // For array types, substitute element type
     if (node.isArray() && node.element_type) {
@@ -1591,6 +1603,44 @@ void Sema::registerIntrinsics() {
     // non-blocking keyboard
     add_intrinsic("__myp_kbhit", TypeKind::Int, {});
     add_intrinsic("__myp_getch", TypeKind::Int, {});
+    // error handling
+    add_intrinsic("__myp_throw", TypeKind::Void, {TypeKind::String});
+    // testing
+    add_intrinsic("__myp_assert", TypeKind::Void, {TypeKind::Bool});
+    add_intrinsic("__myp_assert_eq", TypeKind::Void, {TypeKind::Int, TypeKind::Int});
+    add_intrinsic("__myp_assert_str_eq", TypeKind::Void, {TypeKind::String, TypeKind::String});
+    add_intrinsic("__myp_test_report", TypeKind::Void, {TypeKind::String, TypeKind::Bool});
+}
+
+Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {
+    // Save and temporarily clear main function flag (try blocks allow calls)
+    bool saved_main = in_main_function_;
+    in_main_function_ = false;
+
+    // Type-check the try block
+    if (stmt.try_block) visitBlock(*stmt.try_block);
+
+    // Restore main flag for catch/finally blocks
+    in_main_function_ = saved_main;
+
+    // Type-check the catch block with the variable declared
+    if (stmt.catch_block) {
+        symbol_table_.enterScope();
+        TypeInfo catch_type(TypeKind::String);
+        symbol_table_.declare(stmt.catch_var_name, catch_type);
+        in_main_function_ = false; // catch also allows calls
+        visitBlock(*stmt.catch_block);
+        symbol_table_.leaveScope();
+    }
+
+    // Type-check the finally block
+    if (stmt.finally_block) {
+        in_main_function_ = false;
+        visitBlock(*stmt.finally_block);
+    }
+
+    in_main_function_ = saved_main;
+    return {};
 }
 
 } // namespace mylang

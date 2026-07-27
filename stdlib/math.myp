@@ -3,23 +3,19 @@
 
 class Math {
     static:
-        // 基本运算
         double sqrt(double v)   { return __myp_math_sqrt(v); }
         double abs(double v)    { return __myp_math_abs(v); }
         double floor(double v)  { return __myp_math_floor(v); }
         double ceil(double v)   { return __myp_math_ceil(v); }
 
-        // 三角函数
         double sin(double v)    { return __myp_math_sin(v); }
         double cos(double v)    { return __myp_math_cos(v); }
         double tan(double v)    { return __myp_math_tan(v); }
 
-        // 指数/对数
         double exp(double v)    { return __myp_math_exp(v); }
         double log(double v)    { return __myp_math_log(v); }
         double pow(double base, double exp) { return __myp_math_pow(base, exp); }
 
-        // 整数运算
         int absInt(int v)       { return __myp_math_abs_int(v); }
         int min(int a, int b)   { if (a < b) return a; return b; }
         int max(int a, int b)   { if (a > b) return a; return b; }

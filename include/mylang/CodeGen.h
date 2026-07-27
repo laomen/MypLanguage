@@ -137,6 +137,20 @@ private:
     // ---- Init function ----
     llvm::Function* init_func_ = nullptr;
 
+    // ---- Error handling runtime functions ----
+    llvm::Function* runtime_setjmp_ = nullptr;
+    llvm::Function* runtime_longjmp_ = nullptr;
+    llvm::Function* runtime_throw_ = nullptr;
+    llvm::Function* runtime_get_error_ = nullptr;
+    llvm::StructType* jmp_buf_type_ = nullptr;
+    llvm::GlobalVariable* global_jmp_buf_ = nullptr;
+
+    // ---- Test framework runtime functions ----
+    llvm::Function* runtime_assert_ = nullptr;
+    llvm::Function* runtime_assert_eq_ = nullptr;
+    llvm::Function* runtime_assert_str_eq_ = nullptr;
+    llvm::Function* runtime_test_report_ = nullptr;
+
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;
 
@@ -190,6 +204,7 @@ private:
     void generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* insert_bb = nullptr);
     void createInitFunction();
     void emitInitMappingCalls();
+    void generateTestRunner();
 
     // ---- Statement generation ----
     void generateBlock(const BlockStmt& stmt);
@@ -226,6 +241,7 @@ private:
 
     // ---- Match codegen ----
     void generateMatchStmt(const MatchStmt& stmt);
+    void generateTryStmt(const TryStmt& stmt);
 
     // ---- Helper ----
     TypeInfo builtinTypeToInfo(BuiltinType bt) const;
@@ -244,9 +260,13 @@ private:
 
     // ---- Flags ----
     bool emit_llvm_ = false;
+    bool library_mode_ = false;
+    bool test_mode_ = false;
 
 public:
     void setEmitLLVM(bool v) { emit_llvm_ = v; }
+    void setLibraryMode(bool v) { library_mode_ = v; }
+    void setTestMode(bool v) { test_mode_ = v; }
     bool saveIR(const std::string& path) const;
 
     // ---- Helper: find struct decl ----

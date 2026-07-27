@@ -51,6 +51,10 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
         } else if (match(TokenKind::Keyword_enum)) {
             auto en = parseEnumDecl();
             if (en) tu->enums.push_back(std::move(*en));
+        } else if (peek().kind == TokenKind::At) {
+            // @ annotation at top level → parse as function (@test, @startup)
+            auto func = parseFunction();
+            if (func) tu->functions.push_back(std::move(*func));
         } else if (checkType() || check(TokenKind::Keyword_void)) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
@@ -222,6 +226,7 @@ ActionDecl Parser::parseActionDecl() {
         advance(); // consume @
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "startup") decl.has_startup = true;
+        if (annot == "test") decl.has_test = true;
     }
 
     decl.return_type = parseType();
@@ -399,6 +404,12 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
 std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
     auto func = std::make_unique<FuncDecl>();
     func->range = previous().range;
+    // Check for @ annotation
+    if (peek().kind == TokenKind::At) {
+        advance();
+        std::string annot = parseIdentifier("expected annotation name");
+        if (annot == "test") func->has_test = true;
+    }
     // Check for generic type params before return type
     if (check(TokenKind::Identifier) && peekNext().kind == TokenKind::Less) {
         // Generic function: T foo<T>(...) — type param before function name
@@ -517,6 +528,9 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     }
     if (match(TokenKind::Keyword_match)) {
         return parseMatchStmt();
+    }
+    if (match(TokenKind::Keyword_try)) {
+        return parseTryStmt();
     }
     if (checkType()) {
         // For identifiers: use 2-token lookahead to disambiguate
@@ -1266,6 +1280,15 @@ const Token& Parser::peekNext() const {
     return tokens_[idx];
 }
 
+const Token& Parser::peekNext2() const {
+    size_t idx = current_ + 2;
+    if (idx >= tokens_.size()) {
+        static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
+        return eof;
+    }
+    return tokens_[idx];
+}
+
 const Token& Parser::previous() const {
     static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
     if (current_ == 0 || current_ > tokens_.size()) return eof;
@@ -1455,6 +1478,50 @@ std::unique_ptr<Stmt> Parser::parseMatchStmt() {
 
     consume(TokenKind::RightBrace, "expected '}' after match body");
     return std::make_unique<MatchStmt>(std::move(subject), std::move(arms), r);
+}
+
+std::unique_ptr<Stmt> Parser::parseTryStmt() {
+    SourceRange r = previous().range;
+
+    // Parse try block
+    consume(TokenKind::LeftBrace, "expected '{' after 'try'");
+    auto try_block = parseBlock();
+
+    // Parse optional catch clause
+    std::string catch_var_name;
+    std::string catch_var_type;
+    std::unique_ptr<BlockStmt> catch_block;
+
+    if (match(TokenKind::Keyword_catch)) {
+        consume(TokenKind::LeftParen, "expected '(' after 'catch'");
+        // Parse catch variable type (identifier or type keyword)
+        if (check(TokenKind::Identifier)) {
+            catch_var_type = advance().value;
+        } else if (check(TokenKind::Type_string)) {
+            catch_var_type = "string";
+            advance(); // consume the type token
+        } else {
+            diag_.error(peek().range, "expected type in catch");
+        }
+        catch_var_name = parseIdentifier("expected variable name in catch");
+        consume(TokenKind::RightParen, "expected ')' after catch variable");
+        consume(TokenKind::LeftBrace, "expected '{' for catch body");
+        catch_block = parseBlock();
+    }
+
+    // Parse optional finally clause
+    std::unique_ptr<BlockStmt> finally_block;
+    if (match(TokenKind::Keyword_finally)) {
+        consume(TokenKind::LeftBrace, "expected '{' after 'finally'");
+        finally_block = parseBlock();
+    }
+
+    if (!catch_block && !finally_block) {
+        diag_.error(peek().range, "expected 'catch' or 'finally' after 'try' block");
+    }
+
+    return std::make_unique<TryStmt>(std::move(try_block), catch_var_name,
+        catch_var_type, std::move(catch_block), std::move(finally_block), r);
 }
 
 } // namespace mylang

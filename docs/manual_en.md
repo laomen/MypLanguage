@@ -1,6 +1,6 @@
 # MYP Programming Manual
 
-> Version 2.1 | Event-Driven Component Language
+> Version 2.2 | Event-Driven Component Language
 
 ---
 
@@ -64,6 +64,8 @@ mypc --emit-llvm <file.myp>      # Save LLVM IR to .ll file
 mypc --trace <file.myp>          # Enable runtime event tracing
 mypc --stdlib <path> <file.myp>  # Specify stdlib path
 mypc --package-path <path> <file.myp>  # Specify local package search path
+mypc --shared <file.myp>              # Build shared library (.so)
+mypc --static <file.myp>              # Build static library (.a)
 ```
 
 ---
@@ -661,9 +663,42 @@ import env;
 Console.writeLine("hello");     // Print string + newline
 Console.writeString("text");    // Print string (no newline)
 Console.write(42);              // Print integer
-Console.writeLong(1234567890);  // Print long integer
+Console.writeLong(1234567890L); // Print long integer
 Console.writeFloat(3.14);       // Print float
 Console.writeBool(true);        // Print boolean
+Console.readString();           // Read line from stdin
+Console.kbhit();                // Non-blocking key check
+Console.getch();                // Non-blocking read character
+```
+
+### `import collections` — Collection Types
+
+```myp
+import collections;
+
+// ArrayList<T> — dynamic array (capacity 1024)
+ArrayList<int> list = new ArrayList<int>();
+list.add(10);
+list.add(20);
+int first = list.get(0);   // 10
+list.set(1, 30);
+int n = list.size();        // 2
+
+// HashMap<K,V> — hash table (capacity 1024, linear probing)
+HashMap<int, string> map = new HashMap<int, string>();
+map.put(1, "one");
+map.put(2, "two");
+string v = map.get(1, "?");  // "one"
+bool has = map.contains(2);  // true
+map.remove(1);
+
+// Set<T> — hash set (capacity 1024)
+Set<int> s = new Set<int>();
+s.add(42);
+s.add(17);
+bool b = s.contains(42);     // true
+s.remove(17);
+int sz = s.size();
 ```
 
 ### `import math` — Math Functions
@@ -671,46 +706,48 @@ Console.writeBool(true);        // Print boolean
 ```myp
 import math;
 
-var r = Math.sqrt(64.0);      // 8.0
-var a = Math.abs(-3.5);       // 3.5
-var s = Math.sin(3.14159);    // ~0
-var c = Math.cos(3.14159);    // ~-1
-var p = Math.pow(2.0, 10.0);  // 1024.0
-var m = Math.max(10, 20);     // 20
+Math.sqrt(64.0);        // 8.0
+Math.abs(-3.5);         // 3.5
+Math.sin(3.14159);      // ~0
+Math.cos(3.14159);      // ~-1
+Math.pow(2.0, 10.0);    // 1024.0
+Math.max(10, 20);       // 20
+Math.min(10, 20);       // 10
+Math.absInt(-42);       // 42
 ```
 
-### `import timeline` — Time & Timers
+### `import time` — Time & Timers
 
 ```myp
-import timeline;
+import time;
 
-var now = Timeline.now();          // Current time (ms)
-Timeline.sleep(1000);              // Wait 1 second
-var elapsed = Timeline.now() - now;
+long t = Time.nowMs();        // Current time (ms)
+Time.sleep(1000);             // Sleep 1 second
 
-// Timer events
-Timeline timer;
-timer.startTimeout(500);           // Fire timeout event after 500ms
-timer.startInterval(1000);         // Fire interval event every second
-
-mapping() {
-    timer.timeout -> handler.onTimeout;
-    timer.interval -> handler.onInterval;
-}
+// Timer (for use with mapping)
+// Timer(eventName, delayMs, intervalMs)
+// intervalMs = 0 for one-shot
 ```
 
-### `import io` — File I/O
+### `import random` — Random Numbers
 
 ```myp
-import io;
+import random;
 
-File file;
-file.open("data.txt", "r");
-if (file.hasNext()) {
-    var line = file.readLine();
-    Console.writeLine(line);
-}
-file.close();
+Random.init(12345);           // Set seed
+int r = Random.next();         // [0, RAND_MAX]
+int d = Random.below(10);      // [0, 10)
+```
+
+### `import text` — Text Processing
+
+```myp
+import text;
+
+StringBuilder sb = new StringBuilder();
+sb.append("Hello");
+sb.append(", World");
+string result = sb.toString();  // "Hello, World"
 ```
 
 ---
@@ -739,6 +776,42 @@ cat myapp.myp.ll
 
 # Specify package path
 ./build/mypc --package-path myp_packages myapp.myp
+```
+
+### Test Framework
+
+```bash
+# Compile with test runner generation
+./build/mypc --test mytests.myp && ./a.out
+# Output:
+# === MYP Test Runner ===
+#   RUN: test_math
+#   PASS: test_math
+# === MYP Tests Complete ===
+```
+
+Mark test functions/actions with `@test`:
+
+```myp
+@test void test_example() {
+    __myp_assert(1 == 1);
+    __myp_assert_eq(2 + 2, 4);
+    __myp_assert_str_eq("hello", "hello");
+    __myp_test_report("test_example", true);
+}
+```
+
+### Code Formatter
+
+```bash
+# Format files in-place
+./build/mypc fmt source.myp
+
+# Check-only mode
+./build/mypc fmt --check source.myp
+
+# Standalone formatter
+./build/myp_fmt [--check|--stdout] source.myp
 ```
 
 ### myp — Package Manager CLI

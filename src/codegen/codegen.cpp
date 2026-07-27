@@ -43,6 +43,11 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
     generateTranslationUnit(tu);
     emitInitMappingCalls();
 
+    // In test mode, generate test runner main
+    if (test_mode_) {
+        generateTestRunner();
+    }
+
     std::string err_str;
     llvm::raw_string_ostream err_os(err_str);
     if (llvm::verifyModule(*module_, &err_os)) {
@@ -685,6 +690,12 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
 
     // For main: call init mappings and track for cleanup
     if (decl.name == "main") {
+        // In test mode, skip user's main - test runner main will be generated
+        if (test_mode_) {
+            popScope();
+            current_function_ = nullptr;
+            return;
+        }
         in_main_ = true;
         if (init_func_) {
             builder_.CreateCall(init_func_, {});
@@ -701,6 +712,111 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     if (decl.name == "main") {
         in_main_ = false;
     }
+}
+
+void CodeGen::generateTestRunner() {
+    if (!current_tu_) return;
+    auto& tu = *current_tu_;
+
+    auto* i32t = llvm::Type::getInt32Ty(ctx_);
+    auto* i8t = llvm::Type::getInt8Ty(ctx_);
+    auto* pt = llvm::PointerType::get(ctx_, 0);
+    auto* vt = llvm::Type::getVoidTy(ctx_);
+
+    // Collect @test functions and @test actions
+    struct TestAction {
+        std::string class_name;
+        std::string action_name;
+        bool is_static;
+    };
+    std::vector<TestAction> test_actions;
+    std::vector<std::string> test_functions;
+
+    for (auto& cls : tu.classes) {
+        for (auto& action : cls.actions) {
+            if (action.has_test) {
+                test_actions.push_back({cls.name, action.name, false});
+            }
+        }
+        for (auto& action : cls.static_actions) {
+            if (action.has_test) {
+                test_actions.push_back({cls.name, action.name, true});
+            }
+        }
+    }
+    for (auto& f : tu.functions) {
+        if (f.has_test) {
+            test_functions.push_back(f.name);
+        }
+    }
+
+    // If nothing to test, generate a minimal main
+    auto* ft = llvm::FunctionType::get(i32t, {}, false);
+    auto* main_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "main", module_.get());
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", main_func);
+    builder_.SetInsertPoint(bb);
+    current_function_ = main_func;
+
+    // Call init mappings first
+    if (init_func_) {
+        builder_.CreateCall(init_func_, {});
+    }
+
+    llvm::Function* printf_fn = module_->getFunction("printf");
+    if (!printf_fn) {
+        auto* printf_ft = llvm::FunctionType::get(i32t, {pt}, true);
+        printf_fn = llvm::Function::Create(printf_ft, llvm::Function::ExternalLinkage, "printf", module_.get());
+    }
+
+    // Print header
+    auto* fmt_header = builder_.CreateGlobalStringPtr("=== MYP Test Runner ===\n");
+    builder_.CreateCall(printf_fn, {fmt_header});
+
+    // Call each @test function
+    for (auto& fname : test_functions) {
+        auto* func = module_->getFunction(fname);
+        if (!func) continue;
+        auto* fmt = builder_.CreateGlobalStringPtr(("  RUN: " + fname + "\n").c_str());
+        builder_.CreateCall(printf_fn, {fmt});
+        builder_.CreateCall(func, {});
+    }
+
+    // For each @test action, create instance and call
+    for (auto& ta : test_actions) {
+        std::string fn_name = ta.class_name + "_" + ta.action_name;
+        auto* func = module_->getFunction(fn_name);
+        if (!func) continue;
+
+        auto* fmt = builder_.CreateGlobalStringPtr(("  RUN: " + ta.class_name + "." + ta.action_name + "\n").c_str());
+        builder_.CreateCall(printf_fn, {fmt});
+
+        if (ta.is_static) {
+            builder_.CreateCall(func, {llvm::ConstantPointerNull::get(pt)});
+        } else {
+            // Allocate instance
+            auto* cls_struct = class_structs_[ta.class_name];
+            if (!cls_struct) continue;
+            auto* instance = builder_.CreateCall(runtime_alloc_, {
+                llvm::ConstantExpr::getSizeOf(cls_struct)
+            });
+            // Zero-init
+            builder_.CreateMemSet(instance, llvm::ConstantInt::get(i8t, 0),
+                llvm::ConstantExpr::getSizeOf(cls_struct), llvm::MaybeAlign(1));
+            // Call init mapping to register event handlers
+            auto* alloc_init = module_->getFunction("__myp_alloc_init_" + ta.class_name);
+            if (alloc_init) {
+                builder_.CreateCall(alloc_init, {instance});
+            }
+            builder_.CreateCall(func, {instance});
+        }
+    }
+
+    // Print summary
+    auto* fmt_done = builder_.CreateGlobalStringPtr("=== MYP Tests Complete ===\n");
+    builder_.CreateCall(printf_fn, {fmt_done});
+
+    builder_.CreateRet(llvm::ConstantInt::get(i32t, 0));
+    current_function_ = nullptr;
 }
 
 // -- Mapping --
@@ -752,18 +868,24 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
             if (callee) {
                 std::vector<llvm::Value*> call_args;
 
-                // Instance pointer: use global if available, otherwise fallback
-                auto git = class_instance_globals_.find(tgt.source_name);
-                if (git != class_instance_globals_.end()) {
-                    auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), git->second, "tgt_inst");
-                    call_args.push_back(inst_p);
-                } else {
-                    auto* inst_a = getNamedValue(tgt.source_name);
-                    if (inst_a) {
-                        auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), inst_a, "tgt");
+                // Check if target is a static action (→ no instance pointer needed)
+                auto sit = is_static_action_.find(tf);
+                bool is_static = (sit != is_static_action_.end() && sit->second);
+
+                if (!is_static) {
+                    // Instance pointer: use global if available, otherwise fallback
+                    auto git = class_instance_globals_.find(tgt.source_name);
+                    if (git != class_instance_globals_.end()) {
+                        auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), git->second, "tgt_inst");
                         call_args.push_back(inst_p);
                     } else {
-                        call_args.push_back(handler->getArg(0));
+                        auto* inst_a = getNamedValue(tgt.source_name);
+                        if (inst_a) {
+                            auto* inst_p = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), inst_a, "tgt");
+                            call_args.push_back(inst_p);
+                        } else {
+                            call_args.push_back(handler->getArg(0));
+                        }
                     }
                 }
 
@@ -857,6 +979,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;
         case StmtKind::MappingStmt: generateMappingDecl(static_cast<const MappingStmt&>(s).decl, builder_.GetInsertBlock()); break;
         case StmtKind::MatchStmt: generateMatchStmt(static_cast<const MatchStmt&>(s)); break;
+        case StmtKind::TryStmt: generateTryStmt(static_cast<const TryStmt&>(s)); break;
         default: break;
     }
 }
@@ -864,7 +987,17 @@ void CodeGen::generateStmt(const Stmt& s) {
 void CodeGen::generateBlock(const BlockStmt& s) {
     if (!builder_.GetInsertBlock()) return;
     pushScope();
-    for (auto& st : s.statements) if (st) generateStmt(*st);
+    for (auto& st : s.statements) {
+        if (!st) continue;
+        // If the current block already has a terminator (e.g., after __myp_throw),
+        // create a new dead block to keep LLVM IR valid
+        if (builder_.GetInsertBlock()->getTerminator()) {
+            auto* func = builder_.GetInsertBlock()->getParent();
+            auto* dead_bb = llvm::BasicBlock::Create(ctx_, "dead", func);
+            builder_.SetInsertPoint(dead_bb);
+        }
+        generateStmt(*st);
+    }
     popScope();
 }
 
@@ -1624,6 +1757,23 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     {eid_val, this_ptr, delay64, param, interval64});
                 return result;
             }
+            // __myp_throw: save error message then longjmp to catch block
+            else if (id.name == "__myp_throw") {
+                if (e.args.size() < 1) {
+                    diag_.error(e.range, "__myp_throw requires 1 argument (string)");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* msg = generateExpr(*e.args[0]);
+                builder_.CreateCall(runtime_throw_->getFunctionType(),
+                    runtime_throw_, {msg});
+                // longjmp(&__myp_jmpbuf, 1) — noreturn
+                auto* one = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1);
+                builder_.CreateCall(runtime_longjmp_->getFunctionType(),
+                    runtime_longjmp_, {global_jmp_buf_, one});
+                // Unreachable (longjmp is noreturn, but LLVM needs terminator)
+                builder_.CreateUnreachable();
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
         }
         // Try current class method (bare name without this.)
         if (!callee && !current_class_name_.empty() && current_tu_) {
@@ -2244,6 +2394,75 @@ void CodeGen::generateMatchStmt(const MatchStmt& s) {
     builder_.SetInsertPoint(merge_bb);
 }
 
+void CodeGen::generateTryStmt(const TryStmt& s) {
+    auto* func = builder_.GetInsertBlock()->getParent();
+
+    // Call setjmp on the global jmp_buf: int setjmp(&__myp_jmpbuf)
+    auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
+        runtime_setjmp_, {global_jmp_buf_}, "setjmp_result");
+
+    // Compare result == 0 (normal path) vs != 0 (error/catch path)
+    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* is_error = builder_.CreateICmpNE(result, zero, "is_error");
+
+    auto* try_bb = llvm::BasicBlock::Create(ctx_, "try_block", func);
+    auto* catch_bb = s.catch_block
+        ? llvm::BasicBlock::Create(ctx_, "catch_block", func) : nullptr;
+    auto* finally_bb = s.finally_block
+        ? llvm::BasicBlock::Create(ctx_, "finally_block", func) : nullptr;
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_end", func);
+
+    if (catch_bb) {
+        builder_.CreateCondBr(is_error, catch_bb, try_bb);
+    } else {
+        builder_.CreateCondBr(is_error, merge_bb, try_bb);
+    }
+
+    // === Generate try block ===
+    builder_.SetInsertPoint(try_bb);
+    if (s.try_block) generateBlock(*s.try_block);
+    if (!builder_.GetInsertBlock()->getTerminator()) {
+        if (finally_bb) {
+            builder_.CreateBr(finally_bb);
+        } else {
+            builder_.CreateBr(merge_bb);
+        }
+    }
+
+    // === Generate catch block ===
+    if (catch_bb) {
+        builder_.SetInsertPoint(catch_bb);
+        // Get the error message via myp_get_error()
+        auto* err_ptr = builder_.CreateCall(runtime_get_error_->getFunctionType(),
+            runtime_get_error_, {}, "err_msg");
+        // Store it as the catch variable
+        auto* err_var = createEntryBlockAlloca(func,
+            llvm::PointerType::get(ctx_, 0), s.catch_var_name);
+        builder_.CreateStore(err_ptr, err_var);
+        setNamedValue(s.catch_var_name, err_var);
+
+        if (s.catch_block) generateBlock(*s.catch_block);
+        if (!builder_.GetInsertBlock()->getTerminator()) {
+            if (finally_bb) {
+                builder_.CreateBr(finally_bb);
+            } else {
+                builder_.CreateBr(merge_bb);
+            }
+        }
+    }
+
+    // === Generate finally block ===
+    if (finally_bb) {
+        builder_.SetInsertPoint(finally_bb);
+        if (s.finally_block) generateBlock(*s.finally_block);
+        if (!builder_.GetInsertBlock()->getTerminator()) {
+            builder_.CreateBr(merge_bb);
+        }
+    }
+
+    builder_.SetInsertPoint(merge_bb);
+}
+
 // -- Runtime --
 void CodeGen::declareRuntimeFunctions() {
     auto* v = llvm::Type::getVoidTy(ctx_);
@@ -2342,6 +2561,53 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::FunctionType::get(i32, {i32, p, i64, i64, i64}, false),
         llvm::Function::ExternalLinkage, "myp_timer_create", module_.get());
 
+    // Error handling
+    // Use a global jmp_buf (simpler than stack allocation, and longjmp
+    // must work from any nested call depth).
+    auto* jb_type = llvm::ArrayType::get(i64, 25); // 200 bytes on x86-64
+    jmp_buf_type_ = llvm::StructType::create(ctx_, "myp_jmp_buf");
+    jmp_buf_type_->setBody({jb_type});
+
+    // Global jmp_buf instance
+    global_jmp_buf_ = new llvm::GlobalVariable(*module_, jmp_buf_type_, false,
+        llvm::GlobalValue::InternalLinkage,
+        llvm::ConstantAggregateZero::get(jmp_buf_type_), "__myp_jmpbuf");
+
+    // Declare system setjmp as: int setjmp(ptr)
+    runtime_setjmp_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {llvm::PointerType::get(ctx_, 0)}, false),
+        llvm::Function::ExternalLinkage, "setjmp", module_.get());
+
+    // Longjmp: void longjmp(ptr, int)  (noreturn)
+    runtime_longjmp_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {llvm::PointerType::get(ctx_, 0), i32}, false),
+        llvm::Function::ExternalLinkage, "longjmp", module_.get());
+    runtime_longjmp_->addFnAttr(llvm::Attribute::NoReturn);
+
+    // myp_throw(str) — saves the error message (longjmp is generated inline)
+    runtime_throw_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_throw", module_.get());
+    runtime_throw_->addFnAttr(llvm::Attribute::NoReturn);
+
+    runtime_get_error_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_get_error", module_.get());
+
+    // Test framework runtime functions
+    runtime_assert_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i32}, false),
+        llvm::Function::ExternalLinkage, "myp_assert", module_.get());
+    runtime_assert_eq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_eq", module_.get());
+    runtime_assert_str_eq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, p}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_str_eq", module_.get());
+    runtime_test_report_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_test_report", module_.get());
+
     // Memory allocator
     runtime_alloc_ = llvm::Function::Create(
         llvm::FunctionType::get(p, {i64}, false),
@@ -2391,6 +2657,12 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_getch"] = runtime_getch_;
     intrinsic_map_["__myp_flush"] = runtime_flush_;
     intrinsic_map_["__myp_atof"] = runtime_atof_;
+    // test intrinsics
+    intrinsic_map_["__myp_assert"] = runtime_assert_;
+    intrinsic_map_["__myp_assert_eq"] = runtime_assert_eq_;
+    intrinsic_map_["__myp_assert_str_eq"] = runtime_assert_str_eq_;
+    intrinsic_map_["__myp_test_report"] = runtime_test_report_;
+    // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
 }

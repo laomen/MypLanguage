@@ -2,6 +2,7 @@
 
 #include <math.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
@@ -668,3 +669,82 @@ double myp_math_exp(double v)     { return exp(v); }
 double myp_math_log(double v)     { return log(v); }
 double myp_math_pow(double b, double e) { return pow(b, e); }
 int32_t myp_math_abs_int(int32_t v) { return v < 0 ? -v : v; }
+
+// ======================
+// Error handling (setjmp/longjmp)
+// ======================
+
+// setjmp/longjmp are called directly from LLVM IR.
+// myp_setjmp is a wrapper that forwards to system setjmp,
+// but setjmp must be called in the same function that branches
+// on its return value, so we generate @llvm.setjmp or direct
+// calls in codegen instead.
+static char myp_error_msg[256];
+static int myp_error_active = 0;
+
+// Called from generated code via intrinsic: saves error context
+void myp_error_setup(void) {
+    myp_error_active = 1;
+}
+
+// Called from generated code via intrinsic: records error and triggers longjmp
+void myp_throw(const char* msg) {
+    strncpy(myp_error_msg, msg, 255);
+    myp_error_msg[255] = '\0';
+}
+
+const char* myp_get_error(void) {
+    return myp_error_msg;
+}
+
+int myp_error_is_active(void) {
+    return myp_error_active;
+}
+
+void myp_error_clear(void) {
+    myp_error_active = 0;
+}
+
+// ======================
+// Test framework
+// ======================
+#include <stdio.h>
+
+static int myp_test_pass_count = 0;
+static int myp_test_fail_count = 0;
+
+void myp_assert(int cond) {
+    if (!cond) {
+        fprintf(stderr, "  ASSERTION FAILED\n");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_eq(int a, int b) {
+    if (a != b) {
+        fprintf(stderr, "  ASSERTION FAILED: %d != %d\n", a, b);
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_str_eq(const char* a, const char* b) {
+    int eq = (a == b) || (a && b && strcmp(a, b) == 0);
+    if (!eq) {
+        fprintf(stderr, "  ASSERTION FAILED: \"%s\" != \"%s\"\n", a ? a : "null", b ? b : "null");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_test_report(const char* name, int passed) {
+    if (passed) {
+        printf("  PASS: %s\n", name);
+    } else {
+        printf("  FAIL: %s\n", name);
+    }
+}

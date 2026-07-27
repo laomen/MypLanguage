@@ -44,6 +44,7 @@ set(SOURCES
     src/sema/type.cpp
     src/sema/symbol_table.cpp
     src/codegen/codegen.cpp
+    src/fmt/fmt.cpp
 )
 
 set(HEADERS
@@ -57,6 +58,7 @@ set(HEADERS
     include/mylang/Type.h
     include/mylang/SymbolTable.h
     include/mylang/CodeGen.h
+    include/mylang/Fmt.h
 )
 
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
@@ -104,9 +106,20 @@ target_include_directories(mypc
     ${LLVM_INCLUDE_DIRS}
 )
 
+# ---- Formatter Executable ----
+add_executable(myp_fmt
+    src/fmt/main.cpp
+    src/fmt/fmt.cpp
+    src/token.cpp
+    src/lexer/lexer.cpp
+    src/SourceLocation.cpp
+)
+target_include_directories(myp_fmt PRIVATE ${CMAKE_SOURCE_DIR}/include)
+
 # ---- Runtime Library (C) ----
 add_library(myp_runtime STATIC
     src/runtime/runtime.c
+    src/runtime/myp_stdlib.c
 )
 
 target_include_directories(myp_runtime

@@ -344,6 +344,10 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "enum")     kind = TokenKind::Keyword_enum;
     else if (value == "match")    kind = TokenKind::Keyword_match;
     else if (value == "ffi")      kind = TokenKind::Keyword_ffi;
+    else if (value == "try")      kind = TokenKind::Keyword_try;
+    else if (value == "catch")    kind = TokenKind::Keyword_catch;
+    else if (value == "finally")  kind = TokenKind::Keyword_finally;
+    else if (value == "throw")    kind = TokenKind::Keyword_throw;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

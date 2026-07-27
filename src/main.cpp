@@ -1,10 +1,13 @@
 #include "mylang/CodeGen.h"
 #include "mylang/DiagnosticEngine.h"
+#include "mylang/Fmt.h"
 #include "mylang/Lexer.h"
 #include "mylang/Parser.h"
 #include "mylang/Sema.h"
 #include "mylang/SourceLocation.h"
 
+#include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -108,6 +111,12 @@ static bool loadModule(const std::string& module_name,
         tu.mappings.push_back(std::move(m));
     for (auto& f : sub_ast->functions)
         tu.functions.push_back(std::move(f));
+    for (auto& f : sub_ast->ffis)
+        tu.ffis.push_back(std::move(f));
+    for (auto& e : sub_ast->enums)
+        tu.enums.push_back(std::move(e));
+    for (auto& s : sub_ast->structs)
+        tu.structs.push_back(std::move(s));
     // Recursively load sub-imports
     std::string sub_dir = is_path ? getDir(path) : source_dir;
     for (auto& imp : sub_ast->imports) {
@@ -122,6 +131,8 @@ static bool loadModule(const std::string& module_name,
                                             const std::string& output_fn,
                                             int opt_level,
                                             bool emit_llvm,
+                                            bool library_mode,
+                                            bool test_mode,
                                             mylang::DiagnosticEngine& diag) {
     // === Phase 4: Semantic Analysis ===
     mylang::Sema sema(diag);
@@ -137,6 +148,8 @@ static bool loadModule(const std::string& module_name,
     // === Phase 5: Code Generation ===
     mylang::CodeGen codegen(diag);
     codegen.setEmitLLVM(emit_llvm);
+    codegen.setLibraryMode(library_mode);
+    codegen.setTestMode(test_mode);
     std::string obj_path = codegen.generate(ast, output_fn, opt_level);
 
     if (obj_path.empty()) {
@@ -165,7 +178,8 @@ static bool loadModule(const std::string& module_name,
                                   const std::string& package_path = "",
                                   int opt_level = 0,
                                   bool trace_enabled = false,
-                                  bool emit_llvm = false) {
+                                  bool emit_llvm = false,
+                                  bool test_mode = false) {
     mylang::SourceManager source_mgr;
     if (!source_mgr.loadFile(filename)) {
         std::cerr << "Error: cannot open file '" << filename << "'\n";
@@ -204,13 +218,15 @@ static bool loadModule(const std::string& module_name,
         }
     }
 
-    return doCompile(*ast, filename, opt_level, emit_llvm, diag);
+    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, diag);
 }
 
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
                                        const std::string& output_name,
                                        const std::string& stdlib_path,
-                                       bool trace_enabled) {
+                                       bool trace_enabled,
+                                       bool shared_lib = false,
+                                       bool static_lib = false) {
     if (obj_files.empty()) return false;
 
     std::string runtime_dir = stdlib_path.substr(0, stdlib_path.find_last_of('/'));
@@ -231,20 +247,37 @@ static bool loadModule(const std::string& module_name,
     std::string obj_list;
     for (auto& o : obj_files) obj_list += " " + o;
 
+    // Build runtime object
+    std::string rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
     std::string trace_def = trace_enabled ? " -DTRACE_ENABLED" : "";
+    std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+    if (std::system(compile_rt.c_str()) != 0) {
+        std::cerr << "Failed to compile runtime\n";
+        return false;
+    }
+
     std::string link_cmd;
-    if (trace_enabled) {
-        std::string rebuild_cmd = "gcc -I" + inc_path + " -DTRACE_ENABLED -c " + runtime_c
-                                + " -o /tmp/myp_runtime_trace.o 2>&1";
-        std::system(rebuild_cmd.c_str());
-        link_cmd = "gcc -I" + inc_path + obj_list + " /tmp/myp_runtime_trace.o"
+    if (shared_lib) {
+        // Shared library: -shared -fPIC
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj
                  + " -o " + output_name + " -lpthread -lm 2>&1";
+    } else if (static_lib) {
+        // Static library: archive with ar
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " 2>&1";
+        int ar_result = std::system(ar_cmd.c_str());
+        if (ar_result != 0) {
+            std::cerr << "Static library creation failed\n";
+            return false;
+        }
+        std::cout << "Static lib OK: " << output_name << "\n";
+        return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + obj_list + " " + runtime_c
+        // Normal executable
+        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj
                  + " -o " + output_name + " -lpthread -lm 2>&1";
     }
-    int link_result = std::system(link_cmd.c_str());
 
+    int link_result = std::system(link_cmd.c_str());
     if (link_result != 0) {
         std::cerr << "Linking failed (exit: " << link_result << ")\n";
         return false;
@@ -256,18 +289,78 @@ static bool loadModule(const std::string& module_name,
 
 static const char* MYP_VERSION = "2.0.0";
 
+static int runFmt(int argc, char* argv[]) {
+    bool check_mode = false;
+    std::vector<std::string> fmt_files;
+    for (int i = 2; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--check") check_mode = true;
+        else if (arg == "--help" || arg == "-h") {
+            std::cout << "Usage: mypc fmt [options] <file.myp> ...\n";
+            std::cout << "Options:\n";
+            std::cout << "  --check    Only check formatting, don't write\n";
+            std::cout << "  --help, -h Show this help\n";
+            return 0;
+        } else fmt_files.push_back(arg);
+    }
+    if (fmt_files.empty()) {
+        std::cerr << "Error: no input files for fmt\n";
+        return 1;
+    }
+    bool all_ok = true;
+    for (auto& fname : fmt_files) {
+        mylang::SourceManager src_mgr;
+        if (!src_mgr.loadFile(fname)) {
+            std::cerr << "Error: cannot open '" << fname << "'\n";
+            all_ok = false;
+            continue;
+        }
+        mylang::DiagnosticEngine diag(src_mgr);
+        mylang::Formatter fmt(src_mgr, diag);
+        std::string formatted = fmt.format();
+        if (diag.hasErrors()) {
+            all_ok = false;
+            continue;
+        }
+        if (check_mode) {
+            if (formatted != src_mgr.source()) {
+                std::cout << fname << " would be reformatted\n";
+                all_ok = false;
+            }
+        } else {
+            std::ofstream ofs(fname, std::ios::trunc);
+            if (!ofs) {
+                std::cerr << "Error: cannot write '" << fname << "'\n";
+                all_ok = false;
+                continue;
+            }
+            ofs << formatted;
+            ofs.close();
+            std::cout << "Formatted: " << fname << "\n";
+        }
+    }
+    return all_ok ? 0 : 1;
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " [options] <file1.myp> [file2.myp ...]\n";
+        std::cerr << "       " << argv[0] << " fmt [options] <file.myp> ...\n";
         std::cerr << "Options:\n";
         std::cerr << "  -o <file>       Set output filename\n";
         std::cerr << "  -O[0123]        Set optimization level (default: -O0)\n";
         std::cerr << "  --stdlib <path> Set stdlib directory\n";
         std::cerr << "  --trace         Enable runtime event tracing\n";
         std::cerr << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
+        std::cerr << "  --test          Build and run tests (generate test runner)\n";
         std::cerr << "  --version       Show version number\n";
         std::cerr << "  --help, -h      Show this help message\n";
         return 1;
+    }
+
+    // ---- Subcommand: fmt ----
+    if (strcmp(argv[1], "fmt") == 0) {
+        return runFmt(argc, argv);
     }
 
     std::string stdlib_path = "stdlib";
@@ -276,6 +369,9 @@ int main(int argc, char* argv[]) {
     int opt_level = 0;
     bool trace_enabled = false;
     bool emit_llvm = false;
+    bool shared_lib = false;
+    bool static_lib = false;
+    bool test_mode = false;
     std::vector<std::string> filenames;
     int i = 1;
     while (i < argc) {
@@ -291,7 +387,11 @@ int main(int argc, char* argv[]) {
             std::cout << "  --stdlib <path> Set stdlib directory\n";
             std::cout << "  --package-path <path> Set local package directory\n";
             std::cout << "  --trace         Enable runtime event tracing\n";
+            std::cout << "  --shared        Build shared library (.so)\n";
+            std::cout << "  --static        Build static library (.a)\n";
             std::cout << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
+            std::cout << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
+            std::cout << "  --test          Build and run tests (generate test runner)\n";
             std::cout << "  --version       Show version number\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
@@ -307,6 +407,12 @@ int main(int argc, char* argv[]) {
             package_path = argv[++i];
         } else if (arg == "--trace") {
             trace_enabled = true;
+        } else if (arg == "--shared") {
+            shared_lib = true;
+        } else if (arg == "--static") {
+            static_lib = true;
+        } else if (arg == "--test") {
+            test_mode = true;
         } else if (arg == "--emit-llvm") {
             emit_llvm = true;
         } else {
@@ -341,20 +447,28 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    bool library_mode = shared_lib || static_lib;
+
+    // Determine default output name for libraries
+    if (output_name_v.empty() && library_mode && filenames.size() == 1) {
+        std::string base = filenames[0].substr(0, filenames[0].find_last_of('.'));
+        output_name_v = shared_lib ? base + ".so" : base + ".a";
+    }
+
     // --emit-llvm only works with single file
     if (emit_llvm) {
         if (filenames.size() > 1) {
             std::cerr << "Warning: --emit-llvm only supported for single file\n";
         }
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, test_mode);
         return obj.empty() ? 1 : 0;
     }
 
     if (filenames.size() == 1) {
         // Single file: use simple compile + link
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, test_mode);
         if (obj.empty()) return 1;
-        if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled))
+        if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
             return 1;
         return 0;
     }
@@ -417,11 +531,11 @@ int main(int argc, char* argv[]) {
     }
 
     // Single sema + codegen pass on merged AST
-    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, diag);
+    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, library_mode, test_mode, diag);
     if (obj_path.empty()) return 1;
 
     // Link
-    if (!linkObjects({obj_path}, output_name_v, stdlib_path, trace_enabled))
+    if (!linkObjects({obj_path}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
         return 1;
 
     return 0;

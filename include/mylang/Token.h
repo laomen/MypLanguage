@@ -47,6 +47,10 @@ enum class TokenKind : uint16_t {
     Keyword_enum,
     Keyword_match,
     Keyword_ffi,
+    Keyword_try,
+    Keyword_catch,
+    Keyword_finally,
+    Keyword_throw,
 
     // ----- Types (also keywords) -----
     Type_byte,

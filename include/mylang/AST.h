@@ -81,6 +81,7 @@ struct ActionDecl {
     std::shared_ptr<Stmt> body;  // nullptr if declaration only
     SourceRange range;
     bool has_startup = false;
+    bool has_test = false;
 };
 
 struct EventDecl {
@@ -347,6 +348,7 @@ enum class StmtKind {
     ContinueStmt,
     MappingStmt,
     MatchStmt,
+    TryStmt,
 };
 
 struct Stmt {
@@ -360,6 +362,20 @@ struct BlockStmt : Stmt {
     std::vector<std::unique_ptr<Stmt>> statements;
     BlockStmt(std::vector<std::unique_ptr<Stmt>> stmts, SourceRange r)
         : Stmt(StmtKind::Block, r), statements(std::move(stmts)) {}
+};
+
+struct TryStmt : Stmt {
+    std::unique_ptr<BlockStmt> try_block;
+    std::string catch_var_name;
+    std::string catch_var_type;
+    std::unique_ptr<BlockStmt> catch_block;
+    std::unique_ptr<BlockStmt> finally_block;
+    TryStmt(std::unique_ptr<BlockStmt> tb, const std::string& cvn,
+            const std::string& cvt, std::unique_ptr<BlockStmt> cb,
+            std::unique_ptr<BlockStmt> fb, SourceRange r)
+        : Stmt(StmtKind::TryStmt, r), try_block(std::move(tb)),
+          catch_var_name(cvn), catch_var_type(cvt),
+          catch_block(std::move(cb)), finally_block(std::move(fb)) {}
 };
 
 struct VarDeclStmt : Stmt {
@@ -445,6 +461,7 @@ struct FuncDecl {
     std::vector<ParamDecl> params;
     std::unique_ptr<BlockStmt> body;
     SourceRange range;
+    bool has_test = false;
 };
 
 struct ImportDecl {

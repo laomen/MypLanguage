@@ -1,0 +1,117 @@
+// memory.myp — MYP 标准库：动态内存管理（FFI 桥接 C 标准库）
+//
+// 直接调用 C 标准库的 malloc/free/realloc，实现动态内存分配。
+// 底层通过 FFI 声明调用 libc 函数。
+
+// ---- FFI 声明：C 标准库内存函数 ----
+ffi void* malloc(int size);
+ffi void free(void* ptr);
+ffi void* realloc(void* ptr, int new_size);
+ffi void* memset(void* ptr, int val, int num);
+ffi void* memcpy(void* dst, void* src, int num);
+
+// ============================================================
+// 动态内存分配器
+// ============================================================
+class Mem {
+    static:
+        // 分配内存
+        void* alloc(int size) {
+            return malloc(size);
+        }
+
+        // 释放内存
+        void release(void* ptr) {
+            free(ptr);
+        }
+
+        // 重新分配（扩容/缩容）
+        void* realloc(void* ptr, int new_size) {
+            return realloc(ptr, new_size);
+        }
+
+        // 内存置零
+        void zero(void* ptr, int size) {
+            memset(ptr, 0, size);
+        }
+
+        // 内存拷贝
+        void copy(void* dst, void* src, int size) {
+            memcpy(dst, src, size);
+        }
+}
+
+// ============================================================
+// DynamicArray<T> — 真正的动态数组（使用 malloc/realloc）
+// ============================================================
+// 区别于 ArrayList 的固定容量，DynamicArray 使用堆内存分配，
+// 支持真正的动态扩容，不受固定容量限制。
+//
+// 用法：
+//   DynamicArray<int> arr = new DynamicArray<int>();
+//   arr.add(42);
+//   int v = arr.get(0);
+
+class DynamicArray<T> {
+    action:
+        @startup void init() {
+            cap_ = 4;
+            cnt_ = 0;
+            data_ = Mem.alloc(cap_ * 8);
+            Mem.zero(data_, cap_ * 8);
+        }
+
+        void add(T val) {
+            if (cnt_ >= cap_) {
+                grow();
+            }
+            // 通过指针偏移写入
+            __myp_ptr_write(data_, cnt_, val);
+            cnt_ = cnt_ + 1;
+        }
+
+        T get(int index) {
+            return (T)(__myp_ptr_read(data_, index));
+        }
+
+        void set(int index, T val) {
+            __myp_ptr_write(data_, index, val);
+        }
+
+        int size() {
+            return cnt_;
+        }
+
+        bool isEmpty() {
+            return cnt_ == 0;
+        }
+
+        void clear() {
+            cnt_ = 0;
+        }
+
+        void destroy() {
+            if (data_ != null) {
+                Mem.release(data_);
+                data_ = null;
+                cnt_ = 0;
+                cap_ = 0;
+            }
+        }
+
+    function:
+        void grow() {
+            int new_cap = cap_ * 2;
+            void* new_data = Mem.alloc(new_cap * 8);
+            Mem.zero(new_data, new_cap * 8);
+            Mem.copy(new_data, data_, cap_ * 8);
+            Mem.release(data_);
+            data_ = new_data;
+            cap_ = new_cap;
+        }
+
+    property:
+        void* data_;
+        int cap_;
+        int cnt_;
+}

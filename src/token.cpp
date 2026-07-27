@@ -43,6 +43,10 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Keyword_enum:       return "enum";
         case TokenKind::Keyword_match:      return "match";
         case TokenKind::Keyword_ffi:         return "ffi";
+        case TokenKind::Keyword_try:         return "try";
+        case TokenKind::Keyword_catch:       return "catch";
+        case TokenKind::Keyword_finally:     return "finally";
+        case TokenKind::Keyword_throw:       return "throw";
         case TokenKind::Keyword_static:     return "static";
 
         case TokenKind::Type_byte:          return "byte";
