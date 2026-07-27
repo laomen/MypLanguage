@@ -1701,6 +1701,33 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_assert_eq", TypeKind::Void, {TypeKind::Int, TypeKind::Int});
     add_intrinsic("__myp_assert_str_eq", TypeKind::Void, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_test_report", TypeKind::Void, {TypeKind::String, TypeKind::Bool});
+
+    // Atomic intrinsics (codegen generates LLVM atomic instructions directly)
+    // These take (int[] array, int index, int value) and return the OLD value.
+    // Register as raw function types bypassing the add_intrinsic helper for array params.
+    auto add_atomic = [&](const std::string& name, TypeKind ret, std::vector<TypeKind> params, std::vector<TypeKind> elem_types) {
+        TypeInfo t(TypeKind::Function);
+        t.return_type = std::make_shared<TypeInfo>(ret);
+        size_t ei = 0;
+        for (auto p : params) {
+            if (p == TypeKind::Array) {
+                TypeInfo arr(TypeKind::Array);
+                arr.element_type = std::make_shared<TypeInfo>(
+                    ei < elem_types.size() ? elem_types[ei] : TypeKind::Int);
+                t.param_types.push_back(arr);
+                ei++;
+            } else {
+                t.param_types.push_back(TypeInfo(p));
+            }
+        }
+        symbol_table_.declare(name, t);
+    };
+    add_atomic("__myp_atomic_add_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
+    add_atomic("__myp_atomic_sub_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
+    add_atomic("__myp_atomic_xchg_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
+    add_atomic("__myp_atomic_add_f64", TypeKind::Double, {TypeKind::Array, TypeKind::Int, TypeKind::Double}, {TypeKind::Double});
+    add_atomic("__myp_atomic_load_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int}, {TypeKind::Int});
+    add_atomic("__myp_atomic_store_i32", TypeKind::Void, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
 }
 
 Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {

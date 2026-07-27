@@ -2263,6 +2263,61 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 builder_.CreateUnreachable();
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
             }
+            // Atomic intrinsics: generate LLVM atomic instructions directly
+            else if (id.name == "__myp_atomic_add_i32" ||
+                     id.name == "__myp_atomic_sub_i32" ||
+                     id.name == "__myp_atomic_xchg_i32" ||
+                     id.name == "__myp_atomic_add_f64" ||
+                     id.name == "__myp_atomic_load_i32" ||
+                     id.name == "__myp_atomic_store_i32") {
+                if (e.args.size() < 2) {
+                    diag_.error(e.range, "atomic intrinsic requires at least 2 arguments");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                // First arg is the array pointer (int[] or double[])
+                auto* arr_ptr = generateExpr(*e.args[0]);
+                // Second arg is the index
+                auto* index_val = generateExpr(*e.args[1]);
+
+                // Determine element type and generate GEP
+                bool is_float = (id.name == "__myp_atomic_add_f64");
+                auto* elem_ty = is_float
+                    ? llvm::Type::getDoubleTy(ctx_)
+                    : llvm::Type::getInt32Ty(ctx_);
+                auto* elem_ptr = builder_.CreateGEP(
+                    elem_ty, arr_ptr, {index_val}, "atomic_ptr");
+
+                if (id.name == "__myp_atomic_load_i32") {
+                    auto* loaded = builder_.CreateLoad(elem_ty, elem_ptr);
+                    return loaded;
+                }
+
+                if (e.args.size() < 3) {
+                    diag_.error(e.range, "atomic store/add/sub/xchg requires 3 arguments");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* val = generateExpr(*e.args[2]);
+
+                if (id.name == "__myp_atomic_store_i32") {
+                    builder_.CreateStore(val, elem_ptr);
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+
+                llvm::AtomicRMWInst::BinOp op;
+                if (id.name == "__myp_atomic_add_i32") op = llvm::AtomicRMWInst::Add;
+                else if (id.name == "__myp_atomic_sub_i32") op = llvm::AtomicRMWInst::Sub;
+                else if (id.name == "__myp_atomic_xchg_i32") op = llvm::AtomicRMWInst::Xchg;
+                else if (id.name == "__myp_atomic_add_f64") op = llvm::AtomicRMWInst::FAdd;
+                else {
+                    diag_.error(e.range, "unknown atomic operation");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+
+                auto* result = builder_.CreateAtomicRMW(op, elem_ptr, val,
+                    llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::SequentiallyConsistent);
+                return result;
+            }
         }
         // Try current class method (bare name without this.)
         if (!callee && !current_class_name_.empty() && current_tu_) {

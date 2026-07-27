@@ -846,8 +846,43 @@ mapping() {
 ### 8.4 共享引用
 
 - 对象默认按**引用**传递（不拷贝）
-- 跨线程共享时，**由程序员保证线程安全**
-- 未来可引入 `@synchronized` 或 `@mutex` 注解
+- 同一时间线内的引用是安全的——无竞态条件
+- 跨时间线（跨 `@thread`）的引用：**禁止直接共享**
+  - 跨线程通信的唯一合法通道是 `mapping()` + 事件投递
+  - 不能将一个 `@thread` 实例的 property 直接赋值给另一个线程的变量
+  - 这条规则由**编译器检查**（未来版本）或**程序员自律**（当前版本）
+
+### 8.5 未来：显式同步注解
+
+当前 MYP **没有**显式锁机制——因为设计上就不需要：
+
+| 场景 | 正确的做法 | 错误的做法 |
+|------|-----------|-----------|
+| 跨线程传递数据 | `mapping() { a.event -> b.action; }` | 直接写 `b.property = value` |
+| 线程间共享状态 | 用独立 `@thread` 实例管理状态，通过事件查询/修改 | 多个线程读写同一个 property |
+| 归约/聚合 | 每个线程维护自己的 tally，最后用事件汇总 | 共享全局数组 + 加锁 |
+
+如果未来需要更细粒度的同步控制，可能引入：
+
+```myp
+@mutex class SafeCounter {     // 整个 class 实例受 mutex 保护
+    action:
+        void inc() { count = count + 1; }
+    property:
+        int count;
+}
+
+class BankAccount {
+    action:
+        @synchronized void withdraw(int amount) {  // 单方法加锁
+            balance = balance - amount;
+        }
+    property:
+        int balance;
+}
+```
+
+但目前 **不推荐** 使用共享内存并发模式——MYP 的事件驱动模型已经为无共享并发设计好了。引入锁会让架构退化到传统的共享内存并发，丢失事件驱动的大部分优势。
 
 ### 8.5 已实现的功能
 

@@ -1,0 +1,46 @@
+// atomic.myp — MYP 标准库：原子操作
+//
+// 多线程环境下安全的数据读写原语。
+// 底层通过 LLVM atomicrmw / cmpxchg 指令直接生成，无运行时开销。
+//
+// 用法:
+//   import env;
+//   import atomic;
+//
+//   int[1000] tally;
+//   // 8 个线程安全累加
+//   Atomic.addInt(tally, i, 1);
+//   int old = Atomic.xchgInt(tally, i, 0);  // 重置
+
+class Atomic {
+    static:
+        // 原子加法：arr[i] += val，返回旧值
+        int addInt(int[] arr, int i, int v) {
+            return __myp_atomic_add_i32(arr, i, v);
+        }
+
+        // 原子减法：arr[i] -= val，返回旧值
+        int subInt(int[] arr, int i, int v) {
+            return __myp_atomic_sub_i32(arr, i, v);
+        }
+
+        // 原子交换：arr[i] = val，返回旧值
+        int xchgInt(int[] arr, int i, int v) {
+            return __myp_atomic_xchg_i32(arr, i, v);
+        }
+
+        // 原子浮点加法：arr[i] += val，返回旧值
+        double addDouble(double[] arr, int i, double v) {
+            return __myp_atomic_add_f64(arr, i, v);
+        }
+
+        // 原子读取：返回 arr[i]
+        int loadInt(int[] arr, int i) {
+            return __myp_atomic_load_i32(arr, i);
+        }
+
+        // 原子写入：arr[i] = val
+        void storeInt(int[] arr, int i, int v) {
+            __myp_atomic_store_i32(arr, i, v);
+        }
+}
