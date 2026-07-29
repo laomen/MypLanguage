@@ -6,5 +6,5 @@ C_DEFINES =
 
 C_INCLUDES = -isystem /usr/include/hdf5/serial
 
-C_FLAGS = -g
+C_FLAGS = 
 

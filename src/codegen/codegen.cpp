@@ -1625,7 +1625,13 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             setNamedValue(d.name, ptr_a);
         } else {
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
-            builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
+            // Handle initializer: double[] buf = new double[n]
+            if (d.init_expr) {
+                auto* init_val = generateExpr(*d.init_expr);
+                builder_.CreateStore(init_val, ptr_a);
+            } else {
+                builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
+            }
             setNamedValue(d.name, ptr_a);
         }
         // Record element type for subscript access

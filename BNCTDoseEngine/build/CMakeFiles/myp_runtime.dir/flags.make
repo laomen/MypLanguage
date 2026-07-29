@@ -6,5 +6,5 @@ C_DEFINES =
 
 C_INCLUDES = -I/home/xlkj/code/MYPLanguage/include
 
-C_FLAGS = -g
+C_FLAGS = 
 
