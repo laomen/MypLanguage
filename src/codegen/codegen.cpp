@@ -359,6 +359,19 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         generateFFIDecl(ff);
     }
 
+    // Create global variables for @static class instances (accessible via ClassName.property)
+    for (auto& cls : tu.classes) {
+        if (!cls.is_static) continue;
+        if (cls.properties.empty()) continue;
+        auto* st = getClassStruct(cls.name);
+        if (!st) continue;
+        auto* gv = new llvm::GlobalVariable(*module_, st, false,
+            llvm::GlobalValue::ExternalLinkage,
+            llvm::ConstantAggregateZero::get(st),
+            "__myp_static_" + cls.name);
+        static_property_globals_[cls.name] = gv;
+    }
+
     // Create global instance pointers for classes used in mappings
     // MUST be done before generateClass() so @thread variables can store
     // instance pointers that mapping handlers need
@@ -2594,6 +2607,28 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
 }
 
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // Static class property access: ClassName.property
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto sit = static_property_globals_.find(oi.name);
+        if (sit != static_property_globals_.end() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name == oi.name) {
+                    unsigned pi = 0;
+                    if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                        auto* st = getClassStruct(cls.name);
+                        if (st) {
+                            auto* gep = builder_.CreateStructGEP(st, sit->second, pi);
+                            auto* pt = getPropertyType(cls, e.member_name);
+                            if (pt->isArrayTy()) return gep;
+                            return builder_.CreateLoad(pt, gep);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Enum variant access: Color.Red → i32 constant
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
@@ -3036,6 +3071,39 @@ assign_gep:
                         }
                         builder_.CreateStore(v, gep);
                         return v;
+                    }
+                }
+            }
+            // Static class property assignment: ClassName.property = value
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                auto sit = static_property_globals_.find(oi.name);
+                if (sit != static_property_globals_.end() && current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name == oi.name) {
+                            unsigned pi = 0;
+                            if (getPropertyIndex(cls.name, ma.member_name, pi)) {
+                                auto* st = getClassStruct(cls.name);
+                                if (st) {
+                                    auto* gep = builder_.CreateStructGEP(st, sit->second, pi);
+                                    auto* v = generateExpr(*e.value);
+                                    auto* pt = getPropertyType(cls, ma.member_name);
+                                    if (v->getType() != pt) {
+                                        if (pt->isIntegerTy() && v->getType()->isIntegerTy())
+                                            v = builder_.CreateIntCast(v, pt, true);
+                                        else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
+                                            v = builder_.CreateSIToFP(v, pt);
+                                        else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy())
+                                            v = builder_.CreateFPToSI(v, pt);
+                                    }
+                                    builder_.CreateStore(v, gep);
+                                    return v;
+                                }
+                            }
+                            diag_.error(e.range, "static class '" + oi.name +
+                                "' has no property '" + ma.member_name + "'");
+                            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                        }
                     }
                 }
             }
