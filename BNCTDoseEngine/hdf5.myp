@@ -1,0 +1,30 @@
+// hdf5.myp — HDF5 截面数据读取
+import env;
+
+// FFI 声明 (使用 __ 前缀避免与类方法名冲突)
+ffi long myp_h5_open(string path);
+ffi void myp_h5_close(long fileId);
+ffi long myp_h5_dataset_size(long fileId, string path);
+ffi long myp_h5_read_double(long fileId, string path, double[] buffer, long size);
+
+class H5 {
+    static:
+        long open(string path) { return myp_h5_open(path); }
+        void close(long fileId) { myp_h5_close(fileId); }
+        long datasetSize(long fileId, string path) { return myp_h5_dataset_size(fileId, path); }
+        long readDouble(long fileId, string path, double[] buffer, long size) {
+            return myp_h5_read_double(fileId, path, buffer, size);
+        }
+
+        double[] loadDataset(string filePath, string datasetPath) {
+            long fid = myp_h5_open(filePath);
+            if (fid < 0L) { double[] e; return e; }
+            long n = myp_h5_dataset_size(fid, datasetPath);
+            if (n <= 0L) { myp_h5_close(fid); double[] e; return e; }
+            double[] data = new double[n];
+            long read = myp_h5_read_double(fid, datasetPath, data, n);
+            myp_h5_close(fid);
+            if (read != n) { double[] e; return e; }
+            return data;
+        }
+}

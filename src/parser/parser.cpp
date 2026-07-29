@@ -52,9 +52,20 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             auto en = parseEnumDecl();
             if (en) tu->enums.push_back(std::move(*en));
         } else if (peek().kind == TokenKind::At) {
-            // @ annotation at top level → parse as function (@test, @startup)
-            auto func = parseFunction();
-            if (func) tu->functions.push_back(std::move(*func));
+            // Check for @static class (static is tokenized as Keyword_static)
+            auto n1 = peekNext();
+            auto n2 = peekNext2();
+            if (n1.kind == TokenKind::Keyword_static &&
+                n2.kind == TokenKind::Keyword_class) {
+                // @static class — consume @static class and parse
+                advance(); advance(); advance(); // skip @static class
+                auto cls = parseClass();
+                if (cls) { cls->is_static = true; tu->classes.push_back(std::move(*cls)); }
+            } else {
+                // @ annotation at top level → parse as function (@test, @startup)
+                auto func = parseFunction();
+                if (func) tu->functions.push_back(std::move(*func));
+            }
         } else if (match(TokenKind::Keyword_const)) {
             // File-level const: const Type name = value;
             // Treat as function returning the value so sema/codegen handles it
@@ -183,7 +194,7 @@ void Parser::parseClassSection(ClassDecl& cls) {
                !check(TokenKind::Keyword_struct) &&
                !check(TokenKind::Keyword_interface) &&
                !isAtEnd()) {
-            if (checkType()) {
+            if (checkType() || check(TokenKind::Keyword_const)) {
                 cls.properties.push_back(parsePropertyDecl());
             } else {
                 break;
@@ -294,6 +305,9 @@ std::vector<ParamDecl> Parser::parseParamList() {
 ParamDecl Parser::parseParam() {
     ParamDecl param;
     param.range = peek().range;
+    if (match(TokenKind::Keyword_ref)) {
+        param.is_ref = true;
+    }
     param.type = parseType();
     // Parameter name is optional for event declarations
     if (check(TokenKind::Identifier) || check(TokenKind::Comma) || check(TokenKind::RightParen)) {
@@ -307,6 +321,11 @@ ParamDecl Parser::parseParam() {
 PropertyDecl Parser::parsePropertyDecl() {
     PropertyDecl decl;
     decl.range = previous().range;
+    // Check for 'const' before the type
+    if (check(TokenKind::Keyword_const)) {
+        advance(); // consume 'const'
+        decl.is_const = true;
+    }
     decl.type = parseType();
     decl.name = parseIdentifier("expected property name");
 
@@ -387,7 +406,8 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
             // Skip type tokens (may be void too)
             auto isTypeKind = [](TokenKind k) {
                 return (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) ||
-                       k == TokenKind::Keyword_void;
+                       k == TokenKind::Keyword_void ||
+                       k == TokenKind::Identifier;
             };
             if (ahead < (int)tokens_.size() && isTypeKind(tokens_[ahead].kind)) {
                 ahead++;
@@ -584,6 +604,29 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_while)) {
         return parseWhileStmt();
     }
+    // @parallel for
+    if (check(TokenKind::At)) {
+        advance(); // consume @
+        std::string annot = parseIdentifier("expected annotation name");
+        if (annot == "parallel") {
+            if (!check(TokenKind::Keyword_for)) {
+                diag_.error(previous().range, "'@parallel' must be followed by 'for'");
+                // Fall through to normal statement parsing
+                // Don't consume the for — we'll return an error expression
+            } else {
+                advance(); // consume 'for'
+                auto stmt = parseForStmt();
+                if (auto* fs = dynamic_cast<ForStmt*>(stmt.get())) {
+                    fs->parallel = true;
+                }
+                return stmt;
+            }
+        } else {
+            diag_.error(previous().range,
+                std::string("unknown annotation '@" + annot + "' in statement"));
+        }
+    }
+
     if (match(TokenKind::Keyword_for)) {
         return parseForStmt();
     }
@@ -764,6 +807,58 @@ std::unique_ptr<Stmt> Parser::parseWhileStmt() {
 
 std::unique_ptr<Stmt> Parser::parseForStmt() {
     SourceRange r = previous().range;
+
+    // Range for: "for id in expr body" (no parentheses)
+    // Check if next token is an identifier (not '(')
+    if (!check(TokenKind::LeftParen) && check(TokenKind::Identifier)) {
+        auto save = current_;
+        std::string var_name = parseIdentifier("expected variable name");
+        if (check(TokenKind::Identifier) && peek().value == "in") {
+            advance(); // consume 'in'
+            auto range_expr = parseExpr();
+            auto body = parseStatement();
+
+            // Transform: for i in start..end → for (int i = start; i < end; i = i + 1)
+            if (range_expr->kind == ExprKind::Range) {
+                auto& re = static_cast<RangeExpr&>(*range_expr);
+                // Build init: int i = start
+                VarDecl init_decl;
+                init_decl.name = var_name;
+                init_decl.type.basic_type = BuiltinType::Int;
+                init_decl.init_expr = std::move(re.start);
+                std::vector<VarDecl> init_vec;
+                init_vec.push_back(std::move(init_decl));
+                auto init_var = std::make_unique<VarDeclStmt>(std::move(init_vec), r);
+
+                // Build condition: i < end
+                auto* id_end = new IdentifierExpr(var_name, r);
+                auto* end_raw = re.end.release();
+                auto cond = std::make_unique<BinaryOpExpr>(
+                    std::unique_ptr<Expr>(id_end), BinaryOpKind::Lt,
+                    std::unique_ptr<Expr>(end_raw), r);
+
+                // Build step: i = i + 1
+                auto* id_step = new IdentifierExpr(var_name, r);
+                auto* one = new IntegerLiteralExpr(1, r);
+                auto* add = new BinaryOpExpr(
+                    std::unique_ptr<Expr>(id_step), BinaryOpKind::Add,
+                    std::unique_ptr<Expr>(one), r);
+                auto* id_target = new IdentifierExpr(var_name, r);
+                auto step = std::make_unique<AssignmentExpr>(
+                    std::unique_ptr<Expr>(id_target),
+                    std::unique_ptr<Expr>(add), r);
+
+                return std::make_unique<ForStmt>(
+                    std::move(init_var), std::move(cond),
+                    std::move(step), std::move(body), r);
+            }
+            diag_.error(range_expr->range, "expected range expression (start..end)");
+            return std::make_unique<ForStmt>(nullptr, nullptr, nullptr, std::move(body), r);
+        }
+        current_ = save; // restore, not a range for
+    }
+
+    // Standard for (;;)
     consume(TokenKind::LeftParen, "expected '(' after 'for'");
     // Init: optional variable declaration
     std::unique_ptr<Stmt> init;
@@ -1203,6 +1298,10 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         int64_t val = std::stoll(previous().value, nullptr, 0);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range);
     }
+    if (match(TokenKind::LongLiteral)) {
+        int64_t val = std::stoll(previous().value, nullptr, 0);
+        return std::make_unique<IntegerLiteralExpr>(val, previous().range, true);
+    }
     if (match(TokenKind::FloatLiteral)) {
         double val = std::stod(previous().value);
         return std::make_unique<FloatLiteralExpr>(val, previous().range);
@@ -1275,6 +1374,40 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return std::make_unique<ThisExpr>(previous().range);
     }
     if (match(TokenKind::Keyword_new)) {
+        // new double[n] — dynamic array allocation (parse type manually, avoid parseType which eats [])
+        if (peek().kind >= TokenKind::Type_byte && peek().kind <= TokenKind::Type_string) {
+            TypeNode elem_type;
+            elem_type.range = peek().range;
+            auto tk = advance();
+            switch (tk.kind) {
+                case TokenKind::Type_byte:   elem_type.basic_type = BuiltinType::Byte; break;
+                case TokenKind::Type_short:  elem_type.basic_type = BuiltinType::Short; break;
+                case TokenKind::Type_int:    elem_type.basic_type = BuiltinType::Int; break;
+                case TokenKind::Type_long:   elem_type.basic_type = BuiltinType::Long; break;
+                case TokenKind::Type_ubyte:  elem_type.basic_type = BuiltinType::UByte; break;
+                case TokenKind::Type_ushort: elem_type.basic_type = BuiltinType::UShort; break;
+                case TokenKind::Type_uint:   elem_type.basic_type = BuiltinType::UInt; break;
+                case TokenKind::Type_ulong:  elem_type.basic_type = BuiltinType::ULong; break;
+                case TokenKind::Type_char:   elem_type.basic_type = BuiltinType::Char; break;
+                case TokenKind::Type_float:  elem_type.basic_type = BuiltinType::Float; break;
+                case TokenKind::Type_double: elem_type.basic_type = BuiltinType::Double; break;
+                case TokenKind::Type_bool:   elem_type.basic_type = BuiltinType::Bool; break;
+                case TokenKind::Type_string: elem_type.basic_type = BuiltinType::String; break;
+                default: break;
+            }
+            std::vector<std::unique_ptr<Expr>> dims;
+            while (match(TokenKind::LeftBracket)) {
+                auto size_expr = parseExpr();
+                consume(TokenKind::RightBracket, "expected ']' after array size");
+                dims.push_back(std::move(size_expr));
+            }
+            if (dims.empty()) {
+                diag_.error(previous().range, "expected '[size]' after type in new expression");
+                return std::make_unique<NullLiteralExpr>(previous().range);
+            }
+            return std::make_unique<NewArrayExpr>(std::move(elem_type), std::move(dims), previous().range);
+        }
+        // new ClassName(args) — class allocation
         std::string class_name = parseIdentifier("expected class name after 'new'");
         std::vector<TypeNode> type_args;
         if (match(TokenKind::Less)) {

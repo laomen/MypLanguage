@@ -1,0 +1,44 @@
+// logger.myp — 日志模块
+// 参考: bnctDoseEngine/include/bnctDoseEngine/logger.h
+import env;
+
+enum LogLevel {
+    ERROR;
+    WARNING;
+    INFO;
+    DEBUG;
+    TRACE;
+}
+
+class Logger {
+    static:
+        void error(string msg) {
+            Console.writeString("[ERROR] ");
+            Console.writeString(msg);
+            Console.writeString("\n");
+        }
+
+        void warning(string msg) {
+            Console.writeString("[WARN] ");
+            Console.writeString(msg);
+            Console.writeString("\n");
+        }
+
+        void info(string msg) {
+            Console.writeString("[INFO] ");
+            Console.writeString(msg);
+            Console.writeString("\n");
+        }
+
+        void debug(string msg) {
+            Console.writeString("[DEBUG] ");
+            Console.writeString(msg);
+            Console.writeString("\n");
+        }
+
+        void trace(string msg) {
+            Console.writeString("[TRACE] ");
+            Console.writeString(msg);
+            Console.writeString("\n");
+        }
+}

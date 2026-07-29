@@ -1,0 +1,31 @@
+// tally.myp — @static class 共享剂量数据 + 事件累计器
+import env;
+import atomic;
+
+@static class TallyData {
+    property:
+        double[] depthDose;    // [nz] 每层沉积能量 (MeV)
+        int[] depthCap;        // [nz] 每层俘获数
+        int[] depthBCap;       // [nz] 每层 B-10 俘获数
+        int[] pendingBatches;  // [1] 剩余批次数
+        int nz;                // 深度层数
+        double phantomSize;    // 水模厚度 (cm)
+}
+
+// Tally — 事件驱动累计器
+class Tally {
+    action:
+        void init(int nBatches, int nzIn, double ps) {
+            TallyData.depthDose = new double[nzIn];
+            TallyData.depthCap  = new int[nzIn];
+            TallyData.depthBCap = new int[nzIn];
+            TallyData.pendingBatches = new int[1];
+            TallyData.pendingBatches[0] = nBatches;
+            TallyData.nz = nzIn;
+            TallyData.phantomSize = ps;
+        }
+
+        void addBatch(int cap, int bcap, double dose) {
+            Atomic.addInt(TallyData.pendingBatches, 0, -1);
+        }
+}

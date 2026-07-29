@@ -1,0 +1,119 @@
+// physics.myp — BNCT 物理模型（结构定义 + 静态函数）
+// 参考: bnctDoseEngine/include/physics/physics.h
+import math;
+import "./partical.myp";
+
+enum NeutronReaction {
+    NONE;
+    ELASTIC;
+    INELASTIC;
+    CAPTURE;
+    FISSION;
+}
+
+struct NeutronInteractionData {
+    double elastic_xs;
+    double inelastic_xs;
+    double thermal_scattering_xs;
+    double thermal_elastic_xs;
+    double thermal_inelastic_xs;
+    double capture_xs;
+    double fission_xs;
+    double nu_bar;
+    double elastic_mu;
+    double inelastic_mu;
+    double inelastic_energy_factor;
+    bool create_capture_photon;
+    double capture_photon_energy;
+}
+
+struct PhysicsStepResult {
+    double flight_distance;
+    double dt;
+    bool collided;
+    int neutron_reaction;   // NeutronReaction enum
+    int photon_reaction;    // PhotonReaction enum
+}
+
+struct TransportOptions {
+    double boundary_distance;
+    int max_events;
+    bool stop_at_boundary;
+    bool enable_weight_roulette;
+    double weight_cutoff;
+    double weight_survive;
+    bool enable_weight_window;
+    double weight_window_low;
+    double weight_window_high;
+    double weight_window_target;
+    int max_split;
+    bool enable_implicit_capture;
+}
+
+struct TransportHistoryResult {
+    Particle particle;
+    int events;
+    bool escaped;
+    bool collided;
+    bool terminated;
+    long neutron_elastic_collisions;
+    long neutron_inelastic_collisions;
+    long neutron_thermal_elastic_collisions;
+    long neutron_thermal_inelastic_collisions;
+    long neutron_capture_collisions;
+    long neutron_fission_collisions;
+    long photon_collisions;
+    double deposited_ev_neutron_elastic;
+    double deposited_ev_neutron_inelastic;
+    double deposited_ev_neutron_capture;
+    double deposited_ev_neutron_fission;
+    double deposited_ev_photon;
+}
+
+class Physics {
+    static:
+        long rngStep(long state) {
+            state = state * 6364136223846793005L + 1442695040888963407L;
+            long x = state;
+            x = (x ^ (x >> 30)) * 2685821657736338717L;
+            x = (x ^ (x >> 27)) * 88172645463325252L;
+            x = x ^ (x >> 31);
+            return x;
+        }
+
+        double toDouble(long x) {
+            if (x < 0L) { x = -x; }
+            return x * 1.0842021724855044e-19;
+        }
+
+        // BNCT 能谱采样: 返回能量 (eV)
+        double sampleEnergy(long state) {
+            double xi = Physics.toDouble(state);
+            if (xi < 0.10) {
+                double t = Physics.toDouble(Physics.rngStep(state));
+                return 0.0253 * (-Math.log(1.0 - t));
+            } else if (xi < 0.80) {
+                double t = Physics.toDouble(Physics.rngStep(state));
+                return Math.exp(Math.log(1.0) + t * (Math.log(10000.0) - Math.log(1.0)));
+            } else {
+                double t = Physics.toDouble(Physics.rngStep(state));
+                return Math.exp(Math.log(10000.0) + t * (Math.log(1.0e6) - Math.log(10000.0)));
+            }
+        }
+
+        // 散射角余弦采样 (各向同性)
+        double sampleMu(long state) {
+            return 2.0 * Physics.toDouble(state) - 1.0;
+        }
+
+        double sampleDistance(double xi, double sigmaT) {
+            return -Math.log(xi) / sigmaT;
+        }
+
+        bool isCapture(double xi, double capXs, double totXs) {
+            return xi < capXs / totXs;
+        }
+
+        double boronCaptureMeV() { return 2.33; }
+        double h1CaptureMeV() { return 2.22; }
+}

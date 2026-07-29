@@ -1,0 +1,85 @@
+// mesh.myp — 网格定义 (MYP 移植)
+// 参考: bnctDoseEngine/include/gemotry/mesh.h, cell.h
+import math;
+
+struct VoxelIndex {
+    long i;
+    long j;
+    long k;
+}
+
+struct VoxelCell {
+    VoxelIndex index;
+    long material_id;
+    double density_scale;
+    bool active;
+
+    void init(long i, long j, long k, long matId, double density, bool isActive) {
+        index.i = i;
+        index.j = j;
+        index.k = k;
+        material_id = matId;
+        density_scale = density;
+        active = isActive;
+    }
+}
+
+struct Mesh {
+    long nx;
+    long ny;
+    long nz;
+    double dx;        // 体素尺寸 x (cm)
+    double dy;        // 体素尺寸 y (cm)
+    double dz;        // 体素尺寸 z (cm)
+    double origin_x;  // 网格原点 x (cm)
+    double origin_y;  // 网格原点 y (cm)
+    double origin_z;  // 网格原点 z (cm)
+    long nCells;      // 体素总数 = nx * ny * nz
+
+    // 初始化网格参数
+    void init(long nx_, long ny_, long nz_,
+              double dx_, double dy_, double dz_,
+              double ox, double oy, double oz) {
+        nx = nx_; ny = ny_; nz = nz_;
+        dx = dx_; dy = dy_; dz = dz_;
+        origin_x = ox; origin_y = oy; origin_z = oz;
+        nCells = nx * ny * nz;
+    }
+
+    // 世界坐标 → 体素索引 (返回 VoxelIndex)
+    VoxelIndex getVoxelIJK(double x, double y, double z) {
+        double ix_d = (x - origin_x) / dx;
+        double iy_d = (y - origin_y) / dy;
+        double iz_d = (z - origin_z) / dz;
+        VoxelIndex vi;
+        vi.i = Math.trunc(ix_d);
+        vi.j = Math.trunc(iy_d);
+        vi.k = Math.trunc(iz_d);
+        return vi;
+    }
+
+    // 检查体素索引是否在网格范围内
+    bool isValid(long i, long j, long k) {
+        return i >= 0L && i < nx && j >= 0L && j < ny && k >= 0L && k < nz;
+    }
+
+    // 体素中心的世界坐标
+    double voxelCenterX(long i) { return origin_x + (i + 0.5) * dx; }
+    double voxelCenterY(long j) { return origin_y + (j + 0.5) * dy; }
+    double voxelCenterZ(long k) { return origin_z + (k + 0.5) * dz; }
+
+    // 体素内均匀采样世界坐标
+    double sampleX(long i, double xi) { return origin_x + (i + xi) * dx; }
+    double sampleY(long j, double xi) { return origin_y + (j + xi) * dy; }
+    double sampleZ(long k, double xi) { return origin_z + (k + xi) * dz; }
+
+    // 一维体素索引 (i + j*nx + k*nx*ny)
+    long flatIndex(long i, long j, long k) {
+        return i + j * nx + k * nx * ny;
+    }
+
+    // 网格总厚度
+    double thicknessX() { return nx * dx; }
+    double thicknessY() { return ny * dy; }
+    double thicknessZ() { return nz * dz; }
+}

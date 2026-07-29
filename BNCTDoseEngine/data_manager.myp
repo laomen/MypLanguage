@@ -1,0 +1,131 @@
+// data_manager.myp — 全局数据管理器
+// 管理核素数据库、材料定义、网格几何
+import "./nuclide.myp";
+import "./material.myp";
+import "./mesh.myp";
+import "./cross_section_db.myp";
+
+@static class DataManager {
+    property:
+        // 核素数据库 (最大 32 种)
+        Nuclide[32] nuclideDB;
+        long nNuclides;
+
+        // 材料列表 (最大 16 种)
+        Material[16] materials;
+        long nMaterials;
+
+        // 网格
+        Mesh mesh;
+
+    static:
+        // ============================================================
+        // 注册一个核素到数据库
+        // ============================================================
+        void addNuclide(Nuclide nuc) {
+            DataManager.nuclideDB[DataManager.nNuclides] = nuc;
+            DataManager.nNuclides = DataManager.nNuclides + 1L;
+        }
+
+        // ============================================================
+        // 查找核素
+        // ============================================================
+        Nuclide findNuclide(string name) {
+            for (long i = 0L; i < DataManager.nNuclides; i = i + 1L) {
+                if (DataManager.nuclideDB[i].name == name)
+                    return DataManager.nuclideDB[i];
+            }
+            Nuclide empty;
+            return empty;
+        }
+
+        // ============================================================
+        // 注册一个材料
+        // ============================================================
+        void addMaterial(Material mat) {
+            DataManager.materials[DataManager.nMaterials] = mat;
+            DataManager.nMaterials = DataManager.nMaterials + 1L;
+        }
+
+        // ============================================================
+        // 初始化标准核素: H-1, O-16, B-10
+        // 将 CrossSectionDB 中的扁平数组绑定到核素的截面表
+        // ============================================================
+        void initNuclides() {
+            // ---- H-1 ----
+            Nuclide h1;
+            h1.init("H1", 1, 1, 0.999167);
+            h1.neutron_xs_table_set.elastic.setup(
+                CrossSectionDB.eGrid, CrossSectionDB.h1El, CrossSectionDB.nE);
+            h1.neutron_xs_table_set.capture.setup(
+                CrossSectionDB.eGrid, CrossSectionDB.h1Cap, CrossSectionDB.nE);
+            DataManager.addNuclide(h1);
+
+            // ---- O-16 ----
+            Nuclide o16;
+            o16.init("O16", 8, 16, 15.8578);
+            o16.neutron_xs_table_set.elastic.setup(
+                CrossSectionDB.eGrid, CrossSectionDB.o16El, CrossSectionDB.nE);
+            DataManager.addNuclide(o16);
+
+            // ---- B-10 ----
+            Nuclide b10;
+            b10.init("B10", 5, 10, 9.92632);
+            b10.neutron_xs_table_set.capture.setup(
+                CrossSectionDB.eGrid, CrossSectionDB.b10Cap, CrossSectionDB.nE);
+            DataManager.addNuclide(b10);
+
+            Console.writeString("  DataManager: registered ");
+            Console.write(DataManager.nNuclides);
+            Console.writeString(" nuclides\n");
+        }
+
+        // ============================================================
+        // 初始化水模材料 (Water)
+        // 使用 DataManager 中已注册的核素
+        // ============================================================
+        void initWaterMaterial() {
+            Nuclide h1 = DataManager.findNuclide("H1");
+            Nuclide o16 = DataManager.findNuclide("O16");
+
+            Material water;
+            water.init(0, "Water", 1.0);
+
+            // H-1: 6.68e22 atoms/barn-cm
+            MicroscopicNeutronXs h1_nxs = h1.getNeutronXS(0.0253);
+            MicroscopicPhotonXs h1_pxs = h1.getPhotonXS(0.0253);
+            water.addComponent(6.68e22, h1_nxs, h1_pxs);
+
+            // O-16: 3.34e22 atoms/barn-cm
+            MicroscopicNeutronXs o16_nxs = o16.getNeutronXS(0.0253);
+            MicroscopicPhotonXs o16_pxs = o16.getPhotonXS(0.0253);
+            water.addComponent(3.34e22, o16_nxs, o16_pxs);
+
+            DataManager.addMaterial(water);
+            Console.writeString("  DataManager: prepared Water (nMaterials=");
+            Console.write(DataManager.nMaterials);
+            Console.writeString(")\n");
+        }
+
+        // ============================================================
+        // 初始化 3D 水模网格 (30x10x10, 1cm 体素)
+        // ============================================================
+        void initMesh(long nx, long ny, long nz, double dx, double dy, double dz) {
+            DataManager.mesh.init(nx, ny, nz, dx, dy, dz, 0.0, 0.0, 0.0);
+            Console.writeString("  DataManager: mesh ");
+            Console.write(nx); Console.writeString("x");
+            Console.write(ny); Console.writeString("x");
+            Console.write(nz); Console.writeString(" (");
+            Console.writeFloat(DataManager.mesh.thicknessZ());
+            Console.writeString(" cm thick)\n");
+        }
+
+        // ============================================================
+        // 计算指定能量处所有材料的宏观截面
+        // ============================================================
+        void evalMacroXS(double E) {
+            for (long mi = 0L; mi < DataManager.nMaterials; mi = mi + 1L) {
+                DataManager.materials[mi].computeXS(E, DataManager.comps[mi], DataManager.nComps[mi]);
+            }
+        }
+}

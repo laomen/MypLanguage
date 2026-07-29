@@ -1,0 +1,102 @@
+// transport.myp — 事件驱动输运引擎
+// 使用 Random, CrossSectionDB, TallyData, Mesh, Nuclide
+import math;
+import atomic;
+import "./random.myp";
+import "./physics.myp";
+import "./cross_section_db.myp";
+import "./mesh.myp";
+import "./material.myp";
+
+class Transport {
+    action:
+        void runBatch(int batchId, int size) {
+            double nB  = CrossSectionDB.nB;
+            double nH  = CrossSectionDB.nH;
+            double nO  = CrossSectionDB.nO;
+            double phantomSize = CrossSectionDB.phantomSize;
+            double[] eGrid = CrossSectionDB.eGrid;
+            double[] h1El  = CrossSectionDB.h1El;
+            double[] h1Cap = CrossSectionDB.h1Cap;
+            double[] o16El = CrossSectionDB.o16El;
+            double[] b10Cap = CrossSectionDB.b10Cap;
+            long nE = CrossSectionDB.nE;
+            int nz = TallyData.nz;
+            double voxSize = phantomSize / nz;
+            double beamRadius = 5.0;
+            int nx = 10, ny = 10;
+
+            @parallel for (int i = 0; i < size; i = i + 1) {
+                long state = (batchId * size + i) * 152917L + 1L;
+
+                double r = Math.sqrt(Random.prn(state));
+                state = Random.next(state);
+                double theta = 6.283185307 * Random.prn(state);
+                state = Random.next(state);
+                double x = r * Math.cos(theta) + nx * 0.5;
+                double y = r * Math.sin(theta) + ny * 0.5;
+                double z = 0.0;
+
+                double E = Physics.sampleEnergy(state);
+                state = Random.next(state);
+
+                while (z < phantomSize && E > 1.0e-5) {
+                    double sHEl  = XSInterp.interp(E, eGrid, h1El,  nE) * 1.0e-24;
+                    double sHCap = XSInterp.interp(E, eGrid, h1Cap, nE) * 1.0e-24;
+                    double sOEl  = XSInterp.interp(E, eGrid, o16El,  nE) * 1.0e-24;
+                    double sBCap = XSInterp.interp(E, eGrid, b10Cap, nE) * 1.0e-24;
+                    double sigT   = nH * (sHEl + sHCap) + nO * sOEl + nB * sBCap;
+                    double sigCap = nH * sHCap + nB * sBCap;
+                    double sigBCap = nB * sBCap;
+                    if (sigT <= 0.0) break;
+
+                    double xi = Random.prn(state);
+                    state = Random.next(state);
+                    double d = -Math.log(xi) / sigT;
+
+                    double rn_mu = Random.prn(state);
+                    state = Random.next(state);
+                    double mu = 2.0 * rn_mu - 1.0;
+                    z = z + d * mu;
+                    if (z < 0.0 || z >= phantomSize) break;
+
+                    int iz = Math.trunc(z / voxSize);
+                    int iy = Math.trunc(y);
+                    int ix = Math.trunc(x);
+                    if (ix < 0) ix = 0; if (ix >= nx) ix = nx - 1;
+                    if (iy < 0) iy = 0; if (iy >= ny) iy = ny - 1;
+                    if (iz < 0) iz = 0; if (iz >= nz) iz = nz - 1;
+
+                    double xi2 = Random.prn(state) * sigT;
+                    state = Random.next(state);
+
+                    if (xi2 < sigBCap) {
+                        Atomic.addDouble(TallyData.depthDose, iz, Physics.boronCaptureMeV());
+                        Atomic.addInt(TallyData.depthCap, iz, 1);
+                        Atomic.addInt(TallyData.depthBCap, iz, 1);
+                        break;
+                    } else if (xi2 < sigCap) {
+                        Atomic.addDouble(TallyData.depthDose, iz, Physics.h1CaptureMeV());
+                        Atomic.addInt(TallyData.depthCap, iz, 1);
+                        break;
+                    } else {
+                        double xsRem = xi2 - sigCap;
+                        double sigH = nH * sHEl;
+                        if (xsRem < sigH) {
+                            double rn_h = Random.prn(state);
+                            state = Random.next(state);
+                            double mu2 = 2.0 * rn_h - 1.0;
+                            E = E * (1.0 + mu2) / 2.0;
+                        } else {
+                            double rn_o = Random.prn(state);
+                            state = Random.next(state);
+                            double mu2 = 2.0 * rn_o - 1.0;
+                            E = E * (16.0*16.0 + 2.0*16.0*mu2 + 1.0) / (17.0*17.0);
+                        }
+                        if (E < 1.0e-5) E = 0.0;
+                    }
+                }
+            }
+            Atomic.addInt(TallyData.pendingBatches, 0, -1);
+        }
+}

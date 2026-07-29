@@ -7,6 +7,8 @@ class Math {
         double abs(double v)    { return __myp_math_abs(v); }
         double floor(double v)  { return __myp_math_floor(v); }
         double ceil(double v)   { return __myp_math_ceil(v); }
+        int trunc(double v)     { return __myp_trunc(v); }
+        int trunc(double v)     { return __myp_trunc(v); }
 
         double sin(double v)    { return __myp_math_sin(v); }
         double cos(double v)    { return __myp_math_cos(v); }

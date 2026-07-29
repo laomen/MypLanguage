@@ -1,0 +1,65 @@
+// xs_data.myp — 核截面数据库（ENDF/B-VIII.0 简化函数模型）
+import math;
+
+class XSData {
+    static:
+        double eThermal() { return 0.0253; }
+
+        // H-1 弹性散射 (barns)
+        double h1Elastic(double E) {
+            if (E < 1.0) return 20.5;
+            if (E < 1.0e5) return 20.0 * Math.pow(E, -0.05);
+            return 12.6 * Math.pow(E / 1.0e5, -0.5);
+        }
+
+        // H-1 俘获 (barns) — 1/v
+        double h1Capture(double E) {
+            return 0.332 * Math.sqrt(XSData.eThermal() / E);
+        }
+
+        // O-16 弹性散射 (barns)
+        double o16Elastic(double E) {
+            if (E < 1.0e6) return 3.8;
+            return 3.8 * Math.pow(E / 1.0e6, -0.3);
+        }
+
+        // B-10 俘获 (barns) — 1/v
+        double b10Capture(double E) {
+            double xs = 3837.0 * Math.sqrt(XSData.eThermal() / E);
+            if (E > 1.0e5 && E < 5.0e5) {
+                double dE = E - 2.5e5;
+                xs = xs + 5.0e10 / (dE * dE + 1.0e10);
+            }
+            return xs;
+        }
+
+        // 硼原子数密度 from ppm
+        double boronDensity(double ppm) {
+            return ppm * 1.0e-6 * 0.6022e24 * 0.199 / 10.8;
+        }
+
+        // 宏观总截面 (cm^-1) — H-1 + O-16 + B-10
+        double macroTotal(double E, double nB) {
+            double b = 1.0e-24;
+            return XSData.nH_den() * XSData.h1Elastic(E) * b
+                 + XSData.nH_den() * XSData.h1Capture(E) * b
+                 + XSData.nO_den() * XSData.o16Elastic(E) * b
+                 + nB * XSData.b10Capture(E) * b;
+        }
+
+        // 宏观俘获截面 (cm^-1) — H + B
+        double macroCapture(double E, double nB) {
+            double b = 1.0e-24;
+            return XSData.nH_den() * XSData.h1Capture(E) * b
+                 + nB * XSData.b10Capture(E) * b;
+        }
+
+        // 宏观硼俘获截面 (cm^-1)
+        double macroBoronCapture(double E, double nB) {
+            return nB * XSData.b10Capture(E) * 1.0e-24;
+        }
+
+        // 原子数密度
+        double nH_den() { return 6.68e22; }
+        double nO_den() { return 3.34e22; }
+}

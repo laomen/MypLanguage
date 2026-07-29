@@ -1,0 +1,14 @@
+// pool.myp — MYP 标准库：并行计算工具
+// 提供 Parallel 静态类
+// 配合 @parallel for 和 __myp_atomic_* 使用
+//
+// 用法:
+//   import pool;
+//   int n = Parallel.threadCount();
+//   @parallel for (int i = 0; i < n; i = i + 1) { ... }
+
+class Parallel {
+    static:
+        // 获取硬件并发线程数 (sysconf _SC_NPROCESSORS_ONLN)
+        int threadCount() { return __myp_pool_thread_count(); }
+}

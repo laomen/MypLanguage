@@ -62,6 +62,7 @@ struct TypeNode {
 struct ParamDecl {
     std::string name;
     TypeNode type;
+    bool is_ref = false;
     SourceRange range;
 };
 
@@ -101,6 +102,7 @@ struct PropertyDecl {
     TypeNode type;
     std::shared_ptr<Expr> init_expr;
     SourceRange range;
+    bool is_const = false;
 };
 
 // ---- Struct ----
@@ -216,6 +218,7 @@ enum class ExprKind {
     MemberAccess,
     Subscript,
     NewExpr,
+    NewArrayExpr,
     ThisExpr,
     Assignment,
     Ternary,
@@ -235,8 +238,9 @@ struct Expr {
 
 struct IntegerLiteralExpr : Expr {
     int64_t value;
-    IntegerLiteralExpr(int64_t v, SourceRange r)
-        : Expr(ExprKind::IntegerLiteral, r), value(v) {}
+    bool is_long;  // L suffix: 42L → long
+    IntegerLiteralExpr(int64_t v, SourceRange r, bool l = false)
+        : Expr(ExprKind::IntegerLiteral, r), value(v), is_long(l) {}
 };
 
 struct FloatLiteralExpr : Expr {
@@ -317,10 +321,18 @@ struct SubscriptExpr : Expr {
 
 struct NewExpr : Expr {
     std::string class_name;
-    std::vector<TypeNode> type_args; // generic type arguments
+    std::vector<TypeNode> type_args;
     std::vector<std::unique_ptr<Expr>> args;
     NewExpr(std::string cn, std::vector<TypeNode> ta, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
         : Expr(ExprKind::NewExpr, range_), class_name(std::move(cn)), type_args(std::move(ta)), args(std::move(a)) {}
+};
+
+// new double[n] or new double[nx][ny][nz]
+struct NewArrayExpr : Expr {
+    TypeNode element_type;
+    std::vector<std::unique_ptr<Expr>> dimensions;  // [n], [ny], [nz]
+    NewArrayExpr(TypeNode et, std::vector<std::unique_ptr<Expr>> dims, SourceRange range_)
+        : Expr(ExprKind::NewArrayExpr, range_), element_type(std::move(et)), dimensions(std::move(dims)) {}
 };
 
 struct ThisExpr : Expr {
@@ -449,10 +461,11 @@ struct ForStmt : Stmt {
     std::unique_ptr<Expr> condition;
     std::unique_ptr<Expr> step;
     std::unique_ptr<Stmt> body;
+    bool parallel;  // @parallel for
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
-            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r)
+            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
-          step(std::move(s)), body(std::move(b)) {}
+          step(std::move(s)), body(std::move(b)), parallel(par) {}
 };
 
 struct ReturnStmt : Stmt {

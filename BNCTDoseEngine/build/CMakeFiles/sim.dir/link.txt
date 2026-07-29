@@ -1,0 +1,1 @@
+/usr/bin/cc -g -Wl,--dependency-file=CMakeFiles/sim.dir/link.d mapping_demo.myp.o CMakeFiles/hdf5_bridge.dir/hdf5_bridge.c.o CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o -o sim  -Wl,-rpath,/usr/lib/x86_64-linux-gnu/hdf5/serial: -lm -lpthread /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5.so

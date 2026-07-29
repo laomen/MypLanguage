@@ -1,0 +1,61 @@
+// partical.myp — 粒子数据结构 (纯数据, 方法在 physics.myp 中)
+import math;
+
+enum ParticleType {
+    NEUTRON;
+    PHOTON;
+    ELECTRON;
+    POSITRON;
+}
+
+struct Vec3 {
+    double x;
+    double y;
+    double z;
+}
+
+struct Particle {
+    long id;
+    ParticleType type;
+    Vec3 position;
+    Vec3 direction;
+    double E;
+    double weight;
+    double time;
+    long nCollisions;
+    bool alive;
+
+    double speed() {
+        if (E <= 0.0) return 0.0;
+        return Math.sqrt(E / 0.0253) * 2.2e5;
+    }
+
+    void kill() {
+        alive = false;
+    }
+
+    void moveTo(double nx, double ny, double nz) {
+        position.x = nx;
+        position.y = ny;
+        position.z = nz;
+    }
+
+    void moveDistance(double dx, double dy, double dz) {
+        position.x = position.x + dx;
+        position.y = position.y + dy;
+        position.z = position.z + dz;
+    }
+
+    void scatter(double mu, double phi) {
+        double s = Math.sqrt(1.0 - mu*mu);
+        double new_uy = s * Math.cos(phi);
+        double new_uz = s * Math.sin(phi);
+        direction.x = mu;
+        direction.y = new_uy;
+        direction.z = new_uz;
+    }
+
+    void collide() {
+        nCollisions = nCollisions + 1L;
+    }
+}

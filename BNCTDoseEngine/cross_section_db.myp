@@ -1,0 +1,70 @@
+// cross_section_db.myp — @static class: 全局共享截面数据库
+// 所有组件通过 CrossSectionDB.xxx 直接访问，无需传参
+import "./xs_loader.myp";
+
+@static class CrossSectionDB {
+    property:
+        // H-1 截面
+        double[] eGrid;       // 能量网格 (eV), 631 点
+        double[] h1El;        // H-1 弹性截面 (barn), MT=002
+        double[] h1Cap;       // H-1 俘获截面 (barn), MT=102
+        // O-16 截面
+        double[] o16El;       // O-16 弹性截面 (barn), MT=002
+        // B-10 截面
+        double[] b10Cap;      // B-10 俘获截面 (barn), MT=107
+        long nE;              // 能量网格点数
+        // 材料密度 (atoms/barn-cm)
+        double nH;            // H-1 原子密度
+        double nO;            // O-16 原子密度
+        double phantomSize;   // 水模厚度 (cm)
+        double nB;            // B-10 原子密度 (atoms/barn-cm), 由 setBDensity 设置
+
+    static:
+        // 从 HDF5 加载所有截面数据
+        void load(string dataDir) {
+            CrossSectionDB.eGrid = XSInterp.loadData(
+                dataDir + "/H1.h5", "/H1/energy/294K");
+            CrossSectionDB.h1El  = XSInterp.loadData(
+                dataDir + "/H1.h5", "/H1/reactions/reaction_002/294K/xs");
+            CrossSectionDB.h1Cap = XSInterp.loadData(
+                dataDir + "/H1.h5", "/H1/reactions/reaction_102/294K/xs");
+            CrossSectionDB.o16El = XSInterp.loadData(
+                dataDir + "/O16.h5", "/O16/reactions/reaction_002/294K/xs");
+            CrossSectionDB.b10Cap = XSInterp.loadData(
+                dataDir + "/B10.h5", "/B10/reactions/reaction_107/294K/xs");
+            CrossSectionDB.nE = 631;
+            CrossSectionDB.nH = 6.68e22;
+            CrossSectionDB.nO = 3.34e22;
+            CrossSectionDB.phantomSize = 30.0;
+            CrossSectionDB.nB = 0.0;
+
+            Console.writeString("  CrossSectionDB: loaded H-1, O-16, B-10 xs\n");
+        }
+
+        // 设置 B-10 浓度 (ppm)
+        void setBDensity(double ppm) {
+            CrossSectionDB.nB = ppm * 1.0e-6 * 0.6022e24 * 0.199 / 10.8;
+        }
+
+        // 获取 B-10 原子密度 (atoms/barn-cm) 给定 ppm
+        double getBDensity(double ppm) {
+            return ppm * 1.0e-6 * 0.6022e24 * 0.199 / 10.8;
+        }
+
+        // 插值获取微观截面 (barn)
+        double getXS(double E, string nuclide, int mt) {
+            double[] energies = CrossSectionDB.eGrid;
+            double[] values;
+            if (nuclide == "H1" && mt == 2)
+                values = CrossSectionDB.h1El;
+            else if (nuclide == "H1" && mt == 102)
+                values = CrossSectionDB.h1Cap;
+            else if (nuclide == "O16" && mt == 2)
+                values = CrossSectionDB.o16El;
+            else if (nuclide == "B10" && mt == 107)
+                values = CrossSectionDB.b10Cap;
+            else
+                return 0.0;
+            return XSInterp.interp(E, energies, values, CrossSectionDB.nE);
+        }
+}

@@ -76,6 +76,6 @@
     }
   },
   "dependencies": {
-    "vscode-languageclient": "^10.1.0"
+    "vscode-languageclient": "^9.0.0"
   }
 }

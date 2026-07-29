@@ -39,6 +39,7 @@ struct TypeInfo {
     // For Function types
     std::shared_ptr<TypeInfo> return_type;
     std::vector<TypeInfo> param_types;
+    std::vector<bool> param_is_ref;
 
     TypeInfo() : kind(TypeKind::Void) {}
     TypeInfo(TypeKind k) : kind(k) {}

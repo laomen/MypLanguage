@@ -884,6 +884,118 @@ class BankAccount {
 
 但目前 **不推荐** 使用共享内存并发模式——MYP 的事件驱动模型已经为无共享并发设计好了。引入锁会让架构退化到传统的共享内存并发，丢失事件驱动的大部分优势。
 
+### 8.6 未来：Event-driven Pool（方案 B）
+
+事件驱动的 Worker Pool 模式——不修改编译器，纯运行时 + stdlib 实现。
+
+#### 8.6.1 架构
+
+```
+Source ──batchReady──→ Pool.submit
+                          │
+                    ┌─────┴─────┐
+                    │ Work Queue │ (线程安全，支持工作窃取)
+                    └─────┬─────┘
+                          │
+         ┌────────────────┼────────────────┐
+         ▼                ▼                ▼
+    Worker0.runBatch  Worker1.runBatch  Worker2.runBatch
+         │                │                │
+         └───batchDone───┼────────────────┘
+                         ▼
+                    Tally.addBatch
+```
+
+#### 8.6.2 工作机制
+
+1. **Pool** 持有 `工作窃取队列` + N 个 Worker 线程
+2. `Pool.submit(batchId, size)` → 将任务入队 → 条件变量唤醒空闲 Worker
+3. Worker 完成当前 batch → 从队列拿下一个任务（或从其他 Worker 偷任务）
+4. Worker 完成一个 batch → 发射 `batchDone` 事件 → Tally 累加
+
+#### 8.6.3 需要的运行时支持
+
+| 组件 | 说明 |
+|------|------|
+| 工作窃取队列 | 线程安全 deque，每个 Worker 有自己的双端队列 + 全局队列 |
+| 条件变量唤醒 | 替代 1ms 轮询，任务入队立即唤醒 Worker |
+| 可伸缩事件队列 | 替代固定 1024 环缓冲，支持动态扩容（防止静默丢事件） |
+
+#### 8.6.4 优势与局限
+
+| 维度 | 评价 |
+|------|------|
+| 编译器改动 | ✅ 零改动（纯运行时 + stdlib） |
+| 负载均衡 | ✅ 工作窃取，天然动态均衡 |
+| 灵活性 | ✅ 可通过 mapping 任意组合 Source/Worker/Tally |
+| 单 batch 开销 | ⚠️ 每次 batch 需 2 次事件排队（submit → dispatch → batchDone） |
+| 实现复杂度 | ⚠️ ~400 行（工作窃取队列 + Pool 类 + mapping 配置） |
+| 适用场景 | 每个 batch 计算量大（>1ms），事件排队开销可忽略 |
+
+### 8.7 未来：`@parallel for`（方案 A）
+
+与方案 B 互补——不需要 event/mapping，零运行时开销。
+
+MYP 的 Actor 模型 (`@thread`) 擅长 IO/事件驱动型并发，但对于 **BNCT 蒙特卡洛输运**这类计算密集型、数据并行的场景，事件开销（排队、唤醒、调度）成为瓶颈。
+
+#### 8.6.1 设计目标
+
+```
+用户视角：
+    @parallel for (int i = 0; i < nBatches; i = i + 1) {
+        runBatch(i, batchSize);
+    }
+
+编译器视角：
+    1. 提取循环体为静态函数 fn(int i, void* ctx)
+    2. 替换为 myp_parallel_for(0, nBatches, 1, fn, ctx)
+    
+运行时视角：
+    3. 线程池平分迭代：thread[0] 拿 [0..N/4), thread[1] 拿 [N/4..N/2) ...
+    4. 各线程串行执行 fn(i, ctx)
+    5. barrier 等待全部完成 → 返回
+```
+
+#### 8.6.2 关键设计决策
+
+| 决策 | 选择 | 原因 |
+|------|------|------|
+| 迭代策略 | 静态平分 (static schedule) | BNCT 各 batch 计算量均等，通信开销最低 |
+| 线程池 | 全局懒创建 + 复用 | 避免反复 pthread_create/destroy |
+| 归约 | 线程局部累加 + 最后原子归约 | 归约只在循环结束时发生一次 |
+| 变量捕获 | 编译器分析 + 生成 ctx struct | 支持局部变量、property、函数调用 |
+
+#### 8.6.3 vs Actor 模型
+
+```
+Actor (@thread)              @parallel for
+───────────────────────      ───────────────────────
+事件驱动                     数据驱动
+异步通信                     同步 barrier
+无共享 (share-nothing)       共享读取 + 线程局部写入
+适合 IO/状态管理              适合计算/数值模拟
+通信延迟大（1ms 轮询）         通信零开销（共享内存）
+```
+
+两个模型互补——`@parallel for` 处理 BNCT 的核心计算循环，Actor 模型处理组件编排和结果汇总。
+
+### 8.7 未来：Atomic 操作
+
+当多个线程需要累加共享变量时（如 Tally 汇总），必须使用原子操作避免竞态条件：
+
+```myp
+class Tally {
+    action:
+        void addBatch(int nCap, double dose, int nEsc) {
+            atomic_add(ref totalCaptured, nCap);   // i32 原子加
+            atomic_add(ref totalDose, dose);        // f64 原子加
+            atomic_add(ref totalEscaped, nEsc);     // i32 原子加
+        }
+}
+```
+
+运行时基于 C11 `__sync_fetch_and_add` 实现，MYP 层面暴露为内置函数。
+
 ### 8.5 已实现的功能
 
 | 功能 | 状态 | 说明 |
@@ -1318,6 +1430,15 @@ Runtime  → print/println + 基本运行时
 | **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；await 表达式挂起/恢复 | 🔜 规划中 |
 | **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
 | **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
+| **v6** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |
+| **v6** | `@parallel for` (方案 A) — 编译期将循环体提取为独立函数，由线程池平分迭代执行，barrier 归约。零事件开销，天然负载均衡 | 🔜 规划中 |
+| **v6** | Atomic 操作 — `atomic_add(ref int, int)` / `atomic_add(ref double, double)` 运行时内置函数，支持并行安全累加 | 🔜 规划中 |
+| **v6** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲（防止静默丢事件） | 🔜 规划中 |
+| **v6** | 工作窃取线程池 — 共享 work-stealing 队列 + 条件变量，替代当前固定分片，实现动态负载均衡 | 🔜 规划中 |
+| **v6** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | 🔜 规划中 |
+| **v6** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | 🔜 规划中 |
+| **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | 🔜 规划中 |
+| **v6** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | 🔜 规划中 |
 | **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
 ---

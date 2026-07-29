@@ -120,6 +120,10 @@ target_include_directories(myp_fmt PRIVATE ${CMAKE_SOURCE_DIR}/include)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)
 
+find_package(PkgConfig)
+if(PkgConfig_FOUND)
+    pkg_check_modules(HDF5 hdf5)
+endif()
 add_library(myp_runtime STATIC
     src/runtime/runtime.c
     src/runtime/myp_stdlib.c
@@ -133,6 +137,9 @@ target_include_directories(myp_runtime
 )
 
 target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES})
+
+# ---- Tests (optional, requires GoogleTest) ----
+option(MYP_BUILD_TESTS "Build unit tests" OFF)
 
 # ---- Tests (optional, requires GoogleTest) ----
 option(MYP_BUILD_TESTS "Build unit tests" OFF)

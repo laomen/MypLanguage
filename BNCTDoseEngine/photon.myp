@@ -1,0 +1,19 @@
+// photon.myp — 光子结构与枚举
+// 参考: bnctDoseEngine/include/patical/photon.h
+import "./partical.myp";
+
+enum PhotonReaction {
+    NONE;
+    RAYLEIGH;
+    COMPTON;
+    PHOTOELECTRIC;
+    PAIR_PRODUCTION;
+}
+
+struct PhotonInteractionData {
+    double coherent_xs;
+    double incoherent_xs;
+    double photoelectric_xs;
+    double pair_production_xs;
+    bool doppler_broadening;
+}

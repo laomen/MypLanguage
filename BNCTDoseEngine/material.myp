@@ -1,0 +1,130 @@
+// material.myp — 材料定义 (MYP 移植)
+// 参考: bnctDoseEngine/include/gemotry/material.h
+import "./nuclide.myp";
+
+// ============================================================
+// MaterialNuclideComponent — 材料中的核素组分
+// ============================================================
+struct MaterialNuclideComponent {
+    Nuclide nuclide;
+    double atom_density;    // atoms/barn-cm
+}
+
+// ============================================================
+// MacroscopicNeutronXs — 宏观中子截面 (单能点)
+// ============================================================
+struct MacroscopicNeutronXs {
+    double elastic_xs;      // 1/cm
+    double inelastic_xs;
+    double capture_xs;
+    double fission_xs;
+    double nu_bar;
+    double elastic_mu;
+    double inelastic_mu;
+    double inelastic_energy_factor;
+    bool create_capture_photon;
+    double capture_photon_energy;
+
+    void clear() {
+        elastic_xs = 0.0; inelastic_xs = 0.0;
+        capture_xs = 0.0; fission_xs = 0.0;
+        nu_bar = 0.0;
+        elastic_mu = 0.0; inelastic_mu = 0.0;
+        inelastic_energy_factor = 1.0;
+        create_capture_photon = false;
+        capture_photon_energy = 0.0;
+    }
+
+    double total() {
+        return elastic_xs + inelastic_xs + capture_xs + fission_xs;
+    }
+
+    double captureRatio() {
+        double t = elastic_xs + inelastic_xs + capture_xs + fission_xs;
+        if (t <= 0.0) return 1.0;
+        return capture_xs / t;
+    }
+}
+
+// ============================================================
+// MacroscopicPhotonXs — 宏观光子截面 (单能点)
+// ============================================================
+struct MacroscopicPhotonXs {
+    double coherent_xs;
+    double incoherent_xs;
+    double photoelectric_xs;
+    double pair_production_xs;
+    bool doppler_broadening;
+
+    void clear() {
+        coherent_xs = 0.0; incoherent_xs = 0.0;
+        photoelectric_xs = 0.0; pair_production_xs = 0.0;
+        doppler_broadening = false;
+    }
+
+    double total() {
+        return coherent_xs + incoherent_xs + photoelectric_xs + pair_production_xs;
+    }
+}
+
+// ============================================================
+// Material — 材料: 核素组分 + 宏观截面
+// ============================================================
+struct Material {
+    int id;
+    string name;
+    double density;      // g/cm³
+    long nNuclides;
+    MacroscopicNeutronXs neutron_xs;
+    MacroscopicPhotonXs photon_xs;
+
+    void init(int id_, string n, double dens) {
+        id = id_;
+        name = n;
+        density = dens;
+        nNuclides = 0L;
+        neutron_xs.clear();
+        photon_xs.clear();
+    }
+
+    // 累加一个核素组分的宏观截面:
+    // macro_XS = sum_i (N_i * micro_XS_i)
+    // 其中 N_i = atom_density (atoms/barn-cm), micro_XS_i (barn)
+    // 结果 macro_XS 单位为 1/cm (barn * atoms/barn-cm = 1/cm)
+    void addComponent(double atomDensity, MicroscopicNeutronXs microN, MicroscopicPhotonXs microP) {
+        neutron_xs.elastic_xs  = neutron_xs.elastic_xs  + atomDensity * microN.elastic_xs;
+        neutron_xs.inelastic_xs = neutron_xs.inelastic_xs + atomDensity * microN.inelastic_xs;
+        neutron_xs.capture_xs  = neutron_xs.capture_xs  + atomDensity * microN.capture_xs;
+        neutron_xs.fission_xs  = neutron_xs.fission_xs  + atomDensity * microN.fission_xs;
+        neutron_xs.nu_bar      = neutron_xs.nu_bar      + atomDensity * microN.nu_bar;
+        neutron_xs.elastic_mu  = neutron_xs.elastic_mu  + atomDensity * microN.elastic_mu * microN.elastic_xs;
+        neutron_xs.inelastic_mu = neutron_xs.inelastic_mu + atomDensity * microN.inelastic_mu * microN.inelastic_xs;
+        neutron_xs.inelastic_energy_factor = neutron_xs.inelastic_energy_factor
+            + atomDensity * microN.inelastic_energy_factor * microN.inelastic_xs;
+        if (microN.create_capture_photon) {
+            neutron_xs.create_capture_photon = true;
+            neutron_xs.capture_photon_energy = microN.capture_photon_energy;
+        }
+
+        photon_xs.coherent_xs       = photon_xs.coherent_xs       + atomDensity * microP.coherent_xs;
+        photon_xs.incoherent_xs     = photon_xs.incoherent_xs     + atomDensity * microP.incoherent_xs;
+        photon_xs.photoelectric_xs  = photon_xs.photoelectric_xs  + atomDensity * microP.photoelectric_xs;
+        photon_xs.pair_production_xs = photon_xs.pair_production_xs + atomDensity * microP.pair_production_xs;
+        if (microP.doppler_broadening) photon_xs.doppler_broadening = true;
+
+        nNuclides = nNuclides + 1L;
+    }
+
+    // 在给定能量 E (eV) 处, 用所有核素的截面表重新计算宏观截面
+    void computeXS(double E, MaterialNuclideComponent[] comps, long nComp) {
+        neutron_xs.clear();
+        photon_xs.clear();
+        for (long ci = 0L; ci < nComp; ci = ci + 1L) {
+            Nuclide nuc = comps[ci].nuclide;
+            double nd = comps[ci].atom_density;
+            nuc.fillNeutronXS(E);
+            nuc.fillPhotonXS(E);
+            addComponent(nd, nuc.neutron_xs, nuc.photon_xs);
+        }
+    }
+}

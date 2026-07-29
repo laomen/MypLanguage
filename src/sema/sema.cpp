@@ -107,18 +107,58 @@ bool Sema::analyze(TranslationUnit& tu) {
 void Sema::checkStructMethods(const StructDecl& decl) {
     std::string type_key = decl.parent_class.empty()
         ? decl.name : decl.parent_class + "::" + decl.name;
+
+    // Pre-compute method type info for sibling method resolution
+    struct MethodInfo {
+        std::string name;
+        TypeInfo type;
+    };
+    std::vector<MethodInfo> sibling_methods;
+    for (auto& fn : decl.functions) {
+        TypeInfo ft(TypeKind::Function);
+        ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(fn.return_type));
+        for (auto& p : fn.params)
+            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+        sibling_methods.push_back({fn.name, ft});
+    }
+
     for (auto& func : decl.functions) {
         if (func.body) {
             current_return_type_ = typeNodeToTypeInfo(func.return_type);
             symbol_table_.enterScope();
-            // Struct methods can access struct fields (no 'this', fields are local)
+
+            // 'this' is available in struct methods (type = current struct)
+            TypeInfo this_type(TypeKind::Struct);
+            this_type.class_name = type_key;
+            symbol_table_.declare("this", this_type);
+
+            // Struct fields are accessible by bare name
             for (auto& prop : decl.properties) {
                 symbol_table_.declare(prop.name, typeNodeToTypeInfo(prop.type));
             }
+
+            // Sibling methods are callable by bare name (e.g., getNeutronXS calls fillNeutronXS)
+            for (auto& mi : sibling_methods) {
+                symbol_table_.declare(mi.name, mi.type);
+            }
+
             for (auto& param : func.params) {
                 symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
             }
+
+            bool saved_in_struct = in_struct_method_;
+            std::string saved_struct_key = current_struct_type_key_;
+            bool saved_in_main = in_main_function_;
+            in_struct_method_ = true;
+            current_struct_type_key_ = type_key;
+            in_main_function_ = false;  // Allow function calls from struct methods
+
             visitStmt(*func.body);
+
+            in_struct_method_ = saved_in_struct;
+            current_struct_type_key_ = saved_struct_key;
+            in_main_function_ = saved_in_main;
+
             symbol_table_.leaveScope();
         }
     }
@@ -256,6 +296,7 @@ void Sema::visitStructDecl(StructDecl& decl) {
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(func.return_type));
         for (auto& param : func.params) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            func_type.param_is_ref.push_back(param.is_ref);
         }
         std::string method_name = type_key + "::" + func.name;
         symbol_table_.declare(method_name, func_type);
@@ -295,6 +336,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
         for (auto& param : action.params) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            func_type.param_is_ref.push_back(param.is_ref);
         }
         if (!symbol_table_.declare(action.name, func_type)) {
             error(action.range, "duplicate action '" + action.name + "' in class '" + decl.name + "'");
@@ -307,6 +349,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
         for (auto& param : action.params) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            func_type.param_is_ref.push_back(param.is_ref);
         }
         // Register as ClassName.methodName in global scope
         std::string static_name = decl.name + "." + action.name;
@@ -379,6 +422,7 @@ void Sema::visitFuncDecl(FuncDecl& decl) {
     func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(decl.return_type));
     for (auto& param : decl.params) {
         func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+        func_type.param_is_ref.push_back(param.is_ref);
     }
     symbol_table_.declare(decl.name, func_type);
 }
@@ -423,14 +467,25 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             auto& es = static_cast<ExprStmt&>(stmt);
             if (es.expression) {
                 // In main(), reject direct method calls — use mapping instead
-                if (in_main_function_ && es.expression->kind == ExprKind::Call) {
+                // In main(), block direct class action/event calls (must use mapping)
+                // but allow struct method calls
+                if (in_main_function_ && !in_struct_method_ && es.expression->kind == ExprKind::Call) {
                     auto& call = static_cast<CallExpr&>(*es.expression);
-                    bool is_method_call = call.callee->kind == ExprKind::MemberAccess;
                     bool is_event_call = call.callee->kind == ExprKind::Identifier;
-                    if (is_method_call || is_event_call) {
+                    if (is_event_call) {
                         error(es.expression->range,
                             "direct function call not allowed in main() — use mapping() instead");
                         return {};
+                    }
+                    // For member access calls, allow struct method calls
+                    if (call.callee->kind == ExprKind::MemberAccess) {
+                        auto& ma = static_cast<MemberAccessExpr&>(*call.callee);
+                        auto obj_type = visitExpr(*ma.object);
+                        if (obj_type.kind != TypeKind::Struct) {
+                            error(es.expression->range,
+                                "direct function call not allowed in main() — use mapping() instead");
+                            return {};
+                        }
                     }
                 }
                 visitExpr(*es.expression);
@@ -692,6 +747,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::NewExpr:
             result = visitNewExpr(static_cast<NewExpr&>(expr));
             break;
+        case ExprKind::NewArrayExpr:
+            result = visitNewArrayExpr(static_cast<NewArrayExpr&>(expr));
+            break;
         case ExprKind::ThisExpr:
             result = visitThisExpr(static_cast<ThisExpr&>(expr));
             break;
@@ -716,18 +774,13 @@ TypeInfo Sema::visitExpr(Expr& expr) {
 
 TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {
     auto val = expr.value;
+    // L suffix forces long type
+    if (expr.is_long) return TypeInfo(TypeKind::Long);
     TypeInfo result;
     if (val >= -128 && val <= 127)           result = TypeInfo(TypeKind::Byte);
     else if (val >= -32768 && val <= 32767)  result = TypeInfo(TypeKind::Short);
     else if (val >= -2147483648LL && val <= 2147483647LL) result = TypeInfo(TypeKind::Int);
     else                                      result = TypeInfo(TypeKind::Long);
-    // Store resolved type on the expression for codegen to use
-    if (expr.type == nullptr) {
-        // Allocate a persistent TypeNode
-        static TypeNode long_type, int_type, short_type, byte_type;
-        // Use a simple approach: store the type in a static map by expr pointer
-        // For now, rely on codegen to re-derive from value
-    }
     return result;
 }
 
@@ -750,6 +803,17 @@ TypeInfo Sema::visitNullLiteral(NullLiteralExpr& expr) {
 TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
     auto* type = symbol_table_.lookup(expr.name);
     if (type) return *type;
+
+    // Check for @static class names — they're accessible as identifiers
+    if (current_tu_) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.is_static && cls.name == expr.name) {
+                TypeInfo class_type(TypeKind::Class);
+                class_type.class_name = cls.name;
+                return class_type;
+            }
+        }
+    }
 
     // If inside a class method, also search class properties/actions/events
     if (in_class_method_ && current_tu_) {
@@ -787,8 +851,10 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
                 if (ev.name == expr.name) {
                     TypeInfo event_type(TypeKind::Function);
                     event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-                    for (auto& p : ev.params)
+                    for (auto& p : ev.params) {
                         event_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        event_type.param_is_ref.push_back(false);
+                    }
                     return event_type;
                 }
             }
@@ -1033,6 +1099,61 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         return TypeInfo(TypeKind::Void);
     }
 
+    if (obj_type.kind == TypeKind::Struct) {
+        // Struct member access via 'this' in struct methods
+        if (current_tu_) {
+            for (auto& st : current_tu_->structs) {
+                std::string key = st.parent_class.empty()
+                    ? st.name : st.parent_class + "::" + st.name;
+                if (key == obj_type.class_name) {
+                    for (auto& prop : st.properties) {
+                        if (prop.name == expr.member_name)
+                            return typeNodeToTypeInfo(prop.type);
+                    }
+                    for (auto& func : st.functions) {
+                        if (func.name == expr.member_name) {
+                            TypeInfo ft(TypeKind::Function);
+                            ft.return_type = std::make_shared<TypeInfo>(
+                                typeNodeToTypeInfo(func.return_type));
+                            for (auto& p : func.params)
+                                ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                            return ft;
+                        }
+                    }
+                    error(expr.range, "struct '" + obj_type.class_name +
+                          "' has no member '" + expr.member_name + "'");
+                    return TypeInfo(TypeKind::Void);
+                }
+            }
+            // Also search nested structs
+            for (auto& cls : current_tu_->classes) {
+                for (auto& st : cls.structs) {
+                    std::string key = st.parent_class.empty()
+                        ? st.name : st.parent_class + "::" + st.name;
+                    if (key == obj_type.class_name) {
+                        for (auto& prop : st.properties) {
+                            if (prop.name == expr.member_name)
+                                return typeNodeToTypeInfo(prop.type);
+                        }
+                        for (auto& func : st.functions) {
+                            if (func.name == expr.member_name) {
+                                TypeInfo ft(TypeKind::Function);
+                                ft.return_type = std::make_shared<TypeInfo>(
+                                    typeNodeToTypeInfo(func.return_type));
+                                for (auto& p : func.params)
+                                    ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                                return ft;
+                            }
+                        }
+                        error(expr.range, "struct '" + obj_type.class_name +
+                              "' has no member '" + expr.member_name + "'");
+                        return TypeInfo(TypeKind::Void);
+                    }
+                }
+            }
+        }
+    }
+
     if (obj_type.kind != TypeKind::Class) {
         error(expr.range, "cannot access member of non-class type '" +
               typeName(obj_type) + "'");
@@ -1090,8 +1211,10 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                     if (event.name == expr.member_name) {
                         TypeInfo event_type(TypeKind::Function);
                         event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-                        for (auto& p : event.params)
+                        for (auto& p : event.params) {
                             event_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                            event_type.param_is_ref.push_back(false);
+                        }
                         return event_type;
                     }
                 }
@@ -1143,10 +1266,30 @@ TypeInfo Sema::visitNewExpr(NewExpr& expr) {
     return result;
 }
 
+TypeInfo Sema::visitNewArrayExpr(NewArrayExpr& expr) {
+    // Type-check dimensions: must be integer expressions
+    for (auto& dim : expr.dimensions) {
+        auto dt = visitExpr(*dim);
+        if (dt.kind != TypeKind::Int && dt.kind != TypeKind::Long
+            && dt.kind != TypeKind::Short && dt.kind != TypeKind::Byte) {
+            error(dim->range, "array size must be an integer expression");
+        }
+    }
+    // Return array type
+    TypeInfo result(TypeKind::Array);
+    result.element_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(expr.element_type));
+    return result;
+}
+
 TypeInfo Sema::visitThisExpr(ThisExpr& expr) {
-    if (!in_class_method_) {
+    if (!in_class_method_ && !in_struct_method_) {
         error(expr.range, "'this' can only be used inside a class action");
         return TypeInfo(TypeKind::Void);
+    }
+    if (in_struct_method_) {
+        TypeInfo result(TypeKind::Struct);
+        result.class_name = current_struct_type_key_;
+        return result;
     }
     TypeInfo result(TypeKind::Class);
     result.class_name = current_class_name_;
@@ -1183,6 +1326,31 @@ TypeInfo Sema::visitTernary(TernaryExpr& expr) {
 }
 
 TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
+    // Check if target is a const property
+    auto checkConstProperty = [&](const std::string& prop_name) {
+        if (!current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name == prop_name && p.is_const) {
+                        error(expr.range, "cannot assign to const property '" + prop_name + "'");
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+
+    if (expr.target->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*expr.target);
+        if (checkConstProperty(id.name)) return TypeInfo(TypeKind::Void);
+    } else if (expr.target->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*expr.target);
+        if (ma.object->kind == ExprKind::ThisExpr) {
+            if (checkConstProperty(ma.member_name)) return TypeInfo(TypeKind::Void);
+        }
+    }
     auto target_type = visitExpr(*expr.target);
     auto value_type = visitExpr(*expr.value);
     if (!typesCompatible(target_type, value_type)) {
@@ -1761,6 +1929,12 @@ void Sema::registerIntrinsics() {
     add_atomic("__myp_atomic_add_f64", TypeKind::Double, {TypeKind::Array, TypeKind::Int, TypeKind::Double}, {TypeKind::Double});
     add_atomic("__myp_atomic_load_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int}, {TypeKind::Int});
     add_atomic("__myp_atomic_store_i32", TypeKind::Void, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
+
+    // Thread pool (v6)
+    add_intrinsic("__myp_pool_thread_count", TypeKind::Int, {});
+
+    // Float-to-int truncation
+    add_intrinsic("__myp_trunc", TypeKind::Int, {TypeKind::Double});
 }
 
 Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {

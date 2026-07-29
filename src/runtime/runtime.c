@@ -701,6 +701,235 @@ void myp_thread_destroy(myp_thread_t* thr) {
 }
 
 // ======================
+// Work-Stealing Thread Pool (v6)
+// ======================
+
+typedef struct {
+    int start, end, step;
+} myp_work_chunk_t;
+
+typedef struct myp_work_deque {
+    myp_work_chunk_t* chunks;
+    int cap;
+    volatile int bottom;  // own thread pops here (LIFO)
+    volatile int top;     // stealers take from here (FIFO)
+    pthread_mutex_t mutex;
+} myp_work_deque_t;
+
+typedef struct myp_pool {
+    int n_threads;
+    pthread_t* threads;
+    myp_work_deque_t* deques;
+    volatile int running;
+    volatile int done_count;
+    int total_chunks;
+    pthread_mutex_t barrier_mutex;
+    pthread_cond_t barrier_cond;
+    pthread_mutex_t work_mutex;
+    pthread_cond_t work_cond;
+    volatile int work_available;
+    void (*work_fn)(int, void*);
+    void* work_arg;
+} myp_pool_t;
+
+static myp_pool_t* myp_global_pool = NULL;
+static pthread_mutex_t myp_pool_start_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t myp_pool_start_cond = PTHREAD_COND_INITIALIZER;
+static volatile int myp_pool_start_ok = 0;
+
+static void myp_work_deque_init(myp_work_deque_t* dq, int cap) {
+    dq->chunks = (myp_work_chunk_t*)calloc(cap, sizeof(myp_work_chunk_t));
+    dq->cap = cap;
+    dq->bottom = 0;
+    dq->top = 0;
+    pthread_mutex_init(&dq->mutex, NULL);
+}
+
+static void myp_work_deque_destroy(myp_work_deque_t* dq) {
+    free(dq->chunks);
+    pthread_mutex_destroy(&dq->mutex);
+}
+
+static void myp_work_deque_push(myp_work_deque_t* dq, int start, int end, int step) {
+    pthread_mutex_lock(&dq->mutex);
+    int b = dq->bottom;
+    if (b >= dq->cap) {
+        dq->cap *= 2;
+        dq->chunks = (myp_work_chunk_t*)realloc(dq->chunks, dq->cap * sizeof(myp_work_chunk_t));
+    }
+    dq->chunks[b].start = start;
+    dq->chunks[b].end = end;
+    dq->chunks[b].step = step;
+    dq->bottom = b + 1;
+    pthread_mutex_unlock(&dq->mutex);
+}
+
+static int myp_work_deque_pop(myp_work_deque_t* dq, myp_work_chunk_t* chunk) {
+    pthread_mutex_lock(&dq->mutex);
+    int b = dq->bottom;
+    if (b <= dq->top) { pthread_mutex_unlock(&dq->mutex); return 0; }
+    b = b - 1;
+    *chunk = dq->chunks[b];
+    dq->bottom = b;
+    pthread_mutex_unlock(&dq->mutex);
+    return 1;
+}
+
+static int myp_work_deque_steal(myp_work_deque_t* dq, myp_work_chunk_t* chunk) {
+    pthread_mutex_lock(&dq->mutex);
+    int t = dq->top;
+    if (t >= dq->bottom) { pthread_mutex_unlock(&dq->mutex); return 0; }
+    *chunk = dq->chunks[t];
+    dq->top = t + 1;
+    pthread_mutex_unlock(&dq->mutex);
+    return 1;
+}
+
+static void* myp_pool_worker(void* arg) {
+    int tid = (int)(uintptr_t)arg;
+
+    // Wait until pool is initialized
+    pthread_mutex_lock(&myp_pool_start_mutex);
+    while (!myp_pool_start_ok)
+        pthread_cond_wait(&myp_pool_start_cond, &myp_pool_start_mutex);
+    pthread_mutex_unlock(&myp_pool_start_mutex);
+
+    myp_pool_t* pool = myp_global_pool;
+    while (pool->running) {
+        myp_work_chunk_t chunk;
+        int got_work = 0;
+        if (myp_work_deque_pop(&pool->deques[tid], &chunk)) got_work = 1;
+        if (!got_work) {
+            for (int i = 1; i < pool->n_threads; i++) {
+                int victim = (tid + i) % pool->n_threads;
+                if (myp_work_deque_steal(&pool->deques[victim], &chunk)) {
+                    got_work = 1; break;
+                }
+            }
+        }
+        if (got_work) {
+            for (int i = chunk.start; i < chunk.end; i += chunk.step)
+                pool->work_fn(i, pool->work_arg);
+            pthread_mutex_lock(&pool->barrier_mutex);
+            pool->done_count++;
+            if (pool->done_count >= pool->total_chunks)
+                pthread_cond_signal(&pool->barrier_cond);
+            pthread_mutex_unlock(&pool->barrier_mutex);
+        } else {
+            pthread_mutex_lock(&pool->work_mutex);
+            if (!pool->work_available && pool->running)
+                pthread_cond_wait(&pool->work_cond, &pool->work_mutex);
+            pthread_mutex_unlock(&pool->work_mutex);
+        }
+    }
+    return NULL;
+}
+
+myp_pool_t* myp_pool_create(int n_threads) {
+    if (n_threads <= 0) {
+        n_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        if (n_threads < 1) n_threads = 1;
+    }
+    myp_pool_t* pool = (myp_pool_t*)calloc(1, sizeof(myp_pool_t));
+    pool->n_threads = n_threads;
+    pool->running = 1;
+    pool->deques = (myp_work_deque_t*)calloc(n_threads, sizeof(myp_work_deque_t));
+    for (int i = 0; i < n_threads; i++)
+        myp_work_deque_init(&pool->deques[i], 64);
+    pthread_mutex_init(&pool->barrier_mutex, NULL);
+    pthread_cond_init(&pool->barrier_cond, NULL);
+    pthread_mutex_init(&pool->work_mutex, NULL);
+    pthread_cond_init(&pool->work_cond, NULL);
+    pool->work_available = 0;
+    pool->threads = (pthread_t*)calloc(n_threads, sizeof(pthread_t));
+
+    myp_global_pool = pool;
+    myp_pool_start_ok = 1;
+    pthread_cond_broadcast(&myp_pool_start_cond);
+
+    for (int i = 0; i < n_threads; i++)
+        pthread_create(&pool->threads[i], NULL, myp_pool_worker, (void*)(uintptr_t)i);
+
+    return pool;
+}
+
+void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
+                            void (*fn)(int, void*), void* arg) {
+    if (!pool || !fn) return;
+    int n = (end - start + step - 1) / step;
+    if (n <= 0) return;
+    pool->work_fn = fn;
+    pool->work_arg = arg;
+    int max_chunks = pool->n_threads * 4;
+    if (max_chunks > n) max_chunks = n;
+    if (max_chunks < 1) max_chunks = 1;
+    int chunk_size = n / max_chunks;
+    if (chunk_size < 1) chunk_size = 1;
+    int remainder = n % max_chunks;
+
+    for (int t = 0; t < pool->n_threads; t++) {
+        pthread_mutex_lock(&pool->deques[t].mutex);
+        pool->deques[t].bottom = pool->deques[t].top = 0;
+        pthread_mutex_unlock(&pool->deques[t].mutex);
+    }
+
+    pool->done_count = 0;
+    int actual_chunks = 0;
+
+    int iter = start;
+    for (int c = 0; c < max_chunks && iter < end; c++) {
+        int this_size = chunk_size + (c < remainder ? 1 : 0);
+        int chunk_end = iter + this_size;
+        if (chunk_end > end) chunk_end = end;
+        int td = c % pool->n_threads;
+        myp_work_deque_push(&pool->deques[td], iter, chunk_end, step);
+        iter = chunk_end;
+        actual_chunks++;
+    }
+
+    pool->total_chunks = actual_chunks;
+
+    // Signal workers
+    pthread_mutex_lock(&pool->work_mutex);
+    pool->work_available = 1;
+    pthread_cond_broadcast(&pool->work_cond);
+    pthread_mutex_unlock(&pool->work_mutex);
+
+    // Wait for completion
+    pthread_mutex_lock(&pool->barrier_mutex);
+    while (pool->done_count < pool->total_chunks)
+        pthread_cond_wait(&pool->barrier_cond, &pool->barrier_mutex);
+    pthread_mutex_unlock(&pool->barrier_mutex);
+
+    pool->work_available = 0;
+}
+
+void myp_pool_destroy(myp_pool_t* pool) {
+    if (!pool) return;
+    pool->running = 0;
+    pthread_mutex_lock(&pool->work_mutex);
+    pthread_cond_broadcast(&pool->work_cond);
+    pthread_mutex_unlock(&pool->work_mutex);
+    for (int i = 0; i < pool->n_threads; i++) {
+        pthread_join(pool->threads[i], NULL);
+        myp_work_deque_destroy(&pool->deques[i]);
+    }
+    free(pool->deques);
+    free(pool->threads);
+    pthread_mutex_destroy(&pool->barrier_mutex);
+    pthread_cond_destroy(&pool->barrier_cond);
+    pthread_mutex_destroy(&pool->work_mutex);
+    pthread_cond_destroy(&pool->work_cond);
+    free(pool);
+    myp_global_pool = NULL;
+}
+
+int32_t myp_pool_thread_count(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int32_t)n : 1;
+}
+
+// ======================
 // Math functions
 // ======================
 

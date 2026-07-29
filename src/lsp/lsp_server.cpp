@@ -20,6 +20,7 @@
 #include "mylang/Sema.h"
 #include "mylang/AST.h"
 
+#include <chrono>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -27,6 +28,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <unordered_set>
+#include <utility>
 #include <cstdlib>
 #include <cstring>
 
@@ -36,12 +38,16 @@ namespace {
 // Forward declarations
 std::string typeToBasicTypeName(BuiltinType bt);
 
+// Definition map: symbol name → [{uri, SourceRange}]
+using DefinitionMap = std::unordered_map<std::string, std::vector<std::pair<std::string, SourceRange>>>;
+
 // ---- Active document state ----
 struct Document {
     std::string uri;
     std::string text;
     std::vector<std::string> lines;
     std::unique_ptr<TranslationUnit> ast;
+    DefinitionMap def_map;
     std::string stdlib_path = "stdlib";
 
     void updateLines() {
@@ -56,8 +62,50 @@ struct Document {
 
 std::unordered_map<std::string, Document> documents_;
 std::string server_stdlib_path_ = "stdlib";
+bool diagnostics_running_ = false;
+auto last_diag_time_ = std::chrono::steady_clock::now();
 
-// ---- Convert from SourceRange to LSP range format ----
+// ---- Build definition map from AST ----
+static void buildDefinitionMap(Document& doc) {
+    if (!doc.ast) return;
+    doc.def_map.clear();
+    try {
+        auto& map = doc.def_map;
+        for (auto& cls : doc.ast->classes) {
+            map[cls.name].push_back({doc.uri, cls.range});
+            for (auto& a : cls.actions)
+                map[a.name].push_back({doc.uri, a.range});
+            for (auto& e : cls.events)
+                map[e.name].push_back({doc.uri, e.range});
+            for (auto& p : cls.properties)
+                map[p.name].push_back({doc.uri, p.range});
+            for (auto& f : cls.functions)
+                map[f.name].push_back({doc.uri, f.range});
+        }
+        for (auto& fn : doc.ast->functions)
+            map[fn.name].push_back({doc.uri, fn.range});
+        for (auto& en : doc.ast->enums)
+            map[en.name].push_back({doc.uri, en.range});
+        for (auto& st : doc.ast->structs)
+            map[st.name].push_back({doc.uri, st.range});
+    } catch (...) {
+        // Silently skip definition map errors
+    }
+}
+
+// ---- Extract word at position from document ----
+static std::string extractWordAt(Document& doc, int line, int col) {
+    if (line < 0 || line >= (int)doc.lines.size()) return "";
+    const std::string& src_line = doc.lines[line];
+    if (col < 0 || col > (int)src_line.size()) return "";
+    int start = col;
+    while (start > 0 && (isalnum(src_line[start-1]) || src_line[start-1] == '_'))
+        start--;
+    int end = col;
+    while (end < (int)src_line.size() && (isalnum(src_line[end]) || src_line[end] == '_'))
+        end++;
+    return src_line.substr(start, end - start);
+}
 std::string rangeToJSON(const SourceRange& range) {
     std::string result = "{";
     result += "\"start\":{\"line\":" + std::to_string(range.begin.line) +
@@ -68,81 +116,8 @@ std::string rangeToJSON(const SourceRange& range) {
     return result;
 }
 
-// ---- Run compiler pipeline and publish diagnostics ----
-void publishDiagnostics(const std::string& uri) {
-    auto it = documents_.find(uri);
-    if (it == documents_.end()) return;
-    Document& doc = it->second;
-
-    // Run lexer + parser + sema
-    SourceManager src_mgr;
-    DiagnosticEngine diag(src_mgr);
-    std::string diagnostics_json;
-    int diag_count = 0;
-
-    if (src_mgr.loadString(doc.text, uri)) {
-        Lexer lex(src_mgr, diag);
-        auto toks = lex.tokenize();
-
-        Parser parser(toks, diag);
-        auto ast = parser.parse();
-
-        // Merge stdlib modules if imported
-        std::unordered_set<std::string> loaded;
-        std::string source_dir = ".";
-        for (auto& imp : ast->imports) {
-            // Try to load from stdlib
-            std::string stdlib_path = server_stdlib_path_ + "/" + imp.module_name + ".myp";
-            // loadModule logic simplified - just try stdlib
-            SourceManager sub_sm;
-            if (sub_sm.loadFile(stdlib_path)) {
-                DiagnosticEngine sub_diag(sub_sm);
-                Lexer sub_lex(sub_sm, sub_diag);
-                auto sub_toks = sub_lex.tokenize();
-                Parser sub_par(sub_toks, sub_diag);
-                auto sub_ast = sub_par.parse();
-                for (auto& c : sub_ast->classes) ast->classes.push_back(std::move(c));
-                for (auto& i : sub_ast->interfaces) ast->interfaces.push_back(std::move(i));
-                for (auto& m : sub_ast->mappings) ast->mappings.push_back(std::move(m));
-                for (auto& f : sub_ast->functions) ast->functions.push_back(std::move(f));
-            }
-        }
-
-        if (!diag.hasErrors()) {
-            Sema sema(diag);
-            sema.analyze(*ast);
-        }
-
-        // Collect diagnostics
-        for (auto& err : diag.getErrors()) {
-            if (diag_count > 0) diagnostics_json += ",";
-            std::string diag_json = "{";
-            diag_json += "\"range\":" + rangeToJSON(err.range) + ",";
-            diag_json += "\"severity\":1,";
-            diag_json += "\"message\":" + jsonString(err.message);
-            diag_json += "}";
-            diagnostics_json += diag_json;
-            diag_count++;
-        }
-
-        doc.ast = std::move(ast);
-    } else {
-        // File load error
-        diagnostics_json = "{";
-        diagnostics_json += "\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}},";
-        diagnostics_json += "\"severity\":1,";
-        diagnostics_json += "\"message\":\"Cannot open file\"";
-        diagnostics_json += "}";
-        diag_count = 1;
-    }
-
-    std::string params = "{";
-    params += "\"uri\":" + jsonString(uri) + ",";
-    params += "\"diagnostics\":[" + diagnostics_json + "]";
-    params += "}";
-
-    sendNotification("textDocument/publishDiagnostics", params);
-}
+// ---- Diagnostics disabled: full compilation on every save causes freezes.
+//      Use mypc on the command line to compile and see errors. ----
 
 // === LSP Handlers ===
 
@@ -155,7 +130,7 @@ struct CompletionItem {
 void handleInitialize(const std::string& id, const std::string& /*params*/) {
     std::string result = "{";
     result += "\"capabilities\":{";
-    result += "\"textDocumentSync\":2,"; // incremental
+    result += "\"textDocumentSync\":1,"; // Full (not Incremental) — didChange sends full text
     result += "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]},";
     result += "\"hoverProvider\":true,";
     result += "\"definitionProvider\":true,";
@@ -198,9 +173,7 @@ void handleTextDocumentDidOpen(const std::string& params) {
         doc.text = text;
         doc.updateLines();
         documents_[uri] = std::move(doc);
-
-        // Publish diagnostics for the opened document
-        publishDiagnostics(uri);
+        // No diagnostics on open — diagnostics only on save to avoid CPU spikes
     }
 }
 
@@ -233,23 +206,14 @@ void handleTextDocumentDidChange(const std::string& params) {
     if (it != documents_.end() && !text.empty()) {
         it->second.text = text;
         it->second.updateLines();
-        publishDiagnostics(uri);
+        // Diagnostics are NOT published on every keystroke to avoid 100% CPU.
+        // Only publishDiagnostics on didOpen and didSave.
+        // The user can save the file to see errors/warnings.
     }
 }
 
 void handleTextDocumentDidSave(const std::string& params) {
-    auto uri_start = params.find("\"uri\":\"");
-    std::string uri;
-    if (uri_start != std::string::npos) {
-        uri_start += 7;
-        auto uri_end = params.find("\"", uri_start);
-        if (uri_end != std::string::npos) {
-            uri = params.substr(uri_start, uri_end - uri_start);
-        }
-    }
-    if (!uri.empty()) {
-        publishDiagnostics(uri);
-    }
+    // Diagnostics disabled — use mypc to compile
 }
 
 void handleCompletion(const std::string& id, const std::string& /*params*/) {
@@ -453,8 +417,49 @@ void handleHover(const std::string& id, const std::string& params) {
 }
 
 void handleDefinition(const std::string& id, const std::string& params) {
-    // For now, return empty - a full implementation would track definition locations
-    sendResponse(id, "null");
+    // Parse URI and position from params
+    auto uri_start = params.find("\"uri\":\"");
+    std::string uri;
+    if (uri_start != std::string::npos) {
+        uri_start += 7;
+        auto uri_end = params.find("\"", uri_start);
+        if (uri_end != std::string::npos)
+            uri = params.substr(uri_start, uri_end - uri_start);
+    }
+
+    int line = -1, col = -1;
+    auto line_start = params.find("\"line\":");
+    if (line_start != std::string::npos) {
+        line_start += 7;
+        line = std::stoi(params.substr(line_start));
+    }
+    auto col_start = params.find("\"character\":");
+    if (col_start != std::string::npos) {
+        col_start += 12;
+        col = std::stoi(params.substr(col_start));
+    }
+
+    auto it = documents_.find(uri);
+    if (it == documents_.end()) { sendResponse(id, "null"); return; }
+
+    std::string word = extractWordAt(it->second, line, col);
+    if (word.empty()) { sendResponse(id, "null"); return; }
+
+    // Look up in definition map
+    auto dit = it->second.def_map.find(word);
+    if (dit != it->second.def_map.end() && !dit->second.empty()) {
+        auto& def = dit->second[0]; // First definition (prefer current file)
+        for (auto& d : dit->second) {
+            if (d.first == uri) { def = d; break; } // Prefer same file
+        }
+        std::string result = "{";
+        result += "\"uri\":" + jsonString(def.first) + ",";
+        result += "\"range\":" + rangeToJSON(def.second);
+        result += "}";
+        sendResponse(id, result);
+    } else {
+        sendResponse(id, "null");
+    }
 }
 
 void handleDocumentSymbol(const std::string& id, const std::string& params) {
@@ -636,6 +641,7 @@ int runLSPServer(int argc, char** argv) {
     // Main loop
     LSPMessage msg;
     while (readMessage(msg)) {
+        try {
         // Extract method (handle optional spaces)
         auto method_start = msg.body.find("\"method\":");
         std::string method;
@@ -740,6 +746,13 @@ int runLSPServer(int argc, char** argv) {
                 std::string body = "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":" + err + "}";
                 sendMessage(body);
             }
+        }
+        } catch (const std::exception& e) {
+            std::string err = "{\"code\":-32603,\"message\":\"Internal error: " + std::string(e.what()) + "\"}";
+            std::string body = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" + err + "}";
+            sendMessage(body);
+        } catch (...) {
+            // Ignore unknown exceptions
         }
     }
 

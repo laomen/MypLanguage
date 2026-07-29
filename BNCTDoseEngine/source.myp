@@ -1,0 +1,84 @@
+// source.myp — 粒子源: 数据结构 + 事件驱动接口
+// 参考: bnctDoseEngine/include/patical/source.h
+import env;
+
+// ============================================================
+// 源分布数据结构
+// ============================================================
+
+// Vec3-like inline structs for source distribution (独立于 partical.myp)
+struct SourceVec3 {
+    double x; double y; double z;
+}
+
+enum SpatialSourceType {
+    POINT;
+    BOX;
+    DISK;
+}
+
+enum AngularSourceType {
+    ISOTROPIC;
+    MONO_DIRECTIONAL;
+    CONE;
+}
+
+enum EnergySourceType {
+    MONOENERGETIC;
+    MAXWELL;
+    WATT;
+    GAUSSIAN;
+    TABULATED;
+}
+
+struct SpatialSourceDistribution {
+    int type;           // SpatialSourceType
+    SourceVec3 origin;
+    SourceVec3 lower_left;
+    SourceVec3 upper_right;
+    SourceVec3 axis;
+    double radius;
+}
+
+struct AngularSourceDistribution {
+    int type;           // AngularSourceType
+    SourceVec3 direction;
+    double cone_half_angle;
+    double[] mu_values;
+    long nMUs;
+    double[] mu_probabilities;
+    long nMUsProb;
+    double[] energy_values;
+    long nEnergyVals;
+    double[] energy_probabilities;
+    long nEnergyProb;
+}
+
+struct EnergySourceDistribution {
+    int type;           // EnergySourceType
+    double value;
+    double parameter_b;
+    double std_dev;
+    double[] values;
+    long nValues;
+    double[] probabilities;
+    long nProb;
+    double bias_power;
+}
+
+struct TimeSourceDistribution {
+    double t_min;
+    double t_max;
+}
+
+// Source: 粒子源 — 发射 batchReady 事件
+class Source {
+    action:
+        void emitBatches(int nBatches, int batchSize) {
+            for (int b = 0; b < nBatches; b = b + 1)
+                batchReady(b, batchSize);
+        }
+
+    event:
+        batchReady(int batchId, int size);
+}

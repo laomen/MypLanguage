@@ -4,11 +4,14 @@
   "fileTypes": [".myp"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#annotationParams" },
+    { "include": "#annotations" },
     { "include": "#keywords" },
     { "include": "#types" },
-    { "include": "#annotations" },
     { "include": "#strings" },
     { "include": "#numbers" },
+    { "include": "#propertyAccess" },
+    { "include": "#functionCall" },
     { "include": "#operators" },
     { "include": "#sections" }
   ],
@@ -19,31 +22,44 @@
         { "begin": "/\\*", "end": "\\*/", "name": "comment.block.myp" }
       ]
     },
+    "annotationParams": {
+      "match": "@parallel\\s+\\b(for)\\b",
+      "captures": {
+        "0": { "name": "entity.other.attribute-name.myp" },
+        "1": { "name": "keyword.control.myp" }
+      }
+    },
+    "annotations": {
+      "match": "@\\w+",
+      "name": "entity.other.attribute-name.myp"
+    },
     "keywords": {
-      "match": "\\b(if|else|while|for|return|break|continue|import|mapping|new|this|null|true|false|var|class|interface|struct|enum|match|ffi)\\b",
+      "match": "\\b(if|else|while|for|return|break|continue|import|mapping|new|this|null|true|false|var|class|interface|struct|enum|match|ffi|as|is|in|ref|out)\\b",
       "name": "keyword.control.myp"
     },
     "types": {
       "match": "\\b(void|byte|short|int|long|ubyte|ushort|uint|ulong|char|float|double|bool|string)\\b",
       "name": "storage.type.primitive.myp"
     },
-    "annotations": {
-      "match": "@\\w+",
-      "name": "entity.other.attribute-name.myp"
-    },
     "sections": {
-      "match": "\\b(action|event|property|function|static|struct)\\s*:",
+      "match": "^\\s*(action|event|property|function|static|struct|mapping)\\s*:",
       "name": "entity.name.section.myp"
     },
     "strings": {
       "patterns": [
-        { "begin": "\"", "end": "\"", "name": "string.quoted.double.myp",
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.myp",
           "patterns": [
             { "match": "\\\\[ntr0\"\\\\]", "name": "constant.character.escape.myp" },
             { "match": "\\$\\w+", "name": "variable.other.interpolation.myp" }
           ]
         },
-        { "begin": "'", "end": "'", "name": "string.quoted.single.myp",
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.myp",
           "patterns": [
             { "match": "\\\\[ntr0'\\\\]", "name": "constant.character.escape.myp" }
           ]
@@ -51,12 +67,29 @@
       ]
     },
     "numbers": {
-      "match": "\\b(0[xX][0-9a-fA-F]+|\\d+\\.\\d*([eE][+-]?\\d+)?|\\d+)\\b",
-      "name": "constant.numeric.myp"
+      "patterns": [
+        { "match": "\\b0[xX][0-9a-fA-F]+[uUlL]?\\b", "name": "constant.numeric.hex.myp" },
+        { "match": "\\b\\d+\\.\\d*([eE][+-]?\\d+)?\\b", "name": "constant.numeric.float.myp" },
+        { "match": "\\b\\d+[lL]\\b", "name": "constant.numeric.long.myp" },
+        { "match": "\\b\\d+\\b", "name": "constant.numeric.myp" }
+      ]
+    },
+    "propertyAccess": {
+      "match": "\\b(this)\\s*\\.\\s*(\\w+)",
+      "captures": {
+        "1": { "name": "keyword.control.myp" },
+        "2": { "name": "variable.other.property.myp" }
+      }
+    },
+    "functionCall": {
+      "match": "\\b([A-Z]\\w*)\\s*(?=\\()",
+      "name": "support.function.myp"
     },
     "operators": {
-      "match": "(->|=>|\\+\\+|--|&&|\\|\\||==|!=|<=|>=|\\+=|-=|\\*=|/=|%=|\\+|-|\\*|/|%|<|>|=|!|\\?|:)",
-      "name": "keyword.operator.myp"
+      "patterns": [
+        { "match": "(->|=>|\\.\\.|\\+\\+|--|&&|\\|\\||==|!=|<=|>=|<<|>>|\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=)", "name": "keyword.operator.myp" },
+        { "match": "[+\\-*/%<>=!&|^~?:]", "name": "keyword.operator.myp" }
+      ]
     }
   }
 }

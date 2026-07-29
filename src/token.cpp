@@ -48,6 +48,7 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Keyword_finally:     return "finally";
         case TokenKind::Keyword_throw:       return "throw";
         case TokenKind::Keyword_static:     return "static";
+        case TokenKind::Keyword_ref:        return "ref";
 
         case TokenKind::Type_byte:          return "byte";
         case TokenKind::Type_short:         return "short";

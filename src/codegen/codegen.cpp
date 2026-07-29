@@ -179,7 +179,13 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
             return llvm::ArrayType::get(elem, tn.array_size);
         return llvm::PointerType::get(ctx_, 0);
     }
-    // Basic or class type
+    // Check for class type
+    if (!tn.class_name.empty()) {
+        if (getClassStruct(tn.class_name))
+            return llvm::PointerType::get(ctx_, 0);
+        if (auto* st = getStructType(tn.class_name))
+            return st;
+    }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
 
@@ -294,6 +300,10 @@ void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();
     named_values_.back()[n] = a;
 }
+void CodeGen::setNamedTypedValue(const std::string& n, llvm::Value* ptr, llvm::Type* ty) {
+    setNamedValue(n, ptr);
+    named_value_types_[n] = ty;
+}
 llvm::Value* CodeGen::getNamedValue(const std::string& n) {
     for (auto it = named_values_.rbegin(); it != named_values_.rend(); ++it) {
         auto f = it->find(n);
@@ -301,6 +311,12 @@ llvm::Value* CodeGen::getNamedValue(const std::string& n) {
     }
     return nullptr;
 }
+
+llvm::Type* CodeGen::getNamedValueType(const std::string& n) {
+    auto it = named_value_types_.find(n);
+    return it != named_value_types_.end() ? it->second : nullptr;
+}
+
 llvm::AllocaInst* CodeGen::createEntryBlockAlloca(llvm::Function* f, llvm::Type* t, const std::string& n) {
     llvm::IRBuilder<> tb(&f->getEntryBlock(), f->getEntryBlock().begin());
     return tb.CreateAlloca(t, nullptr, n);
@@ -565,11 +581,11 @@ void CodeGen::declareStructMethods(const StructDecl& st) {
         std::vector<llvm::Type*> pts;
         pts.push_back(llvm::PointerType::get(ctx_, 0)); // struct ptr
         for (auto& p : method.params)
-            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+            pts.push_back(typeNodeToLLVMType(p.type));
 
-        TypeInfo rt = builtinTypeToInfo(method.return_type.basic_type);
-        auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
-        llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
+        auto* ret_ty = typeNodeToLLVMType(method.return_type);
+        auto* ft = llvm::FunctionType::get(ret_ty, pts, false);
+        llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
     }
 }
 
@@ -582,19 +598,19 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
     for (auto& method : st.functions) {
         if (!method.body) continue;
         std::string fn = "struct_" + type_key + "_" + method.name;
-        auto* existing = module_->getFunction(fn);
-        if (existing) existing->deleteBody();
-
-        std::vector<llvm::Type*> pts;
-        // First param: pointer to the struct
-        pts.push_back(llvm::PointerType::get(ctx_, 0));
-        for (auto& p : method.params) {
-            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+        auto* func = module_->getFunction(fn);
+        if (func) {
+            func->deleteBody();
+        } else {
+            std::vector<llvm::Type*> pts;
+            pts.push_back(llvm::PointerType::get(ctx_, 0));
+            for (auto& p : method.params) {
+                pts.push_back(typeNodeToLLVMType(p.type));
+            }
+            auto* ret_ty = typeNodeToLLVMType(method.return_type);
+            auto* ft = llvm::FunctionType::get(ret_ty, pts, false);
+            func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
         }
-
-        TypeInfo rt = builtinTypeToInfo(method.return_type.basic_type);
-        auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
-        auto* func = llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
 
         current_function_ = func;
         current_class_name_ = type_key; // for error messages
@@ -612,23 +628,40 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
             unsigned fi = 0;
             if (getStructFieldIndex(type_key, prop.name, fi)) {
                 auto* gep = builder_.CreateStructGEP(st_type, func->getArg(0), fi);
-                setNamedValue(prop.name, gep);
+                auto* ft5 = st_type->getElementType(fi);
+                setNamedTypedValue(prop.name, gep, ft5);
+                // For array fields, record the element type for subscript access
+                if (prop.type.isArray() && prop.type.element_type) {
+                    array_elem_types_[prop.name] = typeNodeToLLVMType(*prop.type.element_type);
+                }
             }
         }
 
         // Method parameters
         for (size_t i = 0; i < method.params.size(); ++i) {
-            auto* a = createEntryBlockAlloca(func,
-                getLLVMType(builtinTypeToInfo(method.params[i].type.basic_type)),
-                method.params[i].name);
+            auto& p = method.params[i];
+            auto* p_ty = typeNodeToLLVMType(p.type);
+            auto* a = createEntryBlockAlloca(func, p_ty, p.name);
             builder_.CreateStore(func->getArg(i + 1), a);
-            setNamedValue(method.params[i].name, a);
+            setNamedValue(p.name, a);
+            if (p.type.isArray() && p.type.element_type) {
+                array_elem_types_[p.name] = typeNodeToLLVMType(*p.type.element_type);
+            }
         }
 
         if (method.body)
             generateBlock(static_cast<const BlockStmt&>(*method.body));
-        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
-            builder_.CreateRetVoid();
+        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+            auto* rty = typeNodeToLLVMType(method.return_type);
+            if (rty->isVoidTy())
+                builder_.CreateRetVoid();
+            else if (rty->isIntegerTy())
+                builder_.CreateRet(llvm::ConstantInt::get(rty, 0));
+            else if (rty->isFloatingPointTy())
+                builder_.CreateRet(llvm::Constant::getNullValue(rty));
+            else
+                builder_.CreateRet(llvm::Constant::getNullValue(rty));
+        }
         popScope();
     }
 }
@@ -1564,21 +1597,24 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     if (is_struct) {
         lt = getStructType(d.type.class_name);
     } else if (d.type.isArray() && d.type.element_type) {
-        // Array type: allocate as array, store pointer to element 0
-        TypeInfo arr_ti = typeNodeToCodegenType(d.type);
-        lt = getLLVMType(arr_ti);
-        auto* arr_a = createEntryBlockAlloca(current_function_, lt, d.name + "_arr");
-        // Zero-init the array
-        auto arr_sz = module_->getDataLayout().getTypeAllocSize(lt);
-        if (arr_sz > 0)
-            builder_.CreateMemSet(arr_a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
-                                  arr_sz, llvm::Align(8));
-        // Store pointer to first element as the variable's value
-        auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
-        auto* elem_ptr = builder_.CreateGEP(lt, arr_a, {zero, zero});
-        auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
-        builder_.CreateStore(elem_ptr, ptr_a);
-        setNamedValue(d.name, ptr_a);
+        // Array type
+        if (d.type.array_size > 0) {
+            TypeInfo arr_ti = typeNodeToCodegenType(d.type);
+            lt = getLLVMType(arr_ti);
+            auto* arr_a = createEntryBlockAlloca(current_function_, lt, d.name + "_arr");
+            auto arr_sz = module_->getDataLayout().getTypeAllocSize(lt);
+            if (arr_sz > 0)
+                builder_.CreateMemSet(arr_a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), arr_sz, llvm::Align(8));
+            auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            auto* elem_ptr = builder_.CreateGEP(lt, arr_a, {zero, zero});
+            auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
+            builder_.CreateStore(elem_ptr, ptr_a);
+            setNamedValue(d.name, ptr_a);
+        } else {
+            auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
+            builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
+            setNamedValue(d.name, ptr_a);
+        }
         // Record element type for subscript access
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
         return;
@@ -1803,6 +1839,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::MemberAccess:   return generateMemberAccess(static_cast<const MemberAccessExpr&>(e));
         case ExprKind::Subscript:      return generateSubscript(static_cast<const SubscriptExpr&>(e));
         case ExprKind::NewExpr:        return generateNewExpr(static_cast<const NewExpr&>(e));
+        case ExprKind::NewArrayExpr:   return generateNewArrayExpr(static_cast<const NewArrayExpr&>(e));
         case ExprKind::ThisExpr:       return generateThisExpr(static_cast<const ThisExpr&>(e));
         case ExprKind::Assignment:     return generateAssignment(static_cast<const AssignmentExpr&>(e));
         case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
@@ -1909,7 +1946,9 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
     if (llvm::isa<llvm::AllocaInst>(a)) {
         return builder_.CreateLoad(llvm::cast<llvm::AllocaInst>(a)->getAllocatedType(), a, e.name);
     }
-    // For non-alloca (GEP pointers), load using the pointer's element type
+    if (auto* nty2 = getNamedValueType(e.name)) {
+        return builder_.CreateLoad(nty2, a, e.name);
+    }
     return builder_.CreateLoad(a->getType(), a, e.name);
 }
 
@@ -2080,9 +2119,12 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
             // Check if this is an interface variable → vtable dispatch
             auto* obj_val = getNamedValue(oi.name);
             if (obj_val) {
-                auto* allocated_ty = llvm::cast<llvm::AllocaInst>(obj_val)->getAllocatedType();
-                if (allocated_ty->isStructTy()) {
-                    auto* st = llvm::cast<llvm::StructType>(allocated_ty);
+                llvm::Type* obj_ty = nullptr;
+                if (auto* ovi = llvm::dyn_cast<llvm::AllocaInst>(obj_val)) {
+                    obj_ty = ovi->getAllocatedType();
+                }
+                if (obj_ty && obj_ty->isStructTy()) {
+                    auto* st = llvm::cast<llvm::StructType>(obj_ty);
                     std::string st_name = st->getName().str();
                     // {ptr, ptr} = interface fat pointer
                     if (st->getNumElements() == 2 && st->getElementType(0)->isPointerTy()
@@ -2156,8 +2198,8 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
             }
         }
 
-        size_t num_args = e.args.size();
         if (current_tu_) {
+            size_t num_args = e.args.size();
             for (auto& cls : current_tu_->classes) {
                 for (auto& a : cls.actions) {
                     if (a.name == ma.member_name && a.params.size() == num_args) {
@@ -2222,14 +2264,38 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         if (!callee && ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
             auto* oa = getNamedValue(oi.name);
-            if (oa && llvm::cast<llvm::AllocaInst>(oa)->getAllocatedType()->isStructTy()) {
-                std::string st_name = llvm::cast<llvm::AllocaInst>(oa)->getAllocatedType()->getStructName().str();
-                std::string fn = "struct_" + st_name + "_" + ma.member_name;
-                callee = module_->getFunction(fn);
-                if (callee) {
-                    mthis = oa;
-                    is_method = true;
+            if (oa) {
+                llvm::StructType* st_for_name_2 = nullptr;
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                    auto* oat = oai->getAllocatedType();
+                    if (oat->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(oat);
+                } else {
+                    auto* nty = getNamedValueType(oi.name);
+                    if (nty && nty->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(nty);
                 }
+                if (st_for_name_2) {
+                    std::string fn = "struct_" + st_for_name_2->getName().str() + "_" + ma.member_name;
+                    callee = module_->getFunction(fn);
+                    if (callee) {
+                        mthis = oa;
+                        is_method = true;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if this is a struct method self-call (bare method name = this.method())
+    if (!callee && e.callee->kind == ExprKind::Identifier && !current_class_name_.empty()) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.callee);
+        // Check if current class name is a struct type key
+        if (struct_types_.count(current_class_name_)) {
+            std::string fn = "struct_" + current_class_name_ + "_" + id.name;
+            callee = module_->getFunction(fn);
+            if (callee) {
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = ta;
+                is_method = true;
             }
         }
     }
@@ -2308,6 +2374,17 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 // Unreachable (longjmp is noreturn, but LLVM needs terminator)
                 builder_.CreateUnreachable();
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            // __myp_trunc: double to int truncation
+            else if (id.name == "__myp_trunc") {
+                if (e.args.size() < 1) {
+                    diag_.error(e.range, "__myp_trunc requires 1 argument");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* v = generateExpr(*e.args[0]);
+                if (v->getType()->isFloatingPointTy())
+                    return builder_.CreateFPToSI(v, llvm::Type::getInt32Ty(ctx_));
+                return v;
             }
             // Atomic intrinsics: generate LLVM atomic instructions directly
             else if (id.name == "__myp_atomic_add_i32" ||
@@ -2496,8 +2573,13 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
 void CodeGen::generateFFIDecl(const FFIDecl& decl) {
     std::vector<llvm::Type*> pts;
-    for (auto& p : decl.params)
-        pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+    for (auto& p : decl.params) {
+        if (p.type.isArray()) {
+            pts.push_back(llvm::PointerType::get(ctx_, 0));
+        } else {
+            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+        }
+    }
     auto* rt = getLLVMType(builtinTypeToInfo(decl.return_type.basic_type));
     auto* ft = llvm::FunctionType::get(rt, pts, false);
     llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
@@ -2533,16 +2615,21 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
         auto* oa = getNamedValue(oi.name);
         if (oa) {
-            auto* allocated_type = llvm::cast<llvm::AllocaInst>(oa)->getAllocatedType();
-            // Check if the variable is a struct type
-            if (allocated_type->isStructTy()) {
-                auto* st = llvm::cast<llvm::StructType>(allocated_type);
+            llvm::StructType* st2_m = nullptr; llvm::Value* bp_m = nullptr;
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                auto* at = ai->getAllocatedType();
+                if (at->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(at); bp_m = oa; }
+            } else if (oa->getType()->isPointerTy()) {
+                auto* nty = getNamedValueType(oi.name);
+                if (nty && nty->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(nty); bp_m = oa; }
+            }
+            if (st2_m && bp_m) {
                 // Find the field index by name
-                std::string st_name = st->getName().str();
+                std::string st_name = st2_m->getName().str();
                 unsigned fi = 0;
                 if (getStructFieldIndex(st_name, e.member_name, fi)) {
-                    auto* gep = builder_.CreateStructGEP(st, oa, fi);
-                    auto* field_type = st->getElementType(fi);
+                    auto* gep = builder_.CreateStructGEP(st2_m, bp_m, fi);
+                    auto* field_type = st2_m->getElementType(fi);
                     if (field_type->isArrayTy()) return gep;
                     return builder_.CreateLoad(field_type, gep);
                 }
@@ -2555,20 +2642,36 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
             }
         }
     }
-    // this.prop — internal property access (allowed)
+    // this.prop — internal property access (allowed for class AND struct)
     if (e.object->kind == ExprKind::ThisExpr) {
         auto* ta = getNamedValue("this");
         if (ta) {
-            auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
-            if (tp && current_tu_) {
-                for (auto& cls : current_tu_->classes) {
-                    unsigned pi;
-                    if (getPropertyIndex(cls.name, e.member_name, pi)) {
-                        auto* st = getClassStruct(cls.name);
-                        if (st) {
-                            auto* gep = builder_.CreateStructGEP(st, tp, pi);
-                            auto* pt = getPropertyType(cls, e.member_name);
-                            return builder_.CreateLoad(pt, gep);
+            // Check if this is a struct method (current_class_name_ is a struct type key)
+            if (struct_types_.count(current_class_name_)) {
+                auto* st = getStructType(current_class_name_);
+                if (st) {
+                    auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                    unsigned fi = 0;
+                    if (getStructFieldIndex(current_class_name_, e.member_name, fi)) {
+                        auto* gep = builder_.CreateStructGEP(st, tp, fi);
+                        auto* field_type = st->getElementType(fi);
+                        if (field_type->isArrayTy()) return gep;
+                        return builder_.CreateLoad(field_type, gep);
+                    }
+                }
+            } else {
+                // Class property access
+                auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                if (tp && current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        unsigned pi;
+                        if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                            auto* st = getClassStruct(cls.name);
+                            if (st) {
+                                auto* gep = builder_.CreateStructGEP(st, tp, pi);
+                                auto* pt = getPropertyType(cls, e.member_name);
+                                return builder_.CreateLoad(pt, gep);
+                            }
                         }
                     }
                 }
@@ -2607,10 +2710,15 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
         // Check local variables
         auto* va = getNamedValue(id.name);
         if (va) {
-            auto* at = llvm::cast<llvm::AllocaInst>(va)->getAllocatedType();
-            if (at->isArrayTy()) {
-                elem_ty = at->getArrayElementType();
-            } else if (at->isPointerTy()) {
+            llvm::Type* at_x = nullptr;
+            if (auto* vai = llvm::dyn_cast<llvm::AllocaInst>(va)) {
+                at_x = vai->getAllocatedType();
+            } else {
+                at_x = getNamedValueType(id.name);
+            }
+            if (at_x && at_x->isArrayTy()) {
+                elem_ty = at_x->getArrayElementType();
+            } else if (at_x && at_x->isPointerTy()) {
                 // Check if this variable has a recorded array element type
                 auto eit = array_elem_types_.find(id.name);
                 if (eit != array_elem_types_.end()) {
@@ -2693,6 +2801,29 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     return obj;
 }
 
+
+llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
+    llvm::Value* total = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1);
+    for (auto& dim : e.dimensions) {
+        auto* dim_val = generateExpr(*dim);
+        if (dim_val->getType()->isIntegerTy(32))
+            dim_val = builder_.CreateZExt(dim_val, llvm::Type::getInt64Ty(ctx_));
+        total = builder_.CreateMul(total, dim_val);
+    }
+    auto* elem_ty = typeNodeToLLVMType(e.element_type);
+    uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(elem_ty);
+    auto* byte_size = builder_.CreateMul(total,
+        llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), elem_size));
+    auto* alloc_fn = runtime_alloc_;
+    if (!alloc_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+    }
+    auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "new_arr");
+    if (elem_size > 0)
+        builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
+    return ptr;
+}
 llvm::Value* CodeGen::generateThisExpr(const ThisExpr&) {
     return getNamedValue("this");
 }
@@ -2790,11 +2921,16 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
         }
         auto* v = generateExpr(*e.value);
-        auto* at = llvm::cast<llvm::AllocaInst>(a)->getAllocatedType();
-        if (v->getType() != at) {
-            if (at->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, at, true);
-            else if (at->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, at);
-            else if (at->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, at);
+        llvm::Type* at_v = nullptr;
+        if (auto* ai_v = llvm::dyn_cast<llvm::AllocaInst>(a)) {
+            at_v = ai_v->getAllocatedType();
+        } else if (a->getType()->isPointerTy()) {
+            at_v = getNamedValueType(id.name);
+        }
+        if (at_v && v->getType() != at_v) {
+            if (at_v->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, at_v, true);
+            else if (at_v->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, at_v);
+            else if (at_v->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, at_v);
         }
         builder_.CreateStore(v, a);
         return v;
@@ -2873,14 +3009,23 @@ assign_gep:
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
                 auto* oa = getNamedValue(oi.name);
-                if (oa && llvm::cast<llvm::AllocaInst>(oa)->getAllocatedType()->isStructTy()) {
-                    auto* st = llvm::cast<llvm::StructType>(llvm::cast<llvm::AllocaInst>(oa)->getAllocatedType());
+                if (oa) {
+                    llvm::StructType* st3_as = nullptr;
+                    if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                        auto* at = ai->getAllocatedType();
+                        if (at->isStructTy()) st3_as = llvm::cast<llvm::StructType>(at);
+                    } else {
+                        auto* nty = getNamedValueType(oi.name);
+                        if (nty && nty->isStructTy()) st3_as = llvm::cast<llvm::StructType>(nty);
+                    }
+                    if (st3_as) {
+                        auto* st = st3_as;
                     std::string st_name = st->getName().str();
                     unsigned fi = 0;
                     if (getStructFieldIndex(st_name, ma.member_name, fi)) {
                         auto* gep = builder_.CreateStructGEP(st, oa, fi);
                         auto* v = generateExpr(*e.value);
-                        auto* ft = st->getElementType(fi);
+                        auto* ft = st3_as->getElementType(fi);
                         if (v->getType() != ft) {
                             if (ft->isIntegerTy() && v->getType()->isIntegerTy())
                                 v = builder_.CreateIntCast(v, ft, true);
@@ -2902,6 +3047,31 @@ assign_gep:
             } else {
                 diag_.error(e.range, "cannot determine assignment target");
             }
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        }
+        // Struct method: this.field = value
+        if (struct_types_.count(current_class_name_)) {
+            auto* st = getStructType(current_class_name_);
+            if (st) {
+                unsigned fi = 0;
+                if (getStructFieldIndex(current_class_name_, ma.member_name, fi)) {
+                    auto* gep = builder_.CreateStructGEP(st, op, fi);
+                    auto* v = generateExpr(*e.value);
+                    auto* ft = st->getElementType(fi);
+                    if (v->getType() != ft) {
+                        if (ft->isIntegerTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateIntCast(v, ft, true);
+                        else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateSIToFP(v, ft);
+                        else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
+                            v = builder_.CreateFPToSI(v, ft);
+                    }
+                    builder_.CreateStore(v, gep);
+                    return v;
+                }
+            }
+            diag_.error(e.range, "struct '" + current_class_name_ +
+                        "' has no field '" + ma.member_name + "'");
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
         }
         for (auto& cls : current_tu_->classes) {
@@ -2927,6 +3097,7 @@ assign_gep:
     }
     diag_.error(e.range, "not a valid assignment target");
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+}
 }
 
 // -- Enum variant codegen: enum variant ref → i32 constant (variant index) --
@@ -3335,4 +3506,4 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
     return true;
 }
 
-} // namespace mylang
+}

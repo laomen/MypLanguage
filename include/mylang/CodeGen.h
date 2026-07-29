@@ -38,6 +38,7 @@ private:
 
     // ---- Variable scope stack ----
     std::vector<std::unordered_map<std::string, llvm::Value*>> named_values_;
+    std::unordered_map<std::string, llvm::Type*> named_value_types_;
     std::set<llvm::Function*> scope_functions_; // functions with @scope mappings
 
     // ---- Class struct tracking ----
@@ -170,11 +171,14 @@ private:
 
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;
+    // ---- Static property globals: "ClassName_propName" -> GlobalVariable ----
+    std::unordered_map<std::string, llvm::GlobalVariable*> static_property_globals_;
 
     // ---- Variable name → class name map (for method resolution) ----
     std::unordered_map<std::string, std::string> var_class_map_;
     /// Track element types for local array variables (for subscript codegen).
     std::unordered_map<std::string, llvm::Type*> array_elem_types_;
+    std::unordered_map<std::string, llvm::Type*> var_value_types_;
 
     // ---- Global event ID map: "ClassName::eventName" -> int ----
     std::unordered_map<std::string, int> event_id_map_;
@@ -205,7 +209,9 @@ private:
     void pushScope();
     void popScope();
     void setNamedValue(const std::string& name, llvm::Value* alloca);
+    void setNamedTypedValue(const std::string& name, llvm::Value* ptr, llvm::Type* ty);
     llvm::Value* getNamedValue(const std::string& name);
+    llvm::Type* getNamedValueType(const std::string& name);
     llvm::AllocaInst* createEntryBlockAlloca(llvm::Function* func,
                                               llvm::Type* type,
                                               const std::string& name);
@@ -253,6 +259,7 @@ private:
     llvm::Value* generateMemberAccess(const MemberAccessExpr& expr);
     llvm::Value* generateSubscript(const SubscriptExpr& expr);
     llvm::Value* generateNewExpr(const NewExpr& expr);
+    llvm::Value* generateNewArrayExpr(const NewArrayExpr& expr);
     llvm::Value* generateThisExpr(const ThisExpr& expr);
     llvm::Value* generateAssignment(const AssignmentExpr& expr);
     llvm::Value* generateTernary(const TernaryExpr& expr);

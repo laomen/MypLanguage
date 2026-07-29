@@ -295,7 +295,6 @@ static bool loadModule(const std::string& module_name,
         link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj
                  + " -o " + output_name + " -lpthread -lm " + sdl_libs + " 2>&1";
     }
-
     int link_result = std::system(link_cmd.c_str());
     if (link_result != 0) {
         std::cerr << "Linking failed (exit: " << link_result << ")\n";

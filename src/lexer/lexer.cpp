@@ -282,7 +282,12 @@ Token Lexer::scanNumber() {
         while (std::isxdigit(peek())) {
             value += advance();
         }
-        return Token(TokenKind::IntegerLiteral,
+        auto kind = TokenKind::IntegerLiteral;
+        if (peek() == 'L' || peek() == 'l') {
+            advance();
+            kind = TokenKind::LongLiteral;
+        }
+        return Token(kind,
             SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
             value);
     }
@@ -308,6 +313,13 @@ Token Lexer::scanNumber() {
     }
 
     auto kind = is_float ? TokenKind::FloatLiteral : TokenKind::IntegerLiteral;
+
+    // Long suffix: 42L or 0xFFL
+    if (!is_float && (peek() == 'L' || peek() == 'l')) {
+        advance(); // consume the suffix
+        kind = TokenKind::LongLiteral;
+    }
+
     return Token(kind, SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}}, value);
 }
 
@@ -360,6 +372,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "where")    kind = TokenKind::Keyword_where;
     else if (value == "await")   kind = TokenKind::Keyword_await;
     else if (value == "const")   kind = TokenKind::Keyword_const;
+    else if (value == "ref")     kind = TokenKind::Keyword_ref;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

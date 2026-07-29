@@ -1,0 +1,51 @@
+// random.myp — 随机数生成器 (PRNG) + 种子管理
+// 参考: bnctDoseEngine/include/random/random.h
+// 64-bit LCG prn (OpenMC 风格)
+import math;
+
+class Random {
+    static:
+        // 64-bit LCG: 返回下一状态
+        long next(long seed) {
+            return seed * 6364136223846793005L + 1442695040888963407L;
+        }
+
+        // 从状态提取 [0,1) 随机数 (不修改状态)
+        double prn(long seed) {
+            long x = seed;
+            x = (x ^ (x >> 30)) * 2685821657736338717L;
+            x = (x ^ (x >> 27)) * 88172645463325252L;
+            x = x ^ (x >> 31);
+            if (x < 0L) { x = -x; }
+            return x * 1.0842021724855044e-19;
+        }
+
+        // 从历史 ID 初始化粒子种子
+        long initSeed(long id, int offset) {
+            return Random.futureSeed(id * 152917L, Random.ms + offset);
+        }
+
+        // 快速跳转: LCG step n
+        long futureSeed(long n, long seed) {
+            long g = 6364136223846793005L;
+            long c = 1442695040888963407L;
+            long g_new = 1L;
+            long c_new = 0L;
+            while (n > 0L) {
+                if ((n & 1L) != 0L) {
+                    g_new = g_new * g;
+                    c_new = c_new * g + c;
+                }
+                c = c * (g + 1L);
+                g = g * g;
+                n = n >> 1;
+            }
+            return g_new * seed + c_new;
+        }
+
+        long masterSeed() { return Random.ms; }
+        void setMasterSeed(long s) { Random.ms = s; }
+
+    property:
+        long ms;
+}

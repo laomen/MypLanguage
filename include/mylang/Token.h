@@ -12,6 +12,7 @@ namespace mylang {
 enum class TokenKind : uint16_t {
     // ----- Literals -----
     IntegerLiteral,
+    LongLiteral,    // 42L
     FloatLiteral,
     StringLiteral,
     CharLiteral,
@@ -54,6 +55,7 @@ enum class TokenKind : uint16_t {
     Keyword_where,
     Keyword_await,
     Keyword_const,
+    Keyword_ref,
 
     // ----- Types (also keywords) -----
     Type_byte,

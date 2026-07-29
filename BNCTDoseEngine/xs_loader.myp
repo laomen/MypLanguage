@@ -1,0 +1,47 @@
+// xs_loader.myp — HDF5 截面加载器 + 对数插值
+// 扁平数据: 数组作为 property, 插值用静态方法
+import "./hdf5.myp";
+import math;
+
+class XSInterp {
+    static:
+        // 对数-对数线性插值
+        double interp(double E, double[] energies, double[] values, long n) {
+            if (E <= energies[0]) return values[0];
+            if (E >= energies[n - 1]) return values[n - 1];
+
+            long lo = 0;
+            long hi = n - 1;
+            while (hi - lo > 1) {
+                long mid = (lo + hi) / 2;
+                if (E < energies[mid]) hi = mid;
+                else lo = mid;
+            }
+
+            double eLo = energies[lo];
+            double eHi = energies[hi];
+            double vLo = values[lo];
+            double vHi = values[hi];
+
+            if (vLo > 0.0 && vHi > 0.0) {
+                double logE = Math.log(E);
+                double logELo = Math.log(eLo);
+                double logEHi = Math.log(eHi);
+                double t = (logE - logELo) / (logEHi - logELo);
+                return Math.exp(Math.log(vLo) + t * (Math.log(vHi) - Math.log(vLo)));
+            }
+            return vLo + (vHi - vLo) * (E - eLo) / (eHi - eLo);
+        }
+
+        // 从 HDF5 加载一维数据集
+        double[] loadData(string filePath, string datasetPath) {
+            long fid = H5.open(filePath);
+            if (fid < 0L) { double[] e; return e; }
+            long n = H5.datasetSize(fid, datasetPath);
+            if (n <= 0L) { H5.close(fid); double[] e; return e; }
+            double[] data = new double[n];
+            H5.readDouble(fid, datasetPath, data, n);
+            H5.close(fid);
+            return data;
+        }
+}
