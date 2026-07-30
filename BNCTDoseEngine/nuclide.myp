@@ -198,5 +198,16 @@ struct Nuclide {
         photon_xs.doppler_broadening = photon_xs_table_set.doppler_broadening;
     }
 
+    // 获取指定能量 E (eV) 处的中子微观截面（返回填充后的副本）
+    MicroscopicNeutronXs getNeutronXS(double E) {
+        fillNeutronXS(E);
+        return neutron_xs;
+    }
+
+    // 获取指定能量 E (eV) 处的光子微观截面（返回填充后的副本）
+    MicroscopicPhotonXs getPhotonXS(double E) {
+        fillPhotonXS(E);
+        return photon_xs;
+    }
 
 }

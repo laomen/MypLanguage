@@ -7,6 +7,7 @@ import "./physics.myp";
 import "./cross_section_db.myp";
 import "./mesh.myp";
 import "./material.myp";
+import "./tally.myp";
 
 class Transport {
     action:

@@ -1,5 +1,6 @@
 // data_manager.myp — 全局数据管理器
 // 管理核素数据库、材料定义、网格几何
+import env;
 import "./nuclide.myp";
 import "./material.myp";
 import "./mesh.myp";
@@ -76,7 +77,7 @@ import "./cross_section_db.myp";
             DataManager.addNuclide(b10);
 
             Console.writeString("  DataManager: registered ");
-            Console.write(DataManager.nNuclides);
+            Console.writeLong(DataManager.nNuclides);
             Console.writeString(" nuclides\n");
         }
 
@@ -103,7 +104,7 @@ import "./cross_section_db.myp";
 
             DataManager.addMaterial(water);
             Console.writeString("  DataManager: prepared Water (nMaterials=");
-            Console.write(DataManager.nMaterials);
+            Console.writeLong(DataManager.nMaterials);
             Console.writeString(")\n");
         }
 
@@ -113,21 +114,14 @@ import "./cross_section_db.myp";
         void initMesh(long nx, long ny, long nz, double dx, double dy, double dz) {
             DataManager.mesh.init(nx, ny, nz, dx, dy, dz, 0.0, 0.0, 0.0);
             Console.writeString("  DataManager: mesh ");
-            Console.write(nx); Console.writeString("x");
-            Console.write(ny); Console.writeString("x");
-            Console.write(nz); Console.writeString(" (");
+            Console.writeLong(nx); Console.writeString("x");
+            Console.writeLong(ny); Console.writeString("x");
+            Console.writeLong(nz); Console.writeString(" (");
             Console.writeFloat(DataManager.mesh.thicknessZ());
             Console.writeString(" cm thick)\n");
         }
 
-        // ============================================================
-        // 计算指定能量处所有材料的宏观截面
-        // ============================================================
-        void evalMacroXS(double E) {
-            for (long mi = 0L; mi < DataManager.nMaterials; mi = mi + 1L) {
-                DataManager.materials[mi].computeXS(E, DataManager.comps[mi], DataManager.nComps[mi]);
-            }
-        }
+
 }
 
 // DataLoader — 独立线程加载数据，加载完发射 DataReady 信号
@@ -136,7 +130,7 @@ class DataLoader {
         @thread void load(string dataDir) {
             CrossSectionDB.load(dataDir);
             Console.writeString("  DataLoader: data ready\n");
-            DataReady.fire();
+            DataReady();
         }
 
     event:
