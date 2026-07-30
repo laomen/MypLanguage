@@ -368,24 +368,163 @@ class Stack<T> {
 
 
 // ============================================================
+// PriorityQueue<T> — 优先队列（二叉最小堆，固定容量 1024）
+// ============================================================
+class PriorityQueue<T> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+        }
+
+        void push(T val) {
+            if (cnt_ >= 1024) return;
+            data_[cnt_] = val;
+            int i = cnt_;
+            cnt_ = cnt_ + 1;
+            while (i > 0) {
+                int p = (i - 1) / 2;
+                if (data_[p] < data_[i]) break;
+                T tmp = data_[p]; data_[p] = data_[i]; data_[i] = tmp;
+                i = p;
+            }
+        }
+
+        T pop() {
+            if (cnt_ <= 0) return data_[0];
+            T result = data_[0];
+            cnt_ = cnt_ - 1;
+            data_[0] = data_[cnt_];
+            int i = 0;
+            while (true) {
+                int smallest = i;
+                int l = 2 * i + 1;
+                int r = 2 * i + 2;
+                if (l < cnt_ && data_[l] < data_[smallest]) smallest = l;
+                if (r < cnt_ && data_[r] < data_[smallest]) smallest = r;
+                if (smallest == i) break;
+                T tmp = data_[i]; data_[i] = data_[smallest]; data_[smallest] = tmp;
+                i = smallest;
+            }
+            return result;
+        }
+
+        T peek() { return data_[0]; }
+        int size() { return cnt_; }
+        void clear() { cnt_ = 0; }
+
+    property:
+        T[1024] data_;
+        int cnt_;
+}
+
+
+// ============================================================
+// LinkedList<T> — 双向链表（固定节点池 256）
+// ============================================================
+class LinkedList<T> {
+    action:
+        @startup void init() {
+            head_ = -1;
+            tail_ = -1;
+            cnt_ = 0;
+            free_ = 0;
+            for (int i = 0; i < 255; i = i + 1) {
+                next_[i] = i + 1;
+                prev_[i] = -1;
+            }
+            next_[255] = -1;
+            prev_[255] = -1;
+        }
+
+        void addFirst(T val) {
+            if (free_ < 0) return;
+            int idx = free_;
+            free_ = next_[free_];
+            data_[idx] = val;
+            next_[idx] = head_;
+            prev_[idx] = -1;
+            if (head_ >= 0) prev_[head_] = idx;
+            head_ = idx;
+            if (tail_ < 0) tail_ = idx;
+            cnt_ = cnt_ + 1;
+        }
+
+        void addLast(T val) {
+            if (free_ < 0) return;
+            int idx = free_;
+            free_ = next_[free_];
+            data_[idx] = val;
+            prev_[idx] = tail_;
+            next_[idx] = -1;
+            if (tail_ >= 0) next_[tail_] = idx;
+            tail_ = idx;
+            if (head_ < 0) head_ = idx;
+            cnt_ = cnt_ + 1;
+        }
+
+        T removeFirst() {
+            if (cnt_ <= 0) return data_[0];
+            T val = data_[head_];
+            int old = head_;
+            head_ = next_[head_];
+            if (head_ >= 0) prev_[head_] = -1;
+            else tail_ = -1;
+            next_[old] = free_;
+            free_ = old;
+            cnt_ = cnt_ - 1;
+            return val;
+        }
+
+        T removeLast() {
+            if (cnt_ <= 0) return data_[0];
+            T val = data_[tail_];
+            int old = tail_;
+            tail_ = prev_[tail_];
+            if (tail_ >= 0) next_[tail_] = -1;
+            else head_ = -1;
+            next_[old] = free_;
+            free_ = old;
+            cnt_ = cnt_ - 1;
+            return val;
+        }
+
+        T getFirst() { return data_[head_]; }
+        T getLast() { return data_[tail_]; }
+        int size() { return cnt_; }
+        void clear() {
+            head_ = -1; tail_ = -1; cnt_ = 0; free_ = 0;
+            for (int i = 0; i < 255; i = i + 1) { next_[i] = i + 1; prev_[i] = -1; }
+            next_[255] = -1; prev_[255] = -1;
+        }
+
+    function:
+
+    property:
+        T[256] data_;
+        int[256] next_;
+        int[256] prev_;
+        int head_;
+        int tail_;
+        int cnt_;
+        int free_;
+}
+
+
+// ============================================================
 // Sort — 排序与搜索算法（静态类）
 // ============================================================
 class Sort {
     static:
-        // 冒泡排序（int 数组，原地排序）
         void bubbleSort(int[] arr, int n) {
             for (int i = 0; i < n - 1; i = i + 1) {
                 for (int j = 0; j < n - 1 - i; j = j + 1) {
                     if (arr[j] > arr[j + 1]) {
-                        int tmp = arr[j];
-                        arr[j] = arr[j + 1];
-                        arr[j + 1] = tmp;
+                        int tmp = arr[j]; arr[j] = arr[j + 1]; arr[j + 1] = tmp;
                     }
                 }
             }
         }
 
-        // 选择排序（int 数组，原地排序）
         void selectionSort(int[] arr, int n) {
             for (int i = 0; i < n - 1; i = i + 1) {
                 int minIdx = i;
@@ -393,14 +532,11 @@ class Sort {
                     if (arr[j] < arr[minIdx]) minIdx = j;
                 }
                 if (minIdx != i) {
-                    int tmp = arr[i];
-                    arr[i] = arr[minIdx];
-                    arr[minIdx] = tmp;
+                    int tmp = arr[i]; arr[i] = arr[minIdx]; arr[minIdx] = tmp;
                 }
             }
         }
 
-        // 二分查找（要求在已排序数组中执行）
         int binarySearch(int[] arr, int n, int val) {
             int lo = 0;
             int hi = n - 1;
@@ -413,7 +549,6 @@ class Sort {
             return -1;
         }
 
-        // 线性查找
         int linearSearch(int[] arr, int n, int val) {
             for (int i = 0; i < n; i = i + 1) {
                 if (arr[i] == val) return i;
@@ -421,7 +556,6 @@ class Sort {
             return -1;
         }
 
-        // 查找数组中的最大值
         int max(int[] arr, int n) {
             if (n <= 0) return 0;
             int v = arr[0];
@@ -431,7 +565,6 @@ class Sort {
             return v;
         }
 
-        // 查找数组中的最小值
         int min(int[] arr, int n) {
             if (n <= 0) return 0;
             int v = arr[0];
@@ -441,13 +574,10 @@ class Sort {
             return v;
         }
 
-        // 反转数组
         void reverse(int[] arr, int n) {
             for (int i = 0; i < n / 2; i = i + 1) {
                 int j = n - 1 - i;
-                int tmp = arr[i];
-                arr[i] = arr[j];
-                arr[j] = tmp;
+                int tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
             }
         }
 }
