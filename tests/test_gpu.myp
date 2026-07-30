@@ -1,0 +1,17 @@
+// Test: @gpu for loop
+import env;
+import math;
+
+class Tester {
+    action:
+        @startup void go() {
+            @gpu for (int i = 0; i < 100000; i = i + 1) {
+                // Kernel placeholder — just to test GPU launch codegen
+            }
+        }
+}
+
+int main() {
+    Tester t = new Tester();
+    return 0;
+}

@@ -1927,32 +1927,99 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Embed PTX as a global string constant in the main module
     auto* ptx_global = builder_.CreateGlobalString(ptx_str, "__myp_ptx_kernel");
 
-    // Generate GPU launch code in the main module
-    // if (myp_gpu_init()) {
-    //     kernel = myp_gpu_load_kernel(ptx, "myp_kernel");
-    //     if (kernel) {
-    //         // TODO: copy data to GPU, launch, copy back
-    //         myp_gpu_destroy_kernel(kernel);
-    //     }
-    // } else {
-    //     // CPU fallback
-    // }
+    // ---- Generate GPU launch + CPU fallback at the call site ----
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch", func);
+    auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_cpu_fallback", func);
 
-    // For now: call myp_gpu_init() once at module init to test CUDA availability
-    // (the actual launch code will be generated at the call site)
-    auto* gpu_init_result = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+    // n = loop count (from condition i < n)
+    // For now: hardcode a small test value
+    auto* i64_ty2 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32_ty2 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr_ty2 = llvm::PointerType::get(ctx_, 0);
+    llvm::Value* n_val = llvm::ConstantInt::get(i64_ty2, 10); // placeholder
+
+    // Try GPU init
+    auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+    auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok,
+        llvm::ConstantInt::get(i32_ty2, 0), "gpu_ok_cmp");
+    builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
+
+    // === GPU path ===
+    builder_.SetInsertPoint(gpu_bb);
+    auto* kernel_ctx = builder_.CreateCall(runtime_gpu_load_kernel_,
+        {ptx_global, builder_.CreateGlobalString("myp_kernel", "kn")}, "kernel_ctx");
+
+    auto* kernel_ok = builder_.CreateICmpNE(kernel_ctx,
+        llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty2)), "k_ok");
+    auto* launch_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch_run", func);
+    auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
+    builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
+
+    // Launch kernel
+    builder_.SetInsertPoint(launch_bb);
+    auto* grid_val = builder_.CreateUDiv(
+        builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty2, 255)),
+        llvm::ConstantInt::get(i64_ty2, 256), "grid");
+    auto* grid_i32 = builder_.CreateIntCast(grid_val, i32_ty2, false);
+    auto* block_i32 = llvm::ConstantInt::get(i32_ty2, 256);
+
+    // Allocate output array on GPU: gpu_out = myp_gpu_alloc(n * 8)
+    auto* out_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty2, 8), "out_sz");
+    auto* gpu_out = builder_.CreateCall(runtime_gpu_alloc_, {out_size}, "gpu_out");
+
+    // Prepare launch args: [&n, &tid_base, &gpu_out]
+    // args is ptr to array of ptrs: {ptr_to_n, ptr_to_tid_base, ptr_to_gpu_out}
+    auto* n_alloca = builder_.CreateAlloca(i64_ty2);
+    builder_.CreateStore(n_val, n_alloca);
+    auto* tid_alloca = builder_.CreateAlloca(i64_ty2);
+    builder_.CreateStore(llvm::ConstantInt::get(i64_ty2, 0), tid_alloca);
+    auto* out_ptr_alloca = builder_.CreateAlloca(ptr_ty2);
+    builder_.CreateStore(gpu_out, out_ptr_alloca);
+
+    // Build args array: {&n, &tid_base, &gpu_out}
+    auto* args_arr = builder_.CreateAlloca(ptr_ty2, llvm::ConstantInt::get(i32_ty2, 3), "gpu_args");
+    for (int ai = 0; ai < 3; ai++) {
+        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty2, ai) };
+        auto* arg_ptr = builder_.CreateGEP(ptr_ty2, args_arr, idxs, "arg" + std::to_string(ai));
+        llvm::Value* src = (ai == 0) ? (llvm::Value*)n_alloca :
+                           (ai == 1) ? (llvm::Value*)tid_alloca :
+                           (llvm::Value*)out_ptr_alloca;
+        builder_.CreateStore(builder_.CreateBitCast(src, ptr_ty2), arg_ptr);
+    }
+
+    builder_.CreateCall(runtime_gpu_launch_,
+        {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty2),
+         llvm::ConstantInt::get(i32_ty2, 3)});
+
+    // Copy back results
+    // (skipped for now — placeholder kernel doesn't produce useful output)
+
+    // Destroy kernel
+    builder_.CreateCall(runtime_gpu_destroy_kernel_, {kernel_ctx});
+    builder_.CreateBr(gpu_done_bb);
+
+    // GPU done — skip CPU fallback
+    builder_.SetInsertPoint(gpu_done_bb);
+
+    // === CPU fallback ===
+    builder_.SetInsertPoint(cpu_bb);
+    diag_.warn(s.range, "'@gpu for' GPU fallback — running on CPU");
+    const_cast<ForStmt&>(s).gpu = false;
+    generateForStmt(s);
+    const_cast<ForStmt&>(s).gpu = true;
+    builder_.CreateBr(gpu_done_bb);
+
+    // Set insert point to gpu_done_bb (shared continuation)
+    builder_.SetInsertPoint(gpu_done_bb);
 
 #ifdef MYP_CUDA_ENABLED
     cuda_enabled_ = true;
 #endif
 
     diag_.warn(s.range, "'@gpu for' PTX kernel generated (" +
-               std::to_string(ptx_str.size()) + " bytes), running on CPU (CUDA launch to be wired at call site)");
+               std::to_string(ptx_str.size()) + " bytes)");
 
-    // Generate CPU fallback at the call site
-    const_cast<ForStmt&>(s).gpu = false;
-    generateForStmt(s);
-    const_cast<ForStmt&>(s).gpu = true;
     return true;
 }
 
