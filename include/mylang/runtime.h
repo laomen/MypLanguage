@@ -34,6 +34,17 @@ int32_t myp_str_eq(const char* a, const char* b);
 // ---- Flush stdout ----
 void myp_flush(void);
 
+// ---- GPU / CUDA offload ----
+int   myp_gpu_init(void);
+void* myp_gpu_alloc(size_t size);
+void  myp_gpu_free(void* ptr);
+void  myp_gpu_to_device(void* dst, const void* src, size_t size);
+void  myp_gpu_to_host(void* dst, const void* src, size_t size);
+void* myp_gpu_load_kernel(const char* ptx_str, const char* kernel_name);
+int   myp_gpu_launch(void* kernel_ctx, unsigned int grid_dim_x, unsigned int block_dim_x,
+                     void** args, unsigned int num_args);
+void  myp_gpu_destroy_kernel(void* kernel_ctx);
+
 // ---- String to double ----
 double myp_atof(const char* s);
 

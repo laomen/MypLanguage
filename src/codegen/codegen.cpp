@@ -1924,14 +1924,32 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Store PTX for later use (Stage 3)
     ptx_code_ = ptx_str;
 
+    // Embed PTX as a global string constant in the main module
+    auto* ptx_global = builder_.CreateGlobalString(ptx_str, "__myp_ptx_kernel");
+
+    // Generate GPU launch code in the main module
+    // if (myp_gpu_init()) {
+    //     kernel = myp_gpu_load_kernel(ptx, "myp_kernel");
+    //     if (kernel) {
+    //         // TODO: copy data to GPU, launch, copy back
+    //         myp_gpu_destroy_kernel(kernel);
+    //     }
+    // } else {
+    //     // CPU fallback
+    // }
+
+    // For now: call myp_gpu_init() once at module init to test CUDA availability
+    // (the actual launch code will be generated at the call site)
+    auto* gpu_init_result = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+
 #ifdef MYP_CUDA_ENABLED
     cuda_enabled_ = true;
 #endif
 
     diag_.warn(s.range, "'@gpu for' PTX kernel generated (" +
-               std::to_string(ptx_str.size()) + " bytes), running on CPU (CUDA launch in Stage 3)");
+               std::to_string(ptx_str.size()) + " bytes), running on CPU (CUDA launch to be wired at call site)");
 
-    // For now, still fall back to CPU
+    // Generate CPU fallback at the call site
     const_cast<ForStmt&>(s).gpu = false;
     generateForStmt(s);
     const_cast<ForStmt&>(s).gpu = true;
@@ -3684,6 +3702,39 @@ void CodeGen::declareRuntimeFunctions() {
     // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
+
+    // GPU / CUDA runtime
+    auto* gpu_init_ft = llvm::FunctionType::get(i32, {}, false);
+    runtime_gpu_init_ = llvm::Function::Create(gpu_init_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_init", module_.get());
+
+    auto* gpu_alloc_ft = llvm::FunctionType::get(p, {i64}, false);
+    runtime_gpu_alloc_ = llvm::Function::Create(gpu_alloc_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_alloc", module_.get());
+
+    auto* gpu_free_ft = llvm::FunctionType::get(v, {p}, false);
+    runtime_gpu_free_ = llvm::Function::Create(gpu_free_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_free", module_.get());
+
+    auto* gpu_to_dev_ft = llvm::FunctionType::get(v, {p, p, i64}, false);
+    runtime_gpu_to_device_ = llvm::Function::Create(gpu_to_dev_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_to_device", module_.get());
+
+    auto* gpu_to_host_ft = llvm::FunctionType::get(v, {p, p, i64}, false);
+    runtime_gpu_to_host_ = llvm::Function::Create(gpu_to_host_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_to_host", module_.get());
+
+    auto* gpu_load_ft = llvm::FunctionType::get(p, {p, p}, false);
+    runtime_gpu_load_kernel_ = llvm::Function::Create(gpu_load_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_load_kernel", module_.get());
+
+    auto* gpu_launch_ft = llvm::FunctionType::get(i32, {p, i32, i32, p, i32}, false);
+    runtime_gpu_launch_ = llvm::Function::Create(gpu_launch_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_launch", module_.get());
+
+    auto* gpu_destroy_ft = llvm::FunctionType::get(v, {p}, false);
+    runtime_gpu_destroy_kernel_ = llvm::Function::Create(gpu_destroy_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_destroy_kernel", module_.get());
 }
 
 // -- Output --

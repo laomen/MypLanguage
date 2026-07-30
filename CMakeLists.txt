@@ -140,6 +140,7 @@ add_library(myp_runtime STATIC
     src/runtime/runtime.c
     src/runtime/myp_stdlib.c
     src/runtime/sdl_bridge.c
+    src/runtime/runtime_gpu.c
 )
 
 target_include_directories(myp_runtime
@@ -148,7 +149,7 @@ target_include_directories(myp_runtime
     ${SDL2_INCLUDE_DIRS}
 )
 
-target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES})
+target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES} ${CMAKE_DL_LIBS})
 
 # ---- Tests (optional, requires GoogleTest) ----
 option(MYP_BUILD_TESTS "Build unit tests" OFF)

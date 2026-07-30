@@ -275,14 +275,28 @@ static bool loadModule(const std::string& module_name,
         }
     }
 
+    // Build GPU runtime object
+    std::string gpu_c;
+    if (fileExists("src/runtime/runtime_gpu.c"))
+        gpu_c = "src/runtime/runtime_gpu.c";
+    else if (fileExists(runtime_dir + "/src/runtime/runtime_gpu.c"))
+        gpu_c = runtime_dir + "/src/runtime/runtime_gpu.c";
+    std::string gpu_obj;
+    if (!gpu_c.empty()) {
+        gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
+        std::string compile_gpu = "gcc -I" + inc_path + " -fPIC -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
+        if (std::system(compile_gpu.c_str()) != 0) {
+            std::cerr << "Failed to compile GPU runtime\n";
+            return false;
+        }
+    }
+
     std::string link_cmd;
     if (shared_lib) {
-        // Shared library: -shared -fPIC
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj
-                 + " -o " + output_name + " -lpthread -lm " + sdl_libs + " 2>&1";
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+                 + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     } else if (static_lib) {
-        // Static library: archive with ar
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + sdl_obj + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -291,9 +305,8 @@ static bool loadModule(const std::string& module_name,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        // Normal executable
-        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj
-                 + " -o " + output_name + " -lpthread -lm " + sdl_libs + " 2>&1";
+        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+                 + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());
     if (link_result != 0) {

@@ -152,6 +152,16 @@ private:
     // ---- Memory runtime functions ----
     llvm::Function* runtime_free_all_ = nullptr;
 
+    // ---- GPU / CUDA runtime ----
+    llvm::Function* runtime_gpu_init_ = nullptr;
+    llvm::Function* runtime_gpu_alloc_ = nullptr;
+    llvm::Function* runtime_gpu_free_ = nullptr;
+    llvm::Function* runtime_gpu_to_device_ = nullptr;
+    llvm::Function* runtime_gpu_to_host_ = nullptr;
+    llvm::Function* runtime_gpu_load_kernel_ = nullptr;
+    llvm::Function* runtime_gpu_launch_ = nullptr;
+    llvm::Function* runtime_gpu_destroy_kernel_ = nullptr;
+
     // ---- Init function ----
     llvm::Function* init_func_ = nullptr;
 
