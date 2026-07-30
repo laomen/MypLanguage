@@ -621,6 +621,17 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                 }
                 return stmt;
             }
+        } else if (annot == "gpu") {
+            if (!check(TokenKind::Keyword_for)) {
+                diag_.error(previous().range, "'@gpu' must be followed by 'for'");
+            } else {
+                advance();
+                auto stmt = parseForStmt();
+                if (auto* fs = dynamic_cast<ForStmt*>(stmt.get())) {
+                    fs->gpu = true;
+                }
+                return stmt;
+            }
         } else {
             diag_.error(previous().range,
                 std::string("unknown annotation '@" + annot + "' in statement"));

@@ -186,6 +186,10 @@ private:
     // ---- Static action tracking: "ClassName_action" -> true/false ----
     std::unordered_map<std::string, bool> is_static_action_;
 
+    // ---- GPU / CUDA offload ----
+    std::string ptx_code_;  // Generated PTX for @gpu for kernels
+    bool cuda_enabled_ = false;
+
     // ---- Class-related methods ----
     void buildClassStructTypes(TranslationUnit& tu);
     llvm::StructType* getClassStruct(const std::string& name);
@@ -240,6 +244,8 @@ private:
     void generateIfStmt(const IfStmt& stmt);
     void generateWhileStmt(const WhileStmt& stmt);
     void generateForStmt(const ForStmt& stmt);
+    void generateGpuFor(const ForStmt& stmt);
+    bool generateGpuKernel(const ForStmt& stmt);
     void generateReturnStmt(const ReturnStmt& stmt);
     void generateBreakStmt(const BreakStmt& stmt);
     void generateContinueStmt(const ContinueStmt& stmt);

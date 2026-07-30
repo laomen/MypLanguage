@@ -10,6 +10,13 @@
 #include <llvm/TargetParser/Host.h>
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
+#include <llvm/ADT/SmallString.h>
+
+// NVPTX target initialization (must be at global scope)
+extern "C" void LLVMInitializeNVPTXTargetInfo(void);
+extern "C" void LLVMInitializeNVPTXTarget(void);
+extern "C" void LLVMInitializeNVPTXTargetMC(void);
+extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
 
 #include <cstdlib>
 #include <iostream>
@@ -1779,6 +1786,10 @@ void CodeGen::generateWhileStmt(const WhileStmt& s) {
 }
 
 void CodeGen::generateForStmt(const ForStmt& s) {
+    if (s.gpu) {
+        generateGpuFor(s);
+        return;
+    }
     pushScope();
     if (s.init) generateStmt(*s.init);
     auto* f = builder_.GetInsertBlock()->getParent();
@@ -1804,6 +1815,127 @@ void CodeGen::generateForStmt(const ForStmt& s) {
     f->insert(f->end(), abb);
     builder_.SetInsertPoint(abb);
     popScope();
+}
+
+void CodeGen::generateGpuFor(const ForStmt& s) {
+    // Try to generate NVPTX kernel
+    bool ptx_ok = generateGpuKernel(s);
+
+    if (!ptx_ok) {
+        // Fallback: CPU sequential execution
+        diag_.warn(s.range, "'@gpu for' GPU kernel generation failed, running on CPU");
+        const_cast<ForStmt&>(s).gpu = false;
+        generateForStmt(s);
+        const_cast<ForStmt&>(s).gpu = true;
+    }
+}
+
+bool CodeGen::generateGpuKernel(const ForStmt& s) {
+    // Create a new module for PTX generation
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+
+    // Build a minimal placeholder kernel to verify PTX emission works
+    // The actual loop body compilation will come in a later stage
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+
+    // Kernel: void kernel(i64 tid, i64 n, double* out)
+    std::vector<llvm::Type*> params = {i64_ty, i64_ty, ptr_ty};
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), params, false);
+    auto* kernel = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_kernel", ptx_mod.get());
+
+    // Simple body: if (tid < n) out[tid] = (double)tid;
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", kernel);
+    llvm::IRBuilder<> kb(bb);
+    auto* tid_arg = kernel->getArg(0);
+    auto* n_arg = kernel->getArg(1);
+    auto* out_arg = kernel->getArg(2);
+    auto* cond = kb.CreateICmpSLT(tid_arg, n_arg);
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kernel);
+    auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kernel);
+    kb.CreateCondBr(cond, body_bb, end_bb);
+    kb.SetInsertPoint(body_bb);
+    auto* val = kb.CreateSIToFP(tid_arg, llvm::Type::getDoubleTy(ctx_));
+    auto* gep = kb.CreateGEP(llvm::Type::getDoubleTy(ctx_), out_arg, tid_arg);
+    kb.CreateStore(val, gep);
+    kb.CreateBr(end_bb);
+    kb.SetInsertPoint(end_bb);
+    kb.CreateRetVoid();
+
+    // Store PTX for later use (Stage 3)
+    std::string ts = "nvptx64-nvidia-cuda";
+    std::string err;
+
+    // Initialize NVPTX target (needed on first use)
+    static bool nvptx_initialized = false;
+    if (!nvptx_initialized) {
+        LLVMInitializeNVPTXTargetInfo();
+        LLVMInitializeNVPTXTarget();
+        LLVMInitializeNVPTXTargetMC();
+        LLVMInitializeNVPTXAsmPrinter();
+        nvptx_initialized = true;
+    }
+
+    auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
+    if (!tgt) {
+        diag_.warn(SourceRange{}, "NVPTX target not available: " + err);
+        return false;
+    }
+
+    auto* tm = tgt->createTargetMachine(
+        llvm::Triple(std::string(ts)), "", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
+    if (!tm) {
+        diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
+        return false;
+    }
+    ptx_mod->setDataLayout(tm->createDataLayout());
+
+    // Verify the kernel module before emitting
+    std::string verify_err;
+    llvm::raw_string_ostream verify_os(verify_err);
+    if (llvm::verifyModule(*ptx_mod, &verify_os)) {
+        diag_.warn(SourceRange{}, "GPU kernel verification failed: " + verify_err);
+        delete tm;
+        return false;
+    }
+
+    // Emit PTX
+    llvm::legacy::PassManager pm;
+    llvm::SmallString<4096> ptx_buf;
+    llvm::raw_svector_ostream ptx_os(ptx_buf);
+
+    tm->setOptLevel(llvm::CodeGenOptLevel::None);
+    if (tm->addPassesToEmitFile(pm, ptx_os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
+        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX");
+        delete tm;
+        return false;
+    }
+    pm.run(*ptx_mod);
+    delete tm;
+
+    std::string ptx_str(std::string(ptx_buf.data(), ptx_buf.size()));
+
+    if (ptx_str.empty()) {
+        diag_.warn(SourceRange{}, "NVPTX emitted empty PTX");
+        return false;
+    }
+
+    // Store PTX for later use (Stage 3)
+    ptx_code_ = ptx_str;
+
+#ifdef MYP_CUDA_ENABLED
+    cuda_enabled_ = true;
+#endif
+
+    diag_.warn(s.range, "'@gpu for' PTX kernel generated (" +
+               std::to_string(ptx_str.size()) + " bytes), running on CPU (CUDA launch in Stage 3)");
+
+    // For now, still fall back to CPU
+    const_cast<ForStmt&>(s).gpu = false;
+    generateForStmt(s);
+    const_cast<ForStmt&>(s).gpu = true;
+    return true;
 }
 
 void CodeGen::generateReturnStmt(const ReturnStmt& s) {

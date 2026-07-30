@@ -30,7 +30,19 @@ llvm_map_components_to_libnames(myp_llvm_libs
     x86info
     x86asmparser
     x86disassembler
+    nvptxdesc
+    nvptxcodegen
+    nvptxinfo
 )
+
+# ---- CUDA (optional, for GPU offload) ----
+find_package(CUDAToolkit QUIET)
+if(CUDAToolkit_FOUND)
+    message(STATUS "Found CUDA Toolkit: ${CUDAToolkit_VERSION} at ${CUDAToolkit_INCLUDE_DIRS}")
+    add_compile_definitions(MYP_CUDA_ENABLED=1)
+else()
+    message(STATUS "CUDA Toolkit not found — GPU offload disabled (CPU fallback only)")
+endif()
 
 # ---- Sources ----
 set(SOURCES

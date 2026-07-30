@@ -462,10 +462,11 @@ struct ForStmt : Stmt {
     std::unique_ptr<Expr> step;
     std::unique_ptr<Stmt> body;
     bool parallel;  // @parallel for
+    bool gpu;       // @gpu for
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
-            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false)
+            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
-          step(std::move(s)), body(std::move(b)), parallel(par) {}
+          step(std::move(s)), body(std::move(b)), parallel(par), gpu(g) {}
 };
 
 struct ReturnStmt : Stmt {
