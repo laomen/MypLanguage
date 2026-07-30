@@ -1,0 +1,20 @@
+// args: basic argument access
+import env;
+import args;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("count=");
+            Console.write(Args.count());
+
+            string p = Args.get(0);
+            Console.writeString("prog=");
+            Console.writeLine(p);
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

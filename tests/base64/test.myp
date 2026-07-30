@@ -1,0 +1,33 @@
+// base64: encode/decode
+import env;
+import base64;
+
+class Main {
+    action:
+        @startup void run() {
+            // encode
+            string e1 = Base64.encode("hello");
+            Console.writeString("enc1="); Console.writeLine(e1);
+
+            string e2 = Base64.encode("a");
+            Console.writeString("enc2="); Console.writeLine(e2);
+
+            string e3 = Base64.encode("ab");
+            Console.writeString("enc3="); Console.writeLine(e3);
+
+            // decode
+            string d1 = Base64.decode(e1);
+            Console.writeString("dec1="); Console.writeLine(d1);
+
+            string d2 = Base64.decode(e2);
+            Console.writeString("dec2="); Console.writeLine(d2);
+
+            string d3 = Base64.decode(e3);
+            Console.writeString("dec3="); Console.writeLine(d3);
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

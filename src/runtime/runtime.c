@@ -377,32 +377,24 @@ enum JsonType {
 
 typedef struct JsonNode {
     int type;
-    char* key;        // NULL for array elements
-    char* str_val;    // string value
-    double num_val;   // numeric value (also used for int)
-    int bool_val;     // boolean value
+    char* key;
+    char* str_val;
+    double num_val;
+    int bool_val;
     int child_count;
-    int child_cap;
-    struct JsonNode** children;
+    struct JsonNode* children[256];  // fixed max children per node
 } JsonNode;
 
 static JsonNode* json_new_node(int type, const char* key) {
-    JsonNode* n = (JsonNode*)myp_alloc(sizeof(JsonNode));
-    if (n) memset(n, 0, sizeof(JsonNode));
+    JsonNode* n = (JsonNode*)calloc(1, sizeof(JsonNode));
     n->type = type;
-    n->key = key ? myp_strdup(key) : NULL;
+    n->key = key ? strdup(key) : NULL;
     n->child_count = 0;
-    n->child_cap = 0;
-    n->children = NULL;
     return n;
 }
 
 static void json_add_child(JsonNode* parent, JsonNode* child) {
-    if (parent->child_count >= parent->child_cap) {
-        parent->child_cap = parent->child_cap ? parent->child_cap * 2 : 8;
-        parent->children = (JsonNode**)realloc(parent->children,
-            (size_t)parent->child_cap * sizeof(JsonNode*));
-    }
+    if (parent->child_count >= 256) return;
     parent->children[parent->child_count++] = child;
 }
 
@@ -412,7 +404,6 @@ static void json_free_node(JsonNode* n) {
     free(n->str_val);
     for (int i = 0; i < n->child_count; i++)
         json_free_node(n->children[i]);
-    free(n->children);
     free(n);
 }
 
@@ -442,7 +433,7 @@ static JsonNode* json_parse_string(const char** pp) {
     }
     if (!end) return NULL;
     size_t len = (size_t)(end - start);
-    char* val = (char*)myp_alloc(len + 1);
+    char* val = (char*)malloc(len + 1);
     // Copy with unescape
     size_t wi = 0;
     for (const char* r = start; r < end; r++) {
@@ -484,7 +475,7 @@ static JsonNode* json_parse_number(const char** pp) {
         n = json_new_node(JSON_INT, NULL);
         n->num_val = d;
         size_t nlen = (size_t)(end - p);
-        char* tmp = (char*)myp_alloc(nlen + 1);
+        char* tmp = (char*)malloc(nlen + 1);
         memcpy(tmp, p, nlen);
         tmp[nlen] = '\0';
         n->str_val = tmp;
@@ -492,7 +483,7 @@ static JsonNode* json_parse_number(const char** pp) {
         n = json_new_node(JSON_DOUBLE, NULL);
         n->num_val = d;
         size_t nlen = (size_t)(end - p);
-        char* tmp = (char*)myp_alloc(nlen + 1);
+        char* tmp = (char*)malloc(nlen + 1);
         memcpy(tmp, p, nlen);
         tmp[nlen] = '\0';
         n->str_val = tmp;
@@ -551,7 +542,7 @@ static JsonNode* json_parse_object(const char** pp) {
         p = json_skip_ws(p);
         JsonNode* val = json_parse_value(&p);
         if (!val) { json_free_node(key_node); json_free_node(n); return NULL; }
-        val->key = myp_strdup(key_node->str_val);
+        val->key = strdup(key_node->str_val);
         json_add_child(n, val);
         json_free_node(key_node);
         p = json_skip_ws(p);

@@ -1,0 +1,30 @@
+// json: parse and query
+import env;
+import json;
+
+class Main {
+    action:
+        @startup void run() {
+            string data = "{\"name\":\"MYP\",\"ver\":42,\"pi\":3.14,\"ok\":true}";
+            Json doc = new Json(data);
+            Console.writeString("name="); Console.writeLine(doc.getString("name"));
+            Console.writeString("ver="); Console.write(doc.getInt("ver")); Console.writeString("\n");
+            Console.writeString("pi="); Console.writeFloat(doc.getDouble("pi"));
+            Console.writeString("ok="); Console.write(doc.getBool("ok")); Console.writeString("\n");
+
+            // nested
+            string data2 = "{\"user\":{\"name\":\"Alice\"}}";
+            Json doc2 = new Json(data2);
+            Console.writeString("uname="); Console.writeLine(doc2.getString("user.name"));
+
+            // array
+            string data3 = "[10,20,30]";
+            Json doc3 = new Json(data3);
+            Console.writeString("alen="); Console.write(doc3.arrayLen("")); Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

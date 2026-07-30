@@ -1,0 +1,24 @@
+// date: calendar fields
+import env;
+import date;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("year="); Console.write(Date.getYear()); Console.writeString("\n");
+            Console.writeString("mon="); Console.write(Date.getMonth()); Console.writeString("\n");
+            Console.writeString("day="); Console.write(Date.getDay()); Console.writeString("\n");
+
+            // weekday/month names
+            Console.writeLine("wname=" + Date.weekdayName(0));
+            Console.writeLine("wname=" + Date.weekdayName(1));
+            Console.writeLine("wname=" + Date.weekdayName(6));
+            Console.writeLine("mname=" + Date.monthName(1));
+            Console.writeLine("mname=" + Date.monthName(12));
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

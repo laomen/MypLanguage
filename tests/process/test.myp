@@ -1,0 +1,28 @@
+// process: run commands
+import env;
+import process;
+
+class Main {
+    action:
+        @startup void run() {
+            // run simple command
+            int code = Process.run("echo myp_test > /dev/null");
+            Console.writeString("code="); Console.write(code); Console.writeString("\n");
+
+            // capture output
+            string out = Process.output("echo hello_myp_test");
+            Console.writeString("out="); Console.writeLine(out);
+
+            // pid
+            int pid = Process.getPid();
+            Console.writeString("pid="); Console.write(pid); Console.writeString("\n");
+            Console.writeString("pid_gt0=");
+            if (pid > 0) Console.writeString("1\n");
+            else Console.writeString("0\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

@@ -1,0 +1,24 @@
+// regex: pattern matching
+import env;
+import regex;
+
+class Main {
+    action:
+        @startup void run() {
+            Regex r1 = new Regex("^[A-Z][a-z]+$");
+            Console.writeString("r1_Hello="); Console.write(r1.test("Hello")); Console.writeString("\n");
+            Console.writeString("r1_hello="); Console.write(r1.test("hello")); Console.writeString("\n");
+            Console.writeString("r1_123="); Console.write(r1.test("123")); Console.writeString("\n");
+            r1.free();
+
+            Regex r2 = new Regex("^[0-9]+$");
+            Console.writeString("r2_123="); Console.write(r2.test("123")); Console.writeString("\n");
+            Console.writeString("r2_abc="); Console.write(r2.test("abc")); Console.writeString("\n");
+            r2.free();
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
