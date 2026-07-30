@@ -89,6 +89,15 @@ int32_t myp_process_get_pid(void);
 int32_t myp_process_get_ppid(void);
 int32_t myp_process_is_running(int32_t pid);
 
+// ---- Command-Line Arguments ----
+int32_t myp_args_count(void);
+char* myp_args_get(int32_t index);
+
+// ---- Environment Variables ----
+char* myp_env_get(const char* name);
+int32_t myp_env_set(const char* name, const char* value);
+int32_t myp_env_unset(const char* name);
+
 // ---- String Enhancements ----
 char* myp_str_repeat(const char* s, int32_t count);
 char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char);

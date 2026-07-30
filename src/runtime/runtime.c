@@ -949,6 +949,72 @@ int32_t myp_process_is_running(int32_t pid) {
 }
 
 // ======================
+// Command-Line Arguments
+// ======================
+
+// Globals set before main() via constructor
+static int myp_saved_argc = 0;
+static char** myp_saved_argv = NULL;
+
+// Constructor runs before main() to capture command-line arguments.
+// Reads /proc/self/cmdline (Linux-specific, no external dependencies).
+__attribute__((constructor))
+static void myp_capture_args(void) {
+    FILE* fp = fopen("/proc/self/cmdline", "rb");
+    if (!fp) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    fclose(fp);
+    buf[n] = '\0';
+    int argc = 0;
+    for (size_t i = 0; i < n; i++) { if (buf[i] == '\0') argc++; }
+    if (argc == 0) return;
+    myp_saved_argc = argc;
+    myp_saved_argv = (char**)calloc((size_t)argc + 1, sizeof(char*));
+    int idx = 0;
+    size_t start = 0;
+    for (size_t i = 0; i <= n && idx < argc; i++) {
+        if (buf[i] == '\0') {
+            myp_saved_argv[idx++] = strdup(buf + start);
+            start = i + 1;
+        }
+    }
+}
+
+int32_t myp_args_count(void) {
+    return myp_saved_argc;
+}
+
+char* myp_args_get(int32_t index) {
+    if (index < 0 || index >= myp_saved_argc || !myp_saved_argv)
+        { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    return myp_strdup(myp_saved_argv[index]);
+}
+
+// ======================
+// Environment Variables
+// ======================
+
+#include <stdlib.h>
+
+char* myp_env_get(const char* name) {
+    if (!name) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    const char* val = getenv(name);
+    if (!val) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    return myp_strdup(val);
+}
+
+int32_t myp_env_set(const char* name, const char* value) {
+    if (!name || !value) return -1;
+    return setenv(name, value, 1);
+}
+
+int32_t myp_env_unset(const char* name) {
+    if (!name) return -1;
+    return unsetenv(name);
+}
+
+// ======================
 // String Enhancements
 // ======================
 

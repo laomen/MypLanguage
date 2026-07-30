@@ -1,0 +1,27 @@
+// args.myp — MYP 标准库：命令行参数
+import env;
+
+ffi int myp_args_count();
+ffi string myp_args_get(int index);
+
+class Args {
+    static:
+        int count() { return myp_args_count(); }
+        string get(int index) { return myp_args_get(index); }
+        int hasOption(string name) {
+            int n = myp_args_count();
+            for (int i = 1; i < n; i = i + 1) {
+                if (myp_args_get(i) == name) return 1;
+            }
+            return 0;
+        }
+        string getOption(string name, string def) {
+            int n = myp_args_count();
+            for (int i = 1; i < n; i = i + 1) {
+                if (myp_args_get(i) == name && i + 1 < n) {
+                    return myp_args_get(i + 1);
+                }
+            }
+            return def;
+        }
+}
