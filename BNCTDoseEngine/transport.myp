@@ -26,7 +26,12 @@ class Transport {
             double beamRadius = 5.0;
             int nx = 10, ny = 10;
 
-            @parallel for (int i = 0; i < size; i = i + 1) {
+            // GPU offload: 拷贝 @static 数组到局部变量
+            double[] depthDose = TallyData.depthDose;
+            int[] depthCap = TallyData.depthCap;
+            int[] depthBCap = TallyData.depthBCap;
+
+            @gpu for (long i = 0L; i < size; i = i + 1L) {
                 long state = (batchId * size + i) * 152917L + 1L;
 
                 double r = Math.sqrt(Random.prn(state));
@@ -71,13 +76,13 @@ class Transport {
                     state = Random.next(state);
 
                     if (xi2 < sigBCap) {
-                        Atomic.addDouble(TallyData.depthDose, iz, Physics.boronCaptureMeV());
-                        Atomic.addInt(TallyData.depthCap, iz, 1);
-                        Atomic.addInt(TallyData.depthBCap, iz, 1);
+                        Atomic.addDouble(depthDose, iz, Physics.boronCaptureMeV());
+                        Atomic.addInt(depthCap, iz, 1);
+                        Atomic.addInt(depthBCap, iz, 1);
                         break;
                     } else if (xi2 < sigCap) {
-                        Atomic.addDouble(TallyData.depthDose, iz, Physics.h1CaptureMeV());
-                        Atomic.addInt(TallyData.depthCap, iz, 1);
+                        Atomic.addDouble(depthDose, iz, Physics.h1CaptureMeV());
+                        Atomic.addInt(depthCap, iz, 1);
                         break;
                     } else {
                         double xsRem = xi2 - sigCap;
@@ -97,6 +102,11 @@ class Transport {
                     }
                 }
             }
+
+            // GPU 计算完成，写回 @static 数组
+            TallyData.depthDose = depthDose;
+            TallyData.depthCap = depthCap;
+            TallyData.depthBCap = depthBCap;
             Atomic.addInt(TallyData.pendingBatches, 0, -1);
         }
 }

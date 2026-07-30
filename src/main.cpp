@@ -21,6 +21,32 @@ static bool fileExists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
+// Normalize path: remove "./" prefixes and "//" sequences
+static std::string normalizePath(const std::string& path) {
+    std::string result;
+    // Remove "./" at the start
+    if (path.size() >= 2 && path[0] == '.' && path[1] == '/')
+        result = path.substr(2);
+    else
+        result = path;
+    // Remove "/./" sequences
+    for (;;) {
+        auto p = result.find("/./");
+        if (p == std::string::npos) break;
+        result = result.substr(0, p) + result.substr(p + 2);
+    }
+    // Remove "//" sequences
+    for (;;) {
+        auto p = result.find("//");
+        if (p == std::string::npos) break;
+        result = result.substr(0, p) + result.substr(p + 1);
+    }
+    // Remove trailing "."
+    if (result.size() == 1 && result[0] == '.')
+        result.clear();
+    return result;
+}
+
 // Get the directory part of a file path
 static std::string getDir(const std::string& path) {
     auto pos = path.find_last_of("/\\");
@@ -79,6 +105,9 @@ static bool loadModule(const std::string& module_name,
         } else
             path = cwd_path;
     }
+
+    // Normalize path for consistent dedup keys
+    if (is_path) path = normalizePath(path);
 
     // Deduplicate: use canonical path as key
     std::string dedup_key = is_path ? path : module_name;

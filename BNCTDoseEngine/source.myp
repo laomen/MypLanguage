@@ -71,14 +71,22 @@ struct TimeSourceDistribution {
     double t_max;
 }
 
-// Source: 粒子源 — 发射 batchReady 事件
+// Source: 粒子源 — 事件驱动接口
 class Source {
     action:
-        void emitBatches(int nBatches, int batchSize) {
+        // 收到 DataReady 信号后开始发射粒子批次
+        void start(int nBatches, int batchSize) {
             for (int b = 0; b < nBatches; b = b + 1)
-                batchReady(b, batchSize);
+                batchReady.fire(b, batchSize);
+            // 所有批次发射完毕，通知 Tally 写结果
+            allDone.fire();
+        }
+
+        void emitBatches(int nBatches, int batchSize) {
+            start(nBatches, batchSize);
         }
 
     event:
         batchReady(int batchId, int size);
+        allDone();
 }

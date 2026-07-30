@@ -28,4 +28,31 @@ class Tally {
         void addBatch(int cap, int bcap, double dose) {
             Atomic.addInt(TallyData.pendingBatches, 0, -1);
         }
+
+        // 收到 allDone 信号后写入结果文件
+        @thread void writeResults(string prefix) {
+            // 汇总
+            double td = 0.0; int tc = 0; int tbc = 0;
+            Console.writeString("\n========== Results ==========\n");
+            Console.writeString("  depth  | dose     | cap | B10\n");
+            for (int iz = 0; iz < TallyData.nz; iz = iz + 1) {
+                td = td + TallyData.depthDose[iz];
+                tc = tc + TallyData.depthCap[iz];
+                tbc = tbc + TallyData.depthBCap[iz];
+                double d = (iz + 0.5) * TallyData.phantomSize / TallyData.nz;
+                Console.writeFloat(d); Console.writeString(" | ");
+                Console.writeFloat(TallyData.depthDose[iz]); Console.writeString(" | ");
+                Console.write(TallyData.depthCap[iz]); Console.writeString(" | ");
+                Console.write(TallyData.depthBCap[iz]); Console.writeString("\n");
+            }
+            Console.writeString("  total: cap="); Console.write(tc);
+            Console.writeString(" B10="); Console.write(tbc);
+            Console.writeString(" dose="); Console.writeFloat(td);
+            Console.writeString(" MeV");
+            if (tbc > 0) {
+                Console.writeString(" H/B=");
+                Console.writeFloat((tc - tbc) * 1.0 / tbc);
+            }
+            Console.writeString("\n=============================\n");
+        }
 }

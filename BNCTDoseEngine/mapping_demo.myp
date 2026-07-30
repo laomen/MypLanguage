@@ -1,115 +1,89 @@
-// mapping_demo.myp — BNCT 水模剂量引擎 (mapping 事件驱动)
+// mapping_demo.myp — BNCT 水模剂量引擎 (事件驱动 + GPU offload)
 //
-// 数据流:
-//   CrossSectionDB (@static) ── HDF5 截面数据, 全局共享
-//   TallyData      (@static) ── 深度剂量数组, 全局共享
-//   mapping: Source.emit -> Transport.runBatch ── 事件连线
-//   Init.@startup ── 构造 Mesh/Nuclide/Material, 循环浓度
+// 事件流:
+//   DataLoader.load ──(DataReady)──► Source.start
+//     (独立线程加载截面数据)         (收到信号后开始发射粒子批次)
+//                                      │
+//                                      ├─ batchReady ──► Transport.runBatch (GPU)
+//                                      │                     │
+//                                      │                     └─ Atomic.decrement pendingBatches
+//                                      │
+//                                      └─ allDone ──► Tally.writeResults
+//                                                       (写到文件/控制台)
+//
+// GPU offload:
+//   Transport.runBatch 改用 @gpu for
+//   @static 数组(TallyData.depthDose等) 拷贝到局部变量传入 GPU
 import env;
 import "./transport.myp";
 import "./source.myp";
 import "./logger.myp";
 import "./tally.myp";
+import "./data_manager.myp";
 
 mapping() {
-    
     Source.batchReady -> Transport.runBatch;
 }
 
-class Init {
+class Main {
     action:
         @startup void run() {
-            CrossSectionDB.load("/home/xlkj/code/Data Libraries/Official Data Libraries/endfb80/endfb80_hdf5");
-
-            // ============================================
-            // 使用 Mesh 定义几何
-            // ============================================
-            Mesh mesh;
-            mesh.nx = 10; mesh.ny = 10; mesh.nz = 30;
-            mesh.dx = 1.0; mesh.dy = 1.0; mesh.dz = 1.0;
-            mesh.origin_x = 0.0; mesh.origin_y = 0.0; mesh.origin_z = 0.0;
-            double phantomSize = mesh.nz * mesh.dz;
-            long nz = mesh.nz;
-
-            // ============================================
-            // 使用 Nuclide 构建核素
-            // ============================================
-            Nuclide h1, o16, b10;
-            h1.name = "H1"; h1.Z = 1; h1.A = 1;
-            o16.name = "O16"; o16.Z = 8; o16.A = 16;
-            b10.name = "B10"; b10.Z = 5; b10.A = 10;
-
-            // ============================================
-            // 使用 Material 构建水模材质
-            // ============================================
-            Material water;
-            water.id = 0;
-            water.name = "Water";
-            water.density = 1.0;
-            water.nNuclides = 2;
-
-            // ============================================
-            // 使用 Logger
-            // ============================================
-            Logger.info("BNCT v5 启动");
-
             Console.writeString("============================================\n");
-            Console.writeString("  BNCT v5 — mapping + 全数据结构\n");
+            Console.writeString("  BNCT GPU — 事件驱动引擎\n");
             Console.writeString("============================================\n");
 
+            // ============================================
+            // 配置参数
+            // ============================================
             int nP = 500000, bs = 10000, nb = nP / bs;
             int[] ppms = new int[4];
             ppms[0] = 5; ppms[1] = 15; ppms[2] = 35; ppms[3] = 65;
-            Source source = new Source();
+            int nz = 30;
+            double phantomSize = 30.0;
 
+            // ============================================
+            // 创建实例
+            // ============================================
+            Source source = new Source();
+            Transport transport = new Transport();
+            Tally tally = new Tally();
+
+            // ============================================
+            // 循环 B-10 浓度
+            // ============================================
             for (int pi = 0; pi < 4; pi = pi + 1) {
                 int ppm = ppms[pi];
                 CrossSectionDB.setBDensity(ppm * 1.0);
                 Console.writeString("\n--- "); Console.write(ppm);
                 Console.writeString(" ppm ---\n");
 
+                // 重置 tally
                 TallyData.depthDose = new double[nz];
                 TallyData.depthCap  = new int[nz];
                 TallyData.depthBCap = new int[nz];
                 TallyData.pendingBatches = new int[1];
                 TallyData.pendingBatches[0] = nb;
-                TallyData.nz = 30;
+                TallyData.nz = nz;
                 TallyData.phantomSize = phantomSize;
 
-                source.emitBatches(nb, bs);
+                // 发射粒子批次 → Transport 通过 mapping 自动处理
+                source.start(nb, bs);
+
+                // 等待 GPU 计算完成
                 while (TallyData.pendingBatches[0] > 0) {}
 
-                double td = 0.0; int tc = 0, tbc = 0;
-                Console.writeString("  depth  | dose     | cap| B10\n");
-                for (int iz = 0; iz < 30; iz = iz + 1) {
-                    td = td + TallyData.depthDose[iz];
-                    tc = tc + TallyData.depthCap[iz];
-                    tbc = tbc + TallyData.depthBCap[iz];
-                    double d = (iz + 0.5) * phantomSize / nz;
-                    Console.writeFloat(d); Console.writeString(" | ");
-                    Console.writeFloat(TallyData.depthDose[iz]); Console.writeString(" | ");
-                    Console.write(TallyData.depthCap[iz]); Console.writeString(" | ");
-                    Console.write(TallyData.depthBCap[iz]); Console.writeString("\n");
-                }
-                Console.writeString("  total: cap="); Console.write(tc);
-                Console.writeString(" B10="); Console.write(tbc);
-                Console.writeString(" dose="); Console.writeFloat(td);
-                Console.writeString(" MeV");
-                if (tbc > 0) {
-                    Console.writeString(" H/B=");
-                    Console.writeFloat((tc - tbc) * 1.0 / tbc);
-                }
-                Console.writeString("\n");
+                // 显示结果
+                tally.writeResults("gpu");
             }
-            Logger.info("BNCT 模拟完成");
-            Console.writeString("\n[OK]\n");
+
+            Console.writeString("\n[BNCT GPU Done]\n");
         }
 }
 
 int main() {
-    Init init = new Init();
-    Transport transport = new Transport();
+    Main m = new Main();
     Source source = new Source();
-    
+    Transport transport = new Transport();
+    Tally tally = new Tally();
     return 0;
 }

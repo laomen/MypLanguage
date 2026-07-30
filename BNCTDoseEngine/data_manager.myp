@@ -129,3 +129,16 @@ import "./cross_section_db.myp";
             }
         }
 }
+
+// DataLoader — 独立线程加载数据，加载完发射 DataReady 信号
+class DataLoader {
+    action:
+        @thread void load(string dataDir) {
+            CrossSectionDB.load(dataDir);
+            Console.writeString("  DataLoader: data ready\n");
+            DataReady.fire();
+        }
+
+    event:
+        DataReady();
+}
