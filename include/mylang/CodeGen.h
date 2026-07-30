@@ -199,6 +199,8 @@ private:
     // ---- GPU / CUDA offload ----
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
     bool cuda_enabled_ = false;
+    // Track array byte sizes for GPU data transfer
+    std::unordered_map<std::string, llvm::Value*> array_byte_sizes_;
 
     // ---- Stage 4: GPU kernel body compilation ----
     struct KernelArgInfo {
@@ -220,11 +222,11 @@ private:
 
     // Kernel body codegen (uses kb on PTX module)
     llvm::Value* emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
-        const std::map<std::string, llvm::Value*>& kernel_vars,
+        std::map<std::string, llvm::Value*>& kernel_vars,
         const std::vector<llvm::Value*>& kernel_arg_values,
         const std::string& loop_var_name, llvm::Value* tid_val);
     void emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
-        const std::map<std::string, llvm::Value*>& kernel_vars,
+        std::map<std::string, llvm::Value*>& kernel_vars,
         const std::vector<llvm::Value*>& kernel_arg_values,
         const std::string& loop_var_name, llvm::Value* tid_val,
         llvm::BasicBlock* break_target = nullptr);

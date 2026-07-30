@@ -1,0 +1,35 @@
+import env;
+import math;
+
+class Random {
+    static:
+        long next(long s) { return s * 6364136223846793005L + 1442695040888963407L; }
+        double prn(long s) {
+            long x = s;
+            x = (x ^ (x >> 30)) * 2685821657736338717L;
+            x = (x ^ (x >> 27)) * 88172645463325252L;
+            x = x ^ (x >> 31);
+            if (x < 0L) x = -x;
+            return x * 1.0842021724855044e-19;
+        }
+}
+
+class Tester {
+    action:
+        @startup void go() {
+            long n = 8L;
+            double[] r = new double[n];
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                long state = i * 152917L + 1L;
+                state = Random.next(state);
+                double val = Random.prn(state);
+                r[i] = val;
+            }
+            for (long i = 0L; i < n; i = i + 1L) {
+                Console.writeString("r["); Console.writeLong(i);
+                Console.writeString("]="); Console.writeFloat(r[i]);
+            }
+        }
+}
+
+int main() { Tester t = new Tester(); return 0; }

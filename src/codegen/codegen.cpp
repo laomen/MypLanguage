@@ -1638,6 +1638,23 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             if (d.init_expr) {
                 auto* init_val = generateExpr(*d.init_expr);
                 builder_.CreateStore(init_val, ptr_a);
+                // Track array byte size for GPU data transfer
+                if (d.init_expr->kind == ExprKind::NewArrayExpr) {
+                    auto& nae = static_cast<const NewArrayExpr&>(*d.init_expr);
+                    auto* elem_ty_na = typeNodeToLLVMType(nae.element_type);
+                    auto* alloca_lt = llvm::Type::getInt64Ty(ctx_);
+                    uint64_t es_na = module_->getDataLayout().getTypeAllocSize(elem_ty_na);
+                    llvm::Value* total_na = llvm::ConstantInt::get(alloca_lt, 1);
+                    for (auto& dim : nae.dimensions) {
+                        auto* dim_val = generateExpr(*dim);
+                        if (dim_val->getType()->isIntegerTy(32))
+                            dim_val = builder_.CreateZExt(dim_val, alloca_lt);
+                        total_na = builder_.CreateMul(total_na, dim_val);
+                    }
+                    auto* bs = builder_.CreateMul(total_na,
+                        llvm::ConstantInt::get(alloca_lt, es_na));
+                    array_byte_sizes_[d.name] = bs;
+                }
             } else {
                 builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
             }
@@ -1998,7 +2015,7 @@ void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loo
 }
 
 llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
-    const std::map<std::string, llvm::Value*>& kernel_vars,
+    std::map<std::string, llvm::Value*>& kernel_vars,
     const std::vector<llvm::Value*>& kernel_arg_values,
     const std::string& loop_var_name, llvm::Value* tid_val) {
 
@@ -2025,17 +2042,20 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             if (e.name == loop_var_name)
                 return tid_val;
             auto vit = kernel_vars.find(e.name);
-            if (vit != kernel_vars.end())
+            if (vit != kernel_vars.end()) {
+                // If it's an alloca (local mutable var), load from it
+                if (llvm::isa<llvm::AllocaInst>(vit->second))
+                    return kb.CreateLoad(
+                        llvm::cast<llvm::AllocaInst>(vit->second)->getAllocatedType(),
+                        vit->second, e.name);
                 return vit->second;
-            // Try math function names
+            }
             if (e.name == "sqrt" || e.name == "cos" || e.name == "sin" ||
                 e.name == "tan" || e.name == "exp" || e.name == "log" ||
                 e.name == "pow" || e.name == "abs" || e.name == "floor" ||
                 e.name == "ceil" || e.name == "trunc") {
-                // Return nullptr — handled by caller at CallExpr
                 return nullptr;
             }
-            // Unknown — zero
             return llvm::ConstantInt::get(i64_ty, 0);
         }
         case ExprKind::BinaryOp: {
@@ -2143,6 +2163,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             }
 
             // Handle Atomic.addDouble/Atomic.addInt — use atomicrmw in PTX
+            // Check BEFORE function inlining to avoid inlining __myp_atomic_* calls
             if (e.callee->kind == ExprKind::MemberAccess) {
                 auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
                 if (ma.object->kind == ExprKind::Identifier &&
@@ -2151,7 +2172,6 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     bool is_int = (ma.member_name == "addInt" || ma.member_name == "addLong");
 
                     if ((is_double || is_int) && e.args.size() >= 3) {
-                        // args[0] = array expr, args[1] = index, args[2] = value
                         auto* arr_ptr = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                                         kernel_arg_values, loop_var_name, tid_val);
                         auto* idx = emitKernelExpr(*e.args[1], kb, kernel_vars,
@@ -2162,13 +2182,11 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             llvm::Type* elem_ty = is_double ? double_ty : i32_ty;
                             auto* elem_ptr = kb.CreateGEP(elem_ty, arr_ptr, idx, "atomic_ptr");
                             if (is_double) {
-                                // Cast val to double if needed
                                 if (val->getType()->isIntegerTy())
                                     val = kb.CreateSIToFP(val, double_ty);
                                 return kb.CreateAtomicRMW(llvm::AtomicRMWInst::FAdd, elem_ptr, val,
                                     llvm::MaybeAlign(), llvm::AtomicOrdering::SequentiallyConsistent);
                             } else {
-                                // Cast val to i32
                                 if (val->getType()->isDoubleTy())
                                     val = kb.CreateFPToSI(val, i32_ty);
                                 else if (val->getType()->isIntegerTy() && !val->getType()->isIntegerTy(32))
@@ -2176,6 +2194,106 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                 return kb.CreateAtomicRMW(llvm::AtomicRMWInst::Add, elem_ptr, val,
                                     llvm::MaybeAlign(), llvm::AtomicOrdering::SequentiallyConsistent);
                             }
+                        }
+                    }
+                }
+            }
+
+            // Handle function call inlining for GPU kernels
+            // Look up the function definition and inline its body
+            if (e.callee->kind == ExprKind::MemberAccess) {
+                auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+                if (ma.object->kind == ExprKind::Identifier) {
+                    auto& cls_name = static_cast<const IdentifierExpr&>(*ma.object).name;
+                    std::string func_name = ma.member_name;
+
+                    // Try to find the function in the translation unit
+                    if (current_tu_) {
+                        // Look in class static actions
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name != cls_name) continue;
+                            for (auto& sa : cls.static_actions) {
+                                if (sa.name != func_name || !sa.body) continue;
+                                
+                                // Create parameter mapping
+                                std::map<std::string, llvm::Value*> param_vars;
+                                for (size_t ai = 0; ai < sa.params.size() && ai < e.args.size(); ai++) {
+                                    auto* arg_val = emitKernelExpr(*e.args[ai], kb, kernel_vars,
+                                                                    kernel_arg_values, loop_var_name, tid_val);
+                                    if (arg_val) param_vars[sa.params[ai].name] = arg_val;
+                                }
+
+                                // Inline the body
+                                // For return expr statements: just emit the expression
+                                if (sa.body->kind == StmtKind::ExprStmt) {
+                                    auto* es = static_cast<const ExprStmt*>(sa.body.get());
+                                    if (es->expression) {
+                                        return emitKernelExpr(*es->expression, kb, kernel_vars,
+                                                               kernel_arg_values, loop_var_name, tid_val);
+                                    }
+                                }
+                                // For block bodies: merge param vars into kernel_vars then emit
+                                if (sa.body->kind == StmtKind::Block) {
+                                    auto& blk = static_cast<const BlockStmt&>(*sa.body);
+                                    // Merge param vars
+                                    auto merged_vars = kernel_vars;
+                                    for (auto& pv : param_vars)
+                                        merged_vars[pv.first] = pv.second;
+                                    // Generate the block
+                                    for (auto& s : blk.statements) {
+                                        // If it's the last statement, handle return value
+                                        if (&s == &blk.statements.back()) {
+                                            if (s->kind == StmtKind::ExprStmt) {
+                                                auto* es = static_cast<const ExprStmt*>(s.get());
+                                                if (es->expression)
+                                                    return emitKernelExpr(*es->expression, kb, merged_vars,
+                                                                           kernel_arg_values, loop_var_name, tid_val);
+                                            } else if (s->kind == StmtKind::ReturnStmt) {
+                                                auto& rs = static_cast<const ReturnStmt&>(*s);
+                                                if (rs.value)
+                                                    return emitKernelExpr(*rs.value, kb, merged_vars,
+                                                                           kernel_arg_values, loop_var_name, tid_val);
+                                                return llvm::ConstantInt::get(i64_ty, 0);
+                                            }
+                                        }
+                                        emitKernelStmt(*s, kb, merged_vars, kernel_arg_values,
+                                                       loop_var_name, tid_val);
+                                    }
+                                    return llvm::ConstantInt::get(i64_ty, 0);
+                                }
+                                break;
+                            }
+                        }
+                        // Look in standalone functions
+                        for (auto& fn : current_tu_->functions) {
+                            if (fn.name != func_name || !fn.body) continue;
+                            std::map<std::string, llvm::Value*> param_vars;
+                            for (size_t ai = 0; ai < fn.params.size() && ai < e.args.size(); ai++) {
+                                auto* arg_val = emitKernelExpr(*e.args[ai], kb, kernel_vars,
+                                                                kernel_arg_values, loop_var_name, tid_val);
+                                if (arg_val) param_vars[fn.params[ai].name] = arg_val;
+                            }
+                            // fn.body is BlockStmt — iterate statements
+                            auto merged_vars2 = kernel_vars;
+                            for (auto& pv : param_vars) merged_vars2[pv.first] = pv.second;
+                            for (auto& s : fn.body->statements) {
+                                if (&s == &fn.body->statements.back()) {
+                                    if (s->kind == StmtKind::ExprStmt) {
+                                        auto* es = static_cast<const ExprStmt*>(s.get());
+                                        if (es->expression)
+                                            return emitKernelExpr(*es->expression, kb, merged_vars2,
+                                                                   kernel_arg_values, loop_var_name, tid_val);
+                                    } else if (s->kind == StmtKind::ReturnStmt) {
+                                        auto& rs = static_cast<const ReturnStmt&>(*s);
+                                        if (rs.value)
+                                            return emitKernelExpr(*rs.value, kb, merged_vars2,
+                                                                   kernel_arg_values, loop_var_name, tid_val);
+                                    }
+                                }
+                                emitKernelStmt(*s, kb, merged_vars2, kernel_arg_values,
+                                               loop_var_name, tid_val);
+                            }
+                            break;
                         }
                     }
                 }
@@ -2341,8 +2459,25 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             }
             // Simple var = value (not subscript)
             if (e.target->kind == ExprKind::Identifier) {
+                auto& id = static_cast<const IdentifierExpr&>(*e.target);
                 auto* val = emitKernelExpr(*e.value, kb, kernel_vars, kernel_arg_values,
                                             loop_var_name, tid_val);
+                if (val) {
+                    auto vit2 = kernel_vars.find(id.name);
+                    if (vit2 != kernel_vars.end() && llvm::isa<llvm::AllocaInst>(vit2->second)) {
+                        auto* alloca_p = llvm::cast<llvm::AllocaInst>(vit2->second);
+                        if (val->getType() != alloca_p->getAllocatedType()) {
+                            if (alloca_p->getAllocatedType()->isIntegerTy() && val->getType()->isIntegerTy())
+                                val = kb.CreateIntCast(val, alloca_p->getAllocatedType(), true);
+                            else if (alloca_p->getAllocatedType()->isDoubleTy() && val->getType()->isIntegerTy())
+                                val = kb.CreateSIToFP(val, alloca_p->getAllocatedType());
+                            else if (alloca_p->getAllocatedType()->isIntegerTy() && val->getType()->isDoubleTy())
+                                val = kb.CreateFPToSI(val, alloca_p->getAllocatedType());
+                        }
+                        kb.CreateStore(val, alloca_p);
+                    }
+                    // Don't update kernel_vars — value doesn't dominate all uses
+                }
                 return val;
             }
             return llvm::ConstantInt::get(i64_ty, 0);
@@ -2396,7 +2531,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
 }
 
 void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
-    const std::map<std::string, llvm::Value*>& kernel_vars,
+    std::map<std::string, llvm::Value*>& kernel_vars,
     const std::vector<llvm::Value*>& kernel_arg_values,
     const std::string& loop_var_name, llvm::Value* tid_val,
     llvm::BasicBlock* break_target) {
@@ -2420,10 +2555,29 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
         }
         case StmtKind::VarDeclStmt: {
             auto& vds = static_cast<const VarDeclStmt&>(stmt);
+            auto* kernel_func = kb.GetInsertBlock()->getParent();
             for (auto& d : vds.decls) {
-                if (d.init_expr)
-                    emitKernelExpr(*d.init_expr, kb, kernel_vars, kernel_arg_values,
-                                   loop_var_name, tid_val);
+                // Evaluate init expr ONCE to get value and type
+                llvm::Value* init_val = nullptr;
+                llvm::Type* var_ty = i64_ty;
+                if (d.init_expr) {
+                    init_val = emitKernelExpr(*d.init_expr, kb, kernel_vars,
+                                               kernel_arg_values, loop_var_name, tid_val);
+                    if (init_val) var_ty = init_val->getType();
+                }
+                // Create alloca for mutable local variable
+                llvm::BasicBlock& entry_b = kernel_func->getEntryBlock();
+                llvm::IRBuilder<> entry_kb(&entry_b, entry_b.getFirstInsertionPt());
+                auto* alloca_p = entry_kb.CreateAlloca(var_ty, nullptr, d.name);
+                kernel_vars[d.name] = alloca_p;
+                
+                if (init_val) {
+                    if (init_val->getType() != var_ty) {
+                        if (var_ty->isIntegerTy() && init_val->getType()->isIntegerTy())
+                            init_val = kb.CreateIntCast(init_val, var_ty, true);
+                    }
+                    kb.CreateStore(init_val, alloca_p);
+                }
             }
             break;
         }
@@ -2834,15 +2988,21 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         if (nv) {
             auto* loaded = builder_.CreateLoad(ptr_ty, nv, ka.name);
             host_ptr = loaded;
-            auto eit = array_elem_types_.find(ka.name);
-            if (eit != array_elem_types_.end()) {
-                auto* elem_size = llvm::ConstantInt::get(i64_ty,
-                    eit->second->isDoubleTy() ? 8 :
-                    eit->second->isIntegerTy(32) ? 4 : 8);
-                byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
+            // Use tracked byte size if available, otherwise compute from n_val
+            auto bsit = array_byte_sizes_.find(ka.name);
+            if (bsit != array_byte_sizes_.end()) {
+                byte_size = bsit->second;
             } else {
-                byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
-                                               ka.name + "_sz");
+                auto eit = array_elem_types_.find(ka.name);
+                if (eit != array_elem_types_.end()) {
+                    auto* elem_size = llvm::ConstantInt::get(i64_ty,
+                        eit->second->isDoubleTy() ? 8 :
+                        eit->second->isIntegerTy(32) ? 4 : 8);
+                    byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
+                } else {
+                    byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
+                                                   ka.name + "_sz");
+                }
             }
         }
 
