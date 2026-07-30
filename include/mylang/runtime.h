@@ -82,6 +82,22 @@ char* myp_net_recv(int32_t fd, int32_t max_len);
 char* myp_net_recv_line(int32_t fd);
 void myp_net_close(int32_t fd);
 
+// ---- String Enhancements ----
+char* myp_str_repeat(const char* s, int32_t count);
+char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char);
+char* myp_str_pad_right(const char* s, int32_t total_len, int32_t pad_char);
+char* myp_str_reverse(const char* s);
+char* myp_str_replace_all(const char* s, const char* old_str, const char* new_str);
+
+// ---- Regular Expressions (POSIX) ----
+int64_t myp_regex_compile(const char* pattern);
+int32_t myp_regex_match(int64_t handle, const char* s);
+void myp_regex_free(int64_t handle);
+
+// ---- Base64 ----
+char* myp_base64_encode(const char* data);
+char* myp_base64_decode(const char* data);
+
 // ---- Flush stdout ----
 void myp_flush(void);
 

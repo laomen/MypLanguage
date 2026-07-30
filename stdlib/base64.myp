@@ -1,0 +1,24 @@
+// base64.myp — MYP 标准库：Base64 编码解码
+//
+// 用法：
+//   string enc = Base64.encode("hello");
+//   string dec = Base64.decode(enc);
+
+import env;
+
+// FFI 声明
+ffi string myp_base64_encode(string data);
+ffi string myp_base64_decode(string data);
+
+class Base64 {
+    static:
+        // Base64 编码
+        string encode(string data) {
+            return myp_base64_encode(data);
+        }
+
+        // Base64 解码
+        string decode(string data) {
+            return myp_base64_decode(data);
+        }
+}

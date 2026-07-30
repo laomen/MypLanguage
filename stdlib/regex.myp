@@ -1,0 +1,39 @@
+// regex.myp — MYP 标准库：正则表达式（POSIX 扩展正则）
+//
+// 用法：
+//   Regex re = new Regex("^[A-Z][a-z]+$");
+//   re.test("Hello");    // 1 (true)
+//   re.test("hello");    // 0 (false)
+//   re.free();
+
+import env;
+
+// FFI 声明（handle 使用 long 存储指针）
+ffi long myp_regex_compile(string pattern);
+ffi int myp_regex_match(long handle, string s);
+ffi void myp_regex_free(long handle);
+
+class Regex {
+    action:
+        @startup void init(string pattern) {
+            handle_ = myp_regex_compile(pattern);
+        }
+
+        // 测试字符串是否匹配正则表达式
+        int test(string s) {
+            return myp_regex_match(handle_, s);
+        }
+
+        // 释放正则表达式资源
+        void free() {
+            if (handle_ != 0L) {
+                myp_regex_free(handle_);
+                handle_ = 0L;
+            }
+        }
+
+        long getHandle() { return handle_; }
+
+    property:
+        long handle_;
+}

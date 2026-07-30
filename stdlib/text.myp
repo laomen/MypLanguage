@@ -27,6 +27,11 @@ ffi string myp_str_to_lower(string s);
 ffi string myp_str_trim(string s);
 ffi int myp_str_split_count(string s, string delim);
 ffi string myp_str_split_get(string s, string delim, int index);
+ffi string myp_str_repeat(string s, int count);
+ffi string myp_str_pad_left(string s, int total_len, int pad_char);
+ffi string myp_str_pad_right(string s, int total_len, int pad_char);
+ffi string myp_str_reverse(string s);
+ffi string myp_str_replace_all(string s, string old_str, string new_str);
 
 // ============================================================
 // Str — 字符串工具函数（静态类）
@@ -79,6 +84,23 @@ class Str {
                 parts[i] = myp_str_split_get(s, delim, i);
             }
             return parts;
+        }
+
+        // 重复字符串 n 次
+        string repeat(string s, int n) { return myp_str_repeat(s, n); }
+
+        // 左侧填充空格到指定长度
+        string padLeft(string s, int totalLen) { return myp_str_pad_left(s, totalLen, 32); }
+
+        // 右侧填充空格到指定长度
+        string padRight(string s, int totalLen) { return myp_str_pad_right(s, totalLen, 32); }
+
+        // 反转字符串
+        string reverse(string s) { return myp_str_reverse(s); }
+
+        // 替换所有匹配的子串
+        string replaceAll(string s, string oldStr, string newStr) {
+            return myp_str_replace_all(s, oldStr, newStr);
         }
 }
 

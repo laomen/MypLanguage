@@ -889,6 +889,192 @@ void myp_net_close(int32_t fd) {
     if (fd >= 0) close(fd);
 }
 
+// ======================
+// String Enhancements
+// ======================
+
+char* myp_str_repeat(const char* s, int32_t count) {
+    if (!s || count <= 0) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t slen = strlen(s);
+    size_t total = slen * (size_t)count;
+    char* r = (char*)myp_alloc(total + 1);
+    if (!r) return NULL;
+    char* p = r;
+    for (int32_t i = 0; i < count; i++) {
+        memcpy(p, s, slen);
+        p += slen;
+    }
+    *p = '\0';
+    return r;
+}
+
+char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char) {
+    if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t slen = strlen(s);
+    if ((int32_t)slen >= total_len) return myp_strdup(s);
+    size_t pad_count = (size_t)(total_len - (int32_t)slen);
+    size_t total = (size_t)total_len;
+    char* r = (char*)myp_alloc(total + 1);
+    if (!r) return NULL;
+    memset(r, (char)pad_char, pad_count);
+    memcpy(r + pad_count, s, slen);
+    r[total] = '\0';
+    return r;
+}
+
+char* myp_str_pad_right(const char* s, int32_t total_len, int32_t pad_char) {
+    if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t slen = strlen(s);
+    if ((int32_t)slen >= total_len) return myp_strdup(s);
+    size_t total = (size_t)total_len;
+    char* r = (char*)myp_alloc(total + 1);
+    if (!r) return NULL;
+    memcpy(r, s, slen);
+    memset(r + slen, (char)pad_char, total - slen);
+    r[total] = '\0';
+    return r;
+}
+
+char* myp_str_reverse(const char* s) {
+    if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t len = strlen(s);
+    char* r = (char*)myp_alloc(len + 1);
+    if (!r) return NULL;
+    for (size_t i = 0; i < len; i++) r[i] = s[len - 1 - i];
+    r[len] = '\0';
+    return r;
+}
+
+char* myp_str_replace_all(const char* s, const char* old_str, const char* new_str) {
+    if (!s || !old_str || !new_str || !*old_str) {
+        if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+        return myp_strdup(s);
+    }
+    // First pass: count occurrences
+    size_t old_len = strlen(old_str);
+    size_t new_len = strlen(new_str);
+    int count = 0;
+    const char* p = s;
+    while ((p = strstr(p, old_str)) != NULL) { count++; p += old_len; }
+    if (count == 0) return myp_strdup(s);
+    // Second pass: build result
+    size_t total = strlen(s) + (size_t)count * (new_len - old_len);
+    char* r = (char*)myp_alloc(total + 1);
+    if (!r) return NULL;
+    char* w = r;
+    p = s;
+    while (*p) {
+        const char* found = strstr(p, old_str);
+        if (found) {
+            size_t copy_len = (size_t)(found - p);
+            memcpy(w, p, copy_len); w += copy_len;
+            memcpy(w, new_str, new_len); w += new_len;
+            p = found + old_len;
+        } else {
+            size_t remaining = strlen(p);
+            memcpy(w, p, remaining); w += remaining;
+            break;
+        }
+    }
+    *w = '\0';
+    return r;
+}
+
+// ======================
+// POSIX Regular Expressions
+// ======================
+
+#include <regex.h>
+
+// Compile a regex pattern. Returns handle (>0) or 0 on error.
+int64_t myp_regex_compile(const char* pattern) {
+    if (!pattern) return 0;
+    regex_t* re = (regex_t*)malloc(sizeof(regex_t));
+    if (!re) return 0;
+    int ret = regcomp(re, pattern, REG_EXTENDED);
+    if (ret != 0) { free(re); return 0; }
+    return (int64_t)(intptr_t)re;
+}
+
+// Test if string matches regex. Returns 1 if match, 0 otherwise.
+int32_t myp_regex_match(int64_t handle, const char* s) {
+    if (!handle || !s) return 0;
+    regex_t* re = (regex_t*)(intptr_t)handle;
+    return regexec(re, s, 0, NULL, 0) == 0 ? 1 : 0;
+}
+
+// Free compiled regex
+void myp_regex_free(int64_t handle) {
+    if (!handle) return;
+    regex_t* re = (regex_t*)(intptr_t)handle;
+    regfree(re);
+    free(re);
+}
+
+// ======================
+// Base64 Encoding
+// ======================
+
+static const char b64_table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+char* myp_base64_encode(const char* data) {
+    if (!data) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t len = strlen(data);
+    size_t out_len = ((len + 2) / 3) * 4;
+    char* r = (char*)myp_alloc(out_len + 1);
+    if (!r) return NULL;
+    size_t i = 0, o = 0;
+    while (i < len) {
+        unsigned char b0 = (unsigned char)data[i++];
+        int have_b1 = (i < len) ? 1 : 0;
+        unsigned char b1 = have_b1 ? (unsigned char)data[i++] : 0;
+        int have_b2 = (i < len) ? 1 : 0;
+        unsigned char b2 = have_b2 ? (unsigned char)data[i++] : 0;
+        r[o++] = b64_table[b0 >> 2];
+        r[o++] = b64_table[((b0 & 0x03) << 4) | (b1 >> 4)];
+        r[o++] = have_b1 ? b64_table[((b1 & 0x0F) << 2) | (b2 >> 6)] : '=';
+        r[o++] = have_b2 ? b64_table[b2 & 0x3F] : '=';
+    }
+    r[out_len] = '\0';
+    return r;
+}
+
+static int b64_index(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return 0;
+}
+
+char* myp_base64_decode(const char* data) {
+    if (!data) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t len = strlen(data);
+    if (len == 0) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    // Count padding
+    size_t pad = 0;
+    if (len > 0 && data[len-1] == '=') pad++;
+    if (len > 1 && data[len-2] == '=') pad++;
+    size_t out_len = (len / 4) * 3 - pad;
+    char* r = (char*)myp_alloc(out_len + 1);
+    if (!r) return NULL;
+    size_t i = 0, o = 0;
+    while (i < len) {
+        unsigned char c[4];
+        int nc = 0;
+        while (nc < 4 && i < len && data[i] != '=') {
+            c[nc++] = (unsigned char)b64_index(data[i++]);
+        }
+        if (nc < 4) i = len; // skip rest on padding
+        if (nc >= 2) r[o++] = (unsigned char)((c[0] << 2) | (c[1] >> 4));
+        if (nc >= 3) r[o++] = (unsigned char)(((c[1] & 0x0F) << 4) | (c[2] >> 2));
+        if (nc >= 4) r[o++] = (unsigned char)(((c[2] & 0x03) << 6) | c[3]);
+    }
+    r[out_len] = '\0';
+    return r;
+}
+
 typedef struct myp_alloc_node {
     void* ptr;
     struct myp_alloc_node* next;
