@@ -1,0 +1,113 @@
+// net.myp — MYP 标准库：TCP 网络通讯
+//
+// 用法：
+//   // --- 服务器 ---
+//   TcpServer server = new TcpServer(8080);
+//   TcpClient client = new TcpClient();
+//   int ret = server.accept(client);
+//   string data = client.recvLine();
+//   client.send("Hello!\n");
+//   client.close();
+//
+//   // --- 客户端 ---
+//   TcpClient c = new TcpClient();
+//   int ret = c.connect("example.com", 80);
+//   c.send("GET / HTTP/1.0\nHost: example.com\n\n");
+//   string resp = c.recv(4096);
+//   c.close();
+
+import env;
+import text;
+
+// FFI 声明
+ffi int myp_net_server(int port);
+ffi int myp_net_accept(int server_fd);
+ffi int myp_net_connect(string host, int port);
+ffi int myp_net_send(int fd, string data);
+ffi string myp_net_recv(int fd, int max_len);
+ffi string myp_net_recv_line(int fd);
+ffi void myp_net_close(int fd);
+
+// ============================================================
+// TcpServer — TCP 服务器
+// ============================================================
+class TcpServer {
+    action:
+        @startup void init(int port) {
+            fd_ = myp_net_server(port);
+        }
+
+        // 接受客户端连接（阻塞，结果存入 client）
+        int accept(TcpClient client) {
+            int client_fd = myp_net_accept(fd_);
+            client.setFd(client_fd);
+            return client_fd >= 0 ? 0 : -1;
+        }
+
+        int getFd() { return fd_; }
+
+        void close() {
+            if (fd_ >= 0) {
+                myp_net_close(fd_);
+                fd_ = -1;
+            }
+        }
+
+    property:
+        int fd_;
+}
+
+
+// ============================================================
+// TcpClient — TCP 客户端
+// ============================================================
+class TcpClient {
+    action:
+        @startup void init() {
+            fd_ = -1;
+        }
+
+        // 连接到服务器
+        int connect(string host, int port) {
+            fd_ = myp_net_connect(host, port);
+            if (fd_ >= 0) return 0;
+            return fd_;
+        }
+
+        // 设置 fd（由 TcpServer.accept 调用）
+        void setFd(int fd) {
+            fd_ = fd;
+        }
+
+        // 发送字符串
+        int send(string data) {
+            return myp_net_send(fd_, data);
+        }
+
+        // 发送字符串 + 换行
+        int sendLine(string data) {
+            return myp_net_send(fd_, data + "\n");
+        }
+
+        // 接收最多 maxLen 字节
+        string recv(int maxLen) {
+            return myp_net_recv(fd_, maxLen);
+        }
+
+        // 接收一行（直到 \n，不含换行符）
+        string recvLine() {
+            return myp_net_recv_line(fd_);
+        }
+
+        int getFd() { return fd_; }
+
+        void close() {
+            if (fd_ >= 0) {
+                myp_net_close(fd_);
+                fd_ = -1;
+            }
+        }
+
+    property:
+        int fd_;
+}

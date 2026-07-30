@@ -73,6 +73,15 @@ char* myp_fs_dirname(const char* path);
 char* myp_fs_basename(const char* path);
 char* myp_fs_join(const char* dir, const char* file);
 
+// ---- Networking (TCP Sockets) ----
+int32_t myp_net_server(int32_t port);
+int32_t myp_net_accept(int32_t server_fd);
+int32_t myp_net_connect(const char* host, int32_t port);
+int32_t myp_net_send(int32_t fd, const char* data);
+char* myp_net_recv(int32_t fd, int32_t max_len);
+char* myp_net_recv_line(int32_t fd);
+void myp_net_close(int32_t fd);
+
 // ---- Flush stdout ----
 void myp_flush(void);
 
