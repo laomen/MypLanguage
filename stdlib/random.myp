@@ -1,9 +1,14 @@
 // random.myp — MYP 标准库：随机数
 //
 // 用法：
-//   Random.init(12345);        // 设置种子
-//   int r = Random.next();     // 0..RAND_MAX
-//   int d = Random.below(6);   // 0..5
+//   Random.init(12345);              // 设置种子
+//   int r = Random.next();           // 0..RAND_MAX
+//   int d = Random.below(6);         // 0..5
+//   double u = Random.uniform();     // 0.0..1.0
+//   double g = Random.gaussian();    // 标准正态分布
+//   Random.shuffle(arr, n);          // 洗牌算法
+
+import math;
 
 // FFI 声明到 C 标准库的 rand/srand
 ffi int rand();
@@ -25,5 +30,28 @@ class Random {
         int below(int max) {
             if (max <= 0) return 0;
             return rand() % max;
+        }
+
+        // 返回 [0.0, 1.0) 范围内的均匀分布浮点数
+        double uniform() {
+            return (rand() + 0.0) / 2147483647.0;
+        }
+
+        // 返回标准正态分布 N(0,1) 的随机数（Box-Muller 变换）
+        double gaussian() {
+            // Box-Muller: generate two uniforms, produce two normals
+            double u1 = (rand() + 1.0) / 2147483648.0;
+            double u2 = (rand() + 1.0) / 2147483648.0;
+            return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.pi() * u2);
+        }
+
+        // Fisher-Yates 洗牌算法
+        void shuffle(int[] arr, int n) {
+            for (int i = n - 1; i > 0; i = i - 1) {
+                int j = Random.below(i + 1);
+                int tmp = arr[i];
+                arr[i] = arr[j];
+                arr[j] = tmp;
+            }
         }
 }

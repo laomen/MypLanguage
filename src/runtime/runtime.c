@@ -1571,6 +1571,13 @@ double myp_math_ceil(double v)    { return ceil(v); }
 double myp_math_sin(double v)     { return sin(v); }
 double myp_math_cos(double v)     { return cos(v); }
 double myp_math_tan(double v)     { return tan(v); }
+double myp_math_asin(double v)    { return asin(v); }
+double myp_math_acos(double v)    { return acos(v); }
+double myp_math_atan(double v)    { return atan(v); }
+double myp_math_atan2(double y, double x) { return atan2(y, x); }
+double myp_math_sinh(double v)    { return sinh(v); }
+double myp_math_cosh(double v)    { return cosh(v); }
+double myp_math_tanh(double v)    { return tanh(v); }
 double myp_math_exp(double v)     { return exp(v); }
 double myp_math_log(double v)     { return log(v); }
 double myp_math_pow(double b, double e) { return pow(b, e); }

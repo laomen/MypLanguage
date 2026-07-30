@@ -110,6 +110,13 @@ private:
     llvm::Function* runtime_math_sin_ = nullptr;
     llvm::Function* runtime_math_cos_ = nullptr;
     llvm::Function* runtime_math_tan_ = nullptr;
+    llvm::Function* runtime_math_asin_ = nullptr;
+    llvm::Function* runtime_math_acos_ = nullptr;
+    llvm::Function* runtime_math_atan_ = nullptr;
+    llvm::Function* runtime_math_atan2_ = nullptr;
+    llvm::Function* runtime_math_sinh_ = nullptr;
+    llvm::Function* runtime_math_cosh_ = nullptr;
+    llvm::Function* runtime_math_tanh_ = nullptr;
     llvm::Function* runtime_math_exp_ = nullptr;
     llvm::Function* runtime_math_log_ = nullptr;
     llvm::Function* runtime_math_pow_ = nullptr;

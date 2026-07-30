@@ -3,6 +3,10 @@
 
 class Math {
     static:
+        // 常数
+        double pi() { return 3.141592653589793; }
+        double e() { return 2.718281828459045; }
+
         // 基本函数
         double sqrt(double v)   { return __myp_math_sqrt(v); }
         double abs(double v)    { return __myp_math_abs(v); }
@@ -14,6 +18,17 @@ class Math {
         double sin(double v)    { return __myp_math_sin(v); }
         double cos(double v)    { return __myp_math_cos(v); }
         double tan(double v)    { return __myp_math_tan(v); }
+
+        // 反三角函数
+        double asin(double v)   { return __myp_math_asin(v); }
+        double acos(double v)   { return __myp_math_acos(v); }
+        double atan(double v)   { return __myp_math_atan(v); }
+        double atan2(double y, double x) { return __myp_math_atan2(y, x); }
+
+        // 双曲函数
+        double sinh(double v)   { return __myp_math_sinh(v); }
+        double cosh(double v)   { return __myp_math_cosh(v); }
+        double tanh(double v)   { return __myp_math_tanh(v); }
 
         // 指数对数
         double exp(double v)    { return __myp_math_exp(v); }
@@ -41,6 +56,6 @@ class Math {
         double lerp(double a, double b, double t) {
             return a + (b - a) * t;
         }
-        double degToRad(double deg) { return deg * 3.141592653589793 / 180.0; }
-        double radToDeg(double rad) { return rad * 180.0 / 3.141592653589793; }
+        double degToRad(double deg) { return deg * Math.pi() / 180.0; }
+        double radToDeg(double rad) { return rad * 180.0 / Math.pi(); }
 }

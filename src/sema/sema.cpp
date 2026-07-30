@@ -1884,6 +1884,13 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_math_sin", TypeKind::Double, {TypeKind::Double});
     add_intrinsic("__myp_math_cos", TypeKind::Double, {TypeKind::Double});
     add_intrinsic("__myp_math_tan", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_asin", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_acos", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_atan", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_atan2", TypeKind::Double, {TypeKind::Double, TypeKind::Double});
+    add_intrinsic("__myp_math_sinh", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_cosh", TypeKind::Double, {TypeKind::Double});
+    add_intrinsic("__myp_math_tanh", TypeKind::Double, {TypeKind::Double});
     add_intrinsic("__myp_math_exp", TypeKind::Double, {TypeKind::Double});
     add_intrinsic("__myp_math_log", TypeKind::Double, {TypeKind::Double});
     add_intrinsic("__myp_math_pow", TypeKind::Double, {TypeKind::Double, TypeKind::Double});
