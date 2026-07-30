@@ -1245,10 +1245,12 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 | delay / throttle | 2.3 | 定时变换器 |
 | 接口多态 | 2.3 | 基于胖指针的虚表分派 |
 | 数组事件参数 | 2.3 | double[] 等作为事件参数 |
-| TUI 库 (ui.myp) | 2.3 | 纯 MYP 终端 UI 框架：Window/Label/Button/TextBox/ProgressBar，ANSI escape codes 渲染 |
-| `\e` 转义 | 2.3 | lexer 支持 `\e` → ESC 0x1B，用于 ANSI 控制序列 |
-| `__myp_strlen` / `__myp_chr` | 2.3 | 字串长度和字符→字串转换 intrinsics |
-| `__myp_term_width/height` | 2.3 | 终端尺寸查询 intrinsics |
+| TUI 库 (ui.myp) | 2.3 | 纯 MYP 终端 UI 框架 |
+| Struct 方法完整支持 | 2.4 | 返回 struct 类型、this 关键字、兄弟方法互相调用 |
+| @static 类属性外部访问 | 2.4 | `TallyData.depthDose = value` 通过类名直接读写静态属性 |
+| 动态数组初始化 | 2.4 | `double[] buf = new double[n]` 正确生成分配代码 |
+| BNCT Dose 引擎 | 2.4 | 完整 BNCT 蒙特卡罗模拟，mapping 事件驱动，HDF5 截面加载 |
+| work-stealing 线程池 | 2.4 | `runtime.c` 16 线程 work-stealing 池（代码已就绪，待 codegen 接入） |
 
 ### 技术栈
 

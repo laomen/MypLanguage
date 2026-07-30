@@ -7,18 +7,52 @@ BNCTDoseEngine/
 ├── partical.myp      # 粒子数据结构
 ├── nuclide.myp       # 核素微观截面
 ├── material.myp      # 材料定义
-├── mesh.myp          # 网格
-├── voxel.myp         # 体素
+├── mesh.myp          # 网格 + 体素
 ├── random.myp        # 随机数生成器
 ├── physics.myp       # 物理模型 (碰撞/散射/能谱)
 ├── xs_loader.myp     # HDF5 截面加载 + 对数插值
 ├── hdf5.myp          # HDF5 FFI 声明 (MYP 侧)
 ├── hdf5_bridge.c     # HDF5 FFI C 桥接层
+├── xs_data.myp       # 截面数据结构
+├── cross_section_db.myp  # @static 类: 全局截面数据库
+├── data_manager.myp      # 数据管理器
 ├── source.myp        # 粒子源 (事件发射器)
 ├── transport.myp     # 输运引擎 (事件消费者/源)
 ├── tally.myp         # 累计器 (事件消费者)
-├── mapping_demo.myp  # 主程序: mapping 驱动
-└── main.myp          # 主程序: @parallel for 版
+├── logger.myp        # 日志模块
+├── photon.myp        # 光子数据结构
+├── simulation.myp    # 模拟管理器
+├── material_loader.myp   # 材料加载器
+├── mapping_demo.myp  # 主程序: mapping 事件驱动版
+├── main.myp          # 旧版主程序: @parallel for 版
+└── build/
+    └── sim           # 编译产物 (链接 HDF5 bridge)
+```
+
+## 构建与运行
+
+```bash
+cd BNCTDoseEngine/build
+cmake .. && make -j$(nproc)
+./sim
+```
+
+## 编译依赖
+
+- MYP 编译器 (`mypc`) — 来自 `MYPLanguage/build`
+- HDF5 serial 库 — `pkg-config hdf5-serial`
+- pthread — 运行时线程池
+
+## 运行输出示例 (65 ppm B-10)
+
+```
+  depth  | dose     | cap| B10
+0.5      | 12581.4  | 5635 | 652
+1.5      | 8828.48  | 3954 | 460
+2.5      | 4876.31  | 2184 | 253
+...
+  total: cap=13451 B10=1546 dose=30031.3 MeV H/B=7.70052
+```
 ```
 
 ---

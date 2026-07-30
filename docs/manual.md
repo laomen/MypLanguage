@@ -434,6 +434,45 @@ v.y = 4.0;
 var len = v.length();  // 5.0
 ```
 
+### Struct 方法高级特性
+
+Struct 方法支持以下特性：
+
+#### this 关键字
+
+```myp
+struct MyStruct {
+    double x;
+    void setX(double v) {
+        this.x = v;  // this 指向当前实例
+    }
+}
+```
+
+#### 返回 struct 类型
+
+```myp
+struct Inner { double val; }
+
+struct Outer {
+    Inner inner;
+    Inner getInner() {
+        return inner;  // 返回 struct 值
+    }
+}
+```
+
+#### 兄弟方法互相调用
+
+```myp
+struct Helper {
+    double calc(double x) { return x * 2.0; }
+    double process(double v) {
+        return calc(v) + 1.0;  // 直接调用 calc
+    }
+}
+```
+
 ### 嵌套 struct
 
 ```myp
