@@ -1,0 +1,21 @@
+// time: Time.nowMs, Time.sleep
+import env;
+import time;
+
+class Main {
+    action:
+        @startup void run() {
+            long t0 = Time.nowMs();
+            Time.sleep(10);
+            long t1 = Time.nowMs();
+            long dt = t1 - t0;
+            Console.writeString("dt="); Console.writeLong(dt);
+            Console.writeString(" ok="); Console.writeBool(dt > 0L);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

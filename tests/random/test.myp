@@ -1,0 +1,25 @@
+// random: Random.init, Random.next, Random.below
+import env;
+import random;
+
+class Main {
+    action:
+        @startup void run() {
+            Random.init(12345);
+            int r1 = Random.next();
+            int r2 = Random.next();
+            Console.writeString("r1="); Console.write(r1);
+            Console.writeString(" r2="); Console.write(r2);
+            Console.writeString(" diff="); Console.writeBool(r1 != r2);
+
+            int b = Random.below(100);
+            Console.writeString(" below="); Console.write(b);
+            Console.writeString(" in_range="); Console.writeBool(b >= 0 && b < 100);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

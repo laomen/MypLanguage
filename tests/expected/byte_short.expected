@@ -1,0 +1,7 @@
+byte=42
+ short=12345
+ byte->int=42
+ byte->long=42
+ byte->double=42
+ byte+short=15
+ byte+const=120

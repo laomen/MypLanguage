@@ -1,0 +1,18 @@
+// stream: RangeStream (basic verification)
+import env;
+import stream;
+
+class Main {
+    action:
+        @startup void run() {
+            RangeStream rs = new RangeStream();
+            rs.run(0, 3);
+            Console.writeString("range_run_ok\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    RangeStream rs2;
+    return 0;
+}

@@ -65,6 +65,72 @@ std::string server_stdlib_path_ = "stdlib";
 bool diagnostics_running_ = false;
 auto last_diag_time_ = std::chrono::steady_clock::now();
 
+// Forward declarations
+static void buildDefinitionMap(Document& doc);
+
+// ---- Parse a document into AST (includes import resolution for definitions) ----
+static void parseDocument(Document& doc, const std::string& uri) {
+    doc.ast = nullptr;
+    doc.def_map.clear();
+    
+    // Extract file path from URI (file:///path → /path)
+    std::string filepath = uri;
+    if (filepath.find("file://") == 0) filepath = filepath.substr(7);
+    
+    SourceManager src_mgr;
+    if (!src_mgr.loadString(doc.text, filepath)) return;
+    
+    DiagnosticEngine diag(src_mgr);
+    Lexer lex(src_mgr, diag);
+    auto toks = lex.tokenize();
+    if (diag.hasErrors()) return;
+    
+    Parser parser(toks, diag);
+    auto ast = parser.parse();
+    if (diag.hasErrors()) return;
+    
+    // Build definition map from current file (uses doc.uri)
+    doc.ast = std::move(ast);
+    buildDefinitionMap(doc);
+    
+    // Resolve imports — build separate def maps for each and merge
+    std::string source_dir = filepath.substr(0, filepath.find_last_of("/\\"));
+    std::unordered_set<std::string> loaded;
+    loaded.insert(filepath);
+    
+    for (auto& imp : doc.ast->imports) {
+        if (!imp.is_path) continue;
+        std::string imp_path = imp.file_path;
+        if (imp_path[0] != '/') imp_path = source_dir + "/" + imp_path;
+        if (loaded.count(imp_path)) continue;
+        loaded.insert(imp_path);
+        
+        SourceManager imp_src;
+        if (!imp_src.loadFile(imp_path)) continue;
+        
+        DiagnosticEngine imp_diag(imp_src);
+        Lexer imp_lex(imp_src, imp_diag);
+        auto imp_toks = imp_lex.tokenize();
+        if (imp_diag.hasErrors()) continue;
+        
+        Parser imp_par(imp_toks, imp_diag);
+        auto imp_ast = imp_par.parse();
+        if (imp_diag.hasErrors()) continue;
+        
+        // Build def map for the imported file with its own URI
+        Document imp_doc;
+        imp_doc.uri = "file://" + imp_path;
+        imp_doc.ast = std::move(imp_ast);
+        buildDefinitionMap(imp_doc);
+        
+        // Merge its def map into the main document's def map
+        for (auto& [name, locs] : imp_doc.def_map) {
+            auto& target = doc.def_map[name];
+            target.insert(target.end(), locs.begin(), locs.end());
+        }
+    }
+}
+
 // ---- Build definition map from AST ----
 static void buildDefinitionMap(Document& doc) {
     if (!doc.ast) return;
@@ -172,8 +238,9 @@ void handleTextDocumentDidOpen(const std::string& params) {
         doc.uri = uri;
         doc.text = text;
         doc.updateLines();
+        // Parse document into AST for definition/completion support
+        parseDocument(doc, uri);
         documents_[uri] = std::move(doc);
-        // No diagnostics on open — diagnostics only on save to avoid CPU spikes
     }
 }
 
@@ -206,9 +273,7 @@ void handleTextDocumentDidChange(const std::string& params) {
     if (it != documents_.end() && !text.empty()) {
         it->second.text = text;
         it->second.updateLines();
-        // Diagnostics are NOT published on every keystroke to avoid 100% CPU.
-        // Only publishDiagnostics on didOpen and didSave.
-        // The user can save the file to see errors/warnings.
+        parseDocument(it->second, uri);
     }
 }
 
@@ -442,6 +507,9 @@ void handleDefinition(const std::string& id, const std::string& params) {
     auto it = documents_.find(uri);
     if (it == documents_.end()) { sendResponse(id, "null"); return; }
 
+    // Ensure document is parsed
+    if (!it->second.ast) parseDocument(it->second, uri);
+
     std::string word = extractWordAt(it->second, line, col);
     if (word.empty()) { sendResponse(id, "null"); return; }
 
@@ -463,6 +531,7 @@ void handleDefinition(const std::string& id, const std::string& params) {
 }
 
 void handleDocumentSymbol(const std::string& id, const std::string& params) {
+    try {
     auto uri_start = params.find("\"uri\":\"");
     std::string uri;
     if (uri_start != std::string::npos) {
@@ -472,10 +541,14 @@ void handleDocumentSymbol(const std::string& id, const std::string& params) {
             uri = params.substr(uri_start, uri_end - uri_start);
     }
 
+    // Ensure document is parsed
+    auto it = documents_.find(uri);
+    if (it == documents_.end()) { sendResponse(id, "[]"); return; }
+    if (!it->second.ast) parseDocument(it->second, uri);
+
     std::string symbols;
     int count = 0;
-    auto it = documents_.find(uri);
-    if (it != documents_.end() && it->second.ast) {
+    if (it->second.ast) {
         for (auto& cls : it->second.ast->classes) {
             if (count++ > 0) symbols += ",";
             symbols += "{";
@@ -510,6 +583,7 @@ void handleDocumentSymbol(const std::string& id, const std::string& params) {
     } else {
         sendResponse(id, "[" + symbols + "]");
     }
+    } catch (...) { sendResponse(id, "[]"); }
 }
 
 void handleReferences(const std::string& id, const std::string& /*params*/) {
@@ -737,8 +811,8 @@ int runLSPServer(int argc, char** argv) {
             break;
         } else if (method == "exit") {
             break;
-        } else if (method == "$cancelRequest") {
-            // Ignore
+        } else if (method.size() > 2 && method[0] == '$' && method[1] == '/') {
+            // Ignore all $/... notifications (cancelRequest, etc.)
         } else {
             // Unknown method - return method not found
             if (!id.empty()) {

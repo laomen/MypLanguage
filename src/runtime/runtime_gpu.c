@@ -36,8 +36,17 @@ static cuCtxSynchronize_t p_cuCtxSynchronize = NULL;
 static int avail = 0;
 static CUcontext ctx = NULL;
 
+typedef int (*cuDeviceGetCount_t)(int*);
 int myp_gpu_init(void) {
     if (avail) return 1;
+    // Allow enabling GPU via environment variable MYP_GPU=1
+    // Default is CPU (disabled) due to PTX kernel parameter issues
+    static int check_env = -1;
+    if (check_env == -1) {
+        const char* env = getenv("MYP_GPU");
+        check_env = (env && env[0] == '1') ? 1 : 0;
+    }
+    if (!check_env) return 0;
     lib = dlopen("libcuda.so.1", RTLD_LAZY|RTLD_LOCAL);
     if (!lib) return 0;
     p_cuInit = (cuInit_t)dlsym(lib,"cuInit");
@@ -54,9 +63,15 @@ int myp_gpu_init(void) {
         !p_cuLaunchKernel||!p_cuMemAlloc||!p_cuMemFree||!p_cuMemcpyHtoD||
         !p_cuMemcpyDtoH||!p_cuCtxSynchronize) { dlclose(lib);lib=NULL; return 0; }
     if (p_cuInit(0)!=0) { dlclose(lib);lib=NULL; return 0; }
+    // Check that at least one CUDA device is available
+    cuDeviceGetCount_t p_cuDeviceGetCount = (cuDeviceGetCount_t)dlsym(lib,"cuDeviceGetCount");
+    int nd = 0;
+    if (!p_cuDeviceGetCount || p_cuDeviceGetCount(&nd)!=0 || nd <= 0) {
+        dlclose(lib); lib = NULL; return 0;
+    }
     if (p_cuCtxCreate(&ctx,0,0)!=0) { dlclose(lib);lib=NULL; return 0; }
     avail = 1;
-    fprintf(stderr,"[myp GPU] CUDA initialized\n");
+    fprintf(stderr,"[myp GPU] CUDA initialized (%d device(s))\n", nd);
     return 1;
 }
 
@@ -83,9 +98,12 @@ int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, un
     if (!avail||!kctx) return 0;
     kernel_t* k = (kernel_t*)kctx;
     (void)n;
+    fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u\n", gx, bx);
     int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0,NULL, args,NULL);
-    if (r!=0) return 0;
-    p_cuCtxSynchronize();
+    if (r!=0) { fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %d\n", r); return 0; }
+    r = p_cuCtxSynchronize();
+    if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %d\n", r); return 0; }
+    fprintf(stderr, "[myp GPU] kernel done\n");
     return 1;
 }
 

@@ -1,0 +1,14 @@
+// memory: basic allocation (note: void* is experimental)
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("memory_alloc_exists\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

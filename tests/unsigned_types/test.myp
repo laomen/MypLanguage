@@ -1,0 +1,19 @@
+// Unsigned integer types — NOTE: currently limited type support
+// Types are recognized but literals are signed and cannot initialize unsigned.
+// This test documents the limitation.
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // Unsigned types exist but cannot be initialized from literals
+            // due to strict type checking (no signed→unsigned promotion).
+            // Workaround: use signed types and cast as needed.
+            Console.writeString("unsigned_types_declared\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

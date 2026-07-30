@@ -1,0 +1,32 @@
+// 实例级 mapping（函数内局部）
+import env;
+
+class Printer {
+    action:
+        void print(int v) {
+            Console.writeString("v=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Printer p;
+            // 实例级 mapping（函数内局部）
+            mapping() {
+                Main.fire -> Printer.print;
+            }
+            fire(42);
+            fire(99);
+        }
+    event:
+        fire(int v);
+}
+
+int main() {
+    Main m = new Main();
+    Printer p2;
+    return 0;
+}

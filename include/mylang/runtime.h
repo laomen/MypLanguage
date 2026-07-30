@@ -116,8 +116,8 @@ myp_pool_t* myp_pool_create(int n_threads);
 void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
                             void (*work_fn)(int, void*), void* arg);
 void myp_pool_destroy(myp_pool_t* pool);
-int32_t myp_pool_thread_count(void);
-
+int32_t myp_pool_thread_count(void);extern myp_pool_t* myp_global_pool;
+myp_pool_t* myp_pool_ensure_global(void);
 // ---- Math ----
 double myp_math_sqrt(double v);
 double myp_math_abs(double v);

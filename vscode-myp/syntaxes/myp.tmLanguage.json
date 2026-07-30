@@ -8,9 +8,13 @@
     { "include": "#annotations" },
     { "include": "#keywords" },
     { "include": "#types" },
+    { "include": "#typeName" },
+    { "include": "#newExpression" },
+    { "include": "#typeIdentifier" },
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#propertyAccess" },
+    { "include": "#mapping" },
     { "include": "#functionCall" },
     { "include": "#operators" },
     { "include": "#sections" }
@@ -80,6 +84,31 @@
         "1": { "name": "keyword.control.myp" },
         "2": { "name": "variable.other.property.myp" }
       }
+    },
+    "mapping": {
+      "match": "([A-Z]\\w*(?:\\.[A-Z]\\w*)?)\\s*(->)\\s*([A-Z]\\w*(?:\\.[A-Z]\\w*)?)",
+      "captures": {
+        "1": { "name": "entity.name.function.myp" },
+        "2": { "name": "keyword.operator.myp" },
+        "3": { "name": "support.class.myp" }
+      }
+    },
+    "typeName": {
+      "match": "(?<=\\b(class|struct|interface|enum)\\s+)([A-Z]\\w*)",
+      "captures": {
+        "2": { "name": "entity.name.type.myp" }
+      }
+    },
+    "newExpression": {
+      "match": "\\b(new)\\s+([A-Z]\\w*)",
+      "captures": {
+        "1": { "name": "keyword.control.myp" },
+        "2": { "name": "support.class.myp" }
+      }
+    },
+    "typeIdentifier": {
+      "match": "\\b([A-Z]\\w*)(?=\\s+\\w+\\b)",
+      "name": "support.class.myp"
     },
     "functionCall": {
       "match": "\\b([A-Z]\\w*)\\s*(?=\\()",

@@ -381,6 +381,8 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         static_property_globals_[cls.name] = gv;
     }
 
+
+
     // Create global instance pointers for classes used in mappings
     // MUST be done before generateClass() so @thread variables can store
     // instance pointers that mapping handlers need
@@ -2069,9 +2071,9 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             // Type promotion
             if (l->getType() != r->getType()) {
                 if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
-                    if (!l->getType()->isDoubleTy())
+                    if (!l->getType()->isDoubleTy() && l->getType()->isIntegerTy())
                         l = kb.CreateSIToFP(l, double_ty);
-                    if (!r->getType()->isDoubleTy())
+                    if (!r->getType()->isDoubleTy() && r->getType()->isIntegerTy())
                         r = kb.CreateSIToFP(r, double_ty);
                 } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
                     auto lw = l->getType()->getIntegerBitWidth();
@@ -2081,6 +2083,51 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 }
             }
             bool fp = l->getType()->isFloatingPointTy();
+
+            // Ensure both operands have the same type before comparison
+            if (l->getType() != r->getType()) {
+                if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
+                    auto lw = l->getType()->getIntegerBitWidth();
+                    auto rw = r->getType()->getIntegerBitWidth();
+                    if (lw < rw) l = kb.CreateSExt(l, r->getType());
+                    else if (rw < lw) r = kb.CreateSExt(r, l->getType());
+                    else r = kb.CreateIntCast(r, l->getType(), true);
+                } else if (l->getType()->isDoubleTy() && r->getType()->isIntegerTy()) {
+                    r = kb.CreateSIToFP(r, l->getType());
+                } else if (l->getType()->isIntegerTy() && r->getType()->isDoubleTy()) {
+                    l = kb.CreateSIToFP(l, r->getType());
+                } else if (l->getType()->isPointerTy() && r->getType()->isIntegerTy()) {
+                    r = kb.CreateIntToPtr(r, l->getType());
+                } else if (l->getType()->isIntegerTy() && r->getType()->isPointerTy()) {
+                    l = kb.CreateIntToPtr(l, r->getType());
+                } else if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    auto* i8_ptr = llvm::PointerType::get(ctx_, 0);
+                    if (l->getType() != i8_ptr) l = kb.CreateBitCast(l, i8_ptr);
+                    if (r->getType() != i8_ptr) r = kb.CreateBitCast(r, i8_ptr);
+                } else {
+                    // Fallback: convert both to i64 for comparison
+                    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                    auto valToI64 = [&](llvm::Value* v) -> llvm::Value* {
+                        auto* ty = v->getType();
+                        if (ty->isIntegerTy()) {
+                            return ty == i64 ? v : kb.CreateSExt(v, i64);
+                        } else if (ty->isPointerTy()) {
+                            return kb.CreatePtrToInt(v, i64);
+                        } else if (ty->isFloatingPointTy()) {
+                            return kb.CreateFPToSI(v, i64);
+                        } else {
+                            // Struct, array, or other aggregate: store to alloca and get address
+                            auto* alloca = kb.CreateAlloca(ty);
+                            kb.CreateStore(v, alloca);
+                            return kb.CreatePtrToInt(
+                                kb.CreateBitCast(alloca, llvm::PointerType::get(ctx_, 0)), i64);
+                        }
+                    };
+                    l = valToI64(l);
+                    r = valToI64(r);
+                }
+            }
+            fp = l->getType()->isFloatingPointTy();
 
             switch (e.op) {
                 case BinaryOpKind::Add: return fp ? kb.CreateFAdd(l, r) : kb.CreateAdd(l, r);
@@ -2137,16 +2184,41 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             llvm::Function::ExternalLinkage, n, kb.GetInsertBlock()->getParent()->getParent()),
                         {a});
                 };
-                if (callee_name == "sqrt") return emit_math_1("__nv_sqrt");
-                if (callee_name == "cos")  return emit_math_1("__nv_cos");
-                if (callee_name == "sin")  return emit_math_1("__nv_sin");
-                if (callee_name == "tan")  return emit_math_1("__nv_tan");
-                if (callee_name == "exp")  return emit_math_1("__nv_exp");
-                if (callee_name == "log")  return emit_math_1("__nv_log");
-                if (callee_name == "abs")  return emit_math_1("__nv_fabs");
-                if (callee_name == "floor") return emit_math_1("__nv_floor");
-                if (callee_name == "ceil")  return emit_math_1("__nv_ceil");
-                if (callee_name == "trunc") return emit_math_1("__nv_trunc");
+                if (callee_name == "sqrt") return emit_math_1("myp_math_sqrt");
+                if (callee_name == "cos")  return emit_math_1("myp_math_cos");
+                if (callee_name == "sin")  return emit_math_1("myp_math_sin");
+                if (callee_name == "tan")  return emit_math_1("myp_math_tan");
+                if (callee_name == "exp")  return emit_math_1("myp_math_exp");
+                if (callee_name == "log")  return emit_math_1("myp_math_log");
+                if (callee_name == "abs")  return emit_math_1("myp_math_abs");
+                if (callee_name == "floor") return emit_math_1("myp_math_floor");
+                if (callee_name == "ceil")  return emit_math_1("myp_math_ceil");
+                if (callee_name == "trunc") return emit_math_1("trunc");
+                // Handle __myp_math_* intrinsic calls (e.g., from Math.log inlining)
+                if (callee_name.find("__myp_math_") == 0 && e.args.size() >= 1) {
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a) return nullptr;
+                    std::string runtime_name = callee_name.substr(2); // __myp_math_log -> myp_math_log
+                    auto* runtime_fn = module_->getFunction(runtime_name);
+                    if (!runtime_fn) {
+                        // Handle pow with 2 args
+                        if (runtime_name == "myp_math_pow" && e.args.size() >= 2) {
+                            auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                                      kernel_arg_values, loop_var_name, tid_val);
+                            if (!b) return nullptr;
+                            auto* ft = llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false);
+                            runtime_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                runtime_name, kb.GetInsertBlock()->getParent()->getParent());
+                        } else {
+                            runtime_fn = llvm::Function::Create(
+                                llvm::FunctionType::get(double_ty, {double_ty}, false),
+                                llvm::Function::ExternalLinkage, runtime_name,
+                                kb.GetInsertBlock()->getParent()->getParent());
+                        }
+                    }
+                    return kb.CreateCall(runtime_fn, {a});
+                }
                 if (callee_name == "pow" && e.args.size() >= 2) {
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
@@ -2156,7 +2228,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
-                            llvm::Function::ExternalLinkage, "__nv_pow",
+                            llvm::Function::ExternalLinkage, "myp_math_pow",
                             kb.GetInsertBlock()->getParent()->getParent()),
                         {a, b});
                 }
@@ -2199,8 +2271,30 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 }
             }
 
-            // Handle function call inlining for GPU kernels
+            // Handle function call inlining for GPU kernels / parallel for
             // Look up the function definition and inline its body
+            if (e.callee->kind == ExprKind::MemberAccess) {
+                auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+                if (ma.object->kind == ExprKind::Identifier) {
+                    auto& cls_name = static_cast<const IdentifierExpr&>(*ma.object).name;
+                    std::string func_name = ma.member_name;
+                    std::string fn_name = cls_name + "_" + func_name;
+                    // Try to generate a direct function call instead of inlining
+                    auto* callee_fn = module_->getFunction(fn_name);
+                    if (callee_fn) {
+                        std::vector<llvm::Value*> call_args;
+                        for (auto& arg : e.args) {
+                            auto* v = emitKernelExpr(*arg, kb, kernel_vars,
+                                                      kernel_arg_values, loop_var_name, tid_val);
+                            if (!v) break;
+                            call_args.push_back(v);
+                        }
+                        if (call_args.size() == e.args.size()) {
+                            return kb.CreateCall(callee_fn, call_args);
+                        }
+                    }
+                }
+            }
             if (e.callee->kind == ExprKind::MemberAccess) {
                 auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
                 if (ma.object->kind == ExprKind::Identifier) {
@@ -2691,6 +2785,10 @@ void CodeGen::generateForStmt(const ForStmt& s) {
         generateGpuFor(s);
         return;
     }
+    if (s.parallel) {
+        generateParallelFor(s);
+        return;
+    }
     pushScope();
     if (s.init) generateStmt(*s.init);
     auto* f = builder_.GetInsertBlock()->getParent();
@@ -2716,6 +2814,189 @@ void CodeGen::generateForStmt(const ForStmt& s) {
     f->insert(f->end(), abb);
     builder_.SetInsertPoint(abb);
     popScope();
+}
+
+void CodeGen::generateParallelFor(const ForStmt& s) {
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    
+    // Extract loop variable name and generate start/end/step as runtime values
+    std::string loop_var_name;
+    llvm::Value* start_val = llvm::ConstantInt::get(i32_ty, 0, true);
+    llvm::Value* end_val = llvm::ConstantInt::get(i32_ty, 0, true);
+    llvm::Value* step_val = llvm::ConstantInt::get(i32_ty, 1, true);
+    
+    if (s.init && s.init->kind == StmtKind::VarDeclStmt) {
+        auto& vds = static_cast<const VarDeclStmt&>(*s.init);
+        if (!vds.decls.empty()) {
+            loop_var_name = vds.decls[0].name;
+            if (vds.decls[0].init_expr) {
+                auto* v = generateExpr(*vds.decls[0].init_expr);
+                if (v) {
+                    if (v->getType()->isIntegerTy(64))
+                        v = builder_.CreateTrunc(v, i32_ty);
+                    else if (v->getType() != i32_ty)
+                        v = builder_.CreateIntCast(v, i32_ty, true);
+                    start_val = v;
+                }
+            }
+        }
+    }
+    // Generate condition value (end bound) from original for loop's condition
+    if (s.condition && s.condition->kind == ExprKind::BinaryOp) {
+        auto& cond = static_cast<const BinaryOpExpr&>(*s.condition);
+        const Expr* bound_expr = nullptr;
+        if (cond.op == BinaryOpKind::Lt || cond.op == BinaryOpKind::Le)
+            bound_expr = cond.rhs.get();
+        else if (cond.op == BinaryOpKind::Gt || cond.op == BinaryOpKind::Ge)
+            bound_expr = cond.lhs.get();
+        if (bound_expr) {
+            auto* v = generateExpr(*bound_expr);
+            if (v) {
+                if (v->getType()->isIntegerTy(64))
+                    v = builder_.CreateTrunc(v, i32_ty);
+                else if (v->getType() != i32_ty)
+                    v = builder_.CreateIntCast(v, i32_ty, true);
+                end_val = v;
+            }
+        }
+    }
+    // Generate step value
+    if (s.step && s.step->kind == ExprKind::BinaryOp) {
+        auto& step_bin = static_cast<const BinaryOpExpr&>(*s.step);
+        if (step_bin.rhs->kind == ExprKind::IntegerLiteral ||
+            step_bin.rhs->kind == ExprKind::FloatLiteral) {
+            // Literal step - use constant
+            if (step_bin.rhs->kind == ExprKind::IntegerLiteral) {
+                auto& lit = static_cast<const IntegerLiteralExpr&>(*step_bin.rhs);
+                step_val = llvm::ConstantInt::get(i32_ty, (int)lit.value, true);
+            }
+        } else {
+            // Variable step - generate expression
+            auto* v = generateExpr(*step_bin.rhs);
+            if (v) {
+                if (v->getType()->isIntegerTy(64))
+                    v = builder_.CreateTrunc(v, i32_ty);
+                else if (v->getType() != i32_ty)
+                    v = builder_.CreateIntCast(v, i32_ty, true);
+                step_val = v;
+            }
+        }
+    }
+    if (loop_var_name.empty()) {
+        const_cast<ForStmt&>(s).parallel = false;
+        generateForStmt(s);
+        const_cast<ForStmt&>(s).parallel = true;
+        return;
+    }
+
+    // ===== Build capture struct from outer-scope named values =====
+    // Collect all named values from the scope stack
+    std::map<std::string, llvm::Value*> capture_values;
+    std::vector<std::string> capture_names;
+    std::vector<llvm::Type*> capture_types;
+    
+    for (auto& scope : named_values_) {
+        for (auto& [name, val] : scope) {
+            if (name == loop_var_name) continue;
+            if (capture_values.count(name)) continue;
+            
+            llvm::Value* capture_val = val;
+            llvm::Type* store_type = nullptr;
+            
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(val)) {
+                // Stack variable: load its current value
+                store_type = ai->getAllocatedType();
+                capture_val = builder_.CreateLoad(store_type, ai, name + ".cap");
+            } else {
+                store_type = val->getType();
+            }
+            
+            if (!store_type || store_type->isVoidTy()) continue;
+            if (store_type->isLabelTy()) continue;
+            if (store_type->isMetadataTy()) continue;
+            
+            capture_values[name] = capture_val;
+            capture_names.push_back(name);
+            capture_types.push_back(store_type);
+        }
+    }
+    
+    // Create capture struct type
+    llvm::StructType* cap_ty = nullptr;
+    if (!capture_types.empty()) {
+        cap_ty = llvm::StructType::create(ctx_, capture_types, "parallel_capture");
+    }
+    
+    // Allocate and fill capture struct in caller
+    llvm::AllocaInst* cap_alloca = nullptr;
+    if (cap_ty) {
+        cap_alloca = builder_.CreateAlloca(cap_ty, nullptr, "parallel_cap");
+        for (size_t ci = 0; ci < capture_names.size(); ci++) {
+            auto* gep = builder_.CreateStructGEP(cap_ty, cap_alloca, ci, capture_names[ci] + ".gep");
+            auto* loaded = capture_values[capture_names[ci]];
+            builder_.CreateStore(loaded, gep);
+        }
+    }
+
+    // ===== Create parallel body function =====
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i32_ty, ptr_ty}, false);
+    auto* body_fn = llvm::Function::Create(ft, llvm::Function::InternalLinkage,
+        "parallel_body_" + loop_var_name, module_.get());
+    auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", body_fn);
+    llvm::IRBuilder<> pb(entry_bb);
+    
+    auto* i_arg = body_fn->getArg(0); i_arg->setName("i");
+    auto* void_arg = body_fn->getArg(1); void_arg->setName("arg");
+    
+    // Build kernel_vars map for the body function
+    std::map<std::string, llvm::Value*> kernel_vars;
+    std::vector<llvm::Value*> empty_args;
+    
+    // Unpack capture struct in body function
+    if (cap_ty && cap_alloca) {
+        auto* cap_ptr = pb.CreateBitCast(void_arg, llvm::PointerType::get(ctx_, 0), "cap_ptr");
+        for (size_t ci = 0; ci < capture_names.size(); ci++) {
+            auto* gep = pb.CreateStructGEP(cap_ty, cap_ptr, ci, capture_names[ci] + ".capgep");
+            auto* loaded = pb.CreateLoad(capture_types[ci], gep, capture_names[ci] + ".capval");
+            // Create alloca in body function and store
+            auto* body_alloca = pb.CreateAlloca(capture_types[ci], nullptr, capture_names[ci]);
+            pb.CreateStore(loaded, body_alloca);
+            kernel_vars[capture_names[ci]] = body_alloca;
+        }
+    }
+    
+    // Create local alloca for loop variable
+    auto* i_alloca = pb.CreateAlloca(i32_ty, nullptr, loop_var_name);
+    pb.CreateStore(i_arg, i_alloca);
+    kernel_vars[loop_var_name] = i_alloca;
+    
+    // Generate the loop body in the body function
+    pushScope();
+    if (s.body) {
+        emitKernelStmt(*s.body, pb, kernel_vars, empty_args, loop_var_name, i_arg);
+        if (!pb.GetInsertBlock()->getTerminator())
+            pb.CreateRetVoid();
+    } else {
+        pb.CreateRetVoid();
+    }
+    popScope();
+    
+    // ===== Call myp_pool_parallel_for in the caller =====
+    if (!runtime_pool_ensure_ || !runtime_parallel_for_) {
+        const_cast<ForStmt&>(s).parallel = false;
+        generateForStmt(s);
+        const_cast<ForStmt&>(s).parallel = true;
+        return;
+    }
+    auto* pool = builder_.CreateCall(runtime_pool_ensure_, {}, "pool");
+    
+    llvm::Value* cap_arg = llvm::ConstantPointerNull::get(ptr_ty);
+    if (cap_alloca) cap_arg = cap_alloca;
+    
+    builder_.CreateCall(runtime_parallel_for_, {pool, start_val, end_val, step_val,
+        builder_.CreateBitCast(body_fn, ptr_ty), cap_arg});
 }
 
 void CodeGen::generateGpuFor(const ForStmt& s) {
@@ -2998,7 +3279,12 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
                     auto* elem_size = llvm::ConstantInt::get(i64_ty,
                         eit->second->isDoubleTy() ? 8 :
                         eit->second->isIntegerTy(32) ? 4 : 8);
-                    byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
+                    // Use a generous size: max(n_val, 1024) so arrays with more
+                    // elements than the loop bound are still fully transferred.
+                    llvm::Value* min_sz = llvm::ConstantInt::get(i64_ty, 1024);
+                    auto* n_cmp = builder_.CreateICmpSGT(n_val, min_sz);
+                    auto* n_for_size = builder_.CreateSelect(n_cmp, n_val, min_sz);
+                    byte_size = builder_.CreateMul(n_for_size, elem_size, ka.name + "_sz");
                 } else {
                     byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
                                                    ka.name + "_sz");
@@ -3282,17 +3568,18 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     auto* r = generateExpr(*e.rhs);
     if (l->getType() != r->getType()) {
         if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
-            if (!l->getType()->isDoubleTy()) l = builder_.CreateSIToFP(l, llvm::Type::getDoubleTy(ctx_));
-            if (!r->getType()->isDoubleTy()) r = builder_.CreateSIToFP(r, llvm::Type::getDoubleTy(ctx_));
+            if (!l->getType()->isDoubleTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getDoubleTy(ctx_));
+            if (!r->getType()->isDoubleTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getDoubleTy(ctx_));
         } else if (l->getType()->isFloatTy() || r->getType()->isFloatTy()) {
-            if (!l->getType()->isFloatTy()) l = builder_.CreateSIToFP(l, llvm::Type::getFloatTy(ctx_));
-            if (!r->getType()->isFloatTy()) r = builder_.CreateSIToFP(r, llvm::Type::getFloatTy(ctx_));
+            if (!l->getType()->isFloatTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getFloatTy(ctx_));
+            if (!r->getType()->isFloatTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getFloatTy(ctx_));
         } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
             auto lw = l->getType()->getIntegerBitWidth(), rw = r->getType()->getIntegerBitWidth();
             if (lw < rw) l = builder_.CreateSExt(l, r->getType());
             else if (rw < lw) r = builder_.CreateSExt(r, l->getType());
         }
     }
+
     auto fp = l->getType()->isFloatingPointTy();
     // String concatenation with +
     bool is_str_concat = (e.op == BinaryOpKind::Add) &&
@@ -3367,6 +3654,43 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
                     r = builder_.CreateSExt(r, i64);
                 else if (l->getType() == i32 && r->getType() == i64)
                     l = builder_.CreateSExt(l, i64);
+                else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
+                    auto lw = l->getType()->getIntegerBitWidth();
+                    auto rw = r->getType()->getIntegerBitWidth();
+                    if (lw < rw) l = builder_.CreateSExt(l, r->getType());
+                    else if (rw < lw) r = builder_.CreateSExt(r, l->getType());
+                    else r = builder_.CreateIntCast(r, l->getType(), true);
+                } else if (l->getType()->isPointerTy() && r->getType()->isIntegerTy()) {
+                    r = builder_.CreateIntToPtr(r, l->getType());
+                } else if (l->getType()->isIntegerTy() && r->getType()->isPointerTy()) {
+                    l = builder_.CreateIntToPtr(l, r->getType());
+                } else if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    // Pointers to different types: cast both to i8*
+                    auto* i8_ptr = llvm::PointerType::get(ctx_, 0);
+                    if (l->getType() != i8_ptr) l = builder_.CreateBitCast(l, i8_ptr);
+                    if (r->getType() != i8_ptr) r = builder_.CreateBitCast(r, i8_ptr);
+                } else {
+                    // Fallback: convert both to i64 for comparison
+                    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                    auto valToI64 = [&](llvm::Value* v) -> llvm::Value* {
+                        auto* ty = v->getType();
+                        if (ty->isIntegerTy()) {
+                            return ty == i64 ? v : builder_.CreateSExt(v, i64);
+                        } else if (ty->isPointerTy()) {
+                            return builder_.CreatePtrToInt(v, i64);
+                        } else if (ty->isFloatingPointTy()) {
+                            return builder_.CreateFPToSI(v, i64);
+                        } else {
+                            // Struct, array, or other aggregate: store to alloca and get address
+                            auto* alloca = builder_.CreateAlloca(ty);
+                            builder_.CreateStore(v, alloca);
+                            return builder_.CreatePtrToInt(
+                                builder_.CreateBitCast(alloca, llvm::PointerType::get(ctx_, 0)), i64);
+                        }
+                    };
+                    l = valToI64(l);
+                    r = valToI64(r);
+                }
             }
             if (e.op == BinaryOpKind::Eq)
                 return fp ? builder_.CreateFCmpOEQ(l, r) : builder_.CreateICmpEQ(l, r);
@@ -3523,10 +3847,90 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
             }
         }
 
-        if (current_tu_) {
+        // Struct method call: v.method()
+        // Check struct type FIRST, before any class name fallback,
+        // to avoid resolving h1.init() to Tally::init.
+        if (!callee && ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto* oa = getNamedValue(oi.name);
+            if (oa) {
+                llvm::StructType* st_for_name_2 = nullptr;
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                    auto* oat = oai->getAllocatedType();
+                    if (oat->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(oat);
+                } else {
+                    auto* nty = getNamedValueType(oi.name);
+                    if (nty && nty->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(nty);
+                }
+                if (st_for_name_2) {
+                    std::string fn = "struct_" + st_for_name_2->getName().str() + "_" + ma.member_name;
+                    callee = module_->getFunction(fn);
+                    if (callee) {
+                        mthis = oa;
+                        is_method = true;
+                    }
+                }
+            }
+        }
+        // Chained struct method call: a.b.method() or ClassName.prop.method()
+        // Resolve the struct type from the object's property type
+        if (!callee && ma.object->kind == ExprKind::MemberAccess) {
+            auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+            std::string obj_struct_type;
+            // Static property chain: ClassName.prop → get property's type
+            if (inner_ma.object->kind == ExprKind::Identifier) {
+                auto& cls_id = static_cast<const IdentifierExpr&>(*inner_ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == cls_id.name) {
+                        for (auto& prop : cls.properties) {
+                            if (prop.name == inner_ma.member_name &&
+                                !prop.type.class_name.empty()) {
+                                obj_struct_type = prop.type.class_name;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (!obj_struct_type.empty()) {
+                std::string fn = "struct_" + obj_struct_type + "_" + ma.member_name;
+                callee = module_->getFunction(fn);
+                if (callee) {
+                    is_method = true;
+                    auto* obj_val = generateExpr(*ma.object);
+                    if (obj_val) {
+                        auto* st_type = getStructType(obj_struct_type);
+                        if (st_type) {
+                            if (auto* li = llvm::dyn_cast<llvm::LoadInst>(obj_val)) {
+                                mthis = li->getPointerOperand();
+                            } else if (obj_val->getType()->isPointerTy()) {
+                                mthis = builder_.CreateBitCast(obj_val, llvm::PointerType::get(ctx_, 0));
+                            } else {
+                                auto* tmp = builder_.CreateAlloca(st_type);
+                                builder_.CreateStore(obj_val, tmp);
+                                mthis = tmp;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!callee && current_tu_) {
             size_t num_args = e.args.size();
             for (auto& cls : current_tu_->classes) {
                 for (auto& a : cls.actions) {
+                    if (a.name == ma.member_name && a.params.size() == num_args) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // Also check static actions
+                for (auto& a : cls.static_actions) {
                     if (a.name == ma.member_name && a.params.size() == num_args) {
                         auto fn = cls.name + "_" + a.name;
                         if (module_->getFunction(fn)) {
@@ -3546,9 +3950,22 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     }
                 }
             }
-            // Fallback: match by name only
+        }
+
+        // Fallback: match by name only (only if no struct method was found)
+        if (!callee) {
             for (auto& cls : current_tu_->classes) {
                 for (auto& a : cls.actions) {
+                    if (a.name == ma.member_name) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // Also check static actions
+                for (auto& a : cls.static_actions) {
                     if (a.name == ma.member_name) {
                         auto fn = cls.name + "_" + a.name;
                         if (module_->getFunction(fn)) {
@@ -3580,32 +3997,11 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 bool is_static = (sit != is_static_action_.end() && sit->second);
                 if (!is_static) {
                     mthis = generateExpr(*ma.object);
+                } else {
+                    // Static action: no mthis, and the object is a class name
+                    // Don't try to evaluate it as an expression
                 }
                 is_method = true;
-            }
-        }
-
-        // Struct method call: v.method()
-        if (!callee && ma.object->kind == ExprKind::Identifier) {
-            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
-            auto* oa = getNamedValue(oi.name);
-            if (oa) {
-                llvm::StructType* st_for_name_2 = nullptr;
-                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
-                    auto* oat = oai->getAllocatedType();
-                    if (oat->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(oat);
-                } else {
-                    auto* nty = getNamedValueType(oi.name);
-                    if (nty && nty->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(nty);
-                }
-                if (st_for_name_2) {
-                    std::string fn = "struct_" + st_for_name_2->getName().str() + "_" + ma.member_name;
-                    callee = module_->getFunction(fn);
-                    if (callee) {
-                        mthis = oa;
-                        is_method = true;
-                    }
-                }
             }
         }
     }
@@ -3819,7 +4215,8 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         if (e.callee->kind == ExprKind::MemberAccess) {
             auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
             // Try getting object name and building function name
-            if (ma.object->kind == ExprKind::Identifier) {
+            bool ma_is_plain_id = (ma.object->kind == ExprKind::Identifier);
+            if (ma_is_plain_id) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
                 // Search all classes for matching method
                 if (current_tu_) {
@@ -3848,6 +4245,75 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                                 }
                             }
                         }
+                    }
+                }
+            }
+            // Chained struct method call: a.b.c.method()
+            // Resolve the struct type of the object expression
+            if (!callee && current_tu_) {
+                std::string obj_struct_type;
+                // For chained access a.b.c.method(), evaluate the object
+                // expression to determine its struct type by walking the chain
+                if (ma.object->kind == ExprKind::MemberAccess) {
+                    auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+                    // Check if inner is a known struct field of a known struct type
+                    for (auto& [key, st] : struct_types_) {
+                        auto idx_it = struct_field_indices_.find(key);
+                        if (idx_it != struct_field_indices_.end()) {
+                            auto field_it = idx_it->second.find(inner_ma.member_name);
+                            if (field_it != idx_it->second.end()) {
+                                auto* field_ty = st->getElementType(field_it->second);
+                                if (field_ty && field_ty->isStructTy()) {
+                                    obj_struct_type = field_ty->getStructName().str();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Static property chain: ClassName.prop
+                if (obj_struct_type.empty() && ma.object->kind == ExprKind::MemberAccess) {
+                    auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+                    if (inner_ma.object->kind == ExprKind::Identifier) {
+                        auto& cls_id = static_cast<const IdentifierExpr&>(*inner_ma.object);
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name == cls_id.name) {
+                                for (auto& prop : cls.properties) {
+                                    if (prop.name == inner_ma.member_name &&
+                                        !prop.type.class_name.empty()) {
+                                        obj_struct_type = prop.type.class_name;
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Look up the method on the resolved struct type
+                if (!obj_struct_type.empty()) {
+                    std::string sfn = "struct_" + obj_struct_type + "_" + ma.member_name;
+                    callee = module_->getFunction(sfn);
+                    if (callee) {
+                        is_method = true;
+                        // Evaluate object to get pointer for mthis
+                        auto* obj_val = generateExpr(*ma.object);
+                        if (obj_val) {
+                            auto* st_type = getStructType(obj_struct_type);
+                            if (st_type) {
+                                if (auto* li = llvm::dyn_cast<llvm::LoadInst>(obj_val)) {
+                                    mthis = li->getPointerOperand();
+                                } else if (obj_val->getType()->isPointerTy()) {
+                                    mthis = builder_.CreateBitCast(obj_val,
+                                        llvm::PointerType::get(ctx_, 0));
+                                } else {
+                                    auto* tmp = builder_.CreateAlloca(st_type);
+                                    builder_.CreateStore(obj_val, tmp);
+                                    mthis = tmp;
+                                }
+                            }
+                        }
+                        goto call_ready;
                     }
                 }
             }
@@ -3958,11 +4424,13 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
     }
 
     // Struct field access: v.field  (struct is value type, allocated on stack)
+    // Handle both direct identifier and chained member access (a.b.c)
+    llvm::StructType* st2_m = nullptr;
+    llvm::Value* bp_m = nullptr;
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
         auto* oa = getNamedValue(oi.name);
         if (oa) {
-            llvm::StructType* st2_m = nullptr; llvm::Value* bp_m = nullptr;
             if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
                 auto* at = ai->getAllocatedType();
                 if (at->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(at); bp_m = oa; }
@@ -3970,22 +4438,61 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                 auto* nty = getNamedValueType(oi.name);
                 if (nty && nty->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(nty); bp_m = oa; }
             }
-            if (st2_m && bp_m) {
-                // Find the field index by name
-                std::string st_name = st2_m->getName().str();
-                unsigned fi = 0;
-                if (getStructFieldIndex(st_name, e.member_name, fi)) {
-                    auto* gep = builder_.CreateStructGEP(st2_m, bp_m, fi);
-                    auto* field_type = st2_m->getElementType(fi);
-                    if (field_type->isArrayTy()) return gep;
-                    return builder_.CreateLoad(field_type, gep);
+        }
+    } else if (e.object->kind == ExprKind::MemberAccess) {
+        // Chained struct field access: a.b.c (e.g., DataManager.mesh.nx)
+        auto* inner = generateMemberAccess(static_cast<const MemberAccessExpr&>(*e.object));
+        if (inner) {
+            if (auto* inner_ld = llvm::dyn_cast<llvm::LoadInst>(inner)) {
+                // Loaded a struct value — recover the struct type from the load result
+                auto* loaded_ty = inner_ld->getType();
+                if (loaded_ty && loaded_ty->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(loaded_ty);
+                    bp_m = inner_ld->getPointerOperand();
                 }
-            } else {
-                // Class pointer — check for action/event resolution
-                auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa);
-                if (op && current_tu_) {
-                    // Only allow action/event resolution (for mapping calls etc.)
+            } else if (auto* inner_gep = llvm::dyn_cast<llvm::GetElementPtrInst>(inner)) {
+                // GEP pointer — try sourced type info
+                auto* inner_struct = inner_gep->getResultElementType();
+                if (inner_struct && inner_struct->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(inner_struct);
+                    bp_m = inner;
                 }
+            }
+            // If still unresolved, try from the value's type
+            if (!st2_m && inner->getType()->isPointerTy()) {
+                // For opaque pointers in LLVM 21+, try to find the struct type by name
+                // by searching the struct field indices for a matching field name
+                for (auto& [key, st] : struct_types_) {
+                    auto idx_it = struct_field_indices_.find(key);
+                    if (idx_it == struct_field_indices_.end()) continue;
+                    if (idx_it->second.count(e.member_name)) {
+                        st2_m = st;
+                        bp_m = inner;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (st2_m && bp_m) {
+        // Find the field index by name
+        std::string st_name = st2_m->getName().str();
+        unsigned fi = 0;
+        if (getStructFieldIndex(st_name, e.member_name, fi)) {
+            auto* gep = builder_.CreateStructGEP(st2_m, bp_m, fi);
+            auto* field_type = st2_m->getElementType(fi);
+            if (field_type->isArrayTy()) return gep;
+            return builder_.CreateLoad(field_type, gep);
+        }
+    }
+    // If the object is a class pointer (identifier), try action/event resolution
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto* oa = getNamedValue(oi.name);
+        if (oa) {
+            auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa);
+            if (op && current_tu_) {
+                // Only allow action/event resolution (for mapping calls etc.)
             }
         }
     }
@@ -4793,6 +5300,15 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_assert_str_eq_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {p, p}, false),
         llvm::Function::ExternalLinkage, "myp_assert_str_eq", module_.get());
+    runtime_assert_neq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_neq", module_.get());
+    runtime_assert_long_eq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_long_eq", module_.get());
+    runtime_assert_str_neq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, p}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_str_neq", module_.get());
     runtime_test_report_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {p, i32}, false),
         llvm::Function::ExternalLinkage, "myp_test_report", module_.get());
@@ -4807,6 +5323,17 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_free_all_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
         llvm::Function::ExternalLinkage, "myp_free_all", module_.get());
+
+    // Thread pool functions
+    // myp_pool_ensure_global() -> myp_pool_t*
+    runtime_pool_ensure_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_pool_ensure_global", module_.get());
+    // myp_pool_parallel_for(myp_pool_t*, int start, int end, int step, void (*fn)(int, void*), void* arg)
+    auto* fn_ptr_ty = llvm::PointerType::get(ctx_, 0);
+    runtime_parallel_for_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, i32, i32, i32, fn_ptr_ty, p}, false),
+        llvm::Function::ExternalLinkage, "myp_pool_parallel_for", module_.get());
 
     // Build intrinsic name → function map
     intrinsic_map_["__myp_print_int"] = runtime_print_int_;
@@ -4853,7 +5380,10 @@ void CodeGen::declareRuntimeFunctions() {
     // test intrinsics
     intrinsic_map_["__myp_assert"] = runtime_assert_;
     intrinsic_map_["__myp_assert_eq"] = runtime_assert_eq_;
+    intrinsic_map_["__myp_assert_neq"] = runtime_assert_neq_;
+    intrinsic_map_["__myp_assert_long_eq"] = runtime_assert_long_eq_;
     intrinsic_map_["__myp_assert_str_eq"] = runtime_assert_str_eq_;
+    intrinsic_map_["__myp_assert_str_neq"] = runtime_assert_str_neq_;
     intrinsic_map_["__myp_test_report"] = runtime_test_report_;
     // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;

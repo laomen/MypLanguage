@@ -53,7 +53,10 @@ target_include_directories(hdf5_bridge PRIVATE
 )
 
 # ---- Build runtime from MYP compiler ----
-add_library(myp_runtime OBJECT ${RUNTIME_DIR}/runtime.c)
+add_library(myp_runtime OBJECT
+    ${RUNTIME_DIR}/runtime.c
+    ${RUNTIME_DIR}/runtime_gpu.c
+)
 target_include_directories(myp_runtime PRIVATE ${MYP_INCLUDE_DIR})
 
 # ---- Link executable ----

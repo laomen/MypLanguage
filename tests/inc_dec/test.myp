@@ -1,0 +1,45 @@
+// 自增/自减运算符测试
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // 后缀 ++
+            int a = 5;
+            int b = a++;
+            Console.writeString("a++: a="); Console.write(a);
+            Console.writeString(" b="); Console.write(b);
+
+            // 前缀 ++
+            int c = 5;
+            int d = ++c;
+            Console.writeString(" ++c: c="); Console.write(c);
+            Console.writeString(" d="); Console.write(d);
+
+            // 后缀 --
+            int e = 5;
+            int f = e--;
+            Console.writeString(" e--: e="); Console.write(e);
+            Console.writeString(" f="); Console.write(f);
+
+            // 前缀 --
+            int g = 5;
+            int h = --g;
+            Console.writeString(" --g: g="); Console.write(g);
+            Console.writeString(" h="); Console.write(h);
+
+            // for 循环中的 ++
+            int sum = 0;
+            for (int i = 0; i < 10; i++) {
+                sum = sum + i;
+            }
+            Console.writeString(" for_sum="); Console.write(sum);
+
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

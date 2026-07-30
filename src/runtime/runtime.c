@@ -732,7 +732,7 @@ typedef struct myp_pool {
     void* work_arg;
 } myp_pool_t;
 
-static myp_pool_t* myp_global_pool = NULL;
+myp_pool_t* myp_global_pool = NULL;
 static pthread_mutex_t myp_pool_start_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t myp_pool_start_cond = PTHREAD_COND_INITIALIZER;
 static volatile int myp_pool_start_ok = 0;
@@ -851,6 +851,12 @@ myp_pool_t* myp_pool_create(int n_threads) {
         pthread_create(&pool->threads[i], NULL, myp_pool_worker, (void*)(uintptr_t)i);
 
     return pool;
+}
+
+myp_pool_t* myp_pool_ensure_global(void) {
+    if (!myp_global_pool)
+        myp_global_pool = myp_pool_create(0);
+    return myp_global_pool;
 }
 
 void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
@@ -1010,6 +1016,34 @@ void myp_assert_str_eq(const char* a, const char* b) {
     int eq = (a == b) || (a && b && strcmp(a, b) == 0);
     if (!eq) {
         fprintf(stderr, "  ASSERTION FAILED: \"%s\" != \"%s\"\n", a ? a : "null", b ? b : "null");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_neq(int a, int b) {
+    if (a == b) {
+        fprintf(stderr, "  ASSERTION FAILED: %d == %d (expected not equal)\n", a, b);
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_long_eq(int64_t a, int64_t b) {
+    if (a != b) {
+        fprintf(stderr, "  ASSERTION FAILED: %ld != %ld\n", (long)a, (long)b);
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_str_neq(const char* a, const char* b) {
+    int eq = (a == b) || (a && b && strcmp(a, b) == 0);
+    if (eq) {
+        fprintf(stderr, "  ASSERTION FAILED: \"%s\" == \"%s\" (expected not equal)\n", a ? a : "null", b ? b : "null");
         myp_test_fail_count++;
     } else {
         myp_test_pass_count++;

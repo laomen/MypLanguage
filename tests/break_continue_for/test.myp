@@ -1,0 +1,28 @@
+// for 循环中的 break/continue 测试
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            int sum = 0;
+            for (int i = 0; i < 10; i = i + 1) {
+                if (i == 5) break;
+                sum = sum + i;
+            }
+            Console.writeString("break_sum="); Console.write(sum);
+
+            int sum2 = 0;
+            for (int j = 0; j < 10; j = j + 1) {
+                if (j % 2 == 0) continue;
+                sum2 = sum2 + j;
+            }
+            Console.writeString(" continue_sum="); Console.write(sum2);
+
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

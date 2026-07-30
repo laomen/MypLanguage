@@ -1,0 +1,31 @@
+// 多事件 → 同一 action（仅单 target，但多事件源）
+import env;
+
+class Logger {
+    action:
+        void write(int v) {
+            __myp_print_int(v);
+        }
+}
+
+mapping() {
+    Main.fireA -> Logger.write;
+    Main.fireB -> Logger.write;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            fireA(1);
+            fireB(2);
+        }
+    event:
+        fireA(int v);
+        fireB(int v);
+}
+
+int main() {
+    Main m = new Main();
+    Logger log = new Logger();
+    return 0;
+}

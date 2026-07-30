@@ -1,0 +1,22 @@
+// timeline: Timeline.sleep/now/elapsed
+import env;
+import timeline;
+
+class Main {
+    action:
+        @startup void run() {
+            Timeline tl;
+            long t0 = tl.now();
+            tl.sleep(5);
+            long t1 = tl.now();
+            long dt = tl.elapsed(t0);
+            Console.writeString("dt="); Console.writeLong(dt);
+            Console.writeString(" ok="); Console.writeBool(dt > 0L);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

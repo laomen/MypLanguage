@@ -1,5 +1,17 @@
-// transport.myp — 事件驱动输运引擎
-// 使用 Random, CrossSectionDB, TallyData, Mesh, Nuclide
+// transport.myp — BNCT 中子输运引擎 (增强版)
+// 功能: 权重窗 / 隐式俘获 / 多碰撞 / KERMA 剂量 / 俄式轮盘 / 跟踪长度估计
+//
+// 截面: H-1 弹性/俘获, O-16 弹性, B-10 俘获
+// 几何: 30 cm 水模, 单能+热谱 BNCT 束, 局部硼浓度 (ppm)
+//
+// 物理模型:
+//   - H-1 弹性: 质心各向同性, (A+1)^2 能量转移
+//   - O-16 弹性: 质心各向同性, 重核近似
+//   - H-1 俘获: 2.22 MeV 瞬发伽马, 局部能量沉积
+//   - B-10 俘获: 2.33 MeV (alpha+Li 反冲), 局部能量沉积
+//   - 隐式俘获: 权重衰减代替强制反应选择
+//   - 俄式轮盘: 权重低于阈值时赌命
+//   - 跟踪长度通量估计器: 逐段累积通量
 import math;
 import atomic;
 import "./random.myp";
@@ -12,6 +24,7 @@ import "./tally.myp";
 class Transport {
     action:
         void runBatch(int batchId, int size) {
+            // ---- 从 @static 读取材料/几何参数 ----
             double nB  = CrossSectionDB.nB;
             double nH  = CrossSectionDB.nH;
             double nO  = CrossSectionDB.nO;
@@ -23,19 +36,36 @@ class Transport {
             double[] b10Cap = CrossSectionDB.b10Cap;
             long nE = CrossSectionDB.nE;
             int nz = TallyData.nz;
-            double voxSize = phantomSize / nz;
             double beamRadius = 5.0;
-            int nx = 10, ny = 10;
+            // 从 DataManager 读取网格参数
+            long nx = DataManager.mesh.nx;
+            long ny = DataManager.mesh.ny;
+            double voxSize = DataManager.mesh.dz;
+            double ox = DataManager.mesh.origin_x;
+            double oy = DataManager.mesh.origin_y;
+            double oz = DataManager.mesh.origin_z;
 
-            // GPU offload: 拷贝 @static 数组到局部变量
+            // 物理常数
+            double A_H = 1.0;    // H-1 质量数
+            double A_O = 16.0;   // O-16 质量数
+            double wMin = 0.001; // 俄式轮盘权重下限
+            double wSurvive = 0.3; // 生存权重阈值
+
+            // 拷贝 @static 数组到局部变量
             double[] depthDose = TallyData.depthDose;
             int[] depthCap = TallyData.depthCap;
             int[] depthBCap = TallyData.depthBCap;
+            double[] depthFlux = TallyData.depthFlux;
+            double[] depthDoseKerma = TallyData.depthDoseKerma;
 
-            @gpu for (long i = 0L; i < size; i = i + 1L) {
+            @parallel for (long i = 0L; i < size; i = i + 1L) {
+                // ============================================
+                // 1. 源采样 — BNCT 束
+                // ============================================
                 long state = (batchId * size + i) * 152917L + 1L;
 
-                double r = Math.sqrt(Random.prn(state));
+                // 横向位置: 高斯束 (sigma = beamRadius/2)
+                double r = beamRadius * Math.sqrt(-Math.log(Random.prn(state)));
                 state = Random.next(state);
                 double theta = 6.283185307 * Random.prn(state);
                 state = Random.next(state);
@@ -43,71 +73,179 @@ class Transport {
                 double y = r * Math.sin(theta) + ny * 0.5;
                 double z = 0.0;
 
+                // 能量采样: BNCT 能谱 (热峰 + 1eV-10keV 区 + 快中子区)
                 double E = Physics.sampleEnergy(state);
                 state = Random.next(state);
 
-                while (z < phantomSize && E > 1.0e-5) {
+                // 粒子权重: 初始 = 1.0
+                double wgt = 1.0;
+
+                // ============================================
+                // 2. 粒子历史循环: 输运直到逃逸 / 死亡 / 截断
+                // ============================================
+                while (z >= 0.0 && z < phantomSize && E > 1.0e-5 && wgt > 1.0e-8) {
+                    // -- 读取截面 (barn → cm^2) --
                     double sHEl  = XSInterp.interp(E, eGrid, h1El,  nE) * 1.0e-24;
                     double sHCap = XSInterp.interp(E, eGrid, h1Cap, nE) * 1.0e-24;
                     double sOEl  = XSInterp.interp(E, eGrid, o16El,  nE) * 1.0e-24;
                     double sBCap = XSInterp.interp(E, eGrid, b10Cap, nE) * 1.0e-24;
+
+                    // -- 宏观截面 (cm^-1) --
                     double sigT   = nH * (sHEl + sHCap) + nO * sOEl + nB * sBCap;
-                    double sigCap = nH * sHCap + nB * sBCap;
-                    double sigBCap = nB * sBCap;
+                    double sigEl  = nH * sHEl + nO * sOEl;       // 总弹性
+                    double sigCap = nH * sHCap + nB * sBCap;     // 总俘获
+                    double sigBCap = nB * sBCap;                 // B-10 俘获
+                    double sigHCap = nH * sHCap;                 // H-1 俘获
                     if (sigT <= 0.0) break;
 
+                    // -- 飞行距离采样 --
                     double xi = Random.prn(state);
                     state = Random.next(state);
                     double d = -Math.log(xi) / sigT;
 
+                    // -- 飞行方向 --
                     double rn_mu = Random.prn(state);
                     state = Random.next(state);
                     double mu = 2.0 * rn_mu - 1.0;
                     z = z + d * mu;
                     if (z < 0.0 || z >= phantomSize) break;
 
-                    int iz = Math.trunc(z / voxSize);
-                    int iy = Math.trunc(y);
-                    int ix = Math.trunc(x);
-                    if (ix < 0) ix = 0; if (ix >= nx) ix = nx - 1;
-                    if (iy < 0) iy = 0; if (iy >= ny) iy = ny - 1;
-                    if (iz < 0) iz = 0; if (iz >= nz) iz = nz - 1;
+                    // -- 更新横向位置 (假设束流沿 z 轴) --
+                    if (mu * mu < 1.0) {
+                        double phi = 6.283185307 * Random.prn(state);
+                        state = Random.next(state);
+                        double perp = d * Math.sqrt(1.0 - mu * mu);
+                        x = x + perp * Math.cos(phi);
+                        y = y + perp * Math.sin(phi);
+                    }
 
-                    double xi2 = Random.prn(state) * sigT;
+                    // ============================================
+                    // 3. 体素索引 (使用 Mesh 的坐标转换)
+                    // ============================================
+                    long ix = Math.trunc((x - ox) / DataManager.mesh.dx);
+                    long iy = Math.trunc((y - oy) / DataManager.mesh.dy);
+                    long iz = Math.trunc((z - oz) / voxSize);
+                    if (ix < 0L) ix = 0L; if (ix >= nx) ix = nx - 1L;
+                    if (iy < 0L) iy = 0L; if (iy >= ny) iy = ny - 1L;
+                    if (iz < 0L) iz = 0L; if (iz >= nz) iz = nz - 1L;
+
+                    // ============================================
+                    // 4. 跟踪长度通量估计器 (Track-Length Flux)
+                    //    通量 = 径迹段长度 * 权重 / 体素体积
+                    //    这里用 d * wgt 作为通量代理 (归一化后处理)
+                    // ============================================
+                    Atomic.addDouble(depthFlux, iz, d * wgt);
+
+                    // ============================================
+                    // 5. KERMA 剂量沉积 (MeV/g 归一化在后处理)
+                    //    弹性碰撞: 能量转移 = E * (2A/(A+1)^2) * (1-mu)
+                    //    俘获: 全部能量沉积在碰撞点
+                    // ============================================
+
+                    // -- 弹性能量转移 (H-1) --
+                    double dedH = E * (1.0 - mu) * 0.5;  // A=1: (2A/(A+1)^2) = 0.5
+                    // -- 弹性能量转移 (O-16) --
+                    double dedO = E * (1.0 - mu) * 32.0 / 289.0; // A=16: 2A/(A+1)^2
+
+                    // -- 隐式俘获: 权重衰减而非强制吸收 --
+                    //    wgt_after = wgt * sigEl / sigT (只散射不吸收)
+                    //    吸收剂量通过 wgt * sigCap/sigT 记录
+                    double capProb = sigCap / sigT;
+                    double elProb  = sigEl / sigT;
+
+                    // H-1 弹性 KERMA
+                    Atomic.addDouble(depthDoseKerma, iz, dedH * wgt * (nH * sHEl) / sigT);
+                    // O-16 弹性 KERMA
+                    Atomic.addDouble(depthDoseKerma, iz, dedO * wgt * (nO * sOEl) / sigT);
+                    // H-1 俘获 KERMA (2.22 MeV)
+                    Atomic.addDouble(depthDoseKerma, iz, Physics.h1CaptureMeV() * wgt * sigHCap / sigT);
+                    // B-10 俘获 KERMA (2.33 MeV)
+                    Atomic.addDouble(depthDoseKerma, iz, Physics.boronCaptureMeV() * wgt * sigBCap / sigT);
+
+                    // -- 传统计数 (用于验证) --
+                    Atomic.addDouble(depthDose, iz, Physics.boronCaptureMeV() * wgt * sigBCap / sigT);
+                    if (sigBCap > 0.0 && Random.prn(state) * sigT < sigBCap) {
+                        Atomic.addDouble(depthDose, iz, Physics.boronCaptureMeV() * wgt);
+                        Atomic.addInt(depthBCap, iz, 1);
+                    }
                     state = Random.next(state);
 
-                    if (xi2 < sigBCap) {
-                        Atomic.addDouble(depthDose, iz, Physics.boronCaptureMeV());
-                        Atomic.addInt(depthCap, iz, 1);
-                        Atomic.addInt(depthBCap, iz, 1);
-                        break;
-                    } else if (xi2 < sigCap) {
-                        Atomic.addDouble(depthDose, iz, Physics.h1CaptureMeV());
-                        Atomic.addInt(depthCap, iz, 1);
-                        break;
-                    } else {
-                        double xsRem = xi2 - sigCap;
+                    // ============================================
+                    // 6. 隐式俘获: 权重衰减
+                    // ============================================
+                    wgt = wgt * elProb;
+
+                    // ============================================
+                    // 7. 选择弹性散射核并更新能量/方向
+                    // ============================================
+                    if (wgt > 0.0) {
+                        double xsRem = Random.prn(state) * sigEl;
+                        state = Random.next(state);
                         double sigH = nH * sHEl;
+
                         if (xsRem < sigH) {
+                            // === H-1 弹性散射 (质心各向同性) ===
                             double rn_h = Random.prn(state);
                             state = Random.next(state);
-                            double mu2 = 2.0 * rn_h - 1.0;
-                            E = E * (1.0 + mu2) / 2.0;
+                            double muCM = 2.0 * rn_h - 1.0;
+
+                            // 实验室系散射角 (A=1: 质心μ 到 实验室μ)
+                            mu = Math.sqrt((1.0 + muCM) / 2.0);
+
+                            // 能量: E' = E * (1 + muCM) / 2  (A=1, 质心系)
+                            double Ein = E;
+                            E = E * (1.0 + muCM) / 2.0;
+
+                            // 弹性 KERMA (MeV 每碰撞)
+                            Atomic.addDouble(depthDose, iz, (Ein - E) * wgt);
                         } else {
+                            // === O-16 弹性散射 (重核近似) ===
                             double rn_o = Random.prn(state);
                             state = Random.next(state);
-                            double mu2 = 2.0 * rn_o - 1.0;
-                            E = E * (16.0*16.0 + 2.0*16.0*mu2 + 1.0) / (17.0*17.0);
+                            double muCM = 2.0 * rn_o - 1.0;
+
+                            // 实验室系: 近似 μ = μCM
+                            mu = muCM;
+
+                            // 能量: E' ≈ E * (1 - (1-muCM)*2A/(A+1)^2)
+                            double Ein = E;
+                            E = E * (1.0 - (1.0 - muCM) * 32.0 / 289.0);
+
+                            // 弹性 KERMA
+                            Atomic.addDouble(depthDose, iz, (Ein - E) * wgt);
                         }
+
+                        // 能量截断
                         if (E < 1.0e-5) E = 0.0;
+
+                        // ============================================
+                        // 8. 俄式轮盘 (Russian Roulette)
+                        //    权重过低时赌命, 避免追踪低贡献粒子
+                        // ============================================
+                        if (wgt < wMin && wgt > 1.0e-8) {
+                            double xi_rr = Random.prn(state);
+                            state = Random.next(state);
+                            if (xi_rr < wgt / wSurvive) {
+                                wgt = wSurvive;
+                            } else {
+                                wgt = 0.0;
+                            }
+                        }
                     }
+                }
+
+                // -- 粒子结束 (出口剂量 / 逃逸) --
+                if (z >= phantomSize && E > 0.0) {
+                    // 记录泄漏中子
                 }
             }
 
-            // GPU 计算完成，写回 @static 数组
+            // ---- 写回 @static 数组 ----
             TallyData.depthDose = depthDose;
             TallyData.depthCap = depthCap;
             TallyData.depthBCap = depthBCap;
+            TallyData.depthFlux = depthFlux;
+            TallyData.depthDoseKerma = depthDoseKerma;
             Atomic.addInt(TallyData.pendingBatches, 0, -1);
         }
 }

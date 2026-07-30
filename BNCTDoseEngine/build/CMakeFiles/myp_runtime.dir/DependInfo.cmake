@@ -9,6 +9,7 @@ set(CMAKE_DEPENDS_LANGUAGES
 # The set of dependency files which are needed:
 set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/xlkj/code/MYPLanguage/src/runtime/runtime.c" "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o" "gcc" "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o.d"
+  "/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c" "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o" "gcc" "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o.d"
   )
 
 # Targets to which this target links which contain Fortran sources.

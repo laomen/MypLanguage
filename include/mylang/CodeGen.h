@@ -95,6 +95,10 @@ private:
     llvm::Function* runtime_thread_destroy_ = nullptr;
     llvm::Function* runtime_thread_assoc_instance_ = nullptr;
 
+    // Thread pool functions
+    llvm::Function* runtime_pool_ensure_ = nullptr;
+    llvm::Function* runtime_parallel_for_ = nullptr;
+
     // ---- Vtable tracking for interface dispatch ----
     std::map<std::string, llvm::GlobalVariable*> vtables_; // key: "iface_class"
 
@@ -177,6 +181,9 @@ private:
     llvm::Function* runtime_assert_ = nullptr;
     llvm::Function* runtime_assert_eq_ = nullptr;
     llvm::Function* runtime_assert_str_eq_ = nullptr;
+    llvm::Function* runtime_assert_neq_ = nullptr;
+    llvm::Function* runtime_assert_long_eq_ = nullptr;
+    llvm::Function* runtime_assert_str_neq_ = nullptr;
     llvm::Function* runtime_test_report_ = nullptr;
 
     // ---- Global class instance refs (for mapping handler lookup) ----
@@ -286,6 +293,7 @@ private:
     void generateIfStmt(const IfStmt& stmt);
     void generateWhileStmt(const WhileStmt& stmt);
     void generateForStmt(const ForStmt& stmt);
+    void generateParallelFor(const ForStmt& stmt);
     void generateGpuFor(const ForStmt& stmt);
     bool generateGpuKernel(const ForStmt& stmt);
     void generateReturnStmt(const ReturnStmt& stmt);

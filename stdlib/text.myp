@@ -21,6 +21,12 @@ class StringBuilder {
             cnt_ = cnt_ + 1;
         }
 
+        // 追加并换行
+        void appendLine(string s) {
+            parts_[cnt_] = s + "\n";
+            cnt_ = cnt_ + 1;
+        }
+
         // 清空缓冲区
         void clear() {
             cnt_ = 0;

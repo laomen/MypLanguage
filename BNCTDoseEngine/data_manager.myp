@@ -113,12 +113,12 @@ import "./cross_section_db.myp";
         // ============================================================
         void initMesh(long nx, long ny, long nz, double dx, double dy, double dz) {
             DataManager.mesh.init(nx, ny, nz, dx, dy, dz, 0.0, 0.0, 0.0);
-            Console.writeString("  DataManager: mesh ");
+            Console.writeString("  DataManager: mesh initialized (");
             Console.writeLong(nx); Console.writeString("x");
             Console.writeLong(ny); Console.writeString("x");
-            Console.writeLong(nz); Console.writeString(" (");
-            Console.writeFloat(DataManager.mesh.thicknessZ());
-            Console.writeString(" cm thick)\n");
+            Console.writeLong(nz); Console.writeString(", dz=");
+            Console.writeFloat(dz);
+            Console.writeString(" cm)\n");
         }
 
 
@@ -127,12 +127,12 @@ import "./cross_section_db.myp";
 // DataLoader — 独立线程加载数据，加载完发射 DataReady 信号
 class DataLoader {
     action:
-        @thread void load(string dataDir) {
+        void load(string dataDir, int nBatches, int batchSize) {
             CrossSectionDB.load(dataDir);
             Console.writeString("  DataLoader: data ready\n");
-            DataReady();
+            DataReady(nBatches, batchSize);
         }
 
     event:
-        DataReady();
+        DataReady(int nBatches, int batchSize);
 }

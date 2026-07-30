@@ -1,0 +1,26 @@
+// @startup annotation — auto-called on new
+import env;
+
+class Logger {
+    action:
+        @startup void init() {
+            Console.writeString("logger_init\n");
+        }
+        void log(string msg) {
+            Console.writeString("LOG: "); Console.writeString(msg); Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("main_run\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    Logger l = new Logger();
+    return 0;
+}
+

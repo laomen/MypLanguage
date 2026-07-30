@@ -1,0 +1,32 @@
+// String concatenation + and comparison == !=
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // concatenation
+            string a = "Hello";
+            string b = "World";
+            string c = a + ", " + b + "!";
+            Console.writeString("concat="); Console.writeString(c); Console.writeString("\n");
+
+            // concat with int
+            string d = "count: " + 42;
+            Console.writeString("int_concat="); Console.writeString(d); Console.writeString("\n");
+
+            // comparison
+            string e = "abc";
+            string f = "abc";
+            string g = "def";
+            Console.writeString("eq="); Console.writeBool(e == f); Console.writeString("\n");
+            Console.writeString("neq="); Console.writeBool(e != g); Console.writeString("\n");
+
+            // self comparison
+            Console.writeString("self_eq="); Console.writeBool(e == e); Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

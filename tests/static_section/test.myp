@@ -1,0 +1,29 @@
+// static: section — static methods without instance
+import env;
+import math;
+
+class Calculator {
+    static:
+        int add(int a, int b) { return a + b; }
+        double mul(double a, double b) { return a * b; }
+        string greet(string name) { return "Hello, " + name; }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            int sum = Calculator.add(10, 20);
+            double prod = Calculator.mul(3.0, 4.0);
+            string msg = Calculator.greet("MYP");
+
+            Console.writeString("sum="); Console.write(sum);
+            Console.writeString(" prod="); Console.writeFloat(prod);
+            Console.writeString(" msg="); Console.writeString(msg);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

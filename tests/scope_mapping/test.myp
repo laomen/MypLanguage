@@ -1,0 +1,30 @@
+// mapping @scope — 作用域生命周期绑定
+import env;
+
+class Logger {
+    action:
+        void log(string msg) {
+            Console.writeString(msg);
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Logger log;
+            // 实例级映射 + @scope: 函数退出时 handler 自动解注册
+            mapping() @scope {
+                Main.fireMsg -> Logger.log;
+            }
+            fireMsg("a"); fireMsg("b");
+            Console.writeString("\n");
+        }
+    event:
+        fireMsg(string msg);
+}
+
+int main() {
+    Main m = new Main();
+    Logger log2;
+    return 0;
+}

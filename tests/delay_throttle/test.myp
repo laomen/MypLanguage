@@ -1,0 +1,31 @@
+// delay/throttle 测试
+import env;
+import time;
+
+mapping() {
+    Main.fire -> Handler.handle;
+}
+
+class Handler {
+    action:
+        void handle() {
+            Console.writeString("handled\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("firing\n");
+            fire();
+            Time.sleep(50);
+        }
+    event:
+        fire();
+}
+
+int main() {
+    Main m = new Main();
+    Handler h = new Handler();
+    return 0;
+}

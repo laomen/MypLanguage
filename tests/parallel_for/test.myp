@@ -1,0 +1,41 @@
+// @parallel for — 数据并行测试
+import env;
+import atomic;
+import math;
+
+class Main {
+    action:
+        @startup void run() {
+            int n = 1000;
+            double[100] tally;
+            @parallel for (int i = 0; i < n; i = i + 1) {
+                double val = Math.sin(i * 0.1) + 1.0;
+                int idx = i % 100;
+                Atomic.addDouble(tally, idx, val);
+            }
+            double sum = 0.0;
+            for (int j = 0; j < 100; j = j + 1)
+                sum = sum + tally[j];
+            Console.writeString("parallel_sum=");
+            Console.writeFloat(sum);
+            Console.writeString("\n");
+
+            // 验证变量捕获（外层变量）
+            double scale = 2.0;
+            double[10] capTest;
+            @parallel for (int i = 0; i < 10; i = i + 1) {
+                Atomic.addDouble(capTest, i, i * scale);
+            }
+            double capSum = 0.0;
+            for (int j = 0; j < 10; j = j + 1)
+                capSum = capSum + capTest[j];
+            Console.writeString("capture_sum=");
+            Console.writeFloat(capSum);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

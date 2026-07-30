@@ -91,11 +91,13 @@ sim_OBJECTS =
 sim_EXTERNAL_OBJECTS = \
 "/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/mapping_demo.myp.o" \
 "/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/CMakeFiles/hdf5_bridge.dir/hdf5_bridge.c.o" \
-"/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o"
+"/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o" \
+"/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o"
 
 sim: mapping_demo.myp.o
 sim: CMakeFiles/hdf5_bridge.dir/hdf5_bridge.c.o
 sim: CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o
+sim: CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o
 sim: CMakeFiles/sim.dir/build.make
 sim: CMakeFiles/sim.dir/compiler_depend.ts
 sim: /usr/lib/x86_64-linux-gnu/hdf5/serial/libhdf5.so

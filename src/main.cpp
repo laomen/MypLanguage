@@ -117,7 +117,8 @@ static bool loadModule(const std::string& module_name,
     mylang::SourceManager src_mgr;
     if (!src_mgr.loadFile(path)) {
         if (!is_path) {
-            // Silently skip if stdlib file not found
+            // Report error for stdlib module not found
+            diag.error(mylang::SourceRange(), "cannot find import '" + module_name + "'");
             return false;
         }
         std::cerr << "Error: cannot open import '" << path << "'\n";

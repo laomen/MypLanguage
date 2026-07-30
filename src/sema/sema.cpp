@@ -574,7 +574,8 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
         decl_type = visitExpr(*decl.init_expr);
     } else if (decl.init_expr) {
         auto init_type = visitExpr(*decl.init_expr);
-        if (!typesCompatible(decl_type, init_type)) {
+        // Skip cascading error when init type is unknown (already reported)
+        if (init_type.kind != TypeKind::Void && !typesCompatible(decl_type, init_type)) {
             error(decl.range, "cannot initialize variable '" + decl.name +
                   "' of type '" + typeName(decl_type) +
                   "' with value of type '" + typeName(init_type) + "'");
@@ -1365,7 +1366,8 @@ TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
     }
     auto target_type = visitExpr(*expr.target);
     auto value_type = visitExpr(*expr.value);
-    if (!typesCompatible(target_type, value_type)) {
+    // Skip cascading error when target is unknown (already reported)
+    if (target_type.kind != TypeKind::Void && !typesCompatible(target_type, value_type)) {
         error(expr.range, "cannot assign value of type '" +
               typeName(value_type) + "' to variable of type '" +
               typeName(target_type) + "'");
@@ -1609,6 +1611,10 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
         }
         return true;
     }
+    // Implicit numeric promotion: Int ↔ Long are compatible
+    if ((lhs.kind == TypeKind::Int && rhs.kind == TypeKind::Long) ||
+        (lhs.kind == TypeKind::Long && rhs.kind == TypeKind::Int))
+        return true;
     // Interface compatibility: rhs (concrete class) implements lhs (interface)
     if (lhs.kind == TypeKind::Interface && rhs.kind == TypeKind::Class) {
         if (!current_tu_) return false;
@@ -1912,7 +1918,10 @@ void Sema::registerIntrinsics() {
     // testing
     add_intrinsic("__myp_assert", TypeKind::Void, {TypeKind::Bool});
     add_intrinsic("__myp_assert_eq", TypeKind::Void, {TypeKind::Int, TypeKind::Int});
+    add_intrinsic("__myp_assert_neq", TypeKind::Void, {TypeKind::Int, TypeKind::Int});
+    add_intrinsic("__myp_assert_long_eq", TypeKind::Void, {TypeKind::Long, TypeKind::Long});
     add_intrinsic("__myp_assert_str_eq", TypeKind::Void, {TypeKind::String, TypeKind::String});
+    add_intrinsic("__myp_assert_str_neq", TypeKind::Void, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_test_report", TypeKind::Void, {TypeKind::String, TypeKind::Bool});
 
     // Atomic intrinsics (codegen generates LLVM atomic instructions directly)

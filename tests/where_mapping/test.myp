@@ -1,0 +1,32 @@
+// mapping where — 条件过滤（只转发 >= 3 的事件）
+import env;
+
+mapping() {
+    Main.emit where v >= 3 -> Printer.print;
+}
+
+class Printer {
+    action:
+        void print(int v) {
+            Console.writeString("v=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            emit(5);
+            emit(2);
+            emit(3);
+        }
+    event:
+        emit(int v);
+}
+
+int main() {
+    Main m = new Main();
+    Printer p = new Printer();
+    return 0;
+}

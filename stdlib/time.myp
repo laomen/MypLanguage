@@ -19,6 +19,26 @@ class Time {
         void sleep(long ms) {
             __myp_sleep_ms(ms);
         }
+
+        // 秒级工具
+        long nowSec() { return __myp_now_ms() / 1000L; }
+        void sleepSec(long s) { __myp_sleep_ms(s * 1000L); }
+
+        // 毫秒→HMS 格式化（简易）
+        string formatHMS(long ms) {
+            long totalSec = ms / 1000L;
+            long h = totalSec / 3600L;
+            long m = (totalSec % 3600L) / 60L;
+            long s = totalSec % 60L;
+            string result = "";
+            if (h < 10L) result = "0";
+            result = result + h + ":";
+            if (m < 10L) result = result + "0";
+            result = result + m + ":";
+            if (s < 10L) result = result + "0";
+            result = result + s;
+            return result;
+        }
 }
 
 

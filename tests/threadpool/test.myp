@@ -1,0 +1,14 @@
+// @threadpool — 线程池注解测试（4 个线程各打印一次）
+import env;
+
+class Worker {
+    action:
+        @startup void run() {
+            Console.writeString("w");
+        }
+}
+
+int main() {
+    Worker[4] pool @threadpool;
+    return 0;
+}

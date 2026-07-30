@@ -1,0 +1,17 @@
+// FFI 测试 — 直接调用 C 运行时函数
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            double r = __myp_math_sqrt(64.0);
+            Console.writeString("sqrt=");
+            Console.writeFloat(r);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

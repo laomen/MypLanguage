@@ -932,40 +932,68 @@ Source ──batchReady──→ Pool.submit
 | 实现复杂度 | ⚠️ ~400 行（工作窃取队列 + Pool 类 + mapping 配置） |
 | 适用场景 | 每个 batch 计算量大（>1ms），事件排队开销可忽略 |
 
-### 8.7 未来：`@parallel for`（方案 A）
+### 8.7 已实现：`@parallel for`（方案 A）
 
-与方案 B 互补——不需要 event/mapping，零运行时开销。
+✅ v2.4 已实现。不需要 event/mapping，零运行时开销。
 
-MYP 的 Actor 模型 (`@thread`) 擅长 IO/事件驱动型并发，但对于 **BNCT 蒙特卡洛输运**这类计算密集型、数据并行的场景，事件开销（排队、唤醒、调度）成为瓶颈。
+MYP 的 Actor 模型 (`@thread`) 擅长 IO/事件驱动型并发，但对于 **BNCT 蒙特卡洛输运**这类计算密集型、数据并行的场景，事件开销（排队、唤醒、调度）成为瓶颈。`@parallel for` 为这类场景提供编译期并行的解决方案。
 
-#### 8.6.1 设计目标
+#### 8.7.1 语法
 
-```
-用户视角：
-    @parallel for (int i = 0; i < nBatches; i = i + 1) {
-        runBatch(i, batchSize);
-    }
-
-编译器视角：
-    1. 提取循环体为静态函数 fn(int i, void* ctx)
-    2. 替换为 myp_parallel_for(0, nBatches, 1, fn, ctx)
-    
-运行时视角：
-    3. 线程池平分迭代：thread[0] 拿 [0..N/4), thread[1] 拿 [N/4..N/2) ...
-    4. 各线程串行执行 fn(i, ctx)
-    5. barrier 等待全部完成 → 返回
+```myp
+@parallel for (int i = 0; i < n; i = i + 1) {
+    // 循环体——每个线程执行一部分迭代
+    Atomic.addDouble(tally, idx, value);
+}
 ```
 
-#### 8.6.2 关键设计决策
+循环变量类型：`int`（推荐）或 `long`（自动截断为 int32 处理边界）。
 
-| 决策 | 选择 | 原因 |
-|------|------|------|
-| 迭代策略 | 静态平分 (static schedule) | BNCT 各 batch 计算量均等，通信开销最低 |
-| 线程池 | 全局懒创建 + 复用 | 避免反复 pthread_create/destroy |
-| 归约 | 线程局部累加 + 最后原子归约 | 归约只在循环结束时发生一次 |
-| 变量捕获 | 编译器分析 + 生成 ctx struct | 支持局部变量、property、函数调用 |
+#### 8.7.2 编译器视角
 
-#### 8.6.3 vs Actor 模型
+```
+1. 收集所有外层作用域变量，构建捕获结构体 (parallel_captute)
+2. 提取循环体为静态函数 fn(int i, void* arg)
+3. 在调用处填充捕获结构体，调用 myp_pool_parallel_for()
+
+捕获结构体：
+  struct parallel_captute {
+      int32   size;         // 值捕获
+      double  nH;           // 值捕获
+      double* depthDose;    // 指针捕获（堆数组，线程共享）
+      // ... 所有外层变量
+  };
+
+并行体函数：
+  void parallel_body_i(int i, void* arg) {
+      auto* cap = (parallel_captute*)arg;
+      // 解包捕获变量到局部 alloca
+      int size = cap->size;
+      // ... 原始循环体代码（使用局部变量）...
+  }
+```
+
+#### 8.7.3 运行时视角
+
+```
+3. 线程池平分迭代：thread[0] 拿 [0..N/4), thread[1] 拿 [N/4..N/2) ...
+4. 各线程串行执行 fn(i, ctx)
+5. barrier 等待全部完成 → 返回
+```
+
+线程池使用 16 线程 work-stealing 池，全局懒创建 + 复用。
+
+#### 8.7.4 关键实现细节
+
+| 机制 | 说明 |
+|------|------|
+| **变量捕获** | `generateParallelFor` 遍历作用域栈，收集所有 named values → 构建 LLVM StructType → 填充 → `void* arg` 传递 |
+| **数学函数** | emitKernelExpr 原使用 `__nv_log`/`__nv_exp`（CUDA device 函数），改为 `myp_math_log`/`myp_math_exp` 运行时函数 |
+| **静态方法调用** | emitKernelExpr 直接调用 LLVM 模块中已声明的函数（如 `Physics_sampleEnergy`），避免内联复杂 IfStmt 导致返回 `i64(0)` |
+| **Atomic 操作** | `Atomic.addDouble`/`Atomic.addInt` 通过 LLVM `atomicrmw` 指令编译，线程安全 |
+| **线程安全** | 每粒子独立 RNG state（无竞争）+ Atomic 累加（无锁） |
+
+#### 8.7.5 vs Actor 模型
 
 ```
 Actor (@thread)              @parallel for
@@ -979,22 +1007,34 @@ Actor (@thread)              @parallel for
 
 两个模型互补——`@parallel for` 处理 BNCT 的核心计算循环，Actor 模型处理组件编排和结果汇总。
 
-### 8.7 未来：Atomic 操作
+### 8.8 已实现：Atomic 操作
+
+✅ v2.0 已实现。通过 LLVM `atomicrmw` 指令直接生成，零运行时开销。
 
 当多个线程需要累加共享变量时（如 Tally 汇总），必须使用原子操作避免竞态条件：
 
 ```myp
+import atomic;
+
 class Tally {
     action:
-        void addBatch(int nCap, double dose, int nEsc) {
-            atomic_add(ref totalCaptured, nCap);   // i32 原子加
-            atomic_add(ref totalDose, dose);        // f64 原子加
-            atomic_add(ref totalEscaped, nEsc);     // i32 原子加
+        void addBatch(int nCap, double dose) {
+            Atomic.addInt(totalCaptured, idx, nCap);   // i32 原子加
+            Atomic.addDouble(totalDose, idx, dose);     // f64 原子加
         }
 }
 ```
 
-运行时基于 C11 `__sync_fetch_and_add` 实现，MYP 层面暴露为内置函数。
+支持的操作：
+
+| 函数 | 语义 | LLVM 指令 |
+|------|------|-----------|
+| `Atomic.addInt(arr, i, v)` | `arr[i] += v`（返回旧值） | `atomicrmw add` |
+| `Atomic.subInt(arr, i, v)` | `arr[i] -= v` | `atomicrmw sub` |
+| `Atomic.xchgInt(arr, i, v)` | `arr[i] = v`（返回旧值） | `atomicrmw xchg` |
+| `Atomic.addDouble(arr, i, v)` | `arr[i] += v` | `atomicrmw fadd` |
+| `Atomic.loadInt(arr, i)` | 返回 `arr[i]` | `atomicrmw add 0` |
+| `Atomic.storeInt(arr, i, v)` | `arr[i] = v` | `atomicrmw xchg` |
 
 ### 8.5 已实现的功能
 
@@ -1168,11 +1208,22 @@ int main() {
 | 库 | 功能 | 当前状态 |
 |----|------|---------|
 | `env` | `Console` 类（write/writeString/writeLine/writeFloat/writeBool/writeLong/readString/kbhit/getch/flush） | ✅ 已实现：stdlib/env.myp |
-| `timeline` | `Timeline` 类（now/sleep/elapsed/startTimeout/startInterval/startTick）、`Stopwatch` 类 | ✅ 已实现：定时器系统支持 timeout/interval/tick 事件 |
+| `time` | `Time` 类（nowMs/sleep） | ✅ 已实现：stdlib/time.myp |
+| `timeline` | `Timeline` / `Stopwatch` 类（定时器事件 timeout/interval/tick） | ✅ 已实现：stdlib/timeline.myp |
 | `math` | `Math` 类（sqrt/abs/floor/ceil/sin/cos/tan/exp/log/pow/absInt/min/max） | ✅ 已实现 |
-| `io` | `File` 类（open/close/readLine/write/writeLine/hasNext） | ✅ 已实现 |
-| `collections` | `ArrayList<T>` 动态数组、`Queue<T>` 队列（泛型，固定容量） | ✅ 已实现 |
+| `io` | `File` 类（open/close/readLine/write/writeLine/hasNext + 二进制 r/w） | ✅ 已实现 |
+| `stream` | 流式数据源（RangeStream/IntStream/DoubleStream） | ✅ 已实现 |
+| `collections` | `ArrayList<T>` 动态数组（固定容量 1024）、`HashMap<K,V>` 哈希表（线性探测，容量 1024）、`Set<T>` 哈希集合、`Queue<T>` 队列 | ✅ 已实现 |
 | `text` | `StringBuilder` 字符串构建器 | ✅ 已实现 |
+| `atomic` | `Atomic` 类（addInt/subInt/xchgInt/addDouble/loadInt/storeInt），基于 LLVM atomicrmw | ✅ 已实现 |
+| `random` | `Random` 类（init/next/below） | ✅ 已实现 |
+| `pool` | `Parallel` 静态类（线程池任务工具） | ✅ 已实现 |
+| `barrier` | `Barrier` 类（create/wait/destroy），基于 pthread_barrier | ✅ 已实现 |
+| `future` | `Future` 类（create/set/get/destroy），异步结果容器 | ✅ 已实现 |
+| `coro` | `Coro` 协程类（create/resume/yield/isActive/destroy），基于 ucontext | ⚠️ 实验性 |
+| `memory` | `Memory` 类（alloc/free/realloc），直接调用 C malloc | ✅ 已实现 |
+| `test` | `Test` 类（assert/assertEq/assertStrEq/report），配合 `@test` 注解 | ✅ 已实现 |
+| `sdl` | `SDL` 图形类（init/quit/clear/present/getKey），基于 SDL2 FFI | ✅ 已实现 |
 | `ui` | 终端 TUI 框架（Window/Label/Button/TextBox/ProgressBar），纯 MYP 实现，基于 ANSI escape codes 渲染 | ✅ 已实现：stdlib/ui.myp |
 
 ### 10.6 编译器 intrinsics 系统
@@ -1250,7 +1301,12 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 | @static 类属性外部访问 | 2.4 | `TallyData.depthDose = value` 通过类名直接读写静态属性 |
 | 动态数组初始化 | 2.4 | `double[] buf = new double[n]` 正确生成分配代码 |
 | BNCT Dose 引擎 | 2.4 | 完整 BNCT 蒙特卡罗模拟，mapping 事件驱动，HDF5 截面加载 |
-| work-stealing 线程池 | 2.4 | `runtime.c` 16 线程 work-stealing 池（代码已就绪，待 codegen 接入） |
+| work-stealing 线程池 | 2.4 | `runtime.c` 16 线程 work-stealing 池 + codegen 接入（变量捕获 struct/直接函数调用） |
+| @parallel for | 2.4 | 编译期循环体提取 + 线程池平分迭代 + barrier 归约 |
+| 并行体变量捕获 | 2.4 | 自动捕获外层变量到 struct，通过 void* arg 传递 |
+| 并行体数学函数修复 | 2.4 | emitKernelExpr 使用 myp_math_* 运行时函数替代 CUDA __nv_* |
+| 并行体静态方法调用 | 2.4 | 直接 LLVM 函数调用替代内联，避免 IfStmt 返回 i64(0) |
+| Atomic 操作 | 2.0 | Atomic.addDouble/Atomic.addInt 基于 LLVM atomicrmw |
 
 ### 技术栈
 
@@ -1433,10 +1489,13 @@ Runtime  → print/println + 基本运行时
 | **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
 | **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
 | **v6** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |
-| **v6** | `@parallel for` (方案 A) — 编译期将循环体提取为独立函数，由线程池平分迭代执行，barrier 归约。零事件开销，天然负载均衡 | 🔜 规划中 |
-| **v6** | Atomic 操作 — `atomic_add(ref int, int)` / `atomic_add(ref double, double)` 运行时内置函数，支持并行安全累加 | 🔜 规划中 |
-| **v6** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲（防止静默丢事件） | 🔜 规划中 |
-| **v6** | 工作窃取线程池 — 共享 work-stealing 队列 + 条件变量，替代当前固定分片，实现动态负载均衡 | 🔜 规划中 |
+| **v2.4** | `@parallel for` (方案 A) — 编译期将循环体提取为独立函数，由线程池平分迭代执行，barrier 归约。零事件开销，天然负载均衡 | ✅ 已实现 |
+| **v2.4** | 并行体变量捕获 — 自动捕获外层变量到 struct，通过 void* arg 传递 | ✅ 已实现 |
+| **v2.4** | 并行体数学函数修复 — emitKernelExpr 使用 myp_math_* 代替 CUDA __nv_* | ✅ 已实现 |
+| **v2.4** | 并行体静态方法调用 — 直接 LLVM 函数调用代替内联 | ✅ 已实现 |
+| **v2.0** | Atomic 操作 — `Atomic.addDouble`/`Atomic.addInt` 基于 LLVM atomicrmw | ✅ 已实现 |
+| **v2.4** | 工作窃取线程池 — 共享 work-stealing 队列 + codegen 接入 | ✅ 已实现 |
+| **v2.4** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲 | 🔜 规划中 |
 | **v6** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | 🔜 规划中 |
 | **v6** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | 🔜 规划中 |
 | **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | 🔜 规划中 |

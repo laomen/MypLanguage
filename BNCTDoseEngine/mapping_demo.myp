@@ -1,19 +1,17 @@
-// mapping_demo.myp — BNCT 水模剂量引擎 (事件驱动 + GPU offload)
+// mapping_demo.myp — BNCT 水模剂量引擎 (事件驱动 + @parallel for 多线程并行)
 //
 // 事件流:
-//   DataLoader.load ──(DataReady)──► Source.start
-//     (独立线程加载截面数据)         (收到信号后开始发射粒子批次)
-//                                      │
-//                                      ├─ batchReady ──► Transport.runBatch (GPU)
-//                                      │                     │
-//                                      │                     └─ Atomic.decrement pendingBatches
-//                                      │
-//                                      └─ allDone ──► Tally.writeResults
-//                                                       (写到文件/控制台)
+//   Main.prepareData ──► DataLoader.load (独立线程读取 HDF5)
+//   DataLoader.DataReady ──► Source.start (主线程)
+//   Source.batchReady ──► Transport.runBatch (顺序事件循环)
+//     └─ runBatch 内部: @parallel for 用线程池并行处理粒子
+//   Source.allDone ──► Tally.writeResults
 //
-// GPU offload:
-//   Transport.runBatch 改用 @gpu for
-//   @static 数组(TallyData.depthDose等) 拷贝到局部变量传入 GPU
+// 多线程架构:
+//   - @parallel for 在 Transport.runBatch() 内自动使用 myp_pool 线程池 (16 workers)
+//   - 线程安全: Atomic.addDouble/Atomic.addInt 保护 Tally 数组累加
+//   - 截面数据: @static class CrossSectionDB 全局只读，跨线程安全
+//
 import env;
 import "./transport.myp";
 import "./source.myp";
@@ -22,7 +20,10 @@ import "./tally.myp";
 import "./data_manager.myp";
 
 mapping() {
+    Main.prepareData -> DataLoader.load;
+    DataLoader.DataReady -> Source.start;
     Source.batchReady -> Transport.runBatch;
+    Source.allDone -> Tally.writeResults;
 }
 
 class Main {
@@ -35,55 +36,52 @@ class Main {
             // ============================================
             // 配置参数
             // ============================================
-            int nP = 500000, bs = 10000, nb = nP / bs;
+            int nP = 5000000, bs = 10000, nb = nP / bs;
             int[] ppms = new int[4];
             ppms[0] = 5; ppms[1] = 15; ppms[2] = 35; ppms[3] = 65;
             int nz = 30;
             double phantomSize = 30.0;
-
             // ============================================
-            // 创建实例
+            // 初始化 Tally 数据数组
             // ============================================
-            Source source = new Source();
-            Transport transport = new Transport();
-            Tally tally = new Tally();
-
+            TallyData.depthDose = new double[nz];
+            TallyData.depthCap  = new int[nz];
+            TallyData.depthBCap = new int[nz];
+            TallyData.depthFlux = new double[nz];
+            TallyData.depthDoseKerma = new double[nz];
+            TallyData.pendingBatches = new int[1];
+            TallyData.pendingBatches[0] = nb;
+            TallyData.nz = nz;
+            TallyData.phantomSize = phantomSize;
             // ============================================
-            // 循环 B-10 浓度
+            // 初始化网格 (30×10×10, 1cm 体素)
             // ============================================
-            for (int pi = 0; pi < 4; pi = pi + 1) {
-                int ppm = ppms[pi];
-                CrossSectionDB.setBDensity(ppm * 1.0);
-                Console.writeString("\n--- "); Console.write(ppm);
-                Console.writeString(" ppm ---\n");
-
-                // 重置 tally
-                TallyData.depthDose = new double[nz];
-                TallyData.depthCap  = new int[nz];
-                TallyData.depthBCap = new int[nz];
-                TallyData.pendingBatches = new int[1];
-                TallyData.pendingBatches[0] = nb;
-                TallyData.nz = nz;
-                TallyData.phantomSize = phantomSize;
-
-                // 发射粒子批次 → Transport 通过 mapping 自动处理
-                source.start(nb, bs);
-
-                // 等待 GPU 计算完成
-                while (TallyData.pendingBatches[0] > 0) {}
-
-                // 显示结果
-                tally.writeResults("gpu");
-            }
-
+            DataManager.initMesh(10, 10, nz, 1.0, 1.0, phantomSize / nz);
+            // ============================================
+            // 初始化核素数据库和水材料
+            // ============================================
+            DataManager.initNuclides();
+            DataManager.initWaterMaterial();
+            // ============================================
+            // 设置 B-10 浓度 (0 ppm → 不添加硼)
+            // ============================================
+            CrossSectionDB.setBDensity(10.0);
+            // ============================================
+            // 初始化数据管理器，完成后直接进入输运过程
+            // ============================================
+            prepareData("/home/xlkj/code/Data Libraries/Official Data Libraries/endfb80/endfb80_hdf5",
+                nb, bs);
+            // ============================================
             Console.writeString("\n[BNCT GPU Done]\n");
         }
+    event:
+        prepareData(string dataDir, int nBatches, int batchSize);
 }
 
 int main() {
     Main m = new Main();
-    Source source = new Source();
-    Transport transport = new Transport();
-    Tally tally = new Tally();
+    DataLoader loader @thread;
+    Source source;
+    Tally tally;
     return 0;
 }

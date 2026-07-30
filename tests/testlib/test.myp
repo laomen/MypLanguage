@@ -1,0 +1,18 @@
+// testlib: Test.assert/assertEq/assertStrEq
+import env;
+import test;
+
+class Main {
+    action:
+        @startup void run() {
+            Test.assert(1 == 1);
+            Test.assertEq(2 + 2, 4);
+            Test.assertStrEq("hello", "hello");
+            Console.writeString("test_assert_ok\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

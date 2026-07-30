@@ -1,6 +1,8 @@
 file(REMOVE_RECURSE
   "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o"
   "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o.d"
+  "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o"
+  "CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o.d"
 )
 
 # Per-language clean rules from dependency scanning.

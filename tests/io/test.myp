@@ -1,0 +1,34 @@
+// io: File class (write/read roundtrip)
+import env;
+import io;
+
+class Main {
+    action:
+        @startup void run() {
+            // write
+            File f = new File();
+            int ok = f.open("/tmp/myp_io_test.txt", "w");
+            Console.writeString("open_w="); Console.write(ok);
+            f.write("hello\n");
+            f.write("world\n");
+            f.close();
+
+            // read
+            File f2 = new File();
+            int ok2 = f2.open("/tmp/myp_io_test.txt", "r");
+            Console.writeString(" open_r="); Console.write(ok2);
+            string l1 = f2.readLine();
+            string l2 = f2.readLine();
+            int has3 = f2.hasNext();
+            f2.close();
+            Console.writeString(" l1="); Console.writeString(l1);
+            Console.writeString(" l2="); Console.writeString(l2);
+            Console.writeString(" has3="); Console.write(has3);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

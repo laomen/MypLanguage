@@ -1,0 +1,20 @@
+// future: Future.create/set/get/destroy
+import env;
+import future;
+
+class Main {
+    action:
+        @startup void run() {
+            int h = Future.create();
+            Future.set(h, 42);
+            int v = Future.get(h);
+            Console.writeString("future="); Console.write(v);
+            Future.destroy(h);
+            Console.writeString(" future_ok\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

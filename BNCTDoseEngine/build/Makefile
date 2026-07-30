@@ -248,6 +248,30 @@ home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/myp_runtime.dir/build.make CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s
 .PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s
 
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.o: home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.o
+
+# target to build an object file
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/myp_runtime.dir/build.make CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o
+
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.i: home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.i
+
+# target to preprocess a source file
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/myp_runtime.dir/build.make CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i
+
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.s: home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.s
+
+# target to generate assembly for a file
+home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/myp_runtime.dir/build.make CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s
+.PHONY : home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -269,6 +293,9 @@ help:
 	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime.o"
 	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime.i"
 	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime.s"
+	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.o"
+	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.i"
+	@echo "... home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.s"
 .PHONY : help
 
 

@@ -86,7 +86,22 @@ CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s: c
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/xlkj/code/MYPLanguage/src/runtime/runtime.c -o CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.s
 
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o: CMakeFiles/myp_runtime.dir/flags.make
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o: /home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o: CMakeFiles/myp_runtime.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/xlkj/code/MYPLanguage/BNCTDoseEngine/build/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building C object CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o -MF CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o.d -o CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o -c /home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c
+
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c > CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.i
+
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c -o CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.s
+
 myp_runtime: CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o
+myp_runtime: CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o
 myp_runtime: CMakeFiles/myp_runtime.dir/build.make
 .PHONY : myp_runtime
 

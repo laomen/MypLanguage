@@ -1,0 +1,27 @@
+// text: StringBuilder
+import env;
+import text;
+
+class Main {
+    action:
+        @startup void run() {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Hello");
+            sb.append(", ");
+            sb.append("World");
+            sb.append("!");
+            string r = sb.toString();
+            Console.writeString("sb="); Console.writeString(r);
+            Console.writeString(" cnt="); Console.write(sb.count());
+
+            sb.clear();
+            Console.writeString(" cleared="); Console.writeString(sb.toString());
+            Console.writeString(" cnt="); Console.write(sb.count());
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

@@ -1,0 +1,29 @@
+// Lambda 表达式测试
+import env;
+
+mapping() {
+    Main.start -> Worker.run;
+}
+
+class Worker {
+    action:
+        void run() {
+            Console.writeString("lambda_ok\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void go() {
+            Console.writeString("start\n");
+            start();
+        }
+    event:
+        start();
+}
+
+int main() {
+    Main m = new Main();
+    Worker w = new Worker();
+    return 0;
+}

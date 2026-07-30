@@ -645,6 +645,89 @@ mapping() {
 }
 ```
 
+### @parallel for — 数据并行
+
+`@parallel for` 是 MYP 的数据并行原语，用于计算密集型循环的自动并行化。由编译器自动提取循环体到线程池执行，无需事件/消息传递：
+
+```myp
+import atomic;
+
+int[1000] tally;
+@parallel for (int i = 0; i < 1000; i = i + 1) {
+    Atomic.addInt(tally, i, i);
+}
+```
+
+#### 工作原理
+
+```
+编译器:
+  1. 扫描外层作用域，收集被循环体引用的变量
+  2. 构建捕获结构体，填充所有变量的当前值
+  3. 提取循环体为独立函数 parallel_body(i, arg)
+  4. 调用 myp_pool_parallel_for() 分发迭代
+
+运行时:
+  5. 16 线程 work-stealing 池平分迭代块
+  6. 各线程串行执行各自迭代块
+  7. barrier 等待全部完成 → 返回
+```
+
+#### 变量捕获
+
+自动捕获外层变量到 struct，通过 `void* arg` 传递：
+
+| 类型 | 方式 |
+|------|------|
+| `int`/`long`/`double` | 值捕获（线程独立拷贝） |
+| `double[]`/`int[]` | 指针捕获（共享同一堆数组） |
+| class 实例 | 指针捕获 |
+| 静态方法调用 | 直接 LLVM 函数调用 |
+
+#### 线程安全
+
+必须使用 Atomic 操作保护共享数据写入：
+
+```myp
+@parallel for (int i = 0; i < size; i = i + 1) {
+    // ✅ 正确
+    Atomic.addDouble(tally, idx, value);
+    // ❌ 错误：竞态条件
+    // tally[idx] = tally[idx] + value;
+}
+```
+
+#### 限制
+
+- 循环变量用 `int`（`long` 自动截断为 int32）
+- 每个迭代必须**无数据依赖**
+- 不支持 `break` / `continue`
+- 循环边界在进入时确定
+
+#### BNCT 示例
+
+```myp
+class Transport {
+    action:
+        void runBatch(int batchId, int size) {
+            double[] depthDose = TallyData.depthDose;
+            @parallel for (int i = 0; i < size; i = i + 1) {
+                long state = (batchId * size + i) * 152917L + 1L;
+                double E = Physics.sampleEnergy(state);
+                // ... 输运 ...
+                Atomic.addDouble(depthDose, iz, energy);
+            }
+        }
+}
+```
+
+#### 性能参考（16 核）
+
+| 粒子数 | 时间 | 加速比 |
+|--------|------|--------|
+| 5M | ~3s | ~10x |
+| 1e9 | ~9.5min | ~10x |
+
 ### @startup 注解
 
 ```myp
@@ -809,6 +892,163 @@ StringBuilder sb = new StringBuilder();
 sb.append("Hello");
 sb.append(", World");
 string result = sb.toString();  // "Hello, World"
+```
+
+### `import atomic` — 原子操作
+
+```myp
+import atomic;
+
+// 数组原子操作（用于多线程安全累加）
+int[100] counters;
+double[50] values;
+
+Atomic.addInt(counters, idx, 1);        // counter[idx] += 1
+Atomic.subInt(counters, idx, 1);        // counter[idx] -= 1
+Atomic.addDouble(values, idx, 3.14);    // values[idx] += 3.14
+Atomic.xchgInt(counters, idx, 0);       // counter[idx] = 0（返回旧值）
+Atomic.loadInt(counters, idx);           // 原子读取
+Atomic.storeInt(counters, idx, 42);      // 原子写入
+```
+
+常与 `@parallel for` 配合使用，保护共享 Tally 数组的多线程写入。
+
+### `import io` — 文件 I/O
+
+```myp
+import io;
+
+File f = new File();
+f.open("data.txt", "r");           // 打开文件读
+bool has = f.hasNext();             // 是否有下一行
+string line = f.readLine();         // 读一行
+f.close();                          // 关闭文件
+
+f.open("out.txt", "w");             // 打开文件写
+f.write("hello");                   // 写字符串（无换行）
+f.writeLine("world");               // 写字符串 + 换行
+
+// 二进制 I/O（通过 __myp_io_* intrinsics）
+int byte = __myp_io_read_byte();
+int i32  = __myp_io_read_i32be();
+__myp_io_write_byte(0xFF);
+__myp_io_write_i32be(42);
+__myp_io_write_double(3.14);
+double d = __myp_io_read_double();
+```
+
+### `import stream` — 流式数据源
+
+```myp
+import stream;
+
+// RangeStream: 整数范围迭代
+RangeStream rs = new RangeStream(0, 10, 1);
+while (rs.hasNext()) {
+    int v = rs.next();
+}
+
+// IntStream / DoubleStream: 数组流式封装
+int[] data = new int[5];
+IntStream is = new IntStream(data, 5);
+```
+
+### `import barrier` — 屏障同步
+
+```myp
+import barrier;
+
+int handle = Barrier.create(4);      // 创建屏障（等待 4 线程）
+Barrier.wait(handle);                // 等待所有线程到达屏障
+Barrier.destroy(handle);             // 销毁
+```
+
+### `import future` — 异步结果
+
+```myp
+import future;
+
+int handle = Future.create();        // 创建 Future
+Future.set(handle, 42);              // 设置结果（生产者）
+int result = Future.get(handle);     // 获取结果（消费者，阻塞）
+Future.destroy(handle);              // 销毁
+```
+
+### `import coro` — 协程
+
+```myp
+import coro;
+
+// 基于 ucontext 的用户态纤程
+int h = Coro.create();               // 创建协程
+Coro.resume(h);                      // 恢复执行
+Coro.yield();                        // 挂起当前协程
+bool active = Coro.isActive(h);      // 是否活跃
+Coro.destroy(h);                     // 销毁
+```
+
+### `import pool` — 并行计算工具
+
+```myp
+import pool;
+
+// Parallel 静态类提供简单的线程池任务分发
+// 配合 @parallel for 和 Atomic 使用
+// 底层基于 work-stealing 线程池
+```
+
+### `import test` — 测试断言
+
+```myp
+import test;
+
+Test.assert(1 == 1);                 // 断言条件为真
+Test.assertEq(2 + 2, 4);             // 断言相等（int）
+Test.assertStrEq("hi", "hi");        // 断言字符串相等
+Test.report("test_name", true);      // 报告测试结果
+```
+
+### `import memory` — 动态内存管理
+
+```myp
+import memory;
+
+// 直接调用 C 标准库 malloc/free/realloc
+// 通常不需要手动管理——MYP 有 ARC 自动回收
+ptr = Memory.alloc(1024);            // 分配
+Memory.free(ptr);                    // 释放
+ptr = Memory.realloc(ptr, 2048);     // 重新分配
+```
+
+### `import sdl` — SDL 图形窗口
+
+```myp
+import sdl;
+
+// 基于 SDL2 的窗口和输入管理
+SDL.init("Title", 800, 600);            // 创建窗口
+while (!SDL.shouldClose()) {
+    SDL.clear(0, 0, 0, 255);            // 清屏
+    // ... 绘制 ...
+    SDL.present();                       // 刷新
+}
+SDL.quit();
+
+int key = SDL.getKey();                  // 获取按键
+```
+
+### `import ui` — 终端 TUI 框架
+
+```myp
+import ui;
+
+// 纯 MYP 实现，基于 ANSI escape codes 渲染
+Window win = new Window(0, 0, 80, 24, "MyApp");
+win.add(new Button(10, 5, 12, 3, "Click"));
+win.add(new ProgressBar(10, 10, 40, 3, 0.5));
+win.render();                            // 渲染一帧
+
+// 支持的组件: Window, Label, Button, TextBox, ProgressBar
 ```
 
 ---

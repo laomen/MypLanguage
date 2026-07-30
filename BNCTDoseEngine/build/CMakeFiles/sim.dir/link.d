@@ -5,6 +5,7 @@ sim: \
   mapping_demo.myp.o \
   CMakeFiles/hdf5_bridge.dir/hdf5_bridge.c.o \
   CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o \
+  CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o \
   /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
   /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
   /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so \
@@ -82,6 +83,8 @@ mapping_demo.myp.o:
 CMakeFiles/hdf5_bridge.dir/hdf5_bridge.c.o:
 
 CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime.c.o:
+
+CMakeFiles/myp_runtime.dir/home/xlkj/code/MYPLanguage/src/runtime/runtime_gpu.c.o:
 
 /usr/lib/gcc/x86_64-linux-gnu/15/../../../x86_64-linux-gnu/libm.so:
 

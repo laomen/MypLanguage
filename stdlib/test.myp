@@ -3,6 +3,8 @@
 //   import test;
 //   Test.assert(1 == 1);
 //   Test.assertEq(2 + 2, 4);
+//   Test.assertStrEq("hi", "hi");
+//   Test.assertFloatEq(3.14, 3.14, 0.001);
 //   Test.report("my_test", true);
 
 class Test {
@@ -12,14 +14,42 @@ class Test {
             __myp_assert(cond);
         }
 
-        // 整数相等断言
+        // 显式 true/false
+        void assertTrue(bool cond) { __myp_assert(cond); }
+        void assertFalse(bool cond) { __myp_assert(!cond); }
+
+        // 整数相等/不等断言
         void assertEq(int a, int b) {
             __myp_assert_eq(a, b);
+        }
+        void assertNeq(int a, int b) {
+            __myp_assert_neq(a, b);
+        }
+
+        // 长整数相等断言
+        void assertLongEq(long a, long b) {
+            __myp_assert_long_eq(a, b);
+        }
+
+        // 浮点相等断言（带容差）
+        void assertFloatEq(double a, double b, double eps) {
+            double diff = a - b;
+            if (diff < 0.0) diff = -diff;
+            __myp_assert(diff <= eps);
         }
 
         // 字符串相等断言
         void assertStrEq(string a, string b) {
             __myp_assert_str_eq(a, b);
+        }
+        void assertStrNeq(string a, string b) {
+            __myp_assert_str_neq(a, b);
+        }
+
+        // 强制失败（输出消息后终止测试）
+        void fail(string msg) {
+            __myp_assert_str_eq("", msg);
+            __myp_assert(false);
         }
 
         // 报告测试结果

@@ -1,0 +1,39 @@
+// collections: ArrayList, HashMap, Set
+import env;
+import collections;
+
+class Main {
+    action:
+        @startup void run() {
+            // ArrayList
+            ArrayList<int> list = new ArrayList<int>();
+            list.add(10); list.add(20); list.add(30);
+            Console.writeString("list0="); Console.write(list.get(0));
+            Console.writeString(" sz="); Console.write(list.size());
+            list.set(1, 25);
+            Console.writeString(" set1="); Console.write(list.get(1));
+            Console.writeString(" empty="); Console.writeBool(list.isEmpty());
+
+            // HashMap (key must be integer type for modulo)
+            HashMap<int, string> hm = new HashMap<int, string>();
+            hm.put(1, "one"); hm.put(2, "two");
+            string v = hm.get(1, "?");
+            Console.writeString(" hm1="); Console.writeString(v);
+            Console.writeString(" has2="); Console.writeBool(hm.contains(2));
+            hm.remove(1);
+            Console.writeString(" after_rm="); Console.writeBool(hm.contains(1));
+
+            // Set
+            Set<int> s = new Set<int>();
+            s.add(42); s.add(17);
+            Console.writeString(" s42="); Console.writeBool(s.contains(42));
+            Console.writeString(" s99="); Console.writeBool(s.contains(99));
+            Console.writeString(" sz="); Console.write(s.size());
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

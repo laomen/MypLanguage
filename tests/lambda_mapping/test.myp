@@ -1,0 +1,31 @@
+// mapping lambda — 变换节点
+import env;
+
+mapping() {
+    Main.emit -> (int v) => { return v * 2; } -> Printer.print;
+}
+
+class Printer {
+    action:
+        void print(int v) {
+            Console.writeString("v=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            emit(5);
+            emit(3);
+        }
+    event:
+        emit(int v);
+}
+
+int main() {
+    Main m = new Main();
+    Printer p = new Printer();
+    return 0;
+}

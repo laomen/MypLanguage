@@ -1,0 +1,38 @@
+// 异常处理测试 (try/catch + __myp_throw)
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // 1. try 无异常
+            try {
+                Console.writeString("try_ok\n");
+            } catch (string e) {
+                Console.writeString("should_not_catch\n");
+            }
+            Console.writeString("after_try_ok\n");
+
+            // 2. try 捕获 throw
+            try {
+                __myp_throw("error!");
+                Console.writeString("should_not_reach\n");
+            } catch (string e) {
+                Console.writeString("caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+            Console.writeString("after_catch\n");
+
+            // 3. try/finally (无 catch)
+            try {
+                Console.writeString("try_finally\n");
+            } finally {
+                Console.writeString("finally_ok\n");
+            }
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

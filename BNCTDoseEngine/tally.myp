@@ -4,12 +4,14 @@ import atomic;
 
 @static class TallyData {
     property:
-        double[] depthDose;    // [nz] 每层沉积能量 (MeV)
-        int[] depthCap;        // [nz] 每层俘获数
-        int[] depthBCap;       // [nz] 每层 B-10 俘获数
-        int[] pendingBatches;  // [1] 剩余批次数
-        int nz;                // 深度层数
-        double phantomSize;    // 水模厚度 (cm)
+        double[] depthDose;      // [nz] 每层沉积能量 (MeV)
+        int[] depthCap;          // [nz] 每层俘获数
+        int[] depthBCap;         // [nz] 每层 B-10 俘获数
+        double[] depthFlux;      // [nz] 每层跟踪长度通量 (cm)
+        double[] depthDoseKerma; // [nz] 每层 KERMA 剂量 (MeV)
+        int[] pendingBatches;    // [1] 剩余批次数
+        int nz;                  // 深度层数
+        double phantomSize;      // 水模厚度 (cm)
 }
 
 // Tally — 事件驱动累计器
@@ -33,22 +35,28 @@ class Tally {
         @thread void writeResults(string prefix) {
             // 汇总
             double td = 0.0; int tc = 0; int tbc = 0;
+            double tflux = 0.0; double tkerma = 0.0;
             Console.writeString("\n========== Results ==========\n");
-            Console.writeString("  depth  | dose     | cap | B10\n");
+            Console.writeString(" depth  | dose      | cap  | B10   | flux      | kerma\n");
             for (int iz = 0; iz < TallyData.nz; iz = iz + 1) {
                 td = td + TallyData.depthDose[iz];
                 tc = tc + TallyData.depthCap[iz];
                 tbc = tbc + TallyData.depthBCap[iz];
+                tflux = tflux + TallyData.depthFlux[iz];
+                tkerma = tkerma + TallyData.depthDoseKerma[iz];
                 double d = (iz + 0.5) * TallyData.phantomSize / TallyData.nz;
                 Console.writeFloat(d); Console.writeString(" | ");
                 Console.writeFloat(TallyData.depthDose[iz]); Console.writeString(" | ");
                 Console.write(TallyData.depthCap[iz]); Console.writeString(" | ");
-                Console.write(TallyData.depthBCap[iz]); Console.writeString("\n");
+                Console.write(TallyData.depthBCap[iz]); Console.writeString(" | ");
+                Console.writeFloat(TallyData.depthFlux[iz]); Console.writeString(" | ");
+                Console.writeFloat(TallyData.depthDoseKerma[iz]); Console.writeString("\n");
             }
             Console.writeString("  total: cap="); Console.write(tc);
             Console.writeString(" B10="); Console.write(tbc);
             Console.writeString(" dose="); Console.writeFloat(td);
-            Console.writeString(" MeV");
+            Console.writeString(" MeV flux="); Console.writeFloat(tflux);
+            Console.writeString(" kerma="); Console.writeFloat(tkerma);
             if (tbc > 0) {
                 Console.writeString(" H/B=");
                 Console.writeFloat((tc - tbc) * 1.0 / tbc);
