@@ -1,0 +1,63 @@
+// json.myp — MYP 标准库：JSON 解析器
+//
+// 用法：
+//   Json doc = new Json(jsonString);
+//   string name = doc.getString("name");
+//   int ver = doc.getInt("version");
+//   doc.free();
+
+import env;
+import text;
+import math;
+
+// FFI 声明（handle 使用 long 存储指针）
+ffi long myp_json_parse(string json_str);
+ffi int myp_json_get_type(long handle, string path);
+ffi string myp_json_get_string(long handle, string path);
+ffi double myp_json_get_number(long handle, string path);
+ffi int myp_json_get_bool(long handle, string path);
+ffi int myp_json_array_length(long handle, string path);
+ffi void myp_json_free(long handle);
+
+// JSON 文档解析器
+class Json {
+    action:
+        @startup void init(string jsonStr) {
+            handle_ = myp_json_parse(jsonStr);
+        }
+
+        int type(string path) {
+            return myp_json_get_type(handle_, path);
+        }
+
+        string getString(string path) {
+            return myp_json_get_string(handle_, path);
+        }
+
+        int getInt(string path) {
+            double v = myp_json_get_number(handle_, path);
+            return Math.trunc(v);
+        }
+
+        double getDouble(string path) {
+            return myp_json_get_number(handle_, path);
+        }
+
+        int getBool(string path) {
+            return myp_json_get_bool(handle_, path);
+        }
+
+        int arrayLen(string path) {
+            return myp_json_array_length(handle_, path);
+        }
+
+        void free() {
+            if (handle_ != 0L) {
+                myp_json_free(handle_);
+                handle_ = 0L;
+            }
+        }
+
+    property:
+        long handle_;
+}

@@ -1,0 +1,70 @@
+// logger.myp — MYP 标准库：日志工具
+//
+// 用法：
+//   Logger log = new Logger("myapp");
+//   log.info("application started");
+//   log.warn("disk space low: " + freeSpace);
+//   log.error("failed to open file: " + path);
+//   log.setLevel(LogLevel.DEBUG);
+//
+// 默认输出到 Console。支持日志级别过滤。
+
+import env;
+import text;
+import date;
+
+// 日志级别枚举
+enum LogLevel {
+    DEBUG;
+    INFO;
+    WARN;
+    ERROR;
+}
+
+class Logger {
+    action:
+        // 创建 Logger，name 为日志器名称
+        @startup void init(string name) {
+            name_ = name;
+            level_ = 1;  // 默认 INFO
+        }
+
+        // 设置日志级别
+        void setLevel(int level) {
+            level_ = level;
+        }
+
+        int getLevel() {
+            return level_;
+        }
+
+        // DEBUG 级别日志
+        void debug(string msg) {
+            if (level_ <= 0) log_("DEBUG", msg);
+        }
+
+        // INFO 级别日志
+        void info(string msg) {
+            if (level_ <= 1) log_("INFO", msg);
+        }
+
+        // WARN 级别日志
+        void warn(string msg) {
+            if (level_ <= 2) log_("WARN", msg);
+        }
+
+        // ERROR 级别日志
+        void error(string msg) {
+            if (level_ <= 3) log_("ERROR", msg);
+        }
+
+    function:
+        void log_(string level, string msg) {
+            string timestamp = Date.formatNow("%Y-%m-%d %H:%M:%S");
+            Console.writeLine("[" + timestamp + "] [" + level + "] [" + name_ + "] " + msg);
+        }
+
+    property:
+        string name_;
+        int level_;
+}

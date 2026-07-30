@@ -1,0 +1,118 @@
+// date.myp — MYP 标准库：日期时间工具
+//
+// 用法：
+//   string s = Date.now();                    // "2026-07-30 17:52:40"
+//   string s = Date.formatNow("%Y-%m-%d");    // "2026-07-30"
+//   int y = Date.year();                      // 2026
+//   int m = Date.month();                     // 7
+//   int d = Date.day();                       // 30
+//   string t = Date.format(Date.nowMs(), "%H:%M:%S");
+
+// FFI 声明
+ffi long myp_now_realtime_ms();
+ffi string myp_date_format(string fmt);
+ffi string myp_date_format_ms(long ms, string fmt);
+ffi int myp_date_field(long ms, int field);
+
+class Date {
+    static:
+        // 当前实时时间（毫秒，wall-clock）
+        long nowMs() {
+            return myp_now_realtime_ms();
+        }
+
+        // 当前时间字符串（默认格式：YYYY-MM-DD HH:MM:SS）
+        string now() {
+            return myp_date_format("%Y-%m-%d %H:%M:%S");
+        }
+
+        // 自定义格式的当前时间
+        string formatNow(string fmt) {
+            return myp_date_format(fmt);
+        }
+
+        // 自定义格式的指定时间
+        string format(long ms, string fmt) {
+            return myp_date_format_ms(ms, fmt);
+        }
+
+        // ___ 日期字段提取 ___
+
+        // 年份（如 2026）
+        int getYear() {
+            return myp_date_field(myp_now_realtime_ms(), 0);
+        }
+
+        // 月份（1-12）
+        int getMonth() {
+            return myp_date_field(myp_now_realtime_ms(), 1);
+        }
+
+        // 日期（1-31）
+        int getDay() {
+            return myp_date_field(myp_now_realtime_ms(), 2);
+        }
+
+        // 小时（0-23）
+        int getHour() {
+            return myp_date_field(myp_now_realtime_ms(), 3);
+        }
+
+        // 分钟（0-59）
+        int getMinute() {
+            return myp_date_field(myp_now_realtime_ms(), 4);
+        }
+
+        // 秒钟（0-59）
+        int getSecond() {
+            return myp_date_field(myp_now_realtime_ms(), 5);
+        }
+
+        // 星期几（0=星期日, 1=星期一, ...）
+        int getWeekday() {
+            return myp_date_field(myp_now_realtime_ms(), 6);
+        }
+
+        // 一年中的第几天（0-365）
+        int getDayOfYear() {
+            return myp_date_field(myp_now_realtime_ms(), 7);
+        }
+
+        // ___ 字段提取（指定时间） ___
+
+        int getYearOf(long ms) { return myp_date_field(ms, 0); }
+        int getMonthOf(long ms) { return myp_date_field(ms, 1); }
+        int getDayOf(long ms) { return myp_date_field(ms, 2); }
+        int getHourOf(long ms) { return myp_date_field(ms, 3); }
+        int getMinuteOf(long ms) { return myp_date_field(ms, 4); }
+        int getSecondOf(long ms) { return myp_date_field(ms, 5); }
+
+        // 星期名称
+        string weekdayName(int wday) {
+            if (wday == 0) return "Sunday";
+            if (wday == 1) return "Monday";
+            if (wday == 2) return "Tuesday";
+            if (wday == 3) return "Wednesday";
+            if (wday == 4) return "Thursday";
+            if (wday == 5) return "Friday";
+            if (wday == 6) return "Saturday";
+            return "Unknown";
+        }
+
+        // 月份名称
+        string monthName(int mon) {
+            if (mon == 1) return "January";
+            if (mon == 2) return "February";
+            if (mon == 3) return "March";
+            if (mon == 4) return "April";
+            if (mon == 5) return "May";
+            if (mon == 6) return "June";
+            if (mon == 7) return "July";
+            if (mon == 8) return "August";
+            if (mon == 9) return "September";
+            if (mon == 10) return "October";
+            if (mon == 11) return "November";
+            if (mon == 12) return "December";
+            return "Unknown";
+        }
+}

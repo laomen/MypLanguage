@@ -1748,7 +1748,13 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                         auto* start_func = module_->getFunction(fn);
                         if (start_func) {
                             auto* loaded = builder_.CreateLoad(lt, a, d.name);
-                            builder_.CreateCall(start_func, {loaded});
+                            std::vector<llvm::Value*> init_args;
+                            init_args.push_back(loaded);
+                            // Pass constructor arguments from NewExpr
+                            for (auto& arg : ne.args) {
+                                init_args.push_back(generateExpr(*arg));
+                            }
+                            builder_.CreateCall(start_func, init_args);
                         }
                     }
                 }

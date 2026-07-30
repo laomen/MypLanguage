@@ -25,7 +25,13 @@ void myp_free_all(void);
 
 // ---- Timeline ----
 int64_t myp_now_ms(void);
+int64_t myp_now_realtime_ms(void);
 void myp_sleep_ms(int64_t ms);
+
+// ---- Date / Time Formatting ----
+char* myp_date_format(const char* fmt);
+char* myp_date_format_ms(int64_t ms, const char* fmt);
+int32_t myp_date_field(int64_t ms, int32_t field);
 
 // ---- String ----
 char* myp_strcat(const char* a, const char* b);
@@ -41,6 +47,15 @@ char* myp_str_to_lower(const char* s);
 char* myp_str_trim(const char* s);
 int32_t myp_str_split_count(const char* s, const char* delim);
 char* myp_str_split_get(const char* s, const char* delim, int32_t index);
+
+// ---- JSON Parser ----
+int64_t myp_json_parse(const char* json_str);
+int32_t myp_json_get_type(int64_t handle, const char* path);
+const char* myp_json_get_string(int64_t handle, const char* path);
+double myp_json_get_number(int64_t handle, const char* path);
+int32_t myp_json_get_bool(int64_t handle, const char* path);
+int32_t myp_json_array_length(int64_t handle, const char* path);
+void myp_json_free(int64_t handle);
 
 // ---- Flush stdout ----
 void myp_flush(void);
