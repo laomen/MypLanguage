@@ -1,14 +1,90 @@
 // text.myp — MYP 标准库：文本处理
 //
-// StringBuilder — 字符串构建器（固定容量）
+// Str            — 字符串工具函数（静态类）
+//   len/s contains/startsWith/endsWith/indexOf
+//   substring/replace/toUpper/toLower/trim/split
+//
+// StringBuilder  — 字符串构建器（固定容量）
 //   将多个字符串片段收集后一次性拼接，减少中间对象。
 //
 // 用法：
+//   Str.contains("hello", "ell");   // true
+//   Str.toUpper("hello");           // "HELLO"
 //   StringBuilder sb = new StringBuilder();
-//   sb.append("Hello");
-//   sb.append(" World");
+//   sb.append("Hello"); sb.append(" World");
 //   string result = sb.toString();  // "Hello World"
 
+// ---- FFI 声明：C 运行时字符串函数 ----
+ffi int myp_strlen(string s);
+ffi int myp_str_contains(string s, string sub);
+ffi int myp_str_index_of(string s, string sub);
+ffi int myp_str_starts_with(string s, string prefix);
+ffi int myp_str_ends_with(string s, string suffix);
+ffi string myp_str_substring(string s, int start, int end);
+ffi string myp_str_replace(string s, string old_str, string new_str);
+ffi string myp_str_to_upper(string s);
+ffi string myp_str_to_lower(string s);
+ffi string myp_str_trim(string s);
+ffi int myp_str_split_count(string s, string delim);
+ffi string myp_str_split_get(string s, string delim, int index);
+
+// ============================================================
+// Str — 字符串工具函数（静态类）
+// ============================================================
+class Str {
+    static:
+        // 字符串长度
+        int len(string s) { return myp_strlen(s); }
+
+        // 是否包含子串
+        int contains(string s, string sub) { return myp_str_contains(s, sub); }
+
+        // 子串首次出现位置（-1 表示未找到）
+        int indexOf(string s, string sub) { return myp_str_index_of(s, sub); }
+
+        // 是否以指定前缀开头
+        int startsWith(string s, string prefix) { return myp_str_starts_with(s, prefix); }
+
+        // 是否以指定后缀结尾
+        int endsWith(string s, string suffix) { return myp_str_ends_with(s, suffix); }
+
+        // 截取子串 [start, end)，end 不包含
+        string substring(string s, int start, int end) {
+            return myp_str_substring(s, start, end);
+        }
+
+        // 替换第一个匹配的子串
+        string replace(string s, string old_str, string new_str) {
+            return myp_str_replace(s, old_str, new_str);
+        }
+
+        // 转大写
+        string toUpper(string s) { return myp_str_to_upper(s); }
+
+        // 转小写
+        string toLower(string s) { return myp_str_to_lower(s); }
+
+        // 去除首尾空白
+        string trim(string s) { return myp_str_trim(s); }
+
+        // 按分隔符拆分
+        int splitCount(string s, string delim) { return myp_str_split_count(s, delim); }
+        string splitGet(string s, string delim, int index) { return myp_str_split_get(s, delim, index); }
+
+        // 按分隔符拆分为数组（末位存实际数量）
+        string[] split(string s, string delim) {
+            int n = myp_str_split_count(s, delim);
+            string[1024] parts;
+            for (int i = 0; i < n; i = i + 1) {
+                parts[i] = myp_str_split_get(s, delim, i);
+            }
+            return parts;
+        }
+}
+
+// ============================================================
+// StringBuilder — 字符串构建器
+// ============================================================
 class StringBuilder {
     action:
         @startup void init() {

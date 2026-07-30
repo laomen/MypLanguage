@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
+#include <ctype.h>
 #include <time.h>
 #include <termios.h>
 #include <unistd.h>
@@ -219,6 +220,145 @@ int32_t myp_str_eq(const char* a, const char* b) {
 double myp_atof(const char* s) {
     if (!s) return 0.0;
     return atof(s);
+}
+
+// ======================
+// String Utilities
+// ======================
+
+int32_t myp_str_contains(const char* s, const char* sub) {
+    if (!s || !sub) return 0;
+    return strstr(s, sub) != NULL ? 1 : 0;
+}
+
+int32_t myp_str_index_of(const char* s, const char* sub) {
+    if (!s || !sub) return -1;
+    const char* p = strstr(s, sub);
+    if (p) return (int32_t)(p - s);
+    return -1;
+}
+
+int32_t myp_str_starts_with(const char* s, const char* prefix) {
+    if (!s || !prefix) return 0;
+    size_t n = strlen(prefix);
+    if (n > strlen(s)) return 0;
+    return strncmp(s, prefix, n) == 0 ? 1 : 0;
+}
+
+int32_t myp_str_ends_with(const char* s, const char* suffix) {
+    if (!s || !suffix) return 0;
+    size_t sl = strlen(s);
+    size_t sufl = strlen(suffix);
+    if (sufl > sl) return 0;
+    return strcmp(s + sl - sufl, suffix) == 0 ? 1 : 0;
+}
+
+char* myp_str_substring(const char* s, int32_t start, int32_t end) {
+    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    int32_t len = (int32_t)strlen(s);
+    if (start < 0) start = 0;
+    if (end > len) end = len;
+    if (start >= end) {
+        char* r = (char*)malloc(1); r[0] = '\0'; return r;
+    }
+    int32_t new_len = end - start;
+    char* result = (char*)malloc((size_t)new_len + 1);
+    memcpy(result, s + start, (size_t)new_len);
+    result[new_len] = '\0';
+    return result;
+}
+
+char* myp_str_replace(const char* s, const char* old_str, const char* new_str) {
+    if (!s || !old_str || !new_str) {
+        if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+        return myp_strcat(s, "");
+    }
+    const char* pos = strstr(s, old_str);
+    if (!pos) return myp_strcat(s, "");
+    size_t old_len = strlen(old_str);
+    size_t new_len = strlen(new_str);
+    size_t prefix_len = (size_t)(pos - s);
+    size_t total_len = strlen(s) - old_len + new_len;
+    char* result = (char*)malloc(total_len + 1);
+    memcpy(result, s, prefix_len);
+    memcpy(result + prefix_len, new_str, new_len);
+    strcpy(result + prefix_len + new_len, pos + old_len);
+    return result;
+}
+
+char* myp_str_to_upper(const char* s) {
+    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    char* r = myp_strcat(s, "");
+    for (char* p = r; *p; p++) *p = (char)toupper((unsigned char)*p);
+    return r;
+}
+
+char* myp_str_to_lower(const char* s) {
+    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    char* r = myp_strcat(s, "");
+    for (char* p = r; *p; p++) *p = (char)tolower((unsigned char)*p);
+    return r;
+}
+
+char* myp_str_trim(const char* s) {
+    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    while (*s && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) s++;
+    if (!*s) {
+        char* r = (char*)malloc(1); r[0] = '\0'; return r;
+    }
+    const char* end = s + strlen(s) - 1;
+    while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
+    size_t len = (size_t)(end - s + 1);
+    char* r = (char*)malloc(len + 1);
+    memcpy(r, s, len);
+    r[len] = '\0';
+    return r;
+}
+
+int32_t myp_str_split_count(const char* s, const char* delim) {
+    if (!s || !delim) return 0;
+    int32_t count = 0;
+    const char* p = s;
+    size_t dlen = strlen(delim);
+    while (*p) {
+        const char* found = strstr(p, delim);
+        if (found) {
+            count++;
+            p = found + dlen;
+        } else {
+            count++;
+            break;
+        }
+    }
+    return count;
+}
+
+char* myp_str_split_get(const char* s, const char* delim, int32_t index) {
+    if (!s || !delim || index < 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    size_t dlen = strlen(delim);
+    const char* p = s;
+    int32_t cur = 0;
+    while (*p) {
+        const char* found = strstr(p, delim);
+        if (found) {
+            if (cur == index) {
+                size_t len = (size_t)(found - p);
+                char* r = (char*)malloc(len + 1);
+                memcpy(r, p, len);
+                r[len] = '\0';
+                return r;
+            }
+            cur++;
+            p = found + dlen;
+        } else {
+            if (cur == index) {
+                char* r = myp_strcat(p, "");
+                return r;
+            }
+            break;
+        }
+    }
+    char* r = (char*)malloc(1); r[0] = '\0'; return r;
 }
 
 // ======================

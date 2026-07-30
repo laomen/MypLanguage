@@ -222,3 +222,232 @@ class Set<T> {
         bool[1024] occupied_;
         int cnt_;
 }
+
+
+// ============================================================
+// Deque<T> — 双端队列（循环缓冲区，固定容量 1024）
+//   支持从两端添加/移除元素。
+// ============================================================
+class Deque<T> {
+    action:
+        @startup void init() {
+            head_ = 0;
+            tail_ = 0;
+            cnt_ = 0;
+        }
+
+        // 从尾部添加
+        void pushBack(T val) {
+            if (cnt_ >= 1024) return;
+            data_[tail_] = val;
+            tail_ = (tail_ + 1) % 1024;
+            cnt_ = cnt_ + 1;
+        }
+
+        // 从头部添加
+        void pushFront(T val) {
+            if (cnt_ >= 1024) return;
+            head_ = (head_ - 1 + 1024) % 1024;
+            data_[head_] = val;
+            cnt_ = cnt_ + 1;
+        }
+
+        // 从头部移除并返回
+        T popFront() {
+            if (cnt_ <= 0) return data_[0];  // empty
+            T val = data_[head_];
+            head_ = (head_ + 1) % 1024;
+            cnt_ = cnt_ - 1;
+            return val;
+        }
+
+        // 从尾部移除并返回
+        T popBack() {
+            if (cnt_ <= 0) return data_[0];  // empty
+            tail_ = (tail_ - 1 + 1024) % 1024;
+            T val = data_[tail_];
+            cnt_ = cnt_ - 1;
+            return val;
+        }
+
+        // 查看头部元素（不移除）
+        T front() { return data_[head_]; }
+
+        // 查看尾部元素（不移除）
+        T back() { return data_[(tail_ - 1 + 1024) % 1024]; }
+
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() {
+            head_ = 0;
+            tail_ = 0;
+            cnt_ = 0;
+        }
+
+    property:
+        T[1024] data_;
+        int head_;
+        int tail_;
+        int cnt_;
+}
+
+
+// ============================================================
+// Queue<T> — 先进先出队列（循环缓冲区，固定容量 1024）
+// ============================================================
+class Queue<T> {
+    action:
+        @startup void init() {
+            head_ = 0;
+            tail_ = 0;
+            cnt_ = 0;
+        }
+
+        void enqueue(T val) {
+            if (cnt_ >= 1024) return;
+            data_[tail_] = val;
+            tail_ = (tail_ + 1) % 1024;
+            cnt_ = cnt_ + 1;
+        }
+
+        T dequeue() {
+            if (cnt_ <= 0) return data_[0];
+            T val = data_[head_];
+            head_ = (head_ + 1) % 1024;
+            cnt_ = cnt_ - 1;
+            return val;
+        }
+
+        T peek() { return data_[head_]; }
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() {
+            head_ = 0;
+            tail_ = 0;
+            cnt_ = 0;
+        }
+
+    property:
+        T[1024] data_;
+        int head_;
+        int tail_;
+        int cnt_;
+}
+
+
+// ============================================================
+// Stack<T> — 后进先出栈（固定容量 1024）
+// ============================================================
+class Stack<T> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+        }
+
+        void push(T val) {
+            if (cnt_ >= 1024) return;
+            data_[cnt_] = val;
+            cnt_ = cnt_ + 1;
+        }
+
+        T pop() {
+            if (cnt_ <= 0) return data_[0];
+            cnt_ = cnt_ - 1;
+            return data_[cnt_];
+        }
+
+        T peek() { return data_[cnt_ - 1]; }
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() { cnt_ = 0; }
+
+    property:
+        T[1024] data_;
+        int cnt_;
+}
+
+
+// ============================================================
+// Sort — 排序与搜索算法（静态类）
+// ============================================================
+class Sort {
+    static:
+        // 冒泡排序（int 数组，原地排序）
+        void bubbleSort(int[] arr, int n) {
+            for (int i = 0; i < n - 1; i = i + 1) {
+                for (int j = 0; j < n - 1 - i; j = j + 1) {
+                    if (arr[j] > arr[j + 1]) {
+                        int tmp = arr[j];
+                        arr[j] = arr[j + 1];
+                        arr[j + 1] = tmp;
+                    }
+                }
+            }
+        }
+
+        // 选择排序（int 数组，原地排序）
+        void selectionSort(int[] arr, int n) {
+            for (int i = 0; i < n - 1; i = i + 1) {
+                int minIdx = i;
+                for (int j = i + 1; j < n; j = j + 1) {
+                    if (arr[j] < arr[minIdx]) minIdx = j;
+                }
+                if (minIdx != i) {
+                    int tmp = arr[i];
+                    arr[i] = arr[minIdx];
+                    arr[minIdx] = tmp;
+                }
+            }
+        }
+
+        // 二分查找（要求在已排序数组中执行）
+        int binarySearch(int[] arr, int n, int val) {
+            int lo = 0;
+            int hi = n - 1;
+            while (lo <= hi) {
+                int mid = lo + (hi - lo) / 2;
+                if (arr[mid] == val) return mid;
+                if (arr[mid] < val) lo = mid + 1;
+                else hi = mid - 1;
+            }
+            return -1;
+        }
+
+        // 线性查找
+        int linearSearch(int[] arr, int n, int val) {
+            for (int i = 0; i < n; i = i + 1) {
+                if (arr[i] == val) return i;
+            }
+            return -1;
+        }
+
+        // 查找数组中的最大值
+        int max(int[] arr, int n) {
+            if (n <= 0) return 0;
+            int v = arr[0];
+            for (int i = 1; i < n; i = i + 1) {
+                if (arr[i] > v) v = arr[i];
+            }
+            return v;
+        }
+
+        // 查找数组中的最小值
+        int min(int[] arr, int n) {
+            if (n <= 0) return 0;
+            int v = arr[0];
+            for (int i = 1; i < n; i = i + 1) {
+                if (arr[i] < v) v = arr[i];
+            }
+            return v;
+        }
+
+        // 反转数组
+        void reverse(int[] arr, int n) {
+            for (int i = 0; i < n / 2; i = i + 1) {
+                int j = n - 1 - i;
+                int tmp = arr[i];
+                arr[i] = arr[j];
+                arr[j] = tmp;
+            }
+        }
+}

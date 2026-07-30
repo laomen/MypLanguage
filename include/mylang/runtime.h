@@ -30,6 +30,17 @@ void myp_sleep_ms(int64_t ms);
 // ---- String ----
 char* myp_strcat(const char* a, const char* b);
 int32_t myp_str_eq(const char* a, const char* b);
+int32_t myp_str_contains(const char* s, const char* sub);
+int32_t myp_str_index_of(const char* s, const char* sub);
+int32_t myp_str_starts_with(const char* s, const char* prefix);
+int32_t myp_str_ends_with(const char* s, const char* suffix);
+char* myp_str_substring(const char* s, int32_t start, int32_t end);
+char* myp_str_replace(const char* s, const char* old_str, const char* new_str);
+char* myp_str_to_upper(const char* s);
+char* myp_str_to_lower(const char* s);
+char* myp_str_trim(const char* s);
+int32_t myp_str_split_count(const char* s, const char* delim);
+char* myp_str_split_get(const char* s, const char* delim, int32_t index);
 
 // ---- Flush stdout ----
 void myp_flush(void);
