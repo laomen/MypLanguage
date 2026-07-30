@@ -254,15 +254,15 @@ int32_t myp_str_ends_with(const char* s, const char* suffix) {
 }
 
 char* myp_str_substring(const char* s, int32_t start, int32_t end) {
-    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!s) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     int32_t len = (int32_t)strlen(s);
     if (start < 0) start = 0;
     if (end > len) end = len;
     if (start >= end) {
-        char* r = (char*)malloc(1); r[0] = '\0'; return r;
+        char* r = (char*)myp_alloc(1); r[0] = '\0'; return r;
     }
     int32_t new_len = end - start;
-    char* result = (char*)malloc((size_t)new_len + 1);
+    char* result = (char*)myp_alloc((size_t)new_len + 1);
     memcpy(result, s + start, (size_t)new_len);
     result[new_len] = '\0';
     return result;
@@ -270,7 +270,7 @@ char* myp_str_substring(const char* s, int32_t start, int32_t end) {
 
 char* myp_str_replace(const char* s, const char* old_str, const char* new_str) {
     if (!s || !old_str || !new_str) {
-        if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+        if (!s) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
         return myp_strcat(s, "");
     }
     const char* pos = strstr(s, old_str);
@@ -279,7 +279,7 @@ char* myp_str_replace(const char* s, const char* old_str, const char* new_str) {
     size_t new_len = strlen(new_str);
     size_t prefix_len = (size_t)(pos - s);
     size_t total_len = strlen(s) - old_len + new_len;
-    char* result = (char*)malloc(total_len + 1);
+    char* result = (char*)myp_alloc(total_len + 1);
     memcpy(result, s, prefix_len);
     memcpy(result + prefix_len, new_str, new_len);
     strcpy(result + prefix_len + new_len, pos + old_len);
@@ -287,29 +287,29 @@ char* myp_str_replace(const char* s, const char* old_str, const char* new_str) {
 }
 
 char* myp_str_to_upper(const char* s) {
-    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!s) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     char* r = myp_strcat(s, "");
     for (char* p = r; *p; p++) *p = (char)toupper((unsigned char)*p);
     return r;
 }
 
 char* myp_str_to_lower(const char* s) {
-    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!s) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     char* r = myp_strcat(s, "");
     for (char* p = r; *p; p++) *p = (char)tolower((unsigned char)*p);
     return r;
 }
 
 char* myp_str_trim(const char* s) {
-    if (!s) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!s) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     while (*s && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) s++;
     if (!*s) {
-        char* r = (char*)malloc(1); r[0] = '\0'; return r;
+        char* r = (char*)myp_alloc(1); r[0] = '\0'; return r;
     }
     const char* end = s + strlen(s) - 1;
     while (end > s && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) end--;
     size_t len = (size_t)(end - s + 1);
-    char* r = (char*)malloc(len + 1);
+    char* r = (char*)myp_alloc(len + 1);
     memcpy(r, s, len);
     r[len] = '\0';
     return r;
@@ -334,7 +334,7 @@ int32_t myp_str_split_count(const char* s, const char* delim) {
 }
 
 char* myp_str_split_get(const char* s, const char* delim, int32_t index) {
-    if (!s || !delim || index < 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!s || !delim || index < 0) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     size_t dlen = strlen(delim);
     const char* p = s;
     int32_t cur = 0;
@@ -343,7 +343,7 @@ char* myp_str_split_get(const char* s, const char* delim, int32_t index) {
         if (found) {
             if (cur == index) {
                 size_t len = (size_t)(found - p);
-                char* r = (char*)malloc(len + 1);
+                char* r = (char*)myp_alloc(len + 1);
                 memcpy(r, p, len);
                 r[len] = '\0';
                 return r;
@@ -358,7 +358,7 @@ char* myp_str_split_get(const char* s, const char* delim, int32_t index) {
             break;
         }
     }
-    char* r = (char*)malloc(1); r[0] = '\0'; return r;
+    char* r = (char*)myp_alloc(1); r[0] = '\0'; return r;
 }
 
 // ======================
@@ -387,9 +387,10 @@ typedef struct JsonNode {
 } JsonNode;
 
 static JsonNode* json_new_node(int type, const char* key) {
-    JsonNode* n = (JsonNode*)calloc(1, sizeof(JsonNode));
+    JsonNode* n = (JsonNode*)myp_alloc(sizeof(JsonNode));
+    if (n) memset(n, 0, sizeof(JsonNode));
     n->type = type;
-    n->key = key ? strdup(key) : NULL;
+    n->key = key ? myp_strdup(key) : NULL;
     n->child_count = 0;
     n->child_cap = 0;
     n->children = NULL;
@@ -441,7 +442,7 @@ static JsonNode* json_parse_string(const char** pp) {
     }
     if (!end) return NULL;
     size_t len = (size_t)(end - start);
-    char* val = (char*)malloc(len + 1);
+    char* val = (char*)myp_alloc(len + 1);
     // Copy with unescape
     size_t wi = 0;
     for (const char* r = start; r < end; r++) {
@@ -473,7 +474,6 @@ static JsonNode* json_parse_number(const char** pp) {
     double d = strtod(p, &end);
     if (end == p) return NULL;
     JsonNode* n;
-    // Check if it's an integer
     const char* check = p;
     int is_int = 1;
     while (check < end) {
@@ -483,19 +483,16 @@ static JsonNode* json_parse_number(const char** pp) {
     if (is_int) {
         n = json_new_node(JSON_INT, NULL);
         n->num_val = d;
-        n->str_val = strdup(p);
-        // Trim to just the number part
         size_t nlen = (size_t)(end - p);
-        char* tmp = (char*)malloc(nlen + 1);
+        char* tmp = (char*)myp_alloc(nlen + 1);
         memcpy(tmp, p, nlen);
         tmp[nlen] = '\0';
-        free(n->str_val);
         n->str_val = tmp;
     } else {
         n = json_new_node(JSON_DOUBLE, NULL);
         n->num_val = d;
         size_t nlen = (size_t)(end - p);
-        char* tmp = (char*)malloc(nlen + 1);
+        char* tmp = (char*)myp_alloc(nlen + 1);
         memcpy(tmp, p, nlen);
         tmp[nlen] = '\0';
         n->str_val = tmp;
@@ -554,7 +551,7 @@ static JsonNode* json_parse_object(const char** pp) {
         p = json_skip_ws(p);
         JsonNode* val = json_parse_value(&p);
         if (!val) { json_free_node(key_node); json_free_node(n); return NULL; }
-        val->key = strdup(key_node->str_val);
+        val->key = myp_strdup(key_node->str_val);
         json_add_child(n, val);
         json_free_node(key_node);
         p = json_skip_ws(p);
@@ -742,52 +739,52 @@ int32_t myp_fs_list_count(const char* path) {
 }
 
 char* myp_fs_list_get(const char* path, int32_t index) {
-    if (!path || index < 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!path || index < 0) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     DIR* dir = opendir(path);
-    if (!dir) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!dir) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     struct dirent* entry;
     int32_t cur = 0;
     char* result = NULL;
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
         if (cur == index) {
-            result = strdup(entry->d_name);
+            result = myp_strdup(entry->d_name);
             break;
         }
         cur++;
     }
     closedir(dir);
-    if (!result) { result = (char*)malloc(1); result[0] = '\0'; }
+    if (!result) { result = (char*)myp_alloc(1); result[0] = '\0'; }
     return result;
 }
 
 char* myp_fs_dirname(const char* path) {
-    if (!path) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!path) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     const char* slash = strrchr(path, '/');
-    if (!slash) { char* r = strdup("."); return r; }
+    if (!slash) { char* r = myp_strdup("."); return r; }
     size_t len = (size_t)(slash - path);
-    if (len == 0) { char* r = strdup("/"); return r; }
-    char* r = (char*)malloc(len + 1);
+    if (len == 0) { char* r = myp_strdup("/"); return r; }
+    char* r = (char*)myp_alloc(len + 1);
     memcpy(r, path, len);
     r[len] = '\0';
     return r;
 }
 
 char* myp_fs_basename(const char* path) {
-    if (!path) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!path) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     const char* slash = strrchr(path, '/');
-    if (!slash) return strdup(path);
-    return strdup(slash + 1);
+    if (!slash) return myp_strdup(path);
+    return myp_strdup(slash + 1);
 }
 
 char* myp_fs_join(const char* dir, const char* file) {
-    if (!dir && !file) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
-    if (!dir) return strdup(file);
-    if (!file) return strdup(dir);
+    if (!dir && !file) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
+    if (!dir) return myp_strdup(file);
+    if (!file) return myp_strdup(dir);
     size_t dl = strlen(dir);
     size_t fl = strlen(file);
     int need_sep = (dl > 0 && dir[dl-1] != '/') ? 1 : 0;
-    char* r = (char*)malloc(dl + (size_t)need_sep + fl + 1);
+    char* r = (char*)myp_alloc(dl + (size_t)need_sep + fl + 1);
     memcpy(r, dir, dl);
     if (need_sep) r[dl] = '/';
     memcpy(r + dl + need_sep, file, fl + 1);
@@ -886,23 +883,23 @@ static time_t myp_ms_to_time_t(int64_t ms) {
 }
 
 char* myp_date_format(const char* fmt) {
-    if (!fmt) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!fmt) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     time_t t = time(NULL);
     struct tm* tm_info = localtime(&t);
-    if (!tm_info) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!tm_info) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     char buf[128];
     strftime(buf, sizeof(buf), fmt, tm_info);
-    return strdup(buf);
+    return myp_strdup(buf);
 }
 
 char* myp_date_format_ms(int64_t ms, const char* fmt) {
-    if (!fmt) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!fmt) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     time_t t = myp_ms_to_time_t(ms);
     struct tm* tm_info = localtime(&t);
-    if (!tm_info) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!tm_info) { char* r = (char*)myp_alloc(1); r[0] = '\0'; return r; }
     char buf[128];
     strftime(buf, sizeof(buf), fmt, tm_info);
-    return strdup(buf);
+    return myp_strdup(buf);
 }
 
 int32_t myp_date_field(int64_t ms, int32_t field) {
@@ -930,8 +927,8 @@ int32_t myp_date_field(int64_t ms, int32_t field) {
 
 char* myp_strcat(const char* a, const char* b) {
     if (!a && !b) return NULL;
-    if (!a) return strdup(b);
-    if (!b) return strdup(a);
+    if (!a) return myp_strdup(b);
+    if (!b) return myp_strdup(a);
     size_t la = strlen(a), lb = strlen(b);
     char* result = (char*)myp_alloc(la + lb + 1);
     if (result) {
@@ -940,6 +937,14 @@ char* myp_strcat(const char* a, const char* b) {
         result[la + lb] = '\0';
     }
     return result;
+}
+
+char* myp_strdup(const char* s) {
+    if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
+    size_t len = strlen(s);
+    char* r = (char*)myp_alloc(len + 1);
+    if (r) { memcpy(r, s, len + 1); }
+    return r;
 }
 
 // Convert a value to string (for string concatenation with non-strings)

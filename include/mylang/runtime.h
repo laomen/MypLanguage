@@ -35,6 +35,7 @@ int32_t myp_date_field(int64_t ms, int32_t field);
 
 // ---- String ----
 char* myp_strcat(const char* a, const char* b);
+char* myp_strdup(const char* s);
 int32_t myp_str_eq(const char* a, const char* b);
 int32_t myp_str_contains(const char* s, const char* sub);
 int32_t myp_str_index_of(const char* s, const char* sub);
