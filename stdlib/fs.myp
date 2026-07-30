@@ -1,0 +1,92 @@
+// fs.myp — MYP 标准库：文件系统工具
+//
+// 用法：
+//   import fs;
+//   Path p = new Path("/home/user/file.txt");
+//   p.dirname();    // "/home/user"
+//   p.basename();   // "file.txt"
+//   string[] files = Fs.listDir("/tmp");
+//   Fs.exists("/tmp");    // 1
+//   Fs.isDir("/tmp");     // 1
+//   Fs.isFile("/tmp");    // 0
+
+import env;
+import text;
+
+// FFI 声明
+ffi int myp_fs_exists(string path);
+ffi int myp_fs_is_dir(string path);
+ffi int myp_fs_is_file(string path);
+ffi long myp_fs_file_size(string path);
+ffi long myp_fs_modified_time(string path);
+ffi int myp_fs_list_count(string path);
+ffi string myp_fs_list_get(string path, int index);
+ffi string myp_fs_dirname(string path);
+ffi string myp_fs_basename(string path);
+ffi string myp_fs_join(string dir, string file);
+
+// ============================================================
+// Fs — 文件系统静态工具
+// ============================================================
+class Fs {
+    static:
+        int exists(string path) { return myp_fs_exists(path); }
+        int isDir(string path) { return myp_fs_is_dir(path); }
+        int isFile(string path) { return myp_fs_is_file(path); }
+        long fileSize(string path) { return myp_fs_file_size(path); }
+        long modifiedTime(string path) { return myp_fs_modified_time(path); }
+        string dirname(string path) { return myp_fs_dirname(path); }
+        string basename(string path) { return myp_fs_basename(path); }
+        string join(string dir, string file) { return myp_fs_join(dir, file); }
+
+        // 列出目录内容（返回文件名数组）
+        string[] listDir(string path) {
+            int n = myp_fs_list_count(path);
+            string[1024] parts;
+            for (int i = 0; i < n; i = i + 1) {
+                parts[i] = myp_fs_list_get(path, i);
+            }
+            return parts;
+        }
+
+        // 列出目录内容数量
+        int listCount(string path) {
+            return myp_fs_list_count(path);
+        }
+}
+
+// ============================================================
+// Path — 路径操作（实例化）
+// ============================================================
+class Path {
+    action:
+        @startup void init(string path) {
+            path_ = path;
+        }
+
+        string dirname() { return myp_fs_dirname(path_); }
+        string basename() { return myp_fs_basename(path_); }
+        string join(string other) {
+            string d = myp_fs_dirname(path_);
+            return myp_fs_join(d, other);
+        }
+        int exists() { return myp_fs_exists(path_); }
+        int isDir() { return myp_fs_is_dir(path_); }
+        int isFile() { return myp_fs_is_file(path_); }
+        long fileSize() { return myp_fs_file_size(path_); }
+        long modifiedTime() { return myp_fs_modified_time(path_); }
+        string toString() { return path_; }
+
+        // 列出当前路径下的文件
+        string[] listDir() {
+            int n = myp_fs_list_count(path_);
+            string[1024] parts;
+            for (int i = 0; i < n; i = i + 1) {
+                parts[i] = myp_fs_list_get(path_, i);
+            }
+            return parts;
+        }
+
+    property:
+        string path_;
+}

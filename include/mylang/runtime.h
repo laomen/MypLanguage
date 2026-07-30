@@ -57,6 +57,21 @@ int32_t myp_json_get_bool(int64_t handle, const char* path);
 int32_t myp_json_array_length(int64_t handle, const char* path);
 void myp_json_free(int64_t handle);
 
+// ---- String Hash ----
+int32_t myp_str_hash(const char* s);
+
+// ---- File System ----
+int32_t myp_fs_exists(const char* path);
+int32_t myp_fs_is_dir(const char* path);
+int32_t myp_fs_is_file(const char* path);
+int64_t myp_fs_file_size(const char* path);
+int64_t myp_fs_modified_time(const char* path);
+int32_t myp_fs_list_count(const char* path);
+char* myp_fs_list_get(const char* path, int32_t index);
+char* myp_fs_dirname(const char* path);
+char* myp_fs_basename(const char* path);
+char* myp_fs_join(const char* dir, const char* file);
+
 // ---- Flush stdout ----
 void myp_flush(void);
 

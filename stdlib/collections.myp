@@ -451,3 +451,111 @@ class Sort {
             }
         }
 }
+
+
+// ============================================================
+// StrHashMap<V> — 字符串键哈希表（开放寻址，固定容量 1024）
+//   使用 C 运行时的 DJB2 哈希函数。
+// ============================================================
+ffi int myp_str_hash(string s);
+
+class StrHashMap<V> {
+    action:
+        @startup void init() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+        void put(string key, V val) {
+            int h = myp_str_hash(key);
+            int idx = h % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    values_[idx] = val;
+                    return;
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+            keys_[idx] = key;
+            values_[idx] = val;
+            occupied_[idx] = true;
+            cnt_ = cnt_ + 1;
+        }
+
+        V get(string key, V default_val) {
+            int h = myp_str_hash(key);
+            int idx = h % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    return values_[idx];
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return default_val;
+            }
+            return default_val;
+        }
+
+        int contains(string key) {
+            int h = myp_str_hash(key);
+            int idx = h % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) return 1;
+                idx = (idx + 1) % 1024;
+                if (idx == start) return 0;
+            }
+            return 0;
+        }
+
+        void remove(string key) {
+            int h = myp_str_hash(key);
+            int idx = h % 1024;
+            int start = idx;
+            while (occupied_[idx]) {
+                if (keys_[idx] == key) {
+                    occupied_[idx] = false;
+                    cnt_ = cnt_ - 1;
+                    int next = (idx + 1) % 1024;
+                    while (occupied_[next]) {
+                        string re_key = keys_[next];
+                        V re_val = values_[next];
+                        occupied_[next] = false;
+                        cnt_ = cnt_ - 1;
+                        int rh = myp_str_hash(re_key);
+                        int ri = rh % 1024;
+                        while (occupied_[ri]) {
+                            ri = (ri + 1) % 1024;
+                        }
+                        keys_[ri] = re_key;
+                        values_[ri] = re_val;
+                        occupied_[ri] = true;
+                        cnt_ = cnt_ + 1;
+                        next = (next + 1) % 1024;
+                    }
+                    return;
+                }
+                idx = (idx + 1) % 1024;
+                if (idx == start) return;
+            }
+        }
+
+        int size() { return cnt_; }
+        bool isEmpty() { return cnt_ == 0; }
+        void clear() {
+            cnt_ = 0;
+            for (int i = 0; i < 1024; i = i + 1) {
+                occupied_[i] = false;
+            }
+        }
+
+    property:
+        string[1024] keys_;
+        V[1024] values_;
+        bool[1024] occupied_;
+        int cnt_;
+}

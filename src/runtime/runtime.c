@@ -671,6 +671,129 @@ void myp_json_free(int64_t handle) {
     json_free_node((JsonNode*)(intptr_t)handle);
 }
 
+// ======================
+// String Hash (for HashMap<string, V>)
+// ======================
+
+int32_t myp_str_hash(const char* s) {
+    if (!s) return 0;
+    uint32_t hash = 5381;
+    int c;
+    while ((c = (unsigned char)*s++)) {
+        hash = ((hash << 5) + hash) + c;
+    }
+    return (int32_t)(hash & 0x7FFFFFFF);
+}
+
+// ======================
+// File System Utilities
+// ======================
+
+#include <dirent.h>
+#include <sys/stat.h>
+
+int32_t myp_fs_exists(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    return stat(path, &st) == 0 ? 1 : 0;
+}
+
+int32_t myp_fs_is_dir(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int32_t myp_fs_is_file(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISREG(st.st_mode) ? 1 : 0;
+}
+
+int64_t myp_fs_file_size(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (int64_t)st.st_size;
+}
+
+int64_t myp_fs_modified_time(const char* path) {
+    if (!path) return 0;
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    return (int64_t)st.st_mtime * 1000;
+}
+
+int32_t myp_fs_list_count(const char* path) {
+    if (!path) return 0;
+    DIR* dir = opendir(path);
+    if (!dir) return 0;
+    int32_t count = 0;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != NULL) {
+        // Skip . and ..
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        count++;
+    }
+    closedir(dir);
+    return count;
+}
+
+char* myp_fs_list_get(const char* path, int32_t index) {
+    if (!path || index < 0) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    DIR* dir = opendir(path);
+    if (!dir) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    struct dirent* entry;
+    int32_t cur = 0;
+    char* result = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        if (cur == index) {
+            result = strdup(entry->d_name);
+            break;
+        }
+        cur++;
+    }
+    closedir(dir);
+    if (!result) { result = (char*)malloc(1); result[0] = '\0'; }
+    return result;
+}
+
+char* myp_fs_dirname(const char* path) {
+    if (!path) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    const char* slash = strrchr(path, '/');
+    if (!slash) { char* r = strdup("."); return r; }
+    size_t len = (size_t)(slash - path);
+    if (len == 0) { char* r = strdup("/"); return r; }
+    char* r = (char*)malloc(len + 1);
+    memcpy(r, path, len);
+    r[len] = '\0';
+    return r;
+}
+
+char* myp_fs_basename(const char* path) {
+    if (!path) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    const char* slash = strrchr(path, '/');
+    if (!slash) return strdup(path);
+    return strdup(slash + 1);
+}
+
+char* myp_fs_join(const char* dir, const char* file) {
+    if (!dir && !file) { char* r = (char*)malloc(1); r[0] = '\0'; return r; }
+    if (!dir) return strdup(file);
+    if (!file) return strdup(dir);
+    size_t dl = strlen(dir);
+    size_t fl = strlen(file);
+    int need_sep = (dl > 0 && dir[dl-1] != '/') ? 1 : 0;
+    char* r = (char*)malloc(dl + (size_t)need_sep + fl + 1);
+    memcpy(r, dir, dl);
+    if (need_sep) r[dl] = '/';
+    memcpy(r + dl + need_sep, file, fl + 1);
+    return r;
+}
+
 typedef struct myp_alloc_node {
     void* ptr;
     struct myp_alloc_node* next;
