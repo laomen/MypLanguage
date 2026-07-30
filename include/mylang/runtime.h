@@ -82,6 +82,13 @@ char* myp_net_recv(int32_t fd, int32_t max_len);
 char* myp_net_recv_line(int32_t fd);
 void myp_net_close(int32_t fd);
 
+// ---- Process Management ----
+int32_t myp_process_run(const char* cmd);
+char* myp_process_output(const char* cmd);
+int32_t myp_process_get_pid(void);
+int32_t myp_process_get_ppid(void);
+int32_t myp_process_is_running(int32_t pid);
+
 // ---- String Enhancements ----
 char* myp_str_repeat(const char* s, int32_t count);
 char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char);

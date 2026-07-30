@@ -1,0 +1,45 @@
+// process.myp — MYP 标准库：进程管理
+//
+// 用法：
+//   int code = Process.run("ls -l");
+//   string out = Process.output("uname -a");
+//   int pid = Process.getPid();
+//   int alive = Process.isRunning(pid);
+
+import env;
+import text;
+
+// FFI 声明
+ffi int myp_process_run(string cmd);
+ffi string myp_process_output(string cmd);
+ffi int myp_process_get_pid();
+ffi int myp_process_get_ppid();
+ffi int myp_process_is_running(int pid);
+
+class Process {
+    static:
+        // 执行命令并返回退出码
+        int run(string cmd) {
+            return myp_process_run(cmd);
+        }
+
+        // 执行命令并捕获标准输出
+        string output(string cmd) {
+            return myp_process_output(cmd);
+        }
+
+        // 获取当前进程 PID
+        int getPid() {
+            return myp_process_get_pid();
+        }
+
+        // 获取父进程 PID
+        int getParentPid() {
+            return myp_process_get_ppid();
+        }
+
+        // 检查进程是否在运行
+        int isRunning(int pid) {
+            return myp_process_is_running(pid);
+        }
+}
