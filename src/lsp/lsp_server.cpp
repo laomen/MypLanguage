@@ -239,6 +239,8 @@ void handleTextDocumentDidOpen(const std::string& params) {
         doc.text = text;
         doc.updateLines();
         // Parse document into AST for definition/completion support
+        // NOTE: This parses on open which is fine (one-time cost).
+        // didChange (keystrokes) does NOT parse — see handleTextDocumentDidChange.
         parseDocument(doc, uri);
         documents_[uri] = std::move(doc);
     }
@@ -273,7 +275,11 @@ void handleTextDocumentDidChange(const std::string& params) {
     if (it != documents_.end() && !text.empty()) {
         it->second.text = text;
         it->second.updateLines();
-        parseDocument(it->second, uri);
+        // LAZY PARSE: do NOT parse AST on every keystroke.
+        // AST will be parsed on demand when definition/hover/documentSymbol is requested.
+        // This prevents LSP from freezing on fast typing.
+        it->second.ast = nullptr;    // invalidate old AST
+        it->second.def_map.clear();  // clear def map
     }
 }
 
@@ -377,7 +383,11 @@ void handleHover(const std::string& id, const std::string& params) {
 
     std::string hover_text;
     auto it = documents_.find(uri);
-    if (it != documents_.end() && it->second.ast && line >= 0 && line < (int)it->second.lines.size()) {
+    if (it != documents_.end() && line >= 0 && line < (int)it->second.lines.size()) {
+        // Lazy parse: build AST if needed for hover info
+        if (!it->second.ast) parseDocument(it->second, uri);
+        if (!it->second.ast) { sendResponse(id, "{\"contents\":[]}"); return; }
+        
         const std::string& src_line = it->second.lines[line];
         if (col >= 0 && col < (int)src_line.size()) {
             // Extract word at cursor
@@ -390,15 +400,15 @@ void handleHover(const std::string& id, const std::string& params) {
             std::string word = src_line.substr(start, end - start);
 
             if (!word.empty()) {
+                bool found = false;
                 // Search in AST for this symbol
                 for (auto& cls : it->second.ast->classes) {
                     if (cls.name == word) {
                         hover_text = "class " + cls.name;
-                        // Add member count info
                         hover_text += "\n---\nactions: " + std::to_string(cls.actions.size());
                         hover_text += ", events: " + std::to_string(cls.events.size());
                         hover_text += ", properties: " + std::to_string(cls.properties.size());
-                        break;
+                        found = true; break;
                     }
                     for (auto& a : cls.actions) {
                         if (a.name == word) {
@@ -409,9 +419,10 @@ void handleHover(const std::string& id, const std::string& params) {
                             }
                             hover_text += ") → " + typeToBasicTypeName(a.return_type.basic_type);
                             if (a.has_startup) hover_text += " [@startup]";
-                            break;
+                            found = true; break;
                         }
                     }
+                    if (found) break;
                     for (auto& ev : cls.events) {
                         if (ev.name == word) {
                             hover_text = cls.name + "." + ev.name + "(";
@@ -420,15 +431,17 @@ void handleHover(const std::string& id, const std::string& params) {
                                 hover_text += typeToBasicTypeName(ev.params[pi].type.basic_type);
                             }
                             hover_text += ") → event";
-                            break;
+                            found = true; break;
                         }
                     }
+                    if (found) break;
                     for (auto& p : cls.properties) {
                         if (p.name == word) {
                             hover_text = cls.name + "." + p.name + " : " + typeToBasicTypeName(p.type.basic_type);
-                            break;
+                            found = true; break;
                         }
                     }
+                    if (found) break;
                     for (auto& fn : cls.functions) {
                         if (fn.name == word) {
                             hover_text = cls.name + "::" + fn.name + "(";
@@ -437,11 +450,12 @@ void handleHover(const std::string& id, const std::string& params) {
                                 hover_text += typeToBasicTypeName(fn.params[pi].type.basic_type);
                             }
                             hover_text += ") → " + typeToBasicTypeName(fn.return_type.basic_type);
-                            break;
+                            found = true; break;
                         }
                     }
+                    if (found) break;
                 }
-                // Check enums
+                // Check enums (if not found in classes)
                 if (hover_text.empty()) {
                     for (auto& en : it->second.ast->enums) {
                         if (en.name == word) {
