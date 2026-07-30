@@ -2142,9 +2142,44 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 }
             }
 
-            // Handle Atomic.addDouble/Atomic.addInt — -> atomicAdd in CUDA
-            // These are calls to Atomic.addDouble/TallyData access which we handle
-            // through member access + assignment patterns instead.
+            // Handle Atomic.addDouble/Atomic.addInt — use atomicrmw in PTX
+            if (e.callee->kind == ExprKind::MemberAccess) {
+                auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+                if (ma.object->kind == ExprKind::Identifier &&
+                    static_cast<const IdentifierExpr&>(*ma.object).name == "Atomic") {
+                    bool is_double = (ma.member_name == "addDouble" || ma.member_name == "addFloat");
+                    bool is_int = (ma.member_name == "addInt" || ma.member_name == "addLong");
+
+                    if ((is_double || is_int) && e.args.size() >= 3) {
+                        // args[0] = array expr, args[1] = index, args[2] = value
+                        auto* arr_ptr = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                                        kernel_arg_values, loop_var_name, tid_val);
+                        auto* idx = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                                    kernel_arg_values, loop_var_name, tid_val);
+                        auto* val = emitKernelExpr(*e.args[2], kb, kernel_vars,
+                                                    kernel_arg_values, loop_var_name, tid_val);
+                        if (arr_ptr && idx && val) {
+                            llvm::Type* elem_ty = is_double ? double_ty : i32_ty;
+                            auto* elem_ptr = kb.CreateGEP(elem_ty, arr_ptr, idx, "atomic_ptr");
+                            if (is_double) {
+                                // Cast val to double if needed
+                                if (val->getType()->isIntegerTy())
+                                    val = kb.CreateSIToFP(val, double_ty);
+                                return kb.CreateAtomicRMW(llvm::AtomicRMWInst::FAdd, elem_ptr, val,
+                                    llvm::MaybeAlign(), llvm::AtomicOrdering::SequentiallyConsistent);
+                            } else {
+                                // Cast val to i32
+                                if (val->getType()->isDoubleTy())
+                                    val = kb.CreateFPToSI(val, i32_ty);
+                                else if (val->getType()->isIntegerTy() && !val->getType()->isIntegerTy(32))
+                                    val = kb.CreateIntCast(val, i32_ty, true);
+                                return kb.CreateAtomicRMW(llvm::AtomicRMWInst::Add, elem_ptr, val,
+                                    llvm::MaybeAlign(), llvm::AtomicOrdering::SequentiallyConsistent);
+                            }
+                        }
+                    }
+                }
+            }
 
             // Fallback: just return 0
             return llvm::ConstantInt::get(i64_ty, 0);
@@ -2363,7 +2398,8 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
 void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
     const std::map<std::string, llvm::Value*>& kernel_vars,
     const std::vector<llvm::Value*>& kernel_arg_values,
-    const std::string& loop_var_name, llvm::Value* tid_val) {
+    const std::string& loop_var_name, llvm::Value* tid_val,
+    llvm::BasicBlock* break_target) {
 
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
 
@@ -2372,7 +2408,7 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
             auto& b = static_cast<const BlockStmt&>(stmt);
             for (auto& s : b.statements)
                 emitKernelStmt(*s, kb, kernel_vars, kernel_arg_values,
-                               loop_var_name, tid_val);
+                               loop_var_name, tid_val, break_target);
             break;
         }
         case StmtKind::ExprStmt: {
@@ -2388,6 +2424,16 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
                 if (d.init_expr)
                     emitKernelExpr(*d.init_expr, kb, kernel_vars, kernel_arg_values,
                                    loop_var_name, tid_val);
+            }
+            break;
+        }
+        case StmtKind::BreakStmt: {
+            if (break_target) {
+                kb.CreateBr(break_target);
+                // After branch, create a new dead block to continue insertion
+                auto* dead_bb = llvm::BasicBlock::Create(ctx_, "dead",
+                    kb.GetInsertBlock()->getParent());
+                kb.SetInsertPoint(dead_bb);
             }
             break;
         }
@@ -2408,14 +2454,14 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
 
             kb.SetInsertPoint(then_bb);
             emitKernelStmt(*is.then_block, kb, kernel_vars, kernel_arg_values,
-                           loop_var_name, tid_val);
+                           loop_var_name, tid_val, break_target);
             if (!kb.GetInsertBlock()->getTerminator())
                 kb.CreateBr(merge_bb);
 
             kb.SetInsertPoint(else_bb);
             if (is.else_block)
                 emitKernelStmt(*is.else_block, kb, kernel_vars, kernel_arg_values,
-                               loop_var_name, tid_val);
+                               loop_var_name, tid_val, break_target);
             if (!kb.GetInsertBlock()->getTerminator())
                 kb.CreateBr(merge_bb);
 
@@ -2423,7 +2469,6 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
             break;
         }
         case StmtKind::WhileStmt: {
-            // Note: while loops inside GPU kernels must be careful about divergent threads
             auto& ws = static_cast<const WhileStmt&>(stmt);
             auto* func = kb.GetInsertBlock()->getParent();
             auto* while_cond = llvm::BasicBlock::Create(ctx_, "kw_cond", func);
@@ -2440,8 +2485,10 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
             kb.CreateCondBr(wc, while_body, while_end);
 
             kb.SetInsertPoint(while_body);
+            kernel_break_stack_.push_back(while_end);
             emitKernelStmt(*ws.body, kb, kernel_vars, kernel_arg_values,
-                           loop_var_name, tid_val);
+                           loop_var_name, tid_val, while_end);
+            kernel_break_stack_.pop_back();
             if (!kb.GetInsertBlock()->getTerminator())
                 kb.CreateBr(while_cond);
 
@@ -2449,10 +2496,9 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
             break;
         }
         case StmtKind::ForStmt: {
-            // Nested for loop — support is limited
             auto& fs = static_cast<const ForStmt&>(stmt);
             if (fs.init) emitKernelStmt(*fs.init, kb, kernel_vars, kernel_arg_values,
-                                         loop_var_name, tid_val);
+                                         loop_var_name, tid_val, break_target);
             auto* func = kb.GetInsertBlock()->getParent();
             auto* fcond = llvm::BasicBlock::Create(ctx_, "kf_cond", func);
             auto* fbody = llvm::BasicBlock::Create(ctx_, "kf_body", func);
@@ -2469,8 +2515,10 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
                 }
             } else kb.CreateBr(fbody);
             kb.SetInsertPoint(fbody);
+            kernel_break_stack_.push_back(fend);
             if (fs.body) emitKernelStmt(*fs.body, kb, kernel_vars, kernel_arg_values,
-                                         loop_var_name, tid_val);
+                                         loop_var_name, tid_val, fend);
+            kernel_break_stack_.pop_back();
             if (!kb.GetInsertBlock()->getTerminator()) {
                 if (fs.step) emitKernelExpr(*fs.step, kb, kernel_vars, kernel_arg_values,
                                              loop_var_name, tid_val);

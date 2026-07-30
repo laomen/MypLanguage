@@ -1,0 +1,42 @@
+// Test: BNCT-style GPU transport loop with atomic operations
+import env;
+import atomic;
+
+class Tester {
+    action:
+        @startup void go() {
+            int nP = 1024;
+            int nz = 20;
+
+            double[] dose = new double[nz];
+            int[] score = new int[nz];
+
+            @gpu for (int i = 0; i < nP; i = i + 1) {
+                int iz = i % 20;
+                Atomic.addDouble(dose, iz, 2.0);
+                Atomic.addInt(score, iz, 1);
+            }
+
+            long totalScore = 0L;
+            double totalDose = 0.0;
+            for (int iz = 0; iz < nz; iz = iz + 1) {
+                totalScore = totalScore + score[iz];
+                totalDose = totalDose + dose[iz];
+            }
+            Console.writeString("score=");
+            Console.writeLong(totalScore);
+            Console.writeString(" dose=");
+            Console.writeFloat(totalDose);
+            Console.writeLine("");
+            if (totalScore == nP) {
+                Console.writeLine("GPU atomic test: PASS");
+            } else {
+                Console.writeLine("GPU atomic test: FAIL");
+            }
+        }
+}
+
+int main() {
+    Tester t = new Tester();
+    return 0;
+}
