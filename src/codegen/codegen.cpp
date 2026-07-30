@@ -12,6 +12,8 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/ADT/SmallString.h>
 
+#include <llvm/IR/IntrinsicsNVPTX.h>
+
 // NVPTX target initialization (must be at global scope)
 extern "C" void LLVMInitializeNVPTXTargetInfo(void);
 extern "C" void LLVMInitializeNVPTXTarget(void);
@@ -1785,6 +1787,703 @@ void CodeGen::generateWhileStmt(const WhileStmt& s) {
     builder_.SetInsertPoint(abb);
 }
 
+// ---- GPU kernel body compilation helpers (Stage 4) ----
+
+void CodeGen::collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,
+                                     std::set<std::string>& loop_decls) const {
+    switch (expr.kind) {
+        case ExprKind::Identifier: {
+            auto& id = static_cast<const IdentifierExpr&>(expr);
+            if (loop_decls.find(id.name) == loop_decls.end())
+                out.insert(id.name);
+            break;
+        }
+        case ExprKind::BinaryOp: {
+            auto& b = static_cast<const BinaryOpExpr&>(expr);
+            collectExprIdentifiers(*b.lhs, out, loop_decls);
+            collectExprIdentifiers(*b.rhs, out, loop_decls);
+            break;
+        }
+        case ExprKind::UnaryOp: {
+            auto& u = static_cast<const UnaryOpExpr&>(expr);
+            collectExprIdentifiers(*u.operand, out, loop_decls);
+            break;
+        }
+        case ExprKind::Call: {
+            auto& c = static_cast<const CallExpr&>(expr);
+            collectExprIdentifiers(*c.callee, out, loop_decls);
+            for (auto& a : c.args)
+                collectExprIdentifiers(*a, out, loop_decls);
+            break;
+        }
+        case ExprKind::MemberAccess: {
+            auto& m = static_cast<const MemberAccessExpr&>(expr);
+            collectExprIdentifiers(*m.object, out, loop_decls);
+            break;
+        }
+        case ExprKind::Subscript: {
+            auto& s = static_cast<const SubscriptExpr&>(expr);
+            collectExprIdentifiers(*s.array, out, loop_decls);
+            collectExprIdentifiers(*s.index, out, loop_decls);
+            break;
+        }
+        case ExprKind::Assignment: {
+            auto& a = static_cast<const AssignmentExpr&>(expr);
+            collectExprIdentifiers(*a.target, out, loop_decls);
+            collectExprIdentifiers(*a.value, out, loop_decls);
+            break;
+        }
+        case ExprKind::Ternary: {
+            auto& t = static_cast<const TernaryExpr&>(expr);
+            collectExprIdentifiers(*t.condition, out, loop_decls);
+            collectExprIdentifiers(*t.true_expr, out, loop_decls);
+            collectExprIdentifiers(*t.false_expr, out, loop_decls);
+            break;
+        }
+        case ExprKind::ThisExpr:
+        case ExprKind::IntegerLiteral:
+        case ExprKind::FloatLiteral:
+        case ExprKind::BoolLiteral:
+        case ExprKind::StringLiteral:
+        case ExprKind::NullLiteral:
+        case ExprKind::NewExpr:
+        case ExprKind::NewArrayExpr:
+        case ExprKind::Range:
+        case ExprKind::Lambda:
+        case ExprKind::EnumVariant:
+            break;
+    }
+}
+
+void CodeGen::collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& out,
+                                     std::set<std::string>& loop_decls) const {
+    switch (stmt.kind) {
+        case StmtKind::Block: {
+            auto& b = static_cast<const BlockStmt&>(stmt);
+            for (auto& s : b.statements)
+                collectStmtIdentifiers(*s, out, loop_decls);
+            break;
+        }
+        case StmtKind::VarDeclStmt: {
+            auto& vds = static_cast<const VarDeclStmt&>(stmt);
+            for (auto& d : vds.decls) {
+                loop_decls.insert(d.name);  // declared inside loop — NOT captured
+                if (d.init_expr)
+                    collectExprIdentifiers(*d.init_expr, out, loop_decls);
+            }
+            break;
+        }
+        case StmtKind::ExprStmt: {
+            auto& es = static_cast<const ExprStmt&>(stmt);
+            if (es.expression)
+                collectExprIdentifiers(*es.expression, out, loop_decls);
+            break;
+        }
+        case StmtKind::IfStmt: {
+            auto& is = static_cast<const IfStmt&>(stmt);
+            collectExprIdentifiers(*is.condition, out, loop_decls);
+            collectStmtIdentifiers(*is.then_block, out, loop_decls);
+            if (is.else_block)
+                collectStmtIdentifiers(*is.else_block, out, loop_decls);
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto& ws = static_cast<const WhileStmt&>(stmt);
+            collectExprIdentifiers(*ws.condition, out, loop_decls);
+            collectStmtIdentifiers(*ws.body, out, loop_decls);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto& fs = static_cast<const ForStmt&>(stmt);
+            if (fs.init) collectStmtIdentifiers(*fs.init, out, loop_decls);
+            if (fs.condition) collectExprIdentifiers(*fs.condition, out, loop_decls);
+            if (fs.step) collectExprIdentifiers(*fs.step, out, loop_decls);
+            if (fs.body) collectStmtIdentifiers(*fs.body, out, loop_decls);
+            break;
+        }
+        case StmtKind::ReturnStmt:
+        case StmtKind::BreakStmt:
+        case StmtKind::ContinueStmt:
+        case StmtKind::AwaitStmt:
+        case StmtKind::MappingStmt:
+        case StmtKind::MatchStmt:
+        case StmtKind::TryStmt:
+            break;
+    }
+}
+
+void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loop_var) {
+    kernel_args_.clear();
+
+    // Collect all identifier references in the body, condition, step
+    std::set<std::string> all_refs;
+    std::set<std::string> loop_decls;
+    loop_decls.insert(loop_var);  // loop variable is NOT captured
+
+    if (stmt.body)
+        collectStmtIdentifiers(*stmt.body, all_refs, loop_decls);
+    if (stmt.condition)
+        collectExprIdentifiers(*stmt.condition, all_refs, loop_decls);
+    if (stmt.step)
+        collectExprIdentifiers(*stmt.step, all_refs, loop_decls);
+
+    // Also add identifiers from init (they're not captured but may be referenced)
+    if (stmt.init)
+        collectStmtIdentifiers(*stmt.init, all_refs, loop_decls);
+
+    // Remove loop-declared variables
+    for (auto& ld : loop_decls)
+        all_refs.erase(ld);
+
+    // Resolve types for each captured variable and add to kernel_args_
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+
+    for (auto& name : all_refs) {
+        // Skip runtime function names
+        if (name == "Math" || name == "Atomic" || name == "Console")
+            continue;
+        if (name.rfind("__myp_", 0) == 0)
+            continue;
+
+        KernelArgInfo kai;
+        kai.name = name;
+        kai.is_array = false;
+        kai.array_arg_idx = -1;
+        kai.size_arg_idx = -1;
+
+        // Try to resolve type from named values
+        auto* nv = getNamedValue(name);
+        if (nv) {
+            llvm::Type* val_type = getNamedValueType(name);
+            if (!val_type && llvm::isa<llvm::AllocaInst>(nv))
+                val_type = llvm::cast<llvm::AllocaInst>(nv)->getAllocatedType();
+
+            // Check if it's an array (pointer to element type)
+            auto eit = array_elem_types_.find(name);
+            if (eit != array_elem_types_.end()) {
+                kai.is_array = true;
+                kai.type = ptr_ty;  // kernel arg is a pointer
+            } else if (val_type) {
+                if (val_type->isArrayTy()) {
+                    kai.is_array = true;
+                    kai.type = ptr_ty;
+                } else if (val_type->isIntegerTy(64) || val_type->isIntegerTy(32) ||
+                           val_type->isDoubleTy() || val_type->isPointerTy()) {
+                    kai.type = val_type;
+                } else {
+                    kai.type = i64_ty;  // default
+                }
+            } else {
+                kai.type = i64_ty;
+            }
+        } else {
+            // Not a local variable — could be a @static class access like "CrossSectionDB"
+            // Check if it's a static class name
+            auto sit = static_property_globals_.find(name);
+            if (sit != static_property_globals_.end()) {
+                // Pass the static class struct pointer
+                kai.is_array = false;
+                kai.type = ptr_ty;
+            } else {
+                // Unknown — skip
+                continue;
+            }
+        }
+
+        kernel_args_.push_back(kai);
+    }
+}
+
+llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
+    const std::map<std::string, llvm::Value*>& kernel_vars,
+    const std::vector<llvm::Value*>& kernel_arg_values,
+    const std::string& loop_var_name, llvm::Value* tid_val) {
+
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+
+    switch (expr.kind) {
+        case ExprKind::IntegerLiteral: {
+            auto& e = static_cast<const IntegerLiteralExpr&>(expr);
+            return llvm::ConstantInt::get(e.is_long ? i64_ty : i32_ty, e.value, true);
+        }
+        case ExprKind::FloatLiteral: {
+            auto& e = static_cast<const FloatLiteralExpr&>(expr);
+            return llvm::ConstantFP::get(double_ty, e.value);
+        }
+        case ExprKind::BoolLiteral: {
+            auto& e = static_cast<const BoolLiteralExpr&>(expr);
+            return llvm::ConstantInt::get(i32_ty, e.value ? 1 : 0);
+        }
+        case ExprKind::Identifier: {
+            auto& e = static_cast<const IdentifierExpr&>(expr);
+            if (e.name == loop_var_name)
+                return tid_val;
+            auto vit = kernel_vars.find(e.name);
+            if (vit != kernel_vars.end())
+                return vit->second;
+            // Try math function names
+            if (e.name == "sqrt" || e.name == "cos" || e.name == "sin" ||
+                e.name == "tan" || e.name == "exp" || e.name == "log" ||
+                e.name == "pow" || e.name == "abs" || e.name == "floor" ||
+                e.name == "ceil" || e.name == "trunc") {
+                // Return nullptr — handled by caller at CallExpr
+                return nullptr;
+            }
+            // Unknown — zero
+            return llvm::ConstantInt::get(i64_ty, 0);
+        }
+        case ExprKind::BinaryOp: {
+            auto& e = static_cast<const BinaryOpExpr&>(expr);
+            auto* l = emitKernelExpr(*e.lhs, kb, kernel_vars, kernel_arg_values,
+                                      loop_var_name, tid_val);
+            auto* r = emitKernelExpr(*e.rhs, kb, kernel_vars, kernel_arg_values,
+                                      loop_var_name, tid_val);
+            if (!l || !r) return llvm::ConstantInt::get(i64_ty, 0);
+
+            // Type promotion
+            if (l->getType() != r->getType()) {
+                if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
+                    if (!l->getType()->isDoubleTy())
+                        l = kb.CreateSIToFP(l, double_ty);
+                    if (!r->getType()->isDoubleTy())
+                        r = kb.CreateSIToFP(r, double_ty);
+                } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
+                    auto lw = l->getType()->getIntegerBitWidth();
+                    auto rw = r->getType()->getIntegerBitWidth();
+                    if (lw < rw) l = kb.CreateSExt(l, r->getType());
+                    else if (rw < lw) r = kb.CreateSExt(r, l->getType());
+                }
+            }
+            bool fp = l->getType()->isFloatingPointTy();
+
+            switch (e.op) {
+                case BinaryOpKind::Add: return fp ? kb.CreateFAdd(l, r) : kb.CreateAdd(l, r);
+                case BinaryOpKind::Sub: return fp ? kb.CreateFSub(l, r) : kb.CreateSub(l, r);
+                case BinaryOpKind::Mul: return fp ? kb.CreateFMul(l, r) : kb.CreateMul(l, r);
+                case BinaryOpKind::Div: return fp ? kb.CreateFDiv(l, r) : kb.CreateSDiv(l, r);
+                case BinaryOpKind::Mod: return fp ? kb.CreateFRem(l, r) : kb.CreateSRem(l, r);
+                case BinaryOpKind::Eq:  return fp ? kb.CreateFCmpOEQ(l, r) : kb.CreateICmpEQ(l, r);
+                case BinaryOpKind::Ne:  return fp ? kb.CreateFCmpONE(l, r) : kb.CreateICmpNE(l, r);
+                case BinaryOpKind::Lt:  return fp ? kb.CreateFCmpOLT(l, r) : kb.CreateICmpSLT(l, r);
+                case BinaryOpKind::Gt:  return fp ? kb.CreateFCmpOGT(l, r) : kb.CreateICmpSGT(l, r);
+                case BinaryOpKind::Le:  return fp ? kb.CreateFCmpOLE(l, r) : kb.CreateICmpSLE(l, r);
+                case BinaryOpKind::Ge:  return fp ? kb.CreateFCmpOGE(l, r) : kb.CreateICmpSGE(l, r);
+                case BinaryOpKind::And:
+                case BinaryOpKind::BitAnd: return kb.CreateAnd(l, r);
+                case BinaryOpKind::Or:
+                case BinaryOpKind::BitOr:  return kb.CreateOr(l, r);
+                case BinaryOpKind::BitXor: return kb.CreateXor(l, r);
+                case BinaryOpKind::Shl:    return kb.CreateShl(l, r);
+                case BinaryOpKind::Shr:    return kb.CreateAShr(l, r);
+            }
+            return nullptr;
+        }
+        case ExprKind::UnaryOp: {
+            auto& e = static_cast<const UnaryOpExpr&>(expr);
+            auto* op = emitKernelExpr(*e.operand, kb, kernel_vars, kernel_arg_values,
+                                       loop_var_name, tid_val);
+            if (!op) return llvm::ConstantInt::get(i64_ty, 0);
+            if (e.op == UnaryOpKind::Negate) {
+                return op->getType()->isFloatingPointTy()
+                    ? kb.CreateFNeg(op) : kb.CreateNeg(op);
+            }
+            if (e.op == UnaryOpKind::Not)
+                return kb.CreateNot(op);
+            return op;
+        }
+        case ExprKind::Call: {
+            auto& e = static_cast<const CallExpr&>(expr);
+            // Handle math functions
+            std::string callee_name;
+            if (e.callee->kind == ExprKind::Identifier)
+                callee_name = static_cast<const IdentifierExpr&>(*e.callee).name;
+
+            if (!callee_name.empty()) {
+                // Math functions
+                auto emit_math_1 = [&](const char* n) -> llvm::Value* {
+                    if (e.args.size() < 1) return nullptr;
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a) return nullptr;
+                    return kb.CreateCall(
+                        llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty}, false),
+                            llvm::Function::ExternalLinkage, n, kb.GetInsertBlock()->getParent()->getParent()),
+                        {a});
+                };
+                if (callee_name == "sqrt") return emit_math_1("__nv_sqrt");
+                if (callee_name == "cos")  return emit_math_1("__nv_cos");
+                if (callee_name == "sin")  return emit_math_1("__nv_sin");
+                if (callee_name == "tan")  return emit_math_1("__nv_tan");
+                if (callee_name == "exp")  return emit_math_1("__nv_exp");
+                if (callee_name == "log")  return emit_math_1("__nv_log");
+                if (callee_name == "abs")  return emit_math_1("__nv_fabs");
+                if (callee_name == "floor") return emit_math_1("__nv_floor");
+                if (callee_name == "ceil")  return emit_math_1("__nv_ceil");
+                if (callee_name == "trunc") return emit_math_1("__nv_trunc");
+                if (callee_name == "pow" && e.args.size() >= 2) {
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a || !b) return nullptr;
+                    return kb.CreateCall(
+                        llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
+                            llvm::Function::ExternalLinkage, "__nv_pow",
+                            kb.GetInsertBlock()->getParent()->getParent()),
+                        {a, b});
+                }
+            }
+
+            // Handle Atomic.addDouble/Atomic.addInt — -> atomicAdd in CUDA
+            // These are calls to Atomic.addDouble/TallyData access which we handle
+            // through member access + assignment patterns instead.
+
+            // Fallback: just return 0
+            return llvm::ConstantInt::get(i64_ty, 0);
+        }
+        case ExprKind::MemberAccess: {
+            auto& e = static_cast<const MemberAccessExpr&>(expr);
+            // Three cases:
+            // 1. ClassName.property (static class) — look up in static_property_globals_
+            // 2. obj.property (struct field) — struct GEP access
+            // 3. this.property — this pointer struct access
+
+            if (e.object->kind == ExprKind::Identifier) {
+                auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+                auto sit = static_property_globals_.find(oi.name);
+                if (sit != static_property_globals_.end()) {
+                    // Static class property: access via global struct pointer
+                    auto cvit = kernel_vars.find(oi.name);
+                    if (cvit != kernel_vars.end()) {
+                        auto* st_ptr = cvit->second;
+                        // Find the class and property index
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name == oi.name) {
+                                unsigned pi = 0;
+                                if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                                    auto* st = getClassStruct(cls.name);
+                                    if (st) {
+                                        auto* gep = kb.CreateStructGEP(st, st_ptr, pi);
+                                        auto* pt = getPropertyType(cls, e.member_name);
+                                        if (pt->isArrayTy()) return gep;
+                                        return kb.CreateLoad(pt, gep);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Struct field access
+                auto* oa = getNamedValue(oi.name);
+                if (oa) {
+                    llvm::StructType* st2 = nullptr;
+                    llvm::Value* bp = nullptr;
+                    if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                        auto* at = ai->getAllocatedType();
+                        if (at->isStructTy()) { st2 = llvm::cast<llvm::StructType>(at); bp = oa; }
+                    } else {
+                        auto* nty = getNamedValueType(oi.name);
+                        if (nty && nty->isStructTy()) { st2 = llvm::cast<llvm::StructType>(nty); bp = oa; }
+                    }
+                    // For kernel: we pass struct by pointer
+                    auto cvit = kernel_vars.find(oi.name);
+                    if (cvit != kernel_vars.end() && st2) {
+                        unsigned fi = 0;
+                        if (getStructFieldIndex(st2->getName().str(), e.member_name, fi)) {
+                            auto* gep = kb.CreateStructGEP(st2, cvit->second, fi);
+                            auto* ft = st2->getElementType(fi);
+                            if (ft->isArrayTy()) return gep;
+                            return kb.CreateLoad(ft, gep);
+                        }
+                    }
+                }
+            }
+            return llvm::ConstantInt::get(i64_ty, 0);
+        }
+        case ExprKind::Subscript: {
+            auto& e = static_cast<const SubscriptExpr&>(expr);
+            auto* arr = emitKernelExpr(*e.array, kb, kernel_vars, kernel_arg_values,
+                                        loop_var_name, tid_val);
+            auto* idx = emitKernelExpr(*e.index, kb, kernel_vars, kernel_arg_values,
+                                        loop_var_name, tid_val);
+            if (!arr || !idx) return llvm::ConstantInt::get(i64_ty, 0);
+
+            // Determine element type from the subscript context
+            llvm::Type* elem_ty = double_ty;  // default
+            // Try to infer element type
+            if (e.array->kind == ExprKind::Identifier) {
+                auto& id = static_cast<const IdentifierExpr&>(*e.array);
+                auto eit = array_elem_types_.find(id.name);
+                if (eit != array_elem_types_.end())
+                    elem_ty = eit->second;
+            } else if (e.array->kind == ExprKind::MemberAccess) {
+                auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
+                if (ma.object->kind == ExprKind::Identifier) {
+                    auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                    auto sit = static_property_globals_.find(oi.name);
+                    if (sit != static_property_globals_.end() && current_tu_) {
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name == oi.name) {
+                                for (auto& p : cls.properties) {
+                                    if (p.name == ma.member_name && p.type.isArray()) {
+                                        elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                                        goto found_elem;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            found_elem:
+            // For int[] arrays, the pointer is i32*, not double*
+            if (elem_ty->isIntegerTy(32)) {
+                // The arr is already a pointer, GEP on it
+                auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+                return kb.CreateLoad(elem_ty, gep);
+            }
+            auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+            return kb.CreateLoad(elem_ty, gep);
+        }
+        case ExprKind::Assignment: {
+            auto& e = static_cast<const AssignmentExpr&>(expr);
+            if (e.target->kind == ExprKind::Subscript) {
+                auto& ss = static_cast<const SubscriptExpr&>(*e.target);
+                auto* arr = emitKernelExpr(*ss.array, kb, kernel_vars, kernel_arg_values,
+                                            loop_var_name, tid_val);
+                auto* idx = emitKernelExpr(*ss.index, kb, kernel_vars, kernel_arg_values,
+                                            loop_var_name, tid_val);
+                auto* val = emitKernelExpr(*e.value, kb, kernel_vars, kernel_arg_values,
+                                            loop_var_name, tid_val);
+                if (!arr || !idx || !val) return llvm::ConstantInt::get(i64_ty, 0);
+
+                // Determine element type
+                llvm::Type* elem_ty = double_ty;
+                if (ss.array->kind == ExprKind::Identifier) {
+                    auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+                    auto eit = array_elem_types_.find(id.name);
+                    if (eit != array_elem_types_.end())
+                        elem_ty = eit->second;
+                } else if (ss.array->kind == ExprKind::MemberAccess) {
+                    auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
+                    if (ma.object->kind == ExprKind::Identifier) {
+                        auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                        if (current_tu_) {
+                            for (auto& cls : current_tu_->classes) {
+                                if (cls.name == oi.name) {
+                                    for (auto& p : cls.properties) {
+                                        if (p.name == ma.member_name && p.type.isArray()) {
+                                            elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                                            goto assign_found1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                assign_found1:
+                // Type cast value to element type
+                if (val->getType() != elem_ty) {
+                    if (elem_ty->isDoubleTy() && val->getType()->isIntegerTy())
+                        val = kb.CreateSIToFP(val, elem_ty);
+                    else if (elem_ty->isIntegerTy() && val->getType()->isDoubleTy())
+                        val = kb.CreateFPToSI(val, elem_ty);
+                    else if (elem_ty->isIntegerTy() && val->getType()->isIntegerTy())
+                        val = kb.CreateIntCast(val, elem_ty, true);
+                }
+                auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+                kb.CreateStore(val, gep);
+                return val;
+            }
+            // Simple var = value (not subscript)
+            if (e.target->kind == ExprKind::Identifier) {
+                auto* val = emitKernelExpr(*e.value, kb, kernel_vars, kernel_arg_values,
+                                            loop_var_name, tid_val);
+                return val;
+            }
+            return llvm::ConstantInt::get(i64_ty, 0);
+        }
+        case ExprKind::Ternary: {
+            auto& e = static_cast<const TernaryExpr&>(expr);
+            auto* cond = emitKernelExpr(*e.condition, kb, kernel_vars, kernel_arg_values,
+                                         loop_var_name, tid_val);
+            if (!cond) return llvm::ConstantInt::get(i64_ty, 0);
+            if (cond->getType()->isIntegerTy() && !cond->getType()->isIntegerTy(1))
+                cond = kb.CreateICmpNE(cond, llvm::ConstantInt::get(cond->getType(), 0));
+
+            auto* func = kb.GetInsertBlock()->getParent();
+            auto* true_bb = llvm::BasicBlock::Create(ctx_, "kt_true", func);
+            auto* false_bb = llvm::BasicBlock::Create(ctx_, "kt_false", func);
+            auto* merge_bb = llvm::BasicBlock::Create(ctx_, "kt_merge", func);
+
+            kb.CreateCondBr(cond, true_bb, false_bb);
+
+            kb.SetInsertPoint(true_bb);
+            auto* true_val = emitKernelExpr(*e.true_expr, kb, kernel_vars,
+                                             kernel_arg_values, loop_var_name, tid_val);
+            if (!true_val) true_val = llvm::ConstantInt::get(i64_ty, 0);
+            if (!kb.GetInsertBlock()->getTerminator())
+                kb.CreateBr(merge_bb);
+
+            kb.SetInsertPoint(false_bb);
+            auto* false_val = emitKernelExpr(*e.false_expr, kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+            if (!false_val) false_val = llvm::ConstantInt::get(i64_ty, 0);
+            if (!kb.GetInsertBlock()->getTerminator())
+                kb.CreateBr(merge_bb);
+
+            kb.SetInsertPoint(merge_bb);
+            auto* phi = kb.CreatePHI(true_val->getType(), 2);
+            phi->addIncoming(true_val, true_bb);
+            phi->addIncoming(false_val, false_bb);
+            return phi;
+        }
+        case ExprKind::ThisExpr:
+        case ExprKind::NullLiteral:
+        case ExprKind::StringLiteral:
+        case ExprKind::NewExpr:
+        case ExprKind::NewArrayExpr:
+        case ExprKind::Range:
+        case ExprKind::Lambda:
+        case ExprKind::EnumVariant:
+            return llvm::ConstantInt::get(i64_ty, 0);
+    }
+    return llvm::ConstantInt::get(i64_ty, 0);
+}
+
+void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
+    const std::map<std::string, llvm::Value*>& kernel_vars,
+    const std::vector<llvm::Value*>& kernel_arg_values,
+    const std::string& loop_var_name, llvm::Value* tid_val) {
+
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+
+    switch (stmt.kind) {
+        case StmtKind::Block: {
+            auto& b = static_cast<const BlockStmt&>(stmt);
+            for (auto& s : b.statements)
+                emitKernelStmt(*s, kb, kernel_vars, kernel_arg_values,
+                               loop_var_name, tid_val);
+            break;
+        }
+        case StmtKind::ExprStmt: {
+            auto& es = static_cast<const ExprStmt&>(stmt);
+            if (es.expression)
+                emitKernelExpr(*es.expression, kb, kernel_vars, kernel_arg_values,
+                               loop_var_name, tid_val);
+            break;
+        }
+        case StmtKind::VarDeclStmt: {
+            auto& vds = static_cast<const VarDeclStmt&>(stmt);
+            for (auto& d : vds.decls) {
+                if (d.init_expr)
+                    emitKernelExpr(*d.init_expr, kb, kernel_vars, kernel_arg_values,
+                                   loop_var_name, tid_val);
+            }
+            break;
+        }
+        case StmtKind::IfStmt: {
+            auto& is = static_cast<const IfStmt&>(stmt);
+            auto* cond = emitKernelExpr(*is.condition, kb, kernel_vars, kernel_arg_values,
+                                         loop_var_name, tid_val);
+            if (!cond) return;
+            if (cond->getType()->isIntegerTy() && !cond->getType()->isIntegerTy(1))
+                cond = kb.CreateICmpNE(cond, llvm::ConstantInt::get(cond->getType(), 0));
+
+            auto* func = kb.GetInsertBlock()->getParent();
+            auto* then_bb = llvm::BasicBlock::Create(ctx_, "kif_then", func);
+            auto* else_bb = llvm::BasicBlock::Create(ctx_, "kif_else", func);
+            auto* merge_bb = llvm::BasicBlock::Create(ctx_, "kif_end", func);
+
+            kb.CreateCondBr(cond, then_bb, else_bb);
+
+            kb.SetInsertPoint(then_bb);
+            emitKernelStmt(*is.then_block, kb, kernel_vars, kernel_arg_values,
+                           loop_var_name, tid_val);
+            if (!kb.GetInsertBlock()->getTerminator())
+                kb.CreateBr(merge_bb);
+
+            kb.SetInsertPoint(else_bb);
+            if (is.else_block)
+                emitKernelStmt(*is.else_block, kb, kernel_vars, kernel_arg_values,
+                               loop_var_name, tid_val);
+            if (!kb.GetInsertBlock()->getTerminator())
+                kb.CreateBr(merge_bb);
+
+            kb.SetInsertPoint(merge_bb);
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            // Note: while loops inside GPU kernels must be careful about divergent threads
+            auto& ws = static_cast<const WhileStmt&>(stmt);
+            auto* func = kb.GetInsertBlock()->getParent();
+            auto* while_cond = llvm::BasicBlock::Create(ctx_, "kw_cond", func);
+            auto* while_body = llvm::BasicBlock::Create(ctx_, "kw_body", func);
+            auto* while_end = llvm::BasicBlock::Create(ctx_, "kw_end", func);
+
+            kb.CreateBr(while_cond);
+            kb.SetInsertPoint(while_cond);
+            auto* wc = emitKernelExpr(*ws.condition, kb, kernel_vars, kernel_arg_values,
+                                       loop_var_name, tid_val);
+            if (!wc) { kb.CreateBr(while_end); break; }
+            if (wc->getType()->isIntegerTy() && !wc->getType()->isIntegerTy(1))
+                wc = kb.CreateICmpNE(wc, llvm::ConstantInt::get(wc->getType(), 0));
+            kb.CreateCondBr(wc, while_body, while_end);
+
+            kb.SetInsertPoint(while_body);
+            emitKernelStmt(*ws.body, kb, kernel_vars, kernel_arg_values,
+                           loop_var_name, tid_val);
+            if (!kb.GetInsertBlock()->getTerminator())
+                kb.CreateBr(while_cond);
+
+            kb.SetInsertPoint(while_end);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            // Nested for loop — support is limited
+            auto& fs = static_cast<const ForStmt&>(stmt);
+            if (fs.init) emitKernelStmt(*fs.init, kb, kernel_vars, kernel_arg_values,
+                                         loop_var_name, tid_val);
+            auto* func = kb.GetInsertBlock()->getParent();
+            auto* fcond = llvm::BasicBlock::Create(ctx_, "kf_cond", func);
+            auto* fbody = llvm::BasicBlock::Create(ctx_, "kf_body", func);
+            auto* fend = llvm::BasicBlock::Create(ctx_, "kf_end", func);
+            kb.CreateBr(fcond);
+            kb.SetInsertPoint(fcond);
+            if (fs.condition) {
+                auto* fc = emitKernelExpr(*fs.condition, kb, kernel_vars, kernel_arg_values,
+                                           loop_var_name, tid_val);
+                if (fc) {
+                    if (fc->getType()->isIntegerTy() && !fc->getType()->isIntegerTy(1))
+                        fc = kb.CreateICmpNE(fc, llvm::ConstantInt::get(fc->getType(), 0));
+                    kb.CreateCondBr(fc, fbody, fend);
+                }
+            } else kb.CreateBr(fbody);
+            kb.SetInsertPoint(fbody);
+            if (fs.body) emitKernelStmt(*fs.body, kb, kernel_vars, kernel_arg_values,
+                                         loop_var_name, tid_val);
+            if (!kb.GetInsertBlock()->getTerminator()) {
+                if (fs.step) emitKernelExpr(*fs.step, kb, kernel_vars, kernel_arg_values,
+                                             loop_var_name, tid_val);
+                kb.CreateBr(fcond);
+            }
+            kb.SetInsertPoint(fend);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 void CodeGen::generateForStmt(const ForStmt& s) {
     if (s.gpu) {
         generateGpuFor(s);
@@ -1835,39 +2534,139 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
     ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
 
-    // Build a minimal placeholder kernel to verify PTX emission works
-    // The actual loop body compilation will come in a later stage
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* double_ty = llvm::Type::getDoubleTy(ctx_);
 
-    // Kernel: void kernel(i64 tid, i64 n, double* out)
-    std::vector<llvm::Type*> params = {i64_ty, i64_ty, ptr_ty};
-    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), params, false);
-    auto* kernel = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_kernel", ptx_mod.get());
+    // Extract loop variable name from init statement
+    std::string loop_var;
+    if (s.init && s.init->kind == StmtKind::VarDeclStmt) {
+        auto& vds = static_cast<const VarDeclStmt&>(*s.init);
+        if (!vds.decls.empty())
+            loop_var = vds.decls[0].name;
+    }
+    if (loop_var.empty()) {
+        diag_.warn(SourceRange{}, "GPU for: cannot determine loop variable");
+        return false;
+    }
 
-    // Simple body: if (tid < n) out[tid] = (double)tid;
-    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", kernel);
-    llvm::IRBuilder<> kb(bb);
-    auto* tid_arg = kernel->getArg(0);
-    auto* n_arg = kernel->getArg(1);
-    auto* out_arg = kernel->getArg(2);
-    auto* cond = kb.CreateICmpSLT(tid_arg, n_arg);
-    auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kernel);
-    auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kernel);
-    kb.CreateCondBr(cond, body_bb, end_bb);
+    // Extract loop bound from condition (expects i < n or i <= n pattern)
+    llvm::Value* loop_bound_val = nullptr;
+    if (s.condition && s.condition->kind == ExprKind::BinaryOp) {
+        auto& cond = static_cast<const BinaryOpExpr&>(*s.condition);
+        if (cond.op == BinaryOpKind::Lt || cond.op == BinaryOpKind::Le ||
+            cond.op == BinaryOpKind::Gt || cond.op == BinaryOpKind::Ge) {
+            if (cond.lhs->kind == ExprKind::Identifier &&
+                static_cast<const IdentifierExpr&>(*cond.lhs).name == loop_var) {
+                loop_bound_val = generateExpr(*cond.rhs);
+            } else if (cond.rhs->kind == ExprKind::Identifier &&
+                       static_cast<const IdentifierExpr&>(*cond.rhs).name == loop_var) {
+                loop_bound_val = generateExpr(*cond.lhs);
+            }
+        }
+    }
+
+    // Analyze captured variables
+    analyzeGpuCapturedVars(s, loop_var);
+
+    // Remove duplicates: if a captured var is the same as the loop bound variable
+    // used in the kernel's first parameter, exclude it from args
+    // (the bound variable is already passed as kernel param 0)
+    std::set<std::string> bound_var_names;
+    if (s.condition && s.condition->kind == ExprKind::BinaryOp) {
+        auto& cond = static_cast<const BinaryOpExpr&>(*s.condition);
+        if (cond.lhs->kind == ExprKind::Identifier &&
+            static_cast<const IdentifierExpr&>(*cond.lhs).name != loop_var) {
+            bound_var_names.insert(static_cast<const IdentifierExpr&>(*cond.lhs).name);
+        } else if (cond.rhs->kind == ExprKind::Identifier &&
+                   static_cast<const IdentifierExpr&>(*cond.rhs).name != loop_var) {
+            bound_var_names.insert(static_cast<const IdentifierExpr&>(*cond.rhs).name);
+        }
+    }
+    // Also exclude the loop variable itself
+    bound_var_names.insert(loop_var);
+
+    // Filter kernel_args_ to remove bound vars (they are already kernel params)
+    std::vector<KernelArgInfo> filtered_args;
+    for (auto& ka : kernel_args_) {
+        if (bound_var_names.find(ka.name) == bound_var_names.end())
+            filtered_args.push_back(ka);
+    }
+    kernel_args_ = filtered_args;
+
+    // Build kernel function signature: (i64 n, captured_vars...)
+    // tid is NOT a parameter — computed from blockIdx/threadIdx NVVM intrinsics
+    std::vector<llvm::Type*> kernel_param_types;
+    kernel_param_types.push_back(i64_ty);  // n (loop bound)
+
+    std::map<std::string, llvm::Value*> kernel_vars_map;
+    std::vector<llvm::Value*> kernel_arg_values;
+
+    for (auto& ka : kernel_args_) {
+        kernel_param_types.push_back(ka.type);
+    }
+
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), kernel_param_types, false);
+    auto* kernel_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                                "myp_kernel", ptx_mod.get());
+    // Mark as PTX kernel entry point (generates .entry in PTX, not .func)
+    kernel_func->setCallingConv(llvm::CallingConv::PTX_Kernel);
+
+    int arg_idx = 0;
+    auto* n_arg = kernel_func->getArg(arg_idx++);
+    n_arg->setName("n");
+
+    for (auto& ka : kernel_args_) {
+        auto* arg = kernel_func->getArg(arg_idx++);
+        arg->setName(ka.name);
+        kernel_vars_map[ka.name] = arg;
+        kernel_arg_values.push_back(arg);
+    }
+
+    // Build kernel body
+    auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);
+    llvm::IRBuilder<> kb(entry_bb);
+
+    // Compute tid = blockIdx.x * blockDim.x + threadIdx.x using NVVM intrinsics
+    auto* tid_x = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "tid_x");
+    auto* ntid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "ctaid");
+    auto* bid_offset = kb.CreateMul(ctaid, ntid, "bid_off");
+    auto* tid_val = kb.CreateAdd(bid_offset, tid_x, "tid");
+
+    // Generate tid < n check
+    auto* cond_check = kb.CreateICmpSLT(tid_val, n_arg);
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kernel_func);
+    auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kernel_func);
+    kb.CreateCondBr(cond_check, body_bb, end_bb);
+
+    // Compile loop body into kernel
     kb.SetInsertPoint(body_bb);
-    auto* val = kb.CreateSIToFP(tid_arg, llvm::Type::getDoubleTy(ctx_));
-    auto* gep = kb.CreateGEP(llvm::Type::getDoubleTy(ctx_), out_arg, tid_arg);
-    kb.CreateStore(val, gep);
-    kb.CreateBr(end_bb);
+    if (s.body) {
+        emitKernelStmt(*s.body, kb, kernel_vars_map, kernel_arg_values,
+                       loop_var, tid_val);
+    }
+    if (!kb.GetInsertBlock()->getTerminator())
+        kb.CreateBr(end_bb);
+
     kb.SetInsertPoint(end_bb);
     kb.CreateRetVoid();
 
-    // Store PTX for later use (Stage 3)
+    // Store PTX for later use
     std::string ts = "nvptx64-nvidia-cuda";
     std::string err;
 
-    // Initialize NVPTX target (needed on first use)
+    // Initialize NVPTX target
     static bool nvptx_initialized = false;
     if (!nvptx_initialized) {
         LLVMInitializeNVPTXTargetInfo();
@@ -1891,7 +2690,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     }
     ptx_mod->setDataLayout(tm->createDataLayout());
 
-    // Verify the kernel module before emitting
+    // Verify the kernel module
     std::string verify_err;
     llvm::raw_string_ostream verify_os(verify_err);
     if (llvm::verifyModule(*ptx_mod, &verify_os)) {
@@ -1915,13 +2714,11 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     delete tm;
 
     std::string ptx_str(std::string(ptx_buf.data(), ptx_buf.size()));
-
     if (ptx_str.empty()) {
         diag_.warn(SourceRange{}, "NVPTX emitted empty PTX");
         return false;
     }
 
-    // Store PTX for later use (Stage 3)
     ptx_code_ = ptx_str;
 
     // Embed PTX as a global string constant in the main module
@@ -1932,17 +2729,22 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch", func);
     auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_cpu_fallback", func);
 
-    // n = loop count (from condition i < n)
-    // For now: hardcode a small test value
-    auto* i64_ty2 = llvm::Type::getInt64Ty(ctx_);
-    auto* i32_ty2 = llvm::Type::getInt32Ty(ctx_);
-    auto* ptr_ty2 = llvm::PointerType::get(ctx_, 0);
-    llvm::Value* n_val = llvm::ConstantInt::get(i64_ty2, 10); // placeholder
+    // Get n_val from the extracted loop bound, with fallback
+    llvm::Value* n_val = loop_bound_val;
+    if (!n_val)
+        n_val = llvm::ConstantInt::get(i64_ty, 10);  // fallback
+    // Cast to i64 if needed
+    if (n_val->getType() != i64_ty) {
+        if (n_val->getType()->isIntegerTy())
+            n_val = builder_.CreateIntCast(n_val, i64_ty, false);
+        else
+            n_val = builder_.CreateFPToSI(n_val, i64_ty);
+    }
 
     // Try GPU init
     auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
     auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok,
-        llvm::ConstantInt::get(i32_ty2, 0), "gpu_ok_cmp");
+        llvm::ConstantInt::get(i32_ty, 0), "gpu_ok_cmp");
     builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
 
     // === GPU path ===
@@ -1951,7 +2753,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         {ptx_global, builder_.CreateGlobalString("myp_kernel", "kn")}, "kernel_ctx");
 
     auto* kernel_ok = builder_.CreateICmpNE(kernel_ctx,
-        llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty2)), "k_ok");
+        llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)), "k_ok");
     auto* launch_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch_run", func);
     auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
     builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
@@ -1959,41 +2761,120 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Launch kernel
     builder_.SetInsertPoint(launch_bb);
     auto* grid_val = builder_.CreateUDiv(
-        builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty2, 255)),
-        llvm::ConstantInt::get(i64_ty2, 256), "grid");
-    auto* grid_i32 = builder_.CreateIntCast(grid_val, i32_ty2, false);
-    auto* block_i32 = llvm::ConstantInt::get(i32_ty2, 256);
+        builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty, 255)),
+        llvm::ConstantInt::get(i64_ty, 256), "grid");
+    auto* grid_i32 = builder_.CreateIntCast(grid_val, i32_ty, false);
+    auto* block_i32 = llvm::ConstantInt::get(i32_ty, 256);
 
-    // Allocate output array on GPU: gpu_out = myp_gpu_alloc(n * 8)
-    auto* out_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty2, 8), "out_sz");
-    auto* gpu_out = builder_.CreateCall(runtime_gpu_alloc_, {out_size}, "gpu_out");
+    // ---- Data transfer for captured arrays ----
+    struct ArrayAlloc {
+        llvm::Value* gpu_ptr;
+        llvm::Value* host_ptr;
+        llvm::Value* byte_size;
+        bool needs_copyback;
+        std::string name;
+    };
+    std::vector<ArrayAlloc> array_allocs;
 
-    // Prepare launch args: [&n, &tid_base, &gpu_out]
-    // args is ptr to array of ptrs: {ptr_to_n, ptr_to_tid_base, ptr_to_gpu_out}
-    auto* n_alloca = builder_.CreateAlloca(i64_ty2);
-    builder_.CreateStore(n_val, n_alloca);
-    auto* tid_alloca = builder_.CreateAlloca(i64_ty2);
-    builder_.CreateStore(llvm::ConstantInt::get(i64_ty2, 0), tid_alloca);
-    auto* out_ptr_alloca = builder_.CreateAlloca(ptr_ty2);
-    builder_.CreateStore(gpu_out, out_ptr_alloca);
+    for (auto& ka : kernel_args_) {
+        if (!ka.is_array) continue;
 
-    // Build args array: {&n, &tid_base, &gpu_out}
-    auto* args_arr = builder_.CreateAlloca(ptr_ty2, llvm::ConstantInt::get(i32_ty2, 3), "gpu_args");
-    for (int ai = 0; ai < 3; ai++) {
-        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty2, ai) };
-        auto* arg_ptr = builder_.CreateGEP(ptr_ty2, args_arr, idxs, "arg" + std::to_string(ai));
-        llvm::Value* src = (ai == 0) ? (llvm::Value*)n_alloca :
-                           (ai == 1) ? (llvm::Value*)tid_alloca :
-                           (llvm::Value*)out_ptr_alloca;
-        builder_.CreateStore(builder_.CreateBitCast(src, ptr_ty2), arg_ptr);
+        llvm::Value* host_ptr = nullptr;
+        llvm::Value* byte_size = nullptr;
+
+        auto* nv = getNamedValue(ka.name);
+        if (nv) {
+            auto* loaded = builder_.CreateLoad(ptr_ty, nv, ka.name);
+            host_ptr = loaded;
+            auto eit = array_elem_types_.find(ka.name);
+            if (eit != array_elem_types_.end()) {
+                auto* elem_size = llvm::ConstantInt::get(i64_ty,
+                    eit->second->isDoubleTy() ? 8 :
+                    eit->second->isIntegerTy(32) ? 4 : 8);
+                byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
+            } else {
+                byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
+                                               ka.name + "_sz");
+            }
+        }
+
+        if (host_ptr && byte_size) {
+            auto* gpu_ptr = builder_.CreateCall(runtime_gpu_alloc_, {byte_size},
+                                                 ka.name + "_gpu");
+            builder_.CreateCall(runtime_gpu_to_device_, {gpu_ptr, host_ptr, byte_size});
+            array_allocs.push_back({gpu_ptr, host_ptr, byte_size, true, ka.name});
+        }
     }
 
-    builder_.CreateCall(runtime_gpu_launch_,
-        {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty2),
-         llvm::ConstantInt::get(i32_ty2, 3)});
+    // ---- Build kernel launch args ----
+    // Kernel signature: (i64 n, captured_vars...)
+    // Args array: pointer to n, pointer to each captured var
+    int total_args = 1 + (int)kernel_args_.size();
 
-    // Copy back results
-    // (skipped for now — placeholder kernel doesn't produce useful output)
+    auto* args_arr = builder_.CreateAlloca(ptr_ty, llvm::ConstantInt::get(i32_ty, total_args),
+                                           "gpu_args");
+
+    // Build a map from kernel arg name to its GPU pointer (for arrays)
+    std::map<std::string, llvm::Value*> gpu_ptr_map;
+    for (auto& aa : array_allocs) {
+        gpu_ptr_map[aa.name] = aa.gpu_ptr;
+    }
+
+    int arg_pos = 0;
+    // Arg 0: n
+    {
+        auto* n_alloca = builder_.CreateAlloca(i64_ty);
+        builder_.CreateStore(n_val, n_alloca);
+        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty, arg_pos) };
+        auto* ap = builder_.CreateGEP(ptr_ty, args_arr, idxs);
+        builder_.CreateStore(builder_.CreateBitCast(n_alloca, ptr_ty), ap);
+        arg_pos++;
+    }
+    // Args 1..N: captured variables
+    for (auto& ka : kernel_args_) {
+        llvm::Value* store_val = nullptr;
+        if (ka.is_array) {
+            // For arrays: pass pointer to GPU device pointer
+            auto gpit = gpu_ptr_map.find(ka.name);
+            if (gpit != gpu_ptr_map.end()) {
+                auto* tmp = builder_.CreateAlloca(ptr_ty);
+                builder_.CreateStore(gpit->second, tmp);
+                store_val = tmp;
+            }
+        } else {
+            // Scalar: store value in temp alloca
+            auto* nv = getNamedValue(ka.name);
+            if (nv) {
+                auto* val = builder_.CreateLoad(ka.type, nv, ka.name);
+                auto* tmp = builder_.CreateAlloca(ka.type);
+                builder_.CreateStore(val, tmp);
+                store_val = tmp;
+            }
+        }
+        if (!store_val) {
+            auto* tmp = builder_.CreateAlloca(ka.type);
+            builder_.CreateStore(llvm::ConstantInt::get(i64_ty, 0), tmp);
+            store_val = tmp;
+        }
+        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty, arg_pos) };
+        auto* ap = builder_.CreateGEP(ptr_ty, args_arr, idxs);
+        builder_.CreateStore(builder_.CreateBitCast(store_val, ptr_ty), ap);
+        arg_pos++;
+    }
+
+    // Launch kernel
+    builder_.CreateCall(runtime_gpu_launch_,
+        {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty),
+         llvm::ConstantInt::get(i32_ty, total_args)});
+
+    // ---- Copy back results ----
+    for (auto& aa : array_allocs) {
+        if (aa.needs_copyback) {
+            builder_.CreateCall(runtime_gpu_to_host_,
+                {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+        }
+        builder_.CreateCall(runtime_gpu_free_, {aa.gpu_ptr});
+    }
 
     // Destroy kernel
     builder_.CreateCall(runtime_gpu_destroy_kernel_, {kernel_ctx});

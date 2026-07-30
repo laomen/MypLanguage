@@ -200,6 +200,34 @@ private:
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
     bool cuda_enabled_ = false;
 
+    // ---- Stage 4: GPU kernel body compilation ----
+    struct KernelArgInfo {
+        std::string name;
+        llvm::Type* type;
+        bool is_array;
+        int array_arg_idx;      // index in kernel args for array data
+        int size_arg_idx;       // index in kernel args for array byte-size (-1 if none)
+    };
+    std::vector<KernelArgInfo> kernel_args_;
+    const ForStmt* gpu_for_stmt_ = nullptr;
+
+    // AST walk helpers for GPU kernel body compilation
+    void collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,
+                                std::set<std::string>& loop_decls) const;
+    void collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& out,
+                                std::set<std::string>& loop_decls) const;
+    void analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loop_var);
+
+    // Kernel body codegen (uses kb on PTX module)
+    llvm::Value* emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
+        const std::map<std::string, llvm::Value*>& kernel_vars,
+        const std::vector<llvm::Value*>& kernel_arg_values,
+        const std::string& loop_var_name, llvm::Value* tid_val);
+    void emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
+        const std::map<std::string, llvm::Value*>& kernel_vars,
+        const std::vector<llvm::Value*>& kernel_arg_values,
+        const std::string& loop_var_name, llvm::Value* tid_val);
+
     // ---- Class-related methods ----
     void buildClassStructTypes(TranslationUnit& tu);
     llvm::StructType* getClassStruct(const std::string& name);

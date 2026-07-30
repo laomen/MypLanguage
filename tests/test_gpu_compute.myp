@@ -1,0 +1,42 @@
+// Test: @gpu for with actual array computation
+import env;
+import math;
+
+class Tester {
+    action:
+        @startup void go() {
+            long n = 1024L;
+            double[] data = new double[n];
+
+            // Initialize data on CPU: data[i] = i * 1.0
+            for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = 1.0;
+            }
+
+            // GPU: multiply every element by 2.0
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = data[i] * 2.0;
+            }
+
+            // Verify on CPU
+            long errors = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                double expected = 2.0;
+                double actual = data[i];
+                if (Math.abs(actual - expected) > 0.0001) {
+                    errors = errors + 1L;
+                }
+            }
+
+            if (errors == 0L) {
+                Console.writeLine("GPU compute test: PASS");
+            } else {
+                Console.writeLine("GPU compute test: FAIL (" + errors + " errors)");
+            }
+        }
+}
+
+int main() {
+    Tester t = new Tester();
+    return 0;
+}
