@@ -19,3 +19,7 @@ test_io.txt
 node_modules/
 *.bin
 deeplearning/data/
+
+# Large downloaded archives
+*.zip
+raylib-master*
