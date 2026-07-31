@@ -226,6 +226,10 @@ private:
     };
     std::vector<KernelArgInfo> kernel_args_;
     const ForStmt* gpu_for_stmt_ = nullptr;
+    // Set when the GPU kernel body uses a math function that requires CUDA
+    // libdevice (sin/cos/tan/exp/log/pow). The runtime does not link libdevice,
+    // so such kernels must fall back to CPU.
+    bool gpu_math_unsupported_ = false;
 
     // AST walk helpers for GPU kernel body compilation
     void collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,

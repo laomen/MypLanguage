@@ -2178,12 +2178,49 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 callee_name = static_cast<const IdentifierExpr&>(*e.callee).name;
 
             if (!callee_name.empty()) {
+                // GPU math: only functions with NATIVE PTX support work without
+                // linking CUDA libdevice. sqrt/abs/floor/ceil/trunc lower to
+                // PTX instructions via LLVM intrinsics. sin/cos/tan/exp/log/pow
+                // require libdevice (not linked by the runtime) → mark unsupported
+                // so generateGpuKernel falls back to CPU.
+                auto emit_math_gpu = [&](llvm::Intrinsic::ID id) -> llvm::Value* {
+                    if (e.args.size() < 1) return nullptr;
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a) return nullptr;
+                    if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy())
+                        a = kb.CreateSIToFP(a, double_ty);
+                    if (a->getType()->isFloatTy())
+                        a = kb.CreateFPExt(a, double_ty);
+                    return kb.CreateIntrinsic(id, {double_ty}, {a});
+                };
+                auto mark_gpu_unsupported = [&]() -> llvm::Value* {
+                    gpu_math_unsupported_ = true;
+                    return llvm::ConstantFP::get(double_ty, 0.0);
+                };
                 // Math functions
                 auto emit_math_1 = [&](const char* n) -> llvm::Value* {
                     if (e.args.size() < 1) return nullptr;
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
+                    // GPU mode
+                    if (gpu_for_stmt_) {
+                        if (std::string(n) == "myp_math_sqrt")  return emit_math_gpu(llvm::Intrinsic::sqrt);
+                        if (std::string(n) == "myp_math_abs")   return emit_math_gpu(llvm::Intrinsic::fabs);
+                        if (std::string(n) == "myp_math_floor") return emit_math_gpu(llvm::Intrinsic::floor);
+                        if (std::string(n) == "myp_math_ceil")  return emit_math_gpu(llvm::Intrinsic::ceil);
+                        if (std::string(n) == "myp_math_sin" ||
+                            std::string(n) == "myp_math_cos" ||
+                            std::string(n) == "myp_math_tan" ||
+                            std::string(n) == "myp_math_exp" ||
+                            std::string(n) == "myp_math_log") return mark_gpu_unsupported();
+                        if (std::string(n) == "trunc") {
+                            if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy())
+                                a = kb.CreateSIToFP(a, double_ty);
+                            return kb.CreateIntrinsic(llvm::Intrinsic::trunc, {double_ty}, {a});
+                        }
+                    }
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty}, false),
@@ -2206,7 +2243,23 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
                     std::string runtime_name = callee_name.substr(2); // __myp_math_log -> myp_math_log
-                    auto* runtime_fn = module_->getFunction(runtime_name);
+                    // GPU mode
+                    if (gpu_for_stmt_) {
+                        if (runtime_name == "myp_math_sqrt")  return emit_math_gpu(llvm::Intrinsic::sqrt);
+                        if (runtime_name == "myp_math_abs")   return emit_math_gpu(llvm::Intrinsic::fabs);
+                        if (runtime_name == "myp_math_floor") return emit_math_gpu(llvm::Intrinsic::floor);
+                        if (runtime_name == "myp_math_ceil")  return emit_math_gpu(llvm::Intrinsic::ceil);
+                        if (runtime_name == "myp_math_sin" ||
+                            runtime_name == "myp_math_cos" ||
+                            runtime_name == "myp_math_tan" ||
+                            runtime_name == "myp_math_exp" ||
+                            runtime_name == "myp_math_log" ||
+                            runtime_name == "myp_math_pow") return mark_gpu_unsupported();
+                        return emit_math_gpu(llvm::Intrinsic::sqrt); // fallback
+                    }
+                    // CPU mode: resolve runtime function in the CURRENT module.
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    auto* runtime_fn = cur_mod->getFunction(runtime_name);
                     if (!runtime_fn) {
                         // Handle pow with 2 args
                         if (runtime_name == "myp_math_pow" && e.args.size() >= 2) {
@@ -2215,12 +2268,12 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             if (!b) return nullptr;
                             auto* ft = llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false);
                             runtime_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                runtime_name, kb.GetInsertBlock()->getParent()->getParent());
+                                runtime_name, cur_mod);
                         } else {
                             runtime_fn = llvm::Function::Create(
                                 llvm::FunctionType::get(double_ty, {double_ty}, false),
                                 llvm::Function::ExternalLinkage, runtime_name,
-                                kb.GetInsertBlock()->getParent()->getParent());
+                                cur_mod);
                         }
                     }
                     return kb.CreateCall(runtime_fn, {a});
@@ -2231,6 +2284,11 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
+                    if (gpu_for_stmt_) {
+                        // pow requires libdevice — mark unsupported (CPU fallback)
+                        gpu_math_unsupported_ = true;
+                        return llvm::ConstantFP::get(double_ty, 0.0);
+                    }
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
@@ -2285,18 +2343,24 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto& cls_name = static_cast<const IdentifierExpr&>(*ma.object).name;
                     std::string func_name = ma.member_name;
                     std::string fn_name = cls_name + "_" + func_name;
-                    // Try to generate a direct function call instead of inlining
-                    auto* callee_fn = module_->getFunction(fn_name);
-                    if (callee_fn) {
-                        std::vector<llvm::Value*> call_args;
-                        for (auto& arg : e.args) {
-                            auto* v = emitKernelExpr(*arg, kb, kernel_vars,
-                                                      kernel_arg_values, loop_var_name, tid_val);
-                            if (!v) break;
-                            call_args.push_back(v);
-                        }
-                        if (call_args.size() == e.args.size()) {
-                            return kb.CreateCall(callee_fn, call_args);
+                    // Try to generate a direct function call instead of inlining.
+                    // NOTE: only safe for CPU @parallel for (same module).
+                    // In GPU kernel mode (gpu_for_stmt_), the kernel is a SEPARATE
+                    // LLVM module — calling main-module functions would produce a
+                    // cross-module reference that fails LLVM verification.
+                    if (!gpu_for_stmt_) {
+                        auto* callee_fn = module_->getFunction(fn_name);
+                        if (callee_fn) {
+                            std::vector<llvm::Value*> call_args;
+                            for (auto& arg : e.args) {
+                                auto* v = emitKernelExpr(*arg, kb, kernel_vars,
+                                                          kernel_arg_values, loop_var_name, tid_val);
+                                if (!v) break;
+                                call_args.push_back(v);
+                            }
+                            if (call_args.size() == e.args.size()) {
+                                return kb.CreateCall(callee_fn, call_args);
+                            }
                         }
                     }
                 }
@@ -3141,9 +3205,18 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
 
     // Compile loop body into kernel
     kb.SetInsertPoint(body_bb);
+    gpu_for_stmt_ = &s;  // Mark GPU kernel mode (affects emitKernelExpr)
+    gpu_math_unsupported_ = false;
     if (s.body) {
         emitKernelStmt(*s.body, kb, kernel_vars_map, kernel_arg_values,
                        loop_var, tid_val);
+    }
+    gpu_for_stmt_ = nullptr;
+    if (gpu_math_unsupported_) {
+        // Kernel uses transcendental math (sin/cos/tan/exp/log/pow) which needs
+        // CUDA libdevice — the runtime doesn't link libdevice, so fall back to CPU.
+        diag_.warn(s.range, "'@gpu for' uses libdevice math (sin/cos/tan/exp/log/pow); falling back to CPU");
+        return false;
     }
     if (!kb.GetInsertBlock()->getTerminator())
         kb.CreateBr(end_bb);
