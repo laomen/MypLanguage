@@ -775,6 +775,10 @@ for (long i = 0L; i < n; i = i + 1L) data[i] = 1.0;
 | `Math.cos` | `__nv_cos` | `Math.pow` | `__nv_pow` |
 | `Math.tan` | `__nv_tan` | `Math.abs` | `__nv_fabs` |
 | `Math.floor` | `__nv_floor` | `Math.ceil` | `__nv_ceil` |
+| `Math.asin` | `__nv_asin` | `Math.acos` | `__nv_acos` |
+| `Math.atan` | `__nv_atan` | `Math.atan2` | `__nv_atan2` |
+| `Math.sinh` | `__nv_sinh` | `Math.cosh` | `__nv_cosh` |
+| `Math.tanh` | `__nv_tanh` | | |
 
 #### `import cuda` — CUDA 标准库
 
@@ -785,35 +789,74 @@ import cuda;
 提供 GPU 编程的高层 API：
 
 ```myp
-// Cuda — GPU 查询
+// Cuda — GPU 设备信息查询
 int ok = Cuda.available();      // 1=GPU 可用，0=将使用 CPU
+int n = Cuda.count();           // GPU 数量
+string gpu = Cuda.name();       // GPU 名称（如 "NVIDIA GeForce RTX 2070 SUPER"）
+long mem = Cuda.memory();       // 显存（字节）
+int cc = Cuda.capability();     // 计算能力（如 705 = 7.5）
+int sm = Cuda.multiProcessors();// 流式多处理器（SM）数量
+int mt = Cuda.maxThreads();     // 每线程块最大线程数
+int ws = Cuda.warpSize();       // 线程束大小（通常 32）
 
 // Device — 内核内数学函数（GPU 全精度，CPU 用标准库）
+// 支持：sqrt/abs/floor/ceil/trunc/sin/cos/tan/asin/acos/atan/atan2/
+//       sinh/cosh/tanh/exp/log/pow（全部映射到 CUDA libdevice）
 @gpu for (long i = 0L; i < n; i = i + 1L) {
-    data[i] = Device.pow(data[i], 2.0) + Device.cos(0.0);
+    data[i] = Device.pow(data[i], 2.0) + Device.cos(0.0) + Device.atan2(1.0, 2.0);
 }
 
 // Vectors — 基于 @gpu for 的向量化运算（自动使用 GPU，不可用回退 CPU）
-Vectors.add(a, b, out, n);      // out[i] = a[i] + b[i]
-Vectors.sub(a, b, out, n);      // out[i] = a[i] - b[i]
-Vectors.mul(a, b, out, n);      // out[i] = a[i] * b[i]
-Vectors.scale(data, 2.0, n);    // data[i] *= 2.0
-Vectors.addScalar(data, 1.0, n);// data[i] += 1.0
-Vectors.fill(data, 0.0, n);     // data[i] = 0.0
-Vectors.sqrt(data, n);          // data[i] = sqrt(data[i])
-Vectors.sin(data, n);           // data[i] = sin(data[i])
-Vectors.cos(data, n);           // data[i] = cos(data[i])
-Vectors.exp(data, n);           // data[i] = exp(data[i])
-Vectors.log(data, n);           // data[i] = log(data[i])
+Vectors.add(a, b, out, n);       // out[i] = a[i] + b[i]
+Vectors.sub(a, b, out, n);       // out[i] = a[i] - b[i]
+Vectors.mul(a, b, out, n);       // out[i] = a[i] * b[i]
+Vectors.scale(data, 2.0, n);     // data[i] *= 2.0
+Vectors.addScalar(data, 1.0, n); // data[i] += 1.0
+Vectors.fill(data, 0.0, n);      // data[i] = 0.0
+Vectors.saxpy(3.0, x, y, out, n);// out[i] = 3.0*x[i] + y[i]
+Vectors.copy(dst, src, n);       // dst[i] = src[i]
+Vectors.negate(data, n);         // data[i] = -data[i]
+Vectors.clamp(data, lo, hi, n);  // data[i] = clamp(data[i], lo, hi)
+Vectors.pow(data, 2.0, n);       // data[i] = pow(data[i], 2.0)
+Vectors.sqrt(data, n);           // data[i] = sqrt(data[i])
+Vectors.sin(data, n);            // data[i] = sin(data[i])
+Vectors.cos(data, n);            // data[i] = cos(data[i])
+Vectors.tan(data, n);            // data[i] = tan(data[i])
+Vectors.exp(data, n);            // data[i] = exp(data[i])
+Vectors.log(data, n);            // data[i] = log(data[i])
+Vectors.abs(data, n);            // data[i] = |data[i]|
+Vectors.floor(data, n);          // data[i] = floor(data[i])
+Vectors.ceil(data, n);           // data[i] = ceil(data[i])
+
+// Vectors — 归约（sum/mean/variance/norm 用 GPU 原子累加）
+double s = Vectors.sum(a, n);        // Σ a[i]
+double m = Vectors.mean(a, n);       // 均值
+double v = Vectors.variance(a, n);   // 方差（单遍）
+double sd = Vectors.stddev(a, n);    // 标准差
+double ns = Vectors.normSquared(a, n);// Σ a[i]^2
+double no = Vectors.norm(a, n);      // sqrt(Σ a[i]^2)
+Vectors.normalize(data, n);          // data[i] /= ||data||
+double mn = Vectors.min(a, n);       // 最小值（CPU）
+double mx = Vectors.max(a, n);       // 最大值（CPU）
+double d = Vectors.dot(a, b, n);     // 内积（CPU）
+
+// Matrix — 矩阵元素级运算（扁平行主序 double[]，大小 rows*cols）
+Matrix.add(a, b, c, rows, cols);     // c = a + b（GPU）
+Matrix.sub(a, b, c, rows, cols);     // c = a - b（GPU）
+Matrix.mul(a, b, c, rows, cols);     // c = a .* b（GPU）
+Matrix.scale(a, s, rows, cols);      // a *= s（GPU）
+Matrix.fill(a, s, rows, cols);       // a = s（GPU）
+Matrix.transpose(a, t, rows, cols);  // t = a^T（CPU）
 ```
 
 #### 限制
 
 - 循环变量用 `long`，边界 `i < n` 或 `i <= n`
-- 捕获的数组在 GPU 内核启动前整体拷贝到设备，运行后拷回
+- 捕获的数组在 GPU 内核启动前整体拷贝到设备（拷贝元素数 = 循环上界 n），运行后拷回
 - 每个迭代必须**无数据依赖**
 - 不支持 `break` / `continue`
 - GPU 路径的数学函数需要 `libdevice.10.bc`
+- `min`/`max`/`dot`/`transpose` 当前用 CPU 实现（正确但非 GPU 加速）
 
 ### @startup 注解
 

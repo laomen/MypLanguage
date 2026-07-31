@@ -21,6 +21,11 @@ typedef int (*cuMemFree_t)(void*);
 typedef int (*cuMemcpyHtoD_t)(void*, const void*, size_t);
 typedef int (*cuMemcpyDtoH_t)(void*, const void*, size_t);
 typedef int (*cuCtxSynchronize_t)(void);
+typedef int CUdevice;
+typedef int (*cuDeviceGet_t)(CUdevice*, int);
+typedef int (*cuDeviceGetName_t)(char*, int, CUdevice);
+typedef int (*cuDeviceGetAttribute_t)(int*, int, CUdevice);
+typedef int (*cuDeviceTotalMem_t)(size_t*, CUdevice);
 
 static void* lib = NULL;
 static cuInit_t p_cuInit = NULL;
@@ -35,6 +40,13 @@ static cuMemcpyDtoH_t p_cuMemcpyDtoH = NULL;
 static cuCtxSynchronize_t p_cuCtxSynchronize = NULL;
 static int avail = 0;
 static CUcontext ctx = NULL;
+static CUdevice dev = 0;
+static int dev_count = 0;
+static int dev_initialized = 0;
+static cuDeviceGet_t p_cuDeviceGet = NULL;
+static cuDeviceGetName_t p_cuDeviceGetName = NULL;
+static cuDeviceGetAttribute_t p_cuDeviceGetAttribute = NULL;
+static cuDeviceTotalMem_t p_cuDeviceTotalMem = NULL;
 
 typedef int (*cuDeviceGetCount_t)(int*);
 int myp_gpu_init(void) {
@@ -59,6 +71,10 @@ int myp_gpu_init(void) {
     p_cuMemcpyHtoD = (cuMemcpyHtoD_t)dlsym(lib,"cuMemcpyHtoD_v2");
     p_cuMemcpyDtoH = (cuMemcpyDtoH_t)dlsym(lib,"cuMemcpyDtoH_v2");
     p_cuCtxSynchronize = (cuCtxSynchronize_t)dlsym(lib,"cuCtxSynchronize");
+    p_cuDeviceGet = (cuDeviceGet_t)dlsym(lib,"cuDeviceGet");
+    p_cuDeviceGetName = (cuDeviceGetName_t)dlsym(lib,"cuDeviceGetName");
+    p_cuDeviceGetAttribute = (cuDeviceGetAttribute_t)dlsym(lib,"cuDeviceGetAttribute");
+    p_cuDeviceTotalMem = (cuDeviceTotalMem_t)dlsym(lib,"cuDeviceTotalMem_v2");
     if (!p_cuInit||!p_cuCtxCreate||!p_cuModuleLoadData||!p_cuModuleGetFunction||
         !p_cuLaunchKernel||!p_cuMemAlloc||!p_cuMemFree||!p_cuMemcpyHtoD||
         !p_cuMemcpyDtoH||!p_cuCtxSynchronize) { dlclose(lib);lib=NULL; return 0; }
@@ -69,10 +85,66 @@ int myp_gpu_init(void) {
     if (!p_cuDeviceGetCount || p_cuDeviceGetCount(&nd)!=0 || nd <= 0) {
         dlclose(lib); lib = NULL; return 0;
     }
+    if (p_cuDeviceGet) p_cuDeviceGet(&dev, 0);
     if (p_cuCtxCreate(&ctx,0,0)!=0) { dlclose(lib);lib=NULL; return 0; }
     avail = 1;
+    dev_count = nd;
+    dev_initialized = 1;
     fprintf(stderr,"[myp GPU] CUDA initialized (%d device(s))\n", nd);
     return 1;
+}
+
+// ---- Device info (valid only after myp_gpu_init succeeds) ----
+int myp_gpu_device_count(void) {
+    if (!dev_initialized) myp_gpu_init();
+    return dev_count;
+}
+const char* myp_gpu_device_name(void) {
+    static char name[256];
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetName) { name[0]=0; return name; }
+    if (p_cuDeviceGetName(name, 256, dev) != 0) name[0] = 0;
+    return name;
+}
+long myp_gpu_device_memory(void) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceTotalMem) return 0;
+    size_t bytes = 0;
+    if (p_cuDeviceTotalMem(&bytes, dev) != 0) return 0;
+    return (long)bytes;
+}
+int myp_gpu_compute_capability(void) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetAttribute) return 0;
+    int major = 0, minor = 0;
+    // CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR=75, MINOR=76
+    p_cuDeviceGetAttribute(&major, 75, dev);
+    p_cuDeviceGetAttribute(&minor, 76, dev);
+    return major * 100 + minor;
+}
+int myp_gpu_multi_processors(void) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetAttribute) return 0;
+    int n = 0;
+    // CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT=16
+    if (p_cuDeviceGetAttribute(&n, 16, dev) != 0) return 0;
+    return n;
+}
+int myp_gpu_max_threads_per_block(void) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetAttribute) return 0;
+    int n = 0;
+    // CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_BLOCK=1
+    if (p_cuDeviceGetAttribute(&n, 1, dev) != 0) return 0;
+    return n;
+}
+int myp_gpu_warp_size(void) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetAttribute) return 0;
+    int n = 0;
+    // CU_DEVICE_ATTRIBUTE_WARP_SIZE=10
+    if (p_cuDeviceGetAttribute(&n, 10, dev) != 0) return 0;
+    return n;
 }
 
 void* myp_gpu_alloc(size_t sz) {

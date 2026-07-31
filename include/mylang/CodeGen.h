@@ -172,6 +172,14 @@ private:
     llvm::Function* runtime_gpu_load_kernel_ = nullptr;
     llvm::Function* runtime_gpu_launch_ = nullptr;
     llvm::Function* runtime_gpu_destroy_kernel_ = nullptr;
+    // CUDA device info
+    llvm::Function* runtime_cuda_count_ = nullptr;
+    llvm::Function* runtime_cuda_name_ = nullptr;
+    llvm::Function* runtime_cuda_memory_ = nullptr;
+    llvm::Function* runtime_cuda_capability_ = nullptr;
+    llvm::Function* runtime_cuda_multiprocessors_ = nullptr;
+    llvm::Function* runtime_cuda_max_threads_ = nullptr;
+    llvm::Function* runtime_cuda_warp_ = nullptr;
 
     // ---- Init function ----
     llvm::Function* init_func_ = nullptr;

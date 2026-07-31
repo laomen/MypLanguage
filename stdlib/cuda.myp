@@ -2,19 +2,29 @@
 //
 // MYP 支持通过 @gpu for 语法将循环卸载到 NVIDIA GPU 执行。
 // 本模块提供：
-//   1. Device 类 —— 在 @gpu for 内核中可用的数学函数
+//   1. Cuda     —— GPU 设备信息查询
+//   2. Device   —— 在 @gpu for 内核中可用的数学函数
 //      （编译器自动映射到 CUDA libdevice，函数在 GPU 上以全精度执行）
-//   2. Vectors 类 —— 基于 @gpu for 的向量化元素级运算辅助
+//   3. Vectors  —— 基于 @gpu for 的向量化元素级运算与归约
+//   4. Matrix   —— 二维数组元素级运算
 //
 // 用法：
+//   // GPU 设备信息
+//   int n = Cuda.count();                 // GPU 数量
+//   string gpu = Cuda.name();             // GPU 名称
+//   long mem = Cuda.memory();             // 显存字节数
+//   int cc = Cuda.capability();           // 计算能力（如 860 = 8.6）
+//
 //   // 在 GPU 上并行执行循环
 //   @gpu for (long i = 0L; i < n; i = i + 1L) {
 //       data[i] = Device.sqrt(data[i]) + Device.sin(1.0);
 //   }
 //
 //   // 向量化运算（自动使用 GPU）
-//   Vectors.scale(data, 2.0, n);        // data[i] *= 2.0
-//   Vectors.add(a, b, out, n);          // out[i] = a[i] + b[i]
+//   Vectors.scale(data, 2.0, n);          // data[i] *= 2.0
+//   Vectors.add(a, b, out, n);            // out[i] = a[i] + b[i]
+//   double s = Vectors.sum(data, n);      // GPU 原子归约求和
+//   double m = Vectors.mean(data, n);     // 均值
 //
 // 注意：
 //   - @gpu for 需要 CUDA 驱动（libcuda.so.1）且设置环境变量 MYP_GPU=1
@@ -22,8 +32,10 @@
 //   - 数学函数需要 CUDA libdevice（libdevice.10.bc），编译器在编译时自动链接
 //   - 若 libdevice 不存在（设置 MYP_CUDA_LIBDEVICE 指定路径），
 //     含数学函数的 @gpu for 会回退到 CPU 执行
+//   - min/max/dot/transpose 等用 CPU 顺序实现（正确但非 GPU 加速）
 
 import math;
+import atomic;
 
 class Cuda {
     static:
@@ -35,6 +47,29 @@ class Cuda {
         int available() {
             return __myp_cuda_available();
         }
+
+        // ---- 设备信息（GPU 不可用时返回 0 / 空字符串）----
+
+        // CUDA 设备数量
+        int count() { return __myp_cuda_count(); }
+
+        // GPU 名称（如 "NVIDIA GeForce RTX 4060"）
+        string name() { return __myp_cuda_name(); }
+
+        // GPU 全局显存（字节）
+        long memory() { return __myp_cuda_memory(); }
+
+        // 计算能力，如 8.6 → 860，9.0 → 900
+        int capability() { return __myp_cuda_capability(); }
+
+        // 流式多处理器（SM）数量
+        int multiProcessors() { return __myp_cuda_multiprocessors(); }
+
+        // 每线程块最大线程数
+        int maxThreads() { return __myp_cuda_max_threads(); }
+
+        // 线程束大小（通常 32）
+        int warpSize() { return __myp_cuda_warp(); }
 }
 
 // Device 类 —— @gpu for 内核中的数学函数
@@ -57,6 +92,17 @@ class Device {
         double sin(double v)    { return Math.sin(v); }
         double cos(double v)    { return Math.cos(v); }
         double tan(double v)    { return Math.tan(v); }
+
+        // 反三角函数
+        double asin(double v)   { return Math.asin(v); }
+        double acos(double v)   { return Math.acos(v); }
+        double atan(double v)   { return Math.atan(v); }
+        double atan2(double y, double x) { return Math.atan2(y, x); }
+
+        // 双曲函数
+        double sinh(double v)   { return Math.sinh(v); }
+        double cosh(double v)   { return Math.cosh(v); }
+        double tanh(double v)   { return Math.tanh(v); }
 
         // 指数对数
         double exp(double v)    { return Math.exp(v); }
@@ -145,12 +191,213 @@ class Vectors {
             }
         }
 
-        // 计算内积 sum += a[i] * b[i]（归约；线程数较小时结果精确）
+        // data[i] = Device.pow(data[i], p)
+        void pow(double[] data, double p, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.pow(data[i], p);
+            }
+        }
+        // data[i] = Device.tan(data[i])
+        void tan(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.tan(data[i]);
+            }
+        }
+        // data[i] = Device.abs(data[i])
+        void abs(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.abs(data[i]);
+            }
+        }
+        // data[i] = Device.floor(data[i])
+        void floor(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.floor(data[i]);
+            }
+        }
+        // data[i] = Device.ceil(data[i])
+        void ceil(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.ceil(data[i]);
+            }
+        }
+        // out[i] = a * x[i] + y[i]（SAXPY，BLAS 风格）
+        void saxpy(double a, double[] x, double[] y, double[] out, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                out[i] = a * x[i] + y[i];
+            }
+        }
+        // dst[i] = src[i]
+        void copy(double[] dst, double[] src, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                dst[i] = src[i];
+            }
+        }
+        // data[i] = -data[i]
+        void negate(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = 0.0 - data[i];
+            }
+        }
+        // data[i] = clamp(data[i], lo, hi)
+        void clamp(double[] data, double lo, double hi, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                double v = data[i];
+                if (v < lo) v = lo;
+                if (v > hi) v = hi;
+                data[i] = v;
+            }
+        }
+
+        // ---- 归约（sum/mean/variance/norm 用 GPU 原子累加，min/max/dot 为 CPU）----
+
+        // sum = Σ a[i]（GPU 原子归约）
+        double sum(double[] a, long n) {
+            double[1] acc;
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(acc, 0, a[i]);
+            }
+            return acc[0];
+        }
+        // mean = Σ a[i] / n（GPU 原子归约）
+        double mean(double[] a, long n) {
+            double[1] acc;
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(acc, 0, a[i]);
+            }
+            return acc[0] / n;
+        }
+        // variance = Σ (a[i]-mean)^2 / n（GPU 原子归约，单遍）
+        double variance(double[] a, long n) {
+            double[1] s;
+            double[1] sq;
+            s[0] = 0.0;
+            sq[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(s, 0, a[i]);
+                Atomic.addDouble(sq, 0, a[i] * a[i]);
+            }
+            double mean = s[0] / n;
+            return sq[0] / n - mean * mean;
+        }
+        // stddev = sqrt(variance)（GPU 原子归约）
+        double stddev(double[] a, long n) {
+            double[1] s;
+            double[1] sq;
+            s[0] = 0.0;
+            sq[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(s, 0, a[i]);
+                Atomic.addDouble(sq, 0, a[i] * a[i]);
+            }
+            double mean = s[0] / n;
+            double var_val = sq[0] / n - mean * mean;
+            return Math.sqrt(var_val);
+        }
+        // normSquared = Σ a[i]^2（GPU 原子归约）
+        double normSquared(double[] a, long n) {
+            double[1] acc;
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(acc, 0, a[i] * a[i]);
+            }
+            return acc[0];
+        }
+        // norm = sqrt(Σ a[i]^2)（GPU 原子归约）
+        double norm(double[] a, long n) {
+            double[1] acc;
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(acc, 0, a[i] * a[i]);
+            }
+            return Math.sqrt(acc[0]);
+        }
+        // 单位化：data[i] /= ||data||（先 GPU 求模，再 GPU 归一化）
+        void normalize(double[] data, long n) {
+            double[1] acc;
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                Atomic.addDouble(acc, 0, data[i] * data[i]);
+            }
+            double d = Math.sqrt(acc[0]);
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = data[i] / d;
+            }
+        }
+        // 最小值（CPU 顺序，正确但非 GPU 加速）
+        double min(double[] a, long n) {
+            double m = a[0];
+            for (long i = 1L; i < n; i = i + 1L) {
+                if (a[i] < m) m = a[i];
+            }
+            return m;
+        }
+        // 最大值（CPU 顺序）
+        double max(double[] a, long n) {
+            double m = a[0];
+            for (long i = 1L; i < n; i = i + 1L) {
+                if (a[i] > m) m = a[i];
+            }
+            return m;
+        }
+        // 内积 Σ a[i]*b[i]（CPU 顺序）
         double dot(double[] a, double[] b, long n) {
             double sum = 0.0;
             for (long i = 0L; i < n; i = i + 1L) {
                 sum = sum + a[i] * b[i];
             }
             return sum;
+        }
+}
+
+// Matrix 类 —— 矩阵元素级运算
+// 矩阵用扁平行主序 double[] 表示（大小 rows*cols，元素 (i,j) 在索引 i*cols+j）。
+// MYP 目前仅支持一维数组，因此用扁平数组 + 显式行列数。
+class Matrix {
+    static:
+        // C = A + B（逐元素，GPU）
+        void add(double[] a, double[] b, double[] c, long rows, long cols) {
+            long total = rows * cols;
+            @gpu for (long k = 0L; k < total; k = k + 1L) {
+                c[k] = a[k] + b[k];
+            }
+        }
+        // C = A - B（逐元素，GPU）
+        void sub(double[] a, double[] b, double[] c, long rows, long cols) {
+            long total = rows * cols;
+            @gpu for (long k = 0L; k < total; k = k + 1L) {
+                c[k] = a[k] - b[k];
+            }
+        }
+        // C = A * B（逐元素，GPU）
+        void mul(double[] a, double[] b, double[] c, long rows, long cols) {
+            long total = rows * cols;
+            @gpu for (long k = 0L; k < total; k = k + 1L) {
+                c[k] = a[k] * b[k];
+            }
+        }
+        // A = A * s（逐元素，GPU）
+        void scale(double[] a, double s, long rows, long cols) {
+            long total = rows * cols;
+            @gpu for (long k = 0L; k < total; k = k + 1L) {
+                a[k] = a[k] * s;
+            }
+        }
+        // A = s（逐元素，GPU）
+        void fill(double[] a, double s, long rows, long cols) {
+            long total = rows * cols;
+            @gpu for (long k = 0L; k < total; k = k + 1L) {
+                a[k] = s;
+            }
+        }
+        // 转置：T[i*rows+j] = A[j*cols+i]（CPU；A 为 rows×cols，T 为 cols×rows）
+        void transpose(double[] a, double[] t, long rows, long cols) {
+            for (long i = 0L; i < rows; i = i + 1L) {
+                for (long j = 0L; j < cols; j = j + 1L) {
+                    t[j * rows + i] = a[i * cols + j];
+                }
+            }
         }
 }

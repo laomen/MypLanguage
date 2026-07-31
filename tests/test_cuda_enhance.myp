@@ -1,0 +1,100 @@
+// Test enhanced cuda.myp: device info + expanded math + reductions
+import env;
+import math;
+import cuda;
+
+class Tester {
+    action:
+        @startup void go() {
+            // ---- Cuda device info ----
+            Console.writeLine("device count=" + Cuda.count());
+            Console.writeLine("device name=" + Cuda.name());
+            Console.writeLine("memory MB=" + (Cuda.memory() / 1048576L));
+            Console.writeLine("capability=" + Cuda.capability());
+            Console.writeLine("multiProcessors=" + Cuda.multiProcessors());
+            Console.writeLine("maxThreads=" + Cuda.maxThreads());
+            Console.writeLine("warp=" + Cuda.warpSize());
+
+            long n = 256L;
+            double[] a = new double[n];
+            double[] b = new double[n];
+            double[] out = new double[n];
+
+            // ---- Device inverse/hyperbolic math in kernel ----
+            for (long i = 0L; i < n; i = i + 1L) a[i] = 0.5;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                out[i] = Device.asin(a[i]) + Device.acos(a[i]) +
+                         Device.atan(a[i]) + Device.atan2(1.0, 2.0) +
+                         Device.sinh(a[i]) + Device.cosh(a[i]) + Device.tanh(a[i]);
+            }
+            // asin(0.5)+acos(0.5)=pi/2, atan(0.5)+atan2(1,2)=2*atan(0.5),
+            // sinh+cosh=e^0.5, tanh=...
+            double e05 = Math.exp(0.5);
+            double expected0 = Math.pi()/2.0 + 2.0*Math.atan(0.5) + e05 + Math.tanh(0.5);
+            Console.writeLine("invhyp[0]=" + out[0] + " (expect " + expected0 + ")");
+
+            // ---- Vectors.saxpy ----
+            for (long i = 0L; i < n; i = i + 1L) { a[i] = 1.0; b[i] = 2.0; }
+            Vectors.saxpy(3.0, a, b, out, n);
+            Console.writeLine("saxpy[0]=" + out[0] + " (expect 5)");
+
+            // ---- Vectors.copy / negate / clamp ----
+            Vectors.copy(out, a, n);
+            Vectors.negate(out, n);
+            Console.writeLine("negate[0]=" + out[0] + " (expect -1)");
+            for (long i = 0L; i < n; i = i + 1L) out[i] = 5.0;
+            Vectors.clamp(out, 1.0, 2.0, n);
+            Console.writeLine("clamp[0]=" + out[0] + " (expect 2)");
+
+            // ---- Vectors.pow / tan / abs / floor / ceil ----
+            for (long i = 0L; i < n; i = i + 1L) a[i] = 2.0;
+            Vectors.pow(a, 3.0, n);
+            Console.writeLine("pow[0]=" + a[0] + " (expect 8)");
+            for (long i = 0L; i < n; i = i + 1L) a[i] = 1.2;
+            Vectors.floor(a, n);
+            Vectors.ceil(a, n);
+            Console.writeLine("floorceil[0]=" + a[0] + " (expect 1)");
+            for (long i = 0L; i < n; i = i + 1L) a[i] = -1.5;
+            Vectors.abs(a, n);
+            Console.writeLine("abs[0]=" + a[0] + " (expect 1.5)");
+
+            // ---- Vectors reductions (GPU atomic) ----
+            for (long i = 0L; i < n; i = i + 1L) a[i] = 1.0;
+            double s = Vectors.sum(a, n);
+            Console.writeLine("sum=" + s + " (expect 256)");
+            double m = Vectors.mean(a, n);
+            Console.writeLine("mean=" + m + " (expect 1)");
+            double v = Vectors.variance(a, n);
+            Console.writeLine("variance=" + v + " (expect 0)");
+            double sd = Vectors.stddev(a, n);
+            Console.writeLine("stddev=" + sd + " (expect 0)");
+            double ns = Vectors.normSquared(a, n);
+            Console.writeLine("normSq=" + ns + " (expect 256)");
+            double no = Vectors.norm(a, n);
+            Console.writeLine("norm=" + no + " (expect 16)");
+            double mn = Vectors.min(a, n);
+            double mx = Vectors.max(a, n);
+            Console.writeLine("min=" + mn + " max=" + mx + " (expect 1 1)");
+            double d = Vectors.dot(a, a, n);
+            Console.writeLine("dot=" + d + " (expect 256)");
+
+            // ---- Vectors.normalize ----
+            for (long i = 0L; i < n; i = i + 1L) a[i] = 3.0;
+            Vectors.normalize(a, n);
+            Console.writeLine("normalized[0]=" + a[0] + " (expect 0.0625)");
+
+            // ---- Final verification ----
+            double err = 0.0;
+            err = err + Math.abs(s - 256.0);
+            err = err + Math.abs(m - 1.0);
+            err = err + Math.abs(v - 0.0);
+            err = err + Math.abs(no - 16.0);
+            err = err + Math.abs(out[0] - 2.0);
+            Console.writeLine("cuda enhance test: " + (err < 0.001 ? "PASS" : "FAIL"));
+        }
+}
+
+int main() {
+    Tester t = new Tester();
+    return 0;
+}

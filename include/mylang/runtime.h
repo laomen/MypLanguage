@@ -127,6 +127,14 @@ void* myp_gpu_load_kernel(const char* ptx_str, const char* kernel_name);
 int   myp_gpu_launch(void* kernel_ctx, unsigned int grid_dim_x, unsigned int block_dim_x,
                      void** args, unsigned int num_args);
 void  myp_gpu_destroy_kernel(void* kernel_ctx);
+// Device info (returns 0 / empty if GPU unavailable)
+int    myp_gpu_device_count(void);
+const char* myp_gpu_device_name(void);   // static buffer, valid until next call
+long   myp_gpu_device_memory(void);      // total global memory in bytes
+int    myp_gpu_compute_capability(void); // major*100 + minor, e.g. 860
+int    myp_gpu_multi_processors(void);   // number of streaming multiprocessors
+int    myp_gpu_max_threads_per_block(void);
+int    myp_gpu_warp_size(void);
 
 // ---- String to double ----
 double myp_atof(const char* s);

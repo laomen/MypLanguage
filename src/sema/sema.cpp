@@ -1899,6 +1899,15 @@ void Sema::registerIntrinsics() {
     // CUDA GPU availability (returns 1 if GPU offload usable, 0 otherwise)
     add_intrinsic("__myp_cuda_available", TypeKind::Int, {});
 
+    // CUDA device info (return 0/empty if GPU unavailable)
+    add_intrinsic("__myp_cuda_count", TypeKind::Int, {});
+    add_intrinsic("__myp_cuda_name", TypeKind::String, {});
+    add_intrinsic("__myp_cuda_memory", TypeKind::Long, {});
+    add_intrinsic("__myp_cuda_capability", TypeKind::Int, {});
+    add_intrinsic("__myp_cuda_multiprocessors", TypeKind::Int, {});
+    add_intrinsic("__myp_cuda_max_threads", TypeKind::Int, {});
+    add_intrinsic("__myp_cuda_warp", TypeKind::Int, {});
+
     // File I/O intrinsics
     add_intrinsic("__myp_io_fopen", TypeKind::Int, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_io_fclose", TypeKind::Void, {});

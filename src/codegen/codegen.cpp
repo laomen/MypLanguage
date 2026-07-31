@@ -1988,13 +1988,32 @@ void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loo
         // Try to resolve type from named values
         auto* nv = getNamedValue(name);
         if (nv) {
-            llvm::Type* val_type = getNamedValueType(name);
-            if (!val_type && llvm::isa<llvm::AllocaInst>(nv))
+            // Prefer the alloca's actual allocated type (source of truth for the
+            // variable in THIS function) over getNamedValueType, which is keyed by
+            // name and can hold a stale type from a previously compiled function.
+            llvm::Type* val_type = nullptr;
+            if (llvm::isa<llvm::AllocaInst>(nv))
                 val_type = llvm::cast<llvm::AllocaInst>(nv)->getAllocatedType();
+            if (!val_type)
+                val_type = getNamedValueType(name);
 
-            // Check if it's an array (pointer to element type)
-            auto eit = array_elem_types_.find(name);
-            if (eit != array_elem_types_.end()) {
+            // Check if it's an array (pointer to element type).
+            // NOTE: array_elem_types_ is keyed by name and can hold stale entries
+            // from a previously compiled function (e.g. a scalar param `a` while
+            // another method declared `double[] a`). A real array variable is always
+            // stored as a pointer-typed alloca, so require that to avoid
+            // misclassifying scalars as arrays.
+            bool is_array_here = false;
+            if (array_elem_types_.find(name) != array_elem_types_.end()) {
+                if (llvm::isa<llvm::AllocaInst>(nv)) {
+                    llvm::Type* aty = llvm::cast<llvm::AllocaInst>(nv)->getAllocatedType();
+                    if (aty->isPointerTy())
+                        is_array_here = true;
+                } else {
+                    is_array_here = true;  // non-alloca (e.g. global) — trust map
+                }
+            }
+            if (is_array_here) {
                 kai.is_array = true;
                 kai.type = ptr_ty;  // kernel arg is a pointer
             } else if (val_type) {
@@ -2224,6 +2243,25 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             llvm::Function::ExternalLinkage, "__nv_pow", cur_mod);
                     return kb.CreateCall(fn, {a, b});
                 };
+                // Generic 2-argument GPU math (atan2)
+                auto emit_math_gpu_2 = [&](const char* nv) -> llvm::Value* {
+                    if (e.args.size() < 2) return nullptr;
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a || !b) return nullptr;
+                    gpu_math_used_ = true;
+                    if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy()) a = kb.CreateSIToFP(a, double_ty);
+                    if (!b->getType()->isDoubleTy() && b->getType()->isIntegerTy()) b = kb.CreateSIToFP(b, double_ty);
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    auto* fn = cur_mod->getFunction(nv);
+                    if (!fn)
+                        fn = llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
+                            llvm::Function::ExternalLinkage, nv, cur_mod);
+                    return kb.CreateCall(fn, {a, b});
+                };
                 // Math functions
                 auto emit_math_1 = [&](const char* n) -> llvm::Value* {
                     if (e.args.size() < 1) return nullptr;
@@ -2241,6 +2279,12 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         if (std::string(n) == "myp_math_abs")   return emit_math_gpu("__nv_fabs");
                         if (std::string(n) == "myp_math_floor") return emit_math_gpu("__nv_floor");
                         if (std::string(n) == "myp_math_ceil")  return emit_math_gpu("__nv_ceil");
+                        if (std::string(n) == "myp_math_asin")  return emit_math_gpu("__nv_asin");
+                        if (std::string(n) == "myp_math_acos")  return emit_math_gpu("__nv_acos");
+                        if (std::string(n) == "myp_math_atan")  return emit_math_gpu("__nv_atan");
+                        if (std::string(n) == "myp_math_sinh")  return emit_math_gpu("__nv_sinh");
+                        if (std::string(n) == "myp_math_cosh")  return emit_math_gpu("__nv_cosh");
+                        if (std::string(n) == "myp_math_tanh")  return emit_math_gpu("__nv_tanh");
                         if (std::string(n) == "trunc")          return emit_math_gpu("__nv_trunc");
                     }
                     return kb.CreateCall(
@@ -2259,14 +2303,37 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 if (callee_name == "floor") return emit_math_1("myp_math_floor");
                 if (callee_name == "ceil")  return emit_math_1("myp_math_ceil");
                 if (callee_name == "trunc") return emit_math_1("trunc");
-                // Handle __myp_math_* intrinsic calls (e.g., from Math.log inlining)
-                if (callee_name.find("__myp_math_") == 0 && e.args.size() >= 1) {
+                if (callee_name == "asin")  return emit_math_1("myp_math_asin");
+                if (callee_name == "acos")  return emit_math_1("myp_math_acos");
+                if (callee_name == "atan")  return emit_math_1("myp_math_atan");
+                if (callee_name == "sinh")  return emit_math_1("myp_math_sinh");
+                if (callee_name == "cosh")  return emit_math_1("myp_math_cosh");
+                if (callee_name == "tanh")  return emit_math_1("myp_math_tanh");
+                if (callee_name == "atan2" && e.args.size() >= 2) {
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
-                    if (!a) return nullptr;
+                    auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a || !b) return nullptr;
+                    if (gpu_for_stmt_) return emit_math_gpu_2("__nv_atan2");
+                    return kb.CreateCall(
+                        llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
+                            llvm::Function::ExternalLinkage, "myp_math_atan2",
+                            kb.GetInsertBlock()->getParent()->getParent()),
+                        {a, b});
+                }
+                // Handle __myp_math_* intrinsic calls (e.g., from Math.log inlining)
+                if (callee_name.find("__myp_math_") == 0 && e.args.size() >= 1) {
                     std::string runtime_name = callee_name.substr(2); // __myp_math_log -> myp_math_log
                     // GPU mode: call CUDA libdevice device functions
                     if (gpu_for_stmt_) {
+                        // 2-arg functions first (atan2)
+                        if (runtime_name == "myp_math_atan2" && e.args.size() >= 2)
+                            return emit_math_gpu_2("__nv_atan2");
+                        auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                                  kernel_arg_values, loop_var_name, tid_val);
+                        if (!a) return nullptr;
                         if (runtime_name == "myp_math_sqrt")  return emit_math_gpu("__nv_sqrt");
                         if (runtime_name == "myp_math_sin")   return emit_math_gpu("__nv_sin");
                         if (runtime_name == "myp_math_cos")   return emit_math_gpu("__nv_cos");
@@ -2276,6 +2343,12 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         if (runtime_name == "myp_math_abs")   return emit_math_gpu("__nv_fabs");
                         if (runtime_name == "myp_math_floor") return emit_math_gpu("__nv_floor");
                         if (runtime_name == "myp_math_ceil")  return emit_math_gpu("__nv_ceil");
+                        if (runtime_name == "myp_math_asin")  return emit_math_gpu("__nv_asin");
+                        if (runtime_name == "myp_math_acos")  return emit_math_gpu("__nv_acos");
+                        if (runtime_name == "myp_math_atan")  return emit_math_gpu("__nv_atan");
+                        if (runtime_name == "myp_math_sinh")  return emit_math_gpu("__nv_sinh");
+                        if (runtime_name == "myp_math_cosh")  return emit_math_gpu("__nv_cosh");
+                        if (runtime_name == "myp_math_tanh")  return emit_math_gpu("__nv_tanh");
                         if (runtime_name == "myp_math_pow")   return emit_math_pow_gpu();
                         return emit_math_gpu("__nv_sqrt"); // fallback
                     }
@@ -2283,6 +2356,18 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
                     auto* runtime_fn = cur_mod->getFunction(runtime_name);
                     if (!runtime_fn) {
+                        // Handle 2-arg functions (atan2)
+                        if (runtime_name == "myp_math_atan2" && e.args.size() >= 2) {
+                            auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                                      kernel_arg_values, loop_var_name, tid_val);
+                            auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                                      kernel_arg_values, loop_var_name, tid_val);
+                            if (!a || !b) return nullptr;
+                            auto* ft = llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false);
+                            runtime_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                runtime_name, cur_mod);
+                            return kb.CreateCall(runtime_fn, {a, b});
+                        }
                         // Handle pow with 2 args
                         if (runtime_name == "myp_math_pow" && e.args.size() >= 2) {
                             auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
@@ -2298,6 +2383,9 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                 cur_mod);
                         }
                     }
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a) return nullptr;
                     return kb.CreateCall(runtime_fn, {a});
                 }
                 if (callee_name == "pow" && e.args.size() >= 2) {
@@ -3508,12 +3596,11 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
                     auto* elem_size = llvm::ConstantInt::get(i64_ty,
                         eit->second->isDoubleTy() ? 8 :
                         eit->second->isIntegerTy(32) ? 4 : 8);
-                    // Use a generous size: max(n_val, 1024) so arrays with more
-                    // elements than the loop bound are still fully transferred.
-                    llvm::Value* min_sz = llvm::ConstantInt::get(i64_ty, 1024);
-                    auto* n_cmp = builder_.CreateICmpSGT(n_val, min_sz);
-                    auto* n_for_size = builder_.CreateSelect(n_cmp, n_val, min_sz);
-                    byte_size = builder_.CreateMul(n_for_size, elem_size, ka.name + "_sz");
+                    // Transfer exactly the elements the kernel touches (0..n-1).
+                    // NOTE: do NOT pad to a large minimum size here — the host
+                    // arrays may be exactly n elements, and a padded copy-back
+                    // would write past the end of the host array (heap overflow).
+                    byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
                 } else {
                     byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
                                                    ka.name + "_sz");
@@ -3744,6 +3831,13 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_math_pow_ && e.name == "__myp_math_pow") return runtime_math_pow_;
         if (runtime_math_abs_int_ && e.name == "__myp_math_abs_int") return runtime_math_abs_int_;
         if (runtime_gpu_init_ && e.name == "__myp_cuda_available") return runtime_gpu_init_;
+        if (runtime_cuda_count_ && e.name == "__myp_cuda_count") return runtime_cuda_count_;
+        if (runtime_cuda_name_ && e.name == "__myp_cuda_name") return runtime_cuda_name_;
+        if (runtime_cuda_memory_ && e.name == "__myp_cuda_memory") return runtime_cuda_memory_;
+        if (runtime_cuda_capability_ && e.name == "__myp_cuda_capability") return runtime_cuda_capability_;
+        if (runtime_cuda_multiprocessors_ && e.name == "__myp_cuda_multiprocessors") return runtime_cuda_multiprocessors_;
+        if (runtime_cuda_max_threads_ && e.name == "__myp_cuda_max_threads") return runtime_cuda_max_threads_;
+        if (runtime_cuda_warp_ && e.name == "__myp_cuda_warp") return runtime_cuda_warp_;
         if (runtime_io_fopen_ && e.name == "__myp_io_fopen") return runtime_io_fopen_;
         if (runtime_io_fclose_ && e.name == "__myp_io_fclose") return runtime_io_fclose_;
         if (runtime_io_read_line_ && e.name == "__myp_io_read_line") return runtime_io_read_line_;
@@ -4156,7 +4250,18 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
         if (!callee && current_tu_) {
             size_t num_args = e.args.size();
+            // If the object is a known class name (static call like Vectors.min()),
+            // restrict the search to that class so method names that collide across
+            // classes (e.g. min/max in Math and Vectors) resolve to the right one.
+            std::string obj_cls;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == oid.name) { obj_cls = cls.name; break; }
+                }
+            }
             for (auto& cls : current_tu_->classes) {
+                if (!obj_cls.empty() && cls.name != obj_cls) continue;
                 for (auto& a : cls.actions) {
                     if (a.name == ma.member_name && a.params.size() == num_args) {
                         auto fn = cls.name + "_" + a.name;
@@ -4191,6 +4296,38 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
         // Fallback: match by name only (only if no struct method was found)
         if (!callee) {
+            // First, if the object is a KNOWN class name (static method call like
+            // Vectors.min()), only search that class. Otherwise a method name that
+            // collides across classes (e.g. min/max in Math AND Vectors) could
+            // resolve to the wrong class.
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == oid.name) {
+                        // static actions
+                        for (auto& a : cls.static_actions) {
+                            if (a.name == ma.member_name) {
+                                auto fn = cls.name + "_" + a.name;
+                                if (module_->getFunction(fn)) {
+                                    best_class = cls.name;
+                                    goto found_method;
+                                }
+                            }
+                        }
+                        // function: section
+                        for (auto& fn : cls.functions) {
+                            if (fn.name == ma.member_name) {
+                                auto fn_name = cls.name + "_" + fn.name;
+                                if (module_->getFunction(fn_name)) {
+                                    best_class = cls.name;
+                                    goto found_method;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
             for (auto& cls : current_tu_->classes) {
                 for (auto& a : cls.actions) {
                     if (a.name == ma.member_name) {
@@ -5082,6 +5219,10 @@ assign_gep:
         if (v->getType() != elem_ty) {
             if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
                 v = builder_.CreateIntCast(v, elem_ty, true);
+            else if (elem_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
+                v = builder_.CreateSIToFP(v, elem_ty);
+            else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
+                v = builder_.CreateFPToSI(v, elem_ty);
         }
         builder_.CreateStore(v, p);
         return v;
@@ -5673,6 +5814,29 @@ void CodeGen::declareRuntimeFunctions() {
     auto* gpu_destroy_ft = llvm::FunctionType::get(v, {p}, false);
     runtime_gpu_destroy_kernel_ = llvm::Function::Create(gpu_destroy_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_destroy_kernel", module_.get());
+
+    // CUDA device info intrinsics
+    runtime_cuda_count_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_device_count", module_.get());
+    intrinsic_map_["__myp_cuda_count"] = runtime_cuda_count_;
+    runtime_cuda_name_ = llvm::Function::Create(llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_device_name", module_.get());
+    intrinsic_map_["__myp_cuda_name"] = runtime_cuda_name_;
+    runtime_cuda_memory_ = llvm::Function::Create(llvm::FunctionType::get(i64, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_device_memory", module_.get());
+    intrinsic_map_["__myp_cuda_memory"] = runtime_cuda_memory_;
+    runtime_cuda_capability_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_compute_capability", module_.get());
+    intrinsic_map_["__myp_cuda_capability"] = runtime_cuda_capability_;
+    runtime_cuda_multiprocessors_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_multi_processors", module_.get());
+    intrinsic_map_["__myp_cuda_multiprocessors"] = runtime_cuda_multiprocessors_;
+    runtime_cuda_max_threads_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_max_threads_per_block", module_.get());
+    intrinsic_map_["__myp_cuda_max_threads"] = runtime_cuda_max_threads_;
+    runtime_cuda_warp_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_warp_size", module_.get());
+    intrinsic_map_["__myp_cuda_warp"] = runtime_cuda_warp_;
 }
 
 // -- Output --
