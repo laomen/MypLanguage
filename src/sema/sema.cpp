@@ -1359,6 +1359,20 @@ TypeInfo Sema::visitTernary(TernaryExpr& expr) {
 }
 
 TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
+    // Target must be an assignable lvalue: variable, field, or array element.
+    // (Rejects e.g. `--5`, `5 = 1`, `f() = x` — previously crashed codegen.)
+    switch (expr.target->kind) {
+        case ExprKind::Identifier:
+        case ExprKind::MemberAccess:
+        case ExprKind::Subscript:
+            break;  // assignable
+        default:
+            error(expr.range,
+                "cannot assign to this expression (target must be a variable, "
+                "field, or array element)");
+            return TypeInfo(TypeKind::Void);
+    }
+
     // Check if target is a const property
     auto checkConstProperty = [&](const std::string& prop_name) {
         if (!current_class_name_.empty() && current_tu_) {

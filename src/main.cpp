@@ -6,7 +6,10 @@
 #include "mylang/Sema.h"
 #include "mylang/SourceLocation.h"
 
+#include <llvm/Support/ErrorHandling.h>
+
 #include <cstring>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -354,7 +357,21 @@ static bool loadModule(const std::string& module_name,
     return true;
 }
 
-static const char* MYP_VERSION = "2.0.0";
+static const char* MYP_VERSION = "2.4.0";
+// Language specification version (frozen grammar, see docs/grammar.md).
+// Bump ONLY on breaking syntax/semantics changes (see docs/CHANGELOG.md).
+static const char* MYP_SPEC_VERSION = "1.0";
+
+// ---- Crash guard -----------------------------------------------------------
+// LLVM reports internal errors ("LLVM ERROR: ...", e.g. "Cannot select") via
+// report_fatal_error(), which aborts the process by default. For a compiler
+// that must never crash on any input, convert these into a clean diagnostic
+// by throwing an exception that the outer main() catches.
+static void mypFatalErrorHandler(void* /*user_data*/,
+                                 const char* reason,
+                                 bool /*gen_crash_diag*/) {
+    throw std::runtime_error(std::string("LLVM fatal error: ") + reason);
+}
 
 static int runFmt(int argc, char* argv[]) {
     bool check_mode = false;
@@ -409,7 +426,22 @@ static int runFmt(int argc, char* argv[]) {
     return all_ok ? 0 : 1;
 }
 
+// Forward declaration: real work of main() (defined after the wrapper).
+static int realMain(int argc, char* argv[]);
+
 int main(int argc, char* argv[]) {
+    llvm::install_fatal_error_handler(mypFatalErrorHandler);
+    try {
+        return realMain(argc, argv);
+    } catch (const std::exception& e) {
+        std::cerr << "Internal compiler error: " << e.what() << "\n";
+        std::cerr << "This is a compiler bug, not an error in your program.\n"
+                  << "Please report the input that triggered it.\n";
+        return 1;
+    }
+}
+
+static int realMain(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " [options] <file1.myp> [file2.myp ...]\n";
         std::cerr << "       " << argv[0] << " fmt [options] <file.myp> ...\n";
@@ -444,7 +476,8 @@ int main(int argc, char* argv[]) {
     while (i < argc) {
         std::string arg = argv[i];
         if (arg == "--version") {
-            std::cout << "MYP Compiler v" << MYP_VERSION << "\n";
+            std::cout << "MYP Compiler v" << MYP_VERSION
+                      << " (Language Spec " << MYP_SPEC_VERSION << ")\n";
             return 0;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options] <file1.myp> [file2.myp ...]\n";

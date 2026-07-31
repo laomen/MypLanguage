@@ -20,6 +20,12 @@ cases=(
   'class Test { action: @startup void run() { ----x; } } int main(){Test t=new Test();return 0;}'
   'class Test { action: @startup void run() { --5; } } int main(){Test t=new Test();return 0;}'
   'class Test { action: @startup void run() { ++--3; } } int main(){Test t=new Test();return 0;}'
+  # fuzz 发现: 对 long 字面量/浮点字面量做前缀 -- → 赋值到字面量 (曾 SIGILL)
+  'class Test { action: @startup void run() { long v0 = --65372L; v0; } } int main(){Test t=new Test();return 0;}'
+  'class Test { action: @startup void run() { while(true){85.2446;} long v0 = (36512L + --65261L); } } int main(){Test t=new Test();return 0;}'
+  # 直接对字面量/表达式赋值 (同样曾崩溃)
+  'class Test { action: @startup void run() { 5 = 1; } } int main(){Test t=new Test();return 0;}'
+  'class Test { action: @startup void run() { (1+2) = 3; } } int main(){Test t=new Test();return 0;}'
 )
 
 echo "--- 无崩溃回归测试 (no-crash regression) ---"
