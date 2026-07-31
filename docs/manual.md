@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 2.3 | 事件驱动组件语言
+> 版本 2.4 | 事件驱动组件语言
 
 ---
 
@@ -727,6 +727,93 @@ class Transport {
 |--------|------|--------|
 | 5M | ~3s | ~10x |
 | 1e9 | ~9.5min | ~10x |
+
+### @gpu for — GPU 卸载
+
+`@gpu for` 是 MYP 的 GPU 并行原语，将计算密集型循环卸载到 NVIDIA CUDA GPU 执行：
+
+```myp
+import math;
+
+long n = 1000000L;
+double[] data = new double[n];
+for (long i = 0L; i < n; i = i + 1L) data[i] = 1.0;
+
+@gpu for (long i = 0L; i < n; i = i + 1L) {
+    data[i] = Math.sqrt(data[i]) + Math.sin(1.0);
+}
+```
+
+#### 工作原理
+
+```
+编译器:
+  1. 生成 NVPTX 内核（myp_kernel），循环索引映射到 GPU 线程 id
+  2. 收集被捕获的数组/标量变量，生成数据传输代码
+  3. 使用 CUDA libdevice（libdevice.10.bc）链接数学函数
+     → 生成的 PTX 完全自包含，无需运行时 JIT 链接
+运行时:
+  4. cuModuleLoadData 加载 PTX → 启动内核（grid/block 自动计算）
+  5. 拷贝回数组结果 → 同步 → 完成
+```
+
+#### 启用与回退
+
+- 需设置环境变量 `MYP_GPU=1`（默认使用 CPU）
+- 需要 NVIDIA CUDA 驱动（`libcuda.so.1`）
+- 无 GPU / 未设置 `MYP_GPU` 时**自动回退到 CPU 顺序执行**，结果一致
+- 数学函数需 `libdevice.10.bc`（编译器自动查找；可用 `MYP_CUDA_LIBDEVICE` 指定路径）
+
+#### GPU 数学函数
+
+在 `@gpu for` 内核中，`Math` 的以下函数自动映射到 CUDA libdevice（GPU 上全精度执行）：
+
+| 函数 | libdevice | 函数 | libdevice |
+|------|-----------|------|-----------|
+| `Math.sqrt` | `__nv_sqrt` | `Math.exp` | `__nv_exp` |
+| `Math.sin` | `__nv_sin` | `Math.log` | `__nv_log` |
+| `Math.cos` | `__nv_cos` | `Math.pow` | `__nv_pow` |
+| `Math.tan` | `__nv_tan` | `Math.abs` | `__nv_fabs` |
+| `Math.floor` | `__nv_floor` | `Math.ceil` | `__nv_ceil` |
+
+#### `import cuda` — CUDA 标准库
+
+```myp
+import cuda;
+```
+
+提供 GPU 编程的高层 API：
+
+```myp
+// Cuda — GPU 查询
+int ok = Cuda.available();      // 1=GPU 可用，0=将使用 CPU
+
+// Device — 内核内数学函数（GPU 全精度，CPU 用标准库）
+@gpu for (long i = 0L; i < n; i = i + 1L) {
+    data[i] = Device.pow(data[i], 2.0) + Device.cos(0.0);
+}
+
+// Vectors — 基于 @gpu for 的向量化运算（自动使用 GPU，不可用回退 CPU）
+Vectors.add(a, b, out, n);      // out[i] = a[i] + b[i]
+Vectors.sub(a, b, out, n);      // out[i] = a[i] - b[i]
+Vectors.mul(a, b, out, n);      // out[i] = a[i] * b[i]
+Vectors.scale(data, 2.0, n);    // data[i] *= 2.0
+Vectors.addScalar(data, 1.0, n);// data[i] += 1.0
+Vectors.fill(data, 0.0, n);     // data[i] = 0.0
+Vectors.sqrt(data, n);          // data[i] = sqrt(data[i])
+Vectors.sin(data, n);           // data[i] = sin(data[i])
+Vectors.cos(data, n);           // data[i] = cos(data[i])
+Vectors.exp(data, n);           // data[i] = exp(data[i])
+Vectors.log(data, n);           // data[i] = log(data[i])
+```
+
+#### 限制
+
+- 循环变量用 `long`，边界 `i < n` 或 `i <= n`
+- 捕获的数组在 GPU 内核启动前整体拷贝到设备，运行后拷回
+- 每个迭代必须**无数据依赖**
+- 不支持 `break` / `continue`
+- GPU 路径的数学函数需要 `libdevice.10.bc`
 
 ### @startup 注解
 

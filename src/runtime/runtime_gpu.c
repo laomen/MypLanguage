@@ -83,13 +83,19 @@ void myp_gpu_free(void* p) { if(avail&&p) p_cuMemFree(p); }
 void myp_gpu_to_device(void* d,const void* s,size_t sz) { if(avail) p_cuMemcpyHtoD(d,s,sz); }
 void myp_gpu_to_host(void* d,const void* s,size_t sz) { if(avail) p_cuMemcpyDtoH(d,s,sz); }
 
+// Locate the CUDA libdevice bitcode file (provides __nv_* device math functions).
+// Search: $MYP_CUDA_LIBDEVICE, then common CUDA toolkit install paths.
 typedef struct { CUmodule mod; CUfunction fn; } kernel_t;
 
 void* myp_gpu_load_kernel(const char* ptx, const char* name) {
     if (!avail) return NULL;
     kernel_t* k = (kernel_t*)malloc(sizeof(kernel_t));
     if (!k) return NULL;
-    if (p_cuModuleLoadData(&k->mod, ptx)!=0) { free(k); return NULL; }
+
+    // The compiler JIT-links CUDA libdevice into the PTX at compile time, so the
+    // PTX is fully self-contained (no external __nv_* references). Just load it.
+    if (p_cuModuleLoadData(&k->mod, ptx) != 0) { free(k); return NULL; }
+
     if (p_cuModuleGetFunction(&k->fn, k->mod, name)!=0) { free(k); return NULL; }
     return (void*)k;
 }

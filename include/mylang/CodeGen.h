@@ -230,6 +230,10 @@ private:
     // libdevice (sin/cos/tan/exp/log/pow). The runtime does not link libdevice,
     // so such kernels must fall back to CPU.
     bool gpu_math_unsupported_ = false;
+    // Set when the GPU kernel body emits a call to a __nv_* libdevice function.
+    // When true, CUDA libdevice.10.bc is linked into the kernel module at
+    // compile time so the generated PTX is self-contained.
+    bool gpu_math_used_ = false;
 
     // AST walk helpers for GPU kernel body compilation
     void collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,

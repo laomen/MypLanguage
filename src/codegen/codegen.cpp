@@ -13,6 +13,12 @@
 #include <llvm/ADT/SmallString.h>
 
 #include <llvm/IR/IntrinsicsNVPTX.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Linker/Linker.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/IPO/GlobalDCE.h>
 
 // NVPTX target initialization (must be at global scope)
 extern "C" void LLVMInitializeNVPTXTargetInfo(void);
@@ -2178,25 +2184,45 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 callee_name = static_cast<const IdentifierExpr&>(*e.callee).name;
 
             if (!callee_name.empty()) {
-                // GPU math: only functions with NATIVE PTX support work without
-                // linking CUDA libdevice. sqrt/abs/floor/ceil/trunc lower to
-                // PTX instructions via LLVM intrinsics. sin/cos/tan/exp/log/pow
-                // require libdevice (not linked by the runtime) → mark unsupported
-                // so generateGpuKernel falls back to CPU.
-                auto emit_math_gpu = [&](llvm::Intrinsic::ID id) -> llvm::Value* {
+                // GPU math: emit calls to CUDA libdevice device functions (__nv_*).
+                // generateGpuKernel links NVIDIA's libdevice.10.bc bitcode into the
+                // kernel module at compile time, so __nv_sin/__nv_cos/__nv_exp/...
+                // are resolved and the emitted PTX is fully self-contained.
+                auto emit_math_gpu = [&](const char* nv) -> llvm::Value* {
                     if (e.args.size() < 1) return nullptr;
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
+                    gpu_math_used_ = true;
                     if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy())
                         a = kb.CreateSIToFP(a, double_ty);
                     if (a->getType()->isFloatTy())
                         a = kb.CreateFPExt(a, double_ty);
-                    return kb.CreateIntrinsic(id, {double_ty}, {a});
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    auto* fn = cur_mod->getFunction(nv);
+                    if (!fn)
+                        fn = llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty}, false),
+                            llvm::Function::ExternalLinkage, nv, cur_mod);
+                    return kb.CreateCall(fn, {a});
                 };
-                auto mark_gpu_unsupported = [&]() -> llvm::Value* {
-                    gpu_math_unsupported_ = true;
-                    return llvm::ConstantFP::get(double_ty, 0.0);
+                auto emit_math_pow_gpu = [&]() -> llvm::Value* {
+                    if (e.args.size() < 2) return nullptr;
+                    auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                                              kernel_arg_values, loop_var_name, tid_val);
+                    if (!a || !b) return nullptr;
+                    gpu_math_used_ = true;
+                    if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy()) a = kb.CreateSIToFP(a, double_ty);
+                    if (!b->getType()->isDoubleTy() && b->getType()->isIntegerTy()) b = kb.CreateSIToFP(b, double_ty);
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    auto* fn = cur_mod->getFunction("__nv_pow");
+                    if (!fn)
+                        fn = llvm::Function::Create(
+                            llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
+                            llvm::Function::ExternalLinkage, "__nv_pow", cur_mod);
+                    return kb.CreateCall(fn, {a, b});
                 };
                 // Math functions
                 auto emit_math_1 = [&](const char* n) -> llvm::Value* {
@@ -2204,22 +2230,18 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
-                    // GPU mode
+                    // GPU mode: call CUDA libdevice device functions
                     if (gpu_for_stmt_) {
-                        if (std::string(n) == "myp_math_sqrt")  return emit_math_gpu(llvm::Intrinsic::sqrt);
-                        if (std::string(n) == "myp_math_abs")   return emit_math_gpu(llvm::Intrinsic::fabs);
-                        if (std::string(n) == "myp_math_floor") return emit_math_gpu(llvm::Intrinsic::floor);
-                        if (std::string(n) == "myp_math_ceil")  return emit_math_gpu(llvm::Intrinsic::ceil);
-                        if (std::string(n) == "myp_math_sin" ||
-                            std::string(n) == "myp_math_cos" ||
-                            std::string(n) == "myp_math_tan" ||
-                            std::string(n) == "myp_math_exp" ||
-                            std::string(n) == "myp_math_log") return mark_gpu_unsupported();
-                        if (std::string(n) == "trunc") {
-                            if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy())
-                                a = kb.CreateSIToFP(a, double_ty);
-                            return kb.CreateIntrinsic(llvm::Intrinsic::trunc, {double_ty}, {a});
-                        }
+                        if (std::string(n) == "myp_math_sqrt")  return emit_math_gpu("__nv_sqrt");
+                        if (std::string(n) == "myp_math_sin")   return emit_math_gpu("__nv_sin");
+                        if (std::string(n) == "myp_math_cos")   return emit_math_gpu("__nv_cos");
+                        if (std::string(n) == "myp_math_tan")   return emit_math_gpu("__nv_tan");
+                        if (std::string(n) == "myp_math_exp")   return emit_math_gpu("__nv_exp");
+                        if (std::string(n) == "myp_math_log")   return emit_math_gpu("__nv_log");
+                        if (std::string(n) == "myp_math_abs")   return emit_math_gpu("__nv_fabs");
+                        if (std::string(n) == "myp_math_floor") return emit_math_gpu("__nv_floor");
+                        if (std::string(n) == "myp_math_ceil")  return emit_math_gpu("__nv_ceil");
+                        if (std::string(n) == "trunc")          return emit_math_gpu("__nv_trunc");
                     }
                     return kb.CreateCall(
                         llvm::Function::Create(
@@ -2243,19 +2265,19 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
                     std::string runtime_name = callee_name.substr(2); // __myp_math_log -> myp_math_log
-                    // GPU mode
+                    // GPU mode: call CUDA libdevice device functions
                     if (gpu_for_stmt_) {
-                        if (runtime_name == "myp_math_sqrt")  return emit_math_gpu(llvm::Intrinsic::sqrt);
-                        if (runtime_name == "myp_math_abs")   return emit_math_gpu(llvm::Intrinsic::fabs);
-                        if (runtime_name == "myp_math_floor") return emit_math_gpu(llvm::Intrinsic::floor);
-                        if (runtime_name == "myp_math_ceil")  return emit_math_gpu(llvm::Intrinsic::ceil);
-                        if (runtime_name == "myp_math_sin" ||
-                            runtime_name == "myp_math_cos" ||
-                            runtime_name == "myp_math_tan" ||
-                            runtime_name == "myp_math_exp" ||
-                            runtime_name == "myp_math_log" ||
-                            runtime_name == "myp_math_pow") return mark_gpu_unsupported();
-                        return emit_math_gpu(llvm::Intrinsic::sqrt); // fallback
+                        if (runtime_name == "myp_math_sqrt")  return emit_math_gpu("__nv_sqrt");
+                        if (runtime_name == "myp_math_sin")   return emit_math_gpu("__nv_sin");
+                        if (runtime_name == "myp_math_cos")   return emit_math_gpu("__nv_cos");
+                        if (runtime_name == "myp_math_tan")   return emit_math_gpu("__nv_tan");
+                        if (runtime_name == "myp_math_exp")   return emit_math_gpu("__nv_exp");
+                        if (runtime_name == "myp_math_log")   return emit_math_gpu("__nv_log");
+                        if (runtime_name == "myp_math_abs")   return emit_math_gpu("__nv_fabs");
+                        if (runtime_name == "myp_math_floor") return emit_math_gpu("__nv_floor");
+                        if (runtime_name == "myp_math_ceil")  return emit_math_gpu("__nv_ceil");
+                        if (runtime_name == "myp_math_pow")   return emit_math_pow_gpu();
+                        return emit_math_gpu("__nv_sqrt"); // fallback
                     }
                     // CPU mode: resolve runtime function in the CURRENT module.
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
@@ -2284,11 +2306,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
-                    if (gpu_for_stmt_) {
-                        // pow requires libdevice — mark unsupported (CPU fallback)
-                        gpu_math_unsupported_ = true;
-                        return llvm::ConstantFP::get(double_ty, 0.0);
-                    }
+                    if (gpu_for_stmt_) return emit_math_pow_gpu();
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
@@ -3082,6 +3100,112 @@ void CodeGen::generateGpuFor(const ForStmt& s) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CUDA libdevice support for @gpu for kernels.
+//
+// The GPU code path emits calls to CUDA libdevice device functions (__nv_sin,
+// __nv_cos, __nv_exp, ...). These are not provided by the CUDA driver itself,
+// so we link NVIDIA's libdevice.10.bc bitcode into the kernel module at
+// compile time (the same bitcode nvcc links against). The resulting PTX is
+// fully self-contained and can be loaded with cuModuleLoadData — no runtime
+// JIT-linking (cuLink) is required.
+// ---------------------------------------------------------------------------
+
+// Locate the CUDA libdevice bitcode file. Returns empty string if not found.
+static std::string findLibDevicePath() {
+    const char* env = getenv("MYP_CUDA_LIBDEVICE");
+    if (env && *env) {
+        if (llvm::sys::fs::exists(env)) return std::string(env);
+    }
+    static const char* kPaths[] = {
+        "/usr/lib/nvidia-cuda-toolkit/libdevice/libdevice.10.bc",
+        "/usr/local/cuda/nvvm/libdevice/libdevice.10.bc",
+        "/usr/local/cuda/libdevice/libdevice.10.bc",
+        "/opt/cuda/nvvm/libdevice/libdevice.10.bc",
+        "/usr/lib/cuda/nvvm/libdevice/libdevice.10.bc",
+        "/usr/lib/x86_64-linux-gnu/nvidia-cuda-toolkit/libdevice/libdevice.10.bc",
+        "/usr/local/cuda-12/nvvm/libdevice/libdevice.10.bc",
+        "/usr/local/cuda-11/nvvm/libdevice/libdevice.10.bc",
+    };
+    for (const char* p : kPaths) {
+        if (llvm::sys::fs::exists(p)) return std::string(p);
+    }
+    return "";
+}
+
+// Resolve __nvvm_reflect("...") calls to constants. libdevice uses this NVVM
+// intrinsic for compile-time configuration (FTZ, arch, ...); we replace all
+// calls with 0 (no fast-math/FTZ, generic arch path) which is always safe.
+static void resolveNvvmReflect(llvm::Module* M) {
+    llvm::Function* reflect = M->getFunction("__nvvm_reflect");
+    if (!reflect) return;
+    std::vector<llvm::CallInst*> calls;
+    for (llvm::User* u : reflect->users())
+        if (auto* ci = llvm::dyn_cast<llvm::CallInst>(u))
+            calls.push_back(ci);
+    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(M->getContext()), 0);
+    for (auto* ci : calls) {
+        ci->replaceAllUsesWith(zero);
+        ci->eraseFromParent();
+    }
+    if (reflect->use_empty())
+        reflect->eraseFromParent();
+}
+
+// Link CUDA libdevice into a GPU kernel module so __nv_* device functions
+// become self-contained (bodies inlined/emitted in the resulting PTX).
+// Returns true on success; leaves the module untouched on failure.
+static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag) {
+    std::string ld_path = findLibDevicePath();
+    if (ld_path.empty()) {
+        if (diag)
+            diag->warn(SourceRange{},
+                "@gpu for uses libdevice math but libdevice.10.bc was not found "
+                "(set MYP_CUDA_LIBDEVICE)");
+        return false;
+    }
+    llvm::SMDiagnostic sm_err;
+    auto ld_mod = llvm::parseIRFile(ld_path, sm_err, ptx_mod->getContext());
+    if (!ld_mod) {
+        if (diag)
+            diag->warn(SourceRange{}, "@gpu for: failed to parse libdevice: " + ld_path);
+        return false;
+    }
+    if (llvm::Linker::linkModules(*ptx_mod, std::move(ld_mod))) {
+        if (diag)
+            diag->warn(SourceRange{}, "@gpu for: failed to link libdevice: " + ld_path);
+        return false;
+    }
+    // libdevice functions are linkonce_odr; make them internal so unused ones
+    // are eliminated by GlobalDCE (keeps the generated PTX small).
+    for (auto& fn : *ptx_mod) {
+        if (!fn.isDeclaration() && fn.getLinkage() == llvm::GlobalValue::LinkOnceODRLinkage)
+            fn.setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
+    for (auto& gv : ptx_mod->globals()) {
+        if (gv.getLinkage() == llvm::GlobalValue::LinkOnceODRLinkage)
+            gv.setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
+    resolveNvvmReflect(ptx_mod);
+
+    // Inline always-inline (libdevice) functions and drop dead code.
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+    llvm::PassBuilder PB;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+    llvm::ModulePassManager MPM;
+    MPM.addPass(llvm::AlwaysInlinerPass());
+    MPM.addPass(llvm::GlobalDCEPass());
+    MPM.run(*ptx_mod, MAM);
+    return true;
+}
+
 bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Create a new module for PTX generation
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
@@ -3207,6 +3331,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     kb.SetInsertPoint(body_bb);
     gpu_for_stmt_ = &s;  // Mark GPU kernel mode (affects emitKernelExpr)
     gpu_math_unsupported_ = false;
+    gpu_math_used_ = false;
     if (s.body) {
         emitKernelStmt(*s.body, kb, kernel_vars_map, kernel_arg_values,
                        loop_var, tid_val);
@@ -3261,9 +3386,22 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         return false;
     }
 
+    // Link CUDA libdevice so __nv_* math calls (sin/cos/exp/log/pow/...) are
+    // self-contained in the emitted PTX. If libdevice is unavailable, fall back
+    // to CPU execution (the loop still runs correctly, just not on the GPU).
+    if (gpu_math_used_) {
+        if (!linkGpuLibdevice(ptx_mod.get(), &diag_)) {
+            diag_.warn(s.range,
+                "'@gpu for' uses libdevice math (sin/cos/exp/log/pow) but "
+                "libdevice.10.bc was not found; running on CPU");
+            delete tm;
+            return false;
+        }
+    }
+
     // Emit PTX
     llvm::legacy::PassManager pm;
-    llvm::SmallString<4096> ptx_buf;
+    llvm::SmallString<16384> ptx_buf;
     llvm::raw_svector_ostream ptx_os(ptx_buf);
 
     tm->setOptLevel(llvm::CodeGenOptLevel::None);
@@ -3348,9 +3486,21 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         if (nv) {
             auto* loaded = builder_.CreateLoad(ptr_ty, nv, ka.name);
             host_ptr = loaded;
-            // Use tracked byte size if available, otherwise compute from n_val
+            // Use tracked byte size if available, otherwise compute from n_val.
+            // NOTE: array_byte_sizes_ is keyed by name and can hold stale entries
+            // from a previously compiled function (e.g. a local array in another
+            // method with the same name). Only trust it when the value belongs to
+            // the current function.
             auto bsit = array_byte_sizes_.find(ka.name);
+            bool bs_valid = false;
             if (bsit != array_byte_sizes_.end()) {
+                auto* bs_val = bsit->second;
+                if (llvm::isa<llvm::Constant>(bs_val))
+                    bs_valid = true;
+                else if (auto* bi = llvm::dyn_cast<llvm::Instruction>(bs_val))
+                    bs_valid = (bi->getFunction() == func);
+            }
+            if (bs_valid) {
                 byte_size = bsit->second;
             } else {
                 auto eit = array_elem_types_.find(ka.name);
@@ -3593,6 +3743,7 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_math_log_ && e.name == "__myp_math_log") return runtime_math_log_;
         if (runtime_math_pow_ && e.name == "__myp_math_pow") return runtime_math_pow_;
         if (runtime_math_abs_int_ && e.name == "__myp_math_abs_int") return runtime_math_abs_int_;
+        if (runtime_gpu_init_ && e.name == "__myp_cuda_available") return runtime_gpu_init_;
         if (runtime_io_fopen_ && e.name == "__myp_io_fopen") return runtime_io_fopen_;
         if (runtime_io_fclose_ && e.name == "__myp_io_fclose") return runtime_io_fclose_;
         if (runtime_io_read_line_ && e.name == "__myp_io_read_line") return runtime_io_read_line_;
@@ -5493,6 +5644,7 @@ void CodeGen::declareRuntimeFunctions() {
     auto* gpu_init_ft = llvm::FunctionType::get(i32, {}, false);
     runtime_gpu_init_ = llvm::Function::Create(gpu_init_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_init", module_.get());
+    intrinsic_map_["__myp_cuda_available"] = runtime_gpu_init_;
 
     auto* gpu_alloc_ft = llvm::FunctionType::get(p, {i64}, false);
     runtime_gpu_alloc_ = llvm::Function::Create(gpu_alloc_ft,

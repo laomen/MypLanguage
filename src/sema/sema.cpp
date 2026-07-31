@@ -1896,6 +1896,9 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_math_pow", TypeKind::Double, {TypeKind::Double, TypeKind::Double});
     add_intrinsic("__myp_math_abs_int", TypeKind::Int, {TypeKind::Int});
 
+    // CUDA GPU availability (returns 1 if GPU offload usable, 0 otherwise)
+    add_intrinsic("__myp_cuda_available", TypeKind::Int, {});
+
     // File I/O intrinsics
     add_intrinsic("__myp_io_fopen", TypeKind::Int, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_io_fclose", TypeKind::Void, {});

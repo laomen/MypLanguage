@@ -1,0 +1,156 @@
+// cuda.myp — MYP 标准库：CUDA GPU 编程
+//
+// MYP 支持通过 @gpu for 语法将循环卸载到 NVIDIA GPU 执行。
+// 本模块提供：
+//   1. Device 类 —— 在 @gpu for 内核中可用的数学函数
+//      （编译器自动映射到 CUDA libdevice，函数在 GPU 上以全精度执行）
+//   2. Vectors 类 —— 基于 @gpu for 的向量化元素级运算辅助
+//
+// 用法：
+//   // 在 GPU 上并行执行循环
+//   @gpu for (long i = 0L; i < n; i = i + 1L) {
+//       data[i] = Device.sqrt(data[i]) + Device.sin(1.0);
+//   }
+//
+//   // 向量化运算（自动使用 GPU）
+//   Vectors.scale(data, 2.0, n);        // data[i] *= 2.0
+//   Vectors.add(a, b, out, n);          // out[i] = a[i] + b[i]
+//
+// 注意：
+//   - @gpu for 需要 CUDA 驱动（libcuda.so.1）且设置环境变量 MYP_GPU=1
+//   - 无 GPU 或未设置 MYP_GPU 时自动回退到 CPU 顺序执行（结果一致）
+//   - 数学函数需要 CUDA libdevice（libdevice.10.bc），编译器在编译时自动链接
+//   - 若 libdevice 不存在（设置 MYP_CUDA_LIBDEVICE 指定路径），
+//     含数学函数的 @gpu for 会回退到 CPU 执行
+
+import math;
+
+class Cuda {
+    static:
+        // 常量：线程块大小（代码生成时使用的默认值）
+        int blockSize() { return 256; }
+
+        // GPU 是否可用（返回 1 表示可卸载内核，0 表示将使用 CPU）
+        // 注意：实际 GPU 初始化在首个 @gpu for 处进行，此函数用于提前检测
+        int available() {
+            return __myp_cuda_available();
+        }
+}
+
+// Device 类 —— @gpu for 内核中的数学函数
+// 在 @gpu for 块内调用这些函数时，编译器会将其映射到 CUDA libdevice 设备函数，
+// 在 GPU 上以全精度（double）执行；在 CPU 上则调用标准数学库。
+class Device {
+    static:
+        // 平方根
+        double sqrt(double v)   { return Math.sqrt(v); }
+        // 绝对值
+        double abs(double v)    { return Math.abs(v); }
+        // 向下取整
+        double floor(double v)  { return Math.floor(v); }
+        // 向上取整
+        double ceil(double v)   { return Math.ceil(v); }
+        // 截断取整（返回 int）
+        int trunc(double v)     { return Math.trunc(v); }
+
+        // 三角函数
+        double sin(double v)    { return Math.sin(v); }
+        double cos(double v)    { return Math.cos(v); }
+        double tan(double v)    { return Math.tan(v); }
+
+        // 指数对数
+        double exp(double v)    { return Math.exp(v); }
+        double log(double v)    { return Math.log(v); }
+        double pow(double base, double exp) { return Math.pow(base, exp); }
+}
+
+// Vectors 类 —— 基于 @gpu for 的向量化元素级运算
+// 所有运算在 GPU 上并行执行（不可用时自动回退 CPU），结果与顺序执行一致。
+class Vectors {
+    static:
+        // out[i] = a[i] + b[i]
+        void add(double[] a, double[] b, double[] out, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                out[i] = a[i] + b[i];
+            }
+        }
+
+        // out[i] = a[i] - b[i]
+        void sub(double[] a, double[] b, double[] out, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                out[i] = a[i] - b[i];
+            }
+        }
+
+        // out[i] = a[i] * b[i]
+        void mul(double[] a, double[] b, double[] out, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                out[i] = a[i] * b[i];
+            }
+        }
+
+        // data[i] = data[i] * s
+        void scale(double[] data, double s, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = data[i] * s;
+            }
+        }
+
+        // data[i] = data[i] + s
+        void addScalar(double[] data, double s, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = data[i] + s;
+            }
+        }
+
+        // data[i] = s
+        void fill(double[] data, double s, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = s;
+            }
+        }
+
+        // data[i] = Device.sqrt(data[i])
+        void sqrt(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.sqrt(data[i]);
+            }
+        }
+
+        // data[i] = Device.sin(data[i])
+        void sin(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.sin(data[i]);
+            }
+        }
+
+        // data[i] = Device.cos(data[i])
+        void cos(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.cos(data[i]);
+            }
+        }
+
+        // data[i] = Device.exp(data[i])
+        void exp(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.exp(data[i]);
+            }
+        }
+
+        // data[i] = Device.log(data[i])
+        void log(double[] data, long n) {
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Device.log(data[i]);
+            }
+        }
+
+        // 计算内积 sum += a[i] * b[i]（归约；线程数较小时结果精确）
+        double dot(double[] a, double[] b, long n) {
+            double sum = 0.0;
+            for (long i = 0L; i < n; i = i + 1L) {
+                sum = sum + a[i] * b[i];
+            }
+            return sum;
+        }
+}
