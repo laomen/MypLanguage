@@ -2,6 +2,8 @@
 
 > 事件驱动组件语言 | LLVM 21 后端 | 内置 GPU 支持
 
+**🌐 [English](README_EN.md)**
+
 MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `event:` 为架构单元，通过 `mapping()` 声明式组装系统。编译器基于 LLVM 21，生成原生可执行文件。
 
 ## ✨ 核心特性
