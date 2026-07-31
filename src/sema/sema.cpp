@@ -41,16 +41,29 @@ bool Sema::analyze(TranslationUnit& tu) {
         visitFuncBody(func);
     }
 
-    // Type-check action bodies inside classes
-    for (auto& cls : tu.classes) {
-        current_class_name_ = cls.name;
+    // Type-check action bodies inside classes.
+    // NOTE: visitStmt() may monomorphize generic classes (e.g. Box<int>), which
+    // appends to tu.classes and can REALLOCATE the vector. A range-for would hold
+    // a dangling ClassDecl& across that reallocation → use-after-free. Always
+    // re-fetch the class by index, and re-fetch per sub-loop / per element.
+    for (size_t ci = 0; ci < tu.classes.size(); ci++) {
+        // Monomorphized instances share the template's body AST but local generic
+        // type params (V in "V x = ...") are not substituted, so their bodies
+        // cannot be type-checked here. The template itself is checked below with
+        // generic params as placeholders; codegen performs the real substitution.
+        if (tu.classes[ci].is_generic_inst)
+            continue;
+        current_class_name_ = tu.classes[ci].name;
         in_class_method_ = true;
-        for (auto& action : cls.actions) {
+        // Actions (may trigger monomorphization → tu.classes may reallocate)
+        size_t nactions = tu.classes[ci].actions.size();
+        for (size_t ai = 0; ai < nactions; ai++) {
+            auto& action = tu.classes[ci].actions[ai];
             if (action.body) {
                 current_return_type_ = typeNodeToTypeInfo(action.return_type);
                 symbol_table_.enterScope();
                 TypeInfo this_type(TypeKind::Class);
-                this_type.class_name = cls.name;
+                this_type.class_name = current_class_name_;
                 symbol_table_.declare("this", this_type);
                 for (auto& param : action.params) {
                     auto param_type = typeNodeToTypeInfo(param.type);
@@ -60,13 +73,17 @@ bool Sema::analyze(TranslationUnit& tu) {
                 symbol_table_.leaveScope();
             }
         }
-        // Type-check function: section bodies
-        for (auto& func : cls.functions) {
+        // Type-check function: section bodies (re-fetch: tu.classes may have
+        // been reallocated by monomorphization above)
+        if (ci >= tu.classes.size()) break;
+        size_t nfuncs = tu.classes[ci].functions.size();
+        for (size_t fi = 0; fi < nfuncs; fi++) {
+            auto& func = tu.classes[ci].functions[fi];
             if (func.body) {
                 current_return_type_ = typeNodeToTypeInfo(func.return_type);
                 symbol_table_.enterScope();
                 TypeInfo this_type(TypeKind::Class);
-                this_type.class_name = cls.name;
+                this_type.class_name = current_class_name_;
                 symbol_table_.declare("this", this_type);
                 for (auto& param : func.params) {
                     symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
@@ -76,7 +93,10 @@ bool Sema::analyze(TranslationUnit& tu) {
             }
         }
         // Type-check static: section bodies (no 'this')
-        for (auto& action : cls.static_actions) {
+        if (ci >= tu.classes.size()) break;
+        size_t nstatic = tu.classes[ci].static_actions.size();
+        for (size_t si = 0; si < nstatic; si++) {
+            auto& action = tu.classes[ci].static_actions[si];
             if (action.body) {
                 current_return_type_ = typeNodeToTypeInfo(action.return_type);
                 symbol_table_.enterScope();
@@ -1420,6 +1440,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
             ClassDecl& original = current_tu_->classes[gen.tu_index];
             ClassDecl inst;
             inst.name = mangled;
+            inst.is_generic_inst = true;
             inst.range = original.range;
 
             // Substitute properties

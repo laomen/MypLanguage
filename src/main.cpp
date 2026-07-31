@@ -259,6 +259,12 @@ static bool loadModule(const std::string& module_name,
                                        bool static_lib = false) {
     if (obj_files.empty()) return false;
 
+    // When MYP_SANITIZE=1, also instrument the generated program so the test
+    // suite can run entirely under ASan/UBSan (catches runtime memory bugs).
+    std::string san_flags;
+    if (const char* env = getenv("MYP_SANITIZE"); env && env[0] == '1')
+        san_flags = " -fsanitize=address,undefined -fno-omit-frame-pointer ";
+
     std::string runtime_dir = stdlib_path.substr(0, stdlib_path.find_last_of('/'));
     if (runtime_dir.empty() || runtime_dir == stdlib_path) runtime_dir = ".";
     std::string runtime_c;
@@ -280,7 +286,7 @@ static bool loadModule(const std::string& module_name,
     // Build runtime object
     std::string rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
     std::string trace_def = trace_enabled ? " -DTRACE_ENABLED" : "";
-    std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+    std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
     if (std::system(compile_rt.c_str()) != 0) {
         std::cerr << "Failed to compile runtime\n";
         return false;
@@ -298,7 +304,7 @@ static bool loadModule(const std::string& module_name,
         sdl_obj = "/tmp/myp_sdl_" + std::to_string(std::rand()) + ".o";
         std::string sdl_cflags = "-I/usr/include/SDL2 -D_REENTRANT";
         sdl_libs = "-lSDL2";
-        std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
+        std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + san_flags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
         if (std::system(compile_sdl.c_str()) != 0) {
             std::cerr << "Failed to compile SDL bridge\n";
             return false;
@@ -314,7 +320,7 @@ static bool loadModule(const std::string& module_name,
     std::string gpu_obj;
     if (!gpu_c.empty()) {
         gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
-        std::string compile_gpu = "gcc -I" + inc_path + " -fPIC -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
+        std::string compile_gpu = "gcc -I" + inc_path + " -fPIC " + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
         if (std::system(compile_gpu.c_str()) != 0) {
             std::cerr << "Failed to compile GPU runtime\n";
             return false;
@@ -323,7 +329,7 @@ static bool loadModule(const std::string& module_name,
 
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     } else if (static_lib) {
         std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj + " 2>&1";
@@ -335,7 +341,7 @@ static bool loadModule(const std::string& module_name,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());

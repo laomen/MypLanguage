@@ -998,6 +998,57 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         }
         case ExprKind::Lambda:
             return nullptr; // can't clone lambda
+        case ExprKind::Assignment: {
+            auto& v = static_cast<const AssignmentExpr&>(e);
+            auto t = cloneExpr(*v.target);
+            auto val = cloneExpr(*v.value);
+            if (!t || !val) return nullptr;
+            return std::make_unique<AssignmentExpr>(
+                std::move(t), std::move(val), v.range);
+        }
+        case ExprKind::Call: {
+            auto& v = static_cast<const CallExpr&>(e);
+            auto callee = cloneExpr(*v.callee);
+            if (!callee) return nullptr;
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<CallExpr>(std::move(callee), std::move(args), v.range);
+        }
+        case ExprKind::NewExpr: {
+            auto& v = static_cast<const NewExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<NewExpr>(v.class_name, v.type_args, std::move(args), v.range);
+        }
+        case ExprKind::NewArrayExpr: {
+            auto& v = static_cast<const NewArrayExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> dims;
+            for (auto& d : v.dimensions) {
+                auto cd = cloneExpr(*d);
+                if (!cd) return nullptr;
+                dims.push_back(std::move(cd));
+            }
+            return std::make_unique<NewArrayExpr>(v.element_type, std::move(dims), v.range);
+        }
+        case ExprKind::EnumVariant: {
+            auto& v = static_cast<const EnumVariantExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<EnumVariantExpr>(
+                v.enum_name, v.variant_index, std::move(args), v.range);
+        }
         case ExprKind::Range: {
             auto& v = static_cast<const RangeExpr&>(e);
             auto s = cloneExpr(*v.start);

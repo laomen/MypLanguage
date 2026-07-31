@@ -166,7 +166,7 @@ class VarInfo:
 # ===================== 测试运行器 =====================
 
 def compile_mypc(source, mypc_path):
-    """编译 MYP 源码，返回 (成功?, stdout, stderr)"""
+    """编译 MYP 源码，返回 (真实崩溃?, 被拒绝?, stdout, stderr)"""
     with tempfile.NamedTemporaryFile(suffix=".myp", mode="w", delete=False) as f:
         f.write(source)
         src_path = f.name
@@ -178,10 +178,18 @@ def compile_mypc(source, mypc_path):
             [mypc_path, src_path, "-o", out_path],
             capture_output=True, text=True, timeout=10
         )
-        success = (result.returncode == 0)
-        return success, result.stdout, result.stderr, src_path, out_path
+        # A real crash = killed by a signal (e.g. SIGSEGV/SIGABRT) or a
+        # sanitizer report. A non-zero exit with clean diagnostics is just the
+        # compiler correctly REJECTING invalid code — not a crash.
+        output = (result.stdout or "") + (result.stderr or "")
+        is_crash = (result.returncode < 0) or \
+                   ("AddressSanitizer" in output) or \
+                   ("UndefinedBehaviorSanitizer" in output) or \
+                   ("runtime error:" in output and "sanitize" in output)
+        return is_crash, (result.returncode != 0 and not is_crash), \
+               result.stdout, result.stderr, src_path, out_path
     except subprocess.TimeoutExpired:
-        return False, "", "TIMEOUT", src_path, out_path
+        return False, True, "", "TIMEOUT", src_path, out_path
     except FileNotFoundError:
         print(f"[FATAL] Compiler not found: {mypc_path}")
         sys.exit(1)
@@ -196,7 +204,8 @@ def main():
     parser.add_argument("--save", type=str, default=None,
                         help="Directory to save failing test cases")
     parser.add_argument("--mypc", type=str, default="./build/mypc",
-                        help="Path to mypc compiler")
+                        help="Path to mypc compiler (use ./build-asan/mypc + "
+                             "ASAN_OPTIONS=detect_leaks=0 for sanitizer runs)")
     args = parser.parse_args()
 
     mypc_path = os.path.abspath(args.mypc)
@@ -217,6 +226,7 @@ def main():
 
     total = 0
     crashes = 0
+    rejected = 0
     timeouts = 0
     compile_oks = 0
 
@@ -224,7 +234,8 @@ def main():
         source = gen.generate_test()
         total += 1
 
-        ok, stdout, stderr, src_path, out_path = compile_mypc(source, mypc_path)
+        is_crash, is_rejected, stdout, stderr, src_path, out_path = \
+            compile_mypc(source, mypc_path)
 
         # 清理临时文件
         if os.path.exists(out_path):
@@ -233,10 +244,10 @@ def main():
             os.unlink(src_path)
 
         # 分析结果
-        if stderr and "TIMEOUT" in stderr:
+        if "TIMEOUT" in (stderr or ""):
             timeouts += 1
             status = "TIMEOUT"
-        elif not ok:
+        elif is_crash:
             crashes += 1
             status = "CRASH"
 
@@ -246,14 +257,17 @@ def main():
                 with open(os.path.join(args.save, fname), "w") as f:
                     f.write(source)
                 with open(os.path.join(args.save, f"crash_{i:04d}.log"), "w") as f:
-                    f.write(stderr or "")
+                    f.write((stderr or "") + "\n--- stdout ---\n" + (stdout or ""))
+        elif is_rejected:
+            rejected += 1
+            status = "reject"
         else:
             compile_oks += 1
             status = "OK"
 
         # 进度显示
-        if (i + 1) % 10 == 0 or not ok:
-            marker = "!" if not ok else "."
+        if (i + 1) % 10 == 0 or is_crash:
+            marker = "!" if is_crash else "."
             print(f"  [{i+1:4d}/{args.count}] {marker}  crashes={crashes}  timeouts={timeouts}", end="\r")
 
     print()
@@ -263,17 +277,18 @@ def main():
     print("=" * 50)
     print(f"  总迭代:     {total}")
     print(f"  编译成功:   {compile_oks} ({100*compile_oks//total}%)")
+    print(f"  正确拒绝:   {rejected} ({100*rejected//total}%)")
     print(f"  编译器崩溃: {crashes}")
     print(f"  超时:       {timeouts}")
 
     if crashes > 0:
         print()
-        print(f"  ⚠ 发现 {crashes} 个崩溃!")
+        print(f"  ⚠ 发现 {crashes} 个真实崩溃 (信号/ASAN)!")
         if args.save:
             print(f"  崩溃用例已保存到: {args.save}")
     else:
         print()
-        print(f"  ✅ 没有发现编译器崩溃")
+        print(f"  ✅ 没有发现编译器真实崩溃")
 
     return 0 if crashes == 0 else 1
 

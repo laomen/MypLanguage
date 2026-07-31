@@ -125,6 +125,7 @@ struct ClassDecl {
     std::vector<FuncDecl> functions; // internal methods (function: section)
     std::vector<StructDecl> structs; // nested structs
     bool is_static = false; // class has only static: methods
+    bool is_generic_inst = false; // monomorphized instance of a generic template
     std::string interface_class_name; // non-empty if "interface class X;" declared
     SourceRange range;
 };

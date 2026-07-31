@@ -1,19 +1,40 @@
 #!/bin/bash
-# MYP Language 回归测试框架
-# 用法: ./tests/run_tests.sh [--rebuild] [--update]
+# Run the MYP test suite under AddressSanitizer + UndefinedBehaviorSanitizer.
 #
-# 目录结构:
-#   tests/*/test.myp          — 验证测试（编译+运行，比对 expected 输出）
-#   tests/expected/*.expected — 预期的标准输出
-#   tests/negative/*.myp      — 负测试（编译应失败）
-#   tests/fuzz_test.py        — 模糊测试
+# Requires the ASan build of the compiler:
+#   cmake -B build-asan -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm -DMYP_SANITIZE=ON
+#   cmake --build build-asan -j$(nproc)
 #
+# Usage:
+#   bash tests/run_tests_asan.sh [--update]
+#
+# Notes:
+#   - detect_leaks=0: LLVM (linked un-instrumented) reports its own globals as
+#     leaks; we disable leak detection but keep all buffer-overflow / use-after-
+#     free / UBSan checks (the point of the sanitizer build).
+#   - MYP_SANITIZE=1 makes mypc also instrument the generated .out programs.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+export MYPCC="${MYPCC:-./build-asan/mypc}"
+export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+export MYP_SANITIZE=1
+
+if [ ! -x "$MYPCC" ]; then
+    echo "[ASAN] compiler not found: $MYPCC"
+    echo "  Build it first:"
+    echo "    cmake -B build-asan -DCMAKE_PREFIX_PATH=/usr/lib/llvm-21/lib/cmake/llvm -DMYP_SANITIZE=ON"
+    echo "    cmake --build build-asan -j\$(nproc)"
+    exit 1
+fi
+
+echo "[ASAN] running test suite with $MYPCC (MYP_SANITIZE=1, ASAN_OPTIONS=$ASAN_OPTIONS)"
+bash tests/run_tests.sh "$@"
 # 退出码: 0=全部通过, 1=有失败
 
 set -o pipefail
 
-# Compiler binary — override with MYPCC=/path/to/mypc (e.g. the ASan build)
-MYPCC="${MYPCC:-./build/mypc}"
+MYPCC="./build-asan/mypc"
 TIMEOUT_SEC=10
 PASS=0
 FAIL=0
@@ -54,7 +75,7 @@ echo ""
 # =============================================
 # 第1部分: 回归测试 — 编译+运行+比对输出
 # =============================================
-echo "--- [1/5] 回归测试 (Regression Tests) ---"
+echo "--- [1/3] 回归测试 (Regression Tests) ---"
 echo ""
 
 for test_dir in tests/*/; do
@@ -124,7 +145,7 @@ done
 # 第2部分: 负测试 — 编译应该失败
 # =============================================
 echo ""
-echo "--- [2/5] 负测试 (Negative Tests) ---"
+echo "--- [2/3] 负测试 (Negative Tests) ---"
 echo ""
 
 NEG_PASS=0
@@ -155,7 +176,7 @@ fi
 # 第3部分: 测试框架测试 (@test + --test)
 # =============================================
 echo ""
-echo "--- [3/5] 测试框架 (Test Framework) ---"
+echo "--- [3/4] 测试框架 (Test Framework) ---"
 echo ""
 
 TFPASS=0
@@ -198,42 +219,17 @@ else
 fi
 
 # =============================================
-# 第4部分: 无崩溃回归 (compiler must never crash)
-# =============================================
-echo ""
-echo "--- [4/5] 无崩溃回归 (No-Crash Regression) ---"
-echo ""
-
-NCRASH_PASS=0
-NCRASH_FAIL=0
-if [ -f "$PROJ_ROOT/tests/regression_no_crash.sh" ]; then
-    no_crash_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/regression_no_crash.sh" 2>&1)
-    if echo "$no_crash_out" | grep -q "全部通过"; then
-        echo -e "${GREEN}PASS${NC} (compiler rejects invalid input without crashing)"
-        NCRASH_PASS=1
-    else
-        echo -e "${RED}FAIL${NC} — compiler crashed on invalid input!"
-        echo "$no_crash_out" | tail -10
-        NCRASH_FAIL=1
-        FAILED_TESTS="$FAILED_TESTS no_crash(regression)"
-    fi
-else
-    echo "  (no regression_no_crash.sh found)"
-fi
-
-# =============================================
-# 第5部分: 总结
+# 第4部分: 总结
 # =============================================
 echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
 echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
-echo "  无崩溃:   ${NCRASH_PASS} 通过, ${NCRASH_FAIL} 失败"
 echo "  总计:     ${TOTAL_PASS} 通过, ${TOTAL_FAIL} 失败"
 
 if [ $TOTAL_FAIL -gt 0 ]; then

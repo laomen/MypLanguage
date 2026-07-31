@@ -8,6 +8,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ---- Sanitizers (for compiler/runtime stability testing) ----
+# Usage: cmake -B build-asan -DMYP_SANITIZE=ON
+# Instruments mypc/lsp/fmt/viz/runtime with AddressSanitizer + UBSan.
+# Generated programs also get ASAN when MYP_SANITIZE=1 is set at mypc runtime
+# (see src/main.cpp linkObjects).
+option(MYP_SANITIZE "Build with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+if(MYP_SANITIZE)
+    add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g)
+    add_link_options(-fsanitize=address,undefined)
+    message(STATUS "Sanitizers enabled: AddressSanitizer + UndefinedBehaviorSanitizer")
+endif()
+
 # ---- LLVM ----
 find_package(LLVM REQUIRED CONFIG)
 message(STATUS "Found LLVM: ${LLVM_DIR} (${LLVM_PACKAGE_VERSION})")
