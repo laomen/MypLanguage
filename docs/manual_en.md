@@ -125,7 +125,8 @@ var s = "x = $x";            // → "x = 42"
 
 | Precedence | Category | Operators |
 |------------|----------|-----------|
-| 9 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` |
+| 10 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` |
+| 9 | Pipe | `\|>` |
 | 8 | Ternary | `? :` |
 | 7 | Logical OR | `||` |
 | 6 | Logical AND | `&&` |
@@ -154,6 +155,10 @@ var max = a > b ? a : b;
 
 // Range (v2+)
 var r = 0..10;  // Range expression (0 to 10, inclusive)
+
+// Pipe (v2.4+): A |> Op calls the operator component's transform (left-assoc)
+// Op is an operator class name (auto-instantiated) or an instance (reused)
+var v = A |> ScaleOp;
 ```
 
 ---

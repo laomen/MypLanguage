@@ -15,6 +15,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **数据并行** | `@parallel for` 自动并行化，work-stealing 线程池 |
 | **泛型** | `ArrayList<T>`、`HashMap<K,V>`、`Queue<T>` 等 |
 | **接口多态** | `interface` + 虚表分派（胖指针） |
+| **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道（v2.4+） |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
 | **零依赖标准库** | 34+ 个模块，纯 MYP 实现 |
 | **LSP 集成** | 补全、悬停、跳转定义、文档符号 |

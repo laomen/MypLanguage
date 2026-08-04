@@ -15,6 +15,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Data Parallelism** | `@parallel for` auto-parallelization with a work-stealing thread pool |
 | **Generics** | `ArrayList<T>`, `HashMap<K,V>`, `Queue<T>` and more |
 | **Interface Polymorphism** | `interface` + vtable dispatch (fat pointers) |
+| **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe (v2.4+) |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
 | **Zero-Dependency Stdlib** | 34+ modules, pure MYP implementations |
 | **LSP Integration** | Completion, hover, go-to-definition, document symbols |
