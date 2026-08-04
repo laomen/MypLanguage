@@ -56,6 +56,7 @@ enum class TokenKind : uint16_t {
     Keyword_await,
     Keyword_const,
     Keyword_ref,
+    Keyword_operator,
 
     // ----- Types (also keywords) -----
     Type_byte,

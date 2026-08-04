@@ -3895,6 +3895,39 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
 }
 
 llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
+    // Operator overloading: dispatch to a user-defined operator (resolved by Sema).
+    if (e.op_call) {
+        if (e.op_call->kind == "function") {
+            auto* fn = module_->getFunction(e.op_call->func_name);
+            if (fn) {
+                auto* l = generateExpr(*e.lhs);
+                auto* r = generateExpr(*e.rhs);
+                return builder_.CreateCall(fn, {l, r});
+            }
+        } else if (e.op_call->kind == "struct_method") {
+            auto* st_type = getStructType(e.op_call->struct_key);
+            auto* l = generateExpr(*e.lhs);
+            auto* r = generateExpr(*e.rhs);
+            // Build the 'this' (struct receiver) pointer, mirroring struct
+            // method call handling: value → alloca, pointer → reuse.
+            llvm::Value* this_ptr = nullptr;
+            if (auto* li = llvm::dyn_cast<llvm::LoadInst>(l)) {
+                this_ptr = li->getPointerOperand();
+            } else if (l->getType()->isPointerTy()) {
+                this_ptr = builder_.CreateBitCast(l, llvm::PointerType::get(ctx_, 0));
+            } else if (st_type) {
+                auto* tmp = builder_.CreateAlloca(st_type);
+                builder_.CreateStore(l, tmp);
+                this_ptr = tmp;
+            }
+            if (this_ptr) {
+                std::string fn_name = "struct_" + e.op_call->struct_key + "_" + e.op_call->method;
+                auto* fn = module_->getFunction(fn_name);
+                if (fn) return builder_.CreateCall(fn, {this_ptr, r});
+            }
+        }
+    }
+
     auto* l = generateExpr(*e.lhs);
     auto* r = generateExpr(*e.rhs);
     if (l->getType() != r->getType()) {

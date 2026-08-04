@@ -261,7 +261,18 @@ ArgumentList     ::= Expression (',' Expression)*
 - **`@gpu for`** 数学函数映射到 CUDA libdevice；`@parallel for` 用线程池。
 - **`var`** 仅用于局部变量类型推断，不能用于参数/属性。
 
-> **待定增量（设计提案，未实施）**：算子系统（`运算符 = 算子` 统一模型，含 struct
-> `operator:` 节、外部 `@op` 函数、`|>` 管道）见 [operators.md](operators.md)。
-> 该设计全部为 additive（新注解/新 token/新类节），按 CHANGELOG 策略实施后并入本规格。
+> **算子系统（已实施，additive）**：`运算符 = 算子` 统一模型。
+> - struct `operator:` 节 + `@op("+")` 注解（结构内数学算子）
+> - 顶层 `@op("+")` 函数（外部算子：内置类型/对称二元/跨模块）
+> - 新增关键字 `operator`（保留字）；`@op` 注解参数为运算符字符串
+> - 完整规范见 [operators.md](operators.md)；`|>` 管道待实施
+
+### 附：算子语法（EBNF 增量）
+
+```ebnf
+OpAnnot        ::= '@' 'op' '(' StringLiteral ')'   // 符号如 "+" "*" "=="
+StructSection  ::= 'operator:' (OpAnnot ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}')+
+TopLevelDecl   ::= ... | OpAnnot FunctionDecl
+StructDecl     ::= 'struct' (Identifier '::')? Identifier '{' (StructField | StructSection)* '}'
+```
 - **`void`** 仅作为方法返回类型，不能作为变量类型。

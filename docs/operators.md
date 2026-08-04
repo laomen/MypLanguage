@@ -4,6 +4,12 @@
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）
 > 本文档是"运算符 = 算子"统一模型的形式化设计，实施前请先评审。
 
+## 状态
+
+> **v0.2（已部分实施）**：P1+P2 已完成 —— 顶层 `@op` 函数 + struct `operator:` 节 +
+> 二元算子重载分发（内建→struct内→外部）。`|>` 管道为 P3（待实施）。
+> 回归测试：`tests/operators/test.myp`（正常 + ASAN 套件通过）。
+
 ---
 
 ## 1. 核心洞察：运算符本身也是一种算子
@@ -38,14 +44,16 @@ struct Vector3 {
     operator:
         @op("+") Vector3 add(Vector3 other) { ... }   // a + b → 返回新值
         @op("*") Vector3 mul(double s) { ... }         // a * s
-    property:
-        double x_ = 0, y_ = 0, z_ = 0;
+    double x_ = 0;
+    double y_ = 0;
+    double z_ = 0;
 }
 ```
 
-- `operator:` 是 struct 的新类节（与 `property:`/`function:` 并列）
-- 方法即算子，`@op("+")` 注解把方法绑定到符号 `+`
+- `operator:` 是 struct 的新类节（仅 struct，class 用 action/event/mapping 机制，不使用数学算子重载）
+- 方法即算子，`@op("+")` 注解把方法绑定到符号 `+`（符号为字符串字面量）
 - **值语义**：`a + b` 返回新值，不突变操作数（struct 按值传递，天然纯函数）
+- 注意：MYP struct 属性为**裸属性、每行一个**（无 `property:` 节头、不支持逗号分隔）
 
 ### 2.2 外部 @op 函数（内置类型 / 对称二元 / 跨模块）
 

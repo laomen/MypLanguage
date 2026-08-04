@@ -1,0 +1,139 @@
+// set_ops.myp — 算子系统示例（运算符 = 算子）
+//
+// 演示:
+//   1) struct 内算子: 值类型数学运算 (v + u, v * s)
+//   2) 外部 @op 函数: 内置类型 / 对称二元 (A + B, s * v)
+//   3) 变换组件: class + SetOp 接口 (A |> ScaleOp 的嵌套调用形态)
+//
+// 设计规范见 docs/operators.md; 编译运行:
+//   ./build/mypc examples/set_ops.myp && ./examples/set_ops.out
+
+import env;
+
+// ============================================================
+// 1) struct 内算子 — 值类型数学运算
+// ============================================================
+struct Vector3 {
+    operator:
+        @op("+") Vector3 add(Vector3 other) {
+            Vector3 r;
+            r.x_ = x_ + other.x_;
+            r.y_ = y_ + other.y_;
+            r.z_ = z_ + other.z_;
+            return r;
+        }
+        @op("-") Vector3 sub(Vector3 other) {
+            Vector3 r;
+            r.x_ = x_ - other.x_;
+            r.y_ = y_ - other.y_;
+            r.z_ = z_ - other.z_;
+            return r;
+        }
+        @op("*") Vector3 mul(double s) {
+            Vector3 r;
+            r.x_ = x_ * s;
+            r.y_ = y_ * s;
+            r.z_ = z_ * s;
+            return r;
+        }
+        @op("==") bool eq(Vector3 other) {
+            return x_ == other.x_ && y_ == other.y_ && z_ == other.z_;
+        }
+    double x_ = 0;
+    double y_ = 0;
+    double z_ = 0;
+}
+
+// ============================================================
+// 2) 外部 @op 函数 — 内置类型 (double[] 逐元素加)
+// ============================================================
+@op("+") double[] vecAdd(double[] A, double[] B) {
+    int n = 4;
+    double[] C = new double[n];
+    int i = 0; while (i < n) { C[i] = A[i] + B[i]; i = i + 1; }
+    return C;
+}
+
+// 外部 @op: 对称混合二元 (标量 * 向量)
+@op("*") Vector3 vecMul(double s, Vector3 a) {
+    Vector3 r;
+    r.x_ = a.x_ * s;
+    r.y_ = a.y_ * s;
+    r.z_ = a.z_ * s;
+    return r;
+}
+
+// ============================================================
+// 3) 变换组件 — class + 接口, 集合变换 (A -> ScaleOp -> B)
+// ============================================================
+interface SetOp {
+    double[] transform(double[] A);
+}
+
+class ScaleOp {
+    interface class SetOp;
+    action:
+        void setK(double k) { k_ = k; }
+        double[] transform(double[] A) {
+            int n = 4;
+            double[] B = new double[n];
+            int i = 0; while (i < n) { B[i] = A[i] * k_; i = i + 1; }
+            return B;
+        }
+    property:
+        double k_ = 2.0;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("=== 算子系统示例 ===\n\n");
+
+            // --- 1. struct 数学算子 ---
+            Vector3 v; v.x_ = 1; v.y_ = 2; v.z_ = 3;
+            Vector3 u; u.x_ = 4; u.y_ = 5; u.z_ = 6;
+            Vector3 w = v + u;        // @op("+") add
+            Vector3 d = u - v;        // @op("-") sub
+            Vector3 s = v * 2.0;      // @op("*") mul
+            bool e = (w == w);        // @op("==") eq
+            Console.writeString("v = (1,2,3), u = (4,5,6)\n");
+            Console.writeString("v+u = (");
+            Console.writeFloat(w.x_); Console.writeString(",");
+            Console.writeFloat(w.y_); Console.writeString(",");
+            Console.writeFloat(w.z_); Console.writeString(")\n");
+            Console.writeString("u-v = (");
+            Console.writeFloat(d.x_); Console.writeString(",");
+            Console.writeFloat(d.y_); Console.writeString(",");
+            Console.writeFloat(d.z_); Console.writeString(")\n");
+            Console.writeString("v*2 = (");
+            Console.writeFloat(s.x_); Console.writeString(",");
+            Console.writeFloat(s.y_); Console.writeString(",");
+            Console.writeFloat(s.z_); Console.writeString(")\n");
+            Console.writeString("(v+u)==(v+u) = ");
+            Console.writeBool(e);
+            Console.writeString("\n");
+
+            // --- 2. 外部算子 ---
+            double[] A = new double[4];
+            double[] B = new double[4];
+            int i = 0; while (i < 4) { A[i] = i * 1.0; B[i] = 10.0; i = i + 1; }
+            double[] C = A + B;       // @op("+") 外部函数 (内置类型)
+            Vector3 m = 3.0 * v;      // @op("*") 外部函数 (对称混合)
+            Console.writeString("A+B = [");
+            i = 0; while (i < 4) { Console.writeFloat(C[i]); if (i < 3) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+            Console.writeString("3*v = (");
+            Console.writeFloat(m.x_); Console.writeString(",");
+            Console.writeFloat(m.y_); Console.writeString(",");
+            Console.writeFloat(m.z_); Console.writeString(")\n");
+
+            // --- 3. 变换组件 (嵌套组合: A -> ScaleOp -> B) ---
+            ScaleOp scale = new ScaleOp();
+            scale.setK(2.0);
+            double[] D = scale.transform(A);   // A * 2
+            Console.writeString("scale(A) = [");
+            i = 0; while (i < 4) { Console.writeFloat(D[i]); if (i < 3) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

@@ -397,6 +397,16 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
     consume(TokenKind::LeftBrace, "expected '{' after struct name");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        // operator: section — 数学算子方法 (@op 绑定符号)
+        // 只解析 @op 注解的方法; 裸属性/普通方法退出交由主循环处理
+        if (match(TokenKind::Keyword_operator)) {
+            consume(TokenKind::Colon, "expected ':' after 'operator'");
+            while (!check(TokenKind::RightBrace) && !isAtEnd() && check(TokenKind::At)) {
+                auto func = parseFunction();
+                if (func) decl->functions.push_back(std::move(*func));
+            }
+            continue;
+        }
         if (checkType() || check(TokenKind::Keyword_void)) {
             // Look ahead up to 3 tokens to distinguish property vs method:
             //   property: type name ; or type name = expr ;
@@ -445,6 +455,25 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         advance();
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
+        else if (annot == "op") {
+            // @op("+") — operator symbol is a string literal
+            consume(TokenKind::LeftParen, "expected '(' after '@op'");
+            if (check(TokenKind::StringLiteral)) {
+                std::string s = advance().value;  // e.g. "+"
+                static const std::string kOps[] = {
+                    "+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">="
+                };
+                bool valid = false;
+                for (auto& op : kOps) if (op == s) { valid = true; break; }
+                if (valid) func->op_symbol = s;
+                else diag_.error(previous().range,
+                    "unsupported operator symbol '@op(\"" + s + "\")'");
+            } else {
+                diag_.error(peek().range,
+                    "expected operator symbol string in @op(\"...\")");
+            }
+            consume(TokenKind::RightParen, "expected ')' after operator symbol");
+        }
     }
     // Check for generic type params before return type
     if (check(TokenKind::Identifier) && peekNext().kind == TokenKind::Less) {

@@ -280,10 +280,22 @@ enum class BinaryOpKind {
     BitAnd, BitOr, BitXor, Shl, Shr,
 };
 
+// Operator overloading resolution result (set by Sema, consumed by CodeGen).
+// Non-null means this binary op dispatches to a user-defined operator.
+//   kind == "struct_method": call struct_<struct_key>_<method>(lhs, rhs...)
+//   kind == "function"     : call top-level function <func_name>(lhs, rhs)
+struct OperatorCall {
+    std::string kind;       // "struct_method" | "function"
+    std::string struct_key; // struct type key (for struct_method)
+    std::string method;     // method name (for struct_method)
+    std::string func_name;  // function name (for function)
+};
+
 struct BinaryOpExpr : Expr {
     std::unique_ptr<Expr> lhs;
     BinaryOpKind op;
     std::unique_ptr<Expr> rhs;
+    std::shared_ptr<OperatorCall> op_call;  // set by Sema if operator overloaded
     BinaryOpExpr(std::unique_ptr<Expr> l, BinaryOpKind o, std::unique_ptr<Expr> r, SourceRange range_)
         : Expr(ExprKind::BinaryOp, range_), lhs(std::move(l)), op(o), rhs(std::move(r)) {}
 };
@@ -520,6 +532,7 @@ struct FuncDecl {
     std::unique_ptr<BlockStmt> body;
     SourceRange range;
     bool has_test = false;
+    std::string op_symbol;  // non-empty if this is an operator (@op("..."))
 };
 
 struct ImportDecl {

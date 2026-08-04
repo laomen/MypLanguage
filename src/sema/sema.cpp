@@ -902,12 +902,73 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
     auto lhs_type = visitExpr(*expr.lhs);
     auto rhs_type = visitExpr(*expr.rhs);
 
+    // Operator overloading: dispatch to a user-defined operator when the
+    // operands are not handled by builtin semantics.
+    //   Order: 1) struct-internal operator (this = left operand)
+    //          2) external @op function matching (lhs_type, rhs_type)
+    // Builtin numeric/string/bool is handled first in each case below.
+    auto resolveOperator = [&]() -> TypeInfo {
+        if (!current_tu_) return TypeInfo(TypeKind::Void);
+        std::string sym;
+        switch (expr.op) {
+            case BinaryOpKind::Add: sym = "+"; break;
+            case BinaryOpKind::Sub: sym = "-"; break;
+            case BinaryOpKind::Mul: sym = "*"; break;
+            case BinaryOpKind::Div: sym = "/"; break;
+            case BinaryOpKind::Mod: sym = "%"; break;
+            case BinaryOpKind::Eq:  sym = "=="; break;
+            case BinaryOpKind::Ne:  sym = "!="; break;
+            case BinaryOpKind::Lt:  sym = "<"; break;
+            case BinaryOpKind::Gt:  sym = ">"; break;
+            case BinaryOpKind::Le:  sym = "<="; break;
+            case BinaryOpKind::Ge:  sym = ">="; break;
+            default: return TypeInfo(TypeKind::Void);
+        }
+        // 1) struct-internal operator (this = left operand, 1 param = right)
+        if (lhs_type.kind == TypeKind::Struct) {
+            for (auto& st : current_tu_->structs) {
+                std::string skey = st.parent_class.empty()
+                    ? st.name : st.parent_class + "::" + st.name;
+                if (skey != lhs_type.class_name) continue;
+                for (auto& m : st.functions) {
+                    if (m.op_symbol != sym) continue;
+                    if (m.params.size() != 1) continue;
+                    auto ptype = typeNodeToTypeInfo(m.params[0].type);
+                    if (typesCompatible(ptype, rhs_type)) {
+                        expr.op_call = std::make_shared<OperatorCall>();
+                        expr.op_call->kind = "struct_method";
+                        expr.op_call->struct_key = skey;
+                        expr.op_call->method = m.name;
+                        return typeNodeToTypeInfo(m.return_type);
+                    }
+                }
+            }
+        }
+        // 2) external @op function matching (lhs_type, rhs_type)
+        for (auto& f : current_tu_->functions) {
+            if (f.op_symbol != sym) continue;
+            if (f.params.size() != 2) continue;
+            auto p0 = typeNodeToTypeInfo(f.params[0].type);
+            auto p1 = typeNodeToTypeInfo(f.params[1].type);
+            if (typesCompatible(p0, lhs_type) && typesCompatible(p1, rhs_type)) {
+                expr.op_call = std::make_shared<OperatorCall>();
+                expr.op_call->kind = "function";
+                expr.op_call->func_name = f.name;
+                return typeNodeToTypeInfo(f.return_type);
+            }
+        }
+        return TypeInfo(TypeKind::Void);
+    };
+
     switch (expr.op) {
         case BinaryOpKind::Add: {
             // String concatenation: string + any → string
             if (lhs_type.kind == TypeKind::String || rhs_type.kind == TypeKind::String)
                 return TypeInfo(TypeKind::String);
-            // Numeric addition
+            if (lhs_type.kind == TypeKind::Void || rhs_type.kind == TypeKind::Void)
+                return TypeInfo(TypeKind::Int);  // cascading error recovery
+            TypeInfo op_ret = resolveOperator();
+            if (op_ret.kind != TypeKind::Void) return op_ret;
             if (!expectNumeric(lhs_type, expr.lhs->range) ||
                 !expectNumeric(rhs_type, expr.rhs->range)) {
                 return TypeInfo(TypeKind::Int);
@@ -915,21 +976,32 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
             goto numeric_common;
         }
         case BinaryOpKind::Sub:
-        case BinaryOpKind::Mul: case BinaryOpKind::Div: case BinaryOpKind::Mod:
+        case BinaryOpKind::Mul: case BinaryOpKind::Div: case BinaryOpKind::Mod: {
+            if (lhs_type.kind == TypeKind::Void || rhs_type.kind == TypeKind::Void)
+                return TypeInfo(TypeKind::Int);  // cascading error recovery
+            TypeInfo op_ret = resolveOperator();
+            if (op_ret.kind != TypeKind::Void) return op_ret;
             if (!expectNumeric(lhs_type, expr.lhs->range) ||
                 !expectNumeric(rhs_type, expr.rhs->range)) {
                 return TypeInfo(TypeKind::Int);
             }
             goto numeric_common;
+        }
 
-        case BinaryOpKind::Eq: case BinaryOpKind::Ne:
+        case BinaryOpKind::Eq: case BinaryOpKind::Ne: {
+            TypeInfo op_ret = resolveOperator();
+            if (op_ret.kind != TypeKind::Void) return op_ret;
             return TypeInfo(TypeKind::Bool);
+        }
 
         case BinaryOpKind::Lt: case BinaryOpKind::Gt:
-        case BinaryOpKind::Le: case BinaryOpKind::Ge:
+        case BinaryOpKind::Le: case BinaryOpKind::Ge: {
+            TypeInfo op_ret = resolveOperator();
+            if (op_ret.kind != TypeKind::Void) return op_ret;
             if (!expectNumeric(lhs_type, expr.lhs->range))
                 return TypeInfo(TypeKind::Bool);
             return TypeInfo(TypeKind::Bool);
+        }
 
         case BinaryOpKind::And: case BinaryOpKind::Or:
             expectBool(lhs_type, expr.lhs->range);
