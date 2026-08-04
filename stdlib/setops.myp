@@ -1,0 +1,32 @@
+// setops.myp — 集合算子 (Set Operator) 统一契约
+//
+// 统一变换能力: A ->(算子)-> B，A、B 均为集合 (double[])
+//
+// 设计动机:
+//   将"变换"抽象为统一接口, 任何算子(缩放/激活/过滤/归约/降采样…)
+//   只要实现 transform, 即可作为集合流水线的一环复用。
+//   算子内部变换细节(逐元素/尺寸变化/过滤)自由实现, 外层契约统一。
+//
+// 用法:
+//   import setops;
+//
+//   class ScaleOp {
+//       interface class SetOp;
+//       action:
+//           double[] transform(double[] A) {
+//               // 内部任意变换: 输入集合, 输出集合
+//               ...
+//           }
+//       property:
+//           double k = 2.0;
+//   }
+//
+//   单算子:        double[] B = op.transform(A);
+//   流水线组合:    double[] B = op2.transform(op1.transform(A));  // A ->op1-> op2-> B
+//
+// 统一算子模型（运算符 = 算子: struct 算子/外部 @op/管道）见 docs/operators.md。
+// 与 mapping 的事件算子呼应: 事件流算子处理标量事件, 集合算子处理集合变换。
+
+interface SetOp {
+    double[] transform(double[] A);
+}

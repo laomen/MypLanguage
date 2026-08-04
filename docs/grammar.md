@@ -260,4 +260,8 @@ ArgumentList     ::= Expression (',' Expression)*
 - **泛型**：类声明用 `<T, U>`，实例化用 `<int, string>`。
 - **`@gpu for`** 数学函数映射到 CUDA libdevice；`@parallel for` 用线程池。
 - **`var`** 仅用于局部变量类型推断，不能用于参数/属性。
+
+> **待定增量（设计提案，未实施）**：算子系统（`运算符 = 算子` 统一模型，含 struct
+> `operator:` 节、外部 `@op` 函数、`|>` 管道）见 [operators.md](operators.md)。
+> 该设计全部为 additive（新注解/新 token/新类节），按 CHANGELOG 策略实施后并入本规格。
 - **`void`** 仅作为方法返回类型，不能作为变量类型。
