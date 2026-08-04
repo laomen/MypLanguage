@@ -24,3 +24,4 @@ deeplearning/data/
 # Large downloaded archives
 *.zip
 raylib-master*
+*.output

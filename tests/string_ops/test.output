@@ -1,7 +1,0 @@
-concat=Hello, World!
-int_concat=count: 42
-eq=true
-
-neq=true
-
-self_eq=true

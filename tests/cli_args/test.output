@@ -1,4 +1,0 @@
-[命令行参数验证]
-  此测试验证 main(argc, argv) 语法编译通过
-  编译: OK
-[OK] main(argc, argv) 验证通过

@@ -1,4 +1,0 @@
-lib_io=file error: open /no/such/myp_file.txt
-lib_json=json error: 0:0 invalid JSON input
-lib_iface=file error: open /no/such/myp_file2.txt
-done
