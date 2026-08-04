@@ -147,6 +147,7 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'struct:' StructDecl+
                    | 'static:' ActionDecl+              // 静态方法（无 this）
                    | 'interface' 'class' Identifier ';' // 声明实现某接口
+                   | 'const' Type Identifier '=' Expression ';'  // class 顶层 const（等价 property 段 const）
 
 ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
 ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'

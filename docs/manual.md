@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 2.4 | 事件驱动组件语言
+> 版本 3.0 | 事件驱动组件语言
 > 语言规格 v1.0（语法冻结）：正式 EBNF 见 [grammar.md](grammar.md)，版本策略见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -98,6 +98,11 @@ var s = "hello";    // string
 // 常量——变量必须显式初始化
 int a;              // 默认初始化为 0
 ```
+
+> **`const`**：`const Type Name = Expr;` 声明常量（必须初始化）。可用在：
+> `property:` 段（const 属性）、class 顶层（`const double THERMAL = 0.0253;`，等价 const 属性）、
+> 局部变量（`const Type Name = Expr;`）。class 顶层 const 是**每实例一份的常量字段**
+> （非类级共享；如需类级共享常量可用 `@static` 类）。属性默认值（`int x = 5;`）在 `new` 时生效。
 
 ### 字面量
 

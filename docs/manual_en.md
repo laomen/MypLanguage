@@ -1,6 +1,6 @@
 # MYP Programming Manual
 
-> Version 2.3 | Event-Driven Component Language
+> Version 3.0 | Event-Driven Component Language
 
 ---
 
