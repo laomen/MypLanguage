@@ -8,6 +8,7 @@
 
 #include <llvm/Support/ErrorHandling.h>
 
+#include <chrono>
 #include <cstring>
 #include <exception>
 #include <fstream>
@@ -22,6 +23,27 @@
 static bool fileExists(const std::string& path) {
     struct stat st;
     return stat(path.c_str(), &st) == 0;
+}
+
+// ---- Phase timing (MYP_TIMING=1 prints per-phase durations to stderr) ----
+static bool timingEnabled() {
+    static bool on = [] {
+        const char* e = getenv("MYP_TIMING");
+        return e && e[0] == '1';
+    }();
+    return on;
+}
+static long long timingNowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+static long long g_timing_last = 0;
+static void phaseMark(const char* name) {
+    if (!timingEnabled()) return;
+    long long t = timingNowMs();
+    if (g_timing_last == 0) g_timing_last = t;
+    fprintf(stderr, "[timing] %-16s %5lld ms\n", name, t - g_timing_last);
+    g_timing_last = t;
 }
 
 // Normalize path: remove "./" prefixes and "//" sequences
@@ -170,6 +192,7 @@ static bool loadModule(const std::string& module_name,
     // === Phase 4: Semantic Analysis ===
     mylang::Sema sema(diag);
     sema.analyze(ast);
+    phaseMark("sema");
 
     if (diag.hasErrors()) {
         std::cout << "Semantic analysis failed (" << diag.errorCount() << " errors)\n";
@@ -184,6 +207,7 @@ static bool loadModule(const std::string& module_name,
     codegen.setLibraryMode(library_mode);
     codegen.setTestMode(test_mode);
     std::string obj_path = codegen.generate(ast, output_fn, opt_level);
+    phaseMark("codegen");
 
     if (obj_path.empty()) {
         std::cout << "Code generation failed\n";
@@ -218,12 +242,14 @@ static bool loadModule(const std::string& module_name,
         std::cerr << "Error: cannot open file '" << filename << "'\n";
         return "";
     }
+    phaseMark("load");
 
     mylang::DiagnosticEngine diag(source_mgr);
 
     // === Phase 2: Lexer ===
     mylang::Lexer lexer(source_mgr, diag);
     auto tokens = lexer.tokenize();
+    phaseMark("lexer");
 
     if (diag.hasErrors()) {
         return "";
@@ -234,6 +260,7 @@ static bool loadModule(const std::string& module_name,
     // === Phase 3: Parser ===
     mylang::Parser parser(tokens, diag);
     auto ast = parser.parse();
+    phaseMark("parser");
 
     if (diag.hasErrors()) {
         return "";
@@ -250,6 +277,7 @@ static bool loadModule(const std::string& module_name,
             if (diag.hasErrors()) return "";
         }
     }
+    phaseMark("imports");
 
     return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, diag);
 }
@@ -290,14 +318,61 @@ static bool loadModule(const std::string& module_name,
     std::string obj_list;
     for (auto& o : obj_files) obj_list += " " + o;
 
+    // ---- Cache runtime C objects: runtime.c / sdl_bridge.c / runtime_gpu.c
+    // are compiled fresh via gcc on EVERY link (~90ms each). Hash the source +
+    // flags and reuse a cached .o when unchanged (biggest single compile win).
+    auto cacheObj = [&](const std::string& src_path,
+                        const std::string& extra_flags) -> std::string {
+        std::ifstream ifs(src_path, std::ios::binary);
+        if (!ifs) return "";  // fall back to no-cache (caller compiles directly)
+        uint64_t h = 1469598103934665603ULL;  // FNV-1a 64
+        char buf[4096];
+        while (ifs) {
+            ifs.read(buf, sizeof(buf));
+            std::streamsize n = ifs.gcount();
+            for (std::streamsize i = 0; i < n; ++i) {
+                h ^= (unsigned char)buf[i];
+                h *= 1099511628211ULL;
+            }
+        }
+        // Fold flags into the hash (different sanitizer/trace => different object)
+        for (char c : extra_flags) { h ^= (unsigned char)c; h *= 1099511628211ULL; }
+        for (char c : san_flags)    { h ^= (unsigned char)c; h *= 1099511628211ULL; }
+        char hex[17];
+        snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)h);
+        std::string dir = "/tmp/myp_rt_cache";
+        ::mkdir(dir.c_str(), 0755);
+        return dir + "/myp_rt_" + hex + ".o";
+    };
+
     // Build runtime object
-    std::string rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
+    std::string rt_obj;
     std::string trace_def = trace_enabled ? " -DTRACE_ENABLED" : "";
-    std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
-    if (std::system(compile_rt.c_str()) != 0) {
-        std::cerr << "Failed to compile runtime\n";
-        return false;
+    if (fileExists(runtime_c)) {
+        std::string cached = cacheObj(runtime_c, trace_def);
+        if (!cached.empty() && fileExists(cached)) {
+            rt_obj = cached;  // cache hit — skip gcc
+        } else {
+            rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
+            std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+            if (std::system(compile_rt.c_str()) != 0) {
+                std::cerr << "Failed to compile runtime\n";
+                return false;
+            }
+            if (!cached.empty()) {
+                std::string cp = "cp " + rt_obj + " " + cached + " 2>/dev/null";
+                std::system(cp.c_str());
+            }
+        }
+    } else {
+        rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
+        std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+        if (std::system(compile_rt.c_str()) != 0) {
+            std::cerr << "Failed to compile runtime\n";
+            return false;
+        }
     }
+    phaseMark("rt_compile");
 
     // Build SDL bridge object (if exists)
     std::string sdl_obj;
@@ -308,13 +383,23 @@ static bool loadModule(const std::string& module_name,
     else if (fileExists(runtime_dir + "/src/runtime/sdl_bridge.c"))
         sdl_c = runtime_dir + "/src/runtime/sdl_bridge.c";
     if (!sdl_c.empty()) {
-        sdl_obj = "/tmp/myp_sdl_" + std::to_string(std::rand()) + ".o";
+        sdl_obj = "";
         std::string sdl_cflags = "-I/usr/include/SDL2 -D_REENTRANT";
         sdl_libs = "-lSDL2";
-        std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + san_flags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
-        if (std::system(compile_sdl.c_str()) != 0) {
-            std::cerr << "Failed to compile SDL bridge\n";
-            return false;
+        std::string cached = cacheObj(sdl_c, sdl_cflags);
+        if (!cached.empty() && fileExists(cached)) {
+            sdl_obj = cached;
+        } else {
+            sdl_obj = "/tmp/myp_sdl_" + std::to_string(std::rand()) + ".o";
+            std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + san_flags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
+            if (std::system(compile_sdl.c_str()) != 0) {
+                std::cerr << "Failed to compile SDL bridge\n";
+                return false;
+            }
+            if (!cached.empty()) {
+                std::string cp = "cp " + sdl_obj + " " + cached + " 2>/dev/null";
+                std::system(cp.c_str());
+            }
         }
     }
 
@@ -326,11 +411,21 @@ static bool loadModule(const std::string& module_name,
         gpu_c = runtime_dir + "/src/runtime/runtime_gpu.c";
     std::string gpu_obj;
     if (!gpu_c.empty()) {
-        gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
-        std::string compile_gpu = "gcc -I" + inc_path + " -fPIC " + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
-        if (std::system(compile_gpu.c_str()) != 0) {
-            std::cerr << "Failed to compile GPU runtime\n";
-            return false;
+        gpu_obj = "";
+        std::string cached = cacheObj(gpu_c, "");
+        if (!cached.empty() && fileExists(cached)) {
+            gpu_obj = cached;
+        } else {
+            gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
+            std::string compile_gpu = "gcc -I" + inc_path + " -fPIC " + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
+            if (std::system(compile_gpu.c_str()) != 0) {
+                std::cerr << "Failed to compile GPU runtime\n";
+                return false;
+            }
+            if (!cached.empty()) {
+                std::string cp = "cp " + gpu_obj + " " + cached + " 2>/dev/null";
+                std::system(cp.c_str());
+            }
         }
     }
 
@@ -356,6 +451,7 @@ static bool loadModule(const std::string& module_name,
         std::cerr << "Linking failed (exit: " << link_result << ")\n";
         return false;
     }
+    phaseMark("link");
 
     std::cout << "Link OK: " << output_name << "\n";
     return true;
