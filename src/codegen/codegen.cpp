@@ -5675,6 +5675,26 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     auto* obj = builder_.CreateCall(alloc_fn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1)});
     if (sz > 0)
         builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
+
+    // Apply declared property default values (`int x = 5;`, class-level
+    // `const double T = 0.0253;`). The allocator zero-inits; non-default
+    // initializers are stored here on every new. Generic instances are skipped
+    // (their template's defaults keep the zero value).
+    if (current_tu_) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != cls_name) continue;
+            auto* st2 = getClassStruct(cls.name);
+            if (!st2) continue;
+            for (size_t pi = 0; pi < cls.properties.size(); pi++) {
+                auto& prop = cls.properties[pi];
+                if (!prop.init_expr) continue;
+                llvm::Value* v = generateExpr(*prop.init_expr);
+                auto* gep = builder_.CreateStructGEP(st2, obj, pi);
+                builder_.CreateStore(v, gep);
+            }
+            break;
+        }
+    }
     return obj;
 }
 

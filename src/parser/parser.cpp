@@ -143,6 +143,11 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
             parseClassSection(*cls);
         } else if (check(TokenKind::Keyword_interface)) {
             parseInterfaceClassDecl(*cls);
+        } else if (check(TokenKind::Keyword_const)) {
+            // Class-level const: `const double THERMAL = 0.0253;` directly in the
+            // class body. Stored as a const property (semantics identical to the
+            // property: section; useful for per-instance physical constants).
+            cls->properties.push_back(parsePropertyDecl());
         } else {
             diag_.error(peek().range,
                 "expected 'action:', 'event:', 'property:', 'function:', 'struct:', or 'interface class'");

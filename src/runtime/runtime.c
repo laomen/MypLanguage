@@ -1568,7 +1568,7 @@ int myp_timer_check(void) {
 // Event System — Per-Thread Queues
 // ======================
 
-#define MYP_EVENT_QUEUE_SIZE 1024
+#define MYP_EVENT_QUEUE_INIT_SIZE 1024
 
 typedef struct {
     int event_id;
@@ -1577,9 +1577,10 @@ typedef struct {
     int has_data;
 } myp_event_t;
 
-// Event queue (ring buffer)
+// Event queue (dynamic ring buffer — grows on demand, no fixed 1024 cap)
 typedef struct {
-    myp_event_t events[MYP_EVENT_QUEUE_SIZE];
+    myp_event_t* events;
+    int capacity;
     volatile int head;
     volatile int tail;
     pthread_mutex_t mutex;
@@ -1604,6 +1605,7 @@ static void myp_free_queue(void* ptr) {
     if (ptr) {
         myp_event_queue_t* q = (myp_event_queue_t*)ptr;
         pthread_mutex_destroy(&q->mutex);
+        free(q->events);
         free(q);
     }
 }
@@ -1615,6 +1617,8 @@ static void myp_make_queue_key(void) {
 // Create a new event queue
 static myp_event_queue_t* myp_queue_create(void) {
     myp_event_queue_t* q = (myp_event_queue_t*)calloc(1, sizeof(myp_event_queue_t));
+    q->capacity = MYP_EVENT_QUEUE_INIT_SIZE;
+    q->events = (myp_event_t*)calloc((size_t)q->capacity, sizeof(myp_event_t));
     pthread_mutex_init(&q->mutex, NULL);
     return q;
 }
@@ -1637,17 +1641,30 @@ static myp_event_queue_t* myp_queue_current(void) {
     return q;
 }
 
-// Push an event to a specific queue (thread-safe)
+// Push an event to a specific queue (thread-safe); grows the buffer when full.
 static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, void* data) {
     pthread_mutex_lock(&q->mutex);
-    int next = (q->head + 1) % MYP_EVENT_QUEUE_SIZE;
-    if (next != q->tail) {
-        q->events[q->head].event_id = event_id;
-        q->events[q->head].sender = sender;
-        q->events[q->head].data = data;
-        q->events[q->head].has_data = (data != NULL);
-        q->head = next;
+    int next = (q->head + 1) % q->capacity;
+    if (next == q->tail) {
+        // Full — grow (double) and linearize the circular contents.
+        int new_cap = q->capacity * 2;
+        myp_event_t* ne = (myp_event_t*)realloc(q->events,
+                                                (size_t)new_cap * sizeof(myp_event_t));
+        if (!ne) { pthread_mutex_unlock(&q->mutex); return; }  // OOM: drop event
+        int n = 0;
+        for (int i = q->tail; i != q->head; i = (i + 1) % q->capacity)
+            ne[n++] = q->events[i];
+        q->events = ne;
+        q->tail = 0;
+        q->head = n;
+        q->capacity = new_cap;
+        next = (q->head + 1) % q->capacity;
     }
+    q->events[q->head].event_id = event_id;
+    q->events[q->head].sender = sender;
+    q->events[q->head].data = data;
+    q->events[q->head].has_data = (data != NULL);
+    q->head = next;
     pthread_mutex_unlock(&q->mutex);
 }
 
@@ -1659,7 +1676,7 @@ static int myp_queue_pop(myp_event_queue_t* q, myp_event_t* ev) {
         return 0;
     }
     *ev = q->events[q->tail];
-    q->tail = (q->tail + 1) % MYP_EVENT_QUEUE_SIZE;
+    q->tail = (q->tail + 1) % q->capacity;
     pthread_mutex_unlock(&q->mutex);
     return 1;
 }
