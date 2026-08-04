@@ -2141,6 +2141,20 @@ static __thread int myp_handler_depth = 0;
 static __thread void* myp_current_exception = NULL;
 static __thread int myp_current_exception_type = 0;
 
+// ASan: notify before a non-returning jump (longjmp) so ASan unwinds properly
+// and doesn't report false-positive frame-mismatch / __asan_handle_no_return
+// warnings. Weak reference — a no-op when not built with ASan.
+extern void __asan_handle_no_return(void) __attribute__((weak));
+
+// Codegen's longjmp target (replaces the raw system longjmp): tell ASan about
+// the non-returning jump first, then longjmp to the handler's jmp_buf.
+// This is important for coroutines: an uncaught exception inside a coroutine
+// longjmps through ucontext stacks, which ASan otherwise mis-reports.
+void __myp_longjmp(void* jb, int val) {
+    if (__asan_handle_no_return) __asan_handle_no_return();
+    longjmp(*(jmp_buf*)jb, val);
+}
+
 // Called from generated code via intrinsic: saves error context
 void myp_error_setup(void) {
     myp_error_active = 1;
@@ -2508,10 +2522,31 @@ static void myp_coro_stack_pool_free_all(void) {
 }
 
 // Trampoline: called by makecontext with coroutine index as arg
-// Calls the coroutine's entry function, then deactivates it
+// Calls the coroutine's entry function, then deactivates it.
+// It also installs a coroutine-level exception boundary: an exception thrown
+// inside the coroutine that no inner catch handles longjmps back HERE (rather
+// than to the main thread's top handler), so the coroutine ends cleanly
+// (active=0) and the rest of the process keeps running instead of aborting.
 static void __myp_coro_trampoline(int id) {
-    if (id >= 0 && id < myp_coro_count && myp_coros[id] && myp_coros[id]->fn) {
-        myp_coros[id]->fn();
+    jmp_buf jb;
+    if (setjmp(jb) == 0) {
+        myp_exception_push(&jb);
+        if (id >= 0 && id < myp_coro_count && myp_coros[id] && myp_coros[id]->fn) {
+            myp_coros[id]->fn();
+        }
+        myp_exception_pop();
+    } else {
+        // Uncaught exception inside this coroutine: pop our boundary handler
+        // and report, then finish the coroutine normally (no process abort).
+        myp_exception_pop();
+        if (myp_current_exception_type > 0) {
+            fprintf(stderr, "uncaught exception in coroutine (object, type %d)\n",
+                    myp_current_exception_type);
+        } else if (myp_error_msg[0]) {
+            fprintf(stderr, "uncaught exception in coroutine: %s\n", myp_error_msg);
+        } else {
+            fprintf(stderr, "uncaught exception in coroutine\n");
+        }
     }
     if (id >= 0 && id < myp_coro_count && myp_coros[id]) {
         myp_coros[id]->active = 0;

@@ -284,7 +284,7 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | **Codegen** | `@coro` 调用 → spawn（create(stack_bytes)/入口参数槽/set_entry/首启）；顶层 `@coro` 函数入口包装 `generateCoroFuncEntry`（无 this 槽）+ 预扫描解决定义顺序与同类互 spawn；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽；`Coro` 内建静态类 → 直接生成 runtime 调用；`await event` → wait_event；`await event timeout N` → wait_event_timeout；`waitAny` slice 解包 |
 | **Runtime** | ucontext 纤程原语；`create(stack_bytes)` 支持每协程自定义栈；**协程状态线程本地（TLS）**——每线程独立槽数组/调度上下文/事件等待表，线程退出自动清理；线程本地值槽（yield/resume）；per-协程 result 槽；入口参数槽；动态槽位（无硬上限）；**动态事件等待表（无硬上限）+ 超时过期检查**；**每协程独立返回上下文 `ret_ctx`（嵌套 resume 上下文链）**；**栈池复用（上限 128）**；就绪队列 + `__myp_coro_scheduler()`；事件等待表 + 派发通知；`destroy` 自杀防护 + wait 记录清理；`current`/`count`/`status`/`wait_any`/协作式取消 |
 | **Stdlib** | `stdlib/coro.myp`：`Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count/status/waitEventTimeout/waitAny/requestCancel/cancelRequested/clearCancel），无 FFI 声明、无内部符号暴露 |
-| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/` + `tests/coro_stack/` + `tests/coro_thread/` + `tests/coro_top/` + `tests/coro_more/` + `tests/coro_nest/` + `tests/coro_status/` + `tests/coro_timeout/` + `tests/coro_any/` + `tests/coro_cancel/`；普通 + ASAN 全套 105/105 |
+| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/` + `tests/coro_stack/` + `tests/coro_thread/` + `tests/coro_top/` + `tests/coro_more/` + `tests/coro_nest/` + `tests/coro_status/` + `tests/coro_timeout/` + `tests/coro_any/` + `tests/coro_cancel/` + `tests/coro_throw/`；普通 + ASAN 全套 106/106 |
 
 **风险**：ucontext 栈切换正确性（挂起点恢复、值槽线程本地）是核心；改动集中在协程路径，不碰正常执行路径，符合 v1.0 非破坏约束。C1-C4 全部落地，无未决设计项（见 §7）。
 
@@ -307,6 +307,7 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | 11 | 栈溢出防护 | ucontext 固定栈溢出会破坏相邻内存；当前：默认 128KB + `@coro(stack=N)` 可配置 + 极小栈（<16KB）编译警告（C8 已实现）；完整 guard-page（mmap + SIGSEGV handler）或 canary 检测为平台相关改动，暂缓评估 |
 | 12 | 取消语义 | `destroy` = 强杀（不执行 finally/清理，栈入池复用）；`requestCancel` = 协作式取消（协程在 await/yield 后检查 `cancelRequested()` 自行退出，可清理）。取 Go context/C# token 的协作式路径 ✅ C10 |
 | 13 | 嵌套调度 | 每协程独立返回上下文 `ret_ctx`：协程内可 resume 另一协程（子协程返回父协程，父返回其调用者）；替代共享 `sched_ctx`（无法表达嵌套返回链）✅ C10 |
+| 14 | 协程内异常 | 协程 trampoline 建立**异常边界**（setjmp）：协程内未捕获异常在此安全结束协程（报告到 stderr + active=0），**不崩进程**；主流程未捕获异常仍 abort。catch 跨 await 正常。`__myp_longjmp` 在 longjmp 前通知 ASan（ucontext 长跳转的已知警告在测试中过滤）✅ |
 
 ---
 
@@ -323,9 +324,9 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | C7 | 顶层 `@coro` 函数（无需类封装）+ `await` 上下文检查（仅 `@coro` 内可用）| ✅ 已完成（`tests/coro_top/`；普通方法中 `await` 报错）|
 | C8 | 栈溢出防护（诊断层）：`@coro(stack=N)` 栈 < 16KB 编译警告，防止静默内存损坏 | ✅ 已完成（极小栈警告；完整 guard-page/canary 保护待评估）|
 | C9 | 加固：动态事件等待表（修复 1024 上限静默死锁）+ `destroy` 自杀防护 + `Coro.current()`/`Coro.count()` | ✅ 已完成（`tests/coro_more/`：1100 并发等待 + 自杀 + current/count）|
-| C10 | 进阶：嵌套协程（同类互 spawn 修复 + `ret_ctx` 上下文链）+ `Coro.status()` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消 | ✅ 已完成（`tests/coro_nest/status/timeout/any/cancel`；普通 + ASAN 105/105）|
+| C10 | 进阶：嵌套协程（同类互 spawn 修复 + `ret_ctx` 上下文链）+ `Coro.status()` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消 + **协程内异常边界**（未捕获异常安全结束协程，不崩进程）| ✅ 已完成（`tests/coro_nest/status/timeout/any/cancel/throw`；普通 + ASAN 106/106）|
 
-每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（105/105）+ no-crash 回归。
+每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（106/106）+ no-crash 回归。
 
 ---
 

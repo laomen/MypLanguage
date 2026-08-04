@@ -6878,10 +6878,14 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::FunctionType::get(i32, {llvm::PointerType::get(ctx_, 0)}, false),
         llvm::Function::ExternalLinkage, "setjmp", module_.get());
 
-    // Longjmp: void longjmp(ptr, int)  (noreturn)
+    // Longjmp: void longjmp(ptr, int)  (noreturn).
+    // Use __myp_longjmp (runtime wrapper) instead of the raw system longjmp so
+    // ASan is told about the non-returning jump (__asan_handle_no_return)
+    // before it happens — otherwise ASan reports false-positive frame-mismatch
+    // / handle-no-return warnings whenever a coroutine raises an exception.
     runtime_longjmp_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {llvm::PointerType::get(ctx_, 0), i32}, false),
-        llvm::Function::ExternalLinkage, "longjmp", module_.get());
+        llvm::Function::ExternalLinkage, "__myp_longjmp", module_.get());
     runtime_longjmp_->addFnAttr(llvm::Attribute::NoReturn);
 
     // myp_throw(str) — saves the error message (longjmp is generated inline)

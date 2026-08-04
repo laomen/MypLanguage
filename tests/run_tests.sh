@@ -97,11 +97,15 @@ for test_dir in tests/*/; do
 
     # 比对 expected
     if [ -f "$expected_file" ]; then
-        # ASan prints a fixed warning for makecontext/swapcontext (ucontext
-        # coroutines) that is not part of the program output — filter it.
+        # ASan prints known warnings for ucontext coroutines that are NOT part
+        # of the program output — filter them all (makecontext/swapcontext
+        # limitation + the __asan_handle_no_return / longjmp follow-ups, which
+        # appear when a coroutine raises an exception across ucontext stacks).
         # (Use a temp file: diff on process-substitution FIFOs is unreliable.)
         tmp_filtered=$(mktemp)
-        grep -v "ASan doesn't fully support makecontext" "$output_file" > "$tmp_filtered" 2>/dev/null || true
+        grep -v -E \
+            "ASan doesn't fully support makecontext|ASan is ignoring requested __asan_handle_no_return|False positive error reports may follow|For details see https://github.com/google/sanitizers/issues/189" \
+            "$output_file" > "$tmp_filtered" 2>/dev/null || true
         if diff -q "$tmp_filtered" "$expected_file" > /dev/null 2>&1; then
             rm -f "$tmp_filtered"
             echo -e "${GREEN}PASS${NC}"

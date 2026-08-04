@@ -1,0 +1,51 @@
+// tests/coro_throw/test.myp — 协程内异常边界（C10）
+// 覆盖：协程内未捕获异常 → 安全结束协程（不崩进程），主流程继续；
+//       协程内 catch 正常；未捕获异常后主流程仍可 spawn
+//   （未捕获异常报告打印到 stderr，无缓冲即时输出；本测试全部用 writeString
+//    （不带 fflush）使 stdout 全缓冲到退出——普通与 ASAN 下都呈现
+//    "stderr 报告在前、stdout 在后"的一致顺序，expected 稳定）
+import env;
+import coro;
+
+// 协程内未捕获异常（string）
+@coro(stack=16) void boom() {
+    Console.writeString("boom before throw\n");
+    throw "coro_boom";
+    Console.writeString("boom after\n");
+}
+
+// 协程内 catch（应正常结束）
+@coro(stack=16) void catchIt() {
+    try {
+        throw "caught_ok";
+    } catch (string msg) {
+        Console.writeString("c:");
+        Console.writeString(msg);
+        Console.writeString("\n");
+    }
+    Console.writeString("catchIt done\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            long hb = boom();
+            Coro.resume(hb, 0);
+            Console.writeString("boom ended\n");
+
+            long hc = catchIt();
+            Coro.resume(hc, 0);
+            Console.writeString("catchIt ended\n");
+
+            // 未捕获异常后主流程仍可继续 spawn 协程
+            long hb2 = boom();
+            Coro.resume(hb2, 0);
+            Console.writeString("after second boom, main alive\n");
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}
