@@ -1,3 +1,7 @@
+// MYP Language runtime (compiled into generated programs).
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 MYP Language authors
+// See LICENSE for the full MIT license text.
 #define _GNU_SOURCE
 #include "mylang/runtime.h"
 

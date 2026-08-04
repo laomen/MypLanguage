@@ -173,4 +173,7 @@ MYPLanguage/
 
 ## 📝 License
 
-MIT License
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+MIT License — 宽松许可证，可自由使用/修改/商用（含 runtime 与 stdlib）。
+详见 [LICENSE](LICENSE)。

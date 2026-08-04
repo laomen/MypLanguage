@@ -1,3 +1,7 @@
+// MYP Language compiler — entry point.
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 MYP Language authors
+// See LICENSE for the full MIT license text.
 #include "mylang/CodeGen.h"
 #include "mylang/DiagnosticEngine.h"
 #include "mylang/Fmt.h"
