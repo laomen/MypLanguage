@@ -344,6 +344,7 @@ private:
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);
+    void generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action);
     void generateCoroEntry(const ClassDecl& cls, const ActionDecl& action);
     llvm::Value* generateCoroSpawn(llvm::Function* target, const CallExpr& e,
                                    llvm::Value* mthis, bool is_method);

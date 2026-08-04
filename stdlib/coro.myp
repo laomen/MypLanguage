@@ -1,6 +1,7 @@
 // coro.myp — MYP 协程（基于 ucontext 用户态纤程）
 // 语言层使用 @coro 方法 + await；用户通过静态类 Coro 调用调度/生命周期原语。
-// __myp_coro_* 是编译器内部 intrinsic（仅本文件内部使用，不对外暴露 FFI）。
+// Coro 的方法是编译器内建（built-in）：方法体为空，codegen 直接生成底层调用，
+// 因此 __myp_coro_* 完全不暴露给用户（符号未注册，调用即 undefined）。
 //
 // 用法（语言层，编译器自动生成 spawn）：
 //   class Worker {
@@ -16,35 +17,21 @@
 //   Coro.resume(h, 0);                    // 手动恢复
 //   Coro.scheduler();                     // 自动调度：所有就绪协程各一步
 
-// 协程静态类：用户可见 API（__myp_coro_* 为编译器内部 intrinsic）
+// 协程静态类：用户可见 API（方法体由编译器内建生成）
 class Coro {
     static:
         // 自动调度：处理事件后对每个就绪协程 resume 一步（C3）
-        void scheduler() {
-            __myp_coro_scheduler();
-        }
+        void scheduler() {}
         // 手动恢复协程并传入值；返回协程挂起时传出的值（结束则 0，无效 -1）
-        long resume(long handle, long val) {
-            return __myp_coro_resume(handle, val);
-        }
+        long resume(long handle, long val) {}
         // 挂起当前协程并传出值；恢复时返回传入值（等价于 await 表达式）
-        long yield(long val) {
-            return __myp_coro_yield(val);
-        }
+        long yield(long val) {}
         // 协程是否仍活跃
-        long isActive(long handle) {
-            return __myp_coro_is_active(handle);
-        }
+        long isActive(long handle) {}
         // 提前取消协程
-        void destroy(long handle) {
-            __myp_coro_destroy(handle);
-        }
+        void destroy(long handle) {}
         // 取协程返回值（@coro 方法 return 存入）
-        long result(long handle) {
-            return __myp_coro_result(handle);
-        }
+        long result(long handle) {}
         // 等待事件（等价于 await ClassName.eventName 语法）
-        long waitEvent(long eventId, long val) {
-            return __myp_coro_wait_event(eventId, val);
-        }
+        long waitEvent(long eventId, long val) {}
 }

@@ -15,7 +15,7 @@
 |---|---|
 | 运行时原语 | 完整 ucontext 用户态纤程：`__myp_coro_create` / `set_entry` / `yield` / `resume` / `is_active` / `destroy`；每线程 1024 槽、256KB 栈、`swapcontext` 调度（`runtime.c` §Coroutine）|
 | 语法 | `@coro` 注解（`has_coro` 标记，parser 已解析，作用于**类 action 方法**）+ `await` 语句/表达式（`AwaitStmt` + `AwaitExpr`，支持 `await;` / `await expr;` / `int v = await expr;` / `await ClassName.eventName`）|
-| 标准库 | `stdlib/coro.myp`：静态类 `Coro`（`scheduler`/`resume`/`yield`/`isActive`/`destroy`/`result`/`waitEvent`）；`__myp_coro_*` 为编译器内部 intrinsic（不暴露 FFI 声明）|
+| 标准库 | `stdlib/coro.myp`：静态类 `Coro`（`scheduler`/`resume`/`yield`/`isActive`/`destroy`/`result`/`waitEvent`）；`Coro` 为编译器内建静态类（codegen 直接生成底层调用），`__myp_coro_*` 符号未注册、无 FFI 暴露 |
 
 ### 1.2 现状缺口（半成品 → 已解决项）
 
@@ -28,7 +28,7 @@
 | 协程返回值 | ✅ C2：`@coro` 方法 `return` 存结果槽 + `Coro.result(h)` |
 | 自动调度 | ✅ C3：就绪队列 + `Coro.scheduler()` 每轮驱动所有就绪协程各一步 |
 | 事件集成 | ✅ C4：`await ClassName.eventName` 阻塞等待，事件 fire 后重新就绪 |
-| 用户 API 风格 | ✅ `Coro` 静态类封装（scheduler/resume/yield/isActive/destroy/result/waitEvent），`__myp_*` 仅内部 |
+| 用户 API 风格 | ✅ `Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent）；`__myp_coro_*` 符号未注册，用户调用即 undefined |
 | 无测试/示例 | ✅ `tests/coro/` + `tests/coro_auto/` + `tests/coro_event/`（C1-C4 全覆盖）|
 | 文档过时 | ✅ 本文档 + grammar/manual/design 已更新 |
 

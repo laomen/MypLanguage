@@ -660,8 +660,54 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     popScope();
 }
 
+// -- Generate a built-in Coro static method (direct runtime call) --
+// The stdlib `Coro` class declares these methods with empty bodies; codegen
+// emits the runtime call here so the __myp_coro_* intrinsics are never exposed
+// to user code (sema does not register them either).
+void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action) {
+    std::string fn = cls.name + "_" + action.name;
+    auto* func = module_->getFunction(fn);
+    if (!func) return;
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
+    builder_.SetInsertPoint(bb);
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* v = llvm::Type::getVoidTy(ctx_);
+
+    const char* rt = nullptr;
+    llvm::Type* ret = v;
+    std::vector<llvm::Type*> pts;
+    if (action.name == "scheduler") { rt = "__myp_coro_scheduler"; }
+    else if (action.name == "resume")    { rt = "__myp_coro_resume"; ret = i64; pts = {i64, i64}; }
+    else if (action.name == "yield")     { rt = "__myp_coro_yield"; ret = i64; pts = {i64}; }
+    else if (action.name == "isActive")  { rt = "__myp_coro_is_active"; ret = i64; pts = {i64}; }
+    else if (action.name == "destroy")   { rt = "__myp_coro_destroy"; pts = {i64}; }
+    else if (action.name == "result")    { rt = "__myp_coro_result"; ret = i64; pts = {i64}; }
+    else if (action.name == "waitEvent") { rt = "__myp_coro_wait_event"; ret = i64; pts = {i64, i64}; }
+    else {
+        builder_.CreateRetVoid();
+        return;
+    }
+    auto rf = module_->getOrInsertFunction(rt, llvm::FunctionType::get(ret, pts, false));
+    std::vector<llvm::Value*> args;
+    for (size_t i = 0; i < pts.size(); ++i)
+        args.push_back(func->getArg((unsigned)i));
+    if (ret->isVoidTy()) {
+        builder_.CreateCall(rf, args);
+        builder_.CreateRetVoid();
+    } else {
+        auto* r = builder_.CreateCall(rf, args);
+        builder_.CreateRet(r);
+    }
+}
+
 // -- Generate static action (no 'this' pointer) --
 void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& action) {
+    // Coro built-in static methods: body is empty in stdlib; codegen emits the
+    // runtime call directly so __myp_coro_* stays hidden from user code.
+    if (cls.name == "Coro") {
+        generateCoroBuiltin(cls, action);
+        return;
+    }
     std::string fn = cls.name + "_" + action.name;
     auto* func = module_->getFunction(fn);
     if (!func) return;
@@ -6774,35 +6820,6 @@ void CodeGen::declareRuntimeFunctions() {
     // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
-
-    // Coroutine runtime intrinsics (C1-C4) — consumed by the stdlib `Coro`
-    // static class; no FFI declarations exposed in stdlib/coro.myp.
-    {
-        auto* coro_i64 = llvm::Type::getInt64Ty(ctx_);
-        auto* coro_void = llvm::Type::getVoidTy(ctx_);
-        auto* ft_l0 = llvm::FunctionType::get(coro_i64, {}, false);
-        auto* ft_l1 = llvm::FunctionType::get(coro_i64, {coro_i64}, false);
-        auto* ft_l2 = llvm::FunctionType::get(coro_i64, {coro_i64, coro_i64}, false);
-        auto* ft_v0 = llvm::FunctionType::get(coro_void, {}, false);
-        auto* ft_v1 = llvm::FunctionType::get(coro_void, {coro_i64}, false);
-        auto* ft_v2 = llvm::FunctionType::get(coro_void, {coro_i64, coro_i64}, false);
-        auto get_coro = [&](const char* n, llvm::FunctionType* ft) {
-            return llvm::cast<llvm::Function>(
-                module_->getOrInsertFunction(n, ft).getCallee());
-        };
-        intrinsic_map_["__myp_coro_create"]        = get_coro("__myp_coro_create", ft_l0);
-        intrinsic_map_["__myp_coro_set_entry"]     = get_coro("__myp_coro_set_entry", ft_v2);
-        intrinsic_map_["__myp_coro_yield"]         = get_coro("__myp_coro_yield", ft_l1);
-        intrinsic_map_["__myp_coro_resume"]        = get_coro("__myp_coro_resume", ft_l2);
-        intrinsic_map_["__myp_coro_is_active"]     = get_coro("__myp_coro_is_active", ft_l1);
-        intrinsic_map_["__myp_coro_destroy"]       = get_coro("__myp_coro_destroy", ft_v1);
-        intrinsic_map_["__myp_coro_set_entry_arg"] = get_coro("__myp_coro_set_entry_arg", ft_v2);
-        intrinsic_map_["__myp_coro_get_entry_arg"] = get_coro("__myp_coro_get_entry_arg", ft_l1);
-        intrinsic_map_["__myp_coro_set_result"]    = get_coro("__myp_coro_set_result", ft_v1);
-        intrinsic_map_["__myp_coro_result"]        = get_coro("__myp_coro_result", ft_l1);
-        intrinsic_map_["__myp_coro_scheduler"]     = get_coro("__myp_coro_scheduler", ft_v0);
-        intrinsic_map_["__myp_coro_wait_event"]    = get_coro("__myp_coro_wait_event", ft_l2);
-    }
 
     // GPU / CUDA runtime
     auto* gpu_init_ft = llvm::FunctionType::get(i32, {}, false);
