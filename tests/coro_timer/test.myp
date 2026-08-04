@@ -1,0 +1,34 @@
+// tests/coro_timer/test.myp — 协程 + 定时器事件（C4 事件系统 × 协程）
+// 协程 await Timeline.timeout 阻塞；Timeline.startTimeout 启动定时器，
+// 到期 fire timeout 事件 → 协程恢复
+import env;
+import coro;
+import timeline;
+
+@coro(stack=16) void waiter() {
+    Console.writeString("waiter waiting\n");
+    await Timeline.timeout;
+    Console.writeString("waiter got timeout\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            long h = waiter();
+            Timeline tl;
+            tl.startTimeout(40);          // 40ms 后 fire Timeline.timeout
+            Coro.scheduler();             // 无事件：waiter 阻塞在 await
+            Console.writeString("sleep...\n");
+            tl.sleep(70);                 // 等定时器到期
+            Coro.scheduler();             // timeout 已 fire → waiter 恢复
+            Console.writeString("active=");
+            Console.write(Coro.isActive(h));
+            Console.writeString("\n");
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

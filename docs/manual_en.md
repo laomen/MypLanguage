@@ -1061,6 +1061,13 @@ class Main {
 > Thread-local concurrency (coroutines) + inter-thread parallelism (`@thread`); coroutine
 > state is cleaned up automatically when a thread exits.
 
+> **Blocking caveat**: MYP coroutines are cooperative — calling a blocking operation
+> (`Time.sleep`, blocking I/O, `Thread.join`, ...) inside a coroutine **blocks the whole
+> thread** (including the thread's other ready coroutines). To wait for time use
+> `await Timeline.timeout` (with `Timeline.startTimeout(ms)`); to wait for an external
+> condition use `await ClassName.eventName`. Genuinely blocking work (disk/network/
+> cross-thread sync) belongs on a `@thread` thread. See `coro.md` §10.
+
 > Semantics: an `@coro` method or top-level `@coro` function call compiles to a spawn
 > (`create` + arg slots + `set_entry` + first `resume`) and returns a `long` handle; `await`
 > compiles to `__myp_coro_yield(val)` (`await expr` is an expression binding the full operand;

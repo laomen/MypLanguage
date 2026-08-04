@@ -284,7 +284,7 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | **Codegen** | `@coro` 调用 → spawn（create(stack_bytes)/入口参数槽/set_entry/首启）；顶层 `@coro` 函数入口包装 `generateCoroFuncEntry`（无 this 槽）+ 预扫描解决定义顺序与同类互 spawn；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽；`Coro` 内建静态类 → 直接生成 runtime 调用；`await event` → wait_event；`await event timeout N` → wait_event_timeout；`waitAny` slice 解包 |
 | **Runtime** | ucontext 纤程原语；`create(stack_bytes)` 支持每协程自定义栈；**协程状态线程本地（TLS）**——每线程独立槽数组/调度上下文/事件等待表，线程退出自动清理；线程本地值槽（yield/resume）；per-协程 result 槽；入口参数槽；动态槽位（无硬上限）；**动态事件等待表（无硬上限）+ 超时过期检查**；**每协程独立返回上下文 `ret_ctx`（嵌套 resume 上下文链）**；**栈池复用（上限 128）**；就绪队列 + `__myp_coro_scheduler()`；事件等待表 + 派发通知；`destroy` 自杀防护 + wait 记录清理；`current`/`count`/`status`/`wait_any`/协作式取消 |
 | **Stdlib** | `stdlib/coro.myp`：`Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count/status/waitEventTimeout/waitAny/requestCancel/cancelRequested/clearCancel），无 FFI 声明、无内部符号暴露 |
-| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/` + `tests/coro_stack/` + `tests/coro_thread/` + `tests/coro_top/` + `tests/coro_more/` + `tests/coro_nest/` + `tests/coro_status/` + `tests/coro_timeout/` + `tests/coro_any/` + `tests/coro_cancel/` + `tests/coro_throw/`；普通 + ASAN 全套 106/106 |
+| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/` + `tests/coro_stack/` + `tests/coro_thread/` + `tests/coro_top/` + `tests/coro_more/` + `tests/coro_nest/` + `tests/coro_status/` + `tests/coro_timeout/` + `tests/coro_any/` + `tests/coro_cancel/` + `tests/coro_throw/` + `tests/coro_timer/`；普通 + ASAN 全套 107/107 |
 
 **风险**：ucontext 栈切换正确性（挂起点恢复、值槽线程本地）是核心；改动集中在协程路径，不碰正常执行路径，符合 v1.0 非破坏约束。C1-C4 全部落地，无未决设计项（见 §7）。
 
@@ -324,9 +324,9 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | C7 | 顶层 `@coro` 函数（无需类封装）+ `await` 上下文检查（仅 `@coro` 内可用）| ✅ 已完成（`tests/coro_top/`；普通方法中 `await` 报错）|
 | C8 | 栈溢出防护（诊断层）：`@coro(stack=N)` 栈 < 16KB 编译警告，防止静默内存损坏 | ✅ 已完成（极小栈警告；完整 guard-page/canary 保护待评估）|
 | C9 | 加固：动态事件等待表（修复 1024 上限静默死锁）+ `destroy` 自杀防护 + `Coro.current()`/`Coro.count()` | ✅ 已完成（`tests/coro_more/`：1100 并发等待 + 自杀 + current/count）|
-| C10 | 进阶：嵌套协程（同类互 spawn 修复 + `ret_ctx` 上下文链）+ `Coro.status()` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消 + **协程内异常边界**（未捕获异常安全结束协程，不崩进程）| ✅ 已完成（`tests/coro_nest/status/timeout/any/cancel/throw`；普通 + ASAN 106/106）|
+| C10 | 进阶：嵌套协程（同类互 spawn 修复 + `ret_ctx` 上下文链）+ `Coro.status()` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消 + **协程内异常边界**（未捕获异常安全结束协程，不崩进程）+ **协程 × 定时器**（`await Timeline.timeout`）| ✅ 已完成（`tests/coro_nest/status/timeout/any/cancel/throw/timer`；普通 + ASAN 107/107）|
 
-每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（106/106）+ no-crash 回归。
+每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（107/107）+ no-crash 回归。
 
 ---
 
@@ -352,3 +352,27 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 - **协程数量上限**：动态槽位（初始 64，按需翻倍扩容），**无硬上限**，受内存约束；
   槽对象（含 ucontext）独立分配、地址稳定，扩容只移动指针数组。
 - 栈大小注意：单协程运行至少需要 >64KB（MYP 方法栈帧 + ucontext），128KB 为安全默认。
+
+---
+
+## 10. 协程与阻塞操作（设计限制）
+
+MYP 协程是**协作式**（ucontext 用户态纤程）：同一线程上同时只有一个协程在运行，
+`await`/`yield` 主动让出。因此**阻塞调用会阻塞整个线程**（含同线程上所有就绪协程），
+这是协作式调度的固有语义（非 bug）：
+
+| 阻塞操作 | 在协程内的影响 | 推荐替代 |
+|---|---|---|
+| `Time.sleep(ms)` / `Timeline.sleep(ms)` | 阻塞整个线程（其他就绪协程无法推进）| `await Timeline.timeout`（定时器事件）|
+| 阻塞 I/O（读 stdin、网络、文件同步读）| 阻塞整个线程 | 事件驱动 / 异步 I/O、或移入 `@thread` 线程 |
+| `Thread.join()` / 等待线程结束 | 阻塞整个线程 | 事件通知（协程 `await` 线程完成事件）|
+| 持有锁/互斥时被切换 | 其他协程等锁可能**死锁**（无人让出）| 协程内避免跨 `await` 持锁 |
+
+关键结论：
+- **协程内不要用阻塞 sleep/IO**；需要等待时间用 `await Timeline.timeout`（配合
+  `Timeline.startTimeout(ms)`），需要等待外部条件用 `await ClassName.eventName`。
+- 协程适合 **CPU 分片 / 事件驱动**工作负载；真正的阻塞（磁盘、网络、跨线程同步）
+  应交给 `@thread` 线程（协程状态 TLS 化，可与线程并用）。
+- 协作式取消（`Coro.requestCancel`）与超时（`await event timeout N`）是协程内
+  "等待可中断"的正确手段，避免无限阻塞。
+

@@ -1408,6 +1408,12 @@ class Main {
 
 > 线程内并发（协程）+ 线程间并行（@thread）组合；线程退出时其协程状态自动清理。
 
+> **阻塞注意事项**：MYP 协程是协作式的——协程内调用阻塞操作（`Time.sleep`、阻塞 I/O、
+> `Thread.join` 等）会**阻塞整个线程**（含同线程其他就绪协程）。需要等待时间用
+> `await Timeline.timeout`（配 `Timeline.startTimeout(ms)`），等待外部条件用
+> `await ClassName.eventName`；真正的阻塞工作（磁盘/网络/跨线程同步）应交给 `@thread` 线程。
+> 详见 `coro.md` §10。
+
 > 语义说明：`@coro` 方法/顶层 `@coro` 函数调用编译为 spawn（`create` + 参数槽 + `set_entry`
 > + 首启 `resume`），返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr`
 > 是表达式，绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 代码 `return val` 存入
