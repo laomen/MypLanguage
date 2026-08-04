@@ -1,0 +1,29 @@
+// @thread 线程内异常：子线程 handler 栈独立，线程内 try/catch 捕获
+import env;
+
+class Worker {
+    action:
+        @startup void run() {
+            try {
+                __myp_throw("worker_err");
+            } catch (e) {
+                Console.writeString("thr_caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+            Console.writeString("thr_done\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker() @thread;
+            Console.writeString("main_done\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

@@ -52,4 +52,8 @@ re_obj_inner=file error: open re.txt
 re_obj_outer=file error: open re.txt
 re_finally
 re_fin_outer=re_fin
+try_expr_a=10
+try_expr_b=-1
+cm_caught=matched
+cm_finally
 done

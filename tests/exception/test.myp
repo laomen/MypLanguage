@@ -376,8 +376,35 @@ class Main {
                 Console.writeString(e);
                 Console.writeString("\n");
             }
+
+            // 28. 表达式 try（单表达式）：成功给值 / 失败给默认值
+            {
+                int a = try riskyVal(5) catch (e) -1;
+                int b = try riskyVal(-3) catch (e) -1;
+                Console.writeString("try_expr_a=");
+                Console.write(a);
+                Console.writeString("try_expr_b=");
+                Console.write(b);
+            }
+
+            // 29. catch 匹配 + finally：匹配后 finally 也执行
+            try {
+                __myp_throw("matched");
+            } catch (e) {
+                Console.writeString("cm_caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            } finally {
+                Console.writeString("cm_finally\n");
+            }
             Console.writeString("done\n");
         }
+}
+
+// 表达式 try 辅助：负数抛异常，否则返回 x*2
+int riskyVal(int x) {
+    if (x < 0) { __myp_throw("neg"); }
+    return x * 2;
 }
 
 // finally + return：return 前先执行 finally
