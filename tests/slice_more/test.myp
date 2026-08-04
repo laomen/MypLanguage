@@ -1,0 +1,55 @@
+// slice 增强测试 — 元素类型 / 赋值(浅拷贝共享 data) / 空 slice / 集合二元 int
+import env;
+
+// slice<int> 集合二元
+@op("+") slice<int> addInt(slice<int> A, slice<int> B) {
+    int n = A.size();
+    slice<int> C = new slice<int>(n);
+    int i = 0; while (i < n) { C[i] = A[i] + B[i]; i = i + 1; }
+    return C;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[slice 增强]\n");
+
+            // 1) slice<int>
+            slice<int> ai = new slice<int>(3);
+            int i = 0;
+            while (i < 3) { ai[i] = (i + 1) * 10; i = i + 1; }   // [10,20,30]
+            Console.writeString("ai = [");
+            i = 0; while (i < 3) { Console.write(ai[i]); if (i < 2) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+
+            // 2) slice 赋值是浅拷贝（共享 data）
+            slice<int> aj = ai;
+            aj[0] = 99;   // 影响 ai（同一 data 指针）
+            Console.writeString("ai[0] after aj[0]=99 = ");
+            Console.write(ai[0]);
+            Console.writeString("\n");
+
+            // 3) slice<int> 集合二元
+            slice<int> bi = new slice<int>(3);
+            i = 0; while (i < 3) { bi[i] = i; i = i + 1; }       // [0,1,2]
+            slice<int> ci = ai + bi;                             // [99,21,32]
+            Console.writeString("ai+bi = [");
+            i = 0; while (i < 3) { Console.write(ci[i]); if (i < 2) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+
+            // 4) 空 slice
+            slice<double> empty = new slice<double>(0);
+            Console.writeString("empty size = ");
+            Console.write(empty.size());
+            Console.writeString("\n");
+
+            // 5) slice<string>
+            slice<string> ss = new slice<string>(2);
+            ss[0] = "hello";
+            ss[1] = "myp";
+            Console.writeString("ss[1] = ");
+            Console.writeString(ss[1]);
+            Console.writeString("\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

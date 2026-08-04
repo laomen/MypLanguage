@@ -1,0 +1,42 @@
+// @region + 集合二元链式 — 每帧事务内做链式运算，功能验证
+import env;
+
+@op("+") slice<double> add(slice<double> A, slice<double> B) {
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = A[i] + B[i]; i = i + 1; }
+    return C;
+}
+@op("*") slice<double> mul(slice<double> A, double k) {
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = A[i] * k; i = i + 1; }
+    return C;
+}
+
+class Engine {
+    action:
+        @region void process() {
+            // 帧内临时 slice — region 出口自动回收
+            slice<double> A = new slice<double>(4);
+            slice<double> B = new slice<double>(4);
+            int i = 0;
+            while (i < 4) { A[i] = i * 1.0; B[i] = (i + 1) * 1.0; i = i + 1; }
+            slice<double> R = (A + B) * 2.0;   // 链式: (A+B) 再 *2
+            Console.writeString("R = [");
+            i = 0; while (i < 4) { Console.writeFloat(R[i]); if (i < 3) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[region 链式]\n");
+            Engine e = new Engine();
+            int frame = 0;
+            while (frame < 3) { e.process(); frame = frame + 1; }
+            Console.writeString("done\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

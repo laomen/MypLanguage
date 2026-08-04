@@ -1,0 +1,14 @@
+[slice 增强]
+ai = [10
+,20
+,30
+]
+ai[0] after aj[0]=99 = 99
+
+ai+bi = [99
+,21
+,32
+]
+empty size = 0
+
+ss[1] = myp

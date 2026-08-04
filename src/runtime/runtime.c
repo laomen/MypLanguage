@@ -1276,6 +1276,10 @@ void myp_bounds_error(int64_t idx, int64_t len) {
 // while process-level allocations (myp_alloc) survive until myp_free_all.
 static pthread_key_t myp_region_key;
 static pthread_once_t myp_region_key_once = PTHREAD_ONCE_INIT;
+// Region nesting depth (thread-local). >0 means we are inside an @region
+// function's dynamic call scope, so myp_region_alloc pushes to the region list
+// (dynamic extent — even temporaries allocated by plain callees are reclaimed).
+static __thread int myp_region_depth = 0;
 
 static void myp_free_region_list(void* ptr) {
     myp_alloc_node_t* node = (myp_alloc_node_t*)ptr;
@@ -1293,7 +1297,8 @@ static void myp_make_region_key(void) {
 
 void* myp_region_alloc(size_t size) {
     void* ptr = malloc(size);
-    if (ptr) {
+    if (!ptr) return ptr;
+    if (myp_region_depth > 0) {
         pthread_once(&myp_region_key_once, myp_make_region_key);
         myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(sizeof(myp_alloc_node_t));
         if (node) {
@@ -1301,17 +1306,23 @@ void* myp_region_alloc(size_t size) {
             node->next = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
             pthread_setspecific(myp_region_key, node);
         }
+    } else {
+        // Not inside an @region — behave exactly like the process-level allocator.
+        myp_alloc_list_push(ptr);
     }
     return ptr;
 }
 
-// Returns the current region allocation watermark (the head of the region list).
+// Enters a region scope: bumps the depth and returns the current watermark
+// (head of the region list) for the matching myp_arena_release.
 void* myp_arena_mark(void) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
+    myp_region_depth++;
     return pthread_getspecific(myp_region_key);
 }
 
-// Frees all region allocations newer than mark (those made since the mark).
+// Leaves a region scope: frees all region allocations newer than mark
+// (those made since the mark) and restores the depth.
 void myp_arena_release(void* mark) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
     myp_alloc_node_t* node = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
@@ -1322,6 +1333,7 @@ void myp_arena_release(void* mark) {
         node = next;
     }
     pthread_setspecific(myp_region_key, node);
+    if (myp_region_depth > 0) myp_region_depth--;
 }
 
 void myp_region_free_all(void) {
@@ -1331,6 +1343,7 @@ void myp_region_free_all(void) {
         myp_free_region_list(head);
         pthread_setspecific(myp_region_key, NULL);
     }
+    myp_region_depth = 0;
 }
 
 // ======================

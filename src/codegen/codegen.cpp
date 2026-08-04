@@ -5190,16 +5190,13 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
             len_val = builder_.CreateZExt(len_val, llvm::Type::getInt64Ty(ctx_));
         auto* byte_size = builder_.CreateMul(len_val,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
-        llvm::Function* alloc_fn = runtime_alloc_;
-        if (in_region_function_) {
-            alloc_fn = module_->getFunction("myp_region_alloc");
-            if (!alloc_fn) {
-                auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-                alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
-            }
-        } else if (!alloc_fn) {
+        // Always allocate via the region-aware allocator: when called inside an
+        // @region's dynamic scope it lands in the region list (reclaimed on exit),
+        // otherwise it behaves exactly like the process-level allocator.
+        llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+        if (!alloc_fn) {
             auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
         }
         auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "slice_data");
         if (es > 0)
@@ -5268,16 +5265,12 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
     uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(elem_ty);
     auto* byte_size = builder_.CreateMul(total,
         llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), elem_size));
-    llvm::Function* alloc_fn = runtime_alloc_;
-    if (in_region_function_) {
-        alloc_fn = module_->getFunction("myp_region_alloc");
-        if (!alloc_fn) {
-            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
-        }
-    } else if (!alloc_fn) {
+    // Always region-aware allocator (see generateNewExpr): dynamic extent — inside
+    // an @region's call scope it is reclaimed; otherwise acts as process-level.
+    llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+    if (!alloc_fn) {
         auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
     }
     auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "new_arr");
     if (elem_size > 0)
