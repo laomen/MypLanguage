@@ -13,4 +13,8 @@ stale_outer_caught=stale_outer_err
 cross_outer_try
 risky_enter
 cross_caught=deep_error
+obj_file=file: cfg.myp
+obj_parse=parse: 42
+obj_rethrow=parse: 7
+obj_catchall=simple_err
 done
