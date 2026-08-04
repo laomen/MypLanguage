@@ -618,6 +618,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
 
     current_function_ = func;
     current_class_name_ = cls.name;
+    current_is_coro_ = action.has_coro;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -655,6 +656,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
+    current_is_coro_ = false;
     popScope();
 }
 
@@ -666,6 +668,7 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
 
     current_function_ = func;
     current_class_name_ = cls.name;
+    current_is_coro_ = false;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -797,8 +800,8 @@ llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& 
 
     // First start
     auto resume_fn = module_->getOrInsertFunction("__myp_coro_resume",
-        llvm::FunctionType::get(i64, {i64}, false));
-    builder_.CreateCall(resume_fn, {handle});
+        llvm::FunctionType::get(i64, {i64, i64}, false));
+    builder_.CreateCall(resume_fn, {handle, idx(0)});
 
     return handle;
 }
@@ -4001,6 +4004,13 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
     }
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         emitRegionExit();   // @region: release temporaries before returning
+        // @coro method: store return value into the coroutine's result slot
+        if (current_is_coro_ && ret_val && !ret_val->getType()->isVoidTy()) {
+            auto set_result = module_->getOrInsertFunction("__myp_coro_set_result",
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                        {llvm::Type::getInt64Ty(ctx_)}, false));
+            builder_.CreateCall(set_result, {castToI64(ret_val)});
+        }
         if (ret_val)
             builder_.CreateRet(ret_val);
         else
@@ -4065,6 +4075,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::Lambda:         return generateLambda(static_cast<const LambdaExpr&>(e));
         case ExprKind::Pipe:           return generatePipe(static_cast<const PipeExpr&>(e));
         case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
+        case ExprKind::Await:          return generateAwaitExpr(static_cast<const AwaitExpr&>(e));
     }
     return nullptr;
 }
@@ -5565,16 +5576,53 @@ void CodeGen::generateContinueStmt(const ContinueStmt&) {
     builder_.CreateBr(loop_context_.back().continue_bb);
 }
 
+llvm::Value* CodeGen::castToI64(llvm::Value* v) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    if (!v) return llvm::ConstantInt::get(i64, 0);
+    if (v->getType() == i64) return v;
+    if (v->getType()->isIntegerTy())
+        return builder_.CreateIntCast(v, i64, true);
+    if (v->getType()->isFloatingPointTy())
+        return builder_.CreateBitCast(v, i64);
+    if (v->getType()->isPointerTy())
+        return builder_.CreatePtrToInt(v, i64);
+    return llvm::ConstantInt::get(i64, 0);
+}
+
 void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
-    // await expr; — yield coroutine, expr is the value to pass back
-    if (s.expr) generateExpr(*s.expr);
-    // Call __myp_coro_yield() to yield back to scheduler
+    // await expr; / await; — suspend, passing `expr` value out to the scheduler
+    // (statement form; the value passed in by resume is discarded).
+    llvm::Value* out = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+    if (s.expr) {
+        out = generateExpr(*s.expr);
+        out = castToI64(out);
+    }
     auto* yield_fn = module_->getFunction("__myp_coro_yield");
     if (!yield_fn) {
-        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
-        yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "__myp_coro_yield", module_.get());
+        auto* ft = llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx_),
+                                           {llvm::Type::getInt64Ty(ctx_)}, false);
+        yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                          "__myp_coro_yield", module_.get());
     }
-    builder_.CreateCall(yield_fn, {});
+    builder_.CreateCall(yield_fn, {out});
+}
+
+llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
+    // await expr — suspend, passing `expr` out; evaluates to the value passed
+    // in by __myp_coro_resume (e.g. `int v = await n * 2;`)
+    llvm::Value* out = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+    if (e.operand) {
+        out = generateExpr(*e.operand);
+        out = castToI64(out);
+    }
+    auto* yield_fn = module_->getFunction("__myp_coro_yield");
+    if (!yield_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx_),
+                                           {llvm::Type::getInt64Ty(ctx_)}, false);
+        yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                          "__myp_coro_yield", module_.get());
+    }
+    return builder_.CreateCall(yield_fn, {out}, "await_val");
 }
 
 llvm::Value* CodeGen::generateRange(const RangeExpr& e) {

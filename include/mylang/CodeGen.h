@@ -256,6 +256,8 @@ private:
 
     // ---- Coroutine methods: "ClassName_method" (only @coro annotated) ----
     std::unordered_set<std::string> coro_methods_;
+    // True while generating the body of an @coro method (return stores result)
+    bool current_is_coro_ = false;
 
     // ---- GPU / CUDA offload ----
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
@@ -345,6 +347,8 @@ private:
     void generateCoroEntry(const ClassDecl& cls, const ActionDecl& action);
     llvm::Value* generateCoroSpawn(llvm::Function* target, const CallExpr& e,
                                    llvm::Value* mthis, bool is_method);
+    llvm::Value* generateAwaitExpr(const AwaitExpr& e);
+    llvm::Value* castToI64(llvm::Value* v);  // normalize any value to i64 slot
     void generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_decl);
     void generateEventFire(const ClassDecl& cls, const EventDecl& ev, int event_id);
     void generateStructMethods(const StructDecl& st);

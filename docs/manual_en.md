@@ -897,9 +897,9 @@ string result = sb.toString();  // "Hello, World"
 ### `import coro` — Coroutines
 
 MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **class action method**
-+ `await;` to suspend + `__myp_coro_resume` to resume (C1 implemented).
++ `await` to suspend + `__myp_coro_resume` to resume (C1/C2 implemented).
 
-**Declaring a coroutine method** (`@coro`, may take parameters; use `await;` to suspend):
+**Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend):
 
 ```myp
 import env;     // Console
@@ -928,8 +928,36 @@ class Main {
             Worker a = new Worker();  a.setLabel("A");
             long h = a.run();               // spawn, returns handle
             Console.writeString("main\n");
-            __myp_coro_resume(h);           // resume (continue after await)
+            __myp_coro_resume(h, 0);        // resume (continue after await)
             __myp_coro_destroy(h);          // cancel early (optional)
+        }
+}
+```
+
+**C2 — value passing and return values**:
+
+```myp
+class Worker {
+    action:
+        @coro void echo(int n) {
+            int v = await n * 2;            // suspend passing out n*2; on resume v = passed-in value
+            Console.writeString("v="); Console.write(v); Console.writeString("\n");
+        }
+        @coro int compute() {
+            await;
+            return 42;                       // return stored into result slot
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker();
+            long h = w.echo(5);
+            long out = __myp_coro_resume(h, 100);   // pass 100 → v=100; out = yielded 10
+            long hc = w.compute();
+            __myp_coro_resume(hc, 0);
+            int r = __myp_coro_result(hc);          // 42
         }
 }
 ```
@@ -939,18 +967,22 @@ class Main {
 ```myp
 long h  = __myp_coro_create();                       // create (compiler-generated)
 __myp_coro_set_entry(h, fn_ptr);                     // set entry (compiler-generated)
-__myp_coro_yield();                                  // suspend current coroutine (await)
-long r  = __myp_coro_resume(h);                      // resume (-1 invalid, 0 ok)
+long v  = __myp_coro_yield(val);                     // suspend, pass val out; returns passed-in value
+long r  = __myp_coro_resume(h, val);                 // resume, pass val in; returns coroutine's yielded value
 long a  = __myp_coro_is_active(h);                   // still active (1/0)
 __myp_coro_destroy(h);                               // destroy / cancel early
 __myp_coro_set_entry_arg(idx, val);                  // entry arg slot (compiler-generated)
 long v  = __myp_coro_get_entry_arg(idx);             // read entry arg slot
+__myp_coro_set_result(val);                          // @coro return → result slot (internal)
+long r  = __myp_coro_result(h);                      // read coroutine return value
 ```
 
 > Semantics: an `@coro` method call compiles to a spawn (`create` + arg slots + `set_entry`
-> + first `resume`) and returns a `long` handle; `await;` expands to `__myp_coro_yield()`;
-> finished coroutines recycle their slot automatically and stacks are freed at process exit.
-> C2 will add value-passing `await` and an automatic scheduler.
+> + first `resume`) and returns a `long` handle; `await` compiles to `__myp_coro_yield(val)`
+> (`await expr` is an expression binding the full operand; after resume its value equals the
+> value passed in by `resume`); an `@coro` method's `return val` is stored into its per-coroutine
+> result slot, read via `__myp_coro_result(h)`. Finished coroutines recycle their slot
+> automatically and stacks are freed at process exit. C3 will add an automatic scheduler.
 
 ---
 

@@ -229,6 +229,7 @@ enum class ExprKind {
     Lambda,
     Pipe,
     Try,
+    Await,
 };
 
 struct Expr {
@@ -540,6 +541,15 @@ struct AwaitStmt : Stmt {
         : Stmt(StmtKind::AwaitStmt, r), expr(std::move(e)) {}
     AwaitStmt(SourceRange r)  // await; — simple suspend (no value passing)
         : Stmt(StmtKind::AwaitStmt, r), expr(nullptr) {}
+};
+
+// await expr — expression form (C2): suspends, passes `expr` value out to the
+// scheduler, and evaluates to the value passed in by __myp_coro_resume.
+// Used e.g. `int v = await n * 2;`
+struct AwaitExpr : Expr {
+    std::unique_ptr<Expr> operand;  // may be null → await with no value
+    AwaitExpr(std::unique_ptr<Expr> op, SourceRange r)
+        : Expr(ExprKind::Await, r), operand(std::move(op)) {}
 };
 
 struct MappingStmt : Stmt {

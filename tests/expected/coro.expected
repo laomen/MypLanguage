@@ -9,6 +9,13 @@ report n=42
  x=3.5
 
 report resumed
+echo start
+echo v=100
+
+out=10
+
+result=42
+
 active1=0
 
 D:1

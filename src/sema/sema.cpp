@@ -837,6 +837,13 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::Try:
             result = visitTryExpr(static_cast<TryExpr&>(expr));
             break;
+        case ExprKind::Await: {
+            auto& ae = static_cast<AwaitExpr&>(expr);
+            if (ae.operand) visitExpr(*ae.operand);
+            // await expr evaluates to the value passed in by resume → long
+            result = TypeInfo(TypeKind::Long);
+            break;
+        }
     }
     return result;
 }

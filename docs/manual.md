@@ -1251,10 +1251,10 @@ Future.destroy(handle);              // 销毁
 
 ### `import coro` — 协程
 
-MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await;` 挂起 +
-`__myp_coro_resume` 恢复（C1 已实现）。
+MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await` 挂起 +
+`__myp_coro_resume` 恢复（C1/C2 已实现）。
 
-**声明协程方法**（`@coro`，可带参数，方法内可用 `await;` 挂起）：
+**声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起）：
 
 ```myp
 import env;     // Console
@@ -1282,8 +1282,36 @@ class Main {
             Worker a = new Worker();  a.setLabel("A");
             long h = a.run();               // spawn，返回 handle
             Console.writeString("main\n");
-            __myp_coro_resume(h);           // 恢复执行（从 await 处继续）
+            __myp_coro_resume(h, 0);        // 恢复执行（从 await 处继续）
             __myp_coro_destroy(h);          // 提前取消（可选）
+        }
+}
+```
+
+**C2 值传递 + 返回值**：
+
+```myp
+class Worker {
+    action:
+        @coro void echo(int n) {
+            int v = await n * 2;            // 挂起传出 n*2；恢复后 v = resume 传入值
+            Console.writeString("v="); Console.write(v); Console.writeString("\n");
+        }
+        @coro int compute() {
+            await;
+            return 42;                       // return 存入结果槽
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker();
+            long h = w.echo(5);
+            long out = __myp_coro_resume(h, 100);   // 传 100 → v=100；out = 传出值 10
+            long hc = w.compute();
+            __myp_coro_resume(hc, 0);
+            int r = __myp_coro_result(hc);          // 42
         }
 }
 ```
@@ -1293,17 +1321,21 @@ class Main {
 ```myp
 long h  = __myp_coro_create();                       // 创建协程（编译器内部用）
 __myp_coro_set_entry(h, fn_ptr);                     // 设置入口（编译器内部用）
-__myp_coro_yield();                                  // 挂起当前协程（await 展开）
-long r  = __myp_coro_resume(h);                      // 恢复（-1 无效，0 成功）
+long v  = __myp_coro_yield(val);                     // 挂起并传出 val；恢复时返回传入值
+long r  = __myp_coro_resume(h, val);                 // 恢复并传入 val；返回协程传出值
 long a  = __myp_coro_is_active(h);                   // 是否仍活跃（1/0）
 __myp_coro_destroy(h);                               // 销毁（提前取消）
 __myp_coro_set_entry_arg(idx, val);                  // 入口参数槽（编译器内部用）
 long v  = __myp_coro_get_entry_arg(idx);             // 读取入口参数槽
+__myp_coro_set_result(val);                          // @coro 方法 return 存返回值（内部用）
+long r  = __myp_coro_result(h);                      // 取协程返回值
 ```
 
 > 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
-> 返回 `long` handle；`await;` 展开为 `__myp_coro_yield()`；协程自然结束自动回收槽，
-> 进程退出统一释放栈。C2 将加入 `await` 值传递与自动调度器。
+> 返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr` 是表达式，
+> 绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 方法 `return val` 存入 per-协程
+> 结果槽，`__myp_coro_result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
+> C3 将加入自动调度器。
 
 ### `import pool` — 并行计算工具
 

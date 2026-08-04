@@ -196,6 +196,9 @@ ContinueStmt     ::= 'continue' ';'
 AwaitStmt        ::= 'await' ';'                                   // 简单挂起（协程内）
                    | 'await' Expression ';'                        // 带值挂起（C2）
                    // 仅允许在 '@coro' 注解的类 action 方法内
+AwaitExpr        ::= 'await' Expression                            // 表达式（C2）
+                   // 挂起传出 Expression 值；恢复后表达式 = resume 传入值
+                   // 仅允许在 '@coro' 注解的类 action 方法内
 MappingStmt      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'  // 局部 mapping
 
 MatchStmt        ::= 'match' '(' Expression ')' '{' MatchArm+ '}'

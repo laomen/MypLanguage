@@ -1339,6 +1339,17 @@ std::unique_ptr<Expr> Parser::parseMultiplicative() {
 }
 
 std::unique_ptr<Expr> Parser::parseUnary() {
+    // await expr — coroutine suspend with value passing (expression form, C2).
+    // The operand is a FULL expression: `await n * 2` == `await (n * 2)`.
+    if (match(TokenKind::Keyword_await)) {
+        // `await;` / `await,` / `await)` — suspend with no value passed out
+        if (check(TokenKind::Semicolon) || check(TokenKind::RightParen) ||
+            check(TokenKind::Comma)) {
+            return std::make_unique<AwaitExpr>(nullptr, previous().range);
+        }
+        auto operand = parseExpr();
+        return std::make_unique<AwaitExpr>(std::move(operand), previous().range);
+    }
     if (match(TokenKind::Bang)) {
         auto operand = parseUnary();
         return std::make_unique<UnaryOpExpr>(

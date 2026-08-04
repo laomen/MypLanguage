@@ -16,9 +16,11 @@
 
 ffi long  __myp_coro_create();
 ffi void  __myp_coro_set_entry(long handle, long fn_ptr);
-ffi void  __myp_coro_yield();
-ffi long  __myp_coro_resume(long handle);
+ffi long  __myp_coro_yield(long val);              // 挂起并传出 val；恢复时返回传入值
+ffi long  __myp_coro_resume(long handle, long val); // 恢复并传入 val；返回协程传出值
 ffi long  __myp_coro_is_active(long handle);
 ffi void  __myp_coro_destroy(long handle);
 ffi void  __myp_coro_set_entry_arg(long idx, long val);
 ffi long  __myp_coro_get_entry_arg(long idx);
+ffi void  __myp_coro_set_result(long val);          // @coro 方法 return 存返回值
+ffi long  __myp_coro_result(long handle);           // 取协程返回值

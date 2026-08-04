@@ -2378,12 +2378,19 @@ typedef struct {
     char* stack;
     int active;
     void (*fn)(void); // entry function for this coroutine
+    int64_t result;   // return value slot (C2)
 } myp_coro_t;
 
 static myp_coro_t myp_coros[MYP_MAX_COROS];
 static int myp_coro_count = 0;
 static int myp_coro_current = -1;
 static ucontext_t myp_coro_sched_ctx;
+// Value passing between coroutine and scheduler (thread-local; only one
+// coroutine of a thread runs at a time):
+//   myp_coro_yield_val  — coroutine → scheduler (value passed out by await)
+//   myp_coro_resume_val — scheduler → coroutine (value passed in by resume)
+static __thread int64_t myp_coro_yield_val = 0;
+static __thread int64_t myp_coro_resume_val = 0;
 
 // Trampoline: called by makecontext with coroutine index as arg
 // Calls the coroutine's entry function, then deactivates it
@@ -2424,6 +2431,7 @@ int64_t __myp_coro_create(void) {
     c->ctx.uc_stack.ss_size = MYP_CORO_STACK_SIZE;
     makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
     c->active = 1;
+    c->result = 0;
     return idx;
 }
 
@@ -2434,19 +2442,38 @@ void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
     }
 }
 
-void __myp_coro_yield(void) {
-    if (myp_coro_current < 0) return;
+// Suspend the current coroutine, passing `val` out to the scheduler.
+// When resumed, returns the value passed in by __myp_coro_resume.
+int64_t __myp_coro_yield(int64_t val) {
+    if (myp_coro_current < 0) return 0;
+    myp_coro_yield_val = val;
     int saved = myp_coro_current;
     myp_coro_current = -1;
     swapcontext(&myp_coros[saved].ctx, &myp_coro_sched_ctx);
     myp_coro_current = saved;
+    return myp_coro_resume_val;
 }
 
-int64_t __myp_coro_resume(int64_t handle) {
+// Resume a coroutine, passing `val` in. Returns the value the coroutine
+// passed out at its await (0 if the coroutine finished without yielding).
+int64_t __myp_coro_resume(int64_t handle, int64_t val) {
     if (handle < 0 || handle >= myp_coro_count) return -1;
     if (!myp_coros[handle].active) return -1;
+    myp_coro_resume_val = val;
     myp_coro_current = handle;
     swapcontext(&myp_coro_sched_ctx, &myp_coros[handle].ctx);
+    return myp_coro_yield_val;
+}
+
+// Store the coroutine's return value into its result slot (called by the
+// @coro method's return, via codegen).
+void __myp_coro_set_result(int64_t val) {
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count)
+        myp_coros[myp_coro_current].result = val;
+}
+
+int64_t __myp_coro_result(int64_t handle) {
+    if (handle >= 0 && handle < myp_coro_count) return myp_coros[handle].result;
     return 0;
 }
 
