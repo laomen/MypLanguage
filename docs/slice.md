@@ -1,6 +1,6 @@
 # MYP 切片类型设计（Slice）
 
-> 状态：**设计提案 v0.1**（待评审后实施）
+> 状态：**设计定稿 v0.2**（评审通过，待实施）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 算子系统（`docs/operators.md` P4：元素级提升 + 集合二元）
 > 本文档提出带运行时长度的集合类型——**切片（slice）**，并配套两级 arena +
@@ -56,7 +56,7 @@ Rust `&[T]` 同款 fat pointer。**MYP 使用 arena 内存（`myp_free_all` 统�
 | 操作 | 语法 | 实现 |
 |---|---|---|
 | 创建 | `slice<double> s = new slice<double>(n);` | 分配 `n*8` + 构造 `{ptr, n}` |
-| 下标 | `s[i]` | 解包 `data` → GEP（可选边界检查） |
+| 下标 | `s[i]` | 解包 `data` → **边界检查** → GEP（越界报错） |
 | **长度** | `s.size()` / `s.length` | `extractvalue` 读 `len`（**纯 GEP，零 runtime**） |
 | 裸指针 | `s.data()` | 取 `data` 字段（FFI/GPU 用） |
 | 传参/返回 | 值传递 | 2 字段 struct，LLVM 自动处理 |
@@ -147,6 +147,8 @@ class Pipeline {
 - **实现**：codegen 在 `@region` action 入口插 `mark`，所有出口（含 return 路径）插 `release`
 
 **`@region` 统一语义**：
+- **术语**：`region` 此处指**内存管理区域**（region-based memory management，RMM），
+  非地理 / GPU / 图形区域含义
 - **适用对象**：任何有调用作用域的函数——class 的 **action**、**function**、以及**顶层函数**
   （如外部 `@op` 函数）；语义一致 = 该函数调用作用域为 region（动态 extent）
 - **单一语法**：只保留 `@region` 注解一种写法，**不提供** `region { }` 块级语法
@@ -276,8 +278,9 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 
 ### 4.3 下标边界检查
 
-- 安全（bounds check → 越界报错）vs 性能（直接 GEP）
-- 建议：默认不做（与现有 `T[]` 一致），作为后续可选开关
+- **默认做边界检查**（越界 → 运行时错误），保证安全（评审已拍板）
+- 实现：`s[i]` 前比较 `i` 与 `len`，越界报错（调用 runtime 诊断）
+- 性能敏感路径可后续加优化移除（如显式 `-O` 下证明不越界），当前一律检查
 
 ---
 
@@ -296,19 +299,19 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 
 ---
 
-## 6. 待决问题（评审清单）
+## 6. 评审决策（已拍板）
 
-1. **`new double[n]` 返回裸指针还是 slice？**（§4.1 选项 1 vs 2）
-2. **语法命名**：`slice<T>` 还是其他？（§4.2）
-3. **下标是否做边界检查？**（§4.3）
-4. **是否提供 `T[]` → `slice<T>` 转换？**（裸数组无长度，转换语义需谨慎）
-5. **`@region` 适用对象**：action / function / 顶层函数均可注解；**单一语法**
-   （不用 `region { }` 块）；嵌套栈式 LIFO？（§3.4 统一语义，推荐）
-6. **逃逸分析保守策略**："传参即逃逸"是否接受？（§3.5，保证安全但区域回收覆盖有限）
-7. **region 动态 extent**：普通函数内 `new` 归当前 region？（§3.6 ②，推荐动态）
-8. **事件传递 = 逃逸**：fire event 携带的对象提升进程级？（§3.6 ③，推荐）
-9. **与 P4 的衔接**：slice 落地后，`docs/operators.md` §5 示例改为用 `A.size()`，
-   消除"硬编码 n"（§7 难点①）
+| # | 决策点 | 结论 |
+|---|---|---|
+| 1 | `new double[n]` 返回裸指针还是 slice？ | ✅ **选项 1**：裸指针；slice 用显式 `new slice<T>(n)` |
+| 2 | 语法命名 | ✅ **`slice<T>`**（与泛型风格一致） |
+| 3 | 下标边界检查 | ✅ **做**（越界报错，默认启用） |
+| 4 | `T[]` → `slice<T>` 转换 | ✅ **不提供隐式转换**（裸数组无长度，避免语义歧义；需转换用显式构造） |
+| 5 | `@region` 适用对象 | ✅ action / function / 顶层函数；**单一语法**；嵌套**栈式 LIFO** |
+| 6 | 逃逸分析保守策略 | ✅ 接受"传参即逃逸"（100% 安全，区域回收覆盖有限） |
+| 7 | region 动态 extent | ✅ 动态（普通函数内 `new` 归当前 region） |
+| 8 | 事件传递 = 逃逸 | ✅ fire event 携带对象提升进程级 |
+| 9 | 与 P4 衔接 | ✅ slice 落地后示例用 `A.size()`，消除硬编码 n |
 
 ---
 
@@ -316,7 +319,7 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 
 | 阶段 | 内容 |
 |---|---|
-| P4a | slice 类型：Sema + `new slice<T>(n)` + `s[i]` + `s.size()` + `s.data()` |
+| P4a | slice 类型：Sema + `new slice<T>(n)` + `s[i]`（**边界检查**）+ `s.size()` + `s.data()` |
 | P4b | 两级 arena：`myp_arena_mark/release` + `@region` 注解 + 逃逸分析 |
 | P4c | `@op("+")` 集合二元示例（基于 slice），更新 `docs/operators.md` |
 | P4d | 回归测试 `tests/slice/` + 正常/ASAN 套件 + grammar.md 增量 |
