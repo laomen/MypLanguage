@@ -32,10 +32,24 @@ class Coro {
         long current() {}
         // 当前线程活跃（未结束）协程数
         long count() {}
+        // 协程状态：-1 无效, 0 未活跃/结束, 1 就绪/运行, 2 等待事件
+        long status(long handle) {}
         // 提前取消协程
         void destroy(long handle) {}
         // 取协程返回值（@coro 方法 return 存入）
         long result(long handle) {}
         // 等待事件（等价于 await ClassName.eventName 语法）
         long waitEvent(long eventId, long val) {}
+        // 等待事件带超时（毫秒）：事件到达返回 resume 传入值，超时返回 -1
+        long waitEventTimeout(long eventId, long timeoutMs, long val) {}
+        // 等待任一事件触发：返回触发的事件 id，超时返回 -1
+        // ids 为事件 id 数组（MYP 数组无长度跟踪，需显式传 count）
+        long waitAny(long[] ids, long count, long timeoutMs, long val) {}
+        // 协作式取消：请求协程在下一个 await/yield 后自行退出（可执行清理）
+        // 与 destroy（强杀、不执行清理）不同
+        void requestCancel(long handle) {}
+        // 当前协程是否被请求取消（协程内检查；返回 1/0）
+        long cancelRequested() {}
+        // 清除当前协程的取消请求（处理后调用）
+        void clearCancel() {}
 }

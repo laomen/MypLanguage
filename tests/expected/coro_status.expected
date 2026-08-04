@@ -1,0 +1,12 @@
+status invalid=-1
+
+status waiting=2
+
+status ready=1
+
+status destroyed=0
+
+fire
+status done=0
+
+done

@@ -1,0 +1,9 @@
+waitA
+waitB
+sleep...
+B woke event=-1
+
+fire b
+A woke event=1
+
+done

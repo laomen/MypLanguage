@@ -1,0 +1,62 @@
+// tests/coro_timeout/test.myp — 协程超时等待（C10）
+// 覆盖：await event timeout N 语法 + Coro.waitEventTimeout 底层 API
+//   超时（返回 -1） vs 事件到达（返回 resume 传入值）区分
+import env;
+import coro;
+import time;
+
+class Signal {
+    action:
+        void send() {
+            Console.writeString("fire\n");
+            go();
+        }
+    event:
+        go();
+}
+
+// 语言级 await timeout：30ms 超时（事件在 sleep 后 fire，超时先到）
+@coro(stack=16) void timedWaiter() {
+    long r = await Signal.go timeout 30;
+    Console.writeString("timedWaiter r=");
+    Console.write(r);
+    Console.writeString("\n");
+}
+
+// 语言级 await timeout：超时极长 → 事件到达
+@coro(stack=16) void fastWaiter() {
+    long r = await Signal.go timeout 100000;
+    Console.writeString("fastWaiter r=");
+    Console.write(r);
+    Console.writeString("\n");
+}
+
+// 底层 API：waitEventTimeout（等不存在的 event_id=9999 → 一定超时）
+@coro(stack=16) void apiWaiter() {
+    long r = Coro.waitEventTimeout(9999, 20, 7);
+    Console.writeString("apiWaiter r=");
+    Console.write(r);
+    Console.writeString("\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            long ht = timedWaiter();
+            long hf = fastWaiter();
+            long ha = apiWaiter();
+            Coro.scheduler();          // 无事件无超时
+            Console.writeString("sleep...\n");
+            Time.sleep(80);            // 30ms 与 20ms 超时均已过
+            Coro.scheduler();          // timedWaiter/apiWaiter 超时恢复
+            Signal s = new Signal();
+            s.send();                  // fire → fastWaiter 事件到达
+            Coro.scheduler();
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

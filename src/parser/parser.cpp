@@ -1009,6 +1009,13 @@ std::unique_ptr<Stmt> Parser::parseAwaitStmt() {
         return std::make_unique<AwaitStmt>(r);  // await; — simple suspend
     }
     auto expr = parseExpr();
+    // Optional timeout: `await Signal.go timeout 100;` (C10)
+    if (check(TokenKind::Identifier) && peek().value == "timeout") {
+        advance();
+        auto to = parseExpr();
+        consume(TokenKind::Semicolon, "expected ';' after await timeout");
+        return std::make_unique<AwaitStmt>(std::move(expr), std::move(to), r);
+    }
     consume(TokenKind::Semicolon, "expected ';' after await expression");
     return std::make_unique<AwaitStmt>(std::move(expr), r);
 }
@@ -1391,6 +1398,13 @@ std::unique_ptr<Expr> Parser::parseUnary() {
             return std::make_unique<AwaitExpr>(nullptr, previous().range);
         }
         auto operand = parseExpr();
+        // Optional timeout: `long r = await Signal.go timeout 100;` (C10)
+        if (check(TokenKind::Identifier) && peek().value == "timeout") {
+            advance();
+            auto to = parseExpr();
+            return std::make_unique<AwaitExpr>(std::move(operand), std::move(to),
+                                               previous().range);
+        }
         return std::make_unique<AwaitExpr>(std::move(operand), previous().range);
     }
     if (match(TokenKind::Bang)) {

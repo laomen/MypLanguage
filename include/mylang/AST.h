@@ -536,10 +536,16 @@ struct ContinueStmt : Stmt {
     ContinueStmt(SourceRange r) : Stmt(StmtKind::ContinueStmt, r) {}
 };
 
+// await expr — expression form (C2): suspends, passes `expr` value out to the
+// scheduler, and evaluates to the value passed in by __myp_coro_resume.
+// Used e.g. `int v = await n * 2;`
 struct AwaitStmt : Stmt {
     std::unique_ptr<Expr> expr;
+    std::unique_ptr<Expr> timeout;   // nullable: `await Signal.go timeout 100;` (C10)
     AwaitStmt(std::unique_ptr<Expr> e, SourceRange r)
         : Stmt(StmtKind::AwaitStmt, r), expr(std::move(e)) {}
+    AwaitStmt(std::unique_ptr<Expr> e, std::unique_ptr<Expr> to, SourceRange r)
+        : Stmt(StmtKind::AwaitStmt, r), expr(std::move(e)), timeout(std::move(to)) {}
     AwaitStmt(SourceRange r)  // await; — simple suspend (no value passing)
         : Stmt(StmtKind::AwaitStmt, r), expr(nullptr) {}
 };
@@ -549,8 +555,11 @@ struct AwaitStmt : Stmt {
 // Used e.g. `int v = await n * 2;`
 struct AwaitExpr : Expr {
     std::unique_ptr<Expr> operand;  // may be null → await with no value
+    std::unique_ptr<Expr> timeout;  // nullable: `await Signal.go timeout 100` (C10)
     AwaitExpr(std::unique_ptr<Expr> op, SourceRange r)
         : Expr(ExprKind::Await, r), operand(std::move(op)) {}
+    AwaitExpr(std::unique_ptr<Expr> op, std::unique_ptr<Expr> to, SourceRange r)
+        : Expr(ExprKind::Await, r), operand(std::move(op)), timeout(std::move(to)) {}
 };
 
 struct MappingStmt : Stmt {

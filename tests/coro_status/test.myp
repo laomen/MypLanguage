@@ -1,0 +1,47 @@
+// tests/coro_status/test.myp — Coro.status() 协程状态诊断
+// 覆盖：-1 无效 handle、0 未活跃/结束、1 就绪/运行、2 等待事件
+import env;
+import coro;
+
+class Signal {
+    action:
+        void send() {
+            Console.writeString("fire\n");
+            go();
+        }
+    event:
+        go();
+}
+
+@coro(stack=16) void waiter() { await Signal.go; }
+@coro(stack=16) void finisher() { await; }
+
+class Main {
+    action:
+        @startup void run() {
+            long hb = finisher();       // 就绪挂起 → status 1
+            long hw = waiter();         // 等待事件 → status 2
+            Console.writeString("status invalid=");
+            Console.write(Coro.status(9999));
+            Console.writeString("\nstatus waiting=");
+            Console.write(Coro.status(hw));
+            Console.writeString("\nstatus ready=");
+            Console.write(Coro.status(hb));
+            Console.writeString("\n");
+            Coro.destroy(hb);
+            Console.writeString("status destroyed=");
+            Console.write(Coro.status(hb));
+            Console.writeString("\n");
+            Signal s = new Signal();
+            s.send();
+            Coro.scheduler();
+            Console.writeString("status done=");
+            Console.write(Coro.status(hw));
+            Console.writeString("\ndone\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

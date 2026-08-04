@@ -1,0 +1,61 @@
+// tests/coro_cancel/test.myp — 协作式取消（C10）
+// 与 destroy（强杀、不执行清理）不同：requestCancel 只设置标记，
+// 协程在 await/yield 恢复后自行检查 Coro.cancelRequested() 并清理退出
+import env;
+import coro;
+
+@coro(stack=16) void worker() {
+    for (int i = 0; i < 100; i++) {
+        if (Coro.cancelRequested() == 1) {
+            Console.writeString("worker cancelled, cleaning up\n");
+            return;
+        }
+        Console.writeString("step ");
+        Console.write(i);
+        Console.writeString("\n");
+        await;
+    }
+    Console.writeString("worker finished naturally\n");
+}
+
+// 协作式取消请求可在处理后清除并继续（不强制退出）
+@coro(stack=16) void resumable() {
+    Coro.yield(0);                        // 外部 requestCancel 后恢复
+    Console.writeString("resumable sees cancel=");
+    Console.write(Coro.cancelRequested());
+    Console.writeString("\n");
+    Coro.clearCancel();
+    Console.writeString("resumable cleared, continues\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // 1) 协作式取消：协程检查标记后清理退出
+            long h = worker();
+            Coro.resume(h, 0);            // step 0
+            Coro.resume(h, 0);            // step 1
+            Coro.requestCancel(h);
+            Coro.resume(h, 0);            // 协程发现取消 → 清理退出
+            Console.writeString("active=");
+            Console.write(Coro.isActive(h));
+            Console.writeString("\n");
+            Coro.destroy(h);
+
+            // 2) 取消请求可清除（不强制退出）
+            long hr = resumable();
+            Coro.requestCancel(hr);
+            Coro.resume(hr, 0);
+            Coro.resume(hr, 0);           // 看到 cancel=1 → 清除 → 继续
+            Console.writeString("resumable active=");
+            Console.write(Coro.isActive(hr));
+            Console.writeString("\n");
+
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

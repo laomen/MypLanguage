@@ -1,0 +1,15 @@
+step 0
+
+step 1
+
+step 2
+
+worker cancelled, cleaning up
+active=0
+
+resumable sees cancel=1
+
+resumable cleared, continues
+resumable active=0
+
+done

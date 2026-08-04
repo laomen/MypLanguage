@@ -1,0 +1,60 @@
+// tests/coro_any/test.myp — 多事件等待 Coro.waitAny（C10）
+// 覆盖：等待多个事件任一触发（返回触发的事件 id）+ 超时（返回 -1）
+//   注：MYP 数组跨函数传参无长度跟踪，waitAny 需显式传 count
+import env;
+import coro;
+import time;
+
+class Signal {
+    action:
+        void sendA() { Console.writeString("fire a\n"); a(); }
+        void sendB() { Console.writeString("fire b\n"); b(); }
+    event:
+        a();
+        b();
+}
+
+// 事件到达路径：fire b → 返回事件 id 1
+@coro(stack=16) void anyWaiterA() {
+    long[] ids = new long[2];
+    ids[0] = 0;
+    ids[1] = 1;
+    Console.writeString("waitA\n");
+    long r = Coro.waitAny(ids, 2, 100000, 0);
+    Console.writeString("A woke event=");
+    Console.write(r);
+    Console.writeString("\n");
+}
+
+// 超时路径：30ms 超时 → 返回 -1
+@coro(stack=16) void anyWaiterB() {
+    long[] ids = new long[2];
+    ids[0] = 0;
+    ids[1] = 1;
+    Console.writeString("waitB\n");
+    long r = Coro.waitAny(ids, 2, 30, 0);
+    Console.writeString("B woke event=");
+    Console.write(r);
+    Console.writeString("\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            long ha = anyWaiterA();
+            long hb = anyWaiterB();
+            Coro.scheduler();
+            Console.writeString("sleep...\n");
+            Time.sleep(60);          // B 的 30ms 超时已过
+            Coro.scheduler();        // B 超时恢复（-1）
+            Signal s = new Signal();
+            s.sendB();               // fire b → A 事件到达
+            Coro.scheduler();        // A 恢复（event=1）
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

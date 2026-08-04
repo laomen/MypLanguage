@@ -565,6 +565,11 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             }
             auto& as = static_cast<AwaitStmt&>(stmt);
             if (as.expr) visitExpr(*as.expr);
+            if (as.timeout) {
+                TypeInfo tt = visitExpr(*as.timeout);
+                if (!expectNumeric(tt, as.timeout->range))
+                    error(as.timeout->range, "await timeout must be numeric (ms)");
+            }
             return {};
         }
         case StmtKind::MappingStmt: {
@@ -875,6 +880,11 @@ TypeInfo Sema::visitExpr(Expr& expr) {
                     }
                 }
                 if (!is_event_ref) visitExpr(*ae.operand);
+            }
+            if (ae.timeout) {
+                TypeInfo tt = visitExpr(*ae.timeout);
+                if (!expectNumeric(tt, ae.timeout->range))
+                    error(ae.timeout->range, "await timeout must be numeric (ms)");
             }
             // await expr evaluates to the value passed in by resume → long
             result = TypeInfo(TypeKind::Long);

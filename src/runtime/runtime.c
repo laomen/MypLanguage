@@ -2398,9 +2398,14 @@ void myp_future_destroy(int32_t handle) {
 
 typedef struct {
     ucontext_t ctx;
+    ucontext_t ret_ctx;   // caller context (who resumed/created this coroutine)
     char* stack;
+    size_t stack_size;    // bytes allocated for this coroutine's stack
     int active;
     int ready;      // in the ready queue (C3 scheduler); 0 while blocked on an event (C4)
+    int wait_timeout; // set when an event-wait with a deadline expires (C10)
+    int64_t last_wait_event_id; // event id that woke us (C10 waitAny)
+    int cancel_requested; // cooperative-cancel flag (C10)
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
 } myp_coro_t;
@@ -2418,13 +2423,19 @@ static __thread myp_coro_t** myp_coros = NULL;
 static __thread int myp_coro_count = 0;      // number of slots in use (includes inactive/reused)
 static __thread int myp_coro_capacity = 0;
 static __thread int myp_coro_current = -1;
-static __thread ucontext_t myp_coro_sched_ctx;
 // Value passing between coroutine and scheduler (thread-local; only one
 // coroutine of a thread runs at a time):
 //   myp_coro_yield_val  — coroutine → scheduler (value passed out by await)
 //   myp_coro_resume_val — scheduler → coroutine (value passed in by resume)
 static __thread int64_t myp_coro_yield_val = 0;
 static __thread int64_t myp_coro_resume_val = 0;
+
+// Each coroutine keeps its OWN return context (ret_ctx): whoever resumes/creates
+// it saves their context there before switching in, and the coroutine switches
+// back to it on yield or completion (via uc_link). This makes NESTED resume
+// correct — a coroutine that resumes another coroutine is that child's caller,
+// and the child returns to it, while the parent in turn returns to its own
+// caller. A single shared scheduler context cannot express this chain.
 
 // Grow the pointer array (at least doubling). Returns 0 on success.
 static int myp_coro_grow(void) {
@@ -2438,6 +2449,62 @@ static int myp_coro_grow(void) {
     myp_coros = np;
     myp_coro_capacity = new_cap;
     return 0;
+}
+
+// ---- Stack pool (per-thread) ----
+// Reuse freed coroutine stacks to avoid repeated malloc/free on spawn/destroy
+// churn. Stacks come in different sizes (@coro(stack=N)); we keep the size with
+// each slot and hand out the best match. The pool is bounded so it can never
+// grow unboundedly in long-running programs.
+#define MYP_CORO_STACK_POOL_MAX 128
+typedef struct {
+    char* ptr;
+    size_t size;
+} myp_coro_stack_slot_t;
+static __thread myp_coro_stack_slot_t* myp_coro_stack_pool = NULL;
+static __thread int myp_coro_stack_pool_count = 0;
+static __thread int myp_coro_stack_pool_capacity = 0;
+
+// Add a stack to the pool (free it if the pool is full or allocation fails).
+static void myp_coro_stack_pool_add(char* ptr, size_t size) {
+    if (!ptr) return;
+    if (myp_coro_stack_pool_count >= MYP_CORO_STACK_POOL_MAX) { free(ptr); return; }
+    if (myp_coro_stack_pool_count >= myp_coro_stack_pool_capacity) {
+        int nc = myp_coro_stack_pool_capacity ? myp_coro_stack_pool_capacity * 2 : 16;
+        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(
+            myp_coro_stack_pool, (size_t)nc * sizeof(myp_coro_stack_slot_t));
+        if (!np) { free(ptr); return; }
+        myp_coro_stack_pool = np;
+        myp_coro_stack_pool_capacity = nc;
+    }
+    myp_coro_stack_pool[myp_coro_stack_pool_count].ptr = ptr;
+    myp_coro_stack_pool[myp_coro_stack_pool_count].size = size;
+    myp_coro_stack_pool_count++;
+}
+
+// Take a stack of the requested size from the pool: exact size match preferred,
+// otherwise the smallest slot large enough. Returns NULL if none fits.
+static char* myp_coro_stack_pool_take(size_t want) {
+    int best = -1;
+    for (int i = 0; i < myp_coro_stack_pool_count; i++) {
+        if (myp_coro_stack_pool[i].size == want) { best = i; break; }
+        if (myp_coro_stack_pool[i].size >= want &&
+            (best < 0 || myp_coro_stack_pool[i].size < myp_coro_stack_pool[best].size))
+            best = i;
+    }
+    if (best < 0) return NULL;
+    char* p = myp_coro_stack_pool[best].ptr;
+    myp_coro_stack_pool[best] = myp_coro_stack_pool[--myp_coro_stack_pool_count];
+    return p;
+}
+
+static void myp_coro_stack_pool_free_all(void) {
+    for (int i = 0; i < myp_coro_stack_pool_count; i++)
+        free(myp_coro_stack_pool[i].ptr);
+    free(myp_coro_stack_pool);
+    myp_coro_stack_pool = NULL;
+    myp_coro_stack_pool_count = 0;
+    myp_coro_stack_pool_capacity = 0;
 }
 
 // Trampoline: called by makecontext with coroutine index as arg
@@ -2455,12 +2522,13 @@ static void __myp_coro_trampoline(int id) {
 int64_t __myp_coro_create(int64_t stack_bytes) {
     // stack_bytes: requested stack size in bytes (<=0 → default MYP_CORO_STACK_SIZE).
     size_t stack_size = (stack_bytes > 0) ? (size_t)stack_bytes : (size_t)MYP_CORO_STACK_SIZE;
-    // Reuse a finished coroutine slot first (its stack is freed here, not in
-    // the trampoline, because the trampoline still runs on its own stack).
+    // Reuse a finished coroutine slot first (its stack is returned to the
+    // pool here, not in the trampoline, because the trampoline still runs on
+    // its own stack).
     int idx = -1;
     for (int i = 0; i < myp_coro_count; i++) {
         if (myp_coros[i] && !myp_coros[i]->active && myp_coros[i]->stack) {
-            free(myp_coros[i]->stack);
+            myp_coro_stack_pool_add(myp_coros[i]->stack, myp_coros[i]->stack_size);
             myp_coros[i]->stack = NULL;
             idx = i;
             break;
@@ -2477,16 +2545,20 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
         myp_coros[idx] = nc;
     }
     myp_coro_t* c = myp_coros[idx];
-    c->stack = (char*)malloc(stack_size);
+    c->stack = myp_coro_stack_pool_take(stack_size);   // reuse a pooled stack if possible
+    if (!c->stack) c->stack = (char*)malloc(stack_size);
     if (!c->stack) return -1;
-    if (getcontext(&c->ctx) == -1) { free(c->stack); return -1; }
-    c->ctx.uc_link = &myp_coro_sched_ctx;
+    c->stack_size = stack_size;
+    if (getcontext(&c->ctx) == -1) { myp_coro_stack_pool_add(c->stack, stack_size); c->stack = NULL; return -1; }
+    c->ctx.uc_link = &c->ret_ctx;   // on completion, return to the caller
     c->ctx.uc_stack.ss_sp = c->stack;
     c->ctx.uc_stack.ss_size = stack_size;
     makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
     c->active = 1;
     c->ready = 1;
     c->result = 0;
+    c->wait_timeout = 0;
+    c->cancel_requested = 0;
     return idx;
 }
 
@@ -2497,26 +2569,32 @@ void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
     }
 }
 
-// Suspend the current coroutine, passing `val` out to the scheduler.
-// When resumed, returns the value passed in by __myp_coro_resume.
+// Suspend the current coroutine, passing `val` out to the caller (the scheduler
+// or a parent coroutine that resumed us). When resumed, returns the value
+// passed in by __myp_coro_resume.
 int64_t __myp_coro_yield(int64_t val) {
     if (myp_coro_current < 0) return 0;
     myp_coro_yield_val = val;
     int saved = myp_coro_current;
     myp_coro_current = -1;
-    swapcontext(&myp_coros[saved]->ctx, &myp_coro_sched_ctx);
+    // Save our suspend point into our own ctx, then switch back to the caller.
+    swapcontext(&myp_coros[saved]->ctx, &myp_coros[saved]->ret_ctx);
     myp_coro_current = saved;
     return myp_coro_resume_val;
 }
 
 // Resume a coroutine, passing `val` in. Returns the value the coroutine
 // passed out at its await (0 if the coroutine finished without yielding).
+// The caller's context is saved into the callee's ret_ctx, enabling nested
+// resume (a coroutine resuming another coroutine).
 int64_t __myp_coro_resume(int64_t handle, int64_t val) {
     if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return -1;
     if (!myp_coros[handle]->active) return -1;
     myp_coro_resume_val = val;
+    int saved = myp_coro_current;
     myp_coro_current = handle;
-    swapcontext(&myp_coro_sched_ctx, &myp_coros[handle]->ctx);
+    swapcontext(&myp_coros[handle]->ret_ctx, &myp_coros[handle]->ctx);
+    myp_coro_current = saved;
     return myp_coro_yield_val;
 }
 
@@ -2539,6 +2617,30 @@ int64_t __myp_coro_is_active(int64_t handle) {
     return myp_coros[handle]->active ? 1 : 0;
 }
 
+// ---- Cooperative cancellation (C10) ----
+// Unlike destroy (which forcibly frees the stack), these only set/read a flag
+// so a coroutine can shut itself down at a safe point (after an await/yield)
+// and run cleanup.
+void __myp_coro_request_cancel(int64_t handle) {
+    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle])
+        myp_coros[handle]->cancel_requested = 1;
+}
+
+// 1 if the CURRENT coroutine has a pending cancel request, else 0.
+int64_t __myp_coro_cancel_requested(void) {
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current])
+        return myp_coros[myp_coro_current]->cancel_requested ? 1 : 0;
+    return 0;
+}
+
+// Clear the current coroutine's cancel request (after handling it).
+void __myp_coro_cancel_clear(void) {
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current])
+        myp_coros[myp_coro_current]->cancel_requested = 0;
+}
+
 // ---- C4: event waiters (type + state declared here so __myp_coro_destroy can
 // drop a destroyed coroutine's pending wait records) ----
 // A coroutine that awaits an event is removed from the ready queue and parked
@@ -2550,6 +2652,8 @@ typedef struct {
     int event_id;
     int64_t handle;
     int active;
+    int64_t deadline_ms;  // absolute deadline for timed waits (0 = none)
+    int expired;          // 1 if this record was cleared by a timeout
 } myp_coro_wait_t;
 static __thread myp_coro_wait_t* myp_coro_waits = NULL;
 static __thread int myp_coro_wait_count = 0;
@@ -2589,8 +2693,9 @@ void __myp_coro_destroy(int64_t handle) {
             if (myp_coro_waits[i].active && myp_coro_waits[i].handle == handle)
                 myp_coro_waits[i].active = 0;
         }
-        free(myp_coros[handle]->stack);
+        myp_coro_stack_pool_add(myp_coros[handle]->stack, myp_coros[handle]->stack_size);
         myp_coros[handle]->stack = NULL;
+        myp_coros[handle]->stack_size = 0;
     }
 }
 
@@ -2607,6 +2712,15 @@ int64_t __myp_coro_count(void) {
     return n;
 }
 
+// Coroutine status: -1 invalid handle, 0 inactive/finished, 1 ready/running,
+// 2 blocked (waiting on an event).
+int64_t __myp_coro_status(int64_t handle) {
+    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return -1;
+    myp_coro_t* c = myp_coros[handle];
+    if (!c->active) return 0;
+    return c->ready ? 1 : 2;
+}
+
 // ---- C3: automatic scheduler (ready queue) ----
 // Runs each ready coroutine exactly one step (until it yields or finishes).
 // Coroutines that yield with a plain `await` stay ready, so each call to the
@@ -2616,6 +2730,21 @@ void __myp_coro_scheduler(void) {
     // Process pending events first so event-waiting coroutines (C4) that were
     // re-readied by __myp_coro_event_notify become runnable this round.
     myp_event_process_all();
+    // Expire event-waits whose deadline has passed (C10: waitEventTimeout).
+    // The waiter is re-readied and its wait_timeout flag set so it can tell
+    // "timeout" apart from "event arrived" when it resumes.
+    int64_t now = myp_now_ms();
+    for (int i = 0; i < myp_coro_wait_count; i++) {
+        myp_coro_wait_t* w = &myp_coro_waits[i];
+        if (w->active && w->deadline_ms > 0 && now >= w->deadline_ms) {
+            w->active = 0;
+            int64_t h = w->handle;
+            if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active) {
+                myp_coros[h]->wait_timeout = 1;
+                myp_coros[h]->ready = 1;
+            }
+        }
+    }
     if (myp_coro_count == 0) return;
     // Snapshot the ready set first — a coroutine may yield (stay ready) while
     // we are running; we must not re-enter it in the same round.
@@ -2637,22 +2766,77 @@ void __myp_coro_scheduler(void) {
 
 // ---- C4: event waiters (type/state/reserve declared above, before destroy) ----
 
-// Called inside a coroutine: block until `event_id` is fired. Returns 0.
-int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
+// Block until `event_id` is fired, or `timeout_ms` elapses (0 = no timeout).
+// Returns the value passed in by the resume that woke us (event arrived), or
+// -1 if the wait timed out. The scheduler drives timeout expiry; without the
+// scheduler being called, a timed wait behaves like an untimed one.
+int64_t __myp_coro_wait_event_timeout(int64_t event_id, int64_t timeout_ms, int64_t val) {
+    int64_t deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
     if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
         myp_coros[myp_coro_current]) {
         if (myp_coro_wait_reserve() == 0) {
             myp_coro_waits[myp_coro_wait_count].event_id = (int)event_id;
             myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
             myp_coro_waits[myp_coro_wait_count].active = 1;
+            myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
+            myp_coro_waits[myp_coro_wait_count].expired = 0;
             myp_coro_wait_count++;
             myp_coros[myp_coro_current]->ready = 0;  // blocked, not ready
         }
         // On allocation failure: leave the coroutine READY (do not park it)
         // so it can never be silently lost / deadlocked.
     }
-    // Suspend; when the event arrives we are re-readied and resumed.
-    return __myp_coro_yield(val);
+    myp_coro_t* c = (myp_coro_current >= 0 && myp_coro_current < myp_coro_count)
+        ? myp_coros[myp_coro_current] : NULL;
+    if (c) c->wait_timeout = 0;
+    // Suspend; when the event arrives (or we time out) we are re-readied.
+    int64_t r = __myp_coro_yield(val);
+    if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }
+    return r;
+}
+
+// Block until `event_id` is fired (no timeout). Returns the resume-passed value.
+int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
+    return __myp_coro_wait_event_timeout(event_id, 0, val);
+}
+
+// Block until ANY of the given event ids fires (or `timeout_ms` elapses).
+// Returns the event id that woke us, or -1 on timeout.
+int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t timeout_ms,
+                            int64_t val) {
+    int64_t deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current] && ids && count > 0) {
+        for (int64_t i = 0; i < count; i++) {
+            if (myp_coro_wait_reserve() == 0) {
+                myp_coro_waits[myp_coro_wait_count].event_id = (int)ids[i];
+                myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
+                myp_coro_waits[myp_coro_wait_count].active = 1;
+                myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
+                myp_coro_waits[myp_coro_wait_count].expired = 0;
+                myp_coro_wait_count++;
+            }
+        }
+        myp_coros[myp_coro_current]->ready = 0;
+        myp_coros[myp_coro_current]->last_wait_event_id = -1;
+    }
+    myp_coro_t* c = (myp_coro_current >= 0 && myp_coro_current < myp_coro_count)
+        ? myp_coros[myp_coro_current] : NULL;
+    if (c) c->wait_timeout = 0;
+    int64_t r = __myp_coro_yield(val);
+    // Clear any remaining wait records for this coroutine — only one event may
+    // wake a waitAny (later fires of other listed events must not re-ready it).
+    if (c) {
+        for (int i = 0; i < myp_coro_wait_count; i++) {
+            if (myp_coro_waits[i].active &&
+                myp_coro_waits[i].handle == myp_coro_current)
+                myp_coro_waits[i].active = 0;
+        }
+    }
+    if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }
+    return (c && c->last_wait_event_id >= 0) ? c->last_wait_event_id : r;
 }
 
 // Re-ready (and resume if currently dispatching) waiters for an event.
@@ -2661,8 +2845,10 @@ static void __myp_coro_event_notify(int event_id) {
         if (myp_coro_waits[i].active && myp_coro_waits[i].event_id == event_id) {
             int64_t h = myp_coro_waits[i].handle;
             myp_coro_waits[i].active = 0;
-            if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active)
+            if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active) {
+                myp_coros[h]->last_wait_event_id = event_id;  // for waitAny
                 myp_coros[h]->ready = 1;
+            }
         }
     }
 }
@@ -2687,6 +2873,7 @@ static void __myp_coro_cleanup_all(void) {
     myp_coro_waits = NULL;
     myp_coro_wait_count = 0;
     myp_coro_wait_capacity = 0;
+    myp_coro_stack_pool_free_all();
 }
 
 // Release the current thread's coroutine state (called when a @thread thread

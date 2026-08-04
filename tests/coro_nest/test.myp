@@ -1,0 +1,49 @@
+// tests/coro_nest/test.myp — 嵌套协程：@coro 协程内 spawn/驱动子协程
+// 覆盖：
+//   1. 同类 @coro 方法相互 spawn（codegen 预扫描 coro_methods_）
+//   2. 协程内 resume 子协程（嵌套调度，每协程独立返回上下文）
+//   3. 父协程驱动子协程后自己仍能正常 await
+import env;
+import coro;
+
+class Worker {
+    action:
+        @coro void child(string tag) {
+            Console.writeString(tag); Console.writeString(" child:1\n");
+            await;
+            Console.writeString(tag); Console.writeString(" child:2\n");
+            await;
+            Console.writeString(tag); Console.writeString(" child:3\n");
+        }
+        // 父协程：spawn 子协程并手动驱动；之后自己仍能正常 await
+        @coro void parent() {
+            Console.writeString("parent start\n");
+            Worker w = new Worker();
+            long h = w.child("C");
+            Coro.resume(h, 0);   // child:1
+            Coro.resume(h, 0);   // child:2
+            Coro.resume(h, 0);   // child:3
+            Console.writeString("parent mid\n");
+            await;               // 父协程自己挂起
+            Console.writeString("parent end\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker p = new Worker();
+            long h = p.parent();     // spawn → 父协程内部驱动完子协程 → parent mid → await
+            Console.writeString("after spawn\n");
+            Coro.resume(h, 0);       // parent end
+            Console.writeString("active=");
+            Console.write(Coro.isActive(h));
+            Console.writeString("\n");
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

@@ -1,0 +1,10 @@
+parent start
+C child:1
+C child:2
+C child:3
+parent mid
+after spawn
+parent end
+active=0
+
+done

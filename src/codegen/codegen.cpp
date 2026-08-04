@@ -447,6 +447,21 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             coro_stack_map_[f.name] = f.coro_stack_kb;
         }
     }
+    // Pre-scan class @coro methods BEFORE generating any body: a coroutine may
+    // spawn another @coro method of the same class, and coro_methods_ must be
+    // populated before that body is emitted (otherwise the call falls through
+    // to a plain call and the void→long assignment crashes codegen). The
+    // entry wrapper is created here too so spawn sites in any order resolve it.
+    for (auto& cls : tu.classes) {
+        for (auto& a : cls.actions) {
+            if (a.has_coro) {
+                std::string key = cls.name + "_" + a.name;
+                coro_methods_.insert(key);
+                coro_stack_map_[key] = a.coro_stack_kb;
+                generateCoroEntry(cls, a);
+            }
+        }
+    }
 
     // Generate function bodies
     for (auto& f : tu.functions) generateFuncDecl(f);
@@ -684,6 +699,22 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* v = llvm::Type::getVoidTy(ctx_);
 
+    // Coro.waitAny(long[] ids, long count, long timeoutMs, long val) → long
+    // ids is an unsized-array parameter (a bare pointer; MYP arrays carry no
+    // length across calls), so the caller passes the element count explicitly.
+    if (action.name == "waitAny") {
+        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+        auto wfn = module_->getOrInsertFunction("__myp_coro_wait_any",
+            llvm::FunctionType::get(i64, {ptr_ty, i64, i64, i64}, false));
+        auto* ids = func->getArg(0);
+        auto* cnt = castToI64(func->getArg(1));
+        auto* tms = castToI64(func->getArg(2));
+        auto* aval = castToI64(func->getArg(3));
+        auto* r = builder_.CreateCall(wfn, {ids, cnt, tms, aval});
+        builder_.CreateRet(r);
+        return;
+    }
+
     const char* rt = nullptr;
     llvm::Type* ret = v;
     std::vector<llvm::Type*> pts;
@@ -693,9 +724,14 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
     else if (action.name == "isActive")  { rt = "__myp_coro_is_active"; ret = i64; pts = {i64}; }
     else if (action.name == "current")   { rt = "__myp_coro_current_handle"; ret = i64; }
     else if (action.name == "count")    { rt = "__myp_coro_count"; ret = i64; }
+    else if (action.name == "status")   { rt = "__myp_coro_status"; ret = i64; pts = {i64}; }
     else if (action.name == "destroy")   { rt = "__myp_coro_destroy"; pts = {i64}; }
     else if (action.name == "result")    { rt = "__myp_coro_result"; ret = i64; pts = {i64}; }
     else if (action.name == "waitEvent") { rt = "__myp_coro_wait_event"; ret = i64; pts = {i64, i64}; }
+    else if (action.name == "waitEventTimeout") { rt = "__myp_coro_wait_event_timeout"; ret = i64; pts = {i64, i64, i64}; }
+    else if (action.name == "requestCancel") { rt = "__myp_coro_request_cancel"; pts = {i64}; }
+    else if (action.name == "cancelRequested") { rt = "__myp_coro_cancel_requested"; ret = i64; }
+    else if (action.name == "clearCancel") { rt = "__myp_coro_cancel_clear"; }
     else {
         builder_.CreateRetVoid();
         return;
@@ -777,6 +813,7 @@ void CodeGen::generateCoroEntry(const ClassDecl& cls, const ActionDecl& action) 
     if (!target) return;
 
     std::string entry_fn = "__myp_coro_entry_" + cls.name + "_" + action.name;
+    if (module_->getFunction(entry_fn)) return;  // already created (pre-scan)
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
     auto* func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, entry_fn, module_.get());
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -5805,11 +5842,20 @@ void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
             }
         stmt_ev_found:
             if (is_event) {
-                auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
-                    llvm::FunctionType::get(i64, {i64, i64}, false));
-                builder_.CreateCall(wait_fn,
-                    {llvm::ConstantInt::get(i64, event_id),
-                     llvm::ConstantInt::get(i64, 0)});
+                if (s.timeout) {
+                    // await Signal.go timeout N; → wait_event_timeout(id, N, 0)
+                    auto wt = module_->getOrInsertFunction("__myp_coro_wait_event_timeout",
+                        llvm::FunctionType::get(i64, {i64, i64, i64}, false));
+                    auto* tms = castToI64(generateExpr(*s.timeout));
+                    builder_.CreateCall(wt, {llvm::ConstantInt::get(i64, event_id),
+                                             tms, llvm::ConstantInt::get(i64, 0)});
+                } else {
+                    auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
+                        llvm::FunctionType::get(i64, {i64, i64}, false));
+                    builder_.CreateCall(wait_fn,
+                        {llvm::ConstantInt::get(i64, event_id),
+                         llvm::ConstantInt::get(i64, 0)});
+                }
                 return;
             }
         }
@@ -5857,6 +5903,15 @@ llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
             }
         event_found:
             if (is_event) {
+                if (e.timeout) {
+                    // await Signal.go timeout N → wait_event_timeout(id, N, 0)
+                    auto wt = module_->getOrInsertFunction("__myp_coro_wait_event_timeout",
+                        llvm::FunctionType::get(i64, {i64, i64, i64}, false));
+                    auto* tms = castToI64(generateExpr(*e.timeout));
+                    return builder_.CreateCall(wt,
+                        {llvm::ConstantInt::get(i64, event_id), tms,
+                         llvm::ConstantInt::get(i64, 0)}, "await_event");
+                }
                 // __myp_coro_wait_event(event_id, 0)
                 auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
                     llvm::FunctionType::get(i64, {i64, i64}, false));
