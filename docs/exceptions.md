@@ -241,7 +241,7 @@ var v = try {
 | 2 | `catch (e)` 变量类型 | string（消息） | ✅ 已实现 |
 | 3 | 表达式 try | 单表达式 + 块式都要 | ✅ 单表达式已实现（PHI 合并）|
 | 4 | throw 关键字 | 新增 `throw` | ✅ 已实现（保留 `__myp_throw`）|
-| 5 | 未处理行为 | abort + 明确消息 | ✅ 已实现 |
+| 5 | 未处理行为 | abort + 明确消息 | ✅ 已实现（`myp_exception_get_jmpbuf` 空栈时打印 `uncaught exception: <msg>`（string）或 `uncaught exception (object, type N)`（对象）后 `abort()`，而非静默段错误）|
 | 6 | 异常对象生命周期 | 进程级 arena | ✅ 已实现 |
 | 7 | 与 @region 交互 | 异常对象进程级（不随 region 释放）| ✅ 已实现 |
 | 8 | finally + 传播 | 传播路径上也执行 finally（flag 标记源）+ finally 后 rethrow；`return`/`break`/`continue` 也先执行 finally（mode 标记）| ✅ 已实现（`finally_flag` mode：0=正常 1=传播 2=return 3=break 4=continue；嵌套 finally 链转发 mode，最外层才真正退出）|
@@ -260,6 +260,7 @@ var v = try {
 | E4.6 | `catch (Error e)` 接口匹配（匹配任意实现 `Error` 的类，`e.message()` 接口分发）| ✅ |
 | E4.7 | `finally` 覆盖 `return`/`break`/`continue`（mode 标记 + 嵌套 finally 链转发；顺带修复 `for` 的 `break`/`continue`）| ✅ |
 | E4.8 | `throw;` 显式重抛当前异常（仅 catch 内；保留消息/类型；带 finally 时先跑 finally）| ✅ |
+| E4.9 | 未处理异常：打印明确消息（string/对象）后 abort（替代静默段错误）| ✅ |
 | E5 | 测试 `tests/exception/` 扩展（类型分发/传播/未处理/表达式 try）+ grammar.md 增量 | ✅ 15 用例全绿（正常 + ASAN）|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。

@@ -2172,6 +2172,17 @@ void myp_exception_pop(void) {
 
 void* myp_exception_get_jmpbuf(void) {
     if (myp_handler_depth > 0) return myp_handler_bufs[myp_handler_depth - 1];
+    // Unhandled exception: print a clear message, then abort (design: abort +
+    // explicit message, not a silent segfault).
+    if (myp_current_exception_type > 0) {
+        fprintf(stderr, "uncaught exception (object, type %d)\n",
+                myp_current_exception_type);
+    } else if (myp_error_msg[0]) {
+        fprintf(stderr, "uncaught exception: %s\n", myp_error_msg);
+    } else {
+        fprintf(stderr, "uncaught exception\n");
+    }
+    abort();
     return NULL;
 }
 
