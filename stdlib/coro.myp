@@ -28,6 +28,10 @@ class Coro {
         long yield(long val) {}
         // 协程是否仍活跃
         long isActive(long handle) {}
+        // 当前正在执行的协程 handle（不在协程内返回 -1）
+        long current() {}
+        // 当前线程活跃（未结束）协程数
+        long count() {}
         // 提前取消协程
         void destroy(long handle) {}
         // 取协程返回值（@coro 方法 return 存入）

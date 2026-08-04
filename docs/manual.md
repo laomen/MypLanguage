@@ -1336,9 +1336,11 @@ Coro.scheduler();                              // 自动调度：跑所有就绪
 long r  = Coro.resume(h, val);                 // 恢复并传入 val；返回协程传出值
 long v  = Coro.yield(val);                     // 挂起并传出 val；恢复时返回传入值（= await expr）
 long a  = Coro.isActive(h);                    // 是否仍活跃（1/0）
-Coro.destroy(h);                               // 销毁（提前取消）
+Coro.destroy(h);                               // 销毁（提前取消；销毁正在运行的协程不会释放其栈）
 long r  = Coro.result(h);                      // 取协程返回值
 long v  = Coro.waitEvent(eventId, val);        // 等待事件（= await ClassName.eventName）
+long c  = Coro.current();                      // 当前正在执行的协程 handle（不在协程内 -1）
+long n  = Coro.count();                        // 当前线程活跃协程数
 ```
 
 > `__myp_coro_*` 是编译器内部实现（`Coro` 类为内建静态类，codegen 直接生成底层调用），

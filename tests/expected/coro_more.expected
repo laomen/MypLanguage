@@ -1,0 +1,19 @@
+count0=0
+
+in-coro current=0
+
+current==handle:1
+
+count1=0
+
+suicide start
+suicide after destroy
+active_after_suicide=0
+
+spawned 1100
+ waiters; count=1100
+
+fire
+after fire count=0
+
+done

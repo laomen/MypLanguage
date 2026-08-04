@@ -1,0 +1,91 @@
+// tests/coro_more/test.myp — 协程加固：current()/count() + destroy 自杀防护 + 大容量事件等待
+// 覆盖：
+//   1. Coro.count() — 当前线程活跃协程数
+//   2. Coro.current() — 协程内返回自身 handle
+//   3. Coro.destroy(自己 handle) — 不释放正在执行的栈（不崩溃），active→0
+//   4. >1024 个并发事件等待 — 动态等待表（原 1024 固定表满会静默死锁）
+import env;
+import coro;
+
+class Signal {
+    action:
+        void send() {
+            Console.writeString("fire\n");
+            go();
+        }
+    event:
+        go();
+}
+
+// current() + 值传递验证
+@coro(stack=16) long selfCheck() {
+    long c = Coro.current();
+    Console.writeString("in-coro current=");
+    Console.write(c);
+    Console.writeString("\n");
+    Coro.yield(c);
+    return 0;
+}
+
+// destroy 自己（正在执行的协程）：栈不能被 free，协程应继续执行完当前代码段
+@coro(stack=16) void suicide() {
+    Console.writeString("suicide start\n");
+    long me = Coro.current();
+    Coro.destroy(me);
+    Console.writeString("suicide after destroy\n");
+    Coro.yield(0);
+    Console.writeString("suicide unreachable\n");
+}
+
+// 大量并发事件等待（>1024，验证动态等待表无死锁）
+@coro(stack=16) void waiter(int n) {
+    await Signal.go;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("count0=");
+            Console.write(Coro.count());
+            Console.writeString("\n");
+
+            long h = selfCheck();
+            long c = Coro.resume(h, 0);
+            Console.writeString("current==handle:");
+            Console.write(c == h ? 1 : 0);
+            Console.writeString("\n");
+            Coro.destroy(h);
+
+            Console.writeString("count1=");
+            Console.write(Coro.count());
+            Console.writeString("\n");
+
+            long hs = suicide();
+            Console.writeString("active_after_suicide=");
+            Console.write(Coro.isActive(hs));
+            Console.writeString("\n");
+            Coro.destroy(hs);
+
+            int N = 1100;
+            for (int i = 0; i < N; i++) {
+                waiter(i);
+            }
+            Console.writeString("spawned ");
+            Console.write(N);
+            Console.writeString(" waiters; count=");
+            Console.write(Coro.count());
+            Console.writeString("\n");
+            Signal s = new Signal();
+            s.send();
+            Coro.scheduler();
+            Console.writeString("after fire count=");
+            Console.write(Coro.count());
+            Console.writeString("\n");
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

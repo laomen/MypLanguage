@@ -984,9 +984,11 @@ Coro.scheduler();                              // auto-schedule: one step per re
 long r  = Coro.resume(h, val);                 // resume, pass val in; returns coroutine's yielded value
 long v  = Coro.yield(val);                     // suspend, pass val out; returns passed-in value (= await expr)
 long a  = Coro.isActive(h);                    // still active (1/0)
-Coro.destroy(h);                               // destroy / cancel early
+Coro.destroy(h);                               // destroy / cancel early (safe on running coroutine)
 long r  = Coro.result(h);                      // read coroutine return value
 long v  = Coro.waitEvent(eventId, val);        // block on an event (= await ClassName.eventName)
+long c  = Coro.current();                      // handle of the running coroutine (-1 if none)
+long n  = Coro.count();                        // number of active coroutines on this thread
 ```
 
 > `__myp_coro_*` are compiler internals (the `Coro` class is a built-in static class;

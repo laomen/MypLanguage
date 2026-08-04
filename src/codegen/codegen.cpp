@@ -691,6 +691,8 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
     else if (action.name == "resume")    { rt = "__myp_coro_resume"; ret = i64; pts = {i64, i64}; }
     else if (action.name == "yield")     { rt = "__myp_coro_yield"; ret = i64; pts = {i64}; }
     else if (action.name == "isActive")  { rt = "__myp_coro_is_active"; ret = i64; pts = {i64}; }
+    else if (action.name == "current")   { rt = "__myp_coro_current_handle"; ret = i64; }
+    else if (action.name == "count")    { rt = "__myp_coro_count"; ret = i64; }
     else if (action.name == "destroy")   { rt = "__myp_coro_destroy"; pts = {i64}; }
     else if (action.name == "result")    { rt = "__myp_coro_result"; ret = i64; pts = {i64}; }
     else if (action.name == "waitEvent") { rt = "__myp_coro_wait_event"; ret = i64; pts = {i64, i64}; }
@@ -4136,10 +4138,24 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                                         {llvm::Type::getInt64Ty(ctx_)}, false));
             builder_.CreateCall(set_result, {castToI64(ret_val)});
         }
-        if (ret_val)
+        // Cast the return value to the function's declared return type
+        // (e.g. `return 0;` in a `long` function needs an int→long extend).
+        if (ret_val) {
+            llvm::Type* rt = current_function_->getReturnType();
+            if (ret_val->getType() != rt) {
+                if (rt->isIntegerTy() && ret_val->getType()->isIntegerTy())
+                    ret_val = builder_.CreateIntCast(ret_val, rt, true);
+                else if (rt->isFloatingPointTy() && ret_val->getType()->isIntegerTy())
+                    ret_val = builder_.CreateSIToFP(ret_val, rt);
+                else if (rt->isIntegerTy() && ret_val->getType()->isFloatingPointTy())
+                    ret_val = builder_.CreateFPToSI(ret_val, rt);
+                else if (rt->isPointerTy() && ret_val->getType()->isPointerTy())
+                    ret_val = builder_.CreateBitCast(ret_val, rt);
+            }
             builder_.CreateRet(ret_val);
-        else
+        } else {
             builder_.CreateRetVoid();
+        }
     }
 }
 

@@ -2542,11 +2542,33 @@ int64_t __myp_coro_is_active(int64_t handle) {
 void __myp_coro_destroy(int64_t handle) {
     if (handle >= 0 && handle < myp_coro_count && myp_coros[handle] &&
         myp_coros[handle]->stack) {
+        // Safety: never free the stack of the coroutine that is CURRENTLY
+        // executing (destroying itself) — that would free live stack memory
+        // and corrupt execution. Mark it inactive; its stack is reclaimed
+        // when the slot is reused by __myp_coro_create (or at process exit).
+        if (handle == myp_coro_current) {
+            myp_coros[handle]->active = 0;
+            myp_coros[handle]->ready = 0;
+            return;
+        }
         myp_coros[handle]->active = 0;
         myp_coros[handle]->ready = 0;
         free(myp_coros[handle]->stack);
         myp_coros[handle]->stack = NULL;
     }
+}
+
+// Handle of the coroutine currently executing on this thread (-1 if none).
+int64_t __myp_coro_current_handle(void) {
+    return myp_coro_current;
+}
+
+// Number of active (live) coroutines on this thread.
+int64_t __myp_coro_count(void) {
+    int n = 0;
+    for (int i = 0; i < myp_coro_count; i++)
+        if (myp_coros[i] && myp_coros[i]->active) n++;
+    return n;
 }
 
 // ---- C3: automatic scheduler (ready queue) ----
@@ -2581,26 +2603,43 @@ void __myp_coro_scheduler(void) {
 // A coroutine that awaits an event is removed from the ready queue and parked
 // here. When the event is dispatched, matching waiters are re-readied (and
 // resumed if the event is being processed synchronously).
-#define MYP_MAX_CORO_WAITS 1024
+// Dynamic table (grows on demand) — a fixed-size table would silently deadlock
+// the coroutine when it is full (parked but never registered).
 typedef struct {
     int event_id;
     int64_t handle;
     int active;
 } myp_coro_wait_t;
-static __thread myp_coro_wait_t myp_coro_waits[MYP_MAX_CORO_WAITS];
+static __thread myp_coro_wait_t* myp_coro_waits = NULL;
 static __thread int myp_coro_wait_count = 0;
+static __thread int myp_coro_wait_capacity = 0;
+
+// Grow the wait table (at least doubling, starting at 64). Returns 0 on success.
+static int myp_coro_wait_reserve(void) {
+    if (myp_coro_wait_count >= myp_coro_wait_capacity) {
+        int new_cap = myp_coro_wait_capacity ? myp_coro_wait_capacity * 2 : 64;
+        myp_coro_wait_t* np = (myp_coro_wait_t*)realloc(
+            myp_coro_waits, (size_t)new_cap * sizeof(myp_coro_wait_t));
+        if (!np) return -1;
+        myp_coro_waits = np;
+        myp_coro_wait_capacity = new_cap;
+    }
+    return 0;
+}
 
 // Called inside a coroutine: block until `event_id` is fired. Returns 0.
 int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
     if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
         myp_coros[myp_coro_current]) {
-        if (myp_coro_wait_count < MYP_MAX_CORO_WAITS) {
+        if (myp_coro_wait_reserve() == 0) {
             myp_coro_waits[myp_coro_wait_count].event_id = (int)event_id;
             myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
             myp_coro_waits[myp_coro_wait_count].active = 1;
             myp_coro_wait_count++;
+            myp_coros[myp_coro_current]->ready = 0;  // blocked, not ready
         }
-        myp_coros[myp_coro_current]->ready = 0;  // blocked, not ready
+        // On allocation failure: leave the coroutine READY (do not park it)
+        // so it can never be silently lost / deadlocked.
     }
     // Suspend; when the event arrives we are re-readied and resumed.
     return __myp_coro_yield(val);
@@ -2634,6 +2673,10 @@ static void __myp_coro_cleanup_all(void) {
     myp_coros = NULL;
     myp_coro_count = 0;
     myp_coro_capacity = 0;
+    free(myp_coro_waits);
+    myp_coro_waits = NULL;
+    myp_coro_wait_count = 0;
+    myp_coro_wait_capacity = 0;
 }
 
 // Release the current thread's coroutine state (called when a @thread thread
