@@ -975,9 +975,10 @@ long r  = Coro.result(h);                      // read coroutine return value
 long v  = Coro.waitEvent(eventId, val);        // block on an event (= await ClassName.eventName)
 ```
 
-> `__myp_coro_*` are compiler-internal primitives (FFI in `stdlib/coro.myp`) invoked
-> automatically by the `await` syntax and the compiler-generated spawn code — user code
-> should not call them directly.
+> `__myp_coro_*` are compiler-internal intrinsics (same level as `__myp_print`), invoked
+> automatically by the `await` syntax and the compiler-generated spawn code.
+> `stdlib/coro.myp` exposes no FFI declarations — user code should only use the `Coro`
+> static class.
 
 **C3 — automatic scheduler**: spawned coroutines automatically join a ready queue;
 `Coro.scheduler()` advances every ready coroutine by one await per round

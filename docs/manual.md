@@ -1328,8 +1328,9 @@ long r  = Coro.result(h);                      // 取协程返回值
 long v  = Coro.waitEvent(eventId, val);        // 等待事件（= await ClassName.eventName）
 ```
 
-> `__myp_coro_*` 是编译器内部原语（`stdlib/coro.myp` 中的 FFI），由 `await` 语法与
-> 编译器生成的 spawn 代码自动调用，用户代码不应直接使用。
+> `__myp_coro_*` 是编译器内部 intrinsic（与 `__myp_print` 等同级），由 `await` 语法与
+> 编译器生成的 spawn 代码自动调用，`stdlib/coro.myp` 不暴露任何 FFI 声明，用户代码应
+> 只通过 `Coro` 静态类使用。
 
 **C3 自动调度**：spawn 的协程自动加入就绪队列，`Coro.scheduler()` 每轮驱动所有
 就绪协程各一步（先处理事件，再 round-robin 恢复），无需逐个手动 resume：

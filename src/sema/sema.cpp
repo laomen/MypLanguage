@@ -2246,6 +2246,21 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_assert_str_neq", TypeKind::Void, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_test_report", TypeKind::Void, {TypeKind::String, TypeKind::Bool});
 
+    // Coroutine intrinsics (C1-C4) — stdlib Coro class wraps these; __myp_*
+    // prefix marks them internal so stdlib/coro.myp needs no exposed FFI decls.
+    add_intrinsic("__myp_coro_create", TypeKind::Long, {});
+    add_intrinsic("__myp_coro_set_entry", TypeKind::Void, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_coro_yield", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_coro_resume", TypeKind::Long, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_coro_is_active", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_coro_destroy", TypeKind::Void, {TypeKind::Long});
+    add_intrinsic("__myp_coro_set_entry_arg", TypeKind::Void, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_coro_get_entry_arg", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_coro_set_result", TypeKind::Void, {TypeKind::Long});
+    add_intrinsic("__myp_coro_result", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_coro_scheduler", TypeKind::Void, {});
+    add_intrinsic("__myp_coro_wait_event", TypeKind::Long, {TypeKind::Long, TypeKind::Long});
+
     // Atomic intrinsics (codegen generates LLVM atomic instructions directly)
     // These take (int[] array, int index, int value) and return the OLD value.
     // Register as raw function types bypassing the add_intrinsic helper for array params.

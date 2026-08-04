@@ -6775,6 +6775,35 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
 
+    // Coroutine runtime intrinsics (C1-C4) — consumed by the stdlib `Coro`
+    // static class; no FFI declarations exposed in stdlib/coro.myp.
+    {
+        auto* coro_i64 = llvm::Type::getInt64Ty(ctx_);
+        auto* coro_void = llvm::Type::getVoidTy(ctx_);
+        auto* ft_l0 = llvm::FunctionType::get(coro_i64, {}, false);
+        auto* ft_l1 = llvm::FunctionType::get(coro_i64, {coro_i64}, false);
+        auto* ft_l2 = llvm::FunctionType::get(coro_i64, {coro_i64, coro_i64}, false);
+        auto* ft_v0 = llvm::FunctionType::get(coro_void, {}, false);
+        auto* ft_v1 = llvm::FunctionType::get(coro_void, {coro_i64}, false);
+        auto* ft_v2 = llvm::FunctionType::get(coro_void, {coro_i64, coro_i64}, false);
+        auto get_coro = [&](const char* n, llvm::FunctionType* ft) {
+            return llvm::cast<llvm::Function>(
+                module_->getOrInsertFunction(n, ft).getCallee());
+        };
+        intrinsic_map_["__myp_coro_create"]        = get_coro("__myp_coro_create", ft_l0);
+        intrinsic_map_["__myp_coro_set_entry"]     = get_coro("__myp_coro_set_entry", ft_v2);
+        intrinsic_map_["__myp_coro_yield"]         = get_coro("__myp_coro_yield", ft_l1);
+        intrinsic_map_["__myp_coro_resume"]        = get_coro("__myp_coro_resume", ft_l2);
+        intrinsic_map_["__myp_coro_is_active"]     = get_coro("__myp_coro_is_active", ft_l1);
+        intrinsic_map_["__myp_coro_destroy"]       = get_coro("__myp_coro_destroy", ft_v1);
+        intrinsic_map_["__myp_coro_set_entry_arg"] = get_coro("__myp_coro_set_entry_arg", ft_v2);
+        intrinsic_map_["__myp_coro_get_entry_arg"] = get_coro("__myp_coro_get_entry_arg", ft_l1);
+        intrinsic_map_["__myp_coro_set_result"]    = get_coro("__myp_coro_set_result", ft_v1);
+        intrinsic_map_["__myp_coro_result"]        = get_coro("__myp_coro_result", ft_l1);
+        intrinsic_map_["__myp_coro_scheduler"]     = get_coro("__myp_coro_scheduler", ft_v0);
+        intrinsic_map_["__myp_coro_wait_event"]    = get_coro("__myp_coro_wait_event", ft_l2);
+    }
+
     // GPU / CUDA runtime
     auto* gpu_init_ft = llvm::FunctionType::get(i32, {}, false);
     runtime_gpu_init_ = llvm::Function::Create(gpu_init_ft,

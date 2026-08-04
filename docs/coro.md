@@ -15,7 +15,7 @@
 |---|---|
 | 运行时原语 | 完整 ucontext 用户态纤程：`__myp_coro_create` / `set_entry` / `yield` / `resume` / `is_active` / `destroy`；每线程 1024 槽、256KB 栈、`swapcontext` 调度（`runtime.c` §Coroutine）|
 | 语法 | `@coro` 注解（`has_coro` 标记，parser 已解析，作用于**类 action 方法**）+ `await` 语句/表达式（`AwaitStmt` + `AwaitExpr`，支持 `await;` / `await expr;` / `int v = await expr;` / `await ClassName.eventName`）|
-| 标准库 | `stdlib/coro.myp`：FFI 声明（`create`/`set_entry`/`yield(val)`/`resume(h,val)`/`is_active`/`destroy`/`set_entry_arg`/`get_entry_arg`/`set_result`/`result`/`scheduler`/`wait_event`）|
+| 标准库 | `stdlib/coro.myp`：静态类 `Coro`（`scheduler`/`resume`/`yield`/`isActive`/`destroy`/`result`/`waitEvent`）；`__myp_coro_*` 为编译器内部 intrinsic（不暴露 FFI 声明）|
 
 ### 1.2 现状缺口（半成品 → 已解决项）
 
