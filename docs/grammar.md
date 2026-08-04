@@ -129,7 +129,7 @@ Target           ::= Identifier ('.' Identifier)?          // 实例动作 / 类
                    | 'throttle' '(' IntegerLiteral ')'     // 节流变换器
                    | LambdaExpr                            // λ 变换器（链中节点）
 
-FunctionDecl     ::= ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}'
+FunctionDecl     ::= FuncAnnot? ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}'
 FFIDecl          ::= 'ffi' ReturnType Identifier '(' ParamList? ')' ';'
 EnumDecl         ::= 'enum' Identifier '{' EnumVariant (',' EnumVariant)* '}'
 EnumVariant      ::= Identifier ('(' Type (',' Type)* ')')?
@@ -150,7 +150,7 @@ ClassMember      ::= 'action:' ActionDecl+
 
 ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
 ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
-FuncAnnot        ::= '@' 'test' | '@' 'region'
+FuncAnnot        ::= '@' 'test' | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?   // 顶层 @coro 协程函数
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'
 
@@ -196,11 +196,11 @@ ContinueStmt     ::= 'continue' ';'
 AwaitStmt        ::= 'await' ';'                                   // 简单挂起（协程内）
                    | 'await' Expression ';'                        // 带值挂起（C2）
                    | 'await' ClassName '.' EventName ';'           // 等待事件（C4）
-                   // 仅允许在 '@coro' 注解的类 action 方法内
+                   // 仅允许在 '@coro' 注解的类 action 方法或顶层 @coro 函数内
 AwaitExpr        ::= 'await' Expression                            // 表达式（C2）
                    | 'await' ClassName '.' EventName               // 表达式：事件等待（C4）
                    // 挂起传出 Expression 值；恢复后表达式 = resume 传入值
-                   // 仅允许在 '@coro' 注解的类 action 方法内
+                   // 仅允许在 '@coro' 注解的类 action 方法或顶层 @coro 函数内
 MappingStmt      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'  // 局部 mapping
 
 MatchStmt        ::= 'match' '(' Expression ')' '{' MatchArm+ '}'

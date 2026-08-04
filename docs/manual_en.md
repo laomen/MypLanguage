@@ -897,8 +897,12 @@ string result = sb.toString();  // "Hello, World"
 ### `import coro` — Coroutines
 
 MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **class action method**
-+ `await` to suspend + `Coro.resume` to resume (C1-C4 implemented). Users access the
-scheduling/lifecycle API through the static class `Coro`.
+or **top-level function** + `await` to suspend + `Coro.resume` to resume (C1-C7 implemented).
+Users access the scheduling/lifecycle API through the static class `Coro`.
+
+> `await` is only allowed inside an `@coro` method or top-level `@coro` function. In a plain
+> action / `function:` / `static:` section or a plain top-level function, `await` is a compile
+> error: `'await' is only allowed inside an '@coro' method`.
 
 **Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend;
 `@coro(stack=N)` sets the stack size in KB, default 128):
@@ -921,10 +925,16 @@ class Worker {
             await;
         }
 }
+
+// Top-level @coro function: no class wrapper needed; calling spawns and returns a handle
+@coro long worker(long n) {
+    long x = Coro.yield(n * 2);     // suspend, yield n*2; on resume x = value passed in
+    return x + 100;                 // result read via Coro.result(h)
+}
 ```
 
-**Calling = spawning**: `obj.meth(args)` returns a `long` handle (creates the coroutine and
-runs it up to the first `await`):
+**Calling = spawning**: `obj.meth(args)` or a top-level `fn(args)` returns a `long` handle
+(creates the coroutine and runs it up to the first `await`):
 
 ```myp
 class Main {
@@ -1035,12 +1045,14 @@ class Main {
 > Thread-local concurrency (coroutines) + inter-thread parallelism (`@thread`); coroutine
 > state is cleaned up automatically when a thread exits.
 
-> Semantics: an `@coro` method call compiles to a spawn (`create` + arg slots + `set_entry`
-> + first `resume`) and returns a `long` handle; `await` compiles to `__myp_coro_yield(val)`
-> (`await expr` is an expression binding the full operand; after resume its value equals the
-> value passed in by `resume`); an `@coro` method's `return val` is stored into its per-coroutine
-> result slot, read via `Coro.result(h)`. Finished coroutines recycle their slot
-> automatically and stacks are freed at process exit.
+> Semantics: an `@coro` method or top-level `@coro` function call compiles to a spawn
+> (`create` + arg slots + `set_entry` + first `resume`) and returns a `long` handle; `await`
+> compiles to `__myp_coro_yield(val)` (`await expr` is an expression binding the full operand;
+> after resume its value equals the value passed in by `resume`); an `@coro` body's `return val`
+> is stored into its per-coroutine result slot, read via `Coro.result(h)`. Finished coroutines
+> recycle their slot automatically and stacks are freed at process exit. A top-level `@coro`
+> function's entry wrapper has no `this` slot (params start at slot 1); codegen pre-scans to
+> create wrappers, so a coroutine function may be defined after its call site.
 
 ---
 

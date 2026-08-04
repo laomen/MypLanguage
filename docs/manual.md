@@ -1251,8 +1251,12 @@ Future.destroy(handle);              // 销毁
 
 ### `import coro` — 协程
 
-MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await` 挂起 +
-`Coro.resume` 恢复（C1-C4 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
+MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法**或**顶层函数** + `await` 挂起 +
+`Coro.resume` 恢复（C1-C7 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
+
+> `await` 只能在 `@coro` 方法或顶层 `@coro` 函数内使用；普通 action / `function:` /
+> `static:` 段或普通顶层函数中的 `await` 会报编译错误
+> `'await' is only allowed inside an '@coro' method`。
 
 **声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起；`@coro(stack=N)` 指定栈大小 KB，默认 128）：
 
@@ -1274,9 +1278,15 @@ class Worker {
             await;
         }
 }
+
+// 顶层 @coro 函数：无需类封装，调用即启动协程，返回 handle
+@coro long worker(long n) {
+    long x = Coro.yield(n * 2);     // 挂起并传出 n*2；恢复时 x = resume 传入值
+    return x + 100;                 // 返回值经 Coro.result(h) 读取
+}
 ```
 
-**调用 = 启动协程**：`obj.meth(args)` 返回 `long` handle（创建 + 首启到第一个 `await`）：
+**调用 = 启动协程**：`obj.meth(args)` 或顶层 `fn(args)` 返回 `long` handle（创建 + 首启到第一个 `await`）：
 
 ```myp
 class Main {
@@ -1383,10 +1393,12 @@ class Main {
 
 > 线程内并发（协程）+ 线程间并行（@thread）组合；线程退出时其协程状态自动清理。
 
-> 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
-> 返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr` 是表达式，
-> 绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 方法 `return val` 存入 per-协程
-> 结果槽，`Coro.result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
+> 语义说明：`@coro` 方法/顶层 `@coro` 函数调用编译为 spawn（`create` + 参数槽 + `set_entry`
+> + 首启 `resume`），返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr`
+> 是表达式，绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 代码 `return val` 存入
+> per-协程结果槽，`Coro.result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
+> 顶层 `@coro` 函数入口包装无 `this` 槽（参数从槽 1 起），codegen 预扫描创建包装，
+> 因此协程函数可定义在调用点之后。
 
 ### `import pool` — 并行计算工具
 
