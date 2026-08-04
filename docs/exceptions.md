@@ -79,6 +79,23 @@ interface Error {
 | 异常 | 用途 |
 |---|---|
 | `StringError`（内置） | 包装 `throw "msg"` / `__myp_throw("msg")` 的字符串消息 |
+| `FileError` | 文件操作失败（打开/读/写/删除）；属性 `op`、`path` |
+| `IOError` | 通用 I/O 失败；属性 `op`、`detail` |
+| `NetError` | 网络失败（连接/超时/协议）；属性 `op`、`host`、`port` |
+| `ParseError` | 通用解析失败；属性 `source`、`line`、`detail` |
+| `JsonError` | JSON 解析失败；属性 `line`、`col`、`detail` |
+| `ArgumentError` | 非法参数；属性 `arg`、`detail` |
+| `MathError` | 数学域错误（除零/溢出）；属性 `op`、`detail` |
+| `IndexError` | 下标越界；属性 `index`、`size` |
+
+标准异常（`stdlib/error.myp`）全部实现 `Error` 接口，可用 `catch (Error e)` 统一捕获；
+用 setter 填充属性后再 `throw`（MYP 类无带参构造）：
+
+```myp
+FileError e = new FileError();
+e.setOp("read"); e.setPath("config.myp");
+throw e;                       // → catch (FileError e) 精确 / catch (Error e) 兜底
+```
 
 ### 4.3 用户异常
 

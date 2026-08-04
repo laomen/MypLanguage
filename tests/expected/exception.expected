@@ -13,14 +13,22 @@ stale_outer_caught=stale_outer_err
 cross_outer_try
 risky_enter
 cross_caught=deep_error
-obj_file=file: cfg.myp
-obj_parse=parse: 42
-obj_rethrow=parse: 7
+obj_file=file error:  cfg.myp
+obj_parse=parse error: :42 
+obj_rethrow=parse error: :7 
 obj_catchall=simple_err
 fin_inner
 fin_outer=fin_prop
-iface_file=file: 
-iface_parse=parse: 0
+iface_file=file error:  
+iface_parse=parse error: :0 
 iface_catchall=iface_str
-iface_ord=parse: 0
+iface_ord=parse error: :0 
+std_io=io error: write disk full
+std_net=net error: connect 10.0.0.1:8080
+std_json=json error: 3:7 unexpected token
+std_arg=argument error: n must be positive
+std_math=math error: div by zero
+std_idx=index error: 5 / 3
+std_iface=net error: send example.com:443
+std_file=file error: open /no/such/file
 done

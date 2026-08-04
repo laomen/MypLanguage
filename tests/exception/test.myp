@@ -8,23 +8,7 @@ void risky() {
     __myp_throw("deep_error");
 }
 
-// 对象异常（实现 Error 接口）
-class FileError {
-    interface class Error;
-    action:
-        string message() { return "file: " + path_; }
-        void setPath(string p) { path_ = p; }
-    property:
-        string path_;
-}
-class ParseError {
-    interface class Error;
-    action:
-        string message() { return "parse: " + line_; }
-        void setLine(int l) { line_ = l; }
-    property:
-        int line_;
-}
+// 对象异常（标准异常来自 stdlib/error.myp：FileError/ParseError 等）
 
 class Main {
     action:
@@ -203,6 +187,103 @@ class Main {
                 Console.writeString("iface_ord_wrong\n");
             } catch (Error e) {
                 Console.writeString("iface_ord=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 16. 标准异常 IOError：精确匹配 + message 聚合
+            try {
+                IOError e = new IOError();
+                e.setOp("write");
+                e.setDetail("disk full");
+                throw e;
+            } catch (IOError e) {
+                Console.writeString("std_io=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 17. 标准异常 NetError：int 属性参与 message
+            try {
+                NetError e = new NetError();
+                e.setOp("connect");
+                e.setHost("10.0.0.1");
+                e.setPort(8080);
+                throw e;
+            } catch (NetError e) {
+                Console.writeString("std_net=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 18. 标准异常 JsonError + ArgumentError
+            try {
+                JsonError e = new JsonError();
+                e.setLine(3);
+                e.setCol(7);
+                e.setDetail("unexpected token");
+                throw e;
+            } catch (JsonError e) {
+                Console.writeString("std_json=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+            try {
+                ArgumentError e = new ArgumentError();
+                e.setArg("n");
+                e.setDetail("must be positive");
+                throw e;
+            } catch (ArgumentError e) {
+                Console.writeString("std_arg=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 19. 标准异常 MathError + IndexError
+            try {
+                MathError e = new MathError();
+                e.setOp("div");
+                e.setDetail("by zero");
+                throw e;
+            } catch (MathError e) {
+                Console.writeString("std_math=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+            try {
+                IndexError e = new IndexError();
+                e.setIndex(5);
+                e.setSize(3);
+                throw e;
+            } catch (IndexError e) {
+                Console.writeString("std_idx=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 20. catch (Error e) 统一捕获标准异常（接口分发 message）
+            try {
+                NetError e = new NetError();
+                e.setOp("send");
+                e.setHost("example.com");
+                e.setPort(443);
+                throw e;
+            } catch (Error e) {
+                Console.writeString("std_iface=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 21. FileError 精确 vs Error 兜底顺序
+            try {
+                FileError e = new FileError();
+                e.setOp("open");
+                e.setPath("/no/such/file");
+                throw e;
+            } catch (IOError e) {
+                Console.writeString("std_wrong\n");
+            } catch (FileError e) {
+                Console.writeString("std_file=");
                 Console.writeString(e.message());
                 Console.writeString("\n");
             }

@@ -23,3 +23,115 @@ class StringError {
     property:
         string msg_;
 }
+
+// ---- 标准异常（按域分类；全部实现 Error 接口，可被 catch (Error e) 统一捕获）----
+//
+// 用法（无带参构造，用 setter 填充属性后再 throw）：
+//   FileError e = new FileError();
+//   e.setOp("read"); e.setPath("config.myp");
+//   throw e;
+//
+//   try { ... } catch (FileError e) { ... }   // 精确匹配
+//   try { ... } catch (Error e) { ... }       // 任意异常统一捕获
+
+// 文件操作异常（打开/读/写/删除/路径不存在）
+class FileError {
+    interface class Error;
+    action:
+        string message() { return "file error: " + op_ + " " + path_; }
+        void setOp(string v) { op_ = v; }
+        void setPath(string v) { path_ = v; }
+    property:
+        string op_;
+        string path_;
+}
+
+// 通用 I/O 异常（设备/缓冲/格式外的 I/O 失败）
+class IOError {
+    interface class Error;
+    action:
+        string message() { return "io error: " + op_ + " " + detail_; }
+        void setOp(string v) { op_ = v; }
+        void setDetail(string v) { detail_ = v; }
+    property:
+        string op_;
+        string detail_;
+}
+
+// 网络异常（连接/超时/协议/发送接收）
+class NetError {
+    interface class Error;
+    action:
+        string message() { return "net error: " + op_ + " " + host_ + ":" + port_; }
+        void setOp(string v) { op_ = v; }
+        void setHost(string v) { host_ = v; }
+        void setPort(int v) { port_ = v; }
+    property:
+        string op_;
+        string host_;
+        int port_;
+}
+
+// 解析异常（通用，携带来源与位置）
+class ParseError {
+    interface class Error;
+    action:
+        string message() { return "parse error: " + source_ + ":" + line_ + " " + detail_; }
+        void setSource(string v) { source_ = v; }
+        void setLine(int v) { line_ = v; }
+        void setDetail(string v) { detail_ = v; }
+    property:
+        string source_;
+        int line_;
+        string detail_;
+}
+
+// JSON 解析异常
+class JsonError {
+    interface class Error;
+    action:
+        string message() { return "json error: " + line_ + ":" + col_ + " " + detail_; }
+        void setLine(int v) { line_ = v; }
+        void setCol(int v) { col_ = v; }
+        void setDetail(string v) { detail_ = v; }
+    property:
+        int line_;
+        int col_;
+        string detail_;
+}
+
+// 参数异常（非法参数/取值越界/类型不符）
+class ArgumentError {
+    interface class Error;
+    action:
+        string message() { return "argument error: " + arg_ + " " + detail_; }
+        void setArg(string v) { arg_ = v; }
+        void setDetail(string v) { detail_ = v; }
+    property:
+        string arg_;
+        string detail_;
+}
+
+// 数学域异常（除零/溢出/非法运算）
+class MathError {
+    interface class Error;
+    action:
+        string message() { return "math error: " + op_ + " " + detail_; }
+        void setOp(string v) { op_ = v; }
+        void setDetail(string v) { detail_ = v; }
+    property:
+        string op_;
+        string detail_;
+}
+
+// 越界异常（下标/索引越界）
+class IndexError {
+    interface class Error;
+    action:
+        string message() { return "index error: " + index_ + " / " + size_; }
+        void setIndex(int v) { index_ = v; }
+        void setSize(int v) { size_ = v; }
+    property:
+        int index_;
+        int size_;
+}
