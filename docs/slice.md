@@ -146,6 +146,15 @@ class Pipeline {
 - **非破坏性**：默认行为不变，只有标注的 action 启用事件级回收
 - **实现**：codegen 在 `@region` action 入口插 `mark`，所有出口（含 return 路径）插 `release`
 
+**`@region` 统一语义**：
+- **适用对象**：任何有调用作用域的函数——class 的 **action**、**function**、以及**顶层函数**
+  （如外部 `@op` 函数）；语义一致 = 该函数调用作用域为 region（动态 extent）
+- **单一语法**：只保留 `@region` 注解一种写法，**不提供** `region { }` 块级语法
+  （避免两套写法歧义）
+- **嵌套 region**：`@region` 函数内调用另一 `@region` 函数 → 嵌套 region，
+  **栈式 LIFO**：内层先释放、外层后释放，互不干扰
+- **不适用**：struct 方法（值类型、无堆对象），`@region` 无意义
+
 ### 3.5 逃逸分析：统一引用逃逸模型
 
 **问题**：`@region` 内**返回任何携带引用的值**（slice / `T[]` 裸数组 / struct 的引用字段），
@@ -251,7 +260,7 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 
 ## 4. 设计取舍（待评审拍板）
 
-### 3.1 `new double[n]` 的返回类型
+### 4.1 `new double[n]` 的返回类型
 
 - **选项 1（推荐，非破坏）**：`new double[n]` 保持返回裸指针；
   slice 用显式 `new slice<double>(n)` 创建 → 新旧完全隔离，零破坏
@@ -259,13 +268,13 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
   `double[] A = new double[n]` 需 slice→裸指针隐式降级 → 更统一，
   但触碰所有现有赋值点，需升语言规格 v2.0
 
-### 3.2 语法命名
+### 4.2 语法命名
 
 - **`slice<T>`（推荐）**：与现有泛型 `ArrayList<T>` / `HashMap<K,V>` 风格一致
 - `&[T]`（Rust）：MYP 无借用概念，引入会误导
 - `[]T`（Go）：与 MYP 现有后置 `T[]` 语法冲突
 
-### 3.3 下标边界检查
+### 4.3 下标边界检查
 
 - 安全（bounds check → 越界报错）vs 性能（直接 GEP）
 - 建议：默认不做（与现有 `T[]` 一致），作为后续可选开关
@@ -293,7 +302,8 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 2. **语法命名**：`slice<T>` 还是其他？（§4.2）
 3. **下标是否做边界检查？**（§4.3）
 4. **是否提供 `T[]` → `slice<T>` 转换？**（裸数组无长度，转换语义需谨慎）
-5. **`@region` 粒度**：action 注解 vs `region { }` 块级？（§3.4，推荐 action 注解）
+5. **`@region` 适用对象**：action / function / 顶层函数均可注解；**单一语法**
+   （不用 `region { }` 块）；嵌套栈式 LIFO？（§3.4 统一语义，推荐）
 6. **逃逸分析保守策略**："传参即逃逸"是否接受？（§3.5，保证安全但区域回收覆盖有限）
 7. **region 动态 extent**：普通函数内 `new` 归当前 region？（§3.6 ②，推荐动态）
 8. **事件传递 = 逃逸**：fire event 携带的对象提升进程级？（§3.6 ③，推荐）
