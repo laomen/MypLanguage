@@ -398,6 +398,8 @@ private:
     void generateMatchStmt(const MatchStmt& stmt);
     void generateTryStmt(const TryStmt& stmt);
     void generateThrowStmt(const ThrowStmt& stmt);
+    // Pop this handler + longjmp to the next (outer) handler + unreachable.
+    void emitExceptionRethrow();
 
     // ---- Helper ----
     TypeInfo builtinTypeToInfo(BuiltinType bt) const;

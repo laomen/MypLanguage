@@ -2248,6 +2248,14 @@ void Sema::registerIntrinsics() {
 }
 
 Sema::StmtResult Sema::visitThrowStmt(ThrowStmt& stmt) {
+    // throw; — bare rethrow of the current exception (only valid inside a catch)
+    if (!stmt.expr) {
+        if (in_catch_depth_ == 0) {
+            error(stmt.range, "'throw;' rethrow is only valid inside a catch block");
+        }
+        stmt.throw_type = "rethrow";
+        return {};
+    }
     auto t = visitExpr(*stmt.expr);
     if (t.kind == TypeKind::String) {
         stmt.throw_type = "string";
@@ -2309,7 +2317,9 @@ Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {
         }
         symbol_table_.declare(cc.var_name, ct);
         in_main_function_ = false; // catch also allows calls
+        ++in_catch_depth_;
         if (cc.block) visitBlock(*cc.block);
+        --in_catch_depth_;
         symbol_table_.leaveScope();
     }
 

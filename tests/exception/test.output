@@ -46,4 +46,10 @@ after_cont
 fn_inner
 fn_outer
 fin_nest_val=ni
+re_inner=re_str
+re_outer=re_str
+re_obj_inner=file error: open re.txt
+re_obj_outer=file error: open re.txt
+re_finally
+re_fin_outer=re_fin
 done

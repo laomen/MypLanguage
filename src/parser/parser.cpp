@@ -694,6 +694,12 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         return parseTryStmt();
     }
     if (match(TokenKind::Keyword_throw)) {
+        // throw;  → bare rethrow of the current exception (only valid in a catch)
+        // throw expr;  → string shortcut or exception object
+        if (check(TokenKind::Semicolon)) {
+            advance();
+            return std::make_unique<ThrowStmt>(nullptr, previous().range);
+        }
         auto e = parseExpr();
         consume(TokenKind::Semicolon, "expected ';' after throw expression");
         return std::make_unique<ThrowStmt>(std::move(e), previous().range);

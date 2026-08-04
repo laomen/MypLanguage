@@ -114,6 +114,7 @@ private:
     bool in_class_method_ = false;
     bool in_struct_method_ = false;  // Whether inside a struct method
     bool in_main_function_ = false;
+    int in_catch_depth_ = 0;         // >0 inside a catch block (for `throw;` rethrow)
     std::string current_class_name_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct
 

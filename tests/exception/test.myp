@@ -323,6 +323,59 @@ class Main {
                 Console.writeString(s2);
                 Console.writeString("\n");
             }
+
+            // 25. throw; 显式重抛：string 异常保留消息重抛到外层
+            try {
+                try {
+                    __myp_throw("re_str");
+                } catch (e) {
+                    Console.writeString("re_inner=");
+                    Console.writeString(e);
+                    Console.writeString("\n");
+                    throw;
+                }
+                Console.writeString("re_unreach\n");
+            } catch (e) {
+                Console.writeString("re_outer=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+
+            // 26. throw; 重抛对象异常：类型保留，外层精确匹配
+            try {
+                try {
+                    FileError fe = new FileError();
+                    fe.setOp("open");
+                    fe.setPath("re.txt");
+                    throw fe;
+                } catch (FileError e) {
+                    Console.writeString("re_obj_inner=");
+                    Console.writeString(e.message());
+                    Console.writeString("\n");
+                    throw;
+                }
+                Console.writeString("re_obj_unreach\n");
+            } catch (FileError e) {
+                Console.writeString("re_obj_outer=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 27. throw; + finally：重抛先执行 finally 再向外传播
+            try {
+                try {
+                    throw "re_fin";
+                } catch (e) {
+                    throw;
+                } finally {
+                    Console.writeString("re_finally\n");
+                }
+                Console.writeString("re_fin_unreach\n");
+            } catch (e) {
+                Console.writeString("re_fin_outer=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
             Console.writeString("done\n");
         }
 }

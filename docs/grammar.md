@@ -205,7 +205,7 @@ TryStmt          ::= 'try' Block CatchClause+ FinallyClause?
 CatchClause      ::= 'catch' '(' (Type Identifier | Identifier)? ')' Block
                  // 有类型: 按类型匹配（'string' 或异常类名）; 无类型: 兜底（捕获一切，变量为 string 消息）
 FinallyClause    ::= 'finally' Block
-ThrowStmt        ::= 'throw' Expression ';'   // string 快捷或 class 实例
+ThrowStmt        ::= 'throw' Expression? ';'   // 无表达式 = 在 catch 内重抛当前异常
 TryExpr          ::= 'try' Expression 'catch' '(' Identifier ')' Expression
                  // 表达式式: 成功→try 值, 失败→catch 值（类型须兼容）
 

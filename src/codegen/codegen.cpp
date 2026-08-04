@@ -6219,9 +6219,34 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
         runtime_exception_pop_, {});
 }
 
+void CodeGen::emitExceptionRethrow() {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+        runtime_exception_pop_, {});
+    auto* jb2 = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
+        runtime_exception_get_jmpbuf_, {}, "outer_handler");
+    auto* one = llvm::ConstantInt::get(i32_ty, 1);
+    builder_.CreateCall(runtime_longjmp_->getFunctionType(), runtime_longjmp_, {jb2, one});
+    builder_.CreateUnreachable();
+}
+
 void CodeGen::generateThrowStmt(const ThrowStmt& s) {
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    if (s.throw_type == "rethrow") {
+        // throw; — rethrow the current exception. If inside a try-with-finally,
+        // run the finally body first (mode=1), then propagate outward; otherwise
+        // propagate directly (the current exception state stays in the runtime).
+        if (!finally_ctx_stack_.empty() && !finally_ctx_stack_.back().in_finally) {
+            auto& fc = finally_ctx_stack_.back();
+            builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 1), fc.flag_slot);
+            builder_.CreateBr(fc.finally_bb);
+        } else {
+            emitExceptionRethrow();
+        }
+        return;
+    }
     if (s.throw_type == "string") {
         auto* msg = generateExpr(*s.expr);
         builder_.CreateCall(runtime_throw_->getFunctionType(), runtime_throw_, {msg});
