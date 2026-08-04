@@ -1,0 +1,94 @@
+// tests/coro_channel/test.myp — 协程 Channel（协程间通信）
+// 覆盖：基本 send/recv/size/tryRecv、协程 send 满缓冲阻塞（腾空后恢复）、
+//       协程 recv 空缓冲阻塞（送入后恢复）、close/destroy
+import env;
+import coro;
+import channel;
+
+@coro(stack=16) void producer(Channel ch) {
+    Console.writeString("P1\n");
+    ch.send(10);
+    Console.writeString("P2\n");
+    ch.send(20);
+    Console.writeString("P3 block\n");
+    int r3 = ch.send(30);      // 缓冲满(容量2) → 挂起
+    Console.writeString("P3 r=");
+    Console.write(r3);
+    Console.writeString("\n");
+    Console.writeString("P done\n");
+}
+
+@coro(stack=16) void consumer(Channel ch) {
+    Console.writeString("C1\n");
+    long v = ch.recv();        // 缓冲空 → 挂起
+    Console.writeString("C got ");
+    Console.write(v);
+    Console.writeString("\n");
+    Console.writeString("C done\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Channel ch = new Channel();
+            ch.init(2);
+
+            // 1) 非协程基本操作
+            ch.send(1);
+            ch.send(2);
+            Console.writeString("size=");
+            Console.write(ch.size());
+            Console.writeString("\n");
+            Console.writeString("r1=");
+            Console.write(ch.recv());
+            Console.writeString("\n");
+            Console.writeString("r2=");
+            Console.write(ch.recv());
+            Console.writeString("\n");
+            Console.writeString("tryRecv empty=");
+            Console.write(ch.tryRecv());
+            Console.writeString("\n");
+
+            // 2) 协程 producer：send 满缓冲阻塞 → 主流程 recv 腾空 → 恢复
+            long hp = producer(ch);          // spawn 即跑到 send30 挂起
+            Coro.scheduler();
+            Console.writeString("size2=");
+            Console.write(ch.size());
+            Console.writeString("\n");
+            Console.writeString("main recv=");
+            Console.write(ch.recv());        // 腾出空位 → 唤醒 P
+            Console.writeString("\n");
+            Coro.scheduler();                // P 恢复 send30 → P done
+            Console.writeString("Pactive=");
+            Console.write(Coro.isActive(hp));
+            Console.writeString("\n");
+
+            // 清空 P 留下的缓冲（20, 30）
+            Console.writeString("drain1=");
+            Console.write(ch.recv());
+            Console.writeString("\n");
+            Console.writeString("drain2=");
+            Console.write(ch.recv());
+            Console.writeString("\n");
+            Console.writeString("empty size=");
+            Console.write(ch.size());
+            Console.writeString("\n");
+
+            // 3) 协程 consumer：recv 空缓冲阻塞 → 主流程 send 送入 → 恢复
+            long hc = consumer(ch);
+            Coro.scheduler();                // C: C1，recv 空挂起
+            ch.send(99);                     // 送入 → 唤醒 C
+            Coro.scheduler();                // C got 99 → done
+            Console.writeString("Cactive=");
+            Console.write(Coro.isActive(hc));
+            Console.writeString("\n");
+
+            ch.destroy();
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

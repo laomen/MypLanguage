@@ -1,0 +1,33 @@
+size=2
+
+r1=1
+
+r2=2
+
+tryRecv empty=-1
+
+P1
+P2
+P3 block
+size2=2
+
+main recv=10
+
+P3 r=0
+
+P done
+Pactive=0
+
+drain1=20
+
+drain2=30
+
+empty size=0
+
+C1
+C got 99
+
+C done
+Cactive=0
+
+done

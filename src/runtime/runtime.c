@@ -2913,10 +2913,12 @@ static void __myp_coro_cleanup_all(void) {
 
 // Release the current thread's coroutine state (called when a @thread thread
 // exits, so its TLS coroutine slots/stacks are not leaked).
+static void myp_channel_cleanup_all(void);   // defined below (channel section)
 void __myp_coro_thread_cleanup(void) {
     __myp_coro_cleanup_all();
     myp_coro_current = -1;
     myp_coro_wait_count = 0;
+    myp_channel_cleanup_all();
 }
 
 __attribute__((constructor))
@@ -2938,4 +2940,183 @@ int64_t __myp_coro_get_entry_arg(int64_t idx) {
     if (idx >= 0 && idx < MYP_CORO_MAX_ENTRY_ARGS)
         return (int64_t)myp_coro_entry_args[idx];
     return 0;
+}
+
+// ---- Channel (协程间通信, Go-style buffered channel) ----
+// A bounded ring buffer with coroutine-aware blocking send/recv:
+//   - a coroutine that sends into a full buffer parks itself (ready=0 + yield)
+//     and is re-readied when a recv frees a slot;
+//   - a coroutine that recvs from an empty buffer parks and is re-readied when
+//     a send delivers data.
+// Non-coroutine callers (main / @thread) get a non-blocking -1 when the buffer
+// is full/empty instead of parking.
+// Channels are thread-local (a channel belongs to the thread that created it),
+// matching the coroutine TLS model.
+#define MYP_CHANNEL_MAX_WAITERS 256
+typedef struct {
+    int64_t* buf;
+    int capacity;
+    int head;
+    int count;
+    int closed;
+    int64_t recv_waiters[MYP_CHANNEL_MAX_WAITERS]; // coroutines waiting for data
+    int recv_wait_count;
+    int64_t send_waiters[MYP_CHANNEL_MAX_WAITERS]; // coroutines waiting for space
+    int send_wait_count;
+} myp_channel_t;
+#define MYP_MAX_CHANNELS 256
+static __thread myp_channel_t* myp_channels = NULL; // allocated per-thread lazily
+static __thread int myp_channel_count = 0;
+
+static void myp_channel_wake_one(int64_t* waiters, int* wcount) {
+    if (*wcount <= 0) return;
+    int64_t h = waiters[0];
+    for (int i = 1; i < *wcount; i++) waiters[i - 1] = waiters[i];
+    (*wcount)--;
+    if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active)
+        myp_coros[h]->ready = 1;
+}
+
+static myp_channel_t* myp_channel_get(int64_t handle) {
+    if (handle < 0 || handle >= myp_channel_count) return NULL;
+    return &myp_channels[handle];
+}
+
+int64_t myp_channel_create(int64_t capacity) {
+    if (!myp_channels) {
+        myp_channels = (myp_channel_t*)calloc((size_t)MYP_MAX_CHANNELS, sizeof(myp_channel_t));
+        if (!myp_channels) return -1;
+    }
+    for (int i = 0; i < MYP_MAX_CHANNELS; i++) {
+        if (!myp_channels[i].buf) {
+            int cap = (capacity > 0) ? (int)capacity : 1;
+            myp_channels[i].buf = (int64_t*)calloc((size_t)cap, sizeof(int64_t));
+            if (!myp_channels[i].buf) return -1;
+            myp_channels[i].capacity = cap;
+            myp_channels[i].head = 0;
+            myp_channels[i].count = 0;
+            myp_channels[i].closed = 0;
+            myp_channels[i].recv_wait_count = 0;
+            myp_channels[i].send_wait_count = 0;
+            if (i >= myp_channel_count) myp_channel_count = i + 1;
+            return i;
+        }
+    }
+    return -1; // too many channels
+}
+
+void myp_channel_destroy(int64_t handle) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c) return;
+    free(c->buf);
+    c->buf = NULL;
+    c->capacity = 0;
+    c->count = 0;
+    c->closed = 1;
+    c->recv_wait_count = 0;
+    c->send_wait_count = 0;
+}
+
+// Send. Returns 0 on success. A coroutine parks if the buffer is full;
+// a non-coroutine caller returns -1 instead of parking.
+int64_t myp_channel_send(int64_t handle, int64_t val) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c || c->closed) return -1;
+    if (c->count < c->capacity) {
+        c->buf[(c->head + c->count) % c->capacity] = val;
+        c->count++;
+        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+        return 0;
+    }
+    // Buffer full.
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current]) {
+        if (c->send_wait_count < MYP_CHANNEL_MAX_WAITERS) {
+            c->send_waiters[c->send_wait_count++] = myp_coro_current;
+            myp_coros[myp_coro_current]->ready = 0;   // parked
+        }
+        __myp_coro_yield(val);   // suspend until a slot frees up
+        if (c->closed) return -1;
+        c->buf[(c->head + c->count) % c->capacity] = val;
+        c->count++;
+        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+        return 0;
+    }
+    return -1; // non-coroutine, buffer full
+}
+
+// Recv. Returns the value. A coroutine parks if the buffer is empty;
+// a non-coroutine caller returns -1 instead of parking.
+int64_t myp_channel_recv(int64_t handle) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c) return -1;
+    if (c->count > 0) {
+        int64_t v = c->buf[c->head];
+        c->head = (c->head + 1) % c->capacity;
+        c->count--;
+        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+        return v;
+    }
+    if (c->closed) return -1;
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current]) {
+        if (c->recv_wait_count < MYP_CHANNEL_MAX_WAITERS) {
+            c->recv_waiters[c->recv_wait_count++] = myp_coro_current;
+            myp_coros[myp_coro_current]->ready = 0;   // parked
+        }
+        __myp_coro_yield(0);   // suspend until data arrives
+        if (c->closed) return -1;
+        int64_t v = c->buf[c->head];
+        c->head = (c->head + 1) % c->capacity;
+        c->count--;
+        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+        return v;
+    }
+    return -1; // non-coroutine, empty
+}
+
+// Non-blocking variants (never park).
+int64_t myp_channel_try_send(int64_t handle, int64_t val) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c || c->closed || c->count >= c->capacity) return -1;
+    c->buf[(c->head + c->count) % c->capacity] = val;
+    c->count++;
+    myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+    return 0;
+}
+
+int64_t myp_channel_try_recv(int64_t handle) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c || c->count <= 0) return -1;
+    int64_t v = c->buf[c->head];
+    c->head = (c->head + 1) % c->capacity;
+    c->count--;
+    myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+    return v;
+}
+
+int64_t myp_channel_size(int64_t handle) {
+    myp_channel_t* c = myp_channel_get(handle);
+    return c ? c->count : -1;
+}
+
+void myp_channel_close(int64_t handle) {
+    myp_channel_t* c = myp_channel_get(handle);
+    if (!c) return;
+    c->closed = 1;
+    // Wake all parked senders/recvers so they see the closed state.
+    while (c->send_wait_count > 0)
+        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+    while (c->recv_wait_count > 0)
+        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+}
+
+// Free all channels at thread exit (avoid leaks).
+static void myp_channel_cleanup_all(void) {
+    if (!myp_channels) return;
+    for (int i = 0; i < myp_channel_count; i++)
+        if (myp_channels[i].buf) free(myp_channels[i].buf);
+    free(myp_channels);
+    myp_channels = NULL;
+    myp_channel_count = 0;
 }

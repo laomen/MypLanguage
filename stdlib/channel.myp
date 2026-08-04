@@ -1,0 +1,53 @@
+// channel.myp — MYP 通道（协程间通信，Go 风格有缓冲 channel）
+// 语义：
+//   - 协程内 send 缓冲满 → 挂起，等 recv 腾出空位后恢复
+//   - 协程内 recv 缓冲空 → 挂起，等 send 送入数据后恢复
+//   - 主流程/@thread（非协程）send/recv 满/空时返回 -1（非阻塞，不挂起）
+//   - trySend/tryRecv 永远非阻塞
+//   - channel 属于创建它的线程（TLS），与协程模型一致
+ffi long myp_channel_create(int capacity);
+ffi void myp_channel_destroy(long handle);
+ffi int  myp_channel_send(long handle, long val);
+ffi long myp_channel_recv(long handle);
+ffi int  myp_channel_try_send(long handle, long val);
+ffi long myp_channel_try_recv(long handle);
+ffi int  myp_channel_size(long handle);
+ffi void myp_channel_close(long handle);
+
+class Channel {
+    action:
+        // 初始化：capacity 为缓冲容量（>0）
+        void init(int capacity) {
+            handle_ = myp_channel_create(capacity);
+        }
+        // 发送：协程内缓冲满时挂起直到有空位；返回 0 成功，-1 关闭/满(非协程)
+        int send(long val) {
+            return myp_channel_send(handle_, val);
+        }
+        // 接收：协程内缓冲空时挂起直到有数据；返回取出的值，-1 关闭/空(非协程)
+        long recv() {
+            return myp_channel_recv(handle_);
+        }
+        // 非阻塞发送：0 成功，-1 满/关闭
+        int trySend(long val) {
+            return myp_channel_try_send(handle_, val);
+        }
+        // 非阻塞接收：返回取出的值，-1 空/关闭
+        long tryRecv() {
+            return myp_channel_try_recv(handle_);
+        }
+        // 当前缓冲中的元素数
+        int size() {
+            return myp_channel_size(handle_);
+        }
+        // 关闭：唤醒所有等待者（它们将看到关闭状态）
+        void close() {
+            myp_channel_close(handle_);
+        }
+        // 销毁通道（释放缓冲）
+        void destroy() {
+            myp_channel_destroy(handle_);
+        }
+    property:
+        long handle_;
+}
