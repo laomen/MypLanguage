@@ -254,6 +254,7 @@ ActionDecl Parser::parseActionDecl() {
         if (annot == "startup") decl.has_startup = true;
         if (annot == "test") decl.has_test = true;
         if (annot == "coro") decl.has_coro = true;
+        if (annot == "region") decl.has_region = true;
     }
 
     decl.return_type = parseType();
@@ -455,6 +456,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         advance();
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
+        else if (annot == "region") func->has_region = true;
         else if (annot == "op") {
             // @op("+") — operator symbol is a string literal
             consume(TokenKind::LeftParen, "expected '(' after '@op'");

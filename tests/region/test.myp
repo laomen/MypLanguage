@@ -1,0 +1,46 @@
+// @region 回归测试 (P4b)
+// 验证: @region void 启用 region（内部分配出口释放）;
+//       @region 返回引用自动禁用 region（进程级，结果可用）;
+//       反复调用不崩溃、结果正确
+import env;
+
+class Pipeline {
+    action:
+        @region void processFrame() {
+            // 帧内临时 slice — 出口自动回收
+            slice<double> tmp = new slice<double>(4);
+            int i = 0;
+            while (i < 4) { tmp[i] = i * 2.0; i = i + 1; }
+            Console.writeString("frame tmp[3] = ");
+            Console.writeFloat(tmp[3]);
+            Console.writeString("\n");
+        }
+}
+
+// @region 返回 slice：返回引用逃逸 → region 自动禁用（进程级），结果可用
+@region slice<double> makeSlice() {
+    slice<double> s = new slice<double>(3);
+    s[0] = 1.0; s[1] = 2.0; s[2] = 3.0;
+    return s;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[@region 测试]\n");
+            Pipeline p = new Pipeline();
+            int frame = 0;
+            while (frame < 3) {
+                p.processFrame();
+                frame = frame + 1;
+            }
+            slice<double> r = makeSlice();
+            Console.writeString("makeSlice size = ");
+            Console.write(r.size());
+            Console.writeString("\n");
+            Console.writeString("r[2] = ");
+            Console.writeFloat(r[2]);
+            Console.writeString("\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

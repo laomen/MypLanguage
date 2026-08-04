@@ -60,6 +60,10 @@ private:
     // ---- Current class context (for bare method calls) ----
     std::string current_class_name_;
 
+    // ---- @region memory arena state (function currently being generated) ----
+    bool in_region_function_ = false;         // generating a @region fn (non-escaping)
+    llvm::Value* current_region_mark_ = nullptr;  // mark alloca for the region fn
+
     // ---- Struct type tracking ----
     // Maps struct name (e.g. "Vec2" or "Sensor::Config") → LLVM struct type
     std::unordered_map<std::string, llvm::StructType*> struct_types_;
@@ -322,6 +326,10 @@ private:
     void generateGpuFor(const ForStmt& stmt);
     bool generateGpuKernel(const ForStmt& stmt);
     void generateReturnStmt(const ReturnStmt& stmt);
+    // @region memory arena: enter/exit and reference-type predicate
+    void emitRegionEnter();
+    void emitRegionExit();
+    static bool typeIsReference(const TypeInfo& t);
     void generateBreakStmt(const BreakStmt& stmt);
     void generateContinueStmt(const ContinueStmt& stmt);
     void generateAwaitStmt(const AwaitStmt& stmt);

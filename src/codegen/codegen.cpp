@@ -565,14 +565,22 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         }
     }
 
+    // @region: enter arena (skipped if return type is a reference — it escapes)
+    bool fn_region = action.has_region &&
+        !typeIsReference(typeNodeToCodegenType(action.return_type));
+    if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
+
     // Generate action body (stdlib actions use __myp_* intrinsics in their source code)
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
+        if (fn_region) emitRegionExit();
         builder_.CreateRetVoid();
     }
+    in_region_function_ = false;
+    current_region_mark_ = nullptr;
     popScope();
 }
 
@@ -602,13 +610,21 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
             var_slice_types_[action.params[i].name] = pt;
     }
 
+    // @region (static action)
+    bool fn_region = action.has_region &&
+        !typeIsReference(typeNodeToCodegenType(action.return_type));
+    if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
+
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
+        if (fn_region) emitRegionExit();
         builder_.CreateRetVoid();
     }
+    in_region_function_ = false;
+    current_region_mark_ = nullptr;
     popScope();
 }
 
@@ -750,10 +766,19 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
             var_slice_types_[fn_decl.params[i].name] = pt;
     }
 
+    // @region (class function)
+    bool fn_region = fn_decl.has_region &&
+        !typeIsReference(typeNodeToCodegenType(fn_decl.return_type));
+    if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
+
     if (fn_decl.body)
         generateBlock(static_cast<const BlockStmt&>(*fn_decl.body));
-    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        if (fn_region) emitRegionExit();
         builder_.CreateRetVoid();
+    }
+    in_region_function_ = false;
+    current_region_mark_ = nullptr;
     popScope();
 }
 
@@ -807,14 +832,22 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         }
     }
 
+    // @region (top-level function)
+    bool fn_region = decl.has_region &&
+        !typeIsReference(rt);
+    if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
+
     if (decl.body) generateBlock(*decl.body);
 
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
+        if (fn_region) emitRegionExit();
         if (rt.kind == TypeKind::Void) builder_.CreateRetVoid();
         else builder_.CreateRet(llvm::ConstantInt::get(getLLVMType(rt), 0));
     }
+    in_region_function_ = false;
+    current_region_mark_ = nullptr;
     popScope();
     if (decl.name == "main") {
         in_main_ = false;
@@ -3786,11 +3819,15 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     }
     if (s.value) {
         auto* v = generateExpr(*s.value);
-        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+            emitRegionExit();   // @region: release temporaries before returning
             builder_.CreateRet(v);
+        }
     } else {
-        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+            emitRegionExit();   // @region: release temporaries before returning
             builder_.CreateRetVoid();
+        }
     }
 }
 
@@ -5153,8 +5190,14 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
             len_val = builder_.CreateZExt(len_val, llvm::Type::getInt64Ty(ctx_));
         auto* byte_size = builder_.CreateMul(len_val,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
-        auto* alloc_fn = runtime_alloc_;
-        if (!alloc_fn) {
+        llvm::Function* alloc_fn = runtime_alloc_;
+        if (in_region_function_) {
+            alloc_fn = module_->getFunction("myp_region_alloc");
+            if (!alloc_fn) {
+                auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+                alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+            }
+        } else if (!alloc_fn) {
             auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
             alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
         }
@@ -5225,8 +5268,14 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
     uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(elem_ty);
     auto* byte_size = builder_.CreateMul(total,
         llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), elem_size));
-    auto* alloc_fn = runtime_alloc_;
-    if (!alloc_fn) {
+    llvm::Function* alloc_fn = runtime_alloc_;
+    if (in_region_function_) {
+        alloc_fn = module_->getFunction("myp_region_alloc");
+        if (!alloc_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+        }
+    } else if (!alloc_fn) {
         auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
         alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
     }
@@ -5235,6 +5284,44 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
         builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
     return ptr;
 }
+bool CodeGen::typeIsReference(const TypeInfo& t) {
+    switch (t.kind) {
+        case TypeKind::Slice:
+        case TypeKind::Array:
+        case TypeKind::Class:
+        case TypeKind::Interface:
+        case TypeKind::String:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void CodeGen::emitRegionEnter() {
+    if (!current_function_) return;
+    auto* mark_fn = module_->getFunction("myp_arena_mark");
+    if (!mark_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {}, false);
+        mark_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_arena_mark", module_.get());
+    }
+    current_region_mark_ = createEntryBlockAlloca(current_function_,
+        llvm::PointerType::get(ctx_, 0), "region_mark");
+    auto* m = builder_.CreateCall(mark_fn, {});
+    builder_.CreateStore(m, current_region_mark_);
+}
+
+void CodeGen::emitRegionExit() {
+    if (!current_region_mark_) return;
+    auto* rel_fn = module_->getFunction("myp_arena_release");
+    if (!rel_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+            {llvm::PointerType::get(ctx_, 0)}, false);
+        rel_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_arena_release", module_.get());
+    }
+    auto* m = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), current_region_mark_);
+    builder_.CreateCall(rel_fn, {m});
+}
+
 llvm::Value* CodeGen::generateThisExpr(const ThisExpr&) {
     return getNamedValue("this");
 }

@@ -1243,6 +1243,9 @@ void myp_free(void* ptr) {
     free(ptr);
 }
 
+// Forward declaration — region arena is defined below (after myp_free_all).
+void myp_region_free_all(void);
+
 void myp_free_all(void) {
     // Restore terminal if we changed it to raw mode
     myp_restore_term();
@@ -1253,6 +1256,8 @@ void myp_free_all(void) {
         myp_free_alloc_list(head);
         pthread_setspecific(myp_alloc_key, NULL);
     }
+    // Also free the region arena (thread-local)
+    myp_region_free_all();
 }
 
 // Slice subscript bounds check: reports the error and aborts.
@@ -1260,6 +1265,72 @@ void myp_bounds_error(int64_t idx, int64_t len) {
     fprintf(stderr, "MYP runtime error: slice index %lld out of bounds (length %lld)\n",
             (long long)idx, (long long)len);
     abort();
+}
+
+// ======================
+// Region arena (two-tier memory: process-level + region-level)
+// ======================
+// @region functions allocate temporaries via myp_region_alloc into a
+// thread-local region list. myp_arena_release(mark) frees everything
+// allocated after myp_arena_mark() — i.e. the region's temporaries —
+// while process-level allocations (myp_alloc) survive until myp_free_all.
+static pthread_key_t myp_region_key;
+static pthread_once_t myp_region_key_once = PTHREAD_ONCE_INIT;
+
+static void myp_free_region_list(void* ptr) {
+    myp_alloc_node_t* node = (myp_alloc_node_t*)ptr;
+    while (node) {
+        if (node->ptr) free(node->ptr);
+        myp_alloc_node_t* next = node->next;
+        free(node);
+        node = next;
+    }
+}
+
+static void myp_make_region_key(void) {
+    pthread_key_create(&myp_region_key, myp_free_region_list);
+}
+
+void* myp_region_alloc(size_t size) {
+    void* ptr = malloc(size);
+    if (ptr) {
+        pthread_once(&myp_region_key_once, myp_make_region_key);
+        myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(sizeof(myp_alloc_node_t));
+        if (node) {
+            node->ptr = ptr;
+            node->next = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
+            pthread_setspecific(myp_region_key, node);
+        }
+    }
+    return ptr;
+}
+
+// Returns the current region allocation watermark (the head of the region list).
+void* myp_arena_mark(void) {
+    pthread_once(&myp_region_key_once, myp_make_region_key);
+    return pthread_getspecific(myp_region_key);
+}
+
+// Frees all region allocations newer than mark (those made since the mark).
+void myp_arena_release(void* mark) {
+    pthread_once(&myp_region_key_once, myp_make_region_key);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
+    while (node && node != (myp_alloc_node_t*)mark) {
+        myp_alloc_node_t* next = node->next;
+        if (node->ptr) free(node->ptr);
+        free(node);
+        node = next;
+    }
+    pthread_setspecific(myp_region_key, node);
+}
+
+void myp_region_free_all(void) {
+    pthread_once(&myp_region_key_once, myp_make_region_key);
+    myp_alloc_node_t* head = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
+    if (head) {
+        myp_free_region_list(head);
+        pthread_setspecific(myp_region_key, NULL);
+    }
 }
 
 // ======================

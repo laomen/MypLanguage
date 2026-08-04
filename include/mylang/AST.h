@@ -85,6 +85,7 @@ struct ActionDecl {
     bool has_startup = false;
     bool has_test = false;
     bool has_coro = false;
+    bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
 };
 
 struct EventDecl {
@@ -547,6 +548,7 @@ struct FuncDecl {
     std::unique_ptr<BlockStmt> body;
     SourceRange range;
     bool has_test = false;
+    bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
 };
 
