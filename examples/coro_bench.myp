@@ -1,0 +1,132 @@
+// examples/coro_bench.myp — 协程性能基准（基于 ucontext 用户态纤程）
+//
+// 测量指标：
+//   1) 切换开销：N 次 resume+yield 的总耗时 → 单次上下文切换（swapcontext）
+//   2) 函数调用基线：普通函数调用 N 次（对比切换成本）
+//   3) 多协程自动调度：M 个协程 × R 轮 Coro.scheduler() 的总耗时
+//   4) spawn+destroy 成本：创建并销毁协程的平均耗时
+//
+// 运行：
+//   ./build/mypc examples/coro_bench.myp && ./examples/coro_bench.out
+//
+// 注意：协程每 256KB 栈；M 个协程峰值内存 ≈ M × 256KB（本例 M=8 → 2MB）。
+import env;
+import coro;
+import time;
+
+// 空协程：循环 await N 次（每次 resume 前进一次迭代）
+class Ping {
+    action:
+        @coro void loop(long n) {
+            long i = 0L;
+            while (i < n) {
+                await;
+                i = i + 1L;
+            }
+        }
+}
+
+// 普通函数调用基线
+long noop(long x) {
+    return x + 1L;
+}
+
+class Bench {
+    action:
+        @startup void run() {
+            long N = 1000000L;   // 100 万次切换
+            long M = 8L;         // 多协程数量
+            long R = 100000L;    // 每协程 await 次数（多协程）
+            long S = 1000L;      // spawn 测试次数
+            long i = 0L;
+            long t0 = 0L, t1 = 0L, ms = 0L;
+
+            // ---- 1) 协程切换开销 ----
+            Ping p = new Ping();
+            long h = p.loop(N);
+            t0 = Time.nowMs();
+            i = 0L;
+            while (i < N) {
+                Coro.resume(h, 0);
+                i = i + 1L;
+            }
+            t1 = Time.nowMs();
+            ms = t1 - t0;
+            Console.writeString("1) 协程切换: ");
+            Console.writeLong(N);
+            Console.writeString(" 次 resume+yield = ");
+            Console.writeLong(ms);
+            Console.writeString(" ms (~");
+            Console.writeFloat(ms * 1000000.0 / (N * 2.0));
+            Console.writeString(" ns/切换)\n");
+
+            // ---- 2) 函数调用基线 ----
+            long sink = 0L;
+            t0 = Time.nowMs();
+            i = 0L;
+            while (i < N) {
+                sink = noop(sink);
+                i = i + 1L;
+            }
+            t1 = Time.nowMs();
+            ms = t1 - t0;
+            Console.writeString("2) 函数调用: ");
+            Console.writeLong(N);
+            Console.writeString(" 次 = ");
+            Console.writeLong(ms);
+            Console.writeString(" ms (~");
+            Console.writeFloat(ms * 1000000.0 / N);
+            Console.writeString(" ns/次)\n");
+
+            // ---- 3) 多协程自动调度 ----
+            // M 个协程各 await R 次；Coro.scheduler() 每轮让所有就绪协程各前进一步
+            Ping a = new Ping(); long ha = a.loop(R);
+            Ping b = new Ping(); long hb = b.loop(R);
+            Ping c = new Ping(); long hc = c.loop(R);
+            Ping d = new Ping(); long hd = d.loop(R);
+            Ping e = new Ping(); long he = e.loop(R);
+            Ping f = new Ping(); long hf = f.loop(R);
+            Ping g = new Ping(); long hg = g.loop(R);
+            Ping j = new Ping(); long hj = j.loop(R);
+            t0 = Time.nowMs();
+            i = 0L;
+            while (i < R) {
+                Coro.scheduler();
+                i = i + 1L;
+            }
+            t1 = Time.nowMs();
+            ms = t1 - t0;
+            Console.writeString("3) 自动调度: ");
+            Console.writeLong(M);
+            Console.writeString(" 协程 x ");
+            Console.writeLong(R);
+            Console.writeString(" 轮 = ");
+            Console.writeLong(ms);
+            Console.writeString(" ms (~");
+            Console.writeFloat(ms * 1000000.0 / (R * M * 2.0));
+            Console.writeString(" ns/切换)\n");
+
+            // ---- 4) spawn+destroy 成本 ----
+            t0 = Time.nowMs();
+            i = 0L;
+            while (i < S) {
+                long hx = p.loop(1L);
+                Coro.destroy(hx);
+                i = i + 1L;
+            }
+            t1 = Time.nowMs();
+            ms = t1 - t0;
+            Console.writeString("4) spawn+destroy: ");
+            Console.writeLong(S);
+            Console.writeString(" 次 = ");
+            Console.writeLong(ms);
+            Console.writeString(" ms (~");
+            Console.writeFloat(ms * 1000000.0 / S);
+            Console.writeString(" ns/次)\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

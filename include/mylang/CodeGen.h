@@ -259,6 +259,12 @@ private:
     // True while generating the body of an @coro method (return stores result)
     bool current_is_coro_ = false;
 
+    // ---- Global event name→id table (runtime-constructed timers) ----
+    llvm::Value* event_table_names_ = nullptr;
+    llvm::Value* event_table_ids_ = nullptr;
+    int event_table_count_ = 0;
+    void buildEventNameTable();
+
     // ---- GPU / CUDA offload ----
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
     bool cuda_enabled_ = false;

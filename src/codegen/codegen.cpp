@@ -4128,6 +4128,9 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
 
 llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
     auto val = e.value;
+    // An explicit 'L' suffix forces long (i64), regardless of the value range.
+    if (e.is_long)
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), val, true);
     // Determine integer width from value range (same logic as sema)
     bool fits_i32 = (val >= -2147483648LL && val <= 2147483647LL);
     if (fits_i32) {
@@ -4816,23 +4819,36 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     diag_.error(e.range, "__myp_timer_create requires at least 2 arguments");
                     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
                 }
-                // First arg must be a string literal (event name)
-                std::string event_name;
+                // First arg: event name — either a string literal (resolved at
+                // compile time) or a runtime string (looked up via the global
+                // event table, e.g. stdlib Timer.init takes a string param).
+                llvm::Value* event_id = nullptr;
                 if (e.args[0]->kind == ExprKind::StringLiteral) {
-                    event_name = static_cast<const StringLiteralExpr&>(*e.args[0]).value;
+                    std::string event_name = static_cast<const StringLiteralExpr&>(*e.args[0]).value;
+                    std::string ekey = current_class_name_ + "::" + event_name;
+                    int eid = -1;
+                    auto eit = event_id_map_.find(ekey);
+                    if (eit != event_id_map_.end()) eid = eit->second;
+                    if (eid < 0) {
+                        diag_.error(e.range, "unknown event '" + event_name +
+                                    "' in class '" + current_class_name_ + "'");
+                        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                    }
+                    event_id = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), eid);
                 } else {
-                    diag_.error(e.range, "first argument to __myp_timer_create must be a string literal");
-                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
-                }
-                // Look up event ID
-                std::string ekey = current_class_name_ + "::" + event_name;
-                int event_id = -1;
-                auto eit = event_id_map_.find(ekey);
-                if (eit != event_id_map_.end()) event_id = eit->second;
-                if (event_id < 0) {
-                    diag_.error(e.range, "unknown event '" + event_name +
-                                "' in class '" + current_class_name_ + "'");
-                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                    // Runtime event name → look up via the generated table
+                    buildEventNameTable();
+                    auto* name_val = generateExpr(*e.args[0]);
+                    auto find_fn = module_->getOrInsertFunction("myp_event_id_by_name",
+                        llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_),
+                            {llvm::PointerType::get(ctx_, 0),
+                             llvm::PointerType::get(ctx_, 0),
+                             llvm::PointerType::get(ctx_, 0),
+                             llvm::Type::getInt32Ty(ctx_)}, false));
+                    event_id = builder_.CreateCall(find_fn,
+                        {name_val, event_table_names_, event_table_ids_,
+                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_table_count_)},
+                        "evid");
                 }
                 // Get delay_ms and interval_ms args
                 auto* delay = generateExpr(*e.args[1]);
@@ -4847,13 +4863,12 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 auto* this_ptr = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta, "this");
                 // Generate call: myp_timer_create(event_id, instance, delay_ms, param, interval_ms)
                 // param = delay_ms (the requested delay is passed as event data)
-                auto* eid_val = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_id);
                 auto* param = builder_.CreateSExtOrTrunc(delay, llvm::Type::getInt64Ty(ctx_));
                 auto* delay64 = builder_.CreateSExtOrTrunc(delay, llvm::Type::getInt64Ty(ctx_));
                 auto* interval64 = builder_.CreateSExtOrTrunc(interval, llvm::Type::getInt64Ty(ctx_));
                 auto* result = builder_.CreateCall(runtime_timer_create_->getFunctionType(),
                     runtime_timer_create_,
-                    {eid_val, this_ptr, delay64, param, interval64});
+                    {event_id, this_ptr, delay64, param, interval64});
                 return result;
             }
             // __myp_throw: save error message then longjmp to catch block
@@ -5633,6 +5648,40 @@ llvm::Value* CodeGen::castToI64(llvm::Value* v) {
     if (v->getType()->isPointerTy())
         return builder_.CreatePtrToInt(v, i64);
     return llvm::ConstantInt::get(i64, 0);
+}
+
+// Build the global event name→id table once (for runtime-constructed timers,
+// e.g. stdlib Timer.init passes a runtime event-name string).
+void CodeGen::buildEventNameTable() {
+    if (event_table_names_) return;  // already built
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    // Sort by event id for a stable, deterministic order.
+    std::vector<std::pair<int, std::string>> evs;
+    for (auto& kv : event_id_map_) evs.push_back({kv.second, kv.first});
+    std::sort(evs.begin(), evs.end());
+    std::vector<llvm::Constant*> name_strs;
+    std::vector<llvm::Constant*> ids;
+    for (auto& p : evs) {
+        name_strs.push_back(builder_.CreateGlobalStringPtr(p.second, "evname"));
+        ids.push_back(llvm::ConstantInt::get(i32, p.first));
+    }
+    event_table_count_ = (int)name_strs.size();
+    if (event_table_count_ == 0) {
+        event_table_names_ = llvm::ConstantPointerNull::get(ptr);
+        event_table_ids_ = llvm::ConstantPointerNull::get(ptr);
+        return;
+    }
+    auto* names_arr = llvm::ConstantArray::get(
+        llvm::ArrayType::get(ptr, event_table_count_), name_strs);
+    auto* names_gv = new llvm::GlobalVariable(*module_, names_arr->getType(), true,
+        llvm::GlobalValue::InternalLinkage, names_arr, "__myp_event_names");
+    auto* ids_arr = llvm::ConstantArray::get(
+        llvm::ArrayType::get(i32, event_table_count_), ids);
+    auto* ids_gv = new llvm::GlobalVariable(*module_, ids_arr->getType(), true,
+        llvm::GlobalValue::InternalLinkage, ids_arr, "__myp_event_ids");
+    event_table_names_ = names_gv;
+    event_table_ids_ = ids_gv;
 }
 
 void CodeGen::generateAwaitStmt(const AwaitStmt& s) {

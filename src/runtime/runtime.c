@@ -1504,6 +1504,19 @@ int32_t myp_timer_create(int event_id, void* instance, int64_t delay_ms,
     return 0;
 }
 
+// Look up an event id by its name at runtime (for timers created with a
+// dynamic event name). names/ids/count is the compiler-generated table of all
+// events in the translation unit. Returns -1 if not found.
+int32_t myp_event_id_by_name(const char* name, char* const* names,
+                             const int32_t* ids, int32_t count) {
+    if (!name || !names || !ids) return -1;
+    for (int32_t i = 0; i < count; i++) {
+        if (names[i] && strcmp(name, names[i]) == 0)
+            return ids[i];
+    }
+    return -1;
+}
+
 // Cancel all timers for a given instance (e.g., when instance is destroyed)
 void myp_timer_cancel_all(void* instance) {
     pthread_mutex_lock(&myp_timer_mutex);
