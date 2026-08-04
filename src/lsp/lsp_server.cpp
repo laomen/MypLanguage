@@ -88,7 +88,7 @@ static void parseDocument(Document& doc, const std::string& uri) {
     Parser parser(toks, diag);
     auto ast = parser.parse();
     if (diag.hasErrors()) return;
-    
+
     // Build definition map from current file (uses doc.uri)
     doc.ast = std::move(ast);
     buildDefinitionMap(doc);
@@ -172,6 +172,34 @@ static std::string extractWordAt(Document& doc, int line, int col) {
         end++;
     return src_line.substr(start, end - start);
 }
+
+// Correctly decode a JSON string literal. `start` points to the char AFTER the
+// opening quote. Handles \n \t \r \\ \" \/ escapes (passes others through).
+static std::string decodeJSONString(const std::string& raw, size_t start) {
+    std::string out;
+    for (size_t i = start; i < raw.size(); i++) {
+        char c = raw[i];
+        if (c == '\\') {
+            if (i + 1 >= raw.size()) break;
+            char e = raw[++i];
+            switch (e) {
+                case 'n': out += '\n'; break;
+                case 't': out += '\t'; break;
+                case 'r': out += '\r'; break;
+                case '\\': out += '\\'; break;
+                case '"': out += '"'; break;
+                case '/': out += '/'; break;
+                default: out += e; break;
+            }
+        } else if (c == '"') {
+            break;
+        } else {
+            out += c;
+        }
+    }
+    return out;
+}
+
 std::string rangeToJSON(const SourceRange& range) {
     std::string result = "{";
     result += "\"start\":{\"line\":" + std::to_string(range.begin.line) +
@@ -221,17 +249,8 @@ void handleTextDocumentDidOpen(const std::string& params) {
     }
     auto text_start = params.find("\"text\":\"");
     std::string text;
-    if (text_start != std::string::npos) {
-        text_start += 8;
-        // Find the end - handle escaped quotes
-        bool esc = false;
-        for (size_t i = text_start; i < params.size(); i++) {
-            if (esc) { esc = false; text += params[i]; continue; }
-            if (params[i] == '\\') { esc = true; continue; }
-            if (params[i] == '\"') break;
-            text += params[i];
-        }
-    }
+    if (text_start != std::string::npos)
+        text = decodeJSONString(params, text_start + 8);
 
     if (!uri.empty()) {
         Document doc;
@@ -260,16 +279,8 @@ void handleTextDocumentDidChange(const std::string& params) {
     // Simple approach: replace full text
     auto text_start = params.find("\"text\":\"");
     std::string text;
-    if (text_start != std::string::npos) {
-        text_start += 8;
-        bool esc = false;
-        for (size_t i = text_start; i < params.size(); i++) {
-            if (esc) { esc = false; text += params[i]; continue; }
-            if (params[i] == '\\') { esc = true; continue; }
-            if (params[i] == '\"') break;
-            text += params[i];
-        }
-    }
+    if (text_start != std::string::npos)
+        text = decodeJSONString(params, text_start + 8);
 
     auto it = documents_.find(uri);
     if (it != documents_.end() && !text.empty()) {
@@ -835,6 +846,7 @@ int runLSPServer(int argc, char** argv) {
                 sendMessage(body);
             }
         }
+
         } catch (const std::exception& e) {
             std::string err = "{\"code\":-32603,\"message\":\"Internal error: " + std::string(e.what()) + "\"}";
             std::string body = "{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":" + err + "}";
