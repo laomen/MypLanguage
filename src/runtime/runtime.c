@@ -2344,16 +2344,28 @@ void myp_barrier_destroy(int32_t handle) {
 // ======================
 
 #define MYP_MAX_FUTURES 64
+#define MYP_FUTURE_MAX_CORO_WAITERS 64
 typedef struct {
     int32_t value;
     int32_t ready;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
     int32_t used;
+    // Coroutine waiters (same-thread only): a coroutine that gets a not-ready
+    // future parks here instead of pthread_cond_wait (which would block the
+    // whole thread). Coroutine state is thread-local, so this only works when
+    // the future is set on the same thread.
+    int64_t coro_waiters[MYP_FUTURE_MAX_CORO_WAITERS];
+    int32_t coro_wait_count;
 } myp_future_t;
 
 static myp_future_t myp_futures[MYP_MAX_FUTURES];
 static pthread_mutex_t myp_future_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+// Coroutine-aware helpers (defined in the coroutine section below).
+int myp_coro_am_i_coro(void);                    // 1 if currently inside a coroutine
+void myp_coro_wait_future(int32_t handle);       // suspend current coroutine until future ready
+void myp_coro_wake_future(int32_t handle);       // re-ready same-thread coroutines waiting on this future
 
 int32_t myp_future_create(void) {
     pthread_mutex_lock(&myp_future_mutex);
@@ -2379,11 +2391,20 @@ void myp_future_set(int32_t handle, int32_t value) {
     myp_futures[handle].ready = 1;
     pthread_cond_broadcast(&myp_futures[handle].cond);
     pthread_mutex_unlock(&myp_futures[handle].mutex);
+    myp_coro_wake_future(handle);   // re-ready same-thread coroutine waiters
 }
 
 int32_t myp_future_get(int32_t handle) {
     if (handle < 0 || handle >= MYP_MAX_FUTURES || !myp_futures[handle].used) return 0;
     pthread_mutex_lock(&myp_futures[handle].mutex);
+    // Coroutine + not ready: park the coroutine (no thread-blocking wait).
+    // Must not hold the mutex across the coroutine suspend (other threads /
+    // coroutines need it to set).
+    if (!myp_futures[handle].ready && myp_coro_am_i_coro()) {
+        pthread_mutex_unlock(&myp_futures[handle].mutex);
+        myp_coro_wait_future(handle);
+        pthread_mutex_lock(&myp_futures[handle].mutex);
+    }
     while (!myp_futures[handle].ready) {
         pthread_cond_wait(&myp_futures[handle].cond, &myp_futures[handle].mutex);
     }
@@ -3119,4 +3140,39 @@ static void myp_channel_cleanup_all(void) {
     free(myp_channels);
     myp_channels = NULL;
     myp_channel_count = 0;
+}
+
+// ---- Coroutine-aware Future helpers ----
+// A coroutine calling Future.get() on a not-ready future parks (ready=0 + yield)
+// instead of pthread_cond_wait, so it does NOT block the whole thread. Only
+// same-thread sets can wake it (coroutine state is thread-local).
+int myp_coro_am_i_coro(void) {
+    return (myp_coro_current >= 0) ? 1 : 0;
+}
+
+void myp_coro_wait_future(int32_t fh) {
+    if (myp_coro_current < 0 || fh < 0 || fh >= MYP_MAX_FUTURES ||
+        !myp_futures[fh].used) return;
+    myp_future_t* f = &myp_futures[fh];
+    pthread_mutex_lock(&f->mutex);
+    if (f->ready) { pthread_mutex_unlock(&f->mutex); return; }
+    if (f->coro_wait_count < MYP_FUTURE_MAX_CORO_WAITERS) {
+        f->coro_waiters[f->coro_wait_count++] = myp_coro_current;
+        myp_coros[myp_coro_current]->ready = 0;   // parked
+    }
+    pthread_mutex_unlock(&f->mutex);
+    __myp_coro_yield(0);   // suspend until set() wakes us
+}
+
+void myp_coro_wake_future(int32_t fh) {
+    if (fh < 0 || fh >= MYP_MAX_FUTURES) return;
+    myp_future_t* f = &myp_futures[fh];
+    pthread_mutex_lock(&f->mutex);
+    for (int i = 0; i < f->coro_wait_count; i++) {
+        int64_t h = f->coro_waiters[i];
+        if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active)
+            myp_coros[h]->ready = 1;
+    }
+    f->coro_wait_count = 0;
+    pthread_mutex_unlock(&f->mutex);
 }

@@ -1,0 +1,11 @@
+W: get parking...
+O: running while W parked
+O: done
+W: got 42
+
+W: done
+W active=0
+
+O active=0
+
+done

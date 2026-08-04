@@ -1,0 +1,45 @@
+// tests/coro_future/test.myp — 协程 await Future（非阻塞等待）
+// 协程内 Future.get() 未 ready 时挂起协程（而非 pthread_cond_wait 阻塞整个线程），
+// 同线程 Future.set() 唤醒恢复；挂起期间其他协程正常调度
+import env;
+import coro;
+import future;
+
+@coro(stack=16) void waiter(int fh) {
+    Console.writeString("W: get parking...\n");
+    int v = Future.get(fh);        // 未 ready → 挂起协程（不阻塞线程）
+    Console.writeString("W: got ");
+    Console.write(v);
+    Console.writeString("\n");
+    Console.writeString("W: done\n");
+}
+
+@coro(stack=16) void other() {
+    Console.writeString("O: running while W parked\n");
+    Console.writeString("O: done\n");
+}
+
+class Main {
+    action:
+        @startup void run() {
+            int fh = Future.create();
+            long hw = waiter(fh);
+            long ho = other();
+            Coro.scheduler();      // W 挂起，O 运行
+            Future.set(fh, 42);    // 同线程 set → 唤醒 W
+            Coro.scheduler();      // W 恢复 got 42
+            Console.writeString("W active=");
+            Console.write(Coro.isActive(hw));
+            Console.writeString("\n");
+            Console.writeString("O active=");
+            Console.write(Coro.isActive(ho));
+            Console.writeString("\n");
+            Future.destroy(fh);
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}
