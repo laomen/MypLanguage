@@ -16,11 +16,14 @@ class Main {
             string data2 = "{\"user\":{\"name\":\"Alice\"}}";
             Json doc2 = new Json(data2);
             Console.writeString("uname="); Console.writeLine(doc2.getString("user.name"));
+            doc2.free();
 
             // array
             string data3 = "[10,20,30]";
             Json doc3 = new Json(data3);
             Console.writeString("alen="); Console.write(doc3.arrayLen("")); Console.writeString("\n");
+            doc3.free();
+            doc.free();
         }
 }
 

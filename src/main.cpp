@@ -264,9 +264,13 @@ static bool loadModule(const std::string& module_name,
 
     // When MYP_SANITIZE=1, also instrument the generated program so the test
     // suite can run entirely under ASan/UBSan (catches runtime memory bugs).
+    // When MYP_SANITIZE_TSAN=1, use ThreadSanitizer instead (codegen adds the
+    // TSan pass; here runtime + link get -fsanitize=thread).
     std::string san_flags;
     if (const char* env = getenv("MYP_SANITIZE"); env && env[0] == '1')
         san_flags = " -fsanitize=address,undefined -fno-omit-frame-pointer ";
+    else if (const char* env = getenv("MYP_SANITIZE_TSAN"); env && env[0] == '1')
+        san_flags = " -fsanitize=thread -fno-omit-frame-pointer ";
 
     std::string runtime_dir = stdlib_path.substr(0, stdlib_path.find_last_of('/'));
     if (runtime_dir.empty() || runtime_dir == stdlib_path) runtime_dir = ".";

@@ -19,6 +19,7 @@
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
 #include <llvm/Transforms/IPO/GlobalDCE.h>
+#include <llvm/Transforms/Instrumentation/ThreadSanitizer.h>
 
 // NVPTX target initialization (must be at global scope)
 extern "C" void LLVMInitializeNVPTXTargetInfo(void);
@@ -5874,6 +5875,26 @@ void CodeGen::declareRuntimeFunctions() {
 
 // -- Output --
 bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
+    // ThreadSanitizer instrumentation for generated programs.
+    // Enabled via MYP_SANITIZE_TSAN=1 at mypc runtime; instruments the host
+    // module so data races in @thread/@parallel user code are detected.
+    // (TSan uses the new pass manager; runs before legacy-PM codegen.)
+    if (const char* env = getenv("MYP_SANITIZE_TSAN"); env && env[0] == '1') {
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+        llvm::ModulePassManager TSanMPM;
+        TSanMPM.addPass(llvm::ModuleThreadSanitizerPass());
+        TSanMPM.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ThreadSanitizerPass()));
+        TSanMPM.run(*module_, MAM);
+    }
     auto host_triple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
     module_->setTargetTriple(host_triple);
     std::string err;

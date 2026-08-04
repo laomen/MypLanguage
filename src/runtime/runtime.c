@@ -1559,7 +1559,7 @@ static int myp_queue_pop(myp_event_queue_t* q, myp_event_t* ev) {
 // ---- Thread Support (@thread) ----
 struct myp_thread {
     pthread_t thread;
-    volatile int running;
+    _Atomic int running;   // atomic: written by stop, read by event loop (data-race free)
     myp_event_queue_t* queue;
     void (*startup_fn)(void*, void*);
     void* startup_arg;
@@ -1869,8 +1869,12 @@ myp_pool_t* myp_pool_create(int n_threads) {
     pool->threads = (pthread_t*)calloc(n_threads, sizeof(pthread_t));
 
     myp_global_pool = pool;
+    // Publish pool under the start mutex so the worker's condvar handshake
+    // establishes happens-before for myp_global_pool and start_ok (data-race free).
+    pthread_mutex_lock(&myp_pool_start_mutex);
     myp_pool_start_ok = 1;
     pthread_cond_broadcast(&myp_pool_start_cond);
+    pthread_mutex_unlock(&myp_pool_start_mutex);
 
     for (int i = 0; i < n_threads; i++)
         pthread_create(&pool->threads[i], NULL, myp_pool_worker, (void*)(uintptr_t)i);
@@ -1878,9 +1882,19 @@ myp_pool_t* myp_pool_create(int n_threads) {
     return pool;
 }
 
+static pthread_once_t myp_pool_once = PTHREAD_ONCE_INIT;
+
+static void myp_pool_init_global(void) {
+    // myp_pool_create() itself publishes myp_global_pool (before the start-mutex
+    // handshake). Do NOT re-assign here — an unsynchronized second write of the
+    // same pointer would race with workers reading myp_global_pool.
+    myp_pool_create(0);
+}
+
 myp_pool_t* myp_pool_ensure_global(void) {
-    if (!myp_global_pool)
-        myp_global_pool = myp_pool_create(0);
+    // pthread_once: init exactly once with proper happens-before, so the
+    // unsynchronized `myp_global_pool` read/write is no longer a data race.
+    pthread_once(&myp_pool_once, myp_pool_init_global);
     return myp_global_pool;
 }
 
@@ -1904,7 +1918,6 @@ void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
         pthread_mutex_unlock(&pool->deques[t].mutex);
     }
 
-    pool->done_count = 0;
     int actual_chunks = 0;
 
     int iter = start;
@@ -1918,7 +1931,12 @@ void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
         actual_chunks++;
     }
 
+    // Publish total_chunks under barrier_mutex (workers read/write done_count
+    // and total_chunks under this mutex) — avoids the reset/publish data race.
+    pthread_mutex_lock(&pool->barrier_mutex);
+    pool->done_count = 0;
     pool->total_chunks = actual_chunks;
+    pthread_mutex_unlock(&pool->barrier_mutex);
 
     // Signal workers
     pthread_mutex_lock(&pool->work_mutex);
@@ -1932,7 +1950,9 @@ void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
         pthread_cond_wait(&pool->barrier_cond, &pool->barrier_mutex);
     pthread_mutex_unlock(&pool->barrier_mutex);
 
+    pthread_mutex_lock(&pool->work_mutex);
     pool->work_available = 0;
+    pthread_mutex_unlock(&pool->work_mutex);
 }
 
 void myp_pool_destroy(myp_pool_t* pool) {
