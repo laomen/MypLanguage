@@ -13,9 +13,8 @@ class Main {
             string out = Process.output("echo hello_myp_test");
             Console.writeString("out="); Console.writeLine(out);
 
-            // pid
+            // pid 只检查 >0（原始 PID 非确定，不打印，保证 CI 稳定）
             int pid = Process.getPid();
-            Console.writeString("pid="); Console.write(pid); Console.writeString("\n");
             Console.writeString("pid_gt0=");
             if (pid > 0) Console.writeString("1\n");
             else Console.writeString("0\n");

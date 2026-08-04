@@ -1,15 +1,11 @@
-// date: calendar fields
+// date: 确定性字段（weekday/month 名）— 不依赖墙钟日期，保证 CI 稳定
 import env;
 import date;
 
 class Main {
     action:
         @startup void run() {
-            Console.writeString("year="); Console.write(Date.getYear()); Console.writeString("\n");
-            Console.writeString("mon="); Console.write(Date.getMonth()); Console.writeString("\n");
-            Console.writeString("day="); Console.write(Date.getDay()); Console.writeString("\n");
-
-            // weekday/month names
+            // weekday/month names（确定性，不随日期变化）
             Console.writeLine("wname=" + Date.weekdayName(0));
             Console.writeLine("wname=" + Date.weekdayName(1));
             Console.writeLine("wname=" + Date.weekdayName(6));

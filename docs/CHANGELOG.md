@@ -33,6 +33,9 @@
   - 左结合链式 `A |> Op1 |> Op2`（= `Op2.transform(Op1.transform(A))`）
   - 新增 token `|>`；低优先级（高于赋值）；配合 SetOp 契约
   - 回归测试 `tests/pipe/`
+- **CI + 测试确定性**：
+  - 新增 GitHub Actions（`.github/workflows/ci.yml`）：构建 + 全套测试 + fuzz + ASAN
+  - `date`/`process` 测试改为确定性（移除墙钟日期与原始 PID）——套件从"84 通过 2 抖动"到"84 通过 0 失败"
 
 ### v2.4.1
 - **算子系统（P1+P2，additive）**：`运算符 = 算子` 统一模型实施

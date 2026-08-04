@@ -1,0 +1,68 @@
+# GitHub Actions CI — MYP Language
+#
+# 每次 push / PR 自动运行:
+#   1. 构建 mypc (Release)
+#   2. 完整测试套件 (回归 + 负测试 + 测试框架 + 无崩溃) — 84 个确定性测试
+#   3. 模糊测试 (fuzz, 固定种子)
+#   4. ASAN/UBSAN 构建 + 套件
+#
+# 说明:
+#   - GPU 测试 (cuda.myp / @gpu for) 不在 run_tests.sh 套件内 (独立文件),
+#     且需要 NVIDIA GPU, 故 CI 不跑; 留待 self-hosted runner
+#   - LLVM 21 从 apt.llvm.org 安装 (GitHub 镜像不预装)
+#   - 公共仓库: 完全免费
+
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (LLVM 21 + build tools)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc g++ make cmake pkg-config libsdl2-dev
+          # LLVM 21 from apt.llvm.org (GitHub runner doesn't ship it)
+          wget https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 21
+          sudo apt-get install -y libllvm-21-dev llvm-21-dev clang-21
+          llvm-config-21 --version
+
+      - name: Build mypc (Release)
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Test suite (regression + negative + framework + no-crash)
+        run: bash tests/run_tests.sh
+
+      - name: Fuzz (fixed seed)
+        run: python3 tests/fuzz_test.py --count 200 --seed 42
+
+      - name: Build mypc (ASAN)
+        run: |
+          cmake -B build-asan -DMYP_SANITIZE=ON
+          cmake --build build-asan -j"$(nproc)"
+
+      - name: Test suite (ASAN)
+        run: bash tests/run_tests_asan.sh
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            tests/**/test.output
+            tests/expected/
+          retention-days: 7
