@@ -107,10 +107,9 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 | **Process** | `process` (command execution/output capture) |
 | **CLI** | `args` (argument parsing), `env` (environment variables) |
 | **Memory** | `memory` (malloc/DynamicArray) |
-| **Concurrency** | `atomic`, `barrier`, `future`, `pool` |
+| **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `coro` (coroutines) |
 | **Utilities** | `logger`, `json`, `test`, `stream` |
 | **Graphics** | `sdl` (SDL2), `ui` (terminal TUI) |
-| **Experimental** | `coro` (coroutines) |
 
 ## 🛠️ Toolchain
 
@@ -130,9 +129,9 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 
 ```bash
 bash tests/run_tests.sh
-# Regression tests: 55 passed, 0 failed
-# Negative tests:   10 passed, 0 failed
-# Total:            66 passed, 0 failed
+# Regression tests: 67 passed, 0 failed
+# Negative tests:   25 passed, 0 failed
+# Total:            94 passed, 0 failed
 ```
 
 ## 🏗️ Project Structure

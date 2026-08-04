@@ -248,12 +248,12 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 
 | 层 | 改动 |
 |---|---|
-| **Parser** | 已支持 `@coro`/`await`（无需改）；如需 `await` 带类型标注可扩展 |
-| **Sema** | `@coro` 函数约束（无 `@region` 冲突、返回 int/handle 语义）；`await` 类型检查（expr 类型 → 值槽）|
-| **Codegen** | `@coro` 调用 → spawn 代码（create/set_entry/参数/resume）；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽 |
-| **Runtime** | `yield`/`resume` 带值；参数/结果槽；`spawn` 便捷函数 |
-| **Stdlib** | 修复 `stdlib/coro.myp` FFI（`set_entry` 替换 `set_func`）；加 `spawn`/`result` 包装 |
-| **测试** | `tests/coro/`：启动/挂起/恢复/值传递/返回值/销毁/多协程/自动调度 |
+| **Parser** | `@coro` 注解（类 action 方法）+ `await` 语句/表达式（`AwaitStmt`/`AwaitExpr`，支持 `await;` / `await expr;` / `await ClassName.eventName` 事件等待）|
+| **Sema** | `@coro` 方法调用返回 handle；`await` 表达式类型（long）；`await ClassName.eventName` 事件引用识别；`__myp_coro_*` 不注册符号（对用户隐藏）|
+| **Codegen** | `@coro` 调用 → spawn（create/入口参数槽/set_entry/首启）；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽；`Coro` 内建静态类 → 直接生成 runtime 调用；`await event` → wait_event |
+| **Runtime** | ucontext 纤程原语；线程本地值槽（yield/resume）；per-协程 result 槽；入口参数槽；就绪队列（ready 标记）+ `__myp_coro_scheduler()`；事件等待表 + 派发通知 |
+| **Stdlib** | `stdlib/coro.myp`：`Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent），无 FFI 声明、无内部符号暴露 |
+| **测试** | `tests/coro/`（C1+C2：spawn/恢复/参数/值传递/返回值/isActive/destroy/多协程）+ `tests/coro_auto/`（C3：自动调度 round-robin）+ `tests/coro_event/`（C4：事件等待）；普通 + ASAN 全套 94/94 |
 
 **风险**：ucontext 栈切换正确性（挂起点恢复、值槽线程本地）是核心；改动集中在协程路径，不碰正常执行路径，符合 v1.0 非破坏约束。C1-C4 全部落地，无未决设计项（见 §7）。
 

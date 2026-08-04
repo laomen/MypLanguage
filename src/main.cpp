@@ -461,7 +461,7 @@ static bool loadModule(const std::string& module_name,
     return true;
 }
 
-static const char* MYP_VERSION = "2.4.2";
+static const char* MYP_VERSION = "2.4.3";
 // Language specification version (frozen grammar, see docs/grammar.md).
 // Bump ONLY on breaking syntax/semantics changes (see docs/CHANGELOG.md).
 static const char* MYP_SPEC_VERSION = "1.0";

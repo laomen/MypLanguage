@@ -27,7 +27,23 @@
 
 ## 编译器版本历史
 
-### v2.4.2（当前）
+### v2.4.3（当前）
+- **协程（C1-C4 完整落地，additive）**：`@coro` 类 action 方法 + `await` 挂起/恢复
+  - C1：spawn（create/set_entry/入口参数槽/首启）+ 手动 `resume`；`await;` 简单挂起
+  - C2：`await` 值传递（`int v = await expr;`）+ `@coro` 返回值槽（`Coro.result`）
+  - C3：自动调度器（就绪队列 + `Coro.scheduler()` round-robin）
+  - C4：事件集成（`await ClassName.eventName` 阻塞等待 + 事件派发通知）
+  - 用户 API 为编译器内建静态类 `Coro`（scheduler/resume/yield/isActive/destroy/result/waitEvent），
+    `__myp_coro_*` 符号未注册（用户调用即 undefined）；`stdlib/coro.myp` 无 FFI 声明
+  - 回归测试 `tests/coro/` + `tests/coro_auto/` + `tests/coro_event/`（普通 + ASAN 全套 94/94 通过）
+  - 设计规范见 `docs/coro.md`
+- **异常机制完善（additive）**：`finally` 全路径传播（return/break/continue）、`throw;` 重抛、
+  未处理异常消息+abort、标准异常类（FileError/JsonError/NetError 等库接入）、`catch (Error e)` 接口匹配
+- **LSP 稳定性**：修复 `didOpen`/`didChange` JSON 解码 bug（`\n`/`\t` 转义处理），消除 35GB 内存爆炸
+- **测试基础设施**：`run_tests.sh` diff 改用临时文件（规避 process-substitution FIFO 不可靠）；
+  `time`/`timeline` 测试改为确定性断言（消除 sleep 精度 flaky）
+
+### v2.4.2
 - **管道 `|>`（P3，additive）**：算子组件流水线
   - `A |> Op`：Op 为算子类名（自动实例化）或实例（复用），调用其 `transform`
   - 左结合链式 `A |> Op1 |> Op2`（= `Op2.transform(Op1.transform(A))`）

@@ -107,10 +107,9 @@ double[1000] tally;
 | **进程** | `process`（命令执行/输出捕获） |
 | **命令行** | `args`（参数解析）、`env`（环境变量） |
 | **内存** | `memory`（malloc/DynamicArray） |
-| **并发** | `atomic`、`barrier`、`future`、`pool` |
+| **并发** | `atomic`、`barrier`、`future`、`pool`、`coro`（协程） |
 | **工具** | `logger`、`json`、`test`、`stream` |
 | **图形** | `sdl`（SDL2）、`ui`（终端 TUI） |
-| **实验** | `coro`（协程） |
 
 ## 🛠️ 工具链
 
@@ -130,9 +129,9 @@ double[1000] tally;
 
 ```bash
 bash tests/run_tests.sh
-# 回归测试: 55 通过, 0 失败
-# 负测试:   10 通过, 0 失败
-# 总计:     66 通过, 0 失败
+# 回归测试: 67 通过, 0 失败
+# 负测试:   25 通过, 0 失败
+# 总计:     94 通过, 0 失败
 ```
 
 ## 🏗️ 项目结构
