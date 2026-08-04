@@ -310,15 +310,39 @@ void Sema::visitStructDecl(StructDecl& decl) {
     struct_type.class_name = type_key;
     symbol_table_.declare(type_key, struct_type);
 
+    // Validate struct fields: duplicate names and void-typed fields are rejected.
+    for (size_t i = 0; i < decl.properties.size(); ++i) {
+        auto& prop = decl.properties[i];
+        TypeInfo ft = typeNodeToTypeInfo(prop.type);
+        if (ft.kind == TypeKind::Void && prop.type.class_name.empty()) {
+            error(prop.range, "cannot declare field of type 'void'");
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (decl.properties[j].name == prop.name) {
+                error(prop.range, "duplicate field '" + prop.name +
+                      "' in struct '" + type_key + "'");
+                break;
+            }
+        }
+    }
+
     // Register struct methods
     for (auto& func : decl.functions) {
         TypeInfo func_type(TypeKind::Function);
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(func.return_type));
         for (auto& param : func.params) {
-            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            TypeInfo pt = typeNodeToTypeInfo(param.type);
+            if (pt.kind == TypeKind::Void && param.type.class_name.empty()) {
+                error(param.range, "cannot declare parameter of type 'void'");
+            }
+            func_type.param_types.push_back(pt);
             func_type.param_is_ref.push_back(param.is_ref);
         }
         std::string method_name = type_key + "::" + func.name;
+        if (symbol_table_.lookup(method_name)) {
+            error(func.range, "duplicate method '" + func.name +
+                  "' in struct '" + type_key + "'");
+        }
         symbol_table_.declare(method_name, func_type);
     }
 }
@@ -579,9 +603,13 @@ Sema::StmtResult Sema::visitBlock(BlockStmt& stmt) {
 Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
     auto decl_type = typeNodeToTypeInfo(decl.type);
 
-    // Check for unknown class/type
-    if (decl_type.kind == TypeKind::Void && !decl.type.class_name.empty()) {
-        error(decl.range, "unknown type '" + decl.type.class_name + "'");
+    // Reject void-typed variables (explicit `void x;` previously crashed codegen)
+    // and unknown class types (class_name set but not resolvable → Void kind).
+    if (decl_type.kind == TypeKind::Void) {
+        if (!decl.type.class_name.empty())
+            error(decl.range, "unknown type '" + decl.type.class_name + "'");
+        else
+            error(decl.range, "cannot declare variable of type 'void'");
         return {};
     }
 

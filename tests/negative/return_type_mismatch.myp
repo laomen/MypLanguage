@@ -1,0 +1,3 @@
+// EXPECT ERROR: return type mismatch — int function returns string
+int foo() { return "hello"; }
+int main(){return 0;}

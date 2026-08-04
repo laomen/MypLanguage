@@ -1,0 +1,3 @@
+// EXPECT ERROR: struct without '+' operator — binary op on struct not supported
+struct A { int x; }
+int main(){ A a; A b; A c = a + b; return 0; }

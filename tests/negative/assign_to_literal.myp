@@ -1,0 +1,3 @@
+// EXPECT ERROR: cannot assign to literal (5 = 1)
+class M { action: @startup void run() { 5 = 1; } }
+int main(){M m=new M();return 0;}

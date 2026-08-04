@@ -1,0 +1,6 @@
+// EXPECT ERROR: class does not support operator section (math operators are struct-only)
+class C {
+    operator:
+        @op("+") double add(double a, double b) { return a; }
+}
+int main(){return 0;}

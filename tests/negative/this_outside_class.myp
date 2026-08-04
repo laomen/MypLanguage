@@ -1,0 +1,4 @@
+// EXPECT ERROR: this can only be used inside a class action or struct method
+int foo() { return 0; }
+class M { action: @startup void run() { int x = this.x; } }
+int main(){M m=new M();return 0;}

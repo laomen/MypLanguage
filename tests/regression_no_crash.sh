@@ -26,6 +26,10 @@ cases=(
   # 直接对字面量/表达式赋值 (同样曾崩溃)
   'class Test { action: @startup void run() { 5 = 1; } } int main(){Test t=new Test();return 0;}'
   'class Test { action: @startup void run() { (1+2) = 3; } } int main(){Test t=new Test();return 0;}'
+  # 负测试扩展发现: void 变量 (曾 SIGSEGV — LLVM DataLayout 无限递归)
+  'class Test { action: @startup void run() { void x; } } int main(){Test t=new Test();return 0;}'
+  # struct 重复字段 (曾未被拒绝, 现干净报错)
+  'struct S { int x; int x; } int main(){return 0;}'
 )
 
 echo "--- 无崩溃回归测试 (no-crash regression) ---"

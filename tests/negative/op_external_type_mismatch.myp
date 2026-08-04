@@ -1,0 +1,7 @@
+// EXPECT ERROR: no external @op for double[] + double[] (plain function is not an operator)
+double[] add(double[] A, double[] B) { return A; }
+int main(){
+    double[] A = new double[2];
+    double[] C = A + A;
+    return 0;
+}
