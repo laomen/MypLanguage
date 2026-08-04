@@ -161,6 +161,7 @@ region 结束时其指向的数据会被误释放吗？
 |---|---|
 | `T[]`（裸指针） | 1 个：`data` |
 | `slice<T>` | 1 个：`data` |
+| `string` | 1 个：`data` |
 | struct | **递归**：各字段引用槽位的并集 |
 | class 实例 | 1 个（自身）+ 深层实例字段 |
 
@@ -200,6 +201,51 @@ region 结束时其指向的数据会被误释放吗？
 **保守兜底**（v1.0）：跨函数 / 别名复杂分析不清 → 该 `new` 提升进程级，100% 安全。
 P4 链式场景（中间 slice 全为本地、不返回、不传参）仍是主要受益者。
 可选编译期诊断：`@region` 返回 region 内对象 → 提示"已自动提升为持久"。
+
+### 3.6 边界与线程语义
+
+#### ① 字符串（string）逃逸
+
+`string` = `char*`（裸指针），是**引用类型**。`@region` 内 `return` 字符串
+（如 `"prefix_" + id` 经 `myp_strcat`）→ 逃逸 → 进程级（§3.5 引用槽位表已含 `string`）。
+
+#### ② region 动态 extent
+
+```myp
+@region void processFrame() {
+    helper();          // 普通函数，内部 new 归当前 region
+}
+void helper() {
+    slice<double> t = new slice<double>(4);   // ← 属于当前 region（动态 extent）
+}
+```
+
+**region 是动态作用域**：`@region` action 调用栈内（含普通函数）所有 `new` 都进
+当前 region。`myp_region_alloc` 读取"当前 region"TLS（线程本地），天然实现动态 extent。
+普通函数里的临时对象也因此可回收。
+
+#### ③ 事件链跨 region：传递 = 逃逸
+
+```myp
+@region void onData() {
+    slice<double> s = new slice<double>(n);
+    event.ready(s);          // fire event 携带 s 给另一个 action
+}   // ← s 被事件带出 → 视为逃逸 → 进程级，接收方无悬垂
+```
+
+**规则：fire event 携带的对象 = 逃逸**（如同传参），分配进程级。
+否则事件接收方拿到悬垂 slice。这是 MYP 特有的逃逸出口（事件驱动核心场景）。
+
+#### ④ 线程语义
+
+- `myp_arena_mark/release` **线程本地**（TLS）；`@region` 在各线程独立成区域
+- 跨线程 slice：A 线程 region 内对象传给 B 线程 → A 的 region 释放即悬垂 →
+  **视为逃逸（进程级）**或约定"不跨线程传 region 内对象"
+
+#### ⑤ GPU 边界（实现记录）
+
+region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 region 动态回收
+需协调（数据须在 region 释放前完成拷贝）。P4b 实现时再定。
 
 ---
 
@@ -249,7 +295,9 @@ P4 链式场景（中间 slice 全为本地、不返回、不传参）仍是主�
 4. **是否提供 `T[]` → `slice<T>` 转换？**（裸数组无长度，转换语义需谨慎）
 5. **`@region` 粒度**：action 注解 vs `region { }` 块级？（§3.4，推荐 action 注解）
 6. **逃逸分析保守策略**："传参即逃逸"是否接受？（§3.5，保证安全但区域回收覆盖有限）
-7. **与 P4 的衔接**：slice 落地后，`docs/operators.md` §5 示例改为用 `A.size()`，
+7. **region 动态 extent**：普通函数内 `new` 归当前 region？（§3.6 ②，推荐动态）
+8. **事件传递 = 逃逸**：fire event 携带的对象提升进程级？（§3.6 ③，推荐）
+9. **与 P4 的衔接**：slice 落地后，`docs/operators.md` §5 示例改为用 `A.size()`，
    消除"硬编码 n"（§7 难点①）
 
 ---
