@@ -435,6 +435,7 @@ enum class StmtKind {
     MappingStmt,
     MatchStmt,
     TryStmt,
+    ThrowStmt,
 };
 
 struct Stmt {
@@ -450,18 +451,28 @@ struct BlockStmt : Stmt {
         : Stmt(StmtKind::Block, r), statements(std::move(stmts)) {}
 };
 
+struct CatchClause {
+    std::string var_name;
+    std::string var_type;   // "" = catch-all (matches anything, var is string msg)
+    std::unique_ptr<BlockStmt> block;
+};
+
 struct TryStmt : Stmt {
     std::unique_ptr<BlockStmt> try_block;
-    std::string catch_var_name;
-    std::string catch_var_type;
-    std::unique_ptr<BlockStmt> catch_block;
+    std::vector<CatchClause> catches;
     std::unique_ptr<BlockStmt> finally_block;
-    TryStmt(std::unique_ptr<BlockStmt> tb, const std::string& cvn,
-            const std::string& cvt, std::unique_ptr<BlockStmt> cb,
+    TryStmt(std::unique_ptr<BlockStmt> tb, std::vector<CatchClause> cs,
             std::unique_ptr<BlockStmt> fb, SourceRange r)
         : Stmt(StmtKind::TryStmt, r), try_block(std::move(tb)),
-          catch_var_name(cvn), catch_var_type(cvt),
-          catch_block(std::move(cb)), finally_block(std::move(fb)) {}
+          catches(std::move(cs)), finally_block(std::move(fb)) {}
+};
+
+// throw expr; — string shortcut or typed exception object
+struct ThrowStmt : Stmt {
+    std::unique_ptr<Expr> expr;
+    std::string throw_type;   // "string" | class name (set by Sema)
+    ThrowStmt(std::unique_ptr<Expr> e, SourceRange r)
+        : Stmt(StmtKind::ThrowStmt, r), expr(std::move(e)) {}
 };
 
 struct VarDeclStmt : Stmt {

@@ -372,6 +372,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "catch")    kind = TokenKind::Keyword_catch;
     else if (value == "finally")  kind = TokenKind::Keyword_finally;
     else if (value == "throw")    kind = TokenKind::Keyword_throw;
+    else if (value == "throw")    kind = TokenKind::Keyword_throw;
     else if (value == "where")    kind = TokenKind::Keyword_where;
     else if (value == "await")   kind = TokenKind::Keyword_await;
     else if (value == "const")   kind = TokenKind::Keyword_const;

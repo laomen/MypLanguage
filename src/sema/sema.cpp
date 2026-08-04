@@ -587,6 +587,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitMatchStmt(static_cast<MatchStmt&>(stmt));
         case StmtKind::TryStmt:
             return visitTryStmt(static_cast<TryStmt&>(stmt));
+        case StmtKind::ThrowStmt:
+            return visitThrowStmt(static_cast<ThrowStmt&>(stmt));
     }
     return {};
 }
@@ -2245,6 +2247,21 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_trunc", TypeKind::Int, {TypeKind::Double});
 }
 
+Sema::StmtResult Sema::visitThrowStmt(ThrowStmt& stmt) {
+    auto t = visitExpr(*stmt.expr);
+    if (t.kind == TypeKind::String) {
+        stmt.throw_type = "string";
+    } else if (t.kind == TypeKind::Class) {
+        stmt.throw_type = t.class_name;
+    } else if (t.kind == TypeKind::Void) {
+        // cascading error recovery
+    } else {
+        error(stmt.range, "throw requires a string or class instance, got '" +
+              typeName(t) + "'");
+    }
+    return {};
+}
+
 Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {
     // Save and temporarily clear main function flag (try blocks allow calls)
     bool saved_main = in_main_function_;
@@ -2256,13 +2273,29 @@ Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {
     // Restore main flag for catch/finally blocks
     in_main_function_ = saved_main;
 
-    // Type-check the catch block with the variable declared
-    if (stmt.catch_block) {
+    // Type-check each catch clause: declare its variable with its declared type.
+    // catch-all ("") and catch (string e) → the variable is a string message;
+    // catch (ClassName e) → the variable is a class instance.
+    for (auto& cc : stmt.catches) {
         symbol_table_.enterScope();
-        TypeInfo catch_type(TypeKind::String);
-        symbol_table_.declare(stmt.catch_var_name, catch_type);
+        TypeInfo ct(TypeKind::String);
+        if (!cc.var_type.empty() && cc.var_type != "string") {
+            bool found = false;
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes)
+                    if (cls.name == cc.var_type) { found = true; break; }
+            }
+            if (!found) {
+                error(stmt.range, "catch type '" + cc.var_type +
+                    "' is not a class");
+            } else {
+                ct = TypeInfo(TypeKind::Class);
+                ct.class_name = cc.var_type;
+            }
+        }
+        symbol_table_.declare(cc.var_name, ct);
         in_main_function_ = false; // catch also allows calls
-        visitBlock(*stmt.catch_block);
+        if (cc.block) visitBlock(*cc.block);
         symbol_table_.leaveScope();
     }
 

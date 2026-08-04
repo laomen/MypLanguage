@@ -427,6 +427,13 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         for (auto& st : cls.structs) declareStructMethods(st);
     }
 
+    // Assign compile-time exception type IDs to every class (ID 0 = string).
+    {
+        int tid = 1;
+        for (auto& cls : tu.classes)
+            class_type_ids_[cls.name] = tid++;
+    }
+
     // Generate function bodies
     for (auto& f : tu.functions) generateFuncDecl(f);
     for (auto& c : tu.classes) generateClass(c);
@@ -1345,6 +1352,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::MappingStmt: generateMappingDecl(static_cast<const MappingStmt&>(s).decl, builder_.GetInsertBlock()); break;
         case StmtKind::MatchStmt: generateMatchStmt(static_cast<const MatchStmt&>(s)); break;
         case StmtKind::TryStmt: generateTryStmt(static_cast<const TryStmt&>(s)); break;
+        case StmtKind::ThrowStmt: generateThrowStmt(static_cast<const ThrowStmt&>(s)); break;
         default: break;
     }
 }
@@ -5829,11 +5837,13 @@ void CodeGen::generateMatchStmt(const MatchStmt& s) {
 
 void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* func = builder_.GetInsertBlock()->getParent();
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
 
     // Per-try jmp_buf, allocated in the entry block so it stays live across the
     // longjmp back to the setjmp (fixes nested tries / cross-function throws).
     auto* jb = createEntryBlockAlloca(func, jmp_buf_type_, "try_jmpbuf");
-    auto* jb_ptr = builder_.CreateBitCast(jb, llvm::PointerType::get(ctx_, 0));
+    auto* jb_ptr = builder_.CreateBitCast(jb, ptr_ty);
 
     // Register this try's handler before setjmp (innermost-active handler stack).
     builder_.CreateCall(runtime_exception_push_->getFunctionType(),
@@ -5843,54 +5853,95 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
         runtime_setjmp_, {jb_ptr}, "setjmp_result");
 
-    // Compare result == 0 (normal path) vs != 0 (error/catch path)
-    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* zero = llvm::ConstantInt::get(i32_ty, 0);
     auto* is_error = builder_.CreateICmpNE(result, zero, "is_error");
 
     auto* try_bb = llvm::BasicBlock::Create(ctx_, "try_block", func);
-    auto* catch_bb = s.catch_block
-        ? llvm::BasicBlock::Create(ctx_, "catch_block", func) : nullptr;
+    llvm::BasicBlock* dispatch_bb = s.catches.empty()
+        ? nullptr : llvm::BasicBlock::Create(ctx_, "catch_dispatch", func);
     auto* finally_bb = s.finally_block
         ? llvm::BasicBlock::Create(ctx_, "finally_block", func) : nullptr;
     auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_end", func);
 
-    if (catch_bb) {
-        builder_.CreateCondBr(is_error, catch_bb, try_bb);
-    } else {
+    if (dispatch_bb)
+        builder_.CreateCondBr(is_error, dispatch_bb, try_bb);
+    else if (finally_bb)
+        builder_.CreateCondBr(is_error, finally_bb, try_bb);
+    else
         builder_.CreateCondBr(is_error, merge_bb, try_bb);
-    }
 
     // === Generate try block ===
     builder_.SetInsertPoint(try_bb);
     if (s.try_block) generateBlock(*s.try_block);
     if (!builder_.GetInsertBlock()->getTerminator()) {
-        if (finally_bb) {
-            builder_.CreateBr(finally_bb);
-        } else {
-            builder_.CreateBr(merge_bb);
-        }
+        builder_.CreateBr(finally_bb ? finally_bb : merge_bb);
     }
 
-    // === Generate catch block ===
-    if (catch_bb) {
-        builder_.SetInsertPoint(catch_bb);
-        // Get the error message via myp_get_error()
-        auto* err_ptr = builder_.CreateCall(runtime_get_error_->getFunctionType(),
-            runtime_get_error_, {}, "err_msg");
-        // Store it as the catch variable
-        auto* err_var = createEntryBlockAlloca(func,
-            llvm::PointerType::get(ctx_, 0), s.catch_var_name);
-        builder_.CreateStore(err_ptr, err_var);
-        setNamedValue(s.catch_var_name, err_var);
+    // === Dispatch: match the exception type against each catch clause ===
+    if (dispatch_bb) {
+        builder_.SetInsertPoint(dispatch_bb);
+        auto* etype = builder_.CreateCall(runtime_exception_get_type_->getFunctionType(),
+            runtime_exception_get_type_, {}, "exc_type");
+        std::vector<llvm::BasicBlock*> catch_bbs;
+        for (size_t i = 0; i < s.catches.size(); ++i)
+            catch_bbs.push_back(llvm::BasicBlock::Create(ctx_,
+                "catch_" + std::to_string(i), func));
+        auto* rethrow_bb = llvm::BasicBlock::Create(ctx_, "catch_rethrow", func);
 
-        if (s.catch_block) generateBlock(*s.catch_block);
-        if (!builder_.GetInsertBlock()->getTerminator()) {
-            if (finally_bb) {
-                builder_.CreateBr(finally_bb);
+        llvm::BasicBlock* chk = dispatch_bb;
+        for (size_t i = 0; i < s.catches.size(); ++i) {
+            auto& cc = s.catches[i];
+            llvm::BasicBlock* nxt = (i + 1 < s.catches.size())
+                ? llvm::BasicBlock::Create(ctx_, "catch_chk_" + std::to_string(i + 1), func)
+                : rethrow_bb;
+            builder_.SetInsertPoint(chk);
+            if (cc.var_type.empty()) {
+                // catch-all: unconditional
+                builder_.CreateBr(catch_bbs[i]);
+            } else if (cc.var_type == "string") {
+                auto* m = builder_.CreateICmpEQ(etype, llvm::ConstantInt::get(i32_ty, 0));
+                builder_.CreateCondBr(m, catch_bbs[i], nxt);
             } else {
-                builder_.CreateBr(merge_bb);
+                auto it = class_type_ids_.find(cc.var_type);
+                int tid = (it != class_type_ids_.end()) ? it->second : 0;
+                auto* m = builder_.CreateICmpEQ(etype, llvm::ConstantInt::get(i32_ty, tid));
+                builder_.CreateCondBr(m, catch_bbs[i], nxt);
             }
+            chk = nxt;
+
+            // Generate this catch body: bind the variable, run the block.
+            builder_.SetInsertPoint(catch_bbs[i]);
+            llvm::Value* bound = nullptr;
+            if (!cc.var_type.empty() && cc.var_type != "string") {
+                // typed class catch: bind the exception object
+                bound = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
+                    runtime_exception_get_object_, {}, "exc_obj");
+            } else {
+                // string / catch-all: bind the message
+                bound = builder_.CreateCall(runtime_get_error_->getFunctionType(),
+                    runtime_get_error_, {}, "err_msg");
+            }
+            auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
+            builder_.CreateStore(bound, ev);
+            setNamedValue(cc.var_name, ev);
+            // Register typed catch variable so e.method()/property resolves.
+            if (!cc.var_type.empty() && cc.var_type != "string")
+                var_class_map_[cc.var_name] = cc.var_type;
+            if (cc.block) generateBlock(*cc.block);
+            if (!builder_.GetInsertBlock()->getTerminator())
+                builder_.CreateBr(finally_bb ? finally_bb : merge_bb);
         }
+
+        // rethrow: no catch matched — pop this handler and longjmp to the next
+        // (outer) handler; the exception object stays in the thread-local carrier.
+        builder_.SetInsertPoint(rethrow_bb);
+        builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+            runtime_exception_pop_, {});
+        auto* jb2 = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
+            runtime_exception_get_jmpbuf_, {}, "outer_handler");
+        auto* one = llvm::ConstantInt::get(i32_ty, 1);
+        builder_.CreateCall(runtime_longjmp_->getFunctionType(), runtime_longjmp_, {jb2, one});
+        builder_.CreateUnreachable();
     }
 
     // === Generate finally block ===
@@ -5906,6 +5957,27 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // Pop this try's handler (all paths converge here).
     builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
         runtime_exception_pop_, {});
+}
+
+void CodeGen::generateThrowStmt(const ThrowStmt& s) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    if (s.throw_type == "string") {
+        auto* msg = generateExpr(*s.expr);
+        builder_.CreateCall(runtime_throw_->getFunctionType(), runtime_throw_, {msg});
+    } else {
+        auto* obj = generateExpr(*s.expr);
+        auto it = class_type_ids_.find(s.throw_type);
+        int tid = (it != class_type_ids_.end()) ? it->second : 0;
+        builder_.CreateCall(runtime_throw_object_->getFunctionType(),
+            runtime_throw_object_, {obj, llvm::ConstantInt::get(i32_ty, tid)});
+    }
+    // longjmp to the innermost active handler (stack top).
+    auto* jb = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
+        runtime_exception_get_jmpbuf_, {}, "cur_handler");
+    auto* one = llvm::ConstantInt::get(i32_ty, 1);
+    builder_.CreateCall(runtime_longjmp_->getFunctionType(), runtime_longjmp_, {jb, one});
+    builder_.CreateUnreachable();
 }
 
 // -- Runtime --
@@ -6071,6 +6143,15 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_exception_get_jmpbuf_ = llvm::Function::Create(
         llvm::FunctionType::get(p, {}, false),
         llvm::Function::ExternalLinkage, "myp_exception_get_jmpbuf", module_.get());
+    runtime_throw_object_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_throw_object", module_.get());
+    runtime_exception_get_type_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_get_type", module_.get());
+    runtime_exception_get_object_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_get_object", module_.get());
 
     // Test framework runtime functions
     runtime_assert_ = llvm::Function::Create(

@@ -1,10 +1,29 @@
 // 异常处理测试 (try/catch + __myp_throw)
 import env;
+import error;
 
 // 子函数 throw → 父 catch（跨函数 longjmp）
 void risky() {
     Console.writeString("risky_enter\n");
     __myp_throw("deep_error");
+}
+
+// 对象异常（实现 Error 接口）
+class FileError {
+    interface class Error;
+    action:
+        string message() { return "file: " + path_; }
+        void setPath(string p) { path_ = p; }
+    property:
+        string path_;
+}
+class ParseError {
+    interface class Error;
+    action:
+        string message() { return "parse: " + line_; }
+        void setLine(int l) { line_ = l; }
+    property:
+        int line_;
 }
 
 class Main {
@@ -73,6 +92,63 @@ class Main {
                 Console.writeString("cross_outer_after\n");
             } catch (string e) {
                 Console.writeString("cross_caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+
+            // 7. 对象异常：typed catch 分发
+            try {
+                FileError f = new FileError();
+                f.setPath("cfg.myp");
+                throw f;
+            } catch (FileError e) {
+                Console.writeString("obj_file=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            } catch (ParseError e) {
+                Console.writeString("obj_parse\n");
+            } catch (e) {
+                Console.writeString("obj_other\n");
+            }
+
+            // 8. 对象异常 → 第二个 catch
+            try {
+                ParseError p = new ParseError();
+                p.setLine(42);
+                throw p;
+            } catch (FileError e) {
+                Console.writeString("obj_wrong\n");
+            } catch (ParseError e) {
+                Console.writeString("obj_parse=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 9. rethrow：内层不匹配 → 外层捕获
+            try {
+                try {
+                    ParseError p = new ParseError();
+                    p.setLine(7);
+                    throw p;
+                } catch (FileError e) {
+                    Console.writeString("obj_inner_wrong\n");
+                }
+                Console.writeString("obj_inner_continue\n");
+            } catch (ParseError e) {
+                Console.writeString("obj_rethrow=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            } catch (e) {
+                Console.writeString("obj_rethrow_catchall\n");
+            }
+
+            // 10. throw string → catch (e) 兜底
+            try {
+                throw "simple_err";
+            } catch (FileError e) {
+                Console.writeString("obj_wrong2\n");
+            } catch (e) {
+                Console.writeString("obj_catchall=");
                 Console.writeString(e);
                 Console.writeString("\n");
             }

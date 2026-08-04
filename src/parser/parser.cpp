@@ -693,6 +693,11 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_try)) {
         return parseTryStmt();
     }
+    if (match(TokenKind::Keyword_throw)) {
+        auto e = parseExpr();
+        consume(TokenKind::Semicolon, "expected ';' after throw expression");
+        return std::make_unique<ThrowStmt>(std::move(e), previous().range);
+    }
     if (match(TokenKind::Keyword_const)) {
         // const Type name [= expr]; — consume const, parse rest normally
         return parseVarDeclStmt();
@@ -1930,34 +1935,32 @@ std::unique_ptr<Stmt> Parser::parseTryStmt() {
     consume(TokenKind::LeftBrace, "expected '{' after 'try'");
     auto try_block = parseBlock();
 
-    // Parse optional catch clause
-    std::string catch_var_name;
-    std::string catch_var_type;
-    std::unique_ptr<BlockStmt> catch_block;
-
-    if (match(TokenKind::Keyword_catch)) {
+    // Parse one or more catch clauses
+    std::vector<CatchClause> catches;
+    while (match(TokenKind::Keyword_catch)) {
         consume(TokenKind::LeftParen, "expected '(' after 'catch'");
+        CatchClause cc;
         // catch (e)            → catch-all, e is the string message
-        // catch (string e)     → string message (existing)
-        // catch (FileError e)  → typed catch (E4, later)
+        // catch (string e)     → string message
+        // catch (FileError e)  → typed catch (matches that exception class)
         if (check(TokenKind::Identifier) && peekNext().kind == TokenKind::RightParen) {
-            // catch (e) — no type → catch-all (variable holds the string message)
-            catch_var_name = parseIdentifier("expected variable name in catch");
-            catch_var_type = "";
+            cc.var_name = parseIdentifier("expected variable name in catch");
+            cc.var_type = "";
         } else if (check(TokenKind::Type_string)) {
-            catch_var_type = "string";
-            advance(); // consume the type token
-            catch_var_name = parseIdentifier("expected variable name in catch");
+            cc.var_type = "string";
+            advance();
+            cc.var_name = parseIdentifier("expected variable name in catch");
         } else if (check(TokenKind::Identifier)) {
-            catch_var_type = advance().value;
-            catch_var_name = parseIdentifier("expected variable name in catch");
+            cc.var_type = advance().value;
+            cc.var_name = parseIdentifier("expected variable name in catch");
         } else {
             diag_.error(peek().range, "expected type or variable in catch");
-            catch_var_name = "e";
+            cc.var_name = "e";
         }
         consume(TokenKind::RightParen, "expected ')' after catch variable");
         consume(TokenKind::LeftBrace, "expected '{' for catch body");
-        catch_block = parseBlock();
+        cc.block = parseBlock();
+        catches.push_back(std::move(cc));
     }
 
     // Parse optional finally clause
@@ -1967,12 +1970,12 @@ std::unique_ptr<Stmt> Parser::parseTryStmt() {
         finally_block = parseBlock();
     }
 
-    if (!catch_block && !finally_block) {
+    if (catches.empty() && !finally_block) {
         diag_.error(peek().range, "expected 'catch' or 'finally' after 'try' block");
     }
 
-    return std::make_unique<TryStmt>(std::move(try_block), catch_var_name,
-        catch_var_type, std::move(catch_block), std::move(finally_block), r);
+    return std::make_unique<TryStmt>(std::move(try_block), std::move(catches),
+        std::move(finally_block), r);
 }
 
 } // namespace mylang

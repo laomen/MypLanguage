@@ -2113,6 +2113,10 @@ static __thread char myp_error_msg[256];
 static int myp_error_active = 0;
 static __thread void* myp_handler_bufs[64];
 static __thread int myp_handler_depth = 0;
+// Typed exception carrier (per thread): type_id 0 = string message;
+// > 0 = a class instance of that class's type ID.
+static __thread void* myp_current_exception = NULL;
+static __thread int myp_current_exception_type = 0;
 
 // Called from generated code via intrinsic: saves error context
 void myp_error_setup(void) {
@@ -2123,6 +2127,8 @@ void myp_error_setup(void) {
 void myp_throw(const char* msg) {
     strncpy(myp_error_msg, msg, 255);
     myp_error_msg[255] = '\0';
+    myp_current_exception = NULL;
+    myp_current_exception_type = 0;  // 0 = string message exception
 }
 
 const char* myp_get_error(void) {
@@ -2131,6 +2137,23 @@ const char* myp_get_error(void) {
 
 int myp_error_is_active(void) {
     return myp_error_active;
+}
+
+// ---- Typed exception carrier helpers ----
+void myp_throw_object(void* obj, int type_id) {
+    myp_current_exception = obj;
+    myp_current_exception_type = type_id;
+    // Generic message so catch-all (string) handlers still get something.
+    strncpy(myp_error_msg, "exception", 255);
+    myp_error_msg[255] = '\0';
+}
+
+int myp_exception_get_type(void) {
+    return myp_current_exception_type;
+}
+
+void* myp_exception_get_object(void) {
+    return myp_current_exception;
 }
 
 // ---- Exception handler stack (per thread) ----

@@ -196,8 +196,13 @@ private:
     llvm::Function* runtime_exception_push_ = nullptr;
     llvm::Function* runtime_exception_pop_ = nullptr;
     llvm::Function* runtime_exception_get_jmpbuf_ = nullptr;
+    llvm::Function* runtime_throw_object_ = nullptr;
+    llvm::Function* runtime_exception_get_type_ = nullptr;
+    llvm::Function* runtime_exception_get_object_ = nullptr;
     llvm::StructType* jmp_buf_type_ = nullptr;
     llvm::GlobalVariable* global_jmp_buf_ = nullptr;
+    // class name → compile-time exception type ID (>0; 0 = string message)
+    std::unordered_map<std::string, int> class_type_ids_;
 
     // ---- Test framework runtime functions ----
     llvm::Function* runtime_assert_ = nullptr;
@@ -365,6 +370,7 @@ private:
     // ---- Match codegen ----
     void generateMatchStmt(const MatchStmt& stmt);
     void generateTryStmt(const TryStmt& stmt);
+    void generateThrowStmt(const ThrowStmt& stmt);
 
     // ---- Helper ----
     TypeInfo builtinTypeToInfo(BuiltinType bt) const;

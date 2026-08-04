@@ -201,10 +201,13 @@ MatchArm         ::= EnumName '.' VariantName BindingList? '=>' '{' Stmt* '}'
 BindingList      ::= '(' Identifier (',' Identifier)* ')'
 // 枚举变体匹配；变体可选携带数据绑定 (v1, v2, …)，臂体为块
 
-TryStmt          ::= 'try' Block CatchClause* FinallyClause?
-CatchClause      ::= 'catch' '(' Type Identifier ')' Block
+TryStmt          ::= 'try' Block CatchClause+ FinallyClause?
+CatchClause      ::= 'catch' '(' (Type Identifier | Identifier)? ')' Block
+                 // 有类型: 按类型匹配（'string' 或异常类名）; 无类型: 兜底（捕获一切，变量为 string 消息）
 FinallyClause    ::= 'finally' Block
-ThrowStmt        ::= 'throw' Expression ';'
+ThrowStmt        ::= 'throw' Expression ';'   // string 快捷或 class 实例
+TryExpr          ::= 'try' Expression 'catch' '(' Identifier ')' Expression
+                 // 表达式式: 成功→try 值, 失败→catch 值（类型须兼容）
 
 ExprStmt         ::= Expression ';'?
 ```
@@ -277,6 +280,13 @@ ArgumentList     ::= Expression (',' Expression)*
 > - `@region` 注解：函数调用作用域为内存 region（RMM）；入口 mark、出口 release，
 >   内部 slice/数组临时对象自动回收；返回引用类型的 `@region` 自动禁用（逃逸安全）
 > - 完整规范见 [slice.md](slice.md)
+
+> **异常机制（已实施，additive）**：
+> - `try { } catch (e) { }`：多 catch 按类型分发（`catch (string e)` / `catch (FileError e)` /
+>   兜底 `catch (e)`）；内层不匹配自动 rethrow 到外层；`finally` 总是执行
+> - `throw expr;`：字符串快捷或异常对象（实现 `interface Error` 的 class）
+> - 表达式式 try：`var n = try expr catch (e) default;`（失败给默认值）
+> - 完整规范见 [exceptions.md](exceptions.md)
 
 ### 附：算子语法（EBNF 增量）
 

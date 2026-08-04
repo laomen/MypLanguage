@@ -41,6 +41,7 @@ private:
     StmtResult visitReturnStmt(ReturnStmt& stmt);
     StmtResult visitMatchStmt(MatchStmt& stmt);
     StmtResult visitTryStmt(TryStmt& stmt);
+    StmtResult visitThrowStmt(ThrowStmt& stmt);
 
     // ---- Expression type checking ----
     TypeInfo visitExpr(Expr& expr);

@@ -1,0 +1,25 @@
+// error.myp — 异常统一契约与内置异常
+//
+// 所有异常（内置 + 用户）应实现 Error 接口，提供人类可读的 message()。
+// 用法:
+//   class FileError {
+//       interface class Error;
+//       action: string message() { return "file: " + path_; }
+//       property: string path_;
+//   }
+//   try { ... throw new FileError(); } catch (FileError e) { ... }
+
+// 异常统一契约
+interface Error {
+    string message();
+}
+
+// 内置字符串异常：throw "msg" / __myp_throw("msg") 的语义载体
+// （类型 ID 0；catch (string e) 直接拿到消息）
+class StringError {
+    interface class Error;
+    action:
+        string message() { return msg_; }
+    property:
+        string msg_;
+}
