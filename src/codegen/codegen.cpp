@@ -861,8 +861,15 @@ llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& 
     // Stack size: @coro(stack=N) KB, default 128KB (0 → runtime default).
     int64_t stack_bytes = 128 * 1024;
     auto sit = coro_stack_map_.find(target->getName().str());
-    if (sit != coro_stack_map_.end() && sit->second > 0)
+    if (sit != coro_stack_map_.end() && sit->second > 0) {
         stack_bytes = (int64_t)sit->second * 1024;
+        // Guard against a too-small stack (silent corruption on overflow).
+        if (sit->second < 16) {
+            diag_.warn(e.range, "@coro(stack=" + std::to_string(sit->second) +
+                "): very small coroutine stack — risk of stack overflow " +
+                "(recommend >= 16KB, or raise with @coro(stack=N))");
+        }
+    }
 
     auto create_fn = module_->getOrInsertFunction("__myp_coro_create",
         llvm::FunctionType::get(i64, {i64}, false));

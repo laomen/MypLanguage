@@ -287,6 +287,7 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | 8 | 生命周期 | 自然结束自动回收槽 + `Coro.destroy` 显式取消 + `atexit` 统一释放（C1 实现）|
 | 9 | 线程模型 | 协程绑定创建线程：协程状态 `__thread`（TLS）线程本地，每线程独立槽/调度上下文/等待表，线程退出自动清理；可与 `@thread` 线程并用 ✅ 已实现 |
 | 10 | 用户 API 风格 | 静态类 `Coro` 封装（`Coro.*`），`__myp_*` 仅编译器内部使用 |
+| 11 | 栈溢出防护 | ucontext 固定栈溢出会破坏相邻内存；当前：默认 128KB + `@coro(stack=N)` 可配置 + 极小栈（<16KB）编译警告（C8 已实现）；完整 guard-page（mmap + SIGSEGV handler）或 canary 检测为平台相关改动，暂缓评估 |
 
 ---
 
@@ -301,8 +302,9 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | C5 | `@coro(stack=N)` 栈大小可配置（KB，默认 128） | ✅ 已完成（深递归验证栈生效）|
 | C6 | 协程与线程并用：协程状态线程本地化（TLS），多 `@thread` 线程各自独立跑协程 | ✅ 已完成（`tests/coro_thread/`）|
 | C7 | 顶层 `@coro` 函数（无需类封装）+ `await` 上下文检查（仅 `@coro` 内可用）| ✅ 已完成（`tests/coro_top/`；普通方法中 `await` 报错）|
+| C8 | 栈溢出防护（诊断层）：`@coro(stack=N)` 栈 < 16KB 编译警告，防止静默内存损坏 | ✅ 已完成（极小栈警告；完整 guard-page/canary 保护待评估）|
 
-每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（98/98）+ no-crash 回归。
+每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（99/99）+ no-crash 回归。
 
 ---
 
