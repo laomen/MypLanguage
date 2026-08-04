@@ -2281,13 +2281,27 @@ Sema::StmtResult Sema::visitTryStmt(TryStmt& stmt) {
         TypeInfo ct(TypeKind::String);
         if (!cc.var_type.empty() && cc.var_type != "string") {
             bool found = false;
+            bool is_iface = false;
             if (current_tu_) {
                 for (auto& cls : current_tu_->classes)
                     if (cls.name == cc.var_type) { found = true; break; }
+                if (!found) {
+                    // Interface catch, e.g. catch (Error e): matches any class
+                    // that implements the interface (dispatch happens at runtime).
+                    for (auto& ifd : current_tu_->interfaces)
+                        if (ifd.name == cc.var_type) {
+                            found = true;
+                            is_iface = true;
+                            break;
+                        }
+                }
             }
             if (!found) {
                 error(stmt.range, "catch type '" + cc.var_type +
-                    "' is not a class");
+                    "' is not a class or interface");
+            } else if (is_iface) {
+                ct = TypeInfo(TypeKind::Interface);
+                ct.class_name = cc.var_type;
             } else {
                 ct = TypeInfo(TypeKind::Class);
                 ct.class_name = cc.var_type;

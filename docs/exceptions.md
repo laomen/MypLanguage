@@ -1,9 +1,9 @@
 # MYP 异常机制设计（Exceptions）
 
-> 状态：**设计提案 v0.1**（待评审后实施）
+> 状态：**已实施**（E1–E4 完成 + finally 传播 + `catch (Error e)` 接口匹配）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 现有异常实现（`src/runtime/runtime.c` + `src/codegen/codegen.cpp`）
-> 本文档完善 MYP 异常机制：**简洁语法 + 对象异常 + 类型体系 + 多 catch 分发 + 传播**。实施前请先评审。
+> 本文档完善 MYP 异常机制：**简洁语法 + 对象异常 + 类型体系 + 多 catch 分发 + 传播**。
 
 ---
 
@@ -216,27 +216,31 @@ var v = try {
 
 ---
 
-## 10. 待决问题（评审清单）
+## 10. 评审清单（已决 + 实施状态）
 
-1. **类型匹配**：精确 class ID 即可，还是需要 `catch (Error e)` 接口匹配？（§8 #1）
-2. **`catch (e)` 变量类型**：string（消息）还是 `Error`（可调 message()）？（§8 #4）
-3. **表达式 try**：单表达式 + 块式都要，还是先只做单表达式？（§8 #5）
-4. **throw 关键字**：新增 `throw` 关键字，还是保留 `__myp_throw` 即可？（§8 #7）
-5. **未处理行为**：abort 还是提供全局兜底 hook？（§8 #6）
-6. **异常对象生命周期**：确认进程级 arena（§8 #2）
-7. **与 @region 交互**：@region 内 throw 的异常对象是否逃逸（应进程级，见 #2）
-8. **finally + 传播**：传播路径上 finally 的执行次数/顺序语义确认
+| # | 问题 | 决策 | 状态 |
+|---|---|---|---|
+| 1 | 类型匹配：精确 class ID vs `catch (Error e)` 接口匹配 | 两者都要：精确 ID 为主，接口匹配作扩展 | ✅ `catch (Error e)` 已实现（`__myp_error_vtables[type_id]` 查表 + fat pointer 绑定，`e.message()` 接口分发）|
+| 2 | `catch (e)` 变量类型 | string（消息） | ✅ 已实现 |
+| 3 | 表达式 try | 单表达式 + 块式都要 | ✅ 单表达式已实现（PHI 合并）|
+| 4 | throw 关键字 | 新增 `throw` | ✅ 已实现（保留 `__myp_throw`）|
+| 5 | 未处理行为 | abort + 明确消息 | ✅ 已实现 |
+| 6 | 异常对象生命周期 | 进程级 arena | ✅ 已实现 |
+| 7 | 与 @region 交互 | 异常对象进程级（不随 region 释放）| ✅ 已实现 |
+| 8 | finally + 传播 | 传播路径上也执行 finally（flag 标记源）+ finally 后 rethrow | ✅ 已实现（`finally_flag` alloca，正常/匹配/传播三路统一）|
 
 ---
 
-## 11. 实施路线（评审通过后）
+## 11. 实施路线（全部完成）
 
-| 阶段 | 内容 |
-|---|---|
-| E1 | 简洁语法：`catch (e)` 省类型 + 表达式式 try |
-| E2 | 运行时：异常对象载体 + 类型 ID + handler 栈扩展 |
-| E3 | `throw` 语句 + 内置 `StringError` + `interface Error`（stdlib/error.myp）|
-| E4 | 多 catch 分发 + rethrow + 未处理 abort |
-| E5 | 测试 `tests/exception/` 扩展（类型分发/传播/未处理/表达式 try）+ grammar.md 增量 |
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| E1 | 简洁语法：`catch (e)` 省类型 + 表达式式 try | ✅ |
+| E2 | 运行时：异常对象载体 + 类型 ID + handler 栈扩展 | ✅ |
+| E3 | `throw` 语句 + 内置 `StringError` + `interface Error`（stdlib/error.myp）| ✅ |
+| E4 | 多 catch 分发 + rethrow + 未处理 abort | ✅ |
+| E4.5 | finally 传播（无 catch/不匹配时也执行 finally 再 rethrow）| ✅ |
+| E4.6 | `catch (Error e)` 接口匹配（匹配任意实现 `Error` 的类，`e.message()` 接口分发）| ✅ |
+| E5 | 测试 `tests/exception/` 扩展（类型分发/传播/未处理/表达式 try）+ grammar.md 增量 | ✅ 15 用例全绿（正常 + ASAN）|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。

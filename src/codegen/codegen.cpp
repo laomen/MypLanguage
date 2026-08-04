@@ -434,6 +434,10 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             class_type_ids_[cls.name] = tid++;
     }
 
+    // Build Error-interface vtables + the __myp_error_vtables lookup array.
+    // Done BEFORE function bodies so catch (Error e) dispatch can reference it.
+    generateErrorVTables();
+
     // Generate function bodies
     for (auto& f : tu.functions) generateFuncDecl(f);
     for (auto& c : tu.classes) generateClass(c);
@@ -448,6 +452,59 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             generateStructMethods(st);
         }
     }
+}
+
+void CodeGen::generateErrorVTables() {
+    // Only when the Error interface is declared in this TU.
+    const InterfaceDecl* error_iface = nullptr;
+    for (auto& ifd : current_tu_->interfaces)
+        if (ifd.name == "Error") { error_iface = &ifd; break; }
+    if (!error_iface) return;
+
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    int max_tid = 0;
+    for (auto& kv : class_type_ids_)
+        if (kv.second > max_tid) max_tid = kv.second;
+    std::vector<llvm::Constant*> entries(max_tid + 1,
+        llvm::ConstantPointerNull::get(ptr_ty));
+
+    for (auto& cls : current_tu_->classes) {
+        if (cls.interface_class_name != "Error") continue;
+        auto tit = class_type_ids_.find(cls.name);
+        if (tit == class_type_ids_.end()) continue;
+
+        // Build (or reuse) the Error vtable for this class.
+        std::string vkey = "Error_" + cls.name;
+        auto* vgv = module_->getGlobalVariable("__myp_vtable_" + vkey);
+        if (!vgv) {
+            std::vector<llvm::Constant*> func_ptrs;
+            for (auto& ia : error_iface->actions) {
+                std::string fn = cls.name + "_" + ia.name;
+                auto* callee = module_->getFunction(fn);
+                func_ptrs.push_back(callee
+                    ? llvm::ConstantExpr::getPointerCast(callee, ptr_ty)
+                    : llvm::ConstantPointerNull::get(ptr_ty));
+            }
+            auto* arr_type = llvm::ArrayType::get(ptr_ty, func_ptrs.size());
+            auto* arr_init = llvm::ConstantArray::get(arr_type, func_ptrs);
+            vgv = new llvm::GlobalVariable(*module_, arr_type, true,
+                llvm::GlobalValue::InternalLinkage, arr_init,
+                "__myp_vtable_" + vkey);
+        }
+        entries[tit->second] = llvm::ConstantExpr::getPointerCast(vgv, ptr_ty);
+    }
+
+    auto* arr_ty = llvm::ArrayType::get(ptr_ty, entries.size());
+    auto* arr_init = llvm::ConstantArray::get(arr_ty, entries);
+    error_vtables_gv_ = new llvm::GlobalVariable(*module_, arr_ty, true,
+        llvm::GlobalValue::InternalLinkage, arr_init, "__myp_error_vtables");
+}
+
+bool CodeGen::isErrorInterface(const std::string& name) {
+    if (name != "Error" || !current_tu_) return false;
+    for (auto& ifd : current_tu_->interfaces)
+        if (ifd.name == "Error") return true;
+    return false;
 }
 void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& action) {
     auto fn = cls.name + "_" + action.name;
@@ -5920,6 +5977,16 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
             } else if (cc.var_type == "string") {
                 auto* m = builder_.CreateICmpEQ(etype, llvm::ConstantInt::get(i32_ty, 0));
                 builder_.CreateCondBr(m, catch_bbs[i], nxt);
+            } else if (isErrorInterface(cc.var_type)) {
+                // Match any class implementing the Error interface: the
+                // __myp_error_vtables[type_id] entry is non-null for such classes.
+                auto* idx = builder_.CreateSExt(etype, llvm::Type::getInt64Ty(ctx_));
+                auto* zero64 = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                auto* gep = builder_.CreateGEP(error_vtables_gv_->getValueType(),
+                    error_vtables_gv_, {zero64, idx}, "err_vt_gep");
+                auto* vt = builder_.CreateLoad(ptr_ty, gep, "err_vt");
+                auto* m = builder_.CreateICmpNE(vt, llvm::ConstantPointerNull::get(ptr_ty));
+                builder_.CreateCondBr(m, catch_bbs[i], nxt);
             } else {
                 auto it = class_type_ids_.find(cc.var_type);
                 int tid = (it != class_type_ids_.end()) ? it->second : 0;
@@ -5930,19 +5997,37 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
 
             // Generate this catch body: bind the variable, run the block.
             builder_.SetInsertPoint(catch_bbs[i]);
-            llvm::Value* bound = nullptr;
-            if (!cc.var_type.empty() && cc.var_type != "string") {
-                bound = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
+            if (isErrorInterface(cc.var_type)) {
+                // e is an Error interface fat pointer { data=object, vtable }.
+                auto* obj = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
                     runtime_exception_get_object_, {}, "exc_obj");
+                auto* etype2 = builder_.CreateCall(runtime_exception_get_type_->getFunctionType(),
+                    runtime_exception_get_type_, {}, "exc_type2");
+                auto* idx = builder_.CreateSExt(etype2, llvm::Type::getInt64Ty(ctx_));
+                auto* zero64 = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                auto* gep = builder_.CreateGEP(error_vtables_gv_->getValueType(),
+                    error_vtables_gv_, {zero64, idx}, "err_vt_gep");
+                auto* vt = builder_.CreateLoad(ptr_ty, gep, "err_vt");
+                auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+                auto* ev = createEntryBlockAlloca(func, fat_ty, cc.var_name);
+                builder_.CreateStore(obj, builder_.CreateStructGEP(fat_ty, ev, 0));
+                builder_.CreateStore(vt, builder_.CreateStructGEP(fat_ty, ev, 1));
+                setNamedValue(cc.var_name, ev);
             } else {
-                bound = builder_.CreateCall(runtime_get_error_->getFunctionType(),
-                    runtime_get_error_, {}, "err_msg");
+                llvm::Value* bound = nullptr;
+                if (!cc.var_type.empty() && cc.var_type != "string") {
+                    bound = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
+                        runtime_exception_get_object_, {}, "exc_obj");
+                } else {
+                    bound = builder_.CreateCall(runtime_get_error_->getFunctionType(),
+                        runtime_get_error_, {}, "err_msg");
+                }
+                auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
+                builder_.CreateStore(bound, ev);
+                setNamedValue(cc.var_name, ev);
+                if (!cc.var_type.empty() && cc.var_type != "string")
+                    var_class_map_[cc.var_name] = cc.var_type;
             }
-            auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
-            builder_.CreateStore(bound, ev);
-            setNamedValue(cc.var_name, ev);
-            if (!cc.var_type.empty() && cc.var_type != "string")
-                var_class_map_[cc.var_name] = cc.var_type;
             if (cc.block) generateBlock(*cc.block);
             if (!builder_.GetInsertBlock()->getTerminator()) {
                 if (finally_bb) {

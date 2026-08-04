@@ -19,4 +19,8 @@ obj_rethrow=parse: 7
 obj_catchall=simple_err
 fin_inner
 fin_outer=fin_prop
+iface_file=file: 
+iface_parse=parse: 0
+iface_catchall=iface_str
+iface_ord=parse: 0
 done

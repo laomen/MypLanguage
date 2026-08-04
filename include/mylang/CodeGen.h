@@ -203,6 +203,9 @@ private:
     llvm::GlobalVariable* global_jmp_buf_ = nullptr;
     // class name → compile-time exception type ID (>0; 0 = string message)
     std::unordered_map<std::string, int> class_type_ids_;
+    // Global array __myp_error_vtables[type_id] → Error vtable ptr (null if the
+    // class does not implement the Error interface). Used by catch (Error e).
+    llvm::GlobalVariable* error_vtables_gv_ = nullptr;
 
     // ---- Test framework runtime functions ----
     llvm::Function* runtime_assert_ = nullptr;
@@ -308,6 +311,10 @@ private:
 
     // ---- Top-level generation ----
     void generateTranslationUnit(TranslationUnit& tu);
+    // Build per-class Error vtables + the __myp_error_vtables global array.
+    void generateErrorVTables();
+    // True if name is the Error interface declared in this TU.
+    bool isErrorInterface(const std::string& name);
     void createClassActionDecl(const ClassDecl& cls, const ActionDecl& action);
     void createStaticActionDecl(const ClassDecl& cls, const ActionDecl& action);
     void generateClass(const ClassDecl& decl);

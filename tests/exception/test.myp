@@ -166,6 +166,46 @@ class Main {
                 Console.writeString(e);
                 Console.writeString("\n");
             }
+
+            // 12. catch (Error e) 接口匹配：FileError 命中，e.message() 接口分发
+            try {
+                throw new FileError();
+            } catch (Error e) {
+                Console.writeString("iface_file=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 13. catch (Error e) 接口匹配：ParseError 命中
+            try {
+                throw new ParseError();
+            } catch (Error e) {
+                Console.writeString("iface_parse=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // 14. string 异常不匹配 catch (Error e) → 落到 catch (e)
+            try {
+                throw "iface_str";
+            } catch (Error e) {
+                Console.writeString("iface_wrong\n");
+            } catch (e) {
+                Console.writeString("iface_catchall=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+
+            // 15. 顺序：具体类优先于 Error 接口
+            try {
+                throw new ParseError();
+            } catch (FileError e) {
+                Console.writeString("iface_ord_wrong\n");
+            } catch (Error e) {
+                Console.writeString("iface_ord=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
             Console.writeString("done\n");
         }
 }
