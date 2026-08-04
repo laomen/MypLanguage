@@ -24,3 +24,5 @@ ffi void  __myp_coro_set_entry_arg(long idx, long val);
 ffi long  __myp_coro_get_entry_arg(long idx);
 ffi void  __myp_coro_set_result(long val);          // @coro 方法 return 存返回值
 ffi long  __myp_coro_result(long handle);           // 取协程返回值
+ffi void  __myp_coro_scheduler();                   // 自动调度：跑所有就绪协程各一步（C3）
+ffi long  __myp_coro_wait_event(long event_id, long val); // 等待事件（C4，await event 展开）

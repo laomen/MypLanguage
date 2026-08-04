@@ -1329,13 +1329,42 @@ __myp_coro_set_entry_arg(idx, val);                  // 入口参数槽（编译
 long v  = __myp_coro_get_entry_arg(idx);             // 读取入口参数槽
 __myp_coro_set_result(val);                          // @coro 方法 return 存返回值（内部用）
 long r  = __myp_coro_result(h);                      // 取协程返回值
+__myp_coro_scheduler();                              // 自动调度：跑所有就绪协程各一步（C3）
+long v  = __myp_coro_wait_event(eventId, val);       // 等待事件（C4，await event 展开）
+```
+
+**C3 自动调度**：spawn 的协程自动加入就绪队列，`__myp_coro_scheduler()` 每轮驱动所有
+就绪协程各一步（先处理事件，再 round-robin 恢复），无需逐个手动 resume：
+
+```myp
+long h1 = a.run();
+long h2 = b.run();
+__myp_coro_scheduler();   // 每轮所有就绪协程各前进一个 await
+__myp_coro_scheduler();
+```
+
+**C4 事件等待**：协程用 `await ClassName.eventName` 阻塞等待事件，事件 fire 派发后
+自动重新就绪，由调度器驱动继续：
+
+```myp
+class Signal {
+    action:
+        void send() { go(); }        // 类 action 内裸名 fire 事件
+    event:
+        go();
+}
+
+@coro void waiter() {
+    Console.writeString("waiting\n");
+    await Signal.go;                 // 阻塞直到 go 事件
+    Console.writeString("got go\n");
+}
 ```
 
 > 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
 > 返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr` 是表达式，
 > 绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 方法 `return val` 存入 per-协程
 > 结果槽，`__myp_coro_result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
-> C3 将加入自动调度器。
 
 ### `import pool` — 并行计算工具
 

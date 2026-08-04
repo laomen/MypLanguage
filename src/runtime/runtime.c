@@ -1734,6 +1734,9 @@ void myp_event_fire(int event_id, void* sender, void* event_data) {
     myp_queue_push(q, event_id, sender, event_data);
 }
 
+// Coroutine event-wait notification (defined in the coroutine section).
+static void __myp_coro_event_notify(int event_id);
+
 static void myp_event_dispatch(myp_event_t* ev) {
 #ifdef TRACE_ENABLED
     fprintf(stderr, "[TRACE] dispatch(event_id=%d, sender=%p)\n", ev->event_id, ev->sender);
@@ -1744,6 +1747,8 @@ static void myp_event_dispatch(myp_event_t* ev) {
             myp_handlers[i].handler(myp_handlers[i].instance, ev->data);
         }
     }
+    // Re-ready coroutines blocked on this event (C4)
+    __myp_coro_event_notify(ev->event_id);
 }
 
 void myp_event_process_all(void) {
@@ -2377,6 +2382,7 @@ typedef struct {
     ucontext_t ctx;
     char* stack;
     int active;
+    int ready;      // in the ready queue (C3 scheduler); 0 while blocked on an event (C4)
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
 } myp_coro_t;
@@ -2400,6 +2406,7 @@ static void __myp_coro_trampoline(int id) {
     }
     if (id >= 0 && id < myp_coro_count) {
         myp_coros[id].active = 0;
+        myp_coros[id].ready = 0;
     }
 }
 
@@ -2431,6 +2438,7 @@ int64_t __myp_coro_create(void) {
     c->ctx.uc_stack.ss_size = MYP_CORO_STACK_SIZE;
     makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
     c->active = 1;
+    c->ready = 1;
     c->result = 0;
     return idx;
 }
@@ -2485,8 +2493,73 @@ int64_t __myp_coro_is_active(int64_t handle) {
 void __myp_coro_destroy(int64_t handle) {
     if (handle >= 0 && handle < myp_coro_count && myp_coros[handle].stack) {
         myp_coros[handle].active = 0;
+        myp_coros[handle].ready = 0;
         free(myp_coros[handle].stack);
         myp_coros[handle].stack = NULL;
+    }
+}
+
+// ---- C3: automatic scheduler (ready queue) ----
+// Runs each ready coroutine exactly one step (until it yields or finishes).
+// Coroutines that yield with a plain `await` stay ready, so each call to the
+// scheduler advances every live coroutine by one await. Blocked (event-waiting)
+// coroutines are skipped until the event arrives and re-readies them.
+void __myp_coro_scheduler(void) {
+    // Process pending events first so event-waiting coroutines (C4) that were
+    // re-readied by __myp_coro_event_notify become runnable this round.
+    myp_event_process_all();
+    // Snapshot the ready set first — a coroutine may yield (stay ready) while
+    // we are running; we must not re-enter it in the same round.
+    int64_t snapshot[MYP_MAX_COROS];
+    int n = 0;
+    for (int i = 0; i < myp_coro_count && n < MYP_MAX_COROS; i++) {
+        if (myp_coros[i].active && myp_coros[i].ready)
+            snapshot[n++] = i;
+    }
+    for (int k = 0; k < n; k++) {
+        int64_t h = snapshot[k];
+        if (h >= 0 && h < myp_coro_count && myp_coros[h].active && myp_coros[h].ready)
+            __myp_coro_resume(h, 0);
+    }
+}
+
+// ---- C4: event waiters ----
+// A coroutine that awaits an event is removed from the ready queue and parked
+// here. When the event is dispatched, matching waiters are re-readied (and
+// resumed if the event is being processed synchronously).
+#define MYP_MAX_CORO_WAITS 256
+typedef struct {
+    int event_id;
+    int64_t handle;
+    int active;
+} myp_coro_wait_t;
+static myp_coro_wait_t myp_coro_waits[MYP_MAX_CORO_WAITS];
+static int myp_coro_wait_count = 0;
+
+// Called inside a coroutine: block until `event_id` is fired. Returns 0.
+int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count) {
+        if (myp_coro_wait_count < MYP_MAX_CORO_WAITS) {
+            myp_coro_waits[myp_coro_wait_count].event_id = (int)event_id;
+            myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
+            myp_coro_waits[myp_coro_wait_count].active = 1;
+            myp_coro_wait_count++;
+        }
+        myp_coros[myp_coro_current].ready = 0;  // blocked, not ready
+    }
+    // Suspend; when the event arrives we are re-readied and resumed.
+    return __myp_coro_yield(val);
+}
+
+// Re-ready (and resume if currently dispatching) waiters for an event.
+static void __myp_coro_event_notify(int event_id) {
+    for (int i = 0; i < myp_coro_wait_count; i++) {
+        if (myp_coro_waits[i].active && myp_coro_waits[i].event_id == event_id) {
+            int64_t h = myp_coro_waits[i].handle;
+            myp_coro_waits[i].active = 0;
+            if (h >= 0 && h < myp_coro_count && myp_coros[h].active)
+                myp_coros[h].ready = 1;
+        }
     }
 }
 

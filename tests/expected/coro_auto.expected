@@ -1,0 +1,13 @@
+A:a
+B:a
+C:a
+---
+A:b
+B:b
+C:b
+A:c
+B:c
+C:c
+active=0
+
+done

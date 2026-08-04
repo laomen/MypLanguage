@@ -5590,17 +5590,51 @@ llvm::Value* CodeGen::castToI64(llvm::Value* v) {
 }
 
 void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+
+    // await ClassName.eventName; — block until the event is fired (C4).
+    if (s.expr && s.expr->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*s.expr);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            int event_id = 0;
+            bool is_event = false;
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != oid.name) continue;
+                    for (auto& ev : cls.events) {
+                        if (ev.name == ma.member_name) {
+                            auto ekey = cls.name + "::" + ev.name;
+                            auto eit = event_id_map_.find(ekey);
+                            if (eit != event_id_map_.end()) event_id = eit->second;
+                            is_event = true;
+                            goto stmt_ev_found;
+                        }
+                    }
+                }
+            }
+        stmt_ev_found:
+            if (is_event) {
+                auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
+                    llvm::FunctionType::get(i64, {i64, i64}, false));
+                builder_.CreateCall(wait_fn,
+                    {llvm::ConstantInt::get(i64, event_id),
+                     llvm::ConstantInt::get(i64, 0)});
+                return;
+            }
+        }
+    }
+
     // await expr; / await; — suspend, passing `expr` value out to the scheduler
     // (statement form; the value passed in by resume is discarded).
-    llvm::Value* out = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+    llvm::Value* out = llvm::ConstantInt::get(i64, 0);
     if (s.expr) {
         out = generateExpr(*s.expr);
         out = castToI64(out);
     }
     auto* yield_fn = module_->getFunction("__myp_coro_yield");
     if (!yield_fn) {
-        auto* ft = llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx_),
-                                           {llvm::Type::getInt64Ty(ctx_)}, false);
+        auto* ft = llvm::FunctionType::get(i64, {i64}, false);
         yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                           "__myp_coro_yield", module_.get());
     }
@@ -5608,17 +5642,51 @@ void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
 }
 
 llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+
+    // await ClassName.eventName — block until the event is fired (C4).
+    if (e.operand && e.operand->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.operand);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            int event_id = 0;
+            bool is_event = false;
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != oid.name) continue;
+                    for (auto& ev : cls.events) {
+                        if (ev.name == ma.member_name) {
+                            auto ekey = cls.name + "::" + ev.name;
+                            auto eit = event_id_map_.find(ekey);
+                            if (eit != event_id_map_.end()) event_id = eit->second;
+                            is_event = true;
+                            goto event_found;
+                        }
+                    }
+                }
+            }
+        event_found:
+            if (is_event) {
+                // __myp_coro_wait_event(event_id, 0)
+                auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
+                    llvm::FunctionType::get(i64, {i64, i64}, false));
+                return builder_.CreateCall(wait_fn,
+                    {llvm::ConstantInt::get(i64, event_id),
+                     llvm::ConstantInt::get(i64, 0)}, "await_event");
+            }
+        }
+    }
+
     // await expr — suspend, passing `expr` out; evaluates to the value passed
     // in by __myp_coro_resume (e.g. `int v = await n * 2;`)
-    llvm::Value* out = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+    llvm::Value* out = llvm::ConstantInt::get(i64, 0);
     if (e.operand) {
         out = generateExpr(*e.operand);
         out = castToI64(out);
     }
     auto* yield_fn = module_->getFunction("__myp_coro_yield");
     if (!yield_fn) {
-        auto* ft = llvm::FunctionType::get(llvm::Type::getInt64Ty(ctx_),
-                                           {llvm::Type::getInt64Ty(ctx_)}, false);
+        auto* ft = llvm::FunctionType::get(i64, {i64}, false);
         yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                           "__myp_coro_yield", module_.get());
     }

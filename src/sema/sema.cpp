@@ -839,7 +839,28 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             break;
         case ExprKind::Await: {
             auto& ae = static_cast<AwaitExpr&>(expr);
-            if (ae.operand) visitExpr(*ae.operand);
+            if (ae.operand) {
+                // await ClassName.eventName — block on an event (C4).
+                // Recognized here (not in visitMemberAccess) so a bare
+                // `ClassName.eventName` outside await keeps existing semantics.
+                bool is_event_ref = false;
+                if (ae.operand->kind == ExprKind::MemberAccess) {
+                    auto& ma = static_cast<MemberAccessExpr&>(*ae.operand);
+                    if (ma.object->kind == ExprKind::Identifier) {
+                        auto& oid = static_cast<IdentifierExpr&>(*ma.object);
+                        if (current_tu_) {
+                            for (auto& cls : current_tu_->classes) {
+                                if (cls.name == oid.name) {
+                                    for (auto& ev : cls.events)
+                                        if (ev.name == ma.member_name) { is_event_ref = true; break; }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (!is_event_ref) visitExpr(*ae.operand);
+            }
             // await expr evaluates to the value passed in by resume → long
             result = TypeInfo(TypeKind::Long);
             break;

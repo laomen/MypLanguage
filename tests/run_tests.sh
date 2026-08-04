@@ -99,18 +99,22 @@ for test_dir in tests/*/; do
     if [ -f "$expected_file" ]; then
         # ASan prints a fixed warning for makecontext/swapcontext (ucontext
         # coroutines) that is not part of the program output — filter it.
-        filtered_output=$(grep -v "ASan doesn't fully support makecontext" "$output_file" || true)
-        if diff -q <(printf '%s\n' "$filtered_output") "$expected_file" > /dev/null 2>&1; then
+        # (Use a temp file: diff on process-substitution FIFOs is unreliable.)
+        tmp_filtered=$(mktemp)
+        grep -v "ASan doesn't fully support makecontext" "$output_file" > "$tmp_filtered" 2>/dev/null || true
+        if diff -q "$tmp_filtered" "$expected_file" > /dev/null 2>&1; then
+            rm -f "$tmp_filtered"
             echo -e "${GREEN}PASS${NC}"
             PASS=$((PASS + 1))
         else
+            rm -f "$tmp_filtered"
             if $UPDATE_MODE; then
                 cp "$output_file" "$expected_file"
                 echo -e "${YELLOW}UPDATED${NC}"
                 PASS=$((PASS + 1))
             else
                 echo -e "${RED}MISMATCH${NC}"
-                diff <(printf '%s\n' "$filtered_output") "$expected_file" | head -10
+                diff "$output_file" "$expected_file" | head -10
                 FAIL=$((FAIL + 1))
                 FAILED_TESTS="$FAILED_TESTS $name(output)"
             fi

@@ -9,8 +9,9 @@ class Main {
             Time.sleep(10);
             long t1 = Time.nowMs();
             long dt = t1 - t0;
-            Console.writeString("dt="); Console.writeLong(dt);
-            Console.writeString(" ok="); Console.writeBool(dt > 0L);
+            // dt varies with sleep precision (10 or 11) — assert ranges, not exact value
+            Console.writeString("ok="); Console.writeBool(dt > 0L);
+            Console.writeString(" longEnough="); Console.writeBool(dt >= 10L);
             Console.writeString("\n");
         }
 }

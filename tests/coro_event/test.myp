@@ -1,0 +1,43 @@
+// tests/coro_event/test.myp — 协程 C4：await event 事件等待
+// 协程阻塞等待事件；事件 fire → 派发 → 重新就绪 → 调度器恢复
+import env;
+import coro;
+
+class Signal {
+    action:
+        void send() {
+            Console.writeString("fire go\n");
+            go();                     // fire go 事件（裸名 → fire_Signal_go）
+        }
+    event:
+        go();
+}
+
+class Waiter {
+    action:
+        @coro void run() {
+            Console.writeString("waiting\n");
+            await Signal.go;          // 阻塞直到 go 事件
+            Console.writeString("got go\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Waiter w = new Waiter();
+            long h = w.run();         // spawn → waiting，事件等待（阻塞，不在就绪队列）
+            Signal s = new Signal();
+            s.send();                 // fire go → 派发 → waiter 重新就绪
+            __myp_coro_scheduler();   // 跑就绪 waiter → got go
+            Console.writeString("active=");
+            Console.write(__myp_coro_is_active(h));
+            Console.writeString("\n");
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

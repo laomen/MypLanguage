@@ -1,0 +1,46 @@
+// tests/coro_auto/test.myp — 协程 C3：自动调度器（就绪队列）
+// spawn 多个协程后不手动 resume，__myp_coro_scheduler() 每轮驱动所有就绪协程各一步
+import env;
+import coro;
+
+class Worker {
+    property:
+        string label_;
+    action:
+        void setLabel(string s) { label_ = s; }
+        @coro void run() {
+            Console.writeString(label_);
+            Console.writeString(":a\n");
+            await;
+            Console.writeString(label_);
+            Console.writeString(":b\n");
+            await;
+            Console.writeString(label_);
+            Console.writeString(":c\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker a = new Worker(); a.setLabel("A");
+            Worker b = new Worker(); b.setLabel("B");
+            Worker c = new Worker(); c.setLabel("C");
+            long ha = a.run();          // spawn A → A:a, yield
+            long hb = b.run();          // spawn B → B:a, yield
+            long hc = c.run();          // spawn C → C:a, yield
+            Console.writeString("---\n");
+            __myp_coro_scheduler();     // 各一步：A:b, B:b, C:b
+            __myp_coro_scheduler();     // 各一步：A:c, B:c, C:c（全部结束）
+            Console.writeString("active=");
+            Console.write(__myp_coro_is_active(ha));
+            Console.writeString("\n");
+            __myp_coro_scheduler();     // 已全部结束，空转无害
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

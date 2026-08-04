@@ -975,6 +975,37 @@ __myp_coro_set_entry_arg(idx, val);                  // entry arg slot (compiler
 long v  = __myp_coro_get_entry_arg(idx);             // read entry arg slot
 __myp_coro_set_result(val);                          // @coro return → result slot (internal)
 long r  = __myp_coro_result(h);                      // read coroutine return value
+__myp_coro_scheduler();                              // auto-schedule: one step per ready coroutine (C3)
+long v  = __myp_coro_wait_event(eventId, val);       // block on an event (C4, await event)
+```
+
+**C3 — automatic scheduler**: spawned coroutines automatically join a ready queue;
+`__myp_coro_scheduler()` advances every ready coroutine by one await per round
+(processes pending events first, then round-robin resumes) — no per-coroutine manual resume:
+
+```myp
+long h1 = a.run();
+long h2 = b.run();
+__myp_coro_scheduler();   // every ready coroutine advances one await
+__myp_coro_scheduler();
+```
+
+**C4 — event waiting**: a coroutine can block on an event with `await ClassName.eventName`;
+when the event is fired and dispatched, the coroutine is re-readied and driven by the scheduler:
+
+```myp
+class Signal {
+    action:
+        void send() { go(); }        // fire event by bare name inside a class action
+    event:
+        go();
+}
+
+@coro void waiter() {
+    Console.writeString("waiting\n");
+    await Signal.go;                 // block until the go event
+    Console.writeString("got go\n");
+}
 ```
 
 > Semantics: an `@coro` method call compiles to a spawn (`create` + arg slots + `set_entry`
@@ -982,7 +1013,7 @@ long r  = __myp_coro_result(h);                      // read coroutine return va
 > (`await expr` is an expression binding the full operand; after resume its value equals the
 > value passed in by `resume`); an `@coro` method's `return val` is stored into its per-coroutine
 > result slot, read via `__myp_coro_result(h)`. Finished coroutines recycle their slot
-> automatically and stacks are freed at process exit. C3 will add an automatic scheduler.
+> automatically and stacks are freed at process exit.
 
 ---
 

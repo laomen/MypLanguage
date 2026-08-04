@@ -10,8 +10,9 @@ class Main {
             tl.sleep(5);
             long t1 = tl.now();
             long dt = tl.elapsed(t0);
-            Console.writeString("dt="); Console.writeLong(dt);
-            Console.writeString(" ok="); Console.writeBool(dt > 0L);
+            // dt varies with sleep precision (5 or 6) — assert ranges, not exact value
+            Console.writeString("ok="); Console.writeBool(dt > 0L);
+            Console.writeString(" longEnough="); Console.writeBool(dt >= 5L);
             Console.writeString("\n");
         }
 }
