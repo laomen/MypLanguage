@@ -30,14 +30,15 @@ jobs:
       - name: Install dependencies (LLVM 21 + build tools)
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc g++ make cmake pkg-config libsdl2-dev
+          sudo apt-get install -y gcc g++ make cmake pkg-config libsdl2-dev lsb-release wget
           # LLVM 21 from apt.llvm.org (GitHub runner doesn't ship it)
+          # `llvm.sh 21 all` installs the full toolchain incl. llvm-21-dev + libllvm21
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
-          sudo ./llvm.sh 21
+          sudo ./llvm.sh 21 all
           sudo apt-get update
-          # Correct package names: libllvm21 (runtime lib, no dash) + llvm-21-dev (cmake config/headers)
-          sudo apt-get install -y llvm-21-dev libllvm21 clang-21
+          # Belt-and-suspenders: ensure dev packages present (correct names, no dash)
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21 || true
           llvm-config-21 --version
 
       - name: Build mypc (Release)
