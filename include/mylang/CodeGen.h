@@ -355,6 +355,7 @@ private:
     llvm::Value* generateThisExpr(const ThisExpr& expr);
     llvm::Value* generateAssignment(const AssignmentExpr& expr);
     llvm::Value* generateTernary(const TernaryExpr& expr);
+    llvm::Value* generateTryExpr(const TryExpr& expr);
     llvm::Value* generateRange(const RangeExpr& expr);
     llvm::Value* generateEnumVariant(const EnumVariantExpr& expr);
     llvm::Value* generateLambda(const LambdaExpr& expr);

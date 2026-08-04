@@ -3850,6 +3850,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::ThisExpr:       return generateThisExpr(static_cast<const ThisExpr&>(e));
         case ExprKind::Assignment:     return generateAssignment(static_cast<const AssignmentExpr&>(e));
         case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
+        case ExprKind::Try:            return generateTryExpr(static_cast<const TryExpr&>(e));
         case ExprKind::Range:          return generateRange(static_cast<const RangeExpr&>(e));
         case ExprKind::Lambda:         return generateLambda(static_cast<const LambdaExpr&>(e));
         case ExprKind::Pipe:           return generatePipe(static_cast<const PipeExpr&>(e));
@@ -5347,6 +5348,64 @@ void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
 llvm::Value* CodeGen::generateRange(const RangeExpr& e) {
     // Range evaluation: returns the start value (for use in for loops mainly)
     return generateExpr(*e.start);
+}
+
+llvm::Value* CodeGen::generateTryExpr(const TryExpr& e) {
+    // Expression try: try <expr> catch (id) <expr> — value on success, fallback on error.
+    // Uses the same per-try jmp_buf + handler stack as the try statement, and a
+    // PHI to merge the success/fallback values.
+    auto* func = builder_.GetInsertBlock()->getParent();
+
+    auto* jb = createEntryBlockAlloca(func, jmp_buf_type_, "try_expr_jmpbuf");
+    auto* jb_ptr = builder_.CreateBitCast(jb, llvm::PointerType::get(ctx_, 0));
+    builder_.CreateCall(runtime_exception_push_->getFunctionType(),
+        runtime_exception_push_, {jb_ptr});
+    auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
+        runtime_setjmp_, {jb_ptr}, "setjmp_result");
+    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* is_error = builder_.CreateICmpNE(result, zero, "is_error");
+
+    auto* try_bb = llvm::BasicBlock::Create(ctx_, "try_expr_try", func);
+    auto* catch_bb = llvm::BasicBlock::Create(ctx_, "try_expr_catch");
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_expr_merge");
+    builder_.CreateCondBr(is_error, catch_bb, try_bb);
+
+    // Success path: evaluate the try expression
+    builder_.SetInsertPoint(try_bb);
+    auto* v1 = generateExpr(*e.try_expr);
+    auto* last_try = builder_.GetInsertBlock();
+    if (!last_try->getTerminator()) builder_.CreateBr(merge_bb);
+
+    // Error path: bind catch variable (string message), evaluate fallback
+    func->insert(func->end(), catch_bb);
+    builder_.SetInsertPoint(catch_bb);
+    auto* err_ptr = builder_.CreateCall(runtime_get_error_->getFunctionType(),
+        runtime_get_error_, {}, "err_msg");
+    auto* err_var = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), e.catch_var_name);
+    builder_.CreateStore(err_ptr, err_var);
+    setNamedValue(e.catch_var_name, err_var);
+    auto* v2 = generateExpr(*e.catch_expr);
+    auto* last_catch = builder_.GetInsertBlock();
+    if (!last_catch->getTerminator()) builder_.CreateBr(merge_bb);
+
+    // Merge via PHI (cast fallback to the success type if needed)
+    func->insert(func->end(), merge_bb);
+    builder_.SetInsertPoint(merge_bb);
+    if (v2->getType() != v1->getType()) {
+        if (v1->getType()->isIntegerTy() && v2->getType()->isIntegerTy())
+            v2 = builder_.CreateIntCast(v2, v1->getType(), true);
+        else if (v1->getType()->isFloatingPointTy() && v2->getType()->isIntegerTy())
+            v2 = builder_.CreateSIToFP(v2, v1->getType());
+        else if (v1->getType()->isIntegerTy() && v2->getType()->isFloatingPointTy())
+            v2 = builder_.CreateFPToSI(v2, v1->getType());
+    }
+    auto* phi = builder_.CreatePHI(v1->getType(), 2, "try_expr_result");
+    phi->addIncoming(v1, last_try);
+    phi->addIncoming(v2, last_catch);
+    // Pop this try's handler (all paths converge here).
+    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+        runtime_exception_pop_, {});
+    return phi;
 }
 
 llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {

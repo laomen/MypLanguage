@@ -832,8 +832,24 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::EnumVariant:
             result = visitEnumVariant(static_cast<EnumVariantExpr&>(expr));
             break;
+        case ExprKind::Try:
+            result = visitTryExpr(static_cast<TryExpr&>(expr));
+            break;
     }
     return result;
+}
+
+TypeInfo Sema::visitTryExpr(TryExpr& expr) {
+    // Type-check the try expression (the value on success).
+    auto t = visitExpr(*expr.try_expr);
+    // Type-check the catch expression (the fallback value on error).
+    auto f = visitExpr(*expr.catch_expr);
+    if (!typesCompatible(t, f)) {
+        error(expr.range, "try/catch expressions have incompatible types: '" +
+              typeName(t) + "' and '" + typeName(f) + "'");
+        return t;
+    }
+    return t;
 }
 
 TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {

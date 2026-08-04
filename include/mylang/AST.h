@@ -228,6 +228,7 @@ enum class ExprKind {
     EnumVariant,
     Lambda,
     Pipe,
+    Try,
 };
 
 struct Expr {
@@ -407,6 +408,16 @@ struct EnumVariantExpr : Expr {
     std::vector<std::unique_ptr<Expr>> args;
     EnumVariantExpr(std::string en, int vi, std::vector<std::unique_ptr<Expr>> a, SourceRange r)
         : Expr(ExprKind::EnumVariant, r), enum_name(std::move(en)), variant_index(vi), args(std::move(a)) {}
+};
+
+// Expression try: try <expr> catch (e) <expr>  — value on success, fallback on error
+struct TryExpr : Expr {
+    std::unique_ptr<Expr> try_expr;
+    std::string catch_var_name;
+    std::unique_ptr<Expr> catch_expr;
+    TryExpr(std::unique_ptr<Expr> te, std::string cvn, std::unique_ptr<Expr> ce, SourceRange r)
+        : Expr(ExprKind::Try, r), try_expr(std::move(te)),
+          catch_var_name(std::move(cvn)), catch_expr(std::move(ce)) {}
 };
 
 // ---- Statements ----

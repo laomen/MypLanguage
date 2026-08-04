@@ -1485,6 +1485,19 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (match(TokenKind::Keyword_this)) {
         return std::make_unique<ThisExpr>(previous().range);
     }
+    if (match(TokenKind::Keyword_try)) {
+        // Expression try: try <expr> catch (e) <expr>  (value on success, fallback on error)
+        auto te = parseExpr();
+        if (match(TokenKind::Keyword_catch)) {
+            consume(TokenKind::LeftParen, "expected '(' after 'catch'");
+            std::string cvn = parseIdentifier("expected catch variable name");
+            consume(TokenKind::RightParen, "expected ')' after catch variable");
+            auto ce = parseExpr();
+            return std::make_unique<TryExpr>(std::move(te), cvn, std::move(ce), previous().range);
+        }
+        diag_.error(peek().range, "expected 'catch' in expression try");
+        return std::make_unique<IntegerLiteralExpr>(0, previous().range);
+    }
     if (match(TokenKind::Keyword_new)) {
         // new double[n] — dynamic array allocation (parse type manually, avoid parseType which eats [])
         if (peek().kind >= TokenKind::Type_byte && peek().kind <= TokenKind::Type_string) {
@@ -1924,16 +1937,24 @@ std::unique_ptr<Stmt> Parser::parseTryStmt() {
 
     if (match(TokenKind::Keyword_catch)) {
         consume(TokenKind::LeftParen, "expected '(' after 'catch'");
-        // Parse catch variable type (identifier or type keyword)
-        if (check(TokenKind::Identifier)) {
-            catch_var_type = advance().value;
+        // catch (e)            → catch-all, e is the string message
+        // catch (string e)     → string message (existing)
+        // catch (FileError e)  → typed catch (E4, later)
+        if (check(TokenKind::Identifier) && peekNext().kind == TokenKind::RightParen) {
+            // catch (e) — no type → catch-all (variable holds the string message)
+            catch_var_name = parseIdentifier("expected variable name in catch");
+            catch_var_type = "";
         } else if (check(TokenKind::Type_string)) {
             catch_var_type = "string";
             advance(); // consume the type token
+            catch_var_name = parseIdentifier("expected variable name in catch");
+        } else if (check(TokenKind::Identifier)) {
+            catch_var_type = advance().value;
+            catch_var_name = parseIdentifier("expected variable name in catch");
         } else {
-            diag_.error(peek().range, "expected type in catch");
+            diag_.error(peek().range, "expected type or variable in catch");
+            catch_var_name = "e";
         }
-        catch_var_name = parseIdentifier("expected variable name in catch");
         consume(TokenKind::RightParen, "expected ')' after catch variable");
         consume(TokenKind::LeftBrace, "expected '{' for catch body");
         catch_block = parseBlock();

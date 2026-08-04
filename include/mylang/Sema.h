@@ -60,6 +60,7 @@ private:
     TypeInfo visitThisExpr(ThisExpr& expr);
     TypeInfo visitAssignment(AssignmentExpr& expr);
     TypeInfo visitTernary(TernaryExpr& expr);
+    TypeInfo visitTryExpr(TryExpr& expr);
     TypeInfo visitRange(RangeExpr& expr);
     TypeInfo visitEnumVariant(EnumVariantExpr& expr);
 
