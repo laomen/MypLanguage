@@ -4,3 +4,13 @@ caught=error!
 after_catch
 try_finally
 finally_ok
+nest_outer_try
+nest_inner_caught=inner_err
+nest_outer_continue
+stale_outer_try
+stale_inner_ok
+stale_outer_caught=stale_outer_err
+cross_outer_try
+risky_enter
+cross_caught=deep_error
+done
