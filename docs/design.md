@@ -1221,7 +1221,7 @@ int main() {
 | `pool` | `Parallel` 静态类（线程池任务工具） | ✅ 已实现 |
 | `barrier` | `Barrier` 类（create/wait/destroy），基于 pthread_barrier | ✅ 已实现 |
 | `future` | `Future` 类（create/set/get/destroy），异步结果容器 | ✅ 已实现 |
-| `coro` | `Coro` 协程类（create/resume/yield/isActive/destroy），基于 ucontext | ⚠️ 实验性 |
+| `coro` | `Coro` 协程类（scheduler/resume/yield/isActive/destroy/result/waitEvent），基于 ucontext；`@coro` 方法 + `await` 语法由编译器支持 | ✅ 已实现（C1-C4，详见 `coro.md`）|
 | `memory` | `Memory` 类（alloc/free/realloc），直接调用 C malloc | ✅ 已实现 |
 | `test` | `Test` 类（assert/assertEq/assertStrEq/report），配合 `@test` 注解 | ✅ 已实现 |
 | `sdl` | `SDL` 图形类（init/quit/clear/present/getKey），基于 SDL2 FFI | ✅ 已实现 |
