@@ -1425,6 +1425,13 @@ class Main {
 > 顶层 `@coro` 函数入口包装无 `this` 槽（参数从槽 1 起），codegen 预扫描创建包装，
 > 因此协程函数可定义在调用点之后。
 
+**协程间通信**：
+- **Channel**（`import channel`）：Go 风格有缓冲通道。`Channel ch = new Channel(); ch.init(n);`
+  `ch.send(v)`（协程内缓冲满挂起）/ `ch.recv()`（协程内空挂起）/ `ch.trySend`/`ch.tryRecv`
+  （非阻塞）/ `ch.size()`/`ch.close()`。非协程调用满/空返回 -1。
+- **协程 await Future**（`import future`）：协程内 `Future.get(fh)` 未 ready 时挂起协程
+  （不阻塞线程），同线程 `Future.set(fh, v)` 唤醒恢复。跨线程 set 不唤醒其他线程协程。
+
 ### `import pool` — 并行计算工具
 
 ```myp

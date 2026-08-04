@@ -1496,10 +1496,13 @@ Runtime  → print/println + 基本运行时
 | **v2.4** | 并行体静态方法调用 — 直接 LLVM 函数调用代替内联 | ✅ 已实现 |
 | **v2.0** | Atomic 操作 — `Atomic.addDouble`/`Atomic.addInt` 基于 LLVM atomicrmw | ✅ 已实现 |
 | **v2.4** | 工作窃取线程池 — 共享 work-stealing 队列 + codegen 接入 | ✅ 已实现 |
-| **v2.4** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲 | 🔜 规划中 |
+| **v2.4** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲 | ✅ 事件队列已动态化（可扩容，无 1024 上限）；条件变量唤醒：事件由代码同步处理，无 1ms 轮询 |
+| **v2.4** | 协程 Channel — Go 风格有缓冲通道，协程 send/recv 阻塞挂起 + 唤醒（`stdlib/channel.myp`）| ✅ 已实现 |
+| **v2.4** | 协程 await Future — 协程内 `Future.get()` 未 ready 时挂起协程而非阻塞线程（同线程 set 唤醒）| ✅ 已实现 |
+| **v2.4** | property 默认值修复 — `int x = 5;` 声明默认值在 `new` 时生效（此前只 memset 0）| ✅ 已修复 |
 | **v6** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | ✅ 已实现（`stdlib/barrier.myp` + `stdlib/future.myp`）|
 | **v6** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | ✅ 已实现 |
-| **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | 🔜 规划中 |
+| **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | ✅ 已实现（解析为 const 属性）|
 | **v6** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | ✅ 已实现 |
 | **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
