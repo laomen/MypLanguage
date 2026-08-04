@@ -240,7 +240,8 @@ int main() {
 
 ## 7. 待定 / 风险项
 
-1. **集合长度**：动态数组 `double[]` 无运行时长度（arena 裸分配），`A.size()` 需改数组表示（高成本、高风险）——**当前算子里硬编码 n，或用 configure(n) 模式**
+1. **集合长度**：动态数组 `double[]` 无运行时长度（arena 裸分配），`A.size()` 需改数组表示（高成本、高风险）——**当前算子里硬编码 n，或用 configure(n) 模式**。
+   ➡️ 解决方案见 **`docs/slice.md`**（切片类型 `slice<T>`，待评审）
 2. **泛型接口**：`interface SetOp<T>`（struct 集合 `Vector3[]` 的算子）——需验证 MYP 泛型是否支持带类型参数的 interface
 3. **集合二元提升**：元素级自动 lift 的编译期实现（无函数类型时如何表达）
 4. **管道 `|>`**：✅ 已解决（P3，v2.4.2）——`Op` 为算子**类名**（自动实例化）或**实例**（复用），
@@ -256,7 +257,7 @@ int main() {
 | P1 | 顶层 `@op` 函数（parser 注解 + sema 注册 + 二元分发 + codegen 调用） | ✅ 已完成（v2.4.1） | 中 |
 | P2 | struct `operator:` 节（parser + sema + codegen） | ✅ 已完成（v2.4.1） | 中 |
 | P3 | `|>` 管道 token + 表达式 + 组件节点 | ✅ 已完成（v2.4.2） | 中 |
-| P4 | 元素级提升 + 集合二元 | ⏳ 待实施 | 高 |
+| P4 | 元素级提升 + 集合二元 | ⏳ 待实施（地基：`slice<T>`，见 `docs/slice.md`） | 高 |
 | 贯穿 | 示例（Vector3 / Set）+ 回归测试 + grammar.md 增量 + CHANGELOG | ✅ 已完成 | — |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。
