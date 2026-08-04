@@ -1,0 +1,51 @@
+// tests/coro_thread/test.myp — 协程 + 线程并用
+// 两个 @thread 线程各自独立创建/调度协程（协程状态线程本地 TLS，互不干扰）
+import env;
+import coro;
+
+class Ping {
+    action:
+        @coro void loop(long n) {
+            long i = 0L;
+            while (i < n) {
+                await;
+                i = i + 1L;
+            }
+        }
+}
+
+class Worker {
+    action:
+        @startup void run() {
+            // 线程2：本线程 TLS 内创建并调度协程
+            Ping p = new Ping();
+            long h = p.loop(3L);
+            Coro.scheduler();
+            Coro.scheduler();
+            Coro.scheduler();
+            Console.writeString("thread2 active=");
+            Console.writeLong(Coro.isActive(h));
+            Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // 线程1：本线程 TLS 内创建并调度协程
+            Ping p = new Ping();
+            long h = p.loop(3L);
+            Worker w = new Worker() @thread;   // 启动线程2
+            Coro.scheduler();
+            Coro.scheduler();
+            Coro.scheduler();
+            Console.writeString("thread1 active=");
+            Console.writeLong(Coro.isActive(h));
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

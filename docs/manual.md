@@ -1363,6 +1363,26 @@ class Signal {
 }
 ```
 
+**协程 + 线程并用**：协程状态是**线程本地**的（绑定创建它的线程）。多个 `@thread`
+线程可以各自独立创建/调度协程，互不干扰：
+
+```myp
+class Main {
+    action:
+        @startup void run() {
+            // 本线程内跑协程
+            Ping p = new Ping();
+            long h = p.loop(3L);
+            Worker w = new Worker() @thread;   // 启动另一线程（其 @startup 内也可跑协程）
+            Coro.scheduler();
+            Coro.scheduler();
+            Coro.scheduler();
+        }
+}
+```
+
+> 线程内并发（协程）+ 线程间并行（@thread）组合；线程退出时其协程状态自动清理。
+
 > 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
 > 返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr` 是表达式，
 > 绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 方法 `return val` 存入 per-协程

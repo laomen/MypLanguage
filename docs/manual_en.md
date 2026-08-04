@@ -1013,6 +1013,28 @@ class Signal {
 }
 ```
 
+**Coroutines + threads combined**: coroutine state is **thread-local** (a coroutine belongs to
+its creating thread). Multiple `@thread` threads can create/schedule their own coroutines
+independently:
+
+```myp
+class Main {
+    action:
+        @startup void run() {
+            // run a coroutine on this thread
+            Ping p = new Ping();
+            long h = p.loop(3L);
+            Worker w = new Worker() @thread;   // another thread (its @startup may run coroutines too)
+            Coro.scheduler();
+            Coro.scheduler();
+            Coro.scheduler();
+        }
+}
+```
+
+> Thread-local concurrency (coroutines) + inter-thread parallelism (`@thread`); coroutine
+> state is cleaned up automatically when a thread exits.
+
 > Semantics: an `@coro` method call compiles to a spawn (`create` + arg slots + `set_entry`
 > + first `resume`) and returns a `long` handle; `await` compiles to `__myp_coro_yield(val)`
 > (`await expr` is an expression binding the full operand; after resume its value equals the

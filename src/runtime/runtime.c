@@ -1798,6 +1798,9 @@ void myp_thread_post_event(myp_thread_t* thr, int event_id, void* sender, void* 
     myp_queue_push(thr->queue, event_id, sender, data);
 }
 
+// Coroutine TLS cleanup for the current thread (defined in the coroutine section).
+void __myp_coro_thread_cleanup(void);
+
 static void* myp_thread_entry(void* arg) {
     myp_thread_t* thr = (myp_thread_t*)arg;
     // Set this thread's queue
@@ -1816,6 +1819,8 @@ static void* myp_thread_entry(void* arg) {
         struct timespec ts = {0, 1000000}; // 1ms
         nanosleep(&ts, NULL);
     }
+    // Release this thread's coroutine state (TLS) so slots/stacks aren't leaked.
+    __myp_coro_thread_cleanup();
     // Clear TLS so destructor doesn't double-free
     pthread_setspecific(myp_queue_key, NULL);
     return NULL;
@@ -2404,11 +2409,16 @@ typedef struct {
 // Each myp_coro_t (which holds the ucontext) is allocated individually and
 // stays at a stable address; only the pointer array may move on grow (realloc
 // must never relocate a live ucontext_t).
-static myp_coro_t** myp_coros = NULL;
-static int myp_coro_count = 0;      // number of slots in use (includes inactive/reused)
-static int myp_coro_capacity = 0;
-static int myp_coro_current = -1;
-static ucontext_t myp_coro_sched_ctx;
+//
+// All coroutine state is THREAD-LOCAL (__thread): a coroutine belongs to the
+// thread that created it. Each thread has its own slot array, scheduler
+// context and event-wait table, so coroutines can run independently inside
+// multiple @thread threads (coroutine + thread 并用) without locking.
+static __thread myp_coro_t** myp_coros = NULL;
+static __thread int myp_coro_count = 0;      // number of slots in use (includes inactive/reused)
+static __thread int myp_coro_capacity = 0;
+static __thread int myp_coro_current = -1;
+static __thread ucontext_t myp_coro_sched_ctx;
 // Value passing between coroutine and scheduler (thread-local; only one
 // coroutine of a thread runs at a time):
 //   myp_coro_yield_val  — coroutine → scheduler (value passed out by await)
@@ -2577,8 +2587,8 @@ typedef struct {
     int64_t handle;
     int active;
 } myp_coro_wait_t;
-static myp_coro_wait_t myp_coro_waits[MYP_MAX_CORO_WAITS];
-static int myp_coro_wait_count = 0;
+static __thread myp_coro_wait_t myp_coro_waits[MYP_MAX_CORO_WAITS];
+static __thread int myp_coro_wait_count = 0;
 
 // Called inside a coroutine: block until `event_id` is fired. Returns 0.
 int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
@@ -2624,6 +2634,14 @@ static void __myp_coro_cleanup_all(void) {
     myp_coros = NULL;
     myp_coro_count = 0;
     myp_coro_capacity = 0;
+}
+
+// Release the current thread's coroutine state (called when a @thread thread
+// exits, so its TLS coroutine slots/stacks are not leaked).
+void __myp_coro_thread_cleanup(void) {
+    __myp_coro_cleanup_all();
+    myp_coro_current = -1;
+    myp_coro_wait_count = 0;
 }
 
 __attribute__((constructor))
