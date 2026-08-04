@@ -2388,8 +2388,8 @@ void myp_future_destroy(int32_t handle) {
 #include <ucontext.h>
 #include <stdint.h>
 
-#define MYP_CORO_STACK_SIZE (256 * 1024)
-#define MYP_MAX_COROS 1024
+#define MYP_CORO_STACK_SIZE (128 * 1024)      // 128KB per coroutine stack
+#define MYP_CORO_INITIAL_CAPACITY 64
 
 typedef struct {
     ucontext_t ctx;
@@ -2400,8 +2400,13 @@ typedef struct {
     int64_t result;   // return value slot (C2)
 } myp_coro_t;
 
-static myp_coro_t myp_coros[MYP_MAX_COROS];
-static int myp_coro_count = 0;
+// Dynamic slot array (no hard cap — grows on demand, limited only by memory).
+// Each myp_coro_t (which holds the ucontext) is allocated individually and
+// stays at a stable address; only the pointer array may move on grow (realloc
+// must never relocate a live ucontext_t).
+static myp_coro_t** myp_coros = NULL;
+static int myp_coro_count = 0;      // number of slots in use (includes inactive/reused)
+static int myp_coro_capacity = 0;
 static int myp_coro_current = -1;
 static ucontext_t myp_coro_sched_ctx;
 // Value passing between coroutine and scheduler (thread-local; only one
@@ -2411,38 +2416,55 @@ static ucontext_t myp_coro_sched_ctx;
 static __thread int64_t myp_coro_yield_val = 0;
 static __thread int64_t myp_coro_resume_val = 0;
 
+// Grow the pointer array (at least doubling). Returns 0 on success.
+static int myp_coro_grow(void) {
+    int new_cap = myp_coro_capacity ? myp_coro_capacity : MYP_CORO_INITIAL_CAPACITY;
+    if (myp_coro_count >= new_cap) new_cap *= 2;
+    myp_coro_t** np = (myp_coro_t**)realloc(myp_coros,
+                                            (size_t)new_cap * sizeof(myp_coro_t*));
+    if (!np) return -1;
+    memset(np + myp_coro_capacity, 0,
+           (size_t)(new_cap - myp_coro_capacity) * sizeof(myp_coro_t*));
+    myp_coros = np;
+    myp_coro_capacity = new_cap;
+    return 0;
+}
+
 // Trampoline: called by makecontext with coroutine index as arg
 // Calls the coroutine's entry function, then deactivates it
 static void __myp_coro_trampoline(int id) {
-    if (id >= 0 && id < myp_coro_count && myp_coros[id].fn) {
-        myp_coros[id].fn();
+    if (id >= 0 && id < myp_coro_count && myp_coros[id] && myp_coros[id]->fn) {
+        myp_coros[id]->fn();
     }
-    if (id >= 0 && id < myp_coro_count) {
-        myp_coros[id].active = 0;
-        myp_coros[id].ready = 0;
+    if (id >= 0 && id < myp_coro_count && myp_coros[id]) {
+        myp_coros[id]->active = 0;
+        myp_coros[id]->ready = 0;
     }
 }
 
 int64_t __myp_coro_create(void) {
+    // Reuse a finished coroutine slot first (its stack is freed here, not in
+    // the trampoline, because the trampoline still runs on its own stack).
     int idx = -1;
-    if (myp_coro_count < MYP_MAX_COROS) {
+    for (int i = 0; i < myp_coro_count; i++) {
+        if (myp_coros[i] && !myp_coros[i]->active && myp_coros[i]->stack) {
+            free(myp_coros[i]->stack);
+            myp_coros[i]->stack = NULL;
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) {
+        if (myp_coro_grow() != 0) return -1;
         idx = myp_coro_count;
         myp_coro_count++;
-    } else {
-        // Reuse a finished coroutine slot (stack freed here, not in the
-        // trampoline, because the trampoline still runs on its own stack)
-        for (int i = 0; i < MYP_MAX_COROS; i++) {
-            if (!myp_coros[i].active && myp_coros[i].stack) {
-                free(myp_coros[i].stack);
-                myp_coros[i].stack = NULL;
-                idx = i;
-                break;
-            }
-        }
-        if (idx < 0) return -1;
     }
-    myp_coro_t* c = &myp_coros[idx];
-    // Note: fn must be set BEFORE calling create, via __myp_coro_set_entry
+    if (!myp_coros[idx]) {
+        myp_coro_t* nc = (myp_coro_t*)calloc(1, sizeof(myp_coro_t));
+        if (!nc) return -1;
+        myp_coros[idx] = nc;
+    }
+    myp_coro_t* c = myp_coros[idx];
     c->stack = (char*)malloc(MYP_CORO_STACK_SIZE);
     if (!c->stack) return -1;
     if (getcontext(&c->ctx) == -1) { free(c->stack); return -1; }
@@ -2458,8 +2480,8 @@ int64_t __myp_coro_create(void) {
 
 // fn_ptr is a 64-bit function pointer on LP64 — must NOT be int32 (truncation bug)
 void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
-    if (handle >= 0 && handle < MYP_MAX_COROS) {
-        myp_coros[handle].fn = (void (*)(void))(uintptr_t)fn_ptr;
+    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle]) {
+        myp_coros[handle]->fn = (void (*)(void))(uintptr_t)fn_ptr;
     }
 }
 
@@ -2470,7 +2492,7 @@ int64_t __myp_coro_yield(int64_t val) {
     myp_coro_yield_val = val;
     int saved = myp_coro_current;
     myp_coro_current = -1;
-    swapcontext(&myp_coros[saved].ctx, &myp_coro_sched_ctx);
+    swapcontext(&myp_coros[saved]->ctx, &myp_coro_sched_ctx);
     myp_coro_current = saved;
     return myp_coro_resume_val;
 }
@@ -2478,37 +2500,40 @@ int64_t __myp_coro_yield(int64_t val) {
 // Resume a coroutine, passing `val` in. Returns the value the coroutine
 // passed out at its await (0 if the coroutine finished without yielding).
 int64_t __myp_coro_resume(int64_t handle, int64_t val) {
-    if (handle < 0 || handle >= myp_coro_count) return -1;
-    if (!myp_coros[handle].active) return -1;
+    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return -1;
+    if (!myp_coros[handle]->active) return -1;
     myp_coro_resume_val = val;
     myp_coro_current = handle;
-    swapcontext(&myp_coro_sched_ctx, &myp_coros[handle].ctx);
+    swapcontext(&myp_coro_sched_ctx, &myp_coros[handle]->ctx);
     return myp_coro_yield_val;
 }
 
 // Store the coroutine's return value into its result slot (called by the
 // @coro method's return, via codegen).
 void __myp_coro_set_result(int64_t val) {
-    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count)
-        myp_coros[myp_coro_current].result = val;
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current])
+        myp_coros[myp_coro_current]->result = val;
 }
 
 int64_t __myp_coro_result(int64_t handle) {
-    if (handle >= 0 && handle < myp_coro_count) return myp_coros[handle].result;
+    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle])
+        return myp_coros[handle]->result;
     return 0;
 }
 
 int64_t __myp_coro_is_active(int64_t handle) {
-    if (handle < 0 || handle >= myp_coro_count) return 0;
-    return myp_coros[handle].active ? 1 : 0;
+    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return 0;
+    return myp_coros[handle]->active ? 1 : 0;
 }
 
 void __myp_coro_destroy(int64_t handle) {
-    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle].stack) {
-        myp_coros[handle].active = 0;
-        myp_coros[handle].ready = 0;
-        free(myp_coros[handle].stack);
-        myp_coros[handle].stack = NULL;
+    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle] &&
+        myp_coros[handle]->stack) {
+        myp_coros[handle]->active = 0;
+        myp_coros[handle]->ready = 0;
+        free(myp_coros[handle]->stack);
+        myp_coros[handle]->stack = NULL;
     }
 }
 
@@ -2521,26 +2546,30 @@ void __myp_coro_scheduler(void) {
     // Process pending events first so event-waiting coroutines (C4) that were
     // re-readied by __myp_coro_event_notify become runnable this round.
     myp_event_process_all();
+    if (myp_coro_count == 0) return;
     // Snapshot the ready set first — a coroutine may yield (stay ready) while
     // we are running; we must not re-enter it in the same round.
-    int64_t snapshot[MYP_MAX_COROS];
+    int64_t* snapshot = (int64_t*)malloc((size_t)myp_coro_count * sizeof(int64_t));
+    if (!snapshot) return;
     int n = 0;
-    for (int i = 0; i < myp_coro_count && n < MYP_MAX_COROS; i++) {
-        if (myp_coros[i].active && myp_coros[i].ready)
+    for (int i = 0; i < myp_coro_count; i++) {
+        if (myp_coros[i] && myp_coros[i]->active && myp_coros[i]->ready)
             snapshot[n++] = i;
     }
     for (int k = 0; k < n; k++) {
         int64_t h = snapshot[k];
-        if (h >= 0 && h < myp_coro_count && myp_coros[h].active && myp_coros[h].ready)
+        if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
+            myp_coros[h]->active && myp_coros[h]->ready)
             __myp_coro_resume(h, 0);
     }
+    free(snapshot);
 }
 
 // ---- C4: event waiters ----
 // A coroutine that awaits an event is removed from the ready queue and parked
 // here. When the event is dispatched, matching waiters are re-readied (and
 // resumed if the event is being processed synchronously).
-#define MYP_MAX_CORO_WAITS 256
+#define MYP_MAX_CORO_WAITS 1024
 typedef struct {
     int event_id;
     int64_t handle;
@@ -2551,14 +2580,15 @@ static int myp_coro_wait_count = 0;
 
 // Called inside a coroutine: block until `event_id` is fired. Returns 0.
 int64_t __myp_coro_wait_event(int64_t event_id, int64_t val) {
-    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count) {
+    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+        myp_coros[myp_coro_current]) {
         if (myp_coro_wait_count < MYP_MAX_CORO_WAITS) {
             myp_coro_waits[myp_coro_wait_count].event_id = (int)event_id;
             myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
             myp_coro_waits[myp_coro_wait_count].active = 1;
             myp_coro_wait_count++;
         }
-        myp_coros[myp_coro_current].ready = 0;  // blocked, not ready
+        myp_coros[myp_coro_current]->ready = 0;  // blocked, not ready
     }
     // Suspend; when the event arrives we are re-readied and resumed.
     return __myp_coro_yield(val);
@@ -2570,8 +2600,8 @@ static void __myp_coro_event_notify(int event_id) {
         if (myp_coro_waits[i].active && myp_coro_waits[i].event_id == event_id) {
             int64_t h = myp_coro_waits[i].handle;
             myp_coro_waits[i].active = 0;
-            if (h >= 0 && h < myp_coro_count && myp_coros[h].active)
-                myp_coros[h].ready = 1;
+            if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active)
+                myp_coros[h]->ready = 1;
         }
     }
 }
@@ -2579,11 +2609,19 @@ static void __myp_coro_event_notify(int event_id) {
 // Free all remaining coroutine stacks at process exit (avoids leaks)
 static void __myp_coro_cleanup_all(void) {
     for (int i = 0; i < myp_coro_count; i++) {
-        if (myp_coros[i].stack) {
-            free(myp_coros[i].stack);
-            myp_coros[i].stack = NULL;
+        if (myp_coros[i]) {
+            if (myp_coros[i]->stack) {
+                free(myp_coros[i]->stack);
+                myp_coros[i]->stack = NULL;
+            }
+            free(myp_coros[i]);
+            myp_coros[i] = NULL;
         }
     }
+    free(myp_coros);
+    myp_coros = NULL;
+    myp_coro_count = 0;
+    myp_coro_capacity = 0;
 }
 
 __attribute__((constructor))

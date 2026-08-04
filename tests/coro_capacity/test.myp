@@ -1,0 +1,46 @@
+// tests/coro_capacity/test.myp — 协程容量：动态槽位突破旧 1024 硬上限
+// 创建并驱动 N=1500 个协程（旧静态数组上限为 1024），验证动态扩容正确。
+import env;
+import coro;
+
+class Ping {
+    action:
+        @coro void loop(long n) {
+            long i = 0L;
+            while (i < n) {
+                await;
+                i = i + 1L;
+            }
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            long N = 1500L;   // > 旧上限 1024
+            Ping p = new Ping();
+            slice<long> hs = new slice<long>(N);
+            long i = 0L;
+            while (i < N) {
+                hs[i] = p.loop(1L);
+                i = i + 1L;
+            }
+            Console.writeString("created="); Console.writeLong(N);
+            Console.writeString(" lastHandle="); Console.writeLong(hs[N - 1L]);
+            Console.writeString("\n");
+            // 驱动全部完成
+            i = 0L;
+            while (i < N) {
+                Coro.resume(hs[i], 0);
+                i = i + 1L;
+            }
+            Console.writeString("active0=");
+            Console.writeLong(Coro.isActive(hs[0L]));
+            Console.writeString(" done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}
