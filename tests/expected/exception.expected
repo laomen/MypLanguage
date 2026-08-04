@@ -17,4 +17,6 @@ obj_file=file: cfg.myp
 obj_parse=parse: 42
 obj_rethrow=parse: 7
 obj_catchall=simple_err
+fin_inner
+fin_outer=fin_prop
 done

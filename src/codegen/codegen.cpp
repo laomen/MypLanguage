@@ -5839,6 +5839,7 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* func = builder_.GetInsertBlock()->getParent();
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* i8_ty = llvm::Type::getInt8Ty(ctx_);
 
     // Per-try jmp_buf, allocated in the entry block so it stays live across the
     // longjmp back to the setjmp (fixes nested tries / cross-function throws).
@@ -5849,10 +5850,8 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     builder_.CreateCall(runtime_exception_push_->getFunctionType(),
         runtime_exception_push_, {jb_ptr});
 
-    // int setjmp(jmp_buf)
     auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
         runtime_setjmp_, {jb_ptr}, "setjmp_result");
-
     auto* zero = llvm::ConstantInt::get(i32_ty, 0);
     auto* is_error = builder_.CreateICmpNE(result, zero, "is_error");
 
@@ -5862,19 +5861,32 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* finally_bb = s.finally_block
         ? llvm::BasicBlock::Create(ctx_, "finally_block", func) : nullptr;
     auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_end", func);
+    // 1 = an exception is propagating through finally (then rethrow after).
+    llvm::Value* finally_flag = finally_bb
+        ? createEntryBlockAlloca(func, i8_ty, "finally_flag") : nullptr;
+    llvm::BasicBlock* propagate_bb = nullptr;  // exception path: set flag=1, br finally
+    llvm::BasicBlock* rethrow_bb = nullptr;    // pop handler + longjmp to outer
 
+    // Branch from the entry: error → dispatch / finally / merge; normal → try.
     if (dispatch_bb)
         builder_.CreateCondBr(is_error, dispatch_bb, try_bb);
-    else if (finally_bb)
-        builder_.CreateCondBr(is_error, finally_bb, try_bb);
-    else
+    else if (finally_bb) {
+        // No catch: an exception propagates — run finally, then rethrow.
+        propagate_bb = llvm::BasicBlock::Create(ctx_, "try_propagate", func);
+        builder_.CreateCondBr(is_error, propagate_bb, try_bb);
+    } else
         builder_.CreateCondBr(is_error, merge_bb, try_bb);
 
     // === Generate try block ===
     builder_.SetInsertPoint(try_bb);
     if (s.try_block) generateBlock(*s.try_block);
     if (!builder_.GetInsertBlock()->getTerminator()) {
-        builder_.CreateBr(finally_bb ? finally_bb : merge_bb);
+        if (finally_bb) {
+            builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 0), finally_flag);
+            builder_.CreateBr(finally_bb);
+        } else {
+            builder_.CreateBr(merge_bb);
+        }
     }
 
     // === Dispatch: match the exception type against each catch clause ===
@@ -5886,17 +5898,24 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
         for (size_t i = 0; i < s.catches.size(); ++i)
             catch_bbs.push_back(llvm::BasicBlock::Create(ctx_,
                 "catch_" + std::to_string(i), func));
-        auto* rethrow_bb = llvm::BasicBlock::Create(ctx_, "catch_rethrow", func);
+        // "no match" target: if there is a finally, run it then rethrow;
+        // otherwise rethrow directly.
+        if (finally_bb) {
+            if (!propagate_bb)
+                propagate_bb = llvm::BasicBlock::Create(ctx_, "try_propagate", func);
+        } else {
+            rethrow_bb = llvm::BasicBlock::Create(ctx_, "catch_rethrow", func);
+        }
+        llvm::BasicBlock* nomatch = finally_bb ? propagate_bb : rethrow_bb;
 
         llvm::BasicBlock* chk = dispatch_bb;
         for (size_t i = 0; i < s.catches.size(); ++i) {
             auto& cc = s.catches[i];
             llvm::BasicBlock* nxt = (i + 1 < s.catches.size())
                 ? llvm::BasicBlock::Create(ctx_, "catch_chk_" + std::to_string(i + 1), func)
-                : rethrow_bb;
+                : nomatch;
             builder_.SetInsertPoint(chk);
             if (cc.var_type.empty()) {
-                // catch-all: unconditional
                 builder_.CreateBr(catch_bbs[i]);
             } else if (cc.var_type == "string") {
                 auto* m = builder_.CreateICmpEQ(etype, llvm::ConstantInt::get(i32_ty, 0));
@@ -5913,27 +5932,51 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
             builder_.SetInsertPoint(catch_bbs[i]);
             llvm::Value* bound = nullptr;
             if (!cc.var_type.empty() && cc.var_type != "string") {
-                // typed class catch: bind the exception object
                 bound = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
                     runtime_exception_get_object_, {}, "exc_obj");
             } else {
-                // string / catch-all: bind the message
                 bound = builder_.CreateCall(runtime_get_error_->getFunctionType(),
                     runtime_get_error_, {}, "err_msg");
             }
             auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
             builder_.CreateStore(bound, ev);
             setNamedValue(cc.var_name, ev);
-            // Register typed catch variable so e.method()/property resolves.
             if (!cc.var_type.empty() && cc.var_type != "string")
                 var_class_map_[cc.var_name] = cc.var_type;
             if (cc.block) generateBlock(*cc.block);
-            if (!builder_.GetInsertBlock()->getTerminator())
-                builder_.CreateBr(finally_bb ? finally_bb : merge_bb);
+            if (!builder_.GetInsertBlock()->getTerminator()) {
+                if (finally_bb) {
+                    builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 0), finally_flag);
+                    builder_.CreateBr(finally_bb);
+                } else {
+                    builder_.CreateBr(merge_bb);
+                }
+            }
         }
+    }
 
-        // rethrow: no catch matched — pop this handler and longjmp to the next
-        // (outer) handler; the exception object stays in the thread-local carrier.
+    // === Exception propagating through finally (flag=1) ===
+    if (propagate_bb) {
+        builder_.SetInsertPoint(propagate_bb);
+        builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 1), finally_flag);
+        builder_.CreateBr(finally_bb);
+    }
+
+    // === Generate finally block ===
+    if (finally_bb) {
+        builder_.SetInsertPoint(finally_bb);
+        if (s.finally_block) generateBlock(*s.finally_block);
+        if (!builder_.GetInsertBlock()->getTerminator()) {
+            if (!rethrow_bb)
+                rethrow_bb = llvm::BasicBlock::Create(ctx_, "catch_rethrow", func);
+            auto* flag = builder_.CreateLoad(i8_ty, finally_flag, "finally_flag");
+            auto* is_prop = builder_.CreateICmpNE(flag, llvm::ConstantInt::get(i8_ty, 0));
+            builder_.CreateCondBr(is_prop, rethrow_bb, merge_bb);
+        }
+    }
+
+    // === rethrow: pop this handler and longjmp to the next (outer) handler ===
+    if (rethrow_bb) {
         builder_.SetInsertPoint(rethrow_bb);
         builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
             runtime_exception_pop_, {});
@@ -5942,15 +5985,6 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
         auto* one = llvm::ConstantInt::get(i32_ty, 1);
         builder_.CreateCall(runtime_longjmp_->getFunctionType(), runtime_longjmp_, {jb2, one});
         builder_.CreateUnreachable();
-    }
-
-    // === Generate finally block ===
-    if (finally_bb) {
-        builder_.SetInsertPoint(finally_bb);
-        if (s.finally_block) generateBlock(*s.finally_block);
-        if (!builder_.GetInsertBlock()->getTerminator()) {
-            builder_.CreateBr(merge_bb);
-        }
     }
 
     builder_.SetInsertPoint(merge_bb);

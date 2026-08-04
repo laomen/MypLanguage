@@ -152,6 +152,20 @@ class Main {
                 Console.writeString(e);
                 Console.writeString("\n");
             }
+
+            // 11. finally 传播：无 catch 时异常也执行 finally 再 rethrow
+            try {
+                try {
+                    throw "fin_prop";
+                } finally {
+                    Console.writeString("fin_inner\n");
+                }
+                Console.writeString("fin_after\n");
+            } catch (e) {
+                Console.writeString("fin_outer=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
             Console.writeString("done\n");
         }
 }
