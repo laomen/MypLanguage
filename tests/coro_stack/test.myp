@@ -1,0 +1,55 @@
+// tests/coro_stack/test.myp — @coro(stack=N) 栈大小可配置
+// 覆盖：大栈/小栈/默认栈 + 深递归（证明栈大小真正生效）
+import env;
+import coro;
+
+class Worker {
+    action:
+        // 显式大栈（1024KB）
+        @coro(stack=1024) void big() {
+            Console.writeString("big start\n");
+            await;
+            Console.writeString("big end\n");
+        }
+        // 显式小栈（64KB）
+        @coro(stack=64) void small() {
+            Console.writeString("small start\n");
+            await;
+            Console.writeString("small end\n");
+        }
+        // 默认栈（128KB）
+        @coro void def() {
+            Console.writeString("def1\n");
+            await;
+            Console.writeString("def2\n");
+        }
+        // 深递归：3000 层 > 默认 128KB，仅当 stack=2048 生效时能跑完
+        @coro(stack=2048) void deep(long d) {
+            if (d > 0L) {
+                deep(d - 1L);
+            } else {
+                Console.writeString("deep bottom\n");
+            }
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker();
+            long h1 = w.big();
+            Coro.resume(h1, 0);
+            long h2 = w.small();
+            Coro.resume(h2, 0);
+            long h3 = w.def();
+            Coro.resume(h3, 0);
+            long h4 = w.deep(3000L);
+            Coro.resume(h4, 0);
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

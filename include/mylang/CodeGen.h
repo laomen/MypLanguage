@@ -256,6 +256,8 @@ private:
 
     // ---- Coroutine methods: "ClassName_method" (only @coro annotated) ----
     std::unordered_set<std::string> coro_methods_;
+    // @coro(stack=N) → stack size in KB (0 = default 128KB), keyed by "Class_method"
+    std::unordered_map<std::string, int> coro_stack_map_;
     // True while generating the body of an @coro method (return stores result)
     bool current_is_coro_ = false;
 

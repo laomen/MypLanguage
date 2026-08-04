@@ -900,7 +900,8 @@ MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **clas
 + `await` to suspend + `Coro.resume` to resume (C1-C4 implemented). Users access the
 scheduling/lifecycle API through the static class `Coro`.
 
-**Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend):
+**Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend;
+`@coro(stack=N)` sets the stack size in KB, default 128):
 
 ```myp
 import env;     // Console
@@ -911,10 +912,13 @@ class Worker {
         string label_;
     action:
         void setLabel(string s) { label_ = s; }
-        @coro void run() {                    // coroutine method
+        @coro void run() {                    // coroutine method (default 128KB stack)
             Console.writeString(label_); Console.writeString(":1\n");
             await;                            // suspend, yield control
             Console.writeString(label_); Console.writeString(":2\n");
+        }
+        @coro(stack=2048) void heavy() {      // deep recursion / large stack: 2MB
+            await;
         }
 }
 ```

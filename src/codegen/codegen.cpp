@@ -552,6 +552,7 @@ void CodeGen::generateClass(const ClassDecl& cls) {
     for (auto& a : cls.actions) {
         if (a.has_coro) {
             coro_methods_.insert(cls.name + "_" + a.name);
+            coro_stack_map_[cls.name + "_" + a.name] = a.coro_stack_kb;
             generateCoroEntry(cls, a);
         }
     }
@@ -808,9 +809,16 @@ llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& 
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* void_ty = llvm::Type::getVoidTy(ctx_);
 
+    // Stack size: @coro(stack=N) KB, default 128KB (0 → runtime default).
+    int64_t stack_bytes = 128 * 1024;
+    auto sit = coro_stack_map_.find(target->getName().str());
+    if (sit != coro_stack_map_.end() && sit->second > 0)
+        stack_bytes = (int64_t)sit->second * 1024;
+
     auto create_fn = module_->getOrInsertFunction("__myp_coro_create",
-        llvm::FunctionType::get(i64, {}, false));
-    auto* handle = builder_.CreateCall(create_fn, {}, "coro_handle");
+        llvm::FunctionType::get(i64, {i64}, false));
+    auto* handle = builder_.CreateCall(create_fn,
+        {llvm::ConstantInt::get(i64, stack_bytes)}, "coro_handle");
 
     auto set_arg = module_->getOrInsertFunction("__myp_coro_set_entry_arg",
         llvm::FunctionType::get(void_ty, {i64, i64}, false));

@@ -1254,7 +1254,7 @@ Future.destroy(handle);              // 销毁
 MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await` 挂起 +
 `Coro.resume` 恢复（C1-C4 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
 
-**声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起）：
+**声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起；`@coro(stack=N)` 指定栈大小 KB，默认 128）：
 
 ```myp
 import env;     // Console
@@ -1265,10 +1265,13 @@ class Worker {
         string label_;
     action:
         void setLabel(string s) { label_ = s; }
-        @coro void run() {                    // 协程方法
+        @coro void run() {                    // 协程方法（默认 128KB 栈）
             Console.writeString(label_); Console.writeString(":1\n");
             await;                            // 挂起，让出控制权
             Console.writeString(label_); Console.writeString(":2\n");
+        }
+        @coro(stack=2048) void heavy() {      // 深递归/大栈用：2MB 栈
+            await;
         }
 }
 ```

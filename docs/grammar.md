@@ -149,7 +149,7 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'interface' 'class' Identifier ';' // 声明实现某接口
 
 ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
-ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' | '@' 'region'
+ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
 FuncAnnot        ::= '@' 'test' | '@' 'region'
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'

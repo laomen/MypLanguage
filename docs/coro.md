@@ -29,7 +29,7 @@
 | 自动调度 | ✅ C3：就绪队列 + `Coro.scheduler()` 每轮驱动所有就绪协程各一步 |
 | 事件集成 | ✅ C4：`await ClassName.eventName` 阻塞等待，事件 fire 后重新就绪 |
 | 用户 API 风格 | ✅ `Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent）；`__myp_coro_*` 符号未注册，用户调用即 undefined |
-| 无测试/示例 | ✅ `tests/coro/` + `tests/coro_auto/` + `tests/coro_event/` + `tests/coro_capacity/`（C1-C4 + 容量突破 1024 全覆盖）|
+| 无测试/示例 | ✅ `tests/coro/` + `tests/coro_auto/` + `tests/coro_event/` + `tests/coro_capacity/` + `tests/coro_stack/`（C1-C4 + 容量 + 栈可配置）|
 | 文档过时 | ✅ 本文档 + grammar/manual/design 已更新 |
 
 ---
@@ -48,7 +48,8 @@
 ## 3. 语法设计（全部 additive）
 
 ```ebnf
-ActionDecl     ::= '@coro' Type Identifier '(' Params ')' Block   // 协程方法（类 action 段）
+ActionDecl     ::= '@coro' '(' 'stack' '=' Integer ')'? Type Identifier '(' Params ')' Block
+                  // 协程方法（类 action 段）；@coro(stack=N)：栈大小 KB（默认 128）
 AwaitStmt      ::= 'await' ';'                                   // 简单挂起（C1）
                  | 'await' Expression ';'                        // 带值挂起（C2）
                  | 'await' ClassName '.' EventName ';'           // 等待事件（C4）
@@ -248,12 +249,12 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 
 | 层 | 改动 |
 |---|---|
-| **Parser** | `@coro` 注解（类 action 方法）+ `await` 语句/表达式（`AwaitStmt`/`AwaitExpr`，支持 `await;` / `await expr;` / `await ClassName.eventName` 事件等待）|
+| **Parser** | `@coro` 注解（支持 `@coro(stack=N)` KB）+ `await` 语句/表达式（`AwaitStmt`/`AwaitExpr`，支持 `await;` / `await expr;` / `await ClassName.eventName` 事件等待）|
 | **Sema** | `@coro` 方法调用返回 handle；`await` 表达式类型（long）；`await ClassName.eventName` 事件引用识别；`__myp_coro_*` 不注册符号（对用户隐藏）|
-| **Codegen** | `@coro` 调用 → spawn（create/入口参数槽/set_entry/首启）；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽；`Coro` 内建静态类 → 直接生成 runtime 调用；`await event` → wait_event |
-| **Runtime** | ucontext 纤程原语；线程本地值槽（yield/resume）；per-协程 result 槽；入口参数槽；就绪队列（ready 标记）+ `__myp_coro_scheduler()`；事件等待表 + 派发通知 |
+| **Codegen** | `@coro` 调用 → spawn（create(stack_bytes)/入口参数槽/set_entry/首启）；`await` 值传递（yield 带值 + 恢复取回）；`return` 存结果槽；`Coro` 内建静态类 → 直接生成 runtime 调用；`await event` → wait_event |
+| **Runtime** | ucontext 纤程原语；`create(stack_bytes)` 支持每协程自定义栈；线程本地值槽（yield/resume）；per-协程 result 槽；入口参数槽；动态槽位（无硬上限）；就绪队列（ready 标记）+ `__myp_coro_scheduler()`；事件等待表 + 派发通知 |
 | **Stdlib** | `stdlib/coro.myp`：`Coro` 内建静态类（scheduler/resume/yield/isActive/destroy/result/waitEvent），无 FFI 声明、无内部符号暴露 |
-| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/`（动态槽位突破 1024）；普通 + ASAN 全套 95/95 |
+| **测试** | `tests/coro/`（C1+C2）+ `tests/coro_auto/`（C3）+ `tests/coro_event/`（C4）+ `tests/coro_capacity/`（动态槽位）+ `tests/coro_stack/`（栈可配置）；普通 + ASAN 全套 96/96 |
 
 **风险**：ucontext 栈切换正确性（挂起点恢复、值槽线程本地）是核心；改动集中在协程路径，不碰正常执行路径，符合 v1.0 非破坏约束。C1-C4 全部落地，无未决设计项（见 §7）。
 
@@ -269,7 +270,7 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | 4 | 返回值 | `Coro.result(h)`（C2 实现）|
 | 5 | 调度 | 手动 `Coro.resume` + 自动调度器（`Coro.scheduler()` round-robin）（C3 实现）|
 | 6 | 事件集成 | `await ClassName.eventName` 阻塞等待 + 事件派发通知（C4 实现）|
-| 7 | 栈大小 | 128KB 固定（v1，安全默认）；`@coro(stack=...)` 可配置留作扩展 |
+| 7 | 栈大小 | `@coro(stack=N)`（KB，默认 128）可配置；已实现 ✅ |
 | 8 | 生命周期 | 自然结束自动回收槽 + `Coro.destroy` 显式取消 + `atexit` 统一释放（C1 实现）|
 | 9 | 线程模型 | 协程绑定创建线程（线程本地调度器/值槽）（实现遵循）|
 | 10 | 用户 API 风格 | 静态类 `Coro` 封装（`Coro.*`），`__myp_*` 仅编译器内部使用 |
@@ -284,8 +285,9 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 | C2 | `await` 值传递（yield 带值 + 恢复取回）+ 协程返回值槽 | ✅ 已完成（`int v = await expr;` + `Coro.result`）|
 | C3 | 自动调度器（就绪队列 + resume 循环）| ✅ 已完成（`Coro.scheduler()` round-robin）|
 | C4 | 事件集成（`await event`）+ 扩展 `tests/coro/` + grammar.md/manual.md/design.md 收尾 | ✅ 已完成（`await ClassName.eventName` + 全套测试 + 文档）|
+| C5 | `@coro(stack=N)` 栈大小可配置（KB，默认 128） | ✅ 已完成（深递归验证栈生效）|
 
-每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（95/95）+ no-crash 回归。
+每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（96/96）+ no-crash 回归。
 
 ---
 

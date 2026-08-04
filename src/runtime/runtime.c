@@ -2442,7 +2442,9 @@ static void __myp_coro_trampoline(int id) {
     }
 }
 
-int64_t __myp_coro_create(void) {
+int64_t __myp_coro_create(int64_t stack_bytes) {
+    // stack_bytes: requested stack size in bytes (<=0 → default MYP_CORO_STACK_SIZE).
+    size_t stack_size = (stack_bytes > 0) ? (size_t)stack_bytes : (size_t)MYP_CORO_STACK_SIZE;
     // Reuse a finished coroutine slot first (its stack is freed here, not in
     // the trampoline, because the trampoline still runs on its own stack).
     int idx = -1;
@@ -2465,12 +2467,12 @@ int64_t __myp_coro_create(void) {
         myp_coros[idx] = nc;
     }
     myp_coro_t* c = myp_coros[idx];
-    c->stack = (char*)malloc(MYP_CORO_STACK_SIZE);
+    c->stack = (char*)malloc(stack_size);
     if (!c->stack) return -1;
     if (getcontext(&c->ctx) == -1) { free(c->stack); return -1; }
     c->ctx.uc_link = &myp_coro_sched_ctx;
     c->ctx.uc_stack.ss_sp = c->stack;
-    c->ctx.uc_stack.ss_size = MYP_CORO_STACK_SIZE;
+    c->ctx.uc_stack.ss_size = stack_size;
     makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
     c->active = 1;
     c->ready = 1;

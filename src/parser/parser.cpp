@@ -253,7 +253,28 @@ ActionDecl Parser::parseActionDecl() {
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "startup") decl.has_startup = true;
         if (annot == "test") decl.has_test = true;
-        if (annot == "coro") decl.has_coro = true;
+        if (annot == "coro") {
+            decl.has_coro = true;
+            // Optional: @coro(stack=N) — N = coroutine stack size in KB (default 128)
+            if (check(TokenKind::LeftParen)) {
+                consume(TokenKind::LeftParen, "expected '(' after '@coro'");
+                std::string kw = parseIdentifier("expected 'stack' in @coro(stack=N)");
+                if (kw != "stack") {
+                    diag_.error(previous().range, "expected 'stack' in @coro(stack=N)");
+                }
+                consume(TokenKind::Equal, "expected '=' in @coro(stack=N)");
+                if (check(TokenKind::IntegerLiteral)) {
+                    try {
+                        decl.coro_stack_kb = (int)std::stoll(advance().value);
+                    } catch (...) {
+                        diag_.error(previous().range, "invalid stack size in @coro(stack=N)");
+                    }
+                } else {
+                    diag_.error(peek().range, "expected integer stack size (KB) in @coro(stack=N)");
+                }
+                consume(TokenKind::RightParen, "expected ')' after @coro(stack=N)");
+            }
+        }
         if (annot == "region") decl.has_region = true;
     }
 

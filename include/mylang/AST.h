@@ -86,6 +86,7 @@ struct ActionDecl {
     bool has_test = false;
     bool has_coro = false;
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
+    int coro_stack_kb = 0;    // @coro(stack=N): coroutine stack size in KB (0 = default 128KB)
 };
 
 struct EventDecl {
