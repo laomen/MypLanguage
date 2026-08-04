@@ -14,3 +14,13 @@ A|>scale|>off = [1
 ,5
 ,7
 ]
+A|>ScaleOp|>off = [1
+,1
+,1
+,1
+]
+A|>scale|>off|>scale = [2
+,6
+,10
+,14
+]

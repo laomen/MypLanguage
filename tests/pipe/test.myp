@@ -1,6 +1,6 @@
 // 管道 (|>) 回归测试 — 算子组件流水线
 // 设计规范见 docs/operators.md (P3)
-// 验证: 实例管道 / 类名实例化 / 左结合链式
+// 验证: 实例管道 / 类名实例化 / 左结合链式 / 类名混用 / 三段链
 
 import env;
 import setops;
@@ -57,6 +57,19 @@ class Main {
             double[] D = A |> scale |> off;
             Console.writeString("A|>scale|>off = [");
             i = 0; while (i < 4) { Console.writeFloat(D[i]); if (i < 3) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+
+            // 4) 链式 + 类名混用: A |> ScaleOp |> off = off.transform(scale(A))
+            //    (ScaleOp 新实例 k_=0 → 清零) → [1,1,1,1]
+            double[] E = A |> ScaleOp |> off;
+            Console.writeString("A|>ScaleOp|>off = [");
+            i = 0; while (i < 4) { Console.writeFloat(E[i]); if (i < 3) Console.writeString(","); i = i + 1; }
+            Console.writeString("]\n");
+
+            // 5) 三段链: A |> scale |> off |> scale = ((A*2)+1)*2 → [2,6,10,14]
+            double[] F = A |> scale |> off |> scale;
+            Console.writeString("A|>scale|>off|>scale = [");
+            i = 0; while (i < 4) { Console.writeFloat(F[i]); if (i < 3) Console.writeString(","); i = i + 1; }
             Console.writeString("]\n");
         }
 }
