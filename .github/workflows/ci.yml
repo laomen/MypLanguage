@@ -35,7 +35,9 @@ jobs:
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 21
-          sudo apt-get install -y libllvm-21-dev llvm-21-dev clang-21
+          sudo apt-get update
+          # Correct package names: libllvm21 (runtime lib, no dash) + llvm-21-dev (cmake config/headers)
+          sudo apt-get install -y llvm-21-dev libllvm21 clang-21
           llvm-config-21 --version
 
       - name: Build mypc (Release)
