@@ -1487,8 +1487,8 @@ Runtime  → print/println + 基本运行时
 | **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
 | **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O、Atomic 等） | ✅ 已实现 |
 | **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；`@coro` 方法/顶层函数 + `await` 挂起/恢复 + 入口参数槽 + 手动 `resume` + `await` 值传递（`int v = await expr;`）+ 返回值槽 + 自动调度器（就绪队列 + `Coro.scheduler`）+ 事件等待（`await ClassName.eventName`）+ `@coro(stack=N)` 栈可配置 + TLS 线程并用 + 顶层 `@coro` 函数 + `await` 上下文检查 + 动态事件等待表 + `destroy` 自杀防护 + `Coro.current`/`Coro.count` + 嵌套协程（`ret_ctx` 上下文链）+ `Coro.status` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消（`requestCancel`）| ✅ C1-C10 已实现 |
-| **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
-| **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
+| **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | ✅ 已实现 |
+| **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | ✅ 已实现 |
 | **v6** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |
 | **v2.4** | `@parallel for` (方案 A) — 编译期将循环体提取为独立函数，由线程池平分迭代执行，barrier 归约。零事件开销，天然负载均衡 | ✅ 已实现 |
 | **v2.4** | 并行体变量捕获 — 自动捕获外层变量到 struct，通过 void* arg 传递 | ✅ 已实现 |
@@ -1497,10 +1497,10 @@ Runtime  → print/println + 基本运行时
 | **v2.0** | Atomic 操作 — `Atomic.addDouble`/`Atomic.addInt` 基于 LLVM atomicrmw | ✅ 已实现 |
 | **v2.4** | 工作窃取线程池 — 共享 work-stealing 队列 + codegen 接入 | ✅ 已实现 |
 | **v2.4** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲 | 🔜 规划中 |
-| **v6** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | 🔜 规划中 |
-| **v6** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | 🔜 规划中 |
+| **v6** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | ✅ 已实现（`stdlib/barrier.myp` + `stdlib/future.myp`）|
+| **v6** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | ✅ 已实现 |
 | **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | 🔜 规划中 |
-| **v6** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | 🔜 规划中 |
+| **v6** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | ✅ 已实现 |
 | **未来** | 自举、JIT、宏/元编程、神经形态后端 |
 
 ---

@@ -112,6 +112,10 @@ true false  // 布尔
 null        // 空值
 ```
 
+> **`null` 语义**：`null` 可赋给**引用类型**（class/interface/struct 指针），并可用
+> `x == null` 判断。**`string` 是值语义**（字符缓冲），**不能**赋 `null`（编译报错）。
+> 解引用一个 `null` 的 class 引用是运行时错误（不保证防护），调用前应判空。
+
 ### 字符串插值 (v2+)
 
 ```myp
