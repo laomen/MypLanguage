@@ -89,6 +89,9 @@ TypeArgList   ::= '<' Type (',' Type)* '>'
 TypeSuffix    ::= '[' IntegerLiteral? ']'   // 数组；'[]' 动态，'[N]' 定长
 ```
 
+> `slice<T>` 为内置切片类型（`{ T* data; int64 len }`，运行时长度，见 [slice.md](slice.md)）；
+> 经 `ClassType TypeArgList?` 语法解析（如 `slice<double>`），`new slice<T>(n)` 创建。
+
 > `var` 类型由编译器推断（仅局部变量声明可用）。
 
 ---
@@ -146,8 +149,8 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'interface' 'class' Identifier ';' // 声明实现某接口
 
 ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
-ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro'
-FuncAnnot        ::= '@' 'test'
+ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' | '@' 'region'
+FuncAnnot        ::= '@' 'test' | '@' 'region'
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'
 
@@ -267,6 +270,13 @@ ArgumentList     ::= Expression (',' Expression)*
 > - 管道 `|>`（`A |> Op`，算子组件流水线；`Op` 为类名或实例，调用其 `transform`）
 > - 新增关键字 `operator`、token `|>`；`@op` 注解参数为运算符字符串
 > - 完整规范见 [operators.md](operators.md)
+
+> **切片与内存 region（已实施，additive）**：
+> - `slice<T>`：`{ T* data; int64 len }` fat pointer；`new slice<T>(n)` 创建；
+>   `s[i]`（带边界检查）、`s.size()`/`s.length`、`s.data()`；值传递
+> - `@region` 注解：函数调用作用域为内存 region（RMM）；入口 mark、出口 release，
+>   内部 slice/数组临时对象自动回收；返回引用类型的 `@region` 自动禁用（逃逸安全）
+> - 完整规范见 [slice.md](slice.md)
 
 ### 附：算子语法（EBNF 增量）
 
