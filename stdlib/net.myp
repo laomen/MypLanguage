@@ -18,6 +18,7 @@
 
 import env;
 import text;
+import error;
 
 // FFI 声明
 ffi int myp_net_server(int port);
@@ -67,11 +68,17 @@ class TcpClient {
             fd_ = -1;
         }
 
-        // 连接到服务器
+        // 连接到服务器，成功返回 0；失败抛 NetError（op/host/port）
         int connect(string host, int port) {
             fd_ = myp_net_connect(host, port);
-            if (fd_ >= 0) return 0;
-            return fd_;
+            if (fd_ < 0) {
+                NetError e = new NetError();
+                e.setOp("connect");
+                e.setHost(host);
+                e.setPort(port);
+                throw e;
+            }
+            return 0;
         }
 
         // 设置 fd（由 TcpServer.accept 调用）

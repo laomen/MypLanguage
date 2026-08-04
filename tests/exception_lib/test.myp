@@ -1,0 +1,47 @@
+// 库接入：stdlib 库失败时抛标准异常（FileError/JsonError 等）
+import env;
+import io;
+import json;
+
+class Main {
+    action:
+        @startup void run() {
+            // File.open 失败 → FileError
+            try {
+                File f = new File();
+                f.open("/no/such/myp_file.txt", "r");
+                Console.writeString("io_unexpected\n");
+            } catch (FileError e) {
+                Console.writeString("lib_io=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // Json 非法输入 → JsonError
+            try {
+                Json doc = new Json("{not valid");
+                Console.writeString("json_unexpected\n");
+            } catch (JsonError e) {
+                Console.writeString("lib_json=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+
+            // catch (Error e) 统一捕获库异常（接口匹配）
+            try {
+                File f2 = new File();
+                f2.open("/no/such/myp_file2.txt", "r");
+                Console.writeString("err_unexpected\n");
+            } catch (Error e) {
+                Console.writeString("lib_iface=");
+                Console.writeString(e.message());
+                Console.writeString("\n");
+            }
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

@@ -9,6 +9,7 @@
 import env;
 import text;
 import math;
+import error;
 
 // FFI 声明（handle 使用 long 存储指针）
 ffi long myp_json_parse(string json_str);
@@ -24,6 +25,13 @@ class Json {
     action:
         @startup void init(string jsonStr) {
             handle_ = myp_json_parse(jsonStr);
+            if (handle_ == 0L) {
+                JsonError e = new JsonError();
+                e.setLine(0);
+                e.setCol(0);
+                e.setDetail("invalid JSON input");
+                throw e;
+            }
         }
 
         int type(string path) {

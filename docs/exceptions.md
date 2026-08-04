@@ -261,6 +261,7 @@ var v = try {
 | E4.7 | `finally` 覆盖 `return`/`break`/`continue`（mode 标记 + 嵌套 finally 链转发；顺带修复 `for` 的 `break`/`continue`）| ✅ |
 | E4.8 | `throw;` 显式重抛当前异常（仅 catch 内；保留消息/类型；带 finally 时先跑 finally）| ✅ |
 | E4.9 | 未处理异常：打印明确消息（string/对象）后 abort（替代静默段错误）| ✅ |
+| E4.10 | 库接入：`io.File.open` 失败抛 `FileError`、`json.Json` 非法输入抛 `JsonError`、`net.TcpClient.connect` 失败抛 `NetError`（成功路径返回语义不变）| ✅ |
 | E5 | 测试 `tests/exception/` 扩展（类型分发/传播/未处理/表达式 try）+ grammar.md 增量 | ✅ 15 用例全绿（正常 + ASAN）|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。
