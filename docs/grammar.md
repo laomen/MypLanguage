@@ -193,7 +193,9 @@ RangeExpr        ::= Expression '..' Expression
 ReturnStmt       ::= 'return' Expression? ';'
 BreakStmt        ::= 'break' ';'
 ContinueStmt     ::= 'continue' ';'
-AwaitStmt        ::= 'await' Expression ';'
+AwaitStmt        ::= 'await' ';'                                   // 简单挂起（协程内）
+                   | 'await' Expression ';'                        // 带值挂起（C2）
+                   // 仅允许在 '@coro' 注解的类 action 方法内
 MappingStmt      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'  // 局部 mapping
 
 MatchStmt        ::= 'match' '(' Expression ')' '{' MatchArm+ '}'

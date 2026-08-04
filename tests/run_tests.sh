@@ -97,7 +97,10 @@ for test_dir in tests/*/; do
 
     # 比对 expected
     if [ -f "$expected_file" ]; then
-        if diff -q "$output_file" "$expected_file" > /dev/null 2>&1; then
+        # ASan prints a fixed warning for makecontext/swapcontext (ucontext
+        # coroutines) that is not part of the program output — filter it.
+        filtered_output=$(grep -v "ASan doesn't fully support makecontext" "$output_file" || true)
+        if diff -q <(printf '%s\n' "$filtered_output") "$expected_file" > /dev/null 2>&1; then
             echo -e "${GREEN}PASS${NC}"
             PASS=$((PASS + 1))
         else
@@ -107,7 +110,7 @@ for test_dir in tests/*/; do
                 PASS=$((PASS + 1))
             else
                 echo -e "${RED}MISMATCH${NC}"
-                diff "$output_file" "$expected_file" | head -10
+                diff <(printf '%s\n' "$filtered_output") "$expected_file" | head -10
                 FAIL=$((FAIL + 1))
                 FAILED_TESTS="$FAILED_TESTS $name(output)"
             fi

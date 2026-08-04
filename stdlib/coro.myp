@@ -1,6 +1,24 @@
-ffi int  __myp_coro_create();
-ffi void __myp_coro_set_func(int fn_ptr, int arg_ptr);
-ffi void __myp_coro_yield();
-ffi int  __myp_coro_resume(int handle);
-ffi int  __myp_coro_is_active(int handle);
-ffi void __myp_coro_destroy(int handle);
+// coro.myp — MYP 协程底层原语（基于 ucontext 用户态纤程）
+// 语言层使用 @coro 方法 + await；这些 FFI 由编译器生成的代码调用。
+//
+// 用法（语言层，编译器自动生成 spawn）：
+//   class Worker {
+//       action:
+//           @coro void run() {
+//               Console.writeString("w1\n");
+//               await;
+//               Console.writeString("w2\n");
+//           }
+//   }
+//   Worker w = new Worker();
+//   int h = w.run();              // @coro 调用 → 创建并首启，返回 handle
+//   __myp_coro_resume(h);         // 手动恢复
+
+ffi long  __myp_coro_create();
+ffi void  __myp_coro_set_entry(long handle, long fn_ptr);
+ffi void  __myp_coro_yield();
+ffi long  __myp_coro_resume(long handle);
+ffi long  __myp_coro_is_active(long handle);
+ffi void  __myp_coro_destroy(long handle);
+ffi void  __myp_coro_set_entry_arg(long idx, long val);
+ffi long  __myp_coro_get_entry_arg(long idx);

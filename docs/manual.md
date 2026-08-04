@@ -1251,16 +1251,59 @@ Future.destroy(handle);              // 销毁
 
 ### `import coro` — 协程
 
-```myp
-import coro;
+MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await;` 挂起 +
+`__myp_coro_resume` 恢复（C1 已实现）。
 
-// 基于 ucontext 的用户态纤程
-int h = Coro.create();               // 创建协程
-Coro.resume(h);                      // 恢复执行
-Coro.yield();                        // 挂起当前协程
-bool active = Coro.isActive(h);      // 是否活跃
-Coro.destroy(h);                     // 销毁
+**声明协程方法**（`@coro`，可带参数，方法内可用 `await;` 挂起）：
+
+```myp
+import env;     // Console
+import coro;    // 协程 FFI
+
+class Worker {
+    property:
+        string label_;
+    action:
+        void setLabel(string s) { label_ = s; }
+        @coro void run() {                    // 协程方法
+            Console.writeString(label_); Console.writeString(":1\n");
+            await;                            // 挂起，让出控制权
+            Console.writeString(label_); Console.writeString(":2\n");
+        }
+}
 ```
+
+**调用 = 启动协程**：`obj.meth(args)` 返回 `long` handle（创建 + 首启到第一个 `await`）：
+
+```myp
+class Main {
+    action:
+        @startup void run() {
+            Worker a = new Worker();  a.setLabel("A");
+            long h = a.run();               // spawn，返回 handle
+            Console.writeString("main\n");
+            __myp_coro_resume(h);           // 恢复执行（从 await 处继续）
+            __myp_coro_destroy(h);          // 提前取消（可选）
+        }
+}
+```
+
+**FFI 原语**（`stdlib/coro.myp`）：
+
+```myp
+long h  = __myp_coro_create();                       // 创建协程（编译器内部用）
+__myp_coro_set_entry(h, fn_ptr);                     // 设置入口（编译器内部用）
+__myp_coro_yield();                                  // 挂起当前协程（await 展开）
+long r  = __myp_coro_resume(h);                      // 恢复（-1 无效，0 成功）
+long a  = __myp_coro_is_active(h);                   // 是否仍活跃（1/0）
+__myp_coro_destroy(h);                               // 销毁（提前取消）
+__myp_coro_set_entry_arg(idx, val);                  // 入口参数槽（编译器内部用）
+long v  = __myp_coro_get_entry_arg(idx);             // 读取入口参数槽
+```
+
+> 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
+> 返回 `long` handle；`await;` 展开为 `__myp_coro_yield()`；协程自然结束自动回收槽，
+> 进程退出统一释放栈。C2 将加入 `await` 值传递与自动调度器。
 
 ### `import pool` — 并行计算工具
 

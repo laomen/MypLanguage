@@ -548,6 +548,14 @@ void CodeGen::generateClass(const ClassDecl& cls) {
     // Generate all action bodies (including stdlib intrinsics with no body)
     for (auto& a : cls.actions) generateClassAction(cls, a);
 
+    // Generate coroutine entry wrappers for @coro methods (after bodies exist)
+    for (auto& a : cls.actions) {
+        if (a.has_coro) {
+            coro_methods_.insert(cls.name + "_" + a.name);
+            generateCoroEntry(cls, a);
+        }
+    }
+
     // Generate event fire functions for each event using global event ID
     for (auto& ev : cls.events) {
         std::string ekey = cls.name + "::" + ev.name;
@@ -694,6 +702,105 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     in_region_function_ = false;
     current_region_mark_ = nullptr;
     popScope();
+}
+
+// -- Generate coroutine entry wrapper for an @coro method --
+// void __myp_coro_entry_<Class>_<method>(void)
+// Reads 'this' (slot 0) and params (slots 1..N) from the thread-local entry
+// arg table and calls Class_method(this, params...). ucontext trampolines call
+// this with no arguments.
+void CodeGen::generateCoroEntry(const ClassDecl& cls, const ActionDecl& action) {
+    std::string method_fn = cls.name + "_" + action.name;
+    auto* target = module_->getFunction(method_fn);
+    if (!target) return;
+
+    std::string entry_fn = "__myp_coro_entry_" + cls.name + "_" + action.name;
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
+    auto* func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, entry_fn, module_.get());
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
+    builder_.SetInsertPoint(bb);
+
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto get_arg = module_->getOrInsertFunction("__myp_coro_get_entry_arg",
+        llvm::FunctionType::get(i64, {i64}, false));
+    auto* slot0 = builder_.CreateCall(get_arg, {llvm::ConstantInt::get(i64, 0)}, "this_raw");
+    auto* this_ptr = builder_.CreateIntToPtr(slot0, llvm::PointerType::get(ctx_, 0), "this");
+
+    std::vector<llvm::Value*> call_args;
+    call_args.push_back(this_ptr);
+    for (size_t i = 0; i < action.params.size(); ++i) {
+        TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
+        auto* slot = builder_.CreateCall(get_arg,
+            {llvm::ConstantInt::get(i64, (int64_t)(i + 1))}, "arg_raw");
+        auto* want = getLLVMType(pt);
+        llvm::Value* v = slot;
+        if (want->isIntegerTy()) {
+            v = builder_.CreateIntCast(slot, want, true);
+        } else if (want->isFloatingPointTy()) {
+            v = builder_.CreateBitCast(slot, want);
+        } else if (want->isPointerTy()) {
+            v = builder_.CreateIntToPtr(slot, want);
+        }
+        call_args.push_back(v);
+    }
+    builder_.CreateCall(target, call_args);
+    builder_.CreateRetVoid();
+}
+
+// -- Generate coroutine spawn sequence for an @coro method call --
+// h = __myp_coro_create();
+// __myp_coro_set_entry_arg(0, this);
+// __myp_coro_set_entry_arg(1+i, arg_i);
+// __myp_coro_set_entry(h, ptrtoint(__myp_coro_entry_Class_method));
+// __myp_coro_resume(h);   // first start
+// return h;               // handle
+llvm::Value* CodeGen::generateCoroSpawn(llvm::Function* target, const CallExpr& e,
+                                        llvm::Value* mthis, bool is_method) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* void_ty = llvm::Type::getVoidTy(ctx_);
+
+    auto create_fn = module_->getOrInsertFunction("__myp_coro_create",
+        llvm::FunctionType::get(i64, {}, false));
+    auto* handle = builder_.CreateCall(create_fn, {}, "coro_handle");
+
+    auto set_arg = module_->getOrInsertFunction("__myp_coro_set_entry_arg",
+        llvm::FunctionType::get(void_ty, {i64, i64}, false));
+    auto idx = [&](uint64_t v) { return llvm::ConstantInt::get(i64, v); };
+
+    // Slot 0: 'this'
+    llvm::Value* this_i = idx(0);
+    if (is_method && mthis)
+        this_i = builder_.CreatePtrToInt(mthis, i64);
+    builder_.CreateCall(set_arg, {idx(0), this_i});
+
+    // Slots 1..N: explicit arguments
+    for (size_t i = 0; i < e.args.size(); ++i) {
+        auto* arg = generateExpr(*e.args[i]);
+        llvm::Value* slot = arg;
+        if (arg->getType()->isPointerTy())
+            slot = builder_.CreatePtrToInt(arg, i64);
+        else if (arg->getType()->isIntegerTy())
+            slot = builder_.CreateIntCast(arg, i64, true);
+        else if (arg->getType()->isFloatingPointTy())
+            slot = builder_.CreateBitCast(arg, i64);
+        builder_.CreateCall(set_arg, {idx((uint64_t)(i + 1)), slot});
+    }
+
+    // __myp_coro_set_entry(handle, ptrtoint(entry_wrapper))
+    auto set_entry = module_->getOrInsertFunction("__myp_coro_set_entry",
+        llvm::FunctionType::get(void_ty, {i64, i64}, false));
+    std::string entry_name = "__myp_coro_entry_" + target->getName().str();
+    llvm::Value* entry_i = idx(0);
+    if (auto* entry = module_->getFunction(entry_name))
+        entry_i = builder_.CreatePtrToInt(entry, i64);
+    builder_.CreateCall(set_entry, {handle, entry_i});
+
+    // First start
+    auto resume_fn = module_->getOrInsertFunction("__myp_coro_resume",
+        llvm::FunctionType::get(i64, {i64}, false));
+    builder_.CreateCall(resume_fn, {handle});
+
+    return handle;
 }
 
 // -- Generate struct methods --
@@ -4937,6 +5044,14 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         callee = generateExpr(*e.callee);
     }
     call_ready:
+
+    // ---- @coro method call → spawn coroutine, return handle ----
+    if (callee) {
+        auto* ccf = llvm::dyn_cast<llvm::Function>(callee);
+        if (ccf && coro_methods_.count(ccf->getName().str())) {
+            return generateCoroSpawn(ccf, e, mthis, is_method);
+        }
+    }
 
     std::vector<llvm::Value*> args;
     // Check if this is a static method — skip mthis for static actions

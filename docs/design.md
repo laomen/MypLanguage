@@ -1486,7 +1486,7 @@ Runtime  → print/println + 基本运行时
 | **v5** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
 | **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
 | **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O、Atomic 等） | ✅ 已实现 |
-| **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；await 表达式挂起/恢复 | 🔜 规划中 |
+| **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；`@coro` 方法 + `await;` 挂起/恢复 + 入口参数槽 + 手动 `resume`（C1 完成，C2 值传递/自动调度待续） | ✅ C1 已实现 |
 | **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
 | **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
 | **v6** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |

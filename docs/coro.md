@@ -1,9 +1,9 @@
 # MYP 协程设计（Coroutines）
 
-> 状态：**设计提案 v0.1**（待评审后实施）
+> 状态：**实施中 — C1 已完成**（C2/C3/C4 待后续阶段）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、现有实现（`src/runtime/runtime.c` +
 > `src/codegen/codegen.cpp` + `stdlib/coro.myp`）
-> 本文档完善 MYP 协程机制：**`@coro` 函数 + `await` 挂起/恢复 + 调度**。实施前请先评审。
+> 本文档完善 MYP 协程机制：**`@coro` 方法 + `await` 挂起/恢复 + 调度**。
 
 ---
 
@@ -14,17 +14,19 @@
 | 项 | 现状 |
 |---|---|
 | 运行时原语 | 完整 ucontext 用户态纤程：`__myp_coro_create` / `set_entry` / `yield` / `resume` / `is_active` / `destroy`；每线程 1024 槽、256KB 栈、`swapcontext` 调度（`runtime.c` §Coroutine）|
-| 语法 | `@coro` 注解（`has_coro` 标记，parser 已解析）+ `await` 语句（`AwaitStmt` → `__myp_coro_yield`）|
-| 标准库 | `stdlib/coro.myp`：FFI 声明（`create`/`set_func`/`yield`/`resume`/`is_active`/`destroy`）|
+| 语法 | `@coro` 注解（`has_coro` 标记，parser 已解析，作用于**类 action 方法**）+ `await` 语句（`AwaitStmt`，支持 `await;` 与 `await expr;`）|
+| 标准库 | `stdlib/coro.myp`：FFI 声明（`create`/`set_entry`/`yield`/`resume`/`is_active`/`destroy`/`set_entry_arg`/`get_entry_arg`）|
 
-### 1.2 现状缺口（半成品）
+### 1.2 现状缺口（半成品 → 已解决项）
 
-1. **`@coro` 无 codegen 调度**：`has_coro` 只标记，不生成协程启动/恢复代码
-2. **无函数地址机制**：MYP 无法把 `@coro` 函数地址传给 `__myp_coro_set_entry`，无法从语言层启动真实协程
-3. **`stdlib/coro.myp` FFI 签名错误**：声明 `__myp_coro_set_func(fn, arg)`，runtime 实际为 `__myp_coro_set_entry(handle, fn)` → 调用即链接失败
-4. **`await` 无值传递**：`generateAwaitStmt` 仅调 `yield()`，不传/收值
-5. **无测试/示例**：tests、examples 均无协程用例
-6. **文档过时**：`docs/design.md` 标"规划中"
+| 缺口 | C1 状态 |
+|---|---|
+| `@coro` 无 codegen 调度 | ✅ 已解决：`generateClass` 生成协程入口包装 + `generateCall` 生成 spawn |
+| 无函数地址机制 | ✅ 已解决：codegen 直接 `ptrtoint(入口包装)` 传入 `set_entry` |
+| `stdlib/coro.myp` FFI 签名错误（`set_func` vs `set_entry`）| ✅ 已解决：改为 `set_entry(handle, fn_ptr)`，fn_ptr 用 `long` 承载 64 位指针 |
+| `await` 值传递 | ⏳ C2（当前 `await;` 简单挂起可用）|
+| 无测试/示例 | ✅ `tests/coro/` 已建（C1 覆盖：spawn/恢复/参数/is_active/destroy/多协程）|
+| 文档过时 | ✅ 本文档 + grammar/manual/design 已更新 |
 
 ---
 
@@ -42,55 +44,66 @@
 ## 3. 语法设计（全部 additive）
 
 ```ebnf
-FuncDecl       ::= '@coro' Type Identifier '(' Params ')' Block   // 协程函数
-AwaitStmt      ::= 'await' Expression ';'
-                  // 挂起：Expression 值交给调度器；恢复时 await 表达式 = 传入值
-CoroExpr       ::= Identifier '(' Arguments ')'                  // @coro 调用 = 启动协程
-                  // 返回 int handle（协程句柄）
+ActionDecl     ::= '@coro' Type Identifier '(' Params ')' Block   // 协程方法（类 action 段）
+AwaitStmt      ::= 'await' ';'                                   // 简单挂起（C1 已实现）
+                 | 'await' Expression ';'                        // 带值挂起（C2）
+CoroCall       ::= Object '.' Identifier '(' Arguments ')'       // @coro 方法调用 = 启动协程
+                  // 返回 long handle（协程句柄）
 ```
 
-**示例**：
+**C1 已实现的用法**（`@coro` 是**类 action 方法**，`await;` 简单挂起，参数通过入口槽传递）：
 
 ```myp
-import coro;
+import env;    // Console
+import coro;   // 协程 FFI
 
-@coro int worker(int n) {
-    Console.writeString("w1\n");
-    int v = await n * 2;        // 挂起，yield 值 = n*2；恢复时 v = 传入值
-    Console.writeString("w2 ");
-    Console.write(v);
-    Console.writeString("\n");
-    return v + 1;               // 协程结束，返回值存入协程槽
+class Worker {
+    property:
+        string label_;
+    action:
+        void setLabel(string s) { label_ = s; }
+        @coro void run() {              // 协程方法（可带参数）
+            Console.writeString(label_); Console.writeString(":1\n");
+            await;                      // 挂起
+            Console.writeString(label_); Console.writeString(":2\n");
+        }
 }
 
 class Main {
     action:
         @startup void run() {
-            int h = worker(5);              // @coro 调用 → 创建 + 首启到第一个 await
-            Console.writeString("back1\n");
-            int active = __myp_coro_resume(h, 100);   // 恢复，传 100；返回是否仍活动
-            Console.writeString("back2\n");
-            int result = __myp_coro_result(h);        // 协程结束后取返回值
-            __myp_coro_destroy(h);
+            Worker a = new Worker();  a.setLabel("A");
+            long ha = a.run();          // spawn：创建 + 首启到第一个 await，返回 handle
+            Console.writeString("main\n");
+            __myp_coro_resume(ha);      // 恢复：从 await 处继续到协程结束
+            Console.writeString("done\n");
         }
 }
+
+int main() { Main m = new Main(); return 0; }
 ```
 
 **输出**（手动调度）：
 ```
-w1
-back1
-w2 100
-back2
+A:1
+main
+A:2
+done
 ```
+
+> **C1 说明**：`@coro` 方法调用 `obj.meth(args)` 编译为 spawn（`create` + 入口参数槽 +
+> `set_entry` + 首启 `resume`），返回 `long` handle。入口包装 `__myp_coro_entry_<类>_<方法>`
+> 从线程本地入口参数槽（`this`=槽 0，参数=槽 1..N）读出并调用真实方法。`await;` 简单挂起，
+> 返回后由 `__myp_coro_resume(h)` 恢复。协程自然结束自动回收槽；`__myp_coro_destroy(h)` 提前取消；
+> 进程退出 `atexit` 统一释放栈。
 
 ---
 
 ## 4. 实现方案
 
-### 4.1 方案 A（推荐）：复用现有 ucontext 原语
+### 4.1 方案 A（推荐，C1 已采用）：复用现有 ucontext 原语
 
-协程函数保持普通函数（编译为普通 LLVM 函数），通过现有 ucontext 纤程运行：
+协程方法保持普通方法（编译为普通 LLVM 函数），通过现有 ucontext 纤程运行：
 
 - **启动**：`@coro fn(args)` 调用 → codegen 生成
   `__myp_coro_create()` + `__myp_coro_set_entry(h, ptrtoint(fn))` + 参数槽 + `resume(h)`（首启）
@@ -157,13 +170,13 @@ back2
 
 ---
 
-## 8. 实施路线（评审通过后）
+## 8. 实施路线
 
-| 阶段 | 内容 |
-|---|---|
-| C1 | 修复 `stdlib/coro.myp` FFI（`set_entry`）+ `@coro` 启动 codegen（create/set_entry/首启）+ 手动 `resume` |
-| C2 | `await` 值传递（yield 带值 + 恢复取回）+ 协程参数/返回值槽 |
-| C3 | 自动调度器（就绪队列）+ 多协程调度 |
-| C4 | 事件集成（`await event`，可选）+ `tests/coro/` 测试 + grammar.md/manual.md/design.md 更新 |
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| C1 | 修复 `stdlib/coro.myp` FFI（`set_entry`）+ `@coro` 启动 codegen（create/set_entry/首启）+ 手动 `resume` | ✅ 已完成（含入口参数槽：`this`+参数）|
+| C2 | `await` 值传递（yield 带值 + 恢复取回）+ 协程参数/返回值槽 | ⏳ 待实施 |
+| C3 | 自动调度器（就绪队列）+ 多协程调度 | ⏳ 待实施 |
+| C4 | 事件集成（`await event`，可选）+ 扩展 `tests/coro/` + grammar.md/manual.md/design.md 收尾 | ⏳ 待实施 |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。

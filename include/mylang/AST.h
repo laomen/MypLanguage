@@ -538,6 +538,8 @@ struct AwaitStmt : Stmt {
     std::unique_ptr<Expr> expr;
     AwaitStmt(std::unique_ptr<Expr> e, SourceRange r)
         : Stmt(StmtKind::AwaitStmt, r), expr(std::move(e)) {}
+    AwaitStmt(SourceRange r)  // await; — simple suspend (no value passing)
+        : Stmt(StmtKind::AwaitStmt, r), expr(nullptr) {}
 };
 
 struct MappingStmt : Stmt {

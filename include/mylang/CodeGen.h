@@ -18,6 +18,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace mylang {
@@ -253,6 +254,9 @@ private:
     // ---- Static action tracking: "ClassName_action" -> true/false ----
     std::unordered_map<std::string, bool> is_static_action_;
 
+    // ---- Coroutine methods: "ClassName_method" (only @coro annotated) ----
+    std::unordered_set<std::string> coro_methods_;
+
     // ---- GPU / CUDA offload ----
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
     bool cuda_enabled_ = false;
@@ -338,6 +342,9 @@ private:
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);
+    void generateCoroEntry(const ClassDecl& cls, const ActionDecl& action);
+    llvm::Value* generateCoroSpawn(llvm::Function* target, const CallExpr& e,
+                                   llvm::Value* mthis, bool is_method);
     void generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_decl);
     void generateEventFire(const ClassDecl& cls, const EventDecl& ev, int event_id);
     void generateStructMethods(const StructDecl& st);

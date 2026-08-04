@@ -2396,11 +2396,26 @@ static void __myp_coro_trampoline(int id) {
     }
 }
 
-int32_t __myp_coro_create(void) {
-    if (myp_coro_count >= MYP_MAX_COROS) return -1;
-    int idx = myp_coro_count;
-    // Note: fn must be set BEFORE calling create, via __myp_coro_set_entry
+int64_t __myp_coro_create(void) {
+    int idx = -1;
+    if (myp_coro_count < MYP_MAX_COROS) {
+        idx = myp_coro_count;
+        myp_coro_count++;
+    } else {
+        // Reuse a finished coroutine slot (stack freed here, not in the
+        // trampoline, because the trampoline still runs on its own stack)
+        for (int i = 0; i < MYP_MAX_COROS; i++) {
+            if (!myp_coros[i].active && myp_coros[i].stack) {
+                free(myp_coros[i].stack);
+                myp_coros[i].stack = NULL;
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) return -1;
+    }
     myp_coro_t* c = &myp_coros[idx];
+    // Note: fn must be set BEFORE calling create, via __myp_coro_set_entry
     c->stack = (char*)malloc(MYP_CORO_STACK_SIZE);
     if (!c->stack) return -1;
     if (getcontext(&c->ctx) == -1) { free(c->stack); return -1; }
@@ -2409,11 +2424,11 @@ int32_t __myp_coro_create(void) {
     c->ctx.uc_stack.ss_size = MYP_CORO_STACK_SIZE;
     makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
     c->active = 1;
-    myp_coro_count++;
     return idx;
 }
 
-void __myp_coro_set_entry(int32_t handle, int32_t fn_ptr) {
+// fn_ptr is a 64-bit function pointer on LP64 — must NOT be int32 (truncation bug)
+void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
     if (handle >= 0 && handle < MYP_MAX_COROS) {
         myp_coros[handle].fn = (void (*)(void))(uintptr_t)fn_ptr;
     }
@@ -2427,7 +2442,7 @@ void __myp_coro_yield(void) {
     myp_coro_current = saved;
 }
 
-int32_t __myp_coro_resume(int32_t handle) {
+int64_t __myp_coro_resume(int64_t handle) {
     if (handle < 0 || handle >= myp_coro_count) return -1;
     if (!myp_coros[handle].active) return -1;
     myp_coro_current = handle;
@@ -2435,15 +2450,46 @@ int32_t __myp_coro_resume(int32_t handle) {
     return 0;
 }
 
-int32_t __myp_coro_is_active(int32_t handle) {
+int64_t __myp_coro_is_active(int64_t handle) {
     if (handle < 0 || handle >= myp_coro_count) return 0;
     return myp_coros[handle].active ? 1 : 0;
 }
 
-void __myp_coro_destroy(int32_t handle) {
+void __myp_coro_destroy(int64_t handle) {
     if (handle >= 0 && handle < myp_coro_count && myp_coros[handle].stack) {
         myp_coros[handle].active = 0;
         free(myp_coros[handle].stack);
         myp_coros[handle].stack = NULL;
     }
+}
+
+// Free all remaining coroutine stacks at process exit (avoids leaks)
+static void __myp_coro_cleanup_all(void) {
+    for (int i = 0; i < myp_coro_count; i++) {
+        if (myp_coros[i].stack) {
+            free(myp_coros[i].stack);
+            myp_coros[i].stack = NULL;
+        }
+    }
+}
+
+__attribute__((constructor))
+static void __myp_coro_register_cleanup(void) {
+    atexit(__myp_coro_cleanup_all);
+}
+
+// ---- Coroutine entry arguments (thread-local) ----
+// The coroutine entry wrapper reads 'this' (slot 0) and params (slot 1..N)
+// from here; spawn stores them before the first resume. Thread-local is fine
+// because only one coroutine of a thread runs at a time.
+#define MYP_CORO_MAX_ENTRY_ARGS 16
+static __thread uint64_t myp_coro_entry_args[MYP_CORO_MAX_ENTRY_ARGS];
+void __myp_coro_set_entry_arg(int64_t idx, int64_t val) {
+    if (idx >= 0 && idx < MYP_CORO_MAX_ENTRY_ARGS)
+        myp_coro_entry_args[idx] = (uint64_t)val;
+}
+int64_t __myp_coro_get_entry_arg(int64_t idx) {
+    if (idx >= 0 && idx < MYP_CORO_MAX_ENTRY_ARGS)
+        return (int64_t)myp_coro_entry_args[idx];
+    return 0;
 }

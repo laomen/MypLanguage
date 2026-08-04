@@ -894,6 +894,64 @@ sb.append(", World");
 string result = sb.toString();  // "Hello, World"
 ```
 
+### `import coro` — Coroutines
+
+MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **class action method**
++ `await;` to suspend + `__myp_coro_resume` to resume (C1 implemented).
+
+**Declaring a coroutine method** (`@coro`, may take parameters; use `await;` to suspend):
+
+```myp
+import env;     // Console
+import coro;    // coroutine FFI
+
+class Worker {
+    property:
+        string label_;
+    action:
+        void setLabel(string s) { label_ = s; }
+        @coro void run() {                    // coroutine method
+            Console.writeString(label_); Console.writeString(":1\n");
+            await;                            // suspend, yield control
+            Console.writeString(label_); Console.writeString(":2\n");
+        }
+}
+```
+
+**Calling = spawning**: `obj.meth(args)` returns a `long` handle (creates the coroutine and
+runs it up to the first `await`):
+
+```myp
+class Main {
+    action:
+        @startup void run() {
+            Worker a = new Worker();  a.setLabel("A");
+            long h = a.run();               // spawn, returns handle
+            Console.writeString("main\n");
+            __myp_coro_resume(h);           // resume (continue after await)
+            __myp_coro_destroy(h);          // cancel early (optional)
+        }
+}
+```
+
+**FFI primitives** (`stdlib/coro.myp`):
+
+```myp
+long h  = __myp_coro_create();                       // create (compiler-generated)
+__myp_coro_set_entry(h, fn_ptr);                     // set entry (compiler-generated)
+__myp_coro_yield();                                  // suspend current coroutine (await)
+long r  = __myp_coro_resume(h);                      // resume (-1 invalid, 0 ok)
+long a  = __myp_coro_is_active(h);                   // still active (1/0)
+__myp_coro_destroy(h);                               // destroy / cancel early
+__myp_coro_set_entry_arg(idx, val);                  // entry arg slot (compiler-generated)
+long v  = __myp_coro_get_entry_arg(idx);             // read entry arg slot
+```
+
+> Semantics: an `@coro` method call compiles to a spawn (`create` + arg slots + `set_entry`
+> + first `resume`) and returns a `long` handle; `await;` expands to `__myp_coro_yield()`;
+> finished coroutines recycle their slot automatically and stacks are freed at process exit.
+> C2 will add value-passing `await` and an automatic scheduler.
+
 ---
 
 ## 12. Compilation & Tools

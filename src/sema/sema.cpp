@@ -1344,8 +1344,13 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                 for (auto& action : cls.actions) {
                     if (action.name == expr.member_name) {
                         TypeInfo func_type(TypeKind::Function);
-                        func_type.return_type = std::make_shared<TypeInfo>(
-                            typeNodeToTypeInfo(action.return_type));
+                        if (action.has_coro) {
+                            // @coro method call → returns coroutine handle (long)
+                            func_type.return_type = std::make_shared<TypeInfo>(TypeKind::Long);
+                        } else {
+                            func_type.return_type = std::make_shared<TypeInfo>(
+                                typeNodeToTypeInfo(action.return_type));
+                        }
                         for (auto& p : action.params)
                             func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
                         return func_type;

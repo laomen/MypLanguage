@@ -961,6 +961,10 @@ std::unique_ptr<Stmt> Parser::parseContinueStmt() {
 
 std::unique_ptr<Stmt> Parser::parseAwaitStmt() {
     SourceRange r = previous().range;
+    if (check(TokenKind::Semicolon)) {
+        consume(TokenKind::Semicolon, "expected ';' after await expression");
+        return std::make_unique<AwaitStmt>(r);  // await; — simple suspend
+    }
     auto expr = parseExpr();
     consume(TokenKind::Semicolon, "expected ';' after await expression");
     return std::make_unique<AwaitStmt>(std::move(expr), r);
