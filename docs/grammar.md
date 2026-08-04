@@ -264,8 +264,9 @@ ArgumentList     ::= Expression (',' Expression)*
 > **算子系统（已实施，additive）**：`运算符 = 算子` 统一模型。
 > - struct `operator:` 节 + `@op("+")` 注解（结构内数学算子）
 > - 顶层 `@op("+")` 函数（外部算子：内置类型/对称二元/跨模块）
-> - 新增关键字 `operator`（保留字）；`@op` 注解参数为运算符字符串
-> - 完整规范见 [operators.md](operators.md)；`|>` 管道待实施
+> - 管道 `|>`（`A |> Op`，算子组件流水线；`Op` 为类名或实例，调用其 `transform`）
+> - 新增关键字 `operator`、token `|>`；`@op` 注解参数为运算符字符串
+> - 完整规范见 [operators.md](operators.md)
 
 ### 附：算子语法（EBNF 增量）
 
@@ -274,5 +275,6 @@ OpAnnot        ::= '@' 'op' '(' StringLiteral ')'   // 符号如 "+" "*" "=="
 StructSection  ::= 'operator:' (OpAnnot ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}')+
 TopLevelDecl   ::= ... | OpAnnot FunctionDecl
 StructDecl     ::= 'struct' (Identifier '::')? Identifier '{' (StructField | StructSection)* '}'
+Pipe           ::= Conditional ('|>' Conditional)*   // 低优先级左结合: A |> Op1 |> Op2
 ```
 - **`void`** 仅作为方法返回类型，不能作为变量类型。

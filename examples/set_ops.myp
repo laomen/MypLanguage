@@ -127,11 +127,11 @@ class Main {
             Console.writeFloat(m.y_); Console.writeString(",");
             Console.writeFloat(m.z_); Console.writeString(")\n");
 
-            // --- 3. 变换组件 (嵌套组合: A -> ScaleOp -> B) ---
+            // --- 3. 变换组件 (管道: A |> scale -> B) ---
             ScaleOp scale = new ScaleOp();
             scale.setK(2.0);
-            double[] D = scale.transform(A);   // A * 2
-            Console.writeString("scale(A) = [");
+            double[] D = A |> scale;              // A * 2 → [0,2,4,6]
+            Console.writeString("A|>scale = [");
             i = 0; while (i < 4) { Console.writeFloat(D[i]); if (i < 3) Console.writeString(","); i = i + 1; }
             Console.writeString("]\n");
         }

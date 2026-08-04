@@ -826,6 +826,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::Lambda:
             result = visitLambda(static_cast<LambdaExpr&>(expr));
             break;
+        case ExprKind::Pipe:
+            result = visitPipe(static_cast<PipeExpr&>(expr));
+            break;
         case ExprKind::EnumVariant:
             result = visitEnumVariant(static_cast<EnumVariantExpr&>(expr));
             break;
@@ -1977,6 +1980,67 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr) {
     TypeInfo result(TypeKind::Class);
     result.class_name = cls_name;
     return result;
+}
+
+// Pipe: lhs |> op — apply an operator component (class with a `transform`
+// method) to lhs. target_kind="class" instantiates a fresh component;
+// "instance" reuses an operator variable. Left-assoc via chained PipeExpr.
+TypeInfo Sema::visitPipe(PipeExpr& expr) {
+    auto lhs_type = visitExpr(*expr.lhs);
+
+    // Resolve the operator on the RHS: class name or instance variable.
+    auto findTransform = [&](const ClassDecl& cls) -> const ActionDecl* {
+        for (auto& a : cls.actions)
+            if (a.name == "transform" && a.params.size() == 1) return &a;
+        for (auto& f : cls.functions)
+            if (f.name == "transform" && f.params.size() == 1) return nullptr;  // functions not supported as pipe target v1
+        return nullptr;
+    };
+
+    if (expr.rhs->kind == ExprKind::Identifier) {
+        auto& id = static_cast<IdentifierExpr&>(*expr.rhs);
+        // 1) Class name → instantiate
+        if (current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != id.name) continue;
+                if (auto* a = findTransform(cls)) {
+                    auto ptype = typeNodeToTypeInfo(a->params[0].type);
+                    if (!typesCompatible(ptype, lhs_type)) {
+                        error(expr.range, "pipe: cannot apply '" + id.name +
+                              ".transform' to operand of type '" + typeName(lhs_type) + "'");
+                        return TypeInfo(TypeKind::Void);
+                    }
+                    expr.target_kind = "class";
+                    expr.class_name = cls.name;
+                    expr.method = "transform";
+                    return typeNodeToTypeInfo(a->return_type);
+                }
+            }
+        }
+        // 2) Instance variable → reuse
+        if (auto* sym = symbol_table_.lookup(id.name)) {
+            if (sym->kind == TypeKind::Class && current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != sym->class_name) continue;
+                    if (auto* a = findTransform(cls)) {
+                        auto ptype = typeNodeToTypeInfo(a->params[0].type);
+                        if (!typesCompatible(ptype, lhs_type)) {
+                            error(expr.range, "pipe: cannot apply '" + id.name +
+                                  ".transform' to operand of type '" + typeName(lhs_type) + "'");
+                            return TypeInfo(TypeKind::Void);
+                        }
+                        expr.target_kind = "instance";
+                        expr.class_name = cls.name;
+                        expr.method = "transform";
+                        return typeNodeToTypeInfo(a->return_type);
+                    }
+                }
+            }
+        }
+    }
+
+    error(expr.range, "pipe '|>' requires an operator component with a single-argument 'transform' method");
+    return TypeInfo(TypeKind::Void);
 }
 
 void Sema::registerIntrinsics() {

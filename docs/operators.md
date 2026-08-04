@@ -6,9 +6,9 @@
 
 ## 状态
 
-> **v0.2（已部分实施）**：P1+P2 已完成 —— 顶层 `@op` 函数 + struct `operator:` 节 +
-> 二元算子重载分发（内建→struct内→外部）。`|>` 管道为 P3（待实施）。
-> 回归测试：`tests/operators/test.myp`（正常 + ASAN 套件通过）。
+> **v0.3（已实施）**：P1+P2+P3 已完成 —— 顶层 `@op` 函数 + struct `operator:` 节 +
+> 二元算子重载分发 + `|>` 管道。P4（元素级提升 + 集合二元）待实施。
+> 回归测试：`tests/operators/`、`tests/pipe/`（正常 + ASAN + TSan 套件通过）。
 
 ---
 

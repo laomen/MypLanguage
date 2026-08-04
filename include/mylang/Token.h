@@ -126,6 +126,7 @@ enum class TokenKind : uint16_t {
     DoubleDot,      // ..
     Arrow,          // ->
     FatArrow,        // =>
+    PipeForward,    // |>
 
     // Annotation
     At,             // @

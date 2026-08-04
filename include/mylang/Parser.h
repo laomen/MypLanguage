@@ -74,6 +74,7 @@ private:
     // Expressions (precedence climbing)
     std::unique_ptr<Expr> parseExpr();
     std::unique_ptr<Expr> parseAssignment();
+    std::unique_ptr<Expr> parsePipe();
     std::unique_ptr<Expr> parseConditional();
     std::unique_ptr<Expr> parseLogicalOr();
     std::unique_ptr<Expr> parseLogicalAnd();

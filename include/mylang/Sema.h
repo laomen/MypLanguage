@@ -69,6 +69,7 @@ private:
                                 const std::vector<std::string>& type_params,
                                 const std::vector<TypeNode>& type_args) const;
     TypeInfo visitLambda(LambdaExpr& expr);
+    TypeInfo visitPipe(PipeExpr& expr);
     void visitFFI(FFIDecl& decl);
     int lambda_counter_ = 0;
 

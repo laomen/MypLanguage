@@ -345,6 +345,7 @@ private:
     llvm::Value* generateRange(const RangeExpr& expr);
     llvm::Value* generateEnumVariant(const EnumVariantExpr& expr);
     llvm::Value* generateLambda(const LambdaExpr& expr);
+    llvm::Value* generatePipe(const PipeExpr& expr);
     void generateFFIDecl(const FFIDecl& decl);
 
     // ---- Match codegen ----

@@ -226,6 +226,7 @@ enum class ExprKind {
     Range,
     EnumVariant,
     Lambda,
+    Pipe,
 };
 
 struct Expr {
@@ -383,6 +384,20 @@ struct LambdaExpr : Expr {
     std::string hidden_class_name;
     LambdaExpr(std::vector<ParamDecl> p, std::shared_ptr<Stmt> b, SourceRange r)
         : Expr(ExprKind::Lambda, r), params(std::move(p)), body(std::move(b)) {}
+};
+
+// Pipeline: lhs |> op  — applies an operator component to lhs (left-assoc).
+// Semantics: A |> Op1 |> Op2 == Op2.transform(Op1.transform(A)).
+// Resolved by Sema: target_kind="class" (rhs is a class name, instantiate) or
+// "instance" (rhs is an operator instance). The called method is `transform`.
+struct PipeExpr : Expr {
+    std::unique_ptr<Expr> lhs;
+    std::unique_ptr<Expr> rhs;      // operator: class name or instance expression
+    std::string target_kind;        // "class" | "instance" (set by Sema)
+    std::string class_name;         // class owning the transform method
+    std::string method = "transform";
+    PipeExpr(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r, SourceRange range_)
+        : Expr(ExprKind::Pipe, range_), lhs(std::move(l)), rhs(std::move(r)) {}
 };
 
 struct EnumVariantExpr : Expr {

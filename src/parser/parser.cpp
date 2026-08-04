@@ -1027,6 +1027,14 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         }
         case ExprKind::Lambda:
             return nullptr; // can't clone lambda
+        case ExprKind::Pipe: {
+            auto& v = static_cast<const PipeExpr&>(e);
+            auto l = cloneExpr(*v.lhs);
+            auto r = cloneExpr(*v.rhs);
+            if (!l || !r) return nullptr;
+            return std::make_unique<PipeExpr>(
+                std::move(l), std::move(r), v.range);
+        }
         case ExprKind::Assignment: {
             auto& v = static_cast<const AssignmentExpr&>(e);
             auto t = cloneExpr(*v.target);
@@ -1094,8 +1102,19 @@ std::unique_ptr<Expr> Parser::parseExpr() {
     return parseAssignment();
 }
 
-std::unique_ptr<Expr> Parser::parseAssignment() {
+// Pipe: expr "|>" expr  (low precedence, left-assoc) — A |> Op1 |> Op2
+std::unique_ptr<Expr> Parser::parsePipe() {
     auto expr = parseConditional();
+    while (match(TokenKind::PipeForward)) {
+        auto rhs = parseConditional();
+        expr = std::make_unique<PipeExpr>(
+            std::move(expr), std::move(rhs), previous().range);
+    }
+    return expr;
+}
+
+std::unique_ptr<Expr> Parser::parseAssignment() {
+    auto expr = parsePipe();
     if (match(TokenKind::Equal)) {
         auto value = parseAssignment();
         return std::make_unique<AssignmentExpr>(

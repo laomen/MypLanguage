@@ -3773,6 +3773,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
         case ExprKind::Range:          return generateRange(static_cast<const RangeExpr&>(e));
         case ExprKind::Lambda:         return generateLambda(static_cast<const LambdaExpr&>(e));
+        case ExprKind::Pipe:           return generatePipe(static_cast<const PipeExpr&>(e));
         case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
     }
     return nullptr;
@@ -4790,6 +4791,26 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
     auto* obj = generateNewExpr(ne);
     // Also call @startup if any
     return obj;
+}
+
+llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
+    auto* lhs_val = generateExpr(*e.lhs);
+    if (!lhs_val) return nullptr;
+    // Resolve the operator instance: reuse a variable ("instance") or
+    // instantiate a fresh component from its class name ("class").
+    llvm::Value* instance = nullptr;
+    if (e.target_kind == "instance") {
+        instance = generateExpr(*e.rhs);
+    } else {
+        NewExpr ne(e.class_name, {}, {}, e.range);
+        instance = generateNewExpr(ne);
+    }
+    if (!instance) return lhs_val;
+    std::string fn = e.class_name + "_" + e.method;  // e.g. ScaleOp_transform
+    auto* callee = module_->getFunction(fn);
+    if (callee)
+        return builder_.CreateCall(callee, {instance, lhs_val});
+    return lhs_val;
 }
 
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {

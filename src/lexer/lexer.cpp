@@ -156,6 +156,9 @@ void Lexer::scanToken() {
         case '|':
             if (match('|')) {
                 tokens_.emplace_back(TokenKind::OrOr, currentRange());
+            } else if (peek() == '>') {
+                advance();  // consume '>' → |>
+                tokens_.emplace_back(TokenKind::PipeForward, currentRange());
             } else {
                 tokens_.emplace_back(TokenKind::Pipe, currentRange());
             }
