@@ -25,9 +25,10 @@
 | 无函数地址机制 | ✅ C1：codegen 直接 `ptrtoint(入口包装)` 传入 `set_entry` |
 | `stdlib/coro.myp` FFI 签名错误（`set_func` vs `set_entry`）| ✅ C1：改为 `set_entry(handle, fn_ptr)`，fn_ptr 用 `long` 承载 64 位指针 |
 | `await` 值传递 | ✅ C2：`yield(val)`/`resume(h,val)` 双向传递 + `int v = await expr;` |
-| 协程返回值 | ✅ C2：`@coro` 方法 `return` 存结果槽 + `__myp_coro_result(h)` |
-| 自动调度 | ✅ C3：就绪队列 + `__myp_coro_scheduler()` 每轮驱动所有就绪协程各一步 |
+| 协程返回值 | ✅ C2：`@coro` 方法 `return` 存结果槽 + `Coro.result(h)` |
+| 自动调度 | ✅ C3：就绪队列 + `Coro.scheduler()` 每轮驱动所有就绪协程各一步 |
 | 事件集成 | ✅ C4：`await ClassName.eventName` 阻塞等待，事件 fire 后重新就绪 |
+| 用户 API 风格 | ✅ `Coro` 静态类封装（scheduler/resume/yield/isActive/destroy/result/waitEvent），`__myp_*` 仅内部 |
 | 无测试/示例 | ✅ `tests/coro/` + `tests/coro_auto/` + `tests/coro_event/`（C1-C4 全覆盖）|
 | 文档过时 | ✅ 本文档 + grammar/manual/design 已更新 |
 
@@ -81,7 +82,7 @@ class Main {
             Worker a = new Worker();  a.setLabel("A");
             long ha = a.run();          // spawn：创建 + 首启到第一个 await，返回 handle
             Console.writeString("main\n");
-            __myp_coro_resume(ha);      // 恢复：从 await 处继续到协程结束
+            Coro.resume(ha, 0);         // 恢复：从 await 处继续到协程结束
             Console.writeString("done\n");
         }
 }
@@ -100,7 +101,7 @@ done
 > **C1 说明**：`@coro` 方法调用 `obj.meth(args)` 编译为 spawn（`create` + 入口参数槽 +
 > `set_entry` + 首启 `resume`），返回 `long` handle。入口包装 `__myp_coro_entry_<类>_<方法>`
 > 从线程本地入口参数槽（`this`=槽 0，参数=槽 1..N）读出并调用真实方法。`await;` 简单挂起，
-> 返回后由 `__myp_coro_resume(h, 0)` 恢复。协程自然结束自动回收槽；`__myp_coro_destroy(h)` 提前取消；
+> 返回后由 `Coro.resume(h, 0)` 恢复。协程自然结束自动回收槽；`Coro.destroy(h)` 提前取消；
 > 进程退出 `atexit` 统一释放栈。
 
 **C2 值传递 + 返回值**：
@@ -125,10 +126,10 @@ class Main {
         @startup void run() {
             Worker w = new Worker();
             long h = w.echo(5);                       // spawn，yield 传出 10
-            long out = __myp_coro_resume(h, 100);     // 传 100 → v=100；out = 10
+            long out = Coro.resume(h, 100);           // 传 100 → v=100；out = 10
             long hc = w.compute();                    // spawn 到 await 挂起
-            __myp_coro_resume(hc, 0);                 // 恢复：return 42
-            Console.write(__myp_coro_result(hc));     // → 42
+            Coro.resume(hc, 0);                       // 恢复：return 42
+            Console.write(Coro.result(hc));           // → 42
         }
 }
 ```
@@ -136,10 +137,10 @@ class Main {
 > **C2 说明**：`await expr` 是**表达式**（`int v = await expr;`），绑定完整操作数
 > （`await n * 2` == `await (n * 2)`）。编译为 `__myp_coro_yield(expr)`，恢复后
 > 表达式值 = `resume` 传入值。`@coro` 方法 `return val` 自动调用 `__myp_coro_set_result`
-> 存入 per-协程结果槽，`__myp_coro_result(h)` 读取。`__myp_coro_resume(h, val)` 返回协程
+> 存入 per-协程结果槽，`Coro.result(h)` 读取。`Coro.resume(h, val)` 返回协程
 > 挂起时传出的值（结束则 0）。
 
-**C3 自动调度**（就绪队列 + `__myp_coro_scheduler()`）：
+**C3 自动调度**（就绪队列 + `Coro.scheduler()`）：
 
 ```myp
 class Worker {
@@ -154,13 +155,13 @@ class Worker {
 // spawn 多个协程（都自动入就绪队列）
 long h1 = a.run();  // → a, yield
 long h2 = b.run();  // → a, yield
-__myp_coro_scheduler();   // 每轮驱动所有就绪协程各一步：b, b
-__myp_coro_scheduler();   // c, c（结束）
+Coro.scheduler();   // 每轮驱动所有就绪协程各一步：b, b
+Coro.scheduler();   // c, c（结束）
 ```
 
 > **C3 说明**：spawn 的协程自动加入**就绪队列**；普通 `await` 挂起后仍就绪。
-> `__myp_coro_scheduler()` 先处理已排队事件，再对就绪协程**各 resume 一步**
-> （跑到下一个 `await` 或结束），一轮后返回——空转无害。手动 `__myp_coro_resume(h, val)`
+> `Coro.scheduler()` 先处理已排队事件，再对就绪协程**各 resume 一步**
+> （跑到下一个 `await` 或结束），一轮后返回——空转无害。手动 `Coro.resume(h, val)`
 > 仍可用，与调度器并存。
 
 **C4 事件集成**（`await ClassName.eventName`）：
@@ -185,12 +186,12 @@ class Waiter {
 long h = w.run();        // spawn → waiting，事件等待（移出就绪队列）
 Signal s = new Signal();
 s.send();                // fire go → 派发 → waiter 重新就绪
-__myp_coro_scheduler();  // 跑就绪 waiter → got go
+Coro.scheduler();        // 跑就绪 waiter → got go
 ```
 
 > **C4 说明**：`await ClassName.eventName` 把当前协程**移出就绪队列**（阻塞）并注册到
 > 事件等待表；事件 fire → 派发（`myp_event_dispatch`）→ 通知匹配等待者**重新就绪**；
-> 之后 `__myp_coro_scheduler()`（或手动 resume）驱动其继续。事件引用只在 `await`
+> 之后 `Coro.scheduler()`（或手动 resume）驱动其继续。事件引用只在 `await`
 > 上下文中识别（`ClassName.eventName` 不改变普通成员访问语义）。
 
 ---
@@ -265,12 +266,13 @@ __myp_coro_scheduler();  // 跑就绪 waiter → got go
 | 1 | 启动方式 | `@coro fn(args)` 直接调用返回 handle（C1 实现）|
 | 2 | await 值传递 | `int v = await expr;` 双向传递（C2 实现）|
 | 3 | 参数传递 | 入口参数槽（`this`=槽0，参数=槽1..N）（C1 实现）|
-| 4 | 返回值 | `__myp_coro_result(h)`（C2 实现）|
-| 5 | 调度 | 手动 `resume` + 自动调度器（`__myp_coro_scheduler()` round-robin）（C3 实现）|
+| 4 | 返回值 | `Coro.result(h)`（C2 实现）|
+| 5 | 调度 | 手动 `Coro.resume` + 自动调度器（`Coro.scheduler()` round-robin）（C3 实现）|
 | 6 | 事件集成 | `await ClassName.eventName` 阻塞等待 + 事件派发通知（C4 实现）|
 | 7 | 栈大小 | 固定 256KB（v1）；`@coro(stack=...)` 留作后续扩展 |
-| 8 | 生命周期 | 自然结束自动回收槽 + `destroy` 显式取消 + `atexit` 统一释放（C1 实现）|
+| 8 | 生命周期 | 自然结束自动回收槽 + `Coro.destroy` 显式取消 + `atexit` 统一释放（C1 实现）|
 | 9 | 线程模型 | 协程绑定创建线程（线程本地调度器/值槽）（实现遵循）|
+| 10 | 用户 API 风格 | 静态类 `Coro` 封装（`Coro.*`），`__myp_*` 仅编译器内部使用 |
 
 ---
 
@@ -279,8 +281,8 @@ __myp_coro_scheduler();  // 跑就绪 waiter → got go
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | C1 | 修复 `stdlib/coro.myp` FFI（`set_entry`）+ `@coro` 启动 codegen（create/set_entry/首启）+ 手动 `resume` | ✅ 已完成（含入口参数槽：`this`+参数）|
-| C2 | `await` 值传递（yield 带值 + 恢复取回）+ 协程返回值槽 | ✅ 已完成（`int v = await expr;` + `__myp_coro_result`）|
-| C3 | 自动调度器（就绪队列 + resume 循环）| ✅ 已完成（`__myp_coro_scheduler()` round-robin）|
+| C2 | `await` 值传递（yield 带值 + 恢复取回）+ 协程返回值槽 | ✅ 已完成（`int v = await expr;` + `Coro.result`）|
+| C3 | 自动调度器（就绪队列 + resume 循环）| ✅ 已完成（`Coro.scheduler()` round-robin）|
 | C4 | 事件集成（`await event`）+ 扩展 `tests/coro/` + grammar.md/manual.md/design.md 收尾 | ✅ 已完成（`await ClassName.eventName` + 全套测试 + 文档）|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试（94/94）+ no-crash 回归。

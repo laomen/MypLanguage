@@ -29,9 +29,9 @@ class Main {
             long h = w.run();         // spawn → waiting，事件等待（阻塞，不在就绪队列）
             Signal s = new Signal();
             s.send();                 // fire go → 派发 → waiter 重新就绪
-            __myp_coro_scheduler();   // 跑就绪 waiter → got go
+            Coro.scheduler();         // 跑就绪 waiter → got go
             Console.writeString("active=");
-            Console.write(__myp_coro_is_active(h));
+            Console.write(Coro.isActive(h));
             Console.writeString("\n");
             Console.writeString("done\n");
         }

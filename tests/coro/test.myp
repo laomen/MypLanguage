@@ -1,6 +1,6 @@
 // tests/coro/test.myp — 协程：@coro spawn + await 挂起/恢复 + 值传递 + 返回值
 // 覆盖：无参协程、带参协程（int/double）、多协程交错、is_active、destroy、
-//       await 值传递（int v = await expr;）、__myp_coro_result 返回值
+//       await 值传递（int v = await expr;）、Coro.result 返回值
 import env;
 import coro;
 
@@ -56,46 +56,46 @@ class Main {
             long ha = a.run();
             long hb = b.run();
             Console.writeString("---\n");
-            __myp_coro_resume(ha, 0);
-            __myp_coro_resume(hb, 0);
-            __myp_coro_resume(ha, 0);
-            __myp_coro_resume(hb, 0);
-            __myp_coro_resume(ha, 0);
-            __myp_coro_resume(hb, 0);
+            Coro.resume(ha, 0);
+            Coro.resume(hb, 0);
+            Coro.resume(ha, 0);
+            Coro.resume(hb, 0);
+            Coro.resume(ha, 0);
+            Coro.resume(hb, 0);
 
             // 2) 带参协程
             Worker c = new Worker();
             c.setLabel("C");
             long hc = c.report(42, 3.5);
-            __myp_coro_resume(hc, 0);
+            Coro.resume(hc, 0);
 
             // 3) await 值传递
             Worker e = new Worker();
             long he = e.echo(5);
-            long out = __myp_coro_resume(he, 100);
+            long out = Coro.resume(he, 100);
             Console.writeString("out=");
             Console.write(out);
             Console.writeString("\n");
 
             // 4) 返回值
             long hf = e.compute();
-            __myp_coro_resume(hf, 0);
+            Coro.resume(hf, 0);
             Console.writeString("result=");
-            Console.write(__myp_coro_result(hf));
+            Console.write(Coro.result(hf));
             Console.writeString("\n");
 
-            // 5) is_active 生命周期
+            // 5) isActive 生命周期
             Console.writeString("active1=");
-            Console.write(__myp_coro_is_active(hc));
+            Console.write(Coro.isActive(hc));
             Console.writeString("\n");
 
             // 6) 提前取消（未完成时 destroy）
             Worker d = new Worker();
             d.setLabel("D");
             long hd = d.run();
-            __myp_coro_destroy(hd);
+            Coro.destroy(hd);
             Console.writeString("active2=");
-            Console.write(__myp_coro_is_active(hd));
+            Console.write(Coro.isActive(hd));
             Console.writeString("\n");
 
             Console.writeString("done\n");

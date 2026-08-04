@@ -1,18 +1,19 @@
-// coro.myp — MYP 协程底层原语（基于 ucontext 用户态纤程）
-// 语言层使用 @coro 方法 + await；这些 FFI 由编译器生成的代码调用。
+// coro.myp — MYP 协程（基于 ucontext 用户态纤程）
+// 语言层使用 @coro 方法 + await；用户通过静态类 Coro 调用调度/生命周期原语。
 //
 // 用法（语言层，编译器自动生成 spawn）：
 //   class Worker {
 //       action:
 //           @coro void run() {
 //               Console.writeString("w1\n");
-//               await;
+//               await;                    // 挂起
 //               Console.writeString("w2\n");
 //           }
 //   }
 //   Worker w = new Worker();
-//   int h = w.run();              // @coro 调用 → 创建并首启，返回 handle
-//   __myp_coro_resume(h);         // 手动恢复
+//   long h = w.run();                     // @coro 调用 → 创建并首启，返回 handle
+//   Coro.resume(h, 0);                    // 手动恢复
+//   Coro.scheduler();                     // 自动调度：所有就绪协程各一步
 
 ffi long  __myp_coro_create();
 ffi void  __myp_coro_set_entry(long handle, long fn_ptr);
@@ -26,3 +27,36 @@ ffi void  __myp_coro_set_result(long val);          // @coro 方法 return 存�
 ffi long  __myp_coro_result(long handle);           // 取协程返回值
 ffi void  __myp_coro_scheduler();                   // 自动调度：跑所有就绪协程各一步（C3）
 ffi long  __myp_coro_wait_event(long event_id, long val); // 等待事件（C4，await event 展开）
+
+// 协程静态类：用户可见 API（__myp_* 为编译器内部原语）
+class Coro {
+    static:
+        // 自动调度：处理事件后对每个就绪协程 resume 一步（C3）
+        void scheduler() {
+            __myp_coro_scheduler();
+        }
+        // 手动恢复协程并传入值；返回协程挂起时传出的值（结束则 0，无效 -1）
+        long resume(long handle, long val) {
+            return __myp_coro_resume(handle, val);
+        }
+        // 挂起当前协程并传出值；恢复时返回传入值（等价于 await 表达式）
+        long yield(long val) {
+            return __myp_coro_yield(val);
+        }
+        // 协程是否仍活跃
+        long isActive(long handle) {
+            return __myp_coro_is_active(handle);
+        }
+        // 提前取消协程
+        void destroy(long handle) {
+            __myp_coro_destroy(handle);
+        }
+        // 取协程返回值（@coro 方法 return 存入）
+        long result(long handle) {
+            return __myp_coro_result(handle);
+        }
+        // 等待事件（等价于 await ClassName.eventName 语法）
+        long waitEvent(long eventId, long val) {
+            return __myp_coro_wait_event(eventId, val);
+        }
+}

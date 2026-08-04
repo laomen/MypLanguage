@@ -1,5 +1,5 @@
 // tests/coro_auto/test.myp — 协程 C3：自动调度器（就绪队列）
-// spawn 多个协程后不手动 resume，__myp_coro_scheduler() 每轮驱动所有就绪协程各一步
+// spawn 多个协程后不手动 resume，Coro.scheduler() 每轮驱动所有就绪协程各一步
 import env;
 import coro;
 
@@ -30,12 +30,12 @@ class Main {
             long hb = b.run();          // spawn B → B:a, yield
             long hc = c.run();          // spawn C → C:a, yield
             Console.writeString("---\n");
-            __myp_coro_scheduler();     // 各一步：A:b, B:b, C:b
-            __myp_coro_scheduler();     // 各一步：A:c, B:c, C:c（全部结束）
+            Coro.scheduler();     // 各一步：A:b, B:b, C:b
+            Coro.scheduler();     // 各一步：A:c, B:c, C:c（全部结束）
             Console.writeString("active=");
-            Console.write(__myp_coro_is_active(ha));
+            Console.write(Coro.isActive(ha));
             Console.writeString("\n");
-            __myp_coro_scheduler();     // 已全部结束，空转无害
+            Coro.scheduler();     // 已全部结束，空转无害
             Console.writeString("done\n");
         }
 }

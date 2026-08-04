@@ -1252,13 +1252,13 @@ Future.destroy(handle);              // 销毁
 ### `import coro` — 协程
 
 MYP 协程基于 ucontext 用户态纤程：`@coro` 注解的**类 action 方法** + `await` 挂起 +
-`__myp_coro_resume` 恢复（C1/C2 已实现）。
+`Coro.resume` 恢复（C1-C4 已实现）。用户通过静态类 `Coro` 访问调度/生命周期 API。
 
 **声明协程方法**（`@coro`，可带参数，方法内可用 `await` 挂起）：
 
 ```myp
 import env;     // Console
-import coro;    // 协程 FFI
+import coro;    // 协程（静态类 Coro）
 
 class Worker {
     property:
@@ -1282,8 +1282,8 @@ class Main {
             Worker a = new Worker();  a.setLabel("A");
             long h = a.run();               // spawn，返回 handle
             Console.writeString("main\n");
-            __myp_coro_resume(h, 0);        // 恢复执行（从 await 处继续）
-            __myp_coro_destroy(h);          // 提前取消（可选）
+            Coro.resume(h, 0);              // 恢复执行（从 await 处继续）
+            Coro.destroy(h);                // 提前取消（可选）
         }
 }
 ```
@@ -1308,39 +1308,37 @@ class Main {
         @startup void run() {
             Worker w = new Worker();
             long h = w.echo(5);
-            long out = __myp_coro_resume(h, 100);   // 传 100 → v=100；out = 传出值 10
+            long out = Coro.resume(h, 100); // 传 100 → v=100；out = 传出值 10
             long hc = w.compute();
-            __myp_coro_resume(hc, 0);
-            int r = __myp_coro_result(hc);          // 42
+            Coro.resume(hc, 0);
+            int r = Coro.result(hc);        // 42
         }
 }
 ```
 
-**FFI 原语**（`stdlib/coro.myp`）：
+**用户 API（静态类 `Coro`）**：
 
 ```myp
-long h  = __myp_coro_create();                       // 创建协程（编译器内部用）
-__myp_coro_set_entry(h, fn_ptr);                     // 设置入口（编译器内部用）
-long v  = __myp_coro_yield(val);                     // 挂起并传出 val；恢复时返回传入值
-long r  = __myp_coro_resume(h, val);                 // 恢复并传入 val；返回协程传出值
-long a  = __myp_coro_is_active(h);                   // 是否仍活跃（1/0）
-__myp_coro_destroy(h);                               // 销毁（提前取消）
-__myp_coro_set_entry_arg(idx, val);                  // 入口参数槽（编译器内部用）
-long v  = __myp_coro_get_entry_arg(idx);             // 读取入口参数槽
-__myp_coro_set_result(val);                          // @coro 方法 return 存返回值（内部用）
-long r  = __myp_coro_result(h);                      // 取协程返回值
-__myp_coro_scheduler();                              // 自动调度：跑所有就绪协程各一步（C3）
-long v  = __myp_coro_wait_event(eventId, val);       // 等待事件（C4，await event 展开）
+Coro.scheduler();                              // 自动调度：跑所有就绪协程各一步（C3）
+long r  = Coro.resume(h, val);                 // 恢复并传入 val；返回协程传出值
+long v  = Coro.yield(val);                     // 挂起并传出 val；恢复时返回传入值（= await expr）
+long a  = Coro.isActive(h);                    // 是否仍活跃（1/0）
+Coro.destroy(h);                               // 销毁（提前取消）
+long r  = Coro.result(h);                      // 取协程返回值
+long v  = Coro.waitEvent(eventId, val);        // 等待事件（= await ClassName.eventName）
 ```
 
-**C3 自动调度**：spawn 的协程自动加入就绪队列，`__myp_coro_scheduler()` 每轮驱动所有
+> `__myp_coro_*` 是编译器内部原语（`stdlib/coro.myp` 中的 FFI），由 `await` 语法与
+> 编译器生成的 spawn 代码自动调用，用户代码不应直接使用。
+
+**C3 自动调度**：spawn 的协程自动加入就绪队列，`Coro.scheduler()` 每轮驱动所有
 就绪协程各一步（先处理事件，再 round-robin 恢复），无需逐个手动 resume：
 
 ```myp
 long h1 = a.run();
 long h2 = b.run();
-__myp_coro_scheduler();   // 每轮所有就绪协程各前进一个 await
-__myp_coro_scheduler();
+Coro.scheduler();   // 每轮所有就绪协程各前进一个 await
+Coro.scheduler();
 ```
 
 **C4 事件等待**：协程用 `await ClassName.eventName` 阻塞等待事件，事件 fire 派发后
@@ -1364,7 +1362,7 @@ class Signal {
 > 语义说明：`@coro` 方法调用编译为 spawn（`create` + 参数槽 + `set_entry` + 首启 `resume`），
 > 返回 `long` handle；`await` 编译为 `__myp_coro_yield(val)`（`await expr` 是表达式，
 > 绑定完整操作数，恢复后其值 = `resume` 传入值）；`@coro` 方法 `return val` 存入 per-协程
-> 结果槽，`__myp_coro_result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
+> 结果槽，`Coro.result(h)` 读取。协程自然结束自动回收槽，进程退出统一释放栈。
 
 ### `import pool` — 并行计算工具
 

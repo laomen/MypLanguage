@@ -897,13 +897,14 @@ string result = sb.toString();  // "Hello, World"
 ### `import coro` — Coroutines
 
 MYP coroutines are ucontext-based user-space fibers: an `@coro`-annotated **class action method**
-+ `await` to suspend + `__myp_coro_resume` to resume (C1/C2 implemented).
++ `await` to suspend + `Coro.resume` to resume (C1-C4 implemented). Users access the
+scheduling/lifecycle API through the static class `Coro`.
 
 **Declaring a coroutine method** (`@coro`, may take parameters; use `await` to suspend):
 
 ```myp
 import env;     // Console
-import coro;    // coroutine FFI
+import coro;    // coroutines (static class Coro)
 
 class Worker {
     property:
@@ -928,8 +929,8 @@ class Main {
             Worker a = new Worker();  a.setLabel("A");
             long h = a.run();               // spawn, returns handle
             Console.writeString("main\n");
-            __myp_coro_resume(h, 0);        // resume (continue after await)
-            __myp_coro_destroy(h);          // cancel early (optional)
+            Coro.resume(h, 0);              // resume (continue after await)
+            Coro.destroy(h);                // cancel early (optional)
         }
 }
 ```
@@ -954,40 +955,39 @@ class Main {
         @startup void run() {
             Worker w = new Worker();
             long h = w.echo(5);
-            long out = __myp_coro_resume(h, 100);   // pass 100 → v=100; out = yielded 10
+            long out = Coro.resume(h, 100); // pass 100 → v=100; out = yielded 10
             long hc = w.compute();
-            __myp_coro_resume(hc, 0);
-            int r = __myp_coro_result(hc);          // 42
+            Coro.resume(hc, 0);
+            int r = Coro.result(hc);        // 42
         }
 }
 ```
 
-**FFI primitives** (`stdlib/coro.myp`):
+**User API (static class `Coro`)**:
 
 ```myp
-long h  = __myp_coro_create();                       // create (compiler-generated)
-__myp_coro_set_entry(h, fn_ptr);                     // set entry (compiler-generated)
-long v  = __myp_coro_yield(val);                     // suspend, pass val out; returns passed-in value
-long r  = __myp_coro_resume(h, val);                 // resume, pass val in; returns coroutine's yielded value
-long a  = __myp_coro_is_active(h);                   // still active (1/0)
-__myp_coro_destroy(h);                               // destroy / cancel early
-__myp_coro_set_entry_arg(idx, val);                  // entry arg slot (compiler-generated)
-long v  = __myp_coro_get_entry_arg(idx);             // read entry arg slot
-__myp_coro_set_result(val);                          // @coro return → result slot (internal)
-long r  = __myp_coro_result(h);                      // read coroutine return value
-__myp_coro_scheduler();                              // auto-schedule: one step per ready coroutine (C3)
-long v  = __myp_coro_wait_event(eventId, val);       // block on an event (C4, await event)
+Coro.scheduler();                              // auto-schedule: one step per ready coroutine (C3)
+long r  = Coro.resume(h, val);                 // resume, pass val in; returns coroutine's yielded value
+long v  = Coro.yield(val);                     // suspend, pass val out; returns passed-in value (= await expr)
+long a  = Coro.isActive(h);                    // still active (1/0)
+Coro.destroy(h);                               // destroy / cancel early
+long r  = Coro.result(h);                      // read coroutine return value
+long v  = Coro.waitEvent(eventId, val);        // block on an event (= await ClassName.eventName)
 ```
 
+> `__myp_coro_*` are compiler-internal primitives (FFI in `stdlib/coro.myp`) invoked
+> automatically by the `await` syntax and the compiler-generated spawn code — user code
+> should not call them directly.
+
 **C3 — automatic scheduler**: spawned coroutines automatically join a ready queue;
-`__myp_coro_scheduler()` advances every ready coroutine by one await per round
+`Coro.scheduler()` advances every ready coroutine by one await per round
 (processes pending events first, then round-robin resumes) — no per-coroutine manual resume:
 
 ```myp
 long h1 = a.run();
 long h2 = b.run();
-__myp_coro_scheduler();   // every ready coroutine advances one await
-__myp_coro_scheduler();
+Coro.scheduler();   // every ready coroutine advances one await
+Coro.scheduler();
 ```
 
 **C4 — event waiting**: a coroutine can block on an event with `await ClassName.eventName`;
@@ -1012,7 +1012,7 @@ class Signal {
 > + first `resume`) and returns a `long` handle; `await` compiles to `__myp_coro_yield(val)`
 > (`await expr` is an expression binding the full operand; after resume its value equals the
 > value passed in by `resume`); an `@coro` method's `return val` is stored into its per-coroutine
-> result slot, read via `__myp_coro_result(h)`. Finished coroutines recycle their slot
+> result slot, read via `Coro.result(h)`. Finished coroutines recycle their slot
 > automatically and stacks are freed at process exit.
 
 ---
