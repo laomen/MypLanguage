@@ -57,6 +57,24 @@ private:
     };
     std::vector<LoopContext> loop_context_;
 
+    // ---- try/finally control flow (return/break/continue pass through finally) ----
+    // finally_flag per try is now a "mode": 0=normal, 1=propagate(rethrow),
+    // 2=return, 3=break, 4=continue. The stack lets an inner finally forward
+    // the mode to the enclosing finally (nested try/finally), so the actual
+    // return/break/continue happens only after the outermost finally runs.
+    struct FinallyCtx {
+        llvm::Value* flag_slot;          // i8 mode slot for this try
+        llvm::BasicBlock* finally_bb;    // this try's finally block
+        llvm::BasicBlock* merge_bb;      // this try's normal-exit merge
+        llvm::BasicBlock* outer_finally_bb;  // enclosing finally block, or null
+        llvm::Value* outer_flag_slot;    // enclosing flag slot (for mode forwarding)
+        llvm::BasicBlock* break_bb;      // loop break target (outermost, no outer finally)
+        llvm::BasicBlock* continue_bb;   // loop continue target
+        bool in_finally = false;         // while this try's finally body is being generated
+    };
+    std::vector<FinallyCtx> finally_ctx_stack_;
+    llvm::Value* finally_ret_slot_ = nullptr;  // function-level return-value slot (shared)
+
     // ---- Current class context (for bare method calls) ----
     std::string current_class_name_;
 
@@ -345,6 +363,8 @@ private:
     void emitRegionEnter();
     void emitRegionExit();
     static bool typeIsReference(const TypeInfo& t);
+    // Emit the actual function return (in_main cleanup + region exit + ret).
+    void emitFunctionReturn(llvm::Value* ret_val);
     void generateBreakStmt(const BreakStmt& stmt);
     void generateContinueStmt(const ContinueStmt& stmt);
     void generateAwaitStmt(const AwaitStmt& stmt);

@@ -31,4 +31,19 @@ std_math=math error: div by zero
 std_idx=index error: 5 / 3
 std_iface=net error: send example.com:443
 std_file=file error: open /no/such/file
+fin_return_fin
+fin_ret_val=rv
+fb0
+ff
+ff
+after_break
+fc0
+fg
+fg
+fc2
+fg
+after_cont
+fn_inner
+fn_outer
+fin_nest_val=ni
 done

@@ -244,7 +244,7 @@ var v = try {
 | 5 | 未处理行为 | abort + 明确消息 | ✅ 已实现 |
 | 6 | 异常对象生命周期 | 进程级 arena | ✅ 已实现 |
 | 7 | 与 @region 交互 | 异常对象进程级（不随 region 释放）| ✅ 已实现 |
-| 8 | finally + 传播 | 传播路径上也执行 finally（flag 标记源）+ finally 后 rethrow | ✅ 已实现（`finally_flag` alloca，正常/匹配/传播三路统一）|
+| 8 | finally + 传播 | 传播路径上也执行 finally（flag 标记源）+ finally 后 rethrow；`return`/`break`/`continue` 也先执行 finally（mode 标记）| ✅ 已实现（`finally_flag` mode：0=正常 1=传播 2=return 3=break 4=continue；嵌套 finally 链转发 mode，最外层才真正退出）|
 
 ---
 
@@ -258,6 +258,7 @@ var v = try {
 | E4 | 多 catch 分发 + rethrow + 未处理 abort | ✅ |
 | E4.5 | finally 传播（无 catch/不匹配时也执行 finally 再 rethrow）| ✅ |
 | E4.6 | `catch (Error e)` 接口匹配（匹配任意实现 `Error` 的类，`e.message()` 接口分发）| ✅ |
+| E4.7 | `finally` 覆盖 `return`/`break`/`continue`（mode 标记 + 嵌套 finally 链转发；顺带修复 `for` 的 `break`/`continue`）| ✅ |
 | E5 | 测试 `tests/exception/` 扩展（类型分发/传播/未处理/表达式 try）+ grammar.md 增量 | ✅ 15 用例全绿（正常 + ASAN）|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。

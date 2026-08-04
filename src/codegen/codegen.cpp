@@ -610,6 +610,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
 
     current_function_ = func;
     current_class_name_ = cls.name;
+    finally_ret_slot_ = nullptr;
+    finally_ctx_stack_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -656,6 +658,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
 
     current_function_ = func;
     current_class_name_ = cls.name;
+    finally_ret_slot_ = nullptr;
+    finally_ctx_stack_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -861,6 +865,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     for (auto& arg : func->args()) { if (i < decl.params.size()) arg.setName(decl.params[i].name); ++i; }
 
     current_function_ = func;
+    finally_ret_slot_ = nullptr;
+    finally_ctx_stack_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -907,8 +913,10 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
         if (fn_region) emitRegionExit();
+        auto* rty = getLLVMType(rt);
         if (rt.kind == TypeKind::Void) builder_.CreateRetVoid();
-        else builder_.CreateRet(llvm::ConstantInt::get(getLLVMType(rt), 0));
+        else if (rty->isIntegerTy()) builder_.CreateRet(llvm::ConstantInt::get(rty, 0));
+        else builder_.CreateRet(llvm::Constant::getNullValue(rty));
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
@@ -3122,7 +3130,9 @@ void CodeGen::generateForStmt(const ForStmt& s) {
     } else builder_.CreateBr(bbb);
     f->insert(f->end(), bbb);
     builder_.SetInsertPoint(bbb);
+    loop_context_.push_back({sbb, abb});  // continue → sbb (step), break → abb (end)
     if (s.body) generateStmt(*s.body);
+    loop_context_.pop_back();
     if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(sbb);
     f->insert(f->end(), sbb);
     builder_.SetInsertPoint(sbb);
@@ -3855,7 +3865,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     return true;
 }
 
-void CodeGen::generateReturnStmt(const ReturnStmt& s) {
+void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
     // For main: cleanup threads + process pending events before returning
     if (in_main_) {
         // Stop and destroy all @thread handles
@@ -3882,18 +3892,46 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
             builder_.CreateCall(runtime_free_all_, {});
         }
     }
-    if (s.value) {
-        auto* v = generateExpr(*s.value);
-        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
-            emitRegionExit();   // @region: release temporaries before returning
-            builder_.CreateRet(v);
-        }
-    } else {
-        if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
-            emitRegionExit();   // @region: release temporaries before returning
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        emitRegionExit();   // @region: release temporaries before returning
+        if (ret_val)
+            builder_.CreateRet(ret_val);
+        else
             builder_.CreateRetVoid();
-        }
     }
+}
+
+void CodeGen::generateReturnStmt(const ReturnStmt& s) {
+    // Inside a try-with-finally (but not in its finally body): run the finally
+    // first, then return — Java/C#/Python semantics. The return value is stored
+    // in a function-level slot so nested finally blocks can forward it.
+    if (!finally_ctx_stack_.empty() && !finally_ctx_stack_.back().in_finally) {
+        llvm::Value* v = nullptr;
+        if (s.value) {
+            v = generateExpr(*s.value);
+            llvm::Type* rt = current_function_->getReturnType();
+            if (v->getType() != rt) {
+                if (rt->isIntegerTy() && v->getType()->isIntegerTy())
+                    v = builder_.CreateIntCast(v, rt, true);
+                else if (rt->isFloatingPointTy() && v->getType()->isIntegerTy())
+                    v = builder_.CreateSIToFP(v, rt);
+                else if (rt->isIntegerTy() && v->getType()->isFloatingPointTy())
+                    v = builder_.CreateFPToSI(v, rt);
+                else if (rt->isPointerTy() && v->getType()->isPointerTy())
+                    v = builder_.CreateBitCast(v, rt);
+            }
+            if (!finally_ret_slot_)
+                finally_ret_slot_ = createEntryBlockAlloca(current_function_, rt, "finally_ret");
+            builder_.CreateStore(v, finally_ret_slot_);
+        }
+        auto& fc = finally_ctx_stack_.back();
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 2), fc.flag_slot);
+        builder_.CreateBr(fc.finally_bb);
+        return;
+    }
+    llvm::Value* v = nullptr;
+    if (s.value) v = generateExpr(*s.value);
+    emitFunctionReturn(v);
 }
 
 // -- Expressions --
@@ -5390,11 +5428,25 @@ llvm::Value* CodeGen::generateThisExpr(const ThisExpr&) {
 
 void CodeGen::generateBreakStmt(const BreakStmt&) {
     if (loop_context_.empty()) return;
+    // Inside a try-with-finally (not in its finally body): run finally first.
+    if (!finally_ctx_stack_.empty() && !finally_ctx_stack_.back().in_finally) {
+        auto& fc = finally_ctx_stack_.back();
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 3), fc.flag_slot);
+        builder_.CreateBr(fc.finally_bb);
+        return;
+    }
     builder_.CreateBr(loop_context_.back().break_bb);
 }
 
 void CodeGen::generateContinueStmt(const ContinueStmt&) {
     if (loop_context_.empty()) return;
+    // Inside a try-with-finally (not in its finally body): run finally first.
+    if (!finally_ctx_stack_.empty() && !finally_ctx_stack_.back().in_finally) {
+        auto& fc = finally_ctx_stack_.back();
+        builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 4), fc.flag_slot);
+        builder_.CreateBr(fc.finally_bb);
+        return;
+    }
     builder_.CreateBr(loop_context_.back().continue_bb);
 }
 
@@ -5934,6 +5986,31 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     } else
         builder_.CreateCondBr(is_error, merge_bb, try_bb);
 
+    // === Set up finally control-flow context (only when a finally exists) ===
+    // return/break/continue inside the try/catch will store an exit mode and
+    // branch here, so the finally body runs before the real exit.
+    if (finally_bb) {
+        FinallyCtx fc;
+        fc.flag_slot = finally_flag;
+        fc.finally_bb = finally_bb;
+        fc.merge_bb = merge_bb;
+        if (!finally_ctx_stack_.empty()) {
+            fc.outer_finally_bb = finally_ctx_stack_.back().finally_bb;
+            fc.outer_flag_slot = finally_ctx_stack_.back().flag_slot;
+        } else {
+            fc.outer_finally_bb = nullptr;
+            fc.outer_flag_slot = nullptr;
+        }
+        if (!loop_context_.empty()) {
+            fc.break_bb = loop_context_.back().break_bb;
+            fc.continue_bb = loop_context_.back().continue_bb;
+        } else {
+            fc.break_bb = nullptr;
+            fc.continue_bb = nullptr;
+        }
+        finally_ctx_stack_.push_back(fc);
+    }
+
     // === Generate try block ===
     builder_.SetInsertPoint(try_bb);
     if (s.try_block) generateBlock(*s.try_block);
@@ -6049,15 +6126,79 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
 
     // === Generate finally block ===
     if (finally_bb) {
+        finally_ctx_stack_.back().in_finally = true;
         builder_.SetInsertPoint(finally_bb);
         if (s.finally_block) generateBlock(*s.finally_block);
+        finally_ctx_stack_.back().in_finally = false;
         if (!builder_.GetInsertBlock()->getTerminator()) {
+            auto& fc = finally_ctx_stack_.back();
             if (!rethrow_bb)
                 rethrow_bb = llvm::BasicBlock::Create(ctx_, "catch_rethrow", func);
-            auto* flag = builder_.CreateLoad(i8_ty, finally_flag, "finally_flag");
-            auto* is_prop = builder_.CreateICmpNE(flag, llvm::ConstantInt::get(i8_ty, 0));
-            builder_.CreateCondBr(is_prop, rethrow_bb, merge_bb);
+            auto* flag = builder_.CreateLoad(i8_ty, finally_flag, "finally_mode");
+            // Dispatch on exit mode: 0→merge, 1→rethrow, 2→return,
+            // 3→break, 4→continue (2/3/4 forward to an enclosing finally first).
+            auto* fin_merge = llvm::BasicBlock::Create(ctx_, "fin_merge", func);
+            llvm::BasicBlock* fin_ret = llvm::BasicBlock::Create(ctx_, "fin_ret", func);
+            llvm::BasicBlock* fin_break = llvm::BasicBlock::Create(ctx_, "fin_break", func);
+            llvm::BasicBlock* fin_cont = llvm::BasicBlock::Create(ctx_, "fin_cont", func);
+            auto* c0 = llvm::ConstantInt::get(i8_ty, 0);
+            auto* c1 = llvm::ConstantInt::get(i8_ty, 1);
+            auto* c2 = llvm::ConstantInt::get(i8_ty, 2);
+            auto* c3 = llvm::ConstantInt::get(i8_ty, 3);
+            auto* e0 = builder_.CreateICmpEQ(flag, c0);
+            auto* chk1 = llvm::BasicBlock::Create(ctx_, "fin_chk1", func);
+            builder_.CreateCondBr(e0, fin_merge, chk1);
+            builder_.SetInsertPoint(chk1);
+            auto* e1 = builder_.CreateICmpEQ(flag, c1);
+            auto* chk2 = llvm::BasicBlock::Create(ctx_, "fin_chk2", func);
+            builder_.CreateCondBr(e1, rethrow_bb, chk2);
+            builder_.SetInsertPoint(chk2);
+            auto* e2 = builder_.CreateICmpEQ(flag, c2);
+            auto* chk3 = llvm::BasicBlock::Create(ctx_, "fin_chk3", func);
+            builder_.CreateCondBr(e2, fin_ret, chk3);
+            builder_.SetInsertPoint(chk3);
+            auto* e3 = builder_.CreateICmpEQ(flag, c3);
+            builder_.CreateCondBr(e3, fin_break, fin_cont);
+
+            // mode 0 → this try's normal end
+            builder_.SetInsertPoint(fin_merge);
+            builder_.CreateBr(merge_bb);
+
+            // mode 2 → return: forward to enclosing finally, else do the real return
+            builder_.SetInsertPoint(fin_ret);
+            if (fc.outer_finally_bb) {
+                builder_.CreateStore(c2, fc.outer_flag_slot);
+                builder_.CreateBr(fc.outer_finally_bb);
+            } else {
+                llvm::Value* rv = nullptr;
+                if (finally_ret_slot_ && !current_function_->getReturnType()->isVoidTy())
+                    rv = builder_.CreateLoad(current_function_->getReturnType(), finally_ret_slot_);
+                emitFunctionReturn(rv);
+            }
+
+            // mode 3 → break: forward to enclosing finally, else to loop break target
+            builder_.SetInsertPoint(fin_break);
+            if (fc.outer_finally_bb) {
+                builder_.CreateStore(c3, fc.outer_flag_slot);
+                builder_.CreateBr(fc.outer_finally_bb);
+            } else if (fc.break_bb) {
+                builder_.CreateBr(fc.break_bb);
+            } else {
+                builder_.CreateBr(merge_bb);
+            }
+
+            // mode 4 → continue
+            builder_.SetInsertPoint(fin_cont);
+            if (fc.outer_finally_bb) {
+                builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 4), fc.outer_flag_slot);
+                builder_.CreateBr(fc.outer_finally_bb);
+            } else if (fc.continue_bb) {
+                builder_.CreateBr(fc.continue_bb);
+            } else {
+                builder_.CreateBr(merge_bb);
+            }
         }
+        finally_ctx_stack_.pop_back();
     }
 
     // === rethrow: pop this handler and longjmp to the next (outer) handler ===

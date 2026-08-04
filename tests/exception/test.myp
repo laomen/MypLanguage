@@ -287,8 +287,66 @@ class Main {
                 Console.writeString(e.message());
                 Console.writeString("\n");
             }
+
+            // 22. finally + return：return 前先执行 finally，返回值正确
+            {
+                string s = finReturnFn();
+                Console.writeString("fin_ret_val=");
+                Console.writeString(s);
+                Console.writeString("\n");
+            }
+
+            // 23. finally + break / continue（for 循环内穿 finally）
+            for (int i = 0; i < 3; i++) {
+                try {
+                    if (i == 1) break;
+                    Console.writeString("fb" + i + "\n");
+                } finally {
+                    Console.writeString("ff\n");
+                }
+            }
+            Console.writeString("after_break\n");
+            for (int j = 0; j < 3; j++) {
+                try {
+                    if (j == 1) continue;
+                    Console.writeString("fc" + j + "\n");
+                } finally {
+                    Console.writeString("fg\n");
+                }
+            }
+            Console.writeString("after_cont\n");
+
+            // 24. 嵌套 finally + return：return 依次穿内层/外层 finally
+            {
+                string s2 = finNestedFn();
+                Console.writeString("fin_nest_val=");
+                Console.writeString(s2);
+                Console.writeString("\n");
+            }
             Console.writeString("done\n");
         }
+}
+
+// finally + return：return 前先执行 finally
+string finReturnFn() {
+    try {
+        return "rv";
+    } finally {
+        Console.writeString("fin_return_fin\n");
+    }
+}
+
+// 嵌套 finally + return：内层 return 穿内层/外层 finally
+string finNestedFn() {
+    try {
+        try {
+            return "ni";
+        } finally {
+            Console.writeString("fn_inner\n");
+        }
+    } finally {
+        Console.writeString("fn_outer\n");
+    }
 }
 
 int main() {
