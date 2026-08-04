@@ -3,7 +3,8 @@
 > 状态：**设计提案 v0.1**（待评审后实施）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 算子系统（`docs/operators.md` P4：元素级提升 + 集合二元）
-> 本文档提出带运行时长度的集合类型——**切片（slice）**，作为 P4 的地基。实施前请先评审。
+> 本文档提出带运行时长度的集合类型——**切片（slice）**，并配套两级 arena +
+> `@region` 注解 + 逃逸分析的内存模型，作为 P4 的地基。实施前请先评审。
 
 ---
 
@@ -85,7 +86,93 @@ Rust `&[T]` 同款 fat pointer。**MYP 使用 arena 内存（`myp_free_all` 统�
 
 ---
 
-## 3. 设计取舍（待评审拍板）
+## 3. 生命周期与内存模型
+
+### 3.1 现状：双层内存模型
+
+| 变量类别 | 分配位置 | 生命周期 | 释放 |
+|---|---|---|---|
+| 标量局部变量 | 栈（LLVM `alloca`） | 函数作用域 | 栈帧自动 |
+| struct 值 | 栈（`alloca`） | 函数作用域 | 栈帧自动 |
+| 数组 `new T[n]` | **堆**（`myp_alloc` = `malloc`） | 进程/线程结束 | `myp_free_all()` |
+| class 实例 `new C()` | **堆**（`myp_alloc`） | 进程/线程结束 | `myp_free_all()` |
+| 字符串 | 堆（`myp_alloc`） | 进程/线程结束 | `myp_free_all()` |
+
+核心机制（`src/runtime/runtime.c`）：`myp_alloc` = `malloc` + 压入**线程本地链表**
+（pthread_key TLS）；`myp_free_all()` 在 main 退出（或线程退出时 pthread_key 析构）遍历链表整块释放。
+**无 GC、无手动 delete、无 RAII**；arena 是**线程本地**的（`@thread` 各有其 arena）。
+
+### 3.2 为什么 slice 天然无悬垂
+
+slice 的 `data` 指向**堆（arena）数组**，class 实例也在堆上 → 两者同生命周期
+（进程/线程结束才释放）。因此 **class 的 property 持有 slice 字段完全安全**；
+slice 不会指向栈数据（MYP 无栈数组）。
+
+**这正是 MYP 不需要 Rust lifetime 的根本原因**：Rust 栈对象可被借用、需显式生命周期；
+MYP 引用型数据全在 arena 堆上，统一存活，天然无悬垂。
+
+### 3.3 内存爆炸问题 → 两级 arena
+
+**风险**：进程级释放意味着长期运行程序（游戏主循环/服务器/GUI）若每帧/每请求
+`new` 对象，arena 只增不减 → 内存单调增长。
+
+**解法：两级 arena（非破坏性新增 runtime API）**
+
+```c
+int  myp_arena_mark();            // 记录当前分配水位
+void myp_arena_release(int mark); // 释放 mark 之后的所有分配（同线程）
+```
+
+- **默认 `new`** → 进程级 arena（现状，跨事件存活，兼容）
+- **`@region` 内 `new`** → 当前 region（区域结束自动回收）
+
+链表为"头插"，`mark` 记链表头、`release` 从标记处一路 free——实现约 20 行 C。
+**slice 与管道链式让中间对象激增，region 自动回收是 P4 的必需品**（而非可选项）。
+
+### 3.4 `@region` 注解（简洁无感）
+
+```myp
+class Pipeline {
+    action:
+        @region void processFrame() {          // 一帧 = 一个事务
+            slice<double> tmp = new slice<double>(n);
+            var r = tmp |> ScaleOp |> OffsetOp; // 中间产物全是事件临时
+            ... // 用 r
+        }   // ← 返回时自动释放本 action 内 new 的所有对象（含中间 slice）
+}
+```
+
+- **一个注解 = 无感**：只在"每帧/每请求/批量处理"的 action 上加 `@region`
+- **非破坏性**：默认行为不变，只有标注的 action 启用事件级回收
+- **实现**：codegen 在 `@region` action 入口插 `mark`，所有出口（含 return 路径）插 `release`
+
+### 3.5 逃逸分析：return 引用不误清理
+
+**问题**：`@region` 内 `return` 一个 slice，region 结束时其 `data` 会被误释放吗？
+
+**不会。** 编译期逃逸判定，两级分配分流：
+
+| 对象去向 | 逃逸？ | 分配 |
+|---|---|---|
+| 仅局部变量引用、本地计算 | ❌ 未逃逸 | **region**（自动回收） |
+| `return` 出去 | ✅ 逃逸 | **进程级** |
+| 存入 property / 全局 | ✅ 逃逸 | 进程级 |
+| 作为参数传给其他函数 | ✅ 保守视为逃逸 | 进程级 |
+| slice 被返回/传出（按引用逃逸） | ✅ **数据一并逃逸** | 进程级 |
+
+**实现**（codegen，单 action 内分析）：
+1. 收集 `@region` action 内所有 `new` 的**持有者图**（变量引用关系；slice 包装视为数据持有者）
+2. 任一持有者逃逸（return/传参/存属性）→ 该 `new` 提升为进程级 `myp_alloc`
+3. 其余 → `myp_region_alloc`，action 出口统一 `myp_arena_release`
+
+**运行时零额外逻辑**：判定在编译期完成，release 是整块释放。
+**保守策略**（传参即逃逸）保证 100% 安全，且恰好覆盖 P4 链式场景
+（中间 slice 全为本地未逃逸对象）；跨函数逃逸分析留作后续增强。
+可选编译期诊断：`@region` action 返回 region 内 slice → 提示"已自动提升为持久"。
+
+---
+
+## 4. 设计取舍（待评审拍板）
 
 ### 3.1 `new double[n]` 的返回类型
 
@@ -108,7 +195,7 @@ Rust `&[T]` 同款 fat pointer。**MYP 使用 arena 内存（`myp_free_all` 统�
 
 ---
 
-## 4. 实现面评估
+## 5. 实现面评估
 
 | 层 | 改动 |
 |---|---|
@@ -123,21 +210,24 @@ Rust `&[T]` 同款 fat pointer。**MYP 使用 arena 内存（`myp_free_all` 统�
 
 ---
 
-## 5. 待决问题（评审清单）
+## 6. 待决问题（评审清单）
 
-1. **`new double[n]` 返回裸指针还是 slice？**（§3.1 选项 1 vs 2）
-2. **语法命名**：`slice<T>` 还是其他？（§3.2）
-3. **下标是否做边界检查？**（§3.3）
+1. **`new double[n]` 返回裸指针还是 slice？**（§4.1 选项 1 vs 2）
+2. **语法命名**：`slice<T>` 还是其他？（§4.2）
+3. **下标是否做边界检查？**（§4.3）
 4. **是否提供 `T[]` → `slice<T>` 转换？**（裸数组无长度，转换语义需谨慎）
-5. **与 P4 的衔接**：slice 落地后，`docs/operators.md` §5 示例改为用 `A.size()`，
+5. **`@region` 粒度**：action 注解 vs `region { }` 块级？（§3.4，推荐 action 注解）
+6. **逃逸分析保守策略**："传参即逃逸"是否接受？（§3.5，保证安全但区域回收覆盖有限）
+7. **与 P4 的衔接**：slice 落地后，`docs/operators.md` §5 示例改为用 `A.size()`，
    消除"硬编码 n"（§7 难点①）
 
 ---
 
-## 6. 实施路线（评审通过后）
+## 7. 实施路线（评审通过后）
 
 | 阶段 | 内容 |
 |---|---|
 | P4a | slice 类型：Sema + `new slice<T>(n)` + `s[i]` + `s.size()` + `s.data()` |
-| P4b | `@op("+")` 集合二元示例（基于 slice），更新 `docs/operators.md` |
-| P4c | 回归测试 `tests/slice/` + 正常/ASAN 套件 + grammar.md 增量 |
+| P4b | 两级 arena：`myp_arena_mark/release` + `@region` 注解 + 逃逸分析 |
+| P4c | `@op("+")` 集合二元示例（基于 slice），更新 `docs/operators.md` |
+| P4d | 回归测试 `tests/slice/` + 正常/ASAN 套件 + grammar.md 增量 |
