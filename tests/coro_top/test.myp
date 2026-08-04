@@ -1,0 +1,72 @@
+// tests/coro_top/test.myp — 顶层 @coro 函数（无需类封装）
+// 覆盖：值传递（yield/resume/result）、多顶层协程交错、@coro(stack=N)、
+//       定义在 main 之后（预扫描入口包装解决顺序问题）、顶层 @coro 内 await 挂起
+import env;
+import coro;
+
+@coro long worker(long n) {
+    long x = Coro.yield(n * 2);
+    Console.writeString("worker resumed with ");
+    Console.write(x);
+    Console.writeString("\n");
+    return x + 100;
+}
+
+// 无返回值顶层协程 + 内部 await 挂起
+@coro void ticker(string tag) {
+    Console.writeString(tag);
+    Console.writeString(":1\n");
+    await;
+    Console.writeString(tag);
+    Console.writeString(":2\n");
+    await;
+    Console.writeString(tag);
+    Console.writeString(":3\n");
+}
+
+// 定义在 Main 之后 + 显式小栈（16KB）
+@coro(stack=16) long smallStack(long v) {
+    Console.writeString("smallStack start\n");
+    long y = Coro.yield(v);
+    return y;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // 1) 顶层 @coro 值传递 + 返回值
+            long h = worker(21);
+            long v = Coro.resume(h, 7);
+            Console.writeString("yielded ");
+            Console.write(v);
+            Console.writeString("\n");
+            Console.writeString("result ");
+            Console.write(Coro.result(h));
+            Console.writeString("\n");
+            Coro.destroy(h);
+
+            // 2) 多顶层协程交错（ticker 先 spawn，worker 后 spawn）
+            long ht = ticker("T");
+            long hw = worker(1);
+            Coro.resume(hw, 0);
+            Coro.resume(ht, 0);
+            Coro.resume(ht, 0);
+            Coro.resume(ht, 0);
+            Coro.destroy(hw);
+            Coro.destroy(ht);
+
+            // 3) 定义在 main 之后 + stack
+            long hs = smallStack(55);
+            Console.writeString("ss yield ");
+            Console.write(Coro.resume(hs, 66));
+            Console.writeString("\n");
+            Coro.destroy(hs);
+
+            Console.writeString("done\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

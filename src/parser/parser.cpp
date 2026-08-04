@@ -478,6 +478,28 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
         else if (annot == "region") func->has_region = true;
+        else if (annot == "coro") {
+            func->has_coro = true;
+            // Optional: @coro(stack=N) — N = coroutine stack size in KB (default 128)
+            if (check(TokenKind::LeftParen)) {
+                consume(TokenKind::LeftParen, "expected '(' after '@coro'");
+                std::string kw = parseIdentifier("expected 'stack' in @coro(stack=N)");
+                if (kw != "stack") {
+                    diag_.error(previous().range, "expected 'stack' in @coro(stack=N)");
+                }
+                consume(TokenKind::Equal, "expected '=' in @coro(stack=N)");
+                if (check(TokenKind::IntegerLiteral)) {
+                    try {
+                        func->coro_stack_kb = (int)std::stoll(advance().value);
+                    } catch (...) {
+                        diag_.error(previous().range, "invalid stack size in @coro(stack=N)");
+                    }
+                } else {
+                    diag_.error(peek().range, "expected integer stack size (KB) in @coro(stack=N)");
+                }
+                consume(TokenKind::RightParen, "expected ')' after @coro(stack=N)");
+            }
+        }
         else if (annot == "op") {
             // @op("+") — operator symbol is a string literal
             consume(TokenKind::LeftParen, "expected '(' after '@op'");

@@ -438,6 +438,16 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Done BEFORE function bodies so catch (Error e) dispatch can reference it.
     generateErrorVTables();
 
+    // Pre-create entry wrappers for top-level @coro functions so spawn sites in
+    // any order (e.g. main defined before the coroutine) can resolve them.
+    for (auto& f : tu.functions) {
+        if (f.has_coro) {
+            generateCoroFuncEntry(f);
+            coro_methods_.insert(f.name);
+            coro_stack_map_[f.name] = f.coro_stack_kb;
+        }
+    }
+
     // Generate function bodies
     for (auto& f : tu.functions) generateFuncDecl(f);
     for (auto& c : tu.classes) generateClass(c);
@@ -797,7 +807,46 @@ void CodeGen::generateCoroEntry(const ClassDecl& cls, const ActionDecl& action) 
     builder_.CreateRetVoid();
 }
 
-// -- Generate coroutine spawn sequence for an @coro method call --
+// -- Entry wrapper for a top-level @coro function (no 'this' slot) --
+// void __myp_coro_entry_name() {
+//     args = __myp_coro_get_entry_arg(1..N);
+//     name(args...);
+// }
+void CodeGen::generateCoroFuncEntry(const FuncDecl& decl) {
+    std::string entry_fn = "__myp_coro_entry_" + decl.name;
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
+    auto* func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, entry_fn, module_.get());
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
+    builder_.SetInsertPoint(bb);
+
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto get_arg = module_->getOrInsertFunction("__myp_coro_get_entry_arg",
+        llvm::FunctionType::get(i64, {i64}, false));
+
+    // Resolve (or declare) the actual top-level function — body filled later.
+    std::vector<llvm::Type*> pts;
+    for (auto& p : decl.params)
+        pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+    auto* rty = getLLVMType(typeNodeToCodegenType(decl.return_type));
+    auto* ft2 = llvm::FunctionType::get(rty, pts, false);
+    auto* target = llvm::dyn_cast<llvm::Function>(
+        module_->getOrInsertFunction(decl.name, ft2).getCallee());
+
+    std::vector<llvm::Value*> call_args;
+    for (size_t i = 0; i < decl.params.size(); ++i) {
+        TypeInfo pt = typeNodeToCodegenType(decl.params[i].type);
+        auto* slot = builder_.CreateCall(get_arg,
+            {llvm::ConstantInt::get(i64, (int64_t)(i + 1))}, "arg_raw");
+        auto* want = getLLVMType(pt);
+        llvm::Value* v = slot;
+        if (want->isIntegerTy()) v = builder_.CreateIntCast(slot, want, true);
+        else if (want->isFloatingPointTy()) v = builder_.CreateBitCast(slot, want);
+        else if (want->isPointerTy()) v = builder_.CreateIntToPtr(slot, want);
+        call_args.push_back(v);
+    }
+    builder_.CreateCall(target, call_args);
+    builder_.CreateRetVoid();
+}
 // h = __myp_coro_create();
 // __myp_coro_set_entry_arg(0, this);
 // __myp_coro_set_entry_arg(1+i, arg_i);
@@ -1023,7 +1072,21 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
 
     TypeInfo rt = typeNodeToCodegenType(decl.return_type);
     auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
-    auto* func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
+    // Reuse if a declaration was already inserted (top-level @coro entry
+    // wrapper pre-creates it via getOrInsertFunction); otherwise create fresh.
+    auto* func = llvm::dyn_cast<llvm::Function>(
+        module_->getOrInsertFunction(decl.name, ft).getCallee());
+    if (!func) {
+        func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                      decl.name, module_.get());
+    }
+    if (func->size() != 0) {
+        // Already has a body (e.g. duplicate declaration) — skip.
+        current_function_ = nullptr;
+        return;
+    }
+
+    current_is_coro_ = decl.has_coro;
 
     size_t i = 0;
     for (auto& arg : func->args()) { if (i < decl.params.size()) arg.setName(decl.params[i].name); ++i; }
@@ -1084,6 +1147,7 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
+    current_is_coro_ = false;
     popScope();
     if (decl.name == "main") {
         in_main_ = false;

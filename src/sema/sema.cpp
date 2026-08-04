@@ -61,6 +61,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             auto& action = tu.classes[ci].actions[ai];
             if (action.body) {
                 current_return_type_ = typeNodeToTypeInfo(action.return_type);
+                in_coro_method_ = action.has_coro;
                 symbol_table_.enterScope();
                 TypeInfo this_type(TypeKind::Class);
                 this_type.class_name = current_class_name_;
@@ -71,6 +72,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                 }
                 visitStmt(*action.body);
                 symbol_table_.leaveScope();
+                in_coro_method_ = false;
             }
         }
         // Type-check function: section bodies (re-fetch: tu.classes may have
@@ -81,6 +83,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             auto& func = tu.classes[ci].functions[fi];
             if (func.body) {
                 current_return_type_ = typeNodeToTypeInfo(func.return_type);
+                in_coro_method_ = false;
                 symbol_table_.enterScope();
                 TypeInfo this_type(TypeKind::Class);
                 this_type.class_name = current_class_name_;
@@ -90,6 +93,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                 }
                 visitStmt(*func.body);
                 symbol_table_.leaveScope();
+                in_coro_method_ = false;
             }
         }
         // Type-check static: section bodies (no 'this')
@@ -99,6 +103,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             auto& action = tu.classes[ci].static_actions[si];
             if (action.body) {
                 current_return_type_ = typeNodeToTypeInfo(action.return_type);
+                in_coro_method_ = false;
                 symbol_table_.enterScope();
                 // No 'this' for static methods
                 for (auto& param : action.params) {
@@ -106,6 +111,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                 }
                 visitStmt(*action.body);
                 symbol_table_.leaveScope();
+                in_coro_method_ = false;
             }
         }
         in_class_method_ = false;
@@ -486,10 +492,13 @@ void Sema::visitFuncBody(FuncDecl& decl) {
     // In main(), only instance creation + mapping is allowed — no direct method calls
     if (decl.name == "main") in_main_function_ = true;
 
+    in_coro_method_ = decl.has_coro;  // top-level @coro function: allow await
+
     if (decl.body) {
         visitStmt(*decl.body);
     }
 
+    in_coro_method_ = false;
     in_main_function_ = false;
     symbol_table_.leaveScope();
 }
@@ -551,6 +560,9 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             }
             return {};
         case StmtKind::AwaitStmt: {
+            if (!in_coro_method_) {
+                error(stmt.range, "'await' is only allowed inside an '@coro' method");
+            }
             auto& as = static_cast<AwaitStmt&>(stmt);
             if (as.expr) visitExpr(*as.expr);
             return {};
@@ -838,6 +850,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             result = visitTryExpr(static_cast<TryExpr&>(expr));
             break;
         case ExprKind::Await: {
+            if (!in_coro_method_) {
+                error(expr.range, "'await' is only allowed inside an '@coro' method");
+            }
             auto& ae = static_cast<AwaitExpr&>(expr);
             if (ae.operand) {
                 // await ClassName.eventName — block on an event (C4).
@@ -1147,6 +1162,17 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
             error(expr.args[i]->range, "argument " + std::to_string(i + 1) +
                   ": expected '" + typeName(callee_type.param_types[i]) +
                   "', got '" + typeName(arg_type) + "'");
+        }
+    }
+
+    // A call to a top-level @coro function returns a coroutine handle (long),
+    // not the function's declared return type (which is delivered via the
+    // coroutine's result slot and read with Coro.result(handle)).
+    auto* ident2 = dynamic_cast<IdentifierExpr*>(expr.callee.get());
+    if (ident2 && current_tu_) {
+        for (auto& f : current_tu_->functions) {
+            if (f.has_coro && f.name == ident2->name)
+                return TypeInfo(TypeKind::Long);
         }
     }
 

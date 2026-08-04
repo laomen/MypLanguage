@@ -354,6 +354,7 @@ private:
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);
     void generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action);
     void generateCoroEntry(const ClassDecl& cls, const ActionDecl& action);
+    void generateCoroFuncEntry(const FuncDecl& decl);  // top-level @coro function
     llvm::Value* generateCoroSpawn(llvm::Function* target, const CallExpr& e,
                                    llvm::Value* mthis, bool is_method);
     llvm::Value* generateAwaitExpr(const AwaitExpr& e);

@@ -1,0 +1,15 @@
+worker resumed with 7
+
+yielded 42
+
+result 107
+
+T:1
+worker resumed with 0
+
+T:2
+T:3
+smallStack start
+ss yield 55
+
+done

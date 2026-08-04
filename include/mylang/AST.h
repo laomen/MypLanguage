@@ -584,6 +584,8 @@ struct FuncDecl {
     SourceRange range;
     bool has_test = false;
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
+    bool has_coro = false;    // @coro: 顶层协程函数（C 系列）
+    int coro_stack_kb = 0;    // @coro(stack=N) — 协程栈大小 KB（0=默认）
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
 };
 
