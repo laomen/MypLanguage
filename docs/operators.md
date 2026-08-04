@@ -187,11 +187,17 @@ struct Vector3 {
         double x_ = 0, y_ = 0, z_ = 0;
 }
 
-// 2) 外部 @op（内置类型）
-@op("+") double[] add(double[] A, double[] B) {
-    int n = 4;   // 注: 集合长度问题见 §7 待定
-    double[] C = new double[n];
+// 2) 外部 @op（slice 集合二元，P4 已实施）
+@op("+") slice<double> add(slice<double> A, slice<double> B) {
+    int n = A.size();              // 运行时长度（slice，见 docs/slice.md）
+    slice<double> C = new slice<double>(n);
     int i = 0; while (i < n) { C[i] = A[i] + B[i]; i = i + 1; }
+    return C;
+}
+@op("*") slice<double> mul(slice<double> A, double k) {   // 标量广播
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = A[i] * k; i = i + 1; }
     return C;
 }
 
@@ -216,9 +222,10 @@ int main() {
     Vector3 w = v + u;      // struct 数学算子: w = (5,7,9)
     Vector3 s = v * 2.0;    // struct 数学算子: s = (2,4,6)
 
-    double[] A = new double[4]; ...
-    double[] C = A + A;      // 外部算子: 内置类型
-    Set B = A |> ScaleOp;    // 组件管道（待定 §7）
+    slice<double> A = new slice<double>(4); ...
+    slice<double> C = A + A;      // 外部算子: 集合二元（逐元素）
+    slice<double> D = A * 2.0;    // 标量广播
+    Set B = A |> ScaleOp;         // 组件管道（P3 已实施）
     return 0;
 }
 ```
@@ -232,16 +239,17 @@ int main() {
 | struct 方法 | ✅ 已有 | struct 支持属性和方法 |
 | 接口多态 | ✅ 已有 | `interface class IOp`，`examples/ad.myp` 已验证 |
 | SetOp 契约 | ✅ 已有 | `stdlib/setops.myp`（本次新增） |
-| 顶层 `@op` | ❌ 需实现 | 复用 `function` + 注解机制 |
-| struct `operator:` 节 | ❌ 需实现 | parser/sema/codegen |
-| `|>` 管道 | ❌ 需实现 | lexer 新 token + 表达式 |
+| 顶层 `@op` | ✅ 已实现 | 复用 `function` + 注解机制（v2.4.1） |
+| struct `operator:` 节 | ✅ 已实现 | parser/sema/codegen（v2.4.1） |
+| `|>` 管道 | ✅ 已实现 | lexer 新 token + 表达式（v2.4.2） |
+| slice 集合二元 | ✅ 已实现 | `slice<T>` + `@op`（P4，`docs/slice.md`） |
 
 ---
 
 ## 7. 待定 / 风险项
 
-1. **集合长度**：动态数组 `double[]` 无运行时长度（arena 裸分配），`A.size()` 需改数组表示（高成本、高风险）——**当前算子里硬编码 n，或用 configure(n) 模式**。
-   ➡️ 解决方案见 **`docs/slice.md`**（切片类型 `slice<T>`，待评审）
+1. **集合长度**：✅ 已解决（P4a）——新增 `slice<T>` 类型携带运行时长度 `len`，
+   `A.size()` 可用（设计见 `docs/slice.md`），示例不再硬编码 n
 2. **泛型接口**：`interface SetOp<T>`（struct 集合 `Vector3[]` 的算子）——需验证 MYP 泛型是否支持带类型参数的 interface
 3. **集合二元提升**：元素级自动 lift 的编译期实现（无函数类型时如何表达）
 4. **管道 `|>`**：✅ 已解决（P3，v2.4.2）——`Op` 为算子**类名**（自动实例化）或**实例**（复用），
@@ -257,7 +265,7 @@ int main() {
 | P1 | 顶层 `@op` 函数（parser 注解 + sema 注册 + 二元分发 + codegen 调用） | ✅ 已完成（v2.4.1） | 中 |
 | P2 | struct `operator:` 节（parser + sema + codegen） | ✅ 已完成（v2.4.1） | 中 |
 | P3 | `|>` 管道 token + 表达式 + 组件节点 | ✅ 已完成（v2.4.2） | 中 |
-| P4 | 元素级提升 + 集合二元 | ⏳ 待实施（地基：`slice<T>`，见 `docs/slice.md`） | 高 |
+| P4 | 元素级提升 + 集合二元 | ✅ 已完成（P4a slice + P4b region + P4c 集合二元） | 高 |
 | 贯穿 | 示例（Vector3 / Set）+ 回归测试 + grammar.md 增量 + CHANGELOG | ✅ 已完成 | — |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + fuzz + no-crash 回归。
