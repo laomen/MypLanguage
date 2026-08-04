@@ -1,0 +1,28 @@
+// tests/negative/await_outside_coro.myp — await 只能在 @coro 上下文内使用
+// 普通 action / function: / static: / 顶层函数中的 await 应报错
+import env;
+import coro;
+
+// 顶层普通函数：await 非法
+void plainFunc() {
+    await;
+}
+
+class A {
+    action:
+        void normal() {
+            await;   // 普通 action 中 await 非法
+        }
+        function:
+            void f() {
+                await;
+            }
+        static:
+            void s() {
+                await;
+            }
+}
+
+int main() {
+    return 0;
+}
