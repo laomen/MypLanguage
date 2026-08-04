@@ -193,6 +193,9 @@ private:
     llvm::Function* runtime_longjmp_ = nullptr;
     llvm::Function* runtime_throw_ = nullptr;
     llvm::Function* runtime_get_error_ = nullptr;
+    llvm::Function* runtime_exception_push_ = nullptr;
+    llvm::Function* runtime_exception_pop_ = nullptr;
+    llvm::Function* runtime_exception_get_jmpbuf_ = nullptr;
     llvm::StructType* jmp_buf_type_ = nullptr;
     llvm::GlobalVariable* global_jmp_buf_ = nullptr;
 

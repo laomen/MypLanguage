@@ -1,6 +1,12 @@
 // 异常处理测试 (try/catch + __myp_throw)
 import env;
 
+// 子函数 throw → 父 catch（跨函数 longjmp）
+void risky() {
+    Console.writeString("risky_enter\n");
+    __myp_throw("deep_error");
+}
+
 class Main {
     action:
         @startup void run() {
@@ -29,6 +35,48 @@ class Main {
             } finally {
                 Console.writeString("finally_ok\n");
             }
+
+            // 4. 嵌套 try：内层 throw → 内层 catch（近者捕获）
+            try {
+                Console.writeString("nest_outer_try\n");
+                try {
+                    __myp_throw("inner_err");
+                } catch (string e) {
+                    Console.writeString("nest_inner_caught=");
+                    Console.writeString(e);
+                    Console.writeString("\n");
+                }
+                Console.writeString("nest_outer_continue\n");
+            } catch (string e) {
+                Console.writeString("nest_outer_caught\n");
+            }
+
+            // 5. 内层 try 正常结束 → 外层 throw → 外层 catch（回归：曾死循环）
+            try {
+                Console.writeString("stale_outer_try\n");
+                try {
+                    Console.writeString("stale_inner_ok\n");
+                } catch (string e) {
+                    Console.writeString("stale_inner_catch\n");
+                }
+                __myp_throw("stale_outer_err");
+            } catch (string e) {
+                Console.writeString("stale_outer_caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+
+            // 6. 跨函数 throw：子函数 throw → 父 catch
+            try {
+                Console.writeString("cross_outer_try\n");
+                risky();
+                Console.writeString("cross_outer_after\n");
+            } catch (string e) {
+                Console.writeString("cross_caught=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+            Console.writeString("done\n");
         }
 }
 

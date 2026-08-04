@@ -4597,10 +4597,13 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 auto* msg = generateExpr(*e.args[0]);
                 builder_.CreateCall(runtime_throw_->getFunctionType(),
                     runtime_throw_, {msg});
-                // longjmp(&__myp_jmpbuf, 1) — noreturn
+                // longjmp to the innermost active handler (stack top) — not a
+                // global buffer, so nested/cross-function throws resolve right.
+                auto* jb = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
+                    runtime_exception_get_jmpbuf_, {}, "cur_handler");
                 auto* one = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1);
                 builder_.CreateCall(runtime_longjmp_->getFunctionType(),
-                    runtime_longjmp_, {global_jmp_buf_, one});
+                    runtime_longjmp_, {jb, one});
                 // Unreachable (longjmp is noreturn, but LLVM needs terminator)
                 builder_.CreateUnreachable();
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
@@ -5768,9 +5771,18 @@ void CodeGen::generateMatchStmt(const MatchStmt& s) {
 void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* func = builder_.GetInsertBlock()->getParent();
 
-    // Call setjmp on the global jmp_buf: int setjmp(&__myp_jmpbuf)
+    // Per-try jmp_buf, allocated in the entry block so it stays live across the
+    // longjmp back to the setjmp (fixes nested tries / cross-function throws).
+    auto* jb = createEntryBlockAlloca(func, jmp_buf_type_, "try_jmpbuf");
+    auto* jb_ptr = builder_.CreateBitCast(jb, llvm::PointerType::get(ctx_, 0));
+
+    // Register this try's handler before setjmp (innermost-active handler stack).
+    builder_.CreateCall(runtime_exception_push_->getFunctionType(),
+        runtime_exception_push_, {jb_ptr});
+
+    // int setjmp(jmp_buf)
     auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
-        runtime_setjmp_, {global_jmp_buf_}, "setjmp_result");
+        runtime_setjmp_, {jb_ptr}, "setjmp_result");
 
     // Compare result == 0 (normal path) vs != 0 (error/catch path)
     auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
@@ -5832,6 +5844,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     }
 
     builder_.SetInsertPoint(merge_bb);
+    // Pop this try's handler (all paths converge here).
+    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+        runtime_exception_pop_, {});
 }
 
 // -- Runtime --
@@ -5986,6 +6001,17 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_get_error_ = llvm::Function::Create(
         llvm::FunctionType::get(p, {}, false),
         llvm::Function::ExternalLinkage, "myp_get_error", module_.get());
+
+    // Exception handler stack (thread-local) — per-try jmp_buf push/pop/get.
+    runtime_exception_push_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_push", module_.get());
+    runtime_exception_pop_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_pop", module_.get());
+    runtime_exception_get_jmpbuf_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_exception_get_jmpbuf", module_.get());
 
     // Test framework runtime functions
     runtime_assert_ = llvm::Function::Create(

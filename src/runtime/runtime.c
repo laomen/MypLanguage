@@ -2107,8 +2107,12 @@ int32_t myp_math_abs_int(int32_t v) { return v < 0 ? -v : v; }
 // but setjmp must be called in the same function that branches
 // on its return value, so we generate @llvm.setjmp or direct
 // calls in codegen instead.
-static char myp_error_msg[256];
+// The error message and the exception handler stack are thread-local so
+// nested try blocks and concurrent threads each see their own state.
+static __thread char myp_error_msg[256];
 static int myp_error_active = 0;
+static __thread void* myp_handler_bufs[64];
+static __thread int myp_handler_depth = 0;
 
 // Called from generated code via intrinsic: saves error context
 void myp_error_setup(void) {
@@ -2127,6 +2131,25 @@ const char* myp_get_error(void) {
 
 int myp_error_is_active(void) {
     return myp_error_active;
+}
+
+// ---- Exception handler stack (per thread) ----
+// Each try block pushes its own jmp_buf before setjmp and pops it when the
+// try/finally structure ends. __myp_throw longjmps to the *top* handler, so
+// nested tries and cross-function throws resolve to the correct (innermost
+// still-active) handler instead of a stale global buffer.
+void myp_exception_push(void* jmpbuf) {
+    if (myp_handler_depth < 64)
+        myp_handler_bufs[myp_handler_depth++] = jmpbuf;
+}
+
+void myp_exception_pop(void) {
+    if (myp_handler_depth > 0) myp_handler_depth--;
+}
+
+void* myp_exception_get_jmpbuf(void) {
+    if (myp_handler_depth > 0) return myp_handler_bufs[myp_handler_depth - 1];
+    return NULL;
 }
 
 void myp_error_clear(void) {
