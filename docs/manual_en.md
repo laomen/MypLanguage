@@ -278,6 +278,145 @@ void log(string msg) {
 }
 ```
 
+### Exception Handling (try / catch / finally / throw)
+
+MYP uses `try` / `catch` / `finally` / `throw` for structured exception handling, built on C `setjmp`/`longjmp` (one handler per try, thread-local).
+
+#### Basic try/catch
+
+```myp
+try {
+    int v = parseValue(s);
+} catch (e) {                 // catch (e): catch-all, e is the string message
+    Console.writeLine("failed: " + e);
+}
+```
+
+catch clause forms:
+- `catch (e)` — catch-all, `e` is the string message
+- `catch (string e)` — explicitly catch a string exception
+- `catch (ClassName e)` — catch exactly that exception class
+- `catch (Error e)` — catch any exception object implementing the `Error` interface (`e.message()`)
+
+#### Multiple catch, matched in order
+
+```myp
+try {
+    ...
+} catch (FileError e) {
+    ...
+} catch (ParseError e) {
+    ...
+} catch (e) {                 // catch-all
+    ...
+}
+```
+
+Unmatched exceptions propagate outward automatically; if no handler exists, the runtime prints `uncaught exception: <msg>` and aborts.
+
+#### throw
+
+```myp
+throw "some message";      // string shortcut
+throw new FileError();     // exception object (implements Error interface)
+```
+
+`throw;` inside a catch **rethrows** the current exception (message/type preserved; runs `finally` first if present):
+
+```myp
+try {
+    doWork();
+} catch (e) {
+    log("failed");
+    throw;                  // hand it to the outer handler
+}
+```
+
+#### finally
+
+The `finally` block runs on every exit path — normal end of try, a matching catch, exception propagation, and `return` / `break` / `continue`:
+
+```myp
+try {
+    File f = new File();
+    f.open(path, "r");
+} finally {
+    Console.writeLine("cleanup");   // runs on every path
+}
+```
+
+#### Expression try
+
+`try <expr> catch (e) <expr>` is an expression that yields a fallback on error:
+
+```myp
+int n = try parseInt(s) catch (e) -1;   // parseInt result on success, -1 on failure
+```
+
+#### Standard exceptions (`import error`)
+
+Standard exception classes all implement the `Error` interface and can be caught via `catch (Error e)`:
+
+| Exception | Purpose | Key properties |
+|---|---|---|
+| `FileError` | file operation failure | `op`, `path` |
+| `IOError` | generic I/O failure | `op`, `detail` |
+| `NetError` | network failure | `op`, `host`, `port` |
+| `ParseError` | parse failure | `source`, `line`, `detail` |
+| `JsonError` | JSON parse failure | `line`, `col`, `detail` |
+| `ArgumentError` | bad argument | `arg`, `detail` |
+| `MathError` | math domain error | `op`, `detail` |
+| `IndexError` | index out of range | `index`, `size` |
+
+Fill properties via setters, then throw (MYP classes have no parameterized constructors):
+
+```myp
+FileError e = new FileError();
+e.setOp("open");
+e.setPath("config.myp");
+throw e;
+```
+
+#### Library integration
+
+The `io` / `json` / `net` libraries throw standard exceptions on failure: `File.open` failure throws `FileError`, `new Json(...)` with invalid input throws `JsonError`, `TcpClient.connect` failure throws `NetError`.
+
+```myp
+import io;
+try {
+    File f = new File();
+    f.open("/no/such/file", "r");
+} catch (FileError e) {
+    Console.writeLine(e.message());   // "file error: open /no/such/file"
+}
+```
+
+#### Custom exception objects
+
+Implement the `Error` interface to use any class as an exception object:
+
+```myp
+import error;
+class MyError {
+    interface class Error;
+    action:
+        string message() { return "my error: " + code_; }
+        void setCode(int v) { code_ = v; }
+    property:
+        int code_;
+}
+
+try {
+    MyError e = new MyError();
+    e.setCode(42);
+    throw e;
+} catch (Error e) {
+    Console.writeLine(e.message());   // "my error: 42"
+}
+```
+
+> Full design: [`docs/exceptions.md`](exceptions.md).
+
 ---
 
 ## 5. Functions

@@ -264,6 +264,145 @@ void log(string msg) {
 }
 ```
 
+### 异常处理（try / catch / finally / throw）
+
+MYP 用 `try` / `catch` / `finally` / `throw` 做结构化异常处理，机制基于 C `setjmp`/`longjmp`（每 try 独立 handler，线程本地）。
+
+#### 基本 try/catch
+
+```myp
+try {
+    int v = parseValue(s);
+} catch (e) {                 // catch (e)：兜底，e 为 string 消息
+    Console.writeLine("failed: " + e);
+}
+```
+
+catch 子句形式：
+- `catch (e)` —— 无类型兜底，`e` 为 string 消息
+- `catch (string e)` —— 显式捕获 string 异常
+- `catch (ClassName e)` —— 精确捕获某异常类
+- `catch (Error e)` —— 捕获任意实现 `Error` 接口的异常对象（`e.message()`）
+
+#### 多 catch 按序匹配
+
+```myp
+try {
+    ...
+} catch (FileError e) {
+    ...
+} catch (ParseError e) {
+    ...
+} catch (e) {                 // 兜底
+    ...
+}
+```
+
+不匹配的异常自动向外层传播；无外层 catch 时打印 `uncaught exception: <msg>` 并 abort。
+
+#### throw
+
+```myp
+throw "some message";      // string 快捷
+throw new FileError();     // 异常对象（实现 Error 接口）
+```
+
+`throw;` 在 catch 内**重新抛出**当前异常（保留消息/类型，带 finally 时先执行 finally）：
+
+```myp
+try {
+    doWork();
+} catch (e) {
+    log("failed");
+    throw;                  // 交给外层处理
+}
+```
+
+#### finally
+
+`finally` 块在所有退出路径都执行——try 正常结束、catch 匹配、异常传播，以及 `return` / `break` / `continue`：
+
+```myp
+try {
+    File f = new File();
+    f.open(path, "r");
+} finally {
+    Console.writeLine("cleanup");   // 任何路径都会执行
+}
+```
+
+#### 表达式 try
+
+`try <expr> catch (e) <expr>` 作为表达式，失败给默认值：
+
+```myp
+int n = try parseInt(s) catch (e) -1;   // 成功取 parseInt 结果，失败取 -1
+```
+
+#### 标准异常（`import error`）
+
+标准异常类全部实现 `Error` 接口，可被 `catch (Error e)` 统一捕获：
+
+| 异常 | 用途 | 主要属性 |
+|---|---|---|
+| `FileError` | 文件操作失败 | `op`、`path` |
+| `IOError` | 通用 I/O 失败 | `op`、`detail` |
+| `NetError` | 网络失败 | `op`、`host`、`port` |
+| `ParseError` | 解析失败 | `source`、`line`、`detail` |
+| `JsonError` | JSON 解析失败 | `line`、`col`、`detail` |
+| `ArgumentError` | 参数错误 | `arg`、`detail` |
+| `MathError` | 数学域错误 | `op`、`detail` |
+| `IndexError` | 下标越界 | `index`、`size` |
+
+用 setter 填充属性后抛出（MYP 类无带参构造）：
+
+```myp
+FileError e = new FileError();
+e.setOp("open");
+e.setPath("config.myp");
+throw e;
+```
+
+#### 库接入
+
+`io` / `json` / `net` 库在失败时抛标准异常：`File.open` 失败抛 `FileError`，`new Json(...)` 非法输入抛 `JsonError`，`TcpClient.connect` 失败抛 `NetError`。
+
+```myp
+import io;
+try {
+    File f = new File();
+    f.open("/no/such/file", "r");
+} catch (FileError e) {
+    Console.writeLine(e.message());   // "file error: open /no/such/file"
+}
+```
+
+#### 自定义异常对象
+
+实现 `Error` 接口即可作为异常对象抛出：
+
+```myp
+import error;
+class MyError {
+    interface class Error;
+    action:
+        string message() { return "my error: " + code_; }
+        void setCode(int v) { code_ = v; }
+    property:
+        int code_;
+}
+
+try {
+    MyError e = new MyError();
+    e.setCode(42);
+    throw e;
+} catch (Error e) {
+    Console.writeLine(e.message());   // "my error: 42"
+}
+```
+
+> 详细设计见 [`docs/exceptions.md`](exceptions.md)。
+
 ---
 
 ## 5. 函数

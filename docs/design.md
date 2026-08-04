@@ -1286,7 +1286,7 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 | Lambda 表达式 | 2.0 | 隐藏类 + __call 方法 |
 | 包管理系统 (myp) | 2.0 | init/build/install/run |
 | LSP 服务器 | 2.0 | 补全/悬停/跳转定义 |
-| try/catch/throw | 2.1 | setjmp/longjmp 异常处理 |
+| try/catch/throw | 2.1 | setjmp/longjmp 异常处理（对象异常 + finally + `catch (Error e)` 接口匹配 + 标准异常 + 库接入）|
 | 共享/静态库输出 | 2.1 | --shared / --static |
 | @test 测试框架 | 2.2 | --test 自动发现并运行 @test |
 | myp fmt 格式化 | 2.2 | 独立格式化工具 |
@@ -1481,7 +1481,7 @@ Runtime  → print/println + 基本运行时
 | **v5** | 包管理器（myp init/build/install/run + --package-path 导入搜索） | ✅ 已实现 |
 | **v5** | LSP 语言服务器（诊断/补全/悬停/符号/跳转定义/引用查找） | ✅ 已实现 |
 | **v5** | VS Code 扩展（语法高亮 + LSP 集成） | ✅ 已实现 |
-| **v5** | 错误处理（try/catch/throw + setjmp/longjmp） | ✅ 已实现 |
+| **v5** | 错误处理（try/catch/finally/throw + 对象异常 + `catch (Error e)` 接口匹配 + `throw;` 重抛 + 标准异常 + 库接入；setjmp/longjmp）| ✅ 已实现（详见 `exceptions.md`）|
 | **v5** | 共享库/静态库输出（--shared/--static） | ✅ 已实现 |
 | **v5** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
 | **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
