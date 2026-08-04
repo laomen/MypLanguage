@@ -30,7 +30,9 @@ fi
 
 echo "[ASAN] running test suite with $MYPCC (MYP_SANITIZE=1, ASAN_OPTIONS=$ASAN_OPTIONS)"
 bash tests/run_tests.sh "$@"
-# 退出码: 0=全部通过, 1=有失败
+# 退出码直接透传 run_tests.sh（其内置 ASAN makecontext 警告过滤等最新逻辑）。
+# 注意：此脚本尾部曾内嵌 run_tests.sh 的旧副本，已废弃不可达，勿再依赖。
+exit $?
 
 set -o pipefail
 
@@ -46,7 +48,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # 检测是否要重建编译器
-if [ "$1" = "--rebuild" ]; then
+if [ "${1:-}" = "--rebuild" ]; then
     echo -e "${YELLOW}[BUILD] Rebuilding compiler...${NC}"
     cd "$(dirname "$0")/.."
     cmake --build build 2>&1 | tail -3
@@ -57,7 +59,7 @@ if [ "$1" = "--rebuild" ]; then
 fi
 
 UPDATE_MODE=false
-if [ "$1" = "--update" ] || [ "$2" = "--update" ]; then
+if [ "${1:-}" = "--update" ] || [ "${2:-}" = "--update" ]; then
     UPDATE_MODE=true
     echo -e "${YELLOW}[UPDATE] Updating expected outputs...${NC}"
 fi

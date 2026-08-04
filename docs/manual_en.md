@@ -984,12 +984,26 @@ Coro.scheduler();                              // auto-schedule: one step per re
 long r  = Coro.resume(h, val);                 // resume, pass val in; returns coroutine's yielded value
 long v  = Coro.yield(val);                     // suspend, pass val out; returns passed-in value (= await expr)
 long a  = Coro.isActive(h);                    // still active (1/0)
-Coro.destroy(h);                               // destroy / cancel early (safe on running coroutine)
+Coro.destroy(h);                               // FORCE-cancel (no cleanup; safe on running coroutine)
 long r  = Coro.result(h);                      // read coroutine return value
 long v  = Coro.waitEvent(eventId, val);        // block on an event (= await ClassName.eventName)
+long v  = Coro.waitEventTimeout(id, ms, val);  // event wait with timeout: -1 on timeout, else val
+long v  = Coro.waitAny(ids, count, ms, val);   // wait for any listed event: returns fired event id, -1 on timeout
 long c  = Coro.current();                      // handle of the running coroutine (-1 if none)
 long n  = Coro.count();                        // number of active coroutines on this thread
+long s  = Coro.status(h);                      // state: -1 invalid / 0 finished / 1 ready/running / 2 waiting event
+Coro.requestCancel(h);                         // cooperative cancel: request the coroutine exit after its next await/yield
+long q  = Coro.cancelRequested();              // is the current coroutine cancel-requested? (inside coroutine, 1/0)
+Coro.clearCancel();                            // clear the current coroutine's cancel request
 ```
+
+> **Language-level timeout syntax**: `await Signal.go timeout 30;` is equivalent to
+> `Coro.waitEventTimeout(go, 30, 0)` — returns `-1` on timeout, otherwise the value passed in by `resume`.
+>
+> **Cancellation semantics**: `Coro.destroy(h)` is a **force-cancel** (immediate; `finally`/resource
+> cleanup is not run). If a coroutine needs cleanup, use cooperative cancellation — call
+> `Coro.requestCancel(h)` externally; the coroutine checks `Coro.cancelRequested()` after each
+> `await`/`yield` and exits itself (running cleanup) when it sees 1.
 
 > `__myp_coro_*` are compiler internals (the `Coro` class is a built-in static class;
 > codegen emits the underlying call directly). The symbols are **not registered** — user

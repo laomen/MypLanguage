@@ -25,7 +25,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m'
 
 # 检测是否要重建编译器
-if [ "$1" = "--rebuild" ]; then
+if [ "${1:-}" = "--rebuild" ]; then
     echo -e "${YELLOW}[BUILD] Rebuilding compiler...${NC}"
     cd "$(dirname "$0")/.."
     cmake --build build 2>&1 | tail -3
@@ -36,7 +36,7 @@ if [ "$1" = "--rebuild" ]; then
 fi
 
 UPDATE_MODE=false
-if [ "$1" = "--update" ] || [ "$2" = "--update" ]; then
+if [ "${1:-}" = "--update" ] || [ "${2:-}" = "--update" ]; then
     UPDATE_MODE=true
     echo -e "${YELLOW}[UPDATE] Updating expected outputs...${NC}"
 fi

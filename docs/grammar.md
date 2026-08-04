@@ -196,9 +196,11 @@ ContinueStmt     ::= 'continue' ';'
 AwaitStmt        ::= 'await' ';'                                   // 简单挂起（协程内）
                    | 'await' Expression ';'                        // 带值挂起（C2）
                    | 'await' ClassName '.' EventName ';'           // 等待事件（C4）
+                   | 'await' ClassName '.' EventName 'timeout' Integer ';'  // 事件等待带超时（C10，毫秒）
                    // 仅允许在 '@coro' 注解的类 action 方法或顶层 @coro 函数内
 AwaitExpr        ::= 'await' Expression                            // 表达式（C2）
                    | 'await' ClassName '.' EventName               // 表达式：事件等待（C4）
+                   | 'await' ClassName '.' EventName 'timeout' Integer  // 表达式：事件等待带超时（C10）
                    // 挂起传出 Expression 值；恢复后表达式 = resume 传入值
                    // 仅允许在 '@coro' 注解的类 action 方法或顶层 @coro 函数内
 MappingStmt      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'  // 局部 mapping

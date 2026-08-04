@@ -1336,12 +1336,25 @@ Coro.scheduler();                              // 自动调度：跑所有就绪
 long r  = Coro.resume(h, val);                 // 恢复并传入 val；返回协程传出值
 long v  = Coro.yield(val);                     // 挂起并传出 val；恢复时返回传入值（= await expr）
 long a  = Coro.isActive(h);                    // 是否仍活跃（1/0）
-Coro.destroy(h);                               // 销毁（提前取消；销毁正在运行的协程不会释放其栈）
+Coro.destroy(h);                               // 强杀（提前取消；不执行清理；销毁正在运行的协程不会释放其栈）
 long r  = Coro.result(h);                      // 取协程返回值
 long v  = Coro.waitEvent(eventId, val);        // 等待事件（= await ClassName.eventName）
+long v  = Coro.waitEventTimeout(id, ms, val);  // 带超时事件等待：事件到达返回 val，超时返回 -1
+long v  = Coro.waitAny(ids, count, ms, val);   // 多事件等待：返回触发的事件 id，超时返回 -1
 long c  = Coro.current();                      // 当前正在执行的协程 handle（不在协程内 -1）
 long n  = Coro.count();                        // 当前线程活跃协程数
+long s  = Coro.status(h);                      // 状态：-1 无效 / 0 结束 / 1 就绪运行 / 2 等待事件
+Coro.requestCancel(h);                         // 协作式取消：请求协程在 await/yield 后自行退出
+long q  = Coro.cancelRequested();              // 当前协程是否被请求取消（协程内检查，1/0）
+Coro.clearCancel();                            // 清除当前协程的取消请求
 ```
+
+> **语言级超时语法**：`await Signal.go timeout 30;` 等价于 `Coro.waitEventTimeout(go, 30, 0)`，
+> 返回 `-1` 表示超时，否则为 resume 传入值。
+>
+> **取消语义**：`Coro.destroy(h)` 是**强杀**（立即取消，不执行 `finally`/资源清理，与 Go 的
+> 协作式取消不同）；若协程需清理，应使用协作式取消——外部 `Coro.requestCancel(h)` 设置标记，
+> 协程在 `await`/`yield` 恢复后检查 `Coro.cancelRequested()` 为 1 时自行退出（可执行清理）。
 
 > `__myp_coro_*` 是编译器内部实现（`Coro` 类为内建静态类，codegen 直接生成底层调用），
 > **符号未注册**——用户代码调用会报 `undefined symbol`，无法直接使用。`stdlib/coro.myp`

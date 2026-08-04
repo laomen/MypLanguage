@@ -1221,7 +1221,7 @@ int main() {
 | `pool` | `Parallel` 静态类（线程池任务工具） | ✅ 已实现 |
 | `barrier` | `Barrier` 类（create/wait/destroy），基于 pthread_barrier | ✅ 已实现 |
 | `future` | `Future` 类（create/set/get/destroy），异步结果容器 | ✅ 已实现 |
-| `coro` | `Coro` 协程类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count），基于 ucontext；`@coro` 方法/顶层函数 + `await` 语法由编译器支持 | ✅ 已实现（C1-C9，详见 `coro.md`）|
+| `coro` | `Coro` 协程类（scheduler/resume/yield/isActive/destroy/result/waitEvent/current/count/status/waitEventTimeout/waitAny/requestCancel/cancelRequested/clearCancel），基于 ucontext；`@coro` 方法/顶层函数 + `await` 语法由编译器支持 | ✅ 已实现（C1-C10，详见 `coro.md`）|
 | `memory` | `Memory` 类（alloc/free/realloc），直接调用 C malloc | ✅ 已实现 |
 | `test` | `Test` 类（assert/assertEq/assertStrEq/report），配合 `@test` 注解 | ✅ 已实现 |
 | `sdl` | `SDL` 图形类（init/quit/clear/present/getKey），基于 SDL2 FFI | ✅ 已实现 |
@@ -1486,7 +1486,7 @@ Runtime  → print/println + 基本运行时
 | **v5** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
 | **v5** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
 | **v5** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O、Atomic 等） | ✅ 已实现 |
-| **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；`@coro` 方法/顶层函数 + `await` 挂起/恢复 + 入口参数槽 + 手动 `resume` + `await` 值传递（`int v = await expr;`）+ 返回值槽 + 自动调度器（就绪队列 + `Coro.scheduler`）+ 事件等待（`await ClassName.eventName`）+ `@coro(stack=N)` 栈可配置 + TLS 线程并用 + 顶层 `@coro` 函数 + `await` 上下文检查 + 动态事件等待表 + `destroy` 自杀防护 + `Coro.current`/`Coro.count` | ✅ C1-C9 已实现 |
+| **v2.4** | 协程 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；`@coro` 方法/顶层函数 + `await` 挂起/恢复 + 入口参数槽 + 手动 `resume` + `await` 值传递（`int v = await expr;`）+ 返回值槽 + 自动调度器（就绪队列 + `Coro.scheduler`）+ 事件等待（`await ClassName.eventName`）+ `@coro(stack=N)` 栈可配置 + TLS 线程并用 + 顶层 `@coro` 函数 + `await` 上下文检查 + 动态事件等待表 + `destroy` 自杀防护 + `Coro.current`/`Coro.count` + 嵌套协程（`ret_ctx` 上下文链）+ `Coro.status` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消（`requestCancel`）| ✅ C1-C10 已实现 |
 | **v2.4** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | 🔜 规划中 |
 | **v2.4** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | 🔜 规划中 |
 | **v6** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |
