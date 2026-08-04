@@ -1,0 +1,13 @@
+// slice 越界测试 (P4a) — 越界访问应触发运行时错误
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            slice<double> s = new slice<double>(3);
+            Console.writeString("before\n");
+            double x = s[5];   // 越界: len=3, idx=5
+            Console.writeString("unreachable\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

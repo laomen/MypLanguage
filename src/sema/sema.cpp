@@ -1111,6 +1111,24 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     auto obj_type = visitExpr(*expr.object);
 
+    // Slice member access: .size()/.length() → int, .data() → T[]
+    if (obj_type.kind == TypeKind::Slice) {
+        if (expr.member_name == "size" || expr.member_name == "length") {
+            TypeInfo ft(TypeKind::Function);
+            ft.return_type = std::make_shared<TypeInfo>(TypeKind::Int);
+            return ft;
+        }
+        if (expr.member_name == "data") {
+            TypeInfo ft(TypeKind::Function);
+            ft.return_type = std::make_shared<TypeInfo>(TypeKind::Array);
+            ft.return_type->element_type = obj_type.element_type;
+            return ft;
+        }
+        error(expr.range, "slice has no member '" + expr.member_name +
+            "' (expected size/length/data)");
+        return TypeInfo(TypeKind::Void);
+    }
+
     // Interface member access — look up method in interface declaration
     if (obj_type.kind == TypeKind::Interface) {
         if (current_tu_) {
@@ -1368,7 +1386,7 @@ TypeInfo Sema::visitSubscript(SubscriptExpr& expr) {
     auto arr_type = visitExpr(*expr.array);
     auto idx_type = visitExpr(*expr.index);
 
-    if (arr_type.kind != TypeKind::Array) {
+    if (arr_type.kind != TypeKind::Array && arr_type.kind != TypeKind::Slice) {
         error(expr.range, "cannot index non-array type '" + typeName(arr_type) + "'");
         return TypeInfo(TypeKind::Void);
     }
@@ -1379,6 +1397,26 @@ TypeInfo Sema::visitSubscript(SubscriptExpr& expr) {
 }
 
 TypeInfo Sema::visitNewExpr(NewExpr& expr) {
+    // Built-in slice<T>(n): allocate n elements, return { data, len }
+    if (expr.class_name == "slice") {
+        if (expr.type_args.size() != 1) {
+            error(expr.range, "slice requires exactly one type argument: slice<T>");
+            return TypeInfo(TypeKind::Void);
+        }
+        if (expr.args.size() != 1) {
+            error(expr.range, "slice requires exactly one size argument: new slice<T>(n)");
+            return TypeInfo(TypeKind::Void);
+        }
+        auto sz = visitExpr(*expr.args[0]);
+        if (sz.kind != TypeKind::Int && sz.kind != TypeKind::Long
+            && sz.kind != TypeKind::Short && sz.kind != TypeKind::Byte) {
+            error(expr.args[0]->range, "slice size must be an integer expression");
+        }
+        TypeInfo result(TypeKind::Slice);
+        result.element_type = std::make_shared<TypeInfo>(
+            typeNodeToTypeInfo(expr.type_args[0]));
+        return result;
+    }
     // Check if this is a generic instantiation
     if (!expr.type_args.empty()) {
         // Construct a temporary TypeNode to trigger monomorphization
@@ -1525,6 +1563,13 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
         return arr_type;
     }
     if (node.isClass()) {
+        // Built-in slice<T>: { T* data; int64 len } fat pointer
+        if (node.class_name == "slice" && node.type_args.size() == 1) {
+            TypeInfo st(TypeKind::Slice);
+            st.element_type = std::make_shared<TypeInfo>(
+                typeNodeToTypeInfo(node.type_args[0]));
+            return st;
+        }
         std::string lookup_name = node.class_name;
 
         // Check if this is an interface type
@@ -1734,6 +1779,9 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Array:
             if (type.element_type) return typeName(*type.element_type) + "[]";
             return "array";
+        case TypeKind::Slice:
+            if (type.element_type) return "slice<" + typeName(*type.element_type) + ">";
+            return "slice";
         case TypeKind::Function: return "function";
     }
     return "unknown";
@@ -1743,6 +1791,11 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
     if (lhs.kind == rhs.kind) {
         if (lhs.kind == TypeKind::Class) return lhs.class_name == rhs.class_name;
         if (lhs.kind == TypeKind::Array) {
+            if (lhs.element_type && rhs.element_type)
+                return typesCompatible(*lhs.element_type, *rhs.element_type);
+            return !lhs.element_type && !rhs.element_type;
+        }
+        if (lhs.kind == TypeKind::Slice) {
             if (lhs.element_type && rhs.element_type)
                 return typesCompatible(*lhs.element_type, *rhs.element_type);
             return !lhs.element_type && !rhs.element_type;

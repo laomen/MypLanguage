@@ -270,6 +270,11 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
             // Unsized array (int[]) — pass as pointer
             return llvm::PointerType::get(ctx_, 0);
         }
+        case TypeKind::Slice: {
+            // slice<T> = { T* data; int64 len }
+            auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+            return llvm::StructType::get(ctx_, {ptr_ty, llvm::Type::getInt64Ty(ctx_)});
+        }
     }
     return llvm::Type::getVoidTy(ctx_);
 }
@@ -285,6 +290,13 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         return result;
     }
     if (!node.class_name.empty()) {
+        // Built-in slice<T>
+        if (node.class_name == "slice" && node.type_args.size() == 1) {
+            TypeInfo result(TypeKind::Slice);
+            result.element_type = std::make_shared<TypeInfo>(
+                typeNodeToCodegenType(node.type_args[0]));
+            return result;
+        }
         if (getClassStruct(node.class_name)) {
             TypeInfo result(TypeKind::Class);
             result.class_name = node.class_name;
@@ -585,6 +597,9 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
         if (action.params[i].type.isArray() && action.params[i].type.element_type) {
             array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
         }
+        // Record slice element type for slice operations
+        if (pt.kind == TypeKind::Slice)
+            var_slice_types_[action.params[i].name] = pt;
     }
 
     if (action.body)
@@ -678,6 +693,9 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
             if (p.type.isArray() && p.type.element_type) {
                 array_elem_types_[p.name] = typeNodeToLLVMType(*p.type.element_type);
             }
+            TypeInfo pti = typeNodeToCodegenType(p.type);
+            if (pti.kind == TypeKind::Slice)
+                var_slice_types_[p.name] = pti;
         }
 
         if (method.body)
@@ -727,6 +745,9 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), fn_decl.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(fn_decl.params[i].name, a);
+        // Record slice element type for slice operations
+        if (pt.kind == TypeKind::Slice)
+            var_slice_types_[fn_decl.params[i].name] = pt;
     }
 
     if (fn_decl.body)
@@ -761,6 +782,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
             TypeInfo pt = typeNodeToCodegenType(decl.params[i].type);
             auto* a = createEntryBlockAlloca(func, getLLVMType(pt), decl.params[i].name);
             builder_.CreateStore(&arg, a);
+            if (pt.kind == TypeKind::Slice)
+                var_slice_types_[decl.params[i].name] = pt;
             setNamedValue(decl.params[i].name, a);
             // Record array element type for subscript access
             if (decl.params[i].type.isArray() && decl.params[i].type.element_type) {
@@ -1621,6 +1644,25 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto* a = createEntryBlockAlloca(current_function_, init_val->getType(), d.name);
         setNamedValue(d.name, a);
         builder_.CreateStore(init_val, a);
+        return;
+    }
+
+    // slice<T> — value type { T* data; int64 len }, allocated on stack
+    if (d.type.class_name == "slice" && d.type.type_args.size() == 1) {
+        TypeInfo st(TypeKind::Slice);
+        st.element_type = std::make_shared<TypeInfo>(
+            typeNodeToCodegenType(d.type.type_args[0]));
+        auto* slt = getLLVMType(st);
+        auto* a = createEntryBlockAlloca(current_function_, slt, d.name);
+        setNamedValue(d.name, a);
+        if (d.init_expr) {
+            auto* v = generateExpr(*d.init_expr);
+            if (v && v->getType() == slt)
+                builder_.CreateStore(v, a);
+        } else {
+            builder_.CreateStore(llvm::ConstantAggregateZero::get(slt), a);
+        }
+        var_slice_types_[d.name] = st;
         return;
     }
 
@@ -4101,6 +4143,27 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    // slice.size() / slice.length() / slice.data()
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto sit = var_slice_types_.find(oi.name);
+            if (sit != var_slice_types_.end()) {
+                auto* va = getNamedValue(oi.name);
+                if (va) {
+                    auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, oi.name);
+                    if (ma.member_name == "size" || ma.member_name == "length") {
+                        auto* len = builder_.CreateExtractValue(sval, 1);
+                        return builder_.CreateTrunc(len, llvm::Type::getInt32Ty(ctx_));
+                    }
+                    if (ma.member_name == "data") {
+                        return builder_.CreateExtractValue(sval, 0);
+                    }
+                }
+            }
+        }
+    }
     llvm::Value* callee = nullptr;
     bool is_method = false;
     llvm::Value* mthis = nullptr;
@@ -4965,6 +5028,46 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
 }
 
 llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
+    // slice<T>[i] — unpack data, bounds-check, GEP
+    if (e.array->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.array);
+        auto sit = var_slice_types_.find(id.name);
+        if (sit != var_slice_types_.end()) {
+            auto* va = getNamedValue(id.name);
+            if (va && sit->second.element_type) {
+                auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, id.name);
+                auto* data = builder_.CreateExtractValue(sval, 0);
+                auto* len = builder_.CreateExtractValue(sval, 1);
+                auto* idx = generateExpr(*e.index);
+                auto* idx64 = idx;
+                if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
+                    || idx64->getType()->isIntegerTy(16))
+                    idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
+                // Bounds check: 0 <= idx < len
+                auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+                auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
+                auto* inb = builder_.CreateICmpULT(idx64, len);
+                auto* ok = builder_.CreateAnd(nonneg, inb);
+                auto* be_fn = module_->getFunction("myp_bounds_error");
+                if (!be_fn) {
+                    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                        {i64ty, i64ty}, false);
+                    be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_bounds_error", module_.get());
+                }
+                auto* cur_fn = builder_.GetInsertBlock()->getParent();
+                auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+                auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+                builder_.CreateCondBr(ok, cont_bb, err_bb);
+                builder_.SetInsertPoint(err_bb);
+                builder_.CreateCall(be_fn, {idx64, len});
+                builder_.CreateBr(cont_bb);
+                builder_.SetInsertPoint(cont_bb);
+                auto* elem_ty = getLLVMType(*sit->second.element_type);
+                auto* p = builder_.CreateGEP(elem_ty, data, idx64);
+                return builder_.CreateLoad(elem_ty, p);
+            }
+        }
+    }
     auto* a = generateExpr(*e.array);
     auto* i = generateExpr(*e.index);
     // With opaque pointers in LLVM 21, we determine the element type
@@ -5040,6 +5143,31 @@ do_gep:
 }
 
 llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
+    // Built-in slice<T>(n): allocate n*elem bytes, return { data, len }
+    if (e.class_name == "slice") {
+        auto* elem_ty = typeNodeToLLVMType(e.type_args[0]);
+        uint64_t es = module_->getDataLayout().getTypeAllocSize(elem_ty);
+        auto* len_val = generateExpr(*e.args[0]);
+        if (len_val->getType()->isIntegerTy(32) || len_val->getType()->isIntegerTy(8)
+            || len_val->getType()->isIntegerTy(16))
+            len_val = builder_.CreateZExt(len_val, llvm::Type::getInt64Ty(ctx_));
+        auto* byte_size = builder_.CreateMul(len_val,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
+        auto* alloc_fn = runtime_alloc_;
+        if (!alloc_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+        }
+        auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "slice_data");
+        if (es > 0)
+            builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
+        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+        auto* slt = llvm::StructType::get(ctx_, {ptr_ty, llvm::Type::getInt64Ty(ctx_)});
+        llvm::Value* val = llvm::PoisonValue::get(slt);
+        val = builder_.CreateInsertValue(val, ptr, 0);
+        val = builder_.CreateInsertValue(val, len_val, 1);
+        return val;
+    }
     std::string cls_name = e.class_name;
     // Mangle name for generic classes: new Box<int>() → Box_int_inst
     if (!e.type_args.empty()) {
@@ -5221,6 +5349,55 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
     // arr[i] = value
     if (e.target->kind == ExprKind::Subscript) {
         auto& ss = static_cast<const SubscriptExpr&>(*e.target);
+        // slice<T>[i] = value — unpack data, bounds-check, GEP, store
+        if (ss.array->kind == ExprKind::Identifier) {
+            auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+            auto sit = var_slice_types_.find(id.name);
+            if (sit != var_slice_types_.end()) {
+                auto* va = getNamedValue(id.name);
+                if (va && sit->second.element_type) {
+                    auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, id.name);
+                    auto* data = builder_.CreateExtractValue(sval, 0);
+                    auto* len = builder_.CreateExtractValue(sval, 1);
+                    auto* idx = generateExpr(*ss.index);
+                    auto* idx64 = idx;
+                    if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
+                        || idx64->getType()->isIntegerTy(16))
+                        idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
+                    auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+                    auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
+                    auto* inb = builder_.CreateICmpULT(idx64, len);
+                    auto* ok = builder_.CreateAnd(nonneg, inb);
+                    auto* be_fn = module_->getFunction("myp_bounds_error");
+                    if (!be_fn) {
+                        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                            {i64ty, i64ty}, false);
+                        be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_bounds_error", module_.get());
+                    }
+                    auto* cur_fn = builder_.GetInsertBlock()->getParent();
+                    auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+                    auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+                    builder_.CreateCondBr(ok, cont_bb, err_bb);
+                    builder_.SetInsertPoint(err_bb);
+                    builder_.CreateCall(be_fn, {idx64, len});
+                    builder_.CreateBr(cont_bb);
+                    builder_.SetInsertPoint(cont_bb);
+                    auto* elem_ty = getLLVMType(*sit->second.element_type);
+                    auto* p = builder_.CreateGEP(elem_ty, data, idx64);
+                    auto* v = generateExpr(*e.value);
+                    if (v->getType() != elem_ty) {
+                        if (elem_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateSIToFP(v, elem_ty);
+                        else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
+                            v = builder_.CreateFPToSI(v, elem_ty);
+                        else if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateIntCast(v, elem_ty, true);
+                    }
+                    builder_.CreateStore(v, p);
+                    return v;
+                }
+            }
+        }
         auto* a = generateExpr(*ss.array);
         auto* i = generateExpr(*ss.index);
         llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);

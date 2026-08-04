@@ -22,6 +22,7 @@ enum class TypeKind : uint8_t {
     Enum,
     Interface,
     Array,
+    Slice,
     Function,
 };
 

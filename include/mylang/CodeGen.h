@@ -208,6 +208,8 @@ private:
 
     // ---- Variable name → class name map (for method resolution) ----
     std::unordered_map<std::string, std::string> var_class_map_;
+    /// Track slice element types for local slice variables ("name" -> TypeInfo).
+    std::unordered_map<std::string, TypeInfo> var_slice_types_;
     /// Track element types for local array variables (for subscript codegen).
     std::unordered_map<std::string, llvm::Type*> array_elem_types_;
     std::unordered_map<std::string, llvm::Type*> var_value_types_;

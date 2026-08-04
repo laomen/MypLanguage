@@ -1255,6 +1255,13 @@ void myp_free_all(void) {
     }
 }
 
+// Slice subscript bounds check: reports the error and aborts.
+void myp_bounds_error(int64_t idx, int64_t len) {
+    fprintf(stderr, "MYP runtime error: slice index %lld out of bounds (length %lld)\n",
+            (long long)idx, (long long)len);
+    abort();
+}
+
 // ======================
 // Timeline
 // ======================

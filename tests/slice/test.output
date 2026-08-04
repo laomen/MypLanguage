@@ -1,0 +1,13 @@
+[slice 测试]
+size = 4
+
+s = [1.5
+,3
+,4.5
+,6
+]
+[sum count] 4
+
+returned size = 4
+
+r[2] = 4.5
