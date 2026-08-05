@@ -221,15 +221,12 @@ class MappingParser {
         }
 
         // 插入排序（字母序）
-        // 注意：MYP 的 && 不短路（见 next_improvements.md §九-8），
-        // 循环条件里不能写 j>=0 && Str.cmp(nodes_[j],...)，会越界读 nodes_[-1]。
         void sortNodes() {
             for (int i = 1; i < ncount_; i = i + 1) {
                 string key = nodes_[i];
                 int j = i - 1;
-                while (j >= 0) {
-                    int c = Str.cmp(nodes_[j], key);
-                    if (c <= 0) break;
+                // && 已短路（编译器修复），j=-1 时不再求值 nodes_[-1]
+                while (j >= 0 && Str.cmp(nodes_[j], key) > 0) {
                     nodes_[j + 1] = nodes_[j];
                     j = j - 1;
                 }

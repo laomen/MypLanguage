@@ -415,6 +415,8 @@ private:
     llvm::Value* generateNullLiteral(const NullLiteralExpr& expr);
     llvm::Value* generateIdentifier(const IdentifierExpr& expr);
     llvm::Value* generateBinaryOp(const BinaryOpExpr& expr);
+    /// 逻辑 && / || 短路求值（a 为 false/true 时不再求值 b）
+    llvm::Value* generateShortCircuitLogic(const BinaryOpExpr& expr);
     llvm::Value* generateUnaryOp(const UnaryOpExpr& expr);
     llvm::Value* generateCall(const CallExpr& expr);
     llvm::Value* generateMemberAccess(const MemberAccessExpr& expr);

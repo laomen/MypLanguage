@@ -4681,6 +4681,11 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         }
     }
 
+    // 短路逻辑运算：&& / || 在结果已定时不求值右操作数（MYP 原用位运算非短路）
+    if (e.op == BinaryOpKind::And || e.op == BinaryOpKind::Or) {
+        return generateShortCircuitLogic(e);
+    }
+
     auto* l = generateExpr(*e.lhs);
     auto* r = generateExpr(*e.rhs);
     if (l->getType() != r->getType()) {
@@ -4840,6 +4845,39 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         }
     }
     return nullptr;
+}
+
+// 逻辑 && / || 短路求值：结果已定时不求值右操作数（修复原 CreateAnd/CreateOr 位运算非短路）。
+// && : l 为 false → 结果 false，跳过 rhs；l 为 true → 求值 rhs
+// || : l 为 true  → 结果 true，跳过 rhs；l 为 false → 求值 rhs
+llvm::Value* CodeGen::generateShortCircuitLogic(const BinaryOpExpr& e) {
+    auto* l = generateExpr(*e.lhs);
+    if (!l->getType()->isIntegerTy(1))
+        l = builder_.CreateICmpNE(l, llvm::ConstantInt::get(l->getType(), 0));
+    auto* func = builder_.GetInsertBlock()->getParent();
+    bool is_and = (e.op == BinaryOpKind::And);
+    // 与 generateTernary 一致：rhs_bb / merge_bb 先不挂入函数，后续 insert 一次
+    auto* rhs_bb = llvm::BasicBlock::Create(ctx_, is_and ? "and.rhs" : "or.rhs");
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, is_and ? "and.merge" : "or.merge");
+    // &&: l true → rhs_bb，l false → merge（结果 false）
+    // ||: l true → merge（结果 true），l false → rhs_bb
+    builder_.CreateCondBr(l, is_and ? rhs_bb : merge_bb, is_and ? merge_bb : rhs_bb);
+    auto* l_bb = builder_.GetInsertBlock();
+    // RHS 分支
+    func->insert(func->end(), rhs_bb);
+    builder_.SetInsertPoint(rhs_bb);
+    auto* r = generateExpr(*e.rhs);
+    if (!r->getType()->isIntegerTy(1))
+        r = builder_.CreateICmpNE(r, llvm::ConstantInt::get(r->getType(), 0));
+    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(merge_bb);
+    auto* last_rhs = builder_.GetInsertBlock();
+    // Merge
+    func->insert(func->end(), merge_bb);
+    builder_.SetInsertPoint(merge_bb);
+    auto* phi = builder_.CreatePHI(r->getType(), 2, is_and ? "and.res" : "or.res");
+    phi->addIncoming(llvm::ConstantInt::get(r->getType(), is_and ? 0 : 1), l_bb);
+    phi->addIncoming(r, last_rhs);
+    return phi;
 }
 
 llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {

@@ -164,7 +164,9 @@ BNCTDoseEngine）；`tests/negative` 语法错误文件除外（C++ 全解析报
 **过程中发现的 C++/语言 bug**（记录于 `docs/next_improvements.md`）：
 
 - **MYP `&&`/`||` 不短路**（§九-8）：`j >= 0 && Str.cmp(nodes_[j],...)` 在 j=-1 时
-  仍求值 `nodes_[-1]` → 越界崩溃。工具已用嵌套 if 规避；编译器短路修复待定。
+  仍求值 `nodes_[-1]` → 越界崩溃。✅ **已修复**（codegen `generateShortCircuitLogic`：
+  `CreateCondBr` + PHI 分支短路；`sortNodes` 已改回自然 `j >= 0 && Str.cmp(...)`
+  写法并通过全量对拍；`tests/short_circuit` 覆盖全部短路路径）。
 
 ---
 
