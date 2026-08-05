@@ -44,7 +44,6 @@
 | 2 | **for-in / 迭代器协议** | 仅索引式 `for (i=0;...)`，集合遍历靠手写索引 | P1 |
 | 3 | **扩展方法** | 无；内建类型只能靠静态类工具函数 | P2 |
 | 4 | **多行 / raw 字符串** | 无 `"""..."""` / `r"..."` | P2 |
-| — | **切片** | ✅ **已实现**（v3.8.0 P4a-P4d，`slice<T>` + `@region` + 集合二元）——从缺失清单**划掉** | — |
 
 ## 五、机制 / 运行时
 
@@ -78,6 +77,14 @@
 2. ✅ **`myp_fmt` 版本号同步** `2.0.0 → 3.9.0`（`96b3061`）
 3. ✅ **过时 docs 状态头修订**：slice / operators / metaprogramming / optimization_debugging / exceptions + CHANGELOG v3.8.0 补 P4 条目（`b5235ae`, `8584bfd`）
 4. ✅ **稳定性验证矩阵全绿**：-O0/-O2/ASAN 123/123、TSan 12/12 无竞态、fuzz 0 崩溃、pass 6/6、debug 6/6、DAP 15/15、整库 3 连跑、线程测试 10 次稳定
+5. ✅ **包管理器 v1（自举）**：`tools/myp.myp` 重写 Python 版（init/build/install/run/legacy）+ runtime 补 `myp_fs_mkdir_p`/`myp_fs_remove_recursive` + `myp_process_run` 改真实退出码（WEXITSTATUS）+ `tests/test_myp_pm.sh`（9 断言）+ 集成进 run_tests.sh（124/124）
+
+## 九、自举发现的语言 bug（需修复）
+
+| # | Bug | 现象 | 影响 | 状态 |
+|---|-----|------|------|------|
+| 1 | **函数返回定长数组共享存储** | 函数返回 `string[N]`（如 `Fs.listDir`/`Str.split`）后，嵌套调用再返回数组会**覆写外层数组内容**（同层连续调用不冲突，跨嵌套边界才触发） | 所有"先取数组再递归"的模式（含 `copyTree`）出错；自举工具已踩中 | ⚠️ 未修（MYP 层快照规避；codegen 修复待定） |
+| 2 | **io 单一全局文件句柄** | `__myp_io_*` 用 `static FILE* myp_io_fp`，不能同时开两个 File | 同时读写两文件互相覆盖（`copyFile` 曾踩中） | ⚠️ 设计约束（文档化；多文件需分时/FFI） |
 
 ---
 

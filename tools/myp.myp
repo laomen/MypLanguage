@@ -1,0 +1,378 @@
+// myp.myp — MYP 包管理器（v1，MYP 自举工具链）
+//
+// 用 MYP 语言实现的包管理 / 构建工具，与 Python 版 myp 行为一致：
+//   myp init <name>          创建包脚手架
+//   myp build [opts]         编译当前包
+//   myp install <path>       从本地路径安装依赖 → myp_packages/<name>/
+//   myp run [opts]           build + 运行
+//   myp <file.myp> [opts]    legacy 单文件编译
+//
+// 环境变量:
+//   MYP_PACKAGE_PATH  附加包搜索路径（冒号分隔）
+//   MYP_CC            指定 mypc 编译器路径（默认 ./build/mypc）
+//   MYP_STDLIB        指定 stdlib 路径（默认从 mypc 位置推导）
+//
+// 设计: docs/pkg_manager.md；自举: docs/self_hosting.md
+
+import env;
+import args;
+import fs;
+import io;
+import text;
+import process;
+
+// ---- 包元数据（package.myp 解析结果）----
+class Meta {
+    action:
+        @constructor Meta() {
+            pkgName = "";
+            pkgVersion = "0.1.0";
+            depCount = 0;
+        }
+        void setName(string v) { pkgName = v; }
+        void setVersion(string v) { pkgVersion = v; }
+        void addDep(string d) {
+            deps[depCount] = d;
+            depCount = depCount + 1;
+        }
+        string getName() { return pkgName; }
+        string getVersion() { return pkgVersion; }
+        int getDepCount() { return depCount; }
+        string getDep(int i) { return deps[i]; }
+    property:
+        string pkgName;
+        string pkgVersion;
+        string[64] deps;
+        int depCount;
+}
+
+// 解析 package.myp（name/version/depends 字段；# 注释；key: value）
+Meta loadMeta(string dir) {
+    Meta m = new Meta();
+    m.setName(Fs.basename(dir));
+    string path = Fs.join(dir, "package.myp");
+    if (Fs.isFile(path) == 0) return m;
+    File f = new File();
+    if (f.open(path, "r") != 0) return m;
+    while (f.hasNext() != 0) {
+        string line = f.readLine();
+        line = Str.trim(line);
+        if (Str.len(line) == 0) continue;
+        if (Str.startsWith(line, "#") != 0) continue;
+        int ci = Str.indexOf(line, ":");
+        if (ci < 0) continue;
+        string key = Str.trim(Str.substring(line, 0, ci));
+        string val = Str.trim(Str.substring(line, ci + 1, Str.len(line)));
+        // 去引号
+        if (Str.len(val) >= 2 && Str.startsWith(val, "\"") != 0) {
+            val = Str.substring(val, 1, Str.len(val) - 1);
+        }
+        if (key == "name") {
+            m.setName(val);
+        } else if (key == "version") {
+            m.setVersion(val);
+        } else if (key == "depends") {
+            int n = Str.splitCount(val, ",");
+            for (int i = 0; i < n; i = i + 1) {
+                string dep = Str.trim(Str.splitGet(val, ",", i));
+                if (Str.len(dep) > 0) {
+                    m.addDep(dep);
+                }
+            }
+        }
+    }
+    f.close();
+    return m;
+}
+
+// ---- 编译器 / 路径定位 ----
+
+// 定位 mypc：MYP_CC → ./build/mypc → build/mypc → PATH(mypc)
+string findCompiler() {
+    string cc = Console.getEnv("MYP_CC");
+    if (Str.len(cc) > 0 && Fs.isFile(cc) != 0) return cc;
+    if (Fs.isFile("./build/mypc") != 0) return "./build/mypc";
+    if (Fs.isFile("build/mypc") != 0) return "build/mypc";
+    return "mypc";
+}
+
+// 推导 stdlib 路径（compiler 位于 <root>/build/mypc → <root>/stdlib）；空=省略
+string findStdlib(string compiler) {
+    string s = Console.getEnv("MYP_STDLIB");
+    if (Str.len(s) > 0 && Fs.isDir(s) != 0) return s;
+    string dir = Fs.dirname(compiler);   // <root>/build 或 .
+    string root = Fs.dirname(dir);       // <root> 或 ..
+    string cand = Fs.join(root, "stdlib");
+    if (Fs.isDir(cand) != 0) return cand;
+    return "";
+}
+
+// 包搜索路径：本地 myp_packages + MYP_PACKAGE_PATH（冒号分隔）
+string resolvePackagePath() {
+    string result = "";
+    if (Fs.isDir("myp_packages") != 0) result = "myp_packages";
+    string env = Console.getEnv("MYP_PACKAGE_PATH");
+    if (Str.len(env) > 0) {
+        int n = Str.splitCount(env, ":");
+        for (int i = 0; i < n; i = i + 1) {
+            string p = Str.trim(Str.splitGet(env, ":", i));
+            if (Str.len(p) > 0) {
+                if (Str.len(result) > 0) result = result + ":";
+                result = result + p;
+            }
+        }
+    }
+    return result;
+}
+
+// ---- 文件复制（MYP 递归目录/文件复制，复用 fs+io，不新增 FFI）----
+
+// 逐字节复制文件。
+// 注意：io.myp 的 File 底层是单一全局句柄（__myp_io_*），不能同时开两个文件，
+// 因此分两阶段：先读入缓冲（关 in），再写 out。
+int copyFile(string src, string dst) {
+    int[262144] buf;   // 256KB 缓冲（.myp 源文件足够）
+    File in = new File();
+    if (in.open(src, "rb") != 0) return 1;
+    int n = 0;
+    while (true) {
+        int b = in.readByte();
+        if (b < 0) break;
+        if (n >= 262144) { in.close(); return 1; }   // 超出缓冲
+        buf[n] = b;
+        n = n + 1;
+    }
+    in.close();
+    File out = new File();
+    if (out.open(dst, "wb") != 0) return 1;
+    for (int i = 0; i < n; i = i + 1) {
+        out.writeByte(buf[i]);
+    }
+    out.close();
+    return 0;
+}
+
+// 递归复制目录/文件 src → dst
+int copyTree(string src, string dst) {
+    if (Fs.isFile(src) != 0) {
+        Fs.mkdirP(Fs.dirname(dst));
+        return copyFile(src, dst);
+    }
+    if (Fs.isDir(src) != 0) {
+        Fs.mkdirP(dst);
+        int n = Fs.listCount(src);
+        string[] entries = Fs.listDir(src);
+        // 快照：函数返回的定长数组共享存储，嵌套调用会覆写外层数组（语言 bug），
+        // 先把条目拷入本层标量数组再递归。
+        string[64] names;
+        int nc = n;
+        if (nc > 64) nc = 64;
+        for (int i = 0; i < nc; i = i + 1) names[i] = entries[i];
+        for (int i = 0; i < nc; i = i + 1) {
+            string name = names[i];
+            if (Str.len(name) == 0) continue;
+            int r = copyTree(Fs.join(src, name), Fs.join(dst, name));
+            if (r != 0) return r;
+        }
+        return 0;
+    }
+    return 0;
+}
+
+// ---- 命令实现 ----
+
+int cmdInit(string name) {
+    if (Str.len(name) == 0) {
+        Console.writeLine("Usage: myp init <package-name>");
+        return 1;
+    }
+    if (Fs.exists(name) != 0) {
+        Console.writeLine("Error: '" + name + "' already exists");
+        return 1;
+    }
+    string srcDir = Fs.join(name, "src");
+    if (Fs.mkdirP(srcDir) != 0) return 1;
+
+    // package.myp
+    File p = new File();
+    if (p.open(Fs.join(name, "package.myp"), "w") != 0) return 1;
+    p.writeLine("# MYP Package");
+    p.writeLine("name: " + name);
+    p.writeLine("version: 0.1.0");
+    p.writeLine("# depends: other_package");
+    p.close();
+
+    // src/<name>.myp — 类名首字母大写
+    string className = Str.toUpper(Str.substring(name, 0, 1))
+                     + Str.substring(name, 1, Str.len(name));
+    File s = new File();
+    if (s.open(Fs.join(srcDir, name + ".myp"), "w") != 0) return 1;
+    s.writeLine("// " + name + " package — main module");
+    s.writeLine("import env;");
+    s.writeLine("");
+    s.writeLine("class " + className + " {");
+    s.writeLine("    action:");
+    s.writeLine("        @constructor");
+    s.writeLine("        " + className + "() {");
+    s.writeLine("            Console.writeString(\"Hello from " + name + " v0.1.0!\\n\");");
+    s.writeLine("        }");
+    s.writeLine("}");
+    s.writeLine("");
+    s.writeLine("int main() {");
+    s.writeLine("    " + className + " m = new " + className + "();");
+    s.writeLine("    return 0;");
+    s.writeLine("}");
+    s.close();
+
+    Console.writeLine("Created package '" + name + "' in " + name + "/");
+    Console.writeLine("  " + name + "/package.myp");
+    Console.writeLine("  " + name + "/src/" + name + ".myp");
+    return 0;
+}
+
+// 转发 build 选项（- 开头参数）：Args.get(start..argc-1)
+int cmdBuild(int start, int argc) {
+    if (Fs.isFile("package.myp") == 0) {
+        Console.writeLine("Error: no package.myp found in current directory");
+        return 1;
+    }
+    Meta m = loadMeta(".");
+    string srcFile = Fs.join(Fs.join(".", "src"), m.getName() + ".myp");
+    if (Fs.isFile(srcFile) == 0) {
+        Console.writeLine("Error: source file not found at '" + srcFile + "'");
+        return 1;
+    }
+    string compiler = findCompiler();
+    string pkgPath = resolvePackagePath();
+
+    // 依赖检查（v1：仅提示缺失，不自动安装）
+    for (int i = 0; i < m.getDepCount(); i = i + 1) {
+        if (Fs.isDir(Fs.join("myp_packages", m.getDep(i))) == 0) {
+            Console.writeLine("  Dependency '" + m.getDep(i) + "' not found in myp_packages/");
+            Console.writeLine("  Use: myp install <path-to-" + m.getDep(i) + ">");
+        }
+    }
+
+    string output = m.getName() + ".out";
+    StringBuilder cmd = new StringBuilder();
+    cmd.append(compiler);
+    cmd.append(" " + srcFile);
+    cmd.append(" -o " + output);
+    string stdlib = findStdlib(compiler);
+    if (Str.len(stdlib) > 0) cmd.append(" --stdlib " + stdlib);
+    if (Str.len(pkgPath) > 0) cmd.append(" --package-path " + pkgPath);
+    for (int i = start; i < argc; i = i + 1) {
+        string a = Args.get(i);
+        if (Str.startsWith(a, "-") != 0) cmd.append(" " + a);
+    }
+
+    Console.writeLine("Building " + m.getName() + " v" + m.getVersion() + "...");
+    int r = Process.run(cmd.toString());
+    if (r == 0) Console.writeLine("Build successful: " + output);
+    return r;
+}
+
+int cmdInstall(string srcPath) {
+    if (Fs.isFile(Fs.join(srcPath, "package.myp")) == 0) {
+        Console.writeLine("Error: no package.myp found at '" + srcPath + "'");
+        return 1;
+    }
+    Meta m = loadMeta(srcPath);
+    if (Fs.mkdirP("myp_packages") != 0) return 1;
+    string dst = Fs.join("myp_packages", m.getName());
+    if (Fs.exists(dst) != 0) {
+        Console.writeLine("Updating " + m.getName() + " in myp_packages/");
+        Fs.removeRecursive(dst);
+    }
+    if (copyTree(srcPath, dst) != 0) return 1;
+    Console.writeLine("Installed " + m.getName() + " v" + m.getVersion() + " to myp_packages/");
+    return 0;
+}
+
+int cmdRun(int start, int argc) {
+    int r = cmdBuild(start, argc);
+    if (r != 0) return r;
+    Meta m = loadMeta(".");
+    string exe = m.getName() + ".out";
+    if (Fs.isFile(exe) == 0) {
+        Console.writeLine("Error: executable not found: " + exe);
+        return 1;
+    }
+    Console.writeLine("Running " + m.getName() + "...");
+    StringBuilder rc = new StringBuilder();
+    rc.append("./" + exe);
+    for (int i = start; i < argc; i = i + 1) {
+        string a = Args.get(i);
+        if (Str.startsWith(a, "-") == 0) rc.append(" " + a);
+    }
+    return Process.run(rc.toString());
+}
+
+void cmdHelp() {
+    Console.writeLine("Usage: myp <command> [options]");
+    Console.writeLine("");
+    Console.writeLine("Commands:");
+    Console.writeLine("  init <name>       Create a new MYP package scaffold");
+    Console.writeLine("  build [opts]      Build the current package");
+    Console.writeLine("  install <path>    Install a package from local path");
+    Console.writeLine("  run [opts]        Build and run the current package");
+    Console.writeLine("  <file.myp> [opts] Compile a single file (legacy mode)");
+    Console.writeLine("");
+    Console.writeLine("Options (build/run):");
+    Console.writeLine("  -O[0123]          Optimization level");
+    Console.writeLine("  --trace           Enable runtime event tracing");
+    Console.writeLine("  --emit-llvm       Save LLVM IR to .ll file");
+    Console.writeLine("");
+    Console.writeLine("Environment:");
+    Console.writeLine("  MYP_PACKAGE_PATH  Colon-separated package search paths");
+}
+
+// CLI 分发（main() 只允许实例创建 + mapping，逻辑放独立函数）
+int pmRun() {
+    int argc = Args.count();
+    if (argc < 2) {
+        cmdHelp();
+        return 1;
+    }
+    string cmd = Args.get(1);
+    if (cmd == "init") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp init <package-name>");
+            return 1;
+        }
+        return cmdInit(Args.get(2));
+    }
+    if (cmd == "build") return cmdBuild(2, argc);
+    if (cmd == "install") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp install <package-path>");
+            return 1;
+        }
+        return cmdInstall(Args.get(2));
+    }
+    if (cmd == "run") return cmdRun(2, argc);
+    if (cmd == "--help" || cmd == "-h") {
+        cmdHelp();
+        return 0;
+    }
+    // legacy 模式：myp <file.myp> [opts]
+    string src = cmd;
+    if (Str.endsWith(src, ".myp") == 0 || Fs.isFile(src) == 0) {
+        Console.writeLine("Error: unknown command or file not found: " + cmd);
+        cmdHelp();
+        return 1;
+    }
+    string compiler = findCompiler();
+    StringBuilder c = new StringBuilder();
+    c.append(compiler);
+    c.append(" " + src);
+    string stdlib = findStdlib(compiler);
+    if (Str.len(stdlib) > 0) c.append(" --stdlib " + stdlib);
+    for (int i = 2; i < argc; i = i + 1) c.append(" " + Args.get(i));
+    return Process.run(c.toString());
+}
+
+int main() {
+    int code = pmRun();
+    return code;
+}

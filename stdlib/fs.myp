@@ -24,6 +24,8 @@ ffi string myp_fs_list_get(string path, int index);
 ffi string myp_fs_dirname(string path);
 ffi string myp_fs_basename(string path);
 ffi string myp_fs_join(string dir, string file);
+ffi int myp_fs_mkdir_p(string path);
+ffi int myp_fs_remove_recursive(string path);
 
 // ============================================================
 // Fs — 文件系统静态工具
@@ -52,6 +54,16 @@ class Fs {
         // 列出目录内容数量
         int listCount(string path) {
             return myp_fs_list_count(path);
+        }
+
+        // 递归创建目录（mkdir -p）；返回 0 成功
+        int mkdirP(string path) {
+            return myp_fs_mkdir_p(path);
+        }
+
+        // 递归删除文件/目录（rm -rf）；返回 0 成功（不存在视为成功）
+        int removeRecursive(string path) {
+            return myp_fs_remove_recursive(path);
         }
 }
 

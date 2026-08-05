@@ -786,6 +786,46 @@ char* myp_fs_join(const char* dir, const char* file) {
     return r;
 }
 
+// 递归创建目录（mkdir -p）。返回 0 成功，-1 失败。
+int32_t myp_fs_mkdir_p(const char* path) {
+    if (!path || !path[0]) return -1;
+    char* tmp = strdup(path);
+    if (!tmp) return -1;
+    size_t len = strlen(tmp);
+    while (len > 1 && tmp[len-1] == '/') tmp[--len] = '\0';
+    for (char* p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (mkdir(tmp, 0755) != 0 && errno != EEXIST) { free(tmp); return -1; }
+            *p = '/';
+        }
+    }
+    if (mkdir(tmp, 0755) != 0 && errno != EEXIST) { free(tmp); return -1; }
+    free(tmp);
+    return 0;
+}
+
+// 递归删除文件/目录（rm -rf 语义）。返回 0 成功，-1 失败；不存在视为成功。
+int32_t myp_fs_remove_recursive(const char* path) {
+    if (!path || !path[0]) return -1;
+    struct stat st;
+    if (lstat(path, &st) != 0) return (errno == ENOENT) ? 0 : -1;
+    if (S_ISDIR(st.st_mode)) {
+        DIR* dir = opendir(path);
+        if (!dir) return -1;
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+            char* child = myp_fs_join(path, entry->d_name);
+            if (myp_fs_remove_recursive(child) != 0) { closedir(dir); return -1; }
+        }
+        closedir(dir);
+        if (rmdir(path) != 0) return -1;
+        return 0;
+    }
+    return remove(path) == 0 ? 0 : -1;
+}
+
 // ======================
 // Networking (TCP Sockets)
 // ======================
@@ -890,10 +930,14 @@ void myp_net_close(int32_t fd) {
 
 #include <sys/wait.h>
 
-// Run a command via system(). Returns exit code (0 = success).
+// Run a command via system(). Returns the command's real exit code
+// (0 = success); -1 if the shell itself could not be started.
 int32_t myp_process_run(const char* cmd) {
     if (!cmd) return -1;
-    return system(cmd);
+    int status = system(cmd);
+    if (status == -1) return -1;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    return 1;  // 被信号终止等异常情况
 }
 
 // Run a command and capture its stdout output.

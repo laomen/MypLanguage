@@ -233,18 +233,42 @@ else
 fi
 
 # =============================================
-# 第5部分: 总结
+# 第5部分: MYP 包管理器自举测试
+# =============================================
+echo ""
+echo "--- [5/6] MYP 包管理器自举测试 (Self-hosted pkg manager) ---"
+echo ""
+PM_PASS=0
+PM_FAIL=0
+if [ -f "$PROJ_ROOT/tests/test_myp_pm.sh" ]; then
+    pm_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_pm.sh" 2>&1)
+    if echo "$pm_out" | grep -qE "myp-pm PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (tools/myp.myp 自举包管理器)"
+        PM_PASS=1
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$pm_out" | tail -15
+        PM_FAIL=1
+        FAILED_TESTS="$FAILED_TESTS myp_pm(self-hosted)"
+    fi
+else
+    echo "  (no test_myp_pm.sh found)"
+fi
+
+# =============================================
+# 第6部分: 总结
 # =============================================
 echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
 echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
 echo "  无崩溃:   ${NCRASH_PASS} 通过, ${NCRASH_FAIL} 失败"
+echo "  自举包管理: ${PM_PASS} 通过, ${PM_FAIL} 失败"
 echo "  总计:     ${TOTAL_PASS} 通过, ${TOTAL_FAIL} 失败"
 
 if [ $TOTAL_FAIL -gt 0 ]; then

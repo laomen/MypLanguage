@@ -1,6 +1,6 @@
 # MYP 包管理器设计（用 MYP 语言自举）
 
-> 状态：**设计定稿 v0.1**（审评中，待实施）
+> 状态：**v1 已实施（2026-08-05）**——`tools/myp.myp`（init/build/install/run/legacy）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 编译器 `--package-path`（`src/main.cpp` `loadModule`）、现有 Python 版 `myp`（仓库根）。
 > 本文档提出**用 MYP 语言重写包管理器**（自举工具链），作为语言稳定性证明与
@@ -196,3 +196,23 @@ myp build
 - **D3**：fs FFI 命名与语义——`myp_fs_mkdir_p` / `myp_fs_remove_recursive` 是否合适？
 - **D4**：registry 形态——git 仓库 + `index.json` vs 纯 git 子目录（无索引文件）？
 - **D5**：v2 是否补 json 序列化（写 `index.json`/`myp.lock`）vs 统一用 `key: value` 文本格式？
+
+---
+
+## 9. v1 实施记录（2026-08-05）
+
+### 9.1 已交付
+- `tools/myp.myp`（单文件，~400 行）：`init`/`build`/`install`/`run`/legacy + `package.myp` 解析。
+- runtime 补 `myp_fs_mkdir_p` / `myp_fs_remove_recursive`；`stdlib/fs.myp` 加 `Fs.mkdirP`/`Fs.removeRecursive`。
+- `myp_process_run` 改为返回真实退出码（`WEXITSTATUS`，此前 `system()` 原始值致退出码截断）。
+- `tests/test_myp_pm.sh`（9 断言）+ 集成进 `run_tests.sh`（-O0/ASAN 全套 124/124）。
+
+### 9.2 与 Python 版的有意差异
+| 项 | Python 版 | MYP 版 | 说明 |
+|----|-----------|--------|------|
+| init 模板 | `printf(...)` 无 import → **编译失败** | `import env` + `Console` + `int main()` → **可编译可运行** | MYP 版产出可用包（改进） |
+| init 路径打印 | 绝对路径 | 相对路径 | MYP 无 getcwd；功能一致 |
+
+### 9.3 自举发现
+- **语言 bug**：函数返回定长数组共享存储（`Fs.listDir`/`Str.split`），嵌套调用覆写外层数组 → `copyTree` 需快照规避（详见 `next_improvements.md` §九）。
+- **io 约束**：`__myp_io_*` 单一全局句柄，不能同时开两个 File → `copyFile` 分两阶段（先读后写）。
