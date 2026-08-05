@@ -6,7 +6,9 @@
 #include "Type.h"
 
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/DIBuilder.h>
 #include <llvm/IR/DerivedTypes.h>
+#include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/Function.h>
 
 #include <set>
@@ -41,6 +43,7 @@ private:
     std::vector<std::unordered_map<std::string, llvm::Value*>> named_values_;
     std::unordered_map<std::string, llvm::Type*> named_value_types_;
     std::set<llvm::Function*> scope_functions_; // functions with @scope mappings
+    std::unordered_set<std::string> debug_declared_; // names with DWARF declared
 
     // ---- Class struct tracking ----
     // Maps class name → LLVM struct type
@@ -441,11 +444,31 @@ private:
     bool emit_llvm_ = false;
     bool library_mode_ = false;
     bool test_mode_ = false;
+    bool debug_mode_ = false;
+
+    // ---- DWARF debug info (DIBuilder) ----
+    std::unique_ptr<llvm::DIBuilder> dbg_builder_;
+    llvm::DICompileUnit* dbg_cu_ = nullptr;
+    llvm::DIFile* dbg_file_ = nullptr;
+    llvm::DISubprogram* debug_scope_ = nullptr;
+
+    // ---- Debug helpers ----
+    void initDebugInfo(const std::string& filename);
+    llvm::DIType* getDebugType(llvm::Type* ty, unsigned line = 0);
+    void setDebugLoc(const SourceRange& r);
+    void beginFunctionDebug(llvm::Function* func, const std::string& name,
+                            const SourceRange& r);
+    void endFunctionDebug();
+    void emitParamDebug(llvm::Value* alloca, const std::string& name,
+                        llvm::Type* ty, unsigned line, unsigned arg_idx);
+    void emitScopeLocalsDebug();
+    void finalizeDebugInfo();
 
 public:
     void setEmitLLVM(bool v) { emit_llvm_ = v; }
     void setLibraryMode(bool v) { library_mode_ = v; }
     void setTestMode(bool v) { test_mode_ = v; }
+    void setDebugMode(bool v) { debug_mode_ = v; }
     bool saveIR(const std::string& path) const;
 
     // ---- Helper: find struct decl ----

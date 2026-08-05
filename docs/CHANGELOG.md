@@ -27,7 +27,20 @@
 
 ## 编译器版本历史
 
-### v3.1.0（当前）
+### v3.2.0（当前）
+- **DWARF 调试信息（M3-M5）**：`-g/--debug` 生成 gdb 可用调试信息。
+  - M3：编译单元/文件/函数 DISubprogram + 逐语句行号（`break foo.myp:N` 命中）；
+    `main.cpp` 全链路 `-g` 传参（单文件/多文件）。
+  - M4：参数（`createParameterVariable`）+ 局部变量（`popScope` 集中 `dbg.declare`）
+    变量映射（gdb `print a/b/sum/x/y` 正确）。
+  - M5：类型映射（int/long/double/float/bool/char/指针/struct 成员/数组子范围）。
+  - 验证：`tests/test_debug.sh`（gdb 批处理 6 项断言）+ `-g -O0`/`-g -O2` gdb 实测；
+    `-O0`/`-O2` 全套 109/109、ASAN 109/109。
+  - 说明：LLVM 21 已移除 `Type::getPointerElementType`（opaque pointer），
+    指针类型统一映射为 `void*`；类实例显示为指针。
+  - 设计见 `docs/optimization_debugging.md`。
+
+### v3.1.0
 - **IR 优化管线（M1）**：`-O1/-O2/-O3` 真正生效——`writeObjectFile` 用 PassBuilder NewPM
   运行 `buildPerModuleDefaultPipeline`（此前 `-O` 只影响后端指令选择，IR 无优化）。
   修复优化暴露的两个真实 bug：`setjmp` 缺 `returns_twice` 属性、`myp_throw` 误标 `noreturn`

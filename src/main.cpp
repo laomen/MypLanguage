@@ -192,6 +192,7 @@ static bool loadModule(const std::string& module_name,
                                             bool emit_llvm,
                                             bool library_mode,
                                             bool test_mode,
+                                            bool debug,
                                             mylang::DiagnosticEngine& diag) {
     // === Phase 4: Semantic Analysis ===
     mylang::Sema sema(diag);
@@ -210,6 +211,7 @@ static bool loadModule(const std::string& module_name,
     codegen.setEmitLLVM(emit_llvm);
     codegen.setLibraryMode(library_mode);
     codegen.setTestMode(test_mode);
+    codegen.setDebugMode(debug);
     std::string obj_path = codegen.generate(ast, output_fn, opt_level);
     phaseMark("codegen");
 
@@ -240,7 +242,8 @@ static bool loadModule(const std::string& module_name,
                                   int opt_level = 0,
                                   bool trace_enabled = false,
                                   bool emit_llvm = false,
-                                  bool test_mode = false) {
+                                  bool test_mode = false,
+                                  bool debug = false) {
     mylang::SourceManager source_mgr;
     if (!source_mgr.loadFile(filename)) {
         std::cerr << "Error: cannot open file '" << filename << "'\n";
@@ -283,7 +286,7 @@ static bool loadModule(const std::string& module_name,
     }
     phaseMark("imports");
 
-    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, diag);
+    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, debug, diag);
 }
 
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
@@ -461,7 +464,7 @@ static bool loadModule(const std::string& module_name,
     return true;
 }
 
-static const char* MYP_VERSION = "3.1.0";
+static const char* MYP_VERSION = "3.2.0";
 // Language specification version (frozen grammar, see docs/grammar.md).
 // Bump ONLY on breaking syntax/semantics changes (see docs/CHANGELOG.md).
 static const char* MYP_SPEC_VERSION = "1.0";
@@ -556,6 +559,7 @@ static int realMain(int argc, char* argv[]) {
         std::cerr << "  --trace         Enable runtime event tracing\n";
         std::cerr << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
         std::cerr << "  --test          Build and run tests (generate test runner)\n";
+        std::cerr << "  -g, --debug     Emit DWARF debug info (line/var/type)\n";
         std::cerr << "  --version       Show version number\n";
         std::cerr << "  --help, -h      Show this help message\n";
         return 1;
@@ -575,6 +579,7 @@ static int realMain(int argc, char* argv[]) {
     bool shared_lib = false;
     bool static_lib = false;
     bool test_mode = false;
+    bool debug_mode = false;
     std::vector<std::string> filenames;
     int i = 1;
     while (i < argc) {
@@ -594,8 +599,8 @@ static int realMain(int argc, char* argv[]) {
             std::cout << "  --shared        Build shared library (.so)\n";
             std::cout << "  --static        Build static library (.a)\n";
             std::cout << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
-            std::cout << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
             std::cout << "  --test          Build and run tests (generate test runner)\n";
+            std::cout << "  -g, --debug     Emit DWARF debug info (line/var/type)\n";
             std::cout << "  --version       Show version number\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
@@ -617,6 +622,8 @@ static int realMain(int argc, char* argv[]) {
             static_lib = true;
         } else if (arg == "--test") {
             test_mode = true;
+        } else if (arg == "-g" || arg == "--debug") {
+            debug_mode = true;
         } else if (arg == "--emit-llvm") {
             emit_llvm = true;
         } else {
@@ -664,13 +671,13 @@ static int realMain(int argc, char* argv[]) {
         if (filenames.size() > 1) {
             std::cerr << "Warning: --emit-llvm only supported for single file\n";
         }
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, test_mode);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, test_mode, debug_mode);
         return obj.empty() ? 1 : 0;
     }
 
     if (filenames.size() == 1) {
         // Single file: use simple compile + link
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, test_mode);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, test_mode, debug_mode);
         if (obj.empty()) return 1;
         if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
             return 1;
@@ -735,7 +742,7 @@ static int realMain(int argc, char* argv[]) {
     }
 
     // Single sema + codegen pass on merged AST
-    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, library_mode, test_mode, diag);
+    std::string obj_path = doCompile(*merged, filenames[0], opt_level, false, library_mode, test_mode, debug_mode, diag);
     if (obj_path.empty()) return 1;
 
     // Link

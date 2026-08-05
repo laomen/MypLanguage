@@ -1517,6 +1517,14 @@ win.render();                            // 渲染一帧
 # 优化
 ./build/mypc -O2 myapp.myp
 
+# 生成 DWARF 调试信息（配合 gdb 使用）
+./build/mypc -g myapp.myp          # 或 --debug；推荐 -g -O0
+gdb ./myapp.out
+(gdb) break myapp.myp:10           # 按源文件行号下断点
+(gdb) run
+(gdb) print 变量名                  # 查看参数/局部变量
+(gdb) next / step / continue
+
 # 事件追踪
 ./build/mypc --trace myapp.myp
 ./myapp.out 2>trace.log

@@ -229,9 +229,9 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 |---|---|---|
 | **M1** | `-O1/-O2/-O3` PassBuilder 管线 | ✅ 已完成（`writeObjectFile` 加 `buildPerModuleDefaultPipeline`；修复 setjmp `returns_twice` + `myp_throw` 误标 noreturn 两个优化暴露的 bug；`tests/run_tests_O2.sh` -O2 全套 109/109；`MYPC_DUMP_OPT_IR=1` 调试开关）|
 | **M2** | 优化 × 异常/协程兼容专项回归 + 修复 | ✅ 已完成（`tests/exception*`、`tests/coro*` 在 -O2 专项回归全部通过；性能基准：`-O2` 比 `-O0` 至少 45×（45ms→<1ms），结果一致；`-O0`/`-O2` 全套 109/109）|
-| **M3** | `-g` DIBuilder：编译单元/文件/函数/行号 | gdb `break foo.myp:N` 命中 |
-| **M4** | `-g` 局部变量 + 参数（dbg.declare）| gdb `print x` / `info locals` 正确 |
-| **M5** | `-g` 类型细化（class/struct/数组）| `print obj.field` 正确 |
+| **M3** | `-g` DIBuilder：编译单元/文件/函数/行号 | ✅ 已完成（`main.cpp` 加 `-g/--debug` 全链路传参；`CodeGen` 加 `debug_mode_` + DIBuilder；`generateFuncDecl`/`generateClassAction`/`generateStaticAction` 建 DISubprogram + `setSubprogram`；`generateBlock` 逐语句 `SetCurrentDebugLocation`；gdb `break foo.myp:N` 命中验证）|
+| **M4** | `-g` 局部变量 + 参数（dbg.declare）| ✅ 已完成（参数用 `createParameterVariable` + `insertDeclare`；局部变量在 `popScope` 集中 `createAutoVariable` + `insertDeclare`；`debug_declared_` 去重防参数/局部重复；gdb `print a/b/sum/x/y` 正确验证）|
+| **M5** | `-g` 类型细化（class/struct/数组）| ✅ 已完成（`getDebugType(LLVM Type→DIType)`：int/long/double/float/bool/char→DIBasicType；string/类实例→DIDerivedType 指针；struct→DICompositeType + 成员（DataLayout 偏移）；数组→DICompositeType + DISubrange；gdb `print c`（类实例）验证）|
 | **M6** | 自定义 MYP pass（冗余消除 / intrinsic 优化）| `-passes="myp-pass"` 可调用；双级别回归通过 |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。

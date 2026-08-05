@@ -1,5 +1,8 @@
 #include "mylang/CodeGen.h"
 
+#include <llvm/BinaryFormat/Dwarf.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfo.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/Verifier.h>
 #include <llvm/TargetParser/Triple.h>
@@ -51,6 +54,7 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     module_ = std::make_unique<llvm::Module>("myp_module", ctx_);
     current_tu_ = &tu;
+    if (debug_mode_) initDebugInfo(output_fn);
     declareRuntimeFunctions();
     buildStructTypes(tu);
     buildClassStructTypes(tu);
@@ -63,6 +67,8 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
     if (test_mode_) {
         generateTestRunner();
     }
+
+    finalizeDebugInfo();
 
     std::string err_str;
     llvm::raw_string_ostream err_os(err_str);
@@ -85,6 +91,148 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     std::string obj_path = output_fn + ".o";
     return writeObjectFile(obj_path, opt_level) ? obj_path : "";
+}
+
+// ===================== DWARF Debug Info (M3-M5) =====================
+
+void CodeGen::initDebugInfo(const std::string& filename) {
+    dbg_builder_ = std::make_unique<llvm::DIBuilder>(*module_);
+    std::string dir;
+    auto pos = filename.find_last_of('/');
+    if (pos != std::string::npos)
+        dir = filename.substr(0, pos);
+    dbg_file_ = dbg_builder_->createFile(filename, dir);
+    dbg_cu_ = dbg_builder_->createCompileUnit(
+        llvm::dwarf::DW_LANG_C_plus_plus, dbg_file_,
+        "mypc v3.2.0", false, "", 0);
+}
+
+llvm::DIType* CodeGen::getDebugType(llvm::Type* ty, unsigned line) {
+    if (!dbg_builder_ || !ty) return nullptr;
+    if (ty->isIntegerTy(1))
+        return dbg_builder_->createBasicType("bool", 1, llvm::dwarf::DW_ATE_boolean);
+    if (ty->isIntegerTy(8))
+        return dbg_builder_->createBasicType("char", 8, llvm::dwarf::DW_ATE_signed_char);
+    if (ty->isIntegerTy(16))
+        return dbg_builder_->createBasicType("short", 16, llvm::dwarf::DW_ATE_signed);
+    if (ty->isIntegerTy(32))
+        return dbg_builder_->createBasicType("int", 32, llvm::dwarf::DW_ATE_signed);
+    if (ty->isIntegerTy(64))
+        return dbg_builder_->createBasicType("long", 64, llvm::dwarf::DW_ATE_signed);
+    if (ty->isFloatTy())
+        return dbg_builder_->createBasicType("float", 32, llvm::dwarf::DW_ATE_float);
+    if (ty->isDoubleTy())
+        return dbg_builder_->createBasicType("double", 64, llvm::dwarf::DW_ATE_float);
+    if (ty->isPointerTy()) {
+        // LLVM 21 opaque pointers: element type is unavailable.
+        return dbg_builder_->createPointerType(
+            dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned), 64);
+    }
+    if (auto* st = llvm::dyn_cast<llvm::StructType>(ty)) {
+        // DICompositeType with members (offsets from DataLayout)
+        std::vector<llvm::Metadata*> elems;
+        const llvm::StructLayout* sl =
+            module_->getDataLayout().getStructLayout(st);
+        unsigned idx = 0;
+        for (llvm::Type* et : st->elements()) {
+            llvm::DIType* dt = getDebugType(et, line);
+            if (!dt)
+                dt = dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned);
+            elems.push_back(dbg_builder_->createMemberType(
+                dbg_file_, "f" + std::to_string(idx), dbg_file_, line,
+                module_->getDataLayout().getTypeAllocSizeInBits(et),
+                sl->getElementOffsetInBits(idx), 0, llvm::DINode::FlagZero, dt));
+            idx++;
+        }
+        return dbg_builder_->createStructType(
+            dbg_file_, st->getName().str(), dbg_file_, line,
+            module_->getDataLayout().getTypeAllocSizeInBits(st), 0,
+            llvm::DINode::FlagZero, nullptr,
+            dbg_builder_->getOrCreateArray(elems));
+    }
+    if (ty->isArrayTy()) {
+        llvm::DIType* elem = getDebugType(ty->getArrayElementType(), line);
+        if (!elem)
+            elem = dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned);
+        llvm::DINodeArray subs = dbg_builder_->getOrCreateArray({
+            dbg_builder_->getOrCreateSubrange(0, (int64_t)ty->getArrayNumElements())});
+        return dbg_builder_->createArrayType(
+            module_->getDataLayout().getTypeAllocSizeInBits(ty), 0, elem, subs);
+    }
+    return nullptr;
+}
+
+void CodeGen::setDebugLoc(const SourceRange& r) {
+    if (!debug_mode_ || !debug_scope_ || !dbg_builder_) return;
+    uint32_t line = r.begin.line ? r.begin.line : 1;
+    uint32_t col = r.begin.column ? r.begin.column : 1;
+    builder_.SetCurrentDebugLocation(
+        llvm::DILocation::get(ctx_, line, col, debug_scope_));
+}
+
+void CodeGen::beginFunctionDebug(llvm::Function* func, const std::string& name,
+                                 const SourceRange& r) {
+    if (!debug_mode_ || !dbg_builder_ || !func) return;
+    unsigned line = r.begin.line ? r.begin.line : 1;
+    auto* ret_ty = getDebugType(func->getReturnType(), line);
+    if (!ret_ty)
+        ret_ty = dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned);
+    llvm::DISubroutineType* st = dbg_builder_->createSubroutineType(
+        dbg_builder_->getOrCreateTypeArray({ret_ty}));
+    debug_scope_ = dbg_builder_->createFunction(
+        dbg_cu_->getFile(), name, name, dbg_file_, line,
+        st, line, llvm::DINode::FlagPrototyped,
+        llvm::DISubprogram::SPFlagDefinition);
+    func->setSubprogram(debug_scope_);
+    debug_declared_.clear();
+    builder_.SetCurrentDebugLocation(llvm::DILocation::get(
+        ctx_, line, r.begin.column ? r.begin.column : 1, debug_scope_));
+}
+
+void CodeGen::endFunctionDebug() {
+    if (!debug_mode_) return;
+    debug_scope_ = nullptr;
+}
+
+void CodeGen::emitParamDebug(llvm::Value* alloca, const std::string& name,
+                             llvm::Type* ty, unsigned line, unsigned arg_idx) {
+    if (!debug_mode_ || !debug_scope_ || !alloca || !dbg_builder_) return;
+    llvm::DIType* dt = getDebugType(ty, line);
+    if (!dt)
+        dt = dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned);
+    auto* dv = dbg_builder_->createParameterVariable(
+        debug_scope_, name, arg_idx, dbg_file_, line, dt);
+    dbg_builder_->insertDeclare(
+        alloca, dv, dbg_builder_->createExpression(),
+        llvm::DILocation::get(ctx_, line, 1, debug_scope_), builder_.GetInsertBlock());
+    debug_declared_.insert(name);
+}
+
+void CodeGen::emitScopeLocalsDebug() {
+    if (!debug_mode_ || !debug_scope_ || !dbg_builder_) return;
+    if (named_values_.empty()) return;
+    auto& scope = named_values_.back();
+    unsigned line = 1;
+    if (auto loc = builder_.getCurrentDebugLocation()) line = loc->getLine();
+    for (auto& [name, val] : scope) {
+        if (debug_declared_.count(name)) continue;
+        auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(val);
+        if (!alloca) continue;
+        llvm::Type* ty = alloca->getAllocatedType();
+        llvm::DIType* dt = getDebugType(ty, line);
+        if (!dt)
+            dt = dbg_builder_->createBasicType("void", 8, llvm::dwarf::DW_ATE_unsigned);
+        auto* dv = dbg_builder_->createAutoVariable(
+            debug_scope_, name, dbg_file_, line, dt);
+        dbg_builder_->insertDeclare(
+            alloca, dv, dbg_builder_->createExpression(),
+            llvm::DILocation::get(ctx_, line, 1, debug_scope_), builder_.GetInsertBlock());
+        debug_declared_.insert(name);
+    }
+}
+
+void CodeGen::finalizeDebugInfo() {
+    if (dbg_builder_) dbg_builder_->finalize();
 }
 
 // -- Class struct builder --
@@ -323,7 +471,10 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
 
 // -- Symbol table --
 void CodeGen::pushScope() { named_values_.emplace_back(); }
-void CodeGen::popScope() { if (!named_values_.empty()) named_values_.pop_back(); }
+void CodeGen::popScope() {
+    if (debug_mode_) emitScopeLocalsDebug();
+    if (!named_values_.empty()) named_values_.pop_back();
+}
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();
     named_values_.back()[n] = a;
@@ -650,16 +801,23 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
+    if (debug_mode_) beginFunctionDebug(func, fn, action.range);
 
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
     setNamedValue("this", this_a);
+    if (debug_mode_)
+        emitParamDebug(this_a, "this", llvm::PointerType::get(ctx_, 0),
+                       action.range.begin.line ? action.range.begin.line : 1, 0);
 
     for (size_t i = 0; i < action.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(action.params[i].name, a);
+        if (debug_mode_)
+            emitParamDebug(a, action.params[i].name, getLLVMType(pt),
+                           action.range.begin.line ? action.range.begin.line : 1, (unsigned)(i + 1));
         // Record array element type for subscript access
         if (action.params[i].type.isArray() && action.params[i].type.element_type) {
             array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
@@ -684,6 +842,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     current_region_mark_ = nullptr;
     current_is_coro_ = false;
     popScope();
+    if (debug_mode_) endFunctionDebug();
 }
 
 // -- Generate a built-in Coro static method (direct runtime call) --
@@ -769,12 +928,16 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
+    if (debug_mode_) beginFunctionDebug(func, fn, action.range);
 
     for (size_t i = 0; i < action.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i), a);
         setNamedValue(action.params[i].name, a);
+        if (debug_mode_)
+            emitParamDebug(a, action.params[i].name, getLLVMType(pt),
+                           action.range.begin.line ? action.range.begin.line : 1, (unsigned)i);
         // Record array element type for subscript access
         if (action.params[i].type.isArray() && action.params[i].type.element_type) {
             array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
@@ -800,6 +963,7 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     in_region_function_ = false;
     current_region_mark_ = nullptr;
     popScope();
+    if (debug_mode_) endFunctionDebug();
 }
 
 // -- Generate coroutine entry wrapper for an @coro method --
@@ -1078,16 +1242,23 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
+    if (debug_mode_) beginFunctionDebug(func, fn, fn_decl.range);
 
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
     setNamedValue("this", this_a);
+    if (debug_mode_)
+        emitParamDebug(this_a, "this", llvm::PointerType::get(ctx_, 0),
+                       fn_decl.range.begin.line ? fn_decl.range.begin.line : 1, 0);
 
     for (size_t i = 0; i < fn_decl.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(fn_decl.params[i].type);
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), fn_decl.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(fn_decl.params[i].name, a);
+        if (debug_mode_)
+            emitParamDebug(a, fn_decl.params[i].name, getLLVMType(pt),
+                           fn_decl.range.begin.line ? fn_decl.range.begin.line : 1, (unsigned)(i + 1));
         // Record slice element type for slice operations
         if (pt.kind == TypeKind::Slice)
             var_slice_types_[fn_decl.params[i].name] = pt;
@@ -1107,6 +1278,7 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     in_region_function_ = false;
     current_region_mark_ = nullptr;
     popScope();
+    if (debug_mode_) endFunctionDebug();
 }
 
 void CodeGen::generateFuncDecl(const FuncDecl& decl) {
@@ -1143,6 +1315,7 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
+    if (debug_mode_) beginFunctionDebug(func, decl.name, decl.range);
 
     i = 0;
     for (auto& arg : func->args()) {
@@ -1153,6 +1326,9 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
             if (pt.kind == TypeKind::Slice)
                 var_slice_types_[decl.params[i].name] = pt;
             setNamedValue(decl.params[i].name, a);
+            if (debug_mode_)
+                emitParamDebug(a, decl.params[i].name, getLLVMType(pt),
+                               decl.range.begin.line ? decl.range.begin.line : 1, (unsigned)i);
             // Record array element type for subscript access
             if (decl.params[i].type.isArray() && decl.params[i].type.element_type) {
                 array_elem_types_[decl.params[i].name] = getLLVMType(typeNodeToCodegenType(*decl.params[i].type.element_type));
@@ -1198,6 +1374,7 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     if (decl.name == "main") {
         in_main_ = false;
     }
+    if (debug_mode_) endFunctionDebug();
 }
 
 void CodeGen::generateTestRunner() {
@@ -1708,6 +1885,7 @@ void CodeGen::generateBlock(const BlockStmt& s) {
             auto* dead_bb = llvm::BasicBlock::Create(ctx_, "dead", func);
             builder_.SetInsertPoint(dead_bb);
         }
+        if (debug_mode_) setDebugLoc(st->range);
         generateStmt(*st);
     }
     popScope();
