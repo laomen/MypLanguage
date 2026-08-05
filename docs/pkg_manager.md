@@ -278,6 +278,11 @@ myp list              列出锁定依赖
 ### 11.4 验证
 - `tests/test_myp_pm.sh` 扩展 v2 段（add/list/build 自动安装/run/remove，5 断言）→ **14/14**；
   -O0/ASAN 全套 **124/124**；`build/myp` 与 `build-asan/myp` 均端到端可用。
+- **`tests/test_myp_gitee.sh`**（2026-08-05 新增）：远程 registry 端到端测试——
+  默认构建本地 `file://` git 仓库**离线模拟**（CI 安全）；设 `MYP_GITEE_REGISTRY=<url>`
+  切**真实 Gitee**（示例仓库 `tomatosoft_0/myplibtest`）。覆盖 `add`（latest/显式版本）、
+  `list`、`build` 自动安装 + 首装可编译（回归 §11.5）、`update`、`remove`、缓存落盘，
+  离线/真 Gitee 均 **11/11**；已接入 `run_tests.sh` 第 5 节（与 test_myp_pm.sh 并列）。
 
 ### 11.5 修复：build 自动安装首依赖时漏传 `--package-path`
 - **现象**：全新项目（无 `myp_packages/`）`myp build` 能自动安装缺失依赖，但随后编译报

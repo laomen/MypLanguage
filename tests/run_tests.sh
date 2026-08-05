@@ -255,6 +255,22 @@ else
     echo "  (no test_myp_pm.sh found)"
 fi
 
+# 远程 registry 端到端（默认 file:// 离线；MYP_GITEE_REGISTRY 可切真实 Gitee）
+if [ -f "$PROJ_ROOT/tests/test_myp_gitee.sh" ]; then
+    gitee_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_gitee.sh" 2>&1)
+    if echo "$gitee_out" | grep -qE "myp-gitee PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (远程 registry：add/list/build自动安装/update/remove)"
+        PM_PASS=$((PM_PASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$gitee_out" | tail -15
+        PM_FAIL=$((PM_FAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS myp_gitee(registry)"
+    fi
+else
+    echo "  (no test_myp_gitee.sh found)"
+fi
+
 # =============================================
 # 第6部分: MYP 自举格式化器测试
 # =============================================
