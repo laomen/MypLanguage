@@ -134,6 +134,15 @@ private:
     };
     std::unordered_map<std::string, GenericInfo> generic_classes_;
 
+    // ---- Generic function tracking ----
+    struct GenericFuncInfo {
+        int tu_index = -1; // index into current_tu_->functions
+    };
+    std::unordered_map<std::string, GenericFuncInfo> generic_functions_;
+    std::vector<std::string> current_func_type_params_; // type params of current top-level function
+    TypeInfo resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index);
+    TypeNode TypeNodeFromTypeInfo(const TypeInfo& t);
+
 };
 
 } // namespace mylang

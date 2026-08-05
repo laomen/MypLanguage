@@ -615,6 +615,16 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
     } else {
         func->return_type = parseType();
         func->name = parseIdentifier("expected function name");
+        // Generic function type params: foo<T, U>(...)
+        if (match(TokenKind::Less)) {
+            if (check(TokenKind::Identifier)) {
+                func->type_params.push_back(parseIdentifier("expected type parameter name"));
+                while (match(TokenKind::Comma)) {
+                    func->type_params.push_back(parseIdentifier("expected type parameter name"));
+                }
+            }
+            consume(TokenKind::Greater, "expected '>' after generic type parameters");
+        }
     }
 
     consume(TokenKind::LeftParen, "expected '(' after function name");
@@ -1573,6 +1583,33 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
     auto expr = parsePrimary();
 
     while (true) {
+        // Generic call: foo<int>(args) — probe with a diagnostic-free token scan
+        // (parseType can emit spurious errors on `E < energies[mid]` etc. when
+        // the probe fails, so we must not call it during lookahead).
+        if (expr->kind == ExprKind::Identifier && check(TokenKind::Less) &&
+            scanGenericTypeArgs()) {
+            std::vector<TypeNode> targs;
+            advance(); // consume '<'
+            targs.push_back(parseType());
+            while (match(TokenKind::Comma)) {
+                targs.push_back(parseType());
+            }
+            consume(TokenKind::Greater, "expected '>' after generic arguments");
+            std::vector<std::unique_ptr<Expr>> args;
+            consume(TokenKind::LeftParen, "expected '(' after generic arguments");
+            if (!check(TokenKind::RightParen)) {
+                args.push_back(parseExpr());
+                while (match(TokenKind::Comma)) {
+                    args.push_back(parseExpr());
+                }
+            }
+            consume(TokenKind::RightParen, "expected ')' after arguments");
+            auto call = std::make_unique<CallExpr>(
+                std::move(expr), std::move(args), previous().range);
+            call->call_type_args = std::move(targs);
+            expr = std::move(call);
+            continue;
+        }
         if (match(TokenKind::LeftParen)) {
             std::vector<std::unique_ptr<Expr>> args;
             if (!check(TokenKind::RightParen)) {
@@ -1975,6 +2012,59 @@ std::string Parser::parseIdentifier(const std::string& error_msg) {
     }
     diag_.error(peek().range, error_msg);
     return "__error__";
+}
+
+bool Parser::isTypeToken(TokenKind k) const {
+    if (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) return true;
+    if (k == TokenKind::Keyword_void) return true;
+    if (k == TokenKind::Keyword_var) return true;
+    if (k == TokenKind::Identifier) return true;
+    return false;
+}
+
+// Diagnostic-free lookahead for a generic-call arg list: `<Type, ...> (`.
+// Assumes the current token is '<'. Never emits errors — probes must be silent
+// so comparisons like `E < energies[mid]` don't get spurious diagnostics.
+bool Parser::scanGenericTypeArgs() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::Less) return false;
+    i++; // consume '<'
+    if (i >= tokens_.size() || tokens_[i].kind == TokenKind::Greater) return false; // <>()
+    int depth = 1;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::Less) { depth++; i++; continue; }
+        if (k == TokenKind::Greater) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                return i < tokens_.size() && tokens_[i].kind == TokenKind::LeftParen;
+            }
+            i++; continue;
+        }
+        // Tokens that cannot appear inside a MYP type → not a generic call.
+        if (k == TokenKind::LeftParen || k == TokenKind::RightParen ||
+            k == TokenKind::LeftBrace || k == TokenKind::RightBrace ||
+            k == TokenKind::AndAnd || k == TokenKind::OrOr ||
+            k == TokenKind::Equal || k == TokenKind::EqualEqual ||
+            k == TokenKind::NotEqual || k == TokenKind::Semicolon ||
+            k == TokenKind::Colon) {
+            return false;
+        }
+        if (k == TokenKind::LeftBracket) {
+            i++;
+            // Inside []: only an integer or an immediate ']' is a valid type
+            // (`[ident]` is a subscript expression → not a generic call).
+            if (i < tokens_.size() && tokens_[i].kind == TokenKind::IntegerLiteral) i++;
+            else if (i < tokens_.size() && tokens_[i].kind == TokenKind::RightBracket) {}
+            else return false;
+            if (i >= tokens_.size() || tokens_[i].kind != TokenKind::RightBracket) return false;
+            i++;
+            continue;
+        }
+        i++;
+    }
+    return false;
 }
 
 bool Parser::checkType() const {

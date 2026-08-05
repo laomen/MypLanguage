@@ -1,0 +1,7 @@
+// EXPECT ERROR: cannot infer type parameter
+T pick<T>(int x) { return x; }
+
+int main() {
+    int y = pick(5);
+    return y;
+}

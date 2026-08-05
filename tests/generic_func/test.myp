@@ -1,0 +1,30 @@
+// generic_func: 泛型函数（§三-6）——显式类型实参 + 实参推断 + 数组元素推断
+import env;
+
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+T first<T>(T[] arr) { return arr[0]; }
+
+int pmRun() {
+    // 显式类型实参
+    int a = id<int>(5);
+    double c = id<double>(3.5);
+    // 实参推断
+    int b = id(7);
+    int m1 = max2(3, 9);
+    double m2 = max2(1.5, 0.5);
+    // 数组元素推断：T[] 参数 → T = 元素类型
+    int[] xs = new int[2];
+    xs[0] = 10;
+    xs[1] = 20;
+    int f = first(xs);
+    double[] ds = new double[1];
+    ds[0] = 2.5;
+    double df = first(ds);
+    Console.writeString("a=" + a + " b=" + b + " c=" + c);
+    Console.writeString(" m1=" + m1 + " m2=" + m2);
+    Console.writeString(" f=" + f + " df=" + df);
+    Console.writeString("\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }

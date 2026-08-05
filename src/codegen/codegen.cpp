@@ -646,8 +646,28 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         }
     }
 
-    // Generate function bodies
-    for (auto& f : tu.functions) generateFuncDecl(f);
+    // Pre-declare ALL top-level function signatures (including monomorphized
+    // generic instances, which sema appends at the end of tu.functions) so a
+    // body generated earlier in the vector can call one defined later.
+    // Generic templates (type_params, not an instance) are skipped.
+    for (auto& f : tu.functions) {
+        if (!f.type_params.empty() && !f.is_generic_inst) continue;
+        current_type_params_.clear();
+        for (size_t i = 0; i < f.type_params.size() && i < f.inst_type_args.size(); i++)
+            current_type_params_.emplace_back(f.type_params[i], f.inst_type_args[i]);
+        declareFuncSignature(f);
+    }
+
+    // Generate function bodies.
+    // Generic function templates (type_params, not an instance) are skipped —
+    // only monomorphized instances are emitted (like generic classes).
+    for (auto& f : tu.functions) {
+        if (!f.type_params.empty() && !f.is_generic_inst) continue;
+        current_type_params_.clear();
+        for (size_t i = 0; i < f.type_params.size() && i < f.inst_type_args.size(); i++)
+            current_type_params_.emplace_back(f.type_params[i], f.inst_type_args[i]);
+        generateFuncDecl(f);
+    }
     for (auto& c : tu.classes) generateClass(c);
 
     // Generate struct method function bodies (file-level)
@@ -1361,6 +1381,18 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     current_region_mark_ = nullptr;
     popScope();
     if (debug_mode_) endFunctionDebug();
+}
+
+void CodeGen::declareFuncSignature(const FuncDecl& decl) {
+    if (decl.has_proc_macro) return;
+    std::vector<llvm::Type*> pts;
+    for (auto& p : decl.params) {
+        TypeInfo pt = typeNodeToCodegenType(p.type);
+        pts.push_back(getLLVMType(pt));
+    }
+    TypeInfo rt = typeNodeToCodegenType(decl.return_type);
+    auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
+    module_->getOrInsertFunction(decl.name, ft);
 }
 
 void CodeGen::generateFuncDecl(const FuncDecl& decl) {
@@ -4907,6 +4939,34 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    // Generic function call: sema monomorphized the target to a concrete
+    // instance (e.g. id_int_inst); call it directly with arg conversions.
+    if (!e.resolved_call_name.empty()) {
+        auto* fn = module_->getFunction(e.resolved_call_name);
+        if (fn) {
+            std::vector<llvm::Value*> args;
+            for (auto& a : e.args) args.push_back(generateExpr(*a));
+            auto* ft = fn->getFunctionType();
+            for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
+                auto* expected = ft->getParamType(i);
+                if (args[i]->getType() != expected) {
+                    if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
+                        args[i] = builder_.CreateIntCast(args[i], expected, true);
+                    else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                        args[i] = builder_.CreateSIToFP(args[i], expected);
+                    else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                        args[i] = builder_.CreateFPToSI(args[i], expected);
+                    else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
+                        args[i] = builder_.CreateBitCast(args[i], expected);
+                }
+            }
+            bool isv = fn->getReturnType()->isVoidTy();
+            return builder_.CreateCall(fn->getFunctionType(), fn, args,
+                isv ? "" : "calltmp");
+        }
+        diag_.error(e.range, "cannot call generic function '" + e.resolved_call_name + "'");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
     // Struct 函数式构造：StructName(args) → 栈临时 + 构造器，返回 struct 值
     if (!e.resolved_struct_ctor.empty() && !e.resolved_struct_type.empty()) {
         auto* st_ctor = module_->getFunction(e.resolved_struct_ctor);

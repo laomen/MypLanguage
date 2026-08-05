@@ -343,6 +343,7 @@ private:
     TypeInfo typeNodeToCodegenType(const TypeNode& node);
     llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
     const TypeAliasDecl* findAlias(const std::string& name) const;
+    void declareFuncSignature(const FuncDecl& decl);
 
     // ---- Symbol table helpers ----
     void pushScope();

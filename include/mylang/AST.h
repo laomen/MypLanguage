@@ -379,6 +379,8 @@ struct UnaryOpExpr : Expr {
 struct CallExpr : Expr {
     std::unique_ptr<Expr> callee;
     std::vector<std::unique_ptr<Expr>> args;
+    std::vector<TypeNode> call_type_args;   // generic call: foo<int>(...) (explicit)
+    std::string resolved_call_name;          // sema：泛型函数单态化后的 mangled 目标名
     std::string resolved_struct_type;  // sema：函数式构造的 struct 类型 key（空=普通调用）
     std::string resolved_struct_ctor;  // sema：函数式构造的构造器 mangled 名
     CallExpr(std::unique_ptr<Expr> c, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
@@ -654,6 +656,9 @@ struct FuncDecl {
     std::vector<ParamDecl> params;
     std::shared_ptr<BlockStmt> body; // shared: generic insts share the template body
     SourceRange range;
+    std::vector<std::string> type_params;    // generic function template params <T,U>
+    std::vector<TypeNode> inst_type_args;    // monomorphized instance concrete args
+    bool is_generic_inst = false;            // monomorphized instance (not a template)
     bool has_test = false;
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     bool has_coro = false;    // @coro: 顶层协程函数（C 系列）

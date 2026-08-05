@@ -43,8 +43,13 @@ bool Sema::analyze(TranslationUnit& tu) {
     if (diag_.hasErrors()) return false;
 
     // === Pass 2: Type-check function bodies ===
-    for (auto& func : tu.functions) {
-        visitFuncBody(func);
+    // NOTE: visitFuncBody may monomorphize generic functions (appending to
+    // tu.functions → reallocation). Iterate by index, re-fetch per element,
+    // and skip monomorphized instances (their body is shared with the template,
+    // which is type-checked below with type params as placeholders).
+    for (size_t fi = 0; fi < tu.functions.size(); fi++) {
+        if (tu.functions[fi].is_generic_inst) continue;
+        visitFuncBody(tu.functions[fi]);
     }
 
     // Type-check action bodies inside classes.
@@ -264,6 +269,14 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
             GenericInfo info;
             info.tu_index = i;
             generic_classes_[tu.classes[i].name] = info;
+        }
+    }
+    // Register generic function templates
+    for (size_t i = 0; i < tu.functions.size(); i++) {
+        if (!tu.functions[i].type_params.empty()) {
+            GenericFuncInfo info;
+            info.tu_index = i;
+            generic_functions_[tu.functions[i].name] = info;
         }
     }
     // Also register nested structs inside classes
@@ -532,12 +545,18 @@ void Sema::visitFuncDecl(FuncDecl& decl) {
         error(decl.range, "duplicate function name '" + decl.name + "'");
         return;
     }
+    // Generic function template: type params resolve to Int placeholder here
+    // (real substitution happens at monomorphization; template body is checked
+    // with placeholders in visitFuncBody, mirroring generic classes).
+    auto saved_tp = current_func_type_params_;
+    current_func_type_params_ = decl.type_params;
     TypeInfo func_type(TypeKind::Function);
     func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(decl.return_type));
     for (auto& param : decl.params) {
         func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
         func_type.param_is_ref.push_back(param.is_ref);
     }
+    current_func_type_params_ = saved_tp;
     symbol_table_.declare(decl.name, func_type);
 }
 
@@ -552,6 +571,9 @@ void Sema::visitFuncBody(FuncDecl& decl) {
     if (decl.has_proc_macro) return;
 
     symbol_table_.enterScope();
+    // Generic function template body: type params resolve to Int placeholder.
+    auto saved_tp = current_func_type_params_;
+    current_func_type_params_ = decl.type_params;
     current_return_type_ = typeNodeToTypeInfo(decl.return_type);
 
     for (auto& param : decl.params) {
@@ -569,6 +591,7 @@ void Sema::visitFuncBody(FuncDecl& decl) {
 
     in_coro_method_ = false;
     in_main_function_ = false;
+    current_func_type_params_ = saved_tp;
     symbol_table_.leaveScope();
 }
 
@@ -1219,7 +1242,158 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
     return TypeInfo(TypeKind::Void);
 }
 
+// Monomorphize a generic function call (explicit `foo<int>(...)` or inferred
+// `foo(x)`), append the instance to tu.functions, and type-check the call.
+TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
+    if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
+    FuncDecl& templ = current_tu_->functions[tu_index];
+
+    // 1) Visit args to get their types.
+    std::vector<TypeInfo> arg_types;
+    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+
+    // 2) Resolve concrete type args: explicit <T1,...> else infer from args.
+    std::vector<TypeNode> concrete;
+    bool explicit_given = expr.call_type_args.size() > 0;
+    if (explicit_given && expr.call_type_args.size() != templ.type_params.size()) {
+        error(expr.range, "generic function '" + name + "' expects " +
+            std::to_string(templ.type_params.size()) + " type argument(s), got " +
+            std::to_string(expr.call_type_args.size()));
+        return TypeInfo(TypeKind::Void);
+    }
+    for (size_t ti = 0; ti < templ.type_params.size(); ti++) {
+        if (explicit_given) {
+            concrete.push_back(expr.call_type_args[ti]);
+            continue;
+        }
+        // Infer: find the first param whose type is exactly this type param.
+        bool found = false;
+        for (size_t pi = 0; pi < templ.params.size() && pi < arg_types.size(); pi++) {
+            const TypeNode& ptn = templ.params[pi].type;
+            if (ptn.isClass() && ptn.class_name == templ.type_params[ti] &&
+                ptn.type_args.empty() && !ptn.isArray()) {
+                concrete.push_back(TypeNodeFromTypeInfo(arg_types[pi]));
+                found = true;
+                break;
+            }
+            // tp[] — infer from array element type
+            if (ptn.isArray() && ptn.element_type &&
+                ptn.element_type->isClass() &&
+                ptn.element_type->class_name == templ.type_params[ti]) {
+                if (arg_types[pi].kind == TypeKind::Array && arg_types[pi].element_type) {
+                    concrete.push_back(TypeNodeFromTypeInfo(*arg_types[pi].element_type));
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            error(expr.range, "cannot infer type parameter '" + templ.type_params[ti] +
+                "' for generic function '" + name + "' (pass explicit args: " +
+                name + "<...>(...))");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
+
+    // 3) Mangled instance name; reuse if already instantiated.
+    std::string mangled = name;
+    for (auto& c : concrete)
+        mangled += "_" + typeName(typeNodeToTypeInfo(c));
+    mangled += "_inst";
+
+    // 4) Find or clone the instance.
+    const FuncDecl* inst_ptr = nullptr;
+    for (auto& f : current_tu_->functions)
+        if (f.name == mangled) { inst_ptr = &f; break; }
+    if (!inst_ptr) {
+        FuncDecl inst;
+        inst.name = mangled;
+        inst.is_generic_inst = true;
+        inst.type_params = templ.type_params;
+        inst.inst_type_args = concrete;
+        inst.range = templ.range;
+        inst.has_test = templ.has_test;
+        inst.has_region = templ.has_region;
+        inst.has_coro = templ.has_coro;
+        inst.op_symbol = templ.op_symbol;
+        inst.return_type = substituteTypeNode(templ.return_type, templ.type_params, concrete);
+        for (auto& p : templ.params) {
+            ParamDecl np;
+            np.name = p.name;
+            np.type = substituteTypeNode(p.type, templ.type_params, concrete);
+            np.is_ref = p.is_ref;
+            np.range = p.range;
+            inst.params.push_back(std::move(np));
+        }
+        inst.body = templ.body; // shared body (codegen resolves T per-inst)
+        current_tu_->functions.push_back(std::move(inst));
+        inst_ptr = &current_tu_->functions.back();
+    }
+
+    // 5) Type-check args against the instance signature; set the call target.
+    TypeInfo rt = typeNodeToTypeInfo(inst_ptr->return_type);
+    if (expr.args.size() != inst_ptr->params.size()) {
+        error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
+            " arguments, got " + std::to_string(expr.args.size()));
+        return TypeInfo(TypeKind::Void);
+    }
+    for (size_t i = 0; i < expr.args.size(); i++) {
+        TypeInfo pt = typeNodeToTypeInfo(inst_ptr->params[i].type);
+        if (!typesCompatible(pt, arg_types[i])) {
+            error(expr.args[i]->range, "argument " + std::to_string(i + 1) +
+                ": expected '" + typeName(pt) + "', got '" + typeName(arg_types[i]) + "'");
+        }
+    }
+    expr.resolved_call_name = mangled;
+    return rt;
+}
+
+// Build a TypeNode that typeNodeToTypeInfo would resolve back to `t`.
+TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
+    TypeNode n;
+    switch (t.kind) {
+        case TypeKind::Int:    n.basic_type = BuiltinType::Int; break;
+        case TypeKind::Float:  n.basic_type = BuiltinType::Float; break;
+        case TypeKind::Double: n.basic_type = BuiltinType::Double; break;
+        case TypeKind::Bool:   n.basic_type = BuiltinType::Bool; break;
+        case TypeKind::Byte:   n.basic_type = BuiltinType::Byte; break;
+        case TypeKind::Short:  n.basic_type = BuiltinType::Short; break;
+        case TypeKind::Long:   n.basic_type = BuiltinType::Long; break;
+        case TypeKind::Char:   n.basic_type = BuiltinType::Char; break;
+        case TypeKind::String: n.basic_type = BuiltinType::String; break;
+        case TypeKind::UInt:   n.basic_type = BuiltinType::UInt; break;
+        case TypeKind::UByte:  n.basic_type = BuiltinType::UByte; break;
+        case TypeKind::UShort: n.basic_type = BuiltinType::UShort; break;
+        case TypeKind::ULong:  n.basic_type = BuiltinType::ULong; break;
+        case TypeKind::Class:  n.class_name = t.class_name; break;
+        case TypeKind::Interface: n.class_name = t.class_name; break;
+        case TypeKind::Struct: n.class_name = t.class_name; break;
+        case TypeKind::Enum:   n.class_name = t.class_name; break;
+        case TypeKind::Array:
+            if (t.element_type) {
+                n.element_type = std::make_shared<TypeNode>(TypeNodeFromTypeInfo(*t.element_type));
+                n.array_size = t.array_size;
+            }
+            break;
+        case TypeKind::Slice:
+            if (t.element_type) {
+                n.class_name = "slice";
+                n.type_args.push_back(TypeNodeFromTypeInfo(*t.element_type));
+            }
+            break;
+        default: n.basic_type = BuiltinType::Int; break;
+    }
+    return n;
+}
+
 TypeInfo Sema::visitCall(CallExpr& expr) {
+    // Generic function call: foo<int>(...) or foo(x) with inference.
+    if (expr.callee->kind == ExprKind::Identifier) {
+        auto& gid = static_cast<const IdentifierExpr&>(*expr.callee);
+        auto gfit = generic_functions_.find(gid.name);
+        if (gfit != generic_functions_.end())
+            return resolveGenericCall(expr, gid.name, gfit->second.tu_index);
+    }
     // Struct 函数式构造：StructName(args) — 用构造器创建 struct 值
     if (expr.callee->kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(*expr.callee);
@@ -2054,6 +2228,13 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
                         return tp_type;
                     }
                 }
+            }
+        }
+        // Generic function type param placeholder (T → Int, like classes)
+        for (auto& tp : current_func_type_params_) {
+            if (tp == lookup_name) {
+                TypeInfo tp_type(TypeKind::Int);
+                return tp_type;
             }
         }
 

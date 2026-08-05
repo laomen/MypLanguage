@@ -167,10 +167,29 @@ Target           ::= Identifier ('.' Identifier)?          // 实例动作 / 类
                    | 'throttle' '(' IntegerLiteral ')'     // 节流变换器
                    | LambdaExpr                            // λ 变换器（链中节点）
 
-FunctionDecl     ::= FuncAnnot? ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}'
+FunctionDecl     ::= FuncAnnot? ReturnType Identifier GenericParamList? '(' ParamList? ')' '{' Stmt* '}'
 FFIDecl          ::= 'ffi' ReturnType Identifier '(' ParamList? ')' ';'
 EnumDecl         ::= 'enum' Identifier '{' EnumVariant (',' EnumVariant)* '}'
 EnumVariant      ::= Identifier ('(' Type (',' Type)* ')')?
+```
+
+### 3.1 泛型函数（additive，v1.0+）
+
+```
+GenericFunction ::= ReturnType Identifier GenericParamList? '(' ParamList? ')' ...
+```
+
+- **声明**：函数名后可带类型参数 `T foo<T>(T x)`；函数体内 `T` 作类型占位符。
+- **调用**：显式类型实参 `foo<int>(5)` 或实参推断 `foo(5)`（T 从参数类型推出；
+  支持 `T[]` 参数推元素类型）。推断失败须显式给类型实参。
+- **实现**：按类型实参单态化（`foo_int_inst`），与泛型类同构；模板本身不生成运行时代码。
+- **范围**：顶层函数（泛型方法/静态方法暂不支持，见 `next_improvements.md` §三-6）。
+
+```myp
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+int a = id<int>(5);    // 显式
+int b = id(7);         // 推断 → T=int
 ```
 
 ---

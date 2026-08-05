@@ -108,6 +108,8 @@ private:
     std::string parseIdentifier(const std::string& error_msg);
     SourceRange tokenRange(const Token& tok) const;
     bool checkType() const;
+    bool isTypeToken(TokenKind k) const;
+    bool scanGenericTypeArgs();
 
     // Type aliases (`type Name = Type;`) seen so far in this TU, for parse-time
     // substitution (alias must be declared before use).
