@@ -743,6 +743,13 @@ class Worker {
 }
 ```
 
+> **`@startup` is a start signal, not an initializer**: it runs when the instance's
+> thread / event loop **begins operating** (e.g. `@thread` startup, starting timers,
+> firing the first event). Object **initialization** (setting fields / allocating
+> resources / validation) goes through the `constructor:` section — `new ClassName(args)`
+> calls the matching constructor automatically. They are orthogonal and do not replace
+> each other; design: `docs/constructor.md`.
+
 ### Thread Model
 
 ```
@@ -1499,7 +1506,8 @@ int main() {
 | `class` + `action:` + `event:` | Event-driven component (primary architectural unit) |
 | `class` + `function:` | Internal component helper logic |
 | `class` + `static:` | Utility function namespace (e.g. Math) |
+| `constructor:` | Object initialization (auto-called on `new`) |
 | `struct` | Pure data container (pass by value) |
 | Top-level `function` | Pure computation functions |
-| `action:` + `@startup` | Component initialization (auto-called) |
+| `action:` + `@startup` | Start signal / begin operations (runs when thread/event loop starts) |
 | `@thread` | Component needing a dedicated thread |

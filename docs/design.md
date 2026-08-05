@@ -472,7 +472,9 @@ class Sensor {
 | `static:` | 静态方法（无需实例，`import` 即可调用） | `{ }` 定义 |
 | `struct:` | 嵌套结构体 | 字段/方法定义 |
 
-**注解：** Action 前可加 `@startup` 注解，表示实例创建后自动执行；变量声明后可加 `@thread` 注解，表示该实例在独立线程运行。
+**注解：** 类可声明 `constructor:` 节——`new` 创建实例时自动调用（对象初始化）；
+action 前可加 `@startup` 注解——实例的线程/事件循环启动时执行（启动信号/开始操作，
+非初始化器）；变量声明后可加 `@thread` 注解，表示该实例在独立线程运行。
 
 ### 6.3 Interface（接口）
 
@@ -513,31 +515,56 @@ MYP 是**事件驱动组件**语言，访问控制规则服务于解耦目标：
 - 架构完全由 `mapping()` 声明可见
 - 重构时只需修改 mapping，无需搜索属性使用点
 
-### 6.5 继承、多态与 @startup 生命周期
+### 6.5 继承、多态与构造器 / @startup 生命周期
 
-#### @startup 自动初始化
+#### 构造器（`constructor:`）——对象初始化
 
-任何 action 前加 `@startup` 注解，当实例通过 `new` 创建时自动调用：
+`new` 创建实例时**自动调用构造器**（`constructor:` 节，支持重载）：
 
 ```myp
 class Sensor {
+    constructor:
+        Sensor(int i, double t) { id = i; threshold = t; }
     action:
-        @startup void init() { id = 1; threshold = 100; }
         float readValue();
     property:
         int id;
-        float threshold;
+        double threshold;
 }
 
 int main() {
-    Sensor s = new Sensor();  // 自动调用 init()
+    Sensor s = new Sensor(1, 100.0);  // 自动调用构造器 Sensor(int, double)
     return 0;
 }
 ```
 
-- 每个 class 可以有多个 `@startup` 方法
-- `@startup` 是**显式声明**而非构造函数——名称自定义，逻辑可见
-- 对于 `@thread` 实例，`@startup` 在目标线程执行
+- `new ClassName(args)` 绑定匹配的构造器（重载解析，含数字提升）；无构造器时走默认
+  （分配 + property 默认值）。
+- 构造器是**对象初始化**（`new` 时同步执行）：设字段、分配资源、校验。
+- 设计详见 `docs/constructor.md`。
+
+#### `@startup` —— 启动信号（开始操作），不是初始化器
+
+`@startup` 标注"实例开始操作"的入口，在并行/事件驱动代码中当实例的线程/事件循环
+启动时执行（如 `@thread` 启动、启动定时器、触发首事件）：
+
+```myp
+class Worker {
+    action:
+        @startup void run() {          // 启动信号：目标线程启动时执行
+            t.startInterval(2000);     // 开始操作（启动定时器、进入循环...）
+        }
+    property:
+        Timeline t;
+}
+```
+
+- 对 `@thread` 实例：`@startup` 在**目标线程**执行（线程入口）。
+- 语义类比：Java `Runnable.run()` / Actor `preStart`——不是构造器。
+- **构造器管初始化，`@startup` 管开始操作**：两者正交、互不取代。
+
+> 历史注记：早期实现用 `@startup void init(...)` 兼任初始化（`new C(args)` 自动调用）。
+> v3.9 起迁移到 `constructor:`，`@startup` 严格只作启动信号（详见 `docs/constructor.md`）。
 
 #### @thread 线程注解
 

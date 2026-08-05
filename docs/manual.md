@@ -1027,6 +1027,11 @@ class Worker {
 }
 ```
 
+> **`@startup` 是启动信号，不是初始化器**：它在实例的线程/事件循环**开始操作**时执行
+> （如 `@thread` 启动、启动定时器、触发首事件）。对象**初始化**（设字段/分配资源/校验）
+> 走 `constructor:` 节——`new ClassName(args)` 时自动调用构造器。两者正交、互不取代；
+> 设计见 `docs/constructor.md`。
+
 ### 线程模型
 
 ```
@@ -1903,7 +1908,8 @@ int main() {
 | `class` + `action:` + `event:` | 事件驱动组件（主要的架构单元） |
 | `class` + `function:` | 组件内部辅助逻辑 |
 | `class` + `static:` | 工具函数命名空间（如 Math） |
+| `constructor:` | 对象初始化（`new` 时自动调用） |
 | `struct` | 纯数据容器（值传递） |
 | 顶层 `function` | 纯计算函数 |
-| `action:` + `@startup` | 组件初始化（自动调用） |
+| `action:` + `@startup` | 启动信号/开始操作（线程/事件循环启动时执行） |
 | `@thread` | 需要独立线程的组件 |
