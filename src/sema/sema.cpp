@@ -18,6 +18,12 @@ bool Sema::analyze(TranslationUnit& tu) {
     // Register intrinsic functions (for stdlib use)
     registerIntrinsics();
 
+    // === Pass 0: Validate type aliases (catch unknown/recursive even if unused) ===
+    for (auto& ta : tu.type_aliases) {
+        typeNodeToTypeInfo(ta.alias_type);
+    }
+    if (diag_.hasErrors()) return false;
+
     // === Pass 1: Collect all top-level declarations ===
     visitTranslationUnit(tu);
     if (diag_.hasErrors()) return false;
@@ -1843,7 +1849,25 @@ TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
 // Type utilities
 // ==============================
 
-TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
+const TypeAliasDecl* Sema::findAlias(const std::string& name) const {
+    if (!current_tu_) return nullptr;
+    for (auto& a : current_tu_->type_aliases)
+        if (a.name == name) return &a;
+    return nullptr;
+}
+
+TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
+    // Type alias expansion: `type Name = Type;` — resolve Name to its aliased
+    // type (recursively; depth-limited to catch cyclic aliases).
+    if (node.isClass() && node.type_args.empty()) {
+        if (auto* alias = findAlias(node.class_name)) {
+            if (alias_depth > 32) {
+                error(node.range, "recursive type alias '" + node.class_name + "'");
+                return TypeInfo(TypeKind::Int);
+            }
+            return typeNodeToTypeInfo(alias->alias_type, alias_depth + 1);
+        }
+    }
     if (node.isArray()) {
         TypeInfo arr_type(TypeKind::Array);
         arr_type.array_size = node.array_size;

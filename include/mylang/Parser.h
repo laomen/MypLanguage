@@ -6,6 +6,7 @@
 #include "Token.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace mylang {
@@ -45,6 +46,7 @@ private:
     std::unique_ptr<EnumDecl> parseEnumDecl();
     std::unique_ptr<FFIDecl> parseFFIDecl();
     std::unique_ptr<MacroDecl> parseMacroDecl();
+    std::unique_ptr<TypeAliasDecl> parseTypeAlias();
     bool isMacroStmtPlaceholder();
     std::vector<std::string> parseTypeParamList();
     bool parseTypeParamConstraints(ClassDecl& cls);
@@ -106,6 +108,10 @@ private:
     std::string parseIdentifier(const std::string& error_msg);
     SourceRange tokenRange(const Token& tok) const;
     bool checkType() const;
+
+    // Type aliases (`type Name = Type;`) seen so far in this TU, for parse-time
+    // substitution (alias must be declared before use).
+    std::unordered_map<std::string, TypeNode> aliases_;
 
     const std::vector<Token>& tokens_;
     DiagnosticEngine& diag_;

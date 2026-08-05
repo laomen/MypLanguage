@@ -682,6 +682,14 @@ struct MacroDecl {
     SourceRange range;
 };
 
+// Type alias: `type Name = Type;` (contextual keyword — only recognized in
+// top-level `type <Id> = <Type>;` form, so `type` stays usable as identifier).
+struct TypeAliasDecl {
+    std::string name;
+    TypeNode alias_type;
+    SourceRange range;
+};
+
 /// Complete translation unit.
 struct TranslationUnit {
     std::vector<ImportDecl> imports;
@@ -693,6 +701,7 @@ struct TranslationUnit {
     std::vector<EnumDecl> enums;
     std::vector<FFIDecl> ffis;
     std::vector<MacroDecl> macros;       // declarative macros (M3)
+    std::vector<TypeAliasDecl> type_aliases; // type Name = Type; (contextual keyword)
 };
 
 } // namespace mylang

@@ -94,6 +94,26 @@ TypeSuffix    ::= '[' IntegerLiteral? ']'   // 数组；'[]' 动态，'[N]' 定�
 
 > `var` 类型由编译器推断（仅局部变量声明可用）。
 
+### 2.1 类型别名（additive，v1.0+）
+
+```
+TypeAliasDecl  ::= 'type' Identifier '=' Type ';'      // 顶层声明
+```
+
+- **语义**：`type Name = Type;` 为 `Type` 起别名，`Name` 可在后续任何类型位置使用
+  （参数/返回/属性/局部变量/泛型实参/数组元素等），完全等价于 `Type`。
+- **上下文关键字**：`type` 仅在顶层 `type <Id> = <Type> ;` 这一形态被识别为声明；
+  其余位置（属性名/方法名等）仍可作普通标识符（**非破坏性**，不占用保留字）。
+- **先声明后使用**：别名须在同一文件内先声明再使用（同 C 的 typedef）；
+  支持别名套别名；`type A = A;` 递归别名在语义分析报错。
+- **非泛型**：v1 别名不接受类型参数（`type F<T> = ...` 暂不支持）。
+
+```myp
+type MyInt = int;
+type Int3 = int[3];
+type AliasAlias = MyInt;      // 别名套别名
+```
+
 ---
 
 ## 3. 顶层声明

@@ -337,6 +337,11 @@ llvm::Type* CodeGen::getPropertyType(const ClassDecl& cls, const std::string& pn
 }
 
 llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
+    // Type alias expansion: `type Name = Type;`
+    if (!tn.class_name.empty() && tn.type_args.empty()) {
+        if (auto* alias = findAlias(tn.class_name))
+            return typeNodeToLLVMType(alias->alias_type);
+    }
     // Check for array type
     if (tn.isArray() && tn.element_type) {
         auto* elem = typeNodeToLLVMType(*tn.element_type);
@@ -362,6 +367,13 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
 const ClassDecl* CodeGen::findClass(const std::string& n) {
     if (!current_tu_) return nullptr;
     for (auto& c : current_tu_->classes) if (c.name == n) return &c;
+    return nullptr;
+}
+
+const TypeAliasDecl* CodeGen::findAlias(const std::string& name) const {
+    if (!current_tu_) return nullptr;
+    for (auto& a : current_tu_->type_aliases)
+        if (a.name == name) return &a;
     return nullptr;
 }
 
@@ -436,6 +448,11 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
 /// Convert a TypeNode (from AST) to TypeInfo for codegen use.
 /// Properly handles array types (both sized and unsized).
 TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
+    // Type alias expansion: `type Name = Type;`
+    if (!node.class_name.empty() && node.type_args.empty()) {
+        if (auto* alias = findAlias(node.class_name))
+            return typeNodeToCodegenType(alias->alias_type);
+    }
     if (node.isArray() && node.element_type) {
         TypeInfo result(TypeKind::Array);
         result.array_size = node.array_size;

@@ -1,0 +1,4 @@
+// EXPECT ERROR: recursive type alias
+type A = A;
+
+int main() { return 0; }

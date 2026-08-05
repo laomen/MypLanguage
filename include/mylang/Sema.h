@@ -68,7 +68,8 @@ private:
     TypeInfo visitEnumVariant(EnumVariantExpr& expr);
 
     // ---- Type utilities ----
-    TypeInfo typeNodeToTypeInfo(const TypeNode& node);
+    TypeInfo typeNodeToTypeInfo(const TypeNode& node, int alias_depth = 0);
+    const TypeAliasDecl* findAlias(const std::string& name) const;
     TypeNode substituteTypeNode(const TypeNode& node,
                                 const std::vector<std::string>& type_params,
                                 const std::vector<TypeNode>& type_args) const;

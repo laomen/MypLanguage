@@ -85,6 +85,14 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             fb.push_back(std::make_unique<ReturnStmt>(std::move(ie), SourceRange{}));
             fd.body = std::make_unique<BlockStmt>(std::move(fb), SourceRange{});
             tu->functions.push_back(std::move(fd));
+        } else if (check(TokenKind::Identifier) && peek().value == "type" &&
+                   tokens_[current_ + 1].kind == TokenKind::Identifier &&
+                   tokens_[current_ + 2].kind == TokenKind::Equal) {
+            // Type alias (contextual keyword): `type Name = Type;`
+            // Only recognized in this exact top-level shape, so `type` remains
+            // usable as an ordinary identifier elsewhere (additive, non-breaking).
+            auto ta = parseTypeAlias();
+            if (ta) tu->type_aliases.push_back(std::move(*ta));
         } else if (checkType() || check(TokenKind::Keyword_void)) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
@@ -1902,6 +1910,13 @@ TypeNode Parser::parseType() {
     }
     else if (check(TokenKind::Identifier)) {
         node.class_name = parseIdentifier("expected type name");
+        // Type alias substitution: `type Name = Type;` — resolve at parse time
+        // so every downstream path (sema/codegen, incl. basic_type shortcuts)
+        // sees the fully expanded type. Alias must be declared before use.
+        if (node.class_name.size() > 0) {
+            auto it = aliases_.find(node.class_name);
+            if (it != aliases_.end()) node = it->second;
+        }
         // Check for generic type arguments: ClassName<Type>
         if (match(TokenKind::Less)) {
             node.type_args = parseTypeArgList();
@@ -2174,6 +2189,25 @@ std::unique_ptr<EnumDecl> Parser::parseEnumDecl() {
     }
 
     consume(TokenKind::RightBrace, "expected '}' after enum body");
+    return decl;
+}
+
+// ==============================
+// Type alias: "type" Identifier "=" Type ";"
+// (contextual keyword — dispatched from parseProgram only in this exact shape)
+// ==============================
+
+std::unique_ptr<TypeAliasDecl> Parser::parseTypeAlias() {
+    auto decl = std::make_unique<TypeAliasDecl>();
+    decl->range = peek().range;
+
+    advance(); // consume 'type'
+    decl->name = parseIdentifier("expected alias name after 'type'");
+    consume(TokenKind::Equal, "expected '=' in type alias");
+    decl->alias_type = parseType();
+    consume(TokenKind::Semicolon, "expected ';' after type alias");
+    // Register for parse-time substitution (before subsequent decls).
+    aliases_[decl->name] = decl->alias_type;
     return decl;
 }
 

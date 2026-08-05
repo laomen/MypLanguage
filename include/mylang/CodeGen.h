@@ -342,6 +342,7 @@ private:
     /// Convert a TypeNode (from AST) to TypeInfo, preserving array info.
     TypeInfo typeNodeToCodegenType(const TypeNode& node);
     llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
+    const TypeAliasDecl* findAlias(const std::string& name) const;
 
     // ---- Symbol table helpers ----
     void pushScope();

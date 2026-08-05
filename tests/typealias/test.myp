@@ -1,0 +1,39 @@
+// typealias: `type Name = Type;` 类型别名（§三-4）
+// 覆盖：基本类型别名、别名套别名、定长数组别名、参数/返回/属性/局部变量使用别名
+import env;
+
+type MyInt = int;
+type MyString = string;
+type AliasAlias = MyInt;      // 别名套别名
+type Int3 = int[3];           // 定长数组别名
+
+@static class Calc {
+    static:
+        MyInt add(MyInt a, MyInt b) { return a + b; }
+        MyString greet() { return "hi"; }
+}
+
+class Holder {
+    action:
+        int sum() {
+            int t = 0;
+            for (int i = 0; i < 3; i = i + 1) t = t + v[i];
+            return t;
+        }
+    property:
+        Int3 v;
+}
+
+int pmRun() {
+    MyInt x = 3;
+    MyInt y = Calc.add(x, 4);
+    MyString s = Calc.greet();
+    Holder h = new Holder();
+    h.v[0] = 1;
+    h.v[1] = 2;
+    h.v[2] = 3;
+    Console.writeString(s + " y=" + y + " sum=" + h.sum());
+    Console.writeString("\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }
