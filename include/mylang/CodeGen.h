@@ -184,6 +184,7 @@ private:
     // ---- String utilities ----
     llvm::Function* runtime_strlen_ = nullptr;
     llvm::Function* runtime_chr_ = nullptr;
+    llvm::Function* runtime_ord_ = nullptr;
 
     // ---- String to double ----
     llvm::Function* runtime_atof_ = nullptr;

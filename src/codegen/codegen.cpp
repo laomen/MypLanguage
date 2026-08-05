@@ -4579,6 +4579,7 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_term_height_ && e.name == "__myp_term_height") return runtime_term_height_;
         if (runtime_strlen_ && e.name == "__myp_strlen") return runtime_strlen_;
         if (runtime_chr_ && e.name == "__myp_chr") return runtime_chr_;
+        if (runtime_ord_ && e.name == "__myp_ord") return runtime_ord_;
         if (runtime_atof_ && e.name == "__myp_atof") return runtime_atof_;
         // Try class property via 'this'
         if (!current_class_name_.empty() && current_tu_) {
@@ -7159,6 +7160,7 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_strlen_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_strlen", module_.get());
     // Integer to single-char string
     runtime_chr_ = llvm::Function::Create(llvm::FunctionType::get(p, {i32}, false), llvm::Function::ExternalLinkage, "myp_chr", module_.get());
+    runtime_ord_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_ord", module_.get());
 
     // String to double
     runtime_atof_ = llvm::Function::Create(llvm::FunctionType::get(d, {p}, false), llvm::Function::ExternalLinkage, "myp_atof", module_.get());
@@ -7359,6 +7361,7 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_term_height"] = runtime_term_height_;
     intrinsic_map_["__myp_strlen"] = runtime_strlen_;
     intrinsic_map_["__myp_chr"] = runtime_chr_;
+    intrinsic_map_["__myp_ord"] = runtime_ord_;
     intrinsic_map_["__myp_atof"] = runtime_atof_;
     // test intrinsics
     intrinsic_map_["__myp_assert"] = runtime_assert_;

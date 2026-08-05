@@ -1,0 +1,263 @@
+// fmt.myp — 包格式化器：格式化规则（复刻 src/fmt/fmt.cpp format()）
+//
+// 输出 sink：toStdout=1 写 stdout（Console），否则写 out（File，main 已打开）。
+// 关联: docs/self_hosting.md §4（T2）；对拍: src/fmt/fmt.cpp
+
+import env;
+import fs;
+import io;
+import text;
+import "./lexer.myp";
+
+@static class Fmt {
+    static:
+        // 缩进字符串（4 空格/层）
+        string indentStr(int level) {
+            if (level <= 0) return "";
+            string spaces = "";
+            int n = level * 4;
+            for (int i = 0; i < n; i = i + 1) spaces = spaces + " ";
+            return spaces;
+        }
+
+        int isBinaryOp(string k) {
+            if (k == "+" || k == "-" || k == "*" || k == "/" || k == "%"
+                || k == "==" || k == "!=" || k == "<" || k == ">" || k == "<="
+                || k == ">=" || k == "&&" || k == "||" || k == "=" || k == "+="
+                || k == "-=" || k == "*=" || k == "/=" || k == "%=" || k == ".."
+                || k == "->" || k == "=>") return 1;
+            return 0;
+        }
+
+        int isTypeKeyword(string k) {
+            if (k == "byte" || k == "short" || k == "int" || k == "long"
+                || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong"
+                || k == "char" || k == "float" || k == "double" || k == "bool"
+                || k == "string" || k == "void" || k == "var") return 1;
+            return 0;
+        }
+
+        int isKeywordStmt(string k) {
+            if (k == "if" || k == "while" || k == "for" || k == "return"
+                || k == "catch" || k == "throw" || k == "new" || k == "match"
+                || k == "import" || k == "class" || k == "interface"
+                || k == "mapping" || k == "enum" || k == "ffi") return 1;
+            return 0;
+        }
+
+        // 顶层声明（触发空行分隔）
+        int isTopLevel(string k) {
+            if (k == "import" || k == "class" || k == "interface"
+                || k == "mapping" || k == "enum" || k == "ffi") return 1;
+            return 0;
+        }
+
+        // token 文本（复刻 tokenStr）
+        string tokenStr(Tok t) {
+            string k = t.kind();
+            if (k == "id" || k == "int_lit" || k == "float_lit" || k == "bool_lit"
+                || k == "null_lit") return t.value();
+            if (k == "long_lit") return t.value() + "L";   // 复刻 C++：补回后缀
+            if (k == "str") return "\"" + t.value() + "\"";
+            if (k == "char_lit") return "'" + t.value() + "'";
+            return k;
+        }
+
+        // 提取 [from, to) 间注释（跳过空白）
+        // 注意：不能用 stdlib StringBuilder（固定 string[256]，按字符追加会越界），
+        // 复刻 C++ extractComments 用可增长字符串拼接
+        string extractComments(string src, int from, int to) {
+            string result = "";
+            int offset = from;
+            while (offset < to) {
+                string c = Str.substring(src, offset, offset + 1);
+                if (c == " " || c == "\t" || c == "\n" || __myp_ord(c) == 13) {
+                    offset = offset + 1;
+                    continue;
+                }
+                if (c == "/" && offset + 1 < to) {
+                    string n = Str.substring(src, offset + 1, offset + 2);
+                    if (n == "/") {
+                        if (Str.len(result) > 0) result = result + "\n";
+                        result = result + "//";
+                        offset = offset + 2;
+                        while (offset < to && Str.substring(src, offset, offset + 1) != "\n") {
+                            result = result + Str.substring(src, offset, offset + 1);
+                            offset = offset + 1;
+                        }
+                        continue;
+                    } else if (n == "*") {
+                        if (Str.len(result) > 0) result = result + "\n";
+                        result = result + "/*";
+                        offset = offset + 2;
+                        while (offset + 1 < to && !(Str.substring(src, offset, offset + 1) == "*"
+                                && Str.substring(src, offset + 1, offset + 2) == "/")) {
+                            result = result + Str.substring(src, offset, offset + 1);
+                            offset = offset + 1;
+                        }
+                        if (offset + 1 < to) {
+                            result = result + "*/";
+                            offset = offset + 2;
+                        }
+                        continue;
+                    }
+                }
+                break;
+            }
+            return result;
+        }
+
+        // 输出（stdout 或 File）
+        void emit(File out, int toStdout, string s) {
+            if (toStdout != 0) Console.writeString(s);
+            else out.write(s);
+        }
+
+        // 格式化源文件（复刻 format()）
+        void format(string src, File out, int toStdout) {
+            Lexer lex = new Lexer(src);
+            int indent = 0;
+            int lineStart = 1;
+            int firstTopLevel = 1;
+
+            // 首 token 前的注释
+            Tok first = lex.nextToken();
+            if (first.kind() == "eof") {
+                Fmt.emit(out, toStdout, src);
+                Fmt.emit(out, toStdout, "\n");
+                return;
+            }
+            string pre = Fmt.extractComments(src, 0, first.begin());
+            if (Str.len(pre) > 0) {
+                Fmt.emit(out, toStdout, pre);
+                Fmt.emit(out, toStdout, "\n");
+            }
+
+            // 首 token（无间距）
+            Tok cur = first;
+            Fmt.emit(out, toStdout, Fmt.tokenStr(cur));
+            lineStart = 0;
+            if (cur.kind() == "{") indent = indent + 1;
+
+            // 后续 token
+            Tok prev = cur;
+            while (true) {
+                cur = lex.nextToken();
+                if (cur.kind() == "eof") break;
+
+                // token 间注释
+                string comments = Fmt.extractComments(src, prev.end(), cur.begin());
+
+                // 间距判定
+                int needNewline = 0;
+                int needSpace = 0;
+                string ck = cur.kind();
+                string pk = prev.kind();
+
+                if (ck == "}") {
+                    needNewline = 1;
+                } else if (pk == ";") {
+                    needNewline = 1;
+                } else if (pk == "{") {
+                    needNewline = 1;
+                } else if (pk == "}") {
+                    needNewline = 1;
+                } else if (ck == "import" || ck == "class" || ck == "interface"
+                        || ck == "mapping" || ck == "enum" || ck == "ffi") {
+                    needNewline = 1;
+                } else if (ck == "@" && pk != "," && pk != "(") {
+                    needNewline = 1;
+                } else if (pk == ",") {
+                    if (ck != ")") needSpace = 1;
+                } else if (pk == "(") {
+                    needSpace = 0;
+                } else if (ck == ")" || ck == "," || ck == ";") {
+                    needSpace = 0;
+                } else if (ck == "." || pk == ".") {
+                    needSpace = 0;
+                } else if (pk == "@") {
+                    needSpace = 0;
+                } else if (ck == ":") {
+                    needSpace = 0;
+                } else if (Fmt.isBinaryOp(ck) != 0 || Fmt.isBinaryOp(pk) != 0) {
+                    needSpace = 1;
+                } else if (Fmt.isKeywordStmt(pk) != 0) {
+                    if (ck != ";" && ck != ":" && ck != "{") needSpace = 1;
+                } else if (Fmt.isTypeKeyword(pk) != 0) {
+                    if (ck == "id" || ck == "@" || Fmt.isTypeKeyword(ck) != 0) needSpace = 1;
+                } else if (pk == ":") {
+                    needSpace = 1;
+                } else if (ck == "{") {
+                    if (pk != "(") needSpace = 1;
+                } else {
+                    needSpace = 1;
+                }
+
+                // 函数调用：标识符后紧跟 ( 无空格；关键字后跟 ( 有空格
+                if (ck == "(" && pk == "id") needSpace = 0;
+                if (ck == "(" && Fmt.isKeywordStmt(pk) != 0) needSpace = 1;
+
+                // 注释处理
+                if (Str.len(comments) > 0) {
+                    int hasLine = Str.contains(comments, "//");
+                    int hasBlock = Str.contains(comments, "/*");
+                    if (needNewline != 0 && hasBlock != 0) {
+                        if (lineStart == 0) Fmt.emit(out, toStdout, "\n" + Fmt.indentStr(indent));
+                        Fmt.emit(out, toStdout, comments + "\n" + Fmt.indentStr(indent));
+                        lineStart = 1;
+                        needNewline = 0;
+                        needSpace = 0;
+                    } else if (needNewline != 0 && hasLine != 0) {
+                        if (lineStart == 0) Fmt.emit(out, toStdout, "\n" + Fmt.indentStr(indent));
+                        Fmt.emit(out, toStdout, comments);
+                        Fmt.emit(out, toStdout, "\n" + Fmt.indentStr(indent));
+                        lineStart = 1;
+                        needNewline = 0;
+                        needSpace = 0;
+                    } else if (hasLine != 0) {
+                        Fmt.emit(out, toStdout, " " + comments);
+                        Fmt.emit(out, toStdout, "\n" + Fmt.indentStr(indent));
+                        lineStart = 1;
+                        needNewline = 0;
+                        needSpace = 0;
+                    } else if (hasBlock != 0) {
+                        if (lineStart == 0) Fmt.emit(out, toStdout, " ");
+                        Fmt.emit(out, toStdout, comments + " ");
+                        lineStart = 0;
+                        needNewline = 0;
+                        needSpace = 0;
+                    }
+                }
+
+                // 右花括号前缩进减一
+                if (ck == "}") {
+                    if (indent > 0) indent = indent - 1;
+                }
+
+                // 输出间距
+                if (needNewline != 0) {
+                    if (lineStart == 0) {
+                        int blank = Fmt.isTopLevel(ck);
+                        if (blank != 0 && firstTopLevel == 0 && lineStart == 0) Fmt.emit(out, toStdout, "\n");
+                        if (blank != 0) firstTopLevel = 0;
+                        Fmt.emit(out, toStdout, "\n" + Fmt.indentStr(indent));
+                    }
+                    lineStart = 0;
+                } else if (needSpace != 0) {
+                    if (lineStart == 0) Fmt.emit(out, toStdout, " ");
+                    lineStart = 0;
+                }
+
+                // 输出 token
+                Fmt.emit(out, toStdout, Fmt.tokenStr(cur));
+                lineStart = 0;
+
+                // 左花括号后缩进加一
+                if (ck == "{") indent = indent + 1;
+
+                prev = cur;
+            }
+
+            Fmt.emit(out, toStdout, "\n");
+        }
+}

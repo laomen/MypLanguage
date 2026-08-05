@@ -216,6 +216,12 @@ const char* myp_chr(int32_t code) {
     return buf;
 }
 
+// ASCII code of the first character (0 if empty)
+int32_t myp_ord(const char* s) {
+    if (!s || !s[0]) return 0;
+    return (int32_t)(unsigned char)s[0];
+}
+
 // String equality comparison (content, not pointer)
 int32_t myp_str_eq(const char* a, const char* b) {
     if (!a || !b) return a == b ? 1 : 0;

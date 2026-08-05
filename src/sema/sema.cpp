@@ -2450,6 +2450,7 @@ void Sema::registerIntrinsics() {
     // String utilities (for TUI)
     add_intrinsic("__myp_strlen", TypeKind::Int, {TypeKind::String});
     add_intrinsic("__myp_chr", TypeKind::String, {TypeKind::Int});
+    add_intrinsic("__myp_ord", TypeKind::Int, {TypeKind::String});
 
     // Timer intrinsics
     // __myp_timer_create(event_name, delay_ms, interval_ms)

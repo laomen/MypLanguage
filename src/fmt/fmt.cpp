@@ -141,6 +141,9 @@ static std::string tokenStr(const Token& tok) {
         case TokenKind::BoolLiteral:
         case TokenKind::NullLiteral:
             return tok.value;
+        case TokenKind::LongLiteral:
+            // lexer 消费后缀但不写入 value，这里补回 "L"（避免被 keywordString 打成 "?"）
+            return tok.value + "L";
         case TokenKind::StringLiteral:
             return "\"" + tok.value + "\"";
         case TokenKind::CharLiteral:

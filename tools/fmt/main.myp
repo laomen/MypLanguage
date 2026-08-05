@@ -1,0 +1,132 @@
+// main.myp — myp_fmt 自举 CLI（复刻 src/fmt/main.cpp）
+//
+// 用法:
+//   myp_fmt [--check|--stdout|--version|--help] <file.myp> ...
+// 关联: docs/self_hosting.md §4（T2）；对拍: src/fmt/fmt.cpp + main.cpp
+
+import env;
+import args;
+import fs;
+import io;
+import text;
+import "./fmt.myp";
+
+@static class Cli {
+    static:
+        // 读文件为字符串（readLine 重建；丢弃 EOF 空行）
+        string readFile(string path) {
+            string[8192] lines;
+            int cnt = 0;
+            File f = new File();
+            if (f.open(path, "r") != 0) return "";
+            while (f.hasNext() != 0) {
+                string line = f.readLine();
+                if (cnt < 8192) {
+                    lines[cnt] = line;
+                    cnt = cnt + 1;
+                }
+            }
+            f.close();
+            if (cnt > 0 && Str.len(lines[cnt - 1]) == 0) cnt = cnt - 1;
+            // 不用 StringBuilder（固定 string[256]，文件行数多时越界），直接拼接
+            string result = "";
+            for (int i = 0; i < cnt; i = i + 1) {
+                result = result + lines[i];
+                result = result + "\n";
+            }
+            return result;
+        }
+
+        void printHelp() {
+            Console.writeLine("Usage: myp_fmt [options] <file.myp> ...");
+            Console.writeLine("Options:");
+            Console.writeLine("  --check        Only check formatting, don't write");
+            Console.writeLine("  --stdout       Write formatted output to stdout");
+            Console.writeLine("  --version      Show version");
+            Console.writeLine("  --help, -h     Show this help");
+        }
+
+        // CLI 逻辑（main() 只允许实例创建 + mapping）
+        int run() {
+            int argc = Args.count();
+            int checkMode = 0;
+            int toStdout = 0;
+            string[64] files;
+            int nfiles = 0;
+            for (int i = 1; i < argc; i = i + 1) {
+                string a = Args.get(i);
+                if (a == "--check") {
+                    checkMode = 1;
+                } else if (a == "--stdout") {
+                    toStdout = 1;
+                } else if (a == "--version") {
+                    Console.writeLine("MYP Formatter v3.9.0");
+                    return 0;
+                } else if (a == "--help" || a == "-h") {
+                    Cli.printHelp();
+                    return 0;
+                } else {
+                    if (nfiles < 64) {
+                        files[nfiles] = a;
+                        nfiles = nfiles + 1;
+                    }
+                }
+            }
+            if (nfiles == 0) {
+                Console.writeLine("Error: no input files");
+                return 1;
+            }
+            int allOk = 1;
+            for (int i = 0; i < nfiles; i = i + 1) {
+                string fname = files[i];
+                if (Fs.isFile(fname) == 0) {
+                    Console.writeLine("Error: cannot open '" + fname + "'");
+                    allOk = 0;
+                    continue;
+                }
+                string src = Cli.readFile(fname);
+                if (checkMode != 0) {
+                    // 格式化到临时文件后比较
+                    File out = new File();
+                    if (out.open("/tmp/myp_fmt_check.tmp", "w") != 0) {
+                        Console.writeLine("Error: cannot write tmp");
+                        allOk = 0;
+                        continue;
+                    }
+                    Fmt.format(src, out, 0);
+                    out.close();
+                    string formatted = Cli.readFile("/tmp/myp_fmt_check.tmp");
+                    if (formatted != src) {
+                        Console.writeLine(fname + " would be reformatted");
+                        allOk = 0;
+                    }
+                } else if (toStdout != 0) {
+                    Console.writeLine("// " + fname);
+                    File sink = new File();   // stdout 模式不使用
+                    Fmt.format(src, sink, 1);
+                } else {
+                    File out = new File();
+                    if (out.open(fname, "w") != 0) {
+                        Console.writeLine("Error: cannot write '" + fname + "'");
+                        allOk = 0;
+                        continue;
+                    }
+                    Fmt.format(src, out, 0);
+                    out.close();
+                    Console.writeLine("Formatted: " + fname);
+                }
+            }
+            if (allOk != 0) return 0;
+            return 1;
+        }
+}
+
+// CLI 分发（main() 只允许实例创建 + mapping）
+int pmFmt() {
+    return Cli.run();
+}
+
+int main() {
+    int code = pmFmt();
+    return code;
+}

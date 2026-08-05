@@ -89,6 +89,7 @@
 | 1 | **函数返回定长数组共享存储** | 函数返回 `string[N]`（如 `Fs.listDir`/`Str.split`）后，嵌套调用再返回数组会**覆写外层数组内容**（同层连续调用不冲突，跨嵌套边界才触发） | 所有"先取数组再递归"的模式（含 `copyTree`）出错；自举工具已踩中 | ⚠️ 未修（MYP 层快照规避；codegen 修复待定） |
 | 2 | **io 单一全局文件句柄** | `__myp_io_*` 用 `static FILE* myp_io_fp`，不能同时开两个 File | 同时读写两文件互相覆盖（`copyFile` 曾踩中） | ⚠️ 设计约束（文档化；多文件需分时/FFI） |
 | 3 | ~~**`myp_io_read_line` 共享缓冲**~~ | 原 `static char buf[4096]`，多次 readLine 结果存数组全指向最后一行 | 存多行数组出错（lockfile/registry 踩中）；`tests/io` expected 曾编码旧 bug | ✅ **已修复**（每次返回 `myp_strdup` 新分配，EOF 返回空串） |
+| 4 | **stdlib `StringBuilder` 定长越界** | `parts_` 固定 `string[256]` 且 `append` **无边界检查**，超 256 次追加越界写坏堆（段错误） | 长文件/逐字符追加崩溃（T2 格式化器踩中，两个实锤：extractComments 按字符追加、readFile 按行 ×2 追加） | ⚠️ 未修（库层需容量保护；自举工具已改用字符串拼接规避） |
 
 ---
 

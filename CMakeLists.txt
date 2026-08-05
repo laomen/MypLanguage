@@ -175,6 +175,28 @@ add_custom_command(
 )
 add_custom_target(myp_pm ALL DEPENDS ${MYP_PM_OUT})
 
+# ---- Self-hosted Formatter (tools/fmt, built with mypc) ----
+# 用 MYP 语言实现的格式化器（自举工具链 T2）。见 docs/self_hosting.md。
+# 与 C++ myp_fmt 字节级对拍（stdlib/examples/tools/tests/BNCTDoseEngine 218 文件全一致）。
+set(MYP_FMT_SRC ${CMAKE_SOURCE_DIR}/tools/fmt/main.myp)
+set(MYP_FMT_MODULES
+    ${CMAKE_SOURCE_DIR}/tools/fmt/fmt.myp
+    ${CMAKE_SOURCE_DIR}/tools/fmt/lexer.myp
+)
+set(MYP_FMT_OUT ${CMAKE_BINARY_DIR}/myp_fmt2)
+
+add_custom_command(
+    OUTPUT ${MYP_FMT_OUT}
+    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_FMT_SRC} -o ${MYP_FMT_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/fmt/main.myp.o
+    DEPENDS ${MYP_FMT_SRC} ${MYP_FMT_MODULES} mypc
+    COMMENT "Building self-hosted formatter (tools/fmt -> myp_fmt2)"
+    VERBATIM
+)
+add_custom_target(myp_fmt2 ALL DEPENDS ${MYP_FMT_OUT})
+
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)

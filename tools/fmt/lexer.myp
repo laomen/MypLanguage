@@ -1,0 +1,313 @@
+// lexer.myp — 包格式化器：mini 词法器（复刻 C++ Lexer，用于 myp_fmt 自举）
+//
+// 产出 Tok：kind（字符串表示，标点/关键字即 keywordString 字符串；字面量用
+// "id"/"int"/"float"/"str"/"char"/"bool_lit"/"null_lit"/"eof"）+ value + 偏移。
+// 注释被跳过（不产出 token），由格式化器按偏移在 token 间隙提取。
+//
+// 关联: docs/self_hosting.md §4（T2）；对拍: src/fmt/fmt.cpp
+
+import text;
+
+class Tok {
+    action:
+        @constructor Tok() {
+            kind_ = "";
+            value_ = "";
+            begin_ = 0;
+            end_ = 0;
+        }
+        @constructor Tok(string k, string v, int b, int e) {
+            kind_ = k;
+            value_ = v;
+            begin_ = b;
+            end_ = e;
+        }
+        string kind() { return kind_; }
+        string value() { return value_; }
+        int begin() { return begin_; }
+        int end() { return end_; }
+    property:
+        string kind_;
+        string value_;
+        int begin_;
+        int end_;
+}
+
+@static class Lex {
+    static:
+        // 字符分类（基于 __myp_ord）
+        int isAlpha(int c) {
+            if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return 1;
+            return 0;
+        }
+        int isDigit(int c) {
+            if (c >= 48 && c <= 57) return 1;
+            return 0;
+        }
+        int isHex(int c) {
+            if (Lex.isDigit(c) != 0) return 1;
+            if ((c >= 97 && c <= 102) || (c >= 65 && c <= 70)) return 1;
+            return 0;
+        }
+        int isIdentStart(int c) {
+            if (Lex.isAlpha(c) != 0 || c == 95) return 1;
+            return 0;
+        }
+        int isIdentPart(int c) {
+            if (Lex.isIdentStart(c) != 0 || Lex.isDigit(c) != 0) return 1;
+            return 0;
+        }
+        int isSpace(int c) {
+            if (c == 32 || c == 9 || c == 10 || c == 13) return 1;
+            return 0;
+        }
+
+        // 关键字判定（keywordString 中除 true/false/null 外的全部词）
+        int isKeyword(string w) {
+            if (w == "class" || w == "action" || w == "event" || w == "property"
+                || w == "interface" || w == "import" || w == "mapping" || w == "if"
+                || w == "else" || w == "while" || w == "for" || w == "return"
+                || w == "break" || w == "continue" || w == "this" || w == "new"
+                || w == "void" || w == "var" || w == "enum" || w == "match"
+                || w == "ffi" || w == "try" || w == "catch" || w == "finally"
+                || w == "throw" || w == "static" || w == "ref" || w == "operator"
+                || w == "macro" || w == "where" || w == "await" || w == "const"
+                || w == "struct" || w == "function" || w == "byte" || w == "short"
+                || w == "int" || w == "long" || w == "ubyte" || w == "ushort"
+                || w == "uint" || w == "ulong" || w == "char" || w == "float"
+                || w == "double" || w == "bool" || w == "string") return 1;
+            return 0;
+        }
+
+        // 双字符算子（按最长匹配优先）
+        int isTwoOp(string s) {
+            if (s == "==" || s == "!=" || s == "<=" || s == ">=" || s == "&&"
+                || s == "||" || s == "++" || s == "--" || s == "+=" || s == "-="
+                || s == "*=" || s == "/=" || s == "%=" || s == "->" || s == "=>"
+                || s == ".." || s == "::" || s == "|>" || s == "<<" || s == ">>") return 1;
+            return 0;
+        }
+        // 单字符算子/标点
+        int isOneOp(string s) {
+            if (s == "+" || s == "-" || s == "*" || s == "/" || s == "%"
+                || s == "!" || s == "<" || s == ">" || s == "=" || s == "("
+                || s == ")" || s == "{" || s == "}" || s == "[" || s == "]"
+                || s == ";" || s == ":" || s == "?" || s == "," || s == "."
+                || s == "@" || s == "$" || s == "&" || s == "^" || s == "|") return 1;
+            return 0;
+        }
+}
+
+class Lexer {
+    action:
+        @constructor Lexer(string src) {
+            source_ = src;
+            pos_ = 0;
+            len_ = Str.len(src);
+        }
+
+        // 下一个 token（跳过空白与注释）
+        Tok nextToken() {
+            skipWsAndComments();
+            int begin = pos_;
+            if (pos_ >= len_) return new Tok("eof", "", begin, begin);
+            string c = Str.substring(source_, pos_, pos_ + 1);
+            int oc = __myp_ord(c);
+            if (Lex.isIdentStart(oc) != 0) return scanIdent(begin);
+            if (Lex.isDigit(oc) != 0) return scanNumber(begin);
+            if (c == "\"") return scanString(begin);
+            if (c == "'") return scanChar(begin);
+            return scanOperator(begin);
+        }
+
+        // 跳过空白 + 注释（// 行注释、/* */ 块注释）
+        void skipWsAndComments() {
+            while (true) {
+                while (pos_ < len_) {
+                    string c = Str.substring(source_, pos_, pos_ + 1);
+                    if (Lex.isSpace(__myp_ord(c)) != 0) pos_ = pos_ + 1;
+                    else break;
+                }
+                if (pos_ + 1 < len_ && Str.substring(source_, pos_, pos_ + 1) == "/") {
+                    string n = Str.substring(source_, pos_ + 1, pos_ + 2);
+                    if (n == "/") {
+                        pos_ = pos_ + 2;
+                        while (pos_ < len_ && Str.substring(source_, pos_, pos_ + 1) != "\n") pos_ = pos_ + 1;
+                        continue;
+                    } else if (n == "*") {
+                        pos_ = pos_ + 2;
+                        while (pos_ + 1 < len_ && !(Str.substring(source_, pos_, pos_ + 1) == "*"
+                                && Str.substring(source_, pos_ + 1, pos_ + 2) == "/")) pos_ = pos_ + 1;
+                        if (pos_ + 1 < len_) pos_ = pos_ + 2;
+                        continue;
+                    }
+                }
+                break;
+            }
+        }
+
+        Tok scanIdent(int begin) {
+            int start = pos_;
+            while (pos_ < len_) {
+                string c = Str.substring(source_, pos_, pos_ + 1);
+                if (Lex.isIdentPart(__myp_ord(c)) != 0) pos_ = pos_ + 1;
+                else break;
+            }
+            string word = Str.substring(source_, start, pos_);
+            if (word == "true" || word == "false") return new Tok("bool_lit", word, begin, pos_);
+            if (word == "null") return new Tok("null_lit", word, begin, pos_);
+            if (Lex.isKeyword(word) != 0) return new Tok(word, "", begin, pos_);
+            return new Tok("id", word, begin, pos_);
+        }
+
+        Tok scanNumber(int begin) {
+            // 十六进制
+            if (pos_ + 1 < len_ && Str.substring(source_, pos_, pos_ + 1) == "0") {
+                string nx = Str.substring(source_, pos_ + 1, pos_ + 2);
+                if (nx == "x" || nx == "X") {
+                    pos_ = pos_ + 2;
+                    while (pos_ < len_) {
+                        string c = Str.substring(source_, pos_, pos_ + 1);
+                        if (Lex.isHex(__myp_ord(c)) != 0) pos_ = pos_ + 1;
+                        else break;
+                    }
+                    string hkind = "int_lit";
+                    int hvalEnd = pos_;
+                    if (pos_ < len_) {
+                        string hc = Str.substring(source_, pos_, pos_ + 1);
+                        if (hc == "L" || hc == "l") {
+                            hkind = "long_lit";
+                            pos_ = pos_ + 1;   // 消费后缀（与 C++ 一致，不写入 value）
+                        }
+                    }
+                    return new Tok(hkind, Str.substring(source_, begin, hvalEnd), begin, pos_);
+                }
+            }
+            int isFloat = 0;
+            while (pos_ < len_) {
+                string c = Str.substring(source_, pos_, pos_ + 1);
+                if (Lex.isDigit(__myp_ord(c)) != 0) pos_ = pos_ + 1;
+                else break;
+            }
+            if (pos_ < len_ && Str.substring(source_, pos_, pos_ + 1) == ".") {
+                // 仅当 . 后跟数字才算 float（否则是范围/成员访问）
+                if (pos_ + 1 < len_ && Lex.isDigit(__myp_ord(Str.substring(source_, pos_ + 1, pos_ + 2))) != 0) {
+                    isFloat = 1;
+                    pos_ = pos_ + 1;
+                    while (pos_ < len_) {
+                        string c = Str.substring(source_, pos_, pos_ + 1);
+                        if (Lex.isDigit(__myp_ord(c)) != 0) pos_ = pos_ + 1;
+                        else break;
+                    }
+                }
+            }
+            // 指数 e/E
+            if (pos_ < len_) {
+                string c = Str.substring(source_, pos_, pos_ + 1);
+                if (c == "e" || c == "E") {
+                    isFloat = 1;
+                    pos_ = pos_ + 1;
+                    if (pos_ < len_) {
+                        string s2 = Str.substring(source_, pos_, pos_ + 1);
+                        if (s2 == "+" || s2 == "-") pos_ = pos_ + 1;
+                    }
+                    while (pos_ < len_) {
+                        string d = Str.substring(source_, pos_, pos_ + 1);
+                        if (Lex.isDigit(__myp_ord(d)) != 0) pos_ = pos_ + 1;
+                        else break;
+                    }
+                }
+            }
+            string kind = "int_lit";
+            int valEnd = pos_;
+            if (isFloat != 0) kind = "float_lit";
+            else if (pos_ < len_) {
+                string lc = Str.substring(source_, pos_, pos_ + 1);
+                if (lc == "L" || lc == "l") {
+                    kind = "long_lit";
+                    pos_ = pos_ + 1;   // 消费后缀（与 C++ 一致，不写入 value）
+                }
+            }
+            return new Tok(kind, Str.substring(source_, begin, valEnd), begin, pos_);
+        }
+
+        // 字符串：与 C++ Lexer::scanString 一致，转义解码后存入 value
+        Tok scanString(int begin) {
+            pos_ = pos_ + 1;   // 跳过 "
+            string content = "";
+            while (pos_ < len_) {
+                string c = Str.substring(source_, pos_, pos_ + 1);
+                if (c == "\"") break;
+                if (c == "\\") {
+                    pos_ = pos_ + 1;
+                    string e = Str.substring(source_, pos_, pos_ + 1);
+                    int eo = __myp_ord(e);
+                    string d = e;
+                    if (eo == 110) d = "\n";        // \n
+                    else if (eo == 116) d = "\t";   // \t
+                    else if (eo == 92) d = "\\";    // \\
+                    else if (eo == 34) d = "\"";    // \"
+                    else if (eo == 101) d = "\e";   // \e
+                    else if (eo == 48) d = "\0";    // \0
+                    content = content + d;
+                    pos_ = pos_ + 1;
+                    continue;
+                }
+                content = content + c;
+                pos_ = pos_ + 1;
+            }
+            if (pos_ < len_) pos_ = pos_ + 1;   // 跳过收尾 "
+            return new Tok("str", content, begin, pos_);
+        }
+
+        // 字符：与 C++ 一致，转义解码成单字符
+        Tok scanChar(int begin) {
+            pos_ = pos_ + 1;   // 跳过 '
+            string content = "";
+            if (pos_ < len_) {
+                string c = Str.substring(source_, pos_, pos_ + 1);
+                if (c == "\\") {
+                    pos_ = pos_ + 1;
+                    string e = Str.substring(source_, pos_, pos_ + 1);
+                    int eo = __myp_ord(e);
+                    string d = e;
+                    if (eo == 110) d = "\n";        // \n
+                    else if (eo == 116) d = "\t";   // \t
+                    else if (eo == 92) d = "\\";    // \\
+                    else if (eo == 39) d = "'";     // \' 单引号（直接字面量）
+                    else if (eo == 101) d = "\e";   // \e
+                    else if (eo == 48) d = "\0";    // \0
+                    content = content + d;
+                    pos_ = pos_ + 1;
+                } else {
+                    content = content + c;
+                    pos_ = pos_ + 1;
+                }
+            }
+            if (pos_ < len_) pos_ = pos_ + 1;   // 跳过收尾 '
+            return new Tok("char_lit", content, begin, pos_);
+        }
+
+        Tok scanOperator(int begin) {
+            if (pos_ + 1 < len_) {
+                string two = Str.substring(source_, pos_, pos_ + 2);
+                if (Lex.isTwoOp(two) != 0) {
+                    pos_ = pos_ + 2;
+                    return new Tok(two, "", begin, pos_);
+                }
+            }
+            string one = Str.substring(source_, pos_, pos_ + 1);
+            if (Lex.isOneOp(one) != 0) {
+                pos_ = pos_ + 1;
+                return new Tok(one, "", begin, pos_);
+            }
+            // 未知字符：跳过（不产出有效 token 的情况极少）
+            pos_ = pos_ + 1;
+            return new Tok("id", one, begin, pos_);
+        }
+
+    property:
+        string source_;
+        int pos_;
+        int len_;
+}

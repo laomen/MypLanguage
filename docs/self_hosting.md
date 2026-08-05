@@ -1,6 +1,7 @@
 # MYP 自举路线设计（Self-Hosting）
 
-> 状态：**T1 已实施（2026-08-05，v2 模块化 + CMake）**——`tools/pm/*.myp` 包管理器；T2 待实施
+> 状态：**T1 已实施（2026-08-05，v2 模块化 + CMake）**——`tools/pm/*.myp` 包管理器；
+> **T2 已实施（2026-08-05）**——`tools/fmt/{lexer,fmt,main}.myp` 格式化器（自举 `myp_fmt2`）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、`docs/pkg_manager.md`（Tier 1 详细设计）、
 > `docs/design.md` §11"自举"、`docs/next_improvements.md` §六-2。
 > 本文档规划**用 MYP 语言逐步重写自身工具链**：从工具到编译器本体，每层都以
@@ -92,6 +93,33 @@ myp_fmt.myp（或 myp_pkg/fmt.myp）
 **仅 1 个**：`__myp_ord(string) → int`（intrinsic）。其余 `StringBuilder`/`substring`/
 `split`/`repeat`/`args`/`io` 全部现有。
 
+### 4.3b 实施状态（2026-08-05）
+
+**已完成**，模块化为 `tools/fmt/`：
+
+- `lexer.myp` — `class Tok` + `@static class Lex`（字符分类/关键字/算子）+ `class Lexer`
+  （逐 token 扫描，含注释跳过、字符串/char 转义解码、`L` 后缀）。
+- `fmt.myp` — `@static class Fmt`：`extractComments`/`tokenStr`/`format`（状态机复刻
+  `src/fmt/fmt.cpp`：缩进、行内空格、注释、顶层空行、花括号缩进）。
+- `main.myp` — `@static class Cli`：`readFile`（readLine 重建）/`--check`/`--stdout`/
+  `--version`/`--help`/文件模式；入口 `int pmFmt() { return Cli.run(); }`。
+
+**验收结果（全绿）**：
+
+- 字节级对拍：**218 文件 0 差异**（stdlib + examples + tools + tests + BNCTDoseEngine）。
+- 幂等性：50/50 幂等。
+- `--check` 退出码：218/218 与 C++ 一致。
+- 文件模式（in-place）与 C++ 一致；测试见 `tests/test_myp_fmt.sh`，
+  已并入 `run_tests.sh` 第 6 节；CMake 目标 `myp_fmt2`。
+
+**过程中修复的 C++ 参考实现 bug**（`src/fmt/fmt.cpp` + `src/token.cpp`）：
+
+- `tokenStr` 未覆盖 `LongLiteral`/`PipeForward` → 落 `keywordString` 默认输出 `?`（`0L`/`|>`
+  被写坏）。补 `LongLiteral → value+"L"`，并在 `keywordString` 补 `<<`/`>>`/`&`/`^`/`|`/`|>`。
+
+**发现的 stdlib bug**（记录于 `docs/next_improvements.md`）：`StringBuilder` 固定
+`string[256] parts_` 且无边界检查，逐字符/多行追加会越界写坏堆（本工具改用字符串拼接）。
+
 ### 4.4 验收标准（硬指标）
 
 对全部 `stdlib/*.myp`（31 文件）+ `examples/` + `tests/*/test.myp`：
@@ -121,13 +149,13 @@ myp_fmt.myp（或 myp_pkg/fmt.myp）
 
 ## 6. 里程碑
 
-| 阶段 | 交付 | 验收 |
-|------|------|------|
-| **M1** | T1 包管理器（MYP 重写） | 与 Python 版逐命令对拍 |
-| **M2** | `__myp_ord` + T2 lexer + fmt 骨架 | mini lexer 能 tokenize 全 stdlib |
-| **M3** | T2 fmt 全量格式规则 | 全 stdlib 字节级对拍 + 幂等 |
-| **M4**（可选） | T3 viz | AST 文本对拍 |
-| **远期** | T4 LSP、T5 mypc | — |
+| 阶段 | 交付 | 验收 | 状态 |
+|------|------|------|------|
+| **M1** | T1 包管理器（MYP 重写） | 与 Python 版逐命令对拍 | ✅ |
+| **M2** | `__myp_ord` + T2 lexer + fmt 骨架 | mini lexer 能 tokenize 全 stdlib | ✅ |
+| **M3** | T2 fmt 全量格式规则 | 全 stdlib 字节级对拍 + 幂等 | ✅ |
+| **M4**（可选） | T3 viz | AST 文本对拍 | 待实施 |
+| **远期** | T4 LSP、T5 mypc | — | 待实施 |
 
 ---
 

@@ -110,6 +110,12 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::StarEqual:          return "*=";
         case TokenKind::SlashEqual:         return "/=";
         case TokenKind::PercentEqual:       return "%=";
+        case TokenKind::LessLess:           return "<<";
+        case TokenKind::GreaterGreater:     return ">>";
+        case TokenKind::Amp:                return "&";
+        case TokenKind::Caret:              return "^";
+        case TokenKind::Pipe:               return "|";
+        case TokenKind::PipeForward:        return "|>";
         default:                            return "?";
     }
 }
