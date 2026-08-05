@@ -516,18 +516,14 @@ llvm::AllocaInst* CodeGen::createEntryBlockAlloca(llvm::Function* f, llvm::Type*
 void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Create ALL class action function declarations first
     for (auto& cls : tu.classes) {
-        for (auto& action : cls.actions) {
-            if (action.has_constructor) continue;  // 构造器 M2 绑定（含重载 mangling）
+        for (auto& action : cls.actions)
             createClassActionDecl(cls, action);
-        }
         for (auto& action : cls.static_actions)
             createStaticActionDecl(cls, action);
         // Pre-declare function: section methods so cross-calls in the section
         // resolve regardless of declaration order.
-        for (auto& fn : cls.functions) {
-            if (fn.has_constructor) continue;  // 构造器 M2 绑定（含重载 mangling）
+        for (auto& fn : cls.functions)
             createClassFunctionDecl(cls, fn);
-        }
     }
 
     // Create ALL event fire function declarations
@@ -702,7 +698,9 @@ bool CodeGen::isErrorInterface(const std::string& name) {
     return false;
 }
 void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& action) {
-    auto fn = cls.name + "_" + action.name;
+    auto fn = action.has_constructor
+        ? constructorMangledName(cls.name, action.name, action.params)
+        : cls.name + "_" + action.name;
     if (module_->getFunction(fn)) return;
     std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};
     for (auto& p : action.params) {
@@ -732,7 +730,9 @@ void CodeGen::createStaticActionDecl(const ClassDecl& cls, const ActionDecl& act
 // references it (cross-calls in the section were previously order-dependent:
 // a method could only call methods declared earlier in the section).
 void CodeGen::createClassFunctionDecl(const ClassDecl& cls, const FuncDecl& fn) {
-    auto name = cls.name + "_" + fn.name;
+    auto name = fn.has_constructor
+        ? constructorMangledName(cls.name, fn.name, fn.params)
+        : cls.name + "_" + fn.name;
     if (module_->getFunction(name)) return;
     std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};
     for (auto& p : fn.params) {
@@ -757,7 +757,6 @@ void CodeGen::generateClass(const ClassDecl& cls) {
 
     // Generate function: section bodies FIRST so actions can call them
     for (auto& fn : cls.functions) {
-        if (fn.has_constructor) continue;  // 构造器 M2 绑定
         generateClassFunction(cls, fn);
     }
 
@@ -767,10 +766,7 @@ void CodeGen::generateClass(const ClassDecl& cls) {
     }
 
     // Generate all action bodies (including stdlib intrinsics with no body)
-    for (auto& a : cls.actions) {
-        if (a.has_constructor) continue;  // 构造器 M2 绑定
-        generateClassAction(cls, a);
-    }
+    for (auto& a : cls.actions) generateClassAction(cls, a);
 
     // Generate coroutine entry wrappers for @coro methods (after bodies exist)
     for (auto& a : cls.actions) {
@@ -837,7 +833,9 @@ void CodeGen::generateEventFire(const ClassDecl& cls, const EventDecl& ev, int e
 }
 
 void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action) {
-    std::string fn = cls.name + "_" + action.name;
+    std::string fn = action.has_constructor
+        ? constructorMangledName(cls.name, action.name, action.params)
+        : cls.name + "_" + action.name;
     auto* func = module_->getFunction(fn);
     if (!func) return; // declaration not found (shouldn't happen)
 
@@ -1274,7 +1272,9 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
 
 // -- Generate class function: section --
 void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_decl) {
-    std::string fn = cls.name + "_" + fn_decl.name;
+    std::string fn = fn_decl.has_constructor
+        ? constructorMangledName(cls.name, fn_decl.name, fn_decl.params)
+        : cls.name + "_" + fn_decl.name;
     auto* existing = module_->getFunction(fn);
     if (existing) existing->deleteBody();
 
@@ -5877,17 +5877,7 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         cls_name = e.class_name;
         for (auto& ta : e.type_args) {
             cls_name += "_";
-            switch (ta.basic_type) {
-                case BuiltinType::Byte: cls_name += "byte"; break;
-                case BuiltinType::Short: cls_name += "short"; break;
-                case BuiltinType::Int: cls_name += "int"; break;
-                case BuiltinType::Long: cls_name += "long"; break;
-                case BuiltinType::Double: cls_name += "double"; break;
-                case BuiltinType::Float: cls_name += "float"; break;
-                case BuiltinType::Bool: cls_name += "bool"; break;
-                case BuiltinType::String: cls_name += "string"; break;
-                default: cls_name += "unknown"; break;
-            }
+            cls_name += mangleTypeNode(ta);
         }
         cls_name += "_inst";
     }
@@ -5930,6 +5920,37 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 builder_.CreateStore(v, gep);
             }
             break;
+        }
+    }
+
+    // 调用匹配的构造器（sema 已解析；分配→默认值→构造体，构造体可覆写默认值）
+    if (!e.resolved_ctor.empty()) {
+        auto* ctor = module_->getFunction(e.resolved_ctor);
+        if (ctor) {
+            std::vector<llvm::Value*> ctor_args;
+            ctor_args.push_back(obj);
+            auto* ft = ctor->getFunctionType();
+            size_t idx = 1;
+            for (auto& a : e.args) {
+                llvm::Value* v = generateExpr(*a);
+                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致）
+                if (idx < ft->getNumParams()) {
+                    auto* expected = ft->getParamType(idx);
+                    if (v->getType() != expected) {
+                        if (v->getType()->isIntegerTy() && expected->isIntegerTy())
+                            v = builder_.CreateIntCast(v, expected, true);
+                        else if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                            v = builder_.CreateSIToFP(v, expected);
+                        else if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                            v = builder_.CreateFPToSI(v, expected);
+                        else if (v->getType()->isPointerTy() && expected->isPointerTy())
+                            v = builder_.CreateBitCast(v, expected);
+                    }
+                }
+                ctor_args.push_back(v);
+                idx++;
+            }
+            builder_.CreateCall(ctor, ctor_args);
         }
     }
     return obj;

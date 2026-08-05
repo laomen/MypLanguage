@@ -60,6 +60,33 @@ struct TypeNode {
     bool is_inferred = false; // true if declared with 'var'
 };
 
+// 类型 → mangled 名（泛型实例名与构造器重载名共用；sema 与 codegen 必须保持一致）
+inline std::string mangleTypeNode(const TypeNode& t) {
+    if (t.element_type) return mangleTypeNode(*t.element_type) + "_arr";
+    if (!t.class_name.empty()) {
+        std::string s = t.class_name;
+        for (auto& ta : t.type_args) { s += "_"; s += mangleTypeNode(ta); }
+        return s;
+    }
+    switch (t.basic_type) {
+        case BuiltinType::Byte: return "byte";
+        case BuiltinType::Short: return "short";
+        case BuiltinType::Int: return "int";
+        case BuiltinType::Long: return "long";
+        case BuiltinType::UByte: return "ubyte";
+        case BuiltinType::UShort: return "ushort";
+        case BuiltinType::UInt: return "uint";
+        case BuiltinType::ULong: return "ulong";
+        case BuiltinType::Char: return "char";
+        case BuiltinType::Float: return "float";
+        case BuiltinType::Double: return "double";
+        case BuiltinType::Bool: return "bool";
+        case BuiltinType::String: return "string";
+        case BuiltinType::Void: return "void";
+    }
+    return "unknown";
+}
+
 // ---- Declarations ----
 struct ParamDecl {
     std::string name;
@@ -67,6 +94,15 @@ struct ParamDecl {
     bool is_ref = false;
     SourceRange range;
 };
+
+// 构造器 mangled 名：Class_Action_<paramtypes>（重载唯一；sema 与 codegen 共用）
+inline std::string constructorMangledName(const std::string& cls_name,
+                                          const std::string& action_name,
+                                          const std::vector<ParamDecl>& params) {
+    std::string s = cls_name + "_" + action_name;
+    for (auto& p : params) { s += "_"; s += mangleTypeNode(p.type); }
+    return s;
+}
 
 struct VarDecl {
     std::string name;
@@ -365,6 +401,7 @@ struct NewExpr : Expr {
     std::string class_name;
     std::vector<TypeNode> type_args;
     std::vector<std::unique_ptr<Expr>> args;
+    std::string resolved_ctor;  // sema 解析出的匹配构造器 mangled 名（空=无构造器，走 legacy/default）
     NewExpr(std::string cn, std::vector<TypeNode> ta, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
         : Expr(ExprKind::NewExpr, range_), class_name(std::move(cn)), type_args(std::move(ta)), args(std::move(a)) {}
 };

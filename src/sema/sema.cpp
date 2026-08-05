@@ -1559,7 +1559,13 @@ TypeInfo Sema::visitNewExpr(NewExpr& expr) {
         TypeNode tn;
         tn.class_name = expr.class_name;
         tn.type_args = expr.type_args;
-        return typeNodeToTypeInfo(tn);
+        TypeInfo inst_type = typeNodeToTypeInfo(tn);
+        // 在实例类上解析构造器（实例名与 codegen 的 mangling 一致：Box_int_inst）
+        std::string inst_name = expr.class_name;
+        for (auto& ta : expr.type_args) { inst_name += "_"; inst_name += mangleTypeNode(ta); }
+        inst_name += "_inst";
+        resolveNewConstructor(expr, inst_name);
+        return inst_type;
     }
 
     bool found = false;
@@ -1571,9 +1577,65 @@ TypeInfo Sema::visitNewExpr(NewExpr& expr) {
     if (!found)
         error(expr.range, "unknown class '" + expr.class_name + "'");
 
+    resolveNewConstructor(expr, expr.class_name);
+
     TypeInfo result(TypeKind::Class);
     result.class_name = expr.class_name;
     return result;
+}
+
+void Sema::resolveNewConstructor(NewExpr& expr, const std::string& cls_name) {
+    const ClassDecl* cls = nullptr;
+    if (current_tu_) {
+        for (auto& c : current_tu_->classes)
+            if (c.name == cls_name) { cls = &c; break; }
+    }
+    if (!cls) return;
+
+    // 收集构造器候选（action: 与 function: 段）
+    struct Cand { std::string name; const std::vector<ParamDecl>* params; };
+    std::vector<Cand> cands;
+    for (auto& a : cls->actions) if (a.has_constructor) cands.push_back({a.name, &a.params});
+    for (auto& f : cls->functions) if (f.has_constructor) cands.push_back({f.name, &f.params});
+    if (cands.empty()) return;  // 无构造器 → legacy @startup init / 默认
+
+    // 类型检查并收集实参类型（此时才 visit——避免影响无构造器的 legacy 类）
+    std::vector<TypeInfo> arg_types;
+    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+
+    int best = -1;
+    int best_score = 1 << 30;
+    bool ambiguous = false;
+    for (size_t ci = 0; ci < cands.size(); ci++) {
+        auto& params = *cands[ci].params;
+        if (params.size() != arg_types.size()) continue;
+        int promos = 0; bool ok = true;
+        for (size_t i = 0; i < params.size(); i++) {
+            TypeInfo pt = typeNodeToTypeInfo(params[i].type);
+            if (typesCompatible(pt, arg_types[i])) {
+                if (pt.kind != arg_types[i].kind) promos++;
+            } else { ok = false; break; }
+        }
+        if (!ok) continue;
+        if (best < 0 || promos < best_score) { best = (int)ci; best_score = promos; ambiguous = false; }
+        else if (promos == best_score) ambiguous = true;
+    }
+
+    if (best < 0) {
+        std::string argstr;
+        for (size_t i = 0; i < arg_types.size(); i++) {
+            if (i) argstr += ", ";
+            argstr += typeName(arg_types[i]);
+        }
+        error(expr.range, "no matching constructor for '" + cls_name + "(" + argstr + ")'");
+        return;
+    }
+    if (ambiguous) {
+        error(expr.range, "ambiguous constructor call for '" + cls_name + "'");
+        return;
+    }
+    auto& c = cands[best];
+    expr.resolved_ctor = constructorMangledName(cls_name, c.name, *c.params);
 }
 
 TypeInfo Sema::visitNewArrayExpr(NewArrayExpr& expr) {
@@ -1800,6 +1862,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
                 a.body = action.body; // share body
                 a.has_startup = action.has_startup;
                 a.has_test = action.has_test;
+                a.has_constructor = action.has_constructor;
                 a.range = action.range;
                 inst.actions.push_back(std::move(a));
             }
@@ -1852,6 +1915,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
                     f.params.push_back(std::move(p));
                 }
                 f.body = func.body; // share body (codegen resolves T per-inst)
+                f.has_constructor = func.has_constructor;
                 f.range = func.range;
                 inst.functions.push_back(std::move(f));
             }

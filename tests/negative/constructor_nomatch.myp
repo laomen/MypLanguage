@@ -1,0 +1,12 @@
+// 负测试: new 实参无匹配构造器 → 编译报错
+class Bad {
+    action:
+        void Bad(int a) { x = a; }
+    property:
+        int x;
+}
+
+int main() {
+    Bad b = new Bad();   // 错误: 无匹配构造器（0 参数）
+    return 0;
+}

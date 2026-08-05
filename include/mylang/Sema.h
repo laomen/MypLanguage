@@ -57,6 +57,7 @@ private:
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     TypeInfo visitSubscript(SubscriptExpr& expr);
     TypeInfo visitNewExpr(NewExpr& expr);
+    void resolveNewConstructor(NewExpr& expr, const std::string& cls_name);
     TypeInfo visitNewArrayExpr(NewArrayExpr& expr);
     TypeInfo visitThisExpr(ThisExpr& expr);
     TypeInfo visitAssignment(AssignmentExpr& expr);
