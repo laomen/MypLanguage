@@ -248,7 +248,39 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 
 ---
 
-## 7. 参考
+## 8. 后续扩展（还缺少的部分）
+
+### 8.1 DAP 调试协议（VS Code 调试，最高价值）
+
+`-g` 只让 gdb/lldb 可用。MYP 已有 LSP + VS Code 扩展，但**无 DAP**（Debug Adapter Protocol），
+IDE 内无法设断点/单步。规划：
+
+- 新增 DAP 代理（对接 gdb/lldb），实现 VS Code 断点、单步、变量查看。
+- 复用 `-g` 生成的 DWARF；`sourceFile` 映射到 `.myp`。
+- 里程碑：M7（DAP 基础：launch/断点/continue/next）。
+
+### 8.2 质量保障
+
+| 项 | 说明 |
+|---|---|
+| `tests/run_tests_O2.sh` | `-O2` 全套回归脚本（优化管线质量保障）|
+| 性能基准套件 | 编译时间 + 运行性能矩阵（-O0 vs -O2），不止 `coro_bench` 单例 |
+| 自定义 pass 测试框架 | IR 级单元测试（`opt` 风格输入/输出断言）|
+
+### 8.3 进阶优化（低频）
+
+- **PGO**（profile-guided optimization）：profile 反馈优化，MYP 无 profile 采集机制，低频。
+- **编译时间预算**：`-O2` 编译耗时基准，防止优化导致编译显著变慢。
+
+### 8.4 工程
+
+- **manual 用户文档**：`-O`/`-g` 使用说明（`manual.md` 已列 `-O2`，补 `-g` 与调试章节）。
+- **多文件优化说明**：MYP 多文件本就合并成**单模块**编译，天然享受跨文件优化
+  （**无需 LTO**，这是架构优势，文档注明）。
+
+---
+
+## 9. 参考
 
 - LLVM PassBuilder / OptimizationLevel（LLVM 21）
 - LLVM DIBuilder（`llvm/IR/DebugInfo.h`）
