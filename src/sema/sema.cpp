@@ -1,5 +1,6 @@
 #include "mylang/Sema.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace mylang {
@@ -732,7 +733,14 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
         }
         decl_type = visitExpr(*decl.init_expr);
     } else if (decl.init_expr) {
-        auto init_type = visitExpr(*decl.init_expr);
+        TypeInfo init_type;
+        if (decl.init_expr->kind == ExprKind::Lambda && decl_type.kind == TypeKind::Function) {
+            // Contextual typing: lambda assigned to a function-typed var uses
+            // the declared function type (return + param types) as its own.
+            init_type = visitLambda(static_cast<LambdaExpr&>(*decl.init_expr), &decl_type);
+        } else {
+            init_type = visitExpr(*decl.init_expr);
+        }
         // Skip cascading error when init type is unknown (already reported)
         if (init_type.kind != TypeKind::Void && !typesCompatible(decl_type, init_type)) {
             error(decl.range, "cannot initialize variable '" + decl.name +
@@ -1420,7 +1428,14 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     }
 
     for (size_t i = 0; i < expr.args.size(); ++i) {
-        auto arg_type = visitExpr(*expr.args[i]);
+        TypeInfo arg_type;
+        if (expr.args[i]->kind == ExprKind::Lambda &&
+            callee_type.param_types[i].kind == TypeKind::Function) {
+            arg_type = visitLambda(static_cast<LambdaExpr&>(*expr.args[i]),
+                                   &callee_type.param_types[i]);
+        } else {
+            arg_type = visitExpr(*expr.args[i]);
+        }
         if (!typesCompatible(callee_type.param_types[i], arg_type)) {
             error(expr.args[i]->range, "argument " + std::to_string(i + 1) +
                   ": expected '" + typeName(callee_type.param_types[i]) +
@@ -2564,14 +2579,281 @@ void Sema::visitFFI(FFIDecl& decl) {
     symbol_table_.declare(decl.name, ft);
 }
 
-TypeInfo Sema::visitLambda(LambdaExpr& expr) {
+void Sema::collectExprLocals(Expr& e, std::set<std::string>& locals) {
+    switch (e.kind) {
+        case ExprKind::BinaryOp: {
+            auto& b = static_cast<BinaryOpExpr&>(e);
+            collectExprLocals(*b.lhs, locals); collectExprLocals(*b.rhs, locals); break;
+        }
+        case ExprKind::UnaryOp:
+            collectExprLocals(*static_cast<UnaryOpExpr&>(e).operand, locals); break;
+        case ExprKind::Call: {
+            auto& c = static_cast<CallExpr&>(e);
+            collectExprLocals(*c.callee, locals);
+            for (auto& a : c.args) collectExprLocals(*a, locals);
+            break;
+        }
+        case ExprKind::MemberAccess:
+            collectExprLocals(*static_cast<MemberAccessExpr&>(e).object, locals); break;
+        case ExprKind::Subscript: {
+            auto& s = static_cast<SubscriptExpr&>(e);
+            collectExprLocals(*s.array, locals); collectExprLocals(*s.index, locals); break;
+        }
+        case ExprKind::NewExpr:
+            for (auto& a : static_cast<NewExpr&>(e).args) collectExprLocals(*a, locals);
+            break;
+        case ExprKind::NewArrayExpr:
+            for (auto& d : static_cast<NewArrayExpr&>(e).dimensions) collectExprLocals(*d, locals);
+            break;
+        case ExprKind::Assignment: {
+            auto& as = static_cast<AssignmentExpr&>(e);
+            collectExprLocals(*as.target, locals); collectExprLocals(*as.value, locals); break;
+        }
+        case ExprKind::Ternary: {
+            auto& t = static_cast<TernaryExpr&>(e);
+            collectExprLocals(*t.condition, locals); collectExprLocals(*t.true_expr, locals);
+            collectExprLocals(*t.false_expr, locals); break;
+        }
+        case ExprKind::Range: {
+            auto& r = static_cast<RangeExpr&>(e);
+            collectExprLocals(*r.start, locals); collectExprLocals(*r.end, locals); break;
+        }
+        case ExprKind::Lambda: {
+            // Nested lambda: its params/locals belong to the inner scope — skip.
+            break;
+        }
+        case ExprKind::Pipe: {
+            auto& p = static_cast<PipeExpr&>(e);
+            if (p.lhs) collectExprLocals(*p.lhs, locals);
+            if (p.rhs) collectExprLocals(*p.rhs, locals);
+            break;
+        }
+        case ExprKind::Try: {
+            auto& t = static_cast<TryExpr&>(e);
+            if (t.try_expr) collectExprLocals(*t.try_expr, locals);
+            if (t.catch_expr) collectExprLocals(*t.catch_expr, locals);
+            break;
+        }
+        case ExprKind::Await:
+            if (static_cast<AwaitExpr&>(e).operand) collectExprLocals(*static_cast<AwaitExpr&>(e).operand, locals);
+            break;
+        default: break;
+    }
+}
+
+void Sema::collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals) {
+    switch (stmt.kind) {
+        case StmtKind::Block:
+            for (auto& s : static_cast<BlockStmt&>(stmt).statements)
+                if (s) collectLambdaLocals(*s, locals);
+            break;
+        case StmtKind::VarDeclStmt:
+            for (auto& d : static_cast<VarDeclStmt&>(stmt).decls) {
+                locals.insert(d.name);
+                if (d.init_expr) collectExprLocals(*d.init_expr, locals);
+            }
+            break;
+        case StmtKind::ExprStmt:
+            if (static_cast<ExprStmt&>(stmt).expression)
+                collectExprLocals(*static_cast<ExprStmt&>(stmt).expression, locals);
+            break;
+        case StmtKind::IfStmt: {
+            auto& i = static_cast<IfStmt&>(stmt);
+            if (i.condition) collectExprLocals(*i.condition, locals);
+            if (i.then_block) collectLambdaLocals(*i.then_block, locals);
+            if (i.else_block) collectLambdaLocals(*i.else_block, locals);
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto& w = static_cast<WhileStmt&>(stmt);
+            if (w.condition) collectExprLocals(*w.condition, locals);
+            if (w.body) collectLambdaLocals(*w.body, locals);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto& f = static_cast<ForStmt&>(stmt);
+            if (f.init) collectLambdaLocals(*f.init, locals);
+            if (f.condition) collectExprLocals(*f.condition, locals);
+            if (f.step) collectExprLocals(*f.step, locals);
+            if (f.body) collectLambdaLocals(*f.body, locals);
+            break;
+        }
+        case StmtKind::ReturnStmt:
+            if (static_cast<ReturnStmt&>(stmt).value)
+                collectExprLocals(*static_cast<ReturnStmt&>(stmt).value, locals);
+            break;
+        case StmtKind::MatchStmt:
+            for (auto& a : static_cast<MatchStmt&>(stmt).arms) {
+                for (auto& b : a.bindings) locals.insert(b);
+                if (a.body) collectLambdaLocals(*a.body, locals);
+            }
+            break;
+        default: break;
+    }
+}
+
+void Sema::collectExprCaptures(Expr& e, const std::set<std::string>& locals,
+                               const std::vector<std::string>& params,
+                               std::vector<std::string>& out) {
+    switch (e.kind) {
+        case ExprKind::Identifier: {
+            auto& id = static_cast<IdentifierExpr&>(e);
+            if (id.name == "this" || id.name == "true" || id.name == "false") break;
+            if (std::find(params.begin(), params.end(), id.name) != params.end()) break;
+            if (locals.count(id.name)) break;
+            if (symbol_table_.lookup(id.name))
+                if (std::find(out.begin(), out.end(), id.name) == out.end())
+                    out.push_back(id.name);
+            break;
+        }
+        case ExprKind::BinaryOp: {
+            auto& b = static_cast<BinaryOpExpr&>(e);
+            collectExprCaptures(*b.lhs, locals, params, out);
+            collectExprCaptures(*b.rhs, locals, params, out); break;
+        }
+        case ExprKind::UnaryOp:
+            collectExprCaptures(*static_cast<UnaryOpExpr&>(e).operand, locals, params, out); break;
+        case ExprKind::Call: {
+            auto& c = static_cast<CallExpr&>(e);
+            collectExprCaptures(*c.callee, locals, params, out);
+            for (auto& a : c.args) collectExprCaptures(*a, locals, params, out);
+            break;
+        }
+        case ExprKind::MemberAccess:
+            collectExprCaptures(*static_cast<MemberAccessExpr&>(e).object, locals, params, out); break;
+        case ExprKind::Subscript: {
+            auto& s = static_cast<SubscriptExpr&>(e);
+            collectExprCaptures(*s.array, locals, params, out);
+            collectExprCaptures(*s.index, locals, params, out); break;
+        }
+        case ExprKind::NewExpr:
+            for (auto& a : static_cast<NewExpr&>(e).args) collectExprCaptures(*a, locals, params, out);
+            break;
+        case ExprKind::NewArrayExpr:
+            for (auto& d : static_cast<NewArrayExpr&>(e).dimensions) collectExprCaptures(*d, locals, params, out);
+            break;
+        case ExprKind::Assignment: {
+            auto& as = static_cast<AssignmentExpr&>(e);
+            collectExprCaptures(*as.target, locals, params, out);
+            collectExprCaptures(*as.value, locals, params, out); break;
+        }
+        case ExprKind::Ternary: {
+            auto& t = static_cast<TernaryExpr&>(e);
+            collectExprCaptures(*t.condition, locals, params, out);
+            collectExprCaptures(*t.true_expr, locals, params, out);
+            collectExprCaptures(*t.false_expr, locals, params, out); break;
+        }
+        case ExprKind::Range: {
+            auto& r = static_cast<RangeExpr&>(e);
+            collectExprCaptures(*r.start, locals, params, out);
+            collectExprCaptures(*r.end, locals, params, out); break;
+        }
+        case ExprKind::Lambda: {
+            auto& l = static_cast<LambdaExpr&>(e);
+            if (l.body) collectLambdaCaptures(*l.body, locals, params, out);
+            break;
+        }
+        case ExprKind::Pipe: {
+            auto& p = static_cast<PipeExpr&>(e);
+            if (p.lhs) collectExprCaptures(*p.lhs, locals, params, out);
+            if (p.rhs) collectExprCaptures(*p.rhs, locals, params, out);
+            break;
+        }
+        case ExprKind::Try: {
+            auto& t = static_cast<TryExpr&>(e);
+            if (t.try_expr) collectExprCaptures(*t.try_expr, locals, params, out);
+            if (t.catch_expr) collectExprCaptures(*t.catch_expr, locals, params, out);
+            break;
+        }
+        case ExprKind::Await:
+            if (static_cast<AwaitExpr&>(e).operand) collectExprCaptures(*static_cast<AwaitExpr&>(e).operand, locals, params, out);
+            break;
+        default: break;
+    }
+}
+
+void Sema::collectLambdaCaptures(Stmt& stmt, const std::set<std::string>& locals,
+                                 const std::vector<std::string>& params,
+                                 std::vector<std::string>& out) {
+    switch (stmt.kind) {
+        case StmtKind::Block:
+            for (auto& s : static_cast<BlockStmt&>(stmt).statements)
+                if (s) collectLambdaCaptures(*s, locals, params, out);
+            break;
+        case StmtKind::VarDeclStmt:
+            for (auto& d : static_cast<VarDeclStmt&>(stmt).decls)
+                if (d.init_expr) collectExprCaptures(*d.init_expr, locals, params, out);
+            break;
+        case StmtKind::ExprStmt:
+            if (static_cast<ExprStmt&>(stmt).expression)
+                collectExprCaptures(*static_cast<ExprStmt&>(stmt).expression, locals, params, out);
+            break;
+        case StmtKind::IfStmt: {
+            auto& i = static_cast<IfStmt&>(stmt);
+            if (i.condition) collectExprCaptures(*i.condition, locals, params, out);
+            if (i.then_block) collectLambdaCaptures(*i.then_block, locals, params, out);
+            if (i.else_block) collectLambdaCaptures(*i.else_block, locals, params, out);
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto& w = static_cast<WhileStmt&>(stmt);
+            if (w.condition) collectExprCaptures(*w.condition, locals, params, out);
+            if (w.body) collectLambdaCaptures(*w.body, locals, params, out);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto& f = static_cast<ForStmt&>(stmt);
+            if (f.init) collectLambdaCaptures(*f.init, locals, params, out);
+            if (f.condition) collectExprCaptures(*f.condition, locals, params, out);
+            if (f.step) collectExprCaptures(*f.step, locals, params, out);
+            if (f.body) collectLambdaCaptures(*f.body, locals, params, out);
+            break;
+        }
+        case StmtKind::ReturnStmt:
+            if (static_cast<ReturnStmt&>(stmt).value)
+                collectExprCaptures(*static_cast<ReturnStmt&>(stmt).value, locals, params, out);
+            break;
+        case StmtKind::MatchStmt:
+            for (auto& a : static_cast<MatchStmt&>(stmt).arms)
+                if (a.body) collectLambdaCaptures(*a.body, locals, params, out);
+            break;
+        default: break;
+    }
+}
+
+TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     // Create a hidden class: __lambda_N
     std::string cls_name = "__lambda_" + std::to_string(lambda_counter_++);
     expr.hidden_class_name = cls_name;
 
+    // ---- M-FN-2: capture analysis (outer locals referenced in the body) ----
+    std::vector<std::string> params;
+    for (auto& p : expr.params) params.push_back(p.name);
+    std::set<std::string> locals;
+    for (auto& p : expr.params) locals.insert(p.name);
+    if (expr.body) collectLambdaLocals(*expr.body, locals);
+    std::vector<std::string> captures;
+    if (expr.body) collectLambdaCaptures(*expr.body, locals, params, captures);
+
     ClassDecl cls;
     cls.name = cls_name;
     cls.range = expr.range;
+
+    // Capture slots as hidden-class properties: cap_0, cap_1, ...
+    std::vector<TypeNode> cap_types;
+    for (size_t i = 0; i < captures.size(); i++) {
+        auto* sym = symbol_table_.lookup(captures[i]);
+        PropertyDecl prop;
+        std::string slot = "cap_" + std::to_string(i);
+        TypeNode cty = sym ? TypeNodeFromTypeInfo(*sym) : TypeNode();
+        prop.name = slot;
+        prop.type = cty;
+        prop.range = expr.range;
+        cls.properties.push_back(std::move(prop));
+        expr.capture_names.push_back(captures[i]);
+        expr.capture_slots.push_back(slot);
+        cap_types.push_back(cty);
+    }
 
     ActionDecl action;
     action.name = "__call";
@@ -2583,18 +2865,47 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr) {
     action.body = expr.body;
     action.range = expr.range;
 
-    // Infer __call return type from the body (M-FN-1: first `return expr;` in
-    // the lambda's own scope; bare return / none ⇒ void).
-    {
+    // Prepend capture copies to the __call body: `T name = this.cap_i;` so the
+    // original body's references to `name` resolve to the local copy.
+    if (!captures.empty()) {
+        if (auto* block = dynamic_cast<BlockStmt*>(action.body.get())) {
+            std::vector<std::unique_ptr<Stmt>> pre;
+            for (size_t i = 0; i < captures.size(); i++) {
+                VarDecl d;
+                d.name = captures[i];
+                d.type = cap_types[i];
+                d.range = expr.range;
+                auto ma = std::make_unique<MemberAccessExpr>(
+                    std::make_unique<ThisExpr>(expr.range),
+                    "cap_" + std::to_string(i), expr.range);
+                d.init_expr = std::move(ma);
+                std::vector<VarDecl> decls;
+                decls.push_back(std::move(d));
+                auto st = std::make_unique<VarDeclStmt>(std::move(decls), expr.range);
+                pre.push_back(std::move(st));
+            }
+            block->statements.insert(block->statements.begin(),
+                std::make_move_iterator(pre.begin()), std::make_move_iterator(pre.end()));
+        }
+    }
+
+    // Determine __call return type: contextual expected type (M-FN-2, e.g.
+    // `(int) -> int f = (x) => ...` / passed to a `(T)->R` param) takes
+    // priority — this avoids inferring from body expressions that reference
+    // body-local variables (not yet in scope during inference). Otherwise fall
+    // back to inferring from the first `return expr;` (bare return / none ⇒ void).
+    TypeNode ret_ty;
+    if (expected_fn && expected_fn->kind == TypeKind::Function && expected_fn->return_type) {
+        ret_ty = TypeNodeFromTypeInfo(*expected_fn->return_type);
+    } else {
         symbol_table_.enterScope();
         for (auto& p : expr.params)
             symbol_table_.declare(p.name, typeNodeToTypeInfo(p.type));
-        TypeNode ret_ty;
         bool found = false;
         inferLambdaReturn(*expr.body, ret_ty, found);
         symbol_table_.leaveScope();
-        if (found) action.return_type = ret_ty;
     }
+    action.return_type = ret_ty;
     cls.actions.push_back(std::move(action));
 
     // Register class and add to TU

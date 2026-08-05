@@ -5849,6 +5849,26 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
     NewExpr ne(e.hidden_class_name, {}, {}, e.range);
     auto* obj = generateNewExpr(ne);
 
+    // M-FN-2: fill capture slots with the current values of captured outer locals
+    // (by value). obj is the hidden-class instance; store each cap_i = outer value.
+    for (size_t i = 0; i < e.capture_names.size(); i++) {
+        auto* outer = getNamedValue(e.capture_names[i]);
+        if (!outer) continue;
+        unsigned pi = 0;
+        if (!getPropertyIndex(e.hidden_class_name, e.capture_slots[i], pi)) continue;
+        auto* st = getClassStruct(e.hidden_class_name);
+        if (!st) continue;
+        const ClassDecl* hc = nullptr;
+        if (current_tu_) {
+            for (auto& c : current_tu_->classes)
+                if (c.name == e.hidden_class_name) { hc = &c; break; }
+        }
+        auto* pt = hc ? getPropertyType(*hc, e.capture_slots[i]) : llvm::Type::getInt32Ty(ctx_);
+        auto* val = builder_.CreateLoad(pt, outer);
+        auto* gep = builder_.CreateStructGEP(st, obj, pi);
+        builder_.CreateStore(val, gep);
+    }
+
     // Build the first-class function value: fat pointer { closure, call_fn }.
     auto* fp_ty = getFunctionValueType();
     auto* fp = builder_.CreateAlloca(fp_ty);
@@ -6013,10 +6033,14 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                     }
                 }
             } else {
-                // Class property access
+                // Class property access — resolve against the CURRENT class
+                // (this.prop). Must not scan all classes: capture slots named
+                // "cap_i" are shared across lambda hidden classes, so the first
+                // match would be a different lambda's struct.
                 auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
-                if (tp && current_tu_) {
+                if (tp && current_tu_ && !current_class_name_.empty()) {
                     for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
                         unsigned pi;
                         if (getPropertyIndex(cls.name, e.member_name, pi)) {
                             auto* st = getClassStruct(cls.name);

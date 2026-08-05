@@ -1,26 +1,54 @@
-// function: 一等函数/闭包 M-FN-1（函数类型 + 非捕获 lambda 值）——§三-3
-// 覆盖：函数类型变量/参数/返回、lambda 值存/传/返/调用、多参、字符串返回
+// function: 一等函数/闭包（§三-3）——M-FN-1（函数类型+非捕获函数值）+ M-FN-2（按值捕获）
+// 覆盖：存/传/返/调用、多参、字符串返回、字符串捕获、class 引用捕获（浅拷贝共享）、嵌套捕获
 import env;
 
-// 高阶函数：把函数值作参数
+class Counter {
+    action:
+        void set(int v) { v_ = v; }
+        int get() { return v_; }
+    property:
+        int v_;
+}
+
+// 高阶函数：函数值作参数
 int apply2(int v, (int) -> int f) { return f(v); }
 
-// 函数返回函数（非捕获）
-(int) -> int makeF() { return (int x) => { return x + 1; }; }
+// 函数返回函数（捕获参数 n：按值）
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
 
 int pmRun() {
+    // M-FN-1：存/传/返/调用
     (int) -> int f = (int x) => { return x * 3; };
     int a = f(4);                                        // 12
     int b = apply2(7, (int x) => { return x * 2; });     // 14（匿名实参）
     (int) -> int g = f;                                  // 赋值
     int c = g(2);                                        // 6
-    (int) -> int h = makeF();                            // 函数返回函数
-    int d = h(9);                                        // 10
+    (int) -> int h = makeAdder(10);                      // 函数返回函数
+    int d = h(5);                                        // 15
     (int, int) -> int add = (int x, int y) => { return x + y; };
     int e = add(20, 22);                                 // 42（多参）
     (string) -> string shout = (string s) => { return s + "!"; };
     string z = shout("hi");                              // hi!
+    // M-FN-2：字符串捕获
+    string prefix = "pre_";
+    (string) -> string addPrefix = (string s) => { return prefix + s; };
+    string p = addPrefix("x");                           // pre_x
+    // M-FN-2：class 引用捕获（浅拷贝共享对象）
+    Counter cnt = new Counter();
+    cnt.set(10);
+    () -> int readC = () => { return cnt.get(); };
+    int c1 = readC();                                    // 10
+    cnt.set(99);
+    int c2 = readC();                                    // 99（共享）
+    // M-FN-2：嵌套 lambda 捕获外层局部
+    int base = 7;
+    (int) -> int outer = (int x) => {
+        (int) -> int inner = (int y) => { return y + base; };
+        return inner(x);
+    };
+    int n = outer(3);                                    // 10
     Console.writeString("a=" + a + " b=" + b + " c=" + c + " d=" + d + " e=" + e + " z=" + z);
+    Console.writeString(" p=" + p + " c1=" + c1 + " c2=" + c2 + " n=" + n);
     Console.writeString("\n");
     return 0;
 }

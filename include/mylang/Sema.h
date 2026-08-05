@@ -7,6 +7,7 @@
 #include "Type.h"
 
 #include <unordered_map>
+#include <set>
 
 namespace mylang {
 
@@ -73,7 +74,7 @@ private:
     TypeNode substituteTypeNode(const TypeNode& node,
                                 const std::vector<std::string>& type_params,
                                 const std::vector<TypeNode>& type_args) const;
-    TypeInfo visitLambda(LambdaExpr& expr);
+    TypeInfo visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn = nullptr);
     TypeInfo visitPipe(PipeExpr& expr);
     void visitFFI(FFIDecl& decl);
     int lambda_counter_ = 0;
@@ -143,6 +144,14 @@ private:
     TypeInfo resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index);
     TypeNode TypeNodeFromTypeInfo(const TypeInfo& t);
     void inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found);
+    void collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals);
+    void collectExprLocals(Expr& e, std::set<std::string>& locals);
+    void collectLambdaCaptures(Stmt& stmt, const std::set<std::string>& locals,
+                               const std::vector<std::string>& params,
+                               std::vector<std::string>& out);
+    void collectExprCaptures(Expr& e, const std::set<std::string>& locals,
+                             const std::vector<std::string>& params,
+                             std::vector<std::string>& out);
 
 };
 

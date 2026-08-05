@@ -1,6 +1,8 @@
 # MYP 一等函数与闭包设计（First-Class Functions & Closures）
 
-> 状态：**设计稿（2026-08-05）**——待评审拍板后实施
+> 状态：**M-FN-1/M-FN-2 已实施（2026-08-05）**——函数类型 + lambda 一等函数值
+> （fat pointer + tramp）+ **按值闭包捕获**（字符串/class 引用浅拷贝/嵌套）；
+> M-FN-3（stdlib map/filter/reduce + Option.map）待实施
 > 关联：`docs/next_improvements.md` §三-3、`docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，
 > 新增函数类型语法，不改现有语法）、`docs/arc.md`（内存模型：lambda 对象为 class 实例）
 > 决策背景：lambda 语法已在（`(x)=>{}`）但**无函数类型**，无法存储/传递/返回；

@@ -459,6 +459,9 @@ struct LambdaExpr : Expr {
     std::vector<ParamDecl> params;
     std::shared_ptr<Stmt> body;
     std::string hidden_class_name;
+    // M-FN-2 closure capture (by value): outer local names + hidden-class slot names.
+    std::vector<std::string> capture_names;  // outer variable names (ordered)
+    std::vector<std::string> capture_slots;  // hidden class property names ("cap_i")
     LambdaExpr(std::vector<ParamDecl> p, std::shared_ptr<Stmt> b, SourceRange r)
         : Expr(ExprKind::Lambda, r), params(std::move(p)), body(std::move(b)) {}
 };
