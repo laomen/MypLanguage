@@ -844,6 +844,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     current_is_coro_ = action.has_coro;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    // 固定数组栈变量表按函数隔离（否则不同函数同名变量互相污染）
+    stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -971,6 +973,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     current_is_coro_ = false;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    // 固定数组栈变量表按函数隔离
+    stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();

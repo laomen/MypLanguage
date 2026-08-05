@@ -1,0 +1,64 @@
+// main.myp — myp_viz 自举 CLI（复刻 src/myp_viz.cpp）
+//
+// 用法: myp_viz <file.myp>
+// 关联: docs/self_hosting.md §5（T3/M4）；对拍: src/myp_viz.cpp
+import args;
+import env;
+import fs;
+import io;
+import text;
+import "./viz.myp";
+
+@static class Cli {
+    static:
+        // 读文件为字符串（readLine 重建；丢弃 EOF 空行）
+        string readFile(string path) {
+            string[8192] lines;
+            int cnt = 0;
+            File f = new File();
+            if (f.open(path, "r") != 0) return "";
+            while (f.hasNext() != 0) {
+                string line = f.readLine();
+                if (cnt < 8192) {
+                    lines[cnt] = line;
+                    cnt = cnt + 1;
+                }
+            }
+            f.close();
+            if (cnt > 0 && Str.len(lines[cnt - 1]) == 0) cnt = cnt - 1;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < cnt; i = i + 1) {
+                sb.append(lines[i]);
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        int run() {
+            int argc = Args.count();
+            if (argc < 2) {
+                Console.writeLine("Usage: myp_viz <file.myp>");
+                return 1;
+            }
+            string path = Args.get(1);
+            if (Fs.isFile(path) == 0) {
+                Console.writeLine("Error: cannot open '" + path + "'");
+                return 1;
+            }
+            string src = Cli.readFile(path);
+            MappingParser p = new MappingParser();
+            p.parse(src);
+            Console.writeString(p.dot());
+            return 0;
+        }
+}
+
+// CLI 分发（main() 只允许实例创建 + mapping）
+int pmViz() {
+    return Cli.run();
+}
+
+int main() {
+    int code = pmViz();
+    return code;
+}

@@ -5,9 +5,11 @@
 #include "mylang/Parser.h"
 #include "mylang/SourceLocation.h"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 int main(int argc, char* argv[]) {
     if (argc < 2) {
@@ -49,13 +51,18 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Output DOT format
+    // Output DOT format. Nodes are SORTED alphabetically for deterministic
+    // output (std::unordered_set iteration order is hash-bucket specific and
+    // not reproducible across implementations). Edges stay in chain order.
+    std::vector<std::string> sorted_nodes(nodes.begin(), nodes.end());
+    std::sort(sorted_nodes.begin(), sorted_nodes.end());
+
     std::cout << "digraph MYP {\n";
     std::cout << "  rankdir=LR;\n";
     std::cout << "  node [shape=box, style=rounded];\n";
     std::cout << "  edge [color=blue, arrowhead=normal];\n\n";
 
-    for (auto& n : nodes) {
+    for (auto& n : sorted_nodes) {
         std::cout << "  \"" << n << "\";\n";
     }
     std::cout << "\n";

@@ -93,6 +93,7 @@
 | 5 | ~~**`@thread` 协程 stdout 缓冲 bug**~~ | `@startup @thread` 协程里 `Console.write(int)`（`printf("%d\n")`）的换行在**后续大分配/`sb.toString()`** 后丢失或行为不稳（首个 write 的 `\n` 有时消失），且随对象布局扰动而变化 | 协程+输出代码输出不稳定；`tests/text` 原 @thread 版在 StringBuilder 扩容改动后暴露 | ✅ **已修复**（根因：`myp_print` 未 `fflush`，滞留缓冲与退出/stderr 竞态；补上 flush 后一致；`coro_throw` expected 更新为新逻辑序） |
 | 6 | ~~**`\r`/`\'` 字符串转义缺失**~~ | 字符串字面量不支持 `\r`（需 `__myp_ord(c)==13` 绕）与 `\'` | 转义表不完整；格式化器需 `__myp_chr` 生成 CR | ✅ **已修复**（C++ lexer scanString/scanChar 补 `\r`/`\'`；MYP 自举 lexer 同步） |
 | 7 | ~~**格式化器解码字符串转义**~~ | `tokenStr` 直接回放解码后的 value，`"\n"` 被写成真实换行，改变源码语义 | 格式化改变源码（多行串与转义不可分） | ✅ **已修复**（C++ 与 MYP `tokenStr` 统一 re-escape `\n \t \r \\ \" \' \e \0`；`\0` 用 0x01 哨兵绕过 MYP 串 NUL 截断；全语料对拍保持） |
+| 8 | **`&&`/`\|\|` 不短路** | 逻辑与/或**不短路**：`a && f()` 在 a=false 时仍调用 f()；`j>=0 && arr[j]==x` 在 j=-1 时仍读 `arr[-1]`（越界） | 依赖短路的代码（越界保护、副作用抑制）出错/崩溃（T3 可视化器排序踩中：`nodes_[-1]` 崩溃） | ⚠️ 未修（codegen 的 And/Or 用 `CreateAnd`/`CreateOr` 位运算实现，非分支短路；工具已用嵌套 if 规避；编译器短路修复待定） |
 
 ---
 

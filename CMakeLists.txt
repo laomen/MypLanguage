@@ -197,6 +197,28 @@ add_custom_command(
 )
 add_custom_target(myp_fmt2 ALL DEPENDS ${MYP_FMT_OUT})
 
+# ---- Self-hosted Mapping Visualizer (tools/viz, built with mypc) ----
+# 用 MYP 语言实现的 mapping 可视化器（自举工具链 T3/M4）。见 docs/self_hosting.md。
+# 与 C++ myp_viz 字节级对拍（全语料合法文件 220/220 一致）。
+set(MYP_VIZ_SRC ${CMAKE_SOURCE_DIR}/tools/viz/main.myp)
+set(MYP_VIZ_MODULES
+    ${CMAKE_SOURCE_DIR}/tools/viz/viz.myp
+    ${CMAKE_SOURCE_DIR}/tools/viz/lexer.myp
+)
+set(MYP_VIZ_OUT ${CMAKE_BINARY_DIR}/myp_viz2)
+
+add_custom_command(
+    OUTPUT ${MYP_VIZ_OUT}
+    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_VIZ_SRC} -o ${MYP_VIZ_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/viz/main.myp.o
+    DEPENDS ${MYP_VIZ_SRC} ${MYP_VIZ_MODULES} mypc
+    COMMENT "Building self-hosted mapping visualizer (tools/viz -> myp_viz2)"
+    VERBATIM
+)
+add_custom_target(myp_viz2 ALL DEPENDS ${MYP_VIZ_OUT})
+
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)

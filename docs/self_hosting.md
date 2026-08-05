@@ -1,7 +1,8 @@
 # MYP 自举路线设计（Self-Hosting）
 
 > 状态：**T1 已实施（2026-08-05，v2 模块化 + CMake）**——`tools/pm/*.myp` 包管理器；
-> **T2 已实施（2026-08-05）**——`tools/fmt/{lexer,fmt,main}.myp` 格式化器（自举 `myp_fmt2`）
+> **T2 已实施（2026-08-05）**——`tools/fmt/{lexer,fmt,main}.myp` 格式化器（自举 `myp_fmt2`）；
+> **T3 已实施（2026-08-05）**——`tools/viz/{lexer,viz,main}.myp` 可视化器（自举 `myp_viz2`）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、`docs/pkg_manager.md`（Tier 1 详细设计）、
 > `docs/design.md` §11"自举"、`docs/next_improvements.md` §六-2。
 > 本文档规划**用 MYP 语言逐步重写自身工具链**：从工具到编译器本体，每层都以
@@ -141,10 +142,29 @@ myp_fmt.myp（或 myp_pkg/fmt.myp）
 
 ## 5. T3 展望：`myp_viz`
 
-- 现状：`src/myp_viz.cpp`——AST 解析后输出树/图（文本或 Graphviz）。
-- MYP 版：解析（复用 T2 lexer）+ AST 打印（StringBuilder）→ 文本树输出。
-- 验收：对拍 C++ 版 AST 文本输出。
-- stdlib 缺口：无新增（复用 T2 基础设施）。
+### 5.1 实施状态（2026-08-05，M4 ✅）
+
+**已完成**，模块化为 `tools/viz/`：
+
+- `lexer.myp` — 复用 T2 词法器（`class Lexer`/`Tok`）。
+- `viz.myp` — `class MappingParser`：tokenize → 提取**顶层** `mapping()` 块（与 C++
+  `ast->mappings` 一致，类内嵌忽略）→ 解析链（first.id [where] -> targets...，支持
+  lambda `(x)=>{}`、转换器 `delay(ms)`、多 target 逗号）→ 节点去重 + 字母排序。
+- `main.myp` — CLI（`myp_viz <file.myp>`）。
+
+**参考版改动**（`src/myp_viz.cpp`）：节点输出改为**字母排序**（原 `unordered_set`
+ 迭代是 libstdc++ 哈希桶序，不可移植 → MYP 无法合理复刻；排序使输出确定且有意义）。
+
+**验收（全绿）**：全语料合法文件 **220/220 字节级对拍**（stdlib/examples/tools/tests/
+BNCTDoseEngine）；`tests/negative` 语法错误文件除外（C++ 全解析报错，MYP 迷你解析容错，
+属预期差异）。测试见 `tests/test_myp_viz.sh`（run_tests.sh 第 7 节），CMake 目标 `myp_viz2`。
+
+**新增 stdlib**：`Str.cmp(a,b) → int`（纯 MYP 词法比较，供节点排序）。
+
+**过程中发现的 C++/语言 bug**（记录于 `docs/next_improvements.md`）：
+
+- **MYP `&&`/`||` 不短路**（§九-8）：`j >= 0 && Str.cmp(nodes_[j],...)` 在 j=-1 时
+  仍求值 `nodes_[-1]` → 越界崩溃。工具已用嵌套 if 规避；编译器短路修复待定。
 
 ---
 
@@ -155,7 +175,7 @@ myp_fmt.myp（或 myp_pkg/fmt.myp）
 | **M1** | T1 包管理器（MYP 重写） | 与 Python 版逐命令对拍 | ✅ |
 | **M2** | `__myp_ord` + T2 lexer + fmt 骨架 | mini lexer 能 tokenize 全 stdlib | ✅ |
 | **M3** | T2 fmt 全量格式规则 | 全 stdlib 字节级对拍 + 幂等 | ✅ |
-| **M4**（可选） | T3 viz | AST 文本对拍 | 待实施 |
+| **M4**（可选） | T3 viz | AST 文本对拍 | ✅ |
 | **远期** | T4 LSP、T5 mypc | — | 待实施 |
 
 ---

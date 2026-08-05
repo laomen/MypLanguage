@@ -54,7 +54,7 @@ echo ""
 # =============================================
 # 第1部分: 回归测试 — 编译+运行+比对输出
 # =============================================
-echo "--- [1/7] 回归测试 (Regression Tests) ---"
+echo "--- [1/8] 回归测试 (Regression Tests) ---"
 echo ""
 
 for test_dir in tests/*/; do
@@ -135,7 +135,7 @@ done
 # 第2部分: 负测试 — 编译应该失败
 # =============================================
 echo ""
-echo "--- [2/7] 负测试 (Negative Tests) ---"
+echo "--- [2/8] 负测试 (Negative Tests) ---"
 echo ""
 
 NEG_PASS=0
@@ -166,7 +166,7 @@ fi
 # 第3部分: 测试框架测试 (@test + --test)
 # =============================================
 echo ""
-echo "--- [3/7] 测试框架 (Test Framework) ---"
+echo "--- [3/8] 测试框架 (Test Framework) ---"
 echo ""
 
 TFPASS=0
@@ -212,7 +212,7 @@ fi
 # 第4部分: 无崩溃回归 (compiler must never crash)
 # =============================================
 echo ""
-echo "--- [4/7] 无崩溃回归 (No-Crash Regression) ---"
+echo "--- [4/8] 无崩溃回归 (No-Crash Regression) ---"
 echo ""
 
 NCRASH_PASS=0
@@ -236,7 +236,7 @@ fi
 # 第5部分: MYP 包管理器自举测试
 # =============================================
 echo ""
-echo "--- [5/7] MYP 包管理器自举测试 (Self-hosted pkg manager) ---"
+echo "--- [5/8] MYP 包管理器自举测试 (Self-hosted pkg manager) ---"
 echo ""
 PM_PASS=0
 PM_FAIL=0
@@ -259,7 +259,7 @@ fi
 # 第6部分: MYP 自举格式化器测试
 # =============================================
 echo ""
-echo "--- [6/7] MYP 自举格式化器测试 (Self-hosted formatter) ---"
+echo "--- [6/8] MYP 自举格式化器测试 (Self-hosted formatter) ---"
 echo ""
 FMT_PASS=0
 FMT_FAIL=0
@@ -279,20 +279,44 @@ else
 fi
 
 # =============================================
-# 第7部分: 总结
+# 第7部分: MYP 自举可视化器测试
+# =============================================
+echo ""
+echo "--- [7/8] MYP 自举可视化器测试 (Self-hosted visualizer) ---"
+echo ""
+VIZ_PASS=0
+VIZ_FAIL=0
+if [ -f "$PROJ_ROOT/tests/test_myp_viz.sh" ]; then
+    viz_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_viz.sh" 2>&1)
+    if echo "$viz_out" | grep -qE "myp-viz PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (tools/viz/main.myp 自举可视化器)"
+        VIZ_PASS=1
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$viz_out" | tail -15
+        VIZ_FAIL=1
+        FAILED_TESTS="$FAILED_TESTS myp_viz(self-hosted)"
+    fi
+else
+    echo "  (no test_myp_viz.sh found)"
+fi
+
+# =============================================
+# 第8部分: 总结
 # =============================================
 echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS + VIZ_PASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL + VIZ_FAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
 echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
 echo "  无崩溃:   ${NCRASH_PASS} 通过, ${NCRASH_FAIL} 失败"
 echo "  自举包管理: ${PM_PASS} 通过, ${PM_FAIL} 失败"
 echo "  自举格式化: ${FMT_PASS} 通过, ${FMT_FAIL} 失败"
+echo "  自举可视化: ${VIZ_PASS} 通过, ${VIZ_FAIL} 失败"
 echo "  总计:     ${TOTAL_PASS} 通过, ${TOTAL_FAIL} 失败"
 
 if [ $TOTAL_FAIL -gt 0 ]; then

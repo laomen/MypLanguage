@@ -1,0 +1,254 @@
+// viz.myp — myp_viz 自举：提取顶层 mapping() 关系并输出 Graphviz DOT
+// 复刻 src/myp_viz.cpp；节点按字母排序（确定性输出，参考版已改排序）。
+// 关联: docs/self_hosting.md §5（T3/M4）；对拍: src/myp_viz.cpp
+import env;
+import text;
+import "./lexer.myp";
+
+// 解析器：只提取顶层 mapping() 块（与 C++ ast->mappings 一致，类内嵌的被忽略）。
+class MappingParser {
+    action:
+        // 分词 + 解析所有顶层 mapping，结果存 nodes_/edges_
+        void parse(string src) {
+            Lexer lex = new Lexer(src);
+            ntok = 0;
+            while (true) {
+                Tok t = lex.nextToken();
+                if (ntok < 16384) {
+                    kinds_[ntok] = t.kind();
+                    vals_[ntok] = t.value();
+                    ntok = ntok + 1;
+                }
+                if (t.kind() == "eof") break;
+            }
+            pos_ = 0;
+            ncount_ = 0;
+            ecount_ = 0;
+            int depth = 0;
+            while (pos_ < ntok) {
+                string k = kinds_[pos_];
+                if (k == "mapping" && depth == 0) {
+                    parseMappingBlock();
+                    continue;
+                }
+                if (k == "{") depth = depth + 1;
+                else if (k == "}") depth = depth - 1;
+                pos_ = pos_ + 1;
+            }
+        }
+
+        // 构建 DOT 文本（节点已排序）
+        string dot() {
+            sortNodes();
+            StringBuilder sb = new StringBuilder();
+            sb.append("digraph MYP {\n");
+            sb.append("  rankdir=LR;\n");
+            sb.append("  node [shape=box, style=rounded];\n");
+            sb.append("  edge [color=blue, arrowhead=normal];\n");
+            sb.append("\n");
+            for (int i = 0; i < ncount_; i = i + 1) {
+                sb.append("  \"");
+                sb.append(nodes_[i]);
+                sb.append("\";\n");
+            }
+            sb.append("\n");
+            for (int i = 0; i < ecount_; i = i + 1) {
+                sb.append("  \"");
+                sb.append(efrom_[i]);
+                sb.append("\" -> \"");
+                sb.append(eto_[i]);
+                sb.append("\";\n");
+            }
+            sb.append("}\n");
+            return sb.toString();
+        }
+
+        // mapping ( ) [@ann]* { ... }
+        void parseMappingBlock() {
+            pos_ = pos_ + 1;   // mapping
+            pos_ = pos_ + 1;   // (
+            pos_ = pos_ + 1;   // )
+            while (pos_ < ntok && kinds_[pos_] == "@") {
+                pos_ = pos_ + 1;   // @
+                pos_ = pos_ + 1;   // annotation name
+            }
+            if (pos_ < ntok && kinds_[pos_] == "{") pos_ = pos_ + 1;
+            int mdepth = 1;
+            while (pos_ < ntok && mdepth > 0) {
+                string ck = kinds_[pos_];
+                if (ck == "}") {
+                    mdepth = mdepth - 1;
+                    pos_ = pos_ + 1;
+                    continue;
+                }
+                parseChainStmt();
+            }
+        }
+
+        // 一条链语句：first.id [where expr] -> targets... ;
+        void parseChainStmt() {
+            string firstSrc = "";
+            string firstMem = "";
+            if (pos_ < ntok && kinds_[pos_] == "id") {
+                firstSrc = vals_[pos_];
+                pos_ = pos_ + 1;
+            }
+            if (pos_ < ntok && kinds_[pos_] == ".") {
+                pos_ = pos_ + 1;
+                if (pos_ < ntok && kinds_[pos_] == "id") {
+                    firstMem = vals_[pos_];
+                    pos_ = pos_ + 1;
+                }
+            }
+            // where 子句：跳到 ->
+            if (pos_ < ntok && kinds_[pos_] == "where") {
+                while (pos_ < ntok && kinds_[pos_] != "->") pos_ = pos_ + 1;
+            }
+            if (pos_ < ntok && kinds_[pos_] == "->") pos_ = pos_ + 1;
+
+            // targets（逗号分隔的多条链，每条链可含 -> 链式）
+            int firstTarget = 1;
+            while (true) {
+                if (firstTarget == 0) {
+                    if (pos_ < ntok && kinds_[pos_] == ",") pos_ = pos_ + 1;
+                }
+                firstTarget = 0;
+                string[64] csrc;
+                string[64] cmem;
+                int ccnt = 0;
+                csrc[ccnt] = firstSrc;
+                cmem[ccnt] = firstMem;
+                ccnt = ccnt + 1;
+                while (true) {
+                    string ns = "";
+                    string nm = "";
+                    if (pos_ < ntok && kinds_[pos_] == "(") {
+                        skipLambda();   // lambda 节点：source/member 均为空
+                    } else if (pos_ < ntok && kinds_[pos_] == "id") {
+                        ns = vals_[pos_];
+                        pos_ = pos_ + 1;
+                        if (pos_ < ntok && kinds_[pos_] == "(") {
+                            skipParens();   // transformer: delay(ms)
+                        } else if (pos_ < ntok && kinds_[pos_] == ".") {
+                            pos_ = pos_ + 1;
+                            if (pos_ < ntok && kinds_[pos_] == "id") {
+                                nm = vals_[pos_];
+                                pos_ = pos_ + 1;
+                            }
+                        }
+                    }
+                    if (ccnt < 64) {
+                        csrc[ccnt] = ns;
+                        cmem[ccnt] = nm;
+                        ccnt = ccnt + 1;
+                    }
+                    if (pos_ < ntok && kinds_[pos_] == "->") {
+                        pos_ = pos_ + 1;
+                        continue;
+                    }
+                    break;
+                }
+                for (int j = 0; j + 1 < ccnt; j = j + 1) {
+                    string f = csrc[j] + "." + cmem[j];
+                    string t = csrc[j + 1] + "." + cmem[j + 1];
+                    addEdge(f, t);
+                }
+                for (int j = 0; j < ccnt; j = j + 1) {
+                    addNode(csrc[j]);
+                }
+                if (pos_ < ntok && kinds_[pos_] == ",") continue;
+                break;
+            }
+            if (pos_ < ntok && kinds_[pos_] == ";") pos_ = pos_ + 1;
+        }
+
+        // 跳过 lambda：(params) => { body } 或 (params) => expr
+        void skipLambda() {
+            if (pos_ < ntok && kinds_[pos_] == "(") skipParens();
+            if (pos_ < ntok && kinds_[pos_] == "=>") pos_ = pos_ + 1;
+            if (pos_ < ntok && kinds_[pos_] == "{") {
+                int d = 1;
+                pos_ = pos_ + 1;
+                while (pos_ < ntok && d > 0) {
+                    string k = kinds_[pos_];
+                    if (k == "{") d = d + 1;
+                    else if (k == "}") d = d - 1;
+                    pos_ = pos_ + 1;
+                }
+            } else {
+                // 表达式体：跳到 -> 或 , 或 ;（括号深度 0）
+                int d = 0;
+                while (pos_ < ntok) {
+                    string k = kinds_[pos_];
+                    if (k == "(") d = d + 1;
+                    else if (k == ")") d = d - 1;
+                    if (d <= 0 && (k == "->" || k == "," || k == ";")) break;
+                    pos_ = pos_ + 1;
+                }
+            }
+        }
+
+        // 跳过平衡括号 ( ... )
+        void skipParens() {
+            if (pos_ < ntok && kinds_[pos_] == "(") {
+                int d = 0;
+                while (pos_ < ntok) {
+                    string k = kinds_[pos_];
+                    if (k == "(") d = d + 1;
+                    else if (k == ")") d = d - 1;
+                    pos_ = pos_ + 1;
+                    if (d == 0) break;
+                }
+            }
+        }
+
+        void addNode(string name) {
+            for (int i = 0; i < ncount_; i = i + 1) {
+                if (nodes_[i] == name) return;
+            }
+            if (ncount_ < 4096) {
+                nodes_[ncount_] = name;
+                ncount_ = ncount_ + 1;
+            }
+        }
+
+        void addEdge(string f, string t) {
+            if (ecount_ < 4096) {
+                efrom_[ecount_] = f;
+                eto_[ecount_] = t;
+                ecount_ = ecount_ + 1;
+            }
+        }
+
+        // 插入排序（字母序）
+        // 注意：MYP 的 && 不短路（见 next_improvements.md §九-8），
+        // 循环条件里不能写 j>=0 && Str.cmp(nodes_[j],...)，会越界读 nodes_[-1]。
+        void sortNodes() {
+            for (int i = 1; i < ncount_; i = i + 1) {
+                string key = nodes_[i];
+                int j = i - 1;
+                while (j >= 0) {
+                    int c = Str.cmp(nodes_[j], key);
+                    if (c <= 0) break;
+                    nodes_[j + 1] = nodes_[j];
+                    j = j - 1;
+                }
+                nodes_[j + 1] = key;
+            }
+        }
+
+        int nodeCount() { return ncount_; }
+        int edgeCount() { return ecount_; }
+        string nodeName(int i) { return nodes_[i]; }
+
+    property:
+        string[16384] kinds_;
+        string[16384] vals_;
+        int ntok;
+        int pos_;
+        string[4096] nodes_;
+        int ncount_;
+        string[4096] efrom_;
+        string[4096] eto_;
+        int ecount_;
+}
