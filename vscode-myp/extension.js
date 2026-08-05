@@ -32,6 +32,26 @@ function findLspPath(context) {
 }
 
 /**
+ * Find the myp_debug DAP server executable (same search pattern as myp_lsp).
+ */
+function findDebuggerPath(context) {
+    const configured = vscode.workspace.getConfiguration('myp').get('debuggerPath');
+    if (configured && fs.existsSync(configured)) return configured;
+
+    const candidates = [
+        path.join(context.extensionPath, '..', 'build', 'myp_debug'),
+        path.join(vscode.workspace.rootPath || '', 'build', 'myp_debug'),
+        '/home/xlkj/code/MYPLanguage/build/myp_debug',
+    ];
+    for (const c of candidates) {
+        try {
+            if (fs.existsSync(c)) return c;
+        } catch (_) {}
+    }
+    return 'myp_debug'; // hope it's on PATH
+}
+
+/**
  * Find the stdlib directory relative to the compiler or extension.
  */
 function findStdlibPath(context, compilerPath) {
@@ -55,6 +75,16 @@ function findStdlibPath(context, compilerPath) {
 let client = null;
 
 async function activate(context) {
+    // Register the MYP debug adapter (DAP <-> gdb via myp_debug).
+    context.subscriptions.push(
+        vscode.debug.registerDebugAdapterDescriptorFactory('myp', {
+            createDebugAdapterDescriptor() {
+                const dbgPath = findDebuggerPath(context);
+                return new vscode.DebugAdapterExecutable(dbgPath, []);
+            }
+        })
+    );
+
     const lspPath = findLspPath(context);
     const stdlibPath = findStdlibPath(context, lspPath);
 

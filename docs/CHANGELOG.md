@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.7.0（当前）
+- **DAP 调试支持（M7）**：`src/dap/dap_server.cpp` → `myp_debug`（DAP ↔ gdb MI2 桥）。
+  - 支持：initialize/launch/setBreakpoints/configurationDone/continue/next/stepIn/
+    stepOut/threads/stackTrace/scopes/variables/evaluate/pause/disconnect。
+  - 复用 `-g` DWARF：VS Code 设断点/单步/查局部变量。
+  - VS Code 扩展 `vscode-myp` 注册 `myp` 调试器（`myp.debuggerPath` 配置 + 自动探测）。
+  - 验证：`tests/test_dap.py`（launch→断点→stopped→栈/局部变量/evaluate，15 断言）；
+    `-O0`/`-O2` 全套 114/114。
+- **文档手册完善**：`docs/manual.md` 第 12 章补完整命令行选项表、优化（`-O`/`--passes`）、
+  调试（`-g`/gdb）、元编程（`@eval`/`macro`/`@macro`+`quote`）章节。
+
 ### v3.6.0（当前）
 - **元编程 M4：过程宏 `@macro` + `quote`**（`src/eval/eval.cpp` 解释器扩展 + `src/macro/macro_expand.cpp` 集成）。
   - `@macro` 注解修饰函数（sema 跳过 body / codegen 不生成）；`quote { ... }` 上下文关键字

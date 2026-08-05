@@ -1514,17 +1514,6 @@ win.render();                            // 渲染一帧
 # 指定输出
 ./build/mypc myapp.myp -o /tmp/myapp
 
-# 优化
-./build/mypc -O2 myapp.myp
-
-# 生成 DWARF 调试信息（配合 gdb 使用）
-./build/mypc -g myapp.myp          # 或 --debug；推荐 -g -O0
-gdb ./myapp.out
-(gdb) break myapp.myp:10           # 按源文件行号下断点
-(gdb) run
-(gdb) print 变量名                  # 查看参数/局部变量
-(gdb) next / step / continue
-
 # 事件追踪
 ./build/mypc --trace myapp.myp
 ./myapp.out 2>trace.log
@@ -1532,6 +1521,122 @@ gdb ./myapp.out
 # 指定包路径
 ./build/mypc --package-path myp_packages myapp.myp
 ```
+
+#### 完整命令行选项
+
+| 选项 | 说明 |
+|---|---|
+| `-o <file>` | 指定输出文件名 |
+| `-O0` / `-O1` / `-O2` / `-O3` | 优化级别（默认 `-O0`；`-O2` 运行 IR 优化管线）|
+| `-g`, `--debug` | 生成 DWARF 调试信息（断点/行号/变量）|
+| `--passes <p>` | 运行自定义 MYP pass（如 `myp-pass`）|
+| `--emit-llvm` | 输出 LLVM IR 到 `.ll` 文件（跳过链接）|
+| `--test` | 生成并运行测试运行器（`@test`）|
+| `--shared` / `--static` | 构建共享库 / 静态库 |
+| `--trace` | 启用运行时事件追踪 |
+| `--package-path <dir>` | 本地包目录 |
+| `--macro-expand` | 宏展开后输出 AST dump |
+| `--stdlib <path>` | stdlib 目录 |
+| `--version` / `--help` | 版本 / 帮助 |
+
+多文件编译（`mypc a.myp b.myp`）合并为单模块，天然享受跨文件优化（无需 LTO）。
+
+#### 优化（`-O` 与自定义 pass）
+
+```bash
+./build/mypc -O2 myapp.myp        # IR 优化管线（mem2reg/GVN/内联/循环...）
+./build/mypc -O0 myapp.myp        # 默认：快速编译、调试友好
+./build/mypc --passes myp-pass -O0 myapp.myp   # 追加自定义 MYP pass
+```
+
+- `-O1/-O2/-O3` 运行 LLVM 标准优化管线（默认 `-O0` 不优化）。
+- `--passes myp-pass` 运行 MYP 专用 pass（消除编译器生成的死 store）。
+- 设计与实现见 `docs/optimization_debugging.md`。
+
+#### 调试（`-g` DWARF + gdb）
+
+```bash
+./build/mypc -g myapp.myp          # 或 --debug；推荐 -g -O0
+gdb ./myapp.out
+(gdb) break myapp.myp:10           # 按源文件行号下断点
+(gdb) run
+(gdb) print 变量名                  # 查看参数/局部变量
+(gdb) next / step / continue
+```
+
+- `-g` 生成 DWARF：函数断点、源码行号、参数/局部变量、类型信息。
+- 类方法显示为 `Class_method` 符号；协程内调试为已知限制。
+- 设计见 `docs/optimization_debugging.md`（Part B）。
+
+#### 调试（VS Code DAP）
+
+MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/查变量：
+
+```bash
+# 编译带调试信息的可执行文件
+./build/mypc -g myapp.myp
+
+# 直接运行 DAP 服务器（供 VS Code / 任何 DAP 客户端调用）
+./build/myp_debug
+```
+
+**VS Code**：安装 `vscode-myp` 扩展后，`.vscode/launch.json`：
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MYP Launch",
+      "type": "myp",
+      "request": "launch",
+      "program": "${workspaceFolder}/myapp.out"
+    }
+  ]
+}
+```
+
+- `program` 指向 `-g` 编译出的可执行文件。
+- 设置 `myp.debuggerPath` 可指定 `myp_debug` 路径（默认自动探测）。
+- 支持：断点（源码行号）、单步（next/stepIn/stepOut）、调用栈、局部变量、
+  鼠标悬停求值（evaluate）。
+
+#### 元编程（`@eval` / `macro` / `@macro`）
+
+MYP 提供三层元编程（设计见 `docs/metaprogramming.md`）：
+
+**1. `@eval` 编译期求值（纯函数）**
+
+```myp
+@eval int fib(int n) {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+const int FIB10 = fib(10);   // 编译期算得 55（ret i32 55）
+```
+
+**2. `macro` 声明式宏（AST 模板）**
+
+```myp
+macro repeat($n, $body) {
+    for (int _i = 0; _i < $n; _i++) { $body }
+}
+repeat(3, total = total + 10);   // 展开为 for 循环 ×3
+```
+
+**3. `@macro` 过程宏（`quote` 代码模板，可编程生成）**
+
+```myp
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };
+    }
+    return out;
+}
+makeCalls(3);                    // 生成 3 条 Console.write(...)
+```
+
+- 调试：`--macro-expand` 输出展开后的 AST dump。
 
 ### 测试框架
 

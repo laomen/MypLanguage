@@ -256,14 +256,15 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 
 ## 8. 后续扩展（还缺少的部分）
 
-### 8.1 DAP 调试协议（VS Code 调试，最高价值）
+### 8.1 DAP 调试协议（VS Code 调试）
 
-`-g` 只让 gdb/lldb 可用。MYP 已有 LSP + VS Code 扩展，但**无 DAP**（Debug Adapter Protocol），
-IDE 内无法设断点/单步。规划：
-
-- 新增 DAP 代理（对接 gdb/lldb），实现 VS Code 断点、单步、变量查看。
-- 复用 `-g` 生成的 DWARF；`sourceFile` 映射到 `.myp`。
-- 里程碑：M7（DAP 基础：launch/断点/continue/next）。
+- ✅ **M7 已完成**：`src/dap/dap_server.cpp` → `myp_debug`（DAP ↔ gdb MI2 桥）。
+  支持 initialize/launch/setBreakpoints/configurationDone/continue/next/stepIn/
+  stepOut/threads/stackTrace/scopes/variables/evaluate/pause/disconnect。
+  `-g` 编译后 VS Code 可设断点/单步/查变量。
+- VS Code 扩展 `vscode-myp` 注册 `myp` 调试器（`onDebugResolve:myp` + `DebugAdapterExecutable`）。
+- 验证：`tests/test_dap.py`（launch→断点→stopped→栈/局部变量/evaluate，15 断言）。
+- 局限：协程内单步仍受 ucontext 限制（见 §4.4）。
 
 ### 8.2 质量保障
 

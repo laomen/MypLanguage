@@ -96,6 +96,10 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
 # ---- Compiler Executable ----
 add_executable(mypc ${SOURCES})
 
+# ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
+add_executable(myp_debug src/dap/dap_server.cpp)
+target_link_libraries(myp_debug PRIVATE pthread)
+
 # Mapping visualizer tool (uses same parser)
 add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
     src/ast/ast.cpp src/parser/parser.cpp

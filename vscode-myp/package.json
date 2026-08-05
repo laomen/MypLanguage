@@ -14,7 +14,8 @@
     "Language Packs"
   ],
   "activationEvents": [
-    "onLanguage:myp"
+    "onLanguage:myp",
+    "onDebugResolve:myp"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -43,6 +44,39 @@
         "command": "myp.restartLsp",
         "title": "MYP: Restart Language Server"
       }
+    ],
+    "debuggers": [
+      {
+        "type": "myp",
+        "label": "MYP",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "description": "Path to the MYP executable to debug (built with -g)."
+              },
+              "stopOnEntry": {
+                "type": "boolean",
+                "description": "Pause at program entry.",
+                "default": false
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "name": "MYP Launch",
+            "type": "myp",
+            "request": "launch",
+            "program": "${workspaceFolder}/a.out",
+            "stopOnEntry": false
+          }
+        ]
+      }
     ]
   },
   "configuration": {
@@ -62,6 +96,11 @@
         "type": "string",
         "default": "",
         "description": "Path to the myp_lsp executable. Leave empty to auto-detect."
+      },
+      "myp.debuggerPath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to the myp_debug DAP server executable. Leave empty to auto-detect."
       },
       "myp.trace.server": {
         "type": "string",
