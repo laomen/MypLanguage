@@ -1,6 +1,7 @@
 # MYP Programming Manual
 
 > Version 3.0 | Event-Driven Component Language
+> Language spec v1.0 (frozen): official EBNF in [grammar.md](grammar.md), versioning policy in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
