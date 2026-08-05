@@ -1456,7 +1456,8 @@ Runtime  → print/println + 基本运行时
 
 #### Class 系统
 - ✅ 三段式 class（action/event/property）
-- ✅ `@startup` 自动初始化
+- ✅ `constructor:` 节（对象初始化，`new` 自动调用）
+- ✅ `@startup`（启动信号/开始操作，线程/事件循环启动时执行）
 - ✅ `function:` 内部方法段
 - ✅ `static:` 静态方法段
 - ✅ `struct:` 嵌套结构体段
@@ -1518,52 +1519,33 @@ Runtime  → print/println + 基本运行时
 - ✅ 多线程并行计数
 - ✅ 多线程独立定时器
 
-**后续版本：**
+**版本实现历史（v2.0 → v3.8，均已完成）：**
 
 | 版本 | 特性 |
 |------|------|
-| **v2.0** | 字符串插值 `"Hello, $name"`、类型推断 `var x = 42`、Range `0..10` | ✅ 已实现 |
-| **v2.0** | `myp viz` 可视化工具（mapping 关系图 + Graphviz） | ✅ 已实现 |
-| **v2.4** | `--trace` 运行时事件追踪 | ✅ 已实现 |
-| **v2.1** | 泛型（含 monomorphization：`Box<int>`/`Box<double>` 独立代码生成） | ✅ 已实现 |
-| **v2.1** | 枚举 + 模式匹配 | ✅ 已实现 |
-| **v2.1** | Lambda/闭包（`(int x) => { return x*2; }` 编译为隐藏类 `__lambda_N`） | ✅ 已实现 |
-| **v2.1** | FFI | ✅ 已实现 |
-| **v2.1** | 包管理器（myp init/build/install/run + --package-path 导入搜索） | ✅ 已实现 |
-| **v2.1** | LSP 语言服务器（诊断/补全/悬停/符号/跳转定义/引用查找） | ✅ 已实现 |
-| **v2.1** | VS Code 扩展（语法高亮 + LSP 集成） | ✅ 已实现 |
-| **v2.4** | 错误处理完善（try/catch/finally/throw + 对象异常 + `catch (Error e)` 接口匹配 + `throw;` 重抛 + 标准异常 + 库接入；setjmp/longjmp）| ✅ 已实现（详见 `exceptions.md`）|
-| **v2.1** | 共享库/静态库输出（--shared/--static） | ✅ 已实现 |
-| **v2.2** | 内置测试框架（@test + --test 标志 + 断言内置函数） | ✅ 已实现 |
-| **v2.2** | myp fmt 格式化工具（token 级格式化 + 注释保留） | ✅ 已实现 |
-| **v2.2** | 标准库扩充（HashMap、Set、Math、Time、Random、File I/O、Atomic 等） | ✅ 已实现 |
-| **v3.0** | 协程完整体系 `@coro` — 基于 ucontext 的用户态纤程，每线程可承载数万协程；`@coro` 方法/顶层函数 + `await` 挂起/恢复 + 入口参数槽 + 手动 `resume` + `await` 值传递（`int v = await expr;`）+ 返回值槽 + 自动调度器（就绪队列 + `Coro.scheduler`）+ 事件等待（`await ClassName.eventName`）+ `@coro(stack=N)` 栈可配置 + TLS 线程并用 + 顶层 `@coro` 函数 + `await` 上下文检查 + 动态事件等待表 + `destroy` 自杀防护 + `Coro.current`/`Coro.count` + 嵌套协程（`ret_ctx` 上下文链）+ `Coro.status` + 超时等待（`await event timeout N`/`waitEventTimeout`）+ 多事件等待 `waitAny` + 栈池复用 + 协作式取消（`requestCancel`）| ✅ C1-C10 已实现 |
-| **v2.3** | Barrier 同步 — pthread_barrier 封装，多 epoch 并行 | ✅ 已实现 |
-| **v2.3** | Future/Promise — 异步结果容器，future.get() 阻塞等待，promise.set() 唤醒等待者 | ✅ 已实现 |
-| **未来** | **Event-driven Pool (方案 B)** — 事件驱动的工作分发池：Pool 持有工作窃取队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器 | 🔜 规划中 |
-| **v2.4** | `@parallel for` (方案 A) — 编译期将循环体提取为独立函数，由线程池平分迭代执行，barrier 归约。零事件开销，天然负载均衡 | ✅ 已实现 |
-| **v2.4** | 并行体变量捕获 — 自动捕获外层变量到 struct，通过 void* arg 传递 | ✅ 已实现 |
-| **v2.4** | 并行体数学函数修复 — emitKernelExpr 使用 myp_math_* 代替 CUDA __nv_* | ✅ 已实现 |
-| **v2.4** | 并行体静态方法调用 — 直接 LLVM 函数调用代替内联 | ✅ 已实现 |
-| **v2.3** | Atomic 操作 — `Atomic.addDouble`/`Atomic.addInt` 基于 LLVM atomicrmw | ✅ 已实现 |
-| **v2.4** | 工作窃取线程池 — 共享 work-stealing 队列 + codegen 接入 | ✅ 已实现 |
-| **v3.0** | 事件队列优化 — 条件变量唤醒替代 1ms 空轮询；可伸缩队列替代固定 1024 环缓冲 | ✅ 事件队列已动态化（可扩容，无 1024 上限）；条件变量唤醒：事件由代码同步处理，无 1ms 轮询 |
-| **v3.0** | 协程 Channel — Go 风格有缓冲通道，协程 send/recv 阻塞挂起 + 唤醒（`stdlib/channel.myp`）| ✅ 已实现 |
-| **v3.0** | 协程 await Future — 协程内 `Future.get()` 未 ready 时挂起协程而非阻塞线程（同线程 set 唤醒）| ✅ 已实现 |
-| **v3.0** | property 默认值修复 — `int x = 5;` 声明默认值在 `new` 时生效（此前只 memset 0）| ✅ 已修复 |
-| **v2.4** | Barrier / Future / Promise 的 MYP 层 stdlib 封装 — 基于现有 C 运行时提供 MYP 原生 API：`Barrier b = new Barrier(n)`, `Future<int> f` | ✅ 已实现（`stdlib/barrier.myp` + `stdlib/future.myp`）|
-| **v3.0** | `long` 字面量后缀 — `152917L` 解析为 long 类型，避免大整数隐式转换溢出 | ✅ 已实现 |
-| **v3.0** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | ✅ 已实现（解析为 const 属性）|
-| **v3.0** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | ✅ 已实现 |
-| **v3.1** | IR 优化管线（`-O1/-O2/-O3` NewPM） | ✅ 已实现（详见 [optimization_debugging.md](optimization_debugging.md)）|
-| **v3.2** | DWARF 调试信息（`-g`） | ✅ 已实现 |
-| **v3.3** | 自定义 pass（`--passes myp-pass`） | ✅ 已实现 |
-| **v3.4** | `@eval` 编译期求值 + 泛型约束 `where T : Interface` | ✅ 已实现（详见 [metaprogramming.md](metaprogramming.md)）|
-| **v3.5** | 声明式宏 `macro` | ✅ 已实现 |
-| **v3.6** | 过程宏 `@macro` + `quote` | ✅ 已实现 |
-| **v3.7** | DAP 调试（`myp_debug`，VS Code 断点/单步/变量） | ✅ 已实现 |
-| **v3.8** | 集合动态扩容 + 泛型 `new T[n]` + `function:` 跨方法 + LSP 解析死循环修复 + `memory.myp` 修复 | ✅ 已实现 |
-| **未来** | 自举、JIT、神经形态后端 | 🔜 规划中 |
+| **v2.0** | 字符串插值 `"Hello, $name"`、类型推断 `var x = 42`、Range `0..10`、`myp viz` 可视化工具 |
+| **v2.1** | 泛型（monomorphization）、枚举 + 模式匹配、Lambda/闭包、FFI、包管理器（myp）、LSP、VS Code 扩展、共享/静态库（--shared/--static） |
+| **v2.2** | 内置测试框架（@test + --test）、myp fmt 格式化、标准库扩充 |
+| **v2.3** | Barrier 同步、Future/Promise、Atomic 操作、Stream 流类型、接口多态、mapping @scope/where/lambda 节点/delay/throttle、TUI（ui.myp） |
+| **v2.4** | `--trace` 事件追踪、错误处理完善（finally/throw;/对象异常/接口匹配）、`@parallel for` + 工作窃取线程池 + 并行体捕获/数学/静态方法、Barrier/Future stdlib 封装 |
+| **v3.0** | 协程完整体系（C1-C10：`@coro`/`await`/调度器/事件等待/超时/取消等，详见 `coro.md`）、协程 Channel/await Future、事件队列动态化、property 默认值修复、`long` 后缀、Class 级 `const`、Range for |
+| **v3.1** | IR 优化管线（-O1/-O2/-O3 NewPM） |
+| **v3.2** | DWARF 调试信息（-g） |
+| **v3.3** | 自定义 pass（--passes myp-pass） |
+| **v3.4** | `@eval` 编译期求值 + 泛型约束 `where T : Interface` |
+| **v3.5** | 声明式宏 `macro` |
+| **v3.6** | 过程宏 `@macro` + `quote` |
+| **v3.7** | DAP 调试（`myp_debug`，VS Code 断点/单步/变量） |
+| **v3.8** | 集合动态扩容、泛型 `new T[n]`、`function:` 跨方法、LSP 解析死循环修复、`memory.myp` 修复 |
+
+**未来 / 规划中：**
+
+- 🔜 **Event-driven Pool（方案 B）**——事件驱动工作分发池：Pool 持有 work-stealing 队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器。
+- 🔜 **自举**（用 MYP 实现编译器前端）
+- 🔜 **JIT**
+- 🔜 **神经形态后端**
+
+---
 
 ---
 
