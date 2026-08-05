@@ -1,0 +1,7 @@
+// 负测试: 构造器（函数名==类名）不能同时标 @startup
+class Bad {
+    action:
+        @startup void Bad() { }   // 错误: 构造器与 @startup 互斥
+}
+
+int main() { return 0; }

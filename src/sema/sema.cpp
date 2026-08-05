@@ -334,6 +334,15 @@ void Sema::visitStructDecl(StructDecl& decl) {
 
     // Register struct methods
     for (auto& func : decl.functions) {
+        // 构造器：不注册为可调用方法（构造器不能直接调用，同名重载合法）；
+        // M3 负责函数式构造。body 仍在 checkStructMethods 中带 struct 作用域检查。
+        if (func.has_constructor) {
+            if (typeNodeToTypeInfo(func.return_type).kind != TypeKind::Void) {
+                error(func.range, "constructor '" + func.name +
+                      "' must have void return type");
+            }
+            continue;
+        }
         TypeInfo func_type(TypeKind::Function);
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(func.return_type));
         for (auto& param : func.params) {
@@ -382,6 +391,17 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     }
 
     for (auto& action : decl.actions) {
+        // 构造器：不注册为可调用 action（构造器不能直接调用，同名重载合法）；
+        // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
+        if (action.has_constructor) {
+            if (action.has_startup) {
+                error(action.range, "cannot be both @constructor and @startup");
+            }
+            if (typeNodeToTypeInfo(action.return_type).kind != TypeKind::Void) {
+                error(action.range, "constructor '" + action.name + "' must have void return type");
+            }
+            continue;
+        }
         TypeInfo func_type(TypeKind::Function);
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
         for (auto& param : action.params) {
@@ -398,6 +418,14 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     // Previously only resolved via the in_class_method_ fallback, which missed
     // methods declared later in the section.
     for (auto& fn : decl.functions) {
+        // 构造器：不注册为可调用 function（构造器不能直接调用，同名重载合法）；
+        // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
+        if (fn.has_constructor) {
+            if (typeNodeToTypeInfo(fn.return_type).kind != TypeKind::Void) {
+                error(fn.range, "constructor '" + fn.name + "' must have void return type");
+            }
+            continue;
+        }
         TypeInfo func_type(TypeKind::Function);
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(fn.return_type));
         for (auto& param : fn.params) {

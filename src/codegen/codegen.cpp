@@ -516,14 +516,18 @@ llvm::AllocaInst* CodeGen::createEntryBlockAlloca(llvm::Function* f, llvm::Type*
 void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Create ALL class action function declarations first
     for (auto& cls : tu.classes) {
-        for (auto& action : cls.actions)
+        for (auto& action : cls.actions) {
+            if (action.has_constructor) continue;  // 构造器 M2 绑定（含重载 mangling）
             createClassActionDecl(cls, action);
+        }
         for (auto& action : cls.static_actions)
             createStaticActionDecl(cls, action);
         // Pre-declare function: section methods so cross-calls in the section
         // resolve regardless of declaration order.
-        for (auto& fn : cls.functions)
+        for (auto& fn : cls.functions) {
+            if (fn.has_constructor) continue;  // 构造器 M2 绑定（含重载 mangling）
             createClassFunctionDecl(cls, fn);
+        }
     }
 
     // Create ALL event fire function declarations
@@ -753,6 +757,7 @@ void CodeGen::generateClass(const ClassDecl& cls) {
 
     // Generate function: section bodies FIRST so actions can call them
     for (auto& fn : cls.functions) {
+        if (fn.has_constructor) continue;  // 构造器 M2 绑定
         generateClassFunction(cls, fn);
     }
 
@@ -762,7 +767,10 @@ void CodeGen::generateClass(const ClassDecl& cls) {
     }
 
     // Generate all action bodies (including stdlib intrinsics with no body)
-    for (auto& a : cls.actions) generateClassAction(cls, a);
+    for (auto& a : cls.actions) {
+        if (a.has_constructor) continue;  // 构造器 M2 绑定
+        generateClassAction(cls, a);
+    }
 
     // Generate coroutine entry wrappers for @coro methods (after bodies exist)
     for (auto& a : cls.actions) {
@@ -1168,6 +1176,7 @@ void CodeGen::declareStructMethods(const StructDecl& st) {
 
     for (auto& method : st.functions) {
         if (!method.body) continue;
+        if (method.has_constructor) continue;  // 构造器 M3 函数式构造
         std::string fn = "struct_" + type_key + "_" + method.name;
         if (module_->getFunction(fn)) continue;
 
@@ -1190,6 +1199,7 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
 
     for (auto& method : st.functions) {
         if (!method.body) continue;
+        if (method.has_constructor) continue;  // 构造器 M3 函数式构造
         std::string fn = "struct_" + type_key + "_" + method.name;
         auto* func = module_->getFunction(fn);
         if (func) {

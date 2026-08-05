@@ -1,0 +1,7 @@
+// 负测试: 构造器（函数名==类名）必须有 void 返回类型
+class Bad {
+    action:
+        int Bad() { return 1; }   // 错误: 构造器必须 void 返回
+}
+
+int main() { return 0; }

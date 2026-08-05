@@ -85,6 +85,7 @@ struct ActionDecl {
     std::shared_ptr<Stmt> body;  // nullptr if declaration only
     SourceRange range;
     bool has_startup = false;
+    bool has_constructor = false;  // @constructor 或 函数名==类名：构造器（new 时调用）
     bool has_test = false;
     bool has_coro = false;
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
@@ -621,6 +622,7 @@ struct FuncDecl {
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
     bool has_eval = false;  // @eval: 编译期求值（纯函数）
     bool has_proc_macro = false; // @macro: 过程宏函数（编译期 AST 生成，M4）
+    bool has_constructor = false; // @constructor 或 函数名==类名：构造器（new 时调用）
     bool is_const_decl = false; // top-level `const T name = expr` (a value, not a callable)
 };
 

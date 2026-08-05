@@ -176,7 +176,10 @@ void Parser::parseClassSection(ClassDecl& cls) {
                !check(TokenKind::Keyword_interface) &&
                !isAtEnd()) {
             if (checkType() || check(TokenKind::Keyword_void) || check(TokenKind::At)) {
-                cls.actions.push_back(parseActionDecl());
+                ActionDecl ad = parseActionDecl();
+                // 函数名==类名 → 隐式构造器（可省略 @constructor）
+                if (ad.name == cls.name) ad.has_constructor = true;
+                cls.actions.push_back(std::move(ad));
             } else {
                 break;
             }
@@ -222,7 +225,11 @@ void Parser::parseClassSection(ClassDecl& cls) {
                !isAtEnd()) {
             if (checkType() || check(TokenKind::Keyword_void)) {
                 auto func = parseFunction();
-                if (func) cls.functions.push_back(std::move(*func));
+                if (func) {
+                    // 函数名==类名 → 隐式构造器（可省略 @constructor）
+                    if (func->name == cls.name) func->has_constructor = true;
+                    cls.functions.push_back(std::move(*func));
+                }
             } else {
                 break;
             }
@@ -263,6 +270,7 @@ ActionDecl Parser::parseActionDecl() {
         advance(); // consume @
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "startup") decl.has_startup = true;
+        if (annot == "constructor") decl.has_constructor = true;
         if (annot == "test") decl.has_test = true;
         if (annot == "coro") {
             decl.has_coro = true;
@@ -430,6 +438,42 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
     consume(TokenKind::LeftBrace, "expected '{' after struct name");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        // action: section — 方法（含 @constructor 构造器；函数名==struct 名即隐式构造器）。
+        // 遇到属性（type name ;）退出，交由下方主循环按属性解析。
+        if (match(TokenKind::Keyword_action)) {
+            consume(TokenKind::Colon, "expected ':' after 'action'");
+            while (!check(TokenKind::RightBrace) && !isAtEnd() &&
+                   (checkType() || check(TokenKind::Keyword_void) || check(TokenKind::At))) {
+                if (check(TokenKind::At)) {
+                    auto func = parseFunction();
+                    if (func) {
+                        if (func->name == decl->name) func->has_constructor = true;
+                        decl->functions.push_back(std::move(*func));
+                    }
+                    continue;
+                }
+                // 前瞻：方法（type name ( ... )）vs 属性（type name ;）
+                int ahead = current_;
+                auto isTypeKind = [](TokenKind k) {
+                    return (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) ||
+                           k == TokenKind::Keyword_void || k == TokenKind::Identifier;
+                };
+                if (ahead < (int)tokens_.size() && isTypeKind(tokens_[ahead].kind)) {
+                    ahead++;
+                    if (ahead < (int)tokens_.size() && tokens_[ahead].kind == TokenKind::Identifier)
+                        ahead++;
+                }
+                bool is_method = (ahead < (int)tokens_.size() &&
+                                 tokens_[ahead].kind == TokenKind::LeftParen);
+                if (!is_method) break;  // 属性 → 退出 action: 段，交主循环
+                auto func = parseFunction();
+                if (func) {
+                    if (func->name == decl->name) func->has_constructor = true;
+                    decl->functions.push_back(std::move(*func));
+                }
+            }
+            continue;
+        }
         // operator: section — 数学算子方法 (@op 绑定符号)
         // 只解析 @op 注解的方法; 裸属性/普通方法退出交由主循环处理
         if (match(TokenKind::Keyword_operator)) {
@@ -463,7 +507,11 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
 
             if (is_method) {
                 auto func = parseFunction();
-                if (func) decl->functions.push_back(std::move(*func));
+                if (func) {
+                    // 函数名==struct 名 → 隐式构造器（可省略 @constructor）
+                    if (func->name == decl->name) func->has_constructor = true;
+                    decl->functions.push_back(std::move(*func));
+                }
             } else {
                 decl->properties.push_back(parsePropertyDecl());
             }
@@ -490,6 +538,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         if (check(TokenKind::Keyword_macro)) { annot = "macro"; advance(); }
         else annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
+        else if (annot == "constructor") func->has_constructor = true;
         else if (annot == "region") func->has_region = true;
         else if (annot == "eval") func->has_eval = true;
         else if (annot == "macro") func->has_proc_macro = true;   // M4 过程宏

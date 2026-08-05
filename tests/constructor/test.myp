@@ -1,0 +1,45 @@
+// M1: 构造器语法解析测试
+// 验证: @constructor 注解 / 函数名==类名隐式构造器 / struct action: 节 + 构造器
+// 注意: M1 仅解析 + 校验；new 绑定构造器在 M2 实现（此处构造器定义存在但暂不自动调用）
+import env;
+
+class Window {
+    action:
+        @constructor
+        void Window() {
+            x = 0; y = 0; w = 80; h = 24;
+        }
+        void Window(int px, int py, int pw, int ph) {   // 函数名==类名 → 隐式构造器
+            x = px; y = py; w = pw; h = ph;
+        }
+        void reset() {
+            x = 0; y = 0; w = 0; h = 0;
+        }
+    property:
+        int x;
+        int y;
+        int w;
+        int h;
+}
+
+struct Vec2 {
+    action:
+        @constructor
+        void Vec2(double px, double py) { x = px; y = py; }
+        void Vec2() { x = 0; y = 0; }                    // 函数名==类名 → 隐式构造器
+        double lenSq() { return x * x + y * y; }
+    double x;
+    double y;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("M1 constructor syntax OK\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
