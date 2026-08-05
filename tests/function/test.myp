@@ -1,0 +1,27 @@
+// function: 一等函数/闭包 M-FN-1（函数类型 + 非捕获 lambda 值）——§三-3
+// 覆盖：函数类型变量/参数/返回、lambda 值存/传/返/调用、多参、字符串返回
+import env;
+
+// 高阶函数：把函数值作参数
+int apply2(int v, (int) -> int f) { return f(v); }
+
+// 函数返回函数（非捕获）
+(int) -> int makeF() { return (int x) => { return x + 1; }; }
+
+int pmRun() {
+    (int) -> int f = (int x) => { return x * 3; };
+    int a = f(4);                                        // 12
+    int b = apply2(7, (int x) => { return x * 2; });     // 14（匿名实参）
+    (int) -> int g = f;                                  // 赋值
+    int c = g(2);                                        // 6
+    (int) -> int h = makeF();                            // 函数返回函数
+    int d = h(9);                                        // 10
+    (int, int) -> int add = (int x, int y) => { return x + y; };
+    int e = add(20, 22);                                 // 42（多参）
+    (string) -> string shout = (string s) => { return s + "!"; };
+    string z = shout("hi");                              // hi!
+    Console.writeString("a=" + a + " b=" + b + " c=" + c + " d=" + d + " e=" + e + " z=" + z);
+    Console.writeString("\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }

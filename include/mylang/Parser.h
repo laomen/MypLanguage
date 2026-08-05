@@ -110,6 +110,7 @@ private:
     bool checkType() const;
     bool isTypeToken(TokenKind k) const;
     bool scanGenericTypeArgs();
+    bool scanFunctionType();
 
     // Type aliases (`type Name = Type;`) seen so far in this TU, for parse-time
     // substitution (alias must be declared before use).

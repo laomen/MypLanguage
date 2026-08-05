@@ -342,6 +342,9 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
         if (auto* alias = findAlias(tn.class_name))
             return typeNodeToLLVMType(alias->alias_type);
     }
+    // Function type: (A,B)->R → fat pointer {closure, call_fn}
+    if (tn.isFunction())
+        return getFunctionValueType();
     // Check for array type
     if (tn.isArray() && tn.element_type) {
         auto* elem = typeNodeToLLVMType(*tn.element_type);
@@ -413,7 +416,7 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
         case TypeKind::Double: return llvm::Type::getDoubleTy(ctx_);
         case TypeKind::String:    return llvm::PointerType::get(ctx_, 0);
         case TypeKind::Null:
-        case TypeKind::Function:  return llvm::PointerType::get(ctx_, 0);
+        case TypeKind::Function:  return getFunctionValueType();
         case TypeKind::Class: {
             auto* st = getClassStruct(t.class_name);
             (void)st;
@@ -445,6 +448,11 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
     return llvm::Type::getVoidTy(ctx_);
 }
 
+llvm::StructType* CodeGen::getFunctionValueType() {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    return llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+}
+
 /// Convert a TypeNode (from AST) to TypeInfo for codegen use.
 /// Properly handles array types (both sized and unsized).
 TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
@@ -452,6 +460,14 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
     if (!node.class_name.empty() && node.type_args.empty()) {
         if (auto* alias = findAlias(node.class_name))
             return typeNodeToCodegenType(alias->alias_type);
+    }
+    // Function type: (A,B)->R
+    if (node.isFunction()) {
+        TypeInfo ft(TypeKind::Function);
+        ft.return_type = std::make_shared<TypeInfo>(typeNodeToCodegenType(*node.func_return_type));
+        for (auto& p : node.func_param_types)
+            ft.param_types.push_back(typeNodeToCodegenType(p));
+        return ft;
     }
     if (node.isArray() && node.element_type) {
         TypeInfo result(TypeKind::Array);
@@ -658,6 +674,15 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
         declareFuncSignature(f);
     }
 
+    // Pre-declare lambda __call methods + generate tramps so lambda expressions
+    // inside function bodies can build fat pointers regardless of class order.
+    for (auto& cls : tu.classes) {
+        if (cls.name.rfind("__lambda_", 0) != 0) continue;
+        for (auto& a : cls.actions)
+            if (a.name == "__call") createClassActionDecl(cls, a);
+        generateLambdaTramp(cls);
+    }
+
     // Generate function bodies.
     // Generic function templates (type_params, not an instance) are skipped —
     // only monomorphized instances are emitted (like generic classes).
@@ -819,6 +844,45 @@ void CodeGen::generateClass(const ClassDecl& cls) {
         std::string ekey = cls.name + "::" + ev.name;
         int eid = event_id_map_[ekey];
         generateEventFire(cls, ev, eid);
+    }
+
+    // Lambda hidden class → uniform tramp for first-class function values.
+    if (cls.name.rfind("__lambda_", 0) == 0)
+        generateLambdaTramp(cls);
+}
+
+// __lambda_N_tramp(void* self, A, B) -> R : calls __lambda_N___call((__lambda_N*)self, A, B)
+void CodeGen::generateLambdaTramp(const ClassDecl& cls) {
+    if (module_->getFunction(cls.name + "_tramp")) return; // idempotent
+    const ActionDecl* call = nullptr;
+    for (auto& a : cls.actions)
+        if (a.name == "__call") { call = &a; break; }
+    if (!call) return;
+
+    std::vector<llvm::Type*> pts;
+    pts.push_back(llvm::PointerType::get(ctx_, 0)); // self (closure)
+    for (auto& p : call->params)
+        pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+    TypeInfo rt = typeNodeToCodegenType(call->return_type);
+    auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
+    auto* tramp = llvm::Function::Create(ft, llvm::Function::InternalLinkage,
+        cls.name + "_tramp", module_.get());
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", tramp);
+    builder_.SetInsertPoint(bb);
+
+    auto* call_fn = module_->getFunction(cls.name + "___call");
+    if (!call_fn) { builder_.CreateUnreachable(); return; }
+    std::vector<llvm::Value*> args;
+    auto* self = tramp->getArg(0);
+    args.push_back(builder_.CreateBitCast(self, call_fn->getFunctionType()->getParamType(0)));
+    for (size_t i = 1; i < tramp->arg_size(); i++)
+        args.push_back(tramp->getArg(i));
+    if (rt.kind == TypeKind::Void) {
+        builder_.CreateCall(call_fn, args);
+        builder_.CreateRetVoid();
+    } else {
+        auto* r = builder_.CreateCall(call_fn, args);
+        builder_.CreateRet(r);
     }
 }
 
@@ -1441,6 +1505,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
             builder_.CreateStore(&arg, a);
             if (pt.kind == TypeKind::Slice)
                 var_slice_types_[decl.params[i].name] = pt;
+            if (pt.kind == TypeKind::Function)
+                func_val_types_[decl.params[i].name] = pt;
             setNamedValue(decl.params[i].name, a);
             if (debug_mode_)
                 emitParamDebug(a, decl.params[i].name, getLLVMType(pt),
@@ -2390,6 +2456,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // Record element type for subscript access
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
         return;
+    } else if (d.type.isFunction()) {
+        // First-class function value: fat pointer {closure, call_fn}
+        TypeInfo ft = typeNodeToCodegenType(d.type);
+        lt = getLLVMType(ft);
+        func_val_types_[d.name] = ft;
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
@@ -2430,6 +2501,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                               llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz), llvm::Align(8));
     } else if (lt->isPointerTy()) {
         builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(lt)), a);
+    } else if (lt->isStructTy()) {
+        // Fat pointer (function value) / interface — zero via memset
+        auto sz = module_->getDataLayout().getTypeAllocSize(lt);
+        builder_.CreateMemSet(a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+                              llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz), llvm::Align(8));
     } else {
         builder_.CreateStore(llvm::ConstantInt::get(lt, 0), a);
     }
@@ -4967,6 +5043,46 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         diag_.error(e.range, "cannot call generic function '" + e.resolved_call_name + "'");
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
     }
+    // First-class function value call: fn(args) where fn is a function-typed var.
+    // Indirect call through the fat pointer's call_fn (tramp): call_fn(closure, args).
+    if (e.callee->kind == ExprKind::Identifier) {
+        auto& fid = static_cast<const IdentifierExpr&>(*e.callee);
+        auto fit = func_val_types_.find(fid.name);
+        if (fit != func_val_types_.end()) {
+            auto* va = getNamedValue(fid.name);
+            if (va) {
+                const TypeInfo& ft = fit->second;
+                auto* fval = builder_.CreateLoad(getFunctionValueType(), va, fid.name);
+                auto* closure = builder_.CreateExtractValue(fval, 0);
+                auto* call_fn = builder_.CreateExtractValue(fval, 1);
+                std::vector<llvm::Type*> pts;
+                pts.push_back(llvm::PointerType::get(ctx_, 0)); // self
+                for (auto& pt : ft.param_types) pts.push_back(getLLVMType(pt));
+                TypeInfo void_rt(TypeKind::Void);
+                auto* rty = getLLVMType(ft.return_type ? *ft.return_type : void_rt);
+                auto* callt = llvm::FunctionType::get(rty, pts, false);
+                std::vector<llvm::Value*> args;
+                args.push_back(closure);
+                for (auto& a : e.args) args.push_back(generateExpr(*a));
+                for (size_t i = 1; i < args.size() && i < callt->getNumParams(); i++) {
+                    auto* expected = callt->getParamType(i);
+                    if (args[i]->getType() != expected) {
+                        if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
+                            args[i] = builder_.CreateIntCast(args[i], expected, true);
+                        else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                            args[i] = builder_.CreateSIToFP(args[i], expected);
+                        else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                            args[i] = builder_.CreateFPToSI(args[i], expected);
+                        else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
+                            args[i] = builder_.CreateBitCast(args[i], expected);
+                    }
+                }
+                auto* fnp = builder_.CreateBitCast(call_fn, llvm::PointerType::get(callt, 0));
+                bool isv = rty->isVoidTy();
+                return builder_.CreateCall(callt, fnp, args, isv ? "" : "calltmp");
+            }
+        }
+    }
     // Struct 函数式构造：StructName(args) → 栈临时 + 构造器，返回 struct 值
     if (!e.resolved_struct_ctor.empty() && !e.resolved_struct_type.empty()) {
         auto* st_ctor = module_->getFunction(e.resolved_struct_ctor);
@@ -5732,8 +5848,19 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
     // Create instance of hidden class: new __lambda_N()
     NewExpr ne(e.hidden_class_name, {}, {}, e.range);
     auto* obj = generateNewExpr(ne);
-    // Also call @startup if any
-    return obj;
+
+    // Build the first-class function value: fat pointer { closure, call_fn }.
+    auto* fp_ty = getFunctionValueType();
+    auto* fp = builder_.CreateAlloca(fp_ty);
+    auto* closure_gep = builder_.CreateStructGEP(fp_ty, fp, 0);
+    auto* call_fn_gep = builder_.CreateStructGEP(fp_ty, fp, 1);
+    builder_.CreateStore(obj, closure_gep);
+    auto* tramp = module_->getFunction(e.hidden_class_name + "_tramp");
+    if (tramp)
+        builder_.CreateStore(builder_.CreateBitCast(tramp, llvm::PointerType::get(ctx_, 0)), call_fn_gep);
+    else
+        builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), call_fn_gep);
+    return builder_.CreateLoad(fp_ty, fp);
 }
 
 llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {

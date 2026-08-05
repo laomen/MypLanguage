@@ -255,6 +255,8 @@ private:
     std::unordered_map<std::string, std::string> var_class_map_;
     /// Track slice element types for local slice variables ("name" -> TypeInfo).
     std::unordered_map<std::string, TypeInfo> var_slice_types_;
+    /// Track function-typed variables ("name" -> Function TypeInfo) for call dispatch.
+    std::unordered_map<std::string, TypeInfo> func_val_types_;
     /// Track element types for local array variables (for subscript codegen).
     std::unordered_map<std::string, llvm::Type*> array_elem_types_;
     std::unordered_map<std::string, llvm::Type*> var_value_types_;
@@ -344,6 +346,9 @@ private:
     llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
     const TypeAliasDecl* findAlias(const std::string& name) const;
     void declareFuncSignature(const FuncDecl& decl);
+    // Function value = fat pointer { closure ptr, call_fn ptr }
+    llvm::StructType* getFunctionValueType();
+    void generateLambdaTramp(const ClassDecl& cls);
 
     // ---- Symbol table helpers ----
     void pushScope();

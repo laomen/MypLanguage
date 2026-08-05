@@ -2042,6 +2042,14 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             return typeNodeToTypeInfo(alias->alias_type, alias_depth + 1);
         }
     }
+    // Function type: (A, B) -> R
+    if (node.isFunction()) {
+        TypeInfo ft(TypeKind::Function);
+        ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(*node.func_return_type));
+        for (auto& p : node.func_param_types)
+            ft.param_types.push_back(typeNodeToTypeInfo(p));
+        return ft;
+    }
     if (node.isArray()) {
         TypeInfo arr_type(TypeKind::Array);
         arr_type.array_size = node.array_size;
@@ -2316,7 +2324,16 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Slice:
             if (type.element_type) return "slice<" + typeName(*type.element_type) + ">";
             return "slice";
-        case TypeKind::Function: return "function";
+        case TypeKind::Function: {
+            std::string s = "(";
+            for (size_t i = 0; i < type.param_types.size(); i++) {
+                if (i) s += ", ";
+                s += typeName(type.param_types[i]);
+            }
+            s += ") -> ";
+            s += type.return_type ? typeName(*type.return_type) : "void";
+            return s;
+        }
     }
     return "unknown";
 }
@@ -2333,6 +2350,15 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
             if (lhs.element_type && rhs.element_type)
                 return typesCompatible(*lhs.element_type, *rhs.element_type);
             return !lhs.element_type && !rhs.element_type;
+        }
+        if (lhs.kind == TypeKind::Function) {
+            // Structural: same param count, each param compatible, return compatible
+            if (lhs.param_types.size() != rhs.param_types.size()) return false;
+            for (size_t i = 0; i < lhs.param_types.size(); i++)
+                if (!typesCompatible(lhs.param_types[i], rhs.param_types[i])) return false;
+            if (lhs.return_type && rhs.return_type)
+                return typesCompatible(*lhs.return_type, *rhs.return_type);
+            return !lhs.return_type && !rhs.return_type;
         }
         return true;
     }
@@ -2556,6 +2582,19 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr) {
     }
     action.body = expr.body;
     action.range = expr.range;
+
+    // Infer __call return type from the body (M-FN-1: first `return expr;` in
+    // the lambda's own scope; bare return / none ⇒ void).
+    {
+        symbol_table_.enterScope();
+        for (auto& p : expr.params)
+            symbol_table_.declare(p.name, typeNodeToTypeInfo(p.type));
+        TypeNode ret_ty;
+        bool found = false;
+        inferLambdaReturn(*expr.body, ret_ty, found);
+        symbol_table_.leaveScope();
+        if (found) action.return_type = ret_ty;
+    }
     cls.actions.push_back(std::move(action));
 
     // Register class and add to TU
@@ -2564,9 +2603,54 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr) {
         visitClassDecl(current_tu_->classes.back());
     }
 
-    TypeInfo result(TypeKind::Class);
-    result.class_name = cls_name;
-    return result;
+    // First-class function value: the lambda's type is its function type.
+    TypeInfo ft(TypeKind::Function);
+    ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
+    for (auto& p : expr.params) ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+    return ft;
+}
+
+void Sema::inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found) {
+    if (found) return;
+    switch (stmt.kind) {
+        case StmtKind::Block: {
+            auto& b = static_cast<BlockStmt&>(stmt);
+            for (auto& s : b.statements) {
+                if (s) { inferLambdaReturn(*s, out, found); if (found) return; }
+            }
+            break;
+        }
+        case StmtKind::IfStmt: {
+            auto& i = static_cast<IfStmt&>(stmt);
+            if (i.then_block) { inferLambdaReturn(*i.then_block, out, found); if (found) return; }
+            if (i.else_block) { inferLambdaReturn(*i.else_block, out, found); if (found) return; }
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto& w = static_cast<WhileStmt&>(stmt);
+            if (w.body) { inferLambdaReturn(*w.body, out, found); if (found) return; }
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto& f = static_cast<ForStmt&>(stmt);
+            if (f.body) { inferLambdaReturn(*f.body, out, found); if (found) return; }
+            break;
+        }
+        case StmtKind::ReturnStmt: {
+            auto& r = static_cast<ReturnStmt&>(stmt);
+            if (r.value) {
+                TypeInfo t = visitExpr(*r.value);
+                out = TypeNodeFromTypeInfo(t);
+            } else {
+                TypeNode vt;
+                vt.basic_type = BuiltinType::Void;
+                out = vt;
+            }
+            found = true;
+            break;
+        }
+        default: break;
+    }
 }
 
 // Pipe: lhs |> op — apply an operator component (class with a `transform`

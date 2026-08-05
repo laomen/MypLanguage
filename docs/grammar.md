@@ -80,13 +80,15 @@ byte short int long ubyte ushort uint ulong char float double bool string
 ## 2. 类型
 
 ```
-Type          ::= BasicType TypeSuffix? | ClassType TypeArgList? TypeSuffix? | 'var'
+Type          ::= BasicType TypeSuffix? | ClassType TypeArgList? TypeSuffix?
+                | FunctionType | 'var'
 BasicType     ::= 'byte' | 'short' | 'int' | 'long'
                 | 'ubyte' | 'ushort' | 'uint' | 'ulong'
                 | 'char' | 'float' | 'double' | 'bool' | 'string' | 'void'
 ClassType     ::= Identifier
 TypeArgList   ::= '<' Type (',' Type)* '>'
 TypeSuffix    ::= '[' IntegerLiteral? ']'   // 数组；'[]' 动态，'[N]' 定长
+FunctionType  ::= '(' (Type (',' Type)*)? ')' '->' ReturnType
 ```
 
 > `slice<T>` 为内置切片类型（`{ T* data; int64 len }`，运行时长度，见 [slice.md](slice.md)）；

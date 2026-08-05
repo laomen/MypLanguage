@@ -142,6 +142,7 @@ private:
     std::vector<std::string> current_func_type_params_; // type params of current top-level function
     TypeInfo resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index);
     TypeNode TypeNodeFromTypeInfo(const TypeInfo& t);
+    void inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found);
 
 };
 

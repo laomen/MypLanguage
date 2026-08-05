@@ -93,7 +93,8 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             // usable as an ordinary identifier elsewhere (additive, non-breaking).
             auto ta = parseTypeAlias();
             if (ta) tu->type_aliases.push_back(std::move(*ta));
-        } else if (checkType() || check(TokenKind::Keyword_void)) {
+        } else if (checkType() || check(TokenKind::Keyword_void) ||
+                   (check(TokenKind::LeftParen) && scanFunctionType())) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
         } else {
@@ -940,6 +941,17 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             }
             current_ = saved;
         }
+    }
+
+    // Function-type var decl: `(A) -> B name = ...` (starts with '(').
+    if (check(TokenKind::LeftParen) && scanFunctionType()) {
+        auto saved = current_;
+        TypeNode dummy = parseType();
+        if (!isAtEnd() && peek().kind == TokenKind::Identifier) {
+            current_ = saved;
+            return parseVarDeclStmt();
+        }
+        current_ = saved;
     }
 
     auto expr = parseExpr();
@@ -1926,6 +1938,22 @@ TypeNode Parser::parseType() {
     TypeNode node;
     node.range = peek().range;
 
+    // Function type: (A, B) -> R (additive; diagnostic-free lookahead)
+    if (check(TokenKind::LeftParen) && scanFunctionType()) {
+        advance(); // consume '('
+        if (!check(TokenKind::RightParen)) {
+            node.func_param_types.push_back(parseType());
+            while (match(TokenKind::Comma)) {
+                node.func_param_types.push_back(parseType());
+            }
+        }
+        consume(TokenKind::RightParen, "expected ')' in function type");
+        consume(TokenKind::Arrow, "expected '->' in function type");
+        node.func_return_type = std::make_shared<TypeNode>(parseType());
+        node.range = peek().range;
+        return node;
+    }
+
     if (match(TokenKind::Type_byte))       node.basic_type = BuiltinType::Byte;
     else if (match(TokenKind::Type_short)) node.basic_type = BuiltinType::Short;
     else if (match(TokenKind::Type_int))   node.basic_type = BuiltinType::Int;
@@ -2062,6 +2090,30 @@ bool Parser::scanGenericTypeArgs() {
             i++;
             continue;
         }
+        i++;
+    }
+    return false;
+}
+
+// Diagnostic-free lookahead for a function type: `(Type, ...) ->`.
+// Assumes the current token is '('. Never emits errors.
+bool Parser::scanFunctionType() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::LeftParen) return false;
+    i++; // consume '('
+    int depth = 1;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::LeftParen) { depth++; i++; continue; }
+        if (k == TokenKind::RightParen) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                return i < tokens_.size() && tokens_[i].kind == TokenKind::Arrow;
+            }
+            i++; continue;
+        }
+        if (k == TokenKind::Semicolon) return false; // statement boundary
         i++;
     }
     return false;

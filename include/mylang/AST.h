@@ -32,6 +32,9 @@ struct TypeNode {
     bool is_generic_param = false;   // true if this is a type param reference   // non-empty if user-defined type
     std::shared_ptr<TypeNode> element_type; // non-null if array type
     int array_size = 0;       // >0 if fixed-size array like Type[10]
+    // Function type: (A, B) -> R  (func_return_type non-null ⇒ function type)
+    std::vector<TypeNode> func_param_types;
+    std::shared_ptr<TypeNode> func_return_type;
     SourceRange range;
 
     TypeNode() = default;
@@ -40,6 +43,8 @@ struct TypeNode {
           type_args(other.type_args), is_generic_param(other.is_generic_param),
           range(other.range), array_size(other.array_size),
           is_inferred(other.is_inferred),
+          func_param_types(other.func_param_types),
+          func_return_type(other.func_return_type ? std::make_shared<TypeNode>(*other.func_return_type) : nullptr),
           element_type(other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr) {}
     TypeNode& operator=(const TypeNode& other) {
         if (this != &other) {
@@ -50,6 +55,8 @@ struct TypeNode {
             range = other.range;
             array_size = other.array_size;
             is_inferred = other.is_inferred;
+            func_param_types = other.func_param_types;
+            func_return_type = other.func_return_type ? std::make_shared<TypeNode>(*other.func_return_type) : nullptr;
             element_type = other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr;
         }
         return *this;
@@ -57,6 +64,7 @@ struct TypeNode {
 
     bool isArray() const { return element_type != nullptr; }
     bool isClass() const { return !class_name.empty(); }
+    bool isFunction() const { return func_return_type != nullptr; }
     bool is_inferred = false; // true if declared with 'var'
 };
 
