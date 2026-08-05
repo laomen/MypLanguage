@@ -6894,9 +6894,13 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::ConstantAggregateZero::get(jmp_buf_type_), "__myp_jmpbuf");
 
     // Declare system setjmp as: int setjmp(ptr)
+    // MUST carry the returns_twice attribute: the optimizer otherwise assumes
+    // setjmp returns exactly once and miscompiles try/catch (longjmp back to a
+    // setjmp is a second "return" that optimization passes would not preserve).
     runtime_setjmp_ = llvm::Function::Create(
         llvm::FunctionType::get(i32, {llvm::PointerType::get(ctx_, 0)}, false),
         llvm::Function::ExternalLinkage, "setjmp", module_.get());
+    runtime_setjmp_->addFnAttr(llvm::Attribute::ReturnsTwice);
 
     // Longjmp: void longjmp(ptr, int)  (noreturn).
     // Use __myp_longjmp (runtime wrapper) instead of the raw system longjmp so
@@ -6908,11 +6912,14 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::Function::ExternalLinkage, "__myp_longjmp", module_.get());
     runtime_longjmp_->addFnAttr(llvm::Attribute::NoReturn);
 
-    // myp_throw(str) — saves the error message (longjmp is generated inline)
+    // myp_throw(str) — saves the error message (longjmp is generated inline).
+    // MUST NOT be marked noreturn: it returns after recording the message; the
+    // generated IR then calls __myp_longjmp to reach the handler. Marking it
+    // noreturn made the optimizer drop the get_jmpbuf+longjmp calls after it
+    // (treated as unreachable), breaking try/catch under -O1/-O2.
     runtime_throw_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {p}, false),
         llvm::Function::ExternalLinkage, "myp_throw", module_.get());
-    runtime_throw_->addFnAttr(llvm::Attribute::NoReturn);
 
     runtime_get_error_ = llvm::Function::Create(
         llvm::FunctionType::get(p, {}, false),
@@ -7104,6 +7111,34 @@ void CodeGen::declareRuntimeFunctions() {
 
 // -- Output --
 bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
+    // ---- IR optimization pipeline (-O1/-O2/-O3) ----
+    // Runs the standard LLVM optimization passes (mem2reg, instcombine, GVN,
+    // inlining, loop opts, ...) BEFORE the backend codegen. Without this, -O
+    // only affected backend instruction selection and the IR stayed unoptimized
+    // (alloca/load/store everywhere). Runs before TSan so instrumentation is
+    // applied to the final optimized form.
+    if (opt_level > 0) {
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB;
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+        llvm::OptimizationLevel OL =
+            opt_level >= 3 ? llvm::OptimizationLevel::O3 :
+            opt_level == 2 ? llvm::OptimizationLevel::O2 :
+                             llvm::OptimizationLevel::O1;
+        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OL);
+        MPM.addPass(llvm::VerifierPass());
+        MPM.run(*module_, MAM);
+        if (const char* d = getenv("MYPC_DUMP_OPT_IR"); d && d[0] == '1')
+            module_->print(llvm::errs(), nullptr);   // debug: dump post-opt IR
+    }
+
     // ThreadSanitizer instrumentation for generated programs.
     // Enabled via MYP_SANITIZE_TSAN=1 at mypc runtime; instruments the host
     // module so data races in @thread/@parallel user code are detected.
