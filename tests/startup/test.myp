@@ -1,26 +1,29 @@
-// @startup annotation — auto-called on new
+// @startup = 启动信号（@thread 线程入口）；构造器 = 初始化（new 时自动调用）
+// 验证: 构造器在 new 时同步调用；@startup 只在 @thread 实例的线程启动时执行
 import env;
 
-class Logger {
+class Worker {
     action:
-        @startup void init() {
-            Console.writeString("logger_init\n");
+        @constructor
+        void Worker() {
+            Console.writeString("worker_ctor\n");
         }
-        void log(string msg) {
-            Console.writeString("LOG: "); Console.writeString(msg); Console.writeString("\n");
+        @startup void run() {           // 启动信号：线程入口
+            Console.writeString("worker_startup\n");
         }
 }
 
-class Main {
+class Plain {
     action:
-        @startup void run() {
-            Console.writeString("main_run\n");
+        @constructor
+        void Plain() {
+            Console.writeString("plain_ctor\n");
         }
 }
 
 int main() {
-    Main m = new Main();
-    Logger l = new Logger();
+    Plain p = new Plain();              // 非 @thread：仅构造器
+    Worker w = new Worker() @thread;    // @thread：构造器 + @startup 线程入口
     return 0;
 }
 

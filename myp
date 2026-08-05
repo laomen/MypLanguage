@@ -116,10 +116,11 @@ def cmd_init(args):
     with open(os.path.join(src_dir, f"{name}.myp"), "w") as f:
         f.write(f'// {name} package — main module\n')
         f.write(f'class {class_name} {{\n')
-        f.write(f'    @startup\n')
-        f.write(f'    action run() {{\n')
-        f.write(f'        printf("Hello from {name} v0.1.0!\\n");\n')
-        f.write(f'    }}\n')
+        f.write(f'    action:\n')
+        f.write(f'        @constructor\n')
+        f.write(f'        void {class_name}() {{\n')
+        f.write(f'            printf("Hello from {name} v0.1.0!\\n");\n')
+        f.write(f'        }}\n')
         f.write(f'}}\n')
 
     print(f"Created package '{name}' in {dst}/")

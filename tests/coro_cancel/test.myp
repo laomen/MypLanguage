@@ -30,7 +30,7 @@ import coro;
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             // 1) 协作式取消：协程检查标记后清理退出
             long h = worker();
             Coro.resume(h, 0);            // step 0

@@ -12,8 +12,6 @@
 // ============================================================
 class RangeStream {
     action:
-        @startup void init() {}
-
         void run(int start, int end) {
             int i = start;
             while (i < end) {
@@ -32,8 +30,6 @@ class RangeStream {
 // ============================================================
 class IntStream {
     action:
-        @startup void init() {}
-
         void run(int[] data, int n) {
             int i = 0; while (i < n) {
                 valueEmitted(data[i]);
@@ -51,8 +47,6 @@ class IntStream {
 // ============================================================
 class DoubleStream {
     action:
-        @startup void init() {}
-
         void run(double[] data, int n) {
             int i = 0; while (i < n) {
                 valueEmitted(data[i]);
@@ -72,7 +66,7 @@ class DoubleStream {
 //
 //   1. event:   valueEmitted(T value);  —— 定义发射的数据类型
 //   2. run()    —— 遍历数据源，每拿到一个值就调用 valueEmitted()
-//   3. @startup void init() {}  —— 占位（编译器要求，空实现即可）
+//   （构造器/字段默认值可选，用于初始化流状态）
 //
 // 映射到 mapping() 链时，只要 event 类型匹配就能对接。
 //
@@ -81,8 +75,6 @@ class DoubleStream {
 // ----------------------------------------------------------
 // class FileLineStream {
 //     action:
-//         @startup void init() {}
-//
 //         void run() {
 //             // 每次读取一行
 //             string line = Console.readString();
@@ -108,8 +100,6 @@ class DoubleStream {
 // ----------------------------------------------------------
 // class CollatzStream {
 //     action:
-//         @startup void init() {}
-//
 //         void run(int start) {
 //             int n = start;
 //             while (n > 1) {

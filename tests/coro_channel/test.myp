@@ -29,7 +29,7 @@ import channel;
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Channel ch = new Channel();
             ch.init(2);
 

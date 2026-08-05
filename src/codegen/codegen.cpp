@@ -2388,10 +2388,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         }
         builder_.CreateStore(v, a);
 
-        // Auto-call @startup actions for newly created class instances
+        // Store instance in global for mapping handler access
         if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
             auto& ne = static_cast<const NewExpr&>(*d.init_expr);
-            // Store instance in global for mapping handler access
             // Check both by class name and variable name
             auto git = class_instance_globals_.find(ne.class_name);
             if (git == class_instance_globals_.end())
@@ -2410,25 +2409,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 auto* loaded = builder_.CreateLoad(lt, a, d.name);
                 builder_.CreateStore(loaded, git->second);
             }
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != ne.class_name) continue;
-                for (auto& act : cls.actions) {
-                    if (act.has_startup) {
-                        auto fn = cls.name + "_" + act.name;
-                        auto* start_func = module_->getFunction(fn);
-                        if (start_func) {
-                            auto* loaded = builder_.CreateLoad(lt, a, d.name);
-                            std::vector<llvm::Value*> init_args;
-                            init_args.push_back(loaded);
-                            // Pass constructor arguments from NewExpr
-                            for (auto& arg : ne.args) {
-                                init_args.push_back(generateExpr(*arg));
-                            }
-                            builder_.CreateCall(start_func, init_args);
-                        }
-                    }
-                }
-            }
+            // NOTE: legacy `new C(args)` → auto-call `@startup init` binding was
+            // REMOVED (v3.9 migration): constructors handle initialization via
+            // generateNewExpr; @startup is strictly a start signal (thread entry).
         }
     }
 }

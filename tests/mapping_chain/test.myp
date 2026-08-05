@@ -7,7 +7,7 @@ import time;
 // 传感器：产生数据
 class Sensor {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeString("[Sensor] started, generating data...\n");
             // 触发数据事件
             dataReady(42);
@@ -49,7 +49,7 @@ mapping() {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeString("[Mapping 事件链验证]\n\n");
 
             Sensor s = new Sensor();

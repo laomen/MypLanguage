@@ -1,6 +1,6 @@
 # MYP 类构造器设计（Constructors / Copy / Assignment）
 
-> 状态：**设计定稿**（v1.0）——全部决策点已确认，待实施
+> 状态：**已实施**（v3.9.0）——M1-M4 完成 + @startup→构造器迁移完成
 > 语法：`@constructor` 注解 + 函数名==类名隐式构造器
 > 关联：语言规格 v1.0（`docs/grammar.md`）、版本策略（`docs/CHANGELOG.md`）、
 > 类系统（`docs/manual.md` §6）、算子系统（`docs/operators.md`）
@@ -140,14 +140,14 @@ new ClassName(args)
 json/net/fs/regex/time 等 stdlib 依赖它）。本设计把初始化归位给构造器，
 `@startup` 回归启动信号。
 
-**迁移策略（彻底迁移，不留 legacy 混淆）**：
+**迁移策略（✅ 已全部执行，v3.9.0）**：
 
-| 步骤 | 内容 |
-|---|---|
-| 1 | 实现 `@constructor` 注解 + 函数名==类名隐式构造器识别，`new C(args)` 绑定构造器 |
-| 2 | **全部迁移**当前库 + 测试里的 `@startup init(...)` → 构造器（stdlib 9 处 + deeplearning 2 处 + tests 若干） |
-| 3 | **移除** `new C(args)` 自动调 `@startup` 的 legacy 绑定（codegen）——`@startup` 严格只作启动信号（@thread 线程入口） |
-| 4 | 空占位 `@startup void init() {}`（stream/layers）直接删除（编译器并不强制） |
+| 步骤 | 内容 | 状态 |
+|---|---|---|
+| 1 | 实现 `@constructor` 注解 + 函数名==类名隐式构造器识别，`new C(args)` 绑定构造器 | ✅ M1-M3 |
+| 2 | **全部迁移** `@startup init(...)` → 构造器（stdlib 8 文件 + deeplearning + 41 测试 + examples/docs） | ✅ |
+| 3 | **移除** `new C(args)` 自动调 `@startup` 的 legacy 绑定（codegen）——`@startup` 严格只作启动信号 | ✅ |
+| 4 | 空占位 `@startup void init() {}`（stream/layers）直接删除 | ✅ |
 
 **原则**：`@startup` 只保留"并行/事件驱动代码中开始操作"的语义（@thread 启动、
 启动定时器、触发首事件）；初始化一律走构造器。两者语义不混淆。

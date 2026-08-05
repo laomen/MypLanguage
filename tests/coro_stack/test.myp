@@ -35,7 +35,7 @@ class Worker {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Worker w = new Worker();
             long h1 = w.big();
             Coro.resume(h1, 0);

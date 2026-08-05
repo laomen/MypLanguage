@@ -24,7 +24,7 @@ class Waiter {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Waiter w = new Waiter();
             long h = w.run();         // spawn → waiting，事件等待（阻塞，不在就绪队列）
             Signal s = new Signal();

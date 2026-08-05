@@ -31,7 +31,7 @@ class Worker {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Worker p = new Worker();
             long h = p.parent();     // spawn → 父协程内部驱动完子协程 → parent mid → await
             Console.writeString("after spawn\n");

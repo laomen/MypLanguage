@@ -22,7 +22,7 @@ const long BIGL = 100000L * 10L;  // 1000000
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeString("FIB10=");
             Console.write(FIB10());
             Console.writeString(" FIB20=");

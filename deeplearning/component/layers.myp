@@ -9,8 +9,6 @@
 // ============================================================
 class Dense {
     action:
-        @startup void init() {}
-
         void configure(int nIn, int nOut) {
             nIn_ = nIn; nOut_ = nOut;
         }
@@ -65,7 +63,6 @@ class Dense {
 // ============================================================
 class Sigmoid {
     action:
-        @startup void init() {}
         void configure(int n) { n_ = n; }
 
         void setInputFrom(double[] src) {

@@ -47,7 +47,7 @@ class Worker {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             // 1) 无参协程 + 多协程交错
             Worker a = new Worker();
             a.setLabel("A");

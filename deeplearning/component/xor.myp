@@ -23,7 +23,7 @@ double sig_d(double x) {
 
 class Trainer {
     action:
-        @startup void run() {
+        @constructor void run() {
             double[4] x0; x0[0]=0.0; x0[1]=0.0; x0[2]=1.0; x0[3]=1.0;
             double[4] x1; x1[0]=0.0; x1[1]=1.0; x1[2]=0.0; x1[3]=1.0;
             double[4] t; t[0]=0.0; t[1]=1.0; t[2]=1.0; t[3]=0.0;

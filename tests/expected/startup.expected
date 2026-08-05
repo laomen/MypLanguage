@@ -1,2 +1,3 @@
-main_run
-logger_init
+plain_ctor
+worker_ctor
+worker_startup

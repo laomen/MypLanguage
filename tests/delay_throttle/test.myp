@@ -15,7 +15,7 @@ class Handler {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeString("firing\n");
             fire();
             Time.sleep(50);

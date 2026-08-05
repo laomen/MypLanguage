@@ -60,7 +60,8 @@ class Fs {
 // ============================================================
 class Path {
     action:
-        @startup void init(string path) {
+        @constructor
+        void Path(string path) {
             path_ = path;
         }
 

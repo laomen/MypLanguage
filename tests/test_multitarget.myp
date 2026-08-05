@@ -4,7 +4,7 @@ import env;
 
 class Sensor {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeLine("sensor start");
             valueRead(42);
         }

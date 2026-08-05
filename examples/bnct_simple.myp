@@ -11,7 +11,7 @@ double rnd() {
 
 class NeutronSim {
     action:
-        @startup void run() {
+        @constructor void run() {
             srand(12345);
             double sigmaT = 0.5;    // 总截面 cm^-1
             double sigmaB = 0.05;   // 硼俘获截面 cm^-1

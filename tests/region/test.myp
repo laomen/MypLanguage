@@ -26,7 +26,7 @@ class Pipeline {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Console.writeString("[@region 测试]\n");
             Pipeline p = new Pipeline();
             int frame = 0;

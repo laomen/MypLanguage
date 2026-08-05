@@ -24,7 +24,8 @@ enum LogLevel {
 class Logger {
     action:
         // 创建 Logger，name 为日志器名称
-        @startup void init(string name) {
+        @constructor
+        void Logger(string name) {
             name_ = name;
             level_ = 1;  // 默认 INFO
         }

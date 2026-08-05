@@ -10,7 +10,7 @@ class Logger {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Logger log;
             // 实例级映射 + @scope: 函数退出时 handler 自动解注册
             mapping() @scope {

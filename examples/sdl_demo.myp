@@ -2,7 +2,7 @@ import sdl;
 
 class App {
     action:
-        @startup void run() {
+        @constructor void run() {
             int result = SDL.open("MYP SDL Demo", 800, 600);
             if (result != 0) {
                 return;

@@ -13,7 +13,7 @@ import timeline;
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             long h = waiter();
             Timeline tl;
             tl.startTimeout(40);          // 40ms 后 fire Timeline.timeout

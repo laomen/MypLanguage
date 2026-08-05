@@ -96,7 +96,7 @@ class MLP {
 // ========================
 class Trainer {
     action:
-        @startup void run() {
+        @constructor void run() {
             MLP net = new MLP();
             net.init();
             net.randomW();

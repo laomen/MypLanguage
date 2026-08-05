@@ -13,7 +13,7 @@ class Foo {
 
 class Tester {
     action:
-        @startup void go() {
+        @constructor void go() {
             long n = 64L;
             double[] d = new double[n];
             for (long i = 0L; i < n; i = i + 1L) d[i] = 1.0;

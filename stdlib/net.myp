@@ -34,7 +34,8 @@ ffi void myp_net_close(int fd);
 // ============================================================
 class TcpServer {
     action:
-        @startup void init(int port) {
+        @constructor
+        void TcpServer(int port) {
             fd_ = myp_net_server(port);
         }
 
@@ -64,7 +65,8 @@ class TcpServer {
 // ============================================================
 class TcpClient {
     action:
-        @startup void init() {
+        @constructor
+        void TcpClient() {
             fd_ = -1;
         }
 

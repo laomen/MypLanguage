@@ -19,7 +19,7 @@ import env;
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             genAssign("x", 42);
             Console.writeString("x=");
             Console.write(x);

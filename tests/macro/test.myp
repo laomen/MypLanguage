@@ -25,7 +25,7 @@ macro log($a) {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             int v = 0;
             repeat(3, v = v + 10);      // v = 30
             addN(v, 5);                 // v = 35

@@ -23,7 +23,7 @@ import time;
 
 class GameOfLife {
     action:
-        @startup void run() {
+        @constructor void run() {
             cols = 40;
             rows = 20;
             speed = 150;    // ms per generation

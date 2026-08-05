@@ -16,7 +16,7 @@ class Random {
 
 class Tester {
     action:
-        @startup void go() {
+        @constructor void go() {
             long n = 8L;
             double[] r = new double[n];
             @gpu for (long i = 0L; i < n; i = i + 1L) {

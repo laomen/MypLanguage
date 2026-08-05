@@ -11,7 +11,7 @@ import time;
 
 class DungeonGame {
     action:
-        @startup void run() {
+        @constructor void run() {
             COLS = 40; ROWS = 15;
             level = 1; score = 0; gameOver = 0;
             hp = 20; maxHp = 20; dirX = 1; dirY = 0;

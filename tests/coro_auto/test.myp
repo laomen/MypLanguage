@@ -22,7 +22,7 @@ class Worker {
 
 class Main {
     action:
-        @startup void run() {
+        @constructor void run() {
             Worker a = new Worker(); a.setLabel("A");
             Worker b = new Worker(); b.setLabel("B");
             Worker c = new Worker(); c.setLabel("C");

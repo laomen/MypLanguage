@@ -109,7 +109,8 @@ class Str {
 // ============================================================
 class StringBuilder {
     action:
-        @startup void init() {
+        @constructor
+        void StringBuilder() {
             cnt_ = 0;
         }
 

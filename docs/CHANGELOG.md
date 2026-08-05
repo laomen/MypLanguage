@@ -43,6 +43,13 @@
     实例指针（`c.data_[i]` 写入实例内存）；`checkStructMethods` 排除构造器为兄弟方法
     （其名==struct 名遮蔽 struct 类型名）。
   - 设计见 `docs/constructor.md`；测试 `tests/constructor/` + `tests/copy/`。
+- **@startup → 构造器迁移（不留 legacy）**：
+  - stdlib 8 文件（`json`/`fs.Path`/`logger`/`net.TcpServer`/`net.TcpClient`/`regex`/
+    `text.StringBuilder`/`time.Timer`）+ `stream`×3 与 `layers`×2 空占位删除。
+  - 41 个测试 + examples + docs/examples + deeplearning + BNCT 的 legacy `@startup`
+    （非 @thread）→ `@constructor`；`tests/startup` 重写为新语义（构造器 + @thread 线程入口）。
+  - **移除** codegen 中 `new C(args)` 自动调 `@startup` 的 legacy 绑定；
+    `@startup` 严格只作启动信号（@thread 线程入口）。
   - 验证：`-O0`/ASAN 全套 121/121。
 
 ### v3.8.0

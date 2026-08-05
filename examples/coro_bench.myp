@@ -33,7 +33,7 @@ long noop(long x) {
 
 class Bench {
     action:
-        @startup void run() {
+        @constructor void run() {
             long N = 1000000L;   // 100 万次切换
             long M = 8L;         // 多协程数量
             long R = 100000L;    // 每协程 await 次数（多协程）

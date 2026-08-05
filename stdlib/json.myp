@@ -23,7 +23,8 @@ ffi void myp_json_free(long handle);
 // JSON 文档解析器
 class Json {
     action:
-        @startup void init(string jsonStr) {
+        @constructor
+        void Json(string jsonStr) {
             handle_ = myp_json_parse(jsonStr);
             if (handle_ == 0L) {
                 JsonError e = new JsonError();
