@@ -135,6 +135,14 @@ if printf '%s' "$auto_out" | grep -q "Installed mymath v0.2.0"; then
 else
     bad "build 自动安装失败: $auto_out"
 fi
+# 关键回归：首次 build（myp_packages 尚不存在）必须能编译成功。
+# 曾在 resolvePackagePath 先于自动安装求值时漏传 --package-path → cannot find import
+# （§11.5）。只查 "Installed" 会漏掉该 bug（run 二次 build 时 myp_packages 已存在）。
+if printf '%s' "$auto_out" | grep -q "Build successful"; then
+    ok "首装后首次 build 编译成功（package-path 生效）"
+else
+    bad "首次 build 编译失败: $auto_out"
+fi
 run_out=$( cd "$TMP/regapp2" && "$TMP/myp" run 2>&1 )
 if printf '%s' "$run_out" | grep -q "mul=42"; then
     ok "自动安装依赖可运行 (mul=42)"

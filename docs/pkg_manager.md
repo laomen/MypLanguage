@@ -278,3 +278,14 @@ myp list              列出锁定依赖
 ### 11.4 验证
 - `tests/test_myp_pm.sh` 扩展 v2 段（add/list/build 自动安装/run/remove，5 断言）→ **14/14**；
   -O0/ASAN 全套 **124/124**；`build/myp` 与 `build-asan/myp` 均端到端可用。
+
+### 11.5 修复：build 自动安装首依赖时漏传 `--package-path`
+- **现象**：全新项目（无 `myp_packages/`）`myp build` 能自动安装缺失依赖，但随后编译报
+  `cannot find import '<dep>'`。
+- **根因**：`cmdBuild` 在**依赖自动安装循环之前**就调用 `resolvePackagePath()`（其内部以
+  `Fs.isDir("myp_packages")` 判断是否加入搜索路径）；首次自动安装时 `myp_packages/` 刚被
+  创建，过早解析得到空路径 → `--package-path` 未传给 mypc → 找不到 import。
+- **修复**：`resolvePackagePath()` 移到自动安装循环之后求值（此时 `myp_packages/` 已存在）。
+- **回归**：`tests/test_myp_pm.sh` 的 build 自动安装断言补查首次 build 的 `Build successful`
+  （此前只查 `Installed ...`，而 run 二次 build 时 `myp_packages` 已存在会掩盖该 bug）；
+  配合 `file://` git-clone registry 离线模拟 Gitee 远程拉包全链路验证。
