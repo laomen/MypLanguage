@@ -243,7 +243,7 @@ PM_FAIL=0
 if [ -f "$PROJ_ROOT/tests/test_myp_pm.sh" ]; then
     pm_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_pm.sh" 2>&1)
     if echo "$pm_out" | grep -qE "myp-pm PASS=[0-9]+ FAIL=0"; then
-        echo -e "${GREEN}PASS${NC} (tools/myp.myp 自举包管理器)"
+        echo -e "${GREEN}PASS${NC} (tools/pm/main.myp 自举包管理器)"
         PM_PASS=1
     else
         echo -e "${RED}FAIL${NC}"
