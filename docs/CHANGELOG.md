@@ -65,6 +65,16 @@
   - 验证：`-O0`/ASAN 全套 123/123。
 
 ### v3.8.0
+- **切片类型 `slice<T>` + `@region` 两级 arena（P4，additive）**：
+  - P4a `slice<T>` 值类型：`{ T* data; int64 len }` fat pointer；`new slice<T>(n)`、
+    `s[i]`（运行时边界检查）、`.size()`/`.length()`、值传递/返回（逃逸→进程级）、
+    浅拷贝共享 data、空 slice；grammar v1.0 列为内置类型。
+  - P4b 两级 arena + `@region` 注解：region-local arena（`emitRegionEnter` + TLS 追踪），
+    `@region` 函数退出时回收本 region 分配，返回引用类型时逃逸到上层。
+  - P4c slice 集合二元：`@op("+")`/`@op("*")` 元素级运算 + 标量广播（A+B / A*k / k*A）。
+  - P4d grammar 增量（`slice<T>`/`@region` 入规格）+ region 动态作用域（嵌套/逃逸规则）。
+  - 测试：`tests/slice/`、`tests/slice_binop/`、`tests/slice_more/`、`tests/region/`、
+    `tests/region_chain/`。设计见 `docs/slice.md`；算子见 `docs/operators.md` P4。
 - **集合动态扩容**（`stdlib/collections.myp`）：`ArrayList`/`HashMap`/`Set`/`Deque`/`Queue`/
   `Stack`/`PriorityQueue`/`LinkedList`/`StrHashMap` 全部突破固定 1024 上限。
   - 惰性分配（首操作时 `new T[cap_]`）+ 容量翻倍扩容；哈希类 75% 负载因子翻倍重建；

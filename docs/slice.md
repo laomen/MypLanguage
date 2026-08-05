@@ -1,10 +1,10 @@
 # MYP 切片类型设计（Slice）
 
-> 状态：**设计定稿 v0.2**（评审通过，待实施）
+> 状态：**已实施（v3.8.0，P4a-P4d）**——`slice<T>` 类型 + 两级 arena/`@region` + 集合二元
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 算子系统（`docs/operators.md` P4：元素级提升 + 集合二元）
 > 本文档提出带运行时长度的集合类型——**切片（slice）**，并配套两级 arena +
-> `@region` 注解 + 逃逸分析的内存模型，作为 P4 的地基。实施前请先评审。
+> `@region` 注解 + 逃逸分析的内存模型。P4a-P4d 已全部实施（见 `docs/CHANGELOG.md` v3.8.0）。
 
 ---
 
@@ -260,7 +260,7 @@ region 内 slice 用于 GPU 传输：`array_byte_sizes_` 是编译期表，与 r
 
 ---
 
-## 4. 设计取舍（待评审拍板）
+## 4. 设计取舍（已定案）
 
 ### 4.1 `new double[n]` 的返回类型
 

@@ -1,14 +1,15 @@
 # MYP 算子系统设计 (Operators)
 
-> 状态：**已实施（v0.3）** —— P1+P2+P3 完成（v2.4.1/v2.4.2），P4 待实施
+> 状态：**已实施（v0.3）** —— P1+P2+P3 完成（v2.4.1/v2.4.2），P4 完成（v3.8.0）
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）
 > 本文档是"运算符 = 算子"统一模型的形式化设计；后续变更受 `docs/CHANGELOG.md` 版本策略约束。
 
 ## 状态
 
 > **v0.3（已实施）**：P1+P2+P3 已完成 —— 顶层 `@op` 函数 + struct `operator:` 节 +
-> 二元算子重载分发 + `|>` 管道。P4（元素级提升 + 集合二元）待实施。
-> 回归测试：`tests/operators/`、`tests/pipe/`（正常 + ASAN + TSan 套件通过）。
+> 二元算子重载分发 + `|>` 管道。P4（元素级提升 + 集合二元）已完成（v3.8.0，
+> `slice<T>` + `@op` 集合二元，见 `docs/slice.md`）。
+> 回归测试：`tests/operators/`、`tests/pipe/`、`tests/slice_binop/`（正常 + ASAN + TSan 套件通过）。
 
 ---
 
