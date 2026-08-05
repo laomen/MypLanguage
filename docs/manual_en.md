@@ -820,7 +820,7 @@ Console.getch();                // Non-blocking read character
 ```myp
 import collections;
 
-// ArrayList<T> — dynamic array (capacity 1024)
+// ArrayList<T> — dynamic array (auto-growing, no 1024 limit)
 ArrayList<int> list = new ArrayList<int>();
 list.add(10);
 list.add(20);
@@ -828,7 +828,7 @@ int first = list.get(0);   // 10
 list.set(1, 30);
 int n = list.size();        // 2
 
-// HashMap<K,V> — hash table (capacity 1024, linear probing)
+// HashMap<K,V> — hash table (linear probing, auto-growing)
 HashMap<int, string> map = new HashMap<int, string>();
 map.put(1, "one");
 map.put(2, "two");
@@ -836,7 +836,7 @@ string v = map.get(1, "?");  // "one"
 bool has = map.contains(2);  // true
 map.remove(1);
 
-// Set<T> — hash set (capacity 1024)
+// Set<T> — hash set (auto-growing)
 Set<int> s = new Set<int>();
 s.add(42);
 s.add(17);
@@ -1079,6 +1079,26 @@ class Main {
 
 ---
 
+### `import memory` — Dynamic Memory Management
+
+```myp
+import memory;
+
+// Bridge to the C standard library malloc/free/realloc (pointers carried as `long`,
+// same convention as the json/regex handles)
+long p = Memory.alloc(1024);            // allocate (returns a pointer)
+Memory.free(p);                         // free
+p = Memory.realloc(p, 2048);            // reallocate
+Memory.release(p);                      // alias for free
+```
+
+> **Use cases**: ① **Deterministic release** — arena-allocated `new T[n]` is only reclaimed
+> at process exit / `@region` end; for temporaries with a clear lifetime, `Memory` releases
+> immediately (controls peak memory). ② **FFI pointer interop** — raw pointers passed to C
+> libraries (SDL/net/GPU/third-party). ③ **Byte buffers / manual layout** — raw buffers for
+> binary protocols and file formats. For dynamic arrays use `ArrayList<T>` from `collections`
+> (auto-growing); this module only manages raw memory.
+
 ## 12. Compilation & Tools
 
 ### Compiler
@@ -1104,6 +1124,123 @@ cat myapp.myp.ll
 # Specify package path
 ./build/mypc --package-path myp_packages myapp.myp
 ```
+
+#### Full Command-Line Options
+
+| Option | Description |
+|---|---|
+| `-o <file>` | Output file name |
+| `-O0` / `-O1` / `-O2` / `-O3` | Optimization level (default `-O0`; `-O2` runs the IR optimization pipeline) |
+| `-g`, `--debug` | Generate DWARF debug info (breakpoints/lines/variables) |
+| `--passes <p>` | Run a custom MYP pass (e.g. `myp-pass`) |
+| `--emit-llvm` | Write LLVM IR to a `.ll` file (skips linking) |
+| `--test` | Generate and run a test runner (`@test`) |
+| `--shared` / `--static` | Build a shared / static library |
+| `--trace` | Enable runtime event tracing |
+| `--package-path <dir>` | Local package directory |
+| `--macro-expand` | Dump the AST after macro expansion |
+| `--stdlib <path>` | stdlib directory |
+| `--version` / `--help` | Version / help |
+
+Compiling multiple files (`mypc a.myp b.myp`) merges them into one module and naturally
+enjoys cross-file optimization (no LTO needed).
+
+#### Optimization (`-O` and custom passes)
+
+```bash
+./build/mypc -O2 myapp.myp        # IR optimization pipeline (mem2reg/GVN/inline/loops...)
+./build/mypc -O0 myapp.myp        # default: fast compile, debug-friendly
+./build/mypc --passes myp-pass -O0 myapp.myp   # append a custom MYP pass
+```
+
+- `-O1/-O2/-O3` run the LLVM standard optimization pipeline (default `-O0` disables optimization).
+- `--passes myp-pass` runs the MYP-specific pass (removes compiler-generated dead stores).
+- Design & implementation: `docs/optimization_debugging.md`.
+
+#### Debug (`-g` DWARF + gdb)
+
+```bash
+./build/mypc -g myapp.myp          # or --debug; recommend -g -O0
+gdb ./myapp.out
+(gdb) break myapp.myp:10           # breakpoint by source line
+(gdb) run
+(gdb) print variable                # inspect arguments/locals
+(gdb) next / step / continue
+```
+
+- `-g` generates DWARF: function breakpoints, source line numbers, arguments/locals, type info.
+- Class methods appear as `Class_method` symbols; debugging inside coroutines is a known limitation.
+- Design: `docs/optimization_debugging.md` (Part B).
+
+#### Debug (VS Code DAP)
+
+MYP ships `myp_debug` (a DAP ↔ gdb bridge) for breakpoints/stepping/variables in VS Code:
+
+```bash
+# Compile an executable with debug info
+./build/mypc -g myapp.myp
+
+# Run the DAP server directly (for VS Code / any DAP client)
+./build/myp_debug
+```
+
+**VS Code**: after installing the `vscode-myp` extension, use a `.vscode/launch.json`:
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "MYP Launch",
+      "type": "myp",
+      "request": "launch",
+      "program": "${workspaceFolder}/myapp.out"
+    }
+  ]
+}
+```
+
+- `program` points to the `-g`-compiled executable.
+- Set `myp.debuggerPath` to specify the `myp_debug` path (auto-detected by default).
+- Supports: breakpoints (source lines), stepping (next/stepIn/stepOut), call stack, locals,
+  hover evaluation.
+
+#### Metaprogramming (`@eval` / `macro` / `@macro`)
+
+MYP offers three layers of metaprogramming (design: `docs/metaprogramming.md`):
+
+**1. `@eval` compile-time evaluation (pure functions)**
+
+```myp
+@eval int fib(int n) {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+const int FIB10 = fib(10);   // computed at compile time: 55 (ret i32 55)
+```
+
+**2. `macro` declarative macros (AST templates)**
+
+```myp
+macro repeat($n, $body) {
+    for (int _i = 0; _i < $n; _i++) { $body }
+}
+repeat(3, total = total + 10);   // expands to a for loop ×3
+```
+
+**3. `@macro` procedural macros (`quote` code templates)**
+
+```myp
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };
+    }
+    return out;
+}
+makeCalls(3);                    // generates 3 Console.write(...) statements
+```
+
+- Debugging: `--macro-expand` dumps the expanded AST.
 
 ### Test Framework
 
