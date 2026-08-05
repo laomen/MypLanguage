@@ -28,13 +28,13 @@ import "./fmt.myp";
             }
             f.close();
             if (cnt > 0 && Str.len(lines[cnt - 1]) == 0) cnt = cnt - 1;
-            // 不用 StringBuilder（固定 string[256]，文件行数多时越界），直接拼接
-            string result = "";
+            // StringBuilder（stdlib 已修复动态扩容，多行文件不再越界）
+            StringBuilder sb = new StringBuilder();
             for (int i = 0; i < cnt; i = i + 1) {
-                result = result + lines[i];
-                result = result + "\n";
+                sb.append(lines[i]);
+                sb.append("\n");
             }
-            return result;
+            return sb.toString();
         }
 
         void printHelp() {

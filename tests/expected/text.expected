@@ -1,2 +1,10 @@
 sb=Hello, World! cnt=4
+
  cleared= cnt=0
+
+ cap_cnt=1000
+ cap_len=1000
+
+ al=l1
+l2
+ cnt=2

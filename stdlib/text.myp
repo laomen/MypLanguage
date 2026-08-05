@@ -4,7 +4,7 @@
 //   len/s contains/startsWith/endsWith/indexOf
 //   substring/replace/toUpper/toLower/trim/split
 //
-// StringBuilder  — 字符串构建器（固定容量）
+// StringBuilder  — 字符串构建器（动态扩容）
 //   将多个字符串片段收集后一次性拼接，减少中间对象。
 //
 // 用法：
@@ -109,25 +109,29 @@ class Str {
 }
 
 // ============================================================
-// StringBuilder — 字符串构建器
+// StringBuilder — 字符串构建器（动态扩容）
+//   片段存于 string[]（惰性分配，容量翻倍增长），无固定上限。
+//   参考 collections.ArrayList 的扩容模式。
 // ============================================================
 class StringBuilder {
     action:
         @constructor
         StringBuilder() {
             cnt_ = 0;
+            cap_ = 0;
         }
 
-        // 追加字符串
+        // 追加字符串（容量不足自动翻倍扩容）
         void append(string s) {
-            parts_[cnt_] = s;
+            if (data_ == null) { cap_ = 8; data_ = new string[cap_]; }
+            if (cnt_ >= cap_) grow();
+            data_[cnt_] = s;
             cnt_ = cnt_ + 1;
         }
 
         // 追加并换行
         void appendLine(string s) {
-            parts_[cnt_] = s + "\n";
-            cnt_ = cnt_ + 1;
+            append(s + "\n");
         }
 
         // 清空缓冲区
@@ -139,7 +143,7 @@ class StringBuilder {
         string toString() {
             string result = "";
             for (int i = 0; i < cnt_; i = i + 1) {
-                result = result + parts_[i];
+                result = result + data_[i];
             }
             return result;
         }
@@ -148,7 +152,18 @@ class StringBuilder {
             return cnt_;
         }
 
+    function:
+        // 容量翻倍
+        void grow() {
+            int nc = cap_ * 2;
+            string[] nd = new string[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[i];
+            data_ = nd;
+            cap_ = nc;
+        }
+
     property:
-        string[256] parts_;
+        string[] data_;
         int cnt_;
+        int cap_;
 }

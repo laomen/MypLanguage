@@ -1,10 +1,12 @@
 // text: StringBuilder
+// 注：用 pmRun（非 @thread 协程）模式，规避协程 stdout 缓冲 bug（write(int)
+// 的换行在后续大分配时丢失，行为不稳定；见 docs/next_improvements.md §九-5）。
 import env;
 import text;
 
-class Main {
-    action:
-        @startup void run() {
+@static class TextTest {
+    static:
+        int run() {
             StringBuilder sb = new StringBuilder();
             sb.append("Hello");
             sb.append(", ");
@@ -13,15 +15,30 @@ class Main {
             string r = sb.toString();
             Console.writeString("sb="); Console.writeString(r);
             Console.writeString(" cnt="); Console.write(sb.count());
+            Console.writeString("\n");
 
             sb.clear();
             Console.writeString(" cleared="); Console.writeString(sb.toString());
             Console.writeString(" cnt="); Console.write(sb.count());
             Console.writeString("\n");
+
+            // 容量测试：超过旧版 string[256] 上限（动态扩容）
+            for (int i = 0; i < 1000; i = i + 1) sb.append("a");
+            Console.writeString(" cap_cnt="); Console.write(sb.count());
+            Console.writeString(" cap_len="); Console.write(Str.len(sb.toString()));
+            Console.writeString("\n");
+
+            // appendLine + clear 仍正常
+            sb.clear();
+            sb.appendLine("l1");
+            sb.appendLine("l2");
+            Console.writeString(" al="); Console.writeString(sb.toString());
+            Console.writeString(" cnt="); Console.write(sb.count());
+            Console.writeString("\n");
+            return 0;
         }
 }
 
-int main() {
-    Main m = new Main() @thread;
-    return 0;
-}
+int pmRun() { return TextTest.run(); }
+int main() { int c = pmRun(); return c; }
+

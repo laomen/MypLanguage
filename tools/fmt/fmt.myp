@@ -64,10 +64,9 @@ import "./lexer.myp";
         }
 
         // 提取 [from, to) 间注释（跳过空白）
-        // 注意：不能用 stdlib StringBuilder（固定 string[256]，按字符追加会越界），
-        // 复刻 C++ extractComments 用可增长字符串拼接
+        // 用 StringBuilder（stdlib 已修复：动态扩容，不再越界）
         string extractComments(string src, int from, int to) {
-            string result = "";
+            StringBuilder r = new StringBuilder();
             int offset = from;
             while (offset < to) {
                 string c = Str.substring(src, offset, offset + 1);
@@ -78,25 +77,25 @@ import "./lexer.myp";
                 if (c == "/" && offset + 1 < to) {
                     string n = Str.substring(src, offset + 1, offset + 2);
                     if (n == "/") {
-                        if (Str.len(result) > 0) result = result + "\n";
-                        result = result + "//";
+                        if (r.count() > 0) r.append("\n");
+                        r.append("//");
                         offset = offset + 2;
                         while (offset < to && Str.substring(src, offset, offset + 1) != "\n") {
-                            result = result + Str.substring(src, offset, offset + 1);
+                            r.append(Str.substring(src, offset, offset + 1));
                             offset = offset + 1;
                         }
                         continue;
                     } else if (n == "*") {
-                        if (Str.len(result) > 0) result = result + "\n";
-                        result = result + "/*";
+                        if (r.count() > 0) r.append("\n");
+                        r.append("/*");
                         offset = offset + 2;
                         while (offset + 1 < to && !(Str.substring(src, offset, offset + 1) == "*"
                                 && Str.substring(src, offset + 1, offset + 2) == "/")) {
-                            result = result + Str.substring(src, offset, offset + 1);
+                            r.append(Str.substring(src, offset, offset + 1));
                             offset = offset + 1;
                         }
                         if (offset + 1 < to) {
-                            result = result + "*/";
+                            r.append("*/");
                             offset = offset + 2;
                         }
                         continue;
@@ -104,7 +103,7 @@ import "./lexer.myp";
                 }
                 break;
             }
-            return result;
+            return r.toString();
         }
 
         // 输出（stdout 或 File）

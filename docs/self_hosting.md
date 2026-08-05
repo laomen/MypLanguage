@@ -118,7 +118,8 @@ myp_fmt.myp（或 myp_pkg/fmt.myp）
   被写坏）。补 `LongLiteral → value+"L"`，并在 `keywordString` 补 `<<`/`>>`/`&`/`^`/`|`/`|>`。
 
 **发现的 stdlib bug**（记录于 `docs/next_improvements.md`）：`StringBuilder` 固定
-`string[256] parts_` 且无边界检查，逐字符/多行追加会越界写坏堆（本工具改用字符串拼接）。
+`string[256] parts_` 且无边界检查，逐字符/多行追加会越界写坏堆。**已修复**：改
+`string[]` 动态扩容（参考 `ArrayList`）；本工具已改回使用 StringBuilder 并通过全量对拍。
 
 ### 4.4 验收标准（硬指标）
 
