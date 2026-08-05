@@ -70,6 +70,7 @@ set(SOURCES
     src/codegen/codegen.cpp
     src/codegen/myp_passes.cpp
     src/eval/eval.cpp
+    src/macro/macro_expand.cpp
     src/fmt/fmt.cpp
 )
 
@@ -86,6 +87,7 @@ set(HEADERS
     include/mylang/CodeGen.h
     include/mylang/MypPasses.h
     include/mylang/Eval.h
+    include/mylang/Macro.h
     include/mylang/Fmt.h
 )
 

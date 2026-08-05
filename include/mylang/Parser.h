@@ -44,6 +44,8 @@ private:
     std::unique_ptr<FuncDecl> parseFunction(bool allow_void_return = true);
     std::unique_ptr<EnumDecl> parseEnumDecl();
     std::unique_ptr<FFIDecl> parseFFIDecl();
+    std::unique_ptr<MacroDecl> parseMacroDecl();
+    bool isMacroStmtPlaceholder();
     std::vector<std::string> parseTypeParamList();
     bool parseTypeParamConstraints(ClassDecl& cls);
     std::vector<TypeNode> parseTypeArgList();

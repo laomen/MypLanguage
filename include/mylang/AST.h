@@ -234,6 +234,7 @@ enum class ExprKind {
     Pipe,
     Try,
     Await,
+    MacroParam,
 };
 
 struct Expr {
@@ -279,6 +280,14 @@ struct IdentifierExpr : Expr {
     std::string name;
     IdentifierExpr(std::string n, SourceRange r)
         : Expr(ExprKind::Identifier, r), name(std::move(n)) {}
+};
+
+/// A macro template parameter placeholder `$name` inside a macro body.
+/// Replaced with the captured argument AST during macro expansion.
+struct MacroParamExpr : Expr {
+    std::string name;
+    MacroParamExpr(std::string n, SourceRange r)
+        : Expr(ExprKind::MacroParam, r), name(std::move(n)) {}
 };
 
 enum class BinaryOpKind {
@@ -610,6 +619,16 @@ struct ImportDecl {
     SourceRange range;
 };
 
+/// A top-level declarative macro: `macro name($a, $b) { <template body> }`.
+/// The body is a normal MYP block whose `$param` occurrences are
+/// MacroParamExpr placeholders; expansion substitutes captured argument ASTs.
+struct MacroDecl {
+    std::string name;
+    std::vector<std::string> params;
+    std::unique_ptr<BlockStmt> body;
+    SourceRange range;
+};
+
 /// Complete translation unit.
 struct TranslationUnit {
     std::vector<ImportDecl> imports;
@@ -620,6 +639,7 @@ struct TranslationUnit {
     std::vector<FuncDecl> functions;
     std::vector<EnumDecl> enums;
     std::vector<FFIDecl> ffis;
+    std::vector<MacroDecl> macros;       // declarative macros (M3)
 };
 
 } // namespace mylang

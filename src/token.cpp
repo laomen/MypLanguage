@@ -49,6 +49,11 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Keyword_throw:       return "throw";
         case TokenKind::Keyword_static:     return "static";
         case TokenKind::Keyword_ref:        return "ref";
+        case TokenKind::Keyword_operator:   return "operator";
+        case TokenKind::Keyword_macro:      return "macro";
+        case TokenKind::Keyword_where:      return "where";
+        case TokenKind::Keyword_await:      return "await";
+        case TokenKind::Keyword_const:      return "const";
 
         case TokenKind::Type_byte:          return "byte";
         case TokenKind::Type_short:         return "short";
@@ -94,6 +99,7 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Arrow:              return "->";
         case TokenKind::FatArrow:           return "=>";
         case TokenKind::At:                 return "@";
+        case TokenKind::Dollar:             return "$";
         case TokenKind::DoubleColon:        return "::";
         case TokenKind::Keyword_struct:     return "struct";
         case TokenKind::Keyword_function:   return "function";

@@ -63,6 +63,7 @@ void Lexer::scanToken() {
             }
             break;
         case '@': tokens_.emplace_back(TokenKind::At, currentRange()); break;
+        case '$': tokens_.emplace_back(TokenKind::Dollar, currentRange()); break;
         case '?': tokens_.emplace_back(TokenKind::Question, currentRange()); break;
 
         // Operators that could be multi-character
@@ -378,6 +379,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "const")   kind = TokenKind::Keyword_const;
     else if (value == "ref")     kind = TokenKind::Keyword_ref;
     else if (value == "operator") kind = TokenKind::Keyword_operator;
+    else if (value == "macro")   kind = TokenKind::Keyword_macro;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

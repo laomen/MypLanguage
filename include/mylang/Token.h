@@ -57,6 +57,7 @@ enum class TokenKind : uint16_t {
     Keyword_const,
     Keyword_ref,
     Keyword_operator,
+    Keyword_macro,
 
     // ----- Types (also keywords) -----
     Type_byte,
@@ -130,6 +131,7 @@ enum class TokenKind : uint16_t {
 
     // Annotation
     At,             // @
+    Dollar,         // $ (macro parameter marker, e.g. $a)
 
     // Special
     EndOfFile,

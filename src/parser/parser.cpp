@@ -51,6 +51,9 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
         } else if (match(TokenKind::Keyword_enum)) {
             auto en = parseEnumDecl();
             if (en) tu->enums.push_back(std::move(*en));
+        } else if (match(TokenKind::Keyword_macro)) {
+            auto m = parseMacroDecl();
+            if (m) tu->macros.push_back(std::move(*m));
         } else if (peek().kind == TokenKind::At) {
             // Check for @static class (static is tokenized as Keyword_static)
             auto n1 = peekNext();
@@ -759,6 +762,18 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_const)) {
         // const Type name [= expr]; — consume const, parse rest normally
         return parseVarDeclStmt();
+    }
+    if (check(TokenKind::Dollar) && isMacroStmtPlaceholder()) {
+        // Macro statement placeholder: `$param` as a standalone statement in a
+        // macro body (e.g. `repeat($n, $body)`). No trailing ';' required.
+        // Only matched when `$param` is followed by '}' / ';' / EOF; otherwise
+        // `$param` is an expression (e.g. `$x = ...`) handled by parsePrimary.
+        advance();  // consume $
+        std::string pname = parseIdentifier("expected macro parameter name after '$'");
+        if (match(TokenKind::Semicolon)) { /* optional */ }
+        return std::make_unique<ExprStmt>(
+            std::make_unique<MacroParamExpr>(pname, previous().range),
+            previous().range);
     }
     if (checkType()) {
         // For identifiers: use lookahead to disambiguate
@@ -1664,6 +1679,12 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return std::make_unique<IdentifierExpr>(
             parseIdentifier("expected identifier"), previous().range);
     }
+    if (check(TokenKind::Dollar)) {
+        // Macro template parameter: $name → MacroParamExpr placeholder.
+        advance();  // consume $
+        std::string pname = parseIdentifier("expected macro parameter name after '$'");
+        return std::make_unique<MacroParamExpr>(pname, previous().range);
+    }
 
     diag_.error(peek().range,
         std::string("expected expression, got '") + Token::kindName(peek().kind) + "'");
@@ -1687,6 +1708,45 @@ std::unique_ptr<Expr> Parser::parseLambdaExpr() {
     consume(TokenKind::LeftBrace, "expected '{' for lambda body");
     auto body = parseBlock();
     return std::make_unique<LambdaExpr>(std::move(params), std::move(body), previous().range);
+}
+
+// ==============================
+// Macro: "macro" id "(" { "$" id } ")" block
+// ==============================
+
+bool Parser::isMacroStmtPlaceholder() {
+    // current_ is at '$'. A standalone statement placeholder is:
+    //   '$' Identifier   followed by  '}' | ';' | EOF
+    // (otherwise `$x` is an expression, e.g. `$x = $x + $inc` or `foo($a)`)
+    if (!check(TokenKind::Dollar)) return false;
+    if (current_ + 1 >= tokens_.size()) return false;
+    if (tokens_[current_ + 1].kind != TokenKind::Identifier) return false;
+    if (current_ + 2 >= tokens_.size()) return true;  // $param at EOF
+    auto nk = tokens_[current_ + 2].kind;
+    return nk == TokenKind::RightBrace || nk == TokenKind::Semicolon ||
+           nk == TokenKind::Dollar;   // next placeholder (multi-stmt macro body)
+}
+
+std::unique_ptr<MacroDecl> Parser::parseMacroDecl() {    auto decl = std::make_unique<MacroDecl>();
+    decl->range = previous().range;  // 'macro' token
+    decl->name = parseIdentifier("expected macro name after 'macro'");
+
+    consume(TokenKind::LeftParen, "expected '(' after macro name");
+    if (!check(TokenKind::RightParen)) {
+        do {
+            if (!match(TokenKind::Dollar)) {
+                diag_.error(peek().range,
+                    "expected '$' before macro parameter name");
+                break;
+            }
+            decl->params.push_back(
+                parseIdentifier("expected macro parameter name after '$'"));
+        } while (match(TokenKind::Comma));
+    }
+    consume(TokenKind::RightParen, "expected ')' after macro parameters");
+    consume(TokenKind::LeftBrace, "expected '{' for macro body");
+    decl->body = parseBlock();
+    return decl;
 }
 
 TypeNode Parser::parseType() {
