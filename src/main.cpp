@@ -4,6 +4,7 @@
 // See LICENSE for the full MIT license text.
 #include "mylang/CodeGen.h"
 #include "mylang/DiagnosticEngine.h"
+#include "mylang/Eval.h"
 #include "mylang/Fmt.h"
 #include "mylang/Lexer.h"
 #include "mylang/Parser.h"
@@ -206,6 +207,14 @@ static bool loadModule(const std::string& module_name,
     }
 
     std::cout << "Sema OK\n";
+
+    // === Phase 4b: Compile-time evaluation (@eval / const folding) ===
+    mylang::evaluateCompileTimeConstants(ast, diag);
+    phaseMark("eval");
+    if (diag.hasErrors()) {
+        std::cout << "Compile-time evaluation failed (" << diag.errorCount() << " errors)\n";
+        return "";
+    }
 
     // === Phase 5: Code Generation ===
     mylang::CodeGen codegen(diag);
@@ -467,7 +476,7 @@ static bool loadModule(const std::string& module_name,
     return true;
 }
 
-static const char* MYP_VERSION = "3.3.0";
+static const char* MYP_VERSION = "3.4.0";
 // Language specification version (frozen grammar, see docs/grammar.md).
 // Bump ONLY on breaking syntax/semantics changes (see docs/CHANGELOG.md).
 static const char* MYP_SPEC_VERSION = "1.0";

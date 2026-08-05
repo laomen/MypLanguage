@@ -69,6 +69,7 @@ set(SOURCES
     src/sema/symbol_table.cpp
     src/codegen/codegen.cpp
     src/codegen/myp_passes.cpp
+    src/eval/eval.cpp
     src/fmt/fmt.cpp
 )
 
@@ -84,6 +85,7 @@ set(HEADERS
     include/mylang/SymbolTable.h
     include/mylang/CodeGen.h
     include/mylang/MypPasses.h
+    include/mylang/Eval.h
     include/mylang/Fmt.h
 )
 

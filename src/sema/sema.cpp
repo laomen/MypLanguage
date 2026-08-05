@@ -1687,6 +1687,39 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
             if (gen.tu_index < 0 || !current_tu_) return result;
 
             ClassDecl& original = current_tu_->classes[gen.tu_index];
+
+            // ---- M2: enforce generic type-param constraints (where T : I) ----
+            // Before monomorphizing, verify each constrained type argument
+            // implements the required interface.
+            for (auto& [tp, iface] : original.type_param_constraints) {
+                size_t ti = original.type_params.size();
+                for (size_t k = 0; k < original.type_params.size(); k++)
+                    if (original.type_params[k] == tp) { ti = k; break; }
+                if (ti >= node.type_args.size()) continue;
+                const TypeNode& arg = node.type_args[ti];
+                bool ok = false;
+                if (!arg.class_name.empty()) {
+                    for (auto& c : current_tu_->classes) {
+                        if (c.name == arg.class_name) {
+                            // The concrete class must declare the interface via
+                            // `interface class X;` (interface_class_name).
+                            if (c.interface_class_name == iface) { ok = true; }
+                            // Also allow if the arg IS the interface itself.
+                            for (auto& ifd : current_tu_->interfaces)
+                                if (ifd.name == arg.class_name && iface == arg.class_name)
+                                    ok = true;
+                            break;
+                        }
+                    }
+                }
+                if (!ok) {
+                    error(node.range, "type argument '" + typeName(typeNodeToTypeInfo(arg)) +
+                        "' does not satisfy constraint '" + tp + " : " + iface +
+                        "' for generic class '" + node.class_name + "'");
+                    return result;
+                }
+            }
+
             ClassDecl inst;
             inst.name = mangled;
             inst.is_generic_inst = true;

@@ -77,6 +77,7 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             FuncDecl fd;
             fd.name = cn;
             fd.return_type = ct;
+            fd.is_const_decl = true;   // top-level const: compile-time value
             std::vector<std::unique_ptr<Stmt>> fb;
             fb.push_back(std::make_unique<ReturnStmt>(std::move(ie), SourceRange{}));
             fd.body = std::make_unique<BlockStmt>(std::move(fb), SourceRange{});
@@ -128,6 +129,8 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
 
     if (match(TokenKind::Less)) {
         cls->type_params = parseTypeParamList();
+        // Optional `where T : Interface` constraint clause (M2) — inside <...>
+        parseTypeParamConstraints(*cls);
         consume(TokenKind::Greater, "expected '>' after generic parameters");
     }
 
@@ -483,6 +486,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         std::string annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
         else if (annot == "region") func->has_region = true;
+        else if (annot == "eval") func->has_eval = true;
         else if (annot == "coro") {
             func->has_coro = true;
             // Optional: @coro(stack=N) — N = coroutine stack size in KB (default 128)
@@ -1892,7 +1896,32 @@ std::vector<std::string> Parser::parseTypeParamList() {
     do {
         params.push_back(parseIdentifier("expected type parameter name"));
     } while (match(TokenKind::Comma));
+    // Optional constraint clause: `<T where T : Interface>` or `<T : Interface>`.
+    // The parsed constraints are stored into the caller's ClassDecl via the
+    // out-parameter style: this function returns names; constraints are handled
+    // by parseClass which calls this then parses the optional where-clause.
     return params;
+}
+
+/// Parse the optional `where T : Interface [, U : J]` clause after generic
+/// params. Fills type_param_constraints on \p cls. Returns false on error.
+bool Parser::parseTypeParamConstraints(ClassDecl& cls) {
+    if (!match(TokenKind::Keyword_where)) return true;
+    do {
+        std::string param = parseIdentifier("expected type parameter in where clause");
+        consume(TokenKind::Colon, "expected ':' after type parameter in where clause");
+        std::string iface = parseIdentifier("expected interface name in where clause");
+        // Validate the param is one of the declared type params.
+        bool found = false;
+        for (auto& tp : cls.type_params) if (tp == param) { found = true; break; }
+        if (!found) {
+            diag_.error(previous().range,
+                "where clause references unknown type parameter '" + param + "'");
+            return false;
+        }
+        cls.type_param_constraints[param] = iface;
+    } while (match(TokenKind::Comma));
+    return true;
 }
 
 std::vector<TypeNode> Parser::parseTypeArgList() {

@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mylang {
@@ -120,6 +121,8 @@ struct StructDecl {
 struct ClassDecl {
     std::string name;
     std::vector<std::string> type_params; // generic type params
+    // Generic type-param constraints: type_param -> interface name (where T : I)
+    std::unordered_map<std::string, std::string> type_param_constraints;
     std::vector<ActionDecl> actions;
     std::vector<ActionDecl> static_actions; // static: section
     std::vector<EventDecl> events;
@@ -596,6 +599,8 @@ struct FuncDecl {
     bool has_coro = false;    // @coro: 顶层协程函数（C 系列）
     int coro_stack_kb = 0;    // @coro(stack=N) — 协程栈大小 KB（0=默认）
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
+    bool has_eval = false;  // @eval: 编译期求值（纯函数）
+    bool is_const_decl = false; // top-level `const T name = expr` (a value, not a callable)
 };
 
 struct ImportDecl {

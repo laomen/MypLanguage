@@ -1,0 +1,5 @@
+// EXPECT ERROR: type argument 'int' does not satisfy constraint 'T : Shape'
+interface Shape { int area(); }
+class Circle { interface class Shape; action: int area(){return 0;} property: int radius; }
+class DrawList<T where T : Shape> { action: void store(T s){} property: T last; }
+int main(){ DrawList<int> dl; return 0; }

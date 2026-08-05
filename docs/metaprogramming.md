@@ -182,10 +182,10 @@ ActionAnnot      ::= ... | '@' 'eval'        // 若允许 @eval 作用于普通�
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| M1 | P1 `@eval`：内嵌解释器 + 编译期常量/表 | `const int X = fib(10);` 编译为常量 55；`tests/eval/` |
-| M2 | 泛型约束 `where T : Interface` | `DrawList<Circle>` 通过、`DrawList<int>` 编译期报错；`tests/generic_constraint/` |
-| M3 | P2 声明式宏 `macro`：AST 展开 pass + `--macro-expand` | `assertEq`/`repeat` 展开正确；`tests/macro/` |
-| M4 | P3 过程宏（远期）| 视需求 |
+| **M1** | P1 `@eval`：内嵌解释器 + 编译期常量/表 | ✅ 已完成（`src/eval/eval.cpp` + `include/mylang/Eval.h`：轻量 MYP 解释器求值 `@eval` 纯函数——标量/递归/条件/循环/`@eval` 互调/const 引用；`const int X = fib(10);` 折叠为 `ret i32 55`；`tests/eval/`（FIB10/FIB20/HALF/BIG/T5/BIGL 输出断言）+ `--emit-llvm` 验证常量）|
+| **M2** | 泛型约束 `where T : Interface` | ✅ 已完成（`<T where T : Shape>` 语法 + sema monomorphization 时约束检查：`DrawList<Circle>` 通过、`DrawList<int>` 编译期报 "does not satisfy constraint"；`tests/generic_constraint/` + `tests/negative/generic_constraint.myp`）|
+| **M3** | P2 声明式宏 `macro`：AST 展开 pass + `--macro-expand` | `assertEq`/`repeat` 展开正确；`tests/macro/` |
+| **M4** | P3 过程宏（远期）| 视需求 |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。
 

@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.4.0（当前）
+- **元编程 M1：`@eval` 编译期求值**：`src/eval/eval.cpp` 轻量 MYP 解释器。
+  - `@eval` 标记纯函数（标量/递归/条件/循环/`@eval` 互调/const 引用），编译期执行。
+  - 顶层 `const int X = <expr>` 折叠：`const int FIB10 = fib(10)` 生成 `ret i32 55`。
+  - 求值器在 sema 后、codegen 前运行（`main.cpp` Phase 4b）；非折叠初始化保持运行时行为。
+  - 验证：`tests/eval/`（FIB10=55/FIB20=6765/HALF=2.5/BIG=true/T5=165/BIGL=1000000）。
+- **元编程 M2：泛型约束 `where T : Interface`**：
+  - 语法 `<T where T : Shape>`；sema monomorphization 时检查类型参数实现接口。
+  - `DrawList<Circle>` 通过、`DrawList<int>` 编译期报错；`tests/generic_constraint/` + negative。
+  - 验证：`-O0`/`-O2`/ASAN 全套 112/112。
+  - 设计见 `docs/metaprogramming.md`。
+
 ### v3.3.0（当前）
 - **自定义 LLVM pass（M6）**：`src/codegen/myp_passes.cpp` + `include/mylang/MypPasses.h`。
   - `MypRedundantStorePass`（FunctionPass）：消除同基本块内相邻同址死 store

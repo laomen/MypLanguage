@@ -45,6 +45,7 @@ private:
     std::unique_ptr<EnumDecl> parseEnumDecl();
     std::unique_ptr<FFIDecl> parseFFIDecl();
     std::vector<std::string> parseTypeParamList();
+    bool parseTypeParamConstraints(ClassDecl& cls);
     std::vector<TypeNode> parseTypeArgList();
     std::unique_ptr<Stmt> parseMatchStmt();
     std::unique_ptr<Stmt> parseTryStmt();
