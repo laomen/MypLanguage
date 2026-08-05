@@ -106,7 +106,7 @@ double[1000] tally;
 | **网络** | `net`（TCP 客户端/服务器） |
 | **进程** | `process`（命令执行/输出捕获） |
 | **命令行** | `args`（参数解析）、`env`（环境变量） |
-| **内存** | `memory`（malloc/DynamicArray） |
+| **内存** | `memory`（malloc/free/realloc 裸内存 + Memory 类） |
 | **并发** | `atomic`、`barrier`、`future`、`pool`、`coro`（协程）、`channel`（协程通道）|
 | **工具** | `logger`、`json`、`test`、`stream` |
 | **图形** | `sdl`（SDL2）、`ui`（终端 TUI） |

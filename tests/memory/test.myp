@@ -1,10 +1,29 @@
-// memory: basic allocation (note: void* is experimental)
+// memory: Memory 类（malloc/free/realloc，指针以 long 承载）
 import env;
+import memory;
 
 class Main {
     action:
         @startup void run() {
-            Console.writeString("memory_alloc_exists\n");
+            // 分配 + 释放
+            long p = Memory.alloc(256);
+            Console.writeString("alloc_null="); Console.writeBool(p == 0);
+            Console.writeString("\n");
+            Memory.free(p);
+
+            // 分配 + realloc 扩容 + 释放（别名 release）
+            long p2 = Memory.alloc(128);
+            p2 = Memory.realloc(p2, 2048);
+            Console.writeString("realloc_null="); Console.writeBool(p2 == 0);
+            Console.writeString("\n");
+            Memory.release(p2);
+
+            // 多次分配/释放循环（确定性释放，无泄漏崩溃）
+            for (int i = 0; i < 100; i = i + 1) {
+                long b = Memory.alloc(1024);
+                Memory.free(b);
+            }
+            Console.writeString("loop_done\n");
         }
 }
 

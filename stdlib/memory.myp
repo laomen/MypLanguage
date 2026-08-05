@@ -1,117 +1,50 @@
 // memory.myp — MYP 标准库：动态内存管理（FFI 桥接 C 标准库）
 //
-// 直接调用 C 标准库的 malloc/free/realloc，实现动态内存分配。
-// 底层通过 FFI 声明调用 libc 函数。
+// MYP 的 FFI 惯例：C 指针用 `long`（64 位）承载（同 json/regex 的 handle）。
+// 直接调用 C 标准库的 malloc/free/realloc。
+//
+// 使用场景：
+//   1. 确定性释放 —— arena 分配的 `new T[n]` 要等进程退出/@region 结束才回收，
+//      生命周期明确的临时缓冲可用 Memory 手动即时释放，控制峰值内存。
+//   2. FFI 指针互操作 —— 传给 C 库（SDL/net/GPU/第三方）的裸指针。
+//   3. 字节缓冲 / 手动布局 —— 二进制协议、文件格式的原始缓冲区。
+//
+// 用法：
+//   import memory;
+//   long p = Memory.alloc(1024);       // 分配
+//   Memory.free(p);                     // 释放
+//   p = Memory.realloc(p, 2048);        // 重新分配
+//
+// 注：动态数组请用 `import collections` 的 `ArrayList<T>`（已支持自动扩容）；
+// 本模块只负责裸内存管理，不提供容器类型。
 
-// ---- FFI 声明：C 标准库内存函数 ----
-ffi void* malloc(int size);
-ffi void free(void* ptr);
-ffi void* realloc(void* ptr, int new_size);
-ffi void* memset(void* ptr, int val, int num);
-ffi void* memcpy(void* dst, void* src, int num);
+// ---- FFI 声明：C 标准库内存函数（指针以 long 承载）----
+ffi long malloc(long size);
+ffi void free(long ptr);
+ffi long realloc(long ptr, long new_size);
 
 // ============================================================
 // 动态内存分配器
 // ============================================================
-class Mem {
+class Memory {
     static:
-        // 分配内存
-        void* alloc(int size) {
+        // 分配内存（返回指针，用 long 承载）
+        long alloc(long size) {
             return malloc(size);
         }
 
         // 释放内存
-        void release(void* ptr) {
+        void free(long ptr) {
+            free(ptr);
+        }
+
+        // 释放内存（别名）
+        void release(long ptr) {
             free(ptr);
         }
 
         // 重新分配（扩容/缩容）
-        void* realloc(void* ptr, int new_size) {
+        long realloc(long ptr, long new_size) {
             return realloc(ptr, new_size);
         }
-
-        // 内存置零
-        void zero(void* ptr, int size) {
-            memset(ptr, 0, size);
-        }
-
-        // 内存拷贝
-        void copy(void* dst, void* src, int size) {
-            memcpy(dst, src, size);
-        }
-}
-
-// ============================================================
-// DynamicArray<T> — 真正的动态数组（使用 malloc/realloc）
-// ============================================================
-// 区别于 ArrayList 的固定容量，DynamicArray 使用堆内存分配，
-// 支持真正的动态扩容，不受固定容量限制。
-//
-// 用法：
-//   DynamicArray<int> arr = new DynamicArray<int>();
-//   arr.add(42);
-//   int v = arr.get(0);
-
-class DynamicArray<T> {
-    action:
-        @startup void init() {
-            cap_ = 4;
-            cnt_ = 0;
-            data_ = Mem.alloc(cap_ * 8);
-            Mem.zero(data_, cap_ * 8);
-        }
-
-        void add(T val) {
-            if (cnt_ >= cap_) {
-                grow();
-            }
-            // 通过指针偏移写入
-            __myp_ptr_write(data_, cnt_, val);
-            cnt_ = cnt_ + 1;
-        }
-
-        T get(int index) {
-            return (T)(__myp_ptr_read(data_, index));
-        }
-
-        void set(int index, T val) {
-            __myp_ptr_write(data_, index, val);
-        }
-
-        int size() {
-            return cnt_;
-        }
-
-        bool isEmpty() {
-            return cnt_ == 0;
-        }
-
-        void clear() {
-            cnt_ = 0;
-        }
-
-        void destroy() {
-            if (data_ != null) {
-                Mem.release(data_);
-                data_ = null;
-                cnt_ = 0;
-                cap_ = 0;
-            }
-        }
-
-    function:
-        void grow() {
-            int new_cap = cap_ * 2;
-            void* new_data = Mem.alloc(new_cap * 8);
-            Mem.zero(new_data, new_cap * 8);
-            Mem.copy(new_data, data_, cap_ * 8);
-            Mem.release(data_);
-            data_ = new_data;
-            cap_ = new_cap;
-        }
-
-    property:
-        void* data_;
-        int cap_;
-        int cnt_;
 }

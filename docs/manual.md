@@ -1463,12 +1463,18 @@ Test.report("test_name", true);      // 报告测试结果
 ```myp
 import memory;
 
-// 直接调用 C 标准库 malloc/free/realloc
-// 通常不需要手动管理——MYP 有 ARC 自动回收
-ptr = Memory.alloc(1024);            // 分配
-Memory.free(ptr);                    // 释放
-ptr = Memory.realloc(ptr, 2048);     // 重新分配
+// C 标准库 malloc/free/realloc 桥接（指针以 long 承载，同 json/regex 的 handle）
+long p = Memory.alloc(1024);            // 分配（返回指针）
+Memory.free(p);                         // 释放
+p = Memory.realloc(p, 2048);            // 重新分配
+Memory.release(p);                      // free 的别名
 ```
+
+> **使用场景**：① **确定性释放**——arena 分配的 `new T[n]` 要等进程退出/@region 结束
+> 才回收，生命周期明确的临时缓冲可用 `Memory` 手动即时释放（控制峰值内存）；
+> ② **FFI 指针互操作**——传给 C 库（SDL/net/GPU/第三方）的裸指针；
+> ③ **字节缓冲/手动布局**——二进制协议、文件格式的原始缓冲区。
+> 动态数组请用 `collections` 的 `ArrayList<T>`（自动扩容），本模块只负责裸内存。
 
 ### `import sdl` — SDL 图形窗口
 

@@ -106,7 +106,7 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 | **Networking** | `net` (TCP client/server) |
 | **Process** | `process` (command execution/output capture) |
 | **CLI** | `args` (argument parsing), `env` (environment variables) |
-| **Memory** | `memory` (malloc/DynamicArray) |
+| **Memory** | `memory` (malloc/free/realloc raw memory + Memory class) |
 | **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `coro` (coroutines) |
 | **Utilities** | `logger`, `json`, `test`, `stream` |
 | **Graphics** | `sdl` (SDL2), `ui` (terminal TUI) |

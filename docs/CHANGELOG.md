@@ -44,8 +44,12 @@
     畸形输入（如函数体内孤立 `class`、`mapping =>`）不再无限循环耗尽内存（曾致 `myp_lsp`
     膨胀至 35GB）。
   - 模糊测试 5 seed × 600 例随机畸形输入 = 3000 例 0 挂起；全 stdlib 31 文件 LSP 实测 4MB。
+- **`stdlib/memory.myp` 修复**（预存坏文件）：`ffi void*` 语法不支持 → 改用 MYP 惯例
+  **指针以 `long` 承载**（同 json/regex 的 handle）；类名 `Mem` → `Memory`（对齐 manual）；
+  移除基于不存在的 `__myp_ptr_write/read` 的 `DynamicArray`（动态数组统一走
+  `collections.ArrayList<T>`）。`Memory` 提供 alloc/free/realloc/release（FFI 裸内存 +
+  确定性释放）。新增 `tests/memory/`。
 - 验证：`tests/collections_grow/`（全集合超 1024）；`-O0`/`-O2` 全套 115/115；ASAN 115/115。
-- 注：`stdlib/memory.myp`（`ffi void*` 语法不支持）为预存坏文件，与本次无关。
 
 ### v3.7.0
 - **DAP 调试支持（M7）**：`src/dap/dap_server.cpp` → `myp_debug`（DAP ↔ gdb MI2 桥）。
