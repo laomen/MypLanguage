@@ -141,6 +141,8 @@ void Sema::checkStructMethods(const StructDecl& decl) {
     };
     std::vector<MethodInfo> sibling_methods;
     for (auto& fn : decl.functions) {
+        // 构造器不注册为兄弟方法：不可裸名调用，且其名==struct 名会遮蔽 struct 类型名
+        if (fn.has_constructor) continue;
         TypeInfo ft(TypeKind::Function);
         ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(fn.return_type));
         for (auto& p : fn.params)
@@ -1200,6 +1202,16 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
 }
 
 TypeInfo Sema::visitCall(CallExpr& expr) {
+    // Struct 函数式构造：StructName(args) — 用构造器创建 struct 值
+    if (expr.callee->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*expr.callee);
+        if (resolveStructConstruction(expr, id.name)) {
+            TypeInfo rt(TypeKind::Struct);
+            rt.class_name = expr.resolved_struct_type;
+            return rt;
+        }
+    }
+
     auto callee_type = visitExpr(*expr.callee);
 
     if (callee_type.kind != TypeKind::Function) {
@@ -1237,6 +1249,73 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
 
     if (callee_type.return_type) return *callee_type.return_type;
     return TypeInfo(TypeKind::Void);
+}
+
+bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
+    // 查找 struct（文件级或类内嵌套），取类型 key
+    const StructDecl* st = nullptr;
+    std::string type_key;
+    if (current_tu_) {
+        for (auto& s : current_tu_->structs) {
+            std::string key = s.parent_class.empty()
+                ? s.name : s.parent_class + "::" + s.name;
+            if (s.name == name) { st = &s; type_key = key; break; }
+        }
+        if (!st) {
+            for (auto& cls : current_tu_->classes) {
+                for (auto& s : cls.structs) {
+                    if (s.name == name) { st = &s; type_key = cls.name + "::" + s.name; break; }
+                }
+                if (st) break;
+            }
+        }
+    }
+    if (!st) return false;
+
+    // 收集构造器候选（struct 方法中 has_constructor）
+    struct Cand { std::string cname; const std::vector<ParamDecl>* params; };
+    std::vector<Cand> cands;
+    for (auto& f : st->functions) if (f.has_constructor) cands.push_back({f.name, &f.params});
+    if (cands.empty()) return false;  // 无构造器 → 不是函数式构造，保持普通调用解析
+
+    // 类型检查并收集实参类型
+    std::vector<TypeInfo> arg_types;
+    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+
+    int best = -1; int best_score = 1 << 30; bool ambiguous = false;
+    for (size_t ci = 0; ci < cands.size(); ci++) {
+        auto& params = *cands[ci].params;
+        if (params.size() != arg_types.size()) continue;
+        int promos = 0; bool ok = true;
+        for (size_t i = 0; i < params.size(); i++) {
+            TypeInfo pt = typeNodeToTypeInfo(params[i].type);
+            if (typesCompatible(pt, arg_types[i])) {
+                if (pt.kind != arg_types[i].kind) promos++;
+            } else { ok = false; break; }
+        }
+        if (!ok) continue;
+        if (best < 0 || promos < best_score) { best = (int)ci; best_score = promos; ambiguous = false; }
+        else if (promos == best_score) ambiguous = true;
+    }
+
+    if (best < 0) {
+        std::string argstr;
+        for (size_t i = 0; i < arg_types.size(); i++) {
+            if (i) argstr += ", ";
+            argstr += typeName(arg_types[i]);
+        }
+        error(expr.range, "no matching constructor for '" + name + "(" + argstr + ")'");
+        return true;  // 已报错，视为构造调用处理
+    }
+    if (ambiguous) {
+        error(expr.range, "ambiguous constructor call for '" + name + "'");
+        return true;
+    }
+    auto& c = cands[best];
+    expr.resolved_struct_type = type_key;
+    expr.resolved_struct_ctor = "struct_" +
+        constructorMangledName(type_key, c.cname, *c.params);
+    return true;
 }
 
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {

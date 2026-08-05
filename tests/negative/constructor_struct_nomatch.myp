@@ -1,0 +1,11 @@
+// 负测试: struct 函数式构造无匹配构造器 → 编译报错
+struct P {
+    action:
+        void P(int a) { x = a; }
+    int x;
+}
+
+int main() {
+    P p = P(1.5);   // 错误: 无匹配构造器（double→int 不隐式收窄）
+    return 0;
+}

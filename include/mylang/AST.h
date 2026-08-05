@@ -379,6 +379,8 @@ struct UnaryOpExpr : Expr {
 struct CallExpr : Expr {
     std::unique_ptr<Expr> callee;
     std::vector<std::unique_ptr<Expr>> args;
+    std::string resolved_struct_type;  // sema：函数式构造的 struct 类型 key（空=普通调用）
+    std::string resolved_struct_ctor;  // sema：函数式构造的构造器 mangled 名
     CallExpr(std::unique_ptr<Expr> c, std::vector<std::unique_ptr<Expr>> a, SourceRange range_)
         : Expr(ExprKind::Call, range_), callee(std::move(c)), args(std::move(a)) {}
 };

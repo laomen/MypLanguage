@@ -1174,8 +1174,10 @@ void CodeGen::declareStructMethods(const StructDecl& st) {
 
     for (auto& method : st.functions) {
         if (!method.body) continue;
-        if (method.has_constructor) continue;  // 构造器 M3 函数式构造
-        std::string fn = "struct_" + type_key + "_" + method.name;
+        // 构造器用重载 mangling（struct_<key>_<name>_<paramtypes>）
+        std::string fn = method.has_constructor
+            ? "struct_" + constructorMangledName(type_key, method.name, method.params)
+            : "struct_" + type_key + "_" + method.name;
         if (module_->getFunction(fn)) continue;
 
         std::vector<llvm::Type*> pts;
@@ -1197,8 +1199,10 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
 
     for (auto& method : st.functions) {
         if (!method.body) continue;
-        if (method.has_constructor) continue;  // 构造器 M3 函数式构造
-        std::string fn = "struct_" + type_key + "_" + method.name;
+        // 构造器用重载 mangling（struct_<key>_<name>_<paramtypes>）
+        std::string fn = method.has_constructor
+            ? "struct_" + constructorMangledName(type_key, method.name, method.params)
+            : "struct_" + type_key + "_" + method.name;
         auto* func = module_->getFunction(fn);
         if (func) {
             func->deleteBody();
@@ -4820,6 +4824,39 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    // Struct 函数式构造：StructName(args) → 栈临时 + 构造器，返回 struct 值
+    if (!e.resolved_struct_ctor.empty() && !e.resolved_struct_type.empty()) {
+        auto* st_ctor = module_->getFunction(e.resolved_struct_ctor);
+        auto* st_type = getStructType(e.resolved_struct_type);
+        if (st_ctor && st_type) {
+            auto* tmp = builder_.CreateAlloca(st_type);
+            std::vector<llvm::Value*> ctor_args;
+            ctor_args.push_back(tmp);
+            auto* ft = st_ctor->getFunctionType();
+            size_t idx = 1;
+            for (auto& a : e.args) {
+                llvm::Value* v = generateExpr(*a);
+                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致）
+                if (idx < ft->getNumParams()) {
+                    auto* expected = ft->getParamType(idx);
+                    if (v->getType() != expected) {
+                        if (v->getType()->isIntegerTy() && expected->isIntegerTy())
+                            v = builder_.CreateIntCast(v, expected, true);
+                        else if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                            v = builder_.CreateSIToFP(v, expected);
+                        else if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                            v = builder_.CreateFPToSI(v, expected);
+                        else if (v->getType()->isPointerTy() && expected->isPointerTy())
+                            v = builder_.CreateBitCast(v, expected);
+                    }
+                }
+                ctor_args.push_back(v);
+                idx++;
+            }
+            builder_.CreateCall(st_ctor, ctor_args);
+            return builder_.CreateLoad(st_type, tmp);
+        }
+    }
     // slice.size() / slice.length() / slice.data()
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);

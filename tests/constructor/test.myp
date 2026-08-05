@@ -1,5 +1,6 @@
-// M2: class 构造器绑定测试
-// 验证: @constructor / 函数名==类名隐式构造器 / 重载 / 数字提升 / 泛型构造器
+// M2+M3: class 构造器绑定 + struct 函数式构造测试
+// 验证: @constructor / 函数名==类名隐式构造器 / 重载 / 数字提升 / 泛型构造器 /
+//       struct 函数式构造 Struct(args)（含赋值/无参/operator 共存）
 // legacy @startup 启动信号（@thread 线程入口）仍正常工作
 import env;
 
@@ -46,7 +47,7 @@ class Box<T> {
         T data;
 }
 
-// struct action: 节 + 构造器（语法解析；函数式构造在 M3）
+// struct action: 节 + 构造器 + operator 共存（M3 函数式构造）
 struct Vec2 {
     action:
         @constructor
@@ -55,6 +56,23 @@ struct Vec2 {
         double lenSq() { return x * x + y * y; }
     double x;
     double y;
+}
+
+struct Vector3 {
+    operator:
+        @op("+") Vector3 add(Vector3 other) {
+            return Vector3(x_ + other.x_, y_ + other.y_, z_ + other.z_);
+        }
+    action:
+        @constructor
+        void Vector3(double a, double b, double c) { x_ = a; y_ = b; z_ = c; }
+    double x_;
+    double y_;
+    double z_;
+}
+
+Vec2 makeVec(double a, double b) {
+    return Vec2(a, b);            // return 函数式构造
 }
 
 class Main {
@@ -75,9 +93,21 @@ class Main {
             Box<int> i = new Box<int>(7);
             Console.write(i.get());         // 7（泛型 int）
 
-            Vec2 v;
-            v.x = 3; v.y = 4;
-            Console.writeString(" M2 constructor OK\n");
+            Vec2 v2 = Vec2(3.0, 4.0);       // 函数式构造（带参）
+            Console.writeFloat(v2.x);       // 3
+            Vec2 vz = Vec2();               // 函数式构造（无参）
+            Console.writeFloat(vz.x);       // 0
+            Vec2 w2;
+            w2 = Vec2(1.0, 2.0);            // 先声明后赋值
+            Console.writeFloat(w2.x);       // 1
+            Vec2 rv = makeVec(5.0, 6.0);    // return Vec2(...)
+            Console.writeFloat(rv.y);       // 6
+
+            Vector3 va = Vector3(1, 2, 3);  // int→double 提升
+            Vector3 vb = Vector3(4, 5, 6);
+            Vector3 vc = va + vb;           // operator: 与构造器共存
+            Console.writeFloat(vc.z_);      // 9
+            Console.writeString(" M3 constructor OK\n");
         }
 }
 

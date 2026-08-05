@@ -58,6 +58,7 @@ private:
     TypeInfo visitSubscript(SubscriptExpr& expr);
     TypeInfo visitNewExpr(NewExpr& expr);
     void resolveNewConstructor(NewExpr& expr, const std::string& cls_name);
+    bool resolveStructConstruction(CallExpr& expr, const std::string& name);
     TypeInfo visitNewArrayExpr(NewArrayExpr& expr);
     TypeInfo visitThisExpr(ThisExpr& expr);
     TypeInfo visitAssignment(AssignmentExpr& expr);
