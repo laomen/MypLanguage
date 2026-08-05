@@ -227,7 +227,7 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| **M1** | `-O1/-O2/-O3` PassBuilder 管线 | `-O2` IR 有 mem2reg（无 alloca 循环变量）；全套 -O0/-O2 双跑通过 |
+| **M1** | `-O1/-O2/-O3` PassBuilder 管线 | ✅ 已完成（`writeObjectFile` 加 `buildPerModuleDefaultPipeline`；修复 setjmp `returns_twice` + `myp_throw` 误标 noreturn 两个优化暴露的 bug；`tests/run_tests_O2.sh` -O2 全套 109/109；`MYPC_DUMP_OPT_IR=1` 调试开关）|
 | **M2** | 优化 × 异常/协程兼容专项回归 + 修复 | `tests/exception*`、`tests/coro*` 在 -O2 通过；性能基准提升 |
 | **M3** | `-g` DIBuilder：编译单元/文件/函数/行号 | gdb `break foo.myp:N` 命中 |
 | **M4** | `-g` 局部变量 + 参数（dbg.declare）| gdb `print x` / `info locals` 正确 |
