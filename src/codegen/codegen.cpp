@@ -1,4 +1,5 @@
 #include "mylang/CodeGen.h"
+#include "mylang/MypPasses.h"
 
 #include <llvm/BinaryFormat/Dwarf.h>
 #include <llvm/IR/DIBuilder.h>
@@ -7311,10 +7312,25 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
             opt_level == 2 ? llvm::OptimizationLevel::O2 :
                              llvm::OptimizationLevel::O1;
         llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OL);
+        // MYP-specific passes (dead store cleanup etc.) appended after the
+        // default pipeline; also registered as -passes="myp-pass".
+        registerMypPasses(PB, MPM, OL);
         MPM.addPass(llvm::VerifierPass());
         MPM.run(*module_, MAM);
         if (const char* d = getenv("MYPC_DUMP_OPT_IR"); d && d[0] == '1')
             module_->print(llvm::errs(), nullptr);   // debug: dump post-opt IR
+    }
+
+    // ---- Custom MYP pass pipeline (--passes=<name>) ----
+    // Runs on top of the -O0 (or -O) IR. Currently supports "myp-pass"
+    // (MypRedundantStorePass); dispatched via runMypPasses. Enables -O0
+    // users / tests to apply MYP-specific cleanup without -O.
+    if (!myp_passes_.empty()) {
+        if (!runMypPasses(*module_, myp_passes_)) {
+            llvm::errs() << "error: unknown pass pipeline '" << myp_passes_ << "'\n";
+        } else if (const char* d = getenv("MYPC_DUMP_OPT_IR"); d && d[0] == '1') {
+            module_->print(llvm::errs(), nullptr);   // debug: dump after myp pass
+        }
     }
 
     // ThreadSanitizer instrumentation for generated programs.

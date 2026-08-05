@@ -445,6 +445,7 @@ private:
     bool library_mode_ = false;
     bool test_mode_ = false;
     bool debug_mode_ = false;
+    std::string myp_passes_; // --passes=<name>: run custom MYP pass pipeline
 
     // ---- DWARF debug info (DIBuilder) ----
     std::unique_ptr<llvm::DIBuilder> dbg_builder_;
@@ -469,6 +470,7 @@ public:
     void setLibraryMode(bool v) { library_mode_ = v; }
     void setTestMode(bool v) { test_mode_ = v; }
     void setDebugMode(bool v) { debug_mode_ = v; }
+    void setMypPasses(const std::string& v) { myp_passes_ = v; }
     bool saveIR(const std::string& path) const;
 
     // ---- Helper: find struct decl ----

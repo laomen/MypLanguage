@@ -27,7 +27,19 @@
 
 ## 编译器版本历史
 
-### v3.2.0（当前）
+### v3.3.0（当前）
+- **自定义 LLVM pass（M6）**：`src/codegen/myp_passes.cpp` + `include/mylang/MypPasses.h`。
+  - `MypRedundantStorePass`（FunctionPass）：消除同基本块内相邻同址死 store
+    （如 `int x = 0;` 生成的双 store，实测 -O0 IR 每个变量多一次重复 store）。
+  - `mypc --passes myp-pass` 可调用（`runMypPasses` 直接分发）；未知 pass 名报错。
+  - `registerMypPasses`：追加到 -O 管线末尾 + 注册 `-passes` 解析回调（opt 风格嵌套）。
+  - LLVM 21 备注：`parsePassPipeline` 顶层不解析自定义 pass 名（需嵌套 `module(...)`），
+    故 `mypc --passes` 走自建分发。
+  - 验证：`tests/test_myp_pass.sh`（6 项断言：可调用/语义/死 store 10→7/-O2 组合/未知拒绝）；
+    `-O0`/`-O2` 全套 109/109。
+  - 设计见 `docs/optimization_debugging.md` §3.5/M6。
+
+### v3.2.0
 - **DWARF 调试信息（M3-M5）**：`-g/--debug` 生成 gdb 可用调试信息。
   - M3：编译单元/文件/函数 DISubprogram + 逐语句行号（`break foo.myp:N` 命中）；
     `main.cpp` 全链路 `-g` 传参（单文件/多文件）。

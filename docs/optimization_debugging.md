@@ -232,7 +232,13 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 | **M3** | `-g` DIBuilder：编译单元/文件/函数/行号 | ✅ 已完成（`main.cpp` 加 `-g/--debug` 全链路传参；`CodeGen` 加 `debug_mode_` + DIBuilder；`generateFuncDecl`/`generateClassAction`/`generateStaticAction` 建 DISubprogram + `setSubprogram`；`generateBlock` 逐语句 `SetCurrentDebugLocation`；gdb `break foo.myp:N` 命中验证）|
 | **M4** | `-g` 局部变量 + 参数（dbg.declare）| ✅ 已完成（参数用 `createParameterVariable` + `insertDeclare`；局部变量在 `popScope` 集中 `createAutoVariable` + `insertDeclare`；`debug_declared_` 去重防参数/局部重复；gdb `print a/b/sum/x/y` 正确验证）|
 | **M5** | `-g` 类型细化（class/struct/数组）| ✅ 已完成（`getDebugType(LLVM Type→DIType)`：int/long/double/float/bool/char→DIBasicType；string/类实例→DIDerivedType 指针；struct→DICompositeType + 成员（DataLayout 偏移）；数组→DICompositeType + DISubrange；gdb `print c`（类实例）验证）|
-| **M6** | 自定义 MYP pass（冗余消除 / intrinsic 优化）| `-passes="myp-pass"` 可调用；双级别回归通过 |
+| **M6** | 自定义 MYP pass（冗余消除 / intrinsic 优化）| ✅ 已完成（`src/codegen/myp_passes.cpp` + `include/mylang/MypPasses.h`：`MypRedundantStorePass`（FunctionPass）消除同块内相邻同址死 store；`registerMypPasses` 追加到 -O 管线末尾 + 注册 `-passes` 解析回调；`mypc --passes myp-pass` 可调用（`runMypPasses`）；验证 `tests/test_myp_pass.sh` 6 项断言；-O0/-O2 全套 109/109）|
+
+> **M6 实现备注（LLVM 21）**：`PassBuilder::parsePassPipeline` 的**顶层**只接受已注册的
+> pipeline 名（`default<O2>` 等），自定义 pass 名即使通过 `registerPipelineParsingCallback`
+> 注册也无法作为顶层文本解析（顶层 `unknown pass pipeline`）。因此 `mypc --passes` 不走
+> LLVM 解析器，而用 `runMypPasses` 直接按名字分发（逗号分隔列表）；`registerPipelineParsingCallback`
+> 保留，供 `opt` 风格嵌套管线（`module(myp-pass)`）或未来需要时使用。
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。
 
@@ -264,6 +270,8 @@ IDE 内无法设断点/单步。规划：
 | 项 | 说明 |
 |---|---|
 | `tests/run_tests_O2.sh` | `-O2` 全套回归脚本（优化管线质量保障）|
+| `tests/test_debug.sh` | `-g` DWARF gdb 批处理断言（断点/参数/局部变量）|
+| `tests/test_myp_pass.sh` | 自定义 pass 断言（`--passes myp-pass` 可调用/语义/死 store 消除）|
 | 性能基准套件 | 编译时间 + 运行性能矩阵（-O0 vs -O2），不止 `coro_bench` 单例 |
 | 自定义 pass 测试框架 | IR 级单元测试（`opt` 风格输入/输出断言）|
 
