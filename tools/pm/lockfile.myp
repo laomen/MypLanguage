@@ -1,0 +1,229 @@
+// lockfile.myp — 包管理器：myp.lock 读写 + package.myp depends 维护
+//
+// myp.lock 格式（key: value 文本，与 package.myp 一致）：
+//   # MYP lockfile
+//   mymath: 0.2.0
+//
+// 关联: docs/pkg_manager.md §4.3/§4.6；自举: docs/self_hosting.md
+
+import env;
+import fs;
+import io;
+import text;
+
+@static class Lockfile {
+    static:
+        // 读某依赖锁定版本（未锁定返回空串）
+        string readEntry(string name) {
+            if (Fs.isFile("myp.lock") == 0) return "";
+            File f = new File();
+            if (f.open("myp.lock", "r") != 0) return "";
+            string result = "";
+            while (f.hasNext() != 0) {
+                string line = f.readLine();
+                line = Str.trim(line);
+                if (Str.len(line) == 0) continue;
+                if (Str.startsWith(line, "#") != 0) continue;
+                int ci = Str.indexOf(line, ":");
+                if (ci < 0) continue;
+                string key = Str.trim(Str.substring(line, 0, ci));
+                string val = Str.trim(Str.substring(line, ci + 1, Str.len(line)));
+                if (key == name) result = val;
+            }
+            f.close();
+            return result;
+        }
+
+        // 写/更新某依赖锁定版本（read-modify-write）
+        int writeEntry(string name, string ver) {
+            string[64] names;
+            string[64] vers;
+            int cnt = 0;
+            if (Fs.isFile("myp.lock") != 0) {
+                File f = new File();
+                if (f.open("myp.lock", "r") == 0) {
+                    while (f.hasNext() != 0) {
+                        string line = f.readLine();
+                        line = Str.trim(line);
+                        if (Str.len(line) == 0) continue;
+                        if (Str.startsWith(line, "#") != 0) continue;
+                        int ci = Str.indexOf(line, ":");
+                        if (ci < 0) continue;
+                        names[cnt] = Str.trim(Str.substring(line, 0, ci));
+                        vers[cnt] = Str.trim(Str.substring(line, ci + 1, Str.len(line)));
+                        cnt = cnt + 1;
+                    }
+                    f.close();
+                }
+            }
+            int found = 0;
+            for (int i = 0; i < cnt; i = i + 1) {
+                if (names[i] == name) { vers[i] = ver; found = 1; }
+            }
+            if (found == 0) {
+                names[cnt] = name;
+                vers[cnt] = ver;
+                cnt = cnt + 1;
+            }
+            File out = new File();
+            if (out.open("myp.lock", "w") != 0) return 1;
+            out.writeLine("# MYP lockfile");
+            for (int i = 0; i < cnt; i = i + 1) {
+                out.writeLine(names[i] + ": " + vers[i]);
+            }
+            out.close();
+            return 0;
+        }
+
+        // 删除某依赖锁定条目
+        int removeEntry(string name) {
+            if (Fs.isFile("myp.lock") == 0) return 0;
+            string[64] names;
+            string[64] vers;
+            int cnt = 0;
+            File f = new File();
+            if (f.open("myp.lock", "r") == 0) {
+                while (f.hasNext() != 0) {
+                    string line = f.readLine();
+                    line = Str.trim(line);
+                    if (Str.len(line) == 0) continue;
+                    if (Str.startsWith(line, "#") != 0) continue;
+                    int ci = Str.indexOf(line, ":");
+                    if (ci < 0) continue;
+                    string key = Str.trim(Str.substring(line, 0, ci));
+                    string val = Str.trim(Str.substring(line, ci + 1, Str.len(line)));
+                    if (key != name) {
+                        names[cnt] = key;
+                        vers[cnt] = val;
+                        cnt = cnt + 1;
+                    }
+                }
+                f.close();
+            }
+            File out = new File();
+            if (out.open("myp.lock", "w") != 0) return 1;
+            out.writeLine("# MYP lockfile");
+            for (int i = 0; i < cnt; i = i + 1) {
+                out.writeLine(names[i] + ": " + vers[i]);
+            }
+            out.close();
+            return 0;
+        }
+
+        // 锁定依赖清单（格式化字符串，供 myp list）
+        string list() {
+            StringBuilder sb = new StringBuilder();
+            if (Fs.isFile("myp.lock") != 0) {
+                File f = new File();
+                if (f.open("myp.lock", "r") == 0) {
+                    while (f.hasNext() != 0) {
+                        string line = f.readLine();
+                        line = Str.trim(line);
+                        if (Str.len(line) == 0) continue;
+                        if (Str.startsWith(line, "#") != 0) continue;
+                        int ci = Str.indexOf(line, ":");
+                        if (ci < 0) continue;
+                        sb.appendLine(Str.trim(Str.substring(line, 0, ci))
+                                    + " " + Str.trim(Str.substring(line, ci + 1, Str.len(line))));
+                    }
+                    f.close();
+                }
+            }
+            return sb.toString();
+        }
+
+        // 在 package.myp 的 depends 中加入依赖（已存在则跳过）；返回 0 成功
+        int addPackageDep(string name) {
+            string[64] lines;
+            string depLine = "";
+            int hasDep = 0;
+            int cnt = 0;
+            if (Fs.isFile("package.myp") != 0) {
+                File f = new File();
+                if (f.open("package.myp", "r") == 0) {
+                    while (f.hasNext() != 0) {
+                        string line = f.readLine();
+                        if (Str.len(line) == 0) continue;   // 跳过末尾空行（hasNext 多读一次）
+                        lines[cnt] = line;
+                        cnt = cnt + 1;
+                        string t = Str.trim(line);
+                        if (Str.startsWith(t, "depends:") != 0) {
+                            hasDep = 1;
+                            depLine = t;
+                        }
+                    }
+                    f.close();
+                }
+            }
+            if (hasDep != 0 && Str.contains(depLine, name) != 0) return 0;  // 已存在
+            File out = new File();
+            if (out.open("package.myp", "w") != 0) return 1;
+            for (int i = 0; i < cnt; i = i + 1) {
+                string line = lines[i];
+                string t = Str.trim(line);
+                if (hasDep != 0 && Str.startsWith(t, "depends:") != 0) {
+                    string sep = ", ";
+                    if (Str.endsWith(Str.trim(line), ",") != 0) sep = " ";
+                    out.writeLine(line + sep + name);
+                } else {
+                    out.writeLine(line);
+                }
+            }
+            if (hasDep == 0) {
+                out.writeLine("depends: " + name);
+            }
+            out.close();
+            return 0;
+        }
+
+        // 从 package.myp 的 depends 移除依赖；返回 0 成功
+        int removePackageDep(string name) {
+            string[64] lines;
+            string depLine = "";
+            int hasDep = 0;
+            int cnt = 0;
+            if (Fs.isFile("package.myp") != 0) {
+                File f = new File();
+                if (f.open("package.myp", "r") == 0) {
+                    while (f.hasNext() != 0) {
+                        string line = f.readLine();
+                        if (Str.len(line) == 0) continue;   // 跳过末尾空行
+                        lines[cnt] = line;
+                        cnt = cnt + 1;
+                        string t = Str.trim(line);
+                        if (Str.startsWith(t, "depends:") != 0) { hasDep = 1; depLine = t; }
+                    }
+                    f.close();
+                }
+            }
+            if (hasDep == 0) return 0;
+            // 重建 depends 值：去掉 name
+            string val = Str.trim(Str.substring(depLine, Str.indexOf(depLine, ":") + 1, Str.len(depLine)));
+            StringBuilder nb = new StringBuilder();
+            int n = Str.splitCount(val, ",");
+            int first = 1;
+            for (int i = 0; i < n; i = i + 1) {
+                string d = Str.trim(Str.splitGet(val, ",", i));
+                if (Str.len(d) == 0) continue;
+                if (d == name) continue;
+                if (first == 0) nb.append(", ");
+                nb.append(d);
+                first = 0;
+            }
+            string newVal = nb.toString();
+            File out = new File();
+            if (out.open("package.myp", "w") != 0) return 1;
+            for (int i = 0; i < cnt; i = i + 1) {
+                string line = lines[i];
+                string t = Str.trim(line);
+                if (Str.startsWith(t, "depends:") != 0) {
+                    if (Str.len(newVal) > 0) out.writeLine("depends: " + newVal);
+                    // 无剩余依赖则省略 depends 行
+                } else {
+                    out.writeLine(line);
+                }
+            }
+            out.close();
+            return 0;
+        }
+}

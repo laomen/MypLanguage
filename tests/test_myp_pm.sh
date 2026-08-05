@@ -97,6 +97,59 @@ else
     bad "--help 失败"
 fi
 
+# ---- 9) v2: registry add/list/update/remove + build 自动安装 ----
+say ""
+say "--- v2 registry ---"
+mkdir -p "$TMP/reg/packages/mymath/0.1.0/src" "$TMP/reg/packages/mymath/0.2.0/src"
+printf 'name: mymath\nversion: 0.1.0\n' > "$TMP/reg/packages/mymath/0.1.0/package.myp"
+printf 'class MyMath {\n    static:\n        int add(int a, int b) { return a + b; }\n}\n' > "$TMP/reg/packages/mymath/0.1.0/src/mymath.myp"
+printf 'name: mymath\nversion: 0.2.0\n' > "$TMP/reg/packages/mymath/0.2.0/package.myp"
+printf 'class MyMath {\n    static:\n        int add(int a, int b) { return a + b; }\n        int mul(int a, int b) { return a * b; }\n}\n' > "$TMP/reg/packages/mymath/0.2.0/src/mymath.myp"
+export MYP_REGISTRY="$TMP/reg"
+mkdir -p "$TMP/regapp"
+printf 'name: regapp\nversion: 1.0.0\n' > "$TMP/regapp/package.myp"
+
+# add（解析最新 + 写 lock + 更新 depends）
+( cd "$TMP/regapp" && "$TMP/myp" add mymath >/dev/null 2>&1 )
+if grep -q "mymath: 0.2.0" "$TMP/regapp/myp.lock" 2>/dev/null && grep -q "depends: mymath" "$TMP/regapp/package.myp"; then
+    ok "add 解析最新版本 + 写 lock + 更新 depends"
+else
+    bad "add 失败"
+fi
+
+# list
+list_out=$( cd "$TMP/regapp" && "$TMP/myp" list 2>&1 )
+if printf '%s' "$list_out" | grep -q "mymath 0.2.0"; then
+    ok "list 显示锁定依赖"
+else
+    bad "list 输出异常: $list_out"
+fi
+
+# build 自动安装（全新项目：depends 有但 myp_packages 空）
+mkdir -p "$TMP/regapp2/src"
+printf 'name: regapp2\nversion: 1.0.0\ndepends: mymath\n' > "$TMP/regapp2/package.myp"
+printf 'import env;\nimport mymath;\n\nclass App {\n    action:\n        @constructor App() {\n            Console.writeString("mul=");\n            Console.write(MyMath.mul(6, 7));\n            Console.writeString("\\n");\n        }\n}\n\nint main() {\n    App a = new App();\n    return 0;\n}\n' > "$TMP/regapp2/src/regapp2.myp"
+auto_out=$( cd "$TMP/regapp2" && "$TMP/myp" build 2>&1 )
+if printf '%s' "$auto_out" | grep -q "Installed mymath v0.2.0"; then
+    ok "build 自动安装缺失依赖"
+else
+    bad "build 自动安装失败: $auto_out"
+fi
+run_out=$( cd "$TMP/regapp2" && "$TMP/myp" run 2>&1 )
+if printf '%s' "$run_out" | grep -q "mul=42"; then
+    ok "自动安装依赖可运行 (mul=42)"
+else
+    bad "运行失败: $run_out"
+fi
+
+# remove（清理 lock + depends）
+( cd "$TMP/regapp" && "$TMP/myp" remove mymath >/dev/null 2>&1 )
+if ! grep -q "mymath" "$TMP/regapp/myp.lock" 2>/dev/null && ! grep -q "depends: mymath" "$TMP/regapp/package.myp" 2>/dev/null; then
+    ok "remove 清理 lock + depends"
+else
+    bad "remove 未清理干净"
+fi
+
 say ""
 say "=== summary: myp-pm PASS=$PASS FAIL=$FAIL ==="
 [ $FAIL -eq 0 ]

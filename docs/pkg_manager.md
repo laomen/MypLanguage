@@ -1,7 +1,7 @@
 # MYP 包管理器设计（用 MYP 语言自举）
 
-> 状态：**v2 形态已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建；
-> **v2 功能（registry / `myp.lock` / 自动拉取，见 §2、§4.6）未实施**
+> 状态：**v2 已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建 +
+> **registry / lockfile / add-remove-update-list（§4.6、§11）**
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 编译器 `--package-path`（`src/main.cpp` `loadModule`）、现有 Python 版 `myp`（仓库根）。
 > 本文档提出**用 MYP 语言重写包管理器**（自举工具链），作为语言稳定性证明与
@@ -40,8 +40,8 @@ stdlib 等价实现。
 | **v1** | 用 MYP 重写现有 `myp` 全部功能（`init`/`build`/`install`/`run`/legacy），行为与 Python 版**完全一致** | ~1-2 天 |
 | **v2** | `depends` 自动安装、版本解析 + lockfile、registry（git 仓库）、远程拉包 | ~3-5 天 |
 
-> 状态注：**v2 功能未实施**——当前已完成的是 v2 形态（模块化 + CMake，见 §10）；
-> `add`/`remove`/`update`/`list`、registry、`myp.lock`、`depends` 自动安装均待做。
+> 状态注：**v2 功能已实施（2026-08-05）**——`add`/`remove`/`update`/`list`、registry（纯
+> git 子目录，D4）、`myp.lock`、`depends` 自动安装均已完成（见 §11）。
 
 **非目标（v1/v2）**：依赖冲突解决（MVS）、语义化版本范围运算（^/~）、TLS/HTTPS 原生
 下载（v2 用 `curl`/`git` 编排，不引入 TLS FFI）。
@@ -137,19 +137,20 @@ myp build
      （转发 -O/--trace/--emit-llvm）
 ```
 
-### 4.6 registry（v2 设计）
+### 4.6 registry（v2 设计，✅ 已实施）
 
-- **形态**：git 仓库作为 registry（自托管 / GitHub / Gitee）。仓库根含索引：
+- **形态（D4 决议：纯 git 子目录，无索引文件）**：git 仓库（或本地目录）作为 registry：
   ```
   registry/
-    index.json               # { "packages": { "name": { "versions": [...], "latest": "..." } } }
-    packages/<name>/<ver>/   # 各版本包源码（含 package.myp）
+    packages/<name>/<version>/package.myp
+    packages/<name>/<version>/src/<name>.myp
   ```
-- **拉取**：`Process.run("git clone --depth 1 <url> <cache>")` 或
-  `Process.output("curl -s <url>/index.json")`（HTTP 编排，不引入 TLS FFI）
-- **缓存**：`~/.myp/cache/<name>@<ver>/`
-- **解析**：`myp add foo` → 查索引 → 取 `latest` 或 `@ver` 指定 → 复制到
-  `myp_packages/` → 写 `myp.lock`
+- **发现**：`MYP_REGISTRY` 指向本地路径或 git URL（`git clone --depth 1` 到缓存）；
+  未设置时回退本地 `./registry`（演示/测试）。
+- **版本解析**：枚举 `packages/<name>/` 下目录 + 数值比较（`Str.toInt`）；`latest` 或 `@ver` 指定。
+- **缓存**：`MYP_CACHE` 或 `$HOME/.myp/cache`。
+- **解析**：`myp add foo` → 查版本 → 复制到 `myp_packages/` → 写 `myp.lock` → 更新 `package.myp` depends。
+- **格式说明（D5 决议）**：lockfile 与 registry 均用 `key: value`/目录文本，无需 json 序列化。
 
 ---
 
@@ -199,7 +200,9 @@ myp build
 - **D2**：v1 单文件（~300 行，对齐 Python 版）vs 直接模块化拆分？
 - **D3**：fs FFI 命名与语义——`myp_fs_mkdir_p` / `myp_fs_remove_recursive` 是否合适？
 - **D4**：registry 形态——git 仓库 + `index.json` vs 纯 git 子目录（无索引文件）？
+  **✅ 决议：纯 git 子目录**（`packages/<name>/<ver>/`，§4.6 已实施）
 - **D5**：v2 是否补 json 序列化（写 `index.json`/`myp.lock`）vs 统一用 `key: value` 文本格式？
+  **✅ 决议：key: value 文本**（lockfile 与 registry 均用文本，无需 json 序列化）
 
 ---
 
@@ -246,3 +249,33 @@ myp build
 
 ### 10.4 验证
 - `tests/test_myp_pm.sh` 改为编译 `tools/pm/main.myp`（9 断言全过）；-O0/ASAN 全套 124/124。
+
+---
+
+## 11. v2 功能实施记录（2026-08-05，registry + lockfile + 依赖管理）
+
+### 11.1 新增模块
+| 文件 | 职责 |
+|------|------|
+| `lockfile.myp` | `@static class Lockfile`：`myp.lock` 读写（readEntry/writeEntry/removeEntry/list）+ `package.myp` depends 维护（addPackageDep/removePackageDep） |
+| `registry.myp` | `@static class Registry`：verCompare/cacheDir/registryDir/pkgVersions/resolveLatest/installVersion/add/remove/updateAll/listAll |
+
+### 11.2 新增命令
+```
+myp add <pkg>[@ver]   从 registry 解析（latest 或 @ver）→ 安装 → 写 myp.lock → 更新 depends
+myp remove <pkg>      卸载 + 清理 lock + depends
+myp update            按 lock 重装并升级到最新
+myp list              列出锁定依赖
+```
+`myp build` 对缺失依赖自动从 registry 安装（按 lock 版本，未锁定则取 latest）。
+
+### 11.3 自举发现并修复的运行时 bug
+- **`myp_io_read_line` 共享缓冲**：`static char buf[4096]` 每次调用覆盖上次结果，多次
+  readLine 结果存数组全部指向最后一行 → 改为每次返回新分配字符串（`myp_strdup`），
+  EOF 返回空串（符合 io.myp 文档契约）。`tests/io` 的 expected 曾编码旧 bug，已修正。
+- **`Str.toInt` 缺失**：runtime 补 `myp_str_to_int` + `text.myp` 加 `Str.toInt`（版本比较需要）。
+- `@static class` 内自调用必须类名限定（`Registry.xxx()`），与跨模块一致。
+
+### 11.4 验证
+- `tests/test_myp_pm.sh` 扩展 v2 段（add/list/build 自动安装/run/remove，5 断言）→ **14/14**；
+  -O0/ASAN 全套 **124/124**；`build/myp` 与 `build-asan/myp` 均端到端可用。

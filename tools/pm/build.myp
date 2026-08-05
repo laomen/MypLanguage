@@ -9,6 +9,8 @@ import text;
 import process;
 import "./meta.myp";
 import "./util.myp";
+import "./lockfile.myp";
+import "./registry.myp";
 
 @static class Build {
     static:
@@ -65,11 +67,31 @@ import "./util.myp";
             string compiler = Build.findCompiler();
             string pkgPath = Build.resolvePackagePath();
 
-            // 依赖检查（v1：仅提示缺失，不自动安装）
-            for (int i = 0; i < m.getDepCount(); i = i + 1) {
-                if (Fs.isDir(Fs.join("myp_packages", m.getDep(i))) == 0) {
-                    Console.writeLine("  Dependency '" + m.getDep(i) + "' not found in myp_packages/");
-                    Console.writeLine("  Use: myp install <path-to-" + m.getDep(i) + ">");
+// 依赖检查：缺失时从 registry 自动安装（无 registry 则提示）
+    for (int i = 0; i < m.getDepCount(); i = i + 1) {
+        string dep = m.getDep(i);
+        if (Fs.isDir(Fs.join("myp_packages", dep)) != 0) continue;
+        string reg = Registry.registryDir();
+        if (Str.len(reg) == 0) {
+            Console.writeLine("  Dependency '" + dep + "' not found in myp_packages/");
+            Console.writeLine("  Use: myp add " + dep + "  (or set MYP_REGISTRY)");
+            continue;
+        }
+        string locked = Lockfile.readEntry(dep);
+        if (Str.len(locked) > 0) {
+            if (Registry.installVersion(reg, dep, locked) == 0) {
+                Console.writeLine("  Installed " + dep + " v" + locked + " (from myp.lock)");
+            } else {
+                Console.writeLine("  Warning: failed to install locked dep '" + dep + "'");
+            }
+        } else {
+            string latest = Registry.resolveLatest(reg, dep);
+            if (Str.len(latest) > 0 && Registry.installVersion(reg, dep, latest) == 0) {
+                Lockfile.writeEntry(dep, latest);
+                Console.writeLine("  Installed " + dep + " v" + latest + " (from registry)");
+            } else {
+                Console.writeLine("  Dependency '" + dep + "' not found in registry");
+            }
                 }
             }
 

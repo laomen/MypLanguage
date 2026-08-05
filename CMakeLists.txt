@@ -157,13 +157,16 @@ set(MYP_PM_MODULES
     ${CMAKE_SOURCE_DIR}/tools/pm/meta.myp
     ${CMAKE_SOURCE_DIR}/tools/pm/build.myp
     ${CMAKE_SOURCE_DIR}/tools/pm/install.myp
+    ${CMAKE_SOURCE_DIR}/tools/pm/lockfile.myp
+    ${CMAKE_SOURCE_DIR}/tools/pm/registry.myp
     ${CMAKE_SOURCE_DIR}/tools/pm/util.myp
 )
 set(MYP_PM_OUT ${CMAKE_BINARY_DIR}/myp)
 
 add_custom_command(
     OUTPUT ${MYP_PM_OUT}
-    COMMAND $<TARGET_FILE:mypc> ${MYP_PM_SRC} -o ${MYP_PM_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_PM_SRC} -o ${MYP_PM_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
     # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/pm/main.myp.o
     DEPENDS ${MYP_PM_SRC} ${MYP_PM_MODULES} mypc

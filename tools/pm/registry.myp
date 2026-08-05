@@ -1,0 +1,215 @@
+// registry.myp — 包管理器：registry 解析 / 版本解析 / 拉取
+//
+// registry 形态（D4：纯 git 子目录，无索引文件）：
+//   registry/
+//     packages/<name>/<version>/package.myp
+//     packages/<name>/<version>/src/<name>.myp
+// MYP_REGISTRY 指向本地路径，或 git URL（自动 git clone --depth 1 到缓存）。
+// 版本解析：枚举 packages/<name>/ 下目录 + 数值比较（Str.toInt）。
+//
+// 关联: docs/pkg_manager.md §4.6/§6；自举: docs/self_hosting.md
+
+import env;
+import args;
+import fs;
+import text;
+import process;
+import "./lockfile.myp";
+import "./util.myp";
+
+@static class Registry {
+    static:
+        // 比较版本 "1.2.3"：>0 a>b, <0 a<b, 0 相等
+        int verCompare(string a, string b) {
+            int an = Str.splitCount(a, ".");
+            int bn = Str.splitCount(b, ".");
+            int n = an;
+            if (bn > n) n = bn;
+            for (int i = 0; i < n; i = i + 1) {
+                int av = 0;
+                if (i < an) av = Str.toInt(Str.splitGet(a, ".", i));
+                int bv = 0;
+                if (i < bn) bv = Str.toInt(Str.splitGet(b, ".", i));
+                if (av > bv) return 1;
+                if (av < bv) return -1;
+            }
+            return 0;
+        }
+
+        // 缓存目录（MYP_CACHE 或 $HOME/.myp/cache）
+        string cacheDir() {
+            string c = Console.getEnv("MYP_CACHE");
+            if (Str.len(c) > 0) return c;
+            string home = Console.getEnv("HOME");
+            if (Str.len(home) > 0) return Fs.join(Fs.join(home, ".myp"), "cache");
+            return ".myp_cache";
+        }
+
+        // 定位 registry 目录；空=未配置。
+        // MYP_REGISTRY：本地路径 或 git URL；未设置时回退本地 ./registry（演示/测试）。
+        string registryDir() {
+            string r = Console.getEnv("MYP_REGISTRY");
+            if (Str.len(r) == 0) {
+                if (Fs.isDir("./registry") != 0) return "./registry";
+                return "";
+            }
+            if (Str.startsWith(r, "http") != 0 || Str.startsWith(r, "git@") != 0) {
+                string cache = Registry.cacheDir();
+                string target = Fs.join(cache, "registry");
+                if (Fs.isDir(target) == 0) {
+                    if (Fs.mkdirP(cache) != 0) return "";
+                    StringBuilder cmd = new StringBuilder();
+                    cmd.append("git clone --depth 1 " + r + " " + target);
+                    if (Process.run(cmd.toString()) != 0) return "";
+                }
+                return target;
+            }
+            return r;
+        }
+
+        // 某包可用版本列表（逗号连接字符串），未找到返回 ""
+        string pkgVersions(string reg, string name) {
+            string pdir = Fs.join(Fs.join(reg, "packages"), name);
+            if (Fs.isDir(pdir) == 0) return "";
+            int n = Fs.listCount(pdir);
+            string[] entries = Fs.listDir(pdir);
+            // 快照（返回数组共享存储的语言 bug 规避）
+            string[64] names;
+            int nc = n;
+            if (nc > 64) nc = 64;
+            for (int i = 0; i < nc; i = i + 1) names[i] = entries[i];
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < nc; i = i + 1) {
+                string v = names[i];
+                if (Str.len(v) == 0) continue;
+                if (Fs.isDir(Fs.join(pdir, v)) != 0) {
+                    if (sb.count() > 0) sb.append(",");
+                    sb.append(v);
+                }
+            }
+            return sb.toString();
+        }
+
+        // 某包最新版本（空=未找到）
+        string resolveLatest(string reg, string name) {
+            string list = Registry.pkgVersions(reg, name);
+            int n = Str.splitCount(list, ",");
+            string best = "";
+            for (int i = 0; i < n; i = i + 1) {
+                string v = Str.trim(Str.splitGet(list, ",", i));
+                if (Str.len(v) == 0) continue;
+                if (Str.len(best) == 0 || Registry.verCompare(v, best) > 0) best = v;
+            }
+            return best;
+        }
+
+        // 从 registry 安装 <name>@<ver> 到 myp_packages/<name>
+        int installVersion(string reg, string name, string ver) {
+            string src = Fs.join(Fs.join(Fs.join(reg, "packages"), name), ver);
+            if (Fs.isDir(src) == 0) return 1;
+            string dst = Fs.join("myp_packages", name);
+            if (Fs.mkdirP("myp_packages") != 0) return 1;
+            if (Fs.exists(dst) != 0) Fs.removeRecursive(dst);
+            return Util.copyTree(src, dst);
+        }
+
+        // myp add <pkg>[@ver]：解析 → 安装 → 写 lock → 更新 package.myp depends
+        int add(string spec) {
+            string name = spec;
+            string wantVer = "";
+            int at = Str.indexOf(spec, "@");
+            if (at >= 0) {
+                name = Str.substring(spec, 0, at);
+                wantVer = Str.substring(spec, at + 1, Str.len(spec));
+            }
+            string reg = Registry.registryDir();
+            if (Str.len(reg) == 0) {
+                Console.writeLine("Error: no registry configured (set MYP_REGISTRY or use ./registry)");
+                return 1;
+            }
+            string list = Registry.pkgVersions(reg, name);
+            if (Str.len(list) == 0) {
+                Console.writeLine("Error: package '" + name + "' not found in registry");
+                return 1;
+            }
+            string ver = wantVer;
+            if (Str.len(ver) == 0) ver = Registry.resolveLatest(reg, name);
+            if (Str.len(ver) == 0) {
+                Console.writeLine("Error: no version of '" + name + "' in registry");
+                return 1;
+            }
+            if (Str.len(wantVer) > 0) {
+                int found = 0;
+                int n = Str.splitCount(list, ",");
+                for (int i = 0; i < n; i = i + 1) {
+                    if (Str.trim(Str.splitGet(list, ",", i)) == wantVer) found = 1;
+                }
+                if (found == 0) {
+                    Console.writeLine("Error: version '" + wantVer + "' of '" + name + "' not in registry");
+                    return 1;
+                }
+            }
+            if (Registry.installVersion(reg, name, ver) != 0) {
+                Console.writeLine("Error: failed to install '" + name + "' v" + ver);
+                return 1;
+            }
+            Lockfile.writeEntry(name, ver);
+            Lockfile.addPackageDep(name);
+            Console.writeLine("Added " + name + " v" + ver + " (from registry)");
+            return 0;
+        }
+
+        // myp remove <pkg>：卸载 + 移除 lock + 移除 package.myp depends
+        int remove(string name) {
+            string dst = Fs.join("myp_packages", name);
+            if (Fs.exists(dst) != 0) Fs.removeRecursive(dst);
+            Lockfile.removeEntry(name);
+            Lockfile.removePackageDep(name);
+            Console.writeLine("Removed " + name);
+            return 0;
+        }
+
+        // myp update：按 lock 重装所有依赖，并尝试升级到最新
+        int updateAll() {
+            string reg = Registry.registryDir();
+            if (Str.len(reg) == 0) {
+                Console.writeLine("Error: no registry configured (set MYP_REGISTRY or use ./registry)");
+                return 1;
+            }
+            string locks = Lockfile.list();
+            int n = Str.splitCount(locks, "\n");
+            int updated = 0;
+            for (int i = 0; i < n; i = i + 1) {
+                string line = Str.trim(Str.splitGet(locks, "\n", i));
+                if (Str.len(line) == 0) continue;
+                int sp = Str.indexOf(line, " ");
+                if (sp < 0) continue;
+                string name = Str.substring(line, 0, sp);
+                string latest = Registry.resolveLatest(reg, name);
+                if (Str.len(latest) == 0) {
+                    Console.writeLine("  " + name + ": not in registry (skip)");
+                    continue;
+                }
+                if (Registry.installVersion(reg, name, latest) != 0) {
+                    Console.writeLine("  " + name + ": install failed");
+                    continue;
+                }
+                Lockfile.writeEntry(name, latest);
+                Console.writeLine("  " + name + " -> " + latest);
+                updated = updated + 1;
+            }
+            Console.writeLine("Updated " + updated + " package(s)");
+            return 0;
+        }
+
+        // myp list：列出锁定依赖
+        int listAll() {
+            string locks = Lockfile.list();
+            if (Str.len(locks) == 0) {
+                Console.writeLine("(no locked dependencies)");
+                return 0;
+            }
+            Console.writeString(locks);
+            return 0;
+        }
+}

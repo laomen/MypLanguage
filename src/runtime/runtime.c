@@ -86,13 +86,15 @@ void myp_io_fclose(void) {
     myp_io_fp = NULL;
 }
 
+// 读取一行并返回**新分配的**字符串（修复：原 static buf 共享缓冲，
+// 多次 readLine 结果存数组会全部指向最后一行）。EOF 返回空串（文档契约）。
 const char* myp_io_read_line(void) {
-    if (!myp_io_fp) return NULL;
+    if (!myp_io_fp) return myp_strdup("");
     static char buf[4096];
-    if (!fgets(buf, sizeof(buf), myp_io_fp)) return NULL;
+    if (!fgets(buf, sizeof(buf), myp_io_fp)) return myp_strdup("");
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
-    return buf;
+    return myp_strdup(buf);
 }
 
 void myp_io_write(const char* text) {
@@ -224,6 +226,15 @@ int32_t myp_str_eq(const char* a, const char* b) {
 double myp_atof(const char* s) {
     if (!s) return 0.0;
     return atof(s);
+}
+
+// String to int (decimal; 非数字前缀解析失败返回 0)
+int32_t myp_str_to_int(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    long v = strtol(s, &end, 10);
+    if (end == s) return 0;   // 无有效数字
+    return (int32_t)v;
 }
 
 // ======================

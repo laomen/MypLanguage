@@ -23,6 +23,7 @@ import text;
 import process;
 import "./build.myp";
 import "./install.myp";
+import "./registry.myp";
 
 int cmdInit(string name) {
     if (Str.len(name) == 0) {
@@ -80,6 +81,10 @@ void cmdHelp() {
     Console.writeLine("  init <name>       Create a new MYP package scaffold");
     Console.writeLine("  build [opts]      Build the current package");
     Console.writeLine("  install <path>    Install a package from local path");
+    Console.writeLine("  add <pkg>[@ver]   Add dependency from registry");
+    Console.writeLine("  remove <pkg>      Remove a dependency");
+    Console.writeLine("  update            Update dependencies to latest");
+    Console.writeLine("  list              List locked dependencies");
     Console.writeLine("  run [opts]        Build and run the current package");
     Console.writeLine("  <file.myp> [opts] Compile a single file (legacy mode)");
     Console.writeLine("");
@@ -116,6 +121,22 @@ int pmRun() {
         return Install.cmdInstall(Args.get(2));
     }
     if (cmd == "run") return Build.cmdRun(2, argc);
+    if (cmd == "add") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp add <package>[@version]");
+            return 1;
+        }
+        return Registry.add(Args.get(2));
+    }
+    if (cmd == "remove") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp remove <package>");
+            return 1;
+        }
+        return Registry.remove(Args.get(2));
+    }
+    if (cmd == "update") return Registry.updateAll();
+    if (cmd == "list") return Registry.listAll();
     if (cmd == "--help" || cmd == "-h") {
         cmdHelp();
         return 0;
