@@ -1,6 +1,7 @@
 # MYP 包管理器设计（用 MYP 语言自举）
 
-> 状态：**v2 已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建
+> 状态：**v2 形态已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建；
+> **v2 功能（registry / `myp.lock` / 自动拉取，见 §2、§4.6）未实施**
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 编译器 `--package-path`（`src/main.cpp` `loadModule`）、现有 Python 版 `myp`（仓库根）。
 > 本文档提出**用 MYP 语言重写包管理器**（自举工具链），作为语言稳定性证明与
@@ -38,6 +39,9 @@ stdlib 等价实现。
 |--------|------|--------|
 | **v1** | 用 MYP 重写现有 `myp` 全部功能（`init`/`build`/`install`/`run`/legacy），行为与 Python 版**完全一致** | ~1-2 天 |
 | **v2** | `depends` 自动安装、版本解析 + lockfile、registry（git 仓库）、远程拉包 | ~3-5 天 |
+
+> 状态注：**v2 功能未实施**——当前已完成的是 v2 形态（模块化 + CMake，见 §10）；
+> `add`/`remove`/`update`/`list`、registry、`myp.lock`、`depends` 自动安装均待做。
 
 **非目标（v1/v2）**：依赖冲突解决（MVS）、语义化版本范围运算（^/~）、TLS/HTTPS 原生
 下载（v2 用 `curl`/`git` 编排，不引入 TLS FFI）。
@@ -219,7 +223,7 @@ myp build
 
 ---
 
-## 10. v2 实施记录（2026-08-05，模块化 + CMake）
+## 10. v2 形态实施记录（2026-08-05，模块化 + CMake；v2 功能见 §6 待实施）
 
 ### 10.1 模块划分（tools/pm/）
 | 文件 | 职责 |
