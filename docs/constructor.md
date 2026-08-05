@@ -1,6 +1,7 @@
 # MYP 类构造器设计（Constructors / Copy / Assignment）
 
-> 状态：**设计草案**（v0.1）——待审核后实施
+> 状态：**设计草案**（v0.2）——构造器语法已定：`@constructor` 注解 + 函数名==类名
+> 隐式构造器；待审核后实施
 > 关联：语言规格 v1.0（`docs/grammar.md`）、版本策略（`docs/CHANGELOG.md`）、
 > 类系统（`docs/manual.md` §6）、算子系统（`docs/operators.md`）
 
@@ -24,8 +25,8 @@
 
 ### 1.2 目标
 
-1. 一等公民**构造器**（`constructor:` 节）：`new ClassName(args)` 优先绑定构造器，
-   支持重载/默认值——这是**对象初始化**的正规机制。
+1. 一等公民**构造器**（`@constructor` 注解；函数名==类名时隐式视为构造器）：
+   `new ClassName(args)` 优先绑定构造器，支持重载/默认值——这是**对象初始化**的正规机制。
 2. **`@startup` 回归"启动信号"语义**：并行/事件驱动代码中实例开始操作的入口，
    不再兼任初始化。构造器与 `@startup` **正交、互不取代**（构造器=new 时初始化；
    @startup=启动信号）。
@@ -61,17 +62,19 @@ MYP 的核心区分（manual §7 `struct vs class`）：
 
 ## 3. 类构造器（Constructor）
 
-### 3.1 语法：新增 `constructor:` 类节
+### 3.1 语法：`@constructor` 注解 + 函数名==类名隐式构造器
 
-与现有节（`action:`/`event:`/`property:`/`function:`/`static:`）并列，**支持重载**：
+构造器是 `action:`（或 `function:`）里加 `@constructor` 注解的方法；**当函数名与
+类名一致时，默认视为构造器**（可省略 `@constructor`，与 C++/Java 一致）：
 
 ```myp
 class Window {
-    constructor:
-        Window() {                     // 无参构造
+    action:
+        @constructor
+        void Window() {                     // 显式 @constructor：无参构造
             x = 0; y = 0; w = 80; h = 24;
         }
-        Window(int px, int py, int pw, int ph) {   // 带参构造（重载）
+        void Window(int px, int py, int pw, int ph) {  // 函数名==类名 → 隐式构造器（重载）
             x = px; y = py; w = pw; h = ph;
         }
     property:
@@ -79,10 +82,15 @@ class Window {
 }
 ```
 
-- 构造器**无返回类型**，方法名 = 类名（显式，与 C++/Java 一致）。
+**规则**：
+- `@constructor` 注解可加在 `action:`/`function:` 方法上，标记其为构造器。
+- **隐式规则**：方法名 == 类名 → 自动视为构造器（等效于加 `@constructor`）；
+  同名重载即多个构造器。显式注解与隐式命名**等价**。
+- 构造器**无返回类型**（`void`）。
 - 构造器体可用 `this`、可读/写 property、可调用 `function:`/`action:` 方法。
 - **构造器 ≠ `@startup`**：构造器是 `new` 时同步的对象初始化；`@startup` 是
-  并行/事件驱动代码中的**启动信号**（开始操作）。两者正交、可共存（见 §3.5）。
+  并行/事件驱动代码中的**启动信号**（开始操作）。两者正交、可共存（见 §3.5）；
+  同一方法不能同时标 `@constructor` 与 `@startup`。
 
 ### 3.2 `new` 绑定与重载解析
 
@@ -114,7 +122,8 @@ new ClassName(args)
 - 构造器绑定到**单态化实例类**：`new Box<double>()` → 调用 `Box_double_inst` 的构造器
   （codegen 用 `current_type_params_` 解析 `T`，元素/参数类型正确）。
 - 模板类自身的构造器**不注册**到实例分发，从根上避免"误调模板 init"。
-- 泛型参数作构造器参数：`constructor: Box(T v) { data_ = v; }` → 实例化时 `T` 替换为实参类型。
+- 泛型参数作构造器参数：`@constructor void Box(T v) { data_ = v; }`（函数名==类名时
+  亦可省略注解）→ 实例化时 `T` 替换为实参类型。
 
 ### 3.5 与 `@startup` 的关系（正交，互不取代）
 
@@ -135,7 +144,7 @@ json/net/fs/regex/time 等 stdlib 依赖它）。本设计把初始化归位给�
 
 | 步骤 | 内容 |
 |---|---|
-| 1 | 实现 `constructor:` 节，`new C(args)` 绑定构造器 |
+| 1 | 实现 `@constructor` 注解 + 函数名==类名隐式构造器识别，`new C(args)` 绑定构造器 |
 | 2 | **全部迁移**当前库 + 测试里的 `@startup init(...)` → 构造器（stdlib 9 处 + deeplearning 2 处 + tests 若干） |
 | 3 | **移除** `new C(args)` 自动调 `@startup` 的 legacy 绑定（codegen）——`@startup` 严格只作启动信号（@thread 线程入口） |
 | 4 | 空占位 `@startup void init() {}`（stream/layers）直接删除（编译器并不强制） |
@@ -146,14 +155,15 @@ json/net/fs/regex/time 等 stdlib 依赖它）。本设计把初始化归位给�
 ### 3.6 约束
 
 - 构造器不能是 `@coro` / `@test` / `@eval` / `@macro`。
-- 构造器不能被直接调用（只在 `new` 时隐式调用）。
+- 构造器不能同时是 `@startup`（构造器=初始化，`@startup`=启动信号，互斥）。
+- 构造器不能被直接调用（只在 `new` / 函数式构造 `Struct(args)` 时隐式调用）。
 - 构造器内不允许 `return` 值（无返回类型）。
 
 ---
 
 ## 3A. struct 的处理（值类型）
 
-class 是引用、struct 是值——**同一 `constructor:` 特性，两种调用形式**：
+class 是引用、struct 是值——**同一构造器特性（`@constructor` + 函数名==类名），两种调用形式**：
 
 | | class | struct |
 |---|---|---|
@@ -163,13 +173,14 @@ class 是引用、struct 是值——**同一 `constructor:` 特性，两种调�
 | 深拷贝 | `copy()` 显式 | `copy()` 显式 |
 | `=` | 引用重绑定 | 成员级拷贝 |
 
-### 3A.1 struct 构造器（`constructor:` 节同样适用）
+### 3A.1 struct 构造器（`@constructor` 注解同样适用）
 
 ```myp
 struct Vec2 {
-    constructor:
-        Vec2() { x = 0; y = 0; }
-        Vec2(double px, double py) { x = px; y = py; }
+    action:
+        @constructor
+        void Vec2(double px, double py) { x = px; y = py; }  // 显式注解
+        void Vec2() { x = 0; y = 0; }                        // 函数名==类名 → 隐式构造器
     double x, y;
 }
 ```
@@ -200,9 +211,9 @@ Vec2 w;  w = Vec2(7.0, 8.0);    // 先声明后赋值
 
 ```myp
 struct Buffer {
-    constructor:
-        Buffer(int n) { data = new int[n]; }
     action:
+        @constructor
+        void Buffer(int n) { data = new int[n]; }
         Buffer copy() {
             Buffer c = Buffer(size);
             for (int i = 0; i < size; i = i + 1) c.data[i] = data[i];
@@ -220,7 +231,7 @@ struct Buffer {
 
 - class 内 struct 字段：声明时零初始化；class 构造器可 `b = Border(1,2,1,2);` 赋值。
   （MYP 无成员初始化列表，构造器体显式赋值即可。）
-- struct 的 `operator:` 节（数学算子）与 `constructor:` 节**可共存**，互不冲突。
+- struct 的 `operator:` 节（数学算子）与 `@constructor` 构造器**可共存**，互不冲突。
 - `Struct(args)` 是 rvalue；传给函数/返回时按现有 struct 值传递机制（已支持）。
 
 ---
@@ -236,9 +247,9 @@ class 是引用类型，因此 **`A b = a;` 必须是引用别名**，**不**调
 
 ```myp
 class Image {
-    constructor:
-        Image(int w, int h) { width = w; height = h; data_ = new int[w * h]; }
     action:
+        @constructor
+        void Image(int w, int h) { width = w; height = h; data_ = new int[w * h]; }
         Image copy() {                    // 显式深拷贝（约定方法）
             Image c = new Image(width, height);
             for (int i = 0; i < width * height; i = i + 1) c.data_[i] = data_[i];
@@ -266,8 +277,9 @@ Image c = a.copy(); // 显式深拷贝
 
 若需要 `Image c = Image(a);` 这种"拷贝构造式 new"形式，可加一条：
 ```myp
-constructor:
-    Image(Image other) { /* 深拷贝 */ }
+action:
+    @constructor
+    void Image(Image other) { /* 深拷贝 */ }
 ```
 `new Image(src)` / `Image(src)` 调用它。**注意**：这也只显式触发（`Image b = a;` 仍走引用别名）。
 
@@ -365,12 +377,12 @@ C++ 析构器靠栈展开/`delete` 保证确定性清理，MYP 无此生命周�
 
 ## 7. 兼容性
 
-- **additive 语法**：新增 `constructor:` 节 + 关键字 `constructor`，不删除/不改任何现有语法。
+- **additive 语法**：新增 `@constructor` 注解 + 函数名==类名隐式构造器识别，不删除/不改任何现有语法。
 - 语言规格保持 v1.0（非破坏性变更，按 CHANGELOG 版本策略）。
 - **一次性迁移（用户决定，不留 legacy）**：`new C(args)` 从"自动调 `@startup`"改为"绑定构造器"；
-  当前库/测试里所有 `@startup init(...)` 迁到 `constructor:`；`@startup` 严格只作启动信号。
-  迁移后**移除** legacy 绑定，杜绝语义混淆。
-- **调用点不破坏**：迁移只改类的内部定义（`@startup init` → `constructor:`），
+  当前库/测试里所有 `@startup init(...)` 迁到构造器（`@constructor` 或改名为类名）；
+  `@startup` 严格只作启动信号。迁移后**移除** legacy 绑定，杜绝语义混淆。
+- **调用点不破坏**：迁移只改类的内部定义（`@startup init` → `@constructor`/类名命名），
   调用点 `new Json("...")` 等保持不变（仍绑定同名构造器）。
 - **`@startup` 启动信号语义保留**：@thread 线程入口等真正启动场景不变。
 
@@ -380,7 +392,7 @@ C++ 析构器靠栈展开/`delete` 保证确定性清理，MYP 无此生命周�
 
 | 里程碑 | 内容 | 验收 |
 |---|---|---|
-| **M1 构造器语法 + AST** | parser：`constructor:` 节（class + struct）+ `ConstructorDecl`；sema：注册构造器签名 | `constructor:` 可解析；无构造器类行为不变（legacy `@startup init` 继续工作） |
+| **M1 构造器语法 + AST** | parser：`@constructor` 注解 + 函数名==类名隐式构造器识别（class + struct）+ `ConstructorDecl`；sema：注册构造器签名 | `@constructor` 可解析；类名==函数名自动识别；无构造器类行为不变（legacy `@startup init` 继续工作） |
 | **M2 class 构造器** | `new C(args)` 优先绑定构造器（否则 legacy 回退 `@startup init`）+ 重载解析（含数字提升）+ codegen（分配→默认值→构造体）；泛型绑定单态化实例类（根治 @startup bug）；负测试 | `new Window()` / `new Window(10,5,80,24)` 正确；`new Box<double>(1.5)` 正确；存量 `new Json("...")` 仍工作 |
 | **M3 struct 构造器** | 函数式构造 `Vec2(args)`（栈临时 + 构造体）+ 重载；与 `operator:` 共存；负测试 | `Vec2 v = Vec2(1.0,2.0)` / `return Vec2(...)` / 字段赋值正确 |
 | **M4 拷贝约定 + 文档** | `copy()` 约定（纯文档/示例，无新语法）；manual §6 构造器章节 + 文档澄清 `@startup`=启动信号；CHANGELOG v3.9.0 | `a.copy()` / `Buffer.copy()` 深拷贝示例通过；文档齐全 |
@@ -392,13 +404,14 @@ C++ 析构器靠栈展开/`delete` 保证确定性清理，MYP 无此生命周�
 
 ## 9. 待审核决策点
 
-1. **语法**：`constructor:` 节（推荐）vs `@constructor` 注解 vs `init()` 约定。
+1. **语法**：**`@constructor` 注解 + 函数名==类名隐式构造器**（✅ 已定，见 §3.1）。
 2. **泛型构造器绑定**：确认绑定单态化实例类、模板不注册（根治 @startup bug）。
 3. **struct 构造调用形式**：函数式构造 `Vec2(args)`（推荐）vs 聚合初始化 `{...}`（P2）。
 4. **拷贝**：`copy()` 约定（推荐，零语法）vs 加 `A(a)` 拷贝构造语法糖（P2）。
 5. **`=`**：class 与 struct 均不重载（推荐，符合哲学）；struct `@op("=")` 是否允许（P2）。
-6. **迁移**：**彻底迁移、不留 legacy**——当前库/测试所有 `@startup init(...)` 迁到 `constructor:`；
-   移除 `new` 自动调 `@startup` 的绑定；`@startup` 严格只作启动信号。已确认。
+6. **迁移**：**彻底迁移、不留 legacy**——当前库/测试所有 `@startup init(...)` 迁到构造器
+   （`@constructor` 或改名为类名）；移除 `new` 自动调 `@startup` 的绑定；
+   `@startup` 严格只作启动信号。已确认。
 7. **析构器**：**不引入**（arena 模型无确定性销毁点，见 §5A）。清理用显式
    `destroy()`/`close()` + `finally` + `Memory`。确认？
 
