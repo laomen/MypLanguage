@@ -114,8 +114,27 @@ codegen 在 `generateCall` 中：callee 为函数类型变量 → 取 `{closure,
   同一对象（对象内状态可变）。文档明示：按值捕获 = 标量/值类型深拷贝，class 引用浅拷贝。
 - **`this` 捕获**：类方法内 lambda 引用 `this`/实例属性 → 捕获 `this`（v1 支持：把 `this`
   拷入捕获槽，body 用 `this` 访问实例）。
-- **递归/自引用**：lambda 引用自身 → v1 不支持（需函数名/`@name`，v2）。
 - **嵌套 lambda**：外层捕获作为内层的外层变量，逐层按值传递。
+
+### 4.4 命名 lambda / 递归闭包（additive，M-FN-2）
+
+匿名 lambda 赋给变量即获外部名字；**自引用（递归）** 需要内部名字，新增命名语法：
+
+```
+NamedLambda ::= 'fn' Identifier '(' ParamList? ')' '=>' '{' Stmt* '}'
+```
+
+```myp
+(int) -> int fact = fn fact(int n) => { if (n <= 1) return 1; return n * fact(n - 1); };
+```
+
+- **语义**：`name` 在 lambda body 内绑定到**该闭包自身**（函数类型同 `(params)->ret`）。
+- **实现（无需捕获外层变量、无需引用类型）**：lambda 本就是隐藏类对象，`__call` 内
+  `this` 已指向自身；`name(args)` 编译为**经自身 tramp 的递归调用** `tramp(this, args...)`。
+- **与捕获正交**：自引用 `name` 走 `this`，不进捕获集，不参与按值拷贝。
+- **互递归**（A 调 B、B 调 A）：v1 不支持（需先行声明/环，v2）。
+- **类型检查**：`fn name(...)` 的类型由参数/返回类型决定；body 内 `name` 在符号表
+  声明为该函数类型（作用域 = body）。
 
 ---
 
@@ -165,11 +184,11 @@ R reduce<T, R>(T[] arr, R init, (R, T) -> R f) { ... }
 
 | 模块 | 改动 |
 |------|------|
-| `parser` | `parseType` 加 `(T,..)->R` 分支；lambda 参数类型可省略（上下文推断） |
-| `AST` | `TypeNode` 加函数类型字段（`func_param_types` + `func_return_type`）或复用；`LambdaExpr` 加 `capture_names` |
+| `parser` | `parseType` 加 `(T,..)->R` 分支；lambda 参数类型可省略（上下文推断）；`fn name(...) =>` 命名 lambda |
+| `AST` | `TypeNode` 加函数类型字段（`func_param_types` + `func_return_type`）或复用；`LambdaExpr` 加 `capture_names`/`self_name` |
 | `Type.h` | `TypeInfo` 的 Function 完善（param_types/return_type 已有）；`typeName` 支持函数类型打印 |
-| `sema` | lambda → `TypeKind::Function`；捕获集分析；隐藏类加捕获槽 + `__call` 前缀拷贝；函数类型兼容；上下文参数类型注入 |
-| `codegen` | 函数类型降低为 fat pointer；lambda 求值 → 隐藏类 + tramp + 捕获填充；调用函数值 → tramp 间接调用；tramp 生成 |
+| `sema` | lambda → `TypeKind::Function`；捕获集分析；隐藏类加捕获槽 + `__call` 前缀拷贝；函数类型兼容；上下文参数类型注入；命名 lambda 自引用解析（body 内 `name` → 经 `this` tramp 递归） |
+| `codegen` | 函数类型降低为 fat pointer；lambda 求值 → 隐藏类 + tramp + 捕获填充；调用函数值 → tramp 间接调用；tramp 生成；`fn name` 自引用 → 自身 tramp 递归调用 |
 | `stdlib` | `map`/`filter`/`reduce` + `Option.map`/`filter` |
 | `tests` | `tests/function/`：存/传/返/调用、捕获（标量/值/class 引用）、高阶函数、`Option.map`、嵌套 lambda、mapping 链兼容回归 |
 
@@ -198,6 +217,7 @@ R reduce<T, R>(T[] arr, R init, (R, T) -> R f) { ... }
 - **D-F3**：fat pointer 表示（建议，多态统一）vs 每调用点静态隐藏类（限制赋值多态）。
 - **D-F4**：命名函数作值放 v1 还是 v2（建议 v2，需 thunk）。
 - **D-F5**：lambda 参数类型**可省略**（上下文推断）是否放开（建议放开，additive）。
+- **D-F6**：命名 lambda `fn name(...) =>`（递归自引用，经 `this` tramp）——放 M-FN-2（建议）还是 v2。
 
 ---
 
@@ -205,7 +225,7 @@ R reduce<T, R>(T[] arr, R init, (R, T) -> R f) { ... }
 
 - **M-FN-1**：函数类型语法 + TypeInfo + fat pointer 降低 + lambda → 函数值（**非捕获**）
   + `tests/function` 存/传/返/调用。
-- **M-FN-2**：闭包捕获（按值）+ tramp + 捕获填充 + `this` 捕获。
+- **M-FN-2**：闭包捕获（按值）+ tramp + 捕获填充 + `this` 捕获 + **命名 lambda / 递归**（`fn name`，D-F6）。
 - **M-FN-3**：stdlib `map`/`filter`/`reduce` + `Option.map` + 嵌套 lambda + 全库回归 + 文档定稿。
 
 与自举路线关系：T4/T5 大量访问者/回调将直接受益（一等函数是硬前置）；
