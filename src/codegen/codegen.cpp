@@ -513,6 +513,44 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
     return builtinTypeToInfo(node.basic_type);
 }
 
+// Resolve generic type-param placeholders against current_type_params_, then
+// mangle to the same string sema uses (typeName(typeNodeToTypeInfo(...))).
+// Handles builtins, arrays, function types and generic classes (nested generics
+// get one "_inst" per level, matching sema's per-arg mangling).
+std::string CodeGen::mangleConcreteTypeNode(const TypeNode& node) {
+    // Type-param placeholder → concrete arg (e.g. R → string), then recurse.
+    if (!node.class_name.empty() && !node.type_args.empty() && !node.isArray()) {
+        // Generic class: Option<int> → "Option_int_inst"
+        for (auto& tp : current_type_params_)
+            if (node.class_name == tp.first)
+                return mangleConcreteTypeNode(tp.second);
+    }
+    for (auto& tp : current_type_params_) {
+        if (!node.class_name.empty() && node.class_name == tp.first)
+            return mangleConcreteTypeNode(tp.second);
+    }
+    if (node.element_type)
+        return mangleConcreteTypeNode(*node.element_type) + "[]";
+    if (node.isFunction()) {
+        std::string s = "(";
+        for (size_t i = 0; i < node.func_param_types.size(); i++) {
+            if (i) s += ", ";
+            s += mangleConcreteTypeNode(node.func_param_types[i]);
+        }
+        s += ") -> ";
+        s += node.func_return_type ? mangleConcreteTypeNode(*node.func_return_type) : "void";
+        return s;
+    }
+    if (!node.class_name.empty()) {
+        std::string s = node.class_name;
+        bool is_generic = !node.type_args.empty();
+        for (auto& ta : node.type_args) { s += "_"; s += mangleConcreteTypeNode(ta); }
+        if (is_generic) s += "_inst";
+        return s;
+    }
+    return mangleTypeNode(node);
+}
+
 // -- Symbol table --
 void CodeGen::pushScope() { named_values_.emplace_back(); }
 void CodeGen::popScope() {
@@ -2466,22 +2504,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
             std::string cls_name = d.type.class_name;
             // Mangle name for generic classes: Box<int> → Box_int_inst
+            // (type-param placeholders like R are resolved via current_type_params_)
             if (!d.type.type_args.empty()) {
                 cls_name = d.type.class_name;
-                for (auto& ta : d.type.type_args) {
-                    cls_name += "_";
-                    switch (ta.basic_type) {
-                        case BuiltinType::Byte: cls_name += "byte"; break;
-                        case BuiltinType::Short: cls_name += "short"; break;
-                        case BuiltinType::Int: cls_name += "int"; break;
-                        case BuiltinType::Long: cls_name += "long"; break;
-                        case BuiltinType::Double: cls_name += "double"; break;
-                        case BuiltinType::Float: cls_name += "float"; break;
-                        case BuiltinType::Bool: cls_name += "bool"; break;
-                        case BuiltinType::String: cls_name += "string"; break;
-                        default: cls_name += "unknown"; break;
-                    }
-                }
+                for (auto& ta : d.type.type_args)
+                    cls_name += "_" + mangleConcreteTypeNode(ta);
                 cls_name += "_inst";
             }
             vt = TypeInfo(TypeKind::Class); vt.class_name = cls_name;
@@ -6235,12 +6262,11 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     }
     std::string cls_name = e.class_name;
     // Mangle name for generic classes: new Box<int>() → Box_int_inst
+    // (type-param placeholders like R are resolved via current_type_params_)
     if (!e.type_args.empty()) {
         cls_name = e.class_name;
-        for (auto& ta : e.type_args) {
-            cls_name += "_";
-            cls_name += mangleTypeNode(ta);
-        }
+        for (auto& ta : e.type_args)
+            cls_name += "_" + mangleConcreteTypeNode(ta);
         cls_name += "_inst";
     }
     auto* st = getClassStruct(cls_name);

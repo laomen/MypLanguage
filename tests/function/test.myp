@@ -1,6 +1,9 @@
 // function: 一等函数/闭包（§三-3）——M-FN-1（函数类型+非捕获函数值）+ M-FN-2（按值捕获）
+// + M-FN-3（高阶泛型函数：map/fold + Option.map）
 // 覆盖：存/传/返/调用、多参、字符串返回、字符串捕获、class 引用捕获（浅拷贝共享）、嵌套捕获
 import env;
+import option;
+import collections;
 
 class Counter {
     action:
@@ -15,6 +18,20 @@ int apply2(int v, (int) -> int f) { return f(v); }
 
 // 函数返回函数（捕获参数 n：按值）
 (int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
+
+// M-FN-3：泛型高阶函数 —— Option.map（泛型参数 T/R + 一等函数实参）
+Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) {
+    Option<R> r = new Option<R>();
+    if (o.isSome()) r.set(f(o.get()));
+    return r;
+}
+
+// M-FN-3：泛型归约（ArrayList 有 size/get）
+int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+    int acc = init;
+    for (int i = 0; i < arr.size(); i = i + 1) acc = f(acc, arr.get(i));
+    return acc;
+}
 
 int pmRun() {
     // M-FN-1：存/传/返/调用
@@ -47,8 +64,21 @@ int pmRun() {
         return inner(x);
     };
     int n = outer(3);                                    // 10
+    // M-FN-3：Option.map（泛型函数 + 一等函数实参）
+    Option<int> some = new Option<int>(5);
+    Option<string> mapped = mapOpt<int, string>(some, (int x) => { return "v" + x; });
+    string a3 = "none";
+    if (mapped.isSome()) a3 = mapped.get();              // v5
+    Option<int> none = new Option<int>();
+    Option<int> m2 = mapOpt<int, int>(none, (int x) => { return x * 2; });
+    string b3 = m2.isNone() ? "none" : "some";           // none
+    // M-FN-3：fold（ArrayList + 归约闭包）
+    ArrayList<int> xs = new ArrayList<int>();
+    xs.add(1); xs.add(2); xs.add(3); xs.add(4);
+    int sum = foldInt<int>(xs, 0, (int acc, int x) => { return acc + x; }); // 10
     Console.writeString("a=" + a + " b=" + b + " c=" + c + " d=" + d + " e=" + e + " z=" + z);
     Console.writeString(" p=" + p + " c1=" + c1 + " c2=" + c2 + " n=" + n);
+    Console.writeString(" a3=" + a3 + " b3=" + b3 + " sum=" + sum);
     Console.writeString("\n");
     return 0;
 }

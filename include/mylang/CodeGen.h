@@ -343,6 +343,10 @@ private:
     llvm::Type* getLLVMType(const TypeInfo& type);
     /// Convert a TypeNode (from AST) to TypeInfo, preserving array info.
     TypeInfo typeNodeToCodegenType(const TypeNode& node);
+    /// Mangle a TypeNode to the same string sema uses for generic-instance
+    /// names (typeName(typeNodeToTypeInfo(...))), resolving generic type-param
+    /// placeholders (e.g. `R`) against current_type_params_ first.
+    std::string mangleConcreteTypeNode(const TypeNode& node);
     llvm::Type* typeNodeToLLVMType(const TypeNode& tn);
     const TypeAliasDecl* findAlias(const std::string& name) const;
     void declareFuncSignature(const FuncDecl& decl);

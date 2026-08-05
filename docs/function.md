@@ -1,8 +1,8 @@
 # MYP 一等函数与闭包设计（First-Class Functions & Closures）
 
-> 状态：**M-FN-1/M-FN-2 已实施（2026-08-05）**——函数类型 + lambda 一等函数值
-> （fat pointer + tramp）+ **按值闭包捕获**（字符串/class 引用浅拷贝/嵌套）；
-> M-FN-3（stdlib map/filter/reduce + Option.map）待实施
+> 状态：**M-FN-1/M-FN-2/M-FN-3 已实施（2026-08-05）**——函数类型 + lambda 一等函数值
+> （fat pointer + tramp）+ **按值闭包捕获**（字符串/class 引用浅拷贝/嵌套）+
+> **高阶泛型函数**（`mapOpt`/`foldInt`，泛型参数 T/R + 一等函数实参；`Option.map`）
 > 关联：`docs/next_improvements.md` §三-3、`docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，
 > 新增函数类型语法，不改现有语法）、`docs/arc.md`（内存模型：lambda 对象为 class 实例）
 > 决策背景：lambda 语法已在（`(x)=>{}`）但**无函数类型**，无法存储/传递/返回；
@@ -226,9 +226,12 @@ R reduce<T, R>(T[] arr, R init, (R, T) -> R f) { ... }
 ## 12. 里程碑建议
 
 - **M-FN-1**：函数类型语法 + TypeInfo + fat pointer 降低 + lambda → 函数值（**非捕获**）
-  + `tests/function` 存/传/返/调用。
-- **M-FN-2**：闭包捕获（按值）+ tramp + 捕获填充 + `this` 捕获 + **命名 lambda / 递归**（`fn name`，D-F6）。
-- **M-FN-3**：stdlib `map`/`filter`/`reduce` + `Option.map` + 嵌套 lambda + 全库回归 + 文档定稿。
+  + `tests/function` 存/传/返/调用。✔ 已实施
+- **M-FN-2**：闭包捕获（按值）+ tramp + 捕获填充 + `this` 捕获 + **命名 lambda / 递归**（`fn name`，D-F6）。✔ 已实施
+- **M-FN-3**：泛型高阶函数（`mapOpt`/`foldInt`，泛型参数 + 一等函数实参）+ `Option.map`
+  + 嵌套 lambda + 全库回归 + 文档定稿。✔ 已实施
+  - 说明：`map`/`filter`/`reduce` 的 **stdlib 落位**仍待办——顶层泛型函数跨模块不可见，
+    需**泛型 `@static` 类方法**（`resolveGenericCall` 扩展至 `static_actions`）或留作后续。
 
 与自举路线关系：T4/T5 大量访问者/回调将直接受益（一等函数是硬前置）；
 `Option.map` 落地使 §三-1 完整。

@@ -45,11 +45,15 @@ bool Sema::analyze(TranslationUnit& tu) {
 
     // === Pass 2: Type-check function bodies ===
     // NOTE: visitFuncBody may monomorphize generic functions (appending to
-    // tu.functions → reallocation). Iterate by index, re-fetch per element,
-    // and skip monomorphized instances (their body is shared with the template,
-    // which is type-checked below with type params as placeholders).
+    // tu.functions → reallocation). Iterate by index, re-fetch per element.
+    // Generic templates AND monomorphized instances are skipped: their bodies
+    // are shared and type-checked with placeholders would monomorphize generic
+    // classes with type-param TypeNodes (e.g. `new Option<R>()`), leaving
+    // invalid `R`-named members in the spurious instance. Codegen substitutes
+    // type params per-instance, so bodies are correct at runtime.
     for (size_t fi = 0; fi < tu.functions.size(); fi++) {
         if (tu.functions[fi].is_generic_inst) continue;
+        if (!tu.functions[fi].type_params.empty()) continue;
         visitFuncBody(tu.functions[fi]);
     }
 
@@ -2095,6 +2099,33 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
 
         // Check if this is a generic class instantiation
         if (!node.type_args.empty() && generic_classes_.count(node.class_name)) {
+            // If any type argument is a generic type-param placeholder (e.g.
+            // `new Option<R>()` inside a generic template, or `Box<T>` inside a
+            // generic class method), defer monomorphization. The placeholder Int
+            // is only for name-mangling; instantiating now would bake the
+            // type-param NAME into members (ctor param = `R`), which later
+            // resolves to void outside the template scope. The concrete
+            // instance (e.g. Option_int_inst) is created at the call site.
+            bool has_placeholder = false;
+            for (auto& a : node.type_args) {
+                std::string nm = a.class_name;
+                for (auto& tp : current_func_type_params_)
+                    if (tp == nm) { has_placeholder = true; break; }
+                if (has_placeholder) break;
+                if (!current_class_name_.empty()) {
+                    for (auto& cls : current_tu_->classes)
+                        if (cls.name == current_class_name_)
+                            for (auto& tp : cls.type_params)
+                                if (tp == nm) { has_placeholder = true; break; }
+                }
+                if (has_placeholder) break;
+            }
+            if (has_placeholder) {
+                TypeInfo result(TypeKind::Class);
+                result.class_name = node.class_name;
+                return result;
+            }
+
             // Monomorphization: create a concrete class with type params substituted
             std::string mangled = node.class_name;
             for (auto& a : node.type_args)
@@ -2554,6 +2585,17 @@ TypeNode Sema::substituteTypeNode(const TypeNode& node,
             }
             return result;
         }
+    }
+    // Function type: (A,B) -> R — substitute param types and return type
+    if (node.isFunction()) {
+        TypeNode result;
+        result.range = node.range;
+        for (auto& p : node.func_param_types)
+            result.func_param_types.push_back(substituteTypeNode(p, type_params, type_args));
+        if (node.func_return_type)
+            result.func_return_type = std::make_shared<TypeNode>(
+                substituteTypeNode(*node.func_return_type, type_params, type_args));
+        return result;
     }
     // For array types, substitute element type
     if (node.isArray() && node.element_type) {
