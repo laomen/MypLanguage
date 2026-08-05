@@ -1391,6 +1391,42 @@ Extension settings (search `myp` in VS Code settings):
 | `myp.lspPath` | Path to `myp_lsp` (auto-detected by default) |
 | `myp.stdlibPath` | Path to stdlib (auto-detected by default) |
 | `myp.trace.server` | LSP trace log level |
+| `myp.debuggerPath` | Path to `myp_debug` (auto-detected by default) |
+
+### Project Structure
+
+```
+MYPLanguage/
+├── myp                  # package-manager CLI (Python: init/build/install/run)
+├── CMakeLists.txt
+├── include/mylang/      # compiler headers: AST/CodeGen/Sema/Parser/Lexer/Eval/
+│   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
+├── src/                 # compiler source
+│   ├── main.cpp         # mypc driver (lexer→parser→sema→codegen→link)
+│   ├── ast/ lexer/ parser/ sema/ codegen/ runtime/
+│   ├── eval/            # @eval compile-time evaluator
+│   ├── macro/           # macro expansion
+│   ├── fmt/             # formatter
+│   ├── lsp/             # language server (myp_lsp)
+│   └── dap/             # debug adapter (myp_debug, DAP↔gdb bridge)
+├── stdlib/              # standard library (pure MYP classes)
+│   ├── env/io/fs/text/stream/math/random/time/timeline
+│   ├── collections/setops/atomic/pool/barrier/future/memory
+│   ├── coro/channel/net/json/regex/base64/date/process/args
+│   ├── logger/sdl/ui/error/cuda
+│   └── test
+├── tests/               # run_tests.sh / run_tests_O2.sh / run_tests_asan.sh /
+│   └── ...              #   run_tests_tsan.sh / test_debug.sh / test_dap.py /
+│                        #   expected/ / negative/ / <feature>/
+├── examples/            # complete examples (hello/fib/ad/BNCT/sdl/tui)
+├── BNCTDoseEngine/      # BNCT Monte-Carlo engine (pure MYP + HDF5 cross-sections)
+├── deeplearning/        # MLP + MNIST training/inference
+├── vscode-myp/          # VS Code extension (syntax highlight + LSP + DAP)
+├── docs/                # design/grammar/manual/manual_en/coro/exceptions/
+│   └── ...              #   operators/metaprogramming/constructor/...
+├── build/               # build outputs: mypc, myp_debug, myp_lsp, myp_viz, myp_fmt
+└── build-asan/          # ASAN/UBSAN build
+```
 
 ## 13. Complete Example
 
