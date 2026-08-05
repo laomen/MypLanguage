@@ -472,9 +472,10 @@ class Sensor {
 | `static:` | 静态方法（无需实例，`import` 即可调用） | `{ }` 定义 |
 | `struct:` | 嵌套结构体 | 字段/方法定义 |
 
-**注解：** 类可声明 `constructor:` 节——`new` 创建实例时自动调用（对象初始化）；
-action 前可加 `@startup` 注解——实例的线程/事件循环启动时执行（启动信号/开始操作，
-非初始化器）；变量声明后可加 `@thread` 注解，表示该实例在独立线程运行。
+**注解：** action 前可加 `@constructor` 注解——`new` 创建实例时自动调用（对象初始化）；
+当方法名==类名时默认视为构造器（可省略注解）；action 前可加 `@startup` 注解——实例的线程/
+事件循环启动时执行（启动信号/开始操作，非初始化器）；变量声明后可加 `@thread` 注解，
+表示该实例在独立线程运行。
 
 ### 6.3 Interface（接口）
 
@@ -517,15 +518,17 @@ MYP 是**事件驱动组件**语言，访问控制规则服务于解耦目标：
 
 ### 6.5 继承、多态与构造器 / @startup 生命周期
 
-#### 构造器（`constructor:`）——对象初始化
+#### 构造器（`@constructor` / 函数名==类名）——对象初始化
 
-`new` 创建实例时**自动调用构造器**（`constructor:` 节，支持重载）：
+`new` 创建实例时**自动调用构造器**。构造器是 `action:`（或 `function:`）里加 `@constructor`
+注解的方法；**当方法名与类名一致时默认视为构造器**（可省略注解，与 C++/Java 一致）：
 
 ```myp
 class Sensor {
-    constructor:
-        Sensor(int i, double t) { id = i; threshold = t; }
     action:
+        @constructor
+        void Sensor(int i, double t) { id = i; threshold = t; }
+        void Sensor() { id = 0; threshold = 0.0; }
         float readValue();
     property:
         int id;
@@ -541,6 +544,8 @@ int main() {
 - `new ClassName(args)` 绑定匹配的构造器（重载解析，含数字提升）；无构造器时走默认
   （分配 + property 默认值）。
 - 构造器是**对象初始化**（`new` 时同步执行）：设字段、分配资源、校验。
+- 泛型 `new Box<double>(1.5)` 绑定单态化实例类的构造器，`T` 正确解析为 double。
+- struct 用**函数式构造** `Vec2(1.0, 2.0)`（详见 `docs/constructor.md`）。
 - 设计详见 `docs/constructor.md`。
 
 #### `@startup` —— 启动信号（开始操作），不是初始化器
@@ -564,7 +569,8 @@ class Worker {
 - **构造器管初始化，`@startup` 管开始操作**：两者正交、互不取代。
 
 > 历史注记：早期实现用 `@startup void init(...)` 兼任初始化（`new C(args)` 自动调用）。
-> v3.9 起迁移到 `constructor:`，`@startup` 严格只作启动信号（详见 `docs/constructor.md`）。
+> v3.9 起迁移到构造器（`@constructor` 注解或函数名==类名），`@startup` 严格只作启动信号
+> （详见 `docs/constructor.md`）。
 
 #### @thread 线程注解
 
@@ -1456,7 +1462,7 @@ Runtime  → print/println + 基本运行时
 
 #### Class 系统
 - ✅ 三段式 class（action/event/property）
-- ✅ `constructor:` 节（对象初始化，`new` 自动调用）
+- ✅ `@constructor` 注解 / 函数名==类名（对象初始化，`new` 自动调用）
 - ✅ `@startup`（启动信号/开始操作，线程/事件循环启动时执行）
 - ✅ `function:` 内部方法段
 - ✅ `static:` 静态方法段

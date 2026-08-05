@@ -150,7 +150,7 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'const' Type Identifier '=' Expression ';'  // class 顶层 const（等价 property 段 const）
 
 ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
-ActionAnnot      ::= '@' 'startup' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
+ActionAnnot      ::= '@' 'startup' | '@' 'constructor' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
 FuncAnnot        ::= '@' 'test' | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?   // 顶层 @coro 协程函数
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'

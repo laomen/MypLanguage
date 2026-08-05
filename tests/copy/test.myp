@@ -1,0 +1,75 @@
+// M4: copy() 深拷贝约定测试
+// 验证: class 引用别名 vs 显式 copy() 深拷贝；struct copy() 深拷贝
+// copy() 是普通 action 方法（约定，无新语法）
+import env;
+
+class Image {
+    action:
+        @constructor
+        void Image(int w, int h) {
+            width = w;
+            height = h;
+            data_ = new int[w * h];
+        }
+        Image copy() {                    // 显式深拷贝（约定方法）
+            Image c = new Image(width, height);
+            for (int i = 0; i < width * height; i = i + 1) c.data_[i] = data_[i];
+            return c;
+        }
+        int get(int i) { return data_[i]; }
+        void set(int i, int v) { data_[i] = v; }
+    property:
+        int width;
+        int height;
+        int[] data_;
+}
+
+struct Buffer {
+    action:
+        @constructor
+        void Buffer(int n) { size = n; data = new int[n]; }
+        Buffer copy() {                   // struct 深拷贝（约定方法）
+            Buffer c = Buffer(size);
+            for (int i = 0; i < size; i = i + 1) c.data[i] = data[i];
+            return c;
+        }
+    int size;
+    int[] data;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // class: 引用别名（不拷贝）
+            Image a = new Image(4, 1);
+            a.set(0, 42);
+            Image b = a;
+            b.set(0, 7);
+            Console.write(a.get(0));      // 7（引用共享）
+
+            // class: 显式深拷贝
+            Image c = a.copy();
+            c.set(0, 99);
+            Console.write(a.get(0));      // 7（a 不受影响）
+            Console.write(c.get(0));      // 99
+
+            // struct: 成员级拷贝（浅，共享数组）
+            Buffer ba = Buffer(3);
+            ba.data[0] = 5;
+            Buffer bs = ba;               // 浅拷贝：共享 data
+            bs.data[0] = 6;
+            Console.write(ba.data[0]);    // 6（共享）
+
+            // struct: 显式深拷贝
+            Buffer bc = ba.copy();
+            bc.data[0] = 8;
+            Console.write(ba.data[0]);    // 6（ba 不受影响）
+            Console.write(bc.data[0]);    // 8
+            Console.writeString(" M4 copy OK\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

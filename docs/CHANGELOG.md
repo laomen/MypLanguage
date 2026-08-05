@@ -27,7 +27,25 @@
 
 ## 编译器版本历史
 
-### v3.8.0（当前）
+### v3.9.0（当前）
+- **类构造器（M1-M4，additive）**：`@constructor` 注解 + **函数名==类名隐式构造器**。
+  - M1 语法 + AST：`parseActionDecl`/`parseFunction` 识别 `@constructor`；类/struct 中
+    方法名==类名 → 隐式构造器（可省略注解，C++/Java 风格）；struct 新增 `action:` 节
+    （方法/属性前瞻区分）。
+  - M2 class 构造器绑定：`new C(args)` 优先绑定构造器（重载解析 + 数字提升
+    `int → long → double`，歧义/无匹配编译报错）；泛型 `new Box<double>(1.5)` 绑定
+    单态化实例类的构造器（根治 `@startup` 泛型分发 bug 的根因）；构造器重载
+    mangling（`Class_Action_<paramtypes>`）；legacy `@startup init` 回退保留。
+  - M3 struct 构造器：函数式构造 `Struct(args)`（栈临时 + 构造器；声明初始化/赋值/
+    `return Struct(...)`/与 `operator:` 共存）。
+  - M4 `copy()` 深拷贝约定（纯约定方法，无新语法）；manual/design/grammar/CHANGELOG 同步。
+  - 修复既有 bug：`generateMemberAccess` 对类实例局部变量的 `.property` 访问错误返回
+    实例指针（`c.data_[i]` 写入实例内存）；`checkStructMethods` 排除构造器为兄弟方法
+    （其名==struct 名遮蔽 struct 类型名）。
+  - 设计见 `docs/constructor.md`；测试 `tests/constructor/` + `tests/copy/`。
+  - 验证：`-O0`/ASAN 全套 121/121。
+
+### v3.8.0
 - **集合动态扩容**（`stdlib/collections.myp`）：`ArrayList`/`HashMap`/`Set`/`Deque`/`Queue`/
   `Stack`/`PriorityQueue`/`LinkedList`/`StrHashMap` 全部突破固定 1024 上限。
   - 惰性分配（首操作时 `new T[cap_]`）+ 容量翻倍扩容；哈希类 75% 负载因子翻倍重建；

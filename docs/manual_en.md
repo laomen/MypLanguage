@@ -369,7 +369,7 @@ Standard exception classes all implement the `Error` interface and can be caught
 | `MathError` | math domain error | `op`, `detail` |
 | `IndexError` | index out of range | `index`, `size` |
 
-Fill properties via setters, then throw (MYP classes have no parameterized constructors):
+Fill properties via setters (or pass them through a `@constructor` method), then throw:
 
 ```myp
 FileError e = new FileError();
@@ -729,6 +729,54 @@ mapping() {
 }
 ```
 
+### Constructor (`@constructor` / name == class name)
+
+`new ClassName(args)` **automatically calls the constructor** to initialize the object
+(setting fields, allocating resources, validation). A constructor is an `action:`
+(or `function:`) method annotated `@constructor`; **when the method name equals the class
+name it is implicitly a constructor** (the annotation may be omitted, C++/Java-style):
+
+```myp
+class Window {
+    action:
+        @constructor
+        void Window() {                     // explicit @constructor: no-arg
+            x = 0; y = 0; w = 80; h = 24;
+        }
+        void Window(int px, int py, int pw, int ph) {  // name==class → implicit constructor
+            x = px; y = py; w = pw; h = ph;
+        }
+    property:
+        int x;
+        int y;
+        int w;
+        int h;
+}
+
+int main() {
+    Window a = new Window();                // no-arg constructor
+    Window b = new Window(10, 5, 100, 50);  // overloaded constructor
+    return 0;
+}
+```
+
+- **Overloading**: same name (= class name) with different parameters = multiple
+  constructors; `new C(args)` matches by argument types (implicit numeric promotion
+  `int → long → double`); no match / ambiguity → compile error.
+- **Order**: on `new` — allocate instance → apply property defaults → run constructor
+  body (may override defaults).
+- **Generics**: `new Box<double>(1.5)` binds the monomorphized instance's constructor;
+  `T` resolves to `double`.
+- **struct**: functional construction `Vec2(1.0, 2.0)` — create a stack struct value
+  like a function call.
+- **Deep copy**: explicit `copy()` convention method (`A b = a;` is a reference alias,
+  not a copy; see `docs/constructor.md`).
+
+**Constructor ≠ `@startup`**: the constructor does **initialization** (synchronously on
+`new`); `@startup` does **beginning operations** (runs when the instance's thread/event
+loop starts, next section). They are orthogonal and do not replace each other.
+Design: `docs/constructor.md`.
+
 ### @startup Annotation
 
 ```myp
@@ -747,9 +795,9 @@ class Worker {
 > **`@startup` is a start signal, not an initializer**: it runs when the instance's
 > thread / event loop **begins operating** (e.g. `@thread` startup, starting timers,
 > firing the first event). Object **initialization** (setting fields / allocating
-> resources / validation) goes through the `constructor:` section — `new ClassName(args)`
-> calls the matching constructor automatically. They are orthogonal and do not replace
-> each other; design: `docs/constructor.md`.
+> resources / validation) goes through the constructor (`@constructor` annotation or
+> a method named after the class) — `new ClassName(args)` calls it automatically.
+> They are orthogonal and do not replace each other; design: `docs/constructor.md`.
 
 ### Thread Model
 
@@ -1543,7 +1591,7 @@ int main() {
 | `class` + `action:` + `event:` | Event-driven component (primary architectural unit) |
 | `class` + `function:` | Internal component helper logic |
 | `class` + `static:` | Utility function namespace (e.g. Math) |
-| `constructor:` | Object initialization (auto-called on `new`) |
+| `@constructor` annotation / name == class | Object initialization (auto-called on `new`) |
 | `struct` | Pure data container (pass by value) |
 | Top-level `function` | Pure computation functions |
 | `action:` + `@startup` | Start signal / begin operations (runs when thread/event loop starts) |

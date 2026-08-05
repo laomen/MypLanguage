@@ -1012,6 +1012,47 @@ Matrix.transpose(a, t, rows, cols);  // t = a^T（CPU）
 - GPU 路径的数学函数需要 `libdevice.10.bc`
 - `min`/`max`/`dot`/`transpose` 当前用 CPU 实现（正确但非 GPU 加速）
 
+### 构造器（@constructor / 函数名==类名）
+
+`new ClassName(args)` 创建实例时**自动调用构造器**进行对象初始化（设字段、分配资源、校验）。
+构造器是 `action:`（或 `function:`）里加 `@constructor` 注解的方法；**当方法名与类名一致时，
+默认视为构造器**（可省略注解，与 C++/Java 一致）：
+
+```myp
+class Window {
+    action:
+        @constructor
+        void Window() {                     // 显式 @constructor：无参构造
+            x = 0; y = 0; w = 80; h = 24;
+        }
+        void Window(int px, int py, int pw, int ph) {  // 函数名==类名 → 隐式构造器
+            x = px; y = py; w = pw; h = ph;
+        }
+    property:
+        int x;
+        int y;
+        int w;
+        int h;
+}
+
+int main() {
+    Window a = new Window();                // 无参构造
+    Window b = new Window(10, 5, 100, 50);  // 重载构造
+    return 0;
+}
+```
+
+- **重载**：同名（=类名）不同参数即多个构造器，`new C(args)` 按实参类型匹配（数字可隐式提升
+  `int → long → double`）；无匹配 / 歧义 → 编译报错。
+- **执行顺序**：`new` 时 分配实例 → 应用 property 默认值 → 调用构造器体（可覆写默认值）。
+- **泛型**：`new Box<double>(1.5)` 绑定单态化实例类的构造器，`T` 正确解析为 double。
+- **struct**：函数式构造 `Vec2(1.0, 2.0)`——像调用函数一样创建栈上 struct 值。
+- **深拷贝**：显式 `copy()` 约定方法（引用别名 `A b = a;` 不拷贝，见 `docs/constructor.md`）。
+
+**构造器 ≠ `@startup`**：构造器管**初始化**（`new` 时同步执行）；`@startup` 管**开始操作**
+（并行/事件驱动代码中实例的线程/事件循环启动时执行，见下节）。两者正交、互不取代。
+设计详见 `docs/constructor.md`。
+
 ### @startup 注解
 
 ```myp
@@ -1029,8 +1070,8 @@ class Worker {
 
 > **`@startup` 是启动信号，不是初始化器**：它在实例的线程/事件循环**开始操作**时执行
 > （如 `@thread` 启动、启动定时器、触发首事件）。对象**初始化**（设字段/分配资源/校验）
-> 走 `constructor:` 节——`new ClassName(args)` 时自动调用构造器。两者正交、互不取代；
-> 设计见 `docs/constructor.md`。
+> 走构造器（`@constructor` 注解或函数名==类名）——`new ClassName(args)` 时自动调用。
+> 两者正交、互不取代；设计见 `docs/constructor.md`。
 
 ### 线程模型
 
@@ -1908,7 +1949,7 @@ int main() {
 | `class` + `action:` + `event:` | 事件驱动组件（主要的架构单元） |
 | `class` + `function:` | 组件内部辅助逻辑 |
 | `class` + `static:` | 工具函数命名空间（如 Math） |
-| `constructor:` | 对象初始化（`new` 时自动调用） |
+| `@constructor` 注解 / 函数名==类名 | 对象初始化（`new` 时自动调用） |
 | `struct` | 纯数据容器（值传递） |
 | 顶层 `function` | 纯计算函数 |
 | `action:` + `@startup` | 启动信号/开始操作（线程/事件循环启动时执行） |

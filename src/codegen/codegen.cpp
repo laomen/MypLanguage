@@ -5761,6 +5761,37 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
             }
         }
     }
+    // Class instance property access: c.prop — c is a local class instance,
+    // prop is a member (array/scalar). Without this branch, `c.data_` wrongly
+    // resolved to the instance pointer via the fallback below (corrupting
+    // writes like `c.data_[i] = v`).
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        std::string obj_cls;
+        auto vcit = var_class_map_.find(oi.name);
+        if (vcit != var_class_map_.end()) obj_cls = vcit->second;
+        if (obj_cls.empty() && !current_class_name_.empty() && oi.name == current_class_name_)
+            obj_cls = current_class_name_;
+        if (!obj_cls.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != obj_cls) continue;
+                unsigned pi = 0;
+                if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                    auto* oa = getNamedValue(oi.name);
+                    if (oa) {
+                        auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa, oi.name);
+                        auto* st = getClassStruct(cls.name);
+                        if (st) {
+                            auto* gep = builder_.CreateStructGEP(st, op, pi);
+                            auto* pt = getPropertyType(cls, e.member_name);
+                            if (pt->isArrayTy()) return gep;
+                            return builder_.CreateLoad(pt, gep);
+                        }
+                    }
+                }
+            }
+        }
+    }
     return generateExpr(*e.object);
 }
 
