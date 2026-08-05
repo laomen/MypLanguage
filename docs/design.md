@@ -1354,68 +1354,80 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 MYPLanguage/
 ├── myp                  # 包管理 CLI（Python 脚本：init/build/install/run）
 ├── CMakeLists.txt
-├── docs/
-│   ├── design.md
-│   └── syntax-template.md
+├── LICENSE
+├── README.md / README_EN.md
+├── scripts/
+│   └── mirror_gitee.sh   # gitee 镜像推送
 ├── include/
 │   └── mylang/
-│       ├── AST.h
-│       ├── CodeGen.h
+│       ├── AST.h              # AST 节点（含 NewExpr/NewArrayExpr/MacroParamExpr/QuoteExpr）
+│       ├── CodeGen.h          # LLVM 代码生成器
 │       ├── DiagnosticEngine.h
+│       ├── Eval.h             # @eval 编译期求值器（EvalValue）
+│       ├── Fmt.h              # 格式化器
+│       ├── LSP.h              # 语言服务器
 │       ├── Lexer.h
+│       ├── Macro.h            # 声明式宏（MacroExpander）
+│       ├── MypPasses.h        # 自定义 LLVM pass（myp-pass）
 │       ├── Parser.h
-│       ├── runtime.h
 │       ├── Sema.h
 │       ├── SourceLocation.h
 │       ├── SymbolTable.h
-│       └── Type.h
+│       ├── Token.h
+│       ├── Type.h
+│       └── runtime.h
 ├── src/
-│   ├── main.cpp
-│   ├── lexer/
-│   │   └── lexer.cpp
+│   ├── main.cpp               # mypc 编译器入口（驱动各 phase）
+│   ├── myp_viz.cpp            # 可视化工具
+│   ├── token.cpp / SourceLocation.cpp
 │   ├── ast/
-│   │   └── ast.cpp
+│   ├── lexer/
 │   ├── parser/
-│   │   └── parser.cpp
-│   ├── sema/
-│   │   ├── sema.cpp
-│   │   ├── symbol_table.cpp
-│   │   └── type.cpp
-│   ├── codegen/
-│   │   └── codegen.cpp
-│   └── runtime/
-│       └── runtime.c
-├── stdlib/
-│   ├── env.myp       # Console 类（I/O + 键盘）
-│   ├── timeline.myp  # Timeline / Stopwatch
-│   ├── math.myp      # Math 类（数学函数）
-│   ├── io.myp        # File I/O 类
-│   ├── collections.myp  # 集合类（ArrayList, Queue）
-│   └── text.myp      # 文本处理（StringBuilder）
+│   ├── sema/                  # sema.cpp + symbol_table.cpp + type.cpp
+│   ├── codegen/               # codegen.cpp + myp_passes.cpp + codegen_fixes.h
+│   ├── runtime/               # runtime.c（事件/线程/协程/arena/GPU）+ runtime_gpu.c
+│   ├── eval/                  # @eval 解释器（eval.cpp）
+│   ├── macro/                 # 宏展开（macro_expand.cpp）
+│   ├── fmt/                   # 格式化器
+│   ├── lsp/                   # LSP 服务器（lsp_server.cpp）
+│   └── dap/                   # DAP 调试适配器（dap_server.cpp → myp_debug）
+├── stdlib/                    # 标准库（纯 MYP class）
+│   ├── env / io / fs / text / stream / math / random / time / timeline
+│   ├── collections / setops / atomic / pool / barrier / future / memory
+│   ├── coro / channel / net / json / regex / base64 / date / process / args
+│   ├── logger / sdl / ui / error / cuda
+│   └── test
 ├── tests/
-│   ├── run_tests.sh           # 回归测试框架
-│   ├── fuzz_test.py           # 模糊测试
+│   ├── run_tests.sh           # 回归测试（-O0）
+│   ├── run_tests_O2.sh        # 回归测试（-O2）
+│   ├── run_tests_asan.sh      # ASAN 回归
+│   ├── run_tests_tsan.sh      # TSan 回归
+│   ├── test_debug.sh / test_myp_pass.sh / test_dap.py
+│   ├── regression_no_crash.sh / fuzz_test.py
 │   ├── expected/              # 预期输出
-│   ├── negative/              # 负测试
-│   ├── struct_linkedlist/     # struct 验证
-│   ├── interface_shape/       # interface 验证
-│   ├── hanoi/                 # 递归验证
-│   ├── cli_args/              # 命令行参数验证
-│   ├── mapping_chain/         # 事件链验证
-│   ├── test_thread.myp
-│   ├── test_struct.myp
-│   └── test_full.myp
-├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP 客户端）
+│   ├── negative/              # 负测试（编译错误验证）
+│   └── <feature>/             # 每特性一个目录（test.myp + expected）
+├── examples/                  # 完整示例（hello/fib/ad/BNCT/sdl/tui 等）
+├── BNCTDoseEngine/            # BNCT 蒙特卡洛引擎（纯 MYP + HDF5 截面）
+│   ├── transport / physics / material / nuclide / mesh / tally
+│   ├── xs_loader / hdf5_bridge.c / cross_section_db.myp
+│   └── ...
 ├── deeplearning/
 │   ├── code/                  # MLP + MNIST 训练/推理
+│   ├── component/
 │   └── data/                  # MNIST IDX 数据集
-├── docs/
-│   ├── examples/              # 示例：snake, gol, dungeon, neural_net, 并行, 定时器
-│   └── ...
-└── build/
-    ├── mypc              # MYP 编译器
-    ├── myp_lsp           # MYP 语言服务器
-    └── myp_viz           # Mapping 可视化工具
+├── vscode-myp/                # VS Code 扩展（语法高亮 + LSP + DAP 调试）
+├── docs/                      # 设计文档（design/grammar/manual/manual_en/coro/
+│   └── ...                    #   exceptions/operators/metaprogramming/constructor/
+│                              #   optimization_debugging/slice/UPGRADE_V3/CHANGELOG）
+├── build/                     # 构建产物
+│   ├── mypc              # MYP 编译器
+│   ├── myp_debug         # DAP 调试适配器（gdb MI 桥）
+│   ├── myp_lsp           # MYP 语言服务器
+│   ├── myp_viz           # Mapping 可视化工具
+│   ├── myp_fmt           # 独立格式化工具
+│   └── myp_runtime       # 运行时（测试用）
+└── build-asan/               # ASAN/UBSAN 构建
 ```
 
 ### 11.4 第一版范围（核心先行）
