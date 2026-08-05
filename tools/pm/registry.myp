@@ -53,7 +53,8 @@ import "./util.myp";
                 if (Fs.isDir("./registry") != 0) return "./registry";
                 return "";
             }
-            if (Str.startsWith(r, "http") != 0 || Str.startsWith(r, "git@") != 0) {
+            if (Str.startsWith(r, "http") != 0 || Str.startsWith(r, "git@") != 0
+                || Str.startsWith(r, "file://") != 0) {
                 string cache = Registry.cacheDir();
                 string target = Fs.join(cache, "registry");
                 if (Fs.isDir(target) == 0) {

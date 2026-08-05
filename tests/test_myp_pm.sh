@@ -150,6 +150,28 @@ else
     bad "remove 未清理干净"
 fi
 
+# ---- 10) v2 git-clone registry（file:// 离线模拟远程仓库 / Gitee）----
+if command -v git >/dev/null 2>&1; then
+    say ""
+    say "--- v2 git-clone registry ---"
+    ( cd "$TMP" && rm -rf regrepo && mkdir -p regrepo/packages/foo/1.0.0/src \
+        && printf 'name: foo\nversion: 1.0.0\n' > regrepo/packages/foo/1.0.0/package.myp \
+        && printf 'class Foo {\n    static:\n        int v() { return 1; }\n}\n' > regrepo/packages/foo/1.0.0/src/foo.myp \
+        && cd regrepo && git init -q && git add -A \
+        && git -c user.email=t@t.com -c user.name=t commit -qm init )
+    export MYP_REGISTRY="file://$TMP/regrepo"
+    export MYP_CACHE="$TMP/cache"
+    rm -rf "$TMP/cloneapp"; mkdir -p "$TMP/cloneapp"
+    printf 'name: cloneapp\nversion: 1.0.0\n' > "$TMP/cloneapp/package.myp"
+    ( cd "$TMP/cloneapp" && "$TMP/myp" add foo >/dev/null 2>&1 )
+    if [ -f "$TMP/cache/registry/packages/foo/1.0.0/package.myp" ] && [ -f "$TMP/cloneapp/myp_packages/foo/src/foo.myp" ]; then
+        ok "git-clone registry 拉取（file:// 离线模拟）"
+    else
+        bad "git-clone registry 拉取失败"
+    fi
+    unset MYP_REGISTRY MYP_CACHE
+fi
+
 say ""
 say "=== summary: myp-pm PASS=$PASS FAIL=$FAIL ==="
 [ $FAIL -eq 0 ]
