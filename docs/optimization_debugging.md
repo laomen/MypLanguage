@@ -117,6 +117,60 @@ MYP 运行时机制与标准优化 pass 的交互，必须逐一验证：
 - 性能基准：`examples/coro_bench.myp` 在 -O0/-O2 下对比（优化应显著加速）
 - IR 检查：`-O2 --emit-llvm` 确认 mem2reg 已 promote（无 alloca 循环变量）
 
+### 3.5 自定义 LLVM pass（MYP 专属优化/变换）
+
+LLVM pass 是开放 API，MYP 可写**自定义 pass** 做 MYP 特定优化或语义变换。
+`writeObjectFile` 已有 PassBuilder + NewPM 基础设施（TSan），注册自定义 pass 很自然。
+
+**接口**（New Pass Manager）：
+
+```cpp
+// 自定义 FunctionPass（NewPM 标准写法）
+struct MyMypPass : public llvm::PassInfoMixin<MyMypPass> {
+    llvm::PreservedAnalyses run(llvm::Function& F,
+                                llvm::FunctionAnalysisManager& AM) {
+        // ...遍历 F 的指令做变换...
+        return llvm::PreservedAnalyses::all();   // 未修改 IR
+        // return llvm::PreservedAnalyses::none(); // 修改了 IR
+    }
+};
+// 也可写 ModulePass：run(Module&, ModuleAnalysisManager&) 做跨函数/模块级变换
+```
+
+**注册进 `-O` 管线**（两种方式）：
+
+```cpp
+// 方式 A：直接追加到默认管线之后
+PB.buildPerModuleDefaultPipeline(MPM, OL);
+MPM.addPass(llvm::createModuleToFunctionPassAdaptor(MyMypPass()));
+
+// 方式 B：注册命令行可调用 pass（-passes="myp-pass"）
+PB.registerPipelineParsingCallback(
+    [](llvm::StringRef Name, llvm::ModulePassManager& MPM,
+       llvm::ArrayRef<llvm::PassBuilder::PipelineElement>) {
+        if (Name == "myp-pass") {
+            MPM.addPass(llvm::createModuleToFunctionPassAdaptor(MyMypPass()));
+            return true;
+        }
+        return false;
+    });
+```
+
+**MYP 实用场景**：
+
+| 场景 | 用途 |
+|---|---|
+| **intrinsic 降级/展开** | 把 `__myp_*` 内部调用按 MYP 语义内联/降级（如高频 intrinsic 优化）|
+| **冗余消除** | 清理编译器生成的冗余模式（如重复 `store i32 0, ptr %sum`）|
+| **协程/事件语义优化** | 通用 LLVM pass 不识别 ucontext/事件模式，MYP 特定 pass 可优化 |
+| **代码形态转换** | 为 GPU/并行做 MYP 特定 IR 变换 |
+
+**注意事项**：
+- 遵守 `PreservedAnalyses` 契约（改了 IR 就返回 `none()`，否则后续 pass 用错缓存分析）。
+- 不误删/内联 MYP intrinsic（`__myp_*` 是运行时外部函数，除非明确降级）。
+- LLVM 21 API（`PassInfoMixin`/`createModuleToFunctionPassAdaptor`/`registerPipelineParsingCallback`）与现有 TSan 用法一致。
+- 自定义 pass 改动需双级别（-O0/-O2）全套回归。
+
 ---
 
 ## 4. Part B：调试信息（`-g` DWARF）
@@ -178,6 +232,7 @@ codegen 中用 llvm::DIBuilder 生成调试元数据（随 IR）
 | **M3** | `-g` DIBuilder：编译单元/文件/函数/行号 | gdb `break foo.myp:N` 命中 |
 | **M4** | `-g` 局部变量 + 参数（dbg.declare）| gdb `print x` / `info locals` 正确 |
 | **M5** | `-g` 类型细化（class/struct/数组）| `print obj.field` 正确 |
+| **M6** | 自定义 MYP pass（冗余消除 / intrinsic 优化）| `-passes="myp-pass"` 可调用；双级别回归通过 |
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。
 
