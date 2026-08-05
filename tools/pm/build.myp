@@ -1,0 +1,113 @@
+// build.myp — 包管理器：编译器定位 + 构建/运行
+//
+// 关联: docs/pkg_manager.md；自举: docs/self_hosting.md
+
+import env;
+import args;
+import fs;
+import text;
+import process;
+import "./meta.myp";
+import "./util.myp";
+
+@static class Build {
+    static:
+        // 定位 mypc：MYP_CC → ./build/mypc → build/mypc → PATH(mypc)
+        string findCompiler() {
+            string cc = Console.getEnv("MYP_CC");
+            if (Str.len(cc) > 0 && Fs.isFile(cc) != 0) return cc;
+            if (Fs.isFile("./build/mypc") != 0) return "./build/mypc";
+            if (Fs.isFile("build/mypc") != 0) return "build/mypc";
+            return "mypc";
+        }
+
+        // 推导 stdlib 路径（compiler 位于 <root>/build/mypc → <root>/stdlib）；空=省略
+        string findStdlib(string compiler) {
+            string s = Console.getEnv("MYP_STDLIB");
+            if (Str.len(s) > 0 && Fs.isDir(s) != 0) return s;
+            string dir = Fs.dirname(compiler);   // <root>/build 或 .
+            string root = Fs.dirname(dir);       // <root> 或 ..
+            string cand = Fs.join(root, "stdlib");
+            if (Fs.isDir(cand) != 0) return cand;
+            return "";
+        }
+
+        // 包搜索路径：本地 myp_packages + MYP_PACKAGE_PATH（冒号分隔）
+        string resolvePackagePath() {
+            string result = "";
+            if (Fs.isDir("myp_packages") != 0) result = "myp_packages";
+            string env = Console.getEnv("MYP_PACKAGE_PATH");
+            if (Str.len(env) > 0) {
+                int n = Str.splitCount(env, ":");
+                for (int i = 0; i < n; i = i + 1) {
+                    string p = Str.trim(Str.splitGet(env, ":", i));
+                    if (Str.len(p) > 0) {
+                        if (Str.len(result) > 0) result = result + ":";
+                        result = result + p;
+                    }
+                }
+            }
+            return result;
+        }
+
+        // 转发 build 选项（- 开头参数）：Args.get(start..argc-1）
+        int cmdBuild(int start, int argc) {
+            if (Fs.isFile("package.myp") == 0) {
+                Console.writeLine("Error: no package.myp found in current directory");
+                return 1;
+            }
+            Meta m = MetaParser.loadMeta(".");
+            string srcFile = Fs.join(Fs.join(".", "src"), m.getName() + ".myp");
+            if (Fs.isFile(srcFile) == 0) {
+                Console.writeLine("Error: source file not found at '" + srcFile + "'");
+                return 1;
+            }
+            string compiler = Build.findCompiler();
+            string pkgPath = Build.resolvePackagePath();
+
+            // 依赖检查（v1：仅提示缺失，不自动安装）
+            for (int i = 0; i < m.getDepCount(); i = i + 1) {
+                if (Fs.isDir(Fs.join("myp_packages", m.getDep(i))) == 0) {
+                    Console.writeLine("  Dependency '" + m.getDep(i) + "' not found in myp_packages/");
+                    Console.writeLine("  Use: myp install <path-to-" + m.getDep(i) + ">");
+                }
+            }
+
+            string output = m.getName() + ".out";
+            StringBuilder cmd = new StringBuilder();
+            cmd.append(compiler);
+            cmd.append(" " + srcFile);
+            cmd.append(" -o " + output);
+            string stdlib = Build.findStdlib(compiler);
+            if (Str.len(stdlib) > 0) cmd.append(" --stdlib " + stdlib);
+            if (Str.len(pkgPath) > 0) cmd.append(" --package-path " + pkgPath);
+            for (int i = start; i < argc; i = i + 1) {
+                string a = Args.get(i);
+                if (Str.startsWith(a, "-") != 0) cmd.append(" " + a);
+            }
+
+            Console.writeLine("Building " + m.getName() + " v" + m.getVersion() + "...");
+            int r = Process.run(cmd.toString());
+            if (r == 0) Console.writeLine("Build successful: " + output);
+            return r;
+        }
+
+        int cmdRun(int start, int argc) {
+            int r = Build.cmdBuild(start, argc);
+            if (r != 0) return r;
+            Meta m = MetaParser.loadMeta(".");
+            string exe = m.getName() + ".out";
+            if (Fs.isFile(exe) == 0) {
+                Console.writeLine("Error: executable not found: " + exe);
+                return 1;
+            }
+            Console.writeLine("Running " + m.getName() + "...");
+            StringBuilder rc = new StringBuilder();
+            rc.append("./" + exe);
+            for (int i = start; i < argc; i = i + 1) {
+                string a = Args.get(i);
+                if (Str.startsWith(a, "-") == 0) rc.append(" " + a);
+            }
+            return Process.run(rc.toString());
+        }
+}

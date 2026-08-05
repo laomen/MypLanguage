@@ -1,5 +1,5 @@
 #!/bin/bash
-# test_myp_pm.sh — MYP 包管理器（tools/myp.myp）端到端测试
+# test_myp_pm.sh — MYP 包管理器（tools/pm/main.myp）端到端测试
 #
 # 验证：myp.myp 可编译；init/build/run/install/legacy；依赖导入；失败退出码。
 # 用法：bash tests/test_myp_pm.sh
@@ -22,11 +22,11 @@ MYP_ABS="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")"
 export MYP_CC="$MYP_ABS"
 
 # ---- 1) 编译 myp.myp ----
-if ! "$MYPCC" tools/myp.myp -o "$TMP/myp" >/dev/null 2>&1; then
-    bad "tools/myp.myp 编译失败"
+if ! "$MYPCC" tools/pm/main.myp -o "$TMP/myp" >/dev/null 2>&1; then
+    bad "tools/pm/main.myp 编译失败"
     exit 1
 fi
-ok "tools/myp.myp 编译"
+ok "tools/pm/main.myp 编译"
 
 # ---- 2) init ----
 mkdir -p "$TMP/proj"

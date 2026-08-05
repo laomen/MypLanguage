@@ -1,0 +1,30 @@
+// install.myp — 包管理器：本地安装
+//
+// 关联: docs/pkg_manager.md；自举: docs/self_hosting.md
+
+import env;
+import fs;
+import text;
+import "./meta.myp";
+import "./util.myp";
+
+// 从本地路径安装包 → myp_packages/<name>/（已存在则先删除再更新）
+@static class Install {
+    static:
+        int cmdInstall(string srcPath) {
+            if (Fs.isFile(Fs.join(srcPath, "package.myp")) == 0) {
+                Console.writeLine("Error: no package.myp found at '" + srcPath + "'");
+                return 1;
+            }
+            Meta m = MetaParser.loadMeta(srcPath);
+            if (Fs.mkdirP("myp_packages") != 0) return 1;
+            string dst = Fs.join("myp_packages", m.getName());
+            if (Fs.exists(dst) != 0) {
+                Console.writeLine("Updating " + m.getName() + " in myp_packages/");
+                Fs.removeRecursive(dst);
+            }
+            if (Util.copyTree(srcPath, dst) != 0) return 1;
+            Console.writeLine("Installed " + m.getName() + " v" + m.getVersion() + " to myp_packages/");
+            return 0;
+        }
+}

@@ -1,6 +1,6 @@
 # MYP 自举路线设计（Self-Hosting）
 
-> 状态：**T1 已实施（2026-08-05）**——`tools/myp.myp` 包管理器；T2 待实施
+> 状态：**T1 已实施（2026-08-05，v2 模块化 + CMake）**——`tools/pm/*.myp` 包管理器；T2 待实施
 > 关联：语言规格 v1.0（`docs/grammar.md`）、`docs/pkg_manager.md`（Tier 1 详细设计）、
 > `docs/design.md` §11"自举"、`docs/next_improvements.md` §六-2。
 > 本文档规划**用 MYP 语言逐步重写自身工具链**：从工具到编译器本体，每层都以

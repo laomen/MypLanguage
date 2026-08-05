@@ -1,0 +1,143 @@
+// main.myp — 包管理器：CLI 入口 + init/help/命令分发
+//
+// 用 MYP 语言实现的包管理 / 构建工具（V2 模块化版）：
+//   myp init <name>          创建包脚手架
+//   myp build [opts]         编译当前包
+//   myp install <path>       从本地路径安装依赖 → myp_packages/<name>/
+//   myp run [opts]           build + 运行
+//   myp <file.myp> [opts]    legacy 单文件编译
+//
+// 环境变量:
+//   MYP_PACKAGE_PATH  附加包搜索路径（冒号分隔）
+//   MYP_CC            指定 mypc 编译器路径（默认 ./build/mypc）
+//   MYP_STDLIB        指定 stdlib 路径（默认从 mypc 位置推导）
+//
+// 模块划分: main（本文件）/ meta（解析）/ build（构建运行）/ install（安装）/
+//           util（复制）。设计: docs/pkg_manager.md；自举: docs/self_hosting.md
+
+import env;
+import args;
+import fs;
+import io;
+import text;
+import process;
+import "./build.myp";
+import "./install.myp";
+
+int cmdInit(string name) {
+    if (Str.len(name) == 0) {
+        Console.writeLine("Usage: myp init <package-name>");
+        return 1;
+    }
+    if (Fs.exists(name) != 0) {
+        Console.writeLine("Error: '" + name + "' already exists");
+        return 1;
+    }
+    string srcDir = Fs.join(name, "src");
+    if (Fs.mkdirP(srcDir) != 0) return 1;
+
+    // package.myp
+    File p = new File();
+    if (p.open(Fs.join(name, "package.myp"), "w") != 0) return 1;
+    p.writeLine("# MYP Package");
+    p.writeLine("name: " + name);
+    p.writeLine("version: 0.1.0");
+    p.writeLine("# depends: other_package");
+    p.close();
+
+    // src/<name>.myp — 类名首字母大写
+    string className = Str.toUpper(Str.substring(name, 0, 1))
+                     + Str.substring(name, 1, Str.len(name));
+    File s = new File();
+    if (s.open(Fs.join(srcDir, name + ".myp"), "w") != 0) return 1;
+    s.writeLine("// " + name + " package — main module");
+    s.writeLine("import env;");
+    s.writeLine("");
+    s.writeLine("class " + className + " {");
+    s.writeLine("    action:");
+    s.writeLine("        @constructor");
+    s.writeLine("        " + className + "() {");
+    s.writeLine("            Console.writeString(\"Hello from " + name + " v0.1.0!\\n\");");
+    s.writeLine("        }");
+    s.writeLine("}");
+    s.writeLine("");
+    s.writeLine("int main() {");
+    s.writeLine("    " + className + " m = new " + className + "();");
+    s.writeLine("    return 0;");
+    s.writeLine("}");
+    s.close();
+
+    Console.writeLine("Created package '" + name + "' in " + name + "/");
+    Console.writeLine("  " + name + "/package.myp");
+    Console.writeLine("  " + name + "/src/" + name + ".myp");
+    return 0;
+}
+
+void cmdHelp() {
+    Console.writeLine("Usage: myp <command> [options]");
+    Console.writeLine("");
+    Console.writeLine("Commands:");
+    Console.writeLine("  init <name>       Create a new MYP package scaffold");
+    Console.writeLine("  build [opts]      Build the current package");
+    Console.writeLine("  install <path>    Install a package from local path");
+    Console.writeLine("  run [opts]        Build and run the current package");
+    Console.writeLine("  <file.myp> [opts] Compile a single file (legacy mode)");
+    Console.writeLine("");
+    Console.writeLine("Options (build/run):");
+    Console.writeLine("  -O[0123]          Optimization level");
+    Console.writeLine("  --trace           Enable runtime event tracing");
+    Console.writeLine("  --emit-llvm       Save LLVM IR to .ll file");
+    Console.writeLine("");
+    Console.writeLine("Environment:");
+    Console.writeLine("  MYP_PACKAGE_PATH  Colon-separated package search paths");
+}
+
+// CLI 分发（main() 只允许实例创建 + mapping，逻辑放独立函数）
+int pmRun() {
+    int argc = Args.count();
+    if (argc < 2) {
+        cmdHelp();
+        return 1;
+    }
+    string cmd = Args.get(1);
+    if (cmd == "init") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp init <package-name>");
+            return 1;
+        }
+        return cmdInit(Args.get(2));
+    }
+    if (cmd == "build") return Build.cmdBuild(2, argc);
+    if (cmd == "install") {
+        if (argc < 3) {
+            Console.writeLine("Usage: myp install <package-path>");
+            return 1;
+        }
+        return Install.cmdInstall(Args.get(2));
+    }
+    if (cmd == "run") return Build.cmdRun(2, argc);
+    if (cmd == "--help" || cmd == "-h") {
+        cmdHelp();
+        return 0;
+    }
+    // legacy 模式：myp <file.myp> [opts]
+    string src = cmd;
+    if (Str.endsWith(src, ".myp") == 0 || Fs.isFile(src) == 0) {
+        Console.writeLine("Error: unknown command or file not found: " + cmd);
+        cmdHelp();
+        return 1;
+    }
+    string compiler = Build.findCompiler();
+    StringBuilder c = new StringBuilder();
+    c.append(compiler);
+    c.append(" " + src);
+    string stdlib = Build.findStdlib(compiler);
+    if (Str.len(stdlib) > 0) c.append(" --stdlib " + stdlib);
+    for (int i = 2; i < argc; i = i + 1) c.append(" " + Args.get(i));
+    return Process.run(c.toString());
+}
+
+int main() {
+    int code = pmRun();
+    return code;
+}

@@ -1,6 +1,6 @@
 # MYP 包管理器设计（用 MYP 语言自举）
 
-> 状态：**v1 已实施（2026-08-05）**——`tools/myp.myp`（init/build/install/run/legacy）
+> 状态：**v2 已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
 > 编译器 `--package-path`（`src/main.cpp` `loadModule`）、现有 Python 版 `myp`（仓库根）。
 > 本文档提出**用 MYP 语言重写包管理器**（自举工具链），作为语言稳定性证明与
@@ -216,3 +216,29 @@ myp build
 ### 9.3 自举发现
 - **语言 bug**：函数返回定长数组共享存储（`Fs.listDir`/`Str.split`），嵌套调用覆写外层数组 → `copyTree` 需快照规避（详见 `next_improvements.md` §九）。
 - **io 约束**：`__myp_io_*` 单一全局句柄，不能同时开两个 File → `copyFile` 分两阶段（先读后写）。
+
+---
+
+## 10. v2 实施记录（2026-08-05，模块化 + CMake）
+
+### 10.1 模块划分（tools/pm/）
+| 文件 | 职责 |
+|------|------|
+| `main.myp` | CLI 入口 + `cmdInit`/`cmdHelp`/`pmRun`/`main` |
+| `meta.myp` | `Meta` 类 + `@static class MetaParser.loadMeta` |
+| `build.myp` | `@static class Build`：findCompiler/findStdlib/resolvePackagePath/cmdBuild/cmdRun |
+| `install.myp` | `@static class Install.cmdInstall` |
+| `util.myp` | `@static class Util`：copyFile/copyTree |
+
+### 10.2 CMake 集成（顶层 CMakeLists.txt）
+- 自定义 target `myp_pm`（ALL）：`$<TARGET_FILE:mypc> tools/pm/main.myp -o build/myp --stdlib <root>/stdlib`
+- DEPENDS `mypc` + 全部模块源；构建后清理源码旁 `main.myp.o` 保持源码树干净
+- 产物：`build/myp`（可由 `myp build/install/run` 自举使用）
+
+### 10.3 跨模块符号可见性（自举发现）
+- **顶层函数跨路径导入不可见**（main 调用 build.myp 的顶层函数报 undefined variable）。
+- **类可见**：`@static class` 的 `static:` 方法可跨模块 `类名.方法()` 调用（BNCT 同款）。
+- 因此各模块逻辑包进 `@static class`；`main.myp` 内私有逻辑（cmdInit 等）保持顶层函数。
+
+### 10.4 验证
+- `tests/test_myp_pm.sh` 改为编译 `tools/pm/main.myp`（9 断言全过）；-O0/ASAN 全套 124/124。

@@ -1,0 +1,75 @@
+// meta.myp — 包管理器：package.myp 解析
+//
+// 关联: docs/pkg_manager.md；自举: docs/self_hosting.md
+
+import env;
+import fs;
+import io;
+import text;
+
+// 包元数据（package.myp 解析结果；属性封装，外部经 getter/setter 访问）
+class Meta {
+    action:
+        @constructor Meta() {
+            pkgName = "";
+            pkgVersion = "0.1.0";
+            depCount = 0;
+        }
+        void setName(string v) { pkgName = v; }
+        void setVersion(string v) { pkgVersion = v; }
+        void addDep(string d) {
+            deps[depCount] = d;
+            depCount = depCount + 1;
+        }
+        string getName() { return pkgName; }
+        string getVersion() { return pkgVersion; }
+        int getDepCount() { return depCount; }
+        string getDep(int i) { return deps[i]; }
+    property:
+        string pkgName;
+        string pkgVersion;
+        string[64] deps;
+        int depCount;
+}
+
+// 解析 package.myp（name/version/depends 字段；# 注释；key: value）
+@static class MetaParser {
+    static:
+        Meta loadMeta(string dir) {
+            Meta m = new Meta();
+            m.setName(Fs.basename(dir));
+            string path = Fs.join(dir, "package.myp");
+            if (Fs.isFile(path) == 0) return m;
+            File f = new File();
+            if (f.open(path, "r") != 0) return m;
+            while (f.hasNext() != 0) {
+                string line = f.readLine();
+                line = Str.trim(line);
+                if (Str.len(line) == 0) continue;
+                if (Str.startsWith(line, "#") != 0) continue;
+                int ci = Str.indexOf(line, ":");
+                if (ci < 0) continue;
+                string key = Str.trim(Str.substring(line, 0, ci));
+                string val = Str.trim(Str.substring(line, ci + 1, Str.len(line)));
+                // 去引号
+                if (Str.len(val) >= 2 && Str.startsWith(val, "\"") != 0) {
+                    val = Str.substring(val, 1, Str.len(val) - 1);
+                }
+                if (key == "name") {
+                    m.setName(val);
+                } else if (key == "version") {
+                    m.setVersion(val);
+                } else if (key == "depends") {
+                    int n = Str.splitCount(val, ",");
+                    for (int i = 0; i < n; i = i + 1) {
+                        string dep = Str.trim(Str.splitGet(val, ",", i));
+                        if (Str.len(dep) > 0) {
+                            m.addDep(dep);
+                        }
+                    }
+                }
+            }
+            f.close();
+            return m;
+        }
+}

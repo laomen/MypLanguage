@@ -150,6 +150,28 @@ add_executable(myp_fmt
 )
 target_include_directories(myp_fmt PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
+# ---- Self-hosted Package Manager (tools/pm, built with mypc) ----
+# 用 MYP 语言实现的包管理器（自举工具链）。见 docs/pkg_manager.md / self_hosting.md。
+set(MYP_PM_SRC ${CMAKE_SOURCE_DIR}/tools/pm/main.myp)
+set(MYP_PM_MODULES
+    ${CMAKE_SOURCE_DIR}/tools/pm/meta.myp
+    ${CMAKE_SOURCE_DIR}/tools/pm/build.myp
+    ${CMAKE_SOURCE_DIR}/tools/pm/install.myp
+    ${CMAKE_SOURCE_DIR}/tools/pm/util.myp
+)
+set(MYP_PM_OUT ${CMAKE_BINARY_DIR}/myp)
+
+add_custom_command(
+    OUTPUT ${MYP_PM_OUT}
+    COMMAND $<TARGET_FILE:mypc> ${MYP_PM_SRC} -o ${MYP_PM_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/pm/main.myp.o
+    DEPENDS ${MYP_PM_SRC} ${MYP_PM_MODULES} mypc
+    COMMENT "Building self-hosted package manager (tools/pm -> myp)"
+    VERBATIM
+)
+add_custom_target(myp_pm ALL DEPENDS ${MYP_PM_OUT})
+
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(SDL2 REQUIRED sdl2)

@@ -1,0 +1,63 @@
+// util.myp — 包管理器：文件系统工具（递归复制）
+//
+// 关联: docs/pkg_manager.md；自举: docs/self_hosting.md
+// 注意: io.myp 的 File 底层是单一全局句柄（__myp_io_*），不能同时开两个文件，
+//       因此 copyFile 分两阶段（先读入缓冲关 in，再写 out）。
+
+import env;
+import fs;
+import io;
+import text;
+
+@static class Util {
+    static:
+        // 逐字节复制文件。
+        int copyFile(string src, string dst) {
+            int[262144] buf;   // 256KB 缓冲（.myp 源文件足够）
+            File in = new File();
+            if (in.open(src, "rb") != 0) return 1;
+            int n = 0;
+            while (true) {
+                int b = in.readByte();
+                if (b < 0) break;
+                if (n >= 262144) { in.close(); return 1; }   // 超出缓冲
+                buf[n] = b;
+                n = n + 1;
+            }
+            in.close();
+            File out = new File();
+            if (out.open(dst, "wb") != 0) return 1;
+            for (int i = 0; i < n; i = i + 1) {
+                out.writeByte(buf[i]);
+            }
+            out.close();
+            return 0;
+        }
+
+        // 递归复制目录/文件 src → dst
+        int copyTree(string src, string dst) {
+            if (Fs.isFile(src) != 0) {
+                Fs.mkdirP(Fs.dirname(dst));
+                return Util.copyFile(src, dst);
+            }
+            if (Fs.isDir(src) != 0) {
+                Fs.mkdirP(dst);
+                int n = Fs.listCount(src);
+                string[] entries = Fs.listDir(src);
+                // 快照：函数返回的定长数组共享存储，嵌套调用会覆写外层数组（语言
+                // bug，见 next_improvements.md §九），先拷入本层标量数组再递归。
+                string[64] names;
+                int nc = n;
+                if (nc > 64) nc = 64;
+                for (int i = 0; i < nc; i = i + 1) names[i] = entries[i];
+                for (int i = 0; i < nc; i = i + 1) {
+                    string name = names[i];
+                    if (Str.len(name) == 0) continue;
+                    int r = Util.copyTree(Fs.join(src, name), Fs.join(dst, name));
+                    if (r != 0) return r;
+                }
+                return 0;
+            }
+            return 0;
+        }
+}
