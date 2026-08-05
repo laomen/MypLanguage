@@ -1,0 +1,111 @@
+// collections_grow: 所有集合突破 1024 上限（动态扩容）
+import env;
+import collections;
+
+class Main {
+    action:
+        @startup void run() {
+            // ArrayList<T> — 5000 个元素
+            ArrayList<int> list = new ArrayList<int>();
+            for (int i = 0; i < 5000; i = i + 1) list.add(i * 3);
+            Console.writeString("al size="); Console.write(list.size());
+            Console.writeString(" get0="); Console.write(list.get(0));
+            Console.writeString(" get2500="); Console.write(list.get(2500));
+            Console.writeString(" get4999="); Console.write(list.get(4999));
+            Console.writeString("\n");
+
+            // HashMap<K,V> — 5000 个键
+            HashMap<int, int> hm = new HashMap<int, int>();
+            for (int i = 0; i < 5000; i = i + 1) hm.put(i, i * 2);
+            Console.writeString("hm size="); Console.write(hm.size());
+            Console.writeString(" get0="); Console.write(hm.get(0, -1));
+            Console.writeString(" get4999="); Console.write(hm.get(4999, -1));
+            Console.writeString(" has2500="); Console.writeBool(hm.contains(2500));
+            Console.writeString(" has9999="); Console.writeBool(hm.contains(9999));
+            Console.writeString("\n");
+            hm.remove(2500);
+            Console.writeString("hm after_rm="); Console.writeBool(hm.contains(2500));
+            Console.writeString(" get_rm="); Console.write(hm.get(2500, -1));
+            Console.writeString("\n");
+
+            // Set<T> — 5000 个元素
+            Set<int> s = new Set<int>();
+            for (int i = 0; i < 5000; i = i + 1) s.add(i * 2);
+            Console.writeString("set size="); Console.write(s.size());
+            Console.writeString(" has0="); Console.writeBool(s.contains(0));
+            Console.writeString(" has9998="); Console.writeBool(s.contains(9998));
+            Console.writeString(" has9999="); Console.writeBool(s.contains(9999));
+            Console.writeString("\n");
+            s.remove(9998);
+            Console.writeString("set after_rm="); Console.writeBool(s.contains(9998));
+            Console.writeString("\n");
+
+            // Deque<T> — 5000 个元素，两端操作
+            Deque<int> dq = new Deque<int>();
+            for (int i = 0; i < 5000; i = i + 1) dq.pushBack(i);
+            Console.writeString("dq size="); Console.write(dq.size());
+            Console.writeString(" front="); Console.write(dq.popFront());
+            Console.writeString(" back="); Console.write(dq.popBack());
+            Console.writeString("\n");
+            dq.pushFront(9999);
+            Console.writeString("dq front2="); Console.write(dq.popFront());
+            Console.writeString(" sz2="); Console.write(dq.size());
+            Console.writeString("\n");
+
+            // Queue<T> — 5000 个元素
+            Queue<int> q = new Queue<int>();
+            for (int i = 0; i < 5000; i = i + 1) q.enqueue(i * 2);
+            Console.writeString("q size="); Console.write(q.size());
+            Console.writeString(" dq0="); Console.write(q.dequeue());
+            Console.writeString(" dq1="); Console.write(q.dequeue());
+            Console.writeString(" peek="); Console.write(q.peek());
+            Console.writeString("\n");
+
+            // Stack<T> — 5000 个元素
+            Stack<int> st = new Stack<int>();
+            for (int i = 0; i < 5000; i = i + 1) st.push(i);
+            Console.writeString("st size="); Console.write(st.size());
+            Console.writeString(" pop="); Console.write(st.pop());
+            Console.writeString(" pop2="); Console.write(st.pop());
+            Console.writeString("\n");
+
+            // PriorityQueue<T> — 5000 个元素（最小堆）
+            PriorityQueue<int> pq = new PriorityQueue<int>();
+            for (int i = 0; i < 5000; i = i + 1) pq.push((5000 - i) * 7);
+            Console.writeString("pq size="); Console.write(pq.size());
+            Console.writeString(" min="); Console.write(pq.pop());
+            Console.writeString(" min2="); Console.write(pq.pop());
+            Console.writeString(" peek="); Console.write(pq.peek());
+            Console.writeString("\n");
+
+            // LinkedList<T> — 5000 个元素
+            LinkedList<int> ll = new LinkedList<int>();
+            for (int i = 0; i < 5000; i = i + 1) ll.addLast(i * 3);
+            Console.writeString("ll size="); Console.write(ll.size());
+            Console.writeString(" first="); Console.write(ll.removeFirst());
+            Console.writeString(" last="); Console.write(ll.removeLast());
+            Console.writeString("\n");
+            ll.addFirst(7777);
+            Console.writeString("ll first2="); Console.write(ll.removeFirst());
+            Console.writeString(" sz2="); Console.write(ll.size());
+            Console.writeString("\n");
+
+            // StrHashMap<V> — 5000 个字符串键
+            StrHashMap<int> sm = new StrHashMap<int>();
+            for (int i = 0; i < 5000; i = i + 1) sm.put("k" + i, i * 5);
+            Console.writeString("sm size="); Console.write(sm.size());
+            Console.writeString(" k0="); Console.write(sm.get("k0", -1));
+            Console.writeString(" k4999="); Console.write(sm.get("k4999", -1));
+            Console.writeString(" hask2500="); Console.write(sm.contains("k2500"));
+            Console.writeString(" haskx="); Console.write(sm.contains("kx"));
+            Console.writeString("\n");
+            sm.remove("k4999");
+            Console.writeString("sm after_rm="); Console.write(sm.contains("k4999"));
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

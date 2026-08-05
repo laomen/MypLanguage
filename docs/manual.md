@@ -1104,7 +1104,7 @@ Console.getch();                // 非阻塞读一个字符
 ```myp
 import collections;
 
-// ArrayList<T> — 动态数组（容量 1024）
+// ArrayList<T> — 动态数组（惰性分配 + 自动扩容，无 1024 上限）
 ArrayList<int> list = new ArrayList<int>();
 list.add(10);
 list.add(20);
@@ -1112,7 +1112,7 @@ int first = list.get(0);   // 10
 list.set(1, 30);
 int n = list.size();        // 2
 
-// HashMap<K,V> — 哈希表（容量 1024，线性探测）
+// HashMap<K,V> — 哈希表（线性探测，自动扩容）
 HashMap<int, string> map = new HashMap<int, string>();
 map.put(1, "one");
 map.put(2, "two");
@@ -1120,7 +1120,7 @@ string v = map.get(1, "?");  // "one"
 bool has = map.contains(2);  // true
 map.remove(1);
 
-// Set<T> — 哈希集合（容量 1024）
+// Set<T> — 哈希集合（自动扩容）
 Set<int> s = new Set<int>();
 s.add(42);
 s.add(17);

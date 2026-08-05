@@ -82,6 +82,11 @@ private:
     // ---- Current class context (for bare method calls) ----
     std::string current_class_name_;
 
+    // ---- Generic type-param mapping (set per class generation) ----
+    // Maps a generic type param name (e.g. "T") to its concrete TypeNode for the
+    // currently generated class. Empty for non-generic / template classes.
+    std::vector<std::pair<std::string, TypeNode>> current_type_params_;
+
     // ---- @region memory arena state (function currently being generated) ----
     bool in_region_function_ = false;         // generating a @region fn (non-escaping)
     llvm::Value* current_region_mark_ = nullptr;  // mark alloca for the region fn
@@ -352,6 +357,7 @@ private:
     bool isErrorInterface(const std::string& name);
     void createClassActionDecl(const ClassDecl& cls, const ActionDecl& action);
     void createStaticActionDecl(const ClassDecl& cls, const ActionDecl& action);
+    void createClassFunctionDecl(const ClassDecl& cls, const FuncDecl& fn);
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);

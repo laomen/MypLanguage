@@ -4,15 +4,14 @@
 // HashMap<K,V>   — 哈希表（线性探测，固定容量 1024）
 
 // ============================================================
-// ArrayList<T> — 动态数组
+// ArrayList<T> — 动态数组（惰性分配 + 动态扩容）
+//   首次 add 时分配，容量翻倍增长，无 1024 上限。
 // ============================================================
 class ArrayList<T> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-        }
-
         void add(T val) {
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; }
+            if (cnt_ >= cap_) grow();
             data_[cnt_] = val;
             cnt_ = cnt_ + 1;
         }
@@ -37,35 +36,45 @@ class ArrayList<T> {
             cnt_ = 0;
         }
 
+    function:
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[i];
+            data_ = nd;
+            cap_ = nc;
+        }
+
     property:
-        T[1024] data_;
+        T[] data_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
 // HashMap<K,V> — 哈希表（线性探测法）
-//   固定容量 1024。键必须支持 % 和 == 运算。
+//   惰性分配 + 动态扩容（75% 负载因子时翻倍重建）。
+//   键必须支持 % 和 == 运算。
 // ============================================================
 class HashMap<K, V> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
-            }
-        }
-
         void put(K key, V val) {
-            int idx = key % 1024;
+            if (occupied_ == null) init(16);
+            if (cnt_ + 1 > cap_ - cap_ / 4) grow();
+            int idx = key % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     values_[idx] = val;
                     return;
                 }
-                idx = (idx + 1) % 1024;
-                if (idx == start) return;
+                idx = (idx + 1) % cap_;
+                if (idx == start) {
+                    grow();
+                    put(key, val);
+                    return;
+                }
             }
             keys_[idx] = key;
             values_[idx] = val;
@@ -74,55 +83,58 @@ class HashMap<K, V> {
         }
 
         V get(K key, V default_val) {
-            int idx = key % 1024;
+            if (occupied_ == null) return default_val;
+            int idx = key % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     return values_[idx];
                 }
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return default_val;
             }
             return default_val;
         }
 
         bool contains(K key) {
-            int idx = key % 1024;
+            if (occupied_ == null) return false;
+            int idx = key % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) return true;
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return false;
             }
             return false;
         }
 
         void remove(K key) {
-            int idx = key % 1024;
+            if (occupied_ == null) return;
+            int idx = key % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     occupied_[idx] = false;
                     cnt_ = cnt_ - 1;
-                    int next = (idx + 1) % 1024;
+                    int next = (idx + 1) % cap_;
                     while (occupied_[next]) {
                         K re_key = keys_[next];
                         V re_val = values_[next];
                         occupied_[next] = false;
                         cnt_ = cnt_ - 1;
-                        int ri = re_key % 1024;
+                        int ri = re_key % cap_;
                         while (occupied_[ri]) {
-                            ri = (ri + 1) % 1024;
+                            ri = (ri + 1) % cap_;
                         }
                         keys_[ri] = re_key;
                         values_[ri] = re_val;
                         occupied_[ri] = true;
                         cnt_ = cnt_ + 1;
-                        next = (next + 1) % 1024;
+                        next = (next + 1) % cap_;
                     }
                     return;
                 }
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return;
             }
         }
@@ -130,39 +142,69 @@ class HashMap<K, V> {
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
         void clear() {
+            if (occupied_ == null) return;
             cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
+            for (int i = 0; i < cap_; i = i + 1) occupied_[i] = false;
+        }
+
+    function:
+        void init(int n) {
+            cap_ = n;
+            cnt_ = 0;
+            keys_ = new K[n];
+            values_ = new V[n];
+            occupied_ = new bool[n];
+        }
+
+        void grow() {
+            int nc = cap_ * 2;
+            K[] nk = new K[nc];
+            V[] nv = new V[nc];
+            bool[] no = new bool[nc];
+            int old = cap_;
+            for (int i = 0; i < old; i = i + 1) {
+                if (occupied_[i]) {
+                    int h = keys_[i] % nc;
+                    while (no[h]) h = (h + 1) % nc;
+                    nk[h] = keys_[i];
+                    nv[h] = values_[i];
+                    no[h] = true;
+                }
             }
+            keys_ = nk;
+            values_ = nv;
+            occupied_ = no;
+            cap_ = nc;
         }
 
     property:
-        K[1024] keys_;
-        V[1024] values_;
-        bool[1024] occupied_;
+        K[] keys_;
+        V[] values_;
+        bool[] occupied_;
         int cnt_;
+        int cap_;
 }
 
 // ============================================================
 // Set<T> — 基于开放寻址哈希表的集合
-//   固定容量 1024。元素必须支持 % 和 == 运算。
+//   惰性分配 + 动态扩容（75% 负载因子时翻倍重建）。
+//   元素必须支持 % 和 == 运算。
 // ============================================================
 class Set<T> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
-            }
-        }
-
         void add(T val) {
-            int idx = val % 1024;
+            if (occupied_ == null) init(16);
+            if (cnt_ + 1 > cap_ - cap_ / 4) grow();
+            int idx = val % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (data_[idx] == val) return;
-                idx = (idx + 1) % 1024;
-                if (idx == start) return;
+                idx = (idx + 1) % cap_;
+                if (idx == start) {
+                    grow();
+                    add(val);
+                    return;
+                }
             }
             data_[idx] = val;
             occupied_[idx] = true;
@@ -170,40 +212,42 @@ class Set<T> {
         }
 
         bool contains(T val) {
-            int idx = val % 1024;
+            if (occupied_ == null) return false;
+            int idx = val % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (data_[idx] == val) return true;
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return false;
             }
             return false;
         }
 
         void remove(T val) {
-            int idx = val % 1024;
+            if (occupied_ == null) return;
+            int idx = val % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (data_[idx] == val) {
                     occupied_[idx] = false;
                     cnt_ = cnt_ - 1;
-                    int next = (idx + 1) % 1024;
+                    int next = (idx + 1) % cap_;
                     while (occupied_[next]) {
                         T re_val = data_[next];
                         occupied_[next] = false;
                         cnt_ = cnt_ - 1;
-                        int ri = re_val % 1024;
+                        int ri = re_val % cap_;
                         while (occupied_[ri]) {
-                            ri = (ri + 1) % 1024;
+                            ri = (ri + 1) % cap_;
                         }
                         data_[ri] = re_val;
                         occupied_[ri] = true;
                         cnt_ = cnt_ + 1;
-                        next = (next + 1) % 1024;
+                        next = (next + 1) % cap_;
                     }
                     return;
                 }
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return;
             }
         }
@@ -211,43 +255,65 @@ class Set<T> {
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
         void clear() {
+            if (occupied_ == null) return;
             cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
+            for (int i = 0; i < cap_; i = i + 1) occupied_[i] = false;
+        }
+
+    function:
+        void init(int n) {
+            cap_ = n;
+            cnt_ = 0;
+            data_ = new T[n];
+            occupied_ = new bool[n];
+        }
+
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            bool[] no = new bool[nc];
+            int old = cap_;
+            for (int i = 0; i < old; i = i + 1) {
+                if (occupied_[i]) {
+                    int h = data_[i] % nc;
+                    while (no[h]) h = (h + 1) % nc;
+                    nd[h] = data_[i];
+                    no[h] = true;
+                }
             }
+            data_ = nd;
+            occupied_ = no;
+            cap_ = nc;
         }
 
     property:
-        T[1024] data_;
-        bool[1024] occupied_;
+        T[] data_;
+        bool[] occupied_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
-// Deque<T> — 双端队列（循环缓冲区，固定容量 1024）
+// Deque<T> — 双端队列（循环缓冲区，动态扩容）
 //   支持从两端添加/移除元素。
 // ============================================================
 class Deque<T> {
     action:
-        @startup void init() {
-            head_ = 0;
-            tail_ = 0;
-            cnt_ = 0;
-        }
-
         // 从尾部添加
         void pushBack(T val) {
-            if (cnt_ >= 1024) return;
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; head_ = 0; tail_ = 0; cnt_ = 0; }
+            if (cnt_ >= cap_) grow();
             data_[tail_] = val;
-            tail_ = (tail_ + 1) % 1024;
+            tail_ = (tail_ + 1) % cap_;
             cnt_ = cnt_ + 1;
         }
 
         // 从头部添加
         void pushFront(T val) {
-            if (cnt_ >= 1024) return;
-            head_ = (head_ - 1 + 1024) % 1024;
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; head_ = 0; tail_ = 0; cnt_ = 0; }
+            if (cnt_ >= cap_) grow();
+            head_ = (head_ - 1 + cap_) % cap_;
             data_[head_] = val;
             cnt_ = cnt_ + 1;
         }
@@ -256,7 +322,7 @@ class Deque<T> {
         T popFront() {
             if (cnt_ <= 0) return data_[0];  // empty
             T val = data_[head_];
-            head_ = (head_ + 1) % 1024;
+            head_ = (head_ + 1) % cap_;
             cnt_ = cnt_ - 1;
             return val;
         }
@@ -264,7 +330,7 @@ class Deque<T> {
         // 从尾部移除并返回
         T popBack() {
             if (cnt_ <= 0) return data_[0];  // empty
-            tail_ = (tail_ - 1 + 1024) % 1024;
+            tail_ = (tail_ - 1 + cap_) % cap_;
             T val = data_[tail_];
             cnt_ = cnt_ - 1;
             return val;
@@ -274,7 +340,7 @@ class Deque<T> {
         T front() { return data_[head_]; }
 
         // 查看尾部元素（不移除）
-        T back() { return data_[(tail_ - 1 + 1024) % 1024]; }
+        T back() { return data_[(tail_ - 1 + cap_) % cap_]; }
 
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
@@ -284,36 +350,43 @@ class Deque<T> {
             cnt_ = 0;
         }
 
+    function:
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[(head_ + i) % cap_];
+            data_ = nd;
+            head_ = 0;
+            tail_ = cnt_;
+            cap_ = nc;
+        }
+
     property:
-        T[1024] data_;
+        T[] data_;
         int head_;
         int tail_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
-// Queue<T> — 先进先出队列（循环缓冲区，固定容量 1024）
+// Queue<T> — 先进先出队列（循环缓冲区，动态扩容）
 // ============================================================
 class Queue<T> {
     action:
-        @startup void init() {
-            head_ = 0;
-            tail_ = 0;
-            cnt_ = 0;
-        }
-
         void enqueue(T val) {
-            if (cnt_ >= 1024) return;
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; head_ = 0; tail_ = 0; cnt_ = 0; }
+            if (cnt_ >= cap_) grow();
             data_[tail_] = val;
-            tail_ = (tail_ + 1) % 1024;
+            tail_ = (tail_ + 1) % cap_;
             cnt_ = cnt_ + 1;
         }
 
         T dequeue() {
             if (cnt_ <= 0) return data_[0];
             T val = data_[head_];
-            head_ = (head_ + 1) % 1024;
+            head_ = (head_ + 1) % cap_;
             cnt_ = cnt_ - 1;
             return val;
         }
@@ -327,25 +400,34 @@ class Queue<T> {
             cnt_ = 0;
         }
 
+    function:
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[(head_ + i) % cap_];
+            data_ = nd;
+            head_ = 0;
+            tail_ = cnt_;
+            cap_ = nc;
+        }
+
     property:
-        T[1024] data_;
+        T[] data_;
         int head_;
         int tail_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
-// Stack<T> — 后进先出栈（固定容量 1024）
+// Stack<T> — 后进先出栈（动态扩容）
 // ============================================================
 class Stack<T> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-        }
-
         void push(T val) {
-            if (cnt_ >= 1024) return;
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; }
+            if (cnt_ >= cap_) grow();
             data_[cnt_] = val;
             cnt_ = cnt_ + 1;
         }
@@ -361,23 +443,30 @@ class Stack<T> {
         bool isEmpty() { return cnt_ == 0; }
         void clear() { cnt_ = 0; }
 
+    function:
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[i];
+            data_ = nd;
+            cap_ = nc;
+        }
+
     property:
-        T[1024] data_;
+        T[] data_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
-// PriorityQueue<T> — 优先队列（二叉最小堆，固定容量 1024）
+// PriorityQueue<T> — 优先队列（二叉最小堆，动态扩容）
 // ============================================================
 class PriorityQueue<T> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-        }
-
         void push(T val) {
-            if (cnt_ >= 1024) return;
+            if (data_ == null) { cap_ = 8; data_ = new T[cap_]; }
+            if (cnt_ >= cap_) grow();
             data_[cnt_] = val;
             int i = cnt_;
             cnt_ = cnt_ + 1;
@@ -412,32 +501,29 @@ class PriorityQueue<T> {
         int size() { return cnt_; }
         void clear() { cnt_ = 0; }
 
+    function:
+        void grow() {
+            int nc = cap_ * 2;
+            T[] nd = new T[nc];
+            for (int i = 0; i < cnt_; i = i + 1) nd[i] = data_[i];
+            data_ = nd;
+            cap_ = nc;
+        }
+
     property:
-        T[1024] data_;
+        T[] data_;
         int cnt_;
+        int cap_;
 }
 
 
 // ============================================================
-// LinkedList<T> — 双向链表（固定节点池 256）
+// LinkedList<T> — 双向链表（惰性节点池 + 动态扩容）
 // ============================================================
 class LinkedList<T> {
     action:
-        @startup void init() {
-            head_ = -1;
-            tail_ = -1;
-            cnt_ = 0;
-            free_ = 0;
-            for (int i = 0; i < 255; i = i + 1) {
-                next_[i] = i + 1;
-                prev_[i] = -1;
-            }
-            next_[255] = -1;
-            prev_[255] = -1;
-        }
-
         void addFirst(T val) {
-            if (free_ < 0) return;
+            ensurePool();
             int idx = free_;
             free_ = next_[free_];
             data_[idx] = val;
@@ -450,7 +536,7 @@ class LinkedList<T> {
         }
 
         void addLast(T val) {
-            if (free_ < 0) return;
+            ensurePool();
             int idx = free_;
             free_ = next_[free_];
             data_[idx] = val;
@@ -463,6 +549,7 @@ class LinkedList<T> {
         }
 
         T removeFirst() {
+            ensurePool();
             if (cnt_ <= 0) return data_[0];
             T val = data_[head_];
             int old = head_;
@@ -476,6 +563,7 @@ class LinkedList<T> {
         }
 
         T removeLast() {
+            ensurePool();
             if (cnt_ <= 0) return data_[0];
             T val = data_[tail_];
             int old = tail_;
@@ -488,25 +576,69 @@ class LinkedList<T> {
             return val;
         }
 
-        T getFirst() { return data_[head_]; }
-        T getLast() { return data_[tail_]; }
+        T getFirst() { ensurePool(); return data_[head_]; }
+        T getLast() { ensurePool(); return data_[tail_]; }
         int size() { return cnt_; }
         void clear() {
-            head_ = -1; tail_ = -1; cnt_ = 0; free_ = 0;
-            for (int i = 0; i < 255; i = i + 1) { next_[i] = i + 1; prev_[i] = -1; }
-            next_[255] = -1; prev_[255] = -1;
+            head_ = -1; tail_ = -1; cnt_ = 0;
+            if (data_ != null) linkFree();
         }
 
     function:
+        void ensurePool() {
+            if (data_ == null) {
+                pool_ = 8;
+                data_ = new T[pool_];
+                next_ = new int[pool_];
+                prev_ = new int[pool_];
+                head_ = -1;
+                tail_ = -1;
+                cnt_ = 0;
+                linkFree();
+                return;
+            }
+            if (free_ < 0) growPool();
+        }
+
+        void linkFree() {
+            free_ = 0;
+            for (int i = 0; i < pool_ - 1; i = i + 1) { next_[i] = i + 1; prev_[i] = -1; }
+            next_[pool_ - 1] = -1;
+            prev_[pool_ - 1] = -1;
+        }
+
+        void growPool() {
+            int np = pool_ * 2;
+            T[] nd = new T[np];
+            int[] nn = new int[np];
+            int[] nv = new int[np];
+            for (int i = 0; i < pool_; i = i + 1) { nd[i] = data_[i]; nn[i] = next_[i]; nv[i] = prev_[i]; }
+            data_ = nd;
+            next_ = nn;
+            prev_ = nv;
+            int old = pool_;
+            pool_ = np;
+            for (int i = old; i < np - 1; i = i + 1) { next_[i] = i + 1; prev_[i] = -1; }
+            next_[np - 1] = -1;
+            prev_[np - 1] = -1;
+            if (free_ < 0) {
+                free_ = old;
+            } else {
+                int f = free_;
+                while (next_[f] >= 0) f = next_[f];
+                next_[f] = old;
+            }
+        }
 
     property:
-        T[256] data_;
-        int[256] next_;
-        int[256] prev_;
+        T[] data_;
+        int[] next_;
+        int[] prev_;
         int head_;
         int tail_;
         int cnt_;
         int free_;
+        int pool_;
 }
 
 
@@ -584,31 +716,30 @@ class Sort {
 
 
 // ============================================================
-// StrHashMap<V> — 字符串键哈希表（开放寻址，固定容量 1024）
-//   使用 C 运行时的 DJB2 哈希函数。
+// StrHashMap<V> — 字符串键哈希表（开放寻址，动态扩容）
+//   使用 C 运行时的 DJB2 哈希函数。75% 负载因子时翻倍重建。
 // ============================================================
 ffi int myp_str_hash(string s);
 
 class StrHashMap<V> {
     action:
-        @startup void init() {
-            cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
-            }
-        }
-
         void put(string key, V val) {
+            if (occupied_ == null) init(16);
+            if (cnt_ + 1 > cap_ - cap_ / 4) grow();
             int h = myp_str_hash(key);
-            int idx = h % 1024;
+            int idx = h % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     values_[idx] = val;
                     return;
                 }
-                idx = (idx + 1) % 1024;
-                if (idx == start) return;
+                idx = (idx + 1) % cap_;
+                if (idx == start) {
+                    grow();
+                    put(key, val);
+                    return;
+                }
             }
             keys_[idx] = key;
             values_[idx] = val;
@@ -617,59 +748,62 @@ class StrHashMap<V> {
         }
 
         V get(string key, V default_val) {
+            if (occupied_ == null) return default_val;
             int h = myp_str_hash(key);
-            int idx = h % 1024;
+            int idx = h % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     return values_[idx];
                 }
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return default_val;
             }
             return default_val;
         }
 
         int contains(string key) {
+            if (occupied_ == null) return 0;
             int h = myp_str_hash(key);
-            int idx = h % 1024;
+            int idx = h % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) return 1;
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return 0;
             }
             return 0;
         }
 
         void remove(string key) {
+            if (occupied_ == null) return;
             int h = myp_str_hash(key);
-            int idx = h % 1024;
+            int idx = h % cap_;
             int start = idx;
             while (occupied_[idx]) {
                 if (keys_[idx] == key) {
                     occupied_[idx] = false;
                     cnt_ = cnt_ - 1;
-                    int next = (idx + 1) % 1024;
+                    int next = (idx + 1) % cap_;
                     while (occupied_[next]) {
                         string re_key = keys_[next];
                         V re_val = values_[next];
                         occupied_[next] = false;
                         cnt_ = cnt_ - 1;
                         int rh = myp_str_hash(re_key);
-                        int ri = rh % 1024;
+                        int ri = rh % cap_;
                         while (occupied_[ri]) {
-                            ri = (ri + 1) % 1024;
+                            ri = (ri + 1) % cap_;
                         }
                         keys_[ri] = re_key;
                         values_[ri] = re_val;
                         occupied_[ri] = true;
                         cnt_ = cnt_ + 1;
-                        next = (next + 1) % 1024;
+                        next = (next + 1) % cap_;
                     }
                     return;
                 }
-                idx = (idx + 1) % 1024;
+                idx = (idx + 1) % cap_;
                 if (idx == start) return;
             }
         }
@@ -677,15 +811,45 @@ class StrHashMap<V> {
         int size() { return cnt_; }
         bool isEmpty() { return cnt_ == 0; }
         void clear() {
+            if (occupied_ == null) return;
             cnt_ = 0;
-            for (int i = 0; i < 1024; i = i + 1) {
-                occupied_[i] = false;
+            for (int i = 0; i < cap_; i = i + 1) occupied_[i] = false;
+        }
+
+    function:
+        void init(int n) {
+            cap_ = n;
+            cnt_ = 0;
+            keys_ = new string[n];
+            values_ = new V[n];
+            occupied_ = new bool[n];
+        }
+
+        void grow() {
+            int nc = cap_ * 2;
+            string[] nk = new string[nc];
+            V[] nv = new V[nc];
+            bool[] no = new bool[nc];
+            int old = cap_;
+            for (int i = 0; i < old; i = i + 1) {
+                if (occupied_[i]) {
+                    int h = myp_str_hash(keys_[i]) % nc;
+                    while (no[h]) h = (h + 1) % nc;
+                    nk[h] = keys_[i];
+                    nv[h] = values_[i];
+                    no[h] = true;
+                }
             }
+            keys_ = nk;
+            values_ = nv;
+            occupied_ = no;
+            cap_ = nc;
         }
 
     property:
-        string[1024] keys_;
-        V[1024] values_;
-        bool[1024] occupied_;
+        string[] keys_;
+        V[] values_;
+        bool[] occupied_;
         int cnt_;
+        int cap_;
 }

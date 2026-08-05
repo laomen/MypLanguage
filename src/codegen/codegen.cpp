@@ -346,6 +346,11 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
     }
     // Check for class type
     if (!tn.class_name.empty()) {
+        // Resolve generic type param (e.g. T in `new T[n]`) to its concrete arg
+        // for the currently generated generic instance.
+        for (auto& tp : current_type_params_) {
+            if (tn.class_name == tp.first) return typeNodeToLLVMType(tp.second);
+        }
         if (getClassStruct(tn.class_name))
             return llvm::PointerType::get(ctx_, 0);
         if (auto* st = getStructType(tn.class_name))
@@ -439,6 +444,11 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         return result;
     }
     if (!node.class_name.empty()) {
+        // Resolve generic type param (e.g. T in `new T[n]`) to its concrete arg
+        // for the currently generated generic instance.
+        for (auto& tp : current_type_params_) {
+            if (node.class_name == tp.first) return typeNodeToCodegenType(tp.second);
+        }
         // Built-in slice<T>
         if (node.class_name == "slice" && node.type_args.size() == 1) {
             TypeInfo result(TypeKind::Slice);
@@ -510,6 +520,10 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             createClassActionDecl(cls, action);
         for (auto& action : cls.static_actions)
             createStaticActionDecl(cls, action);
+        // Pre-declare function: section methods so cross-calls in the section
+        // resolve regardless of declaration order.
+        for (auto& fn : cls.functions)
+            createClassFunctionDecl(cls, fn);
     }
 
     // Create ALL event fire function declarations
@@ -710,8 +724,33 @@ void CodeGen::createStaticActionDecl(const ClassDecl& cls, const ActionDecl& act
     is_static_action_[fn] = true;
 }
 
+// Pre-declare a function: section method so its symbol exists before any body
+// references it (cross-calls in the section were previously order-dependent:
+// a method could only call methods declared earlier in the section).
+void CodeGen::createClassFunctionDecl(const ClassDecl& cls, const FuncDecl& fn) {
+    auto name = cls.name + "_" + fn.name;
+    if (module_->getFunction(name)) return;
+    std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};
+    for (auto& p : fn.params) {
+        TypeInfo pt = typeNodeToCodegenType(p.type);
+        pts.push_back(getLLVMType(pt));
+    }
+    auto* ft = llvm::FunctionType::get(getLLVMType(typeNodeToCodegenType(fn.return_type)), pts, false);
+    llvm::Function::Create(ft, llvm::Function::ExternalLinkage, name, module_.get());
+}
+
 
 void CodeGen::generateClass(const ClassDecl& cls) {
+    // Set generic type-param mapping: for a monomorphized instance (e.g.
+    // ArrayList_int_inst), type_params_ = {"T"} and inst_type_args_ = {int}, so
+    // `new T[n]` / `(T)x` inside the shared template body resolves T → int.
+    // Template classes (no inst args) leave the map empty (T → i32 placeholder,
+    // never called at runtime).
+    current_type_params_.clear();
+    for (size_t i = 0; i < cls.type_params.size() && i < cls.inst_type_args.size(); i++) {
+        current_type_params_.emplace_back(cls.type_params[i], cls.inst_type_args[i]);
+    }
+
     // Generate function: section bodies FIRST so actions can call them
     for (auto& fn : cls.functions) {
         generateClassFunction(cls, fn);
@@ -1236,7 +1275,14 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 
     TypeInfo rt = typeNodeToCodegenType(fn_decl.return_type);
     auto* ft = llvm::FunctionType::get(getLLVMType(rt), pts, false);
-    auto* func = llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
+    // Reuse the pre-created declaration (createClassFunctionDecl) so cross-calls
+    // in the section resolve; otherwise fall back to creating it here.
+    llvm::Function* func = existing;
+    if (!func) {
+        func = llvm::Function::Create(ft, llvm::Function::InternalLinkage, fn, module_.get());
+    } else {
+        func->setLinkage(llvm::Function::InternalLinkage);
+    }
 
     current_function_ = func;
     current_class_name_ = cls.name;

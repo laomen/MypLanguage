@@ -580,6 +580,7 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
     consume(TokenKind::LeftBrace, "expected '{' for mapping body");
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        size_t before = current_;
         // Parse the event source (first node)
         MappingNode first_node;
         first_node.range = peek().range;
@@ -673,6 +674,12 @@ std::unique_ptr<MappingDecl> Parser::parseMapping() {
         } while (check(TokenKind::Comma));
 
         consume(TokenKind::Semicolon, "expected ';' after mapping chain");
+
+        // Error-recovery progress guarantee (same as parseBlock): if this chain
+        // consumed nothing, advance one token so the mapping loop terminates.
+        if (current_ == before) {
+            advance();
+        }
     }
 
     consume(TokenKind::RightBrace, "expected '}' after mapping body");
@@ -800,6 +807,12 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                 size_t n2 = next + 1;
                 size_t n3 = next + 2;
                 size_t n4 = next + 3;
+                // Identifier [ ] Identifier → dynamic array var decl (T[] name)
+                // e.g. `T[] nd = new T[n];` / `T[] nd;` inside a generic body.
+                if (n2 < tokens_.size() && tokens_[n2].kind == TokenKind::RightBracket
+                    && n3 < tokens_.size() && tokens_[n3].kind == TokenKind::Identifier) {
+                    return parseVarDeclStmt();
+                }
                 if (n3 < tokens_.size() && tokens_[n2].kind == TokenKind::IntegerLiteral
                     && tokens_[n3].kind == TokenKind::RightBracket
                     && n4 < tokens_.size() && tokens_[n4].kind == TokenKind::Identifier) {
@@ -856,8 +869,17 @@ std::unique_ptr<BlockStmt> Parser::parseBlock() {
     SourceRange r = previous().range;
 
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        size_t before = current_;
         auto stmt = parseStatement();
         if (stmt) stmts.push_back(std::move(stmt));
+        // Error-recovery progress guarantee: if parseStatement consumed nothing
+        // (e.g. a bare keyword like `class` that parsePrimary rejects without
+        // advancing), force-advance one token so the block loop terminates.
+        // Without this, malformed input (common mid-edit / LSP) loops forever
+        // and exhausts memory.
+        if (current_ == before) {
+            advance();
+        }
     }
 
     consume(TokenKind::RightBrace, "expected '}' after block");
@@ -1654,6 +1676,25 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         }
         // new ClassName(args) — class allocation
         std::string class_name = parseIdentifier("expected class name after 'new'");
+        // new Type[n] where Type is a generic param or user class (e.g. new T[n],
+        // new Foo[n]): identifier followed by '[' — build a dynamic array instead
+        // of a class allocation. Purely additive; previously this errored.
+        if (check(TokenKind::LeftBracket)) {
+            TypeNode elem_type;
+            elem_type.range = peek().range;
+            elem_type.class_name = class_name;
+            std::vector<std::unique_ptr<Expr>> dims;
+            while (match(TokenKind::LeftBracket)) {
+                auto size_expr = parseExpr();
+                consume(TokenKind::RightBracket, "expected ']' after array size");
+                dims.push_back(std::move(size_expr));
+            }
+            if (dims.empty()) {
+                diag_.error(previous().range, "expected '[size]' after type in new expression");
+                return std::make_unique<NullLiteralExpr>(previous().range);
+            }
+            return std::make_unique<NewArrayExpr>(std::move(elem_type), std::move(dims), previous().range);
+        }
         std::vector<TypeNode> type_args;
         if (match(TokenKind::Less)) {
             type_args = parseTypeArgList();

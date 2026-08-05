@@ -132,6 +132,7 @@ struct ClassDecl {
     std::vector<StructDecl> structs; // nested structs
     bool is_static = false; // class has only static: methods
     bool is_generic_inst = false; // monomorphized instance of a generic template
+    std::vector<TypeNode> inst_type_args; // concrete args of a generic instance
     std::string interface_class_name; // non-empty if "interface class X;" declared
     SourceRange range;
 };
@@ -611,7 +612,7 @@ struct FuncDecl {
     std::string name;
     TypeNode return_type;
     std::vector<ParamDecl> params;
-    std::unique_ptr<BlockStmt> body;
+    std::shared_ptr<BlockStmt> body; // shared: generic insts share the template body
     SourceRange range;
     bool has_test = false;
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）

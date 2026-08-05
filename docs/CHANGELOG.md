@@ -27,7 +27,27 @@
 
 ## 编译器版本历史
 
-### v3.7.0（当前）
+### v3.8.0（当前）
+- **集合动态扩容**（`stdlib/collections.myp`）：`ArrayList`/`HashMap`/`Set`/`Deque`/`Queue`/
+  `Stack`/`PriorityQueue`/`LinkedList`/`StrHashMap` 全部突破固定 1024 上限。
+  - 惰性分配（首操作时 `new T[cap_]`）+ 容量翻倍扩容；哈希类 75% 负载因子翻倍重建；
+    环形缓冲 grow 重排；LinkedList 节点池翻倍。
+  - 规避 `@startup` 泛型分发 bug（`new Box<double>()` 曾误调模板 init 致堆损坏）。
+- **泛型 `new T[n]` 端到端支持**（additive，新语言能力）：
+  - parser：`new Ident[n]` → 动态数组；局部声明歧义消除补 `Ident [] name`。
+  - codegen：单态化类型参数映射（`current_type_params_`），`new T[n]` 用真实元素类型分配。
+  - 支持 `new Foo[n]`（类数组）与 `new T[n]`（泛型参数）。
+- **`function:` 段跨方法调用修复**：sema 声明类作用域符号表 + codegen 预声明函数符号，
+  方法可调用段中任意位置的方法（此前只能调用靠前的）。
+- **LSP 解析错误恢复死循环修复**（内存爆炸根因）：
+  - `parseBlock`/`parseMapping` 的 body 循环加"必须前进"保证（`current_` 未变则强制 `advance`），
+    畸形输入（如函数体内孤立 `class`、`mapping =>`）不再无限循环耗尽内存（曾致 `myp_lsp`
+    膨胀至 35GB）。
+  - 模糊测试 5 seed × 600 例随机畸形输入 = 3000 例 0 挂起；全 stdlib 31 文件 LSP 实测 4MB。
+- 验证：`tests/collections_grow/`（全集合超 1024）；`-O0`/`-O2` 全套 115/115；ASAN 115/115。
+- 注：`stdlib/memory.myp`（`ffi void*` 语法不支持）为预存坏文件，与本次无关。
+
+### v3.7.0
 - **DAP 调试支持（M7）**：`src/dap/dap_server.cpp` → `myp_debug`（DAP ↔ gdb MI2 桥）。
   - 支持：initialize/launch/setBreakpoints/configurationDone/continue/next/stepIn/
     stepOut/threads/stackTrace/scopes/variables/evaluate/pause/disconnect。

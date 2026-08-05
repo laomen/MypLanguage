@@ -1,0 +1,56 @@
+al size=5000
+ get0=0
+ get2500=7500
+ get4999=14997
+
+hm size=5000
+ get0=0
+ get4999=9998
+ has2500=true
+ has9999=false
+
+hm after_rm=false
+ get_rm=-1
+
+set size=5000
+ has0=true
+ has9998=true
+ has9999=false
+
+set after_rm=false
+
+dq size=5000
+ front=0
+ back=4999
+
+dq front2=9999
+ sz2=4998
+
+q size=5000
+ dq0=0
+ dq1=2
+ peek=4
+
+st size=5000
+ pop=4999
+ pop2=4998
+
+pq size=5000
+ min=7
+ min2=14
+ peek=21
+
+ll size=5000
+ first=0
+ last=14997
+
+ll first2=7777
+ sz2=4998
+
+sm size=5000
+ k0=0
+ k4999=24995
+ hask2500=1
+ haskx=0
+
+sm after_rm=0

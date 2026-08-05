@@ -393,6 +393,22 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         }
     }
 
+    // Register function: section methods in class scope (callable by bare name
+    // from actions and other function: methods regardless of declaration order).
+    // Previously only resolved via the in_class_method_ fallback, which missed
+    // methods declared later in the section.
+    for (auto& fn : decl.functions) {
+        TypeInfo func_type(TypeKind::Function);
+        func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(fn.return_type));
+        for (auto& param : fn.params) {
+            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            func_type.param_is_ref.push_back(param.is_ref);
+        }
+        if (!symbol_table_.declare(fn.name, func_type)) {
+            error(fn.range, "duplicate function '" + fn.name + "' in class '" + decl.name + "'");
+        }
+    }
+
     // Register static actions in GLOBAL scope (accessible as ClassName.method)
     for (auto& action : decl.static_actions) {
         TypeInfo func_type(TypeKind::Function);
@@ -1728,6 +1744,8 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
             ClassDecl inst;
             inst.name = mangled;
             inst.is_generic_inst = true;
+            inst.type_params = original.type_params;
+            inst.inst_type_args = node.type_args; // keep concrete args for codegen
             inst.range = original.range;
 
             // Substitute properties
@@ -1790,7 +1808,10 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
                 inst.events.push_back(std::move(e));
             }
 
-            // Copy function: section (skip body — not needed for type checking)
+            // Copy function: section (share body — type-checking of insts is
+            // skipped, but codegen needs the body; generic type params inside
+            // the body (e.g. `new T[n]`) are resolved by codegen's type-param
+            // map, not by textual substitution).
             for (auto& func : original.functions) {
                 FuncDecl f;
                 f.name = func.name;
@@ -1802,7 +1823,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node) {
                     p.range = param.range;
                     f.params.push_back(std::move(p));
                 }
-                // function: section bodies are not needed for instantiation
+                f.body = func.body; // share body (codegen resolves T per-inst)
                 f.range = func.range;
                 inst.functions.push_back(std::move(f));
             }
