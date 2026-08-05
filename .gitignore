@@ -25,3 +25,6 @@ deeplearning/data/
 *.zip
 raylib-master*
 *.output
+
+# IDE code stats (auto-generated)
+.CodeCounter/

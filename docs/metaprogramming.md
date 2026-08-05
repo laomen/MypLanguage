@@ -130,11 +130,137 @@ mypc 增加**宏展开 pass**：
 
 ---
 
-## 5. P3：过程宏 / 编译期插件（远期）
+## 5. P3：过程宏（M4）—— `@macro` + `quote` 代码模板
 
-- 用 MYP 编写宏函数（接收 AST 返回 AST），mypc 在编译期执行。
-- 依赖 P1 解释器扩展为"AST 操作环境"（或编译宏为插件二进制，Rust proc-macro 风格）。
-- 建议：P3 作为远期路线；P1+P2 已覆盖绝大多数元编程需求。
+### 5.1 定位
+
+M3 声明式宏（`macro`）是**模板**：固定的 AST 片段 + 参数替换。
+M4 过程宏（`@macro`）是**可编程的宏函数**：用 MYP 编写，编译期执行，
+函数式地构造/拼接 AST——支持循环、条件、算法驱动代码生成，
+这是 M3 模板做不到的（M3 不能"根据 n 生成 n 条语句"）。
+
+```
+M3 声明式宏（模板）          M4 过程宏（宏函数）
+macro repeat($n,$body)       @macro StmtList makeCalls(int n)
+  → 固定形态 + 参数替换        → 编译期执行，算法生成 AST
+```
+
+与 Rust 对齐：`macro_rules!`（声明式，关键字）↔ M3 `macro`；
+`#[proc_macro]`（过程式，属性修饰函数）↔ M4 `@macro`。
+
+### 5.2 语法
+
+```myp
+// @macro 修饰函数：编译期宏函数
+@macro StmtList genAssign(string name, int value) {
+    return quote {
+        int $name = $value;
+    };
+}
+
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };
+    }
+    return out;
+}
+
+// 调用：语句位置的宏函数调用 → 编译期展开
+class Main {
+    action:
+        @startup void run() {
+            genAssign("x", 42);
+            makeCalls(3);
+        }
+}
+```
+
+### 5.3 代码模板 `quote { ... }`
+
+`quote { <block> }` 是一个**编译期表达式**：把括号内的代码块解析为 AST
+（语句集合）。`$ident` 插值：
+
+| `$x` 的编译期值类型 | 嵌入为 |
+|---|---|
+| `int` / `long` / `double` / `float` / `bool` / `string` | 对应字面量 AST 节点 |
+| `Expr`（AST 值）| 内联该表达式 AST |
+| `StmtList` / `Stmt`（AST 值）| 内联该语句（组）AST |
+
+`quote` 只允许出现在 `@macro` 函数体内（以及作为普通函数的编译期常量
+表达式，V2）。
+
+### 5.4 编译期 AST 值类型与操作
+
+解释器 `EvalValue` 增加 **AST 变体**（V1 三个类型）：
+
+| 编译期类型 | 含义 |
+|---|---|
+| `Expr` | 单个表达式 AST |
+| `Stmt` | 单个语句 AST |
+| `StmtList` | 语句列表（块）AST |
+
+这些是**编译期专属类型**：不能作为普通运行时变量/参数类型（sema 校验）。
+
+支持的操作：
+
+| 操作 | 说明 |
+|---|---|
+| `StmtList + StmtList` | 拼接（`out = out + quote{...}`）|
+| `quote { ... }` | 构造 AST |
+| `Ast.expr("1+2")` / `Ast.stmt("x=1;")` | 从源码字符串解析（V2）|
+| 字段访问（`expr.op` 等）| 遍历/检查 AST（V2）|
+
+### 5.5 执行与展开流程
+
+```
+parse → 收集 @macro 函数（注解解析：FuncDecl::has_proc_macro）
+      → quote 解析为 QuoteExpr
+→ 展开 pass（复用 M3 MacroExpander 框架，扩展两处）：
+      (1) 遇到 @macro 函数调用（语句位置）→ 编译期解释执行函数体
+      (2) 执行结果（StmtList/Stmt/Expr 值）→ 深度克隆后替换调用点
+→ 迭代展开（@macro 返回值可能含 quote/嵌套）直到稳定或达深度上限
+→ sema → codegen
+```
+
+- 解释器复用 M1 `EvalInterpreter`（`src/eval/eval.cpp`），扩展：
+  - `EvalValue` 加 `Stmt/StmtList/Expr` 变体（持有 AST 所有权）。
+  - `quote` 求值：深度克隆 QuoteExpr 内的 BlockStmt，处理 `$x` 插值。
+  - `+` 对 `StmtList` 重载；返回语句集合。
+- `@macro` 函数**不生成运行时代码**（sema 只注册、不 emit）。
+
+### 5.6 V1 范围与限制
+
+| 支持 | 不做（V2） |
+|---|---|
+| `@macro` 返回 `StmtList`/`Stmt`/`Expr` | `Ast.*` 源码字符串解析 |
+| `quote` 块 + `$expr`/`$stmt` 插值 | `quote` 内泛型/类型推导 |
+| `@macro` 函数体 = M1 解释器子集（标量/循环/条件/递归）+ quote + AST 拼接 | @macro 内调用 M3 声明式宏 |
+| 调用点在语句位置（`genAssign(...)` 作为语句）| 表达式位置的过程宏（V2）|
+
+### 5.7 安全与诊断
+
+- `@macro` 函数编译期执行，沿用 M1 纯函数约束（禁 `new`/I/O/非 `@eval`/`@macro` 调用）。
+- 展开深度上限 + 指令数上限（防失控循环生成）。
+- 返回类型不匹配（声明 `StmtList` 但 `quote` 产 `Expr`）→ 编译期诊断。
+- 插值类型不匹配（`$x` 是 `int` 但需语句）→ 编译期诊断。
+- 保持"编译器永不崩溃"：所有展开错误走 DiagnosticEngine。
+
+### 5.8 验收（M4）
+
+- `genAssign("x", 42)` 展开为 `int x = 42;` 且程序运行正确。
+- `makeCalls(3)` 生成 3 条 `Console.write(...)` 调用。
+- `tests/proc_macro/` + 负测试；`-O0`/`-O2`/ASAN 全套回归通过。
+
+### 5.9 设计决策记录（关键字 vs 注解）
+
+- `macro` **关键字** = 声明式宏（M3）：一种新的**顶层声明类型**，与
+  `class`/`struct`/`enum`/`mapping` 平行——MYP 顶层声明一律用关键字。
+- `@macro` **注解** = 过程宏（M4）：`@` 在 MYP 中的语义是**修饰已有声明**
+  （`@test`/`@coro`/`@eval`/`@startup`），过程宏恰是"修饰一个函数使其编译期可调"。
+- 对齐 Rust：`macro_rules!`（关键字）↔ M3；`#[proc_macro]`（属性）↔ M4。
+- 代价：`macro` 占用关键字（MYP 已有先例：`where`/`await`/`operator` 均后加关键字，
+  回归 113/113 无冲突）。
 
 ---
 
@@ -160,17 +286,20 @@ class DrawList<T where T : Shape> {
 
 ```ebnf
 // 顶层
-TopLevelDecl     ::= ... | EvalFuncDecl | MacroDecl
+TopLevelDecl     ::= ... | EvalFuncDecl | MacroDecl | ProcMacroFuncDecl
 EvalFuncDecl     ::= '@eval' ReturnType Identifier '(' ParamList? ')' Block
 MacroDecl        ::= 'macro' Identifier '(' MacroParamList? ')' Block
 MacroParamList   ::= '$' Identifier (',' '$' Identifier)*
+ProcMacroFuncDecl::= '@macro' AstType Identifier '(' ParamList? ')' Block   // M4
+AstType          ::= 'Expr' | 'Stmt' | 'StmtList'                           // M4 编译期类型
 
 // 表达式
-PrimaryExpr      ::= ... | MacroCall
+PrimaryExpr      ::= ... | MacroCall | QuoteExpr
 MacroCall        ::= Identifier '(' (Argument (',' Argument)*)? ')'   // 宏名与函数同命名空间冲突需 resolve
+QuoteExpr        ::= 'quote' '{' Block '}'                            // M4 编译期 AST 模板
 
 // 注解
-ActionAnnot      ::= ... | '@' 'eval'        // 若允许 @eval 作用于普通函数
+ActionAnnot      ::= ... | '@' 'eval' | '@' 'macro'        // @eval 普通函数；@macro 过程宏函数
 ```
 
 > 注意：宏名与函数/方法名**同名冲突**需在解析时区分（宏在 parse 阶段展开，函数在 sema 阶段解析；
@@ -185,7 +314,7 @@ ActionAnnot      ::= ... | '@' 'eval'        // 若允许 @eval 作用于普通�
 | **M1** | P1 `@eval`：内嵌解释器 + 编译期常量/表 | ✅ 已完成（`src/eval/eval.cpp` + `include/mylang/Eval.h`：轻量 MYP 解释器求值 `@eval` 纯函数——标量/递归/条件/循环/`@eval` 互调/const 引用；`const int X = fib(10);` 折叠为 `ret i32 55`；`tests/eval/`（FIB10/FIB20/HALF/BIG/T5/BIGL 输出断言）+ `--emit-llvm` 验证常量）|
 | **M2** | 泛型约束 `where T : Interface` | ✅ 已完成（`<T where T : Shape>` 语法 + sema monomorphization 时约束检查：`DrawList<Circle>` 通过、`DrawList<int>` 编译期报 "does not satisfy constraint"；`tests/generic_constraint/` + `tests/negative/generic_constraint.myp`）|
 | **M3** | P2 声明式宏 `macro`：AST 展开 pass + `--macro-expand` | ✅ 已完成（`src/macro/macro_expand.cpp` + `include/mylang/Macro.h`：`macro` 关键字 + `$param` token（Token/Lexer/Parser）；AST 深拷贝 + 宏体克隆实例化（`$param` → 实参 AST）；表达式/语句/赋值参数 + 嵌套宏（迭代展开、深度上限）；`--macro-expand` AST dump；`tests/macro/`（repeat/addN/twice/log → v=37））|
-| **M4** | P3 过程宏（远期）| 视需求 |
+| **M4** | P3 过程宏 `@macro` + `quote` 代码模板 | ✅ 已完成（`@macro` 注解 → `FuncDecl::has_proc_macro`（sema 跳过 body / codegen 不生成）；`quote { ... }` 上下文关键字（仅 `quote {` 识别，`char quote` 变量不受影响）→ `QuoteExpr`；解释器 `EvalValue` 加 AST 值（`StmtList` 拼接 + quote 求值 + `$x` 插值：数值→字面量、字符串→标识符（变量名/赋值目标）、AST→内联）；展开 pass 集成 `evalProcMacro`（`main.cpp` Phase 3b 对 @macro 也触发）；`tests/proc_macro/`（genAssign 变量名+数值插值、makeCalls 循环+StmtList 拼接））|
 
 每阶段独立可验证：构建（正常 + ASAN）+ 全套测试 + no-crash 回归。
 

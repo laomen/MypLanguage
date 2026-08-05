@@ -486,10 +486,13 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
     // Check for @ annotation
     if (peek().kind == TokenKind::At) {
         advance();
-        std::string annot = parseIdentifier("expected annotation name");
+        std::string annot;
+        if (check(TokenKind::Keyword_macro)) { annot = "macro"; advance(); }
+        else annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
         else if (annot == "region") func->has_region = true;
         else if (annot == "eval") func->has_eval = true;
+        else if (annot == "macro") func->has_proc_macro = true;   // M4 过程宏
         else if (annot == "coro") {
             func->has_coro = true;
             // Optional: @coro(stack=N) — N = coroutine stack size in KB (default 128)
@@ -776,6 +779,11 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             previous().range);
     }
     if (checkType()) {
+        // `Type $name ...` — quote interpolation variable decl (M4): always a
+        // variable declaration (an expression can't start with `Type $`).
+        if (peekNext().kind == TokenKind::Dollar) {
+            return parseVarDeclStmt();
+        }
         // For identifiers: use lookahead to disambiguate
         // Identifier Identifier → type + var name (var decl)
         // Identifier [ Integer ] Identifier → type[size] name (array var decl)
@@ -867,7 +875,12 @@ std::unique_ptr<Stmt> Parser::parseVarDeclStmt() {
         VarDecl decl;
         decl.range = peek().range;
         decl.type = shared_type;
-        decl.name = parseIdentifier("expected variable name");
+        // `$name` = quote interpolation placeholder for the variable name (M4).
+        if (match(TokenKind::Dollar)) {
+            decl.name = "$" + parseIdentifier("expected variable name after '$'");
+        } else {
+            decl.name = parseIdentifier("expected variable name");
+        }
 
         // Init expression only allowed on the first variable
         // (or on each? C allows int a=1, b=2; — support that too)
@@ -1674,6 +1687,15 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         auto expr = parseExpr();
         consume(TokenKind::RightParen, "expected ')' after expression");
         return expr;
+    }
+    if (check(TokenKind::Identifier) && peek().value == "quote" &&
+        peekNext().kind == TokenKind::LeftBrace) {
+        // Contextual keyword `quote { ... }` — compile-time AST template (M4).
+        // Only recognized when followed by '{'; `char quote = ...` stays a var.
+        advance();  // consume 'quote'
+        consume(TokenKind::LeftBrace, "expected '{' after 'quote'");
+        auto body = parseBlock();
+        return std::make_unique<QuoteExpr>(std::move(body), previous().range);
     }
     if (check(TokenKind::Identifier)) {
         return std::make_unique<IdentifierExpr>(

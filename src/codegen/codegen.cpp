@@ -1283,6 +1283,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 }
 
 void CodeGen::generateFuncDecl(const FuncDecl& decl) {
+    // @macro (M4 proc-macro): compile-time only — never emitted as runtime code.
+    if (decl.has_proc_macro) return;
     std::vector<llvm::Type*> pts;
     for (auto& p : decl.params) {
         TypeInfo pt = typeNodeToCodegenType(p.type);

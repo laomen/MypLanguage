@@ -198,8 +198,13 @@ static bool loadModule(const std::string& module_name,
                                             const std::string& passes,
                                             bool macro_expand,
                                             mylang::DiagnosticEngine& diag) {
-    // === Phase 3b: Macro expansion (declarative `macro`, before sema) ===
-    if (!ast.macros.empty()) {
+    // === Phase 3b: Macro expansion (declarative `macro` + @macro proc-macro) ===
+    bool has_any_macro = !ast.macros.empty();
+    if (!has_any_macro) {
+        for (auto& f : ast.functions)
+            if (f.has_proc_macro) { has_any_macro = true; break; }
+    }
+    if (has_any_macro) {
         mylang::expandMacros(ast, diag);
         phaseMark("macro");
         if (diag.hasErrors()) {
@@ -491,7 +496,7 @@ static bool loadModule(const std::string& module_name,
     return true;
 }
 
-static const char* MYP_VERSION = "3.5.0";
+static const char* MYP_VERSION = "3.6.0";
 // Language specification version (frozen grammar, see docs/grammar.md).
 // Bump ONLY on breaking syntax/semantics changes (see docs/CHANGELOG.md).
 static const char* MYP_SPEC_VERSION = "1.0";

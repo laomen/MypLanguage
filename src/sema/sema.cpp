@@ -482,6 +482,11 @@ void Sema::visitFuncDecl(FuncDecl& decl) {
 // ==============================
 
 void Sema::visitFuncBody(FuncDecl& decl) {
+    // @macro (M4 proc-macro): the body runs at compile time (interpreter) and
+    // is not type-checked here — AST types (StmtList/Stmt/Expr) and quote{...}
+    // are only meaningful in the eval environment.
+    if (decl.has_proc_macro) return;
+
     symbol_table_.enterScope();
     current_return_type_ = typeNodeToTypeInfo(decl.return_type);
 

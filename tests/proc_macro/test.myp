@@ -1,0 +1,32 @@
+// M4 — 过程宏（@macro + quote 代码模板）
+// 覆盖：变量名插值（int $name = ...）、数值插值（$value）、循环生成 +
+// StmtList 拼接（out = out + quote{...}）
+import env;
+
+@macro StmtList genAssign(string name, int value) {
+    return quote {
+        int $name = $value;
+    };
+}
+
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };
+    }
+    return out;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            genAssign("x", 42);
+            Console.writeString("x=");
+            Console.write(x);
+            Console.writeString("\n");
+            makeCalls(3);
+            Console.writeString("\n");
+        }
+}
+
+int main(){ Main m = new Main(); return 0; }

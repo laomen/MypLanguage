@@ -23,6 +23,15 @@ class DiagnosticEngine;
 /// left untouched (existing runtime behavior).
 bool evaluateCompileTimeConstants(TranslationUnit& tu, DiagnosticEngine& diag);
 
+/// M4 — execute a `@macro` proc-macro function at compile time.
+/// Binds the call arguments, evaluates the macro body via the interpreter,
+/// and appends the generated statements to \p out. Returns false if a
+/// diagnostic was reported (e.g. body not producing an AST value).
+bool evalProcMacro(TranslationUnit& tu, DiagnosticEngine& diag,
+                   FuncDecl& fn,
+                   const std::vector<std::unique_ptr<Expr>>& args,
+                   std::vector<std::unique_ptr<Stmt>>& out);
+
 } // namespace mylang
 
 #endif // MYLANG_EVAL_H

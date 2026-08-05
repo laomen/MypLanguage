@@ -8,6 +8,7 @@
 
 #include "mylang/Macro.h"
 #include "mylang/DiagnosticEngine.h"
+#include "mylang/Eval.h"
 
 #include <memory>
 #include <string>
@@ -25,6 +26,8 @@ public:
     MacroExpander(TranslationUnit& tu, DiagnosticEngine& diag)
         : tu_(tu), diag_(diag) {
         for (auto& m : tu_.macros) macros_[m.name] = &m;
+        for (auto& fn : tu_.functions)
+            if (fn.has_proc_macro) proc_macros_[fn.name] = &fn;
     }
 
     bool run() {
@@ -46,6 +49,7 @@ private:
     TranslationUnit& tu_;
     DiagnosticEngine& diag_;
     std::unordered_map<std::string, MacroDecl*> macros_;
+    std::unordered_map<std::string, FuncDecl*> proc_macros_;  // M4 @macro
 
     static BlockStmt& asBlock(Stmt& s) { return static_cast<BlockStmt&>(s); }
 
@@ -311,6 +315,18 @@ private:
                     // Expand nested macros inside the instantiated body.
                     expandBlock(blk, depth + 1);
                     for (auto& s : blk.statements) out.push_back(std::move(s));
+                    continue;
+                }
+                // M4: @macro proc-macro call — execute at compile time.
+                auto pit = proc_macros_.find(callee->name);
+                if (pit != proc_macros_.end()) {
+                    FuncDecl& pfn = *pit->second;
+                    std::vector<std::unique_ptr<Stmt>> gen;
+                    if (!evalProcMacro(tu_, diag_, pfn, call->args, gen)) continue;
+                    // Expand any nested M3 macros inside the generated code.
+                    BlockStmt tmp(std::move(gen), call->range);
+                    expandBlock(tmp, depth + 1);
+                    for (auto& s : tmp.statements) out.push_back(std::move(s));
                     continue;
                 }
             }

@@ -16,6 +16,7 @@ class Expr;
 class Stmt;
 class Decl;
 struct FuncDecl;
+struct BlockStmt;
 
 // ---- Types ----
 enum class BuiltinType {
@@ -235,6 +236,7 @@ enum class ExprKind {
     Try,
     Await,
     MacroParam,
+    Quote,
 };
 
 struct Expr {
@@ -288,6 +290,14 @@ struct MacroParamExpr : Expr {
     std::string name;
     MacroParamExpr(std::string n, SourceRange r)
         : Expr(ExprKind::MacroParam, r), name(std::move(n)) {}
+};
+
+/// `quote { ... }` — compile-time AST template (M4 proc-macro).
+/// Holds the quoted block; evaluated by the interpreter to build AST values.
+struct QuoteExpr : Expr {
+    std::unique_ptr<BlockStmt> body;
+    QuoteExpr(std::unique_ptr<BlockStmt> b, SourceRange r)
+        : Expr(ExprKind::Quote, r), body(std::move(b)) {}
 };
 
 enum class BinaryOpKind {
@@ -609,6 +619,7 @@ struct FuncDecl {
     int coro_stack_kb = 0;    // @coro(stack=N) — 协程栈大小 KB（0=默认）
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
     bool has_eval = false;  // @eval: 编译期求值（纯函数）
+    bool has_proc_macro = false; // @macro: 过程宏函数（编译期 AST 生成，M4）
     bool is_const_decl = false; // top-level `const T name = expr` (a value, not a callable)
 };
 
