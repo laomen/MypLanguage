@@ -2,10 +2,7 @@
 import env;
 import atomic;
 import math;
-
-// 获取当前执行线程的池 worker 索引（0..N-1，非池线程为 -1）——
-// 用于检测 @parallel for 是否真正多线程并行（body 不携带线程标识）
-ffi int myp_pool_worker_id();
+import pool;
 
 class Main {
     action:
@@ -30,7 +27,7 @@ class Main {
             // （多核机器上稳定为 YES；单核机器池仅 1 线程则无法并行）
             int[4096] tidSlot;
             @parallel for (int i = 0; i < 4096; i = i + 1) {
-                tidSlot[i] = myp_pool_worker_id();
+                tidSlot[i] = Parallel.workerId();
             }
             int distinct = 0;
             for (int i = 0; i < 4096; i = i + 1) {

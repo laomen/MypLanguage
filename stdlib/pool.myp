@@ -7,8 +7,16 @@
 //   int n = Parallel.threadCount();
 //   @parallel for (int i = 0; i < n; i = i + 1) { ... }
 
+// 线程池运行时 FFI（work-stealing 线程池，见 src/runtime/runtime.c）
+ffi int myp_pool_thread_count();   // 硬件并发线程数（sysconf _SC_NPROCESSORS_ONLN）
+ffi int myp_pool_worker_id();      // 当前池 worker 索引（0..N-1，非池线程为 -1）
+
 class Parallel {
     static:
-        // 获取硬件并发线程数 (sysconf _SC_NPROCESSORS_ONLN)
-        int threadCount() { return __myp_pool_thread_count(); }
+        // 获取硬件并发线程数（sysconf _SC_NPROCESSORS_ONLN）
+        int threadCount() { return myp_pool_thread_count(); }
+
+        // 获取当前执行线程的池 worker 索引（0..N-1，非池线程为 -1）。
+        // 在 @parallel for body 内调用可检测多线程是否真正启动。
+        int workerId() { return myp_pool_worker_id(); }
 }
