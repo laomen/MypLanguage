@@ -1505,6 +1505,7 @@ Runtime  → print/println + 基本运行时
 | **v6** | Class 级 `const` — `const double THERMAL_E = 0.0253;` 在 class 体内生效，用于物理常量 | ✅ 已实现（解析为 const 属性）|
 | **v6** | Range for 循环 — `for i in 0..n { }` 替代 `for (int i = 0; i < n; i = i + 1)` | ✅ 已实现 |
 | **未来** | 自举、JIT、宏/元编程（设计见 [metaprogramming.md](metaprogramming.md)：`@eval` 编译期求值 / 声明式宏 / 过程宏）、神经形态后端 |
+| **后端** | 优化管线（`-O1/-O2/-O3` IR 级）+ 调试信息（`-g` DWARF）——设计见 [optimization_debugging.md](optimization_debugging.md）| 🔜 规划中 |
 
 ---
 
