@@ -1945,8 +1945,13 @@ static int myp_work_deque_steal(myp_work_deque_t* dq, myp_work_chunk_t* chunk) {
     return 1;
 }
 
+// 当前 @parallel for worker 的索引（TLS）：myp_pool_worker 启动时写入，
+// myp_pool_worker_id() 返回它，供并行 body 检测多线程是否真正启动。
+static __thread int myp_pool_worker_tid = -1;
+
 static void* myp_pool_worker(void* arg) {
     int tid = (int)(uintptr_t)arg;
+    myp_pool_worker_tid = tid;  // 记录当前 worker 索引（供 myp_pool_worker_id 查询）
 
     // Wait until pool is initialized
     pthread_mutex_lock(&myp_pool_start_mutex);
@@ -2108,6 +2113,10 @@ void myp_pool_destroy(myp_pool_t* pool) {
     pthread_cond_destroy(&pool->work_cond);
     free(pool);
     myp_global_pool = NULL;
+}
+
+int32_t myp_pool_worker_id(void) {
+    return myp_pool_worker_tid;
 }
 
 int32_t myp_pool_thread_count(void) {

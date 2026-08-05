@@ -1,7 +1,11 @@
-// @parallel for — 数据并行测试
+// @parallel for — 数据并行测试（含多线程启动检测）
 import env;
 import atomic;
 import math;
+
+// 获取当前执行线程的池 worker 索引（0..N-1，非池线程为 -1）——
+// 用于检测 @parallel for 是否真正多线程并行（body 不携带线程标识）
+ffi int myp_pool_worker_id();
 
 class Main {
     action:
@@ -19,6 +23,29 @@ class Main {
             Console.writeString("parallel_sum=");
             Console.writeFloat(sum);
             Console.writeString("\n");
+
+            // ===== 多线程启动检测 =====
+            // 每个迭代把执行它的 worker 索引写入独立槽位（迭代互斥，无竞争），
+            // 循环结束后统计不同 worker 数 —— >= 2 说明 @parallel for 真正并行执行
+            // （多核机器上稳定为 YES；单核机器池仅 1 线程则无法并行）
+            int[4096] tidSlot;
+            @parallel for (int i = 0; i < 4096; i = i + 1) {
+                tidSlot[i] = myp_pool_worker_id();
+            }
+            int distinct = 0;
+            for (int i = 0; i < 4096; i = i + 1) {
+                int tid = tidSlot[i];
+                int already = 0;
+                for (int k = 0; k < i; k = k + 1) {
+                    if (tidSlot[k] == tid) { already = 1; break; }
+                }
+                if (already == 0) distinct = distinct + 1;
+            }
+            if (distinct >= 2) {
+                Console.writeString("multithread=YES\n");
+            } else {
+                Console.writeString("multithread=NO\n");
+            }
 
             // 验证变量捕获（外层变量）
             double scale = 2.0;

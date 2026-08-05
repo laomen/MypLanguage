@@ -3049,6 +3049,18 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             kb.GetInsertBlock()->getParent()->getParent()),
                         {a, b});
                 }
+                // Pool worker id: 当前 @parallel for worker 索引（0..N-1），非池线程为 -1。
+                // 供并行 body 检测是否真的由多个 worker 线程执行（多线程启动检测）。
+                if (callee_name == "myp_pool_worker_id" ||
+                    callee_name == "__myp_pool_worker_id") {
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    auto* wid_fn = cur_mod->getFunction("myp_pool_worker_id");
+                    if (!wid_fn)
+                        wid_fn = llvm::Function::Create(
+                            llvm::FunctionType::get(i32_ty, {}, false),
+                            llvm::Function::ExternalLinkage, "myp_pool_worker_id", cur_mod);
+                    return kb.CreateCall(wid_fn, {});
+                }
             }
 
             // Handle Atomic.addDouble/Atomic.addInt — use atomicrmw in PTX
