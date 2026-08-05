@@ -29,9 +29,10 @@
 
 ### v3.9.0（当前）
 - **类构造器（M1-M4，additive）**：`@constructor` 注解 + **函数名==类名隐式构造器**。
-  - M1 语法 + AST：`parseActionDecl`/`parseFunction` 识别 `@constructor`；类/struct 中
-    方法名==类名 → 隐式构造器（可省略注解，C++/Java 风格）；struct 新增 `action:` 节
-    （方法/属性前瞻区分）。
+  - M1 语法 + AST：`parseActionDecl`/`parseFunction` 识别 `@constructor`；`@constructor`
+    构造器**无返回类型**（`@constructor Window(...)`，不写 `void`）且名称**必须==类名**
+    （编译校验）；类/struct 中方法名==类名 → 隐式构造器（可省略注解，C++/Java 风格）；
+    struct 新增 `action:` 节（方法/属性前瞻区分）。
   - M2 class 构造器绑定：`new C(args)` 优先绑定构造器（重载解析 + 数字提升
     `int → long → double`，歧义/无匹配编译报错）；泛型 `new Box<double>(1.5)` 绑定
     单态化实例类的构造器（根治 `@startup` 泛型分发 bug 的根因）；构造器重载

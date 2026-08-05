@@ -19,7 +19,7 @@ double sigmoid(double x) {
 
 class NeuralNet {
     action:
-        @constructor void run() {
+        @constructor NeuralNet() {
             // Hidden layer: 2 neurons, 2 inputs each
             // h0 detects (x0=1, x1=0): w = [20, -20], b = -10
             // h1 detects (x0=0, x1=1): w = [-20, 20], b = -10

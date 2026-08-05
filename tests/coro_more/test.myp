@@ -44,7 +44,7 @@ class Signal {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("count0=");
             Console.write(Coro.count());
             Console.writeString("\n");

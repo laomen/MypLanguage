@@ -1022,7 +1022,7 @@ Matrix.transpose(a, t, rows, cols);  // t = a^T（CPU）
 class Window {
     action:
         @constructor
-        void Window() {                     // 显式 @constructor：无参构造
+        Window() {                     // 显式 @constructor：无参构造（无返回类型）
             x = 0; y = 0; w = 80; h = 24;
         }
         void Window(int px, int py, int pw, int ph) {  // 函数名==类名 → 隐式构造器

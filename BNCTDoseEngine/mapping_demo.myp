@@ -28,7 +28,7 @@ mapping() {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("============================================\n");
             Console.writeString("  BNCT GPU — 事件驱动引擎\n");
             Console.writeString("============================================\n");

@@ -7,7 +7,7 @@ import env;
 class Window {
     action:
         @constructor
-        void Window() {                     // 无参构造（显式 @constructor）
+        Window() {                     // 无参构造（显式 @constructor）
             x = 0; y = 0; w = 80; h = 24;
         }
         void Window(int px, int py, int pw, int ph) {   // 函数名==类名 → 隐式构造器
@@ -30,7 +30,7 @@ class Window {
 class Scale {
     action:
         @constructor
-        void Scale(double v) { val = v; }
+        Scale(double v) { val = v; }
         void Scale() { val = 1.0; }
         double get() { return val; }
     property:
@@ -41,7 +41,7 @@ class Scale {
 class Box<T> {
     action:
         @constructor
-        void Box(T v) { data = v; }
+        Box(T v) { data = v; }
         T get() { return data; }
     property:
         T data;
@@ -51,7 +51,7 @@ class Box<T> {
 struct Vec2 {
     action:
         @constructor
-        void Vec2(double px, double py) { x = px; y = py; }
+        Vec2(double px, double py) { x = px; y = py; }
         void Vec2() { x = 0; y = 0; }
         double lenSq() { return x * x + y * y; }
     double x;
@@ -65,7 +65,7 @@ struct Vector3 {
         }
     action:
         @constructor
-        void Vector3(double a, double b, double c) { x_ = a; y_ = b; z_ = c; }
+        Vector3(double a, double b, double c) { x_ = a; y_ = b; z_ = c; }
     double x_;
     double y_;
     double z_;

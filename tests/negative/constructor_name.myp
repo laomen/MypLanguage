@@ -1,0 +1,8 @@
+// 负测试: @constructor 构造器名称必须==类名
+class Bad {
+    action:
+        @constructor
+        wrongName() { }   // 错误: 构造器名 wrongName != 类名 Bad
+}
+
+int main() { return 0; }

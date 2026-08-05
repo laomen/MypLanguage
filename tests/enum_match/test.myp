@@ -20,7 +20,7 @@ enum Shape {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[枚举验证]\n");
 
             // 1. 简单枚举

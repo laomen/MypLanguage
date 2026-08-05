@@ -16,7 +16,7 @@ ffi void myp_regex_free(long handle);
 class Regex {
     action:
         @constructor
-        void Regex(string pattern) {
+        Regex(string pattern) {
             handle_ = myp_regex_compile(pattern);
         }
 

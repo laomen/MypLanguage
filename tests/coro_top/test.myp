@@ -33,7 +33,7 @@ import coro;
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             // 1) 顶层 @coro 值传递 + 返回值
             long h = worker(21);
             long v = Coro.resume(h, 7);

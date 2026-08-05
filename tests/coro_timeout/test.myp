@@ -41,7 +41,7 @@ class Signal {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             long ht = timedWaiter();
             long hf = fastWaiter();
             long ha = apiWaiter();

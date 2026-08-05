@@ -118,7 +118,7 @@ def cmd_init(args):
         f.write(f'class {class_name} {{\n')
         f.write(f'    action:\n')
         f.write(f'        @constructor\n')
-        f.write(f'        void {class_name}() {{\n')
+        f.write(f'        {class_name}() {{\n')
         f.write(f'            printf("Hello from {name} v0.1.0!\\n");\n')
         f.write(f'        }}\n')
         f.write(f'}}\n')

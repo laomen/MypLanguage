@@ -18,7 +18,7 @@ class Signal {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             long hb = finisher();       // 就绪挂起 → status 1
             long hw = waiter();         // 等待事件 → status 2
             Console.writeString("status invalid=");

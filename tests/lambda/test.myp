@@ -14,7 +14,7 @@ class Worker {
 
 class Main {
     action:
-        @constructor void go() {
+        @constructor Main() {
             Console.writeString("start\n");
             start();
         }

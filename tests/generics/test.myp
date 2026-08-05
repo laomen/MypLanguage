@@ -11,7 +11,7 @@ class Box<T> {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[泛型验证]\n");
 
             Box<int> bi = new Box<int>();

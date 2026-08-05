@@ -40,7 +40,7 @@ class Signal {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             long ha = anyWaiterA();
             long hb = anyWaiterB();
             Coro.scheduler();

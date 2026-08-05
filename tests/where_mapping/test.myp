@@ -16,7 +16,7 @@ class Printer {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             emit(5);
             emit(2);
             emit(3);

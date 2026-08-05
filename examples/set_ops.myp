@@ -86,7 +86,7 @@ class ScaleOp {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("=== 算子系统示例 ===\n\n");
 
             // --- 1. struct 数学算子 ---

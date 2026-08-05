@@ -20,7 +20,7 @@ import time;
 
 class SnakeGame {
     action:
-        @constructor void run() {
+        @constructor SnakeGame() {
             boardW = 24;
             boardH = 16;
             dir  = 1;        // 0=up  1=right  2=down  3=left

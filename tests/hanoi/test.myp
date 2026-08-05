@@ -31,7 +31,7 @@ int fib(int n) {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[递归验证]\n\n");
 
             // 1. 阶乘

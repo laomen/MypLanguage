@@ -11,7 +11,7 @@ import env;
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[slice 增强]\n");
 
             // 1) slice<int>

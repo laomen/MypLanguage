@@ -31,7 +31,7 @@ class Engine {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[region 链式]\n");
             Engine e = new Engine();
             int frame = 0;

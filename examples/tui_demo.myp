@@ -8,7 +8,7 @@ import ui;
 
 class CounterApp {
     action:
-        @constructor void run() {
+        @constructor CounterApp() {
             Screen.hideCursor();
 
             Window win = new Window();

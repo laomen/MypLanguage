@@ -8,7 +8,7 @@ double relu_d(double x) { return x>0 ? 1.0 : 0.0; }
 
 class Trainer {
     action:
-        @constructor void run() {
+        @constructor Trainer() {
             nIn=784; nHid=64; nOut=10;
             string wpath="./deeplearning/data/mnist_weights.bin";
 

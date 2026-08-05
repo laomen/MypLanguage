@@ -15,7 +15,7 @@ slice<double> sumSlice(slice<double> s) {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[slice 测试]\n");
 
             // 1) 创建

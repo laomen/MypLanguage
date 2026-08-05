@@ -11,7 +11,7 @@ interface IShape {
 class Circle {
     interface class IShape;
     action:
-        @constructor void run() { radius = 5.0; }
+        @constructor Circle() { radius = 5.0; }
         double area() { return 3.14159 * radius * radius; }
         double perimeter() { return 2.0 * 3.14159 * radius; }
     property:
@@ -21,7 +21,7 @@ class Circle {
 class Rectangle {
     interface class IShape;
     action:
-        @constructor void run() { width = 3.0; height = 4.0; }
+        @constructor Rectangle() { width = 3.0; height = 4.0; }
         double area() { return width * height; }
         double perimeter() { return 2.0 * (width + height); }
     property:
@@ -34,7 +34,7 @@ class Rectangle {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[Interface 验证]\n");
 
             Circle c = new Circle();

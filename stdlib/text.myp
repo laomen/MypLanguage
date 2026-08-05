@@ -110,7 +110,7 @@ class Str {
 class StringBuilder {
     action:
         @constructor
-        void StringBuilder() {
+        StringBuilder() {
             cnt_ = 0;
         }
 

@@ -12,7 +12,7 @@ class Printer {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Printer p;
             // 实例级 mapping（函数内局部）
             mapping() {

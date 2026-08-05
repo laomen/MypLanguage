@@ -44,7 +44,7 @@ struct Vector3 {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[算子测试]\n");
 
             // --- 1. struct 内算子 ---

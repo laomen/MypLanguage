@@ -28,7 +28,7 @@ import coro;
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             long hb = boom();
             Coro.resume(hb, 0);
             Console.writeString("boom ended\n");

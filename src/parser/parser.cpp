@@ -297,8 +297,16 @@ ActionDecl Parser::parseActionDecl() {
         if (annot == "region") decl.has_region = true;
     }
 
-    decl.return_type = parseType();
-    decl.name = parseIdentifier("expected action name");
+    if (decl.has_constructor) {
+        // 构造器：无返回类型（隐含 void），名称必须==类名（sema 校验）
+        TypeNode vt;
+        vt.basic_type = BuiltinType::Void;
+        decl.return_type = vt;
+        decl.name = parseIdentifier("expected constructor name");
+    } else {
+        decl.return_type = parseType();
+        decl.name = parseIdentifier("expected action name");
+    }
 
     consume(TokenKind::LeftParen, "expected '(' after action name");
     if (!check(TokenKind::RightParen)) {
@@ -590,8 +598,16 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         // Actually, generic func syntax: T max<T>(T a, T b) —  parse it differently
         // For now, we detect <T> after the function name
     }
-    func->return_type = parseType();
-    func->name = parseIdentifier("expected function name");
+    if (func->has_constructor) {
+        // 构造器：无返回类型（隐含 void），名称必须==类名（sema 校验）
+        TypeNode vt;
+        vt.basic_type = BuiltinType::Void;
+        func->return_type = vt;
+        func->name = parseIdentifier("expected constructor name");
+    } else {
+        func->return_type = parseType();
+        func->name = parseIdentifier("expected function name");
+    }
 
     consume(TokenKind::LeftParen, "expected '(' after function name");
     if (!check(TokenKind::RightParen)) {

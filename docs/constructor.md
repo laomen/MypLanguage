@@ -71,22 +71,24 @@ MYP 的核心区分（manual §7 `struct vs class`）：
 class Window {
     action:
         @constructor
-        void Window() {                     // 显式 @constructor：无参构造
+        Window() {                     // 显式 @constructor：无参构造（无返回类型）
             x = 0; y = 0; w = 80; h = 24;
         }
         void Window(int px, int py, int pw, int ph) {  // 函数名==类名 → 隐式构造器（重载）
             x = px; y = py; w = pw; h = ph;
         }
     property:
-        int x, y, w, h;
+        int x;
+        int y;
+        int w;
+        int h;
 }
 ```
 
 **规则**：
-- `@constructor` 注解可加在 `action:`/`function:` 方法上，标记其为构造器。
-- **隐式规则**：方法名 == 类名 → 自动视为构造器（等效于加 `@constructor`）；
-  同名重载即多个构造器。显式注解与隐式命名**等价**。
-- 构造器**无返回类型**（`void`）。
+- `@constructor` 构造器**无返回类型**（不写 `void`），名称**必须==类名**（编译校验）。
+- **隐式规则**：方法名 == 类名 → 自动视为构造器（等效于加 `@constructor`）；此时按普通
+  action 语法书写（`void Window(...)`），可省略注解。同名重载即多个构造器。
 - 构造器体可用 `this`、可读/写 property、可调用 `function:`/`action:` 方法。
 - **构造器 ≠ `@startup`**：构造器是 `new` 时同步的对象初始化；`@startup` 是
   并行/事件驱动代码中的**启动信号**（开始操作）。两者正交、可共存（见 §3.5）；
@@ -122,7 +124,7 @@ new ClassName(args)
 - 构造器绑定到**单态化实例类**：`new Box<double>()` → 调用 `Box_double_inst` 的构造器
   （codegen 用 `current_type_params_` 解析 `T`，元素/参数类型正确）。
 - 模板类自身的构造器**不注册**到实例分发，从根上避免"误调模板 init"。
-- 泛型参数作构造器参数：`@constructor void Box(T v) { data_ = v; }`（函数名==类名时
+- 泛型参数作构造器参数：`@constructor Box(T v) { data_ = v; }`（函数名==类名时
   亦可省略注解）→ 实例化时 `T` 替换为实参类型。
 
 ### 3.5 与 `@startup` 的关系（正交，互不取代）
@@ -179,9 +181,10 @@ class 是引用、struct 是值——**同一构造器特性（`@constructor` + 
 struct Vec2 {
     action:
         @constructor
-        void Vec2(double px, double py) { x = px; y = py; }  // 显式注解
-        void Vec2() { x = 0; y = 0; }                        // 函数名==类名 → 隐式构造器
-    double x, y;
+        Vec2(double px, double py) { x = px; y = py; }  // 显式注解（无返回类型）
+        void Vec2() { x = 0; y = 0; }                   // 函数名==类名 → 隐式构造器
+    double x;
+    double y;
 }
 ```
 
@@ -213,7 +216,7 @@ Vec2 w;  w = Vec2(7.0, 8.0);    // 先声明后赋值
 struct Buffer {
     action:
         @constructor
-        void Buffer(int n) { data = new int[n]; }
+        Buffer(int n) { data = new int[n]; }
         Buffer copy() {
             Buffer c = Buffer(size);
             for (int i = 0; i < size; i = i + 1) c.data[i] = data[i];
@@ -249,7 +252,7 @@ class 是引用类型，因此 **`A b = a;` 必须是引用别名**，**不**调
 class Image {
     action:
         @constructor
-        void Image(int w, int h) { width = w; height = h; data_ = new int[w * h]; }
+        Image(int w, int h) { width = w; height = h; data_ = new int[w * h]; }
         Image copy() {                    // 显式深拷贝（约定方法）
             Image c = new Image(width, height);
             for (int i = 0; i < width * height; i = i + 1) c.data_[i] = data_[i];
@@ -279,7 +282,7 @@ Image c = a.copy(); // 显式深拷贝
 ```myp
 action:
     @constructor
-    void Image(Image other) { /* 深拷贝 */ }
+    Image(Image other) { /* 深拷贝 */ }
 ```
 `new Image(src)` / `Image(src)` 调用它。**注意**：这也只显式触发（`Image b = a;` 仍走引用别名）。
 

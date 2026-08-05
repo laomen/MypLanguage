@@ -15,7 +15,7 @@ mapping() {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             fireA(1);
             fireB(2);
         }

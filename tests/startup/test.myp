@@ -5,7 +5,7 @@ import env;
 class Worker {
     action:
         @constructor
-        void Worker() {
+        Worker() {
             Console.writeString("worker_ctor\n");
         }
         @startup void run() {           // 启动信号：线程入口
@@ -16,7 +16,7 @@ class Worker {
 class Plain {
     action:
         @constructor
-        void Plain() {
+        Plain() {
             Console.writeString("plain_ctor\n");
         }
 }

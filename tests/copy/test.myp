@@ -6,7 +6,7 @@ import env;
 class Image {
     action:
         @constructor
-        void Image(int w, int h) {
+        Image(int w, int h) {
             width = w;
             height = h;
             data_ = new int[w * h];
@@ -27,7 +27,7 @@ class Image {
 struct Buffer {
     action:
         @constructor
-        void Buffer(int n) { size = n; data = new int[n]; }
+        Buffer(int n) { size = n; data = new int[n]; }
         Buffer copy() {                   // struct 深拷贝（约定方法）
             Buffer c = Buffer(size);
             for (int i = 0; i < size; i = i + 1) c.data[i] = data[i];

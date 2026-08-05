@@ -134,7 +134,7 @@ class MSELossOp {
 // ============================================================
 class App {
     action:
-        @constructor void run() {
+        @constructor App() {
             Console.writeString("=== MYP 自动微分示例 ===\n\n");
 
             // ---- 1. 基本前向/反向 ----

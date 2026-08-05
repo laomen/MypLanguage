@@ -527,8 +527,8 @@ MYP 是**事件驱动组件**语言，访问控制规则服务于解耦目标：
 class Sensor {
     action:
         @constructor
-        void Sensor(int i, double t) { id = i; threshold = t; }
-        void Sensor() { id = 0; threshold = 0.0; }
+        Sensor(int i, double t) { id = i; threshold = t; }
+        void Sensor() { id = 0; threshold = 0.0; }   // 隐式（函数名==类名）
         float readValue();
     property:
         int id;

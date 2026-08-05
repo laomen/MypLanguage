@@ -61,7 +61,7 @@ class Fs {
 class Path {
     action:
         @constructor
-        void Path(string path) {
+        Path(string path) {
             path_ = path;
         }
 

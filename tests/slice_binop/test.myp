@@ -28,7 +28,7 @@ import env;
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             slice<double> A = new slice<double>(4);
             slice<double> B = new slice<double>(4);
             int i = 0;

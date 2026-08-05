@@ -51,7 +51,7 @@ class Time {
 class Timer {
     action:
         @constructor
-        void Timer(string eventName, long delayMs, long intervalMs) {
+        Timer(string eventName, long delayMs, long intervalMs) {
             id_ = __myp_timer_create(eventName, delayMs, intervalMs);
         }
 

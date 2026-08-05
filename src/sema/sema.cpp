@@ -339,6 +339,10 @@ void Sema::visitStructDecl(StructDecl& decl) {
         // 构造器：不注册为可调用方法（构造器不能直接调用，同名重载合法）；
         // M3 负责函数式构造。body 仍在 checkStructMethods 中带 struct 作用域检查。
         if (func.has_constructor) {
+            if (func.name != decl.name) {
+                error(func.range, "constructor name '" + func.name +
+                      "' must match struct name '" + decl.name + "'");
+            }
             if (typeNodeToTypeInfo(func.return_type).kind != TypeKind::Void) {
                 error(func.range, "constructor '" + func.name +
                       "' must have void return type");
@@ -399,6 +403,10 @@ void Sema::visitClassDecl(ClassDecl& decl) {
             if (action.has_startup) {
                 error(action.range, "cannot be both @constructor and @startup");
             }
+            if (action.name != decl.name && !decl.is_generic_inst) {
+                error(action.range, "constructor name '" + action.name +
+                      "' must match class name '" + decl.name + "'");
+            }
             if (typeNodeToTypeInfo(action.return_type).kind != TypeKind::Void) {
                 error(action.range, "constructor '" + action.name + "' must have void return type");
             }
@@ -423,6 +431,10 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         // 构造器：不注册为可调用 function（构造器不能直接调用，同名重载合法）；
         // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
         if (fn.has_constructor) {
+            if (fn.name != decl.name && !decl.is_generic_inst) {
+                error(fn.range, "constructor name '" + fn.name +
+                      "' must match class name '" + decl.name + "'");
+            }
             if (typeNodeToTypeInfo(fn.return_type).kind != TypeKind::Void) {
                 error(fn.range, "constructor '" + fn.name + "' must have void return type");
             }

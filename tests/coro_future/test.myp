@@ -21,7 +21,7 @@ import future;
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             int fh = Future.create();
             long hw = waiter(fh);
             long ho = other();

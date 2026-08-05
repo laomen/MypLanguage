@@ -740,7 +740,7 @@ name it is implicitly a constructor** (the annotation may be omitted, C++/Java-s
 class Window {
     action:
         @constructor
-        void Window() {                     // explicit @constructor: no-arg
+        Window() {                     // explicit @constructor: no-arg (no return type)
             x = 0; y = 0; w = 80; h = 24;
         }
         void Window(int px, int py, int pw, int ph) {  // name==class → implicit constructor

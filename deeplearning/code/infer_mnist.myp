@@ -7,7 +7,7 @@ double relu(double x){return x>0?x:0.0;}
 
 class Inference {
     action:
-        @constructor void run() {
+        @constructor Inference() {
             nIn=784; nHid=64; nOut=10;
             string wpath="./deeplearning/data/mnist_weights.bin";
 

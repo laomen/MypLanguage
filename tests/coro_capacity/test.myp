@@ -16,7 +16,7 @@ class Ping {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             long N = 1500L;   // > 旧上限 1024
             Ping p = new Ping();
             slice<long> hs = new slice<long>(N);

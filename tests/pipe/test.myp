@@ -32,7 +32,7 @@ class OffsetOp {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             Console.writeString("[管道测试]\n");
 
             double[] A = new double[4];

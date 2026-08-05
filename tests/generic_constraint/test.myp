@@ -21,7 +21,7 @@ class DrawList<T where T : Shape> {
 
 class Main {
     action:
-        @constructor void run() {
+        @constructor Main() {
             DrawList<Circle> dl = new DrawList<Circle>();
             Console.writeString("generic constraint OK count=");
             Console.write(dl.count());

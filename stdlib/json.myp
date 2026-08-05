@@ -24,7 +24,7 @@ ffi void myp_json_free(long handle);
 class Json {
     action:
         @constructor
-        void Json(string jsonStr) {
+        Json(string jsonStr) {
             handle_ = myp_json_parse(jsonStr);
             if (handle_ == 0L) {
                 JsonError e = new JsonError();
