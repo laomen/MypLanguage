@@ -52,14 +52,35 @@ import "./lexer.myp";
             return 0;
         }
 
+        // 重新转义解码后的字符串值（\n \t \r \\ \" \' \e \0）
+        // 避免格式化把 "\n" 变成真实换行而改变源码语义（与 C++ escapeString 一致）
+        string escapeString(string s) {
+            string out = "";
+            int n = Str.len(s);
+            for (int i = 0; i < n; i = i + 1) {
+                string c = Str.substring(s, i, i + 1);
+                int oc = __myp_ord(c);
+                if (oc == 10) out = out + "\\n";
+                else if (oc == 9) out = out + "\\t";
+                else if (oc == 13) out = out + "\\r";
+                else if (oc == 92) out = out + "\\\\";
+                else if (oc == 34) out = out + "\\\"";
+                else if (oc == 39) out = out + "\\'";
+                else if (oc == 27) out = out + "\\e";
+                else if (oc == 1) out = out + "\\0";   // 0x01 哨兵 → 还原 \0 文本
+                else out = out + c;
+            }
+            return out;
+        }
+
         // token 文本（复刻 tokenStr）
         string tokenStr(Tok t) {
             string k = t.kind();
             if (k == "id" || k == "int_lit" || k == "float_lit" || k == "bool_lit"
                 || k == "null_lit") return t.value();
             if (k == "long_lit") return t.value() + "L";   // 复刻 C++：补回后缀
-            if (k == "str") return "\"" + t.value() + "\"";
-            if (k == "char_lit") return "'" + t.value() + "'";
+            if (k == "str") return "\"" + Fmt.escapeString(t.value()) + "\"";
+            if (k == "char_lit") return "'" + Fmt.escapeString(t.value()) + "'";
             return k;
         }
 

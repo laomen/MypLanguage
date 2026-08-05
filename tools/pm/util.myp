@@ -1,8 +1,8 @@
 // util.myp — 包管理器：文件系统工具（递归复制）
 //
 // 关联: docs/pkg_manager.md；自举: docs/self_hosting.md
-// 注意: io.myp 的 File 底层是单一全局句柄（__myp_io_*），不能同时开两个文件，
-//       因此 copyFile 分两阶段（先读入缓冲关 in，再写 out）。
+// 注: 多文件句柄与数组返回共享存储已修复（见 next_improvements.md §九），
+//     copyFile 无需再分两阶段，但仍保持简单实现。
 
 import env;
 import fs;

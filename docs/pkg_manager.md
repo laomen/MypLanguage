@@ -221,8 +221,7 @@ myp build
 | init 路径打印 | 绝对路径 | 相对路径 | MYP 无 getcwd；功能一致 |
 
 ### 9.3 自举发现
-- **语言 bug**：函数返回定长数组共享存储（`Fs.listDir`/`Str.split`），嵌套调用覆写外层数组 → `copyTree` 需快照规避（详见 `next_improvements.md` §九）。
-- **io 约束**：`__myp_io_*` 单一全局句柄，不能同时开两个 File → `copyFile` 分两阶段（先读后写）。
+- **语言 bug（已修复）**：函数返回定长数组共享存储、io 单一全局句柄等，均已修复并新增回归测试（详见 `next_improvements.md` §九）。
 
 ---
 

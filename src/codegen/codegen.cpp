@@ -2304,6 +2304,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
             builder_.CreateStore(elem_ptr, ptr_a);
             setNamedValue(d.name, ptr_a);
+            // 记录固定数组栈变量大小：return 该变量时需堆拷贝避免悬垂指针
+            stack_array_sizes_[d.name] = arr_sz;
         } else {
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
             // Handle initializer: double[] buf = new double[n]
@@ -4440,6 +4442,7 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
         llvm::Value* v = nullptr;
         if (s.value) {
             v = generateExpr(*s.value);
+            v = heapCopyArrayReturn(v, s.value.get());
             llvm::Type* rt = current_function_->getReturnType();
             if (v->getType() != rt) {
                 if (rt->isIntegerTy() && v->getType()->isIntegerTy())
@@ -4462,7 +4465,30 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     }
     llvm::Value* v = nullptr;
     if (s.value) v = generateExpr(*s.value);
+    v = heapCopyArrayReturn(v, s.value.get());
     emitFunctionReturn(v);
+}
+
+// 修复 #4a：函数返回固定数组栈变量（如 Fs.listDir 返回 string[1024]）时，
+// 指向的是本函数栈帧 → 悬垂/共享存储（嵌套调用覆写）。这里堆拷贝一份再返回。
+llvm::Value* CodeGen::heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr) {
+    if (!v || !value_expr || value_expr->kind != ExprKind::Identifier) return v;
+    auto& id = static_cast<const IdentifierExpr&>(*value_expr);
+    auto it = stack_array_sizes_.find(id.name);
+    if (it == stack_array_sizes_.end()) return v;
+    auto* size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), it->second);
+    llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+    if (!alloc_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::Type::getInt64Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_region_alloc", module_.get());
+    }
+    auto* dest = builder_.CreateCall(alloc_fn, {size}, "ret_arr_copy");
+    auto* dst = builder_.CreateBitCast(dest, llvm::PointerType::get(ctx_, 0));
+    auto* src = builder_.CreateBitCast(v, llvm::PointerType::get(ctx_, 0));
+    builder_.CreateMemCpy(dst, llvm::Align(8), src, llvm::Align(8), size);
+    return dest;
 }
 
 // -- Expressions --
@@ -4571,6 +4597,8 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_io_write_i32be_ && e.name == "__myp_io_write_i32be") return runtime_io_write_i32be_;
         if (runtime_io_write_double_ && e.name == "__myp_io_write_double") return runtime_io_write_double_;
         if (runtime_io_read_double_ && e.name == "__myp_io_read_double") return runtime_io_read_double_;
+        if (runtime_io_current_handle_ && e.name == "__myp_io_current_handle") return runtime_io_current_handle_;
+        if (runtime_io_select_ && e.name == "__myp_io_select") return runtime_io_select_;
         if (runtime_read_line_ && e.name == "__myp_read_line") return runtime_read_line_;
         if (runtime_kbhit_ && e.name == "__myp_kbhit") return runtime_kbhit_;
         if (runtime_getch_ && e.name == "__myp_getch") return runtime_getch_;
@@ -7138,6 +7166,8 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_io_write_i32be_ = llvm::Function::Create(llvm::FunctionType::get(i32, {i32}, false), llvm::Function::ExternalLinkage, "myp_io_write_i32be", module_.get());
     runtime_io_write_double_ = llvm::Function::Create(llvm::FunctionType::get(i32, {d}, false), llvm::Function::ExternalLinkage, "myp_io_write_double", module_.get());
     runtime_io_read_double_ = llvm::Function::Create(llvm::FunctionType::get(d, {}, false), llvm::Function::ExternalLinkage, "myp_io_read_double", module_.get());
+    runtime_io_current_handle_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false), llvm::Function::ExternalLinkage, "myp_io_current_handle", module_.get());
+    runtime_io_select_ = llvm::Function::Create(llvm::FunctionType::get(v, {i32}, false), llvm::Function::ExternalLinkage, "myp_io_select", module_.get());
 
     // Read line from stdin
     runtime_read_line_ = llvm::Function::Create(llvm::FunctionType::get(p, {}, false), llvm::Function::ExternalLinkage, "myp_read_line", module_.get());
@@ -7353,6 +7383,8 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_io_write_i32be"] = runtime_io_write_i32be_;
     intrinsic_map_["__myp_io_write_double"] = runtime_io_write_double_;
     intrinsic_map_["__myp_io_read_double"] = runtime_io_read_double_;
+    intrinsic_map_["__myp_io_current_handle"] = runtime_io_current_handle_;
+    intrinsic_map_["__myp_io_select"] = runtime_io_select_;
     intrinsic_map_["__myp_read_line"] = runtime_read_line_;
     intrinsic_map_["__myp_kbhit"] = runtime_kbhit_;
     intrinsic_map_["__myp_getch"] = runtime_getch_;

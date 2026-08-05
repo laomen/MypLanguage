@@ -1,5 +1,6 @@
 // io.myp — MYP 标准库：文件 I/O
 // __myp_io_* 是编译器内置函数（intrinsic），仅 stdlib 可用
+// 多文件支持：每个 File 持有独立句柄，操作前 select 切换当前文件。
 import error;
 
 class File {
@@ -13,57 +14,72 @@ class File {
                 e.setPath(path);
                 throw e;
             }
+            handle_ = __myp_io_current_handle();
             return r;
         }
         // 关闭文件
         void close() {
+            __myp_io_select(handle_);
             __myp_io_fclose();
+            handle_ = 0;
         }
         // 读取一行（不含换行符），返回空字符串表示结束
         string readLine() {
+            __myp_io_select(handle_);
             return __myp_io_read_line();
         }
         // 写入文本（不含换行符）
         void write(string text) {
+            __myp_io_select(handle_);
             __myp_io_write(text);
         }
         // 写入文本 + 换行
         void writeLine(string text) {
+            __myp_io_select(handle_);
             __myp_io_write_line(text);
         }
         // 检查是否还有更多内容（返回 0=无，1=有）
         int hasNext() {
+            __myp_io_select(handle_);
             return __myp_io_has_next();
         }
         // 读取一个字节（返回 -1 表示结束）
         int readByte() {
+            __myp_io_select(handle_);
             return __myp_io_read_byte();
         }
         // 读取一个 32 位大端整数
         int readI32BE() {
+            __myp_io_select(handle_);
             return __myp_io_read_i32be();
         }
         // 读取一个 64 位双精度浮点数
         double readDouble() {
+            __myp_io_select(handle_);
             return __myp_io_read_double();
         }
         // 写入一个字节
         int writeByte(int v) {
+            __myp_io_select(handle_);
             return __myp_io_write_byte(v);
         }
         // 写入一个 32 位大端整数
         int writeI32BE(int v) {
+            __myp_io_select(handle_);
             return __myp_io_write_i32be(v);
         }
         // 写入一个 64 位双精度浮点数
         int writeDouble(double v) {
+            __myp_io_select(handle_);
             return __myp_io_write_double(v);
         }
         // 定位到文件位置（whence: 0=SET, 1=CUR, 2=END）
         int seek(int offset, int whence) {
+            __myp_io_select(handle_);
             return __myp_io_seek(offset, whence);
         }
     property:
         string path;
         bool isOpen;
+        int handle_;
 }

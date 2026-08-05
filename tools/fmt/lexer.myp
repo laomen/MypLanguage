@@ -245,10 +245,12 @@ class Lexer {
                     string d = e;
                     if (eo == 110) d = "\n";        // \n
                     else if (eo == 116) d = "\t";   // \t
+                    else if (eo == 114) d = __myp_chr(13);   // \r（MYP 无 \r 转义，用 chr 生成）
                     else if (eo == 92) d = "\\";    // \\
                     else if (eo == 34) d = "\"";    // \"
+                    else if (eo == 39) d = "'";     // \' 单引号
                     else if (eo == 101) d = "\e";   // \e
-                    else if (eo == 48) d = "\0";    // \0
+                    else if (eo == 48) d = __myp_chr(1);   // \0（MYP 串无法容 NUL，用 0x01 哨兵）
                     content = content + d;
                     pos_ = pos_ + 1;
                     continue;
@@ -273,6 +275,7 @@ class Lexer {
                     string d = e;
                     if (eo == 110) d = "\n";        // \n
                     else if (eo == 116) d = "\t";   // \t
+                    else if (eo == 114) d = __myp_chr(13);   // \r
                     else if (eo == 92) d = "\\";    // \\
                     else if (eo == 39) d = "'";     // \' 单引号（直接字面量）
                     else if (eo == 101) d = "\e";   // \e

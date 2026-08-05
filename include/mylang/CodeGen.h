@@ -166,6 +166,8 @@ private:
     llvm::Function* runtime_io_write_i32be_ = nullptr;
     llvm::Function* runtime_io_write_double_ = nullptr;
     llvm::Function* runtime_io_read_double_ = nullptr;
+    llvm::Function* runtime_io_current_handle_ = nullptr;
+    llvm::Function* runtime_io_select_ = nullptr;
     // ---- Read line from stdin ----
     llvm::Function* runtime_read_line_ = nullptr;
 
@@ -281,6 +283,8 @@ private:
     bool cuda_enabled_ = false;
     // Track array byte sizes for GPU data transfer
     std::unordered_map<std::string, llvm::Value*> array_byte_sizes_;
+    /// Fixed-array local variable name → byte size（用于 return 时堆拷贝，避免悬垂指针）
+    std::unordered_map<std::string, uint64_t> stack_array_sizes_;
 
     // ---- Stage 4: GPU kernel body compilation ----
     struct KernelArgInfo {
@@ -390,6 +394,8 @@ private:
     void generateGpuFor(const ForStmt& stmt);
     bool generateGpuKernel(const ForStmt& stmt);
     void generateReturnStmt(const ReturnStmt& stmt);
+    /// 若返回表达式是固定数组栈变量，则堆拷贝后返回新指针（修复返回悬垂/共享存储）
+    llvm::Value* heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr);
     // @region memory arena: enter/exit and reference-type predicate
     void emitRegionEnter();
     void emitRegionExit();

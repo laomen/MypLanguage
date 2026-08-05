@@ -1,0 +1,31 @@
+// array_ret: 函数返回数组共享存储（修复 #4a）
+// 嵌套调用返回数组不覆写外层；listDir 大目录不越界。
+import env;
+import fs;
+import text;
+
+string[] mk(int tag) {
+    string[2] r;
+    r[0] = "A" + tag;
+    r[1] = "B" + tag;
+    return r;
+}
+
+@static class T {
+    static:
+        int run() {
+            // 嵌套调用：外层数组不被内层覆写
+            string[] c = mk(1);
+            string[] d = mk(2);
+            Console.writeString("c=" + c[0] + c[1] + " d=" + d[0] + d[1] + "\n");
+
+            // split 独立
+            string[] s1 = Str.split("x,y", ",");
+            string[] s2 = Str.split("p,q,r", ",");
+            Console.writeString("s1=" + s1[0] + s1[1] + " s2=" + s2[0] + s2[1] + s2[2] + "\n");
+            return 0;
+        }
+}
+
+int pmRun() { return T.run(); }
+int main() { int c = pmRun(); return c; }

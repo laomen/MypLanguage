@@ -41,10 +41,10 @@ class Fs {
         string basename(string path) { return myp_fs_basename(path); }
         string join(string dir, string file) { return myp_fs_join(dir, file); }
 
-        // 列出目录内容（返回文件名数组）
+        // 列出目录内容（返回文件名数组，动态分配无 1024 上限）
         string[] listDir(string path) {
             int n = myp_fs_list_count(path);
-            string[1024] parts;
+            string[] parts = new string[n];
             for (int i = 0; i < n; i = i + 1) {
                 parts[i] = myp_fs_list_get(path, i);
             }

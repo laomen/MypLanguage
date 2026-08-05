@@ -80,10 +80,10 @@ class Str {
         // 解析十进制整数（非数字前缀返回 0）
         int toInt(string s) { return myp_str_to_int(s); }
 
-        // 按分隔符拆分为数组（末位存实际数量）
+        // 按分隔符拆分为数组（动态分配，无 1024 上限）
         string[] split(string s, string delim) {
             int n = myp_str_split_count(s, delim);
-            string[1024] parts;
+            string[] parts = new string[n];
             for (int i = 0; i < n; i = i + 1) {
                 parts[i] = myp_str_split_get(s, delim, i);
             }

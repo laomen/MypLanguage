@@ -133,6 +133,28 @@ static bool isKeywordStmt(TokenKind k) {
     }
 }
 
+// 把解码后的字符串值重新转义（\n \t \r \\ \" \' \e \0），
+// 避免格式化把 "\n" 变成真实换行而改变源码语义。
+static std::string escapeString(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); ++i) {
+        char c = s[i];
+        switch (c) {
+            case '\n': out += "\\n";  break;
+            case '\t': out += "\\t";  break;
+            case '\r': out += "\\r";  break;
+            case '\\': out += "\\\\"; break;
+            case '"':  out += "\\\""; break;
+            case '\'': out += "\\'";  break;
+            case '\x1B': out += "\\e"; break;
+            case '\0': out += "\\0";  break;
+            default:   out += c;      break;
+        }
+    }
+    return out;
+}
+
 static std::string tokenStr(const Token& tok) {
     switch (tok.kind) {
         case TokenKind::Identifier:
@@ -145,9 +167,9 @@ static std::string tokenStr(const Token& tok) {
             // lexer 消费后缀但不写入 value，这里补回 "L"（避免被 keywordString 打成 "?"）
             return tok.value + "L";
         case TokenKind::StringLiteral:
-            return "\"" + tok.value + "\"";
+            return "\"" + escapeString(tok.value) + "\"";
         case TokenKind::CharLiteral:
-            return "'" + tok.value + "'";
+            return "'" + escapeString(tok.value) + "'";
         default:
             return Token::keywordString(tok.kind);
     }

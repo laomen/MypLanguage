@@ -71,19 +71,48 @@ int32_t myp_getch(void) {
 // ======================
 // File I/O
 // ======================
+// 每 File 独立句柄（多文件可同时打开）：fopen 把 FILE* 登记进句柄表，
+// 无句柄的旧 intrinsic（deeplearning 等直接调用方）操作"当前活动文件"；
+// File 类通过 select 切换当前文件后调用，实现多文件交替读写。
 
-static FILE* myp_io_fp = NULL;
+#define MYP_IO_MAX_FILES 64
+static FILE* myp_io_fp = NULL;             // 当前活动文件
+static FILE* myp_io_table[MYP_IO_MAX_FILES] = {0};
+static int32_t myp_io_cur = 0;             // 当前句柄（0=无）
 
 int32_t myp_io_fopen(const char* path, const char* mode) {
     FILE* fp = fopen(path, mode);
     if (!fp) return -1;
-    myp_io_fp = fp;
-    return 0;
+    for (int i = 1; i < MYP_IO_MAX_FILES; i++) {
+        if (!myp_io_table[i]) {
+            myp_io_table[i] = fp;
+            myp_io_fp = fp;
+            myp_io_cur = i;
+            return 0;
+        }
+    }
+    fclose(fp);
+    return -1;  // 句柄表满
+}
+
+// 当前活动句柄（File.open 成功后读取存入 handle_）
+int32_t myp_io_current_handle(void) { return myp_io_cur; }
+
+// 切换当前活动文件（多文件交替读写）
+void myp_io_select(int32_t handle) {
+    if (handle >= 1 && handle < MYP_IO_MAX_FILES && myp_io_table[handle]) {
+        myp_io_fp = myp_io_table[handle];
+        myp_io_cur = handle;
+    }
 }
 
 void myp_io_fclose(void) {
-    if (myp_io_fp) fclose(myp_io_fp);
+    if (myp_io_cur >= 1 && myp_io_cur < MYP_IO_MAX_FILES && myp_io_table[myp_io_cur]) {
+        fclose(myp_io_table[myp_io_cur]);
+        myp_io_table[myp_io_cur] = NULL;
+    }
     myp_io_fp = NULL;
+    myp_io_cur = 0;
 }
 
 // 读取一行并返回**新分配的**字符串（修复：原 static buf 共享缓冲，
@@ -170,7 +199,7 @@ double myp_io_read_double(void) {
 // Basic I/O
 // ======================
 
-void myp_print(const char* str) { printf("%s", str); }
+void myp_print(const char* str) { printf("%s", str); fflush(stdout); }
 void myp_println(const char* str) { printf("%s\n", str); fflush(stdout); }
 void myp_print_int(int32_t val) { printf("%d\n", val); fflush(stdout); }
 void myp_print_long(int64_t val) { printf("%ld\n", val); fflush(stdout); }

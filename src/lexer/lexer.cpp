@@ -187,6 +187,7 @@ void Lexer::scanToken() {
                 switch (peek()) {
                     case 'n':  ch = '\n'; break;
                     case 't':  ch = '\t'; break;
+                    case 'r':  ch = '\r'; break;
                     case '\\': ch = '\\'; break;
                     case '\'': ch = '\''; break;
                     case 'e':  ch = '\x1B'; break;
@@ -247,8 +248,10 @@ Token Lexer::scanString() {
             switch (peek()) {
                 case 'n':  value += '\n'; break;
                 case 't':  value += '\t'; break;
+                case 'r':  value += '\r'; break;
                 case '\\': value += '\\'; break;
                 case '"':  value += '"';  break;
+                case '\'': value += '\''; break;
                 case 'e':  value += '\x1B'; break;
                 case '0':  value += '\0'; break;
                 default:

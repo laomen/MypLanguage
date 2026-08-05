@@ -1,0 +1,35 @@
+// io_multi: 多文件同时打开（修复 #4c 单一全局句柄）
+// 先写两个文件，再同时打开交替读取，验证各自独立位置。
+import env;
+import io;
+
+@static class T {
+    static:
+        int run() {
+            File w = new File();
+            w.open("/tmp/myp_io_a.txt", "w");
+            w.writeLine("A1");
+            w.writeLine("A2");
+            w.close();
+            w.open("/tmp/myp_io_b.txt", "w");
+            w.writeLine("B1");
+            w.writeLine("B2");
+            w.close();
+
+            File a = new File();
+            File b = new File();
+            a.open("/tmp/myp_io_a.txt", "r");
+            b.open("/tmp/myp_io_b.txt", "r");
+            string l1 = a.readLine();
+            string l2 = b.readLine();
+            string l3 = a.readLine();
+            string l4 = b.readLine();
+            Console.writeString("alt=" + l1 + l2 + l3 + l4 + "\n");
+            a.close();
+            b.close();
+            return 0;
+        }
+}
+
+int pmRun() { return T.run(); }
+int main() { int c = pmRun(); return c; }

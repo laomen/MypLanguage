@@ -1,10 +1,10 @@
-uncaught exception in coroutine: coro_boom
-uncaught exception in coroutine: coro_boom
 boom before throw
+uncaught exception in coroutine: coro_boom
 boom ended
 c:caught_ok
 catchIt done
 catchIt ended
 boom before throw
+uncaught exception in coroutine: coro_boom
 after second boom, main alive
 done

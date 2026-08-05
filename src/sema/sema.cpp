@@ -2493,6 +2493,8 @@ void Sema::registerIntrinsics() {
     // File I/O intrinsics
     add_intrinsic("__myp_io_fopen", TypeKind::Int, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_io_fclose", TypeKind::Void, {});
+    add_intrinsic("__myp_io_current_handle", TypeKind::Int, {});
+    add_intrinsic("__myp_io_select", TypeKind::Void, {TypeKind::Int});
     add_intrinsic("__myp_io_read_line", TypeKind::String, {});
     add_intrinsic("__myp_io_write", TypeKind::Void, {TypeKind::String});
     add_intrinsic("__myp_io_write_line", TypeKind::Void, {TypeKind::String});

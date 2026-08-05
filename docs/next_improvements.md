@@ -86,11 +86,13 @@
 
 | # | Bug | 现象 | 影响 | 状态 |
 |---|-----|------|------|------|
-| 1 | **函数返回定长数组共享存储** | 函数返回 `string[N]`（如 `Fs.listDir`/`Str.split`）后，嵌套调用再返回数组会**覆写外层数组内容**（同层连续调用不冲突，跨嵌套边界才触发） | 所有"先取数组再递归"的模式（含 `copyTree`）出错；自举工具已踩中 | ⚠️ 未修（MYP 层快照规避；codegen 修复待定） |
-| 2 | **io 单一全局文件句柄** | `__myp_io_*` 用 `static FILE* myp_io_fp`，不能同时开两个 File | 同时读写两文件互相覆盖（`copyFile` 曾踩中） | ⚠️ 设计约束（文档化；多文件需分时/FFI） |
+| 1 | ~~**函数返回定长数组共享存储**~~ | 函数返回 `string[N]`（如 `Fs.listDir`/`Str.split`）后，嵌套调用再返回数组会**覆写外层数组内容**（同层连续调用不冲突，跨嵌套边界才触发） | 所有"先取数组再递归"的模式（含 `copyTree`）出错；自举工具已踩中 | ✅ **已修复**（codegen 对返回固定数组栈变量做堆拷贝；`Fs.listDir`/`Str.split` 改动态 `new string[n]` 分配并移除 1024 上限；新增 `tests/array_ret`） |
+| 2 | ~~**io 单一全局文件句柄**~~ | `__myp_io_*` 用 `static FILE* myp_io_fp`，不能同时开两个 File | 同时读写两文件互相覆盖（`copyFile` 曾踩中） | ✅ **已修复**（句柄表 + 每 File 持句柄，操作前 `__myp_io_select` 切换；新增 `tests/io_multi`） |
 | 3 | ~~**`myp_io_read_line` 共享缓冲**~~ | 原 `static char buf[4096]`，多次 readLine 结果存数组全指向最后一行 | 存多行数组出错（lockfile/registry 踩中）；`tests/io` expected 曾编码旧 bug | ✅ **已修复**（每次返回 `myp_strdup` 新分配，EOF 返回空串） |
 | 4 | ~~**stdlib `StringBuilder` 定长越界**~~ | `parts_` 固定 `string[256]` 且 `append` **无边界检查**，超 256 次追加越界写坏堆（段错误） | 长文件/逐字符追加崩溃（T2 格式化器踩中，两个实锤：extractComments 按字符追加、readFile 按行 ×2 追加） | ✅ **已修复**（改 `string[]` 动态扩容，参考 `ArrayList`；`tests/text` 加 1000 片段用例；T2 格式化器已改回用 StringBuilder 并通过全量对拍） |
-| 5 | **`@thread` 协程 stdout 缓冲 bug** | `@startup @thread` 协程里 `Console.write(int)`（`printf("%d\n")`）的换行在**后续大分配/`sb.toString()`** 后丢失或行为不稳（首个 write 的 `\n` 有时消失），且随对象布局扰动而变化 | 协程+输出代码输出不稳定；`tests/text` 原 @thread 版在 StringBuilder 扩容改动后暴露 | ⚠️ 未修（测试已改 pmRun 非协程模式规避；协程输出路径待查） |
+| 5 | ~~**`@thread` 协程 stdout 缓冲 bug**~~ | `@startup @thread` 协程里 `Console.write(int)`（`printf("%d\n")`）的换行在**后续大分配/`sb.toString()`** 后丢失或行为不稳（首个 write 的 `\n` 有时消失），且随对象布局扰动而变化 | 协程+输出代码输出不稳定；`tests/text` 原 @thread 版在 StringBuilder 扩容改动后暴露 | ✅ **已修复**（根因：`myp_print` 未 `fflush`，滞留缓冲与退出/stderr 竞态；补上 flush 后一致；`coro_throw` expected 更新为新逻辑序） |
+| 6 | ~~**`\r`/`\'` 字符串转义缺失**~~ | 字符串字面量不支持 `\r`（需 `__myp_ord(c)==13` 绕）与 `\'` | 转义表不完整；格式化器需 `__myp_chr` 生成 CR | ✅ **已修复**（C++ lexer scanString/scanChar 补 `\r`/`\'`；MYP 自举 lexer 同步） |
+| 7 | ~~**格式化器解码字符串转义**~~ | `tokenStr` 直接回放解码后的 value，`"\n"` 被写成真实换行，改变源码语义 | 格式化改变源码（多行串与转义不可分） | ✅ **已修复**（C++ 与 MYP `tokenStr` 统一 re-escape `\n \t \r \\ \" \' \e \0`；`\0` 用 0x01 哨兵绕过 MYP 串 NUL 截断；全语料对拍保持） |
 
 ---
 
