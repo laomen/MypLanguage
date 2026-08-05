@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-static const char* MYP_VERSION = "2.0.0";
+static const char* MYP_VERSION = "3.9.0";
 
 int main(int argc, char* argv[]) {
     bool check_mode = false;
