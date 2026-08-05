@@ -1488,10 +1488,28 @@ class Main {
 ```myp
 import pool;
 
-// Parallel 静态类提供简单的线程池任务分发
-// 配合 @parallel for 和 Atomic 使用
-// 底层基于 work-stealing 线程池
+// Parallel 静态类 —— 线程池查询 / 配置 API
+// 语言级并行接口是 @parallel for（自动使用全局 work-stealing 线程池）
+
+int cpus = Parallel.threadCount();      // 硬件并发线程数（sysconf）
+Parallel.setThreads(4);                 // 首次 @parallel for 前指定池大小（0=自动）
+@parallel for (int i = 0; i < 100; i = i + 1) {
+    int wid = Parallel.workerId();      // 当前 worker 索引（0..N-1）
+    // ...
+}
+int nw = Parallel.workerCount();        // 池实际 worker 线程数（0 = 未初始化）
+int on = Parallel.isActive();           // 池是否已初始化（1=是 0=否）
 ```
+
+| 方法 | 说明 |
+|------|------|
+| `threadCount()` | 硬件并发线程数——线程池默认大小 |
+| `workerCount()` | 全局池实际 worker 线程数（首次 `@parallel for` 后可用；0 = 未初始化） |
+| `workerId()` | 当前执行线程的池 worker 索引（`@parallel for` body 内为 0..N-1；非池线程为 -1） |
+| `isActive()` | 线程池是否已初始化（1=是 0=否） |
+| `setThreads(n)` | 设置线程池大小（0=自动=硬件并发数；仅在首次创建前生效，之后为 no-op） |
+
+底层基于 work-stealing 线程池，配合 `Atomic` 使用。
 
 ### `import test` — 测试断言
 

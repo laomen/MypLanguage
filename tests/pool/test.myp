@@ -1,0 +1,45 @@
+// Parallel 线程池 API 测试
+// 验证: setThreads / isActive / workerCount / workerId（池内与池外）
+import env;
+import pool;
+
+class Main {
+    action:
+        @startup void run() {
+            // setThreads 必须在首次 @parallel for 之前调用
+            Parallel.setThreads(2);
+
+            // 池尚未初始化（writeLong 自带换行）
+            Console.writeString("active0=");
+            Console.writeLong(Parallel.isActive());
+
+            // 池外 workerId 应为 -1
+            Console.writeString("outside_wid=");
+            Console.writeLong(Parallel.workerId());
+
+            int[64] out;
+            @parallel for (int i = 0; i < 64; i = i + 1) {
+                out[i] = Parallel.workerId();
+            }
+
+            // 池已初始化，且 worker 数 = 设定的 2
+            Console.writeString("active1=");
+            Console.writeLong(Parallel.isActive());
+            Console.writeString("worker_count=");
+            Console.writeLong(Parallel.workerCount());
+
+            // 所有 workerId 都在 [0, workerCount) 合法区间内
+            int valid = 1;
+            int wc = Parallel.workerCount();
+            for (int i = 0; i < 64; i = i + 1) {
+                if (out[i] < 0 || out[i] >= wc) valid = 0;
+            }
+            Console.writeString("valid_wids=");
+            Console.writeLong(valid);
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

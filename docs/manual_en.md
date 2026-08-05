@@ -1135,6 +1135,37 @@ class Main {
 
 ---
 
+### `import pool` — Parallel Computing Utilities
+
+```myp
+import pool;
+
+// Parallel static class — thread pool query / configuration API
+// The language-level parallel primitive is @parallel for (which uses the global
+// work-stealing thread pool automatically).
+
+int cpus = Parallel.threadCount();      // hardware concurrency (sysconf)
+Parallel.setThreads(4);                 // set pool size before the first @parallel for (0 = auto)
+@parallel for (int i = 0; i < 100; i = i + 1) {
+    int wid = Parallel.workerId();      // current worker index (0..N-1)
+    // ...
+}
+int nw = Parallel.workerCount();        // actual pool worker threads (0 = not initialized)
+int on = Parallel.isActive();           // whether the pool is initialized (1=yes 0=no)
+```
+
+| Method | Description |
+|--------|-------------|
+| `threadCount()` | Hardware concurrency — the pool's default size |
+| `workerCount()` | Actual worker threads of the global pool (available after the first `@parallel for`; 0 = not initialized) |
+| `workerId()` | Pool worker index of the current thread (0..N-1 inside a `@parallel for` body; -1 on non-pool threads) |
+| `isActive()` | Whether the thread pool is initialized (1=yes 0=no) |
+| `setThreads(n)` | Set the pool size (0 = auto = hardware concurrency; only effective before first creation, no-op afterwards) |
+
+Backed by a work-stealing thread pool; use with `Atomic` for shared data.
+
+---
+
 ### `import memory` — Dynamic Memory Management
 
 ```myp

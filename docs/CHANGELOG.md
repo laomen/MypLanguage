@@ -52,6 +52,17 @@
   - **移除** codegen 中 `new C(args)` 自动调 `@startup` 的 legacy 绑定；
     `@startup` 严格只作启动信号（@thread 线程入口）。
   - 验证：`-O0`/ASAN 全套 121/121。
+- **`@parallel for` 多线程检测 + 线程池 API 扩展**：
+  - 运行时新增 TLS `myp_pool_worker_id()`（当前 worker 索引，`@parallel for` body 内
+    返回 0..N-1，非池线程 -1）；`emitKernelExpr` 支持其直接调用；
+    `tests/parallel_for/` 用 `Parallel.workerId()` 检测多线程真正启动。
+  - 池运行时新增 `myp_pool_worker_count()`（实际 worker 数）、`myp_pool_is_active()`
+    （是否初始化）、`myp_pool_set_threads(n)`（池大小，首次创建前生效，0=自动）；
+    `myp_pool_init_global` 遵循设定的线程数。
+  - `stdlib/pool.myp` FFI 集中于此文件，`Parallel` 静态类扩展为完整查询/配置 API：
+    `threadCount()`/`workerCount()`/`workerId()`/`isActive()`/`setThreads(n)`。
+  - 新增 `tests/pool/`（`setThreads(2)` 确定性断言池大小、worker 索引区间、池内外 workerId）。
+  - 验证：`-O0`/ASAN 全套 123/123。
 
 ### v3.8.0
 - **集合动态扩容**（`stdlib/collections.myp`）：`ArrayList`/`HashMap`/`Set`/`Deque`/`Queue`/

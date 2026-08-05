@@ -1896,6 +1896,7 @@ myp_pool_t* myp_global_pool = NULL;
 static pthread_mutex_t myp_pool_start_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t myp_pool_start_cond = PTHREAD_COND_INITIALIZER;
 static volatile int myp_pool_start_ok = 0;
+static int myp_pool_requested_threads = 0;  // 0 = 自动（硬件并发数）
 
 static void myp_work_deque_init(myp_work_deque_t* dq, int cap) {
     dq->chunks = (myp_work_chunk_t*)calloc(cap, sizeof(myp_work_chunk_t));
@@ -2028,7 +2029,7 @@ static void myp_pool_init_global(void) {
     // myp_pool_create() itself publishes myp_global_pool (before the start-mutex
     // handshake). Do NOT re-assign here — an unsynchronized second write of the
     // same pointer would race with workers reading myp_global_pool.
-    myp_pool_create(0);
+    myp_pool_create(myp_pool_requested_threads);
 }
 
 myp_pool_t* myp_pool_ensure_global(void) {
@@ -2122,6 +2123,24 @@ int32_t myp_pool_worker_id(void) {
 int32_t myp_pool_thread_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
     return n > 0 ? (int32_t)n : 1;
+}
+
+// 设置全局池大小（0 = 自动 = 硬件并发数）。仅在首次创建前生效；
+// 池创建后调用为 no-op（池已按原大小启动）。应在程序早期调用。
+void myp_pool_set_threads(int n) {
+    if (n < 0) n = 0;
+    myp_pool_requested_threads = n;
+}
+
+// 全局池实际 worker 线程数（0 = 尚未初始化）。
+// n_threads 在创建时确定后不再改变，读取无竞争。
+int32_t myp_pool_worker_count(void) {
+    return myp_global_pool ? (int32_t)myp_global_pool->n_threads : 0;
+}
+
+// 全局池是否已初始化（1=是 0=否）。
+int32_t myp_pool_is_active(void) {
+    return myp_global_pool != NULL ? 1 : 0;
 }
 
 // ======================

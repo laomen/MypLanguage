@@ -1,22 +1,39 @@
-// pool.myp — MYP 标准库：并行计算工具
-// 提供 Parallel 静态类
-// 配合 @parallel for 和 __myp_atomic_* 使用
+// pool.myp — MYP 标准库：work-stealing 线程池
+// 语言级并行接口是 @parallel for（自动使用全局池）。
+// 这里暴露池的底层查询 / 配置 API（见 src/runtime/runtime.c）。
 //
 // 用法:
 //   import pool;
-//   int n = Parallel.threadCount();
-//   @parallel for (int i = 0; i < n; i = i + 1) { ... }
+//   int cpus = Parallel.threadCount();     // 硬件并发线程数
+//   Parallel.setThreads(4);                // 首次 @parallel for 前指定池大小
+//   @parallel for (int i = 0; i < 100; i = i + 1) {
+//       int wid = Parallel.workerId();     // 当前 worker 索引（0..N-1）
+//       ...
+//   }
+//   int nw = Parallel.workerCount();       // 池实际 worker 数
+//   int on = Parallel.isActive();          // 池是否已初始化
 
 // 线程池运行时 FFI（work-stealing 线程池，见 src/runtime/runtime.c）
-ffi int myp_pool_thread_count();   // 硬件并发线程数（sysconf _SC_NPROCESSORS_ONLN）
-ffi int myp_pool_worker_id();      // 当前池 worker 索引（0..N-1，非池线程为 -1）
+ffi int myp_pool_thread_count();     // 硬件并发线程数（sysconf _SC_NPROCESSORS_ONLN）
+ffi int myp_pool_worker_id();        // 当前池 worker 索引（0..N-1，非池线程为 -1）
+ffi int myp_pool_worker_count();     // 全局池实际 worker 线程数（0 = 未初始化）
+ffi int myp_pool_is_active();        // 全局池是否已初始化（1=是 0=否）
+ffi void myp_pool_set_threads(int n); // 设置全局池大小（0=自动=硬件并发数，首次创建前生效）
 
 class Parallel {
     static:
-        // 获取硬件并发线程数（sysconf _SC_NPROCESSORS_ONLN）
+        // 硬件并发线程数——线程池默认大小
         int threadCount() { return myp_pool_thread_count(); }
 
-        // 获取当前执行线程的池 worker 索引（0..N-1，非池线程为 -1）。
-        // 在 @parallel for body 内调用可检测多线程是否真正启动。
+        // 全局池实际 worker 线程数（首次 @parallel for 后可用；0 = 未初始化）
+        int workerCount() { return myp_pool_worker_count(); }
+
+        // 当前执行线程的池 worker 索引（@parallel for body 内为 0..N-1；非池线程为 -1）
         int workerId() { return myp_pool_worker_id(); }
+
+        // 线程池是否已初始化（1=是 0=否）
+        int isActive() { return myp_pool_is_active(); }
+
+        // 设置线程池大小（0=自动=硬件并发数；仅在首次创建前生效，之后为 no-op）
+        void setThreads(int n) { myp_pool_set_threads(n); }
 }
