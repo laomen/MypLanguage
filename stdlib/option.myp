@@ -1,0 +1,56 @@
+// option.myp — MYP 标准库：可空值容器 Option<T>（§三-1，additive）
+//
+// 语义：显式可空包装——避免裸 `null` 解引用。用 `isSome()`/`isNone()` 门控访问。
+//   import option;
+//   Option<int> none = new Option<int>();          // none
+//   Option<int> some = new Option<int>(42);        // some
+//   if (some.isSome()) Console.write(some.get());
+//   int v = none.getOr(7);                          // 安全默认值（→7）
+//
+// 语法糖：`Type?` ≡ `Option<Type>`（需 import option）
+//   Option<int> none = new int?();                  // none
+//   Option<string> s = new string?("hi");           // some
+//
+// 注意：get() 不检查 has_（调用方须先 isSome）；需要防御性取用请用 getOr()。
+
+class Option<T> {
+    action:
+        // none
+        @constructor Option() {
+            has_ = false;
+        }
+
+        // some
+        @constructor Option(T v) {
+            val_ = v;
+            has_ = true;
+        }
+
+        bool isSome() { return has_; }
+        bool isNone() { return !has_; }
+
+        // 取用（调用方应已确认 isSome()）
+        T get() {
+            return val_;
+        }
+
+        // 安全取用：无值时返回默认值
+        T getOr(T def) {
+            if (has_) return val_;
+            return def;
+        }
+
+        // 变异：把 none 变成 some / 清空
+        void set(T v) {
+            val_ = v;
+            has_ = true;
+        }
+
+        void clear() {
+            has_ = false;
+        }
+
+    property:
+        T val_;
+        bool has_;
+}

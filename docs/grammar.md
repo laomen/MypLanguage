@@ -114,6 +114,24 @@ type Int3 = int[3];
 type AliasAlias = MyInt;      // 别名套别名
 ```
 
+### 2.2 `Option<T>` 可空容器 + `T?` 语法糖（additive，v1.0+）
+
+- **stdlib `Option<T>`**（`stdlib/option.myp`，需 `import option;`）：显式可空包装，
+  避免裸 `null` 解引用。构造器重载：`Option()`=none、`Option(T v)`=some；
+  API：`isSome()`/`isNone()`/`get()`/`getOr(def)`/`set(v)`/`clear()`。
+- **语法糖**：`Type?` ≡ `Option<Type>`（仅在**类型位置**——声明/参数/返回/属性；
+  `new` 仍用显式 `new Option<T>(...)`）。`int?`=`Option<int>`，`int[]?`=`Option<int[]>`。
+- **严格类型**：无隐式装箱——`Option<int> o = new Option<int>(42);`，取值须
+  `o.get()`（先 `isSome()`）或 `o.getOr(def)`。
+
+```myp
+import option;
+Option<int> none = new Option<int>();
+Option<int> some = new Option<int>(42);
+int? maybe = new Option<int>(7);   // T? 语法糖（类型位置）
+int v = maybe.getOr(0);            // 安全取用
+```
+
 ---
 
 ## 3. 顶层声明

@@ -1951,6 +1951,16 @@ TypeNode Parser::parseType() {
         node.range = peek().range;
     }
 
+    // Option sugar: Type? ≡ Option<Type> (additive; requires `import option;`)
+    // e.g. int? == Option<int>; int[]? == Option<int[]>
+    if (match(TokenKind::Question)) {
+        TypeNode inner = node;
+        node = TypeNode{};
+        node.class_name = "Option";
+        node.type_args.push_back(inner);
+        node.range = inner.range;
+    }
+
     return node;
 }
 
