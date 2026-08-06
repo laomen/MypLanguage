@@ -1054,6 +1054,70 @@ Worker thread: @startup → Event loop → Handle events → Fire new events
 - Cross-thread communication via `mapping()` with automatic async delivery
 - No explicit locking required
 
+### Synchronization Primitives (stdlib, §五-2, v3.9.0, additive)
+
+`import sync` provides pthread-based mutex / read-write lock / condition variable /
+semaphore / call-once. All use the **handle pattern** (like `Barrier`): `create`
+returns an `int` handle; call `destroy` when done (64 slots each, reused after
+destroy).
+
+```myp
+import sync;
+
+// Mutex (plain + recursive)
+int m = Mutex.create();
+Mutex.lock(m);
+try { ... } finally { Mutex.unlock(m); }   // pair with finally
+Mutex.destroy(m);
+
+// RWLock (many readers / one writer)
+int rw = RWLock.create();
+RWLock.readLock(rw);    // shared read
+RWLock.writeLock(rw);   // exclusive write
+RWLock.unlock(rw);
+RWLock.destroy(rw);
+
+// CondVar (paired with a Mutex; while-loop idiom avoids lost wakeups)
+int cv = CondVar.create();
+Mutex.lock(m);
+while (!ready) { CondVar.wait(cv, m); }    // atomically releases m and blocks
+CondVar.signal(cv);                        // or broadcast(cv)
+Mutex.unlock(m);
+CondVar.destroy(cv);
+
+// Semaphore (P/V)
+int s = Semaphore.create(2);   // initial count
+Semaphore.wait(s);             // P: decrement, block at 0
+Semaphore.post(s);             // V: increment, wake a waiter
+Semaphore.destroy(s);
+
+// Once (call-once: only the first caller runs the init)
+int once = Once.create();
+if (Once.enter(once) == 1) { ...init...; Once.done(once); }
+Once.destroy(once);
+```
+
+Share mutable state across threads with `@static class` properties (globals):
+
+```myp
+@static class Shared { property: int mutex; int count = 0; }
+
+class Worker {
+    action:
+        @startup void run() {
+            Mutex.lock(Shared.mutex);
+            Shared.count = Shared.count + 1;   // critical section
+            Mutex.unlock(Shared.mutex);
+        }
+}
+```
+
+- **Return values**: `tryLock`/`tryWait`/`tryReadLock`/`tryWriteLock` → `1`=acquired,
+  `0`=failed, `-1`=bad handle; `Once.enter` → `1`=first caller (run init),
+  `0`=already done.
+- **Constraints**: handles are not auto-reclaimed (like `Barrier`) — call `destroy`;
+  `CondVar.wait` releases and re-acquires the associated Mutex — use a `while` loop.
+
 ---
 
 ## 10. Modules & Imports

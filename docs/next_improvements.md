@@ -50,7 +50,7 @@
 | # | 事项 | 说明 | 优先级 |
 |---|------|------|--------|
 | 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1/2/3 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>` + 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用）、retain-at-return、赋值/属性/静态/映射全局 retain、`T[]`/`slice` 类元素 retain/release、语句末临时释放、`return new` 转移、函数 epilogue release、`@thread`/`@threadpool` 实例线程销毁时释放、**闭包释放**（函数值局部 ARC 槽 + 捕获 class 引用 retain）。诊断：`Memory.liveObjectCount()`。`tests/arc` + `arc_m2` + `arc_fn`。**剩余**：异常/throw-catch 展开释放（v1 泄漏安全）、协程帧释放、`@region` 逃逸精修。设计见 `docs/arc.md` | **P0** |
-| 2 | **同步原语 stdlib** | 只有 `Atomic`/`Barrier`；缺 `Mutex`/`RWLock`/`CondVar`/`Semaphore`/`Once`（pthread 底层已有，低成本） | P1 |
+| 2 | ~~**同步原语 stdlib**~~ | ✅ **已实施（additive）**：`sync.myp`——`Mutex`（普通+可重入，tryLock）、`RWLock`（读写，try rd/wr）、`CondVar`（wait 关联 Mutex handle + signal/broadcast）、`Semaphore`（POSIX sem，tryWait）、`Once`（enter/done call-once 惯用法）。全部 handle 模式（同 `Barrier`，每类 64 槽）。跨线程共享状态用 `@static class` 属性。`tests/sync`（4 worker Mutex 临界区确定性 400 + CondVar 生产者/消费者 + API 检查） | 已就绪 | P1 |
 | 3 | **错误类型分层 / `Result<T,E>`** | 只有 `try/catch`，无自定义错误类型体系 / 值式错误传播 | P1 |
 | 4 | **反射 / RTTI** | 无运行时类型查询 | P2（远期） |
 | 5 | **异步 IO 统一抽象** | `await` 仅限事件，未覆盖文件/网络/睡眠 | P2（远期） |

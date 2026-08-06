@@ -1109,6 +1109,68 @@ class Transport {
 | 5M | ~3s | ~10x |
 | 1e9 | ~9.5min | ~10x |
 
+### 同步原语 stdlib（§五-2，v3.9.0，additive）
+
+`import sync` 提供基于 pthread 的互斥锁/读写锁/条件变量/信号量/单次执行。
+全部采用 **handle 模式**（同 `Barrier`）：`create` 返回 `int` 句柄，用后必须 `destroy`
+释放（槽位有限，每类 64 个，destroy 后可复用）。
+
+```myp
+import sync;
+
+// Mutex 互斥锁（普通 + 可重入）
+int m = Mutex.create();
+Mutex.lock(m);
+try { ... } finally { Mutex.unlock(m); }   // 配合 finally 保证解锁
+Mutex.destroy(m);
+
+// RWLock 读写锁（多读单写）
+int rw = RWLock.create();
+RWLock.readLock(rw);   // 共享读
+RWLock.writeLock(rw);  // 独占写
+RWLock.unlock(rw);
+RWLock.destroy(rw);
+
+// CondVar 条件变量（必须持有关联 Mutex；while 循环惯例避免丢失唤醒）
+int cv = CondVar.create();
+Mutex.lock(m);
+while (!ready) { CondVar.wait(cv, m); }   // 自动释放 m 并阻塞
+CondVar.signal(cv);                        // 或 broadcast(cv)
+Mutex.unlock(m);
+CondVar.destroy(cv);
+
+// Semaphore 信号量（P/V）
+int s = Semaphore.create(2);   // 初始计数
+Semaphore.wait(s);             // P：减一，为 0 阻塞
+Semaphore.post(s);             // V：加一，唤醒等待者
+Semaphore.destroy(s);
+
+// Once 单次执行（多个线程竞争，仅首个执行初始化）
+int once = Once.create();
+if (Once.enter(once) == 1) { ...初始化...; Once.done(once); }
+Once.destroy(once);
+```
+
+跨线程共享状态用 `@static class` 属性（全局变量）：
+
+```myp
+@static class Shared { property: int mutex; int count = 0; }
+
+class Worker {
+    action:
+        @startup void run() {
+            Mutex.lock(Shared.mutex);
+            Shared.count = Shared.count + 1;   // 临界区
+            Mutex.unlock(Shared.mutex);
+        }
+}
+```
+
+- **返回值**：`tryLock`/`tryWait`/`tryReadLock`/`tryWriteLock` 返回 `1`=成功、`0`=失败、
+  `-1`=非法句柄；`Once.enter` 返回 `1`=本线程首个（执行初始化）、`0`=已完成。
+- **约束**：句柄无自动回收（同 `Barrier`），显式 `destroy`；`CondVar.wait` 会释放并重新
+  获取关联 Mutex，`while` 循环是标准防丢醒写法。
+
 ### @gpu for — GPU 卸载
 
 `@gpu for` 是 MYP 的 GPU 并行原语，将计算密集型循环卸载到 NVIDIA CUDA GPU 执行：
