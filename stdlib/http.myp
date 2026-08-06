@@ -1,0 +1,246 @@
+// http.myp — MYP 标准库：HTTP 客户端（§六-4，additive）
+//
+// 基于 net.myp 的 TCP 客户端实现 HTTP/1.1 请求/响应（仅 http://，无 TLS）。
+// 支持 GET/POST、URL 解析（scheme/host/port/path/query）、响应状态行/头解析、
+// Content-Length 定长体、Transfer-Encoding: chunked 分块体、关闭定界体。
+//
+// 用法：
+//   HttpResult r = Http.get("http://example.com/api");
+//   if (r.isOk()) { string body = r.getBody(); }
+//   string ct = r.header("Content-Type");
+//
+// 网络层错误（连接失败/URL 非法/不支持的 scheme）抛异常：
+//   - 连接失败 → NetError（来自 TcpClient.connect）
+//   - 非法 URL / 非 http scheme → string 异常
+
+import net;
+import text;
+
+class HttpResult {
+    action:
+        @constructor HttpResult() {
+            status_ = 0;
+            body_ = "";
+            hdrCount_ = 0;
+        }
+
+        // 响应状态码（0 = 未解析）
+        int getStatus() { return status_; }
+
+        // 是否 2xx
+        bool isOk() { return status_ >= 200 && status_ < 300; }
+
+        // 响应体
+        string getBody() { return body_; }
+
+        // 按名字取响应头（大小写不敏感；不存在返回空串）
+        string header(string name) {
+            string n = Str.toLower(name);
+            for (int i = 0; i < hdrCount_; i++) {
+                if (Str.toLower(hdrNames_[i]) == n) return hdrVals_[i];
+            }
+            return "";
+        }
+
+        // 响应头数量 / 按索引访问（遍历用）
+        int getHeaderCount() { return hdrCount_; }
+        string headerName(int i) { return hdrNames_[i]; }
+        string headerValue(int i) { return hdrVals_[i]; }
+
+        void setStatus(int v) { status_ = v; }
+        void setBody(string b) { body_ = b; }
+
+        void addHeader(string name, string val) {
+            if (hdrCount_ < 32) {
+                hdrNames_[hdrCount_] = name;
+                hdrVals_[hdrCount_] = val;
+                hdrCount_ = hdrCount_ + 1;
+            }
+        }
+
+    property:
+        int status_;
+        string body_;
+        string[32] hdrNames_;
+        string[32] hdrVals_;
+        int hdrCount_;
+}
+
+class Http {
+    static:
+        // GET 请求
+        HttpResult get(string url) {
+            return Http.request("GET", url, "");
+        }
+
+        // POST 请求（body 作为请求体）
+        HttpResult post(string url, string body) {
+            return Http.request("POST", url, body);
+        }
+
+        // 通用请求：method + url + body
+        HttpResult request(string method, string url, string body) {
+            // ---- 解析 URL：scheme://host[:port][/path][?query] ----
+            int sp = Str.indexOf(url, "://");
+            if (sp < 0) throw "invalid url (missing scheme): " + url;
+            string scheme = Str.substring(url, 0, sp);
+            if (scheme != "http") throw "unsupported scheme '" + scheme + "' (only http://, no TLS)";
+            string rest = Str.substring(url, sp + 3, Str.len(url));
+
+            int slash = Str.indexOf(rest, "/");
+            string hostPort;
+            string path;
+            if (slash < 0) {
+                hostPort = rest;
+                path = "/";
+            } else {
+                hostPort = Str.substring(rest, 0, slash);
+                path = Str.substring(rest, slash, Str.len(rest));
+            }
+            if (Str.len(path) == 0) path = "/";
+
+            string host = hostPort;
+            int port = 80;
+            int colon = Str.indexOf(hostPort, ":");
+            if (colon >= 0) {
+                host = Str.substring(hostPort, 0, colon);
+                string ps = Str.substring(hostPort, colon + 1, Str.len(hostPort));
+                port = Str.toInt(ps);
+            }
+            if (Str.len(host) == 0) throw "invalid url (empty host): " + url;
+
+            // ---- 建立连接 ----
+            TcpClient c = new TcpClient();
+            c.connect(host, port);          // 失败抛 NetError
+
+            // ---- 发送请求 ----
+            StringBuilder req = new StringBuilder();
+            req.append(method);
+            req.append(" ");
+            req.append(path);
+            req.append(" HTTP/1.1\r\n");
+            req.append("Host: ");
+            req.append(host);
+            req.append("\r\n");
+            req.append("User-Agent: myp-http/1.0\r\n");
+            req.append("Connection: close\r\n");
+            if (method == "POST") {
+                req.append("Content-Length: ");
+                req.append("" + Str.len(body));
+                req.append("\r\n");
+            }
+            req.append("\r\n");
+            if (method == "POST") req.append(body);
+            c.send(req.toString());
+
+            // ---- 解析响应 ----
+            HttpResult out = new HttpResult();
+
+            // 状态行：HTTP/1.1 200 OK
+            string statusLine = c.recvLine();
+            int st = Http.parseStatus(statusLine);
+            out.setStatus(st);
+
+            // 响应头（直到空行）
+            string hline = c.recvLine();
+            while (Str.len(hline) > 0) {
+                int colon2 = Str.indexOf(hline, ":");
+                if (colon2 > 0) {
+                    string hn = Str.trim(Str.substring(hline, 0, colon2));
+                    string hv = Str.trim(Str.substring(hline, colon2 + 1, Str.len(hline)));
+                    out.addHeader(hn, hv);
+                }
+                hline = c.recvLine();
+            }
+
+            // 响应体：chunked / Content-Length / 关闭定界
+            string te = out.header("Transfer-Encoding");
+            if (Str.toLower(te) == "chunked") {
+                out.setBody(Http.readChunked(c));
+            } else {
+                string cl = out.header("Content-Length");
+                if (Str.len(cl) > 0) {
+                    int n = Str.toInt(cl);
+                    out.setBody(Http.readFixed(c, n));
+                } else {
+                    out.setBody(Http.readUntilClose(c));
+                }
+            }
+            c.close();
+            return out;
+        }
+
+        // 解析状态行，返回状态码
+        int parseStatus(string line) {
+            // "HTTP/1.1 200 OK" → 取第二个空白分隔段
+            int sp1 = Str.indexOf(line, " ");
+            if (sp1 < 0) return 0;
+            int sp2 = Str.indexOf(Str.substring(line, sp1 + 1, Str.len(line)), " ");
+            string code;
+            if (sp2 < 0) {
+                code = Str.substring(line, sp1 + 1, Str.len(line));
+            } else {
+                code = Str.substring(line, sp1 + 1, sp1 + 1 + sp2);
+            }
+            return Str.toInt(code);
+        }
+
+        // 读定长 n 字节（recv 可能分批返回）
+        string readFixed(TcpClient c, int n) {
+            if (n <= 0) return "";
+            StringBuilder sb = new StringBuilder();
+            int got = 0;
+            while (got < n) {
+                string chunk = c.recv(n - got);
+                if (Str.len(chunk) == 0) break;      // 连接关闭
+                sb.append(chunk);
+                got = got + Str.len(chunk);
+            }
+            return sb.toString();
+        }
+
+        // 读 chunked 体
+        string readChunked(TcpClient c) {
+            StringBuilder sb = new StringBuilder();
+            while (true) {
+                string sizeLine = c.recvLine();      // 十六进制块长
+                int sz = Http.hexToInt(sizeLine);
+                if (sz <= 0) break;
+                string block = Http.readFixed(c, sz);
+                sb.append(block);
+                c.recvLine();                        // 块尾 CRLF
+            }
+            // 尾部（trailer 头，忽略）
+            string tl = c.recvLine();
+            while (Str.len(tl) > 0) tl = c.recvLine();
+            return sb.toString();
+        }
+
+        // 读到连接关闭（Connection: close 定界）
+        string readUntilClose(TcpClient c) {
+            StringBuilder sb = new StringBuilder();
+            while (true) {
+                string chunk = c.recv(4096);
+                if (Str.len(chunk) == 0) break;
+                sb.append(chunk);
+            }
+            return sb.toString();
+        }
+
+        // 十六进制字符串 → int（忽略前导空白/非 hex）
+        int hexToInt(string s) {
+            string t = Str.trim(s);
+            int n = 0;
+            for (int i = 0; i < Str.len(t); i++) {
+                string ch = Str.substring(t, i, i + 1);
+                int c = __myp_ord(ch);
+                int d = -1;
+                if (c >= 48 && c <= 57) d = c - 48;         // 0-9
+                else if (c >= 97 && c <= 102) d = c - 87;   // a-f
+                else if (c >= 65 && c <= 70) d = c - 55;    // A-F
+                if (d < 0) break;
+                n = n * 16 + d;
+            }
+            return n;
+        }
+}

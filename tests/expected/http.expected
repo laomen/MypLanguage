@@ -1,0 +1,13 @@
+get_status=200
+ body=hello ct=text/plain ct_lower=text/plain isOk=true
+
+nope_status=404
+ body=404 isOk=false
+
+chunk_status=200
+ body=hello world
+post_status=201
+ body=created echo=post isOk=true
+
+scheme_fail=unsupported scheme 'ftp' (only http://, no TLS)
+done

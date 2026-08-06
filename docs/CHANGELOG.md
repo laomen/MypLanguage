@@ -136,7 +136,14 @@
       运行时补 `myp_fmt_u64_base`/`myp_fmt_double_f/e/g`（snprintf）。
     - **随机分布补强**：`random.myp` 加 `range(lo,hi)`（[lo,hi) 均匀）、`exponential(lambda)`
       （逆变换采样）、`poisson(lambda)`（Knuth 算法）。
-    - `tests/crypto` + `tests/fmt` + `tests/random_dist`；全库回归 **162/162**（-O0+ASAN）。
+    - **HTTP 客户端**：`stdlib/http.myp`——基于 `net.myp` TCP 的 HTTP/1.1 客户端
+      （仅 `http://`，无 TLS）：`Http.get/post/request` + `HttpResult`（status/body/
+      header 大小写不敏感/isOk）。URL 解析（scheme/host/port/path/query）；响应状态行/
+      头解析；`Content-Length` 定长体、`Transfer-Encoding: chunked` 分块体、关闭定界体。
+      连接失败抛 NetError、非法 URL/非 http scheme 抛 string。自包含测试：本地
+      `TcpServer` 响应线程（@thread）验证 GET/404/chunked/POST/scheme 校验。
+    - `tests/crypto` + `tests/fmt` + `tests/random_dist` + `tests/http`；全库回归
+      **166/166**（-O0+ASAN）。
   - **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
   - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
     退出码；args 透传（`main(argc,argv)`/构造器）。

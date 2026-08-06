@@ -1,0 +1,110 @@
+// http: stdlib/http.myp HTTP/1.1 客户端回归（§六-4）
+// 覆盖：GET（状态/体/头/query 路径）、404、chunked 分块体、POST（定长体 + 201）、
+//       Content-Type 头、isOk、header() 大小写不敏感。
+// 用本地 TcpServer 响应线程（@thread）自包含验证，无需外部服务器。
+import env;
+import http;
+import net;
+import text;
+import time;
+
+// ---- 本地 HTTP 响应服务器（@thread）----
+class HttpSrv {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(8899);
+            for (int i = 0; i < 4; i++) {
+                TcpClient cl = new TcpClient();
+                int r = srv.accept(cl);
+                if (r != 0) break;
+                string reqline = cl.recvLine();
+                // 读请求头直到空行（同时取 Content-Length）
+                int bodyLen = -1;
+                string h = cl.recvLine();
+                while (Str.len(h) > 0) {
+                    if (Str.indexOf(Str.toLower(h), "content-length:") == 0) {
+                        int colon = Str.indexOf(h, ":");
+                        bodyLen = Str.toInt(Str.trim(Str.substring(h, colon + 1, Str.len(h))));
+                    }
+                    h = cl.recvLine();
+                }
+                // 读请求体（POST 定长）
+                if (bodyLen > 0) {
+                    StringBuilder sb = new StringBuilder();
+                    int got = 0;
+                    while (got < bodyLen) {
+                        string chunk = cl.recv(bodyLen - got);
+                        sb.append(chunk);
+                        got = got + Str.len(chunk);
+                    }
+                }
+                // 按请求路径响应
+                if (Str.indexOf(reqline, "GET /hello") == 0) {
+                    cl.send("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello");
+                } else if (Str.indexOf(reqline, "GET /chunk") == 0) {
+                    cl.send("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n");
+                } else if (Str.indexOf(reqline, "GET /nope") == 0) {
+                    cl.send("HTTP/1.1 404 Not Found\r\nContent-Length: 3\r\n\r\n404");
+                } else if (Str.indexOf(reqline, "POST /post") == 0) {
+                    cl.send("HTTP/1.1 201 Created\r\nContent-Length: 7\r\nX-Echo: post\r\n\r\ncreated");
+                } else {
+                    cl.send("HTTP/1.1 400 Bad Request\r\nContent-Length: 2\r\n\r\nno");
+                }
+                cl.close();
+            }
+            srv.close();
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            HttpSrv s = new HttpSrv() @thread;
+            Time.sleep(200);                 // 等服务器 bind+listen
+
+            // 1) GET：状态/体/头/isOk
+            HttpResult r1 = Http.get("http://127.0.0.1:8899/hello?x=1");
+            Console.writeString("get_status="); Console.write(r1.getStatus());
+            Console.writeString(" body="); Console.writeString(r1.getBody());
+            Console.writeString(" ct="); Console.writeString(r1.header("Content-Type"));
+            Console.writeString(" ct_lower="); Console.writeString(r1.header("content-type"));
+            Console.writeString(" isOk="); Console.writeBool(r1.isOk());
+            Console.writeString("\n");
+
+            // 2) 404
+            HttpResult r2 = Http.get("http://127.0.0.1:8899/nope");
+            Console.writeString("nope_status="); Console.write(r2.getStatus());
+            Console.writeString(" body="); Console.writeString(r2.getBody());
+            Console.writeString(" isOk="); Console.writeBool(r2.isOk());
+            Console.writeString("\n");
+
+            // 3) chunked 分块体
+            HttpResult r3 = Http.get("http://127.0.0.1:8899/chunk");
+            Console.writeString("chunk_status="); Console.write(r3.getStatus());
+            Console.writeString(" body="); Console.writeString(r3.getBody());
+            Console.writeString("\n");
+
+            // 4) POST：定长请求体 + 201 + 自定义响应头
+            HttpResult r4 = Http.post("http://127.0.0.1:8899/post", "hello world");
+            Console.writeString("post_status="); Console.write(r4.getStatus());
+            Console.writeString(" body="); Console.writeString(r4.getBody());
+            Console.writeString(" echo="); Console.writeString(r4.header("X-Echo"));
+            Console.writeString(" isOk="); Console.writeBool(r4.isOk());
+            Console.writeString("\n");
+
+            // 5) 非法 scheme
+            try {
+                Http.get("ftp://example.com/x");
+                Console.writeString("scheme_fail=no\n");
+            } catch (string e) {
+                Console.writeString("scheme_fail=");
+                Console.writeString(e);
+                Console.writeString("\n");
+            }
+
+            Time.sleep(100);
+            Console.writeString("done\n");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

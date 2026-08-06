@@ -1438,6 +1438,28 @@ Hash.sha256("abc");  // 64-char lowercase hex
 Algorithms: CRC-32 (IEEE 802.3), MD5 (RFC 1321), SHA-1 / SHA-256 (FIPS 180).
 Regression uses standard known-answer vectors (including a 56-byte two-block message).
 
+### `import http` — HTTP Client (§六-4, v3.9.0, additive)
+
+An HTTP/1.1 client built on `net.myp`'s TCP (only `http://`, no TLS). Supports
+GET/POST, URL parsing, status-line/header parsing, `Content-Length` bodies,
+`Transfer-Encoding: chunked`, and close-delimited bodies.
+
+```myp
+import http;
+
+HttpResult r = Http.get("http://example.com/api?page=1");
+if (r.isOk()) {
+    string body = r.getBody();          // response body
+    string ct  = r.header("Content-Type");   // header (case-insensitive)
+}
+int status = r.getStatus();             // status code (0 = parse failure)
+HttpResult p = Http.post("http://example.com/items", "{\"k\":1}");
+```
+
+Network-level errors throw: connect failure throws `NetError` (from
+`TcpClient.connect`); malformed URL / non-`http` scheme throws a string exception
+(`https` needs TLS and is not supported yet).
+
 ### `import text` — Text Processing
 
 ```myp

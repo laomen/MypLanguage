@@ -1680,6 +1680,27 @@ Hash.sha256("abc");  // 64 位小写十六进制
 
 算法：CRC-32（IEEE 802.3）、MD5（RFC 1321）、SHA-1 / SHA-256（FIPS 180）。已用标准已知向量回归（含 56 字节跨块消息）。
 
+### `import http` — HTTP 客户端（§六-4，v3.9.0，additive）
+
+基于 `net.myp` 的 TCP 客户端实现 HTTP/1.1（仅 `http://`，无 TLS）。支持 GET/POST、
+URL 解析、状态行/响应头解析、`Content-Length` 定长体、`Transfer-Encoding: chunked`
+分块体、关闭定界体。
+
+```myp
+import http;
+
+HttpResult r = Http.get("http://example.com/api?page=1");
+if (r.isOk()) {
+    string body = r.getBody();          // 响应体
+    string ct  = r.header("Content-Type");   // 响应头（大小写不敏感）
+}
+int status = r.getStatus();             // 状态码（0 = 解析失败）
+HttpResult p = Http.post("http://example.com/items", "{\"k\":1}");
+```
+
+网络层错误抛异常：连接失败抛 `NetError`（来自 `TcpClient.connect`）；非法 URL /
+非 `http` scheme 抛 string 异常（`https` 需 TLS，暂不支持）。
+
 ### `import text` — 文本处理
 
 ```myp
