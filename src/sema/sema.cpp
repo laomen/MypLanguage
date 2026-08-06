@@ -1266,6 +1266,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
                 error(expr.range, "'await' is only allowed inside an '@coro' method");
             }
             auto& ae = static_cast<AwaitExpr&>(expr);
+            // await expr 默认求值为 resume 传入值 → long；形态3（@async 调用）
+            // 的 await 值为调用返回类型（见下）。
+            TypeInfo await_type(TypeKind::Long);
             if (ae.operand) {
                 // await ClassName.eventName — block on an event (C4).
                 // Recognized here (not in visitMemberAccess) so a bare
@@ -1286,7 +1289,16 @@ TypeInfo Sema::visitExpr(Expr& expr) {
                         }
                     }
                 }
-                if (!is_event_ref) visitExpr(*ae.operand);
+                if (!is_event_ref) {
+                    TypeInfo op_ti = visitExpr(*ae.operand);
+                    // §五-5 形态3: await <@async 调用> — 类型 = 调用返回类型
+                    // （普通 await expr 仍是 resume 传入值 → long）
+                    if (ae.operand->kind == ExprKind::Call) {
+                        auto& call = static_cast<const CallExpr&>(*ae.operand);
+                        if (call.callee && isAsyncCallee(call.callee.get()))
+                            await_type = op_ti;
+                    }
+                }
             }
             if (ae.timeout) {
                 TypeInfo tt = visitExpr(*ae.timeout);
@@ -1294,7 +1306,8 @@ TypeInfo Sema::visitExpr(Expr& expr) {
                     error(ae.timeout->range, "await timeout must be numeric (ms)");
             }
             // await expr evaluates to the value passed in by resume → long
-            result = TypeInfo(TypeKind::Long);
+            // (§五-5: 形态3 @async 调用 → 调用返回类型，见上)
+            result = await_type;
             break;
         }
     }
@@ -3821,11 +3834,20 @@ bool Sema::isAsyncCallee(const Expr* callee) const {
         if (ma.object && ma.object->kind == ExprKind::Identifier) {
             auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
             for (auto& cls : current_tu_->classes) {
-                if (cls.name != oid.name) continue;
+                if (cls.name != oid.name) continue;   // Class.method (static)
                 for (auto& a : cls.actions)
                     if (a.name == ma.member_name && a.has_async) return true;
                 for (auto& a : cls.static_actions)
                     if (a.name == ma.member_name && a.has_async) return true;
+            }
+            // 实例接收者：obj.method — 解析变量的类类型后查该类 @async 方法
+            const TypeInfo* t = symbol_table_.lookup(oid.name);
+            if (t && t->kind == TypeKind::Class) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != t->class_name) continue;
+                    for (auto& a : cls.actions)
+                        if (a.name == ma.member_name && a.has_async) return true;
+                }
             }
         }
     }

@@ -1,0 +1,9 @@
+C:conn
+B:step0
+B:step1
+B:step2
+B:done
+C:recv=pong
+C:lines=line1/line2
+C:timeout_len=0
+main done

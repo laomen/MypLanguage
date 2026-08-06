@@ -1569,6 +1569,7 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
     else if (action.name == "result")    { rt = "__myp_coro_result"; ret = i64; pts = {i64}; }
     else if (action.name == "waitEvent") { rt = "__myp_coro_wait_event"; ret = i64; pts = {i64, i64}; }
     else if (action.name == "waitEventTimeout") { rt = "__myp_coro_wait_event_timeout"; ret = i64; pts = {i64, i64, i64}; }
+    else if (action.name == "waitFd")   { rt = "__myp_coro_wait_fd"; ret = i64; pts = {i64, i64, i64, i64}; }
     else if (action.name == "requestCancel") { rt = "__myp_coro_request_cancel"; pts = {i64}; }
     else if (action.name == "cancelRequested") { rt = "__myp_coro_cancel_requested"; ret = i64; }
     else if (action.name == "clearCancel") { rt = "__myp_coro_cancel_clear"; }
@@ -7653,12 +7654,22 @@ bool CodeGen::isAsyncCallTarget(const Expr* callee) const {
         auto& ma = static_cast<const MemberAccessExpr&>(*callee);
         if (ma.object && ma.object->kind == ExprKind::Identifier) {
             auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            // 类名接收者（静态方法）：Class.method
             for (auto& cls : current_tu_->classes) {
                 if (cls.name != oid.name) continue;
                 for (auto& a : cls.actions)          // action: 段
                     if (a.name == ma.member_name && a.has_async) return true;
                 for (auto& a : cls.static_actions)   // static: 段
                     if (a.name == ma.member_name && a.has_async) return true;
+            }
+            // 实例接收者：obj.method — 经 var_class_map_ 解析变量所属类
+            auto vcit = var_class_map_.find(oid.name);
+            if (vcit != var_class_map_.end()) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != vcit->second) continue;
+                    for (auto& a : cls.actions)
+                        if (a.name == ma.member_name && a.has_async) return true;
+                }
             }
         }
     }

@@ -44,6 +44,8 @@ class Coro {
         long waitEvent(long eventId, long val) {}
         // 等待事件带超时（毫秒）：事件到达返回 resume 传入值，超时返回 -1
         long waitEventTimeout(long eventId, long timeoutMs, long val) {}
+        // 等待 fd 可读/可写（§五-5 P2）：就绪返回 1，超时返回 -1；需在 @coro 内调用
+        long waitFd(long fd, long wantRead, long wantWrite, long timeoutMs) {}
         // 等待任一事件触发：返回触发的事件 id，超时返回 -1
         // ids 为事件 id 数组（MYP 数组无长度跟踪，需显式传 count）
         long waitAny(long[] ids, long count, long timeoutMs, long val) {}

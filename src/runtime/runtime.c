@@ -19,6 +19,8 @@
 #include <semaphore.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <poll.h>
+#include <fcntl.h>
 
 // ======================
 // Terminal raw mode (for real-time keyboard input)
@@ -969,6 +971,14 @@ char* myp_net_recv_line(int32_t fd) {
 // Close a socket
 void myp_net_close(int32_t fd) {
     if (fd >= 0) close(fd);
+}
+
+// Set a socket fd non-blocking (§五-5 P2: used by async recv/send so the actual
+// IO completes without blocking after fd readiness).
+void myp_net_set_nonblock(int32_t fd) {
+    if (fd < 0) return;
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags != -1) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 // ======================
@@ -3434,6 +3444,8 @@ void __myp_coro_cancel_clear(void) {
 typedef struct {
     int kind;           // 等待来源：0=EVENT（现有 C4），1=TIMER（sleep），2=FD，3=EXEC
     int event_id;       // EVENT
+    int fd;             // FD：等待就绪的文件描述符
+    short fd_events;    // FD：POLLIN / POLLOUT
     int64_t handle;
     int active;
     int64_t deadline_ms;  // absolute deadline for timed waits (0 = none)
@@ -3527,6 +3539,43 @@ void __myp_coro_scheduler(void) {
                 myp_coros[h]->wait_timeout = 1;
                 myp_coros[h]->ready = 1;
             }
+        }
+    }
+    // §五-5 P2: poll registered fd waits (kind=FD) once and re-ready the
+    // coroutines whose fd became ready. Batch poll of all active fd waits.
+    {
+        int nfd = 0;
+        for (int i = 0; i < myp_coro_wait_count; i++)
+            if (myp_coro_waits[i].active && myp_coro_waits[i].kind == 2) nfd++;
+        if (nfd > 0) {
+            struct pollfd* pfds = (struct pollfd*)malloc((size_t)nfd * sizeof(struct pollfd));
+            int* widx = (int*)malloc((size_t)nfd * sizeof(int));
+            if (pfds && widx) {
+                int k = 0;
+                for (int i = 0; i < myp_coro_wait_count; i++) {
+                    if (myp_coro_waits[i].active && myp_coro_waits[i].kind == 2) {
+                        pfds[k].fd = myp_coro_waits[i].fd;
+                        pfds[k].events = myp_coro_waits[i].fd_events;
+                        pfds[k].revents = 0;
+                        widx[k] = i;
+                        k++;
+                    }
+                }
+                if (poll(pfds, (nfds_t)nfd, 0) > 0) {
+                    for (int j = 0; j < nfd; j++) {
+                        if (pfds[j].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
+                            int wi = widx[j];
+                            int64_t h = myp_coro_waits[wi].handle;
+                            myp_coro_waits[wi].active = 0;
+                            if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
+                                myp_coros[h]->active)
+                                myp_coros[h]->ready = 1;
+                        }
+                    }
+                }
+            }
+            if (pfds) free(pfds);
+            if (widx) free(widx);
         }
     }
     if (myp_coro_count == 0) return;
@@ -3654,6 +3703,43 @@ int64_t __myp_coro_sleep(int64_t ms) {
     // wait_timeout flag set by the expiry path is the NORMAL wake here → 0.
     __myp_coro_yield(0);
     return 0;
+}
+
+// ---- §五-5 P2: fd readiness (await socket IO) ----
+// Park the current coroutine until `fd` is ready for read/write (poll), or
+// `timeout_ms` elapses (0 = no timeout). The scheduler polls registered FD
+// waits each round and re-readies ready ones. Returns 1 on ready, -1 on
+// timeout. Outside a coroutine returns 0 (cannot wait — caller decides).
+int64_t __myp_coro_wait_fd(int64_t fd, int64_t want_read, int64_t want_write,
+                           int64_t timeout_ms) {
+    if (myp_coro_current < 0 || myp_coro_current >= myp_coro_count ||
+        !myp_coros[myp_coro_current]) {
+        return 0;   // not in a coroutine
+    }
+    int64_t deadline = 0;
+    if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
+    short events = 0;
+    if (want_read)  events |= POLLIN;
+    if (want_write) events |= POLLOUT;
+    if (myp_coro_wait_reserve() == 0) {
+        myp_coro_waits[myp_coro_wait_count].kind = 2;        // FD
+        myp_coro_waits[myp_coro_wait_count].event_id = -1;   // not event-based
+        myp_coro_waits[myp_coro_wait_count].fd = (int)fd;
+        myp_coro_waits[myp_coro_wait_count].fd_events = events;
+        myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
+        myp_coro_waits[myp_coro_wait_count].active = 1;
+        myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
+        myp_coro_waits[myp_coro_wait_count].expired = 0;
+        myp_coro_wait_count++;
+        myp_coros[myp_coro_current]->ready = 0;   // park
+        myp_coros[myp_coro_current]->wait_timeout = 0;
+    }
+    myp_coro_t* c = (myp_coro_current >= 0 && myp_coro_current < myp_coro_count)
+        ? myp_coros[myp_coro_current] : NULL;
+    if (c) c->wait_timeout = 0;
+    __myp_coro_yield(0);
+    if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }  // timeout
+    return 1;   // fd ready (or manual resume)
 }
 
 // Re-ready (and resume if currently dispatching) waiters for an event.

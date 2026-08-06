@@ -1,0 +1,65 @@
+// async_socket: §五-5 P2 socket 就绪 — await recvAsync/recvLineAsync 挂起而不阻塞线程
+// 覆盖：recvAsync（延迟 100ms 发数据，期间 B 完成 3 步 → 非阻塞证明）、
+//       recvLineAsync 逐行、超时路径（50ms 超时无数据 → 空串）。
+import env;
+import net;
+import coro;
+import async;
+import text;
+import time;
+
+// ---- 本地响应服务器（@thread）：单连接，分时发送 ----
+class Sender {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(8896);
+            TcpClient cl = new TcpClient();
+            srv.accept(cl);
+            Time.sleep(100);             // 延迟：让客户端 recvAsync 真正挂起等待
+            cl.send("pong");             // recvAsync 收到
+            Time.sleep(50);
+            cl.send("line1\nline2\n");   // recvLineAsync 两行
+            Time.sleep(200);             // 客户端 50ms 超时内无数据
+            cl.close();
+            srv.close();
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Sender s = new Sender() @thread;
+            Time.sleep(100);             // 等服务器 bind+listen+accept
+            Main me = new Main();
+            long hc = me.client();
+            long hb = me.b();
+            // 40 轮：recvLineAsync 逐字节读需多轮调度；每轮 20ms 共 800ms
+            for (int i = 0; i < 40; i++) { Coro.scheduler(); Time.sleep(20); }
+            Console.writeString("main done\n");
+        }
+
+        // 异步客户端：一次连接，recvAsync / recvLineAsync ×2 / 超时
+        @coro long client() {
+            TcpClient c = new TcpClient();
+            c.connect("127.0.0.1", 8896);
+            Console.writeString("C:conn\n");
+            string d1 = await c.recvAsync(4096);
+            Console.writeString("C:recv=" + d1 + "\n");
+            string l1 = await c.recvLineAsync();
+            string l2 = await c.recvLineAsync();
+            Console.writeString("C:lines=" + l1 + "/" + l2 + "\n");
+            string t = await c.recvAsync(10, 50);   // 50ms 超时 → 空串
+            Console.writeString("C:timeout_len=" + Str.len(t) + "\n");
+            c.close();
+            return 0;
+        }
+
+        // B：客户端等待期间推进（证明异步 recv 不阻塞线程）
+        @coro long b() {
+            for (int i = 0; i < 3; i++) { await; Console.writeString("B:step" + i + "\n"); }
+            Console.writeString("B:done\n");
+            return 0;
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
