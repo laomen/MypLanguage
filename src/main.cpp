@@ -24,6 +24,8 @@
 #include <unordered_set>
 
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 // Check if a file exists
 static bool fileExists(const std::string& path) {
@@ -197,7 +199,8 @@ static bool loadModule(const std::string& module_name,
                                             bool debug,
                                             const std::string& passes,
                                             bool macro_expand,
-                                            mylang::DiagnosticEngine& diag) {
+                                            mylang::DiagnosticEngine& diag,
+                                            bool auto_main = false) {
     // === Phase 3b: Macro expansion (declarative `macro` + @macro proc-macro) ===
     bool has_any_macro = !ast.macros.empty();
     if (!has_any_macro) {
@@ -217,6 +220,7 @@ static bool loadModule(const std::string& module_name,
 
     // === Phase 4: Semantic Analysis ===
     mylang::Sema sema(diag);
+    sema.setAutoMain(auto_main);   // `mypc run`: 单类文件自动 main
     sema.analyze(ast);
     phaseMark("sema");
 
@@ -275,7 +279,8 @@ static bool loadModule(const std::string& module_name,
                                   bool test_mode = false,
                                   bool debug = false,
                                   const std::string& passes = "",
-                                  bool macro_expand = false) {
+                                  bool macro_expand = false,
+                                  bool auto_main = false) {
     mylang::SourceManager source_mgr;
     if (!source_mgr.loadFile(filename)) {
         std::cerr << "Error: cannot open file '" << filename << "'\n";
@@ -318,7 +323,7 @@ static bool loadModule(const std::string& module_name,
     }
     phaseMark("imports");
 
-    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, debug, passes, macro_expand, diag);
+    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, debug, passes, macro_expand, diag, auto_main);
 }
 
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
@@ -565,6 +570,62 @@ static int runFmt(int argc, char* argv[]) {
     return all_ok ? 0 : 1;
 }
 
+// mypc run <file.myp> [args...] — 仿 `go run`：
+//   编译（单类文件无 main 时自动注入合成 main 实例化 @startup 类）→ 链接到临时
+//   二进制 → 执行（透传 args）→ 清理临时产物。退出码 = 程序退出码。
+static int runFile(int argc, char* argv[]) {
+    if (argc < 3) {
+        std::cerr << "Usage: " << argv[0] << " run <file.myp> [args...]\n";
+        return 1;
+    }
+    std::string file = argv[2];
+    std::vector<std::string> prog_args;
+    for (int i = 3; i < argc; i++) prog_args.push_back(argv[i]);
+
+    // 相对可执行文件自动检测 stdlib（与主流程一致）
+    std::string stdlib_path = "stdlib";
+    if (argv[0][0] == '/') {
+        std::string exe_dir = getDir(argv[0]);
+        std::string exe_stdlib = exe_dir + "/../stdlib";
+        if (fileExists(exe_stdlib + "/env.myp")) stdlib_path = exe_stdlib;
+    }
+
+    // 编译（auto_main=true → 单类文件自动 main）；产物 <file>.myp.o
+    auto obj = compileSingle(file, stdlib_path, "", 0, false, false, false, false, "", false, true);
+    if (obj.empty()) return 1;
+
+    // 链接到临时二进制
+    std::string base = "/tmp/myp_run_" + std::to_string((long)::getpid()) + "_" +
+                       std::to_string(std::rand());
+    if (!linkObjects({obj}, base, stdlib_path, false)) {
+        std::remove(obj.c_str());
+        return 1;
+    }
+    std::remove(obj.c_str());   // 清理 .o
+
+    // 执行
+    std::vector<char*> exec_argv;
+    exec_argv.push_back(const_cast<char*>(base.c_str()));
+    for (auto& a : prog_args) exec_argv.push_back(const_cast<char*>(a.c_str()));
+    exec_argv.push_back(nullptr);
+
+    pid_t pid = ::fork();
+    if (pid == 0) {
+        ::execv(base.c_str(), exec_argv.data());
+        std::cerr << "Error: failed to execute '" << base << "'\n";
+        ::_exit(127);
+    } else if (pid < 0) {
+        std::cerr << "Error: fork failed\n";
+        std::remove(base.c_str());
+        return 1;
+    }
+    int status = 0;
+    ::waitpid(pid, &status, 0);
+    int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+    std::remove(base.c_str());  // 清理临时二进制
+    return exit_code;
+}
+
 // Forward declaration: real work of main() (defined after the wrapper).
 static int realMain(int argc, char* argv[]);
 
@@ -584,6 +645,7 @@ static int realMain(int argc, char* argv[]) {
     if (argc < 2) {
         std::cerr << "Usage: " << argv[0] << " [options] <file1.myp> [file2.myp ...]\n";
         std::cerr << "       " << argv[0] << " fmt [options] <file.myp> ...\n";
+        std::cerr << "       " << argv[0] << " run <file.myp> [args...]  (仿 go run: 编译+运行+清理; 单类文件无 main 自动补, 须类带 @startup)\n";
         std::cerr << "Options:\n";
         std::cerr << "  -o <file>       Set output filename\n";
         std::cerr << "  -O[0123]        Set optimization level (default: -O0)\n";
@@ -600,6 +662,11 @@ static int realMain(int argc, char* argv[]) {
     // ---- Subcommand: fmt ----
     if (strcmp(argv[1], "fmt") == 0) {
         return runFmt(argc, argv);
+    }
+
+    // ---- Subcommand: run (仿 go run) ----
+    if (strcmp(argv[1], "run") == 0) {
+        return runFile(argc, argv);
     }
 
     std::string stdlib_path = "stdlib";
@@ -624,6 +691,8 @@ static int realMain(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--help" || arg == "-h") {
             std::cout << "Usage: " << argv[0] << " [options] <file1.myp> [file2.myp ...]\n";
+            std::cout << "       " << argv[0] << " fmt [options] <file.myp> ...\n";
+            std::cout << "       " << argv[0] << " run <file.myp> [args...]  (仿 go run)\n";
             std::cout << "Options:\n";
             std::cout << "  -o <file>       Set output filename\n";
             std::cout << "  -O[0123]        Set optimization level (default: -O0)\n";

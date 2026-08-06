@@ -47,6 +47,13 @@
     （`List.map<T,R>`），跨模块可见；`resolveGenericStaticCall` 单态化到 `tu.functions`
     （`__gs_<Class>_<method>_<types>_inst`）。`tests/generic_static`。
   - 全库回归：141/141（`-O0` + ASAN）。
+- **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
+  - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
+    退出码；args 透传（`main(argc,argv)`/构造器）。
+  - **单类文件无 `main` 也可 run**：sema Pass 1 后注入合成 `main()`（实例化类并触发其
+    `@startup` 入口）；`FuncDecl.is_auto_main` 豁免 main() 直接调用限制；无 `@startup` /
+    多 `@startup` 类编译报错。正常编译（非 run）仍要求显式 main。
+  - `tests/test_myp_run.sh` 8 断言；全库回归 142/142（`-O0` + ASAN）。
 - **类构造器（M1-M4，additive）**：`@constructor` 注解 + **函数名==类名隐式构造器**。
   - M1 语法 + AST：`parseActionDecl`/`parseFunction` 识别 `@constructor`；`@constructor`
     构造器**无返回类型**（`@constructor Window(...)`，不写 `void`）且名称**必须==类名**

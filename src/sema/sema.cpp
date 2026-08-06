@@ -29,6 +29,10 @@ bool Sema::analyze(TranslationUnit& tu) {
     visitTranslationUnit(tu);
     if (diag_.hasErrors()) return false;
 
+    // `mypc run`：单类文件无 main 时自动注入合成 main（实例化 @startup 类并触发其
+    // 入口 action）。仅 run 模式生效——正常编译仍要求用户显式 main（链接期报错）。
+    if (auto_main_) injectAutoMainIfNeeded(tu);
+
     // === Pass 1.5: Check mapping cycles + type compatibility ===
     for (auto& m : tu.mappings) {
         checkMappingCycles(m);
@@ -314,6 +318,78 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     for (auto& func : tu.functions) {
         visitFuncDecl(func);
     }
+}
+
+// `mypc run` 自动 main：无用户 main 且恰好一个类带 @startup 时，注入
+//   int main() { ClassName c = new ClassName(); c.startupAction(); return 0; }
+// 由 analyze() 在 Pass 1 之后调用，注入的 main 会被 Pass 2 完整类型检查（构造器
+// 解析/方法解析同普通代码）。
+void Sema::injectAutoMainIfNeeded(TranslationUnit& tu) {
+    // 用户已定义 main → 直接用，不注入
+    for (auto& f : tu.functions)
+        if (f.name == "main") return;
+
+    // 收集带 @startup 的类（跳过泛型实例类）
+    std::string cls_name, startup_name;
+    int count = 0;
+    for (auto& cls : tu.classes) {
+        if (cls.is_generic_inst) continue;
+        for (auto& a : cls.actions) {
+            if (a.has_startup) {
+                cls_name = cls.name;
+                startup_name = a.name;
+                count++;
+                break;
+            }
+        }
+    }
+    if (count == 0) {
+        error(SourceRange{}, "run: 无 'main' 函数且无带 '@startup' 注解的类——"
+              "请定义 main() 或给类 action 加 '@startup' 注解");
+        return;
+    }
+    if (count > 1) {
+        error(SourceRange{}, "run: 无 'main' 函数但有多个类带 '@startup'——"
+              "请显式定义 main()");
+        return;
+    }
+
+    // 构造合成 main 的 AST（与手写等价）
+    SourceRange r;
+    TypeNode cls_tn;
+    cls_tn.class_name = cls_name;
+
+    // ClassName c = new ClassName();
+    auto new_expr = std::make_unique<NewExpr>(cls_name, std::vector<TypeNode>{},
+                                              std::vector<std::unique_ptr<Expr>>{}, r);
+    VarDecl vd;
+    vd.name = "c";
+    vd.type = cls_tn;
+    vd.range = r;
+    vd.init_expr = std::move(new_expr);
+    auto vds = std::make_unique<VarDeclStmt>(vd);
+
+    // c.startupAction();
+    auto ma = std::make_unique<MemberAccessExpr>(
+        std::make_unique<IdentifierExpr>("c", r), startup_name, r);
+    auto call = std::make_unique<CallExpr>(std::move(ma),
+                                           std::vector<std::unique_ptr<Expr>>{}, r);
+    auto es = std::make_unique<ExprStmt>(std::move(call), r);
+
+    // return 0;
+    auto ret = std::make_unique<ReturnStmt>(std::make_unique<IntegerLiteralExpr>(0, r), r);
+
+    std::vector<std::unique_ptr<Stmt>> stmts;
+    stmts.push_back(std::move(vds));
+    stmts.push_back(std::move(es));
+    stmts.push_back(std::move(ret));
+
+    FuncDecl main_decl;
+    main_decl.name = "main";
+    main_decl.return_type = TypeNode(); // int（默认）
+    main_decl.is_auto_main = true;      // 豁免 main() 直接调用限制（编译器生成）
+    main_decl.body = std::make_unique<BlockStmt>(std::move(stmts), r);
+    tu.functions.push_back(std::move(main_decl));
 }
 
 void Sema::visitEnumDecl(EnumDecl& decl) {
@@ -608,7 +684,8 @@ void Sema::visitFuncBody(FuncDecl& decl) {
     }
 
     // In main(), only instance creation + mapping is allowed — no direct method calls
-    if (decl.name == "main") in_main_function_ = true;
+    // (编译器注入的合成 main 豁免：它本就是要直接触发 @startup 入口)
+    if (decl.name == "main" && !decl.is_auto_main) in_main_function_ = true;
 
     in_coro_method_ = decl.has_coro;  // top-level @coro function: allow await
 

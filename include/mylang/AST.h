@@ -706,6 +706,7 @@ struct FuncDecl {
     std::vector<TypeNode> inst_type_args;    // monomorphized instance concrete args
     bool is_generic_inst = false;            // monomorphized instance (not a template)
     bool has_test = false;
+    bool is_auto_main = false;               // `mypc run`: 编译器注入的合成 main（豁免 main() 限制）
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     bool has_coro = false;    // @coro: 顶层协程函数（C 系列）
     int coro_stack_kb = 0;    // @coro(stack=N) — 协程栈大小 KB（0=默认）

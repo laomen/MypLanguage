@@ -1724,6 +1724,10 @@ win.render();                            // 渲染一帧
 # 编译并运行
 ./build/mypc myapp.myp && ./myapp.out
 
+# 一步编译 + 运行（仿 go run；单类文件无 main 也可，须类带 @startup）
+./build/mypc run myapp.myp
+./build/mypc run myapp.myp arg1 arg2     # 透传程序参数
+
 # 指定输出
 ./build/mypc myapp.myp -o /tmp/myapp
 
@@ -1733,6 +1737,31 @@ win.render();                            // 渲染一帧
 
 # 指定包路径
 ./build/mypc --package-path myp_packages myapp.myp
+```
+
+#### `mypc run`（v3.9.0，仿 `go run`）
+
+`mypc run file.myp [args...]` 编译 → 链接到临时二进制 → 直接运行 → 清理，一步到位：
+- **透传参数**：`args...` 传给程序（`main(argc, argv)` / 构造器 `(int argc, string[] argv)`）。
+- **单类文件自动 `main`**：文件**无 `main`** 时，若恰好一个类带 `@startup` 注解，
+  编译器自动生成 `int main() { ClassName c = new ClassName(); c.startupAction(); return 0; }`
+  并触发其 `@startup` 入口。
+- **约束**：无 `@startup` 类 / 多个 `@startup` 类 → 编译报错（提示定义 `main()`）。
+- **正常编译不受影响**：非 run 模式仍要求显式 `main`（链接期报错）。
+- 临时产物自动清理，退出码 = 程序退出码。
+
+```myp
+// hello.myp — 无 main，run 时自动补
+import env;
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeString("Hello from @startup!\n");
+        }
+}
+```
+```bash
+./build/mypc run hello.myp     # 输出: Hello from @startup!
 ```
 
 #### 完整命令行选项

@@ -20,6 +20,10 @@ public:
     /// Analyze the translation unit. Returns true if no errors.
     bool analyze(TranslationUnit& tu);
 
+    /// `mypc run`: enable auto-generated main for single-class files with
+    /// @startup (inject a synthetic main when none is defined).
+    void setAutoMain(bool v) { auto_main_ = v; }
+
 private:
     struct StmtResult {};
 
@@ -153,6 +157,10 @@ private:
     TypeInfo resolveGenericStaticCall(CallExpr& expr, const std::string& cls_name,
                                       const std::string& method, int class_index, int action_index);
     TypeNode TypeNodeFromTypeInfo(const TypeInfo& t);
+
+    // ---- `mypc run` 自动 main（单类文件带 @startup，无 main 时注入合成 main）----
+    bool auto_main_ = false;
+    void injectAutoMainIfNeeded(TranslationUnit& tu);
     void inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found);
     void collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals);
     void collectExprLocals(Expr& e, std::set<std::string>& locals);
