@@ -1352,6 +1352,11 @@ typedef struct myp_obj_header {
 
 #define MYP_OBJ_HEADER_SIZE ((size_t)sizeof(myp_obj_header_t))
 
+// Live class-object count (thread-local) — diagnostic aid for ARC tests.
+static __thread int64_t myp_live_objects = 0;
+
+int64_t myp_live_object_count(void) { return myp_live_objects; }
+
 // Mark the tracking-list node for `base` as freed so myp_free_all() at exit
 // does not double-free an object ARC already released.
 static void myp_alloc_list_mark_freed(void* base) {
@@ -1371,6 +1376,7 @@ void* myp_alloc_object(size_t size, uint32_t type_id) {
     h->rc = 1;
     h->type_id = type_id;
     myp_alloc_list_push(base);   // track base for exit cleanup
+    myp_live_objects++;
     return base + MYP_OBJ_HEADER_SIZE;  // data pointer
 }
 
@@ -1385,20 +1391,25 @@ uint32_t myp_release(void* obj) {
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
     if (h->rc == 0) return 0;          // safety: never underflow
     h->rc--;
-    if (h->rc == 0) {
+    uint32_t new_rc = h->rc;
+    if (new_rc == 0) {
+        // Cache type_id BEFORE the destroy stub runs — the stub frees the
+        // object, so reading h->* afterward would be a use-after-free.
+        uint32_t tid = h->type_id;
         // Dispatch to the per-TU destroy stub (cascades reference fields).
-        if (h->type_id > 0 && __myp_release_table[h->type_id])
-            __myp_release_table[h->type_id](obj);
+        if (tid > 0 && __myp_release_table[tid])
+            __myp_release_table[tid](obj);
         else
             myp_free_object(obj);
     }
-    return h->rc;
+    return new_rc;
 }
 
 void myp_free_object(void* obj) {
     if (!obj) return;
     char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
     myp_alloc_list_mark_freed(base);
+    if (myp_live_objects > 0) myp_live_objects--;
     free(base);
 }
 

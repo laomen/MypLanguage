@@ -36,6 +36,8 @@ uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);
 // Per-TU destroy-stub table, defined by generated code (indexed by type_id).
 extern void (*__myp_release_table[])(void*);
+// Number of live (not yet freed) class instances on this thread — diagnostic.
+int64_t myp_live_object_count(void);
 
 // ---- Timeline ----
 int64_t myp_now_ms(void);

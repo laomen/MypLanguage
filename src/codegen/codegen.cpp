@@ -238,6 +238,14 @@ void CodeGen::finalizeDebugInfo() {
 
 // -- Class struct builder --
 void CodeGen::buildClassStructTypes(TranslationUnit& tu) {
+    // Pass 1: create ALL class struct types (empty) so self- and cross-class
+    // property references (`Node next;`) resolve to ptr via getClassStruct
+    // instead of falling through to an i32 placeholder. (One-pass building made
+    // a class referencing its own type emit `{ i32, i32, ... }`, corrupting
+    // pointer fields — exposed by ARC tests.)
+    for (auto& cls : tu.classes)
+        class_structs_[cls.name] = llvm::StructType::create(ctx_, cls.name);
+    // Pass 2: fill members.
     for (auto& cls : tu.classes) {
         std::vector<llvm::Type*> members;
         unsigned idx = 0;
@@ -245,7 +253,7 @@ void CodeGen::buildClassStructTypes(TranslationUnit& tu) {
             members.push_back(typeNodeToLLVMType(prop.type));
             property_indices_[cls.name][prop.name] = idx++;
         }
-        class_structs_[cls.name] = llvm::StructType::create(ctx_, members, cls.name);
+        class_structs_[cls.name]->setBody(members);
     }
 }
 
@@ -602,10 +610,84 @@ std::string CodeGen::mangleConcreteTypeNode(const TypeNode& node) {
 }
 
 // -- Symbol table --
-void CodeGen::pushScope() { named_values_.emplace_back(); }
+void CodeGen::pushScope() {
+    named_values_.emplace_back();
+    arc_scope_slots_.emplace_back();
+}
 void CodeGen::popScope() {
     if (debug_mode_) emitScopeLocalsDebug();
+    // ARC (§五-1): release every local class/interface reference declared in the
+    // scope being popped. Params / `this` are never registered → borrowed from
+    // the caller, not released here. If the insert point is dead (after a
+    // return/throw) we skip the release — safe leak, never a premature free.
+    if (!arc_scope_slots_.empty()) {
+        auto& slots = arc_scope_slots_.back();
+        for (auto& s : slots)
+            releaseArcSlot(s.alloca, s.is_interface);
+        arc_scope_slots_.pop_back();
+    }
     if (!named_values_.empty()) named_values_.pop_back();
+}
+// Register a local reference slot (class instance or interface fat pointer)
+// so it is myp_release'd when its scope exits.
+void CodeGen::registerArcSlot(llvm::Value* alloca, bool is_interface) {
+    if (!alloca || arc_scope_slots_.empty()) return;
+    arc_scope_slots_.back().push_back({alloca, is_interface});
+}
+void CodeGen::releaseArcSlot(llvm::Value* alloca, bool is_interface) {
+    if (!runtime_release_ || !alloca) return;
+    if (!builder_.GetInsertBlock() ||
+        builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
+    llvm::Value* v;
+    if (is_interface) {
+        auto* fat = builder_.CreateLoad(getLLVMType(TypeInfo(TypeKind::Interface)), alloca);
+        v = builder_.CreateExtractValue(fat, 0);
+    } else {
+        v = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), alloca);
+    }
+    builder_.CreateCall(runtime_release_, {v});
+}
+llvm::Value* CodeGen::emitRetain(llvm::Value* data) {
+    if (!data) return data;
+    // Null-safe: myp_retain ignores NULL. But a garbage/poison pointer would
+    // read a bogus header — only call on values we know are object refs.
+    if (runtime_retain_)
+        builder_.CreateCall(runtime_retain_, {data});
+    return data;
+}
+bool CodeGen::isArcClassLocal(llvm::Value* alloca) {
+    if (!alloca) return false;
+    for (auto& scope : arc_scope_slots_)
+        for (auto& s : scope)
+            if (s.alloca == alloca && !s.is_interface) return true;
+    return false;
+}
+// ARC strong-slot store: retain(new) unless it is a fresh (new/call) value,
+// then release the previous slot value. The caller stores `new_val` afterward.
+void CodeGen::arcStoreRef(llvm::Value* slot, llvm::Value* new_val,
+                          bool is_interface, bool is_fresh) {
+    if (!slot) return;
+    llvm::Value* new_data = new_val;
+    llvm::Value* old_data = nullptr;
+    if (is_interface) {
+        auto* fat_ty = getLLVMType(TypeInfo(TypeKind::Interface));
+        auto* old = builder_.CreateLoad(fat_ty, slot);
+        old_data = builder_.CreateExtractValue(old, 0);
+        if (new_val && new_val->getType()->isStructTy())
+            new_data = builder_.CreateExtractValue(new_val, 0);
+    } else {
+        old_data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), slot);
+    }
+    if (!is_fresh && new_data && runtime_retain_)
+        builder_.CreateCall(runtime_retain_, {new_data});
+    if (old_data && runtime_release_)
+        builder_.CreateCall(runtime_release_, {old_data});
+}
+// NewExpr / CallExpr produce a fresh (+1) reference → transfer into a strong
+// slot without retaining. Everything else (identifier / member access /
+// subscript …) is an alias of an existing owner → must retain.
+bool CodeGen::isFreshArcExpr(const Expr& e) {
+    return e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call;
 }
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();
@@ -1287,6 +1369,7 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     current_is_coro_ = action.has_coro;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    current_ret_ti_ = typeNodeToCodegenType(action.return_type);
     // 固定数组栈变量表按函数隔离（否则不同函数同名变量互相污染）
     stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -1428,6 +1511,7 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     current_is_coro_ = false;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    current_ret_ti_ = typeNodeToCodegenType(action.return_type);
     // 固定数组栈变量表按函数隔离
     stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -1678,6 +1762,7 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
 
         current_function_ = func;
         current_class_name_ = type_key; // for error messages
+        current_ret_ti_ = typeNodeToCodegenType(method.return_type);
         auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
         builder_.SetInsertPoint(bb);
         pushScope();
@@ -1759,6 +1844,7 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 
     current_function_ = func;
     current_class_name_ = cls.name;
+    current_ret_ti_ = rt;
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -1846,6 +1932,7 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     current_function_ = func;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    current_ret_ti_ = rt;
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -2498,6 +2585,7 @@ void CodeGen::generateBlock(const BlockStmt& s) {
 
 void CodeGen::generateVarDecl(const VarDecl& d) {
     if (!current_function_) return;
+    bool arc_decl_class = false;   // ARC: local holds a counted class reference
 
     if (d.has_thread_annotation) {
         // @thread: create instance + pass startup to dedicated thread
@@ -2663,6 +2751,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
         auto* a = createEntryBlockAlloca(current_function_, fat_ty, d.name);
         setNamedValue(d.name, a);
+        // ARC: interface local holds a counted ref → release its data at scope exit.
+        registerArcSlot(a, true);
 
         // Zero-init
         auto* zero = llvm::ConstantAggregateZero::get(fat_ty);
@@ -2682,6 +2772,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto iface_git = class_instance_globals_.find(cls_name);
             if (iface_git == class_instance_globals_.end())
                 iface_git = class_instance_globals_.find(d.name);
+            // Only pre-created mapping globals are genuine long-lived holders.
+            bool preexisting = (iface_git != class_instance_globals_.end());
             if (iface_git == class_instance_globals_.end()) {
                 auto* gv = new llvm::GlobalVariable(*module_,
                     llvm::PointerType::get(ctx_, 0), false,
@@ -2691,8 +2783,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 class_instance_globals_[d.name] = gv;
                 iface_git = class_instance_globals_.find(d.name);
             }
-            if (iface_git != class_instance_globals_.end())
+            if (iface_git != class_instance_globals_.end()) {
+                if (preexisting)
+                    emitRetain(inst);
                 builder_.CreateStore(inst, iface_git->second);
+            }
 
             // Get or create vtable for (interface, class) pair
             llvm::GlobalVariable* vgv = nullptr;
@@ -2749,6 +2844,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         } else if (d.init_expr) {
             // Assign from an existing concrete variable: IFoo f = impl;
             auto* inst = generateExpr(*d.init_expr);
+            // ARC: alias of an existing owner → retain its data (fresh new/call
+            // transfers; release happens when this interface local's scope exits).
+            if (!isFreshArcExpr(*d.init_expr))
+                emitRetain(inst);
             std::string cls_name;
             if (d.init_expr->kind == ExprKind::Identifier) {
                 auto& id = static_cast<const IdentifierExpr&>(*d.init_expr);
@@ -2813,6 +2912,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto* a = createEntryBlockAlloca(current_function_, init_val->getType(), d.name);
         setNamedValue(d.name, a);
         builder_.CreateStore(init_val, a);
+        // ARC: `var x = new Foo()` → class ref slot (released at scope exit).
+        if (d.init_expr->kind == ExprKind::NewExpr)
+            registerArcSlot(a, false);
         return;
     }
 
@@ -2896,6 +2998,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         lt = getLLVMType(tt);
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
+        bool arc_class = false;
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
             std::string cls_name = d.type.class_name;
             // Mangle name for generic classes: Box<int> → Box_int_inst
@@ -2907,14 +3010,18 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 cls_name += "_inst";
             }
             vt = TypeInfo(TypeKind::Class); vt.class_name = cls_name;
+            arc_class = true;
             // Track variable → class mapping for method resolution
             var_class_map_[d.name] = cls_name;
         }
         lt = getLLVMType(vt);
+        if (arc_class) arc_decl_class = true;
     }
 
     auto* a = createEntryBlockAlloca(current_function_, lt, d.name);
     setNamedValue(d.name, a);
+    // ARC: a local class reference is released when its scope exits.
+    if (arc_decl_class) registerArcSlot(a, false);
 
     if (is_struct) {
         // Zero-initialize struct
@@ -2939,6 +3046,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             else if (lt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, lt);
             else if (lt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, lt);
         }
+        // ARC: fresh (new / call) transfers into the slot; an alias (var/prop)
+        // must retain because the previous owner keeps its reference.
+        if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
+            emitRetain(v);
         builder_.CreateStore(v, a);
 
         // Store instance in global for mapping handler access
@@ -2948,6 +3059,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto git = class_instance_globals_.find(ne.class_name);
             if (git == class_instance_globals_.end())
                 git = class_instance_globals_.find(d.name);
+            // Only globals pre-created for mapping source nodes are genuine
+            // long-lived holders → retain those. On-the-fly convenience globals
+            // must NOT keep the object alive (would defeat ARC for plain locals).
+            bool preexisting = (git != class_instance_globals_.end());
             if (git == class_instance_globals_.end()) {
                 // Create global on-the-fly for function-level mapping access
                 auto* gv = new llvm::GlobalVariable(*module_,
@@ -2960,6 +3075,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             }
             if (git != class_instance_globals_.end()) {
                 auto* loaded = builder_.CreateLoad(lt, a, d.name);
+                if (preexisting)
+                    emitRetain(loaded);
                 builder_.CreateStore(loaded, git->second);
             }
             // NOTE: legacy `new C(args)` → auto-call `@startup init` binding was
@@ -5026,6 +5143,19 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                     }
                     ret_val = agg;
                 }
+            }
+            // ARC (§五-1): retain-at-return — a returned class/interface
+            // reference is +1'd so the caller transfers it into a strong slot
+            // without retaining. Fresh `new` and property returns are both
+            // covered (the caller always takes ownership of the +1).
+            if (current_ret_ti_.kind == TypeKind::Class ||
+                current_ret_ti_.kind == TypeKind::Interface) {
+                llvm::Value* rdata = ret_val;
+                if (current_ret_ti_.kind == TypeKind::Interface &&
+                    ret_val->getType()->isStructTy())
+                    rdata = builder_.CreateExtractValue(ret_val, 0);
+                if (runtime_retain_)
+                    builder_.CreateCall(runtime_retain_, {rdata});
             }
             builder_.CreateRet(ret_val);
         } else {
@@ -7233,6 +7363,17 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                     else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
                                         v = builder_.CreateSIToFP(v, pt);
                                 }
+                                // ARC: this.prop is a strong slot owned by the object.
+                                const TypeNode* prop_tn = nullptr;
+                                for (auto& p : cls.properties)
+                                    if (p.name == id.name) { prop_tn = &p.type; break; }
+                                if (prop_tn && isArcRefType(*prop_tn)) {
+                                    bool iface_prop = false;
+                                    if (current_tu_)
+                                        for (auto& ifd : current_tu_->interfaces)
+                                            if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
+                                    arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                }
                                 builder_.CreateStore(v, gep);
                                 return v;
                             }
@@ -7255,6 +7396,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             else if (at_v->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, at_v);
             else if (at_v->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, at_v);
         }
+        // ARC: class-local assignment — retain the new owner (unless fresh),
+        // release the old value. Self/alias assignment is safe (retain-then-release).
+        if (isArcClassLocal(a))
+            arcStoreRef(a, v, false, isFreshArcExpr(*e.value));
         builder_.CreateStore(v, a);
         return v;
     }
@@ -7304,6 +7449,14 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                             v = builder_.CreateFPToSI(v, elem_ty);
                         else if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
                             v = builder_.CreateIntCast(v, elem_ty, true);
+                    }
+                    // ARC: slice<T> of classes — element is a strong slot.
+                    if (sit->second.element_type->kind == TypeKind::Class) {
+                        auto* old = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), p);
+                        if (!isFreshArcExpr(*e.value))
+                            emitRetain(v);
+                        if (runtime_release_)
+                            builder_.CreateCall(runtime_release_, {old});
                     }
                     builder_.CreateStore(v, p);
                     return v;
@@ -7437,6 +7590,17 @@ assign_gep:
                                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy())
                                             v = builder_.CreateFPToSI(v, pt);
                                     }
+                                    // ARC: static property = process-global strong slot.
+                                    const TypeNode* prop_tn = nullptr;
+                                    for (auto& p : cls.properties)
+                                        if (p.name == ma.member_name) { prop_tn = &p.type; break; }
+                                    if (prop_tn && isArcRefType(*prop_tn)) {
+                                        bool iface_prop = false;
+                                        if (current_tu_)
+                                            for (auto& ifd : current_tu_->interfaces)
+                                                if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
+                                        arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                    }
                                     builder_.CreateStore(v, gep);
                                     return v;
                                 }
@@ -7495,6 +7659,17 @@ assign_gep:
                         if (pt->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, pt, true);
                         else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, pt);
                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, pt);
+                    }
+                    // ARC: obj.prop is a strong slot owned by the object.
+                    const TypeNode* prop_tn = nullptr;
+                    for (auto& p : cls.properties)
+                        if (p.name == ma.member_name) { prop_tn = &p.type; break; }
+                    if (prop_tn && isArcRefType(*prop_tn)) {
+                        bool iface_prop = false;
+                        if (current_tu_)
+                            for (auto& ifd : current_tu_->interfaces)
+                                if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
+                        arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
                     }
                     builder_.CreateStore(v, gep);
                     return v;

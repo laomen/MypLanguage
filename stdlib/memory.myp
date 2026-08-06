@@ -22,6 +22,8 @@
 ffi long malloc(long size);
 ffi void free(long ptr);
 ffi long realloc(long ptr, long new_size);
+// ARC（§五-1）：当前线程存活（未释放）的 class 实例数——诊断用
+ffi long myp_live_object_count();
 
 // ============================================================
 // 动态内存分配器
@@ -46,5 +48,10 @@ class Memory {
         // 重新分配（扩容/缩容）
         long realloc(long ptr, long new_size) {
             return realloc(ptr, new_size);
+        }
+
+        // 当前线程存活的 class 实例数（ARC 诊断）
+        long liveObjectCount() {
+            return myp_live_object_count();
         }
 }

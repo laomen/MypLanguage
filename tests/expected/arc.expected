@@ -1,0 +1,6 @@
+life: +2=2 after_scope=0
+cascade: +3 after_box=0
+alias: x=7 y=7 after_alias=0
+accessor: got=same after_accessor=0
+loop: before=0 after=0
+arc all ok
