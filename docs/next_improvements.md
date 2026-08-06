@@ -30,7 +30,7 @@
 | # | 事项 | 现状 | 价值 / 影响 | 工作量 | 优先级 |
 |---|------|------|-------------|--------|--------|
 | 1 | ~~**`Option<T>` / 空安全**~~ | ✅ **已实施（additive）**：stdlib `Option<T>`（`option.myp`，构造器重载 none/some + `isSome/isNone/get/getOr/set/clear`）+ `T?` 语法糖（类型位置 ≡ `Option<T>`；`new` 用显式形式）。显式可空包装消除裸 `null` 解引用；完整"null 解引用编译期报错"为非破坏所限未做。`tests/option` | 消除最大一类运行时错误；系统性最强 | 大 | **P0** |
-| 2 | **元组 + 解构** | 多返回值只能靠自定义 struct；`match` 仅限枚举 | 表达力质变（多值返回/模式解构） | 中 | P1 |
+| 2 | ~~**元组 + 解构**~~ | ✅ **已实施（additive）**：元组类型 `(int, string)` + 字面量 `(1, "x")` + 多值返回 `(A,B) f()` + 声明式解构 `(A a, B b) = f()` / 赋值式解构 `(a, b) = f()` / 嵌套解构 + 字段访问 `t.N`。括号消歧（函数类型 `(A,B)->R` 有 `->`；元组顶层逗号 + `)` 后非 `->`；`(a,b)=>{}` 为 lambda）。`tests/tuple` + 负测试。**待办**：`_` 忽略符、元组方法（v2） | 表达力质变（多值返回/模式解构） | 中 | P1 |
 | 3 | **一等函数 / 闭包** | 设计见 `docs/function.md`。**M-FN-1/M-FN-2/M-FN-3 已实施**：函数类型 `(A,B)->R` + lambda 一等函数值（fat pointer `{closure, call_fn}` + tramp）+ 存/传/返/调用 + **按值捕获**（标量/字符串深拷贝、class 引用浅拷贝、嵌套、上下文类型推断）+ **泛型高阶函数**（`mapOpt`/`foldInt`：泛型参数 + 一等函数实参，泛型函数模板与类占位符延迟单态化）+ **`Option.map`**。`tests/function`。**待办**：stdlib `map`/`filter`/`reduce` 落位需泛型 `@static` 类方法（`resolveGenericCall` 扩展至 `static_actions`） | 高阶函数（map/filter/reduce 可落地） | 中 | P1 |
 | 4 | ~~**类型别名 `type X = ...`**~~ | ✅ **已实施**（上下文关键字，仅顶层 `type <Id> = <Type>;` 形态识别，`type` 仍可作标识符；parser 解析时替换 + sema 兜底递归检测；`tests/typealias` 正 + 负） | 可读性 | 小 | P2 |
 | 5 | **trait 默认实现 / 关联类型** | 有 `interface` + `where T:Interface` | 泛型能力 | 中 | P2 |

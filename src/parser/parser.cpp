@@ -94,7 +94,8 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             auto ta = parseTypeAlias();
             if (ta) tu->type_aliases.push_back(std::move(*ta));
         } else if (checkType() || check(TokenKind::Keyword_void) ||
-                   (check(TokenKind::LeftParen) && scanFunctionType())) {
+                   (check(TokenKind::LeftParen) && scanFunctionType()) ||
+                   (check(TokenKind::LeftParen) && scanTupleType())) {
             auto func = parseFunction();
             if (func) tu->functions.push_back(std::move(*func));
         } else {
@@ -954,9 +955,91 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
         current_ = saved;
     }
 
+    // Destructure statement: (A a, B b) = expr;  or  (a, b) = expr;
+    if (check(TokenKind::LeftParen) && scanDestructureAssign()) {
+        return parseDestructureStmt();
+    }
+
+    // Tuple-type variable declaration: (int, int) name = ...;
+    if (check(TokenKind::LeftParen) && scanTupleVarDecl()) {
+        auto saved = current_;
+        TypeNode dummy = parseType();
+        if (!isAtEnd() && peek().kind == TokenKind::Identifier) {
+            current_ = saved;
+            return parseVarDeclStmt();
+        }
+        current_ = saved;
+    }
+
     auto expr = parseExpr();
     consume(TokenKind::Semicolon, "expected ';' after expression");
     return std::make_unique<ExprStmt>(std::move(expr), previous().range);
+}
+
+// (T1 a, T2 b) = expr;   (declaration)   or   (a, b) = expr;   (assignment)
+std::unique_ptr<Stmt> Parser::parseDestructureStmt() {
+    DestructureTarget root;
+    root.range = peek().range;
+    advance(); // consume '('
+
+    // Parse one element (recursive): nested ( ... ) or [Type] name leaf.
+    std::function<void(DestructureTarget&)> parse_el =
+        [&](DestructureTarget& t) {
+            t.range = peek().range;
+            if (check(TokenKind::LeftParen)) {
+                advance();
+                while (true) {
+                    DestructureTarget child;
+                    parse_el(child);
+                    t.elements.push_back(std::move(child));
+                    if (!match(TokenKind::Comma)) break;
+                    if (check(TokenKind::RightParen)) break; // trailing comma
+                }
+                consume(TokenKind::RightParen, "expected ')' in destructure target");
+                return;
+            }
+            // Leaf: [Type] name
+            bool has_type = false;
+            if (peek().kind == TokenKind::Identifier) {
+                // Type Name (custom class / generic) vs bare Name:
+                // `Foo bar` / `Foo<...> bar` / `Foo[] bar` → typed leaf.
+                auto nt = peekNext().kind;
+                if (nt == TokenKind::Identifier || nt == TokenKind::Less ||
+                    nt == TokenKind::LeftBracket) {
+                    t.type = parseType();
+                    has_type = true;
+                }
+            } else if (isTypeToken(peek().kind)) {
+                t.type = parseType();
+                has_type = true;
+            }
+            t.has_type = has_type;
+            t.name = parseIdentifier("expected variable name in destructure target");
+        };
+
+    while (true) {
+        DestructureTarget child;
+        parse_el(child);
+        root.elements.push_back(std::move(child));
+        if (!match(TokenKind::Comma)) break;
+        if (check(TokenKind::RightParen)) break; // trailing comma
+    }
+    consume(TokenKind::RightParen, "expected ')' after destructure target");
+    consume(TokenKind::Equal, "expected '=' after destructure target");
+
+    auto value = parseExpr();
+    consume(TokenKind::Semicolon, "expected ';' after destructure assignment");
+
+    // is_decl = any leaf carries a type annotation
+    bool is_decl = false;
+    std::function<void(const DestructureTarget&)> any_type =
+        [&](const DestructureTarget& t) {
+            if (is_decl) return;
+            if (!t.name.empty() && t.has_type) is_decl = true;
+            for (auto& c : t.elements) any_type(c);
+        };
+    for (auto& c : root.elements) any_type(c);
+    return std::make_unique<DestructureStmt>(std::move(root), std::move(value), is_decl, previous().range);
 }
 
 std::unique_ptr<BlockStmt> Parser::parseBlock() {
@@ -1635,7 +1718,13 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
                 std::move(expr), std::move(args), previous().range);
 
         } else if (match(TokenKind::Dot)) {
-            std::string member = parseIdentifier("expected member name");
+            // Tuple field access: t.0, t.1 — allow an integer after '.'.
+            std::string member;
+            if (check(TokenKind::IntegerLiteral)) {
+                member = advance().value;
+            } else {
+                member = parseIdentifier("expected member name");
+            }
             expr = std::make_unique<MemberAccessExpr>(
                 std::move(expr), member, previous().range);
 
@@ -1833,7 +1922,24 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         consume(TokenKind::RightParen, "expected ')' after arguments");
         return std::make_unique<NewExpr>(class_name, std::move(type_args), std::move(args), previous().range);
     }
-    if (match(TokenKind::LeftParen)) {
+    if (check(TokenKind::LeftParen)) {
+        // Tuple literal: (a, b, ...) — top-level comma before the matching ')'
+        // (checked before consuming '(' so scanTupleLiteral sees the '(').
+        if (scanTupleLiteral()) {
+            advance(); // consume '('
+            std::vector<std::unique_ptr<Expr>> elems;
+            if (!check(TokenKind::RightParen)) {
+                elems.push_back(parseExpr());
+                while (match(TokenKind::Comma)) {
+                    if (check(TokenKind::RightParen)) { advance(); break; } // trailing comma
+                    elems.push_back(parseExpr());
+                }
+            }
+            consume(TokenKind::RightParen, "expected ')' after tuple literal");
+            return std::make_unique<TupleExpr>(std::move(elems), previous().range);
+        }
+        // consume '('
+        advance();
         // Check if this might be a lambda: look ahead for ') =>'
         size_t saved = current_;
         if (!isAtEnd()) {
@@ -1951,6 +2057,45 @@ TypeNode Parser::parseType() {
         consume(TokenKind::Arrow, "expected '->' in function type");
         node.func_return_type = std::make_shared<TypeNode>(parseType());
         node.range = peek().range;
+        return node;
+    }
+
+    // Tuple type: (A, B) — top-level comma, ')' NOT followed by '->'
+    // (function types handled above; `(int)` stays a parenthesized single type).
+    if (check(TokenKind::LeftParen) && scanTupleType()) {
+        advance(); // consume '('
+        if (!check(TokenKind::RightParen)) {
+            node.func_param_types.push_back(parseType());
+            while (match(TokenKind::Comma)) {
+                if (check(TokenKind::RightParen)) { advance(); break; } // trailing comma (int,)
+                node.func_param_types.push_back(parseType());
+            }
+        }
+        consume(TokenKind::RightParen, "expected ')' in tuple type");
+        node.is_tuple = true;
+        node.range = peek().range;
+        // (A,B)[] — array of tuples
+        if (match(TokenKind::LeftBracket)) {
+            int arr_size = 0;
+            if (check(TokenKind::IntegerLiteral)) {
+                auto tok = advance();
+                arr_size = std::stoi(tok.value);
+            }
+            consume(TokenKind::RightBracket, "expected ']' in array type");
+            auto elem = std::make_unique<TypeNode>(std::move(node));
+            node = TypeNode{};
+            node.element_type = std::move(elem);
+            node.array_size = arr_size;
+            node.range = peek().range;
+        }
+        // (A,B)? — Option<(A,B)> sugar
+        if (match(TokenKind::Question)) {
+            TypeNode inner = node;
+            node = TypeNode{};
+            node.class_name = "Option";
+            node.type_args.push_back(inner);
+            node.range = inner.range;
+        }
         return node;
     }
 
@@ -2114,6 +2259,114 @@ bool Parser::scanFunctionType() {
             i++; continue;
         }
         if (k == TokenKind::Semicolon) return false; // statement boundary
+        i++;
+    }
+    return false;
+}
+
+// Diagnostic-free lookahead for a tuple type: `(Type, ...)` with a top-level
+// comma and ')' NOT followed by '->' (function types are handled by
+// scanFunctionType first; `(int)` stays a parenthesized single type).
+bool Parser::scanTupleType() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::LeftParen) return false;
+    i++;
+    int depth = 1;
+    bool saw_comma = false;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::LeftParen) { depth++; i++; continue; }
+        if (k == TokenKind::RightParen) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                if (!saw_comma) return false;
+                return !(i < tokens_.size() && tokens_[i].kind == TokenKind::Arrow);
+            }
+            i++; continue;
+        }
+        if (depth == 1 && k == TokenKind::Comma) saw_comma = true;
+        i++;
+    }
+    return false;
+}
+
+// Diagnostic-free lookahead for a tuple literal expression: `(a, b, ...)`
+// with a top-level comma before the matching ')' and ')' NOT followed by
+// '=>' (a lambda `(x, y) => ...` has params, not a tuple).
+bool Parser::scanTupleLiteral() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::LeftParen) return false;
+    i++;
+    int depth = 1;
+    bool saw_comma = false;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::LeftParen) { depth++; i++; continue; }
+        if (k == TokenKind::RightParen) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                if (!saw_comma) return false;
+                return !(i < tokens_.size() && tokens_[i].kind == TokenKind::FatArrow);
+            }
+            i++; continue;
+        }
+        if (depth == 1 && k == TokenKind::Comma) saw_comma = true;
+        i++;
+    }
+    return false;
+}
+
+// Diagnostic-free lookahead for a destructuring statement:
+// `(...) = expr;` — a top-level comma inside parens, ')' followed by '='.
+bool Parser::scanDestructureAssign() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::LeftParen) return false;
+    i++;
+    int depth = 1;
+    bool saw_comma = false;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::LeftParen) { depth++; i++; continue; }
+        if (k == TokenKind::RightParen) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                return saw_comma && i < tokens_.size() &&
+                       tokens_[i].kind == TokenKind::Equal;
+            }
+            i++; continue;
+        }
+        if (depth == 1 && k == TokenKind::Comma) saw_comma = true;
+        i++;
+    }
+    return false;
+}
+
+// Diagnostic-free lookahead for a tuple-typed variable declaration:
+// `(int, int) name = ...` — top-level comma inside parens, ')' followed by an
+// Identifier (the variable name). This disambiguates from destructuring
+// `(int a, int b) = ...` (')' followed by '=').
+bool Parser::scanTupleVarDecl() {
+    size_t i = current_;
+    if (i >= tokens_.size() || tokens_[i].kind != TokenKind::LeftParen) return false;
+    i++;
+    int depth = 1;
+    bool saw_comma = false;
+    while (i < tokens_.size()) {
+        TokenKind k = tokens_[i].kind;
+        if (k == TokenKind::LeftParen) { depth++; i++; continue; }
+        if (k == TokenKind::RightParen) {
+            depth--;
+            if (depth == 0) {
+                i++;
+                return saw_comma && i < tokens_.size() &&
+                       tokens_[i].kind == TokenKind::Identifier;
+            }
+            i++; continue;
+        }
+        if (depth == 1 && k == TokenKind::Comma) saw_comma = true;
         i++;
     }
     return false;

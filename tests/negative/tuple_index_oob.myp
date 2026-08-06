@@ -1,0 +1,8 @@
+// EXPECT ERROR: tuple index out of range — t.5 on a 2-element tuple
+import env;
+int pmRun() {
+    (int, int) t = (1, 2);
+    int x = t.5;
+    return 0;
+}
+int main() { return 0; }

@@ -24,6 +24,7 @@ enum class TypeKind : uint8_t {
     Array,
     Slice,
     Function,
+    Tuple,
 };
 
 struct TypeInfo {
@@ -42,6 +43,9 @@ struct TypeInfo {
     std::vector<TypeInfo> param_types;
     std::vector<bool> param_is_ref;
 
+    // For Tuple types
+    std::vector<TypeInfo> tuple_types;
+
     TypeInfo() : kind(TypeKind::Void) {}
     TypeInfo(TypeKind k) : kind(k) {}
 
@@ -50,6 +54,7 @@ struct TypeInfo {
                kind != TypeKind::Struct &&
                kind != TypeKind::Array &&
                kind != TypeKind::Function &&
+               kind != TypeKind::Tuple &&
                kind != TypeKind::Void;
     }
 

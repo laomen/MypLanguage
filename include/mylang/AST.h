@@ -33,8 +33,10 @@ struct TypeNode {
     std::shared_ptr<TypeNode> element_type; // non-null if array type
     int array_size = 0;       // >0 if fixed-size array like Type[10]
     // Function type: (A, B) -> R  (func_return_type non-null ⇒ function type)
+    // Tuple type:    (A, B)       (is_tuple ⇒ tuple; func_param_types = element types)
     std::vector<TypeNode> func_param_types;
     std::shared_ptr<TypeNode> func_return_type;
+    bool is_tuple = false;   // true if this is a tuple type (int, string)
     SourceRange range;
 
     TypeNode() = default;
@@ -43,6 +45,7 @@ struct TypeNode {
           type_args(other.type_args), is_generic_param(other.is_generic_param),
           range(other.range), array_size(other.array_size),
           is_inferred(other.is_inferred),
+          is_tuple(other.is_tuple),
           func_param_types(other.func_param_types),
           func_return_type(other.func_return_type ? std::make_shared<TypeNode>(*other.func_return_type) : nullptr),
           element_type(other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr) {}
@@ -55,6 +58,7 @@ struct TypeNode {
             range = other.range;
             array_size = other.array_size;
             is_inferred = other.is_inferred;
+            is_tuple = other.is_tuple;
             func_param_types = other.func_param_types;
             func_return_type = other.func_return_type ? std::make_shared<TypeNode>(*other.func_return_type) : nullptr;
             element_type = other.element_type ? std::make_shared<TypeNode>(*other.element_type) : nullptr;
@@ -65,6 +69,7 @@ struct TypeNode {
     bool isArray() const { return element_type != nullptr; }
     bool isClass() const { return !class_name.empty(); }
     bool isFunction() const { return func_return_type != nullptr; }
+    bool isTuple() const { return is_tuple; }
     bool is_inferred = false; // true if declared with 'var'
 };
 
@@ -281,6 +286,7 @@ enum class ExprKind {
     Pipe,
     Try,
     Await,
+    TupleExpr,
     MacroParam,
     Quote,
 };
@@ -498,10 +504,26 @@ struct TryExpr : Expr {
           catch_var_name(std::move(cvn)), catch_expr(std::move(ce)) {}
 };
 
-// ---- Statements ----
+// Tuple literal: (a, b, ...) — at least 2 elements (top-level comma).
+struct TupleExpr : Expr {
+    std::vector<std::unique_ptr<Expr>> elements;
+    TupleExpr(std::vector<std::unique_ptr<Expr>> elems, SourceRange r)
+        : Expr(ExprKind::TupleExpr, r), elements(std::move(elems)) {}
+};
+
+// Destructuring target tree: (A a, B b) or ((int p, int q), int z)
+struct DestructureTarget {
+    std::string name;                              // non-empty ⇒ leaf (identifier)
+    TypeNode type;                                 // declared type for leaf (declaration destructure)
+    bool has_type = false;                         // true if a type annotation was parsed
+    std::vector<DestructureTarget> elements;       // non-empty ⇒ nested tuple
+    SourceRange range;
+};
+
 enum class StmtKind {
     Block,
     VarDeclStmt,
+    DestructureStmt,
     ExprStmt,
     IfStmt,
     WhileStmt,
@@ -561,6 +583,17 @@ struct VarDeclStmt : Stmt {
     VarDeclStmt(std::vector<VarDecl> d, SourceRange r)
         : Stmt(StmtKind::VarDeclStmt, r), decls(std::move(d)) {}
 };
+
+// Destructuring statement: (A a, B b) = expr;  or  (a, b) = expr;  (assignment)
+struct DestructureStmt : Stmt {
+    DestructureTarget target;
+    std::unique_ptr<Expr> value;
+    bool is_decl;   // true = declare new vars ((A a, B b) = ...); false = assign existing
+    DestructureStmt(DestructureTarget t, std::unique_ptr<Expr> v, bool decl, SourceRange r)
+        : Stmt(StmtKind::DestructureStmt, r), target(std::move(t)),
+          value(std::move(v)), is_decl(decl) {}
+};
+
 
 struct ExprStmt : Stmt {
     std::unique_ptr<Expr> expression;

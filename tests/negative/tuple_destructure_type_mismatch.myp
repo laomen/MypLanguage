@@ -1,0 +1,9 @@
+// EXPECT ERROR: destructure type mismatch — string var gets int element
+import env;
+int pmRun() {
+    int a;
+    string b;
+    (a, b) = (1, 2);
+    return 0;
+}
+int main() { return 0; }

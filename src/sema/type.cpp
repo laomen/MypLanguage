@@ -21,6 +21,8 @@ bool TypeInfo::operator==(const TypeInfo& other) const {
         case TypeKind::Function:
             return *return_type == *other.return_type &&
                    param_types == other.param_types;
+        case TypeKind::Tuple:
+            return tuple_types == other.tuple_types;
         default:
             return true; // basic types match by kind alone
     }

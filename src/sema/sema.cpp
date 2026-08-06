@@ -613,6 +613,72 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             for (auto& d : vds.decls) visitVarDecl(d);
             return {};
         }
+        case StmtKind::DestructureStmt: {
+            auto& ds = static_cast<DestructureStmt&>(stmt);
+            TypeInfo rhs = visitExpr(*ds.value);
+            if (rhs.kind != TypeKind::Tuple) {
+                error(stmt.range, "destructure target requires a tuple value, got '" +
+                    typeName(rhs) + "'");
+                return {};
+            }
+            // Walk the target tree against the tuple structure.
+            std::function<void(const DestructureTarget&, const TypeInfo&, size_t&)> walk =
+                [&](const DestructureTarget& t, const TypeInfo& tup, size_t& idx) {
+                    if (!t.name.empty()) {
+                        // Leaf: bind/assign element idx
+                        if (idx >= tup.tuple_types.size()) {
+                            error(t.range, "destructure: not enough elements in tuple '" +
+                                typeName(tup) + "'");
+                            return;
+                        }
+                        const TypeInfo& et = tup.tuple_types[idx];
+                        idx++;
+                        if (ds.is_decl) {
+                            // Declare: explicit type or infer from element
+                            TypeInfo lt = t.has_type ? typeNodeToTypeInfo(t.type) : et;
+                            if (t.has_type && !typesCompatible(lt, et)) {
+                                error(t.range, "destructure: variable '" + t.name +
+                                    "' declared as '" + typeName(lt) + "' but element is '" +
+                                    typeName(et) + "'");
+                            }
+                            symbol_table_.declare(t.name, lt);
+                        } else {
+                            auto* existing = symbol_table_.lookup(t.name);
+                            if (!existing) {
+                                error(t.range, "destructure: undeclared variable '" + t.name + "'");
+                                return;
+                            }
+                            if (!typesCompatible(*existing, et)) {
+                                error(t.range, "destructure: cannot assign '" + typeName(et) +
+                                    "' to '" + t.name + "' of type '" + typeName(*existing) + "'");
+                            }
+                        }
+                        return;
+                    }
+                    // Nested tuple: expect element idx to be a tuple of matching arity
+                    if (idx >= tup.tuple_types.size() ||
+                        tup.tuple_types[idx].kind != TypeKind::Tuple) {
+                        error(t.range, "destructure: expected a nested tuple here");
+                        return;
+                    }
+                    if (tup.tuple_types[idx].tuple_types.size() != t.elements.size()) {
+                        error(t.range, "destructure: nested tuple arity mismatch");
+                        return;
+                    }
+                    const TypeInfo& sub = tup.tuple_types[idx];
+                    size_t sidx = 0;
+                    for (auto& c : t.elements) walk(c, sub, sidx);
+                    idx++;
+                };
+            size_t idx = 0;
+            for (auto& c : ds.target.elements) walk(c, rhs, idx);
+            if (idx != rhs.tuple_types.size()) {
+                error(stmt.range, "destructure: tuple has " +
+                    std::to_string(rhs.tuple_types.size()) + " elements but target binds " +
+                    std::to_string(idx));
+            }
+            return {};
+        }
         case StmtKind::ExprStmt: {
             auto& es = static_cast<ExprStmt&>(stmt);
             if (es.expression) {
@@ -958,6 +1024,14 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::Try:
             result = visitTryExpr(static_cast<TryExpr&>(expr));
             break;
+        case ExprKind::TupleExpr: {
+            auto& te = static_cast<TupleExpr&>(expr);
+            TypeInfo tt(TypeKind::Tuple);
+            for (auto& el : te.elements)
+                tt.tuple_types.push_back(visitExpr(*el));
+            result = tt;
+            break;
+        }
         case ExprKind::Await: {
             if (!in_coro_method_) {
                 error(expr.range, "'await' is only allowed inside an '@coro' method");
@@ -1393,6 +1467,18 @@ TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
                 n.type_args.push_back(TypeNodeFromTypeInfo(*t.element_type));
             }
             break;
+        case TypeKind::Function:
+            n.is_tuple = false;
+            for (auto& p : t.param_types)
+                n.func_param_types.push_back(TypeNodeFromTypeInfo(p));
+            if (t.return_type)
+                n.func_return_type = std::make_shared<TypeNode>(TypeNodeFromTypeInfo(*t.return_type));
+            break;
+        case TypeKind::Tuple:
+            n.is_tuple = true;
+            for (auto& p : t.tuple_types)
+                n.func_param_types.push_back(TypeNodeFromTypeInfo(p));
+            break;
         default: n.basic_type = BuiltinType::Int; break;
     }
     return n;
@@ -1531,6 +1617,20 @@ bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
 
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     auto obj_type = visitExpr(*expr.object);
+
+    // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
+    if (obj_type.kind == TypeKind::Tuple && !expr.member_name.empty()) {
+        bool all_digits = std::all_of(expr.member_name.begin(), expr.member_name.end(),
+            [](unsigned char c) { return std::isdigit(c); });
+        if (all_digits) {
+            unsigned idx = (unsigned)std::stoul(expr.member_name);
+            if (idx < obj_type.tuple_types.size())
+                return obj_type.tuple_types[idx];
+            error(expr.range, "tuple index " + expr.member_name + " out of range (" +
+                std::to_string(obj_type.tuple_types.size()) + " elements)");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
 
     // Slice member access: .size()/.length() → int, .data() → T[]
     if (obj_type.kind == TypeKind::Slice) {
@@ -2069,6 +2169,13 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             ft.param_types.push_back(typeNodeToTypeInfo(p));
         return ft;
     }
+    // Tuple type: (A, B)
+    if (node.isTuple()) {
+        TypeInfo tt(TypeKind::Tuple);
+        for (auto& p : node.func_param_types)
+            tt.tuple_types.push_back(typeNodeToTypeInfo(p));
+        return tt;
+    }
     if (node.isArray()) {
         TypeInfo arr_type(TypeKind::Array);
         arr_type.array_size = node.array_size;
@@ -2380,6 +2487,15 @@ std::string Sema::typeName(const TypeInfo& type) const {
             s += type.return_type ? typeName(*type.return_type) : "void";
             return s;
         }
+        case TypeKind::Tuple: {
+            std::string s = "(";
+            for (size_t i = 0; i < type.tuple_types.size(); i++) {
+                if (i) s += ", ";
+                s += typeName(type.tuple_types[i]);
+            }
+            s += ")";
+            return s;
+        }
     }
     return "unknown";
 }
@@ -2405,6 +2521,13 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
             if (lhs.return_type && rhs.return_type)
                 return typesCompatible(*lhs.return_type, *rhs.return_type);
             return !lhs.return_type && !rhs.return_type;
+        }
+        if (lhs.kind == TypeKind::Tuple) {
+            // Structural: same element count, each element compatible
+            if (lhs.tuple_types.size() != rhs.tuple_types.size()) return false;
+            for (size_t i = 0; i < lhs.tuple_types.size(); i++)
+                if (!typesCompatible(lhs.tuple_types[i], rhs.tuple_types[i])) return false;
+            return true;
         }
         return true;
     }
@@ -2597,6 +2720,15 @@ TypeNode Sema::substituteTypeNode(const TypeNode& node,
                 substituteTypeNode(*node.func_return_type, type_params, type_args));
         return result;
     }
+    // Tuple type: (A,B) — substitute element types
+    if (node.isTuple()) {
+        TypeNode result;
+        result.range = node.range;
+        result.is_tuple = true;
+        for (auto& p : node.func_param_types)
+            result.func_param_types.push_back(substituteTypeNode(p, type_params, type_args));
+        return result;
+    }
     // For array types, substitute element type
     if (node.isArray() && node.element_type) {
         TypeNode result;
@@ -2676,6 +2808,9 @@ void Sema::collectExprLocals(Expr& e, std::set<std::string>& locals) {
             if (t.catch_expr) collectExprLocals(*t.catch_expr, locals);
             break;
         }
+        case ExprKind::TupleExpr:
+            for (auto& el : static_cast<TupleExpr&>(e).elements) collectExprLocals(*el, locals);
+            break;
         case ExprKind::Await:
             if (static_cast<AwaitExpr&>(e).operand) collectExprLocals(*static_cast<AwaitExpr&>(e).operand, locals);
             break;
@@ -2724,6 +2859,18 @@ void Sema::collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals) {
             if (static_cast<ReturnStmt&>(stmt).value)
                 collectExprLocals(*static_cast<ReturnStmt&>(stmt).value, locals);
             break;
+        case StmtKind::DestructureStmt: {
+            auto& ds = static_cast<DestructureStmt&>(stmt);
+            // Declaration leaves are locals (shadowed by the tuple element types).
+            std::function<void(const DestructureTarget&)> bind =
+                [&](const DestructureTarget& t) {
+                    if (!t.name.empty()) { locals.insert(t.name); return; }
+                    for (auto& c : t.elements) bind(c);
+                };
+            for (auto& c : ds.target.elements) bind(c);
+            if (ds.value) collectExprLocals(*ds.value, locals);
+            break;
+        }
         case StmtKind::MatchStmt:
             for (auto& a : static_cast<MatchStmt&>(stmt).arms) {
                 for (auto& b : a.bindings) locals.insert(b);
@@ -2807,6 +2954,9 @@ void Sema::collectExprCaptures(Expr& e, const std::set<std::string>& locals,
             if (t.catch_expr) collectExprCaptures(*t.catch_expr, locals, params, out);
             break;
         }
+        case ExprKind::TupleExpr:
+            for (auto& el : static_cast<TupleExpr&>(e).elements) collectExprCaptures(*el, locals, params, out);
+            break;
         case ExprKind::Await:
             if (static_cast<AwaitExpr&>(e).operand) collectExprCaptures(*static_cast<AwaitExpr&>(e).operand, locals, params, out);
             break;
@@ -2855,6 +3005,11 @@ void Sema::collectLambdaCaptures(Stmt& stmt, const std::set<std::string>& locals
             if (static_cast<ReturnStmt&>(stmt).value)
                 collectExprCaptures(*static_cast<ReturnStmt&>(stmt).value, locals, params, out);
             break;
+        case StmtKind::DestructureStmt: {
+            auto& ds = static_cast<DestructureStmt&>(stmt);
+            if (ds.value) collectExprCaptures(*ds.value, locals, params, out);
+            break;
+        }
         case StmtKind::MatchStmt:
             for (auto& a : static_cast<MatchStmt&>(stmt).arms)
                 if (a.body) collectLambdaCaptures(*a.body, locals, params, out);

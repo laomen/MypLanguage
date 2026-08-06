@@ -50,6 +50,8 @@ private:
     std::unordered_map<std::string, llvm::StructType*> class_structs_;
     // Maps class name → property name → index in struct
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> property_indices_;
+    // Anonymous tuple structs, keyed by element LLVM type signature.
+    std::unordered_map<std::string, llvm::StructType*> tuple_structs_;
 
     // ---- Current function ----
     llvm::Function* current_function_ = nullptr;
@@ -398,6 +400,7 @@ private:
     void generateBlock(const BlockStmt& stmt);
     void generateStmt(const Stmt& stmt);
     void generateVarDecl(const VarDecl& decl);
+    void generateDestructureStmt(const DestructureStmt& stmt);
     void generateIfStmt(const IfStmt& stmt);
     void generateWhileStmt(const WhileStmt& stmt);
     void generateForStmt(const ForStmt& stmt);
@@ -442,6 +445,7 @@ private:
     llvm::Value* generateEnumVariant(const EnumVariantExpr& expr);
     llvm::Value* generateLambda(const LambdaExpr& expr);
     llvm::Value* generatePipe(const PipeExpr& expr);
+    llvm::Value* generateTupleExpr(const TupleExpr& expr);
     void generateFFIDecl(const FFIDecl& decl);
 
     // ---- Match codegen ----

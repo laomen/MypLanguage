@@ -7,6 +7,7 @@
 #include "Type.h"
 
 #include <unordered_map>
+#include <functional>
 #include <set>
 
 namespace mylang {

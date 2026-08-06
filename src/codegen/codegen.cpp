@@ -417,6 +417,21 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
         case TypeKind::String:    return llvm::PointerType::get(ctx_, 0);
         case TypeKind::Null:
         case TypeKind::Function:  return getFunctionValueType();
+        case TypeKind::Tuple: {
+            // Anonymous struct { T0, T1, ... } — cached by element-type signature.
+            std::vector<llvm::Type*> elems;
+            std::string sig;
+            for (auto& et : t.tuple_types) {
+                elems.push_back(getLLVMType(et));
+                sig += std::to_string((uintptr_t)elems.back());
+                sig += ";";
+            }
+            auto it = tuple_structs_.find(sig);
+            if (it != tuple_structs_.end()) return it->second;
+            auto* st = llvm::StructType::get(ctx_, elems);
+            tuple_structs_[sig] = st;
+            return st;
+        }
         case TypeKind::Class: {
             auto* st = getClassStruct(t.class_name);
             (void)st;
@@ -468,6 +483,13 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         for (auto& p : node.func_param_types)
             ft.param_types.push_back(typeNodeToCodegenType(p));
         return ft;
+    }
+    // Tuple type: (A,B)
+    if (node.isTuple()) {
+        TypeInfo tt(TypeKind::Tuple);
+        for (auto& p : node.func_param_types)
+            tt.tuple_types.push_back(typeNodeToCodegenType(p));
+        return tt;
     }
     if (node.isArray() && node.element_type) {
         TypeInfo result(TypeKind::Array);
@@ -539,6 +561,15 @@ std::string CodeGen::mangleConcreteTypeNode(const TypeNode& node) {
         }
         s += ") -> ";
         s += node.func_return_type ? mangleConcreteTypeNode(*node.func_return_type) : "void";
+        return s;
+    }
+    if (node.isTuple()) {
+        std::string s = "(";
+        for (size_t i = 0; i < node.func_param_types.size(); i++) {
+            if (i) s += ", ";
+            s += mangleConcreteTypeNode(node.func_param_types[i]);
+        }
+        s += ")";
         return s;
     }
     if (!node.class_name.empty()) {
@@ -2089,8 +2120,65 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::MatchStmt: generateMatchStmt(static_cast<const MatchStmt&>(s)); break;
         case StmtKind::TryStmt: generateTryStmt(static_cast<const TryStmt&>(s)); break;
         case StmtKind::ThrowStmt: generateThrowStmt(static_cast<const ThrowStmt&>(s)); break;
+        case StmtKind::DestructureStmt: generateDestructureStmt(static_cast<const DestructureStmt&>(s)); break;
         default: break;
     }
+}
+
+// (A a, B b) = tuple;  (declaration)   or  (a, b) = tuple;  (assignment)
+void CodeGen::generateDestructureStmt(const DestructureStmt& ds) {
+    if (!current_function_) return;
+    auto* rval = generateExpr(*ds.value);
+    if (!rval) return;
+    auto* st = llvm::dyn_cast<llvm::StructType>(rval->getType());
+    if (!st) return;
+
+    std::function<void(const DestructureTarget&, llvm::Value*, llvm::StructType*)> walk =
+        [&](const DestructureTarget& t, llvm::Value* agg, llvm::StructType* sty) {
+            size_t idx = 0;
+            for (auto& c : t.elements) {
+                if (idx >= sty->getNumElements()) return;
+                auto* ev = builder_.CreateExtractValue(agg, (unsigned)idx, "tup_el");
+                auto* et = sty->getElementType(idx);
+                if (!c.name.empty()) {
+                    // Leaf
+                    llvm::Type* lt = c.has_type
+                        ? getLLVMType(typeNodeToCodegenType(c.type))
+                        : et;
+                    if (ds.is_decl) {
+                        auto* a = createEntryBlockAlloca(current_function_, lt, c.name);
+                        setNamedValue(c.name, a);
+                        setNamedTypedValue(c.name, a, lt);
+                        if (ev->getType() != lt) {
+                            if (lt->isIntegerTy() && ev->getType()->isIntegerTy())
+                                ev = builder_.CreateIntCast(ev, lt, true);
+                            else if (lt->isPointerTy() && ev->getType()->isPointerTy())
+                                ev = builder_.CreateBitCast(ev, lt);
+                        }
+                        builder_.CreateStore(ev, a);
+                    } else {
+                        auto* existing = getNamedValue(c.name);
+                        if (!existing) return;
+                        auto* existing_ty = llvm::dyn_cast<llvm::AllocaInst>(existing)
+                            ? llvm::cast<llvm::AllocaInst>(existing)->getAllocatedType()
+                            : ev->getType();
+                        if (ev->getType() != existing_ty) {
+                            if (existing_ty->isIntegerTy() && ev->getType()->isIntegerTy())
+                                ev = builder_.CreateIntCast(ev, existing_ty, true);
+                            else if (existing_ty->isPointerTy() && ev->getType()->isPointerTy())
+                                ev = builder_.CreateBitCast(ev, existing_ty);
+                        }
+                        builder_.CreateStore(ev, existing);
+                    }
+                } else {
+                    // Nested tuple
+                    if (auto* nested_st = llvm::dyn_cast<llvm::StructType>(et))
+                        walk(c, ev, nested_st);
+                }
+                idx++;
+            }
+        };
+    walk(ds.target, rval, st);
 }
 
 void CodeGen::generateBlock(const BlockStmt& s) {
@@ -2499,6 +2587,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         TypeInfo ft = typeNodeToCodegenType(d.type);
         lt = getLLVMType(ft);
         func_val_types_[d.name] = ft;
+    } else if (d.type.isTuple()) {
+        // Tuple value type: anonymous struct { T0, T1, ... }
+        TypeInfo tt = typeNodeToCodegenType(d.type);
+        lt = getLLVMType(tt);
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
@@ -2676,6 +2768,13 @@ void CodeGen::collectExprIdentifiers(const Expr& expr, std::set<std::string>& ou
             collectExprIdentifiers(*t.false_expr, out, loop_decls);
             break;
         }
+        case ExprKind::Try:
+        case ExprKind::Await:
+            break;
+        case ExprKind::TupleExpr:
+            for (auto& el : static_cast<const TupleExpr&>(expr).elements)
+                collectExprIdentifiers(*el, out, loop_decls);
+            break;
         case ExprKind::ThisExpr:
         case ExprKind::IntegerLiteral:
         case ExprKind::FloatLiteral:
@@ -2698,6 +2797,30 @@ void CodeGen::collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& ou
             auto& b = static_cast<const BlockStmt&>(stmt);
             for (auto& s : b.statements)
                 collectStmtIdentifiers(*s, out, loop_decls);
+            break;
+        }
+        case StmtKind::DestructureStmt: {
+            auto& ds = static_cast<const DestructureStmt&>(stmt);
+            if (ds.is_decl) {
+                std::function<void(const DestructureTarget&)> bind =
+                    [&](const DestructureTarget& t) {
+                        if (!t.name.empty()) { loop_decls.insert(t.name); return; }
+                        for (auto& c : t.elements) bind(c);
+                    };
+                for (auto& c : ds.target.elements) bind(c);
+            } else {
+                std::function<void(const DestructureTarget&)> refs =
+                    [&](const DestructureTarget& t) {
+                        if (!t.name.empty()) {
+                            if (loop_decls.find(t.name) == loop_decls.end())
+                                out.insert(t.name);
+                            return;
+                        }
+                        for (auto& c : t.elements) refs(c);
+                    };
+                for (auto& c : ds.target.elements) refs(c);
+            }
+            if (ds.value) collectExprIdentifiers(*ds.value, out, loop_decls);
             break;
         }
         case StmtKind::VarDeclStmt: {
@@ -4582,6 +4705,24 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                     ret_val = builder_.CreateFPToSI(ret_val, rt);
                 else if (rt->isPointerTy() && ret_val->getType()->isPointerTy())
                     ret_val = builder_.CreateBitCast(ret_val, rt);
+                else if (rt->isStructTy() && ret_val->getType()->isStructTy()) {
+                    // Tuple return: rebuild with declared element types
+                    // (handles promotions like return (5, "x") in (int, string)).
+                    auto* dst_st = llvm::cast<llvm::StructType>(rt);
+                    llvm::Value* agg = llvm::PoisonValue::get(dst_st);
+                    for (unsigned i = 0; i < dst_st->getNumElements(); i++) {
+                        llvm::Value* el = builder_.CreateExtractValue(ret_val, i);
+                        auto* el_ty = dst_st->getElementType(i);
+                        if (el->getType() != el_ty) {
+                            if (el_ty->isIntegerTy() && el->getType()->isIntegerTy())
+                                el = builder_.CreateIntCast(el, el_ty, true);
+                            else if (el_ty->isPointerTy() && el->getType()->isPointerTy())
+                                el = builder_.CreateBitCast(el, el_ty);
+                        }
+                        agg = builder_.CreateInsertValue(agg, el, i);
+                    }
+                    ret_val = agg;
+                }
             }
             builder_.CreateRet(ret_val);
         } else {
@@ -4672,8 +4813,22 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::Pipe:           return generatePipe(static_cast<const PipeExpr&>(e));
         case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
         case ExprKind::Await:          return generateAwaitExpr(static_cast<const AwaitExpr&>(e));
+        case ExprKind::TupleExpr:      return generateTupleExpr(static_cast<const TupleExpr&>(e));
     }
     return nullptr;
+}
+
+llvm::Value* CodeGen::generateTupleExpr(const TupleExpr& e) {
+    std::vector<llvm::Value*> vals;
+    for (auto& el : e.elements) vals.push_back(generateExpr(*el));
+    std::vector<llvm::Type*> tys;
+    for (auto& v : vals) tys.push_back(v->getType());
+    auto* st = llvm::StructType::get(ctx_, tys);
+    // Match the cached tuple struct (by type) if present, else use this one.
+    llvm::Value* agg = llvm::PoisonValue::get(st);
+    for (size_t i = 0; i < vals.size(); i++)
+        agg = builder_.CreateInsertValue(agg, vals[i], (unsigned)i);
+    return agg;
 }
 
 llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
@@ -5931,6 +6086,20 @@ llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
 }
 
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
+    if (!e.member_name.empty() && std::all_of(e.member_name.begin(), e.member_name.end(),
+            [](unsigned char c) { return std::isdigit(c); })) {
+        auto* objv = generateExpr(*e.object);
+        if (objv && objv->getType()->isStructTy()) {
+            auto* st = llvm::cast<llvm::StructType>(objv->getType());
+            if (st->isLiteral()) {
+                unsigned idx = (unsigned)std::stoul(e.member_name);
+                if (idx < st->getNumElements())
+                    return builder_.CreateExtractValue(objv, idx, "tup_field");
+            }
+        }
+    }
+
     // Static class property access: ClassName.property
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);

@@ -1,0 +1,7 @@
+// EXPECT ERROR: tuple arity mismatch — (int,int) initialized with 3 elements
+import env;
+int pmRun() {
+    (int, int) t = (1, 2, 3);
+    return 0;
+}
+int main() { return 0; }

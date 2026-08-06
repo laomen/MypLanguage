@@ -6,6 +6,7 @@
 #include "Token.h"
 
 #include <memory>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 
@@ -111,6 +112,11 @@ private:
     bool isTypeToken(TokenKind k) const;
     bool scanGenericTypeArgs();
     bool scanFunctionType();
+    bool scanTupleType();
+    bool scanTupleLiteral();
+    bool scanDestructureAssign();
+    bool scanTupleVarDecl();
+    std::unique_ptr<Stmt> parseDestructureStmt();
 
     // Type aliases (`type Name = Type;`) seen so far in this TU, for parse-time
     // substitution (alias must be declared before use).
