@@ -1627,10 +1627,58 @@ Time.sleep(1000);             // 休眠 1 秒
 ```myp
 import random;
 
-Random.init(12345);           // 设置种子
-int r = Random.next();         // [0, RAND_MAX]
-int d = Random.below(10);      // [0, 10)
+Random.init(12345);               // 设置种子
+int r = Random.next();            // [0, RAND_MAX]
+int d = Random.below(10);         // [0, 10)
+double u = Random.uniform();      // [0.0, 1.0)
+double g = Random.gaussian();     // 标准正态 N(0,1)（Box-Muller）
+double rg = Random.range(5.0, 10.0);   // [lo, hi) 均匀分布
+double e = Random.exponential(2.0);    // 指数分布（均值 1/lambda，逆变换采样）
+int p = Random.poisson(3.0);           // 泊松分布整数（Knuth 算法）
+Random.shuffle(arr, n);           // Fisher-Yates 洗牌
 ```
+
+### `import fmt` — printf 风格格式化（§六-4，v3.9.0，additive）
+
+补 `sprintf` 缺口：此前仅字符串插值 `${x}`，现提供宽度/精度/进制/填充控制。
+
+```myp
+import fmt;
+
+Fmt.i(42)               // "42"          十进制（有符号）
+Fmt.i(42, 6)            // "    42"      右对齐，空格填充
+Fmt.i(42, 6, 48)        // "000042"      '0' 填充
+Fmt.u(-1)               // "4294967295"  无符号十进制（位模式）
+Fmt.x(255, 4)           // "00ff"        小写十六进制（无符号，默认 '0' 填充）
+Fmt.X(255, 4)           // "00FF"        大写十六进制
+Fmt.o(8)                // "10"          八进制
+Fmt.b(5)                // "101"         二进制
+Fmt.f(3.14159, 2)       // "3.14"        定点 %.2f
+Fmt.f(123.456, 2, 10)   // "    123.46"  定点 + 宽度
+Fmt.e(123.456, 2)       // "1.23e+02"    科学计数 %.2e
+Fmt.g(0.0001, 4)        // "0.0001"      最短表示 %.4g
+Fmt.s("hi", 5)          // "   hi"       字符串右对齐
+Fmt.sR("hi", 5)         // "hi   "       字符串左对齐
+```
+
+默认参数签名：整数族 `(v, width = 0, pad = 空格/48)`，浮点族 `(v, precision = 6, width = 0, pad = 空格)`；`width <= 0` 不填充。
+
+### `import crypto` — 校验和 / 哈希（§六-4，v3.9.0，additive）
+
+补 `crypto/hash` 缺口。哈希核心在 C 运行时，MYP 侧为静态类封装。
+
+```myp
+import crypto;
+
+string h = Crc32.crc32Hex("hello");   // 8 位小写十六进制（无符号显示）
+int c = Crc32.crc32("hello");         // 原始 32 位值（最高位可能为 1 → int 为负）
+
+Hash.md5("abc");     // 32 位小写十六进制
+Hash.sha1("abc");    // 40 位小写十六进制
+Hash.sha256("abc");  // 64 位小写十六进制
+```
+
+算法：CRC-32（IEEE 802.3）、MD5（RFC 1321）、SHA-1 / SHA-256（FIPS 180）。已用标准已知向量回归（含 56 字节跨块消息）。
 
 ### `import text` — 文本处理
 

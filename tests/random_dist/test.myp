@@ -1,0 +1,48 @@
+// random_dist: Random 分布补强回归 — range/exponential/poisson/gaussian 区间与合法性
+import env;
+import random;
+
+class Main {
+    action:
+        @startup void run() {
+            Random.init(2026);
+            Console.writeString("[random_dist]\n");
+
+            // range: 500 次采样都在 [5, 10)
+            int rangeOk = 1;
+            for (int i = 0; i < 500; i = i + 1) {
+                double v = Random.range(5.0, 10.0);
+                if (v < 5.0 || v >= 10.0) rangeOk = 0;
+            }
+            Console.writeString("range="); Console.writeBool(rangeOk == 1);
+
+            // exponential: 500 次采样都 >= 0
+            int expOk = 1;
+            for (int i = 0; i < 500; i = i + 1) {
+                double v = Random.exponential(2.0);
+                if (v < 0.0) expOk = 0;
+            }
+            Console.writeString("exponential="); Console.writeBool(expOk == 1);
+
+            // poisson: 500 次采样都 >= 0
+            int poisOk = 1;
+            for (int i = 0; i < 500; i = i + 1) {
+                int v = Random.poisson(3.0);
+                if (v < 0) poisOk = 0;
+            }
+            Console.writeString("poisson="); Console.writeBool(poisOk == 1);
+
+            // gaussian: 500 次采样都在 [-8, 8]（Box-Muller 稳定性）
+            int gaussOk = 1;
+            for (int i = 0; i < 500; i = i + 1) {
+                double v = Random.gaussian();
+                if (v < -8.0 || v > 8.0) gaussOk = 0;
+            }
+            Console.writeString("gaussian="); Console.writeBool(gaussOk == 1);
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

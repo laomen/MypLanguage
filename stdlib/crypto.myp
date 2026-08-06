@@ -1,0 +1,41 @@
+// crypto.myp — MYP 标准库：校验和 / 哈希（additive）
+//
+// 补 §六-4 "stdlib 缺口" 之 crypto/hash。
+// 哈希核心在 C 运行时（runtime.c），此处提供 MYP 面向对象封装。
+//
+// 用法：
+//   int c = Crc32.crc32("hello");           // 原始 32 位值（最高位可能为 1 → int 为负）
+//   string h = Crc32.crc32Hex("hello");     // 8 位小写十六进制（无符号显示）
+//   string m = Hash.md5("abc");             // 32 位小写十六进制
+//   string s1 = Hash.sha1("abc");           // 40 位小写十六进制
+//   string s2 = Hash.sha256("abc");         // 64 位小写十六进制
+
+import fmt;
+
+// FFI 声明到 C 运行时
+ffi int myp_crc32(string s);
+ffi string myp_hash_md5(string s);
+ffi string myp_hash_sha1(string s);
+ffi string myp_hash_sha256(string s);
+
+class Crc32 {
+    static:
+        // 原始 CRC-32 值（IEEE 802.3 多项式 0xEDB88320）。
+        // 返回 int32（最高位可能为 1 → 负值），用 crc32Hex / Fmt.x 显示无符号十六进制。
+        int crc32(string s) { return myp_crc32(s); }
+
+        // 8 位小写十六进制字符串（无符号显示）
+        string crc32Hex(string s) { return Fmt.x(myp_crc32(s), 8); }
+}
+
+class Hash {
+    static:
+        // MD5，32 位小写十六进制
+        string md5(string s) { return myp_hash_md5(s); }
+
+        // SHA-1，40 位小写十六进制
+        string sha1(string s) { return myp_hash_sha1(s); }
+
+        // SHA-256，64 位小写十六进制
+        string sha256(string s) { return myp_hash_sha256(s); }
+}

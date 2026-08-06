@@ -118,6 +118,18 @@ int32_t myp_env_unset(const char* name);
 char* myp_str_repeat(const char* s, int32_t count);
 char* myp_str_pad_left(const char* s, int32_t total_len, int32_t pad_char);
 char* myp_str_pad_right(const char* s, int32_t total_len, int32_t pad_char);
+
+// ---- printf-style formatting (stdlib/fmt.myp) ----
+char* myp_fmt_u64_base(int32_t v, int32_t base, int32_t upper);
+char* myp_fmt_double_f(double v, int32_t prec);
+char* myp_fmt_double_e(double v, int32_t prec);
+char* myp_fmt_double_g(double v, int32_t prec);
+
+// ---- Hashing (stdlib/crypto.myp) ----
+int32_t myp_crc32(const char* msg);
+char* myp_hash_md5(const char* msg);
+char* myp_hash_sha1(const char* msg);
+char* myp_hash_sha256(const char* msg);
 char* myp_str_reverse(const char* s);
 char* myp_str_replace_all(const char* s, const char* old_str, const char* new_str);
 

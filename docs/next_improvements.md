@@ -62,7 +62,7 @@
 | 1 | **Windows 移植** | 前端已可移植（纯 C++17+LLVM）；难点：`runtime.c` POSIX 子系统（pthread/TLS/termios/socket/regex/process）+ `linkObjects` gcc 硬编码 + DAP 对 gdb/fork/pipe 的依赖 | P2（**用户已明确推迟**） |
 | 2 | **包管理器** | ✅ 已完成（T1 v1/v2 + registry/Gitee，见 `docs/pkg_manager.md`） | 已交付 |
 | 3 | **文档生成** | 无 doc-comment → API 文档 | P2 |
-| 4 | **stdlib 缺口** | crypto/hash、HTTP 客户端、SQL、时区、压缩、`sprintf` 格式化（仅插值）、随机分布 | P2 |
+| 4 | **stdlib 缺口** | ~~crypto/hash~~ ✅（`stdlib/crypto.myp`：CRC32 + MD5 + SHA-1 + SHA-256，已知向量回归）、~~`sprintf` 格式化~~ ✅（`stdlib/fmt.myp`：Fmt 类——%d/%u/%x/%X/%o/%b + %.Nf/%.Ne/%.Ng + 宽度/填充，runtime 补 snprintf FFI）、~~随机分布~~ ✅（`random.myp`：range/exponential/poisson）。**剩余**：HTTP 客户端（基于 `net.myp` TCP，需 URL/HTTP 解析）、SQL、时区、压缩 | P2 |
 | 5 | ~~**`mypc run`（仿 `go run`）+ 单类文件自动 `main`**~~ | ✅ **已实施（additive）**：①`mypc run file.myp [args]`——编译到临时产物 → 链接 → 直接运行 → 清理，退出码=程序退出码，args 透传。②**单类文件无 `main` 也可 run**：**约束：类必须带 `@startup` 注解**——编译器在 sema Pass 1 后注入合成 `main()`（实例化该类并触发其 `@startup` 入口；`is_auto_main` 标志豁免 main() 直接调用限制）；无 `@startup` / 多 `@startup` 类报错提示。正常编译（非 run）仍要求显式 main（行为不变）。`tests/test_myp_run.sh` 8 断言 | P1 |
 
 ## 七、官方 roadmap（design.md §11，已有规划）

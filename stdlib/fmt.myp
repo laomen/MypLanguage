@@ -1,0 +1,107 @@
+// fmt.myp — MYP 标准库：printf 风格格式化（additive，无新语法）
+//
+// 补 §六-4 "stdlib 缺口" 之 sprintf 格式化（此前仅字符串插值 ${x}）。
+//
+// 用法（sprintf 语义）：
+//   Fmt.i(42)              -> "42"         十进制（有符号）
+//   Fmt.i(42, 6)           -> "    42"     右对齐，空格填充
+//   Fmt.i(-7, 4, 48)       -> "00-7"       '0' 填充
+//   Fmt.x(255)             -> "ff"         小写十六进制（按无符号解释）
+//   Fmt.x(255, 4)          -> "00ff"       宽度 + '0' 填充（默认 pad='0'）
+//   Fmt.X(255, 4)          -> "00FF"       大写
+//   Fmt.o(8)               -> "10"         八进制
+//   Fmt.b(5)               -> "101"        二进制
+//   Fmt.u(-1)              -> "4294967295" 无符号十进制
+//   Fmt.f(3.14159, 2)      -> "3.14"       定点
+//   Fmt.f(123.456, 2, 10)  -> "    123.46" 定点 + 宽度
+//   Fmt.e(123.456, 2)      -> "1.23e+02"   科学计数
+//   Fmt.g(0.0001, 4)       -> "0.0001"     最短表示
+//   Fmt.s("hi", 5)         -> "   hi"      字符串右对齐
+//   Fmt.sR("hi", 5)        -> "hi   "      字符串左对齐
+
+import text;
+
+// FFI 声明到 C 运行时
+ffi string myp_fmt_u64_base(int v, int base, int upper);
+ffi string myp_fmt_double_f(double v, int precision);
+ffi string myp_fmt_double_e(double v, int precision);
+ffi string myp_fmt_double_g(double v, int precision);
+
+class Fmt {
+    static:
+        // 十进制整数（有符号）。width<=0 不填充；pad 为填充字符码（默认空格）
+        string i(int v, int width = 0, int pad = 32) {
+            string s = "" + v;
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 无符号十进制（位模式解释）
+        string u(int v, int width = 0, int pad = 32) {
+            string s = myp_fmt_u64_base(v, 10, 0);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 小写十六进制（无符号解释）
+        string x(int v, int width = 0, int pad = 48) {
+            string s = myp_fmt_u64_base(v, 16, 0);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 大写十六进制（无符号解释）
+        string X(int v, int width = 0, int pad = 48) {
+            string s = myp_fmt_u64_base(v, 16, 1);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 八进制（无符号解释）
+        string o(int v, int width = 0, int pad = 48) {
+            string s = myp_fmt_u64_base(v, 8, 0);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 二进制（无符号解释）
+        string b(int v, int width = 0, int pad = 48) {
+            string s = myp_fmt_u64_base(v, 2, 0);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 定点浮点：%.<precision>f
+        string f(double v, int precision = 6, int width = 0, int pad = 32) {
+            string s = myp_fmt_double_f(v, precision);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 科学计数：%.<precision>e
+        string e(double v, int precision = 6, int width = 0, int pad = 32) {
+            string s = myp_fmt_double_e(v, precision);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 最短表示：%.<precision>g
+        string g(double v, int precision = 6, int width = 0, int pad = 32) {
+            string s = myp_fmt_double_g(v, precision);
+            return Fmt.padL(s, width, pad);
+        }
+
+        // 字符串右对齐（左侧填充）
+        string s(string v, int width = 0, int pad = 32) {
+            return Fmt.padL(v, width, pad);
+        }
+
+        // 字符串左对齐（右侧填充）
+        string sR(string v, int width = 0, int pad = 32) {
+            return Fmt.padR(v, width, pad);
+        }
+
+        // 内部：左侧填充到 width（width<=0 原样返回）
+        string padL(string s, int width, int pad) {
+            if (width <= 0) return s;
+            return myp_str_pad_left(s, width, pad);
+        }
+
+        // 内部：右侧填充到 width（width<=0 原样返回）
+        string padR(string s, int width, int pad) {
+            if (width <= 0) return s;
+            return myp_str_pad_right(s, width, pad);
+        }
+}

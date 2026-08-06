@@ -125,6 +125,18 @@
     返回值赋给接口变量时把胖指针当实例指针（interface passthrough）；⑤`catch (string)`
     绑定共享 `myp_error_msg` 缓冲、后续 throw 覆写导致存下的错误消息漂移（绑定前
     `myp_strdup` 拷贝——`resultTry` 多连调用即踩中）。
+  - **stdlib 缺口补强（§六-4，additive）**：
+    - **crypto/hash**：`stdlib/crypto.myp`——`Crc32.crc32/crc32Hex`（IEEE 802.3，
+      原始 32 位值 + 8 位无符号十六进制显示）+ `Hash.md5/sha1/sha256`（小写十六进制）。
+      核心在 C 运行时（`myp_crc32`/`myp_hash_md5`/`myp_hash_sha1`/`myp_hash_sha256`，
+      MYP 侧静态类封装）。已知测试向量回归（含 56 字节跨块消息）。
+    - **sprintf 格式化**：`stdlib/fmt.myp`——`Fmt` 静态类（默认参数）：`i`（十进制）、
+      `u`（无符号十进制）、`x/X`（无符号十六进制大小写）、`o`（八进制）、`b`（二进制）、
+      `f/e/g`（定点/科学/最短，精度）、`s/sR`（字符串左右对齐），全部支持宽度 + 填充字符。
+      运行时补 `myp_fmt_u64_base`/`myp_fmt_double_f/e/g`（snprintf）。
+    - **随机分布补强**：`random.myp` 加 `range(lo,hi)`（[lo,hi) 均匀）、`exponential(lambda)`
+      （逆变换采样）、`poisson(lambda)`（Knuth 算法）。
+    - `tests/crypto` + `tests/fmt` + `tests/random_dist`；全库回归 **162/162**（-O0+ASAN）。
   - **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
   - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
     退出码；args 透传（`main(argc,argv)`/构造器）。

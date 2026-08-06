@@ -1382,10 +1382,61 @@ Time.sleep(1000);             // Sleep 1 second
 ```myp
 import random;
 
-Random.init(12345);           // Set seed
-int r = Random.next();         // [0, RAND_MAX]
-int d = Random.below(10);      // [0, 10)
+Random.init(12345);               // Set seed
+int r = Random.next();            // [0, RAND_MAX]
+int d = Random.below(10);         // [0, 10)
+double u = Random.uniform();      // [0.0, 1.0)
+double g = Random.gaussian();     // standard normal N(0,1) (Box-Muller)
+double rg = Random.range(5.0, 10.0);   // uniform in [lo, hi)
+double e = Random.exponential(2.0);    // exponential, mean 1/lambda (inverse transform)
+int p = Random.poisson(3.0);           // Poisson integer (Knuth's algorithm)
+Random.shuffle(arr, n);           // Fisher-Yates shuffle
 ```
+
+### `import fmt` — printf-style Formatting (§六-4, v3.9.0, additive)
+
+Fills the `sprintf` gap: previously only string interpolation `${x}` was available;
+now width / precision / base / padding control is provided.
+
+```myp
+import fmt;
+
+Fmt.i(42)               // "42"          decimal (signed)
+Fmt.i(42, 6)            // "    42"      right-aligned, space padded
+Fmt.i(42, 6, 48)        // "000042"      '0' padded
+Fmt.u(-1)               // "4294967295"  unsigned decimal (bit pattern)
+Fmt.x(255, 4)           // "00ff"        lowercase hex (unsigned, default '0' pad)
+Fmt.X(255, 4)           // "00FF"        uppercase hex
+Fmt.o(8)                // "10"          octal
+Fmt.b(5)                // "101"         binary
+Fmt.f(3.14159, 2)       // "3.14"        fixed point %.2f
+Fmt.f(123.456, 2, 10)   // "    123.46"  fixed + width
+Fmt.e(123.456, 2)       // "1.23e+02"    scientific %.2e
+Fmt.g(0.0001, 4)        // "0.0001"      shortest %.4g
+Fmt.s("hi", 5)          // "   hi"       string right-aligned
+Fmt.sR("hi", 5)         // "hi   "       string left-aligned
+```
+
+Default-parameter signatures: integer family `(v, width = 0, pad = space/48)`,
+float family `(v, precision = 6, width = 0, pad = space)`; `width <= 0` means no padding.
+
+### `import crypto` — Checksum / Hashing (§六-4, v3.9.0, additive)
+
+Fills the `crypto/hash` gap. Hash cores live in the C runtime; the MYP side is a static-class wrapper.
+
+```myp
+import crypto;
+
+string h = Crc32.crc32Hex("hello");   // 8-digit lowercase hex (unsigned display)
+int c = Crc32.crc32("hello");         // raw 32-bit value (may be negative as int)
+
+Hash.md5("abc");     // 32-char lowercase hex
+Hash.sha1("abc");    // 40-char lowercase hex
+Hash.sha256("abc");  // 64-char lowercase hex
+```
+
+Algorithms: CRC-32 (IEEE 802.3), MD5 (RFC 1321), SHA-1 / SHA-256 (FIPS 180).
+Regression uses standard known-answer vectors (including a 56-byte two-block message).
 
 ### `import text` — Text Processing
 

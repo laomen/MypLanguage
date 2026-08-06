@@ -1,0 +1,43 @@
+// crypto: Crc32 / Hash（MD5 / SHA-1 / SHA-256）已知测试向量回归
+// 向量来源：RFC 1321 (MD5)、FIPS 180 (SHA-1/SHA-256)、IEEE 802.3 (CRC-32)
+import env;
+import crypto;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[crypto]\n");
+
+            string empty = "";
+            string abc = "abc";
+            string num = "123456789";
+            string fox = "The quick brown fox jumps over the lazy dog";
+            string multi = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+            // CRC32 已知向量
+            Console.writeString("crc_empty="); Console.writeString(Crc32.crc32Hex(empty)); Console.writeString("\n");
+            Console.writeString("crc_123456789="); Console.writeString(Crc32.crc32Hex(num)); Console.writeString("\n");
+            Console.writeString("crc_abc="); Console.writeString(Crc32.crc32Hex(abc)); Console.writeString("\n");
+            Console.writeString("crc_fox="); Console.writeString(Crc32.crc32Hex(fox)); Console.writeString("\n");
+
+            // MD5
+            Console.writeString("md5_empty="); Console.writeString(Hash.md5(empty)); Console.writeString("\n");
+            Console.writeString("md5_abc="); Console.writeString(Hash.md5(abc)); Console.writeString("\n");
+            Console.writeString("md5_fox="); Console.writeString(Hash.md5(fox)); Console.writeString("\n");
+
+            // SHA-1
+            Console.writeString("sha1_empty="); Console.writeString(Hash.sha1(empty)); Console.writeString("\n");
+            Console.writeString("sha1_abc="); Console.writeString(Hash.sha1(abc)); Console.writeString("\n");
+            Console.writeString("sha1_fox="); Console.writeString(Hash.sha1(fox)); Console.writeString("\n");
+
+            // SHA-256（含跨块长消息 multi，56 字节 → 填充后两 64 字节块）
+            Console.writeString("sha256_empty="); Console.writeString(Hash.sha256(empty)); Console.writeString("\n");
+            Console.writeString("sha256_abc="); Console.writeString(Hash.sha256(abc)); Console.writeString("\n");
+            Console.writeString("sha256_multi="); Console.writeString(Hash.sha256(multi)); Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

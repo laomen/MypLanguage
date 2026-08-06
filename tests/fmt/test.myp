@@ -1,0 +1,48 @@
+// fmt: Fmt printf 风格格式化回归（§六-4 sprintf 缺口）
+import env;
+import fmt;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[fmt]\n");
+
+            // 十进制
+            Console.writeString("i1="); Console.writeString(Fmt.i(42)); Console.writeString("\n");
+            Console.writeString("i2="); Console.writeString(Fmt.i(-7)); Console.writeString("\n");
+            Console.writeString("i3=["); Console.writeString(Fmt.i(42, 6)); Console.writeString("]\n");
+            Console.writeString("i4=["); Console.writeString(Fmt.i(42, 6, 48)); Console.writeString("]\n");
+            Console.writeString("i5=["); Console.writeString(Fmt.i(-7, 4, 48)); Console.writeString("]\n");
+
+            // 无符号十进制（位模式）
+            Console.writeString("u1="); Console.writeString(Fmt.u(-1)); Console.writeString("\n");
+
+            // 十六进制
+            Console.writeString("x1="); Console.writeString(Fmt.x(255)); Console.writeString("\n");
+            Console.writeString("x2="); Console.writeString(Fmt.x(255, 4)); Console.writeString("\n");
+            Console.writeString("x3="); Console.writeString(Fmt.X(255, 4)); Console.writeString("\n");
+            Console.writeString("x4="); Console.writeString(Fmt.x(-1, 8)); Console.writeString("\n");
+
+            // 八进制 / 二进制
+            Console.writeString("o1="); Console.writeString(Fmt.o(8)); Console.writeString("\n");
+            Console.writeString("b1="); Console.writeString(Fmt.b(5)); Console.writeString("\n");
+            Console.writeString("b2="); Console.writeString(Fmt.b(10)); Console.writeString("\n");
+
+            // 浮点
+            Console.writeString("f1="); Console.writeString(Fmt.f(3.14159, 2)); Console.writeString("\n");
+            Console.writeString("f2="); Console.writeString(Fmt.f(3.0, 2)); Console.writeString("\n");
+            Console.writeString("f3=["); Console.writeString(Fmt.f(123.456, 2, 10)); Console.writeString("]\n");
+            Console.writeString("f4="); Console.writeString(Fmt.f(1.0 / 3.0, 3)); Console.writeString("\n");
+            Console.writeString("e1="); Console.writeString(Fmt.e(123.456, 2)); Console.writeString("\n");
+            Console.writeString("g1="); Console.writeString(Fmt.g(0.0001, 4)); Console.writeString("\n");
+
+            // 字符串填充
+            Console.writeString("s1=["); Console.writeString(Fmt.s("hi", 5)); Console.writeString("]\n");
+            Console.writeString("s2=["); Console.writeString(Fmt.sR("hi", 5)); Console.writeString("]\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

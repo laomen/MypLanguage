@@ -6,6 +6,9 @@
 //   int d = Random.below(6);         // 0..5
 //   double u = Random.uniform();     // 0.0..1.0
 //   double g = Random.gaussian();    // 标准正态分布
+//   double r = Random.range(5.0, 10.0);   // [lo, hi) 均匀
+//   double e = Random.exponential(2.0);   // 指数分布（均值 1/lambda）
+//   int p = Random.poisson(3.0);          // 泊松分布整数
 //   Random.shuffle(arr, n);          // 洗牌算法
 
 import math;
@@ -43,6 +46,30 @@ class Random {
             double u1 = (rand() + 1.0) / 2147483648.0;
             double u2 = (rand() + 1.0) / 2147483648.0;
             return Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2.0 * Math.pi() * u2);
+        }
+
+        // 返回 [lo, hi) 区间内的均匀分布浮点数
+        double range(double lo, double hi) {
+            return lo + (hi - lo) * Random.uniform();
+        }
+
+        // 返回指数分布 Exp(lambda)（均值 1/lambda）的随机数（逆变换采样）
+        double exponential(double lambda) {
+            double u = Random.uniform();
+            if (u <= 0.0) u = 0.0000000001;   // 避免 log(0)
+            return -Math.log(u) / lambda;
+        }
+
+        // 返回泊松分布 Poisson(lambda) 的随机整数（Knuth 算法）
+        int poisson(double lambda) {
+            double L = Math.exp(-lambda);
+            int k = 0;
+            double p = 1.0;
+            while (p > L) {
+                k = k + 1;
+                p = p * Random.uniform();
+            }
+            return k - 1;
         }
 
         // Fisher-Yates 洗牌算法

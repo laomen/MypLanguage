@@ -1,0 +1,5 @@
+[random_dist]
+range=true
+exponential=true
+poisson=true
+gaussian=true
