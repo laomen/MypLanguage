@@ -3450,6 +3450,7 @@ typedef struct {
     int active;
     int64_t deadline_ms;  // absolute deadline for timed waits (0 = none)
     int expired;          // 1 if this record was cleared by a timeout
+    int64_t exec_result;  // EXEC：worker 完成后交付的结果（char* 指针，本线程 myp_strdup）
 } myp_coro_wait_t;
 static __thread myp_coro_wait_t* myp_coro_waits = NULL;
 static __thread int myp_coro_wait_count = 0;
@@ -3522,6 +3523,7 @@ int64_t __myp_coro_status(int64_t handle) {
 // Coroutines that yield with a plain `await` stay ready, so each call to the
 // scheduler advances every live coroutine by one await. Blocked (event-waiting)
 // coroutines are skipped until the event arrives and re-readies them.
+void myp_exec_pump_results(void);   // §五-5 P3: deliver completed file-exec results
 void __myp_coro_scheduler(void) {
     // Process pending events first so event-waiting coroutines (C4) that were
     // re-readied by __myp_coro_event_notify become runnable this round.
@@ -3578,6 +3580,9 @@ void __myp_coro_scheduler(void) {
             if (widx) free(widx);
         }
     }
+    // §五-5 P3: deliver completed file-executor results to this thread's
+    // waiting coroutines (worker threads posted them to a global result list).
+    myp_exec_pump_results();
     if (myp_coro_count == 0) return;
     // Snapshot the ready set first — a coroutine may yield (stay ready) while
     // we are running; we must not re-enter it in the same round.
@@ -3740,6 +3745,211 @@ int64_t __myp_coro_wait_fd(int64_t fd, int64_t want_read, int64_t want_write,
     __myp_coro_yield(0);
     if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }  // timeout
     return 1;   // fd ready (or manual resume)
+}
+
+// ======================
+// §五-5 P3: file IO executor (bounded worker pool + cross-thread result delivery)
+// ======================
+// Blocking file reads (fgets / read-all) run on a small worker pool so the
+// coroutine's thread is never blocked. A worker reads the file's FILE* directly
+// from the io handle table, then posts the malloc'd result to a global pending
+// list; the owning thread's scheduler (myp_exec_pump_results) strdups it onto
+// the coroutine's thread, stashes it in the coroutine's EXEC wait record and
+// re-readies it. Coroutines are thread-local, so delivery is one-way (worker →
+// owning thread); no cross-thread coroutine mutation.
+
+#define MYP_EXEC_WORKERS 4
+#define MYP_EXEC_MAX_TASKS 256
+
+typedef struct {
+    int io_handle;
+    int op;              // 0 = readLine, 1 = readAll
+    pthread_t target;    // owning thread (the coroutine's thread)
+    int64_t coro_handle;
+} myp_exec_task_t;
+static myp_exec_task_t myp_exec_tasks[MYP_EXEC_MAX_TASKS];
+static int myp_exec_head = 0, myp_exec_tail = 0, myp_exec_count = 0;
+static pthread_mutex_t myp_exec_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t myp_exec_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t myp_exec_workers[MYP_EXEC_WORKERS];
+static int myp_exec_started = 0;
+
+typedef struct {
+    pthread_t target;
+    int64_t coro_handle;
+    char* result;   // malloc'd (NOT myp_alloc'd — freed after delivery)
+    int active;
+} myp_exec_result_t;
+static myp_exec_result_t* myp_exec_results = NULL;
+static int myp_exec_results_count = 0, myp_exec_results_cap = 0;
+
+static void myp_exec_push_result(pthread_t t, int64_t h, char* r) {
+    if (myp_exec_results_count >= myp_exec_results_cap) {
+        int nc = myp_exec_results_cap ? myp_exec_results_cap * 2 : 64;
+        myp_exec_result_t* np = (myp_exec_result_t*)realloc(
+            myp_exec_results, (size_t)nc * sizeof(myp_exec_result_t));
+        if (!np) { free(r); return; }
+        myp_exec_results = np;
+        myp_exec_results_cap = nc;
+    }
+    myp_exec_results[myp_exec_results_count].target = t;
+    myp_exec_results[myp_exec_results_count].coro_handle = h;
+    myp_exec_results[myp_exec_results_count].result = r;
+    myp_exec_results[myp_exec_results_count].active = 1;
+    myp_exec_results_count++;
+}
+
+static char* myp_exec_read_line_from(FILE* fp) {
+    char* line = (char*)malloc(4096);
+    if (!line) return strdup("");
+    if (fgets(line, 4096, fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+        return line;
+    }
+    free(line);
+    return strdup("");
+}
+
+static char* myp_exec_read_all_from(FILE* fp) {
+    size_t cap = 4096, len = 0;
+    char* buf = (char*)malloc(cap + 1);
+    if (!buf) return strdup("");
+    char tmp[4096];
+    while (fgets(tmp, sizeof(tmp), fp)) {
+        size_t n = strlen(tmp);
+        if (len + n + 1 > cap) {
+            cap = (cap + n) * 2;
+            char* nb = (char*)realloc(buf, cap + 1);
+            if (!nb) { free(buf); return strdup(""); }
+            buf = nb;
+        }
+        memcpy(buf + len, tmp, n);
+        len += n;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
+static void* myp_exec_worker_loop(void* arg) {
+    for (;;) {
+        myp_exec_task_t task;
+        pthread_mutex_lock(&myp_exec_mutex);
+        while (myp_exec_count == 0)
+            pthread_cond_wait(&myp_exec_cond, &myp_exec_mutex);
+        task = myp_exec_tasks[myp_exec_head];
+        myp_exec_head = (myp_exec_head + 1) % MYP_EXEC_MAX_TASKS;
+        myp_exec_count--;
+        pthread_mutex_unlock(&myp_exec_mutex);
+
+        char* out = NULL;
+        FILE* fp = myp_io_table[task.io_handle];
+        if (fp)
+            out = (task.op == 0) ? myp_exec_read_line_from(fp) : myp_exec_read_all_from(fp);
+        else
+            out = strdup("");
+
+        pthread_mutex_lock(&myp_exec_mutex);
+        myp_exec_push_result(task.target, task.coro_handle, out);
+        pthread_mutex_unlock(&myp_exec_mutex);
+    }
+    return NULL;
+}
+
+static void myp_exec_ensure_started(void) {
+    pthread_mutex_lock(&myp_exec_mutex);
+    if (!myp_exec_started) {
+        for (int i = 0; i < MYP_EXEC_WORKERS; i++)
+            pthread_create(&myp_exec_workers[i], NULL, myp_exec_worker_loop, NULL);
+        myp_exec_started = 1;
+    }
+    pthread_mutex_unlock(&myp_exec_mutex);
+}
+
+// Deliver completed file-exec results to the CURRENT thread's waiting
+// coroutines (called by the scheduler each round). Runs on the coroutine's
+// owning thread; copies each result into the coroutine's EXEC wait record
+// (myp_strdup → tracked on this thread) and re-readies it.
+void myp_exec_pump_results(void) {
+    pthread_t me = pthread_self();
+    pthread_mutex_lock(&myp_exec_mutex);
+    for (int i = 0; i < myp_exec_results_count; i++) {
+        myp_exec_result_t* r = &myp_exec_results[i];
+        if (!r->active || !pthread_equal(r->target, me)) continue;
+        r->active = 0;
+        int64_t h = r->coro_handle;
+        if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active) {
+            char* copy = myp_strdup(r->result);   // tracked on THIS thread
+            for (int j = 0; j < myp_coro_wait_count; j++) {
+                if (myp_coro_waits[j].active && myp_coro_waits[j].kind == 3 &&
+                    myp_coro_waits[j].handle == h) {
+                    myp_coro_waits[j].active = 0;
+                    myp_coro_waits[j].exec_result = (int64_t)copy;
+                    break;
+                }
+            }
+            myp_coros[h]->ready = 1;
+        }
+        free(r->result);
+        r->result = NULL;
+    }
+    pthread_mutex_unlock(&myp_exec_mutex);
+}
+
+// Park the current coroutine until a worker completes a blocking read of the
+// file referenced by `io_handle`. Returns the read string (tracked on the
+// coroutine's thread). Outside a coroutine → synchronous fallback.
+static char* myp_coro_file_read(int io_handle, int op) {
+    if (!myp_coro_am_i_coro()) {
+        FILE* fp = myp_io_table[io_handle];
+        if (!fp) return myp_strdup("");
+        char* r = (op == 0) ? myp_exec_read_line_from(fp) : myp_exec_read_all_from(fp);
+        char* tracked = myp_strdup(r);
+        free(r);
+        return tracked;
+    }
+    myp_exec_ensure_started();
+    int64_t h = myp_coro_current;
+    int idx = -1;
+    if (myp_coro_wait_reserve() == 0) {
+        idx = myp_coro_wait_count;
+        myp_coro_waits[idx].kind = 3;            // EXEC
+        myp_coro_waits[idx].event_id = -1;
+        myp_coro_waits[idx].fd = -1;
+        myp_coro_waits[idx].fd_events = 0;
+        myp_coro_waits[idx].handle = h;
+        myp_coro_waits[idx].active = 1;
+        myp_coro_waits[idx].deadline_ms = 0;
+        myp_coro_waits[idx].expired = 0;
+        myp_coro_waits[idx].exec_result = 0;
+        myp_coro_wait_count++;
+        myp_coros[h]->ready = 0;                 // park
+        myp_coros[h]->wait_timeout = 0;
+    }
+    pthread_mutex_lock(&myp_exec_mutex);
+    if (myp_exec_count < MYP_EXEC_MAX_TASKS) {
+        myp_exec_tasks[myp_exec_tail].io_handle = io_handle;
+        myp_exec_tasks[myp_exec_tail].op = op;
+        myp_exec_tasks[myp_exec_tail].target = pthread_self();
+        myp_exec_tasks[myp_exec_tail].coro_handle = h;
+        myp_exec_tail = (myp_exec_tail + 1) % MYP_EXEC_MAX_TASKS;
+        myp_exec_count++;
+        pthread_cond_signal(&myp_exec_cond);
+    }
+    pthread_mutex_unlock(&myp_exec_mutex);
+    __myp_coro_yield(0);   // park until the worker delivers the result
+    char* res = (idx >= 0 && idx < myp_coro_wait_count)
+        ? (char*)myp_coro_waits[idx].exec_result : NULL;
+    return res ? res : myp_strdup("");
+}
+
+// Async readLine on a File handle (§五-5 P3). Returns the line ('' at EOF).
+char* myp_coro_file_read_line(int io_handle) {
+    return myp_coro_file_read(io_handle, 0);
+}
+// Async read-all of a File handle (§五-5 P3).
+char* myp_coro_file_read_all(int io_handle) {
+    return myp_coro_file_read(io_handle, 1);
 }
 
 // Re-ready (and resume if currently dispatching) waiters for an event.

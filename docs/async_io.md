@@ -1,6 +1,6 @@
 # MYP 异步 IO 统一抽象设计（Async I/O）
 
-> 状态：**设计稿（未实施）** — 对应 `docs/next_improvements.md` §五-5
+> 状态：**已实施（P1 定时器 / P2 套接字 / P3 文件执行器）** — 对应 `docs/next_improvements.md` §五-5
 > 关联：语言规格 v1.0（`docs/grammar.md`）、协程设计 `docs/coro.md`、现有实现
 > （`src/runtime/runtime.c` §Coroutine + `src/codegen/codegen.cpp` + `stdlib/coro.myp`）
 > 目标：把"等某件事完成"（事件 / 文件 / 网络 / 睡眠）统一到 `await` + 协程调度器
@@ -177,12 +177,13 @@ string line = await file.readLineAsync();// worker 执行器
 
 | 阶段 | 内容 | 工作量 | 验收 |
 |------|------|--------|------|
-| **P1 定时器** | 广义等待表引入 `kind=TIMER`；`__myp_coro_sleep`；调度器 deadline 过期复用现有逻辑（仅加 TIMER 注册，已存在 deadline 机制）；`Async.sleep` + `await Async.sleep(ms)` | 小 | 两个 `@coro` 不同 sleep 交错，调度器期间另一协程推进；`tests/async_sleep` |
-| **P2 socket 就绪** | `kind=FD` + `wait_fd` + 调度器批量 `poll`；`TcpClient.recvAsync/sendAsync/recvLineAsync`；fd 置 O_NONBLOCK + EAGAIN 重等 | 中 | TcpServer + `@coro` 客户端 `await recvAsync` 期间另一协程推进；`tests/async_socket` |
-| **P3 文件执行器** | `kind=EXEC` + 有界 worker 线程池 + 线程收件箱 + 调度器检查；`File.readLineAsync/readAllAsync` | 中 | 大文件异步读期间另一协程推进；`tests/async_file` |
+| **P1 定时器** | ✅ 已实施 | 小 | `tests/async_sleep` |
+| **P2 socket 就绪** | ✅ 已实施 | 中 | `tests/async_socket` |
+| **P3 文件执行器** | ✅ 已实施 | 中 | `tests/async_file` |
 | **P4 统一 waitAny（可选远期）** | `Coro.waitAny` 扩展到事件+fd+定时器混等 | 中 | 混等测试 |
 
-> 建议：P1 自包含、价值高、无 OS 依赖，先落地验证机制；P2/P3 在 P1 的等待表上叠加。
+> P1 自包含验证了广义等待表机制；P2/P3 在同一张等待表上叠加（`kind` 字段区分
+> EVENT/TIMER/FD/EXEC），全部 additive 无破坏性变更。
 
 ---
 

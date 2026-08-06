@@ -97,6 +97,11 @@ int32_t myp_net_send(int32_t fd, const char* data);
 char* myp_net_recv(int32_t fd, int32_t max_len);
 char* myp_net_recv_line(int32_t fd);
 void myp_net_close(int32_t fd);
+void myp_net_set_nonblock(int32_t fd);   // §五-5 P2: async socket IO
+
+// ---- Async file IO (§五-5 P3, worker-pool executor) ----
+char* myp_coro_file_read_line(int32_t io_handle);
+char* myp_coro_file_read_all(int32_t io_handle);
 
 // ---- Process Management ----
 int32_t myp_process_run(const char* cmd);

@@ -1,0 +1,9 @@
+R:line1=alpha
+B:step0
+R:line2=beta
+B:step1
+R:rest=gamma
+
+B:step2
+B:done
+main done

@@ -3,6 +3,10 @@
 // 多文件支持：每个 File 持有独立句柄，操作前 select 切换当前文件。
 import error;
 
+// §五-5 P3 异步文件读（worker 线程执行器，跨线程投递结果）
+ffi string myp_coro_file_read_line(int handle);
+ffi string myp_coro_file_read_all(int handle);
+
 class File {
     action:
         // 打开文件，返回 0 表示成功；失败抛 FileError（op/path）
@@ -27,6 +31,15 @@ class File {
         string readLine() {
             __myp_io_select(handle_);
             return __myp_io_read_line();
+        }
+        // ---- §五-5 P3 异步文件读（@coro 内 await；worker 线程执行阻塞 IO）----
+        // 异步读一行（不含换行符）；EOF 返回空串
+        @async string readLineAsync() {
+            return myp_coro_file_read_line(handle_);
+        }
+        // 异步读整个文件（到 EOF）
+        @async string readAllAsync() {
+            return myp_coro_file_read_all(handle_);
         }
         // 写入文本（不含换行符）
         void write(string text) {

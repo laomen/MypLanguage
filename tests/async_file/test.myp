@@ -1,0 +1,51 @@
+// async_file: §五-5 P3 文件执行器 — await readLineAsync/readAllAsync 不阻塞线程
+// 覆盖：@async 读行 ×2（worker 线程阻塞读，结果跨线程投递）、
+//       readAllAsync 读余下内容、B 在异步文件读期间推进（非阻塞证明）。
+import env;
+import io;
+import coro;
+import async;
+import time;
+
+class Main {
+    action:
+        @startup void run() {
+            // 准备测试文件（3 行）
+            File w = new File();
+            w.open("/tmp/myp_async_file.txt", "w");
+            w.writeLine("alpha");
+            w.writeLine("beta");
+            w.writeLine("gamma");
+            w.close();
+
+            Main me = new Main();
+            long hf = me.reader();
+            long hb = me.b();
+            Time.sleep(50);   // 给 worker 投递首行（线程启动/读取延迟）
+            for (int i = 0; i < 15; i++) { Coro.scheduler(); Time.sleep(20); }
+            Console.writeString("main done\n");
+        }
+
+        // 异步读：2 行 + readAll 余下内容
+        @coro long reader() {
+            File f = new File();
+            f.open("/tmp/myp_async_file.txt", "r");
+            string l1 = await f.readLineAsync();
+            Console.writeString("R:line1=" + l1 + "\n");
+            string l2 = await f.readLineAsync();
+            Console.writeString("R:line2=" + l2 + "\n");
+            string all = await f.readAllAsync();
+            Console.writeString("R:rest=" + all + "\n");
+            f.close();
+            return 0;
+        }
+
+        // B：异步文件读期间推进（证明读不阻塞协程线程）
+        @coro long b() {
+            for (int i = 0; i < 3; i++) { await; Console.writeString("B:step" + i + "\n"); }
+            Console.writeString("B:done\n");
+            return 0;
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
