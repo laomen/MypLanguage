@@ -317,6 +317,42 @@ for (; i < 10;) {
 }
 ```
 
+### For-in — Collection Iteration (§四-2)
+
+`for-in` iterates four kinds of iterable with one uniform syntax (parentheses and element type optional):
+
+```myp
+// 1) Fixed array T[N] (compile-time length)
+int[4] arr = ...;
+for (x in arr) { ... }
+
+// 2) slice<T> (uses .size())
+slice<int> s = new slice<int>(3);
+for (x in s) { ... }
+
+// 3) Collection class — must provide size() + get(int) methods (de-facto iterator protocol, e.g. ArrayList<T>)
+ArrayList<int> list = new ArrayList<int>();
+list.add(10); list.add(20);
+for (x in list) { ... }
+
+// 4) range: for (i in a..b) ≡ for (int i = a; i < b; i++)  (exclusive upper bound)
+for (i in 0..5) { ... }        // i = 0,1,2,3,4
+```
+
+Four forms:
+
+```myp
+for (x in coll) { ... }        // parenthesized, inferred element type
+for (int x in coll) { ... }    // parenthesized, explicit element type
+for x in coll { ... }          // no parentheses (inferred type only)
+for (i in 0..5) { ... }        // no-parentheses range (i < 5, exclusive)
+```
+
+- The loop variable is re-declared each iteration (scope-level); `break` / `continue` and nesting are supported.
+- The iterable expression is evaluated once; a collection-class temporary reference is released after the loop.
+- Class elements (e.g. `Node[]`, `ArrayList<Node>`) follow ARC borrow semantics (retain on iteration, release at loop-variable scope exit) — verified zero-leak.
+- **Not iterable** (compile error): dynamic arrays `int[]` (no runtime length — use `slice<T>` or a collection class), classes without `size()/get(int)`, non-collection types (e.g. `int`), and collections whose element type is an array.
+
 ### Break / Continue
 
 ```myp

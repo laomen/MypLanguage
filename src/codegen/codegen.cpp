@@ -2559,6 +2559,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::IfStmt: generateIfStmt(static_cast<const IfStmt&>(s)); break;
         case StmtKind::WhileStmt: generateWhileStmt(static_cast<const WhileStmt&>(s)); break;
         case StmtKind::ForStmt: generateForStmt(static_cast<const ForStmt&>(s)); break;
+        case StmtKind::ForInStmt: generateForInStmt(static_cast<const ForInStmt&>(s)); break;
         case StmtKind::ReturnStmt: generateReturnStmt(static_cast<const ReturnStmt&>(s)); break;
         case StmtKind::BreakStmt:   generateBreakStmt(static_cast<const BreakStmt&>(s)); break;
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;
@@ -3030,6 +3031,19 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto arr_sz = module_->getDataLayout().getTypeAllocSize(lt);
             if (arr_sz > 0)
                 builder_.CreateMemSet(arr_a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), arr_sz, llvm::Align(8));
+            // 固定数组带初始化：拷贝源数据（lambda 捕获 `T[N] a = this.cap_i;` /
+            // `T[N] b = otherArray`）。源可能为 [N x T] 值（属性加载）或指针（首元素
+            // 数据指针 / [N x T]*）→ 分别 store / memcpy。
+            if (d.init_expr) {
+                auto* src = generateExpr(*d.init_expr);
+                if (src) {
+                    if (src->getType() == lt) {
+                        builder_.CreateStore(src, arr_a);
+                    } else if (src->getType()->isPointerTy() && arr_sz > 0) {
+                        builder_.CreateMemCpy(arr_a, llvm::Align(8), src, llvm::Align(8), arr_sz);
+                    }
+                }
+            }
             auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
             auto* elem_ptr = builder_.CreateGEP(lt, arr_a, {zero, zero});
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
@@ -3374,6 +3388,13 @@ void CodeGen::collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& ou
             if (fs.condition) collectExprIdentifiers(*fs.condition, out, loop_decls);
             if (fs.step) collectExprIdentifiers(*fs.step, out, loop_decls);
             if (fs.body) collectStmtIdentifiers(*fs.body, out, loop_decls);
+            break;
+        }
+        case StmtKind::ForInStmt: {
+            auto& fis = static_cast<const ForInStmt&>(stmt);
+            loop_decls.insert(fis.var_name);  // loop var — NOT captured
+            collectExprIdentifiers(*fis.iterable, out, loop_decls);
+            if (fis.body) collectStmtIdentifiers(*fis.body, out, loop_decls);
             break;
         }
         case StmtKind::ReturnStmt:
@@ -4444,6 +4465,123 @@ void CodeGen::generateForStmt(const ForStmt& s) {
     f->insert(f->end(), sbb);
     builder_.SetInsertPoint(sbb);
     if (s.step) generateExpr(*s.step);
+    builder_.CreateBr(cbb);
+    f->insert(f->end(), abb);
+    builder_.SetInsertPoint(abb);
+    popScope();
+}
+
+// for (x in coll) — 集合迭代（§四-2）。sema 已解析 iter_kind：
+//   0=class(size/get), 1=固定数组, 2=slice, 3=range
+void CodeGen::generateForInStmt(const ForInStmt& s) {
+    if (!current_function_) return;
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* f = builder_.GetInsertBlock()->getParent();
+
+    pushScope();
+    // 迭代集合求值一次 → 临时（class 集合需要 ARC 管理；数组/slice 为借用）
+    auto* iter_val = generateExpr(*s.iterable);
+    auto* iter_ty = iter_val->getType();
+    auto* iter_a = createEntryBlockAlloca(current_function_, iter_ty, "__for_coll");
+    builder_.CreateStore(iter_val, iter_a);
+    if (s.iter_kind == 0) {
+        // class 集合：临时持有引用——别名需 retain（fresh call 转移），循环末释放
+        if (!isFreshArcExpr(*s.iterable))
+            emitRetain(iter_val);
+        registerArcSlot(iter_a, 0);
+    }
+
+    auto* elem_ty = getLLVMType(s.elem_type);
+
+    // 上界
+    llvm::Value* size_v = llvm::ConstantInt::get(i32, 0);
+    if (s.iter_kind == 0) {
+        auto* size_fn = module_->getFunction(s.size_fn);
+        if (size_fn) {
+            auto* coll = builder_.CreateLoad(iter_ty, iter_a);
+            size_v = builder_.CreateCall(size_fn->getFunctionType(), size_fn, {coll}, "for_n");
+        }
+    } else if (s.iter_kind == 1) {
+        size_v = llvm::ConstantInt::get(i32, s.array_size);
+    } else if (s.iter_kind == 2) {
+        auto* sv = builder_.CreateLoad(iter_ty, iter_a);
+        size_v = builder_.CreateTrunc(builder_.CreateExtractValue(sv, 1), i32, "for_n");
+    } else if (s.iter_kind == 3) {
+        auto& re = static_cast<RangeExpr&>(*s.iterable);
+        auto* end_v = generateExpr(*re.end);
+        if (end_v->getType() != i32) end_v = builder_.CreateIntCast(end_v, i32, true);
+        size_v = end_v;
+    }
+    if (!size_v) size_v = llvm::ConstantInt::get(i32, 0);
+
+    auto* idx_a = createEntryBlockAlloca(current_function_, i32, "__for_i");
+    builder_.CreateStore(llvm::ConstantInt::get(i32, 0), idx_a);
+
+    auto* cbb = llvm::BasicBlock::Create(ctx_, "for_cond", f);
+    auto* bbb = llvm::BasicBlock::Create(ctx_, "for_body");
+    auto* sbb = llvm::BasicBlock::Create(ctx_, "for_step");
+    auto* abb = llvm::BasicBlock::Create(ctx_, "for_end");
+    builder_.CreateBr(cbb);
+    builder_.SetInsertPoint(cbb);
+    auto* idx0 = builder_.CreateLoad(i32, idx_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(idx0, size_v, "for_cmp"), bbb, abb);
+
+    f->insert(f->end(), bbb);
+    builder_.SetInsertPoint(bbb);
+    {
+        pushScope();
+        auto* var_a = createEntryBlockAlloca(current_function_, elem_ty, s.var_name);
+        setNamedValue(s.var_name, var_a);
+        llvm::Value* elem = nullptr;
+        auto* idx1 = builder_.CreateLoad(i32, idx_a);
+        auto* coll = builder_.CreateLoad(iter_ty, iter_a);
+        if (s.iter_kind == 0) {
+            auto* get_fn = module_->getFunction(s.get_fn);
+            if (get_fn)
+                elem = builder_.CreateCall(get_fn->getFunctionType(), get_fn, {coll, idx1}, "for_el");
+        } else if (s.iter_kind == 1) {
+            auto* p = builder_.CreateGEP(elem_ty, coll, idx1);
+            elem = builder_.CreateLoad(elem_ty, p, "for_el");
+        } else if (s.iter_kind == 2) {
+            auto* data = builder_.CreateExtractValue(coll, 0);
+            auto* idx64 = builder_.CreateZExt(idx1, i64);
+            auto* p = builder_.CreateGEP(elem_ty, data, idx64);
+            elem = builder_.CreateLoad(elem_ty, p, "for_el");
+        } else {  // range
+            auto& re = static_cast<RangeExpr&>(*s.iterable);
+            auto* start_v = generateExpr(*re.start);
+            if (start_v->getType() != i32) start_v = builder_.CreateIntCast(start_v, i32, true);
+            elem = builder_.CreateAdd(start_v, idx1, "for_el");
+        }
+        if (elem && elem->getType() != elem_ty) {
+            if (elem_ty->isIntegerTy() && elem->getType()->isIntegerTy())
+                elem = builder_.CreateIntCast(elem, elem_ty, true);
+            else if (elem_ty->isFloatingPointTy() && elem->getType()->isIntegerTy())
+                elem = builder_.CreateSIToFP(elem, elem_ty);
+            else if (elem_ty->isPointerTy() && elem->getType()->isPointerTy())
+                elem = builder_.CreateBitCast(elem, elem_ty);
+        }
+        builder_.CreateStore(elem, var_a);
+        // ARC：类元素——class get 结果是 fresh(+1) 转移；数组/slice 下标是借用需 retain。
+        // 循环变量在迭代作用域末释放（balanced）。
+        bool elem_arc = s.elem_type.kind == TypeKind::Class ||
+                        s.elem_type.kind == TypeKind::Interface;
+        if (elem_arc) {
+            if (s.iter_kind != 0 && elem)
+                emitRetain(elem);
+            registerArcSlot(var_a, s.elem_type.kind == TypeKind::Interface ? 1 : 0);
+        }
+        loop_context_.push_back({sbb, abb});
+        if (s.body) generateStmt(*s.body);
+        loop_context_.pop_back();
+        popScope();
+    }
+    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(sbb);
+    f->insert(f->end(), sbb);
+    builder_.SetInsertPoint(sbb);
+    auto* idx2 = builder_.CreateLoad(i32, idx_a);
+    builder_.CreateStore(builder_.CreateAdd(idx2, llvm::ConstantInt::get(i32, 1)), idx_a);
     builder_.CreateBr(cbb);
     f->insert(f->end(), abb);
     builder_.SetInsertPoint(abb);
@@ -6632,7 +6770,15 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
                 if (c.name == e.hidden_class_name) { hc = &c; break; }
         }
         auto* pt = hc ? getPropertyType(*hc, e.capture_slots[i]) : llvm::Type::getInt32Ty(ctx_);
-        auto* val = builder_.CreateLoad(pt, outer);
+        // 固定数组捕获：外层局部是数据指针 alloca（`int[N] a` 存 `a_arr[0]` 指针）。
+        // 属性类型是 [N x T] → 需先取数据指针，再加载数组值（深拷贝进闭包）。
+        llvm::Value* val = nullptr;
+        if (pt->isArrayTy()) {
+            auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), outer, e.capture_names[i] + ".data");
+            val = builder_.CreateLoad(pt, data, e.capture_names[i] + ".cap");
+        } else {
+            val = builder_.CreateLoad(pt, outer, e.capture_names[i] + ".cap");
+        }
         // ARC: a captured class reference is shared (浅拷贝共享) — the closure's
         // destroy stub will release it, so the closure must RETAIN its own ref
         // (otherwise the outer local's release frees it while the closure holds

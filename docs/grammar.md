@@ -379,9 +379,14 @@ IfStmt           ::= 'if' '(' Expression ')' Stmt ('else' Stmt)?
 WhileStmt        ::= 'while' '(' Expression ')' Stmt
 
 ForStmt          ::= 'for' '(' (VarDeclStmt | ';') Expression? ';' Expression? ')' Stmt
-                   | 'for' Identifier 'in' RangeExpr Stmt        // 区间 for
+                   | ForInStmt
                    | '@parallel' 'for' '(' … ')' Stmt            // 数据并行
                    | '@gpu' 'for' '(' … ')' Stmt                 // GPU 卸载
+ForInStmt        ::= 'for' '(' Type? Identifier 'in' Expression ')' Stmt   // 集合迭代（§四-2）
+                   | 'for' Identifier 'in' Expression Stmt                 // 无括号集合迭代
+                   | 'for' Identifier 'in' RangeExpr Stmt                  // 区间 for（同下）
+                 // 迭代源：固定数组 T[N]（编译期长度）、slice<T>（.size()）、
+                 //   集合类（需 size()+get(int) 方法，如 ArrayList<T>）、range a..b（右开 i<b）
 RangeExpr        ::= Expression '..' Expression
 
 ReturnStmt       ::= 'return' Expression? ';'

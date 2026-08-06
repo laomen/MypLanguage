@@ -3,6 +3,7 @@
 
 #include "SourceLocation.h"
 #include "Token.h"
+#include "Type.h"
 
 #include <memory>
 #include <string>
@@ -534,6 +535,7 @@ enum class StmtKind {
     IfStmt,
     WhileStmt,
     ForStmt,
+    ForInStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
@@ -635,6 +637,29 @@ struct ForStmt : Stmt {
             std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
           step(std::move(s)), body(std::move(b)), parallel(par), gpu(g) {}
+};
+
+// for (x in coll) { ... } — 集合迭代（§四-2，additive）。
+// sema 解析 iter_kind 并注解：
+//   0 = class 迭代（需 size() + get(int)），size_fn/get_fn 为解析后的函数名
+//   1 = 固定数组 T[N]（编译期长度）
+//   2 = slice<T>（运行时长度，用 s.size()）
+struct ForInStmt : Stmt {
+    std::string var_name;         // 循环变量名
+    TypeNode var_type;            // 显式元素类型（has_type=false 时推断）
+    bool has_type;
+    std::unique_ptr<Expr> iterable;
+    std::unique_ptr<Stmt> body;
+    TypeInfo elem_type;           // sema 解析的元素类型
+    int iter_kind = 0;            // 0=class, 1=fixed array, 2=slice
+    std::string class_name;       // class 迭代：实例类名（mangled）
+    std::string size_fn;          // class/slice：size 函数名
+    std::string get_fn;           // class：get 函数名
+    int array_size = -1;          // 固定数组长度（iter_kind==1）
+    ForInStmt(std::string vn, TypeNode vt, bool ht,
+              std::unique_ptr<Expr> it, std::unique_ptr<Stmt> b, SourceRange r)
+        : Stmt(StmtKind::ForInStmt, r), var_name(std::move(vn)), var_type(std::move(vt)),
+          has_type(ht), iterable(std::move(it)), body(std::move(b)) {}
 };
 
 struct ReturnStmt : Stmt {

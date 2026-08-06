@@ -25,6 +25,7 @@ private:
     const Token& peek() const;
     const Token& peekNext() const;
     const Token& peekNext2() const;
+    const Token& peekNext3() const;
     const Token& previous() const;
     Token advance();
     bool check(TokenKind kind) const;
@@ -71,6 +72,8 @@ private:
     std::unique_ptr<Stmt> parseIfStmt();
     std::unique_ptr<Stmt> parseWhileStmt();
     std::unique_ptr<Stmt> parseForStmt();
+    // for (x in coll) / for (T x in coll) / for x in coll — 集合迭代（§四-2）
+    std::unique_ptr<Stmt> parseForInStmt(bool parenthesized, bool has_explicit_type);
     std::unique_ptr<Stmt> parseReturnStmt();
     std::unique_ptr<Stmt> parseBreakStmt();
     std::unique_ptr<Stmt> parseContinueStmt();

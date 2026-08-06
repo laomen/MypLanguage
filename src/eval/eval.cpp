@@ -451,6 +451,13 @@ private:
                 v.step ? cloneExprI(*v.step) : nullptr,
                 v.body ? cloneStmtI(*v.body) : nullptr, v.range, v.parallel, v.gpu);
         }
+        case StmtKind::ForInStmt: {
+            auto& v = static_cast<const ForInStmt&>(s);
+            return std::make_unique<ForInStmt>(
+                v.var_name, v.var_type, v.has_type,
+                v.iterable ? cloneExprI(*v.iterable) : nullptr,
+                v.body ? cloneStmtI(*v.body) : nullptr, v.range);
+        }
         case StmtKind::ReturnStmt: {
             auto& v = static_cast<const ReturnStmt&>(s);
             return std::make_unique<ReturnStmt>(

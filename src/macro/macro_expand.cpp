@@ -204,6 +204,13 @@ private:
                 v.step ? cloneExpr(*v.step, args) : nullptr,
                 v.body ? cloneStmt(*v.body, args) : nullptr, v.range, v.parallel, v.gpu);
         }
+        case StmtKind::ForInStmt: {
+            auto& v = static_cast<const ForInStmt&>(s);
+            return std::make_unique<ForInStmt>(
+                v.var_name, v.var_type, v.has_type,
+                v.iterable ? cloneExpr(*v.iterable, args) : nullptr,
+                v.body ? cloneStmt(*v.body, args) : nullptr, v.range);
+        }
         case StmtKind::ReturnStmt: {
             auto& v = static_cast<const ReturnStmt&>(s);
             return std::make_unique<ReturnStmt>(
@@ -268,6 +275,11 @@ private:
         case StmtKind::ForStmt: {
             auto& v = static_cast<ForStmt&>(s);
             if (v.init) expandNested(*v.init, depth);
+            if (v.body) expandNested(*v.body, depth);
+            break;
+        }
+        case StmtKind::ForInStmt: {
+            auto& v = static_cast<ForInStmt&>(s);
             if (v.body) expandNested(*v.body, depth);
             break;
         }
@@ -391,6 +403,13 @@ void dumpStmt(const Stmt& s, int indent) {
         if (v.init) dumpStmt(*v.init, indent + 2);
         if (v.condition) dumpExpr(*v.condition, indent + 2);
         if (v.step) dumpExpr(*v.step, indent + 2);
+        if (v.body) dumpStmt(*v.body, indent + 2);
+        break;
+    }
+    case StmtKind::ForInStmt: {
+        auto& v = static_cast<const ForInStmt&>(s);
+        name("for-in");
+        dumpExpr(*v.iterable, indent + 2);
         if (v.body) dumpStmt(*v.body, indent + 2);
         break;
     }

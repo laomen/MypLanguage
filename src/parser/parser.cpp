@@ -1175,6 +1175,17 @@ std::unique_ptr<Stmt> Parser::parseWhileStmt() {
 std::unique_ptr<Stmt> Parser::parseForStmt() {
     SourceRange r = previous().range;
 
+    // Parenthesized for-in: "for (x in expr)" / "for (T x in expr)"（§四-2）
+    // 检测：peek()=x, peekNext()="in"（无类型）；peekNext()=x, peekNext2()="in"（有类型）
+    if (check(TokenKind::LeftParen)) {
+        // for (x in ...)：当前 token 是 '('，变量在 peekNext()，'in' 在 peekNext2()
+        if (peekNext().kind == TokenKind::Identifier && peekNext2().value == "in")
+            return parseForInStmt(true, false);  // for (x in ...)
+        // for (T x in ...)：类型在 peekNext()，变量在 peekNext2()，'in' 在 peekNext3()
+        if (peekNext2().kind == TokenKind::Identifier && peekNext3().value == "in")
+            return parseForInStmt(true, true);   // for (T x in ...)
+    }
+
     // Range for: "for id in expr body" (no parentheses)
     // Check if next token is an identifier (not '(')
     if (!check(TokenKind::LeftParen) && check(TokenKind::Identifier)) {
@@ -1219,8 +1230,9 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
                     std::move(init_var), std::move(cond),
                     std::move(step), std::move(body), r);
             }
-            diag_.error(range_expr->range, "expected range expression (start..end)");
-            return std::make_unique<ForStmt>(nullptr, nullptr, nullptr, std::move(body), r);
+            // 集合迭代（§四-2）：for x in coll → ForInStmt（sema 解析类型/访问）
+            return std::make_unique<ForInStmt>(var_name, TypeNode(), false,
+                std::move(range_expr), std::move(body), r);
         }
         current_ = save; // restore, not a range for
     }
@@ -1249,6 +1261,36 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
     auto body = parseStatement();
     return std::make_unique<ForStmt>(std::move(init), std::move(cond),
                                       std::move(step), std::move(body), r);
+}
+
+// for (x in coll) / for (T x in coll) / for x in coll — 集合迭代（§四-2）
+std::unique_ptr<Stmt> Parser::parseForInStmt(bool parenthesized, bool has_explicit_type) {
+    SourceRange r = previous().range;
+    if (parenthesized)
+        consume(TokenKind::LeftParen, "expected '(' after 'for'");
+
+    TypeNode var_type;
+    bool has_type = has_explicit_type;
+    std::string var_name;
+    if (has_explicit_type) {
+        // 显式元素类型：for (T x in ...)
+        var_type = parseType();
+        var_name = parseIdentifier("expected variable name");
+    } else {
+        var_name = parseIdentifier("expected variable name");
+    }
+
+    if (!(check(TokenKind::Identifier) && peek().value == "in"))
+        diag_.error(peek().range, "expected 'in' in for-in");
+    else
+        advance(); // consume 'in'
+
+    auto iterable = parseExpr();
+    if (parenthesized)
+        consume(TokenKind::RightParen, "expected ')' after for-in iterable");
+    auto body = parseStatement();
+    return std::make_unique<ForInStmt>(var_name, std::move(var_type), has_type,
+                                        std::move(iterable), std::move(body), r);
 }
 
 std::unique_ptr<Stmt> Parser::parseReturnStmt() {
@@ -2460,6 +2502,15 @@ const Token& Parser::peekNext() const {
 
 const Token& Parser::peekNext2() const {
     size_t idx = current_ + 2;
+    if (idx >= tokens_.size()) {
+        static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
+        return eof;
+    }
+    return tokens_[idx];
+}
+
+const Token& Parser::peekNext3() const {
+    size_t idx = current_ + 3;
     if (idx >= tokens_.size()) {
         static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
         return eof;

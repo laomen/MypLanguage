@@ -464,6 +464,7 @@ private:
     void generateIfStmt(const IfStmt& stmt);
     void generateWhileStmt(const WhileStmt& stmt);
     void generateForStmt(const ForStmt& stmt);
+    void generateForInStmt(const ForInStmt& stmt);
     void generateParallelFor(const ForStmt& stmt);
     void generateGpuFor(const ForStmt& stmt);
     bool generateGpuKernel(const ForStmt& stmt);

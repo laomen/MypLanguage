@@ -836,6 +836,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitWhileStmt(static_cast<WhileStmt&>(stmt));
         case StmtKind::ForStmt:
             return visitForStmt(static_cast<ForStmt&>(stmt));
+        case StmtKind::ForInStmt:
+            return visitForInStmt(static_cast<ForInStmt&>(stmt));
         case StmtKind::ReturnStmt:
             return visitReturnStmt(static_cast<ReturnStmt&>(stmt));
         case StmtKind::BreakStmt:
@@ -997,6 +999,91 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
     if (stmt.body) visitStmt(*stmt.body);
     in_loop_ = saved;
     symbol_table_.leaveScope();
+    return {};
+}
+
+// for (x in coll) — 集合迭代（§四-2）。解析迭代方式并注解 ForInStmt：
+//   iter_kind 0=class(size/get), 1=固定数组, 2=slice, 3=range
+Sema::StmtResult Sema::visitForInStmt(ForInStmt& stmt) {
+    auto it_type = visitExpr(*stmt.iterable);
+    bool valid = false;
+
+    // 范围 for-in：for (i in start..end) 父括号形式
+    if (stmt.iterable->kind == ExprKind::Range) {
+        stmt.elem_type = TypeInfo(TypeKind::Int);
+        stmt.iter_kind = 3;
+        valid = true;
+    } else if (it_type.kind == TypeKind::Class) {
+        // 集合类：需要 size() + get(int)（迭代器协议，de-facto）
+        if (current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != it_type.class_name) continue;
+                const ActionDecl* get_a = nullptr;
+                const ActionDecl* size_a = nullptr;
+                for (auto& a : cls.actions) {
+                    if (a.name == "get" && a.params.size() == 1 &&
+                        typeNodeToTypeInfo(a.params[0].type).kind == TypeKind::Int)
+                        get_a = &a;
+                    if (a.name == "size" && a.params.empty())
+                        size_a = &a;
+                }
+                if (!get_a || !size_a) {
+                    error(stmt.range, "'" + it_type.class_name + "' is not iterable: " +
+                        "requires size() and get(int) methods");
+                    break;
+                }
+                stmt.elem_type = typeNodeToTypeInfo(get_a->return_type);
+                if (stmt.elem_type.kind == TypeKind::Array) {
+                    error(stmt.range, "cannot iterate a collection whose element is an array '" +
+                        typeName(stmt.elem_type) + "'; wrap it in a class or use slice<T>");
+                    break;
+                }
+                stmt.iter_kind = 0;
+                stmt.class_name = it_type.class_name;
+                stmt.size_fn = it_type.class_name + "_size";
+                stmt.get_fn = it_type.class_name + "_get";
+                valid = true;
+                break;
+            }
+        }
+    } else if (it_type.kind == TypeKind::Array) {
+        if (!it_type.element_type) {
+            error(stmt.range, "cannot iterate an array with unknown element type");
+        } else if (it_type.array_size <= 0) {
+            error(stmt.range, "cannot iterate a dynamic array '" + typeName(it_type) +
+                "' (no runtime length); use slice<T> or a collection class");
+        } else {
+            stmt.elem_type = *it_type.element_type;
+            stmt.iter_kind = 1;
+            stmt.array_size = it_type.array_size;
+            valid = true;
+        }
+    } else if (it_type.kind == TypeKind::Slice) {
+        if (!it_type.element_type) {
+            error(stmt.range, "cannot iterate a slice with unknown element type");
+        } else {
+            stmt.elem_type = *it_type.element_type;
+            stmt.iter_kind = 2;
+            valid = true;
+        }
+    } else {
+        error(stmt.range, "cannot iterate over type '" + typeName(it_type) + "'");
+    }
+
+    if (valid) {
+        symbol_table_.enterScope();
+        TypeInfo var_ti = stmt.has_type ? typeNodeToTypeInfo(stmt.var_type) : stmt.elem_type;
+        if (stmt.has_type && !typesCompatible(var_ti, stmt.elem_type)) {
+            error(stmt.range, "for-in variable type '" + typeName(var_ti) +
+                "' does not match element type '" + typeName(stmt.elem_type) + "'");
+        }
+        symbol_table_.declare(stmt.var_name, var_ti);
+        bool saved = in_loop_;
+        in_loop_ = true;
+        if (stmt.body) visitStmt(*stmt.body);
+        in_loop_ = saved;
+        symbol_table_.leaveScope();
+    }
     return {};
 }
 
@@ -3166,6 +3253,12 @@ void Sema::collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals) {
             if (f.body) collectLambdaLocals(*f.body, locals);
             break;
         }
+        case StmtKind::ForInStmt: {
+            auto& f = static_cast<ForInStmt&>(stmt);
+            locals.insert(f.var_name);  // loop var — lambda-local
+            if (f.body) collectLambdaLocals(*f.body, locals);
+            break;
+        }
         case StmtKind::ReturnStmt:
             if (static_cast<ReturnStmt&>(stmt).value)
                 collectExprLocals(*static_cast<ReturnStmt&>(stmt).value, locals);
@@ -3312,6 +3405,12 @@ void Sema::collectLambdaCaptures(Stmt& stmt, const std::set<std::string>& locals
             if (f.body) collectLambdaCaptures(*f.body, locals, params, out);
             break;
         }
+        case StmtKind::ForInStmt: {
+            auto& f = static_cast<ForInStmt&>(stmt);
+            if (f.iterable) collectExprCaptures(*f.iterable, locals, params, out);
+            if (f.body) collectLambdaCaptures(*f.body, locals, params, out);
+            break;
+        }
         case StmtKind::ReturnStmt:
             if (static_cast<ReturnStmt&>(stmt).value)
                 collectExprCaptures(*static_cast<ReturnStmt&>(stmt).value, locals, params, out);
@@ -3452,6 +3551,11 @@ void Sema::inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found) {
         }
         case StmtKind::ForStmt: {
             auto& f = static_cast<ForStmt&>(stmt);
+            if (f.body) { inferLambdaReturn(*f.body, out, found); if (found) return; }
+            break;
+        }
+        case StmtKind::ForInStmt: {
+            auto& f = static_cast<ForInStmt&>(stmt);
             if (f.body) { inferLambdaReturn(*f.body, out, found); if (found) return; }
             break;
         }

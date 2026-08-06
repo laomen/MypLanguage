@@ -310,6 +310,42 @@ for (var i = 0; i < 10; i++) {
 }
 ```
 
+### For-in — 集合迭代（§四-2）
+
+`for-in` 用统一语法遍历四种可迭代源（括号可选，类型可选）：
+
+```myp
+// 1) 固定数组 T[N]（编译期长度）
+int[4] arr = ...;
+for (x in arr) { ... }
+
+// 2) slice<T>（用 .size() 求长）
+slice<int> s = new slice<int>(3);
+for (x in s) { ... }
+
+// 3) 集合类——需实现 size() + get(int) 方法（de-facto 迭代器协议，如 ArrayList<T>）
+ArrayList<int> list = new ArrayList<int>();
+list.add(10); list.add(20);
+for (x in list) { ... }
+
+// 4) range：for (i in a..b) 等价 for (int i = a; i < b; i++)（右开区间）
+for (i in 0..5) { ... }        // i = 0,1,2,3,4
+```
+
+四种形式：
+
+```myp
+for (x in coll) { ... }        // 括号 + 无类型（元素类型由迭代源推断）
+for (int x in coll) { ... }    // 括号 + 显式元素类型
+for x in coll { ... }          // 无括号（仅无类型）
+for (i in 0..5) { ... }        // 无括号 range（右开 i < 5）
+```
+
+- 循环变量每次迭代重新声明（作用域级），支持 `break` / `continue` 与嵌套。
+- 迭代源的表达式只求值一次；集合类迭代时临时引用在循环结束后释放。
+- 类元素（如 `Node[]`、`ArrayList<Node>`）按 ARC 借用语义 retain，循环变量离开迭代作用域时释放——实测零泄漏。
+- **不可迭代**（编译期报错）：动态数组 `int[]`（无运行时长度，请用 `slice<T>` 或集合类）、无 `size()/get(int)` 的类、非集合类型（如 `int`）、集合元素为数组的集合。
+
 ### Break / Continue
 
 ```myp

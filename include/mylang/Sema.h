@@ -44,6 +44,7 @@ private:
     StmtResult visitIfStmt(IfStmt& stmt);
     StmtResult visitWhileStmt(WhileStmt& stmt);
     StmtResult visitForStmt(ForStmt& stmt);
+    StmtResult visitForInStmt(ForInStmt& stmt);
     StmtResult visitReturnStmt(ReturnStmt& stmt);
     StmtResult visitMatchStmt(MatchStmt& stmt);
     StmtResult visitTryStmt(TryStmt& stmt);
