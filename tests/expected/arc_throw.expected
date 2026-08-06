@@ -1,0 +1,9 @@
+catch_out=out left1=0
+outer_alive=0 left2=0
+caught=myerr left3=0
+iface=myerr left4=0
+fin_run recaught left5=0
+left6=0
+alias_throw=42 left7=0
+left8=0
+end
