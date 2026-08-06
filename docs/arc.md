@@ -1,6 +1,6 @@
 # MYP 引用计数内存管理设计（ARC on class 实例）
 
-> 状态：**M-ARC-1 已实施（2026-08-06）**；M-ARC-2（异常/数组/线程帧释放）待办
+> 状态：**M-ARC-1 + M-ARC-2 已实施（2026-08-06）**；M-ARC-3（@region 逃逸简化、异常展开精修）待办
 > 关联：`docs/slice.md` §3（两级 arena 内存模型）、`docs/next_improvements.md` §五-1、
 > `docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，无新语法）
 > 决策背景：析构器已讨论排除（`docs/constructor.md`）；完整 GC 过重；手动 free 会打破
@@ -226,10 +226,16 @@ struct 是值类型、可浅拷贝共享同一 class 引用；若计数释放，
 - **M-ARC-1**：runtime API + 对象头 + 分配路径切换 + `tests/arc` 生命周期/级联/自赋值 —— 最小可用。**✅ 已实施（2026-08-06）**
   - 实际落点：对象头在数据指针前 8 字节（data = base+8，字段 GEP/this/vtable 零改动）；
     `__myp_release_table` 为 ExternalLinkage 每程序一表；作用域退出释放 + retain-at-return +
-    赋值/属性/静态/映射全局/slice 元素插桩；类结构体两遍构建（修自引用 i32 布局 bug）。
-- **M-ARC-2**：全插桩（赋值/参数/返回/存储/临时/数组元素）+ 异常/协程展开。**待办**
-  - 剩余：异常/throw-catch 展开释放、`T[]` 数组元素 retain/release、`@thread`/协程帧
-    销毁释放、临时表达式语句末释放、`@region`/逃逸分析简化整合。
+    赋值/属性/静态/映射全局插桩；类结构体两遍构建（修自引用 i32 布局 bug）。
+- **M-ARC-2**：全插桩（数组元素 + 临时 + 线程帧）。**✅ 已实施（2026-08-06）**
+  - `T[]` 数组元素 retain/release（局部数组/this.arr/obj.arr；slice 同）；语句末临时释放
+    （`new` 作实参/丢弃不累积，强槽 store 消费）；`return new T()` 转移（跳过 retain-at-return，
+    修 M-ARC-1 fresh-return 泄漏）；函数 epilogue release（修 return 结尾局部泄漏）；
+    `@thread`/`@threadpool` 实例在 `myp_thread_destroy` 释放 startup_arg。
+  - 修复：lambda 闭包临时消费入胖指针；@thread 实例临时消费；emitFunctionReturn 顺序
+    （retain 先于 release；main 的 release 先于 `myp_free_all`）。`tests/arc_m2`。
+  - **剩余**：异常/throw-catch 展开释放（未捕获走 `myp_free_all` 兜底安全）；闭包入函数值
+    变量的释放（v1 泄漏安全）；协程帧引用释放。
 - **M-ARC-3**：与 `@region`/逃逸分析简化整合 + 全库回归 + 文档定稿。**待办**
 - 与自举路线关系：T4/T5 大量 AST 节点（class 实例）将自动受益；`Option`/空安全（§三-1）
   与 `Result`（§五-3）可与 ARC 并行，互不冲突。

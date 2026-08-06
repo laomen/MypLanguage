@@ -74,8 +74,7 @@
       指针字段损坏，ARC 测试暴露）；`myp_release` free 前缓存 rc（原 free 后读头 → UAF）。
     - 诊断：`Memory.liveObjectCount()`（当前线程存活实例数）。
     - `tests/arc`（生命周期/级联/自赋值/借用返回/循环不累积）；全库回归 147/147（-O0+ASAN）。
-    - **M-ARC-2 待办**：异常/throw-catch 展开释放、`T[]` 数组元素、`@thread`/协程帧释放、
-      `@region` 逃逸简化整合。设计见 `docs/arc.md`。
+    - **M-ARC-2（2026-08-06）**：`T[]` 数组元素 retain/release（局部/this.arr/obj.arr，slice 同）；\n      语句末临时释放（`new` 作实参/丢弃不累积，强槽 store 消费）；`return new T()` 转移\n      （跳过 retain-at-return，修 M-ARC-1 fresh-return 泄漏）；函数 epilogue release（修\n      return 结尾局部泄漏）；`@thread`/`@threadpool` 实例在 `myp_thread_destroy` 释放\n      startup_arg（线程池改 `myp_alloc_object` 带头）。修复：lambda 闭包/`@thread` 实例\n      临时消费（ASAN 捕获的过早释放）；emitFunctionReturn 顺序（retain 先于 release、\n      main 的 release 先于 `myp_free_all`）。`tests/arc_m2`；全库回归 148/148（-O0+ASAN）。\n    - **M-ARC-3 待办**：异常/throw-catch 展开释放、闭包入函数值释放、协程帧释放、\n      `@region` 逃逸简化整合。设计见 `docs/arc.md`。
   - **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
   - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
     退出码；args 透传（`main(argc,argv)`/构造器）。
