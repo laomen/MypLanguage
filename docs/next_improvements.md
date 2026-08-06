@@ -49,7 +49,7 @@
 
 | # | 事项 | 说明 | 优先级 |
 |---|------|------|--------|
-| 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1 + M-ARC-2 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>` + 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用）、retain-at-return（借用/新对象）、赋值/属性/静态/映射全局 retain、`T[]`/`slice` 类元素 retain/release、语句末临时释放（`new` 作实参/丢弃不累积）、`return new` 转移、函数 epilogue release、`@thread`/`@threadpool` 实例线程销毁时释放。诊断：`Memory.liveObjectCount()`。`tests/arc` + `tests/arc_m2`。**剩余**：异常/throw-catch 展开释放、闭包入函数值释放（v1 泄漏安全）、协程帧释放、`@region` 逃逸简化（M-ARC-3）。设计见 `docs/arc.md` | **P0** |
+| 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1/2/3 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>` + 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用）、retain-at-return、赋值/属性/静态/映射全局 retain、`T[]`/`slice` 类元素 retain/release、语句末临时释放、`return new` 转移、函数 epilogue release、`@thread`/`@threadpool` 实例线程销毁时释放、**闭包释放**（函数值局部 ARC 槽 + 捕获 class 引用 retain）。诊断：`Memory.liveObjectCount()`。`tests/arc` + `arc_m2` + `arc_fn`。**剩余**：异常/throw-catch 展开释放（v1 泄漏安全）、协程帧释放、`@region` 逃逸精修。设计见 `docs/arc.md` | **P0** |
 | 2 | **同步原语 stdlib** | 只有 `Atomic`/`Barrier`；缺 `Mutex`/`RWLock`/`CondVar`/`Semaphore`/`Once`（pthread 底层已有，低成本） | P1 |
 | 3 | **错误类型分层 / `Result<T,E>`** | 只有 `try/catch`，无自定义错误类型体系 / 值式错误传播 | P1 |
 | 4 | **反射 / RTTI** | 无运行时类型查询 | P2（远期） |

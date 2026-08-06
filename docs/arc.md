@@ -1,6 +1,6 @@
 # MYP 引用计数内存管理设计（ARC on class 实例）
 
-> 状态：**M-ARC-1 + M-ARC-2 已实施（2026-08-06）**；M-ARC-3（@region 逃逸简化、异常展开精修）待办
+> 状态：**M-ARC-1 + M-ARC-2 + M-ARC-3（闭包释放）已实施（2026-08-06）**；异常展开释放待办（v1 泄漏安全）
 > 关联：`docs/slice.md` §3（两级 arena 内存模型）、`docs/next_improvements.md` §五-1、
 > `docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，无新语法）
 > 决策背景：析构器已讨论排除（`docs/constructor.md`）；完整 GC 过重；手动 free 会打破
@@ -236,6 +236,15 @@ struct 是值类型、可浅拷贝共享同一 class 引用；若计数释放，
     （retain 先于 release；main 的 release 先于 `myp_free_all`）。`tests/arc_m2`。
   - **剩余**：异常/throw-catch 展开释放（未捕获走 `myp_free_all` 兜底安全）；闭包入函数值
     变量的释放（v1 泄漏安全）；协程帧引用释放。
-- **M-ARC-3**：与 `@region`/逃逸分析简化整合 + 全库回归 + 文档定稿。**待办**
+- **M-ARC-3**：与 `@region`/逃逸分析简化整合 + 全库回归 + 文档定稿。**部分实施（2026-08-06）**
+  - **闭包释放**：函数值局部注册为 ARC 槽（fat pointer index 0 = 闭包），作用域退出释放；
+    `LambdaExpr` 视为 fresh（闭包是新分配的 class 实例）；别名赋值 retain 闭包；捕获的
+    class 引用在 `generateLambda` **retain**（闭包拥有自己的引用，销毁桩级联释放平衡——
+    修外层局部释放后闭包持悬垂借用的 UAF）。`tests/arc_fn`。
+  - **异常/throw-catch 展开释放**：setjmp/longjmp 直接跳到 handler，跳过中间作用域——
+    v1 约定泄漏安全（未捕获走 `myp_free_all` 兜底，不泄漏不双 free）。
+  - **协程帧引用释放**：待办（协程栈池回收时释放帧持有引用）。
+  - **`@region` 逃逸简化**：class 实例一律不走 region（rc 决定生死），逃逸分析只做
+    string/数组——现状已符合，精修留待。
 - 与自举路线关系：T4/T5 大量 AST 节点（class 实例）将自动受益；`Option`/空安全（§三-1）
   与 `Result`（§五-3）可与 ARC 并行，互不冲突。
