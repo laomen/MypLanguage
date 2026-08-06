@@ -149,6 +149,18 @@ private:
     TypeInfo current_ret_ti_;
     void registerArcSlot(llvm::Value* alloca, int kind);
     void releaseArcSlot(llvm::Value* alloca, int kind);
+    // ARC coroutine-frame registry (§五-1 收尾): every local ARC slot inside a
+    // @coro body mirrors the object it currently holds into the coroutine's
+    // runtime frame list (set at each store, clear at every release — all
+    // normal releases funnel through releaseArcSlot). On Coro.destroy or an
+    // uncaught exception the runtime releases the still-live objects, because
+    // those paths longjmp/skip the normal scope-exit epilogue (frame objects
+    // would leak). We mirror OBJECT pointers (not stack addresses) so release
+    // stays safe after the exception has unwound/reused the coroutine stack.
+    llvm::Function* runtime_coro_frame_set_ = nullptr;
+    llvm::Function* runtime_coro_frame_clear_ = nullptr;
+    void emitCoroFrameSet(llvm::Value* alloca, llvm::Value* obj);
+    void emitCoroFrameClear(llvm::Value* alloca);
     llvm::Value* emitRetain(llvm::Value* data);
     // ARC store into a strong reference slot (local alloca or property GEP):
     // retain(new) unless fresh, release(old), caller then stores new.
@@ -314,6 +326,11 @@ private:
 
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;
+    // §五-1 收尾 bug fix: instance globals created on-the-fly for a plain local
+    // `X v = new X()` are transient (mapping convenience only) and must NOT
+    // retain. A later var in the same TU with the same name used to see the
+    // global as "pre-existing" and retain into it → the object leaked (rc 2).
+    std::unordered_set<std::string> class_inst_globals_transient_;
     // ---- Static property globals: "ClassName_propName" -> GlobalVariable ----
     std::unordered_map<std::string, llvm::GlobalVariable*> static_property_globals_;
 

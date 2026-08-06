@@ -663,6 +663,40 @@ void CodeGen::emitReleaseTryInnerSlots() {
     for (auto& s : slots)
         releaseArcSlot(s.alloca, s.kind);
 }
+
+// §五-1 收尾: coroutine-frame ARC registry (see header comment). set/clear mirror
+// the object currently held by a local ARC slot into the current coroutine's
+// runtime frame list. Only meaningful inside @coro bodies (current_is_coro_);
+// elsewhere the runtime calls are no-ops anyway.
+void CodeGen::emitCoroFrameSet(llvm::Value* alloca, llvm::Value* obj) {
+    if (!current_is_coro_ || !alloca || !obj) return;
+    if (!builder_.GetInsertBlock() || builder_.GetInsertBlock()->getTerminator())
+        return;   // dead path — never runs
+    if (!runtime_coro_frame_set_)
+        runtime_coro_frame_set_ = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                    {llvm::Type::getInt64Ty(ctx_),
+                                     llvm::Type::getInt64Ty(ctx_)}, false),
+            llvm::Function::ExternalLinkage, "__myp_coro_frame_set", module_.get());
+    auto* slot = builder_.CreatePtrToInt(alloca, llvm::Type::getInt64Ty(ctx_));
+    llvm::Value* data = obj;
+    if (obj->getType()->isStructTy())   // interface / function-value fat pointer
+        data = builder_.CreateExtractValue(obj, 0);
+    auto* obj_i = builder_.CreatePtrToInt(data, llvm::Type::getInt64Ty(ctx_));
+    builder_.CreateCall(runtime_coro_frame_set_, {slot, obj_i});
+}
+void CodeGen::emitCoroFrameClear(llvm::Value* alloca) {
+    if (!current_is_coro_ || !alloca) return;
+    if (!builder_.GetInsertBlock() || builder_.GetInsertBlock()->getTerminator())
+        return;   // dead path — never runs
+    if (!runtime_coro_frame_clear_)
+        runtime_coro_frame_clear_ = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                    {llvm::Type::getInt64Ty(ctx_)}, false),
+            llvm::Function::ExternalLinkage, "__myp_coro_frame_clear", module_.get());
+    auto* slot = builder_.CreatePtrToInt(alloca, llvm::Type::getInt64Ty(ctx_));
+    builder_.CreateCall(runtime_coro_frame_clear_, {slot});
+}
 // Release the current function's still-live slots before an outward longjmp.
 // Fresh-throw sites: only when no same-function try exists (its dispatch would
 // otherwise handle the inner slots). Rethrow sites: when no ENCLOSING
@@ -678,6 +712,10 @@ void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     if (!runtime_release_ || !alloca) return;
     if (!builder_.GetInsertBlock() ||
         builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
+    // §五-1 收尾: remove this slot from the coroutine's runtime frame list
+    // BEFORE the release — a normally-released slot's object must not be
+    // released again if the coroutine is destroyed later.
+    emitCoroFrameClear(alloca);
     llvm::Value* v;
     if (kind == 1 || kind == 2) {
         // Interface / function-value fat pointer {obj, ...} → release index 0.
@@ -2920,10 +2958,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                     llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
                     "__myp_inst_" + d.name);
                 class_instance_globals_[d.name] = gv;
+                class_inst_globals_transient_.insert(d.name);   // §五-1 收尾
                 iface_git = class_instance_globals_.find(d.name);
             }
             if (iface_git != class_instance_globals_.end()) {
-                if (preexisting)
+                if (preexisting && !class_inst_globals_transient_.count(d.name))
                     emitRetain(inst);
                 builder_.CreateStore(inst, iface_git->second);
             }
@@ -3235,6 +3274,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             emitRetain(cl);
         }
         builder_.CreateStore(v, a);
+        // §五-1 收尾: mirror this slot's live object into the coroutine frame
+        // (released by Coro.destroy / an uncaught exception).
+        if (current_is_coro_ && (arc_decl_class || arc_decl_function))
+            emitCoroFrameSet(a, v);
         arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
 
         // Store instance in global for mapping handler access
@@ -3256,11 +3299,12 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                     llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
                     "__myp_inst_" + d.name);
                 class_instance_globals_[d.name] = gv;
+                class_inst_globals_transient_.insert(d.name);   // §五-1 收尾
                 git = class_instance_globals_.find(d.name);
             }
             if (git != class_instance_globals_.end()) {
                 auto* loaded = builder_.CreateLoad(lt, a, d.name);
-                if (preexisting)
+                if (preexisting && !class_inst_globals_transient_.count(d.name))
                     emitRetain(loaded);
                 builder_.CreateStore(loaded, git->second);
             }
@@ -7860,6 +7904,9 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             arcConsumeTemp(v);   // fresh lambda RHS closure now owned by the local
         }
         builder_.CreateStore(v, a);
+        // §五-1 收尾: mirror the slot's live object into the coroutine frame.
+        if (current_is_coro_ && (isArcClassLocal(a) || isArcFunctionLocal(a)))
+            emitCoroFrameSet(a, v);
         return v;
     }
     // arr[i] = value

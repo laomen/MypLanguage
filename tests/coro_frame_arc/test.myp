@@ -1,0 +1,77 @@
+// tests/coro_frame_arc — §五-1 收尾：协程帧 ARC 释放
+// 覆盖：
+//   ① 强制销毁挂起协程 → 帧上存活的局部类对象被释放（无泄漏）
+//   ② 内层作用域已释放的槽不被重复释放（无 double-free）
+//   ③ 正常结束 → 帧表为空（无泄漏）
+//   ④ helper 抛出未捕获异常 → 协程体帧槽由 trampoline 释放（无泄漏）
+// 用 Memory.liveObjectCount()（线程本地存活实例数）验证零泄漏。
+import env;
+import memory;
+import coro;
+import time;
+
+class Tank {
+    action:
+        @constructor Tank() {}
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Main me = new Main();
+            long base = Memory.liveObjectCount();
+
+            // ①+②：park 时 inner（内层作用域）已释放，只有 outer 存活；
+            //      destroy 后回到 base（outer 释放、inner 不重复释放）
+            long h = me.parked();
+            Coro.scheduler();
+            long mid = Memory.liveObjectCount();
+            Console.writeString("A parked extra=" + (mid - base) + "\n");
+            Coro.destroy(h);
+            long a2 = Memory.liveObjectCount();
+            Console.writeString("A destroyed extra=" + (a2 - base) + "\n");
+
+            // ③：正常结束（epilogue 释放 + 帧表为空）
+            long h2 = me.normal();
+            Coro.scheduler();
+            long b = Memory.liveObjectCount();
+            Console.writeString("B normal extra=" + (b - base) + "\n");
+
+            // ④：helper 抛未捕获异常 → trampoline 释放协程体帧槽
+            Console.writeString("C start\n");
+            long h3 = me.boom2();
+            Coro.scheduler();
+            long c = Memory.liveObjectCount();
+            Console.writeString("C boom extra=" + (c - base) + "\n");
+
+            Console.writeString("done\n");
+        }
+
+        // 内层作用域的 inner 在作用域结束时正常释放（从帧表清除）；
+        // outer 在 park 期间存活 → destroy 时必须被释放。
+        // 注意：裸 await 是 yield 握手（协程保持就绪），不会真正挂起；
+        // 要用 waitEventTimeout 等一个永不触发的事件才能真 park。
+        @coro long parked() {
+            { Tank inner = new Tank(); }
+            Tank outer = new Tank();
+            Coro.waitEventTimeout(9999, 100000, 0);   // 真 park（阻塞）
+            return 0;
+        }
+
+        @coro long normal() {
+            Tank t = new Tank();
+            return 0;
+        }
+
+        // helper（非协程方法）抛出未捕获异常 → 协程体 t 的帧槽由 trampoline 释放
+        @coro long boom2() {
+            Tank t = new Tank();
+            helper();
+            return 0;
+        }
+
+    function:
+        void helper() { throw "boom"; }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

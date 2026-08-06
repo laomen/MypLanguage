@@ -1,6 +1,6 @@
 # MYP 引用计数内存管理设计（ARC on class 实例）
 
-> 状态：**M-ARC-1 + M-ARC-2 + M-ARC-3（闭包释放）已实施（2026-08-06）**；异常展开释放待办（v1 泄漏安全）
+> 状态：**M-ARC-1 + M-ARC-2 + M-ARC-3（闭包释放）已实施（2026-08-06）**；异常/throw-catch 展开释放已实施（`d5f7ddf`）；协程帧引用释放已实施（帧 ARC 登记表）
 > 关联：`docs/slice.md` §3（两级 arena 内存模型）、`docs/next_improvements.md` §五-1、
 > `docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，无新语法）
 > 决策背景：析构器已讨论排除（`docs/constructor.md`）；完整 GC 过重；手动 free 会打破
@@ -243,7 +243,7 @@ struct 是值类型、可浅拷贝共享同一 class 引用；若计数释放，
     修外层局部释放后闭包持悬垂借用的 UAF）。`tests/arc_fn`。
   - **异常/throw-catch 展开释放**：setjmp/longjmp 直接跳到 handler，跳过中间作用域——
     v1 约定泄漏安全（未捕获走 `myp_free_all` 兜底，不泄漏不双 free）。
-  - **协程帧引用释放**：待办（协程栈池回收时释放帧持有引用）。
+  - **协程帧引用释放**：✅ **已实施**——`@coro` 体内每个局部 ARC 槽在 store 时把**对象指针**镜像进协程帧登记表（`__myp_coro_frame_set`，slot_id 作键、堆对象指针作值），每次正常释放经 `releaseArcSlot` 触发 `__myp_coro_frame_clear` 移除；`Coro.destroy`（含自毁）与未捕获异常（trampoline）时 `__myp_coro_release_frame` 释放帧表内仍存活对象。**追踪对象指针而非栈地址**——异常解卷会复用协程栈，读栈槽内容不可靠。附带修复预存在 bug：`X v = new X()` 存入 `__myp_inst_<v>` 全局，同 TU 第二个方法同名变量复用时 `preexisting` 误判为真映射全局而 retain → 对象 rc=2 泄漏（`class_inst_globals_transient_` 瞬态集合区分 on-the-fly 全局）。`tests/coro_frame_arc`（park+destroy / 内层作用域不双释 / 正常结束 / helper 抛未捕获异常）。
   - **`@region` 逃逸简化**：class 实例一律不走 region（rc 决定生死），逃逸分析只做
     string/数组——现状已符合，精修留待。
 - 与自举路线关系：T4/T5 大量 AST 节点（class 实例）将自动受益；`Option`/空安全（§三-1）

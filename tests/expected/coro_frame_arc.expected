@@ -1,0 +1,7 @@
+A parked extra=1
+A destroyed extra=0
+B normal extra=0
+C start
+uncaught exception in coroutine: boom
+C boom extra=0
+done

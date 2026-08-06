@@ -107,6 +107,10 @@ char* myp_coro_file_read_all(int32_t io_handle);
 int64_t __myp_coro_wait_any_of(const int64_t* spec, int64_t count, int64_t timeout_ms,
                                int64_t val);
 
+// ---- §五-1 收尾: coroutine-frame ARC registry (codegen-emitted) ----
+void __myp_coro_frame_set(int64_t slot_id, int64_t obj);
+void __myp_coro_frame_clear(int64_t slot_id);
+
 // ---- Process Management ----
 int32_t myp_process_run(const char* cmd);
 char* myp_process_output(const char* cmd);

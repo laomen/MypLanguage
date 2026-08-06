@@ -3168,6 +3168,14 @@ void myp_future_destroy(int32_t handle) {
 #define MYP_CORO_STACK_SIZE (128 * 1024)      // 128KB per coroutine stack
 #define MYP_CORO_INITIAL_CAPACITY 64
 
+// §五-1 收尾: one entry in a coroutine's frame ARC registry — the object a
+// local ARC slot currently holds (slot_id = alloca address, used only as a
+// lookup key and never dereferenced).
+typedef struct {
+    int64_t slot_id;
+    int64_t obj;
+} myp_frame_slot_t;
+
 typedef struct {
     ucontext_t ctx;
     ucontext_t ret_ctx;   // caller context (who resumed/created this coroutine)
@@ -3179,6 +3187,14 @@ typedef struct {
     int64_t last_wait_event_id; // event id that woke us (C10 waitAny)
     int64_t last_wait_index; // §五-5 P4: spec index that woke a waitAnyOf (-1 = none)
     int cancel_requested; // cooperative-cancel flag (C10)
+    // §五-1 收尾: coroutine-frame ARC registry — mirrors the object each local
+    // ARC slot currently holds (set at store, cleared at every normal release).
+    // On Coro.destroy or an uncaught exception the runtime releases each still-
+    // registered object. Objects are heap pointers, so release is safe even
+    // after the coroutine's stack was unwound/reused by the exception path.
+    myp_frame_slot_t* frame_slots;
+    int frame_slots_count;
+    int frame_slots_cap;
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
 } myp_coro_t;
@@ -3286,6 +3302,9 @@ static void myp_coro_stack_pool_free_all(void) {
 // inside the coroutine that no inner catch handles longjmps back HERE (rather
 // than to the main thread's top handler), so the coroutine ends cleanly
 // (active=0) and the rest of the process keeps running instead of aborting.
+// §五-1 收尾: defined below the wait table (needs myp_release); forward-declared
+// so the trampoline can release a frame abandoned by an uncaught exception.
+static void __myp_coro_release_frame(myp_coro_t* c);
 static void __myp_coro_trampoline(int id) {
     jmp_buf jb;
     if (setjmp(jb) == 0) {
@@ -3308,6 +3327,11 @@ static void __myp_coro_trampoline(int id) {
         }
     }
     if (id >= 0 && id < myp_coro_count && myp_coros[id]) {
+        // §五-1 收尾: release any frame slots still live at completion (normally
+        // the epilogue already released+del'd them, so this is a no-op; on an
+        // uncaught exception it recovers the frame's objects). We are ON this
+        // coroutine's stack, so reading the slot addresses is safe.
+        __myp_coro_release_frame(myp_coros[id]);
         myp_coros[id]->active = 0;
         myp_coros[id]->ready = 0;
     }
@@ -3353,6 +3377,7 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     c->result = 0;
     c->wait_timeout = 0;
     c->cancel_requested = 0;
+    c->frame_slots_count = 0;   // §五-1 收尾: fresh frame (slot reuse is clean)
     return idx;
 }
 
@@ -3472,6 +3497,64 @@ static int myp_coro_wait_reserve(void) {
     return 0;
 }
 
+// ---- §五-1 收尾: coroutine-frame ARC registry ----
+// A coroutine's local class/interface/closure slots live on its ucontext stack.
+// Normal completion releases them via the function epilogue (codegen pairs each
+// release with __myp_coro_frame_clear). But a FORCE destroy (Coro.destroy) or an
+// uncaught exception longjmps past those releases → the frame's objects leak.
+// So every live ARC slot value inside a @coro body is mirrored into the
+// coroutine's frame list at STORE time (as the OBJECT pointer, on the heap) and
+// removed at every normal release; on destroy / abnormal exit the runtime
+// releases each still-registered object. We track OBJECT pointers (not stack
+// slot addresses) so release is safe even after the exception has unwound and
+// reused the coroutine's stack. Coroutines are thread-local and destroy runs on
+// the owning thread, so the per-coroutine list needs no locking.
+void __myp_coro_frame_set(int64_t slot_id, int64_t obj) {
+    if (myp_coro_current < 0 || myp_coro_current >= myp_coro_count) return;
+    myp_coro_t* c = myp_coros[myp_coro_current];
+    if (!c || !slot_id) return;
+    for (int i = 0; i < c->frame_slots_count; i++) {
+        if (c->frame_slots[i].slot_id == slot_id) {
+            c->frame_slots[i].obj = obj;   // update in place (no duplicates)
+            return;
+        }
+    }
+    if (c->frame_slots_count >= c->frame_slots_cap) {
+        int nc = c->frame_slots_cap ? c->frame_slots_cap * 2 : 16;
+        myp_frame_slot_t* np = (myp_frame_slot_t*)realloc(c->frame_slots,
+                                        (size_t)nc * sizeof(myp_frame_slot_t));
+        if (!np) return;   // OOM: leave untracked (leak on destroy, no UAF)
+        c->frame_slots = np;
+        c->frame_slots_cap = nc;
+    }
+    c->frame_slots[c->frame_slots_count].slot_id = slot_id;
+    c->frame_slots[c->frame_slots_count].obj = obj;
+    c->frame_slots_count++;
+}
+void __myp_coro_frame_clear(int64_t slot_id) {
+    if (myp_coro_current < 0 || myp_coro_current >= myp_coro_count) return;
+    myp_coro_t* c = myp_coros[myp_coro_current];
+    if (!c || !slot_id) return;
+    for (int i = 0; i < c->frame_slots_count; i++) {
+        if (c->frame_slots[i].slot_id == slot_id) {
+            c->frame_slots[i] = c->frame_slots[c->frame_slots_count - 1];
+            c->frame_slots_count--;
+            return;   // one entry per slot_id
+        }
+    }
+}
+// Release every still-live frame slot's OBJECT. The objects are heap pointers
+// mirrored at store time, so this is safe even after the coroutine's stack has
+// been unwound/reused (unlike reading stack slot contents).
+static void __myp_coro_release_frame(myp_coro_t* c) {
+    if (!c) return;
+    for (int i = 0; i < c->frame_slots_count; i++) {
+        void* p = (void*)(uintptr_t)c->frame_slots[i].obj;
+        if (p) myp_release(p);
+    }
+    c->frame_slots_count = 0;
+}
+
 void __myp_coro_destroy(int64_t handle) {
     if (handle >= 0 && handle < myp_coro_count && myp_coros[handle] &&
         myp_coros[handle]->stack) {
@@ -3480,10 +3563,17 @@ void __myp_coro_destroy(int64_t handle) {
         // and corrupt execution. Mark it inactive; its stack is reclaimed
         // when the slot is reused by __myp_coro_create (or at process exit).
         if (handle == myp_coro_current) {
+            // We are ON this stack — releasing the frame's still-live objects
+            // is safe (we are not freeing the stack, just their objects).
+            __myp_coro_release_frame(myp_coros[handle]);
             myp_coros[handle]->active = 0;
             myp_coros[handle]->ready = 0;
             return;
         }
+        // Force-destroy of a parked/live coroutine: release its frame's
+        // still-live ARC slots BEFORE returning the stack to the pool (the
+        // slot addresses point into that stack, which is still allocated).
+        __myp_coro_release_frame(myp_coros[handle]);
         myp_coros[handle]->active = 0;
         myp_coros[handle]->ready = 0;
         // Drop any pending event-wait records for this coroutine so the wait
@@ -4065,6 +4155,7 @@ static void __myp_coro_cleanup_all(void) {
                 free(myp_coros[i]->stack);
                 myp_coros[i]->stack = NULL;
             }
+            free(myp_coros[i]->frame_slots);   // §五-1 收尾
             free(myp_coros[i]);
             myp_coros[i] = NULL;
         }
