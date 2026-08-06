@@ -1,0 +1,161 @@
+// sync.myp — MYP 标准库：线程同步原语（§五-2，handle 模式）
+//
+// 基于 pthread 的互斥锁/读写锁/条件变量/信号量/单次执行。
+// 全部采用 handle 模式（同 Barrier）：create 返回 int 句柄，用后必须 destroy 释放。
+// 句柄槽位有限（每类 64 个）；destroy 后可复用。
+//
+// 用法:
+//   import env;
+//   import sync;
+//
+//   int m = Mutex.create();
+//   Mutex.lock(m);
+//   try { ... } finally { Mutex.unlock(m); }   // 配合 finally 保证解锁
+//   Mutex.destroy(m);
+//
+//   // 条件变量（必须持有关联的 Mutex）
+//   int cv = CondVar.create();
+//   Mutex.lock(m); while (!ready) { CondVar.wait(cv, m); }  ...
+//   CondVar.signal(cv); Mutex.unlock(m);
+//
+//   // 单次执行（Once）：多个线程竞争，仅首个执行初始化
+//   int once = Once.create();
+//   if (Once.enter(once) == 1) { ...初始化...; Once.done(once); }
+//   Once.destroy(once);
+
+// ---- FFI：pthread 封装（句柄以 int 承载，同 Barrier）----
+ffi int  myp_mutex_create();
+ffi int  myp_mutex_create_recursive();
+ffi void myp_mutex_lock(int h);
+ffi int  myp_mutex_trylock(int h);
+ffi void myp_mutex_unlock(int h);
+ffi void myp_mutex_destroy(int h);
+ffi int  myp_rwlock_create();
+ffi void myp_rwlock_rdlock(int h);
+ffi void myp_rwlock_wrlock(int h);
+ffi int  myp_rwlock_tryrdlock(int h);
+ffi int  myp_rwlock_trywrlock(int h);
+ffi void myp_rwlock_unlock(int h);
+ffi void myp_rwlock_destroy(int h);
+ffi int  myp_cond_create();
+ffi void myp_cond_wait(int ch, int mh);
+ffi void myp_cond_signal(int ch);
+ffi void myp_cond_broadcast(int ch);
+ffi void myp_cond_destroy(int ch);
+ffi int  myp_sem_create(int initial);
+ffi void myp_sem_wait(int h);
+ffi int  myp_sem_trywait(int h);
+ffi void myp_sem_post(int h);
+ffi void myp_sem_destroy(int h);
+ffi int  myp_once_create();
+ffi int  myp_once_enter(int h);
+ffi void myp_once_done(int h);
+ffi void myp_once_destroy(int h);
+
+// ============================================================
+// Mutex 互斥锁
+// ============================================================
+class Mutex {
+    static:
+        // 创建普通互斥锁，返回句柄（-1 = 失败）
+        int create() { return myp_mutex_create(); }
+
+        // 创建可重入互斥锁（同一线程可重复加锁）
+        int createRecursive() { return myp_mutex_create_recursive(); }
+
+        // 加锁（阻塞）
+        void lock(int h) { myp_mutex_lock(h); }
+
+        // 尝试加锁：1 = 成功，0 = 已被占用，-1 = 非法句柄
+        int tryLock(int h) { return myp_mutex_trylock(h); }
+
+        // 解锁
+        void unlock(int h) { myp_mutex_unlock(h); }
+
+        // 销毁（释放句柄槽位）
+        void destroy(int h) { myp_mutex_destroy(h); }
+}
+
+// ============================================================
+// RWLock 读写锁：多读单写
+// ============================================================
+class RWLock {
+    static:
+        int create() { return myp_rwlock_create(); }
+
+        // 读锁（共享，多个读可并存；写者等待）
+        void readLock(int h) { myp_rwlock_rdlock(h); }
+
+        // 写锁（独占，等待所有读者释放）
+        void writeLock(int h) { myp_rwlock_wrlock(h); }
+
+        // 尝试读锁：1 = 成功，0 = 失败，-1 = 非法句柄
+        int tryReadLock(int h) { return myp_rwlock_tryrdlock(h); }
+
+        // 尝试写锁
+        int tryWriteLock(int h) { return myp_rwlock_trywrlock(h); }
+
+        // 释放锁（读锁或写锁均可）
+        void unlock(int h) { myp_rwlock_unlock(h); }
+
+        void destroy(int h) { myp_rwlock_destroy(h); }
+}
+
+// ============================================================
+// CondVar 条件变量（必须与 Mutex 配合使用）
+// ============================================================
+class CondVar {
+    static:
+        int create() { return myp_cond_create(); }
+
+        // 等待条件（自动释放 mutex 并阻塞；被 signal 唤醒后重新持有 mutex）
+        // 惯例：while (!condition) CondVar.wait(cv, mutex);
+        void wait(int cv, int mutex) { myp_cond_wait(cv, mutex); }
+
+        // 唤醒一个等待者
+        void signal(int cv) { myp_cond_signal(cv); }
+
+        // 唤醒所有等待者
+        void broadcast(int cv) { myp_cond_broadcast(cv); }
+
+        void destroy(int cv) { myp_cond_destroy(cv); }
+}
+
+// ============================================================
+// Semaphore 信号量（P/V 操作）
+// ============================================================
+class Semaphore {
+    static:
+        // 创建信号量，初始计数 initial（>= 0）
+        int create(int initial) { return myp_sem_create(initial); }
+
+        // P 操作：计数减一，若为 0 则阻塞直到被 post
+        void wait(int h) { myp_sem_wait(h); }
+
+        // 尝试 P 操作：1 = 成功，0 = 计数为 0，-1 = 非法句柄
+        int tryWait(int h) { return myp_sem_trywait(h); }
+
+        // V 操作：计数加一，唤醒一个等待者
+        void post(int h) { myp_sem_post(h); }
+
+        void destroy(int h) { myp_sem_destroy(h); }
+}
+
+// ============================================================
+// Once 单次执行（call-once 惯用法）
+// ============================================================
+class Once {
+    static:
+        int create() { return myp_once_create(); }
+
+        // 返回 1 = 本线程是首个调用者（应执行初始化，随后调用 done）；
+        // 返回 0 = 已由其他线程完成（跳过初始化）。
+        // 惯例：
+        //   if (Once.enter(h) == 1) { ...init...; Once.done(h); }
+        int enter(int h) { return myp_once_enter(h); }
+
+        // 标记初始化完成并释放锁（仅首个调用者调用）
+        void done(int h) { myp_once_done(h); }
+
+        void destroy(int h) { myp_once_destroy(h); }
+}

@@ -16,6 +16,7 @@
 #include <time.h>
 #include <termios.h>
 #include <unistd.h>
+#include <semaphore.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 
@@ -2556,6 +2557,261 @@ void myp_barrier_destroy(int32_t handle) {
     if (handle >= 0 && handle < MYP_MAX_BARRIERS && myp_barrier_used[handle]) {
         pthread_barrier_destroy(&myp_barriers[handle]);
         myp_barrier_used[handle] = 0;
+    }
+}
+
+// ======================
+// 同步原语（§五-2，pthread 封装）：Mutex / RWLock / CondVar / Semaphore / Once
+// 全部采用 handle 模式（同 Barrier）：固定数组 + 分配表 + 互斥保护槽位分配。
+// ======================
+
+#define MYP_MAX_MUTEX 64
+static pthread_mutex_t myp_mutexes[MYP_MAX_MUTEX];
+static int myp_mutex_used[MYP_MAX_MUTEX] = {0};
+static pthread_mutex_t myp_mutex_slot = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_mutex_create(void) {
+    pthread_mutex_lock(&myp_mutex_slot);
+    for (int32_t i = 0; i < MYP_MAX_MUTEX; i++) {
+        if (!myp_mutex_used[i]) {
+            if (pthread_mutex_init(&myp_mutexes[i], NULL) != 0) {
+                pthread_mutex_unlock(&myp_mutex_slot);
+                return -1;
+            }
+            myp_mutex_used[i] = 1;
+            pthread_mutex_unlock(&myp_mutex_slot);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_mutex_slot);
+    return -1;
+}
+
+int32_t myp_mutex_create_recursive(void) {
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_lock(&myp_mutex_slot);
+    for (int32_t i = 0; i < MYP_MAX_MUTEX; i++) {
+        if (!myp_mutex_used[i]) {
+            if (pthread_mutex_init(&myp_mutexes[i], &attr) != 0) {
+                pthread_mutexattr_destroy(&attr);
+                pthread_mutex_unlock(&myp_mutex_slot);
+                return -1;
+            }
+            pthread_mutexattr_destroy(&attr);
+            myp_mutex_used[i] = 1;
+            pthread_mutex_unlock(&myp_mutex_slot);
+            return i;
+        }
+    }
+    pthread_mutexattr_destroy(&attr);
+    pthread_mutex_unlock(&myp_mutex_slot);
+    return -1;
+}
+
+static int myp_mutex_valid(int32_t h) {
+    return h >= 0 && h < MYP_MAX_MUTEX && myp_mutex_used[h];
+}
+
+void myp_mutex_lock(int32_t h) {
+    if (myp_mutex_valid(h)) pthread_mutex_lock(&myp_mutexes[h]);
+}
+int32_t myp_mutex_trylock(int32_t h) {
+    if (!myp_mutex_valid(h)) return -1;
+    return pthread_mutex_trylock(&myp_mutexes[h]) == 0 ? 1 : 0;
+}
+void myp_mutex_unlock(int32_t h) {
+    if (myp_mutex_valid(h)) pthread_mutex_unlock(&myp_mutexes[h]);
+}
+void myp_mutex_destroy(int32_t h) {
+    if (myp_mutex_valid(h)) {
+        pthread_mutex_destroy(&myp_mutexes[h]);
+        myp_mutex_used[h] = 0;
+    }
+}
+
+// ---- RWLock ----
+#define MYP_MAX_RWLOCK 64
+static pthread_rwlock_t myp_rwlocks[MYP_MAX_RWLOCK];
+static int myp_rwlock_used[MYP_MAX_RWLOCK] = {0};
+static pthread_mutex_t myp_rwlock_slot = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_rwlock_create(void) {
+    pthread_mutex_lock(&myp_rwlock_slot);
+    for (int32_t i = 0; i < MYP_MAX_RWLOCK; i++) {
+        if (!myp_rwlock_used[i]) {
+            if (pthread_rwlock_init(&myp_rwlocks[i], NULL) != 0) {
+                pthread_mutex_unlock(&myp_rwlock_slot);
+                return -1;
+            }
+            myp_rwlock_used[i] = 1;
+            pthread_mutex_unlock(&myp_rwlock_slot);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_rwlock_slot);
+    return -1;
+}
+static int myp_rwlock_valid(int32_t h) {
+    return h >= 0 && h < MYP_MAX_RWLOCK && myp_rwlock_used[h];
+}
+void myp_rwlock_rdlock(int32_t h) {
+    if (myp_rwlock_valid(h)) pthread_rwlock_rdlock(&myp_rwlocks[h]);
+}
+void myp_rwlock_wrlock(int32_t h) {
+    if (myp_rwlock_valid(h)) pthread_rwlock_wrlock(&myp_rwlocks[h]);
+}
+int32_t myp_rwlock_tryrdlock(int32_t h) {
+    if (!myp_rwlock_valid(h)) return -1;
+    return pthread_rwlock_tryrdlock(&myp_rwlocks[h]) == 0 ? 1 : 0;
+}
+int32_t myp_rwlock_trywrlock(int32_t h) {
+    if (!myp_rwlock_valid(h)) return -1;
+    return pthread_rwlock_trywrlock(&myp_rwlocks[h]) == 0 ? 1 : 0;
+}
+void myp_rwlock_unlock(int32_t h) {
+    if (myp_rwlock_valid(h)) pthread_rwlock_unlock(&myp_rwlocks[h]);
+}
+void myp_rwlock_destroy(int32_t h) {
+    if (myp_rwlock_valid(h)) {
+        pthread_rwlock_destroy(&myp_rwlocks[h]);
+        myp_rwlock_used[h] = 0;
+    }
+}
+
+// ---- CondVar（wait 需关联一个 Mutex handle）----
+#define MYP_MAX_COND 64
+static pthread_cond_t myp_conds[MYP_MAX_COND];
+static int myp_cond_used[MYP_MAX_COND] = {0};
+static pthread_mutex_t myp_cond_slot = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_cond_create(void) {
+    pthread_mutex_lock(&myp_cond_slot);
+    for (int32_t i = 0; i < MYP_MAX_COND; i++) {
+        if (!myp_cond_used[i]) {
+            if (pthread_cond_init(&myp_conds[i], NULL) != 0) {
+                pthread_mutex_unlock(&myp_cond_slot);
+                return -1;
+            }
+            myp_cond_used[i] = 1;
+            pthread_mutex_unlock(&myp_cond_slot);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_cond_slot);
+    return -1;
+}
+static int myp_cond_valid(int32_t h) {
+    return h >= 0 && h < MYP_MAX_COND && myp_cond_used[h];
+}
+void myp_cond_wait(int32_t ch, int32_t mh) {
+    if (myp_cond_valid(ch) && myp_mutex_valid(mh))
+        pthread_cond_wait(&myp_conds[ch], &myp_mutexes[mh]);
+}
+void myp_cond_signal(int32_t ch) {
+    if (myp_cond_valid(ch)) pthread_cond_signal(&myp_conds[ch]);
+}
+void myp_cond_broadcast(int32_t ch) {
+    if (myp_cond_valid(ch)) pthread_cond_broadcast(&myp_conds[ch]);
+}
+void myp_cond_destroy(int32_t ch) {
+    if (myp_cond_valid(ch)) {
+        pthread_cond_destroy(&myp_conds[ch]);
+        myp_cond_used[ch] = 0;
+    }
+}
+
+// ---- Semaphore（POSIX 无名信号量）----
+#define MYP_MAX_SEM 64
+static sem_t myp_sems[MYP_MAX_SEM];
+static int myp_sem_used[MYP_MAX_SEM] = {0};
+static pthread_mutex_t myp_sem_slot = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_sem_create(int32_t initial) {
+    pthread_mutex_lock(&myp_sem_slot);
+    for (int32_t i = 0; i < MYP_MAX_SEM; i++) {
+        if (!myp_sem_used[i]) {
+            if (sem_init(&myp_sems[i], 0, (unsigned int)initial) != 0) {
+                pthread_mutex_unlock(&myp_sem_slot);
+                return -1;
+            }
+            myp_sem_used[i] = 1;
+            pthread_mutex_unlock(&myp_sem_slot);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_sem_slot);
+    return -1;
+}
+static int myp_sem_valid(int32_t h) {
+    return h >= 0 && h < MYP_MAX_SEM && myp_sem_used[h];
+}
+void myp_sem_wait(int32_t h) {
+    if (myp_sem_valid(h)) sem_wait(&myp_sems[h]);
+}
+int32_t myp_sem_trywait(int32_t h) {
+    if (!myp_sem_valid(h)) return -1;
+    return sem_trywait(&myp_sems[h]) == 0 ? 1 : 0;
+}
+void myp_sem_post(int32_t h) {
+    if (myp_sem_valid(h)) sem_post(&myp_sems[h]);
+}
+void myp_sem_destroy(int32_t h) {
+    if (myp_sem_valid(h)) {
+        sem_destroy(&myp_sems[h]);
+        myp_sem_used[h] = 0;
+    }
+}
+
+// ---- Once（call-once：enter 返回 1 表示首个调用者应执行初始化，done 标记完成）----
+#define MYP_MAX_ONCE 64
+typedef struct {
+    pthread_mutex_t mutex;
+    int32_t done;
+    int32_t used;
+} myp_once_t;
+static myp_once_t myp_onces[MYP_MAX_ONCE];
+static pthread_mutex_t myp_once_slot = PTHREAD_MUTEX_INITIALIZER;
+
+int32_t myp_once_create(void) {
+    pthread_mutex_lock(&myp_once_slot);
+    for (int32_t i = 0; i < MYP_MAX_ONCE; i++) {
+        if (!myp_onces[i].used) {
+            pthread_mutex_init(&myp_onces[i].mutex, NULL);
+            myp_onces[i].done = 0;
+            myp_onces[i].used = 1;
+            pthread_mutex_unlock(&myp_once_slot);
+            return i;
+        }
+    }
+    pthread_mutex_unlock(&myp_once_slot);
+    return -1;
+}
+static int myp_once_valid(int32_t h) {
+    return h >= 0 && h < MYP_MAX_ONCE && myp_onces[h].used;
+}
+// Returns 1 if this is the first caller (and the lock is held — caller must run
+// the init body then call myp_once_done); 0 if already done (lock released).
+int32_t myp_once_enter(int32_t h) {
+    if (!myp_once_valid(h)) return 0;
+    pthread_mutex_lock(&myp_onces[h].mutex);
+    if (myp_onces[h].done) {
+        pthread_mutex_unlock(&myp_onces[h].mutex);
+        return 0;
+    }
+    return 1;   // lock stays held; caller runs init, then myp_once_done
+}
+void myp_once_done(int32_t h) {
+    if (myp_once_valid(h)) {
+        myp_onces[h].done = 1;
+        pthread_mutex_unlock(&myp_onces[h].mutex);
+    }
+}
+void myp_once_destroy(int32_t h) {
+    if (myp_once_valid(h)) {
+        pthread_mutex_destroy(&myp_onces[h].mutex);
+        myp_onces[h].used = 0;
     }
 }
 

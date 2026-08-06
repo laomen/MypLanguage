@@ -1,0 +1,118 @@
+// sync: 同步原语（§五-2，additive）— Mutex / RWLock / CondVar / Semaphore / Once
+// 多线程临界区（4 个 @thread worker 用 Mutex 保护 @static 共享计数）+
+// CondVar 生产者/消费者（cond-wait 协调，确定性输出）+ 单线程 API 验证
+import env;
+import sync;
+
+@static class Shared {
+    property:
+        int mutex;        // 跨线程共享的 Mutex handle
+        int cond;         // 跨线程共享的 CondVar handle
+        int count = 0;    // 多线程临界区累加（预期 400 = 4 worker × 100）
+        int done = 0;     // 完成的 worker 数
+        int ready = 0;    // 生产者就绪标志
+        int condVal = 0;  // 生产者写入的值
+        int onceInit = 0; // Once 首次执行次数
+}
+
+class Worker {
+    action:
+        @startup void run() {
+            // 临界区：Mutex 保护累加
+            for (int i = 0; i < 100; i = i + 1) {
+                Mutex.lock(Shared.mutex);
+                Shared.count = Shared.count + 1;
+                Mutex.unlock(Shared.mutex);
+            }
+            // 完成计数 + 唤醒 main
+            Mutex.lock(Shared.mutex);
+            Shared.done = Shared.done + 1;
+            CondVar.signal(Shared.cond);
+            Mutex.unlock(Shared.mutex);
+        }
+}
+
+class Producer {
+    action:
+        @startup void run() {
+            Mutex.lock(Shared.mutex);
+            Shared.condVal = 42;
+            Shared.ready = 1;
+            CondVar.signal(Shared.cond);
+            Mutex.unlock(Shared.mutex);
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Shared.mutex = Mutex.create();
+            Shared.cond = CondVar.create();
+
+            Worker w1 = new Worker() @thread;
+            Worker w2 = new Worker() @thread;
+            Worker w3 = new Worker() @thread;
+            Worker w4 = new Worker() @thread;
+            Producer p = new Producer() @thread;
+
+            // 等 4 个 worker 完成（cond-wait 协调，确定性）
+            Mutex.lock(Shared.mutex);
+            while (Shared.done < 4) { CondVar.wait(Shared.cond, Shared.mutex); }
+            int c = Shared.count;
+            Mutex.unlock(Shared.mutex);
+            Console.writeString("mutex_count=" + c + "\n");
+
+            // 等生产者就绪
+            Mutex.lock(Shared.mutex);
+            while (Shared.ready == 0) { CondVar.wait(Shared.cond, Shared.mutex); }
+            int cv = Shared.condVal;
+            Mutex.unlock(Shared.mutex);
+            Console.writeString("cond=" + cv + "\n");
+
+            // --- 单线程 API：Mutex tryLock / recursive ---
+            int m2 = Mutex.create();
+            Mutex.lock(m2);
+            int tl_held = Mutex.tryLock(m2);   // 0（已被本线程持有）
+            Mutex.unlock(m2);
+            int tl_free = Mutex.tryLock(m2);   // 1
+            Mutex.unlock(m2);
+            int rm = Mutex.createRecursive();
+            Mutex.lock(rm); Mutex.lock(rm);     // 递归加锁 OK
+            Mutex.unlock(rm); Mutex.unlock(rm);
+            Console.writeString("mutex_api: try_held=" + tl_held + " try_free=" + tl_free + "\n");
+
+            // --- RWLock ---
+            int rw = RWLock.create();
+            RWLock.readLock(rw); RWLock.readLock(rw);   // 读锁可重复
+            RWLock.unlock(rw); RWLock.unlock(rw);
+            RWLock.writeLock(rw); RWLock.unlock(rw);
+            int tr = RWLock.tryReadLock(rw); RWLock.unlock(rw);
+            int tw = RWLock.tryWriteLock(rw); RWLock.unlock(rw);
+            Console.writeString("rwlock_api: r=" + tr + " w=" + tw + "\n");
+
+            // --- Semaphore ---
+            int s = Semaphore.create(2);
+            Semaphore.wait(s); Semaphore.wait(s);       // 2 → 0
+            int st_empty = Semaphore.tryWait(s);        // 0（空）
+            Semaphore.post(s);                           // 0 → 1
+            int st_ok = Semaphore.tryWait(s);           // 1（成功）
+            Console.writeString("sem_api: empty=" + st_empty + " after_post=" + st_ok + "\n");
+
+            // --- Once：1000 次 enter 仅首次执行 ---
+            int o = Once.create();
+            for (int i = 0; i < 1000; i = i + 1) {
+                if (Once.enter(o) == 1) {
+                    Shared.onceInit = Shared.onceInit + 1;
+                    Once.done(o);
+                }
+            }
+            Console.writeString("once: init=" + Shared.onceInit + "\n");
+
+            Console.writeString("sync all ok\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

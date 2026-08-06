@@ -1,0 +1,7 @@
+mutex_count=400
+cond=42
+mutex_api: try_held=0 try_free=1
+rwlock_api: r=1 w=1
+sem_api: empty=0 after_post=1
+once: init=1
+sync all ok

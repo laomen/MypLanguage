@@ -217,6 +217,35 @@ void myp_thread_stop(myp_thread_t* thr);
 // Destroy a thread (join + cleanup)
 void myp_thread_destroy(myp_thread_t* thr);
 
+// ---- Synchronization primitives (§五-2): handle-based pthread wrappers ----
+int32_t myp_mutex_create(void);
+int32_t myp_mutex_create_recursive(void);
+void myp_mutex_lock(int32_t h);
+int32_t myp_mutex_trylock(int32_t h);
+void myp_mutex_unlock(int32_t h);
+void myp_mutex_destroy(int32_t h);
+int32_t myp_rwlock_create(void);
+void myp_rwlock_rdlock(int32_t h);
+void myp_rwlock_wrlock(int32_t h);
+int32_t myp_rwlock_tryrdlock(int32_t h);
+int32_t myp_rwlock_trywrlock(int32_t h);
+void myp_rwlock_unlock(int32_t h);
+void myp_rwlock_destroy(int32_t h);
+int32_t myp_cond_create(void);
+void myp_cond_wait(int32_t ch, int32_t mh);
+void myp_cond_signal(int32_t ch);
+void myp_cond_broadcast(int32_t ch);
+void myp_cond_destroy(int32_t ch);
+int32_t myp_sem_create(int32_t initial);
+void myp_sem_wait(int32_t h);
+int32_t myp_sem_trywait(int32_t h);
+void myp_sem_post(int32_t h);
+void myp_sem_destroy(int32_t h);
+int32_t myp_once_create(void);
+int32_t myp_once_enter(int32_t h);
+void myp_once_done(int32_t h);
+void myp_once_destroy(int32_t h);
+
 // ---- Work-Stealing Thread Pool (v6) ----
 typedef struct myp_pool myp_pool_t;
 myp_pool_t* myp_pool_create(int n_threads);
