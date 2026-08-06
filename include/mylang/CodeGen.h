@@ -161,6 +161,9 @@ private:
     // True for NewExpr / CallExpr / LambdaExpr results: transfer (no retain)
     // at a strong slot.
     static bool isFreshArcExpr(const Expr& e);
+    // §五-5 形态3: is the awaited operand a call to an @async-annotated
+    // function/static method (an await-able async IO operation)?
+    bool isAsyncCallTarget(const Expr* callee) const;
     // ---- Statement-end temporary release (§五-1 M-ARC-2) ----
     // A `new` expression's fresh object is owned by the current statement; if a
     // store site takes it (transfer) it calls arcConsumeTemp; otherwise

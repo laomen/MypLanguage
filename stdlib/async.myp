@@ -1,0 +1,19 @@
+// async.myp — MYP 标准库：异步 IO 统一抽象（§五-5，additive）
+// 设计见 docs/async_io.md。@async 方法内部经 park 原语挂起/恢复当前协程，
+// 必须在 @coro 上下文以 `await` 调用（否则运行时退化为同步阻塞）。
+//
+// 用法：
+//   @coro void run() {
+//       await Async.sleep(200);          // 挂起 200ms，不阻塞线程
+//       Console.writeString("woke\n");
+//   }
+
+import coro;
+
+class Async {
+    static:
+        // 挂起当前协程 ms 毫秒（不阻塞线程；非协程上下文退化为同步 sleep）
+        @async long sleep(long ms) {
+            return Coro.sleep(ms);
+        }
+}

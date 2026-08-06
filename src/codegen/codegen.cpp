@@ -1558,6 +1558,7 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
     llvm::Type* ret = v;
     std::vector<llvm::Type*> pts;
     if (action.name == "scheduler") { rt = "__myp_coro_scheduler"; }
+    else if (action.name == "sleep") { rt = "__myp_coro_sleep"; ret = i64; pts = {i64}; }
     else if (action.name == "resume")    { rt = "__myp_coro_resume"; ret = i64; pts = {i64, i64}; }
     else if (action.name == "yield")     { rt = "__myp_coro_yield"; ret = i64; pts = {i64}; }
     else if (action.name == "isActive")  { rt = "__myp_coro_is_active"; ret = i64; pts = {i64}; }
@@ -7494,6 +7495,16 @@ void CodeGen::buildEventNameTable() {
 void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
 
+    // §五-5 形态3: await <@async 调用> — 直接调用（@async 函数内部经 park 原语
+    // 挂起/恢复当前协程），不做 yield 值握手；语句形式丢弃返回值。
+    if (s.expr && s.expr->kind == ExprKind::Call) {
+        auto& call = static_cast<const CallExpr&>(*s.expr);
+        if (call.callee && isAsyncCallTarget(call.callee.get())) {
+            generateExpr(*s.expr);
+            return;
+        }
+    }
+
     // await ClassName.eventName; — block until the event is fired (C4).
     if (s.expr && s.expr->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*s.expr);
@@ -7554,6 +7565,16 @@ void CodeGen::generateAwaitStmt(const AwaitStmt& s) {
 
 llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
+
+    // §五-5 形态3: await <@async 调用> — 直接调用（@async 函数内部经 park 原语
+    // 挂起/恢复当前协程），不做 yield 值握手；await 表达式的值 = 函数返回值。
+    if (e.operand && e.operand->kind == ExprKind::Call) {
+        auto& call = static_cast<const CallExpr&>(*e.operand);
+        if (call.callee && isAsyncCallTarget(call.callee.get())) {
+            auto* v = generateExpr(*e.operand);
+            return v ? castToI64(v) : llvm::ConstantInt::get(i64, 0);
+        }
+    }
 
     // await ClassName.eventName — block until the event is fired (C4).
     if (e.operand && e.operand->kind == ExprKind::MemberAccess) {
@@ -7616,6 +7637,32 @@ llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
 llvm::Value* CodeGen::generateRange(const RangeExpr& e) {
     // Range evaluation: returns the start value (for use in for loops mainly)
     return generateExpr(*e.start);
+}
+
+// §五-5 形态3: is `callee` a call target to an @async-annotated function or
+// static class method (an await-able async IO operation)?
+bool CodeGen::isAsyncCallTarget(const Expr* callee) const {
+    if (!callee || !current_tu_) return false;
+    if (callee->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*callee);
+        for (auto& f : current_tu_->functions)
+            if (f.name == id.name && f.has_async) return true;
+        return false;
+    }
+    if (callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*callee);
+        if (ma.object && ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != oid.name) continue;
+                for (auto& a : cls.actions)          // action: 段
+                    if (a.name == ma.member_name && a.has_async) return true;
+                for (auto& a : cls.static_actions)   // static: 段
+                    if (a.name == ma.member_name && a.has_async) return true;
+            }
+        }
+    }
+    return false;
 }
 
 llvm::Value* CodeGen::generateTryExpr(const TryExpr& e) {

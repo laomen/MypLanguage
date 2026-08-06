@@ -22,6 +22,8 @@ class Coro {
     static:
         // 自动调度：处理事件后对每个就绪协程 resume 一步（C3）
         void scheduler() {}
+        // 挂起当前协程 ms 毫秒（§五-5 P1 定时器；不阻塞线程，非协程上下文退化为同步）
+        long sleep(long ms) {}
         // 手动恢复协程并传入值；返回协程挂起时传出的值（结束则 0，无效 -1）
         long resume(long handle, long val) {}
         // 挂起当前协程并传出值；恢复时返回传入值（等价于 await 表达式）

@@ -2267,6 +2267,12 @@ void Sema::checkParamDefaults(const std::vector<ParamDecl>& params) {
 }
 
 TypeInfo Sema::visitCall(CallExpr& expr) {
+    // §五-5: an @async function/static method may only be called from an @coro
+    // context (it suspends the fiber via park primitives — meaningless/unsafe
+    // elsewhere). Runtime falls back to blocking, but sema rejects at compile time.
+    if (!in_coro_method_ && isAsyncCallee(expr.callee.get()))
+        error(expr.range, "'@async' function can only be awaited inside an '@coro' method");
+
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
     if (expr.callee->kind == ExprKind::MemberAccess) {
         auto& gma = static_cast<MemberAccessExpr&>(*expr.callee);
@@ -3797,6 +3803,32 @@ bool Sema::isGlobalName(const std::string& name) const {
         if (s.name == name) return true;
     for (auto& e : current_tu_->enums)
         if (e.name == name) return true;
+    return false;
+}
+
+// §五-5: is `callee` an @async-annotated top-level function or class
+// (action:/static:) method? Used to reject @async calls outside @coro contexts.
+bool Sema::isAsyncCallee(const Expr* callee) const {
+    if (!callee || !current_tu_) return false;
+    if (callee->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*callee);
+        for (auto& f : current_tu_->functions)
+            if (f.name == id.name && f.has_async) return true;
+        return false;
+    }
+    if (callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*callee);
+        if (ma.object && ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != oid.name) continue;
+                for (auto& a : cls.actions)
+                    if (a.name == ma.member_name && a.has_async) return true;
+                for (auto& a : cls.static_actions)
+                    if (a.name == ma.member_name && a.has_async) return true;
+            }
+        }
+    }
     return false;
 }
 

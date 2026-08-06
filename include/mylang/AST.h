@@ -146,6 +146,7 @@ struct ActionDecl {
     bool has_constructor = false;  // @constructor 或 函数名==类名：构造器（new 时调用）
     bool has_test = false;
     bool has_coro = false;
+    bool has_async = false;  // @async: 可挂起的异步 IO 方法（await 形态3）
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     int coro_stack_kb = 0;    // @coro(stack=N): coroutine stack size in KB (0 = default 128KB)
 };
@@ -753,6 +754,7 @@ struct FuncDecl {
     bool is_auto_main = false;               // `mypc run`: 编译器注入的合成 main（豁免 main() 限制）
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     bool has_coro = false;    // @coro: 顶层协程函数（C 系列）
+    bool has_async = false;   // @async: 顶层异步 IO 函数（await 形态3）
     int coro_stack_kb = 0;    // @coro(stack=N) — 协程栈大小 KB（0=默认）
     std::string op_symbol;  // non-empty if this is an operator (@op("..."))
     bool has_eval = false;  // @eval: 编译期求值（纯函数）

@@ -1,0 +1,43 @@
+// async_sleep: §五-5 P1 定时器 — await Async.sleep(ms) 挂起协程而不阻塞线程
+// 覆盖：@coro 内 await Async.sleep 挂起/到期恢复；睡眠期间其他协程继续推进
+//       （A sleep(100) 期间 B 完成 3 步 → 证明非阻塞）；调度器到期驱动。
+import env;
+import coro;
+import async;
+import time;
+
+class Main {
+    action:
+        @startup void run() {
+            Main me = new Main();
+            // A 先启动并 sleep(100) 挂起；B 随后启动并快速完成 3 步。
+            // 若 sleep 阻塞线程，B 只能等 A 醒来后才运行 → 顺序会相反。
+            long ha = me.runnerA();
+            long hb = me.runnerB();
+            for (int i = 0; i < 15; i++) {
+                Coro.scheduler();          // 驱动就绪协程（含到期定时器唤醒）
+                Time.sleep(20);
+            }
+            Console.writeString("done\n");
+        }
+
+        // A：sleep 100ms 后醒来
+        @coro long runnerA() {
+            Console.writeString("A:start\n");
+            await Async.sleep(100);
+            Console.writeString("A:woke\n");
+            return 0;
+        }
+
+        // B：3 个普通 await 快速推进（无需时间）
+        @coro long runnerB() {
+            for (int i = 0; i < 3; i++) {
+                await;
+                Console.writeString("B:step" + i + "\n");
+            }
+            Console.writeString("B:done\n");
+            return 0;
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

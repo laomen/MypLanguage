@@ -1,0 +1,7 @@
+// async_outside_coro: @async 函数只能在 @coro 上下文 await（普通 main 调用 → 编译报错）
+import async;
+
+int main() {
+    Async.sleep(10);
+    return 0;
+}

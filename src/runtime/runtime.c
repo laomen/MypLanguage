@@ -3432,7 +3432,8 @@ void __myp_coro_cancel_clear(void) {
 // Dynamic table (grows on demand) — a fixed-size table would silently deadlock
 // the coroutine when it is full (parked but never registered).
 typedef struct {
-    int event_id;
+    int kind;           // 等待来源：0=EVENT（现有 C4），1=TIMER（sleep），2=FD，3=EXEC
+    int event_id;       // EVENT
     int64_t handle;
     int active;
     int64_t deadline_ms;  // absolute deadline for timed waits (0 = none)
@@ -3559,6 +3560,7 @@ int64_t __myp_coro_wait_event_timeout(int64_t event_id, int64_t timeout_ms, int6
     if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
         myp_coros[myp_coro_current]) {
         if (myp_coro_wait_reserve() == 0) {
+            myp_coro_waits[myp_coro_wait_count].kind = 0;  // EVENT
             myp_coro_waits[myp_coro_wait_count].event_id = (int)event_id;
             myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
             myp_coro_waits[myp_coro_wait_count].active = 1;
@@ -3594,6 +3596,7 @@ int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t timeout_m
         myp_coros[myp_coro_current] && ids && count > 0) {
         for (int64_t i = 0; i < count; i++) {
             if (myp_coro_wait_reserve() == 0) {
+                myp_coro_waits[myp_coro_wait_count].kind = 0;  // EVENT
                 myp_coro_waits[myp_coro_wait_count].event_id = (int)ids[i];
                 myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
                 myp_coro_waits[myp_coro_wait_count].active = 1;
@@ -3620,6 +3623,37 @@ int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t timeout_m
     }
     if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }
     return (c && c->last_wait_event_id >= 0) ? c->last_wait_event_id : r;
+}
+
+// ---- §五-5 P1: coroutine timer (await sleep) ----
+// Sleep the current coroutine for `ms` milliseconds WITHOUT blocking the thread:
+// register a TIMER wait (deadline = now+ms, no event — event_id = -1 never
+// matches a real event), park; the scheduler's deadline-expiry loop re-readies
+// it when the deadline passes. Outside a coroutine this falls back to a real
+// blocking sleep (myp_sleep_ms) so Async.sleep / Coro.sleep is safe anywhere.
+int64_t __myp_coro_sleep(int64_t ms) {
+    if (ms <= 0) return 0;
+    if (myp_coro_current < 0 || myp_coro_current >= myp_coro_count ||
+        !myp_coros[myp_coro_current]) {
+        myp_sleep_ms(ms);   // not in a coroutine → blocking fallback
+        return 0;
+    }
+    int64_t deadline = myp_now_ms() + ms;
+    if (myp_coro_wait_reserve() == 0) {
+        myp_coro_waits[myp_coro_wait_count].kind = 1;      // TIMER
+        myp_coro_waits[myp_coro_wait_count].event_id = -1; // never matches an event
+        myp_coro_waits[myp_coro_wait_count].handle = myp_coro_current;
+        myp_coro_waits[myp_coro_wait_count].active = 1;
+        myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
+        myp_coro_waits[myp_coro_wait_count].expired = 0;
+        myp_coro_wait_count++;
+        myp_coros[myp_coro_current]->ready = 0;   // park
+        myp_coros[myp_coro_current]->wait_timeout = 0;
+    }
+    // Suspend; the scheduler re-readies us when the deadline passes. A
+    // wait_timeout flag set by the expiry path is the NORMAL wake here → 0.
+    __myp_coro_yield(0);
+    return 0;
 }
 
 // Re-ready (and resume if currently dispatching) waiters for an event.

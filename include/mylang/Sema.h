@@ -137,6 +137,9 @@ private:
     bool in_main_function_ = false;
     int in_catch_depth_ = 0;         // >0 inside a catch block (for `throw;` rethrow)
     bool in_coro_method_ = false;    // true while checking an @coro action body (await allowed)
+    // §五-5: is `callee` an @async-annotated function/static method? (only
+    // await-able inside an @coro context)
+    bool isAsyncCallee(const Expr* callee) const;
     std::string current_class_name_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct
 

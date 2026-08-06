@@ -53,7 +53,7 @@
 | 2 | ~~**同步原语 stdlib**~~ | ✅ **已实施（additive）**：`sync.myp`——`Mutex`（普通+可重入，tryLock）、`RWLock`（读写，try rd/wr）、`CondVar`（wait 关联 Mutex handle + signal/broadcast）、`Semaphore`（POSIX sem，tryWait）、`Once`（enter/done call-once 惯用法）。全部 handle 模式（同 `Barrier`，每类 64 槽）。跨线程共享状态用 `@static class` 属性。`tests/sync`（4 worker Mutex 临界区确定性 400 + CondVar 生产者/消费者 + API 检查） | 已就绪 | P1 |
 | 3 | ~~**错误类型分层 / `Result<T,E>`**~~ | ✅ **已实施（additive）**：`stdlib/result.myp`——`Result<T,E>` 二态容器（`Result()`=err、`Result(T v)`=ok + `isOk/isErr/get/getErr/getOr/setOk/setErr`）；顶层泛型工厂 `resultOk<T,E>(v)`/`resultErr<T,E>(e)`（实参推断部分类型实参）；组合子 `resultMap`/`resultAndThen`/`resultMapErr`（无异常错误传播，泛型体内直接构造避免占位符单态化限制）；异常桥 `resultTry<T>((() -> T) f) -> Result<T,string>`（`catch (string s)` 优先拿原始消息 + `catch (Error e)` 用 `e.message()`——错误类型分层：精确捕获用具体异常类、统一处理用 `Error` 接口）。`error.myp` 补 `StringError.setMsg`。`tests/result`。**附带修复 5 个既有 bug**：①lambda 捕获分析误捕全局函数/类名（`collectExprCaptures` 加 `isGlobalName` 过滤）；②`string + bool` 拼接调 `myp_to_string_i32` 传 i1（改 `myp_to_string_bool` + sext）；③泛型函数内 `new GenericClass<T>(args)` 带参构造不调用构造器（codegen 按具体实例类名 + 实参个数重建 ctor）；④接口值来自函数返回值赋给接口变量时把胖指针当实例指针（interface passthrough）；⑤`catch (string)` 绑定共享 `myp_error_msg` 缓冲指针、后续 throw 覆写导致存下的错误消息漂移（绑定前 `myp_strdup` 拷贝） | 错误处理 | P1 |
 | 4 | **反射 / RTTI** | 无运行时类型查询 | P2（远期） |
-| 5 | **异步 IO 统一抽象** | `await` 仅限事件，未覆盖文件/网络/睡眠 | P2（远期） |
+| 5 | **异步 IO 统一抽象** | `await` 仅限事件，未覆盖文件/网络/睡眠。**设计见 `docs/async_io.md`**（单线程 reactor：广义等待表 EVENT/TIMER/FD/EXEC + 调度器批量 poll/定时器/线程收件箱 + worker 文件执行器 + `@async` 注解；分阶段 P1 定时器 → P2 socket 就绪 → P3 文件执行器 → P4 统一 waitAny）| P2（远期） |
 
 ## 六、平台 / 生态（远期）
 

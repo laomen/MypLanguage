@@ -292,6 +292,7 @@ ActionDecl Parser::parseActionDecl() {
         if (annot == "startup") decl.has_startup = true;
         if (annot == "constructor") decl.has_constructor = true;
         if (annot == "test") decl.has_test = true;
+        if (annot == "async") decl.has_async = true;
         if (annot == "coro") {
             decl.has_coro = true;
             // Optional: @coro(stack=N) — N = coroutine stack size in KB (default 128)
@@ -608,6 +609,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
         else annot = parseIdentifier("expected annotation name");
         if (annot == "test") func->has_test = true;
         else if (annot == "constructor") func->has_constructor = true;
+        else if (annot == "async") func->has_async = true;
         else if (annot == "region") func->has_region = true;
         else if (annot == "eval") func->has_eval = true;
         else if (annot == "macro") func->has_proc_macro = true;   // M4 过程宏
