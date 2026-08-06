@@ -764,6 +764,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                                 typeName(tup) + "'");
                             return;
                         }
+                        // `_` 忽略符：跳过该元素——不声明/不赋值、不校验类型、仍消耗一个槽位
+                        if (t.name == "_") { idx++; return; }
                         const TypeInfo& et = tup.tuple_types[idx];
                         idx++;
                         if (ds.is_decl) {

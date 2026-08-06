@@ -125,6 +125,26 @@ private:
     // 1=interface fat ptr, 2=function value fat ptr {closure, call_fn}.
     struct ArcSlot { llvm::Value* alloca; int kind; };
     std::vector<std::vector<ArcSlot>> arc_scope_slots_;
+    // Exception unwinding (§五-1 剩余项): when a throw longjmps to a catch, the
+    // scope-exit releases inside the abandoned try block are skipped → locals
+    // leak. Each try records the ARC slots registered while inside it; the
+    // dispatch/propagate path releases them, and outward rethrow sites release
+    // the remaining (outer) slots. A slot is collected only into the INNERMOST
+    // active try's list so inner-no-match→outer-catch never double-releases.
+    struct TryUnwindCtx { std::vector<ArcSlot> inner_slots; };
+    std::vector<TryUnwindCtx> try_ctx_stack_;
+    // Emit myp_release for every slot collected in the innermost try's unwind
+    // list (called at the top of the dispatch/propagate exception paths).
+    void emitReleaseTryInnerSlots();
+    // Drop a slot from the innermost try's unwind list after its scope exits
+    // NORMALLY (popScope) — otherwise the dispatch path would release it a
+    // second time (double free → release of a freed pointer).
+    void removeTryUnwindSlot(llvm::Value* alloca);
+    // Release the current function's still-live slots before an outward
+    // longjmp. `rethrow_site` true when propagating an existing exception:
+    // release whenever there is no ENCLOSING same-function try (size<=1);
+    // for a fresh throw release only when there is no same-function try at all.
+    void emitUnwindRelease(bool rethrow_site);
     // Source-level return type of the current function (for retain-at-return).
     TypeInfo current_ret_ti_;
     void registerArcSlot(llvm::Value* alloca, int kind);

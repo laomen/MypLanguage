@@ -1,0 +1,6 @@
+// tuple_ignore_arity: `_` 忽略符仍需满足元组元数（绑定 2 个但元组有 3 个元素 → 报错）
+(int, int, int) getTri() { return (10, 20, 30); }
+int main() {
+    (int a, _) = getTri();
+    return a;
+}

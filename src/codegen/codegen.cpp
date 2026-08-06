@@ -622,11 +622,26 @@ void CodeGen::popScope() {
     // return/throw) we skip the release — safe leak, never a premature free.
     if (!arc_scope_slots_.empty()) {
         auto& slots = arc_scope_slots_.back();
-        for (auto& s : slots)
+        // Dead path (after return/throw): the normal release is skipped (safe
+        // leak) — keep the slot in the try's unwind list so the exception
+        // dispatch releases it. Live path: release and drop from the unwind
+        // list so the dispatch never double-releases it.
+        bool dead = !builder_.GetInsertBlock() ||
+                    builder_.GetInsertBlock()->getTerminator();
+        for (auto& s : slots) {
             releaseArcSlot(s.alloca, s.kind);
+            if (!dead) removeTryUnwindSlot(s.alloca);
+        }
         arc_scope_slots_.pop_back();
     }
     if (!named_values_.empty()) named_values_.pop_back();
+}
+void CodeGen::removeTryUnwindSlot(llvm::Value* alloca) {
+    if (try_ctx_stack_.empty() || !alloca) return;
+    auto& slots = try_ctx_stack_.back().inner_slots;
+    for (auto it = slots.begin(); it != slots.end(); ++it) {
+        if (it->alloca == alloca) { slots.erase(it); return; }
+    }
 }
 // Register a local reference slot (class instance / interface fat pointer /
 // function-value closure) so its referenced object is myp_release'd when the
@@ -634,6 +649,30 @@ void CodeGen::popScope() {
 void CodeGen::registerArcSlot(llvm::Value* alloca, int kind) {
     if (!alloca || arc_scope_slots_.empty()) return;
     arc_scope_slots_.back().push_back({alloca, kind});
+    // Exception unwinding: also collect into the innermost active try so the
+    // dispatch path can release it (the longjmp skips the normal scope exit).
+    if (!try_ctx_stack_.empty())
+        try_ctx_stack_.back().inner_slots.push_back({alloca, kind});
+}
+// Emit myp_release for every slot collected in the innermost try's unwind list.
+// Called at the top of the exception paths (dispatch / propagate) — only runs
+// when the try block was abandoned, so no double release with normal scope exit.
+void CodeGen::emitReleaseTryInnerSlots() {
+    if (try_ctx_stack_.empty()) return;
+    auto& slots = try_ctx_stack_.back().inner_slots;
+    for (auto& s : slots)
+        releaseArcSlot(s.alloca, s.kind);
+}
+// Release the current function's still-live slots before an outward longjmp.
+// Fresh-throw sites: only when no same-function try exists (its dispatch would
+// otherwise handle the inner slots). Rethrow sites: when no ENCLOSING
+// same-function try exists (only the current one, or none) — the outer slots
+// would otherwise leak when the exception leaves the function.
+void CodeGen::emitUnwindRelease(bool rethrow_site) {
+    bool release = rethrow_site
+        ? (try_ctx_stack_.size() <= 1)
+        : try_ctx_stack_.empty();
+    if (release) arcReleaseAllScopes();
 }
 void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     if (!runtime_release_ || !alloca) return;
@@ -2589,6 +2628,8 @@ void CodeGen::generateDestructureStmt(const DestructureStmt& ds) {
             size_t idx = 0;
             for (auto& c : t.elements) {
                 if (idx >= sty->getNumElements()) return;
+                // `_` 忽略符：跳过该元素（不生成绑定，仅推进槽位）
+                if (c.name == "_") { idx++; continue; }
                 auto* ev = builder_.CreateExtractValue(agg, (unsigned)idx, "tup_el");
                 auto* et = sty->getElementType(idx);
                 if (!c.name.empty()) {
@@ -8149,6 +8190,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // Register this try's handler before setjmp (innermost-active handler stack).
     builder_.CreateCall(runtime_exception_push_->getFunctionType(),
         runtime_exception_push_, {jb_ptr});
+    // Exception unwinding: collect ARC slots registered inside this try so the
+    // dispatch/propagate paths can release them when the longjmp skips scope exit.
+    try_ctx_stack_.emplace_back();
 
     auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
         runtime_setjmp_, {jb_ptr}, "setjmp_result");
@@ -8217,6 +8261,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // === Dispatch: match the exception type against each catch clause ===
     if (dispatch_bb) {
         builder_.SetInsertPoint(dispatch_bb);
+        // The longjmp skipped the try block's scope-exit releases — free the
+        // abandoned inner slots before running the catch bodies.
+        emitReleaseTryInnerSlots();
         auto* etype = builder_.CreateCall(runtime_exception_get_type_->getFunctionType(),
             runtime_exception_get_type_, {}, "exc_type");
         std::vector<llvm::BasicBlock*> catch_bbs;
@@ -8265,7 +8312,10 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
 
             // Generate this catch body: bind the variable, run the block.
             builder_.SetInsertPoint(catch_bbs[i]);
-            if (isErrorInterface(cc.var_type)) {
+            bool iface_catch = isErrorInterface(cc.var_type);
+            bool obj_catch = !cc.var_type.empty() && cc.var_type != "string" && !iface_catch;
+            llvm::Value* caught_slot = nullptr;   // non-null → release at catch end
+            if (iface_catch) {
                 // e is an Error interface fat pointer { data=object, vtable }.
                 auto* obj = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
                     runtime_exception_get_object_, {}, "exc_obj");
@@ -8281,9 +8331,10 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
                 builder_.CreateStore(obj, builder_.CreateStructGEP(fat_ty, ev, 0));
                 builder_.CreateStore(vt, builder_.CreateStructGEP(fat_ty, ev, 1));
                 setNamedValue(cc.var_name, ev);
+                caught_slot = ev;
             } else {
                 llvm::Value* bound = nullptr;
-                if (!cc.var_type.empty() && cc.var_type != "string") {
+                if (obj_catch) {
                     bound = builder_.CreateCall(runtime_exception_get_object_->getFunctionType(),
                         runtime_exception_get_object_, {}, "exc_obj");
                 } else {
@@ -8302,10 +8353,27 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
                 auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
                 builder_.CreateStore(bound, ev);
                 setNamedValue(cc.var_name, ev);
-                if (!cc.var_type.empty() && cc.var_type != "string")
+                if (obj_catch) {
                     var_class_map_[cc.var_name] = cc.var_type;
+                    caught_slot = ev;
+                }
             }
             if (cc.block) generateBlock(*cc.block);
+            // ARC ownership: the catch takes the exception's reference. Release
+            // it at NORMAL catch end; a rethrow/return/break (dead path) skips
+            // this, so ownership flows to the next catch (or leaks if uncaught,
+            // safe). Non-matching catches never run → no uninitialized slot.
+            if (caught_slot && builder_.GetInsertBlock() &&
+                !builder_.GetInsertBlock()->getTerminator() && runtime_release_) {
+                llvm::Value* rel = nullptr;
+                if (iface_catch) {
+                    auto* fat = builder_.CreateLoad(getLLVMType(TypeInfo(TypeKind::Interface)), caught_slot);
+                    rel = builder_.CreateExtractValue(fat, 0);
+                } else {
+                    rel = builder_.CreateLoad(ptr_ty, caught_slot);
+                }
+                builder_.CreateCall(runtime_release_, {rel});
+            }
             if (!builder_.GetInsertBlock()->getTerminator()) {
                 if (finally_bb) {
                     builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 0), finally_flag);
@@ -8320,6 +8388,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // === Exception propagating through finally (flag=1) ===
     if (propagate_bb) {
         builder_.SetInsertPoint(propagate_bb);
+        // No matching catch: the try's abandoned inner slots must be freed
+        // before the finally body runs (then rethrow frees the outer ones).
+        emitReleaseTryInnerSlots();
         builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 1), finally_flag);
         builder_.CreateBr(finally_bb);
     }
@@ -8370,10 +8441,20 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
                 builder_.CreateStore(c2, fc.outer_flag_slot);
                 builder_.CreateBr(fc.outer_finally_bb);
             } else {
-                llvm::Value* rv = nullptr;
-                if (finally_ret_slot_ && !current_function_->getReturnType()->isVoidTy())
-                    rv = builder_.CreateLoad(current_function_->getReturnType(), finally_ret_slot_);
-                emitFunctionReturn(rv);
+                // flag==2 (return) can only be set by an actual return inside the
+                // try, which always creates finally_ret_slot_ (for non-void). If
+                // there was none, this block is unreachable — emit a well-typed
+                // unreachable instead of `ret void` in a non-void function
+                // (pre-existing bug: try/finally in an int-returning fn failed
+                // LLVM verify with "return type does not match").
+                if (finally_ret_slot_ || current_function_->getReturnType()->isVoidTy()) {
+                    llvm::Value* rv = nullptr;
+                    if (finally_ret_slot_ && !current_function_->getReturnType()->isVoidTy())
+                        rv = builder_.CreateLoad(current_function_->getReturnType(), finally_ret_slot_);
+                    emitFunctionReturn(rv);
+                } else {
+                    builder_.CreateUnreachable();
+                }
             }
 
             // mode 3 → break: forward to enclosing finally, else to loop break target
@@ -8406,6 +8487,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
         builder_.SetInsertPoint(rethrow_bb);
         builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
             runtime_exception_pop_, {});
+        // Leaving the function (no enclosing same-function try): free the
+        // remaining outer slots before the outward longjmp.
+        emitUnwindRelease(true);
         auto* jb2 = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
             runtime_exception_get_jmpbuf_, {}, "outer_handler");
         auto* one = llvm::ConstantInt::get(i32_ty, 1);
@@ -8417,6 +8501,8 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // Pop this try's handler (all paths converge here).
     builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
         runtime_exception_pop_, {});
+    // Pop the unwind-collection context (must match the emplace_back at entry).
+    if (!try_ctx_stack_.empty()) try_ctx_stack_.pop_back();
 }
 
 void CodeGen::emitExceptionRethrow() {
@@ -8424,6 +8510,8 @@ void CodeGen::emitExceptionRethrow() {
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
         runtime_exception_pop_, {});
+    // Rethrow leaving the function: free the still-live outer slots first.
+    emitUnwindRelease(true);
     auto* jb2 = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
         runtime_exception_get_jmpbuf_, {}, "outer_handler");
     auto* one = llvm::ConstantInt::get(i32_ty, 1);
@@ -8438,6 +8526,8 @@ void CodeGen::generateThrowStmt(const ThrowStmt& s) {
         // throw; — rethrow the current exception. If inside a try-with-finally,
         // run the finally body first (mode=1), then propagate outward; otherwise
         // propagate directly (the current exception state stays in the runtime).
+        // (Ownership model: the exception keeps the object; the rethrowing catch's
+        // normal-end release is skipped because this path ends in longjmp.)
         if (!finally_ctx_stack_.empty() && !finally_ctx_stack_.back().in_finally) {
             auto& fc = finally_ctx_stack_.back();
             builder_.CreateStore(llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 1), fc.flag_slot);
@@ -8454,9 +8544,18 @@ void CodeGen::generateThrowStmt(const ThrowStmt& s) {
         auto* obj = generateExpr(*s.expr);
         auto it = class_type_ids_.find(s.throw_type);
         int tid = (it != class_type_ids_.end()) ? it->second : 0;
+        // The exception owns a reference independent of any local slot: a fresh
+        // (new/call/lambda) value transfers its +1 to the exception; an alias
+        // (identifier / member access) must be retained so the unwind release of
+        // its slot doesn't free the object before the catch binds it.
+        if (obj && !isFreshArcExpr(*s.expr) && runtime_retain_)
+            builder_.CreateCall(runtime_retain_->getFunctionType(), runtime_retain_, {obj});
         builder_.CreateCall(runtime_throw_object_->getFunctionType(),
             runtime_throw_object_, {obj, llvm::ConstantInt::get(i32_ty, tid)});
     }
+    // This throw leaves the function (no same-function try): free the abandoned
+    // local slots before the longjmp skips their scope-exit releases.
+    emitUnwindRelease(false);
     // longjmp to the innermost active handler (stack top).
     auto* jb = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
         runtime_exception_get_jmpbuf_, {}, "cur_handler");

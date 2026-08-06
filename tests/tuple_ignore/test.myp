@@ -1,0 +1,34 @@
+// tuple_ignore: 元组解构 `_` 忽略符（§三-2 待办项）
+// 覆盖：跳过首/尾/全部元素、声明式+赋值式、嵌套 `_`、带类型的 `_`、
+//       `_` 在普通上下文仍是合法标识符
+import env;
+
+(int, string) getPair() { return (1, "x"); }
+(int, int) getTwo() { return (7, 9); }
+((int, int), int) getNested() { return ((1, 2), 5); }
+(int, int, int) getTri() { return (10, 20, 30); }
+
+int pmRun() {
+    // 跳过首元素，绑定第二个
+    (_, string b) = getPair();
+    // 绑定第一个，跳过尾元素
+    (int a, _) = getPair();
+    // 全部跳过
+    (_, _) = getPair();
+    // 赋值式解构 + 跳过（已有变量，跳过不触碰 g）
+    int g = 42; int h;
+    (_, h) = getTwo();
+    // 嵌套 `_`：外层跳过第二个、内层跳过第一个
+    ((_, int q), _) = getNested();
+    // 带类型的 `_`：仍忽略
+    (int _, string b2) = getPair();
+    // 三元组跳中间
+    (int x, _, int z) = getTri();
+    // `_` 在普通上下文仍是合法标识符（不受影响）
+    int _ = 5;
+    Console.writeString("a=" + a + " b=" + b + " g=" + g + " h=" + h + " q=" + q + " x=" + x + " z=" + z);
+    Console.writeString(" b2=" + b2 + " underscore=" + _);
+    Console.writeString("\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }
