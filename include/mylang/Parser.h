@@ -105,8 +105,10 @@ private:
     TypeNode parseBasicType();
 
     // Parameters
-    ParamDecl parseParam();
-    std::vector<ParamDecl> parseParamList();
+    ParamDecl parseParam(bool allow_default = false);
+    std::vector<ParamDecl> parseParamList(bool allow_default = false);
+    // §四-1：解析调用实参 `( a, b, name = v, ... )`（支持命名实参；消费 '(' ')'）
+    std::vector<std::unique_ptr<Expr>> parseCallArgs();
 
     // Helpers
     std::string parseIdentifier(const std::string& error_msg);

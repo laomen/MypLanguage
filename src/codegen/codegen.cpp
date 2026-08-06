@@ -5514,6 +5514,8 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
         case ExprKind::Await:          return generateAwaitExpr(static_cast<const AwaitExpr&>(e));
         case ExprKind::TupleExpr:      return generateTupleExpr(static_cast<const TupleExpr&>(e));
+        case ExprKind::NamedArg:       // 防御：sema 已把命名实参重排消除；残留时生成其值
+            return generateExpr(*static_cast<const NamedArgExpr&>(e).value);
     }
     return nullptr;
 }

@@ -1,0 +1,10 @@
+// 必填参数缺失应报错
+import env;
+int g(int a, int b, int c) { return a + b + c; }
+class Main {
+    action:
+        @startup void run() {
+            int r = g(1, 2);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

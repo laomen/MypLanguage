@@ -62,6 +62,17 @@ private:
     TypeInfo visitUnaryOp(UnaryOpExpr& expr);
     TypeInfo visitCall(CallExpr& expr);
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
+    // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐
+    void populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params);
+    // §四-1：把实参（含命名实参 + 缺省默认值）规范化为与形参一一对应的有序列表
+    bool normalizeCallArgs(std::vector<std::unique_ptr<Expr>>& args,
+                           const TypeInfo& ft, const SourceRange& call_range);
+    // §四-1：按 ParamDecl 列表规范化实参（构造器/struct 构造用）
+    bool normalizeArgsToParamDecls(std::vector<std::unique_ptr<Expr>>& args,
+                                   const std::vector<ParamDecl>& params,
+                                   const SourceRange& call_range);
+    // §四-1：声明期校验每个带默认值的形参默认表达式类型
+    void checkParamDefaults(const std::vector<ParamDecl>& params);
     TypeInfo visitSubscript(SubscriptExpr& expr);
     TypeInfo visitNewExpr(NewExpr& expr);
     void resolveNewConstructor(NewExpr& expr, const std::string& cls_name);

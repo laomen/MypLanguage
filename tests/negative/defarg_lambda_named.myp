@@ -1,0 +1,10 @@
+// 函数值（无参数元数据）上命名实参应报错
+import env;
+class Main {
+    action:
+        @startup void run() {
+            (int, int) -> int lam = (int x, int y) => { return x + y; };
+            int r = lam(a = 1, b = 2);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

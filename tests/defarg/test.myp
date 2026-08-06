@@ -1,0 +1,109 @@
+// defarg: §四-1 默认参数 / 命名实参 回归测试
+// 覆盖：顶层函数默认参数（省略/部分/全给）、命名实参乱序、默认+命名混合、
+//       方法默认参数+命名、静态方法、泛型函数默认参数、构造器默认+命名、
+//       struct 构造默认+命名、方法调用无参默认
+import env;
+import collections;
+
+// 顶层函数：默认参数 + 命名实参
+int add(int a, int b = 100, int c = 200) {
+    return a + b + c;
+}
+int mul(int a, int b) {
+    return a * b;
+}
+// 泛型函数默认参数
+T identity<T>(T v, int tag = 99) {
+    return v;
+}
+
+struct Vec2 {
+    action:
+        @constructor
+        Vec2(double px = 0.0, double py = 0.0) {
+            x = px;
+            y = py;
+        }
+        double length() { return x * x + y * y; }
+    double x;
+    double y;
+}
+
+class Rect {
+    action:
+        @constructor
+        Rect(int w = 1, int h = 1) {
+            width = w;
+            height = h;
+        }
+        int area() { return width * height; }
+    property:
+        int width;
+        int height;
+}
+
+class Greeter {
+    action:
+        string greet(string name, string prefix = "Hi", string suffix = "!") {
+            return prefix + " " + name + suffix;
+        }
+    static:
+        int scale(int v, int f = 2) {
+            return v * f;
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[defarg]\n");
+
+            // 1) 顶层函数默认参数
+            Console.writeString("" + add(1) + "," + add(1, 2) + "," + add(1, 2, 3));
+            Console.writeString(" ");
+
+            // 2) 命名实参（乱序）
+            Console.writeString("" + add(1, c = 5) + "," + add(1, b = 5, c = 6) + "," + mul(b = 7, a = 6));
+            Console.writeString(" ");
+
+            // 3) 默认 + 命名混合
+            Console.writeString("" + add(a = 1));
+            Console.writeString(" ");
+
+            // 4) 方法默认参数 + 命名
+            Greeter g = new Greeter();
+            Console.writeString(g.greet("Bob") + "|" + g.greet(name = "Al", suffix = "?") + "|" + g.greet("Cat", prefix = "Yo"));
+            Console.writeString(" ");
+
+            // 5) 静态方法默认参数
+            Console.writeString("" + Greeter.scale(5) + "," + Greeter.scale(5, 3));
+            Console.writeString(" ");
+
+            // 6) 泛型函数默认参数
+            Console.writeString("" + identity<int>(42) + "," + identity<string>("ok", 7));
+            Console.writeString(" ");
+
+            // 7) 构造器默认参数 + 命名
+            Rect r1 = new Rect();
+            Rect r2 = new Rect(3);
+            Rect r3 = new Rect(h = 5);
+            Rect r4 = new Rect(w = 4, h = 6);
+            Console.writeString("" + r1.area() + "," + r2.area() + "," + r3.area() + "," + r4.area());
+            Console.writeString(" ");
+
+            // 8) struct 构造默认 + 命名
+            Vec2 v1 = Vec2();
+            Vec2 v2 = Vec2(3.0);
+            Vec2 v3 = Vec2(py = 4.0);
+            Vec2 v4 = Vec2(px = 3.0, py = 4.0);
+            Console.writeFloat(v1.length()); Console.writeString(",");
+            Console.writeFloat(v2.length()); Console.writeString(",");
+            Console.writeFloat(v3.length()); Console.writeString(",");
+            Console.writeFloat(v4.length()); Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

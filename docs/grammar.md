@@ -344,10 +344,18 @@ EventDecl        ::= Identifier '(' ParamList? ')' ';'
 PropertyDecl     ::= 'const'? Type Identifier ('=' Expression)? ';'
 
 ParamList        ::= Param (',' Param)*
-Param            ::= Type Identifier
+Param            ::= Type Identifier ('=' Expression)?    // §四-1 默认参数（函数/action/构造器；事件/枚举无）
 ReturnType       ::= Type | 'void'
 Block            ::= '{' Stmt* '}'
 ```
+
+> **默认参数 / 命名实参（§四-1，additive）**
+> - `Param ::= Type Identifier ('=' Expression)?`——带默认值的参数可省略（仅函数/action/构造器；
+>   事件与枚举数据字段不允许默认值）。
+> - 调用点 `CallArguments ::= Expression (',' Expression)*`，其中 `name = value`（解析为赋值表达式，
+>   语义阶段按「目标标识符匹配形参名」重解释为命名实参，与宏的赋值实参 `$n/$body` 无歧义）。
+> - 位置实参按序填前 N 个形参；命名实参按名填入（可乱序）；缺失且有默认值的形参用默认表达式。
+>   负例：未知/重复命名实参、位置+命名重叠、必填缺失、实参过多、默认值类型不匹配均编译期报错。
 
 ---
 

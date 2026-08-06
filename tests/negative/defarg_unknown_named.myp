@@ -1,0 +1,10 @@
+// 未知命名实参应报错
+import env;
+int f(int a, int b = 10) { return a + b; }
+class Main {
+    action:
+        @startup void run() {
+            int r = f(a = 1, x = 2);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

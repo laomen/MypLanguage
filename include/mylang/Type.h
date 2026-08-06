@@ -8,6 +8,8 @@
 
 namespace mylang {
 
+struct Expr;   // §四-1：Function 类型携带默认实参表达式（借用指针，生命周期=TUs）
+
 enum class TypeKind : uint8_t {
     Byte, Short, Int, Long,
     UByte, UShort, UInt, ULong,
@@ -43,6 +45,12 @@ struct TypeInfo {
     std::shared_ptr<TypeInfo> return_type;
     std::vector<TypeInfo> param_types;
     std::vector<bool> param_is_ref;
+    // §四-1 默认/命名参数元数据（与 param_types 对齐）：
+    //   参数名（命名实参用）、是否有默认值、默认实参表达式（借用指针）。
+    // 无默认/命名信息（如函数值类型）时为空。
+    std::vector<std::string> param_names;
+    std::vector<bool> param_has_default;
+    std::vector<Expr*> param_default_exprs;
 
     // For Tuple types
     std::vector<TypeInfo> tuple_types;

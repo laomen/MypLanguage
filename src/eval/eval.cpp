@@ -615,6 +615,10 @@ private:
             auto& v = static_cast<const RangeExpr&>(e);
             return std::make_unique<RangeExpr>(cloneExprI(*v.start), cloneExprI(*v.end), v.range);
         }
+        case ExprKind::NamedArg: {
+            auto& v = static_cast<const NamedArgExpr&>(e);
+            return std::make_unique<NamedArgExpr>(v.name, cloneExprI(*v.value), v.range);
+        }
         case ExprKind::EnumVariant: {
             auto& v = static_cast<const EnumVariantExpr&>(e);
             std::vector<std::unique_ptr<Expr>> a;

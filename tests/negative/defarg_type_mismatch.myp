@@ -1,0 +1,10 @@
+// 默认值类型不匹配应报错
+import env;
+int f(int a = "wrong") { return a; }
+class Main {
+    action:
+        @startup void run() {
+            int r = f();
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

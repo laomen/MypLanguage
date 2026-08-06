@@ -1,0 +1,10 @@
+// 位置+命名重叠应报错
+import env;
+int f(int a, int b = 10) { return a + b; }
+class Main {
+    action:
+        @startup void run() {
+            int r = f(1, a = 2);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

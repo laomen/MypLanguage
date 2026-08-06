@@ -340,7 +340,7 @@ ActionDecl Parser::parseActionDecl() {
 
     consume(TokenKind::LeftParen, "expected '(' after action name");
     if (!check(TokenKind::RightParen)) {
-        decl.params = parseParamList();
+        decl.params = parseParamList(true);  // action/method/constructor: 允许默认值
     }
     consume(TokenKind::RightParen, "expected ')' after parameters");
 
@@ -363,7 +363,7 @@ EventDecl Parser::parseEventDecl() {
 
     consume(TokenKind::LeftParen, "expected '(' after event name");
     if (!check(TokenKind::RightParen)) {
-        decl.params = parseParamList();
+        decl.params = parseParamList(false);  // event：无默认值
     }
     consume(TokenKind::RightParen, "expected ')' after parameters");
     consume(TokenKind::Semicolon, "expected ';' after event declaration");
@@ -371,17 +371,18 @@ EventDecl Parser::parseEventDecl() {
     return decl;
 }
 
-// Parse param list where names are optional (for events)
-std::vector<ParamDecl> Parser::parseParamList() {
+// Parse param list where names are optional (for events); allow_default 控制
+// 是否允许 `= expr` 默认值（仅函数/action/构造器；事件/枚举/lambda 不允许）。
+std::vector<ParamDecl> Parser::parseParamList(bool allow_default) {
     std::vector<ParamDecl> params;
-    params.push_back(parseParam());
+    params.push_back(parseParam(allow_default));
     while (match(TokenKind::Comma)) {
-        params.push_back(parseParam());
+        params.push_back(parseParam(allow_default));
     }
     return params;
 }
 
-ParamDecl Parser::parseParam() {
+ParamDecl Parser::parseParam(bool allow_default) {
     ParamDecl param;
     param.range = peek().range;
     if (match(TokenKind::Keyword_ref)) {
@@ -392,9 +393,31 @@ ParamDecl Parser::parseParam() {
     if (check(TokenKind::Identifier) || check(TokenKind::Comma) || check(TokenKind::RightParen)) {
         if (check(TokenKind::Identifier)) {
             param.name = parseIdentifier("expected parameter name");
+            // §四-1 默认参数：`int b = 10`（仅命名参数、允许默认时）
+            if (allow_default && match(TokenKind::Equal)) {
+                param.default_expr = parseExpr();
+            }
         }
     }
     return param;
+}
+
+// 解析调用实参 `( a, b, ... )`（含空括号）。调用方已把当前 token 定位到 '('；
+// 本函数消费 '(' … ')' 并返回实参列表。
+// 注意：`f(x = y)` 在此按普通赋值表达式解析（宏把赋值 AST 作实参，如
+// `repeat(3, v = v + 10)`）；sema 在 normalizeCallArgs 中按「目标标识符是否匹配
+// 形参名」把赋值实参重解释为命名实参（§四-1），从而与宏实参无歧义。
+std::vector<std::unique_ptr<Expr>> Parser::parseCallArgs() {
+    std::vector<std::unique_ptr<Expr>> args;
+    consume(TokenKind::LeftParen, "expected '(' after arguments");
+    if (!check(TokenKind::RightParen)) {
+        args.push_back(parseExpr());
+        while (match(TokenKind::Comma)) {
+            args.push_back(parseExpr());
+        }
+    }
+    consume(TokenKind::RightParen, "expected ')' after arguments");
+    return args;
 }
 
 PropertyDecl Parser::parsePropertyDecl() {
@@ -659,7 +682,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
 
     consume(TokenKind::LeftParen, "expected '(' after function name");
     if (!check(TokenKind::RightParen)) {
-        func->params = parseParamList();
+        func->params = parseParamList(true);  // 顶层函数：允许默认值
     }
     consume(TokenKind::RightParen, "expected ')' after parameters");
 
@@ -1473,6 +1496,12 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
             if (!s || !e) return nullptr;
             return std::make_unique<RangeExpr>(std::move(s), std::move(e), v.range);
         }
+        case ExprKind::NamedArg: {
+            auto& v = static_cast<const NamedArgExpr&>(e);
+            auto val = cloneExpr(*v.value);
+            if (!val) return nullptr;
+            return std::make_unique<NamedArgExpr>(v.name, std::move(val), v.range);
+        }
         default:
             return nullptr; // cannot clone complex expressions
     }
@@ -1767,30 +1796,15 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
                 targs.push_back(parseType());
             }
             consume(TokenKind::Greater, "expected '>' after generic arguments");
-            std::vector<std::unique_ptr<Expr>> args;
-            consume(TokenKind::LeftParen, "expected '(' after generic arguments");
-            if (!check(TokenKind::RightParen)) {
-                args.push_back(parseExpr());
-                while (match(TokenKind::Comma)) {
-                    args.push_back(parseExpr());
-                }
-            }
-            consume(TokenKind::RightParen, "expected ')' after arguments");
+            auto args = parseCallArgs();
             auto call = std::make_unique<CallExpr>(
                 std::move(expr), std::move(args), previous().range);
             call->call_type_args = std::move(targs);
             expr = std::move(call);
             continue;
         }
-        if (match(TokenKind::LeftParen)) {
-            std::vector<std::unique_ptr<Expr>> args;
-            if (!check(TokenKind::RightParen)) {
-                args.push_back(parseExpr());
-                while (match(TokenKind::Comma)) {
-                    args.push_back(parseExpr());
-                }
-            }
-            consume(TokenKind::RightParen, "expected ')' after arguments");
+        if (check(TokenKind::LeftParen)) {
+            auto args = parseCallArgs();
             expr = std::make_unique<CallExpr>(
                 std::move(expr), std::move(args), previous().range);
 
@@ -1988,15 +2002,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             type_args = parseTypeArgList();
             consume(TokenKind::Greater, "expected '>' after generic arguments");
         }
-        std::vector<std::unique_ptr<Expr>> args;
-        consume(TokenKind::LeftParen, "expected '(' after class name");
-        if (!check(TokenKind::RightParen)) {
-            args.push_back(parseExpr());
-            while (match(TokenKind::Comma)) {
-                args.push_back(parseExpr());
-            }
-        }
-        consume(TokenKind::RightParen, "expected ')' after arguments");
+        auto args = parseCallArgs();
         return std::make_unique<NewExpr>(class_name, std::move(type_args), std::move(args), previous().range);
     }
     if (check(TokenKind::LeftParen)) {
@@ -2066,9 +2072,9 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
 std::unique_ptr<Expr> Parser::parseLambdaExpr() {
     std::vector<ParamDecl> params;
     if (!check(TokenKind::RightParen)) {
-        params.push_back(parseParam());
+        params.push_back(parseParam(false));  // lambda：暂不支持默认值
         while (match(TokenKind::Comma)) {
-            params.push_back(parseParam());
+            params.push_back(parseParam(false));
         }
     }
     consume(TokenKind::RightParen, "expected ')' after parameters");
@@ -2669,7 +2675,7 @@ std::unique_ptr<EnumDecl> Parser::parseEnumDecl() {
         // Optional data fields: Variant(type name, ...)
         if (match(TokenKind::LeftParen)) {
             if (!check(TokenKind::RightParen)) {
-                variant.params = parseParamList();
+                variant.params = parseParamList(false);  // 枚举数据字段：无默认值
             }
             consume(TokenKind::RightParen, "expected ')' after variant parameters");
         }

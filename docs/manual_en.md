@@ -576,6 +576,45 @@ string s = id("hi");   // T=string
 - `T[]` parameters infer the element type; on inference failure, explicit type
   arguments are required.
 
+### Default & Named Parameters (v3.x, additive)
+
+Parameters can carry default values; calls may omit parameters that have defaults,
+or use `name = value` named arguments (which may be out of order).
+
+```myp
+// Definition: parameters with defaults may be omitted
+int add(int a, int b = 100, int c = 200) { return a + b + c; }
+
+add(1);            // 301 (b, c defaulted)
+add(1, 2);         // 203 (c defaulted)
+add(1, 2, 3);      // 6 (all given)
+
+// Named arguments (out of order) — `name = value` matches by parameter name
+add(1, c = 5);         // 106 (b defaults to 100)
+add(1, b = 5, c = 6);  // 12
+mul(b = 7, a = 6);     // 42 (named args may be reordered)
+
+// Constructors / methods / static methods / struct construction all support them
+Rect r = new Rect(h = 5);            // w defaults to 1
+Vec2 v = Vec2(px = 3.0, py = 4.0);   // struct functional construction, named
+g.greet(name = "Al", suffix = "?");  // method named arguments
+Greeter.scale(5);                    // static method, default f=2
+```
+
+- Applies to: top-level functions, class methods (`action:`/`function:`), static
+  methods, constructors (`new`), and struct construction.
+- **Positional args fill the first N parameters in order; named args fill by name.**
+  A parameter cannot be given both by position and by name.
+- Default expressions are evaluated **at the call site** (usually constants); their
+  type is checked against the parameter type at declaration.
+- `name = value` in an argument is parsed as an assignment expression and re-interpreted
+  as a named argument when the target identifier matches a parameter name — so **macro
+  assignment arguments** (`repeat(3, v = v + 10)`, macro params `$n/$body` never match)
+  are unaffected.
+- Negative cases (compile-time errors): unknown/duplicate named argument, positional+
+  named overlap, missing required argument, too many arguments, default-value type
+  mismatch.
+
 ### First-Class Functions & Closures (v3.x, additive)
 
 Function types `(A, B) -> R` are first-class values: assignable, passable as

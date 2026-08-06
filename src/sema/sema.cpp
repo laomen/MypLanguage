@@ -1,6 +1,7 @@
 #include "mylang/Sema.h"
 
 #include <algorithm>
+#include <optional>
 #include <unordered_set>
 
 namespace mylang {
@@ -90,6 +91,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                     auto param_type = typeNodeToTypeInfo(param.type);
                     symbol_table_.declare(param.name, param_type);
                 }
+                checkParamDefaults(action.params);
                 visitStmt(*action.body);
                 symbol_table_.leaveScope();
                 in_coro_method_ = false;
@@ -111,6 +113,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                 for (auto& param : func.params) {
                     symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
                 }
+                checkParamDefaults(func.params);
                 visitStmt(*func.body);
                 symbol_table_.leaveScope();
                 in_coro_method_ = false;
@@ -132,6 +135,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             for (auto& param : action.params) {
                 symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
             }
+            checkParamDefaults(action.params);
             visitStmt(*action.body);
             symbol_table_.leaveScope();
             in_coro_method_ = false;
@@ -169,6 +173,7 @@ void Sema::checkStructMethods(const StructDecl& decl) {
         ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(fn.return_type));
         for (auto& p : fn.params)
             ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+        populateFuncTypeMeta(ft, fn.params);
         sibling_methods.push_back({fn.name, ft});
     }
 
@@ -477,6 +482,7 @@ void Sema::visitStructDecl(StructDecl& decl) {
             func_type.param_types.push_back(pt);
             func_type.param_is_ref.push_back(param.is_ref);
         }
+        populateFuncTypeMeta(func_type, func.params);
         std::string method_name = type_key + "::" + func.name;
         if (symbol_table_.lookup(method_name)) {
             error(func.range, "duplicate method '" + func.name +
@@ -543,6 +549,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
             func_type.param_is_ref.push_back(param.is_ref);
         }
+        populateFuncTypeMeta(func_type, action.params);
         if (!symbol_table_.declare(action.name, func_type)) {
             error(action.range, "duplicate action '" + action.name + "' in class '" + decl.name + "'");
         }
@@ -571,6 +578,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
             func_type.param_is_ref.push_back(param.is_ref);
         }
+        populateFuncTypeMeta(func_type, fn.params);
         if (!symbol_table_.declare(fn.name, func_type)) {
             error(fn.range, "duplicate function '" + fn.name + "' in class '" + decl.name + "'");
         }
@@ -604,6 +612,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
             func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
             func_type.param_is_ref.push_back(param.is_ref);
         }
+        populateFuncTypeMeta(func_type, action.params);
         // Register as ClassName.methodName in global scope
         std::string static_name = decl.name + "." + action.name;
         symbol_table_.declare(static_name, func_type);
@@ -682,6 +691,7 @@ void Sema::visitFuncDecl(FuncDecl& decl) {
         func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
         func_type.param_is_ref.push_back(param.is_ref);
     }
+    populateFuncTypeMeta(func_type, decl.params);
     current_func_type_params_ = saved_tp;
     symbol_table_.declare(decl.name, func_type);
 }
@@ -705,6 +715,7 @@ void Sema::visitFuncBody(FuncDecl& decl) {
     for (auto& param : decl.params) {
         symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
     }
+    checkParamDefaults(decl.params);
 
     // In main(), only instance creation + mapping is allowed — no direct method calls
     // (编译器注入的合成 main 豁免：它本就是要直接触发 @startup 入口)
@@ -1241,6 +1252,13 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             result = tt;
             break;
         }
+        case ExprKind::NamedArg: {
+            // 防御：正常路径中命名实参在 visitCall/构造器解析时已被重排消除；
+            // 残留时按实参值类型处理。
+            auto& na = static_cast<NamedArgExpr&>(expr);
+            result = visitExpr(*na.value);
+            break;
+        }
         case ExprKind::Await: {
             if (!in_coro_method_) {
                 error(expr.range, "'await' is only allowed inside an '@coro' method");
@@ -1354,6 +1372,7 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
                         typeNodeToTypeInfo(action.return_type));
                     for (auto& p : action.params)
                         func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                    populateFuncTypeMeta(func_type, action.params);
                     return func_type;
                 }
             }
@@ -1365,6 +1384,7 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
                         typeNodeToTypeInfo(fn.return_type));
                     for (auto& p : fn.params)
                         func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                    populateFuncTypeMeta(func_type, fn.params);
                     return func_type;
                 }
             }
@@ -1617,6 +1637,7 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
             np.name = p.name;
             np.type = substituteTypeNode(p.type, templ.type_params, concrete);
             np.is_ref = p.is_ref;
+            np.default_expr = p.default_expr;
             np.range = p.range;
             inst.params.push_back(std::move(np));
         }
@@ -1626,11 +1647,18 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
     }
 
     // 5) Type-check args against the instance signature; set the call target.
+    //    §四-1：实参数量不足/含命名实参时先规范化（默认补齐 + 命名重排）。
     TypeInfo rt = typeNodeToTypeInfo(inst_ptr->return_type);
-    if (expr.args.size() != inst_ptr->params.size()) {
-        error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
-            " arguments, got " + std::to_string(expr.args.size()));
-        return TypeInfo(TypeKind::Void);
+    bool has_named = false;
+    for (auto& a : expr.args) if (a->kind == ExprKind::NamedArg) { has_named = true; break; }
+    if (expr.args.size() != inst_ptr->params.size() || has_named) {
+        if (!normalizeArgsToParamDecls(expr.args, inst_ptr->params, expr.range)) {
+            error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
+                " arguments, got " + std::to_string(expr.args.size()));
+            return TypeInfo(TypeKind::Void);
+        }
+        arg_types.clear();
+        for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
     }
     for (size_t i = 0; i < expr.args.size(); i++) {
         TypeInfo pt = typeNodeToTypeInfo(inst_ptr->params[i].type);
@@ -1722,6 +1750,7 @@ TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_n
             np.name = p.name;
             np.type = substituteTypeNode(p.type, templ.type_params, concrete);
             np.is_ref = false;
+            np.default_expr = p.default_expr;
             np.range = p.range;
             inst.params.push_back(std::move(np));
         }
@@ -1731,11 +1760,18 @@ TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_n
     }
 
     // 5) Type-check args against the instance signature; set the call target.
+    //    §四-1：实参数量不足/含命名实参时先规范化（默认补齐 + 命名重排）。
     TypeInfo rt = typeNodeToTypeInfo(inst_ptr->return_type);
-    if (expr.args.size() != inst_ptr->params.size()) {
-        error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
-            " arguments, got " + std::to_string(expr.args.size()));
-        return TypeInfo(TypeKind::Void);
+    bool has_named = false;
+    for (auto& a : expr.args) if (a->kind == ExprKind::NamedArg) { has_named = true; break; }
+    if (expr.args.size() != inst_ptr->params.size() || has_named) {
+        if (!normalizeArgsToParamDecls(expr.args, inst_ptr->params, expr.range)) {
+            error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
+                " arguments, got " + std::to_string(expr.args.size()));
+            return TypeInfo(TypeKind::Void);
+        }
+        arg_types.clear();
+        for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
     }
     for (size_t i = 0; i < expr.args.size(); i++) {
         TypeInfo pt = typeNodeToTypeInfo(inst_ptr->params[i].type);
@@ -1798,6 +1834,436 @@ TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
     return n;
 }
 
+// ==============================
+// §四-1 默认参数 / 命名实参
+// ==============================
+
+// 深克隆表达式（默认值按调用点复制；不支持克隆的复杂表达式返回 nullptr）。
+static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
+    switch (e.kind) {
+        case ExprKind::IntegerLiteral: {
+            auto& v = static_cast<const IntegerLiteralExpr&>(e);
+            return std::make_unique<IntegerLiteralExpr>(v.value, v.range, v.is_long);
+        }
+        case ExprKind::FloatLiteral: {
+            auto& v = static_cast<const FloatLiteralExpr&>(e);
+            return std::make_unique<FloatLiteralExpr>(v.value, v.range);
+        }
+        case ExprKind::BoolLiteral: {
+            auto& v = static_cast<const BoolLiteralExpr&>(e);
+            return std::make_unique<BoolLiteralExpr>(v.value, v.range);
+        }
+        case ExprKind::StringLiteral: {
+            auto& v = static_cast<const StringLiteralExpr&>(e);
+            return std::make_unique<StringLiteralExpr>(v.value, v.range);
+        }
+        case ExprKind::Identifier: {
+            auto& v = static_cast<const IdentifierExpr&>(e);
+            return std::make_unique<IdentifierExpr>(v.name, v.range);
+        }
+        case ExprKind::NullLiteral:
+            return std::make_unique<NullLiteralExpr>(e.range);
+        case ExprKind::ThisExpr:
+            return std::make_unique<ThisExpr>(e.range);
+        case ExprKind::MemberAccess: {
+            auto& v = static_cast<const MemberAccessExpr&>(e);
+            auto o = cloneExpr(*v.object);
+            if (!o) return nullptr;
+            return std::make_unique<MemberAccessExpr>(std::move(o), v.member_name, v.range);
+        }
+        case ExprKind::Subscript: {
+            auto& v = static_cast<const SubscriptExpr&>(e);
+            auto arr = cloneExpr(*v.array);
+            auto idx = cloneExpr(*v.index);
+            if (!arr || !idx) return nullptr;
+            return std::make_unique<SubscriptExpr>(std::move(arr), std::move(idx), v.range);
+        }
+        case ExprKind::BinaryOp: {
+            auto& v = static_cast<const BinaryOpExpr&>(e);
+            auto l = cloneExpr(*v.lhs);
+            auto r = cloneExpr(*v.rhs);
+            if (!l || !r) return nullptr;
+            return std::make_unique<BinaryOpExpr>(std::move(l), v.op, std::move(r), v.range);
+        }
+        case ExprKind::UnaryOp: {
+            auto& v = static_cast<const UnaryOpExpr&>(e);
+            auto o = cloneExpr(*v.operand);
+            if (!o) return nullptr;
+            return std::make_unique<UnaryOpExpr>(v.op, std::move(o), v.range);
+        }
+        case ExprKind::Ternary: {
+            auto& v = static_cast<const TernaryExpr&>(e);
+            auto c = cloneExpr(*v.condition);
+            auto t = cloneExpr(*v.true_expr);
+            auto f = cloneExpr(*v.false_expr);
+            if (!c || !t || !f) return nullptr;
+            return std::make_unique<TernaryExpr>(std::move(c), std::move(t), std::move(f), v.range);
+        }
+        case ExprKind::Pipe: {
+            auto& v = static_cast<const PipeExpr&>(e);
+            auto l = cloneExpr(*v.lhs);
+            auto r = cloneExpr(*v.rhs);
+            if (!l || !r) return nullptr;
+            return std::make_unique<PipeExpr>(std::move(l), std::move(r), v.range);
+        }
+        case ExprKind::Assignment: {
+            auto& v = static_cast<const AssignmentExpr&>(e);
+            auto t = cloneExpr(*v.target);
+            auto val = cloneExpr(*v.value);
+            if (!t || !val) return nullptr;
+            return std::make_unique<AssignmentExpr>(std::move(t), std::move(val), v.range);
+        }
+        case ExprKind::Call: {
+            auto& v = static_cast<const CallExpr&>(e);
+            auto callee = cloneExpr(*v.callee);
+            if (!callee) return nullptr;
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<CallExpr>(std::move(callee), std::move(args), v.range);
+        }
+        case ExprKind::NewExpr: {
+            auto& v = static_cast<const NewExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<NewExpr>(v.class_name, v.type_args, std::move(args), v.range);
+        }
+        case ExprKind::NewArrayExpr: {
+            auto& v = static_cast<const NewArrayExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> dims;
+            for (auto& d : v.dimensions) {
+                auto cd = cloneExpr(*d);
+                if (!cd) return nullptr;
+                dims.push_back(std::move(cd));
+            }
+            return std::make_unique<NewArrayExpr>(v.element_type, std::move(dims), v.range);
+        }
+        case ExprKind::EnumVariant: {
+            auto& v = static_cast<const EnumVariantExpr&>(e);
+            std::vector<std::unique_ptr<Expr>> args;
+            for (auto& a : v.args) {
+                auto ca = cloneExpr(*a);
+                if (!ca) return nullptr;
+                args.push_back(std::move(ca));
+            }
+            return std::make_unique<EnumVariantExpr>(
+                v.enum_name, v.variant_index, std::move(args), v.range);
+        }
+        case ExprKind::Range: {
+            auto& v = static_cast<const RangeExpr&>(e);
+            auto s = cloneExpr(*v.start);
+            auto e2 = cloneExpr(*v.end);
+            if (!s || !e2) return nullptr;
+            return std::make_unique<RangeExpr>(std::move(s), std::move(e2), v.range);
+        }
+        default:
+            return nullptr; // lambda/await/try 等复杂表达式不可作默认值
+    }
+}
+
+void Sema::populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params) {
+    for (auto& p : params) {
+        ft.param_names.push_back(p.name);
+        ft.param_has_default.push_back(p.default_expr != nullptr);
+        ft.param_default_exprs.push_back(p.default_expr.get());
+    }
+}
+
+// 实参是否为命名实参形态：`AssignmentExpr(Identifier name = value)` 且 name 是形参名。
+// parser 把 `f(name = value)` 按赋值表达式解析（为兼容宏的赋值实参 `$n/$body` 形态）；
+// 此处按「目标标识符匹配形参名」重解释为命名实参 → 与宏实参无歧义。
+static std::string namedArgName(const Expr& a, const std::vector<ParamDecl>& params) {
+    if (a.kind != ExprKind::Assignment) return "";
+    auto& as = static_cast<const AssignmentExpr&>(a);
+    if (as.target->kind != ExprKind::Identifier) return "";
+    const std::string& name = static_cast<const IdentifierExpr&>(*as.target).name;
+    for (auto& p : params)
+        if (p.name == name) return name;
+    return "";
+}
+
+// 计算「形参 i ← 实参 j」映射（-1 = 缺省）。不修改实参；不匹配返回 nullopt。
+// 供构造器候选按形参类型打分发。（0 参候选返回空向量——合法，勿当失败。）
+static std::optional<std::vector<int>> planArgMapping(
+    const std::vector<std::unique_ptr<Expr>>& args,
+    const std::vector<ParamDecl>& params) {
+    size_t nparam = params.size();
+    std::vector<int> plan(nparam, -1);
+    size_t positional = 0;
+    std::vector<std::pair<std::string, size_t>> named;
+    for (size_t ai = 0; ai < args.size(); ai++) {
+        std::string nn = namedArgName(*args[ai], params);
+        if (args[ai]->kind == ExprKind::NamedArg)
+            named.emplace_back(static_cast<NamedArgExpr&>(*args[ai]).name, ai);
+        else if (!nn.empty())
+            named.emplace_back(nn, ai);
+        else
+            positional++;
+    }
+    if (positional > nparam) return std::nullopt;
+    size_t pi = 0;
+    for (size_t ai = 0; ai < args.size(); ai++) {
+        // 跳过命名实参（NamedArgExpr 或命名赋值实参），只给位置实参占位
+        if (args[ai]->kind == ExprKind::NamedArg) continue;
+        if (!namedArgName(*args[ai], params).empty()) continue;
+        plan[pi++] = (int)ai;
+    }
+    for (auto& np : named) {
+        bool found = false;
+        for (size_t i = 0; i < nparam; i++) {
+            if (params[i].name == np.first) {
+                if (plan[i] >= 0) return std::nullopt;  // 位置+命名重叠
+                plan[i] = (int)np.second;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return std::nullopt;
+    }
+    for (size_t i = 0; i < named.size(); i++)
+        for (size_t j = i + 1; j < named.size(); j++)
+            if (named[i].first == named[j].first) return std::nullopt;
+    for (size_t i = 0; i < nparam; i++)
+        if (plan[i] < 0 && !params[i].default_expr) return std::nullopt;  // 必填缺失
+    return plan;
+}
+
+// 校验实参是否适配形参（不修改、不发错）：位置 ≤ 总数、命名名合法且不重复、
+// 位置/命名不重叠、必填形参全提供。供构造器候选筛选用。
+static bool fitsArgsToParamDecls(const std::vector<std::unique_ptr<Expr>>& args,
+                                 const std::vector<ParamDecl>& params) {
+    size_t nparam = params.size();
+    size_t positional = 0;
+    std::vector<std::pair<std::string, const Expr*>> named;
+    for (auto& a : args) {
+        std::string nn = namedArgName(*a, params);
+        if (a->kind == ExprKind::NamedArg) {
+            auto& na = static_cast<NamedArgExpr&>(*a);
+            named.emplace_back(na.name, na.value.get());
+        } else if (!nn.empty()) {
+            named.emplace_back(nn, static_cast<const AssignmentExpr&>(*a).value.get());
+        } else {
+            positional++;
+        }
+    }
+    if (positional > nparam) return false;
+    for (auto& np : named) {
+        bool found = false;
+        for (auto& p : params)
+            if (p.name == np.first) { found = true; break; }
+        if (!found) return false;
+    }
+    for (size_t i = 0; i < named.size(); i++)
+        for (size_t j = i + 1; j < named.size(); j++)
+            if (named[i].first == named[j].first) return false;
+    // provided[i]: 形参 i 是否被位置或命名实参提供
+    std::vector<bool> provided(nparam, false);
+    for (size_t i = 0; i < positional && i < nparam; i++) provided[i] = true;
+    for (auto& np : named) {
+        for (size_t i = 0; i < nparam; i++) {
+            if (params[i].name == np.first) {
+                if (provided[i]) return false;  // 位置+命名重叠
+                provided[i] = true;
+            }
+        }
+    }
+    for (size_t i = 0; i < nparam; i++)
+        if (!provided[i] && !params[i].default_expr) return false;  // 必填缺失
+    return true;
+}
+
+// 把实参规范化为与形参一一对应的有序列表（见 fitsArgsToParamDecls 的校验规则）。
+// 成功后 args 重建为完整有序列表（NamedArgExpr 已被替换为值）；失败已发错。
+bool Sema::normalizeArgsToParamDecls(std::vector<std::unique_ptr<Expr>>& args,
+                                     const std::vector<ParamDecl>& params,
+                                     const SourceRange& call_range) {
+    size_t nparam = params.size();
+    if (nparam == 0) {
+        if (!args.empty()) {
+            error(call_range, "call takes no arguments, but " +
+                  std::to_string(args.size()) + " given");
+            return false;
+        }
+        return true;
+    }
+    // §四-1：把「赋值实参 `name = value` 且 name 是形参名」重解释为命名实参
+    //（parser 按赋值表达式解析，为兼容宏的赋值实参形态）。
+    for (auto& a : args) {
+        std::string nn = namedArgName(*a, params);
+        if (!nn.empty()) {
+            auto& as = static_cast<AssignmentExpr&>(*a);
+            a = std::make_unique<NamedArgExpr>(nn, std::move(as.value), a->range);
+        }
+    }
+    if (!fitsArgsToParamDecls(args, params)) {
+        // 给出更具体的错误
+        size_t positional = 0;
+        for (auto& a : args)
+            if (a->kind != ExprKind::NamedArg) positional++;
+        if (positional > nparam) {
+            error(call_range, "too many arguments: expected at most " +
+                  std::to_string(nparam) + ", got " + std::to_string(args.size()));
+        } else {
+            std::vector<std::pair<std::string, const Expr*>> named;
+            for (auto& a : args)
+                if (a->kind == ExprKind::NamedArg)
+                    named.emplace_back(static_cast<NamedArgExpr&>(*a).name,
+                                       static_cast<NamedArgExpr&>(*a).value.get());
+            bool any_named = !named.empty();
+            if (any_named) {
+                // 未知命名实参
+                for (auto& np : named) {
+                    bool found = false;
+                    for (auto& p : params)
+                        if (p.name == np.first) { found = true; break; }
+                    if (!found) {
+                        error(call_range, "unknown named argument '" + np.first + "'");
+                        return false;
+                    }
+                }
+                // 位置 + 命名重叠（前 positional 个形参已被位置实参占据）
+                for (size_t i = 0; i < positional && i < nparam; i++) {
+                    for (auto& np : named) {
+                        if (np.first == params[i].name) {
+                            error(call_range, "parameter '" + params[i].name +
+                                  "' given both by position and by name");
+                            return false;
+                        }
+                    }
+                }
+            }
+            // 必填缺失
+            std::vector<bool> provided(nparam, false);
+            for (size_t i = 0; i < positional && i < nparam; i++) provided[i] = true;
+            for (auto& np : named)
+                for (size_t i = 0; i < nparam; i++)
+                    if (params[i].name == np.first) provided[i] = true;
+            for (size_t i = 0; i < nparam; i++) {
+                if (!provided[i] && !params[i].default_expr) {
+                    error(call_range, "missing required argument '" + params[i].name + "'");
+                    return false;
+                }
+            }
+            if (!any_named)
+                error(call_range, "expected " + std::to_string(nparam) +
+                      " arguments, got " + std::to_string(args.size()));
+        }
+        return false;
+    }
+
+    // 解析位置/命名实参
+    std::vector<std::unique_ptr<Expr>> positional;
+    std::vector<std::pair<std::string, std::unique_ptr<Expr>>> named;
+    for (auto& a : args) {
+        if (a->kind == ExprKind::NamedArg) {
+            auto& na = static_cast<NamedArgExpr&>(*a);
+            named.emplace_back(na.name, std::move(na.value));
+        } else {
+            positional.push_back(std::move(a));
+        }
+    }
+    std::vector<int> name_to_idx(nparam, -1);
+    for (size_t i = 0; i < nparam; i++)
+        for (size_t j = 0; j < named.size(); j++)
+            if (named[j].first == params[i].name) name_to_idx[i] = (int)j;
+
+    std::vector<bool> provided(nparam, false);
+    std::vector<int> arg_of_param(nparam, -1);
+    for (size_t i = 0; i < positional.size(); i++) { provided[i] = true; arg_of_param[i] = (int)i; }
+    for (size_t i = 0; i < nparam; i++) {
+        if (name_to_idx[i] >= 0) {
+            provided[i] = true;
+            arg_of_param[i] = (int)(positional.size() + name_to_idx[i]);
+        }
+    }
+
+    std::vector<std::unique_ptr<Expr>> out;
+    for (size_t i = 0; i < nparam; i++) {
+        if (provided[i]) {
+            int src = arg_of_param[i];
+            if (src < (int)positional.size())
+                out.push_back(std::move(positional[src]));
+            else {
+                int ni = src - (int)positional.size();
+                out.push_back(std::move(named[ni].second));
+            }
+        } else {
+            auto cl = params[i].default_expr ? cloneExpr(*params[i].default_expr) : nullptr;
+            if (!cl) {
+                error(call_range, "cannot use default value for parameter '" +
+                      params[i].name + "' (non-constant expression)");
+                return false;
+            }
+            out.push_back(std::move(cl));
+        }
+    }
+    args = std::move(out);
+    return true;
+}
+
+// 从 Function TypeInfo 的参数元数据构造 ParamDecl 列表并委托核心规范化。
+bool Sema::normalizeCallArgs(std::vector<std::unique_ptr<Expr>>& args,
+                             const TypeInfo& ft, const SourceRange& call_range) {
+    size_t nparam = ft.param_types.size();
+    if (nparam == 0) {
+        if (!args.empty()) {
+            error(call_range, "call takes no arguments, but " +
+                  std::to_string(args.size()) + " given");
+            return false;
+        }
+        return true;
+    }
+    // 无默认/命名元数据（如函数值类型）：严格按数量匹配
+    if (ft.param_names.empty() || ft.param_names.size() != nparam) {
+        if (args.size() != nparam) {
+            error(call_range, "expected " + std::to_string(nparam) +
+                  " arguments, got " + std::to_string(args.size()));
+            return false;
+        }
+        for (auto& a : args)
+            if (a->kind == ExprKind::NamedArg) {
+                error(a->range, "named argument '" +
+                      static_cast<NamedArgExpr&>(*a).name + "' not applicable here");
+                return false;
+            }
+        return true;
+    }
+    std::vector<ParamDecl> pds;
+    pds.reserve(nparam);
+    for (size_t i = 0; i < nparam; i++) {
+        ParamDecl pd;
+        pd.name = ft.param_names[i];
+        // 借用指针包装（no-op deleter）；default_expr 生命周期 = 整个 TU
+        pd.default_expr = ft.param_default_exprs[i]
+            ? std::shared_ptr<Expr>(ft.param_default_exprs[i], [](Expr*) {})
+            : nullptr;
+        pds.push_back(std::move(pd));
+    }
+    return normalizeArgsToParamDecls(args, pds, call_range);
+}
+
+// 声明期校验每个带默认值的形参：默认表达式类型须与形参类型兼容。
+// （调用点克隆默认值到实参后也会被 visitCall 类型检查；此处保证从未被省略
+//  调用的默认值也被检查。）
+void Sema::checkParamDefaults(const std::vector<ParamDecl>& params) {
+    for (auto& p : params) {
+        if (!p.default_expr) continue;
+        TypeInfo dt = visitExpr(*p.default_expr);
+        TypeInfo pt = typeNodeToTypeInfo(p.type);
+        if (!typesCompatible(pt, dt)) {
+            error(p.default_expr->range, "default value for parameter '" + p.name +
+                "' has type '" + typeName(dt) + "', expected '" + typeName(pt) + "'");
+        }
+    }
+}
+
 TypeInfo Sema::visitCall(CallExpr& expr) {
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
     if (expr.callee->kind == ExprKind::MemberAccess) {
@@ -1838,11 +2304,9 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         return TypeInfo(TypeKind::Void);
     }
 
-    if (expr.args.size() != callee_type.param_types.size()) {
-        error(expr.range, "expected " + std::to_string(callee_type.param_types.size()) +
-              " arguments, got " + std::to_string(expr.args.size()));
+    // §四-1：规范实参（命名实参重排 + 默认值补齐），失败已报错
+    if (!normalizeCallArgs(expr.args, callee_type, expr.range))
         return TypeInfo(TypeKind::Void);
-    }
 
     for (size_t i = 0; i < expr.args.size(); ++i) {
         TypeInfo arg_type;
@@ -1902,19 +2366,29 @@ bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
     for (auto& f : st->functions) if (f.has_constructor) cands.push_back({f.name, &f.params});
     if (cands.empty()) return false;  // 无构造器 → 不是函数式构造，保持普通调用解析
 
-    // 类型检查并收集实参类型
+    // 类型检查并收集实参类型（命名实参形态 `name = value` → 只 visit 值）
     std::vector<TypeInfo> arg_types;
-    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+    for (auto& a : expr.args) {
+        if (a->kind == ExprKind::Assignment) {
+            arg_types.push_back(visitExpr(*static_cast<AssignmentExpr&>(*a).value));
+        } else {
+            arg_types.push_back(visitExpr(*a));
+        }
+    }
 
     int best = -1; int best_score = 1 << 30; bool ambiguous = false;
     for (size_t ci = 0; ci < cands.size(); ci++) {
         auto& params = *cands[ci].params;
-        if (params.size() != arg_types.size()) continue;
+        // §四-1：默认值/命名实参 → 校验 + 映射后按形参类型打分
+        auto plan = planArgMapping(expr.args, params);
+        if (!plan) continue;
         int promos = 0; bool ok = true;
-        for (size_t i = 0; i < params.size(); i++) {
+        for (size_t i = 0; i < (*plan).size(); i++) {
+            if ((*plan)[i] < 0) continue;  // 缺省 → 完全匹配
             TypeInfo pt = typeNodeToTypeInfo(params[i].type);
-            if (typesCompatible(pt, arg_types[i])) {
-                if (pt.kind != arg_types[i].kind) promos++;
+            const TypeInfo& at = arg_types[(*plan)[i]];
+            if (typesCompatible(pt, at)) {
+                if (pt.kind != at.kind) promos++;
             } else { ok = false; break; }
         }
         if (!ok) continue;
@@ -1936,6 +2410,8 @@ bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
         return true;
     }
     auto& c = cands[best];
+    // §四-1：实参规范化为完整有序列表（命名重排 + 默认补齐）
+    normalizeArgsToParamDecls(expr.args, *c.params, expr.range);
     expr.resolved_struct_type = type_key;
     expr.resolved_struct_ctor = "struct_" +
         constructorMangledName(type_key, c.cname, *c.params);
@@ -1990,6 +2466,7 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                             typeNodeToTypeInfo(act.return_type));
                         for (auto& p : act.params)
                             ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        populateFuncTypeMeta(ft, act.params);
                         return ft;
                     }
                 }
@@ -2183,6 +2660,7 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                         }
                         for (auto& p : action.params)
                             func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        populateFuncTypeMeta(func_type, action.params);
                         return func_type;
                     }
                 }
@@ -2194,6 +2672,7 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                             typeNodeToTypeInfo(action.return_type));
                         for (auto& p : action.params)
                             func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        populateFuncTypeMeta(func_type, action.params);
                         return func_type;
                     }
                 }
@@ -2211,6 +2690,7 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                             typeNodeToTypeInfo(func.return_type));
                         for (auto& p : func.params)
                             ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                        populateFuncTypeMeta(ft, func.params);
                         return ft;
                     }
                 }
@@ -2316,21 +2796,34 @@ void Sema::resolveNewConstructor(NewExpr& expr, const std::string& cls_name) {
     for (auto& f : cls->functions) if (f.has_constructor) cands.push_back({f.name, &f.params});
     if (cands.empty()) return;  // 无构造器 → legacy @startup init / 默认
 
-    // 类型检查并收集实参类型（此时才 visit——避免影响无构造器的 legacy 类）
+    // 类型检查并收集实参类型（此时才 visit——避免影响无构造器的 legacy 类）。
+    // 命名实参形态 `name = value`（parser 解析为赋值表达式）→ 只 visit 值，
+    // 不 visit 目标标识符（它可能是未定义的形参名）。
     std::vector<TypeInfo> arg_types;
-    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+    for (auto& a : expr.args) {
+        if (a->kind == ExprKind::Assignment) {
+            arg_types.push_back(visitExpr(*static_cast<AssignmentExpr&>(*a).value));
+        } else {
+            arg_types.push_back(visitExpr(*a));
+        }
+    }
 
     int best = -1;
     int best_score = 1 << 30;
     bool ambiguous = false;
     for (size_t ci = 0; ci < cands.size(); ci++) {
         auto& params = *cands[ci].params;
-        if (params.size() != arg_types.size()) continue;
+        // §四-1：支持默认值/命名实参——先校验实参适配形参（含缺省补齐），
+        // 得到「形参 i ← 实参 j」映射后再按形参类型打分。
+        auto plan = planArgMapping(expr.args, params);
+        if (!plan) continue;
         int promos = 0; bool ok = true;
-        for (size_t i = 0; i < params.size(); i++) {
+        for (size_t i = 0; i < (*plan).size(); i++) {
+            if ((*plan)[i] < 0) continue;  // 缺省 → 跳过（视为完全匹配）
             TypeInfo pt = typeNodeToTypeInfo(params[i].type);
-            if (typesCompatible(pt, arg_types[i])) {
-                if (pt.kind != arg_types[i].kind) promos++;
+            const TypeInfo& at = arg_types[(*plan)[i]];
+            if (typesCompatible(pt, at)) {
+                if (pt.kind != at.kind) promos++;
             } else { ok = false; break; }
         }
         if (!ok) continue;
@@ -2352,6 +2845,8 @@ void Sema::resolveNewConstructor(NewExpr& expr, const std::string& cls_name) {
         return;
     }
     auto& c = cands[best];
+    // §四-1：把实参规范化为完整有序列表（命名重排 + 默认补齐），供 codegen 直接使用
+    normalizeArgsToParamDecls(expr.args, *c.params, expr.range);
     expr.resolved_ctor = constructorMangledName(cls_name, c.name, *c.params);
 }
 

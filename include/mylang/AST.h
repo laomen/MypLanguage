@@ -12,6 +12,9 @@
 
 namespace mylang {
 
+struct Expr;   // 前置声明：ParamDecl::default_expr（定义见本文件 Expr）
+struct Stmt;
+
 // Forward declarations
 class Expr;
 class Stmt;
@@ -106,6 +109,9 @@ struct ParamDecl {
     std::string name;
     TypeNode type;
     bool is_ref = false;
+    // §四-1 默认参数：`void f(int a, int b = 10)` —— 调用时可省略（sema 克隆到实参）。
+    // shared_ptr：ParamDecl 在向量中可拷贝（含泛型实例克隆），默认表达式只读共享。
+    std::shared_ptr<Expr> default_expr;
     SourceRange range;
 };
 
@@ -294,6 +300,7 @@ enum class ExprKind {
     Try,
     Await,
     TupleExpr,
+    NamedArg,   // §四-1 命名实参：f(name = value)
     MacroParam,
     Quote,
 };
@@ -341,6 +348,14 @@ struct IdentifierExpr : Expr {
     std::string name;
     IdentifierExpr(std::string n, SourceRange r)
         : Expr(ExprKind::Identifier, r), name(std::move(n)) {}
+};
+
+/// §四-1 命名实参：`f(name = value)`。sema 在 visitCall 中按参数名重排到对应位置。
+struct NamedArgExpr : Expr {
+    std::string name;
+    std::unique_ptr<Expr> value;
+    NamedArgExpr(std::string n, std::unique_ptr<Expr> v, SourceRange r)
+        : Expr(ExprKind::NamedArg, r), name(std::move(n)), value(std::move(v)) {}
 };
 
 /// A macro template parameter placeholder `$name` inside a macro body.
