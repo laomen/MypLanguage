@@ -1554,6 +1554,23 @@ void CodeGen::generateCoroBuiltin(const ClassDecl& cls, const ActionDecl& action
         return;
     }
 
+    // Coro.waitAnyOf(long[] spec, long count, long timeoutMs, long val) → long
+    // (§五-5 P4): unified waitAny — spec is a flat long[] of count*3 entries
+    // (kind/id/flag per spec, see __myp_coro_wait_any_of). Returns fired spec
+    // index, -1 overall timeout, -2 not in a coroutine.
+    if (action.name == "waitAnyOf") {
+        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+        auto wfn = module_->getOrInsertFunction("__myp_coro_wait_any_of",
+            llvm::FunctionType::get(i64, {ptr_ty, i64, i64, i64}, false));
+        auto* spec = func->getArg(0);
+        auto* cnt = castToI64(func->getArg(1));
+        auto* tms = castToI64(func->getArg(2));
+        auto* aval = castToI64(func->getArg(3));
+        auto* r = builder_.CreateCall(wfn, {spec, cnt, tms, aval});
+        builder_.CreateRet(r);
+        return;
+    }
+
     const char* rt = nullptr;
     llvm::Type* ret = v;
     std::vector<llvm::Type*> pts;

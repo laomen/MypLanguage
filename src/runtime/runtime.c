@@ -3177,6 +3177,7 @@ typedef struct {
     int ready;      // in the ready queue (C3 scheduler); 0 while blocked on an event (C4)
     int wait_timeout; // set when an event-wait with a deadline expires (C10)
     int64_t last_wait_event_id; // event id that woke us (C10 waitAny)
+    int64_t last_wait_index; // §五-5 P4: spec index that woke a waitAnyOf (-1 = none)
     int cancel_requested; // cooperative-cancel flag (C10)
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
@@ -3451,6 +3452,8 @@ typedef struct {
     int64_t deadline_ms;  // absolute deadline for timed waits (0 = none)
     int expired;          // 1 if this record was cleared by a timeout
     int64_t exec_result;  // EXEC：worker 完成后交付的结果（char* 指针，本线程 myp_strdup）
+    int wait_index;     // §五-5 P4 waitAnyOf：此记录对应的 spec 下标（>=0）；
+                        // -1 = 普通等待（非 waitAnyOf）；-2 = waitAnyOf 的总体超时记录
 } myp_coro_wait_t;
 static __thread myp_coro_wait_t* myp_coro_waits = NULL;
 static __thread int myp_coro_wait_count = 0;
@@ -3538,8 +3541,18 @@ void __myp_coro_scheduler(void) {
             w->active = 0;
             int64_t h = w->handle;
             if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active) {
-                myp_coros[h]->wait_timeout = 1;
-                myp_coros[h]->ready = 1;
+                if (w->wait_index >= 0 && w->kind == 1) {
+                    // §五-5 P4 waitAnyOf TIMER spec: its OWN deadline fired — a
+                    // specific spec (not the overall timeout), so report index.
+                    myp_coros[h]->last_wait_index = w->wait_index;
+                    myp_coros[h]->ready = 1;
+                } else {
+                    // Overall timeout: the waitAnyOf -2 marker, a normal timed
+                    // wait (wait_index==-1), or an EVENT/FD spec whose deadline
+                    // is just the overall timeout — all mean "timed out".
+                    myp_coros[h]->wait_timeout = 1;
+                    myp_coros[h]->ready = 1;
+                }
             }
         }
     }
@@ -3570,8 +3583,11 @@ void __myp_coro_scheduler(void) {
                             int64_t h = myp_coro_waits[wi].handle;
                             myp_coro_waits[wi].active = 0;
                             if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
-                                myp_coros[h]->active)
+                                myp_coros[h]->active) {
+                                if (myp_coro_waits[wi].wait_index >= 0)  // §五-5 P4 waitAnyOf
+                                    myp_coros[h]->last_wait_index = myp_coro_waits[wi].wait_index;
                                 myp_coros[h]->ready = 1;
+                            }
                         }
                     }
                 }
@@ -3620,6 +3636,7 @@ int64_t __myp_coro_wait_event_timeout(int64_t event_id, int64_t timeout_ms, int6
             myp_coro_waits[myp_coro_wait_count].active = 1;
             myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
             myp_coro_waits[myp_coro_wait_count].expired = 0;
+            myp_coro_waits[myp_coro_wait_count].wait_index = -1;
             myp_coro_wait_count++;
             myp_coros[myp_coro_current]->ready = 0;  // blocked, not ready
         }
@@ -3656,6 +3673,7 @@ int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t timeout_m
                 myp_coro_waits[myp_coro_wait_count].active = 1;
                 myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
                 myp_coro_waits[myp_coro_wait_count].expired = 0;
+                myp_coro_waits[myp_coro_wait_count].wait_index = -1;
                 myp_coro_wait_count++;
             }
         }
@@ -3679,6 +3697,74 @@ int64_t __myp_coro_wait_any(const int64_t* ids, int64_t count, int64_t timeout_m
     return (c && c->last_wait_event_id >= 0) ? c->last_wait_event_id : r;
 }
 
+// ---- §五-5 P4: unified waitAny — mix EVENT / TIMER / FD specs in ONE wait ----
+// spec is a flat long[] of `count * 3` entries, each spec = 3 consecutive longs:
+//   [i*3+0] kind : 0=EVENT, 1=TIMER, 2=FD
+//   [i*3+1] id   : event_id (EVENT) / fd (FD) / -1 (TIMER)
+//   [i*3+2] flag : FD 1=wantRead 2=wantWrite 3=both; TIMER ms (relative deadline);
+//                  EVENT 0
+// Returns the 0-based index of the spec that fired, -1 on overall timeout
+// (`timeout_ms`, ms), -2 if not in a coroutine / bad args.
+int64_t __myp_coro_wait_any_of(const int64_t* spec, int64_t count, int64_t timeout_ms,
+                               int64_t val) {
+    if (!spec || count <= 0) return -2;
+    if (myp_coro_current < 0 || myp_coro_current >= myp_coro_count ||
+        !myp_coros[myp_coro_current])
+        return -2;   // not in a coroutine
+    int64_t now0 = myp_now_ms();
+    int64_t deadline = (timeout_ms > 0) ? now0 + timeout_ms : 0;
+    for (int64_t i = 0; i < count; i++) {
+        int64_t kind = spec[i * 3];
+        int64_t id = spec[i * 3 + 1];
+        int64_t flag = spec[i * 3 + 2];
+        if (myp_coro_wait_reserve() != 0) break;
+        myp_coro_wait_t* w = &myp_coro_waits[myp_coro_wait_count];
+        w->kind = (int)kind;
+        w->event_id = (kind == 0) ? (int)id : -1;
+        w->fd = (kind == 2) ? (int)id : -1;
+        w->fd_events = (kind == 2)
+            ? (short)(((flag & 1) ? POLLIN : 0) | ((flag & 2) ? POLLOUT : 0)) : 0;
+        w->handle = myp_coro_current;
+        w->active = 1;
+        w->deadline_ms = (kind == 1) ? ((flag > 0) ? now0 + flag : 0) : deadline;
+        w->expired = 0;
+        w->exec_result = 0;
+        w->wait_index = (int)i;
+        myp_coro_wait_count++;
+    }
+    // Overall-timeout marker (kind=TIMER, wait_index=-2), registered LAST so at a
+    // tie its wait_timeout wins the deadline loop (specs' overall deadlines expire
+    // before it in table order but only set last_wait_index when kind==1).
+    if (deadline > 0 && myp_coro_wait_reserve() == 0) {
+        myp_coro_wait_t* w = &myp_coro_waits[myp_coro_wait_count];
+        w->kind = 1;
+        w->event_id = -1;
+        w->fd = -1;
+        w->fd_events = 0;
+        w->handle = myp_coro_current;
+        w->active = 1;
+        w->deadline_ms = deadline;
+        w->expired = 0;
+        w->exec_result = 0;
+        w->wait_index = -2;
+        myp_coro_wait_count++;
+    }
+    myp_coro_t* c = myp_coros[myp_coro_current];
+    c->ready = 0;
+    c->last_wait_index = -1;
+    c->wait_timeout = 0;
+    int64_t r = __myp_coro_yield(val);
+    // Only one spec may wake a waitAnyOf — clear the rest so later fires of
+    // other listed specs must not re-ready this coroutine.
+    for (int i = 0; i < myp_coro_wait_count; i++) {
+        if (myp_coro_waits[i].active && myp_coro_waits[i].handle == myp_coro_current)
+            myp_coro_waits[i].active = 0;
+    }
+    if (c && c->last_wait_index >= 0) return c->last_wait_index;
+    if (c && c->wait_timeout) { c->wait_timeout = 0; return -1; }
+    return r;
+}
+
 // ---- §五-5 P1: coroutine timer (await sleep) ----
 // Sleep the current coroutine for `ms` milliseconds WITHOUT blocking the thread:
 // register a TIMER wait (deadline = now+ms, no event — event_id = -1 never
@@ -3700,6 +3786,7 @@ int64_t __myp_coro_sleep(int64_t ms) {
         myp_coro_waits[myp_coro_wait_count].active = 1;
         myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
         myp_coro_waits[myp_coro_wait_count].expired = 0;
+        myp_coro_waits[myp_coro_wait_count].wait_index = -1;
         myp_coro_wait_count++;
         myp_coros[myp_coro_current]->ready = 0;   // park
         myp_coros[myp_coro_current]->wait_timeout = 0;
@@ -3735,6 +3822,7 @@ int64_t __myp_coro_wait_fd(int64_t fd, int64_t want_read, int64_t want_write,
         myp_coro_waits[myp_coro_wait_count].active = 1;
         myp_coro_waits[myp_coro_wait_count].deadline_ms = deadline;
         myp_coro_waits[myp_coro_wait_count].expired = 0;
+        myp_coro_waits[myp_coro_wait_count].wait_index = -1;
         myp_coro_wait_count++;
         myp_coros[myp_coro_current]->ready = 0;   // park
         myp_coros[myp_coro_current]->wait_timeout = 0;
@@ -3922,6 +4010,7 @@ static char* myp_coro_file_read(int io_handle, int op) {
         myp_coro_waits[idx].deadline_ms = 0;
         myp_coro_waits[idx].expired = 0;
         myp_coro_waits[idx].exec_result = 0;
+        myp_coro_waits[idx].wait_index = -1;
         myp_coro_wait_count++;
         myp_coros[h]->ready = 0;                 // park
         myp_coros[h]->wait_timeout = 0;
@@ -3960,6 +4049,8 @@ static void __myp_coro_event_notify(int event_id) {
             myp_coro_waits[i].active = 0;
             if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active) {
                 myp_coros[h]->last_wait_event_id = event_id;  // for waitAny
+                if (myp_coro_waits[i].wait_index >= 0)        // §五-5 P4 waitAnyOf
+                    myp_coros[h]->last_wait_index = myp_coro_waits[i].wait_index;
                 myp_coros[h]->ready = 1;
             }
         }

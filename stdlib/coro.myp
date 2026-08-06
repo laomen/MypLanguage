@@ -49,6 +49,13 @@ class Coro {
         // 等待任一事件触发：返回触发的事件 id，超时返回 -1
         // ids 为事件 id 数组（MYP 数组无长度跟踪，需显式传 count）
         long waitAny(long[] ids, long count, long timeoutMs, long val) {}
+        // §五-5 P4 统一 waitAny：混等 事件/定时器/fd，返回触发的 spec 下标
+        // spec 为扁平 long[]，每 3 个元素描述一个等待项：
+        //   [i*3+0] kind：0=EVENT 1=TIMER 2=FD
+        //   [i*3+1] id：  EVENT 的事件 id / FD 的 fd / TIMER 填 -1
+        //   [i*3+2] flag：FD 1=可读 2=可写 3=可读写；TIMER 填相对毫秒；EVENT 填 0
+        // 返回：触发的 spec 下标（0 起），总体超时 -1，非协程上下文 -2
+        long waitAnyOf(long[] spec, long count, long timeoutMs, long val) {}
         // 协作式取消：请求协程在下一个 await/yield 后自行退出（可执行清理）
         // 与 destroy（强杀、不执行清理）不同
         void requestCancel(long handle) {}

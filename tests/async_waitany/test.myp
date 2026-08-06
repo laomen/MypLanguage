@@ -1,0 +1,98 @@
+// tests/async_waitany — §五-5 P4 统一 waitAnyOf：事件/定时器/fd 混等
+// 覆盖：EVENT 在 TIMER 前触发 → 返回事件 spec 下标 0；
+//       TIMER 在永不触发的事件前触发 → 返回定时器 spec 下标 1；
+//       总体超时 → 返回 -1；
+//       FD 就绪（socket 收到数据）→ 返回 fd spec 下标 1。
+// spec 为扁平 long[]：每 3 个元素 [kind, id, flag]
+//   kind 0=EVENT(id=事件id) 1=TIMER(id=-1, flag=相对毫秒) 2=FD(id=fd, flag=1可读)
+import env;
+import coro;
+import net;
+import time;
+
+// 事件源：eA/eB/eC/eD 全局 id = 0/1/2/3（按声明序），仅 eA 被触发
+class Signal {
+    action:
+        void fireA() { Console.writeString("fire eA\n"); eA(); }
+    event:
+        eA();
+        eB();
+        eC();
+        eD();
+}
+
+// 本地响应服务器（@thread）：D 的 FD 在 accept 后 200ms 可读
+class Sender {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(8897);
+            TcpClient cl = new TcpClient();
+            srv.accept(cl);
+            Time.sleep(200);          // 让 D 的 FD wait 真正挂起等待
+            cl.send("data");          // D 的 fd 可读
+            Time.sleep(200);
+            cl.close();
+            srv.close();
+        }
+}
+
+// A：EVENT(eA=0) 50ms 被触发 → 返回 0（TIMER 300ms 未到）
+@coro(stack=16) void waiterA() {
+    long[] spec = new long[6];
+    spec[0] = 0; spec[1] = 0; spec[2] = 0;     // EVENT eA (id 0)
+    spec[3] = 1; spec[4] = -1; spec[5] = 300;  // TIMER 300ms
+    long r = Coro.waitAnyOf(spec, 2, 1000, 0);
+    Console.writeString("A woke spec=" + r + "\n");
+}
+
+// B：TIMER 100ms 先于永不触发的 EVENT(eB=1) → 返回 1
+@coro(stack=16) void waiterB() {
+    long[] spec = new long[6];
+    spec[0] = 0; spec[1] = 1; spec[2] = 0;     // EVENT eB (id 1, 永不触发)
+    spec[3] = 1; spec[4] = -1; spec[5] = 100;  // TIMER 100ms
+    long r = Coro.waitAnyOf(spec, 2, 1000, 0);
+    Console.writeString("B woke spec=" + r + "\n");
+}
+
+// C：总体超时 150ms（EVENT eC 永不触发、TIMER 500ms）→ 返回 -1
+@coro(stack=16) void waiterC() {
+    long[] spec = new long[6];
+    spec[0] = 0; spec[1] = 2; spec[2] = 0;     // EVENT eC (id 2, 永不触发)
+    spec[3] = 1; spec[4] = -1; spec[5] = 500;  // TIMER 500ms
+    long r = Coro.waitAnyOf(spec, 2, 150, 0);
+    Console.writeString("C woke spec=" + r + "\n");
+}
+
+// D：FD 就绪（socket 收到数据）先于 EVENT(eD=3)/TIMER(400ms) → 返回 fd 下标 1
+@coro(stack=16) void waiterD() {
+    TcpClient c = new TcpClient();
+    c.connect("127.0.0.1", 8897);
+    long[] spec = new long[9];
+    spec[0] = 0; spec[1] = 3; spec[2] = 0;          // EVENT eD (id 3, 永不触发)
+    spec[3] = 2; spec[4] = c.getFd(); spec[5] = 1;  // FD 可读
+    spec[6] = 1; spec[7] = -1; spec[8] = 400;       // TIMER 400ms
+    long r = Coro.waitAnyOf(spec, 3, 1000, 0);
+    Console.writeString("D woke spec=" + r + "\n");
+    c.close();
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Sender s = new Sender() @thread;
+            Time.sleep(100);             // 等服务器 bind+listen+accept
+            Signal sig = new Signal();
+            long ha = waiterA();
+            long hb = waiterB();
+            long hc = waiterC();
+            long hd = waiterD();
+            Coro.scheduler();
+            Time.sleep(50);              // A 的事件在 50ms 触发
+            sig.fireA();
+            // 40 轮 × 20ms = 800ms：A(50) B(100) C(150) D(~300) 依次醒来
+            for (int i = 0; i < 40; i++) { Coro.scheduler(); Time.sleep(20); }
+            Console.writeString("main done\n");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

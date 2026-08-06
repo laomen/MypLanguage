@@ -1,6 +1,6 @@
 # MYP 异步 IO 统一抽象设计（Async I/O）
 
-> 状态：**已实施（P1 定时器 / P2 套接字 / P3 文件执行器）** — 对应 `docs/next_improvements.md` §五-5
+> 状态：**已实施（P1 定时器 / P2 套接字 / P3 文件执行器 / P4 统一 waitAnyOf）** — 对应 `docs/next_improvements.md` §五-5
 > 关联：语言规格 v1.0（`docs/grammar.md`）、协程设计 `docs/coro.md`、现有实现
 > （`src/runtime/runtime.c` §Coroutine + `src/codegen/codegen.cpp` + `stdlib/coro.myp`）
 > 目标：把"等某件事完成"（事件 / 文件 / 网络 / 睡眠）统一到 `await` + 协程调度器
@@ -180,10 +180,12 @@ string line = await file.readLineAsync();// worker 执行器
 | **P1 定时器** | ✅ 已实施 | 小 | `tests/async_sleep` |
 | **P2 socket 就绪** | ✅ 已实施 | 中 | `tests/async_socket` |
 | **P3 文件执行器** | ✅ 已实施 | 中 | `tests/async_file` |
-| **P4 统一 waitAny（可选远期）** | `Coro.waitAny` 扩展到事件+fd+定时器混等 | 中 | 混等测试 |
+| **P4 统一 waitAny** | ✅ 已实施 | 中 | `tests/async_waitany` |
 
-> P1 自包含验证了广义等待表机制；P2/P3 在同一张等待表上叠加（`kind` 字段区分
-> EVENT/TIMER/FD/EXEC），全部 additive 无破坏性变更。
+> P1 自包含验证了广义等待表机制；P2/P3/P4 在同一张等待表上叠加（`kind` 字段区分
+> EVENT/TIMER/FD/EXEC + `wait_index` 记录 waitAnyOf 触发下标），全部 additive 无破坏性变更。
+> P4 提供新 API `Coro.waitAnyOf(spec, count, timeoutMs, val)`：扁平 long[] 每 3 元素描述
+> 一个等待项（kind=EVENT/TIMER/FD），返回触发的 spec 下标（总体超时 -1，非协程 -2）。
 
 ---
 
@@ -194,6 +196,7 @@ string line = await file.readLineAsync();// worker 执行器
 | `tests/async_sleep` | 两协程 sleep(30)/sleep(10) 交错，调度器驱动，确定性顺序；sleep 不阻塞线程（对照协程推进计数） |
 | `tests/async_socket` | 本地 TcpServer；`@coro` 客户端 `await recvAsync` 阻塞等待时另一协程完成 N 步（证明非阻塞）；超时路径 |
 | `tests/async_file` | 写临时文件；`await readLineAsync/readAllAsync` 期间另一协程推进；执行器结果正确 |
+| `tests/async_waitany` | `Coro.waitAnyOf` 混等：EVENT 先于 TIMER、TIMER 先于永不触发事件、总体超时 -1、FD 就绪；四场景确定性输出 |
 | 负测试 | `await` 在非 `@coro` 上下文调用 `@async` → 编译报错；`Async.sleep` 在普通上下文调用 → 报错或保持同步 |
 | 回归 | 全库 -O0 + ASAN 通过；现有 `tests/coro_*`、`tests/io`、`tests/http`、`tests/net`（若有）不回归 |
 

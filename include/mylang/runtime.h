@@ -103,6 +103,10 @@ void myp_net_set_nonblock(int32_t fd);   // §五-5 P2: async socket IO
 char* myp_coro_file_read_line(int32_t io_handle);
 char* myp_coro_file_read_all(int32_t io_handle);
 
+// ---- §五-5 P4: unified waitAny (mix EVENT/TIMER/FD in one wait) ----
+int64_t __myp_coro_wait_any_of(const int64_t* spec, int64_t count, int64_t timeout_ms,
+                               int64_t val);
+
 // ---- Process Management ----
 int32_t myp_process_run(const char* cmd);
 char* myp_process_output(const char* cmd);
