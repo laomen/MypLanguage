@@ -20,6 +20,7 @@ class StringError {
     interface class Error;
     action:
         string message() { return msg_; }
+        void setMsg(string v) { msg_ = v; }   // §五-3：供 Result 桥/程序化构造填充
     property:
         string msg_;
 }

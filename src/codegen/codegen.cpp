@@ -2922,8 +2922,23 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 }
             }
         } else if (d.init_expr) {
-            // Assign from an existing concrete variable: IFoo f = impl;
             auto* inst = generateExpr(*d.init_expr);
+            // 接口值直通：init 表达式本身是接口值（函数返回接口 / 另一接口变量）→
+            // inst 已是 {data, vtable} 胖指针，整体拷入即可（此前误把它当具体实例
+            // 指针存进 data 槽 + 空 vtable，导致后续接口分发参数错乱）。
+            if (inst && inst->getType()->isStructTy() &&
+                inst->getType()->isAggregateType()) {
+                auto* data = builder_.CreateExtractValue(inst, 0);
+                // ARC：别名持有 → retain data（fresh call 转移，作用域末释放）
+                if (!isFreshArcExpr(*d.init_expr)) emitRetain(data);
+                auto* dp = builder_.CreateStructGEP(fat_ty, a, 0);
+                builder_.CreateStore(data, dp);
+                auto* vt = builder_.CreateExtractValue(inst, 1);
+                auto* vp = builder_.CreateStructGEP(fat_ty, a, 1);
+                builder_.CreateStore(vt, vp);
+                return;
+            }
+            // Assign from an existing concrete variable: IFoo f = impl;
             // ARC: alias of an existing owner → retain its data (fresh new/call
             // transfers; release happens when this interface local's scope exits).
             if (!isFreshArcExpr(*d.init_expr))
@@ -5718,33 +5733,32 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     if (is_str_concat) {
         // Ensure both operands are strings
         auto* ptr_type = llvm::PointerType::get(ctx_, 0);
-        if (!l->getType()->isPointerTy()) {
-            // Convert non-string to string
+        auto conv_to_string = [&](llvm::Value* v) -> llvm::Value* {
+            if (v->getType()->isPointerTy()) return v;
+            // bool (i1) → myp_to_string_bool(i32)（sext 0/1 → "true"/"false"）
+            if (v->getType()->isIntegerTy(1)) {
+                auto* ext = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+                auto* fn = module_->getFunction("myp_to_string_bool");
+                if (!fn) {
+                    auto* ft = llvm::FunctionType::get(ptr_type, {llvm::Type::getInt32Ty(ctx_)}, false);
+                    fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_to_string_bool", module_.get());
+                }
+                return builder_.CreateCall(fn, {ext});
+            }
             auto fn_name = std::string("myp_to_string_") +
-                (l->getType()->isIntegerTy(32) ? "i32" :
-                 l->getType()->isIntegerTy(64) ? "i64" :
-                 l->getType()->isDoubleTy() ? "double" : "i32");
+                (v->getType()->isIntegerTy(32) ? "i32" :
+                 v->getType()->isIntegerTy(64) ? "i64" :
+                 v->getType()->isDoubleTy() ? "double" : "i32");
             auto* conv_fn = module_->getFunction(fn_name);
             if (!conv_fn) {
                 auto* ft = llvm::FunctionType::get(ptr_type,
-                    {l->getType()}, false);
+                    {v->getType()}, false);
                 conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
             }
-            l = builder_.CreateCall(conv_fn, {l});
-        }
-        if (!r->getType()->isPointerTy()) {
-            auto fn_name = std::string("myp_to_string_") +
-                (r->getType()->isIntegerTy(32) ? "i32" :
-                 r->getType()->isIntegerTy(64) ? "i64" :
-                 r->getType()->isDoubleTy() ? "double" : "i32");
-            auto* conv_fn = module_->getFunction(fn_name);
-            if (!conv_fn) {
-                auto* ft = llvm::FunctionType::get(ptr_type,
-                    {r->getType()}, false);
-                conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
-            }
-            r = builder_.CreateCall(conv_fn, {r});
-        }
+            return builder_.CreateCall(conv_fn, {v});
+        };
+        l = conv_to_string(l);
+        r = conv_to_string(r);
         // Call runtime myp_strcat(l, r)
         auto* sc = module_->getFunction("myp_strcat");
         if (!sc) {
@@ -7253,12 +7267,25 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         }
     }
 
-    // 调用匹配的构造器（sema 已解析；分配→默认值→构造体，构造体可覆写默认值）
-    if (!e.resolved_ctor.empty()) {
-        auto* ctor = module_->getFunction(e.resolved_ctor);
-        if (ctor) {
-            std::vector<llvm::Value*> ctor_args;
-            ctor_args.push_back(obj);
+    // 调用匹配的构造器（sema 已解析；分配→默认值→构造体，构造体可覆写默认值）。
+    // 泛型实例：模板期 resolved_ctor 基于占位符（`Result_T_E_inst` 类当时可能不存在
+    // 或名字带占位符）→ 找不到时按「具体实例类名 + 实参个数」重建 ctor 名。
+    auto* ctor = module_->getFunction(e.resolved_ctor);
+    if (!ctor && !e.type_args.empty()) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != cls_name) continue;
+            for (auto& a : cls.actions) {
+                if (!a.has_constructor) continue;
+                if (a.params.size() != e.args.size()) continue;
+                auto* f2 = module_->getFunction(constructorMangledName(cls_name, a.name, a.params));
+                if (f2) { ctor = f2; break; }
+            }
+            if (ctor) break;
+        }
+    }
+    if (ctor) {
+        std::vector<llvm::Value*> ctor_args;
+        ctor_args.push_back(obj);
             auto* ft = ctor->getFunctionType();
             size_t idx = 1;
             for (auto& a : e.args) {
@@ -7281,7 +7308,6 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 idx++;
             }
             builder_.CreateCall(ctor, ctor_args);
-        }
     }
     return obj;
 }
@@ -7582,6 +7608,15 @@ llvm::Value* CodeGen::generateTryExpr(const TryExpr& e) {
     builder_.SetInsertPoint(catch_bb);
     auto* err_ptr = builder_.CreateCall(runtime_get_error_->getFunctionType(),
         runtime_get_error_, {}, "err_msg");
+    // 拷贝消息（共享 myp_error_msg 缓冲会被后续 throw 覆写）
+    auto* dup = module_->getFunction("myp_strdup");
+    if (!dup) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::PointerType::get(ctx_, 0)}, false);
+        dup = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_strdup", module_.get());
+    }
+    err_ptr = builder_.CreateCall(dup->getFunctionType(), dup, {err_ptr}, "err_copy");
     auto* err_var = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), e.catch_var_name);
     builder_.CreateStore(err_ptr, err_var);
     setNamedValue(e.catch_var_name, err_var);
@@ -8254,6 +8289,15 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
                 } else {
                     bound = builder_.CreateCall(runtime_get_error_->getFunctionType(),
                         runtime_get_error_, {}, "err_msg");
+                    // 拷贝消息：myp_get_error 返回共享 myp_error_msg 缓冲指针，
+                    // 后续 throw 会覆写它 → 存储的字符串漂移（Result 等存错误即踩中）。
+                    auto* dup = module_->getFunction("myp_strdup");
+                    if (!dup) {
+                        auto* ft = llvm::FunctionType::get(ptr_ty, {ptr_ty}, false);
+                        dup = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                            "myp_strdup", module_.get());
+                    }
+                    bound = builder_.CreateCall(dup->getFunctionType(), dup, {bound}, "err_copy");
                 }
                 auto* ev = createEntryBlockAlloca(func, ptr_ty, cc.var_name);
                 builder_.CreateStore(bound, ev);

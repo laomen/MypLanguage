@@ -1,0 +1,102 @@
+// result.myp — MYP 标准库：值式错误传播 Result<T, E>（§五-3，additive）
+//
+// 语义：Ok(值)/Err(错误) 二态容器。用 isOk()/isErr() 门控访问；组合子
+// （resultMap/resultAndThen/resultMapErr）做无异常的错误传播；resultTry 把
+// try/catch 异常转成 Result（值式错误传播入口）。
+//   import result;
+//   Result<int, string> r = new Result<int, string>(42);   // ok
+//   Result<int, string> e = new Result<int, string>(); e.setErr("oops");
+//   if (r.isOk()) Console.write(r.get());
+//   int v = e.getOr(-1);                                   // → -1
+//
+// 工厂（顶层泛型函数）：
+//   Result<string, string> s = resultOk<string, string>("hi");
+//   Result<int, string> b = resultErr<int, string>("bad");
+//   // 或推断部分类型实参：resultErr<int>("bad")（T 显式、E 从实参推断）
+//
+// 组合子：
+//   resultMap(r, (T) -> R)          // 仅 ok 时应用 f；err 原样传播
+//   resultAndThen(r, (T) -> Result<R, E>)
+//   resultMapErr(r, (E) -> E2)
+//
+// 异常桥：
+//   Result<int, string> r = resultTry<int>(() => { return risky(); });
+//   // catch (Error e)（e.message()）与 catch (string s) 都转成消息字符串；
+//   // E=string 简单错误消息；类型化分层错误仍用 try/catch（error.myp）。
+import error;
+
+class Result<T, E> {
+    action:
+        // err（未初始化 E，用 setErr 填充）
+        @constructor Result() { ok_ = false; }
+        // ok
+        @constructor Result(T v) { val_ = v; ok_ = true; }
+        bool isOk() { return ok_; }
+        bool isErr() { return !ok_; }
+        // 取值（调用方先 isOk()）
+        T get() { return val_; }
+        // 取错误（调用方先 isErr()）
+        E getErr() { return err_; }
+        // 安全取用：err 时返回默认值
+        T getOr(T def) { if (ok_) return val_; return def; }
+        void setOk(T v) { val_ = v; ok_ = true; }
+        void setErr(E e) { err_ = e; ok_ = false; }
+    property:
+        T val_;
+        E err_;
+        bool ok_;
+}
+
+// ---- 工厂（顶层泛型函数；泛型体内不调用其它泛型函数，避免占位符单态化限制）----
+Result<T, E> resultOk<T, E>(T v) {
+    Result<T, E> r = new Result<T, E>(v);
+    return r;
+}
+Result<T, E> resultErr<T, E>(E e) {
+    Result<T, E> r = new Result<T, E>();
+    r.setErr(e);
+    return r;
+}
+
+// ---- 组合子（无异常错误传播）----
+Result<R, E> resultMap<T, R, E>(Result<T, E> r, (T) -> R f) {
+    if (r.isOk()) {
+        Result<R, E> ok = new Result<R, E>(f(r.get()));
+        return ok;
+    }
+    Result<R, E> err = new Result<R, E>();
+    err.setErr(r.getErr());
+    return err;
+}
+Result<R, E> resultAndThen<T, R, E>(Result<T, E> r, (T) -> Result<R, E> f) {
+    if (r.isOk()) return f(r.get());
+    Result<R, E> err = new Result<R, E>();
+    err.setErr(r.getErr());
+    return err;
+}
+Result<T, E2> resultMapErr<T, E, E2>(Result<T, E> r, (E) -> E2 f) {
+    if (r.isErr()) {
+        Result<T, E2> err = new Result<T, E2>();
+        err.setErr(f(r.getErr()));
+        return err;
+    }
+    Result<T, E2> ok = new Result<T, E2>(r.get());
+    return ok;
+}
+
+// ---- 异常 → Result 桥（值式错误传播入口；错误统一转成消息字符串）----
+// 捕获 string（throw "msg"）与 Error 接口（e.message()）；string 优先以拿到原始消息。
+Result<T, string> resultTry<T>(() -> T f) {
+    try {
+        Result<T, string> ok = new Result<T, string>(f());
+        return ok;
+    } catch (string s) {
+        Result<T, string> err = new Result<T, string>();
+        err.setErr(s);
+        return err;
+    } catch (Error e) {
+        Result<T, string> err = new Result<T, string>();
+        err.setErr(e.message());
+        return err;
+    }
+}

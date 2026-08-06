@@ -3780,6 +3780,24 @@ void Sema::collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals) {
     }
 }
 
+// 标识符是否为全局函数/泛型函数/类/接口/struct/枚举名。lambda 捕获分析据此跳过
+// 这些名字（它们不是外层局部变量，运行时始终可解析）。§五-3
+bool Sema::isGlobalName(const std::string& name) const {
+    if (generic_functions_.count(name)) return true;
+    if (!current_tu_) return false;
+    for (auto& f : current_tu_->functions)
+        if (f.name == name) return true;
+    for (auto& c : current_tu_->classes)
+        if (c.name == name) return true;
+    for (auto& i : current_tu_->interfaces)
+        if (i.name == name) return true;
+    for (auto& s : current_tu_->structs)
+        if (s.name == name) return true;
+    for (auto& e : current_tu_->enums)
+        if (e.name == name) return true;
+    return false;
+}
+
 void Sema::collectExprCaptures(Expr& e, const std::set<std::string>& locals,
                                const std::vector<std::string>& params,
                                std::vector<std::string>& out) {
@@ -3789,6 +3807,9 @@ void Sema::collectExprCaptures(Expr& e, const std::set<std::string>& locals,
             if (id.name == "this" || id.name == "true" || id.name == "false") break;
             if (std::find(params.begin(), params.end(), id.name) != params.end()) break;
             if (locals.count(id.name)) break;
+            // 全局函数/泛型函数/类/接口/struct/枚举名：不是外层局部变量，无需捕获
+            //（否则 lambda 内调用顶层函数被误捕 → 合成捕获声明与函数名重复）。
+            if (isGlobalName(id.name)) break;
             if (symbol_table_.lookup(id.name))
                 if (std::find(out.begin(), out.end(), id.name) == out.end())
                     out.push_back(id.name);

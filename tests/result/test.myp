@@ -1,0 +1,61 @@
+// result: §五-3 值式错误传播 Result<T,E> 回归测试
+// 覆盖：构造（ok/err）、门控访问、工厂、getOr、组合子（map/andThen/mapErr）、
+//       resultTry 异常桥（无异常 ok / string 抛错 / Error 对象抛错，消息稳定不漂移）
+import env;
+import result;
+
+int risky(int v) {
+    if (v < 0) throw "negative: " + v;
+    if (v > 100) { ParseError e = new ParseError(); e.setDetail("too big"); throw e; }
+    return v * 2;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("[result]\n");
+
+            // 1) 构造 + 门控访问
+            Result<int, string> ok = new Result<int, string>(42);
+            Result<int, string> bad = new Result<int, string>();
+            bad.setErr("oops");
+            Console.writeString("" + ok.isOk() + "," + ok.get() + "," + bad.isErr() + "," + bad.getErr());
+            Console.writeString(" ");
+
+            // 2) 工厂 + getOr
+            Result<int, string> f1 = resultOk<int, string>(7);
+            Result<int, string> f2 = resultErr<int, string>("bad");
+            Console.writeString("" + f1.get() + "," + f2.getOr(-1) + "," + f2.getOr(99));
+            Console.writeString(" ");
+
+            // 3) resultMap
+            Result<string, string> m1 = resultMap<int, string, string>(f1, (int x) => { return "v" + x; });
+            Result<string, string> m2 = resultMap<int, string, string>(f2, (int x) => { return "v" + x; });
+            Console.writeString("" + m1.get() + "," + m2.isErr() + "," + m2.getErr());
+            Console.writeString(" ");
+
+            // 4) resultAndThen
+            Result<int, string> a1 = resultAndThen<int, int, string>(f1, (int x) => { return resultOk<int, string>(x * 3); });
+            Result<int, string> a2 = resultAndThen<int, int, string>(f2, (int x) => { return resultOk<int, string>(x * 3); });
+            Console.writeString("" + a1.get() + "," + a2.isErr());
+            Console.writeString(" ");
+
+            // 5) resultMapErr
+            Result<int, string> me = resultMapErr<int, string, string>(f2, (string e) => { return "E:" + e; });
+            Console.writeString(me.getErr());
+            Console.writeString(" ");
+
+            // 6) resultTry 异常桥（string 抛错 / Error 对象抛错；消息稳定——后抛不覆写先存）
+            Result<int, string> t1 = resultTry<int>(() => { return risky(5); });
+            Result<int, string> t2 = resultTry<int>(() => { return risky(-3); });
+            Result<int, string> t3 = resultTry<int>(() => { return risky(200); });
+            Console.writeString("" + t1.isOk() + "," + t1.get() + "," + t2.isErr() + "," + t2.getErr());
+            Console.writeString("," + t3.isErr() + "," + t3.getErr());
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

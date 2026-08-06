@@ -513,6 +513,53 @@ try {
 
 > Full design: [`docs/exceptions.md`](exceptions.md).
 
+### Value-Based Error Propagation: Result\<T, E\> (§五-3, additive)
+
+Besides try/catch, `import result` provides **value-based error propagation**: `Result<T, E>`
+is an Ok(value)/Err(error) two-state container — errors are passed explicitly as return values
+(complementing the typed error hierarchy in `error.myp`).
+
+```myp
+import result;
+
+Result<int, string> ok  = new Result<int, string>(42);   // ok
+Result<int, string> bad = new Result<int, string>();     // err (E uninitialized)
+bad.setErr("oops");
+
+if (ok.isOk())  Console.write(ok.get());      // 42 (gate with isOk before get)
+if (bad.isErr()) Console.writeString(bad.getErr());   // "oops"
+int v = bad.getOr(-1);                        // safe access → -1
+```
+
+Factories (top-level generic functions):
+
+```myp
+Result<string, string> s = resultOk<string, string>("hi");
+Result<int, string>    b = resultErr<int>("bad");   // T explicit, E inferred from arg
+```
+
+Combinators (exception-free error propagation):
+
+```myp
+Result<string, string> m = resultMap(f1, (int x) => { return "v" + x; });  // apply f only on ok
+Result<int, string>    a = resultAndThen(f1, (int x) => { return resultOk(x * 3); });
+Result<int, string>    e = resultMapErr(f2, (string e) => { return "E:" + e; });
+```
+
+Exception bridge `resultTry` (turns a possibly-throwing call into `Result<T, string>`,
+error unified as a message):
+
+```myp
+Result<int, string> r = resultTry<int>(() => { return risky(); });
+if (r.isErr()) Console.writeString(r.getErr());
+// throw "msg" → err(msg); throw <Error object> → err(e.message())
+// Layered errors: precise handling via concrete exception classes + catch,
+// unified handling via the Error interface + resultTry.
+```
+
+> The combinators are **top-level generic functions** (a generic body cannot call other
+> generic functions, so they construct `Result` directly). `tests/result` covers all paths.
+
 ---
 
 ## 5. Functions

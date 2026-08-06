@@ -506,6 +506,50 @@ try {
 
 > 详细设计见 [`docs/exceptions.md`](exceptions.md)。
 
+### 值式错误传播：Result\<T, E\>（§五-3，additive）
+
+除 try/catch 外，`import result` 提供**值式错误传播**：`Result<T, E>` 是 Ok(值)/Err(错误)
+二态容器，错误作为返回值显式传递（配合 `error.myp` 的错误类型分层）。
+
+```myp
+import result;
+
+Result<int, string> ok  = new Result<int, string>(42);   // ok
+Result<int, string> bad = new Result<int, string>();     // err（未初始化 E）
+bad.setErr("oops");
+
+if (ok.isOk())  Console.write(ok.get());      // 42（先 isOk 再 get）
+if (bad.isErr()) Console.writeString(bad.getErr());   // "oops"
+int v = bad.getOr(-1);                        // 安全取用 → -1
+```
+
+工厂（顶层泛型函数）：
+
+```myp
+Result<string, string> s = resultOk<string, string>("hi");
+Result<int, string>    b = resultErr<int>("bad");   // T 显式、E 从实参推断
+```
+
+组合子（无异常错误传播）：
+
+```myp
+Result<string, string> m = resultMap(f1, (int x) => { return "v" + x; });  // 仅 ok 应用 f
+Result<int, string>    a = resultAndThen(f1, (int x) => { return resultOk(x * 3); });
+Result<int, string>    e = resultMapErr(f2, (string e) => { return "E:" + e; });
+```
+
+异常桥 `resultTry`（把可能抛异常的调用转成 `Result<T, string>`，错误统一为消息）：
+
+```myp
+Result<int, string> r = resultTry<int>(() => { return risky(); });
+if (r.isErr()) Console.writeString(r.getErr());
+// throw "msg" → err(msg)；throw <Error 对象> → err(e.message())
+// 错误类型分层：精确捕获用具体异常类 + catch，统一处理用 Error 接口 + resultTry
+```
+
+> 组合子 `resultMap` 等为**顶层泛型函数**（泛型体内不能调用其它泛型函数，故直接构造
+> Result）。`tests/result` 覆盖全路径。
+
 ---
 
 ## 5. 函数

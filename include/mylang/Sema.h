@@ -182,6 +182,9 @@ private:
     void collectExprCaptures(Expr& e, const std::set<std::string>& locals,
                              const std::vector<std::string>& params,
                              std::vector<std::string>& out);
+    // §五-3：标识符是否为全局函数/泛型函数/类/接口/struct/枚举名（lambda 捕获
+    // 分析跳过——它们不是外层局部变量）。
+    bool isGlobalName(const std::string& name) const;
 
 };
 
