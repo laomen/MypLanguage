@@ -121,13 +121,14 @@ private:
     llvm::Function* runtime_free_object_ = nullptr;
     llvm::GlobalVariable* release_table_gv_ = nullptr;
     // ARC scope tracking: per-scope list of local reference slots to release
-    // at scope exit (parallel to named_values_). is_interface = fat pointer.
-    struct ArcSlot { llvm::Value* alloca; bool is_interface; };
+    // at scope exit (parallel to named_values_). kind: 0=class ptr,
+    // 1=interface fat ptr, 2=function value fat ptr {closure, call_fn}.
+    struct ArcSlot { llvm::Value* alloca; int kind; };
     std::vector<std::vector<ArcSlot>> arc_scope_slots_;
     // Source-level return type of the current function (for retain-at-return).
     TypeInfo current_ret_ti_;
-    void registerArcSlot(llvm::Value* alloca, bool is_interface);
-    void releaseArcSlot(llvm::Value* alloca, bool is_interface);
+    void registerArcSlot(llvm::Value* alloca, int kind);
+    void releaseArcSlot(llvm::Value* alloca, int kind);
     llvm::Value* emitRetain(llvm::Value* data);
     // ARC store into a strong reference slot (local alloca or property GEP):
     // retain(new) unless fresh, release(old), caller then stores new.
@@ -135,7 +136,10 @@ private:
                      bool is_interface, bool is_fresh);
     // True if `alloca` is a currently-scoped local class reference slot.
     bool isArcClassLocal(llvm::Value* alloca);
-    // True for NewExpr / CallExpr results: transfer (no retain) at a strong slot.
+    // True if `alloca` is a currently-scoped local function-value (closure) slot.
+    bool isArcFunctionLocal(llvm::Value* alloca);
+    // True for NewExpr / CallExpr / LambdaExpr results: transfer (no retain)
+    // at a strong slot.
     static bool isFreshArcExpr(const Expr& e);
     // ---- Statement-end temporary release (§五-1 M-ARC-2) ----
     // A `new` expression's fresh object is owned by the current statement; if a

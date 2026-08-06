@@ -1,0 +1,59 @@
+// arc_fn: ARC 闭包释放（§五-1 M-ARC-3，additive）
+// 覆盖：lambda 闭包入函数值局部（作用域退出释放）、别名共享闭包（retain 平衡）、
+// 循环内闭包零累积、捕获 class 引用（闭包 retain 自己的引用，销毁桩级联释放平衡）
+import env;
+import memory;
+
+class Node {
+    action:
+        int getVal() { return val; }
+        void setVal(int v) { val = v; }
+    property:
+        int val = 0;
+}
+
+int pmRun() {
+    long base = Memory.liveObjectCount();
+
+    // 闭包入函数值局部：作用域退出释放闭包
+    {
+        (int) -> int f = (int x) => { return x * 2; };
+        int r = f(21);
+        Console.writeString("fn_decl: r=" + r + " ");
+    }
+    long after_decl = Memory.liveObjectCount() - base;
+    Console.writeString("after_decl=" + after_decl + "\n");
+
+    // 别名：g = f → 两局部共享闭包，各自释放 → 平衡
+    {
+        (int) -> int f = (int x) => { return x + 1; };
+        (int) -> int g = f;
+        int r = g(5);
+        Console.writeString("fn_alias: r=" + r + " ");
+    }
+    long after_alias = Memory.liveObjectCount() - base;
+    Console.writeString("after_alias=" + after_alias + "\n");
+
+    // 捕获 class 引用：闭包 retain 自己的引用；外层局部释放后闭包仍可调用
+    long before_cap = Memory.liveObjectCount();
+    int captured_val = -1;
+    {
+        Node n = new Node();
+        n.setVal(77);
+        (int) -> int f = (int x) => { return x + n.getVal(); };   // 捕获 n（class 引用）
+        captured_val = f(0);
+    }   // n 的局部释放；闭包 f 持有 n 的引用（retain）
+    long after_cap = Memory.liveObjectCount() - before_cap;
+    Console.writeString("fn_capture: val=" + captured_val + " after_cap=" + after_cap + "\n");
+
+    // 循环内创建闭包 → 零累积
+    for (int i = 0; i < 1000; i = i + 1) {
+        (int) -> int f = (int x) => { return x + i; };
+    }
+    long after_loop = Memory.liveObjectCount() - base;
+    Console.writeString("fn_loop: after=" + after_loop + "\n");
+
+    Console.writeString("fn all ok\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }

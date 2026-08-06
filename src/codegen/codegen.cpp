@@ -623,23 +623,25 @@ void CodeGen::popScope() {
     if (!arc_scope_slots_.empty()) {
         auto& slots = arc_scope_slots_.back();
         for (auto& s : slots)
-            releaseArcSlot(s.alloca, s.is_interface);
+            releaseArcSlot(s.alloca, s.kind);
         arc_scope_slots_.pop_back();
     }
     if (!named_values_.empty()) named_values_.pop_back();
 }
-// Register a local reference slot (class instance or interface fat pointer)
-// so it is myp_release'd when its scope exits.
-void CodeGen::registerArcSlot(llvm::Value* alloca, bool is_interface) {
+// Register a local reference slot (class instance / interface fat pointer /
+// function-value closure) so its referenced object is myp_release'd when the
+// scope exits. kind: 0=class ptr, 1=interface, 2=function value.
+void CodeGen::registerArcSlot(llvm::Value* alloca, int kind) {
     if (!alloca || arc_scope_slots_.empty()) return;
-    arc_scope_slots_.back().push_back({alloca, is_interface});
+    arc_scope_slots_.back().push_back({alloca, kind});
 }
-void CodeGen::releaseArcSlot(llvm::Value* alloca, bool is_interface) {
+void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     if (!runtime_release_ || !alloca) return;
     if (!builder_.GetInsertBlock() ||
         builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
     llvm::Value* v;
-    if (is_interface) {
+    if (kind == 1 || kind == 2) {
+        // Interface / function-value fat pointer {obj, ...} → release index 0.
         auto* fat = builder_.CreateLoad(getLLVMType(TypeInfo(TypeKind::Interface)), alloca);
         v = builder_.CreateExtractValue(fat, 0);
     } else {
@@ -659,7 +661,14 @@ bool CodeGen::isArcClassLocal(llvm::Value* alloca) {
     if (!alloca) return false;
     for (auto& scope : arc_scope_slots_)
         for (auto& s : scope)
-            if (s.alloca == alloca && !s.is_interface) return true;
+            if (s.alloca == alloca && s.kind == 0) return true;
+    return false;
+}
+bool CodeGen::isArcFunctionLocal(llvm::Value* alloca) {
+    if (!alloca) return false;
+    for (auto& scope : arc_scope_slots_)
+        for (auto& s : scope)
+            if (s.alloca == alloca && s.kind == 2) return true;
     return false;
 }
 // ARC strong-slot store: retain(new) unless it is a fresh (new/call) value,
@@ -721,14 +730,17 @@ void CodeGen::arcReleaseAllScopes() {
         return;
     for (auto& scope : arc_scope_slots_) {
         for (auto& s : scope)
-            releaseArcSlot(s.alloca, s.is_interface);
+            releaseArcSlot(s.alloca, s.kind);
     }
 }
 // NewExpr / CallExpr produce a fresh (+1) reference → transfer into a strong
 // slot without retaining. Everything else (identifier / member access /
 // subscript …) is an alias of an existing owner → must retain.
 bool CodeGen::isFreshArcExpr(const Expr& e) {
-    return e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call;
+    // NewExpr / CallExpr / LambdaExpr produce a fresh reference (the lambda's
+    // closure is a freshly allocated class instance held by its fat pointer).
+    return e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call ||
+           e.kind == ExprKind::Lambda;
 }
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();
@@ -2639,7 +2651,8 @@ void CodeGen::generateBlock(const BlockStmt& s) {
 
 void CodeGen::generateVarDecl(const VarDecl& d) {
     if (!current_function_) return;
-    bool arc_decl_class = false;   // ARC: local holds a counted class reference
+    bool arc_decl_class = false;      // ARC: local holds a counted class reference
+    bool arc_decl_function = false;   // ARC: local holds a closure (function value)
 
     if (d.has_thread_annotation) {
         // @thread: create instance + pass startup to dedicated thread
@@ -2817,7 +2830,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto* a = createEntryBlockAlloca(current_function_, fat_ty, d.name);
         setNamedValue(d.name, a);
         // ARC: interface local holds a counted ref → release its data at scope exit.
-        registerArcSlot(a, true);
+        registerArcSlot(a, 1);
 
         // Zero-init
         auto* zero = llvm::ConstantAggregateZero::get(fat_ty);
@@ -2980,7 +2993,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         builder_.CreateStore(init_val, a);
         // ARC: `var x = new Foo()` → class ref slot (released at scope exit).
         if (d.init_expr->kind == ExprKind::NewExpr) {
-            registerArcSlot(a, false);
+            registerArcSlot(a, 0);
             arcConsumeTemp(init_val);
         }
         return;
@@ -3064,6 +3077,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         TypeInfo ft = typeNodeToCodegenType(d.type);
         lt = getLLVMType(ft);
         func_val_types_[d.name] = ft;
+        arc_decl_function = true;   // ARC: closure released at scope exit
     } else if (d.type.isTuple()) {
         // Tuple value type: anonymous struct { T0, T1, ... }
         TypeInfo tt = typeNodeToCodegenType(d.type);
@@ -3093,7 +3107,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     auto* a = createEntryBlockAlloca(current_function_, lt, d.name);
     setNamedValue(d.name, a);
     // ARC: a local class reference is released when its scope exits.
-    if (arc_decl_class) registerArcSlot(a, false);
+    if (arc_decl_class) registerArcSlot(a, 0);
+    // ARC: a local function-value's closure is released at scope exit (the fat
+    // pointer's index 0 is the closure; null closures are no-ops on release).
+    if (arc_decl_function) registerArcSlot(a, 2);
 
     if (is_struct) {
         // Zero-initialize struct
@@ -3122,6 +3139,12 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // must retain because the previous owner keeps its reference.
         if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
             emitRetain(v);
+        // ARC: function-value alias (`g = f`) → retain the closure (index 0).
+        if (arc_decl_function && !isFreshArcExpr(*d.init_expr) &&
+            v->getType()->isStructTy()) {
+            auto* cl = builder_.CreateExtractValue(v, 0);
+            emitRetain(cl);
+        }
         builder_.CreateStore(v, a);
         arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
 
@@ -6610,6 +6633,24 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
         }
         auto* pt = hc ? getPropertyType(*hc, e.capture_slots[i]) : llvm::Type::getInt32Ty(ctx_);
         auto* val = builder_.CreateLoad(pt, outer);
+        // ARC: a captured class reference is shared (浅拷贝共享) — the closure's
+        // destroy stub will release it, so the closure must RETAIN its own ref
+        // (otherwise the outer local's release frees it while the closure holds
+        // a dangling borrow). Interface/function captures handled analogously.
+        bool cap_is_ref = false;
+        if (hc) {
+            for (auto& p : hc->properties)
+                if (p.name == e.capture_slots[i] && isArcRefType(p.type)) {
+                    cap_is_ref = true;
+                    break;
+                }
+        }
+        if (cap_is_ref) {
+            llvm::Value* cap_data = val;
+            if (val->getType()->isStructTy())
+                cap_data = builder_.CreateExtractValue(val, 0);
+            emitRetain(cap_data);
+        }
         auto* gep = builder_.CreateStructGEP(st, obj, pi);
         builder_.CreateStore(val, gep);
     }
@@ -7514,6 +7555,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         if (isArcClassLocal(a)) {
             arcStoreRef(a, v, false, isFreshArcExpr(*e.value));
             arcConsumeTemp(v);   // fresh `new` RHS is now owned by the local
+        } else if (isArcFunctionLocal(a)) {
+            // Function-value slot: release the old closure, retain the new one.
+            arcStoreRef(a, v, true, isFreshArcExpr(*e.value));
+            arcConsumeTemp(v);   // fresh lambda RHS closure now owned by the local
         }
         builder_.CreateStore(v, a);
         return v;

@@ -1,0 +1,5 @@
+fn_decl: r=42 after_decl=0
+fn_alias: r=6 after_alias=0
+fn_capture: val=77 after_cap=0
+fn_loop: after=0
+fn all ok
