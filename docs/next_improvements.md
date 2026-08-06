@@ -49,7 +49,7 @@
 
 | # | 事项 | 说明 | 优先级 |
 |---|------|------|--------|
-| 1 | **中寿命对象回收：class 实例 ARC** | 无 GC、无手动管理；`@region` 只覆盖事务型短寿命，跨事务的缓存/状态只增不减（BNCT 等长跑进程累积）。析构器已讨论排除、完整 GC 过重 → **class 实例引用计数（ARC）**（自动/确定性/防悬垂；`string`/`T[]`/`slice` 保持 arena + `@region`）。设计见 `docs/arc.md` | **P0** |
+| 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>`（级联释放类引用字段）+ 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用不释放）、函数返回 retain-at-return（借用/新对象均覆盖）、赋值 retain-new/release-old（自赋值安全）、属性存储/静态属性/映射全局 retain、`slice<T>` 类元素 retain/release、`var x = new` 归槽。诊断：`Memory.liveObjectCount()`。`tests/arc`（生命周期/级联/自赋值/借用返回/循环不累积）。**M-ARC-2 待办**：异常/throw-catch 展开释放、`T[]` 数组元素、`@thread`/协程帧释放、与 `@region` 逃逸简化整合。设计见 `docs/arc.md` | **P0** |
 | 2 | **同步原语 stdlib** | 只有 `Atomic`/`Barrier`；缺 `Mutex`/`RWLock`/`CondVar`/`Semaphore`/`Once`（pthread 底层已有，低成本） | P1 |
 | 3 | **错误类型分层 / `Result<T,E>`** | 只有 `try/catch`，无自定义错误类型体系 / 值式错误传播 | P1 |
 | 4 | **反射 / RTTI** | 无运行时类型查询 | P2（远期） |

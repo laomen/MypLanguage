@@ -62,6 +62,20 @@
     `var_class_map_` 注册使 `c.method()` 精确解析到具体实例类）。
   - `tests/assoc_types`（基本引用 + 泛型 T::Item + 关联类型参数/返回）+ 负测试。
   - 全库回归：146/146（`-O0` + ASAN）。
+  - **class 实例 ARC（§五-1，M-ARC-1，additive 无新语法）**：自动引用计数回收中寿命对象。
+    - 对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节）；`myp_alloc_object/retain/release/
+      free_object`；每类销毁桩 `__myp_destroy_<Class>`（级联释放类/接口引用字段）+ 按
+      type_id 分派的 `__myp_release_table`（ExternalLinkage，运行时按需读取）。
+    - 插桩：作用域退出释放局部类/接口引用槽（参数/`this` 借用不释放）；函数返回
+      **retain-at-return**（借用返回/新对象均覆盖，调用方转移接管）；赋值 retain-new
+      （fresh new/call 转移）release-old（自赋值安全）；属性存储（`this.prop`/裸 `prop`/
+      静态属性/映射全局）retain；`slice<T>` 类元素 retain/release；`var x = new` 归槽。
+    - 修复潜在 bug：类结构体**两遍构建**（自/交叉类属性引用解析为 ptr，原为 i32 致
+      指针字段损坏，ARC 测试暴露）；`myp_release` free 前缓存 rc（原 free 后读头 → UAF）。
+    - 诊断：`Memory.liveObjectCount()`（当前线程存活实例数）。
+    - `tests/arc`（生命周期/级联/自赋值/借用返回/循环不累积）；全库回归 147/147（-O0+ASAN）。
+    - **M-ARC-2 待办**：异常/throw-catch 展开释放、`T[]` 数组元素、`@thread`/协程帧释放、
+      `@region` 逃逸简化整合。设计见 `docs/arc.md`。
   - **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
   - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
     退出码；args 透传（`main(argc,argv)`/构造器）。
