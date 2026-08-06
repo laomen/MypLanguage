@@ -81,7 +81,7 @@ byte short int long ubyte ushort uint ulong char float double bool string
 
 ```
 Type          ::= BasicType TypeSuffix? | ClassType TypeArgList? TypeSuffix?
-                | FunctionType | 'var'
+                | FunctionType | TupleType | 'var'
 BasicType     ::= 'byte' | 'short' | 'int' | 'long'
                 | 'ubyte' | 'ushort' | 'uint' | 'ulong'
                 | 'char' | 'float' | 'double' | 'bool' | 'string' | 'void'
@@ -89,12 +89,16 @@ ClassType     ::= Identifier
 TypeArgList   ::= '<' Type (',' Type)* '>'
 TypeSuffix    ::= '[' IntegerLiteral? ']'   // 数组；'[]' 动态，'[N]' 定长
 FunctionType  ::= '(' (Type (',' Type)*)? ')' '->' ReturnType
+TupleType     ::= '(' Type (',' Type)+ ')'   // 元组；≥2 元素（含尾逗号）
 ```
 
 > `slice<T>` 为内置切片类型（`{ T* data; int64 len }`，运行时长度，见 [slice.md](slice.md)）；
 > 经 `ClassType TypeArgList?` 语法解析（如 `slice<double>`），`new slice<T>(n)` 创建。
 
 > `var` 类型由编译器推断（仅局部变量声明可用）。
+
+> **元组/函数类型消歧**：`(A, B) -> R` 为函数类型（`->` 后必须有返回类型）；
+> `(A, B)` 为元组类型（顶层逗号 + `)` 后非 `->`）；`(int)` 仍是普通括号类型。
 
 ### 2.1 类型别名（additive，v1.0+）
 
@@ -133,6 +137,45 @@ Option<int> some = new Option<int>(42);
 int? maybe = new Option<int>(7);   // T? 语法糖（类型位置）
 int v = maybe.getOr(0);            // 安全取用
 ```
+
+### 2.3 元组类型（additive，v1.0+）
+
+- **语法**：`(Type, Type, ...)`，≥2 元素（含尾逗号）；元素可为任意类型（含嵌套元组）。
+- **字面量**：`(expr, expr, ...)`（顶层逗号）；`(x)` 仍是括号表达式。
+- **多值返回**：`(int, string) f() { return (1, "x"); }`。
+- **解构**：声明式 `(int a, string b) = f();`、赋值式 `(a, b) = f();`（变量须已声明）、
+  嵌套 `((int p, int q), int z) = g();`。
+- **字段访问**：`t.0`/`t.1`（编译期常量索引，越界编译报错）。
+- **消歧**：函数类型有 `->`；`(a, b) => ...` 是 lambda（FatArrow）；`(int, int) a = ...`
+  是元组类型变量声明（`)` 后是变量名）。
+
+```myp
+(int, string) getPair() { return (1, "x"); }
+(int a, string b) = getPair();      // 声明式解构 → a=1, b="x"
+(int, int) t = (3, 4);
+int c = t.0;                        // 字段访问 → 3
+int x; int y;
+(x, y) = getPair() ...;             // 赋值式解构（y 为 string 时报错）
+```
+
+> 设计见 [tuple.md](tuple.md)。
+
+### 2.4 函数类型 / 一等函数（additive，v1.0+）
+
+- **语法**：`(A, B) -> R`；参数可为 0 个 `() -> R`；返回可为 `void`。
+- **一等值**：函数类型变量存**胖指针** `{closure, call_fn}`；lambda 表达式
+  `(params) => { body }` 创建函数值（编译期生成隐藏 class + 统一 tramp）。
+- **捕获**：闭包**按值捕获**外层局部（标量/字符串深拷贝、class 引用浅拷贝、嵌套）。
+- **调用**：函数值变量直接调用 `f(args)`（经 tramp 间接调用）；也可作参数/返回值传递。
+- **高阶泛型**：泛型参数可为函数类型（`(T) -> R`），见 §3.1。
+
+```myp
+(int) -> int add1 = (int x) => { return x + 1; };   // 函数类型变量 + lambda
+int apply2(int v, (int) -> int f) { return f(v); }  // 高阶函数
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }  // 返回闭包（捕获 n）
+```
+
+> 设计见 [function.md](function.md)。
 
 ---
 
@@ -185,13 +228,42 @@ GenericFunction ::= ReturnType Identifier GenericParamList? '(' ParamList? ')' .
 - **调用**：显式类型实参 `foo<int>(5)` 或实参推断 `foo(5)`（T 从参数类型推出；
   支持 `T[]` 参数推元素类型）。推断失败须显式给类型实参。
 - **实现**：按类型实参单态化（`foo_int_inst`），与泛型类同构；模板本身不生成运行时代码。
-- **范围**：顶层函数（泛型方法/静态方法暂不支持，见 `next_improvements.md` §三-6）。
+- **范围**：顶层函数 + **泛型 `@static` 类方法**（`List.map<T,R>`，见 §3.2）。
+  泛型实例方法暂不支持（见 `next_improvements.md` §三-6）。
 
 ```myp
 T id<T>(T x) { return x; }
 T max2<T>(T a, T b) { if (a > b) return a; return b; }
 int a = id<int>(5);    // 显式
 int b = id(7);         // 推断 → T=int
+```
+
+### 3.2 泛型 `@static` 类方法（additive，v1.0+）
+
+```
+GenericStaticMethod ::= Annot? ReturnType Identifier GenericParamList? '(' ParamList? ')' Block?
+```
+
+- **声明**：`@static class List { static: Option<R> map<T,R>(...) { ... } }`——
+  `static:` 段内方法名后可带类型参数；方法体共享，`T`/`R` 作占位符。
+- **调用**：`List.map<int, string>(...)`（显式）或实参推断；单态化实例名为
+  `__gs_<Class>_<method>_<types>_inst`。
+- **跨模块**：`@static class` 顶层可见 → 泛型静态方法可在 stdlib 定义、任意模块调用
+  （`map`/`filter`/`reduce` 落位）。
+- **约束**：泛型静态方法无 `this`；模板本身不生成运行时代码（仅实例生成）。
+
+```myp
+@static class List {
+    static:
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+}
+// 调用（跨模块）
+Option<int> some = new Option<int>(5);
+Option<string> m = List.map<int, string>(some, (int x) => { return "v" + x; });
 ```
 
 ---
@@ -208,7 +280,8 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'interface' 'class' Identifier ';' // 声明实现某接口
                    | 'const' Type Identifier '=' Expression ';'  // class 顶层 const（等价 property 段 const）
 
-ActionDecl       ::= Annot? ReturnType Identifier '(' ParamList? ')' Block? ';'?
+ActionDecl       ::= Annot? ReturnType Identifier GenericParamList? '(' ParamList? ')' Block? ';'?
+                   // 类型参数仅对 static: 段内方法有效（泛型静态方法，§3.2）
 ActionAnnot      ::= '@' 'startup' | '@' 'constructor' | '@' 'test' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )? | '@' 'region'
 FuncAnnot        ::= '@' 'test' | '@' 'region' | '@' 'coro' ( '(' 'stack' '=' Integer ')' )?   // 顶层 @coro 协程函数
 EventDecl        ::= Identifier '(' ParamList? ')' ';'
@@ -240,6 +313,11 @@ VarDeclStmt      ::= Type VarDeclarator (',' VarDeclarator)* ';'
                    | 'const' Type Identifier ('=' Expression)? ';'
 VarDeclarator    ::= Identifier ('=' Expression)? VarAnnot?
 VarAnnot         ::= '@' 'thread' | '@' 'threadpool'
+
+DestructureStmt  ::= '(' DestructureTarget (',' DestructureTarget)+ ')' '=' Expression ';'
+DestructureTarget ::= Type? Identifier                      // 叶子：可选类型（声明式）
+                    | '(' DestructureTarget (',' DestructureTarget)* ')'  // 嵌套元组
+                 // 声明式解构（叶子带类型）声明新变量；赋值式解构（无类型）写入已有变量
 
 IfStmt           ::= 'if' '(' Expression ')' Stmt ('else' Stmt)?
 WhileStmt        ::= 'while' '(' Expression ')' Stmt
@@ -310,6 +388,7 @@ Postfix          ::= Primary PostfixOp*
 PostfixOp        ::= '(' ArgumentList? ')'        // 调用
                    | '[' Expression ']'           // 下标
                    | '.' Identifier               // 成员访问
+                   | '.' IntegerLiteral           // 元组字段访问 t.0（编译期索引）
                    | '++' | '--'                  // 后缀增减
 
 Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
@@ -317,10 +396,12 @@ Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
                    | 'this'
                    | Identifier                    // 变量 / 类名 / 枚举变体
                    | '(' Expression ')'
+                   | TupleLiteral                  // (a, b, …)：顶层逗号
                    | 'new' ClassType TypeArgList? '(' ArgumentList? ')'
                    | 'new' Type '[' Expression ']' ( '[' Expression ']' )*
                    | LambdaExpression
 
+TupleLiteral     ::= '(' Expression (',' Expression)+ ')'   // ≥2 元素（含尾逗号）
 LambdaExpression ::= '(' ParamList? ')' '=>' '{' Stmt* '}'   // FatArrow '=>'
 ArgumentList     ::= Expression (',' Expression)*
 ```

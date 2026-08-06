@@ -218,6 +218,64 @@ ClassName obj;          // 类类型 (指针)
 ClassName::StructType;  // 嵌套 struct 类型
 ```
 
+### 类型别名 `type X = ...`（v3.x，additive）
+
+`type Name = Type;` 为类型起别名，`Name` 可在后续任何类型位置使用（参数/返回/
+属性/局部变量/泛型实参/数组元素），完全等价于 `Type`。`type` 是**上下文关键字**，
+仅顶层 `type <Id> = <Type> ;` 形态被识别为声明。
+
+```myp
+type MyInt = int;
+type Int3 = int[3];
+type AliasAlias = MyInt;       // 别名套别名
+
+MyInt x = 42;                  // ≡ int x = 42;
+```
+
+### 元组类型 (v3.x，additive)
+
+`(Type, Type, ...)` ≥2 元素；支持**多值返回**、**解构**、**字段访问 `t.N`**。
+
+```myp
+// 多值返回
+(int, string) getPair() { return (1, "x"); }
+
+// 声明式解构
+(int a, string b) = getPair();          // a=1, b="x"
+
+// 元组变量 + 字段访问
+(int, int) t = (3, 4);
+int c = t.0;                            // 3
+
+// 赋值式解构（变量须已声明）
+int x; int y;
+(x, y) = getPair();                     // x=1, y="x"
+
+// 嵌套解构
+((int p, int q), int z) = ((1, 2), 5);  // p=1, q=2, z=5
+```
+
+> 与函数类型 `(A, B) -> R`、lambda `(a, b) => ...` 自动消歧；设计见 `docs/tuple.md`。
+
+### 可空类型 `Option<T>` / `T?`（v3.x，additive）
+
+显式可空包装避免裸 `null` 解引用。需 `import option;`。
+
+```myp
+import option;
+Option<int> none = new Option<int>();      // none
+Option<int> some = new Option<int>(42);    // some
+int? maybe = new Option<int>(7);           // T? ≡ Option<T>（类型位置）
+if (some.isSome()) {
+    int v = some.get();                    // 42（先 isSome 再 get）
+}
+int safe = maybe.getOr(0);                 // 安全取用（none → 默认值）
+some.set(9);
+some.clear();                              // 变回 none
+```
+
+> API：`isSome()`/`isNone()`/`get()`/`getOr(def)`/`set(v)`/`clear()`。
+
 ---
 
 ## 4. 控制流
@@ -456,6 +514,48 @@ int main() {
 
 > **原则**：main 只做"接线"，不做"操作"。所有逻辑在组件的 action/function 中实现。
 
+### 泛型函数 (v3.x，additive)
+
+函数名后可带类型参数 `T foo<T>(T x)`；调用时**显式类型实参**或**实参推断**。
+
+```myp
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+
+int a = id<int>(5);    // 显式
+int b = id(7);         // 推断 → T=int
+string s = id("hi");   // T=string
+```
+
+- 泛型函数按类型实参**单态化**（`id_int_inst`），模板本身不生成运行时代码。
+- 支持 `T[]` 参数推元素类型；推断失败须显式给类型实参。
+
+### 一等函数与闭包 (v3.x，additive)
+
+函数类型 `(A, B) -> R` 是一等值：可存变量、作参数/返回值、直接调用。lambda
+`(params) => { body }` 创建函数值（**按值捕获**外层局部）。
+
+```myp
+// 函数类型变量 + lambda
+(int) -> int add1 = (int x) => { return x + 1; };
+int r = add1(41);                       // 42
+
+// 高阶函数：函数值作参数
+int apply2(int v, (int) -> int f) { return f(v); }
+int r2 = apply2(10, (int x) => { return x * 2; });   // 20
+
+// 函数返回闭包（捕获参数 n）
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
+(int) -> int add5 = makeAdder(5);
+int r3 = add5(3);                       // 8
+
+// 泛型高阶：Option.map 式组合
+Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) { ... }
+```
+
+- 运行时表示：胖指针 `{closure, call_fn}` + 统一 tramp。
+- 捕获：标量/字符串**深拷贝**、class 引用**浅拷贝**（共享实例）、支持嵌套 lambda。
+
 ---
 
 ## 6. Class 组件系统
@@ -563,6 +663,30 @@ int main() {
     return 0;
 }
 ```
+
+#### 泛型静态方法（v3.x，additive）
+
+`static:` 段内方法名后可带类型参数——**泛型静态方法**：模板在 stdlib/`@static class`
+中定义，任意模块调用（`map`/`filter`/`reduce` 落位）。
+
+```myp
+@static class List {
+    static:
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) { ... }
+}
+
+// 调用（跨模块）：显式类型实参 + 一等函数实参
+Option<int> some = new Option<int>(5);
+Option<string> m = List.map<int, string>(some, (int x) => { return "v" + x; });
+```
+
+- 单态化实例名 `__gs_<Class>_<method>_<types>_inst`；模板本身不生成运行时代码。
+- 泛型静态方法无 `this`；支持显式类型实参与实参推断。
 
 ---
 
@@ -1144,6 +1268,25 @@ Console.readString();           // 从 stdin 读一行
 Console.kbhit();                // 非阻塞键盘检测
 Console.getch();                // 非阻塞读一个字符
 ```
+
+### `import option` — 可空容器（v3.x）
+
+显式可空包装 `Option<T>`：`Option()`=none、`Option(T v)`=some。
+
+```myp
+import option;
+Option<int> none = new Option<int>();
+Option<int> some = new Option<int>(42);
+int? maybe = new Option<int>(7);       // T? ≡ Option<T>（类型位置）
+if (some.isSome()) {
+    int v = some.get();                // 42
+}
+int safe = maybe.getOr(0);             // none → 默认值
+some.set(9);
+some.clear();                          // 变回 none
+```
+
+> 与元组/一等函数组合：`Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f)`（见 §5 一等函数）。
 
 ### `import collections` — 集合类型
 

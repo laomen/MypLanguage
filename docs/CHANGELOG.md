@@ -28,6 +28,25 @@
 ## 编译器版本历史
 
 ### v3.9.0（当前）
+- **§三 类型系统增强（additive）**：
+  - **类型别名 `type X = ...`**：上下文关键字（仅顶层 `type <Id> = <Type> ;` 形态），
+    别名可在任何类型位置使用、支持别名套别名、递归别名编译报错。`tests/typealias` + 负测试。
+  - **`Option<T>` 可空容器 + `T?` 语法糖**：stdlib `option.myp`（`Option()`=none /
+    `Option(T v)`=some + `isSome/isNone/get/getOr/set/clear`）；`Type?` ≡ `Option<Type>`
+    （类型位置）。`tests/option`。
+  - **泛型函数 `T foo<T>(T x)`**：显式类型实参或实参推断（含 `T[]` 推元素类型）；
+    按类型实参单态化（`foo_int_inst`），模板不生成运行时代码。`tests/generic_func`。
+  - **一等函数与闭包（M-FN-1/2/3）**：函数类型 `(A,B)->R`（胖指针 `{closure, call_fn}` +
+    统一 tramp）；lambda 按值捕获（标量/字符串深拷贝、class 引用浅拷贝、嵌套、上下文类型
+    推断）；命名 lambda `fn name(...) =>` 递归；泛型高阶函数 `mapOpt`/`foldInt` + `Option.map`。
+    设计见 `docs/function.md`；`tests/function`。
+  - **元组 + 解构（TUP-1/2）**：元组类型 `(int, string)` + 字面量 + **多值返回** +
+    声明式/赋值式/嵌套解构 + 字段访问 `t.N`；与函数类型/lambda/元组变量声明四路消歧。
+    设计见 `docs/tuple.md`；`tests/tuple` + 3 负测试。
+  - **泛型 `@static` 类方法（M-FN-3 stdlib 落位）**：`static:` 段方法名后带类型参数
+    （`List.map<T,R>`），跨模块可见；`resolveGenericStaticCall` 单态化到 `tu.functions`
+    （`__gs_<Class>_<method>_<types>_inst`）。`tests/generic_static`。
+  - 全库回归：141/141（`-O0` + ASAN）。
 - **类构造器（M1-M4，additive）**：`@constructor` 注解 + **函数名==类名隐式构造器**。
   - M1 语法 + AST：`parseActionDecl`/`parseFunction` 识别 `@constructor`；`@constructor`
     构造器**无返回类型**（`@constructor Window(...)`，不写 `void`）且名称**必须==类名**

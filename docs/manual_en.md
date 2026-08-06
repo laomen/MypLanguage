@@ -210,6 +210,65 @@ ClassName obj;          // Class type (pointer)
 ClassName::StructType;  // Nested struct type
 ```
 
+### Type Alias `type X = ...` (v3.x, additive)
+
+`type Name = Type;` aliases a type; `Name` can be used anywhere a type is expected.
+`type` is a **contextual keyword** — only the top-level `type <Id> = <Type> ;` shape is a declaration.
+
+```myp
+type MyInt = int;
+type Int3 = int[3];
+type AliasAlias = MyInt;       // alias of alias
+
+MyInt x = 42;                  // ≡ int x = 42;
+```
+
+### Tuple Types (v3.x, additive)
+
+`(Type, Type, ...)` with ≥2 elements; supports **multi-value returns**, **destructuring**,
+and **field access `t.N`**.
+
+```myp
+// Multi-value return
+(int, string) getPair() { return (1, "x"); }
+
+// Declarative destructuring
+(int a, string b) = getPair();          // a=1, b="x"
+
+// Tuple variable + field access
+(int, int) t = (3, 4);
+int c = t.0;                            // 3
+
+// Assignment destructuring (variables must already exist)
+int x; int y;
+(x, y) = getPair();                     // x=1, y="x"
+
+// Nested destructuring
+((int p, int q), int z) = ((1, 2), 5);  // p=1, q=2, z=5
+```
+
+> Disambiguated from function types `(A, B) -> R` and lambdas `(a, b) => ...`;
+> see `docs/tuple.md`.
+
+### Nullable `Option<T>` / `T?` (v3.x, additive)
+
+Explicit nullable wrapper avoiding bare `null` dereferences. Requires `import option;`.
+
+```myp
+import option;
+Option<int> none = new Option<int>();      // none
+Option<int> some = new Option<int>(42);    // some
+int? maybe = new Option<int>(7);           // T? ≡ Option<T> (type position)
+if (some.isSome()) {
+    int v = some.get();                    // 42 (check isSome before get)
+}
+int safe = maybe.getOr(0);                 // safe access (default when none)
+some.set(9);
+some.clear();                              // back to none
+```
+
+> API: `isSome()`/`isNone()`/`get()`/`getOr(def)`/`set(v)`/`clear()`.
+
 ---
 
 ## 4. Control Flow
@@ -462,6 +521,53 @@ int main() {
 
 > **Principle**: main() does only "wiring", not "operations". All logic lives in class actions/functions.
 
+### Generic Functions (v3.x, additive)
+
+A function name can carry type parameters `T foo<T>(T x)`; calls use **explicit type
+arguments** or **argument inference**.
+
+```myp
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+
+int a = id<int>(5);    // explicit
+int b = id(7);         // inferred → T=int
+string s = id("hi");   // T=string
+```
+
+- Generic functions are **monomorphized** per type argument (`id_int_inst`); the
+  template itself emits no runtime code.
+- `T[]` parameters infer the element type; on inference failure, explicit type
+  arguments are required.
+
+### First-Class Functions & Closures (v3.x, additive)
+
+Function types `(A, B) -> R` are first-class values: assignable, passable as
+arguments/returns, directly callable. Lambdas `(params) => { body }` create function
+values that **capture by value**.
+
+```myp
+// Function-type variable + lambda
+(int) -> int add1 = (int x) => { return x + 1; };
+int r = add1(41);                       // 42
+
+// Higher-order: function value as argument
+int apply2(int v, (int) -> int f) { return f(v); }
+int r2 = apply2(10, (int x) => { return x * 2; });   // 20
+
+// Function returning a closure (captures n)
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
+(int) -> int add5 = makeAdder(5);
+int r3 = add5(3);                       // 8
+
+// Generic higher-order: Option.map-style composition
+Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) { ... }
+```
+
+- Runtime representation: fat pointer `{closure, call_fn}` + uniform tramp.
+- Capture: scalars/strings are **deep-copied**, class references **shallow-copied**
+  (shared instance); nested lambdas supported.
+
 ### main(argc, argv) (v2+)
 
 ```myp
@@ -554,6 +660,33 @@ int main() {
     return 0;
 }
 ```
+
+#### Generic Static Methods (v3.x, additive)
+
+Methods in the `static:` section can carry type parameters — **generic static
+methods**: templates are defined in stdlib/`@static class` and callable from any
+module (enables `map`/`filter`/`reduce`).
+
+```myp
+@static class List {
+    static:
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) { ... }
+}
+
+// Cross-module call: explicit type arguments + first-class function argument
+Option<int> some = new Option<int>(5);
+Option<string> m = List.map<int, string>(some, (int x) => { return "v" + x; });
+```
+
+- Monomorphized instance name `__gs_<Class>_<method>_<types>_inst`; the template
+  itself emits no runtime code.
+- Generic static methods have no `this`; support explicit type arguments and
+  argument inference.
 
 ### Interface Support (v2+)
 
@@ -870,6 +1003,25 @@ Console.readString();           // Read line from stdin
 Console.kbhit();                // Non-blocking key check
 Console.getch();                // Non-blocking read character
 ```
+
+### `import option` — Nullable Container (v3.x)
+
+Explicit nullable wrapper `Option<T>`: `Option()`=none, `Option(T v)`=some.
+
+```myp
+import option;
+Option<int> none = new Option<int>();
+Option<int> some = new Option<int>(42);
+int? maybe = new Option<int>(7);       // T? ≡ Option<T> (type position)
+if (some.isSome()) {
+    int v = some.get();                // 42
+}
+int safe = maybe.getOr(0);             // default when none
+some.set(9);
+some.clear();                          // back to none
+```
+
+> Combines with tuples/first-class functions: `Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f)`.
 
 ### `import collections` — Collection Types
 
