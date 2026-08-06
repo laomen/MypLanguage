@@ -33,7 +33,7 @@
 | 2 | ~~**元组 + 解构**~~ | ✅ **已实施（additive）**：元组类型 `(int, string)` + 字面量 `(1, "x")` + 多值返回 `(A,B) f()` + 声明式解构 `(A a, B b) = f()` / 赋值式解构 `(a, b) = f()` / 嵌套解构 + 字段访问 `t.N`。括号消歧（函数类型 `(A,B)->R` 有 `->`；元组顶层逗号 + `)` 后非 `->`；`(a,b)=>{}` 为 lambda）。`tests/tuple` + 负测试。**待办**：`_` 忽略符、元组方法（v2） | 表达力质变（多值返回/模式解构） | 中 | P1 |
 | 3 | **一等函数 / 闭包** | 设计见 `docs/function.md`。**M-FN-1/M-FN-2/M-FN-3 已实施**：函数类型 `(A,B)->R` + lambda 一等函数值（fat pointer `{closure, call_fn}` + tramp）+ 存/传/返/调用 + **按值捕获**（标量/字符串深拷贝、class 引用浅拷贝、嵌套、上下文类型推断）+ **泛型高阶函数**（`mapOpt`/`foldInt`：泛型参数 + 一等函数实参，泛型函数模板与类占位符延迟单态化）+ **`Option.map`** + **泛型 `@static` 类方法**（`List.map<T,R>` stdlib 落位）。`tests/function` + `tests/generic_static` | 高阶函数（map/filter/reduce 可落地） | 中 | P1 |
 | 4 | ~~**类型别名 `type X = ...`**~~ | ✅ **已实施**（上下文关键字，仅顶层 `type <Id> = <Type>;` 形态识别，`type` 仍可作标识符；parser 解析时替换 + sema 兜底递归检测；`tests/typealias` 正 + 负） | 可读性 | 小 | P2 |
-| 5 | **trait 默认实现 / 关联类型** | 有 `interface` + `where T:Interface` | 泛型能力 | 中 | P2 |
+| 5 | ~~**trait 默认实现 / 关联类型**~~ | ✅ **默认实现已实施（additive）**：接口方法**带默认体** → 实现类可省略，虚表回退默认函数（按类特化 `__ifdef_<Iface>_<method>_<Class>`，`this` 绑定具体类，默认体内 `this.method()`/裸方法调用静态解析到类方法，默认调默认也支持）；类覆盖则用覆盖；纯签名方法仍强制实现（负测试）。`tests/interface_default`。**待办**：**关联类型**（`type Item` 由实现类绑定）——需泛型约束 `where T:I` 与 `T.Item` 解析，留作后续 | 泛型能力 | 中 | P2 |
 | 6 | ~~**泛型方法推断**~~ | ✅ **已实施（additive）**：泛型**顶层函数** `T foo<T>(...)`——显式类型实参 `foo<int>(x)` + 实参推断 `foo(x)`（含 `T[]` 元素推断）；按实参单态化（`foo_int_inst`）与泛型类同构；调用点 `<Type,..>(` 用**诊断-free 令牌扫描**消歧（不误伤 `E < energies[mid]` 比较）。泛型方法/静态方法暂缓。`tests/generic_func` | 泛型函数 | 中 | P2 |
 
 ## 四、语法 / 表达层

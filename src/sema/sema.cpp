@@ -229,6 +229,8 @@ void Sema::checkInterfaceImpl(const ClassDecl& cls) {
     }
     // Check all interface actions exist in the class
     for (auto& ia : iface->actions) {
+        // 默认实现（trait 默认方法）：接口方法带 body → 类可省略，虚表回退默认
+        if (ia.body) continue;
         bool found = false;
         for (auto& ca : cls.actions) {
             if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) {

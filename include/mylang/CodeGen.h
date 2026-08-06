@@ -376,6 +376,15 @@ private:
     void createClassActionDecl(const ClassDecl& cls, const ActionDecl& action);
     void createStaticActionDecl(const ClassDecl& cls, const ActionDecl& action);
     void createClassFunctionDecl(const ClassDecl& cls, const FuncDecl& fn);
+    // trait 默认实现（§三-5）：接口方法带默认体 → 按实现类特化的默认函数
+    // `__ifdef_<Iface>_<method>_<Class>`（this 绑定具体类，this.method() 静态解析）
+    void createClassDefaultDecl(const ClassDecl& cls, const InterfaceDecl& iface, const ActionDecl& action);
+    void generateClassDefaultAction(const ClassDecl& cls, const InterfaceDecl& iface, const ActionDecl& action);
+    // trait 默认函数名：__ifdef_<Iface>_<method>_<Class>
+    std::string ifaceDefaultName(const std::string& iface, const std::string& method,
+                                 const std::string& cls);
+    // 查找类未覆盖的接口默认函数（无 → nullptr）
+    llvm::Function* findInterfaceDefault(const std::string& cls_name, const std::string& method);
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);

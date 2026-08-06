@@ -1,0 +1,10 @@
+// EXPECT ERROR: interface signature-only method must be implemented (default body doesn't excuse it)
+interface I {
+    int mustImplement();
+    int optional() { return 1; }
+}
+class C {
+    interface class I;
+    action:
+        // 缺 mustImplement() → 必须实现；optional() 可省略（有默认体）
+}

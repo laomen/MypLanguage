@@ -628,6 +628,23 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             createClassFunctionDecl(cls, fn);
     }
 
+    // trait 默认实现：预声明接口默认方法（按实现类特化），使虚表构建时能找到。
+    for (auto& cls : tu.classes) {
+        if (cls.interface_class_name.empty() || cls.is_generic_inst) continue;
+        const InterfaceDecl* iface = nullptr;
+        for (auto& ifd : tu.interfaces)
+            if (ifd.name == cls.interface_class_name) { iface = &ifd; break; }
+        if (!iface) continue;
+        for (auto& ia : iface->actions) {
+            if (!ia.body) continue;
+            bool has = false;
+            for (auto& ca : cls.actions)
+                if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) { has = true; break; }
+            if (has) continue;   // 类已覆盖 → 不需要默认
+            createClassDefaultDecl(cls, *iface, ia);
+        }
+    }
+
     // Create ALL event fire function declarations
     for (auto& cls : tu.classes) {
         for (auto& ev : cls.events) {
@@ -803,6 +820,9 @@ void CodeGen::generateErrorVTables() {
             for (auto& ia : error_iface->actions) {
                 std::string fn = cls.name + "_" + ia.name;
                 auto* callee = module_->getFunction(fn);
+                // trait 默认实现：类未实现但接口方法带默认体 → 回退默认函数
+                if (!callee && ia.body)
+                    callee = module_->getFunction(ifaceDefaultName(error_iface->name, ia.name, cls.name));
                 func_ptrs.push_back(callee
                     ? llvm::ConstantExpr::getPointerCast(callee, ptr_ty)
                     : llvm::ConstantPointerNull::get(ptr_ty));
@@ -860,6 +880,87 @@ void CodeGen::createStaticActionDecl(const ClassDecl& cls, const ActionDecl& act
     is_static_action_[fn] = true;
 }
 
+// trait 默认实现（§三-5）：接口方法带默认体 → 为省略该方法的实现类生成特化默认函数
+// `__ifdef_<Iface>_<method>_<Class>`。this 绑定具体类，故 `this.method()` 在默认体
+// 内静态解析到 `<Class>_<method>`（无需 vtable 查找）。类必须实现全部无体方法，
+// 由 sema checkInterfaceImpl 保证（默认体引用的抽象方法必存在）。
+std::string CodeGen::ifaceDefaultName(const std::string& iface,
+                                      const std::string& method,
+                                      const std::string& cls) {
+    return "__ifdef_" + iface + "_" + method + "_" + cls;
+}
+
+// 类未覆盖的接口默认方法 → 该类的特化默认函数（无则 nullptr）。
+llvm::Function* CodeGen::findInterfaceDefault(const std::string& cls_name,
+                                              const std::string& method) {
+    if (!current_tu_) return nullptr;
+    const ClassDecl* cls = nullptr;
+    for (auto& c : current_tu_->classes)
+        if (c.name == cls_name) { cls = &c; break; }
+    if (!cls || cls->interface_class_name.empty()) return nullptr;
+    const InterfaceDecl* iface = nullptr;
+    for (auto& ifd : current_tu_->interfaces)
+        if (ifd.name == cls->interface_class_name) { iface = &ifd; break; }
+    if (!iface) return nullptr;
+    for (auto& ia : iface->actions)
+        if (ia.name == method && ia.body)
+            return module_->getFunction(ifaceDefaultName(iface->name, method, cls_name));
+    return nullptr;
+}
+
+void CodeGen::createClassDefaultDecl(const ClassDecl& cls, const InterfaceDecl& iface,
+                                     const ActionDecl& action) {
+    auto fn = ifaceDefaultName(iface.name, action.name, cls.name);
+    if (module_->getFunction(fn)) return;
+    std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)}; // this
+    for (auto& p : action.params)
+        pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+    auto* ft = llvm::FunctionType::get(
+        getLLVMType(typeNodeToCodegenType(action.return_type)), pts, false);
+    llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn, module_.get());
+    is_static_action_[fn] = false;
+}
+
+void CodeGen::generateClassDefaultAction(const ClassDecl& cls, const InterfaceDecl& iface,
+                                         const ActionDecl& action) {
+    std::string fn = ifaceDefaultName(iface.name, action.name, cls.name);
+    auto* func = module_->getFunction(fn);
+    if (!func) return;
+    current_function_ = func;
+    current_class_name_ = cls.name;
+    current_is_coro_ = false;
+    finally_ret_slot_ = nullptr;
+    finally_ctx_stack_.clear();
+    stack_array_sizes_.clear();
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
+    builder_.SetInsertPoint(bb);
+    pushScope();
+    if (debug_mode_) beginFunctionDebug(func, fn, action.range);
+
+    auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
+    builder_.CreateStore(func->getArg(0), this_a);
+    setNamedValue("this", this_a);
+
+    for (size_t i = 0; i < action.params.size(); ++i) {
+        TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
+        auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
+        builder_.CreateStore(func->getArg((unsigned)(i + 1)), a);
+        setNamedValue(action.params[i].name, a);
+        if (action.params[i].type.isArray() && action.params[i].type.element_type)
+            array_elem_types_[action.params[i].name] =
+                getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
+    }
+
+    if (action.body)
+        generateBlock(static_cast<const BlockStmt&>(*action.body));
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+        builder_.CreateRetVoid();
+    }
+    current_is_coro_ = false;
+    popScope();
+    if (debug_mode_) endFunctionDebug();
+}
+
 // Pre-declare a function: section method so its symbol exists before any body
 // references it (cross-calls in the section were previously order-dependent:
 // a method could only call methods declared earlier in the section).
@@ -899,6 +1000,24 @@ void CodeGen::generateClass(const ClassDecl& cls) {
     for (auto& a : cls.static_actions) {
         if (!a.type_params.empty()) continue;
         generateStaticAction(cls, a);
+    }
+
+    // trait 默认实现：类省略了带默认体的接口方法时，生成按类特化的默认函数
+    //（this 绑定本类，默认体内 this.method() 静态解析到 <Class>_<method>）。
+    if (!cls.interface_class_name.empty() && !cls.is_generic_inst) {
+        const InterfaceDecl* iface = nullptr;
+        if (current_tu_)
+            for (auto& ifd : current_tu_->interfaces)
+                if (ifd.name == cls.interface_class_name) { iface = &ifd; break; }
+        if (iface) {
+            for (auto& ia : iface->actions) {
+                if (!ia.body) continue;
+                bool has = false;
+                for (auto& ca : cls.actions)
+                    if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) { has = true; break; }
+                if (!has) generateClassDefaultAction(cls, *iface, ia);
+            }
+        }
     }
 
     // Generate all action bodies (including stdlib intrinsics with no body)
@@ -2415,6 +2534,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                     for (auto& ia : iface->actions) {
                         std::string fn = cls_name + "_" + ia.name;
                         auto* callee = module_->getFunction(fn);
+                        // trait 默认实现：类未实现但接口方法带默认体 → 回退默认函数
+                        if (!callee && ia.body)
+                            callee = module_->getFunction(ifaceDefaultName(iface->name, ia.name, cls_name));
                         if (callee)
                             func_ptrs.push_back(llvm::ConstantExpr::getPointerCast(callee, ptr_ty));
                         else
@@ -2481,6 +2603,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                         for (auto& ia : iface->actions) {
                             std::string fn = cls_name + "_" + ia.name;
                             auto* callee = module_->getFunction(fn);
+                            // trait 默认实现：类未实现但接口方法带默认体 → 回退默认函数
+                            if (!callee && ia.body)
+                                callee = module_->getFunction(ifaceDefaultName(iface->name, ia.name, cls_name));
                             if (callee)
                                 func_ptrs.push_back(llvm::ConstantExpr::getPointerCast(callee, ptr_ty));
                             else
@@ -5428,6 +5553,8 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
             if (vit != var_class_map_.end()) {
                 std::string fn = vit->second + "_" + ma.member_name;
                 callee = module_->getFunction(fn);
+                // trait 默认实现：类未覆盖但接口方法带默认体 → 用本类默认函数
+                if (!callee) callee = findInterfaceDefault(vit->second, ma.member_name);
                 if (callee) {
                     mthis = generateExpr(*ma.object);
                     is_method = true;
@@ -5622,6 +5749,8 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
         if (!best_class.empty()) {
             callee = module_->getFunction(best_class + "_" + ma.member_name);
+            // trait 默认实现：类未覆盖但接口方法带默认体 → 用本类默认函数
+            if (!callee) callee = findInterfaceDefault(best_class, ma.member_name);
             if (callee) {
                 // Check if this is a static method
                 std::string fn_name = best_class + "_" + ma.member_name;
@@ -5633,6 +5762,16 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     // Static action: no mthis, and the object is a class name
                     // Don't try to evaluate it as an expression
                 }
+                is_method = true;
+            }
+        }
+        // 显式 this.method()：best_class 未找到时回退本类接口默认
+        if (!callee && ma.object->kind == ExprKind::ThisExpr && !current_class_name_.empty()) {
+            callee = findInterfaceDefault(current_class_name_, ma.member_name);
+            if (callee) {
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = builder_.CreateLoad(
+                    llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
                 is_method = true;
             }
         }
@@ -5855,6 +5994,16 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 }
             }
             found_bare_method:;
+        }
+        // 裸方法调用 = this.method()（trait 默认实现兜底）：类未覆盖的接口默认方法
+        if (!callee && !current_class_name_.empty()) {
+            callee = findInterfaceDefault(current_class_name_, id.name);
+            if (callee) {
+                is_method = true;
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = builder_.CreateLoad(
+                    llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+            }
         }
     }
     if (!callee) {

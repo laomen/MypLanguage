@@ -198,7 +198,7 @@ StructField      ::= Type Identifier ('=' Expression)? ';'      // 属性
                    | ReturnType Identifier '(' ParamList? ')' '{' Stmt* '}'  // 方法
 
 InterfaceDecl    ::= 'interface' Identifier '{' InterfaceMember* '}'
-InterfaceMember  ::= (返回类型 Identifier '(' ParamList? ')' ';')   // 动作签名
+InterfaceMember  ::= (返回类型 Identifier '(' ParamList? ')' (';' | Block))  // 动作：签名 或 默认实现（v1.0+，additive）
                    | ('event' Identifier '(' ParamList? ')' ';')
 
 MappingDecl      ::= 'mapping' '(' ')' MappingAnnot? '{' MappingChain+ '}'

@@ -713,6 +713,51 @@ class FileLogger {
 // are implemented by the class. Missing members cause a compile error.
 ```
 
+#### Default Methods (trait default implementation, v3.9.0, additive)
+
+Interface methods may carry a **default body** — implementing classes that **omit** the
+method inherit the default logic; overriding classes use their own:
+
+```myp
+interface IShape {
+    double area();                       // signature-only → must be implemented
+    double perimeter();
+    string describe() {                  // default body → may be omitted
+        return "area=" + area() + " perim=" + perimeter();
+    }
+}
+
+class Circle {
+    interface class IShape;
+    action:
+        double area() { return 3.14 * r * r; }
+        double perimeter() { return 2 * 3.14 * r; }
+        // no describe() → IShape.describe default is used (this.area → Circle_area)
+    property: double r = 1.0;
+}
+
+class Square {
+    interface class IShape;
+    action:
+        double area() { return side * side; }
+        double perimeter() { return 4 * side; }
+        string describe() { return "SQUARE(" + area() + ")"; }  // overrides default
+    property: double side = 3.0;
+}
+
+IShape c = new Circle();   IShape s = new Square();
+c.describe();   // "area=3.14 perim=6.28" (default; this.area dispatches to Circle)
+s.describe();   // "SQUARE(9)" (Square override)
+```
+
+- **Semantics**: default methods are **specialized per class** (`__ifdef_<Iface>_<method>_<Class>`);
+  inside the default body, `this.method()` / bare method calls resolve **statically to that
+  concrete class**. A default calling another default method is also supported.
+- **Constraint**: signature-only (no default body) interface methods **must** be implemented;
+  this guarantees the abstract methods a default body references always exist.
+- **Value**: adding a method to an interface doesn't break existing implementers (they get
+  the default); shared composed logic lives in the interface itself.
+
 ---
 
 ## 7. Struct Data Type

@@ -616,6 +616,47 @@ double a = s.area();        // 虚表分派 → Circle_area
 
 适合算子模式实现自动微分（见 `examples/ad.myp`）。
 
+#### 默认实现（trait 默认方法，v3.9.0，additive）
+
+接口方法可以**带默认体**——实现类**省略该方法**时自动继承默认逻辑，实现则覆盖：
+
+```myp
+interface IShape {
+    double area();                       // 纯签名 → 实现类必须实现
+    double perimeter();
+    string describe() {                  // 默认实现 → 实现类可省略
+        return "area=" + area() + " perim=" + perimeter();
+    }
+}
+
+class Circle {
+    interface class IShape;
+    action:
+        double area() { return 3.14 * r * r; }
+        double perimeter() { return 2 * 3.14 * r; }
+        // 未写 describe() → 用 IShape.describe 默认实现（this.area → Circle_area）
+    property: double r = 1.0;
+}
+
+class Square {
+    interface class IShape;
+    action:
+        double area() { return side * side; }
+        double perimeter() { return 4 * side; }
+        string describe() { return "SQUARE(" + area() + ")"; }  // 覆盖默认
+    property: double side = 3.0;
+}
+
+IShape c = new Circle();   IShape s = new Square();
+c.describe();   // "area=3.14 perim=6.28"（默认，内部 this.area 分派到 Circle）
+s.describe();   // "SQUARE(9)"（Square 覆盖）
+```
+
+- **语义**：默认方法按实现类**特化**（`__ifdef_<Iface>_<method>_<Class>`），体内
+  `this.method()` / 裸方法调用**静态解析到该具体类**；默认方法调用另一个默认方法也支持。
+- **约束**：纯签名（无默认体）的接口方法实现类**必须**实现；默认体引用的抽象方法由此保证存在。
+- **价值**：给接口**新增方法**不破坏已有实现类（自动获得默认行为）；公共组合逻辑写在接口里。
+
 ### 访问控制
 
 ```myp
