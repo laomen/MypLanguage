@@ -316,6 +316,16 @@ ActionDecl Parser::parseActionDecl() {
     } else {
         decl.return_type = parseType();
         decl.name = parseIdentifier("expected action name");
+        // Generic static method type params: List.map<T, U>(...)
+        if (match(TokenKind::Less)) {
+            if (check(TokenKind::Identifier)) {
+                decl.type_params.push_back(parseIdentifier("expected type parameter name"));
+                while (match(TokenKind::Comma)) {
+                    decl.type_params.push_back(parseIdentifier("expected type parameter name"));
+                }
+            }
+            consume(TokenKind::Greater, "expected '>' after generic type parameters");
+        }
     }
 
     consume(TokenKind::LeftParen, "expected '(' after action name");
@@ -1678,11 +1688,12 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
     auto expr = parsePrimary();
 
     while (true) {
-        // Generic call: foo<int>(args) — probe with a diagnostic-free token scan
-        // (parseType can emit spurious errors on `E < energies[mid]` etc. when
-        // the probe fails, so we must not call it during lookahead).
-        if (expr->kind == ExprKind::Identifier && check(TokenKind::Less) &&
-            scanGenericTypeArgs()) {
+        // Generic call: foo<int>(args) or ClassName.method<T>(args) — probe with
+        // a diagnostic-free token scan (parseType can emit spurious errors on
+        // `E < energies[mid]` etc. when the probe fails, so we must not call it
+        // during lookahead).
+        if ((expr->kind == ExprKind::Identifier || expr->kind == ExprKind::MemberAccess) &&
+            check(TokenKind::Less) && scanGenericTypeArgs()) {
             std::vector<TypeNode> targs;
             advance(); // consume '<'
             targs.push_back(parseType());

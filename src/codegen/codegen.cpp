@@ -845,6 +845,9 @@ void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& acti
 }
 
 void CodeGen::createStaticActionDecl(const ClassDecl& cls, const ActionDecl& action) {
+    // Generic static method templates (List.map<T,R>) are not emitted directly;
+    // only their monomorphized instances (appended to tu.functions by sema) are.
+    if (!action.type_params.empty()) return;
     auto fn = cls.name + "_" + action.name;
     if (module_->getFunction(fn)) return;
     std::vector<llvm::Type*> pts;
@@ -891,8 +894,10 @@ void CodeGen::generateClass(const ClassDecl& cls) {
         generateClassFunction(cls, fn);
     }
 
-    // Generate static action bodies (no 'this' pointer needed)
+    // Generate static action bodies (no 'this' pointer needed); generic static
+    // method templates are skipped (their instances are in tu.functions).
     for (auto& a : cls.static_actions) {
+        if (!a.type_params.empty()) continue;
         generateStaticAction(cls, a);
     }
 

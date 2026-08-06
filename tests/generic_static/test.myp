@@ -1,0 +1,47 @@
+// generic_static: 泛型 @static 类方法（M-FN-3 stdlib 落位）
+// 覆盖：泛型静态方法模板（显式类型实参 + 一等函数实参）、跨模块可见性（本文件内
+// 等价于 stdlib 内 @static class）、推断、多个实例互不干扰
+import env;
+import option;
+import collections;
+
+@static class List {
+    static:
+        // 泛型静态方法：显式类型实参 + 一等函数实参
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+        // 泛型归约（ArrayList 有 size/get）
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+            int acc = init;
+            for (int i = 0; i < arr.size(); i = i + 1) acc = f(acc, arr.get(i));
+            return acc;
+        }
+        // 从实参推断类型参数
+        R id<R>(R v) { return v; }
+}
+
+int pmRun() {
+    // map: Option<int> → Option<string>
+    Option<int> some = new Option<int>(5);
+    Option<string> mapped = List.map<int, string>(some, (int x) => { return "v" + x; });
+    string a = "none";
+    if (mapped.isSome()) a = mapped.get();              // v5
+    // map over none
+    Option<int> none = new Option<int>();
+    Option<int> m2 = List.map<int, int>(none, (int x) => { return x * 2; });
+    string b = m2.isNone() ? "none" : "some";           // none
+    // fold
+    ArrayList<int> xs = new ArrayList<int>();
+    xs.add(1); xs.add(2); xs.add(3); xs.add(4);
+    int sum = List.foldInt<int>(xs, 0, (int acc, int x) => { return acc + x; }); // 10
+    // 推断类型参数
+    int idd = List.id<int>(42);                          // 42
+    string ids = List.id<string>("hi");                  // hi
+    Console.writeString("a=" + a + " b=" + b + " sum=" + sum + " idd=" + idd + " ids=" + ids);
+    Console.writeString("\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }

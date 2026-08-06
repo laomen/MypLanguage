@@ -117,18 +117,20 @@ bool Sema::analyze(TranslationUnit& tu) {
         size_t nstatic = tu.classes[ci].static_actions.size();
         for (size_t si = 0; si < nstatic; si++) {
             auto& action = tu.classes[ci].static_actions[si];
-            if (action.body) {
-                current_return_type_ = typeNodeToTypeInfo(action.return_type);
-                in_coro_method_ = false;
-                symbol_table_.enterScope();
-                // No 'this' for static methods
-                for (auto& param : action.params) {
-                    symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
-                }
-                visitStmt(*action.body);
-                symbol_table_.leaveScope();
-                in_coro_method_ = false;
+            if (!action.body) continue;
+            // Generic static method templates are skipped (like generic function
+            // templates): their bodies are shared and monomorphized per call.
+            if (!action.type_params.empty()) continue;
+            current_return_type_ = typeNodeToTypeInfo(action.return_type);
+            in_coro_method_ = false;
+            symbol_table_.enterScope();
+            // No 'this' for static methods
+            for (auto& param : action.params) {
+                symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
             }
+            visitStmt(*action.body);
+            symbol_table_.leaveScope();
+            in_coro_method_ = false;
         }
         in_class_method_ = false;
     }
@@ -476,7 +478,27 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     }
 
     // Register static actions in GLOBAL scope (accessible as ClassName.method)
-    for (auto& action : decl.static_actions) {
+    for (size_t sa_idx = 0; sa_idx < decl.static_actions.size(); sa_idx++) {
+        auto& action = decl.static_actions[sa_idx];
+        // Generic static method: List.map<T,U>(...) — register for call resolution
+        // (monomorphization happens at the call site; the template isn't callable
+        // directly since its type params are placeholders).
+        if (!action.type_params.empty()) {
+            std::string gkey = decl.name + "::" + action.name;
+            GenericStaticMethodInfo ginfo;
+            // Find the class index (decl may be a generic instance clone; use the
+            // original template's index for stable registration).
+            for (size_t ci = 0; ci < current_tu_->classes.size(); ci++) {
+                if (current_tu_->classes[ci].name == decl.name &&
+                    !current_tu_->classes[ci].is_generic_inst) {
+                    ginfo.class_index = (int)ci;
+                    break;
+                }
+            }
+            ginfo.action_index = (int)sa_idx;
+            generic_static_methods_[gkey] = ginfo;
+            continue; // template not directly callable
+        }
         TypeInfo func_type(TypeKind::Function);
         func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
         for (auto& param : action.params) {
@@ -1434,6 +1456,111 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
     return rt;
 }
 
+// Monomorphize a generic static method call (StaticClass.method<T>(...) or
+// inferred), append the instance to tu.functions (as a top-level FuncDecl with
+// a unique mangled name), and type-check the call. Static methods have no
+// `this`, so the instance body is shared and codegen resolves T per-instance
+// exactly like a generic function.
+TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_name,
+                                        const std::string& method, int class_index,
+                                        int action_index) {
+    if (!current_tu_ || class_index < 0 || action_index < 0) return TypeInfo(TypeKind::Void);
+    ActionDecl& templ = current_tu_->classes[class_index].static_actions[action_index];
+
+    // 1) Visit args to get their types.
+    std::vector<TypeInfo> arg_types;
+    for (auto& a : expr.args) arg_types.push_back(visitExpr(*a));
+
+    // 2) Resolve concrete type args: explicit <T1,...> else infer from args.
+    std::vector<TypeNode> concrete;
+    bool explicit_given = expr.call_type_args.size() > 0;
+    if (explicit_given && expr.call_type_args.size() != templ.type_params.size()) {
+        error(expr.range, "generic static method '" + cls_name + "." + method + "' expects " +
+            std::to_string(templ.type_params.size()) + " type argument(s), got " +
+            std::to_string(expr.call_type_args.size()));
+        return TypeInfo(TypeKind::Void);
+    }
+    for (size_t ti = 0; ti < templ.type_params.size(); ti++) {
+        if (explicit_given) { concrete.push_back(expr.call_type_args[ti]); continue; }
+        bool found = false;
+        for (size_t pi = 0; pi < templ.params.size() && pi < arg_types.size(); pi++) {
+            const TypeNode& ptn = templ.params[pi].type;
+            if (ptn.isClass() && ptn.class_name == templ.type_params[ti] &&
+                ptn.type_args.empty() && !ptn.isArray()) {
+                concrete.push_back(TypeNodeFromTypeInfo(arg_types[pi]));
+                found = true;
+                break;
+            }
+            if (ptn.isArray() && ptn.element_type &&
+                ptn.element_type->isClass() &&
+                ptn.element_type->class_name == templ.type_params[ti]) {
+                if (arg_types[pi].kind == TypeKind::Array && arg_types[pi].element_type) {
+                    concrete.push_back(TypeNodeFromTypeInfo(*arg_types[pi].element_type));
+                    found = true;
+                    break;
+                }
+            }
+        }
+        if (!found) {
+            error(expr.range, "cannot infer type parameter '" + templ.type_params[ti] +
+                "' for generic static method '" + cls_name + "." + method +
+                "' (pass explicit args: " + cls_name + "." + method + "<...>(...))");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
+
+    // 3) Mangled instance name (distinct prefix avoids collision with generic
+    //    functions named ClassName_method).
+    std::string mangled = "__gs_" + cls_name + "_" + method;
+    for (auto& c : concrete)
+        mangled += "_" + typeName(typeNodeToTypeInfo(c));
+    mangled += "_inst";
+
+    // 4) Find or clone the instance.
+    const FuncDecl* inst_ptr = nullptr;
+    for (auto& f : current_tu_->functions)
+        if (f.name == mangled) { inst_ptr = &f; break; }
+    if (!inst_ptr) {
+        FuncDecl inst;
+        inst.name = mangled;
+        inst.is_generic_inst = true;
+        inst.type_params = templ.type_params;
+        inst.inst_type_args = concrete;
+        inst.range = templ.range;
+        inst.has_region = templ.has_region;
+        inst.has_coro = templ.has_coro;
+        inst.return_type = substituteTypeNode(templ.return_type, templ.type_params, concrete);
+        for (auto& p : templ.params) {
+            ParamDecl np;
+            np.name = p.name;
+            np.type = substituteTypeNode(p.type, templ.type_params, concrete);
+            np.is_ref = false;
+            np.range = p.range;
+            inst.params.push_back(std::move(np));
+        }
+        inst.body = std::static_pointer_cast<BlockStmt>(templ.body); // shared body (codegen resolves T per-inst)
+        current_tu_->functions.push_back(std::move(inst));
+        inst_ptr = &current_tu_->functions.back();
+    }
+
+    // 5) Type-check args against the instance signature; set the call target.
+    TypeInfo rt = typeNodeToTypeInfo(inst_ptr->return_type);
+    if (expr.args.size() != inst_ptr->params.size()) {
+        error(expr.range, "expected " + std::to_string(inst_ptr->params.size()) +
+            " arguments, got " + std::to_string(expr.args.size()));
+        return TypeInfo(TypeKind::Void);
+    }
+    for (size_t i = 0; i < expr.args.size(); i++) {
+        TypeInfo pt = typeNodeToTypeInfo(inst_ptr->params[i].type);
+        if (!typesCompatible(pt, arg_types[i])) {
+            error(expr.args[i]->range, "argument " + std::to_string(i + 1) +
+                ": expected '" + typeName(pt) + "', got '" + typeName(arg_types[i]) + "'");
+        }
+    }
+    expr.resolved_call_name = mangled;
+    return rt;
+}
+
 // Build a TypeNode that typeNodeToTypeInfo would resolve back to `t`.
 TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
     TypeNode n;
@@ -1485,6 +1612,19 @@ TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
 }
 
 TypeInfo Sema::visitCall(CallExpr& expr) {
+    // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
+    if (expr.callee->kind == ExprKind::MemberAccess) {
+        auto& gma = static_cast<MemberAccessExpr&>(*expr.callee);
+        if (gma.object->kind == ExprKind::Identifier) {
+            auto& gso = static_cast<IdentifierExpr&>(*gma.object);
+            std::string gkey = gso.name + "::" + gma.member_name;
+            auto git = generic_static_methods_.find(gkey);
+            if (git != generic_static_methods_.end())
+                return resolveGenericStaticCall(expr, gso.name, gma.member_name,
+                                                git->second.class_index,
+                                                git->second.action_index);
+        }
+    }
     // Generic function call: foo<int>(...) or foo(x) with inference.
     if (expr.callee->kind == ExprKind::Identifier) {
         auto& gid = static_cast<const IdentifierExpr&>(*expr.callee);
@@ -2329,6 +2469,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
                     p.range = param.range;
                     a.params.push_back(std::move(p));
                 }
+                a.type_params = action.type_params;
                 a.body = action.body;
                 a.range = action.range;
                 inst.static_actions.push_back(std::move(a));

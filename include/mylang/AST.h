@@ -131,6 +131,8 @@ struct ActionDecl {
     std::string name;
     TypeNode return_type;
     std::vector<ParamDecl> params;
+    // Generic static method: List.map<T, U>(...) — type params on a static action.
+    std::vector<std::string> type_params;
     std::shared_ptr<Stmt> body;  // nullptr if declaration only
     SourceRange range;
     bool has_startup = false;

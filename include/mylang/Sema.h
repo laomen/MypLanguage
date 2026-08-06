@@ -143,6 +143,15 @@ private:
     std::unordered_map<std::string, GenericFuncInfo> generic_functions_;
     std::vector<std::string> current_func_type_params_; // type params of current top-level function
     TypeInfo resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index);
+
+    // ---- Generic static method tracking (List.map<T,U>(...)) ----
+    struct GenericStaticMethodInfo {
+        int class_index = -1;  // index into current_tu_->classes
+        int action_index = -1; // index into classes[class_index].static_actions
+    };
+    std::unordered_map<std::string, GenericStaticMethodInfo> generic_static_methods_;
+    TypeInfo resolveGenericStaticCall(CallExpr& expr, const std::string& cls_name,
+                                      const std::string& method, int class_index, int action_index);
     TypeNode TypeNodeFromTypeInfo(const TypeInfo& t);
     void inferLambdaReturn(Stmt& stmt, TypeNode& out, bool& found);
     void collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals);
