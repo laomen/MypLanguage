@@ -15,9 +15,12 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Data Parallelism** | `@parallel for` auto-parallelization with a work-stealing thread pool |
 | **Generics** | `ArrayList<T>`, `HashMap<K,V>`, `Queue<T>` and more |
 | **Interface Polymorphism** | `interface` + vtable dispatch (fat pointers) |
-| **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe (v2.4+) |
+| **Coroutines + Async I/O** | `@coro`/`await` user-space coroutines + `@async` unified async abstraction (timers/sockets/file executor) + `Coro.waitAnyOf` mixed waits |
+| **Error Handling** | `Result<T,E>` / `Option<T>`/`T?` containers + layered `catch (Error)` exceptions |
+| **Automatic Memory Mgmt** | ARC for class instances (automatic reference counting, additive, no new syntax) |
+| **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
-| **Zero-Dependency Stdlib** | 34+ modules, pure MYP implementations |
+| **Zero-Dependency Stdlib** | 38 modules, pure MYP implementations |
 | **LSP Integration** | Completion, hover, go-to-definition, document symbols |
 
 ## 🚀 Quick Start
@@ -90,32 +93,66 @@ double[1000] tally;
 }
 ```
 
+### Coroutines & Async I/O
+
+```myp
+import env;
+import coro;
+import async;
+import time;
+
+class Worker {
+    action:
+        @coro long run() {
+            Console.writeString("W:start\n");
+            await Async.sleep(100);       // async sleep: suspend this coroutine, don't block the thread
+            Console.writeString("W:woke\n");
+            return 0;
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker();
+            long h = w.run();             // create + first-run the coroutine, returns its handle
+            for (int i = 0; i < 10; i++) {
+                Coro.scheduler();         // auto-schedule: advance all ready coroutines
+                Time.sleep(20);
+            }
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
+```
+
 ### Full Syntax
 
 See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/design.md) for full details.
 
-## 📦 Standard Library (34+ Modules)
+## 📦 Standard Library (38 Modules)
 
 | Category | Modules |
 |----------|---------|
 | **Basic I/O** | `env` (console), `io` (files), `text` (strings), `regex`, `base64` |
-| **Data Structures** | `collections`: `ArrayList`, `HashMap`, `Set`, `Queue`, `Stack`, `Deque`, `PriorityQueue`, `LinkedList`, `Sort`, `StrHashMap` |
-| **Mathematics** | `math` (trig/hyperbolic/inverse/constants), `random` (uniform/normal/shuffle) |
+| **Data Structures** | `collections`: `ArrayList`, `HashMap`, `Set`, `Queue`, `Stack`, `Deque`, `PriorityQueue`, `LinkedList`, `Sort`, `StrHashMap`; `option` (`Option<T>`/`T?` nullable) |
+| **Mathematics** | `math` (trig/hyperbolic/inverse/constants), `random` (uniform/normal/exponential/poisson distributions) |
 | **Time & Date** | `time`, `timeline`, `date` |
 | **File System** | `fs` (paths/directory traversal) |
-| **Networking** | `net` (TCP client/server) |
+| **Networking** | `net` (TCP client/server), `http` (HTTP client) |
 | **Process** | `process` (command execution/output capture) |
 | **CLI** | `args` (argument parsing), `env` (environment variables) |
-| **Memory** | `memory` (malloc/free/realloc raw memory + Memory class) |
-| **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `coro` (coroutines) |
-| **Utilities** | `logger`, `json`, `test`, `stream` |
+| **Memory** | `memory` (malloc/free/realloc raw memory + Memory class + `liveObjectCount` diagnostics) |
+| **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `sync` (Mutex/RWLock/CondVar/Semaphore), `coro` (coroutines + async I/O), `channel` |
+| **Error Handling** | `result` (`Result<T,E>` two-state container), `error` (layered exception types) |
+| **Utilities** | `fmt` (printf-style formatting), `crypto` (CRC32/MD5/SHA), `logger`, `json`, `test`, `stream` |
 | **Graphics** | `sdl` (SDL2), `ui` (terminal TUI) |
 
 ## 🛠️ Toolchain
 
 | Tool | Purpose |
 |------|---------|
-| `mypc` | Compiler (compile/link/format) |
+| `mypc` | Compiler (compile/link/format/`run` go-style direct execution) |
 | `myp` | Package manager (init/build/install/run) |
 | `myp_viz` | Visualization (DOT graph generation) |
 | `myp_lsp` | Language server (LSP) |
@@ -128,10 +165,11 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 ## 🧪 Testing
 
 ```bash
-bash tests/run_tests.sh
-# Regression tests: 67 passed, 0 failed
-# Negative tests:   25 passed, 0 failed
-# Total:            94 passed, 0 failed
+bash tests/run_tests.sh          # full regression (compile+run compare + negative + self-hosted)
+# Regression tests: 117 passed, 0 failed
+# Negative tests:   47 passed, 0 failed
+# Total:            171 passed, 0 failed
+bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
 ```
 
 ## 🏗️ Project Structure

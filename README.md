@@ -15,9 +15,12 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **数据并行** | `@parallel for` 自动并行化，work-stealing 线程池 |
 | **泛型** | `ArrayList<T>`、`HashMap<K,V>`、`Queue<T>` 等 |
 | **接口多态** | `interface` + 虚表分派（胖指针） |
-| **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道（v2.4+） |
+| **协程 + 异步 IO** | `@coro`/`await` 用户态协程 + `@async` 统一异步抽象（定时器/套接字/文件执行器）+ `Coro.waitAnyOf` 混等 |
+| **错误处理** | `Result<T,E>` / `Option<T>`/`T?` 容器 + `catch (Error)` 异常分层 |
+| **自动内存管理** | class 实例 ARC（自动引用计数，additive 无新语法） |
+| **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道 |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
-| **零依赖标准库** | 34+ 个模块，纯 MYP 实现 |
+| **零依赖标准库** | 38 个模块，纯 MYP 实现 |
 | **LSP 集成** | 补全、悬停、跳转定义、文档符号 |
 
 ## 🚀 快速开始
@@ -90,32 +93,66 @@ double[1000] tally;
 }
 ```
 
+### 协程与异步 IO
+
+```myp
+import env;
+import coro;
+import async;
+import time;
+
+class Worker {
+    action:
+        @coro long run() {
+            Console.writeString("W:start\n");
+            await Async.sleep(100);       // 异步睡眠：挂起本协程，不阻塞线程
+            Console.writeString("W:woke\n");
+            return 0;
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Worker w = new Worker();
+            long h = w.run();             // 创建并首启协程，返回 handle
+            for (int i = 0; i < 10; i++) {
+                Coro.scheduler();         // 自动调度：推进所有就绪协程
+                Time.sleep(20);
+            }
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
+```
+
 ### 完整语法
 
 详细语法见 [编程手册](docs/manual.md) 和 [设计文档](docs/design.md)。
 
-## 📦 标准库（34+ 模块）
+## 📦 标准库（38 模块）
 
 | 类别 | 模块 |
 |------|------|
 | **基础 I/O** | `env`（控制台）、`io`（文件）、`text`（字符串）、`regex`、`base64` |
-| **数据结构** | `collections`：`ArrayList`、`HashMap`、`Set`、`Queue`、`Stack`、`Deque`、`PriorityQueue`、`LinkedList`、`Sort`、`StrHashMap` |
-| **数学** | `math`（三角/双曲/反三角/常数）、`random`（均匀/正态/洗牌） |
+| **数据结构** | `collections`：`ArrayList`、`HashMap`、`Set`、`Queue`、`Stack`、`Deque`、`PriorityQueue`、`LinkedList`、`Sort`、`StrHashMap`；`option`（`Option<T>`/`T?` 可空） |
+| **数学** | `math`（三角/双曲/反三角/常数）、`random`（均匀/正态/指数/泊松等分布） |
 | **时间日期** | `time`、`timeline`、`date` |
 | **文件系统** | `fs`（路径/目录遍历） |
-| **网络** | `net`（TCP 客户端/服务器） |
+| **网络** | `net`（TCP 客户端/服务器）、`http`（HTTP 客户端） |
 | **进程** | `process`（命令执行/输出捕获） |
 | **命令行** | `args`（参数解析）、`env`（环境变量） |
-| **内存** | `memory`（malloc/free/realloc 裸内存 + Memory 类） |
-| **并发** | `atomic`、`barrier`、`future`、`pool`、`coro`（协程）、`channel`（协程通道）|
-| **工具** | `logger`、`json`、`test`、`stream` |
+| **内存** | `memory`（malloc/free/realloc 裸内存 + Memory 类 + `liveObjectCount` 诊断） |
+| **并发** | `atomic`、`barrier`、`future`、`pool`、`sync`（Mutex/RWLock/CondVar/Semaphore）、`coro`（协程 + 异步 IO）、`channel`（协程通道）|
+| **错误处理** | `result`（`Result<T,E>` 二态容器）、`error`（异常类型分层） |
+| **工具** | `fmt`（printf 风格格式化）、`crypto`（CRC32/MD5/SHA）、`logger`、`json`、`test`、`stream` |
 | **图形** | `sdl`（SDL2）、`ui`（终端 TUI） |
 
 ## 🛠️ 工具链
 
 | 工具 | 用途 |
 |------|------|
-| `mypc` | 编译器（编译/链接/格式化） |
+| `mypc` | 编译器（编译/链接/格式化/`run` 仿 go run 直接运行） |
 | `myp` | 包管理（init/build/install/run） |
 | `myp_viz` | 可视化（生成 DOT 图） |
 | `myp_lsp` | 语言服务器（LSP） |
@@ -128,10 +165,11 @@ double[1000] tally;
 ## 🧪 测试
 
 ```bash
-bash tests/run_tests.sh
-# 回归测试: 67 通过, 0 失败
-# 负测试:   25 通过, 0 失败
-# 总计:     94 通过, 0 失败
+bash tests/run_tests.sh          # 全量回归（编译+运行比对 + 负测试 + 自举）
+# 回归测试: 117 通过, 0 失败
+# 负测试:   47 通过, 0 失败
+# 总计:     171 通过, 0 失败
+bash tests/run_tests_asan.sh     # ASAN（AddressSanitizer）回归
 ```
 
 ## 🏗️ 项目结构
