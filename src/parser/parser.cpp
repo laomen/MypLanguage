@@ -164,6 +164,16 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
             // class body. Stored as a const property (semantics identical to the
             // property: section; useful for per-instance physical constants).
             cls->properties.push_back(parsePropertyDecl());
+        } else if (check(TokenKind::Identifier) && peek().value == "type" &&
+                   tokens_[current_ + 1].kind == TokenKind::Identifier &&
+                   tokens_[current_ + 2].kind == TokenKind::Equal) {
+            // 关联类型绑定：type Item = int;  （§三-5，实现接口的关联类型）
+            advance(); // 'type'
+            std::string name = parseIdentifier("expected associated type name");
+            consume(TokenKind::Equal, "expected '=' in associated type binding");
+            TypeNode bt = parseType();
+            consume(TokenKind::Semicolon, "expected ';' after associated type binding");
+            cls->associated_type_bindings[name] = std::move(bt);
         } else {
             diag_.error(peek().range,
                 "expected 'action:', 'event:', 'property:', 'function:', 'struct:', or 'interface class'");
@@ -427,6 +437,14 @@ std::unique_ptr<InterfaceDecl> Parser::parseInterface() {
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
         // Look ahead: if peek+1 is '(' it's an event; otherwise it's an action
         if (peek().kind == TokenKind::Identifier) {
+            // 关联类型声明：type Item;  （§三-5）
+            if (peek().value == "type" && peekNext().kind == TokenKind::Identifier) {
+                advance(); // 'type'
+                decl->associated_types.push_back(
+                    parseIdentifier("expected associated type name"));
+                consume(TokenKind::Semicolon, "expected ';' after associated type declaration");
+                continue;
+            }
             // Could be event name directly, or class-type return type for an action
             if (peekNext().kind == TokenKind::LeftParen) {
                 decl->events.push_back(parseEventDecl());
@@ -894,6 +912,12 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             // Check if next token is also an Identifier (var decl)
             size_t next = current_ + 1;
             if (next < tokens_.size() && tokens_[next].kind == TokenKind::Identifier) {
+                return parseVarDeclStmt();
+            }
+            // 限定类型：ClassName::StructType name / ClassName::AssocType name
+            //（:: 仅类型用途——嵌套 struct / 关联类型引用）
+            if (next < tokens_.size() && tokens_[next].kind == TokenKind::DoubleColon &&
+                next + 1 < tokens_.size() && tokens_[next + 1].kind == TokenKind::Identifier) {
                 return parseVarDeclStmt();
             }
             // Check if next token is [ (array type): IOperator[2] name

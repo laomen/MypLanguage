@@ -23,6 +23,8 @@ bool TypeInfo::operator==(const TypeInfo& other) const {
                    param_types == other.param_types;
         case TypeKind::Tuple:
             return tuple_types == other.tuple_types;
+        case TypeKind::Assoc:
+            return true; // 抽象关联类型按 kind 匹配
         default:
             return true; // basic types match by kind alone
     }

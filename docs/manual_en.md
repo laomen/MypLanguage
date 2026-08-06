@@ -758,6 +758,71 @@ s.describe();   // "SQUARE(9)" (Square override)
 - **Value**: adding a method to an interface doesn't break existing implementers (they get
   the default); shared composed logic lives in the interface itself.
 
+#### Associated Types (v3.9.0, additive)
+
+An interface may declare an **associated type** (Rust associated-type semantics) — interface
+method signatures reference this abstract type, and **each implementing class binds a concrete
+type** (`int`, `string`, custom classes, ...). The same interface can be instantiated by
+implementers with different element types:
+
+```myp
+interface Container {
+    type Item;                    // associated type declaration (abstract)
+    bool contains(Item v);        // param references the associated type
+    Item getVal();                // return references the associated type
+}
+
+class IntBox {
+    interface class Container;
+    type Item = int;              // bound to int
+    action:
+        bool contains(int v) { return v == val; }
+        int getVal() { return val; }
+    property: int val = 42;
+}
+
+class StrBox {
+    interface class Container;
+    type Item = string;           // bound to string
+    action:
+        bool contains(string v) { return v == val; }
+        string getVal() { return val; }
+    property: string val = "hi";
+}
+```
+
+- **Binding**: an implementing class **must** bind with `type Item = int;` (otherwise a
+  compile error; negative test `assoc_unbound`).
+- **Direct reference**: a binding is referenced with `X::Item` syntax — `IntBox::Item ≡ int`,
+  usable as a local variable, parameter, or return type:
+
+```myp
+IntBox::Item x = 5;          // ≡ int x = 5;
+Container c = new IntBox();
+bool r = c.contains(x);      // virtual-dispatch call on an interface variable
+```
+
+- **Generic constraints**: a generic class/function constrains `T` with `where T : I` and
+  references the associated type as `T::Item` — at instantiation `T` binds the concrete class
+  and `T::Item` monomorphizes to that class's bound type:
+
+```myp
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }      // returns associated type
+        bool check(T c, T::Item v) { return c.contains(v); }
+}
+
+Processor<IntBox> pi = new Processor<IntBox>();
+int iv = pi.peek(ib);        // T::Item = int → 42
+Processor<StrBox> ps = new Processor<StrBox>();
+string sv = ps.peek(sb);     // T::Item = string → "hi"
+```
+
+- **Value**: interface methods become **decoupled from the element type** — one interface
+  adapts to arbitrary concrete types, and generic code keeps type safety without reimplementing
+  per element type.
+
 ---
 
 ## 7. Struct Data Type

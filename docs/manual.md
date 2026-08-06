@@ -657,6 +657,68 @@ s.describe();   // "SQUARE(9)"（Square 覆盖）
 - **约束**：纯签名（无默认体）的接口方法实现类**必须**实现；默认体引用的抽象方法由此保证存在。
 - **价值**：给接口**新增方法**不破坏已有实现类（自动获得默认行为）；公共组合逻辑写在接口里。
 
+#### 关联类型（associated types，v3.9.0，additive）
+
+接口可以声明**关联类型**（Rust 的 associated type 语义）——接口方法签名引用该抽象
+类型，由**各实现类绑定具体类型**（`int`/`string`/自定义类等）。同一接口可被不同
+元素类型的实现类实例化：
+
+```myp
+interface Container {
+    type Item;                    // 关联类型声明（抽象）
+    bool contains(Item v);        // 方法参数引用关联类型
+    Item getVal();                // 方法返回引用关联类型
+}
+
+class IntBox {
+    interface class Container;
+    type Item = int;              // 绑定 int
+    action:
+        bool contains(int v) { return v == val; }
+        int getVal() { return val; }
+    property: int val = 42;
+}
+
+class StrBox {
+    interface class Container;
+    type Item = string;           // 绑定 string
+    action:
+        bool contains(string v) { return v == val; }
+        string getVal() { return val; }
+    property: string val = "hi";
+}
+```
+
+- **绑定**：实现类**必须**用 `type Item = int;` 绑定（否则编译错误，负测试
+  `assoc_unbound`）。
+- **直接引用**：绑定类型通过 `X::Item` 语法引用——`IntBox::Item ≡ int`，可作局部
+  变量、参数、返回类型：
+
+```myp
+IntBox::Item x = 5;          // ≡ int x = 5;
+Container c = new IntBox();
+bool r = c.contains(x);      // 接口变量上按虚表分派
+```
+
+- **泛型约束**：泛型类/函数用 `where T : I` 约束 T，内部以 `T::Item` 引用关联类型
+  ——实例化时 `T` 绑定具体类，`T::Item` 自动单态化为该类绑定类型：
+
+```myp
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }      // 返回关联类型
+        bool check(T c, T::Item v) { return c.contains(v); }
+}
+
+Processor<IntBox> pi = new Processor<IntBox>();
+int iv = pi.peek(ib);        // T::Item = int → 42
+Processor<StrBox> ps = new Processor<StrBox>();
+string sv = ps.peek(sb);     // T::Item = string → "hi"
+```
+
+- **价值**：接口方法与**元素类型解耦**——同一份接口逻辑适配任意具体类型，泛型代码
+  在保留类型安全的同时无需为每种元素类型重写。
+
 ### 访问控制
 
 ```myp

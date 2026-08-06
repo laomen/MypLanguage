@@ -19,6 +19,7 @@
 #include <llvm/IR/Value.h>
 
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -385,6 +386,8 @@ private:
                                  const std::string& cls);
     // 查找类未覆盖的接口默认函数（无 → nullptr）
     llvm::Function* findInterfaceDefault(const std::string& cls_name, const std::string& method);
+    // 关联类型 X::Item → 绑定类型（X 为具体类或当前类型参数；无绑定 → nullopt）
+    std::optional<TypeNode> resolveAssocType(const std::string& owner, const std::string& member);
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);

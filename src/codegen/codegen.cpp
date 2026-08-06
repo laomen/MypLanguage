@@ -354,6 +354,13 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
     }
     // Check for class type
     if (!tn.class_name.empty()) {
+        // 关联类型 X::Item → 绑定类型（递归解析）
+        auto pos = tn.class_name.find("::");
+        if (pos != std::string::npos) {
+            auto ra = resolveAssocType(tn.class_name.substr(0, pos),
+                                       tn.class_name.substr(pos + 2));
+            if (ra) return typeNodeToLLVMType(*ra);
+        }
         // Resolve generic type param (e.g. T in `new T[n]`) to its concrete arg
         // for the currently generated generic instance.
         for (auto& tp : current_type_params_) {
@@ -432,6 +439,11 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
             tuple_structs_[sig] = st;
             return st;
         }
+        case TypeKind::Assoc: {
+            // 抽象关联类型：仅接口签名静态用途；运行时参数经调用方实参类型生成。
+            // 兜底 i32 占位（实际不会在运行时物化）。
+            return llvm::Type::getInt32Ty(ctx_);
+        }
         case TypeKind::Class: {
             auto* st = getClassStruct(t.class_name);
             (void)st;
@@ -499,6 +511,13 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         return result;
     }
     if (!node.class_name.empty()) {
+        // 关联类型 X::Item → 绑定类型（递归解析）
+        auto pos = node.class_name.find("::");
+        if (pos != std::string::npos) {
+            auto ra = resolveAssocType(node.class_name.substr(0, pos),
+                                       node.class_name.substr(pos + 2));
+            if (ra) return typeNodeToCodegenType(*ra);
+        }
         // Resolve generic type param (e.g. T in `new T[n]`) to its concrete arg
         // for the currently generated generic instance.
         for (auto& tp : current_type_params_) {
@@ -779,7 +798,14 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
             current_type_params_.emplace_back(f.type_params[i], f.inst_type_args[i]);
         generateFuncDecl(f);
     }
-    for (auto& c : tu.classes) generateClass(c);
+    // Generic class templates are skipped (like generic function templates):
+    // their bodies use type-param placeholders that would resolve method calls
+    // on T to arbitrary classes (best-class search). Only monomorphized
+    // instances (with substituted param types + current_type_params_) are emitted.
+    for (auto& c : tu.classes) {
+        if (!c.type_params.empty() && !c.is_generic_inst) continue;
+        generateClass(c);
+    }
 
     // Generate struct method function bodies (file-level)
     for (auto& st : tu.structs) {
@@ -888,6 +914,23 @@ std::string CodeGen::ifaceDefaultName(const std::string& iface,
                                       const std::string& method,
                                       const std::string& cls) {
     return "__ifdef_" + iface + "_" + method + "_" + cls;
+}
+
+// 关联类型（§三-5）：X::Item → 绑定类型。X 为具体类，或当前类型参数（T → 具体类，
+// 经 current_type_params_ 解析）。无绑定 → nullopt（回落嵌套 struct 等既有路径）。
+std::optional<TypeNode> CodeGen::resolveAssocType(const std::string& owner,
+                                                  const std::string& member) {
+    std::string cls_name = owner;
+    for (auto& tp : current_type_params_)
+        if (tp.first == owner) { cls_name = tp.second.class_name; break; }
+    if (cls_name.empty() || !current_tu_) return std::nullopt;
+    for (auto& cls : current_tu_->classes) {
+        if (cls.name != cls_name) continue;
+        auto bit = cls.associated_type_bindings.find(member);
+        if (bit != cls.associated_type_bindings.end()) return bit->second;
+        break;
+    }
+    return std::nullopt;
 }
 
 // 类未覆盖的接口默认方法 → 该类的特化默认函数（无则 nullptr）。
@@ -1157,6 +1200,18 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(action.params[i].name, a);
+        // 类参数：注册 var_class_map_（含类型参数 T→具体类，经 current_type_params_
+        // 解析）→ `c.method()` 精确解析到 c 的具体类，而非 best-class 误选同名方法。
+        if (pt.kind == TypeKind::Class) {
+            std::string cn = pt.class_name;
+            if (!action.params[i].type.type_args.empty()) {
+                cn = action.params[i].type.class_name;
+                for (auto& ta : action.params[i].type.type_args)
+                    cn += "_" + mangleConcreteTypeNode(ta);
+                cn += "_inst";
+            }
+            var_class_map_[action.params[i].name] = cn;
+        }
         if (debug_mode_)
             emitParamDebug(a, action.params[i].name, getLLVMType(pt),
                            action.range.begin.line ? action.range.begin.line : 1, (unsigned)(i + 1));
@@ -1701,6 +1756,18 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
             if (pt.kind == TypeKind::Function)
                 func_val_types_[decl.params[i].name] = pt;
             setNamedValue(decl.params[i].name, a);
+            // 类参数：注册 var_class_map_（含类型参数 T→具体类型）→ 泛型函数实例内
+            // `opt.method()` 精确解析到具体实例类，而非 best-class 误选模板名。
+            if (pt.kind == TypeKind::Class) {
+                std::string cn = pt.class_name;
+                if (!decl.params[i].type.type_args.empty()) {
+                    cn = decl.params[i].type.class_name;
+                    for (auto& ta : decl.params[i].type.type_args)
+                        cn += "_" + mangleConcreteTypeNode(ta);
+                    cn += "_inst";
+                }
+                var_class_map_[decl.params[i].name] = cn;
+            }
             if (debug_mode_)
                 emitParamDebug(a, decl.params[i].name, getLLVMType(pt),
                                decl.range.begin.line ? decl.range.begin.line : 1, (unsigned)i);

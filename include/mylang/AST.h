@@ -186,6 +186,8 @@ struct ClassDecl {
     bool is_generic_inst = false; // monomorphized instance of a generic template
     std::vector<TypeNode> inst_type_args; // concrete args of a generic instance
     std::string interface_class_name; // non-empty if "interface class X;" declared
+    // 关联类型绑定：type Item = int;  —— 实现接口的关联类型（§三-5）
+    std::unordered_map<std::string, TypeNode> associated_type_bindings;
     SourceRange range;
 };
 
@@ -193,6 +195,8 @@ struct InterfaceDecl {
     std::string name;
     std::vector<ActionDecl> actions;
     std::vector<EventDecl> events;
+    // 关联类型声明：type Item;  —— 实现类须绑定（§三-5）
+    std::vector<std::string> associated_types;
     SourceRange range;
 };
 

@@ -266,6 +266,61 @@ Option<int> some = new Option<int>(5);
 Option<string> m = List.map<int, string>(some, (int x) => { return "v" + x; });
 ```
 
+### 3.3 接口关联类型（additive，v1.0+）
+
+```
+InterfaceAssocType ::= 'type' Identifier ';'          // 接口内：抽象关联类型
+ClassAssocBinding  ::= 'type' Identifier '=' Type ';' // 实现类内：绑定具体类型
+AssocTypeRef       ::= ClassName '::' AssocName       // 引用绑定：IntBox::Item
+                     | TypeParam '::' AssocName       // 泛型内引用：T::Item
+```
+
+- **声明**：接口内 `type Item;` 声明一个**关联类型**——由各实现类绑定具体类型
+  （Rust 的 associated type 语义）。接口方法签名可引用该关联类型。
+- **绑定**：实现类必须用 `type Item = int;` 绑定（负测试 `assoc_unbound`）；绑定
+  通过 `X::Item` 语法直接引用（`IntBox::Item ≡ int`，可作局部变量/参数/返回类型）。
+- **泛型**：`class Processor<T where T : I>` 内用 `T::Item` 引用关联类型——实例化时
+  `T` 绑定具体类，`T::Item` 即该类的绑定类型（实例方法/返回/参数自动单态化）。
+- **语义**：关联类型是类型级抽象——允许同一接口被 `int`/`string` 等不同元素类型
+  的实现类实例化；约束类型参数注册为接口类型（约束检查在 sema 完成）。
+
+```myp
+interface Container {
+    type Item;                    // 关联类型声明
+    bool contains(Item v);
+    Item getVal();
+}
+class IntBox {
+    interface class Container;
+    type Item = int;              // 绑定 int
+    action:
+        bool contains(int v) { return v == val; }
+        int getVal() { return val; }
+    property: int val = 42;
+}
+class StrBox {
+    interface class Container;
+    type Item = string;           // 绑定 string
+    action:
+        bool contains(string v) { return v == val; }
+        string getVal() { return val; }
+    property: string val = "hi";
+}
+// 泛型类：T 约束为 Container，内部用 T::Item（实例化后绑定具体类型）
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }
+}
+int pmRun() {
+    IntBox::Item x = 5;                       // 直接引用绑定类型 ≡ int
+    Processor<IntBox> pi = new Processor<IntBox>();
+    int iv = pi.peek(new IntBox());           // T::Item = int → 42
+    Processor<StrBox> ps = new Processor<StrBox>();
+    string sv = ps.peek(new StrBox());        // T::Item = string → "hi"
+    return 0;
+}
+```
+
 ---
 
 ## 4. 类成员
@@ -278,6 +333,7 @@ ClassMember      ::= 'action:' ActionDecl+
                    | 'struct:' StructDecl+
                    | 'static:' ActionDecl+              // 静态方法（无 this）
                    | 'interface' 'class' Identifier ';' // 声明实现某接口
+                   | 'type' Identifier '=' Type ';'      // 关联类型绑定（§3.3，additive）
                    | 'const' Type Identifier '=' Expression ';'  // class 顶层 const（等价 property 段 const）
 
 ActionDecl       ::= Annot? ReturnType Identifier GenericParamList? '(' ParamList? ')' Block? ';'?

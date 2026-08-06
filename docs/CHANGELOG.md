@@ -46,14 +46,23 @@
   - **泛型 `@static` 类方法（M-FN-3 stdlib 落位）**：`static:` 段方法名后带类型参数
     （`List.map<T,R>`），跨模块可见；`resolveGenericStaticCall` 单态化到 `tu.functions`
     （`__gs_<Class>_<method>_<types>_inst`）。`tests/generic_static`。
-  - 全库回归：141/141（`-O0` + ASAN）。- **trait 默认实现（§三-5，additive）**：
+  - 全库回归：141/141（`-O0` + ASAN）。
+  - **trait 默认实现（§三-5，additive）**：
   - 接口方法**带默认体** → 实现类可省略该方法，虚表回退默认函数；类覆盖则用覆盖。
   - 实现：按类特化默认函数 `__ifdef_<Iface>_<method>_<Class>`（预声明 + generateClass 生成），
     `this` 绑定具体类 → 默认体内 `this.method()`/裸方法调用**静态解析到类方法**（含默认调默认）；
     sema `checkInterfaceImpl` 放行带默认体的接口方法，纯签名方法仍强制实现（负测试）。
   - `tests/interface_default`（默认/覆盖/this 分派/默认调默认）+ 负测试。
-  - **待办**：关联类型（`type Item` 由实现类绑定 + `T.Item` 解析），见 `next_improvements.md`。
-  - 全库回归：144/144（`-O0` + ASAN）。- **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
+  - 全库回归：144/144（`-O0` + ASAN）。
+  - **关联类型（§三-5，additive）**：接口 `type Item;` 声明抽象关联类型，实现类
+    `type Item = int;` 绑定（**必须绑定**，负测试 `assoc_unbound`）；接口方法参数/返回
+    引用关联类型；绑定经 `X::Item` 直接引用（局部变量/参数/返回类型）；泛型
+    `where T:I` 内 `T::Item` 实例化后单态化为具体绑定（约束类型参数注册为接口类型、
+    `T::Item` 替换、Assoc 通配；codegen `::` 拦截 + `resolveAssocType` + 类参数
+    `var_class_map_` 注册使 `c.method()` 精确解析到具体实例类）。
+  - `tests/assoc_types`（基本引用 + 泛型 T::Item + 关联类型参数/返回）+ 负测试。
+  - 全库回归：146/146（`-O0` + ASAN）。
+  - **`mypc run`（仿 `go run`）+ 单类文件自动 `main`（additive）**：
   - `mypc run file.myp [args]`：编译到临时产物 → 链接 → 直接运行 → 清理；退出码=程序
     退出码；args 透传（`main(argc,argv)`/构造器）。
   - **单类文件无 `main` 也可 run**：sema Pass 1 后注入合成 `main()`（实例化类并触发其

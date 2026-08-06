@@ -231,20 +231,23 @@ void Sema::checkInterfaceImpl(const ClassDecl& cls) {
     for (auto& ia : iface->actions) {
         // 默认实现（trait 默认方法）：接口方法带 body → 类可省略，虚表回退默认
         if (ia.body) continue;
+        // 接口签名含关联类型（Item）时类型由实现类绑定 → 只按名称匹配；
+        // 否则按 名称 + 返回类型 basic_type 匹配（既有粗粒度签名比较）。
+        bool iface_uses_assoc = (typeNodeToTypeInfo(ia.return_type).kind == TypeKind::Assoc);
+        if (!iface_uses_assoc)
+            for (auto& p : ia.params)
+                if (typeNodeToTypeInfo(p.type).kind == TypeKind::Assoc) { iface_uses_assoc = true; break; }
+        auto matches = [&](const ActionDecl& ca) {
+            if (ca.name != ia.name) return false;
+            if (iface_uses_assoc) return true;
+            return ca.return_type.basic_type == ia.return_type.basic_type;
+        };
         bool found = false;
-        for (auto& ca : cls.actions) {
-            if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) {
-                found = true;
-                break;
-            }
-        }
+        for (auto& ca : cls.actions)
+            if (matches(ca)) { found = true; break; }
         if (!found) {
-            for (auto& ca : cls.static_actions) {
-                if (ca.name == ia.name && ca.return_type.basic_type == ia.return_type.basic_type) {
-                    found = true;
-                    break;
-                }
-            }
+            for (auto& ca : cls.static_actions)
+                if (matches(ca)) { found = true; break; }
         }
         if (!found) {
             error(cls.range, "class '" + cls.name + "' does not implement action '" + ia.name + "' from interface '" + iface->name + "'");
@@ -262,6 +265,17 @@ void Sema::checkInterfaceImpl(const ClassDecl& cls) {
         if (!found) {
             error(cls.range, "class '" + cls.name + "' does not implement event '" + ie.name + "' from interface '" + iface->name + "'");
         }
+    }
+    // 关联类型（§三-5）：实现类必须绑定接口声明的全部关联类型
+    for (auto& at : iface->associated_types) {
+        auto bit = cls.associated_type_bindings.find(at);
+        if (bit == cls.associated_type_bindings.end()) {
+            error(cls.range, "class '" + cls.name + "' does not bind associated type '" +
+                at + "' from interface '" + iface->name + "' (add `type " + at + " = ...;`)");
+            continue;
+        }
+        // 校验绑定类型可解析（未知类型/递归别名等在此报错）
+        typeNodeToTypeInfo(bit->second);
     }
 }
 
@@ -485,6 +499,13 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     // Register generic type parameters as valid types within the class scope
     for (auto& tp : decl.type_params) {
         TypeInfo tp_type(TypeKind::Int);
+        // 约束类型参数（where T : I，§三-5）→ 注册为接口类型，使模板体内
+        // T 上的方法调用 / T::Item 可静态检查（运行时单态化到具体类）。
+        auto cit = decl.type_param_constraints.find(tp);
+        if (cit != decl.type_param_constraints.end()) {
+            tp_type = TypeInfo(TypeKind::Interface);
+            tp_type.class_name = cit->second;
+        }
         symbol_table_.declare(tp, tp_type);
     }
 
@@ -2403,6 +2424,37 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
         return arr_type;
     }
     if (node.isClass()) {
+        // 关联类型：X::Item — X 为实现接口的类（或其类型参数），Item 为绑定类型（§三-5）
+        {
+            auto pos = node.class_name.find("::");
+            if (pos != std::string::npos) {
+                std::string owner = node.class_name.substr(0, pos);
+                std::string member = node.class_name.substr(pos + 2);
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != owner) continue;
+                        auto bit = cls.associated_type_bindings.find(member);
+                        if (bit != cls.associated_type_bindings.end())
+                            return typeNodeToTypeInfo(bit->second);
+                    }
+                }
+                // owner 是类型参数（T）→ 约束接口的关联类型 → 抽象 Assoc；
+                // 无约束 → 占位符 Int（codegen 单态化时经 current_type_params_
+                // 解析到具体类绑定）。
+                for (auto& tp : current_func_type_params_)
+                    if (tp == owner) return TypeInfo(TypeKind::Int);
+                if (!current_class_name_.empty())
+                    for (auto& cls : current_tu_->classes)
+                        if (cls.name == current_class_name_)
+                            for (auto& tp : cls.type_params) {
+                                if (tp != owner) continue;
+                                auto cit = cls.type_param_constraints.find(tp);
+                                if (cit != cls.type_param_constraints.end())
+                                    return TypeInfo(TypeKind::Assoc);
+                                return TypeInfo(TypeKind::Int);
+                            }
+            }
+        }
         // Built-in slice<T>: { T* data; int64 len } fat pointer
         if (node.class_name == "slice" && node.type_args.size() == 1) {
             TypeInfo st(TypeKind::Slice);
@@ -2507,6 +2559,11 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             inst.inst_type_args = node.type_args; // keep concrete args for codegen
             inst.range = original.range;
 
+            // 关联类型绑定：类型实参代入（如 type Item = T; → Item = int）
+            for (auto& [name, bt] : original.associated_type_bindings)
+                inst.associated_type_bindings[name] =
+                    substituteTypeNode(bt, original.type_params, node.type_args);
+
             // Substitute properties
             for (auto& prop : original.properties) {
                 PropertyDecl p;
@@ -2603,11 +2660,20 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
         if (existing) return *existing;
         if (!current_class_name_.empty()) {
             for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
                 for (auto& tp : cls.type_params) {
-                    if (tp == lookup_name) {
-                        TypeInfo tp_type(TypeKind::Int);
-                        return tp_type;
+                    if (tp != lookup_name) continue;
+                    // 约束类型参数（where T : I，§三-5）→ 解析为接口类型，使
+                    // T 上的方法调用 / T::Item 可在模板体中静态检查（运行时单态化
+                    // 到具体类）。
+                    auto cit = cls.type_param_constraints.find(tp);
+                    if (cit != cls.type_param_constraints.end()) {
+                        TypeInfo if_type(TypeKind::Interface);
+                        if_type.class_name = cit->second;
+                        return if_type;
                     }
+                    TypeInfo tp_type(TypeKind::Int);
+                    return tp_type;
                 }
             }
         }
@@ -2617,6 +2683,14 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
                 TypeInfo tp_type(TypeKind::Int);
                 return tp_type;
             }
+        }
+
+        // 抽象关联类型（§三-5）：标识符匹配某接口的 `type Item;` 声明 → Assoc
+        //（静态检查与任意类型兼容；运行时经实现类绑定为具体类型）。
+        if (current_tu_) {
+            for (auto& ifd : current_tu_->interfaces)
+                for (auto& at : ifd.associated_types)
+                    if (at == lookup_name) return TypeInfo(TypeKind::Assoc);
         }
 
         // Check if this is a generic class instantiation
@@ -2716,6 +2790,8 @@ std::string Sema::typeName(const TypeInfo& type) const {
             s += ")";
             return s;
         }
+        case TypeKind::Assoc:
+            return "assoc";
     }
     return "unknown";
 }
@@ -2751,6 +2827,8 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
         }
         return true;
     }
+    // 抽象关联类型（§三-5）：Assoc 与任意类型兼容（双向通配）
+    if (lhs.kind == TypeKind::Assoc || rhs.kind == TypeKind::Assoc) return true;
     // Implicit numeric promotion: Int ↔ Long are compatible
     if ((lhs.kind == TypeKind::Int && rhs.kind == TypeKind::Long) ||
         (lhs.kind == TypeKind::Long && rhs.kind == TypeKind::Int))
@@ -2914,6 +2992,19 @@ TypeNode Sema::substituteTypeNode(const TypeNode& node,
                                    const std::vector<TypeNode>& type_args) const {
     // Check if this node's class name is a type parameter
     if (node.isClass() && !node.class_name.empty()) {
+        // 关联类型 T::Item — 替换 owner 类型参数（§三-5）
+        auto pos = node.class_name.find("::");
+        if (pos != std::string::npos) {
+            std::string owner = node.class_name.substr(0, pos);
+            std::string member = node.class_name.substr(pos + 2);
+            for (size_t i = 0; i < type_params.size() && i < type_args.size(); i++) {
+                if (owner != type_params[i]) continue;
+                TypeNode result = node;
+                result.class_name = type_args[i].class_name + "::" + member;
+                result.type_args = type_args[i].type_args;
+                return result;
+            }
+        }
         for (size_t i = 0; i < type_params.size() && i < type_args.size(); i++) {
             if (node.class_name == type_params[i]) {
                 return type_args[i];

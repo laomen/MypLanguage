@@ -1,0 +1,11 @@
+// EXPECT ERROR: interface 声明了关联类型，实现类必须绑定（type Item = ...）
+interface I {
+    type Item;                    // 关联类型声明
+    Item getVal();                // 方法引用关联类型
+}
+class C {
+    interface class I;
+    action:
+        // 缺少 type Item = ... 绑定 → 必须报错（关联类型未绑定）
+        int getVal() { return 1; }
+}

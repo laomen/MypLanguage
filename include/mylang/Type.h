@@ -25,6 +25,7 @@ enum class TypeKind : uint8_t {
     Slice,
     Function,
     Tuple,
+    Assoc,   // 抽象关联类型（接口 type Item;）——静态检查与任意类型兼容，运行时经实现类绑定
 };
 
 struct TypeInfo {
