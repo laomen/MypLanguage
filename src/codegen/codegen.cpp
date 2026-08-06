@@ -683,6 +683,47 @@ void CodeGen::arcStoreRef(llvm::Value* slot, llvm::Value* new_val,
     if (old_data && runtime_release_)
         builder_.CreateCall(runtime_release_, {old_data});
 }
+// A fresh `new` object is owned by the current statement until a store takes it.
+void CodeGen::arcPushTemp(llvm::Value* v) {
+    if (v) arc_pending_temps_.push_back(v);
+}
+// A store site takes ownership of a temporary (transfer) — drop it from the
+// pending list so the statement-end flush does not release it again.
+void CodeGen::arcConsumeTemp(llvm::Value* v) {
+    if (!v) return;
+    for (auto it = arc_pending_temps_.begin(); it != arc_pending_temps_.end(); ++it) {
+        if (*it == v) { arc_pending_temps_.erase(it); return; }
+    }
+}
+// End of statement: release any `new` temporaries nobody stored.
+void CodeGen::arcFlushTemps() {
+    if (arc_pending_temps_.empty()) return;
+    // Dead path (after return/throw): leak the temps rather than emit into a
+    // dead block (the return path already consumed/retained its value).
+    if (!builder_.GetInsertBlock() || builder_.GetInsertBlock()->getTerminator()) {
+        arc_pending_temps_.clear();
+        return;
+    }
+    for (auto* v : arc_pending_temps_) {
+        if (runtime_release_)
+            builder_.CreateCall(runtime_release_, {v});
+    }
+    arc_pending_temps_.clear();
+}
+// Function epilogue: release every live scope's local reference slots before a
+// return. Normally popScope handles this, but when the last statement is a
+// `return` the block is already terminated and popScope's release is skipped
+// (leaking the locals). retain-at-return already +1'd the returned value, so
+// releasing the returned slot too is balanced.
+void CodeGen::arcReleaseAllScopes() {
+    if (!runtime_release_) return;
+    if (!builder_.GetInsertBlock() || builder_.GetInsertBlock()->getTerminator())
+        return;
+    for (auto& scope : arc_scope_slots_) {
+        for (auto& s : scope)
+            releaseArcSlot(s.alloca, s.is_interface);
+    }
+}
 // NewExpr / CallExpr produce a fresh (+1) reference → transfer into a strong
 // slot without retaining. Everything else (identifier / member access /
 // subscript …) is an alias of an existing owner → must retain.
@@ -1370,6 +1411,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
     current_ret_ti_ = typeNodeToCodegenType(action.return_type);
+    arc_skip_retain_return_ = false;
+    arc_pending_temps_.clear();
     // 固定数组栈变量表按函数隔离（否则不同函数同名变量互相污染）
     stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -1512,6 +1555,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
     current_ret_ti_ = typeNodeToCodegenType(action.return_type);
+    arc_skip_retain_return_ = false;
+    arc_pending_temps_.clear();
     // 固定数组栈变量表按函数隔离
     stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
@@ -1763,6 +1808,8 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
         current_function_ = func;
         current_class_name_ = type_key; // for error messages
         current_ret_ti_ = typeNodeToCodegenType(method.return_type);
+        arc_skip_retain_return_ = false;
+        arc_pending_temps_.clear();
         auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
         builder_.SetInsertPoint(bb);
         pushScope();
@@ -1845,6 +1892,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     current_function_ = func;
     current_class_name_ = cls.name;
     current_ret_ti_ = rt;
+    arc_skip_retain_return_ = false;
+    arc_pending_temps_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -1933,6 +1982,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
     current_ret_ti_ = rt;
+    arc_skip_retain_return_ = false;
+    arc_pending_temps_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -2507,6 +2558,9 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::DestructureStmt: generateDestructureStmt(static_cast<const DestructureStmt&>(s)); break;
         default: break;
     }
+    // ARC: statement-end temporary release — any fresh `new` whose object was
+    // not stored into a slot (e.g. passed as a borrow, or discarded) is freed.
+    arcFlushTemps();
 }
 
 // (A a, B b) = tuple;  (declaration)   or  (a, b) = tuple;  (assignment)
@@ -2602,6 +2656,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto* v = generateExpr(*d.init_expr);
             builder_.CreateStore(v, inst_a);
             instance_ptr = builder_.CreateLoad(lt, inst_a, d.name);
+            // ARC: the thread's startup_arg owns the instance (released in
+            // myp_thread_destroy) — drop the statement-end `new` temp so it is
+            // not freed while the thread still uses it.
+            arcConsumeTemp(v);
 
             // Store in global for mapping handler access
             if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
@@ -2681,17 +2739,24 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         setNamedValue(d.name, ptr_a);
 
         for (int i = 0; i < pool_size; i++) {
-            // Create instance via myp_alloc
+            // Create instance via myp_alloc_object (ARC header so the thread
+            // destroy path can myp_release(startup_arg) safely).
             auto* st = getClassStruct(elem_class);
             if (!st) continue;
             const auto& lay = module_->getDataLayout();
             auto sz = lay.getTypeAllocSize(st);
-            auto* alloc_fn = runtime_alloc_;
+            auto* alloc_fn = runtime_alloc_object_;
             if (!alloc_fn) {
-                auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-                alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+                auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                    {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+                alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                    "myp_alloc_object", module_.get());
             }
-            auto* obj = builder_.CreateCall(alloc_fn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1)});
+            auto tit = class_type_ids_.find(elem_class);
+            uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
+            auto* obj = builder_.CreateCall(alloc_fn,
+                {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
+                 llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
             if (sz > 0)
                 builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
 
@@ -2821,6 +2886,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             // Store instance ptr and vtable ptr in the fat pointer
             auto* data_ptr = builder_.CreateStructGEP(fat_ty, a, 0);
             builder_.CreateStore(inst, data_ptr);
+            arcConsumeTemp(inst);   // interface local takes the fresh `new` object
 
             if (vgv) {
                 auto* vtable_ptr = builder_.CreateStructGEP(fat_ty, a, 1);
@@ -2913,8 +2979,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         setNamedValue(d.name, a);
         builder_.CreateStore(init_val, a);
         // ARC: `var x = new Foo()` → class ref slot (released at scope exit).
-        if (d.init_expr->kind == ExprKind::NewExpr)
+        if (d.init_expr->kind == ExprKind::NewExpr) {
             registerArcSlot(a, false);
+            arcConsumeTemp(init_val);
+        }
         return;
     }
 
@@ -2986,6 +3054,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         }
         // Record element type for subscript access
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
+        // ARC: record whether elements are class references (retain/release on store).
+        array_elem_is_class_[d.name] =
+            d.type.element_type &&
+            getClassStruct(d.type.element_type->class_name) != nullptr;
         return;
     } else if (d.type.isFunction()) {
         // First-class function value: fat pointer {closure, call_fn}
@@ -3051,6 +3123,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
             emitRetain(v);
         builder_.CreateStore(v, a);
+        arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
 
         // Store instance in global for mapping handler access
         if (d.init_expr->kind == ExprKind::NewExpr && !d.type.class_name.empty() && current_tu_) {
@@ -5077,6 +5150,17 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
 }
 
 void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
+    bool can_emit = builder_.GetInsertBlock() &&
+                    !builder_.GetInsertBlock()->getTerminator();
+
+    // ARC: for main, release function-local slots BEFORE myp_free_all() — that
+    // call frees every remaining tracking-list object, so releasing a slot
+    // after it would read already-freed memory (UAF). For non-main functions
+    // the epilogue release runs AFTER retain-at-return (see below), so the
+    // returned slot's rc stays balanced (retain +1 then release -1).
+    if (can_emit && in_main_)
+        arcReleaseAllScopes();
+
     // For main: cleanup threads + process pending events before returning
     if (in_main_) {
         // Stop and destroy all @thread handles
@@ -5103,7 +5187,7 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             builder_.CreateCall(runtime_free_all_, {});
         }
     }
-    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
+    if (can_emit) {
         emitRegionExit();   // @region: release temporaries before returning
         // @coro method: store return value into the coroutine's result slot
         if (current_is_coro_ && ret_val && !ret_val->getType()->isVoidTy()) {
@@ -5146,10 +5230,14 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             }
             // ARC (§五-1): retain-at-return — a returned class/interface
             // reference is +1'd so the caller transfers it into a strong slot
-            // without retaining. Fresh `new` and property returns are both
-            // covered (the caller always takes ownership of the +1).
-            if (current_ret_ti_.kind == TypeKind::Class ||
-                current_ret_ti_.kind == TypeKind::Interface) {
+            // without retaining. `return new T()` is a fresh temporary whose
+            // rc=1 already transfers to the caller — skip the extra retain
+            // (arc_skip_retain_return_ set by generateReturnStmt).
+            bool skip_retain = arc_skip_retain_return_;
+            arc_skip_retain_return_ = false;
+            if (!skip_retain &&
+                (current_ret_ti_.kind == TypeKind::Class ||
+                 current_ret_ti_.kind == TypeKind::Interface)) {
                 llvm::Value* rdata = ret_val;
                 if (current_ret_ti_.kind == TypeKind::Interface &&
                     ret_val->getType()->isStructTy())
@@ -5157,8 +5245,16 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                 if (runtime_retain_)
                     builder_.CreateCall(runtime_retain_, {rdata});
             }
+            // ARC epilogue (non-main): release local slots AFTER retain-at-return
+            // so the returned slot's rc is balanced (+1 then -1); for main the
+            // release already ran before myp_free_all().
+            if (!in_main_)
+                arcReleaseAllScopes();
             builder_.CreateRet(ret_val);
         } else {
+            // Void return: release local slots (epilogue).
+            if (!in_main_)
+                arcReleaseAllScopes();
             builder_.CreateRetVoid();
         }
     }
@@ -5184,6 +5280,12 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                 else if (rt->isPointerTy() && v->getType()->isPointerTy())
                     v = builder_.CreateBitCast(v, rt);
             }
+            // ARC: `return new T()` in a try-with-finally — consume the fresh
+            // temp now; emitFunctionReturn skips the extra retain later.
+            if (s.value->kind == ExprKind::NewExpr) {
+                arcConsumeTemp(v);
+                arc_skip_retain_return_ = true;
+            }
             if (!finally_ret_slot_)
                 finally_ret_slot_ = createEntryBlockAlloca(current_function_, rt, "finally_ret");
             builder_.CreateStore(v, finally_ret_slot_);
@@ -5196,6 +5298,10 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     llvm::Value* v = nullptr;
     if (s.value) v = generateExpr(*s.value);
     v = heapCopyArrayReturn(v, s.value.get());
+    if (s.value && s.value->kind == ExprKind::NewExpr) {
+        arcConsumeTemp(v);
+        arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
+    }
     emitFunctionReturn(v);
 }
 
@@ -6514,6 +6620,9 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
     auto* closure_gep = builder_.CreateStructGEP(fp_ty, fp, 0);
     auto* call_fn_gep = builder_.CreateStructGEP(fp_ty, fp, 1);
     builder_.CreateStore(obj, closure_gep);
+    // ARC: the fat-pointer function value now owns the closure — drop it from
+    // the statement-end temp list (else it would be freed while still called).
+    arcConsumeTemp(obj);
     auto* tramp = module_->getFunction(e.hidden_class_name + "_tramp");
     if (tramp)
         builder_.CreateStore(builder_.CreateBitCast(tramp, llvm::PointerType::get(ctx_, 0)), call_fn_gep);
@@ -6908,9 +7017,11 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         }
         auto tit = class_type_ids_.find(cls_name);
         uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
-        return builder_.CreateCall(alloc_fn,
+        auto* obj1 = builder_.CreateCall(alloc_fn,
             {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1),
              llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
+        arcPushTemp(obj1);   // statement-end temp release (consumed by stores)
+        return obj1;
     }
     const auto& lay = module_->getDataLayout();
     auto sz = lay.getTypeAllocSize(st);
@@ -6929,6 +7040,7 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     auto* obj = builder_.CreateCall(alloc_fn,
         {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
+    arcPushTemp(obj);   // statement-end temp release (consumed by stores)
     if (sz > 0)
         builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
 
@@ -7373,6 +7485,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                         for (auto& ifd : current_tu_->interfaces)
                                             if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                     arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                    arcConsumeTemp(v);
                                 }
                                 builder_.CreateStore(v, gep);
                                 return v;
@@ -7398,8 +7511,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         }
         // ARC: class-local assignment — retain the new owner (unless fresh),
         // release the old value. Self/alias assignment is safe (retain-then-release).
-        if (isArcClassLocal(a))
+        if (isArcClassLocal(a)) {
             arcStoreRef(a, v, false, isFreshArcExpr(*e.value));
+            arcConsumeTemp(v);   // fresh `new` RHS is now owned by the local
+        }
         builder_.CreateStore(v, a);
         return v;
     }
@@ -7457,6 +7572,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                             emitRetain(v);
                         if (runtime_release_)
                             builder_.CreateCall(runtime_release_, {old});
+                        arcConsumeTemp(v);
                     }
                     builder_.CreateStore(v, p);
                     return v;
@@ -7466,6 +7582,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         auto* a = generateExpr(*ss.array);
         auto* i = generateExpr(*ss.index);
         llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);
+        bool elem_is_class = false;   // ARC: element is a class reference slot
 
         // Determine element type from the array expression (see generateSubscript)
         if (ss.array->kind == ExprKind::Identifier) {
@@ -7476,6 +7593,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                     for (auto& p : cls.properties) {
                         if (p.name == id.name && p.type.isArray()) {
                             elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                            elem_is_class = p.type.element_type &&
+                                getClassStruct(p.type.element_type->class_name) != nullptr;
                             goto assign_gep;
                         }
                     }
@@ -7485,6 +7604,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             auto eit = array_elem_types_.find(id.name);
             if (eit != array_elem_types_.end()) {
                 elem_ty = eit->second;
+                auto cit = array_elem_is_class_.find(id.name);
+                if (cit != array_elem_is_class_.end()) elem_is_class = cit->second;
                 goto assign_gep;
             }
         } else if (ss.array->kind == ExprKind::MemberAccess) {
@@ -7502,6 +7623,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         for (auto& p : cls.properties) {
                             if (p.name == ma.member_name && p.type.isArray()) {
                                 elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                                elem_is_class = p.type.element_type &&
+                                    getClassStruct(p.type.element_type->class_name) != nullptr;
                                 goto assign_gep;
                             }
                         }
@@ -7520,6 +7643,16 @@ assign_gep:
                 v = builder_.CreateSIToFP(v, elem_ty);
             else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
                 v = builder_.CreateFPToSI(v, elem_ty);
+        }
+        // ARC: T[] of classes — element is a strong slot (retain unless fresh,
+        // release the overwritten element). Slice handled above.
+        if (elem_is_class) {
+            auto* old = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), p);
+            if (!isFreshArcExpr(*e.value))
+                emitRetain(v);
+            if (runtime_release_)
+                builder_.CreateCall(runtime_release_, {old});
+            arcConsumeTemp(v);
         }
         builder_.CreateStore(v, p);
         return v;
@@ -7600,6 +7733,7 @@ assign_gep:
                                             for (auto& ifd : current_tu_->interfaces)
                                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                        arcConsumeTemp(v);
                                     }
                                     builder_.CreateStore(v, gep);
                                     return v;
@@ -7670,6 +7804,7 @@ assign_gep:
                             for (auto& ifd : current_tu_->interfaces)
                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                        arcConsumeTemp(v);
                     }
                     builder_.CreateStore(v, gep);
                     return v;

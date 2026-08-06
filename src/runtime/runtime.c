@@ -2025,8 +2025,13 @@ void myp_thread_destroy(myp_thread_t* thr) {
     myp_thread_stop(thr);
     pthread_join(thr->thread, NULL);
     free(thr->queue);
-    // Note: thr->startup_arg (the instance) is tracked by myp_alloc and
-    // will be freed by myp_free_all() at main exit. Do NOT free it here.
+    // ARC (§五-1): release the instance the thread ran its @startup on. The
+    // instance is a header-bearing myp_alloc_object (both @thread and
+    // @threadpool paths), so this decrements its rc; if nothing else holds it,
+    // it is freed here instead of leaking to process exit. myp_free_object
+    // marks the tracking-list node freed, so myp_free_all() won't double-free.
+    if (thr->startup_arg)
+        myp_release(thr->startup_arg);
     free(thr);
 }
 

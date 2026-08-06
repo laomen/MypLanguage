@@ -137,6 +137,19 @@ private:
     bool isArcClassLocal(llvm::Value* alloca);
     // True for NewExpr / CallExpr results: transfer (no retain) at a strong slot.
     static bool isFreshArcExpr(const Expr& e);
+    // ---- Statement-end temporary release (§五-1 M-ARC-2) ----
+    // A `new` expression's fresh object is owned by the current statement; if a
+    // store site takes it (transfer) it calls arcConsumeTemp; otherwise
+    // arcFlushTemps (end of every statement) releases the leftover temporaries.
+    std::vector<llvm::Value*> arc_pending_temps_;
+    bool arc_skip_retain_return_ = false;
+    void arcPushTemp(llvm::Value* v);
+    void arcConsumeTemp(llvm::Value* v);
+    void arcFlushTemps();
+    // Release every live scope's local reference slots (function epilogue —
+    // called before a return so locals that would otherwise be skipped by the
+    // dead-path popScope are freed; retain-at-return already +1'd the result).
+    void arcReleaseAllScopes();
     llvm::Function* runtime_now_ms_ = nullptr;
     llvm::Function* runtime_sleep_ms_ = nullptr;
     // Event system
@@ -285,6 +298,8 @@ private:
     std::unordered_map<std::string, TypeInfo> func_val_types_;
     /// Track element types for local array variables (for subscript codegen).
     std::unordered_map<std::string, llvm::Type*> array_elem_types_;
+    /// ARC: whether a local array variable's elements are class references.
+    std::unordered_map<std::string, bool> array_elem_is_class_;
     std::unordered_map<std::string, llvm::Type*> var_value_types_;
 
     // ---- Global event ID map: "ClassName::eventName" -> int ----

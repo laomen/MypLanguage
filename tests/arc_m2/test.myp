@@ -1,0 +1,73 @@
+// arc_m2: ARC M-ARC-2（§五-1，additive）
+// 覆盖：T[] 数组元素 retain/release（别名入数组不悬垂、覆盖释放旧元素）、
+// 语句末临时释放（new 丢弃/作实参不累积）、return new 转移（不泄漏）、
+// return 借用（命名局部 retain-at-return + epilogue release 不泄漏）、
+// 循环临时参数零累积
+import env;
+import memory;
+
+class Node {
+    action:
+        void setVal(int v) { val = v; }
+        int getVal() { return val; }
+        void setChild(Node c) { child = c; }      // 属性存储 → retain
+        void consume(Node x) { child = x; }        // 存储参数 → retain
+        Node makeChild(int v) { Node c = new Node(); c.setVal(v); return c; }  // 借用返回
+        Node makeFresh(int v) { return new Node(); }  // return new → 转移
+    property:
+        Node child;
+        int val = 0;
+}
+
+int pmRun() {
+    long base = Memory.liveObjectCount();
+    Node host = new Node();
+
+    // --- T[] 数组：别名入数组 retain，局部释放后元素仍存活 ---
+    {
+        Node[] arr = new Node[2];
+        {
+            Node x = new Node();
+            x.setVal(11);
+            arr[0] = x;              // retain(x) → arr 持有
+        }                            // x 释放 → arr[0] 仍存活（rc 1）
+        int got = arr[0].getVal();
+        Console.writeString("arr_alias: got=" + got + " ");
+        Node y = new Node();
+        y.setVal(22);
+        arr[0] = y;                  // retain(y) + release(旧 arr[0]=x)
+        Console.writeString("arr_overwrite: " + arr[0].getVal() + "\n");
+    }
+
+    // --- 语句末临时释放：new 作实参（consume 存储 retain）不累积 ---
+    for (int i = 0; i < 1000; i = i + 1) {
+        host.consume(new Node());    // new 临时 → consume 存 child → 语句末释放临时
+    }
+    long after_consume = Memory.liveObjectCount() - base;
+    Console.writeString("temp_consume: host_child_alive=1 after=" + after_consume + " ");
+
+    // --- 纯丢弃临时：`new Node();` 语句 → 立即释放 ---
+    for (int i = 0; i < 1000; i = i + 1) {
+        new Node();
+    }
+    long after_discard = Memory.liveObjectCount() - base;
+    Console.writeString("temp_discard: after=" + after_discard + "\n");
+
+    // --- return new → 转移（不泄漏） ---
+    for (int i = 0; i < 1000; i = i + 1) {
+        Node fresh = host.makeFresh(i);
+    }
+    long after_return = Memory.liveObjectCount() - base;
+    Console.writeString("return_new: after=" + after_return + " ");
+
+    // --- return 借用（命名局部）→ retain-at-return + epilogue release 不泄漏 ---
+    for (int i = 0; i < 1000; i = i + 1) {
+        Node c = host.makeChild(i);
+    }
+    long after_borrow = Memory.liveObjectCount() - base;
+    Console.writeString("return_borrow: after=" + after_borrow + "\n");
+
+    Console.writeString("arc m2 all ok\n");
+    return 0;
+}
+int main() { int c = pmRun(); return c; }
