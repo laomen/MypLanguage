@@ -114,6 +114,12 @@ private:
     llvm::Function* runtime_print_bool_ = nullptr;
     llvm::Function* runtime_alloc_ = nullptr;
     llvm::Function* runtime_free_ = nullptr;
+    // ARC (§五-1)
+    llvm::Function* runtime_alloc_object_ = nullptr;
+    llvm::Function* runtime_retain_ = nullptr;
+    llvm::Function* runtime_release_ = nullptr;
+    llvm::Function* runtime_free_object_ = nullptr;
+    llvm::GlobalVariable* release_table_gv_ = nullptr;
     llvm::Function* runtime_now_ms_ = nullptr;
     llvm::Function* runtime_sleep_ms_ = nullptr;
     // Event system
@@ -372,6 +378,12 @@ private:
     void generateTranslationUnit(TranslationUnit& tu);
     // Build per-class Error vtables + the __myp_error_vtables global array.
     void generateErrorVTables();
+    // ARC (§五-1): per-class destroy stubs + __myp_release_table.
+    void generateArcSupport(TranslationUnit& tu);
+    // True if a TypeNode is a class instance / interface reference slot (ARC-counted).
+    bool isArcRefType(const TypeNode& tn);
+    // Emit myp_release(load of local alloca) if it holds a class ref.
+    void maybeReleaseLocal(const std::string& name, llvm::Value* alloca);
     // True if name is the Error interface declared in this TU.
     bool isErrorInterface(const std::string& name);
     void createClassActionDecl(const ClassDecl& cls, const ActionDecl& action);

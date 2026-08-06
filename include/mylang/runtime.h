@@ -23,6 +23,20 @@ void myp_free(void* ptr);
 // Free all allocations made by the current thread (called at main exit)
 void myp_free_all(void);
 
+// ---- ARC (automatic reference counting on class instances, §五-1) ----
+// Object layout: 8-byte header { rc:u32, type_id:u32 } sits *before* the data
+// pointer returned to codegen. myp_alloc_object allocates size+header, sets
+// rc=1 + type_id, and returns the data pointer (base+8). myp_retain/myp_release
+// operate on the data pointer and reach the header at (obj-8). myp_release
+// reaching rc=0 dispatches to the per-TU __myp_release_table[type_id] destroy
+// stub, which cascades reference fields then calls myp_free_object.
+void* myp_alloc_object(size_t size, uint32_t type_id);
+void myp_retain(void* obj);
+uint32_t myp_release(void* obj);
+void myp_free_object(void* obj);
+// Per-TU destroy-stub table, defined by generated code (indexed by type_id).
+extern void (*__myp_release_table[])(void*);
+
 // ---- Timeline ----
 int64_t myp_now_ms(void);
 int64_t myp_now_realtime_ms(void);

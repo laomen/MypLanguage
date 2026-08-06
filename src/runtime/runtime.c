@@ -1333,6 +1333,75 @@ void myp_free(void* ptr) {
     free(ptr);
 }
 
+// ======================
+// ARC — automatic reference counting on class instances (§五-1)
+// ======================
+// Class instances are allocated with an 8-byte header { rc:u32, type_id:u32 }
+// placed immediately BEFORE the data pointer handed to generated code. All
+// existing field GEPs / this / vtable accesses use the data pointer, so no
+// codegen offset churn is needed; retain/release reach the header at (obj-8).
+// The per-TU __myp_release_table (defined by generated code) is indexed by
+// type_id and holds each class's destroy stub (cascades ref fields, then
+// myp_free_object). Thread-local + non-atomic (objects don't cross threads,
+// §7 of docs/arc.md).
+
+typedef struct myp_obj_header {
+    uint32_t rc;
+    uint32_t type_id;
+} myp_obj_header_t;
+
+#define MYP_OBJ_HEADER_SIZE ((size_t)sizeof(myp_obj_header_t))
+
+// Mark the tracking-list node for `base` as freed so myp_free_all() at exit
+// does not double-free an object ARC already released.
+static void myp_alloc_list_mark_freed(void* base) {
+    pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
+    while (node) {
+        if (node->ptr == base) { node->ptr = NULL; return; }
+        node = node->next;
+    }
+}
+
+void* myp_alloc_object(size_t size, uint32_t type_id) {
+    size_t total = size + MYP_OBJ_HEADER_SIZE;
+    char* base = (char*)malloc(total);
+    if (!base) return NULL;
+    myp_obj_header_t* h = (myp_obj_header_t*)base;
+    h->rc = 1;
+    h->type_id = type_id;
+    myp_alloc_list_push(base);   // track base for exit cleanup
+    return base + MYP_OBJ_HEADER_SIZE;  // data pointer
+}
+
+void myp_retain(void* obj) {
+    if (!obj) return;
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    h->rc++;
+}
+
+uint32_t myp_release(void* obj) {
+    if (!obj) return 0;
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    if (h->rc == 0) return 0;          // safety: never underflow
+    h->rc--;
+    if (h->rc == 0) {
+        // Dispatch to the per-TU destroy stub (cascades reference fields).
+        if (h->type_id > 0 && __myp_release_table[h->type_id])
+            __myp_release_table[h->type_id](obj);
+        else
+            myp_free_object(obj);
+    }
+    return h->rc;
+}
+
+void myp_free_object(void* obj) {
+    if (!obj) return;
+    char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
+    myp_alloc_list_mark_freed(base);
+    free(base);
+}
+
 // Forward declaration — region arena is defined below (after myp_free_all).
 void myp_region_free_all(void);
 

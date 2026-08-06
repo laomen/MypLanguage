@@ -742,6 +742,11 @@ void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Done BEFORE function bodies so catch (Error e) dispatch can reference it.
     generateErrorVTables();
 
+    // ARC (§五-1): per-class destroy stubs + __myp_release_table. Stubs are
+    // dormant until myp_release drops an rc to 0; objects live until exit
+    // until the instrumentation (M-ARC-2) starts releasing them.
+    generateArcSupport(tu);
+
     // Pre-create entry wrappers for top-level @coro functions so spawn sites in
     // any order (e.g. main defined before the coroutine) can resolve them.
     for (auto& f : tu.functions) {
@@ -874,6 +879,107 @@ bool CodeGen::isErrorInterface(const std::string& name) {
         if (ifd.name == "Error") return true;
     return false;
 }
+
+// ---- ARC (§五-1) ----
+
+// Is a TypeNode an ARC-counted reference slot? Only class instances and
+// interface fat pointers count (§2 of docs/arc.md). string / arrays / slices /
+// structs do NOT (value or arena-managed). Generic type-param placeholders are
+// resolved via current_type_params_ before classifying.
+bool CodeGen::isArcRefType(const TypeNode& tn) {
+    if (!tn.class_name.empty() && tn.class_name.find("::") != std::string::npos) {
+        auto ra = const_cast<CodeGen*>(this)->resolveAssocType(
+            tn.class_name.substr(0, tn.class_name.find("::")),
+            tn.class_name.substr(tn.class_name.find("::") + 2));
+        if (ra) return isArcRefType(*ra);
+        return false;
+    }
+    // Generic type-param placeholder → concrete arg for current instance.
+    for (auto& tp : current_type_params_) {
+        if (!tn.class_name.empty() && tn.class_name == tp.first)
+            return isArcRefType(tp.second);
+    }
+    if (tn.isArray() || tn.isTuple() || tn.isFunction()) return false;
+    if (!tn.class_name.empty()) {
+        // Class instance?
+        if (getClassStruct(tn.class_name)) return true;
+        // Interface fat pointer (data part is the object)?
+        if (current_tu_)
+            for (auto& ifd : current_tu_->interfaces)
+                if (ifd.name == tn.class_name) return true;
+        return false;
+    }
+    return false;
+}
+
+// Emit myp_release(load(alloca)) for a local class-ref slot. Used at scope exit.
+void CodeGen::maybeReleaseLocal(const std::string& name, llvm::Value* alloca) {
+    if (!runtime_release_ || !alloca) return;
+    if (builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
+    auto* slot = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), alloca, name + ".ref");
+    builder_.CreateCall(runtime_release_, {slot});
+}
+
+void CodeGen::generateArcSupport(TranslationUnit& tu) {
+    auto* p = llvm::PointerType::get(ctx_, 0);
+    int max_tid = 0;
+    for (auto& kv : class_type_ids_)
+        if (kv.second > max_tid) max_tid = kv.second;
+    std::vector<llvm::Constant*> table(max_tid + 1,
+        llvm::ConstantPointerNull::get(p));
+
+    for (auto& cls : tu.classes) {
+        auto tit = class_type_ids_.find(cls.name);
+        if (tit == class_type_ids_.end()) continue;
+        std::string dname = "__myp_destroy_" + cls.name;
+        auto* fn = module_->getFunction(dname);
+        if (!fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {p}, false);
+            fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, dname, module_.get());
+        }
+        auto* bb = llvm::BasicBlock::Create(ctx_, "entry", fn);
+        llvm::IRBuilder<> b(ctx_);
+        b.SetInsertPoint(bb);
+        auto* self = fn->getArg(0);
+        auto* st = getClassStruct(cls.name);
+        bool is_iface_field = false;
+        if (st) {
+            for (size_t pi = 0; pi < cls.properties.size(); pi++) {
+                auto& prop = cls.properties[pi];
+                if (!isArcRefType(prop.type)) continue;
+                // Interface slot = fat pointer { data, vtable } → release data.
+                bool iface = false;
+                if (!prop.type.class_name.empty() && current_tu_)
+                    for (auto& ifd : current_tu_->interfaces)
+                        if (ifd.name == prop.type.class_name) { iface = true; break; }
+                is_iface_field = iface;
+                auto* gep = b.CreateStructGEP(st, self, pi);
+                llvm::Value* slot;
+                if (iface) {
+                    auto* fat = b.CreateLoad(getLLVMType(typeNodeToCodegenType(prop.type)), gep);
+                    slot = b.CreateExtractValue(fat, 0);
+                } else {
+                    slot = b.CreateLoad(llvm::PointerType::get(ctx_, 0), gep);
+                }
+                b.CreateCall(runtime_release_, {slot});
+            }
+        }
+        (void)is_iface_field;
+        b.CreateCall(runtime_free_object_, {self});
+        b.CreateRetVoid();
+        table[tit->second] = llvm::ConstantExpr::getPointerCast(fn, p);
+    }
+
+    // __myp_release_table: ExternalLinkage so the runtime's myp_release can
+    // dispatch by type_id. Sized to max_tid+1; null entries fall back to a
+    // plain myp_free_object in myp_release.
+    if (table.empty()) table.push_back(llvm::ConstantPointerNull::get(p));
+    auto* arr_ty = llvm::ArrayType::get(p, table.size());
+    auto* init = llvm::ConstantArray::get(arr_ty, table);
+    release_table_gv_ = new llvm::GlobalVariable(*module_, arr_ty, false,
+        llvm::GlobalValue::ExternalLinkage, init, "__myp_release_table");
+}
+
 void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& action) {
     auto fn = action.has_constructor
         ? constructorMangledName(cls.name, action.name, action.params)
@@ -6663,21 +6769,36 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     if (!st) {
         // Struct type not found — allocate 1 byte (minimum valid pointer)
         // The struct has no properties, so no real storage is needed
-        auto* alloc_fn = runtime_alloc_;
+        auto* alloc_fn = runtime_alloc_object_;
         if (!alloc_fn) {
-            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_alloc_object", module_.get());
         }
-        return builder_.CreateCall(alloc_fn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1)});
+        auto tit = class_type_ids_.find(cls_name);
+        uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
+        return builder_.CreateCall(alloc_fn,
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
     }
     const auto& lay = module_->getDataLayout();
     auto sz = lay.getTypeAllocSize(st);
-    auto* alloc_fn = runtime_alloc_;
+    // ARC: allocate with an 8-byte { rc, type_id } header. myp_alloc_object
+    // returns the data pointer (header sits just before it), so all existing
+    // field GEPs / this / vtable accesses are unchanged.
+    auto* alloc_fn = runtime_alloc_object_;
     if (!alloc_fn) {
-        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_alloc", module_.get());
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_alloc_object", module_.get());
     }
-    auto* obj = builder_.CreateCall(alloc_fn, {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1)});
+    auto tit = class_type_ids_.find(cls_name);
+    uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
+    auto* obj = builder_.CreateCall(alloc_fn,
+        {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
     if (sz > 0)
         builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
 
@@ -8017,6 +8138,19 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_free_all_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
         llvm::Function::ExternalLinkage, "myp_free_all", module_.get());
+    // ARC (§五-1): myp_alloc_object(size, type_id) -> data ptr (header before it)
+    runtime_alloc_object_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {i64, llvm::Type::getInt32Ty(ctx_)}, false),
+        llvm::Function::ExternalLinkage, "myp_alloc_object", module_.get());
+    runtime_retain_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_retain", module_.get());
+    runtime_release_ = llvm::Function::Create(
+        llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_), {p}, false),
+        llvm::Function::ExternalLinkage, "myp_release", module_.get());
+    runtime_free_object_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_free_object", module_.get());
 
     // Thread pool functions
     // myp_pool_ensure_global() -> myp_pool_t*
