@@ -2004,6 +2004,26 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
             type_args = parseTypeArgList();
             consume(TokenKind::Greater, "expected '>' after generic arguments");
         }
+        // new Generic<Arg>[n] — generic class dynamic array (e.g. new Box<int>[2]).
+        // The generic args are already parsed; a following '[' makes this an array
+        // allocation instead of a class construction.
+        if (check(TokenKind::LeftBracket)) {
+            TypeNode elem_type;
+            elem_type.range = peek().range;
+            elem_type.class_name = class_name;
+            elem_type.type_args = type_args;
+            std::vector<std::unique_ptr<Expr>> dims;
+            while (match(TokenKind::LeftBracket)) {
+                auto size_expr = parseExpr();
+                consume(TokenKind::RightBracket, "expected ']' after array size");
+                dims.push_back(std::move(size_expr));
+            }
+            if (dims.empty()) {
+                diag_.error(previous().range, "expected '[size]' after type in new expression");
+                return std::make_unique<NullLiteralExpr>(previous().range);
+            }
+            return std::make_unique<NewArrayExpr>(std::move(elem_type), std::move(dims), previous().range);
+        }
         auto args = parseCallArgs();
         return std::make_unique<NewExpr>(class_name, std::move(type_args), std::move(args), previous().range);
     }

@@ -486,6 +486,9 @@ private:
     bool isArcClassType(const TypeNode& tn);
     // Fixed (stack) class-array slots: alloca → element count (kind-3 slots).
     std::unordered_map<llvm::Value*, uint64_t> arc_fixed_array_counts_;
+    // Array variable → element class name (mangled for generics, e.g. Box_int_inst).
+    // Used to resolve `arr[i].method()` method dispatch on class-element arrays.
+    std::unordered_map<std::string, std::string> array_elem_class_map_;
     // Emit myp_release(load of local alloca) if it holds a class ref.
     void maybeReleaseLocal(const std::string& name, llvm::Value* alloca);
     // True if name is the Error interface declared in this TU.
@@ -562,6 +565,18 @@ private:
     llvm::Value* generateShortCircuitLogic(const BinaryOpExpr& expr);
     llvm::Value* generateUnaryOp(const UnaryOpExpr& expr);
     llvm::Value* generateCall(const CallExpr& expr);
+    // True if a call returns an ARC-owned class / class-array reference (the
+    // caller owns the returned +1 and must store it or release it).
+    bool callReturnsArcRef(const CallExpr& e);
+    // Resolve the class (mangled for generics) of a member-access object
+    // expression: identifier (var/static), this, array element, `new X<...>()`,
+    // or a call (via its return type).
+    std::string memberObjectClassName(const Expr& obj);
+    // Return-type class name (mangled for generics) of a call, "" if not a class.
+    std::string callReturnClassName(const CallExpr& e);
+    // generateCall's body (renamed): the public generateCall wraps it to push
+    // ARC-owned call results as statement temps.
+    llvm::Value* generateCallImpl(const CallExpr& expr);
     llvm::Value* generateMemberAccess(const MemberAccessExpr& expr);
     llvm::Value* generateSubscript(const SubscriptExpr& expr);
     llvm::Value* generateNewExpr(const NewExpr& expr);

@@ -108,6 +108,8 @@ private:
                                   const std::vector<TypeInfo>& type_args);
     std::string typeName(const TypeInfo& type) const;
     bool typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const;
+    bool isNumericKind(TypeKind k) const;
+    TypeKind commonNumericKind(TypeKind a, TypeKind b) const;
 
     // ---- Helpers ----
     void error(const SourceRange& range, const std::string& msg);

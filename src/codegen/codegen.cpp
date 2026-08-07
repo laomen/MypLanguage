@@ -456,6 +456,12 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
             return st;
         if (findEnum(tn.class_name))
             return getEnumStructType(tn.class_name);
+        // Generic class instance (Box<int>) → mangled concrete class ref.
+        if (!tn.type_args.empty()) {
+            std::string m = mangleConcreteTypeNode(tn);
+            if (getClassStruct(m))
+                return llvm::PointerType::get(ctx_, 0);
+        }
     }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
@@ -630,6 +636,15 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
             TypeInfo result(TypeKind::Enum);
             result.class_name = node.class_name;
             return result;
+        }
+        // Generic class instance (Box<int>) → mangled concrete class ref.
+        if (!node.type_args.empty()) {
+            std::string m = mangleConcreteTypeNode(node);
+            if (getClassStruct(m)) {
+                TypeInfo result(TypeKind::Class);
+                result.class_name = m;
+                return result;
+            }
         }
         // Check if this is an interface type
         if (current_tu_) {
@@ -1271,8 +1286,14 @@ bool CodeGen::isArcClassType(const TypeNode& tn) {
         if (!tn.class_name.empty() && tn.class_name == tp.first)
             return isArcClassType(tp.second);
     }
-    if (!tn.class_name.empty())
+    if (!tn.class_name.empty()) {
+        // Generic class instance (Box<int>) → mangled concrete class ref.
+        if (!tn.type_args.empty()) {
+            std::string m = mangleConcreteTypeNode(tn);
+            return getClassStruct(m) != nullptr;
+        }
         return getClassStruct(tn.class_name) != nullptr;
+    }
     return false;
 }
 
@@ -3429,6 +3450,15 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
         // ARC: record whether elements are class references (retain/release on store).
         array_elem_is_class_[d.name] = isArcClassType(*d.type.element_type);
+        // Record the element class name (mangled for generics) so `arr[i].method()`
+        // dispatch resolves to the concrete instance's method.
+        if (array_elem_is_class_[d.name]) {
+            const TypeNode* et = d.type.element_type.get();
+            if (!et->type_args.empty())
+                array_elem_class_map_[d.name] = mangleConcreteTypeNode(*et);
+            else
+                array_elem_class_map_[d.name] = et->class_name;
+        }
         return;
     } else if (d.type.isFunction()) {
         // First-class function value: fat pointer {closure, call_fn}
@@ -5812,11 +5842,13 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                 else if (rt->isPointerTy() && v->getType()->isPointerTy())
                     v = builder_.CreateBitCast(v, rt);
             }
-            // ARC: `return new T()` / `return new T[n]` in a try-with-finally —
-            // consume the fresh temp now; emitFunctionReturn skips the extra
-            // retain later.
+            // ARC: `return new T()` / `return new T[n]` / `return f()` (f returns
+            // a class ref) in a try-with-finally — consume the fresh temp now;
+            // emitFunctionReturn skips the extra retain later.
             if (s.value->kind == ExprKind::NewExpr ||
-                s.value->kind == ExprKind::NewArrayExpr) {
+                s.value->kind == ExprKind::NewArrayExpr ||
+                (s.value->kind == ExprKind::Call &&
+                 callReturnsArcRef(static_cast<const CallExpr&>(*s.value)))) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -5833,7 +5865,9 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     if (s.value) v = generateExpr(*s.value);
     v = heapCopyArrayReturn(v, s.value.get());
     if (s.value && (s.value->kind == ExprKind::NewExpr ||
-                    s.value->kind == ExprKind::NewArrayExpr)) {
+                    s.value->kind == ExprKind::NewArrayExpr ||
+                    (s.value->kind == ExprKind::Call &&
+                     callReturnsArcRef(static_cast<const CallExpr&>(*s.value))))) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }
@@ -6345,6 +6379,104 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    llvm::Value* r = generateCallImpl(e);
+    // ARC: a call that returns a class / class-array reference hands the caller
+    // a +1 it OWNS (the callee's retain-at-return / `return new` transfer). If
+    // the result is stored into a slot the store site consumes it; if it is
+    // used inline (e.g. `obj.take().get()`) and discarded, the statement-end
+    // flush releases it. Without this, inline calls leaked the +1.
+    if (r && r->getType()->isPointerTy() && callReturnsArcRef(e))
+        arcPushTemp(r);
+    return r;
+}
+
+// Resolve a call's callee to its return TypeNode and report whether it is an
+// ARC-counted class / class-array reference (string / interface / scalar = no).
+std::string CodeGen::memberObjectClassName(const Expr& obj) {
+    if (obj.kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(obj);
+        auto v = var_class_map_.find(oi.name);
+        if (v != var_class_map_.end()) return v->second;
+        if (current_tu_)
+            for (auto& c : current_tu_->classes)
+                if (c.name == oi.name) return c.name;   // static call
+        return "";
+    }
+    if (obj.kind == ExprKind::ThisExpr) return current_class_name_;
+    if (obj.kind == ExprKind::Subscript) {
+        auto& ss = static_cast<const SubscriptExpr&>(obj);
+        if (ss.array->kind == ExprKind::Identifier) {
+            auto eit = array_elem_class_map_.find(
+                static_cast<const IdentifierExpr&>(*ss.array).name);
+            if (eit != array_elem_class_map_.end()) return eit->second;
+        }
+        return "";
+    }
+    if (obj.kind == ExprKind::NewExpr) {
+        auto& ne = static_cast<const NewExpr&>(obj);
+        std::string cn = ne.class_name;
+        if (!ne.type_args.empty()) {
+            cn = ne.class_name;
+            for (auto& ta : ne.type_args) cn += "_" + mangleConcreteTypeNode(ta);
+            cn += "_inst";
+        }
+        return cn;
+    }
+    if (obj.kind == ExprKind::Call)
+        return callReturnClassName(static_cast<const CallExpr&>(obj));
+    return "";
+}
+
+std::string CodeGen::callReturnClassName(const CallExpr& e) {
+    const TypeNode* rt = nullptr;
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        std::string cls = memberObjectClassName(*ma.object);
+        if (cls.empty() || !current_tu_) return "";
+        for (auto& c : current_tu_->classes) {
+            if (c.name != cls) continue;
+            for (auto& a : c.actions)
+                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
+            for (auto& a : c.static_actions)
+                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
+            for (auto& f : c.functions)
+                if (f.name == ma.member_name) { rt = &f.return_type; goto found; }
+        }
+    } else if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
+        for (auto& f : current_tu_->functions)
+            if (f.name == e.resolved_call_name) { rt = &f.return_type; goto found; }
+    }
+found:
+    if (!rt || rt->class_name.empty()) return "";
+    if (!rt->type_args.empty()) return mangleConcreteTypeNode(*rt);
+    return rt->class_name;
+}
+
+bool CodeGen::callReturnsArcRef(const CallExpr& e) {
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        std::string cls = memberObjectClassName(*ma.object);
+        if (cls.empty() || !current_tu_) return false;
+        for (auto& c : current_tu_->classes) {
+            if (c.name != cls) continue;
+            for (auto& a : c.actions)
+                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+            for (auto& a : c.static_actions)
+                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+            for (auto& f : c.functions)
+                if (f.name == ma.member_name) return isArcRefType(f.return_type);
+        }
+        return false;
+    }
+    if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
+        for (auto& f : current_tu_->functions)
+            if (f.name == e.resolved_call_name) return isArcRefType(f.return_type);
+        return false;
+    }
+    return false;
+}
+
+llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
     // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
     // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.
     const std::string SELF_SUFFIX = "__self";
@@ -6699,6 +6831,15 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     if (cls.name == oid.name) { obj_cls = cls.name; break; }
                 }
             }
+            // arr[i].method() / new Box<Node>().method() / f().method() — restrict
+            // to the object's (possibly mangled) class so generic element / new /
+            // chained-call method dispatch resolves to the concrete instance, not
+            // the template's placeholder signature.
+            else if (ma.object->kind == ExprKind::Subscript ||
+                     ma.object->kind == ExprKind::NewExpr ||
+                     ma.object->kind == ExprKind::Call) {
+                obj_cls = memberObjectClassName(*ma.object);
+            }
             for (auto& cls : current_tu_->classes) {
                 if (!obj_cls.empty() && cls.name != obj_cls) continue;
                 for (auto& a : cls.actions) {
@@ -6735,6 +6876,19 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
 
         // Fallback: match by name only (only if no struct method was found)
         if (!callee) {
+            // Restrict to the object's (possibly mangled) class for non-identifier
+            // objects (chained `f().method()` / `arr[i].method()` / generic new),
+            // so they don't resolve to a template's placeholder signature.
+            std::string fb_obj_cls;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid2 = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes)
+                    if (cls.name == oid2.name) { fb_obj_cls = cls.name; break; }
+            } else if (ma.object->kind == ExprKind::Subscript ||
+                       ma.object->kind == ExprKind::NewExpr ||
+                       ma.object->kind == ExprKind::Call) {
+                fb_obj_cls = memberObjectClassName(*ma.object);
+            }
             // First, if the object is a KNOWN class name (static method call like
             // Vectors.min()), only search that class. Otherwise a method name that
             // collides across classes (e.g. min/max in Math AND Vectors) could
@@ -6768,6 +6922,7 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 }
             }
             for (auto& cls : current_tu_->classes) {
+                if (!fb_obj_cls.empty() && cls.name != fb_obj_cls) continue;
                 for (auto& a : cls.actions) {
                     if (a.name == ma.member_name) {
                         auto fn = cls.name + "_" + a.name;
@@ -7613,6 +7768,29 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            // Struct variable's array field: `bg.nodes[i]` — resolve the field's
+            // element type from the struct declaration (var_class_map_ only covers
+            // class instances, so struct fields would otherwise fall through to i32).
+            auto* oa = getNamedValue(oi.name);
+            llvm::Type* oat = nullptr;
+            if (oa) {
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                    oat = oai->getAllocatedType();
+                else
+                    oat = getNamedValueType(oi.name);
+            }
+            if (oat && oat->isStructTy()) {
+                std::string sname = llvm::cast<llvm::StructType>(oat)->getName().str();
+                const StructDecl* sd = findStruct(sname);
+                if (sd) {
+                    for (auto& pr : sd->properties) {
+                        if (pr.name == ma.member_name && pr.type.isArray()) {
+                            elem_ty = typeNodeToLLVMType(*pr.type.element_type);
+                            goto do_gep;
+                        }
+                    }
+                }
+            }
             // Resolve variable name to class name via var_class_map_
             std::string obj_class = oi.name;
             auto vcit = var_class_map_.find(oi.name);
@@ -8202,20 +8380,61 @@ llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
     // True branch
     builder_.SetInsertPoint(true_bb);
     auto* true_val = generateExpr(*e.true_expr);
-    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(merge_bb);
     auto* last_true = builder_.GetInsertBlock();
     // False branch
     func->insert(func->end(), false_bb);
     builder_.SetInsertPoint(false_bb);
     auto* false_val = generateExpr(*e.false_expr);
-    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(merge_bb);
     auto* last_false = builder_.GetInsertBlock();
+
+    // Numeric ternary branches can differ in width (e.g. `? 1 : x` — literal 1
+    // is i8, x is i32): widen both to a common type before the phi (matches the
+    // binary-op SExt promotion).
+    llvm::Type* common_ty = true_val->getType();
+    if (false_val->getType() != common_ty) {
+        if (common_ty->isIntegerTy() && false_val->getType()->isIntegerTy()) {
+            unsigned w = std::max(common_ty->getIntegerBitWidth(),
+                                  false_val->getType()->getIntegerBitWidth());
+            common_ty = llvm::Type::getIntNTy(ctx_, w);
+        } else if (common_ty->isFloatingPointTy() && false_val->getType()->isFloatingPointTy()) {
+            if (false_val->getType()->getPrimitiveSizeInBits() > common_ty->getPrimitiveSizeInBits())
+                common_ty = false_val->getType();
+        } else if (common_ty->isIntegerTy() && false_val->getType()->isFloatingPointTy()) {
+            common_ty = false_val->getType();
+        }
+    }
+    // Insert the casts in the branch blocks (before their merge branch), then
+    // branch to merge. If a branch already returned/terminated, keep its value.
+    auto castIn = [&](llvm::Value* v, llvm::BasicBlock* bb) -> llvm::Value* {
+        if (!v || v->getType() == common_ty) return v;
+        if (bb->getTerminator()) return v;   // dead path — no cast needed
+        llvm::IRBuilder<> tb(bb);            // inserts at end of bb
+        if (common_ty->isIntegerTy() && v->getType()->isIntegerTy())
+            return tb.CreateSExt(v, common_ty);
+        if (common_ty->isFloatingPointTy() && v->getType()->isFloatingPointTy())
+            return tb.CreateFPCast(v, common_ty);
+        if (common_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
+            return tb.CreateSIToFP(v, common_ty);
+        if (common_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
+            return tb.CreateFPToSI(v, common_ty);
+        return v;
+    };
+    llvm::Value* t_cast = castIn(true_val, last_true);
+    llvm::Value* f_cast = castIn(false_val, last_false);
+    if (!last_true->getTerminator()) {
+        llvm::IRBuilder<> tb(last_true);
+        tb.CreateBr(merge_bb);
+    }
+    if (!last_false->getTerminator()) {
+        llvm::IRBuilder<> tb(last_false);
+        tb.CreateBr(merge_bb);
+    }
     // Merge
     func->insert(func->end(), merge_bb);
     builder_.SetInsertPoint(merge_bb);
-    auto* phi = builder_.CreatePHI(true_val->getType(), 2, "ternary");
-    phi->addIncoming(true_val, last_true);
-    phi->addIncoming(false_val, last_false);
+    auto* phi = builder_.CreatePHI(common_ty, 2, "ternary");
+    phi->addIncoming(t_cast, last_true);
+    phi->addIncoming(f_cast, last_false);
     return phi;
 }
 
@@ -8389,6 +8608,29 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                // Struct variable's array field: `bg.nodes[i] = ...` — resolve
+                // from the struct declaration (var_class_map_ covers classes only).
+                auto* oa = getNamedValue(oi.name);
+                llvm::Type* oat = nullptr;
+                if (oa) {
+                    if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                        oat = oai->getAllocatedType();
+                    else
+                        oat = getNamedValueType(oi.name);
+                }
+                if (oat && oat->isStructTy()) {
+                    std::string sname = llvm::cast<llvm::StructType>(oat)->getName().str();
+                    const StructDecl* sd = findStruct(sname);
+                    if (sd) {
+                        for (auto& pr : sd->properties) {
+                            if (pr.name == ma.member_name && pr.type.isArray()) {
+                                elem_ty = typeNodeToLLVMType(*pr.type.element_type);
+                                elem_is_class = isArcClassType(*pr.type.element_type);
+                                goto assign_gep;
+                            }
+                        }
+                    }
+                }
                 // Resolve variable name to class name via var_class_map_
                 std::string obj_class = oi.name;
                 auto vcit = var_class_map_.find(oi.name);
@@ -8400,8 +8642,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         for (auto& p : cls.properties) {
                             if (p.name == ma.member_name && p.type.isArray()) {
                                 elem_ty = typeNodeToLLVMType(*p.type.element_type);
-                                elem_is_class = p.type.element_type &&
-                                    getClassStruct(p.type.element_type->class_name) != nullptr;
+                                elem_is_class = isArcClassType(*p.type.element_type);
                                 goto assign_gep;
                             }
                         }

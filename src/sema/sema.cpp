@@ -3019,12 +3019,43 @@ TypeInfo Sema::visitTernary(TernaryExpr& expr) {
     expectBool(cond_type, expr.condition->range);
     auto true_type = visitExpr(*expr.true_expr);
     auto false_type = visitExpr(*expr.false_expr);
+    // Numeric branches: unify to the wider type (e.g. `x > 0 ? 1 : x` — the
+    // literal 1 defaults to byte, x is int → int). Mirrors binary-op promotion;
+    // codegen casts both branches to the common type.
+    if (isNumericKind(true_type.kind) && isNumericKind(false_type.kind)) {
+        TypeKind common = commonNumericKind(true_type.kind, false_type.kind);
+        if (common != TypeKind::Void) {
+            if (common != true_type.kind)
+                true_type = TypeInfo(common);
+            return true_type;
+        }
+    }
     if (!typesCompatible(true_type, false_type)) {
         error(expr.range, "ternary branches have incompatible types: '" +
               typeName(true_type) + "' and '" + typeName(false_type) + "'");
         return true_type;
     }
     return true_type;
+}
+
+// True for Byte/Short/Int/Long/Float/Double (and unsigned/char variants).
+bool Sema::isNumericKind(TypeKind k) const {
+    switch (k) {
+        case TypeKind::Byte: case TypeKind::Short: case TypeKind::Int:
+        case TypeKind::Long: case TypeKind::UByte: case TypeKind::UShort:
+        case TypeKind::UInt: case TypeKind::ULong: case TypeKind::Char:
+        case TypeKind::Float: case TypeKind::Double:
+            return true;
+        default: return false;
+    }
+}
+
+// Wider of two numeric kinds; Void if not promotable either way.
+TypeKind Sema::commonNumericKind(TypeKind a, TypeKind b) const {
+    if (a == b) return a;
+    if (typesCompatible(TypeInfo(a), TypeInfo(b))) return a;  // b promotes to a
+    if (typesCompatible(TypeInfo(b), TypeInfo(a))) return b;  // a promotes to b
+    return TypeKind::Void;
 }
 
 TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
