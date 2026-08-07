@@ -1701,6 +1701,33 @@ HttpResult p = Http.post("http://example.com/items", "{\"k\":1}");
 网络层错误抛异常：连接失败抛 `NetError`（来自 `TcpClient.connect`）；非法 URL /
 非 `http` scheme 抛 string 异常（`https` 需 TLS，暂不支持）。
 
+### `import net` — TCP 套接字
+
+```myp
+import net;
+
+// --- 服务器 ---
+TcpServer srv = new TcpServer(8080);   // bind + listen
+TcpClient cl = new TcpClient();
+srv.accept(cl);                        // 阻塞接受连接（结果写入 cl）
+string data = cl.recvLine();           // 同步读一行
+cl.send("Hello!\n");
+cl.close();
+srv.close();
+
+// --- 客户端 ---
+TcpClient c = new TcpClient();
+int ret = c.connect("example.com", 80);    // 成功 0；失败抛 NetError
+c.sendLine("GET / HTTP/1.0");
+string resp = c.recv(4096);
+c.close();
+```
+
+- `TcpServer(port)` / `accept(client)` / `close()`
+- `TcpClient.connect(host, port)` / `send(data)` / `sendLine(data)` / `recv(maxLen)` /
+  `recvLine()` / `getFd()` / `close()`；连接失败抛 `NetError`（含 op/host/port）
+- **异步**：`recvAsync` / `recvLineAsync` / `sendAsync`（见 `import async`，§五-5 P2）
+
 ### `import text` — 文本处理
 
 ```myp
@@ -1884,6 +1911,9 @@ long r  = Coro.result(h);                      // 取协程返回值
 long v  = Coro.waitEvent(eventId, val);        // 等待事件（= await ClassName.eventName）
 long v  = Coro.waitEventTimeout(id, ms, val);  // 带超时事件等待：事件到达返回 val，超时返回 -1
 long v  = Coro.waitAny(ids, count, ms, val);   // 多事件等待：返回触发的事件 id，超时返回 -1
+long s  = Coro.sleep(ms);                      // §五-5 P1：挂起当前协程 ms 毫秒（不阻塞线程；非协程退化为同步 sleep）
+long f  = Coro.waitFd(fd, rd, wr, ms);         // §五-5 P2：等待 fd 可读/可写；就绪返回 1，超时返回 -1（需 @coro 内调用）
+long k  = Coro.waitAnyOf(spec, cnt, ms, val);  // §五-5 P4：混等 事件/定时器/fd，返回触发 spec 下标（见 `import async`）
 long c  = Coro.current();                      // 当前正在执行的协程 handle（不在协程内 -1）
 long n  = Coro.count();                        // 当前线程活跃协程数
 long s  = Coro.status(h);                      // 状态：-1 无效 / 0 结束 / 1 就绪运行 / 2 等待事件
@@ -1971,6 +2001,75 @@ class Main {
 - **协程 await Future**（`import future`）：协程内 `Future.get(fh)` 未 ready 时挂起协程
   （不阻塞线程），同线程 `Future.set(fh, v)` 唤醒恢复。跨线程 set 不唤醒其他线程协程。
 
+### `import async` — 异步 IO 统一抽象（§五-5，v3.9.0，additive）
+
+把"等某件事完成"（定时器 / 套接字 / 文件 / 事件）统一到 `await` + 协程调度器（reactor
+模型，对标 Rust tokio / Node 事件循环）。设计见 `docs/async_io.md`。
+
+**`@async` 注解 + await 形态 3**：被 `@async` 标注的类 action / `static:` / 顶层函数，在
+`@coro` 内用 `await f()` 调用时**直接执行**（函数内部经 park 原语挂起/恢复），`await` 的
+值 = 函数返回值——不再走普通 `await` 的 yield-值握手。sema 限制：非 `@coro` 上下文调用
+`@async` 函数报编译错误。
+
+**异步睡眠（P1）**：
+```myp
+import coro;
+import async;
+
+@coro long worker() {
+    await Async.sleep(100);      // 挂起当前协程 100ms，不阻塞线程
+    Console.writeString("woke\n");
+    return 0;
+}
+```
+等价底层 API `Coro.sleep(ms)`（`Async.sleep` 即其封装；非协程上下文退化为同步 sleep）。
+
+**异步套接字（P2，`import net`）**：fd 置 O_NONBLOCK，调度器每轮批量 `poll`，可读/可写才恢复协程：
+```myp
+@coro long client() {
+    TcpClient c = new TcpClient();
+    c.connect("127.0.0.1", 8080);
+    string d1 = await c.recvAsync(4096);   // fd 可读后非阻塞读
+    string l1 = await c.recvLineAsync();   // 逐字节读到 \n
+    long n  = await c.sendAsync("hi");     // fd 可写后发送
+    c.close();
+    return 0;
+}
+```
+带超时：`recvAsync(maxLen, timeoutMs)` 超时返回空串；`recvLineAsync(timeoutMs)` 超时返回已收内容；
+`sendAsync(data, timeoutMs)` 超时返回已发字节。
+
+**异步文件（P3，`import io`）**：阻塞 fgets/read-all 在 worker 线程池执行，完成后跨线程投递
+结果并恢复协程（`readAllAsync` 返回余下内容，含末尾换行）：
+```myp
+@coro long reader() {
+    File f = new File();
+    f.open("/tmp/x.txt", "r");
+    string line = await f.readLineAsync();   // worker 线程读一行
+    string all  = await f.readAllAsync();    // worker 线程读全量
+    f.close();
+    return 0;
+}
+```
+
+**统一 waitAnyOf（P4，`Coro.waitAnyOf`）**：一次等待混搭 事件/定时器/fd，返回最先触发的 spec
+下标。`spec` 为扁平 `long[]`，每 3 个元素一个等待项 `[kind, id, flag]`：`kind` 0=EVENT
+（id=事件 id，flag=0）、1=TIMER（id=-1，flag=相对毫秒）、2=FD（id=fd，flag=1/2/3 可读/可写/读写）。
+返回：触发 spec 下标（0 起），总体超时 -1，非协程上下文 -2：
+```myp
+@coro long waitMix(int fd) {
+    long[] spec = new long[9];
+    spec[0] = 0; spec[1] = 0;  spec[2] = 0;     // EVENT 事件 id 0
+    spec[3] = 2; spec[4] = fd; spec[5] = 1;     // FD 可读
+    spec[6] = 1; spec[7] = -1; spec[8] = 300;   // TIMER 300ms
+    return Coro.waitAnyOf(spec, 3, 1000, 0);    // 返回最先触发的下标
+}
+```
+
+> **机制**：等待表统一为 `myp_coro_wait_t.kind`——0=EVENT / 1=TIMER / 2=FD / 3=EXEC。调度器
+> 每轮顺序：处理事件 → 过期 deadline → 批量 poll fd → 执行器收件箱 → 就绪快照。全部
+> additive，与既有 `await ClassName.eventName` / `Coro.waitEvent*` 并存。
+
 ### `import pool` — 并行计算工具
 
 ```myp
@@ -2027,6 +2126,133 @@ Memory.release(p);                      // free 的别名
 > ② **FFI 指针互操作**——传给 C 库（SDL/net/GPU/第三方）的裸指针；
 > ③ **字节缓冲/手动布局**——二进制协议、文件格式的原始缓冲区。
 > 动态数组请用 `collections` 的 `ArrayList<T>`（自动扩容），本模块只负责裸内存。
+
+### `import channel` — 协程通道
+
+Go 风格有缓冲通道（属于创建它的线程 TLS，与协程模型一致）：
+```myp
+import channel;
+Channel ch = new Channel();
+ch.init(4);                    // 缓冲容量 > 0
+ch.send(v);                    // 协程内缓冲满 → 挂起等空位；非协程满返回 -1
+long v = ch.recv();            // 协程内缓冲空 → 挂起等数据；非协程空返回 -1
+ch.trySend(v);  ch.tryRecv();  // 永远非阻塞（0/值，满/空 -1）
+ch.size();                     // 当前缓冲元素数
+ch.close();                    // 关闭并唤醒等待者
+ch.destroy();                  // 释放缓冲
+```
+
+### `import fs` — 文件系统
+
+```myp
+import fs;
+Fs.exists("/tmp");         Fs.isDir("/tmp");        Fs.isFile("/tmp/x");
+long sz = Fs.fileSize("/tmp/x");
+long mt = Fs.modifiedTime("/tmp/x");
+Fs.dirname(p);   Fs.basename(p);   Fs.join(dir, file);
+string[] files = Fs.listDir("/tmp");      // 文件名数组（动态分配，无上限）
+Fs.listCount("/tmp");
+Fs.mkdirP("/a/b/c");                      // 递归建目录（mkdir -p）
+Fs.removeRecursive("/a");                 // 递归删除（rm -rf）
+
+// Path 封装：面向路径的方法
+Path p = new Path("/home/user/file.txt");
+p.dirname();  p.basename();  p.join("x.txt");
+p.exists();  p.isDir();  p.isFile();  p.fileSize();  p.modifiedTime();
+p.listDir();  p.toString();
+```
+
+### `import process` — 进程管理
+
+```myp
+import process;
+int code = Process.run("ls -l");          // 执行命令并返回退出码
+string out = Process.output("uname -a");  // 执行并捕获标准输出
+int pid  = Process.getPid();              // 当前进程 PID
+int ppid = Process.getParentPid();        // 父进程 PID
+int alive = Process.isRunning(pid);       // 进程是否在运行
+```
+
+### `import args` — 命令行参数
+
+```myp
+import args;
+int n = Args.count();                   // 参数个数（含程序名）
+string a = Args.get(i);                 // 第 i 个参数（0 = 程序名）
+Args.hasOption("-v");                  // 是否含某选项
+string v = Args.getOption("-o", "def");// 取选项值（无则返回默认值）
+```
+
+### `import json` — JSON 解析
+
+```myp
+import json;
+Json doc = new Json("{\"name\":\"myp\",\"v\":1}");  // 解析失败抛 JsonError
+string n = doc.getString("name");
+int v    = doc.getInt("v");
+double d = doc.getDouble("pi");
+int b    = doc.getBool("ok");
+int len  = doc.arrayLen("items");      // 数组长度
+int t    = doc.type("field");          // 值类型
+string g = doc.getString("a.b[0]");    // path 支持嵌套字段/下标
+
+doc.free();
+```
+
+### `import regex` — 正则表达式
+
+```myp
+import regex;
+Regex re = new Regex("^[A-Z][a-z]+$");   // POSIX 扩展正则
+re.test("Hello");   // 1
+re.test("hello");   // 0
+re.free();
+```
+
+### `import base64` — Base64
+
+```myp
+import base64;
+string enc = Base64.encode("hello");
+string dec = Base64.decode(enc);
+```
+
+### `import date` — 日期时间
+
+```myp
+import date;
+long ms  = Date.nowMs();                 // wall-clock 毫秒
+string s = Date.now();                   // "YYYY-MM-DD HH:MM:SS"
+string f = Date.formatNow("%Y-%m-%d");  // 自定义格式当前时间
+string t = Date.format(ms, "%H:%M:%S"); // 自定义格式指定时间
+int y = Date.getYear();  Date.getMonth();  Date.getDay();
+int h = Date.getHour();  Date.getMinute(); Date.getSecond();
+Date.getWeekday();  Date.getDayOfYear();
+Date.getYearOf(ms);  Date.getMonthOf(ms); Date.getSecondOf(ms);  // 指定时间取字段
+```
+
+### `import logger` — 日志
+
+```myp
+import logger;
+Logger log = new Logger("myapp");
+log.debug("...");  log.info("...");  log.warn("...");  log.error("...");
+log.setLevel(0);   // 0=DEBUG 1=INFO(默认) 2=WARN 3=ERROR（LogLevel 枚举）
+log.getLevel();
+```
+
+### `import timeline` — 时间线
+
+```myp
+import timeline;
+Timeline tl = new Timeline();
+long now = tl.now();  tl.sleep(100);
+tl.startTimeout(1000);   // 1 秒后 timeout(ms) 事件触发
+ tl.startInterval(500);  // 每 500ms interval(ms) 事件触发
+tl.startTick(200);       // 每 200ms tick() 事件触发
+// 事件：timeout(long ms) / interval(long ms) / tick()
+Stopwatch sw = new Stopwatch();  sw.start();  ...  sw.elapsed();
+```
 
 ### `import sdl` — SDL 图形窗口
 

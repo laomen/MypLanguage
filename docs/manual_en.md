@@ -1566,6 +1566,9 @@ long r  = Coro.result(h);                      // read coroutine return value
 long v  = Coro.waitEvent(eventId, val);        // block on an event (= await ClassName.eventName)
 long v  = Coro.waitEventTimeout(id, ms, val);  // event wait with timeout: -1 on timeout, else val
 long v  = Coro.waitAny(ids, count, ms, val);   // wait for any listed event: returns fired event id, -1 on timeout
+long s  = Coro.sleep(ms);                      // §五-5 P1: suspend the current coroutine ms ms (doesn't block the thread; non-coroutine falls back to blocking sleep)
+long f  = Coro.waitFd(fd, rd, wr, ms);         // §五-5 P2: wait for fd readable/writable; 1 when ready, -1 on timeout (call inside @coro)
+long k  = Coro.waitAnyOf(spec, cnt, ms, val);  // §五-5 P4: unified wait mixing EVENT/TIMER/FD; returns fired spec index (see `import async`)
 long c  = Coro.current();                      // handle of the running coroutine (-1 if none)
 long n  = Coro.count();                        // number of active coroutines on this thread
 long s  = Coro.status(h);                      // state: -1 invalid / 0 finished / 1 ready/running / 2 waiting event
@@ -1655,6 +1658,76 @@ class Main {
 > create wrappers, so a coroutine function may be defined after its call site.
 
 ---
+
+### `import async` — Async I/O Unified Abstraction (§五-5, v3.9.0, additive)
+
+Unifies "waiting for something to complete" (timers / sockets / files / events) onto `await` + the
+coroutine scheduler (reactor model, like Rust tokio / Node event loop). Design: `docs/async_io.md`.
+
+**`@async` annotation + await form-3**: an action / `static:` method / top-level function marked
+`@async` is called with `await f()` inside a `@coro` — it runs directly (parking/resuming internally
+via the runtime), and `await`'s value = the function's return value (no yield-value handshake).
+Sema rejects calling `@async` outside a `@coro` context.
+
+**Async sleep (P1)**:
+```myp
+import coro;
+import async;
+
+@coro long worker() {
+    await Async.sleep(100);      // suspend this coroutine 100ms, doesn't block the thread
+    Console.writeString("woke\n");
+    return 0;
+}
+```
+Equivalent low-level `Coro.sleep(ms)` (`Async.sleep` wraps it).
+
+**Async sockets (P2, `import net`)**: fd is set O_NONBLOCK; the scheduler batch-polls each round and
+resumes a coroutine only when the fd is readable/writable:
+```myp
+@coro long client() {
+    TcpClient c = new TcpClient();
+    c.connect("127.0.0.1", 8080);
+    string d1 = await c.recvAsync(4096);   // non-blocking read once readable
+    string l1 = await c.recvLineAsync();   // byte-by-byte to \n
+    long n  = await c.sendAsync("hi");     // send once writable
+    c.close();
+    return 0;
+}
+```
+With timeouts: `recvAsync(maxLen, timeoutMs)` returns "" on timeout; `recvLineAsync(timeoutMs)`
+returns what was received; `sendAsync(data, timeoutMs)` returns bytes sent.
+
+**Async files (P3, `import io`)**: blocking fgets/read-all run on a worker thread pool; results are
+delivered cross-thread and the coroutine resumes (`readAllAsync` returns the rest incl. trailing \n):
+```myp
+@coro long reader() {
+    File f = new File();
+    f.open("/tmp/x.txt", "r");
+    string line = await f.readLineAsync();   // worker-thread read line
+    string all  = await f.readAllAsync();    // worker-thread read all
+    f.close();
+    return 0;
+}
+```
+
+**Unified waitAnyOf (P4, `Coro.waitAnyOf`)**: wait on a mix of EVENT/TIMER/FD at once, returning the
+index of the spec that fired first. `spec` is a flat `long[]`, 3 entries per spec `[kind, id, flag]`:
+`kind` 0=EVENT (id=event id, flag=0), 1=TIMER (id=-1, flag=relative ms), 2=FD (id=fd, flag=1/2/3
+read/write/both). Returns fired spec index (0-based), -1 on overall timeout, -2 outside a coroutine:
+```myp
+@coro long waitMix(int fd) {
+    long[] spec = new long[9];
+    spec[0] = 0; spec[1] = 0;  spec[2] = 0;     // EVENT event id 0
+    spec[3] = 2; spec[4] = fd; spec[5] = 1;     // FD read
+    spec[6] = 1; spec[7] = -1; spec[8] = 300;   // TIMER 300ms
+    return Coro.waitAnyOf(spec, 3, 1000, 0);    // index of the first that fired
+}
+```
+
+> **Mechanism**: the wait table is unified as `myp_coro_wait_t.kind` — 0=EVENT / 1=TIMER / 2=FD /
+> 3=EXEC. Each scheduler round: process events → expire deadlines → batch-poll fds → executor inbox
+> → ready snapshot. Fully additive; coexists with `await ClassName.eventName` / `Coro.waitEvent*`.
 
 ### `import pool` — Parallel Computing Utilities
 
