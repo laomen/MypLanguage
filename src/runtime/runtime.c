@@ -1363,6 +1363,23 @@ typedef struct myp_obj_header {
 
 #define MYP_OBJ_HEADER_SIZE ((size_t)sizeof(myp_obj_header_t))
 
+// ---- Ref-counted class arrays (§五-1) ----
+// `new T[n]` where T is a class allocates a 24-byte header before the
+// element-data pointer handed to generated code. rc/type_id sit at the SAME
+// obj-8/obj-4 offsets as the class-object header, so myp_retain (reads obj-8)
+// and myp_release (reads obj-4 → detects MYP_ARR_TYPE_ID) work uniformly on
+// both objects and arrays.
+#define MYP_ARR_TYPE_ID 0xFFFFFFFFu
+
+typedef struct myp_arr_header {
+    uint64_t count;
+    uint32_t elem_size;
+    uint32_t pad;
+    uint32_t rc;        // == myp_obj_header.rc   (at obj-8)
+    uint32_t type_id;   // == MYP_ARR_TYPE_ID     (at obj-4)
+} myp_arr_header_t;
+#define MYP_ARR_HEADER_SIZE ((size_t)sizeof(myp_arr_header_t))
+
 // Live class-object count (thread-local) — diagnostic aid for ARC tests.
 static __thread int64_t myp_live_objects = 0;
 
@@ -1397,6 +1414,9 @@ void myp_retain(void* obj) {
     h->rc++;
 }
 
+// Forward decl — defined after myp_free_object, used by myp_release below.
+static void myp_free_class_array(void* data);
+
 uint32_t myp_release(void* obj) {
     if (!obj) return 0;
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
@@ -1407,8 +1427,18 @@ uint32_t myp_release(void* obj) {
         // Cache type_id BEFORE the destroy stub runs — the stub frees the
         // object, so reading h->* afterward would be a use-after-free.
         uint32_t tid = h->type_id;
+        // Ref-counted class array: release every element (strong class-ref
+        // slots), then free the header+data block.
+        if (tid == MYP_ARR_TYPE_ID) {
+            myp_arr_header_t* ah =
+                (myp_arr_header_t*)((char*)obj - MYP_ARR_HEADER_SIZE);
+            void** elems = (void**)obj;
+            for (uint64_t i = 0; i < ah->count; i++)
+                myp_release(elems[i]);
+            myp_free_class_array(obj);
+        }
         // Dispatch to the per-TU destroy stub (cascades reference fields).
-        if (tid > 0 && __myp_release_table[tid])
+        else if (tid > 0 && __myp_release_table[tid])
             __myp_release_table[tid](obj);
         else
             myp_free_object(obj);
@@ -1422,6 +1452,37 @@ void myp_free_object(void* obj) {
     myp_alloc_list_mark_freed(base);
     if (myp_live_objects > 0) myp_live_objects--;
     free(base);
+}
+
+// ---- Ref-counted class arrays (§五-1): allocation + element release ----
+void* myp_alloc_class_array(uint64_t count, uint32_t elem_size) {
+    size_t total = MYP_ARR_HEADER_SIZE + (size_t)count * (size_t)elem_size;
+    char* base = (char*)malloc(total);
+    if (!base) return NULL;
+    myp_arr_header_t* h = (myp_arr_header_t*)base;
+    h->count = count;
+    h->elem_size = elem_size;
+    h->pad = 0;
+    h->rc = 1;
+    h->type_id = MYP_ARR_TYPE_ID;
+    myp_alloc_list_push(base);   // track base for exit cleanup
+    return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
+}
+
+static void myp_free_class_array(void* data) {
+    if (!data) return;
+    char* base = (char*)data - MYP_ARR_HEADER_SIZE;
+    myp_alloc_list_mark_freed(base);
+    free(base);
+}
+
+// Release `count` element refs of a fixed (stack) class array. Elements are
+// strong class-ref slots; the backing stack buffer is NOT freed.
+void myp_release_fixed_class_array(void* data, uint64_t count) {
+    if (!data) return;
+    void** elems = (void**)data;
+    for (uint64_t i = 0; i < count; i++)
+        myp_release(elems[i]);
 }
 
 // ---- RTTI (§五-4): read type info back out of the object header ----

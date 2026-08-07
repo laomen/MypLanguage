@@ -87,6 +87,21 @@ bool Sema::analyze(TranslationUnit& tu) {
                 TypeInfo this_type(TypeKind::Class);
                 this_type.class_name = current_class_name_;
                 symbol_table_.declare("this", this_type);
+                // M-FN-2 named lambda：__call body 内把自名声明为自身函数类型（走
+                // 自身 tramp 递归），并置 lambda_self_* 标记供调用解析识别。
+                bool named_lambda =
+                    current_class_name_.rfind("__lambda_", 0) == 0 &&
+                    !tu.classes[ci].lambda_name.empty() &&
+                    action.name == "__call";
+                if (named_lambda) {
+                    lambda_self_name_ = tu.classes[ci].lambda_name;
+                    lambda_self_class_ = current_class_name_;
+                    TypeInfo self_ft(TypeKind::Function);
+                    self_ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(action.return_type));
+                    for (auto& p : action.params)
+                        self_ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                    symbol_table_.declare(tu.classes[ci].lambda_name, self_ft);
+                }
                 for (auto& param : action.params) {
                     auto param_type = typeNodeToTypeInfo(param.type);
                     symbol_table_.declare(param.name, param_type);
@@ -94,6 +109,10 @@ bool Sema::analyze(TranslationUnit& tu) {
                 checkParamDefaults(action.params);
                 visitStmt(*action.body);
                 symbol_table_.leaveScope();
+                if (named_lambda) {
+                    lambda_self_name_.clear();
+                    lambda_self_class_.clear();
+                }
                 in_coro_method_ = false;
             }
         }
@@ -1017,8 +1036,10 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
 
 // for (x in coll) — 集合迭代（§四-2）。解析迭代方式并注解 ForInStmt：
 //   iter_kind 0=class(size/get), 1=固定数组, 2=slice, 3=range
-Sema::StmtResult Sema::visitForInStmt(ForInStmt& stmt) {
-    auto it_type = visitExpr(*stmt.iterable);
+// 注解逻辑抽成独立函数：visitForInStmt（正常访问）与泛型单态化重注解共用
+// （§四-2 × 泛型：泛型模板体在 sema 被跳过，ForInStmt 注解从未计算 → 单态化时
+// 用具体参数类型重注解共享 body，否则 codegen 读到默认值 → void 循环变量崩溃）。
+bool Sema::annotateForInStmt(ForInStmt& stmt, const TypeInfo& it_type) {
     bool valid = false;
 
     // 范围 for-in：for (i in start..end) 父括号形式
@@ -1082,6 +1103,69 @@ Sema::StmtResult Sema::visitForInStmt(ForInStmt& stmt) {
     } else {
         error(stmt.range, "cannot iterate over type '" + typeName(it_type) + "'");
     }
+    return valid;
+}
+
+// 递归遍历共享泛型 body，为每个 ForInStmt 用具体参数类型重注解（iterable 为
+// 参数标识符的常见情形）。非参数 iterable（字段/方法调用）暂不处理（codegen 有守卫）。
+void Sema::annotateForInsInStmt(Stmt& s, const std::vector<ParamDecl>& params) {
+    switch (s.kind) {
+        case StmtKind::ForInStmt: {
+            auto& fis = static_cast<ForInStmt&>(s);
+            if (fis.iterable && fis.iterable->kind == ExprKind::Identifier) {
+                auto& id = static_cast<IdentifierExpr&>(*fis.iterable);
+                for (auto& p : params) {
+                    if (p.name == id.name) {
+                        TypeInfo it = typeNodeToTypeInfo(p.type);
+                        annotateForInStmt(fis, it);
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+        case StmtKind::Block: {
+            auto& b = static_cast<BlockStmt&>(s);
+            for (auto& st : b.statements) annotateForInsInStmt(*st, params);
+            break;
+        }
+        case StmtKind::IfStmt: {
+            auto& is = static_cast<IfStmt&>(s);
+            if (is.then_block) annotateForInsInStmt(*is.then_block, params);
+            if (is.else_block) annotateForInsInStmt(*is.else_block, params);
+            break;
+        }
+        case StmtKind::WhileStmt: {
+            auto& w = static_cast<WhileStmt&>(s);
+            if (w.body) annotateForInsInStmt(*w.body, params);
+            break;
+        }
+        case StmtKind::ForStmt: {
+            auto& f = static_cast<ForStmt&>(s);
+            if (f.body) annotateForInsInStmt(*f.body, params);
+            break;
+        }
+        case StmtKind::TryStmt: {
+            auto& t = static_cast<TryStmt&>(s);
+            if (t.try_block) annotateForInsInStmt(*t.try_block, params);
+            for (auto& c : t.catches)
+                if (c.block) annotateForInsInStmt(*c.block, params);
+            if (t.finally_block) annotateForInsInStmt(*t.finally_block, params);
+            break;
+        }
+        case StmtKind::MatchStmt: {
+            auto& m = static_cast<MatchStmt&>(s);
+            for (auto& arm : m.arms)
+                if (arm.body) annotateForInsInStmt(*arm.body, params);
+            break;
+        }
+        default: break;
+    }
+}
+
+Sema::StmtResult Sema::visitForInStmt(ForInStmt& stmt) {
+    auto it_type = visitExpr(*stmt.iterable);
+    bool valid = annotateForInStmt(stmt, it_type);
 
     if (valid) {
         symbol_table_.enterScope();
@@ -1657,6 +1741,11 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
             inst.params.push_back(std::move(np));
         }
         inst.body = templ.body; // shared body (codegen resolves T per-inst)
+        // §四-2 × 泛型：泛型模板体在 sema 被跳过 → ForInStmt 注解从未计算。单态化
+        // 时用具体参数类型重注解共享 body（iterable 为参数标识符的情形）。注意：
+        // 共享 body 意味着多实例同函数时注解以最后一次为准（多实例 for-in 暂不支持）。
+        if (inst.body)
+            annotateForInsInStmt(*inst.body, inst.params);
         current_tu_->functions.push_back(std::move(inst));
         inst_ptr = &current_tu_->functions.back();
     }
@@ -2328,6 +2417,14 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     // §四-1：规范实参（命名实参重排 + 默认值补齐），失败已报错
     if (!normalizeCallArgs(expr.args, callee_type, expr.range))
         return TypeInfo(TypeKind::Void);
+
+    // M-FN-2 named lambda self-recursion: `name(args)` inside the lambda body
+    // routes to the lambda's own tramp (codegen detects the `__self` marker).
+    if (!lambda_self_name_.empty() && expr.callee->kind == ExprKind::Identifier) {
+        auto& sid = static_cast<const IdentifierExpr&>(*expr.callee);
+        if (sid.name == lambda_self_name_)
+            expr.resolved_call_name = lambda_self_class_ + "__self";
+    }
 
     for (size_t i = 0; i < expr.args.size(); ++i) {
         TypeInfo arg_type;
@@ -4010,6 +4107,8 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     for (auto& p : expr.params) params.push_back(p.name);
     std::set<std::string> locals;
     for (auto& p : expr.params) locals.insert(p.name);
+    // 命名 lambda：`name` 自引用走 this，不进捕获集（否则被当外层变量捕获）。
+    if (!expr.name.empty()) locals.insert(expr.name);
     if (expr.body) collectLambdaLocals(*expr.body, locals);
     std::vector<std::string> captures;
     if (expr.body) collectLambdaCaptures(*expr.body, locals, params, captures);
@@ -4087,8 +4186,10 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     action.return_type = ret_ty;
     cls.actions.push_back(std::move(action));
 
-    // Register class and add to TU
+    // Register class and add to TU (named lambda: record self-name on the class
+    // so the main-loop __call body visit can bind the self-reference).
     if (current_tu_) {
+        cls.lambda_name = expr.name;
         current_tu_->classes.push_back(std::move(cls));
         visitClassDecl(current_tu_->classes.back());
     }

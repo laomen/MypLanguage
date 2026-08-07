@@ -194,6 +194,9 @@ struct ClassDecl {
     bool is_generic_inst = false; // monomorphized instance of a generic template
     std::vector<TypeNode> inst_type_args; // concrete args of a generic instance
     std::string interface_class_name; // non-empty if "interface class X;" declared
+    // M-FN-2 named lambda: the lambda's own name (empty for normal classes), so
+    // the __call body visit can bind the self-reference.
+    std::string lambda_name;
     // 关联类型绑定：type Item = int;  —— 实现接口的关联类型（§三-5）
     std::unordered_map<std::string, TypeNode> associated_type_bindings;
     SourceRange range;
@@ -488,6 +491,9 @@ struct LambdaExpr : Expr {
     std::vector<ParamDecl> params;
     std::shared_ptr<Stmt> body;
     std::string hidden_class_name;
+    // M-FN-2 named lambda `fn name(...) => {...}`: name is bound to the lambda
+    // itself inside the body (recursion via the hidden class's own tramp).
+    std::string name;
     // M-FN-2 closure capture (by value): outer local names + hidden-class slot names.
     std::vector<std::string> capture_names;  // outer variable names (ordered)
     std::vector<std::string> capture_slots;  // hidden class property names ("cap_i")

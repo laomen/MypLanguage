@@ -34,6 +34,14 @@ void* myp_alloc_object(size_t size, uint32_t type_id);
 void myp_retain(void* obj);
 uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);
+// Ref-counted class arrays (§五-1): `new T[n]` with a class element type. A
+// 24-byte header { count:u64, elem_size:u32, pad:u32, rc:u32, type_id:u32 }
+// (rc/type_id at the same obj-8/obj-4 offsets as a class-object header) sits
+// before the element-data pointer returned to codegen, so myp_retain/myp_release
+// treat arrays uniformly; myp_release on an array (type_id==MYP_ARR_TYPE_ID)
+// releases every element then frees the header.
+void* myp_alloc_class_array(uint64_t count, uint32_t elem_size);
+void myp_release_fixed_class_array(void* data, uint64_t count);
 // Per-TU destroy-stub table, defined by generated code (indexed by type_id).
 extern void (*__myp_release_table[])(void*);
 // Per-TU class-name table, defined by generated code (indexed by type_id,

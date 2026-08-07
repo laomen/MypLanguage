@@ -54,6 +54,11 @@ private:
     // Anonymous tuple structs, keyed by element LLVM type signature.
     std::unordered_map<std::string, llvm::StructType*> tuple_structs_;
 
+    // Enum structs: { i32 disc, [N x i8] payload } keyed by enum name.
+    std::unordered_map<std::string, llvm::StructType*> enum_structs_;
+    // Set of all enum struct types (for disc-extraction in equality).
+    std::unordered_set<llvm::StructType*> enum_struct_set_;
+
     // ---- Current function ----
     llvm::Function* current_function_ = nullptr;
 
@@ -430,6 +435,14 @@ private:
 
     // ---- Struct-related methods ----
     void buildStructTypes(TranslationUnit& tu);
+    // Enum struct type: { i32 disc, [N x i8] payload }, built & cached per enum.
+    llvm::StructType* getEnumStructType(const std::string& name);
+    const EnumDecl* findEnum(const std::string& name) const;
+    // Build an enum struct value: disc = variant_index, payload = packed args.
+    llvm::Value* buildEnumVariant(const std::string& enum_name, size_t variant_index,
+                                  const std::vector<llvm::Value*>& args);
+    // Byte offset of field field_idx in a variant's packed payload.
+    uint64_t enumPayloadOffset(const EnumVariant& v, size_t field_idx);
     llvm::StructType* getStructType(const std::string& name);
     bool getStructFieldIndex(const std::string& struct_name, const std::string& field_name, unsigned& idx);
     llvm::Type* getStructFieldType(const StructDecl& st, const std::string& field_name);
@@ -468,6 +481,11 @@ private:
     void generateArcSupport(TranslationUnit& tu);
     // True if a TypeNode is a class instance / interface reference slot (ARC-counted).
     bool isArcRefType(const TypeNode& tn);
+    // True if tn is a class (not interface) reference — resolves generic type
+    // params through current_type_params_. Used to decide ref-counted arrays.
+    bool isArcClassType(const TypeNode& tn);
+    // Fixed (stack) class-array slots: alloca → element count (kind-3 slots).
+    std::unordered_map<llvm::Value*, uint64_t> arc_fixed_array_counts_;
     // Emit myp_release(load of local alloca) if it holds a class ref.
     void maybeReleaseLocal(const std::string& name, llvm::Value* alloca);
     // True if name is the Error interface declared in this TU.

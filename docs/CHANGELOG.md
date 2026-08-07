@@ -27,7 +27,38 @@
 
 ## 编译器版本历史
 
-### v3.9.0（当前）
+### v3.10.0（当前）
+- **showcase 差分测试驱动的 4 项修复**（`examples/showcase.myp` 作为语言能力展示 +
+  差异测试工件，暴露并回归了以下缺陷）：
+  - **枚举带数据变体载荷恒为 0**：`Shape.Circle(2.5)` 之前只存判别值、match 绑定硬编码 0
+    （`data(v)=0`/`radius=0`）。修复：枚举 LLVM 类型从 `i32` 改为结构体
+    `{ i32 disc, [N x i8] payload }`（N = 最大变体载荷字节）；构造打包载荷
+    （`buildEnumVariant`，与 `getEnumStructType` 同字节偏移）、`generateMatchStmt`
+    提取判别 + 按偏移解包载荷绑定、等值比较按判别（Eq/Ne/Lt..）；`typeNodeToLLVMType`/
+    `typeNodeToCodegenType`/局部变量分配均识别枚举。`tests/enum_match` 期望更新为真值。
+  - **`ArrayList<T>`（T 为类）销毁时元素不释放** + **动态/固定类数组元素泄漏**：
+    `new T[n]`（T 为类）之前走裸 `myp_region_alloc`，无长度、无释放。修复：**引用计数类数组**
+    ——运行时 `myp_alloc_class_array` 分配 24 字节头
+    `{ count:u64, elem_size:u32, pad:u32, rc:u32, type_id=MYP_ARR_TYPE_ID }`
+    （rc/type_id 与类对象头同偏移，`myp_retain`/`myp_release` 统一可用；
+    `myp_release` 见 magic 即逐元素释放再 `myp_free_class_array`）；
+    codegen `isArcRefType` 对动态类数组返回 true（销毁桩/字段存储/作用域退出/临时释放
+    自动接管）、`generateNewArrayExpr` 类元素走 `myp_alloc_class_array` + 语句末临时、
+    局部动态类数组注册 ARC 槽、固定 `[N x T]` 栈数组注册 kind-3 槽（`myp_release_fixed_class_array`
+    按 count 释放元素不 free 栈缓冲）、`return` 转移/retain-at-return 覆盖类数组、
+    `heapCopyArrayReturn` 对固定类数组做引用计数深拷贝。
+    `tests/arc_m2` 期望更新（`after=2` 不再编码数组泄漏）。
+  - **泛型模板体 for-in 崩溃**（sema 跳过模板体 → ForInStmt 注解未计算 → codegen 读默认值
+    → LLVM 对齐栈溢出）：模板体递归注解（`annotateForInsInStmt`）+ codegen 兜底报清晰错误
+    （不再崩溃；迭代泛型集合仍建议索引循环）。
+  - **命名 lambda 自引用失败**（`fn fact(n) => ...` 递归本名解析不到）：AST 加
+    `LambdaExpr::name`/`ClassDecl::lambda_name`；sema 在 `__call` 作用域声明自名
+    （函数类型、不捕获），调用解析 `resolved_call_name = <cls>__self`；codegen 识别
+    `__self` 后缀走 `this` tramp 递归。`/tmp/nl2.myp`（含捕获 + 自递归）O0/O2 通过。
+  - 验证矩阵：**-O0/-O2/ASAN 全套 173/173、TSan 12/12**；`arclist.myp`（d1=0）、
+    `arrleak.myp`（fixedarr=0/dynarr=0）、`arrfull.myp`（传参/返回/覆盖/字段级联，leak=0）。
+
+### v3.9.0
 - **异常 × -O2 修复（§五-3 × 优化管线）**：`-O2` 全套复验（套件涨到 173 后首次）暴露
   `result` **段错误** + `arc_throw` **泄漏**——异常 dispatch/propagate 读 try 内 ARC 槽，
   其唯一 def 在 try_block（不支配 longjmp 路径），LLVM 把 load 折叠成 `undef`

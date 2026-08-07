@@ -2051,6 +2051,17 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         auto body = parseBlock();
         return std::make_unique<QuoteExpr>(std::move(body), previous().range);
     }
+    // M-FN-2 命名 lambda：`fn name(params) => { body }`（body 内 name 自引用递归）。
+    if (check(TokenKind::Identifier) && peek().value == "fn" &&
+        peekNext().kind == TokenKind::Identifier &&
+        peekNext2().kind == TokenKind::LeftParen) {
+        advance();  // consume 'fn'
+        std::string lname = parseIdentifier("expected lambda name after 'fn'");
+        consume(TokenKind::LeftParen, "expected '(' after lambda name");
+        auto l = parseLambdaBody();
+        static_cast<LambdaExpr*>(l.get())->name = lname;
+        return l;
+    }
     if (check(TokenKind::Identifier)) {
         return std::make_unique<IdentifierExpr>(
             parseIdentifier("expected identifier"), previous().range);
@@ -2072,6 +2083,12 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
 // ==============================
 
 std::unique_ptr<Expr> Parser::parseLambdaExpr() {
+    // Caller has consumed '(' — parse params + body.
+    return parseLambdaBody();
+}
+
+// Assumes the '(' introducing the lambda's parameter list is already consumed.
+std::unique_ptr<Expr> Parser::parseLambdaBody() {
     std::vector<ParamDecl> params;
     if (!check(TokenKind::RightParen)) {
         params.push_back(parseParam(false));  // lambda：暂不支持默认值

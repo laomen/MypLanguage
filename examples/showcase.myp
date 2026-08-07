@@ -40,9 +40,10 @@ class Node {
 
 struct Point { int x; int y; string name; }
 
-// 简单枚举（判别 + match）。注意：带数据的变体（如 Shape.Circle(double)）目前
-// 载荷恒为 0（codegen 只存判别值、match 绑定硬编码 0）——已知缺陷，见 docs 备注。
+// 简单枚举（判别 + match）+ 带数据变体（判别 + 载荷字节包）。
+// 带数据变体（如 Shape.Circle(double)）的载荷已正确打包/解包（曾经恒为 0）。
 enum Color { Red; Green; Blue; }
+enum Shape { Circle(double radius); Rect(double w, double h); Point; }
 // 自定义 Error 类（可被 catch (Error e) 接口捕获，也可按具体类捕获）
 class MyErr {
     interface class Error;
@@ -75,8 +76,9 @@ class Person {
 }
 
 // @static 类 + 泛型静态方法（跨模块工具）
-// 注意：泛型函数/类模板体里不能用 for-in 迭代泛型集合（§四-2 已知缺陷——模板体在
-// sema 被跳过、ForInStmt 注解未计算 → codegen 崩溃），改用 size()/get(i) 索引循环。
+// 注意：泛型函数/类模板体里不能用 for-in 迭代泛型集合——模板体在 sema 被跳过、
+// ForInStmt 注解未计算 → codegen 报错（不再崩溃，§四-2）。改用 size()/get(i)
+// 索引循环，或在具体（非泛型）迭代对象上用 for-in。
 @static class Utils {
     static:
         R id<R>(R v) { return v; }
@@ -154,6 +156,18 @@ int pmRun() {
         Color.Blue => { rd = "blue"; }
     }
     Console.writeString("3enum: " + cd + " | " + rd + "\n");
+
+    // 带数据的枚举变体：判别 + 载荷
+    Shape shape_c = Shape.Circle(2.5);
+    Shape shape_r = Shape.Rect(3.0, 4.0);
+    double area = 0.0;
+    match (shape_c) {
+        Shape.Circle(rad) => { area = 3.14159 * rad * rad; }
+        Shape.Rect(w, h) => { area = w * h; }
+        Shape.Point => { area = 0.0; }
+    }
+    Console.writeString("3enum-data: circle=" + area +
+        " eq=" + (shape_c == shape_r) + "\n");
 
     // ===== 4. 结构体 / 元组 / 解构 / 多值返回 =====
     Point p;
@@ -258,8 +272,8 @@ int pmRun() {
     Console.writeString(" json=" + jn + "/" + ja + "\n");
 
     // ===== 12. ARC 生命周期验证（各段 delta 应为 0） =====
-    // 注意：ArrayList<T>（T 为类）在集合销毁时元素不释放（已知缺陷，见 docs 备注）
-    // ——这里用类字段级联释放 + 嵌套泛型验证 ARC。
+    // ArrayList<T>（T 为类）在集合销毁时元素已正确释放（引用计数类数组）；
+    // 这里用类字段级联释放 + 嵌套泛型验证 ARC。
     long base = Memory.liveObjectCount();
     {
         Node na = new Node(1);

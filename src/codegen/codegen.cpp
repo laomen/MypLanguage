@@ -287,6 +287,82 @@ void CodeGen::buildStructTypes(TranslationUnit& tu) {
     }
 }
 
+llvm::StructType* CodeGen::getEnumStructType(const std::string& name) {
+    auto it = enum_structs_.find(name);
+    if (it != enum_structs_.end()) return it->second;
+    const EnumDecl* ed = findEnum(name);
+    uint64_t max_payload = 0;
+    if (ed) {
+        for (auto& v : ed->variants) {
+            uint64_t sz = 0;
+            for (auto& p : v.params) {
+                auto* t = typeNodeToLLVMType(p.type);
+                sz += module_->getDataLayout().getTypeAllocSize(t).getFixedValue();
+            }
+            if (sz > max_payload) max_payload = sz;
+        }
+    }
+    std::vector<llvm::Type*> elems;
+    elems.push_back(llvm::Type::getInt32Ty(ctx_)); // disc
+    if (max_payload > 0)
+        elems.push_back(llvm::ArrayType::get(llvm::Type::getInt8Ty(ctx_), max_payload));
+    auto* st = llvm::StructType::get(ctx_, elems, /*isPacked=*/false);
+    enum_structs_[name] = st;
+    enum_struct_set_.insert(st);
+    return st;
+}
+
+const EnumDecl* CodeGen::findEnum(const std::string& name) const {
+    if (!current_tu_) return nullptr;
+    for (auto& e : current_tu_->enums)
+        if (e.name == name) return &e;
+    return nullptr;
+}
+
+uint64_t CodeGen::enumPayloadOffset(const EnumVariant& v, size_t field_idx) {
+    uint64_t off = 0;
+    auto& dl = module_->getDataLayout();
+    for (size_t i = 0; i < field_idx && i < v.params.size(); i++)
+        off += dl.getTypeAllocSize(typeNodeToLLVMType(v.params[i].type)).getFixedValue();
+    return off;
+}
+
+llvm::Value* CodeGen::buildEnumVariant(const std::string& enum_name, size_t variant_index,
+                                       const std::vector<llvm::Value*>& args) {
+    auto* st = getEnumStructType(enum_name);
+    auto* func = builder_.GetInsertBlock()->getParent();
+    const EnumDecl* ed = findEnum(enum_name);
+    llvm::Value* result = llvm::UndefValue::get(st);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    result = builder_.CreateInsertValue(
+        result, llvm::ConstantInt::get(i32_ty, variant_index, false), 0);
+
+    if (st->getNumElements() > 1 && ed && variant_index < ed->variants.size()) {
+        auto& v = ed->variants[variant_index];
+        size_t n = v.params.size();
+        if (n > 0 && args.size() >= n) {
+            // Materialize each arg into a byte buffer at its packed offset,
+            // then store the buffer as the payload array.
+            auto* buf = createEntryBlockAlloca(
+                func, st->getElementType(1), "enum_payload");
+            auto& dl = module_->getDataLayout();
+            auto* i8_ptr = llvm::PointerType::get(ctx_, 0);
+            for (size_t i = 0; i < n; i++) {
+                uint64_t off = enumPayloadOffset(v, i);
+                auto* base = builder_.CreateBitCast(buf, i8_ptr);
+                auto* field_ptr = builder_.CreateGEP(
+                    llvm::Type::getInt8Ty(ctx_), base,
+                    llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), off));
+                field_ptr = builder_.CreateBitCast(field_ptr, args[i]->getType()->getPointerTo());
+                builder_.CreateStore(args[i], field_ptr);
+            }
+            auto* payload = builder_.CreateLoad(st->getElementType(1), buf, "enum_payload_val");
+            result = builder_.CreateInsertValue(result, payload, 1);
+        }
+    }
+    return result;
+}
+
 llvm::StructType* CodeGen::getStructType(const std::string& name) {
     auto it = struct_types_.find(name);
     return it != struct_types_.end() ? it->second : nullptr;
@@ -378,6 +454,8 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
             return llvm::PointerType::get(ctx_, 0);
         if (auto* st = getStructType(tn.class_name))
             return st;
+        if (findEnum(tn.class_name))
+            return getEnumStructType(tn.class_name);
     }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
@@ -465,7 +543,7 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
         case TypeKind::Struct:
             return getStructType(t.class_name);
         case TypeKind::Enum:
-            return llvm::Type::getInt32Ty(ctx_);
+            return getEnumStructType(t.class_name);
         case TypeKind::Array: {
             if (t.array_size > 0 && t.element_type) {
                 auto* elem = getLLVMType(*t.element_type);
@@ -545,6 +623,11 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         }
         if (getStructType(node.class_name)) {
             TypeInfo result(TypeKind::Struct);
+            result.class_name = node.class_name;
+            return result;
+        }
+        if (findEnum(node.class_name)) {
+            TypeInfo result(TypeKind::Enum);
             result.class_name = node.class_name;
             return result;
         }
@@ -701,6 +784,23 @@ void CodeGen::emitReleaseTryInnerSlots() {
         // Drop the coroutine-frame mirror for this slot first (same as
         // releaseArcSlot does) so a later Coro.destroy can't double-release.
         emitCoroFrameClear(s.alloca);
+        if (s.kind == 3) {
+            // Fixed class-array slot: release `count` element refs directly
+            // (myp_release_slot has no count).
+            auto it = arc_fixed_array_counts_.find(s.alloca);
+            uint64_t cnt = (it != arc_fixed_array_counts_.end()) ? it->second : 0;
+            auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), s.alloca);
+            auto* fn = module_->getFunction("myp_release_fixed_class_array");
+            if (!fn) {
+                auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                    {llvm::PointerType::get(ctx_, 0), llvm::Type::getInt64Ty(ctx_)}, false);
+                fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                    "myp_release_fixed_class_array", module_.get());
+            }
+            builder_.CreateCall(fn, {data,
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), cnt)});
+            continue;
+        }
         llvm::Value* kind = llvm::ConstantInt::get(i32ty, s.kind);
         builder_.CreateCall(runtime_release_slot_->getFunctionType(),
                             runtime_release_slot_, {s.alloca, kind});
@@ -759,6 +859,21 @@ void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     // BEFORE the release — a normally-released slot's object must not be
     // released again if the coroutine is destroyed later.
     emitCoroFrameClear(alloca);
+    if (kind == 3) {
+        // Fixed (stack) class-array slot: release `count` element refs.
+        auto it = arc_fixed_array_counts_.find(alloca);
+        uint64_t cnt = (it != arc_fixed_array_counts_.end()) ? it->second : 0;
+        auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), alloca);
+        auto* fn = module_->getFunction("myp_release_fixed_class_array");
+        if (!fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {llvm::PointerType::get(ctx_, 0), llvm::Type::getInt64Ty(ctx_)}, false);
+            fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_release_fixed_class_array", module_.get());
+        }
+        builder_.CreateCall(fn, {data, llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), cnt)});
+        return;
+    }
     llvm::Value* v;
     if (kind == 1 || kind == 2) {
         // Interface / function-value fat pointer {obj, ...} → release index 0.
@@ -855,12 +970,14 @@ void CodeGen::arcReleaseAllScopes() {
 }
 // NewExpr / CallExpr produce a fresh (+1) reference → transfer into a strong
 // slot without retaining. Everything else (identifier / member access /
-// subscript …) is an alias of an existing owner → must retain.
+// subscript …) is an alias of an existing owner → must retain. NewArrayExpr of
+// a class element is likewise a fresh ref-counted array (temp rc=1).
 bool CodeGen::isFreshArcExpr(const Expr& e) {
     // NewExpr / CallExpr / LambdaExpr produce a fresh reference (the lambda's
     // closure is a freshly allocated class instance held by its fat pointer).
+    // NewArrayExpr of a class element is a fresh ref-counted array.
     return e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call ||
-           e.kind == ExprKind::Lambda;
+           e.kind == ExprKind::Lambda || e.kind == ExprKind::NewArrayExpr;
 }
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();
@@ -1141,6 +1258,24 @@ bool CodeGen::isErrorInterface(const std::string& name) {
 // interface fat pointers count (§2 of docs/arc.md). string / arrays / slices /
 // structs do NOT (value or arena-managed). Generic type-param placeholders are
 // resolved via current_type_params_ before classifying.
+bool CodeGen::isArcClassType(const TypeNode& tn) {
+    if (!tn.class_name.empty() && tn.class_name.find("::") != std::string::npos) {
+        auto ra = const_cast<CodeGen*>(this)->resolveAssocType(
+            tn.class_name.substr(0, tn.class_name.find("::")),
+            tn.class_name.substr(tn.class_name.find("::") + 2));
+        if (ra) return isArcClassType(*ra);
+        return false;
+    }
+    // Generic type-param placeholder → concrete arg for current instance.
+    for (auto& tp : current_type_params_) {
+        if (!tn.class_name.empty() && tn.class_name == tp.first)
+            return isArcClassType(tp.second);
+    }
+    if (!tn.class_name.empty())
+        return getClassStruct(tn.class_name) != nullptr;
+    return false;
+}
+
 bool CodeGen::isArcRefType(const TypeNode& tn) {
     if (!tn.class_name.empty() && tn.class_name.find("::") != std::string::npos) {
         auto ra = const_cast<CodeGen*>(this)->resolveAssocType(
@@ -1154,7 +1289,17 @@ bool CodeGen::isArcRefType(const TypeNode& tn) {
         if (!tn.class_name.empty() && tn.class_name == tp.first)
             return isArcRefType(tp.second);
     }
-    if (tn.isArray() || tn.isTuple() || tn.isFunction()) return false;
+    if (tn.isArray()) {
+        // Dynamic class-element arrays (T[] of class) are ref-counted
+        // (myp_alloc_class_array); their elements are strong slots released
+        // when the array is released. Fixed arrays ([N x T]) are stack/field
+        // VALUES — not ARC-managed (lambda captures / returns must not treat
+        // them as refs). Interface arrays hold fat-pointer elements — skipped.
+        if (tn.element_type && tn.array_size == 0)
+            return isArcClassType(*tn.element_type);
+        return false;
+    }
+    if (tn.isTuple() || tn.isFunction()) return false;
     if (!tn.class_name.empty()) {
         // Class instance?
         if (getClassStruct(tn.class_name)) return true;
@@ -3234,12 +3379,19 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             setNamedValue(d.name, ptr_a);
             // 记录固定数组栈变量大小：return 该变量时需堆拷贝避免悬垂指针
             stack_array_sizes_[d.name] = arr_sz;
+            // ARC: fixed class-array — elements are strong slots; release them
+            // at scope exit (the backing stack buffer is not freed).
+            if (isArcClassType(*d.type.element_type)) {
+                registerArcSlot(ptr_a, 3);
+                arc_fixed_array_counts_[ptr_a] = (uint64_t)d.type.array_size;
+            }
         } else {
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
+            llvm::Value* dyn_init_val = nullptr;   // for ARC transfer below
             // Handle initializer: double[] buf = new double[n]
             if (d.init_expr) {
-                auto* init_val = generateExpr(*d.init_expr);
-                builder_.CreateStore(init_val, ptr_a);
+                dyn_init_val = generateExpr(*d.init_expr);
+                builder_.CreateStore(dyn_init_val, ptr_a);
                 // Track array byte size for GPU data transfer
                 if (d.init_expr->kind == ExprKind::NewArrayExpr) {
                     auto& nae = static_cast<const NewArrayExpr&>(*d.init_expr);
@@ -3261,13 +3413,22 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
             }
             setNamedValue(d.name, ptr_a);
+            // ARC: dynamic class-array — the local owns the ref-counted array
+            // (myp_release on scope exit releases elements + frees header).
+            if (isArcClassType(*d.type.element_type)) {
+                registerArcSlot(ptr_a, 0);
+                if (d.init_expr) {
+                    if (isFreshArcExpr(*d.init_expr))
+                        arcConsumeTemp(dyn_init_val);   // fresh (new-array/call) rc=1 → local owns
+                    else if (dyn_init_val)
+                        emitRetain(dyn_init_val);       // alias → local retains
+                }
+            }
         }
         // Record element type for subscript access
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
         // ARC: record whether elements are class references (retain/release on store).
-        array_elem_is_class_[d.name] =
-            d.type.element_type &&
-            getClassStruct(d.type.element_type->class_name) != nullptr;
+        array_elem_is_class_[d.name] = isArcClassType(*d.type.element_type);
         return;
     } else if (d.type.isFunction()) {
         // First-class function value: fat pointer {closure, call_fn}
@@ -3282,7 +3443,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         bool arc_class = false;
-        if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
+        if (!d.type.class_name.empty() && findEnum(d.type.class_name)) {
+            // Enum value type: { i32 disc, [N x i8] payload }
+            vt = TypeInfo(TypeKind::Enum);
+            vt.class_name = d.type.class_name;
+        } else if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
             std::string cls_name = d.type.class_name;
             // Mangle name for generic classes: Box<int> → Box_int_inst
             // (type-param placeholders like R are resolved via current_type_params_)
@@ -4663,6 +4828,14 @@ void CodeGen::generateForStmt(const ForStmt& s) {
 //   0=class(size/get), 1=固定数组, 2=slice, 3=range
 void CodeGen::generateForInStmt(const ForInStmt& s) {
     if (!current_function_) return;
+    // 守卫：泛型模板体内 for-in 若未被 sema 注解（iter_kind 默认 0 且 size_fn 空），
+    // 给出明确错误而非用 void 循环变量崩溃（§四-2 × 泛型）。
+    if (s.iter_kind == 0 && s.size_fn.empty() &&
+        !(s.iterable && s.iterable->kind == ExprKind::Range)) {
+        diag_.error(s.range, "for-in over a generic-typed iterable was not resolved; "
+            "iterate by index (a.size()/a.get(i)) or use a concrete iterable");
+        return;
+    }
     auto* i32 = llvm::Type::getInt32Ty(ctx_);
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* f = builder_.GetInsertBlock()->getParent();
@@ -5585,12 +5758,18 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             // reference is +1'd so the caller transfers it into a strong slot
             // without retaining. `return new T()` is a fresh temporary whose
             // rc=1 already transfers to the caller — skip the extra retain
-            // (arc_skip_retain_return_ set by generateReturnStmt).
+            // (arc_skip_retain_return_ set by generateReturnStmt). A returned
+            // class-array (T[] of class) is likewise +1'd (myp_retain reaches
+            // the array header).
             bool skip_retain = arc_skip_retain_return_;
             arc_skip_retain_return_ = false;
-            if (!skip_retain &&
-                (current_ret_ti_.kind == TypeKind::Class ||
-                 current_ret_ti_.kind == TypeKind::Interface)) {
+            bool ret_is_arc_ref =
+                current_ret_ti_.kind == TypeKind::Class ||
+                current_ret_ti_.kind == TypeKind::Interface ||
+                (current_ret_ti_.kind == TypeKind::Array &&
+                 current_ret_ti_.element_type &&
+                 current_ret_ti_.element_type->kind == TypeKind::Class);
+            if (!skip_retain && ret_is_arc_ref) {
                 llvm::Value* rdata = ret_val;
                 if (current_ret_ti_.kind == TypeKind::Interface &&
                     ret_val->getType()->isStructTy())
@@ -5633,9 +5812,11 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                 else if (rt->isPointerTy() && v->getType()->isPointerTy())
                     v = builder_.CreateBitCast(v, rt);
             }
-            // ARC: `return new T()` in a try-with-finally — consume the fresh
-            // temp now; emitFunctionReturn skips the extra retain later.
-            if (s.value->kind == ExprKind::NewExpr) {
+            // ARC: `return new T()` / `return new T[n]` in a try-with-finally —
+            // consume the fresh temp now; emitFunctionReturn skips the extra
+            // retain later.
+            if (s.value->kind == ExprKind::NewExpr ||
+                s.value->kind == ExprKind::NewArrayExpr) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -5651,7 +5832,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     llvm::Value* v = nullptr;
     if (s.value) v = generateExpr(*s.value);
     v = heapCopyArrayReturn(v, s.value.get());
-    if (s.value && s.value->kind == ExprKind::NewExpr) {
+    if (s.value && (s.value->kind == ExprKind::NewExpr ||
+                    s.value->kind == ExprKind::NewArrayExpr)) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }
@@ -5665,7 +5847,49 @@ llvm::Value* CodeGen::heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr
     auto& id = static_cast<const IdentifierExpr&>(*value_expr);
     auto it = stack_array_sizes_.find(id.name);
     if (it == stack_array_sizes_.end()) return v;
-    auto* size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), it->second);
+    uint64_t byte_size = it->second;
+    auto eit = array_elem_types_.find(id.name);
+    bool elem_is_class = false;
+    auto cit = array_elem_is_class_.find(id.name);
+    if (cit != array_elem_is_class_.end()) elem_is_class = cit->second;
+    if (elem_is_class && eit != array_elem_types_.end()) {
+        // Fixed class array return: deep-copy into a ref-counted array so the
+        // returned value owns its elements (each retained from the stack copy).
+        // The scope-exit release of the stack copy balances those retains.
+        uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(eit->second);
+        uint64_t count = elem_size ? byte_size / elem_size : 0;
+        auto* ac = module_->getFunction("myp_alloc_class_array");
+        if (!ac) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+            ac = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_alloc_class_array", module_.get());
+        }
+        auto* dest = builder_.CreateCall(ac,
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), count),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)elem_size)},
+            "ret_arr_copy");
+        builder_.CreateMemSet(dest, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), byte_size), llvm::Align(8));
+        auto* src_i8 = builder_.CreateBitCast(v, llvm::PointerType::get(ctx_, 0));
+        auto* dst_i8 = builder_.CreateBitCast(dest, llvm::PointerType::get(ctx_, 0));
+        for (uint64_t i = 0; i < count; i++) {
+            auto* off = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), i * elem_size);
+            auto* srcp = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), src_i8, off);
+            auto* elp = builder_.CreateBitCast(srcp, eit->second->getPointerTo());
+            auto* el = builder_.CreateLoad(eit->second, elp);
+            auto* dstp = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), dst_i8, off);
+            auto* dpe = builder_.CreateBitCast(dstp, eit->second->getPointerTo());
+            builder_.CreateStore(el, dpe);
+            if (runtime_retain_ && el)   // myp_retain ignores NULL
+                builder_.CreateCall(runtime_retain_, {el});
+        }
+        // The fresh rc=1 array transfers to the caller — skip the extra retain
+        // in emitFunctionReturn.
+        arc_skip_retain_return_ = true;
+        return dest;
+    }
+    auto* size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), byte_size);
     llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
     if (!alloc_fn) {
         auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
@@ -5981,6 +6205,24 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::Gt:
         case BinaryOpKind::Le:
         case BinaryOpKind::Ge: {
+            // Enum struct operands: compare by discriminant (payload ignored).
+            if (l->getType()->isStructTy() && r->getType()->isStructTy()) {
+                auto* ls = llvm::cast<llvm::StructType>(l->getType());
+                auto* rs = llvm::cast<llvm::StructType>(r->getType());
+                if (enum_struct_set_.count(ls) && enum_struct_set_.count(rs)) {
+                    auto* ld = builder_.CreateExtractValue(l, 0, "enum_l_disc");
+                    auto* rd = builder_.CreateExtractValue(r, 0, "enum_r_disc");
+                    switch (e.op) {
+                        case BinaryOpKind::Eq: return builder_.CreateICmpEQ(ld, rd);
+                        case BinaryOpKind::Ne: return builder_.CreateICmpNE(ld, rd);
+                        case BinaryOpKind::Lt: return builder_.CreateICmpSLT(ld, rd);
+                        case BinaryOpKind::Gt: return builder_.CreateICmpSGT(ld, rd);
+                        case BinaryOpKind::Le: return builder_.CreateICmpSLE(ld, rd);
+                        case BinaryOpKind::Ge: return builder_.CreateICmpSGE(ld, rd);
+                        default: break;
+                    }
+                }
+            }
             // Ensure both operands have same type for comparison
             if (!fp && l->getType() != r->getType()) {
                 auto* i32 = llvm::Type::getInt32Ty(ctx_);
@@ -6103,6 +6345,39 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
+    // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.
+    const std::string SELF_SUFFIX = "__self";
+    if (!e.resolved_call_name.empty() &&
+        e.resolved_call_name.size() > SELF_SUFFIX.size() &&
+        e.resolved_call_name.compare(e.resolved_call_name.size() - SELF_SUFFIX.size(),
+                                     SELF_SUFFIX.size(), SELF_SUFFIX) == 0) {
+        std::string base = e.resolved_call_name.substr(0, e.resolved_call_name.size() - SELF_SUFFIX.size());
+        auto* tramp = module_->getFunction(base + "_tramp");
+        if (tramp) {
+            std::vector<llvm::Value*> args;
+            auto* ta = getNamedValue("this");
+            if (ta) args.push_back(builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta));
+            for (auto& a : e.args) args.push_back(generateExpr(*a));
+            auto* ft = tramp->getFunctionType();
+            for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
+                auto* expected = ft->getParamType(i);
+                if (args[i]->getType() != expected) {
+                    if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
+                        args[i] = builder_.CreateIntCast(args[i], expected, true);
+                    else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                        args[i] = builder_.CreateSIToFP(args[i], expected);
+                    else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                        args[i] = builder_.CreateFPToSI(args[i], expected);
+                    else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
+                        args[i] = builder_.CreateBitCast(args[i], expected);
+                }
+            }
+            bool isv = tramp->getReturnType()->isVoidTy();
+            return builder_.CreateCall(tramp->getFunctionType(), tramp, args,
+                isv ? "" : "calltmp");
+        }
+    }
     // Generic function call: sema monomorphized the target to a concrete
     // instance (e.g. id_int_inst); call it directly with arg conversions.
     if (!e.resolved_call_name.empty()) {
@@ -6232,7 +6507,7 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
 
-        // Enum variant construction: Option.Some(42) → return variant index
+        // Enum variant construction: Option.Some(42) → enum struct {disc, payload}
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
             if (current_tu_) {
@@ -6240,7 +6515,10 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                     if (en.name == oi.name) {
                         for (size_t vi = 0; vi < en.variants.size(); vi++) {
                             if (en.variants[vi].name == ma.member_name) {
-                                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), vi);
+                                std::vector<llvm::Value*> arg_vals;
+                                for (auto& a : e.args)
+                                    arg_vals.push_back(generateExpr(*a));
+                                return buildEnumVariant(en.name, vi, arg_vals);
                             }
                         }
                     }
@@ -7081,7 +7359,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
         }
     }
 
-    // Enum variant access: Color.Red → i32 constant
+    // Enum variant access: Color.Red → enum struct {disc, zeros}
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
         if (current_tu_) {
@@ -7089,7 +7367,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                 if (en.name == oi.name) {
                     for (size_t vi = 0; vi < en.variants.size(); vi++) {
                         if (en.variants[vi].name == e.member_name) {
-                            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), vi);
+                            return buildEnumVariant(en.name, vi, {});
                         }
                     }
                 }
@@ -7515,6 +7793,28 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
     uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(elem_ty);
     auto* byte_size = builder_.CreateMul(total,
         llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), elem_size));
+    // Class-element array → ref-counted class array: a header { count,
+    // elem_size, rc=1, type_id=MYP_ARR_TYPE_ID } precedes the data pointer, so
+    // myp_release on the array (scope exit / destroy stub / temp flush)
+    // releases every element then frees it.
+    if (isArcClassType(e.element_type)) {
+        auto* ac = module_->getFunction("myp_alloc_class_array");
+        if (!ac) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+            ac = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_alloc_class_array", module_.get());
+        }
+        auto* ptr = builder_.CreateCall(ac,
+            {total, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)elem_size)},
+            "new_arr");
+        // Zero the element area so unreleased slots are NULL (release no-op).
+        if (elem_size > 0)
+            builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+                byte_size, llvm::Align(8));
+        arcPushTemp(ptr);   // fresh array rc=1 owned by this statement
+        return ptr;
+    }
     // Always region-aware allocator (see generateNewExpr): dynamic extent — inside
     // an @region's call scope it is reclaimed; otherwise acts as process-level.
     llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
@@ -8298,21 +8598,40 @@ assign_gep:
 
 // -- Enum variant codegen: enum variant ref → i32 constant (variant index) --
 llvm::Value* CodeGen::generateEnumVariant(const EnumVariantExpr& e) {
-    // Enum variants are represented as i32 constants holding the variant index
-    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), e.variant_index, false);
+    // Enum variant value → enum struct {disc, payload}.
+    if (!e.args.empty()) {
+        std::vector<llvm::Value*> arg_vals;
+        for (auto& a : e.args)
+            arg_vals.push_back(generateExpr(*a));
+        return buildEnumVariant(e.enum_name, e.variant_index, arg_vals);
+    }
+    return buildEnumVariant(e.enum_name, e.variant_index, {});
 }
 
-// -- Match statement codegen: if/else chain comparing i32 --
+// -- Match statement codegen: if/else chain comparing the enum discriminant --
 void CodeGen::generateMatchStmt(const MatchStmt& s) {
     auto* subject_val = generateExpr(*s.subject);
     auto* func = builder_.GetInsertBlock()->getParent();
 
-    // Ensure subject is i32 for comparison
-    if (!subject_val->getType()->isIntegerTy(32)) {
-        if (subject_val->getType()->isIntegerTy())
-            subject_val = builder_.CreateIntCast(subject_val, llvm::Type::getInt32Ty(ctx_), false);
-        else
-            subject_val = builder_.CreatePtrToInt(subject_val, llvm::Type::getInt32Ty(ctx_));
+    // Resolve the enum name (for payload extraction) from the subject's type.
+    std::string enum_name;
+    if (s.subject->type && !s.subject->type->class_name.empty())
+        enum_name = s.subject->type->class_name;
+    else if (!s.arms.empty())
+        enum_name = s.arms[0].enum_name;
+
+    // Ensure the subject is the enum struct, then extract the i32 discriminant.
+    llvm::Value* disc = nullptr;
+    llvm::StructType* subject_st = nullptr;
+    if (subject_val->getType()->isStructTy()) {
+        subject_st = llvm::cast<llvm::StructType>(subject_val->getType());
+        disc = builder_.CreateExtractValue(subject_val, 0, "match_disc");
+    } else if (subject_val->getType()->isIntegerTy()) {
+        disc = subject_val;
+        if (!disc->getType()->isIntegerTy(32))
+            disc = builder_.CreateIntCast(disc, llvm::Type::getInt32Ty(ctx_), false);
+    } else {
+        disc = builder_.CreatePtrToInt(subject_val, llvm::Type::getInt32Ty(ctx_));
     }
 
     size_t n = s.arms.size();
@@ -8340,7 +8659,7 @@ void CodeGen::generateMatchStmt(const MatchStmt& s) {
 
         auto* variant_const = llvm::ConstantInt::get(
             llvm::Type::getInt32Ty(ctx_), (uint64_t)arm.variant_index, false);
-        auto* cmp = builder_.CreateICmpEQ(subject_val, variant_const, "match_cmp");
+        auto* cmp = builder_.CreateICmpEQ(disc, variant_const, "match_cmp");
 
         llvm::BasicBlock* next_bb = nullptr;
         if (i + 1 < n) {
@@ -8355,19 +8674,49 @@ void CodeGen::generateMatchStmt(const MatchStmt& s) {
         // Generate arm body
         builder_.SetInsertPoint(arm_blocks[i]);
 
-        // If arm has data bindings, introduce variables for them in a scope
+        // If arm has data bindings, extract the packed payload bytes from the
+        // subject and bind each field into a local variable.
         pushScope();
         if (!arm.bindings.empty()) {
-            // For enum variants with data — allocate local variables for bindings
-            // The data is the subject value itself (which is just the i32 discriminant).
-            // Data-carrying enum variants would require heap-allocated data,
-            // but for now we just create the bindings as variables.
-            for (auto& bname : arm.bindings) {
-                auto* a = createEntryBlockAlloca(func,
-                    llvm::Type::getInt32Ty(ctx_), bname);
-                builder_.CreateStore(
-                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0), a);
-                setNamedValue(bname, a);
+            const EnumDecl* ed = findEnum(enum_name);
+            if (ed && arm.variant_index >= 0 &&
+                (size_t)arm.variant_index < ed->variants.size() && subject_st) {
+                auto& v = ed->variants[arm.variant_index];
+                // Materialize the subject into an alloca so we can GEP into it.
+                auto* subj_a = createEntryBlockAlloca(func, subject_st, "match_subject");
+                builder_.CreateStore(subject_val, subj_a);
+                auto* i8_ptr = llvm::PointerType::get(ctx_, 0);
+                llvm::Value* base = nullptr;
+                if (subject_st->getNumElements() > 1) {
+                    auto* payload_ptr = builder_.CreateStructGEP(subject_st, subj_a, 1);
+                    base = builder_.CreateBitCast(payload_ptr, i8_ptr);
+                }
+                for (size_t bi = 0; bi < arm.bindings.size() && bi < v.params.size(); bi++) {
+                    auto* bind_ty = typeNodeToLLVMType(v.params[bi].type);
+                    auto* a = createEntryBlockAlloca(func, bind_ty, arm.bindings[bi]);
+                    if (base) {
+                        uint64_t off = enumPayloadOffset(v, bi);
+                        auto* field_ptr = builder_.CreateGEP(
+                            llvm::Type::getInt8Ty(ctx_), base,
+                            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), off));
+                        auto* typed_ptr = builder_.CreateBitCast(field_ptr, bind_ty->getPointerTo());
+                        auto* loaded = builder_.CreateLoad(bind_ty, typed_ptr);
+                        builder_.CreateStore(loaded, a);
+                    } else {
+                        // No payload available — zero-initialize.
+                        builder_.CreateStore(llvm::Constant::getNullValue(bind_ty), a);
+                    }
+                    setNamedValue(arm.bindings[bi], a);
+                }
+            } else {
+                // Unknown enum/arm — fall back to zero bindings.
+                for (auto& bname : arm.bindings) {
+                    auto* a = createEntryBlockAlloca(func,
+                        llvm::Type::getInt32Ty(ctx_), bname);
+                    builder_.CreateStore(
+                        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0), a);
+                    setNamedValue(bname, a);
+                }
             }
         }
 

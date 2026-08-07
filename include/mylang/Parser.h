@@ -56,6 +56,7 @@ private:
     std::unique_ptr<Stmt> parseMatchStmt();
     std::unique_ptr<Stmt> parseTryStmt();
     std::unique_ptr<Expr> parseLambdaExpr();
+    std::unique_ptr<Expr> parseLambdaBody();   // M-FN-2 named lambda: params+body after '('
     bool isGenericIdentifier();
 
     // Class internals

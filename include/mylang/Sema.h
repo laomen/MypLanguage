@@ -45,6 +45,9 @@ private:
     StmtResult visitWhileStmt(WhileStmt& stmt);
     StmtResult visitForStmt(ForStmt& stmt);
     StmtResult visitForInStmt(ForInStmt& stmt);
+    // §四-2 × 泛型：ForInStmt 注解逻辑（正常访问 + 单态化重注解共用）。
+    bool annotateForInStmt(ForInStmt& stmt, const TypeInfo& it_type);
+    void annotateForInsInStmt(Stmt& s, const std::vector<ParamDecl>& params);
     StmtResult visitReturnStmt(ReturnStmt& stmt);
     StmtResult visitMatchStmt(MatchStmt& stmt);
     StmtResult visitTryStmt(TryStmt& stmt);
@@ -95,6 +98,10 @@ private:
     TypeInfo visitPipe(PipeExpr& expr);
     void visitFFI(FFIDecl& decl);
     int lambda_counter_ = 0;
+    // M-FN-2 named lambda self-reference: while visiting a `fn name(...)` lambda's
+    // __call body, calls to `name` resolve to the lambda's own tramp (this).
+    std::string lambda_self_name_;
+    std::string lambda_self_class_;
 
     TypeInfo substituteTypeParams(const TypeNode& node,
                                   const std::vector<std::string>& type_params,

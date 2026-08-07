@@ -129,7 +129,12 @@ class A { property: B b; C c; }
 ```
 
 - 引用槽位 = **class 实例类型字段**（含 `interface` fat pointer 的 data 部分）。
-- 数组字段（`T[]`/`slice`/`string`）：**不释放**（不计数，arena 管理）——v1 保守策略。
+- **动态类数组字段**（`T[]`，T 为 class）：引用计数类数组（M-ARC-4）——数组头
+  `{ count, elem_size, rc, type_id=MYP_ARR_TYPE_ID }`，`myp_release` 见 magic 即逐元素释放
+  再释放头；销毁桩/字段存储/作用域退出/临时释放统一经 `myp_release` 接管。
+- **固定栈数组 `[N x T]`**（T 为 class）：kind-3 槽在作用域退出按 count 释放元素
+  （`myp_release_fixed_class_array`，不 free 栈缓冲）。
+- 非类数组（`int[]`/`double[]`/`slice`/`string`）：**不计数**（arena/进程级管理）——v1 保守策略。
 
 ### 5.2 struct 引用字段：不参与计数（保守，宁可泄漏不悬垂）
 
