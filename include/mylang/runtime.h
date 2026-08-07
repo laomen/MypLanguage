@@ -333,6 +333,13 @@ void myp_throw(const char* msg);
 const char* myp_get_error(void);
 int myp_error_is_active(void);
 void myp_error_clear(void);
+// IR-level optimization barrier: codegen passes try-inner ARC slot addresses so
+// LLVM keeps them as escaped memory across setjmp/longjmp (see runtime.c).
+void myp_try_escape(void* p);
+// Release the object held by a local ARC slot, reading the slot's physical
+// memory here in C (opaque to LLVM — the -O pipeline cannot fold it to undef on
+// the longjmp path). kind: 0=class ptr, 1/2=interface/function fat pointer.
+void myp_release_slot(void* slot_addr, int kind);
 
 // ---- Test framework ----
 void myp_assert(int cond);

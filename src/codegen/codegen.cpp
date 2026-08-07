@@ -651,17 +651,60 @@ void CodeGen::registerArcSlot(llvm::Value* alloca, int kind) {
     arc_scope_slots_.back().push_back({alloca, kind});
     // Exception unwinding: also collect into the innermost active try so the
     // dispatch path can release it (the longjmp skips the normal scope exit).
-    if (!try_ctx_stack_.empty())
+    if (!try_ctx_stack_.empty()) {
         try_ctx_stack_.back().inner_slots.push_back({alloca, kind});
+        // §五-3 exception × -O: the dispatch/propagate paths release inner
+        // slots AFTER a longjmp, but their only reaching defs live in try_block
+        // (which does NOT dominate the longjmp path). Without an escape, LLVM
+        // folds the dispatch load to undef → myp_release(garbage) at -O2
+        // (result segfault) or release(null) (arc_throw leak). Passing the slot
+        // address to the myp_try_escape no-op marks it escaped memory, so the
+        // -O pipeline keeps both the try-block stores and the dispatch load and
+        // reads the true physical value on the longjmp path.
+        if (!builder_.GetInsertBlock() ||
+            builder_.GetInsertBlock()->getTerminator())
+            return;   // dead path — nothing further to do
+        if (!runtime_try_escape_)
+            runtime_try_escape_ = llvm::Function::Create(
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                        {llvm::PointerType::get(ctx_, 0)}, false),
+                llvm::Function::ExternalLinkage, "myp_try_escape", module_.get());
+        builder_.CreateCall(runtime_try_escape_->getFunctionType(),
+                            runtime_try_escape_, {alloca});
+    }
 }
+
 // Emit myp_release for every slot collected in the innermost try's unwind list.
 // Called at the top of the exception paths (dispatch / propagate) — only runs
 // when the try block was abandoned, so no double release with normal scope exit.
+// The slot is read PHYSICALLY by myp_release_slot (opaque to LLVM): after the
+// longjmp, the slot's memory holds the true object (try-block null-init or the
+// constructed object), but an LLVM-side load here would be folded to undef at
+// -O2 because the try_block defs do not dominate the longjmp path (§五-3).
+// Passing the slot address to the opaque myp_release_slot also escapes it,
+// keeping the try-block stores alive.
 void CodeGen::emitReleaseTryInnerSlots() {
     if (try_ctx_stack_.empty()) return;
     auto& slots = try_ctx_stack_.back().inner_slots;
-    for (auto& s : slots)
-        releaseArcSlot(s.alloca, s.kind);
+    if (slots.empty()) return;
+    if (!builder_.GetInsertBlock() ||
+        builder_.GetInsertBlock()->getTerminator())
+        return;   // dead path — skip
+    if (!runtime_release_slot_)
+        runtime_release_slot_ = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                    {llvm::PointerType::get(ctx_, 0),
+                                     llvm::Type::getInt32Ty(ctx_)}, false),
+            llvm::Function::ExternalLinkage, "myp_release_slot", module_.get());
+    auto* i32ty = llvm::Type::getInt32Ty(ctx_);
+    for (auto& s : slots) {
+        // Drop the coroutine-frame mirror for this slot first (same as
+        // releaseArcSlot does) so a later Coro.destroy can't double-release.
+        emitCoroFrameClear(s.alloca);
+        llvm::Value* kind = llvm::ConstantInt::get(i32ty, s.kind);
+        builder_.CreateCall(runtime_release_slot_->getFunctionType(),
+                            runtime_release_slot_, {s.alloca, kind});
+    }
 }
 
 // §五-1 收尾: coroutine-frame ARC registry (see header comment). set/clear mirror

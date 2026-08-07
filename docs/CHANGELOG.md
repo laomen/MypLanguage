@@ -28,6 +28,15 @@
 ## 编译器版本历史
 
 ### v3.9.0（当前）
+- **异常 × -O2 修复（§五-3 × 优化管线）**：`-O2` 全套复验（套件涨到 173 后首次）暴露
+  `result` **段错误** + `arc_throw` **泄漏**——异常 dispatch/propagate 读 try 内 ARC 槽，
+  其唯一 def 在 try_block（不支配 longjmp 路径），LLVM 把 load 折叠成 `undef`
+  （`MYPC_DUMP_OPT_IR=1` 可见 `call myp_release(ptr undef)`）。修复：运行时
+  `myp_release_slot(槽地址, kind)` 读**物理槽位**再释放（对 LLVM 不透明）+ `registerArcSlot`
+  内 `myp_try_escape` 让槽逃逸保住 try_block 的 store（协程帧镜像仍先 `emitCoroFrameClear`）。
+  **附带**：`mypc run` 支持子命令前 flag（`-O2 run file.myp`，提取 -O 级传给编译）；
+  5 个自举子脚本（pm/gitee/fmt/viz/run）`"$MYPCC"` 引号在 `MYPCC` 带参数时失效→去引号 +
+  `MYP_ABS` 取首个词。验证矩阵：**-O0/-O2/ASAN 全套 173/173、TSan 12/12**。
 - **反射 / RTTI（§五-4，additive）**：class 对象头 `{rc, type_id}` 自带运行时类型 id。
   新增 `stdlib/rtti.myp` 静态类 `Rtti`——`typeOf<T>(obj)`（运行时类名）、
   `typeId<T>(obj)`（运行时类型 id）、`sameType<T,U>(a,b)`（同类型判定；null → id 0 / 空名）。

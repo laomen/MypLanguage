@@ -28,7 +28,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # ---- 1) 编译 ----
-if ! "$MYPCC" tools/fmt/main.myp -o "$TMP/myp_fmt2" >/dev/null 2>&1; then
+if ! $MYPCC tools/fmt/main.myp -o "$TMP/myp_fmt2" >/dev/null 2>&1; then
     bad "tools/fmt/main.myp 编译失败"
     echo "myp-fmt PASS=0 FAIL=1"
     exit 1

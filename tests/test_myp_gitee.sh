@@ -37,13 +37,15 @@ fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-MYP_ABS="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")"
+# MYPCC 可能带优化标志（run_tests_O2.sh 传 "./build/mypc -O2"）→ 取首个词为编译器路径
+MYPCC_BIN="${MYPCC%% *}"
+MYP_ABS="$(cd "$(dirname "$MYPCC_BIN")" && pwd)/$(basename "$MYPCC_BIN")"
 # 钉住编译器：myp build 在临时目录里找不到 ./build/mypc，必须经 MYP_CC 指定
 # （否则回退到 PATH 上的 mypc —— 测试环境未必有，导致 "mypc: not found"）
 export MYP_CC="$MYP_ABS"
 
 # ---- 0) 编译 myp.myp ----
-if ! "$MYPCC" tools/pm/main.myp -o "$TMP/myp" >/dev/null 2>&1; then
+if ! $MYPCC tools/pm/main.myp -o "$TMP/myp" >/dev/null 2>&1; then
     bad "tools/pm/main.myp 编译失败"
     exit 1
 fi

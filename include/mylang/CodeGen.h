@@ -311,6 +311,12 @@ private:
     llvm::Function* runtime_throw_object_ = nullptr;
     llvm::Function* runtime_exception_get_type_ = nullptr;
     llvm::Function* runtime_exception_get_object_ = nullptr;
+    // IR-level escape barrier for try-inner ARC slots (§五-3): keeps them as
+    // escaped memory so the -O pipeline can't fold dispatch loads to undef.
+    llvm::Function* runtime_try_escape_ = nullptr;
+    // Reads a local ARC slot's physical memory in the runtime and releases the
+    // object (§五-3 × -O): LLVM cannot fold this opaque read on the longjmp path.
+    llvm::Function* runtime_release_slot_ = nullptr;
     llvm::StructType* jmp_buf_type_ = nullptr;
     llvm::GlobalVariable* global_jmp_buf_ = nullptr;
     // class name → compile-time exception type ID (>0; 0 = string message)

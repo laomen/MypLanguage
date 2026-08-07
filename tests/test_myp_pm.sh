@@ -18,11 +18,13 @@ bad() { say "  FAIL: $*"; FAIL=$((FAIL+1)); }
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
-MYP_ABS="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")"
+# MYPCC 可能带优化标志（run_tests_O2.sh 传 "./build/mypc -O2"）→ 取首个词为编译器路径
+MYPCC_BIN="${MYPCC%% *}"
+MYP_ABS="$(cd "$(dirname "$MYPCC_BIN")" && pwd)/$(basename "$MYPCC_BIN")"
 export MYP_CC="$MYP_ABS"
 
 # ---- 1) 编译 myp.myp ----
-if ! "$MYPCC" tools/pm/main.myp -o "$TMP/myp" >/dev/null 2>&1; then
+if ! $MYPCC tools/pm/main.myp -o "$TMP/myp" >/dev/null 2>&1; then
     bad "tools/pm/main.myp 编译失败"
     exit 1
 fi

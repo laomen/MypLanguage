@@ -34,7 +34,7 @@ class Hello {
         }
 }
 EOF
-out1=$("$MYPCC" run "$TMPDIR/hello.myp" 2>&1)
+out1=$($MYPCC run "$TMPDIR/hello.myp" 2>&1)
 ec1=$?
 check "单类@startup run 输出" "echo \"$out1\" | grep -q 'hello-run sum=5'"
 check "单类@startup run 退出码0" "test $ec1 -eq 0"
@@ -44,7 +44,7 @@ cat > "$TMPDIR/noentry.myp" <<'EOF'
 import env;
 class A { action: void f() {} }
 EOF
-out2=$("$MYPCC" run "$TMPDIR/noentry.myp" 2>&1)
+out2=$($MYPCC run "$TMPDIR/noentry.myp" 2>&1)
 ec2=$?
 check "无@startup 报错提示" "echo \"$out2\" | grep -q '@startup'"
 check "无@startup 非零退出" "test $ec2 -ne 0"
@@ -64,7 +64,7 @@ int main(int argc, string[] argv) {
     return 0;
 }
 EOF
-out3=$("$MYPCC" run "$TMPDIR/args.myp" alpha beta 2>&1)
+out3=$($MYPCC run "$TMPDIR/args.myp" alpha beta 2>&1)
 ec3=$?
 check "args 透传输出" "echo \"$out3\" | grep -q 'argc=3 a1=alpha a2=beta'"
 check "args 透传退出码0" "test $ec3 -eq 0"
@@ -73,7 +73,7 @@ check "args 透传退出码0" "test $ec3 -eq 0"
 cat > "$TMPDIR/nomain.myp" <<'EOF'
 class B { action: void g() {} }
 EOF
-out4=$("$MYPCC" "$TMPDIR/nomain.myp" -o "$TMPDIR/nomain.out" 2>&1)
+out4=$($MYPCC "$TMPDIR/nomain.myp" -o "$TMPDIR/nomain.out" 2>&1)
 ec4=$?
 check "正常编译无 main 链接失败" "test $ec4 -ne 0"
 

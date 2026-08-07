@@ -28,7 +28,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # ---- 1) 编译 ----
-if ! "$MYPCC" tools/viz/main.myp -o "$TMP/myp_viz2" >/dev/null 2>&1; then
+if ! $MYPCC tools/viz/main.myp -o "$TMP/myp_viz2" >/dev/null 2>&1; then
     bad "tools/viz/main.myp 编译失败"
     echo "myp-viz PASS=0 FAIL=1"
     exit 1

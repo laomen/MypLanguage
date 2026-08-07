@@ -2713,6 +2713,33 @@ void myp_exception_pop(void) {
     if (myp_handler_depth > 0) myp_handler_depth--;
 }
 
+// IR-level optimization barrier for the exception machinery (§五-3):
+// codegen passes the ADDRESS of each try-inner ARC slot to this no-op so LLVM
+// treats the slot as escaped memory. Without it, the -O pipeline sees the
+// dispatch/propagate load of a try-inner slot as undef (its only defs live in
+// try_block, which does not dominate the longjmp path) and folds myp_release to
+// a garbage/undef arg → -O2 segfaults (result) / leaks (arc_throw). The C body
+// is intentionally empty; the escape effect happens at the IR level.
+void myp_try_escape(void* p) {
+    (void)p;
+}
+
+// Release the object held by a local ARC slot, reading the slot's PHYSICAL
+// memory here in C. On the exception longjmp path the slot's physical contents
+// are the authoritative value (same-frame stack memory is preserved by
+// longjmp), but LLVM cannot see that — its own load of the slot in the
+// dispatch/propagate block is folded to undef at -O2 (the try_block defs don't
+// dominate the longjmp path). Reading it in C (opaque to LLVM) yields the true
+// object: the try-block null-init (pre-construction) or the constructed object
+// (post-construction, the longjmp skipped its scope-exit release).
+// kind: 0 = class ptr slot, 1/2 = interface / function-value fat pointer
+// (object is element 0).
+void myp_release_slot(void* slot_addr, int kind) {
+    if (!slot_addr) return;
+    void* obj = (kind == 0) ? *(void**)slot_addr : ((void**)slot_addr)[0];
+    myp_release(obj);
+}
+
 void* myp_exception_get_jmpbuf(void) {
     if (myp_handler_depth > 0) return myp_handler_bufs[myp_handler_depth - 1];
     // Unhandled exception: print a clear message, then abort (design: abort +

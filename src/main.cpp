@@ -573,14 +573,40 @@ static int runFmt(int argc, char* argv[]) {
 // mypc run <file.myp> [args...] — 仿 `go run`：
 //   编译（单类文件无 main 时自动注入合成 main 实例化 @startup 类）→ 链接到临时
 //   二进制 → 执行（透传 args）→ 清理临时产物。退出码 = 程序退出码。
-static int runFile(int argc, char* argv[]) {
-    if (argc < 3) {
+// Detect a subcommand (run) that may follow leading flags, e.g.
+// "mypc -O2 run file.myp [args...]". Returns the argv index of the
+// subcommand token, or 0 if the leading tokens are not flags leading to one.
+static int findSubcommand(int argc, char* argv[]) {
+    for (int i = 1; i < argc; i++) {
+        std::string a = argv[i];
+        if (a == "run") return i;
+        if (a == "fmt") return i;
+        // Flags that consume a following value → skip the value.
+        if (a == "--stdlib" || a == "--package-path" || a == "--passes" || a == "-o") {
+            i++;
+            continue;
+        }
+        // Flags without a value argument.
+        if (a.size() >= 2 && a[0] == '-' &&
+            (a[1] == 'O' || a[1] == 'g')) continue;
+        if (a == "--debug" || a == "--trace" || a == "--emit-llvm" ||
+            a == "--shared" || a == "--static" || a == "--test" ||
+            a == "--macro-expand" || a == "--version" || a == "--help" || a == "-h")
+            continue;
+        // First non-flag token that isn't a subcommand → no subcommand.
+        return 0;
+    }
+    return 0;
+}
+
+static int runFile(int argc, char* argv[], int sub_idx, int opt_level) {
+    if (argc < sub_idx + 2) {
         std::cerr << "Usage: " << argv[0] << " run <file.myp> [args...]\n";
         return 1;
     }
-    std::string file = argv[2];
+    std::string file = argv[sub_idx + 1];
     std::vector<std::string> prog_args;
-    for (int i = 3; i < argc; i++) prog_args.push_back(argv[i]);
+    for (int i = sub_idx + 2; i < argc; i++) prog_args.push_back(argv[i]);
 
     // 相对可执行文件自动检测 stdlib（与主流程一致）
     std::string stdlib_path = "stdlib";
@@ -591,7 +617,7 @@ static int runFile(int argc, char* argv[]) {
     }
 
     // 编译（auto_main=true → 单类文件自动 main）；产物 <file>.myp.o
-    auto obj = compileSingle(file, stdlib_path, "", 0, false, false, false, false, "", false, true);
+    auto obj = compileSingle(file, stdlib_path, "", opt_level, false, false, false, false, "", false, true);
     if (obj.empty()) return 1;
 
     // 链接到临时二进制
@@ -665,8 +691,22 @@ static int realMain(int argc, char* argv[]) {
     }
 
     // ---- Subcommand: run (仿 go run) ----
-    if (strcmp(argv[1], "run") == 0) {
-        return runFile(argc, argv);
+    // Flags may precede the subcommand (e.g. "mypc -O2 run file.myp" — the
+    // run_tests_O2.sh wrapper sets MYPCC="./build/mypc -O2"). Extract the
+    // leading -O level and pass it through to the compile.
+    {
+        int sub_idx = findSubcommand(argc, argv);
+        if (sub_idx > 0 && strcmp(argv[sub_idx], "run") == 0) {
+            int ropt = 0;
+            for (int j = 1; j < sub_idx; j++) {
+                std::string a = argv[j];
+                if (a.size() >= 2 && a[0] == '-' && a[1] == 'O') {
+                    ropt = a.size() > 2 ? (a[2] - '0') : 1;
+                    if (ropt < 0 || ropt > 3) ropt = 0;
+                }
+            }
+            return runFile(argc, argv, sub_idx, ropt);
+        }
     }
 
     std::string stdlib_path = "stdlib";
