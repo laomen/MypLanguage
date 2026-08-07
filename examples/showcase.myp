@@ -1,0 +1,284 @@
+// showcase.myp — MYP 语言能力展示 + 差分测试载体
+//
+// 用途：
+//   1) 展示 MYP 核心特性：类型系统、控制流、枚举/match、结构体、元组/解构、
+//      泛型（类/函数/静态方法）、Option/Result 值式错误、一等函数/lambda、
+//      默认/命名参数、面向对象（类/动作/构造器/接口/trait 默认方法）、
+//      异常（try/catch/finally + 自定义 Error 类）、ARC 自动内存管理、
+//      容器与标准库（math/fmt/random/crypto/json）。
+//   2) 作为差分测试载体：同程序用 -O0 / -O2 / ASAN 编译运行，输出必须逐字节
+//      一致；任何不一致即暴露优化管线 bug（§五-3 异常×-O2 就是这样被发现的）。
+//   3) 用 Memory.liveObjectCount() 验证 ARC 生命周期（每段 delta 应为 0）。
+//
+// 用法：
+//   ./build/mypc examples/showcase.myp -o /tmp/showcase && /tmp/showcase
+//   ./build/mypc -O2 examples/showcase.myp -o /tmp/showcase_o2 && /tmp/showcase_o2
+//   diff <(/tmp/showcase) <(/tmp/showcase_o2)     # 空 = 优化不破坏语义
+//
+// 确定性设计：不用线程/协程/时钟（避免竞态）；随机数显式播种。
+
+import env;
+import math;
+import fmt;
+import random;
+import crypto;
+import json;
+import collections;
+import option;
+import result;
+import memory;
+
+// ---------------------------------------------------------------- 类型
+// Node 供异常/ARC 段使用（含类字段，级联释放）
+class Node {
+    action:
+        @constructor Node(int v) { val = v; }
+        int getVal() { return val; }
+    property:
+        int val = 0;
+}
+
+struct Point { int x; int y; string name; }
+
+// 简单枚举（判别 + match）。注意：带数据的变体（如 Shape.Circle(double)）目前
+// 载荷恒为 0（codegen 只存判别值、match 绑定硬编码 0）——已知缺陷，见 docs 备注。
+enum Color { Red; Green; Blue; }
+// 自定义 Error 类（可被 catch (Error e) 接口捕获，也可按具体类捕获）
+class MyErr {
+    interface class Error;
+    action:
+        @constructor MyErr(string m) { msg = m; }
+        string message() { return msg; }
+    property:
+        string msg;
+}
+
+// 泛型类
+class Box<T> {
+    action:
+        void set(T v) { value = v; }
+        T get() { return value; }
+    property:
+        T value;
+}
+
+// 接口 + trait 默认方法：实现类可省略带默认体的方法
+interface Greeter {
+    string hello() { return "hello"; }          // 默认实现 → 实现类可省略
+    string greet(string name);                  // 纯签名，必须实现
+}
+
+class Person {
+    interface class Greeter;
+    action:
+        string greet(string name) { return "greet:" + name; }
+}
+
+// @static 类 + 泛型静态方法（跨模块工具）
+// 注意：泛型函数/类模板体里不能用 for-in 迭代泛型集合（§四-2 已知缺陷——模板体在
+// sema 被跳过、ForInStmt 注解未计算 → codegen 崩溃），改用 size()/get(i) 索引循环。
+@static class Utils {
+    static:
+        R id<R>(R v) { return v; }
+        int sum<T>(ArrayList<T> a, (T) -> int f) {
+            int acc = 0;
+            for (int i = 0; i < a.size(); i = i + 1) acc = acc + f(a.get(i));
+            return acc;
+        }
+}
+
+// 多返回值（元组）
+(int, string) pair(int n) {
+    if (n == 1) return (1, "one");
+    return (n, "many");
+}
+
+// 可抛错函数（配合 resultTry 桥接）
+int risky(int v) {
+    if (v < 0) throw "neg:" + v;
+    return v * 2;
+}
+
+// 带默认参数 + 命名参数目标的函数
+int scale(int v, int k = 1, int off = 0) { return v * k + off; }
+
+// 深度递归（压栈 + 大量临时对象，锻炼 ARC 与栈管理）
+long fib(int n) {
+    if (n <= 1) return 1L;
+    return fib(n - 1) + fib(n - 2);
+}
+
+int pmRun() {
+    // ===== 1. 基础类型 / 运算符 / 字符串插值 =====
+    int i = 42; long l = 1234567890L; double d = 3.5; bool b = true;
+    string s = "myp"; byte by = 100; short sh = -1234;
+    int t = (i > 40) ? 1 : 0;
+    int bits = (i << 2) | 0x0F;
+    Console.writeString("1type: i=" + i + " l=" + l + " d=" + Fmt.f(d, 1) +
+                        " b=" + b + " s=" + s + " by=" + by + " sh=" + sh);
+    Console.writeString(" t=" + t + " bits=" + bits + " interp=$i->$s\n");
+
+    // ===== 2. 控制流 + for-in =====
+    int sum = 0;
+    for (int k = 1; k <= 10; k = k + 1) {
+        if (k % 2 == 0) continue;
+        if (k > 9) break;
+        sum = sum + k;
+    }
+    int w = 0;
+    int wi = 0;
+    while (wi < 5) { w = w + wi; wi = wi + 1; }
+    int[5] arr;
+    int ai = 0;
+    while (ai < 5) { arr[ai] = ai * ai; ai = ai + 1; }
+    int arrsum = 0;
+    for (x in arr) arrsum = arrsum + x;
+    int rsum = 0;
+    for (r in 1..6) rsum = rsum + r;
+    Console.writeString("2ctrl: sum=" + sum + " w=" + w + " arrsum=" + arrsum +
+                        " rsum=" + rsum + "\n");
+
+    // ===== 3. 枚举 + match =====
+    Color c = Color.Green;
+    Color r = Color.Blue;
+    string cd = "";
+    match (c) {
+        Color.Red => { cd = "red"; }
+        Color.Green => { cd = "green"; }
+        Color.Blue => { cd = "blue"; }
+    }
+    string rd = "";
+    match (r) {
+        Color.Red => { rd = "red"; }
+        Color.Green => { rd = "green"; }
+        Color.Blue => { rd = "blue"; }
+    }
+    Console.writeString("3enum: " + cd + " | " + rd + "\n");
+
+    // ===== 4. 结构体 / 元组 / 解构 / 多值返回 =====
+    Point p;
+    p.x = 10; p.y = 20; p.name = "P1";
+    (int a, string b) = pair(1);
+    (int, string) pr = pair(7);
+    Console.writeString("4struct: " + p.name + "=(" + p.x + "," + p.y + ") sum=" +
+                        (p.x + p.y) + " pair1=" + a + "/" + b + " pair7=" + pr.0 + "/" + pr.1 + "\n");
+
+    // ===== 5. 泛型（类 / 函数 / 静态方法）+ Option + Result =====
+    Box<int> bi = new Box<int>();
+    bi.set(99);
+    Box<string> bs = new Box<string>();
+    bs.set("box");
+    Option<int> some = new Option<int>(5);
+    Option<int> none = new Option<int>();
+    int got = some.isSome() ? some.get() : -1;
+    int non = none.isNone() ? -1 : 0;
+    Result<int, string> ok = resultOk<int, string>(7);
+    Result<int, string> bad = resultErr<int, string>("boom");
+    Result<int, string> t1 = resultTry<int>(() => { return risky(5); });
+    Result<int, string> t2 = resultTry<int>(() => { return risky(-3); });
+    int uid = Utils.id<int>(123);
+    ArrayList<int> xs = new ArrayList<int>();
+    xs.add(1); xs.add(2); xs.add(3); xs.add(4);
+    int xsum = Utils.sum<int>(xs, (int v) => { return v * 2; });
+    Console.writeString("5generic: " + bi.get() + "/" + bs.get() + " opt=" + got + "/" + non);
+    Console.writeString(" res=" + ok.get() + "/" + bad.getErr() + " try=" + t1.get() + "/" + t2.getErr());
+    Console.writeString(" uid=" + uid + " xsum=" + xsum + "\n");
+
+    // ===== 6. 一等函数 / lambda / 闭包捕获 =====
+    int cap = 10;
+    (int) -> int addCap = (int v) => { return v + cap; };
+    int f1 = addCap(5);
+    (int, int) -> int add = (int x, int y) => { return x + y; };
+    int f2 = add(3, 4);
+    long f3 = fib(20);          // 深度递归（栈 + 临时对象）
+    Console.writeString("6lambda: addCap=" + f1 + " add34=" + f2 + " fib20=" + f3 + "\n");
+
+    // ===== 7. 默认 / 命名参数 =====
+    int s0 = scale(5);          // 5
+    int s1 = scale(5, 3);       // 15
+    int s2 = scale(5, k = 2, off = 1);   // 11
+    Console.writeString("7defarg: " + s0 + "/" + s1 + "/" + s2 + "\n");
+
+    // ===== 8. 面向对象：接口 + trait 默认方法 =====
+    Greeter g = new Person();
+    string h = g.hello();           // 默认方法（经接口虚表）
+    string gr = g.greet("Al");      // Person 实现
+    Console.writeString("8oo: " + h + " | " + gr + "\n");
+
+    // ===== 9. 异常：try/catch/finally + 自定义 Error + 接口捕获 =====
+    long eb = Memory.liveObjectCount();
+    try {
+        try {
+            Node n = new Node(99);
+            throw new MyErr("inner");
+        } finally {
+            Console.writeString("9finally ");
+        }
+    } catch (MyErr e) {
+        Console.writeString("caught=" + e.message() + " ");
+    }
+    long ed = Memory.liveObjectCount() - eb;
+    Console.writeString("edelta=" + ed + "\n");   // 0（n 与抛出的 MyErr 均被释放）
+
+    long ec = Memory.liveObjectCount();
+    try {
+        throw new MyErr("iface");
+    } catch (Error e) {
+        Console.writeString("9iface=" + e.message() + " ");
+    }
+    long ecd = Memory.liveObjectCount() - ec;
+    Console.writeString("ifdelta=" + ecd + "\n");
+
+    // ===== 10. 容器（ArrayList / HashMap / Set） =====
+    ArrayList<string> names = new ArrayList<string>();
+    names.add("ada"); names.add("bob"); names.add("cyn");
+    HashMap<int, string> hm = new HashMap<int, string>();
+    hm.put(1, "one"); hm.put(2, "two");
+    Set<int> set = new Set<int>();
+    set.add(42); set.add(17); set.add(42);
+    string hm2 = hm.get(2, "?");
+    Console.writeString("10coll: names=" + names.size() + " hm=" + hm2 + " has42=" +
+                        set.contains(42) + " sz=" + set.size() + "\n");
+
+    // ===== 11. 标准库：math / fmt / random(播种) / crypto / json =====
+    double sq = Math.sqrt(16.0);
+    int mx = Math.max(3, 7);
+    string hex = Fmt.x(255, 2);
+    Random.init(12345);
+    int r1 = Random.below(100);
+    int r2 = Random.below(100);
+    string md5abc = Hash.md5("abc");
+    string sha = Hash.sha256("abc");
+    Json doc = new Json("{\"name\":\"myp\",\"age\":8,\"ok\":true}");
+    string jn = doc.getString("name");
+    int ja = doc.getInt("age");
+    Console.writeString("11lib: sqrt=" + Fmt.f(sq, 1) + " max=" + mx + " hex=" + hex);
+    Console.writeString(" rand=" + r1 + "," + r2 + " md5=" + md5abc);
+    Console.writeString(" sha256=" + sha);
+    Console.writeString(" json=" + jn + "/" + ja + "\n");
+
+    // ===== 12. ARC 生命周期验证（各段 delta 应为 0） =====
+    // 注意：ArrayList<T>（T 为类）在集合销毁时元素不释放（已知缺陷，见 docs 备注）
+    // ——这里用类字段级联释放 + 嵌套泛型验证 ARC。
+    long base = Memory.liveObjectCount();
+    {
+        Node na = new Node(1);
+        Node nb = new Node(2);
+    }
+    long d1 = Memory.liveObjectCount() - base;
+    {
+        // 嵌套泛型（注意 >> 需空格，MYP 把 >> 当移位运算符）
+        Box<Box<int> > nested = new Box<Box<int> >();
+        Box<int> inner = new Box<int>();
+        inner.set(1);
+        nested.set(inner);
+    }
+    long d2 = Memory.liveObjectCount() - base;
+    long dtotal = Memory.liveObjectCount() - base;
+    Console.writeString("12arc: d1=" + d1 + " d2=" + d2 + " dtotal=" + dtotal + "\n");
+
+    Console.writeString("done\n");
+    return 0;
+}
+
+int main() { int c = pmRun(); return c; }

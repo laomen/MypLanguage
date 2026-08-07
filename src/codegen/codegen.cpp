@@ -4699,7 +4699,11 @@ void CodeGen::generateForInStmt(const ForInStmt& s) {
         auto& re = static_cast<RangeExpr&>(*s.iterable);
         auto* end_v = generateExpr(*re.end);
         if (end_v->getType() != i32) end_v = builder_.CreateIntCast(end_v, i32, true);
-        size_v = end_v;
+        // 右开 range a..b → 迭代次数 = b - a（循环变量 = start + idx）。
+        // 之前用 end 作次数：a=0 时恰好正确，a≠0（如 1..6）会多迭代一次。
+        auto* start_v = generateExpr(*re.start);
+        if (start_v->getType() != i32) start_v = builder_.CreateIntCast(start_v, i32, true);
+        size_v = builder_.CreateSub(end_v, start_v, "for_n");
     }
     if (!size_v) size_v = llvm::ConstantInt::get(i32, 0);
 
@@ -5917,6 +5921,19 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
                     fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_to_string_bool", module_.get());
                 }
                 return builder_.CreateCall(fn, {ext});
+            }
+            // byte (i8) / short (i16) 等窄整数 → 先加宽到 i32 再格式化
+            // （否则 i8/i16 直接传给 myp_to_string_i32 → LLVM verify 失败）。
+            // byte 无符号（0..255）→ zext；short 有符号 → sext。
+            if (v->getType()->isIntegerTy() &&
+                !v->getType()->isIntegerTy(32) &&
+                !v->getType()->isIntegerTy(64)) {
+                if (v->getType()->isIntegerTy(8))
+                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+                else if (v->getType()->isIntegerTy(16))
+                    v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
+                else
+                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
             }
             auto fn_name = std::string("myp_to_string_") +
                 (v->getType()->isIntegerTy(32) ? "i32" :
