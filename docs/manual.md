@@ -600,6 +600,18 @@ int main() {
 
 > **原则**：main 只做"接线"，不做"操作"。所有逻辑在组件的 action/function 中实现。
 
+### main(argc, argv)（v2+）
+
+带参数的入口：接收命令行参数（配合 `import args` 使用）：
+
+```myp
+int main(int argc, string[] argv) {
+    // argc: 命令行参数个数
+    // argv: 参数字符串数组
+    return 0;
+}
+```
+
 ### 泛型函数 (v3.x，additive)
 
 函数名后可带类型参数 `T foo<T>(T x)`；调用时**显式类型实参**或**实参推断**。
@@ -2497,8 +2509,6 @@ import test;
 
 ### myp — 包管理工具
 
-### myp — 包管理工具
-
 `myp` 是 MYP 的包管理命令行工具，提供项目初始化、构建和依赖管理：
 
 ```bash
@@ -2535,6 +2545,40 @@ mypackage/              # 包根目录
         ├── package.myp
         └── src/
             └── other_lib.myp
+```
+
+### 项目结构
+
+```
+MYPLanguage/
+├── myp                  # 包管理 CLI（Python: init/build/install/run）
+├── CMakeLists.txt
+├── include/mylang/      # 编译器头文件：AST/CodeGen/Sema/Parser/Lexer/Eval/
+│   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
+├── src/                 # 编译器源码
+│   ├── main.cpp         # mypc 驱动（lexer→parser→sema→codegen→link）
+│   ├── ast/ lexer/ parser/ sema/ codegen/ runtime/
+│   ├── eval/            # @eval 编译期求值
+│   ├── macro/           # 宏展开
+│   ├── fmt/             # 格式化器
+│   ├── lsp/             # 语言服务器（myp_lsp）
+│   └── dap/             # 调试适配器（myp_debug，DAP↔gdb 桥）
+├── stdlib/              # 标准库（纯 MYP 类）
+│   ├── env/io/fs/text/stream/math/random/time/timeline
+│   ├── collections/setops/atomic/pool/barrier/future/memory
+│   ├── coro/channel/net/json/regex/base64/date/process/args
+│   ├── logger/sdl/ui/error/cuda
+│   └── test
+├── tests/               # run_tests.sh / run_tests_O2.sh / run_tests_asan.sh /
+│   └── ...              #   run_tests_tsan.sh / test_debug.sh / test_dap.py /
+│                        #   expected/ / negative/ / <feature>/
+├── examples/            # 完整示例（hello/fib/ad/BNCT/sdl/tui）
+├── BNCTDoseEngine/      # BNCT 蒙特卡洛引擎（纯 MYP + HDF5 截面）
+├── deeplearning/        # MLP + MNIST 训练/推理
+├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP + DAP）
+├── docs/                # design/grammar/manual/manual_en/coro/exceptions/...
+├── build/               # 构建产物：mypc, myp_debug, myp_lsp, myp_viz, myp_fmt
+└── build-asan/          # ASAN/UBSAN 构建
 ```
 
 ### 环境变量

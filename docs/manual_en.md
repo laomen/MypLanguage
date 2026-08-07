@@ -974,6 +974,45 @@ v.y = 4.0;
 var len = v.length();  // 5.0
 ```
 
+### Struct Method Advanced Features
+
+Struct methods support the following:
+
+#### `this` keyword
+
+```myp
+struct MyStruct {
+    double x;
+    void setX(double v) {
+        this.x = v;  // `this` refers to the current instance
+    }
+}
+```
+
+#### Returning a struct
+
+```myp
+struct Inner { double val; }
+
+struct Outer {
+    Inner inner;
+    Inner getInner() {
+        return inner;  // return a struct by value
+    }
+}
+```
+
+#### Sibling-method calls
+
+```myp
+struct Helper {
+    double calc(double x) { return x * 2.0; }
+    double process(double v) {
+        return calc(v) + 1.0;  // call calc directly
+    }
+}
+```
+
 ### Nested Struct
 
 ```myp
@@ -1148,8 +1187,9 @@ mapping() {
 
 ### @parallel for — Data Parallelism
 
-`@parallel for` is MYP's data-parallelism primitive: the compiler extracts the loop body onto a
-work-stealing thread pool automatically (no events/messages needed):
+`@parallel for` is MYP's data-parallelism primitive for auto-parallelizing compute-heavy loops.
+The compiler extracts the loop body onto a work-stealing thread pool automatically — no
+events/message passing needed:
 
 ```myp
 import atomic;
@@ -1160,54 +1200,197 @@ int[1000] tally;
 }
 ```
 
-**How it works**: the compiler scans the outer scope, collects referenced variables into a capture
-struct, extracts the body into a standalone `parallel_body(i, arg)` function, and calls
-`myp_pool_parallel_for()`; the work-stealing pool splits the iteration range across threads, each
-thread runs its chunk serially, then a barrier waits for all to finish.
+#### How it works
 
-**Variable capture**: `int`/`long`/`double` by value (per-thread copy); `double[]`/`int[]` by pointer
-(shared heap array); class instances by pointer; static-method calls as direct LLVM calls.
+```
+Compiler:
+  1. scan the outer scope, collect variables referenced by the loop body
+  2. build a capture struct filled with current values of all variables
+  3. extract the loop body into a standalone function parallel_body(i, arg)
+  4. call myp_pool_parallel_for() to distribute the iterations
 
-**Thread safety**: protect shared writes with `Atomic`:
+Runtime:
+  5. the work-stealing pool splits the iteration range into chunks
+  6. each thread executes its chunk serially
+  7. a barrier waits for all to finish → return
+```
+
+#### Variable capture
+
+Outer variables are auto-captured into a struct passed via `void* arg`:
+
+| Type | How |
+|------|-----|
+| `int`/`long`/`double` | by value (per-thread copy) |
+| `double[]`/`int[]` | by pointer (shared heap array) |
+| class instance | by pointer |
+| static-method call | direct LLVM call |
+
+#### Thread safety
+
+Protect shared writes with `Atomic`:
 ```myp
 @parallel for (int i = 0; i < size; i = i + 1) {
-    Atomic.addDouble(tally, idx, value);   // ✅ correct
-    // tally[idx] = tally[idx] + value;    // ❌ race condition
+    // ✅ correct
+    Atomic.addDouble(tally, idx, value);
+    // ❌ race condition
+    // tally[idx] = tally[idx] + value;
 }
 ```
 
-**Limits**: loop variable `int` (`long` truncated); each iteration must be **independent**; no
-`break`/`continue`; loop bounds are fixed at entry.
+#### Limits
 
-**Performance reference (16 cores)**: 5M particles ~3s (~10x); 1e9 particles ~9.5min (~10x).
+- loop variable `int` (`long` auto-truncated to int32)
+- each iteration must be **independent** (no data dependency)
+- no `break` / `continue`
+- loop bounds fixed at entry
+
+#### BNCT example
+
+```myp
+class Transport {
+    action:
+        void runBatch(int batchId, int size) {
+            double[] depthDose = TallyData.depthDose;
+            @parallel for (int i = 0; i < size; i = i + 1) {
+                long state = (batchId * size + i) * 152917L + 1L;
+                double E = Physics.sampleEnergy(state);
+                // ... transport ...
+                Atomic.addDouble(depthDose, iz, energy);
+            }
+        }
+}
+```
+
+#### Performance reference (16 cores)
+
+| Particles | Time | Speedup |
+|-----------|------|---------|
+| 5M | ~3s | ~10x |
+| 1e9 | ~9.5min | ~10x |
 
 ### @gpu for — GPU Offload
 
-`@gpu for` offloads compute-heavy loops to an NVIDIA CUDA GPU (the compiler emits an NVPTX kernel
-with the loop index mapped to the GPU thread id):
+`@gpu for` is MYP's GPU-parallelism primitive: compute-heavy loops are offloaded to an NVIDIA CUDA
+GPU:
 
 ```myp
 import math;
+
 long n = 1000000L;
 double[] data = new double[n];
+for (long i = 0L; i < n; i = i + 1L) data[i] = 1.0;
+
 @gpu for (long i = 0L; i < n; i = i + 1L) {
     data[i] = Math.sqrt(data[i]) + Math.sin(1.0);
 }
 ```
 
-- **Enable**: set `MYP_GPU=1` (default is CPU). Requires the NVIDIA CUDA driver (`libcuda.so.1`).
-- **Fallback**: no GPU / no `MYP_GPU` → automatic sequential CPU execution with identical results.
-- **Math**: `Math.sqrt/sin/cos/tan/floor/ceil/asin/acos/atan/atan2/sinh/cosh/tanh/exp/log/pow/abs`
-  map to CUDA libdevice (`__nv_*`) at full precision (needs `libdevice.10.bc`; `MYP_CUDA_LIBDEVICE`
-  overrides the path).
-- **`import cuda`** high-level API: `Cuda.available/count/name/memory/capability/multiProcessors/
-  maxThreads/warpSize` (device info); `Device.*` math inside kernels; `Vectors` (elementwise
-  add/sub/mul/scale/addScalar/fill/saxpy/copy/negate/clamp/pow/sqrt/sin/cos/tan/exp/log/abs/floor/
-  ceil + reductions sum/mean/variance/stddev/norm/normalize/min/max/dot); `Matrix` (elementwise
-  add/sub/mul/scale/fill, transpose on CPU).
-- **Limits**: loop var `long`, `i < n` or `i <= n`; captured arrays copied to the device whole
-  before launch; each iteration independent; no `break`/`continue`; GPU math needs libdevice;
-  `min/max/dot/transpose` are CPU for now (correct but not GPU-accelerated).
+#### How it works
+
+```
+Compiler:
+  1. emit an NVPTX kernel (myp_kernel), loop index → GPU thread id
+  2. collect captured arrays/scalars, generate data-transfer code
+  3. link math functions with CUDA libdevice (libdevice.10.bc)
+     → the generated PTX is fully self-contained (no runtime JIT linking)
+Runtime:
+  4. cuModuleLoadData loads the PTX → launch kernel (grid/block auto-computed)
+  5. copy array results back → sync → done
+```
+
+#### Enable & fallback
+
+- set `MYP_GPU=1` (default CPU)
+- requires the NVIDIA CUDA driver (`libcuda.so.1`)
+- no GPU / no `MYP_GPU` → **auto-fallback to sequential CPU execution**, identical results
+- math needs `libdevice.10.bc` (auto-located; `MYP_CUDA_LIBDEVICE` overrides the path)
+
+#### GPU math functions
+
+Inside a `@gpu for` kernel, the following `Math` functions map to CUDA libdevice (full precision):
+
+| Function | libdevice | Function | libdevice |
+|----------|-----------|----------|-----------|
+| `Math.sqrt` | `__nv_sqrt` | `Math.exp` | `__nv_exp` |
+| `Math.sin` | `__nv_sin` | `Math.log` | `__nv_log` |
+| `Math.cos` | `__nv_cos` | `Math.pow` | `__nv_pow` |
+| `Math.tan` | `__nv_tan` | `Math.abs` | `__nv_fabs` |
+| `Math.floor` | `__nv_floor` | `Math.ceil` | `__nv_ceil` |
+| `Math.asin` | `__nv_asin` | `Math.acos` | `__nv_acos` |
+| `Math.atan` | `__nv_atan` | `Math.atan2` | `__nv_atan2` |
+| `Math.sinh` | `__nv_sinh` | `Math.cosh` | `__nv_cosh` |
+| `Math.tanh` | `__nv_tanh` | | |
+
+#### `import cuda` — CUDA standard library
+
+```myp
+import cuda;
+```
+
+High-level GPU API:
+
+```myp
+// Cuda — device info
+int ok = Cuda.available();       // 1=GPU available, 0=will use CPU
+int n = Cuda.count();            // number of GPUs
+string gpu = Cuda.name();        // e.g. "NVIDIA GeForce RTX 2070 SUPER"
+long mem = Cuda.memory();        // VRAM (bytes)
+int cc = Cuda.capability();      // compute capability (e.g. 705 = 7.5)
+int sm = Cuda.multiProcessors(); // streaming multiprocessor count
+int mt = Cuda.maxThreads();      // max threads per block
+int ws = Cuda.warpSize();        // warp size (usually 32)
+
+// Device — kernel math (GPU full precision, CPU uses the stdlib)
+@gpu for (long i = 0L; i < n; i = i + 1L) {
+    data[i] = Device.pow(data[i], 2.0) + Device.cos(0.0) + Device.atan2(1.0, 2.0);
+}
+
+// Vectors — vectorized ops based on @gpu for (auto GPU, CPU fallback)
+Vectors.add(a, b, out, n);        // out[i] = a[i] + b[i]
+Vectors.sub(a, b, out, n);        // out[i] = a[i] - b[i]
+Vectors.mul(a, b, out, n);        // out[i] = a[i] * b[i]
+Vectors.scale(data, 2.0, n);      // data[i] *= 2.0
+Vectors.addScalar(data, 1.0, n);  // data[i] += 1.0
+Vectors.fill(data, 0.0, n);       // data[i] = 0.0
+Vectors.saxpy(3.0, x, y, out, n); // out[i] = 3.0*x[i] + y[i]
+Vectors.copy(dst, src, n);        // dst[i] = src[i]
+Vectors.negate(data, n);          // data[i] = -data[i]
+Vectors.clamp(data, lo, hi, n);   // data[i] = clamp(...)
+Vectors.pow(data, 2.0, n);        // data[i] = pow(data[i], 2.0)
+Vectors.sqrt(data, n);  Vectors.sin(data, n);  Vectors.cos(data, n);
+Vectors.tan(data, n);   Vectors.exp(data, n);  Vectors.log(data, n);
+Vectors.abs(data, n);   Vectors.floor(data, n); Vectors.ceil(data, n);
+
+// Vectors — reductions (GPU atomics)
+double s = Vectors.sum(a, n);         // Σ a[i]
+double m = Vectors.mean(a, n);        // mean
+double v = Vectors.variance(a, n);    // variance (single-pass)
+double sd = Vectors.stddev(a, n);     // stddev
+double ns = Vectors.normSquared(a, n);// Σ a[i]^2
+double no = Vectors.norm(a, n);       // sqrt(Σ a[i]^2)
+Vectors.normalize(data, n);           // data[i] /= ||data||
+double mn = Vectors.min(a, n);        // min (CPU)
+double mx = Vectors.max(a, n);        // max (CPU)
+double d = Vectors.dot(a, b, n);      // dot (CPU)
+
+// Matrix — elementwise (row-major double[], size rows*cols)
+Matrix.add(a, b, c, rows, cols);      // c = a + b (GPU)
+Matrix.sub(a, b, c, rows, cols);      // c = a - b (GPU)
+Matrix.mul(a, b, c, rows, cols);      // c = a .* b (GPU)
+Matrix.scale(a, s, rows, cols);       // a *= s (GPU)
+Matrix.fill(a, s, rows, cols);        // a = s (GPU)
+Matrix.transpose(a, t, rows, cols);   // t = a^T (CPU)
+```
+
+#### Limits
+
+- loop variable `long`, bound `i < n` or `i <= n`
+- captured arrays are copied to the device whole before launch (element count = loop upper bound n), copied back after
+- each iteration must be **independent**
+- no `break` / `continue`
+- GPU math needs `libdevice.10.bc`
+- `min`/`max`/`dot`/`transpose` are CPU for now (correct but not GPU-accelerated)
 
 ### Constructor (`@constructor` / name == class name)
 
