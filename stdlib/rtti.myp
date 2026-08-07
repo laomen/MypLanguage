@@ -1,0 +1,35 @@
+// rtti.myp — MYP 标准库：运行时类型信息（RTTI，§五-4，additive）
+//
+// MYP 每个 class 实例头部带 8 字节元数据 { rc:u32, type_id:u32 }；codegen 为每个
+// 类分配全局唯一 type_id，并生成 __myp_type_name_table（type_id → 类名）。本模块
+// 把它们封装成稳定的 Rtti 静态接口：
+//
+//   Tank t = new Tank();
+//   string n  = Rtti.typeOf(t);      // "Tank"
+//   int   id  = Rtti.typeId(t);      // 运行时类型 id（同类恒定，跨类不同）
+//   int   ok  = Rtti.sameType(t, t); // 1（同类型）
+//
+// 说明：
+//   - 泛型 T/U 应传 class 引用类型（对象）；传 null 时 typeId→0、typeOf→""。
+//   - 接口引用（如 UI 传入 UI.draw）也指向真实对象，typeId/typeOf 返回实现类的信息。
+//   - 本接口提供"运行时身份"查询（日志 / 序列化 / 调试）；类型转换仍用 §三-4 的 isa。
+
+class Rtti {
+    static:
+        // 对象的运行时类型 id（0 = null / 非 class 对象）。
+        int typeId<T>(T obj) {
+            return __myp_type_id(obj);
+        }
+
+        // 对象的运行时类型名（class 名；null / 非 class 返回空串）。
+        string typeOf<T>(T obj) {
+            return __myp_type_name(obj);
+        }
+
+        // 两个对象是否为同一运行时类型（均为非 null 且 type_id 相同）。
+        int sameType<T, U>(T a, U b) {
+            int x = __myp_type_id(a);
+            int y = __myp_type_id(b);
+            return (x == y && x != 0) ? 1 : 0;
+        }
+}

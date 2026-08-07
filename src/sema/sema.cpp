@@ -4236,6 +4236,10 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_chr", TypeKind::String, {TypeKind::Int});
     add_intrinsic("__myp_ord", TypeKind::Int, {TypeKind::String});
 
+    // §五-4 RTTI intrinsics (stdlib Rtti wraps them; param = any class object)
+    add_intrinsic("__myp_type_id", TypeKind::Int, {TypeKind::Class});
+    add_intrinsic("__myp_type_name", TypeKind::String, {TypeKind::Class});
+
     // Timer intrinsics
     // __myp_timer_create(event_name, delay_ms, interval_ms)
     // Codegen resolves event_name to event_id using the current class context.

@@ -1656,6 +1656,27 @@ int p = Random.poisson(3.0);           // 泊松分布整数（Knuth 算法）
 Random.shuffle(arr, n);           // Fisher-Yates 洗牌
 ```
 
+### `import rtti` — 运行时类型信息 / RTTI（§五-4，additive）
+
+每个 class 实例的对象头 `{rc, type_id}` 携带运行时类型 id；codegen 生成
+`__myp_type_name_table`（type_id → 类名字符串）。`Rtti` 静态类暴露类型查询接口：
+
+```myp
+import rtti;
+
+Tank t = new Tank();
+string n  = Rtti.typeOf<Tank>(t);            // "Tank"（运行时类名）
+int    id = Rtti.typeId<Tank>(t);            // 运行时类型 id（同类恒定、跨类不同）
+int    ok = Rtti.sameType<Tank, Tank>(t, t2); // 1（同类型）；跨类 → 0
+
+Tank nul = null;
+Rtti.typeId<Tank>(nul);                       // 0（null）
+Rtti.typeOf<Tank>(nul);                       // ""（空串）
+```
+
+- 泛型 T/U 应传直接 class 引用（对象）；接口引用需先 `isa` 向下转型到具体类。
+- 用途：日志 / 序列化 / 调试的类型身份查询；类型转换仍用 `isa`（§三-4）。
+
 ### `import fmt` — printf 风格格式化（§六-4，v3.9.0，additive）
 
 补 `sprintf` 缺口：此前仅字符串插值 `${x}`，现提供宽度/精度/进制/填充控制。

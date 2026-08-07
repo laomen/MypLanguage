@@ -1,0 +1,4 @@
+typeOf: Tank / Soldier / Sniper
+typeId: t=1 t2=1 s=2 sn=3
+same(t,t2)=1 same(t,s)=0 same(s,sn)=0
+null: id=0 name=''

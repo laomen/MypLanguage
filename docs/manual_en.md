@@ -1691,6 +1691,30 @@ int p = Random.poisson(3.0);           // Poisson integer (Knuth's algorithm)
 Random.shuffle(arr, n);           // Fisher-Yates shuffle
 ```
 
+### `import rtti` — Runtime Type Information / RTTI (§五-4, additive)
+
+Every class instance's object header `{rc, type_id}` carries a runtime type id;
+codegen emits `__myp_type_name_table` (type_id → class name string). The `Rtti`
+static class exposes type-identity queries:
+
+```myp
+import rtti;
+
+Tank t = new Tank();
+string n  = Rtti.typeOf<Tank>(t);             // "Tank" (runtime class name)
+int    id = Rtti.typeId<Tank>(t);             // runtime type id (same class → same, across classes → different)
+int    ok = Rtti.sameType<Tank, Tank>(t, t2); // 1 (same type); across classes → 0
+
+Tank nul = null;
+Rtti.typeId<Tank>(nul);                       // 0 (null)
+Rtti.typeOf<Tank>(nul);                       // "" (empty string)
+```
+
+- Generic T/U should be a direct class reference (an object); interface
+  references should first be downcast to the concrete class with `isa`.
+- Use for type-identity queries in logging / serialization / debugging; type
+  conversion still uses `isa` (§三-4).
+
 ### `import fmt` — printf-style Formatting (§六-4, v3.9.0, additive)
 
 Fills the `sprintf` gap: previously only string interpolation `${x}` was available;

@@ -36,8 +36,19 @@ uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);
 // Per-TU destroy-stub table, defined by generated code (indexed by type_id).
 extern void (*__myp_release_table[])(void*);
+// Per-TU class-name table, defined by generated code (indexed by type_id,
+// index 0 = ""). Backs the RTTI intrinsics (§五-4).
+extern const char* __myp_type_name_table[];
 // Number of live (not yet freed) class instances on this thread — diagnostic.
 int64_t myp_live_object_count(void);
+
+// ---- RTTI (§五-4) ----
+// Runtime type id of a class instance (0 = null / non-class object).
+int myp_obj_type_id(void* obj);
+// Class name for a type id ("" for 0 / unknown).
+const char* myp_type_name(int type_id);
+// Runtime type name of a class instance ("" if null / non-class).
+const char* myp_obj_type_name(void* obj);
 
 // ---- Timeline ----
 int64_t myp_now_ms(void);

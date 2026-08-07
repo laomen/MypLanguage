@@ -1424,6 +1424,30 @@ void myp_free_object(void* obj) {
     free(base);
 }
 
+// ---- RTTI (§五-4): read type info back out of the object header ----
+// __myp_type_name_table (declared in mylang/runtime.h, defined by generated
+// code) maps type_id → class name string; index 0 = "" (reserved for
+// non-class / string messages). Callers must pass a live object.
+
+// Runtime type id of a class instance (0 = null / non-class object).
+int myp_obj_type_id(void* obj) {
+    if (!obj) return 0;
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    return (int)h->type_id;
+}
+
+// Class name for a type id ("" for 0 / unknown).
+const char* myp_type_name(int type_id) {
+    if (type_id > 0 && __myp_type_name_table[type_id])
+        return __myp_type_name_table[type_id];
+    return "";
+}
+
+// Runtime type name of a class instance ("" if null / non-class).
+const char* myp_obj_type_name(void* obj) {
+    return myp_type_name(myp_obj_type_id(obj));
+}
+
 // Forward declaration — region arena is defined below (after myp_free_all).
 void myp_region_free_all(void);
 

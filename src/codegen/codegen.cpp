@@ -1190,6 +1190,32 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
     auto* init = llvm::ConstantArray::get(arr_ty, table);
     release_table_gv_ = new llvm::GlobalVariable(*module_, arr_ty, false,
         llvm::GlobalValue::ExternalLinkage, init, "__myp_release_table");
+
+    // §五-4 RTTI: __myp_type_name_table — type_id → class name string
+    // (index 0 = "" for string messages / non-class objects). ExternalLinkage
+    // + constant so the runtime's myp_obj_type_name can index it directly.
+    // ALWAYS emitted (a bare [null] table when no class got a type_id) because
+    // the runtime's myp_type_name references the symbol unconditionally.
+    {
+        auto* i32ty = llvm::Type::getInt32Ty(ctx_);
+        size_t n = (size_t)max_tid + 1;
+        std::vector<llvm::Constant*> names(n,
+            llvm::ConstantPointerNull::get(p));
+        for (auto& kv : class_type_ids_) {
+            if (kv.second <= 0 || kv.second > (int)max_tid) continue;
+            auto* str = llvm::ConstantDataArray::getString(ctx_, kv.first);
+            auto* gv = new llvm::GlobalVariable(*module_, str->getType(), true,
+                llvm::GlobalValue::PrivateLinkage, str, "__myp_tn_" + kv.first);
+            std::vector<llvm::Constant*> sidx = {
+                llvm::ConstantInt::get(i32ty, 0), llvm::ConstantInt::get(i32ty, 0)};
+            names[kv.second] = llvm::ConstantExpr::getInBoundsGetElementPtr(
+                str->getType(), gv, sidx);
+        }
+        auto* name_arr_ty = llvm::ArrayType::get(p, names.size());
+        auto* name_init = llvm::ConstantArray::get(name_arr_ty, names);
+        new llvm::GlobalVariable(*module_, name_arr_ty, true,
+            llvm::GlobalValue::ExternalLinkage, name_init, "__myp_type_name_table");
+    }
 }
 
 void CodeGen::createClassActionDecl(const ClassDecl& cls, const ActionDecl& action) {
@@ -8767,6 +8793,10 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_chr_ = llvm::Function::Create(llvm::FunctionType::get(p, {i32}, false), llvm::Function::ExternalLinkage, "myp_chr", module_.get());
     runtime_ord_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_ord", module_.get());
 
+    // §五-4 RTTI: type info from the object header (type_id → __myp_type_name_table)
+    runtime_type_id_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_obj_type_id", module_.get());
+    runtime_type_name_ = llvm::Function::Create(llvm::FunctionType::get(p, {p}, false), llvm::Function::ExternalLinkage, "myp_obj_type_name", module_.get());
+
     // String to double
     runtime_atof_ = llvm::Function::Create(llvm::FunctionType::get(d, {p}, false), llvm::Function::ExternalLinkage, "myp_atof", module_.get());
 
@@ -8983,6 +9013,9 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_chr"] = runtime_chr_;
     intrinsic_map_["__myp_ord"] = runtime_ord_;
     intrinsic_map_["__myp_atof"] = runtime_atof_;
+    // §五-4 RTTI intrinsics
+    intrinsic_map_["__myp_type_id"] = runtime_type_id_;
+    intrinsic_map_["__myp_type_name"] = runtime_type_name_;
     // test intrinsics
     intrinsic_map_["__myp_assert"] = runtime_assert_;
     intrinsic_map_["__myp_assert_eq"] = runtime_assert_eq_;
