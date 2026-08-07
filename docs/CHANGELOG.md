@@ -27,7 +27,32 @@
 
 ## 编译器版本历史
 
-### v3.10.0（当前）
+### v3.10.1（当前）
+- **系统探测驱动的 8 项修复**（`tests/probe.sh`：编译+运行每个 `.myp` 的 -O0/-O2
+  输出与崩溃对比；覆盖枚举/类数组/泛型/命名 lambda/字符串/slice/异常/协程/接口/静态/
+  数值运算符，~20 个探测用例全部 PASS）：
+  - **`new Generic<Arg>[n]` 解析失败**（`new Box<int>[2]`）：parser 解析完泛型实参后
+    遇 `[` 未走数组分支。Fix：type_args 后检查 `[` → NewArrayExpr（元素带 type_args）。
+  - **泛型类数组元素类型解析成 i32**：`typeNodeToLLVMType`/`typeNodeToCodegenType`/
+    `isArcClassType` 未对 class_name+type_args 做实例 mangling（`Box<int>`→`Box_int_inst`）。
+  - **数组元素方法分派到模板**（`boxes[0].take()` → 模板签名未定义）：新增
+    `array_elem_class_map_`（数组变量→元素类名），`best_class` 的 obj_cls 对 Subscript 用它。
+  - **struct 字段数组下标元素类型解析失败**（`bg.nodes[0]` 元素 i32 错读）：generateSubscript/
+    赋值下标的 MemberAccess 分支只查类、漏 struct 字段；加 `findStruct` 字段类型解析。
+  - **`new Box<Node>().make2()` 方法解析到模板**：`memberObjectClassName` 辅助（Identifier/
+    this/Subscript/NewExpr/Call → 类名，泛型 mangling）。
+  - **内联调用类返回方法泄漏 retain-at-return 的 +1**（`obj.take().get()` 每次泄漏 1）：
+    `generateCall` 包装器对 `callReturnsArcRef`（callee 返回类/类数组）的结果 push 语句末
+    临时；`return f()`（f 返类）作 fresh 转移（consume+skip retain）。
+  - **三元表达式数值字面量分支类型不统一**（`x>0 ? 1 : x` byte vs int 报错）：sema
+    `isNumericKind`/`commonNumericKind` 统一到较宽数值类型；codegen `generateTernary`
+    两分支 SExt/FP 拓宽到共同类型再建 phi。
+  - **链式泛型方法调用**（`pp.first().first()` 外层对象是 CallExpr）回退到模板：
+    `callReturnClassName` 解析调用返回类型类名；`memberObjectClassName` 加 Call 分支；
+    两处 obj_cls + 名字兜底统一用它。
+  - 验证矩阵：**-O0/-O2/ASAN 全套 173/173、TSan 12/12**；showcase O0==O2==ASAN 逐字节一致。
+
+### v3.10.0
 - **showcase 差分测试驱动的 4 项修复**（`examples/showcase.myp` 作为语言能力展示 +
   差异测试工件，暴露并回归了以下缺陷）：
   - **枚举带数据变体载荷恒为 0**：`Shape.Circle(2.5)` 之前只存判别值、match 绑定硬编码 0
