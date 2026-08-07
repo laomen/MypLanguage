@@ -24,7 +24,8 @@ MYP 工具链全部为 C++（`src/`）：
 | `myp_viz` | `src/myp_viz.cpp` | 中 | AST dump / 图输出 |
 | `myp_debug` | `src/dap/` | 中 | gdb 桥 + DAP |
 
-另有一个 Python 版包管理器 `myp`（268 行，见 `docs/pkg_manager.md`）。
+另有 Python 版包管理器 `myp`（268 行，见 `docs/pkg_manager.md`）——已于 2026-08-07 移除，
+由自举版 `tools/pm`（编译为 `build/myp`）完全接管。
 
 ### 1.2 动机
 

@@ -3,7 +3,8 @@
 > 状态：**v2 已实施（2026-08-05）**——模块化 `tools/pm/*.myp` + CMake 构建 +
 > **registry / lockfile / add-remove-update-list（§4.6、§11）**
 > 关联：语言规格 v1.0（`docs/grammar.md`）、变更策略（`docs/CHANGELOG.md`）、
-> 编译器 `--package-path`（`src/main.cpp` `loadModule`）、现有 Python 版 `myp`（仓库根）。
+> 编译器 `--package-path`（`src/main.cpp` `loadModule`）。Python 版 `myp`（仓库根）已移除
+> （2026-08-07），由自举版 `tools/pm`（编译为 `build/myp`）完全接管。
 > 本文档提出**用 MYP 语言重写包管理器**（自举工具链），作为语言稳定性证明与
 > 自举 roadmap（`docs/design.md` §11）的第一步。
 

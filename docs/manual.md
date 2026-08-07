@@ -2551,7 +2551,7 @@ mypackage/              # 包根目录
 
 ```
 MYPLanguage/
-├── myp                  # 包管理 CLI（Python: init/build/install/run）
+├── tools/               # 自举 MYP 工具：tools/pm（包管理器→build/myp）、tools/fmt、tools/viz
 ├── CMakeLists.txt
 ├── include/mylang/      # 编译器头文件：AST/CodeGen/Sema/Parser/Lexer/Eval/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...

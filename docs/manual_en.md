@@ -2678,7 +2678,7 @@ Extension settings (search `myp` in VS Code settings):
 
 ```
 MYPLanguage/
-├── myp                  # package-manager CLI (Python: init/build/install/run)
+├── tools/               # self-hosted MYP tools: tools/pm (package manager → build/myp), tools/fmt, tools/viz
 ├── CMakeLists.txt
 ├── include/mylang/      # compiler headers: AST/CodeGen/Sema/Parser/Lexer/Eval/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
