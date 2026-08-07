@@ -71,6 +71,13 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     finalizeDebugInfo();
 
+    // If codegen-level semantic errors were emitted (e.g. "undefined variable"
+    // in a generic template body that sema skips — template bodies aren't fully
+    // type-checked), abort cleanly instead of letting the type-incompatible
+    // placeholder (i32 0) reach LLVM verify and crash with a confusing message.
+    if (diag_.hasErrors())
+        return "";
+
     std::string err_str;
     llvm::raw_string_ostream err_os(err_str);
     if (llvm::verifyModule(*module_, &err_os)) {
@@ -1789,7 +1796,11 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
         if (fn_region) emitRegionExit();
-        builder_.CreateRetVoid();
+        // Fall-off-the-end: return the declared type's zero default (e.g. empty
+        // `int test() {}` stubs) instead of `ret void` (LLVM verify).
+        auto* rty = func->getReturnType();
+        if (rty->isVoidTy()) builder_.CreateRetVoid();
+        else builder_.CreateRet(llvm::Constant::getNullValue(rty));
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
@@ -1935,7 +1946,11 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
         if (scope_functions_.count(func))
             builder_.CreateCall(runtime_event_pop_scope_, {});
         if (fn_region) emitRegionExit();
-        builder_.CreateRetVoid();
+        // Fall-off-the-end: return the declared type's zero default (e.g. empty
+        // `@async long sleep() {}` stubs) instead of `ret void` (LLVM verify).
+        auto* rty = func->getReturnType();
+        if (rty->isVoidTy()) builder_.CreateRetVoid();
+        else builder_.CreateRet(llvm::Constant::getNullValue(rty));
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
@@ -2271,7 +2286,12 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
         generateBlock(static_cast<const BlockStmt&>(*fn_decl.body));
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
         if (fn_region) emitRegionExit();
-        builder_.CreateRetVoid();
+        // Fall-off-the-end: return the declared type's zero default (e.g. empty
+        // `int helper() {}` FFI stubs) instead of `ret void` (LLVM verify).
+        auto* rty = getLLVMType(rt);
+        if (rt.kind == TypeKind::Void) builder_.CreateRetVoid();
+        else if (rty->isIntegerTy()) builder_.CreateRet(llvm::ConstantInt::get(rty, 0));
+        else builder_.CreateRet(llvm::Constant::getNullValue(rty));
     }
     in_region_function_ = false;
     current_region_mark_ = nullptr;
@@ -5817,7 +5837,15 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             // Void return: release local slots (epilogue).
             if (!in_main_)
                 arcReleaseAllScopes();
-            builder_.CreateRetVoid();
+            llvm::Type* rt = current_function_->getReturnType();
+            if (rt->isVoidTy())
+                builder_.CreateRetVoid();
+            else
+                // Fall-off-the-end in a non-void function (e.g. empty-body FFI
+                // stubs like `int helper() {}`, or an uncaught path): return a
+                // zero default instead of emitting `ret void` (LLVM verify
+                // "return type does not match").
+                builder_.CreateRet(llvm::Constant::getNullValue(rt));
         }
     }
 }
@@ -7477,6 +7505,49 @@ llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
     return lhs_val;
 }
 
+llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
+    llvm::StructType* st = nullptr;
+    llvm::Value* base = nullptr;
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto* oa = getNamedValue(oi.name);
+        if (!oa) return nullptr;
+        if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+            auto* at = ai->getAllocatedType();
+            if (!at->isStructTy()) return nullptr;
+            st = llvm::cast<llvm::StructType>(at);
+            base = oa;
+        } else {
+            auto* nty = getNamedValueType(oi.name);
+            if (!nty || !nty->isStructTy()) return nullptr;
+            st = llvm::cast<llvm::StructType>(nty);
+            base = oa;
+        }
+    } else if (e.object->kind == ExprKind::ThisExpr) {
+        // this.field.subfield inside a struct method: 'this' is the struct ptr
+        auto* ta = getNamedValue("this");
+        if (!ta) return nullptr;
+        if (!struct_types_.count(current_class_name_)) return nullptr;
+        st = getStructType(current_class_name_);
+        if (!st) return nullptr;
+        base = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+    } else if (e.object->kind == ExprKind::MemberAccess) {
+        // Chained: a.b.c — recurse to get the address of a.b, then GEP c
+        base = generateStructMemberAddress(static_cast<const MemberAccessExpr&>(*e.object));
+        if (!base) return nullptr;
+        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(base)) {
+            auto* rt = gep->getResultElementType();
+            if (rt && rt->isStructTy()) st = llvm::cast<llvm::StructType>(rt);
+        }
+        if (!st) return nullptr;
+    } else {
+        return nullptr;
+    }
+    unsigned fi = 0;
+    if (!getStructFieldIndex(st->getName().str(), e.member_name, fi)) return nullptr;
+    return builder_.CreateStructGEP(st, base, fi);
+}
+
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
     // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
     if (!e.member_name.empty() && std::all_of(e.member_name.begin(), e.member_name.end(),
@@ -8773,6 +8844,31 @@ assign_gep:
                 diag_.error(e.range, "cannot determine assignment target");
             }
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        }
+        // Chained struct field assignment: a.b.c = value (obj is itself a
+        // member access, e.g. v.field.subfield) — at the if(!op) level so it
+        // fires for non-Identifier objects (Identifier targets were handled
+        // above inside the class property path).
+        if (ma.object->kind == ExprKind::MemberAccess) {
+            auto* addr = generateStructMemberAddress(ma);
+            if (addr) {
+                llvm::Type* ft = nullptr;
+                if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(addr))
+                    ft = gep->getResultElementType();
+                if (ft) {
+                    auto* v = generateExpr(*e.value);
+                    if (v->getType() != ft) {
+                        if (ft->isIntegerTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateIntCast(v, ft, true);
+                        else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
+                            v = builder_.CreateSIToFP(v, ft);
+                        else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
+                            v = builder_.CreateFPToSI(v, ft);
+                    }
+                    builder_.CreateStore(v, addr);
+                    return v;
+                }
+            }
         }
         // Struct method: this.field = value
         if (struct_types_.count(current_class_name_)) {

@@ -27,7 +27,48 @@
 
 ## 编译器版本历史
 
-### v3.10.1（当前）
+### v3.10.2（当前）
+- **变异模糊测试驱动的 7 项修复**（`tools/fuzz_myp.py`：对 tests/examples/stdlib 种子做
+  行级/表达式级变异，用 ASAN 编译的 `mypc` 编译 + 超时分类输出 ——
+  CLEAN / CRASH(ASAN) / VERIFY(LLVM verify failed) / INTERNAL / HANG；本次跑 12000
+  次迭代收敛为 0 发现）：
+  - **未知类型导致 sema/codegen 签名分歧**（`propertyvoid`/`UnknownType`）：sema
+    `typeNodeToTypeInfo` 之前对未注册类名静默回退 Void，而 codegen 把同名解析成 i32 →
+    函数签名不一致 → LLVM verify "return type does not match"。Fix：未找到类时报
+    `unknown type 'X'`（@macro 的 AST 类型 StmtList/Stmt/Expr 保留 Void 兜底）。
+  - **非 void 函数缺失 return 落到 `ret void`**（verify 崩溃）：sema 新增保守的
+    `stmtGuaranteesTermination`（Return/Throw/Block 末句/If+else 双支/Match 全臂/
+    Try+finally/while(true)/for(;;)）+ `checkMissingReturn`，在 `analyze` 与
+    `visitFuncBody` 的 action/function/struct 方法/顶层函数各调用点报
+    `missing return statement`（跳过空体 FFI 桩与 @coro/@async 的 Void 保护）。
+  - **空体非 void 函数/action/static 返回 `ret void`**（`int helper() {}`、
+    `@async long sleep() {}`）：codegen 三处 fall-through（generateClassFunction /
+    generateClassAction / generateStaticAction）按返回类型补零值 `CreateRet`。
+  - **编译器 use-after-free（ASAN）**：`visitFuncBody`/action 的
+    `visitStmt` 触发的单态化会 realloc `tu.functions`/`tu.classes`，读
+    `decl.range`/`decl.body` 悬垂。Fix：visitStmt **前**捕获 `SourceRange` 与
+    `shared_ptr` body。
+  - **`throw <void 表达式>`**（`throw Console.writeString(...)`）：codegen 会发
+    `myp_throw_object(<badref>)` → verify。Fix：visitThrowStmt 对真 void 报
+    `throw requires a string or class instance, got 'void'`（仅在有既有错误时静默恢复）。
+  - **泛型模板体 use-before-decl 的 codegen 晚期错误**（`map<T,R>` 体内 `r` 未定义，
+    sema 跳过模板体）：codegen 之前用 i32 0 占位 → LLVM verify 崩溃。Fix：
+    `CodeGen::generate` 在 finalizeDebugInfo 后 `diag_.hasErrors()` 即干净中止
+    （不再把类型不兼容占位送入 verify）。
+  - **枚举体错误恢复死循环（HANG）**（`enum { a.b; }` / `enum { 1; }` / `enum { "s"; }`）：
+    `parseEnumDecl` 体内 token 既不能被 parseIdentifier 也不能被 consume(Semicolon)
+    消费时（两者失败都不前进）→ 无限循环。Fix：循环内记录 `before = current_`，
+    迭代无前进则 `advance()` 一次保证前向进度。
+  - **嵌套 struct 成员赋值静默失效（顺带发现的 wrong-code bug）**：
+    `o.inner.val = 3.14` 之前落到 codegen `unknown property` 兜底（写 i32 0），
+    且 mypc 退出码为 0 → 错误 expected 文件掩盖（`inner.val=0`）。Fix：新增
+    `generateStructMemberAddress`（递归解析 `v.a.b` 链地址），赋值处理器在
+    `if(!op)` 层级处理 `MemberAccess` 目标并 GEP/store；`tests/nested_struct`
+    expected 更新为真值 `inner.val=3.14`。
+  - 验证矩阵：**-O0/-O2/ASAN 全套 173/173、TSan 12/12**；12000 次 fuzz 收敛为 0
+    CRASH/VERIFY/INTERNAL/HANG。
+
+### v3.10.1
 - **系统探测驱动的 8 项修复**（`tests/probe.sh`：编译+运行每个 `.myp` 的 -O0/-O2
   输出与崩溃对比；覆盖枚举/类数组/泛型/命名 lambda/字符串/slice/异常/协程/接口/静态/
   数值运算符，~20 个探测用例全部 PASS）：

@@ -1,2 +1,2 @@
-label=test inner.val=0
- returned.val=0
+label=test inner.val=3.14
+ returned.val=3.14

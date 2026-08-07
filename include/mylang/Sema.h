@@ -110,6 +110,12 @@ private:
     bool typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const;
     bool isNumericKind(TypeKind k) const;
     TypeKind commonNumericKind(TypeKind a, TypeKind b) const;
+    // Conservative "does this statement guarantee control never falls off its
+    // end" (return/throw/infinite-loop/all-arms-return). Used to flag non-void
+    // functions missing a return at the end.
+    bool stmtGuaranteesTermination(const Stmt& s) const;
+    // Error if the current (non-void) function's body can fall off the end.
+    void checkMissingReturn(const SourceRange& range, const Stmt& body);
 
     // ---- Helpers ----
     void error(const SourceRange& range, const std::string& msg);

@@ -578,6 +578,10 @@ private:
     // ARC-owned call results as statement temps.
     llvm::Value* generateCallImpl(const CallExpr& expr);
     llvm::Value* generateMemberAccess(const MemberAccessExpr& expr);
+    // Address (pointer) of a struct member-access chain like v.a.b — used for
+    // chained struct-field assignment (v.a.b = expr). Returns nullptr if the
+    // chain cannot be resolved to a struct field.
+    llvm::Value* generateStructMemberAddress(const MemberAccessExpr& expr);
     llvm::Value* generateSubscript(const SubscriptExpr& expr);
     llvm::Value* generateNewExpr(const NewExpr& expr);
     llvm::Value* generateNewArrayExpr(const NewArrayExpr& expr);

@@ -2707,6 +2707,7 @@ std::unique_ptr<EnumDecl> Parser::parseEnumDecl() {
 
     int vi = 0;
     while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        size_t before = current_;
         EnumVariant variant;
         variant.range = peek().range;
         variant.name = parseIdentifier("expected variant name");
@@ -2722,6 +2723,10 @@ std::unique_ptr<EnumDecl> Parser::parseEnumDecl() {
         consume(TokenKind::Semicolon, "expected ';' after variant");
         decl->variants.push_back(std::move(variant));
         vi++;
+        // Guarantee forward progress: if neither parseIdentifier nor consume
+        // consumed anything this iteration (both failed on an unexpected token
+        // like '.', '1' or '"'), skip one token so we can't infinite-loop.
+        if (current_ == before) advance();
     }
 
     consume(TokenKind::RightBrace, "expected '}' after enum body");

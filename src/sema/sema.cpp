@@ -107,7 +107,12 @@ bool Sema::analyze(TranslationUnit& tu) {
                     symbol_table_.declare(param.name, param_type);
                 }
                 checkParamDefaults(action.params);
-                visitStmt(*action.body);
+                // Capture before visitStmt (monomorphization may reallocate
+                // tu.classes → dangling `action` reference).
+                SourceRange ar = action.range;
+                std::shared_ptr<Stmt> abody = action.body;
+                visitStmt(*abody);
+                checkMissingReturn(ar, *abody);
                 symbol_table_.leaveScope();
                 if (named_lambda) {
                     lambda_self_name_.clear();
@@ -133,7 +138,10 @@ bool Sema::analyze(TranslationUnit& tu) {
                     symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
                 }
                 checkParamDefaults(func.params);
-                visitStmt(*func.body);
+                SourceRange fr = func.range;
+                std::shared_ptr<BlockStmt> fbody = func.body;
+                visitStmt(*fbody);
+                checkMissingReturn(fr, *fbody);
                 symbol_table_.leaveScope();
                 in_coro_method_ = false;
             }
@@ -155,7 +163,10 @@ bool Sema::analyze(TranslationUnit& tu) {
                 symbol_table_.declare(param.name, typeNodeToTypeInfo(param.type));
             }
             checkParamDefaults(action.params);
-            visitStmt(*action.body);
+            SourceRange sar = action.range;
+            std::shared_ptr<Stmt> sabody = action.body;
+            visitStmt(*sabody);
+            checkMissingReturn(sar, *sabody);
             symbol_table_.leaveScope();
             in_coro_method_ = false;
         }
@@ -227,7 +238,10 @@ void Sema::checkStructMethods(const StructDecl& decl) {
             current_struct_type_key_ = type_key;
             in_main_function_ = false;  // Allow function calls from struct methods
 
-            visitStmt(*func.body);
+            SourceRange sr = func.range;
+            std::shared_ptr<BlockStmt> sbody = func.body;
+            visitStmt(*sbody);
+            checkMissingReturn(sr, *sbody);
 
             in_struct_method_ = saved_in_struct;
             current_struct_type_key_ = saved_struct_key;
@@ -743,7 +757,14 @@ void Sema::visitFuncBody(FuncDecl& decl) {
     in_coro_method_ = decl.has_coro;  // top-level @coro function: allow await
 
     if (decl.body) {
-        visitStmt(*decl.body);
+        // Capture BEFORE visitStmt: monomorphization may reallocate
+        // tu.functions (dangling the decl reference).
+        SourceRange dr = decl.range;
+        std::shared_ptr<BlockStmt> body = decl.body;
+        visitStmt(*body);
+        // @coro/@async functions: non-void ones must still return a value (the
+        // source return stores into the coroutine result slot).
+        checkMissingReturn(dr, *body);
     }
 
     in_coro_method_ = false;
@@ -1199,6 +1220,79 @@ Sema::StmtResult Sema::visitReturnStmt(ReturnStmt& stmt) {
         }
     }
     return {};
+}
+
+// Conservative "control never falls off the end" analysis. Used to flag non-void
+// functions missing a return at the end (previously codegen emitted `ret void`
+// in an i32 function → LLVM verify failure).
+bool Sema::stmtGuaranteesTermination(const Stmt& s) const {
+    switch (s.kind) {
+        case StmtKind::ReturnStmt:
+        case StmtKind::ThrowStmt:
+            return true;
+        case StmtKind::Block: {
+            auto& b = static_cast<const BlockStmt&>(s);
+            if (b.statements.empty()) return false;
+            return stmtGuaranteesTermination(*b.statements.back());
+        }
+        case StmtKind::IfStmt: {
+            auto& i = static_cast<const IfStmt&>(s);
+            if (!i.else_block) return false;
+            bool t = i.then_block && stmtGuaranteesTermination(*i.then_block);
+            bool f = stmtGuaranteesTermination(*i.else_block);
+            return t && f;
+        }
+        case StmtKind::MatchStmt: {
+            auto& m = static_cast<const MatchStmt&>(s);
+            if (m.arms.empty()) return false;
+            for (auto& a : m.arms)
+                if (!(a.body && stmtGuaranteesTermination(*a.body))) return false;
+            return true;
+        }
+        case StmtKind::TryStmt: {
+            auto& t = static_cast<const TryStmt&>(s);
+            // If the try block itself returns, control never falls off (the
+            // finally only runs on the return path). If the try falls through,
+            // a terminating finally prevents fall-off (its return covers the
+            // fall-through path). A terminating catch alone is not enough: the
+            // non-throw path (try falls through) would still reach the end.
+            if (t.try_block && stmtGuaranteesTermination(*t.try_block)) return true;
+            if (t.finally_block && stmtGuaranteesTermination(*t.finally_block))
+                return true;
+            return false;
+        }
+        case StmtKind::WhileStmt: {
+            // `while (true)` / `while (1)` never falls through.
+            auto& w = static_cast<const WhileStmt&>(s);
+            if (w.condition) {
+                if (w.condition->kind == ExprKind::BoolLiteral)
+                    return static_cast<const BoolLiteralExpr&>(*w.condition).value;
+                if (w.condition->kind == ExprKind::IntegerLiteral)
+                    return static_cast<const IntegerLiteralExpr&>(*w.condition).value != 0;
+            }
+            return false;
+        }
+        case StmtKind::ForStmt: {
+            // `for (;;)` (no condition) never falls through.
+            auto& f = static_cast<const ForStmt&>(s);
+            return f.condition == nullptr;
+        }
+        default:
+            return false;
+    }
+}
+
+void Sema::checkMissingReturn(const SourceRange& range, const Stmt& body) {
+    if (current_return_type_.kind != TypeKind::Void &&
+        !stmtGuaranteesTermination(body)) {
+        // FFI/extern stubs: `long f(...) {}` with an empty body (e.g. the Coro.*
+        // / runtime-backed functions) legitimately have no return statement.
+        if (body.kind == StmtKind::Block &&
+            static_cast<const BlockStmt&>(body).statements.empty())
+            return;
+        error(range, "missing return statement (function expects '" +
+                     typeName(current_return_type_) + "')");
+    }
 }
 
 // ==============================
@@ -3450,7 +3544,17 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             }
         }
         if (!class_found) {
-            // Return a clear error type — the caller will report it
+            // Undefined type name (e.g. a typo `propertyvoid` / `UnknownType`).
+            // Previously fell back to Void in sema while codegen resolved the
+            // same name to Int → divergent function signatures → LLVM verify
+            // "return type does not match". Report a clean error instead.
+            // Exception: macro AST types (StmtList/Stmt/Expr) are valid inside
+            // @macro bodies but not registered classes — keep the Void fallback.
+            bool is_macro_ast =
+                node.class_name == "StmtList" || node.class_name == "Stmt" ||
+                node.class_name == "Expr";
+            if (!is_macro_ast)
+                error(node.range, "unknown type '" + node.class_name + "'");
             TypeInfo err_type(TypeKind::Void);
             return err_type;
         }
@@ -4500,7 +4604,12 @@ Sema::StmtResult Sema::visitThrowStmt(ThrowStmt& stmt) {
     } else if (t.kind == TypeKind::Class) {
         stmt.throw_type = t.class_name;
     } else if (t.kind == TypeKind::Void) {
-        // cascading error recovery
+        // cascading error recovery: only when a prior error already occurred
+        // (e.g. the thrown expr itself failed). A genuinely void expression
+        // (`throw Console.writeString(...)`) must be rejected — codegen would
+        // otherwise emit myp_throw_object(void <badref>) → LLVM verify.
+        if (!diag_.hasErrors())
+            error(stmt.range, "throw requires a string or class instance, got 'void'");
     } else {
         error(stmt.range, "throw requires a string or class instance, got '" +
               typeName(t) + "'");
