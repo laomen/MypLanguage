@@ -253,9 +253,15 @@ int x; int y;
 
 // 嵌套解构
 ((int p, int q), int z) = ((1, 2), 5);  // p=1, q=2, z=5
+
+// `_` 忽略符：跳过不关心的元素（不绑定、不检查类型）
+(int _, string name) = getPair();       // 丢弃第一个元素
+(int a, string _) = getPair();          // 丢弃第二个元素
+(int _, string _) = getPair();          // 只要多值返回副作用
 ```
 
 > 与函数类型 `(A, B) -> R`、lambda `(a, b) => ...` 自动消歧；设计见 `docs/tuple.md`。
+> `_` 本身是合法标识符，可在其他上下文正常使用。
 
 ### 可空类型 `Option<T>` / `T?`（v3.x，additive）
 

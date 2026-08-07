@@ -245,10 +245,15 @@ int x; int y;
 
 // Nested destructuring
 ((int p, int q), int z) = ((1, 2), 5);  // p=1, q=2, z=5
+
+// `_` ignore: skip elements you don't care about (no binding, no type check)
+(int _, string name) = getPair();       // discard the first element
+(int a, string _) = getPair();          // discard the second element
+(int _, string _) = getPair();          // keep only the multi-value side effect
 ```
 
 > Disambiguated from function types `(A, B) -> R` and lambdas `(a, b) => ...`;
-> see `docs/tuple.md`.
+> see `docs/tuple.md`. `_` is a valid identifier and can be used normally elsewhere.
 
 ### Nullable `Option<T>` / `T?` (v3.x, additive)
 
