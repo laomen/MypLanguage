@@ -1062,6 +1062,53 @@ mapping() {
 - Mapping establishes an event bus at runtime
 - Same thread = synchronous processing, cross-thread = async delivery
 
+### Scope Management `@scope` (v2.3)
+
+By default a mapping stays active forever. `@scope` binds the handler lifetime to a function scope:
+
+```myp
+void run() {
+    Sensor s;
+    mapping() @scope {
+        s.ready -> log.write;
+    }
+}  // handler auto-unregisters when the function exits
+```
+
+### Conditional Filter `where` (v2.3)
+
+Only events satisfying the condition are forwarded:
+
+```myp
+mapping() {
+    rs.valueEmitted where value >= 3 -> Console.write;
+}
+```
+
+The `where` expression can use event parameter names and supports comparisons and arithmetic.
+
+### Lambda Transform Nodes (v2.3)
+
+Inline data transforms via a lambda in the mapping chain:
+
+```myp
+mapping() {
+    rs.valueEmitted -> (int v) => { return v * 2; } -> display.show;
+}
+```
+
+### Timer Transforms (v2.3)
+
+- `delay(ms)` — delay forwarding
+- `throttle(ms)` — rate-limit
+
+```myp
+mapping() {
+    sensor.data -> delay(100) -> display.update;
+    sensor.data -> throttle(50) -> logger.write;
+}
+```
+
 ---
 
 ## 9. Concurrent Programming
@@ -1093,6 +1140,69 @@ mapping() {
     sensor.valueRead -> pool[0].process;
 }
 ```
+
+### @parallel for — Data Parallelism
+
+`@parallel for` is MYP's data-parallelism primitive: the compiler extracts the loop body onto a
+work-stealing thread pool automatically (no events/messages needed):
+
+```myp
+import atomic;
+
+int[1000] tally;
+@parallel for (int i = 0; i < 1000; i = i + 1) {
+    Atomic.addInt(tally, i, i);
+}
+```
+
+**How it works**: the compiler scans the outer scope, collects referenced variables into a capture
+struct, extracts the body into a standalone `parallel_body(i, arg)` function, and calls
+`myp_pool_parallel_for()`; the work-stealing pool splits the iteration range across threads, each
+thread runs its chunk serially, then a barrier waits for all to finish.
+
+**Variable capture**: `int`/`long`/`double` by value (per-thread copy); `double[]`/`int[]` by pointer
+(shared heap array); class instances by pointer; static-method calls as direct LLVM calls.
+
+**Thread safety**: protect shared writes with `Atomic`:
+```myp
+@parallel for (int i = 0; i < size; i = i + 1) {
+    Atomic.addDouble(tally, idx, value);   // ✅ correct
+    // tally[idx] = tally[idx] + value;    // ❌ race condition
+}
+```
+
+**Limits**: loop variable `int` (`long` truncated); each iteration must be **independent**; no
+`break`/`continue`; loop bounds are fixed at entry.
+
+**Performance reference (16 cores)**: 5M particles ~3s (~10x); 1e9 particles ~9.5min (~10x).
+
+### @gpu for — GPU Offload
+
+`@gpu for` offloads compute-heavy loops to an NVIDIA CUDA GPU (the compiler emits an NVPTX kernel
+with the loop index mapped to the GPU thread id):
+
+```myp
+import math;
+long n = 1000000L;
+double[] data = new double[n];
+@gpu for (long i = 0L; i < n; i = i + 1L) {
+    data[i] = Math.sqrt(data[i]) + Math.sin(1.0);
+}
+```
+
+- **Enable**: set `MYP_GPU=1` (default is CPU). Requires the NVIDIA CUDA driver (`libcuda.so.1`).
+- **Fallback**: no GPU / no `MYP_GPU` → automatic sequential CPU execution with identical results.
+- **Math**: `Math.sqrt/sin/cos/tan/floor/ceil/asin/acos/atan/atan2/sinh/cosh/tanh/exp/log/pow/abs`
+  map to CUDA libdevice (`__nv_*`) at full precision (needs `libdevice.10.bc`; `MYP_CUDA_LIBDEVICE`
+  overrides the path).
+- **`import cuda`** high-level API: `Cuda.available/count/name/memory/capability/multiProcessors/
+  maxThreads/warpSize` (device info); `Device.*` math inside kernels; `Vectors` (elementwise
+  add/sub/mul/scale/addScalar/fill/saxpy/copy/negate/clamp/pow/sqrt/sin/cos/tan/exp/log/abs/floor/
+  ceil + reductions sum/mean/variance/stddev/norm/normalize/min/max/dot); `Matrix` (elementwise
+  add/sub/mul/scale/fill, transpose on CPU).
+- **Limits**: loop var `long`, `i < n` or `i <= n`; captured arrays copied to the device whole
+  before launch; each iteration independent; no `break`/`continue`; GPU math needs libdevice;
+  `min/max/dot/transpose` are CPU for now (correct but not GPU-accelerated).
 
 ### Constructor (`@constructor` / name == class name)
 
@@ -1460,6 +1570,33 @@ Network-level errors throw: connect failure throws `NetError` (from
 `TcpClient.connect`); malformed URL / non-`http` scheme throws a string exception
 (`https` needs TLS and is not supported yet).
 
+### `import net` — TCP Sockets
+
+```myp
+import net;
+
+// --- Server ---
+TcpServer srv = new TcpServer(8080);   // bind + listen
+TcpClient cl = new TcpClient();
+srv.accept(cl);                        // blocking accept (result into cl)
+string data = cl.recvLine();           // blocking read one line
+cl.send("Hello!\n");
+cl.close();
+srv.close();
+
+// --- Client ---
+TcpClient c = new TcpClient();
+int ret = c.connect("example.com", 80);    // 0 on success; throws NetError on failure
+c.sendLine("GET / HTTP/1.0");
+string resp = c.recv(4096);
+c.close();
+```
+
+- `TcpServer(port)` / `accept(client)` / `close()`
+- `TcpClient.connect(host, port)` / `send(data)` / `sendLine(data)` / `recv(maxLen)` /
+  `recvLine()` / `getFd()` / `close()`; connection failure throws `NetError` (with op/host/port)
+- **Async**: `recvAsync` / `recvLineAsync` / `sendAsync` (see `import async`, §五-5 P2)
+
 ### `import text` — Text Processing
 
 ```myp
@@ -1469,6 +1606,86 @@ StringBuilder sb = new StringBuilder();
 sb.append("Hello");
 sb.append(", World");
 string result = sb.toString();  // "Hello, World"
+```
+
+### `import atomic` — Atomic Operations
+
+```myp
+import atomic;
+
+// Array atomic ops (thread-safe accumulation)
+int[100] counters;
+double[50] values;
+
+Atomic.addInt(counters, idx, 1);        // counters[idx] += 1
+Atomic.subInt(counters, idx, 1);        // counters[idx] -= 1
+Atomic.addDouble(values, idx, 3.14);    // values[idx] += 3.14
+Atomic.xchgInt(counters, idx, 0);       // counters[idx] = 0 (returns old value)
+Atomic.loadInt(counters, idx);          // atomic read
+Atomic.storeInt(counters, idx, 42);     // atomic write
+```
+
+Used with `@parallel for` to protect shared Tally arrays from concurrent writes.
+
+### `import io` — File I/O
+
+```myp
+import io;
+
+File f = new File();
+f.open("data.txt", "r");           // open for read
+bool has = f.hasNext();             // is there another line?
+string line = f.readLine();         // read one line
+f.close();                          // close
+
+f.open("out.txt", "w");             // open for write
+f.write("hello");                   // write string (no newline)
+f.writeLine("world");               // write string + newline
+
+// Binary I/O (via __myp_io_* intrinsics)
+int byte = __myp_io_read_byte();
+int i32  = __myp_io_read_i32be();
+__myp_io_write_byte(0xFF);
+__myp_io_write_i32be(42);
+__myp_io_write_double(3.14);
+double d = __myp_io_read_double();
+```
+
+### `import stream` — Streaming Data Sources
+
+```myp
+import stream;
+
+// RangeStream: integer range iteration
+RangeStream rs = new RangeStream(0, 10, 1);
+while (rs.hasNext()) {
+    int v = rs.next();
+}
+
+// IntStream / DoubleStream: array streaming wrappers
+int[] data = new int[5];
+IntStream is = new IntStream(data, 5);
+```
+
+### `import barrier` — Barrier Synchronization
+
+```myp
+import barrier;
+
+int handle = Barrier.create(4);      // create barrier (waits for 4 threads)
+Barrier.wait(handle);                // wait until all threads arrive
+Barrier.destroy(handle);             // destroy
+```
+
+### `import future` — Async Results
+
+```myp
+import future;
+
+int handle = Future.create();        // create a Future
+Future.set(handle, 42);              // set the result (producer)
+int result = Future.get(handle);     // get the result (consumer, blocks)
+Future.destroy(handle);              // destroy
 ```
 
 ### `import coro` — Coroutines
@@ -1779,6 +1996,175 @@ Memory.release(p);                      // alias for free
 > libraries (SDL/net/GPU/third-party). ③ **Byte buffers / manual layout** — raw buffers for
 > binary protocols and file formats. For dynamic arrays use `ArrayList<T>` from `collections`
 > (auto-growing); this module only manages raw memory.
+
+### `import channel` — Coroutine Channels
+
+Go-style buffered channel (owned by the creating thread's TLS, consistent with the coroutine model):
+```myp
+import channel;
+Channel ch = new Channel();
+ch.init(4);                    // buffer capacity > 0
+ch.send(v);                    // in a coroutine: suspend when full; non-coroutine: -1 when full
+long v = ch.recv();            // in a coroutine: suspend when empty; non-coroutine: -1 when empty
+ch.trySend(v);  ch.tryRecv();  // always non-blocking (0/value, -1 full/empty)
+ch.size();                     // current buffered element count
+ch.close();                    // close and wake all waiters
+ch.destroy();                  // release the buffer
+```
+
+### `import fs` — File System
+
+```myp
+import fs;
+Fs.exists("/tmp");         Fs.isDir("/tmp");        Fs.isFile("/tmp/x");
+long sz = Fs.fileSize("/tmp/x");
+long mt = Fs.modifiedTime("/tmp/x");
+Fs.dirname(p);   Fs.basename(p);   Fs.join(dir, file);
+string[] files = Fs.listDir("/tmp");      // filename array (dynamic, no 1024 cap)
+Fs.listCount("/tmp");
+Fs.mkdirP("/a/b/c");                      // recursive mkdir (mkdir -p)
+Fs.removeRecursive("/a");                 // recursive delete (rm -rf)
+
+// Path wrapper: path-oriented methods
+Path p = new Path("/home/user/file.txt");
+p.dirname();  p.basename();  p.join("x.txt");
+p.exists();  p.isDir();  p.isFile();  p.fileSize();  p.modifiedTime();
+p.listDir();  p.toString();
+```
+
+### `import process` — Process Management
+
+```myp
+import process;
+int code = Process.run("ls -l");          // run command, return exit code
+string out = Process.output("uname -a");  // run and capture stdout
+int pid  = Process.getPid();              // current process PID
+int ppid = Process.getParentPid();        // parent process PID
+int alive = Process.isRunning(pid);       // is the process running?
+```
+
+### `import args` — Command-Line Arguments
+
+```myp
+import args;
+int n = Args.count();                   // argument count (including program name)
+string a = Args.get(i);                 // i-th argument (0 = program name)
+Args.hasOption("-v");                  // does an option exist?
+string v = Args.getOption("-o", "def");// option value (default if absent)
+```
+
+### `import json` — JSON Parsing
+
+```myp
+import json;
+Json doc = new Json("{\"name\":\"myp\",\"v\":1}");  // throws JsonError on invalid input
+string n = doc.getString("name");
+int v    = doc.getInt("v");
+double d = doc.getDouble("pi");
+int b    = doc.getBool("ok");
+int len  = doc.arrayLen("items");      // array length
+int t    = doc.type("field");          // value type
+string g = doc.getString("a.b[0]");    // path supports nested fields / indices
+
+doc.free();
+```
+
+### `import regex` — Regular Expressions
+
+```myp
+import regex;
+Regex re = new Regex("^[A-Z][a-z]+$");   // POSIX extended regex
+re.test("Hello");   // 1
+re.test("hello");   // 0
+re.free();
+```
+
+### `import base64` — Base64
+
+```myp
+import base64;
+string enc = Base64.encode("hello");
+string dec = Base64.decode(enc);
+```
+
+### `import date` — Date & Time
+
+```myp
+import date;
+long ms  = Date.nowMs();                 // wall-clock milliseconds
+string s = Date.now();                   // "YYYY-MM-DD HH:MM:SS"
+string f = Date.formatNow("%Y-%m-%d");  // formatted current time
+string t = Date.format(ms, "%H:%M:%S"); // formatted given time
+int y = Date.getYear();  Date.getMonth();  Date.getDay();
+int h = Date.getHour();  Date.getMinute(); Date.getSecond();
+Date.getWeekday();  Date.getDayOfYear();
+Date.getYearOf(ms);  Date.getMonthOf(ms); Date.getSecondOf(ms);  // fields of a given time
+```
+
+### `import logger` — Logging
+
+```myp
+import logger;
+Logger log = new Logger("myapp");
+log.debug("...");  log.info("...");  log.warn("...");  log.error("...");
+log.setLevel(0);   // 0=DEBUG 1=INFO(default) 2=WARN 3=ERROR (LogLevel enum)
+log.getLevel();
+```
+
+### `import timeline` — Timeline
+
+```myp
+import timeline;
+Timeline tl = new Timeline();
+long now = tl.now();  tl.sleep(100);
+tl.startTimeout(1000);   // fires timeout(ms) event after 1s
+tl.startInterval(500);   // fires interval(ms) event every 500ms
+tl.startTick(200);       // fires tick() event every 200ms
+// events: timeout(long ms) / interval(long ms) / tick()
+Stopwatch sw = new Stopwatch();  sw.start();  ...  sw.elapsed();
+```
+
+### `import test` — Test Assertions
+
+```myp
+import test;
+
+Test.assert(1 == 1);                 // assert a condition is true
+Test.assertEq(2 + 2, 4);             // assert int equality
+Test.assertStrEq("hi", "hi");        // assert string equality
+Test.report("test_name", true);      // report a test result
+```
+
+### `import sdl` — SDL Graphics Window
+
+```myp
+import sdl;
+
+// SDL2-based window and input management
+SDL.init("Title", 800, 600);            // create window
+while (!SDL.shouldClose()) {
+    SDL.clear(0, 0, 0, 255);            // clear screen
+    // ... draw ...
+    SDL.present();                       // present
+}
+SDL.quit();
+
+int key = SDL.getKey();                  // get a key press
+```
+
+### `import ui` — Terminal TUI Framework
+
+```myp
+import ui;
+
+// Pure-MYP implementation rendering via ANSI escape codes
+Window win = new Window(0, 0, 80, 24, "MyApp");
+win.add(new Button(10, 5, 12, 3, "Click"));
+win.add(new ProgressBar(10, 10, 40, 3, 0.5));
+win.render();                            // render one frame
+
+// Components: Window, Label, Button, TextBox, ProgressBar
+```
 
 ## 12. Compilation & Tools
 
