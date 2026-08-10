@@ -54,6 +54,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `slicevec` | slice<Vec> 结构体切片点积（AoS + 运行时边界检查） | 2×10⁶ 个 Vec |
 | `slicemat` | 嵌套 slice<slice<int>> 矩阵求和（二维运行时切片） | 2048×2048 |
 | `parcomp` | 并行计算：MYP @parallel for vs C++ std::thread（16 线程分块） | 10⁶ 迭代×200 浮点 |
+| `parreduce` | 并行归约：@parallel for + Atomic（每线程槽位）vs std::thread 各自累加 | 10⁶ 随机整数 |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。
@@ -113,10 +114,11 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   没处理 slice 类型，`slice<slice<int>>` 元素算成 4 字节而非 16，写穿外层数据区 +
   `rows[i][j]` 双下标 codegen 缺失——新增 `sliceTypeOfExpr`/`generateSliceElementAddress`
   统一读写路径）。回归测试 `tests/nested_slice/`。
-- **并行计算批（parcomp）**：MYP `@parallel for`（16 线程池，写入 slice）vs
-  C++ `std::thread`（16 线程分块）——0.94 基本持平（MYP 17ms vs C++ 16ms）。
-  说明 MYP 的编译期并行循环与手写 std::thread 效率相当；串行同负载 180ms+，
-  两者都约 10x 加速。slice 边界检查与线程池分派开销可忽略。
+- **并行计算批（parcomp/parreduce）**：parcomp（并行计算，写 slice）0.94 基本持平；
+  parreduce（`@parallel for` + Atomic 归约，每线程独立槽位）0.60——C++ 更快，
+  因 MYP 每元素做原子 RMW（写进 workerId 槽位），C++ 是线程内普通加法再一次性写
+  回；原子操作固有开销。两者 verify 与串行精确一致，验证 `@parallel for` 并行/归约
+  正确性。串行同负载约 10x 加速。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。
 
