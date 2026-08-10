@@ -342,7 +342,7 @@ fi
 # 第9部分: LSP hover / 缓存失效
 # =============================================
 echo ""
-echo "--- [9/10] LSP 测试 (hover cache + invalidation) ---"
+echo "--- [9/10] LSP 测试 (lookup caches + invalidation) ---"
 echo ""
 LSP_PASS=0
 LSP_FAIL=0
@@ -350,7 +350,7 @@ if [ -f "$PROJ_ROOT/tests/test_lsp.js" ] && command -v node >/dev/null 2>&1; the
     MYP_LSP_BIN="${MYP_LSP:-$(dirname "$MYPCC")/myp_lsp}"
     lsp_out=$(MYP_LSP="$MYP_LSP_BIN" node "$PROJ_ROOT/tests/test_lsp.js" 2>&1)
     if echo "$lsp_out" | grep -qE "myp-lsp PASS=[0-9]+ FAIL=0"; then
-        echo -e "${GREEN}PASS${NC} (hover 索引与 didChange 缓存失效)"
+        echo -e "${GREEN}PASS${NC} (hover/completion 索引与缓存失效)"
         LSP_PASS=1
     else
         echo -e "${RED}FAIL${NC}"

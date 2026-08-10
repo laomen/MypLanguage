@@ -62,6 +62,8 @@ struct Document {
 };
 
 std::unordered_map<std::string, Document> documents_;
+std::string completion_cache_;
+bool completion_cache_valid_ = false;
 std::string server_stdlib_path_ = "stdlib";
 bool diagnostics_running_ = false;
 auto last_diag_time_ = std::chrono::steady_clock::now();
@@ -71,6 +73,7 @@ static void buildDefinitionMap(Document& doc);
 
 // ---- Parse a document into AST (includes import resolution for definitions) ----
 static void parseDocument(Document& doc, const std::string& uri) {
+    completion_cache_valid_ = false;
     doc.ast = nullptr;
     doc.def_map.clear();
     doc.hover_map.clear();
@@ -348,6 +351,7 @@ void handleTextDocumentDidChange(const std::string& params) {
         it->second.ast = nullptr;    // invalidate old AST
         it->second.def_map.clear();  // clear def map
         it->second.hover_map.clear();
+        completion_cache_valid_ = false;
     }
 }
 
@@ -356,6 +360,11 @@ void handleTextDocumentDidSave(const std::string& params) {
 }
 
 void handleCompletion(const std::string& id, const std::string& /*params*/) {
+    if (completion_cache_valid_) {
+        sendResponse(id, completion_cache_);
+        return;
+    }
+
     // Provide completions: keywords, class names, methods
     std::vector<CompletionItem> items;
 
@@ -419,8 +428,9 @@ void handleCompletion(const std::string& id, const std::string& /*params*/) {
         completion_list += "}";
     }
 
-    std::string result = "{\"isIncomplete\":false,\"items\":[" + completion_list + "]}";
-    sendResponse(id, result);
+    completion_cache_ = "{\"isIncomplete\":false,\"items\":[" + completion_list + "]}";
+    completion_cache_valid_ = true;
+    sendResponse(id, completion_cache_);
 }
 
 void handleHover(const std::string& id, const std::string& params) {
