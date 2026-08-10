@@ -162,7 +162,7 @@ std::unique_ptr<ClassDecl> Parser::parseClass() {
         cls->type_params = parseTypeParamList();
         // Optional `where T : Interface` constraint clause (M2) — inside <...>
         parseTypeParamConstraints(*cls);
-        consume(TokenKind::Greater, "expected '>' after generic parameters");
+        consumeGenericClose("expected '>' after generic parameters");
     }
 
     consume(TokenKind::LeftBrace, "expected '{' after class name");
@@ -353,7 +353,7 @@ ActionDecl Parser::parseActionDecl() {
                     decl.type_params.push_back(parseIdentifier("expected type parameter name"));
                 }
             }
-            consume(TokenKind::Greater, "expected '>' after generic type parameters");
+            consumeGenericClose("expected '>' after generic type parameters");
         }
     }
 
@@ -696,7 +696,7 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
                     func->type_params.push_back(parseIdentifier("expected type parameter name"));
                 }
             }
-            consume(TokenKind::Greater, "expected '>' after generic type parameters");
+            consumeGenericClose("expected '>' after generic type parameters");
         }
     }
 
@@ -1821,7 +1821,7 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
             while (match(TokenKind::Comma)) {
                 targs.push_back(parseType());
             }
-            consume(TokenKind::Greater, "expected '>' after generic arguments");
+            consumeGenericClose("expected '>' after generic arguments");
             auto args = parseCallArgs();
             auto call = std::make_unique<CallExpr>(
                 std::move(expr), std::move(args), previous().range);
@@ -2051,7 +2051,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         std::vector<TypeNode> type_args;
         if (match(TokenKind::Less)) {
             type_args = parseTypeArgList();
-            consume(TokenKind::Greater, "expected '>' after generic arguments");
+            consumeGenericClose("expected '>' after generic arguments");
         }
         // new Generic<Arg>[n] — generic class dynamic array (e.g. new Box<int>[2]).
         // The generic args are already parsed; a following '[' makes this an array
@@ -2309,7 +2309,7 @@ TypeNode Parser::parseType() {
         // Check for generic type arguments: ClassName<Type>
         if (match(TokenKind::Less)) {
             node.type_args = parseTypeArgList();
-            consume(TokenKind::Greater, "expected '>' after generic arguments");
+            consumeGenericClose("expected '>' after generic arguments");
         }
         // Check for qualified name: ClassName::StructName
         if (match(TokenKind::DoubleColon)) {
@@ -2593,6 +2593,8 @@ SourceRange Parser::tokenRange(const Token& tok) const {
 // ==============================
 
 const Token& Parser::peek() const {
+    // Synthetic '>' pushed by nested-generic split takes precedence.
+    if (!pending_.empty()) return pending_.back();
     // Return EOF token if out of bounds
     if (current_ >= tokens_.size()) {
         static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
@@ -2602,6 +2604,14 @@ const Token& Parser::peek() const {
 }
 
 const Token& Parser::peekNext() const {
+    if (!pending_.empty()) {
+        // Pending token is the current one; the next is the real current token.
+        if (current_ >= tokens_.size()) {
+            static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
+            return eof;
+        }
+        return tokens_[current_];
+    }
     size_t idx = current_ + 1;
     if (idx >= tokens_.size()) {
         static Token eof(TokenKind::EndOfFile, SourceRange{}, "");
@@ -2635,6 +2645,11 @@ const Token& Parser::previous() const {
 }
 
 Token Parser::advance() {
+    if (!pending_.empty()) {
+        Token t = pending_.back();
+        pending_.pop_back();
+        return t;
+    }
     if (!isAtEnd()) ++current_;
     return previous();
 }
@@ -2660,6 +2675,21 @@ bool Parser::matchAny(std::initializer_list<TokenKind> kinds) {
 
 Token Parser::consume(TokenKind kind, const std::string& error_msg) {
     if (check(kind)) return advance();
+    diag_.error(peek().range, error_msg);
+    return peek();
+}
+
+Token Parser::consumeGenericClose(const std::string& error_msg) {
+    if (check(TokenKind::Greater)) return advance();
+    if (check(TokenKind::GreaterGreater)) {
+        // Nested generics: `Box<Vec<int>>` lexes the closing `>>` as one token.
+        // Consume it and push a synthetic '>' so the enclosing generic context
+        // still sees its own close (peek/advance consult pending_ first).
+        Token split = advance();
+        split.kind = TokenKind::Greater;
+        pending_.push_back(std::move(split));
+        return split;
+    }
     diag_.error(peek().range, error_msg);
     return peek();
 }

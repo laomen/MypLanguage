@@ -489,6 +489,16 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
     // Function type: (A,B)->R → fat pointer {closure, call_fn}
     if (tn.isFunction())
         return getFunctionValueType();
+    // slice<T> — fat pointer { T* data; int64 len }. Missing this, a slice type
+    // falls through to the builtin default (i32, 4 bytes), which mis-sizes
+    // `new slice<slice<T>>(n)` (element should be 16 bytes, not 4) and corrupts
+    // the outer slice's data region.
+    if (tn.class_name == "slice" && !tn.type_args.empty()) {
+        TypeInfo st(TypeKind::Slice);
+        st.element_type = std::make_shared<TypeInfo>(
+            typeNodeToCodegenType(tn.type_args[0]));
+        return getLLVMType(st);
+    }
     // Check for array type
     if (tn.isArray() && tn.element_type) {
         auto* elem = typeNodeToLLVMType(*tn.element_type);
@@ -7642,11 +7652,16 @@ llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
 
 llvm::Value* CodeGen::generateArrayElementAddress(const SubscriptExpr& ss) {
     llvm::Type* elem_ty = nullptr;
+    const TypeInfo* slice_ti = nullptr;
     if (ss.array->kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(*ss.array);
         auto eit = array_elem_types_.find(id.name);
         if (eit != array_elem_types_.end())
             elem_ty = eit->second;
+        // slice<T>[i] — unpack {data,len}, bounds-check, GEP to element.
+        auto sit = var_slice_types_.find(id.name);
+        if (sit != var_slice_types_.end() && sit->second.element_type)
+            slice_ti = &sit->second;
     } else if (ss.array->kind == ExprKind::MemberAccess) {
         // obj.arr[i] — resolve the array field's element type from the struct
         // or class declaration.
@@ -7673,9 +7688,45 @@ llvm::Value* CodeGen::generateArrayElementAddress(const SubscriptExpr& ss) {
             }
         }
     }
+    auto* i = generateExpr(*ss.index);
+    auto* i64 = i;
+    if (i64->getType()->isIntegerTy(32) || i64->getType()->isIntegerTy(8)
+        || i64->getType()->isIntegerTy(16))
+        i64 = builder_.CreateZExt(i64, llvm::Type::getInt64Ty(ctx_));
+
+    // Slice path: {data, len} fat pointer — bounds check, GEP data[i].
+    if (slice_ti) {
+        auto* va = getNamedValue(
+            static_cast<const IdentifierExpr&>(*ss.array).name);
+        if (!va) return nullptr;
+        auto* sval = builder_.CreateLoad(getLLVMType(*slice_ti), va);
+        auto* data = builder_.CreateExtractValue(sval, 0);
+        auto* len = builder_.CreateExtractValue(sval, 1);
+        auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+        auto* nonneg = builder_.CreateICmpSGE(i64, llvm::ConstantInt::get(i64ty, 0));
+        auto* inb = builder_.CreateICmpULT(i64, len);
+        auto* ok = builder_.CreateAnd(nonneg, inb);
+        auto* be_fn = module_->getFunction("myp_bounds_error");
+        if (!be_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {i64ty, i64ty}, false);
+            be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_bounds_error", module_.get());
+        }
+        auto* cur_fn = builder_.GetInsertBlock()->getParent();
+        auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+        auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+        builder_.CreateCondBr(ok, cont_bb, err_bb);
+        builder_.SetInsertPoint(err_bb);
+        builder_.CreateCall(be_fn, {i64, len});
+        builder_.CreateBr(cont_bb);
+        builder_.SetInsertPoint(cont_bb);
+        auto* et = getLLVMType(*slice_ti->element_type);
+        return builder_.CreateGEP(et, data, i64);
+    }
+
     if (!elem_ty) return nullptr;
     auto* a = generateExpr(*ss.array);
-    auto* i = generateExpr(*ss.index);
     return builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
 }
 
@@ -7945,43 +7996,68 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
     return generateExpr(*e.object);
 }
 
-llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
-    // slice<T>[i] — unpack data, bounds-check, GEP
-    if (e.array->kind == ExprKind::Identifier) {
-        auto& id = static_cast<const IdentifierExpr&>(*e.array);
+const TypeInfo* CodeGen::sliceTypeOfExpr(const Expr* arr) {
+    if (!arr) return nullptr;
+    if (arr->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*arr);
         auto sit = var_slice_types_.find(id.name);
-        if (sit != var_slice_types_.end()) {
-            auto* va = getNamedValue(id.name);
-            if (va && sit->second.element_type) {
-                auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, id.name);
-                auto* data = builder_.CreateExtractValue(sval, 0);
-                auto* len = builder_.CreateExtractValue(sval, 1);
-                auto* idx = generateExpr(*e.index);
-                auto* idx64 = idx;
-                if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
-                    || idx64->getType()->isIntegerTy(16))
-                    idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
-                // Bounds check: 0 <= idx < len
-                auto* i64ty = llvm::Type::getInt64Ty(ctx_);
-                auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
-                auto* inb = builder_.CreateICmpULT(idx64, len);
-                auto* ok = builder_.CreateAnd(nonneg, inb);
-                auto* be_fn = module_->getFunction("myp_bounds_error");
-                if (!be_fn) {
-                    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
-                        {i64ty, i64ty}, false);
-                    be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_bounds_error", module_.get());
-                }
-                auto* cur_fn = builder_.GetInsertBlock()->getParent();
-                auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
-                auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
-                builder_.CreateCondBr(ok, cont_bb, err_bb);
-                builder_.SetInsertPoint(err_bb);
-                builder_.CreateCall(be_fn, {idx64, len});
-                builder_.CreateBr(cont_bb);
-                builder_.SetInsertPoint(cont_bb);
-                auto* elem_ty = getLLVMType(*sit->second.element_type);
-                auto* p = builder_.CreateGEP(elem_ty, data, idx64);
+        return sit != var_slice_types_.end() ? &sit->second : nullptr;
+    }
+    if (arr->kind == ExprKind::Subscript) {
+        // rows[i] where rows is slice<slice<int>> → rows[i] : slice<int>
+        auto& ss = static_cast<const SubscriptExpr&>(*arr);
+        const TypeInfo* inner = sliceTypeOfExpr(ss.array.get());
+        if (inner && inner->kind == TypeKind::Slice)
+            return inner->element_type.get();
+        return nullptr;
+    }
+    return nullptr;
+}
+
+llvm::Value* CodeGen::generateSliceElementAddress(const Expr* arr, llvm::Value* idx) {
+    const TypeInfo* sti = sliceTypeOfExpr(arr);
+    if (!sti || sti->kind != TypeKind::Slice || !sti->element_type) return nullptr;
+    auto* sval = generateExpr(*arr);
+    if (!sval || !sval->getType()->isStructTy()) return nullptr;
+    auto* data = builder_.CreateExtractValue(sval, 0);
+    auto* len = builder_.CreateExtractValue(sval, 1);
+    auto* idx64 = idx;
+    if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
+        || idx64->getType()->isIntegerTy(16))
+        idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
+    // Bounds check: 0 <= idx < len
+    auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+    auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
+    auto* inb = builder_.CreateICmpULT(idx64, len);
+    auto* ok = builder_.CreateAnd(nonneg, inb);
+    auto* be_fn = module_->getFunction("myp_bounds_error");
+    if (!be_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+            {i64ty, i64ty}, false);
+        be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_bounds_error", module_.get());
+    }
+    auto* cur_fn = builder_.GetInsertBlock()->getParent();
+    auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+    auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+    builder_.CreateCondBr(ok, cont_bb, err_bb);
+    builder_.SetInsertPoint(err_bb);
+    builder_.CreateCall(be_fn, {idx64, len});
+    builder_.CreateBr(cont_bb);
+    builder_.SetInsertPoint(cont_bb);
+    auto* et = getLLVMType(*sti->element_type);
+    return builder_.CreateGEP(et, data, idx64);
+}
+
+llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
+    // slice<T>[i] (incl. nested slice<slice<T>> rows[i][j]) — unpack the slice
+    // value, bounds-check, GEP, load.
+    if (const TypeInfo* sti = sliceTypeOfExpr(e.array.get())) {
+        if (sti->kind == TypeKind::Slice && sti->element_type) {
+            auto* idx = generateExpr(*e.index);
+            auto* p = generateSliceElementAddress(e.array.get(), idx);
+            if (p) {
+                auto* elem_ty = getLLVMType(*sti->element_type);
                 return builder_.CreateLoad(elem_ty, p);
             }
         }
@@ -8786,41 +8862,14 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
     // arr[i] = value
     if (e.target->kind == ExprKind::Subscript) {
         auto& ss = static_cast<const SubscriptExpr&>(*e.target);
-        // slice<T>[i] = value — unpack data, bounds-check, GEP, store
-        if (ss.array->kind == ExprKind::Identifier) {
-            auto& id = static_cast<const IdentifierExpr&>(*ss.array);
-            auto sit = var_slice_types_.find(id.name);
-            if (sit != var_slice_types_.end()) {
-                auto* va = getNamedValue(id.name);
-                if (va && sit->second.element_type) {
-                    auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, id.name);
-                    auto* data = builder_.CreateExtractValue(sval, 0);
-                    auto* len = builder_.CreateExtractValue(sval, 1);
-                    auto* idx = generateExpr(*ss.index);
-                    auto* idx64 = idx;
-                    if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
-                        || idx64->getType()->isIntegerTy(16))
-                        idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
-                    auto* i64ty = llvm::Type::getInt64Ty(ctx_);
-                    auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
-                    auto* inb = builder_.CreateICmpULT(idx64, len);
-                    auto* ok = builder_.CreateAnd(nonneg, inb);
-                    auto* be_fn = module_->getFunction("myp_bounds_error");
-                    if (!be_fn) {
-                        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
-                            {i64ty, i64ty}, false);
-                        be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_bounds_error", module_.get());
-                    }
-                    auto* cur_fn = builder_.GetInsertBlock()->getParent();
-                    auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
-                    auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
-                    builder_.CreateCondBr(ok, cont_bb, err_bb);
-                    builder_.SetInsertPoint(err_bb);
-                    builder_.CreateCall(be_fn, {idx64, len});
-                    builder_.CreateBr(cont_bb);
-                    builder_.SetInsertPoint(cont_bb);
-                    auto* elem_ty = getLLVMType(*sit->second.element_type);
-                    auto* p = builder_.CreateGEP(elem_ty, data, idx64);
+        // slice<T>[i] = value (incl. nested slice<slice<T>> rows[i][j] = v) —
+        // unpack the slice value, bounds-check, GEP, store.
+        if (const TypeInfo* sti = sliceTypeOfExpr(ss.array.get())) {
+            if (sti->kind == TypeKind::Slice && sti->element_type) {
+                auto* idx = generateExpr(*ss.index);
+                auto* p = generateSliceElementAddress(ss.array.get(), idx);
+                if (p) {
+                    auto* elem_ty = getLLVMType(*sti->element_type);
                     auto* v = generateExpr(*e.value);
                     if (v->getType() != elem_ty) {
                         if (elem_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
@@ -8831,7 +8880,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                             v = builder_.CreateIntCast(v, elem_ty, true);
                     }
                     // ARC: slice<T> of classes — element is a strong slot.
-                    if (sit->second.element_type->kind == TypeKind::Class) {
+                    if (sti->element_type->kind == TypeKind::Class) {
                         auto* old = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), p);
                         if (!isFreshArcExpr(*e.value))
                             emitRetain(v);

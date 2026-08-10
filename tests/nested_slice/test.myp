@@ -1,0 +1,79 @@
+// 验证：嵌套泛型 + 嵌套 slice + slice<struct>
+// 覆盖三个修复：
+//   1. 嵌套泛型解析 `slice<slice<int>>`（>> 拆分为两个 >）
+//   2. 嵌套 slice 双下标 `rows[i][j]` 读写（slice 值再下标）
+//   3. slice<struct> 元素字段访问 `v[i].x`（slice 下标 + struct 成员）
+
+import env;
+
+struct Vec { int x; int y; }
+
+// 嵌套泛型：slice<slice<int>> 作函数参数/返回
+slice<int> getRow(slice<slice<int>> rows, int i) {
+    return rows[i];
+}
+
+int nestedTest(int n) {
+    slice<slice<int>> rows = new slice<slice<int>>(n);
+    int i = 0;
+    while (i < n) {
+        slice<int> row = new slice<int>(n);
+        int j = 0;
+        while (j < n) {
+            row[j] = i * n + j;
+            j = j + 1;
+        }
+        rows[i] = row;
+        i = i + 1;
+    }
+    int sum = 0;
+    i = 0;
+    while (i < n) {
+        slice<int> r = getRow(rows, i);
+        int j = 0;
+        while (j < n) {
+            sum = sum + r[j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    rows[3][4] = 999;             // 嵌套写
+    sum = sum - 52 + rows[3][4];  // 嵌套读（3*16+4=52 → 999）
+    return sum;
+}
+
+int vecTest(int n) {
+    slice<Vec> v = new slice<Vec>(n);
+    int i = 0;
+    while (i < n) {
+        v[i].x = i;
+        v[i].y = i + 1;
+        i = i + 1;
+    }
+    int sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + v[i].x * v[i].y;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Console.writeString("[嵌套泛型 / 嵌套 slice / slice<struct>]\n");
+            int a = nestedTest(16);   // 期望 33587
+            int b = vecTest(4);       // 期望 20
+            Console.writeString("nestedTest(16) = "); Console.write(a);
+            Console.writeString(", vecTest(4) = "); Console.write(b);
+            Console.writeString("\n");
+            if (a == 33587 && b == 20) {
+                Console.writeString("[OK] 嵌套泛型/slice 通过\n");
+            } else {
+                Console.writeString("[FAIL] 期望 33587 / 20\n");
+            }
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

@@ -593,6 +593,12 @@ private:
     // Returns nullptr if the array isn't a resolvable struct-element array.
     // Backs `arr[i].field` read/write and chained `arr[i].field.sub` access.
     llvm::Value* generateArrayElementAddress(const SubscriptExpr& ss);
+    // If `expr` evaluates to a slice value, return its TypeInfo (recursing
+    // through subscripts so nested slices like rows[i] resolve to slice<int>).
+    const TypeInfo* sliceTypeOfExpr(const Expr* expr);
+    // Bounds-checked element address for a slice-valued expression (incl. nested
+    // slice subscripts like rows[i][j]); nullptr if expr isn't a slice.
+    llvm::Value* generateSliceElementAddress(const Expr* arr, llvm::Value* idx);
     llvm::Value* generateSubscript(const SubscriptExpr& expr);
     llvm::Value* generateNewExpr(const NewExpr& expr);
     llvm::Value* generateNewArrayExpr(const NewArrayExpr& expr);

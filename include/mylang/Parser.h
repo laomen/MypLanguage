@@ -33,6 +33,10 @@ private:
     bool matchAny(std::initializer_list<TokenKind> kinds);
     Token consume(TokenKind kind, const std::string& error_msg);
     bool isAtEnd() const;
+    // Consume the closing '>' of a generic type-arg list, handling the nested
+    // case where the lexer emitted one '>>' token (e.g. Box<Vec<int>>): we
+    // consume it and re-insert a single '>' so the outer context still sees it.
+    Token consumeGenericClose(const std::string& error_msg);
 
     // Error recovery
     Token synchronize();
@@ -129,6 +133,9 @@ private:
     std::unordered_map<std::string, TypeNode> aliases_;
 
     const std::vector<Token>& tokens_;
+    // Synthetic tokens pushed when a nested-generic `>>` is split into two `>`
+    // (see consumeGenericClose). peek()/advance() consult this first.
+    std::vector<Token> pending_;
     DiagnosticEngine& diag_;
     size_t current_ = 0;
 };

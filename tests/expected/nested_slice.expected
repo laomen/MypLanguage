@@ -1,0 +1,5 @@
+[嵌套泛型 / 嵌套 slice / slice<struct>]
+nestedTest(16) = 33587
+, vecTest(4) = 20
+
+[OK] 嵌套泛型/slice 通过
