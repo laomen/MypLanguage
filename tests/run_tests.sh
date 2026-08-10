@@ -82,18 +82,16 @@ for test_dir in tests/*/; do
         continue
     fi
 
-    # 运行
-    run_output=$(timeout $TIMEOUT_SEC "$binary_file" 2>&1)
+    # 运行 —— 直接重定向到文件（字节级精确捕获）。此前用 $(...) 捕获会剥离
+    # 程序输出的尾部换行、echo 再补一个，导致 expected 非字节精确（§二-1）。
+    timeout $TIMEOUT_SEC "$binary_file" > "$output_file" 2>&1
     if [ $? -ne 0 ]; then
         echo -e "${RED}RUNTIME FAIL${NC}"
-        echo "$run_output" | head -5
+        head -5 "$output_file"
         FAIL=$((FAIL + 1))
         FAILED_TESTS="$FAILED_TESTS $name(runtime)"
         continue
     fi
-
-    # 保存输出
-    echo "$run_output" > "$output_file"
 
     # 比对 expected
     if [ -f "$expected_file" ]; then
