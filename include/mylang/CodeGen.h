@@ -518,6 +518,13 @@ private:
     llvm::GlobalVariable* getOrCreateVtable(const std::string& iface_name, const std::string& cls_name);
     // 是否为接口胖指针类型 {ptr data, ptr vtable}
     static bool isInterfaceFatType(llvm::Type* ty);
+    // 把具体类实例(ptr) 构造成接口胖指针 {data, vtable}（接口参数 upcast 用）
+    llvm::Value* buildInterfaceFat(llvm::Value* inst, const std::string& iface_name,
+                                   const std::string& cls_name);
+    // 解析实参表达式的具体类名：new X / 局部变量 / 本类属性（无 → ""）
+    std::string resolveArgClassName(const Expr& arg);
+    // 解析被调函数第 rel 个参数声明的接口名（形参为接口类型时；无 → ""）
+    std::string paramIfaceName(llvm::Function* cf, size_t rel);
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);

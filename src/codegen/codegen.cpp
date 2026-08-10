@@ -1625,6 +1625,87 @@ llvm::GlobalVariable* CodeGen::getOrCreateVtable(const std::string& iface_name,
     return vgv;
 }
 
+llvm::Value* CodeGen::buildInterfaceFat(llvm::Value* inst,
+                                        const std::string& iface_name,
+                                        const std::string& cls_name) {
+    auto* vgv = getOrCreateVtable(iface_name, cls_name);
+    if (!vgv) return inst;
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+    auto* fat = builder_.CreateAlloca(fat_ty);
+    builder_.CreateStore(inst, builder_.CreateStructGEP(fat_ty, fat, 0));
+    builder_.CreateStore(builder_.CreateBitCast(vgv, ptr_ty),
+        builder_.CreateStructGEP(fat_ty, fat, 1));
+    return builder_.CreateLoad(fat_ty, fat);
+}
+
+std::string CodeGen::resolveArgClassName(const Expr& arg) {
+    if (arg.kind == ExprKind::NewExpr)
+        return static_cast<const NewExpr&>(arg).class_name;
+    if (arg.kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(arg);
+        auto vit = var_class_map_.find(id.name);
+        if (vit != var_class_map_.end()) return vit->second;
+        // 本类裸属性名（this.label）：按当前类属性类型解析具体类
+        if (!current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name == id.name && !p.type.class_name.empty()) {
+                        std::string cn = p.type.class_name;
+                        if (!p.type.type_args.empty()) {
+                            std::string m = cn;
+                            for (auto& ta : p.type.type_args)
+                                m += "_" + mangleConcreteTypeNode(ta);
+                            m += "_inst";
+                            cn = m;
+                        }
+                        return cn;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    return "";
+}
+
+std::string CodeGen::paramIfaceName(llvm::Function* cf, size_t rel) {
+    if (!current_tu_ || !cf) return "";
+    std::string fn = cf->getName().str();
+    for (auto& cls : current_tu_->classes) {
+        std::string prefix = cls.name + "_";
+        if (fn.compare(0, prefix.size(), prefix) != 0) continue;
+        std::string mname = fn.substr(prefix.size());
+        auto scan = [&](const auto& actions) -> std::string {
+            for (auto& a : actions) {
+                if (a.name == mname && rel < a.params.size() &&
+                    !a.params[rel].type.class_name.empty())
+                    return a.params[rel].type.class_name;
+            }
+            return "";
+        };
+        std::string s = scan(cls.actions);
+        if (!s.empty()) return s;
+        s = scan(cls.functions);
+        if (!s.empty()) return s;
+        s = scan(cls.static_actions);
+        if (!s.empty()) return s;
+        // 构造器：函数名带参数类型后缀，如 `C_C_IWidget_IRenderer_int`。
+        // mname = `C_<mangled-params>`；匹配任何构造器（has_constructor）并
+        // 检查 rel 位置的形参是否为接口类型。
+        if (mname.compare(0, cls.name.size() + 1, cls.name + "_") == 0) {
+            for (auto& a : cls.actions) {
+                if (!a.has_constructor) continue;
+                if (rel < a.params.size() && !a.params[rel].type.class_name.empty())
+                    return a.params[rel].type.class_name;
+            }
+        }
+        break;
+    }
+    return "";
+}
+
 void CodeGen::createClassDefaultDecl(const ClassDecl& cls, const InterfaceDecl& iface,
                                      const ActionDecl& action) {
     auto fn = ifaceDefaultName(iface.name, action.name, cls.name);
@@ -7119,6 +7200,66 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             }
         }
 
+        // Generalized interface dispatch: any object expression that evaluates
+        // to a {data, vtable} fat pointer (interface var / interface property
+        // `this.iface` / interface array element) → vtable dispatch. Bug fix:
+        // only identifier-vars were dispatched before; interface properties
+        // (root_.method()) fell to the concrete direct-call path and passed the
+        // fat pointer as `this` → invalid IR. Safe to evaluate: these are pure
+        // loads (no side effects). Non-interface objects evaluate to a ptr and
+        // fall through to the concrete paths below.
+        if (ma.object->kind == ExprKind::Identifier ||
+            ma.object->kind == ExprKind::MemberAccess ||
+            ma.object->kind == ExprKind::Subscript ||
+            ma.object->kind == ExprKind::ThisExpr) {
+            // 静态类调用（Cli.run() / Console.writeLine()）：对象是类名而非值，
+            // 求值会报 undefined variable —— 跳过，交给下方静态解析路径。
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                bool is_class_name = false;
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes)
+                        if (cls.name == oid.name) { is_class_name = true; break; }
+                }
+                if (is_class_name) goto skip_generalized_iface;
+            }
+            auto* obj_val = generateExpr(*ma.object);
+            if (obj_val && isInterfaceFatType(obj_val->getType())) {
+                auto* data = builder_.CreateExtractValue(obj_val, 0);
+                auto* vt = builder_.CreateExtractValue(obj_val, 1);
+                int method_idx = -1;
+                for (auto& ifd : current_tu_->interfaces)
+                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
+                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
+                if (method_idx >= 0) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        "iface_method");
+                    auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                    for (auto& ifd : current_tu_->interfaces) {
+                        if ((size_t)method_idx < ifd.actions.size() &&
+                            ifd.actions[method_idx].name == ma.member_name) {
+                            ret_ty = getLLVMType(typeNodeToCodegenType(
+                                ifd.actions[method_idx].return_type));
+                            break;
+                        }
+                    }
+                    std::vector<llvm::Value*> call_args;
+                    call_args.push_back(data);
+                    for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    std::vector<llvm::Type*> param_types;
+                    param_types.push_back(ptr_ty);
+                    for (size_t ai = 1; ai < call_args.size(); ai++)
+                        param_types.push_back(call_args[ai]->getType());
+                    auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                    return builder_.CreateCall(ft, func_ptr, call_args);
+                }
+            }
+        }
+        skip_generalized_iface:
+
         // Find the correct class by matching function name AND arg count (fallback)
         std::string best_class;
 
@@ -7206,6 +7347,33 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     mthis = generateExpr(*ma.object);
                     is_method = true;
                     goto call_ready;
+                }
+            } else if (!current_class_name_.empty() && current_tu_) {
+                // 本类属性对象：this.prop.method()（如 button.key()，button 是
+                // Button 属性）。此前只按方法名兜底匹配，Label/Button 同名方法
+                // （key/draw/layout）会解析到先声明的类 → 调错方法。按属性的
+                // 具体类解析。
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != current_class_name_) continue;
+                    for (auto& p : cls.properties) {
+                        if (p.name != oi.name || p.type.class_name.empty()) continue;
+                        std::string cn = p.type.class_name;
+                        if (!p.type.type_args.empty()) {
+                            std::string m = cn;
+                            for (auto& ta : p.type.type_args)
+                                m += "_" + mangleConcreteTypeNode(ta);
+                            cn = m + "_inst";
+                        }
+                        std::string fn = cn + "_" + ma.member_name;
+                        callee = module_->getFunction(fn);
+                        if (!callee) callee = findInterfaceDefault(cn, ma.member_name);
+                        if (callee) {
+                            mthis = generateExpr(*ma.object);
+                            is_method = true;
+                            goto call_ready;
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -7860,32 +8028,6 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
     // Implicit type conversion for arguments
     auto* ft = cf->getFunctionType();
     size_t arg_offset = (is_method && mthis && !skip_this) ? 1 : 0;
-    // Resolve the interface name expected by a callee param (vtable key needs it).
-    auto resolveParamIfaceName = [&](llvm::Function* cf2, size_t rel) -> std::string {
-        if (!current_tu_) return "";
-        std::string fn = cf2->getName().str();
-        for (auto& cls : current_tu_->classes) {
-            std::string prefix = cls.name + "_";
-            if (fn.compare(0, prefix.size(), prefix) != 0) continue;
-            std::string mname = fn.substr(prefix.size());
-            auto scan = [&](const auto& actions) -> std::string {
-                for (auto& a : actions) {
-                    if (a.name == mname && rel < a.params.size() &&
-                        !a.params[rel].type.class_name.empty())
-                        return a.params[rel].type.class_name;
-                }
-                return "";
-            };
-            std::string s = scan(cls.actions);
-            if (!s.empty()) return s;
-            s = scan(cls.functions);
-            if (!s.empty()) return s;
-            s = scan(cls.static_actions);
-            if (!s.empty()) return s;
-            break;
-        }
-        return "";
-    };
     for (size_t i = arg_offset; i < args.size() && i < ft->getNumParams(); ++i) {
         auto* expected = ft->getParamType(i);
         if (args[i]->getType() != expected) {
@@ -7896,27 +8038,12 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             // the fat pointer was expected → LLVM verify failure / wrong dispatch.
             if (expected->isStructTy() && isInterfaceFatType(expected) &&
                 args[i]->getType()->isPointerTy() && current_tu_) {
-                const Expr* arg_expr = e.args[i - arg_offset].get();
-                std::string cls_name;
-                if (arg_expr->kind == ExprKind::NewExpr)
-                    cls_name = static_cast<const NewExpr&>(*arg_expr).class_name;
-                else if (arg_expr->kind == ExprKind::Identifier) {
-                    auto vit = var_class_map_.find(
-                        static_cast<const IdentifierExpr&>(*arg_expr).name);
-                    if (vit != var_class_map_.end()) cls_name = vit->second;
-                }
-                std::string iface_name = resolveParamIfaceName(cf, i - arg_offset);
+                std::string cls_name = resolveArgClassName(*e.args[i - arg_offset]);
+                std::string iface_name = paramIfaceName(cf, i - arg_offset);
                 if (!cls_name.empty() && !iface_name.empty()) {
-                    auto* vgv = getOrCreateVtable(iface_name, cls_name);
-                    if (vgv) {
-                        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
-                        auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
-                        auto* fat = builder_.CreateAlloca(fat_ty);
-                        builder_.CreateStore(args[i],
-                            builder_.CreateStructGEP(fat_ty, fat, 0));
-                        builder_.CreateStore(builder_.CreateBitCast(vgv, ptr_ty),
-                            builder_.CreateStructGEP(fat_ty, fat, 1));
-                        args[i] = builder_.CreateLoad(fat_ty, fat);
+                    llvm::Value* fp = buildInterfaceFat(args[i], iface_name, cls_name);
+                    if (fp && fp->getType()->isStructTy()) {
+                        args[i] = fp;
                         continue;
                     }
                 }
@@ -8680,7 +8807,16 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 if (idx < ft->getNumParams()) {
                     auto* expected = ft->getParamType(idx);
                     if (v->getType() != expected) {
-                        if (v->getType()->isIntegerTy() && expected->isIntegerTy())
+                        // 接口参数 upcast（同 generateCall）：具体实例 → 接口胖指针
+                        if (expected->isStructTy() && isInterfaceFatType(expected) &&
+                            v->getType()->isPointerTy() && current_tu_) {
+                            std::string cls_name = resolveArgClassName(*a);
+                            std::string iface_name = paramIfaceName(ctor, idx - 1);
+                            if (!cls_name.empty() && !iface_name.empty()) {
+                                llvm::Value* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                if (fp && fp->getType()->isStructTy()) { v = fp; }
+                            }
+                        } else if (v->getType()->isIntegerTy() && expected->isIntegerTy())
                             v = builder_.CreateIntCast(v, expected, true);
                         else if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
                             v = builder_.CreateSIToFP(v, expected);
