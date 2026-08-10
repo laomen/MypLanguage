@@ -326,7 +326,25 @@ void Sema::checkInterfaceImpl(const ClassDecl& cls) {
 void Sema::visitTranslationUnit(TranslationUnit& tu) {
     // stdlib files are already loaded and merged into tu by main.cpp
 
-    // Register all struct types first (so classes can reference them)
+    // Register all ENUM types FIRST: visitStructDecl validates field types, so
+    // a struct field referencing an enum (`struct Box { Color c; }`) previously
+    // failed with "unknown type 'Color'" because structs were registered before
+    // enums. Enums reference no other types, so ordering them first is safe.
+    for (auto& en : tu.enums) {
+        visitEnumDecl(en);
+    }
+    // Phase A: declare ALL struct names (top-level + nested) before any field
+    // validation, so `struct Holder { Item it; }` resolving `Item` (declared
+    // later in the merged TU) works regardless of declaration order.
+    for (auto& st : tu.structs) {
+        declareStructName(st);
+    }
+    for (auto& cls : tu.classes) {
+        for (auto& st : cls.structs) {
+            declareStructName(st);
+        }
+    }
+    // Phase B: validate fields + register methods (order-independent now)
     for (auto& st : tu.structs) {
         visitStructDecl(st);
     }
@@ -359,9 +377,6 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
 
     for (auto& ff : tu.ffis) {
         visitFFI(ff);
-    }
-    for (auto& en : tu.enums) {
-        visitEnumDecl(en);
     }
     for (auto& cls : tu.classes) {
         visitClassDecl(cls);
@@ -468,10 +483,14 @@ void Sema::visitEnumDecl(EnumDecl& decl) {
     enum_info_[decl.name] = info;
 }
 
-void Sema::visitStructDecl(StructDecl& decl) {
+void Sema::declareStructName(StructDecl& decl) {
     std::string type_key = decl.parent_class.empty()
         ? decl.name
         : decl.parent_class + "::" + decl.name;
+    // Phase A already declared this exact struct → idempotent return. A genuine
+    // duplicate (a *different* decl with the same name) still hits the symbol
+    // table lookup below and reports an error.
+    if (declared_struct_names_.count(type_key)) return;
     if (symbol_table_.lookup(type_key)) {
         error(decl.range, "duplicate struct name '" + type_key + "'");
         return;
@@ -479,6 +498,14 @@ void Sema::visitStructDecl(StructDecl& decl) {
     TypeInfo struct_type(TypeKind::Struct);
     struct_type.class_name = type_key;
     symbol_table_.declare(type_key, struct_type);
+    declared_struct_names_.insert(type_key);
+}
+
+void Sema::visitStructDecl(StructDecl& decl) {
+    declareStructName(decl);
+    std::string type_key = decl.parent_class.empty()
+        ? decl.name
+        : decl.parent_class + "::" + decl.name;
 
     // Validate struct fields: duplicate names and void-typed fields are rejected.
     for (size_t i = 0; i < decl.properties.size(); ++i) {

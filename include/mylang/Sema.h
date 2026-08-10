@@ -31,6 +31,7 @@ private:
     void visitTranslationUnit(TranslationUnit& tu);
     void visitClassDecl(ClassDecl& decl);
     void visitStructDecl(StructDecl& decl);
+    void declareStructName(StructDecl& decl);
     void visitInterfaceDecl(InterfaceDecl& decl);
     void visitFuncDecl(FuncDecl& decl);
     void visitEnumDecl(EnumDecl& decl);
@@ -222,6 +223,10 @@ private:
     // and fail with a cryptic "Code generation failed".
     std::unordered_map<std::string, std::vector<std::string>> struct_byval_edges_;
     std::unordered_map<std::string, SourceRange> struct_decl_ranges_;
+    // Struct names already declared in Phase A (name-only registration). Used so
+    // visitStructDecl's field validation is order-independent: a struct may
+    // reference a struct declared later in the same merged translation unit.
+    std::set<std::string> declared_struct_names_;
     void detectStructRecursion();
 
     // Names of local variables declared with `@thread` (auto-starting worker

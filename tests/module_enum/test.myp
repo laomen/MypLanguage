@@ -1,0 +1,14 @@
+// 跨模块 enum 可见性回归测试
+import env;
+import "./helper.myp";
+
+class Main { action: @startup void run() {
+    // 直接使用导入模块的 enum 类型（此前报 unknown type 'Color'）
+    Color c = Color.GREEN;
+    // 通过导入模块函数拿到含 enum 字段的 struct
+    Box b = makeBox();
+    bool ok = (b.id == 7) && (b.c == Color.BLUE);
+    ok = ok && (c == Color.GREEN);
+    Console.writeString(ok ? "PASS module_enum\n" : "FAIL module_enum\n");
+} }
+int main(){ Main m = new Main() @thread; return 0; }

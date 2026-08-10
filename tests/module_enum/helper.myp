@@ -1,0 +1,6 @@
+// 跨模块 enum 可见性回归测试（此前 enum 在导入模块中报 unknown type）
+// Regression: enums defined in imported modules were not visible because
+// structs were registered before enums in visitTranslationUnit.
+enum Color { RED; GREEN; BLUE; }
+struct Box { int id; Color c; double d; }
+Box makeBox() { Box b; b.id = 7; b.c = Color.BLUE; return b; }

@@ -1,0 +1,17 @@
+// struct 前向引用回归测试
+// Regression: `struct Holder { Item it; }` referencing `Item` declared later
+// failed with "unknown type 'Item'" because struct fields were validated in
+// declaration order. Fixed with two-phase struct registration.
+import env;
+
+struct Holder { Item it; }
+struct Item { int v; }
+
+class Main { action: @startup void run() {
+    // 注意：两级链式访问 h.it.v 目前不受支持，用中间变量
+    Holder h;
+    Item tmp = h.it;
+    tmp.v = 42;
+    Console.writeString(tmp.v == 42 ? "PASS struct_fwdref\n" : "FAIL struct_fwdref\n");
+} }
+int main(){ Main m = new Main() @thread; return 0; }
