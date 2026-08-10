@@ -28,6 +28,22 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **修复 @macro StmtList 累加拼接 O(n²)（`out = out + quote{...}` 惯用法）**：
+  - 症状：文档推荐的 `makeCalls(n)` 风格循环里每次 `+` 都深克隆整个已累加列表 →
+    二次方。实测 gen(1000)→0.5s、gen(4000)→7.6s、gen(10000)→**46s**（每翻倍 n
+    耗时×4）。
+  - 根因：`evalBinary` 的 `Ast + Ast` 无条件 `cloneStmtI` 双侧；`EvalValue::Ast`
+    是 `shared_ptr`，累加变量与求值临时量共享同一 vector（refcount=2），无法安全
+    move 走左侧。
+  - 修复（两处）：
+    - `evalExpr` 赋值分支增加快路径：识别 `acc = acc + X`（acc 为 StmtList）时
+      **原地 append** X 的语句到 acc 现有列表——摊销 O(n)。用 `use_count()==1`
+      守卫：若别的变量别名共享 acc 的列表，则回退到通用克隆路径（保证别名不被污染）。
+    - `evalBinary` 的 `Ast + Ast` 在左操作数 `use_count()==1`（如新鲜 quote）时
+      移动而非克隆。
+  - 效果：gen(10000) 46s → **0.2s**，gen(40000) <1s，线性缩放。输出与文档惯用法
+    逐字节一致；别名安全用例（`alias = out; out = out + X;` → alias 不受污染）通过。
+  - 新增正测试 `tests/macro_concat/`；189/189 回归通过，ASAN 干净。
 - **修复编译期 `const string` 拼接导致 LLVM verify 崩溃（元编程测试暴露）**：
   - 症状：`const string G = "a" + "b";`（或 @eval 函数返回拼接串、`a() + b()`）
     报 `LLVM verify failed: Function return type does not match operand type of

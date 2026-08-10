@@ -201,6 +201,36 @@ private:
                 return std::nullopt;
             }
             auto& id = static_cast<const IdentifierExpr&>(*a.target);
+
+            // Fast path: `acc = acc + X` where acc is a StmtList — append X's
+            // statements into acc's existing list IN PLACE. The generic path
+            // deep-clones the whole accumulated list on every `+`, making the
+            // documented idiom `out = out + quote{...}` O(n²) (measured:
+            // gen(1000)→0.5s … gen(8000)→29.5s, ~×4 per doubling). In-place
+            // append makes it amortized O(n). Guarded by use_count()==1: if
+            // another variable aliases acc's list, in-place append would
+            // wrongly mutate that alias too, so fall back to the generic path.
+            if (a.value->kind == ExprKind::BinaryOp) {
+                auto& bop = static_cast<const BinaryOpExpr&>(*a.value);
+                if (bop.op == BinaryOpKind::Add &&
+                    bop.lhs->kind == ExprKind::Identifier &&
+                    static_cast<const IdentifierExpr&>(*bop.lhs).name == id.name) {
+                    auto it = locals_.find(id.name);
+                    if (it != locals_.end() &&
+                        it->second.kind == EvalValue::Ast &&
+                        it->second.stmts.use_count() == 1) {
+                        auto rhs = evalExpr(*bop.rhs);
+                        if (rhs && rhs->kind == EvalValue::Ast) {
+                            // rhs is freshly evaluated (typically a quote) and
+                            // uniquely owned — steal its statements.
+                            for (auto& s : *rhs->stmts)
+                                it->second.stmts->push_back(std::move(s));
+                            return it->second;
+                        }
+                    }
+                }
+            }
+
             auto v = evalExpr(*a.value);
             if (!v) return std::nullopt;
             locals_[id.name] = *v;
@@ -239,7 +269,15 @@ private:
         // M4: StmtList + StmtList concatenation.
         if (b.op == BinaryOpKind::Add && a.kind == EvalValue::Ast && c.kind == EvalValue::Ast) {
             auto out = std::make_shared<std::vector<std::unique_ptr<Stmt>>>();
-            for (auto& s : *a.stmts) out->push_back(cloneStmtI(*s));
+            // Steal a uniquely-owned left operand (e.g. a fresh quote) instead
+            // of deep-cloning — O(size) per concat instead of doubling. The
+            // accumulation loop (`acc = acc + quote{}`) is handled separately
+            // by the assignment fast path in evalExpr.
+            if (a.stmts.use_count() == 1) {
+                for (auto& s : *a.stmts) out->push_back(std::move(s));
+            } else {
+                for (auto& s : *a.stmts) out->push_back(cloneStmtI(*s));
+            }
             for (auto& s : *c.stmts) out->push_back(cloneStmtI(*s));
             return EvalValue::ofAst(std::move(*out));
         }

@@ -1,0 +1,42 @@
+// macro_concat: @macro StmtList 累加拼接 `out = out + quote{...}`
+// 此前每次 `+` 深克隆整个累加列表 → O(n²)（gen(10000)≈46s）；
+// 修复后原地 append → O(n)（gen(10000)≈0.2s）。
+// 同时验证别名安全：alias 共享 out 列表后，out 再累加不应污染 alias。
+import env;
+
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); Console.writeString(","); };
+    }
+    return out;
+}
+
+@macro StmtList aliasTest() {
+    StmtList out = quote { Console.writeString("A"); };
+    StmtList alias = out;
+    out = out + quote { Console.writeString("B"); };
+    return alias;  // 只应输出 A（若被原地污染则输出 AB）
+}
+
+@macro StmtList bigAccum(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.writeString("."); };
+    }
+    return out;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            makeCalls(3);
+            Console.writeString("\n");
+            aliasTest();
+            Console.writeString("\n");
+            bigAccum(2000);
+            Console.writeString(" done\n");
+        }
+}
+
+int main(){ Main m = new Main(); return 0; }
