@@ -425,6 +425,13 @@ private:
         const std::string& loop_var_name, llvm::Value* tid_val,
         llvm::BasicBlock* break_target = nullptr);
     std::vector<llvm::BasicBlock*> kernel_break_stack_; // for break/continue in kernel
+    // Kernel-path element ADDRESS for `arr[idx]` where arr is a slice variable
+    // (unpacks {data,len}, bounds-checks) or a plain array variable (direct GEP).
+    // Backs `v[i].field` read/write inside a @parallel for body.
+    llvm::Value* emitKernelElementAddr(const Expr* arr_expr, llvm::Value* idx,
+        llvm::IRBuilder<>& kb, std::map<std::string, llvm::Value*>& kernel_vars,
+        const std::vector<llvm::Value*>& kernel_arg_values,
+        const std::string& loop_var_name, llvm::Value* tid_val);
 
     // ---- Class-related methods ----
     void buildClassStructTypes(TranslationUnit& tu);

@@ -3990,6 +3990,60 @@ void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loo
     }
 }
 
+llvm::Value* CodeGen::emitKernelElementAddr(
+    const Expr* arr_expr, llvm::Value* idx, llvm::IRBuilder<>& kb,
+    std::map<std::string, llvm::Value*>& kernel_vars,
+    const std::vector<llvm::Value*>& kernel_arg_values,
+    const std::string& loop_var_name, llvm::Value* tid_val) {
+    if (!arr_expr || arr_expr->kind != ExprKind::Identifier || !idx) return nullptr;
+    auto& id = static_cast<const IdentifierExpr&>(*arr_expr);
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+
+    // slice<T> variable: arr evaluates to the captured {data,len} slice value.
+    auto sit = var_slice_types_.find(id.name);
+    if (sit != var_slice_types_.end() && sit->second.element_type) {
+        auto* arr = emitKernelExpr(*arr_expr, kb, kernel_vars, kernel_arg_values,
+                                   loop_var_name, tid_val);
+        if (!arr || !arr->getType()->isStructTy()) return nullptr;
+        auto* data = kb.CreateExtractValue(arr, 0);
+        auto* len = kb.CreateExtractValue(arr, 1);
+        auto* i64idx = idx;
+        if (i64idx->getType()->isIntegerTy(32) || i64idx->getType()->isIntegerTy(8)
+            || i64idx->getType()->isIntegerTy(16))
+            i64idx = kb.CreateZExt(i64idx, i64_ty);
+        auto* nonneg = kb.CreateICmpSGE(i64idx, llvm::ConstantInt::get(i64_ty, 0));
+        auto* inb = kb.CreateICmpULT(i64idx, len);
+        auto* ok = kb.CreateAnd(nonneg, inb);
+        auto* be_fn = module_->getFunction("myp_bounds_error");
+        if (!be_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {i64_ty, i64_ty}, false);
+            be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_bounds_error", module_.get());
+        }
+        auto* cur_fn = kb.GetInsertBlock()->getParent();
+        auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+        auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+        kb.CreateCondBr(ok, cont_bb, err_bb);
+        kb.SetInsertPoint(err_bb);
+        kb.CreateCall(be_fn, {i64idx, len});
+        kb.CreateBr(cont_bb);
+        kb.SetInsertPoint(cont_bb);
+        auto* et = getLLVMType(*sit->second.element_type);
+        return kb.CreateGEP(et, data, i64idx);
+    }
+
+    // Plain array variable: arr is a pointer; GEP directly.
+    auto eit = array_elem_types_.find(id.name);
+    if (eit != array_elem_types_.end()) {
+        auto* arr = emitKernelExpr(*arr_expr, kb, kernel_vars, kernel_arg_values,
+                                   loop_var_name, tid_val);
+        if (!arr) return nullptr;
+        return kb.CreateGEP(eit->second, arr, zextIndexValue(kb, idx));
+    }
+    return nullptr;
+}
+
 llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
     std::map<std::string, llvm::Value*>& kernel_vars,
     const std::vector<llvm::Value*>& kernel_arg_values,
@@ -4620,6 +4674,32 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     }
                 }
             }
+            // v[i].field — struct-array / slice-of-struct element field read in
+            // a @parallel for body.
+            if (e.object->kind == ExprKind::Subscript) {
+                auto& ss = static_cast<const SubscriptExpr&>(*e.object);
+                auto* idx = emitKernelExpr(*ss.index, kb, kernel_vars, kernel_arg_values,
+                                           loop_var_name, tid_val);
+                if (idx) {
+                    auto* elem_ptr = emitKernelElementAddr(ss.array.get(), idx, kb,
+                        kernel_vars, kernel_arg_values, loop_var_name, tid_val);
+                    if (elem_ptr) {
+                        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(elem_ptr)) {
+                            auto* rt = gep->getResultElementType();
+                            if (rt && rt->isStructTy()) {
+                                auto* st = llvm::cast<llvm::StructType>(rt);
+                                unsigned fi = 0;
+                                if (getStructFieldIndex(st->getName().str(), e.member_name, fi)) {
+                                    auto* fgep = kb.CreateStructGEP(st, elem_ptr, fi);
+                                    auto* ft = st->getElementType(fi);
+                                    if (ft->isArrayTy()) return fgep;
+                                    return kb.CreateLoad(ft, fgep);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return llvm::ConstantInt::get(i64_ty, 0);
         }
         case ExprKind::Subscript: {
@@ -4629,6 +4709,44 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             auto* idx = emitKernelExpr(*e.index, kb, kernel_vars, kernel_arg_values,
                                         loop_var_name, tid_val);
             if (!arr || !idx) return llvm::ConstantInt::get(i64_ty, 0);
+
+            // slice<T>[i] inside a @parallel for body: arr is the captured
+            // {data,len} slice value (data pointer is thread-shared). Unpack,
+            // bounds-check, GEP.
+            if (e.array->kind == ExprKind::Identifier) {
+                auto& id = static_cast<const IdentifierExpr&>(*e.array);
+                auto sit = var_slice_types_.find(id.name);
+                if (sit != var_slice_types_.end() && sit->second.element_type &&
+                    arr->getType()->isStructTy()) {
+                    auto* data = kb.CreateExtractValue(arr, 0);
+                    auto* len = kb.CreateExtractValue(arr, 1);
+                    auto* i64idx = idx;
+                    if (i64idx->getType()->isIntegerTy(32) || i64idx->getType()->isIntegerTy(8)
+                        || i64idx->getType()->isIntegerTy(16))
+                        i64idx = kb.CreateZExt(i64idx, i64_ty);
+                    auto* nonneg = kb.CreateICmpSGE(i64idx, llvm::ConstantInt::get(i64_ty, 0));
+                    auto* inb = kb.CreateICmpULT(i64idx, len);
+                    auto* ok = kb.CreateAnd(nonneg, inb);
+                    auto* be_fn = module_->getFunction("myp_bounds_error");
+                    if (!be_fn) {
+                        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                            {i64_ty, i64_ty}, false);
+                        be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                            "myp_bounds_error", module_.get());
+                    }
+                    auto* cur_fn = kb.GetInsertBlock()->getParent();
+                    auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+                    auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+                    kb.CreateCondBr(ok, cont_bb, err_bb);
+                    kb.SetInsertPoint(err_bb);
+                    kb.CreateCall(be_fn, {i64idx, len});
+                    kb.CreateBr(cont_bb);
+                    kb.SetInsertPoint(cont_bb);
+                    auto* et = getLLVMType(*sit->second.element_type);
+                    auto* gep = kb.CreateGEP(et, data, i64idx);
+                    return kb.CreateLoad(et, gep);
+                }
+            }
 
             // Determine element type from the subscript context
             llvm::Type* elem_ty = double_ty;  // default
@@ -4669,6 +4787,45 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::Assignment: {
             auto& e = static_cast<const AssignmentExpr&>(expr);
+            // v[i].field = value — struct-array / slice-of-struct element field
+            // write inside a @parallel for body.
+            if (e.target->kind == ExprKind::MemberAccess) {
+                auto& tma = static_cast<const MemberAccessExpr&>(*e.target);
+                if (tma.object->kind == ExprKind::Subscript) {
+                    auto& ss = static_cast<const SubscriptExpr&>(*tma.object);
+                    auto* idx = emitKernelExpr(*ss.index, kb, kernel_vars, kernel_arg_values,
+                                               loop_var_name, tid_val);
+                    auto* val = emitKernelExpr(*e.value, kb, kernel_vars, kernel_arg_values,
+                                               loop_var_name, tid_val);
+                    if (idx && val) {
+                        auto* elem_ptr = emitKernelElementAddr(ss.array.get(), idx, kb,
+                            kernel_vars, kernel_arg_values, loop_var_name, tid_val);
+                        if (elem_ptr) {
+                            if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(elem_ptr)) {
+                                auto* rt = gep->getResultElementType();
+                                if (rt && rt->isStructTy()) {
+                                    auto* st = llvm::cast<llvm::StructType>(rt);
+                                    unsigned fi = 0;
+                                    if (getStructFieldIndex(st->getName().str(), tma.member_name, fi)) {
+                                        auto* fgep = kb.CreateStructGEP(st, elem_ptr, fi);
+                                        auto* ft = st->getElementType(fi);
+                                        if (val->getType() != ft) {
+                                            if (ft->isDoubleTy() && val->getType()->isIntegerTy())
+                                                val = kb.CreateSIToFP(val, ft);
+                                            else if (ft->isIntegerTy() && val->getType()->isDoubleTy())
+                                                val = kb.CreateFPToSI(val, ft);
+                                            else if (ft->isIntegerTy() && val->getType()->isIntegerTy())
+                                                val = kb.CreateIntCast(val, ft, true);
+                                        }
+                                        kb.CreateStore(val, fgep);
+                                        return val;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if (e.target->kind == ExprKind::Subscript) {
                 auto& ss = static_cast<const SubscriptExpr&>(*e.target);
                 auto* arr = emitKernelExpr(*ss.array, kb, kernel_vars, kernel_arg_values,
@@ -4678,6 +4835,52 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 auto* val = emitKernelExpr(*e.value, kb, kernel_vars, kernel_arg_values,
                                             loop_var_name, tid_val);
                 if (!arr || !idx || !val) return llvm::ConstantInt::get(i64_ty, 0);
+
+                // slice<T>[i] = v inside a @parallel for body: unpack the captured
+                // {data,len} slice value, bounds-check, GEP, store.
+                if (ss.array->kind == ExprKind::Identifier) {
+                    auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+                    auto sit = var_slice_types_.find(id.name);
+                    if (sit != var_slice_types_.end() && sit->second.element_type &&
+                        arr->getType()->isStructTy()) {
+                        auto* data = kb.CreateExtractValue(arr, 0);
+                        auto* len = kb.CreateExtractValue(arr, 1);
+                        auto* i64idx = idx;
+                        if (i64idx->getType()->isIntegerTy(32) || i64idx->getType()->isIntegerTy(8)
+                            || i64idx->getType()->isIntegerTy(16))
+                            i64idx = kb.CreateZExt(i64idx, i64_ty);
+                        auto* nonneg = kb.CreateICmpSGE(i64idx, llvm::ConstantInt::get(i64_ty, 0));
+                        auto* inb = kb.CreateICmpULT(i64idx, len);
+                        auto* ok = kb.CreateAnd(nonneg, inb);
+                        auto* be_fn = module_->getFunction("myp_bounds_error");
+                        if (!be_fn) {
+                            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                {i64_ty, i64_ty}, false);
+                            be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                "myp_bounds_error", module_.get());
+                        }
+                        auto* cur_fn = kb.GetInsertBlock()->getParent();
+                        auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+                        auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+                        kb.CreateCondBr(ok, cont_bb, err_bb);
+                        kb.SetInsertPoint(err_bb);
+                        kb.CreateCall(be_fn, {i64idx, len});
+                        kb.CreateBr(cont_bb);
+                        kb.SetInsertPoint(cont_bb);
+                        auto* et = getLLVMType(*sit->second.element_type);
+                        auto* gep = kb.CreateGEP(et, data, i64idx);
+                        if (val->getType() != et) {
+                            if (et->isDoubleTy() && val->getType()->isIntegerTy())
+                                val = kb.CreateSIToFP(val, et);
+                            else if (et->isIntegerTy() && val->getType()->isDoubleTy())
+                                val = kb.CreateFPToSI(val, et);
+                            else if (et->isIntegerTy() && val->getType()->isIntegerTy())
+                                val = kb.CreateIntCast(val, et, true);
+                        }
+                        kb.CreateStore(val, gep);
+                        return val;
+                    }
+                }
 
                 // Determine element type
                 llvm::Type* elem_ty = double_ty;

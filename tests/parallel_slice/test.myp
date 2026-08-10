@@ -1,0 +1,77 @@
+// 验证：@parallel for 与 slice 联用（并行体里 slice 读写 + slice<struct> 字段）
+// 覆盖三个 kernel 路径修复：slice 标量读写、slice<struct> 字段读写、数组字段。
+// 各线程写不同索引（无竞争），串行读回核对与串行计算一致。
+
+import env;
+import pool;
+
+struct Vec { int x; int y; }
+
+long parSliceWrite(int n) {
+    slice<int> s = new slice<int>(n);
+    @parallel for (int i = 0; i < n; i = i + 1) {
+        s[i] = i * 2;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + s[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+long parStructWrite(int n) {
+    slice<Vec> v = new slice<Vec>(n);
+    @parallel for (int i = 0; i < n; i = i + 1) {
+        v[i].x = i;
+        v[i].y = i * 2;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + v[i].x + v[i].y;
+        i = i + 1;
+    }
+    return sum;
+}
+
+long parArrStruct(int n) {
+    Vec[] a = new Vec[n];
+    @parallel for (int i = 0; i < n; i = i + 1) {
+        a[i].x = i + 1;
+        a[i].y = i * 3;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + a[i].x + a[i].y;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Console.writeString("[@parallel for + slice]\n");
+            int n = 100000;
+            // n=100000: parSliceWrite = 2*Σi = 9999900000; parStructWrite = 3*Σi;
+            // parArrStruct = Σ((i+1) + 3i)
+            long a = parSliceWrite(n);
+            long b = parStructWrite(n);
+            long c = parArrStruct(n);
+            long si = 4999950000L;   // Σi (0..99999)
+            Console.writeString("a="); Console.writeLong(a);
+            Console.writeString(" b="); Console.writeLong(b);
+            Console.writeString(" c="); Console.writeLong(c);
+            Console.writeString("\n");
+            if (a == 2 * si && b == 3 * si && c == si + n + 3 * si) {
+                Console.writeString("[OK] @parallel for + slice 通过\n");
+            } else {
+                Console.writeString("[FAIL] 期望 a=9999900000 b=14999850000 c=19999900000\n");
+            }
+        }
+}
+
+int main() { Main m = new Main(); return 0; }
