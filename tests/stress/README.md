@@ -1,18 +1,21 @@
-# stress — 协程 / 并发压力测试
+# tests/stress — 协程 / 并发压力测试
 
 针对 MYP 运行时（ucontext 协程、通道、异步 I/O、线程池）的**压力测试**：用远超常规
 测试的负载压垮运行时，寻找**崩溃、内存泄漏、死锁、数据竞争、协程/句柄泄漏**。
 
 > 与 `bench/` 的区别：bench 测量**性能**（同算法对拍 C++/Go，取最小 ms）；
 > stress 关注**稳定性**——只求在高压下不崩、不漏、不死锁、结果正确。
+>
+> 与 `tests/` 常规回归的区别：压测负载重、含时序数据（ms/worker 数），
+> 故**独立于 `run_tests.sh`**，按需手动运行。
 
 ## 运行
 
 ```bash
-bash stress/run_stress.sh                # 全部（-O2）
-bash stress/run_stress.sh coro_flood     # 只跑指定项
-TSAN=1 bash stress/run_stress.sh         # ThreadSanitizer 查数据竞争
-ASAN=1 bash stress/run_stress.sh         # AddressSanitizer 查内存错误
+bash tests/stress/run_stress.sh                # 全部（-O2）
+bash tests/stress/run_stress.sh coro_flood     # 只跑指定项
+TSAN=1 bash tests/stress/run_stress.sh         # ThreadSanitizer 查数据竞争
+ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer 查内存错误
 ```
 
 退出码 0=全部通过，1=有失败。

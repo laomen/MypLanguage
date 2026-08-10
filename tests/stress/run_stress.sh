@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# run_stress.sh — 运行 stress/ 协程/并发压力测试套件
+# run_stress.sh — 运行 tests/stress/ 协程/并发压力测试套件
 #
 # 用法:
-#   bash stress/run_stress.sh                # 编译并运行全部（-O2）
-#   TSAN=1 bash stress/run_stress.sh         # ThreadSanitizer：检测数据竞争
-#   ASAN=1 bash stress/run_stress.sh         # AddressSanitizer：检测内存错误
-#   bash stress/run_stress.sh coro_flood     # 只跑指定项（可多个）
+#   bash tests/stress/run_stress.sh          # 编译并运行全部（-O2）
+#   TSAN=1 bash tests/stress/run_stress.sh   # ThreadSanitizer：检测数据竞争
+#   ASAN=1 bash tests/stress/run_stress.sh   # AddressSanitizer：检测内存错误
+#   bash tests/stress/run_stress.sh coro_flood   # 只跑指定项（可多个）
 #
 # 每个测试打印 "PASS <name>" 视为通过；退出码 0=全部通过, 1=有失败。
+# 独立于 run_tests.sh（压测负载重、有时序数据，不进快速回归）。
 
 set -u
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # tests/stress
+cd "$SCRIPT_DIR/../.."                        # 仓库根
+STRESS_DIR="$SCRIPT_DIR"
 MYPCC="${MYPCC:-./build/mypc}"
 TIMEOUT_COMPILE=120
 TIMEOUT_RUN=240
@@ -33,7 +36,7 @@ fi
 
 PASS=0; FAIL=0; FAILED=""
 for t in $TESTS; do
-    f="stress/$t.myp"
+    f="$STRESS_DIR/$t.myp"
     [ -f "$f" ] || { echo "  [SKIP] $t (无 $f)"; continue; }
     printf "  %-22s " "$t"
     if ! env $SAN_ENV "$MYPCC" -O2 "$f" -o "/tmp/stress_$t" >/tmp/stress_${t}.compile 2>&1; then

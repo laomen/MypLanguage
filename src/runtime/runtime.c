@@ -2603,6 +2603,18 @@ void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
     if (chunk_size < 1) chunk_size = 1;
     int remainder = n % max_chunks;
 
+    // Reset the barrier counters BEFORE publishing any chunks. A worker left
+    // spinning from the previous call can grab a newly-pushed chunk and bump
+    // done_count before the old code reset it here — that increment was then
+    // wiped, so that chunk was never counted and done_count could never reach
+    // total_chunks → the main thread hung on the barrier forever (intermittent,
+    // ~1/3 on loaded machines). Resetting first guarantees every increment for
+    // this batch lands on the new counter and is preserved.
+    pthread_mutex_lock(&pool->barrier_mutex);
+    pool->done_count = 0;
+    pool->total_chunks = 0;
+    pthread_mutex_unlock(&pool->barrier_mutex);
+
     for (int t = 0; t < pool->n_threads; t++) {
         pthread_mutex_lock(&pool->deques[t].mutex);
         pool->deques[t].bottom = pool->deques[t].top = 0;
@@ -2622,10 +2634,11 @@ void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
         actual_chunks++;
     }
 
-    // Publish total_chunks under barrier_mutex (workers read/write done_count
-    // and total_chunks under this mutex) — avoids the reset/publish data race.
+    // Publish the true total (workers read/write done_count and total_chunks
+    // under barrier_mutex). A worker incrementing while total_chunks is still 0
+    // merely signals with no waiter — harmless; the wait loop's re-check under
+    // the mutex covers it.
     pthread_mutex_lock(&pool->barrier_mutex);
-    pool->done_count = 0;
     pool->total_chunks = actual_chunks;
     pthread_mutex_unlock(&pool->barrier_mutex);
 
