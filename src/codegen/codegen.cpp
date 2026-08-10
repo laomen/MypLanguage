@@ -7640,6 +7640,45 @@ llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
     return lhs_val;
 }
 
+llvm::Value* CodeGen::generateArrayElementAddress(const SubscriptExpr& ss) {
+    llvm::Type* elem_ty = nullptr;
+    if (ss.array->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+        auto eit = array_elem_types_.find(id.name);
+        if (eit != array_elem_types_.end())
+            elem_ty = eit->second;
+    } else if (ss.array->kind == ExprKind::MemberAccess) {
+        // obj.arr[i] — resolve the array field's element type from the struct
+        // or class declaration.
+        auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto* oa = getNamedValue(oi.name);
+            llvm::Type* oat = nullptr;
+            if (oa) {
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                    oat = oai->getAllocatedType();
+                else
+                    oat = getNamedValueType(oi.name);
+            }
+            if (oat && oat->isStructTy()) {
+                const StructDecl* sd = findStruct(
+                    llvm::cast<llvm::StructType>(oat)->getName().str());
+                if (sd) {
+                    for (auto& pr : sd->properties) {
+                        if (pr.name == ma.member_name && pr.type.isArray())
+                            elem_ty = typeNodeToLLVMType(*pr.type.element_type);
+                    }
+                }
+            }
+        }
+    }
+    if (!elem_ty) return nullptr;
+    auto* a = generateExpr(*ss.array);
+    auto* i = generateExpr(*ss.index);
+    return builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
+}
+
 llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
     llvm::StructType* st = nullptr;
     llvm::Value* base = nullptr;
@@ -7669,6 +7708,15 @@ llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
     } else if (e.object->kind == ExprKind::MemberAccess) {
         // Chained: a.b.c — recurse to get the address of a.b, then GEP c
         base = generateStructMemberAddress(static_cast<const MemberAccessExpr&>(*e.object));
+        if (!base) return nullptr;
+        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(base)) {
+            auto* rt = gep->getResultElementType();
+            if (rt && rt->isStructTy()) st = llvm::cast<llvm::StructType>(rt);
+        }
+        if (!st) return nullptr;
+    } else if (e.object->kind == ExprKind::Subscript) {
+        // Struct array element: a[i].b — GEP to element, then GEP the field.
+        base = generateArrayElementAddress(static_cast<const SubscriptExpr&>(*e.object));
         if (!base) return nullptr;
         if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(base)) {
             auto* rt = gep->getResultElementType();
@@ -7783,6 +7831,20 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                         bp_m = inner;
                         break;
                     }
+                }
+            }
+        }
+    } else if (e.object->kind == ExprKind::Subscript) {
+        // Struct array element field access: v[i].field — GEP to element, then
+        // GEP the field. Element type recovered from the GEP result.
+        auto* elem_ptr = generateArrayElementAddress(
+            static_cast<const SubscriptExpr&>(*e.object));
+        if (elem_ptr) {
+            if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(elem_ptr)) {
+                auto* rt = gep->getResultElementType();
+                if (rt && rt->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(rt);
+                    bp_m = elem_ptr;
                 }
             }
         }
@@ -9003,6 +9065,36 @@ assign_gep:
                     }
                     builder_.CreateStore(v, addr);
                     return v;
+                }
+            }
+        }
+        // Struct array element field: v[i].field = value — GEP to element, GEP
+        // the field, store (struct elements are value slots, no ARC).
+        if (ma.object->kind == ExprKind::Subscript) {
+            auto* elem_ptr = generateArrayElementAddress(
+                static_cast<const SubscriptExpr&>(*ma.object));
+            if (elem_ptr) {
+                llvm::Type* rt = nullptr;
+                if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(elem_ptr))
+                    rt = gep->getResultElementType();
+                if (rt && rt->isStructTy()) {
+                    auto* st = llvm::cast<llvm::StructType>(rt);
+                    unsigned fi = 0;
+                    if (getStructFieldIndex(st->getName().str(), ma.member_name, fi)) {
+                        auto* fgep = builder_.CreateStructGEP(st, elem_ptr, fi);
+                        auto* ft = st->getElementType(fi);
+                        auto* v = generateExpr(*e.value);
+                        if (v->getType() != ft) {
+                            if (ft->isIntegerTy() && v->getType()->isIntegerTy())
+                                v = builder_.CreateIntCast(v, ft, true);
+                            else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
+                                v = builder_.CreateSIToFP(v, ft);
+                            else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
+                                v = builder_.CreateFPToSI(v, ft);
+                        }
+                        builder_.CreateStore(v, fgep);
+                        return v;
+                    }
                 }
             }
         }

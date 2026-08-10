@@ -1,0 +1,76 @@
+// 验证：struct 数组元素字段读写（v[i].x）——曾报 "unknown property" 的 codegen 缺口
+// 覆盖：字段写、字段读、链式嵌套字段（arr[i].inner.a）、整体元素拷贝、
+//       struct 数组下标字段在表达式/循环中使用。
+
+import env;
+
+struct Vec {
+    int x;
+    int y;
+    int z;
+}
+
+struct Inner {
+    int a;
+    int b;
+}
+
+struct Outer {
+    Inner in;
+    int tag;
+}
+
+int structArrayTest(int n, int seed) {
+    Vec[] v = new Vec[n];
+    // 字段写
+    v[5].x = 10;
+    v[5].y = 20;
+    v[5].z = 30;
+    v[6].x = 1;
+    v[6].y = 2;
+    v[6].z = 3;
+    // 字段读
+    int r = v[5].x + v[5].y + v[5].z;          // 60
+    int r2 = v[5].x * v[6].y + v[6].z;         // 23
+    // 循环里读写
+    int acc = 0;
+    int i = 0;
+    while (i < 10) {
+        v[i].x = i;
+        v[i].y = i * 2;
+        acc = acc + v[i].x + v[i].y;
+        i = i + 1;
+    }
+    // 整体元素拷贝
+    Vec t;
+    t.x = 100;
+    t.y = 200;
+    t.z = 300;
+    v[7] = t;
+    Vec u = v[7];
+    // 链式嵌套字段（struct 数组元素内的 struct 字段）
+    Outer[] o = new Outer[4];
+    o[2].in.a = 7;
+    o[2].in.b = 8;
+    o[2].tag = 9;
+    int nest = o[2].in.a + o[2].in.b + o[2].tag; // 24
+    return r + r2 + acc + u.x + u.y + u.z + nest;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Console.writeString("[Struct 数组元素字段访问]\n");
+            int v = structArrayTest(100, 1);
+            Console.writeString("structArrayTest = "); Console.write(v);
+            Console.writeString("\n");
+            if (v == 60 + 23 + 135 + 600 + 24) {
+                Console.writeString("[OK] Struct 数组元素字段访问通过\n");
+            } else {
+                Console.writeString("[FAIL] 期望 842 得到 "); Console.write(v);
+                Console.writeString("\n");
+            }
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

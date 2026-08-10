@@ -1,0 +1,52 @@
+// bench/myp/dotprod.myp — 结构体数组点积（AoS：struct 数组 + 字段访问）
+// N=2×10^6 个 Vec{x,y,z}；verify = sum(v[i].x*v[i].y + v[i].z)。与 C++ 同算法。
+// 压测 struct 数组元素字段读写（v[i].x）——曾报 "unknown property" 的 codegen 缺口。
+import env;
+import time;
+
+struct Vec {
+    int x;
+    int y;
+    int z;
+}
+
+long dotprod(int n, int seed) {
+    Vec[] v = new Vec[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].x = int((rng >> 16) % 100L);
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].y = int((rng >> 16) % 100L);
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].z = int((rng >> 16) % 100L);
+        i = i + 1;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + long(v[i].x) * v[i].y + v[i].z;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = dotprod(2000000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

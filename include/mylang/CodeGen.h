@@ -589,6 +589,10 @@ private:
     // chained struct-field assignment (v.a.b = expr). Returns nullptr if the
     // chain cannot be resolved to a struct field.
     llvm::Value* generateStructMemberAddress(const MemberAccessExpr& expr);
+    // Address (pointer) of struct-array element `arr[i]` (base + i·sizeof(Elem)).
+    // Returns nullptr if the array isn't a resolvable struct-element array.
+    // Backs `arr[i].field` read/write and chained `arr[i].field.sub` access.
+    llvm::Value* generateArrayElementAddress(const SubscriptExpr& ss);
     llvm::Value* generateSubscript(const SubscriptExpr& expr);
     llvm::Value* generateNewExpr(const NewExpr& expr);
     llvm::Value* generateNewArrayExpr(const NewArrayExpr& expr);

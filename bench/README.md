@@ -50,6 +50,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `floyd` | Floyd-Warshall 全源最短路（稠密三层循环 + 原地最小） | V=600 |
 | `heapsort` | 二叉堆排序：堆化 + sift-down + 交换 | 10⁶ 整数 |
 | `crc32` | 表驱动 CRC-32（uint32 表 + 字节循环 + 位移异或） | 32MB 数据 |
+| `dotprod` | 结构体数组点积（AoS：struct 数组 + 字段读写） | 2×10⁶ 个 Vec |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。
@@ -96,6 +97,11 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   说明顶层函数 internal 化后这些内核被常量特化+内联+向量化。heapsort（数据相关的
   sift-down）0.83 是唯一落后项，属分支布局/预测差异（两版内层结构一致），非
   codegen 缺陷。这批同时验证了 uint8/uint32/显式转换/窄下标在此类负载上均正确。
+- **结构体数组批（dotprod）**：dotprod（struct 数组点积）2.29——顺带**发现并修复
+  一个编译 bug**：`v[i].x`（struct 数组元素字段访问）此前读/写都报 "unknown
+  property"，codegen 只处理了标量 struct 和链式成员，未处理 Subscript 对象。新增
+  `generateArrayElementAddress` 后接入读/写/链式三路径（回归测试
+  `tests/struct_array/`）。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。
 
