@@ -564,6 +564,7 @@ private:
     /// 逻辑 && / || 短路求值（a 为 false/true 时不再求值 b）
     llvm::Value* generateShortCircuitLogic(const BinaryOpExpr& expr);
     llvm::Value* generateUnaryOp(const UnaryOpExpr& expr);
+    llvm::Value* generateConvert(const ConvertExpr& expr);
     llvm::Value* generateCall(const CallExpr& expr);
     // True if a call returns an ARC-owned class / class-array reference (the
     // caller owns the returned +1 and must store it or release it).

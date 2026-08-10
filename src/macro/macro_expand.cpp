@@ -99,6 +99,10 @@ private:
             auto& v = static_cast<const UnaryOpExpr&>(e);
             return std::make_unique<UnaryOpExpr>(v.op, cloneExpr(*v.operand, args), v.range);
         }
+        case ExprKind::Convert: {
+            auto& v = static_cast<const ConvertExpr&>(e);
+            return std::make_unique<ConvertExpr>(v.to_kind, cloneExpr(*v.operand, args), v.range);
+        }
         case ExprKind::Call: {
             auto& v = static_cast<const CallExpr&>(e);
             std::vector<std::unique_ptr<Expr>> a;
@@ -463,6 +467,10 @@ void dumpExpr(const Expr& e, int indent) {
     case ExprKind::UnaryOp:
         name("unop");
         dumpExpr(*static_cast<const UnaryOpExpr&>(e).operand, indent + 2);
+        break;
+    case ExprKind::Convert:
+        name("convert");
+        dumpExpr(*static_cast<const ConvertExpr&>(e).operand, indent + 2);
         break;
     case ExprKind::Call: {
         auto& v = static_cast<const CallExpr&>(e);

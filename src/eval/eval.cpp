@@ -175,6 +175,20 @@ private:
             if (v->kind == EvalValue::Double) return EvalValue::ofDouble(-v->d);
             return EvalValue::ofInt(-v->i);
         }
+        case ExprKind::Convert: {
+            auto& c = static_cast<const ConvertExpr&>(e);
+            auto v = evalExpr(*c.operand);
+            if (!v) return std::nullopt;
+            // 常量求值：int ↔ float / 整数间截断（窄→宽按位，宽→窄截断）
+            bool is_fp = (c.to_kind == TypeKind::Float || c.to_kind == TypeKind::Double);
+            if (is_fp) {
+                double d = (v->kind == EvalValue::Double) ? v->d : (double)v->i;
+                if (c.to_kind == TypeKind::Float) return EvalValue::ofDouble(d);
+                return EvalValue::ofDouble(d);
+            }
+            int64_t iv = (v->kind == EvalValue::Double) ? (int64_t)v->d : v->i;
+            return EvalValue::ofInt(iv);
+        }
         case ExprKind::BinaryOp: {
             auto& b = static_cast<const BinaryOpExpr&>(e);
             return evalBinary(b);
@@ -560,6 +574,10 @@ private:
         case ExprKind::UnaryOp: {
             auto& v = static_cast<const UnaryOpExpr&>(e);
             return std::make_unique<UnaryOpExpr>(v.op, cloneExprI(*v.operand), v.range);
+        }
+        case ExprKind::Convert: {
+            auto& v = static_cast<const ConvertExpr&>(e);
+            return std::make_unique<ConvertExpr>(v.to_kind, cloneExprI(*v.operand), v.range);
         }
         case ExprKind::Call: {
             auto& v = static_cast<const CallExpr&>(e);

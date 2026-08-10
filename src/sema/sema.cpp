@@ -1385,6 +1385,9 @@ TypeInfo Sema::visitExpr(Expr& expr) {
         case ExprKind::UnaryOp:
             result = visitUnaryOp(static_cast<UnaryOpExpr&>(expr));
             break;
+        case ExprKind::Convert:
+            result = visitConvert(static_cast<ConvertExpr&>(expr));
+            break;
         case ExprKind::Call:
             result = visitCall(static_cast<CallExpr&>(expr));
             break;
@@ -1808,6 +1811,17 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
     return TypeInfo(TypeKind::Void);
 }
 
+// 显式类型转换：uint8(x) / long(x) / double(x)。要求操作数是数值类型；
+// 转换规则（宽→窄截断、窄→宽按源符号、int↔float）在 codegen 实现。
+TypeInfo Sema::visitConvert(ConvertExpr& expr) {
+    auto ot = visitExpr(*expr.operand);
+    if (!isNumericKind(ot.kind)) {
+        error(expr.range, "cannot convert '" + typeName(ot) + "' to '" +
+              typeName(TypeInfo(expr.to_kind)) + "' (conversion operand must be numeric)");
+    }
+    return TypeInfo(expr.to_kind);
+}
+
 // Monomorphize a generic function call (explicit `foo<int>(...)` or inferred
 // `foo(x)`), append the instance to tu.functions, and type-check the call.
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
@@ -2146,6 +2160,12 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
             auto o = cloneExpr(*v.operand);
             if (!o) return nullptr;
             return std::make_unique<UnaryOpExpr>(v.op, std::move(o), v.range);
+        }
+        case ExprKind::Convert: {
+            auto& v = static_cast<const ConvertExpr&>(e);
+            auto o = cloneExpr(*v.operand);
+            if (!o) return nullptr;
+            return std::make_unique<ConvertExpr>(v.to_kind, std::move(o), v.range);
         }
         case ExprKind::Ternary: {
             auto& v = static_cast<const TernaryExpr&>(e);
@@ -3986,6 +4006,8 @@ void Sema::collectExprLocals(Expr& e, std::set<std::string>& locals) {
         }
         case ExprKind::UnaryOp:
             collectExprLocals(*static_cast<UnaryOpExpr&>(e).operand, locals); break;
+        case ExprKind::Convert:
+            collectExprLocals(*static_cast<ConvertExpr&>(e).operand, locals); break;
         case ExprKind::Call: {
             auto& c = static_cast<CallExpr&>(e);
             collectExprLocals(*c.callee, locals);

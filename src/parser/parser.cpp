@@ -2,6 +2,24 @@
 
 namespace mylang {
 
+// 类型关键字 → TypeKind（显式转换 uint8(x) 的目标类型）
+static TypeKind typeTokenToKind(TokenKind k) {
+    switch (k) {
+        case TokenKind::Type_byte:  case TokenKind::Type_int8:   return TypeKind::Byte;
+        case TokenKind::Type_short: case TokenKind::Type_int16:  return TypeKind::Short;
+        case TokenKind::Type_int:   case TokenKind::Type_int32:  return TypeKind::Int;
+        case TokenKind::Type_long:  case TokenKind::Type_int64:  return TypeKind::Long;
+        case TokenKind::Type_ubyte: case TokenKind::Type_uint8:  return TypeKind::UByte;
+        case TokenKind::Type_ushort:case TokenKind::Type_uint16: return TypeKind::UShort;
+        case TokenKind::Type_uint:  case TokenKind::Type_uint32: return TypeKind::UInt;
+        case TokenKind::Type_ulong: case TokenKind::Type_uint64: return TypeKind::ULong;
+        case TokenKind::Type_char:  return TypeKind::Char;
+        case TokenKind::Type_float: return TypeKind::Float;
+        case TokenKind::Type_double:return TypeKind::Double;
+        default: return TypeKind::Void;
+    }
+}
+
 // ==============================
 // Constructor & main entry
 // ==============================
@@ -1421,6 +1439,12 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
             if (!o) return nullptr;
             return std::make_unique<UnaryOpExpr>(v.op, std::move(o), v.range);
         }
+        case ExprKind::Convert: {
+            auto& v = static_cast<const ConvertExpr&>(e);
+            auto o = cloneExpr(*v.operand);
+            if (!o) return nullptr;
+            return std::make_unique<ConvertExpr>(v.to_kind, std::move(o), v.range);
+        }
         case ExprKind::Ternary: {
             auto& v = static_cast<const TernaryExpr&>(e);
             auto c = cloneExpr(*v.condition);
@@ -1852,6 +1876,19 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
 }
 
 std::unique_ptr<Expr> Parser::parsePrimary() {
+    // 显式类型转换：uint8(x) / long(x) / double(x)（类型关键字后跟 '('）
+    if (!isAtEnd()) {
+        TypeKind ck = typeTokenToKind(peek().kind);
+        if (ck != TypeKind::Void && current_ + 1 < tokens_.size() &&
+            tokens_[current_ + 1].kind == TokenKind::LeftParen) {
+            SourceRange r = peek().range;
+            advance();                 // 类型关键字
+            advance();                 // '('
+            auto op = parseExpr();
+            consume(TokenKind::RightParen, "expected ')' after conversion operand");
+            return std::make_unique<ConvertExpr>(ck, std::move(op), r);
+        }
+    }
     if (match(TokenKind::IntegerLiteral)) {
         int64_t val = std::stoll(previous().value, nullptr, 0);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range);

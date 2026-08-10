@@ -27,6 +27,16 @@
 
 ## 编译器版本历史
 
+### v3.11.2
+- **显式类型转换 `uint8(x)` / `byte(x)` / `long(x)` / `double(x)`**：内置类型名当
+  函数调用即转换。宽→窄截断、窄→宽按源符号扩展、double↔int 转换。解决了
+  "无法从 `long` 计算填充 `uint8[]`"（base64 基准 0.58→0.81，`uint8[]` 替代
+  `long[]` 省 8 倍内存）。
+  - 新增回归测试 `tests/convert_expr/`；自举 viz lexer 同步 intN/uintN 关键字。
+  - 顺带修复既有缺口：float→double 调用实参（`Console.writeFloat(float 变量)`
+    之前 LLVM verify 失败）。
+  - 回归：O0/O2/ASAN 175/175 全过。
+
 ### v3.11.1
 - **修复数组下标窄整数符号扩展 bug**：`cnt[msg[i]]` 里 `msg[i]` 是 `uint8`(i8)，
   作为数组下标被 LLVM GEP **符号扩展**——字节值 >=128（如 190=0xBE 即 i8 -66）变成

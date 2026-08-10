@@ -307,6 +307,7 @@ enum class ExprKind {
     NamedArg,   // §四-1 命名实参：f(name = value)
     MacroParam,
     Quote,
+    Convert,    // 显式类型转换：uint8(x) / long(x) / double(x) ...
 };
 
 struct Expr {
@@ -423,6 +424,15 @@ struct UnaryOpExpr : Expr {
     std::unique_ptr<Expr> operand;
     UnaryOpExpr(UnaryOpKind o, std::unique_ptr<Expr> opnd, SourceRange range_)
         : Expr(ExprKind::UnaryOp, range_), op(o), operand(std::move(opnd)) {}
+};
+
+// 显式类型转换：`uint8(x)` / `byte(x)` / `long(x)` / `double(x)` ...
+// 类型关键字后跟 '(' 解析为转换（宽→窄截断，窄→宽按源符号扩展，int↔float 转换）。
+struct ConvertExpr : Expr {
+    TypeKind to_kind;                     // 目标内置类型
+    std::unique_ptr<Expr> operand;
+    ConvertExpr(TypeKind k, std::unique_ptr<Expr> opnd, SourceRange range_)
+        : Expr(ExprKind::Convert, range_), to_kind(k), operand(std::move(opnd)) {}
 };
 
 struct CallExpr : Expr {

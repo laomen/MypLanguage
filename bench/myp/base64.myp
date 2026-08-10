@@ -5,12 +5,12 @@ import env;
 import time;
 
 long base64_bench(int n, int seed) {
-    long[] in = new long[n];
+    uint8[] in = new uint8[n];
     long rng = seed;
     int i = 0;
     while (i < n) {
         rng = (rng * 1103515245L + 12345L) % 2147483648L;
-        in[i] = (rng >> 16) & 0xFFL;   // 0..255
+        in[i] = uint8((rng >> 16) & 0xFFL);   // 显式转换：long→uint8
         i = i + 1;
     }
     int outn = (n / 3) * 4;

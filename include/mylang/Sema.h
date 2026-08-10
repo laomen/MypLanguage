@@ -63,6 +63,7 @@ private:
     TypeInfo visitIdentifier(IdentifierExpr& expr);
     TypeInfo visitBinaryOp(BinaryOpExpr& expr);
     TypeInfo visitUnaryOp(UnaryOpExpr& expr);
+    TypeInfo visitConvert(ConvertExpr& expr);
     TypeInfo visitCall(CallExpr& expr);
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐

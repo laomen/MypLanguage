@@ -56,6 +56,10 @@ static llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
         return b.CreateSIToFP(v, expected);
     if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
         return b.CreateFPToSI(v, expected);
+    if (v->getType()->isFloatTy() && expected->isDoubleTy())
+        return b.CreateFPExt(v, expected);       // float → double（调用实参）
+    if (v->getType()->isDoubleTy() && expected->isFloatTy())
+        return b.CreateFPTrunc(v, expected);     // double → float（调用实参）
     if (v->getType()->isPointerTy() && expected->isPointerTy())
         return b.CreateBitCast(v, expected);
     return v;
@@ -3710,6 +3714,11 @@ void CodeGen::collectExprIdentifiers(const Expr& expr, std::set<std::string>& ou
             collectExprIdentifiers(*u.operand, out, loop_decls);
             break;
         }
+        case ExprKind::Convert: {
+            auto& c = static_cast<const ConvertExpr&>(expr);
+            collectExprIdentifiers(*c.operand, out, loop_decls);
+            break;
+        }
         case ExprKind::Call: {
             auto& c = static_cast<const CallExpr&>(expr);
             collectExprIdentifiers(*c.callee, out, loop_decls);
@@ -4107,6 +4116,36 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             }
             if (e.op == UnaryOpKind::Not)
                 return kb.CreateNot(op);
+            return op;
+        }
+        case ExprKind::Convert: {
+            auto& e = static_cast<const ConvertExpr&>(expr);
+            auto* op = emitKernelExpr(*e.operand, kb, kernel_vars, kernel_arg_values,
+                                       loop_var_name, tid_val);
+            if (!op) return llvm::ConstantInt::get(i64_ty, 0);
+            llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
+            if (op->getType() == target) return op;
+            bool src_unsigned = (e.operand->resolved_kind == TypeKind::UByte ||
+                                 e.operand->resolved_kind == TypeKind::UShort ||
+                                 e.operand->resolved_kind == TypeKind::UInt ||
+                                 e.operand->resolved_kind == TypeKind::ULong);
+            auto* sty = op->getType();
+            if (target->isIntegerTy()) {
+                if (sty->isIntegerTy()) {
+                    unsigned sw = sty->getIntegerBitWidth(), tw = target->getIntegerBitWidth();
+                    if (tw < sw) return kb.CreateTrunc(op, target);
+                    if (tw > sw) return src_unsigned ? kb.CreateZExt(op, target)
+                                                     : kb.CreateSExt(op, target);
+                    return op;
+                }
+                if (sty->isFloatingPointTy()) return kb.CreateFPToSI(op, target);
+            }
+            if (target->isFloatingPointTy()) {
+                if (sty->isFloatingPointTy()) return kb.CreateFPCast(op, target);
+                if (sty->isIntegerTy())
+                    return src_unsigned ? kb.CreateUIToFP(op, target)
+                                        : kb.CreateSIToFP(op, target);
+            }
             return op;
         }
         case ExprKind::Call: {
@@ -6023,6 +6062,7 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::Identifier:     return generateIdentifier(static_cast<const IdentifierExpr&>(e));
         case ExprKind::BinaryOp:       return generateBinaryOp(static_cast<const BinaryOpExpr&>(e));
         case ExprKind::UnaryOp:        return generateUnaryOp(static_cast<const UnaryOpExpr&>(e));
+        case ExprKind::Convert:        return generateConvert(static_cast<const ConvertExpr&>(e));
         case ExprKind::Call:           return generateCall(static_cast<const CallExpr&>(e));
         case ExprKind::MemberAccess:   return generateMemberAccess(static_cast<const MemberAccessExpr&>(e));
         case ExprKind::Subscript:      return generateSubscript(static_cast<const SubscriptExpr&>(e));
@@ -6475,6 +6515,39 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
         case UnaryOpKind::Not:    return builder_.CreateNot(o);
     }
     return nullptr;
+}
+
+// 显式类型转换：uint8(x) / long(x) / double(x)。
+// 规则：宽→窄截断；窄→宽按源符号（无符号 ZExt / 有符号 SExt）；int↔float 转换。
+llvm::Value* CodeGen::generateConvert(const ConvertExpr& e) {
+    auto* v = generateExpr(*e.operand);
+    llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
+    if (!v) return llvm::ConstantInt::get(target, 0);
+    if (v->getType() == target) return v;
+
+    bool src_unsigned = (e.operand->resolved_kind == TypeKind::UByte ||
+                         e.operand->resolved_kind == TypeKind::UShort ||
+                         e.operand->resolved_kind == TypeKind::UInt ||
+                         e.operand->resolved_kind == TypeKind::ULong);
+    auto* sty = v->getType();
+
+    if (target->isIntegerTy()) {
+        if (sty->isIntegerTy()) {
+            unsigned sw = sty->getIntegerBitWidth(), tw = target->getIntegerBitWidth();
+            if (tw < sw) return builder_.CreateTrunc(v, target);            // 宽→窄
+            if (tw > sw) return src_unsigned ? builder_.CreateZExt(v, target)
+                                             : builder_.CreateSExt(v, target);  // 窄→宽
+            return v;
+        }
+        if (sty->isFloatingPointTy()) return builder_.CreateFPToSI(v, target);
+    }
+    if (target->isFloatingPointTy()) {
+        if (sty->isFloatingPointTy()) return builder_.CreateFPCast(v, target);
+        if (sty->isIntegerTy())
+            return src_unsigned ? builder_.CreateUIToFP(v, target)
+                                : builder_.CreateSIToFP(v, target);
+    }
+    return v;
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
