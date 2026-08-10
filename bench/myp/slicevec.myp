@@ -1,0 +1,52 @@
+// bench/myp/slicevec.myp — slice<Vec> 结构体切片点积（AoS + 运行时边界检查）
+// N=2×10^6 个 Vec{x,y,z}；verify = sum(v[i].x*v[i].y + v[i].z)。与 C++ 同算法。
+// 与 dotprod 对比：slice 下标带边界检查（设计使然），测其开销。
+import env;
+import time;
+
+struct Vec {
+    int x;
+    int y;
+    int z;
+}
+
+long slicevec(int n, int seed) {
+    slice<Vec> v = new slice<Vec>(n);
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].x = int((rng >> 16) % 100L);
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].y = int((rng >> 16) % 100L);
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        v[i].z = int((rng >> 16) % 100L);
+        i = i + 1;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + long(v[i].x) * v[i].y + v[i].z;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = slicevec(2000000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

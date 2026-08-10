@@ -51,6 +51,8 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `heapsort` | 二叉堆排序：堆化 + sift-down + 交换 | 10⁶ 整数 |
 | `crc32` | 表驱动 CRC-32（uint32 表 + 字节循环 + 位移异或） | 32MB 数据 |
 | `dotprod` | 结构体数组点积（AoS：struct 数组 + 字段读写） | 2×10⁶ 个 Vec |
+| `slicevec` | slice<Vec> 结构体切片点积（AoS + 运行时边界检查） | 2×10⁶ 个 Vec |
+| `slicemat` | 嵌套 slice<slice<int>> 矩阵求和（二维运行时切片） | 2048×2048 |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。
@@ -102,6 +104,14 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   property"，codegen 只处理了标量 struct 和链式成员，未处理 Subscript 对象。新增
   `generateArrayElementAddress` 后接入读/写/链式三路径（回归测试
   `tests/struct_array/`）。
+- **切片批（slicevec/slicemat）**：slicevec（slice<Vec> 点积）2.67、slicemat
+  （嵌套 slice<slice<int>> 矩阵和）2.50——MYP 反超，说明 slice 下标边界检查在 -O2
+  下基本被优化掉。这批**发现并修复两个编译 bug**：①嵌套泛型 `slice<slice<int>>`
+  无法解析（lexer 把 `>>` 合成一个 token，泛型收尾期待单 `>`——新增
+  `consumeGenericClose` 拆分）；②slice-of-slice 分配大小错误（`typeNodeToLLVMType`
+  没处理 slice 类型，`slice<slice<int>>` 元素算成 4 字节而非 16，写穿外层数据区 +
+  `rows[i][j]` 双下标 codegen 缺失——新增 `sliceTypeOfExpr`/`generateSliceElementAddress`
+  统一读写路径）。回归测试 `tests/nested_slice/`。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。
 

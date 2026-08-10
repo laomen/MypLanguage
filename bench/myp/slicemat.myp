@@ -1,0 +1,52 @@
+// bench/myp/slicemat.myp — 嵌套 slice<slice<int>> 矩阵求和（二维运行时切片）
+// M=2048×2048；verify = 全部元素之和。与 C++ 同算法同 LCG。
+// 压测 slice-of-slice 双下标 rows[i][j] 读 + 逐行分配。
+import env;
+import time;
+
+long slicemat(int n, int seed) {
+    slice<slice<int>> rows = new slice<slice<int>>(n);
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        slice<int> row = new slice<int>(n);
+        int j = 0;
+        while (j < n) {
+            rng = (rng * 1103515245L + 12345L) % 2147483648L;
+            row[j] = int(rng & 0xFFL);
+            j = j + 1;
+        }
+        rows[i] = row;
+        i = i + 1;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            sum = sum + rows[i][j];
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = slicemat(2048, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
