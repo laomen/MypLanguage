@@ -123,6 +123,24 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。
 
+## 协程对比（MYP @coro vs Go goroutine）
+
+`bash bench/run_compare_go.sh [iters]` —— MYP `@coro`（ucontext 栈式纤程，协作式
+调度）vs Go goroutine（可增长栈，抢占式调度）。结果（verify 一致）：
+
+| 基准 | 测什么 | MYP | Go | Go/MYP |
+|------|--------|-----|-----|--------|
+| `coro_switch` | 上下文切换吞吐（200 协程 × 10000 次挂起/恢复） | 406ms | 306ms | **0.75** |
+| `coro_spawn` | spawn 开销（20000 个只返回的协程） | 527ms | 3ms | **0.01** |
+
+- **切换**：MYP 比 Go 慢 ~33%（0.75）——两者都要做栈切换，MYP 是 ucontext 交换 +
+  手动 `Coro.resume` 驱动，Go 是运行时抢占调度，差距不大。
+- **spawn**：Go 快 ~175x——Go goroutine 是 ~2KB 可增长栈、批量创建极廉价；MYP
+  `@coro` 每个分配**固定栈**（默认 128KB，可用 `@coro(stack=KB)` 调小）+ ucontext
+  初始化。这是 MYP 协程的主要成本，适合少量长生命周期协程（I/O/事件），不适合
+  海量短任务。
+
+
 ## 性能修复记录
 
 - **顶层函数内联化（2026-08，最大一次提升）**：根因是 MYP 把**所有顶层函数都发成

@@ -1,0 +1,52 @@
+// bench/myp/coro_spawn.myp — 协程 spawn 开销（与 Go goroutine 对比）
+// K=20000 个 @coro（stack=64KB）各执行一次后退出；verify = Coro.count()（应为 0）。
+// 压测 ucontext 栈分配 + 纤程初始化的成本。
+import env;
+import coro;
+import time;
+
+class Worker {
+    action:
+        @coro(stack=64) void run(long x) {
+            long y = x * 2;
+            await;
+        }
+}
+
+long coroSpawn(int K, int seed) {
+    long[] h = new long[K];
+    int i = 0;
+    while (i < K) {
+        Worker w = new Worker();
+        h[i] = w.run(long(i));
+        i = i + 1;
+    }
+    i = 0;
+    while (i < K) {
+        Coro.resume(h[i], 0L);
+        i = i + 1;
+    }
+    // 全部结束后应无活跃协程（正确性检查）；verify = 协程总数（与 Go 一致）
+    long left = Coro.count();
+    if (left != 0L) return -1L;
+    return long(K);
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = coroSpawn(20000, 1);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
