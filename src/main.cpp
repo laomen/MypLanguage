@@ -403,16 +403,23 @@ static bool loadModule(const std::string& module_name,
         return dir + "/myp_rt_" + hex + ".o";
     };
 
-    // Build runtime object
+    // Build runtime object. IMPORTANT: the C runtime is compiled fresh for
+    // EVERY generated program. It MUST be optimized — gcc's default is -O0,
+    // which leaves every runtime function unoptimized (no inlining, all
+    // locals spilled to the stack), dominating hot loops (channel sync
+    // handoff, coroutine yield/resume, string/ARC ops). -O2 is folded into
+    // the cache hash so old -O0 cached objects are never reused.
     std::string rt_obj;
+    const char* rt_opt = "-O2";
     std::string trace_def = trace_enabled ? " -DTRACE_ENABLED" : "";
+    std::string rt_flags = std::string(rt_opt) + trace_def;
     if (fileExists(runtime_c)) {
-        std::string cached = cacheObj(runtime_c, trace_def);
+        std::string cached = cacheObj(runtime_c, rt_flags);
         if (!cached.empty() && fileExists(cached)) {
             rt_obj = cached;  // cache hit — skip gcc
         } else {
             rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
-            std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+            std::string compile_rt = "gcc -I" + inc_path + " -fPIC " + rt_flags + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
             if (std::system(compile_rt.c_str()) != 0) {
                 std::cerr << "Failed to compile runtime\n";
                 return false;
@@ -463,7 +470,7 @@ static bool loadModule(const std::string& module_name,
         sdl_c = runtime_dir + "/src/runtime/sdl_bridge.c";
     if (!sdl_c.empty()) {
         sdl_obj = "";
-        std::string sdl_cflags = "-I/usr/include/SDL2 -D_REENTRANT";
+        std::string sdl_cflags = "-O2 -I/usr/include/SDL2 -D_REENTRANT";
         sdl_libs = "-lSDL2";
         std::string cached = cacheObj(sdl_c, sdl_cflags);
         if (!cached.empty() && fileExists(cached)) {
@@ -491,12 +498,12 @@ static bool loadModule(const std::string& module_name,
     std::string gpu_obj;
     if (!gpu_c.empty()) {
         gpu_obj = "";
-        std::string cached = cacheObj(gpu_c, "");
+        std::string cached = cacheObj(gpu_c, "-O2");
         if (!cached.empty() && fileExists(cached)) {
             gpu_obj = cached;
         } else {
             gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
-            std::string compile_gpu = "gcc -I" + inc_path + " -fPIC " + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
+            std::string compile_gpu = "gcc -I" + inc_path + " -fPIC -O2" + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
             if (std::system(compile_gpu.c_str()) != 0) {
                 std::cerr << "Failed to compile GPU runtime\n";
                 return false;

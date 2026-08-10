@@ -4635,7 +4635,10 @@ int64_t myp_channel_send(int64_t handle, int64_t val) {
     if (!c || c->closed) return -1;
     for (;;) {
         if (c->count < c->capacity) {
-            c->buf[(c->head + c->count) % c->capacity] = val;
+            // head/count bounded: head+count < 2*cap, one wrap suffices (no idiv).
+            int wpos = c->head + c->count;
+            if (wpos >= c->capacity) wpos -= c->capacity;
+            c->buf[wpos] = val;
             c->count++;
             myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
             return 0;
@@ -4667,7 +4670,10 @@ int64_t myp_channel_recv(int64_t handle) {
     for (;;) {
         if (c->count > 0) {
             int64_t v = c->buf[c->head];
-            c->head = (c->head + 1) % c->capacity;
+            // head < cap: head+1 <= cap, wrap once (no idiv).
+            int nh = c->head + 1;
+            if (nh >= c->capacity) nh = 0;
+            c->head = nh;
             c->count--;
             myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
             return v;
@@ -4692,7 +4698,9 @@ int64_t myp_channel_recv(int64_t handle) {
 int64_t myp_channel_try_send(int64_t handle, int64_t val) {
     myp_channel_t* c = myp_channel_get(handle);
     if (!c || c->closed || c->count >= c->capacity) return -1;
-    c->buf[(c->head + c->count) % c->capacity] = val;
+    int wpos = c->head + c->count;
+    if (wpos >= c->capacity) wpos -= c->capacity;
+    c->buf[wpos] = val;
     c->count++;
     myp_channel_wake_ready(c->recv_waiters, &c->recv_wait_count);
     return 0;
@@ -4702,7 +4710,9 @@ int64_t myp_channel_try_recv(int64_t handle) {
     myp_channel_t* c = myp_channel_get(handle);
     if (!c || c->count <= 0) return -1;
     int64_t v = c->buf[c->head];
-    c->head = (c->head + 1) % c->capacity;
+    int nh = c->head + 1;
+    if (nh >= c->capacity) nh = 0;
+    c->head = nh;
     c->count--;
     myp_channel_wake_ready(c->send_waiters, &c->send_wait_count);
     return v;

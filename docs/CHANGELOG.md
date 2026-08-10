@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.11.19
+- **C 运行时以 -O2 编译（perf 定位：`cpp_long` channel 乒乓 N=10⁷ 的
+  `myp_channel_recv` 31.6% / `myp_channel_wake_one` 15.0%）**：
+  - `mypc` 链接生成程序时**每次用 gcc 现编 `runtime.c`**，但编译命令没有任何 `-O`
+    参数——整个 C 运行时（channel/coroutine/string/ARC/thread pool）一直以 gcc
+    默认的 **-O0** 编译：无内联、所有局部变量上栈，连 `myp_channel_get` 这种 3 行
+    函数都是独立 call。`mypc -O2` 只优化 MYP 生成的 LLVM 代码，从未作用到 C 运行时。
+  - 修复：`src/main.cpp` 链接阶段以 `-O2` 编译 `runtime.c`/`sdl_bridge.c`/
+    `runtime_gpu.c`，并把 `-O2` 折进缓存哈希（旧的 -O0 缓存对象不会复用）。
+  - 效果（对所有生成程序生效）：
+    - channel 乒乓 N=10⁷：**582→453ms（22%）**；`channel_pingpong` bench 6→4ms，
+      反超 Go（Go/MYP 1.50）。
+    - ARC 压力（3M 对象+字符串拼接）：~515→~450ms（15%）。
+    - coro_switch 72→66ms、io_socket 71→69ms；parreduce 反超 C++ 从 2.00→**3.00**
+      （1ms vs 3ms），parcomp 也反超 C++（0.88）。
+  - 顺手把 channel 环形缓冲的 `% capacity`（每次消息 2 次 idiv）改为有界条件回绕
+    （head/count 均 < capacity，单次比较回绕即精确）。
+  - 181/181 回归（含 ASan）、25/25 Go 基准、33/33 C++ 基准全部通过，无回归。
+
 ### v3.11.18
 - **`@parallel for` body 改为 chunk 循环（perf 定位：并行归约 N=10⁸ 的
   `parallel_body_j` 62% / `myp_pool_worker_id` 8.9%）**：
