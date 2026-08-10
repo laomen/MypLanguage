@@ -61,3 +61,111 @@ class Box {
         int fg_ = 7;
         int bg_ = 0;
 }
+
+// ---- Flow 流式布局：子组件横向排列，超宽自动换行 ----
+class Flow {
+    interface class IWidget;
+    action:
+        @constructor Flow() {
+            children_ = new IWidget[32];
+            count_ = 0;
+        }
+
+        void add(IWidget c) {
+            children_[count_] = c;
+            count_ = count_ + 1;
+        }
+        int count() { return count_; }
+
+        void layout(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            // 每个子组件占固定块宽，横向排列，超右边界则换行
+            int cw = 8;
+            int cx = x;
+            int cy = y;
+            int i = 0;
+            while (i < count_) {
+                if (cx + cw > x + w) { cx = x; cy = cy + 1; }
+                children_[i].layout(cx, cy, cw, 1);
+                cx = cx + cw;
+                i = i + 1;
+            }
+        }
+        void draw(IRenderer r) {
+            r.rect(x_, y_, w_, h_, fg_, bg_);
+            int i = 0;
+            while (i < count_) {
+                children_[i].draw(r);
+                i = i + 1;
+            }
+        }
+        void key(int ch) {
+            int i = 0;
+            while (i < count_) {
+                children_[i].key(ch);
+                i = i + 1;
+            }
+        }
+        int focusable() { return 0; }
+
+    property:
+        IWidget[] children_;
+        int count_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int fg_ = 7;
+        int bg_ = 0;
+}
+
+// ---- Stack 堆叠布局：子组件全部重叠在同一矩形，后加入者在上层 ----
+class Stack {
+    interface class IWidget;
+    action:
+        @constructor Stack() {
+            children_ = new IWidget[32];
+            count_ = 0;
+        }
+
+        void add(IWidget c) {
+            children_[count_] = c;
+            count_ = count_ + 1;
+        }
+        int count() { return count_; }
+
+        void layout(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            int i = 0;
+            while (i < count_) {
+                children_[i].layout(x, y, w, h);   // 全部重叠
+                i = i + 1;
+            }
+        }
+        void draw(IRenderer r) {
+            r.rect(x_, y_, w_, h_, fg_, bg_);
+            int i = 0;
+            while (i < count_) {
+                children_[i].draw(r);
+                i = i + 1;
+            }
+        }
+        void key(int ch) {
+            int i = 0;
+            while (i < count_) {
+                children_[i].key(ch);
+                i = i + 1;
+            }
+        }
+        int focusable() { return 0; }
+
+    property:
+        IWidget[] children_;
+        int count_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int fg_ = 7;
+        int bg_ = 0;
+}

@@ -1,8 +1,9 @@
 # mypview — 轻量「类 QML」声明式 UI 库（设计文档）
 
-> 状态：**M1 骨架 + M3 绑定已实施（2026-08-10）**——`src/{core,render,widgets,layout,binding,app}.myp`
-> + `examples/{hello,counter}.myp` + `tests/test.myp`。M1 画出嵌套组件树（hello）；
-> M3 验收通过（counter：按钮→事件→mapping→绑定→文本更新，counter=2/label=2/updates=1）。
+> 状态：**M1-M4 已实施（2026-08-10）**——`src/{core,render,widgets,layout,binding,app}.myp`
+> + `examples/{hello,counter,dashboard}.myp` + `tests/test.myp`。M1 画出嵌套组件树（hello）；
+> M3 验收通过（counter：按钮→事件→mapping→绑定→文本更新，counter=2/label=2/updates=1）；
+> M4 组合布局（dashboard：Box + Flow 换行 + Stack 重叠 + Bar 进度条）。
 > 开发中修复了 6 组编译器接口路径 bug（见提交 f2d405d，均在"bug 修正"例外内）。
 > 定位：**类似 QML 的声明式界面库，但轻量** —— 只做"声明式组件树 + 属性绑定 +
 > 事件接线 + 基础布局 + 一个渲染目标"，**不是** Qt/QML 的复刻。

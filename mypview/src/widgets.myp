@@ -72,3 +72,46 @@ class Button {
         int bg_ = 0;
         int focused_ = 0;
 }
+
+// ---- Bar 进度条：显示 label + 百分比 + 填充条 ----
+class Bar {
+    interface class IWidget;
+    action:
+        @constructor Bar(string label, int pct) {
+            label_ = label;
+            pct_ = pct;
+        }
+
+        void setPct(int p) { pct_ = p; }
+        int getPct() { return pct_; }
+
+        void layout(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+        void draw(IRenderer r) {
+            r.rect(x_, y_, w_, h_, fg_, bg_);
+            // 填充条：按百分比画 "█"（高亮绿）
+            int filled = (w_ - 2) * pct_ / 100;
+            string bar = "";
+            int k = 0;
+            while (k < filled) {
+                bar = bar + "█";
+                k = k + 1;
+            }
+            r.text(x_ + 1, y_, bar, 10, bg_);
+            // 标签覆盖在条上（亮白）
+            r.text(x_ + 1, y_, label_ + " " + pct_ + "%", 15, bg_);
+        }
+        void key(int ch) {}
+        int focusable() { return 0; }
+
+    property:
+        string label_;
+        int pct_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int fg_ = 7;
+        int bg_ = 0;
+}
