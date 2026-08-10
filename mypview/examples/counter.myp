@@ -29,12 +29,16 @@ class CounterApp {
 
             // 状态 + 绑定
             counter = new Counter(0);
-            Binding b = new Binding(counter, label);
+            b = new Binding(counter, label);
 
-            // 事件循环
-            TuiRenderer r = new TuiRenderer();
-            Application app = new Application(root, r, 50);
+            // 渲染器 + 应用（事件循环由 Driver 在实例注册后驱动）
+            r = new TuiRenderer();
+            app = new Application(root, r, 50);
             app.setBinding(b);
+        }
+
+        // 事件循环（mapping 目标 __myp_inst_CounterApp 已注册后才能触发事件）
+        void runLoop() {
             app.run();
         }
 
@@ -48,6 +52,17 @@ class CounterApp {
         Label label;
         Button button;
         Counter counter;
+        Binding b;
+        TuiRenderer r;
+        Application app;
+}
+
+// 实例注册后驱动事件循环（main 先 new App 再 new Driver）
+class Driver {
+    action:
+        @constructor Driver(CounterApp app) {
+            app.runLoop();
+        }
 }
 
 // 事件接线（类级）：任意 Button.clicked → CounterApp.onIncrement
@@ -57,5 +72,6 @@ mapping() {
 
 int main() {
     CounterApp a = new CounterApp();
+    Driver d = new Driver(a);
     return 0;
 }

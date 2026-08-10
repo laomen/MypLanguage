@@ -1,10 +1,13 @@
 # mypview — 轻量「类 QML」声明式 UI 库（设计文档）
 
-> 状态：**M1-M4 已实施（2026-08-10）**——`src/{core,render,widgets,layout,binding,app}.myp`
-> + `examples/{hello,counter,dashboard}.myp` + `tests/test.myp`。M1 画出嵌套组件树（hello）；
+> 状态：**M1-M5 已实施（2026-08-10）**——`src/{core,render,sdlrender,widgets,layout,binding,app}.myp`
+> + `examples/{hello,counter,dashboard,sdl_counter}.myp` + `tests/{test,sdl_smoke}.myp`。M1 画出嵌套组件树（hello）；
 > M3 验收通过（counter：按钮→事件→mapping→绑定→文本更新，counter=2/label=2/updates=1）；
-> M4 组合布局（dashboard：Box + Flow 换行 + Stack 重叠 + Bar 进度条）。
-> 开发中修复了 6 组编译器接口路径 bug（见提交 f2d405d，均在"bug 修正"例外内）。
+> M4 组合布局（dashboard：Box + Flow 换行 + Stack 重叠 + Bar 进度条）；
+> M5 SDL 后端（sdl_counter：同一组件树用 `SdlRenderer` 渲染到窗口；`sdl_bridge.c` 内置 5×7 位图字体 +
+> 软件渲染回退；`SDL_VIDEODRIVER=dummy` 无头冒烟测试 + BMP 截图验证通过）。
+> 开发中修复了 6 组编译器接口路径 bug（见提交 f2d405d，均在"bug 修正"例外内）；
+> counter 事件循环改为 Driver 模式（实例注册后再驱动，mapping 目标非空）。
 > 定位：**类似 QML 的声明式界面库，但轻量** —— 只做"声明式组件树 + 属性绑定 +
 > 事件接线 + 基础布局 + 一个渲染目标"，**不是** Qt/QML 的复刻。
 > 纯 MYP 实现（可少量依赖 SDL2 FFI）。

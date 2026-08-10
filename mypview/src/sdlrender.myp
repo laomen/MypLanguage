@@ -1,0 +1,81 @@
+// sdlrender.myp — mypview SDL 渲染后端（M5）
+//
+// SdlRenderer 用 SDL2 实现 IRenderer：同一组件树可切换到窗口渲染。
+// 坐标：TUI 用字符单元格，SDL 用像素 —— scale_ 把单元格放大到像素。
+// 文本用 sdl_bridge.c 内置 5×7 位图字体（纯 SDL2，无 SDL_ttf）。
+// 颜色：widget 的 fg/bg 是 0-255 的 256 色索引，映射为 RGB。
+
+import sdl;
+import "./core.myp";
+
+// ---- 256 色索引 → RGB（0-15 标准色，其余灰阶）----
+int cr(int c) {
+    if (c == 1 || c == 9) return 170;
+    if (c == 2 || c == 10) return 85;
+    if (c == 3 || c == 11) return 170;
+    if (c == 4 || c == 12) return 85;
+    if (c == 5 || c == 13) return 170;
+    if (c == 6 || c == 14) return 85;
+    if (c == 15) return 255;
+    if (c >= 8) return 85;
+    return 0;
+}
+int cg(int c) {
+    if (c == 1) return 0;
+    if (c == 2 || c == 10) return 255;
+    if (c == 3 || c == 14) return 255;
+    if (c == 4 || c == 12) return 85;
+    if (c == 5 || c == 13) return 85;
+    if (c == 6 || c == 11) return 255;
+    if (c == 7) return 170;
+    if (c == 9) return 85;
+    if (c == 15) return 255;
+    if (c >= 8) return 85;
+    return 0;
+}
+int cb(int c) {
+    if (c == 1 || c == 9) return 85;
+    if (c == 2 || c == 10) return 85;
+    if (c == 3 || c == 11 || c == 6) return 255;
+    if (c == 4 || c == 12) return 255;
+    if (c == 5 || c == 13) return 170;
+    if (c == 7) return 170;
+    if (c == 14) return 85;
+    if (c == 15) return 255;
+    if (c >= 8) return 85;
+    return 0;
+}
+
+class SdlRenderer {
+    interface class IRenderer;
+    action:
+        @constructor SdlRenderer(string title, int w, int h) {
+            scale_ = 8;
+            SDL.open(title, w, h);
+        }
+
+        void setScale(int s) { scale_ = s; }
+
+        void clear() {
+            SDL.clear(18, 18, 26, 255);
+        }
+
+        // 画文字（像素坐标 = 单元格 × scale）
+        void text(int x, int y, string s, int fg, int bg) {
+            SDL.drawText(x * scale_, y * scale_, s, scale_, cr(fg), cg(fg), cb(fg), 255);
+        }
+
+        // 画矩形：填充（用 bg）+ 边框（用 fg）
+        void rect(int x, int y, int w, int h, int fg, int bg) {
+            SDL.drawRect(x * scale_, y * scale_, w * scale_, h * scale_, cr(bg), cg(bg), cb(bg), 255);
+            if (w >= 2 && h >= 2)
+                SDL.drawOutline(x * scale_, y * scale_, w * scale_, h * scale_, cr(fg), cg(fg), cb(fg), 255);
+        }
+
+        void flush() {
+            SDL.present();
+        }
+
+    property:
+        int scale_;
+}

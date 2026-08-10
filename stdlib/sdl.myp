@@ -12,6 +12,8 @@ ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_width();
 ffi int  myp_sdl_height();
 ffi void myp_sdl_delay(int ms);
+ffi void myp_sdl_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
+ffi int  myp_sdl_save_bmp(string path);
 
 class SDL {
     static:
@@ -38,4 +40,12 @@ class SDL {
         int width()  { return myp_sdl_width(); }
         int height() { return myp_sdl_height(); }
         void delay(int ms) { myp_sdl_delay(ms); }
+        // 绘制文本（5×7 位图字体，scale 放大倍数，纯 SDL2 无 SDL_ttf）
+        void drawText(int x, int y, string text, int scale, int r, int g, int b, int a) {
+            myp_sdl_draw_text(x, y, text, scale, r, g, b, a);
+        }
+        // 保存当前帧为 BMP（调试 / 冒烟测试）
+        int saveBmp(string path) {
+            return myp_sdl_save_bmp(path);
+        }
 }
