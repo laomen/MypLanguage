@@ -1,0 +1,95 @@
+// bench/myp/io_socket.myp — @coro I/O 密集：await fd/socket（loopback TCP + waitFd）
+// 服务器/客户端各一个 @coro，经回环 TCP 逐字节 ping-pong N 轮；每轮 =
+// 客户端 sendAsync + 服务器 recvAsync + 服务器 sendAsync + 客户端 recvAsync
+// （4 次 Coro.waitFd + 4 次非阻塞 send/recv 系统调用）。
+// verify = 客户端收到的字节数 = N（每轮 1 字节回显）。
+import env;
+import net;
+import coro;
+import time;
+import text;
+
+// 服务器侧：收 "x" → 回显 "y"，N 轮
+class Server {
+    action:
+        @coro(stack=64) long run(TcpClient c, long n) {
+            long got = 0;
+            long i = 0;
+            while (i < n) {
+                string m = await c.recvAsync(16);
+                if (Str.len(m) == 0) return -1;
+                int s = await c.sendAsync("y");
+                if (s <= 0) return -1;
+                got = got + 1;
+                i = i + 1;
+            }
+            return got;
+        }
+}
+
+// 客户端侧：发 "x" → 收回显 "y"，N 轮
+class Client {
+    action:
+        @coro(stack=64) long run(TcpClient c, long n) {
+            long got = 0;
+            long i = 0;
+            while (i < n) {
+                int s = await c.sendAsync("x");
+                if (s <= 0) return -1;
+                string m = await c.recvAsync(16);
+                if (Str.len(m) == 0) return -1;
+                got = got + 1;
+                i = i + 1;
+            }
+            return got;
+        }
+}
+
+long ioSocket(long n) {
+    int port = 24781;
+    TcpServer srv = new TcpServer(port);
+    TcpClient cli = new TcpClient();
+    int rc = cli.connect("127.0.0.1", port);
+    if (rc != 0) return -2;
+    TcpClient srvCli = new TcpClient();
+    int ra = srv.accept(srvCli);
+    if (ra != 0) return -3;
+    Server sv = new Server();
+    Client cl = new Client();
+    long hs = sv.run(srvCli, n);
+    long hc = cl.run(cli, n);
+    // 驱动：调度器每轮 poll 全部 fd 等待，就绪者 resume 一步
+    long guard = 0;
+    while (Coro.count() > 0 && guard < 2000000) {
+        Coro.scheduler();
+        guard = guard + 1;
+    }
+    long sg = Coro.result(hs);
+    long cg = Coro.result(hc);
+    srvCli.close();
+    cli.close();
+    srv.close();
+    // 正确性：两侧都完成 N 轮
+    if (sg != n || cg != n) return -1;
+    return cg;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long n = 20000;
+            long t0 = Time.nowMs();
+            long v = ioSocket(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

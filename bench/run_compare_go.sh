@@ -9,6 +9,9 @@
 # 覆盖：
 #   21 个主套件基准（sieve..bigint）— 与 bench/cpp/*.cpp 同算法同规模，
 #   Go 版逐文件移植，verify 与 MYP 完全对拍（整数精确、浮点 1e-3 容差）。
+#   channel_pingpong — 通道 ping-pong：MYP Channel vs Go channel（capacity=1）
+#   io_socket        — @coro I/O 密集：MYP await fd（loopback TCP + waitFd）
+#                      vs Go goroutine + 阻塞 socket
 #   coro_switch  — 协程上下文切换吞吐（K 协程 × M 次挂起/恢复）
 #   coro_spawn   — 协程 spawn 开销（K 个只返回的协程）
 set -u
@@ -23,6 +26,7 @@ names=(
     sieve matmul nbody mandelbrot tripleloop fft sha256 quicksort knapsack
     kmp crc32 radixsort sobel floyd heapsort convolution base64 spmv kmeans
     huffman bigint
+    channel_pingpong io_socket
     coro_switch coro_spawn
 )
 

@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.11.13
+- **协程通信/I-O 基准 + 调度器 O(N²) 修复**：新增 `channel_pingpong`（cap=1
+  Channel 双向 10⁵ 次收发）与 `io_socket`（回环 TCP 逐字节 ping-pong，@coro +
+  `waitFd` vs goroutine + 阻塞 socket）两个 MYP/Go 对比基准，`run_compare_go.sh`
+  扩至 25 项。
+  - channel_pingpong：MYP 54ms vs Go 6ms（0.11，Go 快 ~9x）——Go channel 双方阻塞
+    时直接交接（无栈切换/syscall），MYP 每次 park/resume 走 ucontext 栈切换 +
+    调度器驱动（~270ns vs ~30ns）。
+  - io_socket：MYP 86ms vs Go 79ms（0.92，基本持平）——都受限于 syscall + 唤醒，
+    MYP waitFd 轮询调度代价已与 Go netpoller 相当。
+  - **顺带修复真实缺陷**：`myp_coro_waits` 从不压缩，`active=0` 的 wait 记录随等待
+    次数线性累积 → 调度器每轮 O(N) 扫描 → 总 O(N²)。io_socket 修复前 6101ms、
+    修复后 86ms（71x）；N=50000 回归测试由 ~38s（超时）→ 0.30s（线性）。
+    修复：`__myp_coro_scheduler` 入口原地压缩（仅保留 active=1），跨调度器不持有
+    表索引，安全。回归测试 `tests/coro_wait_compact/`。
+
 ### v3.11.12
 - **MYP vs Go 主套件全量对比**：把 21 个主套件基准（sieve..bigint）逐个移植为
   `bench/go/*.go`（由 `bench/cpp/*.cpp` 逐文件翻译，同算法/同规模/同 LCG），

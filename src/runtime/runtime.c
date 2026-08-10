@@ -3324,6 +3324,7 @@ typedef struct {
     int frame_slots_cap;
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
+    int64_t exec_result; // EXEC：worker 交付的文件读结果（char*，本线程 tracked）
 } myp_coro_t;
 
 // Dynamic slot array (no hard cap — grows on demand, limited only by memory).
@@ -3502,6 +3503,7 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     c->active = 1;
     c->ready = 1;
     c->result = 0;
+    c->exec_result = 0;
     c->wait_timeout = 0;
     c->cancel_requested = 0;
     c->frame_slots_count = 0;   // §五-1 收尾: fresh frame (slot reuse is clean)
@@ -3745,6 +3747,24 @@ int64_t __myp_coro_status(int64_t handle) {
 // coroutines are skipped until the event arrives and re-readies them.
 void myp_exec_pump_results(void);   // §五-5 P3: deliver completed file-exec results
 void __myp_coro_scheduler(void) {
+    // Compact the wait table: inactive records (woken by fd-poll / expiry /
+    // event) were never removed — they accumulate one per waitFd/await round,
+    // so myp_coro_wait_count grows linearly with the number of waits and every
+    // scheduler call (expiry scan + fd-poll setup + pump scan) becomes O(N) →
+    // total O(N²). Dropping inactive entries keeps the table ~constant-size.
+    // Safe: no code holds a table index across a scheduler call (wake paths
+    // reference handles / spec indices, not table positions); parked-and-still-
+    // waiting coroutines have active=1 and are preserved.
+    if (myp_coro_wait_count > 0) {
+        int w = 0;
+        for (int i = 0; i < myp_coro_wait_count; i++) {
+            if (myp_coro_waits[i].active) {
+                if (w != i) myp_coro_waits[w] = myp_coro_waits[i];
+                w++;
+            }
+        }
+        myp_coro_wait_count = w;
+    }
     // Process pending events first so event-waiting coroutines (C4) that were
     // re-readied by __myp_coro_event_notify become runnable this round.
     myp_event_process_all();
@@ -4193,6 +4213,7 @@ void myp_exec_pump_results(void) {
                     break;
                 }
             }
+            myp_coros[h]->exec_result = (int64_t)copy; // 存进协程体（地址稳定，压缩无关）
             myp_coros[h]->ready = 1;
         }
         free(r->result);
@@ -4243,9 +4264,10 @@ static char* myp_coro_file_read(int io_handle, int op) {
         pthread_cond_signal(&myp_exec_cond);
     }
     pthread_mutex_unlock(&myp_exec_mutex);
+    myp_coros[h]->exec_result = 0;   // 挂起前清掉上次结果
     __myp_coro_yield(0);   // park until the worker delivers the result
-    char* res = (idx >= 0 && idx < myp_coro_wait_count)
-        ? (char*)myp_coro_waits[idx].exec_result : NULL;
+    // 结果存在协程体（地址稳定），不依赖 wait 表索引——压缩安全。
+    char* res = (char*)myp_coros[h]->exec_result;
     return res ? res : myp_strdup("");
 }
 

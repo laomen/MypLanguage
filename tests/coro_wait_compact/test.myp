@@ -1,0 +1,83 @@
+// tests/coro_wait_compact — 调度器 wait 表压缩回归（O(N²) 防回归）
+// 大量连续 Coro.waitFd（loopback TCP ping-pong）会让 inactive 的 wait 记录
+// 累积在 myp_coro_waits 表里；若调度器不压缩（__myp_coro_scheduler 入口只保留
+// active 记录），每轮扫描变 O(N) → 总 O(N²)：
+//   N=20000 时 6.1s，N=50000 时 ~38s → 超过测试 10s 超时 → RUNTIME FAIL。
+// 有压缩后 N=50000 只需 ~0.2s，线性。
+// 输出：全部 50000 轮 waitFd 完成后打印 PASS。
+import env;
+import net;
+import coro;
+import time;
+import text;
+
+// 服务器侧：收 "x" → 回显 "y"
+class Server {
+    action:
+        @coro(stack=64) long run(TcpClient c, long n) {
+            long i = 0;
+            while (i < n) {
+                string m = await c.recvAsync(16);
+                if (Str.len(m) == 0) return -1;
+                int s = await c.sendAsync("y");
+                if (s <= 0) return -1;
+                i = i + 1;
+            }
+            return n;
+        }
+}
+
+// 客户端侧：发 "x" → 收回显
+class Client {
+    action:
+        @coro(stack=64) long run(TcpClient c, long n) {
+            long i = 0;
+            while (i < n) {
+                int s = await c.sendAsync("x");
+                if (s <= 0) return -1;
+                string m = await c.recvAsync(16);
+                if (Str.len(m) == 0) return -1;
+                i = i + 1;
+            }
+            return n;
+        }
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long n = 50000;
+            int port = 24783;
+            TcpServer srv = new TcpServer(port);
+            TcpClient cli = new TcpClient();
+            int rc = cli.connect("127.0.0.1", port);
+            if (rc != 0) { Console.writeString("FAIL connect\n"); return; }
+            TcpClient srvCli = new TcpClient();
+            int ra = srv.accept(srvCli);
+            if (ra != 0) { Console.writeString("FAIL accept\n"); return; }
+            Server sv = new Server();
+            Client cl = new Client();
+            long hs = sv.run(srvCli, n);
+            long hc = cl.run(cli, n);
+            long guard = 0;
+            while (Coro.count() > 0 && guard < 5000000) {
+                Coro.scheduler();
+                guard = guard + 1;
+            }
+            long sg = Coro.result(hs);
+            long cg = Coro.result(hc);
+            srvCli.close();
+            cli.close();
+            srv.close();
+            if (sg != n || cg != n) {
+                Console.writeString("FAIL " + sg + "/" + cg + "\n");
+                return;
+            }
+            Console.writeString("PASS 50000 waitFd rounds\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

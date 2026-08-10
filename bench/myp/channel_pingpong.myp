@@ -1,0 +1,79 @@
+// bench/myp/channel_pingpong.myp — 通道 ping-pong（协程通信，与 Go channel 对比）
+// Channel(capacity=1)：生产者协程 send 0..N-1，消费者协程 recv 累加。
+// 容量 1 迫使双方在"send 满 / recv 空"时交替挂起/恢复——每次都是一次真正的
+// 协程切换 + 通道唤醒（myp_channel_send/recv 内部 park → __myp_coro_yield）。
+// verify = Σ(0..N-1) = N*(N-1)/2（两语言一致）。
+import env;
+import channel;
+import coro;
+import time;
+
+// 生产者：往通道发 0..N-1，返回发送总数
+class Producer {
+    action:
+        @coro(stack=64) long run(Channel ch, long n) {
+            long i = 0;
+            while (i < n) {
+                int r = ch.send(i);
+                i = i + 1;
+            }
+            return n;
+        }
+}
+
+// 消费者：从通道收 N 个值累加，返回累加和
+class Consumer {
+    action:
+        @coro(stack=64) long run(Channel ch, long n) {
+            long sum = 0;
+            long i = 0;
+            while (i < n) {
+                long v = ch.recv();
+                sum = sum + v;
+                i = i + 1;
+            }
+            return sum;
+        }
+}
+
+long channelPingPong(long n) {
+    Channel ch = new Channel();
+    ch.init(1);
+    Producer p = new Producer();
+    Consumer c = new Consumer();
+    long hp = p.run(ch, n);
+    long hc = c.run(ch, n);
+    // 驱动：逐个调度就绪协程，直到双方都结束（guard 防死锁）
+    long guard = 0;
+    while (Coro.count() > 0 && guard < 4000000) {
+        Coro.scheduler();
+        guard = guard + 1;
+    }
+    long cnt = Coro.result(hp);
+    long sum = Coro.result(hc);
+    ch.destroy();
+    // 正确性：发送数 = n，且累加和 = n*(n-1)/2
+    if (cnt != n) return -1;
+    if (sum != n * (n - 1) / 2) return -1;
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long n = 100000;
+            long t0 = Time.nowMs();
+            long v = channelPingPong(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

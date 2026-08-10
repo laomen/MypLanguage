@@ -142,10 +142,11 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 
 ## Go 主套件对比（MYP vs Go）
 
-`bash bench/run_compare_go.sh [iters]` 现覆盖**全部 21 个主套件基准 + 2 个协程专项**。
-Go 侧 `bench/go/*.go` 由 `bench/cpp/*.cpp` 逐文件移植（同算法、同规模、同 LCG），
-MYP -O2 vs Go `go build`（默认优化，**无 -march=native**），verify 全部与 MYP 对拍
-（整数精确、浮点 1e-3 容差）。结果（16 核，min-of-3）：
+`bash bench/run_compare_go.sh [iters]` 现覆盖**全部 21 个主套件基准 + 2 个协程通信/I-O
+专项 + 2 个协程切换专项**（共 25 项）。Go 侧 `bench/go/*.go` 由
+`bench/cpp/*.cpp` 逐文件移植（同算法、同规模、同 LCG），MYP -O2 vs Go
+`go build`（默认优化，**无 -march=native**），verify 全部与 MYP 对拍（整数精确、
+浮点 1e-3 容差）。结果（16 核，min-of-3）：
 
 | 基准 | MYP(ms) | Go(ms) | Go/MYP |
 |------|--------:|-------:|:------:|
@@ -170,9 +171,12 @@ MYP -O2 vs Go `go build`（默认优化，**无 -march=native**），verify 全�
 | `kmeans` | 95 | 362 | **3.81** |
 | `huffman` | 9 | 19 | 2.11 |
 | `bigint` | 61 | 97 | 1.59 |
+| `channel_pingpong` | 54 | 6 | **0.11** |
+| `io_socket` | 86 | 79 | **0.92** |
 
-- **结论：MYP 在 21 项里赢 20 项**（Go/MYP>1 即 MYP 快），几何平均 ~1.8x；只有
-  `fft` 一项 Go 略快（0.86）。
+- **结论：MYP 在 23 个主套件/协程基准里赢 21 项**（Go/MYP>1 即 MYP 快），几何
+  平均 ~1.8x；Go 赢 3 项：`fft`（0.86）、`channel_pingpong`（0.11）、
+  `coro_switch`（0.76，见上节）。
 - **最大差距集中在浮点/内存带宽类**：convolution 4.04、kmeans 3.81、matmul 3.47、
   sobel 3.17、radixsort 2.20、spmv 2.15。根因是 **MYP 走 LLVM O2 自动向量化
   （SIMD 循环展开）**，而 Go 编译器默认几乎不自动向量化，这些标量浮点/字节循环
@@ -183,9 +187,31 @@ MYP -O2 vs Go `go build`（默认优化，**无 -march=native**），verify 全�
   强调快速编译 + GC + 简单内联。二者都不是 `-march=native`，均用基础 x86-64。
 - **协程对比见上一节**：spawn 差 175x（固定栈 vs 可增长栈）、切换差 33%，是 MYP
   协程实现特性（适合少量长生命周期协程），与主套件趋势独立。
+- **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）Go
+  快 ~9x（0.11）——Go channel 在双方都阻塞时**直接交接**（无栈切换、无 syscall），
+  MYP 每次 park/resume 都要 ucontext 栈切换 + 调度器驱动，~270ns/次 vs Go
+  ~30ns/次。`io_socket`（回环 TCP 逐字节 ping-pong，@coro + waitFd vs
+  goroutine + 阻塞 socket）**基本持平 0.92**——都受限于 syscall + 上下文唤醒，
+  MYP 的 waitFd 轮询调度代价已与 Go netpoller 相当。
 
 
 ## 性能修复记录
+
+- **协程调度器 wait 表压缩（2026-08，O(N²)→O(N)，io_socket 71x）**：新增
+  `channel_pingpong`/`io_socket` 基准时发现 **`myp_coro_waits` 从不压缩**——每条
+  `waitFd`/`await` 完成后 `active=0` 的记录留在表里，表长随等待次数线性增长，调度器
+  每轮（超时扫描 + fd-poll 收集 + pump 扫描）变 O(N) → 总 O(N²)。回环 TCP
+  ping-pong 在 `__myp_coro_scheduler` 入口做原地压缩（仅保留 `active=1` 的等待者）
+  后：
+
+  | N（等待轮次） | 修复前 | 修复后 |
+  |------|--------|--------|
+  | 20000（io_socket） | 6101ms | **86ms**（71x） |
+  | 50000（回归测试） | ~38s（超时 FAIL） | **0.30s**（线性） |
+
+  安全前提已验证：跨调度器调用不持有表索引（唤醒路径用 handle/spec 索引而非表位），
+  仍在等待的协程 `active=1` 被保留。回归测试 `tests/coro_wait_compact/`（N=50000，
+  无修复 38s 超时，有修复 0.30s）。
 
 - **顶层函数内联化（2026-08，最大一次提升）**：根因是 MYP 把**所有顶层函数都发成
   external 链接**（含 `convolution`/`kmp`/`sha256` 等热点内核），LLVM -O2 的内联器
