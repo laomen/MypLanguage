@@ -2651,6 +2651,21 @@ int32_t myp_pool_thread_count(void) {
 // 池创建后调用为 no-op（池已按原大小启动）。应在程序早期调用。
 void myp_pool_set_threads(int n) {
     if (n < 0) n = 0;
+    if (n > 0) {
+        long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        if (cpus > 0 && n > cpus) {
+            // Warn once: oversubscription (more workers than cores) usually
+            // hurts throughput via context-switch/cache contention. The user's
+            // explicit count is still honored — no silent cap.
+            static int warned = 0;
+            if (!warned) {
+                warned = 1;
+                fprintf(stderr,
+                    "MYP warning: Parallel.setThreads(%d) exceeds %ld CPU(s); "
+                    "oversubscription may degrade performance\n", n, cpus);
+            }
+        }
+    }
     myp_pool_requested_threads = n;
 }
 
