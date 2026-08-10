@@ -510,6 +510,23 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
 }
 
 std::unique_ptr<Expr> Parser::parsePrimary() {
+    ParserDepthGuard g(recursion_depth_, 300);
+    if (g.exceeded) {
+        diag_.error(peek().range, "expression nested too deeply");
+        // Skip the rest of the deeply-nested '('...')' group in one shot
+        // (balanced-paren consumption) so the parser terminates instead of
+        // re-descending through thousands of parens.
+        int nest = 0;
+        while (!isAtEnd()) {
+            TokenKind k = peek().kind;
+            if (k == TokenKind::LeftParen) nest++;
+            else if (k == TokenKind::RightParen) {
+                if (--nest <= 0) { advance(); break; }
+            }
+            advance();
+        }
+        return std::make_unique<IdentifierExpr>("__error__", peek().range);
+    }
     // 显式类型转换：uint8(x) / long(x) / double(x)（类型关键字后跟 '('）
     if (!isAtEnd()) {
         TypeKind ck = typeTokenToKind(peek().kind);

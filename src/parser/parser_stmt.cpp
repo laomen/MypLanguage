@@ -7,6 +7,24 @@
 namespace mylang {
 
 std::unique_ptr<Stmt> Parser::parseStatement() {
+    ParserDepthGuard g(recursion_depth_, 300);
+    if (g.exceeded) {
+        diag_.error(peek().range, "statement nested too deeply");
+        // Skip the deeply-nested '{...}' block in one shot (balanced-brace
+        // consumption) so the parser terminates instead of re-descending.
+        int nest = 0;
+        while (!isAtEnd()) {
+            TokenKind k = peek().kind;
+            if (k == TokenKind::LeftBrace) nest++;
+            else if (k == TokenKind::RightBrace) {
+                if (--nest <= 0) { advance(); break; }
+            }
+            advance();
+        }
+        return std::make_unique<ExprStmt>(
+            std::make_unique<IdentifierExpr>("__error__", peek().range),
+            peek().range);
+    }
     if (match(TokenKind::LeftBrace)) {
         return parseBlock();
     }

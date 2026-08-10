@@ -206,6 +206,10 @@ private:
     // 分析跳过——它们不是外层局部变量）。
     bool isGlobalName(const std::string& name) const;
 
+    // Recursion depth for deep-nesting stack-overflow defense (guarded in
+    // visitExpr; see SemaDepthGuard in sema_expr.cpp).
+    int recursion_depth_ = 0;
+
 };
 
 } // namespace mylang

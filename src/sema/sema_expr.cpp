@@ -10,7 +10,23 @@
 
 namespace mylang {
 
+// RAII recursion-depth guard for visitExpr — pathologically deep ASTs (e.g. a
+// 20k-long `1+1+1+...` chain) would otherwise overflow the stack.
+struct SemaDepthGuard {
+    int& depth;
+    bool exceeded;
+    SemaDepthGuard(int& d, int max) : depth(d), exceeded(false) {
+        if (++depth > max) exceeded = true;
+    }
+    ~SemaDepthGuard() { --depth; }
+};
+
 TypeInfo Sema::visitExpr(Expr& expr) {
+    SemaDepthGuard g(recursion_depth_, 300);
+    if (g.exceeded) {
+        error(expr.range, "expression nested too deeply");
+        return TypeInfo();
+    }
     TypeInfo result;
     switch (expr.kind) {
         case ExprKind::IntegerLiteral:

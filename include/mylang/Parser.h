@@ -12,6 +12,17 @@
 
 namespace mylang {
 
+// RAII recursion-depth guard — defends against stack overflow from
+// pathologically deep input (e.g. 10k nested '(' or '{').
+struct ParserDepthGuard {
+    int& depth;
+    bool exceeded;
+    ParserDepthGuard(int& d, int max) : depth(d), exceeded(false) {
+        if (++depth > max) exceeded = true;
+    }
+    ~ParserDepthGuard() { --depth; }
+};
+
 /// Recursive descent parser for MYP language.
 class Parser {
 public:
@@ -138,6 +149,9 @@ private:
     std::vector<Token> pending_;
     DiagnosticEngine& diag_;
     size_t current_ = 0;
+    // Recursion depth for deep-nesting stack-overflow defense (see
+    // ParserDepthGuard; guards live in parsePrimary/parseStatement).
+    int recursion_depth_ = 0;
 };
 
 } // namespace mylang
