@@ -27,6 +27,12 @@
 
 ## 编译器版本历史
 
+### v3.11.10
+- **`Parallel.setThreads(n)` 超过 CPU 数时打警告**：`myp_pool_set_threads` 在
+  `n > sysconf(_SC_NPROCESSORS_ONLN)` 时向 stderr 打一次警告（过订阅通常损害
+  吞吐），但仍尊重用户显式指定、不静默 cap。实测 `setThreads(64)` 于 16 核 →
+  警告 + 仍 64 worker；`setThreads(8)` 无警告。回归 O0/O2/ASAN 178/178 全过。
+
 ### v3.11.9
 - **parreduce 0.60→1.00**：并行归约基准曾用 `Atomic.addInt`（每元素原子 RMW），
   但每线程专属槽位（`Parallel.workerId()` 恒定、槽位互斥）**无竞争，普通
