@@ -2579,6 +2579,35 @@ import test;
 }
 ```
 
+### Stress Testing (tests/stress/)
+
+Stress tests for the runtime (ucontext coroutines, channels, async I/O, thread
+pool): hammer it with loads far beyond normal tests to find **crashes, memory
+leaks, deadlocks, data races, coroutine/handle leaks**. Unlike `bench/` (which
+measures performance against C++/Go), stress focuses on **stability** — no
+crash/leak/deadlock under pressure and correct results. Because the load is
+heavy and output includes timing data (ms / worker count), it is **separate from
+`run_tests.sh`** — run it on demand:
+
+```bash
+bash tests/stress/run_stress.sh                # all (-O2)
+bash tests/stress/run_stress.sh coro_flood     # a specific test
+TSAN=1 bash tests/stress/run_stress.sh         # ThreadSanitizer for data races
+ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer for memory errors
+```
+
+| Test | What it stresses | Verification |
+|------|------------------|--------------|
+| `coro_flood` | mass coroutine create/destroy (natural reclamation + `destroy` hard-kill) | `Coro.count()` returns to 0, no leak |
+| `coro_switch_storm` | context-switch throughput (ucontext swapcontext) | all finish, sums exact |
+| `channel_stress` | multi-producer/multi-consumer channels (cap=1 ping-pong + cap=8 batch) | no deadlock, Σrecv == expected |
+| `async_io_stress` | async loopback TCP (coroutines `await recvAsync`) | all clients get correct payload |
+| `parallel_stress` | `@parallel for` + Atomic high contention | Σ exact == n, ≥2 workers engaged |
+
+> Each test prints `PASS <name>`; the runner judges by exit code + PASS; exit
+> 0 = all pass, 1 = failures. This suite reproduced and fixed the intermittent
+> `@parallel for` hang (counter-reset race, see CHANGELOG).
+
 ### Code Formatter
 
 ```bash
@@ -2708,7 +2737,10 @@ MYPLanguage/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
 ├── src/                 # compiler source
 │   ├── main.cpp         # mypc driver (lexer→parser→sema→codegen→link)
-│   ├── ast/ lexer/ parser/ sema/ codegen/ runtime/
+│   ├── ast/ lexer/ runtime/ eval/ macro/ fmt/ lsp/ dap/   # see per-directory roles below
+│   ├── parser/          # syntax analysis (parser / parser_expr / parser_stmt, split by concern)
+│   ├── sema/            # semantic analysis (sema / sema_expr)
+│   ├── codegen/         # LLVM codegen (codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu + myp_passes)
 │   ├── eval/            # @eval compile-time evaluator
 │   ├── macro/           # macro expansion
 │   ├── fmt/             # formatter
@@ -2723,13 +2755,14 @@ MYPLanguage/
 ├── tests/               # run_tests.sh / run_tests_O2.sh / run_tests_asan.sh /
 │   └── ...              #   run_tests_tsan.sh / test_debug.sh / test_dap.py /
 │                        #   expected/ / negative/ / <feature>/
+│                        #   stress/ (coroutine/concurrency stress, run_stress.sh)
 ├── examples/            # complete examples (hello/fib/ad/BNCT/sdl/tui)
 ├── BNCTDoseEngine/      # BNCT Monte-Carlo engine (pure MYP + HDF5 cross-sections)
 ├── deeplearning/        # MLP + MNIST training/inference
 ├── vscode-myp/          # VS Code extension (syntax highlight + LSP + DAP)
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/
 │   └── ...              #   operators/metaprogramming/constructor/...
-├── build/               # build outputs: mypc, myp_debug, myp_lsp, myp_viz, myp_fmt
+├── build/               # build outputs: mypc, myp, myp_fmt2, myp_viz2, myp_debug, myp_lsp, myp_viz, myp_fmt
 └── build-asan/          # ASAN/UBSAN build
 ```
 
