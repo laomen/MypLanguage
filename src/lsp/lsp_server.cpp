@@ -306,7 +306,7 @@ void handleCompletion(const std::string& id, const std::string& /*params*/) {
     const char* keywords[] = {
         "class", "action", "event", "property", "interface", "import",
         "void", "byte", "short", "int", "long", "ubyte", "ushort", "uint", "ulong",
-        "uint8", "uint16", "uint32", "uint64",
+        "uint8", "uint16", "uint32", "uint64", "int8", "int16", "int32", "int64",
         "char", "float", "double", "bool", "string",
         "mapping", "if", "else", "while", "for", "return", "break", "continue",
         "static", "true", "false", "null", "this", "new", "struct", "function",

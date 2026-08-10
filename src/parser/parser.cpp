@@ -1967,6 +1967,10 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
                 case TokenKind::Type_uint16: elem_type.basic_type = BuiltinType::UShort; break;
                 case TokenKind::Type_uint32: elem_type.basic_type = BuiltinType::UInt; break;
                 case TokenKind::Type_uint64: elem_type.basic_type = BuiltinType::ULong; break;
+                case TokenKind::Type_int8:   elem_type.basic_type = BuiltinType::Byte; break;
+                case TokenKind::Type_int16:  elem_type.basic_type = BuiltinType::Short; break;
+                case TokenKind::Type_int32:  elem_type.basic_type = BuiltinType::Int; break;
+                case TokenKind::Type_int64:  elem_type.basic_type = BuiltinType::Long; break;
                 case TokenKind::Type_char:   elem_type.basic_type = BuiltinType::Char; break;
                 case TokenKind::Type_float:  elem_type.basic_type = BuiltinType::Float; break;
                 case TokenKind::Type_double: elem_type.basic_type = BuiltinType::Double; break;
@@ -2241,6 +2245,10 @@ TypeNode Parser::parseType() {
     else if (match(TokenKind::Type_uint16)) node.basic_type = BuiltinType::UShort;
     else if (match(TokenKind::Type_uint32)) node.basic_type = BuiltinType::UInt;
     else if (match(TokenKind::Type_uint64)) node.basic_type = BuiltinType::ULong;
+    else if (match(TokenKind::Type_int8))  node.basic_type = BuiltinType::Byte;
+    else if (match(TokenKind::Type_int16)) node.basic_type = BuiltinType::Short;
+    else if (match(TokenKind::Type_int32)) node.basic_type = BuiltinType::Int;
+    else if (match(TokenKind::Type_int64)) node.basic_type = BuiltinType::Long;
     else if (match(TokenKind::Type_char))  node.basic_type = BuiltinType::Char;
     else if (match(TokenKind::Type_float)) node.basic_type = BuiltinType::Float;
     else if (match(TokenKind::Type_double))node.basic_type = BuiltinType::Double;
@@ -2521,6 +2529,10 @@ bool Parser::checkType() const {
         case TokenKind::Type_uint16:
         case TokenKind::Type_uint32:
         case TokenKind::Type_uint64:
+        case TokenKind::Type_int8:
+        case TokenKind::Type_int16:
+        case TokenKind::Type_int32:
+        case TokenKind::Type_int64:
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:

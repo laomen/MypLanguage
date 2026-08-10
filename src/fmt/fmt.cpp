@@ -102,6 +102,10 @@ static bool isTypeKeyword(TokenKind k) {
         case TokenKind::Type_uint16:
         case TokenKind::Type_uint32:
         case TokenKind::Type_uint64:
+        case TokenKind::Type_int8:
+        case TokenKind::Type_int16:
+        case TokenKind::Type_int32:
+        case TokenKind::Type_int64:
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:

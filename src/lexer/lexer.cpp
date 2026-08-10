@@ -403,6 +403,10 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "uint16")   kind = TokenKind::Type_uint16;
     else if (value == "uint32")   kind = TokenKind::Type_uint32;
     else if (value == "uint64")   kind = TokenKind::Type_uint64;
+    else if (value == "int8")     kind = TokenKind::Type_int8;
+    else if (value == "int16")    kind = TokenKind::Type_int16;
+    else if (value == "int32")    kind = TokenKind::Type_int32;
+    else if (value == "int64")    kind = TokenKind::Type_int64;
     else if (value == "char")     kind = TokenKind::Type_char;
     else if (value == "float")    kind = TokenKind::Type_float;
     else if (value == "double")   kind = TokenKind::Type_double;

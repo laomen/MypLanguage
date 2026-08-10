@@ -68,6 +68,10 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Type_uint16:        return "uint16";
         case TokenKind::Type_uint32:        return "uint32";
         case TokenKind::Type_uint64:        return "uint64";
+        case TokenKind::Type_int8:          return "int8";
+        case TokenKind::Type_int16:         return "int16";
+        case TokenKind::Type_int32:         return "int32";
+        case TokenKind::Type_int64:         return "int64";
         case TokenKind::Type_char:          return "char";
         case TokenKind::Type_float:         return "float";
         case TokenKind::Type_double:        return "double";

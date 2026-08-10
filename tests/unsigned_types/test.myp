@@ -55,10 +55,21 @@ class Main {
             Console.writeLong(ver);   Console.writeString("\n");
             Console.writeLong(W[0]);  Console.writeString("\n");
             Console.writeLong(W[2]);  Console.writeString("\n");
+            // 有符号定宽别名 int8/int16/int32/int64
+            int8 s8 = -100;
+            int16 s16 = -30000;
+            int32 s32 = -2000000000;
+            int64 s64 = -9000000000000000000L;
+            Console.writeLong(s8);  Console.writeString("\n");
+            Console.writeLong(s16); Console.writeString("\n");
+            Console.writeLong(s32); Console.writeString("\n");
+            Console.writeLong(s64); Console.writeString("\n");
             if (big) Console.writeString("BIG\n"); else Console.writeString("notbig\n");
             if (small) Console.writeString("small\n"); else Console.writeString("notsmall\n");
             if (wrap == 0u && wrap2 == 1u) Console.writeString("WRAP\n");
             if (b64 == 0x123456789ABCDEF0u) Console.writeString("U64OK\n");
+            if (s8 == -100 && s16 == -30000 && s32 == -2000000000 && s64 == -9000000000000000000L)
+                Console.writeString("INTALIAS\n");
         }
 }
 

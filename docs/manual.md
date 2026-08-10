@@ -178,10 +178,10 @@ var v = A |> ScaleOp;
 
 | 类型 | 描述 | 大小 |
 |------|------|------|
-| `byte` | 有符号 8-bit | 8 |
-| `short` | 有符号 16-bit | 16 |
-| `int` | 有符号 32-bit | 32 |
-| `long` | 有符号 64-bit | 64 |
+| `byte` | 有符号 8-bit（`int8` 别名） | 8 |
+| `short` | 有符号 16-bit（`int16` 别名） | 16 |
+| `int` | 有符号 32-bit（`int32` 别名） | 32 |
+| `long` | 有符号 64-bit（`int64` 别名） | 64 |
 | `ubyte` | 无符号 8-bit（`uint8` 别名） | 8 |
 | `ushort` | 无符号 16-bit（`uint16` 别名） | 16 |
 | `uint` | 无符号 32-bit（`uint32` 别名） | 32 |

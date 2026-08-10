@@ -33,6 +33,7 @@ import "./lexer.myp";
             if (k == "byte" || k == "short" || k == "int" || k == "long"
                 || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong"
                 || k == "uint8" || k == "uint16" || k == "uint32" || k == "uint64"
+                || k == "int8" || k == "int16" || k == "int32" || k == "int64"
                 || k == "char" || k == "float" || k == "double" || k == "bool"
                 || k == "string" || k == "void" || k == "var") return 1;
             return 0;

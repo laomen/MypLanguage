@@ -40,6 +40,8 @@
   - 自举格式化/可视化器同步 `u` 后缀与新类型关键字（对拍通过）。
   - 新增回归测试 `tests/unsigned_types/`（逻辑右移/无符号除/比较/回绕/旋转/ZExt）。
   - 效果：bench sha256 用 uint32 后 32ms→22ms（比值 0.56→0.91），verify 不变。
+- **有符号定宽别名 `int8`/`int16`/`int32`/`int64`**（→`byte`/`short`/`int`/`long`，
+  与 uint 家族对称补齐）。
 
 ### v3.10.2（当前）
 - **变异模糊测试驱动的 7 项修复**（`tools/fuzz_myp.py`：对 tests/examples/stdlib 种子做
