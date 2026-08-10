@@ -55,6 +55,15 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     module_ = std::make_unique<llvm::Module>("myp_module", ctx_);
     current_tu_ = &tu;
+    // Opt-in IEEE relaxation (like -ffast-math): MYP_FAST_MATH=1 marks all FP
+    // ops with fast-math flags (reassoc/contract/nnan/...) so LLVM can vectorize
+    // FP reductions (e.g. matmul) and contract FMAs. Default OFF keeps strict
+    // IEEE semantics (matches the -O0/-O2 regression baseline).
+    if (const char* fm = getenv("MYP_FAST_MATH"); fm && fm[0] == '1') {
+        llvm::FastMathFlags fmf;
+        fmf.setFast();
+        builder_.setFastMathFlags(fmf);
+    }
     if (debug_mode_) initDebugInfo(output_fn);
     declareRuntimeFunctions();
     buildStructTypes(tu);
@@ -9849,6 +9858,22 @@ void CodeGen::declareRuntimeFunctions() {
 
 // -- Output --
 bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
+    // Set target triple + datalayout BEFORE the optimization pipeline so that
+    // target-dependent passes (LoopVectorize, etc.) get proper TTI / cost model.
+    // Previously this was only set AFTER the pipeline → the vectorizer had no
+    // target info and never ran (all loops stayed scalar, e.g. matmul 2x gap).
+    // The later block re-sets the same values and keeps a TargetMachine for the
+    // backend codegen.
+    {
+        llvm::Triple host_triple(llvm::sys::getDefaultTargetTriple());
+        module_->setTargetTriple(host_triple);
+        std::string err;
+        auto* tgt = llvm::TargetRegistry::lookupTarget(host_triple.getTriple(), err);
+        if (tgt) {
+            auto* tm = tgt->createTargetMachine(host_triple, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
+            module_->setDataLayout(tm->createDataLayout());
+        }
+    }
     // ---- IR optimization pipeline (-O1/-O2/-O3) ----
     // Runs the standard LLVM optimization passes (mem2reg, instcombine, GVN,
     // inlining, loop opts, ...) BEFORE the backend codegen. Without this, -O
@@ -9860,7 +9885,16 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
         llvm::FunctionAnalysisManager FAM;
         llvm::CGSCCAnalysisManager CGAM;
         llvm::ModuleAnalysisManager MAM;
-        llvm::PassBuilder PB;
+        // Pass the TargetMachine to PassBuilder so TTI (TargetIRAnalysis) is
+        // registered for target-dependent passes — without this the
+        // LoopVectorizer has no cost model and never vectorizes (historically
+        // ALL MYP loops stayed scalar, e.g. matmul ~2x gap vs C++).
+        llvm::Triple ht(llvm::sys::getDefaultTargetTriple());
+        std::string terr;
+        llvm::TargetMachine* opt_tm = nullptr;
+        if (auto* ttgt = llvm::TargetRegistry::lookupTarget(ht.getTriple(), terr))
+            opt_tm = ttgt->createTargetMachine(ht, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
+        llvm::PassBuilder PB(opt_tm);
         PB.registerModuleAnalyses(MAM);
         PB.registerCGSCCAnalyses(CGAM);
         PB.registerFunctionAnalyses(FAM);
