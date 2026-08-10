@@ -319,7 +319,29 @@ void CodeGen::buildClassStructTypes(TranslationUnit& tu) {
 
 // -- Struct type builder --
 void CodeGen::buildStructTypes(TranslationUnit& tu) {
-    // File-level structs
+    // Two-pass build: Pass 1 creates ALL struct types as empty named types
+    // (top-level + nested) BEFORE any body is computed, so a struct referencing
+    // another struct declared later in the merged TU resolves to the named type
+    // instead of falling through to an i32 placeholder. (Single-pass building
+    // made `struct Holder { Item it; } struct Item {...}` lay out Holder's
+    // field as i32 → LLVM verify "Call parameter type does not match function
+    // signature!" when passing h.it as an Item argument. Mirrors the sema
+    // two-phase struct registration fix.)
+    for (auto& st : tu.structs) {
+        std::string key = st.parent_class.empty()
+            ? st.name : st.parent_class + "::" + st.name;
+        struct_types_[key] = llvm::StructType::create(ctx_, key);
+    }
+    for (auto& cls : tu.classes) {
+        for (auto& st : cls.structs) {
+            std::string key = st.parent_class.empty()
+                ? st.name : st.parent_class + "::" + st.name;
+            struct_types_[key] = llvm::StructType::create(ctx_, key);
+        }
+    }
+    // Pass 2: fill bodies. Struct-typed fields resolve via getStructType to the
+    // (shared) named type object; bodies are set after all types exist so the
+    // final layout is correct regardless of declaration order.
     for (auto& st : tu.structs) {
         std::string key = st.parent_class.empty()
             ? st.name : st.parent_class + "::" + st.name;
@@ -329,9 +351,8 @@ void CodeGen::buildStructTypes(TranslationUnit& tu) {
             members.push_back(typeNodeToLLVMType(prop.type));
             struct_field_indices_[key][prop.name] = idx++;
         }
-        struct_types_[key] = llvm::StructType::create(ctx_, members, key);
+        struct_types_[key]->setBody(members);
     }
-    // Nested structs in classes
     for (auto& cls : tu.classes) {
         for (auto& st : cls.structs) {
             std::string key = st.parent_class.empty()
@@ -339,10 +360,10 @@ void CodeGen::buildStructTypes(TranslationUnit& tu) {
             std::vector<llvm::Type*> members;
             unsigned idx = 0;
             for (auto& prop : st.properties) {
-                members.push_back(getLLVMType(builtinTypeToInfo(prop.type.basic_type)));
+                members.push_back(typeNodeToLLVMType(prop.type));
                 struct_field_indices_[key][prop.name] = idx++;
             }
-            struct_types_[key] = llvm::StructType::create(ctx_, members, key);
+            struct_types_[key]->setBody(members);
         }
     }
 }

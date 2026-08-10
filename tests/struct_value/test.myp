@@ -1,0 +1,76 @@
+// struct 值语义测试
+// 验证：struct 按值传递/赋值是拷贝语义（副本修改不影响原值），
+// 以及 struct 作为函数参数/返回值的行为。
+import env;
+
+struct Point {
+    int x;
+    int y;
+}
+
+struct Pair {
+    Point first;
+    int second;
+}
+
+// 按值传参：函数内修改字段不影响调用方的原 struct
+void bumpX(Point p) {
+    p.x = p.x + 1000;
+}
+
+// 按值返回
+Point makePoint(int x, int y) {
+    Point p;
+    p.x = x;
+    p.y = y;
+    return p;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            bool ok = true;
+
+            // 1) 赋值拷贝：b = a 后改 b，a 不变
+            Point a;
+            a.x = 1; a.y = 2;
+            Point b = a;
+            b.x = 99;
+            ok = ok && (a.x == 1) && (b.x == 99);
+            Console.writeString("1) 赋值拷贝独立: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 2) 函数按值传参：改副本不影响原值
+            Point c;
+            c.x = 5; c.y = 6;
+            bumpX(c);
+            ok = ok && (c.x == 5);
+            Console.writeString("2) 传参按值: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 3) 函数按值返回
+            Point d = makePoint(7, 8);
+            ok = ok && (d.x == 7) && (d.y == 8);
+            Console.writeString("3) 按值返回: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 4) 嵌套 struct：复制含嵌套字段的 struct，改副本嵌套字段不影响原值
+            Pair pa;
+            pa.first.x = 1; pa.first.y = 2;
+            pa.second = 3;
+            Pair pb = pa;
+            pb.first.x = 50;
+            pb.second = 99;
+            ok = ok && (pa.first.x == 1) && (pa.second == 3);
+            ok = ok && (pb.first.x == 50) && (pb.second == 99);
+            Console.writeString("4) 嵌套拷贝独立: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            Console.writeString(ok ? "PASS struct_value\n" : "FAIL struct_value\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

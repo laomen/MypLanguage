@@ -1,0 +1,4 @@
+1) 嵌套前向引用: PASS
+2) struct 方法签名: PASS
+3) 类嵌套 struct: PASS
+PASS struct_reg_order

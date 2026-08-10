@@ -1,0 +1,69 @@
+// @thread 并发 + 原子累加测试
+// N 个 @threadpool worker 各自对共享计数器原子累加 M 次，
+// 主线程轮询等待全部完成，验证总数 == N*M。
+// 验证：@thread 真并发、共享 @static class 状态跨线程可见、Atomic.addInt 原子性。
+import env;
+import timeline;
+import atomic;
+
+@static class Shared {
+    property:
+        int[] counter;
+        int[] done;
+
+    static:
+        void init(int nworkers) {
+            Shared.counter = new int[1];
+            Shared.done = new int[1];
+            Shared.counter[0] = 0;
+            Shared.done[0] = 0;
+        }
+}
+
+class Worker {
+    action:
+        @startup void run() {
+            int m = 1000;
+            int i = 0;
+            while (i < m) {
+                Atomic.addInt(Shared.counter, 0, 1);
+                i = i + 1;
+            }
+            // 完成标记（原子 RMW，兼作原子读基准）
+            Atomic.addInt(Shared.done, 0, 1);
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            int N = 4;
+            Shared.init(N);
+            Worker[4] pool @threadpool;
+
+            // 轮询等待 4 个 worker 全部完成
+            Timeline tl;
+            int finished = 0;
+            while (finished < N) {
+                finished = Atomic.addInt(Shared.done, 0, 0);   // 原子读旧值
+                if (finished < N) {
+                    tl.sleep(1);
+                }
+            }
+
+            int total = Atomic.addInt(Shared.counter, 0, 0);
+            int expected = N * 1000;
+            bool ok = (total == expected);
+            Console.writeString(ok ? "PASS thread_atomic\n" : "FAIL thread_atomic\n");
+            Console.writeString("total=");
+            Console.write(total);
+            Console.writeString(" expected=");
+            Console.write(expected);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

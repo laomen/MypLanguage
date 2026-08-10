@@ -1,0 +1,3 @@
+PASS thread_atomic
+total=4000
+ expected=4000

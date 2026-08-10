@@ -1,0 +1,50 @@
+// struct 数组值语义测试
+// 验证：struct 数组元素各自独立（改一个不影响其他），
+// 固定数组与动态数组（new Point[n]）都正确。
+import env;
+
+struct Point {
+    int x;
+    int y;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            bool ok = true;
+
+            // 1) 固定大小 struct 数组：元素独立
+            Point[3] arr;
+            arr[0].x = 1; arr[0].y = 2;
+            arr[1].x = 10; arr[1].y = 20;
+            arr[2].x = 100; arr[2].y = 200;
+            // 改 arr[1]，arr[0]/arr[2] 不变
+            arr[1].x = 99;
+            ok = ok && (arr[0].x == 1) && (arr[1].x == 99) && (arr[2].x == 100);
+            Console.writeString("1) 固定数组元素独立: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 2) 动态 struct 数组
+            Point[] dyn = new Point[2];
+            dyn[0].x = 5; dyn[0].y = 6;
+            dyn[1].x = 7; dyn[1].y = 8;
+            dyn[0].y = 60;
+            ok = ok && (dyn[0].y == 60) && (dyn[1].y == 8);
+            Console.writeString("2) 动态数组元素独立: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 3) 数组整体拷贝：副本 struct 字段修改不影响原数组
+            Point[3] copy = arr;
+            copy[0].x = 555;
+            ok = ok && (arr[0].x == 1) && (copy[0].x == 555);
+            Console.writeString("3) 数组拷贝独立: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            Console.writeString(ok ? "PASS struct_array_value\n" : "FAIL struct_array_value\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

@@ -1,0 +1,4 @@
+1) 固定数组元素独立: PASS
+2) 动态数组元素独立: PASS
+3) 数组拷贝独立: PASS
+PASS struct_array_value
