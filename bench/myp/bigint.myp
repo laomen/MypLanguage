@@ -1,0 +1,75 @@
+// bench/myp/bigint.myp — 大数乘法（schoolbook，uint16 字 + 64 位进位链）
+// 512 字（8192 位）× 500 次（每次 LCG 重新生成操作数）；
+// verify = 结果字滚动校验和。与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long bigint(int n, int iters, int seed) {
+    uint16[] A = new uint16[n];
+    uint16[] B = new uint16[n];
+    uint16[] C = new uint16[2 * n];
+    long rng = seed;
+    long checksum = 0;
+    int it = 0;
+    while (it < iters) {
+        int i = 0;
+        while (i < n) {
+            rng = (rng * 1103515245L + 12345L) % 2147483648L;
+            A[i] = uint16((rng >> 16) & 0xFFFFL);
+            rng = (rng * 1103515245L + 12345L) % 2147483648L;
+            B[i] = uint16((rng >> 16) & 0xFFFFL);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 2 * n) {
+            C[i] = 0u;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < n) {
+            long carry = 0;
+            long av = long(A[i]);
+            int j = 0;
+            while (j < n) {
+                long cur = long(C[i + j]) + av * long(B[j]) + carry;
+                C[i + j] = uint16(cur & 0xFFFFL);
+                carry = cur >> 16;
+                j = j + 1;
+            }
+            int pos = i + n;
+            while (carry != 0 && pos < 2 * n) {
+                long s = long(C[pos]) + carry;
+                C[pos] = uint16(s & 0xFFFFL);
+                carry = s >> 16;
+                pos = pos + 1;
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < 2 * n) {
+            checksum = checksum + long(C[i]) * (i + 1);
+            i = i + 1;
+        }
+        it = it + 1;
+    }
+    return checksum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = bigint(512, 500, 13579);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

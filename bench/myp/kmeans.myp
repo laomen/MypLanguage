@@ -1,0 +1,106 @@
+// bench/myp/kmeans.myp — K-means 聚类（浮点距离 + 数据相关分支）
+// N=16384 点 × D=8 维 × K=8 簇 × 400 轮；verify = 最终各点簇号之和。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long kmeans(int n, int d, int k, int rounds, int seed) {
+    double[] pts = new double[n * d];
+    long rng = seed;
+    int i = 0;
+    while (i < n * d) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        pts[i] = ((rng >> 16) % 10000) / 100.0;   // 0..99.99
+        i = i + 1;
+    }
+    double[] cen = new double[k * d];
+    i = 0;
+    while (i < k * d) {
+        cen[i] = pts[i];
+        i = i + 1;
+    }
+    int[] assign = new int[n];
+    double[] sum = new double[k * d];
+    int[] cnt = new int[k];
+    int t = 0;
+    while (t < rounds) {
+        int p = 0;
+        int c = 0;
+        int q = 0;
+        int cc = 0;
+        while (p < n) {
+            double best = 1e300;
+            int bk = 0;
+            c = 0;
+            while (c < k) {
+                double s = 0.0;
+                q = 0;
+                while (q < d) {
+                    double df = pts[p * d + q] - cen[c * d + q];
+                    s = s + df * df;
+                    q = q + 1;
+                }
+                if (s < best) {
+                    best = s;
+                    bk = c;
+                }
+                c = c + 1;
+            }
+            assign[p] = bk;
+            p = p + 1;
+        }
+        c = 0;
+        while (c < k * d) { sum[c] = 0.0; c = c + 1; }
+        c = 0;
+        while (c < k) { cnt[c] = 0; c = c + 1; }
+        p = 0;
+        while (p < n) {
+            cc = assign[p];
+            cnt[cc] = cnt[cc] + 1;
+            q = 0;
+            while (q < d) {
+                sum[cc * d + q] = sum[cc * d + q] + pts[p * d + q];
+                q = q + 1;
+            }
+            p = p + 1;
+        }
+        c = 0;
+        while (c < k) {
+            if (cnt[c] > 0) {
+                q = 0;
+                while (q < d) {
+                    cen[c * d + q] = sum[c * d + q] / cnt[c];
+                    q = q + 1;
+                }
+            }
+            c = c + 1;
+        }
+        t = t + 1;
+    }
+    long v = 0;
+    i = 0;
+    while (i < n) {
+        v = v + assign[i];
+        i = i + 1;
+    }
+    return v;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = kmeans(16384, 8, 8, 400, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

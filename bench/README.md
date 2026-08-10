@@ -39,6 +39,9 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `base64` | Base64 编码：字符映射 + 位打包（perlbench 类字符串处理） | 8MB 字节流 |
 | `alphabeta` | 极小极大 + α-β 剪枝：递归游戏树搜索（deepsjeng 类） | B=6, D=14 |
 | `spmv` | 稀疏矩阵×稠密向量：CSR 随机 gather（cactuBSSN 类） | 65536 行 × 64 非零 |
+| `kmeans` | K-means 聚类：浮点距离 + 数据相关分支 | 16384 点×8维×8簇×400 轮 |
+| `bigint` | 大数乘法：schoolbook uint16 字 + 64 位进位链 | 8192 位 × 500 次 |
+| `huffman` | Huffman 编码：字节计数 + 二叉树 + 码长（uint8 下标） | 8MB 字节流 |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。
@@ -71,5 +74,9 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   （1.12）；alphabeta（递归搜索+剪枝）C++ 快 16%（0.86）；base64（字符/字节处理）
   曾 0.58（MYP 无强转填不了 `uint8[]`，只能 `long[]` 8 倍内存）——加显式转换
   `uint8(x)` 后改用 `uint8[]`，0.58→0.81。
+- **浮点/大数/压缩批（kmeans/bigint/huffman）**：huffman（字节计数+二叉树+uint8
+  下标）持平（1.06）；kmeans（浮点聚类）C++ 快 22%（0.82）；bigint（uint16 字大数
+  乘法+64 位进位链）C++ 快 19%（0.84）——bigint/kmeans 的差距来自 i64 宽算术与
+  浮点距离的寄存器压力，属宽算术/分配器差异。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。

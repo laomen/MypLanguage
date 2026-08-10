@@ -1,0 +1,125 @@
+// bench/myp/huffman.myp — Huffman 编码（字节计数 + 二叉树建树 + 码长）
+// 8MB 字节流（uint8[]，LCG）；verify = 总码长 ∑cnt×depth + 符号数×10^9。
+// cnt[msg[i]] 用 uint8 下标（验证下标 zext 修复）。与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long huffman(int n, int seed) {
+    uint8[] msg = new uint8[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        msg[i] = uint8((rng >> 16) & 0xFFL);
+        i = i + 1;
+    }
+    int[] cnt = new int[256];
+    i = 0;
+    while (i < n) {
+        cnt[msg[i]] = cnt[msg[i]] + 1;   // uint8 下标（zext 修复）
+        i = i + 1;
+    }
+    int MAX = 512;
+    int[] freq = new int[MAX];
+    int[] left = new int[MAX];
+    int[] right = new int[MAX];
+    int nid = 0;
+    i = 0;
+    while (i < 256) {
+        if (cnt[i] > 0) {
+            freq[nid] = cnt[i];
+            left[nid] = -1;
+            right[nid] = -1;
+            nid = nid + 1;
+        }
+        i = i + 1;
+    }
+    // 无序池 + 每轮线性扫描取最小两个（完全确定，无堆细节差异）
+    int[] pool = new int[MAX];
+    int poolSize = 0;
+    i = 0;
+    while (i < nid) {
+        pool[poolSize] = i;
+        poolSize = poolSize + 1;
+        i = i + 1;
+    }
+    while (poolSize > 1) {
+        int bi = 0;
+        int j = 1;
+        while (j < poolSize) {
+            if (freq[pool[j]] < freq[pool[bi]] ||
+                (freq[pool[j]] == freq[pool[bi]] && pool[j] < pool[bi])) bi = j;
+            j = j + 1;
+        }
+        int a = pool[bi];
+        pool[bi] = pool[poolSize - 1];
+        poolSize = poolSize - 1;
+        bi = 0;
+        j = 1;
+        while (j < poolSize) {
+            if (freq[pool[j]] < freq[pool[bi]] ||
+                (freq[pool[j]] == freq[pool[bi]] && pool[j] < pool[bi])) bi = j;
+            j = j + 1;
+        }
+        int b = pool[bi];
+        pool[bi] = pool[poolSize - 1];
+        poolSize = poolSize - 1;
+        freq[nid] = freq[a] + freq[b];
+        left[nid] = a;
+        right[nid] = b;
+        pool[poolSize] = nid;
+        poolSize = poolSize + 1;
+        nid = nid + 1;
+    }
+    int root = -1;
+    if (poolSize > 0) root = pool[0];
+    // 深度（码长）统计
+    int[] stack = new int[MAX];
+    int[] stackDepth = new int[MAX];
+    int sp = 0;
+    if (root >= 0) {
+        stack[sp] = root;
+        stackDepth[sp] = 0;
+        sp = sp + 1;
+    }
+    long sum = 0;
+    int nsym = 0;
+    while (sp > 0) {
+        sp = sp - 1;
+        int node = stack[sp];
+        int dep = stackDepth[sp];
+        if (left[node] < 0 && right[node] < 0) {
+            if (node < 256) {
+                sum = sum + long(cnt[node]) * dep;
+                nsym = nsym + 1;
+            }
+        } else {
+            stack[sp] = left[node];
+            stackDepth[sp] = dep + 1;
+            sp = sp + 1;
+            stack[sp] = right[node];
+            stackDepth[sp] = dep + 1;
+            sp = sp + 1;
+        }
+    }
+    return sum + nsym * 1000000000L;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = huffman(8388608, 98765);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
