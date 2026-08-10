@@ -13,8 +13,42 @@ namespace mylang {
 Sema::Sema(DiagnosticEngine& diag)
     : diag_(diag) {}
 
+void Sema::buildCurrentClassMemberTypes(const ClassDecl& decl) {
+    current_class_member_types_.clear();
+    for (auto& prop : decl.properties)
+        current_class_member_types_.emplace(prop.name, typeNodeToTypeInfo(prop.type));
+    for (auto& action : decl.actions) {
+        TypeInfo func_type(TypeKind::Function);
+        func_type.return_type = std::make_shared<TypeInfo>(
+            typeNodeToTypeInfo(action.return_type));
+        for (auto& param : action.params)
+            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+        populateFuncTypeMeta(func_type, action.params);
+        current_class_member_types_.emplace(action.name, std::move(func_type));
+    }
+    for (auto& func : decl.functions) {
+        TypeInfo func_type(TypeKind::Function);
+        func_type.return_type = std::make_shared<TypeInfo>(
+            typeNodeToTypeInfo(func.return_type));
+        for (auto& param : func.params)
+            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+        populateFuncTypeMeta(func_type, func.params);
+        current_class_member_types_.emplace(func.name, std::move(func_type));
+    }
+    for (auto& event : decl.events) {
+        TypeInfo event_type(TypeKind::Function);
+        event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
+        for (auto& param : event.params) {
+            event_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+            event_type.param_is_ref.push_back(false);
+        }
+        current_class_member_types_.emplace(event.name, std::move(event_type));
+    }
+}
+
 bool Sema::analyze(TranslationUnit& tu) {
     current_tu_ = &tu;
+    current_class_member_types_.clear();
     diag_.reset();
 
     // Register intrinsic functions (for stdlib use)
@@ -76,6 +110,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             continue;
         current_class_name_ = tu.classes[ci].name;
         in_class_method_ = true;
+        buildCurrentClassMemberTypes(tu.classes[ci]);
         // Actions (may trigger monomorphization → tu.classes may reallocate)
         size_t nactions = tu.classes[ci].actions.size();
         for (size_t ai = 0; ai < nactions; ai++) {
@@ -173,6 +208,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             in_coro_method_ = false;
         }
         in_class_method_ = false;
+        current_class_member_types_.clear();
     }
 
     // Type-check struct method bodies (file-level and nested)

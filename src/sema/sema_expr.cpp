@@ -227,52 +227,9 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
         }
     }
 
-    // If inside a class method, also search class properties/actions/events
-    if (in_class_method_ && current_tu_) {
-        for (auto& cls : current_tu_->classes) {
-            if (cls.name != current_class_name_) continue;
-            // Search properties first
-            for (auto& prop : cls.properties) {
-                if (prop.name == expr.name)
-                    return typeNodeToTypeInfo(prop.type);
-            }
-            // Then actions
-            for (auto& action : cls.actions) {
-                if (action.name == expr.name) {
-                    TypeInfo func_type(TypeKind::Function);
-                    func_type.return_type = std::make_shared<TypeInfo>(
-                        typeNodeToTypeInfo(action.return_type));
-                    for (auto& p : action.params)
-                        func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                    populateFuncTypeMeta(func_type, action.params);
-                    return func_type;
-                }
-            }
-            // Then function: section
-            for (auto& fn : cls.functions) {
-                if (fn.name == expr.name) {
-                    TypeInfo func_type(TypeKind::Function);
-                    func_type.return_type = std::make_shared<TypeInfo>(
-                        typeNodeToTypeInfo(fn.return_type));
-                    for (auto& p : fn.params)
-                        func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                    populateFuncTypeMeta(func_type, fn.params);
-                    return func_type;
-                }
-            }
-            // Then events
-            for (auto& ev : cls.events) {
-                if (ev.name == expr.name) {
-                    TypeInfo event_type(TypeKind::Function);
-                    event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-                    for (auto& p : ev.params) {
-                        event_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        event_type.param_is_ref.push_back(false);
-                    }
-                    return event_type;
-                }
-            }
-        }
+    if (in_class_method_) {
+        auto member = current_class_member_types_.find(expr.name);
+        if (member != current_class_member_types_.end()) return member->second;
     }
 
     error(expr.range, "undefined symbol '" + expr.name + "'");

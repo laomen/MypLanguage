@@ -58,6 +58,7 @@ private:
     std::unordered_map<std::string, llvm::StructType*> class_structs_;
     // Maps class name → property name → index in struct
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> property_indices_;
+    std::unordered_map<std::string, std::unordered_map<std::string, llvm::Type*>> property_types_;
     // Anonymous tuple structs, keyed by element LLVM type signature.
     std::unordered_map<std::string, llvm::StructType*> tuple_structs_;
 

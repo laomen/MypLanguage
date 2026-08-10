@@ -124,6 +124,7 @@ private:
     void error(const SourceRange& range, const std::string& msg);
     bool expectBool(const TypeInfo& type, const SourceRange& range);
     bool expectNumeric(const TypeInfo& type, const SourceRange& range);
+    void buildCurrentClassMemberTypes(const ClassDecl& decl);
 
     // ---- Mapping cycle detection ----
     void checkMappingCycles(const MappingDecl& decl);
@@ -164,6 +165,7 @@ private:
     // await-able inside an @coro context)
     bool isAsyncCallee(const Expr* callee) const;
     std::string current_class_name_;
+    std::unordered_map<std::string, TypeInfo> current_class_member_types_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct
 
     // ---- Enum info tracking ----

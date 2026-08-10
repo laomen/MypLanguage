@@ -310,8 +310,10 @@ void CodeGen::buildClassStructTypes(TranslationUnit& tu) {
         std::vector<llvm::Type*> members;
         unsigned idx = 0;
         for (auto& prop : cls.properties) {
-            members.push_back(typeNodeToLLVMType(prop.type));
+            auto* prop_type = typeNodeToLLVMType(prop.type);
+            members.push_back(prop_type);
             property_indices_[cls.name][prop.name] = idx++;
+            property_types_[cls.name][prop.name] = prop_type;
         }
         class_structs_[cls.name]->setBody(members);
     }
@@ -496,8 +498,11 @@ bool CodeGen::getPropertyIndex(const std::string& cn, const std::string& pn, uns
 }
 
 llvm::Type* CodeGen::getPropertyType(const ClassDecl& cls, const std::string& pn) {
-    for (auto& p : cls.properties)
-        if (p.name == pn) return typeNodeToLLVMType(p.type);
+    auto class_it = property_types_.find(cls.name);
+    if (class_it != property_types_.end()) {
+        auto property_it = class_it->second.find(pn);
+        if (property_it != class_it->second.end()) return property_it->second;
+    }
     return llvm::Type::getInt32Ty(ctx_);
 }
 
