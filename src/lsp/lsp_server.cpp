@@ -49,6 +49,8 @@ struct Document {
     std::unique_ptr<TranslationUnit> ast;
     DefinitionMap def_map;
     std::unordered_map<std::string, std::string> hover_map;
+    std::string document_symbols_cache;
+    bool document_symbols_cache_valid = false;
     std::string stdlib_path = "stdlib";
 
     void updateLines() {
@@ -77,6 +79,8 @@ static void parseDocument(Document& doc, const std::string& uri) {
     doc.ast = nullptr;
     doc.def_map.clear();
     doc.hover_map.clear();
+    doc.document_symbols_cache.clear();
+    doc.document_symbols_cache_valid = false;
     
     // Extract file path from URI (file:///path → /path)
     std::string filepath = uri;
@@ -351,6 +355,8 @@ void handleTextDocumentDidChange(const std::string& params) {
         it->second.ast = nullptr;    // invalidate old AST
         it->second.def_map.clear();  // clear def map
         it->second.hover_map.clear();
+        it->second.document_symbols_cache.clear();
+        it->second.document_symbols_cache_valid = false;
         completion_cache_valid_ = false;
     }
 }
@@ -543,6 +549,10 @@ void handleDocumentSymbol(const std::string& id, const std::string& params) {
     auto it = documents_.find(uri);
     if (it == documents_.end()) { sendResponse(id, "[]"); return; }
     if (!it->second.ast) parseDocument(it->second, uri);
+    if (it->second.document_symbols_cache_valid) {
+        sendResponse(id, it->second.document_symbols_cache);
+        return;
+    }
 
     std::string symbols;
     int count = 0;
@@ -576,11 +586,9 @@ void handleDocumentSymbol(const std::string& id, const std::string& params) {
         }
     }
 
-    if (count == 0) {
-        sendResponse(id, "[]");
-    } else {
-        sendResponse(id, "[" + symbols + "]");
-    }
+    it->second.document_symbols_cache = count == 0 ? "[]" : "[" + symbols + "]";
+    it->second.document_symbols_cache_valid = true;
+    sendResponse(id, it->second.document_symbols_cache);
     } catch (...) { sendResponse(id, "[]"); }
 }
 

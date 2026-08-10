@@ -47,6 +47,15 @@ function completion(id) {
     });
 }
 
+function documentSymbols(id) {
+    send({
+        jsonrpc: "2.0",
+        id,
+        method: "textDocument/documentSymbol",
+        params: { textDocument: { uri } },
+    });
+}
+
 send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
 send({
     jsonrpc: "2.0",
@@ -62,14 +71,17 @@ hover(7, source, 6, "count");
 hover(8, source, 8, "twice");
 hover(9, source, 10, "Color");
 hover(10, source, 11, "helper");
+documentSymbols(13);
+documentSymbols(14);
 send({
     jsonrpc: "2.0",
     method: "textDocument/didChange",
     params: { textDocument: { uri }, contentChanges: [{ text: changedSource }] },
 });
-hover(11, changedSource, 0, "Beta");
-completion(12);
-send({ jsonrpc: "2.0", id: 13, method: "shutdown", params: {} });
+hover(15, changedSource, 0, "Beta");
+completion(16);
+documentSymbols(17);
+send({ jsonrpc: "2.0", id: 18, method: "shutdown", params: {} });
 
 const result = spawnSync(lsp, [], {
     input: frames.join(""),
@@ -105,7 +117,7 @@ const expected = new Map([
     [8, "Alpha::twice(int) → int"],
     [9, "enum Color { Red, Blue }"],
     [10, "function helper(int) → int"],
-    [11, "class Beta\n---\nactions: 1, events: 1, properties: 1"],
+    [15, "class Beta\n---\nactions: 1, events: 1, properties: 1"],
 ]);
 
 let failures = 0;
@@ -119,7 +131,7 @@ for (const [id, text] of expected) {
 
 const initialCompletion = responses.get(2)?.result;
 const cachedCompletion = responses.get(3)?.result;
-const changedCompletion = responses.get(12)?.result;
+const changedCompletion = responses.get(16)?.result;
 const initialLabels = initialCompletion?.items?.map((item) => item.label) || [];
 const changedLabels = changedCompletion?.items?.map((item) => item.label) || [];
 if (JSON.stringify(cachedCompletion) !== JSON.stringify(initialCompletion)) {
@@ -135,5 +147,23 @@ if (!changedLabels.includes("Beta") || changedLabels.includes("Alpha")) {
     failures++;
 }
 
+const initialSymbols = responses.get(13)?.result;
+const cachedSymbols = responses.get(14)?.result;
+const changedSymbols = responses.get(17)?.result;
+const initialSymbolNames = initialSymbols?.map((symbol) => symbol.name) || [];
+const changedSymbolNames = changedSymbols?.map((symbol) => symbol.name) || [];
+if (JSON.stringify(cachedSymbols) !== JSON.stringify(initialSymbols)) {
+    console.error("document symbol cache changed an identical response");
+    failures++;
+}
+if (!initialSymbolNames.includes("Alpha") || initialSymbolNames.includes("Beta")) {
+    console.error("initial document symbols do not contain the expected class");
+    failures++;
+}
+if (!changedSymbolNames.includes("Beta") || changedSymbolNames.includes("Alpha")) {
+    console.error("changed document symbols were not invalidated");
+    failures++;
+}
+
 if (failures > 0) process.exit(1);
-console.log(`myp-lsp PASS=${expected.size + 3} FAIL=0`);
+console.log(`myp-lsp PASS=${expected.size + 6} FAIL=0`);
