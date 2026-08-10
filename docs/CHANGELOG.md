@@ -27,6 +27,12 @@
 
 ## 编译器版本历史
 
+### v3.11.7
+- **并行基准 parcomp**：MYP `@parallel for`（16 线程池，写入 slice）vs C++
+  `std::thread`（16 线程分块）——0.94 基本持平（MYP 17ms vs C++ 16ms，串行同负载
+  180ms+）。首个并行基准，验证 `@parallel for` + slice 的并行效率与手写线程相当。
+  33 项基准 verify 全一致。
+
 ### v3.11.6
 - **`@parallel for` 与 slice 联用**：此前并行体（emitKernelExpr 路径）只支持普通
   数组——`slice<T>[i]` 读写直接 GEP 捕获的 `{data,len}` 结构体值 → LLVM verify 失败；
