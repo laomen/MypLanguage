@@ -526,6 +526,12 @@ private:
     void createInitFunction();
     void emitInitMappingCalls();
     void generateTestRunner();
+    // Non-library builds: mark every function definition except `main` as
+    // `internal` so LLVM's IPO (IPSCCP + inliner + vectorizer) can
+    // constant-specialize and inline hot top-level kernels (e.g. benchmarks
+    // called with constant args), which unlocks unrolling/vectorization.
+    // Skipped in library mode (--shared/--static) where symbols are an API.
+    void markNonMainFunctionsInternal();
 
     // ---- Statement generation ----
     void generateBlock(const BlockStmt& stmt);

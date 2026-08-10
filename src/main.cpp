@@ -289,6 +289,7 @@ static bool loadModule(const std::string& module_name,
                                   int opt_level = 0,
                                   bool trace_enabled = false,
                                   bool emit_llvm = false,
+                                  bool library_mode = false,
                                   bool test_mode = false,
                                   bool debug = false,
                                   const std::string& passes = "",
@@ -336,7 +337,7 @@ static bool loadModule(const std::string& module_name,
     }
     phaseMark("imports");
 
-    return doCompile(*ast, filename, opt_level, emit_llvm, false, test_mode, debug, passes, macro_expand, diag, auto_main);
+    return doCompile(*ast, filename, opt_level, emit_llvm, library_mode, test_mode, debug, passes, macro_expand, diag, auto_main);
 }
 
 [[nodiscard]] static bool linkObjects(const std::vector<std::string>& obj_files,
@@ -630,7 +631,7 @@ static int runFile(int argc, char* argv[], int sub_idx, int opt_level) {
     }
 
     // 编译（auto_main=true → 单类文件自动 main）；产物 <file>.myp.o
-    auto obj = compileSingle(file, stdlib_path, "", opt_level, false, false, false, false, "", false, true);
+    auto obj = compileSingle(file, stdlib_path, "", opt_level, false, false, false, false, false, "", false, true);
     if (obj.empty()) return 1;
 
     // 链接到临时二进制
@@ -834,13 +835,13 @@ static int realMain(int argc, char* argv[]) {
         if (filenames.size() > 1) {
             std::cerr << "Warning: --emit-llvm only supported for single file\n";
         }
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, test_mode, debug_mode, passes, macro_expand);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, true, library_mode, test_mode, debug_mode, passes, macro_expand);
         return obj.empty() ? 1 : 0;
     }
 
     if (filenames.size() == 1) {
         // Single file: use simple compile + link
-        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, test_mode, debug_mode, passes, macro_expand);
+        auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, library_mode, test_mode, debug_mode, passes, macro_expand);
         if (obj.empty()) return 1;
         if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
             return 1;

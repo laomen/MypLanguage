@@ -116,6 +116,12 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
         generateTestRunner();
     }
 
+    // Non-library builds: internalize all function definitions except `main`
+    // so LLVM IPO can constant-specialize + inline hot kernels.
+    if (!library_mode_) {
+        markNonMainFunctionsInternal();
+    }
+
     finalizeDebugInfo();
 
     // If codegen-level semantic errors were emitted (e.g. "undefined variable"
@@ -2940,6 +2946,16 @@ void CodeGen::emitInitMappingCalls() {
     for (auto& m : current_tu_->mappings) generateMappingDecl(m, bb);
 
     builder_.CreateRetVoid();
+}
+
+void CodeGen::markNonMainFunctionsInternal() {
+    for (auto& fn : module_->functions()) {
+        if (fn.isDeclaration()) continue;   // runtime/C declarations stay external
+        if (fn.getName() == "main") continue;  // C runtime entry point
+        // Skip `used`/address-exposed functions? InternalLinkage still keeps the
+        // address valid; only symbol visibility changes. Safe for callbacks.
+        fn.setLinkage(llvm::GlobalValue::InternalLinkage);
+    }
 }
 
 // -- Statements --
