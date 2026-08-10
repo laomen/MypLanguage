@@ -1,0 +1,94 @@
+// stress/channel_stress.myp — 通道多生产者/多消费者压力
+//
+// P 个生产者协程各 send `per` 个值，C 个消费者协程各 recv `P*per/C` 个值。
+// 用不同通道容量（cap=1 强制 ping-pong、cap=8 批量）跑多轮，验证：
+//   - 无死锁（全部结束后 Coro.count() 归零）
+//   - 消费者累加和 == 理论值（Σ(p*per+i)）
+// 运行: ./build/mypc -O2 stress/channel_stress.myp -o /tmp/ch && /tmp/ch
+import env;
+import coro;
+import channel;
+
+class Producer {
+    action:
+        @coro(stack=64) long run(Channel ch, long p, long per) {
+            long i = 0;
+            while (i < per) {
+                ch.send(p * per + i);
+                i = i + 1;
+            }
+            return p * per;
+        }
+}
+
+class Consumer {
+    action:
+        @coro(stack=64) long run(Channel ch, long n) {
+            long sum = 0;
+            long i = 0;
+            while (i < n) {
+                sum = sum + ch.recv();
+                i = i + 1;
+            }
+            return sum;
+        }
+}
+
+// 理论总和：Σ_{p=0}^{P-1} Σ_{i=0}^{per-1} (p*per + i)
+long expectedSum(long P, long per) {
+    long s = 0;
+    long p = 0;
+    while (p < P) {
+        long i = 0;
+        while (i < per) { s = s + (p * per + i); i = i + 1; }
+        p = p + 1;
+    }
+    return s;
+}
+
+class Main {
+    action:
+        void runRound(int cap) {
+            long P = 4;
+            long C = 4;
+            long per = 5000;
+            long[] hp = new long[P];
+            long[] hc = new long[C];
+            Channel ch = new Channel();
+            ch.init(cap);
+            long p = 0;
+            while (p < P) {
+                Producer pr = new Producer();
+                hp[p] = pr.run(ch, p, per);
+                p = p + 1;
+            }
+            long nrecv = P * per / C;
+            long c = 0;
+            while (c < C) {
+                Consumer co = new Consumer();
+                hc[c] = co.run(ch, nrecv);
+                c = c + 1;
+            }
+            int guard = 0;
+            while (Coro.count() > 0 && guard < 5000000) { Coro.scheduler(); guard = guard + 1; }
+            long sum = 0;
+            long i = 0;
+            while (i < C) { sum = sum + Coro.result(hc[i]); i = i + 1; }
+            long expect = expectedSum(P, per);
+            long left = Coro.count();
+            ch.destroy();
+            Console.writeString("cap=" + cap + " sum=" + sum + " expect=" + expect + " left=" + left + "\n");
+            if (left != 0 || sum != expect) Console.writeLine("FAIL channel_stress cap=" + cap);
+            else Console.writeLine("PASS channel_stress cap=" + cap);
+        }
+
+        @constructor Main() {
+            runRound(1);
+            runRound(8);
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

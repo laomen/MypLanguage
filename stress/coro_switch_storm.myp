@@ -1,0 +1,57 @@
+// stress/coro_switch_storm.myp — 上下文切换风暴
+//
+// K 个协程 × M 次 await = K*M 次挂起/恢复（ucontext swapcontext）。
+// 每次 await 前做累加模拟真实负载；全部结束后验证：
+//   - Coro.count() 归零（无泄漏/卡死）
+//   - 各协程返回值（累加和）正确（Coro.result）
+// 运行: ./build/mypc -O2 stress/coro_switch_storm.myp -o /tmp/sw && /tmp/sw
+import env;
+import coro;
+import time;
+
+class Counter {
+    action:
+        @coro(stack=64) long run(long m, long step) {
+            long acc = 0;
+            long j = 0;
+            while (j < m) {
+                acc = acc + step;
+                await;
+                j = j + 1;
+            }
+            return acc;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            long K = 200;
+            long M = 20000;
+            long step = 3;
+            long[] hs = new long[K];
+            long i = 0;
+            while (i < K) {
+                Counter c = new Counter();
+                hs[i] = c.run(M, step);
+                i = i + 1;
+            }
+            long t0 = Time.nowMs();
+            int guard = 0;
+            while (Coro.count() > 0 && guard < 3000000) { Coro.scheduler(); guard = guard + 1; }
+            long t1 = Time.nowMs();
+            long sum = 0;
+            i = 0;
+            while (i < K) { sum = sum + Coro.result(hs[i]); i = i + 1; }
+            long expect = K * M * step;
+            long left = Coro.count();
+            Console.writeString("switches=" + (K * M) + " ms=" + (t1 - t0) + " sum=" + sum + " expect=" + expect + " left=" + left + "\n");
+            if (left == 0 && sum == expect) Console.writeLine("PASS coro_switch_storm");
+            else Console.writeLine("FAIL coro_switch_storm");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

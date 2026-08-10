@@ -1,0 +1,67 @@
+// stress/coro_flood.myp — 协程海量创建/销毁风暴
+//
+// 多波次创建大量 @coro（stack=64KB），验证两类回收路径：
+//   A) 自然回收：Coro.scheduler() 驱动全部结束后 Coro.count() 归零
+//   B) 强杀回收：Coro.destroy 全部后 Coro.count() 归零
+// 峰值内存 ≈ K × 64KB；总计创建 = K × 波数 × 2。
+//
+// 运行: ./build/mypc -O2 stress/coro_flood.myp -o /tmp/coro_flood && /tmp/coro_flood
+import env;
+import coro;
+
+// 轻量协程：几次 await 后自然结束（每次 await 都做点算术模拟真实负载）
+class Ping {
+    action:
+        @coro(stack=64) void run(long id) {
+            long x = id * 2 + 1;
+            await;
+            long y = x * x;
+            await;
+            long z = y - x;
+            await;
+            long w = z + id;
+            await;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            long K = 3000;
+            int waves = 6;
+            int fails = 0;
+            long total = 0;
+            int w = 0;
+            while (w < waves) {
+                long[] hs = new long[K];
+
+                // 波 A：自然回收（scheduler 驱动到全部结束）
+                long i = 0;
+                while (i < K) { Ping p = new Ping(); hs[i] = p.run(i); i = i + 1; }
+                int guard = 0;
+                while (Coro.count() > 0 && guard < 2000000) { Coro.scheduler(); guard = guard + 1; }
+                long leftA = Coro.count();
+                if (leftA != 0) { fails = fails + 1; Console.writeString("FAIL natural wave " + w + " left=" + leftA + "\n"); }
+                total = total + K;
+
+                // 波 B：强杀回收（destroy 全部）
+                i = 0;
+                while (i < K) { Ping p = new Ping(); hs[i] = p.run(i); i = i + 1; }
+                i = 0;
+                while (i < K) { Coro.destroy(hs[i]); i = i + 1; }
+                long leftB = Coro.count();
+                if (leftB != 0) { fails = fails + 1; Console.writeString("FAIL destroy wave " + w + " left=" + leftB + "\n"); }
+                total = total + K;
+
+                w = w + 1;
+            }
+            Console.writeString("total=" + total + " count=" + Coro.count() + "\n");
+            if (fails == 0) Console.writeLine("PASS coro_flood");
+            else Console.writeLine("FAIL coro_flood fails=" + fails);
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

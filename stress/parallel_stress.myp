@@ -1,0 +1,49 @@
+// stress/parallel_stress.myp — @parallel for 多线程高压竞争
+//
+// 多轮 @parallel for + Atomic 精确累加（无浮点顺序问题，和必须精确 == n），
+// 并检测 worker 分布（多核上应出现 >=2 个 worker 真正并行）。
+// 运行: ./build/mypc -O2 stress/parallel_stress.myp -o /tmp/pl && /tmp/pl
+import env;
+import pool;
+import atomic;
+
+class Main {
+    action:
+        @constructor Main() {
+            long n = 200000;
+            int ROUNDS = 8;
+            int fails = 0;
+            int r = 0;
+            while (r < ROUNDS) {
+                // 精确计数累加：Σ tally == n（整型，无精度问题）
+                int[64] tally;
+                @parallel for (int i = 0; i < n; i = i + 1) {
+                    Atomic.addInt(tally, i % 64, 1);
+                }
+                long sum = 0;
+                for (int j = 0; j < 64; j = j + 1) sum = sum + tally[j];
+                if (sum != n) { fails = fails + 1; Console.writeString("FAIL round " + r + " sum=" + sum + " expect=" + n + "\n"); }
+                r = r + 1;
+            }
+            // worker 分布检测：多核机器应出现 >=2 个 worker
+            int[4096] tid;
+            @parallel for (int i = 0; i < 4096; i = i + 1) {
+                tid[i] = Parallel.workerId();
+            }
+            int[64] seen;
+            for (int j = 0; j < 4096; j = j + 1) {
+                int w = tid[j];
+                if (w >= 0 && w < 64) seen[w] = 1;
+            }
+            int workers = 0;
+            for (int j = 0; j < 64; j = j + 1) workers = workers + seen[j];
+            Console.writeString("rounds=" + ROUNDS + " workers=" + workers + "\n");
+            if (fails == 0 && workers >= 2) Console.writeLine("PASS parallel_stress");
+            else Console.writeLine("FAIL parallel_stress fails=" + fails);
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

@@ -1,0 +1,71 @@
+// stress/async_io_stress.myp — 异步 loopback socket 压力
+//
+// 服务器线程接受 C 个连接，每个连接发送 payload 后关闭；
+// C 个客户端协程各自 connect + await recvAsync，校验收到的数据。
+// 验证：全部客户端收到正确数据、无挂起/超时、协程归零。
+// 运行: ./build/mypc -O2 stress/async_io_stress.myp -o /tmp/io && /tmp/io
+import env;
+import net;
+import coro;
+import async;
+import time;
+
+class Server {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(9101);
+            int i = 0;
+            while (i < 32) {
+                TcpClient cl = new TcpClient();
+                srv.accept(cl);
+                cl.send("P" + i);
+                cl.close();
+                i = i + 1;
+            }
+            srv.close();
+        }
+}
+
+class Client {
+    action:
+        @coro(stack=64) long run(int id) {
+            TcpClient c = new TcpClient();
+            c.connect("127.0.0.1", 9101);
+            string d = await c.recvAsync(64);
+            long ok = 0;
+            if (d == ("P" + id)) ok = 1;
+            c.close();
+            return ok;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            int C = 32;
+            Server s = new Server() @thread;
+            Time.sleep(100);              // 等服务器 bind+listen
+            long[] hs = new long[C];
+            int i = 0;
+            while (i < C) {
+                Client c = new Client();
+                hs[i] = c.run(i);
+                i = i + 1;
+            }
+            // 驱动客户端协程（每轮 10ms，最多 10s）
+            int guard = 0;
+            while (Coro.count() > 0 && guard < 1000) { Coro.scheduler(); Time.sleep(10); guard = guard + 1; }
+            long ok = 0;
+            long total = 0;
+            i = 0;
+            while (i < C) { total = total + Coro.result(hs[i]); i = i + 1; }
+            Console.writeString("clients=" + C + " ok=" + total + " left=" + Coro.count() + "\n");
+            if (total == C && Coro.count() == 0) Console.writeLine("PASS async_io_stress");
+            else Console.writeLine("FAIL async_io_stress");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}
