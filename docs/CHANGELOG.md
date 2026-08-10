@@ -27,6 +27,16 @@
 
 ## 编译器版本历史
 
+### v3.11.11
+- **MYP `@coro` vs Go goroutine 协程对比**：新增 `bench/go/`（Go 侧）+ `bench/myp/`
+  的 coro_switch/coro_spawn + `bench/run_compare_go.sh`（MYP -O2 vs `go build`）。
+  - coro_switch（200 协程 × 10000 次挂起/恢复）：MYP 406ms vs Go 306ms（0.75，
+    Go 快 ~33%）——ucontext 交换 vs Go 抢占调度，差距不大。
+  - coro_spawn（20000 个只返回协程）：MYP 527ms vs Go 3ms（0.01，Go 快 ~175x）
+    ——Go goroutine ~2KB 可增长栈极廉价；MYP @coro 每个分配固定栈（默认 128KB，
+    `@coro(stack=KB)` 可调小）+ ucontext 初始化。
+  - 结论：MYP 协程适合少量长生命周期任务（I/O/事件），不适合海量短任务。
+
 ### v3.11.10
 - **`Parallel.setThreads(n)` 超过 CPU 数时打警告**：`myp_pool_set_threads` 在
   `n > sysconf(_SC_NPROCESSORS_ONLN)` 时向 stderr 打一次警告（过订阅通常损害
