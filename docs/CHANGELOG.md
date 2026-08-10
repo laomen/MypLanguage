@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.11.6
+- **`@parallel for` 与 slice 联用**：此前并行体（emitKernelExpr 路径）只支持普通
+  数组——`slice<T>[i]` 读写直接 GEP 捕获的 `{data,len}` 结构体值 → LLVM verify 失败；
+  `slice<struct>` 字段 `v[i].x` 读/写静默返回 0（verify 错乱）。修复：
+  - Subscript 读/写分支识别 slice 变量，解包 `{data,len}` + 边界检查 + GEP
+    （`data` 指针线程共享，各线程写不同索引无竞争）。
+  - 新增 `emitKernelElementAddr`（slice 解包 / 普通数组直 GEP 统一元素地址）。
+  - MemberAccess 读 + Assignment 写处理 Subscript 对象（slice<struct> 与 struct
+    数组的字段访问）。
+  - 实测：串行 37ms → `@parallel for` 3ms（~12x，16 线程池）；verify 与串行一致。
+  - 回归测试 `tests/parallel_slice/`；回归 O0/O2/ASAN 178/178 全过。
+
 ### v3.11.5
 - **嵌套泛型解析**：`slice<slice<int>>`、`Box<Vec<int>>`、`foo<Bar<int>>(...)`、
   `new Box<int>[]` 此前无法解析——lexer 把 `>>` 合成一个 `GreaterGreater` token，
