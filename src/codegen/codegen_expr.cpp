@@ -483,9 +483,13 @@ llvm::Value* CodeGen::generateShortCircuitLogic(const BinaryOpExpr& e) {
     // RHS 分支
     func->insert(func->end(), rhs_bb);
     builder_.SetInsertPoint(rhs_bb);
+    size_t before_rhs = arc_pending_temps_.size();
     auto* r = generateExpr(*e.rhs);
     if (!r->getType()->isIntegerTy(1))
         r = builder_.CreateICmpNE(r, llvm::ConstantInt::get(r->getType(), 0));
+    // ARC: RHS 创建的临时对象在 rhs_bb 内释放（rhs 结果是 i1，绝无临时对象；
+    // merge 块可从 entry 直达，语句末释放会违反支配 → LLVM verify 崩溃）。
+    arcEndBranch(before_rhs, r);
     if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(merge_bb);
     auto* last_rhs = builder_.GetInsertBlock();
     // Merge
@@ -2099,6 +2103,30 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
             }
         }
     }
+    // obj.method().field — member access on a method call that returns a class
+    // instance (e.g. `w.get().x`). Previously fell through to the fallback
+    // `return generateExpr(*e.object)` below, dropping the field and passing
+    // the raw instance pointer to the consumer (LLVM verify error: call
+    // parameter type does not match function signature). Resolve the class from
+    // the sema-recorded object type and GEP the property.
+    if (e.object->kind == ExprKind::Call && !e.resolved_object_class.empty()) {
+        auto* op = generateExpr(*e.object);
+        if (op && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != e.resolved_object_class) continue;
+                unsigned pi = 0;
+                if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                    auto* st = getClassStruct(cls.name);
+                    if (st) {
+                        auto* gep = builder_.CreateStructGEP(st, op, pi);
+                        auto* pt = getPropertyType(cls, e.member_name);
+                        if (pt->isArrayTy()) return gep;
+                        return builder_.CreateLoad(pt, gep);
+                    }
+                }
+            }
+        }
+    }
     return generateExpr(*e.object);
 }
 
@@ -2715,12 +2743,19 @@ llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
     builder_.CreateCondBr(cond, true_bb, false_bb);
     // True branch
     builder_.SetInsertPoint(true_bb);
+    size_t before_true = arc_pending_temps_.size();
     auto* true_val = generateExpr(*e.true_expr);
+    // ARC: 释放本分支创建的中间临时对象；若结果本身是新类引用临时对象则转移
+    // 所有权给 phi（见 generateTernary 末尾）。merge 可从另一分支直达，语句末
+    // 释放会违反支配。
+    llvm::Value* true_owned = arcEndBranch(before_true, true_val);
     auto* last_true = builder_.GetInsertBlock();
     // False branch
     func->insert(func->end(), false_bb);
     builder_.SetInsertPoint(false_bb);
+    size_t before_false = arc_pending_temps_.size();
     auto* false_val = generateExpr(*e.false_expr);
+    llvm::Value* false_owned = arcEndBranch(before_false, false_val);
     auto* last_false = builder_.GetInsertBlock();
 
     // Numeric ternary branches can differ in width (e.g. `? 1 : x` — literal 1
@@ -2771,6 +2806,12 @@ llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
     auto* phi = builder_.CreatePHI(common_ty, 2, "ternary");
     phi->addIncoming(t_cast, last_true);
     phi->addIncoming(f_cast, last_false);
+    // If both arms produced fresh class-ref temps, the phi owns whichever arm
+    // was taken — push it so the statement-end flush releases it once. If only
+    // ONE arm was a fresh temp (mixed owned/borrowed), releasing the phi could
+    // double-free the borrowed branch, so the fresh temp is consumed above and
+    // intentionally leaked (safe; single object, rare pattern).
+    if (true_owned && false_owned) arcPushTemp(phi);
     return phi;
 }
 

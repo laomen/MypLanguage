@@ -993,6 +993,31 @@ void CodeGen::arcConsumeTemp(llvm::Value* v) {
         if (*it == v) { arc_pending_temps_.erase(it); return; }
     }
 }
+// End of a conditional branch block (short-circuit RHS / ternary arm): the merge
+// block is reachable from sibling blocks (short-circuit/other arm), so the
+// statement-end flush — emitted in merge — would release temps created here in
+// a block they do NOT dominate (LLVM verify: "Instruction does not dominate all
+// uses"). Release branch-local intermediates HERE (the current block dominates
+// its own instructions). If the branch result itself is a freshly-created class-
+// ref temp, ownership transfers to the merge phi: consume it from the pending
+// list and return it so the caller can push the phi as the surviving temp.
+llvm::Value* CodeGen::arcEndBranch(size_t before, llvm::Value* branch_result) {
+    llvm::Value* owned = nullptr;
+    if (arc_pending_temps_.size() <= before) return owned;
+    for (auto it = arc_pending_temps_.begin() + (ptrdiff_t)before;
+         it != arc_pending_temps_.end(); ) {
+        if (branch_result && *it == branch_result) {
+            owned = *it;
+            it = arc_pending_temps_.erase(it);
+        } else {
+            if (runtime_release_ && builder_.GetInsertBlock() &&
+                !builder_.GetInsertBlock()->getTerminator())
+                builder_.CreateCall(runtime_release_, {*it});
+            it = arc_pending_temps_.erase(it);
+        }
+    }
+    return owned;
+}
 // End of statement: release any `new` temporaries nobody stored.
 void CodeGen::arcFlushTemps() {
     if (arc_pending_temps_.empty()) return;

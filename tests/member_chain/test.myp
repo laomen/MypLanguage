@@ -1,0 +1,56 @@
+// member_chain: 方法调用结果上的链式访问 + 条件表达式 ARC 释放
+// 覆盖：obj.method().field（此前 codegen fallback 丢字段 → LLVM verify 崩溃）；
+// && / || / ternary 分支内创建类临时对象（语句末统一释放违反支配 → verify 崩溃）。
+import env;
+
+class Point {
+    property: int x; int y;
+    action: @constructor Point(int a, int b) { x = a; y = b; }
+}
+
+class W {
+    action:
+        void set(Point v) { p = v; }
+        Point get() { return p; }
+    property:
+        Point p;
+}
+
+class Wrap<T> {
+    action:
+        void set(T v) { value = v; }
+        T get() { return value; }
+    property:
+        T value;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            // 链式字段访问（非泛型 + 泛型）
+            W w = new W(); w.set(new Point(3, 4));
+            W w2 = new W(); w2.set(new Point(5, 6));
+            int a = w.get().x;
+            int b = w.get().y;
+
+            Wrap<Point> wp = new Wrap<Point>(); wp.set(new Point(7, 8));
+            int c = wp.get().x;               // 泛型实例方法返回类的字段
+            int d = wp.get().y;
+
+            // && 短路 + 分支内临时对象
+            bool e = w.get().x == 3 && w2.get().x == 5;
+            bool f = w.get().x == 99 && w2.get().x == 5;   // 短路路径
+            // || 短路
+            bool g = w.get().x == 99 || w2.get().x == 5;
+            // ternary 分支内字段访问 + 类结果
+            int h = true ? w.get().x : w2.get().x;
+            Point i = true ? new Point(1, 1) : new Point(2, 2);
+
+            bool ok = a == 3 && b == 4 && c == 7 && d == 8 &&
+                      e && !f && g && h == 3 && i.x == 1;
+            Console.writeString(ok ? "PASS member_chain" : "FAIL member_chain");
+            Console.writeString("\n");
+        }
+}
+
+int main(){ Main m = new Main(); return 0; }

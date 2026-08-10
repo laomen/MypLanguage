@@ -28,6 +28,23 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **修复条件表达式（`&&`/`||`/ternary）分支内类临时对象 ARC 释放违反支配（LLVM verify 崩溃）**：
+  - 症状：`w.get().x == 3 && w2.get().x == 5`（方法调用返回类的链式字段访问）、
+    `true ? w.get().x : w2.get().x`、`c ? new Point(1) : new Point(2)` 报
+    `LLVM verify failed: Instruction does not dominate all uses!`。链式 `get().x`
+    还会丢字段（`Console_write(ptr)` 参数类型不匹配）。
+  - 根因一（丢字段）：`generateMemberAccess` 对 `Call` 对象无分支，fallback 直接
+    返回调用结果。修复：sema 在 `MemberAccessExpr` 记录对象解析 class，codegen
+    用它对调用结果 GEP 字段（新增 `resolved_object_class`）。
+  - 根因二（不支配）：`arc_pending_temps_` 扁平列表在**语句末**统一释放；短路 `&&`
+    的 merge 块可从 entry 直达（跳过 rhs_bb），ternary 的 merge 可从另一分支直达
+    —— 分支块不支配 merge，分支内创建的临时对象在 merge 释放违反支配。
+  - 修复：新增 `arcEndBranch(before, result)`——在分支块内释放分支创建的中间临时
+    对象；若分支结果是新类引用临时对象则转移所有权给 merge phi（两臂都是新临时时
+    推 phi 由语句末释放一次；单臂新临时时消费并泄漏，避免对借用分支双重释放）。
+    应用于 `generateShortCircuitLogic`（rhs_bb）与 `generateTernary`（true/false_bb）。
+  - 验证：`&&`/`||`/ternary × 链式字段访问/类结果全部通过；新增 `tests/member_chain/`；
+    190/190 回归 + ASAN + TSAN 压力测试全过。
 - **修复 @macro StmtList 累加拼接 O(n²)（`out = out + quote{...}` 惯用法）**：
   - 症状：文档推荐的 `makeCalls(n)` 风格循环里每次 `+` 都深克隆整个已累加列表 →
     二次方。实测 gen(1000)→0.5s、gen(4000)→7.6s、gen(10000)→**46s**（每翻倍 n

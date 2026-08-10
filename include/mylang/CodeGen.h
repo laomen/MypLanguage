@@ -197,6 +197,10 @@ private:
     void arcPushTemp(llvm::Value* v);
     void arcConsumeTemp(llvm::Value* v);
     void arcFlushTemps();
+    // Release branch-created temporaries inside the branch block; transfer the
+    // branch result if it is a fresh class-ref temp (returns it for the merge
+    // phi to take ownership). See arcEndBranch in codegen.cpp.
+    llvm::Value* arcEndBranch(size_t before, llvm::Value* branch_result);
     // Release every live scope's local reference slots (function epilogue —
     // called before a return so locals that would otherwise be skipped by the
     // dead-path popScope are freed; retain-at-return already +1'd the result).

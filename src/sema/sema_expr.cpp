@@ -1351,6 +1351,12 @@ bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     auto obj_type = visitExpr(*expr.object);
 
+    // Record the object's resolved class so codegen can emit field access on a
+    // method-call result (`obj.method().field`) — that case has no variable
+    // name for the var_class_map_ lookup and previously fell through codegen,
+    // dropping the field (LLVM verify: param type mismatch).
+    expr.resolved_object_class = obj_type.class_name;
+
     // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
     if (obj_type.kind == TypeKind::Tuple && !expr.member_name.empty()) {
         bool all_digits = std::all_of(expr.member_name.begin(), expr.member_name.end(),

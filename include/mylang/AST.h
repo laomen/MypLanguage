@@ -449,6 +449,10 @@ struct CallExpr : Expr {
 struct MemberAccessExpr : Expr {
     std::unique_ptr<Expr> object;
     std::string member_name;
+    // sema：对象表达式的解析类型 class_name（如 `w.get().x` 的 w.get() 解析为
+    // class Point）。codegen 用它对方法调用结果做字段访问（该场景无变量名可查
+    // var_class_map_）。泛型模板体内由 codegen 按实例另行解析。
+    std::string resolved_object_class;
     MemberAccessExpr(std::unique_ptr<Expr> obj, std::string mem, SourceRange range_)
         : Expr(ExprKind::MemberAccess, range_), object(std::move(obj)), member_name(std::move(mem)) {}
 };
