@@ -197,7 +197,9 @@ void Lexer::scanToken() {
                         ch = peek();
                         break;
                 }
-                advance();
+                // Backslash as the very last char (e.g. '\ at EOF) — don't
+                // advance past the buffer.
+                if (!isAtEnd()) advance();
             } else {
                 ch = advance();
             }
@@ -258,7 +260,9 @@ Token Lexer::scanString() {
                     diag_.error(currentRange(), "unknown escape sequence");
                     break;
             }
-            advance();
+            // The backslash may be the very last char (unterminated string
+            // like "\ at EOF) — don't advance past the buffer.
+            if (!isAtEnd()) advance();
         } else {
             value += advance();
         }
@@ -307,8 +311,10 @@ Token Lexer::scanNumber() {
     while (std::isdigit(peek()) || peek() == '.') {
         if (peek() == '.') {
             if (is_float) break; // second dot -> stop
-            // Check for ".." range operator — don't consume if followed by another dot
-            if (source_[offset_] == '.' && source_[offset_ + 1] == '.') break;
+            // Check for ".." range operator — don't consume if followed by
+            // another dot. Guard: the '.' may be the last char ("5." at EOF),
+            // so source_[offset_ + 1] would read out of bounds.
+            if (offset_ + 1 < source_.size() && source_[offset_ + 1] == '.') break;
             is_float = true;
         }
         value += advance();

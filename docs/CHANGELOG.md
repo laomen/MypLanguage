@@ -66,6 +66,14 @@
     parser_expr.cpp + parser_stmt.cpp。最大文件 10807 → ~2900 行。
   - `convertIntegerValue`/`zextIndexValue` 去 static 并在 `CodeGen.h` 声明（跨 TU）。
 
+- **修复词法层 3 处缓冲区越界读取（fuzz 暴露，畸形输入崩溃 SIGABRT）**：
+  - `scanNumber`：`5.`（数字后点 + EOF）时 `source_[offset_ + 1]` 越界（`..` 范围
+    符判断未做边界检查）。
+  - `scanString` / 字符字面量：`"\` / `'\`（反斜杠是最后一个字符）时转义处理后
+    无条件 `advance()` 越过缓冲末尾。
+  - 修复：`source_[offset_+1]` 加 `offset_+1 < source_.size()` 守卫；转义处理后
+    `if (!isAtEnd()) advance()`。修复前 3036 个边角料输入 3 崩溃 → 修复后 0。
+
 ### v3.11.19
 - **C 运行时以 -O2 编译（perf 定位：`cpp_long` channel 乒乓 N=10⁷ 的
   `myp_channel_recv` 31.6% / `myp_channel_wake_one` 15.0%）**：
