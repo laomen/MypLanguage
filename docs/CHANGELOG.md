@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.11.12
+- **MYP vs Go 主套件全量对比**：把 21 个主套件基准（sieve..bigint）逐个移植为
+  `bench/go/*.go`（由 `bench/cpp/*.cpp` 逐文件翻译，同算法/同规模/同 LCG），
+  `bench/run_compare_go.sh` 从 2 个协程专项扩展为 **21 主套件 + 2 协程**共 23 项，
+  verify 与 MYP 全部对拍（整数精确、浮点 1e-3 容差）。
+  - 结果：MYP 赢 20/21 项，几何平均 ~1.8x；仅 `fft` Go 略快（0.86）。
+  - 最大差距在浮点/带宽类：convolution 4.04、kmeans 3.81、matmul 3.47、sobel
+    3.17、radixsort 2.20、spmv 2.15——根因是 MYP 走 LLVM O2 **自动向量化**，Go
+    默认不向量化。
+  - 整数/分支/字符串类 1.1~1.7x：quicksort 1.14、kmp 1.18、heapsort 1.15、
+    sieve 1.08、mandelbrot 1.01 等。
+  - 移植中修正：sha256 初版用了旧的 64KB 消息长度，与 C++/MYP 的 4MB 不一致导致
+    verify 不符（实现本身经 Go 标准库 crypto/sha256 与 sha256sum 双重验证正确）。
+
 ### v3.11.11
 - **MYP `@coro` vs Go goroutine 协程对比**：新增 `bench/go/`（Go 侧）+ `bench/myp/`
   的 coro_switch/coro_spawn + `bench/run_compare_go.sh`（MYP -O2 vs `go build`）。

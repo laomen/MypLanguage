@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# run_compare_go.sh — 对比 MYP @coro 协程 vs Go goroutine 效率
+# run_compare_go.sh — 对比 MYP vs Go 效率（主套件 + @coro 协程专项）
 #
 # 用法：bash bench/run_compare_go.sh [iterations]   # 默认 3 轮取最小 ms
 #
 # 每个基准 MYP 侧输出 "verify <值> / ms <毫秒>"，Go 侧同格式。
-# 比值 = Go_ms / MYP_ms（>1 表示 Go 更快）。
+# 比值 = Go_ms / MYP_ms（<1 表示 Go 更快）。
 #
 # 覆盖：
+#   21 个主套件基准（sieve..bigint）— 与 bench/cpp/*.cpp 同算法同规模，
+#   Go 版逐文件移植，verify 与 MYP 完全对拍（整数精确、浮点 1e-3 容差）。
 #   coro_switch  — 协程上下文切换吞吐（K 协程 × M 次挂起/恢复）
 #   coro_spawn   — 协程 spawn 开销（K 个只返回的协程）
 set -u
@@ -17,7 +19,12 @@ GO=${GO:-go}
 ITERS=${1:-3}
 mkdir -p out
 
-names=(coro_switch coro_spawn)
+names=(
+    sieve matmul nbody mandelbrot tripleloop fft sha256 quicksort knapsack
+    kmp crc32 radixsort sobel floyd heapsort convolution base64 spmv kmeans
+    huffman bigint
+    coro_switch coro_spawn
+)
 
 build_all() {
     local ok=1
