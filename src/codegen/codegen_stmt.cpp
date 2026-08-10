@@ -1975,6 +1975,11 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
             builder_.CreateStore(llvm::ConstantInt::get(i8_ty, 0), finally_flag);
             builder_.CreateBr(finally_bb);
         } else {
+            // No finally: the try body completed normally — pop the handler so
+            // a throw in a later catch body targets the outer handler, not this
+            // try. (With a finally, the pop happens at finally-block entry.)
+            builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+                runtime_exception_pop_, {});
             builder_.CreateBr(merge_bb);
         }
     }
@@ -2033,6 +2038,15 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
 
             // Generate this catch body: bind the variable, run the block.
             builder_.SetInsertPoint(catch_bbs[i]);
+            // A throw inside a catch body must propagate to the OUTER handler,
+            // not re-trigger this try (previously: infinite loop). Pop this
+            // try's handler before running the catch body — but only when there
+            // is no finally (the finally-block entry pop already covers the
+            // catch-end path when a finally exists; popping here too would
+            // double-pop).
+            if (!finally_bb)
+                builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+                    runtime_exception_pop_, {});
             bool iface_catch = isErrorInterface(cc.var_type);
             bool obj_catch = !cc.var_type.empty() && cc.var_type != "string" && !iface_catch;
             llvm::Value* caught_slot = nullptr;   // non-null → release at catch end
@@ -2120,6 +2134,12 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     if (finally_bb) {
         finally_ctx_stack_.back().in_finally = true;
         builder_.SetInsertPoint(finally_bb);
+        // Pop this try's handler BEFORE running the finally body: a throw here
+        // (or in a nested finally) must go to the OUTER handler, not re-trigger
+        // this try (infinite loop). All finally entry paths (try end / catch
+        // end / propagate / return/break/continue forwarding) converge here.
+        builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+            runtime_exception_pop_, {});
         if (s.finally_block) generateBlock(*s.finally_block);
         finally_ctx_stack_.back().in_finally = false;
         if (!builder_.GetInsertBlock()->getTerminator()) {
@@ -2206,8 +2226,13 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // === rethrow: pop this handler and longjmp to the next (outer) handler ===
     if (rethrow_bb) {
         builder_.SetInsertPoint(rethrow_bb);
-        builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
-            runtime_exception_pop_, {});
+        // With a finally, the handler was already popped at finally-block entry
+        // (mode-1 dispatch happens there); popping again would pop the outer
+        // try's handler. Without a finally (catch-only no-match), this is the
+        // only pop on the path.
+        if (!finally_bb)
+            builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+                runtime_exception_pop_, {});
         // Leaving the function (no enclosing same-function try): free the
         // remaining outer slots before the outward longjmp.
         emitUnwindRelease(true);
@@ -2219,9 +2244,9 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     }
 
     builder_.SetInsertPoint(merge_bb);
-    // Pop this try's handler (all paths converge here).
-    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
-        runtime_exception_pop_, {});
+    // (Handler is popped on every path into here: try-body end when there is no
+    // finally, catch-body entry, or finally-block entry. An unconditional pop
+    // here would double-pop the outer try's handler.)
     // Pop the unwind-collection context (must match the emplace_back at entry).
     if (!try_ctx_stack_.empty()) try_ctx_stack_.pop_back();
 }
@@ -2229,8 +2254,10 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
 void CodeGen::emitExceptionRethrow() {
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
-    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
-        runtime_exception_pop_, {});
+    // NOTE: no myp_exception_pop here — `throw;` is only valid inside a catch
+    // body, and the handler was already popped at catch-body entry (or at the
+    // enclosing finally-block entry). Popping again would pop the OUTER try's
+    // handler and misdirect the rethrow (caught as "uncaught").
     // Rethrow leaving the function: free the still-live outer slots first.
     emitUnwindRelease(true);
     auto* jb2 = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),

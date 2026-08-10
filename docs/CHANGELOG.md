@@ -28,6 +28,19 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **修复 catch/finally 体内 throw 无限循环（异常 handler 未及时 pop）**：
+  - 症状：`try { throw "a"; } finally { throw "b"; }`、catch 体内 `throw`、嵌套
+    finally 内抛 → 无限循环（运行时几秒吐出千万行）。根因：本 try 的 handler
+    （jmp_buf）直到 `merge_bb`/`rethrow_bb` 才 pop，而 catch/finally **体**执行时
+    它仍在栈顶 → 体内 throw 经 `__myp_throw` 长跳到**同一 try** → 反复触发。
+  - 修复（codegen_stmt.cpp）：handler 只在 try 体执行期间保持激活——
+    - 有 finally：在 `finally_bb` 起点 pop（覆盖 try 结束/catch 结束/propagate/
+      return/break/continue 转发全部入口）；
+    - 无 finally（仅 catch）：try 体正常结束、catch 体起点、`rethrow_bb` 各 pop；
+    - `emitExceptionRethrow`（裸 `throw;`）去掉 pop——`throw;` 只在 catch 内，
+      handler 已在 catch 起点 pop 过，再 pop 会弹掉外层 handler（表现为未捕获）。
+  - 验证：finally 抛替换原异常传外层、catch 体抛传外层、裸重抛保消息、嵌套 finally
+    全正确；新增 `tests/exception_throwin/`；191/191 回归 + ASAN 压力全过。
 - **修复条件表达式（`&&`/`||`/ternary）分支内类临时对象 ARC 释放违反支配（LLVM verify 崩溃）**：
   - 症状：`w.get().x == 3 && w2.get().x == 5`（方法调用返回类的链式字段访问）、
     `true ? w.get().x : w2.get().x`、`c ? new Point(1) : new Point(2)` 报

@@ -1,0 +1,54 @@
+// exception_throwin: catch/finally 体内 throw 传播
+// 此前：catch/finally 体执行时本 try 的 handler 仍在栈顶 → 体内 throw 重新触发
+// 同一 try → 无限循环（fuzz 测试暴露）。修复后抛向最外层 handler。
+// 覆盖：finally 抛、catch 体抛、裸重抛 throw;、嵌套 finally + 抛。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // 1) finally 内 throw → 外层 catch（替换原异常）
+            try {
+                try { throw "a"; } finally { throw "b"; }
+                Console.writeString("unreach1\n");
+            } catch (string e) {
+                Console.writeString("case1:" + e + "\n");
+            }
+
+            // 2) catch 体内 throw → 外层 catch
+            try {
+                try { throw "x"; } catch (string e) {
+                    Console.writeString("case2_inner\n");
+                    throw "from_catch";
+                }
+            } catch (string e) {
+                Console.writeString("case2:" + e + "\n");
+            }
+
+            // 3) 裸重抛 throw; → 外层保留原消息
+            try {
+                try { throw "re"; } catch (string e) {
+                    Console.writeString("case3_inner\n");
+                    throw;
+                }
+            } catch (string e) {
+                Console.writeString("case3:" + e + "\n");
+            }
+
+            // 4) 嵌套 finally，内层 finally 抛 → 外层 catch
+            try {
+                try {
+                    throw "deep";
+                } finally {
+                    Console.writeString("case4_f1\n");
+                    try { throw "f2"; } finally { Console.writeString("case4_f2\n"); }
+                }
+            } catch (string e) {
+                Console.writeString("case4:" + e + "\n");
+            }
+
+            Console.writeString("done\n");
+        }
+}
+
+int main(){ Main m = new Main() @thread; return 0; }
