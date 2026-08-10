@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(BNCTDoseEngine C)
+enable_language(ASM)
 
 # ---- Find HDF5 (serial) ----
 find_package(PkgConfig REQUIRED)
@@ -53,8 +54,12 @@ target_include_directories(hdf5_bridge PRIVATE
 )
 
 # ---- Build runtime from MYP compiler ----
+# coro_ctx.S provides myp_ctx_switch on x86-64 (the ucontext fallback in
+# runtime.c is only used on non-x86-64); without it linking fails with
+# "undefined reference to myp_ctx_switch".
 add_library(myp_runtime OBJECT
     ${RUNTIME_DIR}/runtime.c
+    ${RUNTIME_DIR}/coro_ctx.S
     ${RUNTIME_DIR}/runtime_gpu.c
 )
 target_include_directories(myp_runtime PRIVATE ${MYP_INCLUDE_DIR})
