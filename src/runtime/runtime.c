@@ -3343,23 +3343,30 @@ static void myp_ctx_switch(myp_ctx_t* save, myp_ctx_t* load) {
 #endif
 
 // ASan 对 ucontext 有内建 fiber 支持；自研切换绕过它，需显式通知 sanitizer 正在
-// 切换栈（否则 asan 构建产生假阳性栈不匹配）。弱引用——非 asan 链接为 no-op。
+// 切换栈（否则 asan 构建产生假阳性栈不匹配）。**只在 ASan 编译下启用**：gcc 编译
+// runtime.c 带 -fsanitize=address 时定义 __SANITIZE_ADDRESS__。普通/TSan 构建里
+// 这些符号恒为 NULL，保留运行时检查会让 resume/yield 每次切换付一次 GOT 加载 +
+// 分支（perf：非 ASan cpp_long 的 __sanitizer_finish_switch_fiber NULL 检查占
+// resume/yield 自样本 64~80%），故编译期整体剔除。
+#if defined(__SANITIZE_ADDRESS__)
 extern void __sanitizer_start_switch_fiber(void** fake_stack_save,
-                                           const void* bottom, size_t size)
-    __attribute__((weak));
+                                           const void* bottom, size_t size);
 extern void __sanitizer_finish_switch_fiber(void* fake_stack_save,
                                             const void** bottom_old,
-                                            size_t* size_old)
-    __attribute__((weak));
+                                            size_t* size_old);
 static __thread void* myp_asan_fake_stack = NULL;
 static void myp_asan_start_switch(const void* bottom, size_t size) {
-    if (__sanitizer_start_switch_fiber)
-        __sanitizer_start_switch_fiber(&myp_asan_fake_stack, bottom, size);
+    __sanitizer_start_switch_fiber(&myp_asan_fake_stack, bottom, size);
 }
 static void myp_asan_finish_switch(void) {
-    if (__sanitizer_finish_switch_fiber)
-        __sanitizer_finish_switch_fiber(myp_asan_fake_stack, NULL, NULL);
+    __sanitizer_finish_switch_fiber(myp_asan_fake_stack, NULL, NULL);
 }
+#else
+static inline void myp_asan_start_switch(const void* bottom, size_t size) {
+    (void)bottom; (void)size;
+}
+static inline void myp_asan_finish_switch(void) {}
+#endif
 
 // §五-1 收尾: one entry in a coroutine's frame ARC registry — the object a
 // local ARC slot currently holds (slot_id = alloca address, used only as a

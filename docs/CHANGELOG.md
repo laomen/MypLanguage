@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.11.20
+- **协程切换路径剔除 sanitizer fiber 钩子（perf 定位：非 ASan `cpp_long` 的
+  `__sanitizer_finish_switch_fiber` NULL 检查占 `__myp_coro_resume`/`__myp_coro_yield`
+  自样本 64~80%）**：
+  - `__myp_coro_resume`/`__myp_coro_yield`/trampoline 每次上下文切换都做两次
+    `if (__sanitizer_start_switch_fiber)` 运行时检查——weak 符号经 GOT 加载 + 分支，
+    普通/TSan 构建里恒为 NULL，纯浪费（perf 样本大量聚在切换返回后的检查指令上）。
+  - 修复：`src/runtime/runtime.c` 用 `#if defined(__SANITIZE_ADDRESS__)` 守卫——
+    只在 ASan 编译（`-fsanitize=address` → gcc 定义该宏）下启用 fiber 钩子；
+    普通/TSan 构建编译期整体剔除（行为与 weak-NULL no-op 一致，少 GOT 加载+分支）。
+    顺带把 `myp_asan_fake_stack` 从非 ASan 的 TLS 布局里移出（TLS 块小 8 字节）。
+  - 效果：`cpp_long`（channel 乒乓 N=10⁷）454→441ms（~3%，交错 A/B 一致）；
+    coro_switch 66→62ms。ASan 路径不变：`build-asan` 全局 `-fsanitize=address` →
+    `__SANITIZE_ADDRESS__` 定义 → 钩子保留，ASan 冒烟 + 181/181 回归全过。
+  - 181/181 正常 + ASan、25/25 Go、33/33 C++ 基准全部通过，无回归。
+  - 注：perf 显示剩余热点是 channel send/recv/wake + 2 次上下文切换/消息的固有
+    机器开销（切换返回边界的样本涂抹），无单一可安全下刀的大项。
+
 ### v3.11.19
 - **C 运行时以 -O2 编译（perf 定位：`cpp_long` channel 乒乓 N=10⁷ 的
   `myp_channel_recv` 31.6% / `myp_channel_wake_one` 15.0%）**：
