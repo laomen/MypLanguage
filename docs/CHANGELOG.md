@@ -27,6 +27,13 @@
 
 ## 编译器版本历史
 
+### v3.11.9
+- **parreduce 0.60→1.00**：并行归约基准曾用 `Atomic.addInt`（每元素原子 RMW），
+  但每线程专属槽位（`Parallel.workerId()` 恒定、槽位互斥）**无竞争，普通
+  load-add-store 即可**——去掉原子后 MYP 3ms vs C++ std::thread 3ms 完全持平
+  （verify 仍精确一致 496532956）。**MYP 并行归约最佳实践：每线程槽位用普通写，
+  只有共享槽位才用 `Atomic`**。
+
 ### v3.11.8
 - **并行归约基准 parreduce**：`@parallel for` + `Atomic.addInt`（每线程
   `Parallel.workerId()` 槽位低竞争）vs C++ `std::thread` 各自累加——verify 精确
