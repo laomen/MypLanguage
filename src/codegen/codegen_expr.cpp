@@ -1,0 +1,2788 @@
+// expression codegen — part of the CodeGen implementation, split from codegen.cpp.
+// Pure refactor: member definitions moved out of the 10k-line monolith;
+// no behavior change. See codegen.cpp for the class declaration.
+
+#include "mylang/CodeGen.h"
+#include "mylang/MypPasses.h"
+
+#include <llvm/BinaryFormat/Dwarf.h>
+#include <llvm/IR/DIBuilder.h>
+#include <llvm/IR/DebugInfo.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/TargetParser/Triple.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Support/FileSystem.h>
+#include <llvm/Support/raw_ostream.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/ADT/SmallString.h>
+
+#include <llvm/IR/IntrinsicsNVPTX.h>
+#include <llvm/IRReader/IRReader.h>
+#include <llvm/Linker/Linker.h>
+#include <llvm/Support/SourceMgr.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/IPO/AlwaysInliner.h>
+#include <llvm/Transforms/IPO/GlobalDCE.h>
+#include <llvm/Transforms/Instrumentation/ThreadSanitizer.h>
+
+// NVPTX target initialization (must be at global scope)
+extern "C" void LLVMInitializeNVPTXTargetInfo(void);
+extern "C" void LLVMInitializeNVPTXTarget(void);
+extern "C" void LLVMInitializeNVPTXTargetMC(void);
+extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
+
+#include <cstdlib>
+#include <iostream>
+
+namespace mylang {
+
+llvm::Value* CodeGen::generateExpr(const Expr& e) {
+    switch (e.kind) {
+        case ExprKind::IntegerLiteral: return generateIntegerLiteral(static_cast<const IntegerLiteralExpr&>(e));
+        case ExprKind::FloatLiteral:   return generateFloatLiteral(static_cast<const FloatLiteralExpr&>(e));
+        case ExprKind::BoolLiteral:    return generateBoolLiteral(static_cast<const BoolLiteralExpr&>(e));
+        case ExprKind::StringLiteral:  return generateStringLiteral(static_cast<const StringLiteralExpr&>(e));
+        case ExprKind::NullLiteral:    return generateNullLiteral(static_cast<const NullLiteralExpr&>(e));
+        case ExprKind::Identifier:     return generateIdentifier(static_cast<const IdentifierExpr&>(e));
+        case ExprKind::BinaryOp:       return generateBinaryOp(static_cast<const BinaryOpExpr&>(e));
+        case ExprKind::UnaryOp:        return generateUnaryOp(static_cast<const UnaryOpExpr&>(e));
+        case ExprKind::Convert:        return generateConvert(static_cast<const ConvertExpr&>(e));
+        case ExprKind::Call:           return generateCall(static_cast<const CallExpr&>(e));
+        case ExprKind::MemberAccess:   return generateMemberAccess(static_cast<const MemberAccessExpr&>(e));
+        case ExprKind::Subscript:      return generateSubscript(static_cast<const SubscriptExpr&>(e));
+        case ExprKind::NewExpr:        return generateNewExpr(static_cast<const NewExpr&>(e));
+        case ExprKind::NewArrayExpr:   return generateNewArrayExpr(static_cast<const NewArrayExpr&>(e));
+        case ExprKind::ThisExpr:       return generateThisExpr(static_cast<const ThisExpr&>(e));
+        case ExprKind::Assignment:     return generateAssignment(static_cast<const AssignmentExpr&>(e));
+        case ExprKind::Ternary:        return generateTernary(static_cast<const TernaryExpr&>(e));
+        case ExprKind::Try:            return generateTryExpr(static_cast<const TryExpr&>(e));
+        case ExprKind::Range:          return generateRange(static_cast<const RangeExpr&>(e));
+        case ExprKind::Lambda:         return generateLambda(static_cast<const LambdaExpr&>(e));
+        case ExprKind::Pipe:           return generatePipe(static_cast<const PipeExpr&>(e));
+        case ExprKind::EnumVariant:    return generateEnumVariant(static_cast<const EnumVariantExpr&>(e));
+        case ExprKind::Await:          return generateAwaitExpr(static_cast<const AwaitExpr&>(e));
+        case ExprKind::TupleExpr:      return generateTupleExpr(static_cast<const TupleExpr&>(e));
+        case ExprKind::NamedArg:       // 防御：sema 已把命名实参重排消除；残留时生成其值
+            return generateExpr(*static_cast<const NamedArgExpr&>(e).value);
+    }
+    return nullptr;
+}
+
+llvm::Value* CodeGen::generateTupleExpr(const TupleExpr& e) {
+    std::vector<llvm::Value*> vals;
+    for (auto& el : e.elements) vals.push_back(generateExpr(*el));
+    std::vector<llvm::Type*> tys;
+    for (auto& v : vals) tys.push_back(v->getType());
+    auto* st = llvm::StructType::get(ctx_, tys);
+    // Match the cached tuple struct (by type) if present, else use this one.
+    llvm::Value* agg = llvm::PoisonValue::get(st);
+    for (size_t i = 0; i < vals.size(); i++)
+        agg = builder_.CreateInsertValue(agg, vals[i], (unsigned)i);
+    return agg;
+}
+
+llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
+    auto val = e.value;
+    // 'u' suffix → 无符号：按值定宽（0xFFu→i8, 0xFFFFu→i16, 0xFFFFFFFFu→i32, 更大→i64）
+    if (e.is_unsigned) {
+        if (val >= 0 && val <= 0xFF) return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), (uint64_t)val, false);
+        if (val <= 0xFFFF) return llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx_), (uint64_t)val, false);
+        if (val <= 0xFFFFFFFFLL) return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)val, false);
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), (uint64_t)val, false);
+    }
+    // An explicit 'L' suffix forces long (i64), regardless of the value range.
+    if (e.is_long)
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), val, true);
+    // Determine integer width from value range (same logic as sema)
+    bool fits_i32 = (val >= -2147483648LL && val <= 2147483647LL);
+    if (fits_i32) {
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), val, true);
+    }
+    return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), val, true);
+}
+
+llvm::Value* CodeGen::generateFloatLiteral(const FloatLiteralExpr& e) {
+    return llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx_), e.value);
+}
+
+llvm::Value* CodeGen::generateBoolLiteral(const BoolLiteralExpr& e) {
+    return llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), e.value ? 1 : 0);
+}
+
+llvm::Value* CodeGen::generateStringLiteral(const StringLiteralExpr& e) {
+    return builder_.CreateGlobalString(e.value, "str");
+}
+
+llvm::Value* CodeGen::generateNullLiteral(const NullLiteralExpr&) {
+    return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+}
+
+llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
+    auto* a = getNamedValue(e.name);
+    if (!a) {
+        if (runtime_now_ms_ && e.name == "now") return runtime_now_ms_;
+        if (runtime_sleep_ms_ && e.name == "sleep") return runtime_sleep_ms_;
+        if (runtime_print_int_ && e.name == "__myp_print_int") return runtime_print_int_;
+        if (runtime_print_long_ && e.name == "__myp_print_long") return runtime_print_long_;
+        if (runtime_print_ && e.name == "__myp_print") return runtime_print_;
+        if (runtime_println_ && e.name == "__myp_println") return runtime_println_;
+        if (runtime_print_float_ && e.name == "__myp_print_float") return runtime_print_float_;
+        if (runtime_print_bool_ && e.name == "__myp_print_bool") return runtime_print_bool_;
+        if (runtime_now_ms_ && e.name == "__myp_now_ms") return runtime_now_ms_;
+        if (runtime_sleep_ms_ && e.name == "__myp_sleep_ms") return runtime_sleep_ms_;
+        if (runtime_math_sqrt_ && e.name == "__myp_math_sqrt") return runtime_math_sqrt_;
+        if (runtime_math_abs_ && e.name == "__myp_math_abs") return runtime_math_abs_;
+        if (runtime_math_floor_ && e.name == "__myp_math_floor") return runtime_math_floor_;
+        if (runtime_math_ceil_ && e.name == "__myp_math_ceil") return runtime_math_ceil_;
+        if (runtime_math_sin_ && e.name == "__myp_math_sin") return runtime_math_sin_;
+        if (runtime_math_cos_ && e.name == "__myp_math_cos") return runtime_math_cos_;
+        if (runtime_math_tan_ && e.name == "__myp_math_tan") return runtime_math_tan_;
+        if (runtime_math_asin_ && e.name == "__myp_math_asin") return runtime_math_asin_;
+        if (runtime_math_acos_ && e.name == "__myp_math_acos") return runtime_math_acos_;
+        if (runtime_math_atan_ && e.name == "__myp_math_atan") return runtime_math_atan_;
+        if (runtime_math_atan2_ && e.name == "__myp_math_atan2") return runtime_math_atan2_;
+        if (runtime_math_sinh_ && e.name == "__myp_math_sinh") return runtime_math_sinh_;
+        if (runtime_math_cosh_ && e.name == "__myp_math_cosh") return runtime_math_cosh_;
+        if (runtime_math_tanh_ && e.name == "__myp_math_tanh") return runtime_math_tanh_;
+        if (runtime_math_exp_ && e.name == "__myp_math_exp") return runtime_math_exp_;
+        if (runtime_math_log_ && e.name == "__myp_math_log") return runtime_math_log_;
+        if (runtime_math_pow_ && e.name == "__myp_math_pow") return runtime_math_pow_;
+        if (runtime_math_abs_int_ && e.name == "__myp_math_abs_int") return runtime_math_abs_int_;
+        if (runtime_gpu_init_ && e.name == "__myp_cuda_available") return runtime_gpu_init_;
+        if (runtime_cuda_count_ && e.name == "__myp_cuda_count") return runtime_cuda_count_;
+        if (runtime_cuda_name_ && e.name == "__myp_cuda_name") return runtime_cuda_name_;
+        if (runtime_cuda_memory_ && e.name == "__myp_cuda_memory") return runtime_cuda_memory_;
+        if (runtime_cuda_capability_ && e.name == "__myp_cuda_capability") return runtime_cuda_capability_;
+        if (runtime_cuda_multiprocessors_ && e.name == "__myp_cuda_multiprocessors") return runtime_cuda_multiprocessors_;
+        if (runtime_cuda_max_threads_ && e.name == "__myp_cuda_max_threads") return runtime_cuda_max_threads_;
+        if (runtime_cuda_warp_ && e.name == "__myp_cuda_warp") return runtime_cuda_warp_;
+        if (runtime_io_fopen_ && e.name == "__myp_io_fopen") return runtime_io_fopen_;
+        if (runtime_io_fclose_ && e.name == "__myp_io_fclose") return runtime_io_fclose_;
+        if (runtime_io_read_line_ && e.name == "__myp_io_read_line") return runtime_io_read_line_;
+        if (runtime_io_write_ && e.name == "__myp_io_write") return runtime_io_write_;
+        if (runtime_io_write_line_ && e.name == "__myp_io_write_line") return runtime_io_write_line_;
+        if (runtime_io_has_next_ && e.name == "__myp_io_has_next") return runtime_io_has_next_;
+        if (runtime_io_read_byte_ && e.name == "__myp_io_read_byte") return runtime_io_read_byte_;
+        if (runtime_io_read_i32be_ && e.name == "__myp_io_read_i32be") return runtime_io_read_i32be_;
+        if (runtime_io_seek_ && e.name == "__myp_io_seek") return runtime_io_seek_;
+        if (runtime_io_write_byte_ && e.name == "__myp_io_write_byte") return runtime_io_write_byte_;
+        if (runtime_io_write_i32be_ && e.name == "__myp_io_write_i32be") return runtime_io_write_i32be_;
+        if (runtime_io_write_double_ && e.name == "__myp_io_write_double") return runtime_io_write_double_;
+        if (runtime_io_read_double_ && e.name == "__myp_io_read_double") return runtime_io_read_double_;
+        if (runtime_io_current_handle_ && e.name == "__myp_io_current_handle") return runtime_io_current_handle_;
+        if (runtime_io_select_ && e.name == "__myp_io_select") return runtime_io_select_;
+        if (runtime_read_line_ && e.name == "__myp_read_line") return runtime_read_line_;
+        if (runtime_kbhit_ && e.name == "__myp_kbhit") return runtime_kbhit_;
+        if (runtime_getch_ && e.name == "__myp_getch") return runtime_getch_;
+        if (runtime_flush_ && e.name == "__myp_flush") return runtime_flush_;
+        if (runtime_term_width_ && e.name == "__myp_term_width") return runtime_term_width_;
+        if (runtime_term_height_ && e.name == "__myp_term_height") return runtime_term_height_;
+        if (runtime_strlen_ && e.name == "__myp_strlen") return runtime_strlen_;
+        if (runtime_chr_ && e.name == "__myp_chr") return runtime_chr_;
+        if (runtime_ord_ && e.name == "__myp_ord") return runtime_ord_;
+        if (runtime_atof_ && e.name == "__myp_atof") return runtime_atof_;
+        // Try class property via 'this'
+        if (!current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                unsigned pi;
+                if (getPropertyIndex(cls.name, e.name, pi)) {
+                    auto* ta = getNamedValue("this");
+                    if (ta) {
+                        auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                        auto* st = getClassStruct(cls.name);
+                        if (st) {
+                            auto* gep = builder_.CreateStructGEP(st, tp, pi);
+                            auto* pt = getPropertyType(cls, e.name);
+                            // Array-typed properties: return GEP pointer (cannot load array value)
+                            if (pt->isArrayTy()) return gep;
+                            return builder_.CreateLoad(pt, gep);
+                        }
+                    }
+                }
+            }
+        }
+        diag_.error(e.range, "undefined variable '" + e.name + "'");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    // Load named value (could be alloca or struct field GEP)
+    if (llvm::isa<llvm::AllocaInst>(a)) {
+        return builder_.CreateLoad(llvm::cast<llvm::AllocaInst>(a)->getAllocatedType(), a, e.name);
+    }
+    if (auto* nty2 = getNamedValueType(e.name)) {
+        return builder_.CreateLoad(nty2, a, e.name);
+    }
+    return builder_.CreateLoad(a->getType(), a, e.name);
+}
+
+llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
+    // Operator overloading: dispatch to a user-defined operator (resolved by Sema).
+    if (e.op_call) {
+        if (e.op_call->kind == "function") {
+            auto* fn = module_->getFunction(e.op_call->func_name);
+            if (fn) {
+                auto* l = generateExpr(*e.lhs);
+                auto* r = generateExpr(*e.rhs);
+                return builder_.CreateCall(fn, {l, r});
+            }
+        } else if (e.op_call->kind == "struct_method") {
+            auto* st_type = getStructType(e.op_call->struct_key);
+            auto* l = generateExpr(*e.lhs);
+            auto* r = generateExpr(*e.rhs);
+            // Build the 'this' (struct receiver) pointer, mirroring struct
+            // method call handling: value → alloca, pointer → reuse.
+            llvm::Value* this_ptr = nullptr;
+            if (auto* li = llvm::dyn_cast<llvm::LoadInst>(l)) {
+                this_ptr = li->getPointerOperand();
+            } else if (l->getType()->isPointerTy()) {
+                this_ptr = builder_.CreateBitCast(l, llvm::PointerType::get(ctx_, 0));
+            } else if (st_type) {
+                auto* tmp = builder_.CreateAlloca(st_type);
+                builder_.CreateStore(l, tmp);
+                this_ptr = tmp;
+            }
+            if (this_ptr) {
+                std::string fn_name = "struct_" + e.op_call->struct_key + "_" + e.op_call->method;
+                auto* fn = module_->getFunction(fn_name);
+                if (fn) return builder_.CreateCall(fn, {this_ptr, r});
+            }
+        }
+    }
+
+    // 短路逻辑运算：&& / || 在结果已定时不求值右操作数（MYP 原用位运算非短路）
+    if (e.op == BinaryOpKind::And || e.op == BinaryOpKind::Or) {
+        return generateShortCircuitLogic(e);
+    }
+
+    auto* l = generateExpr(*e.lhs);
+    auto* r = generateExpr(*e.rhs);
+    if (l->getType() != r->getType()) {
+        if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
+            if (!l->getType()->isDoubleTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getDoubleTy(ctx_));
+            if (!r->getType()->isDoubleTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getDoubleTy(ctx_));
+        } else if (l->getType()->isFloatTy() || r->getType()->isFloatTy()) {
+            if (!l->getType()->isFloatTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getFloatTy(ctx_));
+            if (!r->getType()->isFloatTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getFloatTy(ctx_));
+        } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
+            auto lw = l->getType()->getIntegerBitWidth(), rw = r->getType()->getIntegerBitWidth();
+            // uint32：无符号操作数加宽用 ZExt（0xFFFFFFFFu 提升到 i64 = 4294967295，不是 -1）
+            if (lw < rw) l = e.lhs_unsigned ? builder_.CreateZExt(l, r->getType())
+                                            : builder_.CreateSExt(l, r->getType());
+            else if (rw < lw) r = e.rhs_unsigned ? builder_.CreateZExt(r, l->getType())
+                                                : builder_.CreateSExt(r, l->getType());
+        }
+    }
+
+    auto fp = l->getType()->isFloatingPointTy();
+    // String concatenation with +
+    bool is_str_concat = (e.op == BinaryOpKind::Add) &&
+                          (l->getType()->isPointerTy() || r->getType()->isPointerTy());
+    if (is_str_concat) {
+        // Ensure both operands are strings
+        auto* ptr_type = llvm::PointerType::get(ctx_, 0);
+        auto conv_to_string = [&](llvm::Value* v) -> llvm::Value* {
+            if (v->getType()->isPointerTy()) return v;
+            // bool (i1) → myp_to_string_bool(i32)（sext 0/1 → "true"/"false"）
+            if (v->getType()->isIntegerTy(1)) {
+                auto* ext = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+                auto* fn = module_->getFunction("myp_to_string_bool");
+                if (!fn) {
+                    auto* ft = llvm::FunctionType::get(ptr_type, {llvm::Type::getInt32Ty(ctx_)}, false);
+                    fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_to_string_bool", module_.get());
+                }
+                return builder_.CreateCall(fn, {ext});
+            }
+            // byte (i8) / short (i16) 等窄整数 → 先加宽到 i32 再格式化
+            // （否则 i8/i16 直接传给 myp_to_string_i32 → LLVM verify 失败）。
+            // byte 无符号（0..255）→ zext；short 有符号 → sext。
+            if (v->getType()->isIntegerTy() &&
+                !v->getType()->isIntegerTy(32) &&
+                !v->getType()->isIntegerTy(64)) {
+                if (v->getType()->isIntegerTy(8))
+                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+                else if (v->getType()->isIntegerTy(16))
+                    v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
+                else
+                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+            }
+            auto fn_name = std::string("myp_to_string_") +
+                (v->getType()->isIntegerTy(32) ? "i32" :
+                 v->getType()->isIntegerTy(64) ? "i64" :
+                 v->getType()->isDoubleTy() ? "double" : "i32");
+            auto* conv_fn = module_->getFunction(fn_name);
+            if (!conv_fn) {
+                auto* ft = llvm::FunctionType::get(ptr_type,
+                    {v->getType()}, false);
+                conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+            }
+            return builder_.CreateCall(conv_fn, {v});
+        };
+        l = conv_to_string(l);
+        r = conv_to_string(r);
+        // Call runtime myp_strcat(l, r)
+        auto* sc = module_->getFunction("myp_strcat");
+        if (!sc) {
+            auto* ft = llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false);
+            sc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_strcat", module_.get());
+        }
+        return builder_.CreateCall(sc, {l, r}, "strcat");
+    }
+
+    // For string equality (== / !=), use myp_str_eq for content comparison
+    if (runtime_str_eq_ && (e.op == BinaryOpKind::Eq || e.op == BinaryOpKind::Ne) &&
+        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp) {
+        auto* result = builder_.CreateCall(runtime_str_eq_, {l, r}, "streq");
+        if (e.op == BinaryOpKind::Ne) {
+            return builder_.CreateICmpEQ(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+        } else {
+            return builder_.CreateICmpNE(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+        }
+    }
+
+    switch (e.op) {
+        case BinaryOpKind::Add: return fp ? builder_.CreateFAdd(l, r) : builder_.CreateAdd(l, r);
+        case BinaryOpKind::Sub: return fp ? builder_.CreateFSub(l, r) : builder_.CreateSub(l, r);
+        case BinaryOpKind::Mul: return fp ? builder_.CreateFMul(l, r) : builder_.CreateMul(l, r);
+        case BinaryOpKind::Div: return fp ? builder_.CreateFDiv(l, r)
+                                  : (e.result_unsigned ? builder_.CreateUDiv(l, r)
+                                                       : builder_.CreateSDiv(l, r));
+        case BinaryOpKind::Mod: return fp ? builder_.CreateFRem(l, r)
+                                  : (e.result_unsigned ? builder_.CreateURem(l, r)
+                                                       : builder_.CreateSRem(l, r));
+        case BinaryOpKind::Eq:
+        case BinaryOpKind::Ne:
+        case BinaryOpKind::Lt:
+        case BinaryOpKind::Gt:
+        case BinaryOpKind::Le:
+        case BinaryOpKind::Ge: {
+            // Enum struct operands: compare by discriminant (payload ignored).
+            if (l->getType()->isStructTy() && r->getType()->isStructTy()) {
+                auto* ls = llvm::cast<llvm::StructType>(l->getType());
+                auto* rs = llvm::cast<llvm::StructType>(r->getType());
+                if (enum_struct_set_.count(ls) && enum_struct_set_.count(rs)) {
+                    auto* ld = builder_.CreateExtractValue(l, 0, "enum_l_disc");
+                    auto* rd = builder_.CreateExtractValue(r, 0, "enum_r_disc");
+                    switch (e.op) {
+                        case BinaryOpKind::Eq: return builder_.CreateICmpEQ(ld, rd);
+                        case BinaryOpKind::Ne: return builder_.CreateICmpNE(ld, rd);
+                        case BinaryOpKind::Lt: return builder_.CreateICmpSLT(ld, rd);
+                        case BinaryOpKind::Gt: return builder_.CreateICmpSGT(ld, rd);
+                        case BinaryOpKind::Le: return builder_.CreateICmpSLE(ld, rd);
+                        case BinaryOpKind::Ge: return builder_.CreateICmpSGE(ld, rd);
+                        default: break;
+                    }
+                }
+            }
+            // Ensure both operands have same type for comparison
+            if (!fp && l->getType() != r->getType()) {
+                auto* i32 = llvm::Type::getInt32Ty(ctx_);
+                auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                if (l->getType() == i64 && r->getType() == i32)
+                    r = e.rhs_unsigned ? builder_.CreateZExt(r, i64) : builder_.CreateSExt(r, i64);
+                else if (l->getType() == i32 && r->getType() == i64)
+                    l = e.lhs_unsigned ? builder_.CreateZExt(l, i64) : builder_.CreateSExt(l, i64);
+                else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
+                    auto lw = l->getType()->getIntegerBitWidth();
+                    auto rw = r->getType()->getIntegerBitWidth();
+                    if (lw < rw) l = e.lhs_unsigned ? builder_.CreateZExt(l, r->getType())
+                                                    : builder_.CreateSExt(l, r->getType());
+                    else if (rw < lw) r = e.rhs_unsigned ? builder_.CreateZExt(r, l->getType())
+                                                        : builder_.CreateSExt(r, l->getType());
+                    else r = builder_.CreateIntCast(r, l->getType(), !e.rhs_unsigned);
+                } else if (l->getType()->isPointerTy() && r->getType()->isIntegerTy()) {
+                    r = builder_.CreateIntToPtr(r, l->getType());
+                } else if (l->getType()->isIntegerTy() && r->getType()->isPointerTy()) {
+                    l = builder_.CreateIntToPtr(l, r->getType());
+                } else if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
+                    // Pointers to different types: cast both to i8*
+                    auto* i8_ptr = llvm::PointerType::get(ctx_, 0);
+                    if (l->getType() != i8_ptr) l = builder_.CreateBitCast(l, i8_ptr);
+                    if (r->getType() != i8_ptr) r = builder_.CreateBitCast(r, i8_ptr);
+                } else {
+                    // Fallback: convert both to i64 for comparison
+                    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+                    auto valToI64 = [&](llvm::Value* v) -> llvm::Value* {
+                        auto* ty = v->getType();
+                        if (ty->isIntegerTy()) {
+                            return ty == i64 ? v : builder_.CreateSExt(v, i64);
+                        } else if (ty->isPointerTy()) {
+                            return builder_.CreatePtrToInt(v, i64);
+                        } else if (ty->isFloatingPointTy()) {
+                            return builder_.CreateFPToSI(v, i64);
+                        } else {
+                            // Struct, array, or other aggregate: store to alloca and get address
+                            auto* alloca = builder_.CreateAlloca(ty);
+                            builder_.CreateStore(v, alloca);
+                            return builder_.CreatePtrToInt(
+                                builder_.CreateBitCast(alloca, llvm::PointerType::get(ctx_, 0)), i64);
+                        }
+                    };
+                    l = valToI64(l);
+                    r = valToI64(r);
+                }
+            }
+            if (e.op == BinaryOpKind::Eq)
+                return fp ? builder_.CreateFCmpOEQ(l, r) : builder_.CreateICmpEQ(l, r);
+            if (e.op == BinaryOpKind::Ne)
+                return fp ? builder_.CreateFCmpONE(l, r) : builder_.CreateICmpNE(l, r);
+            if (e.op == BinaryOpKind::Lt)
+                return fp ? builder_.CreateFCmpOLT(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpULT(l, r)
+                                               : builder_.CreateICmpSLT(l, r));
+            if (e.op == BinaryOpKind::Gt)
+                return fp ? builder_.CreateFCmpOGT(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpUGT(l, r)
+                                               : builder_.CreateICmpSGT(l, r));
+            if (e.op == BinaryOpKind::Le)
+                return fp ? builder_.CreateFCmpOLE(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpULE(l, r)
+                                               : builder_.CreateICmpSLE(l, r));
+            if (e.op == BinaryOpKind::Ge)
+                return fp ? builder_.CreateFCmpOGE(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpUGE(l, r)
+                                               : builder_.CreateICmpSGE(l, r));
+        }
+        case BinaryOpKind::And: return builder_.CreateAnd(l, r);
+        case BinaryOpKind::Or:  return builder_.CreateOr(l, r);
+        case BinaryOpKind::BitAnd: return builder_.CreateAnd(l, r);
+        case BinaryOpKind::BitOr:  return builder_.CreateOr(l, r);
+        case BinaryOpKind::BitXor: return builder_.CreateXor(l, r);
+        case BinaryOpKind::Shl: {
+            // Shift amount must match value type
+            if (r->getType() != l->getType())
+                r = builder_.CreateZExt(r, l->getType());
+            return builder_.CreateShl(l, r);
+        }
+        case BinaryOpKind::Shr: {
+            if (r->getType() != l->getType())
+                r = builder_.CreateZExt(r, l->getType());
+            // uint32：无符号右移 = 逻辑右移（LShr），有符号 = 算术右移（AShr）
+            return e.result_unsigned ? builder_.CreateLShr(l, r) : builder_.CreateAShr(l, r);
+        }
+    }
+    return nullptr;
+}
+
+llvm::Value* CodeGen::generateShortCircuitLogic(const BinaryOpExpr& e) {
+    auto* l = generateExpr(*e.lhs);
+    if (!l->getType()->isIntegerTy(1))
+        l = builder_.CreateICmpNE(l, llvm::ConstantInt::get(l->getType(), 0));
+    auto* func = builder_.GetInsertBlock()->getParent();
+    bool is_and = (e.op == BinaryOpKind::And);
+    // 与 generateTernary 一致：rhs_bb / merge_bb 先不挂入函数，后续 insert 一次
+    auto* rhs_bb = llvm::BasicBlock::Create(ctx_, is_and ? "and.rhs" : "or.rhs");
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, is_and ? "and.merge" : "or.merge");
+    // &&: l true → rhs_bb，l false → merge（结果 false）
+    // ||: l true → merge（结果 true），l false → rhs_bb
+    builder_.CreateCondBr(l, is_and ? rhs_bb : merge_bb, is_and ? merge_bb : rhs_bb);
+    auto* l_bb = builder_.GetInsertBlock();
+    // RHS 分支
+    func->insert(func->end(), rhs_bb);
+    builder_.SetInsertPoint(rhs_bb);
+    auto* r = generateExpr(*e.rhs);
+    if (!r->getType()->isIntegerTy(1))
+        r = builder_.CreateICmpNE(r, llvm::ConstantInt::get(r->getType(), 0));
+    if (!builder_.GetInsertBlock()->getTerminator()) builder_.CreateBr(merge_bb);
+    auto* last_rhs = builder_.GetInsertBlock();
+    // Merge
+    func->insert(func->end(), merge_bb);
+    builder_.SetInsertPoint(merge_bb);
+    auto* phi = builder_.CreatePHI(r->getType(), 2, is_and ? "and.res" : "or.res");
+    phi->addIncoming(llvm::ConstantInt::get(r->getType(), is_and ? 0 : 1), l_bb);
+    phi->addIncoming(r, last_rhs);
+    return phi;
+}
+
+llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
+    auto* o = generateExpr(*e.operand);
+    switch (e.op) {
+        case UnaryOpKind::Negate: return o->getType()->isFloatingPointTy() ? builder_.CreateFNeg(o) : builder_.CreateNeg(o);
+        case UnaryOpKind::Not:    return builder_.CreateNot(o);
+    }
+    return nullptr;
+}
+
+llvm::Value* CodeGen::generateConvert(const ConvertExpr& e) {
+    auto* v = generateExpr(*e.operand);
+    llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
+    if (!v) return llvm::ConstantInt::get(target, 0);
+    if (v->getType() == target) return v;
+
+    bool src_unsigned = (e.operand->resolved_kind == TypeKind::UByte ||
+                         e.operand->resolved_kind == TypeKind::UShort ||
+                         e.operand->resolved_kind == TypeKind::UInt ||
+                         e.operand->resolved_kind == TypeKind::ULong);
+    auto* sty = v->getType();
+
+    if (target->isIntegerTy()) {
+        if (sty->isIntegerTy()) {
+            unsigned sw = sty->getIntegerBitWidth(), tw = target->getIntegerBitWidth();
+            if (tw < sw) return builder_.CreateTrunc(v, target);            // 宽→窄
+            if (tw > sw) return src_unsigned ? builder_.CreateZExt(v, target)
+                                             : builder_.CreateSExt(v, target);  // 窄→宽
+            return v;
+        }
+        if (sty->isFloatingPointTy()) return builder_.CreateFPToSI(v, target);
+    }
+    if (target->isFloatingPointTy()) {
+        if (sty->isFloatingPointTy()) return builder_.CreateFPCast(v, target);
+        if (sty->isIntegerTy())
+            return src_unsigned ? builder_.CreateUIToFP(v, target)
+                                : builder_.CreateSIToFP(v, target);
+    }
+    return v;
+}
+
+llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    llvm::Value* r = generateCallImpl(e);
+    // ARC: a call that returns a class / class-array reference hands the caller
+    // a +1 it OWNS (the callee's retain-at-return / `return new` transfer). If
+    // the result is stored into a slot the store site consumes it; if it is
+    // used inline (e.g. `obj.take().get()`) and discarded, the statement-end
+    // flush releases it. Without this, inline calls leaked the +1.
+    if (r && r->getType()->isPointerTy() && callReturnsArcRef(e))
+        arcPushTemp(r);
+    return r;
+}
+
+std::string CodeGen::memberObjectClassName(const Expr& obj) {
+    if (obj.kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(obj);
+        auto v = var_class_map_.find(oi.name);
+        if (v != var_class_map_.end()) return v->second;
+        if (current_tu_)
+            for (auto& c : current_tu_->classes)
+                if (c.name == oi.name) return c.name;   // static call
+        return "";
+    }
+    if (obj.kind == ExprKind::ThisExpr) return current_class_name_;
+    if (obj.kind == ExprKind::Subscript) {
+        auto& ss = static_cast<const SubscriptExpr&>(obj);
+        if (ss.array->kind == ExprKind::Identifier) {
+            auto eit = array_elem_class_map_.find(
+                static_cast<const IdentifierExpr&>(*ss.array).name);
+            if (eit != array_elem_class_map_.end()) return eit->second;
+        }
+        return "";
+    }
+    if (obj.kind == ExprKind::NewExpr) {
+        auto& ne = static_cast<const NewExpr&>(obj);
+        std::string cn = ne.class_name;
+        if (!ne.type_args.empty()) {
+            cn = ne.class_name;
+            for (auto& ta : ne.type_args) cn += "_" + mangleConcreteTypeNode(ta);
+            cn += "_inst";
+        }
+        return cn;
+    }
+    if (obj.kind == ExprKind::Call)
+        return callReturnClassName(static_cast<const CallExpr&>(obj));
+    return "";
+}
+
+std::string CodeGen::callReturnClassName(const CallExpr& e) {
+    const TypeNode* rt = nullptr;
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        std::string cls = memberObjectClassName(*ma.object);
+        if (cls.empty() || !current_tu_) return "";
+        for (auto& c : current_tu_->classes) {
+            if (c.name != cls) continue;
+            for (auto& a : c.actions)
+                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
+            for (auto& a : c.static_actions)
+                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
+            for (auto& f : c.functions)
+                if (f.name == ma.member_name) { rt = &f.return_type; goto found; }
+        }
+    } else if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
+        for (auto& f : current_tu_->functions)
+            if (f.name == e.resolved_call_name) { rt = &f.return_type; goto found; }
+    }
+found:
+    if (!rt || rt->class_name.empty()) return "";
+    if (!rt->type_args.empty()) return mangleConcreteTypeNode(*rt);
+    return rt->class_name;
+}
+
+bool CodeGen::callReturnsArcRef(const CallExpr& e) {
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        std::string cls = memberObjectClassName(*ma.object);
+        if (cls.empty() || !current_tu_) return false;
+        for (auto& c : current_tu_->classes) {
+            if (c.name != cls) continue;
+            for (auto& a : c.actions)
+                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+            for (auto& a : c.static_actions)
+                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+            for (auto& f : c.functions)
+                if (f.name == ma.member_name) return isArcRefType(f.return_type);
+        }
+        return false;
+    }
+    if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
+        for (auto& f : current_tu_->functions)
+            if (f.name == e.resolved_call_name) return isArcRefType(f.return_type);
+        return false;
+    }
+    return false;
+}
+
+llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
+    // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
+    // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.
+    const std::string SELF_SUFFIX = "__self";
+    if (!e.resolved_call_name.empty() &&
+        e.resolved_call_name.size() > SELF_SUFFIX.size() &&
+        e.resolved_call_name.compare(e.resolved_call_name.size() - SELF_SUFFIX.size(),
+                                     SELF_SUFFIX.size(), SELF_SUFFIX) == 0) {
+        std::string base = e.resolved_call_name.substr(0, e.resolved_call_name.size() - SELF_SUFFIX.size());
+        auto* tramp = module_->getFunction(base + "_tramp");
+        if (tramp) {
+            std::vector<llvm::Value*> args;
+            auto* ta = getNamedValue("this");
+            if (ta) args.push_back(builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta));
+            for (auto& a : e.args) args.push_back(generateExpr(*a));
+            auto* ft = tramp->getFunctionType();
+            for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
+                auto* expected = ft->getParamType(i);
+                if (args[i]->getType() != expected)
+                    args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i].get());
+            }
+            bool isv = tramp->getReturnType()->isVoidTy();
+            return builder_.CreateCall(tramp->getFunctionType(), tramp, args,
+                isv ? "" : "calltmp");
+        }
+    }
+    // Generic function call: sema monomorphized the target to a concrete
+    // instance (e.g. id_int_inst); call it directly with arg conversions.
+    if (!e.resolved_call_name.empty()) {
+        auto* fn = module_->getFunction(e.resolved_call_name);
+        if (fn) {
+            std::vector<llvm::Value*> args;
+            for (auto& a : e.args) args.push_back(generateExpr(*a));
+            auto* ft = fn->getFunctionType();
+            for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
+                auto* expected = ft->getParamType(i);
+                if (args[i]->getType() != expected)
+                    args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i].get());
+            }
+            bool isv = fn->getReturnType()->isVoidTy();
+            return builder_.CreateCall(fn->getFunctionType(), fn, args,
+                isv ? "" : "calltmp");
+        }
+        diag_.error(e.range, "cannot call generic function '" + e.resolved_call_name + "'");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    // First-class function value call: fn(args) where fn is a function-typed var.
+    // Indirect call through the fat pointer's call_fn (tramp): call_fn(closure, args).
+    if (e.callee->kind == ExprKind::Identifier) {
+        auto& fid = static_cast<const IdentifierExpr&>(*e.callee);
+        auto fit = func_val_types_.find(fid.name);
+        if (fit != func_val_types_.end()) {
+            auto* va = getNamedValue(fid.name);
+            if (va) {
+                const TypeInfo& ft = fit->second;
+                auto* fval = builder_.CreateLoad(getFunctionValueType(), va, fid.name);
+                auto* closure = builder_.CreateExtractValue(fval, 0);
+                auto* call_fn = builder_.CreateExtractValue(fval, 1);
+                std::vector<llvm::Type*> pts;
+                pts.push_back(llvm::PointerType::get(ctx_, 0)); // self
+                for (auto& pt : ft.param_types) pts.push_back(getLLVMType(pt));
+                TypeInfo void_rt(TypeKind::Void);
+                auto* rty = getLLVMType(ft.return_type ? *ft.return_type : void_rt);
+                auto* callt = llvm::FunctionType::get(rty, pts, false);
+                std::vector<llvm::Value*> args;
+                args.push_back(closure);
+                for (auto& a : e.args) args.push_back(generateExpr(*a));
+                for (size_t i = 1; i < args.size() && i < callt->getNumParams(); i++) {
+                    auto* expected = callt->getParamType(i);
+                    if (args[i]->getType() != expected)
+                        args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i - 1].get());
+                }
+                auto* fnp = builder_.CreateBitCast(call_fn, llvm::PointerType::get(callt, 0));
+                bool isv = rty->isVoidTy();
+                return builder_.CreateCall(callt, fnp, args, isv ? "" : "calltmp");
+            }
+        }
+    }
+    // Struct 函数式构造：StructName(args) → 栈临时 + 构造器，返回 struct 值
+    if (!e.resolved_struct_ctor.empty() && !e.resolved_struct_type.empty()) {
+        auto* st_ctor = module_->getFunction(e.resolved_struct_ctor);
+        auto* st_type = getStructType(e.resolved_struct_type);
+        if (st_ctor && st_type) {
+            auto* tmp = builder_.CreateAlloca(st_type);
+            std::vector<llvm::Value*> ctor_args;
+            ctor_args.push_back(tmp);
+            auto* ft = st_ctor->getFunctionType();
+            size_t idx = 1;
+            for (auto& a : e.args) {
+                llvm::Value* v = generateExpr(*a);
+                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致；
+                // uint32：无符号实参加宽用 ZExt）
+                if (idx < ft->getNumParams()) {
+                    auto* expected = ft->getParamType(idx);
+                    if (v->getType() != expected)
+                        v = convertIntegerValue(builder_, v, expected, a.get());
+                }
+                ctor_args.push_back(v);
+                idx++;
+            }
+            builder_.CreateCall(st_ctor, ctor_args);
+            return builder_.CreateLoad(st_type, tmp);
+        }
+    }
+    // slice.size() / slice.length() / slice.data()
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto sit = var_slice_types_.find(oi.name);
+            if (sit != var_slice_types_.end()) {
+                auto* va = getNamedValue(oi.name);
+                if (va) {
+                    auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, oi.name);
+                    if (ma.member_name == "size" || ma.member_name == "length") {
+                        auto* len = builder_.CreateExtractValue(sval, 1);
+                        return builder_.CreateTrunc(len, llvm::Type::getInt32Ty(ctx_));
+                    }
+                    if (ma.member_name == "data") {
+                        return builder_.CreateExtractValue(sval, 0);
+                    }
+                }
+            }
+        }
+    }
+    llvm::Value* callee = nullptr;
+    bool is_method = false;
+    llvm::Value* mthis = nullptr;
+
+    if (e.callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+
+        // Enum variant construction: Option.Some(42) → enum struct {disc, payload}
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            if (current_tu_) {
+                for (auto& en : current_tu_->enums) {
+                    if (en.name == oi.name) {
+                        for (size_t vi = 0; vi < en.variants.size(); vi++) {
+                            if (en.variants[vi].name == ma.member_name) {
+                                std::vector<llvm::Value*> arg_vals;
+                                for (auto& a : e.args)
+                                    arg_vals.push_back(generateExpr(*a));
+                                return buildEnumVariant(en.name, vi, arg_vals);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Generalized interface dispatch: any object expression that evaluates
+        // to a {data, vtable} fat pointer (interface var / interface property
+        // `this.iface` / interface array element) → vtable dispatch. Bug fix:
+        // only identifier-vars were dispatched before; interface properties
+        // (root_.method()) fell to the concrete direct-call path and passed the
+        // fat pointer as `this` → invalid IR. Safe to evaluate: these are pure
+        // loads (no side effects). Non-interface objects evaluate to a ptr and
+        // fall through to the concrete paths below.
+        if (ma.object->kind == ExprKind::Identifier ||
+            ma.object->kind == ExprKind::MemberAccess ||
+            ma.object->kind == ExprKind::Subscript ||
+            ma.object->kind == ExprKind::ThisExpr) {
+            // 静态类调用（Cli.run() / Console.writeLine()）：对象是类名而非值，
+            // 求值会报 undefined variable —— 跳过，交给下方静态解析路径。
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                bool is_class_name = false;
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes)
+                        if (cls.name == oid.name) { is_class_name = true; break; }
+                }
+                if (is_class_name) goto skip_generalized_iface;
+            }
+            auto* obj_val = generateExpr(*ma.object);
+            if (obj_val && isInterfaceFatType(obj_val->getType())) {
+                auto* data = builder_.CreateExtractValue(obj_val, 0);
+                auto* vt = builder_.CreateExtractValue(obj_val, 1);
+                int method_idx = -1;
+                for (auto& ifd : current_tu_->interfaces)
+                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
+                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
+                if (method_idx >= 0) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        "iface_method");
+                    auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                    for (auto& ifd : current_tu_->interfaces) {
+                        if ((size_t)method_idx < ifd.actions.size() &&
+                            ifd.actions[method_idx].name == ma.member_name) {
+                            ret_ty = getLLVMType(typeNodeToCodegenType(
+                                ifd.actions[method_idx].return_type));
+                            break;
+                        }
+                    }
+                    std::vector<llvm::Value*> call_args;
+                    call_args.push_back(data);
+                    for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    std::vector<llvm::Type*> param_types;
+                    param_types.push_back(ptr_ty);
+                    for (size_t ai = 1; ai < call_args.size(); ai++)
+                        param_types.push_back(call_args[ai]->getType());
+                    auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                    return builder_.CreateCall(ft, func_ptr, call_args);
+                }
+            }
+        }
+        skip_generalized_iface:
+
+        // Find the correct class by matching function name AND arg count (fallback)
+        std::string best_class;
+
+        // First, try to resolve by variable→class map for identifier objects
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+
+            // Check if this is an interface variable → vtable dispatch
+            auto* obj_val = getNamedValue(oi.name);
+            if (obj_val) {
+                llvm::Type* obj_ty = nullptr;
+                if (auto* ovi = llvm::dyn_cast<llvm::AllocaInst>(obj_val)) {
+                    obj_ty = ovi->getAllocatedType();
+                }
+                if (obj_ty && obj_ty->isStructTy()) {
+                    auto* st = llvm::cast<llvm::StructType>(obj_ty);
+                    std::string st_name = st->getName().str();
+                    // {ptr, ptr} = interface fat pointer
+                    if (st->getNumElements() == 2 && st->getElementType(0)->isPointerTy()
+                        && st->getElementType(1)->isPointerTy()) {
+                        // Interface dispatch: load vtable, index method, call indirect
+                        auto* data_ptr = builder_.CreateStructGEP(st, obj_val, 0);
+                        auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), data_ptr, "iface_data");
+                        auto* vt_ptr = builder_.CreateStructGEP(st, obj_val, 1);
+                        auto* vt = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), vt_ptr, "iface_vt");
+
+                        // Find method index in the interface
+                        int method_idx = -1;
+                        for (auto& ifd : current_tu_->interfaces) {
+                            for (size_t mi = 0; mi < ifd.actions.size(); mi++) {
+                                if (ifd.actions[mi].name == ma.member_name) {
+                                    method_idx = (int)mi;
+                                    goto iface_method_found;
+                                }
+                            }
+                        }
+                        iface_method_found:
+
+                        if (method_idx >= 0) {
+                            // Vtable is [N x ptr], load function pointer by index
+                            auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                            auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                                "iface_method");
+                            auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+
+                            // Determine return type from interface method declaration
+                            llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                            for (auto& ifd : current_tu_->interfaces) {
+                                if ((size_t)method_idx < ifd.actions.size() &&
+                                    ifd.actions[method_idx].name == ma.member_name) {
+                                    ret_ty = getLLVMType(typeNodeToCodegenType(
+                                        ifd.actions[method_idx].return_type));
+                                    break;
+                                }
+                            }
+
+                            // Build call args: instance + explicit args
+                            std::vector<llvm::Value*> call_args;
+                            call_args.push_back(data); // 'this' pointer
+                            for (auto& arg : e.args)
+                                call_args.push_back(generateExpr(*arg));
+
+                            // Build parameter types
+                            std::vector<llvm::Type*> param_types;
+                            param_types.push_back(ptr_ty);
+                            for (auto& arg : e.args)
+                                param_types.push_back(generateExpr(*arg)->getType());
+
+                            auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                            auto* result = builder_.CreateCall(ft, func_ptr, call_args);
+                            return result;
+                        }
+                    }
+                }
+            }
+
+            auto vit = var_class_map_.find(oi.name);
+            if (vit != var_class_map_.end()) {
+                std::string fn = vit->second + "_" + ma.member_name;
+                callee = module_->getFunction(fn);
+                // trait 默认实现：类未覆盖但接口方法带默认体 → 用本类默认函数
+                if (!callee) callee = findInterfaceDefault(vit->second, ma.member_name);
+                if (callee) {
+                    mthis = generateExpr(*ma.object);
+                    is_method = true;
+                    goto call_ready;
+                }
+            } else if (!current_class_name_.empty() && current_tu_) {
+                // 本类属性对象：this.prop.method()（如 button.key()，button 是
+                // Button 属性）。此前只按方法名兜底匹配，Label/Button 同名方法
+                // （key/draw/layout）会解析到先声明的类 → 调错方法。按属性的
+                // 具体类解析。
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != current_class_name_) continue;
+                    for (auto& p : cls.properties) {
+                        if (p.name != oi.name || p.type.class_name.empty()) continue;
+                        std::string cn = p.type.class_name;
+                        if (!p.type.type_args.empty()) {
+                            std::string m = cn;
+                            for (auto& ta : p.type.type_args)
+                                m += "_" + mangleConcreteTypeNode(ta);
+                            cn = m + "_inst";
+                        }
+                        std::string fn = cn + "_" + ma.member_name;
+                        callee = module_->getFunction(fn);
+                        if (!callee) callee = findInterfaceDefault(cn, ma.member_name);
+                        if (callee) {
+                            mthis = generateExpr(*ma.object);
+                            is_method = true;
+                            goto call_ready;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Interface value from a non-identifier expression (e.g. interface array
+        // element children[i].method()): the expression evaluates to a
+        // {data, vtable} fat pointer → vtable dispatch. Bug fix: this previously
+        // fell through to the concrete-class direct-call path and passed the fat
+        // pointer as `this`, producing invalid IR (LLVM verify failure).
+        if (!callee && ma.object->kind == ExprKind::Subscript) {
+            auto* obj_val = generateExpr(*ma.object);
+            if (obj_val && isInterfaceFatType(obj_val->getType())) {
+                auto* data = builder_.CreateExtractValue(obj_val, 0);
+                auto* vt = builder_.CreateExtractValue(obj_val, 1);
+                int method_idx = -1;
+                for (auto& ifd : current_tu_->interfaces)
+                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
+                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
+                if (method_idx >= 0) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        "iface_method");
+                    auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                    for (auto& ifd : current_tu_->interfaces) {
+                        if ((size_t)method_idx < ifd.actions.size() &&
+                            ifd.actions[method_idx].name == ma.member_name) {
+                            ret_ty = getLLVMType(typeNodeToCodegenType(
+                                ifd.actions[method_idx].return_type));
+                            break;
+                        }
+                    }
+                    std::vector<llvm::Value*> call_args;
+                    call_args.push_back(data);
+                    for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    std::vector<llvm::Type*> param_types;
+                    param_types.push_back(ptr_ty);
+                    for (size_t ai = 1; ai < call_args.size(); ai++)
+                        param_types.push_back(call_args[ai]->getType());
+                    auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                    return builder_.CreateCall(ft, func_ptr, call_args);
+                }
+            }
+        }
+
+        // Struct method call: v.method()
+        // Check struct type FIRST, before any class name fallback,
+        // to avoid resolving h1.init() to Tally::init.
+        if (!callee && ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto* oa = getNamedValue(oi.name);
+            if (oa) {
+                llvm::StructType* st_for_name_2 = nullptr;
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                    auto* oat = oai->getAllocatedType();
+                    if (oat->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(oat);
+                } else {
+                    auto* nty = getNamedValueType(oi.name);
+                    if (nty && nty->isStructTy()) st_for_name_2 = llvm::cast<llvm::StructType>(nty);
+                }
+                if (st_for_name_2) {
+                    std::string fn = "struct_" + st_for_name_2->getName().str() + "_" + ma.member_name;
+                    callee = module_->getFunction(fn);
+                    if (callee) {
+                        mthis = oa;
+                        is_method = true;
+                    }
+                }
+            }
+        }
+        // Chained struct method call: a.b.method() or ClassName.prop.method()
+        // Resolve the struct type from the object's property type
+        if (!callee && ma.object->kind == ExprKind::MemberAccess) {
+            auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+            std::string obj_struct_type;
+            // Static property chain: ClassName.prop → get property's type
+            if (inner_ma.object->kind == ExprKind::Identifier) {
+                auto& cls_id = static_cast<const IdentifierExpr&>(*inner_ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == cls_id.name) {
+                        for (auto& prop : cls.properties) {
+                            if (prop.name == inner_ma.member_name &&
+                                !prop.type.class_name.empty()) {
+                                obj_struct_type = prop.type.class_name;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            if (!obj_struct_type.empty()) {
+                std::string fn = "struct_" + obj_struct_type + "_" + ma.member_name;
+                callee = module_->getFunction(fn);
+                if (callee) {
+                    is_method = true;
+                    auto* obj_val = generateExpr(*ma.object);
+                    if (obj_val) {
+                        auto* st_type = getStructType(obj_struct_type);
+                        if (st_type) {
+                            if (auto* li = llvm::dyn_cast<llvm::LoadInst>(obj_val)) {
+                                mthis = li->getPointerOperand();
+                            } else if (obj_val->getType()->isPointerTy()) {
+                                mthis = builder_.CreateBitCast(obj_val, llvm::PointerType::get(ctx_, 0));
+                            } else {
+                                auto* tmp = builder_.CreateAlloca(st_type);
+                                builder_.CreateStore(obj_val, tmp);
+                                mthis = tmp;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!callee && current_tu_) {
+            size_t num_args = e.args.size();
+            // If the object is a known class name (static call like Vectors.min()),
+            // restrict the search to that class so method names that collide across
+            // classes (e.g. min/max in Math and Vectors) resolve to the right one.
+            std::string obj_cls;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == oid.name) { obj_cls = cls.name; break; }
+                }
+            }
+            // arr[i].method() / new Box<Node>().method() / f().method() — restrict
+            // to the object's (possibly mangled) class so generic element / new /
+            // chained-call method dispatch resolves to the concrete instance, not
+            // the template's placeholder signature.
+            else if (ma.object->kind == ExprKind::Subscript ||
+                     ma.object->kind == ExprKind::NewExpr ||
+                     ma.object->kind == ExprKind::Call) {
+                obj_cls = memberObjectClassName(*ma.object);
+            }
+            for (auto& cls : current_tu_->classes) {
+                if (!obj_cls.empty() && cls.name != obj_cls) continue;
+                for (auto& a : cls.actions) {
+                    if (a.name == ma.member_name && a.params.size() == num_args) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // Also check static actions
+                for (auto& a : cls.static_actions) {
+                    if (a.name == ma.member_name && a.params.size() == num_args) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // Also check function: section
+                for (auto& fn : cls.functions) {
+                    if (fn.name == ma.member_name && fn.params.size() == num_args) {
+                        auto fn_name = cls.name + "_" + fn.name;
+                        if (module_->getFunction(fn_name)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback: match by name only (only if no struct method was found)
+        if (!callee) {
+            // Restrict to the object's (possibly mangled) class for non-identifier
+            // objects (chained `f().method()` / `arr[i].method()` / generic new),
+            // so they don't resolve to a template's placeholder signature.
+            std::string fb_obj_cls;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid2 = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes)
+                    if (cls.name == oid2.name) { fb_obj_cls = cls.name; break; }
+            } else if (ma.object->kind == ExprKind::Subscript ||
+                       ma.object->kind == ExprKind::NewExpr ||
+                       ma.object->kind == ExprKind::Call) {
+                fb_obj_cls = memberObjectClassName(*ma.object);
+            }
+            // First, if the object is a KNOWN class name (static method call like
+            // Vectors.min()), only search that class. Otherwise a method name that
+            // collides across classes (e.g. min/max in Math AND Vectors) could
+            // resolve to the wrong class.
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name == oid.name) {
+                        // static actions
+                        for (auto& a : cls.static_actions) {
+                            if (a.name == ma.member_name) {
+                                auto fn = cls.name + "_" + a.name;
+                                if (module_->getFunction(fn)) {
+                                    best_class = cls.name;
+                                    goto found_method;
+                                }
+                            }
+                        }
+                        // function: section
+                        for (auto& fn : cls.functions) {
+                            if (fn.name == ma.member_name) {
+                                auto fn_name = cls.name + "_" + fn.name;
+                                if (module_->getFunction(fn_name)) {
+                                    best_class = cls.name;
+                                    goto found_method;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+            for (auto& cls : current_tu_->classes) {
+                if (!fb_obj_cls.empty() && cls.name != fb_obj_cls) continue;
+                for (auto& a : cls.actions) {
+                    if (a.name == ma.member_name) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // Also check static actions
+                for (auto& a : cls.static_actions) {
+                    if (a.name == ma.member_name) {
+                        auto fn = cls.name + "_" + a.name;
+                        if (module_->getFunction(fn)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+                // function: section fallback
+                for (auto& fn : cls.functions) {
+                    if (fn.name == ma.member_name) {
+                        auto fn_name = cls.name + "_" + fn.name;
+                        if (module_->getFunction(fn_name)) {
+                            best_class = cls.name;
+                            goto found_method;
+                        }
+                    }
+                }
+            }
+        }
+        found_method:
+
+        if (!best_class.empty()) {
+            callee = module_->getFunction(best_class + "_" + ma.member_name);
+            // trait 默认实现：类未覆盖但接口方法带默认体 → 用本类默认函数
+            if (!callee) callee = findInterfaceDefault(best_class, ma.member_name);
+            if (callee) {
+                // Check if this is a static method
+                std::string fn_name = best_class + "_" + ma.member_name;
+                auto sit = is_static_action_.find(fn_name);
+                bool is_static = (sit != is_static_action_.end() && sit->second);
+                if (!is_static) {
+                    mthis = generateExpr(*ma.object);
+                } else {
+                    // Static action: no mthis, and the object is a class name
+                    // Don't try to evaluate it as an expression
+                }
+                is_method = true;
+            }
+        }
+        // 显式 this.method()：best_class 未找到时回退本类接口默认
+        if (!callee && ma.object->kind == ExprKind::ThisExpr && !current_class_name_.empty()) {
+            callee = findInterfaceDefault(current_class_name_, ma.member_name);
+            if (callee) {
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = builder_.CreateLoad(
+                    llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+                is_method = true;
+            }
+        }
+    }
+
+    // Check if this is a struct method self-call (bare method name = this.method())
+    if (!callee && e.callee->kind == ExprKind::Identifier && !current_class_name_.empty()) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.callee);
+        // Check if current class name is a struct type key
+        if (struct_types_.count(current_class_name_)) {
+            std::string fn = "struct_" + current_class_name_ + "_" + id.name;
+            callee = module_->getFunction(fn);
+            if (callee) {
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = ta;
+                is_method = true;
+            }
+        }
+    }
+
+    if (!callee && e.callee->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.callee);
+        callee = module_->getFunction(id.name);
+        if (!callee) {
+            // Intrinsic functions (lookup via map)
+            auto it = intrinsic_map_.find(id.name);
+            if (it != intrinsic_map_.end()) {
+                callee = it->second;
+            }
+            // Timer intrinsic (special: resolves event name to event_id)
+            else if (id.name == "__myp_timer_create") {
+                // __myp_timer_create("eventName", delay_ms, interval_ms)
+                // We resolve the event name to event_id and generate
+                // myp_timer_create(event_id, this, delay_ms, delay_ms, interval_ms)
+                if (e.args.size() < 2) {
+                    diag_.error(e.range, "__myp_timer_create requires at least 2 arguments");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                // First arg: event name — either a string literal (resolved at
+                // compile time) or a runtime string (looked up via the global
+                // event table, e.g. stdlib Timer.init takes a string param).
+                llvm::Value* event_id = nullptr;
+                if (e.args[0]->kind == ExprKind::StringLiteral) {
+                    std::string event_name = static_cast<const StringLiteralExpr&>(*e.args[0]).value;
+                    std::string ekey = current_class_name_ + "::" + event_name;
+                    int eid = -1;
+                    auto eit = event_id_map_.find(ekey);
+                    if (eit != event_id_map_.end()) eid = eit->second;
+                    if (eid < 0) {
+                        diag_.error(e.range, "unknown event '" + event_name +
+                                    "' in class '" + current_class_name_ + "'");
+                        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                    }
+                    event_id = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), eid);
+                } else {
+                    // Runtime event name → look up via the generated table
+                    buildEventNameTable();
+                    auto* name_val = generateExpr(*e.args[0]);
+                    auto find_fn = module_->getOrInsertFunction("myp_event_id_by_name",
+                        llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_),
+                            {llvm::PointerType::get(ctx_, 0),
+                             llvm::PointerType::get(ctx_, 0),
+                             llvm::PointerType::get(ctx_, 0),
+                             llvm::Type::getInt32Ty(ctx_)}, false));
+                    event_id = builder_.CreateCall(find_fn,
+                        {name_val, event_table_names_, event_table_ids_,
+                         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_table_count_)},
+                        "evid");
+                }
+                // Get delay_ms and interval_ms args
+                auto* delay = generateExpr(*e.args[1]);
+                auto* interval = e.args.size() > 2 ? generateExpr(*e.args[2])
+                    : llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+                // Get 'this' pointer
+                auto* ta = getNamedValue("this");
+                if (!ta) {
+                    diag_.error(e.range, "'this' is not available in this context");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* this_ptr = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta, "this");
+                // Generate call: myp_timer_create(event_id, instance, delay_ms, param, interval_ms)
+                // param = delay_ms (the requested delay is passed as event data)
+                auto* param = builder_.CreateSExtOrTrunc(delay, llvm::Type::getInt64Ty(ctx_));
+                auto* delay64 = builder_.CreateSExtOrTrunc(delay, llvm::Type::getInt64Ty(ctx_));
+                auto* interval64 = builder_.CreateSExtOrTrunc(interval, llvm::Type::getInt64Ty(ctx_));
+                auto* result = builder_.CreateCall(runtime_timer_create_->getFunctionType(),
+                    runtime_timer_create_,
+                    {event_id, this_ptr, delay64, param, interval64});
+                return result;
+            }
+            // __myp_throw: save error message then longjmp to catch block
+            else if (id.name == "__myp_throw") {
+                if (e.args.size() < 1) {
+                    diag_.error(e.range, "__myp_throw requires 1 argument (string)");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* msg = generateExpr(*e.args[0]);
+                builder_.CreateCall(runtime_throw_->getFunctionType(),
+                    runtime_throw_, {msg});
+                // longjmp to the innermost active handler (stack top) — not a
+                // global buffer, so nested/cross-function throws resolve right.
+                auto* jb = builder_.CreateCall(runtime_exception_get_jmpbuf_->getFunctionType(),
+                    runtime_exception_get_jmpbuf_, {}, "cur_handler");
+                auto* one = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1);
+                builder_.CreateCall(runtime_longjmp_->getFunctionType(),
+                    runtime_longjmp_, {jb, one});
+                // Unreachable (longjmp is noreturn, but LLVM needs terminator)
+                builder_.CreateUnreachable();
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            // __myp_trunc: double to int truncation
+            else if (id.name == "__myp_trunc") {
+                if (e.args.size() < 1) {
+                    diag_.error(e.range, "__myp_trunc requires 1 argument");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* v = generateExpr(*e.args[0]);
+                if (v->getType()->isFloatingPointTy())
+                    return builder_.CreateFPToSI(v, llvm::Type::getInt32Ty(ctx_));
+                return v;
+            }
+            // Atomic intrinsics: generate LLVM atomic instructions directly
+            else if (id.name == "__myp_atomic_add_i32" ||
+                     id.name == "__myp_atomic_sub_i32" ||
+                     id.name == "__myp_atomic_xchg_i32" ||
+                     id.name == "__myp_atomic_add_f64" ||
+                     id.name == "__myp_atomic_load_i32" ||
+                     id.name == "__myp_atomic_store_i32") {
+                if (e.args.size() < 2) {
+                    diag_.error(e.range, "atomic intrinsic requires at least 2 arguments");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                // First arg is the array pointer (int[] or double[])
+                auto* arr_ptr = generateExpr(*e.args[0]);
+                // Second arg is the index
+                auto* index_val = generateExpr(*e.args[1]);
+
+                // Determine element type and generate GEP
+                bool is_float = (id.name == "__myp_atomic_add_f64");
+                auto* elem_ty = is_float
+                    ? llvm::Type::getDoubleTy(ctx_)
+                    : llvm::Type::getInt32Ty(ctx_);
+                auto* elem_ptr = builder_.CreateGEP(
+                    elem_ty, arr_ptr, {index_val}, "atomic_ptr");
+
+                if (id.name == "__myp_atomic_load_i32") {
+                    auto* loaded = builder_.CreateLoad(elem_ty, elem_ptr);
+                    return loaded;
+                }
+
+                if (e.args.size() < 3) {
+                    diag_.error(e.range, "atomic store/add/sub/xchg requires 3 arguments");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+                auto* val = generateExpr(*e.args[2]);
+
+                if (id.name == "__myp_atomic_store_i32") {
+                    builder_.CreateStore(val, elem_ptr);
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+
+                llvm::AtomicRMWInst::BinOp op;
+                if (id.name == "__myp_atomic_add_i32") op = llvm::AtomicRMWInst::Add;
+                else if (id.name == "__myp_atomic_sub_i32") op = llvm::AtomicRMWInst::Sub;
+                else if (id.name == "__myp_atomic_xchg_i32") op = llvm::AtomicRMWInst::Xchg;
+                else if (id.name == "__myp_atomic_add_f64") op = llvm::AtomicRMWInst::FAdd;
+                else {
+                    diag_.error(e.range, "unknown atomic operation");
+                    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                }
+
+                auto* result = builder_.CreateAtomicRMW(op, elem_ptr, val,
+                    llvm::MaybeAlign(),
+                    llvm::AtomicOrdering::SequentiallyConsistent);
+                return result;
+            }
+        }
+        // Try current class method (bare name without this.)
+        if (!callee && !current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                // Check actions
+                for (auto& a : cls.actions) {
+                    if (a.name == id.name) {
+                        auto fn = cls.name + "_" + a.name;
+                        callee = module_->getFunction(fn);
+                        if (callee) {
+                            is_method = true;
+                            auto* ta = getNamedValue("this");
+                            if (ta) mthis = builder_.CreateLoad(llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+                            goto found_bare_method;
+                        }
+                    }
+                }
+                // Check function: section
+                for (auto& fn : cls.functions) {
+                    if (fn.name == id.name) {
+                        auto fn_name = cls.name + "_" + fn.name;
+                        callee = module_->getFunction(fn_name);
+                        if (callee) {
+                            is_method = true;
+                            auto* ta = getNamedValue("this");
+                            if (ta) mthis = builder_.CreateLoad(llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+                            goto found_bare_method;
+                        }
+                    }
+                }
+                // Check events
+                for (auto& ev : cls.events) {
+                    if (ev.name == id.name) {
+                        auto fn = "fire_" + cls.name + "_" + ev.name;
+                        callee = module_->getFunction(fn);
+                        if (callee) {
+                            is_method = true;
+                            auto* ta = getNamedValue("this");
+                            if (ta) mthis = builder_.CreateLoad(llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+                            goto found_bare_method;
+                        }
+                    }
+                }
+            }
+            found_bare_method:;
+        }
+        // 裸方法调用 = this.method()（trait 默认实现兜底）：类未覆盖的接口默认方法
+        if (!callee && !current_class_name_.empty()) {
+            callee = findInterfaceDefault(current_class_name_, id.name);
+            if (callee) {
+                is_method = true;
+                auto* ta = getNamedValue("this");
+                if (ta) mthis = builder_.CreateLoad(
+                    llvm::cast<llvm::AllocaInst>(ta)->getAllocatedType(), ta, "this");
+            }
+        }
+    }
+    if (!callee) {
+        // Last resort: try to find the function by name
+        if (e.callee->kind == ExprKind::MemberAccess) {
+            auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
+            // Try getting object name and building function name
+            bool ma_is_plain_id = (ma.object->kind == ExprKind::Identifier);
+            if (ma_is_plain_id) {
+                auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                // Search all classes for matching method
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        for (auto& a : cls.actions) {
+                            if (a.name == ma.member_name) {
+                                callee = module_->getFunction(cls.name + "_" + a.name);
+                                if (callee) {
+                                    is_method = true;
+                                    std::string fn = cls.name + "_" + a.name;
+                                    auto sit = is_static_action_.find(fn);
+                                    if (sit == is_static_action_.end() || !sit->second)
+                                        mthis = generateExpr(*ma.object);
+                                    goto call_ready;
+                                }
+                            }
+                        }
+                        // Also check static actions
+                        for (auto& a : cls.static_actions) {
+                            if (a.name == ma.member_name) {
+                                callee = module_->getFunction(cls.name + "_" + a.name);
+                                if (callee) {
+                                    is_method = true;
+                                    // Static — no mthis
+                                    goto call_ready;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Chained struct method call: a.b.c.method()
+            // Resolve the struct type of the object expression
+            if (!callee && current_tu_) {
+                std::string obj_struct_type;
+                // For chained access a.b.c.method(), evaluate the object
+                // expression to determine its struct type by walking the chain
+                if (ma.object->kind == ExprKind::MemberAccess) {
+                    auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+                    // Check if inner is a known struct field of a known struct type
+                    for (auto& [key, st] : struct_types_) {
+                        auto idx_it = struct_field_indices_.find(key);
+                        if (idx_it != struct_field_indices_.end()) {
+                            auto field_it = idx_it->second.find(inner_ma.member_name);
+                            if (field_it != idx_it->second.end()) {
+                                auto* field_ty = st->getElementType(field_it->second);
+                                if (field_ty && field_ty->isStructTy()) {
+                                    obj_struct_type = field_ty->getStructName().str();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Static property chain: ClassName.prop
+                if (obj_struct_type.empty() && ma.object->kind == ExprKind::MemberAccess) {
+                    auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
+                    if (inner_ma.object->kind == ExprKind::Identifier) {
+                        auto& cls_id = static_cast<const IdentifierExpr&>(*inner_ma.object);
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name == cls_id.name) {
+                                for (auto& prop : cls.properties) {
+                                    if (prop.name == inner_ma.member_name &&
+                                        !prop.type.class_name.empty()) {
+                                        obj_struct_type = prop.type.class_name;
+                                        break;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                // Look up the method on the resolved struct type
+                if (!obj_struct_type.empty()) {
+                    std::string sfn = "struct_" + obj_struct_type + "_" + ma.member_name;
+                    callee = module_->getFunction(sfn);
+                    if (callee) {
+                        is_method = true;
+                        // Evaluate object to get pointer for mthis
+                        auto* obj_val = generateExpr(*ma.object);
+                        if (obj_val) {
+                            auto* st_type = getStructType(obj_struct_type);
+                            if (st_type) {
+                                if (auto* li = llvm::dyn_cast<llvm::LoadInst>(obj_val)) {
+                                    mthis = li->getPointerOperand();
+                                } else if (obj_val->getType()->isPointerTy()) {
+                                    mthis = builder_.CreateBitCast(obj_val,
+                                        llvm::PointerType::get(ctx_, 0));
+                                } else {
+                                    auto* tmp = builder_.CreateAlloca(st_type);
+                                    builder_.CreateStore(obj_val, tmp);
+                                    mthis = tmp;
+                                }
+                            }
+                        }
+                        goto call_ready;
+                    }
+                }
+            }
+        }
+        callee = generateExpr(*e.callee);
+    }
+    call_ready:
+
+    // ---- @coro method call → spawn coroutine, return handle ----
+    if (callee) {
+        auto* ccf = llvm::dyn_cast<llvm::Function>(callee);
+        if (ccf && coro_methods_.count(ccf->getName().str())) {
+            return generateCoroSpawn(ccf, e, mthis, is_method);
+        }
+    }
+
+    std::vector<llvm::Value*> args;
+    // Check if this is a static method — skip mthis for static actions
+    bool skip_this = false;
+    if (callee && is_method && mthis) {
+        auto* cf = llvm::dyn_cast<llvm::Function>(callee);
+        if (cf) {
+            auto sit = is_static_action_.find(cf->getName().str());
+            if (sit != is_static_action_.end() && sit->second)
+                skip_this = true;
+        }
+    }
+    if (is_method && mthis && !skip_this) args.push_back(mthis);
+    for (auto& a : e.args) args.push_back(generateExpr(*a));
+
+    auto* cf = llvm::dyn_cast<llvm::Function>(callee);
+    if (!cf) {
+        diag_.error(e.range, "cannot call expression");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    // Implicit type conversion for arguments
+    auto* ft = cf->getFunctionType();
+    size_t arg_offset = (is_method && mthis && !skip_this) ? 1 : 0;
+    for (size_t i = arg_offset; i < args.size() && i < ft->getNumParams(); ++i) {
+        auto* expected = ft->getParamType(i);
+        if (args[i]->getType() != expected) {
+            // Interface param upcast: a concrete class instance (ptr) passed where
+            // an interface fat pointer {data, vtable} is expected → build the fat
+            // pointer for (param_interface, concrete_class). Bug fix: previously
+            // there was no conversion, so the raw object pointer was passed where
+            // the fat pointer was expected → LLVM verify failure / wrong dispatch.
+            if (expected->isStructTy() && isInterfaceFatType(expected) &&
+                args[i]->getType()->isPointerTy() && current_tu_) {
+                std::string cls_name = resolveArgClassName(*e.args[i - arg_offset]);
+                std::string iface_name = paramIfaceName(cf, i - arg_offset);
+                if (!cls_name.empty() && !iface_name.empty()) {
+                    llvm::Value* fp = buildInterfaceFat(args[i], iface_name, cls_name);
+                    if (fp && fp->getType()->isStructTy()) {
+                        args[i] = fp;
+                        continue;
+                    }
+                }
+            }
+            args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i - arg_offset].get());
+        }
+    }
+    bool isv = cf->getReturnType()->isVoidTy();
+    // Math intrinsics (stdlib Math.sqrt/abs/floor/ceil) → LLVM intrinsics so the
+    // backend lowers them to single instructions (sqrtsd / fabs / roundsd) instead
+    // of an external runtime call (myp_math_* lives in a separate TU → cannot
+    // inline). This matches what C++ -O2 does for std::sqrt/std::fabs/std::floor
+    // and removes a call frame from the hottest inner loops (e.g. ray tracing).
+    if (args.size() == 1) {
+        const std::string& cname = cf->getName().str();
+        llvm::Intrinsic::ID mid = llvm::Intrinsic::not_intrinsic;
+        if (cname == "myp_math_sqrt") mid = llvm::Intrinsic::sqrt;
+        else if (cname == "myp_math_floor") mid = llvm::Intrinsic::floor;
+        else if (cname == "myp_math_ceil") mid = llvm::Intrinsic::ceil;
+        else if (cname == "myp_math_abs") mid = llvm::Intrinsic::fabs;
+        if (mid != llvm::Intrinsic::not_intrinsic)
+            return builder_.CreateUnaryIntrinsic(mid, args[0], nullptr, "mypmath");
+    }
+    return builder_.CreateCall(cf->getFunctionType(), cf, args, isv ? "" : "calltmp");
+}
+
+void CodeGen::generateFFIDecl(const FFIDecl& decl) {
+    std::vector<llvm::Type*> pts;
+    for (auto& p : decl.params) {
+        if (p.type.isArray()) {
+            pts.push_back(llvm::PointerType::get(ctx_, 0));
+        } else {
+            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+        }
+    }
+    auto* rt = getLLVMType(builtinTypeToInfo(decl.return_type.basic_type));
+    auto* ft = llvm::FunctionType::get(rt, pts, false);
+    llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
+}
+
+llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
+    // Create instance of hidden class: new __lambda_N()
+    NewExpr ne(e.hidden_class_name, {}, {}, e.range);
+    auto* obj = generateNewExpr(ne);
+
+    // M-FN-2: fill capture slots with the current values of captured outer locals
+    // (by value). obj is the hidden-class instance; store each cap_i = outer value.
+    for (size_t i = 0; i < e.capture_names.size(); i++) {
+        auto* outer = getNamedValue(e.capture_names[i]);
+        if (!outer) continue;
+        unsigned pi = 0;
+        if (!getPropertyIndex(e.hidden_class_name, e.capture_slots[i], pi)) continue;
+        auto* st = getClassStruct(e.hidden_class_name);
+        if (!st) continue;
+        const ClassDecl* hc = nullptr;
+        if (current_tu_) {
+            for (auto& c : current_tu_->classes)
+                if (c.name == e.hidden_class_name) { hc = &c; break; }
+        }
+        auto* pt = hc ? getPropertyType(*hc, e.capture_slots[i]) : llvm::Type::getInt32Ty(ctx_);
+        // 固定数组捕获：外层局部是数据指针 alloca（`int[N] a` 存 `a_arr[0]` 指针）。
+        // 属性类型是 [N x T] → 需先取数据指针，再加载数组值（深拷贝进闭包）。
+        llvm::Value* val = nullptr;
+        if (pt->isArrayTy()) {
+            auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), outer, e.capture_names[i] + ".data");
+            val = builder_.CreateLoad(pt, data, e.capture_names[i] + ".cap");
+        } else {
+            val = builder_.CreateLoad(pt, outer, e.capture_names[i] + ".cap");
+        }
+        // ARC: a captured class reference is shared (浅拷贝共享) — the closure's
+        // destroy stub will release it, so the closure must RETAIN its own ref
+        // (otherwise the outer local's release frees it while the closure holds
+        // a dangling borrow). Interface/function captures handled analogously.
+        bool cap_is_ref = false;
+        if (hc) {
+            for (auto& p : hc->properties)
+                if (p.name == e.capture_slots[i] && isArcRefType(p.type)) {
+                    cap_is_ref = true;
+                    break;
+                }
+        }
+        if (cap_is_ref) {
+            llvm::Value* cap_data = val;
+            if (val->getType()->isStructTy())
+                cap_data = builder_.CreateExtractValue(val, 0);
+            emitRetain(cap_data);
+        }
+        auto* gep = builder_.CreateStructGEP(st, obj, pi);
+        builder_.CreateStore(val, gep);
+    }
+
+    // Build the first-class function value: fat pointer { closure, call_fn }.
+    auto* fp_ty = getFunctionValueType();
+    auto* fp = builder_.CreateAlloca(fp_ty);
+    auto* closure_gep = builder_.CreateStructGEP(fp_ty, fp, 0);
+    auto* call_fn_gep = builder_.CreateStructGEP(fp_ty, fp, 1);
+    builder_.CreateStore(obj, closure_gep);
+    // ARC: the fat-pointer function value now owns the closure — drop it from
+    // the statement-end temp list (else it would be freed while still called).
+    arcConsumeTemp(obj);
+    auto* tramp = module_->getFunction(e.hidden_class_name + "_tramp");
+    if (tramp)
+        builder_.CreateStore(builder_.CreateBitCast(tramp, llvm::PointerType::get(ctx_, 0)), call_fn_gep);
+    else
+        builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), call_fn_gep);
+    return builder_.CreateLoad(fp_ty, fp);
+}
+
+llvm::Value* CodeGen::generatePipe(const PipeExpr& e) {
+    auto* lhs_val = generateExpr(*e.lhs);
+    if (!lhs_val) return nullptr;
+    // Resolve the operator instance: reuse a variable ("instance") or
+    // instantiate a fresh component from its class name ("class").
+    llvm::Value* instance = nullptr;
+    if (e.target_kind == "instance") {
+        instance = generateExpr(*e.rhs);
+    } else {
+        NewExpr ne(e.class_name, {}, {}, e.range);
+        instance = generateNewExpr(ne);
+    }
+    if (!instance) return lhs_val;
+    std::string fn = e.class_name + "_" + e.method;  // e.g. ScaleOp_transform
+    auto* callee = module_->getFunction(fn);
+    if (callee)
+        return builder_.CreateCall(callee, {instance, lhs_val});
+    return lhs_val;
+}
+
+llvm::Value* CodeGen::generateArrayElementAddress(const SubscriptExpr& ss) {
+    llvm::Type* elem_ty = nullptr;
+    const TypeInfo* slice_ti = nullptr;
+    if (ss.array->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*ss.array);
+        auto eit = array_elem_types_.find(id.name);
+        if (eit != array_elem_types_.end())
+            elem_ty = eit->second;
+        // slice<T>[i] — unpack {data,len}, bounds-check, GEP to element.
+        auto sit = var_slice_types_.find(id.name);
+        if (sit != var_slice_types_.end() && sit->second.element_type)
+            slice_ti = &sit->second;
+    } else if (ss.array->kind == ExprKind::MemberAccess) {
+        // obj.arr[i] — resolve the array field's element type from the struct
+        // or class declaration.
+        auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            auto* oa = getNamedValue(oi.name);
+            llvm::Type* oat = nullptr;
+            if (oa) {
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                    oat = oai->getAllocatedType();
+                else
+                    oat = getNamedValueType(oi.name);
+            }
+            if (oat && oat->isStructTy()) {
+                const StructDecl* sd = findStruct(
+                    llvm::cast<llvm::StructType>(oat)->getName().str());
+                if (sd) {
+                    for (auto& pr : sd->properties) {
+                        if (pr.name == ma.member_name && pr.type.isArray())
+                            elem_ty = typeNodeToLLVMType(*pr.type.element_type);
+                    }
+                }
+            }
+        }
+    }
+    auto* i = generateExpr(*ss.index);
+    auto* i64 = i;
+    if (i64->getType()->isIntegerTy(32) || i64->getType()->isIntegerTy(8)
+        || i64->getType()->isIntegerTy(16))
+        i64 = builder_.CreateZExt(i64, llvm::Type::getInt64Ty(ctx_));
+
+    // Slice path: {data, len} fat pointer — bounds check, GEP data[i].
+    if (slice_ti) {
+        auto* va = getNamedValue(
+            static_cast<const IdentifierExpr&>(*ss.array).name);
+        if (!va) return nullptr;
+        auto* sval = builder_.CreateLoad(getLLVMType(*slice_ti), va);
+        auto* data = builder_.CreateExtractValue(sval, 0);
+        auto* len = builder_.CreateExtractValue(sval, 1);
+        auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+        auto* nonneg = builder_.CreateICmpSGE(i64, llvm::ConstantInt::get(i64ty, 0));
+        auto* inb = builder_.CreateICmpULT(i64, len);
+        auto* ok = builder_.CreateAnd(nonneg, inb);
+        auto* be_fn = module_->getFunction("myp_bounds_error");
+        if (!be_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {i64ty, i64ty}, false);
+            be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_bounds_error", module_.get());
+        }
+        auto* cur_fn = builder_.GetInsertBlock()->getParent();
+        auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+        auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+        builder_.CreateCondBr(ok, cont_bb, err_bb);
+        builder_.SetInsertPoint(err_bb);
+        builder_.CreateCall(be_fn, {i64, len});
+        builder_.CreateBr(cont_bb);
+        builder_.SetInsertPoint(cont_bb);
+        auto* et = getLLVMType(*slice_ti->element_type);
+        return builder_.CreateGEP(et, data, i64);
+    }
+
+    if (!elem_ty) return nullptr;
+    auto* a = generateExpr(*ss.array);
+    return builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
+}
+
+llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
+    llvm::StructType* st = nullptr;
+    llvm::Value* base = nullptr;
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto* oa = getNamedValue(oi.name);
+        if (!oa) return nullptr;
+        if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+            auto* at = ai->getAllocatedType();
+            if (!at->isStructTy()) return nullptr;
+            st = llvm::cast<llvm::StructType>(at);
+            base = oa;
+        } else {
+            auto* nty = getNamedValueType(oi.name);
+            if (!nty || !nty->isStructTy()) return nullptr;
+            st = llvm::cast<llvm::StructType>(nty);
+            base = oa;
+        }
+    } else if (e.object->kind == ExprKind::ThisExpr) {
+        // this.field.subfield inside a struct method: 'this' is the struct ptr
+        auto* ta = getNamedValue("this");
+        if (!ta) return nullptr;
+        if (!struct_types_.count(current_class_name_)) return nullptr;
+        st = getStructType(current_class_name_);
+        if (!st) return nullptr;
+        base = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+    } else if (e.object->kind == ExprKind::MemberAccess) {
+        // Chained: a.b.c — recurse to get the address of a.b, then GEP c
+        base = generateStructMemberAddress(static_cast<const MemberAccessExpr&>(*e.object));
+        if (!base) return nullptr;
+        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(base)) {
+            auto* rt = gep->getResultElementType();
+            if (rt && rt->isStructTy()) st = llvm::cast<llvm::StructType>(rt);
+        }
+        if (!st) return nullptr;
+    } else if (e.object->kind == ExprKind::Subscript) {
+        // Struct array element: a[i].b — GEP to element, then GEP the field.
+        base = generateArrayElementAddress(static_cast<const SubscriptExpr&>(*e.object));
+        if (!base) return nullptr;
+        if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(base)) {
+            auto* rt = gep->getResultElementType();
+            if (rt && rt->isStructTy()) st = llvm::cast<llvm::StructType>(rt);
+        }
+        if (!st) return nullptr;
+    } else {
+        return nullptr;
+    }
+    unsigned fi = 0;
+    if (!getStructFieldIndex(st->getName().str(), e.member_name, fi)) return nullptr;
+    return builder_.CreateStructGEP(st, base, fi);
+}
+
+llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
+    if (!e.member_name.empty() && std::all_of(e.member_name.begin(), e.member_name.end(),
+            [](unsigned char c) { return std::isdigit(c); })) {
+        auto* objv = generateExpr(*e.object);
+        if (objv && objv->getType()->isStructTy()) {
+            auto* st = llvm::cast<llvm::StructType>(objv->getType());
+            if (st->isLiteral()) {
+                unsigned idx = (unsigned)std::stoul(e.member_name);
+                if (idx < st->getNumElements())
+                    return builder_.CreateExtractValue(objv, idx, "tup_field");
+            }
+        }
+    }
+
+    // Static class property access: ClassName.property
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto sit = static_property_globals_.find(oi.name);
+        if (sit != static_property_globals_.end() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name == oi.name) {
+                    unsigned pi = 0;
+                    if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                        auto* st = getClassStruct(cls.name);
+                        if (st) {
+                            auto* gep = builder_.CreateStructGEP(st, sit->second, pi);
+                            auto* pt = getPropertyType(cls, e.member_name);
+                            if (pt->isArrayTy()) return gep;
+                            return builder_.CreateLoad(pt, gep);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Enum variant access: Color.Red → enum struct {disc, zeros}
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        if (current_tu_) {
+            for (auto& en : current_tu_->enums) {
+                if (en.name == oi.name) {
+                    for (size_t vi = 0; vi < en.variants.size(); vi++) {
+                        if (en.variants[vi].name == e.member_name) {
+                            return buildEnumVariant(en.name, vi, {});
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Struct field access: v.field  (struct is value type, allocated on stack)
+    // Handle both direct identifier and chained member access (a.b.c)
+    llvm::StructType* st2_m = nullptr;
+    llvm::Value* bp_m = nullptr;
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto* oa = getNamedValue(oi.name);
+        if (oa) {
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(oa)) {
+                auto* at = ai->getAllocatedType();
+                if (at->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(at); bp_m = oa; }
+            } else if (oa->getType()->isPointerTy()) {
+                auto* nty = getNamedValueType(oi.name);
+                if (nty && nty->isStructTy()) { st2_m = llvm::cast<llvm::StructType>(nty); bp_m = oa; }
+            }
+        }
+    } else if (e.object->kind == ExprKind::MemberAccess) {
+        // Chained struct field access: a.b.c (e.g., DataManager.mesh.nx)
+        auto* inner = generateMemberAccess(static_cast<const MemberAccessExpr&>(*e.object));
+        if (inner) {
+            if (auto* inner_ld = llvm::dyn_cast<llvm::LoadInst>(inner)) {
+                // Loaded a struct value — recover the struct type from the load result
+                auto* loaded_ty = inner_ld->getType();
+                if (loaded_ty && loaded_ty->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(loaded_ty);
+                    bp_m = inner_ld->getPointerOperand();
+                }
+            } else if (auto* inner_gep = llvm::dyn_cast<llvm::GetElementPtrInst>(inner)) {
+                // GEP pointer — try sourced type info
+                auto* inner_struct = inner_gep->getResultElementType();
+                if (inner_struct && inner_struct->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(inner_struct);
+                    bp_m = inner;
+                }
+            }
+            // If still unresolved, try from the value's type
+            if (!st2_m && inner->getType()->isPointerTy()) {
+                // For opaque pointers in LLVM 21+, try to find the struct type by name
+                // by searching the struct field indices for a matching field name
+                for (auto& [key, st] : struct_types_) {
+                    auto idx_it = struct_field_indices_.find(key);
+                    if (idx_it == struct_field_indices_.end()) continue;
+                    if (idx_it->second.count(e.member_name)) {
+                        st2_m = st;
+                        bp_m = inner;
+                        break;
+                    }
+                }
+            }
+        }
+    } else if (e.object->kind == ExprKind::Subscript) {
+        // Struct array element field access: v[i].field — GEP to element, then
+        // GEP the field. Element type recovered from the GEP result.
+        auto* elem_ptr = generateArrayElementAddress(
+            static_cast<const SubscriptExpr&>(*e.object));
+        if (elem_ptr) {
+            if (auto* gep = llvm::dyn_cast<llvm::GetElementPtrInst>(elem_ptr)) {
+                auto* rt = gep->getResultElementType();
+                if (rt && rt->isStructTy()) {
+                    st2_m = llvm::cast<llvm::StructType>(rt);
+                    bp_m = elem_ptr;
+                }
+            }
+        }
+    }
+    if (st2_m && bp_m) {
+        // Find the field index by name
+        std::string st_name = st2_m->getName().str();
+        unsigned fi = 0;
+        if (getStructFieldIndex(st_name, e.member_name, fi)) {
+            auto* gep = builder_.CreateStructGEP(st2_m, bp_m, fi);
+            auto* field_type = st2_m->getElementType(fi);
+            if (field_type->isArrayTy()) return gep;
+            return builder_.CreateLoad(field_type, gep);
+        }
+    }
+    // If the object is a class pointer (identifier), try action/event resolution
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto* oa = getNamedValue(oi.name);
+        if (oa) {
+            auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa);
+            if (op && current_tu_) {
+                // Only allow action/event resolution (for mapping calls etc.)
+            }
+        }
+    }
+    // this.prop — internal property access (allowed for class AND struct)
+    if (e.object->kind == ExprKind::ThisExpr) {
+        auto* ta = getNamedValue("this");
+        if (ta) {
+            // Check if this is a struct method (current_class_name_ is a struct type key)
+            if (struct_types_.count(current_class_name_)) {
+                auto* st = getStructType(current_class_name_);
+                if (st) {
+                    auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                    unsigned fi = 0;
+                    if (getStructFieldIndex(current_class_name_, e.member_name, fi)) {
+                        auto* gep = builder_.CreateStructGEP(st, tp, fi);
+                        auto* field_type = st->getElementType(fi);
+                        if (field_type->isArrayTy()) return gep;
+                        return builder_.CreateLoad(field_type, gep);
+                    }
+                }
+            } else {
+                // Class property access — resolve against the CURRENT class
+                // (this.prop). Must not scan all classes: capture slots named
+                // "cap_i" are shared across lambda hidden classes, so the first
+                // match would be a different lambda's struct.
+                auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                if (tp && current_tu_ && !current_class_name_.empty()) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
+                        unsigned pi;
+                        if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                            auto* st = getClassStruct(cls.name);
+                            if (st) {
+                                auto* gep = builder_.CreateStructGEP(st, tp, pi);
+                                auto* pt = getPropertyType(cls, e.member_name);
+                                return builder_.CreateLoad(pt, gep);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Class instance property access: c.prop — c is a local class instance,
+    // prop is a member (array/scalar). Without this branch, `c.data_` wrongly
+    // resolved to the instance pointer via the fallback below (corrupting
+    // writes like `c.data_[i] = v`).
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        std::string obj_cls;
+        auto vcit = var_class_map_.find(oi.name);
+        if (vcit != var_class_map_.end()) obj_cls = vcit->second;
+        if (obj_cls.empty() && !current_class_name_.empty() && oi.name == current_class_name_)
+            obj_cls = current_class_name_;
+        if (!obj_cls.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != obj_cls) continue;
+                unsigned pi = 0;
+                if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                    auto* oa = getNamedValue(oi.name);
+                    if (oa) {
+                        auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa, oi.name);
+                        auto* st = getClassStruct(cls.name);
+                        if (st) {
+                            auto* gep = builder_.CreateStructGEP(st, op, pi);
+                            auto* pt = getPropertyType(cls, e.member_name);
+                            if (pt->isArrayTy()) return gep;
+                            return builder_.CreateLoad(pt, gep);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return generateExpr(*e.object);
+}
+
+const TypeInfo* CodeGen::sliceTypeOfExpr(const Expr* arr) {
+    if (!arr) return nullptr;
+    if (arr->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*arr);
+        auto sit = var_slice_types_.find(id.name);
+        return sit != var_slice_types_.end() ? &sit->second : nullptr;
+    }
+    if (arr->kind == ExprKind::Subscript) {
+        // rows[i] where rows is slice<slice<int>> → rows[i] : slice<int>
+        auto& ss = static_cast<const SubscriptExpr&>(*arr);
+        const TypeInfo* inner = sliceTypeOfExpr(ss.array.get());
+        if (inner && inner->kind == TypeKind::Slice)
+            return inner->element_type.get();
+        return nullptr;
+    }
+    return nullptr;
+}
+
+llvm::Value* CodeGen::generateSliceElementAddress(const Expr* arr, llvm::Value* idx) {
+    const TypeInfo* sti = sliceTypeOfExpr(arr);
+    if (!sti || sti->kind != TypeKind::Slice || !sti->element_type) return nullptr;
+    auto* sval = generateExpr(*arr);
+    if (!sval || !sval->getType()->isStructTy()) return nullptr;
+    auto* data = builder_.CreateExtractValue(sval, 0);
+    auto* len = builder_.CreateExtractValue(sval, 1);
+    auto* idx64 = idx;
+    if (idx64->getType()->isIntegerTy(32) || idx64->getType()->isIntegerTy(8)
+        || idx64->getType()->isIntegerTy(16))
+        idx64 = builder_.CreateZExt(idx64, llvm::Type::getInt64Ty(ctx_));
+    // Bounds check: 0 <= idx < len
+    auto* i64ty = llvm::Type::getInt64Ty(ctx_);
+    auto* nonneg = builder_.CreateICmpSGE(idx64, llvm::ConstantInt::get(i64ty, 0));
+    auto* inb = builder_.CreateICmpULT(idx64, len);
+    auto* ok = builder_.CreateAnd(nonneg, inb);
+    auto* be_fn = module_->getFunction("myp_bounds_error");
+    if (!be_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+            {i64ty, i64ty}, false);
+        be_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_bounds_error", module_.get());
+    }
+    auto* cur_fn = builder_.GetInsertBlock()->getParent();
+    auto* err_bb = llvm::BasicBlock::Create(ctx_, "slice_oob", cur_fn);
+    auto* cont_bb = llvm::BasicBlock::Create(ctx_, "slice_ok", cur_fn);
+    builder_.CreateCondBr(ok, cont_bb, err_bb);
+    builder_.SetInsertPoint(err_bb);
+    builder_.CreateCall(be_fn, {idx64, len});
+    builder_.CreateBr(cont_bb);
+    builder_.SetInsertPoint(cont_bb);
+    auto* et = getLLVMType(*sti->element_type);
+    return builder_.CreateGEP(et, data, idx64);
+}
+
+llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
+    // slice<T>[i] (incl. nested slice<slice<T>> rows[i][j]) — unpack the slice
+    // value, bounds-check, GEP, load.
+    if (const TypeInfo* sti = sliceTypeOfExpr(e.array.get())) {
+        if (sti->kind == TypeKind::Slice && sti->element_type) {
+            auto* idx = generateExpr(*e.index);
+            auto* p = generateSliceElementAddress(e.array.get(), idx);
+            if (p) {
+                auto* elem_ty = getLLVMType(*sti->element_type);
+                return builder_.CreateLoad(elem_ty, p);
+            }
+        }
+    }
+    auto* a = generateExpr(*e.array);
+    auto* i = generateExpr(*e.index);
+    // With opaque pointers in LLVM 21, we determine the element type
+    // from the source-level type info rather than the pointer type.
+    // If the array expression is a property or variable of known type,
+    // we try to access it as a pointer to the element type.
+    // Default: assume i32 elements with a simple GEP.
+    llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);
+
+    // Try to determine the actual element type from the array expression
+    if (e.array->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.array);
+        // Check class properties
+        if (!current_class_name_.empty() && current_tu_) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name == id.name && p.type.isArray()) {
+                        // Get the element type from the property's type node
+                        elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                        goto do_gep;
+                    }
+                }
+            }
+        }
+        // Check local variables
+        auto* va = getNamedValue(id.name);
+        if (va) {
+            llvm::Type* at_x = nullptr;
+            if (auto* vai = llvm::dyn_cast<llvm::AllocaInst>(va)) {
+                at_x = vai->getAllocatedType();
+            } else {
+                at_x = getNamedValueType(id.name);
+            }
+            if (at_x && at_x->isArrayTy()) {
+                elem_ty = at_x->getArrayElementType();
+            } else if (at_x && at_x->isPointerTy()) {
+                // Check if this variable has a recorded array element type
+                auto eit = array_elem_types_.find(id.name);
+                if (eit != array_elem_types_.end()) {
+                    elem_ty = eit->second;
+                } else {
+                    elem_ty = llvm::Type::getInt32Ty(ctx_);
+                }
+            }
+        }
+    } else if (e.array->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+            // Struct variable's array field: `bg.nodes[i]` — resolve the field's
+            // element type from the struct declaration (var_class_map_ only covers
+            // class instances, so struct fields would otherwise fall through to i32).
+            auto* oa = getNamedValue(oi.name);
+            llvm::Type* oat = nullptr;
+            if (oa) {
+                if (auto* oai = llvm::dyn_cast<llvm::AllocaInst>(oa))
+                    oat = oai->getAllocatedType();
+                else
+                    oat = getNamedValueType(oi.name);
+            }
+            if (oat && oat->isStructTy()) {
+                std::string sname = llvm::cast<llvm::StructType>(oat)->getName().str();
+                const StructDecl* sd = findStruct(sname);
+                if (sd) {
+                    for (auto& pr : sd->properties) {
+                        if (pr.name == ma.member_name && pr.type.isArray()) {
+                            elem_ty = typeNodeToLLVMType(*pr.type.element_type);
+                            goto do_gep;
+                        }
+                    }
+                }
+            }
+            // Resolve variable name to class name via var_class_map_
+            std::string obj_class = oi.name;
+            auto vcit = var_class_map_.find(oi.name);
+            if (vcit != var_class_map_.end())
+                obj_class = vcit->second;
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != obj_class && cls.name != current_class_name_) continue;
+                    for (auto& p : cls.properties) {
+                        if (p.name == ma.member_name && p.type.isArray()) {
+                            elem_ty = typeNodeToLLVMType(*p.type.element_type);
+                            goto do_gep;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+do_gep:
+    // 下标窄整数零扩展（ubyte/uint8 值>=128 不符号扩展成负下标）
+    auto* p = builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
+    return builder_.CreateLoad(elem_ty, p);
+}
+
+llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
+    // Built-in slice<T>(n): allocate n*elem bytes, return { data, len }
+    if (e.class_name == "slice") {
+        auto* elem_ty = typeNodeToLLVMType(e.type_args[0]);
+        uint64_t es = module_->getDataLayout().getTypeAllocSize(elem_ty);
+        auto* len_val = generateExpr(*e.args[0]);
+        if (len_val->getType()->isIntegerTy(32) || len_val->getType()->isIntegerTy(8)
+            || len_val->getType()->isIntegerTy(16))
+            len_val = builder_.CreateZExt(len_val, llvm::Type::getInt64Ty(ctx_));
+        auto* byte_size = builder_.CreateMul(len_val,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
+        // Always allocate via the region-aware allocator: when called inside an
+        // @region's dynamic scope it lands in the region list (reclaimed on exit),
+        // otherwise it behaves exactly like the process-level allocator.
+        llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+        if (!alloc_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+        }
+        auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "slice_data");
+        if (es > 0)
+            builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
+        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+        auto* slt = llvm::StructType::get(ctx_, {ptr_ty, llvm::Type::getInt64Ty(ctx_)});
+        llvm::Value* val = llvm::PoisonValue::get(slt);
+        val = builder_.CreateInsertValue(val, ptr, 0);
+        val = builder_.CreateInsertValue(val, len_val, 1);
+        return val;
+    }
+    std::string cls_name = e.class_name;
+    // Mangle name for generic classes: new Box<int>() → Box_int_inst
+    // (type-param placeholders like R are resolved via current_type_params_)
+    if (!e.type_args.empty()) {
+        cls_name = e.class_name;
+        for (auto& ta : e.type_args)
+            cls_name += "_" + mangleConcreteTypeNode(ta);
+        cls_name += "_inst";
+    }
+    auto* st = getClassStruct(cls_name);
+    if (!st) {
+        // Struct type not found — allocate 1 byte (minimum valid pointer)
+        // The struct has no properties, so no real storage is needed
+        auto* alloc_fn = runtime_alloc_object_;
+        if (!alloc_fn) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_alloc_object", module_.get());
+        }
+        auto tit = class_type_ids_.find(cls_name);
+        uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
+        auto* obj1 = builder_.CreateCall(alloc_fn,
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
+        arcPushTemp(obj1);   // statement-end temp release (consumed by stores)
+        return obj1;
+    }
+    const auto& lay = module_->getDataLayout();
+    auto sz = lay.getTypeAllocSize(st);
+    // ARC: allocate with an 8-byte { rc, type_id } header. myp_alloc_object
+    // returns the data pointer (header sits just before it), so all existing
+    // field GEPs / this / vtable accesses are unchanged.
+    auto* alloc_fn = runtime_alloc_object_;
+    if (!alloc_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_alloc_object", module_.get());
+    }
+    auto tit = class_type_ids_.find(cls_name);
+    uint32_t tid = (tit != class_type_ids_.end()) ? (uint32_t)tit->second : 0;
+    auto* obj = builder_.CreateCall(alloc_fn,
+        {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz > 0 ? sz : 1),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), tid)});
+    arcPushTemp(obj);   // statement-end temp release (consumed by stores)
+    if (sz > 0)
+        builder_.CreateMemSet(obj, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), sz, llvm::Align(8));
+
+    // Apply declared property default values (`int x = 5;`, class-level
+    // `const double T = 0.0253;`). The allocator zero-inits; non-default
+    // initializers are stored here on every new. Generic instances are skipped
+    // (their template's defaults keep the zero value).
+    if (current_tu_) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != cls_name) continue;
+            auto* st2 = getClassStruct(cls.name);
+            if (!st2) continue;
+            for (size_t pi = 0; pi < cls.properties.size(); pi++) {
+                auto& prop = cls.properties[pi];
+                if (!prop.init_expr) continue;
+                llvm::Value* v = generateExpr(*prop.init_expr);
+                auto* gep = builder_.CreateStructGEP(st2, obj, pi);
+                builder_.CreateStore(v, gep);
+            }
+            break;
+        }
+    }
+
+    // 调用匹配的构造器（sema 已解析；分配→默认值→构造体，构造体可覆写默认值）。
+    // 泛型实例：模板期 resolved_ctor 基于占位符（`Result_T_E_inst` 类当时可能不存在
+    // 或名字带占位符）→ 找不到时按「具体实例类名 + 实参个数」重建 ctor 名。
+    auto* ctor = module_->getFunction(e.resolved_ctor);
+    if (!ctor && !e.type_args.empty()) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != cls_name) continue;
+            for (auto& a : cls.actions) {
+                if (!a.has_constructor) continue;
+                if (a.params.size() != e.args.size()) continue;
+                auto* f2 = module_->getFunction(constructorMangledName(cls_name, a.name, a.params));
+                if (f2) { ctor = f2; break; }
+            }
+            if (ctor) break;
+        }
+    }
+    if (ctor) {
+        std::vector<llvm::Value*> ctor_args;
+        ctor_args.push_back(obj);
+            auto* ft = ctor->getFunctionType();
+            size_t idx = 1;
+            for (auto& a : e.args) {
+                llvm::Value* v = generateExpr(*a);
+                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致）
+                if (idx < ft->getNumParams()) {
+                    auto* expected = ft->getParamType(idx);
+                    if (v->getType() != expected) {
+                        // 接口参数 upcast（同 generateCall）：具体实例 → 接口胖指针
+                        if (expected->isStructTy() && isInterfaceFatType(expected) &&
+                            v->getType()->isPointerTy() && current_tu_) {
+                            std::string cls_name = resolveArgClassName(*a);
+                            std::string iface_name = paramIfaceName(ctor, idx - 1);
+                            if (!cls_name.empty() && !iface_name.empty()) {
+                                llvm::Value* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                if (fp && fp->getType()->isStructTy()) { v = fp; }
+                            }
+                        } else if (v->getType()->isIntegerTy() && expected->isIntegerTy())
+                            v = builder_.CreateIntCast(v, expected, true);
+                        else if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
+                            v = builder_.CreateSIToFP(v, expected);
+                        else if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
+                            v = builder_.CreateFPToSI(v, expected);
+                        else if (v->getType()->isPointerTy() && expected->isPointerTy())
+                            v = builder_.CreateBitCast(v, expected);
+                    }
+                }
+                ctor_args.push_back(v);
+                idx++;
+            }
+            builder_.CreateCall(ctor, ctor_args);
+    }
+    return obj;
+}
+
+llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
+    llvm::Value* total = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1);
+    for (auto& dim : e.dimensions) {
+        auto* dim_val = generateExpr(*dim);
+        if (dim_val->getType()->isIntegerTy(32))
+            dim_val = builder_.CreateZExt(dim_val, llvm::Type::getInt64Ty(ctx_));
+        total = builder_.CreateMul(total, dim_val);
+    }
+    auto* elem_ty = typeNodeToLLVMType(e.element_type);
+    uint64_t elem_size = module_->getDataLayout().getTypeAllocSize(elem_ty);
+    auto* byte_size = builder_.CreateMul(total,
+        llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), elem_size));
+    // Class-element array → ref-counted class array: a header { count,
+    // elem_size, rc=1, type_id=MYP_ARR_TYPE_ID } precedes the data pointer, so
+    // myp_release on the array (scope exit / destroy stub / temp flush)
+    // releases every element then frees it.
+    if (isArcClassType(e.element_type)) {
+        auto* ac = module_->getFunction("myp_alloc_class_array");
+        if (!ac) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_)}, false);
+            ac = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                "myp_alloc_class_array", module_.get());
+        }
+        auto* ptr = builder_.CreateCall(ac,
+            {total, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)elem_size)},
+            "new_arr");
+        // Zero the element area so unreleased slots are NULL (release no-op).
+        if (elem_size > 0)
+            builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
+                byte_size, llvm::Align(8));
+        arcPushTemp(ptr);   // fresh array rc=1 owned by this statement
+        return ptr;
+    }
+    // Always region-aware allocator (see generateNewExpr): dynamic extent — inside
+    // an @region's call scope it is reclaimed; otherwise acts as process-level.
+    llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+    if (!alloc_fn) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+    }
+    auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "new_arr");
+    if (elem_size > 0)
+        builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
+    return ptr;
+}
+
+bool CodeGen::typeIsReference(const TypeInfo& t) {
+    switch (t.kind) {
+        case TypeKind::Slice:
+        case TypeKind::Array:
+        case TypeKind::Class:
+        case TypeKind::Interface:
+        case TypeKind::String:
+            return true;
+        default:
+            return false;
+    }
+}
+
+llvm::Value* CodeGen::generateThisExpr(const ThisExpr&) {
+    return getNamedValue("this");
+}
+
+llvm::Value* CodeGen::castToI64(llvm::Value* v) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    if (!v) return llvm::ConstantInt::get(i64, 0);
+    if (v->getType() == i64) return v;
+    if (v->getType()->isIntegerTy())
+        return builder_.CreateIntCast(v, i64, true);
+    if (v->getType()->isFloatingPointTy())
+        return builder_.CreateBitCast(v, i64);
+    if (v->getType()->isPointerTy())
+        return builder_.CreatePtrToInt(v, i64);
+    return llvm::ConstantInt::get(i64, 0);
+}
+
+void CodeGen::buildEventNameTable() {
+    if (event_table_names_) return;  // already built
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    // Sort by event id for a stable, deterministic order.
+    std::vector<std::pair<int, std::string>> evs;
+    for (auto& kv : event_id_map_) evs.push_back({kv.second, kv.first});
+    std::sort(evs.begin(), evs.end());
+    std::vector<llvm::Constant*> name_strs;
+    std::vector<llvm::Constant*> ids;
+    for (auto& p : evs) {
+        name_strs.push_back(builder_.CreateGlobalStringPtr(p.second, "evname"));
+        ids.push_back(llvm::ConstantInt::get(i32, p.first));
+    }
+    event_table_count_ = (int)name_strs.size();
+    if (event_table_count_ == 0) {
+        event_table_names_ = llvm::ConstantPointerNull::get(ptr);
+        event_table_ids_ = llvm::ConstantPointerNull::get(ptr);
+        return;
+    }
+    auto* names_arr = llvm::ConstantArray::get(
+        llvm::ArrayType::get(ptr, event_table_count_), name_strs);
+    auto* names_gv = new llvm::GlobalVariable(*module_, names_arr->getType(), true,
+        llvm::GlobalValue::InternalLinkage, names_arr, "__myp_event_names");
+    auto* ids_arr = llvm::ConstantArray::get(
+        llvm::ArrayType::get(i32, event_table_count_), ids);
+    auto* ids_gv = new llvm::GlobalVariable(*module_, ids_arr->getType(), true,
+        llvm::GlobalValue::InternalLinkage, ids_arr, "__myp_event_ids");
+    event_table_names_ = names_gv;
+    event_table_ids_ = ids_gv;
+}
+
+llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+
+    // §五-5 形态3: await <@async 调用> — 直接调用（@async 函数内部经 park 原语
+    // 挂起/恢复当前协程），不做 yield 值握手；await 表达式的值 = 函数返回值。
+    if (e.operand && e.operand->kind == ExprKind::Call) {
+        auto& call = static_cast<const CallExpr&>(*e.operand);
+        if (call.callee && isAsyncCallTarget(call.callee.get())) {
+            auto* v = generateExpr(*e.operand);
+            return v ? castToI64(v) : llvm::ConstantInt::get(i64, 0);
+        }
+    }
+
+    // await ClassName.eventName — block until the event is fired (C4).
+    if (e.operand && e.operand->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*e.operand);
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            int event_id = 0;
+            bool is_event = false;
+            if (current_tu_) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != oid.name) continue;
+                    for (auto& ev : cls.events) {
+                        if (ev.name == ma.member_name) {
+                            auto ekey = cls.name + "::" + ev.name;
+                            auto eit = event_id_map_.find(ekey);
+                            if (eit != event_id_map_.end()) event_id = eit->second;
+                            is_event = true;
+                            goto event_found;
+                        }
+                    }
+                }
+            }
+        event_found:
+            if (is_event) {
+                if (e.timeout) {
+                    // await Signal.go timeout N → wait_event_timeout(id, N, 0)
+                    auto wt = module_->getOrInsertFunction("__myp_coro_wait_event_timeout",
+                        llvm::FunctionType::get(i64, {i64, i64, i64}, false));
+                    auto* tms = castToI64(generateExpr(*e.timeout));
+                    return builder_.CreateCall(wt,
+                        {llvm::ConstantInt::get(i64, event_id), tms,
+                         llvm::ConstantInt::get(i64, 0)}, "await_event");
+                }
+                // __myp_coro_wait_event(event_id, 0)
+                auto wait_fn = module_->getOrInsertFunction("__myp_coro_wait_event",
+                    llvm::FunctionType::get(i64, {i64, i64}, false));
+                return builder_.CreateCall(wait_fn,
+                    {llvm::ConstantInt::get(i64, event_id),
+                     llvm::ConstantInt::get(i64, 0)}, "await_event");
+            }
+        }
+    }
+
+    // await expr — suspend, passing `expr` out; evaluates to the value passed
+    // in by __myp_coro_resume (e.g. `int v = await n * 2;`)
+    llvm::Value* out = llvm::ConstantInt::get(i64, 0);
+    if (e.operand) {
+        out = generateExpr(*e.operand);
+        out = castToI64(out);
+    }
+    auto* yield_fn = module_->getFunction("__myp_coro_yield");
+    if (!yield_fn) {
+        auto* ft = llvm::FunctionType::get(i64, {i64}, false);
+        yield_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                          "__myp_coro_yield", module_.get());
+    }
+    return builder_.CreateCall(yield_fn, {out}, "await_val");
+}
+
+llvm::Value* CodeGen::generateRange(const RangeExpr& e) {
+    // Range evaluation: returns the start value (for use in for loops mainly)
+    return generateExpr(*e.start);
+}
+
+bool CodeGen::isAsyncCallTarget(const Expr* callee) const {
+    if (!callee || !current_tu_) return false;
+    if (callee->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*callee);
+        for (auto& f : current_tu_->functions)
+            if (f.name == id.name && f.has_async) return true;
+        return false;
+    }
+    if (callee->kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(*callee);
+        if (ma.object && ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            // 类名接收者（静态方法）：Class.method
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != oid.name) continue;
+                for (auto& a : cls.actions)          // action: 段
+                    if (a.name == ma.member_name && a.has_async) return true;
+                for (auto& a : cls.static_actions)   // static: 段
+                    if (a.name == ma.member_name && a.has_async) return true;
+            }
+            // 实例接收者：obj.method — 经 var_class_map_ 解析变量所属类
+            auto vcit = var_class_map_.find(oid.name);
+            if (vcit != var_class_map_.end()) {
+                for (auto& cls : current_tu_->classes) {
+                    if (cls.name != vcit->second) continue;
+                    for (auto& a : cls.actions)
+                        if (a.name == ma.member_name && a.has_async) return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+llvm::Value* CodeGen::generateTryExpr(const TryExpr& e) {
+    // Expression try: try <expr> catch (id) <expr> — value on success, fallback on error.
+    // Uses the same per-try jmp_buf + handler stack as the try statement, and a
+    // PHI to merge the success/fallback values.
+    auto* func = builder_.GetInsertBlock()->getParent();
+
+    auto* jb = createEntryBlockAlloca(func, jmp_buf_type_, "try_expr_jmpbuf");
+    auto* jb_ptr = builder_.CreateBitCast(jb, llvm::PointerType::get(ctx_, 0));
+    builder_.CreateCall(runtime_exception_push_->getFunctionType(),
+        runtime_exception_push_, {jb_ptr});
+    auto* result = builder_.CreateCall(runtime_setjmp_->getFunctionType(),
+        runtime_setjmp_, {jb_ptr}, "setjmp_result");
+    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* is_error = builder_.CreateICmpNE(result, zero, "is_error");
+
+    auto* try_bb = llvm::BasicBlock::Create(ctx_, "try_expr_try", func);
+    auto* catch_bb = llvm::BasicBlock::Create(ctx_, "try_expr_catch");
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_expr_merge");
+    builder_.CreateCondBr(is_error, catch_bb, try_bb);
+
+    // Success path: evaluate the try expression
+    builder_.SetInsertPoint(try_bb);
+    auto* v1 = generateExpr(*e.try_expr);
+    auto* last_try = builder_.GetInsertBlock();
+    if (!last_try->getTerminator()) builder_.CreateBr(merge_bb);
+
+    // Error path: bind catch variable (string message), evaluate fallback
+    func->insert(func->end(), catch_bb);
+    builder_.SetInsertPoint(catch_bb);
+    auto* err_ptr = builder_.CreateCall(runtime_get_error_->getFunctionType(),
+        runtime_get_error_, {}, "err_msg");
+    // 拷贝消息（共享 myp_error_msg 缓冲会被后续 throw 覆写）
+    auto* dup = module_->getFunction("myp_strdup");
+    if (!dup) {
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::PointerType::get(ctx_, 0)}, false);
+        dup = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_strdup", module_.get());
+    }
+    err_ptr = builder_.CreateCall(dup->getFunctionType(), dup, {err_ptr}, "err_copy");
+    auto* err_var = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), e.catch_var_name);
+    builder_.CreateStore(err_ptr, err_var);
+    setNamedValue(e.catch_var_name, err_var);
+    auto* v2 = generateExpr(*e.catch_expr);
+    auto* last_catch = builder_.GetInsertBlock();
+    if (!last_catch->getTerminator()) builder_.CreateBr(merge_bb);
+
+    // Merge via PHI (cast fallback to the success type if needed)
+    func->insert(func->end(), merge_bb);
+    builder_.SetInsertPoint(merge_bb);
+    if (v2->getType() != v1->getType()) {
+        if (v1->getType()->isIntegerTy() && v2->getType()->isIntegerTy())
+            v2 = builder_.CreateIntCast(v2, v1->getType(), true);
+        else if (v1->getType()->isFloatingPointTy() && v2->getType()->isIntegerTy())
+            v2 = builder_.CreateSIToFP(v2, v1->getType());
+        else if (v1->getType()->isIntegerTy() && v2->getType()->isFloatingPointTy())
+            v2 = builder_.CreateFPToSI(v2, v1->getType());
+    }
+    auto* phi = builder_.CreatePHI(v1->getType(), 2, "try_expr_result");
+    phi->addIncoming(v1, last_try);
+    phi->addIncoming(v2, last_catch);
+    // Pop this try's handler (all paths converge here).
+    builder_.CreateCall(runtime_exception_pop_->getFunctionType(),
+        runtime_exception_pop_, {});
+    return phi;
+}
+
+llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
+    auto* cond = generateExpr(*e.condition);
+    if (!cond->getType()->isIntegerTy(1))
+        cond = builder_.CreateICmpNE(cond, llvm::ConstantInt::get(cond->getType(), 0));
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* true_bb = llvm::BasicBlock::Create(ctx_, "tern_true", func);
+    auto* false_bb = llvm::BasicBlock::Create(ctx_, "tern_false");
+    auto* merge_bb = llvm::BasicBlock::Create(ctx_, "tern_merge");
+    builder_.CreateCondBr(cond, true_bb, false_bb);
+    // True branch
+    builder_.SetInsertPoint(true_bb);
+    auto* true_val = generateExpr(*e.true_expr);
+    auto* last_true = builder_.GetInsertBlock();
+    // False branch
+    func->insert(func->end(), false_bb);
+    builder_.SetInsertPoint(false_bb);
+    auto* false_val = generateExpr(*e.false_expr);
+    auto* last_false = builder_.GetInsertBlock();
+
+    // Numeric ternary branches can differ in width (e.g. `? 1 : x` — literal 1
+    // is i8, x is i32): widen both to a common type before the phi (matches the
+    // binary-op SExt promotion).
+    llvm::Type* common_ty = true_val->getType();
+    if (false_val->getType() != common_ty) {
+        if (common_ty->isIntegerTy() && false_val->getType()->isIntegerTy()) {
+            unsigned w = std::max(common_ty->getIntegerBitWidth(),
+                                  false_val->getType()->getIntegerBitWidth());
+            common_ty = llvm::Type::getIntNTy(ctx_, w);
+        } else if (common_ty->isFloatingPointTy() && false_val->getType()->isFloatingPointTy()) {
+            if (false_val->getType()->getPrimitiveSizeInBits() > common_ty->getPrimitiveSizeInBits())
+                common_ty = false_val->getType();
+        } else if (common_ty->isIntegerTy() && false_val->getType()->isFloatingPointTy()) {
+            common_ty = false_val->getType();
+        }
+    }
+    // Insert the casts in the branch blocks (before their merge branch), then
+    // branch to merge. If a branch already returned/terminated, keep its value.
+    auto castIn = [&](llvm::Value* v, llvm::BasicBlock* bb) -> llvm::Value* {
+        if (!v || v->getType() == common_ty) return v;
+        if (bb->getTerminator()) return v;   // dead path — no cast needed
+        llvm::IRBuilder<> tb(bb);            // inserts at end of bb
+        if (common_ty->isIntegerTy() && v->getType()->isIntegerTy())
+            return tb.CreateSExt(v, common_ty);
+        if (common_ty->isFloatingPointTy() && v->getType()->isFloatingPointTy())
+            return tb.CreateFPCast(v, common_ty);
+        if (common_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
+            return tb.CreateSIToFP(v, common_ty);
+        if (common_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
+            return tb.CreateFPToSI(v, common_ty);
+        return v;
+    };
+    llvm::Value* t_cast = castIn(true_val, last_true);
+    llvm::Value* f_cast = castIn(false_val, last_false);
+    if (!last_true->getTerminator()) {
+        llvm::IRBuilder<> tb(last_true);
+        tb.CreateBr(merge_bb);
+    }
+    if (!last_false->getTerminator()) {
+        llvm::IRBuilder<> tb(last_false);
+        tb.CreateBr(merge_bb);
+    }
+    // Merge
+    func->insert(func->end(), merge_bb);
+    builder_.SetInsertPoint(merge_bb);
+    auto* phi = builder_.CreatePHI(common_ty, 2, "ternary");
+    phi->addIncoming(t_cast, last_true);
+    phi->addIncoming(f_cast, last_false);
+    return phi;
+}
+
+llvm::Value* CodeGen::generateEnumVariant(const EnumVariantExpr& e) {
+    // Enum variant value → enum struct {disc, payload}.
+    if (!e.args.empty()) {
+        std::vector<llvm::Value*> arg_vals;
+        for (auto& a : e.args)
+            arg_vals.push_back(generateExpr(*a));
+        return buildEnumVariant(e.enum_name, e.variant_index, arg_vals);
+    }
+    return buildEnumVariant(e.enum_name, e.variant_index, {});
+}
+
+}  // namespace mylang

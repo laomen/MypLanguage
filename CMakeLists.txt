@@ -68,6 +68,10 @@ set(SOURCES
     src/sema/type.cpp
     src/sema/symbol_table.cpp
     src/codegen/codegen.cpp
+    src/codegen/codegen_class.cpp
+    src/codegen/codegen_stmt.cpp
+    src/codegen/codegen_expr.cpp
+    src/codegen/codegen_gpu.cpp
     src/codegen/myp_passes.cpp
     src/eval/eval.cpp
     src/macro/macro_expand.cpp

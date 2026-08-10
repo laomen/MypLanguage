@@ -26,6 +26,13 @@
 
 namespace mylang {
 
+// Small shared integer-conversion helpers used across the split codegen TUs.
+// Definitions live in src/codegen/codegen.cpp (not file-static, so the
+// per-concern translation units can call them).
+llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
+                                 llvm::Type* expected, const Expr* src);
+llvm::Value* zextIndexValue(llvm::IRBuilder<>& b, llvm::Value* v);
+
 /// LLVM IR code generator.
 class CodeGen {
 public:
