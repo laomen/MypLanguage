@@ -28,6 +28,16 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **修复编译期 `const string` 拼接导致 LLVM verify 崩溃（元编程测试暴露）**：
+  - 症状：`const string G = "a" + "b";`（或 @eval 函数返回拼接串、`a() + b()`）
+    报 `LLVM verify failed: Function return type does not match operand type of
+    return inst!`。根因：`evalBinary` 缺字符串 `+` 分支 → 两个 Str 值落入 int 分支，
+    读 Str 的 `.i` 字段得垃圾整数 → const 被替换成类型不符的 int 字面量 → codegen
+    给返回 `ptr` 的函数生成 `ret i32`。
+  - 修复：`evalBinary` 增加 `Str + Str → ofStr(a.s + c.s)`；`eq`/`lt` 增加 Str
+    分支（此前字符串相等/比较同样读 `.i` 算错）。编译期字符串拼接/相等现在正确。
+  - 新增正测试 `tests/const_string/`（拼接/链式拼接/@eval 拼接/编译期 ==）；
+    188/188 回归通过，ASAN 干净。
 - **修复前缀 `++`/`--` 嵌套反解的指数级 AST 膨胀（内存耗尽挂死，fuzz 暴露）**：
   - 症状：`-`×50（偶数个 → 25 个 `--` token）使 mypc 100% CPU 自旋 + 内存暴涨挂死
     （`内存占用太大挂了`）；`----1` 等深层前缀链触发。原实现逐运算符反解 `x = x ± 1`

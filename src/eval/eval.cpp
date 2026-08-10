@@ -244,6 +244,14 @@ private:
             return EvalValue::ofAst(std::move(*out));
         }
 
+        // String concatenation: "a" + "b" at compile time. Without this case
+        // the operands fell through to the integer branch, reading the garbage
+        // `.i` field of Str values and producing an Int const for a string
+        // declaration → codegen emitted an i32 return for a ptr-returning
+        // function → "LLVM verify failed" (found via `const string G = "a"+"b"`).
+        if (b.op == BinaryOpKind::Add && a.kind == EvalValue::Str && c.kind == EvalValue::Str)
+            return EvalValue::ofStr(a.s + c.s);
+
         // Comparison / logical produce bool.
         switch (b.op) {
         case BinaryOpKind::Eq:
@@ -298,6 +306,8 @@ private:
     }
 
     static bool eq(const EvalValue& a, const EvalValue& c) {
+        if (a.kind == EvalValue::Str || c.kind == EvalValue::Str)
+            return a.s == c.s;
         if (a.kind == EvalValue::Double || c.kind == EvalValue::Double)
             return (a.kind == EvalValue::Double ? a.d : (double)a.i) ==
                    (c.kind == EvalValue::Double ? c.d : (double)c.i);
@@ -307,6 +317,8 @@ private:
     }
 
     static bool lt(const EvalValue& a, const EvalValue& c) {
+        if (a.kind == EvalValue::Str || c.kind == EvalValue::Str)
+            return a.s < c.s;
         if (a.kind == EvalValue::Double || c.kind == EvalValue::Double)
             return (a.kind == EvalValue::Double ? a.d : (double)a.i) <
                    (c.kind == EvalValue::Double ? c.d : (double)c.i);
