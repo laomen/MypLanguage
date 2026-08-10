@@ -27,6 +27,16 @@
 
 ## 编译器版本历史
 
+### v3.11.4
+- **支持 struct 数组元素字段访问 `arr[i].field`**：此前 `v[i].x` 读/写都报
+  "unknown property 'x'"——codegen 只处理标量 struct（Identifier 对象）和链式成员
+  （MemberAccess 对象），未处理 Subscript 对象（sema 能解析、codegen 挂）。新增
+  `generateArrayElementAddress` 计算 struct 数组元素地址，接入读/写/链式三路径，
+  并支持 struct 字段数组（`obj.arr[i]`）。
+  - 由新基准 dotprod（struct 数组点积）暴露；回归测试 `tests/struct_array/`
+    （字段写/读/循环/整体拷贝/链式嵌套 `o[i].in.a`）。
+  - 回归：O0/O2/ASAN 176/176 全过；30 项基准 verify 全一致，dotprod 2.29 反超。
+
 ### v3.11.3
 - **顶层函数 internal 化（最大一次性能提升）**：此前所有顶层函数发成 external 链接，
   LLVM -O2 内联器因内联成本超阈值拒绝内联（如 convolution 425 > 225）→ 调用点传的
