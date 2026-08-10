@@ -1,0 +1,64 @@
+// bench/myp/spmv.myp — 稀疏矩阵×稠密向量（CSR 风格 gather，cactuBSSN 类）
+// N=65536 行 × K=64 非零/行，列号 LCG 随机（cache 不友好 gather）。
+// verify = 结果向量 y 之和（double，同序求和位级一致）。
+import env;
+import time;
+
+double spmv(int n, int k, int seed) {
+    int[] col = new int[n * k];
+    double[] val = new double[n * k];
+    double[] x = new double[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * k) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        col[i] = (rng >> 16) % n;
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        val[i] = ((rng >> 16) % 1000) / 100.0;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        x[i] = ((rng >> 16) % 1000) / 100.0;
+        i = i + 1;
+    }
+    double[] y = new double[n];
+    i = 0;
+    while (i < n) {
+        double s = 0.0;
+        int j = 0;
+        while (j < k) {
+            s = s + val[i * k + j] * x[col[i * k + j]];
+            j = j + 1;
+        }
+        y[i] = s;
+        i = i + 1;
+    }
+    double sum = 0.0;
+    i = 0;
+    while (i < n) {
+        sum = sum + y[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            double v = spmv(65536, 64, 13579);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,65 @@
+// bench/myp/alphabeta.myp — 极小极大 + α-β 剪枝（游戏树搜索，deepsjeng 类）
+// B=6 分支 D=14 层；叶子值 = 路径确定性哈希（-1000..1000）。
+// verify = 根值×10^6 + 评估节点数。与 C++ 同算法。
+import env;
+import time;
+
+class AB {
+    property:
+        long nodes;
+        int seed;
+    action:
+        long leafVal(int path) {
+            long h = seed;
+            h = (h * 1103515245L + path * 97L + 12345L) % 2147483648L;
+            return (h % 2001L) - 1000;   // -1000..1000
+        }
+        long ab(int depth, long alpha, long beta, int player, int path) {
+            if (depth == 14) {
+                nodes = nodes + 1;
+                return leafVal(path);
+            }
+            long best = 0;
+            if (player != 0) best = -1000000000;
+            else best = 1000000000;
+            int m = 0;
+            while (m < 6) {
+                long v = ab(depth + 1, alpha, beta, 1 - player, path * 6 + m);
+                if (player != 0) {
+                    if (v > best) best = v;
+                    if (best > alpha) alpha = best;
+                } else {
+                    if (v < best) best = v;
+                    if (best < beta) beta = best;
+                }
+                if (beta <= alpha) break;   // 剪枝
+                m = m + 1;
+            }
+            return best;
+        }
+        @constructor AB(int s) {
+            seed = s;
+            nodes = 0;
+        }
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            AB t = new AB(12345);
+            long root = t.ab(0, -1000000000, 1000000000, 1, 0);
+            long v = root * 1000000L + t.nodes;
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

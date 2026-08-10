@@ -1,0 +1,65 @@
+// bench/myp/base64.myp — Base64 编码（字符映射 + 位打包，字符串处理）
+// 8MB 字节流（LCG 高位）→ base64；verify = 输出字节和 + 采样字符×1000003。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long base64_bench(int n, int seed) {
+    long[] in = new long[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        in[i] = (rng >> 16) & 0xFFL;   // 0..255
+        i = i + 1;
+    }
+    int outn = (n / 3) * 4;
+    int[] out = new int[outn];
+    // Base64 字母表 ASCII 码（int[] 避免窄类型赋值限制）
+    int[] B64 = new int[64];
+    i = 0;
+    while (i < 26) { B64[i] = 65 + i; i = i + 1; }
+    while (i < 52) { B64[i] = 97 + i - 26; i = i + 1; }
+    while (i < 62) { B64[i] = 48 + i - 52; i = i + 1; }
+    B64[62] = 43;
+    B64[63] = 47;
+    int j = 0;
+    i = 0;
+    while (i + 2 < n) {
+        int b0 = in[i];
+        int b1 = in[i + 1];
+        int b2 = in[i + 2];
+        out[j] = B64[b0 >> 2];
+        out[j + 1] = B64[((b0 & 3) << 4) | (b1 >> 4)];
+        out[j + 2] = B64[((b1 & 15) << 2) | (b2 >> 6)];
+        out[j + 3] = B64[b2 & 63];
+        i = i + 3;
+        j = j + 4;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < outn) {
+        sum = sum + out[i];
+        i = i + 1;
+    }
+    return sum + out[123456] * 1000003L;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = base64_bench(8388606, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
