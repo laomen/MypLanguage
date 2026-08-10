@@ -432,6 +432,27 @@ static bool loadModule(const std::string& module_name,
     }
     phaseMark("rt_compile");
 
+    // Build coroutine context-switch assembly object (x86-64 fast path).
+    // Always compiled fresh (tiny, ~10ms); provides myp_ctx_switch referenced
+    // by runtime.c's coroutine yield/resume. On non-x86-64 mypc this stays
+    // empty and runtime.c uses its ucontext fallback (no myp_ctx_switch ref).
+    std::string ctx_obj;
+#if defined(__x86_64__)
+    std::string ctx_asm;
+    if (fileExists("src/runtime/coro_ctx.S"))
+        ctx_asm = "src/runtime/coro_ctx.S";
+    else if (fileExists(runtime_dir + "/src/runtime/coro_ctx.S"))
+        ctx_asm = runtime_dir + "/src/runtime/coro_ctx.S";
+    if (!ctx_asm.empty()) {
+        ctx_obj = "/tmp/myp_rt_ctx_" + std::to_string(std::rand()) + ".o";
+        std::string compile_ctx = "gcc -c " + ctx_asm + " -o " + ctx_obj + " 2>&1";
+        if (std::system(compile_ctx.c_str()) != 0) {
+            std::cerr << "Failed to compile coro_ctx.S\n";
+            return false;
+        }
+    }
+#endif
+
     // Build SDL bridge object (if exists)
     std::string sdl_obj;
     std::string sdl_libs;
@@ -489,10 +510,10 @@ static bool loadModule(const std::string& module_name,
 
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     } else if (static_lib) {
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -501,7 +522,7 @@ static bool loadModule(const std::string& module_name,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());

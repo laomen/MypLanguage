@@ -229,6 +229,7 @@ if(PkgConfig_FOUND)
 endif()
 add_library(myp_runtime STATIC
     src/runtime/runtime.c
+    src/runtime/coro_ctx.S
     src/runtime/myp_stdlib.c
     src/runtime/sdl_bridge.c
     src/runtime/runtime_gpu.c

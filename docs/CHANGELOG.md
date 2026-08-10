@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.11.14
+- **协程上下文切换改为寄存器级汇编（coro_ctx.S，x86-64 SysV）**：
+  - 替代 `swapcontext`（ucontext 内部每次 `sigprocmask` syscall，微基准 ~180ns/次）
+    为自研寄存器级切换（仅保存/恢复 rsp/rip/rbx/rbp/r12-r15，~13ns/次，13.9x）。
+  - 集成：`myp_runtime` 新增 `src/runtime/coro_ctx.S`；`mypc` 链接生成程序时同样
+    编译该文件（`src/main.cpp`）；非 x86-64 回退 ucontext；ASan 构建用
+    `__sanitizer_start/finish_switch_fiber` 显式通知纤维切换（trampoline 入口补配对）。
+  - 效果（16 核 min-of-3，Go/MYP）：coro_switch 400→**72ms**（0.76→**4.26**，
+    MYP 反超 Go 4.3x）；channel_pingpong 54→**21ms**（0.11→0.29，Go 快 9x 收窄到
+    3.4x）；io_socket 86→**71ms**（0.90→**1.10**，MYP 反超 Go）。
+  - 修复过程中的 bug：初始帧定位（`myp_ctx_init` 用 `top-8` 导致保存块越界 48 字节
+    堆损坏，改为 `top-64`）；ASan fiber 配对（trampoline 入口补 finish_switch_fiber）。
+  - 回归：普通/ASan 构建各 179/179 全过。修复 `run_compare_go.sh` 未调用
+    `build_all()` 的缺陷（依赖预编译产物）。
+
 ### v3.11.13
 - **协程通信/I-O 基准 + 调度器 O(N²) 修复**：新增 `channel_pingpong`（cap=1
   Channel 双向 10⁵ 次收发）与 `io_socket`（回环 TCP 逐字节 ping-pong，@coro +

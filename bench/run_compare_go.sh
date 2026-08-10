@@ -62,6 +62,8 @@ best_of() {
     echo "$best_v $best_ms"
 }
 
+build_all || { echo "[run_compare_go] 编译失败，中止"; exit 1; }
+
 echo "--------------------------------------------------------------"
 printf "%-12s %-9s %-9s %-7s %s\n" "bench" "MYP(ms)" "Go(ms)" "Go/MYP" "verify"
 echo "--------------------------------------------------------------"

@@ -3286,14 +3286,52 @@ void myp_future_destroy(int32_t handle) {
 }
 
 // ======================
-// Coroutine (基于 ucontext 的用户态纤程)
+// Coroutine (用户态纤程)
 // ======================
+// 上下文切换：x86-64 用寄存器级汇编（coro_ctx.S，无 syscall，~20-40ns）；
+// 其他平台回退 ucontext swapcontext（~200ns）。见下方 myp_ctx_*。
 
+#if defined(__x86_64__)
+// 快速路径：无需 ucontext 头。
+#else
 #include <ucontext.h>
+#endif
 #include <stdint.h>
 
 #define MYP_CORO_STACK_SIZE (128 * 1024)      // 128KB per coroutine stack
 #define MYP_CORO_INITIAL_CAPACITY 64
+
+// ---- 上下文切换抽象 ----
+// myp_ctx_t 保存单份"执行上下文"。x86-64 下是一个栈指针（指向保存块：
+// [rip, r15, r14, r13, r12, rbx, rbp]，见 coro_ctx.S）；其他平台用 ucontext_t。
+#if defined(__x86_64__)
+typedef struct { void* rsp; } myp_ctx_t;
+extern void myp_ctx_switch(myp_ctx_t* save, myp_ctx_t* load);
+#else
+typedef struct { ucontext_t u; } myp_ctx_t;
+static void myp_ctx_switch(myp_ctx_t* save, myp_ctx_t* load) {
+    swapcontext(&save->u, &load->u);
+}
+#endif
+
+// ASan 对 ucontext 有内建 fiber 支持；自研切换绕过它，需显式通知 sanitizer 正在
+// 切换栈（否则 asan 构建产生假阳性栈不匹配）。弱引用——非 asan 链接为 no-op。
+extern void __sanitizer_start_switch_fiber(void** fake_stack_save,
+                                           const void* bottom, size_t size)
+    __attribute__((weak));
+extern void __sanitizer_finish_switch_fiber(void* fake_stack_save,
+                                            const void** bottom_old,
+                                            size_t* size_old)
+    __attribute__((weak));
+static __thread void* myp_asan_fake_stack = NULL;
+static void myp_asan_start_switch(const void* bottom, size_t size) {
+    if (__sanitizer_start_switch_fiber)
+        __sanitizer_start_switch_fiber(&myp_asan_fake_stack, bottom, size);
+}
+static void myp_asan_finish_switch(void) {
+    if (__sanitizer_finish_switch_fiber)
+        __sanitizer_finish_switch_fiber(myp_asan_fake_stack, NULL, NULL);
+}
 
 // §五-1 收尾: one entry in a coroutine's frame ARC registry — the object a
 // local ARC slot currently holds (slot_id = alloca address, used only as a
@@ -3304,8 +3342,8 @@ typedef struct {
 } myp_frame_slot_t;
 
 typedef struct {
-    ucontext_t ctx;
-    ucontext_t ret_ctx;   // caller context (who resumed/created this coroutine)
+    myp_ctx_t ctx;
+    myp_ctx_t ret_ctx;   // caller context (who resumed/created this coroutine)
     char* stack;
     size_t stack_size;    // bytes allocated for this coroutine's stack
     int active;
@@ -3349,10 +3387,10 @@ static __thread int64_t myp_coro_resume_val = 0;
 
 // Each coroutine keeps its OWN return context (ret_ctx): whoever resumes/creates
 // it saves their context there before switching in, and the coroutine switches
-// back to it on yield or completion (via uc_link). This makes NESTED resume
-// correct — a coroutine that resumes another coroutine is that child's caller,
-// and the child returns to it, while the parent in turn returns to its own
-// caller. A single shared scheduler context cannot express this chain.
+// back to it on yield or completion (explicitly in the trampoline). This makes
+// NESTED resume correct — a coroutine that resumes another coroutine is that
+// child's caller, and the child returns to it, while the parent in turn returns
+// to its own caller. A single shared scheduler context cannot express this chain.
 
 // Grow the pointer array (at least doubling). Returns 0 on success.
 static int myp_coro_grow(void) {
@@ -3424,8 +3462,9 @@ static void myp_coro_stack_pool_free_all(void) {
     myp_coro_stack_pool_capacity = 0;
 }
 
-// Trampoline: called by makecontext with coroutine index as arg
-// Calls the coroutine's entry function, then deactivates it.
+// Trampoline: entered on the coroutine's first resume (myp_coro_current already
+// set to the handle). Calls the coroutine's entry function, then deactivates it
+// and switches back to whoever resumed/created it (ret_ctx).
 // It also installs a coroutine-level exception boundary: an exception thrown
 // inside the coroutine that no inner catch handles longjmps back HERE (rather
 // than to the main thread's top handler), so the coroutine ends cleanly
@@ -3433,7 +3472,12 @@ static void myp_coro_stack_pool_free_all(void) {
 // §五-1 收尾: defined below the wait table (needs myp_release); forward-declared
 // so the trampoline can release a frame abandoned by an uncaught exception.
 static void __myp_coro_release_frame(myp_coro_t* c);
-static void __myp_coro_trampoline(int id) {
+static void __myp_coro_trampoline(void) {
+    int id = myp_coro_current;
+    // ASan：完成"调用者→本协程"的 fiber 切换（配对 __myp_coro_resume 里的
+    // start_switch_fiber）；否则首次 entry 后第一个 yield 会报
+    // "starting fiber switch while in fiber switch"。
+    myp_asan_finish_switch();
     jmp_buf jb;
     if (setjmp(jb) == 0) {
         myp_exception_push(&jb);
@@ -3462,8 +3506,41 @@ static void __myp_coro_trampoline(int id) {
         __myp_coro_release_frame(myp_coros[id]);
         myp_coros[id]->active = 0;
         myp_coros[id]->ready = 0;
+        // 完成：切回创建/恢复我们的调用者（ret_ctx）。此函数不返回。
+        myp_coro_current = -1;
+        myp_asan_start_switch(NULL, 0);
+        myp_ctx_switch(&myp_coros[id]->ctx, &myp_coros[id]->ret_ctx);
+        myp_asan_finish_switch();
     }
 }
+
+// Set up a fresh coroutine context so the first resume jumps into `entry` with
+// standard x86-64 function-entry stack alignment (rsp%16 == 8).
+#if defined(__x86_64__)
+static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
+                         void (*entry)(void)) {
+    // 保存块 = 7 槽 [rsp..rsp+56]（rax=入口, r15..rbp=0）。加载时按序 pop：
+    // 入口 rsp = rsp+64，需 %16==8（标准函数入口对齐）。令 base=top-64：
+    //   块 [top-64, top-8] 在分配区内；入口 rsp=top-8，%16==8。
+    uintptr_t top = (uintptr_t)(stack + stack_size);
+    top &= ~(uintptr_t)15;              // 16-align the top
+    uintptr_t rsp = top - 64;           // 块基址（16 对齐；base%16==0）
+    void** frame = (void**)rsp;
+    frame[0] = (void*)entry;            // -> rax（jmp 目标）
+    frame[1] = 0; frame[2] = 0; frame[3] = 0;
+    frame[4] = 0; frame[5] = 0; frame[6] = 0;  // r15..rbp（入口会立即改写）
+    ctx->rsp = (void*)rsp;
+}
+#else
+static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
+                         void (*entry)(void)) {
+    getcontext(&ctx->u);
+    ctx->u.uc_link = NULL;              // 完成由 trampoline 显式切回 ret_ctx
+    ctx->u.uc_stack.ss_sp = stack;
+    ctx->u.uc_stack.ss_size = stack_size;
+    makecontext(&ctx->u, (void(*)())entry, 0);
+}
+#endif
 
 int64_t __myp_coro_create(int64_t stack_bytes) {
     // stack_bytes: requested stack size in bytes (<=0 → default MYP_CORO_STACK_SIZE).
@@ -3495,11 +3572,7 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     if (!c->stack) c->stack = (char*)malloc(stack_size);
     if (!c->stack) return -1;
     c->stack_size = stack_size;
-    if (getcontext(&c->ctx) == -1) { myp_coro_stack_pool_add(c->stack, stack_size); c->stack = NULL; return -1; }
-    c->ctx.uc_link = &c->ret_ctx;   // on completion, return to the caller
-    c->ctx.uc_stack.ss_sp = c->stack;
-    c->ctx.uc_stack.ss_size = stack_size;
-    makecontext(&c->ctx, (void(*)())__myp_coro_trampoline, 1, idx);
+    myp_ctx_init(&c->ctx, c->stack, c->stack_size, __myp_coro_trampoline);
     c->active = 1;
     c->ready = 1;
     c->result = 0;
@@ -3526,7 +3599,9 @@ int64_t __myp_coro_yield(int64_t val) {
     int saved = myp_coro_current;
     myp_coro_current = -1;
     // Save our suspend point into our own ctx, then switch back to the caller.
-    swapcontext(&myp_coros[saved]->ctx, &myp_coros[saved]->ret_ctx);
+    myp_asan_start_switch(NULL, 0);   // 切到非纤程（调用者）
+    myp_ctx_switch(&myp_coros[saved]->ctx, &myp_coros[saved]->ret_ctx);
+    myp_asan_finish_switch();         // 回到本协程栈
     myp_coro_current = saved;
     return myp_coro_resume_val;
 }
@@ -3541,7 +3616,10 @@ int64_t __myp_coro_resume(int64_t handle, int64_t val) {
     myp_coro_resume_val = val;
     int saved = myp_coro_current;
     myp_coro_current = handle;
-    swapcontext(&myp_coros[handle]->ret_ctx, &myp_coros[handle]->ctx);
+    myp_coro_t* c = myp_coros[handle];
+    myp_asan_start_switch(c->stack, c->stack_size);   // 切到协程栈
+    myp_ctx_switch(&c->ret_ctx, &c->ctx);
+    myp_asan_finish_switch();                         // 回到调用者栈
     myp_coro_current = saved;
     return myp_coro_yield_val;
 }

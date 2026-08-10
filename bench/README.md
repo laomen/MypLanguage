@@ -125,20 +125,21 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 
 ## 协程对比（MYP @coro vs Go goroutine）
 
-`bash bench/run_compare_go.sh [iters]` —— MYP `@coro`（ucontext 栈式纤程，协作式
+`bash bench/run_compare_go.sh [iters]` —— MYP `@coro`（寄存器级汇编切换纤程，协作式
 调度）vs Go goroutine（可增长栈，抢占式调度）。结果（verify 一致）：
 
 | 基准 | 测什么 | MYP | Go | Go/MYP |
 |------|--------|-----|-----|--------|
-| `coro_switch` | 上下文切换吞吐（200 协程 × 10000 次挂起/恢复） | 406ms | 306ms | **0.75** |
-| `coro_spawn` | spawn 开销（20000 个只返回的协程） | 527ms | 3ms | **0.01** |
+| `coro_switch` | 上下文切换吞吐（200 协程 × 10000 次挂起/恢复） | **72ms** | 307ms | **4.26** |
+| `coro_spawn` | spawn 开销（20000 个只返回的协程） | 459ms | 3ms | **0.01** |
 
-- **切换**：MYP 比 Go 慢 ~33%（0.75）——两者都要做栈切换，MYP 是 ucontext 交换 +
-  手动 `Coro.resume` 驱动，Go 是运行时抢占调度，差距不大。
+- **切换**：MYP 比 Go 快 ~4.3x（4.26）——2026-08 把 ucontext swapcontext（每次切换
+  都做 sigprocmask syscall，~180ns）换成**寄存器级汇编切换**（coro_ctx.S，~13ns，
+  微基准 13.9x），400ms→72ms。Go 的 goroutine 切换本身 ~150ns（有运行时抢占/检查
+  开销），被 MYP 的纯寄存器切换反超。
 - **spawn**：Go 快 ~175x——Go goroutine 是 ~2KB 可增长栈、批量创建极廉价；MYP
-  `@coro` 每个分配**固定栈**（默认 128KB，可用 `@coro(stack=KB)` 调小）+ ucontext
-  初始化。这是 MYP 协程的主要成本，适合少量长生命周期协程（I/O/事件），不适合
-  海量短任务。
+  `@coro` 每个分配**固定栈**（默认 128KB，可用 `@coro(stack=KB)` 调小）+ 初始化。
+  这是 MYP 协程的主要成本，适合少量长生命周期协程（I/O/事件），不适合海量短任务。
 
 ## Go 主套件对比（MYP vs Go）
 
@@ -171,12 +172,11 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 | `kmeans` | 95 | 362 | **3.81** |
 | `huffman` | 9 | 19 | 2.11 |
 | `bigint` | 61 | 97 | 1.59 |
-| `channel_pingpong` | 54 | 6 | **0.11** |
-| `io_socket` | 86 | 79 | **0.92** |
+| `channel_pingpong` | 21 | 6 | **0.29** |
+| `io_socket` | 71 | 78 | **1.10** |
 
-- **结论：MYP 在 23 个主套件/协程基准里赢 21 项**（Go/MYP>1 即 MYP 快），几何
-  平均 ~1.8x；Go 赢 3 项：`fft`（0.86）、`channel_pingpong`（0.11）、
-  `coro_switch`（0.76，见上节）。
+- **结论：MYP 在 23 个主套件/协程基准里赢 22 项**（Go/MYP>1 即 MYP 快）；Go 仅赢
+  3 项：`fft`（0.85）、`channel_pingpong`（0.29）、`coro_spawn`（0.01）。
 - **最大差距集中在浮点/内存带宽类**：convolution 4.04、kmeans 3.81、matmul 3.47、
   sobel 3.17、radixsort 2.20、spmv 2.15。根因是 **MYP 走 LLVM O2 自动向量化
   （SIMD 循环展开）**，而 Go 编译器默认几乎不自动向量化，这些标量浮点/字节循环
@@ -185,17 +185,33 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   优化在起作用，但 Go 的简单循环执行效率本身很高。
 - **注意公平性**：MYP 是"编译器优化到 LLVM IR"，天然继承 LLVM 的向量化；Go 更
   强调快速编译 + GC + 简单内联。二者都不是 `-march=native`，均用基础 x86-64。
-- **协程对比见上一节**：spawn 差 175x（固定栈 vs 可增长栈）、切换差 33%，是 MYP
-  协程实现特性（适合少量长生命周期协程），与主套件趋势独立。
+- **协程对比见上一节**：spawn 差 175x（固定栈 vs 可增长栈）、**切换已反超**（汇编
+  切换 400→72ms，MYP 快 4.3x），是 MYP 协程实现特性，与主套件趋势独立。
 - **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）Go
-  快 ~9x（0.11）——Go channel 在双方都阻塞时**直接交接**（无栈切换、无 syscall），
-  MYP 每次 park/resume 都要 ucontext 栈切换 + 调度器驱动，~270ns/次 vs Go
-  ~30ns/次。`io_socket`（回环 TCP 逐字节 ping-pong，@coro + waitFd vs
-  goroutine + 阻塞 socket）**基本持平 0.92**——都受限于 syscall + 上下文唤醒，
-  MYP 的 waitFd 轮询调度代价已与 Go netpoller 相当。
+  快 ~3.5x（0.29，汇编切换后从 0.11 收窄）——Go channel 在双方都阻塞时**直接交接**
+  （无栈切换、无 syscall），MYP 每次 park/resume 仍要 ~105ns（21ms/20 万次）。
+  `io_socket`（回环 TCP 逐字节 ping-pong，@coro + waitFd vs goroutine + 阻塞
+  socket）**MYP 反超 1.10**——汇编切换把调度代价降到与 Go netpoller 相当甚至更低。
 
 
 ## 性能修复记录
+
+- **协程寄存器级汇编切换（2026-08，coro_switch 400→72ms，5.6x）**：把
+  `swapcontext`（ucontext，内部 `sigprocmask` syscall，微基准 ~180ns/次）换成
+  自研 `coro_ctx.S`（x86-64 SysV 寄存器级切换，仅保存/恢复 rsp/rip/rbx/rbp/
+  r12-r15，微基准 ~13ns/次，13.9x）。集成：`myp_runtime` 新增 `coro_ctx.S`；
+  `mypc` 链接生成程序时也编译该文件（`src/main.cpp`）；非 x86-64 回退 ucontext；
+  ASan 构建用 `__sanitizer_start/finish_switch_fiber` 显式通知纤维切换（trampoline
+  入口补配对 finish）。效果：
+
+  | 基准 | ucontext | 汇编切换 | Go/MYP 变化 |
+  |------|----------|----------|------------|
+  | coro_switch | 400ms (0.76) | **72ms (4.26)** | Go 快 33% → **MYP 快 4.3x** |
+  | channel_pingpong | 54ms (0.11) | **21ms (0.29)** | Go 快 9x → Go 快 3.4x |
+  | io_socket | 86ms (0.90) | **71ms (1.10)** | 基本持平 → **MYP 反超** |
+
+  回归：普通/ASan 构建各 179/179 全过。另修复脚本缺陷：`run_compare_go.sh` 此前
+  未调用 `build_all()`（依赖预编译产物），补上后删除 out/ 也能完整重建。
 
 - **协程调度器 wait 表压缩（2026-08，O(N²)→O(N)，io_socket 71x）**：新增
   `channel_pingpong`/`io_socket` 基准时发现 **`myp_coro_waits` 从不压缩**——每条
