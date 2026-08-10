@@ -1,0 +1,238 @@
+// examples/bench3way.myp — 复杂 for 循环：串行 / @parallel 多线程 / @gpu GPU 三版本对比
+//
+// 计算任务：Mandelbrot 集渲染（w×h 网格，每个像素内层 while 逃逸迭代 + break）。
+// 这是典型的「计算密集 + 不规则工作负载」复杂循环：每个像素的迭代次数差异很大，
+// 恰好能体现并行与 GPU 相对串行的真实收益（而非纯内存带宽）。
+//
+// 三个版本逐元素计算逻辑完全一致（纯加/乘/比较，IEEE 位级一致 → verify 必须相等）：
+//   1. serial    —— 普通 for 循环，单线程顺序执行
+//   2. parallel  —— @parallel for，work-stealing 线程池（默认按硬件并发数）
+//   3. gpu       —— @gpu for，卸载到 NVIDIA GPU（运行需 MYP_GPU=1；不可用自动回退 CPU）
+//
+// 编译：  ./build/mypc -O2 examples/bench3way.myp -o /tmp/bench3way
+// 运行：  MYP_GPU=1 /tmp/bench3way
+// 输出： 每个版本跑 RUNS 轮取最小 ms，打印 verify（三版必须一致）+ ms
+
+import env;
+import pool;
+import cuda;
+import time;
+
+// ============================================================
+// 1) 串行版本 —— 普通 for 循环
+// ============================================================
+long serial(int w, int h, int maxiter, int[] out) {
+    int n = w * h;
+    int p = 0;
+    while (p < n) {
+        int col = p % w;
+        int row = p / w;
+        double x0 = -2.0 + 3.0 * double(col) / double(w);
+        double y0 = -1.0 + 2.0 * double(row) / double(h);
+        double x = 0.0;
+        double y = 0.0;
+        int iter = 0;
+        while (iter < maxiter) {
+            double xx = x * x - y * y + x0;
+            double yy = 2.0 * x * y + y0;
+            x = xx;
+            y = yy;
+            if (x * x + y * y > 4.0) { break; }  // 已逃逸 → 提前终止
+            iter = iter + 1;
+        }
+        out[p] = iter;
+        p = p + 1;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + long(out[i]);
+        i = i + 1;
+    }
+    return sum;
+}
+
+// ============================================================
+// 2) 多线程版本 —— @parallel for（work-stealing 线程池）
+//    与串行版本逐元素计算逻辑完全一致，仅循环头不同。
+// ============================================================
+long parallel(int w, int h, int maxiter, int[] out) {
+    int n = w * h;
+    @parallel for (int p = 0; p < n; p = p + 1) {
+        int col = p % w;
+        int row = p / w;
+        double x0 = -2.0 + 3.0 * double(col) / double(w);
+        double y0 = -1.0 + 2.0 * double(row) / double(h);
+        double x = 0.0;
+        double y = 0.0;
+        int iter = 0;
+        while (iter < maxiter) {
+            double xx = x * x - y * y + x0;
+            double yy = 2.0 * x * y + y0;
+            x = xx;
+            y = yy;
+            if (x * x + y * y > 4.0) { break; }
+            iter = iter + 1;
+        }
+        out[p] = iter;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + long(out[i]);
+        i = i + 1;
+    }
+    return sum;
+}
+
+// ============================================================
+// 3) GPU 版本 —— @gpu for（编译为 CUDA kernel，逐线程执行）
+//    同样计算逻辑；循环变量为 long（GPU 内核按 i64 tid 展开）。
+// ============================================================
+long gpu(int w, int h, int maxiter, int[] out) {
+    long n = long(w) * long(h);
+    @gpu for (long p = 0L; p < n; p = p + 1L) {
+        int col = int(p % long(w));
+        int row = int(p / long(w));
+        double x0 = -2.0 + 3.0 * double(col) / double(w);
+        double y0 = -1.0 + 2.0 * double(row) / double(h);
+        double x = 0.0;
+        double y = 0.0;
+        int iter = 0;
+        while (iter < maxiter) {
+            double xx = x * x - y * y + x0;
+            double yy = 2.0 * x * y + y0;
+            x = xx;
+            y = yy;
+            if (x * x + y * y > 4.0) { break; }
+            iter = iter + 1;
+        }
+        out[p] = iter;
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < int(n)) {
+        sum = sum + long(out[i]);
+        i = i + 1;
+    }
+    return sum;
+}
+
+// ============================================================
+// 计时与校验（MYP 惯例：代码在 @constructor 中执行，main 仅创建实例）
+// ============================================================
+class Bench {
+    action:
+        @constructor Bench() {
+            // 网格尺寸与迭代上限（调大更耗算力，串行会更久）
+            int w = 4096;      // 宽
+            int h = 4096;      // 高
+            int maxiter = 300; // 每个像素最大迭代次数
+            int runs = 3;      // 每版本重复轮数（取最小 ms）
+
+            int n = w * h;
+
+            Console.writeString("Mandelbrot 3-way benchmark  ");
+            Console.writeString("grid ");
+            Console.write(w);
+            Console.writeString("x");
+            Console.write(h);
+            Console.writeString("  maxiter ");
+            Console.write(maxiter);
+            Console.writeString("  points ");
+            Console.write(n);
+            Console.writeLine("");
+
+            // 硬件信息
+            Console.writeString("threads(hw): ");
+            Console.write(Parallel.threadCount());
+            Console.writeString("   GPU: ");
+            Console.writeString(Cuda.name());
+            Console.writeString(" (");
+            Console.write(Cuda.multiProcessors());
+            Console.writeString(" SM, cc ");
+            Console.write(Cuda.capability());
+            Console.writeString(")");
+            Console.writeLine("");
+
+            // ---- 串行 ----
+            int[] o1 = new int[n];
+            long v1 = 0;
+            long best1 = 1L << 62;
+            int r = 0;
+            while (r < runs) {
+                long t0 = Time.nowMs();
+                v1 = serial(w, h, maxiter, o1);
+                long t1 = Time.nowMs();
+                if (t1 - t0 < best1) { best1 = t1 - t0; }
+                r = r + 1;
+            }
+            Console.writeString("serial   verify ");
+            Console.writeLong(v1);
+            Console.writeString("  best ");
+            Console.writeLong(best1);
+            Console.writeString(" ms");
+            Console.writeLine("");
+
+            // ---- 多线程 ----
+            int[] o2 = new int[n];
+            long v2 = 0;
+            long best2 = 1L << 62;
+            r = 0;
+            while (r < runs) {
+                long t0 = Time.nowMs();
+                v2 = parallel(w, h, maxiter, o2);
+                long t1 = Time.nowMs();
+                if (t1 - t0 < best2) { best2 = t1 - t0; }
+                r = r + 1;
+            }
+            Console.writeString("parallel verify ");
+            Console.writeLong(v2);
+            Console.writeString("  best ");
+            Console.writeLong(best2);
+            Console.writeString(" ms  (x");
+            Console.writeFloat(double(best1) / double(best2));
+            Console.writeString(")");
+            Console.writeLine("");
+
+            // ---- GPU ----
+            int[] o3 = new int[n];
+            long v3 = 0;
+            long best3 = 1L << 62;
+            r = 0;
+            while (r < runs) {
+                long t0 = Time.nowMs();
+                v3 = gpu(w, h, maxiter, o3);
+                long t1 = Time.nowMs();
+                if (t1 - t0 < best3) { best3 = t1 - t0; }
+                r = r + 1;
+            }
+            Console.writeString("gpu      verify ");
+            Console.writeLong(v3);
+            Console.writeString("  best ");
+            Console.writeLong(best3);
+            Console.writeString(" ms  (x");
+            Console.writeFloat(double(best1) / double(best3));
+            Console.writeString(")");
+            Console.writeLine("");
+
+            // ---- 一致性校验（三版本结果必须完全一致）----
+            Console.writeString("consistency: ");
+            if (v1 == v2 && v2 == v3) {
+                Console.writeLine("OK (serial == parallel == gpu)");
+            } else {
+                Console.writeString("MISMATCH serial=");
+                Console.writeLong(v1);
+                Console.writeString(" parallel=");
+                Console.writeLong(v2);
+                Console.writeString(" gpu=");
+                Console.writeLong(v3);
+                Console.writeLine("");
+            }
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
