@@ -13,6 +13,14 @@ namespace mylang {
 Sema::Sema(DiagnosticEngine& diag)
     : diag_(diag) {}
 
+ClassDecl* Sema::findClassDecl(const std::string& name) {
+    if (!current_tu_) return nullptr;
+    auto it = class_indices_.find(name);
+    if (it == class_indices_.end() || it->second >= current_tu_->classes.size())
+        return nullptr;
+    return &current_tu_->classes[it->second];
+}
+
 void Sema::buildCurrentClassMemberTypes(const ClassDecl& decl) {
     current_class_member_types_.clear();
     for (auto& prop : decl.properties)
@@ -49,6 +57,10 @@ void Sema::buildCurrentClassMemberTypes(const ClassDecl& decl) {
 bool Sema::analyze(TranslationUnit& tu) {
     current_tu_ = &tu;
     current_class_member_types_.clear();
+    class_indices_.clear();
+    struct_member_types_.clear();
+    for (size_t i = 0; i < tu.classes.size(); i++)
+        class_indices_.emplace(tu.classes[i].name, i);
     diag_.reset();
 
     // Register intrinsic functions (for stdlib use)
@@ -542,11 +554,14 @@ void Sema::visitStructDecl(StructDecl& decl) {
     std::string type_key = decl.parent_class.empty()
         ? decl.name
         : decl.parent_class + "::" + decl.name;
+    auto& member_types = struct_member_types_[type_key];
+    member_types.clear();
 
     // Validate struct fields: duplicate names and void-typed fields are rejected.
     for (size_t i = 0; i < decl.properties.size(); ++i) {
         auto& prop = decl.properties[i];
         TypeInfo ft = typeNodeToTypeInfo(prop.type);
+        member_types.emplace(prop.name, ft);
         if (ft.kind == TypeKind::Void && prop.type.class_name.empty()) {
             error(prop.range, "cannot declare field of type 'void'");
         }
@@ -578,6 +593,17 @@ void Sema::visitStructDecl(StructDecl& decl) {
 
     // Register struct methods
     for (auto& func : decl.functions) {
+        TypeInfo member_type(TypeKind::Function);
+        member_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(func.return_type));
+        for (auto& param : func.params)
+            member_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+        member_types.emplace(func.name, member_type);
+
+        TypeInfo func_type = member_type;
+        for (auto& param : func.params)
+            func_type.param_is_ref.push_back(param.is_ref);
+        populateFuncTypeMeta(func_type, func.params);
+
         // 构造器：不注册为可调用方法（构造器不能直接调用，同名重载合法）；
         // M3 负责函数式构造。body 仍在 checkStructMethods 中带 struct 作用域检查。
         if (func.has_constructor) {
@@ -591,17 +617,13 @@ void Sema::visitStructDecl(StructDecl& decl) {
             }
             continue;
         }
-        TypeInfo func_type(TypeKind::Function);
-        func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(func.return_type));
-        for (auto& param : func.params) {
-            TypeInfo pt = typeNodeToTypeInfo(param.type);
+        for (size_t i = 0; i < func.params.size(); i++) {
+            auto& param = func.params[i];
+            const TypeInfo& pt = func_type.param_types[i];
             if (pt.kind == TypeKind::Void && param.type.class_name.empty()) {
                 error(param.range, "cannot declare parameter of type 'void'");
             }
-            func_type.param_types.push_back(pt);
-            func_type.param_is_ref.push_back(param.is_ref);
         }
-        populateFuncTypeMeta(func_type, func.params);
         std::string method_name = type_key + "::" + func.name;
         if (symbol_table_.lookup(method_name)) {
             error(func.range, "duplicate method '" + func.name +

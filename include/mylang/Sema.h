@@ -125,6 +125,7 @@ private:
     bool expectBool(const TypeInfo& type, const SourceRange& range);
     bool expectNumeric(const TypeInfo& type, const SourceRange& range);
     void buildCurrentClassMemberTypes(const ClassDecl& decl);
+    ClassDecl* findClassDecl(const std::string& name);
 
     // ---- Mapping cycle detection ----
     void checkMappingCycles(const MappingDecl& decl);
@@ -166,6 +167,9 @@ private:
     bool isAsyncCallee(const Expr* callee) const;
     std::string current_class_name_;
     std::unordered_map<std::string, TypeInfo> current_class_member_types_;
+    std::unordered_map<std::string, size_t> class_indices_;
+    std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
+        struct_member_types_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct
 
     // ---- Enum info tracking ----

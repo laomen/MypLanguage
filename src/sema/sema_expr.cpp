@@ -1419,61 +1419,15 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
 
     // Struct member access — fields are PUBLIC
     if (obj_type.kind == TypeKind::Struct) {
-        // Search all struct definitions (file-level + nested in classes)
-        if (current_tu_) {
-            for (auto& st : current_tu_->structs) {
-                std::string key = st.parent_class.empty()
-                    ? st.name : st.parent_class + "::" + st.name;
-                if (key == obj_type.class_name) {
-                    // Check fields
-                    for (auto& prop : st.properties) {
-                        if (prop.name == expr.member_name)
-                            return typeNodeToTypeInfo(prop.type);
-                    }
-                    // Check methods
-                    for (auto& func : st.functions) {
-                        if (func.name == expr.member_name) {
-                            TypeInfo ft(TypeKind::Function);
-                            ft.return_type = std::make_shared<TypeInfo>(
-                                typeNodeToTypeInfo(func.return_type));
-                            for (auto& p : func.params)
-                                ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                            return ft;
-                        }
-                    }
-                    error(expr.range, "struct '" + obj_type.class_name +
-                          "' has no member '" + expr.member_name + "'");
-                    return TypeInfo(TypeKind::Void);
-                }
-            }
-            // Also search nested structs in classes
-            for (auto& cls : current_tu_->classes) {
-                for (auto& st : cls.structs) {
-                    std::string key = st.parent_class.empty()
-                        ? st.name : st.parent_class + "::" + st.name;
-                    if (key == obj_type.class_name) {
-                        for (auto& prop : st.properties) {
-                            if (prop.name == expr.member_name)
-                                return typeNodeToTypeInfo(prop.type);
-                        }
-                        for (auto& func : st.functions) {
-                            if (func.name == expr.member_name) {
-                                TypeInfo ft(TypeKind::Function);
-                                ft.return_type = std::make_shared<TypeInfo>(
-                                    typeNodeToTypeInfo(func.return_type));
-                                for (auto& p : func.params)
-                                    ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                                return ft;
-                            }
-                        }
-                        error(expr.range, "struct '" + obj_type.class_name +
-                              "' has no member '" + expr.member_name + "'");
-                        return TypeInfo(TypeKind::Void);
-                    }
-                }
-            }
+        auto struct_it = struct_member_types_.find(obj_type.class_name);
+        if (struct_it == struct_member_types_.end()) {
+            error(expr.range, "unknown struct '" + obj_type.class_name + "'");
+            return TypeInfo(TypeKind::Void);
         }
-        error(expr.range, "unknown struct '" + obj_type.class_name + "'");
+        auto member_it = struct_it->second.find(expr.member_name);
+        if (member_it != struct_it->second.end()) return member_it->second;
+        error(expr.range, "struct '" + obj_type.class_name +
+              "' has no member '" + expr.member_name + "'");
         return TypeInfo(TypeKind::Void);
     }
 
@@ -1506,153 +1460,95 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         return TypeInfo(TypeKind::Void);
     }
 
-    if (obj_type.kind == TypeKind::Struct) {
-        // Struct member access via 'this' in struct methods
-        if (current_tu_) {
-            for (auto& st : current_tu_->structs) {
-                std::string key = st.parent_class.empty()
-                    ? st.name : st.parent_class + "::" + st.name;
-                if (key == obj_type.class_name) {
-                    for (auto& prop : st.properties) {
-                        if (prop.name == expr.member_name)
-                            return typeNodeToTypeInfo(prop.type);
-                    }
-                    for (auto& func : st.functions) {
-                        if (func.name == expr.member_name) {
-                            TypeInfo ft(TypeKind::Function);
-                            ft.return_type = std::make_shared<TypeInfo>(
-                                typeNodeToTypeInfo(func.return_type));
-                            for (auto& p : func.params)
-                                ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                            return ft;
-                        }
-                    }
-                    error(expr.range, "struct '" + obj_type.class_name +
-                          "' has no member '" + expr.member_name + "'");
-                    return TypeInfo(TypeKind::Void);
-                }
-            }
-            // Also search nested structs
-            for (auto& cls : current_tu_->classes) {
-                for (auto& st : cls.structs) {
-                    std::string key = st.parent_class.empty()
-                        ? st.name : st.parent_class + "::" + st.name;
-                    if (key == obj_type.class_name) {
-                        for (auto& prop : st.properties) {
-                            if (prop.name == expr.member_name)
-                                return typeNodeToTypeInfo(prop.type);
-                        }
-                        for (auto& func : st.functions) {
-                            if (func.name == expr.member_name) {
-                                TypeInfo ft(TypeKind::Function);
-                                ft.return_type = std::make_shared<TypeInfo>(
-                                    typeNodeToTypeInfo(func.return_type));
-                                for (auto& p : func.params)
-                                    ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                                return ft;
-                            }
-                        }
-                        error(expr.range, "struct '" + obj_type.class_name +
-                              "' has no member '" + expr.member_name + "'");
-                        return TypeInfo(TypeKind::Void);
-                    }
-                }
-            }
-        }
-    }
-
     if (obj_type.kind != TypeKind::Class) {
         error(expr.range, "cannot access member of non-class type '" +
               typeName(obj_type) + "'");
         return TypeInfo(TypeKind::Void);
     }
 
-    if (current_tu_) {
-        for (auto& cls : current_tu_->classes) {
-            if (cls.name == obj_type.class_name) {
-                // Properties — accessible from anywhere
-                for (auto& prop : cls.properties) {
-                    if (prop.name == expr.member_name) {
-                        return typeNodeToTypeInfo(prop.type);
-                    }
-                }
-                for (auto& action : cls.actions) {
-                    if (action.name == expr.member_name) {
-                        // @startup methods on @thread instances are auto-invoked
-                        // in the worker thread; a manual call re-runs the entry
-                        // logic and double-executes (SIGSEGV at runtime). Reject
-                        // the pattern at compile time. NOTE: @startup on plain
-                        // instances is still callable (mypc run relies on it).
-                        if (action.has_startup &&
-                            expr.object->kind == ExprKind::Identifier) {
-                            auto& oid = static_cast<IdentifierExpr&>(*expr.object);
-                            if (thread_annotated_vars_.count(oid.name))
-                                error(expr.range, "cannot manually call '@startup' method '" +
-                                      action.name + "' on a @thread instance "
-                                      "(auto-invoked in the worker thread)");
-                        }
-                        TypeInfo func_type(TypeKind::Function);
-                        if (action.has_coro) {
-                            // @coro method call → returns coroutine handle (long)
-                            func_type.return_type = std::make_shared<TypeInfo>(TypeKind::Long);
-                        } else {
-                            func_type.return_type = std::make_shared<TypeInfo>(
-                                typeNodeToTypeInfo(action.return_type));
-                        }
-                        for (auto& p : action.params)
-                            func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        populateFuncTypeMeta(func_type, action.params);
-                        return func_type;
-                    }
-                }
-                // Static actions: accessible from anywhere (no 'this' needed)
-                for (auto& action : cls.static_actions) {
-                    if (action.name == expr.member_name) {
-                        TypeInfo func_type(TypeKind::Function);
-                        func_type.return_type = std::make_shared<TypeInfo>(
-                            typeNodeToTypeInfo(action.return_type));
-                        for (auto& p : action.params)
-                            func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        populateFuncTypeMeta(func_type, action.params);
-                        return func_type;
-                    }
-                }
-                // Also check function: section (visible inside class, not from outside)
-                for (auto& func : cls.functions) {
-                    if (func.name == expr.member_name) {
-                        bool is_this = expr.object->kind == ExprKind::ThisExpr;
-                        if (!is_this) {
-                            error(expr.range, "cannot access function '" + func.name +
-                                  "' from outside class '" + cls.name + "'");
-                            return TypeInfo(TypeKind::Void);
-                        }
-                        TypeInfo ft(TypeKind::Function);
-                        ft.return_type = std::make_shared<TypeInfo>(
-                            typeNodeToTypeInfo(func.return_type));
-                        for (auto& p : func.params)
-                            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        populateFuncTypeMeta(ft, func.params);
-                        return ft;
-                    }
-                }
-                for (auto& event : cls.events) {
-                    if (event.name == expr.member_name) {
-                        TypeInfo event_type(TypeKind::Function);
-                        event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-                        for (auto& p : event.params) {
-                            event_type.param_types.push_back(typeNodeToTypeInfo(p.type));
-                            event_type.param_is_ref.push_back(false);
-                        }
-                        return event_type;
-                    }
-                }
-                error(expr.range, "class '" + obj_type.class_name +
-                      "' has no member '" + expr.member_name + "'");
-                return TypeInfo(TypeKind::Void);
+    if (auto* class_decl = findClassDecl(obj_type.class_name)) {
+        auto& cls = *class_decl;
+        // Properties — accessible from anywhere
+        for (auto& prop : cls.properties) {
+            if (prop.name == expr.member_name) {
+                return typeNodeToTypeInfo(prop.type);
             }
         }
-        error(expr.range, "unknown class '" + obj_type.class_name + "'");
+        for (auto& action : cls.actions) {
+            if (action.name == expr.member_name) {
+                // @startup methods on @thread instances are auto-invoked
+                // in the worker thread; a manual call re-runs the entry
+                // logic and double-executes (SIGSEGV at runtime). Reject
+                // the pattern at compile time. NOTE: @startup on plain
+                // instances is still callable (mypc run relies on it).
+                if (action.has_startup &&
+                    expr.object->kind == ExprKind::Identifier) {
+                    auto& oid = static_cast<IdentifierExpr&>(*expr.object);
+                    if (thread_annotated_vars_.count(oid.name))
+                        error(expr.range, "cannot manually call '@startup' method '" +
+                              action.name + "' on a @thread instance "
+                              "(auto-invoked in the worker thread)");
+                }
+                TypeInfo func_type(TypeKind::Function);
+                if (action.has_coro) {
+                    // @coro method call → returns coroutine handle (long)
+                    func_type.return_type = std::make_shared<TypeInfo>(TypeKind::Long);
+                } else {
+                    func_type.return_type = std::make_shared<TypeInfo>(
+                        typeNodeToTypeInfo(action.return_type));
+                }
+                for (auto& p : action.params)
+                    func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                populateFuncTypeMeta(func_type, action.params);
+                return func_type;
+            }
+        }
+        // Static actions: accessible from anywhere (no 'this' needed)
+        for (auto& action : cls.static_actions) {
+            if (action.name == expr.member_name) {
+                TypeInfo func_type(TypeKind::Function);
+                func_type.return_type = std::make_shared<TypeInfo>(
+                    typeNodeToTypeInfo(action.return_type));
+                for (auto& p : action.params)
+                    func_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                populateFuncTypeMeta(func_type, action.params);
+                return func_type;
+            }
+        }
+        // Also check function: section (visible inside class, not from outside)
+        for (auto& func : cls.functions) {
+            if (func.name == expr.member_name) {
+                bool is_this = expr.object->kind == ExprKind::ThisExpr;
+                if (!is_this) {
+                    error(expr.range, "cannot access function '" + func.name +
+                          "' from outside class '" + cls.name + "'");
+                    return TypeInfo(TypeKind::Void);
+                }
+                TypeInfo ft(TypeKind::Function);
+                ft.return_type = std::make_shared<TypeInfo>(
+                    typeNodeToTypeInfo(func.return_type));
+                for (auto& p : func.params)
+                    ft.param_types.push_back(typeNodeToTypeInfo(p.type));
+                populateFuncTypeMeta(ft, func.params);
+                return ft;
+            }
+        }
+        for (auto& event : cls.events) {
+            if (event.name == expr.member_name) {
+                TypeInfo event_type(TypeKind::Function);
+                event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
+                for (auto& p : event.params) {
+                    event_type.param_types.push_back(typeNodeToTypeInfo(p.type));
+                    event_type.param_is_ref.push_back(false);
+                }
+                return event_type;
+            }
+        }
+        error(expr.range, "class '" + obj_type.class_name +
+              "' has no member '" + expr.member_name + "'");
+        return TypeInfo(TypeKind::Void);
     }
+    error(expr.range, "unknown class '" + obj_type.class_name + "'");
     return TypeInfo(TypeKind::Void);
 }
 
@@ -2179,6 +2075,8 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
 
             // Register and add to TU — visitClassDecl will declare the type
             current_tu_->classes.push_back(std::move(inst));
+            class_indices_[current_tu_->classes.back().name] =
+                current_tu_->classes.size() - 1;
             visitClassDecl(current_tu_->classes.back());
             // Now it's registered; look up the result
             auto* lookup_result = symbol_table_.lookup(mangled);
@@ -2850,6 +2748,8 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     if (current_tu_) {
         cls.lambda_name = expr.name;
         current_tu_->classes.push_back(std::move(cls));
+        class_indices_[current_tu_->classes.back().name] =
+            current_tu_->classes.size() - 1;
         visitClassDecl(current_tu_->classes.back());
     }
 

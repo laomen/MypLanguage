@@ -769,6 +769,19 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
 
+        if (ma.object->kind == ExprKind::Identifier) {
+            auto& object_id = static_cast<const IdentifierExpr&>(*ma.object);
+            std::string function_name = object_id.name + "_" + ma.member_name;
+            auto static_action = is_static_action_.find(function_name);
+            if (static_action != is_static_action_.end() && static_action->second) {
+                callee = module_->getFunction(function_name);
+                if (callee) {
+                    is_method = true;
+                    goto call_ready;
+                }
+            }
+        }
+
         // Enum variant construction: Option.Some(42) → enum struct {disc, payload}
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
