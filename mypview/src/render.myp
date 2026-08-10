@@ -1,0 +1,78 @@
+// render.myp — mypview 渲染后端：终端 (TUI) 渲染器
+//
+// TuiRenderer 直接用 ANSI escape 实现 IRenderer，不依赖 stdlib/ui.myp
+// （ui.myp 已含 Label/Button 等类，导入会造成类名冲突；本层只需少量原语）。
+// 坐标约定：x = 列（水平），y = 行（垂直），原点 (0,0) 左上。
+// 用 256 色：fg/bg 为 0-255 色号。
+
+import "./core.myp";
+
+class TuiRenderer {
+    interface class IRenderer;
+    action:
+        @constructor TuiRenderer() {}
+
+        void clear() {
+            __myp_print("\e[2J\e[H");
+        }
+
+        // 画文字：绝对坐标 (x=列, y=行)
+        void text(int x, int y, string s, int fg, int bg) {
+            __myp_print("\e[38;5;" + fg + "m");
+            __myp_print("\e[48;5;" + bg + "m");
+            __myp_print("\e[" + (y + 1) + ";" + (x + 1) + "H");
+            __myp_print(s);
+            __myp_print("\e[0m");
+        }
+
+        // 画矩形（背景块）+ 边框（w/h >= 2 才画）
+        void rect(int x, int y, int w, int h, int fg, int bg) {
+            __myp_print("\e[48;5;" + bg + "m");
+            int r = 0;
+            while (r < h) {
+                __myp_print("\e[" + (y + r + 1) + ";" + (x + 1) + "H");
+                int c = 0;
+                while (c < w) {
+                    __myp_print(" ");
+                    c = c + 1;
+                }
+                r = r + 1;
+            }
+            if (w >= 2 && h >= 2) {
+                __myp_print("\e[38;5;" + fg + "m");
+                // 上边
+                __myp_print("\e[" + (y + 1) + ";" + (x + 1) + "H");
+                __myp_print("┌");
+                int c = 1;
+                while (c < w - 1) {
+                    __myp_print("─");
+                    c = c + 1;
+                }
+                __myp_print("┐");
+                // 下边
+                __myp_print("\e[" + (y + h) + ";" + (x + 1) + "H");
+                __myp_print("└");
+                c = 1;
+                while (c < w - 1) {
+                    __myp_print("─");
+                    c = c + 1;
+                }
+                __myp_print("┘");
+                // 两侧
+                r = 1;
+                while (r < h - 1) {
+                    __myp_print("\e[" + (y + r + 1) + ";" + (x + 1) + "H");
+                    __myp_print("│");
+                    __myp_print("\e[" + (y + r + 1) + ";" + (x + w) + "H");
+                    __myp_print("│");
+                    r = r + 1;
+                }
+            }
+            __myp_print("\e[0m");
+        }
+
+        void flush() {
+            __myp_flush();
+        }
+}
+

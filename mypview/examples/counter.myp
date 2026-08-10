@@ -1,0 +1,61 @@
+// counter.myp — mypview M3 验收：按钮 + 计数标签（事件 + 绑定 + 重绘）
+//
+// 交互：焦点在 "+1" 按钮上，按 Enter/Space 激活 → clicked 事件 →
+// mapping 接到 CounterApp.onIncrement → Counter.value+1 →
+// Binding.pump 检测变化 → 标签文本更新 → 重绘。ESC 退出。
+//
+// 编译运行:
+//   ./build/mypc -O2 mypview/examples/counter.myp -o /tmp/counter_ui && /tmp/counter_ui
+
+import env;
+import time;
+import "../src/core.myp";
+import "../src/render.myp";
+import "../src/widgets.myp";
+import "../src/layout.myp";
+import "../src/binding.myp";
+import "../src/app.myp";
+
+class CounterApp {
+    action:
+        @constructor CounterApp() {
+            // 声明式组件树
+            root = new Box();
+            label = new Label("Count: 0");
+            button = new Button("+1");
+            button.setFocused(1);
+            root.add(label);
+            root.add(button);
+
+            // 状态 + 绑定
+            counter = new Counter(0);
+            Binding b = new Binding(counter, label);
+
+            // 事件循环
+            TuiRenderer r = new TuiRenderer();
+            Application app = new Application(root, r, 50);
+            app.setBinding(b);
+            app.run();
+        }
+
+        // 由 mapping 接入：Button.clicked -> CounterApp.onIncrement
+        void onIncrement() {
+            counter.set(counter.get() + 1);
+        }
+
+    property:
+        Box root;
+        Label label;
+        Button button;
+        Counter counter;
+}
+
+// 事件接线（类级）：任意 Button.clicked → CounterApp.onIncrement
+mapping() {
+    Button.clicked -> CounterApp.onIncrement;
+}
+
+int main() {
+    CounterApp a = new CounterApp();
+    return 0;
+}

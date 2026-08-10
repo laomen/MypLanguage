@@ -1,0 +1,45 @@
+// binding.myp — mypview 属性绑定（方案 A：命令式注册 + 每帧 pump 轮询）
+//
+// 硬约束下不改编译器 → 绑定用纯库实现：
+//   Binding(counter, label)：把 Counter.value 绑定到 Label.text。
+//   Application 每帧调用 Binding.pump()，检测源值变化 → 更新目标文本。
+
+import "./core.myp";
+import "./widgets.myp";
+
+// 简单可观察状态源（后续可推广为通用 Observable）
+class Counter {
+    action:
+        @constructor Counter(int v) { value_ = v; }
+        int get() { return value_; }
+        void set(int v) { value_ = v; }
+    property:
+        int value_;
+}
+
+// 绑定：源 Counter.value → 目标 Label.text
+class Binding {
+    action:
+        @constructor Binding(Counter c, Label l) {
+            c_ = c;
+            l_ = l;
+            last_ = c.get();
+            l_.setText("" + last_);
+        }
+
+        // 每帧调用：源值变化 → 更新标签文本。返回 1 表示本轮有更新。
+        int pump() {
+            int v = c_.get();
+            if (v != last_) {
+                last_ = v;
+                l_.setText("" + v);
+                return 1;
+            }
+            return 0;
+        }
+
+    property:
+        Counter c_;
+        Label l_;
+        int last_;
+}
