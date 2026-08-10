@@ -1,0 +1,70 @@
+// bench/myp/convolution.myp — 2D 图像卷积（5×5 核，滑窗，imagick 类）
+// N=2048 图像；verify = 输出图像元素之和（double，同序求和位级一致）。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+double convolution(int n, int k, int seed) {
+    double[] img = new double[n * n];
+    double[] out = new double[n * n];
+    double[] ker = new double[k * k];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        img[i] = ((rng >> 16) % 1000) / 100.0;
+        i = i + 1;
+    }
+    i = 0;
+    while (i < k * k) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        ker[i] = ((rng >> 16) % 100) / 100.0;
+        i = i + 1;
+    }
+    int hk = k / 2;
+    int y = hk;
+    while (y + hk < n) {
+        int x = hk;
+        while (x + hk < n) {
+            double s = 0.0;
+            int ky = 0;
+            while (ky < k) {
+                int kx = 0;
+                while (kx < k) {
+                    s = s + img[(y + ky - hk) * n + (x + kx - hk)] * ker[ky * k + kx];
+                    kx = kx + 1;
+                }
+                ky = ky + 1;
+            }
+            out[y * n + x] = s;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    double sum = 0.0;
+    i = 0;
+    while (i < n * n) {
+        sum = sum + out[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            double v = convolution(2048, 5, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
