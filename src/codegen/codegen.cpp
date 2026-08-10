@@ -526,6 +526,17 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
             return st;
         if (findEnum(tn.class_name))
             return getEnumStructType(tn.class_name);
+        // Interface type → fat pointer { ptr data, ptr vtable }. Bug fix: this
+        // previously fell through to the builtin default (i32, 4 bytes), so
+        // `new IWidget[n]` allocated 4 bytes/elem while GEPs (which use the
+        // correct {ptr,ptr} element type) stepped 16 → out-of-bounds writes
+        // into the heap (corruption / double-free).
+        if (current_tu_)
+            for (auto& ifd : current_tu_->interfaces)
+                if (ifd.name == tn.class_name) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    return llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+                }
         // Generic class instance (Box<int>) → mangled concrete class ref.
         if (!tn.type_args.empty()) {
             std::string m = mangleConcreteTypeNode(tn);
@@ -1572,6 +1583,46 @@ llvm::Function* CodeGen::findInterfaceDefault(const std::string& cls_name,
         if (ia.name == method && ia.body)
             return module_->getFunction(ifaceDefaultName(iface->name, method, cls_name));
     return nullptr;
+}
+
+bool CodeGen::isInterfaceFatType(llvm::Type* ty) {
+    if (!ty || !ty->isStructTy()) return false;
+    auto* st = llvm::dyn_cast<llvm::StructType>(ty);
+    if (!st || st->getNumElements() != 2) return false;
+    return st->getElementType(0)->isPointerTy() &&
+           st->getElementType(1)->isPointerTy();
+}
+
+llvm::GlobalVariable* CodeGen::getOrCreateVtable(const std::string& iface_name,
+                                                 const std::string& cls_name) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    std::string vkey = iface_name + "_" + cls_name;
+    auto* vgv = module_->getGlobalVariable("__myp_vtable_" + vkey);
+    if (vgv) return vgv;
+    if (!current_tu_) return nullptr;
+    const InterfaceDecl* iface = nullptr;
+    for (auto& ifd : current_tu_->interfaces)
+        if (ifd.name == iface_name) { iface = &ifd; break; }
+    if (!iface) return nullptr;
+    std::vector<llvm::Constant*> func_ptrs;
+    for (auto& ia : iface->actions) {
+        std::string fn = cls_name + "_" + ia.name;
+        auto* callee = module_->getFunction(fn);
+        // trait 默认实现：类未实现但接口方法带默认体 → 回退默认函数
+        if (!callee && ia.body)
+            callee = module_->getFunction(ifaceDefaultName(iface->name, ia.name, cls_name));
+        if (callee)
+            func_ptrs.push_back(llvm::ConstantExpr::getPointerCast(callee, ptr_ty));
+        else
+            func_ptrs.push_back(llvm::ConstantPointerNull::get(ptr_ty));
+    }
+    auto* arr_type = llvm::ArrayType::get(ptr_ty, func_ptrs.size());
+    auto* arr_init = llvm::ConstantArray::get(arr_type, func_ptrs);
+    vgv = new llvm::GlobalVariable(*module_, arr_type, true,
+        llvm::GlobalValue::InternalLinkage, arr_init,
+        "__myp_vtable_" + vkey);
+    vtables_[vkey] = vgv;
+    return vgv;
 }
 
 void CodeGen::createClassDefaultDecl(const ClassDecl& cls, const InterfaceDecl& iface,
@@ -7159,6 +7210,48 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             }
         }
 
+        // Interface value from a non-identifier expression (e.g. interface array
+        // element children[i].method()): the expression evaluates to a
+        // {data, vtable} fat pointer → vtable dispatch. Bug fix: this previously
+        // fell through to the concrete-class direct-call path and passed the fat
+        // pointer as `this`, producing invalid IR (LLVM verify failure).
+        if (!callee && ma.object->kind == ExprKind::Subscript) {
+            auto* obj_val = generateExpr(*ma.object);
+            if (obj_val && isInterfaceFatType(obj_val->getType())) {
+                auto* data = builder_.CreateExtractValue(obj_val, 0);
+                auto* vt = builder_.CreateExtractValue(obj_val, 1);
+                int method_idx = -1;
+                for (auto& ifd : current_tu_->interfaces)
+                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
+                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
+                if (method_idx >= 0) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        "iface_method");
+                    auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
+                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
+                    for (auto& ifd : current_tu_->interfaces) {
+                        if ((size_t)method_idx < ifd.actions.size() &&
+                            ifd.actions[method_idx].name == ma.member_name) {
+                            ret_ty = getLLVMType(typeNodeToCodegenType(
+                                ifd.actions[method_idx].return_type));
+                            break;
+                        }
+                    }
+                    std::vector<llvm::Value*> call_args;
+                    call_args.push_back(data);
+                    for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    std::vector<llvm::Type*> param_types;
+                    param_types.push_back(ptr_ty);
+                    for (size_t ai = 1; ai < call_args.size(); ai++)
+                        param_types.push_back(call_args[ai]->getType());
+                    auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
+                    return builder_.CreateCall(ft, func_ptr, call_args);
+                }
+            }
+        }
+
         // Struct method call: v.method()
         // Check struct type FIRST, before any class name fallback,
         // to avoid resolving h1.init() to Tally::init.
@@ -7767,10 +7860,69 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
     // Implicit type conversion for arguments
     auto* ft = cf->getFunctionType();
     size_t arg_offset = (is_method && mthis && !skip_this) ? 1 : 0;
+    // Resolve the interface name expected by a callee param (vtable key needs it).
+    auto resolveParamIfaceName = [&](llvm::Function* cf2, size_t rel) -> std::string {
+        if (!current_tu_) return "";
+        std::string fn = cf2->getName().str();
+        for (auto& cls : current_tu_->classes) {
+            std::string prefix = cls.name + "_";
+            if (fn.compare(0, prefix.size(), prefix) != 0) continue;
+            std::string mname = fn.substr(prefix.size());
+            auto scan = [&](const auto& actions) -> std::string {
+                for (auto& a : actions) {
+                    if (a.name == mname && rel < a.params.size() &&
+                        !a.params[rel].type.class_name.empty())
+                        return a.params[rel].type.class_name;
+                }
+                return "";
+            };
+            std::string s = scan(cls.actions);
+            if (!s.empty()) return s;
+            s = scan(cls.functions);
+            if (!s.empty()) return s;
+            s = scan(cls.static_actions);
+            if (!s.empty()) return s;
+            break;
+        }
+        return "";
+    };
     for (size_t i = arg_offset; i < args.size() && i < ft->getNumParams(); ++i) {
         auto* expected = ft->getParamType(i);
-        if (args[i]->getType() != expected)
+        if (args[i]->getType() != expected) {
+            // Interface param upcast: a concrete class instance (ptr) passed where
+            // an interface fat pointer {data, vtable} is expected → build the fat
+            // pointer for (param_interface, concrete_class). Bug fix: previously
+            // there was no conversion, so the raw object pointer was passed where
+            // the fat pointer was expected → LLVM verify failure / wrong dispatch.
+            if (expected->isStructTy() && isInterfaceFatType(expected) &&
+                args[i]->getType()->isPointerTy() && current_tu_) {
+                const Expr* arg_expr = e.args[i - arg_offset].get();
+                std::string cls_name;
+                if (arg_expr->kind == ExprKind::NewExpr)
+                    cls_name = static_cast<const NewExpr&>(*arg_expr).class_name;
+                else if (arg_expr->kind == ExprKind::Identifier) {
+                    auto vit = var_class_map_.find(
+                        static_cast<const IdentifierExpr&>(*arg_expr).name);
+                    if (vit != var_class_map_.end()) cls_name = vit->second;
+                }
+                std::string iface_name = resolveParamIfaceName(cf, i - arg_offset);
+                if (!cls_name.empty() && !iface_name.empty()) {
+                    auto* vgv = getOrCreateVtable(iface_name, cls_name);
+                    if (vgv) {
+                        auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                        auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+                        auto* fat = builder_.CreateAlloca(fat_ty);
+                        builder_.CreateStore(args[i],
+                            builder_.CreateStructGEP(fat_ty, fat, 0));
+                        builder_.CreateStore(builder_.CreateBitCast(vgv, ptr_ty),
+                            builder_.CreateStructGEP(fat_ty, fat, 1));
+                        args[i] = builder_.CreateLoad(fat_ty, fat);
+                        continue;
+                    }
+                }
+            }
             args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i - arg_offset].get());
+        }
     }
     bool isv = cf->getReturnType()->isVoidTy();
     // Math intrinsics (stdlib Math.sqrt/abs/floor/ceil) → LLVM intrinsics so the
@@ -9215,6 +9367,40 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
 assign_gep:
         auto* p = builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
         auto* v = generateExpr(*e.value);
+        // Interface array element store: a concrete class instance (raw ptr)
+        // stored into an interface fat-pointer slot {data, vtable} → build the
+        // fat pointer for (class.interface_class_name, class). Bug fix: the raw
+        // pointer was stored before, leaving the vtable half of the slot as
+        // garbage → segfault on the later vtable dispatch (children[i].draw()).
+        if (isInterfaceFatType(elem_ty) && v->getType()->isPointerTy() && current_tu_) {
+            llvm::Value* raw_v = v;
+            std::string cls_name;
+            if (e.value->kind == ExprKind::NewExpr)
+                cls_name = static_cast<const NewExpr&>(*e.value).class_name;
+            else if (e.value->kind == ExprKind::Identifier) {
+                auto vit = var_class_map_.find(
+                    static_cast<const IdentifierExpr&>(*e.value).name);
+                if (vit != var_class_map_.end()) cls_name = vit->second;
+            }
+            std::string iface_name;
+            for (auto& cls : current_tu_->classes)
+                if (cls.name == cls_name) { iface_name = cls.interface_class_name; break; }
+            if (!iface_name.empty()) {
+                auto* vgv = getOrCreateVtable(iface_name, cls_name);
+                if (vgv) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+                    auto* fat = builder_.CreateAlloca(fat_ty);
+                    builder_.CreateStore(v, builder_.CreateStructGEP(fat_ty, fat, 0));
+                    builder_.CreateStore(builder_.CreateBitCast(vgv, ptr_ty),
+                        builder_.CreateStructGEP(fat_ty, fat, 1));
+                    v = builder_.CreateLoad(fat_ty, fat);
+                    // 把 fresh `new` 的所有权转给数组槽（接口数组不释放元素，
+                    // 由 arena 回收），否则语句末 temp flush 会释放它 → 悬垂。
+                    arcConsumeTemp(raw_v);
+                }
+            }
+        }
         if (v->getType() != elem_ty) {
             if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
                 v = builder_.CreateIntCast(v, elem_ty, true);

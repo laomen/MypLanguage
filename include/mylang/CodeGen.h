@@ -514,6 +514,10 @@ private:
     llvm::Function* findInterfaceDefault(const std::string& cls_name, const std::string& method);
     // 关联类型 X::Item → 绑定类型（X 为具体类或当前类型参数；无绑定 → nullopt）
     std::optional<TypeNode> resolveAssocType(const std::string& owner, const std::string& member);
+    // 获取（或创建）(接口, 实现类) 的 vtable 全局：__myp_vtable_<Iface>_<Class>
+    llvm::GlobalVariable* getOrCreateVtable(const std::string& iface_name, const std::string& cls_name);
+    // 是否为接口胖指针类型 {ptr data, ptr vtable}
+    static bool isInterfaceFatType(llvm::Type* ty);
     void generateClass(const ClassDecl& decl);
     void generateClassAction(const ClassDecl& cls, const ActionDecl& action);
     void generateStaticAction(const ClassDecl& cls, const ActionDecl& action);
