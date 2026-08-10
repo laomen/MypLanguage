@@ -1580,6 +1580,19 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
                 }
                 for (auto& action : cls.actions) {
                     if (action.name == expr.member_name) {
+                        // @startup methods on @thread instances are auto-invoked
+                        // in the worker thread; a manual call re-runs the entry
+                        // logic and double-executes (SIGSEGV at runtime). Reject
+                        // the pattern at compile time. NOTE: @startup on plain
+                        // instances is still callable (mypc run relies on it).
+                        if (action.has_startup &&
+                            expr.object->kind == ExprKind::Identifier) {
+                            auto& oid = static_cast<IdentifierExpr&>(*expr.object);
+                            if (thread_annotated_vars_.count(oid.name))
+                                error(expr.range, "cannot manually call '@startup' method '" +
+                                      action.name + "' on a @thread instance "
+                                      "(auto-invoked in the worker thread)");
+                        }
                         TypeInfo func_type(TypeKind::Function);
                         if (action.has_coro) {
                             // @coro method call → returns coroutine handle (long)

@@ -1053,6 +1053,11 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
     }
 
     symbol_table_.declare(decl.name, decl_type);
+
+    // Track @thread-annotated instances so manual calls to their @startup
+    // method are rejected at compile time (auto-invoked in worker thread).
+    if (decl.has_thread_annotation)
+        thread_annotated_vars_.insert(decl.name);
     return {};
 }
 

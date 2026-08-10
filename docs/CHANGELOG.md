@@ -28,6 +28,15 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **编译期拒绝在 `@thread` 实例上手动调用 `@startup` 方法（压测暴露的误用 → 编译期诊断）**：
+  - 症状：`Worker w = new Worker() @thread; w.run(...)`（`run` 为 `@startup`）在运行时
+    SIGSEGV —— `@startup` 已由运行时在 worker 线程自动执行，手动再调一遍 = 双重执行。
+  - 修复：sema 记录 `@thread` 注解变量（`VarDecl.has_thread_annotation`），在成员访问
+    解析到 `@startup` 方法（`ActionDecl.has_startup`）时报错：
+    `cannot manually call '@startup' method 'run' on a @thread instance (auto-invoked in the worker thread)`。
+  - 作用域：仅限 `@thread` 实例；普通实例上手动调 `@startup` 仍合法（`mypc run` 依赖此
+    路径），回归含 `mypc run` 用例全过。
+  - 新增负测试 `tests/negative/thread_startup_call.myp`；185/185 回归通过。
 - **协程切换路径剔除 sanitizer fiber 钩子（perf 定位：非 ASan `cpp_long` 的
   `__sanitizer_finish_switch_fiber` NULL 检查占 `__myp_coro_resume`/`__myp_coro_yield`
   自样本 64~80%）**：

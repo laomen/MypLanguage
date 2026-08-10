@@ -1,0 +1,26 @@
+// Negative: manually calling a @startup method on a @thread instance is
+// rejected at compile time — the runtime auto-invokes it in the worker thread,
+// so a manual call double-executes the entry logic (runtime SIGSEGV).
+class Worker {
+    action:
+        @startup void run() {
+        }
+    event:
+        output(int v);
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Worker w = new Worker() @thread;
+
+            // ERROR: @startup on @thread instance is auto-invoked in the
+            // worker thread — manual call would double-execute.
+            w.run();
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

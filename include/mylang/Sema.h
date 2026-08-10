@@ -219,6 +219,11 @@ private:
     std::unordered_map<std::string, SourceRange> struct_decl_ranges_;
     void detectStructRecursion();
 
+    // Names of local variables declared with `@thread` (auto-starting worker
+    // threads). Manual calls to their `@startup` method are rejected at
+    // compile time because the runtime auto-invokes it in the worker thread.
+    std::set<std::string> thread_annotated_vars_;
+
 };
 
 } // namespace mylang
