@@ -61,6 +61,18 @@ static llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
     return v;
 }
 
+// 数组下标：窄整数（i8/i16/i32）一律**零扩展**到 i64 再 GEP——否则 `cnt[msg[i]]`
+// 里 msg[i] 是 uint8(i8)，值 >=128（如 190=0xBE 即 i8 -66）被 LLVM GEP 符号扩展成
+// 负下标 → 计数丢失 + 越界写（huffman 基准暴露的 bug）。与 slice 路径的
+// zext 约定一致（数组下标视为非负）。
+static llvm::Value* zextIndexValue(llvm::IRBuilder<>& b, llvm::Value* v) {
+    if (!v) return v;
+    if (v->getType()->isIntegerTy(8) || v->getType()->isIntegerTy(16) ||
+        v->getType()->isIntegerTy(32))
+        return b.CreateZExt(v, llvm::Type::getInt64Ty(v->getContext()));
+    return v;
+}
+
 bool CodeGen::saveIR(const std::string& path) const {
     std::error_code ec;
     llvm::raw_fd_ostream dest(path, ec);
@@ -4336,7 +4348,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                                     kernel_arg_values, loop_var_name, tid_val);
                         if (arr_ptr && idx && val) {
                             llvm::Type* elem_ty = is_double ? double_ty : i32_ty;
-                            auto* elem_ptr = kb.CreateGEP(elem_ty, arr_ptr, idx, "atomic_ptr");
+                            auto* elem_ptr = kb.CreateGEP(elem_ty, arr_ptr, zextIndexValue(kb, idx), "atomic_ptr");
                             if (is_double) {
                                 if (val->getType()->isIntegerTy())
                                     val = kb.CreateSIToFP(val, double_ty);
@@ -4584,10 +4596,10 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             // For int[] arrays, the pointer is i32*, not double*
             if (elem_ty->isIntegerTy(32)) {
                 // The arr is already a pointer, GEP on it
-                auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+                auto* gep = kb.CreateGEP(elem_ty, arr, zextIndexValue(kb, idx));
                 return kb.CreateLoad(elem_ty, gep);
             }
-            auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+            auto* gep = kb.CreateGEP(elem_ty, arr, zextIndexValue(kb, idx));
             return kb.CreateLoad(elem_ty, gep);
         }
         case ExprKind::Assignment: {
@@ -4637,7 +4649,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     else if (elem_ty->isIntegerTy() && val->getType()->isIntegerTy())
                         val = kb.CreateIntCast(val, elem_ty, true);
                 }
-                auto* gep = kb.CreateGEP(elem_ty, arr, idx);
+                auto* gep = kb.CreateGEP(elem_ty, arr, zextIndexValue(kb, idx));
                 kb.CreateStore(val, gep);
                 return val;
             }
@@ -7916,7 +7928,8 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
     }
 
 do_gep:
-    auto* p = builder_.CreateGEP(elem_ty, a, i);
+    // 下标窄整数零扩展（ubyte/uint8 值>=128 不符号扩展成负下标）
+    auto* p = builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
     return builder_.CreateLoad(elem_ty, p);
 }
 
@@ -8757,7 +8770,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         }
 
 assign_gep:
-        auto* p = builder_.CreateGEP(elem_ty, a, i);
+        auto* p = builder_.CreateGEP(elem_ty, a, zextIndexValue(builder_, i));
         auto* v = generateExpr(*e.value);
         if (v->getType() != elem_ty) {
             if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())

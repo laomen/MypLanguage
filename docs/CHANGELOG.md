@@ -27,6 +27,16 @@
 
 ## 编译器版本历史
 
+### v3.11.1
+- **修复数组下标窄整数符号扩展 bug**：`cnt[msg[i]]` 里 `msg[i]` 是 `uint8`(i8)，
+  作为数组下标被 LLVM GEP **符号扩展**——字节值 >=128（如 190=0xBE 即 i8 -66）变成
+  负下标，计数丢失 + 越界写（段错误）。huffman 类基准暴露。
+  - 修复：`generateSubscript`/下标赋值/GPU kernel 的 GEP 索引统一**零扩展**
+    （`zextIndexValue`：i8/i16/i32 → i64），与 slice 路径的 zext 约定一致。
+  - 新增回归测试 `tests/subscript_narrow/`（uint8/uint16 作读+写下标 + int 控制组）。
+  - 顺带收益：gol 基准 MYP 165→~120ms（索引变 i64 后 LLVM 对邻居循环优化更好）。
+  - 回归：O0/O2/ASAN 174/174 全过。
+
 ### v3.11.0
 - **无符号整数类型补全（`uint32`/`uint8`/`uint16`/`uint64` 固定宽度别名）**：
   - 新增 `u`/`U` 字面量后缀（`0xFFFFFFFFu`），按值定宽（≤0xFF→`ubyte`、≤0xFFFF→
