@@ -59,6 +59,14 @@ int astar(int n, int seed) {
 
     int expansions = 0;
 
+    // 方向表：常量，提出主循环（C++ 是函数级栈数组，这里等价地只分配一次）
+    int[] ddx = new int[4];
+    int[] ddy = new int[4];
+    ddx[0] = 0;  ddy[0] = -1;
+    ddx[1] = 0;  ddy[1] = 1;
+    ddx[2] = -1; ddy[2] = 0;
+    ddx[3] = 1;  ddy[3] = 0;
+
     while (heapSize > 0) {
         // pop 最小 f（tie-break 节点号小优先）
         int cur = heapNode[0];
@@ -95,12 +103,6 @@ int astar(int n, int seed) {
         int cx = cur % n;
         int cy = cur / n;
         // 上 下 左 右（固定顺序，确定性）
-        int[] ddx = new int[4];
-        int[] ddy = new int[4];
-        ddx[0] = 0;  ddy[0] = -1;
-        ddx[1] = 0;  ddy[1] = 1;
-        ddx[2] = -1; ddy[2] = 0;
-        ddx[3] = 1;  ddy[3] = 0;
         int d = 0;
         while (d < 4) {
             int nx = cx + ddx[d];
