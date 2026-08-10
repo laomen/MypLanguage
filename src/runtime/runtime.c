@@ -80,21 +80,54 @@ int32_t myp_getch(void) {
 // File 类通过 select 切换当前文件后调用，实现多文件交替读写。
 
 #define MYP_IO_MAX_FILES 64
-static FILE* myp_io_fp = NULL;             // 当前活动文件
 static FILE* myp_io_table[MYP_IO_MAX_FILES] = {0};
-static int32_t myp_io_cur = 0;             // 当前句柄（0=无）
+static pthread_mutex_t myp_io_table_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t myp_io_locks[MYP_IO_MAX_FILES];
+static pthread_once_t myp_io_once = PTHREAD_ONCE_INIT;
+static __thread int32_t myp_io_cur = 0;     // 当前线程的活动句柄（0=无）
+
+static void myp_io_init(void) {
+    for (int i = 0; i < MYP_IO_MAX_FILES; i++)
+        pthread_mutex_init(&myp_io_locks[i], NULL);
+}
+
+// Returns the locked FILE for a handle. The caller must unlock with
+// myp_io_unlock_handle after completing the stdio operation.
+static FILE* myp_io_lock_handle(int32_t handle) {
+    if (handle < 1 || handle >= MYP_IO_MAX_FILES) return NULL;
+    pthread_once(&myp_io_once, myp_io_init);
+    pthread_mutex_lock(&myp_io_locks[handle]);
+    FILE* fp = myp_io_table[handle];
+    if (!fp) pthread_mutex_unlock(&myp_io_locks[handle]);
+    return fp;
+}
+
+static void myp_io_unlock_handle(int32_t handle) {
+    pthread_mutex_unlock(&myp_io_locks[handle]);
+}
+
+static FILE* myp_io_lock_current(int32_t* handle) {
+    *handle = myp_io_cur;
+    return myp_io_lock_handle(*handle);
+}
 
 int32_t myp_io_fopen(const char* path, const char* mode) {
     FILE* fp = fopen(path, mode);
     if (!fp) return -1;
+    pthread_once(&myp_io_once, myp_io_init);
+    pthread_mutex_lock(&myp_io_table_mutex);
     for (int i = 1; i < MYP_IO_MAX_FILES; i++) {
+        pthread_mutex_lock(&myp_io_locks[i]);
         if (!myp_io_table[i]) {
             myp_io_table[i] = fp;
-            myp_io_fp = fp;
             myp_io_cur = i;
+            pthread_mutex_unlock(&myp_io_locks[i]);
+            pthread_mutex_unlock(&myp_io_table_mutex);
             return 0;
         }
+        pthread_mutex_unlock(&myp_io_locks[i]);
     }
+    pthread_mutex_unlock(&myp_io_table_mutex);
     fclose(fp);
     return -1;  // 句柄表满
 }
@@ -104,98 +137,146 @@ int32_t myp_io_current_handle(void) { return myp_io_cur; }
 
 // 切换当前活动文件（多文件交替读写）
 void myp_io_select(int32_t handle) {
-    if (handle >= 1 && handle < MYP_IO_MAX_FILES && myp_io_table[handle]) {
-        myp_io_fp = myp_io_table[handle];
-        myp_io_cur = handle;
-    }
+    FILE* fp = myp_io_lock_handle(handle);
+    if (!fp) return;
+    myp_io_cur = handle;
+    myp_io_unlock_handle(handle);
 }
 
 void myp_io_fclose(void) {
-    if (myp_io_cur >= 1 && myp_io_cur < MYP_IO_MAX_FILES && myp_io_table[myp_io_cur]) {
-        fclose(myp_io_table[myp_io_cur]);
-        myp_io_table[myp_io_cur] = NULL;
-    }
-    myp_io_fp = NULL;
+    int32_t handle = myp_io_cur;
     myp_io_cur = 0;
+    if (handle < 1 || handle >= MYP_IO_MAX_FILES) return;
+    pthread_once(&myp_io_once, myp_io_init);
+    pthread_mutex_lock(&myp_io_table_mutex);
+    pthread_mutex_lock(&myp_io_locks[handle]);
+    FILE* fp = myp_io_table[handle];
+    myp_io_table[handle] = NULL;
+    pthread_mutex_unlock(&myp_io_table_mutex);
+    if (fp) fclose(fp);
+    pthread_mutex_unlock(&myp_io_locks[handle]);
 }
 
 // 读取一行并返回**新分配的**字符串（修复：原 static buf 共享缓冲，
 // 多次 readLine 结果存数组会全部指向最后一行）。EOF 返回空串（文档契约）。
 const char* myp_io_read_line(void) {
-    if (!myp_io_fp) return myp_strdup("");
-    static char buf[4096];
-    if (!fgets(buf, sizeof(buf), myp_io_fp)) return myp_strdup("");
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return myp_strdup("");
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), fp)) {
+        myp_io_unlock_handle(handle);
+        return myp_strdup("");
+    }
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+    myp_io_unlock_handle(handle);
     return myp_strdup(buf);
 }
 
 void myp_io_write(const char* text) {
-    if (!myp_io_fp) return;
-    fputs(text, myp_io_fp);
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return;
+    fputs(text, fp);
+    myp_io_unlock_handle(handle);
 }
 
 void myp_io_write_line(const char* text) {
-    if (!myp_io_fp) return;
-    fprintf(myp_io_fp, "%s\n", text);
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return;
+    fprintf(fp, "%s\n", text);
+    myp_io_unlock_handle(handle);
 }
 
 int32_t myp_io_has_next(void) {
-    if (!myp_io_fp) return 0;
-    return !feof(myp_io_fp);
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return 0;
+    int32_t result = !feof(fp);
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 // Binary file I/O for IDX parsing
 #include <stdint.h>
 int32_t myp_io_read_byte(void) {
-    if (!myp_io_fp) return -1;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
     unsigned char c;
-    if (fread(&c, 1, 1, myp_io_fp) != 1) return -1;
+    if (fread(&c, 1, 1, fp) != 1) {
+        myp_io_unlock_handle(handle);
+        return -1;
+    }
+    myp_io_unlock_handle(handle);
     return (int32_t)c;
 }
 
 int32_t myp_io_read_i32be(void) {
-    if (!myp_io_fp) return -1;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
     unsigned char buf[4];
-    if (fread(buf, 1, 4, myp_io_fp) != 4) return -1;
-    return ((int32_t)buf[0] << 24) | ((int32_t)buf[1] << 16) |
-           ((int32_t)buf[2] << 8) | (int32_t)buf[3];
+    int32_t result = -1;
+    if (fread(buf, 1, 4, fp) == 4)
+        result = ((int32_t)buf[0] << 24) | ((int32_t)buf[1] << 16) |
+                 ((int32_t)buf[2] << 8) | (int32_t)buf[3];
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 int32_t myp_io_seek(int32_t offset, int32_t whence) {
-    if (!myp_io_fp) return -1;
-    return fseek(myp_io_fp, offset, whence) == 0 ? 0 : -1;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
+    int32_t result = fseek(fp, offset, whence) == 0 ? 0 : -1;
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 // Binary file I/O for weight save/load
 int32_t myp_io_write_byte(int32_t c) {
-    if (!myp_io_fp) return -1;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
     unsigned char byte = (unsigned char)(c & 0xFF);
-    if (fwrite(&byte, 1, 1, myp_io_fp) != 1) return -1;
-    return 0;
+    int32_t result = fwrite(&byte, 1, 1, fp) == 1 ? 0 : -1;
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 int32_t myp_io_write_i32be(int32_t val) {
-    if (!myp_io_fp) return -1;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
     unsigned char buf[4];
     buf[0] = (unsigned char)((val >> 24) & 0xFF);
     buf[1] = (unsigned char)((val >> 16) & 0xFF);
     buf[2] = (unsigned char)((val >> 8) & 0xFF);
     buf[3] = (unsigned char)(val & 0xFF);
-    if (fwrite(buf, 1, 4, myp_io_fp) != 4) return -1;
-    return 0;
+    int32_t result = fwrite(buf, 1, 4, fp) == 4 ? 0 : -1;
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 int32_t myp_io_write_double(double val) {
-    if (!myp_io_fp) return -1;
-    if (fwrite(&val, sizeof(double), 1, myp_io_fp) != 1) return -1;
-    return 0;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return -1;
+    int32_t result = fwrite(&val, sizeof(double), 1, fp) == 1 ? 0 : -1;
+    myp_io_unlock_handle(handle);
+    return result;
 }
 
 double myp_io_read_double(void) {
-    if (!myp_io_fp) return 0.0;
-    double val;
-    if (fread(&val, sizeof(double), 1, myp_io_fp) != 1) return 0.0;
+    int32_t handle;
+    FILE* fp = myp_io_lock_current(&handle);
+    if (!fp) return 0.0;
+    double val = 0.0;
+    fread(&val, sizeof(double), 1, fp);
+    myp_io_unlock_handle(handle);
     return val;
 }
 
@@ -4490,11 +4571,13 @@ static void* myp_exec_worker_loop(void* arg) {
         pthread_mutex_unlock(&myp_exec_mutex);
 
         char* out = NULL;
-        FILE* fp = myp_io_table[task.io_handle];
-        if (fp)
+        FILE* fp = myp_io_lock_handle(task.io_handle);
+        if (fp) {
             out = (task.op == 0) ? myp_exec_read_line_from(fp) : myp_exec_read_all_from(fp);
-        else
+            myp_io_unlock_handle(task.io_handle);
+        } else {
             out = strdup("");
+        }
 
         pthread_mutex_lock(&myp_exec_mutex);
         myp_exec_push_result(task.target, task.coro_handle, out);
@@ -4549,9 +4632,10 @@ void myp_exec_pump_results(void) {
 // coroutine's thread). Outside a coroutine → synchronous fallback.
 static char* myp_coro_file_read(int io_handle, int op) {
     if (!myp_coro_am_i_coro()) {
-        FILE* fp = myp_io_table[io_handle];
+        FILE* fp = myp_io_lock_handle(io_handle);
         if (!fp) return myp_strdup("");
         char* r = (op == 0) ? myp_exec_read_line_from(fp) : myp_exec_read_all_from(fp);
+        myp_io_unlock_handle(io_handle);
         char* tracked = myp_strdup(r);
         free(r);
         return tracked;

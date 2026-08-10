@@ -1,0 +1,76 @@
+// io_thread: concurrent File instances must keep independent active handles.
+import env;
+import io;
+import barrier;
+
+@static class Shared {
+    property:
+        int start;
+        int done;
+    static:
+        void init() {
+            Shared.start = Barrier.create(3);
+            Shared.done = Barrier.create(3);
+        }
+}
+
+class WriterA {
+    action:
+        @startup void run() {
+            File file = new File();
+            file.open("/tmp/myp_io_thread_a.txt", "w");
+            Barrier.wait(Shared.start);
+            for (int i = 0; i < 200; i++) file.writeLine("A");
+            file.close();
+            Barrier.wait(Shared.done);
+        }
+}
+
+class WriterB {
+    action:
+        @startup void run() {
+            File file = new File();
+            file.open("/tmp/myp_io_thread_b.txt", "w");
+            Barrier.wait(Shared.start);
+            for (int i = 0; i < 200; i++) file.writeLine("B");
+            file.close();
+            Barrier.wait(Shared.done);
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Shared.init();
+            WriterA a = new WriterA() @thread;
+            WriterB b = new WriterB() @thread;
+            Barrier.wait(Shared.start);
+            Barrier.wait(Shared.done);
+
+            int countA = 0;
+            int countB = 0;
+            int wrong = 0;
+            File fileA = new File();
+            fileA.open("/tmp/myp_io_thread_a.txt", "r");
+            string line = fileA.readLine();
+            while (line != "") {
+                if (line != "A") wrong = wrong + 1;
+                countA = countA + 1;
+                line = fileA.readLine();
+            }
+            fileA.close();
+
+            File fileB = new File();
+            fileB.open("/tmp/myp_io_thread_b.txt", "r");
+            line = fileB.readLine();
+            while (line != "") {
+                if (line != "B") wrong = wrong + 1;
+                countB = countB + 1;
+                line = fileB.readLine();
+            }
+            fileB.close();
+            Console.writeString("a=" + countA + " b=" + countB + " wrong=" + wrong + "\n");
+        }
+}
+
+int main() { Main app = new Main() @thread; return 0; }

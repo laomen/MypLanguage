@@ -16,7 +16,7 @@ TIMEOUT_COMPILE=60
 TIMEOUT_RUN=30
 
 # 并发相关测试 (真实并发原语 + @thread 事件流)
-TESTS="atomic barrier future threadpool parallel_for mapping_chain multi_event multitarget delay_throttle scope_mapping instance_mapping lambda_mapping where_mapping"
+TESTS="atomic barrier future threadpool parallel_for io_thread mapping_chain multi_event multitarget delay_throttle scope_mapping instance_mapping lambda_mapping where_mapping"
 
 PASS=0
 FAIL=0
