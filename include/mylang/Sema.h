@@ -154,6 +154,11 @@ private:
     bool in_main_function_ = false;
     int in_catch_depth_ = 0;         // >0 inside a catch block (for `throw;` rethrow)
     bool in_coro_method_ = false;    // true while checking an @coro action body (await allowed)
+    // Current action name (for the @coro recursive-self-call diagnostic).
+    std::string current_method_name_;
+    // True while visiting a statement-level call whose result is discarded
+    // (e.g. `deep(n-1);`) — such @coro self-calls spawn a chain and are allowed.
+    bool in_discarded_stmt_expr_ = false;
     // §五-5: is `callee` an @async-annotated function/static method? (only
     // await-able inside an @coro context)
     bool isAsyncCallee(const Expr* callee) const;

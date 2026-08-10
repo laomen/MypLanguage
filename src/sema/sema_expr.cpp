@@ -1187,6 +1187,41 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     if (!in_coro_method_ && isAsyncCallee(expr.callee.get()))
         error(expr.range, "'@async' function can only be awaited inside an '@coro' method");
 
+    // Recursive self-call inside an @coro method: calling a @coro method SPAWNS a
+    // new coroutine and returns a HANDLE (long), not the method's return value —
+    // so `deep(n-1) + 1` silently computes on a handle (garbage, e.g. always 2).
+    // Reject with a clear message; the recursion belongs in a plain function.
+    // A self-call whose result is DISCARDED as a statement (`deep(n-1);`) is the
+    // spawn-chain form and stays allowed (tests/coro_stack).
+    bool top_discarded = in_discarded_stmt_expr_;
+    in_discarded_stmt_expr_ = false;  // nested calls in args are value uses
+    if (in_coro_method_ && !current_method_name_.empty() && current_tu_) {
+        bool self_call = false;
+        if (expr.callee->kind == ExprKind::Identifier) {
+            auto& ci = static_cast<const IdentifierExpr&>(*expr.callee);
+            if (ci.name == current_method_name_) self_call = true;
+        } else if (expr.callee->kind == ExprKind::MemberAccess) {
+            auto& ma = static_cast<const MemberAccessExpr&>(*expr.callee);
+            if (ma.object->kind == ExprKind::ThisExpr &&
+                ma.member_name == current_method_name_) self_call = true;
+        }
+        if (self_call && !top_discarded) {
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& a : cls.actions) {
+                    if (a.name == current_method_name_ && a.has_coro) {
+                        error(expr.range,
+                            "recursive call to '@coro' method '" + current_method_name_ +
+                            "' is not supported: an '@coro' call spawns a new coroutine and "
+                            "returns a handle, not the method's return value. Move the "
+                            "recursion into a plain function and call it from the '@coro' body");
+                        return TypeInfo(TypeKind::Void);
+                    }
+                }
+            }
+        }
+    }
+
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
     if (expr.callee->kind == ExprKind::MemberAccess) {
         auto& gma = static_cast<MemberAccessExpr&>(*expr.callee);

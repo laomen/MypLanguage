@@ -28,6 +28,19 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **编译期拒绝 @coro 方法递归自调用（把静默垃圾值变成清晰错误）**：
+  - 背景：`@coro` 调用 = spawn 新协程返回 handle（long），不是返回值。因此
+    `@coro long deep(n) { return deep(n-1) + 1; }` 是对 handle 做运算——实测无论
+    n 多大恒返回 2（静默错误）。
+  - 修复：sema 跟踪当前方法名（`current_method_name_`），在 `@coro` 体内检测到
+    自调用（裸名 / `this.` 形式）且**结果被当值使用**（return/算术/参数/赋值）时
+    报错：
+    `recursive call to '@coro' method 'X' is not supported: an '@coro' call spawns
+    a new coroutine and returns a handle... Move the recursion into a plain function`。
+  - **语句丢弃形式**（`deep(n-1);`）仍允许——那是 spawn 链（tests/coro_stack 依赖）。
+  - 验证：值使用自调用报错、语句丢弃放行、普通函数递归不受影响、合法嵌套协程
+    （coro_nest 模式）不受影响。新增负测试 `tests/negative/coro_self_recursion.myp`；
+    193/193 回归通过。
 - **修复 slice<类> 元素 / `new Foo().x` 上的链式字段访问（LLVM verify 崩溃）**：
   - 症状：`s[0].val`（slice<类> 元素，s[i] 返回类引用）、`new Node(7).val` 报
     `LLVM verify failed: Call parameter type does not match function signature!`

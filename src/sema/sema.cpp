@@ -83,6 +83,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             if (action.body) {
                 current_return_type_ = typeNodeToTypeInfo(action.return_type);
                 in_coro_method_ = action.has_coro;
+                current_method_name_ = action.name;
                 symbol_table_.enterScope();
                 TypeInfo this_type(TypeKind::Class);
                 this_type.class_name = current_class_name_;
@@ -119,6 +120,7 @@ bool Sema::analyze(TranslationUnit& tu) {
                     lambda_self_class_.clear();
                 }
                 in_coro_method_ = false;
+                current_method_name_.clear();
             }
         }
         // Type-check function: section bodies (re-fetch: tu.classes may have
@@ -930,7 +932,16 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                         }
                     }
                 }
+                // Mark a statement-level CALL as having its result discarded
+                // (e.g. `deep(n-1);`) — @coro self-calls in this form spawn a
+                // chain and are allowed (tests/coro_stack). Nested value uses
+                // (args/assignment/arithmetic) are NOT discarded and still get
+                // the recursive-@coro diagnostic.
+                bool was_discard = in_discarded_stmt_expr_;
+                if (es.expression->kind == ExprKind::Call)
+                    in_discarded_stmt_expr_ = true;
                 visitExpr(*es.expression);
+                in_discarded_stmt_expr_ = was_discard;
             }
             return {};
         }

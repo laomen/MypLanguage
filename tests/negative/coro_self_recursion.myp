@@ -1,0 +1,25 @@
+// Negative: recursive self-call inside an @coro method using the result as a
+// value. An @coro call SPAWNS a new coroutine and returns a HANDLE (long), not
+// the method's return value — `deep(n-1) + 1` silently computed on a handle
+// (always garbage, e.g. 2). Rejected at compile time; move recursion into a
+// plain function.
+import env;
+import coro;
+
+class W {
+    action:
+        @coro long deep(int n) {
+            if (n <= 0) return 0;
+            return deep(n - 1) + 1;   // ERROR: @coro self-call used as value
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            W w = new W();
+            long h = w.deep(5);
+        }
+}
+
+int main(){ Main m = new Main() @thread; return 0; }
