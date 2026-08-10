@@ -2433,7 +2433,11 @@ typedef struct myp_pool {
     pthread_mutex_t work_mutex;
     pthread_cond_t work_cond;
     volatile int work_available;
-    void (*work_fn)(int, void*);
+    // work_fn is now a chunk loop: void(*)(start, end, step, arg). The worker
+    // calls it once per chunk; the body loops over its own range. Removes one
+    // call/ret per iteration and lets the compiler (LLVM in the generated
+    // body) hoist loop-invariant work (e.g. worker id) and vectorize the body.
+    void (*work_fn)(int, int, int, void*);
     void* work_arg;
 } myp_pool_t;
 
@@ -2519,8 +2523,9 @@ static void* myp_pool_worker(void* arg) {
             }
         }
         if (got_work) {
-            for (int i = chunk.start; i < chunk.end; i += chunk.step)
-                pool->work_fn(i, pool->work_arg);
+            // Body loops over its chunk: one call per chunk instead of one per
+            // iteration.
+            pool->work_fn(chunk.start, chunk.end, chunk.step, pool->work_arg);
             pthread_mutex_lock(&pool->barrier_mutex);
             pool->done_count++;
             if (pool->done_count >= pool->total_chunks)
@@ -2585,7 +2590,7 @@ myp_pool_t* myp_pool_ensure_global(void) {
 }
 
 void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
-                            void (*fn)(int, void*), void* arg) {
+                            void (*fn)(int, int, int, void*), void* arg) {
     if (!pool || !fn) return;
     int n = (end - start + step - 1) / step;
     if (n <= 0) return;

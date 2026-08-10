@@ -294,7 +294,7 @@ void myp_once_destroy(int32_t h);
 typedef struct myp_pool myp_pool_t;
 myp_pool_t* myp_pool_create(int n_threads);
 void myp_pool_parallel_for(myp_pool_t* pool, int start, int end, int step,
-                            void (*work_fn)(int, void*), void* arg);
+                            void (*work_fn)(int, int, int, void*), void* arg);
 void myp_pool_destroy(myp_pool_t* pool);
 int32_t myp_pool_thread_count(void);extern myp_pool_t* myp_global_pool;
 myp_pool_t* myp_pool_ensure_global(void);

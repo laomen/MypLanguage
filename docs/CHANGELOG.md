@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.11.18
+- **`@parallel for` body 改为 chunk 循环（perf 定位：并行归约 N=10⁸ 的
+  `parallel_body_j` 62% / `myp_pool_worker_id` 8.9%）**：
+  - 原实现把 body 生成为**每迭代一个函数** `void(i, arg)`，worker 每轮 `call` 一次
+    ——每次迭代付 call/ret + 栈帧开销，且 body 是"单条语句"，LLVM 既无法提升
+    `Parallel.workerId()` 也无法展开/向量化累加。
+  - 改为生成 **chunk 循环体** `void(start, end, step, arg)`（body 内部 `for(i=start;
+    i<end; i+=step)`），worker 每 chunk 只调用一次。运行时 `work_fn` 签名由
+    `void(int,void*)` 改为 `void(int,int,int,void*)`；`myp_pool_parallel_for` 外部
+    签名不变（LLVM IR 中 fn 为不透明 `ptr`），缓存 `.myp.ll` 无需重编。
+  - 将 `myp_pool_worker_id` 标记 `readnone nounwind willreturn`（TLS 值在 chunk 循环
+    内恒定），让 LICM 把 `workerId()` 提出循环——由此 `perThread[wid]` 地址成为循环
+    不变式，LLVM 可把累加器提升到寄存器（打破内存往返依赖链），甚至向量化。
+  - 效果：并行归约 N=10⁸：**320→122ms（2.6x）**；N=10⁶ bench 3→1ms；parreduce 反超
+    C++ std::thread（1ms vs 2ms，C++/MYP 2.00）。181/181 回归（含 ASan）、25/25
+    Go 基准、33/33 C++ 基准全部通过，无回归。
+
 ### v3.11.17
 - **整数→字符串快速路径（perf 定位：ARC 压力 31% 在 `myp_to_string_i64`）**：
   原实现 `snprintf("%ld")` + `myp_strcat`（glibc 通用格式化 + 内部 malloc + 二次

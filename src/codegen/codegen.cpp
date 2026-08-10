@@ -4441,10 +4441,19 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     callee_name == "__myp_pool_worker_id") {
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
                     auto* wid_fn = cur_mod->getFunction("myp_pool_worker_id");
-                    if (!wid_fn)
+                    if (!wid_fn) {
                         wid_fn = llvm::Function::Create(
                             llvm::FunctionType::get(i32_ty, {}, false),
                             llvm::Function::ExternalLinkage, "myp_pool_worker_id", cur_mod);
+                        // Worker index is a thread-local value, constant for the
+                        // duration of a @parallel for chunk loop. Mark
+                        // readnone/nounwind/willreturn so LICM hoists the call
+                        // out of the loop body (perf: workerId() was ~8.9% of
+                        // the parallel-reduce hot loop when called per-iteration).
+                        wid_fn->setDoesNotAccessMemory();
+                        wid_fn->setDoesNotThrow();
+                        wid_fn->setWillReturn();
+                    }
                     return kb.CreateCall(wid_fn, {});
                 }
             }
@@ -5441,15 +5450,26 @@ void CodeGen::generateParallelFor(const ForStmt& s) {
         }
     }
 
-    // ===== Create parallel body function =====
-    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i32_ty, ptr_ty}, false);
+    // ===== Create parallel body function (chunk loop) =====
+    // The body is now a LOOP over its assigned chunk:
+    //   void parallel_body_j(int start, int end, int step, void* arg)
+    //     for (i = start; i < end; i += step) { user body }
+    // vs the old per-iteration form void(i, arg) — one call/ret + stack frame
+    // per iteration from the pool worker, and the user body was a single
+    // statement LLVM could neither hoist nor vectorize. With the loop inside
+    // the body, LLVM hoists loop-invariant work (e.g. Parallel.workerId() TLS
+    // read) and can unroll/vectorize the user reduction.
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+        {i32_ty, i32_ty, i32_ty, ptr_ty}, false);
     auto* body_fn = llvm::Function::Create(ft, llvm::Function::InternalLinkage,
         "parallel_body_" + loop_var_name, module_.get());
     auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", body_fn);
     llvm::IRBuilder<> pb(entry_bb);
     
-    auto* i_arg = body_fn->getArg(0); i_arg->setName("i");
-    auto* void_arg = body_fn->getArg(1); void_arg->setName("arg");
+    auto* start_arg = body_fn->getArg(0); start_arg->setName("start");
+    auto* end_arg = body_fn->getArg(1);   end_arg->setName("end");
+    auto* step_arg = body_fn->getArg(2);  step_arg->setName("step");
+    auto* void_arg = body_fn->getArg(3);  void_arg->setName("arg");
     
     // Build kernel_vars map for the body function
     std::map<std::string, llvm::Value*> kernel_vars;
@@ -5468,21 +5488,41 @@ void CodeGen::generateParallelFor(const ForStmt& s) {
         }
     }
     
-    // Create local alloca for loop variable
+    // Create local alloca for loop variable, init to start
     auto* i_alloca = pb.CreateAlloca(i32_ty, nullptr, loop_var_name);
-    pb.CreateStore(i_arg, i_alloca);
+    pb.CreateStore(start_arg, i_alloca);
     kernel_vars[loop_var_name] = i_alloca;
     
-    // Generate the loop body in the body function
+    // Chunk loop: for (i = start; i < end; i += step)
+    auto* loop_cond = llvm::BasicBlock::Create(ctx_, "ploop.cond", body_fn);
+    auto* loop_body = llvm::BasicBlock::Create(ctx_, "ploop.body", body_fn);
+    auto* loop_end  = llvm::BasicBlock::Create(ctx_, "ploop.end", body_fn);
+    pb.CreateBr(loop_cond);
+    
+    pb.SetInsertPoint(loop_cond);
+    auto* i_cur = pb.CreateLoad(i32_ty, i_alloca, loop_var_name);
+    auto* loop_ok = pb.CreateICmpSLT(i_cur, end_arg, "ploop.cond");
+    pb.CreateCondBr(loop_ok, loop_body, loop_end);
+    
+    // Generate the user body inside the chunk loop
+    pb.SetInsertPoint(loop_body);
     pushScope();
     if (s.body) {
-        emitKernelStmt(*s.body, pb, kernel_vars, empty_args, loop_var_name, i_arg);
-        if (!pb.GetInsertBlock()->getTerminator())
-            pb.CreateRetVoid();
+        emitKernelStmt(*s.body, pb, kernel_vars, empty_args, loop_var_name, i_cur);
+        if (!pb.GetInsertBlock()->getTerminator()) {
+            auto* i_next = pb.CreateAdd(i_cur, step_arg, "i.next");
+            pb.CreateStore(i_next, i_alloca);
+            pb.CreateBr(loop_cond);
+        }
     } else {
-        pb.CreateRetVoid();
+        auto* i_next = pb.CreateAdd(i_cur, step_arg, "i.next");
+        pb.CreateStore(i_next, i_alloca);
+        pb.CreateBr(loop_cond);
     }
     popScope();
+    
+    pb.SetInsertPoint(loop_end);
+    pb.CreateRetVoid();
     
     // ===== Call myp_pool_parallel_for in the caller =====
     if (!runtime_pool_ensure_ || !runtime_parallel_for_) {
@@ -10331,6 +10371,22 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
         }
     }
     // ---- IR optimization pipeline (-O1/-O2/-O3) ----
+    // Mark the pool worker-id accessor readnone/nounwind/willreturn so the
+    // optimizer can hoist Parallel.workerId() out of @parallel for chunk
+    // loops (thread-local value, constant for the loop's duration). Applied
+    // at this single choke point so it covers whichever path declared the
+    // function (kernel expr, @extern wrapper, or generic extern call).
+    auto markWorkerIdReadNone = [this]() {
+        for (const char* name : {"myp_pool_worker_id", "__myp_pool_worker_id"}) {
+            if (auto* wf = module_->getFunction(name)) {
+                wf->setDoesNotAccessMemory();
+                wf->setDoesNotThrow();
+                wf->setWillReturn();
+            }
+        }
+    };
+    markWorkerIdReadNone();
+
     // Runs the standard LLVM optimization passes (mem2reg, instcombine, GVN,
     // inlining, loop opts, ...) BEFORE the backend codegen. Without this, -O
     // only affected backend instruction selection and the IR stayed unoptimized
