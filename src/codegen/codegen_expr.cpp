@@ -2108,8 +2108,13 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
     // `return generateExpr(*e.object)` below, dropping the field and passing
     // the raw instance pointer to the consumer (LLVM verify error: call
     // parameter type does not match function signature). Resolve the class from
-    // the sema-recorded object type and GEP the property.
-    if (e.object->kind == ExprKind::Call && !e.resolved_object_class.empty()) {
+    // the sema-recorded object type and GEP the property. Also covers
+    // slice/array-of-class elements (`s[i].field`, where s[i] returns a class
+    // ref) and fresh `new Foo().field`.
+    if ((e.object->kind == ExprKind::Call ||
+         e.object->kind == ExprKind::Subscript ||
+         e.object->kind == ExprKind::NewExpr) &&
+        !e.resolved_object_class.empty()) {
         auto* op = generateExpr(*e.object);
         if (op && current_tu_) {
             for (auto& cls : current_tu_->classes) {

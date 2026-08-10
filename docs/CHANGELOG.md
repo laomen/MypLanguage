@@ -28,6 +28,17 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **修复 slice<类> 元素 / `new Foo().x` 上的链式字段访问（LLVM verify 崩溃）**：
+  - 症状：`s[0].val`（slice<类> 元素，s[i] 返回类引用）、`new Node(7).val` 报
+    `LLVM verify failed: Call parameter type does not match function signature!`
+    或读出垃圾值（链式访问在 codegen fallback 丢字段）。
+  - 修复：`generateMemberAccess` 的 sema-记录类分支（`resolved_object_class`）从
+    仅 Call 对象扩展到 **Subscript / NewExpr** 对象——对 slice/数组类元素下标结果
+    和新鲜 `new` 结果 GEP 属性字段。
+  - 验证：`s[i].field`、`new Foo().field`、方法调用结果链式全部正确；新增
+    `tests/slice_class_chain/`；192/192 回归 + ASAN 干净。
+  - 已知限制（未改）：slice 数据用 `myp_region_alloc` 竞技场分配、无析构——slice<类>
+    元素不会 ARC 释放（区域/进程退出才回收）。`slice<Node>` 循环创建会累积泄漏。
 - **修复 catch/finally 体内 throw 无限循环（异常 handler 未及时 pop）**：
   - 症状：`try { throw "a"; } finally { throw "b"; }`、catch 体内 `throw`、嵌套
     finally 内抛 → 无限循环（运行时几秒吐出千万行）。根因：本 try 的 handler

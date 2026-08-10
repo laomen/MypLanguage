@@ -1,0 +1,37 @@
+// slice_class_chain: slice<类>/new 结果上的链式字段访问
+// 此前 generateMemberAccess 对 Subscript/NewExpr 对象无分支 → 丢字段/LLVM verify
+// 崩溃（"Call parameter type does not match function signature"）。
+import env;
+
+class Node {
+    action:
+        @constructor Node(int v) { val = v; }
+    property:
+        int val;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // new Foo().field 链式
+            int a = new Node(7).val;
+
+            // slice<类> 元素链式（s[i] 返回类引用）
+            slice<Node> s = new slice<Node>(3);
+            s[0] = new Node(10);
+            s[1] = new Node(20);
+            s[2] = new Node(30);
+            int x = s[0].val;
+            int y = s[1].val;
+            int z = s[2].val;
+
+            // 方法调用结果链式（既有修复回归）
+            if (a != 7 || x != 10 || y != 20 || z != 30) {
+                Console.writeString("FAIL\n");
+                return;
+            }
+            Console.writeString("PASS slice_class_chain\n");
+        }
+}
+
+int main(){ Main m = new Main() @thread; return 0; }
