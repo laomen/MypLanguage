@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.11.3
+- **顶层函数 internal 化（最大一次性能提升）**：此前所有顶层函数发成 external 链接，
+  LLVM -O2 内联器因内联成本超阈值拒绝内联（如 convolution 425 > 225）→ 调用点传的
+  常量参数无法常量折叠 → 小循环因运行时上界被 cost-model 判"向量化不划算"→ 热点
+  内核（convolution/kmp/sha256 等）全部退化为标量执行。
+  - 修复：非库构建下把所有函数定义标记 `internal`（仅保留 `main` external），LLVM
+    的 IPSCCP/内联器随即常量特化 + 内联 + 向量化；库构建 `--shared/--static` 跳过
+    以保持符号导出（顺带修复单文件库构建的 `library_mode` 未传递问题）。
+  - 基准效果（MYP -O2 vs C++ -O3，24 项 verify 全一致）：convolution 0.61→1.32、
+    kmp 0.63→0.96、base64 0.81→1.29、sha256 0.82→1.20、kmeans 0.83→1.05、
+    huffman 0.94→2.12；gol 因常量折叠后 SLP 过度向量化 119→153ms（仍 1.06x 领先
+    C++）。
+  - 回归：O0/O2/ASAN 175/175、TSan 12/12 全过。
+
 ### v3.11.2
 - **显式类型转换 `uint8(x)` / `byte(x)` / `long(x)` / `double(x)`**：内置类型名当
   函数调用即转换。宽→窄截断、窄→宽按源符号扩展、double↔int 转换。解决了
