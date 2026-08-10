@@ -1698,80 +1698,95 @@ void myp_bounds_error(int64_t idx, int64_t len) {
 // Region arena (two-tier memory: process-level + region-level)
 // ======================
 // @region functions allocate temporaries via myp_region_alloc into a
-// thread-local region list. myp_arena_release(mark) frees everything
-// allocated after myp_arena_mark() — i.e. the region's temporaries —
+// thread-local bump arena. myp_arena_release(mark) frees newer chunks and
+// rewinds the marked chunk — i.e. releases the region's temporaries —
 // while process-level allocations (myp_alloc) survive until myp_free_all.
 static pthread_key_t myp_region_key;
 static pthread_once_t myp_region_key_once = PTHREAD_ONCE_INIT;
+static __thread myp_arena_chunk_t* myp_region_cur = NULL;
 // Region nesting depth (thread-local). >0 means we are inside an @region
-// function's dynamic call scope, so myp_region_alloc pushes to the region list
+// function's dynamic call scope, so myp_region_alloc uses the region arena
 // (dynamic extent — even temporaries allocated by plain callees are reclaimed).
 static __thread int myp_region_depth = 0;
 
-static void myp_free_region_list(void* ptr) {
-    myp_alloc_node_t* node = (myp_alloc_node_t*)ptr;
-    while (node) {
-        if (node->ptr) free(node->ptr);
-        myp_alloc_node_t* next = node->next;
-        free(node);
-        node = next;
-    }
+static void myp_make_region_key(void) {
+    pthread_key_create(&myp_region_key, myp_free_arena_chunks);
 }
 
-static void myp_make_region_key(void) {
-    pthread_key_create(&myp_region_key, myp_free_region_list);
+static void* myp_region_bump_alloc(size_t size) {
+    pthread_once(&myp_region_key_once, myp_make_region_key);
+    size = (size + MYP_ARENA_ALIGN - 1) & ~(size_t)(MYP_ARENA_ALIGN - 1);
+    if (!myp_region_cur || myp_region_cur->used + size > myp_region_cur->cap) {
+        size_t chunk_cap = size > MYP_ARENA_CHUNK_SIZE ? size : MYP_ARENA_CHUNK_SIZE;
+        myp_arena_chunk_t* chunk =
+            (myp_arena_chunk_t*)malloc(sizeof(myp_arena_chunk_t) + chunk_cap);
+        if (!chunk) return NULL;
+        chunk->next = myp_region_cur;
+        chunk->used = 0;
+        chunk->cap = chunk_cap;
+        myp_region_cur = chunk;
+        pthread_setspecific(myp_region_key, myp_region_cur);
+    }
+    void* ptr = (char*)myp_region_cur + sizeof(myp_arena_chunk_t) + myp_region_cur->used;
+    myp_region_cur->used += size;
+    return ptr;
 }
 
 void* myp_region_alloc(size_t size) {
     if (myp_region_depth > 0) {
-        // Inside an @region's dynamic scope → per-allocation node tracked so
-        // myp_arena_release can free exactly the region's temporaries.
-        void* ptr = malloc(size);
-        if (!ptr) return ptr;
-        pthread_once(&myp_region_key_once, myp_make_region_key);
-        myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(sizeof(myp_alloc_node_t));
-        if (node) {
-            node->ptr = ptr;
-            node->next = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
-            pthread_setspecific(myp_region_key, node);
-        }
-        return ptr;
+        return myp_region_bump_alloc(size);
     }
     // Not inside an @region — same lifetime as process-level data (freed at
     // exit), served from the chunked bump arena (no per-allocation malloc).
     return myp_arena_bump_alloc(size);
 }
 
-// Enters a region scope: bumps the depth and returns the current watermark
-// (head of the region list) for the matching myp_arena_release.
+// Enters a region scope and returns its exact bump pointer as the watermark.
+// The pointer encodes both the current chunk and its used offset, so nested
+// regions need no separately allocated marker object.
 void* myp_arena_mark(void) {
-    pthread_once(&myp_region_key_once, myp_make_region_key);
+    if (!myp_region_cur && !myp_region_bump_alloc(0)) return NULL;
     myp_region_depth++;
-    return pthread_getspecific(myp_region_key);
+    return (char*)myp_region_cur + sizeof(myp_arena_chunk_t) + myp_region_cur->used;
 }
 
-// Leaves a region scope: frees all region allocations newer than mark
-// (those made since the mark) and restores the depth.
+// Leaves a region scope: frees chunks newer than the marked chunk and rewinds
+// that chunk to its marked offset.
 void myp_arena_release(void* mark) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
-    myp_alloc_node_t* node = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
-    while (node && node != (myp_alloc_node_t*)mark) {
-        myp_alloc_node_t* next = node->next;
-        if (node->ptr) free(node->ptr);
-        free(node);
-        node = next;
+    uintptr_t target = (uintptr_t)mark;
+    myp_arena_chunk_t* chunk =
+        (myp_arena_chunk_t*)pthread_getspecific(myp_region_key);
+    while (chunk) {
+        uintptr_t begin = (uintptr_t)((char*)chunk + sizeof(myp_arena_chunk_t));
+        uintptr_t end = begin + chunk->cap;
+        if (target >= begin && target <= end) {
+            myp_arena_chunk_t* head =
+                (myp_arena_chunk_t*)pthread_getspecific(myp_region_key);
+            while (head != chunk) {
+                myp_arena_chunk_t* next = head->next;
+                free(head);
+                head = next;
+            }
+            chunk->used = (size_t)(target - begin);
+            myp_region_cur = chunk;
+            pthread_setspecific(myp_region_key, chunk);
+            break;
+        }
+        chunk = chunk->next;
     }
-    pthread_setspecific(myp_region_key, node);
     if (myp_region_depth > 0) myp_region_depth--;
 }
 
 void myp_region_free_all(void) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
-    myp_alloc_node_t* head = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
+    myp_arena_chunk_t* head =
+        (myp_arena_chunk_t*)pthread_getspecific(myp_region_key);
     if (head) {
-        myp_free_region_list(head);
+        myp_free_arena_chunks(head);
         pthread_setspecific(myp_region_key, NULL);
     }
+    myp_region_cur = NULL;
     myp_region_depth = 0;
 }
 

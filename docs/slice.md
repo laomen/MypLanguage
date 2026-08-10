@@ -94,13 +94,12 @@ Rust `&[T]` 同款 fat pointer。**MYP 使用 arena 内存（`myp_free_all` 统�
 |---|---|---|---|
 | 标量局部变量 | 栈（LLVM `alloca`） | 函数作用域 | 栈帧自动 |
 | struct 值 | 栈（`alloca`） | 函数作用域 | 栈帧自动 |
-| 数组 `new T[n]` | **堆**（`myp_alloc` = `malloc`） | 进程/线程结束 | `myp_free_all()` |
-| class 实例 `new C()` | **堆**（`myp_alloc`） | 进程/线程结束 | `myp_free_all()` |
-| 字符串 | 堆（`myp_alloc`） | 进程/线程结束 | `myp_free_all()` |
+| 数组 / slice / 字符串 | **堆**（TLS bump arena） | 默认到线程结束；`@region` 内到 region 结束 | chunk 批量回滚/释放 |
+| class 实例 `new C()` | **堆**（`malloc` + ARC） | 最后一个强引用释放 | `myp_release()` |
 
-核心机制（`src/runtime/runtime.c`）：`myp_alloc` = `malloc` + 压入**线程本地链表**
-（pthread_key TLS）；`myp_free_all()` 在 main 退出（或线程退出时 pthread_key 析构）遍历链表整块释放。
-**无 GC、无手动 delete、无 RAII**；arena 是**线程本地**的（`@thread` 各有其 arena）。
+核心机制（`src/runtime/runtime.c`）：数组、slice 和字符串从 64 KiB 的**线程本地 chunk**
+顺序分配；`myp_free_all()` 在 main 退出（或线程退出时 pthread_key 析构）批量释放 chunk。
+class 实例独立使用 ARC。**无 GC、无手动 delete**；arena 是线程本地的（`@thread` 各有其 arena）。
 
 ### 3.2 为什么 slice 天然无悬垂
 
@@ -124,14 +123,16 @@ MYP 引用型数据全在 arena 堆上，统一存活，天然无悬垂。
 **解法：两级 arena（非破坏性新增 runtime API）**
 
 ```c
-int  myp_arena_mark();            // 记录当前分配水位
-void myp_arena_release(int mark); // 释放 mark 之后的所有分配（同线程）
+void* myp_arena_mark();             // 记录当前 chunk 与分配水位
+void  myp_arena_release(void* mark); // 回滚到 mark（同线程）
 ```
 
 - **默认 `new`** → 进程级 arena（现状，跨事件存活，兼容）
 - **`@region` 内 `new`** → 当前 region（区域结束自动回收）
 
-链表为"头插"，`mark` 记链表头、`release` 从标记处一路 free——实现约 20 行 C。
+region 同样使用 chunked bump arena；`mark` 是 chunk 内的当前 bump 地址，`release` 释放
+后续 chunk 并回滚标记 chunk。嵌套 region 按 LIFO 恢复水位，不再为每个临时对象执行
+`malloc` 并创建追踪节点。
 **slice 与管道链式让中间对象激增，region 自动回收是 P4 的必需品**（而非可选项）。
 
 ### 3.4 `@region` 注解（简洁无感）

@@ -4,6 +4,13 @@
 //       反复调用不崩溃、结果正确
 import env;
 
+@region int nestedRegion(int seed) {
+    slice<int> inner = new slice<int>(30000);
+    inner[0] = seed + 1;
+    inner[29999] = seed + 2;
+    return inner[0] + inner[29999];
+}
+
 class Pipeline {
     action:
         @region void processFrame() {
@@ -14,6 +21,15 @@ class Pipeline {
             Console.writeString("frame tmp[3] = ");
             Console.writeFloat(tmp[3]);
             Console.writeString("\n");
+        }
+        @region void processNested() {
+            slice<int> outer = new slice<int>(20000);
+            outer[0] = 7;
+            outer[19999] = 9;
+            int inner = nestedRegion(10);
+            slice<int> tail = new slice<int>(20000);
+            tail[0] = 13;
+            Console.writeString("nested sum = " + (outer[0] + outer[19999] + inner + tail[0]) + "\n");
         }
 }
 
@@ -34,6 +50,7 @@ class Main {
                 p.processFrame();
                 frame = frame + 1;
             }
+            p.processNested();
             slice<double> r = makeSlice();
             Console.writeString("makeSlice size = ");
             Console.write(r.size());

@@ -5,6 +5,7 @@ frame tmp[3] = 6
 
 frame tmp[3] = 6
 
+nested sum = 52
 makeSlice size = 3
 
 r[2] = 3
