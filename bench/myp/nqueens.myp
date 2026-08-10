@@ -1,0 +1,61 @@
+// bench/myp/nqueens.myp — N 皇后（对角数组 O(1) 冲突检查，类方法递归）
+// N=14 方案数 = 365596（确定性）；测：递归调用 + 分支密集。
+// 与 C++ 同算法。
+import env;
+import time;
+
+class Nq {
+    property:
+        int n;
+        int count;
+        int[] col;
+        int[] d1;
+        int[] d2;
+    action:
+        void place(int row) {
+            if (row == n) {
+                count = count + 1;
+                return;
+            }
+            int c = 0;
+            while (c < n) {
+                if (col[c] == 0 && d1[row + c] == 0 && d2[row - c + n - 1] == 0) {
+                    col[c] = 1;
+                    d1[row + c] = 1;
+                    d2[row - c + n - 1] = 1;
+                    place(row + 1);
+                    col[c] = 0;
+                    d1[row + c] = 0;
+                    d2[row - c + n - 1] = 0;
+                }
+                c = c + 1;
+            }
+        }
+        @constructor Nq(int nn) {
+            n = nn;
+            count = 0;
+            col = new int[n];
+            d1 = new int[2 * n - 1];
+            d2 = new int[2 * n - 1];
+            place(0);
+        }
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            Nq q = new Nq(14);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(q.count);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

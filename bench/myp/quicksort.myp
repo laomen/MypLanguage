@@ -1,0 +1,64 @@
+// bench/myp/quicksort.myp — 快速排序（Lomuto 分区，递归）
+// 随机数组（LCG 全值 0..2^31-1）800000 个；verify = 排序后 a[n/2] + 总和。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+void qsortImpl(int[] a, int lo, int hi) {
+    if (lo >= hi) return;
+    int pivot = a[hi];
+    int i = lo;
+    int j = lo;
+    while (j < hi) {
+        if (a[j] <= pivot) {
+            int t = a[i];
+            a[i] = a[j];
+            a[j] = t;
+            i = i + 1;
+        }
+        j = j + 1;
+    }
+    int t2 = a[i];
+    a[i] = a[hi];
+    a[hi] = t2;
+    qsortImpl(a, lo, i - 1);
+    qsortImpl(a, i + 1, hi);
+}
+
+long quicksort(int n, int seed) {
+    int[] a = new int[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        a[i] = rng;   // 0..2^31-1，long→int 截断（值在 int32 内）
+        i = i + 1;
+    }
+    qsortImpl(a, 0, n - 1);
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + a[i];
+        i = i + 1;
+    }
+    return sum + a[n / 2];
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = quicksort(800000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,74 @@
+// bench/myp/dijkstra.myp — 稠密图单源最短路（O(V²)，无堆）
+// N=4096 邻接矩阵，权重 1..1000（LCG 高位）。verify = dist 总和 + dist[N-1]×10^6。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long dijkstra(int n, int seed) {
+    int[] w = new int[n * n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        w[i] = (rng >> 16) % 1000 + 1;   // 1..1000
+        i = i + 1;
+    }
+    int[] dist = new int[n];
+    int[] visited = new int[n];
+    i = 0;
+    while (i < n) {
+        dist[i] = 1 << 29;
+        visited[i] = 0;
+        i = i + 1;
+    }
+    dist[0] = 0;
+    int iter = 0;
+    while (iter < n) {
+        int u = -1;
+        i = 0;
+        while (i < n) {
+            if (visited[i] == 0 && (u < 0 || dist[i] < dist[u])) u = i;
+            i = i + 1;
+        }
+        if (u < 0 || dist[u] >= 1 << 29) {
+            iter = n;   // 不可达，提前结束
+        } else {
+            visited[u] = 1;
+            int v = 0;
+            while (v < n) {
+                if (visited[v] == 0) {
+                    int nd = dist[u] + w[u * n + v];
+                    if (nd < dist[v]) dist[v] = nd;
+                }
+                v = v + 1;
+            }
+            iter = iter + 1;
+        }
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + dist[i];
+        i = i + 1;
+    }
+    return sum + dist[n - 1] * 1000000L;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = dijkstra(4096, 13579);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
