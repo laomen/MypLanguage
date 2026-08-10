@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.11.5
+- **嵌套泛型解析**：`slice<slice<int>>`、`Box<Vec<int>>`、`foo<Bar<int>>(...)`、
+  `new Box<int>[]` 此前无法解析——lexer 把 `>>` 合成一个 `GreaterGreater` token，
+  泛型收尾期待单 `>`。新增 `consumeGenericClose`：遇 `>>` 消费后压入合成 `>`
+  （`pending_` 栈，`peek`/`advance` 优先消费），6 处泛型收尾点统一替换。
+- **slice-of-slice 分配大小错误**：`new slice<slice<int>>(n)` 元素大小算成 4 字节
+  而非 16（`typeNodeToLLVMType` 无 `slice<T>` 分支，落入内置默认 i32），写穿外层
+  slice 数据区 → verify 错乱 + 退出段错误。修复：`typeNodeToLLVMType` 加 slice 分支。
+- **嵌套 slice 双下标 `rows[i][j]` 读写 + slice<struct> 字段访问 `v[i].x`**：
+  codegen 只处理 Identifier slice / 标量 struct。新增 `sliceTypeOfExpr`（递归解析
+  slice 值类型）+ `generateSliceElementAddress`（解包+边界检查+GEP）统一读写路径；
+  `generateArrayElementAddress` 扩展 slice 分支。
+- 由 slice 类基准（slicevec/slicemat）暴露；回归测试 `tests/nested_slice/`。
+- 回归：O0/O2/ASAN 177/177 全过；32 项基准 verify 全一致，slicevec 2.67 /
+  slicemat 2.50 反超。
+
 ### v3.11.4
 - **支持 struct 数组元素字段访问 `arr[i].field`**：此前 `v[i].x` 读/写都报
   "unknown property 'x'"——codegen 只处理标量 struct（Identifier 对象）和链式成员
