@@ -64,7 +64,10 @@ set(SOURCES
     src/lexer/lexer.cpp
     src/ast/ast.cpp
     src/parser/parser.cpp
+    src/parser/parser_stmt.cpp
+    src/parser/parser_expr.cpp
     src/sema/sema.cpp
+    src/sema/sema_expr.cpp
     src/sema/type.cpp
     src/sema/symbol_table.cpp
     src/codegen/codegen.cpp
@@ -106,7 +109,7 @@ target_link_libraries(myp_debug PRIVATE pthread)
 
 # Mapping visualizer tool (uses same parser)
 add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
-    src/ast/ast.cpp src/parser/parser.cpp
+    src/ast/ast.cpp src/parser/parser.cpp src/parser/parser_stmt.cpp src/parser/parser_expr.cpp
     src/SourceLocation.cpp)
 target_link_libraries(myp_viz PRIVATE ${LLVM_LIBS})
 
@@ -118,7 +121,10 @@ add_executable(myp_lsp
     src/lexer/lexer.cpp
     src/ast/ast.cpp
     src/parser/parser.cpp
+    src/parser/parser_stmt.cpp
+    src/parser/parser_expr.cpp
     src/sema/sema.cpp
+    src/sema/sema_expr.cpp
     src/sema/type.cpp
     src/sema/symbol_table.cpp
     src/SourceLocation.cpp
