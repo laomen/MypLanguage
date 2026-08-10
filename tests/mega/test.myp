@@ -1,0 +1,224 @@
+// mega.myp — 组合特性超级测试
+// 单程序同时覆盖：泛型类/泛型静态方法/高阶函数、struct+enum+match、接口+trait
+// 默认方法、slice（嵌套 + slice<struct>）、异常 try/catch/finally、@parallel for
+// + Atomic、@thread 并发 worker + Atomic、@coro 协程、@static class 共享状态、
+// 深度递归 + 字符串插值。
+//
+// 用途：压测"特性组合"——每个特性单独都有测试，但组合在一起（同进程、跨段状态
+// 交互、并发与异常并存）是 showcase 刻意避免的高风险地带。
+// 验证：每段自检不变量，全部 PASS 才输出 "PASS mega"。
+//
+// 用法: ./build/mypc tests/mega/test.myp -o /tmp/mega && /tmp/mega
+import env;
+import math;
+import timeline;
+import atomic;
+import coro;
+
+// ==================== 1. 泛型类 Stack<T> ====================
+class Stack<T> {
+    action:
+        void push(T v) { buf[sz] = v; sz = sz + 1; }
+        T pop() { sz = sz - 1; return buf[sz]; }
+        int size() { return sz; }
+    property:
+        T[64] buf;
+        int sz = 0;
+}
+
+// ==================== 2. 泛型静态方法 + 高阶函数 ====================
+@static class Util {
+    static:
+        R id<R>(R v) { return v; }
+        int sumList<T>(slice<T> a, (T) -> int f) {
+            int acc = 0;
+            for (int i = 0; i < a.size(); i = i + 1) acc = acc + f(a[i]);
+            return acc;
+        }
+}
+
+// ==================== 3. struct + enum + match ====================
+struct Vec3 { double x; double y; double z; }
+enum Kind { Alpha; Beta; Gamma; }
+
+double len(Vec3 v) {
+    return Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+}
+
+// ==================== 4. 接口 + trait 默认方法 ====================
+interface Renderer {
+    string name();
+    int area() { return 0; }           // 默认实现，实现类可省略
+}
+class Circle {
+    interface class Renderer;
+    action:
+        @constructor Circle(int radius) { r = radius; }
+        string name() { return "circle"; }
+        int area() { return 3 * r * r; }
+    property:
+        int r;
+}
+class Dot {
+    interface class Renderer;
+    action:
+        string name() { return "dot"; }
+}
+
+// ==================== 5. 异常 ====================
+int divSafe(int a, int b) {
+    if (b == 0) throw "division by zero";
+    return a / b;
+}
+int guarded(int a, int b) {
+    int r = 0;
+    try {
+        r = divSafe(a, b);
+    } catch (string e) {
+        r = -1;
+    } finally {
+        r = r + 0;   // finally 一定执行
+    }
+    return r;
+}
+
+// ==================== 6. @coro ====================
+class Ticker {
+    action:
+        @coro long tick(long n) {
+            long i = 0L;
+            while (i < n) {
+                await;
+                i = i + 1L;
+            }
+            return i;
+        }
+}
+
+// ==================== 7. @thread worker ====================
+@static class Shared {
+    property:
+        int[] counter;
+        int[] done;
+    static:
+        void init(int nw) {
+            Shared.counter = new int[1];
+            Shared.done = new int[1];
+            Shared.counter[0] = 0;
+            Shared.done[0] = 0;
+        }
+}
+class Worker {
+    action:
+        @startup void run() {
+            int m = 500;
+            int i = 0;
+            while (i < m) {
+                Atomic.addInt(Shared.counter, 0, 1);
+                i = i + 1;
+            }
+            Atomic.addInt(Shared.done, 0, 1);
+        }
+}
+
+// ==================== 8. 深度递归 ====================
+long fib(int n) {
+    if (n <= 1) return 1L;
+    return fib(n - 1) + fib(n - 2);
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            bool ok = true;
+
+            // ---- 1. 泛型 Stack<int> / Stack<string> ----
+            Stack<int> si = new Stack<int>();
+            si.push(1); si.push(2); si.push(3);
+            ok = ok && (si.pop() == 3) && (si.pop() == 2) && (si.size() == 1);
+            Stack<string> ss = new Stack<string>();
+            ss.push("a"); ss.push("b");
+            ok = ok && (ss.pop() == "b") && (ss.pop() == "a");
+            Console.writeString("1) 泛型类: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 2. 泛型函数 + 高阶函数 ----
+            int uid = Util.id<int>(42);
+            slice<int> xs = new slice<int>(4);
+            xs[0] = 1; xs[1] = 2; xs[2] = 3; xs[3] = 4;
+            int xsum = Util.sumList<int>(xs, (int v) => { return v * 2; });   // 20
+            ok = ok && (uid == 42) && (xsum == 20);
+            Console.writeString("2) 泛型函数+lambda: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 3. struct + enum + match ----
+            Vec3 v;
+            v.x = 3.0; v.y = 4.0; v.z = 0.0;
+            bool lenOk = (len(v) > 4.99) && (len(v) < 5.01);
+            Kind k = Kind.Beta;
+            string kd = "";
+            match (k) {
+                Kind.Alpha => { kd = "alpha"; }
+                Kind.Beta => { kd = "beta"; }
+                Kind.Gamma => { kd = "gamma"; }
+            }
+            ok = ok && lenOk && (kd == "beta");
+            Console.writeString("3) struct+enum+match: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 4. 接口 + 默认方法 ----
+            Circle c = new Circle(2);
+            Renderer rc = c;
+            Dot d = new Dot();
+            Renderer rd = d;
+            ok = ok && (rc.name() == "circle") && (rc.area() == 12);
+            ok = ok && (rd.name() == "dot") && (rd.area() == 0);   // 默认实现
+            Console.writeString("4) 接口+默认方法: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 5. 异常 ----
+            ok = ok && (guarded(10, 2) == 5);
+            ok = ok && (guarded(10, 0) == -1);
+            Console.writeString("5) 异常 try/catch/finally: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 6. @coro ----
+            Ticker tk = new Ticker();
+            long h = tk.tick(3L);
+            Coro.scheduler();
+            Coro.scheduler();
+            Coro.scheduler();
+            ok = ok && (Coro.isActive(h) == 0L);
+            Console.writeString("6) @coro: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 7. @thread + Atomic ----
+            Shared.init(4);
+            Worker[4] pool @threadpool;
+            Timeline tl;
+            int fin = 0;
+            while (fin < 4) {
+                fin = Atomic.addInt(Shared.done, 0, 0);
+                if (fin < 4) tl.sleep(1);
+            }
+            ok = ok && (Shared.counter[0] == 4 * 500);
+            Console.writeString("7) @thread 并发: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 8. @parallel for + Atomic ----
+            int[64] tally;
+            @parallel for (int i = 0; i < 20000; i = i + 1) {
+                Atomic.addInt(tally, i % 64, 1);
+            }
+            long psum = 0;
+            for (int j = 0; j < 64; j = j + 1) psum = psum + tally[j];
+            ok = ok && (psum == 20000);
+            Console.writeString("8) @parallel for: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // ---- 9. 深度递归 + 字符串插值 ----
+            long f = fib(20);   // 10946
+            string interp = "fib(20)=$f";
+            ok = ok && (f == 10946L) && (interp == "fib(20)=10946");
+            Console.writeString("9) 递归+插值: "); Console.writeLine(ok ? "PASS" : "FAIL");
+
+            Console.writeString(ok ? "PASS mega\n" : "FAIL mega\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

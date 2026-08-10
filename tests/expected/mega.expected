@@ -1,0 +1,10 @@
+1) 泛型类: PASS
+2) 泛型函数+lambda: PASS
+3) struct+enum+match: PASS
+4) 接口+默认方法: PASS
+5) 异常 try/catch/finally: PASS
+6) @coro: PASS
+7) @thread 并发: PASS
+8) @parallel for: PASS
+9) 递归+插值: PASS
+PASS mega
