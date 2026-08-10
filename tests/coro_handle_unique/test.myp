@@ -1,0 +1,43 @@
+// tests/coro_handle_unique — 协程句柄槽位复用回归
+// 3 个无 await 的协程（eager 启动即完成）。修复前 __myp_coro_create 复用已完成
+// 协程的槽位→ 三者都拿到 handle 0 → 已存句柄别名、Coro.result 全读到最后一个
+// （verify 900 ≠ 600）。修复后槽位不复用，句柄唯一（h=0,1,2），结果 100+200+300。
+import env;
+import coro;
+import time;
+
+class Worker {
+    action:
+        @coro(stack=64) long run(long x) {
+            return x * 100;   // 无 await → eager 启动即完成
+        }
+}
+
+long test() {
+    Worker w1 = new Worker();
+    long h1 = w1.run(1L);
+    Worker w2 = new Worker();
+    long h2 = w2.run(2L);
+    Worker w3 = new Worker();
+    long h3 = w3.run(3L);
+    // 句柄必须唯一（0,1,2），否则结果串位
+    if (h1 == h2 || h2 == h3 || h1 == h3) return -1;
+    long s = Coro.result(h1) + Coro.result(h2) + Coro.result(h3);
+    if (s != 600) return -2;
+    return s;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long v = test();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nPASS unique coroutine handles\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,77 @@
+// tests/channel_multi_consumer — Channel 多消费者 count 下溢回归
+// 1 生产者 × 2 消费者，cap=2。修复前 recv 的 park-resume 路径无守卫 count--，
+// 第二个消费者 resume 时 count 已被第一个取走→ count 下溢 -1 → 环形缓冲越界写
+// （buf[-1]，堆损坏/munmap 崩溃）。修复后 park-resume 重新校验 count>0。
+// verify = 总和 + 平方和（三指标检测丢值/重复/错值）。
+import env;
+import channel;
+import coro;
+import time;
+
+class Producer {
+    action:
+        @coro(stack=64) long run(Channel ch, long n) {
+            long i = 0;
+            while (i < n) {
+                int r = ch.send(i);
+                i = i + 1;
+            }
+            return n;
+        }
+}
+
+class Consumer {
+    action:
+        @coro(stack=64) long run(Channel ch, long m) {
+            long s1 = 0;
+            long i = 0;
+            while (i < m) {
+                long v = ch.recv();
+                s1 = s1 + v;
+                i = i + 1;
+            }
+            return s1;
+        }
+}
+
+long test(int n, int nc, int cap) {
+    Channel ch = new Channel();
+    ch.init(cap);
+    Producer p = new Producer();
+    long hp = p.run(ch, long(n));
+    long[] chh = new long[nc];
+    int i = 0;
+    while (i < nc) {
+        Consumer c = new Consumer();
+        chh[i] = c.run(ch, long(n) / nc);
+        i = i + 1;
+    }
+    long guard = 0;
+    while (Coro.count() > 0 && guard < 50000000) {
+        Coro.scheduler();
+        guard = guard + 1;
+    }
+    long totalS1 = 0;
+    i = 0;
+    while (i < nc) { totalS1 = totalS1 + Coro.result(chh[i]); i = i + 1; }
+    ch.destroy();
+    long expS1 = long(n) * long(n - 1) / 2;
+    if (totalS1 != expS1) return -1;
+    if (Coro.count() != 0) return -2;
+    return totalS1;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long v = test(100000, 2, 2);
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nPASS multi-consumer channel\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

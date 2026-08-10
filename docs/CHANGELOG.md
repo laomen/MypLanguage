@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.11.15
+- **修复两个协程/通道崩溃级缺陷**：
+  - **Channel 多消费者 count 下溢**：`myp_channel_recv` park-resume 路径无守卫
+    `count--`——多消费者时第二个消费者被唤醒但值已被第一个取走，count 下溢 -1 →
+    环形缓冲越界写 `buf[-1]`（ASan heap-buffer-overflow + munmap 崩溃）。send 的
+    park-resume 无守卫 `count++` 同理。修复：send/recv park-resume 后循环重新校验
+    缓冲状态（count 不足/已满重新挂起）。回归测试 `tests/channel_multi_consumer/`
+    （修复前崩溃）。
+  - **协程句柄槽位复用（结果串位）**：`__myp_coro_create` 复用已完成协程的槽位，
+    无 await 协程 eager 启动即完成 → 新协程拿到相同句柄 → 已存句柄别名、
+    `Coro.result` 读到新协程结果（verify 900≠600）。修复：槽位不复用（句柄唯一）；
+    完成协程栈经线程局部 retired 列表延迟回收（create/调度器安全点移回栈池）。
+    回归测试 `tests/coro_handle_unique/`。
+- **性能**：顺带消除 `__myp_coro_create` 找可复用槽的 O(n²) 线性扫描，
+  **coro_spawn 460→24ms（19x）**；channel_pingpong 21ms 无回归；coro_switch 72ms。
+  普通/ASan 构建各 **181/181** 回归全过。
+
 ### v3.11.14
 - **协程上下文切换改为寄存器级汇编（coro_ctx.S，x86-64 SysV）**：
   - 替代 `swapcontext`（ucontext 内部每次 `sigprocmask` syscall，微基准 ~180ns/次）

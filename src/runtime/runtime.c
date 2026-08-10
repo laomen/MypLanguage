@@ -3462,6 +3462,45 @@ static void myp_coro_stack_pool_free_all(void) {
     myp_coro_stack_pool_capacity = 0;
 }
 
+// ---- Retired-stack reclamation ----
+// 句柄槽位不复用（避免已存句柄被新协程别名/结果串位），故已完成协程的栈不能靠
+// 槽位复用回收。trampoline 运行在自己的栈上无法就地 free，所以把 {ptr,size} 记入
+// 线程本地 retired 列表，在下一个安全点（__myp_coro_create 或调度器——都不在
+// 退役栈上运行）移回栈池复用，避免大量短协程累积栈内存（如 coro_spawn 2万×64KB）。
+static __thread myp_coro_stack_slot_t* myp_coro_retired = NULL;
+static __thread int myp_coro_retired_count = 0;
+static __thread int myp_coro_retired_cap = 0;
+
+static void myp_coro_retired_add(char* ptr, size_t size) {
+    if (!ptr) return;
+    if (myp_coro_retired_count >= myp_coro_retired_cap) {
+        int nc = myp_coro_retired_cap ? myp_coro_retired_cap * 2 : 16;
+        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(
+            myp_coro_retired, (size_t)nc * sizeof(myp_coro_stack_slot_t));
+        if (!np) { free(ptr); return; }
+        myp_coro_retired = np;
+        myp_coro_retired_cap = nc;
+    }
+    myp_coro_retired[myp_coro_retired_count].ptr = ptr;
+    myp_coro_retired[myp_coro_retired_count].size = size;
+    myp_coro_retired_count++;
+}
+
+static void myp_coro_retired_drain(void) {
+    for (int i = 0; i < myp_coro_retired_count; i++)
+        myp_coro_stack_pool_add(myp_coro_retired[i].ptr, myp_coro_retired[i].size);
+    myp_coro_retired_count = 0;
+}
+
+static void myp_coro_retired_free_all(void) {
+    for (int i = 0; i < myp_coro_retired_count; i++)
+        free(myp_coro_retired[i].ptr);
+    free(myp_coro_retired);
+    myp_coro_retired = NULL;
+    myp_coro_retired_count = 0;
+    myp_coro_retired_cap = 0;
+}
+
 // Trampoline: entered on the coroutine's first resume (myp_coro_current already
 // set to the handle). Calls the coroutine's entry function, then deactivates it
 // and switches back to whoever resumed/created it (ret_ctx).
@@ -3504,6 +3543,10 @@ static void __myp_coro_trampoline(void) {
         // uncaught exception it recovers the frame's objects). We are ON this
         // coroutine's stack, so reading the slot addresses is safe.
         __myp_coro_release_frame(myp_coros[id]);
+        // 退役本协程的栈（延迟回收）：不能就地 free（正运行其上），记入列表由
+        // 下一次 create/调度器移回池。
+        myp_coro_retired_add(myp_coros[id]->stack, myp_coros[id]->stack_size);
+        myp_coros[id]->stack = NULL;
         myp_coros[id]->active = 0;
         myp_coros[id]->ready = 0;
         // 完成：切回创建/恢复我们的调用者（ret_ctx）。此函数不返回。
@@ -3545,23 +3588,13 @@ static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
 int64_t __myp_coro_create(int64_t stack_bytes) {
     // stack_bytes: requested stack size in bytes (<=0 → default MYP_CORO_STACK_SIZE).
     size_t stack_size = (stack_bytes > 0) ? (size_t)stack_bytes : (size_t)MYP_CORO_STACK_SIZE;
-    // Reuse a finished coroutine slot first (its stack is returned to the
-    // pool here, not in the trampoline, because the trampoline still runs on
-    // its own stack).
-    int idx = -1;
-    for (int i = 0; i < myp_coro_count; i++) {
-        if (myp_coros[i] && !myp_coros[i]->active && myp_coros[i]->stack) {
-            myp_coro_stack_pool_add(myp_coros[i]->stack, myp_coros[i]->stack_size);
-            myp_coros[i]->stack = NULL;
-            idx = i;
-            break;
-        }
-    }
-    if (idx < 0) {
-        if (myp_coro_grow() != 0) return -1;
-        idx = myp_coro_count;
-        myp_coro_count++;
-    }
+    // 先回收已完成协程的退役栈（安全点：不在退役栈上运行）。
+    myp_coro_retired_drain();
+    // 句柄槽位不复用：每个创建的协程获得唯一槽位。复用已完成协程的槽位会让
+    // 已存句柄指向新协程（handle 别名 / Coro.result 串位，见 handle_reuse 回归）。
+    if (myp_coro_grow() != 0) return -1;
+    int idx = myp_coro_count;
+    myp_coro_count++;
     if (!myp_coros[idx]) {
         myp_coro_t* nc = (myp_coro_t*)calloc(1, sizeof(myp_coro_t));
         if (!nc) return -1;
@@ -3825,6 +3858,8 @@ int64_t __myp_coro_status(int64_t handle) {
 // coroutines are skipped until the event arrives and re-readies them.
 void myp_exec_pump_results(void);   // §五-5 P3: deliver completed file-exec results
 void __myp_coro_scheduler(void) {
+    // 安全点：回收已完成协程的退役栈（池满则 free）。调度器不在任何协程栈上运行。
+    myp_coro_retired_drain();
     // Compact the wait table: inactive records (woken by fd-poll / expiry /
     // event) were never removed — they accumulate one per waitFd/await round,
     // so myp_coro_wait_count grows linearly with the number of waits and every
@@ -4421,6 +4456,7 @@ static void __myp_coro_cleanup_all(void) {
     myp_coro_wait_count = 0;
     myp_coro_wait_capacity = 0;
     myp_coro_stack_pool_free_all();
+    myp_coro_retired_free_all();
 }
 
 // Release the current thread's coroutine state (called when a @thread thread
@@ -4531,60 +4567,65 @@ void myp_channel_destroy(int64_t handle) {
 
 // Send. Returns 0 on success. A coroutine parks if the buffer is full;
 // a non-coroutine caller returns -1 instead of parking.
+// 修复：park-resume 后重新校验 count<capacity——多生产者下，唤醒我们的槽位可能
+// 已被另一个先 resume 的生产者占用，必须重新挂起而非无守卫写缓冲（曾致 count 上溢
+// + 环形缓冲越界，见 multi-consumer 崩溃）。
 int64_t myp_channel_send(int64_t handle, int64_t val) {
     myp_channel_t* c = myp_channel_get(handle);
     if (!c || c->closed) return -1;
-    if (c->count < c->capacity) {
-        c->buf[(c->head + c->count) % c->capacity] = val;
-        c->count++;
-        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
-        return 0;
-    }
-    // Buffer full.
-    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
-        myp_coros[myp_coro_current]) {
-        if (c->send_wait_count < MYP_CHANNEL_MAX_WAITERS) {
-            c->send_waiters[c->send_wait_count++] = myp_coro_current;
-            myp_coros[myp_coro_current]->ready = 0;   // parked
+    for (;;) {
+        if (c->count < c->capacity) {
+            c->buf[(c->head + c->count) % c->capacity] = val;
+            c->count++;
+            myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+            return 0;
         }
-        __myp_coro_yield(val);   // suspend until a slot frees up
-        if (c->closed) return -1;
-        c->buf[(c->head + c->count) % c->capacity] = val;
-        c->count++;
-        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
-        return 0;
+        // Buffer full — park as a sender (if a coroutine).
+        if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+            myp_coros[myp_coro_current]) {
+            if (c->send_wait_count < MYP_CHANNEL_MAX_WAITERS) {
+                c->send_waiters[c->send_wait_count++] = myp_coro_current;
+                myp_coros[myp_coro_current]->ready = 0;   // parked
+            }
+            __myp_coro_yield(val);   // suspend until a slot frees up
+            if (c->closed) return -1;
+            // Loop: 重新校验。可能别的发送者已先占用了空位。
+        } else {
+            return -1; // non-coroutine, buffer full
+        }
     }
-    return -1; // non-coroutine, buffer full
 }
 
 // Recv. Returns the value. A coroutine parks if the buffer is empty;
 // a non-coroutine caller returns -1 instead of parking.
+// 修复：park-resume 后重新校验 count>0——多消费者下，唤醒我们的值可能已被另一个
+// 先 resume 的消费者取走，必须重新挂起而非无守卫读+count--（曾致 count 下溢 -1 +
+// 环形缓冲越界，见 multi-consumer 崩溃）。
 int64_t myp_channel_recv(int64_t handle) {
     myp_channel_t* c = myp_channel_get(handle);
     if (!c) return -1;
-    if (c->count > 0) {
-        int64_t v = c->buf[c->head];
-        c->head = (c->head + 1) % c->capacity;
-        c->count--;
-        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
-        return v;
-    }
-    if (c->closed) return -1;
-    if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
-        myp_coros[myp_coro_current]) {
-        if (c->recv_wait_count < MYP_CHANNEL_MAX_WAITERS) {
-            c->recv_waiters[c->recv_wait_count++] = myp_coro_current;
-            myp_coros[myp_coro_current]->ready = 0;   // parked
+    for (;;) {
+        if (c->count > 0) {
+            int64_t v = c->buf[c->head];
+            c->head = (c->head + 1) % c->capacity;
+            c->count--;
+            myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+            return v;
         }
-        __myp_coro_yield(0);   // suspend until data arrives
         if (c->closed) return -1;
-        int64_t v = c->buf[c->head];
-        c->head = (c->head + 1) % c->capacity;
-        c->count--;
-        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
-        return v;
+        if (myp_coro_current >= 0 && myp_coro_current < myp_coro_count &&
+            myp_coros[myp_coro_current]) {
+            if (c->recv_wait_count < MYP_CHANNEL_MAX_WAITERS) {
+                c->recv_waiters[c->recv_wait_count++] = myp_coro_current;
+                myp_coros[myp_coro_current]->ready = 0;   // parked
+            }
+            __myp_coro_yield(0);   // suspend until data arrives
+            if (c->closed) return -1;
+            // Loop: 重新校验。可能别的消费者已先取走了值。
+        } else {
+            return -1; // non-coroutine, empty
+        }
     }
-    return -1; // non-coroutine, empty
 }
 
 // Non-blocking variants (never park).

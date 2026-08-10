@@ -131,15 +131,16 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 | 基准 | 测什么 | MYP | Go | Go/MYP |
 |------|--------|-----|-----|--------|
 | `coro_switch` | 上下文切换吞吐（200 协程 × 10000 次挂起/恢复） | **72ms** | 307ms | **4.26** |
-| `coro_spawn` | spawn 开销（20000 个只返回的协程） | 459ms | 3ms | **0.01** |
+| `coro_spawn` | spawn 开销（20000 个只返回的协程） | **24ms** | 3ms | **0.12** |
 
 - **切换**：MYP 比 Go 快 ~4.3x（4.26）——2026-08 把 ucontext swapcontext（每次切换
   都做 sigprocmask syscall，~180ns）换成**寄存器级汇编切换**（coro_ctx.S，~13ns，
   微基准 13.9x），400ms→72ms。Go 的 goroutine 切换本身 ~150ns（有运行时抢占/检查
   开销），被 MYP 的纯寄存器切换反超。
-- **spawn**：Go 快 ~175x——Go goroutine 是 ~2KB 可增长栈、批量创建极廉价；MYP
-  `@coro` 每个分配**固定栈**（默认 128KB，可用 `@coro(stack=KB)` 调小）+ 初始化。
-  这是 MYP 协程的主要成本，适合少量长生命周期协程（I/O/事件），不适合海量短任务。
+- **spawn**：MYP 460→**24ms**（19x）——修复 `__myp_coro_create` 的 O(n²) 槽位复用
+  扫描（每创建遍历全部槽找可复用者）+ 句柄槽位不复用（句柄唯一）。Go 仍快 ~8x：
+  Go goroutine ~2KB 可增长栈批量创建极廉价；MYP `@coro` 每个分配固定栈（默认
+  128KB，`@coro(stack=KB)` 可调小）+ 初始化。适合少量长生命周期协程，不适合海量短任务。
 
 ## Go 主套件对比（MYP vs Go）
 
@@ -174,9 +175,10 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 | `bigint` | 61 | 97 | 1.59 |
 | `channel_pingpong` | 21 | 6 | **0.29** |
 | `io_socket` | 71 | 78 | **1.10** |
+| `coro_spawn`（见上节） | 24 | 3 | **0.12** |
 
-- **结论：MYP 在 23 个主套件/协程基准里赢 22 项**（Go/MYP>1 即 MYP 快）；Go 仅赢
-  3 项：`fft`（0.85）、`channel_pingpong`（0.29）、`coro_spawn`（0.01）。
+- **结论：MYP 在 24 个主套件/协程基准里赢 23 项**（Go/MYP>1 即 MYP 快）；Go 仅赢
+  2 项：`fft`（0.85）、`channel_pingpong`（0.29）。
 - **最大差距集中在浮点/内存带宽类**：convolution 4.04、kmeans 3.81、matmul 3.47、
   sobel 3.17、radixsort 2.20、spmv 2.15。根因是 **MYP 走 LLVM O2 自动向量化
   （SIMD 循环展开）**，而 Go 编译器默认几乎不自动向量化，这些标量浮点/字节循环
@@ -185,8 +187,9 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   优化在起作用，但 Go 的简单循环执行效率本身很高。
 - **注意公平性**：MYP 是"编译器优化到 LLVM IR"，天然继承 LLVM 的向量化；Go 更
   强调快速编译 + GC + 简单内联。二者都不是 `-march=native`，均用基础 x86-64。
-- **协程对比见上一节**：spawn 差 175x（固定栈 vs 可增长栈）、**切换已反超**（汇编
-  切换 400→72ms，MYP 快 4.3x），是 MYP 协程实现特性，与主套件趋势独立。
+- **协程对比见上一节**：spawn 差 ~8x（固定栈 vs 可增长栈，460→24ms 已修复 O(n²)）、
+  **切换已反超**（汇编切换 400→72ms，MYP 快 4.3x），是 MYP 协程实现特性，与主套件
+  趋势独立。
 - **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）Go
   快 ~3.5x（0.29，汇编切换后从 0.11 收窄）——Go channel 在双方都阻塞时**直接交接**
   （无栈切换、无 syscall），MYP 每次 park/resume 仍要 ~105ns（21ms/20 万次）。
@@ -195,6 +198,19 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 
 
 ## 性能修复记录
+
+- **Channel 多消费者 count 下溢（2026-08，崩溃级缺陷）**：`myp_channel_recv` 的
+  park-resume 路径无守卫 `count--`——多消费者时，第二个消费者被唤醒但值已被第一个
+  取走，`count` 下溢 -1 → 环形缓冲写 `buf[-1]`（ASan: heap-buffer-overflow + 堆损坏/
+  munmap 崩溃）。`send` 的 park-resume 无守卫 `count++` 同理。**修复**：send/recv
+  park-resume 后循环**重新校验缓冲状态**（count 不足/已满就重新挂起），不再假设被
+  唤醒就一定有值/空间。回归测试 `tests/channel_multi_consumer/`（1p×2c，修复前崩溃）。
+- **协程句柄槽位复用（2026-08，结果串位）**：`__myp_coro_create` 复用已完成协程的
+  槽位 → 无 await 的协程 eager 启动即完成，下一个协程拿到**相同句柄** → 已存句柄
+  别名、`Coro.result` 读到新协程结果（verify 900≠600）。**修复**：槽位不复用（句柄
+  唯一）；完成协程的栈经线程局部 retired 列表延迟回收（create/调度器安全点移回栈池，
+  避免 2 万×64KB 栈累积）。顺带消除 create 里找可复用槽的 **O(n²) 线性扫描**：
+  coro_spawn 460→**24ms**（19x）。回归测试 `tests/coro_handle_unique/`。
 
 - **协程寄存器级汇编切换（2026-08，coro_switch 400→72ms，5.6x）**：把
   `swapcontext`（ucontext，内部 `sigprocmask` syscall，微基准 ~180ns/次）换成
