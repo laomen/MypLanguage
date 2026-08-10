@@ -1,0 +1,45 @@
+// bench/myp/parcomp.myp — 并行计算（@parallel for 16 线程池，写入 slice<long>）
+// N=10^6 计算密集迭代（每迭代 200 次浮点乘加），各线程写不重叠槽位（data 指针
+// 线程共享）。verify = out[] 串行求和。与 C++ std::thread 版同算法。
+import env;
+import pool;
+import time;
+
+long parcomp(int n, int seed) {
+    slice<long> out = new slice<long>(n);
+    @parallel for (int i = 0; i < n; i = i + 1) {
+        double d = 1.0 + (i % 1000) * 0.001;
+        int k = 0;
+        while (k < 200) {
+            d = d * 1.0001 + 0.00001;
+            k = k + 1;
+        }
+        out[i] = long(d * 1000);
+    }
+    long sum = 0;
+    int i = 0;
+    while (i < n) {
+        sum = sum + out[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = parcomp(1000000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
