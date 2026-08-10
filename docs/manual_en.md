@@ -1598,7 +1598,7 @@ Console.kbhit();                // Non-blocking key check
 Console.getch();                // Non-blocking read character
 ```
 
-### `import option` — Nullable Container (v3.x)
+### `import option` — Nullable Container (v3.9.0)
 
 Explicit nullable wrapper `Option<T>`: `Option()`=none, `Option(T v)`=some.
 

@@ -22,6 +22,9 @@
 | `--package-path` | C++（`mypc`） | `loadModule` 按 `<pkg_path>/<module>/src/<module>.myp` 解析导入 |
 | `package.myp` | 文本 | `name`/`version`/`depends` 字段 |
 
+> 注：上表为历史现状——Python 版 `myp` 已于 2026-08-07 移除，由自举版
+> `tools/pm/*.myp`（→ `build/myp`）完全接管。
+
 现有 `myp` 是 Python 包装脚本，核心逻辑（参数/路径/子进程/JSON/环境变量）全部可用 MYP
 stdlib 等价实现。
 
@@ -210,7 +213,7 @@ myp build
 ## 9. v1 实施记录（2026-08-05）
 
 ### 9.1 已交付
-- `tools/myp.myp`（单文件，~400 行）：`init`/`build`/`install`/`run`/legacy + `package.myp` 解析。
+- `tools/myp.myp`（v1 单文件，~400 行，**已被模块化 `tools/pm/*.myp` 取代，见 §10/§11**）：`init`/`build`/`install`/`run`/legacy + `package.myp` 解析。
 - runtime 补 `myp_fs_mkdir_p` / `myp_fs_remove_recursive`；`stdlib/fs.myp` 加 `Fs.mkdirP`/`Fs.removeRecursive`。
 - `myp_process_run` 改为返回真实退出码（`WEXITSTATUS`，此前 `system()` 原始值致退出码截断）。
 - `tests/test_myp_pm.sh`（9 断言）+ 集成进 `run_tests.sh`（-O0/ASAN 全套 124/124）。
@@ -226,7 +229,7 @@ myp build
 
 ---
 
-## 10. v2 形态实施记录（2026-08-05，模块化 + CMake；v2 功能见 §6 待实施）
+## 10. v2 形态实施记录（2026-08-05，模块化 + CMake；v2 功能见 §6、§11）
 
 ### 10.1 模块划分（tools/pm/）
 | 文件 | 职责 |

@@ -239,8 +239,8 @@ struct 是值类型、可浅拷贝共享同一 class 引用；若计数释放，
     `@thread`/`@threadpool` 实例在 `myp_thread_destroy` 释放 startup_arg。
   - 修复：lambda 闭包临时消费入胖指针；@thread 实例临时消费；emitFunctionReturn 顺序
     （retain 先于 release；main 的 release 先于 `myp_free_all`）。`tests/arc_m2`。
-  - **剩余**：异常/throw-catch 展开释放（未捕获走 `myp_free_all` 兜底安全）；闭包入函数值
-    变量的释放（v1 泄漏安全）；协程帧引用释放。
+  - **剩余（已由 M-ARC-3 全部实施，见下文）**：异常/throw-catch 展开释放（未捕获走
+    `myp_free_all` 兜底安全）；闭包入函数值变量的释放（v1 泄漏安全）；协程帧引用释放。
 - **M-ARC-3**：与 `@region`/逃逸分析简化整合 + 全库回归 + 文档定稿。**部分实施（2026-08-06）**
   - **闭包释放**：函数值局部注册为 ARC 槽（fat pointer index 0 = 闭包），作用域退出释放；
     `LambdaExpr` 视为 fresh（闭包是新分配的 class 实例）；别名赋值 retain 闭包；捕获的

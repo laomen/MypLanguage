@@ -27,7 +27,7 @@
 
 ## 编译器版本历史
 
-### v3.11.20
+### v3.11.20（当前）
 - **协程切换路径剔除 sanitizer fiber 钩子（perf 定位：非 ASan `cpp_long` 的
   `__sanitizer_finish_switch_fiber` NULL 检查占 `__myp_coro_resume`/`__myp_coro_yield`
   自样本 64~80%）**：
@@ -285,7 +285,7 @@
 - **有符号定宽别名 `int8`/`int16`/`int32`/`int64`**（→`byte`/`short`/`int`/`long`，
   与 uint 家族对称补齐）。
 
-### v3.10.2（当前）
+### v3.10.2
 - **变异模糊测试驱动的 7 项修复**（`tools/fuzz_myp.py`：对 tests/examples/stdlib 种子做
   行级/表达式级变异，用 ASAN 编译的 `mypc` 编译 + 超时分类输出 ——
   CLEAN / CRASH(ASAN) / VERIFY(LLVM verify failed) / INTERNAL / HANG；本次跑 12000
@@ -602,7 +602,7 @@
 - **文档手册完善**：`docs/manual.md` 第 12 章补完整命令行选项表、优化（`-O`/`--passes`）、
   调试（`-g`/gdb）、元编程（`@eval`/`macro`/`@macro`+`quote`）章节。
 
-### v3.6.0（当前）
+### v3.6.0
 - **元编程 M4：过程宏 `@macro` + `quote`**（`src/eval/eval.cpp` 解释器扩展 + `src/macro/macro_expand.cpp` 集成）。
   - `@macro` 注解修饰函数（sema 跳过 body / codegen 不生成）；`quote { ... }` 上下文关键字
     （仅 `quote {` 识别为 AST 模板，`char quote = ...` 变量不受影响）。
@@ -614,7 +614,7 @@
     `Console.write(0/1/2)`）；`-O0`/`-O2`/ASAN 全套 114/114。
   - 设计见 `docs/metaprogramming.md` §5。
 
-### v3.5.0（当前）
+### v3.5.0
 - **元编程 M3：声明式宏 `macro`**（`src/macro/macro_expand.cpp` + `include/mylang/Macro.h`）。
   - `macro name($a, $b) { ... }` 顶层声明；`$param` 为模板占位（新 token `Dollar` + `Keyword_macro`）。
   - 宏体是普通 MYP 块；展开为 AST 深拷贝 + `$param` → 实参 AST 替换（parse 后、sema 前）。
@@ -624,7 +624,7 @@
   - 验证：`tests/macro/`（repeat+addN+twice+log → v=37）；`-O0`/`-O2` 全套 113/113。
   - 设计见 `docs/metaprogramming.md`。
 
-### v3.4.0（当前）
+### v3.4.0
 - **元编程 M1：`@eval` 编译期求值**：`src/eval/eval.cpp` 轻量 MYP 解释器。
   - `@eval` 标记纯函数（标量/递归/条件/循环/`@eval` 互调/const 引用），编译期执行。
   - 顶层 `const int X = <expr>` 折叠：`const int FIB10 = fib(10)` 生成 `ret i32 55`。
@@ -636,7 +636,7 @@
   - 验证：`-O0`/`-O2`/ASAN 全套 112/112。
   - 设计见 `docs/metaprogramming.md`。
 
-### v3.3.0（当前）
+### v3.3.0
 - **自定义 LLVM pass（M6）**：`src/codegen/myp_passes.cpp` + `include/mylang/MypPasses.h`。
   - `MypRedundantStorePass`（FunctionPass）：消除同基本块内相邻同址死 store
     （如 `int x = 0;` 生成的双 store，实测 -O0 IR 每个变量多一次重复 store）。

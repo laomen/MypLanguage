@@ -1358,7 +1358,10 @@ mapping() { ... -> Console.write; } // ✅ mapping 连接
 
 ```
 MYPLanguage/
-├── myp                  # 包管理 CLI（Python 脚本：init/build/install/run）
+├── tools/               # 自举工具链（MYP 实现）
+│   ├── pm/              # 包管理 CLI（main/meta/build/install/util/lockfile/registry → build/myp）
+│   ├── fmt/             # 格式化器（lexer/fmt/main → build/myp_fmt2）
+│   └── viz/             # 可视化器（lexer/viz/main → build/myp_viz2）
 ├── CMakeLists.txt
 ├── LICENSE
 ├── README.md / README_EN.md
@@ -1398,10 +1401,10 @@ MYPLanguage/
 │   ├── lsp/                   # LSP 服务器（lsp_server.cpp）
 │   └── dap/                   # DAP 调试适配器（dap_server.cpp → myp_debug）
 ├── stdlib/                    # 标准库（纯 MYP class）
-│   ├── env / io / fs / text / stream / math / random / time / timeline
-│   ├── collections / setops / atomic / pool / barrier / future / memory
-│   ├── coro / channel / net / json / regex / base64 / date / process / args
-│   ├── logger / sdl / ui / error / cuda
+│   ├── env / io / fs / text / stream / math / random / time / timeline / date
+│   ├── collections / setops / option / result / atomic / pool / barrier / future / sync / memory
+│   ├── coro / async / channel / net / http / json / regex / base64 / process / args
+│   ├── logger / fmt / crypto / rtti / sdl / ui / error / cuda
 │   └── test
 ├── tests/
 │   ├── run_tests.sh           # 回归测试（-O0）
@@ -1430,9 +1433,13 @@ MYPLanguage/
 │   ├── mypc              # MYP 编译器
 │   ├── myp_debug         # DAP 调试适配器（gdb MI 桥）
 │   ├── myp_lsp           # MYP 语言服务器
-│   ├── myp_viz           # Mapping 可视化工具
-│   ├── myp_fmt           # 独立格式化工具
-│   └── myp_runtime       # 运行时（测试用）
+│   ├── myp               # 自举包管理（tools/pm）
+│   ├── myp_fmt2          # 自举格式化器（tools/fmt）
+│   ├── myp_viz2          # 自举可视化器（tools/viz）
+│   ├── myp_debug         # DAP 调试适配器（gdb MI 桥）
+│   ├── myp_lsp           # MYP 语言服务器
+│   ├── myp_viz           # 可视化工具（C++ 版）
+│   └── myp_fmt           # 格式化工具（C++ 版）
 └── build-asan/               # ASAN/UBSAN 构建
 ```
 
@@ -1525,7 +1532,7 @@ Runtime  → print/println + 基本运行时
 - ✅ 多线程并行计数
 - ✅ 多线程独立定时器
 
-**版本实现历史（v2.0 → v3.8，均已完成）：**
+**版本实现历史（v2.0 → v3.11，均已完成）：**
 
 | 版本 | 特性 |
 |------|------|
@@ -1543,11 +1550,15 @@ Runtime  → print/println + 基本运行时
 | **v3.6** | 过程宏 `@macro` + `quote` |
 | **v3.7** | DAP 调试（`myp_debug`，VS Code 断点/单步/变量） |
 | **v3.8** | 集合动态扩容、泛型 `new T[n]`、`function:` 跨方法、LSP 解析死循环修复、`memory.myp` 修复 |
+| **v3.9** | class 实例 ARC、构造器/`@startup` 语义迁移、`Option<T>`/`T?`/`Result<T,E>`、RTTI、`sync` 同步原语、统一异步 IO（`Coro.waitAnyOf`）、`slice<T>`、元组、`fmt`/`crypto`/`http` 库、包管理器 v2（registry/lockfile） |
+| **v3.10** | showcase/probe 差分测试驱动的语言修复、系统探测 |
+| **v3.11** | 定宽整型别名（int8/16/32/64、uint8/16/32/64）、协程/Channel 性能（rendezvous）、C 运行时 -O2、perf 优化 |
 
 **未来 / 规划中：**
 
+- ✅ **工具链自举**（`tools/pm`、`tools/fmt`、`tools/viz` 已落地，见 `docs/self_hosting.md` T1–T3）
 - 🔜 **Event-driven Pool（方案 B）**——事件驱动工作分发池：Pool 持有 work-stealing 队列 + N 个 Worker 线程，通过 mapping 接收任务 → 自动分派给空闲 Worker → 结果事件汇总到 Tally。纯运行时方案，不改编译器。
-- 🔜 **自举**（用 MYP 实现编译器前端）
+- 🔜 **编译器前端自举（T5）**——用 MYP 实现 mypc 前端（roadmap 终极目标）
 - 🔜 **JIT**
 - 🔜 **神经形态后端**
 

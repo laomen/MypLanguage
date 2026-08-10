@@ -1610,7 +1610,7 @@ Console.kbhit();                // 非阻塞键盘检测
 Console.getch();                // 非阻塞读一个字符
 ```
 
-### `import option` — 可空容器（v3.x）
+### `import option` — 可空容器（v3.9.0）
 
 显式可空包装 `Option<T>`：`Option()`=none、`Option(T v)`=some。
 
@@ -2571,8 +2571,11 @@ import test;
 # 仅检查格式
 ./build/mypc fmt --check source.myp
 
-# 独立格式化工具
+# 独立格式化工具（C++ 版）
 ./build/myp_fmt [--check|--stdout] source.myp
+
+# 自举格式化工具（MYP 实现，tools/fmt）
+./build/myp_fmt2 [--check|--stdout] source.myp
 ```
 
 ### myp — 包管理工具
@@ -2632,10 +2635,10 @@ MYPLanguage/
 │   ├── lsp/             # 语言服务器（myp_lsp）
 │   └── dap/             # 调试适配器（myp_debug，DAP↔gdb 桥）
 ├── stdlib/              # 标准库（纯 MYP 类）
-│   ├── env/io/fs/text/stream/math/random/time/timeline
-│   ├── collections/setops/atomic/pool/barrier/future/memory
-│   ├── coro/channel/net/json/regex/base64/date/process/args
-│   ├── logger/sdl/ui/error/cuda
+│   ├── env/io/fs/text/stream/math/random/time/timeline/date
+│   ├── collections/setops/option/result/atomic/pool/barrier/future/sync/memory
+│   ├── coro/async/channel/net/http/json/regex/base64/process/args
+│   ├── logger/fmt/crypto/rtti/sdl/ui/error/cuda
 │   └── test
 ├── tests/               # run_tests.sh / run_tests_O2.sh / run_tests_asan.sh /
 │   └── ...              #   run_tests_tsan.sh / test_debug.sh / test_dap.py /
@@ -2645,7 +2648,7 @@ MYPLanguage/
 ├── deeplearning/        # MLP + MNIST 训练/推理
 ├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP + DAP）
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/...
-├── build/               # 构建产物：mypc, myp_debug, myp_lsp, myp_viz, myp_fmt
+├── build/               # 构建产物：mypc, myp, myp_fmt2, myp_viz2, myp_debug, myp_lsp, myp_viz, myp_fmt
 └── build-asan/          # ASAN/UBSAN 构建
 ```
 

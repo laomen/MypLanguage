@@ -11,7 +11,7 @@
 
 ## 1. 背景与现状
 
-### 1.1 已有协程能力（C1-C7 已实现，见 `docs/coro.md`）
+### 1.1 已有协程能力（C1-C10 已实现，见 `docs/coro.md`）
 
 | 项 | 现状 |
 |---|---|
@@ -19,7 +19,7 @@
 | 语法 | `@coro` 注解 + `await`（语句/表达式）；`await;` / `await expr;` / `int v = await expr;` / `await ClassName.eventName` / `await ClassName.eventName timeout N`；`await` 仅限 `@coro` 上下文 |
 | 事件集成（C4） | `await ClassName.eventName`：协程在 `myp_coro_waits[]` 注册 `{event_id, handle, active, deadline_ms}`，park（ready=0）；事件 fire → `__myp_coro_event_notify` 重新就绪；调度器每轮：处理事件 → 过期超时（`deadline_ms`）→ 就绪协程各一步 |
 
-### 1.2 现状缺口：`await` 只覆盖事件，文件/网络/睡眠仍是同步阻塞
+### 1.2 现状缺口：`await` 只覆盖事件，文件/网络/睡眠仍是同步阻塞（P1–P4 已解决，见 §5）
 
 | 操作 | 运行时实现 | 阻塞范围 |
 |------|-----------|---------|

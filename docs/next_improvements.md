@@ -78,7 +78,7 @@
 2. ✅ **`myp_fmt` 版本号同步** `2.0.0 → 3.9.0`（`96b3061`）
 3. ✅ **过时 docs 状态头修订**：slice / operators / metaprogramming / optimization_debugging / exceptions + CHANGELOG v3.8.0 补 P4 条目（`b5235ae`, `8584bfd`）
 4. ✅ **稳定性验证矩阵全绿**：-O0/-O2/ASAN 123/123、TSan 12/12 无竞态、fuzz 0 崩溃、pass 6/6、debug 6/6、DAP 15/15、整库 3 连跑、线程测试 10 次稳定
-5. ✅ **包管理器 v1（自举）**：`tools/myp.myp` 重写 Python 版（init/build/install/run/legacy）+ runtime 补 `myp_fs_mkdir_p`/`myp_fs_remove_recursive` + `myp_process_run` 改真实退出码（WEXITSTATUS）+ `tests/test_myp_pm.sh`（9 断言）+ 集成进 run_tests.sh（124/124）
+5. ✅ **包管理器 v1（自举）**：`tools/myp.myp` 重写 Python 版（init/build/install/run/legacy，**后模块化为 `tools/pm/*.myp`**）+ runtime 补 `myp_fs_mkdir_p`/`myp_fs_remove_recursive` + `myp_process_run` 改真实退出码（WEXITSTATUS）+ `tests/test_myp_pm.sh`（9 断言）+ 集成进 run_tests.sh（124/124）
 6. ✅ **包管理器 v2 形态**：模块化 `tools/pm/*.myp`（main/meta/build/install/util）+ CMake 自定义 target `myp_pm`（build/myp）
 7. ✅ **包管理器 v2 功能**：registry（纯 git 子目录）+ `myp.lock` + `add`/`remove`/`update`/`list` + `myp build` 缺失依赖自动安装；`tests/test_myp_pm.sh` 14/14；-O0/ASAN 124/124
 8. ✅ **修复运行时 bug**：`myp_io_read_line` 共享缓冲（`static char buf[4096]`）→ 每次返回新分配字符串，EOF 返回空串；补 `Str.toInt`（`myp_str_to_int`）

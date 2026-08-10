@@ -2,6 +2,10 @@
 
 > Event-Driven Component Language | LLVM 21 Backend | Built-in GPU Support
 
+<p align="center">
+  <img src="logo/logo2.png" alt="MYP Logo" width="460">
+</p>
+
 **🌐 [中文](README.md)**
 
 MYP is an **event-driven component** programming language built around `class` + `action:` / `event:` as architectural units, assembled declaratively via `mapping()`. The compiler is based on LLVM 21 and produces native executables.
@@ -20,7 +24,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Automatic Memory Mgmt** | ARC for class instances (automatic reference counting, additive, no new syntax) |
 | **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
-| **Zero-Dependency Stdlib** | 38 modules, pure MYP implementations |
+| **Zero-Dependency Stdlib** | 39 modules, pure MYP implementations |
 | **LSP Integration** | Completion, hover, go-to-definition, document symbols |
 
 ## 🚀 Quick Start
@@ -130,12 +134,12 @@ int main() { Main m = new Main() @thread; return 0; }
 
 See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/design.md) for full details.
 
-## 📦 Standard Library (38 Modules)
+## 📦 Standard Library (39 Modules)
 
 | Category | Modules |
 |----------|---------|
 | **Basic I/O** | `env` (console), `io` (files), `text` (strings), `regex`, `base64` |
-| **Data Structures** | `collections`: `ArrayList`, `HashMap`, `Set`, `Queue`, `Stack`, `Deque`, `PriorityQueue`, `LinkedList`, `Sort`, `StrHashMap`; `option` (`Option<T>`/`T?` nullable) |
+| **Data Structures** | `collections`: `ArrayList`, `HashMap`, `Set`, `Queue`, `Stack`, `Deque`, `PriorityQueue`, `LinkedList`, `Sort`, `StrHashMap`; `option` (`Option<T>`/`T?` nullable), `setops` (set operations) |
 | **Mathematics** | `math` (trig/hyperbolic/inverse/constants), `random` (uniform/normal/exponential/poisson distributions) |
 | **Time & Date** | `time`, `timeline`, `date` |
 | **File System** | `fs` (paths/directory traversal) |
@@ -143,10 +147,10 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 | **Process** | `process` (command execution/output capture) |
 | **CLI** | `args` (argument parsing), `env` (environment variables) |
 | **Memory** | `memory` (malloc/free/realloc raw memory + Memory class + `liveObjectCount` diagnostics) |
-| **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `sync` (Mutex/RWLock/CondVar/Semaphore), `coro` (coroutines + async I/O), `channel` |
+| **Concurrency** | `atomic`, `barrier`, `future`, `pool`, `sync` (Mutex/RWLock/CondVar/Semaphore), `coro` (coroutine scheduler), `async` (unified async I/O: timers/sockets/files), `channel` |
 | **Error Handling** | `result` (`Result<T,E>` two-state container), `error` (layered exception types) |
-| **Utilities** | `fmt` (printf-style formatting), `crypto` (CRC32/MD5/SHA), `logger`, `json`, `test`, `stream` |
-| **Graphics** | `sdl` (SDL2), `ui` (terminal TUI) |
+| **Utilities** | `fmt` (printf-style formatting), `crypto` (CRC32/MD5/SHA), `logger`, `json`, `test`, `stream`, `rtti` (runtime type info) |
+| **Graphics / GPU** | `sdl` (SDL2), `ui` (terminal TUI), `cuda` (CUDA GPU programming) |
 
 ## 🛠️ Toolchain
 
@@ -157,6 +161,7 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 | `myp_viz` | Visualization (DOT graph generation) |
 | `myp_lsp` | Language server (LSP) |
 | `myp_fmt` | Code formatter |
+| `myp_fmt2` / `myp_viz2` | Self-hosted formatter / visualizer (in MYP, byte-identical to C++ versions) |
 
 ### VS Code Extension
 
@@ -166,9 +171,9 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 
 ```bash
 bash tests/run_tests.sh          # full regression (compile+run compare + negative + self-hosted)
-# Regression tests: 117 passed, 0 failed
+# Regression tests: 127 passed, 0 failed
 # Negative tests:   47 passed, 0 failed
-# Total:            171 passed, 0 failed
+# Total:            181 passed, 0 failed
 bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
 ```
 
@@ -186,6 +191,8 @@ MYPLanguage/
 │   └── fmt/          # Formatter
 ├── include/mylang/   # Headers
 ├── stdlib/           # Standard library (.myp)
+├── tools/            # Self-hosted toolchain (pm / fmt / viz, in MYP)
+├── logo/             # Language logo
 ├── BNCTDoseEngine/   # BNCT dose simulation engine (example)
 ├── vscode-myp/       # VS Code extension
 ├── docs/             # Documentation
