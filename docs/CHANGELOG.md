@@ -27,6 +27,12 @@
 
 ## 编译器版本历史
 
+### v3.11.8
+- **并行归约基准 parreduce**：`@parallel for` + `Atomic.addInt`（每线程
+  `Parallel.workerId()` 槽位低竞争）vs C++ `std::thread` 各自累加——verify 精确
+  一致（496532956），0.60（C++ 快，因 MYP 每元素原子 RMW vs C++ 线程内普通加）。
+  与 parcomp 构成并行基准对（计算/归约）。34 项基准 verify 全一致。
+
 ### v3.11.7
 - **并行基准 parcomp**：MYP `@parallel for`（16 线程池，写入 slice）vs C++
   `std::thread`（16 线程分块）——0.94 基本持平（MYP 17ms vs C++ 16ms，串行同负载
