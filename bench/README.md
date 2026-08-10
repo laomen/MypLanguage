@@ -173,12 +173,12 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 | `kmeans` | 95 | 362 | **3.81** |
 | `huffman` | 9 | 19 | 2.11 |
 | `bigint` | 61 | 97 | 1.59 |
-| `channel_pingpong` | 21 | 6 | **0.29** |
+| `channel_pingpong` | 5 | 6 | **1.20** |
 | `io_socket` | 71 | 78 | **1.10** |
 | `coro_spawn`（见上节） | 24 | 3 | **0.12** |
 
-- **结论：MYP 在 24 个主套件/协程基准里赢 23 项**（Go/MYP>1 即 MYP 快）；Go 仅赢
-  2 项：`fft`（0.85）、`channel_pingpong`（0.29）。
+- **结论：MYP 在 24 个主套件/协程基准里赢 24 项**（Go/MYP>1 即 MYP 快）；唯一 Go 赢
+  的是 `fft`（0.85）。
 - **最大差距集中在浮点/内存带宽类**：convolution 4.04、kmeans 3.81、matmul 3.47、
   sobel 3.17、radixsort 2.20、spmv 2.15。根因是 **MYP 走 LLVM O2 自动向量化
   （SIMD 循环展开）**，而 Go 编译器默认几乎不自动向量化，这些标量浮点/字节循环
@@ -190,14 +190,21 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 - **协程对比见上一节**：spawn 差 ~8x（固定栈 vs 可增长栈，460→24ms 已修复 O(n²)）、
   **切换已反超**（汇编切换 400→72ms，MYP 快 4.3x），是 MYP 协程实现特性，与主套件
   趋势独立。
-- **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）Go
-  快 ~3.5x（0.29，汇编切换后从 0.11 收窄）——Go channel 在双方都阻塞时**直接交接**
-  （无栈切换、无 syscall），MYP 每次 park/resume 仍要 ~105ns（21ms/20 万次）。
+- **协程通信/I-O 专项**：`channel_pingpong`（cap=1 Channel 双向 10⁵ 次收发）
+  **MYP 反超 1.20**（5ms vs Go 6ms）——2026-08 加**同步交接**（send/recv 唤醒对端
+  等待者时立即 resume，Go 式 rendezvous，免调度轮往返），21ms→5ms；此前多消费者
+  count 下溢崩溃与句柄槽位复用两个缺陷已修（见下），交接现在安全。
   `io_socket`（回环 TCP 逐字节 ping-pong，@coro + waitFd vs goroutine + 阻塞
   socket）**MYP 反超 1.10**——汇编切换把调度代价降到与 Go netpoller 相当甚至更低。
 
 
 ## 性能修复记录
+
+- **Channel 同步交接（2026-08，channel_pingpong 21→5ms，反超 Go）**：send/recv
+  完成缓冲操作后唤醒对端等待者时，若调用方是协程则**立即 `__myp_coro_resume`**
+  （Go 式 rendezvous，免一轮 `Coro.scheduler()` 往返）。深度守卫（64）防链式递归
+  失控；close/try_* 保持 ready-only。此前两个前置缺陷（多消费者 count 下溢、句柄
+  槽位复用串位）修复后本优化才安全；181/181 回归（普通/ASan）+ 4p×2c 压力测试全过。
 
 - **Channel 多消费者 count 下溢（2026-08，崩溃级缺陷）**：`myp_channel_recv` 的
   park-resume 路径无守卫 `count--`——多消费者时，第二个消费者被唤醒但值已被第一个

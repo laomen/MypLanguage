@@ -4516,13 +4516,45 @@ typedef struct {
 static __thread myp_channel_t* myp_channels = NULL; // allocated per-thread lazily
 static __thread int myp_channel_count = 0;
 
-static void myp_channel_wake_one(int64_t* waiters, int* wcount) {
-    if (*wcount <= 0) return;
+// Pop the FIRST waiter (FIFO). Returns handle or -1.
+static int64_t myp_channel_pop_first(int64_t* waiters, int* wcount) {
+    if (*wcount <= 0) return -1;
     int64_t h = waiters[0];
     for (int i = 1; i < *wcount; i++) waiters[i - 1] = waiters[i];
     (*wcount)--;
+    return h;
+}
+
+// ---- Synchronous handoff (Go-style rendezvous) ----
+// send/recv 完成缓冲操作后唤醒对端等待者时，若调用方本身是协程，**立即** resume
+// 对端（__myp_coro_resume 内联运行它一步），省掉一轮 Coro.scheduler() 往返。
+// 深度守卫防跨多协程链式唤醒时 C 级递归失控；到上限/非协程上下文回退 ready=1。
+// 前置正确性修复（count 循环校验 + 句柄唯一）已保证：内联 resume 的对端若发现
+// 无值/无空间会重新挂起，不会下溢/越界；句柄唯一使 Coro.result 不串位。
+static __thread int myp_channel_wake_depth = 0;
+#define MYP_CHANNEL_WAKE_DEPTH_MAX 64
+static int64_t myp_channel_wake_one(int64_t* waiters, int* wcount) {
+    int64_t h = myp_channel_pop_first(waiters, wcount);
+    if (h < 0) return -1;
+    if (h < 0 || h >= myp_coro_count || !myp_coros[h] || !myp_coros[h]->active) return h;
+    if (myp_coro_current >= 0 && myp_channel_wake_depth < MYP_CHANNEL_WAKE_DEPTH_MAX) {
+        myp_channel_wake_depth++;
+        __myp_coro_resume(h, 0);   // 同步交接：现在就跑对端一步
+        myp_channel_wake_depth--;
+    } else {
+        myp_coros[h]->ready = 1;   // 回退：等下一轮调度
+    }
+    return h;
+}
+
+// Ready-only wake: mark for the scheduler, never inline-resume. Used by close()
+// (broadcast) and try_* — inline-resuming there could run a woken coroutine's
+// unbounded send/recv loop on a closed channel, hanging the caller.
+static int64_t myp_channel_wake_ready(int64_t* waiters, int* wcount) {
+    int64_t h = myp_channel_pop_first(waiters, wcount);
     if (h >= 0 && h < myp_coro_count && myp_coros[h] && myp_coros[h]->active)
         myp_coros[h]->ready = 1;
+    return h;
 }
 
 static myp_channel_t* myp_channel_get(int64_t handle) {
@@ -4634,7 +4666,7 @@ int64_t myp_channel_try_send(int64_t handle, int64_t val) {
     if (!c || c->closed || c->count >= c->capacity) return -1;
     c->buf[(c->head + c->count) % c->capacity] = val;
     c->count++;
-    myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+    myp_channel_wake_ready(c->recv_waiters, &c->recv_wait_count);
     return 0;
 }
 
@@ -4644,7 +4676,7 @@ int64_t myp_channel_try_recv(int64_t handle) {
     int64_t v = c->buf[c->head];
     c->head = (c->head + 1) % c->capacity;
     c->count--;
-    myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+    myp_channel_wake_ready(c->send_waiters, &c->send_wait_count);
     return v;
 }
 
@@ -4657,11 +4689,13 @@ void myp_channel_close(int64_t handle) {
     myp_channel_t* c = myp_channel_get(handle);
     if (!c) return;
     c->closed = 1;
-    // Wake all parked senders/recvers so they see the closed state.
+    // Wake all parked senders/recvers so they see the closed state. Ready-only
+    // (not synchronous): inline-resuming here could run a woken coroutine's
+    // unbounded send/recv loop on a closed channel and hang close() itself.
     while (c->send_wait_count > 0)
-        myp_channel_wake_one(c->send_waiters, &c->send_wait_count);
+        myp_channel_wake_ready(c->send_waiters, &c->send_wait_count);
     while (c->recv_wait_count > 0)
-        myp_channel_wake_one(c->recv_waiters, &c->recv_wait_count);
+        myp_channel_wake_ready(c->recv_waiters, &c->recv_wait_count);
 }
 
 // Free all channels at thread exit (avoid leaks).
