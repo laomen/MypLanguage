@@ -127,7 +127,7 @@ private:
     bool break_ = false;
     bool continue_ = false;
 
-    static constexpr int kMaxDepth = 100000;
+    static constexpr int kMaxDepth = 500;
 
     void error(const SourceRange& r, const std::string& msg) {
         diag_.error(r, msg);
@@ -342,6 +342,7 @@ private:
             return std::nullopt;
         }
         if (++depth_ > kMaxDepth) {
+            depth_--;  // restore on this path too
             error(c.range, "compile-time evaluation: recursion depth exceeded in '" + callee + "'");
             return std::nullopt;
         }

@@ -1,0 +1,5 @@
+// EXPECT ERROR: compile-time evaluation: recursion depth exceeded
+// Deep @eval recursion must be rejected gracefully, not crash the compiler.
+@eval int deep(int n) { if (n <= 0) return 0; return deep(n - 1) + 1; }
+const int B = deep(100000);
+int main() { return 0; }
