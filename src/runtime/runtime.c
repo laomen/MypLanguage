@@ -21,6 +21,7 @@
 #include <sys/select.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 
 // ======================
 // Terminal raw mode (for real-time keyboard input)
@@ -2101,6 +2102,7 @@ typedef struct {
 static myp_timer_entry_t myp_timers[MYP_MAX_TIMERS];
 static int myp_timer_count = 0;
 static pthread_mutex_t myp_timer_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void myp_timer_wake_target(void* instance);
 
 // Create a timer that fires event_id on instance after delay_ms.
 // If interval_ms > 0, the timer repeats every interval_ms.
@@ -2122,7 +2124,22 @@ int32_t myp_timer_create(int event_id, void* instance, int64_t delay_ms,
     myp_timers[myp_timer_count].active = 1;
     myp_timer_count++;
     pthread_mutex_unlock(&myp_timer_mutex);
+    myp_timer_wake_target(instance);
     return 0;
+}
+
+static int64_t myp_timer_next_delay_ms(void) {
+    int64_t next = -1;
+    int64_t now = myp_now_ms();
+    pthread_mutex_lock(&myp_timer_mutex);
+    for (int i = 0; i < myp_timer_count; i++) {
+        if (!myp_timers[i].active) continue;
+        int64_t delay = myp_timers[i].fire_time - now;
+        if (delay < 0) delay = 0;
+        if (next < 0 || delay < next) next = delay;
+    }
+    pthread_mutex_unlock(&myp_timer_mutex);
+    return next;
 }
 
 // Look up an event id by its name at runtime (for timers created with a
@@ -2205,6 +2222,7 @@ typedef struct {
     volatile int head;
     volatile int tail;
     pthread_mutex_t mutex;
+    pthread_cond_t cond;
 } myp_event_queue_t;
 
 // Event handler registration (global)
@@ -2225,6 +2243,7 @@ static pthread_once_t myp_queue_key_once = PTHREAD_ONCE_INIT;
 static void myp_free_queue(void* ptr) {
     if (ptr) {
         myp_event_queue_t* q = (myp_event_queue_t*)ptr;
+        pthread_cond_destroy(&q->cond);
         pthread_mutex_destroy(&q->mutex);
         free(q->events);
         free(q);
@@ -2241,6 +2260,11 @@ static myp_event_queue_t* myp_queue_create(void) {
     q->capacity = MYP_EVENT_QUEUE_INIT_SIZE;
     q->events = (myp_event_t*)calloc((size_t)q->capacity, sizeof(myp_event_t));
     pthread_mutex_init(&q->mutex, NULL);
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&q->cond, &attr);
+    pthread_condattr_destroy(&attr);
     return q;
 }
 
@@ -2286,6 +2310,34 @@ static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, voi
     q->events[q->head].data = data;
     q->events[q->head].has_data = (data != NULL);
     q->head = next;
+    pthread_cond_signal(&q->cond);
+    pthread_mutex_unlock(&q->mutex);
+}
+
+static void myp_queue_wake(myp_event_queue_t* q) {
+    pthread_mutex_lock(&q->mutex);
+    pthread_cond_signal(&q->cond);
+    pthread_mutex_unlock(&q->mutex);
+}
+
+static void myp_queue_wait(myp_event_queue_t* q, const _Atomic int* running,
+                           int64_t timeout_ms) {
+    pthread_mutex_lock(&q->mutex);
+    if (q->tail == q->head && atomic_load(running)) {
+        if (timeout_ms < 0) {
+            pthread_cond_wait(&q->cond, &q->mutex);
+        } else if (timeout_ms > 0) {
+            struct timespec deadline;
+            clock_gettime(CLOCK_MONOTONIC, &deadline);
+            deadline.tv_sec += timeout_ms / 1000;
+            deadline.tv_nsec += (timeout_ms % 1000) * 1000000;
+            if (deadline.tv_nsec >= 1000000000) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1000000000;
+            }
+            pthread_cond_timedwait(&q->cond, &q->mutex, &deadline);
+        }
+    }
     pthread_mutex_unlock(&q->mutex);
 }
 
@@ -2340,6 +2392,11 @@ static myp_thread_t* myp_thread_for_instance(void* instance) {
             return myp_inst_map[i].thread;
     }
     return NULL;
+}
+
+static void myp_timer_wake_target(void* instance) {
+    myp_thread_t* thr = myp_thread_for_instance(instance);
+    if (thr) myp_queue_wake(thr->queue);
 }
 
 // ---- Public API ----
@@ -2450,12 +2507,9 @@ static void* myp_thread_entry(void* arg) {
     }
 
     // Event loop — process this thread's own queue + timers
-    while (thr->running) {
+    while (atomic_load(&thr->running)) {
         myp_event_process_all();
-        myp_timer_check();  // fire expired timers
-        // Brief sleep to avoid busy-waiting
-        struct timespec ts = {0, 1000000}; // 1ms
-        nanosleep(&ts, NULL);
+        myp_queue_wait(thr->queue, &thr->running, myp_timer_next_delay_ms());
     }
     // Release this thread's coroutine state (TLS) so slots/stacks aren't leaked.
     __myp_coro_thread_cleanup();
@@ -2469,13 +2523,14 @@ void myp_thread_run_loop(myp_thread_t* thr) {
 }
 
 void myp_thread_stop(myp_thread_t* thr) {
-    thr->running = 0;
+    atomic_store(&thr->running, 0);
+    myp_queue_wake(thr->queue);
 }
 
 void myp_thread_destroy(myp_thread_t* thr) {
     myp_thread_stop(thr);
     pthread_join(thr->thread, NULL);
-    free(thr->queue);
+    myp_free_queue(thr->queue);
     // ARC (§五-1): release the instance the thread ran its @startup on. The
     // instance is a header-bearing myp_alloc_object (both @thread and
     // @threadpool paths), so this decrements its rc; if nothing else holds it,

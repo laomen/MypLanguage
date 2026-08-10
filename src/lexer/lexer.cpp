@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <string>
+#include <utility>
 
 namespace mylang {
 
@@ -12,6 +13,10 @@ Lexer::Lexer(SourceManager& source_mgr, DiagnosticEngine& diag)
 
 std::vector<Token> Lexer::tokenize() {
     tokens_.clear();
+    size_t estimated_tokens = source_.size() / 4;
+    if (estimated_tokens > 4096) estimated_tokens = 4096;
+    if (tokens_.capacity() < estimated_tokens)
+        tokens_.reserve(estimated_tokens);
     while (!isAtEnd()) {
         skipWhitespace();
         if (isAtEnd()) break;
@@ -21,7 +26,7 @@ std::vector<Token> Lexer::tokenize() {
 
     // Add EOF token
     tokens_.emplace_back(TokenKind::EndOfFile, SourceRange{}, "");
-    return tokens_;
+    return std::move(tokens_);
 }
 
 void Lexer::skipWhitespace() {
@@ -217,12 +222,12 @@ void Lexer::scanToken() {
         }
 
         default:
-            if (std::isalpha(c) || c == '_') {
+            if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
                 // Push back the character we already read for scanning
                 // Our scanIdentifierOrKeyword needs the current position
                 auto token = scanIdentifierOrKeyword();
                 tokens_.push_back(token);
-            } else if (std::isdigit(c)) {
+            } else if (std::isdigit(static_cast<unsigned char>(c))) {
                 auto token = scanNumber();
                 tokens_.push_back(token);
             } else {
@@ -290,7 +295,7 @@ Token Lexer::scanNumber() {
     // Hex integer: 0xFF
     if (value[0] == '0' && (peek() == 'x' || peek() == 'X')) {
         value += advance();
-        while (std::isxdigit(peek())) {
+        while (std::isxdigit(static_cast<unsigned char>(peek()))) {
             value += advance();
         }
         auto kind = TokenKind::IntegerLiteral;
@@ -308,7 +313,7 @@ Token Lexer::scanNumber() {
 
     // Decimal number
     bool is_float = false;
-    while (std::isdigit(peek()) || peek() == '.') {
+    while (std::isdigit(static_cast<unsigned char>(peek())) || peek() == '.') {
         if (peek() == '.') {
             if (is_float) break; // second dot -> stop
             // Check for ".." range operator — don't consume if followed by
@@ -324,7 +329,7 @@ Token Lexer::scanNumber() {
     if (peek() == 'e' || peek() == 'E') {
         value += advance();
         if (peek() == '+' || peek() == '-') value += advance();
-        while (std::isdigit(peek())) value += advance();
+        while (std::isdigit(static_cast<unsigned char>(peek()))) value += advance();
         is_float = true;
     }
 
@@ -350,7 +355,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     std::string value;
     value += source_[start_offset];
 
-    while (std::isalnum(peek()) || peek() == '_') {
+    while (std::isalnum(static_cast<unsigned char>(peek())) || peek() == '_') {
         value += advance();
     }
 
@@ -387,7 +392,6 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "try")      kind = TokenKind::Keyword_try;
     else if (value == "catch")    kind = TokenKind::Keyword_catch;
     else if (value == "finally")  kind = TokenKind::Keyword_finally;
-    else if (value == "throw")    kind = TokenKind::Keyword_throw;
     else if (value == "throw")    kind = TokenKind::Keyword_throw;
     else if (value == "where")    kind = TokenKind::Keyword_where;
     else if (value == "await")   kind = TokenKind::Keyword_await;

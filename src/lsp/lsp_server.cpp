@@ -101,6 +101,7 @@ static void parseDocument(Document& doc, const std::string& uri) {
     for (auto& imp : doc.ast->imports) {
         if (!imp.is_path) continue;
         std::string imp_path = imp.file_path;
+        if (imp_path.empty()) continue;
         if (imp_path[0] != '/') imp_path = source_dir + "/" + imp_path;
         if (loaded.count(imp_path)) continue;
         loaded.insert(imp_path);
@@ -165,10 +166,12 @@ static std::string extractWordAt(Document& doc, int line, int col) {
     const std::string& src_line = doc.lines[line];
     if (col < 0 || col > (int)src_line.size()) return "";
     int start = col;
-    while (start > 0 && (isalnum(src_line[start-1]) || src_line[start-1] == '_'))
+    while (start > 0 && (std::isalnum(static_cast<unsigned char>(src_line[start-1])) ||
+                         src_line[start-1] == '_'))
         start--;
     int end = col;
-    while (end < (int)src_line.size() && (isalnum(src_line[end]) || src_line[end] == '_'))
+    while (end < (int)src_line.size() &&
+           (std::isalnum(static_cast<unsigned char>(src_line[end])) || src_line[end] == '_'))
         end++;
     return src_line.substr(start, end - start);
 }
@@ -279,11 +282,12 @@ void handleTextDocumentDidChange(const std::string& params) {
     // Simple approach: replace full text
     auto text_start = params.find("\"text\":\"");
     std::string text;
-    if (text_start != std::string::npos)
+    bool has_text = text_start != std::string::npos;
+    if (has_text)
         text = decodeJSONString(params, text_start + 8);
 
     auto it = documents_.find(uri);
-    if (it != documents_.end() && !text.empty()) {
+    if (it != documents_.end() && has_text) {
         it->second.text = text;
         it->second.updateLines();
         // LAZY PARSE: do NOT parse AST on every keystroke.
@@ -404,10 +408,14 @@ void handleHover(const std::string& id, const std::string& params) {
         if (col >= 0 && col < (int)src_line.size()) {
             // Extract word at cursor
             int start = col;
-            while (start > 0 && (isalnum(src_line[start-1]) || src_line[start-1] == '_'))
+            while (start > 0 &&
+                   (std::isalnum(static_cast<unsigned char>(src_line[start-1])) ||
+                    src_line[start-1] == '_'))
                 start--;
             int end = col;
-            while (end < (int)src_line.size() && (isalnum(src_line[end]) || src_line[end] == '_'))
+            while (end < (int)src_line.size() &&
+                   (std::isalnum(static_cast<unsigned char>(src_line[end])) ||
+                    src_line[end] == '_'))
                 end++;
             std::string word = src_line.substr(start, end - start);
 

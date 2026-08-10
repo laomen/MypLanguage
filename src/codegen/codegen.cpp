@@ -2054,20 +2054,16 @@ void CodeGen::declareRuntimeFunctions() {
 bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
     // Set target triple + datalayout BEFORE the optimization pipeline so that
     // target-dependent passes (LoopVectorize, etc.) get proper TTI / cost model.
-    // Previously this was only set AFTER the pipeline → the vectorizer had no
-    // target info and never ran (all loops stayed scalar, e.g. matmul 2x gap).
-    // The later block re-sets the same values and keeps a TargetMachine for the
-    // backend codegen.
-    {
-        llvm::Triple host_triple(llvm::sys::getDefaultTargetTriple());
-        module_->setTargetTriple(host_triple);
-        std::string err;
-        auto* tgt = llvm::TargetRegistry::lookupTarget(host_triple.getTriple(), err);
-        if (tgt) {
-            auto* tm = tgt->createTargetMachine(host_triple, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
-            module_->setDataLayout(tm->createDataLayout());
-        }
-    }
+    // Reuse the same TargetMachine for optimization and object emission.
+    llvm::Triple host_triple(llvm::sys::getDefaultTargetTriple());
+    module_->setTargetTriple(host_triple);
+    std::string err;
+    auto* tgt = llvm::TargetRegistry::lookupTarget(host_triple.getTriple(), err);
+    if (!tgt) { diag_.error(SourceRange{}, "target: " + err); return false; }
+    std::unique_ptr<llvm::TargetMachine> tm(tgt->createTargetMachine(
+        host_triple, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_));
+    if (!tm) { diag_.error(SourceRange{}, "cannot create target machine"); return false; }
+    module_->setDataLayout(tm->createDataLayout());
     // ---- IR optimization pipeline (-O1/-O2/-O3) ----
     // Mark the pool worker-id accessor readnone/nounwind/willreturn so the
     // optimizer can hoist Parallel.workerId() out of @parallel for chunk
@@ -2099,12 +2095,7 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
         // registered for target-dependent passes — without this the
         // LoopVectorizer has no cost model and never vectorizes (historically
         // ALL MYP loops stayed scalar, e.g. matmul ~2x gap vs C++).
-        llvm::Triple ht(llvm::sys::getDefaultTargetTriple());
-        std::string terr;
-        llvm::TargetMachine* opt_tm = nullptr;
-        if (auto* ttgt = llvm::TargetRegistry::lookupTarget(ht.getTriple(), terr))
-            opt_tm = ttgt->createTargetMachine(ht, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
-        llvm::PassBuilder PB(opt_tm);
+        llvm::PassBuilder PB(tm.get());
         PB.registerModuleAnalyses(MAM);
         PB.registerCGSCCAnalyses(CGAM);
         PB.registerFunctionAnalyses(FAM);
@@ -2156,22 +2147,14 @@ bool CodeGen::writeObjectFile(const std::string& p, int opt_level) {
         TSanMPM.addPass(llvm::createModuleToFunctionPassAdaptor(llvm::ThreadSanitizerPass()));
         TSanMPM.run(*module_, MAM);
     }
-    auto host_triple = llvm::Triple(llvm::sys::getDefaultTargetTriple());
-    module_->setTargetTriple(host_triple);
-    std::string err;
-    std::string ts = host_triple.getTriple();
-    auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
-    if (!tgt) { diag_.error(SourceRange{}, "target: " + err); return false; }
-    auto* tm = tgt->createTargetMachine(host_triple, "generic", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
-    module_->setDataLayout(tm->createDataLayout());
     std::error_code ec;
     llvm::raw_fd_ostream dest(p, ec, llvm::sys::fs::OF_None);
     if (ec) { diag_.error(SourceRange{}, "file: " + ec.message()); return false; }
     llvm::legacy::PassManager pm;
     // Set target machine features
     tm->setOptLevel(opt_level >= 2 ? llvm::CodeGenOptLevel::Aggressive
-                   : opt_level >= 1 ? llvm::CodeGenOptLevel::Default
-                   : llvm::CodeGenOptLevel::None);
+                    : opt_level >= 1 ? llvm::CodeGenOptLevel::Default
+                                     : llvm::CodeGenOptLevel::None);
     if (tm->addPassesToEmitFile(pm, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
         diag_.error(SourceRange{}, "cannot emit object"); return false;
     }
