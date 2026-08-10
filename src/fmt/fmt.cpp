@@ -98,6 +98,10 @@ static bool isTypeKeyword(TokenKind k) {
         case TokenKind::Type_ushort:
         case TokenKind::Type_uint:
         case TokenKind::Type_ulong:
+        case TokenKind::Type_uint8:
+        case TokenKind::Type_uint16:
+        case TokenKind::Type_uint32:
+        case TokenKind::Type_uint64:
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:
@@ -166,6 +170,8 @@ static std::string tokenStr(const Token& tok) {
         case TokenKind::LongLiteral:
             // lexer 消费后缀但不写入 value，这里补回 "L"（避免被 keywordString 打成 "?"）
             return tok.value + "L";
+        case TokenKind::UIntLiteral:
+            return tok.value + "u";
         case TokenKind::StringLiteral:
             return "\"" + escapeString(tok.value) + "\"";
         case TokenKind::CharLiteral:

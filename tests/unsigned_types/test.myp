@@ -1,15 +1,64 @@
-// Unsigned integer types — NOTE: currently limited type support
-// Types are recognized but literals are signed and cannot initialize unsigned.
-// This test documents the limitation.
+// Unsigned integer types: uint8/uint16/uint32/uint64（uint 为 uint32 别名）
+//   - u/U 字面量后缀（0xFFFFFFFFu）
+//   - 逻辑右移 >>、无符号除法/取模、无符号比较
+//   - 加减自动回绕、位运算保持无符号
+//   - uint→long 隐式拓宽（ZExt，0xFFFFFFFFu → 4294967295）
+//   - (x>>n)|(x<<(32-n)) → 原生旋转（rorl/rol）
 import env;
+
+// 32 位循环右移（uint32 上 >> 是逻辑右移）
+uint rotr(uint x, int n) {
+    return (x >> n) | (x << (32 - n));
+}
 
 class Main {
     action:
         @startup void run() {
-            // Unsigned types exist but cannot be initialized from literals
-            // due to strict type checking (no signed→unsigned promotion).
-            // Workaround: use signed types and cast as needed.
-            Console.writeString("unsigned_types_declared\n");
+            // 类型别名与 u 后缀字面量
+            uint32 a = 0xFFFFFFFFu;
+            uint8 b8 = 200u;
+            uint16 b16 = 40000u;
+            uint64 b64 = 0x123456789ABCDEF0u;   // 正 i64 内，验证 ulong 位型
+            // 逻辑右移
+            uint lshr = a >> 4;                 // 0x0FFFFFFF = 268435455
+            // 无符号除法 / 取模
+            uint udiv = a / 3u;                 // 4294967295/3 = 1431655765
+            uint umod = a % 7u;                 // 3
+            // 无符号比较
+            bool big = a > 100u;                // true
+            bool small = a < 100u;              // false
+            // 回绕加法
+            uint wrap = 0xFFFFFFFFu + 1u;       // 0
+            uint wrap2 = 0xFFFFFFFEu + 3u;      // 1
+            // 旋转
+            uint rot = rotr(0x12345678u, 4);    // 0x81234567
+            // 位运算保持无符号
+            uint masked = a & 0xFFu;            // 0xFF = 255
+            // uint→long 拓宽（ZExt）
+            long zext = a * 1L;                 // 4294967295
+            long ver = a * 4294967296L + 0x80000000u;  // (0xFFFFFFFF<<32)|0x80000000
+            // 数组
+            uint[] W = new uint[4];
+            W[0] = 0x6a09e667u;
+            W[1] = a;
+            W[2] = W[0] + W[1];                 // 回绕
+            W[3] = 0u;
+
+            Console.writeLong(lshr);  Console.writeString("\n");
+            Console.writeLong(udiv);  Console.writeString("\n");
+            Console.writeLong(umod);  Console.writeString("\n");
+            Console.writeLong(b8);    Console.writeString("\n");
+            Console.writeLong(b16);   Console.writeString("\n");
+            Console.writeLong(rot);   Console.writeString("\n");
+            Console.writeLong(masked);Console.writeString("\n");
+            Console.writeLong(zext);  Console.writeString("\n");
+            Console.writeLong(ver);   Console.writeString("\n");
+            Console.writeLong(W[0]);  Console.writeString("\n");
+            Console.writeLong(W[2]);  Console.writeString("\n");
+            if (big) Console.writeString("BIG\n"); else Console.writeString("notbig\n");
+            if (small) Console.writeString("small\n"); else Console.writeString("notsmall\n");
+            if (wrap == 0u && wrap2 == 1u) Console.writeString("WRAP\n");
+            if (b64 == 0x123456789ABCDEF0u) Console.writeString("U64OK\n");
         }
 }
 

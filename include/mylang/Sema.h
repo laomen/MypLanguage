@@ -109,6 +109,7 @@ private:
     std::string typeName(const TypeInfo& type) const;
     bool typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const;
     bool isNumericKind(TypeKind k) const;
+    bool isUnsignedKind(TypeKind k) const;
     TypeKind commonNumericKind(TypeKind a, TypeKind b) const;
     // Conservative "does this statement guarantee control never falls off its
     // end" (return/throw/infinite-loop/all-arms-return). Used to flag non-void

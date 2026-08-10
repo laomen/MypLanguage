@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.11.0
+- **无符号整数类型补全（`uint32`/`uint8`/`uint16`/`uint64` 固定宽度别名）**：
+  - 新增 `u`/`U` 字面量后缀（`0xFFFFFFFFu`），按值定宽（≤0xFF→`ubyte`、≤0xFFFF→
+    `ushort`、≤0xFFFFFFFF→`uint`、更大→`ulong`），可直接初始化无符号变量/数组。
+  - 无符号语义：`uint` 的 `>>` 是逻辑右移（`lshr`）、`/`→`udiv`、`%`→`urem`、
+    比较用无符号谓词、加减自动回绕；uint→long 拓宽用 ZExt（`0xFFFFFFFFu`→
+    `4294967295L`）。`(x>>n)|(x<<(32-n))` 被 LLVM 识别为单条 `rol`/`rorl`。
+  - sema：`visitBinaryOp` 无符号类型推断；`typesCompatible` 拓宽表加无符号族；
+    codegen：二元运算按 `result_unsigned` 选 UDiv/URem/LShr/无符号比较，新增
+    `convertIntegerValue` 助手使调用实参/变量初始化对无符号源做 ZExt。
+  - 自举格式化/可视化器同步 `u` 后缀与新类型关键字（对拍通过）。
+  - 新增回归测试 `tests/unsigned_types/`（逻辑右移/无符号除/比较/回绕/旋转/ZExt）。
+  - 效果：bench sha256 用 uint32 后 32ms→22ms（比值 0.56→0.91），verify 不变。
+
 ### v3.10.2（当前）
 - **变异模糊测试驱动的 7 项修复**（`tools/fuzz_myp.py`：对 tests/examples/stdlib 种子做
   行级/表达式级变异，用 ASAN 编译的 `mypc` 编译 + 超时分类输出 ——

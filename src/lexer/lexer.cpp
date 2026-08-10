@@ -293,6 +293,9 @@ Token Lexer::scanNumber() {
         if (peek() == 'L' || peek() == 'l') {
             advance();
             kind = TokenKind::LongLiteral;
+        } else if (peek() == 'u' || peek() == 'U') {
+            advance();
+            kind = TokenKind::UIntLiteral;
         }
         return Token(kind,
             SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
@@ -325,6 +328,9 @@ Token Lexer::scanNumber() {
     if (!is_float && (peek() == 'L' || peek() == 'l')) {
         advance(); // consume the suffix
         kind = TokenKind::LongLiteral;
+    } else if (!is_float && (peek() == 'u' || peek() == 'U')) {
+        advance(); // consume the suffix
+        kind = TokenKind::UIntLiteral;
     }
 
     return Token(kind, SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}}, value);
@@ -393,6 +399,10 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "ushort")   kind = TokenKind::Type_ushort;
     else if (value == "uint")     kind = TokenKind::Type_uint;
     else if (value == "ulong")    kind = TokenKind::Type_ulong;
+    else if (value == "uint8")    kind = TokenKind::Type_uint8;
+    else if (value == "uint16")   kind = TokenKind::Type_uint16;
+    else if (value == "uint32")   kind = TokenKind::Type_uint32;
+    else if (value == "uint64")   kind = TokenKind::Type_uint64;
     else if (value == "char")     kind = TokenKind::Type_char;
     else if (value == "float")    kind = TokenKind::Type_float;
     else if (value == "double")   kind = TokenKind::Type_double;

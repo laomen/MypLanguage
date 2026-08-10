@@ -32,6 +32,7 @@ import "./lexer.myp";
         int isTypeKeyword(string k) {
             if (k == "byte" || k == "short" || k == "int" || k == "long"
                 || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong"
+                || k == "uint8" || k == "uint16" || k == "uint32" || k == "uint64"
                 || k == "char" || k == "float" || k == "double" || k == "bool"
                 || k == "string" || k == "void" || k == "var") return 1;
             return 0;
@@ -79,6 +80,7 @@ import "./lexer.myp";
             if (k == "id" || k == "int_lit" || k == "float_lit" || k == "bool_lit"
                 || k == "null_lit") return t.value();
             if (k == "long_lit") return t.value() + "L";   // 复刻 C++：补回后缀
+            if (k == "uint_lit") return t.value() + "u";   // 复刻 C++：补回 u 后缀
             if (k == "str") return "\"" + Fmt.escapeString(t.value()) + "\"";
             if (k == "char_lit") return "'" + Fmt.escapeString(t.value()) + "'";
             return k;

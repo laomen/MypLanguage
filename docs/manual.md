@@ -182,10 +182,10 @@ var v = A |> ScaleOp;
 | `short` | 有符号 16-bit | 16 |
 | `int` | 有符号 32-bit | 32 |
 | `long` | 有符号 64-bit | 64 |
-| `ubyte` | 无符号 8-bit | 8 |
-| `ushort` | 无符号 16-bit | 16 |
-| `uint` | 无符号 32-bit | 32 |
-| `ulong` | 无符号 64-bit | 64 |
+| `ubyte` | 无符号 8-bit（`uint8` 别名） | 8 |
+| `ushort` | 无符号 16-bit（`uint16` 别名） | 16 |
+| `uint` | 无符号 32-bit（`uint32` 别名） | 32 |
+| `ulong` | 无符号 64-bit（`uint64` 别名） | 64 |
 | `char` | 字符 (8-bit) | 8 |
 | `float` | 单精度浮点 | 32 |
 | `double` | 双精度浮点 | 64 |
@@ -207,6 +207,32 @@ long b = a;       // ✅ int → long 自动提升
 double c = a;     // ✅ int → double 自动提升
 int d = b;        // ❌ long → int 不会自动降级
 ```
+
+### 无符号类型（uint 族）
+
+无符号类型 `ubyte`/`ushort`/`uint`/`ulong`（固定宽度别名 `uint8`/`uint16`/
+`uint32`/`uint64`）具有**无符号语义**，与 C 一致：
+
+- **字面量 `u` 后缀**：`0xFFFFFFFFu` 是无符号整数字面量（按值定宽：≤0xFF→`ubyte`，
+  ≤0xFFFF→`ushort`，≤0xFFFFFFFF→`uint`，更大→`ulong`）。`uint x = 0xFFFFFFFFu;`
+  可直接初始化，无需 `long` 掩码。
+- **逻辑右移**：`uint` 的 `>>` 是逻辑右移（`lshr`），不是算术右移。
+- **无符号除法/取模**：`/`→`udiv`、`%`→`urem`。
+- **无符号比较**：`<`/`>`/`<=`/`>=` 用无符号谓词。
+- **回绕**：加减法自动按 32 位回绕，无需 `& 0xFFFFFFFF`。
+- **uint→long 拓宽**用 ZExt（`0xFFFFFFFFu` → `4294967295L`，不是 -1）。
+- **原生旋转**：`(x >> n) | (x << (32 - n))` 被 LLVM 识别为单条 `rorl`/`rol`。
+
+```myp
+uint a = 0xFFFFFFFFu;
+uint b = a >> 4;          // 逻辑右移 → 0x0FFFFFFF
+uint c = a / 3u;          // 无符号除法 → 1431655765
+bool big = a > 100u;      // 无符号比较 → true
+long v = a * 4294967296L; // uint→long ZExt → 4294967295 << 32
+```
+
+> 注：无符号值要打印为 `long` 时，经二元运算（如 `x * 1L`）显式拓宽；`ulong`
+> 不隐式转 `long`（值可能溢出有符号范围）。
 
 ### 复合类型
 

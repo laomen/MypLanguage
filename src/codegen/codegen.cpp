@@ -39,6 +39,28 @@ namespace mylang {
 CodeGen::CodeGen(DiagnosticEngine& diag) : diag_(diag), builder_(ctx_) {}
 CodeGen::~CodeGen() = default;
 
+// uint32：按源表达式类型做整数转换——无符号源加宽用 ZExt（0xFFFFFFFFu → i64 = 4294967295，
+// 不是 -1）。arg 可为空（回退有符号 SExt，保持旧行为）。其余转换同原内联逻辑。
+static llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
+                                        llvm::Type* expected, const Expr* src) {
+    if (!v || v->getType() == expected) return v;
+    if (v->getType()->isIntegerTy() && expected->isIntegerTy()) {
+        bool src_unsigned = src &&
+            (src->resolved_kind == TypeKind::UByte ||
+             src->resolved_kind == TypeKind::UShort ||
+             src->resolved_kind == TypeKind::UInt ||
+             src->resolved_kind == TypeKind::ULong);
+        return b.CreateIntCast(v, expected, !src_unsigned);
+    }
+    if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
+        return b.CreateSIToFP(v, expected);
+    if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
+        return b.CreateFPToSI(v, expected);
+    if (v->getType()->isPointerTy() && expected->isPointerTy())
+        return b.CreateBitCast(v, expected);
+    return v;
+}
+
 bool CodeGen::saveIR(const std::string& path) const {
     std::error_code ec;
     llvm::raw_fd_ostream dest(path, ec);
@@ -3551,11 +3573,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
     if (d.init_expr) {
         auto* v = generateExpr(*d.init_expr);
-        if (v->getType() != lt) {
-            if (lt->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, lt, true);
-            else if (lt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, lt);
-            else if (lt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, lt);
-        }
+        if (v->getType() != lt)
+            v = convertIntegerValue(builder_, v, lt, d.init_expr.get());
         // ARC: fresh (new / call) transfers into the slot; an alias (var/prop)
         // must retain because the previous owner keeps its reference.
         if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
@@ -3937,6 +3956,12 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
     switch (expr.kind) {
         case ExprKind::IntegerLiteral: {
             auto& e = static_cast<const IntegerLiteralExpr&>(expr);
+            if (e.is_unsigned) {
+                if (e.value >= 0 && e.value <= 0xFF) return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), (uint64_t)e.value, false);
+                if (e.value <= 0xFFFF) return llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx_), (uint64_t)e.value, false);
+                if (e.value <= 0xFFFFFFFFLL) return llvm::ConstantInt::get(i32_ty, (uint64_t)e.value, false);
+                return llvm::ConstantInt::get(i64_ty, (uint64_t)e.value, false);
+            }
             return llvm::ConstantInt::get(e.is_long ? i64_ty : i32_ty, e.value, true);
         }
         case ExprKind::FloatLiteral: {
@@ -6022,6 +6047,13 @@ llvm::Value* CodeGen::generateTupleExpr(const TupleExpr& e) {
 
 llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
     auto val = e.value;
+    // 'u' suffix → 无符号：按值定宽（0xFFu→i8, 0xFFFFu→i16, 0xFFFFFFFFu→i32, 更大→i64）
+    if (e.is_unsigned) {
+        if (val >= 0 && val <= 0xFF) return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), (uint64_t)val, false);
+        if (val <= 0xFFFF) return llvm::ConstantInt::get(llvm::Type::getInt16Ty(ctx_), (uint64_t)val, false);
+        if (val <= 0xFFFFFFFFLL) return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)val, false);
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), (uint64_t)val, false);
+    }
     // An explicit 'L' suffix forces long (i64), regardless of the value range.
     if (e.is_long)
         return llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), val, true);
@@ -6193,8 +6225,11 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             if (!r->getType()->isFloatTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getFloatTy(ctx_));
         } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
             auto lw = l->getType()->getIntegerBitWidth(), rw = r->getType()->getIntegerBitWidth();
-            if (lw < rw) l = builder_.CreateSExt(l, r->getType());
-            else if (rw < lw) r = builder_.CreateSExt(r, l->getType());
+            // uint32：无符号操作数加宽用 ZExt（0xFFFFFFFFu 提升到 i64 = 4294967295，不是 -1）
+            if (lw < rw) l = e.lhs_unsigned ? builder_.CreateZExt(l, r->getType())
+                                            : builder_.CreateSExt(l, r->getType());
+            else if (rw < lw) r = e.rhs_unsigned ? builder_.CreateZExt(r, l->getType())
+                                                : builder_.CreateSExt(r, l->getType());
         }
     }
 
@@ -6268,8 +6303,12 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::Add: return fp ? builder_.CreateFAdd(l, r) : builder_.CreateAdd(l, r);
         case BinaryOpKind::Sub: return fp ? builder_.CreateFSub(l, r) : builder_.CreateSub(l, r);
         case BinaryOpKind::Mul: return fp ? builder_.CreateFMul(l, r) : builder_.CreateMul(l, r);
-        case BinaryOpKind::Div: return fp ? builder_.CreateFDiv(l, r) : builder_.CreateSDiv(l, r);
-        case BinaryOpKind::Mod: return fp ? builder_.CreateFRem(l, r) : builder_.CreateSRem(l, r);
+        case BinaryOpKind::Div: return fp ? builder_.CreateFDiv(l, r)
+                                  : (e.result_unsigned ? builder_.CreateUDiv(l, r)
+                                                       : builder_.CreateSDiv(l, r));
+        case BinaryOpKind::Mod: return fp ? builder_.CreateFRem(l, r)
+                                  : (e.result_unsigned ? builder_.CreateURem(l, r)
+                                                       : builder_.CreateSRem(l, r));
         case BinaryOpKind::Eq:
         case BinaryOpKind::Ne:
         case BinaryOpKind::Lt:
@@ -6299,15 +6338,17 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
                 auto* i32 = llvm::Type::getInt32Ty(ctx_);
                 auto* i64 = llvm::Type::getInt64Ty(ctx_);
                 if (l->getType() == i64 && r->getType() == i32)
-                    r = builder_.CreateSExt(r, i64);
+                    r = e.rhs_unsigned ? builder_.CreateZExt(r, i64) : builder_.CreateSExt(r, i64);
                 else if (l->getType() == i32 && r->getType() == i64)
-                    l = builder_.CreateSExt(l, i64);
+                    l = e.lhs_unsigned ? builder_.CreateZExt(l, i64) : builder_.CreateSExt(l, i64);
                 else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
                     auto lw = l->getType()->getIntegerBitWidth();
                     auto rw = r->getType()->getIntegerBitWidth();
-                    if (lw < rw) l = builder_.CreateSExt(l, r->getType());
-                    else if (rw < lw) r = builder_.CreateSExt(r, l->getType());
-                    else r = builder_.CreateIntCast(r, l->getType(), true);
+                    if (lw < rw) l = e.lhs_unsigned ? builder_.CreateZExt(l, r->getType())
+                                                    : builder_.CreateSExt(l, r->getType());
+                    else if (rw < lw) r = e.rhs_unsigned ? builder_.CreateZExt(r, l->getType())
+                                                        : builder_.CreateSExt(r, l->getType());
+                    else r = builder_.CreateIntCast(r, l->getType(), !e.rhs_unsigned);
                 } else if (l->getType()->isPointerTy() && r->getType()->isIntegerTy()) {
                     r = builder_.CreateIntToPtr(r, l->getType());
                 } else if (l->getType()->isIntegerTy() && r->getType()->isPointerTy()) {
@@ -6345,13 +6386,21 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             if (e.op == BinaryOpKind::Ne)
                 return fp ? builder_.CreateFCmpONE(l, r) : builder_.CreateICmpNE(l, r);
             if (e.op == BinaryOpKind::Lt)
-                return fp ? builder_.CreateFCmpOLT(l, r) : builder_.CreateICmpSLT(l, r);
+                return fp ? builder_.CreateFCmpOLT(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpULT(l, r)
+                                               : builder_.CreateICmpSLT(l, r));
             if (e.op == BinaryOpKind::Gt)
-                return fp ? builder_.CreateFCmpOGT(l, r) : builder_.CreateICmpSGT(l, r);
+                return fp ? builder_.CreateFCmpOGT(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpUGT(l, r)
+                                               : builder_.CreateICmpSGT(l, r));
             if (e.op == BinaryOpKind::Le)
-                return fp ? builder_.CreateFCmpOLE(l, r) : builder_.CreateICmpSLE(l, r);
+                return fp ? builder_.CreateFCmpOLE(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpULE(l, r)
+                                               : builder_.CreateICmpSLE(l, r));
             if (e.op == BinaryOpKind::Ge)
-                return fp ? builder_.CreateFCmpOGE(l, r) : builder_.CreateICmpSGE(l, r);
+                return fp ? builder_.CreateFCmpOGE(l, r)
+                          : (e.result_unsigned ? builder_.CreateICmpUGE(l, r)
+                                               : builder_.CreateICmpSGE(l, r));
         }
         case BinaryOpKind::And: return builder_.CreateAnd(l, r);
         case BinaryOpKind::Or:  return builder_.CreateOr(l, r);
@@ -6367,7 +6416,8 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::Shr: {
             if (r->getType() != l->getType())
                 r = builder_.CreateZExt(r, l->getType());
-            return builder_.CreateAShr(l, r);
+            // uint32：无符号右移 = 逻辑右移（LShr），有符号 = 算术右移（AShr）
+            return e.result_unsigned ? builder_.CreateLShr(l, r) : builder_.CreateAShr(l, r);
         }
     }
     return nullptr;
@@ -6531,16 +6581,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             auto* ft = tramp->getFunctionType();
             for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
                 auto* expected = ft->getParamType(i);
-                if (args[i]->getType() != expected) {
-                    if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
-                        args[i] = builder_.CreateIntCast(args[i], expected, true);
-                    else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
-                        args[i] = builder_.CreateSIToFP(args[i], expected);
-                    else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
-                        args[i] = builder_.CreateFPToSI(args[i], expected);
-                    else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
-                        args[i] = builder_.CreateBitCast(args[i], expected);
-                }
+                if (args[i]->getType() != expected)
+                    args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i].get());
             }
             bool isv = tramp->getReturnType()->isVoidTy();
             return builder_.CreateCall(tramp->getFunctionType(), tramp, args,
@@ -6557,16 +6599,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             auto* ft = fn->getFunctionType();
             for (size_t i = 0; i < args.size() && i < ft->getNumParams(); ++i) {
                 auto* expected = ft->getParamType(i);
-                if (args[i]->getType() != expected) {
-                    if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
-                        args[i] = builder_.CreateIntCast(args[i], expected, true);
-                    else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
-                        args[i] = builder_.CreateSIToFP(args[i], expected);
-                    else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
-                        args[i] = builder_.CreateFPToSI(args[i], expected);
-                    else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
-                        args[i] = builder_.CreateBitCast(args[i], expected);
-                }
+                if (args[i]->getType() != expected)
+                    args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i].get());
             }
             bool isv = fn->getReturnType()->isVoidTy();
             return builder_.CreateCall(fn->getFunctionType(), fn, args,
@@ -6598,16 +6632,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 for (auto& a : e.args) args.push_back(generateExpr(*a));
                 for (size_t i = 1; i < args.size() && i < callt->getNumParams(); i++) {
                     auto* expected = callt->getParamType(i);
-                    if (args[i]->getType() != expected) {
-                        if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy())
-                            args[i] = builder_.CreateIntCast(args[i], expected, true);
-                        else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy())
-                            args[i] = builder_.CreateSIToFP(args[i], expected);
-                        else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy())
-                            args[i] = builder_.CreateFPToSI(args[i], expected);
-                        else if (args[i]->getType()->isPointerTy() && expected->isPointerTy())
-                            args[i] = builder_.CreateBitCast(args[i], expected);
-                    }
+                    if (args[i]->getType() != expected)
+                        args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i - 1].get());
                 }
                 auto* fnp = builder_.CreateBitCast(call_fn, llvm::PointerType::get(callt, 0));
                 bool isv = rty->isVoidTy();
@@ -6627,19 +6653,12 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             size_t idx = 1;
             for (auto& a : e.args) {
                 llvm::Value* v = generateExpr(*a);
-                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致）
+                // 隐式类型转换：实参 → 形参（int→double 等，与 generateCall 一致；
+                // uint32：无符号实参加宽用 ZExt）
                 if (idx < ft->getNumParams()) {
                     auto* expected = ft->getParamType(idx);
-                    if (v->getType() != expected) {
-                        if (v->getType()->isIntegerTy() && expected->isIntegerTy())
-                            v = builder_.CreateIntCast(v, expected, true);
-                        else if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
-                            v = builder_.CreateSIToFP(v, expected);
-                        else if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
-                            v = builder_.CreateFPToSI(v, expected);
-                        else if (v->getType()->isPointerTy() && expected->isPointerTy())
-                            v = builder_.CreateBitCast(v, expected);
-                    }
+                    if (v->getType() != expected)
+                        v = convertIntegerValue(builder_, v, expected, a.get());
                 }
                 ctor_args.push_back(v);
                 idx++;
@@ -7396,17 +7415,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
     size_t arg_offset = (is_method && mthis && !skip_this) ? 1 : 0;
     for (size_t i = arg_offset; i < args.size() && i < ft->getNumParams(); ++i) {
         auto* expected = ft->getParamType(i);
-        if (args[i]->getType() != expected) {
-            if (args[i]->getType()->isIntegerTy() && expected->isIntegerTy()) {
-                args[i] = builder_.CreateIntCast(args[i], expected, true);
-            } else if (args[i]->getType()->isIntegerTy() && expected->isFloatingPointTy()) {
-                args[i] = builder_.CreateSIToFP(args[i], expected);
-            } else if (args[i]->getType()->isFloatingPointTy() && expected->isIntegerTy()) {
-                args[i] = builder_.CreateFPToSI(args[i], expected);
-            } else if (args[i]->getType()->isPointerTy() && expected->isPointerTy()) {
-                args[i] = builder_.CreateBitCast(args[i], expected);
-            }
-        }
+        if (args[i]->getType() != expected)
+            args[i] = convertIntegerValue(builder_, args[i], expected, e.args[i - arg_offset].get());
     }
     bool isv = cf->getReturnType()->isVoidTy();
     // Math intrinsics (stdlib Math.sqrt/abs/floor/ceil) → LLVM intrinsics so the

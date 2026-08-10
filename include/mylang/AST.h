@@ -313,6 +313,9 @@ struct Expr {
     ExprKind kind;
     SourceRange range;
     TypeNode* type = nullptr;  // resolved during sema
+    // §uint32：sema 解析出的表达式类型（默认 Int = 未设置/有符号回退）。
+    // codegen 用它判断无符号实参/初始化值的 ZExt 加宽。
+    TypeKind resolved_kind = TypeKind::Int;
 
     Expr(ExprKind k, SourceRange r) : kind(k), range(r) {}
     virtual ~Expr() = default;
@@ -320,9 +323,10 @@ struct Expr {
 
 struct IntegerLiteralExpr : Expr {
     int64_t value;
-    bool is_long;  // L suffix: 42L → long
-    IntegerLiteralExpr(int64_t v, SourceRange r, bool l = false)
-        : Expr(ExprKind::IntegerLiteral, r), value(v), is_long(l) {}
+    bool is_long;      // L suffix: 42L → long
+    bool is_unsigned;  // u suffix: 42u / 0xFFu → uint/ulong（无符号字面量）
+    IntegerLiteralExpr(int64_t v, SourceRange r, bool l = false, bool u = false)
+        : Expr(ExprKind::IntegerLiteral, r), value(v), is_long(l), is_unsigned(u) {}
 };
 
 struct FloatLiteralExpr : Expr {
@@ -401,6 +405,11 @@ struct BinaryOpExpr : Expr {
     BinaryOpKind op;
     std::unique_ptr<Expr> rhs;
     std::shared_ptr<OperatorCall> op_call;  // set by Sema if operator overloaded
+    // §uint32：sema 解析出的无符号性（供 codegen 选 UDiv/URem/LShr/无符号比较与
+    // ZExt 加宽；默认全 false = 现有有符号行为）。
+    bool lhs_unsigned = false;    // 左操作数源类型为无符号
+    bool rhs_unsigned = false;    // 右操作数源类型为无符号
+    bool result_unsigned = false; // 公共运算类型为无符号
     BinaryOpExpr(std::unique_ptr<Expr> l, BinaryOpKind o, std::unique_ptr<Expr> r, SourceRange range_)
         : Expr(ExprKind::BinaryOp, range_), lhs(std::move(l)), op(o), rhs(std::move(r)) {}
 };

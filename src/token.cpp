@@ -5,6 +5,7 @@ namespace mylang {
 const char* Token::kindName(TokenKind kind) {
     switch (kind) {
         case TokenKind::IntegerLiteral:   return "integer literal";
+        case TokenKind::UIntLiteral:      return "uint literal";
         case TokenKind::FloatLiteral:     return "float literal";
         case TokenKind::StringLiteral:    return "string literal";
         case TokenKind::CharLiteral:      return "char literal";
@@ -63,6 +64,10 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Type_ushort:        return "ushort";
         case TokenKind::Type_uint:          return "uint";
         case TokenKind::Type_ulong:         return "ulong";
+        case TokenKind::Type_uint8:         return "uint8";
+        case TokenKind::Type_uint16:        return "uint16";
+        case TokenKind::Type_uint32:        return "uint32";
+        case TokenKind::Type_uint64:        return "uint64";
         case TokenKind::Type_char:          return "char";
         case TokenKind::Type_float:         return "float";
         case TokenKind::Type_double:        return "double";

@@ -13,6 +13,7 @@ enum class TokenKind : uint16_t {
     // ----- Literals -----
     IntegerLiteral,
     LongLiteral,    // 42L
+    UIntLiteral,    // 42u / 0xFFu（无符号整数字面量）
     FloatLiteral,
     StringLiteral,
     CharLiteral,
@@ -68,6 +69,10 @@ enum class TokenKind : uint16_t {
     Type_ushort,
     Type_uint,
     Type_ulong,
+    Type_uint8,
+    Type_uint16,
+    Type_uint32,
+    Type_uint64,
     Type_char,
     Type_float,
     Type_double,

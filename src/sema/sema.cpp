@@ -1489,6 +1489,7 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             break;
         }
     }
+    expr.resolved_kind = result.kind;
     return result;
 }
 
@@ -1507,6 +1508,13 @@ TypeInfo Sema::visitTryExpr(TryExpr& expr) {
 
 TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {
     auto val = expr.value;
+    // u suffix → 无符号：按值定宽（同有符号字面量：小值→ubyte/ushort，大→uint/ulong）
+    if (expr.is_unsigned) {
+        if (val >= 0 && val <= 0xFF) return TypeInfo(TypeKind::UByte);
+        if (val <= 0xFFFF)           return TypeInfo(TypeKind::UShort);
+        if (val <= 0xFFFFFFFFLL)     return TypeInfo(TypeKind::UInt);
+        return TypeInfo(TypeKind::ULong);
+    }
     // L suffix forces long type
     if (expr.is_long) return TypeInfo(TypeKind::Long);
     TypeInfo result;
@@ -1702,6 +1710,19 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
             if (op_ret.kind != TypeKind::Void) return op_ret;
             if (!expectNumeric(lhs_type, expr.lhs->range))
                 return TypeInfo(TypeKind::Bool);
+            // uint32：无符号比较（codegen 选 ULT/UGT/ULE/UGE）。
+            // 决定规则同 numeric_common：只要出现 ULong 就是无符号；否则只要
+            // 出现 Long/Double/Float 就按有符号；否则有任一无符号即无符号。
+            expr.lhs_unsigned = isUnsignedKind(lhs_type.kind);
+            expr.rhs_unsigned = isUnsignedKind(rhs_type.kind);
+            bool uc = expr.lhs_unsigned || expr.rhs_unsigned;
+            if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long ||
+                lhs_type.kind == TypeKind::Double || rhs_type.kind == TypeKind::Double ||
+                lhs_type.kind == TypeKind::Float || rhs_type.kind == TypeKind::Float)
+                uc = false;
+            if (lhs_type.kind == TypeKind::ULong || rhs_type.kind == TypeKind::ULong)
+                uc = true;
+            expr.result_unsigned = uc;
             return TypeInfo(TypeKind::Bool);
         }
 
@@ -1717,22 +1738,59 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
                 !expectNumeric(rhs_type, expr.rhs->range)) {
                 return TypeInfo(TypeKind::Int);
             }
-            // Bitwise on integer types: promote to int/long
-            if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long)
+            expr.lhs_unsigned = isUnsignedKind(lhs_type.kind);
+            expr.rhs_unsigned = isUnsignedKind(rhs_type.kind);
+            // uint32：位运算/移位在无符号上保持无符号（uint >> n 是逻辑右移）。
+            if (lhs_type.kind == TypeKind::ULong || rhs_type.kind == TypeKind::ULong) {
+                expr.result_unsigned = true;
+                return TypeInfo(TypeKind::ULong);
+            }
+            if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long) {
+                expr.result_unsigned = false;
                 return TypeInfo(TypeKind::Long);
+            }
+            if (lhs_type.kind == TypeKind::UInt || rhs_type.kind == TypeKind::UInt) {
+                expr.result_unsigned = true;
+                return TypeInfo(TypeKind::UInt);
+            }
+            if (lhs_type.kind == TypeKind::UByte || rhs_type.kind == TypeKind::UByte ||
+                lhs_type.kind == TypeKind::UShort || rhs_type.kind == TypeKind::UShort) {
+                expr.result_unsigned = true;
+                return TypeInfo(TypeKind::UInt);
+            }
             return TypeInfo(TypeKind::Int);
     }
     return TypeInfo(TypeKind::Void);
 
 numeric_common:
+    expr.lhs_unsigned = isUnsignedKind(lhs_type.kind);
+    expr.rhs_unsigned = isUnsignedKind(rhs_type.kind);
     if (lhs_type.kind == TypeKind::Double || rhs_type.kind == TypeKind::Double)
         return TypeInfo(TypeKind::Double);
     if (lhs_type.kind == TypeKind::Float || rhs_type.kind == TypeKind::Float)
         return TypeInfo(TypeKind::Float);
-    if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long)
+    if (lhs_type.kind == TypeKind::ULong || rhs_type.kind == TypeKind::ULong) {
+        expr.result_unsigned = true;
+        return TypeInfo(TypeKind::ULong);
+    }
+    if (lhs_type.kind == TypeKind::Long || rhs_type.kind == TypeKind::Long) {
+        expr.result_unsigned = false;
         return TypeInfo(TypeKind::Long);
-    if (lhs_type.kind == TypeKind::Int || rhs_type.kind == TypeKind::Int)
+    }
+    if (lhs_type.kind == TypeKind::UInt || rhs_type.kind == TypeKind::UInt) {
+        expr.result_unsigned = true;
+        return TypeInfo(TypeKind::UInt);
+    }
+    if (lhs_type.kind == TypeKind::Int || rhs_type.kind == TypeKind::Int) {
+        expr.result_unsigned = false;
         return TypeInfo(TypeKind::Int);
+    }
+    // UByte/UShort（及 Byte/Short）→ UInt
+    if (lhs_type.kind == TypeKind::UByte || rhs_type.kind == TypeKind::UByte ||
+        lhs_type.kind == TypeKind::UShort || rhs_type.kind == TypeKind::UShort) {
+        expr.result_unsigned = true;
+        return TypeInfo(TypeKind::UInt);
+    }
     return TypeInfo(TypeKind::Int);
 }
 
@@ -3144,6 +3202,12 @@ bool Sema::isNumericKind(TypeKind k) const {
     }
 }
 
+// uint32 族：源类型是否为无符号整数（UByte/UShort/UInt/ULong）。
+bool Sema::isUnsignedKind(TypeKind k) const {
+    return k == TypeKind::UByte || k == TypeKind::UShort ||
+           k == TypeKind::UInt || k == TypeKind::ULong;
+}
+
 // Wider of two numeric kinds; Void if not promotable either way.
 TypeKind Sema::commonNumericKind(TypeKind a, TypeKind b) const {
     if (a == b) return a;
@@ -3689,16 +3753,31 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
             case TypeKind::Byte:
             case TypeKind::Char:
                 return to == TypeKind::Short || to == TypeKind::Int || to == TypeKind::Long ||
-                       to == TypeKind::Float || to == TypeKind::Double;
+                       to == TypeKind::Float || to == TypeKind::Double ||
+                       to == TypeKind::UInt;   // uint32: 字面量/小值 → uint（非负，位保持）
             case TypeKind::Short:
                 return to == TypeKind::Int || to == TypeKind::Long ||
-                       to == TypeKind::Float || to == TypeKind::Double;
+                       to == TypeKind::Float || to == TypeKind::Double ||
+                       to == TypeKind::UInt;
             case TypeKind::Int:
-                return to == TypeKind::Long || to == TypeKind::Float || to == TypeKind::Double;
+                return to == TypeKind::Long || to == TypeKind::Float || to == TypeKind::Double ||
+                       to == TypeKind::UInt;
             case TypeKind::Long:
-                return to == TypeKind::Float || to == TypeKind::Double;
+                return to == TypeKind::Float || to == TypeKind::Double ||
+                       to == TypeKind::UInt;   // uint32: long→uint 隐式截断（C 语义，codegen trunc）
             case TypeKind::Float:
                 return to == TypeKind::Double;
+            // uint32 族拓宽（codegen 用 ZExt 加宽，见 generateCallImpl/generateVarDecl）：
+            case TypeKind::UByte:
+                return to == TypeKind::UShort || to == TypeKind::Int ||
+                       to == TypeKind::Long || to == TypeKind::UInt || to == TypeKind::ULong;
+            case TypeKind::UShort:
+                return to == TypeKind::Int || to == TypeKind::Long ||
+                       to == TypeKind::UInt || to == TypeKind::ULong;
+            case TypeKind::UInt:
+                return to == TypeKind::Long || to == TypeKind::ULong;
+            case TypeKind::ULong:
+                return false;
             default: return false;
         }
     };

@@ -1860,6 +1860,10 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         int64_t val = std::stoll(previous().value, nullptr, 0);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range, true);
     }
+    if (match(TokenKind::UIntLiteral)) {
+        int64_t val = std::stoll(previous().value, nullptr, 0);
+        return std::make_unique<IntegerLiteralExpr>(val, previous().range, false, true);
+    }
     if (match(TokenKind::FloatLiteral)) {
         double val = std::stod(previous().value);
         return std::make_unique<FloatLiteralExpr>(val, previous().range);
@@ -1959,6 +1963,10 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
                 case TokenKind::Type_ushort: elem_type.basic_type = BuiltinType::UShort; break;
                 case TokenKind::Type_uint:   elem_type.basic_type = BuiltinType::UInt; break;
                 case TokenKind::Type_ulong:  elem_type.basic_type = BuiltinType::ULong; break;
+                case TokenKind::Type_uint8:  elem_type.basic_type = BuiltinType::UByte; break;
+                case TokenKind::Type_uint16: elem_type.basic_type = BuiltinType::UShort; break;
+                case TokenKind::Type_uint32: elem_type.basic_type = BuiltinType::UInt; break;
+                case TokenKind::Type_uint64: elem_type.basic_type = BuiltinType::ULong; break;
                 case TokenKind::Type_char:   elem_type.basic_type = BuiltinType::Char; break;
                 case TokenKind::Type_float:  elem_type.basic_type = BuiltinType::Float; break;
                 case TokenKind::Type_double: elem_type.basic_type = BuiltinType::Double; break;
@@ -2229,6 +2237,10 @@ TypeNode Parser::parseType() {
     else if (match(TokenKind::Type_ushort))node.basic_type = BuiltinType::UShort;
     else if (match(TokenKind::Type_uint))  node.basic_type = BuiltinType::UInt;
     else if (match(TokenKind::Type_ulong)) node.basic_type = BuiltinType::ULong;
+    else if (match(TokenKind::Type_uint8))  node.basic_type = BuiltinType::UByte;
+    else if (match(TokenKind::Type_uint16)) node.basic_type = BuiltinType::UShort;
+    else if (match(TokenKind::Type_uint32)) node.basic_type = BuiltinType::UInt;
+    else if (match(TokenKind::Type_uint64)) node.basic_type = BuiltinType::ULong;
     else if (match(TokenKind::Type_char))  node.basic_type = BuiltinType::Char;
     else if (match(TokenKind::Type_float)) node.basic_type = BuiltinType::Float;
     else if (match(TokenKind::Type_double))node.basic_type = BuiltinType::Double;
@@ -2505,6 +2517,10 @@ bool Parser::checkType() const {
         case TokenKind::Type_ushort:
         case TokenKind::Type_uint:
         case TokenKind::Type_ulong:
+        case TokenKind::Type_uint8:
+        case TokenKind::Type_uint16:
+        case TokenKind::Type_uint32:
+        case TokenKind::Type_uint64:
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:

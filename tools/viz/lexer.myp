@@ -178,6 +178,9 @@ class Lexer {
                         if (hc == "L" || hc == "l") {
                             hkind = "long_lit";
                             pos_ = pos_ + 1;   // 消费后缀（与 C++ 一致，不写入 value）
+                        } else if (hc == "u" || hc == "U") {
+                            hkind = "uint_lit";
+                            pos_ = pos_ + 1;
                         }
                     }
                     return new Tok(hkind, Str.substring(source_, begin, hvalEnd), begin, pos_);
@@ -226,6 +229,9 @@ class Lexer {
                 if (lc == "L" || lc == "l") {
                     kind = "long_lit";
                     pos_ = pos_ + 1;   // 消费后缀（与 C++ 一致，不写入 value）
+                } else if (lc == "u" || lc == "U") {
+                    kind = "uint_lit";
+                    pos_ = pos_ + 1;
                 }
             }
             return new Tok(kind, Str.substring(source_, begin, valEnd), begin, pos_);
