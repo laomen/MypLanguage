@@ -54,19 +54,21 @@
 
 ## 3. 对象布局与运行时
 
-### 3.1 对象头（新增，8 字节）
+### 3.1 对象头（公开 ABI 8 字节）
 
 ```
-┌──────────┬──────────┬──────────────────┐
-│ rc:u32   │ type_id  │ 对象数据（字段）  │
-└──────────┴──────────┴──────────────────┘
+┌───────────────────┬──────────┬──────────┬──────────────────┐
+│ tracking next/prev│ rc:u32   │ type_id  │ 对象数据（字段）  │
+└───────────────────┴──────────┴──────────┴──────────────────┘
+                    ↑ data - 8            ↑ data
 ```
 
 - **`rc`**：引用计数（非原子，见 §7）。
 - **`type_id`**：复用现有 `class_type_ids_`（顺序分配的 per-class id，error vtable 已用）。
   用于 `myp_release` 按类型动态派发销毁桩 → **interface 引用也可安全释放**。
-- **布局变更**：class 实例数据指针前移 8 字节；codegen 所有属性 GEP 偏移 +8。
-  一次性改动，集中在对象布局/分配代码。
+- **tracking 前缀**：双向链节点与对象同一次 `malloc`，释放时 $O(1)$ 摘链；无需单独节点
+  分配，也无需扫描全部存活对象。它位于 ARC 头之前，对 codegen 不可见。
+- **ABI**：`rc/type_id` 始终位于数据指针前 8 字节，所有属性 GEP 和既有生成代码不变。
 
 ### 3.2 运行时新 API（`runtime.c`）
 
@@ -74,7 +76,7 @@
 void* myp_alloc_object(size_t size, uint32_t type_id); // rc=1 的 class 分配
 void  myp_retain(void* obj);                           // rc++
 uint32_t myp_release(void* obj);                       // rc--；为 0 时调释放表并 free
-void  myp_free_object(void* obj);                      // 摘追踪链节点 + free（防退出双 free）
+void  myp_free_object(void* obj);                      // O(1) 摘 tracking 节点 + free
 ```
 
 - `myp_release` 为 0 → 查**全局释放表** `__myp_release_table[type_id]`（每 TU 数组，

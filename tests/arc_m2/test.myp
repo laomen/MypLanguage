@@ -67,6 +67,22 @@ int pmRun() {
     long after_borrow = Memory.liveObjectCount() - base;
     Console.writeString("return_borrow: after=" + after_borrow + "\n");
 
+    // --- tracking list：头/尾/中间节点均可 O(1) 摘链，批量释放后不残留 ---
+    long before_bulk = Memory.liveObjectCount();
+    {
+        Node[] bulk = new Node[256];
+        for (int i = 0; i < 256; i = i + 1) {
+            Node item = new Node();
+            bulk[i] = item;
+        }
+        bulk[0] = null;
+        bulk[255] = null;
+        bulk[127] = null;
+        for (int i = 0; i < 256; i = i + 1) bulk[i] = null;
+    }
+    long after_bulk = Memory.liveObjectCount() - before_bulk;
+    Console.writeString("tracking_unlink: after=" + after_bulk + "\n");
+
     Console.writeString("arc m2 all ok\n");
     return 0;
 }

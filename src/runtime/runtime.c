@@ -1379,8 +1379,8 @@ char* myp_base64_decode(const char* data) {
 }
 
 typedef struct myp_alloc_node {
-    void* ptr;
     struct myp_alloc_node* next;
+    struct myp_alloc_node* prev;
 } myp_alloc_node_t;
 
 static pthread_key_t myp_alloc_key;
@@ -1389,7 +1389,6 @@ static pthread_once_t myp_alloc_key_once = PTHREAD_ONCE_INIT;
 static void myp_free_alloc_list(void* ptr) {
     myp_alloc_node_t* node = (myp_alloc_node_t*)ptr;
     while (node) {
-        if (node->ptr) free(node->ptr);
         myp_alloc_node_t* next = node->next;
         free(node);
         node = next;
@@ -1400,18 +1399,23 @@ static void myp_make_alloc_key(void) {
     pthread_key_create(&myp_alloc_key, myp_free_alloc_list);
 }
 
-static myp_alloc_node_t* myp_alloc_list_head(void) {
+static void myp_alloc_list_push(myp_alloc_node_t* node) {
     pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    return (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
+    myp_alloc_node_t* head =
+        (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
+    node->next = head;
+    node->prev = NULL;
+    if (head) head->prev = node;
+    pthread_setspecific(myp_alloc_key, node);
 }
 
-static void myp_alloc_list_push(void* p) {
+static void myp_alloc_list_remove(myp_alloc_node_t* node) {
     pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(sizeof(myp_alloc_node_t));
-    if (!node) return;
-    node->ptr = p;
-    node->next = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
-    pthread_setspecific(myp_alloc_key, node);
+    if (node->prev)
+        node->prev->next = node->next;
+    else
+        pthread_setspecific(myp_alloc_key, node->next);
+    if (node->next) node->next->prev = node->prev;
 }
 
 // Forward decl — chunked bump arena defined below (after myp_free).
@@ -1544,25 +1548,15 @@ static __thread int64_t myp_live_objects = 0;
 
 int64_t myp_live_object_count(void) { return myp_live_objects; }
 
-// Mark the tracking-list node for `base` as freed so myp_free_all() at exit
-// does not double-free an object ARC already released.
-static void myp_alloc_list_mark_freed(void* base) {
-    pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    myp_alloc_node_t* node = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
-    while (node) {
-        if (node->ptr == base) { node->ptr = NULL; return; }
-        node = node->next;
-    }
-}
-
 void* myp_alloc_object(size_t size, uint32_t type_id) {
-    size_t total = size + MYP_OBJ_HEADER_SIZE;
-    char* base = (char*)malloc(total);
-    if (!base) return NULL;
+    size_t total = sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE + size;
+    myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(total);
+    if (!node) return NULL;
+    char* base = (char*)node + sizeof(myp_alloc_node_t);
     myp_obj_header_t* h = (myp_obj_header_t*)base;
     h->rc = 1;
     h->type_id = type_id;
-    myp_alloc_list_push(base);   // track base for exit cleanup
+    myp_alloc_list_push(node);
     myp_live_objects++;
     return base + MYP_OBJ_HEADER_SIZE;  // data pointer
 }
@@ -1608,31 +1602,37 @@ uint32_t myp_release(void* obj) {
 void myp_free_object(void* obj) {
     if (!obj) return;
     char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
-    myp_alloc_list_mark_freed(base);
+    myp_alloc_node_t* node =
+        (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
+    myp_alloc_list_remove(node);
     if (myp_live_objects > 0) myp_live_objects--;
-    free(base);
+    free(node);
 }
 
 // ---- Ref-counted class arrays (§五-1): allocation + element release ----
 void* myp_alloc_class_array(uint64_t count, uint32_t elem_size) {
-    size_t total = MYP_ARR_HEADER_SIZE + (size_t)count * (size_t)elem_size;
-    char* base = (char*)malloc(total);
-    if (!base) return NULL;
+    size_t total = sizeof(myp_alloc_node_t) + MYP_ARR_HEADER_SIZE +
+                   (size_t)count * (size_t)elem_size;
+    myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(total);
+    if (!node) return NULL;
+    char* base = (char*)node + sizeof(myp_alloc_node_t);
     myp_arr_header_t* h = (myp_arr_header_t*)base;
     h->count = count;
     h->elem_size = elem_size;
     h->pad = 0;
     h->rc = 1;
     h->type_id = MYP_ARR_TYPE_ID;
-    myp_alloc_list_push(base);   // track base for exit cleanup
+    myp_alloc_list_push(node);
     return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
 }
 
 static void myp_free_class_array(void* data) {
     if (!data) return;
     char* base = (char*)data - MYP_ARR_HEADER_SIZE;
-    myp_alloc_list_mark_freed(base);
-    free(base);
+    myp_alloc_node_t* node =
+        (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
+    myp_alloc_list_remove(node);
+    free(node);
 }
 
 // Release `count` element refs of a fixed (stack) class array. Elements are
