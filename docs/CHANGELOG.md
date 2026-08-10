@@ -27,6 +27,16 @@
 
 ## 编译器版本历史
 
+### v3.11.16
+- **Channel 同步交接（channel_pingpong 21→5ms，反超 Go 1.20）**：`send`/`recv`
+  完成缓冲操作后唤醒对端等待者时，若调用方是协程则**立即 `__myp_coro_resume`**
+  （Go 式 rendezvous，免一轮 `Coro.scheduler()` 往返）。深度守卫（64）防链式递归
+  失控；`close`/`try_*` 保持 ready-only。
+  - 前置：v3.11.15 修复的多消费者 count 下溢与句柄槽位复用两个缺陷是本优化的
+    安全前提——修复后同步交接 181/181 回归（普通/ASan）+ 4p×2c 压力测试全过。
+  - 效果（Go/MYP）：channel_pingpong **0.29→1.20**（5ms vs Go 6ms，MYP 反超）；
+    io_socket 1.08、coro_switch 4.22、coro_spawn 0.16 无回归；全 25 基准 verify 全对。
+
 ### v3.11.15
 - **修复两个协程/通道崩溃级缺陷**：
   - **Channel 多消费者 count 下溢**：`myp_channel_recv` park-resume 路径无守卫
