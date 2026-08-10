@@ -87,6 +87,19 @@ static std::string getDir(const std::string& path) {
     return path.substr(0, pos);
 }
 
+// Absolute directory of the running executable — robust to a RELATIVE argv[0]
+// (e.g. `../../build/mypc run x.myp`), which previously made stdlib lookup fail.
+// Uses /proc/self/exe (Linux); falls back to argv[0] on failure (non-Linux).
+static std::string selfExeDir(const char* argv0) {
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return getDir(std::string(buf));
+    }
+    return getDir(argv0);
+}
+
 // Load and merge a stdlib module or a user file into the given TranslationUnit.
 // For stdlib modules: module_name = "Env" → loads "stdlib/Env.myp"
 // For user files: file_path = "./other.myp" → resolved relative to source_dir
@@ -610,8 +623,8 @@ static int runFile(int argc, char* argv[], int sub_idx, int opt_level) {
 
     // 相对可执行文件自动检测 stdlib（与主流程一致）
     std::string stdlib_path = "stdlib";
-    if (argv[0][0] == '/') {
-        std::string exe_dir = getDir(argv[0]);
+    {
+        std::string exe_dir = selfExeDir(argv[0]);
         std::string exe_stdlib = exe_dir + "/../stdlib";
         if (fileExists(exe_stdlib + "/env.myp")) stdlib_path = exe_stdlib;
     }
@@ -787,9 +800,9 @@ static int realMain(int argc, char* argv[]) {
         return 1;
     }
 
-    // Auto-detect stdlib relative to executable
-    if (stdlib_path == "stdlib" && argv[0][0] == '/') {
-        std::string exe_dir = getDir(argv[0]);
+    // Auto-detect stdlib relative to executable (works for relative argv[0] too)
+    if (stdlib_path == "stdlib") {
+        std::string exe_dir = selfExeDir(argv[0]);
         std::string exe_stdlib = exe_dir + "/../stdlib";
         if (fileExists(exe_stdlib + "/env.myp"))
             stdlib_path = exe_stdlib;
