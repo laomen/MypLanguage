@@ -1,0 +1,430 @@
+// examples/raytracer.myp — 光线追踪器（纯 MYP，CPU 软渲染，增强版）
+//
+// 特性：
+//   - 2×2 超采样抗锯齿
+//   - 镜面反射（多次反弹）
+//   - 玻璃球折射（Snell + Schlick 菲涅尔 + 全内反射）
+//   - 软阴影（4 采样面光源，确定性 LCG，MYP/C++ 结果一致）
+//   - 800×600 输出
+//
+// 输出：/tmp/raytracer.ppm (P6 二进制) + 打印 verify（像素通道和）与耗时
+// 运行：
+//   mypc -O2 examples/raytracer.myp -o rt && ./rt
+//   转 PNG：python3 -c "from PIL import Image; Image.open('/tmp/raytracer.ppm').save('/tmp/raytracer.png')"
+import env;
+import io;
+import math;
+import time;
+
+// ===================== 3D 向量 =====================
+struct Vec3 {
+    double x;
+    double y;
+    double z;
+}
+
+Vec3 vAdd(Vec3 a, Vec3 b) {
+    Vec3 r;
+    r.x = a.x + b.x; r.y = a.y + b.y; r.z = a.z + b.z;
+    return r;
+}
+Vec3 vSub(Vec3 a, Vec3 b) {
+    Vec3 r;
+    r.x = a.x - b.x; r.y = a.y - b.y; r.z = a.z - b.z;
+    return r;
+}
+Vec3 vMul(Vec3 a, double s) {
+    Vec3 r;
+    r.x = a.x * s; r.y = a.y * s; r.z = a.z * s;
+    return r;
+}
+double vDot(Vec3 a, Vec3 b) {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+Vec3 vCross(Vec3 a, Vec3 b) {
+    Vec3 r;
+    r.x = a.y * b.z - a.z * b.y;
+    r.y = a.z * b.x - a.x * b.z;
+    r.z = a.x * b.y - a.y * b.x;
+    return r;
+}
+Vec3 vNorm(Vec3 a) {
+    double l = Math.sqrt(vDot(a, a));
+    Vec3 r;
+    if (l > 1e-12) { r.x = a.x / l; r.y = a.y / l; r.z = a.z / l; }
+    else { r.x = 0.0; r.y = 0.0; r.z = 0.0; }
+    return r;
+}
+Vec3 vReflect(Vec3 d, Vec3 n) {
+    return vSub(d, vMul(n, 2.0 * vDot(d, n)));
+}
+double vLen(Vec3 a) {
+    return Math.sqrt(vDot(a, a));
+}
+Vec3 makeVec3(double x, double y, double z) {
+    Vec3 r;
+    r.x = x; r.y = y; r.z = z;
+    return r;
+}
+
+// ===================== 命中信息 =====================
+struct Hit {
+    double t;   // 命中距离，<0 未命中
+    int idx;    // 球索引，-1 未命中，-2 地面
+}
+
+// ===================== 光线追踪器 =====================
+class RayTracer {
+    action:
+        @constructor RayTracer() {
+            W_ = 800;
+            H_ = 600;
+
+            initScene();
+
+            eyeX_ = 0.0; eyeY_ = 1.3; eyeZ_ = 4.2;
+            Vec3 target = makeVec3(0.0, 1.0, 0.0);
+            Vec3 up = makeVec3(0.0, 1.0, 0.0);
+            Vec3 fwd = vNorm(vSub(target, makeVec3(eyeX_, eyeY_, eyeZ_)));
+            Vec3 right = vNorm(vCross(fwd, up));
+            Vec3 upv = vCross(right, fwd);
+            double tanHalf = Math.tan(30.0 * Math.pi() / 180.0);
+            double aspect = (W_ * 1.0) / H_;
+
+            File f = new File();
+            int ok = f.open("/tmp/raytracer.ppm", "wb");
+            if (ok != 0) {
+                Console.writeString("cannot open output\n");
+                return;
+            }
+            f.write("P6\n");
+            f.write(W_ + " " + H_ + "\n255\n");
+
+            long t0 = Time.nowMs();
+            long verify_ = 0L;
+            int y = 0;
+            while (y < H_) {
+                int x = 0;
+                while (x < W_) {
+                    // 2×2 超采样
+                    double r = 0.0, g = 0.0, b = 0.0;
+                    int sx = 0;
+                    while (sx < 2) {
+                        int sy = 0;
+                        while (sy < 2) {
+                            double fx = (x + (sx + 0.5) / 2.0) / W_;
+                            double fy = (y + (sy + 0.5) / 2.0) / H_;
+                            double ndcX = (2.0 * fx - 1.0) * tanHalf * aspect;
+                            double ndcY = (1.0 - 2.0 * fy) * tanHalf;
+                            // 确定性随机种子（按像素+子采样，MYP/C++ 一致）
+                            gSeed_ = ((y * 7919L + x * 104729L) * 2L) + (sx * 2 + sy);
+                            Vec3 dir = vNorm(vAdd(vAdd(fwd, vMul(right, ndcX)), vMul(upv, ndcY)));
+                            Vec3 c = trace(makeVec3(eyeX_, eyeY_, eyeZ_), dir, 3);
+                            r = r + c.x; g = g + c.y; b = b + c.z;
+                            sy = sy + 1;
+                        }
+                        sx = sx + 1;
+                    }
+                    r = r / 4.0; g = g / 4.0; b = b / 4.0;
+                    int ri = clampByte(r);
+                    int gi = clampByte(g);
+                    int bi = clampByte(b);
+                    f.writeByte(ri);
+                    f.writeByte(gi);
+                    f.writeByte(bi);
+                    verify_ = verify_ + ri + gi + bi;
+                    x = x + 1;
+                }
+                y = y + 1;
+            }
+            long t1 = Time.nowMs();
+            f.close();
+
+            Console.writeString("verify ");
+            Console.writeLong(verify_);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+
+    function:
+        // 光线-场景求交（球体 + 地面）
+        Hit sceneHit(Vec3 ro, Vec3 rd) {
+            Hit best;
+            best.t = -1.0;
+            best.idx = -1;
+            double bestT = 1e30;
+            int i = 0;
+            while (i < n_) {
+                Vec3 oc = vSub(ro, cen(i));
+                double a = vDot(rd, rd);
+                double b = 2.0 * vDot(oc, rd);
+                double c = vDot(oc, oc) - rad_[i] * rad_[i];
+                double disc = b * b - 4.0 * a * c;
+                if (disc > 0.0) {
+                    double sq = Math.sqrt(disc);
+                    double t0 = (-b - sq) / (2.0 * a);
+                    double t1 = (-b + sq) / (2.0 * a);
+                    if (t0 > 1e-4 && t0 < bestT) { bestT = t0; best.idx = i; }
+                    else if (t1 > 1e-4 && t1 < bestT) { bestT = t1; best.idx = i; }
+                }
+                i = i + 1;
+            }
+            if (rd.y < -1e-6) {
+                double tp = -ro.y / rd.y;
+                if (tp > 1e-4 && tp < bestT) {
+                    best.t = tp;
+                    best.idx = -2;
+                    return best;
+                }
+            }
+            if (best.idx >= 0) best.t = bestT;
+            return best;
+        }
+
+        // 指定球的远交点（玻璃折射出口）
+        double sphereFarT(Vec3 ro, Vec3 rd, int idx) {
+            Vec3 oc = vSub(ro, cen(idx));
+            double a = vDot(rd, rd);
+            double b = 2.0 * vDot(oc, rd);
+            double c = vDot(oc, oc) - rad_[idx] * rad_[idx];
+            double disc = b * b - 4.0 * a * c;
+            if (disc <= 0.0) return -1.0;
+            double t1 = (-b + Math.sqrt(disc)) / (2.0 * a);
+            if (t1 > 1e-4) return t1;
+            return -1.0;
+        }
+
+        Vec3 cen(int i) {
+            Vec3 r;
+            r.x = cx_[i]; r.y = cy_[i]; r.z = cz_[i];
+            return r;
+        }
+
+        // 折射（返回零向量表示全内反射）
+        Vec3 refract(Vec3 d, Vec3 n, double eta, double cosi) {
+            double k = 1.0 - eta * eta * (1.0 - cosi * cosi);
+            Vec3 r;
+            if (k < 0.0) { r.x = 0.0; r.y = 0.0; r.z = 0.0; return r; }
+            double s = eta * cosi - Math.sqrt(k);
+            r.x = eta * d.x + s * n.x;
+            r.y = eta * d.y + s * n.y;
+            r.z = eta * d.z + s * n.z;
+            return r;
+        }
+
+        // 与向量正交的单位向量
+        Vec3 perp(Vec3 a) {
+            Vec3 tmp;
+            if (Math.abs(a.x) < 0.9) { tmp.x = 1.0; tmp.y = 0.0; tmp.z = 0.0; }
+            else { tmp.x = 0.0; tmp.y = 1.0; tmp.z = 0.0; }
+            return vNorm(vCross(a, tmp));
+        }
+
+        // 确定性 LCG 步进
+        long lcg(long x) {
+            return (x * 1103515245L + 12345L) % 2147483648L;
+        }
+
+        // 软阴影：朝面光源打 4 条抖动阴影光线
+        double softShadow(Vec3 p2, Vec3 L) {
+            Vec3 u = perp(L);
+            Vec3 v = vCross(L, u);
+            long rng = gSeed_;
+            double occl = 0.0;
+            int s = 0;
+            while (s < 4) {
+                rng = lcg(rng);
+                double a1 = (rng % 100000L) / 100000.0;
+                rng = lcg(rng);
+                double a2 = (rng % 100000L) / 100000.0;
+                double ang = a1 * 2.0 * Math.pi();
+                double rr = Math.sqrt(a2) * 0.35;
+                Vec3 target = vAdd(makeVec3(lightX_, lightY_, lightZ_),
+                                   vAdd(vMul(u, Math.cos(ang) * rr), vMul(v, Math.sin(ang) * rr)));
+                Vec3 sd = vNorm(vSub(target, p2));
+                double sld = vLen(vSub(target, p2));
+                Hit sh = sceneHit(p2, sd);
+                if (sh.idx >= 0 && sh.t < sld) occl = occl + 1.0;
+                s = s + 1;
+            }
+            return 1.0 - occl / 4.0;
+        }
+
+        // 主光线：递归 trace（depth 次反弹）
+        Vec3 trace(Vec3 ro, Vec3 rd, int depth) {
+            Hit h = sceneHit(ro, rd);
+            if (h.idx == -2) {
+                // 地面棋盘
+                Vec3 p;
+                p.x = ro.x + rd.x * h.t;
+                p.y = 0.0;
+                p.z = ro.z + rd.z * h.t;
+                int ix = Math.trunc(Math.floor(p.x));
+                int iz = Math.trunc(Math.floor(p.z));
+                double checker = 1.0;
+                if ((ix + iz) % 2 != 0) checker = 0.72;
+                Vec3 n = makeVec3(0.0, 1.0, 0.0);
+                Vec3 p2 = vAdd(p, vMul(n, 1e-3));
+                Vec3 lv = vSub(makeVec3(lightX_, lightY_, lightZ_), p2);
+                Vec3 L = vNorm(lv);
+                double diff = vDot(n, L);
+                if (diff < 0.0) diff = 0.0;
+                double shad = softShadow(p2, L);
+                double k = 0.13 + 0.87 * diff * shad;
+                Vec3 out;
+                out.x = 0.55 * checker * k;
+                out.y = 0.55 * checker * k;
+                out.z = 0.55 * checker * k;
+                return out;
+            }
+            if (h.idx >= 0) {
+                Vec3 p = vAdd(ro, vMul(rd, h.t));
+                Vec3 n = vNorm(vSub(p, cen(h.idx)));
+                return shade(ro, rd, p, n, h.idx, depth);
+            }
+            // 背景渐变
+            Vec3 out;
+            double t = 0.5 * (rd.y + 1.0);
+            out.x = 0.25 + 0.35 * t;
+            out.y = 0.35 + 0.35 * t;
+            out.z = 0.55 + 0.25 * t;
+            return out;
+        }
+
+        // 球体着色（按材质分派）
+        Vec3 shade(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, int idx, int depth) {
+            if (mat_[idx] == 2) return shadeGlass(ro, rd, p, n, idx, depth);
+            double cr = kr_[idx];
+            double cg = kg_[idx];
+            double cb = kb_[idx];
+            Vec3 p2 = vAdd(p, vMul(n, 1e-3));
+            Vec3 lv = vSub(makeVec3(lightX_, lightY_, lightZ_), p2);
+            Vec3 L = vNorm(lv);
+            double diff = vDot(n, L);
+            if (diff < 0.0) diff = 0.0;
+            double shad = softShadow(p2, L);
+            Vec3 V = vMul(rd, -1.0);
+            Vec3 H;
+            H.x = L.x + V.x; H.y = L.y + V.y; H.z = L.z + V.z;
+            H = vNorm(H);
+            double spec = vDot(n, H);
+            if (spec < 0.0) spec = 0.0;
+            spec = Math.pow(spec, 32.0);
+            double ir = cr * (0.15 + 0.85 * diff * shad) + 0.9 * spec * shad;
+            double ig = cg * (0.15 + 0.85 * diff * shad) + 0.9 * spec * shad;
+            double ib = cb * (0.15 + 0.85 * diff * shad) + 0.9 * spec * shad;
+            // 镜面反射
+            if (mat_[idx] == 1 && depth > 0) {
+                Vec3 R = vReflect(rd, n);
+                Vec3 rc = trace(p2, R, depth - 1);
+                ir = ir * 0.35 + rc.x * 0.65;
+                ig = ig * 0.35 + rc.y * 0.65;
+                ib = ib * 0.35 + rc.z * 0.65;
+            }
+            Vec3 out;
+            out.x = ir; out.y = ig; out.z = ib;
+            return out;
+        }
+
+        // 玻璃：菲涅尔混合反射 + 折射（进出两次表面）
+        Vec3 shadeGlass(Vec3 ro, Vec3 rd, Vec3 p, Vec3 n, int idx, int depth) {
+            if (depth <= 0) {
+                Vec3 z;
+                z.x = 0.0; z.y = 0.0; z.z = 0.0;
+                return z;
+            }
+            double cosi = -vDot(rd, n);
+            if (cosi < 0.0) cosi = 0.0;
+            double r0 = (1.0 - 1.5) / (1.0 + 1.5);
+            r0 = r0 * r0;
+            double fr = r0 + (1.0 - r0) * Math.pow(1.0 - cosi, 5.0);
+            // 反射
+            Vec3 R = vReflect(rd, n);
+            Vec3 pp = vAdd(p, vMul(n, 1e-3));
+            Vec3 cref = trace(pp, R, depth - 1);
+            // 折射进入
+            Vec3 T = refract(rd, n, 1.0 / 1.5, cosi);
+            Vec3 ctrans;
+            if (T.x == 0.0 && T.y == 0.0 && T.z == 0.0) {
+                return cref;   // 全内反射
+            }
+            // 出口
+            double tf = sphereFarT(p, T, idx);
+            if (tf < 1e-4) return cref;
+            Vec3 xp = vAdd(p, vMul(T, tf));
+            Vec3 n2 = vNorm(vSub(xp, cen(idx)));
+            double cosi2 = -vDot(T, n2);
+            if (cosi2 < 0.0) cosi2 = 0.0;
+            Vec3 T2 = refract(T, n2, 1.5, cosi2);
+            if (T2.x == 0.0 && T2.y == 0.0 && T2.z == 0.0) {
+                ctrans = trace(vAdd(xp, vMul(n2, 1e-3)), vReflect(T, n2), depth - 1);
+            } else {
+                ctrans = trace(vAdd(xp, vMul(n2, 1e-3)), T2, depth - 1);
+            }
+            Vec3 out;
+            out.x = fr * cref.x + (1.0 - fr) * ctrans.x;
+            out.y = fr * cref.y + (1.0 - fr) * ctrans.y;
+            out.z = fr * cref.z + (1.0 - fr) * ctrans.z;
+            return out;
+        }
+
+        int clampByte(double v) {
+            if (v < 0.0) v = 0.0;
+            if (v > 1.0) v = 1.0;
+            return Math.trunc(v * 255.0);
+        }
+
+        // 场景：6 个球体（mat: 0 漫反射, 1 镜面, 2 玻璃）+ 光源
+        void initScene() {
+            n_ = 6;
+            cx_ = new double[n_]; cy_ = new double[n_]; cz_ = new double[n_];
+            rad_ = new double[n_];
+            kr_ = new double[n_]; kg_ = new double[n_]; kb_ = new double[n_];
+            mat_ = new int[n_];
+            // 0 中央红色镜面球
+            cx_[0] = 0.0;  cy_[0] = 1.0;  cz_[0] = 0.0;  rad_[0] = 1.0;
+            kr_[0] = 0.85; kg_[0] = 0.20; kb_[0] = 0.20; mat_[0] = 1;
+            // 1 左绿漫反射
+            cx_[1] = -2.2; cy_[1] = 0.7;  cz_[1] = -0.5; rad_[1] = 0.7;
+            kr_[1] = 0.20; kg_[1] = 0.80; kb_[1] = 0.20; mat_[1] = 0;
+            // 2 右蓝漫反射
+            cx_[2] = 2.2;  cy_[2] = 0.7;  cz_[2] = 0.3;  rad_[2] = 0.7;
+            kr_[2] = 0.20; kg_[2] = 0.30; kb_[2] = 0.85; mat_[2] = 0;
+            // 3 前玻璃球
+            cx_[3] = 0.9;  cy_[3] = 0.4;  cz_[3] = 1.1;  rad_[3] = 0.4;
+            kr_[3] = 0.9;  kg_[3] = 0.9;  kb_[3] = 0.9;  mat_[3] = 2;
+            // 4 后紫漫反射
+            cx_[4] = -1.0; cy_[4] = 0.4;  cz_[4] = -1.6; rad_[4] = 0.45;
+            kr_[4] = 0.70; kg_[4] = 0.30; kb_[4] = 0.75; mat_[4] = 0;
+            // 5 上/后小黄镜面
+            cx_[5] = -0.5; cy_[5] = 2.1;  cz_[5] = -0.3; rad_[5] = 0.5;
+            kr_[5] = 0.90; kg_[5] = 0.80; kb_[5] = 0.15; mat_[5] = 1;
+            lightX_ = 2.5; lightY_ = 5.0; lightZ_ = -2.5;
+        }
+
+    property:
+        int W_;
+        int H_;
+        int n_;
+        double[] cx_;
+        double[] cy_;
+        double[] cz_;
+        double[] rad_;
+        double[] kr_;
+        double[] kg_;
+        double[] kb_;
+        int[] mat_;
+        double lightX_;
+        double lightY_;
+        double lightZ_;
+        double eyeX_;
+        double eyeY_;
+        double eyeZ_;
+        long gSeed_;
+}
+
+int main() {
+    RayTracer rt = new RayTracer();
+    return 0;
+}
