@@ -1,0 +1,28 @@
+// prefix_chain: 前缀 ++/-- 反解线性化后语义正确
+// 覆盖 -- / ++ / ----（两层 -- 折叠为 x-2）/ ++--（抵消）
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            int a = 10;
+            --a;          // a = 9
+            int b = 10;
+            ++b;          // b = 11
+            int c = 10;
+            ----c;        // c = 8
+            int d = 10;
+            ++--d;        // d = 10（增量抵消）
+
+            if (a != 9)  { Console.writeLine("FAIL a=" + a); return; }
+            if (b != 11) { Console.writeLine("FAIL b=" + b); return; }
+            if (c != 8)  { Console.writeLine("FAIL c=" + c); return; }
+            if (d != 10) { Console.writeLine("FAIL d=" + d); return; }
+            Console.writeLine("PASS prefix ++/-- chain");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

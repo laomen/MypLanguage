@@ -419,20 +419,24 @@ std::unique_ptr<Expr> Parser::parseUnary() {
         return std::make_unique<UnaryOpExpr>(
             UnaryOpKind::Negate, std::move(operand), previous().range);
     }
-    // Prefix ++/--: desugar as assignment
-    if (match(TokenKind::PlusPlus)) {
+    // Prefix ++/--: desugar as assignment `x = x ± N`.
+    // Collect ALL consecutive ++/-- first. A naive per-operator desugar that
+    // recursively parses the operand and cloneExpr's it nests AssignmentExprs,
+    // doubling the tree at every level → exponential AST growth (`----`×25 =
+    // 2^26 nodes → OOM, found by fuzz/`内存占用太大挂了`). Summing the delta
+    // keeps the AST linear and is semantically equivalent for pure chains
+    // (each nested level telescopes onto the base lvalue).
+    if (check(TokenKind::PlusPlus) || check(TokenKind::MinusMinus)) {
+        int64_t net = 0;
+        while (match(TokenKind::PlusPlus)) net += 1;
+        while (match(TokenKind::MinusMinus)) net -= 1;
         auto operand = parseUnary();
-        auto one = std::make_unique<IntegerLiteralExpr>(1, previous().range);
+        if (net == 0) return operand;  // `++--x` etc.: deltas cancel out
+        auto delta = std::make_unique<IntegerLiteralExpr>(
+            net < 0 ? -net : net, previous().range);
+        BinaryOpKind op = net < 0 ? BinaryOpKind::Sub : BinaryOpKind::Add;
         auto binop = std::make_unique<BinaryOpExpr>(
-            cloneExpr(*operand), BinaryOpKind::Add, std::move(one), previous().range);
-        return std::make_unique<AssignmentExpr>(
-            std::move(operand), std::move(binop), previous().range);
-    }
-    if (match(TokenKind::MinusMinus)) {
-        auto operand = parseUnary();
-        auto one = std::make_unique<IntegerLiteralExpr>(1, previous().range);
-        auto binop = std::make_unique<BinaryOpExpr>(
-            cloneExpr(*operand), BinaryOpKind::Sub, std::move(one), previous().range);
+            cloneExpr(*operand), op, std::move(delta), previous().range);
         return std::make_unique<AssignmentExpr>(
             std::move(operand), std::move(binop), previous().range);
     }
