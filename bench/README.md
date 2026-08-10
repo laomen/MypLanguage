@@ -20,6 +20,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `nbody` | 浮点除法 + sqrt + O(N²) 嵌套访存 | 5000 体 × 2 步 |
 | `mandelbrot` | 双精度分支密集 + 提前跳出 | 1000×1000, 256 迭代 |
 | `hashmap` | 泛型 + 类实例 ARC 成本（vs std::unordered_map） | 10⁶ put/get |
+| `tripleloop` | 三层嵌套循环控制 + 整型 ALU（无内存访问） | 300³ 迭代 |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。

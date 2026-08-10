@@ -1,0 +1,43 @@
+// bench/myp/tripleloop.myp — 三层嵌套循环速度（纯整型算术累加）
+// 测：深层循环控制开销 + 整数 ALU（i/j/k 三重 while 嵌套，无内存访问）。
+// verify = 累加和（MYP 与 C++ 必须一致）
+import env;
+import time;
+
+long tripleLoop(int n) {
+    long sum = 0L;
+    int i = 0;
+    while (i < n) {
+        int j = 0;
+        while (j < n) {
+            int k = 0;
+            while (k < n) {
+                sum = sum + (i * 101 + j * 97 + k * 89) % 997;
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 300;
+            long t0 = Time.nowMs();
+            long s = tripleLoop(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(s);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

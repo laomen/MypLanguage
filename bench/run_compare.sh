@@ -36,7 +36,7 @@ case "$MYPCC" in
     *) MYPCC="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")" ;;
 esac
 
-names=(sieve matmul nbody mandelbrot hashmap)
+names=(sieve matmul nbody mandelbrot hashmap tripleloop)
 mkdir -p out
 
 # verify 数值一致性（整数精确、浮点容差 1e-3 相对误差）
