@@ -183,9 +183,9 @@ bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
 MYPLanguage/
 ├── src/              # Compiler source (C++17)
 │   ├── lexer/        # Lexical analysis
-│   ├── parser/       # Syntax analysis
-│   ├── sema/         # Semantic analysis
-│   ├── codegen/      # LLVM code generation
+│   ├── parser/       # Syntax analysis (parser / parser_expr / parser_stmt)
+│   ├── sema/         # Semantic analysis (sema / sema_expr)
+│   ├── codegen/      # LLVM code generation (codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu)
 │   ├── runtime/      # C runtime
 │   ├── lsp/          # Language server
 │   └── fmt/          # Formatter
@@ -196,7 +196,7 @@ MYPLanguage/
 ├── BNCTDoseEngine/   # BNCT dose simulation engine (example)
 ├── vscode-myp/       # VS Code extension
 ├── docs/             # Documentation
-└── tests/            # Test suite
+└── tests/            # Test suite (incl. tests/stress/: `bash tests/stress/run_stress.sh`)
 ```
 
 ## 🎯 BNCT Dose Engine

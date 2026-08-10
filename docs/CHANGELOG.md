@@ -45,6 +45,27 @@
   - 注：perf 显示剩余热点是 channel send/recv/wake + 2 次上下文切换/消息的固有
     机器开销（切换返回边界的样本涂抹），无单一可安全下刀的大项。
 
+- **修复 `@parallel for` 偶发永久挂起（计数器重置竞态，压测暴露）**：
+  - 症状：间歇性 ~1/3 概率 worker 全核空转 + 主线程 barrier 永等；也是此前回归
+    `parallel_for` 偶发超时的根因。
+  - 根因：`myp_pool_parallel_for` 先推送分块、后重置 `done_count=0`。上次调用
+    残留的自旋 worker 在「推送后、重置前」窗口抢到新分块并 `++done_count`，随后
+    重置抹掉该增量 → 该分块永久不计 → `done_count` 到不了 `total_chunks` → 挂起。
+  - 修复：发布任何新分块前先重置计数器（`runtime.c`）。
+
+- **新增协程/并发压力测试套件 `tests/stress/`**：
+  - `run_stress.sh`（-O2 / TSAN=1 / ASAN=1）+ 5 项：`coro_flood`（3.6 万协程创建/
+    销毁）、`coro_switch_storm`（400 万次切换）、`channel_stress`（多产多消）、
+    `async_io_stress`（loopback TCP）、`parallel_stress`（@parallel for + Atomic）。
+  - 独立于 `run_tests.sh`（负载重、含时序数据，按需运行）。
+
+- **可读性重构：拆分 10807 行 codegen.cpp 与 4785 行 sema.cpp / 2952 行 parser.cpp**
+  （纯重构，零行为变化，181/181 + 压测 5/5 全过）：
+  - `codegen/` → codegen.cpp(核心) / codegen_class / codegen_stmt / codegen_expr /
+    codegen_gpu；`sema/` → sema.cpp + sema_expr.cpp；`parser/` → parser.cpp +
+    parser_expr.cpp + parser_stmt.cpp。最大文件 10807 → ~2900 行。
+  - `convertIntegerValue`/`zextIndexValue` 去 static 并在 `CodeGen.h` 声明（跨 TU）。
+
 ### v3.11.19
 - **C 运行时以 -O2 编译（perf 定位：`cpp_long` channel 乒乓 N=10⁷ 的
   `myp_channel_recv` 31.6% / `myp_channel_wake_one` 15.0%）**：

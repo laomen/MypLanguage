@@ -2562,6 +2562,32 @@ import test;
 }
 ```
 
+### 压力测试（tests/stress/）
+
+针对运行时（ucontext 协程、通道、异步 I/O、线程池）的**压力测试**：用远超常规
+负载压垮运行时，寻找**崩溃、内存泄漏、死锁、数据竞争、协程/句柄泄漏**。
+与 `bench/`（测性能、对拍 C++/Go）不同，stress 只关注**稳定性**——高压下不崩、
+不漏、不死锁、结果正确。因负载重、含时序数据（ms/worker 数），**独立于
+`run_tests.sh`**，按需运行：
+
+```bash
+bash tests/stress/run_stress.sh                # 全部（-O2）
+bash tests/stress/run_stress.sh coro_flood     # 只跑指定项
+TSAN=1 bash tests/stress/run_stress.sh         # ThreadSanitizer 查数据竞争
+ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer 查内存错误
+```
+
+| 测试 | 压什么 | 验证 |
+|------|--------|------|
+| `coro_flood` | 协程海量创建/销毁（自然回收 + `destroy` 强杀双路径） | `Coro.count()` 归零、无泄漏 |
+| `coro_switch_storm` | 上下文切换吞吐（ucontext swapcontext） | 全部结束、累加和精确 |
+| `channel_stress` | 通道多生产者/多消费者（cap=1 ping-pong + cap=8 批量） | 无死锁、Σrecv == 理论值 |
+| `async_io_stress` | 异步 loopback TCP（协程 `await recvAsync`） | 全部收到正确 payload |
+| `parallel_stress` | `@parallel for` + Atomic 高压竞争 | Σ 精确 == n、≥2 worker 并行 |
+
+> 每个测试打印 `PASS <name>`，runner 按退出码 + PASS 判定；退出码 0=全过、1=有失败。
+> 该套件曾复现并修复 `@parallel for` 偶发挂起（计数器重置竞态，见 CHANGELOG）。
+
 ### 代码格式化
 
 ```bash
@@ -2628,7 +2654,10 @@ MYPLanguage/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
 ├── src/                 # 编译器源码
 │   ├── main.cpp         # mypc 驱动（lexer→parser→sema→codegen→link）
-│   ├── ast/ lexer/ parser/ sema/ codegen/ runtime/
+│   ├── ast/ lexer/ runtime/ eval/ macro/ fmt/ lsp/ dap/   # 各目录职责见下
+│   ├── parser/          # 语法分析（parser / parser_expr / parser_stmt，按职责拆分）
+│   ├── sema/            # 语义分析（sema / sema_expr）
+│   ├── codegen/         # LLVM 代码生成（codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu + myp_passes）
 │   ├── eval/            # @eval 编译期求值
 │   ├── macro/           # 宏展开
 │   ├── fmt/             # 格式化器
@@ -2643,6 +2672,7 @@ MYPLanguage/
 ├── tests/               # run_tests.sh / run_tests_O2.sh / run_tests_asan.sh /
 │   └── ...              #   run_tests_tsan.sh / test_debug.sh / test_dap.py /
 │                        #   expected/ / negative/ / <feature>/
+│                        #   stress/（协程/并发压力测试，run_stress.sh）
 ├── examples/            # 完整示例（hello/fib/ad/BNCT/sdl/tui）
 ├── BNCTDoseEngine/      # BNCT 蒙特卡洛引擎（纯 MYP + HDF5 截面）
 ├── deeplearning/        # MLP + MNIST 训练/推理

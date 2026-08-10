@@ -183,9 +183,9 @@ bash tests/run_tests_asan.sh     # ASAN（AddressSanitizer）回归
 MYPLanguage/
 ├── src/              # 编译器源码 (C++17)
 │   ├── lexer/        # 词法分析
-│   ├── parser/       # 语法分析
-│   ├── sema/         # 语义分析
-│   ├── codegen/      # LLVM 代码生成
+│   ├── parser/       # 语法分析（parser / parser_expr / parser_stmt）
+│   ├── sema/         # 语义分析（sema / sema_expr）
+│   ├── codegen/      # LLVM 代码生成（codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu）
 │   ├── runtime/      # C 运行时
 │   ├── lsp/          # 语言服务器
 │   └── fmt/          # 格式化
@@ -196,7 +196,7 @@ MYPLanguage/
 ├── BNCTDoseEngine/   # BNCT 剂量模拟引擎 (示例)
 ├── vscode-myp/       # VS Code 扩展
 ├── docs/             # 文档
-└── tests/            # 测试套件
+└── tests/            # 测试套件（含 tests/stress/ 压力测试：`bash tests/stress/run_stress.sh`）
 ```
 
 ## 🎯 BNCT Dose Engine
