@@ -3800,38 +3800,52 @@ void __myp_coro_scheduler(void) {
         for (int i = 0; i < myp_coro_wait_count; i++)
             if (myp_coro_waits[i].active && myp_coro_waits[i].kind == 2) nfd++;
         if (nfd > 0) {
-            struct pollfd* pfds = (struct pollfd*)malloc((size_t)nfd * sizeof(struct pollfd));
-            int* widx = (int*)malloc((size_t)nfd * sizeof(int));
-            if (pfds && widx) {
-                int k = 0;
-                for (int i = 0; i < myp_coro_wait_count; i++) {
-                    if (myp_coro_waits[i].active && myp_coro_waits[i].kind == 2) {
-                        pfds[k].fd = myp_coro_waits[i].fd;
-                        pfds[k].events = myp_coro_waits[i].fd_events;
-                        pfds[k].revents = 0;
-                        widx[k] = i;
-                        k++;
-                    }
+            // Reusable thread-local buffers (grow on demand) instead of
+            // malloc/free per scheduler call: io_socket polls every round, so
+            // per-call heap traffic is pure overhead. (Same rationale as the
+            // ready-set snapshot buffer below.)
+            static __thread struct pollfd* s_pfds = NULL;
+            static __thread int* s_widx = NULL;
+            static __thread int s_fd_cap = 0;
+            if (nfd > s_fd_cap) {
+                int nc = s_fd_cap ? s_fd_cap * 2 : 16;
+                while (nc < nfd) nc *= 2;
+                struct pollfd* np = (struct pollfd*)realloc(s_pfds, (size_t)nc * sizeof(struct pollfd));
+                int* nw = (int*)realloc(s_widx, (size_t)nc * sizeof(int));
+                if (!np || !nw) goto fd_poll_done;  // OOM: skip this round's poll, keep scheduler alive
+                s_pfds = np;
+                s_widx = nw;
+                s_fd_cap = nc;
+            }
+            struct pollfd* pfds = s_pfds;
+            int* widx = s_widx;
+            int k = 0;
+            for (int i = 0; i < myp_coro_wait_count; i++) {
+                if (myp_coro_waits[i].active && myp_coro_waits[i].kind == 2) {
+                    pfds[k].fd = myp_coro_waits[i].fd;
+                    pfds[k].events = myp_coro_waits[i].fd_events;
+                    pfds[k].revents = 0;
+                    widx[k] = i;
+                    k++;
                 }
-                if (poll(pfds, (nfds_t)nfd, 0) > 0) {
-                    for (int j = 0; j < nfd; j++) {
-                        if (pfds[j].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
-                            int wi = widx[j];
-                            int64_t h = myp_coro_waits[wi].handle;
-                            myp_coro_waits[wi].active = 0;
-                            if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
-                                myp_coros[h]->active) {
-                                if (myp_coro_waits[wi].wait_index >= 0)  // §五-5 P4 waitAnyOf
-                                    myp_coros[h]->last_wait_index = myp_coro_waits[wi].wait_index;
-                                myp_coros[h]->ready = 1;
-                            }
+            }
+            if (poll(pfds, (nfds_t)nfd, 0) > 0) {
+                for (int j = 0; j < nfd; j++) {
+                    if (pfds[j].revents & (POLLIN | POLLOUT | POLLERR | POLLHUP)) {
+                        int wi = widx[j];
+                        int64_t h = myp_coro_waits[wi].handle;
+                        myp_coro_waits[wi].active = 0;
+                        if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
+                            myp_coros[h]->active) {
+                            if (myp_coro_waits[wi].wait_index >= 0)  // §五-5 P4 waitAnyOf
+                                myp_coros[h]->last_wait_index = myp_coro_waits[wi].wait_index;
+                            myp_coros[h]->ready = 1;
                         }
                     }
                 }
             }
-            if (pfds) free(pfds);
-            if (widx) free(widx);
         }
+        fd_poll_done: ;
     }
     // §五-5 P3: deliver completed file-executor results to this thread's
     // waiting coroutines (worker threads posted them to a global result list).
@@ -3839,8 +3853,20 @@ void __myp_coro_scheduler(void) {
     if (myp_coro_count == 0) return;
     // Snapshot the ready set first — a coroutine may yield (stay ready) while
     // we are running; we must not re-enter it in the same round.
-    int64_t* snapshot = (int64_t*)malloc((size_t)myp_coro_count * sizeof(int64_t));
-    if (!snapshot) return;
+    // Reusable thread-local buffer (grows on demand) instead of malloc/free per
+    // scheduler call — scheduler-driven workloads (channel ping-pong, io_socket)
+    // call Coro.scheduler() once per round, so per-call heap traffic is pure
+    // overhead (measured: ping-pong 54→~44ms, io_socket 89→~82ms).
+    static __thread int64_t* s_snapshot = NULL;
+    static __thread int s_snapshot_cap = 0;
+    size_t need = (size_t)myp_coro_count * sizeof(int64_t);
+    if ((int)need > s_snapshot_cap) {
+        int64_t* np = (int64_t*)realloc(s_snapshot, need);
+        if (!np) return;
+        s_snapshot = np;
+        s_snapshot_cap = (int)need;
+    }
+    int64_t* snapshot = s_snapshot;
     int n = 0;
     for (int i = 0; i < myp_coro_count; i++) {
         if (myp_coros[i] && myp_coros[i]->active && myp_coros[i]->ready)
@@ -3852,7 +3878,6 @@ void __myp_coro_scheduler(void) {
             myp_coros[h]->active && myp_coros[h]->ready)
             __myp_coro_resume(h, 0);
     }
-    free(snapshot);
 }
 
 // ---- C4: event waiters (type/state/reserve declared above, before destroy) ----
