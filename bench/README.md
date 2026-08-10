@@ -16,7 +16,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | 基准 | 测什么 | 规模 |
 |------|--------|------|
 | `sieve` | 字节数组内存带宽 + 分支 + 紧致循环 | N=10⁷ |
-| `matmul` | 浮点乘加 + 自动向量化机会是否保留 | 512×512 |
+| `matmul` | 浮点乘加 + 自动向量化（分块 64 写法，内层 C/B 连续可向量化） | 512×512 |
 | `nbody` | 浮点除法 + sqrt + O(N²) 嵌套访存 | 5000 体 × 2 步 |
 | `mandelbrot` | 双精度分支密集 + 提前跳出 | 1000×1000, 256 迭代 |
 | `hashmap` | 泛型 + 类实例 ARC 成本（vs std::unordered_map） | 10⁶ put/get |

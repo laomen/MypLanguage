@@ -10,12 +10,17 @@ static double matmulTrace(int n) {
         A[i] = (i % 1000);
         B[i] = (i % 7);
     }
-    for (int r = 0; r < n; ++r)
-        for (int c = 0; c < n; ++c) {
-            double sum = 0.0;
-            for (int k = 0; k < n; ++k) sum += A[r * n + k] * B[k * n + c];
-            C[r * n + c] = sum;
-        }
+    // 分块(blocked)矩阵乘：内层 jj 循环 C/B 连续 + A 元素不变 → 可向量化
+    const int BS = 64;
+    for (int i0 = 0; i0 < n; i0 += BS)
+        for (int j0 = 0; j0 < n; j0 += BS)
+            for (int k0 = 0; k0 < n; k0 += BS)
+                for (int i1 = i0; i1 < i0 + BS && i1 < n; ++i1)
+                    for (int k1 = k0; k1 < k0 + BS && k1 < n; ++k1) {
+                        double av = A[i1 * n + k1];
+                        for (int j1 = j0; j1 < j0 + BS && j1 < n; ++j1)
+                            C[i1 * n + j1] += av * B[k1 * n + j1];
+                    }
     double trace = 0.0;
     for (int i = 0; i < n; ++i) trace += C[i * n + i];
     return trace;

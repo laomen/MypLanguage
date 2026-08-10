@@ -15,20 +15,33 @@ double matmulTrace(int n) {
         C[i] = 0.0;
         i = i + 1;
     }
-    int r = 0;
-    while (r < n) {
-        int c = 0;
-        while (c < n) {
-            double sum = 0.0;
-            int k = 0;
-            while (k < n) {
-                sum = sum + A[r * n + k] * B[k * n + c];
-                k = k + 1;
+    // 分块(blocked)矩阵乘：内层 jj 循环 C/B 连续 + A 元素不变 → 可向量化
+    int BS = 64;
+    int i0 = 0;
+    while (i0 < n) {
+        int j0 = 0;
+        while (j0 < n) {
+            int k0 = 0;
+            while (k0 < n) {
+                int i1 = i0;
+                while (i1 < i0 + BS && i1 < n) {
+                    int k1 = k0;
+                    while (k1 < k0 + BS && k1 < n) {
+                        double av = A[i1 * n + k1];
+                        int j1 = j0;
+                        while (j1 < j0 + BS && j1 < n) {
+                            C[i1 * n + j1] = C[i1 * n + j1] + av * B[k1 * n + j1];
+                            j1 = j1 + 1;
+                        }
+                        k1 = k1 + 1;
+                    }
+                    i1 = i1 + 1;
+                }
+                k0 = k0 + BS;
             }
-            C[r * n + c] = sum;
-            c = c + 1;
+            j0 = j0 + BS;
         }
-        r = r + 1;
+        i0 = i0 + BS;
     }
     double trace = 0.0;
     i = 0;
