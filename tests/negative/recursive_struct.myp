@@ -1,0 +1,5 @@
+// EXPECT ERROR: recursive struct definition (infinite size)
+// By-value self-embedding (scalar or fixed array) must be rejected at sema,
+// not fail cryptically in codegen or produce a broken layout.
+struct S { S next; }
+int main() { return 0; }

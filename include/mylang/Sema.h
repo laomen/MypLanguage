@@ -210,6 +210,15 @@ private:
     // visitExpr; see SemaDepthGuard in sema_expr.cpp).
     int recursion_depth_ = 0;
 
+    // ---- Recursive struct detection (infinite by-value size) ----
+    // struct key -> struct-type field names embedded by value; and the decl
+    // range for diagnostics. A cycle in this graph means an infinitely-sized
+    // struct (e.g. `struct S { S next; }`), which would otherwise reach codegen
+    // and fail with a cryptic "Code generation failed".
+    std::unordered_map<std::string, std::vector<std::string>> struct_byval_edges_;
+    std::unordered_map<std::string, SourceRange> struct_decl_ranges_;
+    void detectStructRecursion();
+
 };
 
 } // namespace mylang

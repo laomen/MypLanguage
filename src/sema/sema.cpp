@@ -351,6 +351,10 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
         }
     }
 
+    // All structs registered → detect by-value recursion (infinite size) and
+    // report clean diagnostics instead of a cryptic codegen failure.
+    detectStructRecursion();
+
     for (auto& ff : tu.ffis) {
         visitFFI(ff);
     }
@@ -481,6 +485,23 @@ void Sema::visitStructDecl(StructDecl& decl) {
         if (ft.kind == TypeKind::Void && prop.type.class_name.empty()) {
             error(prop.range, "cannot declare field of type 'void'");
         }
+        // Record by-value struct embedding (struct fields are always by value
+        // in MYP) for recursive/infinite-size detection. Self-embedding
+        // (S { S next; }) and mutual cycles (A { B b; } B { A a; }) are caught
+        // later in detectStructRecursion(). Fixed-size array fields (T[N]) are
+        // also inline by value — S { S[3] arr; } is equally infinite and would
+        // otherwise silently produce a broken struct layout.
+        if (ft.kind == TypeKind::Struct && !ft.class_name.empty()) {
+            struct_byval_edges_[type_key].push_back(ft.class_name);
+            struct_decl_ranges_[type_key] = decl.range;
+        } else if (ft.kind == TypeKind::Array && ft.array_size > 0) {
+            const TypeInfo* et = ft.element_type.get();
+            while (et && et->kind == TypeKind::Array) et = et->element_type.get();
+            if (et && et->kind == TypeKind::Struct && !et->class_name.empty()) {
+                struct_byval_edges_[type_key].push_back(et->class_name);
+                struct_decl_ranges_[type_key] = decl.range;
+            }
+        }
         for (size_t j = 0; j < i; ++j) {
             if (decl.properties[j].name == prop.name) {
                 error(prop.range, "duplicate field '" + prop.name +
@@ -523,6 +544,36 @@ void Sema::visitStructDecl(StructDecl& decl) {
         }
         symbol_table_.declare(method_name, func_type);
     }
+}
+
+void Sema::detectStructRecursion() {
+    // Detect by-value struct cycles → infinitely-sized structs. Any cycle in
+    // the by-value embedding graph is an error (C would say "field has
+    // incomplete type"). Without this, `struct S { S next; }` passes sema and
+    // fails later in codegen with a cryptic "Code generation failed".
+    std::unordered_map<std::string, int> color;   // 0=white 1=gray 2=black
+    std::function<void(const std::string&)> dfs =
+        [&](const std::string& n) {
+            color[n] = 1;
+            for (auto& f : struct_byval_edges_[n]) {
+                auto it = color.find(f);
+                if (it == color.end() || it->second == 0) {
+                    dfs(f);
+                } else if (it->second == 1) {
+                    // back-edge → cycle; report once on the member the edge
+                    // points back to
+                    auto r = struct_decl_ranges_.find(f);
+                    if (r != struct_decl_ranges_.end())
+                        error(r->second,
+                              "recursive struct definition (infinite size): '" +
+                              f + "' is embedded by value in a cycle");
+                }
+            }
+            color[n] = 2;
+        };
+    for (auto& e : struct_byval_edges_)
+        if (color[e.first] == 0)
+            dfs(e.first);
 }
 
 void Sema::visitClassDecl(ClassDecl& decl) {
