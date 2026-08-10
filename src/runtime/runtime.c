@@ -1332,16 +1332,93 @@ static void myp_alloc_list_push(void* p) {
     pthread_setspecific(myp_alloc_key, node);
 }
 
+// Forward decl — chunked bump arena defined below (after myp_free).
+static void* myp_arena_bump_alloc(size_t size);
+
 void* myp_alloc(size_t size) {
-    void* ptr = malloc(size);
-    if (ptr) myp_alloc_list_push(ptr);
-    return ptr;
+    // Strings (and other non-ARC data) are never individually freed — only
+    // bulk-freed at exit. Allocate from the chunked bump arena instead of
+    // malloc(size) + a tracking node per allocation (see below).
+    return myp_arena_bump_alloc(size);
 }
 
 void myp_free(void* ptr) {
     // Individual free is optional — myp_free_all() at exit handles bulk cleanup.
     // This is provided for cases where deterministic early release is needed.
+    // NOTE: only valid for pointers NOT from the bump arena (arena blocks are
+    // released in bulk; myp_free is not emitted by codegen for arena data).
     free(ptr);
+}
+
+// ======================
+// Chunked bump arena — for non-ARC allocations (strings, slices, T[]).
+// ======================
+// Strings/slices/arrays are never individually freed (only bulk at exit, or
+// @region release). The old myp_alloc did malloc(size) + malloc(16-byte node)
+// and pushed the node onto a TLS list — 2 mallocs per allocation, plus malloc
+// header overhead on every tiny object. Long-running allocation-heavy code
+// (servers, loops creating slices/strings) wasted 2-3x the data size in
+// bookkeeping + fragmentation, and RSS grew accordingly.
+//
+// This chunked bump allocator hands out memory from large chunks (zero
+// per-allocation malloc), tracks only the chunks, and bulk-frees them at exit.
+// Thread-local (per-thread arena), non-atomic — same model as the old lists.
+#define MYP_ARENA_CHUNK_SIZE (64 * 1024)
+#define MYP_ARENA_ALIGN 16
+
+typedef struct myp_arena_chunk {
+    struct myp_arena_chunk* next;
+    size_t used;      // bump offset within this chunk
+    size_t cap;       // capacity of data area (sizeof(header) + cap bytes)
+    /* data follows immediately after the header */
+} myp_arena_chunk_t;
+
+static pthread_key_t myp_arena_key;
+static pthread_once_t myp_arena_key_once = PTHREAD_ONCE_INIT;
+static __thread myp_arena_chunk_t* myp_arena_cur = NULL;  // head = current chunk
+
+static void myp_free_arena_chunks(void* ptr) {
+    myp_arena_chunk_t* c = (myp_arena_chunk_t*)ptr;
+    while (c) {
+        myp_arena_chunk_t* next = c->next;
+        free(c);
+        c = next;
+    }
+}
+
+static void myp_make_arena_key(void) {
+    pthread_key_create(&myp_arena_key, myp_free_arena_chunks);
+}
+
+static void* myp_arena_bump_alloc(size_t size) {
+    pthread_once(&myp_arena_key_once, myp_make_arena_key);
+    size = (size + MYP_ARENA_ALIGN - 1) & ~(size_t)(MYP_ARENA_ALIGN - 1);
+    if (!myp_arena_cur || myp_arena_cur->used + size > myp_arena_cur->cap) {
+        // Need a fresh chunk. Oversized allocations get a dedicated chunk.
+        size_t chunk_cap = size > MYP_ARENA_CHUNK_SIZE ? size : MYP_ARENA_CHUNK_SIZE;
+        myp_arena_chunk_t* c = (myp_arena_chunk_t*)malloc(sizeof(myp_arena_chunk_t) + chunk_cap);
+        if (!c) return NULL;
+        c->next = myp_arena_cur;
+        c->used = 0;
+        c->cap = chunk_cap;
+        myp_arena_cur = c;
+        // Keep the head in the pthread key so the TLS destructor frees it all.
+        pthread_setspecific(myp_arena_key, myp_arena_cur);
+    }
+    void* p = (char*)myp_arena_cur + sizeof(myp_arena_chunk_t) + myp_arena_cur->used;
+    myp_arena_cur->used += size;
+    return p;
+}
+
+// Free all bump-arena chunks for this thread (used by myp_free_all).
+static void myp_arena_free_all(void) {
+    pthread_once(&myp_arena_key_once, myp_make_arena_key);
+    myp_arena_chunk_t* head = (myp_arena_chunk_t*)pthread_getspecific(myp_arena_key);
+    if (head) {
+        myp_free_arena_chunks(head);
+        pthread_setspecific(myp_arena_key, NULL);
+        myp_arena_cur = NULL;
+    }
 }
 
 // ======================
@@ -1524,6 +1601,8 @@ void myp_free_all(void) {
     }
     // Also free the region arena (thread-local)
     myp_region_free_all();
+    // Also free the bump arena chunks (non-ARC allocations: strings/slices/arrays)
+    myp_arena_free_all();
 }
 
 // Slice subscript bounds check: reports the error and aborts.
@@ -1562,9 +1641,11 @@ static void myp_make_region_key(void) {
 }
 
 void* myp_region_alloc(size_t size) {
-    void* ptr = malloc(size);
-    if (!ptr) return ptr;
     if (myp_region_depth > 0) {
+        // Inside an @region's dynamic scope → per-allocation node tracked so
+        // myp_arena_release can free exactly the region's temporaries.
+        void* ptr = malloc(size);
+        if (!ptr) return ptr;
         pthread_once(&myp_region_key_once, myp_make_region_key);
         myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(sizeof(myp_alloc_node_t));
         if (node) {
@@ -1572,11 +1653,11 @@ void* myp_region_alloc(size_t size) {
             node->next = (myp_alloc_node_t*)pthread_getspecific(myp_region_key);
             pthread_setspecific(myp_region_key, node);
         }
-    } else {
-        // Not inside an @region — behave exactly like the process-level allocator.
-        myp_alloc_list_push(ptr);
+        return ptr;
     }
-    return ptr;
+    // Not inside an @region — same lifetime as process-level data (freed at
+    // exit), served from the chunked bump arena (no per-allocation malloc).
+    return myp_arena_bump_alloc(size);
 }
 
 // Enters a region scope: bumps the depth and returns the current watermark
