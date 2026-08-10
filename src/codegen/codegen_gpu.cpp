@@ -250,6 +250,17 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::BinaryOp: {
             auto& e = static_cast<const BinaryOpExpr&>(expr);
+            // String operations (concat, comparison) are not supported inside
+            // @parallel for / @gpu for bodies — the kernel path has no string
+            // runtime. Reject cleanly instead of emitting garbage pointer
+            // arithmetic (previously: LLVM verify "Call parameter type does
+            // not match function signature!" for `"iter " + i` → `add i64`).
+            if (e.lhs->resolved_kind == TypeKind::String ||
+                e.rhs->resolved_kind == TypeKind::String) {
+                diag_.error(expr.range,
+                    "string operations are not supported inside '@parallel for' / '@gpu for' bodies");
+                return llvm::ConstantInt::get(i64_ty, 0);
+            }
             auto* l = emitKernelExpr(*e.lhs, kb, kernel_vars, kernel_arg_values,
                                       loop_var_name, tid_val);
             auto* r = emitKernelExpr(*e.rhs, kb, kernel_vars, kernel_arg_values,
@@ -863,6 +874,18 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     }
                 }
             }
+            // Class-instance field access (obj.field where obj is a class object)
+            // is not supported by the kernel path — it previously fell through to
+            // constant 0 (reads) / was dropped (writes), silently corrupting
+            // results (tested: `new Node(); n.val = 7;` → all reads wrong).
+            if (e.object->kind == ExprKind::Identifier) {
+                auto& oid = static_cast<const IdentifierExpr&>(*e.object);
+                if (var_class_map_.count(oid.name)) {
+                    diag_.error(expr.range,
+                        "class-instance field access is not supported inside '@parallel for' / '@gpu for' bodies");
+                    return llvm::ConstantInt::get(i64_ty, 0);
+                }
+            }
             return llvm::ConstantInt::get(i64_ty, 0);
         }
         case ExprKind::Subscript: {
@@ -1146,12 +1169,23 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::ThisExpr:
         case ExprKind::NullLiteral:
-        case ExprKind::StringLiteral:
-        case ExprKind::NewExpr:
-        case ExprKind::NewArrayExpr:
         case ExprKind::Range:
         case ExprKind::Lambda:
         case ExprKind::EnumVariant:
+            return llvm::ConstantInt::get(i64_ty, 0);
+        // Class/array allocation inside a @parallel for / @gpu for body is not
+        // supported by the kernel path — it previously silently returned 0
+        // (null), so `new Node()` + field writes produced garbage results with
+        // no error (tested: 999/1000 wrong). Reject cleanly; allocate outside
+        // the parallel loop and write into it.
+        case ExprKind::NewExpr:
+        case ExprKind::NewArrayExpr:
+            diag_.error(expr.range,
+                "'new' inside '@parallel for' / '@gpu for' bodies is not supported — allocate before the loop and write into the captured variable");
+            return llvm::ConstantInt::get(i64_ty, 0);
+        case ExprKind::StringLiteral:
+            diag_.error(expr.range,
+                "string literals are not supported inside '@parallel for' / '@gpu for' bodies");
             return llvm::ConstantInt::get(i64_ty, 0);
     }
     return llvm::ConstantInt::get(i64_ty, 0);

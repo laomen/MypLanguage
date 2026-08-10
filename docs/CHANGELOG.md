@@ -28,6 +28,18 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **@parallel for / @gpu for 体不支持构造的静默垃圾值 → 编译期干净报错**：
+  - 症状：并行体内 `new Node()`（→ 常量 0/null）、类实例字段读写（写被丢弃、读
+    恒 0——实测 `n.val=7` 后 1000 次读全错）、字符串拼接（`"iter "+i` → 垃圾指针
+    运算 → LLVM verify "Call parameter type does not match function signature!"）。
+  - 修复（codegen_gpu.cpp emitKernelExpr）：`new`/`new[]`、字符串字面量、类实例字段
+    访问（`var_class_map_` 检测）在 kernel 路径现报清晰错误，提示"在循环外分配/只做
+    数值运算"。数值数组读写、slice、struct 元素字段、Atomic 等正常路径不受影响。
+  - 新增负测试 `tests/negative/parallel_new.myp`、`tests/negative/parallel_string.myp`；
+    195/195 回归通过。
+  - 注：`tests/stress/parallel_stress.myp` 的 `workers >= 2` 断言间歇性失败（16 核下
+    偶发 workers=1）——4096 迭代太快、首 worker 抢完全部导致的时序竞态，与本次改动
+    无关（改动只在编译期加错误分支）。
 - **编译期拒绝 @coro 方法递归自调用（把静默垃圾值变成清晰错误）**：
   - 背景：`@coro` 调用 = spawn 新协程返回 handle（long），不是返回值。因此
     `@coro long deep(n) { return deep(n-1) + 1; }` 是对 handle 做运算——实测无论
