@@ -1,0 +1,43 @@
+// bench/myp/hashmap.myp — HashMap<int,int>（线性探测，泛型 + 类实例/ARC）
+// 测：泛型容器开销 + 类实例 ARC 成本 vs std::unordered_map。
+// verify = 命中键值总和（所有键都存在，验证 put/get 正确）
+import env;
+import time;
+import collections;
+
+long hashmapBench(int n) {
+    HashMap<int,int> m = new HashMap<int,int>();
+    int i = 0;
+    while (i < n) {
+        m.put(i, i * 3);
+        i = i + 1;
+    }
+    long sum = 0L;
+    i = 0;
+    while (i < n) {
+        int v = m.get(i, -1);
+        sum = sum + v * 1L;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 1000000;
+            long t0 = Time.nowMs();
+            long s = hashmapBench(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(s);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

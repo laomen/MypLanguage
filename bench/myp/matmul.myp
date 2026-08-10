@@ -1,0 +1,60 @@
+// bench/myp/matmul.myp — 矩阵乘法 512×512 (double)
+// 测：浮点乘加 + LLVM 是否保留自动向量化机会（C++ -O2 通常能向量化）。
+// verify = 结果矩阵的迹
+import env;
+import time;
+
+double matmulTrace(int n) {
+    double[] A = new double[n * n];
+    double[] B = new double[n * n];
+    double[] C = new double[n * n];
+    int i = 0;
+    while (i < n * n) {
+        A[i] = (i % 1000) * 1.0;
+        B[i] = (i % 7) * 1.0;
+        C[i] = 0.0;
+        i = i + 1;
+    }
+    int r = 0;
+    while (r < n) {
+        int c = 0;
+        while (c < n) {
+            double sum = 0.0;
+            int k = 0;
+            while (k < n) {
+                sum = sum + A[r * n + k] * B[k * n + c];
+                k = k + 1;
+            }
+            C[r * n + c] = sum;
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    double trace = 0.0;
+    i = 0;
+    while (i < n) {
+        trace = trace + C[i * n + i];
+        i = i + 1;
+    }
+    return trace;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 512;
+            long t0 = Time.nowMs();
+            double tr = matmulTrace(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(tr);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

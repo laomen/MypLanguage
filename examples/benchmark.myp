@@ -3,6 +3,12 @@
 
 import env;
 
+// 打印整数（带换行）——main() 不允许直接函数调用，统一在类构造器里跑测试
+void printInt(int v) {
+    Console.write(v);
+    Console.writeString("\n");
+}
+
 // ---- 数论函数 ----
 
 // 最大公约数 (欧几里得算法)
@@ -144,35 +150,43 @@ int legendre(int n, int p) {
     return count;
 }
 
+class Bench {
+    action:
+        @constructor Bench() {
+            // ---- 数论测试 ----
+            printInt(gcd(12, 8));
+            printInt(gcd(1071, 462));
+            printInt(lcm(6, 8));
+            printInt(lcm(12, 18));
+
+            // ---- 素数测试 ----
+            printInt(isPrime(2));
+            printInt(isPrime(97));
+            printInt(isPrime(100));
+            printInt(countPrimes(100));
+
+            // ---- 数字操作 ----
+            printInt(sumDigits(12345));
+            printInt(reverseNum(12345));
+
+            // ---- 递归测试 ----
+            printInt(fib(20));
+            printInt(factorial(10));
+
+            // ---- 迭代测试 ----
+            printInt(fibIter(20));
+            printInt(sumRange(1, 100));
+
+            // ---- 综合测试 ----
+            printInt(sumFactorials(5));
+            printInt(legendre(100, 5));
+
+            // 返回素数计数 (1~100 有 25 个素数)
+            printInt(countPrimes(100));
+        }
+}
+
 int main() {
-    // ---- 数论测试 ----
-    printInt(gcd(12, 8));
-    printInt(gcd(1071, 462));
-    printInt(lcm(6, 8));
-    printInt(lcm(12, 18));
-
-    // ---- 素数测试 ----
-    printInt(isPrime(2));
-    printInt(isPrime(97));
-    printInt(isPrime(100));
-    printInt(countPrimes(100));
-
-    // ---- 数字操作 ----
-    printInt(sumDigits(12345));
-    printInt(reverseNum(12345));
-
-    // ---- 递归测试 ----
-    printInt(fib(20));
-    printInt(factorial(10));
-
-    // ---- 迭代测试 ----
-    printInt(fibIter(20));
-    printInt(sumRange(1, 100));
-
-    // ---- 综合测试 ----
-    printInt(sumFactorials(5));
-    printInt(legendre(100, 5));
-
-    // 返回素数计数 (1~100 有 25 个素数)
-    return countPrimes(100);
+    Bench b = new Bench();
+    return 0;
 }

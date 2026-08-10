@@ -1,0 +1,54 @@
+// bench/myp/mandelbrot.myp — Mandelbrot 集合（双精度、分支密集）
+// 测：每像素迭代 + 提前跳出分支。
+// verify = 总迭代次数
+import env;
+import time;
+
+long mandelbrot(int width, int height, int maxIter) {
+    long total = 0L;
+    int y = 0;
+    while (y < height) {
+        int x = 0;
+        while (x < width) {
+            double cr = (x * 1.0) / width * 3.5 - 2.5;
+            double ci = (y * 1.0) / height * 2.0 - 1.0;
+            double zr = 0.0;
+            double zi = 0.0;
+            int iter = 0;
+            while (iter < maxIter) {
+                double zr2 = zr * zr;
+                double zi2 = zi * zi;
+                if (zr2 + zi2 > 4.0) break;
+                zi = 2.0 * zr * zi + ci;
+                zr = zr2 - zi2 + cr;
+                iter = iter + 1;
+            }
+            total = total + iter * 1L;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return total;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int w = 1000;
+            int h = 1000;
+            int mi = 256;
+            long t0 = Time.nowMs();
+            long t = mandelbrot(w, h, mi);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(t);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

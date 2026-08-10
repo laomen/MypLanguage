@@ -1,0 +1,35 @@
+# bench — MYP vs C++ 计算效率对比
+
+MYP 走 LLVM 后端，与 C++（clang）同源。这里的每对 `myp/xxx.myp ↔ cpp/xxx.cpp`
+用**同算法、同数据、同规模**，唯一差异是前端/语义/代码生成，用来观察 MYP 把多少
+优化机会保留给了 LLVM。
+
+## 运行
+
+```bash
+bash bench/run_compare.sh [iterations]    # 默认 3 轮取最小 ms
+MYPCC=/path/to/mypc bash bench/run_compare.sh
+```
+
+## 基准清单
+
+| 基准 | 测什么 | 规模 |
+|------|--------|------|
+| `sieve` | 字节数组内存带宽 + 分支 + 紧致循环 | N=10⁷ |
+| `matmul` | 浮点乘加 + 自动向量化机会是否保留 | 512×512 |
+| `nbody` | 浮点除法 + sqrt + O(N²) 嵌套访存 | 5000 体 × 2 步 |
+| `mandelbrot` | 双精度分支密集 + 提前跳出 | 1000×1000, 256 迭代 |
+| `hashmap` | 泛型 + 类实例 ARC 成本（vs std::unordered_map） | 10⁶ put/get |
+
+每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
+verify 一致（浮点容差 1e-3）、输出比值表。
+
+## 解读指南
+
+- 纯计算项（sieve/matmul/nbody/mandelbrot）用**原始类型数组**，不产生 ARC 开销，
+  比值主要反映代码生成质量（循环、数组、内联、向量化）。
+- `hashmap` 一项 MYP 的 `HashMap<K,V>` 是**纯 MYP 泛型类**（线性探测），含类实例
+  ARC 成本，不能和 `std::unordered_map` 直接比 CPU 速度——它衡量的是"MYP 里自己写
+  泛型容器"的代价。
+- 想让 C++ 更强可加 `-march=native`（脚本里有注释）。
+- 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。

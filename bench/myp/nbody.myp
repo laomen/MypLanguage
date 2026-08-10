@@ -1,0 +1,91 @@
+// bench/myp/nbody.myp — N-body 引力模拟（并行 double 数组，无 ARC 开销）
+// 测：浮点除法 + sqrt + 嵌套循环访存。O(N^2) 体-体相互作用。
+// verify = 末时刻动能
+import env;
+import time;
+import math;
+
+double nbodyKE(int n, int steps) {
+    double[] px = new double[n];
+    double[] py = new double[n];
+    double[] pz = new double[n];
+    double[] vx = new double[n];
+    double[] vy = new double[n];
+    double[] vz = new double[n];
+    double[] m = new double[n];
+    int i = 0;
+    while (i < n) {
+        px[i] = ((i * 37) % 1000) * 1.0;
+        py[i] = ((i * 53) % 1000) * 1.0;
+        pz[i] = ((i * 71) % 1000) * 1.0;
+        vx[i] = 0.0;
+        vy[i] = 0.0;
+        vz[i] = 0.0;
+        m[i] = 1.0 + (i % 10) * 0.1;
+        i = i + 1;
+    }
+    int step = 0;
+    while (step < steps) {
+        int a = 0;
+        while (a < n) {
+            double ax = 0.0;
+            double ay = 0.0;
+            double az = 0.0;
+            int b = 0;
+            while (b < n) {
+                if (b != a) {
+                    double dx = px[b] - px[a];
+                    double dy = py[b] - py[a];
+                    double dz = pz[b] - pz[a];
+                    double d2 = dx * dx + dy * dy + dz * dz + 1e-6;
+                    double inv = 1.0 / (d2 * Math.sqrt(d2));
+                    double mm = m[b] * inv;
+                    ax = ax + dx * mm;
+                    ay = ay + dy * mm;
+                    az = az + dz * mm;
+                }
+                b = b + 1;
+            }
+            vx[a] = vx[a] + ax;
+            vy[a] = vy[a] + ay;
+            vz[a] = vz[a] + az;
+            a = a + 1;
+        }
+        i = 0;
+        while (i < n) {
+            px[i] = px[i] + vx[i];
+            py[i] = py[i] + vy[i];
+            pz[i] = pz[i] + vz[i];
+            i = i + 1;
+        }
+        step = step + 1;
+    }
+    double ke = 0.0;
+    i = 0;
+    while (i < n) {
+        ke = ke + 0.5 * m[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+        i = i + 1;
+    }
+    return ke;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 5000;
+            int steps = 2;
+            long t0 = Time.nowMs();
+            double ke = nbodyKE(n, steps);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(ke);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

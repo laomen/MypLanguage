@@ -1,0 +1,48 @@
+// bench/myp/sieve.myp — 埃氏筛 (Sieve of Eratosthenes)
+// 统计 1..N 内素数个数。测：字节数组内存带宽 + 分支 + 紧致循环。
+//
+// 输出（机器可解析）：
+//   verify <count>   素数个数（MYP 与 C++ 必须一致）
+//   ms <elapsed>     实测毫秒
+import env;
+import time;
+
+int countPrimesSieve(int n) {
+    byte[] comp = new byte[n + 1];
+    int count = 0;
+    int p = 2;
+    while (p <= n) {
+        if (comp[p] == 0) {
+            count = count + 1;
+            // 用 long 计算 p*p 与下标：p 较大时 int 乘法会溢出为负 → 负下标越界
+            long step = p;
+            long j = step * step;
+            while (j <= n) {
+                comp[j] = 1;
+                j = j + step;
+            }
+        }
+        p = p + 1;
+    }
+    return count;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int N = 10000000;
+            long t0 = Time.nowMs();
+            int c = countPrimesSieve(N);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(c);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
