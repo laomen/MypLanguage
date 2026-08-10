@@ -48,6 +48,7 @@ struct Document {
     std::vector<std::string> lines;
     std::unique_ptr<TranslationUnit> ast;
     DefinitionMap def_map;
+    std::unordered_map<std::string, std::string> hover_map;
     std::string stdlib_path = "stdlib";
 
     void updateLines() {
@@ -72,6 +73,7 @@ static void buildDefinitionMap(Document& doc);
 static void parseDocument(Document& doc, const std::string& uri) {
     doc.ast = nullptr;
     doc.def_map.clear();
+    doc.hover_map.clear();
     
     // Extract file path from URI (file:///path → /path)
     std::string filepath = uri;
@@ -136,23 +138,73 @@ static void parseDocument(Document& doc, const std::string& uri) {
 static void buildDefinitionMap(Document& doc) {
     if (!doc.ast) return;
     doc.def_map.clear();
+    doc.hover_map.clear();
     try {
         auto& map = doc.def_map;
+        auto& hover = doc.hover_map;
         for (auto& cls : doc.ast->classes) {
             map[cls.name].push_back({doc.uri, cls.range});
-            for (auto& a : cls.actions)
+            hover.emplace(cls.name, "class " + cls.name + "\n---\nactions: " +
+                std::to_string(cls.actions.size()) + ", events: " +
+                std::to_string(cls.events.size()) + ", properties: " +
+                std::to_string(cls.properties.size()));
+            for (auto& a : cls.actions) {
                 map[a.name].push_back({doc.uri, a.range});
-            for (auto& e : cls.events)
+                std::string text = cls.name + "." + a.name + "(";
+                for (size_t i = 0; i < a.params.size(); i++) {
+                    if (i > 0) text += ", ";
+                    text += typeToBasicTypeName(a.params[i].type.basic_type);
+                }
+                text += ") → " + typeToBasicTypeName(a.return_type.basic_type);
+                if (a.has_startup) text += " [@startup]";
+                hover.emplace(a.name, std::move(text));
+            }
+            for (auto& e : cls.events) {
                 map[e.name].push_back({doc.uri, e.range});
-            for (auto& p : cls.properties)
+                std::string text = cls.name + "." + e.name + "(";
+                for (size_t i = 0; i < e.params.size(); i++) {
+                    if (i > 0) text += ", ";
+                    text += typeToBasicTypeName(e.params[i].type.basic_type);
+                }
+                text += ") → event";
+                hover.emplace(e.name, std::move(text));
+            }
+            for (auto& p : cls.properties) {
                 map[p.name].push_back({doc.uri, p.range});
-            for (auto& f : cls.functions)
+                hover.emplace(p.name, cls.name + "." + p.name + " : " +
+                    typeToBasicTypeName(p.type.basic_type));
+            }
+            for (auto& f : cls.functions) {
                 map[f.name].push_back({doc.uri, f.range});
+                std::string text = cls.name + "::" + f.name + "(";
+                for (size_t i = 0; i < f.params.size(); i++) {
+                    if (i > 0) text += ", ";
+                    text += typeToBasicTypeName(f.params[i].type.basic_type);
+                }
+                text += ") → " + typeToBasicTypeName(f.return_type.basic_type);
+                hover.emplace(f.name, std::move(text));
+            }
         }
-        for (auto& fn : doc.ast->functions)
-            map[fn.name].push_back({doc.uri, fn.range});
-        for (auto& en : doc.ast->enums)
+        for (auto& en : doc.ast->enums) {
             map[en.name].push_back({doc.uri, en.range});
+            std::string text = "enum " + en.name + " { ";
+            for (size_t i = 0; i < en.variants.size(); i++) {
+                if (i > 0) text += ", ";
+                text += en.variants[i].name;
+            }
+            text += " }";
+            hover.emplace(en.name, std::move(text));
+        }
+        for (auto& fn : doc.ast->functions) {
+            map[fn.name].push_back({doc.uri, fn.range});
+            std::string text = "function " + fn.name + "(";
+            for (size_t i = 0; i < fn.params.size(); i++) {
+                if (i > 0) text += ", ";
+                text += typeToBasicTypeName(fn.params[i].type.basic_type);
+            }
+            text += ") → " + typeToBasicTypeName(fn.return_type.basic_type);
+            hover.emplace(fn.name, std::move(text));
+        }
         for (auto& st : doc.ast->structs)
             map[st.name].push_back({doc.uri, st.range});
     } catch (...) {
@@ -295,6 +347,7 @@ void handleTextDocumentDidChange(const std::string& params) {
         // This prevents LSP from freezing on fast typing.
         it->second.ast = nullptr;    // invalidate old AST
         it->second.def_map.clear();  // clear def map
+        it->second.hover_map.clear();
     }
 }
 
@@ -403,108 +456,9 @@ void handleHover(const std::string& id, const std::string& params) {
         // Lazy parse: build AST if needed for hover info
         if (!it->second.ast) parseDocument(it->second, uri);
         if (!it->second.ast) { sendResponse(id, "{\"contents\":[]}"); return; }
-        
-        const std::string& src_line = it->second.lines[line];
-        if (col >= 0 && col < (int)src_line.size()) {
-            // Extract word at cursor
-            int start = col;
-            while (start > 0 &&
-                   (std::isalnum(static_cast<unsigned char>(src_line[start-1])) ||
-                    src_line[start-1] == '_'))
-                start--;
-            int end = col;
-            while (end < (int)src_line.size() &&
-                   (std::isalnum(static_cast<unsigned char>(src_line[end])) ||
-                    src_line[end] == '_'))
-                end++;
-            std::string word = src_line.substr(start, end - start);
-
-            if (!word.empty()) {
-                bool found = false;
-                // Search in AST for this symbol
-                for (auto& cls : it->second.ast->classes) {
-                    if (cls.name == word) {
-                        hover_text = "class " + cls.name;
-                        hover_text += "\n---\nactions: " + std::to_string(cls.actions.size());
-                        hover_text += ", events: " + std::to_string(cls.events.size());
-                        hover_text += ", properties: " + std::to_string(cls.properties.size());
-                        found = true; break;
-                    }
-                    for (auto& a : cls.actions) {
-                        if (a.name == word) {
-                            hover_text = cls.name + "." + a.name + "(";
-                            for (size_t pi = 0; pi < a.params.size(); pi++) {
-                                if (pi > 0) hover_text += ", ";
-                                hover_text += typeToBasicTypeName(a.params[pi].type.basic_type);
-                            }
-                            hover_text += ") → " + typeToBasicTypeName(a.return_type.basic_type);
-                            if (a.has_startup) hover_text += " [@startup]";
-                            found = true; break;
-                        }
-                    }
-                    if (found) break;
-                    for (auto& ev : cls.events) {
-                        if (ev.name == word) {
-                            hover_text = cls.name + "." + ev.name + "(";
-                            for (size_t pi = 0; pi < ev.params.size(); pi++) {
-                                if (pi > 0) hover_text += ", ";
-                                hover_text += typeToBasicTypeName(ev.params[pi].type.basic_type);
-                            }
-                            hover_text += ") → event";
-                            found = true; break;
-                        }
-                    }
-                    if (found) break;
-                    for (auto& p : cls.properties) {
-                        if (p.name == word) {
-                            hover_text = cls.name + "." + p.name + " : " + typeToBasicTypeName(p.type.basic_type);
-                            found = true; break;
-                        }
-                    }
-                    if (found) break;
-                    for (auto& fn : cls.functions) {
-                        if (fn.name == word) {
-                            hover_text = cls.name + "::" + fn.name + "(";
-                            for (size_t pi = 0; pi < fn.params.size(); pi++) {
-                                if (pi > 0) hover_text += ", ";
-                                hover_text += typeToBasicTypeName(fn.params[pi].type.basic_type);
-                            }
-                            hover_text += ") → " + typeToBasicTypeName(fn.return_type.basic_type);
-                            found = true; break;
-                        }
-                    }
-                    if (found) break;
-                }
-                // Check enums (if not found in classes)
-                if (hover_text.empty()) {
-                    for (auto& en : it->second.ast->enums) {
-                        if (en.name == word) {
-                            hover_text = "enum " + en.name + " { ";
-                            for (size_t vi = 0; vi < en.variants.size(); vi++) {
-                                if (vi > 0) hover_text += ", ";
-                                hover_text += en.variants[vi].name;
-                            }
-                            hover_text += " }";
-                            break;
-                        }
-                    }
-                }
-                // Check top-level functions
-                if (hover_text.empty()) {
-                    for (auto& fn : it->second.ast->functions) {
-                        if (fn.name == word) {
-                            hover_text = "function " + fn.name + "(";
-                            for (size_t pi = 0; pi < fn.params.size(); pi++) {
-                                if (pi > 0) hover_text += ", ";
-                                hover_text += typeToBasicTypeName(fn.params[pi].type.basic_type);
-                            }
-                            hover_text += ") → " + typeToBasicTypeName(fn.return_type.basic_type);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        std::string word = extractWordAt(it->second, line, col);
+        auto hit = it->second.hover_map.find(word);
+        if (hit != it->second.hover_map.end()) hover_text = hit->second;
     }
 
     if (hover_text.empty()) {
