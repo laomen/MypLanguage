@@ -1,6 +1,7 @@
 # Build output
 /build/
 /build-asan/
+/build-nogpu/
 *.o
 *.out
 *.ll
