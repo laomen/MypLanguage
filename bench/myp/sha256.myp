@@ -1,0 +1,138 @@
+// bench/myp/sha256.myp — SHA-256 哈希（纯 MYP，long+掩码模拟 32 位无符号）
+// 测：位运算密集加密哈希（完全确定性，verify 完美对拍）。
+// 消息 64KB（LCG 高位填充），verify = 哈希前 64 位（有符号 long）。
+import env;
+import time;
+
+// 32 位循环右移（x 为非负 long，算术>>=逻辑>>）
+long rotr(long x, int n) {
+    return ((x >> n) | (x << (32 - n))) & 0xFFFFFFFFL;
+}
+
+// SHA-256 主函数：返回 h0<<32|h1（有符号 long 作 verify）
+long sha256(int msglen, int seed) {
+    // 消息字节（0..255，用 long 数组避免强转）
+    long[] msg = new long[msglen];
+    long rng = seed;
+    int i = 0;
+    while (i < msglen) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        msg[i] = (rng >> 16) & 0xFFL;
+        i = i + 1;
+    }
+    // 填充：0x80 + 零 + 8 字节长度（bit 数）
+    int total = msglen + 72;   // 留足：1(0x80)+pad+8，向上取整到 64 的倍数
+    total = (total / 64) * 64;
+    if (total < msglen + 9) total = total + 64;
+    long[] data = new long[total];
+    i = 0;
+    while (i < msglen) {
+        data[i] = msg[i];
+        i = i + 1;
+    }
+    data[msglen] = 0x80;
+    i = msglen + 1;
+    while (i < total - 8) {
+        data[i] = 0;
+        i = i + 1;
+    }
+    long bitlen = msglen * 8L;
+    data[total - 8] = (bitlen >> 56) & 0xFFL;
+    data[total - 7] = (bitlen >> 48) & 0xFFL;
+    data[total - 6] = (bitlen >> 40) & 0xFFL;
+    data[total - 5] = (bitlen >> 32) & 0xFFL;
+    data[total - 4] = (bitlen >> 24) & 0xFFL;
+    data[total - 3] = (bitlen >> 16) & 0xFFL;
+    data[total - 2] = (bitlen >> 8) & 0xFFL;
+    data[total - 1] = bitlen & 0xFFL;
+
+    // K 常量（64）与 H 初值（8）
+    long[] K = new long[64];
+    K[0] = 0x428a2f98L;  K[1] = 0x71374491L;  K[2] = 0xb5c0fbcfL;  K[3] = 0xe9b5dba5L;
+    K[4] = 0x3956c25bL;  K[5] = 0x59f111f1L;  K[6] = 0x923f82a4L;  K[7] = 0xab1c5ed5L;
+    K[8] = 0xd807aa98L;  K[9] = 0x12835b01L;  K[10] = 0x243185beL; K[11] = 0x550c7dc3L;
+    K[12] = 0x72be5d74L; K[13] = 0x80deb1feL; K[14] = 0x9bdc06a7L; K[15] = 0xc19bf174L;
+    K[16] = 0xe49b69c1L; K[17] = 0xefbe4786L; K[18] = 0x0fc19dc6L; K[19] = 0x240ca1ccL;
+    K[20] = 0x2de92c6fL; K[21] = 0x4a7484aaL; K[22] = 0x5cb0a9dcL; K[23] = 0x76f988daL;
+    K[24] = 0x983e5152L; K[25] = 0xa831c66dL; K[26] = 0xb00327c8L; K[27] = 0xbf597fc7L;
+    K[28] = 0xc6e00bf3L; K[29] = 0xd5a79147L; K[30] = 0x06ca6351L; K[31] = 0x14292967L;
+    K[32] = 0x27b70a85L; K[33] = 0x2e1b2138L; K[34] = 0x4d2c6dfcL; K[35] = 0x53380d13L;
+    K[36] = 0x650a7354L; K[37] = 0x766a0abbL; K[38] = 0x81c2c92eL; K[39] = 0x92722c85L;
+    K[40] = 0xa2bfe8a1L; K[41] = 0xa81a664bL; K[42] = 0xc24b8b70L; K[43] = 0xc76c51a3L;
+    K[44] = 0xd192e819L; K[45] = 0xd6990624L; K[46] = 0xf40e3585L; K[47] = 0x106aa070L;
+    K[48] = 0x19a4c116L; K[49] = 0x1e376c08L; K[50] = 0x2748774cL; K[51] = 0x34b0bcb5L;
+    K[52] = 0x391c0cb3L; K[53] = 0x4ed8aa4aL; K[54] = 0x5b9cca4fL; K[55] = 0x682e6ff3L;
+    K[56] = 0x748f82eeL; K[57] = 0x78a5636fL; K[58] = 0x84c87814L; K[59] = 0x8cc70208L;
+    K[60] = 0x90befffaL; K[61] = 0xa4506cebL; K[62] = 0xbef9a3f7L; K[63] = 0xc67178f2L;
+
+    long h0 = 0x6a09e667L, h1 = 0xbb67ae85L, h2 = 0x3c6ef372L, h3 = 0xa54ff53aL;
+    long h4 = 0x510e527fL, h5 = 0x9b05688cL, h6 = 0x1f83d9abL, h7 = 0x5be0cd19L;
+
+    long[] W = new long[64];
+    int blk = 0;
+    while (blk < total / 64) {
+        int base = blk * 64;
+        i = 0;
+        while (i < 16) {
+            long b0 = data[base + i * 4];
+            long b1 = data[base + i * 4 + 1];
+            long b2 = data[base + i * 4 + 2];
+            long b3 = data[base + i * 4 + 3];
+            W[i] = ((b0 << 24) | (b1 << 16) | (b2 << 8) | b3) & 0xFFFFFFFFL;
+            i = i + 1;
+        }
+        i = 16;
+        while (i < 64) {
+            long s0 = (rotr(W[i - 15], 7) ^ rotr(W[i - 15], 18) ^ (W[i - 15] >> 3)) & 0xFFFFFFFFL;
+            long s1 = (rotr(W[i - 2], 17) ^ rotr(W[i - 2], 19) ^ (W[i - 2] >> 10)) & 0xFFFFFFFFL;
+            W[i] = (W[i - 16] + s0 + W[i - 7] + s1) & 0xFFFFFFFFL;
+            i = i + 1;
+        }
+        long a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, gg = h6, hh = h7;
+        i = 0;
+        while (i < 64) {
+            long S1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25));
+            long chh = ((e & f) ^ ((e ^ 0xFFFFFFFFL) & gg)) & 0xFFFFFFFFL;
+            long t1 = (hh + S1 + chh + K[i] + W[i]) & 0xFFFFFFFFL;
+            long S0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22));
+            long maj = ((a & b) ^ (a & c) ^ (b & c)) & 0xFFFFFFFFL;
+            long t2 = (S0 + maj) & 0xFFFFFFFFL;
+            hh = gg; gg = f; f = e;
+            e = (d + t1) & 0xFFFFFFFFL;
+            d = c; c = b; b = a;
+            a = (t1 + t2) & 0xFFFFFFFFL;
+            i = i + 1;
+        }
+        h0 = (h0 + a) & 0xFFFFFFFFL;
+        h1 = (h1 + b) & 0xFFFFFFFFL;
+        h2 = (h2 + c) & 0xFFFFFFFFL;
+        h3 = (h3 + d) & 0xFFFFFFFFL;
+        h4 = (h4 + e) & 0xFFFFFFFFL;
+        h5 = (h5 + f) & 0xFFFFFFFFL;
+        h6 = (h6 + gg) & 0xFFFFFFFFL;
+        h7 = (h7 + hh) & 0xFFFFFFFFL;
+        blk = blk + 1;
+    }
+    // 前 64 位作 verify（有符号 long，两语言打印一致）
+    return (h0 << 32) | h1;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int msglen = 4194304;   // 4MB，让耗时可测（64KB 时两语言都 <1ms）
+            long t0 = Time.nowMs();
+            long v = sha256(msglen, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

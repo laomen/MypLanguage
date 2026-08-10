@@ -26,8 +26,10 @@ elif command -v clang++ >/dev/null 2>&1; then
 else
     CXX=g++
 fi
-CXXFLAGS="-O2 -std=c++17"
-# CXXFLAGS="-O2 -std=c++17 -march=native"
+# C++ 用 -O3：MYP 的 -O2 精确映射 LLVM O2（= clang++ -O2，含循环展开/向量化）；
+# g++ 的 -O2 更保守（gol 项 -O2 时 LLVM-O2 ≈ 2.7x 于 g++-O2，-O3 才持平）。
+# 用 -O3 让 C++ 端与 LLVM O2 的激进程度对齐，才是诚实的对比。
+CXXFLAGS="-O3 -std=c++17"
 ITERS=${1:-3}
 
 # mypc 用 argv[0] 定位 stdlib —— 必须用绝对路径调用
@@ -36,7 +38,7 @@ case "$MYPCC" in
     *) MYPCC="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")" ;;
 esac
 
-names=(sieve matmul nbody mandelbrot hashmap tripleloop raytracer)
+names=(sieve matmul nbody mandelbrot hashmap tripleloop raytracer gol fft astar sha256)
 mkdir -p out
 
 # verify 数值一致性（整数精确、浮点容差 1e-3 相对误差）

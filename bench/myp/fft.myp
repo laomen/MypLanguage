@@ -1,0 +1,103 @@
+// bench/myp/fft.myp — 快速傅里叶变换（迭代 radix-2，Cooley-Tukey）
+// 测：浮点复数蝶形 + 位反转（Cache 不友好）。verify = 频谱能量和。
+import env;
+import math;
+import time;
+
+double fft(int n, int iters) {
+    double[] re = new double[n];
+    double[] im = new double[n];
+    int i = 0;
+    while (i < n) {
+        re[i] = Math.sin((i % 100) * 0.1234567);
+        im[i] = Math.cos((i % 100) * 0.07654321);
+        i = i + 1;
+    }
+    int it = 0;
+    while (it < iters) {
+        // 每次迭代重置为确定性有界信号（避免对 FFT 输出反复 FFT 导致数值溢出）
+        i = 0;
+        while (i < n) {
+            re[i] = Math.sin((i % 100) * 0.1234567);
+            im[i] = Math.cos((i % 100) * 0.07654321);
+            i = i + 1;
+        }
+        // 位反转重排
+        int j = 0;
+        i = 1;
+        while (i < n) {
+            int bit = n >> 1;
+            while ((j & bit) != 0) {
+                j = j ^ bit;
+                bit = bit >> 1;
+            }
+            j = j ^ bit;
+            if (i < j) {
+                double tr = re[i]; re[i] = re[j]; re[j] = tr;
+                double ti = im[i]; im[i] = im[j]; im[j] = ti;
+            }
+            i = i + 1;
+        }
+        // 蝶形
+        int len = 2;
+        while (len <= n) {
+            double ang = -2.0 * Math.pi() / len;
+            double wRe = Math.cos(ang);
+            double wIm = Math.sin(ang);
+            int k = 0;
+            while (k < n) {
+                double curRe = 1.0;
+                double curIm = 0.0;
+                int k2 = 0;
+                while (k2 < len / 2) {
+                    int a = k + k2;
+                    int b = k + k2 + len / 2;
+                    double tre = re[b];
+                    double tim = im[b];
+                    double pRe = tre * curRe - tim * curIm;
+                    double pIm = tre * curIm + tim * curRe;
+                    re[b] = re[a] - pRe;
+                    im[b] = im[a] - pIm;
+                    re[a] = re[a] + pRe;
+                    im[a] = im[a] + pIm;
+                    double ncRe = curRe * wRe - curIm * wIm;
+                    double ncIm = curRe * wIm + curIm * wRe;
+                    curRe = ncRe;
+                    curIm = ncIm;
+                    k2 = k2 + 1;
+                }
+                k = k + len;
+            }
+            len = len << 1;
+        }
+        it = it + 1;
+    }
+    double e = 0.0;
+    i = 0;
+    while (i < n) {
+        e = e + re[i] * re[i] + im[i] * im[i];
+        i = i + 1;
+    }
+    return e;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 4096;
+            int iters = 800;
+            long t0 = Time.nowMs();
+            double e = fft(n, iters);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(e);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

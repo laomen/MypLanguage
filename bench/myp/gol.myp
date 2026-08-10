@@ -1,0 +1,90 @@
+// bench/myp/gol.myp — Game of Life 细胞自动机（确定性初始态）
+// 测：大网格内存带宽 + 8 邻居分支。verify = 终态活细胞总数。
+// 初始态用确定性 LCG 填充（MYP/C++ 一致）。
+import env;
+import time;
+
+int gol(int n, int gens, int seed) {
+    int[] a = new int[n * n];
+    int[] b = new int[n * n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        int v = 0;
+        // 用 LCG 高位（低位有 32 周期 → 初始态呈周期墙结构，退化）
+        if ((rng >> 16) < 9830L) v = 1;
+        a[i] = v;
+        i = i + 1;
+    }
+    int g = 0;
+    while (g < gens) {
+        int[] cur = a;
+        int[] nxt = b;
+        int y = 0;
+        while (y < n) {
+            int x = 0;
+            while (x < n) {
+                int live = 0;
+                int dy = -1;
+                while (dy <= 1) {
+                    int dx = -1;
+                    while (dx <= 1) {
+                        if (!(dx == 0 && dy == 0)) {
+                            int nx = x + dx;
+                            int ny = y + dy;
+                            if (nx < 0) nx = nx + n;
+                            if (nx >= n) nx = nx - n;
+                            if (ny < 0) ny = ny + n;
+                            if (ny >= n) ny = ny - n;
+                            live = live + cur[ny * n + nx];
+                        }
+                        dx = dx + 1;
+                    }
+                    dy = dy + 1;
+                }
+                int val = 0;
+                if (cur[y * n + x] != 0) {
+                    if (live == 2 || live == 3) val = 1;
+                } else {
+                    if (live == 3) val = 1;
+                }
+                nxt[y * n + x] = val;
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        int[] t = a;
+        a = b;
+        b = t;
+        g = g + 1;
+    }
+    int total = 0;
+    i = 0;
+    while (i < n * n) {
+        total = total + a[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 1024;
+            int gens = 60;
+            long t0 = Time.nowMs();
+            int c = gol(n, gens, 12345);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(c);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,157 @@
+// bench/myp/astar.myp — A* 网格寻路（二叉最小堆，确定性）
+// 测：优先队列 + 启发式 + 回溯。verify = 扩展节点数。
+// 初始障碍用确定性 LCG（MYP/C++ 一致），起点(0,0) 终点(N-1,N-1)。
+import env;
+import time;
+
+// 曼哈顿距离（须在使用前定义）
+int manhattan(int node, int goal, int n) {
+    int x = node % n;
+    int y = node / n;
+    int gx = goal % n;
+    int gy = goal / n;
+    int dx = x - gx;
+    int dy = y - gy;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    return dx + dy;
+}
+
+int astar(int n, int seed) {
+    // 网格：0 空地 / 1 障碍。每 8 行/列强制空地（高速公路，保证连通），
+    // 其余 20% 随机障碍（LCG 高位，两语言一致）。
+    int[] grid = new int[n * n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        int v = 0;
+        int xx = i % n;
+        int yy = i / n;
+        if (xx % 8 != 0 && yy % 8 != 0) {
+            if ((rng >> 16) < 6554L) v = 1;
+        }
+        grid[i] = v;
+        i = i + 1;
+    }
+
+    // 堆（按 f 排序，f 相同按节点号小优先）——保证两语言行为一致
+    int[] heapNode = new int[n * n * 2];
+    int[] heapF = new int[n * n * 2];
+    int heapSize = 0;
+
+    // g 值 / closed
+    int[] g = new int[n * n];
+    int[] closed = new int[n * n];
+    i = 0;
+    while (i < n * n) {
+        g[i] = 1 << 29;
+        closed[i] = 0;
+        i = i + 1;
+    }
+
+    int goal = n * n - 1;
+    int start = 0;
+    g[start] = 0;
+    heapNode[0] = start;
+    heapF[0] = manhattan(start, goal, n);
+    heapSize = 1;
+
+    int expansions = 0;
+
+    while (heapSize > 0) {
+        // pop 最小 f（tie-break 节点号小优先）
+        int cur = heapNode[0];
+        heapSize = heapSize - 1;
+        heapNode[0] = heapNode[heapSize];
+        heapF[0] = heapF[heapSize];
+        int idx = 0;
+        int done = 0;
+        while (done == 0) {
+            int l = idx * 2 + 1;
+            int r = idx * 2 + 2;
+            int smallest = idx;
+            if (l < heapSize) {
+                if (heapF[l] < heapF[smallest] ||
+                    (heapF[l] == heapF[smallest] && heapNode[l] < heapNode[smallest]))
+                    smallest = l;
+            }
+            if (r < heapSize) {
+                if (heapF[r] < heapF[smallest] ||
+                    (heapF[r] == heapF[smallest] && heapNode[r] < heapNode[smallest]))
+                    smallest = r;
+            }
+            if (smallest == idx) done = 1;
+            else {
+                int tn = heapNode[idx]; heapNode[idx] = heapNode[smallest]; heapNode[smallest] = tn;
+                int tf = heapF[idx]; heapF[idx] = heapF[smallest]; heapF[smallest] = tf;
+                idx = smallest;
+            }
+        }
+        if (closed[cur] != 0) continue;
+        closed[cur] = 1;
+        expansions = expansions + 1;
+        if (cur == goal) break;
+        int cx = cur % n;
+        int cy = cur / n;
+        // 上 下 左 右（固定顺序，确定性）
+        int[] ddx = new int[4];
+        int[] ddy = new int[4];
+        ddx[0] = 0;  ddy[0] = -1;
+        ddx[1] = 0;  ddy[1] = 1;
+        ddx[2] = -1; ddy[2] = 0;
+        ddx[3] = 1;  ddy[3] = 0;
+        int d = 0;
+        while (d < 4) {
+            int nx = cx + ddx[d];
+            int ny = cy + ddy[d];
+            if (nx >= 0 && nx < n && ny >= 0 && ny < n) {
+                int nb = ny * n + nx;
+                if (grid[nb] == 0) {
+                    int tentative = g[cur] + 1;
+                    if (tentative < g[nb]) {
+                        g[nb] = tentative;
+                        int f = tentative + manhattan(nb, goal, n);
+                        heapNode[heapSize] = nb;
+                        heapF[heapSize] = f;
+                        int pos = heapSize;
+                        heapSize = heapSize + 1;
+                        int pdone = 0;
+                        while (pos > 0 && pdone == 0) {
+                            int par = (pos - 1) / 2;
+                            if (heapF[pos] < heapF[par] ||
+                                (heapF[pos] == heapF[par] && heapNode[pos] < heapNode[par])) {
+                                int tn = heapNode[pos]; heapNode[pos] = heapNode[par]; heapNode[par] = tn;
+                                int tf = heapF[pos]; heapF[pos] = heapF[par]; heapF[par] = tf;
+                                pos = par;
+                            } else pdone = 1;
+                        }
+                    }
+                }
+            }
+            d = d + 1;
+        }
+    }
+
+    return expansions;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 512;
+            long t0 = Time.nowMs();
+            int exp = astar(n, 987654);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(exp);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
