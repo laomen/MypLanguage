@@ -1,0 +1,56 @@
+// bench/myp/crc32.myp — 表驱动 CRC-32（uint32 表 + 字节循环 + 位移异或）
+// 32MB 数据；verify = CRC-32 值（uint32→long 为正数）。与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long crc32(int n, int seed) {
+    uint8[] data = new uint8[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        data[i] = uint8((rng >> 16) & 0xFFL);
+        i = i + 1;
+    }
+    uint[] table = new uint[256];
+    i = 0;
+    while (i < 256) {
+        uint c = i;
+        int k = 0;
+        while (k < 8) {
+            if ((c & 1u) != 0u) c = 0xEDB88320u ^ (c >> 1);
+            else c = c >> 1;
+            k = k + 1;
+        }
+        table[i] = c;
+        i = i + 1;
+    }
+    uint crc = 0xFFFFFFFFu;
+    i = 0;
+    while (i < n) {
+        int t = int((crc ^ data[i]) & 0xFFu);
+        crc = table[t] ^ (crc >> 8);
+        i = i + 1;
+    }
+    crc = crc ^ 0xFFFFFFFFu;
+    return long(crc);
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = crc32(33554432, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

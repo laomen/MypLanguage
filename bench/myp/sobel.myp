@@ -1,0 +1,60 @@
+// bench/myp/sobel.myp — Sobel 边缘检测（3×3 梯度，uint8 灰度图，字节滑窗）
+// N=2048 图像；verify = 所有像素梯度幅值之和（|gx|+|gy|，clamp 255）。
+// 与 C++ 同算法同 LCG（uint8 先转 int 再算符号梯度）。
+import env;
+import time;
+
+int sobel(int n, int seed) {
+    uint8[] img = new uint8[n * n];
+    uint8[] out = new uint8[n * n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        img[i] = uint8((rng >> 16) & 0xFFL);
+        i = i + 1;
+    }
+    long sum = 0;
+    int y = 1;
+    while (y < n - 1) {
+        int x = 1;
+        while (x < n - 1) {
+            int a00 = int(img[(y - 1) * n + x - 1]);
+            int a01 = int(img[(y - 1) * n + x]);
+            int a02 = int(img[(y - 1) * n + x + 1]);
+            int a10 = int(img[y * n + x - 1]);
+            int a12 = int(img[y * n + x + 1]);
+            int a20 = int(img[(y + 1) * n + x - 1]);
+            int a21 = int(img[(y + 1) * n + x]);
+            int a22 = int(img[(y + 1) * n + x + 1]);
+            int gx = -a00 - 2 * a10 - a20 + a02 + 2 * a12 + a22;
+            int gy = -a00 - 2 * a01 - a02 + a20 + 2 * a21 + a22;
+            int m = (gx < 0 ? -gx : gx) + (gy < 0 ? -gy : gy);
+            if (m > 255) m = 255;
+            out[y * n + x] = uint8(m);
+            sum = sum + m;
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+    return int(sum);
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            int v = sobel(2048, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(long(v));
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,70 @@
+// bench/myp/heapsort.myp — 二叉堆排序（堆化 + sift-down + 交换）
+// N=10^6 随机整数；verify = 排序后校验和 sum(a[i]*(i+1))（有符号 long 回绕）。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+void siftDown(int[] a, int start, int end) {
+    int root = start;
+    while (2 * root + 1 <= end) {
+        int child = 2 * root + 1;
+        int sw = root;
+        if (a[sw] < a[child]) sw = child;
+        if (child + 1 <= end && a[sw] < a[child + 1]) sw = child + 1;
+        if (sw == root) return;
+        int t = a[root];
+        a[root] = a[sw];
+        a[sw] = t;
+        root = sw;
+    }
+}
+
+long heapsort(int n, int seed) {
+    int[] a = new int[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        a[i] = int(rng & 0x7FFFFFFFL);
+        i = i + 1;
+    }
+    i = n / 2 - 1;
+    while (i >= 0) {
+        siftDown(a, i, n - 1);
+        i = i - 1;
+    }
+    int end = n - 1;
+    while (end > 0) {
+        int t = a[0];
+        a[0] = a[end];
+        a[end] = t;
+        siftDown(a, 0, end - 1);
+        end = end - 1;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + long(a[i]) * (i + 1);
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = heapsort(1000000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

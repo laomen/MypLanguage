@@ -1,0 +1,77 @@
+// bench/myp/radixsort.myp — LSD 基数排序（8-bit 4 趟：直方图+前缀和+散布）
+// N=4×10^6 随机整数；verify = 排序后校验和 sum(a[i]*(i+1))（有符号 long 回绕）。
+// 与 C++ 同算法同 LCG。
+import env;
+import time;
+
+long radixsort(int n, int seed) {
+    int[] a = new int[n];
+    int[] b = new int[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        a[i] = int(rng & 0x7FFFFFFFL);
+        i = i + 1;
+    }
+    int[] cnt = new int[256];
+    int shift = 0;
+    while (shift < 32) {
+        i = 0;
+        while (i < 256) {
+            cnt[i] = 0;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < n) {
+            int idx = (a[i] >> shift) & 0xFF;
+            cnt[idx] = cnt[idx] + 1;
+            i = i + 1;
+        }
+        int s = 0;
+        i = 0;
+        while (i < 256) {
+            int t = cnt[i];
+            cnt[i] = s;
+            s = s + t;
+            i = i + 1;
+        }
+        i = 0;
+        while (i < n) {
+            int idx = (a[i] >> shift) & 0xFF;
+            b[cnt[idx]] = a[i];
+            cnt[idx] = cnt[idx] + 1;
+            i = i + 1;
+        }
+        int[] t2 = a;
+        a = b;
+        b = t2;
+        shift = shift + 8;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n) {
+        sum = sum + long(a[i]) * (i + 1);
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = radixsort(4000000, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

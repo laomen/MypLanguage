@@ -1,0 +1,62 @@
+// bench/myp/floyd.myp — Floyd-Warshall 全源最短路（稠密三层循环 + 原地最小）
+// V=600 邻接矩阵 1..1000 边权、对角线 0；verify = 全部 dist 之和。与 C++ 同算法。
+import env;
+import time;
+
+long floyd(int n, int seed) {
+    int[] d = new int[n * n];
+    long rng = seed;
+    int i = 0;
+    while (i < n * n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        d[i] = int((rng >> 16) % 1000L) + 1;   // 1..1000
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        d[i * n + i] = 0;
+        i = i + 1;
+    }
+    int k = 0;
+    while (k < n) {
+        int i2 = 0;
+        while (i2 < n) {
+            int dk = d[i2 * n + k];
+            int base = i2 * n;
+            int j = 0;
+            while (j < n) {
+                int nd = dk + d[k * n + j];
+                if (nd < d[base + j]) d[base + j] = nd;
+                j = j + 1;
+            }
+            i2 = i2 + 1;
+        }
+        k = k + 1;
+    }
+    long sum = 0;
+    i = 0;
+    while (i < n * n) {
+        sum = sum + d[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            long v = floyd(600, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
