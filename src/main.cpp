@@ -403,6 +403,16 @@ static bool loadModule(const std::string& module_name,
         return dir + "/myp_rt_" + hex + ".o";
     };
 
+    // Unique per-process temp path (parallel-safe). The old unseeded
+    // rand()-only names collided when multiple mypc ran concurrently
+    // (make -j8 / xargs -P): every process got the same temp path, so
+    // parallel gcc writes clobbered each other. PID + rand + kind is
+    // unique across concurrent compilers.
+    auto tmpObj = [](const std::string& kind) {
+        return "/tmp/myp_" + kind + "_" + std::to_string(::getpid())
+             + "_" + std::to_string(std::rand()) + ".o";
+    };
+
     // Build runtime object. IMPORTANT: the C runtime is compiled fresh for
     // EVERY generated program. It MUST be optimized — gcc's default is -O0,
     // which leaves every runtime function unoptimized (no inlining, all
@@ -418,19 +428,22 @@ static bool loadModule(const std::string& module_name,
         if (!cached.empty() && fileExists(cached)) {
             rt_obj = cached;  // cache hit — skip gcc
         } else {
-            rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
+            rt_obj = tmpObj("runtime");
             std::string compile_rt = "gcc -I" + inc_path + " -fPIC " + rt_flags + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
             if (std::system(compile_rt.c_str()) != 0) {
                 std::cerr << "Failed to compile runtime\n";
                 return false;
             }
+            // Atomically install into the shared cache (parallel-safe):
+            // rename() is atomic on the same filesystem, so concurrent mypc
+            // processes never observe a partially-written cache object.
             if (!cached.empty()) {
-                std::string cp = "cp " + rt_obj + " " + cached + " 2>/dev/null";
-                std::system(cp.c_str());
+                if (::rename(rt_obj.c_str(), cached.c_str()) == 0)
+                    rt_obj = cached;  // link from the installed cache path
             }
         }
     } else {
-        rt_obj = "/tmp/myp_runtime_" + std::to_string(std::rand()) + ".o";
+        rt_obj = tmpObj("runtime");
         std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
         if (std::system(compile_rt.c_str()) != 0) {
             std::cerr << "Failed to compile runtime\n";
@@ -451,7 +464,7 @@ static bool loadModule(const std::string& module_name,
     else if (fileExists(runtime_dir + "/src/runtime/coro_ctx.S"))
         ctx_asm = runtime_dir + "/src/runtime/coro_ctx.S";
     if (!ctx_asm.empty()) {
-        ctx_obj = "/tmp/myp_rt_ctx_" + std::to_string(std::rand()) + ".o";
+        ctx_obj = tmpObj("rt_ctx");
         std::string compile_ctx = "gcc -c " + ctx_asm + " -o " + ctx_obj + " 2>&1";
         if (std::system(compile_ctx.c_str()) != 0) {
             std::cerr << "Failed to compile coro_ctx.S\n";
@@ -476,15 +489,15 @@ static bool loadModule(const std::string& module_name,
         if (!cached.empty() && fileExists(cached)) {
             sdl_obj = cached;
         } else {
-            sdl_obj = "/tmp/myp_sdl_" + std::to_string(std::rand()) + ".o";
+            sdl_obj = tmpObj("sdl");
             std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + san_flags + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
             if (std::system(compile_sdl.c_str()) != 0) {
                 std::cerr << "Failed to compile SDL bridge\n";
                 return false;
             }
             if (!cached.empty()) {
-                std::string cp = "cp " + sdl_obj + " " + cached + " 2>/dev/null";
-                std::system(cp.c_str());
+                if (::rename(sdl_obj.c_str(), cached.c_str()) == 0)
+                    sdl_obj = cached;
             }
         }
     }
@@ -502,15 +515,15 @@ static bool loadModule(const std::string& module_name,
         if (!cached.empty() && fileExists(cached)) {
             gpu_obj = cached;
         } else {
-            gpu_obj = "/tmp/myp_gpu_" + std::to_string(std::rand()) + ".o";
+            gpu_obj = tmpObj("gpu");
             std::string compile_gpu = "gcc -I" + inc_path + " -fPIC -O2" + san_flags + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
             if (std::system(compile_gpu.c_str()) != 0) {
                 std::cerr << "Failed to compile GPU runtime\n";
                 return false;
             }
             if (!cached.empty()) {
-                std::string cp = "cp " + gpu_obj + " " + cached + " 2>/dev/null";
-                std::system(cp.c_str());
+                if (::rename(gpu_obj.c_str(), cached.c_str()) == 0)
+                    gpu_obj = cached;
             }
         }
     }
