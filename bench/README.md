@@ -24,6 +24,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `sieve` | 字节数组内存带宽 + 分支 + 紧致循环 | N=10⁷ |
 | `matmul` | 浮点乘加 + 自动向量化（分块 64 写法，内层 C/B 连续可向量化） | 512×512 |
 | `nbody` | 浮点除法 + sqrt + O(N²) 嵌套访存 | 5000 体 × 2 步 |
+| `nbodybg` | **benchmarksgame n-body**：5 体太阳系引力（忠实复刻官方数据/算法，10 对/步） | 5×10⁶ 步 |
 | `mandelbrot` | 双精度分支密集 + 提前跳出 | 1000×1000, 256 迭代 |
 | `hashmap` | 泛型 + 类实例 ARC 成本（vs std::unordered_map） | 10⁶ put/get |
 | `tripleloop` | 三层嵌套循环控制 + 整型 ALU（无内存访问） | 300³ 迭代 |
@@ -63,6 +64,12 @@ verify 一致（浮点容差 1e-3）、输出比值表。
 
 - 纯计算项（sieve/matmul/nbody/mandelbrot）用**原始类型数组**，不产生 ARC 开销，
   比值主要反映代码生成质量（循环、数组、内联、向量化）。
+- **benchmarksgame n-body（`nbodybg`，新增）**：忠实复刻
+  [benchmarksgame 官方 n-body](https://benchmarksgame-team.pages.debian.net/benchmarksgame/program/nbody-gcc-9.html)
+  （5 体太阳系，同数据同算法）。50M 步两行输出 `-0.169075164`/`-0.169059907` 与
+  官方**逐位一致**（MYP 与 C++ 均复现）。MYP `-O2` vs C++ `-O3`（默认 arch，SSE2
+  基线）标量写法对比，MYP 反超 ~10%（5M 步 167ms vs 183ms）。注：gcc#9 是手写 AVX
+  内联汇编版（`-march=ivybridge`），属人工 SIMD 特化，不参与 MYP/C++ 同源公平对比。
 - `hashmap` 一项 MYP 的 `HashMap<K,V>` 是**纯 MYP 泛型类**（线性探测），含类实例
   ARC 成本，不能和 `std::unordered_map` 直接比 CPU 速度——它衡量的是"MYP 里自己写
   泛型容器"的代价。

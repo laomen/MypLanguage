@@ -1,0 +1,153 @@
+// bench/myp/nbodybg.myp — benchmarksgame n-body（5 体太阳系，忠实复刻标量算法）
+// 数据/算法与
+//   https://benchmarksgame-team.pages.debian.net/benchmarksgame/program/nbody-gcc-9.html
+// 一致（标量形式；gcc#9 是手写 AVX 内联汇编向量化版，MYP 靠 LLVM -O2 自动向量化）。
+// 50M 步时应精确复现 benchmarksgame 输出：-0.169075164 / -0.169059907。
+// 输出：首行初始能量（%.9f），verify=advance 后末能量（%.9f），ms=advance 耗时。
+import env;
+import time;
+import math;
+import fmt;
+
+double nbodySolarMass() { return 4.0 * Math.pi() * Math.pi(); }
+
+double nbodyEnergy(int n, double[] mass, double[] px, double[] py, double[] pz,
+                   double[] vx, double[] vy, double[] vz) {
+    double e = 0.0;
+    int i = 0;
+    while (i < n) {
+        e = e + 0.5 * mass[i] * (vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        int j = i + 1;
+        while (j < n) {
+            double dx = px[i] - px[j];
+            double dy = py[i] - py[j];
+            double dz = pz[i] - pz[j];
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            e = e - (mass[i] * mass[j]) / dist;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    return e;
+}
+
+void nbodyAdvance(int n, double dt, double[] mass, double[] px, double[] py,
+                  double[] pz, double[] vx, double[] vy, double[] vz) {
+    int i = 0;
+    while (i < n) {
+        int j = i + 1;
+        while (j < n) {
+            double dx = px[i] - px[j];
+            double dy = py[i] - py[j];
+            double dz = pz[i] - pz[j];
+            double d2 = dx * dx + dy * dy + dz * dz;
+            double mag = dt / (d2 * Math.sqrt(d2));
+            double mi = mass[i];
+            double mj = mass[j];
+            vx[i] = vx[i] - dx * mj * mag;
+            vy[i] = vy[i] - dy * mj * mag;
+            vz[i] = vz[i] - dz * mj * mag;
+            vx[j] = vx[j] + dx * mi * mag;
+            vy[j] = vy[j] + dy * mi * mag;
+            vz[j] = vz[j] + dz * mi * mag;
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < n) {
+        px[i] = px[i] + dt * vx[i];
+        py[i] = py[i] + dt * vy[i];
+        pz[i] = pz[i] + dt * vz[i];
+        i = i + 1;
+    }
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            double sm = nbodySolarMass();
+            double daysPerYear = 365.24;
+            int n = 5;
+            double[] mass = new double[n];
+            double[] px = new double[n];
+            double[] py = new double[n];
+            double[] pz = new double[n];
+            double[] vx = new double[n];
+            double[] vy = new double[n];
+            double[] vz = new double[n];
+
+            // sun
+            mass[0] = sm; px[0] = 0.0; py[0] = 0.0; pz[0] = 0.0;
+            vx[0] = 0.0; vy[0] = 0.0; vz[0] = 0.0;
+            // jupiter
+            mass[1] = 9.54791938424326609e-04 * sm;
+            px[1] = 4.84143144246472090e+00; py[1] = -1.16032004402742839e+00; pz[1] = -1.03622044471123109e-01;
+            vx[1] = 1.66007664274403694e-03 * daysPerYear;
+            vy[1] = 7.69901118419740425e-03 * daysPerYear;
+            vz[1] = -6.90460016972063023e-05 * daysPerYear;
+            // saturn
+            mass[2] = 2.85885980666130812e-04 * sm;
+            px[2] = 8.34336671824457987e+00; py[2] = 4.12479856412430479e+00; pz[2] = -4.03523417114321381e-01;
+            vx[2] = -2.76742510726862411e-03 * daysPerYear;
+            vy[2] = 4.99852801234917238e-03 * daysPerYear;
+            vz[2] = 2.30417297573763929e-05 * daysPerYear;
+            // uranus
+            mass[3] = 4.36624404335156298e-05 * sm;
+            px[3] = 1.28943695621391310e+01; py[3] = -1.51111514016986312e+01; pz[3] = -2.23307578892655734e-01;
+            vx[3] = 2.96460137564761618e-03 * daysPerYear;
+            vy[3] = 2.37847173959480950e-03 * daysPerYear;
+            vz[3] = -2.96589568540237556e-05 * daysPerYear;
+            // neptune
+            mass[4] = 5.15138902046611451e-05 * sm;
+            px[4] = 1.53796971148509165e+01; py[4] = -2.59193146099879641e+01; pz[4] = 1.79258772950371181e-01;
+            vx[4] = 2.68067772490389322e-03 * daysPerYear;
+            vy[4] = 1.62824170038242295e-03 * daysPerYear;
+            vz[4] = -9.51592254519715870e-05 * daysPerYear;
+
+            // offset momentum
+            double mpx = 0.0;
+            double mpy = 0.0;
+            double mpz = 0.0;
+            int i = 0;
+            while (i < n) {
+                mpx = mpx + vx[i] * mass[i];
+                mpy = mpy + vy[i] * mass[i];
+                mpz = mpz + vz[i] * mass[i];
+                i = i + 1;
+            }
+            vx[0] = -mpx / sm;
+            vy[0] = -mpy / sm;
+            vz[0] = -mpz / sm;
+
+            double e0 = nbodyEnergy(n, mass, px, py, pz, vx, vy, vz);
+
+            int steps = 5000000;
+            long t0 = Time.nowMs();
+            int s = 0;
+            while (s < steps) {
+                nbodyAdvance(n, 0.01, mass, px, py, pz, vx, vy, vz);
+                s = s + 1;
+            }
+            long t1 = Time.nowMs();
+
+            double e1 = nbodyEnergy(n, mass, px, py, pz, vx, vy, vz);
+            Console.writeString(Fmt.f(e0, 9));
+            Console.writeString("\n");
+            Console.writeString("verify ");
+            Console.writeString(Fmt.f(e1, 9));
+            Console.writeString("\n");
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
