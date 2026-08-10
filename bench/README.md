@@ -114,11 +114,12 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   没处理 slice 类型，`slice<slice<int>>` 元素算成 4 字节而非 16，写穿外层数据区 +
   `rows[i][j]` 双下标 codegen 缺失——新增 `sliceTypeOfExpr`/`generateSliceElementAddress`
   统一读写路径）。回归测试 `tests/nested_slice/`。
-- **并行计算批（parcomp/parreduce）**：parcomp（并行计算，写 slice）0.94 基本持平；
-  parreduce（`@parallel for` + Atomic 归约，每线程独立槽位）0.60——C++ 更快，
-  因 MYP 每元素做原子 RMW（写进 workerId 槽位），C++ 是线程内普通加法再一次性写
-  回；原子操作固有开销。两者 verify 与串行精确一致，验证 `@parallel for` 并行/归约
-  正确性。串行同负载约 10x 加速。
+- **并行计算批（parcomp/parreduce）**：parcomp（并行计算，写 slice）0.89~0.94
+  基本持平。parreduce（并行归约）**1.00 持平**——曾 0.60，查明是基准写法用了
+  `Atomic.addInt`（每元素原子 RMW），但每线程专属槽位（`Parallel.workerId()` 恒定、
+  槽位互斥）**无竞争，普通 load-add-store 即可**；去掉原子后 MYP 与 C++ 寄存器累加
+  完全持平（3ms vs 3ms）。**教训：MYP 并行归约到每线程槽位用普通写，只有共享槽位
+  才用 `Atomic`**。两者 verify 与串行精确一致，串行同负载约 10x 加速。
 - 想让 C++ 更强可加 `-march=native`（脚本里可取消注释）。
 - 若某项 `verify` 不一致，说明两语言算法/数据布局有差异，**该行比值无效**。
 

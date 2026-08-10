@@ -1,10 +1,10 @@
-// bench/myp/parreduce.myp — 并行归约（@parallel for + Atomic，每线程独立槽位）
+// bench/myp/parreduce.myp — 并行归约（@parallel for，每线程独立槽位普通写）
 // N=10^6 随机小整数（0..999，LCG），verify = 总和（无溢出，精确一致）。
-// 每线程用 Parallel.workerId() 累加到自己槽位（低竞争），最后串行求和。
+// 每线程用 Parallel.workerId() 累加到自己专属槽位（workerId 恒定、槽位互斥 →
+// 无竞争，普通 load-add-store 即可，无需原子），最后串行求和。
 // 与 C++ std::thread 版同算法。
 import env;
 import pool;
-import atomic;
 import time;
 
 long parreduce(int n, int seed) {
@@ -23,7 +23,8 @@ long parreduce(int n, int seed) {
         i = i + 1;
     }
     @parallel for (int j = 0; j < n; j = j + 1) {
-        Atomic.addInt(perThread, Parallel.workerId(), a[j]);
+        int wid = Parallel.workerId();
+        perThread[wid] = perThread[wid] + a[j];
     }
     long sum = 0;
     i = 0;
