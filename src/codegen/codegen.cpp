@@ -7400,6 +7400,21 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
         }
     }
     bool isv = cf->getReturnType()->isVoidTy();
+    // Math intrinsics (stdlib Math.sqrt/abs/floor/ceil) → LLVM intrinsics so the
+    // backend lowers them to single instructions (sqrtsd / fabs / roundsd) instead
+    // of an external runtime call (myp_math_* lives in a separate TU → cannot
+    // inline). This matches what C++ -O2 does for std::sqrt/std::fabs/std::floor
+    // and removes a call frame from the hottest inner loops (e.g. ray tracing).
+    if (args.size() == 1) {
+        const std::string& cname = cf->getName().str();
+        llvm::Intrinsic::ID mid = llvm::Intrinsic::not_intrinsic;
+        if (cname == "myp_math_sqrt") mid = llvm::Intrinsic::sqrt;
+        else if (cname == "myp_math_floor") mid = llvm::Intrinsic::floor;
+        else if (cname == "myp_math_ceil") mid = llvm::Intrinsic::ceil;
+        else if (cname == "myp_math_abs") mid = llvm::Intrinsic::fabs;
+        if (mid != llvm::Intrinsic::not_intrinsic)
+            return builder_.CreateUnaryIntrinsic(mid, args[0], nullptr, "mypmath");
+    }
     return builder_.CreateCall(cf->getFunctionType(), cf, args, isv ? "" : "calltmp");
 }
 
