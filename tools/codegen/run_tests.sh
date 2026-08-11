@@ -51,10 +51,14 @@ out3=$("$MYPCC" run tests/test_res.myp 2>&1) || { echo "FAIL: 编译/运行 test
 echo "$out3" | grep -q "res ok h=" \
     || { echo "FAIL: 资源输出不符"; echo "$out3"; exit 1; }
 
-# 6) 组合 schema（serde + ffi 同文件）：串行生成验证
-if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
-    echo "FAIL: 组合 serde"; exit 1
+# 6) autodiff 符号求导：生成 → 编译 → 数值梯度验证
+if ! "$MYPCC" run main.myp autodiff tests/schema_autodiff.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 autodiff 代码"; exit 1
 fi
+cp "$WORK/autodiff_gen.myp" tests/autodiff_gen.myp
+out4=$("$MYPCC" run tests/test_autodiff.myp 2>&1) || { echo "FAIL: 编译/运行 test_autodiff"; echo "$out4"; exit 1; }
+echo "$out4" | grep -q "autodiff ok f1=13 g0=6 g1=1" \
+    || { echo "FAIL: autodiff 输出不符"; echo "$out4"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources）"
+echo "codegen 自测通过（serde + ffi + resources + autodiff）"
 exit 0
