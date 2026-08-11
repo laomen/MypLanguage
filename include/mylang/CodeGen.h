@@ -496,6 +496,11 @@ private:
     void setNamedTypedValue(const std::string& name, llvm::Value* ptr, llvm::Type* ty);
     llvm::Value* getNamedValue(const std::string& name);
     llvm::Type* getNamedValueType(const std::string& name);
+    // M3: guard a signed length/dimension against negative values — emit a
+    // branch to myp_bounds_error (deterministic abort, no OOB) and return a
+    // zero-extended i64 copy safe to multiply into a byte size. Accepts any
+    // integer width (i32/i64/etc.).
+    llvm::Value* guardNonNegativeLen(llvm::Value* v);
     llvm::AllocaInst* createEntryBlockAlloca(llvm::Function* func,
                                               llvm::Type* type,
                                               const std::string& name);

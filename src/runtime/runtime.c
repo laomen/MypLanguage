@@ -22,6 +22,36 @@
 #include <poll.h>
 #include <fcntl.h>
 #include <stdatomic.h>
+#include <limits.h>
+
+// ======================
+// Checked size arithmetic + OOM handling (M3: overflow-safe allocation)
+// ======================
+// Every allocation size computation must detect overflow and treat it as OOM
+// (a deterministic, diagnosable abort) rather than proceeding with a truncated
+// size that later writes out of bounds. realloc callers must keep the original
+// pointer until the new allocation succeeds (checked at each call site).
+static void myp_oom(size_t size) {
+    fprintf(stderr, "MYP runtime: out of memory / size overflow (%zu bytes)\n", size);
+    abort();
+}
+static int myp_mul_overflow(size_t a, size_t b, size_t* out) {
+    if (a != 0 && b > SIZE_MAX / a) return 1;
+    *out = a * b;
+    return 0;
+}
+static int myp_add_overflow(size_t a, size_t b, size_t* out) {
+    if (b > SIZE_MAX - a) return 1;
+    *out = a + b;
+    return 0;
+}
+// Allocation helper that never returns NULL: overflow or malloc failure aborts
+// deterministically instead of letting a NULL flow into GEP/memset.
+static void* myp_xmalloc(size_t size) {
+    void* p = malloc(size);
+    if (!p) myp_oom(size);
+    return p;
+}
 
 // ======================
 // Terminal raw mode (for real-time keyboard input)
@@ -1478,12 +1508,15 @@ static void myp_make_arena_key(void) {
 
 static void* myp_arena_bump_alloc(size_t size) {
     pthread_once(&myp_arena_key_once, myp_make_arena_key);
+    if (size > SIZE_MAX - (MYP_ARENA_ALIGN - 1)) myp_oom(size);
     size = (size + MYP_ARENA_ALIGN - 1) & ~(size_t)(MYP_ARENA_ALIGN - 1);
-    if (!myp_arena_cur || myp_arena_cur->used + size > myp_arena_cur->cap) {
+    if (!myp_arena_cur || size > myp_arena_cur->cap - myp_arena_cur->used) {
         // Need a fresh chunk. Oversized allocations get a dedicated chunk.
         size_t chunk_cap = size > MYP_ARENA_CHUNK_SIZE ? size : MYP_ARENA_CHUNK_SIZE;
-        myp_arena_chunk_t* c = (myp_arena_chunk_t*)malloc(sizeof(myp_arena_chunk_t) + chunk_cap);
-        if (!c) return NULL;
+        size_t chunk_total;
+        if (myp_add_overflow(sizeof(myp_arena_chunk_t), chunk_cap, &chunk_total))
+            myp_oom(chunk_cap);
+        myp_arena_chunk_t* c = (myp_arena_chunk_t*)myp_xmalloc(chunk_total);
         c->next = myp_arena_cur;
         c->used = 0;
         c->cap = chunk_cap;
@@ -1549,9 +1582,10 @@ static __thread int64_t myp_live_objects = 0;
 int64_t myp_live_object_count(void) { return myp_live_objects; }
 
 void* myp_alloc_object(size_t size, uint32_t type_id) {
-    size_t total = sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE + size;
-    myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(total);
-    if (!node) return NULL;
+    size_t total;
+    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE, size, &total))
+        myp_oom(size);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)myp_xmalloc(total);
     char* base = (char*)node + sizeof(myp_alloc_node_t);
     myp_obj_header_t* h = (myp_obj_header_t*)base;
     h->rc = 1;
@@ -1611,10 +1645,12 @@ void myp_free_object(void* obj) {
 
 // ---- Ref-counted class arrays (§五-1): allocation + element release ----
 void* myp_alloc_class_array(uint64_t count, uint32_t elem_size) {
-    size_t total = sizeof(myp_alloc_node_t) + MYP_ARR_HEADER_SIZE +
-                   (size_t)count * (size_t)elem_size;
-    myp_alloc_node_t* node = (myp_alloc_node_t*)malloc(total);
-    if (!node) return NULL;
+    size_t data_bytes, total;
+    if (myp_mul_overflow((size_t)count, (size_t)elem_size, &data_bytes))
+        myp_oom((size_t)count);
+    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_ARR_HEADER_SIZE, data_bytes, &total))
+        myp_oom(data_bytes);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)myp_xmalloc(total);
     char* base = (char*)node + sizeof(myp_alloc_node_t);
     myp_arr_header_t* h = (myp_arr_header_t*)base;
     h->count = count;
@@ -1756,12 +1792,14 @@ static void myp_make_region_key(void) {
 
 static void* myp_region_bump_alloc(size_t size) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
+    if (size > SIZE_MAX - (MYP_ARENA_ALIGN - 1)) myp_oom(size);
     size = (size + MYP_ARENA_ALIGN - 1) & ~(size_t)(MYP_ARENA_ALIGN - 1);
-    if (!myp_region_cur || myp_region_cur->used + size > myp_region_cur->cap) {
+    if (!myp_region_cur || size > myp_region_cur->cap - myp_region_cur->used) {
         size_t chunk_cap = size > MYP_ARENA_CHUNK_SIZE ? size : MYP_ARENA_CHUNK_SIZE;
-        myp_arena_chunk_t* chunk =
-            (myp_arena_chunk_t*)malloc(sizeof(myp_arena_chunk_t) + chunk_cap);
-        if (!chunk) return NULL;
+        size_t chunk_total;
+        if (myp_add_overflow(sizeof(myp_arena_chunk_t), chunk_cap, &chunk_total))
+            myp_oom(chunk_cap);
+        myp_arena_chunk_t* chunk = (myp_arena_chunk_t*)myp_xmalloc(chunk_total);
         chunk->next = myp_region_cur;
         chunk->used = 0;
         chunk->cap = chunk_cap;
@@ -2432,10 +2470,14 @@ static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, voi
     int next = (q->head + 1) % q->capacity;
     if (next == q->tail) {
         // Full — grow (double) and linearize the circular contents.
+        if (q->capacity > INT_MAX / 2) { pthread_mutex_unlock(&q->mutex); return; }
         int new_cap = q->capacity * 2;
-        myp_event_t* ne = (myp_event_t*)realloc(q->events,
-                                                (size_t)new_cap * sizeof(myp_event_t));
-        if (!ne) { pthread_mutex_unlock(&q->mutex); return; }  // OOM: drop event
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)new_cap, sizeof(myp_event_t), &nbytes)) {
+            pthread_mutex_unlock(&q->mutex); return;
+        }
+        myp_event_t* ne = (myp_event_t*)realloc(q->events, nbytes);
+        if (!ne) { pthread_mutex_unlock(&q->mutex); return; }  // OOM: drop event, keep original
         int n = 0;
         for (int i = q->tail; i != q->head; i = (i + 1) % q->capacity)
             ne[n++] = q->events[i];
@@ -2743,8 +2785,15 @@ static void myp_work_deque_push(myp_work_deque_t* dq, int start, int end, int st
     pthread_mutex_lock(&dq->mutex);
     int b = dq->bottom;
     if (b >= dq->cap) {
+        if (dq->cap > INT_MAX / 2) { pthread_mutex_unlock(&dq->mutex); return; }
         dq->cap *= 2;
-        dq->chunks = (myp_work_chunk_t*)realloc(dq->chunks, dq->cap * sizeof(myp_work_chunk_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)dq->cap, sizeof(myp_work_chunk_t), &nbytes)) {
+            pthread_mutex_unlock(&dq->mutex); return;
+        }
+        myp_work_chunk_t* nch = (myp_work_chunk_t*)realloc(dq->chunks, nbytes);
+        if (!nch) { pthread_mutex_unlock(&dq->mutex); return; }  // keep original ptr
+        dq->chunks = nch;
     }
     dq->chunks[b].start = start;
     dq->chunks[b].end = end;
@@ -3722,9 +3771,13 @@ static __thread int64_t myp_coro_resume_val = 0;
 // Grow the pointer array (at least doubling). Returns 0 on success.
 static int myp_coro_grow(void) {
     int new_cap = myp_coro_capacity ? myp_coro_capacity : MYP_CORO_INITIAL_CAPACITY;
-    if (myp_coro_count >= new_cap) new_cap *= 2;
-    myp_coro_t** np = (myp_coro_t**)realloc(myp_coros,
-                                            (size_t)new_cap * sizeof(myp_coro_t*));
+    if (myp_coro_count >= new_cap) {
+        if (new_cap > INT_MAX / 2) return -1;
+        new_cap *= 2;
+    }
+    size_t nbytes;
+    if (myp_mul_overflow((size_t)new_cap, sizeof(myp_coro_t*), &nbytes)) return -1;
+    myp_coro_t** np = (myp_coro_t**)realloc(myp_coros, nbytes);
     if (!np) return -1;
     memset(np + myp_coro_capacity, 0,
            (size_t)(new_cap - myp_coro_capacity) * sizeof(myp_coro_t*));
@@ -3752,9 +3805,11 @@ static void myp_coro_stack_pool_add(char* ptr, size_t size) {
     if (!ptr) return;
     if (myp_coro_stack_pool_count >= MYP_CORO_STACK_POOL_MAX) { free(ptr); return; }
     if (myp_coro_stack_pool_count >= myp_coro_stack_pool_capacity) {
+        if (myp_coro_stack_pool_capacity > INT_MAX / 2) { free(ptr); return; }
         int nc = myp_coro_stack_pool_capacity ? myp_coro_stack_pool_capacity * 2 : 16;
-        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(
-            myp_coro_stack_pool, (size_t)nc * sizeof(myp_coro_stack_slot_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)nc, sizeof(myp_coro_stack_slot_t), &nbytes)) { free(ptr); return; }
+        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(myp_coro_stack_pool, nbytes);
         if (!np) { free(ptr); return; }
         myp_coro_stack_pool = np;
         myp_coro_stack_pool_capacity = nc;
@@ -3801,9 +3856,11 @@ static __thread int myp_coro_retired_cap = 0;
 static void myp_coro_retired_add(char* ptr, size_t size) {
     if (!ptr) return;
     if (myp_coro_retired_count >= myp_coro_retired_cap) {
+        if (myp_coro_retired_cap > INT_MAX / 2) { free(ptr); return; }
         int nc = myp_coro_retired_cap ? myp_coro_retired_cap * 2 : 16;
-        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(
-            myp_coro_retired, (size_t)nc * sizeof(myp_coro_stack_slot_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)nc, sizeof(myp_coro_stack_slot_t), &nbytes)) { free(ptr); return; }
+        myp_coro_stack_slot_t* np = (myp_coro_stack_slot_t*)realloc(myp_coro_retired, nbytes);
         if (!np) { free(ptr); return; }
         myp_coro_retired = np;
         myp_coro_retired_cap = nc;
@@ -4054,9 +4111,11 @@ static __thread int myp_coro_wait_capacity = 0;
 // Grow the wait table (at least doubling, starting at 64). Returns 0 on success.
 static int myp_coro_wait_reserve(void) {
     if (myp_coro_wait_count >= myp_coro_wait_capacity) {
+        if (myp_coro_wait_capacity > INT_MAX / 2) return -1;
         int new_cap = myp_coro_wait_capacity ? myp_coro_wait_capacity * 2 : 64;
-        myp_coro_wait_t* np = (myp_coro_wait_t*)realloc(
-            myp_coro_waits, (size_t)new_cap * sizeof(myp_coro_wait_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)new_cap, sizeof(myp_coro_wait_t), &nbytes)) return -1;
+        myp_coro_wait_t* np = (myp_coro_wait_t*)realloc(myp_coro_waits, nbytes);
         if (!np) return -1;
         myp_coro_waits = np;
         myp_coro_wait_capacity = new_cap;
@@ -4087,9 +4146,11 @@ void __myp_coro_frame_set(int64_t slot_id, int64_t obj) {
         }
     }
     if (c->frame_slots_count >= c->frame_slots_cap) {
+        if (c->frame_slots_cap > INT_MAX / 2) return;   // OOM: leave untracked
         int nc = c->frame_slots_cap ? c->frame_slots_cap * 2 : 16;
-        myp_frame_slot_t* np = (myp_frame_slot_t*)realloc(c->frame_slots,
-                                        (size_t)nc * sizeof(myp_frame_slot_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)nc, sizeof(myp_frame_slot_t), &nbytes)) return;
+        myp_frame_slot_t* np = (myp_frame_slot_t*)realloc(c->frame_slots, nbytes);
         if (!np) return;   // OOM: leave untracked (leak on destroy, no UAF)
         c->frame_slots = np;
         c->frame_slots_cap = nc;
@@ -4249,10 +4310,23 @@ void __myp_coro_scheduler(void) {
             static __thread int s_fd_cap = 0;
             if (nfd > s_fd_cap) {
                 int nc = s_fd_cap ? s_fd_cap * 2 : 16;
-                while (nc < nfd) nc *= 2;
-                struct pollfd* np = (struct pollfd*)realloc(s_pfds, (size_t)nc * sizeof(struct pollfd));
-                int* nw = (int*)realloc(s_widx, (size_t)nc * sizeof(int));
-                if (!np || !nw) goto fd_poll_done;  // OOM: skip this round's poll, keep scheduler alive
+                while (nc < nfd) {
+                    if (nc > INT_MAX / 2) goto fd_poll_done;
+                    nc *= 2;
+                }
+                size_t pfds_bytes, widx_bytes;
+                if (myp_mul_overflow((size_t)nc, sizeof(struct pollfd), &pfds_bytes) ||
+                    myp_mul_overflow((size_t)nc, sizeof(int), &widx_bytes))
+                    goto fd_poll_done;
+                struct pollfd* np = (struct pollfd*)realloc(s_pfds, pfds_bytes);
+                int* nw = (int*)realloc(s_widx, widx_bytes);
+                if (!np || !nw) {
+                    // Adopt whichever succeeded (realloc keeps the original on
+                    // failure, so neither pointer ever dangles); skip this round.
+                    if (np) s_pfds = np;
+                    if (nw) s_widx = nw;
+                    goto fd_poll_done;
+                }
                 s_pfds = np;
                 s_widx = nw;
                 s_fd_cap = nc;
@@ -4298,13 +4372,14 @@ void __myp_coro_scheduler(void) {
     // call Coro.scheduler() once per round, so per-call heap traffic is pure
     // overhead (measured: ping-pong 54→~44ms, io_socket 89→~82ms).
     static __thread int64_t* s_snapshot = NULL;
-    static __thread int s_snapshot_cap = 0;
-    size_t need = (size_t)myp_coro_count * sizeof(int64_t);
-    if ((int)need > s_snapshot_cap) {
+    static __thread size_t s_snapshot_cap = 0;
+    size_t need;
+    if (myp_mul_overflow((size_t)myp_coro_count, sizeof(int64_t), &need)) return;
+    if (need > s_snapshot_cap) {
         int64_t* np = (int64_t*)realloc(s_snapshot, need);
         if (!np) return;
         s_snapshot = np;
-        s_snapshot_cap = (int)need;
+        s_snapshot_cap = need;
     }
     int64_t* snapshot = s_snapshot;
     int n = 0;
@@ -4575,9 +4650,11 @@ static int myp_exec_results_count = 0, myp_exec_results_cap = 0;
 
 static void myp_exec_push_result(pthread_t t, int64_t h, char* r) {
     if (myp_exec_results_count >= myp_exec_results_cap) {
+        if (myp_exec_results_cap > INT_MAX / 2) { free(r); return; }
         int nc = myp_exec_results_cap ? myp_exec_results_cap * 2 : 64;
-        myp_exec_result_t* np = (myp_exec_result_t*)realloc(
-            myp_exec_results, (size_t)nc * sizeof(myp_exec_result_t));
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)nc, sizeof(myp_exec_result_t), &nbytes)) { free(r); return; }
+        myp_exec_result_t* np = (myp_exec_result_t*)realloc(myp_exec_results, nbytes);
         if (!np) { free(r); return; }
         myp_exec_results = np;
         myp_exec_results_cap = nc;
@@ -4603,16 +4680,29 @@ static char* myp_exec_read_line_from(FILE* fp) {
 
 static char* myp_exec_read_all_from(FILE* fp) {
     size_t cap = 4096, len = 0;
-    char* buf = (char*)malloc(cap + 1);
+    size_t init;
+    if (myp_add_overflow(cap, 1, &init)) return strdup("");
+    char* buf = (char*)malloc(init);
     if (!buf) return strdup("");
     char tmp[4096];
     while (fgets(tmp, sizeof(tmp), fp)) {
         size_t n = strlen(tmp);
-        if (len + n + 1 > cap) {
-            cap = (cap + n) * 2;
-            char* nb = (char*)realloc(buf, cap + 1);
+        size_t need;
+        if (myp_add_overflow(len, n, &need) || myp_add_overflow(need, 1, &need)) {
+            free(buf); return strdup("");
+        }
+        if (need > cap) {
+            size_t ncap;
+            if (myp_add_overflow(cap, n, &ncap) || ncap > SIZE_MAX / 2) {
+                free(buf); return strdup("");
+            }
+            ncap = ncap * 2;
+            size_t ncap1;
+            if (myp_add_overflow(ncap, 1, &ncap1)) { free(buf); return strdup(""); }
+            char* nb = (char*)realloc(buf, ncap1);
             if (!nb) { free(buf); return strdup(""); }
             buf = nb;
+            cap = ncap;
         }
         memcpy(buf + len, tmp, n);
         len += n;

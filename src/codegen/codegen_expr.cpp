@@ -2278,15 +2278,53 @@ do_gep:
     return builder_.CreateLoad(elem_ty, p);
 }
 
+// M3: guard a signed length/dimension against negative values. Emits a branch
+// to myp_bounds_error (deterministic abort — never a huge/negative allocation)
+// and returns a zero-extended i64 copy safe to multiply into a byte size.
+// Accepts any integer width. Constant non-negative lengths skip the runtime
+// check (common case: `new slice<int>(64)`).
+llvm::Value* CodeGen::guardNonNegativeLen(llvm::Value* v) {
+    if (!v || !v->getType()->isIntegerTy()) return v;
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* ty = v->getType();
+    // Constant fast path: non-negative literals need no runtime branch.
+    if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(v)) {
+        if (ci->getSExtValue() >= 0) {
+            return ty->isIntegerTy(64) ? v : builder_.CreateZExt(v, i64);
+        }
+    }
+    auto* neg = builder_.CreateICmpSLT(v, llvm::ConstantInt::get(ty, 0));
+    auto* cur_bb = builder_.GetInsertBlock();
+    if (!cur_bb || !cur_bb->getParent()) return v;
+    auto* fn = cur_bb->getParent();
+    auto* ok_bb = llvm::BasicBlock::Create(ctx_, "len_ok", fn);
+    auto* err_bb = llvm::BasicBlock::Create(ctx_, "len_neg", fn);
+    builder_.CreateCondBr(neg, err_bb, ok_bb);
+    builder_.SetInsertPoint(err_bb);
+    auto* be = module_->getFunction("myp_bounds_error");
+    if (!be) {
+        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+            {i64, i64}, false);
+        be = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_bounds_error", module_.get());
+    }
+    auto* val64 = ty->isIntegerTy(64) ? v : builder_.CreateSExt(v, i64);
+    builder_.CreateCall(be, {val64, llvm::ConstantInt::get(i64, 0)});
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(ok_bb);
+    return ty->isIntegerTy(64) ? v : builder_.CreateZExt(v, i64);
+}
+
 llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     // Built-in slice<T>(n): allocate n*elem bytes, return { data, len }
     if (e.class_name == "slice") {
         auto* elem_ty = typeNodeToLLVMType(e.type_args[0]);
         uint64_t es = module_->getDataLayout().getTypeAllocSize(elem_ty);
-        auto* len_val = generateExpr(*e.args[0]);
-        if (len_val->getType()->isIntegerTy(32) || len_val->getType()->isIntegerTy(8)
-            || len_val->getType()->isIntegerTy(16))
-            len_val = builder_.CreateZExt(len_val, llvm::Type::getInt64Ty(ctx_));
+        // M3: reject negative length deterministically (myp_bounds_error). A
+        // negative int otherwise zexts to 0xFFFFFFFF → a ~16GB allocation
+        // instead of an error; a negative long → SIZE_MAX-bytes → allocator
+        // OOM abort. Both must be clean bounds errors, never an allocation.
+        auto* len_val = guardNonNegativeLen(generateExpr(*e.args[0]));
         auto* byte_size = builder_.CreateMul(len_val,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
         // Always allocate via the region-aware allocator: when called inside an
@@ -2438,9 +2476,8 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
 llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
     llvm::Value* total = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 1);
     for (auto& dim : e.dimensions) {
-        auto* dim_val = generateExpr(*dim);
-        if (dim_val->getType()->isIntegerTy(32))
-            dim_val = builder_.CreateZExt(dim_val, llvm::Type::getInt64Ty(ctx_));
+        // M3: each dimension is a signed length — reject negative at runtime.
+        auto* dim_val = guardNonNegativeLen(generateExpr(*dim));
         total = builder_.CreateMul(total, dim_val);
     }
     auto* elem_ty = typeNodeToLLVMType(e.element_type);
