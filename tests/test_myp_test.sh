@@ -57,6 +57,20 @@ check "失败套件 汇总 2 failed" "echo \"$bad_out\" | grep -q 'assertions: 0
 check "失败套件 FAILED 消息" "echo \"$bad_out\" | grep -q 'FAILED: deliberate'"
 check "失败套件 FAIL 标记" "echo \"$bad_out\" | grep -q 'FAIL: t2'"
 
+# 2b) 断言自定义消息: Test.assert(cond, msg) 失败时打印 msg
+cat > "$TMPDIR/msg.myp" <<'EOF'
+import test;
+@test void t_msg() {
+    Test.assert(1 + 1 == 2, "math ok");
+    Test.assert(1 == 2, "custom failure msg");
+    Test.report("t_msg", true);
+}
+EOF
+$MYPCC --test "$TMPDIR/msg.myp" 2>/dev/null
+msg_out=$(cd "$TMPDIR" && ./msg.out 2>&1); msg_ec=$?
+check "消息断言 exit 1" "test $msg_ec -ne 0"
+check "消息断言 打印 msg" "echo \"$msg_out\" | grep -q 'ASSERTION FAILED: custom failure msg'"
+
 # 3) 扩展断言 API（long/float 不等、空引用泛型）
 cat > "$TMPDIR/ext.myp" <<'EOF'
 import test;

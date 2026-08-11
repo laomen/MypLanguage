@@ -3689,6 +3689,17 @@ void myp_assert(int cond) {
     }
 }
 
+// Assertion with a user-provided message: on failure print the message instead
+// of the generic "ASSERTION FAILED" line (Test.assert(cond, msg)).
+void myp_assert_msg(int cond, const char* msg) {
+    if (!cond) {
+        fprintf(stderr, "  ASSERTION FAILED: %s\n", msg ? msg : "");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
 void myp_assert_eq(int a, int b) {
     if (a != b) {
         fprintf(stderr, "  ASSERTION FAILED: %d != %d\n", a, b);

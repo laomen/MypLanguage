@@ -9,14 +9,21 @@
 
 class Test {
     static:
-        // 布尔断言
-        void assert(bool cond) {
-            __myp_assert(cond);
+        // 布尔断言（可带自定义消息，失败时打印）
+        void assert(bool cond, string msg = "") {
+            if (msg == "") __myp_assert(cond);
+            else __myp_assert_msg(cond, msg);
         }
 
         // 显式 true/false
-        void assertTrue(bool cond) { __myp_assert(cond); }
-        void assertFalse(bool cond) { __myp_assert(!cond); }
+        void assertTrue(bool cond, string msg = "") {
+            if (msg == "") __myp_assert(cond);
+            else __myp_assert_msg(cond, msg);
+        }
+        void assertFalse(bool cond, string msg = "") {
+            if (msg == "") __myp_assert(!cond);
+            else __myp_assert_msg(!cond, msg);
+        }
 
         // 整数相等/不等断言
         void assertEq(int a, int b) {

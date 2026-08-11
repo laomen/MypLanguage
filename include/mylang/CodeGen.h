@@ -376,6 +376,7 @@ private:
 
     // ---- Test framework runtime functions ----
     llvm::Function* runtime_assert_ = nullptr;
+    llvm::Function* runtime_assert_msg_ = nullptr;
     llvm::Function* runtime_assert_eq_ = nullptr;
     llvm::Function* runtime_assert_str_eq_ = nullptr;
     llvm::Function* runtime_assert_neq_ = nullptr;

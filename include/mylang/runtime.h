@@ -381,6 +381,7 @@ void myp_release_slot(void* slot_addr, int kind);
 
 // ---- Test framework ----
 void myp_assert(int cond);
+void myp_assert_msg(int cond, const char* msg);
 void myp_assert_eq(int a, int b);
 void myp_assert_str_eq(const char* a, const char* b);
 void myp_test_report(const char* name, int passed);

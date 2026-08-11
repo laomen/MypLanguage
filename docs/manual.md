@@ -2633,7 +2633,7 @@ import test;
 
 | 断言 | 说明 |
 |------|------|
-| `Test.assert(bool)` / `assertTrue` / `assertFalse` | 布尔条件 |
+| `Test.assert(bool, msg="")` / `assertTrue` / `assertFalse` | 布尔条件（`msg` 为失败时打印的自定义消息）|
 | `Test.assertEq(a, b)` / `assertNeq(a, b)` | 整数相等/不等 |
 | `Test.assertLongEq(a, b)` / `assertLongNeq(a, b)` | 长整数 |
 | `Test.assertFloatEq(a, b, eps)` / `assertFloatNeq(a, b, eps)` | 浮点（带容差）|

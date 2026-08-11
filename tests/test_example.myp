@@ -41,6 +41,14 @@ import test;
 
 class Node { action: @constructor Node() {} }
 
+// 断言自定义消息（失败时打印 msg）
+@test void test_messages() {
+    Test.assert(1 + 1 == 2, "math broken");
+    Test.assertTrue(5 > 3, "comparison broken");
+    Test.assertFalse(1 > 2, "expected false");
+    Test.report("test_messages", true);
+}
+
 // 扩展断言 API（long/float 不等、空引用、fail）
 @test void test_ext_assertions() {
     Test.assertLongEq(10000000000L, 10000000000L);

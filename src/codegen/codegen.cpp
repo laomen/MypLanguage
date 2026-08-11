@@ -2249,6 +2249,9 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_assert_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {i32}, false),
         llvm::Function::ExternalLinkage, "myp_assert", module_.get());
+    runtime_assert_msg_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i32, p}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_msg", module_.get());
     runtime_assert_eq_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {i32, i32}, false),
         llvm::Function::ExternalLinkage, "myp_assert_eq", module_.get());
@@ -2379,6 +2382,7 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_type_name"] = runtime_type_name_;
     // test intrinsics
     intrinsic_map_["__myp_assert"] = runtime_assert_;
+    intrinsic_map_["__myp_assert_msg"] = runtime_assert_msg_;
     intrinsic_map_["__myp_assert_eq"] = runtime_assert_eq_;
     intrinsic_map_["__myp_assert_neq"] = runtime_assert_neq_;
     intrinsic_map_["__myp_assert_long_eq"] = runtime_assert_long_eq_;
