@@ -1,0 +1,65 @@
+// mapping 数据传递：struct 值 / class 引用 / interface 胖指针（虚表分派）
+import env;
+
+class Payload {
+    action:
+        @constructor Payload(int x) { v = x; }
+        int get() { return v; }
+        int add(int x) { v = v + x; return v; }
+    property: int v;
+}
+
+struct Point { double x; double y; }
+
+interface IShape { int area(); }
+
+class Circle {
+    interface class IShape;
+    action:
+        @constructor Circle(int rad) { r = rad; }
+        int area() { return r * r; }
+    property: int r;
+}
+
+class Sink {
+    action:
+        void st(Point p) {
+            Console.writeString("st="); Console.writeFloat(p.x);
+            Console.writeString(","); Console.writeFloat(p.y);
+            Console.writeString("\n");
+        }
+        void cls(Payload p) {
+            Console.writeString("cls="); Console.write(p.get());
+            Console.writeString("\n");
+        }
+        void ish(IShape s) {
+            Console.writeString("ish="); Console.write(s.area());
+            Console.writeString("\n");
+        }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            Point p; p.x = 1.5; p.y = 2.5;
+            evSt(p);
+
+            Payload pl = new Payload(42);
+            evCls(pl);
+
+            Circle c = new Circle(5);
+            evIsh(c);
+        }
+    event:
+        evSt(Point p);
+        evCls(Payload p);
+        evIsh(IShape s);
+}
+
+mapping() {
+    Src.evSt -> Sink.st;
+    Src.evCls -> Sink.cls;
+    Src.evIsh -> Sink.ish;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); return 0; }

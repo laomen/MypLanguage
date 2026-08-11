@@ -1,0 +1,49 @@
+// mapping 数据传递：标量家族（int/long/float/double/bool）+ string + 多参数事件
+import env;
+
+class Sink {
+    action:
+        void onInt(int v)     { Console.writeString("int=");   Console.write(v); }
+        void onLong(long v)   { Console.writeString("long=");  Console.writeLong(v); }
+        void onFloat(float v) { Console.writeString("float="); Console.writeFloat(v); }
+        void onDouble(double v) { Console.writeString("dbl="); Console.writeFloat(v); }
+        void onBool(bool v)   { Console.writeString("bool=");  Console.writeBool(v); }
+        void onStr(string v)  { Console.writeString("str=");   Console.writeString(v); Console.writeString("\n"); }
+        void onTwo(int a, string b) {
+            Console.writeString("two="); Console.write(a);
+            Console.writeString(b); Console.writeString("\n");
+        }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            evInt(1);
+            evLong(9999999999L);
+            evFloat(float(1.5));
+            evDouble(2.25);
+            evBool(true);
+            evStr("hi");
+            evTwo(7, "xy");
+        }
+    event:
+        evInt(int v);
+        evLong(long v);
+        evFloat(float v);
+        evDouble(double v);
+        evBool(bool v);
+        evStr(string v);
+        evTwo(int a, string b);
+}
+
+mapping() {
+    Src.evInt -> Sink.onInt;
+    Src.evLong -> Sink.onLong;
+    Src.evFloat -> Sink.onFloat;
+    Src.evDouble -> Sink.onDouble;
+    Src.evBool -> Sink.onBool;
+    Src.evStr -> Sink.onStr;
+    Src.evTwo -> Sink.onTwo;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); return 0; }

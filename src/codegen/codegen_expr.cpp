@@ -1986,6 +1986,24 @@ llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
 }
 
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // Slice field access: s.length / s.size / s.data — value-type {ptr, len}.
+    // Must come before the generic field fallback (which treated `s.length`
+    // as a pointer-deref and generated `ptrtoint(&s)` garbage as the length).
+    if (e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        auto sit = var_slice_types_.find(oi.name);
+        if (sit != var_slice_types_.end()) {
+            auto* va = getNamedValue(oi.name);
+            if (va) {
+                auto* sval = builder_.CreateLoad(getLLVMType(sit->second), va, oi.name);
+                if (e.member_name == "length" || e.member_name == "size")
+                    return builder_.CreateExtractValue(sval, 1, "slen");
+                if (e.member_name == "data")
+                    return builder_.CreateExtractValue(sval, 0, "sdata");
+            }
+        }
+    }
+
     // Tuple field access: t.0, t.1 — numeric member name on a tuple value.
     if (!e.member_name.empty() && std::all_of(e.member_name.begin(), e.member_name.end(),
             [](unsigned char c) { return std::isdigit(c); })) {

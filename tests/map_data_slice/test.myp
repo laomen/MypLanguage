@@ -1,0 +1,46 @@
+// mapping 数据传递：slice<T>（事件参数下标 + .length + 元素读写）
+import env;
+
+class Sink {
+    action:
+        void sum(slice<int> a) {
+            int acc = 0;
+            for (int i = 0; i < a.length; i = i + 1) acc = acc + a[i];
+            Console.writeString("sum="); Console.write(acc);
+            Console.writeString(" len="); Console.write(a.length);
+            Console.writeString("\n");
+        }
+        void join(slice<string> a) {
+            Console.writeString("join=");
+            for (int i = 0; i < a.size(); i = i + 1) {
+                Console.writeString(a[i]);
+                Console.writeString(";");
+            }
+            Console.writeString("\n");
+        }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            slice<int> ia = new slice<int>(4);
+            ia[0]=1; ia[1]=2; ia[2]=3; ia[3]=4;
+            evSum(ia);
+            slice<int> ib = new slice<int>(3);
+            ib[0]=10; ib[1]=20; ib[2]=30;
+            evSum(ib);
+            slice<string> sa = new slice<string>(3);
+            sa[0]="a"; sa[1]="bb"; sa[2]="ccc";
+            evJoin(sa);
+        }
+    event:
+        evSum(slice<int> a);
+        evJoin(slice<string> a);
+}
+
+mapping() {
+    Src.evSum -> Sink.sum;
+    Src.evJoin -> Sink.join;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); return 0; }

@@ -1,0 +1,52 @@
+// mapping 数据传递：事件链返回值（double/string/bool）+ where 过滤 + lambda 变换
+import env;
+
+class Proc {
+    action:
+        double dd(double v)  { return v * 2.0; }
+        string up(string v)  { return v + "!"; }
+        bool neg(bool v)     { return !v; }
+}
+
+class Sink {
+    action:
+        void showDouble(double v) { Console.writeString("chD="); Console.writeFloat(v); }
+        void showStr(string v)    { Console.writeString("chS="); Console.writeString(v); Console.writeString("\n"); }
+        void showBool(bool v)     { Console.writeString("chB="); Console.writeBool(v); }
+        void onDouble(double v)   { Console.writeString("d=");   Console.writeFloat(v); }
+        void onInt(int v)         { Console.writeString("i=");   Console.write(v); }
+        void onStr(string v)      { Console.writeString("s=");   Console.writeString(v); Console.writeString("\n"); }
+        void onBool(bool v)       { Console.writeString("b=");   Console.writeBool(v); }
+        void lam(int v)           { Console.writeString("lam="); Console.write(v); }
+        void lamd(double v)       { Console.writeString("lamd=");Console.writeFloat(v); }
+        void lams(string v)       { Console.writeString("lams=");Console.writeString(v); Console.writeString("\n"); }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            chD(3.0); chS("ab"); chB(false);
+            wI(1); wI(5); wI(3);
+            wD(1.0); wD(4.0); wD(2.5);
+            wS("lo"); wS("hi");
+            lamE(4); lamD(1.5); lamS("cat");
+        }
+    event:
+        chD(double v); chS(string v); chB(bool v);
+        wI(int v); wD(double v); wS(string v);
+        lamE(int v); lamD(double v); lamS(string v);
+}
+
+mapping() {
+    Src.chD -> Proc.dd -> Sink.showDouble;
+    Src.chS -> Proc.up -> Sink.showStr;
+    Src.chB -> Proc.neg -> Sink.showBool;
+    Src.wI where v >= 3 -> Sink.onInt;
+    Src.wD where v >= 2.0 -> Sink.onDouble;
+    Src.wS where v == "hi" -> Sink.onStr;
+    Src.lamE -> (int v) => { return v * 3; } -> Sink.lam;
+    Src.lamD -> (double v) => { return v + 0.5; } -> Sink.lamd;
+    Src.lamS -> (string v) => { return v + v; } -> Sink.lams;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); Proc p = new Proc(); return 0; }

@@ -1209,6 +1209,31 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         }
     }
 
+    // Slice built-in method call: a.size() / a.length() → int, a.data() → T[].
+    // visitMemberAccess resolves the bare field (a.length / a.size) to the
+    // value itself; here the call form is intercepted so `a.size()` keeps
+    // working even though the callee's MemberAccess now types as int.
+    if (expr.callee->kind == ExprKind::MemberAccess) {
+        auto& sma = static_cast<MemberAccessExpr&>(*expr.callee);
+        if (sma.object->kind == ExprKind::Identifier) {
+            TypeInfo oti = visitExpr(*sma.object);
+            if (oti.kind == TypeKind::Slice) {
+                if (sma.member_name == "size" || sma.member_name == "length") {
+                    if (!expr.args.empty())
+                        error(expr.range, "slice size()/length() takes no arguments");
+                    return TypeInfo(TypeKind::Int);
+                }
+                if (sma.member_name == "data") {
+                    if (!expr.args.empty())
+                        error(expr.range, "slice data() takes no arguments");
+                    TypeInfo at(TypeKind::Array);
+                    at.element_type = oti.element_type;
+                    return at;
+                }
+            }
+        }
+    }
+
     auto callee_type = visitExpr(*expr.callee);
 
     if (callee_type.kind != TypeKind::Function) {
@@ -1217,7 +1242,6 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         error(expr.range, "'" + name + "' is not callable");
         return TypeInfo(TypeKind::Void);
     }
-
     // §四-1：规范实参（命名实参重排 + 默认值补齐），失败已报错
     if (!normalizeCallArgs(expr.args, callee_type, expr.range))
         return TypeInfo(TypeKind::Void);
@@ -1364,17 +1388,17 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
     }
 
     // Slice member access: .size()/.length() → int, .data() → T[]
+    // Field form (a.length / a.size / a.data) resolves to the value itself;
+    // the call form a.size() is handled in visitCall (slice built-in method).
     if (obj_type.kind == TypeKind::Slice) {
         if (expr.member_name == "size" || expr.member_name == "length") {
-            TypeInfo ft(TypeKind::Function);
-            ft.return_type = std::make_shared<TypeInfo>(TypeKind::Int);
-            return ft;
+            TypeInfo ti(TypeKind::Int);
+            return ti;
         }
         if (expr.member_name == "data") {
-            TypeInfo ft(TypeKind::Function);
-            ft.return_type = std::make_shared<TypeInfo>(TypeKind::Array);
-            ft.return_type->element_type = obj_type.element_type;
-            return ft;
+            TypeInfo at(TypeKind::Array);
+            at.element_type = obj_type.element_type;
+            return at;
         }
         error(expr.range, "slice has no member '" + expr.member_name +
             "' (expected size/length/data)");

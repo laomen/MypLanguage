@@ -616,6 +616,25 @@ std::string CodeGen::resolveArgClassName(const Expr& arg) {
 std::string CodeGen::paramIfaceName(llvm::Function* cf, size_t rel) {
     if (!current_tu_ || !cf) return "";
     std::string fn = cf->getName().str();
+    // Event fire functions: fire_<Class>_<Event>(this, args...) — the param
+    // types come from the class's `event:` declarations. Without this, calling
+    // `ev(concreteInstance)` where the event takes an interface param passed
+    // the raw object pointer where a {data, vtable} fat pointer was expected
+    // → LLVM verify failure.
+    if (fn.compare(0, 5, "fire_") == 0) {
+        std::string rest = fn.substr(5);
+        for (auto& cls : current_tu_->classes) {
+            std::string prefix = cls.name + "_";
+            if (rest.compare(0, prefix.size(), prefix) != 0) continue;
+            std::string ename = rest.substr(prefix.size());
+            for (auto& ev : cls.events) {
+                if (ev.name == ename && rel < ev.params.size() &&
+                    !ev.params[rel].type.class_name.empty())
+                    return ev.params[rel].type.class_name;
+            }
+        }
+        return "";
+    }
     for (auto& cls : current_tu_->classes) {
         std::string prefix = cls.name + "_";
         if (fn.compare(0, prefix.size(), prefix) != 0) continue;
@@ -915,6 +934,12 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         if (action.params[i].type.isArray() && action.params[i].type.element_type) {
             array_elem_types_[action.params[i].name] = getLLVMType(typeNodeToCodegenType(*action.params[i].type.element_type));
         }
+        // Record slice element type for slice operations (must mirror
+        // generateStaticAction / generateClassFunction — a slice parameter's
+        // `a[i]`/`a.length` were otherwise compiled as a plain pointer GEP on
+        // the {ptr,len} value → LLVM verify failure).
+        if (pt.kind == TypeKind::Slice)
+            var_slice_types_[action.params[i].name] = pt;
     }
 
     // @region: enter arena (skipped if return type is a reference — it escapes)
