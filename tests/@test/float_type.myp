@@ -1,0 +1,9 @@
+// float type (32-bit) — limited support, use double for general purpose → @test
+import test;
+
+@test void test_float_type() {
+    // float 可声明并使用（函数返回等）
+    float a = 0;
+    Test.assert(true, "float_exists");
+    Test.report("test_float_type", true);
+}

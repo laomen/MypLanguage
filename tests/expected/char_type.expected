@@ -1,7 +1,0 @@
-char: 65
- nl=10
- tab=9
- quote=34
- backslash=92
- char_to_int=65
-

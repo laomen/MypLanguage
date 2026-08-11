@@ -1,0 +1,23 @@
+// Nested for loops → @test
+import test;
+
+@test void test_nested_for() {
+    int sum = 0;
+    for (int i = 0; i < 5; i = i + 1) {
+        for (int j = 0; j < 5; j = j + 1) {
+            sum = sum + 1;
+        }
+    }
+    Test.assertEq(sum, 25, "nested_sum");
+
+    // nested with break
+    int partial = 0;
+    for (int i = 0; i < 10; i = i + 1) {
+        for (int j = 0; j < 10; j = j + 1) {
+            partial = partial + 1;
+            if (j >= 4) break;
+        }
+    }
+    Test.assertEq(partial, 50, "partial");
+    Test.report("test_nested_for", true);
+}

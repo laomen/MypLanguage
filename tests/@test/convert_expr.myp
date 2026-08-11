@@ -1,0 +1,37 @@
+// 显式类型转换：uint8(x) / byte(x) / long(x) / double(x) ... → @test
+import test;
+
+@test void test_convert_expr() {
+    // 1) long 计算值填充 uint8[]（base64 场景的核心）
+    long rng = 24680;
+    rng = (rng * 1103515245L + 12345L) % 2147483648L;
+    uint8[] in = new uint8[3];
+    in[0] = uint8((rng >> 16) & 0xFFL);
+    in[1] = uint8(190L);
+    in[2] = uint8(255L);
+    Test.assertEq(int(in[0]), 248, "u8[0]");
+    Test.assertEq(int(in[1]), 190, "u8[1]");
+    Test.assertEq(int(in[2]), 255, "u8[2]");
+
+    // 2) 宽→窄显式截断
+    byte b = byte(200L);
+    int8 i8 = int8(-3);
+    short s = short(100000L);
+    Test.assertEq(int(b), -56, "narrow b");
+    Test.assertEq(int(i8), -3, "narrow i8");
+    Test.assertEq(int(s), -31072, "narrow s");
+
+    // 3) double→int、int→long、int→uint 回绕
+    int x = int(3.99);
+    long y = long(x);
+    uint u = uint(-1);
+    Test.assertEq(x, 3, "conv x");
+    Test.assertLongEq(y, 3L, "conv y");
+    long ul = u;
+    Test.assertLongEq(ul, 4294967295L, "conv u");
+
+    // 4) float 变量作实参（float→double 提升）
+    float f = float(42.5);
+    Test.assertFloatEq(f, 42.5, 0.0001, "f");
+    Test.report("test_convert_expr", true);
+}

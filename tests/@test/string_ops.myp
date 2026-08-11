@@ -1,0 +1,23 @@
+// String concatenation + and comparison == != → @test
+import test;
+
+@test void test_string_ops() {
+    // concatenation
+    string a = "Hello";
+    string b = "World";
+    string c = a + ", " + b + "!";
+    Test.assertStrEq(c, "Hello, World!", "concat");
+
+    // concat with int
+    string d = "count: " + 42;
+    Test.assertStrEq(d, "count: 42", "int_concat");
+
+    // comparison
+    string e = "abc";
+    string f = "abc";
+    string g = "def";
+    Test.assert(e == f, "eq");
+    Test.assert(e != g, "neq");
+    Test.assert(e == e, "self_eq");
+    Test.report("test_string_ops", true);
+}

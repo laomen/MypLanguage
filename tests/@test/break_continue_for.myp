@@ -1,0 +1,19 @@
+// for 循环中的 break/continue 测试 → @test
+import test;
+
+@test void test_break_continue_for() {
+    int sum = 0;
+    for (int i = 0; i < 10; i = i + 1) {
+        if (i == 5) break;
+        sum = sum + i;
+    }
+    Test.assertEq(sum, 10, "break_sum");   // 0+1+2+3+4
+
+    int sum2 = 0;
+    for (int j = 0; j < 10; j = j + 1) {
+        if (j % 2 == 0) continue;
+        sum2 = sum2 + j;
+    }
+    Test.assertEq(sum2, 25, "continue_sum");  // 1+3+5+7+9
+    Test.report("test_break_continue_for", true);
+}

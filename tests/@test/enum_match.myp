@@ -1,0 +1,60 @@
+// 枚举 + 模式匹配验证 → @test
+import test;
+
+// 简单枚举
+enum Color {
+    Red; Green; Blue;
+}
+
+// 带数据的枚举
+enum Option {
+    Some(int value);
+    None;
+}
+
+// 多属性的枚举
+enum Shape {
+    Circle(double radius);
+    Rect(double width, double height);
+}
+
+@test void test_enum_match() {
+    // 1. 简单枚举
+    Color c = Color.Red;
+    string got1 = "";
+    match (c) {
+        Color.Red => { got1 = "Red"; }
+        Color.Green => { got1 = "Green"; }
+        Color.Blue => { got1 = "Blue"; }
+    }
+    Test.assertStrEq(got1, "Red", "Color.Red");
+
+    // 2. 所有变体
+    Color c2 = Color.Green;
+    string got2 = "";
+    match (c2) {
+        Color.Red => { got2 = "Red"; }
+        Color.Green => { got2 = "Green"; }
+        Color.Blue => { got2 = "Blue"; }
+    }
+    Test.assertStrEq(got2, "Green", "Color.Green");
+
+    // 3. 带数据的枚举
+    Option opt = Option.Some(42);
+    int v = -1;
+    match (opt) {
+        Option.Some(x) => { v = x; }
+        Option.None => { v = -99; }
+    }
+    Test.assertEq(v, 42, "Some data");
+
+    // 4. 多属性枚举
+    Shape s = Shape.Circle(5.0);
+    double r = 0.0;
+    match (s) {
+        Shape.Circle(rr) => { r = rr; }
+        Shape.Rect(w, h) => { r = -1.0; }
+    }
+    Test.assertFloatEq(r, 5.0, 0.0001, "Circle radius");
+    Test.report("test_enum_match", true);
+}

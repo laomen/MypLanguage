@@ -1,0 +1,19 @@
+// char 类型测试 → @test
+import test;
+
+@test void test_char_type() {
+    char ch = 'A';
+    int ci = ch;
+    Test.assertEq(ci, 65, "char A");
+
+    char nl = '\n';   int nlv = nl;   Test.assertEq(nlv, 10, "nl");
+    char tab = '\t';  int tabv = tab; Test.assertEq(tabv, 9, "tab");
+    char quote = '"'; int qv = quote; Test.assertEq(qv, 34, "quote");
+    char backslash = '\\'; int bsv = backslash; Test.assertEq(bsv, 92, "backslash");
+
+    // char 参与算术
+    char c2 = 'A';
+    int ci2 = c2;
+    Test.assertEq(ci2, 65, "char_to_int");
+    Test.report("test_char_type", true);
+}

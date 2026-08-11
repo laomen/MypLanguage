@@ -1,0 +1,18 @@
+// Type inference: var keyword → @test
+import test;
+import math;
+
+@test void test_var_inference() {
+    var x = 42;
+    var y = 3.14;
+    var s = "hello";
+    var b = true;
+    var sq = Math.sqrt(64.0);
+
+    Test.assertEq(x, 42, "x");
+    Test.assertFloatEq(y, 3.14, 0.0001, "y");
+    Test.assertStrEq(s, "hello", "s");
+    Test.assert(b, "b");
+    Test.assertFloatEq(sq, 8.0, 0.0001, "sq");
+    Test.report("test_var_inference", true);
+}
