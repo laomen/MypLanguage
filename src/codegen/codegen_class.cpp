@@ -392,6 +392,13 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
     release_table_gv_ = new llvm::GlobalVariable(*module_, arr_ty, false,
         llvm::GlobalValue::ExternalLinkage, init, "__myp_release_table");
 
+    // M9: max type_id — lets the runtime validate object headers in strict
+    // mode (a live header's type_id must be STR/ARR magic or 1..max_tid).
+    new llvm::GlobalVariable(*module_, llvm::Type::getInt32Ty(ctx_), true,
+        llvm::GlobalValue::ExternalLinkage,
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), max_tid),
+        "__myp_max_type_id");
+
     // §五-4 RTTI: __myp_type_name_table — type_id → class name string
     // (index 0 = "" for string messages / non-class objects). ExternalLinkage
     // + constant so the runtime's myp_obj_type_name can index it directly.

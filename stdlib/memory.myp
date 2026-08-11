@@ -24,6 +24,30 @@ ffi void free(long ptr);
 ffi long realloc(long ptr, long new_size);
 // ARC（§五-1）：当前线程存活（未释放）的 class 实例数——诊断用
 ffi long myp_live_object_count();
+// ---- M9 内存诊断 ----
+ffi long myp_live_string_count();
+ffi long myp_live_array_count();
+ffi long myp_live_total_count();
+ffi long myp_live_object_count_by_type(long typeId);
+ffi long myp_diag_arena_reserved();
+ffi long myp_diag_arena_used();
+ffi long myp_diag_region_reserved();
+ffi long myp_diag_region_used();
+ffi long myp_diag_coro_slots();
+ffi long myp_diag_coro_slot_capacity();
+ffi long myp_diag_coro_free_slots();
+ffi long myp_diag_stack_pool_count();
+ffi long myp_diag_stack_pool_capacity();
+ffi long myp_diag_stack_pool_bytes();
+ffi long myp_diag_stack_pool_max_bytes();
+ffi long myp_diag_retired_count();
+ffi long myp_diag_retired_bytes();
+// M9 分配失败注入（第 N 次分配 abort）与 strict 头校验开关
+ffi void myp_fail_alloc_enable(long nth);
+ffi void myp_fail_alloc_disable();
+ffi long myp_fail_alloc_get();
+ffi void myp_diag_set_strict(long on);
+ffi long myp_diag_get_strict();
 
 // ============================================================
 // 动态内存分配器
@@ -54,4 +78,47 @@ class Memory {
         long liveObjectCount() {
             return myp_live_object_count();
         }
+
+        // ---- M9：内存诊断 ----
+        // 存活计数（线程本地）：
+        //   liveObjectCount         —— class 实例总数
+        //   liveStringCount         —— 引用计数 string 数
+        //   liveArrayCount          —— 引用计数数组/slice backing 数
+        //   liveTotalCount          —— 三者之和
+        //   liveObjectCountByType   —— 按运行时 type_id 的 class 实例数
+        long liveStringCount() { return myp_live_string_count(); }
+        long liveArrayCount() { return myp_live_array_count(); }
+        long liveTotalCount() { return myp_live_total_count(); }
+        long liveObjectCountByType(long typeId) {
+            return myp_live_object_count_by_type(typeId);
+        }
+
+        // 非 ARC bump arena（进程级字符串/数组历史分配）reserved/used 字节
+        long arenaReservedBytes() { return myp_diag_arena_reserved(); }
+        long arenaUsedBytes() { return myp_diag_arena_used(); }
+        // @region arena reserved/used 字节（region 结束时回落）
+        long regionReservedBytes() { return myp_diag_region_reserved(); }
+        long regionUsedBytes() { return myp_diag_region_used(); }
+
+        // 协程资源（线程本地）：槽容量 / 空闲槽 / 栈池 / 退役栈
+        long coroSlotCount() { return myp_diag_coro_slots(); }
+        long coroSlotCapacity() { return myp_diag_coro_slot_capacity(); }
+        long coroFreeSlotCount() { return myp_diag_coro_free_slots(); }
+        long stackPoolCount() { return myp_diag_stack_pool_count(); }
+        long stackPoolCapacity() { return myp_diag_stack_pool_capacity(); }
+        long stackPoolBytes() { return myp_diag_stack_pool_bytes(); }
+        long stackPoolMaxBytes() { return myp_diag_stack_pool_max_bytes(); }
+        long retiredCount() { return myp_diag_retired_count(); }
+        long retiredBytes() { return myp_diag_retired_bytes(); }
+
+        // 分配失败注入：第 nth 次分配（到达 runtime 分配器的）确定性 abort。
+        // 0=关闭；也可用环境变量 MYP_FAIL_ALLOC=n 在启动时设置。
+        void failAllocEnable(long nth) { myp_fail_alloc_enable(nth); }
+        void failAllocDisable() { myp_fail_alloc_disable(); }
+        long failAllocGet() { return myp_fail_alloc_get(); }
+
+        // strict 头校验：release 下溢/重复释放/损坏头（非法 type_id）立即 abort
+        // 并给出稳定诊断。debug/ASAN 构建默认开，release 默认关。
+        void setStrictChecks(long on) { myp_diag_set_strict(on); }
+        long getStrictChecks() { return myp_diag_get_strict(); }
 }

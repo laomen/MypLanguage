@@ -45,9 +45,42 @@ static int myp_add_overflow(size_t a, size_t b, size_t* out) {
     *out = a + b;
     return 0;
 }
+
+// ---- M9: deterministic allocation-failure injection ----
+// Memory.failAllocEnable(N) (or env MYP_FAIL_ALLOC=N) makes the Nth allocation
+// that reaches myp_xmalloc abort with a stable diagnostic instead of silently
+// proceeding. OOM-sweep tests run the same program with N=1..K and assert each
+// aborts cleanly (no corruption, distinct message). TLS: injection is per-thread.
+static __thread int64_t myp_fail_alloc_at = 0;
+static __thread int64_t myp_fail_alloc_seen = 0;
+static __thread int myp_fail_alloc_env_read = 0;
+
+void myp_fail_alloc_enable(int64_t nth) {
+    myp_fail_alloc_at = (nth > 0) ? nth : 0;
+    myp_fail_alloc_seen = 0;
+}
+void myp_fail_alloc_disable(void) { myp_fail_alloc_at = 0; }
+int64_t myp_fail_alloc_get(void) { return myp_fail_alloc_at; }
+
+static void myp_fail_alloc_check(void) {
+    if (!myp_fail_alloc_env_read) {
+        myp_fail_alloc_env_read = 1;
+        const char* v = getenv("MYP_FAIL_ALLOC");
+        if (v && v[0]) { myp_fail_alloc_at = atoll(v); myp_fail_alloc_seen = 0; }
+    }
+    if (myp_fail_alloc_at <= 0) return;
+    myp_fail_alloc_seen++;
+    if (myp_fail_alloc_seen >= myp_fail_alloc_at) {
+        fprintf(stderr, "MYP runtime: injected allocation failure (allocation #%lld)\n",
+                (long long)myp_fail_alloc_seen);
+        abort();
+    }
+}
+
 // Allocation helper that never returns NULL: overflow or malloc failure aborts
 // deterministically instead of letting a NULL flow into GEP/memset.
 static void* myp_xmalloc(size_t size) {
+    myp_fail_alloc_check();   // M9: deterministic injection point (Nth alloc)
     void* p = malloc(size);
     if (!p) myp_oom(size);
     return p;
@@ -1551,6 +1584,20 @@ static void myp_arena_free_all(void) {
     }
 }
 
+// ---- M9: arena byte accounting (payload reserved/used, thread-local) ----
+// Walks the current thread's chunk chain; diagnostics are called rarely so
+// O(chunks) is fine. "reserved" = total payload capacity, "used" = bump offset.
+int64_t myp_diag_arena_reserved(void) {
+    int64_t n = 0;
+    for (myp_arena_chunk_t* c = myp_arena_cur; c; c = c->next) n += (int64_t)c->cap;
+    return n;
+}
+int64_t myp_diag_arena_used(void) {
+    int64_t n = 0;
+    for (myp_arena_chunk_t* c = myp_arena_cur; c; c = c->next) n += (int64_t)c->used;
+    return n;
+}
+
 // ======================
 // ARC — automatic reference counting on class instances (§五-1)
 // ======================
@@ -1599,9 +1646,84 @@ typedef struct myp_arr_header {
 static __thread int64_t myp_live_objects = 0;
 // M8 diagnostics: live counted strings (alloc-freed balance).
 static __thread int64_t myp_live_strings = 0;
+// M9: live ref-counted array/slice backing count.
+static __thread int64_t myp_live_arrays = 0;
 int64_t myp_live_string_count(void) { return myp_live_strings; }
 
 int64_t myp_live_object_count(void) { return myp_live_objects; }
+int64_t myp_live_array_count(void) { return myp_live_arrays; }
+int64_t myp_live_total_count(void) {
+    return myp_live_objects + myp_live_strings + myp_live_arrays;
+}
+
+// M9: per-type live class-instance counts (type_id → live count). type_ids are
+// dense 1..max from generated code; the TLS array grows on demand. Diagnostic
+// only — OOM during growth just keeps the old (undersized) table. Freed at
+// thread/process exit via a pthread key destructor (like the arena keys) so
+// LeakSanitizer stays clean.
+static __thread int64_t* myp_type_live = NULL;
+static __thread int myp_type_live_cap = 0;
+static pthread_key_t myp_type_live_key;
+static pthread_once_t myp_type_live_key_once = PTHREAD_ONCE_INIT;
+static void myp_free_type_live(void* p) { free(p); }
+static void myp_make_type_live_key(void) {
+    pthread_key_create(&myp_type_live_key, myp_free_type_live);
+}
+static void myp_type_live_inc(int tid) {
+    if (tid <= 0) return;
+    if (tid >= myp_type_live_cap) {
+        int nc = myp_type_live_cap ? myp_type_live_cap * 2 : 16;
+        while (nc <= tid) nc *= 2;
+        int64_t* np = (int64_t*)realloc(myp_type_live, (size_t)nc * sizeof(int64_t));
+        if (!np) return;
+        for (int i = myp_type_live_cap; i < nc; i++) np[i] = 0;
+        myp_type_live = np;
+        myp_type_live_cap = nc;
+        pthread_once(&myp_type_live_key_once, myp_make_type_live_key);
+        pthread_setspecific(myp_type_live_key, myp_type_live);
+    }
+    myp_type_live[tid]++;
+}
+static void myp_type_live_dec(int tid) {
+    if (tid > 0 && tid < myp_type_live_cap && myp_type_live[tid] > 0)
+        myp_type_live[tid]--;
+}
+int64_t myp_live_object_count_by_type(int64_t type_id) {
+    if (type_id <= 0 || type_id >= myp_type_live_cap) return 0;
+    return myp_type_live[type_id];
+}
+
+// M9: strict header checks. In debug/ASAN builds they are ON by default and
+// Memory.setStrictChecks can toggle them at runtime. Catching a release
+// underflow (double free), or a header whose type_id is not STR/ARR/a valid
+// class id, aborts with a stable diagnostic instead of corrupting.
+// __myp_max_type_id is emitted by generated code (weak extern so a standalone
+// runtime TU that omits it degrades to 0 = only STR/ARR headers validate).
+extern const int __myp_max_type_id __attribute__((weak));
+static __thread int myp_strict_checks =
+#ifdef MYP_SANITIZE
+    1
+#else
+    0
+#endif
+    ;
+void myp_diag_set_strict(int64_t on) { myp_strict_checks = on ? 1 : 0; }
+int64_t myp_diag_get_strict(void) { return myp_strict_checks; }
+static int myp_header_type_id_ok(uint32_t tid) {
+    if (tid == MYP_STR_TYPE_ID || tid == MYP_ARR_TYPE_ID) return 1;
+    if (tid > 0 && &__myp_max_type_id && (int)tid <= __myp_max_type_id) return 1;
+    return 0;
+}
+static void myp_strict_abort_header(void* obj, uint32_t tid) {
+    fprintf(stderr, "MYP runtime [strict]: corrupted object header at %p "
+                    "(illegal type_id 0x%x)\n", obj, (unsigned)tid);
+    abort();
+}
+static void myp_strict_abort_underflow(void* obj) {
+    fprintf(stderr, "MYP runtime [strict]: release underflow / double free "
+                    "on object %p\n", obj);
+    abort();
+}
 
 void* myp_alloc_object(size_t size, uint32_t type_id) {
     size_t total;
@@ -1614,6 +1736,7 @@ void* myp_alloc_object(size_t size, uint32_t type_id) {
     h->type_id = type_id;
     myp_alloc_list_push(node);
     myp_live_objects++;
+    myp_type_live_inc((int)type_id);   // M9
     return base + MYP_OBJ_HEADER_SIZE;  // data pointer
 }
 
@@ -1640,6 +1763,8 @@ static void* myp_alloc_str(size_t size) {
 void myp_retain(void* obj) {
     if (!obj) return;
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    if (myp_strict_checks && !myp_header_type_id_ok(h->type_id))
+        myp_strict_abort_header(obj, h->type_id);
     h->rc++;
 }
 
@@ -1649,6 +1774,11 @@ static void myp_free_class_array(void* data);
 uint32_t myp_release(void* obj) {
     if (!obj) return 0;
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    if (myp_strict_checks) {
+        if (!myp_header_type_id_ok(h->type_id))
+            myp_strict_abort_header(obj, h->type_id);
+        if (h->rc == 0) myp_strict_abort_underflow(obj);
+    }
     if (h->rc == 0) return 0;          // safety: never underflow
     h->rc--;
     uint32_t new_rc = h->rc;
@@ -1700,10 +1830,13 @@ uint32_t myp_release(void* obj) {
 void myp_free_object(void* obj) {
     if (!obj) return;
     char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
+    myp_obj_header_t* h = (myp_obj_header_t*)base;
+    int tid = (int)h->type_id;
     myp_alloc_node_t* node =
         (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
     myp_alloc_list_remove(node);
     if (myp_live_objects > 0) myp_live_objects--;
+    myp_type_live_dec(tid);   // M9: per-type count
     free(node);
 }
 
@@ -1723,6 +1856,7 @@ void* myp_alloc_class_array(uint64_t count, uint32_t elem_size) {
     h->rc = 1;
     h->type_id = MYP_ARR_TYPE_ID;
     myp_alloc_list_push(node);
+    myp_live_arrays++;   // M9
     return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
 }
 
@@ -1732,6 +1866,7 @@ static void myp_free_class_array(void* data) {
     myp_alloc_node_t* node =
         (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
     myp_alloc_list_remove(node);
+    if (myp_live_arrays > 0) myp_live_arrays--;   // M9
     free(node);
 }
 
@@ -1755,6 +1890,7 @@ void* myp_alloc_slice_backing(uint64_t count, uint32_t elem_size, uint32_t elem_
     h->rc = 1;
     h->type_id = MYP_ARR_TYPE_ID;
     myp_alloc_list_push(node);
+    myp_live_arrays++;   // M9
     return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
 }
 
@@ -1959,6 +2095,18 @@ void myp_region_free_all(void) {
     }
     myp_region_cur = NULL;
     myp_region_depth = 0;
+}
+
+// ---- M9: region arena byte accounting (thread-local) ----
+int64_t myp_diag_region_reserved(void) {
+    int64_t n = 0;
+    for (myp_arena_chunk_t* c = myp_region_cur; c; c = c->next) n += (int64_t)c->cap;
+    return n;
+}
+int64_t myp_diag_region_used(void) {
+    int64_t n = 0;
+    for (myp_arena_chunk_t* c = myp_region_cur; c; c = c->next) n += (int64_t)c->used;
+    return n;
 }
 
 // ======================
@@ -4008,6 +4156,7 @@ static void myp_coro_stack_pool_free_all(void) {
 static __thread myp_coro_stack_slot_t* myp_coro_retired = NULL;
 static __thread int myp_coro_retired_count = 0;
 static __thread int myp_coro_retired_cap = 0;
+static __thread size_t myp_coro_retired_bytes = 0;   // M9: retired stack bytes
 
 static void myp_coro_retired_add(char* ptr, size_t size) {
     if (!ptr) return;
@@ -4024,12 +4173,14 @@ static void myp_coro_retired_add(char* ptr, size_t size) {
     myp_coro_retired[myp_coro_retired_count].ptr = ptr;
     myp_coro_retired[myp_coro_retired_count].size = size;
     myp_coro_retired_count++;
+    myp_coro_retired_bytes += size;   // M9
 }
 
 static void myp_coro_retired_drain(void) {
     for (int i = 0; i < myp_coro_retired_count; i++)
         myp_coro_stack_pool_add(myp_coro_retired[i].ptr, myp_coro_retired[i].size);
     myp_coro_retired_count = 0;
+    myp_coro_retired_bytes = 0;   // M9
 }
 
 static void myp_coro_retired_free_all(void) {
@@ -4039,6 +4190,7 @@ static void myp_coro_retired_free_all(void) {
     myp_coro_retired = NULL;
     myp_coro_retired_count = 0;
     myp_coro_retired_cap = 0;
+    myp_coro_retired_bytes = 0;   // M9
 }
 
 // Trampoline: entered on the coroutine's first resume (myp_coro_current already
@@ -4423,6 +4575,17 @@ int64_t __myp_coro_count(void) {
         if (myp_coros[i] && myp_coros[i]->active) n++;
     return n;
 }
+
+// ---- M9: coroutine resource diagnostics (thread-local) ----
+int64_t myp_diag_coro_slots(void) { return myp_coro_count; }
+int64_t myp_diag_coro_slot_capacity(void) { return myp_coro_capacity; }
+int64_t myp_diag_coro_free_slots(void) { return myp_coro_free_count; }
+int64_t myp_diag_stack_pool_count(void) { return myp_coro_stack_pool_count; }
+int64_t myp_diag_stack_pool_capacity(void) { return myp_coro_stack_pool_capacity; }
+int64_t myp_diag_stack_pool_bytes(void) { return (int64_t)myp_coro_stack_pool_bytes; }
+int64_t myp_diag_stack_pool_max_bytes(void) { return (int64_t)MYP_CORO_STACK_POOL_MAX_BYTES; }
+int64_t myp_diag_retired_count(void) { return myp_coro_retired_count; }
+int64_t myp_diag_retired_bytes(void) { return (int64_t)myp_coro_retired_bytes; }
 
 // Coroutine status: -1 invalid handle, 0 inactive/finished, 1 ready/running,
 // 2 blocked (waiting on an event).

@@ -341,6 +341,8 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             }
             return builder_.CreateCall(conv_fn, {v});
         };
+        bool l_was_ptr = l->getType()->isPointerTy();   // operand already a string?
+        bool r_was_ptr = r->getType()->isPointerTy();
         l = conv_to_string(l);
         r = conv_to_string(r);
         // Call runtime myp_strcat(l, r)
@@ -349,7 +351,15 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             auto* ft = llvm::FunctionType::get(ptr_type, {ptr_type, ptr_type}, false);
             sc = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_strcat", module_.get());
         }
-        return builder_.CreateCall(sc, {l, r}, "strcat");
+        auto* cat = builder_.CreateCall(sc, {l, r}, "strcat");
+        // M9: myp_strcat reads its operands but does NOT consume them. The
+        // integer/float/bool→string conversion temps (myp_to_string_*) are fresh
+        // counted strings (rc=1); releasing them here fixes one leaked counted
+        // string per non-string concat operand (e.g. `"s" + i` in a loop leaked
+        // once per iteration). String operands (already pointers) stay borrowed.
+        if (!l_was_ptr && runtime_release_) builder_.CreateCall(runtime_release_, {l});
+        if (!r_was_ptr && runtime_release_) builder_.CreateCall(runtime_release_, {r});
+        return cat;
     }
 
     // For string equality (== / !=), use myp_str_eq for content comparison

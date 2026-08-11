@@ -1,0 +1,119 @@
+// mem_diag: M9 内存诊断 —— 按类型 live count、string/array/total 计数、
+// arena/region 字节、协程栈池/退役栈/槽容量、strict 头校验、分配失败注入 API。
+// 断言：各类计数在 churn 后回到基线（泄漏检测）、region 字节回落、栈池字节受限、
+// strict 开启不误报、failAlloc 开关可读可写。
+import env;
+import memory;
+import rtti;
+import coro;
+
+class Node {
+    action:
+        void poke() { val = val + 1; }
+    property:
+        int val = 0;
+}
+
+class Worker {
+    action:
+        @coro(stack=64) long run(long x) { return x + 1; }
+}
+
+// @region：入口 materialize 一个 region chunk，出口 myp_arena_release 释放回基线。
+@region long regionChurn() {
+    slice<int> tmp = new slice<int>(4096);
+    tmp[0] = 1;
+    long peak = Memory.regionReservedBytes();   // 应在 region 内有 >=1 个 chunk
+    return peak;
+}
+
+class Main {
+    action:
+        int checkNodeByType() {
+            long baseTotal = Memory.liveObjectCount();
+            int tid = 0;
+            {
+                Node probe = new Node();
+                tid = Rtti.typeId<Node>(probe);
+                long bt = Memory.liveObjectCountByType(tid);
+                if (bt < 1L) return 1;
+                {
+                    Node inner = new Node();
+                    long bt2 = Memory.liveObjectCountByType(tid);
+                    if (bt2 != bt + 1L) return 2;   // probe + inner
+                }
+                long bt3 = Memory.liveObjectCountByType(tid);
+                if (bt3 != bt) return 3;            // inner 已释放
+                if (Memory.liveObjectCount() != baseTotal + 1L) return 4;  // probe
+            }
+            if (Memory.liveObjectCountByType(tid) != 0L) return 5;   // probe 已释放
+            if (Memory.liveObjectCount() != baseTotal) return 6;
+            return 0;
+        }
+
+        @constructor Main() {
+            int rc = checkNodeByType();
+            if (rc != 0) { Console.writeString("FAIL node-by-type rc=" + rc + "\n"); return; }
+
+            // 字符串/数组/对象 churn 后回到基线（泄漏检测）
+            long sb = Memory.liveStringCount();
+            long ab = Memory.liveArrayCount();
+            long tb = Memory.liveObjectCount();
+            long i = 0;
+            while (i < 100) {
+                string s = "s" + i;                 // 计数 string（concat）
+                slice<int> arr = new slice<int>(64); // 计数 slice backing
+                arr[0] = i;
+                i = i + 1;
+            }
+            if (Memory.liveStringCount() != sb) { Console.writeString("FAIL string leak\n"); return; }
+            if (Memory.liveArrayCount() != ab) { Console.writeString("FAIL array leak\n"); return; }
+            if (Memory.liveObjectCount() != tb) { Console.writeString("FAIL object leak\n"); return; }
+            if (Memory.liveTotalCount() < Memory.liveObjectCount()) { Console.writeString("FAIL total\n"); return; }
+
+            // @region：入口 materialize 一个 region chunk；used 在出口回落回基线
+            //（reserved 因 chunk 缓存复用不会缩小，但必须有界——多次调用复用同一 chunk）。
+            long rb = Memory.regionReservedBytes();
+            long ub = Memory.regionUsedBytes();
+            long peak = regionChurn();
+            if (peak < 65536L) { Console.writeString("FAIL region peak\n"); return; }
+            if (Memory.regionUsedBytes() != ub) { Console.writeString("FAIL region used\n"); return; }
+            if (Memory.regionReservedBytes() < rb) { Console.writeString("FAIL region reserved shrink\n"); return; }
+            long k = 0;
+            while (k < 100) { regionChurn(); k = k + 1; }
+            if (Memory.regionReservedBytes() > rb + 65536L) { Console.writeString("FAIL region reserved unbounded\n"); return; }
+            if (Memory.arenaReservedBytes() < 0L || Memory.arenaUsedBytes() < 0L) { Console.writeString("FAIL arena\n"); return; }
+
+            // 协程：churn 后槽容量受限、栈池字节受限
+            long j = 0;
+            while (j < 2000) {
+                Worker w = new Worker();
+                long h = w.run(j);                  // @coro → create + eager 完成
+                long r = Coro.result(h);
+                if (r != j + 1L) { Console.writeString("FAIL coro result\n"); return; }
+                j = j + 1;
+            }
+            if (Memory.coroSlotCount() > 64L) { Console.writeString("FAIL coro slots unbounded\n"); return; }
+            if (Memory.coroSlotCapacity() < Memory.coroSlotCount()) { Console.writeString("FAIL coro cap\n"); return; }
+            if (Memory.stackPoolBytes() > Memory.stackPoolMaxBytes()) { Console.writeString("FAIL stack pool bytes\n"); return; }
+            if (Memory.stackPoolCount() > Memory.stackPoolCapacity()) { Console.writeString("FAIL stack pool count\n"); return; }
+            if (Memory.retiredCount() < 0L || Memory.retiredBytes() < 0L) { Console.writeString("FAIL retired\n"); return; }
+
+            // strict 开关：开启时正常操作不误报（类型/计数校验通过）
+            long oldStrict = Memory.getStrictChecks();
+            Memory.setStrictChecks(1);
+            Node n = new Node();
+            n.poke();
+            Memory.setStrictChecks(oldStrict);
+            if (Memory.getStrictChecks() != oldStrict) { Console.writeString("FAIL strict toggle\n"); return; }
+
+            // 分配失败注入 API：启→读→禁（用极大 N，不触发 abort）
+            Memory.failAllocEnable(1000000000L);
+            if (Memory.failAllocGet() != 1000000000L) { Console.writeString("FAIL failAlloc set\n"); return; }
+            Memory.failAllocDisable();
+            if (Memory.failAllocGet() != 0L) { Console.writeString("FAIL failAlloc reset\n"); return; }
+
+            Console.writeString("PASS M9 memory diagnostics\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

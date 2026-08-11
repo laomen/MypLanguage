@@ -63,7 +63,8 @@
 
 > 已完成基线：class ARC、异常/协程帧释放、`@region` 引用逃逸保护、`slice<class>`
 > backing 级联释放，以及 **M1（协程句柄代际化）/ M2（栈池字节上限）/ M3（溢出安全）/
-> M5（struct ARC）/ M8（string·原始数组计数）** 均已实施（见下表 ✅），通过 O0/O2/ASan/UBSan 215/215。下表其余项仍未实施；
+> M5（struct ARC）/ M8（string·原始数组计数）/ M9（内存诊断与故障注入）**
+> 均已实施（见下表 ✅），通过 O0/O2/ASan/UBSan 216/216。下表其余项仍未实施；
 > “设计扩展”不是当前回归，不应阻塞现有 P0 收口。
 
 | # | 未完成项 | 当前风险 / 边界 | 实施方向 | 验收标准 | 优先级 |
@@ -76,7 +77,7 @@
 | M6 | **跨线程 class 所有权** | ARC 计数当前非原子，语言约定对象线程本地；若 class 经事件、静态槽或 FFI 跨线程共享，retain/release 存在数据竞争 | 明确实现原子 ARC，或提供冻结后一次性 move 的线程转移语义；在方案落定前增加 sema 诊断，阻止可识别的 class 跨线程捕获/存储 | TSan 下多线程传递、并发 retain/release、最后持有者释放和线程提前退出无竞态；性能基准量化原子模式成本 | **P2（设计）** |
 | M7 | **循环引用与 weak** | 纯 ARC 无法回收强环；当前仅文档约定组件图为 DAG，双向 parent/child、回调捕获 self 等模式仍可形成永久泄漏 | 设计 additive `weak` 引用：对象销毁时置空观察者，不增加强计数；先覆盖 class 字段和闭包捕获，再评估数组/接口 weak 槽。静态可疑环只做警告，不代替运行时语义 | 双节点环、self 环、闭包环在断开强引用后 live count 回零；weak 读取在对象释放后得到 null；并发语义与 M6 一并定义 | **P2（能力）** |
 | ~~M8~~ | **~~string/原始数组的中寿命回收~~** | primitive `T[]`、string 和非 class slice 仍属于 arena；未放进有效 `@region` 的重复分配只在线程退出释放。它们不是悬垂缺陷，但会使缓存更新、服务器请求等长跑场景 RSS 单调增长 | 先用真实 workload 测量占比；优先依靠 M4 提高 region 覆盖。若仍是主因，再为拥有 backing 引入计数头/owned buffer，保持 FFI 裸指针和 slice 16 字节 ABI 兼容 | 长跑 benchmark 分类型报告 live/allocated bytes；固定工作集运行达到平台后 RSS 稳定；string 拼接、动态数组返回、slice/FFI/GPU 互操作无回归 | ✅ **已完成**（`646d5c0` slice + `b6960b4` 动态数组 + `c6673dd` 字符串 + `008c43d` struct + `17dd80e` return 泄漏/泛型占位符修复：全计数头回收，RSS 稳定；`tests/str_arc` 44MB→7MB、`slice_arr_ret`/`generic_rehash`/`struct_arc`） |
-| M9 | **内存诊断与故障注入** | 现有 `Memory.liveObjectCount()` 只能观察 class 总数，无法区分类型、arena bytes、class-slice backing、协程栈和 runtime 表；泄漏或峰值回归定位成本高 | debug runtime 增加按类型 live count、arena reserved/used、栈池/retired bytes、协程槽容量；提供确定性的第 N 次分配失败注入；release 下溢和非法 type id 在 debug 构建立即失败 | 测试可断言各类计数回到基线；CI 至少运行一次 OOM sweep；release underflow、重复释放和损坏 header 给出稳定诊断 | **P2（工具）** |
+| ~~M9~~ | **~~内存诊断与故障注入~~** | 现有 `Memory.liveObjectCount()` 只能观察 class 总数，无法区分类型、arena bytes、class-slice backing、协程栈和 runtime 表；泄漏或峰值回归定位成本高 | debug runtime 增加按类型 live count、arena reserved/used、栈池/retired bytes、协程槽容量；提供确定性的第 N 次分配失败注入；release 下溢和非法 type id 在 debug 构建立即失败 | 测试可断言各类计数回到基线；CI 至少运行一次 OOM sweep；release underflow、重复释放和损坏 header 给出稳定诊断 | ✅ **已完成**（`Memory` 诊断面：`liveStringCount/liveArrayCount/liveTotalCount/liveObjectCountByType` + `arena/regionReservedBytes/UsedBytes` + `coroSlotCount/Capacity/FreeSlotCount` + `stackPoolCount/Bytes/MaxBytes` + `retiredCount/Bytes`；按类型 TLS 计数数组（pthread key 析构，LSAN 干净）；确定性分配失败注入 `failAllocEnable(N)`/env `MYP_FAIL_ALLOC=N`——第 N 次分配以稳定消息 abort；strict 头校验（`setStrictChecks`，ASAN 构建默认开）——release 下溢/重复释放/非法 type_id 立即 abort；codegen 发射 `__myp_max_type_id` 供校验。**附带修复**：`string + 非string` 拼接转换临时（`myp_to_string_*` 返回计数串、`myp_strcat` 不消费）每次泄漏 1 串——现拼接后释放转换临时，`"s"+i` 循环泄漏 100→0。测试 `tests/mem_diag` + `tests/stress/run_oom_sweep.sh`（MYP_FAIL_ALLOC=1..12 全 abort 点）；216/216、ASAN 216/216、ASAN stress 5/5） |
 
 **实施顺序**：先完成 M1 → M2 → M3，形成长跑资源上界和分配安全基线；再以诊断数据决定
 M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写设计决议和负面用例，不能

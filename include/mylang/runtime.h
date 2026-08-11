@@ -53,6 +53,19 @@ extern void (*__myp_release_table[])(void*);
 extern const char* __myp_type_name_table[];
 // Number of live (not yet freed) class instances on this thread — diagnostic.
 int64_t myp_live_object_count(void);
+// M9 diagnostics: live counted strings, live array/slice backings, total, and
+// per-type class-instance count (0 if type_id unknown). Plus strict-mode toggle
+// (release underflow / corrupted header → abort) and deterministic allocation
+// failure injection (the Nth allocation reaching the allocator aborts).
+int64_t myp_live_string_count(void);
+int64_t myp_live_array_count(void);
+int64_t myp_live_total_count(void);
+int64_t myp_live_object_count_by_type(int64_t type_id);
+void myp_diag_set_strict(int64_t on);
+int64_t myp_diag_get_strict(void);
+void myp_fail_alloc_enable(int64_t nth);
+void myp_fail_alloc_disable(void);
+int64_t myp_fail_alloc_get(void);
 
 // ---- RTTI (§五-4) ----
 // Runtime type id of a class instance (0 = null / non-class object).

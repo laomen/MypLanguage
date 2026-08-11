@@ -1,0 +1,23 @@
+// oom_sweep.myp — M9 OOM sweep 目标程序（确定性分配失败注入）
+// 本程序固定做 ~200 次 runtime 分配；配合 MYP_FAIL_ALLOC=N（N=1..K）运行时，
+// 第 N 次分配应被注入为确定性 abort（"injected allocation failure (allocation #N)"），
+// 而不是静默继续或崩溃在别处。无 MYP_FAIL_ALLOC 时正常完成并打印 ok。
+import env;
+import memory;
+
+class Main {
+    action:
+        @constructor Main() {
+            long acc = 0;
+            long i = 0;
+            while (i < 100) {
+                string s = "seed" + i;               // 计数 string（concat）
+                slice<int> arr = new slice<int>(128); // 计数 slice backing
+                arr[0] = i;
+                acc = acc + arr[0];
+                i = i + 1;
+            }
+            Console.writeString("ok acc=" + acc + "\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }
