@@ -1,0 +1,47 @@
+// test_embed.myp — 资源嵌入验证（P5）
+// 生成函数返回内容 与 源文件字节级 round-trip 一致（换行/引号/反斜杠/制表符）。
+import env;
+import io;
+import text;
+import "./embed_gen.myp";
+
+// 读取源文件原始内容（与生成器同方式）
+string readRaw(string path) {
+    File f = new File();
+    if (f.open(path, "r") != 0) return "";
+    string c = f.readAll();
+    f.close();
+    return c;
+}
+
+int run() {
+    string g = Greeting_content();
+    string gs = readRaw("tests/assets/greeting.txt");
+    Console.writeLine("greeting len=" + Str.len(g));
+    if (g != gs) {
+        Console.writeLine("FAIL greeting len " + Str.len(g) + " vs " + Str.len(gs));
+        return 1;
+    }
+
+    string c = Config_content();
+    string cs = readRaw("tests/assets/config.json");
+    Console.writeLine("config len=" + Str.len(c));
+    if (c != cs) {
+        Console.writeLine("FAIL config len " + Str.len(c) + " vs " + Str.len(cs));
+        return 2;
+    }
+
+    // 抽样校验转义关键点
+    if (Str.indexOf(g, "世界") == -1) { Console.writeLine("FAIL utf8"); return 3; }
+    if (Str.indexOf(g, "\"quoted\"") == -1) { Console.writeLine("FAIL quote"); return 4; }
+    if (Str.indexOf(g, "\\backslash") == -1) { Console.writeLine("FAIL backslash"); return 5; }
+    if (Str.indexOf(g, "\t") == -1) { Console.writeLine("FAIL tab"); return 6; }
+    if (Str.indexOf(c, "line1\\\\nline2") == -1) { Console.writeLine("FAIL bs-n"); return 7; }
+
+    Console.writeLine("embed ok len=" + Str.len(g) + "+" + Str.len(c));
+    return 0;
+}
+
+int main() {
+    return run();
+}

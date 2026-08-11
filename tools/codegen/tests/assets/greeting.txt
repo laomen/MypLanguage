@@ -1,0 +1,3 @@
+Hello, 世界!
+A "quoted" line with \backslash and	a tab
+No trailing newline

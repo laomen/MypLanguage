@@ -14,7 +14,7 @@ esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -83,5 +83,14 @@ out7=$("$MYPCC" run tests/test_orm.myp 2>&1) || { echo "FAIL: 编译/运行 test
 echo "$out7" | grep -q "orm ok" \
     || { echo "FAIL: orm 输出不符"; echo "$out7"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm）"
+# 10) 资源嵌入：文件 → 字符串常量（字节级 round-trip）
+if ! "$MYPCC" run main.myp embed tests/schema_embed.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 embed 代码"; exit 1
+fi
+cp "$WORK/embed_gen.myp" tests/embed_gen.myp
+out8=$("$MYPCC" run tests/test_embed.myp 2>&1) || { echo "FAIL: 编译/运行 test_embed"; echo "$out8"; exit 1; }
+echo "$out8" | grep -q "embed ok" \
+    || { echo "FAIL: embed 输出不符"; echo "$out8"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed）"
 exit 0

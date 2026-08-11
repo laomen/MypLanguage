@@ -1,0 +1,64 @@
+// gen_embed.myp — 资源嵌入生成器（P5）
+// embeds schema → 每资源一个 <Name>_content() 函数，返回嵌入的源文件内容。
+// 读取用 stdlib File.readAll()（同步、字节级、保留换行/结尾）；写入为转义后的
+// MYP 字符串字面量（\n \r \t \" \\ 转义，其余原样）。生成的函数不依赖 stdlib
+// 之外的任何东西，可自包含运行。
+
+import env;
+import io;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class EmbedGen {
+    action:
+        @constructor EmbedGen() {}
+
+        // 读文件原始内容（字节级，保留换行/结尾）
+        string readRaw(string path) {
+            File f = new File();
+            if (f.open(path, "r") != 0) return "";
+            string content = f.readAll();
+            f.close();
+            return content;
+        }
+
+        // 转义为 MYP 字符串字面量正文：\n \r \t \" \\ 保留，其余原样
+        string esc(string content) {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            int n = Str.len(content);
+            while (i < n) {
+                string ch = Str.substring(content, i, i + 1);
+                int c = Str.ord(ch);
+                if (c == 34) sb.append("\\\"");
+                else if (c == 92) sb.append("\\\\");
+                else if (c == 10) sb.append("\\n");
+                else if (c == 13) sb.append("\\r");
+                else if (c == 9) sb.append("\\t");
+                else sb.append(ch);
+                i = i + 1;
+            }
+            return sb.toString();
+        }
+
+        string gen(Schema s) {
+            if (s.embedCount() == 0) return "";
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("import env;");
+            e.line("");
+            int i = 0;
+            while (i < s.embedCount()) {
+                EmbedDecl ed = s.embedAt(i);
+                string content = readRaw(ed.path);
+                e.line("// 嵌入: " + ed.path);
+                e.block("string " + ed.name + "_content()");
+                e.line("return \"" + esc(content) + "\";");
+                e.endBlock();
+                e.line("");
+                i = i + 1;
+            }
+            return e.text();
+        }
+}

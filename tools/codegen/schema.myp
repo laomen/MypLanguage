@@ -140,6 +140,16 @@ class SchemaParser {
                 s.addTable(td);
                 ti = ti + 1;
             }
+            // embeds 段：资源嵌入（文件 → 字符串常量）
+            int emn = arrLen(j, "embeds");
+            int emi = 0;
+            while (emi < emn) {
+                string emp = "embeds." + emi;
+                EmbedDecl ed = new EmbedDecl();
+                ed.set(j.getString(emp + ".name"), j.getString(emp + ".path"));
+                s.addEmbed(ed);
+                emi = emi + 1;
+            }
             j.free();
             return s;
         }

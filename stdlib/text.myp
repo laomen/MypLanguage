@@ -123,6 +123,12 @@ class Str {
         string replaceAll(string s, string oldStr, string newStr) {
             return myp_str_replace_all(s, oldStr, newStr);
         }
+
+        // 字符 → 码点（首个字节的数值；空串返回 -1）
+        int ord(string ch) { return __myp_ord(ch); }
+
+        // 码点 → 单字符字符串
+        string chr(int code) { return __myp_chr(code); }
 }
 
 // ============================================================

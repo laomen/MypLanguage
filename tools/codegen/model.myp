@@ -179,6 +179,18 @@ class TableDecl {
         ArrayList<Field> fields;
 }
 
+class EmbedDecl {
+    action:
+        @constructor EmbedDecl() {
+            name = "";
+            path = "";
+        }
+        void set(string n, string p) { name = n; path = p; }
+    property:
+        string name;      // 生成函数名
+        string path;      // 源文件路径（相对 CWD）
+}
+
 class Schema {
     action:
         @constructor Schema() {
@@ -189,6 +201,7 @@ class Schema {
             service = new ServiceDecl();
             hasService = 0;
             tables = new ArrayList<TableDecl>();
+            embeds = new ArrayList<EmbedDecl>();
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -207,6 +220,9 @@ class Schema {
         void addTable(TableDecl t) { tables.add(t); }
         int tableCount() { return tables.size(); }
         TableDecl tableAt(int i) { return tables.get(i); }
+        void addEmbed(EmbedDecl e) { embeds.add(e); }
+        int embedCount() { return embeds.size(); }
+        EmbedDecl embedAt(int i) { return embeds.get(i); }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
@@ -215,4 +231,5 @@ class Schema {
         ServiceDecl service;
         int hasService;
         ArrayList<TableDecl> tables;
+        ArrayList<EmbedDecl> embeds;
 }

@@ -1,0 +1,5 @@
+{
+  "name": "demo",
+  "max": 100,
+  "note": "line1\\nline2 \"quoted\""
+}

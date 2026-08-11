@@ -1,0 +1,6 @@
+{
+  "embeds": [
+    { "name": "Greeting", "path": "tests/assets/greeting.txt" },
+    { "name": "Config", "path": "tests/assets/config.json" }
+  ]
+}
