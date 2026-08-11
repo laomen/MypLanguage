@@ -1,14 +1,13 @@
 // tuple: 元组 + 解构（§三-2）——TUP-1（类型+字面量+声明式解构+多值返回）
-// + TUP-2（赋值式解构 + 嵌套 + 字段访问 t.N）
-// 覆盖：元组字面量、字段访问、声明式解构、赋值式解构、嵌套解构、多返回值、元组变量
-import env;
+// + TUP-2（赋值式解构 + 嵌套 + 字段访问 t.N）→ 转 @test
+import test;
 
 // 多返回值：元组
 (int, string) getPair() { return (1, "x"); }
 (int, int) getTwo() { return (7, 9); }
 ((int, int), int) getNested() { return ((1, 2), 5); }
 
-int pmRun() {
+@test void test_tuple() {
     // 元组字面量 + 元组变量 + 字段访问
     (int, int) t = (3, 4);
     int c = t.0;
@@ -27,9 +26,18 @@ int pmRun() {
     // 三元素元组
     (int, int, int) tri = (1, 2, 3);
     int w = tri.2;
-    Console.writeString("a=" + a + " b=" + b + " c=" + c + " d=" + d + " e=" + e + " f=" + f);
-    Console.writeString(" g=" + g + " h=" + h + " p=" + p + " q=" + q + " z=" + z + " w=" + w);
-    Console.writeString("\n");
-    return 0;
+    // 值断言（原 expected: a=1 b=x c=3 d=4 e=7 f=9 g=7 h=9 p=1 q=2 z=5 w=3）
+    Test.assertEq(a, 1, "a");
+    Test.assertStrEq(b, "x", "b");
+    Test.assertEq(c, 3, "c");
+    Test.assertEq(d, 4, "d");
+    Test.assertEq(e, 7, "e");
+    Test.assertEq(f, 9, "f");
+    Test.assertEq(g, 7, "g");
+    Test.assertEq(h, 9, "h");
+    Test.assertEq(p, 1, "p");
+    Test.assertEq(q, 2, "q");
+    Test.assertEq(z, 5, "z");
+    Test.assertEq(w, 3, "w");
+    Test.report("test_tuple", true);
 }
-int main() { int c = pmRun(); return c; }

@@ -1,0 +1,18 @@
+// 复合赋值运算符测试 → @test
+import test;
+
+@test void test_compound_assign() {
+    int x = 10;
+    x += 5;  Test.assertEq(x, 15, "x+=5");
+    x -= 3;  Test.assertEq(x, 12, "x-=3");
+    x *= 4;  Test.assertEq(x, 48, "x*=4");
+    x /= 2;  Test.assertEq(x, 24, "x/=2");
+    x %= 7;  Test.assertEq(x, 3, "x%=7");
+
+    double y = 10.0;
+    y += 3.5; Test.assertFloatEq(y, 13.5, 0.0001, "y+=3.5");
+    y -= 2.0; Test.assertFloatEq(y, 11.5, 0.0001, "y-=2.0");
+    y *= 2.0; Test.assertFloatEq(y, 23.0, 0.0001, "y*=2.0");
+    y /= 4.0; Test.assertFloatEq(y, 5.75, 0.0001, "y/=4.0");
+    Test.report("test_compound_assign", true);
+}

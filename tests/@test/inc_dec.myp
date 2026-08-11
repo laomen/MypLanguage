@@ -1,0 +1,37 @@
+// 自增/自减运算符测试 → @test
+// 注：MYP 后缀 a++ 作为表达式返回递增后的值（与 expected 一致）
+import test;
+
+@test void test_inc_dec() {
+    // 后缀 ++
+    int a = 5;
+    int b = a++;
+    Test.assertEq(a, 6, "a++ a");
+    Test.assertEq(b, 6, "a++ b");
+
+    // 前缀 ++
+    int c = 5;
+    int d = ++c;
+    Test.assertEq(c, 6, "++c c");
+    Test.assertEq(d, 6, "++c d");
+
+    // 后缀 --
+    int e = 5;
+    int f = e--;
+    Test.assertEq(e, 4, "e-- e");
+    Test.assertEq(f, 4, "e-- f");
+
+    // 前缀 --
+    int g = 5;
+    int h = --g;
+    Test.assertEq(g, 4, "--g g");
+    Test.assertEq(h, 4, "--g h");
+
+    // for 循环中的 ++
+    int sum = 0;
+    for (int i = 0; i < 10; i++) {
+        sum = sum + i;
+    }
+    Test.assertEq(sum, 45, "for_sum");
+    Test.report("test_inc_dec", true);
+}

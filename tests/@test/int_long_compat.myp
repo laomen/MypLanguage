@@ -1,0 +1,24 @@
+// int ↔ long type compatibility (auto-promotion) → @test
+import test;
+
+long twice(long x) { return x * 2L; }
+
+@test void test_int_long_compat() {
+    // int → long promotion
+    int a = 42;
+    long b = a;        // implicit int→long
+    Test.assertLongEq(b, 42L, "b");
+
+    // int + long = long
+    long c = a + 100L;
+    Test.assertLongEq(c, 142L, "c");
+
+    // long function param with int arg
+    long d = twice(a);
+    Test.assertLongEq(d, 84L, "d");
+
+    // mixed arithmetic
+    long e = a * 10L + 5;
+    Test.assertLongEq(e, 425L, "e");
+    Test.report("test_int_long_compat", true);
+}

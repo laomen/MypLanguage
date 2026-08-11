@@ -1,0 +1,40 @@
+// short_circuit: && / || 短路求值（编译器修复 §九-8）
+// 验证：a 为 false/true 时不再求值 b（用副作用计数检测）→ @test
+import test;
+
+class T {
+    action:
+        int g() {
+            gcount = gcount + 1;
+            return 1;
+        }
+        void reset() { gcount = 0; }
+        int count() { return gcount; }
+    property:
+        int gcount;
+}
+
+@test void test_short_circuit() {
+    T t = new T();
+    // &&：lhs false → rhs 不求值
+    t.reset();
+    if (0 != 0 && t.g() != 0) Test.fail("and bad");
+    Test.assertEq(t.count(), 0, "and_skip");
+    // &&：lhs true → rhs 求值
+    t.reset();
+    if (1 != 0 && t.g() != 0) { }
+    Test.assertEq(t.count(), 1, "and_call");
+    // ||：lhs true → rhs 不求值
+    t.reset();
+    if (1 != 0 || t.g() != 0) { }
+    Test.assertEq(t.count(), 0, "or_skip");
+    // ||：lhs false → rhs 求值
+    t.reset();
+    if (0 != 0 || t.g() != 0) { }
+    Test.assertEq(t.count(), 1, "or_call");
+    // 嵌套：a && b || c（|| 短路使 a&&b 不求值）
+    t.reset();
+    if (0 != 0 && t.g() != 0 || 1 != 0) { }
+    Test.assertEq(t.count(), 0, "nest_skip");
+    Test.report("test_short_circuit", true);
+}

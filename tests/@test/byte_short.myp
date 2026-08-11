@@ -1,0 +1,27 @@
+// byte / short 类型测试 → @test
+import test;
+
+@test void test_byte_short() {
+    byte b = 42;
+    short s = 12345;
+    int i_from_byte = b;
+    int i_from_short = s;
+    long l_from_byte = b;
+    double d_from_byte = b;
+
+    Test.assertEq(i_from_byte, 42, "byte");
+    Test.assertEq(i_from_short, 12345, "short");
+    Test.assertEq(i_from_byte, 42, "byte->int");
+    Test.assertLongEq(l_from_byte, 42L, "byte->long");
+    Test.assertFloatEq(d_from_byte, 42.0, 0.0001, "byte->double");
+
+    byte b2 = 0; b2 = 10;
+    short s2 = 0; s2 = 5;
+    int r = b2 + s2;
+    Test.assertEq(r, 15, "byte+short");
+
+    byte bx = 0; bx = 100;
+    int bx2 = bx + 20;
+    Test.assertEq(bx2, 120, "byte+const");
+    Test.report("test_byte_short", true);
+}

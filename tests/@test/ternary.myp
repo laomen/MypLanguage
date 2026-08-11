@@ -1,0 +1,21 @@
+// Ternary operator ? : → @test
+import test;
+
+@test void test_ternary() {
+    int a = 10;
+    int b = 20;
+    int max = a > b ? a : b;
+    Test.assertEq(max, 20, "max");
+
+    int min = a < b ? a : b;
+    Test.assertEq(min, 10, "min");
+
+    string label = a > 0 ? "positive" : "non-positive";
+    Test.assertStrEq(label, "positive", "label");
+
+    // nested ternary
+    int x = -5;
+    string sign = x > 0 ? "pos" : x < 0 ? "neg" : "zero";
+    Test.assertStrEq(sign, "neg", "sign");
+    Test.report("test_ternary", true);
+}

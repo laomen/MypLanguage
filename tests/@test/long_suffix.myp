@@ -1,0 +1,19 @@
+// long literal suffix 'L' and long operations → @test
+import test;
+
+@test void test_long_suffix() {
+    long a = 152917L;
+    long b = 1000000000000L;
+    long c = a + b;
+    long d = b * 2L;
+
+    Test.assertLongEq(a, 152917L, "a");
+    Test.assertLongEq(b, 1000000000000L, "b");
+    Test.assertLongEq(c, 1000000152917L, "sum");
+    Test.assertLongEq(d, 2000000000000L, "double");
+
+    // long in expressions
+    long e = (10 * 20 + 5) * 1000L + 1L;
+    Test.assertLongEq(e, 205001L, "expr");
+    Test.report("test_long_suffix", true);
+}
