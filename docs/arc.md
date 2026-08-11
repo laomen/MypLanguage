@@ -1,6 +1,7 @@
 # MYP 引用计数内存管理设计（ARC on class 实例）
 
-> 状态：**M-ARC-1 + M-ARC-2 + M-ARC-3（闭包释放）已实施（2026-08-06）**；异常/throw-catch 展开释放已实施（`d5f7ddf`）；协程帧引用释放已实施（帧 ARC 登记表）
+> 状态：**M-ARC-1/2/3/4 已实施**；异常展开、协程帧引用释放、`@region`
+> 引用逃逸保护与 `slice<class>` backing 级联释放均已实施
 > 关联：`docs/slice.md` §3（两级 arena 内存模型）、`docs/next_improvements.md` §五-1、
 > `docs/grammar.md`（规格 v1.0 冻结——本设计 **additive**，无新语法）
 > 决策背景：析构器已讨论排除（`docs/constructor.md`）；完整 GC 过重；手动 free 会打破
@@ -136,7 +137,10 @@ class A { property: B b; C c; }
   再释放头；销毁桩/字段存储/作用域退出/临时释放统一经 `myp_release` 接管。
 - **固定栈数组 `[N x T]`**（T 为 class）：kind-3 槽在作用域退出按 count 释放元素
   （`myp_release_fixed_class_array`，不 free 栈缓冲）。
-- 非类数组（`int[]`/`double[]`/`slice`/`string`）：**不计数**（arena/进程级管理）——v1 保守策略。
+- 非类数组（`int[]`/`double[]`/`string`）：**不计数**（arena/进程级管理）。
+- `slice<class>` 保持 16 字节值 ABI；其 backing 使用引用计数类数组布局，并由 runtime
+  建立唯一清理登记。region 退出或线程/进程清理时释放 backing，继而逐元素 release；
+  slice 浅拷贝不复制清理登记，避免双重释放。
 
 ### 5.2 struct 引用字段：不参与计数（保守，宁可泄漏不悬垂）
 
@@ -151,8 +155,10 @@ struct 是值类型、可浅拷贝共享同一 class 引用；若计数释放，
 - **class 实例一律不分配进 region**（进程级 + ARC，rc 决定生死）——这**简化**现有逃逸分析：
   class 不再参与"逃逸→进程级"判定，region 只管 `string`/`T[]`/`slice`。
 - `@region` 内 `new T()` 返回/存储 class 引用 → 一律计数管理，rc 转移，无悬垂。
-- region 批量释放逻辑（`myp_arena_mark/release`）**不变**；`myp_alloc_object` 走进程级分配
-  并进进程级追踪链（与 region 链互斥，TLS 分离）。
+- region 批量释放逻辑（`myp_arena_mark/release`）保持 chunk 回滚；`myp_alloc_object` 走
+  进程级分配并进进程级追踪链（与 region 链互斥，TLS 分离）。`@region` 函数若检测到
+  slice/数组经 return、property/global store 或调用参数逃逸，会保守禁用该函数的 region，
+  防止 backing 在返回后悬垂。
 
 ---
 

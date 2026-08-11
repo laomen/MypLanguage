@@ -93,6 +93,16 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     module_ = std::make_unique<llvm::Module>("myp_module", ctx_);
     current_tu_ = &tu;
+    interface_methods_.clear();
+    interface_method_fallback_.clear();
+    for (auto& iface : tu.interfaces) {
+        auto& methods = interface_methods_[iface.name];
+        for (size_t index = 0; index < iface.actions.size(); ++index) {
+            InterfaceMethodInfo info{static_cast<unsigned>(index), &iface.actions[index]};
+            methods.emplace(iface.actions[index].name, info);
+            interface_method_fallback_.emplace(iface.actions[index].name, info);
+        }
+    }
     // Opt-in IEEE relaxation (like -ffast-math): MYP_FAST_MATH=1 marks all FP
     // ops with fast-math flags (reassoc/contract/nnan/...) so LLVM can vectorize
     // FP reductions (e.g. matmul) and contract FMAs. Default OFF keeps strict
@@ -1584,6 +1594,195 @@ void CodeGen::collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& ou
         case StmtKind::TryStmt:
             break;
     }
+}
+
+bool CodeGen::regionBodyMayEscape(const Stmt& body) const {
+    std::unordered_set<std::string> local_refs;
+    std::unordered_set<std::string> local_names;
+
+    auto typeMayUseRegion = [](const TypeNode& type) {
+        return type.isArray() || type.class_name == "slice";
+    };
+
+    std::function<void(const Stmt&)> collectLocals = [&](const Stmt& stmt) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (auto& child : static_cast<const BlockStmt&>(stmt).statements)
+                    if (child) collectLocals(*child);
+                break;
+            case StmtKind::VarDeclStmt:
+                for (auto& decl : static_cast<const VarDeclStmt&>(stmt).decls) {
+                    local_names.insert(decl.name);
+                    if (typeMayUseRegion(decl.type)) local_refs.insert(decl.name);
+                }
+                break;
+            case StmtKind::IfStmt: {
+                auto& value = static_cast<const IfStmt&>(stmt);
+                if (value.then_block) collectLocals(*value.then_block);
+                if (value.else_block) collectLocals(*value.else_block);
+                break;
+            }
+            case StmtKind::WhileStmt: {
+                auto& value = static_cast<const WhileStmt&>(stmt);
+                if (value.body) collectLocals(*value.body);
+                break;
+            }
+            case StmtKind::ForStmt: {
+                auto& value = static_cast<const ForStmt&>(stmt);
+                if (value.init) collectLocals(*value.init);
+                if (value.body) collectLocals(*value.body);
+                break;
+            }
+            case StmtKind::ForInStmt: {
+                auto& value = static_cast<const ForInStmt&>(stmt);
+                local_names.insert(value.var_name);
+                if (typeMayUseRegion(value.var_type)) local_refs.insert(value.var_name);
+                if (value.body) collectLocals(*value.body);
+                break;
+            }
+            case StmtKind::TryStmt: {
+                auto& value = static_cast<const TryStmt&>(stmt);
+                if (value.try_block) collectLocals(*value.try_block);
+                for (auto& clause : value.catches)
+                    if (clause.block) collectLocals(*clause.block);
+                if (value.finally_block) collectLocals(*value.finally_block);
+                break;
+            }
+            default:
+                break;
+        }
+    };
+    collectLocals(body);
+
+    std::function<bool(const Expr&)> carriesRegionRef = [&](const Expr& expr) {
+        if (expr.type && typeMayUseRegion(*expr.type)) return true;
+        switch (expr.kind) {
+            case ExprKind::Identifier:
+                return local_refs.count(static_cast<const IdentifierExpr&>(expr).name) != 0;
+            case ExprKind::NewExpr:
+                return static_cast<const NewExpr&>(expr).class_name == "slice";
+            case ExprKind::NewArrayExpr:
+                return true;
+            case ExprKind::Assignment:
+                return carriesRegionRef(*static_cast<const AssignmentExpr&>(expr).value);
+            case ExprKind::Ternary: {
+                auto& value = static_cast<const TernaryExpr&>(expr);
+                return carriesRegionRef(*value.true_expr) || carriesRegionRef(*value.false_expr);
+            }
+            case ExprKind::TupleExpr:
+                for (auto& element : static_cast<const TupleExpr&>(expr).elements)
+                    if (carriesRegionRef(*element)) return true;
+                return false;
+            default:
+                return false;
+        }
+    };
+
+    std::function<bool(const Expr&)> exprEscapes = [&](const Expr& expr) {
+        switch (expr.kind) {
+            case ExprKind::Call: {
+                auto& call = static_cast<const CallExpr&>(expr);
+                for (auto& arg : call.args)
+                    if (carriesRegionRef(*arg) || exprEscapes(*arg)) return true;
+                return exprEscapes(*call.callee);
+            }
+            case ExprKind::Assignment: {
+                auto& assignment = static_cast<const AssignmentExpr&>(expr);
+                bool external_target = assignment.target->kind == ExprKind::MemberAccess ||
+                    assignment.target->kind == ExprKind::Subscript;
+                if (assignment.target->kind == ExprKind::Identifier) {
+                    auto& id = static_cast<const IdentifierExpr&>(*assignment.target);
+                    external_target = local_names.count(id.name) == 0;
+                }
+                if (external_target && carriesRegionRef(*assignment.value)) return true;
+                return exprEscapes(*assignment.target) || exprEscapes(*assignment.value);
+            }
+            case ExprKind::BinaryOp: {
+                auto& value = static_cast<const BinaryOpExpr&>(expr);
+                return exprEscapes(*value.lhs) || exprEscapes(*value.rhs);
+            }
+            case ExprKind::UnaryOp:
+                return exprEscapes(*static_cast<const UnaryOpExpr&>(expr).operand);
+            case ExprKind::Convert:
+                return exprEscapes(*static_cast<const ConvertExpr&>(expr).operand);
+            case ExprKind::MemberAccess:
+                return exprEscapes(*static_cast<const MemberAccessExpr&>(expr).object);
+            case ExprKind::Subscript: {
+                auto& value = static_cast<const SubscriptExpr&>(expr);
+                return exprEscapes(*value.array) || exprEscapes(*value.index);
+            }
+            case ExprKind::Ternary: {
+                auto& value = static_cast<const TernaryExpr&>(expr);
+                return exprEscapes(*value.condition) || exprEscapes(*value.true_expr) ||
+                    exprEscapes(*value.false_expr);
+            }
+            case ExprKind::TupleExpr:
+                for (auto& element : static_cast<const TupleExpr&>(expr).elements)
+                    if (exprEscapes(*element)) return true;
+                return false;
+            default:
+                return false;
+        }
+    };
+
+    std::function<bool(const Stmt&)> stmtEscapes = [&](const Stmt& stmt) {
+        switch (stmt.kind) {
+            case StmtKind::Block:
+                for (auto& child : static_cast<const BlockStmt&>(stmt).statements)
+                    if (child && stmtEscapes(*child)) return true;
+                return false;
+            case StmtKind::VarDeclStmt:
+                for (auto& decl : static_cast<const VarDeclStmt&>(stmt).decls)
+                    if (decl.init_expr && exprEscapes(*decl.init_expr)) return true;
+                return false;
+            case StmtKind::ExprStmt: {
+                auto& value = static_cast<const ExprStmt&>(stmt);
+                return value.expression && exprEscapes(*value.expression);
+            }
+            case StmtKind::IfStmt: {
+                auto& value = static_cast<const IfStmt&>(stmt);
+                return exprEscapes(*value.condition) ||
+                    (value.then_block && stmtEscapes(*value.then_block)) ||
+                    (value.else_block && stmtEscapes(*value.else_block));
+            }
+            case StmtKind::WhileStmt: {
+                auto& value = static_cast<const WhileStmt&>(stmt);
+                return exprEscapes(*value.condition) ||
+                    (value.body && stmtEscapes(*value.body));
+            }
+            case StmtKind::ForStmt: {
+                auto& value = static_cast<const ForStmt&>(stmt);
+                return (value.init && stmtEscapes(*value.init)) ||
+                    (value.condition && exprEscapes(*value.condition)) ||
+                    (value.step && exprEscapes(*value.step)) ||
+                    (value.body && stmtEscapes(*value.body));
+            }
+            case StmtKind::ForInStmt: {
+                auto& value = static_cast<const ForInStmt&>(stmt);
+                return exprEscapes(*value.iterable) ||
+                    (value.body && stmtEscapes(*value.body));
+            }
+            case StmtKind::ReturnStmt: {
+                auto& value = static_cast<const ReturnStmt&>(stmt);
+                return value.value && carriesRegionRef(*value.value);
+            }
+            case StmtKind::ThrowStmt: {
+                auto& value = static_cast<const ThrowStmt&>(stmt);
+                return value.expr && carriesRegionRef(*value.expr);
+            }
+            case StmtKind::TryStmt: {
+                auto& value = static_cast<const TryStmt&>(stmt);
+                if (value.try_block && stmtEscapes(*value.try_block)) return true;
+                for (auto& clause : value.catches)
+                    if (clause.block && stmtEscapes(*clause.block)) return true;
+                return value.finally_block && stmtEscapes(*value.finally_block);
+            }
+            default:
+                return false;
+        }
+    };
+
+    return stmtEscapes(body);
 }
 
 

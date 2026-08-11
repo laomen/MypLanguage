@@ -1635,6 +1635,45 @@ static void myp_free_class_array(void* data) {
     free(node);
 }
 
+typedef struct myp_class_slice_cleanup {
+    struct myp_class_slice_cleanup* next;
+    void* data;
+    int region_depth;
+} myp_class_slice_cleanup_t;
+
+static __thread int myp_region_depth = 0;
+static __thread myp_class_slice_cleanup_t* myp_class_slice_cleanups = NULL;
+
+static void myp_register_class_slice(void* data) {
+    myp_class_slice_cleanup_t* cleanup =
+        (myp_class_slice_cleanup_t*)malloc(sizeof(myp_class_slice_cleanup_t));
+    if (!cleanup) return;  // OOM: keep backing live; leak-safe, never dangling
+    cleanup->data = data;
+    cleanup->region_depth = myp_region_depth;
+    cleanup->next = myp_class_slice_cleanups;
+    myp_class_slice_cleanups = cleanup;
+}
+
+static void myp_release_class_slices_from_depth(int region_depth) {
+    myp_class_slice_cleanup_t** link = &myp_class_slice_cleanups;
+    while (*link) {
+        myp_class_slice_cleanup_t* cleanup = *link;
+        if (cleanup->region_depth >= region_depth) {
+            *link = cleanup->next;
+            myp_release(cleanup->data);
+            free(cleanup);
+        } else {
+            link = &cleanup->next;
+        }
+    }
+}
+
+void* myp_alloc_class_slice(uint64_t count) {
+    void* data = myp_alloc_class_array(count, (uint32_t)sizeof(void*));
+    if (data) myp_register_class_slice(data);
+    return data;
+}
+
 // Release `count` element refs of a fixed (stack) class array. Elements are
 // strong class-ref slots; the backing stack buffer is NOT freed.
 void myp_release_fixed_class_array(void* data, uint64_t count) {
@@ -1674,6 +1713,9 @@ void myp_region_free_all(void);
 void myp_free_all(void) {
     // Restore terminal if we changed it to raw mode
     myp_restore_term();
+    // slice<class> backing retains its elements. Release those arrays before
+    // the raw allocation-list fallback frees any still-live ARC blocks.
+    myp_release_class_slices_from_depth(0);
     // Trigger the pthread key destructor which calls myp_free_alloc_list
     pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
     myp_alloc_node_t* head = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
@@ -1707,7 +1749,6 @@ static __thread myp_arena_chunk_t* myp_region_cur = NULL;
 // Region nesting depth (thread-local). >0 means we are inside an @region
 // function's dynamic call scope, so myp_region_alloc uses the region arena
 // (dynamic extent — even temporaries allocated by plain callees are reclaimed).
-static __thread int myp_region_depth = 0;
 
 static void myp_make_region_key(void) {
     pthread_key_create(&myp_region_key, myp_free_arena_chunks);
@@ -1754,6 +1795,9 @@ void* myp_arena_mark(void) {
 // that chunk to its marked offset.
 void myp_arena_release(void* mark) {
     pthread_once(&myp_region_key_once, myp_make_region_key);
+    // Backings are separate counted allocations, so cascade their element
+    // releases before rolling arena storage back to this mark.
+    myp_release_class_slices_from_depth(myp_region_depth);
     uintptr_t target = (uintptr_t)mark;
     myp_arena_chunk_t* chunk =
         (myp_arena_chunk_t*)pthread_getspecific(myp_region_key);
@@ -2609,6 +2653,9 @@ static void* myp_thread_entry(void* arg) {
     }
     // Release this thread's coroutine state (TLS) so slots/stacks aren't leaked.
     __myp_coro_thread_cleanup();
+    // Run ARC-aware cleanup while the TLS allocation lists are still valid;
+    // pthread key destructors otherwise only know how to raw-free blocks.
+    myp_free_all();
     // Clear TLS so destructor doesn't double-free
     pthread_setspecific(myp_queue_key, NULL);
     return NULL;

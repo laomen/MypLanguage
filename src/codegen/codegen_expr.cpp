@@ -828,25 +828,16 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             if (obj_val && isInterfaceFatType(obj_val->getType())) {
                 auto* data = builder_.CreateExtractValue(obj_val, 0);
                 auto* vt = builder_.CreateExtractValue(obj_val, 1);
-                int method_idx = -1;
-                for (auto& ifd : current_tu_->interfaces)
-                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
-                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
-                if (method_idx >= 0) {
+                auto* method = findInterfaceMethod(
+                    ma.resolved_object_class, ma.member_name);
+                if (method) {
                     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
                     auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
-                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},
                         "iface_method");
                     auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
-                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
-                    for (auto& ifd : current_tu_->interfaces) {
-                        if ((size_t)method_idx < ifd.actions.size() &&
-                            ifd.actions[method_idx].name == ma.member_name) {
-                            ret_ty = getLLVMType(typeNodeToCodegenType(
-                                ifd.actions[method_idx].return_type));
-                            break;
-                        }
-                    }
+                    auto* ret_ty = getLLVMType(typeNodeToCodegenType(
+                        method->action->return_type));
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
@@ -888,35 +879,19 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                         auto* vt = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), vt_ptr, "iface_vt");
 
                         // Find method index in the interface
-                        int method_idx = -1;
-                        for (auto& ifd : current_tu_->interfaces) {
-                            for (size_t mi = 0; mi < ifd.actions.size(); mi++) {
-                                if (ifd.actions[mi].name == ma.member_name) {
-                                    method_idx = (int)mi;
-                                    goto iface_method_found;
-                                }
-                            }
-                        }
-                        iface_method_found:
-
-                        if (method_idx >= 0) {
+                        auto* method = findInterfaceMethod(
+                            ma.resolved_object_class, ma.member_name);
+                        if (method) {
                             // Vtable is [N x ptr], load function pointer by index
                             auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
                             auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
-                                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                                {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},
                                 "iface_method");
                             auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
 
                             // Determine return type from interface method declaration
-                            llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
-                            for (auto& ifd : current_tu_->interfaces) {
-                                if ((size_t)method_idx < ifd.actions.size() &&
-                                    ifd.actions[method_idx].name == ma.member_name) {
-                                    ret_ty = getLLVMType(typeNodeToCodegenType(
-                                        ifd.actions[method_idx].return_type));
-                                    break;
-                                }
-                            }
+                            auto* ret_ty = getLLVMType(typeNodeToCodegenType(
+                                method->action->return_type));
 
                             // Build call args: instance + explicit args
                             std::vector<llvm::Value*> call_args;
@@ -989,25 +964,16 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             if (obj_val && isInterfaceFatType(obj_val->getType())) {
                 auto* data = builder_.CreateExtractValue(obj_val, 0);
                 auto* vt = builder_.CreateExtractValue(obj_val, 1);
-                int method_idx = -1;
-                for (auto& ifd : current_tu_->interfaces)
-                    for (size_t mi = 0; mi < ifd.actions.size(); mi++)
-                        if (ifd.actions[mi].name == ma.member_name) { method_idx = (int)mi; break; }
-                if (method_idx >= 0) {
+                auto* method = findInterfaceMethod(
+                    ma.resolved_object_class, ma.member_name);
+                if (method) {
                     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
                     auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
-                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method_idx)},
+                        {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},
                         "iface_method");
                     auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
-                    llvm::Type* ret_ty = llvm::Type::getVoidTy(ctx_);
-                    for (auto& ifd : current_tu_->interfaces) {
-                        if ((size_t)method_idx < ifd.actions.size() &&
-                            ifd.actions[method_idx].name == ma.member_name) {
-                            ret_ty = getLLVMType(typeNodeToCodegenType(
-                                ifd.actions[method_idx].return_type));
-                            break;
-                        }
-                    }
+                    auto* ret_ty = getLLVMType(typeNodeToCodegenType(
+                        method->action->return_type));
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
@@ -2326,12 +2292,17 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         // Always allocate via the region-aware allocator: when called inside an
         // @region's dynamic scope it lands in the region list (reclaimed on exit),
         // otherwise it behaves exactly like the process-level allocator.
-        llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+        bool class_elements = isArcClassType(e.type_args[0]);
+        const char* alloc_name = class_elements
+            ? "myp_alloc_class_slice" : "myp_region_alloc";
+        llvm::Function* alloc_fn = module_->getFunction(alloc_name);
         if (!alloc_fn) {
             auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+            alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                              alloc_name, module_.get());
         }
-        auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "slice_data");
+        llvm::Value* alloc_size = class_elements ? len_val : byte_size;
+        auto* ptr = builder_.CreateCall(alloc_fn, {alloc_size}, "slice_data");
         if (es > 0)
             builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
         auto* ptr_ty = llvm::PointerType::get(ctx_, 0);

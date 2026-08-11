@@ -1,0 +1,30 @@
+// slice<class> retains elements and releases them once with its region backing.
+import env;
+import memory;
+
+class Node {
+    action:
+        @constructor Node(int value) { number = value; }
+    property:
+        int number;
+}
+
+@region int buildAndRelease() {
+    slice<Node> nodes = new slice<Node>(128);
+    int index = 0;
+    while (index < 128) {
+        nodes[index] = new Node(index);
+        index = index + 1;
+    }
+    return nodes[127].number;
+}
+
+int pmRun() {
+    long before = Memory.liveObjectCount();
+    int last = buildAndRelease();
+    long after = Memory.liveObjectCount();
+    Console.writeString("last=" + last + " live=" + (after - before) + "\n");
+    return 0;
+}
+
+int main() { return pmRun(); }

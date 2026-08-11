@@ -59,6 +59,13 @@ private:
     // Maps class name → property name → index in struct
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> property_indices_;
     std::unordered_map<std::string, std::unordered_map<std::string, llvm::Type*>> property_types_;
+    struct InterfaceMethodInfo {
+        unsigned index;
+        const ActionDecl* action;
+    };
+    std::unordered_map<std::string,
+        std::unordered_map<std::string, InterfaceMethodInfo>> interface_methods_;
+    std::unordered_map<std::string, InterfaceMethodInfo> interface_method_fallback_;
     // Anonymous tuple structs, keyed by element LLVM type signature.
     std::unordered_map<std::string, llvm::StructType*> tuple_structs_;
 
@@ -106,6 +113,7 @@ private:
     // ---- @region memory arena state (function currently being generated) ----
     bool in_region_function_ = false;         // generating a @region fn (non-escaping)
     llvm::Value* current_region_mark_ = nullptr;  // mark alloca for the region fn
+    bool regionBodyMayEscape(const Stmt& body) const;
 
     // ---- Struct type tracking ----
     // Maps struct name (e.g. "Vec2" or "Sensor::Config") → LLVM struct type
@@ -533,6 +541,8 @@ private:
     // 把具体类实例(ptr) 构造成接口胖指针 {data, vtable}（接口参数 upcast 用）
     llvm::Value* buildInterfaceFat(llvm::Value* inst, const std::string& iface_name,
                                    const std::string& cls_name);
+    const InterfaceMethodInfo* findInterfaceMethod(const std::string& iface_name,
+                                                   const std::string& method) const;
     // 解析实参表达式的具体类名：new X / 局部变量 / 本类属性（无 → ""）
     std::string resolveArgClassName(const Expr& arg);
     // 解析被调函数第 rel 个参数声明的接口名（形参为接口类型时；无 → ""）

@@ -1,0 +1,48 @@
+// @region reference escape must promote the whole function conservatively.
+import env;
+
+class Holder {
+    action:
+        void store(slice<int> value) { saved = value; }
+
+        @region void storeDirect(int value) {
+            slice<int> temp = new slice<int>(20000);
+            temp[0] = value;
+            saved = temp;
+        }
+
+        @region void storeThroughCall(int value) {
+            slice<int> temp = new slice<int>(20000);
+            temp[0] = value;
+            store(temp);
+        }
+
+        @region void churn(int value) {
+            slice<int> overwrite = new slice<int>(20000);
+            overwrite[0] = value;
+        }
+
+        int first() {
+            slice<int> view = this.saved;
+            return view[0];
+        }
+
+    property:
+        slice<int> saved;
+}
+
+int pmRun() {
+    Holder holder = new Holder();
+    holder.storeDirect(123);
+    holder.churn(900);
+    int direct = holder.first();
+
+    holder.storeThroughCall(456);
+    holder.churn(901);
+    int through = holder.first();
+
+    Console.writeString("direct=" + direct + " through=" + through + "\n");
+    return 0;
+}
+
+int main() { return pmRun(); }

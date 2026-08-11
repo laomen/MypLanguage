@@ -416,6 +416,21 @@ llvm::Value* CodeGen::buildInterfaceFat(llvm::Value* inst,
     return builder_.CreateLoad(fat_ty, fat);
 }
 
+const CodeGen::InterfaceMethodInfo* CodeGen::findInterfaceMethod(
+        const std::string& iface_name, const std::string& method) const {
+    if (!iface_name.empty()) {
+        auto interface_it = interface_methods_.find(iface_name);
+        if (interface_it != interface_methods_.end()) {
+            auto method_it = interface_it->second.find(method);
+            if (method_it != interface_it->second.end())
+                return &method_it->second;
+            return nullptr;
+        }
+    }
+    auto fallback_it = interface_method_fallback_.find(method);
+    return fallback_it != interface_method_fallback_.end() ? &fallback_it->second : nullptr;
+}
+
 std::string CodeGen::resolveArgClassName(const Expr& arg) {
     if (arg.kind == ExprKind::NewExpr)
         return static_cast<const NewExpr&>(arg).class_name;
@@ -753,7 +768,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
 
     // @region: enter arena (skipped if return type is a reference — it escapes)
     bool fn_region = action.has_region &&
-        !typeIsReference(typeNodeToCodegenType(action.return_type));
+        !typeIsReference(typeNodeToCodegenType(action.return_type)) &&
+        (!action.body || !regionBodyMayEscape(*action.body));
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
 
     // Generate action body (stdlib actions use __myp_* intrinsics in their source code)
@@ -899,7 +915,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
 
     // @region (static action)
     bool fn_region = action.has_region &&
-        !typeIsReference(typeNodeToCodegenType(action.return_type));
+        !typeIsReference(typeNodeToCodegenType(action.return_type)) &&
+        (!action.body || !regionBodyMayEscape(*action.body));
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
 
     if (action.body)
@@ -1224,7 +1241,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 
     // @region (class function)
     bool fn_region = fn_decl.has_region &&
-        !typeIsReference(typeNodeToCodegenType(fn_decl.return_type));
+        !typeIsReference(typeNodeToCodegenType(fn_decl.return_type)) &&
+        (!fn_decl.body || !regionBodyMayEscape(*fn_decl.body));
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
 
     if (fn_decl.body)
@@ -1347,7 +1365,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
 
     // @region (top-level function)
     bool fn_region = decl.has_region &&
-        !typeIsReference(rt);
+        !typeIsReference(rt) &&
+        (!decl.body || !regionBodyMayEscape(*decl.body));
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
 
     if (decl.body) generateBlock(*decl.body);

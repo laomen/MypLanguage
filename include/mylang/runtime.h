@@ -41,6 +41,10 @@ void myp_free_object(void* obj);
 // treat arrays uniformly; myp_release on an array (type_id==MYP_ARR_TYPE_ID)
 // releases every element then frees the header.
 void* myp_alloc_class_array(uint64_t count, uint32_t elem_size);
+// `slice<T>` with class T uses the same counted backing layout, but its slice
+// value is borrowed/copyable. The runtime owns one cleanup registration for
+// the backing and releases it at region or thread/process teardown.
+void* myp_alloc_class_slice(uint64_t count);
 void myp_release_fixed_class_array(void* data, uint64_t count);
 // Per-TU destroy-stub table, defined by generated code (indexed by type_id).
 extern void (*__myp_release_table[])(void*);

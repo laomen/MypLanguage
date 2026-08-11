@@ -841,6 +841,22 @@ void Sema::visitInterfaceDecl(InterfaceDecl& decl) {
         error(decl.range, "duplicate interface name '" + decl.name + "'");
         return;
     }
+    auto& members = interface_member_types_[decl.name];
+    for (auto& act : decl.actions) {
+        TypeInfo ft(TypeKind::Function);
+        ft.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(act.return_type));
+        for (auto& param : act.params)
+            ft.param_types.push_back(typeNodeToTypeInfo(param.type));
+        populateFuncTypeMeta(ft, act.params);
+        members.emplace(act.name, std::move(ft));
+    }
+    for (auto& ev : decl.events) {
+        TypeInfo ft(TypeKind::Function);
+        ft.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
+        for (auto& param : ev.params)
+            ft.param_types.push_back(typeNodeToTypeInfo(param.type));
+        members.emplace(ev.name, std::move(ft));
+    }
     TypeInfo iface_type(TypeKind::Class);
     iface_type.class_name = decl.name;
     symbol_table_.declare(decl.name, iface_type);

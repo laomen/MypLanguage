@@ -1383,35 +1383,14 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
 
     // Interface member access — look up method in interface declaration
     if (obj_type.kind == TypeKind::Interface) {
-        if (current_tu_) {
-            for (auto& ifd : current_tu_->interfaces) {
-                if (ifd.name != obj_type.class_name) continue;
-                // Check actions (methods)
-                for (auto& act : ifd.actions) {
-                    if (act.name == expr.member_name) {
-                        TypeInfo ft(TypeKind::Function);
-                        ft.return_type = std::make_shared<TypeInfo>(
-                            typeNodeToTypeInfo(act.return_type));
-                        for (auto& p : act.params)
-                            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        populateFuncTypeMeta(ft, act.params);
-                        return ft;
-                    }
-                }
-                // Check events
-                for (auto& ev : ifd.events) {
-                    if (ev.name == expr.member_name) {
-                        TypeInfo ft(TypeKind::Function);
-                        ft.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-                        for (auto& p : ev.params)
-                            ft.param_types.push_back(typeNodeToTypeInfo(p.type));
-                        return ft;
-                    }
-                }
-                error(expr.range, "interface '" + obj_type.class_name +
-                    "' has no member '" + expr.member_name + "'");
-                return TypeInfo(TypeKind::Void);
-            }
+        auto interface_it = interface_member_types_.find(obj_type.class_name);
+        if (interface_it != interface_member_types_.end()) {
+            auto member_it = interface_it->second.find(expr.member_name);
+            if (member_it != interface_it->second.end())
+                return member_it->second;
+            error(expr.range, "interface '" + obj_type.class_name +
+                "' has no member '" + expr.member_name + "'");
+            return TypeInfo(TypeKind::Void);
         }
         error(expr.range, "unknown interface '" + obj_type.class_name + "'");
         return TypeInfo(TypeKind::Void);

@@ -28,6 +28,14 @@
 ## 编译器版本历史
 
 ### v3.11.20（当前）
+- **内存生命周期 P0 加固**：
+  - `@region` 新增函数级保守逃逸分析：slice/数组经 return、property/global store、
+    subscript store、throw 或调用参数逃逸时，不建立 arena mark，防止函数返回后持久引用
+    指向已回滚 backing；局部-only 函数继续使用 region 快速回滚。
+  - `slice<class>` backing 改用引用计数类数组布局，并由 runtime 建立唯一清理登记；
+    region 退出或线程/进程清理时逐元素 release，修复元素写入 retain 后无对应 release 的
+    长跑泄漏。slice 的 16 字节 ABI 和浅拷贝语义不变。
+  - 新增 `tests/region_escape`、`tests/region_slice_class_arc`。
 - **@parallel for / @gpu for 体不支持构造的静默垃圾值 → 编译期干净报错**：
   - 症状：并行体内 `new Node()`（→ 常量 0/null）、类实例字段读写（写被丢弃、读
     恒 0——实测 `n.val=7` 后 1000 次读全错）、字符串拼接（`"iter "+i` → 垃圾指针

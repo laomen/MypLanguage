@@ -1,0 +1,27 @@
+import env;
+
+interface IFirst {
+    int shared();
+}
+
+interface ISecond {
+    int before();
+    int shared();
+}
+
+class Second {
+    interface class ISecond;
+    action:
+        int before() { return 11; }
+        int shared() { return 22; }
+}
+
+int runInterfaceMethodIndex() {
+    ISecond value = new Second();
+    Console.write(value.shared());
+    return 0;
+}
+
+int main() {
+    return runInterfaceMethodIndex();
+}

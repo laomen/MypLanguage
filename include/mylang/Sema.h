@@ -170,6 +170,8 @@ private:
     std::unordered_map<std::string, size_t> class_indices_;
     std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
         struct_member_types_;
+    std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
+        interface_member_types_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct
 
     // ---- Enum info tracking ----

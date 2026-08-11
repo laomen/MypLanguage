@@ -19,6 +19,10 @@
 
 ## 二、测试 / 稳定性强化
 
+> 2026-08-11 新一轮测试与 benchmark 审计、风险清单、规模基准及分阶段验收标准见
+> [`testing_benchmark_roadmap.md`](testing_benchmark_roadmap.md)。该文档作为下一步测试
+> 基础设施和编译性能优化的实施入口；本节以下内容保留为早期归档。
+
 | # | 事项 | 说明 | 工作量 | 优先级 |
 |---|------|------|--------|--------|
 | 1 | **字节级精确 expected** | `run_tests.sh` 用 `$(...)` 捕获会剥尾部换行，导致 `parallel_for`/`coro_thread` 的程序原始输出（末尾多一个空行）与 expected 不精确一致。清掉测试里 `writeFloat`/`writeLong` 后冗余的 `Console.writeString("\n")`（二者自带换行），使 expected 与原始字节精确一致 | 小 | P1 |
@@ -49,11 +53,37 @@
 
 | # | 事项 | 说明 | 优先级 |
 |---|------|------|--------|
-| 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1/2/3/4 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>` + 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用）、retain-at-return、赋值/属性/静态/映射全局 retain、`T[]`/`slice` 类元素 retain/release、语句末临时释放、`return new` 转移、函数 epilogue release、`@thread`/`@threadpool` 实例线程销毁时释放、**闭包释放**（函数值局部 ARC 槽 + 捕获 class 引用 retain）。**M-ARC-4：引用计数类数组**——`new T[n]`（T 为 class）分配 24B 头 `{count, elem_size, rc, type_id=MYP_ARR_TYPE_ID}`（rc/type_id 与对象头同偏移），`myp_release` 见 magic 即逐元素释放；动态类数组字段/局部/临时/返回统一 ARC 接管；固定 `[N x T]` 栈数组 kind-3 槽按 count 释放元素。**异常/throw-catch 展开释放** + **协程帧引用释放**（帧 ARC 登记表：store 时镜像对象指针、release 时清除、destroy/未捕获异常时释放帧表）。诊断：`Memory.liveObjectCount()`。`tests/arc` + `arc_m2` + `arc_fn` + `coro_frame_arc`。**剩余**：`@region` 逃逸精修。设计见 `docs/arc.md` | **P0** |
+| 1 | ~~**中寿命对象回收：class 实例 ARC**~~ | ✅ **M-ARC-1/2/3/4 已实施（additive，无新语法）**：class 实例自动引用计数——对象头 `{rc:u32, type_id:u32}`（数据指针前 8 字节），`myp_alloc_object/retain/release/free_object` + 每类销毁桩 `__myp_destroy_<Class>` + 按 type_id 分派的 `__myp_release_table`。插桩：作用域退出释放局部类/接口槽（参数/`this` 借用）、retain-at-return、赋值/属性/静态/映射全局 retain、`T[]`/`slice` 类元素 retain/release、语句末临时释放、`return new` 转移、函数 epilogue release、`@thread`/`@threadpool` 实例线程销毁时释放、**闭包释放**（函数值局部 ARC 槽 + 捕获 class 引用 retain）。**M-ARC-4：引用计数类数组**——`new T[n]`（T 为 class）分配 24B 头 `{count, elem_size, rc, type_id=MYP_ARR_TYPE_ID}`（rc/type_id 与对象头同偏移），`myp_release` 见 magic 即逐元素释放；动态类数组字段/局部/临时/返回统一 ARC 接管；固定 `[N x T]` 栈数组 kind-3 槽按 count 释放元素。`slice<class>` backing 复用计数数组布局，由 runtime 唯一登记并在 region/线程退出逐元素释放。**异常/throw-catch 展开释放** + **协程帧引用释放**（帧 ARC 登记表：store 时镜像对象指针、release 时清除、destroy/未捕获异常时释放帧表）。`@region` 已加入函数级保守逃逸保护，引用经 return/property/global/call 逃逸时禁用该函数 region，避免悬垂。诊断：`Memory.liveObjectCount()`。测试 `arc`/`arc_m2`/`arc_fn`/`coro_frame_arc`/`region_escape`/`region_slice_class_arc`。**可选性能精修**：从函数级保守禁用升级为逐分配提升。设计见 `docs/arc.md` | **P0 已完成** |
 | 2 | ~~**同步原语 stdlib**~~ | ✅ **已实施（additive）**：`sync.myp`——`Mutex`（普通+可重入，tryLock）、`RWLock`（读写，try rd/wr）、`CondVar`（wait 关联 Mutex handle + signal/broadcast）、`Semaphore`（POSIX sem，tryWait）、`Once`（enter/done call-once 惯用法）。全部 handle 模式（同 `Barrier`，每类 64 槽）。跨线程共享状态用 `@static class` 属性。`tests/sync`（4 worker Mutex 临界区确定性 400 + CondVar 生产者/消费者 + API 检查） | 已就绪 | P1 |
 | 3 | ~~**错误类型分层 / `Result<T,E>`**~~ | ✅ **已实施（additive）**：`stdlib/result.myp`——`Result<T,E>` 二态容器（`Result()`=err、`Result(T v)`=ok + `isOk/isErr/get/getErr/getOr/setOk/setErr`）；顶层泛型工厂 `resultOk<T,E>(v)`/`resultErr<T,E>(e)`（实参推断部分类型实参）；组合子 `resultMap`/`resultAndThen`/`resultMapErr`（无异常错误传播，泛型体内直接构造避免占位符单态化限制）；异常桥 `resultTry<T>((() -> T) f) -> Result<T,string>`（`catch (string s)` 优先拿原始消息 + `catch (Error e)` 用 `e.message()`——错误类型分层：精确捕获用具体异常类、统一处理用 `Error` 接口）。`error.myp` 补 `StringError.setMsg`。`tests/result`。**附带修复 5 个既有 bug**：①lambda 捕获分析误捕全局函数/类名（`collectExprCaptures` 加 `isGlobalName` 过滤）；②`string + bool` 拼接调 `myp_to_string_i32` 传 i1（改 `myp_to_string_bool` + sext）；③泛型函数内 `new GenericClass<T>(args)` 带参构造不调用构造器（codegen 按具体实例类名 + 实参个数重建 ctor）；④接口值来自函数返回值赋给接口变量时把胖指针当实例指针（interface passthrough）；⑤`catch (string)` 绑定共享 `myp_error_msg` 缓冲指针、后续 throw 覆写导致存下的错误消息漂移（绑定前 `myp_strdup` 拷贝） | 错误处理 | P1 |
 | 4 | ~~**反射 / RTTI**~~ | ✅ **已实施（additive，无新语法）**：class 对象头 `{rc, type_id}` 本就带运行时类型 id——新增 `stdlib/rtti.myp` 静态类 `Rtti`：`typeOf<T>(obj)`（运行时类名）、`typeId<T>(obj)`（运行时类型 id）、`sameType<T,U>(a,b)`（同类型判定；null → id 0 / 空名）。实现：codegen 在 ARC 支持里并列生成 `__myp_type_name_table`（type_id→类名，ExternalLinkage 常量表；无类 TU 退化为 `[null]` 保证链接）；新内建 `__myp_type_id`/`__myp_type_name`（sema 注册 + `intrinsic_map_` 解析）→ runtime `myp_obj_type_id`（读对象头 type_id）/`myp_obj_type_name`（查表）。`tests/rtti`。泛型 T 应为直接 class 引用（接口引用先 `isa` 向下转型） | 运行时身份查询 | P2 |
 | 5 | ~~**异步 IO 统一抽象**~~ | ✅ **已实施（additive）**：单线程 reactor + 广义等待表 `kind` 区分 **EVENT/TIMER/FD/EXEC**。**P1 定时器**：`kind=TIMER` + `__myp_coro_sleep` + 调度器 deadline 过期；`Async.sleep` + `await Async.sleep(ms)`。**P2 socket 就绪**：`kind=FD` + `__myp_coro_wait_fd` + 调度器批量 `poll`（POLLIN/POLLOUT/ERR/HUP）+ fd 置 O_NONBLOCK；`TcpClient.recvAsync/sendAsync/recvLineAsync`（超时）。**P3 文件执行器**：`kind=EXEC` + 有界 worker 线程池（4 线程 + 256 槽环形队列）执行阻塞 fgets/read-all + 跨线程结果投递（worker malloc → 归属线程调度器 `myp_exec_pump_results` myp_strdup 到 EXEC 等待记录并 re-ready）；`File.readLineAsync/readAllAsync`。**P4 统一 waitAny**：新 API `Coro.waitAnyOf(spec,count,timeoutMs,val)`——扁平 long[] 每 3 元素一个等待项（EVENT/TIMER/FD），等待表记录加 `wait_index` 字段（>=0=spec 下标，-2=总体超时标记），调度器三路 re-ready（事件/定时器/poll）记录触发下标，返回触发的 spec 下标/超时 -1/非协程 -2。`@async` 注解（类 action/static/顶层函数）+ await 形态 3（直接调用，非 yield 握手）；sema 限制非 `@coro` 上下文调用 `@async`。测试 `tests/async_sleep`/`async_socket`/`async_file`/`async_waitany`。设计见 `docs/async_io.md`（P1-P4 全部完成） | P2（远期） |
+
+### 五-A、内存管理尚未完成项（2026-08-11）
+
+> 已完成基线：class ARC、异常/协程帧释放、`@region` 引用逃逸保护及
+> `slice<class>` backing 级联释放已通过 O0/O2/ASan/UBSan 208/208。下表只记录尚未
+> 实施的工作；“设计扩展”不是当前回归，不应阻塞现有 P0 收口。
+
+| # | 未完成项 | 当前风险 / 边界 | 实施方向 | 验收标准 | 优先级 |
+|---|----------|-----------------|----------|----------|--------|
+| M1 | **协程句柄代际化与槽位复用** | 当前为避免旧句柄错误别名到新协程，完成后的 handle 槽不复用；协程栈可回收，但 `myp_coros` 指针数组和每槽元数据会随历史创建总数增长，长跑服务存在无界元数据增长 | 将 64 位 handle 编码为 `{generation, slot}`；完成/销毁后回收槽并递增 generation。所有 resume/await/destroy/wait 表入口校验两部分，旧句柄必须稳定返回无效，不能操作新协程 | 循环创建并完成至少 100 万个短协程，活跃数固定时槽容量与 RSS 达到平台后保持稳定；旧 handle、双 destroy、wait 表残留均有回归；O0/O2/ASan/TSan 全绿 | **P1** |
+| M2 | **协程栈峰值与缓存上界** | 默认每协程栈 128 KiB；每线程栈池最多缓存 128 个不同大小的栈，理论缓存约 16 MiB/线程（自定义大栈更高）。retired 栈还要等安全点回收，多线程或突发协程会抬高 RSS 峰值 | 用“总字节数 + 个数”双上限替代仅按个数限制；大栈直接归还系统；调度安全点及时 drain retired；评估 `mmap`/guard page 或按需提交，保留 `@coro(stack=N)` ABI | 1/10/100 个线程分别执行突发创建-回落压测，完成后 RSS 回落到明确预算；默认栈、超大栈、深递归、栈池命中和线程退出均覆盖，ASan fiber 切换不回归 | **P1** |
+| M3 | **分配大小溢出与 OOM 一致性** | 数组/slice 的 `count * elem_size`、arena chunk 扩容、协程槽/等待表 `capacity * sizeof(T)` 等若溢出，可能小分配后越界；各 allocator 的 NULL 处理还没有统一语言级行为 | 引入 checked add/mul/grow helper，所有 `malloc/calloc/realloc` 前统一检查 `SIZE_MAX`；保留原指针直到 realloc 成功；定义 OOM 为可诊断终止或可捕获错误，禁止 NULL 继续进入 GEP/memset | 0、边界值、负长度、乘法/加法溢出、realloc 失败注入均确定性失败且无越界/双 free；ASan/UBSan 和独立 runtime 单测通过 | **P1** |
+| M4 | **逐分配逃逸提升** | 目前 `@region` 只要函数体存在任一数组/slice 逃逸，就保守禁用整个函数的 region；正确但会让同函数内大量不逃逸临时值也活到线程退出，损失 region 的峰值内存收益 | 为每个分配点做 use/escape 分类：仅逃逸 backing 提升到外层 arena/进程 arena，其余仍在当前 region；无法证明时继续保守提升。需覆盖 return、property/global store、调用参数、分支 PHI 和别名传播 | “一个逃逸结果 + 大量不逃逸临时值”压测中临时内存随 region 结束回落；逃逸值跨多轮 churn 后仍有效；生成 IR 只对必要分配改 allocator | **P2（性能）** |
+| M5 | **struct 内 class 引用所有权** | v1 明确把 struct 内引用视为借用，浅拷贝时不 retain/release；避免悬垂优先，但长期保存此类 struct 可能泄漏，且语义依赖文档纪律 | 先统计真实用例，再选择“复制时 retain + 销毁时 release”的值语义、move-only struct，或显式 owning 字段；不能仅在销毁桩补 release，否则浅拷贝会双释 | struct 的复制、赋值、返回、数组元素、嵌套 struct 和异常展开都有 live-count 测试；别名不 UAF、不双释、最终回零 | **P2（设计）** |
+| M6 | **跨线程 class 所有权** | ARC 计数当前非原子，语言约定对象线程本地；若 class 经事件、静态槽或 FFI 跨线程共享，retain/release 存在数据竞争 | 明确实现原子 ARC，或提供冻结后一次性 move 的线程转移语义；在方案落定前增加 sema 诊断，阻止可识别的 class 跨线程捕获/存储 | TSan 下多线程传递、并发 retain/release、最后持有者释放和线程提前退出无竞态；性能基准量化原子模式成本 | **P2（设计）** |
+| M7 | **循环引用与 weak** | 纯 ARC 无法回收强环；当前仅文档约定组件图为 DAG，双向 parent/child、回调捕获 self 等模式仍可形成永久泄漏 | 设计 additive `weak` 引用：对象销毁时置空观察者，不增加强计数；先覆盖 class 字段和闭包捕获，再评估数组/接口 weak 槽。静态可疑环只做警告，不代替运行时语义 | 双节点环、self 环、闭包环在断开强引用后 live count 回零；weak 读取在对象释放后得到 null；并发语义与 M6 一并定义 | **P2（能力）** |
+| M8 | **string/原始数组的中寿命回收** | primitive `T[]`、string 和非 class slice 仍属于 arena；未放进有效 `@region` 的重复分配只在线程退出释放。它们不是悬垂缺陷，但会使缓存更新、服务器请求等长跑场景 RSS 单调增长 | 先用真实 workload 测量占比；优先依靠 M4 提高 region 覆盖。若仍是主因，再为拥有 backing 引入计数头/owned buffer，保持 FFI 裸指针和 slice 16 字节 ABI 兼容 | 长跑 benchmark 分类型报告 live/allocated bytes；固定工作集运行达到平台后 RSS 稳定；string 拼接、动态数组返回、slice/FFI/GPU 互操作无回归 | **P2（能力）** |
+| M9 | **内存诊断与故障注入** | 现有 `Memory.liveObjectCount()` 只能观察 class 总数，无法区分类型、arena bytes、class-slice backing、协程栈和 runtime 表；泄漏或峰值回归定位成本高 | debug runtime 增加按类型 live count、arena reserved/used、栈池/retired bytes、协程槽容量；提供确定性的第 N 次分配失败注入；release 下溢和非法 type id 在 debug 构建立即失败 | 测试可断言各类计数回到基线；CI 至少运行一次 OOM sweep；release underflow、重复释放和损坏 header 给出稳定诊断 | **P2（工具）** |
+
+**实施顺序**：先完成 M1 → M2 → M3，形成长跑资源上界和分配安全基线；再以诊断数据决定
+M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写设计决议和负面用例，不能
+直接以局部 codegen 插桩替代语言规则。
+
+**统一验证矩阵**：每项至少运行普通 O0、O2、ASan/UBSan；涉及共享状态的 M1/M2/M6
+还必须运行 TSan 与长时间 stress。性能/峰值项目记录 `max RSS`、arena reserved bytes、
+协程栈池 bytes 和 live object count，不能只以“进程未崩溃”作为通过标准。
 
 ## 六、平台 / 生态（远期）
 
