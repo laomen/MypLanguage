@@ -689,6 +689,16 @@ bool CodeGen::callReturnsArcStruct(const CallExpr& e) {
     return sd && isArcFieldType(*rt);
 }
 
+// M8: a slice or dynamic-array-returning call. `return <call>` skips the
+// retain-at-return so the fresh rc=1 backing transfers to the caller instead of
+// being +1'd and then dropped to 1 by the caller's release (a leak per call).
+bool CodeGen::callReturnsArcSliceOrArray(const CallExpr& e) {
+    const TypeNode* rt = callReturnTypeNode(e);
+    if (!rt) return false;
+    if (rt->class_name == "slice") return true;
+    return isCountedArrayType(*rt);   // dynamic T[]
+}
+
 // M8: does this expression yield a string value? Used to detect string
 // concatenation (a fresh counted string) in isFreshArcExpr.
 bool CodeGen::exprIsString(const Expr& e) {

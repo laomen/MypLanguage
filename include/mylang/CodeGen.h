@@ -653,6 +653,11 @@ private:
     // Used ONLY for `return call()` skip-retain (NOT generateCall temp-push —
     // structs aren't released as single refs).
     bool callReturnsArcStruct(const CallExpr& e);
+    // M8: does this call return a slice or dynamic T[] (counted backing)?
+    // Used ONLY for `return call()` skip-retain — a `return sliceCall()`/array
+    // otherwise retain-at-return (+1) the backing the caller then drops to 1,
+    // leaking one reference per call. Not used by generateCall temp-push.
+    bool callReturnsArcSliceOrArray(const CallExpr& e);
     // M8: resolve the return TypeNode of a call (class method / free fn / FFI),
     // or nullptr if unresolvable. Used to detect string-producing exprs.
     const TypeNode* callReturnTypeNode(const CallExpr& e);

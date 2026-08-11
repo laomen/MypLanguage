@@ -301,17 +301,30 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         return;
     }
 
-    TypeInfo vt = builtinTypeToInfo(d.type.basic_type);
+    // Resolve a generic type-param placeholder (e.g. `V x` in a generic class
+    // body) to the concrete type arg for the current instantiation. Without
+    // this, a `V` bound to a non-i32 type (string / class / slice / ...) is
+    // typed as the placeholder's default Int: wrong size (a 4-byte stack alloca
+    // that an 8-byte pointer store overflows — latent corruption in e.g.
+    // HashMap<int,string>.remove rehash) and wrong ARC classification.
+    const TypeNode* resolved_tp = nullptr;
+    if (!d.type.class_name.empty() && !d.type.isArray() && !d.type.isTuple()) {
+        for (auto& tp : current_type_params_)
+            if (d.type.class_name == tp.first) { resolved_tp = &tp.second; break; }
+    }
+    const TypeNode& dt = resolved_tp ? *resolved_tp : d.type;
+
+    TypeInfo vt = builtinTypeToInfo(dt.basic_type);
     // Detect class type from parser's type node
-    if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
-        vt = TypeInfo(TypeKind::Class); vt.class_name = d.type.class_name;
+    if (!dt.class_name.empty() && getClassStruct(dt.class_name)) {
+        vt = TypeInfo(TypeKind::Class); vt.class_name = dt.class_name;
     }
     // Detect interface type
     bool is_interface = false;
-    if (!d.type.class_name.empty() && current_tu_) {
+    if (!dt.class_name.empty() && current_tu_) {
         for (auto& ifd : current_tu_->interfaces) {
-            if (ifd.name == d.type.class_name) {
-                vt = TypeInfo(TypeKind::Interface); vt.class_name = d.type.class_name;
+            if (ifd.name == dt.class_name) {
+                vt = TypeInfo(TypeKind::Interface); vt.class_name = dt.class_name;
                 is_interface = true;
                 break;
             }
@@ -319,7 +332,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     }
 
     // Detect struct type — allocate inline on stack
-    bool is_struct = !d.type.class_name.empty() && getStructType(d.type.class_name) != nullptr;
+    bool is_struct = !dt.class_name.empty() && getStructType(dt.class_name) != nullptr;
 
     // --- Interface variable: fat pointer {ptr data, ptr vtable} ---
     if (is_interface) {
@@ -514,10 +527,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     }
 
     // slice<T> — value type { T* data; int64 len }, allocated on stack
-    if (d.type.class_name == "slice" && d.type.type_args.size() == 1) {
+    if (dt.class_name == "slice" && dt.type_args.size() == 1) {
         TypeInfo st(TypeKind::Slice);
         st.element_type = std::make_shared<TypeInfo>(
-            typeNodeToCodegenType(d.type.type_args[0]));
+            typeNodeToCodegenType(dt.type_args[0]));
         auto* slt = getLLVMType(st);
         auto* a = createEntryBlockAlloca(current_function_, slt, d.name);
         setNamedValue(d.name, a);
@@ -541,11 +554,11 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
     llvm::Type* lt;
     if (is_struct) {
-        lt = getStructType(d.type.class_name);
-    } else if (d.type.isArray() && d.type.element_type) {
+        lt = getStructType(dt.class_name);
+    } else if (dt.isArray() && dt.element_type) {
         // Array type
-        if (d.type.array_size > 0) {
-            TypeInfo arr_ti = typeNodeToCodegenType(d.type);
+        if (dt.array_size > 0) {
+            TypeInfo arr_ti = typeNodeToCodegenType(dt);
             lt = getLLVMType(arr_ti);
             auto* arr_a = createEntryBlockAlloca(current_function_, lt, d.name + "_arr");
             auto arr_sz = module_->getDataLayout().getTypeAllocSize(lt);
@@ -574,9 +587,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             // ARC: fixed class/string-array — elements are strong slots;
             // release them at scope exit (the backing stack buffer is not
             // freed). Counted strings share the class release machinery.
-            if (isArcClassType(*d.type.element_type) || isStringType(*d.type.element_type)) {
+            if (isArcClassType(*dt.element_type) || isStringType(*dt.element_type)) {
                 registerArcSlot(ptr_a, 3);
-                arc_fixed_array_counts_[ptr_a] = (uint64_t)d.type.array_size;
+                arc_fixed_array_counts_[ptr_a] = (uint64_t)dt.array_size;
             }
         } else {
             auto* ptr_a = createEntryBlockAlloca(current_function_, llvm::PointerType::get(ctx_, 0), d.name);
@@ -618,48 +631,48 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             }
         }
         // Record element type for subscript access
-        array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
+        array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*dt.element_type));
         // ARC: record whether elements are class/string references
         // (retain/release on store, release on array free).
-        array_elem_is_class_[d.name] = isArcClassType(*d.type.element_type) ||
-                                       isStringType(*d.type.element_type);
+        array_elem_is_class_[d.name] = isArcClassType(*dt.element_type) ||
+                                       isStringType(*dt.element_type);
         // Record the element class name (mangled for generics) so `arr[i].method()`
         // dispatch resolves to the concrete instance's method.
         if (array_elem_is_class_[d.name]) {
-            const TypeNode* et = d.type.element_type.get();
+            const TypeNode* et = dt.element_type.get();
             if (!et->type_args.empty())
                 array_elem_class_map_[d.name] = mangleConcreteTypeNode(*et);
             else
                 array_elem_class_map_[d.name] = et->class_name;
         }
         return;
-    } else if (d.type.isFunction()) {
+    } else if (dt.isFunction()) {
         // First-class function value: fat pointer {closure, call_fn}
-        TypeInfo ft = typeNodeToCodegenType(d.type);
+        TypeInfo ft = typeNodeToCodegenType(dt);
         lt = getLLVMType(ft);
         func_val_types_[d.name] = ft;
         arc_decl_function = true;   // ARC: closure released at scope exit
-    } else if (d.type.isTuple()) {
+    } else if (dt.isTuple()) {
         // Tuple value type: anonymous struct { T0, T1, ... }
-        TypeInfo tt = typeNodeToCodegenType(d.type);
+        TypeInfo tt = typeNodeToCodegenType(dt);
         lt = getLLVMType(tt);
     } else {
-        vt = builtinTypeToInfo(d.type.basic_type);
+        vt = builtinTypeToInfo(dt.basic_type);
         bool arc_class = false;
-        if (isStringType(d.type)) {
+        if (isStringType(dt)) {
             // M8: strings are counted — the local owns a strong string ref.
             arc_decl_string = true;
-        } else if (!d.type.class_name.empty() && findEnum(d.type.class_name)) {
+        } else if (!dt.class_name.empty() && findEnum(dt.class_name)) {
             // Enum value type: { i32 disc, [N x i8] payload }
             vt = TypeInfo(TypeKind::Enum);
-            vt.class_name = d.type.class_name;
-        } else if (!d.type.class_name.empty() && getClassStruct(d.type.class_name)) {
-            std::string cls_name = d.type.class_name;
+            vt.class_name = dt.class_name;
+        } else if (!dt.class_name.empty() && getClassStruct(dt.class_name)) {
+            std::string cls_name = dt.class_name;
             // Mangle name for generic classes: Box<int> → Box_int_inst
             // (type-param placeholders like R are resolved via current_type_params_)
-            if (!d.type.type_args.empty()) {
-                cls_name = d.type.class_name;
-                for (auto& ta : d.type.type_args)
+            if (!dt.type_args.empty()) {
+                cls_name = dt.class_name;
+                for (auto& ta : dt.type_args)
                     cls_name += "_" + mangleConcreteTypeNode(ta);
                 cls_name += "_inst";
             }
@@ -691,10 +704,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // M8 structs: an OWNED struct local whose fields hold ARC references is
         // registered as a kind-5 slot — its fields are released at scope exit.
         // (A struct PARAM is borrowed: not registered, field stores stay plain.)
-        const StructDecl* sd = findStruct(d.type.class_name);
-        if (sd && isArcFieldType(d.type)) {
+        const StructDecl* sd = findStruct(dt.class_name);
+        if (sd && isArcFieldType(dt)) {
             registerArcSlot(a, 5);
-            arc_struct_slot_types_[a] = d.type.class_name;
+            arc_struct_slot_types_[a] = dt.class_name;
         }
     } else if (lt->isPointerTy()) {
         builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(lt)), a);
@@ -730,8 +743,8 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // FRESH init (`var s = makeStruct();`) already has +1 fields from the
         // return retain — no extra retain, ownership transfers to this local.
         if (is_struct && !isFreshArcExpr(*d.init_expr)) {
-            const StructDecl* sd = findStruct(d.type.class_name);
-            if (sd && isArcFieldType(d.type))
+            const StructDecl* sd = findStruct(dt.class_name);
+            if (sd && isArcFieldType(dt))
                 emitStructFieldsValue(builder_, v, *sd, true);
         }
         builder_.CreateStore(v, a);
@@ -1159,7 +1172,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                 s.value->kind == ExprKind::NewArrayExpr ||
                 (s.value->kind == ExprKind::Call &&
                  (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
-                  callReturnsArcStruct(static_cast<const CallExpr&>(*s.value))))) {
+                  callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
+                  callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value))))) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -1179,7 +1193,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                     s.value->kind == ExprKind::NewArrayExpr ||
                     (s.value->kind == ExprKind::Call &&
                      (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
-                      callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)))))) {
+                      callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
+                      callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))))) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }

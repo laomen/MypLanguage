@@ -1,0 +1,46 @@
+import env;
+import text;
+
+// M8: `return sliceCall()` / `return arrayCall()` must skip retain-at-return —
+// otherwise each call leaks one backing reference (rc never reaches 0).
+// Live count stays flat across rounds when the leak is fixed.
+
+slice<int> makeSlice(int n) {
+    slice<int> s = new slice<int>(n);
+    for (int i = 0; i < n; i = i + 1) s[i] = i;
+    return s;
+}
+
+int[] makeArray(int n) {
+    int[] a = new int[n];
+    for (int i = 0; i < n; i = i + 1) a[i] = i;
+    return a;
+}
+
+slice<int> passThroughSlice(slice<int> s) { return s; }
+int[] passThroughArray(int[] a) { return a; }
+
+int passSlice(slice<int> s) { return s[0]; }
+int passArray(int[] a) { return a[0]; }
+
+int runTest() {
+    for (int round = 0; round < 200; round = round + 1) {
+        // direct `return <call>()` — the leak being fixed
+        slice<int> s1 = makeSlice(100);
+        int[] a1 = makeArray(100);
+        if (s1[0] != 0) return 1;
+        if (a1[0] != 0) return 2;
+        // pass-through return (borrowed param -> return) — also skips retain
+        slice<int> s2 = passThroughSlice(s1);
+        int[] a2 = passThroughArray(a1);
+        if (s2[5] != 5) return 3;
+        if (a2[7] != 7) return 4;
+        // pass by value (borrowed)
+        if (passSlice(s1) != 0) return 5;
+        if (passArray(a1) != 0) return 6;
+    }
+    Console.writeString("slice array churn done\n");
+    return 0;
+}
+
+int main() { int c = runTest(); return c; }
