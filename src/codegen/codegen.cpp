@@ -558,6 +558,16 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
         }
         if (getClassStruct(tn.class_name))
             return llvm::PointerType::get(ctx_, 0);
+        // Class reference is always a pointer. Fall back to a TU class-name
+        // lookup so struct bodies still map class fields to ptr when
+        // buildStructTypes runs BEFORE buildClassStructTypes has filled
+        // class_structs_ — otherwise `struct Holder { Payload p; }` laid the
+        // field out as i32 → `h.p.get()` compiled as Payload_get(i32).
+        if (current_tu_) {
+            for (auto& c : current_tu_->classes)
+                if (c.name == tn.class_name)
+                    return llvm::PointerType::get(ctx_, 0);
+        }
         if (auto* st = getStructType(tn.class_name))
             return st;
         if (findEnum(tn.class_name))
@@ -578,6 +588,10 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
             std::string m = mangleConcreteTypeNode(tn);
             if (getClassStruct(m))
                 return llvm::PointerType::get(ctx_, 0);
+            if (current_tu_)
+                for (auto& c : current_tu_->classes)
+                    if (c.name == m)
+                        return llvm::PointerType::get(ctx_, 0);
         }
     }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));

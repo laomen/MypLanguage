@@ -1,0 +1,76 @@
+// mapping 数据传递：struct 复合 —— class 引用字段(M5 值语义 ARC) / string /
+// 嵌套 struct / 事件参数 / class action 返回 struct 链节点
+import env;
+
+class Payload {
+    action:
+        @constructor Payload(int x) { v = x; }
+        int get() { return v; }
+    property: int v;
+}
+
+struct Holder {
+    Payload p;          // struct 含 class 引用字段（值拷贝逐字段 retain）
+    string name;        // struct 含 string 字段
+    int tag;
+}
+
+struct Inner { int a; int b; }
+struct Outer { Inner inner; string label; }
+
+class Sink {
+    action:
+        void hold(Holder h) {
+            Console.writeString("hold="); Console.write(h.p.get());
+            Console.writeString(","); Console.writeString(h.name);
+            Console.writeString(","); Console.write(h.tag);
+            Console.writeString("\n");
+        }
+        void out(Outer o) {
+            Console.writeString("out="); Console.write(o.inner.a);
+            Console.writeString(","); Console.write(o.inner.b);
+            Console.writeString(","); Console.writeString(o.label);
+            Console.writeString("\n");
+        }
+        void shown(Outer o) {   // 链返回值：class action 返回 struct
+            Console.writeString("chain="); Console.write(o.inner.a);
+            Console.writeString("+"); Console.write(o.inner.b);
+            Console.writeString("\n");
+        }
+}
+
+class Proc {
+    action:
+        Outer make(Outer o) {   // struct 链节点：入参 + 返回 struct
+            Outer r;
+            r.inner.a = o.inner.a + o.inner.b;
+            r.inner.b = 0;
+            r.label = o.label;
+            return r;
+        }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            Payload pl = new Payload(42);
+            Holder h; h.p = pl; h.name = "abc"; h.tag = 7;
+            evHold(h);
+
+            Outer o; o.inner.a = 3; o.inner.b = 4; o.label = "L";
+            evOut(o);
+            evChain(o);
+        }
+    event:
+        evHold(Holder h);
+        evOut(Outer o);
+        evChain(Outer o);
+}
+
+mapping() {
+    Src.evHold -> Sink.hold;
+    Src.evOut -> Sink.out;
+    Src.evChain -> Proc.make -> Sink.shown;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); Proc p = new Proc(); return 0; }
