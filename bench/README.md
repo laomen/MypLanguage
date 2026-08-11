@@ -293,3 +293,14 @@ verify 一致（浮点容差 1e-3）、输出比值表。
   alphabeta 是 gcc 独有的**按深度特化递归展开**（LLVM -O2 无递归内联）；nqueens 是
   递归回溯。三者非 MYP codegen 缺陷，属优化器深度差异。
 
+
+## 编译器自身性能基准
+
+`bench/compiler/` 是**编译器自身**（`mypc` 前端/语义/CodeGen）的规模性能基准，与
+本目录的运行时语言对比分离。测量完整编译时间 + 分阶段耗时（`MYP_TIMING=1`）+ 峰值
+RSS，覆盖类/接口/struct/enum/方法解析/泛型的 N/2N/4N 复杂度曲线。详见
+[bench/compiler/README.md](compiler/README.md)。
+
+```bash
+bash bench/compiler/run.sh            # P1..P7 全量基线
+```

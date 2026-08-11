@@ -1,0 +1,99 @@
+# bench/compiler — 编译器自身性能基准
+
+测量 MYP 编译器 `mypc` 对规模源码的**完整编译时间**（外部高精度时钟）、**分阶段耗时**
+（`MYP_TIMING=1`：load / lexer / parser / imports / sema / eval / codegen）与**峰值 RSS**
+（GNU time），并按 N / 2N / 4N（P1 含 8N）规模检查复杂度斜率，用于防止编译器性能回退。
+
+设计对应 `docs/testing_benchmark_roadmap.md` 第五节《需要新增的编译器性能基准》。
+
+## 文件
+
+- `gen.py` — 生成 P1..P7 规模 MYP 源码（输出到 stdout）
+- `run.sh` — 基准运行器
+- `README.md` — 本文档
+
+## 用法
+
+```bash
+bash bench/compiler/run.sh              # 默认 P1..P7，每规模 3 轮取中位数
+bash bench/compiler/run.sh P1 P4        # 只跑指定项
+MYPCC=./build/mypc ITERS=5 bash bench/compiler/run.sh P2
+SCALES="500 1000 2000" bash bench/compiler/run.sh P3   # 自定义规模档
+JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
+```
+
+- 默认规模档：`1000 2000 4000`；P1 额外含 `8000`。
+- 每规模先 warmup 编译一次，再测 `ITERS`（默认 3）次取中位数（ms），front(ms) 为
+  parser+sema+eval+codegen 合计，RSS(KB) 为峰值常驻集中位数。
+- 斜率列 `2N/N`：耗时比。> `SLOPE_TOL`（默认 3.0）判定为疑似超线性并打印警告（退出
+  码仍为 0；可用 `SLOPE_TOL=…` 覆盖阈值）。
+- 任一基准任一规模编译失败 → 退出码 1。
+- 源码与编译产物均在临时目录，运行结束自动清理。
+
+## 基准项（对应 roadmap 5.2）
+
+| 项 | 度量 | 说明 |
+|----|------|------|
+| P1 | 类数量 × 裸属性读取 | N-1 无关类 + 目标类方法内读裸属性 N 次 |
+| P2 | 接口数量 × 接口方法调用 | N-1 无关接口 + 目标接口 + N 次接口方法调用 |
+| P3 | 接口数量 × 接口变量声明 | N-1 无关接口 + main 内声明 N 个目标接口变量 |
+| P4 | struct 数量 × 字段读取 | N-1 无关 struct + N 次目标 struct 字段读取 |
+| P5 | enum 数量 × variant 构造 | N-1 无关 enum + N 次目标 enum variant 构造 |
+| P6 | 类数量 × 方法调用 fallback | N-1 冲突类 + 已知 action/static/function:/new 链式调用 |
+| P7 | 泛型实例数量 | N 个独立泛型类模板 + N 个泛型函数各实例化一次 |
+
+## 当前基线（release `build/mypc`，commit `be087cd`，ITERS=3，2026-08-11）
+
+| Bench | N | total(ms) | front(ms) | RSS(KB) | 2N/N 斜率 |
+|------:|---:|---:|---:|---:|---:|
+| P1 | 1000 | 92 | 53 | 43 074 | — |
+| P1 | 2000 | 187 | 139 | 51 896 | 2.03 |
+| P1 | 4000 | 484 | 413 | 70 702 | 2.59 |
+| P1 | 8000 | 1 486 | 1 385 | 107 172 | **3.07 超线性** |
+| P2 | 1000 | 82 | 45 | 53 862 | — |
+| P2 | 2000 | 136 | 89 | 71 144 | 1.66 |
+| P2 | 4000 | 257 | 187 | 107 514 | 1.89 |
+| P3 | 1000 | 163 | 118 | 76 400 | — |
+| P3 | 2000 | 375 | 316 | 116 112 | 2.30 |
+| P3 | 4000 | 1 014 | 969 | 196 542 | 2.70 |
+| P4 | 1000 | 59 | 22 | 39 880 | — |
+| P4 | 2000 | 86 | 42 | 45 916 | 1.46 |
+| P4 | 4000 | 142 | 83 | 57 882 | 1.65 |
+| P5 | 1000 | 98 | 58 | 45 260 | — |
+| P5 | 2000 | 211 | 160 | 56 306 | 2.15 |
+| P5 | 4000 | 569 | 496 | 76 354 | 2.70 |
+| P6 | 1000 | 329 | 273 | 72 362 | — |
+| P6 | 2000 | 925 | 842 | 111 620 | 2.81 |
+| P6 | 4000 | 2 967 | 2 833 | 189 626 | **3.21 超线性** |
+| P7 | 1000 | 486 | 413 | 78 728 | — |
+| P7 | 2000 | 1 373 | 1 261 | 124 176 | 2.83 |
+| P7 | 4000 | 4 739 | 4 555 | 214 808 | **3.45 超线性** |
+
+### 基线解读
+
+- **P1** 与 roadmap 历史基线一致（8000 ≈ 1 486 ms vs 历史 1 430.6 ms），8000 处超线性，
+  印证 CodeGen 对每次裸属性读取仍扫描全部类——建立 class-name 索引后应回落。
+- **P2** 近线性（≤1.89），接口方法调用已受益于 Sema+CodeGen 精确方法索引优化。
+- **P3** 仍偏超线性（2.70），热点为 CodeGen 接口类型判定逐变量扫全部接口。
+- **P4** 线性（1.65），struct 字段读取缓存优化已生效（历史 5.4 倍提升已固化）。
+- **P5** 趋势超线性（2.70），对应计划中的 enum-name/variant-name 缓存。
+- **P6 / P7** 明显超线性（3.21 / 3.45），对应方法解析 fallback 全类扫描与泛型实例线性
+  查找（O(N²)）——roadmap 预测的两处优化点。
+
+## 已知发现（bench 触发）
+
+**泛型类/泛型函数以 struct 类型做实参时链接失败。** 复现：
+
+```myp
+struct T0 { int x; }
+class Box<T> { action: T get() { return v; } property: T v; }
+int main() { Box<T0> b = new Box<T0>(); T0 v = b.get(); return 0; }
+```
+
+- 泛型类：`undefined reference to 'Box_get'`（方法符号未按实例 mangling，struct 实参
+  时未发出定义；int/double 等原语实参正常）。
+- 泛型函数：`LLVM verify failed: Call parameter type does not match function signature!`
+
+故 P7 当前用**独立泛型模板 + 原语实参**（N 个 `Box_i<int>` / `id_i<int>`）保持可运行；
+待修复 struct 实参泛型后，P7 应改用 N 个不同 struct 类型实参来测**同一模板多实例查找**
+的真实 O(N²) 路径。
