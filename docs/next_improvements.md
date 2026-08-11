@@ -61,20 +61,21 @@
 
 ### 五-A、内存管理尚未完成项（2026-08-11）
 
-> 已完成基线：class ARC、异常/协程帧释放、`@region` 引用逃逸保护及
-> `slice<class>` backing 级联释放已通过 O0/O2/ASan/UBSan 208/208。下表只记录尚未
-> 实施的工作；“设计扩展”不是当前回归，不应阻塞现有 P0 收口。
+> 已完成基线：class ARC、异常/协程帧释放、`@region` 引用逃逸保护、`slice<class>`
+> backing 级联释放，以及 **M3（溢出安全）/ M5（struct ARC）/ M8（string·原始数组计数）**
+> 均已实施（见下表 ✅），通过 O0/O2/ASan/UBSan 213/213。下表其余项仍未实施；
+> “设计扩展”不是当前回归，不应阻塞现有 P0 收口。
 
 | # | 未完成项 | 当前风险 / 边界 | 实施方向 | 验收标准 | 优先级 |
 |---|----------|-----------------|----------|----------|--------|
 | M1 | **协程句柄代际化与槽位复用** | 当前为避免旧句柄错误别名到新协程，完成后的 handle 槽不复用；协程栈可回收，但 `myp_coros` 指针数组和每槽元数据会随历史创建总数增长，长跑服务存在无界元数据增长 | 将 64 位 handle 编码为 `{generation, slot}`；完成/销毁后回收槽并递增 generation。所有 resume/await/destroy/wait 表入口校验两部分，旧句柄必须稳定返回无效，不能操作新协程 | 循环创建并完成至少 100 万个短协程，活跃数固定时槽容量与 RSS 达到平台后保持稳定；旧 handle、双 destroy、wait 表残留均有回归；O0/O2/ASan/TSan 全绿 | **P1** |
 | M2 | **协程栈峰值与缓存上界** | 默认每协程栈 128 KiB；每线程栈池最多缓存 128 个不同大小的栈，理论缓存约 16 MiB/线程（自定义大栈更高）。retired 栈还要等安全点回收，多线程或突发协程会抬高 RSS 峰值 | 用“总字节数 + 个数”双上限替代仅按个数限制；大栈直接归还系统；调度安全点及时 drain retired；评估 `mmap`/guard page 或按需提交，保留 `@coro(stack=N)` ABI | 1/10/100 个线程分别执行突发创建-回落压测，完成后 RSS 回落到明确预算；默认栈、超大栈、深递归、栈池命中和线程退出均覆盖，ASan fiber 切换不回归 | **P1** |
-| M3 | **分配大小溢出与 OOM 一致性** | 数组/slice 的 `count * elem_size`、arena chunk 扩容、协程槽/等待表 `capacity * sizeof(T)` 等若溢出，可能小分配后越界；各 allocator 的 NULL 处理还没有统一语言级行为 | 引入 checked add/mul/grow helper，所有 `malloc/calloc/realloc` 前统一检查 `SIZE_MAX`；保留原指针直到 realloc 成功；定义 OOM 为可诊断终止或可捕获错误，禁止 NULL 继续进入 GEP/memset | 0、边界值、负长度、乘法/加法溢出、realloc 失败注入均确定性失败且无越界/双 free；ASan/UBSan 和独立 runtime 单测通过 | **P1** |
+| ~~M3~~ | **~~分配大小溢出与 OOM 一致性~~** | 数组/slice 的 `count * elem_size`、arena chunk 扩容、协程槽/等待表 `capacity * sizeof(T)` 等若溢出，可能小分配后越界；各 allocator 的 NULL 处理还没有统一语言级行为 | 引入 checked add/mul/grow helper，所有 `malloc/calloc/realloc` 前统一检查 `SIZE_MAX`；保留原指针直到 realloc 成功；定义 OOM 为可诊断终止或可捕获错误，禁止 NULL 继续进入 GEP/memset | 0、边界值、负长度、乘法/加法溢出、realloc 失败注入均确定性失败且无越界/双 free；ASan/UBSan 和独立 runtime 单测通过 | ✅ **已完成**（`9ecac7b`） |
 | M4 | **逐分配逃逸提升** | 目前 `@region` 只要函数体存在任一数组/slice 逃逸，就保守禁用整个函数的 region；正确但会让同函数内大量不逃逸临时值也活到线程退出，损失 region 的峰值内存收益 | 为每个分配点做 use/escape 分类：仅逃逸 backing 提升到外层 arena/进程 arena，其余仍在当前 region；无法证明时继续保守提升。需覆盖 return、property/global store、调用参数、分支 PHI 和别名传播 | “一个逃逸结果 + 大量不逃逸临时值”压测中临时内存随 region 结束回落；逃逸值跨多轮 churn 后仍有效；生成 IR 只对必要分配改 allocator | **P2（性能）** |
-| M5 | **struct 内 class 引用所有权** | v1 明确把 struct 内引用视为借用，浅拷贝时不 retain/release；避免悬垂优先，但长期保存此类 struct 可能泄漏，且语义依赖文档纪律 | 先统计真实用例，再选择“复制时 retain + 销毁时 release”的值语义、move-only struct，或显式 owning 字段；不能仅在销毁桩补 release，否则浅拷贝会双释 | struct 的复制、赋值、返回、数组元素、嵌套 struct 和异常展开都有 live-count 测试；别名不 UAF、不双释、最终回零 | **P2（设计）** |
+| ~~M5~~ | **~~struct 内 class 引用所有权~~** | v1 明确把 struct 内引用视为借用，浅拷贝时不 retain/release；避免悬垂优先，但长期保存此类 struct 可能泄漏，且语义依赖文档纪律 | 先统计真实用例，再选择“复制时 retain + 销毁时 release”的值语义、move-only struct，或显式 owning 字段；不能仅在销毁桩补 release，否则浅拷贝会双释 | struct 的复制、赋值、返回、数组元素、嵌套 struct 和异常展开都有 live-count 测试；别名不 UAF、不双释、最终回零 | ✅ **已完成**（`008c43d`：struct 值语义 ARC——拷贝/赋值 retain、覆盖/作用域退出/销毁桩 release，含嵌套 struct 与 class 属性持 struct；`tests/struct_arc` RSS 恒定） |
 | M6 | **跨线程 class 所有权** | ARC 计数当前非原子，语言约定对象线程本地；若 class 经事件、静态槽或 FFI 跨线程共享，retain/release 存在数据竞争 | 明确实现原子 ARC，或提供冻结后一次性 move 的线程转移语义；在方案落定前增加 sema 诊断，阻止可识别的 class 跨线程捕获/存储 | TSan 下多线程传递、并发 retain/release、最后持有者释放和线程提前退出无竞态；性能基准量化原子模式成本 | **P2（设计）** |
 | M7 | **循环引用与 weak** | 纯 ARC 无法回收强环；当前仅文档约定组件图为 DAG，双向 parent/child、回调捕获 self 等模式仍可形成永久泄漏 | 设计 additive `weak` 引用：对象销毁时置空观察者，不增加强计数；先覆盖 class 字段和闭包捕获，再评估数组/接口 weak 槽。静态可疑环只做警告，不代替运行时语义 | 双节点环、self 环、闭包环在断开强引用后 live count 回零；weak 读取在对象释放后得到 null；并发语义与 M6 一并定义 | **P2（能力）** |
-| M8 | **string/原始数组的中寿命回收** | primitive `T[]`、string 和非 class slice 仍属于 arena；未放进有效 `@region` 的重复分配只在线程退出释放。它们不是悬垂缺陷，但会使缓存更新、服务器请求等长跑场景 RSS 单调增长 | 先用真实 workload 测量占比；优先依靠 M4 提高 region 覆盖。若仍是主因，再为拥有 backing 引入计数头/owned buffer，保持 FFI 裸指针和 slice 16 字节 ABI 兼容 | 长跑 benchmark 分类型报告 live/allocated bytes；固定工作集运行达到平台后 RSS 稳定；string 拼接、动态数组返回、slice/FFI/GPU 互操作无回归 | **P2（能力）** |
+| ~~M8~~ | **~~string/原始数组的中寿命回收~~** | primitive `T[]`、string 和非 class slice 仍属于 arena；未放进有效 `@region` 的重复分配只在线程退出释放。它们不是悬垂缺陷，但会使缓存更新、服务器请求等长跑场景 RSS 单调增长 | 先用真实 workload 测量占比；优先依靠 M4 提高 region 覆盖。若仍是主因，再为拥有 backing 引入计数头/owned buffer，保持 FFI 裸指针和 slice 16 字节 ABI 兼容 | 长跑 benchmark 分类型报告 live/allocated bytes；固定工作集运行达到平台后 RSS 稳定；string 拼接、动态数组返回、slice/FFI/GPU 互操作无回归 | ✅ **已完成**（`646d5c0` slice + `b6960b4` 动态数组 + `c6673dd` 字符串 + `008c43d` struct + `17dd80e` return 泄漏/泛型占位符修复：全计数头回收，RSS 稳定；`tests/str_arc` 44MB→7MB、`slice_arr_ret`/`generic_rehash`/`struct_arc`） |
 | M9 | **内存诊断与故障注入** | 现有 `Memory.liveObjectCount()` 只能观察 class 总数，无法区分类型、arena bytes、class-slice backing、协程栈和 runtime 表；泄漏或峰值回归定位成本高 | debug runtime 增加按类型 live count、arena reserved/used、栈池/retired bytes、协程槽容量；提供确定性的第 N 次分配失败注入；release 下溢和非法 type id 在 debug 构建立即失败 | 测试可断言各类计数回到基线；CI 至少运行一次 OOM sweep；release underflow、重复释放和损坏 header 给出稳定诊断 | **P2（工具）** |
 
 **实施顺序**：先完成 M1 → M2 → M3，形成长跑资源上界和分配安全基线；再以诊断数据决定
@@ -112,6 +113,14 @@ M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写�
 6. ✅ **包管理器 v2 形态**：模块化 `tools/pm/*.myp`（main/meta/build/install/util）+ CMake 自定义 target `myp_pm`（build/myp）
 7. ✅ **包管理器 v2 功能**：registry（纯 git 子目录）+ `myp.lock` + `add`/`remove`/`update`/`list` + `myp build` 缺失依赖自动安装；`tests/test_myp_pm.sh` 14/14；-O0/ASAN 124/124
 8. ✅ **修复运行时 bug**：`myp_io_read_line` 共享缓冲（`static char buf[4096]`）→ 每次返回新分配字符串，EOF 返回空串；补 `Str.toInt`（`myp_str_to_int`）
+9. ✅ **M3 分配溢出与 OOM 一致性**（§五-A M3，`9ecac7b`）：checked add/mul/grow helper（`myp_mul_overflow`/`myp_add_overflow`/`myp_oom`/`myp_xmalloc`）+ 各扩容点 `SIZE_MAX`/`INT_MAX` 守卫 + 负数长度 → `myp_bounds_error` 确定性报错（`guardNonNegativeLen`），杜绝负长 16GB 分配与越界
+10. ✅ **M8 slice 引用计数**（§五-A M8 之一，`646d5c0`）：`myp_alloc_slice_backing`（24B `{count,elem_size,pad,elem_kind,rc,type_id}` 头）+ slice 值持计数引用 + 拷贝 retain/作用域末 release + slice-of-slice 元素 retain + 属性/销毁桩处理。647MB→7MB
+11. ✅ **M8 动态数组引用计数**（§五-A M8 之一，`b6960b4`）：`new T[n]` 非类元素走 `myp_alloc_slice_backing` + 固定数组返回堆拷贝计数化（修 `array_ret` 悬垂）。640MB→7.2MB。**教训**：fresh `new` backing 不 `arcPushTemp`（未存储即泄漏安全；存储槽即归属）
+12. ✅ **M8 字符串引用计数**（§五-A M8 之一，`c6673dd`）：`myp_alloc` 全计数（`{rc,type_id=STR}` 头）、字符串字面量=不朽可写全局（rc 巨大）、字符串局部 kind-0 槽、属性/销毁桩释放、`isFreshArcExpr` 识别字符串拼接（修 `s=s+x` 泄漏）、`callReturnsArcRef` 含字符串+FFI（修 `return call()` 双重计数）、字符串数组元素按 class 处理、`emitRetain` 指针守卫、await 消费 temp。44MB→7MB
+13. ✅ **M8 struct 值语义 ARC**（§五-A M5，`008c43d`）：struct 持有 ARC 字段（string/class/interface/slice/动态数组/嵌套）→ 局部 kind-5 槽作用域退出释放、拷贝/赋值/字段存储 retain+release、返回 retain、class 属性持 struct 的 destroy/存储处理；协程帧镜像字符串局部。`tests/struct_arc`
+14. ✅ **slice/数组 return-call 泄漏 + 泛型占位符 var 类型**（`17dd80e`）：`callReturnsArcSliceOrArray` 使 `return sliceCall()` 跳过 retain（修每次泄漏 1 引用）；`generateVarDecl` 顶部解析 `current_type_params_` 占位符（修 HashMap<int,string> rehash 的 `V re_val` 4 字节栈槽被 8 字节指针覆盖的隐患）。`tests/slice_arr_ret`/`generic_rehash`
+15. ✅ **`structCall().field` 直接成员访问**（`dca36b1`）：调用结果返回 struct VALUE 时 `ExtractValue` 取字段（此前静默返回整个 struct）
+16. ✅ **基准新增**（`bc71abd`/`4866025`）：`sieve_odd`（只筛奇数埃氏筛，N=10⁷）+ `montepi`（蒙特卡洛求 π，LCG 三语言逐位一致，N=10⁸），MYP/C++/Go 三版 + 接入 `run_compare.sh`/`run_compare_go.sh`。MYP 单线程确认（/proc Threads:1 + 单核钉定仍 1.6x）
 
 ## 九、自举发现的语言 bug（需修复）
 
