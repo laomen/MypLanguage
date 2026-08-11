@@ -1,0 +1,149 @@
+// gen_serde.myp — serde 生成器（P0b：struct 的 toJson/fromJson 生成）
+// 生成：类型定义（schema 为准）+ 每类型 toJson/fromJsonPath/fromJson 顶层函数。
+// P0b 范围：int/long/double/float/bool/string + 嵌套 struct；数组字段检测即告警跳过。
+
+import env;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class SerdeGen {
+    action:
+        @constructor SerdeGen() {}
+
+        // 生成 MYP 源码里的字符串字面量 "inner"（inner 不含引号）
+        string lit(string inner) {
+            return "\"" + inner + "\"";
+        }
+
+        // 固定辅助函数块（import + JSON 构造/路径辅助）
+        string helpers() {
+            // 源码 token："\""（1 引号） 与 "\\\""（反斜杠+引号）
+            string q1 = lit("\\\"");
+            string q2 = lit("\\\\\\\"");
+            string s = "";
+            s = s + "import env;\nimport json;\nimport fmt;\nimport text;\n\n";
+            s = s + "string cg_i(int x) { return Fmt.i(x); }\n";
+            s = s + "string cg_d(double x) { return Fmt.g(x, 10); }\n";
+            s = s + "string cg_b(bool b) { if (b) return " + lit("true") + "; return " + lit("false") + "; }\n";
+            s = s + "string cg_s(string s) { return " + q1 + " + Str.replaceAll(s, " + q1 + ", " + q2 + ") + " + q1 + "; }\n";
+            s = s + "string cg_kv(string k, string v) { return cg_s(k) + " + lit(":") + " + v; }\n";
+            s = s + "string cg_p(string path, string name) { if (path == " + lit("") + ") return name; return path + " + lit(".") + " + name; }\n";
+            return s;
+        }
+
+        int isScalarOrString(string t) {
+            if (t == "int" || t == "long" || t == "double" || t == "float" || t == "bool" || t == "string") return 1;
+            return 0;
+        }
+        // 字段值 → JSON 值表达式（MYP 源码片段，访问 v.<field>）
+        string scalarConv(string t, string access) {
+            if (t == "int" || t == "long") return "cg_i(" + access + ")";
+            if (t == "double" || t == "float") return "cg_d(" + access + ")";
+            if (t == "bool") return "cg_b(" + access + ")";
+            return "cg_s(" + access + ")";   // string
+        }
+        string fromJsonRead(string t, string access) {
+            if (t == "int" || t == "long") return "p.getInt(" + access + ")";
+            if (t == "double" || t == "float") return "p.getDouble(" + access + ")";
+            if (t == "bool") return "p.getBool(" + access + ")";
+            return "p.getString(" + access + ")";
+        }
+
+        void genTypeDef(Emitter e, TypeDecl t) {
+            string s = "struct " + t.name + " {";
+            int k = 0;
+            while (k < t.fieldCount()) {
+                Field f = t.field(k);
+                s = s + " " + f.type + " " + f.name + ";";
+                k = k + 1;
+            }
+            s = s + " }";
+            e.line(s);
+        }
+
+        void genToJson(Emitter e, TypeDecl t) {
+            e.block("string " + t.name + "_toJson(" + t.name + " v)");
+            e.line("string s = " + lit("{") + ";");
+            int k = 0;
+            int n = t.fieldCount();
+            while (k < n) {
+                Field f = t.field(k);
+                if (f.array == 1) {
+                    Console.writeLine("warn: array field '" + f.name + "' skipped (P0b 暂不支持数组)");
+                    k = k + 1;
+                    continue;
+                }
+                string sep = (k == n - 1) ? "" : " + " + lit(",");
+                string conv;
+                if (isScalarOrString(f.type) == 1) {
+                    conv = scalarConv(f.type, "v." + f.name);
+                } else {
+                    conv = f.type + "_toJson(v." + f.name + ")";   // 嵌套 struct
+                }
+                e.line("s = s + cg_kv(" + lit(f.name) + ", " + conv + ")" + sep + ";");
+                k = k + 1;
+            }
+            e.line("s = s + " + lit("}") + ";");
+            e.line("return s;");
+            e.endBlock();
+        }
+
+        void genFromJsonPath(Emitter e, TypeDecl t) {
+            e.block(t.name + " " + t.name + "_fromJsonPath(Json p, string path)");
+            e.line(t.name + " v;");
+            int k = 0;
+            while (k < t.fieldCount()) {
+                Field f = t.field(k);
+                if (f.array == 1) {
+                    k = k + 1;
+                    continue;
+                }
+                string pathExpr = "cg_p(path, " + lit(f.name) + ")";
+                if (isScalarOrString(f.type) == 1) {
+                    e.line("v." + f.name + " = " + fromJsonRead(f.type, pathExpr) + ";");
+                } else {
+                    e.line("v." + f.name + " = " + f.type + "_fromJsonPath(p, " + pathExpr + ");");
+                }
+                k = k + 1;
+            }
+            e.line("return v;");
+            e.endBlock();
+        }
+
+        void genFromJson(Emitter e, TypeDecl t) {
+            e.block(t.name + " " + t.name + "_fromJson(string j)");
+            e.line("Json p = new Json(j);");
+            e.line(t.name + " v = " + t.name + "_fromJsonPath(p, " + lit("") + ");");
+            e.line("p.free();");
+            e.line("return v;");
+            e.endBlock();
+        }
+
+        string gen(Schema s) {
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.raw(helpers());
+            // 类型定义（schema 为准）
+            int i = 0;
+            while (i < s.typeCount()) {
+                TypeDecl t = s.typeAt(i);
+                genTypeDef(e, t);
+                e.line("");
+                i = i + 1;
+            }
+            // serde 函数
+            i = 0;
+            while (i < s.typeCount()) {
+                TypeDecl t = s.typeAt(i);
+                genToJson(e, t);
+                e.line("");
+                genFromJsonPath(e, t);
+                e.line("");
+                genFromJson(e, t);
+                e.line("");
+                i = i + 1;
+            }
+            return e.text();
+        }
+}

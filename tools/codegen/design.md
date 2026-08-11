@@ -1,6 +1,6 @@
 # tools/codegen — MYP 代码生成框架（torchgen 式）
 
-> 状态：**设计稿（待评审）** · 项目：**规划中**
+> 状态：**P0a+P0b 已实施（2026-08-11）** · P1 起规划中
 > 定位：**MYP 自举的 schema 驱动代码生成框架**——声明式 schema → 生成 MYP/C/C++ 源码。
 > 对标：PyTorch torchgen（算子 schema → C++/CUDA/Python）、gRPC/Thrift（IDL → 各语言 stub）。
 > 关联：`docs/next_improvements.md` §六-6、`docs/serde_macro.md`（编译器内 `@derive` 为另一路线）、
@@ -195,8 +195,8 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 
 | 阶段 | 内容 | 前置 | 验收 |
 |------|------|------|------|
-| **P0a** | 框架骨架：`schema.myp` + `model.myp` + `emit.myp` + `main.myp` CLI | 无 | `mypc run main.myp` 能读 schema、能 emit 文本文件 |
-| **P0b** | `gen_serde.myp`：标量/string/嵌套 struct/class/数组 | P0a | `Player` round-trip 一致 + 产出可编译 |
+| **P0a** | ✅ 框架骨架：`schema.myp` + `model.myp` + `emit.myp` + `main.myp` CLI | 无 | `mypc run main.myp serde schema.json -o dir` 可读 schema、emit 文件 |
+| **P0b** | ✅ `gen_serde.myp`：标量/string/嵌套 struct 的 toJson/fromJson | P0a | `tests/schema.json` + `test_serde.myp` round-trip 一致；`run_tests.sh` 通过。数组字段检测告警跳过（class 属性私有 → toJson 待方法化） |
 | **P1** | `gen_ffi.myp`：C 函数 → ffi 声明 + 资源 RAII；重构 hdf5/sdl 桥 | P0b | 产出桥编译 + 现有测试等价 |
 | **P2** | `gen_autodiff.myp`：算子 → 反向 | P1 | MLP 反向与手写一致 |
 | **P3** | `gen_idl.myp`：服务 → client/server stub | P2 | 示例 RPC 通 |
@@ -222,5 +222,6 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 
 ---
 
-**下一步**：评审通过后按 §10 实施——P0a 搭框架骨架 + P0b 首个 serde 生成器，
-以真实 `Player`/`Vec2` schema 端到端验证框架闭环。
+**下一步**：P0 已闭环（框架 + serde 生成器 + 自测）。下一步按 §10 实施 **P1 `gen_ffi.myp`**
+（C 函数 → ffi 声明 + 资源 RAII，重构 hdf5/sdl 手写桥），以及 P0 延伸：数组字段、
+class 属性方法化 toJson/fromJson。

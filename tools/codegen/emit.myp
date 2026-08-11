@@ -1,0 +1,39 @@
+// emit.myp — 源码发射器（缩进/行/块/文本）
+
+class Emitter {
+    action:
+        @constructor Emitter() {
+            buf_ = "";
+            indent_ = 0;
+        }
+        // 追加一行（当前缩进 + 文本 + 换行）
+        void line(string s) {
+            int i = 0;
+            while (i < indent_) {
+                buf_ = buf_ + "    ";
+                i = i + 1;
+            }
+            buf_ = buf_ + s + "\n";
+        }
+        // 块开头：header {
+        void block(string header) {
+            line(header + " {");
+            indent_ = indent_ + 1;
+        }
+        // 块结尾：}
+        void endBlock() {
+            indent_ = indent_ - 1;
+            line("}");
+        }
+        // 原样追加（不缩进不换行）
+        void raw(string s) {
+            buf_ = buf_ + s;
+        }
+        // 取生成文本
+        string text() {
+            return buf_;
+        }
+    property:
+        string buf_;
+        int indent_;
+}

@@ -1,0 +1,46 @@
+// test_serde.myp — serde 生成代码验证（round-trip）
+import env;
+import "./serde_gen.myp";
+
+int run() {
+    // 构造样本
+    Vec2 pos;
+    pos.x = 1.5;
+    pos.y = 2.5;
+    Player p;
+    p.name = "Alice";
+    p.hp = 100;
+    p.pos = pos;
+
+    // toJson
+    string j = Player_toJson(p);
+    Console.writeLine("json = " + j);
+
+    // fromJson → round-trip
+    Player q = Player_fromJson(j);
+    if (q.name != "Alice") { Console.writeLine("FAIL name=" + q.name); return 1; }
+    if (q.hp != 100) { Console.writeLine("FAIL hp=" + q.hp); return 2; }
+    if (q.pos.x != 1.5 || q.pos.y != 2.5) { Console.writeLine("FAIL pos"); return 3; }
+
+    // 字符串转义
+    Player p2;
+    p2.name = "say \"hi\"";
+    p2.hp = 7;
+    p2.pos.x = 0.0;
+    p2.pos.y = 0.0;
+    string j2 = Player_toJson(p2);
+    Console.writeLine("json2 = " + j2);
+    Player q2 = Player_fromJson(j2);
+    if (q2.name != "say \"hi\"") { Console.writeLine("FAIL esc=" + q2.name); return 4; }
+
+    // Vec2 独立 round-trip
+    Vec2 v = Vec2_fromJson(Vec2_toJson(pos));
+    if (v.x != 1.5 || v.y != 2.5) { Console.writeLine("FAIL v"); return 5; }
+
+    Console.writeLine("round-trip OK");
+    return 0;
+}
+
+int main() {
+    return run();
+}

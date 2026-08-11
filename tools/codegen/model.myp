@@ -1,0 +1,52 @@
+// model.myp — tools/codegen schema 模型类型
+// schema（JSON 声明）解析后的结构化表示，各生成器共享。
+
+import collections;
+
+class Field {
+    action:
+        @constructor Field() {
+            name = "";
+            type = "";
+            array = 0;
+        }
+        void set(string n, string t, int a) {
+            name = n;
+            type = t;
+            array = a;
+        }
+    property:
+        string name;      // 字段名
+        string type;      // 类型名（int/double/string/自定义类型…）
+        int array;        // 1 = 动态数组（P0b 暂不支持，检测即告警跳过）
+}
+
+class TypeDecl {
+    action:
+        @constructor TypeDecl() {
+            name = "";
+            kind = "struct";            // struct / class / enum / op / ffi
+            fields = new ArrayList<Field>();
+        }
+        void setName(string v) { name = v; }
+        void setKind(string v) { kind = v; }
+        void addField(Field f) { fields.add(f); }
+        int fieldCount() { return fields.size(); }
+        Field field(int i) { return fields.get(i); }
+    property:
+        string name;
+        string kind;
+        ArrayList<Field> fields;
+}
+
+class Schema {
+    action:
+        @constructor Schema() {
+            types = new ArrayList<TypeDecl>();
+        }
+        void addType(TypeDecl t) { types.add(t); }
+        int typeCount() { return types.size(); }
+        TypeDecl typeAt(int i) { return types.get(i); }
+    property:
+        ArrayList<TypeDecl> types;
+}

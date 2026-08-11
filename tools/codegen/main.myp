@@ -1,0 +1,83 @@
+// main.myp — tools/codegen CLI
+//
+// 用法:
+//   mypc run tools/codegen/main.myp <generator> <schema.json> [-o outdir]
+//   生成器: serde（P0b：struct toJson/fromJson）
+//
+// 关联: tools/codegen/design.md §10
+
+import env;
+import args;
+import fs;
+import io;
+import text;
+import "./model.myp";
+import "./schema.myp";
+import "./gen_serde.myp";
+
+// 读文件为字符串（File + readLine 重建）
+string readFile(string path) {
+    File f = new File();
+    if (f.open(path, "r") != 0) return "";
+    StringBuilder sb = new StringBuilder();
+    while (f.hasNext() != 0) {
+        sb.append(f.readLine());
+        sb.append("\n");
+    }
+    f.close();
+    return sb.toString();
+}
+
+// 写文件
+int writeFile(string path, string content) {
+    File f = new File();
+    if (f.open(path, "w") != 0) return 1;
+    f.write(content);
+    f.close();
+    return 0;
+}
+
+int run() {
+    if (Args.count() < 3) {
+        Console.writeLine("用法: mypc run tools/codegen/main.myp <serde> <schema.json> [-o outdir]");
+        return 1;
+    }
+    string gen = Args.get(1);
+    string schemaFile = Args.get(2);
+    string outDir = ".";
+    int i = 3;
+    while (i < Args.count()) {
+        if (Args.get(i) == "-o" && i + 1 < Args.count()) {
+            outDir = Args.get(i + 1);
+            i = i + 2;
+        } else {
+            i = i + 1;
+        }
+    }
+    string text = readFile(schemaFile);
+    if (Str.len(text) == 0) {
+        Console.writeLine("error: 读不到 schema 文件: " + schemaFile);
+        return 1;
+    }
+    SchemaParser sp = new SchemaParser();
+    Schema s = sp.parse(text);
+    if (gen == "serde") {
+        SerdeGen g = new SerdeGen();
+        string out = g.gen(s);
+        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
+        string outPath = Fs.join(outDir, "serde_gen.myp");
+        if (writeFile(outPath, out) != 0) {
+            Console.writeLine("error: 写文件失败: " + outPath);
+            return 1;
+        }
+        Console.writeLine("生成: " + outPath);
+    } else {
+        Console.writeLine("未知生成器: " + gen + "（支持: serde）");
+        return 1;
+    }
+    return 0;
+}
+
+int main() {
+    return run();
+}

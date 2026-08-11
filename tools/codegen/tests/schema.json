@@ -1,0 +1,13 @@
+{
+  "types": [
+    { "name": "Vec2", "kind": "struct", "fields": [
+      { "name": "x", "type": "double" },
+      { "name": "y", "type": "double" }
+    ] },
+    { "name": "Player", "kind": "struct", "fields": [
+      { "name": "name", "type": "string" },
+      { "name": "hp", "type": "int" },
+      { "name": "pos", "type": "Vec2" }
+    ] }
+  ]
+}
