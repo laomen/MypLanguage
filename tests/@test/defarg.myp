@@ -1,0 +1,102 @@
+// defarg: §四-1 默认参数 / 命名实参 → @test
+// 顶层/方法/静态/泛型/构造器/struct 构造的默认参数与命名实参
+
+import test;
+import collections;
+
+int add(int a, int b = 100, int c = 200) {
+    return a + b + c;
+}
+int mul(int a, int b) {
+    return a * b;
+}
+T identity<T>(T v, int tag = 99) {
+    return v;
+}
+
+struct Vec2 {
+    action:
+        @constructor
+        Vec2(double px = 0.0, double py = 0.0) {
+            x = px;
+            y = py;
+        }
+        double length() { return x * x + y * y; }
+    double x;
+    double y;
+}
+
+class Rect {
+    action:
+        @constructor
+        Rect(int w = 1, int h = 1) {
+            width = w;
+            height = h;
+        }
+        int area() { return width * height; }
+    property:
+        int width;
+        int height;
+}
+
+class Greeter {
+    action:
+        string greet(string name, string prefix = "Hi", string suffix = "!") {
+            return prefix + " " + name + suffix;
+        }
+    static:
+        int scale(int v, int f = 2) {
+            return v * f;
+        }
+}
+
+@test void test_defarg() {
+    // 1) 顶层函数默认参数
+    Test.assertEq(add(1), 301, "add(1)");
+    Test.assertEq(add(1, 2), 203, "add(1,2)");
+    Test.assertEq(add(1, 2, 3), 6, "add(1,2,3)");
+
+    // 2) 命名实参（乱序）
+    Test.assertEq(add(1, c = 5), 106, "add(1,c=5)");
+    Test.assertEq(add(1, b = 5, c = 6), 12, "add(1,b=5,c=6)");
+    Test.assertEq(mul(b = 7, a = 6), 42, "mul(b=7,a=6)");
+
+    // 3) 默认 + 命名混合
+    Test.assertEq(add(a = 1), 301, "add(a=1)");
+
+    // 4) 方法默认参数 + 命名
+    Greeter g = new Greeter();
+    Test.assertStrEq(g.greet("Bob"), "Hi Bob!", "greet Bob");
+    Test.assertStrEq(g.greet(name = "Al", suffix = "?"), "Hi Al?", "greet Al?");
+    Test.assertStrEq(g.greet("Cat", prefix = "Yo"), "Yo Cat!", "greet Yo");
+
+    // 5) 静态方法默认参数
+    Test.assertEq(Greeter.scale(5), 10, "scale(5)");
+    Test.assertEq(Greeter.scale(5, 3), 15, "scale(5,3)");
+
+    // 6) 泛型函数默认参数
+    Test.assertEq(identity<int>(42), 42, "identity<int>");
+    Test.assertStrEq(identity<string>("ok", 7), "ok", "identity<string>");
+
+    // 7) 构造器默认参数 + 命名
+    Rect r1 = new Rect();
+    Rect r2 = new Rect(3);
+    Rect r3 = new Rect(h = 5);
+    Rect r4 = new Rect(w = 4, h = 6);
+    Test.assertEq(r1.area(), 1, "r1");
+    Test.assertEq(r2.area(), 3, "r2");
+    Test.assertEq(r3.area(), 5, "r3");
+    Test.assertEq(r4.area(), 24, "r4");
+
+    // 8) struct 构造默认 + 命名
+    Vec2 v1 = Vec2();
+    Vec2 v2 = Vec2(3.0);
+    Vec2 v3 = Vec2(py = 4.0);
+    Vec2 v4 = Vec2(px = 3.0, py = 4.0);
+    Test.assertFloatEq(v1.length(), 0.0, 1e-9, "v1");
+    Test.assertFloatEq(v2.length(), 9.0, 1e-9, "v2");
+    Test.assertFloatEq(v3.length(), 16.0, 1e-9, "v3");
+    Test.assertFloatEq(v4.length(), 25.0, 1e-9, "v4");
+
+    Test.report("test_defarg", true);
+}
