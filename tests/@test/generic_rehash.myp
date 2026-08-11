@@ -1,0 +1,26 @@
+// generic_rehash: HashMap<int,string> remove 重哈希 → @test
+// V 重哈希循环中值须完整存活（防 i32 误型指针损坏）
+
+import test;
+import collections;
+
+@test void test_generic_rehash() {
+    for (int round = 0; round < 20; round = round + 1) {
+        HashMap<int, string> hm = new HashMap<int, string>();
+        hm.put(1, "one");
+        hm.put(2, "two");
+        hm.put(3, "three");
+        hm.put(4, "four");
+        hm.put(5, "five");
+        hm.remove(3);
+        string g = hm.get(1, "");
+        string g2 = hm.get(2, "");
+        string g4 = hm.get(4, "");
+        string g5 = hm.get(5, "");
+        Test.assertStrEq(g, "one", "one");
+        Test.assertStrEq(g2, "two", "two");
+        Test.assertStrEq(g4, "four", "four");
+        Test.assertStrEq(g5, "five", "five");
+    }
+    Test.report("test_generic_rehash", true);
+}

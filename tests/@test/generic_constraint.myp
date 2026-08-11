@@ -1,0 +1,26 @@
+// M2 — 泛型约束（where T : Interface）→ @test
+
+import test;
+
+interface Shape {
+    int area();
+}
+
+class Circle {
+    interface class Shape;
+    action:
+        int area() { return radius * radius; }
+    property:
+        int radius;
+}
+
+class DrawList<T where T : Shape> {
+    action:
+        int count() { return 0; }
+}
+
+@test void test_generic_constraint() {
+    DrawList<Circle> dl = new DrawList<Circle>();
+    Test.assertEq(dl.count(), 0, "constraint OK");
+    Test.report("test_generic_constraint", true);
+}

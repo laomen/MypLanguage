@@ -1,0 +1,25 @@
+// 泛型验证 (Monomorphization) → @test
+
+import test;
+
+class Box<T> {
+    action:
+        void set(T val) { value = val; }
+        T get() { return value; }
+    property:
+        T value;
+}
+
+@test void test_generics() {
+    Box<int> bi = new Box<int>();
+    bi.set(42);
+    int vi = bi.get();
+    Test.assertEq(vi, 42, "Box<int>");
+
+    Box<double> bd = new Box<double>();
+    bd.set(3.14);
+    double vd = bd.get();
+    Test.assertFloatEq(vd, 3.14, 1e-9, "Box<double>");
+
+    Test.report("test_generics", true);
+}

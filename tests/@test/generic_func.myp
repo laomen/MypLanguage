@@ -1,0 +1,33 @@
+// generic_func: 泛型函数（§三-6）→ @test
+// 显式类型实参 + 实参推断 + 数组元素推断
+
+import test;
+
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+T first<T>(T[] arr) { return arr[0]; }
+
+@test void test_generic_func() {
+    int a = id<int>(5);
+    Test.assertEq(a, 5, "id<int>");
+    double c = id<double>(3.5);
+    Test.assertFloatEq(c, 3.5, 1e-9, "id<double>");
+    int b = id(7);
+    Test.assertEq(b, 7, "id 推断");
+    int m1 = max2(3, 9);
+    Test.assertEq(m1, 9, "max2 int");
+    double m2 = max2(1.5, 0.5);
+    Test.assertFloatEq(m2, 1.5, 1e-9, "max2 double");
+
+    int[] xs = new int[2];
+    xs[0] = 10;
+    xs[1] = 20;
+    int f = first(xs);
+    Test.assertEq(f, 10, "first int[]");
+    double[] ds = new double[1];
+    ds[0] = 2.5;
+    double df = first(ds);
+    Test.assertFloatEq(df, 2.5, 1e-9, "first double[]");
+
+    Test.report("test_generic_func", true);
+}

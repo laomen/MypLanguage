@@ -1,0 +1,45 @@
+// generic_static: 泛型 @static 类方法 → @test
+
+import test;
+import option;
+import collections;
+
+@static class List {
+    static:
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+            int acc = init;
+            for (int i = 0; i < arr.size(); i = i + 1) acc = f(acc, arr.get(i));
+            return acc;
+        }
+        R id<R>(R v) { return v; }
+}
+
+@test void test_generic_static() {
+    Option<int> some = new Option<int>(5);
+    Option<string> mapped = List.map<int, string>(some, (int x) => { return "v" + x; });
+    string a = "none";
+    if (mapped.isSome()) a = mapped.get();
+    Test.assertStrEq(a, "v5", "map Some");
+
+    Option<int> none = new Option<int>();
+    Option<int> m2 = List.map<int, int>(none, (int x) => { return x * 2; });
+    string b = m2.isNone() ? "none" : "some";
+    Test.assertStrEq(b, "none", "map None");
+
+    ArrayList<int> xs = new ArrayList<int>();
+    xs.add(1); xs.add(2); xs.add(3); xs.add(4);
+    int sum = List.foldInt<int>(xs, 0, (int acc, int x) => { return acc + x; });
+    Test.assertEq(sum, 10, "fold");
+
+    int idd = List.id<int>(42);
+    string ids = List.id<string>("hi");
+    Test.assertEq(idd, 42, "id int");
+    Test.assertStrEq(ids, "hi", "id string");
+
+    Test.report("test_generic_static", true);
+}
