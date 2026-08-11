@@ -2207,11 +2207,69 @@ p = Memory.realloc(p, 2048);            // 重新分配
 Memory.release(p);                      // free 的别名
 ```
 
-> **使用场景**：① **确定性释放**——arena 分配的 `new T[n]` 要等进程退出/@region 结束
-> 才回收，生命周期明确的临时缓冲可用 `Memory` 手动即时释放（控制峰值内存）；
-> ② **FFI 指针互操作**——传给 C 库（SDL/net/GPU/第三方）的裸指针；
+> **使用场景**：① **确定性释放**——生命周期明确的临时缓冲可用 `Memory` 手动即时释放
+> （控制峰值内存）；② **FFI 指针互操作**——传给 C 库（SDL/net/GPU/第三方）的裸指针；
 > ③ **字节缓冲/手动布局**——二进制协议、文件格式的原始缓冲区。
 > 动态数组请用 `collections` 的 `ArrayList<T>`（自动扩容），本模块只负责裸内存。
+
+**内存诊断（M9）**——`Memory` 静态方法暴露运行时各类存活计数与资源占用，供泄漏/
+峰值回归定位（与 `Rtti` 结合可按类型统计）：
+
+```myp
+// 存活计数（线程本地）
+long n = Memory.liveObjectCount();          // 活着的 class 实例总数
+long s = Memory.liveStringCount();          // 引用计数 string 数
+long a = Memory.liveArrayCount();           // 引用计数数组/slice backing 数
+long t = Memory.liveTotalCount();           // 三者之和
+long bt = Memory.liveObjectCountByType(tid); // 按运行时 type_id 的实例数（Rtti.typeId 取 id）
+
+// arena / @region 字节（reserved/used）
+Memory.arenaReservedBytes();  Memory.arenaUsedBytes();
+Memory.regionReservedBytes(); Memory.regionUsedBytes();
+
+// 协程资源（线程本地）
+Memory.coroSlotCount();      Memory.coroSlotCapacity();   Memory.coroFreeSlotCount();
+Memory.stackPoolCount();     Memory.stackPoolBytes();     Memory.stackPoolMaxBytes();
+Memory.stackPoolCapacity();  Memory.retiredCount();       Memory.retiredBytes();
+
+// 分配失败注入（确定性 OOM 测试）：第 nth 次分配 abort（也可用环境变量 MYP_FAIL_ALLOC=n）
+Memory.failAllocEnable(nth);  Memory.failAllocDisable();  long x = Memory.failAllocGet();
+
+// strict 头校验：release 下溢/重复释放/损坏头（非法 type_id）立即 abort；ASAN 构建默认开
+Memory.setStrictChecks(1);  long on = Memory.getStrictChecks();
+```
+
+### 内存模型与弱引用（ARC + `@weak`）
+
+MYP 的 class 实例、`string`、动态数组与 `slice` backing 均**自动引用计数**（ARC）：
+离开作用域/覆盖引用时自动释放，无手动 `delete`、无 GC 暂停；`Memory.liveObjectCount()`
+可观测存活实例数（泄漏检测）。
+
+**`@weak` 弱引用（M7）**——默认引用是**强引用**（持有对象、阻止回收）；环状引用
+（双向 parent/child、回调捕获 self、观察者）会让强引用互相锁定而泄漏。在环的**一侧**
+用 `@weak` 打破：弱引用**不增加计数**，且目标销毁时**自动置空**（读得 `null`，不会悬垂）。
+
+```myp
+class Parent {
+    property: Child child;        // 强引用：持有 child
+}
+class Child {
+    property:
+        @weak Parent parent;      // 弱引用：不计数；Parent 销毁后自动变 null
+}
+
+Parent p = new Parent();
+Child c = new Child();
+p.child = c;          // 强：p → c
+c.parent = p;         // 弱：c → p（不阻止 p 回收）
+Parent q = c.parent;  // 弱→强升级：p 活着返回强引用；已销毁返回 null（用完释放）
+```
+
+- `@weak` 仅限 **class / interface 引用字段**（`string`/`slice`/数值及 struct 字段会被
+  编译期拒绝）。
+- 弱字段读取 = "弱→强一次性升级"：目标活着返回强引用（调用方正常释放）、已销毁返回
+  `null`——读取时**必须判空**。
+- 适用：双向引用（子回指父）、观察者/订阅者、回调捕获 self。无环场景仍用默认强引用。
 
 ### `import channel` — 协程通道
 

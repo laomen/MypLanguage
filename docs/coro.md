@@ -247,6 +247,21 @@ Coro.scheduler();        // 跑就绪 waiter → got go
 
 > **推荐 v1 用方案 A**（复用现有原语，快速打通）；方案 B 作为 v2 优化方向。
 
+### 4.3 资源上限与句柄世代化（M1/M2，2026-08）
+
+内存系列收尾时为协程子系统补上确定性资源上限（防长跑进程栈池/槽表无界增长）：
+
+- **句柄世代化（M1）**：协程句柄从裸 `slot` 升级为 **`{generation<<32 | slot}`**。槽位
+  TLS 空闲表复用；同槽被新协程接管时世代 +1，旧句柄（已 destroy/复用）经世代比对判为
+  **无效**——杜绝"旧句柄误操作新协程"。`Coro.status(h)`/`resume(h)`/`destroy(h)` 均先验
+  世代。诊断：`Memory.coroSlotCount/coroSlotCapacity/coroFreeSlotCount`。
+- **栈池字节上限（M2）**：栈池从"数量上限 128"改为**字节预算**——
+  `MYP_CORO_STACK_POOL_MAX_BYTES=16MiB`；达到预算后栈直接 `free`（不入池）。`@coro`
+  栈 > `MYP_CORO_STACK_BIG=1MiB` 视为大栈，**旁路池**（专用/不复用），避免大栈挤占池。
+  诊断：`Memory.stackPoolCount/stackPoolBytes/stackPoolMaxBytes/stackPoolCapacity/
+  retiredCount/retiredBytes`。测试：`tests/coro_slot_reuse`（世代+槽复用）、
+  `tests/coro_stack_pool_cap`（字节上限+大栈旁路）。
+
 ---
 
 ## 5. 运行时扩展（方案 A）

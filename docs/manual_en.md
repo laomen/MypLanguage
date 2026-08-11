@@ -2202,12 +2202,76 @@ p = Memory.realloc(p, 2048);            // reallocate
 Memory.release(p);                      // alias for free
 ```
 
-> **Use cases**: ① **Deterministic release** — arena-allocated `new T[n]` is only reclaimed
-> at process exit / `@region` end; for temporaries with a clear lifetime, `Memory` releases
-> immediately (controls peak memory). ② **FFI pointer interop** — raw pointers passed to C
-> libraries (SDL/net/GPU/third-party). ③ **Byte buffers / manual layout** — raw buffers for
-> binary protocols and file formats. For dynamic arrays use `ArrayList<T>` from `collections`
+> **Use cases**: ① **Deterministic release** — for temporaries with a clear lifetime, `Memory`
+> releases immediately (controls peak memory). ② **FFI pointer interop** — raw pointers passed
+> to C libraries (SDL/net/GPU/third-party). ③ **Byte buffers / manual layout** — raw buffers
+> for binary protocols and file formats. For dynamic arrays use `ArrayList<T>` from `collections`
 > (auto-growing); this module only manages raw memory.
+
+**Memory diagnostics (M9)** — `Memory` static methods expose live counts and resource usage
+for leak / peak-regression diagnosis (combine with `Rtti` for per-type statistics):
+
+```myp
+// Live counts (thread-local)
+long n = Memory.liveObjectCount();           // total live class instances
+long s = Memory.liveStringCount();           // live counted strings
+long a = Memory.liveArrayCount();            // live counted array/slice backings
+long t = Memory.liveTotalCount();            // sum of the above
+long bt = Memory.liveObjectCountByType(tid); // instances of a runtime type_id (Rtti.typeId)
+
+// arena / @region bytes (reserved/used)
+Memory.arenaReservedBytes();  Memory.arenaUsedBytes();
+Memory.regionReservedBytes(); Memory.regionUsedBytes();
+
+// coroutine resources (thread-local)
+Memory.coroSlotCount();      Memory.coroSlotCapacity();   Memory.coroFreeSlotCount();
+Memory.stackPoolCount();     Memory.stackPoolBytes();     Memory.stackPoolMaxBytes();
+Memory.stackPoolCapacity();  Memory.retiredCount();       Memory.retiredBytes();
+
+// deterministic allocation-failure injection: abort on the nth allocation
+// (or set env MYP_FAIL_ALLOC=n at startup)
+Memory.failAllocEnable(nth);  Memory.failAllocDisable();  long x = Memory.failAllocGet();
+
+// strict header checks: release underflow / double free / corrupted header abort;
+// on by default in ASAN builds
+Memory.setStrictChecks(1);  long on = Memory.getStrictChecks();
+```
+
+### Memory model & weak references (ARC + `@weak`)
+
+Class instances, `string`, dynamic arrays and `slice` backings are all **automatically
+reference-counted** (ARC): they are released when a reference goes out of scope / is
+overwritten — no manual `delete`, no GC pauses. `Memory.liveObjectCount()` observes live
+instances (leak detection).
+
+**`@weak` references (M7)** — the default reference is **strong** (holds the object, prevents
+reclamation); cyclic references (bidirectional parent/child, callbacks capturing `self`,
+observers) make strong references lock each other and leak. Use `@weak` on **one side** of the
+cycle: a weak reference does **not** increment the count, and it is **auto-nulled** when the
+target is destroyed (reading it yields `null`, never a dangling pointer).
+
+```myp
+class Parent {
+    property: Child child;        // strong: holds child
+}
+class Child {
+    property:
+        @weak Parent parent;      // weak: no count; auto-null after Parent dies
+}
+
+Parent p = new Parent();
+Child c = new Child();
+p.child = c;          // strong: p → c
+c.parent = p;         // weak: c → p (does not prevent p's reclamation)
+Parent q = c.parent;  // weak→strong upgrade: strong ref if p is alive; null if destroyed
+```
+
+- `@weak` is only allowed on **class / interface reference fields** (`string`/`slice`/numeric
+  and struct fields are rejected at compile time).
+- Reading a weak field is a one-shot "weak→strong upgrade": a strong reference if the target is
+  alive, `null` if it was destroyed — **always null-check** the result.
+- Use for: back-references (child→parent), observers/subscribers, callbacks capturing `self`.
+  Use the default strong reference when there is no cycle.
 
 ### `import channel` — Coroutine Channels
 

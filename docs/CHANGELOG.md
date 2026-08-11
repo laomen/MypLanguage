@@ -27,7 +27,38 @@
 
 ## 编译器版本历史
 
-### v3.11.20（当前）
+### v3.12.0（当前）— 内存系列收尾（M5–M9）
+- **M8 · 全量引用计数**：`string`（`myp_alloc_str`，`MYP_STR_TYPE_ID`）、动态数组
+  `T[]` 与 `slice` backing（`myp_alloc_slice_backing`，`MYP_ARR_TYPE_ID`，24B 头
+  `{rc, type_id, elem_size, count, cap}`）全部改为引用计数——作用域/覆盖自动释放，
+  不再依赖 arena/进程退出回收。字符串拼接/数组字面量/切分均经计数。
+- **in-place 字符串拼接**：`s = s + x` 在 `s` 为唯一计数串（rc==1）时 realloc 原位
+  扩展（`myp_str_append`）——长串累积 O(n²)→O(n)（bench：808ms→52ms）。
+- **M5 · struct 引用字段值语义 ARC**：struct 槽按字段计数（拷贝逐字段 retain / 释放
+  逐字段 release，kind-5），struct 不再"引用字段不参与计数"。
+- **M6 · 跨线程原子 ARC**：`rc` 为 `_Atomic uint32_t`；`myp_retain`=relaxed
+  fetch_add，`myp_release`=release fetch_sub（返回旧值），末次释放 acquire fence 后
+  析构；分配/释放列表由进程级自旋锁 `myp_alloc_lock` 保护。class/string/数组可安全
+  跨线程传递。验证：移除原子后 TSan 报竞争、恢复后无竞争。
+- **M7 · `@weak` 弱引用**：字段注解 `@weak`（仅 class/interface 引用字段，struct 字段
+  编译期拒绝）；弱表 64 槽链式哈希 + 自旋锁；目标销毁 `myp_weak_notify_death` 持锁置空
+  全部弱槽并重查 rc（防并发升级竞争）。读取 = 弱→强一次性升级。测试 `tests/weak_cycle`、
+  `tests/weak_non_ref`（负）。
+- **M9 · 内存诊断与严格校验**：`Memory.*` 存活/按类型计数、arena/region 字节、协程槽/
+  栈池统计；分配失败注入（`MYP_FAIL_ALLOC=n` / `failAllocEnable`）；strict 头校验
+  （rc 下溢、重复释放、非法 `type_id` abort，ASAN 默认开）。`tests/mem_diag`、
+  `stress/oom_sweep`。
+- **M1/M2 · 协程资源上限**：句柄 `{generation<<32|slot}` 世代化（槽复用安全、旧句柄判
+  无效）；栈池字节预算 `MYP_CORO_STACK_POOL_MAX_BYTES=16MiB`、大栈
+  `MYP_CORO_STACK_BIG=1MiB` 旁路池。`tests/coro_slot_reuse`、`tests/coro_stack_pool_cap`。
+- **if/while/for 条件临时泄漏修复**：条件求值产生的 class 临时（调用/弱升级）被分支体
+  语句末 flush 抢占 → 分支后 `arcReleaseConditionTemps` 释放，修另一路径泄漏。
+- **`string + 非 string` 拼接泄漏修复**：`stringifyForConcat` 转换临时在
+  `myp_strcat` 后显式 release（修 `"s"+i` 每拼接漏 1）。
+- **回归基线**：release 219/219、ASAN 219/219、ASAN stress 6/6、TSan 2/2、OOM 注入
+  13/13、BNCT 正常。
+
+### v3.11.20
 - **内存生命周期 P0 加固**：
   - `@region` 新增函数级保守逃逸分析：slice/数组经 return、property/global store、
     subscript store、throw 或调用参数逃逸时，不建立 arena mark，防止函数返回后持久引用

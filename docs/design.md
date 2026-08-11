@@ -1515,7 +1515,7 @@ Runtime  → print/println + 基本运行时
 - ✅ 终端原始模式 + 非阻塞键盘输入（kbhit/getch）
 - ✅ 二进制文件 I/O（read_byte/read_i32be/write_byte/write_i32be/write_double/read_double）
 - ✅ 权重持久化（深度学习模型保存/加载）
-- ✅ ARC 内存管理（每个线程独立 alloc 链表）
+- ✅ ARC 内存管理（class/string/数组/slice/struct 字段全计数；`_Atomic` rc 跨线程原子 + 全局自旋锁分配链；`@weak` 弱引用自动置空；`Memory.*` 内存诊断与失败注入）
 - ✅ `atexit` 清理
 
 #### 测试基础设施
@@ -1553,6 +1553,7 @@ Runtime  → print/println + 基本运行时
 | **v3.9** | class 实例 ARC、构造器/`@startup` 语义迁移、`Option<T>`/`T?`/`Result<T,E>`、RTTI、`sync` 同步原语、统一异步 IO（`Coro.waitAnyOf`）、`slice<T>`、元组、`fmt`/`crypto`/`http` 库、包管理器 v2（registry/lockfile） |
 | **v3.10** | showcase/probe 差分测试驱动的语言修复、系统探测 |
 | **v3.11** | 定宽整型别名（int8/16/32/64、uint8/16/32/64）、协程/Channel 性能（rendezvous）、C 运行时 -O2、perf 优化 |
+| **v3.12** | 内存系列收尾：`string`/`T[]`/`slice` 引用计数 + in-place 字符串拼接（O(n²)→O(n)）、struct 引用字段值语义 ARC、跨线程原子 ARC（M6）、`@weak` 弱引用（M7）、内存诊断/失败注入/strict 校验（M9）、协程句柄世代化 + 栈池字节上限（M1/M2） |
 
 **未来 / 规划中：**
 
