@@ -42,5 +42,19 @@ out2=$("$MYPCC" run tests/test_ffi.myp 2>&1) || { echo "FAIL: 编译/运行 test
 echo "$out2" | grep -q "ffi ok exists=1 isdir=1 sqrt=8" \
     || { echo "FAIL: ffi 输出不符"; echo "$out2"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi）"
+# 5) 资源包装类：生成 → 编译 → 运行
+if ! "$MYPCC" run main.myp ffi tests/schema_res.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成资源代码"; exit 1
+fi
+cp "$WORK/ffi_gen.myp" tests/ffi_gen.myp
+out3=$("$MYPCC" run tests/test_res.myp 2>&1) || { echo "FAIL: 编译/运行 test_res"; echo "$out3"; exit 1; }
+echo "$out3" | grep -q "res ok h=" \
+    || { echo "FAIL: 资源输出不符"; echo "$out3"; exit 1; }
+
+# 6) 组合 schema（serde + ffi 同文件）：串行生成验证
+if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 组合 serde"; exit 1
+fi
+
+echo "codegen 自测通过（serde + ffi + resources）"
 exit 0

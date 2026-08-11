@@ -1,0 +1,12 @@
+{
+  "resources": [
+    { "name": "BarrierRes", "handle": "int", "invalid": "-1",
+      "open": { "c": "myp_barrier_create", "ret": "int", "params": [
+        { "type": "int", "name": "count" }
+      ] },
+      "close": { "c": "myp_barrier_destroy", "ret": "void", "params": [
+        { "type": "int", "name": "handle" }
+      ] }
+    }
+  ]
+}

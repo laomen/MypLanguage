@@ -66,11 +66,44 @@ class FfiFunc {
         ArrayList<FfiParam> params;
 }
 
+class Resource {
+    action:
+        @constructor Resource() {
+            name = "";
+            handleType = "long";
+            invalid = "0";
+            openC = ""; openRet = ""; openParams = ""; openArgs = "";
+            closeC = ""; closeRet = ""; closeArgs = "";
+        }
+        // open/close 以扁平字符串存储（避免跨类 FfiFunc 对象引用的编译器边界问题）
+        void setName(string v) { name = v; }
+        void setHandleType(string v) { handleType = v; }
+        void setInvalid(string v) { invalid = v; }
+        void setOpen(string c, string ret, string paramsDecl, string args) {
+            openC = c; openRet = ret; openParams = paramsDecl; openArgs = args;
+        }
+        void setClose(string c, string ret, string args) {
+            closeC = c; closeRet = ret; closeArgs = args;
+        }
+    property:
+        string name;          // 包装类名
+        string handleType;    // long / int
+        string invalid;       // 无效句柄哨兵（barrier=-1，多数 C API=0）
+        string openC;         // open C 函数名
+        string openRet;
+        string openParams;    // 参数声明串（"int count"）
+        string openArgs;      // 调用实参串（"count"）
+        string closeC;        // close C 函数名
+        string closeRet;
+        string closeArgs;     // 调用实参串（handle 参数已替换为 handle_）
+}
+
 class Schema {
     action:
         @constructor Schema() {
             types = new ArrayList<TypeDecl>();
             ffiFuncs = new ArrayList<FfiFunc>();
+            resources = new ArrayList<Resource>();
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -78,7 +111,11 @@ class Schema {
         void addFfi(FfiFunc f) { ffiFuncs.add(f); }
         int ffiCount() { return ffiFuncs.size(); }
         FfiFunc ffiAt(int i) { return ffiFuncs.get(i); }
+        void addResource(Resource r) { resources.add(r); }
+        int resourceCount() { return resources.size(); }
+        Resource resourceAt(int i) { return resources.get(i); }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
+        ArrayList<Resource> resources;
 }

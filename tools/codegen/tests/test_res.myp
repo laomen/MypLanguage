@@ -1,0 +1,19 @@
+// test_res.myp — ffi 资源包装类验证（BarrierRes：open/close/getHandle）
+import env;
+import "./ffi_gen.myp";
+
+int run() {
+    BarrierRes b = new BarrierRes();
+    int h = b.open(1);
+    if (h < 0) { Console.writeLine("FAIL open"); return 1; }
+    int h2 = b.getHandle();
+    if (h2 != h) { Console.writeLine("FAIL getHandle"); return 2; }
+    b.close();
+    b.close();   // 幂等：handle 已置 invalid，不重复销毁
+    Console.writeLine("res ok h=" + h);
+    return 0;
+}
+
+int main() {
+    return run();
+}

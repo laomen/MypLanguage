@@ -25,6 +25,14 @@ class Emitter {
             indent_ = indent_ - 1;
             line("}");
         }
+        // 仅增加缩进（不输出行）
+        void push() {
+            indent_ = indent_ + 1;
+        }
+        // 仅减少缩进（不输出行）
+        void pop() {
+            indent_ = indent_ - 1;
+        }
         // 原样追加（不缩进不换行）
         void raw(string s) {
             buf_ = buf_ + s;

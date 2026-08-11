@@ -41,26 +41,86 @@ class SchemaParser {
                 i = i + 1;
             }
             // ffi 段：C 函数声明
-            int fn = arrLen(j, "ffi");
-            int k = 0;
-            while (k < fn) {
-                string fp = "ffi." + k;
-                FfiFunc f = new FfiFunc();
-                f.setName(j.getString(fp + ".name"));
-                f.setRet(j.getString(fp + ".ret"));
-                int pn = arrLen(j, fp + ".params");
-                int m = 0;
-                while (m < pn) {
-                    string pp = fp + ".params." + m;
-                    FfiParam p = new FfiParam();
-                    p.set(j.getString(pp + ".type"), j.getString(pp + ".name"));
-                    f.addParam(p);
-                    m = m + 1;
-                }
+            int fn2 = arrLen(j, "ffi");
+            int k2 = 0;
+            while (k2 < fn2) {
+                FfiFunc f = parseFfiFunc(j, "ffi." + k2);
                 s.addFfi(f);
-                k = k + 1;
+                k2 = k2 + 1;
+            }
+            // resources 段：资源包装（open/close 对，扁平字符串）
+            int rn = arrLen(j, "resources");
+            int r = 0;
+            while (r < rn) {
+                string rp = "resources." + r;
+                Resource res = new Resource();
+                res.setName(j.getString(rp + ".name"));
+                res.setHandleType(j.getString(rp + ".handle"));
+                if (j.type(rp + ".invalid") != -1) {
+                    res.setInvalid(j.getString(rp + ".invalid"));
+                }
+                // open：声明 "int count" + 实参 "count"
+                res.setOpen(
+                    j.getString(rp + ".open.c"),
+                    j.getString(rp + ".open.ret"),
+                    paramsDecl(j, rp + ".open.params", 0),
+                    paramsArgs(j, rp + ".open.params", 0));
+                // close：实参中 handle 参数替换为 handle_
+                res.setClose(
+                    j.getString(rp + ".close.c"),
+                    j.getString(rp + ".close.ret"),
+                    paramsArgs(j, rp + ".close.params", 1));
+                s.addResource(res);
+                r = r + 1;
             }
             j.free();
             return s;
+        }
+
+        // 参数声明串："int count, ..."
+        string paramsDecl(Json j, string path, int subHandle) {
+            int pn = arrLen(j, path);
+            string s = "";
+            int m = 0;
+            while (m < pn) {
+                string pp = path + "." + m;
+                if (m > 0) s = s + ", ";
+                s = s + j.getString(pp + ".type") + " " + j.getString(pp + ".name");
+                m = m + 1;
+            }
+            return s;
+        }
+
+        // 调用实参串："count, ..."；subHandle=1 时名为 handle 的参数换成 handle_
+        string paramsArgs(Json j, string path, int subHandle) {
+            int pn = arrLen(j, path);
+            string s = "";
+            int m = 0;
+            while (m < pn) {
+                string pp = path + "." + m;
+                string nm = j.getString(pp + ".name");
+                if (m > 0) s = s + ", ";
+                if (subHandle == 1 && nm == "handle") { s = s + "handle_"; }
+                else { s = s + nm; }
+                m = m + 1;
+            }
+            return s;
+        }
+
+        // 解析一个 FfiFunc（路径形如 "ffi.0" / "resources.0.open"；name 字段用 "c"）
+        FfiFunc parseFfiFunc(Json j, string path) {
+            FfiFunc f = new FfiFunc();
+            f.setName(j.getString(path + ".c"));
+            f.setRet(j.getString(path + ".ret"));
+            int pn = arrLen(j, path + ".params");
+            int m = 0;
+            while (m < pn) {
+                string pp = path + ".params." + m;
+                FfiParam p = new FfiParam();
+                p.set(j.getString(pp + ".type"), j.getString(pp + ".name"));
+                f.addParam(p);
+                m = m + 1;
+            }
+            return f;
         }
 }

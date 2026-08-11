@@ -11,6 +11,56 @@ class FfiGen {
     action:
         @constructor FfiGen() {}
 
+        // ffi 函数 → 声明行
+        string ffiLine(FfiFunc f) {
+            string line = "ffi " + f.ret + " " + f.name + "(";
+            int k = 0;
+            while (k < f.paramCount()) {
+                FfiParam p = f.paramAt(k);
+                if (k > 0) line = line + ", ";
+                line = line + p.type + " " + p.name;
+                k = k + 1;
+            }
+            return line + ");";
+        }
+
+        // 资源包装类：显式 open/close（MYP 无用户析构器 → RAII 用显式生命周期）
+        void genResource(Emitter e, Resource r) {
+            // open/close 的 ffi 声明（扁平字符串）
+            e.line("ffi " + r.openRet + " " + r.openC + "(" + r.openParams + ");");
+            e.line("ffi " + r.closeRet + " " + r.closeC + "(" + r.handleType + " handle);");
+            e.line("");
+            string zero = r.invalid;
+            e.block("class " + r.name);
+            e.line("action:");
+            // 构造：handle 置 0
+            e.block("@constructor " + r.name + "()");
+            e.line("handle_ = " + zero + ";");
+            e.endBlock();
+            // open：调用 openC，存 handle，返回
+            e.block(r.handleType + " open(" + r.openParams + ")");
+            e.line("handle_ = " + r.openC + "(" + r.openArgs + ");");
+            e.line("return handle_;");
+            e.endBlock();
+            // close：handle 非 0 才调用 closeC，随后清零
+            e.block("void close()");
+            e.line("if (handle_ != " + zero + ") {");
+            e.push();
+            e.line(r.closeC + "(" + r.closeArgs + ");");
+            e.line("handle_ = " + zero + ";");
+            e.pop();
+            e.line("}");
+            e.endBlock();
+            // 访问器
+            e.block(r.handleType + " getHandle()");
+            e.line("return handle_;");
+            e.endBlock();
+            e.line("property:");
+            e.line(r.handleType + " handle_;");
+            e.endBlock();
+            e.line("");
+        }
+
         string gen(Schema s) {
             Emitter e = new Emitter();
             e.line("// ── 由 tools/codegen 生成，勿手改 ──");
@@ -18,17 +68,15 @@ class FfiGen {
             int i = 0;
             while (i < s.ffiCount()) {
                 FfiFunc f = s.ffiAt(i);
-                string line = "ffi " + f.ret + " " + f.name + "(";
-                int k = 0;
-                while (k < f.paramCount()) {
-                    FfiParam p = f.paramAt(k);
-                    if (k > 0) line = line + ", ";
-                    line = line + p.type + " " + p.name;
-                    k = k + 1;
-                }
-                line = line + ");";
-                e.line(line);
+                e.line(ffiLine(f));
                 i = i + 1;
+            }
+            // 资源包装
+            int r = 0;
+            while (r < s.resourceCount()) {
+                if (s.ffiCount() == 0 && r == 0) e.line("");
+                genResource(e, s.resourceAt(r));
+                r = r + 1;
             }
             return e.text();
         }
