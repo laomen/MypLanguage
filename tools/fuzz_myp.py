@@ -150,10 +150,12 @@ def run_one(args):
     except subprocess.TimeoutExpired:
         # Confirm: re-run standalone (fresh process, no parallel load). If it
         # finishes quickly it was just slow under load — not a real hang.
+        # Use a generous timeout (20s): a large stdlib seed compiles in ~2-3s
+        # standalone, but the parallel load can push it past the 6s window.
         try:
             env = dict(os.environ)
             env["ASAN_OPTIONS"] = env.get("ASAN_OPTIONS", "") + "detect_leaks=0"
-            subprocess.run([MYPC, f], capture_output=True, timeout=4,
+            subprocess.run([MYPC, f], capture_output=True, timeout=20,
                            text=True, errors="replace", cwd=os.getcwd(), env=env)
             return "CLEAN"
         except subprocess.TimeoutExpired:

@@ -1015,6 +1015,12 @@ void CodeGen::generateForInStmt(const ForInStmt& s) {
 }
 
 void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
+    // `return voidExpr;` inside a void function (e.g. `return f();` where f
+    // returns void) — the expression's void value must NOT be handed to
+    // CreateRet ("return instr that returns non-void in Function of void
+    // return type"). Discard it so the void-return path emits `ret void`.
+    if (ret_val && ret_val->getType()->isVoidTy())
+        ret_val = nullptr;
     bool can_emit = builder_.GetInsertBlock() &&
                     !builder_.GetInsertBlock()->getTerminator();
 
