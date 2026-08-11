@@ -1,0 +1,58 @@
+// @weak 多订阅者（M7）：多个弱槽共享同一目标，目标销毁全部置空、无泄漏
+import env;
+import memory;
+
+class Publisher {
+    action:
+        int hits() { return count; }
+    property:
+        int count = 0;
+}
+
+class Subscriber {
+    action:
+        void subscribe(Publisher p) { pub = p; }   // @weak 存储（不计数）
+        int pubAlive() { Publisher q = pub; return (q == null) ? 0 : 1; }
+    property:
+        @weak Publisher pub;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            long base = Memory.liveObjectCount();
+
+            // 1) 多订阅者：多个 @weak 槽共享同一 Publisher
+            long b1 = Memory.liveObjectCount();
+            {
+                Publisher p = new Publisher();
+                Subscriber s1 = new Subscriber();
+                Subscriber s2 = new Subscriber();
+                Subscriber s3 = new Subscriber();
+                s1.subscribe(p);   // 3 个弱槽指向 p（都不计数）
+                s2.subscribe(p);
+                s3.subscribe(p);
+                long held = Memory.liveObjectCount();
+                if (held != b1 + 4L) { Console.writeString("FAIL count " + (held - b1) + "\n"); return; }
+                if (s1.pubAlive() != 1 || s2.pubAlive() != 1 || s3.pubAlive() != 1) { Console.writeString("FAIL alive\n"); return; }
+                p = null;   // Publisher 销毁 → 3 个弱槽全部置空
+                if (s1.pubAlive() != 0 || s2.pubAlive() != 0 || s3.pubAlive() != 0) { Console.writeString("FAIL not nulled\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b1) { Console.writeString("FAIL leak\n"); return; }
+
+            // 2) 订阅者在发布者之后销毁：无泄漏
+            long b2 = Memory.liveObjectCount();
+            {
+                Publisher p = new Publisher();
+                Subscriber s1 = new Subscriber();
+                s1.subscribe(p);
+                p = null;   // p 先销毁（块内），s1 后销毁
+                if (s1.pubAlive() != 0) { Console.writeString("FAIL order\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b2) { Console.writeString("FAIL order leak\n"); return; }
+
+            Console.writeString("PASS weak_multi_subscriber\n");
+        }
+}
+
+int main(){ Main m = new Main(); return 0; }

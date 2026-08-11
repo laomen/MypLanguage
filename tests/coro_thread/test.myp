@@ -23,9 +23,9 @@ class Worker {
             Coro.scheduler();
             Coro.scheduler();
             Coro.scheduler();
-            Console.writeString("thread2 active=");
-            Console.writeLong(Coro.isActive(h));
-            Console.writeString("\n");
+            // 单次写入（原子）：writeLong 自带换行 + 额外 writeString 会拆成
+            // 多次输出，多线程交错时产生空行竞态（expected 无法稳定匹配）。
+            Console.writeString("thread2 active=" + Coro.isActive(h) + "\n");
         }
 }
 
@@ -39,9 +39,9 @@ class Main {
             Coro.scheduler();
             Coro.scheduler();
             Coro.scheduler();
-            Console.writeString("thread1 active=");
-            Console.writeLong(Coro.isActive(h));
-            Console.writeString("\n");
+            // 单次写入（原子）：writeLong 自带换行 + 额外 writeString 会拆成
+            // 多次输出，多线程交错时产生空行竞态（expected 无法稳定匹配）。
+            Console.writeString("thread1 active=" + Coro.isActive(h) + "\n");
         }
 }
 
