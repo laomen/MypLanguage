@@ -1,0 +1,60 @@
+// test_idl_socket.myp — IDL socket 传输验证（P3b）
+// Calc_server_once / Calc_client_call 走真实 TCP 回环（@thread 服务器线程）。
+import env;
+import math;
+import net;
+import text;
+import time;
+import "./idl_gen.myp";
+
+// 用户实现的服务端 handler
+class MyCalcS {
+    interface class CalcHandler;
+    action:
+        int add(int a, int b) { return a + b; }
+        string echo(string msg) { return msg + "!"; }
+        double mul3(double x) { return x * 3.0; }
+}
+
+// 服务器线程：连续处理请求
+class CalcSrv {
+    action:
+        @startup void run() {
+            TcpServer srv = new TcpServer(24901);
+            CalcHandler h = new MyCalcS();
+            int i = 0;
+            while (i < 4) {
+                string resp = Calc_server_once(srv, h);
+                if (Str.indexOf(resp, "\"ok\":0") != -1) break;
+                i = i + 1;
+            }
+            srv.close();
+        }
+}
+
+int run() {
+    CalcSrv s = new CalcSrv() @thread;
+    Time.sleep(200);   // 等服务器 bind+listen
+
+    // add（int）走真实 socket
+    string r1 = Calc_client_call("127.0.0.1", 24901, Calc_request_add(3, 4));
+    int a = Calc_result_int(r1);
+    if (a != 7) { Console.writeLine("FAIL add=" + a); return 1; }
+
+    // echo（string）走真实 socket
+    string r2 = Calc_client_call("127.0.0.1", 24901, Calc_request_echo("hi"));
+    string e = Calc_result_string(r2);
+    if (e != "hi!") { Console.writeLine("FAIL echo=" + e); return 2; }
+
+    // mul3（double）走真实 socket
+    string r3 = Calc_client_call("127.0.0.1", 24901, Calc_request_mul3(2.5));
+    double d = Calc_result_double(r3);
+    if (Math.abs(d - 7.5) > 1e-9) { Console.writeLine("FAIL mul3=" + d); return 3; }
+
+    Console.writeLine("idl_socket ok add=" + a + " echo=" + e + " mul3=" + d);
+    return 0;
+}
+
+int main() {
+    return run();
+}

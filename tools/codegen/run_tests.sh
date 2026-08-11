@@ -69,5 +69,10 @@ out5=$("$MYPCC" run tests/test_idl.myp 2>&1) || { echo "FAIL: 编译/运行 test
 echo "$out5" | grep -q "idl ok add=7 echo=hi! mul3=7.5" \
     || { echo "FAIL: idl 输出不符"; echo "$out5"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl）"
+# 8) IDL socket 传输：真实 TCP 回环（@thread 服务器线程）
+out6=$("$MYPCC" run tests/test_idl_socket.myp 2>&1) || { echo "FAIL: 编译/运行 test_idl_socket"; echo "$out6"; exit 1; }
+echo "$out6" | grep -q "idl_socket ok add=7 echo=hi! mul3=7.5" \
+    || { echo "FAIL: idl socket 输出不符"; echo "$out6"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket）"
 exit 0

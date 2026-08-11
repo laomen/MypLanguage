@@ -65,6 +65,7 @@ class IdlGen {
             e.line("import json;");
             e.line("import fmt;");
             e.line("import text;");
+            e.line("import net;");
             e.line("");
             e.line("string cg_s(string s) { return \"\\\"\" + Str.replaceAll(s, \"\\\"\", \"\\\\\\\"\") + \"\\\"\"; }");
             e.line("string cg_b(bool b) { if (b) return \"true\"; return \"false\"; }");
@@ -145,6 +146,31 @@ class IdlGen {
                 }
                 m = m + 1;
             }
+
+            // 5) socket 传输（P3b）：server 处理一次连接 + client 一次调用
+            e.line("");
+            e.line("// 5) socket 传输（P3b）");
+            e.block("string " + svc.name + "_server_once(TcpServer srv, " + svc.name + "Handler h)");
+            e.line("TcpClient c = new TcpClient();");
+            e.line("int rc = srv.accept(c);");
+            e.line("if (rc != 0) return " + lit("{\"ok\":0,\"error\":\"accept failed\"}") + ";");
+            e.line("string request = c.recvLine();");
+            e.line("string resp = " + svc.name + "_dispatch(request, h);");
+            e.line("c.sendLine(resp);");
+            e.line("c.close();");
+            e.line("return resp;");
+            e.endBlock();
+            e.line("");
+            e.block("string " + svc.name + "_client_call(string host, int port, string request)");
+            e.line("TcpClient c = new TcpClient();");
+            e.line("int rc = c.connect(host, port);");
+            e.line("if (rc != 0) return " + lit("{\"ok\":0,\"error\":\"connect failed\"}") + ";");
+            e.line("c.sendLine(request);");
+            e.line("string resp = c.recvLine();");
+            e.line("c.close();");
+            e.line("return resp;");
+            e.endBlock();
+            e.line("");
             return e.text();
         }
 }
