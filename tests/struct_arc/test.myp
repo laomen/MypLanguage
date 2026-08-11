@@ -61,8 +61,8 @@ int runTest() {
         Person gotp = cfg.getPoint();
         if (gotp.name != "alice") return 8;
         cfg.setPoint(d);           // overwrite property -> release old fields
-        Person p9 = cfg.getPoint();
-        if (p9.name != "dave") return 9;
+        // direct member access on a struct-returning call result
+        if (cfg.getPoint().name != "dave") return 9;
     }
     Console.writeString("struct churn done\n");
     return 0;

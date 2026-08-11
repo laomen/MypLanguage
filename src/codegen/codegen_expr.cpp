@@ -2174,6 +2174,24 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
             }
         }
     }
+    // M8 structs: `structCall().field` — member access on a call that returns a
+    // struct VALUE. The call yields a loaded struct; extract the field by index
+    // (structs are values, unlike class refs which use GEP via
+    // resolved_object_class). Previously this fell through and returned the
+    // whole struct, silently dropping the field.
+    if (e.object->kind == ExprKind::Call) {
+        auto& scol = static_cast<const CallExpr&>(*e.object);
+        const TypeNode* srt = callReturnTypeNode(scol);
+        if (srt && !srt->class_name.empty() && findStruct(srt->class_name)) {
+            const StructDecl* ssd = findStruct(srt->class_name);
+            unsigned sfi = 0;
+            if (ssd && getStructFieldIndex(ssd->name, e.member_name, sfi)) {
+                auto* op = generateExpr(*e.object);
+                if (op && op->getType()->isStructTy())
+                    return builder_.CreateExtractValue(op, sfi);
+            }
+        }
+    }
     // obj.method().field — member access on a method call that returns a class
     // instance (e.g. `w.get().x`). Previously fell through to the fallback
     // `return generateExpr(*e.object)` below, dropping the field and passing
