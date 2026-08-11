@@ -1791,6 +1791,20 @@ assign_gep:
                                 v = builder_.CreateSIToFP(v, ft);
                             else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
                                 v = builder_.CreateFPToSI(v, ft);
+                            else if (ft->isStructTy() && isInterfaceFatType(ft) &&
+                                     v->getType()->isPointerTy() && current_tu_) {
+                                // struct field is an interface fat pointer:
+                                // upcast the concrete instance (ptr) → {data, vtable}.
+                                std::string cls_name = resolveArgClassName(*e.value);
+                                std::string iface_name;
+                                const StructDecl* fsd = findStruct(st_name);
+                                if (fsd && fi < fsd->properties.size())
+                                    iface_name = fsd->properties[fi].type.class_name;
+                                if (!cls_name.empty() && !iface_name.empty()) {
+                                    auto* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                    if (fp) v = fp;
+                                }
+                            }
                         }
                         // M8 structs: an OWNED struct local's ARC field is a
                         // strong slot — retain the new value (unless fresh),
@@ -1909,6 +1923,27 @@ assign_gep:
                             v = builder_.CreateSIToFP(v, ft);
                         else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
                             v = builder_.CreateFPToSI(v, ft);
+                        else if (ft->isStructTy() && isInterfaceFatType(ft) &&
+                                 v->getType()->isPointerTy() && current_tu_) {
+                            // Chained struct field store into an interface field:
+                            // upcast the concrete instance (ptr) → {data, vtable}.
+                            // (The single-level path above already handles
+                            // `h.s = c`; this covers `w.h.s = c`.)
+                            std::string cls_name = resolveArgClassName(*e.value);
+                            std::string iface_name;
+                            for (auto& sd : current_tu_->structs)
+                                for (auto& p : sd.properties)
+                                    if (p.name == ma.member_name) {
+                                        bool is_iface = false;
+                                        for (auto& ifd : current_tu_->interfaces)
+                                            if (ifd.name == p.type.class_name) { is_iface = true; break; }
+                                        if (is_iface) { iface_name = p.type.class_name; break; }
+                                    }
+                            if (!cls_name.empty() && !iface_name.empty()) {
+                                auto* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                if (fp) v = fp;
+                            }
+                        }
                     }
                     builder_.CreateStore(v, addr);
                     return v;

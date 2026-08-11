@@ -1,0 +1,66 @@
+// mapping 数据传递：struct 含 interface 引用字段（M5 值语义 ARC）
+// 覆盖：单层/嵌套 struct 字段 store 的 concrete→interface upcast（{data,vtable}）、
+// 拷贝共享（retain 平衡）、覆盖释放旧引用、虚表分派、级联释放零泄漏。
+import env;
+import memory;
+
+interface IShape { int area(); }
+class Circle {
+    interface class IShape;
+    action:
+        @constructor Circle(int rad) { r = rad; }
+        int area() { return r * r; }
+    property: int r;
+}
+class Rect {
+    interface class IShape;
+    action:
+        @constructor Rect(int a, int b) { w = a; h = b; }
+        int area() { return w * h; }
+    property: int w; int h;
+}
+
+struct Holder {
+    IShape s;        // struct 含 interface 引用字段（fat pointer）
+    int tag;
+}
+struct Wrap { Holder h; }   // 嵌套 struct（内层含 interface）
+
+class Main {
+    action:
+        @constructor Main() {
+            long base = Memory.liveObjectCount();
+
+            // 1) 单层字段 store + 拷贝共享：live 不增（retain 不改对象数）
+            long b1 = Memory.liveObjectCount();
+            {
+                Circle c = new Circle(5);
+                Holder h; h.s = c; h.tag = 1;
+                Holder h2 = h;                  // 拷贝共享 c
+                long held = Memory.liveObjectCount();
+                if (held != b1 + 1L) { Console.writeString("FAIL count " + (held - b1) + "\n"); return; }
+                if (h.s.area() != 25 || h2.s.area() != 25) { Console.writeString("FAIL area\n"); return; }
+                // 2) 覆盖 h2.s（换 Rect）→ 旧 Circle 引用释放
+                Rect r = new Rect(3, 4);
+                h2.s = r;
+                if (h.s.area() != 25 || h2.s.area() != 12) { Console.writeString("FAIL dispatch\n"); return; }
+                long held2 = Memory.liveObjectCount();
+                if (held2 != b1 + 2L) { Console.writeString("FAIL overwrite\n"); return; }
+            }
+            // 3) 全部销毁回基线（无泄漏）
+            if (Memory.liveObjectCount() != base) { Console.writeString("FAIL leak\n"); return; }
+
+            // 4) 嵌套 struct（链式字段 store w.h.s = c）
+            long b2 = Memory.liveObjectCount();
+            {
+                Circle c = new Circle(2);
+                Wrap w; w.h.s = c; w.h.tag = 9;
+                if (w.h.s.area() != 4) { Console.writeString("FAIL nested\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b2) { Console.writeString("FAIL nested leak\n"); return; }
+
+            Console.writeString("PASS struct_iface_arc\n");
+        }
+}
+
+int main(){ Main m = new Main(); return 0; }
