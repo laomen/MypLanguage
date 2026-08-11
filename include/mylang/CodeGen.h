@@ -626,6 +626,12 @@ private:
     void createInitFunction();
     void emitInitMappingCalls();
     void generateTestRunner();
+    // Wrap one @test invocation with an exception handler so an uncaught
+    // exception in a single test marks it FAIL and continues the runner,
+    // instead of terminating the whole suite.
+    void emitTestRunnerProtectedCall(llvm::Function* printf_fn,
+                                     const std::string& label,
+                                     const std::function<void()>& call_body);
     // Non-library builds: mark every function definition except `main` as
     // `internal` so LLVM's IPO (IPSCCP + inliner + vectorizer) can
     // constant-specialize and inline hot top-level kernels (e.g. benchmarks

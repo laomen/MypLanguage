@@ -3756,9 +3756,9 @@ void myp_test_fail_msg(const char* msg) {
 // 0 = all assertions passed, 1 = at least one failed. Without this the runner
 // always exited 0, so a failing test suite was indistinguishable from a green
 // one (CI / scripts could not detect failures).
-int myp_test_summary(void) {
-    printf("  assertions: %d passed, %d failed\n",
-           myp_test_pass_count, myp_test_fail_count);
+int myp_test_summary(int test_count) {
+    printf("  tests: %d, assertions: %d passed, %d failed\n",
+           test_count, myp_test_pass_count, myp_test_fail_count);
     return myp_test_fail_count > 0 ? 1 : 0;
 }
 

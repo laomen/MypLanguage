@@ -1953,7 +1953,7 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_assert_str_neq", TypeKind::Void, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_test_report", TypeKind::Void, {TypeKind::String, TypeKind::Bool});
     add_intrinsic("__myp_test_fail_msg", TypeKind::Void, {TypeKind::String});
-    add_intrinsic("__myp_test_summary", TypeKind::Int, {});
+    add_intrinsic("__myp_test_summary", TypeKind::Int, {TypeKind::Int});
     add_intrinsic("__myp_assert_long_neq", TypeKind::Void, {TypeKind::Long, TypeKind::Long});
     add_intrinsic("__myp_assert_float_neq", TypeKind::Void, {TypeKind::Double, TypeKind::Double, TypeKind::Double});
     add_intrinsic("__myp_assert_null", TypeKind::Void, {TypeKind::Class});

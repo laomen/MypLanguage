@@ -2271,7 +2271,7 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::FunctionType::get(v, {p}, false),
         llvm::Function::ExternalLinkage, "myp_test_fail_msg", module_.get());
     runtime_test_summary_ = llvm::Function::Create(
-        llvm::FunctionType::get(i32, {}, false),
+        llvm::FunctionType::get(i32, {i32}, false),
         llvm::Function::ExternalLinkage, "myp_test_summary", module_.get());
     runtime_assert_long_neq_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {i64, i64}, false),

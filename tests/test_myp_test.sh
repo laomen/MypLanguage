@@ -76,5 +76,29 @@ ext_out=$(cd "$TMPDIR" && ./ext.out 2>&1); ext_ec=$?
 check "扩展断言 exit 0" "test $ext_ec -eq 0"
 check "扩展断言 汇总 4 passed" "echo \"$ext_out\" | grep -q 'assertions: 4 passed, 0 failed'"
 
+# 4) 异常捕获: @test 抛未捕获异常 → 该测试 FAIL，后续测试继续，exit 1
+cat > "$TMPDIR/throw.myp" <<'EOF'
+import test;
+class Boom { action: @constructor Boom() { throw "boom!"; } }
+@test void t_ok() {
+    Test.assertEq(1, 1);
+    Test.report("t_ok", true);
+}
+@test void t_throw() {
+    Boom b = new Boom();          // 构造器抛异常（未捕获）
+    Test.report("t_throw", true); // 不应执行
+}
+@test void t_after() {
+    Test.assertEq(2, 2);
+    Test.report("t_after", true);
+}
+EOF
+$MYPCC --test "$TMPDIR/throw.myp" 2>/dev/null
+throw_out=$(cd "$TMPDIR" && ./throw.out 2>&1); throw_ec=$?
+check "异常测试 exit 1" "test $throw_ec -ne 0"
+check "异常测试 该测试 FAIL" "echo \"$throw_out\" | grep -q 'FAIL: t_throw (uncaught exception)'"
+check "异常测试 后续继续 PASS" "echo \"$throw_out\" | grep -q 'PASS: t_after'"
+check "异常测试 汇总 3 tests" "echo \"$throw_out\" | grep -q 'tests: 3, assertions: 2 passed, 1 failed'"
+
 echo "myp-test PASS=$PASS FAIL=$FAIL"
 [ $FAIL -eq 0 ]

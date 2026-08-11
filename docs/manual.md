@@ -2605,11 +2605,16 @@ makeCalls(3);                    // 生成 3 条 Console.write(...)
 #   RUN: test_math
 #   PASS: test_math
 # === MYP Tests Complete ===
-#   assertions: 12 passed, 0 failed
+#   tests: 1, assertions: 12 passed, 0 failed
 ```
 
-**退出码反映失败**：运行器在结束时打印断言汇总，并返回 **非零退出码**（任一断言
-失败 → exit 1，全部通过 → exit 0）——脚本/CI 可直接用 `$?` 判断套件是否通过。
+**退出码反映失败**：运行器在结束时打印汇总（测试数 + 断言通过/失败数），并返回
+**非零退出码**（任一断言失败 → exit 1，全部通过 → exit 0）——脚本/CI 可直接用 `$?`
+判断套件是否通过。
+
+**异常隔离**：每个 `@test` 在独立异常保护内运行——某测试抛**未捕获异常**时，该测试
+标记 `FAIL: <name> (uncaught exception)` 并继续运行**后续测试**，不会挂起整个套件
+（最终 exit 1）。
 
 使用 `@test` 注解标记测试函数和 action，配合 `Test` 类使用断言：
 
