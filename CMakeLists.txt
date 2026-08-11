@@ -75,6 +75,7 @@ set(SOURCES
     src/codegen/codegen_stmt.cpp
     src/codegen/codegen_expr.cpp
     src/codegen/codegen_gpu.cpp
+    src/codegen/codegen_test.cpp
     src/codegen/myp_passes.cpp
     src/eval/eval.cpp
     src/macro/macro_expand.cpp

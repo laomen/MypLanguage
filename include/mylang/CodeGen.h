@@ -650,6 +650,10 @@ private:
     void emitTestRunnerProtectedCall(llvm::Function* printf_fn,
                                      const std::string& label,
                                      const std::function<void()>& call_body);
+    // @test runtime 函数声明 + __myp_* 测试 intrinsic 注册（定义于
+    // codegen_test.cpp，由 declareRuntimeFunctions 调用）。
+    void declareTestRuntimeFunctions();
+    void registerTestIntrinsics();
     // Non-library builds: mark every function definition except `main` as
     // `internal` so LLVM's IPO (IPSCCP + inliner + vectorizer) can
     // constant-specialize and inline hot top-level kernels (e.g. benchmarks

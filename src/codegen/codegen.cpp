@@ -2300,53 +2300,8 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::FunctionType::get(p, {}, false),
         llvm::Function::ExternalLinkage, "myp_exception_get_object", module_.get());
 
-    // Test framework runtime functions
-    runtime_assert_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i32}, false),
-        llvm::Function::ExternalLinkage, "myp_assert", module_.get());
-    runtime_assert_msg_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i32, p}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_msg", module_.get());
-    runtime_test_set_msg_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p}, false),
-        llvm::Function::ExternalLinkage, "myp_test_set_msg", module_.get());
-    runtime_assert_eq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i32, i32}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_eq", module_.get());
-    runtime_assert_str_eq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p, p}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_str_eq", module_.get());
-    runtime_assert_neq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i32, i32}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_neq", module_.get());
-    runtime_assert_long_eq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i64, i64}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_long_eq", module_.get());
-    runtime_assert_str_neq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p, p}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_str_neq", module_.get());
-    runtime_test_report_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p, i32}, false),
-        llvm::Function::ExternalLinkage, "myp_test_report", module_.get());
-    runtime_test_fail_msg_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p}, false),
-        llvm::Function::ExternalLinkage, "myp_test_fail_msg", module_.get());
-    runtime_test_summary_ = llvm::Function::Create(
-        llvm::FunctionType::get(i32, {i32}, false),
-        llvm::Function::ExternalLinkage, "myp_test_summary", module_.get());
-    runtime_assert_long_neq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i64, i64}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_long_neq", module_.get());
-    auto* d_ty = llvm::Type::getDoubleTy(ctx_);
-    runtime_assert_float_neq_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {d_ty, d_ty, d_ty}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_float_neq", module_.get());
-    runtime_assert_null_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_null", module_.get());
-    runtime_assert_not_null_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {p}, false),
-        llvm::Function::ExternalLinkage, "myp_assert_not_null", module_.get());
+    // Test framework runtime functions (定义见 codegen_test.cpp)
+    declareTestRuntimeFunctions();
 
     // Memory allocator
     runtime_alloc_ = llvm::Function::Create(
@@ -2438,22 +2393,8 @@ void CodeGen::declareRuntimeFunctions() {
     // §五-4 RTTI intrinsics
     intrinsic_map_["__myp_type_id"] = runtime_type_id_;
     intrinsic_map_["__myp_type_name"] = runtime_type_name_;
-    // test intrinsics
-    intrinsic_map_["__myp_assert"] = runtime_assert_;
-    intrinsic_map_["__myp_assert_msg"] = runtime_assert_msg_;
-    intrinsic_map_["__myp_test_set_msg"] = runtime_test_set_msg_;
-    intrinsic_map_["__myp_assert_eq"] = runtime_assert_eq_;
-    intrinsic_map_["__myp_assert_neq"] = runtime_assert_neq_;
-    intrinsic_map_["__myp_assert_long_eq"] = runtime_assert_long_eq_;
-    intrinsic_map_["__myp_assert_str_eq"] = runtime_assert_str_eq_;
-    intrinsic_map_["__myp_assert_str_neq"] = runtime_assert_str_neq_;
-    intrinsic_map_["__myp_test_report"] = runtime_test_report_;
-    intrinsic_map_["__myp_test_fail_msg"] = runtime_test_fail_msg_;
-    intrinsic_map_["__myp_test_summary"] = runtime_test_summary_;
-    intrinsic_map_["__myp_assert_long_neq"] = runtime_assert_long_neq_;
-    intrinsic_map_["__myp_assert_float_neq"] = runtime_assert_float_neq_;
-    intrinsic_map_["__myp_assert_null"] = runtime_assert_null_;
-    intrinsic_map_["__myp_assert_not_null"] = runtime_assert_not_null_;
+    // test intrinsics (定义见 codegen_test.cpp)
+    registerTestIntrinsics();
     // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
