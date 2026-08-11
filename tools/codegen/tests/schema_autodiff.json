@@ -1,0 +1,7 @@
+{
+  "exprs": [
+    { "name": "f1", "expr": "x*x + y", "vars": ["x", "y"] },
+    { "name": "f2", "expr": "x * sin(y) + exp(x)", "vars": ["x", "y"] },
+    { "name": "f3", "expr": "log(x) / sqrt(y)", "vars": ["x", "y"] }
+  ]
+}

@@ -1,0 +1,347 @@
+// gen_autodiff.myp — 符号求导生成器（P2）
+// 从表达式 schema 生成 MYP 前向函数 + 梯度函数（struct 返回各偏导）。
+// 验证：有限差分数值梯度比对（test_autodiff.myp）。
+// 表达式语法（v1）：数字 / 变量 / + - * / / 一元负 / ( ) / sin cos exp log sqrt 单参调用
+
+import env;
+import text;
+import fmt;
+import "./model.myp";
+import "./emit.myp";
+
+// ---- 表达式树 ----
+class Expr {
+    action:
+        @constructor Expr() {
+            kind = 0;      // 0=num 1=var 2=binop 3=call
+            num = 0.0;
+            name = "";
+            op = "";
+            left = null;
+            right = null;
+        }
+        void setNum(double v) { kind = 0; num = v; }
+        void setVar(string n) { kind = 1; name = n; }
+        void setBin(string o, Expr l, Expr r) { kind = 2; op = o; left = l; right = r; }
+        void setCall(string fn, Expr a) { kind = 3; name = fn; left = a; }
+    property:
+        int kind;
+        double num;
+        string name;
+        string op;
+        Expr left;
+        Expr right;
+}
+
+// ---- 工厂（自由函数） ----
+Expr mkNum(double v) {
+    Expr e = new Expr();
+    e.setNum(v);
+    return e;
+}
+Expr mkVar(string n) {
+    Expr e = new Expr();
+    e.setVar(n);
+    return e;
+}
+Expr mkBin(string o, Expr l, Expr r) {
+    Expr e = new Expr();
+    e.setBin(o, l, r);
+    return e;
+}
+Expr mkCall(string fn, Expr a) {
+    Expr e = new Expr();
+    e.setCall(fn, a);
+    return e;
+}
+
+// ---- 递归下降解析器 ----
+class ExprParser {
+    action:
+        @constructor ExprParser(string src) {
+            s = src;
+            pos = 0;
+        }
+        Expr parse() {
+            skipWs();
+            return parseExpr();
+        }
+        string cur() {
+            if (pos >= Str.len(s)) return "";
+            return Str.substring(s, pos, pos + 1);
+        }
+        void skipWs() {
+            while (cur() == " " || cur() == "\t") pos = pos + 1;
+        }
+        int isDigit(string c) {
+            if (c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+                || c == "5" || c == "6" || c == "7" || c == "8" || c == "9") return 1;
+            return 0;
+        }
+        int isAlpha(string c) {
+            if (c == "a" || c == "b" || c == "c" || c == "d" || c == "e" || c == "f"
+                || c == "g" || c == "h" || c == "i" || c == "j" || c == "k" || c == "l"
+                || c == "m" || c == "n" || c == "o" || c == "p" || c == "q" || c == "r"
+                || c == "s" || c == "t" || c == "u" || c == "v" || c == "w" || c == "x"
+                || c == "y" || c == "z") return 1;
+            if (c == "A" || c == "B" || c == "C" || c == "D" || c == "E" || c == "F"
+                || c == "G" || c == "H" || c == "I" || c == "J" || c == "K" || c == "L"
+                || c == "M" || c == "N" || c == "O" || c == "P" || c == "Q" || c == "R"
+                || c == "S" || c == "T" || c == "U" || c == "V" || c == "W" || c == "X"
+                || c == "Y" || c == "Z") return 1;
+            return 0;
+        }
+        Expr parseExpr() {
+            Expr l = parseTerm();
+            skipWs();
+            while (cur() == "+" || cur() == "-") {
+                string op = cur();
+                pos = pos + 1;
+                Expr r = parseTerm();
+                l = mkBin(op, l, r);
+                skipWs();
+            }
+            return l;
+        }
+        Expr parseTerm() {
+            Expr l = parseFactor();
+            skipWs();
+            while (cur() == "*" || cur() == "/") {
+                string op = cur();
+                pos = pos + 1;
+                Expr r = parseFactor();
+                l = mkBin(op, l, r);
+                skipWs();
+            }
+            return l;
+        }
+        Expr parseFactor() {
+            skipWs();
+            string c = cur();
+            if (c == "(") {
+                pos = pos + 1;
+                Expr e = parseExpr();
+                skipWs();
+                if (cur() == ")") pos = pos + 1;
+                return e;
+            }
+            if (c == "-") {
+                pos = pos + 1;
+                Expr e = parseFactor();
+                return mkBin("neg", e, null);
+            }
+            if (isDigit(c) == 1 || c == ".") {
+                return parseNumber();
+            }
+            // 标识符（变量或函数调用）
+            string id = parseIdent();
+            skipWs();
+            if (cur() == "(") {
+                pos = pos + 1;
+                Expr a = parseExpr();
+                skipWs();
+                if (cur() == ")") pos = pos + 1;
+                return mkCall(id, a);
+            }
+            return mkVar(id);
+        }
+        Expr parseNumber() {
+            int start = pos;
+            while (isDigit(cur()) == 1) pos = pos + 1;
+            if (cur() == ".") {
+                pos = pos + 1;
+                while (isDigit(cur()) == 1) pos = pos + 1;
+            }
+            string txt = Str.substring(s, start, pos);
+            return mkNum(strToDouble(txt));
+        }
+        string parseIdent() {
+            int start = pos;
+            while (isAlpha(cur()) == 1 || isDigit(cur()) == 1 || cur() == "_") pos = pos + 1;
+            return Str.substring(s, start, pos);
+        }
+    property:
+        string s;
+        int pos;
+}
+
+// ---- 求导 ----
+Expr diff(Expr e, string v) {
+    if (e.kind == 0) return mkNum(0.0);
+    if (e.kind == 1) {
+        if (e.name == v) return mkNum(1.0);
+        return mkNum(0.0);
+    }
+    if (e.kind == 3) {
+        if (e.name == "sin") return simp(mkBin("*", mkCall("cos", e.left), diff(e.left, v)));
+        if (e.name == "cos") return simp(mkBin("*", mkBin("neg", mkCall("sin", e.left), null), diff(e.left, v)));
+        if (e.name == "exp") return simp(mkBin("*", mkCall("exp", e.left), diff(e.left, v)));
+        if (e.name == "log") return simp(mkBin("/", diff(e.left, v), e.left));
+        if (e.name == "sqrt") return simp(mkBin("/", diff(e.left, v), mkBin("*", mkNum(2.0), mkCall("sqrt", e.left))));
+        return mkNum(0.0);
+    }
+    if (e.op == "neg") return mkBin("neg", diff(e.left, v), null);
+    if (e.op == "+") return simp(mkBin("+", diff(e.left, v), diff(e.right, v)));
+    if (e.op == "-") return simp(mkBin("-", diff(e.left, v), diff(e.right, v)));
+    if (e.op == "*") return simp(mkBin("+", mkBin("*", diff(e.left, v), e.right),
+                                          mkBin("*", e.left, diff(e.right, v))));
+    if (e.op == "/") return simp(mkBin("/", mkBin("-", mkBin("*", diff(e.left, v), e.right),
+                                          mkBin("*", e.left, diff(e.right, v))),
+                                      mkBin("*", e.right, e.right)));
+    return mkNum(0.0);
+}
+
+// ---- 简化（浅层 + 常量折叠，不可变重建） ----
+Expr simp(Expr e) {
+    if (e.kind == 0 || e.kind == 1) return e;
+    if (e.kind == 3) {
+        return mkCall(e.name, simp(e.left));
+    }
+    if (e.op == "neg") {
+        return mkBin("neg", simp(e.left), null);
+    }
+    Expr l = simp(e.left);
+    Expr r = simp(e.right);
+    int ln = (l.kind == 0) ? 1 : 0;
+    int rn = (r.kind == 0) ? 1 : 0;
+    if (e.op == "+") {
+        if (ln == 1 && l.num == 0.0) return r;
+        if (rn == 1 && r.num == 0.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.num + r.num);
+    } else if (e.op == "-") {
+        if (rn == 1 && r.num == 0.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.num - r.num);
+    } else if (e.op == "*") {
+        if (ln == 1 && l.num == 0.0) return mkNum(0.0);
+        if (rn == 1 && r.num == 0.0) return mkNum(0.0);
+        if (ln == 1 && l.num == 1.0) return r;
+        if (rn == 1 && r.num == 1.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.num * r.num);
+    } else if (e.op == "/") {
+        if (rn == 1 && r.num == 1.0) return l;
+        if (ln == 1 && l.num == 0.0) return mkNum(0.0);
+        if (ln == 1 && rn == 1) return mkNum(l.num / r.num);
+    }
+    return mkBin(e.op, l, r);
+}
+
+// ---- 源码发射 ----
+// 数字 → MYP double 字面量（整数补 .0）
+string numSrc(double v) {
+    string s = Fmt.g(v, 12);
+    if (Str.indexOf(s, ".") == -1 && Str.indexOf(s, "e") == -1 && Str.indexOf(s, "E") == -1) {
+        s = s + ".0";
+    }
+    return s;
+}
+
+// 单个数字字符 → 数值
+int digitVal(string c) {
+    if (c == "0") return 0;
+    if (c == "1") return 1;
+    if (c == "2") return 2;
+    if (c == "3") return 3;
+    if (c == "4") return 4;
+    if (c == "5") return 5;
+    if (c == "6") return 6;
+    if (c == "7") return 7;
+    if (c == "8") return 8;
+    if (c == "9") return 9;
+    return 0;
+}
+
+// 是否数字字符
+int isDigitChar(string c) {
+    if (c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9") return 1;
+    return 0;
+}
+
+// 字符串 → double（支持整数/小数，负号；v1 无指数）
+double strToDouble(string s) {
+    double r = 0.0;
+    int i = 0;
+    int n = Str.len(s);
+    int neg = 0;
+    if (i < n && Str.substring(s, i, i + 1) == "-") { neg = 1; i = i + 1; }
+    while (i < n && isDigitChar(Str.substring(s, i, i + 1)) == 1) {
+        r = r * 10.0 + digitVal(Str.substring(s, i, i + 1));
+        i = i + 1;
+    }
+    if (i < n && Str.substring(s, i, i + 1) == ".") {
+        i = i + 1;
+        double frac = 0.1;
+        while (i < n && isDigitChar(Str.substring(s, i, i + 1)) == 1) {
+            r = r + frac * digitVal(Str.substring(s, i, i + 1));
+            frac = frac * 0.1;
+            i = i + 1;
+        }
+    }
+    if (neg == 1) r = -r;
+    return r;
+}
+
+string toSrc(Expr e) {
+    if (e.kind == 0) return numSrc(e.num);
+    if (e.kind == 1) return e.name;
+    if (e.kind == 3) return "Math." + e.name + "(" + toSrc(e.left) + ")";
+    if (e.op == "neg") return "(-" + toSrc(e.left) + ")";
+    return "(" + toSrc(e.left) + " " + e.op + " " + toSrc(e.right) + ")";
+}
+
+// ---- 生成器 ----
+class AutodiffGen {
+    action:
+        @constructor AutodiffGen() {}
+
+        string gen(Schema s) {
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("import env;");
+            e.line("import math;");
+            e.line("");
+            int i = 0;
+            while (i < s.exprCount()) {
+                ExprDecl d = s.exprAt(i);
+                ExprParser p = new ExprParser(d.expr);
+                Expr tree = p.parse();
+                // 参数列表 "double x, double y"
+                string params = "";
+                int k = 0;
+                while (k < d.varCount()) {
+                    if (k > 0) params = params + ", ";
+                    params = params + "double " + d.varAt(k);
+                    k = k + 1;
+                }
+                // 前向函数
+                e.block("double " + d.name + "(" + params + ")");
+                e.line("return " + toSrc(tree) + ";");
+                e.endBlock();
+                e.line("");
+                // 梯度 struct
+                string gname = "Grad_" + d.name;
+                e.block("struct " + gname);
+                k = 0;
+                while (k < d.varCount()) {
+                    e.line("double g" + k + ";");
+                    k = k + 1;
+                }
+                e.endBlock();
+                e.line("");
+                // 梯度函数
+                e.block(gname + " " + d.name + "_grad(" + params + ")");
+                e.line(gname + " g;");
+                k = 0;
+                while (k < d.varCount()) {
+                    Expr gk = simp(diff(tree, d.varAt(k)));
+                    e.line("g.g" + k + " = " + toSrc(gk) + ";");
+                    k = k + 1;
+                }
+                e.line("return g;");
+                e.endBlock();
+                e.line("");
+                i = i + 1;
+            }
+            return e.text();
+        }
+}

@@ -1,0 +1,53 @@
+// test_autodiff.myp — 符号求导生成代码验证
+// 有限差分数值梯度 vs 生成的解析梯度。
+import env;
+import math;
+import "./autodiff_gen.myp";
+
+// 一阶中心差分数值梯度
+double numGrad1(double h, double x, double y, int axis) {
+    double a = (axis == 0) ? x + h : x;
+    double b = (axis == 0) ? y : y + h;
+    double c = (axis == 0) ? x - h : x;
+    double d = (axis == 0) ? y : y - h;
+    return (f1(a, b) - f1(c, d)) / (2.0 * h);
+}
+
+int run() {
+    double h = 1e-6;
+
+    // f1 = x*x + y @ (3,4): f=13, df/dx=6, df/dy=1
+    double fx = f1(3.0, 4.0);
+    if (Math.abs(fx - 13.0) > 1e-9) { Console.writeLine("FAIL f1=" + fx); return 1; }
+    Grad_f1 g = f1_grad(3.0, 4.0);
+    if (Math.abs(g.g0 - 6.0) > 1e-9) { Console.writeLine("FAIL g0=" + g.g0); return 2; }
+    if (Math.abs(g.g1 - 1.0) > 1e-9) { Console.writeLine("FAIL g1=" + g.g1); return 3; }
+    double nx = numGrad1(h, 3.0, 4.0, 0);
+    double ny = numGrad1(h, 3.0, 4.0, 1);
+    if (Math.abs(g.g0 - nx) > 1e-4) { Console.writeLine("FAIL nx"); return 4; }
+    if (Math.abs(g.g1 - ny) > 1e-4) { Console.writeLine("FAIL ny"); return 5; }
+
+    // f2 = x*sin(y)+exp(x) @ (1,2)
+    double f2v = f2(1.0, 2.0);
+    double expect2 = 1.0 * Math.sin(2.0) + Math.exp(1.0);
+    if (Math.abs(f2v - expect2) > 1e-9) { Console.writeLine("FAIL f2=" + f2v); return 6; }
+    Grad_f2 g2 = f2_grad(1.0, 2.0);
+    double n2x = (f2(1.0 + h, 2.0) - f2(1.0 - h, 2.0)) / (2.0 * h);
+    double n2y = (f2(1.0, 2.0 + h) - f2(1.0, 2.0 - h)) / (2.0 * h);
+    if (Math.abs(g2.g0 - n2x) > 1e-4) { Console.writeLine("FAIL n2x=" + g2.g0); return 7; }
+    if (Math.abs(g2.g1 - n2y) > 1e-4) { Console.writeLine("FAIL n2y=" + g2.g1); return 8; }
+
+    // f3 = log(x)/sqrt(y) @ (2,9)
+    Grad_f3 g3 = f3_grad(2.0, 9.0);
+    double n3x = (f3(2.0 + h, 9.0) - f3(2.0 - h, 9.0)) / (2.0 * h);
+    double n3y = (f3(2.0, 9.0 + h) - f3(2.0, 9.0 - h)) / (2.0 * h);
+    if (Math.abs(g3.g0 - n3x) > 1e-4) { Console.writeLine("FAIL n3x=" + g3.g0); return 9; }
+    if (Math.abs(g3.g1 - n3y) > 1e-4) { Console.writeLine("FAIL n3y=" + g3.g1); return 10; }
+
+    Console.writeLine("autodiff ok f1=" + fx + " g0=" + g.g0 + " g1=" + g.g1);
+    return 0;
+}
+
+int main() {
+    return run();
+}

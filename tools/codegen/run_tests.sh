@@ -14,7 +14,7 @@ esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then

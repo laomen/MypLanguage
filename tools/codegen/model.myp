@@ -98,12 +98,31 @@ class Resource {
         string closeArgs;     // 调用实参串（handle 参数已替换为 handle_）
 }
 
+class ExprDecl {
+    action:
+        @constructor ExprDecl() {
+            name = "";
+            expr = "";
+            vars = new ArrayList<string>();
+        }
+        void setName(string v) { name = v; }
+        void setExpr(string v) { expr = v; }
+        void addVar(string v) { vars.add(v); }
+        int varCount() { return vars.size(); }
+        string varAt(int i) { return vars.get(i); }
+    property:
+        string name;       // 函数名
+        string expr;       // 表达式源码串
+        ArrayList<string> vars;   // 自变量（梯度按序）
+}
+
 class Schema {
     action:
         @constructor Schema() {
             types = new ArrayList<TypeDecl>();
             ffiFuncs = new ArrayList<FfiFunc>();
             resources = new ArrayList<Resource>();
+            exprs = new ArrayList<ExprDecl>();
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -114,8 +133,12 @@ class Schema {
         void addResource(Resource r) { resources.add(r); }
         int resourceCount() { return resources.size(); }
         Resource resourceAt(int i) { return resources.get(i); }
+        void addExpr(ExprDecl d) { exprs.add(d); }
+        int exprCount() { return exprs.size(); }
+        ExprDecl exprAt(int i) { return exprs.get(i); }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
         ArrayList<Resource> resources;
+        ArrayList<ExprDecl> exprs;
 }

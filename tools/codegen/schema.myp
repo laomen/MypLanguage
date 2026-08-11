@@ -73,6 +73,23 @@ class SchemaParser {
                 s.addResource(res);
                 r = r + 1;
             }
+            // exprs 段：符号求导表达式
+            int en = arrLen(j, "exprs");
+            int ei = 0;
+            while (ei < en) {
+                string ep = "exprs." + ei;
+                ExprDecl d = new ExprDecl();
+                d.setName(j.getString(ep + ".name"));
+                d.setExpr(j.getString(ep + ".expr"));
+                int vn = arrLen(j, ep + ".vars");
+                int vi = 0;
+                while (vi < vn) {
+                    d.addVar(j.getString(ep + ".vars." + vi));
+                    vi = vi + 1;
+                }
+                s.addExpr(d);
+                ei = ei + 1;
+            }
             j.free();
             return s;
         }

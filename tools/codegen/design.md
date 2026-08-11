@@ -1,6 +1,6 @@
 # tools/codegen — MYP 代码生成框架（torchgen 式）
 
-> 状态：**P0a+P0b+P1a+P1b 已实施（2026-08-11）** · P2 起规划中
+> 状态：**P0-P2 已实施（2026-08-11）** · P3 起规划中
 > 定位：**MYP 自举的 schema 驱动代码生成框架**——声明式 schema → 生成 MYP/C/C++ 源码。
 > 对标：PyTorch torchgen（算子 schema → C++/CUDA/Python）、gRPC/Thrift（IDL → 各语言 stub）。
 > 关联：`docs/next_improvements.md` §六-6、`docs/serde_macro.md`（编译器内 `@derive` 为另一路线）、
@@ -132,7 +132,7 @@ class Emitter {
 |------|--------|--------|------|-------------|
 | **P0** | **serde**（JSON 序列化，方案 A 正式化） | types | 每类的 `toJson()/fromJson()`（MYP） | 终结手写序列化；纯 MYP 输出、最快闭环；**验收：round-trip 一致** |
 | **P1** | **ffi**（C 绑定） | ffi 函数签名 | `ffi` 声明 + C 桥 `*_bridge.c` + 资源 RAII 包装类 | 最大生态杠杆；目标案例 `hdf5_bridge.c`/`sdl_bridge.c` 重构；**验收：产出桥可编译 + 现有测试等价** |
-| **P2** | **autodiff**（自动微分） | ops 算子签名 | 反向算子代码（MYP） | deeplearning 进化；**验收：MLP 前向+反向与手写一致** |
+| **P2** | ✅ **autodiff**（表达式符号求导） | exprs 表达式 | 前向 + 梯度函数（MYP） | deeplearning 进化（表达式级反向）；**验收：数值梯度与有限差分一致**（见 §10 P2 行） |
 | **P3** | **idl**（RPC） | 服务/方法 | client/server stub + 编解码（MYP，配 net/http/json） | 网络生态；**验收：示例 RPC 通** |
 | P4 | orm / DSL / 资源嵌入 | 表 / 规则 | 数据类 + CRUD / 生成代码 | 生态补强 |
 
@@ -198,7 +198,7 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 | **P0a** | ✅ 框架骨架：`schema.myp` + `model.myp` + `emit.myp` + `main.myp` CLI | 无 | `mypc run main.myp serde schema.json -o dir` 可读 schema、emit 文件 |
 | **P0b** | ✅ `gen_serde.myp`：标量/string/嵌套 struct 的 toJson/fromJson | P0a | `tests/schema.json` + `test_serde.myp` round-trip 一致；`run_tests.sh` 通过。数组字段检测告警跳过（class 属性私有 → toJson 待方法化） |
 | **P1** | ✅ `gen_ffi.myp`（P1a 声明 + **P1b 资源包装类**） | P0b | P1a：4 个 runtime C 函数链接运行正确。P1b：`resources` 段 → 包装类（构造/`open`/`close`/`getHandle`，`invalid` 哨兵；MYP 无用户析构器 → 显式生命周期 RAII）。`schema_res.json` + `test_res.myp`：barrier open/close 幂等通过 |
-| **P2** | `gen_autodiff.myp`：算子 → 反向 | P1 | MLP 反向与手写一致 |
+| **P2** | ✅ `gen_autodiff.myp`：表达式符号求导 → 前向 + 梯度函数 | P1 | `schema_autodiff.json` + `test_autodiff.myp`：f1=x*x+y / f2=x·sin(y)+exp(x) / f3=log(x)/sqrt(y) 解析梯度与有限差分一致。表达式语法 v1：+ - * / 一元负 括号 sin/cos/exp/log/sqrt；MYP 自写 tokenizer/parser/求导/简化（常量折叠+浅层） |
 | **P3** | `gen_idl.myp`：服务 → client/server stub | P2 | 示例 RPC 通 |
 | P4 | orm / DSL / 资源嵌入 | P3 | 各自验收 |
 
