@@ -1,7 +1,7 @@
-// interface_default: trait 默认实现（§三-5，additive）
+// interface_default: trait 默认实现（§三-5，additive）→ @test
 // 覆盖：接口方法带默认体（类可省略）、默认体内 this.method() 静态分派到具体类、
-// 类覆盖默认、多实现类共享默认、纯签名方法仍强制实现（负测试）
-import env;
+// 类覆盖默认、多实现类共享默认、默认方法内部再调默认方法
+import test;
 
 interface IShape {
     double area();                      // 纯签名 → 实现类必须实现
@@ -16,7 +16,7 @@ class Circle {
     action:
         double area() { return 3.14 * r * r; }
         double perimeter() { return 2 * 3.14 * r; }
-        // 未实现 describe() → 用 IShape.describe 默认实现（this.area → Circle_area）
+        // 未实现 describe() → 用 IShape.describe 默认实现
     property: double r = 1.0;
 }
 
@@ -29,27 +29,23 @@ class Square {
     property: double side = 3.0;
 }
 
-// 默认方法内部再调另一个默认方法：Triangle 省略 describe() 与 label()
 interface INamed {
     string label() { return "unnamed"; }   // 默认
-    string full() { return label() + "#" + label(); }  // 默认调用默认（本类也未覆盖）
+    string full() { return label() + "#" + label(); }  // 默认调用默认
 }
 
 class Triangle {
     interface class INamed;
     action:
-        // 两个默认方法都省略 → 均用默认（label → "unnamed"）
+        // 两个默认方法都省略 → 均用默认
 }
 
-int pmRun() {
+@test void test_interface_default() {
     IShape c = new Circle();
     IShape s = new Square();
     INamed t = new Triangle();
-    string cc = c.describe();
-    string ss = s.describe();
-    string tt = t.full();
-    Console.writeString(cc + " | " + ss + " | " + tt);
-    Console.writeString("\n");
-    return 0;
+    Test.assertStrEq(c.describe(), "area=3.14 perim=6.28", "circle default");
+    Test.assertStrEq(s.describe(), "SQUARE(9)", "square override");
+    Test.assertStrEq(t.full(), "unnamed#unnamed", "triangle default-default");
+    Test.report("test_interface_default", true);
 }
-int main() { int c = pmRun(); return c; }

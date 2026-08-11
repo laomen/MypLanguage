@@ -1,4 +1,0 @@
-1) string 字段拷贝独立: PASS
-2) 多重拷贝独立: PASS
-3) 数组元素 string 独立: PASS
-PASS struct_string

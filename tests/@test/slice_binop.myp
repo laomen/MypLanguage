@@ -1,0 +1,53 @@
+// 集合二元 (P4c) — slice 上的 @op 元素级运算 → @test
+// 验证: 逐元素加 A+B / 标量广播 A*k / 对称 k*A（基于 slice.size()）
+import test;
+
+// 逐元素加: A + B
+@op("+") slice<double> add(slice<double> A, slice<double> B) {
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = A[i] + B[i]; i = i + 1; }
+    return C;
+}
+
+// 标量广播: A * k
+@op("*") slice<double> mul(slice<double> A, double k) {
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = A[i] * k; i = i + 1; }
+    return C;
+}
+
+// 对称标量广播: k * A
+@op("*") slice<double> mulLeft(double k, slice<double> A) {
+    int n = A.size();
+    slice<double> C = new slice<double>(n);
+    int i = 0; while (i < n) { C[i] = k * A[i]; i = i + 1; }
+    return C;
+}
+
+@test void test_slice_binop() {
+    slice<double> A = new slice<double>(4);
+    slice<double> B = new slice<double>(4);
+    int i = 0;
+    while (i < 4) { A[i] = i * 1.0; B[i] = (i + 10) * 1.0; i = i + 1; }
+    // A = [0,1,2,3], B = [10,11,12,13]
+
+    slice<double> C = A + B;      // 逐元素: [10,12,14,16]
+    slice<double> D = A * 2.0;    // 标量广播: [0,2,4,6]
+    slice<double> E = 3.0 * A;    // 对称广播: [0,3,6,9]
+
+    Test.assertFloatEq(C[0], 10.0, 0.0001, "C0");
+    Test.assertFloatEq(C[1], 12.0, 0.0001, "C1");
+    Test.assertFloatEq(C[2], 14.0, 0.0001, "C2");
+    Test.assertFloatEq(C[3], 16.0, 0.0001, "C3");
+    Test.assertFloatEq(D[0], 0.0, 0.0001, "D0");
+    Test.assertFloatEq(D[1], 2.0, 0.0001, "D1");
+    Test.assertFloatEq(D[2], 4.0, 0.0001, "D2");
+    Test.assertFloatEq(D[3], 6.0, 0.0001, "D3");
+    Test.assertFloatEq(E[0], 0.0, 0.0001, "E0");
+    Test.assertFloatEq(E[1], 3.0, 0.0001, "E1");
+    Test.assertFloatEq(E[2], 6.0, 0.0001, "E2");
+    Test.assertFloatEq(E[3], 9.0, 0.0001, "E3");
+    Test.report("test_slice_binop", true);
+}
