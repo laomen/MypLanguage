@@ -1,0 +1,54 @@
+// assoc_types: 关联类型（§三-5，additive）→ @test
+// 接口关联类型 / 实现类绑定 / 直接引用 / 泛型类 T::Item
+
+import test;
+
+interface Container {
+    type Item;
+    bool contains(Item v);
+    Item getVal();
+}
+
+class IntBox {
+    interface class Container;
+    type Item = int;
+    action:
+        bool contains(int v) { return v == val; }
+        int getVal() { return val; }
+    property: int val = 42;
+}
+
+class StrBox {
+    interface class Container;
+    type Item = string;
+    action:
+        bool contains(string v) { return v == val; }
+        string getVal() { return val; }
+    property: string val = "hi";
+}
+
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }
+        bool check(T c, T::Item v) { return c.contains(v); }
+}
+
+@test void test_assoc_types() {
+    IntBox ib = new IntBox();
+    StrBox sb = new StrBox();
+    IntBox::Item x = 5;
+    Container c = new IntBox();
+    bool r1 = c.contains(x);
+    Test.assertEq(r1 ? 1 : 0, 0, "r1=false");
+
+    Processor<IntBox> pi = new Processor<IntBox>();
+    Processor<StrBox> ps = new Processor<StrBox>();
+    int iv = pi.peek(ib);
+    string sv = ps.peek(sb);
+    bool r2 = pi.check(ib, 7);
+    Test.assertEq(iv, 42, "iv");
+    Test.assertStrEq(sv, "hi", "sv");
+    Test.assertEq(r2 ? 1 : 0, 0, "r2=false");
+
+    Test.report("test_assoc_types", true);
+}

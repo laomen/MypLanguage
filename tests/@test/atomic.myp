@@ -1,0 +1,32 @@
+// Atomic operations → @test
+
+import test;
+import atomic;
+
+@test void test_atomic() {
+    int[10] arr;
+    double[5] darr;
+
+    Atomic.addInt(arr, 0, 10);
+    Atomic.addInt(arr, 1, 20);
+    Atomic.addInt(arr, 0, 5);
+    Test.assertEq(arr[0], 15, "arr[0]");
+    Test.assertEq(arr[1], 20, "arr[1]");
+
+    Atomic.subInt(arr, 0, 3);
+    Test.assertEq(arr[0], 12, "sub=12");
+
+    Atomic.addDouble(darr, 0, 3.14);
+    Atomic.addDouble(darr, 0, 2.86);
+    Test.assertFloatEq(darr[0], 6.0, 1e-9, "darr[0]");
+
+    int old = Atomic.xchgInt(arr, 0, 99);
+    Test.assertEq(old, 12, "xchg_old");
+    Test.assertEq(arr[0], 99, "xchg_new");
+
+    Atomic.storeInt(arr, 2, 42);
+    int loaded = Atomic.loadInt(arr, 2);
+    Test.assertEq(loaded, 42, "loaded");
+
+    Test.report("test_atomic", true);
+}
