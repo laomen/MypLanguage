@@ -39,6 +39,7 @@
 | 4 | ~~**类型别名 `type X = ...`**~~ | ✅ **已实施**（上下文关键字，仅顶层 `type <Id> = <Type>;` 形态识别，`type` 仍可作标识符；parser 解析时替换 + sema 兜底递归检测；`tests/typealias` 正 + 负） | 可读性 | 小 | P2 |
 | 5 | ~~**trait 默认实现 / 关联类型**~~ | ✅ **已实施（additive）**：**默认实现**——接口方法**带默认体** → 实现类可省略，虚表回退默认函数（按类特化 `__ifdef_<Iface>_<method>_<Class>`，`this` 绑定具体类，默认体内 `this.method()`/裸方法调用静态解析到类方法，默认调默认也支持）；类覆盖则用覆盖；纯签名方法仍强制实现（负测试）。**关联类型**——接口 `type Item;` 声明抽象关联类型 + 实现类 `type Item = int;` 绑定（必须绑定，负测试 `assoc_unbound`）；绑定经 `X::Item` 直接引用（局部变量/参数/返回）；泛型 `where T:I` 内 `T::Item` 实例化后单态化为具体绑定（sema：约束类型参数注册为接口类型、`T::Item` 替换、Assoc 通配；codegen：`::` 拦截 + `resolveAssocType` + 类参数 `var_class_map_` 注册使 `c.method()` 精确解析）。`tests/interface_default` + `tests/assoc_types` + 负测试 | 泛型能力 | 中 | P2 |
 | 6 | ~~**泛型方法推断**~~ | ✅ **已实施（additive）**：泛型**顶层函数** `T foo<T>(...)`——显式类型实参 `foo<int>(x)` + 实参推断 `foo(x)`（含 `T[]` 元素推断）；按实参单态化（`foo_int_inst`）与泛型类同构；调用点 `<Type,..>(` 用**诊断-free 令牌扫描**消歧（不误伤 `E < energies[mid]` 比较）。泛型方法/静态方法暂缓。`tests/generic_func` | 泛型函数 | 中 | P2 |
+| 7 | **派生序列化宏 `@derive(Json)`（serde 式过程宏）** | 🔜 **规划**（设计见 `docs/serde_macro.md`）：强化 `@macro` 到**类级派生**——`@derive(Json)` 修饰 class，宏在编译期读到字段元数据（`ClassMeta`：类名 + 属性名/类型表），自动生成 `toJson()/fromJson()` 注入该类。复用现有 M4（`@macro`+`quote`，v3.6）+ `json.myp`（C 端路径查询解析器）+ 单态化；需补：类级注解展开、编译期 `ClassMeta/PropMeta` 值类型与遍历、`MethodList` 方法注入、泛型类按实例派生。零运行时反射/零开销、类型安全、与单态化同构——**终结"每类手写序列化"缺口**。前置：`@macro` V2 字段访问（`m.props.get(i)`/`p.kind`） | 终结最大工程缺口（通用序列化/网络载荷/存档） | 大 | **P1** |
 
 ## 四、语法 / 表达层
 
@@ -147,3 +148,4 @@ M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写�
 - **D2**：§三-1（`Option`/空安全）与 §五-1（class 实例 ARC，**已决议**，见 `docs/arc.md`）是否纳入下一里程碑？
 - **D3**：§三/§四/§五 各 P1 项的实施顺序（建议：五-1[ARC] → 三-1[`Option`] → 三-3[一等函数] → 五-2[同步原语] → 四-2[for-in] → 三-2[元组]；ARC 与 `Option` 并行不冲突）？
 - **D4**：Windows 移植是否正式立项（当前为"后续再说"）？
+- **D5**：§三-7（`@derive(Json)` 派生序列化宏，方案 B）是否立项？若否，是否先落地降级方案 A（外部 `tools/serde.myp` 代码生成器）作为过渡？（设计见 `docs/serde_macro.md`，含 A/B/C/D 四方案对比）
