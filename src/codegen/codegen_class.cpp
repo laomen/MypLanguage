@@ -199,6 +199,10 @@ bool CodeGen::isArcRefType(const TypeNode& tn) {
     return false;
 }
 
+bool CodeGen::isCountedArrayType(const TypeNode& tn) {
+    return tn.isArray() && tn.array_size == 0;
+}
+
 void CodeGen::maybeReleaseLocal(const std::string& name, llvm::Value* alloca) {
     if (!runtime_release_ || !alloca) return;
     if (builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
@@ -232,6 +236,13 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
         if (st) {
             for (size_t pi = 0; pi < cls.properties.size(); pi++) {
                 auto& prop = cls.properties[pi];
+                if (isCountedArrayType(prop.type)) {
+                    // M8: dynamic T[] field — release the counted backing.
+                    auto* gep = b.CreateStructGEP(st, self, pi);
+                    auto* data = b.CreateLoad(llvm::PointerType::get(ctx_, 0), gep);
+                    b.CreateCall(runtime_release_, {data});
+                    continue;
+                }
                 if (prop.type.class_name == "slice") {
                     // M8: slice field → release the counted backing via data
                     // (index 0 of the {data,len} fat pointer).

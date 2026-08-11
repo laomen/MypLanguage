@@ -517,6 +517,11 @@ private:
     void generateArcSupport(TranslationUnit& tu);
     // True if a TypeNode is a class instance / interface reference slot (ARC-counted).
     bool isArcRefType(const TypeNode& tn);
+    // M8: dynamic T[] (array_size==0, any element) — the backing is a counted
+    // ref now (myp_alloc_slice_backing / myp_alloc_class_array), so slots
+    // holding it retain/release like a class ref. Fixed [N x T] are stack
+    // values (not counted).
+    bool isCountedArrayType(const TypeNode& tn);
     // True if tn is a class (not interface) reference — resolves generic type
     // params through current_type_params_. Used to decide ref-counted arrays.
     bool isArcClassType(const TypeNode& tn);

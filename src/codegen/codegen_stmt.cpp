@@ -604,16 +604,15 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);
             }
             setNamedValue(d.name, ptr_a);
-            // ARC: dynamic class-array — the local owns the ref-counted array
-            // (myp_release on scope exit releases elements + frees header).
-            if (isArcClassType(*d.type.element_type)) {
-                registerArcSlot(ptr_a, 0);
-                if (d.init_expr) {
-                    if (isFreshArcExpr(*d.init_expr))
-                        arcConsumeTemp(dyn_init_val);   // fresh (new-array/call) rc=1 → local owns
-                    else if (dyn_init_val)
-                        emitRetain(dyn_init_val);       // alias → local retains
-                }
+            // ARC/M8: dynamic T[] backing is ref-counted (class arrays + now
+            // primitive arrays via myp_alloc_slice_backing) — the local owns a
+            // counted reference released on scope exit.
+            registerArcSlot(ptr_a, 0);
+            if (d.init_expr) {
+                if (isFreshArcExpr(*d.init_expr))
+                    arcConsumeTemp(dyn_init_val);   // fresh (new-array/call) rc=1 → local owns
+                else if (dyn_init_val)
+                    emitRetain(dyn_init_val);       // alias → local retains
             }
         }
         // Record element type for subscript access
@@ -1053,8 +1052,9 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                 current_ret_ti_.kind == TypeKind::Interface ||
                 current_ret_ti_.kind == TypeKind::Slice ||
                 (current_ret_ti_.kind == TypeKind::Array &&
-                 current_ret_ti_.element_type &&
-                 current_ret_ti_.element_type->kind == TypeKind::Class);
+                 ((current_ret_ti_.element_type &&
+                   current_ret_ti_.element_type->kind == TypeKind::Class) ||
+                  current_ret_ti_.array_size == 0));
             if (!skip_retain && ret_is_arc_ref) {
                 llvm::Value* rdata = ret_val;
                 if ((current_ret_ti_.kind == TypeKind::Interface ||
@@ -1186,18 +1186,31 @@ llvm::Value* CodeGen::heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr
         arc_skip_retain_return_ = true;
         return dest;
     }
-    auto* size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), byte_size);
-    llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+    // Non-class fixed-array return: allocate a COUNTED backing (not arena) so
+    // the returned pointer can be released by any counted array slot the caller
+    // creates — an arena copy here would crash myp_release (reads a garbage
+    // header). rc=1 transfers to the caller (skip the emitFunctionReturn retain).
+    uint64_t elem_size = (eit != array_elem_types_.end())
+        ? module_->getDataLayout().getTypeAllocSize(eit->second)
+        : 1;
+    uint64_t count = elem_size ? byte_size / elem_size : 0;
+    llvm::Function* alloc_fn = module_->getFunction("myp_alloc_slice_backing");
     if (!alloc_fn) {
         auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
-            {llvm::Type::getInt64Ty(ctx_)}, false);
+            {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_),
+             llvm::Type::getInt32Ty(ctx_)}, false);
         alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-            "myp_region_alloc", module_.get());
+            "myp_alloc_slice_backing", module_.get());
     }
-    auto* dest = builder_.CreateCall(alloc_fn, {size}, "ret_arr_copy");
+    auto* dest = builder_.CreateCall(alloc_fn,
+        {llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), count),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)elem_size),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 1)},  // SCALAR
+        "ret_arr_copy");
     auto* dst = builder_.CreateBitCast(dest, llvm::PointerType::get(ctx_, 0));
     auto* src = builder_.CreateBitCast(v, llvm::PointerType::get(ctx_, 0));
-    builder_.CreateMemCpy(dst, llvm::Align(8), src, llvm::Align(8), size);
+    builder_.CreateMemCpy(dst, llvm::Align(8), src, llvm::Align(8), byte_size);
+    arc_skip_retain_return_ = true;
     return dest;
 }
 
@@ -1351,10 +1364,15 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                 const TypeNode* prop_tn = nullptr;
                                 for (auto& p : cls.properties)
                                     if (p.name == id.name) { prop_tn = &p.type; break; }
-                                if (prop_tn && prop_tn->class_name == "slice") {
-                                    // M8: slice field store — retain new backing
+                                if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
+                                    // M8: slice/array field — retain new backing
                                     // (unless fresh), release the old one.
-                                    arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                    if (prop_tn->class_name == "slice")
+                                        arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                    else {
+                                        arcStoreRef(gep, v, false, isFreshArcExpr(*e.value));
+                                        arcConsumeTemp(v);
+                                    }
                                 } else if (prop_tn && isArcRefType(*prop_tn)) {
                                     bool iface_prop = false;
                                     if (current_tu_)
@@ -1656,9 +1674,14 @@ assign_gep:
                                     const TypeNode* prop_tn = nullptr;
                                     for (auto& p : cls.properties)
                                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                                    if (prop_tn && prop_tn->class_name == "slice") {
-                                        // M8: static slice field — retain/release backing.
-                                        arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
+                                        // M8: static slice/array field — retain/release backing.
+                                        if (prop_tn->class_name == "slice")
+                                            arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                        else {
+                                            arcStoreRef(gep, v, false, isFreshArcExpr(*e.value));
+                                            arcConsumeTemp(v);
+                                        }
                                     } else if (prop_tn && isArcRefType(*prop_tn)) {
                                         bool iface_prop = false;
                                         if (current_tu_)
@@ -1785,9 +1808,14 @@ assign_gep:
                     const TypeNode* prop_tn = nullptr;
                     for (auto& p : cls.properties)
                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                    if (prop_tn && prop_tn->class_name == "slice") {
-                        // M8: instance slice field — retain/release backing.
-                        arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
+                        // M8: instance slice/array field — retain/release backing.
+                        if (prop_tn->class_name == "slice")
+                            arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                        else {
+                            arcStoreRef(gep, v, false, isFreshArcExpr(*e.value));
+                            arcConsumeTemp(v);
+                        }
                     } else if (prop_tn && isArcRefType(*prop_tn)) {
                         bool iface_prop = false;
                         if (current_tu_)

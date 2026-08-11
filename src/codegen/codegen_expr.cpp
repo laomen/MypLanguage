@@ -2514,16 +2514,32 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
         arcPushTemp(ptr);   // fresh array rc=1 owned by this statement
         return ptr;
     }
-    // Always region-aware allocator (see generateNewExpr): dynamic extent — inside
-    // an @region's call scope it is reclaimed; otherwise acts as process-level.
-    llvm::Function* alloc_fn = module_->getFunction("myp_region_alloc");
+    // M8: dynamic T[] backing is ref-counted too (reuse the slice backing
+    // layout) so primitive arrays are reclaimed when the last owner goes away,
+    // not at process exit. elem_kind: 1=scalar/struct, 2=slice elements.
+    const TypeNode& et2 = e.element_type;
+    uint32_t elem_kind2 = (et2.class_name == "slice") ? 2 : 1;
+    llvm::Function* alloc_fn = module_->getFunction("myp_alloc_slice_backing");
     if (!alloc_fn) {
-        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
-        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_region_alloc", module_.get());
+        auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+            {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_),
+             llvm::Type::getInt32Ty(ctx_)}, false);
+        alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_alloc_slice_backing", module_.get());
     }
-    auto* ptr = builder_.CreateCall(alloc_fn, {byte_size}, "new_arr");
+    auto* ptr = builder_.CreateCall(alloc_fn,
+        {total,
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)elem_size),
+         llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), elem_kind2)},
+        "new_arr");
     if (elem_size > 0)
         builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
+    // NOTE: no arcPushTemp here — a fresh backing is owned by whichever slot
+    // stores it (local kind-0 slot / class property / struct field). Pushing a
+    // statement temp would release it at statement end even when a struct field
+    // or array element holds it (those stores don't consume temps) → use-after-
+    // free (two `Buffer(3)` sharing the same freed backing). An unstored temp
+    // backing simply stays rc=1 until exit (leak-safe, like slices).
     return ptr;
 }
 
