@@ -1,0 +1,15 @@
+// barrier: Barrier.create/wait/destroy → @test
+
+import test;
+import barrier;
+import atomic;
+
+@test void test_barrier() {
+    int h = Barrier.create(1);  // self-only barrier
+    int ok1 = Barrier.wait(h);
+    Test.assertEq(ok1, 0, "wait1");
+    int ok2 = Barrier.wait(h);
+    Test.assertEq(ok2, 0, "wait2");
+    Barrier.destroy(h);
+    Test.report("test_barrier", true);
+}

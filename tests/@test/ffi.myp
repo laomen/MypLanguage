@@ -1,0 +1,9 @@
+// FFI 测试 — 直接调用 C 运行时函数 → @test
+
+import test;
+
+@test void test_ffi() {
+    double r = __myp_math_sqrt(64.0);
+    Test.assertFloatEq(r, 8.0, 1e-9, "sqrt");
+    Test.report("test_ffi", true);
+}
