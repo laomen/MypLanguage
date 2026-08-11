@@ -1,0 +1,35 @@
+// crypto: Crc32 / Hash（MD5 / SHA-1 / SHA-256）已知测试向量 → @test
+
+import test;
+import crypto;
+
+@test void test_crypto() {
+    string empty = "";
+    string abc = "abc";
+    string num = "123456789";
+    string fox = "The quick brown fox jumps over the lazy dog";
+    string multi = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+
+    // CRC32 已知向量
+    Test.assertStrEq(Crc32.crc32Hex(empty), "00000000", "crc_empty");
+    Test.assertStrEq(Crc32.crc32Hex(num), "cbf43926", "crc_123456789");
+    Test.assertStrEq(Crc32.crc32Hex(abc), "352441c2", "crc_abc");
+    Test.assertStrEq(Crc32.crc32Hex(fox), "414fa339", "crc_fox");
+
+    // MD5
+    Test.assertStrEq(Hash.md5(empty), "d41d8cd98f00b204e9800998ecf8427e", "md5_empty");
+    Test.assertStrEq(Hash.md5(abc), "900150983cd24fb0d6963f7d28e17f72", "md5_abc");
+    Test.assertStrEq(Hash.md5(fox), "9e107d9d372bb6826bd81d3542a419d6", "md5_fox");
+
+    // SHA-1
+    Test.assertStrEq(Hash.sha1(empty), "da39a3ee5e6b4b0d3255bfef95601890afd80709", "sha1_empty");
+    Test.assertStrEq(Hash.sha1(abc), "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1_abc");
+    Test.assertStrEq(Hash.sha1(fox), "2fd4e1c67a2d28fced849ee1bb76e7391b93eb12", "sha1_fox");
+
+    // SHA-256（含跨块长消息 multi）
+    Test.assertStrEq(Hash.sha256(empty), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256_empty");
+    Test.assertStrEq(Hash.sha256(abc), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256_abc");
+    Test.assertStrEq(Hash.sha256(multi), "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1", "sha256_multi");
+
+    Test.report("test_crypto", true);
+}

@@ -1,0 +1,13 @@
+// date: 确定性字段（weekday/month 名）→ @test
+
+import test;
+import date;
+
+@test void test_date() {
+    Test.assertStrEq(Date.weekdayName(0), "Sunday", "w0");
+    Test.assertStrEq(Date.weekdayName(1), "Monday", "w1");
+    Test.assertStrEq(Date.weekdayName(6), "Saturday", "w6");
+    Test.assertStrEq(Date.monthName(1), "January", "m1");
+    Test.assertStrEq(Date.monthName(12), "December", "m12");
+    Test.report("test_date", true);
+}

@@ -1,0 +1,19 @@
+// base64: encode/decode → @test
+
+import test;
+import base64;
+
+@test void test_base64() {
+    string e1 = Base64.encode("hello");
+    Test.assertStrEq(e1, "aGVsbG8=", "enc hello");
+    string e2 = Base64.encode("a");
+    Test.assertStrEq(e2, "YQ==", "enc a");
+    string e3 = Base64.encode("ab");
+    Test.assertStrEq(e3, "YWI=", "enc ab");
+
+    Test.assertStrEq(Base64.decode(e1), "hello", "dec hello");
+    Test.assertStrEq(Base64.decode(e2), "a", "dec a");
+    Test.assertStrEq(Base64.decode(e3), "ab", "dec ab");
+
+    Test.report("test_base64", true);
+}
