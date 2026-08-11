@@ -294,6 +294,8 @@ private:
     llvm::Function* runtime_strlen_ = nullptr;
     llvm::Function* runtime_chr_ = nullptr;
     llvm::Function* runtime_ord_ = nullptr;
+    // In-place string append (`s = s + x` fast path, M4): runtime myp_str_append
+    llvm::Function* runtime_str_append_ = nullptr;
 
     // ---- RTTI (§五-4) ----
     llvm::Function* runtime_type_id_ = nullptr;
@@ -665,6 +667,10 @@ private:
     bool exprIsString(const Expr& e);
     // M8: is this `a + b` a string concatenation (fresh counted string)?
     bool isStringConcatExpr(const Expr& e);
+    // M4: convert a scalar operand to a string for concatenation (bool/byte/
+    // short/int/long/double → myp_to_string_*). Pointer operands pass through
+    // (borrowed). Result is a fresh counted string only when converted.
+    llvm::Value* stringifyForConcat(llvm::Value* v);
     // Resolve the class (mangled for generics) of a member-access object
     // expression: identifier (var/static), this, array element, `new X<...>()`,
     // or a call (via its return type).

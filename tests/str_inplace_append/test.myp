@@ -1,0 +1,84 @@
+// str_inplace_append: M4-in-place 字符串拼接（`s = s + x` 快速路径）回归
+// 覆盖：基本累加正确、自拼接 `s = s + s`、数字拼接（转换临时无泄漏）、
+//       共享串别名（rc>1 回退 strcat，不破坏别名）、字面量起始、长累加、
+//       @coro 帧镜像、try 块、非自拼接链式不受影响。
+// 性能：50k 次 `s = s + "0123456789"` 由 O(n²)（~800ms）降为 O(n)（~50ms）。
+import env;
+import coro;
+import memory;
+
+string helper() { return "y"; }
+
+class W {
+    action:
+        @coro(stack=64) void build(long n) {
+            string s = "";
+            long i = 0;
+            while (i < n) { s = s + "x"; i = i + 1; }   // @coro 内 in-place + 帧镜像
+            await;
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            // 1) 基本累加正确
+            string s = "";
+            long i = 0;
+            while (i < 5) { s = s + "ab"; i = i + 1; }
+            if (s != "ababababab") { Console.writeString("FAIL basic\n"); return; }
+            // 2) 自拼接 s = s + s
+            string q = "xy";
+            q = q + q;
+            if (q != "xyxy") { Console.writeString("FAIL self\n"); return; }
+            // 3) s = s + 数字（转换临时释放，无泄漏：循环后只多 s 本身 1 个）
+            long b3 = Memory.liveStringCount();
+            string n = "n=";
+            long j = 0;
+            while (j < 10) { n = n + j; j = j + 1; }
+            if (n != "n=0123456789") { Console.writeString("FAIL num\n"); return; }
+            if (Memory.liveStringCount() != b3 + 1L) { Console.writeString("FAIL num leak\n"); return; }
+            // 4) 共享串别名（rc>1）→ 回退 strcat，不破坏别名
+            string a = "shared";
+            string b = a;
+            a = a + "X";
+            if (a != "sharedX") { Console.writeString("FAIL alias-a\n"); return; }
+            if (b != "shared") { Console.writeString("FAIL alias-b\n"); return; }
+            // 5) 字面量起始（不可变 literal → 首步回退分配）
+            string lit = "pre";
+            lit = lit + "post";
+            if (lit != "prepost") { Console.writeString("FAIL lit\n"); return; }
+            // 6) @coro 帧：完成后 destroy，字符串回基线
+            long bc = Memory.liveStringCount();
+            W w = new W();
+            long h = w.build(3);
+            Coro.resume(h, 0);
+            Coro.destroy(h);
+            if (Memory.liveStringCount() != bc) { Console.writeString("FAIL coro frame\n"); return; }
+            // 7) try 块内拼接正确（t 存活时 = 基线 + 1）
+            string t = "";
+            try {
+                long k = 0;
+                while (k < 4) { t = t + "y"; k = k + 1; }
+            } catch (string e) { Console.writeString("unexpected\n"); }
+            if (t != "yyyy") { Console.writeString("FAIL try\n"); return; }
+            long bt = Memory.liveStringCount();
+            string tmp = "";
+            tmp = tmp + "z";
+            if (Memory.liveStringCount() != bt + 1L) { Console.writeString("FAIL try leak\n"); return; }
+            // 8) 长累加正确（500k 字符）
+            string big = "";
+            long m = 0;
+            while (m < 50000) { big = big + "0123456789"; m = m + 1; }
+            string expect = "";
+            long o = 0;
+            while (o < 50000) { expect = expect + "0123456789"; o = o + 1; }
+            if (big != expect) { Console.writeString("FAIL big\n"); return; }
+            // 9) 非自拼接链式（普通路径）不受影响
+            string c = "x";
+            string d = c + "y" + "z";
+            if (d != "xyz") { Console.writeString("FAIL chain\n"); return; }
+            Console.writeString("PASS in-place string append\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

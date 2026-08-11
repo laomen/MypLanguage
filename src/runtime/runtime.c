@@ -2197,6 +2197,51 @@ char* myp_strcat(const char* a, const char* b) {
     return result;
 }
 
+// In-place string append (`s = s + x` fast path, M4 post-M8). CONSUMES `s`:
+// if `s` is a unique counted string (rc==1, not an immortal literal and not
+// shared) its {node,header,bytes} block is realloc'd in place and extended —
+// O(1) amortized, no full copy per append. Otherwise falls back to
+// myp_strcat(s,x) and releases `s`. Either way the returned string is fresh
+// (rc=1) and owned by the caller, and `s` must not be released again.
+// `x` may alias `s` (self-append) — handled by falling back to strcat.
+char* myp_str_append(char* s, const char* x) {
+    if (!s) return myp_strdup(x);
+    if (!x) return s;
+    if (x == s) {   // reading x while reallocating s would be a use-after-free
+        char* r = myp_strcat(s, x);
+        myp_release(s);
+        return r;
+    }
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)s - MYP_OBJ_HEADER_SIZE);
+    size_t la = strlen(s), lb = strlen(x);
+    if (h->type_id == MYP_STR_TYPE_ID && h->rc == 1) {
+        // Unique counted string → in-place: unlink the intrusive alloc-list
+        // node (realloc may move the block), realloc, relink, extend.
+        char* base = (char*)s - MYP_OBJ_HEADER_SIZE;
+        myp_alloc_node_t* node = (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
+        size_t new_len, new_total;
+        if (!myp_add_overflow(la, lb, &new_len) &&
+            !myp_add_overflow(new_len, 1, &new_len) &&
+            !myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE,
+                              new_len, &new_total)) {
+            myp_alloc_list_remove(node);
+            void* nb = realloc(node, new_total);
+            if (nb) {
+                myp_alloc_node_t* nn = (myp_alloc_node_t*)nb;
+                myp_alloc_list_push(nn);
+                char* nd = (char*)nn + sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE;
+                memcpy(nd + la, x, lb);
+                nd[la + lb] = '\0';
+                return nd;
+            }
+            myp_alloc_list_push(node);   // realloc failed → restore, fall back
+        }
+    }
+    char* r = myp_strcat(s, x);
+    myp_release(s);
+    return r;
+}
+
 char* myp_strdup(const char* s) {
     if (!s) { char* r = (char*)myp_alloc(1); if (r) r[0] = '\0'; return r; }
     size_t len = strlen(s);

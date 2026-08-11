@@ -1462,6 +1462,44 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             diag_.error(e.range, "undefined variable '" + id.name + "'");
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
         }
+        // M4: in-place string append — `s = s + x` reuses s's counted buffer
+        // when it is unique (rc==1) via myp_str_append, turning O(n²) string
+        // accumulation into O(1)-amortized appends (no full copy per step).
+        // Only when the target is a string local and the RHS is `s + x` with
+        // the SAME variable on the left (the common accumulation pattern).
+        if (e.value && e.value->kind == ExprKind::BinaryOp &&
+            exprIsString(*e.target)) {
+            auto& bin = static_cast<const BinaryOpExpr&>(*e.value);
+            if (bin.op == BinaryOpKind::Add &&
+                bin.lhs->kind == ExprKind::Identifier &&
+                static_cast<const IdentifierExpr&>(*bin.lhs).name == id.name &&
+                exprIsString(*bin.lhs)) {
+                if (!runtime_str_append_) {
+                    auto* pt = llvm::PointerType::get(ctx_, 0);
+                    auto* ft = llvm::FunctionType::get(pt, {pt, pt}, false);
+                    runtime_str_append_ = llvm::Function::Create(ft,
+                        llvm::Function::ExternalLinkage, "myp_str_append",
+                        module_.get());
+                }
+                auto* cur = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), a);
+                llvm::Value* rhs = generateExpr(*bin.rhs);
+                bool rhs_was_ptr = rhs->getType()->isPointerTy();
+                rhs = stringifyForConcat(rhs);
+                auto* app = builder_.CreateCall(
+                    runtime_str_append_->getFunctionType(),
+                    runtime_str_append_, {cur, rhs});
+                // Freshly converted scalar → string temp is not consumed by
+                // myp_str_append; release it (same as the concat path).
+                if (!rhs_was_ptr && runtime_release_)
+                    builder_.CreateCall(runtime_release_, {rhs});
+                builder_.CreateStore(app, a);
+                // §五-1 收尾: mirror the slot's live object into the coroutine
+                // frame (append consumed the old value).
+                if (current_is_coro_ && (isArcClassLocal(a) || isArcFunctionLocal(a)))
+                    emitCoroFrameSet(a, app);
+                return app;
+            }
+        }
         auto* v = generateExpr(*e.value);
         llvm::Type* at_v = nullptr;
         if (auto* ai_v = llvm::dyn_cast<llvm::AllocaInst>(a)) {

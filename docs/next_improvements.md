@@ -122,6 +122,8 @@ M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写�
 14. ✅ **slice/数组 return-call 泄漏 + 泛型占位符 var 类型**（`17dd80e`）：`callReturnsArcSliceOrArray` 使 `return sliceCall()` 跳过 retain（修每次泄漏 1 引用）；`generateVarDecl` 顶部解析 `current_type_params_` 占位符（修 HashMap<int,string> rehash 的 `V re_val` 4 字节栈槽被 8 字节指针覆盖的隐患）。`tests/slice_arr_ret`/`generic_rehash`
 15. ✅ **`structCall().field` 直接成员访问**（`dca36b1`）：调用结果返回 struct VALUE 时 `ExtractValue` 取字段（此前静默返回整个 struct）
 16. ✅ **基准新增**（`bc71abd`/`4866025`）：`sieve_odd`（只筛奇数埃氏筛，N=10⁷）+ `montepi`（蒙特卡洛求 π，LCG 三语言逐位一致，N=10⁸），MYP/C++/Go 三版 + 接入 `run_compare.sh`/`run_compare_go.sh`。MYP 单线程确认（/proc Threads:1 + 单核钉定仍 1.6x）
+17. ✅ **M9 内存诊断 + 故障注入 + strict**（`1966900`）：`Memory` 诊断面（liveString/Array/Total/ByType、arena/region bytes、协程槽/栈池/退役字节）、`failAllocEnable(N)`/`MYP_FAIL_ALLOC=N` 确定性注入、strict 头校验（release 下溢/非法 type_id abort，ASAN 默认开）。**附带修复**：`string + 非string` 拼接转换临时泄漏（`myp_strcat` 不消费操作数）。`tests/mem_diag` + `tests/stress/run_oom_sweep.sh`
+18. ✅ **`s = s + x` in-place 字符串拼接**（M4 之后的 P2 性能精修）：`myp_str_append`——计数串 rc==1 时 unlink 侵入式 alloc 列表节点 → realloc 整块 → relink → 就地扩展（O(1) 摊还，无全量拷贝），否则回退 strcat+release；codegen `generateAssignment` 拦截 `var = var + x`（仅字符串局部、同一变量在左）。50k 次累加 808ms→52ms（15x）。**顺带修复**：`exprIsString(Identifier)` 原先依赖未填充的 `named_value_types_`（字符串局部一律判 false），改由局部槽的分配类型判定（var-var 拼接的 fresh 检测也因此正确）。`tests/str_inplace_append`（正确性+别名+自拼接+@coro 帧+try+500k 累加）
 
 ## 九、自举发现的语言 bug（需修复）
 

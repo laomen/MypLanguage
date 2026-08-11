@@ -304,47 +304,10 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     if (is_str_concat) {
         // Ensure both operands are strings
         auto* ptr_type = llvm::PointerType::get(ctx_, 0);
-        auto conv_to_string = [&](llvm::Value* v) -> llvm::Value* {
-            if (v->getType()->isPointerTy()) return v;
-            // bool (i1) → myp_to_string_bool(i32)（sext 0/1 → "true"/"false"）
-            if (v->getType()->isIntegerTy(1)) {
-                auto* ext = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
-                auto* fn = module_->getFunction("myp_to_string_bool");
-                if (!fn) {
-                    auto* ft = llvm::FunctionType::get(ptr_type, {llvm::Type::getInt32Ty(ctx_)}, false);
-                    fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_to_string_bool", module_.get());
-                }
-                return builder_.CreateCall(fn, {ext});
-            }
-            // byte (i8) / short (i16) 等窄整数 → 先加宽到 i32 再格式化
-            // （否则 i8/i16 直接传给 myp_to_string_i32 → LLVM verify 失败）。
-            // byte 无符号（0..255）→ zext；short 有符号 → sext。
-            if (v->getType()->isIntegerTy() &&
-                !v->getType()->isIntegerTy(32) &&
-                !v->getType()->isIntegerTy(64)) {
-                if (v->getType()->isIntegerTy(8))
-                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
-                else if (v->getType()->isIntegerTy(16))
-                    v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
-                else
-                    v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
-            }
-            auto fn_name = std::string("myp_to_string_") +
-                (v->getType()->isIntegerTy(32) ? "i32" :
-                 v->getType()->isIntegerTy(64) ? "i64" :
-                 v->getType()->isDoubleTy() ? "double" : "i32");
-            auto* conv_fn = module_->getFunction(fn_name);
-            if (!conv_fn) {
-                auto* ft = llvm::FunctionType::get(ptr_type,
-                    {v->getType()}, false);
-                conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
-            }
-            return builder_.CreateCall(conv_fn, {v});
-        };
         bool l_was_ptr = l->getType()->isPointerTy();   // operand already a string?
         bool r_was_ptr = r->getType()->isPointerTy();
-        l = conv_to_string(l);
-        r = conv_to_string(r);
+        l = stringifyForConcat(l);
+        r = stringifyForConcat(r);
         // Call runtime myp_strcat(l, r)
         auto* sc = module_->getFunction("myp_strcat");
         if (!sc) {
@@ -719,6 +682,16 @@ bool CodeGen::exprIsString(const Expr& e) {
             // String vars are pointer-typed slots NOT in var_class_map_ (a
             // class ref is also a pointer, but its name IS in var_class_map_).
             if (var_class_map_.find(id.name) != var_class_map_.end()) return false;
+            auto* v = getNamedValue(id.name);
+            if (auto* ai = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+                // A pointer-typed non-class local is a string. Slice/interface/
+                // function/struct locals are struct-typed, not plain pointers,
+                // but exclude them explicitly for safety.
+                if (!ai->getAllocatedType()->isPointerTy()) return false;
+                if (isArcSliceLocal(ai) || isArcFunctionLocal(ai)) return false;
+                if (arc_struct_slot_types_.find(ai) != arc_struct_slot_types_.end()) return false;
+                return true;
+            }
             auto* t = getNamedValueType(id.name);
             return t && t->isPointerTy();
         }
@@ -737,6 +710,46 @@ bool CodeGen::isStringConcatExpr(const Expr& e) {
     auto& b = static_cast<const BinaryOpExpr&>(e);
     if (b.op != BinaryOpKind::Add) return false;
     return exprIsString(*b.lhs) || exprIsString(*b.rhs);
+}
+
+// M4: convert a scalar operand to a string for concatenation. Pointer operands
+// (already strings) pass through borrowed. Returns a FRESH counted string only
+// for converted scalars (caller releases it after use).
+llvm::Value* CodeGen::stringifyForConcat(llvm::Value* v) {
+    if (!v) return v;
+    if (v->getType()->isPointerTy()) return v;
+    auto* ptr_type = llvm::PointerType::get(ctx_, 0);
+    // bool (i1) → myp_to_string_bool(i32)（sext 0/1 → "true"/"false"）
+    if (v->getType()->isIntegerTy(1)) {
+        auto* ext = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+        auto* fn = module_->getFunction("myp_to_string_bool");
+        if (!fn) {
+            auto* ft = llvm::FunctionType::get(ptr_type, {llvm::Type::getInt32Ty(ctx_)}, false);
+            fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_to_string_bool", module_.get());
+        }
+        return builder_.CreateCall(fn, {ext});
+    }
+    // byte (i8) / short (i16) 等窄整数 → 先加宽到 i32 再格式化
+    if (v->getType()->isIntegerTy() &&
+        !v->getType()->isIntegerTy(32) &&
+        !v->getType()->isIntegerTy(64)) {
+        if (v->getType()->isIntegerTy(8))
+            v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+        else if (v->getType()->isIntegerTy(16))
+            v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
+        else
+            v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+    }
+    auto fn_name = std::string("myp_to_string_") +
+        (v->getType()->isIntegerTy(32) ? "i32" :
+         v->getType()->isIntegerTy(64) ? "i64" :
+         v->getType()->isDoubleTy() ? "double" : "i32");
+    auto* conv_fn = module_->getFunction(fn_name);
+    if (!conv_fn) {
+        auto* ft = llvm::FunctionType::get(ptr_type, {v->getType()}, false);
+        conv_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+    }
+    return builder_.CreateCall(conv_fn, {v});
 }
 
 llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
