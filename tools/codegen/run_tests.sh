@@ -12,6 +12,7 @@ case "$MYPCC" in
     *) MYPCC="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")" ;;
 esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
+export MYP_CC="$MYPCC"   # 让 main.myp --verify 的子进程定位到同一编译器
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
 trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp' EXIT
