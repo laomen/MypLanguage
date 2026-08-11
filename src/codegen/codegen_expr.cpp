@@ -2327,20 +2327,28 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         auto* len_val = guardNonNegativeLen(generateExpr(*e.args[0]));
         auto* byte_size = builder_.CreateMul(len_val,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), es));
-        // Always allocate via the region-aware allocator: when called inside an
-        // @region's dynamic scope it lands in the region list (reclaimed on exit),
-        // otherwise it behaves exactly like the process-level allocator.
-        bool class_elements = isArcClassType(e.type_args[0]);
-        const char* alloc_name = class_elements
-            ? "myp_alloc_class_slice" : "myp_region_alloc";
-        llvm::Function* alloc_fn = module_->getFunction(alloc_name);
+        // M8: slice backing is ref-counted (MYP_ARR header layout); every slice
+        // VALUE holds a counted reference to it, so copies retain and the last
+        // release frees the backing (and its elements). elem_kind tells
+        // myp_release how to dispose elements: 0=class refs, 1=scalar/struct
+        // (none), 2=nested slice fat pointers.
+        const TypeNode& et = e.type_args[0];
+        bool class_elements = isArcClassType(et);
+        uint32_t elem_kind = class_elements ? 0
+            : (et.class_name == "slice" ? 2 : 1);
+        llvm::Function* alloc_fn = module_->getFunction("myp_alloc_slice_backing");
         if (!alloc_fn) {
-            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0), {llvm::Type::getInt64Ty(ctx_)}, false);
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::Type::getInt64Ty(ctx_), llvm::Type::getInt32Ty(ctx_),
+                 llvm::Type::getInt32Ty(ctx_)}, false);
             alloc_fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
-                                              alloc_name, module_.get());
+                "myp_alloc_slice_backing", module_.get());
         }
-        llvm::Value* alloc_size = class_elements ? len_val : byte_size;
-        auto* ptr = builder_.CreateCall(alloc_fn, {alloc_size}, "slice_data");
+        auto* ptr = builder_.CreateCall(alloc_fn,
+            {len_val,
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), (uint64_t)es),
+             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), elem_kind)},
+            "slice_data");
         if (es > 0)
             builder_.CreateMemSet(ptr, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0), byte_size, llvm::Align(8));
         auto* ptr_ty = llvm::PointerType::get(ctx_, 0);

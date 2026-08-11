@@ -183,6 +183,10 @@ private:
     void emitCoroFrameSet(llvm::Value* alloca, llvm::Value* obj);
     void emitCoroFrameClear(llvm::Value* alloca);
     llvm::Value* emitRetain(llvm::Value* data);
+    // M8: retain the counted backing of a slice value ({data, len} fat pointer).
+    llvm::Value* emitRetainSlice(llvm::Value* slice_val);
+    void arcStoreSlice(llvm::Value* slot, llvm::Value* new_val, bool is_fresh);
+    bool isArcSliceLocal(llvm::Value* alloca);
     // ARC store into a strong reference slot (local alloca or property GEP):
     // retain(new) unless fresh, release(old), caller then stores new.
     void arcStoreRef(llvm::Value* slot, llvm::Value* new_val,

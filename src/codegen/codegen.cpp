@@ -964,6 +964,16 @@ void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
         builder_.CreateCall(fn, {data, llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), cnt)});
         return;
     }
+    if (kind == 4) {
+        // M8: slice slot holds a { T* data; int64 len } fat pointer — release
+        // the counted backing via data (index 0).
+        auto* slt = llvm::StructType::get(ctx_,
+            {llvm::PointerType::get(ctx_, 0), llvm::Type::getInt64Ty(ctx_)});
+        auto* fat = builder_.CreateLoad(slt, alloca);
+        auto* data = builder_.CreateExtractValue(fat, 0);
+        builder_.CreateCall(runtime_release_, {data});
+        return;
+    }
     llvm::Value* v;
     if (kind == 1 || kind == 2) {
         // Interface / function-value fat pointer {obj, ...} → release index 0.
@@ -982,11 +992,26 @@ llvm::Value* CodeGen::emitRetain(llvm::Value* data) {
         builder_.CreateCall(runtime_retain_, {data});
     return data;
 }
+// M8: retain the counted backing of a slice value ({data, len} fat pointer).
+llvm::Value* CodeGen::emitRetainSlice(llvm::Value* slice_val) {
+    if (!slice_val || !slice_val->getType()->isStructTy()) return slice_val;
+    auto* data = builder_.CreateExtractValue(slice_val, 0);
+    if (runtime_retain_)
+        builder_.CreateCall(runtime_retain_, {data});
+    return slice_val;
+}
 bool CodeGen::isArcClassLocal(llvm::Value* alloca) {
     if (!alloca) return false;
     for (auto& scope : arc_scope_slots_)
         for (auto& s : scope)
             if (s.alloca == alloca && s.kind == 0) return true;
+    return false;
+}
+bool CodeGen::isArcSliceLocal(llvm::Value* alloca) {
+    if (!alloca) return false;
+    for (auto& scope : arc_scope_slots_)
+        for (auto& s : scope)
+            if (s.alloca == alloca && s.kind == 4) return true;
     return false;
 }
 bool CodeGen::isArcFunctionLocal(llvm::Value* alloca) {
@@ -1014,6 +1039,22 @@ void CodeGen::arcStoreRef(llvm::Value* slot, llvm::Value* new_val,
     }
     if (!is_fresh && new_data && runtime_retain_)
         builder_.CreateCall(runtime_retain_, {new_data});
+    if (old_data && runtime_release_)
+        builder_.CreateCall(runtime_release_, {old_data});
+}
+// M8: strong-store into a slice slot ({data,len} fat pointer): retain the new
+// backing (unless the RHS is a fresh new slice), release the old backing.
+void CodeGen::arcStoreSlice(llvm::Value* slot, llvm::Value* new_val, bool is_fresh) {
+    if (!slot || !new_val) return;
+    auto* slt = llvm::StructType::get(ctx_,
+        {llvm::PointerType::get(ctx_, 0), llvm::Type::getInt64Ty(ctx_)});
+    auto* old = builder_.CreateLoad(slt, slot);
+    auto* old_data = builder_.CreateExtractValue(old, 0);
+    if (!is_fresh) {
+        auto* new_data = builder_.CreateExtractValue(new_val, 0);
+        if (runtime_retain_)
+            builder_.CreateCall(runtime_retain_, {new_data});
+    }
     if (old_data && runtime_release_)
         builder_.CreateCall(runtime_release_, {old_data});
 }

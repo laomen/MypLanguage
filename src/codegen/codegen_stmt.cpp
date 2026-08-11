@@ -522,8 +522,15 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         setNamedValue(d.name, a);
         if (d.init_expr) {
             auto* v = generateExpr(*d.init_expr);
-            if (v && v->getType() == slt)
+            if (v && v->getType() == slt) {
+                // M8: the slice slot holds a counted reference to the backing.
+                // A fresh (new slice / call) result transfers its rc=1; an
+                // alias (slice b = a) must retain the shared backing.
+                if (!isFreshArcExpr(*d.init_expr))
+                    emitRetainSlice(v);
                 builder_.CreateStore(v, a);
+                registerArcSlot(a, 4);
+            }
         } else {
             builder_.CreateStore(llvm::ConstantAggregateZero::get(slt), a);
         }
@@ -1044,12 +1051,14 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             bool ret_is_arc_ref =
                 current_ret_ti_.kind == TypeKind::Class ||
                 current_ret_ti_.kind == TypeKind::Interface ||
+                current_ret_ti_.kind == TypeKind::Slice ||
                 (current_ret_ti_.kind == TypeKind::Array &&
                  current_ret_ti_.element_type &&
                  current_ret_ti_.element_type->kind == TypeKind::Class);
             if (!skip_retain && ret_is_arc_ref) {
                 llvm::Value* rdata = ret_val;
-                if (current_ret_ti_.kind == TypeKind::Interface &&
+                if ((current_ret_ti_.kind == TypeKind::Interface ||
+                     current_ret_ti_.kind == TypeKind::Slice) &&
                     ret_val->getType()->isStructTy())
                     rdata = builder_.CreateExtractValue(ret_val, 0);
                 if (runtime_retain_)
@@ -1342,7 +1351,11 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                 const TypeNode* prop_tn = nullptr;
                                 for (auto& p : cls.properties)
                                     if (p.name == id.name) { prop_tn = &p.type; break; }
-                                if (prop_tn && isArcRefType(*prop_tn)) {
+                                if (prop_tn && prop_tn->class_name == "slice") {
+                                    // M8: slice field store — retain new backing
+                                    // (unless fresh), release the old one.
+                                    arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                } else if (prop_tn && isArcRefType(*prop_tn)) {
                                     bool iface_prop = false;
                                     if (current_tu_)
                                         for (auto& ifd : current_tu_->interfaces)
@@ -1381,6 +1394,9 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             // Function-value slot: release the old closure, retain the new one.
             arcStoreRef(a, v, true, isFreshArcExpr(*e.value));
             arcConsumeTemp(v);   // fresh lambda RHS closure now owned by the local
+        } else if (isArcSliceLocal(a)) {
+            // M8: slice slot — retain new backing (unless fresh), release old.
+            arcStoreSlice(a, v, isFreshArcExpr(*e.value));
         }
         builder_.CreateStore(v, a);
         // §五-1 收尾: mirror the slot's live object into the coroutine frame.
@@ -1416,6 +1432,20 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         if (runtime_release_)
                             builder_.CreateCall(runtime_release_, {old});
                         arcConsumeTemp(v);
+                    } else if (sti->element_type->kind == TypeKind::Slice) {
+                        // M8: slice<slice<T>> — element is a {data,len} fat
+                        // pointer holding a counted backing: retain the new
+                        // (unless fresh), release the old.
+                        auto* slt = getLLVMType(*sti->element_type);
+                        auto* old = builder_.CreateLoad(slt, p);
+                        auto* old_data = builder_.CreateExtractValue(old, 0);
+                        if (!isFreshArcExpr(*e.value)) {
+                            auto* new_data = builder_.CreateExtractValue(v, 0);
+                            if (runtime_retain_)
+                                builder_.CreateCall(runtime_retain_, {new_data});
+                        }
+                        if (runtime_release_)
+                            builder_.CreateCall(runtime_release_, {old_data});
                     }
                     builder_.CreateStore(v, p);
                     return v;
@@ -1626,7 +1656,10 @@ assign_gep:
                                     const TypeNode* prop_tn = nullptr;
                                     for (auto& p : cls.properties)
                                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                                    if (prop_tn && isArcRefType(*prop_tn)) {
+                                    if (prop_tn && prop_tn->class_name == "slice") {
+                                        // M8: static slice field — retain/release backing.
+                                        arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                                    } else if (prop_tn && isArcRefType(*prop_tn)) {
                                         bool iface_prop = false;
                                         if (current_tu_)
                                             for (auto& ifd : current_tu_->interfaces)
@@ -1752,7 +1785,10 @@ assign_gep:
                     const TypeNode* prop_tn = nullptr;
                     for (auto& p : cls.properties)
                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                    if (prop_tn && isArcRefType(*prop_tn)) {
+                    if (prop_tn && prop_tn->class_name == "slice") {
+                        // M8: instance slice field — retain/release backing.
+                        arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
+                    } else if (prop_tn && isArcRefType(*prop_tn)) {
                         bool iface_prop = false;
                         if (current_tu_)
                             for (auto& ifd : current_tu_->interfaces)

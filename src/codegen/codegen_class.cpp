@@ -232,6 +232,15 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
         if (st) {
             for (size_t pi = 0; pi < cls.properties.size(); pi++) {
                 auto& prop = cls.properties[pi];
+                if (prop.type.class_name == "slice") {
+                    // M8: slice field → release the counted backing via data
+                    // (index 0 of the {data,len} fat pointer).
+                    auto* gep = b.CreateStructGEP(st, self, pi);
+                    auto* fat = b.CreateLoad(getLLVMType(typeNodeToCodegenType(prop.type)), gep);
+                    auto* data = b.CreateExtractValue(fat, 0);
+                    b.CreateCall(runtime_release_, {data});
+                    continue;
+                }
                 if (!isArcRefType(prop.type)) continue;
                 // Interface slot = fat pointer { data, vtable } → release data.
                 bool iface = false;

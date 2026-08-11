@@ -1566,6 +1566,11 @@ typedef struct myp_obj_header {
 // and myp_release (reads obj-4 → detects MYP_ARR_TYPE_ID) work uniformly on
 // both objects and arrays.
 #define MYP_ARR_TYPE_ID 0xFFFFFFFFu
+// Element-kind of a ref-counted array/slice backing, stored in `pad` so the
+// header size stays 24 bytes. myp_release uses it to dispose elements.
+#define MYP_ARR_ELEM_CLASS  0u   // elements are class refs → release each
+#define MYP_ARR_ELEM_SCALAR 1u   // scalar/struct elements → just free block
+#define MYP_ARR_ELEM_SLICE  2u   // elements are {data,len} fat ptrs → release data
 
 typedef struct myp_arr_header {
     uint64_t count;
@@ -1614,14 +1619,27 @@ uint32_t myp_release(void* obj) {
         // Cache type_id BEFORE the destroy stub runs — the stub frees the
         // object, so reading h->* afterward would be a use-after-free.
         uint32_t tid = h->type_id;
-        // Ref-counted class array: release every element (strong class-ref
-        // slots), then free the header+data block.
+        // Ref-counted array/slice backing: dispose elements per element-kind,
+        // then free the header+data block.
         if (tid == MYP_ARR_TYPE_ID) {
             myp_arr_header_t* ah =
                 (myp_arr_header_t*)((char*)obj - MYP_ARR_HEADER_SIZE);
-            void** elems = (void**)obj;
-            for (uint64_t i = 0; i < ah->count; i++)
-                myp_release(elems[i]);
+            if (ah->pad == MYP_ARR_ELEM_SLICE) {
+                // Elements are slice fat pointers {data, len} (16 bytes):
+                // release each inner backing. Stride by elem_size so a
+                // non-16-byte struct-of-slice layout still walks correctly.
+                char* p = (char*)obj;
+                for (uint64_t i = 0; i < ah->count; i++) {
+                    void* inner_data = *(void**)p;
+                    myp_release(inner_data);
+                    p += ah->elem_size;
+                }
+            } else if (ah->pad == MYP_ARR_ELEM_CLASS) {
+                void** elems = (void**)obj;
+                for (uint64_t i = 0; i < ah->count; i++)
+                    myp_release(elems[i]);
+            }
+            // MYP_ARR_ELEM_SCALAR: no per-element release.
             myp_free_class_array(obj);
         }
         // Dispatch to the per-TU destroy stub (cascades reference fields).
@@ -1671,6 +1689,29 @@ static void myp_free_class_array(void* data) {
     free(node);
 }
 
+// ---- Ref-counted slice backing (§五-1 M8) ----
+// Same header layout as class arrays; the `pad` field records the element kind
+// so myp_release knows how to dispose elements (class refs / none / nested
+// slice fat pointers). This is what makes slice<T> values ARC-managed: every
+// slice value holds a counted reference to this backing.
+void* myp_alloc_slice_backing(uint64_t count, uint32_t elem_size, uint32_t elem_kind) {
+    size_t data_bytes, total;
+    if (myp_mul_overflow((size_t)count, (size_t)elem_size, &data_bytes))
+        myp_oom((size_t)count);
+    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_ARR_HEADER_SIZE, data_bytes, &total))
+        myp_oom(data_bytes);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)myp_xmalloc(total);
+    char* base = (char*)node + sizeof(myp_alloc_node_t);
+    myp_arr_header_t* h = (myp_arr_header_t*)base;
+    h->count = count;
+    h->elem_size = elem_size;
+    h->pad = elem_kind;
+    h->rc = 1;
+    h->type_id = MYP_ARR_TYPE_ID;
+    myp_alloc_list_push(node);
+    return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
+}
+
 typedef struct myp_class_slice_cleanup {
     struct myp_class_slice_cleanup* next;
     void* data;
@@ -1705,7 +1746,7 @@ static void myp_release_class_slices_from_depth(int region_depth) {
 }
 
 void* myp_alloc_class_slice(uint64_t count) {
-    void* data = myp_alloc_class_array(count, (uint32_t)sizeof(void*));
+    void* data = myp_alloc_slice_backing(count, (uint32_t)sizeof(void*), MYP_ARR_ELEM_CLASS);
     if (data) myp_register_class_slice(data);
     return data;
 }

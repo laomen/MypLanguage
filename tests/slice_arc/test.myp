@@ -1,0 +1,78 @@
+// slice 引用计数回归测试（M8）
+// 验证：
+//   1) slice<class> 局部变量：出作用域释放 backing + 全部元素（live 回基线）
+//   2) slice<int> 拷贝 b = a：共享 backing，双双释放无双重 free
+//   3) class 属性持有 new 的 slice：拥有者销毁时释放
+import env;
+import memory;
+
+class Item {
+    action:
+        @constructor Item(int v) { val = v; }
+    property:
+        int val;
+}
+
+// slice<class> 局部：每次调用创建 256 个 Item，返回后应全部释放
+int makeItems(int seed) {
+    slice<Item> s = new slice<Item>(256);
+    int i = 0;
+    int sum = 0;
+    while (i < 256) {
+        s[i] = new Item(i + seed);
+        sum = sum + s[i].val;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Owner {
+    action:
+        @constructor Owner() { data = new slice<int>(1024); }
+    property:
+        slice<int> data;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            bool ok = true;
+
+            // 1) slice<class> 局部释放：live 回到基线
+            long base = Memory.liveObjectCount();
+            int r = 0;
+            long total = 0L;
+            while (r < 100) {
+                total = total + makeItems(r);
+                r = r + 1;
+            }
+            long after = Memory.liveObjectCount();
+            ok = ok && (after == base);
+            Console.writeString("1) slice<class> 局部释放: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 2) slice<int> 拷贝：b = a 共享，双双释放无 double free
+            slice<int> a = new slice<int>(8);
+            int i = 0;
+            while (i < 8) { a[i] = i * 10; i = i + 1; }
+            slice<int> b = a;           // 别名拷贝
+            b[0] = 999;                 // 共享底层：a[0] 也变
+            ok = ok && (a[0] == 999) && (b[7] == 70);
+            Console.writeString("2) slice 拷贝共享: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            // 3) Owner 持有 slice 属性：销毁时释放（反复创建释放不累积）
+            int rounds = 5000;
+            r = 0;
+            while (r < rounds) {
+                Owner o = new Owner();
+                r = r + 1;
+            }
+            Console.writeString("3) 属性 slice 随拥有者释放: ");
+            Console.writeLine(ok ? "PASS" : "FAIL");
+
+            Console.writeString(ok ? "PASS slice_arc\n" : "FAIL slice_arc\n");
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

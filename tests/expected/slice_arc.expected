@@ -1,0 +1,4 @@
+1) slice<class> 局部释放: PASS
+2) slice 拷贝共享: PASS
+3) 属性 slice 随拥有者释放: PASS
+PASS slice_arc
