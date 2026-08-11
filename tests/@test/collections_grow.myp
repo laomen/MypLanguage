@@ -1,0 +1,92 @@
+// collections_grow: 所有集合突破 1024 上限（动态扩容）→ @test
+
+import test;
+import collections;
+
+@test void test_collections_grow() {
+    // ArrayList<T> — 5000 个元素
+    ArrayList<int> list = new ArrayList<int>();
+    for (int i = 0; i < 5000; i = i + 1) list.add(i * 3);
+    Test.assertEq(list.size(), 5000, "al size");
+    Test.assertEq(list.get(0), 0, "al get0");
+    Test.assertEq(list.get(2500), 7500, "al get2500");
+    Test.assertEq(list.get(4999), 14997, "al get4999");
+
+    // HashMap<K,V> — 5000 个键
+    HashMap<int, int> hm = new HashMap<int, int>();
+    for (int i = 0; i < 5000; i = i + 1) hm.put(i, i * 2);
+    Test.assertEq(hm.size(), 5000, "hm size");
+    Test.assertEq(hm.get(0, -1), 0, "hm get0");
+    Test.assertEq(hm.get(4999, -1), 9998, "hm get4999");
+    Test.assertEq(hm.contains(2500) ? 1 : 0, 1, "hm has2500");
+    Test.assertEq(hm.contains(9999) ? 1 : 0, 0, "hm has9999");
+    hm.remove(2500);
+    Test.assertEq(hm.contains(2500) ? 1 : 0, 0, "hm after_rm");
+    Test.assertEq(hm.get(2500, -1), -1, "hm get_rm");
+
+    // Set<T> — 5000 个元素
+    Set<int> s = new Set<int>();
+    for (int i = 0; i < 5000; i = i + 1) s.add(i * 2);
+    Test.assertEq(s.size(), 5000, "set size");
+    Test.assertEq(s.contains(0) ? 1 : 0, 1, "set has0");
+    Test.assertEq(s.contains(9998) ? 1 : 0, 1, "set has9998");
+    Test.assertEq(s.contains(9999) ? 1 : 0, 0, "set has9999");
+    s.remove(9998);
+    Test.assertEq(s.contains(9998) ? 1 : 0, 0, "set after_rm");
+
+    // Deque<T> — 5000 个元素，两端操作
+    Deque<int> dq = new Deque<int>();
+    for (int i = 0; i < 5000; i = i + 1) dq.pushBack(i);
+    Test.assertEq(dq.size(), 5000, "dq size");
+    Test.assertEq(dq.popFront(), 0, "dq front");
+    Test.assertEq(dq.popBack(), 4999, "dq back");
+    dq.pushFront(9999);
+    Test.assertEq(dq.popFront(), 9999, "dq front2");
+    Test.assertEq(dq.size(), 4998, "dq sz2");
+
+    // Queue<T> — 5000 个元素
+    Queue<int> q = new Queue<int>();
+    for (int i = 0; i < 5000; i = i + 1) q.enqueue(i * 2);
+    Test.assertEq(q.size(), 5000, "q size");
+    Test.assertEq(q.dequeue(), 0, "q dq0");
+    Test.assertEq(q.dequeue(), 2, "q dq1");
+    Test.assertEq(q.peek(), 4, "q peek");
+
+    // Stack<T> — 5000 个元素
+    Stack<int> st = new Stack<int>();
+    for (int i = 0; i < 5000; i = i + 1) st.push(i);
+    Test.assertEq(st.size(), 5000, "st size");
+    Test.assertEq(st.pop(), 4999, "st pop");
+    Test.assertEq(st.pop(), 4998, "st pop2");
+
+    // PriorityQueue<T> — 5000 个元素（最小堆）
+    PriorityQueue<int> pq = new PriorityQueue<int>();
+    for (int i = 0; i < 5000; i = i + 1) pq.push((5000 - i) * 7);
+    Test.assertEq(pq.size(), 5000, "pq size");
+    Test.assertEq(pq.pop(), 7, "pq min");
+    Test.assertEq(pq.pop(), 14, "pq min2");
+    Test.assertEq(pq.peek(), 21, "pq peek");
+
+    // LinkedList<T> — 5000 个元素
+    LinkedList<int> ll = new LinkedList<int>();
+    for (int i = 0; i < 5000; i = i + 1) ll.addLast(i * 3);
+    Test.assertEq(ll.size(), 5000, "ll size");
+    Test.assertEq(ll.removeFirst(), 0, "ll first");
+    Test.assertEq(ll.removeLast(), 14997, "ll last");
+    ll.addFirst(7777);
+    Test.assertEq(ll.removeFirst(), 7777, "ll first2");
+    Test.assertEq(ll.size(), 4998, "ll sz2");
+
+    // StrHashMap<V> — 5000 个字符串键
+    StrHashMap<int> sm = new StrHashMap<int>();
+    for (int i = 0; i < 5000; i = i + 1) sm.put("k" + i, i * 5);
+    Test.assertEq(sm.size(), 5000, "sm size");
+    Test.assertEq(sm.get("k0", -1), 0, "sm k0");
+    Test.assertEq(sm.get("k4999", -1), 24995, "sm k4999");
+    Test.assertEq(sm.contains("k2500"), 1, "sm hask2500");
+    Test.assertEq(sm.contains("kx"), 0, "sm haskx");
+    sm.remove("k4999");
+    Test.assertEq(sm.contains("k4999"), 0, "sm after_rm");
+
+    Test.report("test_collections_grow", true);
+}
