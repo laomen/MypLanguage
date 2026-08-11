@@ -107,10 +107,17 @@ class SchemaParser {
             return s;
         }
 
-        // 解析一个 FfiFunc（路径形如 "ffi.0" / "resources.0.open"；name 字段用 "c"）
+        // 解析一个 FfiFunc（路径形如 "ffi.0" / "resources.0.open"；函数名字段
+        // 兼容 "c"（resources）与 "name"（独立 ffi 段））
         FfiFunc parseFfiFunc(Json j, string path) {
             FfiFunc f = new FfiFunc();
-            f.setName(j.getString(path + ".c"));
+            string nm = "";
+            if (j.type(path + ".c") != -1) {
+                nm = j.getString(path + ".c");
+            } else {
+                nm = j.getString(path + ".name");
+            }
+            f.setName(nm);
             f.setRet(j.getString(path + ".ret"));
             int pn = arrLen(j, path + ".params");
             int m = 0;
