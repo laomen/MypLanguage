@@ -38,3 +38,19 @@ import test;
     Test.report("test_return", true);
     return 0;
 }
+
+class Node { action: @constructor Node() {} }
+
+// 扩展断言 API（long/float 不等、空引用、fail）
+@test void test_ext_assertions() {
+    Test.assertLongEq(10000000000L, 10000000000L);
+    Test.assertLongNeq(1L, 2L);
+    Test.assertFloatEq(3.14159, 3.14159, 0.001);
+    Test.assertFloatNeq(1.0, 2.0, 0.001);
+    Test.assertStrNeq("a", "b");
+    Node p = new Node();
+    Node n = null;
+    Test.assertNotNull<Node>(p);
+    Test.assertNull<Node>(n);
+    Test.report("test_ext_assertions", true);
+}

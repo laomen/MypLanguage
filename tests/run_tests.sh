@@ -206,6 +206,21 @@ else
     echo "  (no test framework files found)"
 fi
 
+# 语言内建测试套件（@test + --test）专项：正常套件 exit 0、失败套件 exit 1、
+# 汇总行、Test.fail 消息、扩展断言 API（long/float/空引用）。
+if [ -f "$PROJ_ROOT/tests/test_myp_test.sh" ]; then
+    tf_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_test.sh" 2>&1)
+    if echo "$tf_out" | grep -qE "myp-test PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (@test 运行器：退出码反映失败 + 汇总 + 扩展断言)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$tf_out" | tail -15
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS myp_test(@test-framework)"
+    fi
+fi
+
 # =============================================
 # 第4部分: 无崩溃回归 (compiler must never crash)
 # =============================================

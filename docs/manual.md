@@ -2605,7 +2605,11 @@ makeCalls(3);                    // 生成 3 条 Console.write(...)
 #   RUN: test_math
 #   PASS: test_math
 # === MYP Tests Complete ===
+#   assertions: 12 passed, 0 failed
 ```
+
+**退出码反映失败**：运行器在结束时打印断言汇总，并返回 **非零退出码**（任一断言
+失败 → exit 1，全部通过 → exit 0）——脚本/CI 可直接用 `$?` 判断套件是否通过。
 
 使用 `@test` 注解标记测试函数和 action，配合 `Test` 类使用断言：
 
@@ -2619,6 +2623,22 @@ import test;
     Test.report("test_example", true);
 }
 ```
+
+**`Test` 断言 API**：
+
+| 断言 | 说明 |
+|------|------|
+| `Test.assert(bool)` / `assertTrue` / `assertFalse` | 布尔条件 |
+| `Test.assertEq(a, b)` / `assertNeq(a, b)` | 整数相等/不等 |
+| `Test.assertLongEq(a, b)` / `assertLongNeq(a, b)` | 长整数 |
+| `Test.assertFloatEq(a, b, eps)` / `assertFloatNeq(a, b, eps)` | 浮点（带容差）|
+| `Test.assertStrEq(a, b)` / `assertStrNeq(a, b)` | 字符串 |
+| `Test.assertNull<T>(p)` / `assertNotNull<T>(p)` | 空引用（泛型，任意 class）|
+| `Test.fail(msg)` | 硬失败：记录失败并打印消息（不中断后续断言）|
+| `Test.report(name, passed)` | 报告单个测试 PASS/FAIL |
+
+失败断言打印 `ASSERTION FAILED: ...`（或 `FAILED: <msg>`）到 stderr 并计数，**不
+中断后续测试**——所有失败都会收集，最终汇总 + 非零退出码。
 
 ### 压力测试（tests/stress/）
 

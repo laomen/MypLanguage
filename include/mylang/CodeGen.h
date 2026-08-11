@@ -382,6 +382,12 @@ private:
     llvm::Function* runtime_assert_long_eq_ = nullptr;
     llvm::Function* runtime_assert_str_neq_ = nullptr;
     llvm::Function* runtime_test_report_ = nullptr;
+    llvm::Function* runtime_test_fail_msg_ = nullptr;
+    llvm::Function* runtime_test_summary_ = nullptr;
+    llvm::Function* runtime_assert_long_neq_ = nullptr;
+    llvm::Function* runtime_assert_float_neq_ = nullptr;
+    llvm::Function* runtime_assert_null_ = nullptr;
+    llvm::Function* runtime_assert_not_null_ = nullptr;
 
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;

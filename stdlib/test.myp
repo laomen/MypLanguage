@@ -26,9 +26,12 @@ class Test {
             __myp_assert_neq(a, b);
         }
 
-        // 长整数相等断言
+        // 长整数相等/不等断言
         void assertLongEq(long a, long b) {
             __myp_assert_long_eq(a, b);
+        }
+        void assertLongNeq(long a, long b) {
+            __myp_assert_long_neq(a, b);
         }
 
         // 浮点相等断言（带容差）
@@ -36,6 +39,9 @@ class Test {
             double diff = a - b;
             if (diff < 0.0) diff = -diff;
             __myp_assert(diff <= eps);
+        }
+        void assertFloatNeq(double a, double b, double eps) {
+            __myp_assert_float_neq(a, b, eps);
         }
 
         // 字符串相等断言
@@ -46,10 +52,19 @@ class Test {
             __myp_assert_str_neq(a, b);
         }
 
-        // 强制失败（输出消息后终止测试）
+        // 空引用断言（泛型：任意 class 引用）
+        void assertNull<T>(T p) {
+            if (p == null) __myp_assert(true);
+            else __myp_assert_null(p);
+        }
+        void assertNotNull<T>(T p) {
+            if (p != null) __myp_assert(true);
+            else __myp_assert_not_null(p);
+        }
+
+        // 强制失败（记录失败并打印消息，不中断后续测试）
         void fail(string msg) {
-            __myp_assert_str_eq("", msg);
-            __myp_assert(false);
+            __myp_test_fail_msg(msg);
         }
 
         // 报告测试结果

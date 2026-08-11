@@ -384,6 +384,12 @@ void myp_assert(int cond);
 void myp_assert_eq(int a, int b);
 void myp_assert_str_eq(const char* a, const char* b);
 void myp_test_report(const char* name, int passed);
+void myp_test_fail_msg(const char* msg);
+int myp_test_summary(void);
+void myp_assert_long_neq(int64_t a, int64_t b);
+void myp_assert_float_neq(double a, double b, double eps);
+void myp_assert_null(const void* p);
+void myp_assert_not_null(const void* p);
 
 #ifdef __cplusplus
 }

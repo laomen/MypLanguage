@@ -1667,7 +1667,15 @@ void CodeGen::generateTestRunner() {
     auto* fmt_done = builder_.CreateGlobalStringPtr("=== MYP Tests Complete ===\n");
     builder_.CreateCall(printf_fn, {fmt_done});
 
-    builder_.CreateRet(llvm::ConstantInt::get(i32t, 0));
+    // Print assertion totals and return non-zero exit code on failure
+    // (myp_test_summary returns 1 if any assertion failed). Previously the
+    // runner always returned 0, so a failing test suite was indistinguishable
+    // from a green one in scripts/CI.
+    auto* summary = module_->getFunction("myp_test_summary");
+    llvm::Value* exit_code = llvm::ConstantInt::get(i32t, 0);
+    if (summary)
+        exit_code = builder_.CreateCall(summary, {});
+    builder_.CreateRet(exit_code);
     current_function_ = nullptr;
 }
 

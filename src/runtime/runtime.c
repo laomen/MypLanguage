@@ -3744,6 +3744,67 @@ void myp_test_report(const char* name, int passed) {
     }
 }
 
+// Hard failure with a message (Test.fail / user-facing): record a failure and
+// print the reason. Previously Test.fail abused an empty-string assert, which
+// double-counted and produced a confusing "ASSERTION FAILED" message.
+void myp_test_fail_msg(const char* msg) {
+    fprintf(stderr, "  FAILED: %s\n", msg ? msg : "(no message)");
+    myp_test_fail_count++;
+}
+
+// Print assertion totals and return the process exit code for the test runner:
+// 0 = all assertions passed, 1 = at least one failed. Without this the runner
+// always exited 0, so a failing test suite was indistinguishable from a green
+// one (CI / scripts could not detect failures).
+int myp_test_summary(void) {
+    printf("  assertions: %d passed, %d failed\n",
+           myp_test_pass_count, myp_test_fail_count);
+    return myp_test_fail_count > 0 ? 1 : 0;
+}
+
+// -- Extended assertion helpers (Test.assertLongNeq / assertFloatNeq) --
+
+void myp_assert_long_neq(int64_t a, int64_t b) {
+    if (a == b) {
+        fprintf(stderr, "  ASSERTION FAILED: %ld == %ld (expected not equal)\n",
+                (long)a, (long)b);
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_float_neq(double a, double b, double eps) {
+    double diff = a - b;
+    if (diff < 0.0) diff = -diff;
+    if (diff <= eps) {
+        fprintf(stderr, "  ASSERTION FAILED: %g == %g (expected not equal)\n", a, b);
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+// -- Null pointer assertions (Test.assertNull / assertNotNull) --
+
+void myp_assert_null(const void* p) {
+    if (p != NULL) {
+        fprintf(stderr, "  ASSERTION FAILED: expected null\n");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
+void myp_assert_not_null(const void* p) {
+    if (p == NULL) {
+        fprintf(stderr, "  ASSERTION FAILED: expected non-null\n");
+        myp_test_fail_count++;
+    } else {
+        myp_test_pass_count++;
+    }
+}
+
 // ======================
 // Barrier 同步 (pthread_barrier 封装)
 // ======================

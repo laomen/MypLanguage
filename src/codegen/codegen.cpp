@@ -2267,6 +2267,25 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_test_report_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {p, i32}, false),
         llvm::Function::ExternalLinkage, "myp_test_report", module_.get());
+    runtime_test_fail_msg_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_test_fail_msg", module_.get());
+    runtime_test_summary_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_test_summary", module_.get());
+    runtime_assert_long_neq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_long_neq", module_.get());
+    auto* d_ty = llvm::Type::getDoubleTy(ctx_);
+    runtime_assert_float_neq_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {d_ty, d_ty, d_ty}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_float_neq", module_.get());
+    runtime_assert_null_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_null", module_.get());
+    runtime_assert_not_null_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_assert_not_null", module_.get());
 
     // Memory allocator
     runtime_alloc_ = llvm::Function::Create(
@@ -2366,6 +2385,12 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_assert_str_eq"] = runtime_assert_str_eq_;
     intrinsic_map_["__myp_assert_str_neq"] = runtime_assert_str_neq_;
     intrinsic_map_["__myp_test_report"] = runtime_test_report_;
+    intrinsic_map_["__myp_test_fail_msg"] = runtime_test_fail_msg_;
+    intrinsic_map_["__myp_test_summary"] = runtime_test_summary_;
+    intrinsic_map_["__myp_assert_long_neq"] = runtime_assert_long_neq_;
+    intrinsic_map_["__myp_assert_float_neq"] = runtime_assert_float_neq_;
+    intrinsic_map_["__myp_assert_null"] = runtime_assert_null_;
+    intrinsic_map_["__myp_assert_not_null"] = runtime_assert_not_null_;
     // __myp_throw is handled specially in generateCall (calls myp_throw + longjmp)
     intrinsic_map_["now"] = runtime_now_ms_;
     intrinsic_map_["sleep"] = runtime_sleep_ms_;
