@@ -1,0 +1,13 @@
+// 字符串插值测试 → @test
+import test;
+
+@test void test_string_interp() {
+    string name = "MYP";
+    int version = 24;
+    double pi = 3.14;
+
+    Test.assertStrEq(name, "MYP", "name");
+    Test.assertEq(version, 24, "version");
+    Test.assertFloatEq(pi, 3.14, 0.0001, "pi");
+    Test.report("test_string_interp", true);
+}
