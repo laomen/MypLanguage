@@ -1,9 +1,7 @@
-// arc_m2: ARC M-ARC-2（§五-1，additive）
-// 覆盖：T[] 数组元素 retain/release（别名入数组不悬垂、覆盖释放旧元素）、
-// 语句末临时释放（new 丢弃/作实参不累积）、return new 转移（不泄漏）、
-// return 借用（命名局部 retain-at-return + epilogue release 不泄漏）、
-// 循环临时参数零累积
-import env;
+// arc_m2: ARC M-ARC-2 → @test
+// T[] 元素 retain/覆盖释放 / 语句末临时释放 / return new 转移 / return 借用 / 循环临时零累积 / 批量摘链
+
+import test;
 import memory;
 
 class Node {
@@ -19,55 +17,55 @@ class Node {
         int val = 0;
 }
 
-int pmRun() {
+@test void test_arc_m2() {
     long base = Memory.liveObjectCount();
     Node host = new Node();
 
-    // --- T[] 数组：别名入数组 retain，局部释放后元素仍存活 ---
+    // T[] 数组：别名入数组 retain，局部释放后元素仍存活
     {
         Node[] arr = new Node[2];
         {
             Node x = new Node();
             x.setVal(11);
-            arr[0] = x;              // retain(x) → arr 持有
-        }                            // x 释放 → arr[0] 仍存活（rc 1）
+            arr[0] = x;
+        }
         int got = arr[0].getVal();
-        Console.writeString("arr_alias: got=" + got + " ");
+        Test.assertEq(got, 11, "arr_alias got");
         Node y = new Node();
         y.setVal(22);
         arr[0] = y;                  // retain(y) + release(旧 arr[0]=x)
-        Console.writeString("arr_overwrite: " + arr[0].getVal() + "\n");
+        Test.assertEq(arr[0].getVal(), 22, "arr_overwrite");
     }
 
-    // --- 语句末临时释放：new 作实参（consume 存储 retain）不累积 ---
+    // 语句末临时释放：new 作实参（consume 存储 retain）不累积
     for (int i = 0; i < 1000; i = i + 1) {
-        host.consume(new Node());    // new 临时 → consume 存 child → 语句末释放临时
+        host.consume(new Node());
     }
     long after_consume = Memory.liveObjectCount() - base;
-    Console.writeString("temp_consume: host_child_alive=1 after=" + after_consume + " ");
+    Test.assertEq(after_consume, 2, "temp_consume after=2");   // host + child
 
-    // --- 纯丢弃临时：`new Node();` 语句 → 立即释放 ---
+    // 纯丢弃临时：`new Node();` 语句 → 立即释放
     for (int i = 0; i < 1000; i = i + 1) {
         new Node();
     }
     long after_discard = Memory.liveObjectCount() - base;
-    Console.writeString("temp_discard: after=" + after_discard + "\n");
+    Test.assertEq(after_discard, 2, "temp_discard after=2");
 
-    // --- return new → 转移（不泄漏） ---
+    // return new → 转移（不泄漏）
     for (int i = 0; i < 1000; i = i + 1) {
         Node fresh = host.makeFresh(i);
     }
     long after_return = Memory.liveObjectCount() - base;
-    Console.writeString("return_new: after=" + after_return + " ");
+    Test.assertEq(after_return, 2, "return_new after=2");
 
-    // --- return 借用（命名局部）→ retain-at-return + epilogue release 不泄漏 ---
+    // return 借用（命名局部）→ retain-at-return + epilogue release 不泄漏
     for (int i = 0; i < 1000; i = i + 1) {
         Node c = host.makeChild(i);
     }
     long after_borrow = Memory.liveObjectCount() - base;
-    Console.writeString("return_borrow: after=" + after_borrow + "\n");
+    Test.assertEq(after_borrow, 2, "return_borrow after=2");
 
-    // --- tracking list：头/尾/中间节点均可 O(1) 摘链，批量释放后不残留 ---
+    // tracking list：头/尾/中间节点均可 O(1) 摘链，批量释放后不残留
     long before_bulk = Memory.liveObjectCount();
     {
         Node[] bulk = new Node[256];
@@ -81,9 +79,7 @@ int pmRun() {
         for (int i = 0; i < 256; i = i + 1) bulk[i] = null;
     }
     long after_bulk = Memory.liveObjectCount() - before_bulk;
-    Console.writeString("tracking_unlink: after=" + after_bulk + "\n");
+    Test.assertEq(after_bulk, 0, "tracking_unlink after=0");
 
-    Console.writeString("arc m2 all ok\n");
-    return 0;
+    Test.report("test_arc_m2", true);
 }
-int main() { int c = pmRun(); return c; }

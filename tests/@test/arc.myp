@@ -1,0 +1,84 @@
+// arc: 引用计数内存管理 → @test
+// 生命周期 / 级联释放 / 自赋值别名 / 属性 retain / 借用返回 / 循环临时不累积
+
+import test;
+import memory;
+
+class Node {
+    action:
+        void setNext(Node n) { next = n; }          // 属性存储 → retain(n)
+        Node getNext() { return next; }              // 借用返回 → retain-at-return
+        void setChild(Node c) { child = c; }
+        void setParent(Node p) { parent = p; }
+        int getVal() { return val; }
+        void setVal(int v) { val = v; }
+    property:
+        Node next;
+        Node child;
+        Node parent;
+        int val = 0;
+}
+
+@test void test_arc() {
+    long base = Memory.liveObjectCount();
+
+    // 生命周期：作用域结束后实例释放
+    {
+        Node a = new Node();
+        Node b = new Node();
+        long mid = Memory.liveObjectCount();
+        Test.assertEq(mid - base, 2, "life +2");
+    }
+    long after = Memory.liveObjectCount();
+    Test.assertEq(after - base, 0, "after_scope=0");
+
+    // 级联释放：容器销毁级联释放子对象
+    long c1 = Memory.liveObjectCount();
+    {
+        Node box = new Node();
+        Node c = new Node();
+        Node d = new Node();
+        box.setChild(c);
+        box.setNext(d);
+        long held = Memory.liveObjectCount() - c1;
+        Test.assertEq(held, 3, "cascade +3");
+    }
+    long c2 = Memory.liveObjectCount() - c1;
+    Test.assertEq(c2, 0, "after_box=0");
+
+    // 自赋值 / 别名
+    {
+        Node x = new Node();
+        x = x;
+        Node y = x;
+        y.setVal(7);
+        Test.assertEq(x.getVal(), 7, "alias x");
+        Test.assertEq(y.getVal(), 7, "alias y");
+    }
+    long a2 = Memory.liveObjectCount() - base;
+    Test.assertEq(a2, 0, "after_alias=0");
+
+    // 访问器借用返回 + 调用方释放
+    {
+        Node head = new Node();
+        Node mid2 = new Node();
+        head.setNext(mid2);
+        Node got = head.getNext();
+        int same = got == mid2 ? 1 : 0;
+        Test.assertEq(same, 1, "accessor same");
+    }
+    long a3 = Memory.liveObjectCount() - base;
+    Test.assertEq(a3, 0, "after_accessor=0");
+
+    // 循环内临时对象不累积
+    long before_loop = Memory.liveObjectCount();
+    for (int i = 0; i < 1000; i = i + 1) {
+        Node t = new Node();
+        t.setVal(i);
+    }
+    long after_loop = Memory.liveObjectCount();
+    Test.assertEq(before_loop - base, 0, "loop before");
+    Test.assertEq(after_loop - base, 0, "loop after");
+
+    Test.report("test_arc", true);
+}

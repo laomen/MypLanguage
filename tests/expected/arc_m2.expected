@@ -1,5 +1,0 @@
-arr_alias: got=11 arr_overwrite: 22
-temp_consume: host_child_alive=1 after=2 temp_discard: after=2
-return_new: after=2 return_borrow: after=2
-tracking_unlink: after=0
-arc m2 all ok
