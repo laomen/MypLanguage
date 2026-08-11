@@ -144,7 +144,10 @@ private:
     void error(const SourceRange& range, const std::string& msg);
     bool expectBool(const TypeInfo& type, const SourceRange& range);
     bool expectNumeric(const TypeInfo& type, const SourceRange& range);
-    void buildCurrentClassMemberTypes(const ClassDecl& decl);
+    // Builds current_class_member_types_ for class tu.classes[ci]. Takes the TU
+    // + index (NOT a ClassDecl&) because resolving generic member types may
+    // monomorphize (tu.classes reallocates) → a held reference would dangle.
+    void buildCurrentClassMemberTypes(TranslationUnit& tu, size_t ci);
     ClassDecl* findClassDecl(const std::string& name);
 
     // ---- Mapping cycle detection ----

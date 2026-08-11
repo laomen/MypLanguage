@@ -21,36 +21,59 @@ ClassDecl* Sema::findClassDecl(const std::string& name) {
     return &current_tu_->classes[it->second];
 }
 
-void Sema::buildCurrentClassMemberTypes(const ClassDecl& decl) {
+void Sema::buildCurrentClassMemberTypes(TranslationUnit& tu, size_t ci) {
+    // ⚠ 悬垂引用（UAF）：解析泛型属性/返回类型时，typeNodeToTypeInfo 可能触发
+    // monomorphization（current_tu_->classes.push_back → vector 重分配），使外部
+    // 传入的 tu.classes[ci] 引用失效。故改为按下标循环，每轮重取 tu.classes[ci]，
+    // 且 name/type 先拷到局部——绝不跨 typeNodeToTypeInfo 调用持有类内引用。
     current_class_member_types_.clear();
-    for (auto& prop : decl.properties)
-        current_class_member_types_.emplace(prop.name, typeNodeToTypeInfo(prop.type));
-    for (auto& action : decl.actions) {
-        TypeInfo func_type(TypeKind::Function);
-        func_type.return_type = std::make_shared<TypeInfo>(
-            typeNodeToTypeInfo(action.return_type));
-        for (auto& param : action.params)
-            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
-        populateFuncTypeMeta(func_type, action.params);
-        current_class_member_types_.emplace(action.name, std::move(func_type));
+
+    size_t nprops = tu.classes[ci].properties.size();
+    for (size_t pi = 0; pi < nprops; pi++) {
+        std::string pname = tu.classes[ci].properties[pi].name;
+        TypeNode ptype = tu.classes[ci].properties[pi].type;
+        current_class_member_types_.emplace(std::move(pname), typeNodeToTypeInfo(ptype));
     }
-    for (auto& func : decl.functions) {
+
+    size_t nactions = tu.classes[ci].actions.size();
+    for (size_t ai = 0; ai < nactions; ai++) {
         TypeInfo func_type(TypeKind::Function);
-        func_type.return_type = std::make_shared<TypeInfo>(
-            typeNodeToTypeInfo(func.return_type));
-        for (auto& param : func.params)
-            func_type.param_types.push_back(typeNodeToTypeInfo(param.type));
-        populateFuncTypeMeta(func_type, func.params);
-        current_class_member_types_.emplace(func.name, std::move(func_type));
+        TypeNode rtype = tu.classes[ci].actions[ai].return_type;
+        func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(rtype));
+        size_t nparams = tu.classes[ci].actions[ai].params.size();
+        for (size_t pi = 0; pi < nparams; pi++) {
+            TypeNode ptype = tu.classes[ci].actions[ai].params[pi].type;
+            func_type.param_types.push_back(typeNodeToTypeInfo(ptype));
+        }
+        populateFuncTypeMeta(func_type, tu.classes[ci].actions[ai].params);
+        current_class_member_types_.emplace(tu.classes[ci].actions[ai].name, std::move(func_type));
     }
-    for (auto& event : decl.events) {
+
+    size_t nfuncs = tu.classes[ci].functions.size();
+    for (size_t fi = 0; fi < nfuncs; fi++) {
+        TypeInfo func_type(TypeKind::Function);
+        TypeNode rtype = tu.classes[ci].functions[fi].return_type;
+        func_type.return_type = std::make_shared<TypeInfo>(typeNodeToTypeInfo(rtype));
+        size_t nparams = tu.classes[ci].functions[fi].params.size();
+        for (size_t pi = 0; pi < nparams; pi++) {
+            TypeNode ptype = tu.classes[ci].functions[fi].params[pi].type;
+            func_type.param_types.push_back(typeNodeToTypeInfo(ptype));
+        }
+        populateFuncTypeMeta(func_type, tu.classes[ci].functions[fi].params);
+        current_class_member_types_.emplace(tu.classes[ci].functions[fi].name, std::move(func_type));
+    }
+
+    size_t nevts = tu.classes[ci].events.size();
+    for (size_t ei = 0; ei < nevts; ei++) {
         TypeInfo event_type(TypeKind::Function);
         event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
-        for (auto& param : event.params) {
-            event_type.param_types.push_back(typeNodeToTypeInfo(param.type));
+        size_t nparams = tu.classes[ci].events[ei].params.size();
+        for (size_t pi = 0; pi < nparams; pi++) {
+            TypeNode ptype = tu.classes[ci].events[ei].params[pi].type;
+            event_type.param_types.push_back(typeNodeToTypeInfo(ptype));
             event_type.param_is_ref.push_back(false);
         }
-        current_class_member_types_.emplace(event.name, std::move(event_type));
+        current_class_member_types_.emplace(tu.classes[ci].events[ei].name, std::move(event_type));
     }
 }
 
@@ -127,7 +150,7 @@ bool Sema::analyze(TranslationUnit& tu) {
             continue;
         current_class_name_ = tu.classes[ci].name;
         in_class_method_ = true;
-        buildCurrentClassMemberTypes(tu.classes[ci]);
+        buildCurrentClassMemberTypes(tu, ci);
         // Actions (may trigger monomorphization → tu.classes may reallocate)
         size_t nactions = tu.classes[ci].actions.size();
         for (size_t ai = 0; ai < nactions; ai++) {
