@@ -1,0 +1,53 @@
+// generic_struct: 泛型以 struct 类型做实参 → @test
+// 修复：sema typeName 缺 TypeKind::Struct → 实例类命名 Box_unknown_inst 与调用点
+// Box_T0_inst_get 失配（Box_get 未定义 / LLVM verify）。此前 Box<T0> 链接失败。
+// 现覆盖：泛型类属性存储/读取 struct、泛型函数传递 struct、多 struct 实参区分实例。
+
+import test;
+
+struct Point { int x; int y; }
+struct Vec2 { int a; int b; }
+
+class Box<T> {
+    property: T v;
+    action: void set(T val) { v = val; }
+    action: T get() { return v; }
+}
+
+T id<T>(T x) { return x; }
+
+int runSetGet() {
+    Box<Point> b = new Box<Point>();
+    Point p; p.x = 3; p.y = 4;
+    b.set(p);
+    Point q = b.get();
+    return q.x + q.y;   // 7
+}
+
+@test void test_generic_struct() {
+    // 泛型类属性存/取 struct
+    int r = runSetGet();
+    Test.assertEq(r, 7, "Box<Point> set/get");
+
+    // 泛型函数传 struct
+    Point p; p.x = 10; p.y = 32;
+    Point q = id<Point>(p);
+    Test.assertEq(q.x, 10, "id<Point>.x");
+    Test.assertEq(q.y, 32, "id<Point>.y");
+
+    // 两个不同 struct 实参 → 独立实例互不干扰
+    Box<Point> bp = new Box<Point>();
+    Box<Vec2> bv = new Box<Vec2>();
+    Point pp; pp.x = 1; pp.y = 2;
+    Vec2 vv; vv.a = 8; vv.b = 9;
+    bp.set(pp);
+    bv.set(vv);
+    Point got_p = bp.get();
+    Vec2 got_v = bv.get();
+    Test.assertEq(got_p.x, 1, "Box<Point>.x");
+    Test.assertEq(got_p.y, 2, "Box<Point>.y");
+    Test.assertEq(got_v.a, 8, "Box<Vec2>.a");
+    Test.assertEq(got_v.b, 9, "Box<Vec2>.b");
+
+    Test.report("test_generic_struct", true);
+}

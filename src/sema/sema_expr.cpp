@@ -2205,6 +2205,7 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Void:   return "void";
         case TypeKind::Null:   return "null";
         case TypeKind::Class:  return type.class_name;
+        case TypeKind::Struct: return type.class_name;
         case TypeKind::Interface: return type.class_name;
         case TypeKind::Array:
             if (type.element_type) return typeName(*type.element_type) + "[]";

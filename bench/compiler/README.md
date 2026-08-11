@@ -40,9 +40,10 @@ JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
 | P4 | struct 数量 × 字段读取 | N-1 无关 struct + N 次目标 struct 字段读取 |
 | P5 | enum 数量 × variant 构造 | N-1 无关 enum + N 次目标 enum variant 构造 |
 | P6 | 类数量 × 方法调用 fallback | N-1 冲突类 + 已知 action/static/function:/new 链式调用 |
-| P7 | 泛型实例数量 | N 个独立泛型类模板 + N 个泛型函数各实例化一次 |
+| P7 | 泛型实例数量 | 同一 `Box<T>` 模板 × N 个不同 struct 实参 + N 个泛型函数调用 |
 
-## 当前基线（release `build/mypc`，commit `be087cd`，ITERS=3，2026-08-11）
+## 当前基线（release `build/mypc`，P1-P6 于 commit `be087cd` 测得，P7 为修复后新设计
+重测，ITERS=3，2026-08-11）
 
 | Bench | N | total(ms) | front(ms) | RSS(KB) | 2N/N 斜率 |
 |------:|---:|---:|---:|---:|---:|
@@ -65,9 +66,9 @@ JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
 | P6 | 1000 | 329 | 273 | 72 362 | — |
 | P6 | 2000 | 925 | 842 | 111 620 | 2.81 |
 | P6 | 4000 | 2 967 | 2 833 | 189 626 | **3.21 超线性** |
-| P7 | 1000 | 486 | 413 | 78 728 | — |
-| P7 | 2000 | 1 373 | 1 261 | 124 176 | 2.83 |
-| P7 | 4000 | 4 739 | 4 555 | 214 808 | **3.45 超线性** |
+| P7 | 1000 | 820 | 752 | 108 674 | — |
+| P7 | 2000 | 2 437 | 2 364 | 180 586 | 2.97 |
+| P7 | 4000 | 8 673 | 8 510 | 325 198 | **3.56 超线性** |
 
 ### 基线解读
 
@@ -77,12 +78,13 @@ JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
 - **P3** 仍偏超线性（2.70），热点为 CodeGen 接口类型判定逐变量扫全部接口。
 - **P4** 线性（1.65），struct 字段读取缓存优化已生效（历史 5.4 倍提升已固化）。
 - **P5** 趋势超线性（2.70），对应计划中的 enum-name/variant-name 缓存。
-- **P6 / P7** 明显超线性（3.21 / 3.45），对应方法解析 fallback 全类扫描与泛型实例线性
-  查找（O(N²)）——roadmap 预测的两处优化点。
+- **P6 / P7** 明显超线性（3.21 / 3.56），对应方法解析 fallback 全类扫描与泛型实例线性
+  查找（O(N²)）——roadmap 预测的两处优化点。修复 struct 泛型后 P7 改用同一模板多实
+  例设计，O(N²) 斜率更显著（4000 → 8.67 s）。
 
-## 已知发现（bench 触发）
+## 已知发现（bench 触发，已修复）
 
-**泛型类/泛型函数以 struct 类型做实参时链接失败。** 复现：
+**泛型类/泛型函数以 struct 类型做实参时链接失败**（bench P7 原始设计触发）：
 
 ```myp
 struct T0 { int x; }
@@ -90,10 +92,11 @@ class Box<T> { action: T get() { return v; } property: T v; }
 int main() { Box<T0> b = new Box<T0>(); T0 v = b.get(); return 0; }
 ```
 
-- 泛型类：`undefined reference to 'Box_get'`（方法符号未按实例 mangling，struct 实参
-  时未发出定义；int/double 等原语实参正常）。
-- 泛型函数：`LLVM verify failed: Call parameter type does not match function signature!`
-
-故 P7 当前用**独立泛型模板 + 原语实参**（N 个 `Box_i<int>` / `id_i<int>`）保持可运行；
-待修复 struct 实参泛型后，P7 应改用 N 个不同 struct 类型实参来测**同一模板多实例查找**
-的真实 O(N²) 路径。
+- 现象：泛型类 `undefined reference to 'Box_get'`；泛型函数 `LLVM verify failed`。
+- 根因：**`Sema::typeName` 缺少 `TypeKind::Struct` 分支** → 返回 "unknown"。sema 给
+  单态化实例类命名 `Box_unknown_inst`（定义 `Box_unknown_inst_get`），而调用点 codegen
+  的 `mangleConcreteTypeNode` 正确算出 `Box_T0_inst`（`Box_T0_inst_get`）→ 符号失配。
+- 修复：`sema_expr.cpp` `typeName` 补 `case TypeKind::Struct: return type.class_name;`。
+  泛型类/函数以 struct 实参即可正常编译链接与运行。
+- 回归保护：`tests/@test/generic_struct.myp`（Box<Point> 属性存/取、id<Point> 传递、
+  多 struct 实参独立实例，7 断言）。

@@ -145,22 +145,29 @@ def p6_method_call_fallback(n):
 
 def p7_generic_instances(n):
     lines = []
-    # N 个不同的泛型类模板，各实例化一次（原语实参）。
-    # 注：泛型类/函数以 struct 类型做实参时当前编译器链接失败（Box_get 未定义 /
-    # LLVM verify），故此处用原语实参以保持基准可运行；该缺陷见 README「已知发现」。
+    # N 个不同 struct 类型实参 → 同一 Box<T> 模板的 N 个不同实例 + N 个泛型函数
+    # 调用（测已存在实例查找 / 新实例追加 / tu.classes/functions 扩容 / O(N²) 斜率）。
+    # 注：struct 实参泛型缺陷已修复（sema typeName 补 TypeKind::Struct）。
     for i in range(n):
-        lines.append(f"class Box{i}<T> {{")
-        lines.append(f"    property: T v;")
-        lines.append(f"    action: T get() {{ return v; }}")
-        lines.append("}")
-        lines.append(f"T id{i}<T>(T x) {{ return x; }}")
-    lines.append("int main() {")
+        lines.append(f"struct T{i} {{ int x; }}")
+    lines.append("class Box<T> {")
+    lines.append("    property: T v;")
+    lines.append("    action: void set(T val) { v = val; }")
+    lines.append("    action: T get() { return v; }")
+    lines.append("}")
+    lines.append("T id<T>(T x) { return x; }")
+    lines.append("int run() {")
     lines.append("    int s = 0;")
     for i in range(n):
-        lines.append(f"    Box{i}<int> b{i} = new Box{i}<int>();")
-        lines.append(f"    s = s + b{i}.get() + id{i}<int>(1);")
+        lines.append(f"    Box<T{i}> b{i} = new Box<T{i}>();")
+        lines.append(f"    T{i} z{i};")
+        lines.append(f"    b{i}.set(z{i});")
+        lines.append(f"    T{i} v{i} = b{i}.get();")
+        lines.append(f"    T{i} w{i} = id<T{i}>(v{i});")
+        lines.append("    s = s + 1;")
     lines.append("    return s;")
     lines.append("}")
+    lines.append("int main() { return run(); }")
     return _out(lines)
 
 
