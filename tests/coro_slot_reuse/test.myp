@@ -1,0 +1,46 @@
+import env;
+import coro;
+class Worker {
+    action:
+        @coro(stack=64) long run(long x) { return x + 1; }
+}
+class Tester {
+    action:
+        @constructor Tester() {
+            long acc = 0;
+            long i = 0;
+            while (i < 200000) {
+                Worker w = new Worker();
+                long h = w.run(i);          // @coro 调用 → create + eager 启动即完成
+                acc = acc + Coro.result(h); // 结果在完成后可读（句柄不失效直到槽复用）
+                i = i + 1;
+            }
+            // acc = sum_{i=0}^{199999} (i+1) = 200000*200001/2 = 20000100000
+            if (acc != 20000100000L) {
+                Console.writeString("FAIL acc=" + acc + "\n");
+                return;
+            }
+            // M1 陈旧句柄安全：槽被复用后，旧句柄（代际过期）必须失效，
+            // 不得别名新协程。
+            Worker w = new Worker();
+            long hA = w.run(7);      // 占槽（如 0），eager 完成
+            long rA = Coro.result(hA); // 读结果 → 槽回收
+            long hB = w.run(9);      // 复用槽 0，generation++
+            if (rA != 8) { Console.writeString("FAIL rA\n"); return; }
+            // 旧句柄：is_active=0、status=-1、result=0（不指向新协程）
+            if (Coro.isActive(hA) != 0 || Coro.status(hA) != -1) {
+                Console.writeString("FAIL stale handle alias\n");
+                return;
+            }
+            // 新句柄仍有效且结果正确
+            if (Coro.result(hB) != 10) {
+                Console.writeString("FAIL hB result\n");
+                return;
+            }
+            Console.writeString("M1 slot-reuse churn ok (200000 coros)\n");
+        }
+}
+int main() {
+    Tester m = new Tester();
+    return 0;
+}

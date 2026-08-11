@@ -3828,6 +3828,12 @@ typedef struct {
     void (*fn)(void); // entry function for this coroutine
     int64_t result;   // return value slot (C2)
     int64_t exec_result; // EXEC：worker 交付的文件读结果（char*，本线程 tracked）
+    // M1 句柄代际化 + 槽位复用：generation 在槽被复用（create）时递增；句柄编码
+    // {generation<<32 | slot}，消费句柄时校验代际，旧句柄稳定失效、绝不操作新协程。
+    uint32_t generation;
+    int result_pending;  // 1 = 已完成且结果未读；result() 读取后清 0 → 槽可复用
+    int on_free_list;    // 1 = 该槽已在空闲复用列表
+    int discard_result;  // 1 = 协程被 destroy（无结果可读），完成后直接回收槽
 } myp_coro_t;
 
 // Dynamic slot array (no hard cap — grows on demand, limited only by memory).
@@ -3843,6 +3849,53 @@ static __thread myp_coro_t** myp_coros = NULL;
 static __thread int myp_coro_count = 0;      // number of slots in use (includes inactive/reused)
 static __thread int myp_coro_capacity = 0;
 static __thread int myp_coro_current = -1;
+// M1: 空闲槽复用列表 + 句柄编解码。句柄 = {generation<<32 | slot}（用户面）；
+// 内部机制（等待表/调度器快照/exec pump/myp_coro_current）仍用槽号。
+static __thread int* myp_coro_free_slots = NULL;
+static __thread int myp_coro_free_count = 0;
+static __thread int myp_coro_free_cap = 0;
+
+static inline int64_t myp_coro_make_handle(int slot) {
+    if (slot < 0 || slot >= myp_coro_count || !myp_coros[slot]) return -1;
+    return ((int64_t)myp_coros[slot]->generation << 32) | (int64_t)(uint32_t)slot;
+}
+static inline int myp_coro_handle_slot(int64_t h) { return (int)(uint32_t)h; }
+static inline int myp_coro_handle_valid(int64_t h) {
+    int slot = (int)(uint32_t)h;
+    uint32_t gen = (uint32_t)((uint64_t)h >> 32);
+    return slot >= 0 && slot < myp_coro_count && myp_coros[slot] &&
+           myp_coros[slot]->generation == gen;
+}
+static void myp_coro_push_free(int slot) {
+    if (slot < 0 || slot >= myp_coro_count || !myp_coros[slot]) return;
+    if (myp_coros[slot]->on_free_list) return;   // 已在列表，防双入
+    if (myp_coro_free_count >= myp_coro_free_cap) {
+        if (myp_coro_free_cap > INT_MAX / 2) return;
+        int nc = myp_coro_free_cap ? myp_coro_free_cap * 2 : 16;
+        size_t nbytes;
+        if (myp_mul_overflow((size_t)nc, sizeof(int), &nbytes)) return;
+        int* np = (int*)realloc(myp_coro_free_slots, nbytes);
+        if (!np) return;
+        myp_coro_free_slots = np;
+        myp_coro_free_cap = nc;
+    }
+    myp_coros[slot]->on_free_list = 1;
+    myp_coro_free_slots[myp_coro_free_count++] = slot;
+}
+static int myp_coro_pop_free(void) {
+    if (myp_coro_free_count <= 0) return -1;
+    int s = myp_coro_free_slots[--myp_coro_free_count];
+    if (s >= 0 && s < myp_coro_count && myp_coros[s])
+        myp_coros[s]->on_free_list = 0;
+    return s;
+}
+// 槽可复用条件：不活跃 且 无未读结果 且 未在列表。满足则入空闲列表。
+static void myp_coro_try_recycle(int slot) {
+    if (slot < 0 || slot >= myp_coro_count || !myp_coros[slot]) return;
+    myp_coro_t* c = myp_coros[slot];
+    if (!c->active && !c->result_pending && !c->on_free_list)
+        myp_coro_push_free(slot);
+}
 // Value passing between coroutine and scheduler (thread-local; only one
 // coroutine of a thread runs at a time):
 //   myp_coro_yield_val  — coroutine → scheduler (value passed out by await)
@@ -3880,7 +3933,9 @@ static int myp_coro_grow(void) {
 // churn. Stacks come in different sizes (@coro(stack=N)); we keep the size with
 // each slot and hand out the best match. The pool is bounded so it can never
 // grow unboundedly in long-running programs.
-#define MYP_CORO_STACK_POOL_MAX 128
+#define MYP_CORO_STACK_POOL_MAX 128   // 栈池缓存个数上限
+#define MYP_CORO_STACK_POOL_MAX_BYTES (16u * 1024 * 1024)  // M2: 栈池总字节上限/线程
+#define MYP_CORO_STACK_BIG (1024u * 1024)                  // M2: ≥1MiB 大栈直接归还系统
 typedef struct {
     char* ptr;
     size_t size;
@@ -3888,11 +3943,19 @@ typedef struct {
 static __thread myp_coro_stack_slot_t* myp_coro_stack_pool = NULL;
 static __thread int myp_coro_stack_pool_count = 0;
 static __thread int myp_coro_stack_pool_capacity = 0;
+static __thread size_t myp_coro_stack_pool_bytes = 0;   // M2: 池内总字节数
 
-// Add a stack to the pool (free it if the pool is full or allocation fails).
+// Add a stack to the pool (free it if the pool is full / over byte cap / too big).
 static void myp_coro_stack_pool_add(char* ptr, size_t size) {
     if (!ptr) return;
-    if (myp_coro_stack_pool_count >= MYP_CORO_STACK_POOL_MAX) { free(ptr); return; }
+    // M2: 大栈直接归还系统；个数或总字节上限达到也直接 free，避免多线程/突发
+    // 协程把每线程缓存堆到 ~16MiB+，峰值 RSS 受控。
+    if (size >= MYP_CORO_STACK_BIG ||
+        myp_coro_stack_pool_count >= MYP_CORO_STACK_POOL_MAX ||
+        (size > MYP_CORO_STACK_POOL_MAX_BYTES - myp_coro_stack_pool_bytes)) {
+        free(ptr);
+        return;
+    }
     if (myp_coro_stack_pool_count >= myp_coro_stack_pool_capacity) {
         if (myp_coro_stack_pool_capacity > INT_MAX / 2) { free(ptr); return; }
         int nc = myp_coro_stack_pool_capacity ? myp_coro_stack_pool_capacity * 2 : 16;
@@ -3906,6 +3969,7 @@ static void myp_coro_stack_pool_add(char* ptr, size_t size) {
     myp_coro_stack_pool[myp_coro_stack_pool_count].ptr = ptr;
     myp_coro_stack_pool[myp_coro_stack_pool_count].size = size;
     myp_coro_stack_pool_count++;
+    myp_coro_stack_pool_bytes += size;
 }
 
 // Take a stack of the requested size from the pool: exact size match preferred,
@@ -3920,7 +3984,9 @@ static char* myp_coro_stack_pool_take(size_t want) {
     }
     if (best < 0) return NULL;
     char* p = myp_coro_stack_pool[best].ptr;
+    size_t sz = myp_coro_stack_pool[best].size;
     myp_coro_stack_pool[best] = myp_coro_stack_pool[--myp_coro_stack_pool_count];
+    myp_coro_stack_pool_bytes -= sz;   // M2: 扣除已取出的字节数
     return p;
 }
 
@@ -3931,6 +3997,7 @@ static void myp_coro_stack_pool_free_all(void) {
     myp_coro_stack_pool = NULL;
     myp_coro_stack_pool_count = 0;
     myp_coro_stack_pool_capacity = 0;
+    myp_coro_stack_pool_bytes = 0;
 }
 
 // ---- Retired-stack reclamation ----
@@ -4022,6 +4089,15 @@ static void __myp_coro_trampoline(void) {
         myp_coros[id]->stack = NULL;
         myp_coros[id]->active = 0;
         myp_coros[id]->ready = 0;
+        // M1: 正常完成 → 结果待读（Coro.result 完成后仍可读），槽在结果被读或
+        // destroy 后回收；被 destroy（discard_result）→ 无结果可读，直接回收。
+        if (myp_coros[id]->discard_result) {
+            myp_coros[id]->discard_result = 0;
+            myp_coros[id]->result_pending = 0;
+        } else {
+            myp_coros[id]->result_pending = 1;
+        }
+        myp_coro_try_recycle(id);
         // 完成：切回创建/恢复我们的调用者（ret_ctx）。此函数不返回。
         myp_coro_current = -1;
         myp_asan_start_switch(NULL, 0);
@@ -4063,17 +4139,20 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     size_t stack_size = (stack_bytes > 0) ? (size_t)stack_bytes : (size_t)MYP_CORO_STACK_SIZE;
     // 先回收已完成协程的退役栈（安全点：不在退役栈上运行）。
     myp_coro_retired_drain();
-    // 句柄槽位不复用：每个创建的协程获得唯一槽位。复用已完成协程的槽位会让
-    // 已存句柄指向新协程（handle 别名 / Coro.result 串位，见 handle_reuse 回归）。
-    if (myp_coro_grow() != 0) return -1;
-    int idx = myp_coro_count;
-    myp_coro_count++;
-    if (!myp_coros[idx]) {
-        myp_coro_t* nc = (myp_coro_t*)calloc(1, sizeof(myp_coro_t));
-        if (!nc) return -1;
-        myp_coros[idx] = nc;
+    // M1: 优先复用空闲槽（generation+1 → 旧句柄代际过期、稳定失效）；无空闲才扩容。
+    int idx = myp_coro_pop_free();
+    if (idx < 0) {
+        if (myp_coro_grow() != 0) return -1;
+        idx = myp_coro_count;
+        myp_coro_count++;
+        if (!myp_coros[idx]) {
+            myp_coro_t* nc = (myp_coro_t*)calloc(1, sizeof(myp_coro_t));
+            if (!nc) return -1;
+            myp_coros[idx] = nc;
+        }
     }
     myp_coro_t* c = myp_coros[idx];
+    c->generation++;            // 新鲜槽 calloc 为 0 → 1；复用槽递增使旧句柄失效
     c->stack = myp_coro_stack_pool_take(stack_size);   // reuse a pooled stack if possible
     if (!c->stack) c->stack = (char*)malloc(stack_size);
     if (!c->stack) return -1;
@@ -4086,14 +4165,18 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     c->wait_timeout = 0;
     c->cancel_requested = 0;
     c->frame_slots_count = 0;   // §五-1 收尾: fresh frame (slot reuse is clean)
-    return idx;
+    c->result_pending = 0;
+    c->on_free_list = 0;
+    c->discard_result = 0;
+    return myp_coro_make_handle(idx);
 }
 
 // fn_ptr is a 64-bit function pointer on LP64 — must NOT be int32 (truncation bug)
 void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
-    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle]) {
-        myp_coros[handle]->fn = (void (*)(void))(uintptr_t)fn_ptr;
-    }
+    if (!myp_coro_handle_valid(handle)) return;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx >= 0 && idx < myp_coro_count && myp_coros[idx])
+        myp_coros[idx]->fn = (void (*)(void))(uintptr_t)fn_ptr;
 }
 
 // Suspend the current coroutine, passing `val` out to the caller (the scheduler
@@ -4117,12 +4200,14 @@ int64_t __myp_coro_yield(int64_t val) {
 // The caller's context is saved into the callee's ret_ctx, enabling nested
 // resume (a coroutine resuming another coroutine).
 int64_t __myp_coro_resume(int64_t handle, int64_t val) {
-    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return -1;
-    if (!myp_coros[handle]->active) return -1;
+    if (!myp_coro_handle_valid(handle)) return -1;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return -1;
+    if (!myp_coros[idx]->active) return -1;
     myp_coro_resume_val = val;
     int saved = myp_coro_current;
-    myp_coro_current = handle;
-    myp_coro_t* c = myp_coros[handle];
+    myp_coro_current = idx;
+    myp_coro_t* c = myp_coros[idx];
     myp_asan_start_switch(c->stack, c->stack_size);   // 切到协程栈
     myp_ctx_switch(&c->ret_ctx, &c->ctx);
     myp_asan_finish_switch();                         // 回到调用者栈
@@ -4139,14 +4224,22 @@ void __myp_coro_set_result(int64_t val) {
 }
 
 int64_t __myp_coro_result(int64_t handle) {
-    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle])
-        return myp_coros[handle]->result;
-    return 0;
+    if (!myp_coro_handle_valid(handle)) return 0;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return 0;
+    int64_t r = myp_coros[idx]->result;
+    // M1: 结果被消费 → 若无未读结果且不活跃，槽可复用（循环 create→complete→result
+    // 场景下槽容量与 RSS 达到平台后保持稳定）。
+    myp_coros[idx]->result_pending = 0;
+    myp_coro_try_recycle(idx);
+    return r;
 }
 
 int64_t __myp_coro_is_active(int64_t handle) {
-    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return 0;
-    return myp_coros[handle]->active ? 1 : 0;
+    if (!myp_coro_handle_valid(handle)) return 0;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return 0;
+    return myp_coros[idx]->active ? 1 : 0;
 }
 
 // ---- Cooperative cancellation (C10) ----
@@ -4154,8 +4247,10 @@ int64_t __myp_coro_is_active(int64_t handle) {
 // so a coroutine can shut itself down at a safe point (after an await/yield)
 // and run cleanup.
 void __myp_coro_request_cancel(int64_t handle) {
-    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle])
-        myp_coros[handle]->cancel_requested = 1;
+    if (!myp_coro_handle_valid(handle)) return;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx >= 0 && idx < myp_coro_count && myp_coros[idx])
+        myp_coros[idx]->cancel_requested = 1;
 }
 
 // 1 if the CURRENT coroutine has a pending cancel request, else 0.
@@ -4273,42 +4368,52 @@ static void __myp_coro_release_frame(myp_coro_t* c) {
 }
 
 void __myp_coro_destroy(int64_t handle) {
-    if (handle >= 0 && handle < myp_coro_count && myp_coros[handle] &&
-        myp_coros[handle]->stack) {
+    // M1: 旧句柄（代际过期）直接无效，绝不操作新协程。
+    if (!myp_coro_handle_valid(handle)) return;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return;
+    myp_coro_t* c = myp_coros[idx];
+    if (!c->stack) {
+        // 已完成（栈已退役）：丢弃结果，使槽可复用。
+        c->result_pending = 0;
+        myp_coro_try_recycle(idx);
+        return;
+    }
+    if (idx == myp_coro_current) {
         // Safety: never free the stack of the coroutine that is CURRENTLY
         // executing (destroying itself) — that would free live stack memory
-        // and corrupt execution. Mark it inactive; its stack is reclaimed
-        // when the slot is reused by __myp_coro_create (or at process exit).
-        if (handle == myp_coro_current) {
-            // We are ON this stack — releasing the frame's still-live objects
-            // is safe (we are not freeing the stack, just their objects).
-            __myp_coro_release_frame(myp_coros[handle]);
-            myp_coros[handle]->active = 0;
-            myp_coros[handle]->ready = 0;
-            return;
-        }
-        // Force-destroy of a parked/live coroutine: release its frame's
-        // still-live ARC slots BEFORE returning the stack to the pool (the
-        // slot addresses point into that stack, which is still allocated).
-        __myp_coro_release_frame(myp_coros[handle]);
-        myp_coros[handle]->active = 0;
-        myp_coros[handle]->ready = 0;
-        // Drop any pending event-wait records for this coroutine so the wait
-        // table never accumulates dead entries (e.g. destroyed while blocked
-        // on an event that is never fired).
-        for (int i = 0; i < myp_coro_wait_count; i++) {
-            if (myp_coro_waits[i].active && myp_coro_waits[i].handle == handle)
-                myp_coro_waits[i].active = 0;
-        }
-        myp_coro_stack_pool_add(myp_coros[handle]->stack, myp_coros[handle]->stack_size);
-        myp_coros[handle]->stack = NULL;
-        myp_coros[handle]->stack_size = 0;
+        // and corrupt execution. Mark it inactive; the trampoline (which
+        // runs after the body returns) discards the result and recycles.
+        __myp_coro_release_frame(c);
+        c->active = 0;
+        c->ready = 0;
+        c->discard_result = 1;
+        return;
     }
+    // Force-destroy of a parked/live coroutine: release its frame's
+    // still-live ARC slots BEFORE returning the stack to the pool (the
+    // slot addresses point into that stack, which is still allocated).
+    __myp_coro_release_frame(c);
+    c->active = 0;
+    c->ready = 0;
+    // Drop any pending event-wait records for this coroutine so the wait
+    // table never accumulates dead entries (e.g. destroyed while blocked
+    // on an event that is never fired).
+    for (int i = 0; i < myp_coro_wait_count; i++) {
+        if (myp_coro_waits[i].active && myp_coro_waits[i].handle == idx)
+            myp_coro_waits[i].active = 0;
+    }
+    myp_coro_stack_pool_add(c->stack, c->stack_size);
+    c->stack = NULL;
+    c->stack_size = 0;
+    c->result_pending = 0;   // destroy 丢弃结果 → 槽可复用
+    myp_coro_try_recycle(idx);
 }
 
 // Handle of the coroutine currently executing on this thread (-1 if none).
+// M1: 返回编码句柄（与 create 返回一致），而非内部槽号。
 int64_t __myp_coro_current_handle(void) {
-    return myp_coro_current;
+    return myp_coro_make_handle(myp_coro_current);
 }
 
 // Number of active (live) coroutines on this thread.
@@ -4322,8 +4427,10 @@ int64_t __myp_coro_count(void) {
 // Coroutine status: -1 invalid handle, 0 inactive/finished, 1 ready/running,
 // 2 blocked (waiting on an event).
 int64_t __myp_coro_status(int64_t handle) {
-    if (handle < 0 || handle >= myp_coro_count || !myp_coros[handle]) return -1;
-    myp_coro_t* c = myp_coros[handle];
+    if (!myp_coro_handle_valid(handle)) return -1;
+    int idx = myp_coro_handle_slot(handle);
+    if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return -1;
+    myp_coro_t* c = myp_coros[idx];
     if (!c->active) return 0;
     return c->ready ? 1 : 2;
 }
@@ -4480,7 +4587,7 @@ void __myp_coro_scheduler(void) {
         int64_t h = snapshot[k];
         if (h >= 0 && h < myp_coro_count && myp_coros[h] &&
             myp_coros[h]->active && myp_coros[h]->ready)
-            __myp_coro_resume(h, 0);
+            __myp_coro_resume(myp_coro_make_handle(h), 0);
     }
 }
 
@@ -4964,6 +5071,10 @@ static void __myp_coro_cleanup_all(void) {
     myp_coros = NULL;
     myp_coro_count = 0;
     myp_coro_capacity = 0;
+    free(myp_coro_free_slots);   // M1: 空闲槽列表
+    myp_coro_free_slots = NULL;
+    myp_coro_free_count = 0;
+    myp_coro_free_cap = 0;
     free(myp_coro_waits);
     myp_coro_waits = NULL;
     myp_coro_wait_count = 0;
@@ -5052,7 +5163,7 @@ static int64_t myp_channel_wake_one(int64_t* waiters, int* wcount) {
     if (h < 0 || h >= myp_coro_count || !myp_coros[h] || !myp_coros[h]->active) return h;
     if (myp_coro_current >= 0 && myp_channel_wake_depth < MYP_CHANNEL_WAKE_DEPTH_MAX) {
         myp_channel_wake_depth++;
-        __myp_coro_resume(h, 0);   // 同步交接：现在就跑对端一步
+        __myp_coro_resume(myp_coro_make_handle(h), 0);   // 同步交接：现在就跑对端一步
         myp_channel_wake_depth--;
     } else {
         myp_coros[h]->ready = 1;   // 回退：等下一轮调度

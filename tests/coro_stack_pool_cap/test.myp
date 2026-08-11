@@ -1,0 +1,35 @@
+import env;
+import coro;
+
+// M2: 栈池字节上限压测。
+// 大栈（>=1MiB，即 stack>=1024KB）不得进入池缓存 —— 完成后直接释放，
+// 否则 count-only 上限（128 个 2MB 栈 → 256MB 缓存）会让 RSS 线性涨。
+// 循环 create→(eager 完成)→result，观测 RSS 应平台化（~数 MB 量级）。
+// RSS 用 /usr/bin/time -v 观测；本程序只验证正确性（结果累加一致）。
+class Big {
+    action:
+        @coro(stack=2048) long run(long x) { return x + 1; }
+}
+class Tester {
+    action:
+        @constructor Tester() {
+            long acc = 0;
+            long i = 0;
+            while (i < 50000) {
+                Big b = new Big();
+                long h = b.run(i);          // 2MB 栈：create → eager 完成 → 释放
+                acc = acc + Coro.result(h);
+                i = i + 1;
+            }
+            // acc = sum_{i=0}^{49999} (i+1) = 50000*50001/2 = 1250025000
+            if (acc != 1250025000L) {
+                Console.writeString("FAIL acc=" + acc + "\n");
+                return;
+            }
+            Console.writeString("M2 big-stack bypass ok (50000 coros)\n");
+        }
+}
+int main() {
+    Tester m = new Tester();
+    return 0;
+}

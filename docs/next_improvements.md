@@ -62,14 +62,14 @@
 ### 五-A、内存管理尚未完成项（2026-08-11）
 
 > 已完成基线：class ARC、异常/协程帧释放、`@region` 引用逃逸保护、`slice<class>`
-> backing 级联释放，以及 **M3（溢出安全）/ M5（struct ARC）/ M8（string·原始数组计数）**
-> 均已实施（见下表 ✅），通过 O0/O2/ASan/UBSan 213/213。下表其余项仍未实施；
+> backing 级联释放，以及 **M1（协程句柄代际化）/ M2（栈池字节上限）/ M3（溢出安全）/
+> M5（struct ARC）/ M8（string·原始数组计数）** 均已实施（见下表 ✅），通过 O0/O2/ASan/UBSan 215/215。下表其余项仍未实施；
 > “设计扩展”不是当前回归，不应阻塞现有 P0 收口。
 
 | # | 未完成项 | 当前风险 / 边界 | 实施方向 | 验收标准 | 优先级 |
 |---|----------|-----------------|----------|----------|--------|
-| M1 | **协程句柄代际化与槽位复用** | 当前为避免旧句柄错误别名到新协程，完成后的 handle 槽不复用；协程栈可回收，但 `myp_coros` 指针数组和每槽元数据会随历史创建总数增长，长跑服务存在无界元数据增长 | 将 64 位 handle 编码为 `{generation, slot}`；完成/销毁后回收槽并递增 generation。所有 resume/await/destroy/wait 表入口校验两部分，旧句柄必须稳定返回无效，不能操作新协程 | 循环创建并完成至少 100 万个短协程，活跃数固定时槽容量与 RSS 达到平台后保持稳定；旧 handle、双 destroy、wait 表残留均有回归；O0/O2/ASan/TSan 全绿 | **P1** |
-| M2 | **协程栈峰值与缓存上界** | 默认每协程栈 128 KiB；每线程栈池最多缓存 128 个不同大小的栈，理论缓存约 16 MiB/线程（自定义大栈更高）。retired 栈还要等安全点回收，多线程或突发协程会抬高 RSS 峰值 | 用“总字节数 + 个数”双上限替代仅按个数限制；大栈直接归还系统；调度安全点及时 drain retired；评估 `mmap`/guard page 或按需提交，保留 `@coro(stack=N)` ABI | 1/10/100 个线程分别执行突发创建-回落压测，完成后 RSS 回落到明确预算；默认栈、超大栈、深递归、栈池命中和线程退出均覆盖，ASan fiber 切换不回归 | **P1** |
+| ~~M1~~ | **~~协程句柄代际化与槽位复用~~** | 当前为避免旧句柄错误别名到新协程，完成后的 handle 槽不复用；协程栈可回收，但 `myp_coros` 指针数组和每槽元数据会随历史创建总数增长，长跑服务存在无界元数据增长 | 将 64 位 handle 编码为 `{generation, slot}`；完成/销毁后回收槽并递增 generation。所有 resume/await/destroy/wait 表入口校验两部分，旧句柄必须稳定返回无效，不能操作新协程 | 循环创建并完成至少 100 万个短协程，活跃数固定时槽容量与 RSS 达到平台后保持稳定；旧 handle、双 destroy、wait 表残留均有回归；O0/O2/ASan/TSan 全绿 | ✅ **已完成**（handle 编码 `{generation<<32 | slot}`，TLS 空闲槽列表复用 + generation 递增，`result_pending` 门控——完成后结果未读前槽不回收、`Coro.result` 读后回收、destroy 丢弃结果；所有 resume/result/is_active/status/destroy/set_entry/wait 表入口代际校验，旧句柄稳定失效不别名新协程；调度器快照与 channel 唤醒以编码句柄 resume；`tests/coro_slot_reuse`：20万/40万 churn RSS 均 ~7MB 平台化 + 陈旧句柄安全回归；215/215、ASAN 5/5） |
+| ~~M2~~ | **~~协程栈峰值与缓存上界~~** | 默认每协程栈 128 KiB；每线程栈池最多缓存 128 个不同大小的栈，理论缓存约 16 MiB/线程（自定义大栈更高）。retired 栈还要等安全点回收，多线程或突发协程会抬高 RSS 峰值 | 用“总字节数 + 个数”双上限替代仅按个数限制；大栈直接归还系统；调度安全点及时 drain retired；评估 `mmap`/guard page 或按需提交，保留 `@coro(stack=N)` ABI | 1/10/100 个线程分别执行突发创建-回落压测，完成后 RSS 回落到明确预算；默认栈、超大栈、深递归、栈池命中和线程退出均覆盖，ASan fiber 切换不回归 | ✅ **已完成**（新增 `MYP_CORO_STACK_POOL_MAX_BYTES` 16MiB 字节上限 + 池内字节计数，`stack_pool_add/take/free_all` 全程记账；`>=1MiB` 大栈（`MYP_CORO_STACK_BIG`）绕过池直接归还系统，防 128×2MB=256MB 缓存膨胀；retired 列表在 create/调度器安全点 drain；`tests/coro_stack_pool_cap`：5万/10万次 2MB 栈 churn RSS 均 ~7MB 平台化；ASan 5/5） |
 | ~~M3~~ | **~~分配大小溢出与 OOM 一致性~~** | 数组/slice 的 `count * elem_size`、arena chunk 扩容、协程槽/等待表 `capacity * sizeof(T)` 等若溢出，可能小分配后越界；各 allocator 的 NULL 处理还没有统一语言级行为 | 引入 checked add/mul/grow helper，所有 `malloc/calloc/realloc` 前统一检查 `SIZE_MAX`；保留原指针直到 realloc 成功；定义 OOM 为可诊断终止或可捕获错误，禁止 NULL 继续进入 GEP/memset | 0、边界值、负长度、乘法/加法溢出、realloc 失败注入均确定性失败且无越界/双 free；ASan/UBSan 和独立 runtime 单测通过 | ✅ **已完成**（`9ecac7b`） |
 | M4 | **逐分配逃逸提升** | 目前 `@region` 只要函数体存在任一数组/slice 逃逸，就保守禁用整个函数的 region；正确但会让同函数内大量不逃逸临时值也活到线程退出，损失 region 的峰值内存收益 | 为每个分配点做 use/escape 分类：仅逃逸 backing 提升到外层 arena/进程 arena，其余仍在当前 region；无法证明时继续保守提升。需覆盖 return、property/global store、调用参数、分支 PHI 和别名传播 | “一个逃逸结果 + 大量不逃逸临时值”压测中临时内存随 region 结束回落；逃逸值跨多轮 churn 后仍有效；生成 IR 只对必要分配改 allocator | **P2（性能）** |
 | ~~M5~~ | **~~struct 内 class 引用所有权~~** | v1 明确把 struct 内引用视为借用，浅拷贝时不 retain/release；避免悬垂优先，但长期保存此类 struct 可能泄漏，且语义依赖文档纪律 | 先统计真实用例，再选择“复制时 retain + 销毁时 release”的值语义、move-only struct，或显式 owning 字段；不能仅在销毁桩补 release，否则浅拷贝会双释 | struct 的复制、赋值、返回、数组元素、嵌套 struct 和异常展开都有 live-count 测试；别名不 UAF、不双释、最终回零 | ✅ **已完成**（`008c43d`：struct 值语义 ARC——拷贝/赋值 retain、覆盖/作用域退出/销毁桩 release，含嵌套 struct 与 class 属性持 struct；`tests/struct_arc` RSS 恒定） |
