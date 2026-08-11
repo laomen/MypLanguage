@@ -1,0 +1,41 @@
+// fmt: Fmt printf 风格格式化回归 → @test
+
+import test;
+import fmt;
+
+@test void test_fmt() {
+    // 十进制
+    Test.assertStrEq(Fmt.i(42), "42", "i1");
+    Test.assertStrEq(Fmt.i(-7), "-7", "i2");
+    Test.assertStrEq(Fmt.i(42, 6), "    42", "i3");
+    Test.assertStrEq(Fmt.i(42, 6, 48), "000042", "i4");
+    Test.assertStrEq(Fmt.i(-7, 4, 48), "00-7", "i5");
+
+    // 无符号十进制（位模式）
+    Test.assertStrEq(Fmt.u(-1), "4294967295", "u1");
+
+    // 十六进制
+    Test.assertStrEq(Fmt.x(255), "ff", "x1");
+    Test.assertStrEq(Fmt.x(255, 4), "00ff", "x2");
+    Test.assertStrEq(Fmt.X(255, 4), "00FF", "x3");
+    Test.assertStrEq(Fmt.x(-1, 8), "ffffffff", "x4");
+
+    // 八进制 / 二进制
+    Test.assertStrEq(Fmt.o(8), "10", "o1");
+    Test.assertStrEq(Fmt.b(5), "101", "b1");
+    Test.assertStrEq(Fmt.b(10), "1010", "b2");
+
+    // 浮点
+    Test.assertStrEq(Fmt.f(3.14159, 2), "3.14", "f1");
+    Test.assertStrEq(Fmt.f(3.0, 2), "3.00", "f2");
+    Test.assertStrEq(Fmt.f(123.456, 2, 10), "    123.46", "f3");
+    Test.assertStrEq(Fmt.f(1.0 / 3.0, 3), "0.333", "f4");
+    Test.assertStrEq(Fmt.e(123.456, 2), "1.23e+02", "e1");
+    Test.assertStrEq(Fmt.g(0.0001, 4), "0.0001", "g1");
+
+    // 字符串填充
+    Test.assertStrEq(Fmt.s("hi", 5), "   hi", "s1");
+    Test.assertStrEq(Fmt.sR("hi", 5), "hi   ", "s2");
+
+    Test.report("test_fmt", true);
+}
