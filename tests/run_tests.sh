@@ -206,6 +206,42 @@ else
     echo "  (no test framework files found)"
 fi
 
+# @test 目录测试：tests/@test/*.myp —— 语言内建测试套件的正式用例，
+# 自动发现 + 逐个 --test 编译运行。每个用例必须 exit 0 且输出无 "FAIL:"。
+# 以后的新测试用例均用此套件编写并放入该目录。
+ATEST_DIR="$PROJ_ROOT/tests/@test"
+if [ -d "$ATEST_DIR" ]; then
+    for tf in "$ATEST_DIR"/*.myp; do
+        [ -f "$tf" ] || continue
+        tname=$(basename "$tf" .myp)
+        printf "  @test %-20s " "$tname"
+        compile_output=$($MYPCC --test "$tf" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}COMPILE FAIL${NC}"
+            echo "$compile_output" | head -5
+            TFFAIL=$((TFFAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS @test/$tname(compile)"
+            continue
+        fi
+        tbin="${tf%.myp}.out"
+        run_output=$(timeout $TIMEOUT_SEC "$tbin" 2>&1)
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}RUNTIME FAIL${NC}"
+            echo "$run_output" | head -5
+            TFFAIL=$((TFFAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS @test/$tname(runtime)"
+        elif echo "$run_output" | grep -q "FAIL:"; then
+            echo -e "${RED}TEST FAIL${NC}"
+            echo "$run_output" | head -8
+            TFFAIL=$((TFFAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS @test/$tname(test-fail)"
+        else
+            echo -e "${GREEN}PASS${NC}"
+            TFPASS=$((TFPASS + 1))
+        fi
+    done
+fi
+
 # 语言内建测试套件（@test + --test）专项：正常套件 exit 0、失败套件 exit 1、
 # 汇总行、Test.fail 消息、扩展断言 API（long/float/空引用）。
 if [ -f "$PROJ_ROOT/tests/test_myp_test.sh" ]; then

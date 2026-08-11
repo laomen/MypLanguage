@@ -1,0 +1,48 @@
+// tests/@test/misc.myp — 语言内建 @test 套件示例
+// run_tests.sh 自动发现 tests/@test/*.myp，逐个 --test 编译运行，
+// 要求 exit 0 且输出无 "FAIL:"。以后新测试用例均用此套件编写。
+import test;
+
+@test void test_math() {
+    Test.assertEq(2 + 2, 4);
+    Test.assertEq(10 / 2, 5);
+    Test.assert(10 > 5, "comparison");
+    Test.assertFalse(1 > 2);
+    Test.assertLongEq(10000000000L, 10000000000L);
+    Test.assertLongNeq(1L, 2L);
+    Test.assertFloatEq(3.14159, 3.14159, 0.001);
+    Test.assertFloatNeq(1.0, 2.0, 0.001);
+    Test.report("test_math", true);
+}
+
+@test void test_strings() {
+    string a = "Hello";
+    string b = "Hello";
+    Test.assertStrEq(a, b);
+    Test.assertStrNeq(a, "World");
+    Test.assertStrEq(a + " " + "World", "Hello World");
+    Test.report("test_strings", true);
+}
+
+class Node {
+    action:
+        @constructor Node(int v) { val = v; }
+        int get() { return val; }
+    property: int val;
+}
+
+@test void test_objects() {
+    Node n = new Node(42);
+    Test.assertEq(n.get(), 42);
+    Node m = null;
+    Test.assertNull<Node>(m);
+    Test.assertNotNull<Node>(n);
+    Test.report("test_objects", true);
+}
+
+@test void test_cycles() {
+    int acc = 0;
+    for (int i = 0; i < 100; i = i + 1) acc = acc + i;
+    Test.assertEq(acc, 4950);
+    Test.report("test_cycles", true);
+}

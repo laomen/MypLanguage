@@ -2671,6 +2671,29 @@ ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer 查内存错�
 > 每个测试打印 `PASS <name>`，runner 按退出码 + PASS 判定；退出码 0=全过、1=有失败。
 > 该套件曾复现并修复 `@parallel for` 偶发挂起（计数器重置竞态，见 CHANGELOG）。
 
+### 如何新增测试（@test 套件）
+
+新测试用例用**语言内建 `@test` 套件**编写，放入 `tests/@test/` 目录即可被
+`run_tests.sh` 自动发现（逐个 `--test` 编译运行，要求 exit 0 且无 `FAIL:`）：
+
+```myp
+// tests/@test/my_feature.myp
+import test;
+
+@test void test_feature() {
+    Test.assertEq(compute(), 42, "compute result");
+    Test.assertNotNull<Node>(node);
+    Test.report("test_feature", true);   // 可选：PASS/FAIL 标记
+}
+```
+
+```bash
+./tests/run_tests.sh        # 自动编译运行 tests/@test/*.myp
+```
+
+约定：一个 `.myp` 文件一组相关测试；用 `@test` 标记函数；断言失败自动使退出码非零
+（无需手工处理）。需要确定性输入的用 `Test.assert(cond, msg)` 加说明。
+
 ### 代码格式化
 
 ```bash
