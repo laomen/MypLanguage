@@ -116,6 +116,39 @@ class ExprDecl {
         ArrayList<string> vars;   // 自变量（梯度按序）
 }
 
+class MethodDecl {
+    action:
+        @constructor MethodDecl() {
+            name = "";
+            ret = "void";
+            params = new ArrayList<FfiParam>();
+        }
+        void setName(string v) { name = v; }
+        void setRet(string v) { ret = v; }
+        void addParam(FfiParam p) { params.add(p); }
+        int paramCount() { return params.size(); }
+        FfiParam paramAt(int i) { return params.get(i); }
+    property:
+        string name;      // 方法名
+        string ret;       // 返回类型
+        ArrayList<FfiParam> params;
+}
+
+class ServiceDecl {
+    action:
+        @constructor ServiceDecl() {
+            name = "";
+            methods = new ArrayList<MethodDecl>();
+        }
+        void setName(string v) { name = v; }
+        void addMethod(MethodDecl m) { methods.add(m); }
+        int methodCount() { return methods.size(); }
+        MethodDecl methodAt(int i) { return methods.get(i); }
+    property:
+        string name;
+        ArrayList<MethodDecl> methods;
+}
+
 class Schema {
     action:
         @constructor Schema() {
@@ -123,6 +156,8 @@ class Schema {
             ffiFuncs = new ArrayList<FfiFunc>();
             resources = new ArrayList<Resource>();
             exprs = new ArrayList<ExprDecl>();
+            service = new ServiceDecl();
+            hasService = 0;
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -136,9 +171,13 @@ class Schema {
         void addExpr(ExprDecl d) { exprs.add(d); }
         int exprCount() { return exprs.size(); }
         ExprDecl exprAt(int i) { return exprs.get(i); }
+        void setService(ServiceDecl s) { service = s; hasService = 1; }
+        int hasServiceDecl() { return hasService; }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
         ArrayList<Resource> resources;
         ArrayList<ExprDecl> exprs;
+        ServiceDecl service;
+        int hasService;
 }

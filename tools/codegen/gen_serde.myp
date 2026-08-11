@@ -11,16 +11,17 @@ class SerdeGen {
     action:
         @constructor SerdeGen() {}
 
-        // 生成 MYP 源码里的字符串字面量 "inner"（inner 不含引号）
+        // 生成 MYP 源码里的字符串字面量（inner 为原始文本，自动转义引号/反斜杠）
         string lit(string inner) {
-            return "\"" + inner + "\"";
+            string e = Str.replaceAll(Str.replaceAll(inner, "\\", "\\\\"), "\"", "\\\"");
+            return "\"" + e + "\"";
         }
 
         // 固定辅助函数块（import + JSON 构造/路径辅助）
         string helpers() {
             // 源码 token："\""（1 引号） 与 "\\\""（反斜杠+引号）
-            string q1 = lit("\\\"");
-            string q2 = lit("\\\\\\\"");
+            string q1 = lit("\"");
+            string q2 = lit("\\\"");
             string s = "";
             s = s + "import env;\nimport json;\nimport fmt;\nimport text;\n\n";
             s = s + "string cg_i(int x) { return Fmt.i(x); }\n";

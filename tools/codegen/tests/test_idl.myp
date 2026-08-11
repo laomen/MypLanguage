@@ -1,0 +1,48 @@
+// test_idl.myp — IDL 生成代码验证（JSON-RPC 协议层）
+// 服务端 dispatch + 客户端请求/结果解析，进程内验证。
+import env;
+import math;
+import text;
+import "./idl_gen.myp";
+
+// 用户实现的服务端 handler
+class MyCalc {
+    interface class CalcHandler;
+    action:
+        int add(int a, int b) { return a + b; }
+        string echo(string msg) { return msg + "!"; }
+        double mul3(double x) { return x * 3.0; }
+}
+
+int run() {
+    CalcHandler h = new MyCalc();   // 具体类 → 接口变量（构造 fat pointer）
+
+    // add（int）
+    string req = Calc_request_add(3, 4);
+    string resp = Calc_dispatch(req, h);
+    int r = Calc_result_int(resp);
+    if (r != 7) { Console.writeLine("FAIL add=" + r); return 1; }
+
+    // echo（string）
+    string req2 = Calc_request_echo("hi");
+    string resp2 = Calc_dispatch(req2, h);
+    string s = Calc_result_string(resp2);
+    if (s != "hi!") { Console.writeLine("FAIL echo=" + s); return 2; }
+
+    // mul3（double）
+    string req3 = Calc_request_mul3(2.5);
+    string resp3 = Calc_dispatch(req3, h);
+    double d = Calc_result_double(resp3);
+    if (Math.abs(d - 7.5) > 1e-9) { Console.writeLine("FAIL mul3=" + d); return 3; }
+
+    // 未知方法 → ok:0
+    string resp4 = Calc_dispatch("{\"method\":\"nope\",\"params\":[]}", h);
+    if (Str.indexOf(resp4, "ok\":0") == -1) { Console.writeLine("FAIL unknown=" + resp4); return 4; }
+
+    Console.writeLine("idl ok add=" + r + " echo=" + s + " mul3=" + d);
+    return 0;
+}
+
+int main() {
+    return run();
+}

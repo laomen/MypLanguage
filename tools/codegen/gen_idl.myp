@@ -1,0 +1,150 @@
+// gen_idl.myp — IDL 生成器（P3）
+// service schema → MYP 接口 + 请求编解码 + 服务端 dispatch + 结果解析。
+// 协议：JSON-RPC 式 {"method":...,"params":[...]} → {"ok":1,"result":...}。
+// P3a 进程内验证（dispatch 层）；socket 传输（net.myp TcpServer/TcpClient）为 P3b。
+
+import env;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class IdlGen {
+    action:
+        @constructor IdlGen() {}
+
+        // 生成 MYP 源码里的字符串字面量（inner 为原始文本，自动转义引号/反斜杠）
+        string lit(string inner) {
+            string e = Str.replaceAll(Str.replaceAll(inner, "\\", "\\\\"), "\"", "\\\"");
+            return "\"" + e + "\"";
+        }
+
+        // 参数声明串 "int a, int b"
+        string paramDecl(MethodDecl md) {
+            string s = "";
+            int i = 0;
+            while (i < md.paramCount()) {
+                FfiParam p = md.paramAt(i);
+                if (i > 0) s = s + ", ";
+                s = s + p.type + " " + p.name;
+                i = i + 1;
+            }
+            return s;
+        }
+        // 实参名串 "a, b"
+        string argNames(MethodDecl md) {
+            string s = "";
+            int i = 0;
+            while (i < md.paramCount()) {
+                if (i > 0) s = s + ", ";
+                s = s + md.paramAt(i).name;
+                i = i + 1;
+            }
+            return s;
+        }
+        // 类型 → 序列化 JSON 值表达式（MYP 源码片段）
+        string jsonVal(string t, string access) {
+            if (t == "int" || t == "long") return "Fmt.i(" + access + ")";
+            if (t == "double" || t == "float") return "Fmt.g(" + access + ", 10)";
+            if (t == "bool") return "cg_b(" + access + ")";
+            return "cg_s(" + access + ")";   // string
+        }
+        // 类型 → 反序列化读取表达式
+        string jsonRead(string t, string pathExpr) {
+            if (t == "int" || t == "long") return "j.getInt(" + pathExpr + ")";
+            if (t == "double" || t == "float") return "j.getDouble(" + pathExpr + ")";
+            if (t == "bool") return "j.getBool(" + pathExpr + ")";
+            return "j.getString(" + pathExpr + ")";
+        }
+
+        string gen(Schema s) {
+            if (s.hasServiceDecl() == 0) return "";
+            ServiceDecl svc = s.service;
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("import env;");
+            e.line("import json;");
+            e.line("import fmt;");
+            e.line("import text;");
+            e.line("");
+            e.line("string cg_s(string s) { return \"\\\"\" + Str.replaceAll(s, \"\\\"\", \"\\\\\\\"\") + \"\\\"\"; }");
+            e.line("string cg_b(bool b) { if (b) return \"true\"; return \"false\"; }");
+            e.line("");
+
+            // 1) 服务接口
+            e.block("interface " + svc.name + "Handler");
+            int m = 0;
+            while (m < svc.methodCount()) {
+                MethodDecl md = svc.methodAt(m);
+                e.line(md.ret + " " + md.name + "(" + paramDecl(md) + ");");
+                m = m + 1;
+            }
+            e.endBlock();
+            e.line("");
+
+            // 2) 请求构造（客户端发）
+            m = 0;
+            while (m < svc.methodCount()) {
+                MethodDecl md = svc.methodAt(m);
+                e.block("string " + svc.name + "_request_" + md.name + "(" + paramDecl(md) + ")");
+                string req = "return " + lit("{\"method\":\"" + md.name + "\",\"params\":[");
+                int p = 0;
+                while (p < md.paramCount()) {
+                    if (p > 0) req = req + " + " + lit(",");
+                    req = req + " + " + jsonVal(md.paramAt(p).type, md.paramAt(p).name);
+                    p = p + 1;
+                }
+                req = req + " + " + lit("]}") + ";";
+                e.line(req);
+                e.endBlock();
+                e.line("");
+                m = m + 1;
+            }
+
+            // 3) 服务端 dispatch：解析请求 → 调 handler → 响应
+            e.block("string " + svc.name + "_dispatch(string request, " + svc.name + "Handler h)");
+            e.line("Json j = new Json(request);");
+            e.line("string m = j.getString(" + lit("method") + ");");
+            m = 0;
+            while (m < svc.methodCount()) {
+                MethodDecl md = svc.methodAt(m);
+                e.block("if (m == " + lit(md.name) + ")");
+                int p = 0;
+                while (p < md.paramCount()) {
+                    FfiParam prm = md.paramAt(p);
+                    e.line(prm.type + " " + prm.name + " = " + jsonRead(prm.type, lit("params." + p)) + ";");
+                    p = p + 1;
+                }
+                e.line(md.ret + " r = h." + md.name + "(" + argNames(md) + ");");
+                e.line("return " + lit("{\"ok\":1,\"result\":") + " + " + jsonVal(md.ret, "r") + " + " + lit("}") + ";");
+                e.endBlock();
+                m = m + 1;
+            }
+            e.line("return " + lit("{\"ok\":0,\"error\":\"unknown method\"}") + ";");
+            e.endBlock();
+            e.line("");
+
+            // 4) 结果解析（客户端收）——按去重返回类型
+            ArrayList<string> done = new ArrayList<string>();
+            m = 0;
+            while (m < svc.methodCount()) {
+                MethodDecl md = svc.methodAt(m);
+                string rt = md.ret;
+                int seen = 0;
+                int d = 0;
+                while (d < done.size()) {
+                    if (done.get(d) == rt) { seen = 1; break; }
+                    d = d + 1;
+                }
+                if (seen == 0 && rt != "void") {
+                    done.add(rt);
+                    e.block(rt + " " + svc.name + "_result_" + rt + "(string response)");
+                    e.line("Json j = new Json(response);");
+                    e.line("return " + jsonRead(rt, lit("result")) + ";");
+                    e.endBlock();
+                    e.line("");
+                }
+                m = m + 1;
+            }
+            return e.text();
+        }
+}

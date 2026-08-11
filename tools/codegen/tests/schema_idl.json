@@ -1,0 +1,14 @@
+{
+  "service": { "name": "Calc", "methods": [
+    { "name": "add", "ret": "int", "params": [
+      { "type": "int", "name": "a" },
+      { "type": "int", "name": "b" }
+    ] },
+    { "name": "echo", "ret": "string", "params": [
+      { "type": "string", "name": "msg" }
+    ] },
+    { "name": "mul3", "ret": "double", "params": [
+      { "type": "double", "name": "x" }
+    ] }
+  ] }
+}

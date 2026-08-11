@@ -14,7 +14,7 @@ esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -60,5 +60,14 @@ out4=$("$MYPCC" run tests/test_autodiff.myp 2>&1) || { echo "FAIL: 编译/运行
 echo "$out4" | grep -q "autodiff ok f1=13 g0=6 g1=1" \
     || { echo "FAIL: autodiff 输出不符"; echo "$out4"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff）"
+# 7) IDL：生成 → 编译 → JSON-RPC 协议层验证
+if ! "$MYPCC" run main.myp idl tests/schema_idl.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 idl 代码"; exit 1
+fi
+cp "$WORK/idl_gen.myp" tests/idl_gen.myp
+out5=$("$MYPCC" run tests/test_idl.myp 2>&1) || { echo "FAIL: 编译/运行 test_idl"; echo "$out5"; exit 1; }
+echo "$out5" | grep -q "idl ok add=7 echo=hi! mul3=7.5" \
+    || { echo "FAIL: idl 输出不符"; echo "$out5"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl）"
 exit 0

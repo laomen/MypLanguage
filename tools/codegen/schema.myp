@@ -90,6 +90,31 @@ class SchemaParser {
                 s.addExpr(d);
                 ei = ei + 1;
             }
+            // service 段：IDL 服务（方法表）
+            if (j.type("service") != -1) {
+                ServiceDecl svc = new ServiceDecl();
+                svc.setName(j.getString("service.name"));
+                int mn = arrLen(j, "service.methods");
+                int mi = 0;
+                while (mi < mn) {
+                    string mp = "service.methods." + mi;
+                    MethodDecl md = new MethodDecl();
+                    md.setName(j.getString(mp + ".name"));
+                    md.setRet(j.getString(mp + ".ret"));
+                    int pn = arrLen(j, mp + ".params");
+                    int pi = 0;
+                    while (pi < pn) {
+                        string pp = mp + ".params." + pi;
+                        FfiParam p = new FfiParam();
+                        p.set(j.getString(pp + ".type"), j.getString(pp + ".name"));
+                        md.addParam(p);
+                        pi = pi + 1;
+                    }
+                    svc.addMethod(md);
+                    mi = mi + 1;
+                }
+                s.setService(svc);
+            }
             j.free();
             return s;
         }

@@ -199,7 +199,7 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 | **P0b** | ✅ `gen_serde.myp`：标量/string/嵌套 struct 的 toJson/fromJson | P0a | `tests/schema.json` + `test_serde.myp` round-trip 一致；`run_tests.sh` 通过。数组字段检测告警跳过（class 属性私有 → toJson 待方法化） |
 | **P1** | ✅ `gen_ffi.myp`（P1a 声明 + **P1b 资源包装类**） | P0b | P1a：4 个 runtime C 函数链接运行正确。P1b：`resources` 段 → 包装类（构造/`open`/`close`/`getHandle`，`invalid` 哨兵；MYP 无用户析构器 → 显式生命周期 RAII）。`schema_res.json` + `test_res.myp`：barrier open/close 幂等通过 |
 | **P2** | ✅ `gen_autodiff.myp`：表达式符号求导 → 前向 + 梯度函数 | P1 | `schema_autodiff.json` + `test_autodiff.myp`：f1=x*x+y / f2=x·sin(y)+exp(x) / f3=log(x)/sqrt(y) 解析梯度与有限差分一致。表达式语法 v1：+ - * / 一元负 括号 sin/cos/exp/log/sqrt；MYP 自写 tokenizer/parser/求导/简化（常量折叠+浅层） |
-| **P3** | `gen_idl.myp`：服务 → client/server stub | P2 | 示例 RPC 通 |
+| **P3** | ✅ `gen_idl.myp`（P3a 协议层：接口 + 请求编解码 + dispatch + 结果解析） | P2 | `schema_idl.json` + `test_idl.myp`：Calc{add/echo/mul3} JSON-RPC 进程内验证（add=7/echo=hi!/mul3=7.5/未知方法 ok:0）。**P3b 待做**：socket 传输（net.myp TcpServer/TcpClient 封装 <Service>_server/_client） |
 | P4 | orm / DSL / 资源嵌入 | P3 | 各自验收 |
 
 ## 11. 风险与决策
