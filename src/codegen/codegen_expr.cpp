@@ -114,7 +114,27 @@ llvm::Value* CodeGen::generateBoolLiteral(const BoolLiteralExpr& e) {
 }
 
 llvm::Value* CodeGen::generateStringLiteral(const StringLiteralExpr& e) {
-    return builder_.CreateGlobalString(e.value, "str");
+    // M8 strings: emit an IMMORTAL counted string global —
+    // { rc=0x7FFFFFFF, type_id=MYP_STR_TYPE_ID, [N x i8] bytes }. myp_release
+    // on a literal decrements the huge rc but never reaches zero, so any ARC
+    // slot that aliases a literal releases safely (static, never freed).
+    // Type_id 0xFFFFFFFE == MYP_STR_TYPE_ID in runtime.c.
+    // NOTE: the global must be WRITABLE (not `constant`), because myp_retain/
+    // myp_release bump the header's rc field; a read-only section would fault.
+    // The rc starts huge so it never reaches zero — the literal is immortal
+    // while still being a uniform counted string for every ARC slot.
+    auto* bytes = llvm::ConstantDataArray::getString(ctx_, e.value, true);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* st = llvm::StructType::get(ctx_,
+        {i32, i32, bytes->getType()}, false);
+    auto* init = llvm::ConstantStruct::get(st, {
+        llvm::ConstantInt::get(i32, 0x7FFFFFFF),   // rc — immortal
+        llvm::ConstantInt::get(i32, 0xFFFFFFFE),   // MYP_STR_TYPE_ID
+        bytes});
+    auto* gv = new llvm::GlobalVariable(*module_, st, false /*writable*/,
+        llvm::GlobalValue::PrivateLinkage, init, "str");
+    gv->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+    return builder_.CreateConstGEP2_32(st, gv, 0, 2);  // bytes pointer
 }
 
 llvm::Value* CodeGen::generateNullLiteral(const NullLiteralExpr&) {
@@ -613,28 +633,80 @@ found:
     return rt->class_name;
 }
 
-bool CodeGen::callReturnsArcRef(const CallExpr& e) {
+const TypeNode* CodeGen::callReturnTypeNode(const CallExpr& e) {
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
         std::string cls = memberObjectClassName(*ma.object);
-        if (cls.empty() || !current_tu_) return false;
+        if (cls.empty() || !current_tu_) return nullptr;
         for (auto& c : current_tu_->classes) {
             if (c.name != cls) continue;
             for (auto& a : c.actions)
-                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+                if (a.name == ma.member_name) return &a.return_type;
             for (auto& a : c.static_actions)
-                if (a.name == ma.member_name) return isArcRefType(a.return_type);
+                if (a.name == ma.member_name) return &a.return_type;
             for (auto& f : c.functions)
-                if (f.name == ma.member_name) return isArcRefType(f.return_type);
+                if (f.name == ma.member_name) return &f.return_type;
         }
-        return false;
+        return nullptr;
     }
-    if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
-        for (auto& f : current_tu_->functions)
-            if (f.name == e.resolved_call_name) return isArcRefType(f.return_type);
-        return false;
+    if (e.callee->kind == ExprKind::Identifier) {
+        // Named call: check TU functions first, then FFI declarations (whose
+        // return_type may be a counted string / array / slice).
+        std::string name = !e.resolved_call_name.empty()
+            ? e.resolved_call_name : static_cast<const IdentifierExpr&>(*e.callee).name;
+        if (current_tu_) {
+            for (auto& f : current_tu_->functions)
+                if (f.name == name) return &f.return_type;
+            for (auto& ff : current_tu_->ffis)
+                if (ff.name == name) return &ff.return_type;
+        }
+        return nullptr;
     }
-    return false;
+    return nullptr;
+}
+
+bool CodeGen::callReturnsArcRef(const CallExpr& e) {
+    // A call result is pushed as a statement temp (reclaimed if discarded),
+    // and `return <call>` skips retain-at-return. Both require the caller's
+    // store path to CONSUME the temp. Class/interface/string var-decls and
+    // property stores all call arcConsumeTemp, so those are safe. Slice and
+    // dynamic-array var-decls do NOT consume temps — including them here would
+    // push an unconsumed temp and double-free the backing at statement end.
+    // (Slices/dynamic arrays keep their pre-M8 behavior: no temp, and a
+    // `return sliceCall()` retains at return — a known small leak, not UAF.)
+    const TypeNode* rt = callReturnTypeNode(e);
+    if (!rt) return false;
+    return isArcRefType(*rt) || isStringType(*rt);
+}
+
+// M8: does this expression yield a string value? Used to detect string
+// concatenation (a fresh counted string) in isFreshArcExpr.
+bool CodeGen::exprIsString(const Expr& e) {
+    switch (e.kind) {
+        case ExprKind::StringLiteral: return true;
+        case ExprKind::Identifier: {
+            auto& id = static_cast<const IdentifierExpr&>(e);
+            // String vars are pointer-typed slots NOT in var_class_map_ (a
+            // class ref is also a pointer, but its name IS in var_class_map_).
+            if (var_class_map_.find(id.name) != var_class_map_.end()) return false;
+            auto* t = getNamedValueType(id.name);
+            return t && t->isPointerTy();
+        }
+        case ExprKind::BinaryOp:
+            return isStringConcatExpr(static_cast<const BinaryOpExpr&>(e));
+        case ExprKind::Call: {
+            const TypeNode* rt = callReturnTypeNode(static_cast<const CallExpr&>(e));
+            return rt && isStringType(*rt);
+        }
+        default: return false;
+    }
+}
+
+bool CodeGen::isStringConcatExpr(const Expr& e) {
+    if (e.kind != ExprKind::BinaryOp) return false;
+    auto& b = static_cast<const BinaryOpExpr&>(e);
+    if (b.op != BinaryOpKind::Add) return false;
+    return exprIsString(*b.lhs) || exprIsString(*b.rhs);
 }
 
 llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
@@ -2334,7 +2406,7 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
         // (none), 2=nested slice fat pointers.
         const TypeNode& et = e.type_args[0];
         bool class_elements = isArcClassType(et);
-        uint32_t elem_kind = class_elements ? 0
+        uint32_t elem_kind = class_elements || isStringType(et) ? 0
             : (et.class_name == "slice" ? 2 : 1);
         llvm::Function* alloc_fn = module_->getFunction("myp_alloc_slice_backing");
         if (!alloc_fn) {
@@ -2516,9 +2588,11 @@ llvm::Value* CodeGen::generateNewArrayExpr(const NewArrayExpr& e) {
     }
     // M8: dynamic T[] backing is ref-counted too (reuse the slice backing
     // layout) so primitive arrays are reclaimed when the last owner goes away,
-    // not at process exit. elem_kind: 1=scalar/struct, 2=slice elements.
+    // not at process exit. elem_kind: 0=class/string refs (release each),
+    // 1=scalar/struct, 2=slice elements.
     const TypeNode& et2 = e.element_type;
-    uint32_t elem_kind2 = (et2.class_name == "slice") ? 2 : 1;
+    uint32_t elem_kind2 = isArcClassType(et2) || isStringType(et2) ? 0
+        : (et2.class_name == "slice" ? 2 : 1);
     llvm::Function* alloc_fn = module_->getFunction("myp_alloc_slice_backing");
     if (!alloc_fn) {
         auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
@@ -2614,6 +2688,13 @@ llvm::Value* CodeGen::generateAwaitExpr(const AwaitExpr& e) {
         auto& call = static_cast<const CallExpr&>(*e.operand);
         if (call.callee && isAsyncCallTarget(call.callee.get())) {
             auto* v = generateExpr(*e.operand);
+            // M8 strings: an @async call returning a string/class ref hands
+            // the caller a fresh owned reference (rc=1). generateCall pushed
+            // it as a statement temp; the i64 round-trip below transfers it to
+            // the caller, so consume the temp NOW — otherwise the statement-end
+            // flush frees the string the caller just stored.
+            if (v && v->getType()->isPointerTy() && callReturnsArcRef(call))
+                arcConsumeTemp(v);
             return v ? castToI64(v) : llvm::ConstantInt::get(i64, 0);
         }
     }

@@ -203,6 +203,19 @@ bool CodeGen::isCountedArrayType(const TypeNode& tn) {
     return tn.isArray() && tn.array_size == 0;
 }
 
+bool CodeGen::isStringType(const TypeNode& tn) {
+    return tn.class_name.empty() && !tn.isArray() && !tn.isTuple() &&
+           tn.basic_type == BuiltinType::String;
+}
+
+bool CodeGen::isArcReturnType(const TypeNode& tn) {
+    if (isArcRefType(tn)) return true;        // class / interface / dyn class array
+    if (isCountedArrayType(tn)) return true;  // dynamic T[] (all element kinds)
+    if (isStringType(tn)) return true;        // M8 counted string
+    if (tn.class_name == "slice") return true; // slice value -> counted backing
+    return false;
+}
+
 void CodeGen::maybeReleaseLocal(const std::string& name, llvm::Value* alloca) {
     if (!runtime_release_ || !alloca) return;
     if (builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
@@ -250,6 +263,13 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
                     auto* fat = b.CreateLoad(getLLVMType(typeNodeToCodegenType(prop.type)), gep);
                     auto* data = b.CreateExtractValue(fat, 0);
                     b.CreateCall(runtime_release_, {data});
+                    continue;
+                }
+                if (isStringType(prop.type)) {
+                    // M8: string field → release the counted string.
+                    auto* gep = b.CreateStructGEP(st, self, pi);
+                    auto* s = b.CreateLoad(llvm::PointerType::get(ctx_, 0), gep);
+                    b.CreateCall(runtime_release_, {s});
                     continue;
                 }
                 if (!isArcRefType(prop.type)) continue;

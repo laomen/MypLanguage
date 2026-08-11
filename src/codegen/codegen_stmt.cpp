@@ -150,6 +150,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     if (!current_function_) return;
     bool arc_decl_class = false;      // ARC: local holds a counted class reference
     bool arc_decl_function = false;   // ARC: local holds a closure (function value)
+    bool arc_decl_string = false;     // M8: local holds a counted string reference
 
     if (d.has_thread_annotation) {
         // @thread: create instance + pass startup to dedicated thread
@@ -570,9 +571,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             setNamedValue(d.name, ptr_a);
             // 记录固定数组栈变量大小：return 该变量时需堆拷贝避免悬垂指针
             stack_array_sizes_[d.name] = arr_sz;
-            // ARC: fixed class-array — elements are strong slots; release them
-            // at scope exit (the backing stack buffer is not freed).
-            if (isArcClassType(*d.type.element_type)) {
+            // ARC: fixed class/string-array — elements are strong slots;
+            // release them at scope exit (the backing stack buffer is not
+            // freed). Counted strings share the class release machinery.
+            if (isArcClassType(*d.type.element_type) || isStringType(*d.type.element_type)) {
                 registerArcSlot(ptr_a, 3);
                 arc_fixed_array_counts_[ptr_a] = (uint64_t)d.type.array_size;
             }
@@ -617,8 +619,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         }
         // Record element type for subscript access
         array_elem_types_[d.name] = getLLVMType(typeNodeToCodegenType(*d.type.element_type));
-        // ARC: record whether elements are class references (retain/release on store).
-        array_elem_is_class_[d.name] = isArcClassType(*d.type.element_type);
+        // ARC: record whether elements are class/string references
+        // (retain/release on store, release on array free).
+        array_elem_is_class_[d.name] = isArcClassType(*d.type.element_type) ||
+                                       isStringType(*d.type.element_type);
         // Record the element class name (mangled for generics) so `arr[i].method()`
         // dispatch resolves to the concrete instance's method.
         if (array_elem_is_class_[d.name]) {
@@ -642,7 +646,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     } else {
         vt = builtinTypeToInfo(d.type.basic_type);
         bool arc_class = false;
-        if (!d.type.class_name.empty() && findEnum(d.type.class_name)) {
+        if (isStringType(d.type)) {
+            // M8: strings are counted — the local owns a strong string ref.
+            arc_decl_string = true;
+        } else if (!d.type.class_name.empty() && findEnum(d.type.class_name)) {
             // Enum value type: { i32 disc, [N x i8] payload }
             vt = TypeInfo(TypeKind::Enum);
             vt.class_name = d.type.class_name;
@@ -669,6 +676,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     setNamedValue(d.name, a);
     // ARC: a local class reference is released when its scope exits.
     if (arc_decl_class) registerArcSlot(a, 0);
+    // M8: a local string reference is released when its scope exits (kind 0
+    // shares the class-ptr release machinery — myp_release on a char*).
+    if (arc_decl_string) registerArcSlot(a, 0);
     // ARC: a local function-value's closure is released at scope exit (the fat
     // pointer's index 0 is the closure; null closures are no-ops on release).
     if (arc_decl_function) registerArcSlot(a, 2);
@@ -696,6 +706,10 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         // ARC: fresh (new / call) transfers into the slot; an alias (var/prop)
         // must retain because the previous owner keeps its reference.
         if (arc_decl_class && !isFreshArcExpr(*d.init_expr))
+            emitRetain(v);
+        // M8 strings: same discipline — fresh (call/concat) transfers its rc=1;
+        // an alias (string b = s / literal) retains the shared string.
+        if (arc_decl_string && !isFreshArcExpr(*d.init_expr))
             emitRetain(v);
         // ARC: function-value alias (`g = f`) → retain the closure (index 0).
         if (arc_decl_function && !isFreshArcExpr(*d.init_expr) &&
@@ -1051,6 +1065,7 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                 current_ret_ti_.kind == TypeKind::Class ||
                 current_ret_ti_.kind == TypeKind::Interface ||
                 current_ret_ti_.kind == TypeKind::Slice ||
+                current_ret_ti_.kind == TypeKind::String ||   // M8: counted string
                 (current_ret_ti_.kind == TypeKind::Array &&
                  ((current_ret_ti_.element_type &&
                    current_ret_ti_.element_type->kind == TypeKind::Class) ||
@@ -1364,8 +1379,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                 const TypeNode* prop_tn = nullptr;
                                 for (auto& p : cls.properties)
                                     if (p.name == id.name) { prop_tn = &p.type; break; }
-                                if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
-                                    // M8: slice/array field — retain new backing
+                                if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn) || isStringType(*prop_tn))) {
+                                    // M8: slice/array/string field — retain new
                                     // (unless fresh), release the old one.
                                     if (prop_tn->class_name == "slice")
                                         arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
@@ -1485,7 +1500,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         if (p.name == id.name && p.type.isArray()) {
                             elem_ty = typeNodeToLLVMType(*p.type.element_type);
                             elem_is_class = p.type.element_type &&
-                                getClassStruct(p.type.element_type->class_name) != nullptr;
+                                (getClassStruct(p.type.element_type->class_name) != nullptr ||
+                                 isStringType(*p.type.element_type));
                             goto assign_gep;
                         }
                     }
@@ -1520,7 +1536,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         for (auto& pr : sd->properties) {
                             if (pr.name == ma.member_name && pr.type.isArray()) {
                                 elem_ty = typeNodeToLLVMType(*pr.type.element_type);
-                                elem_is_class = isArcClassType(*pr.type.element_type);
+                                elem_is_class = isArcClassType(*pr.type.element_type) ||
+                                                isStringType(*pr.type.element_type);
                                 goto assign_gep;
                             }
                         }
@@ -1537,7 +1554,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                         for (auto& p : cls.properties) {
                             if (p.name == ma.member_name && p.type.isArray()) {
                                 elem_ty = typeNodeToLLVMType(*p.type.element_type);
-                                elem_is_class = isArcClassType(*p.type.element_type);
+                                elem_is_class = isArcClassType(*p.type.element_type) ||
+                                                isStringType(*p.type.element_type);
                                 goto assign_gep;
                             }
                         }
@@ -1674,8 +1692,8 @@ assign_gep:
                                     const TypeNode* prop_tn = nullptr;
                                     for (auto& p : cls.properties)
                                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
-                                        // M8: static slice/array field — retain/release backing.
+                                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn) || isStringType(*prop_tn))) {
+                                        // M8: static slice/array/string field — retain/release.
                                         if (prop_tn->class_name == "slice")
                                             arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
                                         else {
@@ -1808,8 +1826,8 @@ assign_gep:
                     const TypeNode* prop_tn = nullptr;
                     for (auto& p : cls.properties)
                         if (p.name == ma.member_name) { prop_tn = &p.type; break; }
-                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn))) {
-                        // M8: instance slice/array field — retain/release backing.
+                    if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn) || isStringType(*prop_tn))) {
+                        // M8: instance slice/array/string field — retain/release.
                         if (prop_tn->class_name == "slice")
                             arcStoreSlice(gep, v, isFreshArcExpr(*e.value));
                         else {

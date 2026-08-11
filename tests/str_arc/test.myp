@@ -1,0 +1,39 @@
+import env;
+import text;
+// M8 string refcount regression: medium-lifetime string churn must be
+// reclaimed (not held to process exit). Compare RSS: before counted strings
+// this loop leaked ~40MB; with refcount it stays flat.
+
+class Holder {
+    action:
+        void setName(string n) { name = n; }
+        string getName() { return name; }
+    property:
+        string name;
+}
+
+string buildBig() {
+    string s = "";
+    for (int i = 0; i < 50; i = i + 1) {
+        s = s + "0123456789abcdefghij0123456789abcdefghij0123456789abcdefghij";
+    }
+    return s;
+}
+
+int runTest() {
+    for (int round = 0; round < 200; round = round + 1) {
+        string s = buildBig();
+        string t = s;              // alias -> retain
+        string u = t + "!";        // concat -> new counted string
+        string v = Str.substring(s, 10, 40);  // copy substring
+        // property-style churn through a class
+        Holder h = new Holder();
+        h.setName(u);
+        string got = h.getName();
+        if (got != u) return 1;
+    }
+    Console.writeString("string churn done\n");
+    return 0;
+}
+
+int main() { int c = runTest(); return c; }

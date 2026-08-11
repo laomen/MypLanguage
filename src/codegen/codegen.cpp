@@ -988,7 +988,11 @@ llvm::Value* CodeGen::emitRetain(llvm::Value* data) {
     if (!data) return data;
     // Null-safe: myp_retain ignores NULL. But a garbage/poison pointer would
     // read a bogus header — only call on values we know are object refs.
-    if (runtime_retain_)
+    // Only retain POINTER values (class/string refs). A non-pointer (e.g. a
+    // generic type-param placeholder that resolved to a primitive in a
+    // template body) is not an ARC ref — passing it to myp_retain would fail
+    // LLVM verify ("Call parameter type does not match").
+    if (data->getType()->isPointerTy() && runtime_retain_)
         builder_.CreateCall(runtime_retain_, {data});
     return data;
 }
@@ -1132,8 +1136,14 @@ bool CodeGen::isFreshArcExpr(const Expr& e) {
     // NewExpr / CallExpr / LambdaExpr produce a fresh reference (the lambda's
     // closure is a freshly allocated class instance held by its fat pointer).
     // NewArrayExpr of a class element is a fresh ref-counted array.
-    return e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call ||
-           e.kind == ExprKind::Lambda || e.kind == ExprKind::NewArrayExpr;
+    if (e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call ||
+        e.kind == ExprKind::Lambda || e.kind == ExprKind::NewArrayExpr)
+        return true;
+    // M8: string concatenation `a + b` is a BinaryOp whose result is a fresh
+    // counted string (rc=1). Without this, `s = s + "x"` / `string t = a + b`
+    // RETAINED the concat result (rc 1→2), so releasing the slot only dropped
+    // it to 1 — one leaked reference per concatenation.
+    return isStringConcatExpr(e);
 }
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();

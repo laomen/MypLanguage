@@ -343,7 +343,9 @@ const char* myp_read_line(void) {
     if (!fgets(buf, sizeof(buf), stdin)) return NULL;
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
-    return buf;
+    // M8: return a COUNTED copy (never the static buffer — ARC would release
+    // a static pointer's bogus header).
+    return myp_strdup(buf);
 }
 
 // String length
@@ -354,10 +356,12 @@ int32_t myp_strlen(const char* s) {
 
 // Convert a character code to a single-character string
 const char* myp_chr(int32_t code) {
-    static char buf[2];
-    buf[0] = (char)(code & 0xFF);
-    buf[1] = '\0';
-    return buf;
+    // M8: return a COUNTED string (the old static buffer has no ARC header).
+    char* r = (char*)myp_alloc(2);
+    if (!r) return NULL;
+    r[0] = (char)(code & 0xFF);
+    r[1] = '\0';
+    return r;
 }
 
 // ASCII code of the first character (0 if empty)
@@ -795,8 +799,11 @@ const char* myp_json_get_string(int64_t handle, const char* path) {
     JsonNode* root = (JsonNode*)(intptr_t)handle;
     JsonNode* n = json_resolve_path(root, path);
     if (!n || (n->type != JSON_STRING && n->type != JSON_INT && n->type != JSON_DOUBLE)) return NULL;
-    if (n->str_val) return n->str_val;
-    return "";
+    // M8: return a COUNTED copy — the node's str_val is malloc'd by the JSON
+    // parser without an ARC header, so handing it out directly would make
+    // myp_retain/myp_release read a bogus header.
+    if (n->str_val) return myp_strdup(n->str_val);
+    return myp_strdup("");
 }
 
 double myp_json_get_number(int64_t handle, const char* path) {
@@ -1450,12 +1457,16 @@ static void myp_alloc_list_remove(myp_alloc_node_t* node) {
 
 // Forward decl — chunked bump arena defined below (after myp_free).
 static void* myp_arena_bump_alloc(size_t size);
+// Forward decl — counted-string allocator defined with the ARC machinery
+// (needs myp_obj_header_t / MYP_STR_TYPE_ID, below).
+static void* myp_alloc_str(size_t size);
 
 void* myp_alloc(size_t size) {
-    // Strings (and other non-ARC data) are never individually freed — only
-    // bulk-freed at exit. Allocate from the chunked bump arena instead of
-    // malloc(size) + a tracking node per allocation (see below).
-    return myp_arena_bump_alloc(size);
+    // Strings are ref-counted (§五-A M8): myp_alloc is now string-only
+    // (slices/arrays use myp_alloc_slice_backing), so every allocation hands
+    // out a counted {rc=1, type_id=STR} header + bytes. The chunked bump
+    // arena below remains for @region temporaries (myp_region_alloc).
+    return myp_alloc_str(size);
 }
 
 void myp_free(void* ptr) {
@@ -1566,6 +1577,9 @@ typedef struct myp_obj_header {
 // and myp_release (reads obj-4 → detects MYP_ARR_TYPE_ID) work uniformly on
 // both objects and arrays.
 #define MYP_ARR_TYPE_ID 0xFFFFFFFFu
+// Strings are ref-counted too (§五-A M8): myp_alloc allocates {rc=1, type_id=STR}
+// before the bytes. Distinct from MYP_ARR_TYPE_ID and class type_ids.
+#define MYP_STR_TYPE_ID 0xFFFFFFFEu
 // Element-kind of a ref-counted array/slice backing, stored in `pad` so the
 // header size stays 24 bytes. myp_release uses it to dispose elements.
 #define MYP_ARR_ELEM_CLASS  0u   // elements are class refs → release each
@@ -1583,6 +1597,9 @@ typedef struct myp_arr_header {
 
 // Live class-object count (thread-local) — diagnostic aid for ARC tests.
 static __thread int64_t myp_live_objects = 0;
+// M8 diagnostics: live counted strings (alloc-freed balance).
+static __thread int64_t myp_live_strings = 0;
+int64_t myp_live_string_count(void) { return myp_live_strings; }
 
 int64_t myp_live_object_count(void) { return myp_live_objects; }
 
@@ -1598,6 +1615,26 @@ void* myp_alloc_object(size_t size, uint32_t type_id) {
     myp_alloc_list_push(node);
     myp_live_objects++;
     return base + MYP_OBJ_HEADER_SIZE;  // data pointer
+}
+
+static void* myp_alloc_str(size_t size) {
+    // Counted string: {node, {rc=1, type_id=STR}, bytes}. Same 8-byte header
+    // layout as class objects, so myp_retain (reads data-8) and myp_release
+    // (reads data-4 -> MYP_STR_TYPE_ID) work uniformly on strings, objects,
+    // and arrays. Strings are immutable and shared by value; the count is a
+    // handle count, and myp_release frees the block at zero (medium lifetime
+    // is now reclaimed, not held to process exit).
+    size_t total;
+    if (myp_add_overflow(sizeof(myp_alloc_node_t) + MYP_OBJ_HEADER_SIZE, size, &total))
+        myp_oom(size);
+    myp_alloc_node_t* node = (myp_alloc_node_t*)myp_xmalloc(total);
+    char* base = (char*)node + sizeof(myp_alloc_node_t);
+    myp_obj_header_t* h = (myp_obj_header_t*)base;
+    h->rc = 1;
+    h->type_id = MYP_STR_TYPE_ID;
+    myp_alloc_list_push(node);
+    myp_live_strings++;
+    return base + MYP_OBJ_HEADER_SIZE;  // data bytes
 }
 
 void myp_retain(void* obj) {
@@ -1641,6 +1678,15 @@ uint32_t myp_release(void* obj) {
             }
             // MYP_ARR_ELEM_SCALAR: no per-element release.
             myp_free_class_array(obj);
+        }
+        // Counted string: free the {node, header, bytes} block.
+        else if (tid == MYP_STR_TYPE_ID) {
+            char* base = (char*)obj - MYP_OBJ_HEADER_SIZE;
+            myp_alloc_node_t* node =
+                (myp_alloc_node_t*)(base - sizeof(myp_alloc_node_t));
+            myp_alloc_list_remove(node);
+            if (myp_live_strings > 0) myp_live_strings--;
+            free(node);
         }
         // Dispatch to the per-TU destroy stub (cascades reference fields).
         else if (tid > 0 && __myp_release_table[tid])
@@ -1774,9 +1820,11 @@ int myp_obj_type_id(void* obj) {
 
 // Class name for a type id ("" for 0 / unknown).
 const char* myp_type_name(int type_id) {
+    // M8: return a COUNTED copy — the table strings are static data without
+    // an ARC header; reflection results flow into string slots.
     if (type_id > 0 && __myp_type_name_table[type_id])
-        return __myp_type_name_table[type_id];
-    return "";
+        return myp_strdup(__myp_type_name_table[type_id]);
+    return myp_strdup("");
 }
 
 // Runtime type name of a class instance ("" if null / non-class).
@@ -4708,6 +4756,8 @@ static void myp_exec_push_result(pthread_t t, int64_t h, char* r) {
 }
 
 static char* myp_exec_read_line_from(FILE* fp) {
+    // INTERNAL helper: returns a plain malloc'd buffer (callers wrap it in
+    // myp_strdup for the counted-string path, then free() this buffer).
     char* line = (char*)malloc(4096);
     if (!line) return strdup("");
     if (fgets(line, 4096, fp)) {
@@ -4720,6 +4770,8 @@ static char* myp_exec_read_line_from(FILE* fp) {
 }
 
 static char* myp_exec_read_all_from(FILE* fp) {
+    // INTERNAL helper: returns a plain malloc'd buffer (callers wrap it in
+    // myp_strdup for the counted-string path, then free() this buffer).
     size_t cap = 4096, len = 0;
     size_t init;
     if (myp_add_overflow(cap, 1, &init)) return strdup("");

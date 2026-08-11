@@ -197,7 +197,7 @@ private:
     bool isArcFunctionLocal(llvm::Value* alloca);
     // True for NewExpr / CallExpr / LambdaExpr results: transfer (no retain)
     // at a strong slot.
-    static bool isFreshArcExpr(const Expr& e);
+    bool isFreshArcExpr(const Expr& e);
     // §五-5 形态3: is the awaited operand a call to an @async-annotated
     // function/static method (an await-able async IO operation)?
     bool isAsyncCallTarget(const Expr* callee) const;
@@ -522,6 +522,13 @@ private:
     // holding it retain/release like a class ref. Fixed [N x T] are stack
     // values (not counted).
     bool isCountedArrayType(const TypeNode& tn);
+    // M8 strings: the builtin string type (class_name empty, basic String).
+    // Strings are ref-counted (counted header from myp_alloc), so string
+    // locals/fields are strong ARC slots exactly like class refs.
+    bool isStringType(const TypeNode& tn);
+    // M8: any type whose value is a counted/ARC reference that flows through
+    // retain-at-return: class, interface, slice, dynamic T[], and string.
+    bool isArcReturnType(const TypeNode& tn);
     // True if tn is a class (not interface) reference — resolves generic type
     // params through current_type_params_. Used to decide ref-counted arrays.
     bool isArcClassType(const TypeNode& tn);
@@ -629,6 +636,13 @@ private:
     // True if a call returns an ARC-owned class / class-array reference (the
     // caller owns the returned +1 and must store it or release it).
     bool callReturnsArcRef(const CallExpr& e);
+    // M8: resolve the return TypeNode of a call (class method / free fn / FFI),
+    // or nullptr if unresolvable. Used to detect string-producing exprs.
+    const TypeNode* callReturnTypeNode(const CallExpr& e);
+    // M8: does this expression yield a string value?
+    bool exprIsString(const Expr& e);
+    // M8: is this `a + b` a string concatenation (fresh counted string)?
+    bool isStringConcatExpr(const Expr& e);
     // Resolve the class (mangled for generics) of a member-access object
     // expression: identifier (var/static), this, array element, `new X<...>()`,
     // or a call (via its return type).
