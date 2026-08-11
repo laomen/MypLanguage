@@ -1,0 +1,89 @@
+// function: 一等函数/闭包（M-FN-1/2/3）→ @test
+// 存/传/返/调用、多参、字符串/class 捕获、嵌套捕获、Option.map、fold
+
+import test;
+import option;
+import collections;
+
+class Counter {
+    action:
+        void set(int v) { v_ = v; }
+        int get() { return v_; }
+    property:
+        int v_;
+}
+
+int apply2(int v, (int) -> int f) { return f(v); }
+
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
+
+Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) {
+    Option<R> r = new Option<R>();
+    if (o.isSome()) r.set(f(o.get()));
+    return r;
+}
+
+int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+    int acc = init;
+    for (int i = 0; i < arr.size(); i = i + 1) acc = f(acc, arr.get(i));
+    return acc;
+}
+
+@test void test_function() {
+    (int) -> int f = (int x) => { return x * 3; };
+    int a = f(4);
+    Test.assertEq(a, 12, "f(4)");
+    int b = apply2(7, (int x) => { return x * 2; });
+    Test.assertEq(b, 14, "apply2");
+    (int) -> int g = f;
+    int c = g(2);
+    Test.assertEq(c, 6, "g(2)");
+    (int) -> int h = makeAdder(10);
+    int d = h(5);
+    Test.assertEq(d, 15, "h(5)");
+    (int, int) -> int add = (int x, int y) => { return x + y; };
+    int e = add(20, 22);
+    Test.assertEq(e, 42, "add 多参");
+    (string) -> string shout = (string s) => { return s + "!"; };
+    string z = shout("hi");
+    Test.assertStrEq(z, "hi!", "shout");
+
+    string prefix = "pre_";
+    (string) -> string addPrefix = (string s) => { return prefix + s; };
+    string p = addPrefix("x");
+    Test.assertStrEq(p, "pre_x", "字符串捕获");
+
+    Counter cnt = new Counter();
+    cnt.set(10);
+    () -> int readC = () => { return cnt.get(); };
+    int c1 = readC();
+    Test.assertEq(c1, 10, "class 捕获 1");
+    cnt.set(99);
+    int c2 = readC();
+    Test.assertEq(c2, 99, "class 捕获共享");
+
+    int base = 7;
+    (int) -> int outer = (int x) => {
+        (int) -> int inner = (int y) => { return y + base; };
+        return inner(x);
+    };
+    int n = outer(3);
+    Test.assertEq(n, 10, "嵌套捕获");
+
+    Option<int> some = new Option<int>(5);
+    Option<string> mapped = mapOpt<int, string>(some, (int x) => { return "v" + x; });
+    string a3 = "none";
+    if (mapped.isSome()) a3 = mapped.get();
+    Test.assertStrEq(a3, "v5", "Option.map Some");
+    Option<int> none = new Option<int>();
+    Option<int> m2 = mapOpt<int, int>(none, (int x) => { return x * 2; });
+    string b3 = m2.isNone() ? "none" : "some";
+    Test.assertStrEq(b3, "none", "Option.map None");
+
+    ArrayList<int> xs = new ArrayList<int>();
+    xs.add(1); xs.add(2); xs.add(3); xs.add(4);
+    int sum = foldInt<int>(xs, 0, (int acc, int x) => { return acc + x; });
+    Test.assertEq(sum, 10, "fold sum");
+
+    Test.report("test_function", true);
+}

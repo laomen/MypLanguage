@@ -1,0 +1,21 @@
+// function: section — internal methods → @test
+
+import test;
+
+class Calculator {
+    action:
+        int compute(int n) {
+            return helper(n) + 1;
+        }
+    function:
+        int helper(int n) {
+            return n * n;
+        }
+}
+
+@test void test_function_section() {
+    Calculator c = new Calculator();
+    int r = c.compute(5);
+    Test.assertEq(r, 26, "compute(5)=26");
+    Test.report("test_function_section", true);
+}

@@ -1,0 +1,54 @@
+// 汉诺塔 — 递归验证 → @test
+// 阶乘/斐波那契值断言 + 汉诺塔 3 层移动序列输出捕获
+
+import test;
+import env;
+
+void hanoi(int n, string from, string to, string aux) {
+    if(n == 1){
+        Console.writeString("  Move disk 1 from "); Console.writeString(from);
+        Console.writeString(" to "); Console.writeString(to); Console.writeString("\n");
+        return;
+    }
+    hanoi(n-1, from, aux, to);
+    Console.writeString("  Move disk "); Console.write(n);
+    Console.writeString(" from "); Console.writeString(from);
+    Console.writeString(" to "); Console.writeString(to); Console.writeString("\n");
+    hanoi(n-1, aux, to, from);
+}
+
+int fact(int n) {
+    if(n <= 1) return 1;
+    return n * fact(n-1);
+}
+
+int fib(int n) {
+    if(n <= 1) return n;
+    return fib(n-1) + fib(n-2);
+}
+
+@test void test_hanoi() {
+    // 1. 阶乘
+    Test.assertEq(fact(1), 1, "1!");
+    Test.assertEq(fact(5), 120, "5!");
+    Test.assertEq(fact(7), 5040, "7!");
+
+    // 2. 斐波那契
+    Test.assertEq(fib(1), 1, "fib1");
+    Test.assertEq(fib(7), 13, "fib7");
+    Test.assertEq(fib(10), 55, "fib10");
+
+    // 3. 汉诺塔（3层）——捕获移动序列
+    Test.captureStart();
+    hanoi(3, "A", "C", "B");
+    Test.captureEnd();
+    Test.assertOutputContains("Move disk 1 from A to C", "hanoi 第1步");
+    Test.assertOutputContains("Move disk 2\n from A to B", "hanoi 第2步");
+    Test.assertOutputContains("Move disk 1 from C to B", "hanoi 第3步");
+    Test.assertOutputContains("Move disk 3\n from A to C", "hanoi 第4步");
+    Test.assertOutputContains("Move disk 1 from B to A", "hanoi 第5步");
+    Test.assertOutputContains("Move disk 2\n from B to C", "hanoi 第6步");
+    Test.assertOutputContains("Move disk 1 from A to C", "hanoi 第7步");
+
+    Test.report("test_hanoi", true);
+}
