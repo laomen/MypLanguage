@@ -1,0 +1,16 @@
+{
+  "ffi": [
+    { "name": "myp_fs_exists", "ret": "int", "params": [
+      { "type": "string", "name": "path" }
+    ] },
+    { "name": "myp_fs_is_dir", "ret": "int", "params": [
+      { "type": "string", "name": "path" }
+    ] },
+    { "name": "myp_fs_file_size", "ret": "long", "params": [
+      { "type": "string", "name": "path" }
+    ] },
+    { "name": "myp_math_sqrt", "ret": "double", "params": [
+      { "type": "double", "name": "v" }
+    ] }
+  ]
+}

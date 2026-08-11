@@ -14,7 +14,7 @@ esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -33,5 +33,14 @@ echo "$out" | grep -q 'json2 = {"name":"say \\"hi\\"","hp":7,"pos":{"x":0,"y":0}
 echo "$out" | grep -q "round-trip OK" \
     || { echo "FAIL: round-trip 失败"; echo "$out"; exit 1; }
 
-echo "codegen 自测通过"
+# 4) ffi 生成器：生成 → 编译 → 运行
+if ! "$MYPCC" run main.myp ffi tests/schema_ffi.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 ffi 代码"; exit 1
+fi
+cp "$WORK/ffi_gen.myp" tests/ffi_gen.myp
+out2=$("$MYPCC" run tests/test_ffi.myp 2>&1) || { echo "FAIL: 编译/运行 test_ffi"; echo "$out2"; exit 1; }
+echo "$out2" | grep -q "ffi ok exists=1 isdir=1 sqrt=8" \
+    || { echo "FAIL: ffi 输出不符"; echo "$out2"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi）"
 exit 0

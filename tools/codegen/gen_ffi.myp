@@ -1,0 +1,35 @@
+// gen_ffi.myp — ffi 生成器（P1a：C 函数 → MYP ffi 声明）
+// 生成：`ffi <ret> <name>(<params>);` 声明。
+// 注：MYP 无用户析构器，资源 RAII 用显式 open/close 包装类（与 stdlib 惯例一致），
+// 见 design.md §7.2 说明。
+
+import env;
+import "./model.myp";
+import "./emit.myp";
+
+class FfiGen {
+    action:
+        @constructor FfiGen() {}
+
+        string gen(Schema s) {
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("");
+            int i = 0;
+            while (i < s.ffiCount()) {
+                FfiFunc f = s.ffiAt(i);
+                string line = "ffi " + f.ret + " " + f.name + "(";
+                int k = 0;
+                while (k < f.paramCount()) {
+                    FfiParam p = f.paramAt(k);
+                    if (k > 0) line = line + ", ";
+                    line = line + p.type + " " + p.name;
+                    k = k + 1;
+                }
+                line = line + ");";
+                e.line(line);
+                i = i + 1;
+            }
+            return e.text();
+        }
+}

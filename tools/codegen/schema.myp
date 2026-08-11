@@ -40,6 +40,26 @@ class SchemaParser {
                 s.addType(t);
                 i = i + 1;
             }
+            // ffi 段：C 函数声明
+            int fn = arrLen(j, "ffi");
+            int k = 0;
+            while (k < fn) {
+                string fp = "ffi." + k;
+                FfiFunc f = new FfiFunc();
+                f.setName(j.getString(fp + ".name"));
+                f.setRet(j.getString(fp + ".ret"));
+                int pn = arrLen(j, fp + ".params");
+                int m = 0;
+                while (m < pn) {
+                    string pp = fp + ".params." + m;
+                    FfiParam p = new FfiParam();
+                    p.set(j.getString(pp + ".type"), j.getString(pp + ".name"));
+                    f.addParam(p);
+                    m = m + 1;
+                }
+                s.addFfi(f);
+                k = k + 1;
+            }
             j.free();
             return s;
         }

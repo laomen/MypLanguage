@@ -1,0 +1,24 @@
+// test_ffi.myp — ffi 生成代码验证
+// 调用生成的 ffi 声明（runtime 的真实 C 函数），确认可链接可运行。
+import env;
+import "./ffi_gen.myp";
+
+int run() {
+    // myp_fs_exists / myp_fs_is_dir
+    int e = myp_fs_exists("/tmp");
+    if (e == 0) { Console.writeLine("FAIL exists"); return 1; }
+    int d = myp_fs_is_dir("/tmp");
+    if (d == 0) { Console.writeLine("FAIL is_dir"); return 2; }
+    // myp_fs_file_size（返回 long）
+    long sz = myp_fs_file_size("/tmp");
+    if (sz < 0L) { Console.writeLine("FAIL size"); return 3; }
+    // myp_math_sqrt
+    double r = myp_math_sqrt(64.0);
+    if (r != 8.0) { Console.writeLine("FAIL sqrt=" + r); return 4; }
+    Console.writeLine("ffi ok exists=" + e + " isdir=" + d + " sqrt=" + r);
+    return 0;
+}
+
+int main() {
+    return run();
+}

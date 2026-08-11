@@ -39,14 +39,46 @@ class TypeDecl {
         ArrayList<Field> fields;
 }
 
+class FfiParam {
+    action:
+        @constructor FfiParam() { type = ""; name = ""; }
+        void set(string t, string n) { type = t; name = n; }
+    property:
+        string type;      // int/long/double/string/void…
+        string name;
+}
+
+class FfiFunc {
+    action:
+        @constructor FfiFunc() {
+            name = "";
+            ret = "void";
+            params = new ArrayList<FfiParam>();
+        }
+        void setName(string v) { name = v; }
+        void setRet(string v) { ret = v; }
+        void addParam(FfiParam p) { params.add(p); }
+        int paramCount() { return params.size(); }
+        FfiParam paramAt(int i) { return params.get(i); }
+    property:
+        string name;      // C 函数名
+        string ret;       // 返回类型
+        ArrayList<FfiParam> params;
+}
+
 class Schema {
     action:
         @constructor Schema() {
             types = new ArrayList<TypeDecl>();
+            ffiFuncs = new ArrayList<FfiFunc>();
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
         TypeDecl typeAt(int i) { return types.get(i); }
+        void addFfi(FfiFunc f) { ffiFuncs.add(f); }
+        int ffiCount() { return ffiFuncs.size(); }
+        FfiFunc ffiAt(int i) { return ffiFuncs.get(i); }
     property:
         ArrayList<TypeDecl> types;
+        ArrayList<FfiFunc> ffiFuncs;
 }
