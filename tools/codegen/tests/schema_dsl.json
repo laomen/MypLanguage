@@ -1,0 +1,14 @@
+{
+  "dsl": {
+    "name": "Calc",
+    "lparen": "(",
+    "rparen": ")",
+    "ops": [
+      { "sym": "+", "prec": 1, "assoc": "left" },
+      { "sym": "-", "prec": 1, "assoc": "left" },
+      { "sym": "*", "prec": 2, "assoc": "left" },
+      { "sym": "/", "prec": 2, "assoc": "left" },
+      { "sym": "neg", "prec": 3, "assoc": "right", "unary": 1, "text": "-" }
+    ]
+  }
+}

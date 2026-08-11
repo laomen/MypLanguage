@@ -191,6 +191,46 @@ class EmbedDecl {
         string path;      // 源文件路径（相对 CWD）
 }
 
+class DslOp {
+    action:
+        @constructor DslOp() {
+            sym = "";     // 内部符号名（二元 = 词法文本；一元 = 如 "neg"）
+            text = "";    // 词法匹配文本（二元默认 = sym）
+            prec = 0;
+            assoc = "left";
+            unary = 0;
+        }
+        void set(string s, string t, int p, string a, int u) {
+            sym = s; text = t; prec = p; assoc = a; unary = u;
+        }
+    property:
+        string sym;
+        string text;
+        int prec;
+        string assoc;
+        int unary;
+}
+
+class DslDecl {
+    action:
+        @constructor DslDecl() {
+            name = "";
+            lparen = "(";
+            rparen = ")";
+            ops = new ArrayList<DslOp>();
+        }
+        void setName(string v) { name = v; }
+        void setParens(string l, string r) { lparen = l; rparen = r; }
+        void addOp(DslOp o) { ops.add(o); }
+        int opCount() { return ops.size(); }
+        DslOp opAt(int i) { return ops.get(i); }
+    property:
+        string name;       // 生成前缀（Calc_xxx）
+        string lparen;
+        string rparen;
+        ArrayList<DslOp> ops;
+}
+
 class Schema {
     action:
         @constructor Schema() {
@@ -202,6 +242,8 @@ class Schema {
             hasService = 0;
             tables = new ArrayList<TableDecl>();
             embeds = new ArrayList<EmbedDecl>();
+            dsl = new DslDecl();
+            hasDsl = 0;
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -223,6 +265,9 @@ class Schema {
         void addEmbed(EmbedDecl e) { embeds.add(e); }
         int embedCount() { return embeds.size(); }
         EmbedDecl embedAt(int i) { return embeds.get(i); }
+        void setDsl(DslDecl d) { dsl = d; hasDsl = 1; }
+        int hasDslDecl() { return hasDsl; }
+        DslDecl dslDecl() { return dsl; }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
@@ -232,4 +277,6 @@ class Schema {
         int hasService;
         ArrayList<TableDecl> tables;
         ArrayList<EmbedDecl> embeds;
+        DslDecl dsl;
+        int hasDsl;
 }

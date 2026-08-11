@@ -15,7 +15,7 @@ if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 export MYP_CC="$MYPCC"   # 让 main.myp --verify 的子进程定位到同一编译器
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp tests/dsl_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -99,5 +99,14 @@ out9=$("$MYPCC" run main.myp orm tests/schema_orm.json -o "$WORK" --verify 2>&1)
 echo "$out9" | grep -q "verify OK" \
     || { echo "FAIL: --verify 未报 verify OK"; echo "$out9"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed + --verify）"
+# 12) DSL：运算符表 schema → 词法 + 优先级爬升解析 + 求值
+if ! "$MYPCC" run main.myp dsl tests/schema_dsl.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 dsl 代码"; exit 1
+fi
+cp "$WORK/dsl_gen.myp" tests/dsl_gen.myp
+outA=$("$MYPCC" run tests/test_dsl.myp 2>&1) || { echo "FAIL: 编译/运行 test_dsl"; echo "$outA"; exit 1; }
+echo "$outA" | grep -q "dsl ok" \
+    || { echo "FAIL: dsl 输出不符"; echo "$outA"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed + --verify + dsl）"
 exit 0

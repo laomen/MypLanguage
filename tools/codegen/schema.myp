@@ -150,6 +150,32 @@ class SchemaParser {
                 s.addEmbed(ed);
                 emi = emi + 1;
             }
+            // dsl 段：表达式 DSL（运算符表 + 括号）
+            if (j.type("dsl") != -1) {
+                DslDecl d = new DslDecl();
+                d.setName(j.getString("dsl.name"));
+                if (j.type("dsl.lparen") != -1) {
+                    d.setParens(j.getString("dsl.lparen"), j.getString("dsl.rparen"));
+                }
+                int on = arrLen(j, "dsl.ops");
+                int oi = 0;
+                while (oi < on) {
+                    string op = "dsl.ops." + oi;
+                    DslOp o = new DslOp();
+                    int un = 0;
+                    if (j.type(op + ".unary") != -1) un = j.getInt(op + ".unary");
+                    string txt = j.getString(op + ".sym");
+                    if (j.type(op + ".text") != -1) txt = j.getString(op + ".text");
+                    string assoc = "left";
+                    if (j.type(op + ".assoc") != -1) assoc = j.getString(op + ".assoc");
+                    int pr = 0;
+                    if (j.type(op + ".prec") != -1) pr = j.getInt(op + ".prec");
+                    o.set(j.getString(op + ".sym"), txt, pr, assoc, un);
+                    d.addOp(o);
+                    oi = oi + 1;
+                }
+                s.setDsl(d);
+            }
             j.free();
             return s;
         }

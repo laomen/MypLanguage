@@ -1,0 +1,40 @@
+// test_dsl.myp — DSL 生成器验证（P7）
+// schema 驱动生成的计算器：词法 + 优先级爬升解析 + 求值。
+// 覆盖：优先级、括号、除法→double、一元负号、空白、小数。
+import env;
+import math;
+import text;
+import "./dsl_gen.myp";
+
+int approx(double a, double b) {
+    if (Math.abs(a - b) < 1e-9) return 1;
+    return 0;
+}
+
+int check(string src, double want) {
+    double got = Calc_eval_src(src);
+    if (approx(got, want) == 0) {
+        Console.writeLine("FAIL " + src + " = " + got + " (want " + want + ")");
+        return 1;
+    }
+    return 0;
+}
+
+int run() {
+    if (check("1+2*3", 7.0) != 0) return 1;        // 优先级 * > +
+    if (check("(1+2)*3", 9.0) != 0) return 2;      // 括号
+    if (check("10/4", 2.5) != 0) return 3;         // 除法 → double
+    if (check("-2+3", 1.0) != 0) return 4;         // 一元负号（前缀）
+    if (check("2*-3", -6.0) != 0) return 5;        // 一元负号（操作数）
+    if (check(" 7.5 * 2 ", 15.0) != 0) return 6;   // 空白 + 小数
+    if (check("-3.5", -3.5) != 0) return 7;        // 纯负数
+    if (check("100/2/2", 25.0) != 0) return 8;     // 左结合
+    if (check("(1)", 1.0) != 0) return 9;          // 单括号
+
+    Console.writeLine("dsl ok");
+    return 0;
+}
+
+int main() {
+    return run();
+}

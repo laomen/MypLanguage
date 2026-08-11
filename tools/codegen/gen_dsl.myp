@@ -1,0 +1,390 @@
+// gen_dsl.myp — DSL 生成器（P7）
+// dsl schema → 表达式语言引擎（词法 + 优先级爬升解析 + 求值）。
+// 从运算符表（sym/prec/assoc/unary:text）生成：
+//   <N>Token / <N>_lex()           词法：空白跳、数字、运算符、括号、eof
+//   <N>_binPrec/_prefPrec/...      优先级/结合性/一元 查找表
+//   <N>Expr + 工厂 + <N>Parser     优先级爬升递归下降（一元前缀按 prefPrec）
+//   <N>_eval / <N>_eval_src        求值
+// 数字解析 strToDouble 内嵌（stdlib 无 toDouble）。
+
+import env;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class DslGen {
+    action:
+        @constructor DslGen() {}
+
+        // 生成 MYP 源码里的字符串字面量（inner 为原始文本，自动转义引号/反斜杠）
+        string lit(string inner) {
+            string e = Str.replaceAll(Str.replaceAll(inner, "\\", "\\\\"), "\"", "\\\"");
+            return "\"" + e + "\"";
+        }
+
+        // 公共辅助块（数字解析等）
+        void emitHelpers(Emitter e) {
+            e.line("// 数字字符 → 数值");
+            e.block("int " + "digitVal(string c)");
+            e.line("if (c == " + lit("0") + ") return 0;");
+            e.line("if (c == " + lit("1") + ") return 1;");
+            e.line("if (c == " + lit("2") + ") return 2;");
+            e.line("if (c == " + lit("3") + ") return 3;");
+            e.line("if (c == " + lit("4") + ") return 4;");
+            e.line("if (c == " + lit("5") + ") return 5;");
+            e.line("if (c == " + lit("6") + ") return 6;");
+            e.line("if (c == " + lit("7") + ") return 7;");
+            e.line("if (c == " + lit("8") + ") return 8;");
+            e.line("if (c == " + lit("9") + ") return 9;");
+            e.line("return 0;");
+            e.endBlock();
+            e.line("");
+            e.line("// 是否数字字符");
+            e.block("int isDigitChar(string c)");
+            e.line("if (c == " + lit("0") + " || c == " + lit("1") + " || c == " + lit("2") + " || c == " + lit("3") + " || c == " + lit("4"));
+            e.line("    || c == " + lit("5") + " || c == " + lit("6") + " || c == " + lit("7") + " || c == " + lit("8") + " || c == " + lit("9") + ") return 1;");
+            e.line("return 0;");
+            e.endBlock();
+            e.line("");
+            e.line("// 字符串 → double（整数/小数；负号）");
+            e.block("double strToDouble(string s)");
+            e.line("double r = 0.0;");
+            e.line("int i = 0;");
+            e.line("int n = Str.len(s);");
+            e.line("int neg = 0;");
+            e.line("if (i < n && Str.substring(s, i, i + 1) == " + lit("-") + ") { neg = 1; i = i + 1; }");
+            e.line("while (i < n && isDigitChar(Str.substring(s, i, i + 1)) == 1) {");
+            e.push();
+            e.line("r = r * 10.0 + digitVal(Str.substring(s, i, i + 1));");
+            e.line("i = i + 1;");
+            e.pop();
+            e.line("}");
+            e.line("if (i < n && Str.substring(s, i, i + 1) == " + lit(".") + ") {");
+            e.push();
+            e.line("i = i + 1;");
+            e.line("double frac = 0.1;");
+            e.line("while (i < n && isDigitChar(Str.substring(s, i, i + 1)) == 1) {");
+            e.push();
+            e.line("r = r + frac * digitVal(Str.substring(s, i, i + 1));");
+            e.line("frac = frac * 0.1;");
+            e.line("i = i + 1;");
+            e.pop();
+            e.line("}");
+            e.pop();
+            e.line("}");
+            e.line("if (neg == 1) r = -r;");
+            e.line("return r;");
+            e.endBlock();
+            e.line("");
+        }
+
+        // 运算符查找表（schema 生成）
+        void emitTables(Emitter e, DslDecl d) {
+            string P = d.name;
+            // 二元优先级
+            e.block("int " + P + "_binPrec(string sym)");
+            int i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                if (o.unary == 0) {
+                    e.line("if (sym == " + lit(o.text) + ") return " + o.prec + ";");
+                }
+                i = i + 1;
+            }
+            e.line("return -1;");
+            e.endBlock();
+            e.line("");
+            // 一元优先级（前缀）
+            e.block("int " + P + "_prefPrec(string sym)");
+            i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                if (o.unary == 1) {
+                    e.line("if (sym == " + lit(o.text) + ") return " + o.prec + ";");
+                }
+                i = i + 1;
+            }
+            e.line("return -1;");
+            e.endBlock();
+            e.line("");
+            // 右结合（二元）
+            e.block("int " + P + "_isRightAssoc(string sym)");
+            i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                if (o.unary == 0) {
+                    string v = (o.assoc == "right") ? "1" : "0";
+                    e.line("if (sym == " + lit(o.text) + ") return " + v + ";");
+                }
+                i = i + 1;
+            }
+            e.line("return 0;");
+            e.endBlock();
+            e.line("");
+            // 一元前缀标记
+            e.block("int " + P + "_isUnary(string sym)");
+            i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                if (o.unary == 1) {
+                    e.line("if (sym == " + lit(o.text) + ") return 1;");
+                }
+                i = i + 1;
+            }
+            e.line("return 0;");
+            e.endBlock();
+            e.line("");
+        }
+
+        // Token 类 + 工厂
+        void emitToken(Emitter e, DslDecl d) {
+            string P = d.name;
+            e.block("class " + P + "Token");
+            e.line("action:");
+            e.push();
+            e.line("@constructor");
+            e.block(P + "Token()");
+            e.line("kind = " + lit("") + ";");
+            e.line("text = " + lit("") + ";");
+            e.endBlock();
+            e.line("void set(string k, string t) { kind = k; text = t; }");
+            e.line("string getKind() { return kind; }");
+            e.line("string getText() { return text; }");
+            e.pop();
+            e.line("property:");
+            e.push();
+            e.line("string kind;");
+            e.line("string text;");
+            e.pop();
+            e.endBlock();
+            e.line("");
+            e.block(P + "Token " + P + "_mkTok(string kind, string text)");
+            e.line(P + "Token t = new " + P + "Token();");
+            e.line("t.set(kind, text);");
+            e.line("return t;");
+            e.endBlock();
+            e.line("");
+        }
+
+        // 词法
+        void emitLexer(Emitter e, DslDecl d) {
+            string P = d.name;
+            e.block("ArrayList<" + P + "Token> " + P + "_lex(string src)");
+            e.line("ArrayList<" + P + "Token> toks = new ArrayList<" + P + "Token>();");
+            e.line("int pos = 0;");
+            e.line("int n = Str.len(src);");
+            e.line("while (pos < n) {");
+            e.push();
+            e.line("string ch = Str.substring(src, pos, pos + 1);");
+            e.line("int c = Str.ord(ch);");
+            e.line("if (c == 32 || c == 9 || c == 10 || c == 13) { pos = pos + 1; continue; }");
+            e.line("if (c >= 48 && c <= 57) {");
+            e.push();
+            e.line("int start = pos;");
+            e.line("while (pos < n) {");
+            e.push();
+            e.line("int d = Str.ord(Str.substring(src, pos, pos + 1));");
+            e.line("if (d >= 48 && d <= 57) { pos = pos + 1; continue; }");
+            e.line("if (d == 46) { pos = pos + 1; continue; }");
+            e.line("break;");
+            e.pop();
+            e.line("}");
+            e.line("toks.add(" + P + "_mkTok(" + lit("num") + ", Str.substring(src, start, pos)));");
+            e.line("continue;");
+            e.pop();
+            e.line("}");
+            e.line("int got = 0;");
+            // 运算符（去重文本）
+            ArrayList<string> seen = new ArrayList<string>();
+            int i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                int dup = 0;
+                int s = 0;
+                while (s < seen.size()) {
+                    if (seen.get(s) == o.text) { dup = 1; break; }
+                    s = s + 1;
+                }
+                if (dup == 0) {
+                    seen.add(o.text);
+                    string guard = (i == 0) ? "" : "got == 0 && ";
+                    e.line("if (" + guard + "ch == " + lit(o.text) + ") { toks.add(" + P + "_mkTok(" + lit("op") + ", " + lit(o.text) + ")); pos = pos + 1; got = 1; }");
+                }
+                i = i + 1;
+            }
+            e.line("if (got == 0 && ch == " + lit(d.lparen) + ") { toks.add(" + P + "_mkTok(" + lit("lparen") + ", " + lit(d.lparen) + ")); pos = pos + 1; got = 1; }");
+            e.line("if (got == 0 && ch == " + lit(d.rparen) + ") { toks.add(" + P + "_mkTok(" + lit("rparen") + ", " + lit(d.rparen) + ")); pos = pos + 1; got = 1; }");
+            e.line("if (got == 0) { toks.add(" + P + "_mkTok(" + lit("err") + ", ch)); pos = pos + 1; }");
+            e.pop();
+            e.line("}");
+            e.line("toks.add(" + P + "_mkTok(" + lit("eof") + ", " + lit("") + "));");
+            e.line("return toks;");
+            e.endBlock();
+            e.line("");
+        }
+
+        // AST + 工厂
+        void emitAst(Emitter e, DslDecl d) {
+            string P = d.name;
+            e.block("class " + P + "Expr");
+            e.line("action:");
+            e.push();
+            e.line("@constructor");
+            e.block(P + "Expr()");
+            e.line("kind = 0;       // 0=num 1=bin 2=neg");
+            e.line("num = 0.0;");
+            e.line("op = " + lit("") + ";");
+            e.line("left = null;");
+            e.line("right = null;");
+            e.endBlock();
+            e.line("void setNum(double v) { kind = 0; num = v; }");
+            e.line("void setBin(string o, " + P + "Expr l, " + P + "Expr r) { kind = 1; op = o; left = l; right = r; }");
+            e.line("void setNeg(" + P + "Expr a) { kind = 2; left = a; }");
+            e.pop();
+            e.line("property:");
+            e.push();
+            e.line("int kind;");
+            e.line("double num;");
+            e.line("string op;");
+            e.line(P + "Expr left;");
+            e.line(P + "Expr right;");
+            e.pop();
+            e.endBlock();
+            e.line("");
+            e.block(P + "Expr " + P + "_mkNum(double v)");
+            e.line(P + "Expr e = new " + P + "Expr();");
+            e.line("e.setNum(v);");
+            e.line("return e;");
+            e.endBlock();
+            e.line("");
+            e.block(P + "Expr " + P + "_mkBin(string o, " + P + "Expr l, " + P + "Expr r)");
+            e.line(P + "Expr e = new " + P + "Expr();");
+            e.line("e.setBin(o, l, r);");
+            e.line("return e;");
+            e.endBlock();
+            e.line("");
+            e.block(P + "Expr " + P + "_mkNeg(" + P + "Expr a)");
+            e.line(P + "Expr e = new " + P + "Expr();");
+            e.line("e.setNeg(a);");
+            e.line("return e;");
+            e.endBlock();
+            e.line("");
+        }
+
+        // 解析器（优先级爬升）
+        void emitParser(Emitter e, DslDecl d) {
+            string P = d.name;
+            e.block("class " + P + "Parser");
+            e.line("action:");
+            e.push();
+            e.line("@constructor");
+            e.block(P + "Parser(ArrayList<" + P + "Token> t)");
+            e.line("toks = t;");
+            e.line("pos = 0;");
+            e.endBlock();
+            e.line(P + "Token peek() {");
+            e.push();
+            e.line("if (pos < toks.size()) return toks.get(pos);");
+            e.line("return " + P + "_mkTok(" + lit("eof") + ", " + lit("") + ");");
+            e.pop();
+            e.line("}");
+            e.line(P + "Token next() {");
+            e.push();
+            e.line(P + "Token t = peek();");
+            e.line("pos = pos + 1;");
+            e.line("return t;");
+            e.pop();
+            e.line("}");
+            e.line(P + "Expr parse() { return parsePrec(0); }");
+            e.block(P + "Expr parsePrec(int minPrec)");
+            e.line(P + "Expr l = parseAtom();");
+            e.line("while (true) {");
+            e.push();
+            e.line(P + "Token t = peek();");
+            e.line("if (t.getKind() != " + lit("op") + ") break;");
+            e.line("int p = " + P + "_binPrec(t.getText());");
+            e.line("if (p < 0 || p < minPrec) break;");
+            e.line("next();");
+            e.line("int rp = p + 1;");
+            e.line("if (" + P + "_isRightAssoc(t.getText()) != 0) rp = p;");
+            e.line(P + "Expr r = parsePrec(rp);");
+            e.line("l = " + P + "_mkBin(t.getText(), l, r);");
+            e.pop();
+            e.line("}");
+            e.line("return l;");
+            e.endBlock();
+            e.block(P + "Expr parseAtom()");
+            e.line(P + "Token t = next();");
+            e.line("if (t.getKind() == " + lit("num") + ") return " + P + "_mkNum(strToDouble(t.getText()));");
+            e.line("if (t.getKind() == " + lit("op") + " && " + P + "_prefPrec(t.getText()) >= 0) {");
+            e.push();
+            e.line(P + "Expr a = parsePrec(" + P + "_prefPrec(t.getText()));");
+            e.line("return " + P + "_mkNeg(a);");
+            e.pop();
+            e.line("}");
+            e.line("if (t.getKind() == " + lit("lparen") + ") {");
+            e.push();
+            e.line(P + "Expr e = parsePrec(0);");
+            e.line("next();   // " + d.rparen);
+            e.line("return e;");
+            e.pop();
+            e.line("}");
+            e.line("return " + P + "_mkNum(0.0);");
+            e.endBlock();
+            e.pop();
+            e.line("property:");
+            e.push();
+            e.line("ArrayList<" + P + "Token> toks;");
+            e.line("int pos;");
+            e.pop();
+            e.endBlock();
+            e.line("");
+        }
+
+        // 求值
+        void emitEval(Emitter e, DslDecl d) {
+            string P = d.name;
+            e.block("double " + P + "_eval(" + P + "Expr e)");
+            e.line("if (e.kind == 0) return e.num;");
+            e.line("if (e.kind == 2) return -(" + P + "_eval(e.left));");
+            e.line("double l = " + P + "_eval(e.left);");
+            e.line("double r = " + P + "_eval(e.right);");
+            int i = 0;
+            while (i < d.opCount()) {
+                DslOp o = d.opAt(i);
+                if (o.unary == 0) {
+                    e.line("if (e.op == " + lit(o.sym) + ") return l " + o.sym + " r;");
+                }
+                i = i + 1;
+            }
+            e.line("return 0.0;");
+            e.endBlock();
+            e.line("");
+            e.block("double " + P + "_eval_src(string src)");
+            e.line(P + "Parser p = new " + P + "Parser(" + P + "_lex(src));");
+            e.line("return " + P + "_eval(p.parse());");
+            e.endBlock();
+            e.line("");
+        }
+
+        string gen(Schema s) {
+            if (s.hasDslDecl() == 0) return "";
+            DslDecl d = s.dslDecl();
+            string P = d.name;
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("// DSL: " + P + " —— 词法 + 优先级爬升解析 + 求值");
+            e.line("import env;");
+            e.line("import text;");
+            e.line("import collections;");
+            e.line("");
+            emitHelpers(e);
+            emitToken(e, d);
+            emitTables(e, d);
+            emitLexer(e, d);
+            emitAst(e, d);
+            emitParser(e, d);
+            emitEval(e, d);
+            return e.text();
+        }
+}

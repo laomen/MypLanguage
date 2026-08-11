@@ -1,6 +1,6 @@
 # tools/codegen — MYP 代码生成框架（torchgen 式）
 
-> 状态：**P0-P5 已实施（2026-08-11）** · 规划中：DSL / --verify 增强
+> 状态：**P0-P7 已实施（2026-08-11）** · 框架完成
 > 定位：**MYP 自举的 schema 驱动代码生成框架**——声明式 schema → 生成 MYP/C/C++ 源码。
 > 对标：PyTorch torchgen（算子 schema → C++/CUDA/Python）、gRPC/Thrift（IDL → 各语言 stub）。
 > 关联：`docs/next_improvements.md` §六-6、`docs/serde_macro.md`（编译器内 `@derive` 为另一路线）、
@@ -54,6 +54,7 @@ tools/codegen/
   gen_idl.myp        ← 生成器④：IDL → 接口 + JSON-RPC 编解码 + socket 传输
   gen_orm.myp        ← 生成器⑤：ORM（tables → 实体 + CRUD SQL）
   gen_embed.myp      ← 生成器⑥：资源嵌入（文件 → 字符串常量）
+  gen_dsl.myp        ← 生成器⑦：DSL（运算符表 → 词法 + 优先级爬升解析 + 求值）
   tests/             ← 每生成器正/负测试
 ```
 
@@ -205,7 +206,8 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 | **P4** | ✅ `gen_orm.myp`：tables → 实体 struct + CRUD SQL 生成 | P3 | `schema_orm.json` + `test_orm.myp`：Player{id key,name,hp}/Item{id key,price double,label} 的 CREATE/INSERT/SELECT_ALL/SELECT_BY_KEY/UPDATE/DELETE 语句精确匹配；类型映射 int/long/bool→INTEGER、double/float→REAL、string→TEXT |
 | **P5** | ✅ `gen_embed.myp`：文件 → `<Name>_content()` 字符串常量（资源嵌入） | P4 | `schema_embed.json` + `test_embed.myp`：Greeting/Config 嵌入内容与源文件字节级 round-trip 一致（utf8/引号/反斜杠/制表符/`\\n` 双重转义）。配套扩标准库：`File.readAll()`（同步字节级读全文件）、`Str.ord`/`Str.chr` |
 | **P6** | ✅ `--verify`：生成后自动编译校验（`mypc <file> --emit-llvm` 走完 codegen 跳过链接） | P5 | 7 个生成器产出全部 `verify OK`；`run_tests.sh` 第 11 步覆盖。定位 mypc：`MYP_CC` → `./build/mypc` → `build/mypc` → PATH（同 `tools/pm`） |
-| 规划 | DSL 生成器 | P6 | 各自验收 |
+| **P7** | ✅ `gen_dsl.myp`：运算符表 schema → 表达式 DSL（词法 + 优先级爬升解析 + 求值） | P6 | `schema_dsl.json` + `test_dsl.myp`：Calc{+ - * / 一元neg} 9 用例全过（优先级/括号/除法→double/一元负号/空白/小数/左结合）。生成 `<N>_lex`/`<N>Parser`/`<N>_eval_src`；strToDouble 内嵌（stdlib 无 toDouble）。`--verify` 通过 |
+| 完成 | 框架收尾：`emitFile` 补回 mkdirP（P6 重构遗漏）；编译器 UAF 修复（见 git log） | P7 | 自测 10 步全过；回归 233/233 |
 
 ## 11. 风险与决策
 
