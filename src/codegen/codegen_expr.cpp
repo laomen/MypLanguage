@@ -142,6 +142,31 @@ llvm::Value* CodeGen::generateNullLiteral(const NullLiteralExpr&) {
 }
 
 llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
+    // M-FN-2 递归闭包：lambda __call 体内把"自名"作为值使用（如实参传给
+    // 其他函数作为 thunk）→ 生成当前闭包的 fat pointer {this, <hidden>_tramp}。
+    // 调用形式（B(...)）已由 sema 标记 __self 在 generateCallImpl 处理；
+    // 此处覆盖"作为值"（函数值实参/赋值）的情形。
+    if (!current_class_name_.empty() &&
+        current_class_name_.rfind("__lambda_", 0) == 0 && current_tu_) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != current_class_name_) continue;
+            if (!cls.lambda_name.empty() && cls.lambda_name == e.name) {
+                auto* ta = getNamedValue("this");
+                auto* tramp = module_->getFunction(current_class_name_ + "_tramp");
+                if (ta && tramp) {
+                    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+                    auto* fat_ty = llvm::StructType::get(ctx_, {ptr_ty, ptr_ty});
+                    auto* fat = builder_.CreateAlloca(fat_ty);
+                    auto* closure = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                    builder_.CreateStore(closure, builder_.CreateStructGEP(fat_ty, fat, 0));
+                    builder_.CreateStore(builder_.CreateBitCast(tramp, ptr_ty),
+                                         builder_.CreateStructGEP(fat_ty, fat, 1));
+                    return builder_.CreateLoad(fat_ty, fat);
+                }
+            }
+            break;
+        }
+    }
     auto* a = getNamedValue(e.name);
     if (!a) {
         if (runtime_now_ms_ && e.name == "now") return runtime_now_ms_;

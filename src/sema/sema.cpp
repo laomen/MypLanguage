@@ -1162,6 +1162,12 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
         if (decl.init_expr->kind == ExprKind::Lambda && decl_type.kind == TypeKind::Function) {
             // Contextual typing: lambda assigned to a function-typed var uses
             // the declared function type (return + param types) as its own.
+            // Recursive closures: treat the variable name as a NAMED lambda
+            // (M-FN-2 __self) so a self-reference `name(...)` inside the body
+            // routes to the lambda's own tramp — otherwise the self-reference
+            // is seen as capturing an as-yet-uninitialized variable (typed
+            // void → "cannot return value of type 'void'"; value null at call).
+            static_cast<LambdaExpr&>(*decl.init_expr).name = decl.name;
             init_type = visitLambda(static_cast<LambdaExpr&>(*decl.init_expr), &decl_type);
         } else {
             init_type = visitExpr(*decl.init_expr);
