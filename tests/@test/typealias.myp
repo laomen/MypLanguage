@@ -1,6 +1,6 @@
-// typealias: `type Name = Type;` 类型别名（§三-4）
+// typealias: `type Name = Type;` 类型别名（§三-4）→ @test
 // 覆盖：基本类型别名、别名套别名、定长数组别名、参数/返回/属性/局部变量使用别名
-import env;
+import test;
 
 type MyInt = int;
 type MyString = string;
@@ -24,7 +24,7 @@ class Holder {
         Int3 v;
 }
 
-int pmRun() {
+@test void test_typealias() {
     MyInt x = 3;
     MyInt y = Calc.add(x, 4);
     MyString s = Calc.greet();
@@ -32,8 +32,8 @@ int pmRun() {
     h.v[0] = 1;
     h.v[1] = 2;
     h.v[2] = 3;
-    Console.writeString(s + " y=" + y + " sum=" + h.sum());
-    Console.writeString("\n");
-    return 0;
+    Test.assertStrEq(s, "hi", "s");
+    Test.assertEq(y, 7, "y");
+    Test.assertEq(h.sum(), 6, "sum");
+    Test.report("test_typealias", true);
 }
-int main() { int c = pmRun(); return c; }

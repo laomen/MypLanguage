@@ -1,0 +1,23 @@
+// @static class property read/write through class name → @test
+import test;
+
+@static class Config {
+    property:
+        double[] data;
+        int count;
+        string name;
+}
+
+@test void test_static_property() {
+    Config.data = new double[5];
+    Config.data[0] = 3.14;
+    Config.data[1] = 2.71;
+    Config.count = 42;
+    Config.name = "test";
+
+    Test.assertStrEq(Config.name, "test", "name");
+    Test.assertEq(Config.count, 42, "count");
+    Test.assertFloatEq(Config.data[0], 3.14, 0.0001, "d0");
+    Test.assertFloatEq(Config.data[1], 2.71, 0.0001, "d1");
+    Test.report("test_static_property", true);
+}

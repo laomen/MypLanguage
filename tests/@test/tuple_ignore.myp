@@ -1,14 +1,14 @@
-// tuple_ignore: 元组解构 `_` 忽略符（§三-2 待办项）
+// tuple_ignore: 元组解构 `_` 忽略符（§三-2 待办项）→ @test
 // 覆盖：跳过首/尾/全部元素、声明式+赋值式、嵌套 `_`、带类型的 `_`、
 //       `_` 在普通上下文仍是合法标识符
-import env;
+import test;
 
 (int, string) getPair() { return (1, "x"); }
 (int, int) getTwo() { return (7, 9); }
 ((int, int), int) getNested() { return ((1, 2), 5); }
 (int, int, int) getTri() { return (10, 20, 30); }
 
-int pmRun() {
+@test void test_tuple_ignore() {
     // 跳过首元素，绑定第二个
     (_, string b) = getPair();
     // 绑定第一个，跳过尾元素
@@ -24,11 +24,16 @@ int pmRun() {
     (int _, string b2) = getPair();
     // 三元组跳中间
     (int x, _, int z) = getTri();
-    // `_` 在普通上下文仍是合法标识符（不受影响）
+    // `_` 在普通上下文仍是合法标识符
     int _ = 5;
-    Console.writeString("a=" + a + " b=" + b + " g=" + g + " h=" + h + " q=" + q + " x=" + x + " z=" + z);
-    Console.writeString(" b2=" + b2 + " underscore=" + _);
-    Console.writeString("\n");
-    return 0;
+    Test.assertEq(a, 1, "a");
+    Test.assertStrEq(b, "x", "b");
+    Test.assertEq(g, 42, "g");
+    Test.assertEq(h, 9, "h");
+    Test.assertEq(q, 2, "q");
+    Test.assertEq(x, 10, "x");
+    Test.assertEq(z, 30, "z");
+    Test.assertStrEq(b2, "x", "b2");
+    Test.assertEq(_, 5, "underscore");
+    Test.report("test_tuple_ignore", true);
 }
-int main() { int c = pmRun(); return c; }
