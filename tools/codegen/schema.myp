@@ -115,6 +115,31 @@ class SchemaParser {
                 }
                 s.setService(svc);
             }
+            // tables 段：ORM 数据表（实体字段 + 主键）
+            int tn = arrLen(j, "tables");
+            int ti = 0;
+            while (ti < tn) {
+                string tp = "tables." + ti;
+                TableDecl td = new TableDecl();
+                td.setName(j.getString(tp + ".name"));
+                td.setTable(j.getString(tp + ".table"));
+                int tfn = arrLen(j, tp + ".fields");
+                int tk = 0;
+                while (tk < tfn) {
+                    string fp2 = tp + ".fields." + tk;
+                    Field f = new Field();
+                    int key = 0;
+                    if (j.type(fp2 + ".key") != -1) {
+                        key = j.getInt(fp2 + ".key");
+                    }
+                    f.set(j.getString(fp2 + ".name"), j.getString(fp2 + ".type"), 0);
+                    f.setKey(key);
+                    td.addField(f);
+                    tk = tk + 1;
+                }
+                s.addTable(td);
+                ti = ti + 1;
+            }
             j.free();
             return s;
         }

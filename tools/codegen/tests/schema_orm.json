@@ -1,0 +1,14 @@
+{
+  "tables": [
+    { "name": "Player", "table": "players", "fields": [
+      { "name": "id", "type": "int", "key": true },
+      { "name": "name", "type": "string" },
+      { "name": "hp", "type": "int" }
+    ] },
+    { "name": "Item", "table": "items", "fields": [
+      { "name": "id", "type": "int", "key": true },
+      { "name": "price", "type": "double" },
+      { "name": "label", "type": "string" }
+    ] }
+  ]
+}

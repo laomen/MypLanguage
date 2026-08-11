@@ -9,16 +9,19 @@ class Field {
             name = "";
             type = "";
             array = 0;
+            key = 0;
         }
         void set(string n, string t, int a) {
             name = n;
             type = t;
             array = a;
         }
+        void setKey(int v) { key = v; }
     property:
         string name;      // 字段名
         string type;      // 类型名（int/double/string/自定义类型…）
         int array;        // 1 = 动态数组（P0b 暂不支持，检测即告警跳过）
+        int key;          // 1 = 主键（ORM 用）
 }
 
 class TypeDecl {
@@ -149,6 +152,33 @@ class ServiceDecl {
         ArrayList<MethodDecl> methods;
 }
 
+class TableDecl {
+    action:
+        @constructor TableDecl() {
+            name = "";
+            table = "";
+            fields = new ArrayList<Field>();
+        }
+        void setName(string v) { name = v; }
+        void setTable(string v) { table = v; }
+        void addField(Field f) { fields.add(f); }
+        int fieldCount() { return fields.size(); }
+        Field fieldAt(int i) { return fields.get(i); }
+        // 主键下标（无标记 → 默认第一个字段）
+        int keyIndex() {
+            int i = 0;
+            while (i < fields.size()) {
+                if (fields.get(i).key == 1) return i;
+                i = i + 1;
+            }
+            return 0;
+        }
+    property:
+        string name;            // 实体类型名（struct 名）
+        string table;           // SQL 表名
+        ArrayList<Field> fields;
+}
+
 class Schema {
     action:
         @constructor Schema() {
@@ -158,6 +188,7 @@ class Schema {
             exprs = new ArrayList<ExprDecl>();
             service = new ServiceDecl();
             hasService = 0;
+            tables = new ArrayList<TableDecl>();
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -173,6 +204,9 @@ class Schema {
         ExprDecl exprAt(int i) { return exprs.get(i); }
         void setService(ServiceDecl s) { service = s; hasService = 1; }
         int hasServiceDecl() { return hasService; }
+        void addTable(TableDecl t) { tables.add(t); }
+        int tableCount() { return tables.size(); }
+        TableDecl tableAt(int i) { return tables.get(i); }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
@@ -180,4 +214,5 @@ class Schema {
         ArrayList<ExprDecl> exprs;
         ServiceDecl service;
         int hasService;
+        ArrayList<TableDecl> tables;
 }

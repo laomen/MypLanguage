@@ -1,0 +1,73 @@
+// test_orm.myp — ORM 生成代码验证（CRUD SQL 生成）
+import env;
+import text;
+import "./orm_gen.myp";
+
+int run() {
+    // Player 实体
+    Player p;
+    p.id = 1;
+    p.name = "Alice";
+    p.hp = 100;
+
+    string create = Player_create_table();
+    Console.writeLine("create = " + create);
+    if (create != "CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY, name TEXT, hp INTEGER)") {
+        Console.writeLine("FAIL create=" + create); return 1;
+    }
+
+    string ins = Player_insert(p);
+    Console.writeLine("insert = " + ins);
+    if (ins != "INSERT INTO players (id,name,hp) VALUES (1,\"Alice\",100)") {
+        Console.writeLine("FAIL insert=" + ins); return 2;
+    }
+
+    string all = Player_select_all();
+    Console.writeLine("select_all = " + all);
+    if (all != "SELECT id,name,hp FROM players") {
+        Console.writeLine("FAIL select_all=" + all); return 3;
+    }
+
+    string byk = Player_select_by_id(1);
+    Console.writeLine("select_by_id = " + byk);
+    if (byk != "SELECT id,name,hp FROM players WHERE id = 1") {
+        Console.writeLine("FAIL select_by_id=" + byk); return 4;
+    }
+
+    string upd = Player_update(p);
+    Console.writeLine("update = " + upd);
+    if (upd != "UPDATE players SET name=\"Alice\",hp=100 WHERE id = 1") {
+        Console.writeLine("FAIL update=" + upd); return 5;
+    }
+
+    string del = Player_delete_by_id(1);
+    Console.writeLine("delete = " + del);
+    if (del != "DELETE FROM players WHERE id = 1") {
+        Console.writeLine("FAIL delete=" + del); return 6;
+    }
+
+    // 第二张表（double 字段）
+    Item it;
+    it.id = 5;
+    it.price = 9.99;
+    it.label = "sword";
+    string ic = Item_create_table();
+    if (ic != "CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY, price REAL, label TEXT)") {
+        Console.writeLine("FAIL item create=" + ic); return 7;
+    }
+    string ii = Item_insert(it);
+    if (ii != "INSERT INTO items (id,price,label) VALUES (5,9.99,\"sword\")") {
+        Console.writeLine("FAIL item insert=" + ii); return 8;
+    }
+    string iu = Item_update(it);
+    if (iu != "UPDATE items SET price=9.99,label=\"sword\" WHERE id = 5") {
+        Console.writeLine("FAIL item update=" + iu); return 9;
+    }
+
+    Console.writeLine("orm ok");
+    return 0;
+}
+
+int main() {
+    return run();
+}

@@ -1,0 +1,159 @@
+// gen_orm.myp — ORM 生成器（P4）
+// tables schema → 实体 struct + CRUD SQL 生成（CREATE/INSERT/SELECT/UPDATE/DELETE）。
+// 生成独立 SQL 语句函数（字符串拼接），供上层驱动执行；字段经 struct 公开访问。
+// 类型映射：int/long/bool→INTEGER，double/float→REAL，string→TEXT。
+
+import env;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class OrmGen {
+    action:
+        @constructor OrmGen() {}
+
+        // 生成 MYP 源码里的字符串字面量（inner 为原始文本，自动转义引号/反斜杠）
+        string lit(string inner) {
+            string e = Str.replaceAll(Str.replaceAll(inner, "\\", "\\\\"), "\"", "\\\"");
+            return "\"" + e + "\"";
+        }
+
+        // MYP 类型 → SQL 列类型
+        string sqlType(string t) {
+            if (t == "int" || t == "long" || t == "bool") return "INTEGER";
+            if (t == "double" || t == "float") return "REAL";
+            return "TEXT";   // string
+        }
+        // 值 → SQL 字面量表达式（MYP 源码片段；access 形如 "p.id" 或 "k"）
+        string sqlVal(string t, string access) {
+            if (t == "int" || t == "long") return "Fmt.i(" + access + ")";
+            if (t == "double" || t == "float") return "Fmt.g(" + access + ", 10)";
+            if (t == "bool") return "((" + access + ") ? 1 : 0)";
+            return "cg_s(" + access + ")";   // string
+        }
+        // 列名串 "id,name,hp"
+        string colList(TableDecl td) {
+            string s = "";
+            int i = 0;
+            while (i < td.fieldCount()) {
+                if (i > 0) s = s + ",";
+                s = s + td.fieldAt(i).name;
+                i = i + 1;
+            }
+            return s;
+        }
+        // VALUES 表达式串（obj 为实体变量名；分隔符 "," 作字面量参与 + 拼接）
+        string valList(TableDecl td, string obj) {
+            string s = "";
+            int i = 0;
+            while (i < td.fieldCount()) {
+                if (i > 0) s = s + " + " + lit(",") + " + ";
+                s = s + sqlVal(td.fieldAt(i).type, obj + "." + td.fieldAt(i).name);
+                i = i + 1;
+            }
+            return s;
+        }
+        // SET 串（跳过主键；obj 为实体变量名；"col=" 与 "," 均作字面量）
+        string setList(TableDecl td, string obj, int skipIdx) {
+            string s = "";
+            int first = 0;
+            int i = 0;
+            while (i < td.fieldCount()) {
+                if (i != skipIdx) {
+                    Field f = td.fieldAt(i);
+                    if (first > 0) s = s + " + " + lit(",") + " + ";
+                    s = s + lit(f.name + "=") + " + " + sqlVal(f.type, obj + "." + f.name);
+                    first = first + 1;
+                }
+                i = i + 1;
+            }
+            return s;
+        }
+
+        // 实体 struct 定义
+        void genStruct(Emitter e, TableDecl td) {
+            string s = "struct " + td.name + " {";
+            int k = 0;
+            while (k < td.fieldCount()) {
+                Field f = td.fieldAt(k);
+                s = s + " " + f.type + " " + f.name + ";";
+                k = k + 1;
+            }
+            s = s + " }";
+            e.line(s);
+        }
+
+        // CRUD SQL 函数
+        void genCrud(Emitter e, TableDecl td) {
+            int ki = td.keyIndex();
+            Field kf = td.fieldAt(ki);
+            string P = td.name;
+
+            // CREATE TABLE
+            e.block("string " + P + "_create_table()");
+            string colSql = "";
+            int i = 0;
+            while (i < td.fieldCount()) {
+                Field f = td.fieldAt(i);
+                if (i > 0) colSql = colSql + ", ";
+                colSql = colSql + f.name + " " + sqlType(f.type);
+                if (i == ki) colSql = colSql + " PRIMARY KEY";
+                i = i + 1;
+            }
+            e.line("return " + lit("CREATE TABLE IF NOT EXISTS " + td.table + " (" + colSql + ")") + ";");
+            e.endBlock();
+            e.line("");
+
+            // INSERT
+            e.block("string " + P + "_insert(" + P + " p)");
+            e.line("return " + lit("INSERT INTO " + td.table + " (" + colList(td) + ") VALUES (") + " + " + valList(td, "p") + " + " + lit(")") + ";");
+            e.endBlock();
+            e.line("");
+
+            // SELECT all
+            e.block("string " + P + "_select_all()");
+            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.table) + ";");
+            e.endBlock();
+            e.line("");
+
+            // SELECT by key
+            e.block("string " + P + "_select_by_" + kf.name + "(" + kf.type + " k)");
+            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.table + " WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "k") + ";");
+            e.endBlock();
+            e.line("");
+
+            // UPDATE
+            e.block("string " + P + "_update(" + P + " p)");
+            e.line("return " + lit("UPDATE " + td.table + " SET ") + " + " + setList(td, "p", ki) + " + " + lit(" WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "p." + kf.name) + ";");
+            e.endBlock();
+            e.line("");
+
+            // DELETE by key
+            e.block("string " + P + "_delete_by_" + kf.name + "(" + kf.type + " k)");
+            e.line("return " + lit("DELETE FROM " + td.table + " WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "k") + ";");
+            e.endBlock();
+            e.line("");
+        }
+
+        string gen(Schema s) {
+            if (s.tableCount() == 0) return "";
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("import env;");
+            e.line("import fmt;");
+            e.line("import text;");
+            e.line("");
+            e.line("string cg_s(string s) { return \"\\\"\" + Str.replaceAll(s, \"\\\"\", \"\\\\\\\"\") + \"\\\"\"; }");
+            e.line("");
+            int t = 0;
+            while (t < s.tableCount()) {
+                TableDecl td = s.tableAt(t);
+                e.line("// ── 表: " + td.table + " ──");
+                genStruct(e, td);
+                e.line("");
+                genCrud(e, td);
+                t = t + 1;
+            }
+            return e.text();
+        }
+}

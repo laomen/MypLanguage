@@ -14,7 +14,7 @@ esac
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -74,5 +74,14 @@ out6=$("$MYPCC" run tests/test_idl_socket.myp 2>&1) || { echo "FAIL: 编译/运�
 echo "$out6" | grep -q "idl_socket ok add=7 echo=hi! mul3=7.5" \
     || { echo "FAIL: idl socket 输出不符"; echo "$out6"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket）"
+# 9) ORM：tables schema → 实体 struct + CRUD SQL 生成验证
+if ! "$MYPCC" run main.myp orm tests/schema_orm.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 orm 代码"; exit 1
+fi
+cp "$WORK/orm_gen.myp" tests/orm_gen.myp
+out7=$("$MYPCC" run tests/test_orm.myp 2>&1) || { echo "FAIL: 编译/运行 test_orm"; echo "$out7"; exit 1; }
+echo "$out7" | grep -q "orm ok" \
+    || { echo "FAIL: orm 输出不符"; echo "$out7"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm）"
 exit 0

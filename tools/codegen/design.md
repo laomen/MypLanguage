@@ -1,6 +1,6 @@
 # tools/codegen — MYP 代码生成框架（torchgen 式）
 
-> 状态：**P0-P2 已实施（2026-08-11）** · P3 起规划中
+> 状态：**P0-P4 已实施（2026-08-11）** · P5 起规划中
 > 定位：**MYP 自举的 schema 驱动代码生成框架**——声明式 schema → 生成 MYP/C/C++ 源码。
 > 对标：PyTorch torchgen（算子 schema → C++/CUDA/Python）、gRPC/Thrift（IDL → 各语言 stub）。
 > 关联：`docs/next_improvements.md` §六-6、`docs/serde_macro.md`（编译器内 `@derive` 为另一路线）、
@@ -51,7 +51,8 @@ tools/codegen/
   gen_serde.myp      ← 生成器①：JSON 序列化代码（MYP）
   gen_ffi.myp        ← 生成器②：C 绑定（ffi 声明 + 桥 + 资源 RAII）
   gen_autodiff.myp   ← 生成器③：自动微分（正向 → 反向）
-  gen_idl.myp        ← 生成器④：IDL → client/server（规划）
+  gen_idl.myp        ← 生成器④：IDL → 接口 + JSON-RPC 编解码 + socket 传输
+  gen_orm.myp        ← 生成器⑤：ORM（tables → 实体 + CRUD SQL）
   tests/             ← 每生成器正/负测试
 ```
 
@@ -200,7 +201,8 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 | **P1** | ✅ `gen_ffi.myp`（P1a 声明 + **P1b 资源包装类**） | P0b | P1a：4 个 runtime C 函数链接运行正确。P1b：`resources` 段 → 包装类（构造/`open`/`close`/`getHandle`，`invalid` 哨兵；MYP 无用户析构器 → 显式生命周期 RAII）。`schema_res.json` + `test_res.myp`：barrier open/close 幂等通过 |
 | **P2** | ✅ `gen_autodiff.myp`：表达式符号求导 → 前向 + 梯度函数 | P1 | `schema_autodiff.json` + `test_autodiff.myp`：f1=x*x+y / f2=x·sin(y)+exp(x) / f3=log(x)/sqrt(y) 解析梯度与有限差分一致。表达式语法 v1：+ - * / 一元负 括号 sin/cos/exp/log/sqrt；MYP 自写 tokenizer/parser/求导/简化（常量折叠+浅层） |
 | **P3** | ✅ `gen_idl.myp`（P3a 协议层 + **P3b socket 传输**） | P2 | P3a：`schema_idl.json` + `test_idl.myp`：Calc{add/echo/mul3} JSON-RPC 进程内验证（add=7/echo=hi!/mul3=7.5/未知方法 ok:0）。P3b：生成 `<Svc>_server_once`（accept→recvLine→dispatch→sendLine）+ `<Svc>_client_call`（connect→sendLine→recvLine），`test_idl_socket.myp` 用 @thread 服务器 + 真实 TCP 回环验证 |
-| P4 | orm / DSL / 资源嵌入 | P3 | 各自验收 |
+| **P4** | ✅ `gen_orm.myp`：tables → 实体 struct + CRUD SQL 生成 | P3 | `schema_orm.json` + `test_orm.myp`：Player{id key,name,hp}/Item{id key,price double,label} 的 CREATE/INSERT/SELECT_ALL/SELECT_BY_KEY/UPDATE/DELETE 语句精确匹配；类型映射 int/long/bool→INTEGER、double/float→REAL、string→TEXT |
+| P5 | 资源嵌入（embed）/ DSL / `--verify` 编译校验增强 | P4 | 各自验收 |
 
 ## 11. 风险与决策
 
