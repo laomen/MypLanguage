@@ -392,6 +392,12 @@ void myp_assert_long_neq(int64_t a, int64_t b);
 void myp_assert_float_neq(double a, double b, double eps);
 void myp_assert_null(const void* p);
 void myp_assert_not_null(const void* p);
+// @test 输出捕获（阶段 1）
+void myp_test_capture_start(void);
+void myp_test_capture_stop(void);
+const char* myp_test_capture_get(void);
+int myp_test_capture_contains(const char* sub);
+int myp_test_capture_eq(const char* expected);
 
 #ifdef __cplusplus
 }

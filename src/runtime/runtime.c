@@ -348,12 +348,57 @@ double myp_io_read_double(void) {
 // Basic I/O
 // ======================
 
-void myp_print(const char* str) { printf("%s", str); fflush(stdout); }
-void myp_println(const char* str) { printf("%s\n", str); fflush(stdout); }
-void myp_print_int(int32_t val) { printf("%d\n", val); fflush(stdout); }
-void myp_print_long(int64_t val) { printf("%ld\n", val); fflush(stdout); }
-void myp_print_float(double val) { printf("%g", val); fflush(stdout); }
-void myp_print_bool(int32_t val) { printf(val ? "true" : "false"); fflush(stdout); }
+// ---- @test 输出捕获（阶段 1）----
+// captureStart 后，所有 Console.* 输出（myp_print*）改写入捕获缓冲而非 stdout；
+// captureEnd 停止；get 取回捕获串，contains/eq 供 Test.assertOutputContains/Eq
+// 断言。非捕获态行为与原来完全一致（fputs/fwrite 到 stdout）。
+static char* myp_capture_buf = NULL;
+static size_t myp_capture_len = 0;
+static size_t myp_capture_cap = 0;
+static int myp_capture_on = 0;
+
+static void myp_capture_write(const char* s, size_t n) {
+    if (!myp_capture_on) return;
+    if (myp_capture_len + n + 1 > myp_capture_cap) {
+        size_t nc = myp_capture_cap ? myp_capture_cap * 2 : 256;
+        while (nc < myp_capture_len + n + 1) nc *= 2;
+        char* nb = (char*)realloc(myp_capture_buf, nc);
+        if (!nb) return;
+        myp_capture_buf = nb;
+        myp_capture_cap = nc;
+    }
+    memcpy(myp_capture_buf + myp_capture_len, s, n);
+    myp_capture_len += n;
+    myp_capture_buf[myp_capture_len] = '\0';
+}
+
+// 统一出口：捕获态写入缓冲，否则写 stdout。
+static void myp_out_write(const char* s) { myp_capture_write(s, strlen(s)); if (!myp_capture_on) fputs(s, stdout); }
+static void myp_out_write_n(const char* s, size_t n) {
+    myp_capture_write(s, n);
+    if (!myp_capture_on) fwrite(s, 1, n, stdout);
+}
+
+void myp_test_capture_start(void) { myp_capture_len = 0; myp_capture_on = 1; }
+void myp_test_capture_stop(void) { myp_capture_on = 0; }
+const char* myp_test_capture_get(void) { return myp_capture_buf ? myp_capture_buf : ""; }
+int32_t myp_test_capture_contains(const char* sub) {
+    if (!sub) return 0;
+    if (!myp_capture_buf) return sub[0] == '\0' ? 1 : 0;
+    return strstr(myp_capture_buf, sub) ? 1 : 0;
+}
+int32_t myp_test_capture_eq(const char* expected) {
+    if (!expected) return 0;
+    const char* got = myp_capture_buf ? myp_capture_buf : "";
+    return strcmp(got, expected) == 0 ? 1 : 0;
+}
+
+void myp_print(const char* str) { myp_out_write(str); fflush(stdout); }
+void myp_println(const char* str) { myp_out_write(str); myp_out_write("\n"); fflush(stdout); }
+void myp_print_int(int32_t val) { char b[32]; snprintf(b, sizeof b, "%d\n", val); myp_out_write(b); fflush(stdout); }
+void myp_print_long(int64_t val) { char b[64]; snprintf(b, sizeof b, "%ld\n", (long)val); myp_out_write(b); fflush(stdout); }
+void myp_print_float(double val) { char b[64]; snprintf(b, sizeof b, "%g", val); myp_out_write(b); fflush(stdout); }
+void myp_print_bool(int32_t val) { myp_out_write(val ? "true" : "false"); fflush(stdout); }
 
 void myp_flush(void) { fflush(stdout); }
 
@@ -2160,6 +2205,13 @@ void myp_region_free_all(void);
 void myp_free_all(void) {
     // Restore terminal if we changed it to raw mode
     myp_restore_term();
+    // @test 输出捕获缓冲（阶段 1）：进程退出时释放，保持 LSan 干净
+    if (myp_capture_buf) {
+        free(myp_capture_buf);
+        myp_capture_buf = NULL;
+        myp_capture_cap = 0;
+        myp_capture_len = 0;
+    }
     // slice<class> backing retains its elements. Release those arrays so the
     // process-exit raw free (myp_free_alloc_list_global via atexit) sees no
     // still-live element refs dangling past their backing.

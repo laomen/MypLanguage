@@ -2020,6 +2020,12 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_assert_float_neq", TypeKind::Void, {TypeKind::Double, TypeKind::Double, TypeKind::Double});
     add_intrinsic("__myp_assert_null", TypeKind::Void, {TypeKind::Class});
     add_intrinsic("__myp_assert_not_null", TypeKind::Void, {TypeKind::Class});
+    // @test 输出捕获（阶段 1）
+    add_intrinsic("__myp_test_capture_start", TypeKind::Void, {});
+    add_intrinsic("__myp_test_capture_stop", TypeKind::Void, {});
+    add_intrinsic("__myp_test_capture_get", TypeKind::String, {});
+    add_intrinsic("__myp_test_capture_contains", TypeKind::Int, {TypeKind::String});
+    add_intrinsic("__myp_test_capture_eq", TypeKind::Int, {TypeKind::String});
 
     // NOTE: __myp_coro_* are NOT registered here. The stdlib `Coro` class is a
     // compiler built-in (codegen generates the runtime call); keeping these out

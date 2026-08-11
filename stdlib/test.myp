@@ -74,6 +74,31 @@ class Test {
             else __myp_assert_not_null(p);
         }
 
+        // ---- 输出捕获（阶段 1）----
+        // captureStart 后 Console.*（myp_print*）写入捕获缓冲而非 stdout；
+        // captureEnd 停止捕获并返回捕获串。适合校验格式化/叙事型输出。
+        void captureStart() {
+            __myp_test_capture_start();
+        }
+        string captureEnd() {
+            __myp_test_capture_stop();
+            return __myp_test_capture_get();
+        }
+        // 捕获输出包含 expected 子串（自动停止捕获）
+        void assertOutputContains(string expected, string msg = "") {
+            __myp_test_capture_stop();
+            bool ok = (__myp_test_capture_contains(expected) != 0);
+            if (msg != "") __myp_test_set_msg(msg);
+            __myp_assert(ok);
+        }
+        // 捕获输出精确等于 expected
+        void assertOutputEq(string expected, string msg = "") {
+            __myp_test_capture_stop();
+            bool ok = (__myp_test_capture_eq(expected) != 0);
+            if (msg != "") __myp_test_set_msg(msg);
+            __myp_assert(ok);
+        }
+
         // 强制失败（记录失败并打印消息，不中断后续测试）
         void fail(string msg) {
             __myp_test_fail_msg(msg);

@@ -390,6 +390,12 @@ private:
     llvm::Function* runtime_assert_float_neq_ = nullptr;
     llvm::Function* runtime_assert_null_ = nullptr;
     llvm::Function* runtime_assert_not_null_ = nullptr;
+    // @test 输出捕获（阶段 1）
+    llvm::Function* runtime_test_capture_start_ = nullptr;
+    llvm::Function* runtime_test_capture_stop_ = nullptr;
+    llvm::Function* runtime_test_capture_get_ = nullptr;
+    llvm::Function* runtime_test_capture_contains_ = nullptr;
+    llvm::Function* runtime_test_capture_eq_ = nullptr;
 
     // ---- Global class instance refs (for mapping handler lookup) ----
     std::unordered_map<std::string, llvm::GlobalVariable*> class_instance_globals_;

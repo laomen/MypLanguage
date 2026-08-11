@@ -1,0 +1,30 @@
+import test;
+import env;
+
+@test void test_output_capture_exact() {
+    Test.captureStart();
+    Console.writeString("hello");
+    Console.write(42);        // Console.write(int) 自带换行
+    Console.writeString(" world\n");
+    string out = Test.captureEnd();
+    Test.assertStrEq(out, "hello42\n world\n", "capture exact");
+    Test.report("test_output_capture_exact", true);
+}
+
+@test void test_output_contains() {
+    Test.captureStart();
+    Console.writeString("The answer is ");
+    Console.write(42);
+    Console.writeString("!\n");
+    Test.assertOutputContains("answer is 42", "contains");
+    Test.report("test_output_contains", true);
+}
+
+@test void test_output_eq() {
+    Test.captureStart();
+    Console.writeString("x=");
+    Console.write(7);
+    Console.writeString("\n");
+    Test.assertOutputEq("x=7\n\n", "eq");
+    Test.report("test_output_eq", true);
+}

@@ -70,6 +70,22 @@ void CodeGen::declareTestRuntimeFunctions() {
     runtime_assert_not_null_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {p}, false),
         llvm::Function::ExternalLinkage, "myp_assert_not_null", module_.get());
+    // @test 输出捕获（阶段 1）
+    runtime_test_capture_start_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {}, false),
+        llvm::Function::ExternalLinkage, "myp_test_capture_start", module_.get());
+    runtime_test_capture_stop_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {}, false),
+        llvm::Function::ExternalLinkage, "myp_test_capture_stop", module_.get());
+    runtime_test_capture_get_ = llvm::Function::Create(
+        llvm::FunctionType::get(p, {}, false),
+        llvm::Function::ExternalLinkage, "myp_test_capture_get", module_.get());
+    runtime_test_capture_contains_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_test_capture_contains", module_.get());
+    runtime_test_capture_eq_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_test_capture_eq", module_.get());
 }
 
 // ---- __myp_* 测试 intrinsic 注册（declareRuntimeFunctions 内调用）----
@@ -89,6 +105,12 @@ void CodeGen::registerTestIntrinsics() {
     intrinsic_map_["__myp_assert_float_neq"] = runtime_assert_float_neq_;
     intrinsic_map_["__myp_assert_null"] = runtime_assert_null_;
     intrinsic_map_["__myp_assert_not_null"] = runtime_assert_not_null_;
+    // @test 输出捕获（阶段 1）
+    intrinsic_map_["__myp_test_capture_start"] = runtime_test_capture_start_;
+    intrinsic_map_["__myp_test_capture_stop"] = runtime_test_capture_stop_;
+    intrinsic_map_["__myp_test_capture_get"] = runtime_test_capture_get_;
+    intrinsic_map_["__myp_test_capture_contains"] = runtime_test_capture_contains_;
+    intrinsic_map_["__myp_test_capture_eq"] = runtime_test_capture_eq_;
 }
 
 // ---- 测试运行器：生成 main，逐个调用 @test 函数/action，异常隔离 + 汇总 ----
