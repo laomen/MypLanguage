@@ -688,6 +688,14 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto sz = module_->getDataLayout().getTypeAllocSize(lt);
         builder_.CreateMemSet(a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
                               llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz), llvm::Align(8));
+        // M8 structs: an OWNED struct local whose fields hold ARC references is
+        // registered as a kind-5 slot — its fields are released at scope exit.
+        // (A struct PARAM is borrowed: not registered, field stores stay plain.)
+        const StructDecl* sd = findStruct(d.type.class_name);
+        if (sd && isArcFieldType(d.type)) {
+            registerArcSlot(a, 5);
+            arc_struct_slot_types_[a] = d.type.class_name;
+        }
     } else if (lt->isPointerTy()) {
         builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(lt)), a);
     } else if (lt->isStructTy()) {
@@ -717,10 +725,21 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
             auto* cl = builder_.CreateExtractValue(v, 0);
             emitRetain(cl);
         }
+        // M8 structs: an ALIAS init (`struct S s2 = s1;`) copies the value —
+        // retain the ARC fields so the copy owns them (s1 keeps its own). A
+        // FRESH init (`var s = makeStruct();`) already has +1 fields from the
+        // return retain — no extra retain, ownership transfers to this local.
+        if (is_struct && !isFreshArcExpr(*d.init_expr)) {
+            const StructDecl* sd = findStruct(d.type.class_name);
+            if (sd && isArcFieldType(d.type))
+                emitStructFieldsValue(builder_, v, *sd, true);
+        }
         builder_.CreateStore(v, a);
         // §五-1 收尾: mirror this slot's live object into the coroutine frame
-        // (released by Coro.destroy / an uncaught exception).
-        if (current_is_coro_ && (arc_decl_class || arc_decl_function))
+        // (released by Coro.destroy / an uncaught exception). Strings are
+        // counted refs too — mirror them so early coroutine teardown releases
+        // (not leaks) their backing.
+        if (current_is_coro_ && (arc_decl_class || arc_decl_function || arc_decl_string))
             emitCoroFrameSet(a, v);
         arcConsumeTemp(v);   // a fresh `new` temp is now owned by the local
 
@@ -1079,6 +1098,17 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                 if (runtime_retain_)
                     builder_.CreateCall(runtime_retain_, {rdata});
             }
+            // M8 structs: a returned struct VALUE with ARC-reference fields —
+            // retain each field so the caller's copy owns the refs. The callee's
+            // struct local is released by the epilogue below (balanced). A
+            // `return <structCall>()` skips this via arc_skip_retain_return_
+            // (the call already returned a +1 value).
+            if (!skip_retain && current_ret_ti_.kind == TypeKind::Struct &&
+                !current_ret_ti_.class_name.empty() &&
+                ret_val && ret_val->getType()->isStructTy()) {
+                const StructDecl* sd = findStruct(current_ret_ti_.class_name);
+                if (sd) emitStructFieldsValue(builder_, ret_val, *sd, true);
+            }
             // ARC epilogue (non-main): release local slots AFTER retain-at-return
             // so the returned slot's rc is balanced (+1 then -1); for main the
             // release already ran before myp_free_all().
@@ -1128,7 +1158,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
             if (s.value->kind == ExprKind::NewExpr ||
                 s.value->kind == ExprKind::NewArrayExpr ||
                 (s.value->kind == ExprKind::Call &&
-                 callReturnsArcRef(static_cast<const CallExpr&>(*s.value)))) {
+                 (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
+                  callReturnsArcStruct(static_cast<const CallExpr&>(*s.value))))) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -1147,7 +1178,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     if (s.value && (s.value->kind == ExprKind::NewExpr ||
                     s.value->kind == ExprKind::NewArrayExpr ||
                     (s.value->kind == ExprKind::Call &&
-                     callReturnsArcRef(static_cast<const CallExpr&>(*s.value))))) {
+                     (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
+                      callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)))))) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }
@@ -1395,6 +1427,15 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                             if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                     arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
                                     arcConsumeTemp(v);
+                                } else if (prop_tn && !prop_tn->class_name.empty() &&
+                                           findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {
+                                    // M8 structs: struct property with ARC refs — retain new
+                                    // fields (unless fresh), release the old ones.
+                                    const StructDecl* psd = findStruct(prop_tn->class_name);
+                                    if (!isFreshArcExpr(*e.value))
+                                        emitStructFieldsValue(builder_, v, *psd, true);
+                                    emitStructFieldsPtr(builder_, gep, *psd, false);
+                                    arcConsumeTemp(v);
                                 }
                                 builder_.CreateStore(v, gep);
                                 return v;
@@ -1430,6 +1471,19 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         } else if (isArcSliceLocal(a)) {
             // M8: slice slot — retain new backing (unless fresh), release old.
             arcStoreSlice(a, v, isFreshArcExpr(*e.value));
+        } else if (isOwnedStructLocal(a)) {
+            // M8 structs: struct assignment — release the old fields, retain the
+            // new value's fields (unless fresh RHS owns them already), store.
+            auto sit = arc_struct_slot_types_.find(a);
+            if (sit != arc_struct_slot_types_.end()) {
+                const StructDecl* sd = findStruct(sit->second);
+                if (sd) {
+                    emitStructFieldsPtr(builder_, a, *sd, false);
+                    if (!isFreshArcExpr(*e.value))
+                        emitStructFieldsValue(builder_, v, *sd, true);
+                    arcConsumeTemp(v);
+                }
+            }
         }
         builder_.CreateStore(v, a);
         // §五-1 收尾: mirror the slot's live object into the coroutine frame.
@@ -1661,6 +1715,23 @@ assign_gep:
                             else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
                                 v = builder_.CreateFPToSI(v, ft);
                         }
+                        // M8 structs: an OWNED struct local's ARC field is a
+                        // strong slot — retain the new value (unless fresh),
+                        // release the overwritten field. Borrowed struct copies
+                        // (params) keep plain stores (no release — the caller
+                        // still owns the field ref).
+                        if (isOwnedStructLocal(oa)) {
+                            const StructDecl* fsd = findStruct(st_name);
+                            if (fsd && fi < fsd->properties.size() &&
+                                isArcFieldType(fsd->properties[fi].type)) {
+                                auto* old = builder_.CreateLoad(ft, gep);
+                                const TypeNode& ftn = fsd->properties[fi].type;
+                                if (!isFreshArcExpr(*e.value))
+                                    emitArcFieldOp(builder_, v, ftn, true);
+                                emitArcFieldOp(builder_, old, ftn, false);
+                                arcConsumeTemp(v);
+                            }
+                        }
                         builder_.CreateStore(v, gep);
                         return v;
                     }
@@ -1706,6 +1777,14 @@ assign_gep:
                                             for (auto& ifd : current_tu_->interfaces)
                                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                        arcConsumeTemp(v);
+                                    } else if (prop_tn && !prop_tn->class_name.empty() &&
+                                               findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {
+                                        // M8 structs: static struct property — retain/release fields.
+                                        const StructDecl* psd = findStruct(prop_tn->class_name);
+                                        if (!isFreshArcExpr(*e.value))
+                                            emitStructFieldsValue(builder_, v, *psd, true);
+                                        emitStructFieldsPtr(builder_, gep, *psd, false);
                                         arcConsumeTemp(v);
                                     }
                                     builder_.CreateStore(v, gep);
@@ -1840,6 +1919,14 @@ assign_gep:
                             for (auto& ifd : current_tu_->interfaces)
                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                        arcConsumeTemp(v);
+                    } else if (prop_tn && !prop_tn->class_name.empty() &&
+                               findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {
+                        // M8 structs: instance struct property — retain/release fields.
+                        const StructDecl* psd = findStruct(prop_tn->class_name);
+                        if (!isFreshArcExpr(*e.value))
+                            emitStructFieldsValue(builder_, v, *psd, true);
+                        emitStructFieldsPtr(builder_, gep, *psd, false);
                         arcConsumeTemp(v);
                     }
                     builder_.CreateStore(v, gep);

@@ -1,0 +1,71 @@
+import env;
+import text;
+
+// M8 structs: struct VALUES that hold ARC-reference fields (string, nested
+// struct with strings) must retain fields on copy and release them on
+// overwrite/scope-exit — otherwise string fields leak or dangle.
+
+struct Person {
+    int id;
+    string name;
+    string city;
+}
+
+struct Team {
+    string title;
+    Person lead;      // nested struct with ARC fields
+}
+
+// A class whose property is a struct with ARC fields — the destroy stub must
+// release the struct's fields, and property stores retain them.
+class Config {
+    action:
+        void setPoint(Person p) { point_ = p; }
+        Person getPoint() { return point_; }
+    property:
+        Person point_;
+}
+
+Person makePerson(int id, string name, string city) {
+    Person p;
+    p.id = id;
+    p.name = name;
+    p.city = city;
+    return p;
+}
+
+int runTest() {
+    for (int round = 0; round < 200; round = round + 1) {
+        Person a = makePerson(1, "alice", "cityA");
+        Person b = a;              // copy alias -> retain fields
+        b.name = "bob";            // field store -> release old, retain new
+        Person c = a;              // another alias
+        Person d = makePerson(2, "dave", "cityD");
+        c = d;                     // struct assignment -> release old fields
+        Team t;
+        t.title = "team1";
+        t.lead = a;                // nested struct field store
+        string got = t.lead.name;
+        if (got != "alice") return 1;
+        if (b.name != "bob") return 2;
+        if (a.name != "alice") return 3;
+        if (c.name != "dave") return 4;
+        if (c.city != "cityD") return 5;
+        Team t2 = t;               // struct copy with nested ARC fields
+        if (t2.lead.city != "cityA") return 6;
+        t2.lead.name = "eve";      // mutate through nested copy
+        if (t.lead.name != "alice") return 7;  // t's nested field unchanged
+        // class property holding a struct with ARC fields
+        Config cfg = new Config();
+        cfg.setPoint(a);
+        Person gotp = cfg.getPoint();
+        if (gotp.name != "alice") return 8;
+        cfg.setPoint(d);           // overwrite property -> release old fields
+        Person p9 = cfg.getPoint();
+        if (p9.name != "dave") return 9;
+    }
+    Console.writeString("struct churn done\n");
+    return 0;
+}
+
+int main() { int c = runTest(); return c; }

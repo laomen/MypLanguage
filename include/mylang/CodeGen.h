@@ -529,6 +529,19 @@ private:
     // M8: any type whose value is a counted/ARC reference that flows through
     // retain-at-return: class, interface, slice, dynamic T[], and string.
     bool isArcReturnType(const TypeNode& tn);
+    // M8 structs: a struct FIELD that holds an ARC reference (or is a nested
+    // struct that transitively does) — needs retain/release on struct copies.
+    bool isArcFieldType(const TypeNode& tn);
+    // M8 structs: emit retain (retain=true) or release on one loaded field value.
+    void emitArcFieldOp(llvm::IRBuilderBase& b, llvm::Value* field_val, const TypeNode& tn, bool retain);
+    // M8 structs: operate on every ARC field of a struct VALUE (loaded value).
+    void emitStructFieldsValue(llvm::IRBuilderBase& b, llvm::Value* struct_val, const StructDecl& sd, bool retain);
+    // M8 structs: operate on every ARC field of a struct at an alloca/pointer.
+    void emitStructFieldsPtr(llvm::IRBuilderBase& b, llvm::Value* struct_ptr, const StructDecl& sd, bool retain);
+    // Owned struct locals (kind-5 ARC slots): alloca -> struct name. A struct
+    // PARAM is borrowed and NOT here (its field stores stay plain copies).
+    std::unordered_map<llvm::Value*, std::string> arc_struct_slot_types_;
+    bool isOwnedStructLocal(llvm::Value* alloca);
     // True if tn is a class (not interface) reference — resolves generic type
     // params through current_type_params_. Used to decide ref-counted arrays.
     bool isArcClassType(const TypeNode& tn);
@@ -636,6 +649,10 @@ private:
     // True if a call returns an ARC-owned class / class-array reference (the
     // caller owns the returned +1 and must store it or release it).
     bool callReturnsArcRef(const CallExpr& e);
+    // M8 structs: does this call return a struct whose fields hold ARC refs?
+    // Used ONLY for `return call()` skip-retain (NOT generateCall temp-push —
+    // structs aren't released as single refs).
+    bool callReturnsArcStruct(const CallExpr& e);
     // M8: resolve the return TypeNode of a call (class method / free fn / FFI),
     // or nullptr if unresolvable. Used to detect string-producing exprs.
     const TypeNode* callReturnTypeNode(const CallExpr& e);

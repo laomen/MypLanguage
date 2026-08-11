@@ -216,6 +216,81 @@ bool CodeGen::isArcReturnType(const TypeNode& tn) {
     return false;
 }
 
+// M8 structs: a struct field that holds an ARC reference (class/interface/
+// slice/dynamic-array/string), OR is a nested struct that transitively holds
+// one. Such fields need retain/release whenever the struct value is copied or
+// discarded.
+bool CodeGen::isArcFieldType(const TypeNode& tn) {
+    if (isArcReturnType(tn)) return true;
+    if (!tn.class_name.empty() && !tn.isArray() && findStruct(tn.class_name)) {
+        const StructDecl* nsd = findStruct(tn.class_name);
+        if (nsd)
+            for (auto& p : nsd->properties)
+                if (isArcFieldType(p.type)) return true;
+    }
+    return false;
+}
+
+// Operate (retain/release) on one loaded field value. field_val is a plain
+// pointer (string/class/counted-array), a fat-pointer struct (slice/interface/
+// function value -> index 0 is the data ptr), or a nested struct value (recurse).
+void CodeGen::emitArcFieldOp(llvm::IRBuilderBase& b, llvm::Value* field_val,
+                             const TypeNode& tn, bool retain) {
+    if (!field_val) return;
+    // Nested user struct -> recurse into its ARC fields.
+    if (!tn.class_name.empty() && !tn.isArray() && findStruct(tn.class_name)) {
+        const StructDecl* nsd = findStruct(tn.class_name);
+        if (nsd && field_val->getType()->isStructTy()) {
+            emitStructFieldsValue(b, field_val, *nsd, retain);
+            return;
+        }
+    }
+    if (field_val->getType()->isStructTy()) {
+        // slice / interface / function value -> index 0 is the data pointer.
+        auto* data = b.CreateExtractValue(field_val, 0);
+        if (retain) emitRetain(data);
+        else if (runtime_release_) b.CreateCall(runtime_release_, {data});
+    } else if (field_val->getType()->isPointerTy()) {
+        if (retain) emitRetain(field_val);
+        else if (runtime_release_) b.CreateCall(runtime_release_, {field_val});
+    }
+}
+
+void CodeGen::emitStructFieldsValue(llvm::IRBuilderBase& b, llvm::Value* struct_val,
+                                    const StructDecl& sd, bool retain) {
+    auto* st = getStructType(sd.name);
+    if (!st || !struct_val || !struct_val->getType()->isStructTy()) return;
+    unsigned n = (unsigned)std::min<size_t>(sd.properties.size(), st->getNumElements());
+    for (unsigned i = 0; i < n; i++) {
+        const TypeNode& ftn = sd.properties[i].type;
+        if (!isArcFieldType(ftn)) continue;
+        auto* fv = b.CreateExtractValue(struct_val, i);
+        emitArcFieldOp(b, fv, ftn, retain);
+    }
+}
+
+void CodeGen::emitStructFieldsPtr(llvm::IRBuilderBase& b, llvm::Value* struct_ptr,
+                                  const StructDecl& sd, bool retain) {
+    auto* st = getStructType(sd.name);
+    if (!st || !struct_ptr) return;
+    unsigned n = (unsigned)std::min<size_t>(sd.properties.size(), st->getNumElements());
+    for (unsigned i = 0; i < n; i++) {
+        const TypeNode& ftn = sd.properties[i].type;
+        if (!isArcFieldType(ftn)) continue;
+        auto* gep = b.CreateStructGEP(st, struct_ptr, i);
+        auto* fv = b.CreateLoad(st->getElementType(i), gep);
+        emitArcFieldOp(b, fv, ftn, retain);
+    }
+}
+
+bool CodeGen::isOwnedStructLocal(llvm::Value* alloca) {
+    if (!alloca) return false;
+    for (auto& scope : arc_scope_slots_)
+        for (auto& s : scope)
+            if (s.alloca == alloca && s.kind == 5) return true;
+    return false;
+}
+
 void CodeGen::maybeReleaseLocal(const std::string& name, llvm::Value* alloca) {
     if (!runtime_release_ || !alloca) return;
     if (builder_.GetInsertBlock()->getTerminator()) return;  // dead path — skip
@@ -271,6 +346,18 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
                     auto* s = b.CreateLoad(llvm::PointerType::get(ctx_, 0), gep);
                     b.CreateCall(runtime_release_, {s});
                     continue;
+                }
+                // M8 structs: a struct-typed field holding ARC refs (incl.
+                // nested structs) → release its ARC fields on destroy.
+                if (!prop.type.class_name.empty()) {
+                    const StructDecl* fnsd = findStruct(prop.type.class_name);
+                    if (fnsd && isArcFieldType(prop.type)) {
+                        auto* gep = b.CreateStructGEP(st, self, pi);
+                        auto* fv = b.CreateLoad(
+                            getLLVMType(typeNodeToCodegenType(prop.type)), gep);
+                        emitStructFieldsValue(b, fv, *fnsd, false);
+                        continue;
+                    }
                 }
                 if (!isArcRefType(prop.type)) continue;
                 // Interface slot = fat pointer { data, vtable } → release data.

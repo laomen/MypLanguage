@@ -679,6 +679,16 @@ bool CodeGen::callReturnsArcRef(const CallExpr& e) {
     return isArcRefType(*rt) || isStringType(*rt);
 }
 
+// M8 structs: a struct-returning call whose fields hold ARC refs. Used ONLY by
+// `return <call>` (arc_skip_retain_return_) so the return doesn't double-retain
+// a +1 value. NOT used by generateCall temp-push (structs aren't single refs).
+bool CodeGen::callReturnsArcStruct(const CallExpr& e) {
+    const TypeNode* rt = callReturnTypeNode(e);
+    if (!rt || rt->class_name.empty()) return false;
+    const StructDecl* sd = findStruct(rt->class_name);
+    return sd && isArcFieldType(*rt);
+}
+
 // M8: does this expression yield a string value? Used to detect string
 // concatenation (a fresh counted string) in isFreshArcExpr.
 bool CodeGen::exprIsString(const Expr& e) {

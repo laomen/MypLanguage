@@ -949,6 +949,16 @@ void CodeGen::releaseArcSlot(llvm::Value* alloca, int kind) {
     // BEFORE the release — a normally-released slot's object must not be
     // released again if the coroutine is destroyed later.
     emitCoroFrameClear(alloca);
+    if (kind == 5) {
+        // M8 structs: an owned struct local — release every ARC-reference field
+        // (string / class / interface / slice / dynamic array / nested struct).
+        auto it = arc_struct_slot_types_.find(alloca);
+        if (it != arc_struct_slot_types_.end()) {
+            const StructDecl* sd = findStruct(it->second);
+            if (sd) emitStructFieldsPtr(builder_, alloca, *sd, false);
+        }
+        return;
+    }
     if (kind == 3) {
         // Fixed (stack) class-array slot: release `count` element refs.
         auto it = arc_fixed_array_counts_.find(alloca);
