@@ -148,6 +148,16 @@ void CodeGen::generateBlock(const BlockStmt& s) {
 
 void CodeGen::generateVarDecl(const VarDecl& d) {
     if (!current_function_) return;
+    // M-FN-2 nonlocal: 被 lambda 按引用捕获的标量局部 → 提升为堆 cell（共享可变）。
+    // 读写走 cell 属性 GEP（与栈 alloca 一致）；cell 对象注册 ARC 槽，作用域退出释放。
+    if (!current_fn_nonlocal_vars_.empty() &&
+        current_fn_nonlocal_vars_.count(d.name) &&
+        current_fn_nonlocal_cell_class_.count(d.name)) {
+        TypeInfo vt = typeNodeToCodegenType(d.type);
+        llvm::Value* init = d.init_expr ? generateExpr(*d.init_expr) : nullptr;
+        promoteNonlocalToCell(d.name, getLLVMType(vt), init);
+        return;
+    }
     bool arc_decl_class = false;      // ARC: local holds a counted class reference
     bool arc_decl_function = false;   // ARC: local holds a closure (function value)
     bool arc_decl_string = false;     // M8: local holds a counted string reference
@@ -1113,6 +1123,7 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                 current_ret_ti_.kind == TypeKind::Interface ||
                 current_ret_ti_.kind == TypeKind::Slice ||
                 current_ret_ti_.kind == TypeKind::String ||   // M8: counted string
+                current_ret_ti_.kind == TypeKind::Function || // M-FN-2: closure fat ptr
                 (current_ret_ti_.kind == TypeKind::Array &&
                  ((current_ret_ti_.element_type &&
                    current_ret_ti_.element_type->kind == TypeKind::Class) ||
@@ -1120,7 +1131,8 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
             if (!skip_retain && ret_is_arc_ref) {
                 llvm::Value* rdata = ret_val;
                 if ((current_ret_ti_.kind == TypeKind::Interface ||
-                     current_ret_ti_.kind == TypeKind::Slice) &&
+                     current_ret_ti_.kind == TypeKind::Slice ||
+                     current_ret_ti_.kind == TypeKind::Function) &&
                     ret_val->getType()->isStructTy())
                     rdata = builder_.CreateExtractValue(ret_val, 0);
                 if (runtime_retain_)
@@ -1184,6 +1196,7 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
             // a class ref) in a try-with-finally — consume the fresh temp now;
             // emitFunctionReturn skips the extra retain later.
             if (s.value->kind == ExprKind::NewExpr ||
+                s.value->kind == ExprKind::Lambda ||
                 s.value->kind == ExprKind::NewArrayExpr ||
                 (s.value->kind == ExprKind::Call &&
                  (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
@@ -1207,6 +1220,7 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
     if (s.value) v = generateExpr(*s.value);
     v = heapCopyArrayReturn(v, s.value.get());
     if (s.value && (s.value->kind == ExprKind::NewExpr ||
+                    s.value->kind == ExprKind::Lambda ||
                     s.value->kind == ExprKind::NewArrayExpr ||
                     (s.value->kind == ExprKind::Call &&
                      (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||

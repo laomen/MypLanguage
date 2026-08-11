@@ -106,6 +106,11 @@ bool Sema::analyze(TranslationUnit& tu) {
         if (tu.functions[fi].is_generic_inst) continue;
         if (!tu.functions[fi].type_params.empty()) continue;
         visitFuncBody(tu.functions[fi]);
+        // M-FN-2 nonlocal：按索引重取（visitFuncBody 内单态化可能重分配），赋捕获集。
+        if (fi < tu.functions.size()) {
+            tu.functions[fi].nonlocal_captures = last_func_nonlocal_vars_;
+            tu.functions[fi].nonlocal_cell_class = last_func_nonlocal_cell_class_;
+        }
     }
 
     // Type-check action bodies inside classes.
@@ -149,6 +154,16 @@ bool Sema::analyze(TranslationUnit& tu) {
                     for (auto& p : action.params)
                         self_ft.param_types.push_back(typeNodeToTypeInfo(p.type));
                     symbol_table_.declare(tu.classes[ci].lambda_name, self_ft);
+                    // M-FN-2 nonlocal：把 nonlocal 变量按其 cell 属性类型声明进
+                    // __call 作用域（body 引用解析；实际存储由 codegen 注入别名）。
+                    for (auto& ns : tu.classes[ci].nonlocal_slots) {
+                        for (auto& c : tu.classes) {
+                            if (c.name != ns.cell_class) continue;
+                            if (!c.properties.empty())
+                                symbol_table_.declare(ns.var, typeNodeToTypeInfo(c.properties[0].type));
+                            break;
+                        }
+                    }
                 }
                 for (auto& param : action.params) {
                     auto param_type = typeNodeToTypeInfo(param.type);
@@ -159,7 +174,19 @@ bool Sema::analyze(TranslationUnit& tu) {
                 // tu.classes → dangling `action` reference).
                 SourceRange ar = action.range;
                 std::shared_ptr<Stmt> abody = action.body;
+                current_func_nonlocal_vars_.clear();   // M-FN-2 nonlocal accumulator
+                current_func_nonlocal_cell_class_.clear();
+                if (named_lambda) in_lambda_body_++;
                 visitStmt(*abody);
+                if (named_lambda) in_lambda_body_--;
+                // `action` 引用在 visitStmt 后可能悬垂（单态化重分配 tu.classes）→
+                // 先拷成员，再按索引重取赋值。
+                last_func_nonlocal_vars_ = current_func_nonlocal_vars_;
+                last_func_nonlocal_cell_class_ = current_func_nonlocal_cell_class_;
+                if (ci < tu.classes.size() && ai < tu.classes[ci].actions.size()) {
+                    tu.classes[ci].actions[ai].nonlocal_captures = last_func_nonlocal_vars_;
+                    tu.classes[ci].actions[ai].nonlocal_cell_class = last_func_nonlocal_cell_class_;
+                }
                 checkMissingReturn(ar, *abody);
                 symbol_table_.leaveScope();
                 if (named_lambda) {
@@ -189,7 +216,15 @@ bool Sema::analyze(TranslationUnit& tu) {
                 checkParamDefaults(func.params);
                 SourceRange fr = func.range;
                 std::shared_ptr<BlockStmt> fbody = func.body;
+                current_func_nonlocal_vars_.clear();
+                current_func_nonlocal_cell_class_.clear();
                 visitStmt(*fbody);
+                last_func_nonlocal_vars_ = current_func_nonlocal_vars_;
+                last_func_nonlocal_cell_class_ = current_func_nonlocal_cell_class_;
+                if (ci < tu.classes.size() && fi < tu.classes[ci].functions.size()) {
+                    tu.classes[ci].functions[fi].nonlocal_captures = last_func_nonlocal_vars_;
+                    tu.classes[ci].functions[fi].nonlocal_cell_class = last_func_nonlocal_cell_class_;
+                }
                 checkMissingReturn(fr, *fbody);
                 symbol_table_.leaveScope();
                 in_coro_method_ = false;
@@ -214,7 +249,15 @@ bool Sema::analyze(TranslationUnit& tu) {
             checkParamDefaults(action.params);
             SourceRange sar = action.range;
             std::shared_ptr<Stmt> sabody = action.body;
+            current_func_nonlocal_vars_.clear();
+            current_func_nonlocal_cell_class_.clear();
             visitStmt(*sabody);
+            last_func_nonlocal_vars_ = current_func_nonlocal_vars_;
+            last_func_nonlocal_cell_class_ = current_func_nonlocal_cell_class_;
+            if (ci < tu.classes.size() && si < tu.classes[ci].static_actions.size()) {
+                tu.classes[ci].static_actions[si].nonlocal_captures = last_func_nonlocal_vars_;
+                tu.classes[ci].static_actions[si].nonlocal_cell_class = last_func_nonlocal_cell_class_;
+            }
             checkMissingReturn(sar, *sabody);
             symbol_table_.leaveScope();
             in_coro_method_ = false;
@@ -290,7 +333,10 @@ void Sema::checkStructMethods(const StructDecl& decl) {
 
             SourceRange sr = func.range;
             std::shared_ptr<BlockStmt> sbody = func.body;
+            current_func_nonlocal_vars_.clear();
             visitStmt(*sbody);
+            // 非 local 不支持 struct 方法内 lambda（visitLambda 已报错）；清空防泄漏。
+            current_func_nonlocal_vars_.clear();
             checkMissingReturn(sr, *sbody);
 
             in_struct_method_ = saved_in_struct;
@@ -930,7 +976,13 @@ void Sema::visitFuncBody(FuncDecl& decl) {
         // tu.functions (dangling the decl reference).
         SourceRange dr = decl.range;
         std::shared_ptr<BlockStmt> body = decl.body;
+        current_func_nonlocal_vars_.clear();   // M-FN-2 nonlocal: 本函数 accumulator
+        current_func_nonlocal_cell_class_.clear();
         visitStmt(*body);
+        // decl 引用在 visitStmt 后可能悬垂（单态化重分配 tu.functions）→ 先拷到
+        // 成员，由调用方按索引重取 decl 后赋值。
+        last_func_nonlocal_vars_ = current_func_nonlocal_vars_;
+        last_func_nonlocal_cell_class_ = current_func_nonlocal_cell_class_;
         // @coro/@async functions: non-void ones must still return a value (the
         // source return stores into the coroutine result slot).
         checkMissingReturn(dr, *body);
@@ -1124,6 +1176,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitTryStmt(static_cast<TryStmt&>(stmt));
         case StmtKind::ThrowStmt:
             return visitThrowStmt(static_cast<ThrowStmt&>(stmt));
+        case StmtKind::NonlocalStmt:
+            return visitNonlocalStmt(static_cast<NonlocalStmt&>(stmt));
     }
     return {};
 }
@@ -2029,6 +2083,21 @@ Sema::StmtResult Sema::visitThrowStmt(ThrowStmt& stmt) {
     } else {
         error(stmt.range, "throw requires a string or class instance, got '" +
               typeName(t) + "'");
+    }
+    return {};
+}
+
+// nonlocal k, m; — 仅 lambda body 内合法（visitLambda 已做主要校验/捕获设置；
+// 此处兜底：非 lambda 上下文报错，且名字须可解析）。
+Sema::StmtResult Sema::visitNonlocalStmt(NonlocalStmt& stmt) {
+    if (in_lambda_body_ == 0) {
+        error(stmt.range, "'nonlocal' is only allowed inside a lambda body");
+        return {};
+    }
+    for (auto& n : stmt.names) {
+        if (!symbol_table_.lookup(n)) {
+            error(stmt.range, "nonlocal: undeclared variable '" + n + "'");
+        }
     }
     return {};
 }

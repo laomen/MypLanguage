@@ -86,6 +86,17 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
     if (match(TokenKind::Keyword_mapping)) {
         return parseMappingStmt();
     }
+    if (match(TokenKind::Keyword_nonlocal)) {
+        // nonlocal k, m;  — 仅 lambda 内合法（sema 校验）。按引用捕获外层变量。
+        std::vector<std::string> names;
+        SourceRange r = previous().range;
+        while (true) {
+            names.push_back(parseIdentifier("expected variable name after 'nonlocal'"));
+            if (!match(TokenKind::Comma)) break;
+        }
+        consume(TokenKind::Semicolon, "expected ';' after nonlocal declaration");
+        return std::make_unique<NonlocalStmt>(std::move(names), r);
+    }
     if (match(TokenKind::Keyword_match)) {
         return parseMatchStmt();
     }

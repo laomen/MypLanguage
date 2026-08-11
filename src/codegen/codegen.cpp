@@ -1294,6 +1294,61 @@ llvm::AllocaInst* CodeGen::createEntryBlockAlloca(llvm::Function* f, llvm::Type*
     return tb.CreateAlloca(t, nullptr, n);
 }
 
+// ---- M-FN-2 nonlocal：把外层变量提升为堆 cell（共享可变）----
+// 分配 __cell_N（rc=1），把初值存入属性 v，把属性 GEP 注册为命名值（T*，读写与
+// 栈 alloca 完全一致），登记 cell 所有者（闭包捕获用），并把 cell 对象存进 alloca
+// + 注册 ARC 槽（作用域退出释放——除非有闭包还持有引用）。
+llvm::Value* CodeGen::promoteNonlocalToCell(const std::string& name, llvm::Type* vt,
+                                            llvm::Value* init) {
+    auto it = current_fn_nonlocal_cell_class_.find(name);
+    if (it == current_fn_nonlocal_cell_class_.end()) return nullptr;
+    std::string ccell = it->second;
+    auto* st = getClassStruct(ccell);
+    if (!st) return nullptr;
+    NewExpr ne(ccell, {}, {}, SourceRange{});
+    auto* cell = generateNewExpr(ne);   // rc=1 (fresh)
+    arcConsumeTemp(cell);               // 归 cell alloca 所有
+    auto* gep = builder_.CreateStructGEP(st, cell, 0);   // cell->v  (T*)
+    if (init) builder_.CreateStore(init, gep);
+    setNamedTypedValue(name, gep, vt);
+    cell_owners_[name] = cell;
+    auto* cell_a = createEntryBlockAlloca(current_function_,
+        llvm::PointerType::get(ctx_, 0), name + ".cell");
+    builder_.CreateStore(cell, cell_a);
+    registerArcSlot(cell_a, 0);
+    return gep;
+}
+
+// lambda __call 开头注入 nonlocal 别名：把 this.cap_i（cell 对象引用）的属性 v
+// GEP 注册为外层变量名 → body 对 `name` 的读写直达共享 cell。
+void CodeGen::setupNonlocalAliases(const ClassDecl& cls) {
+    if (cls.nonlocal_slots.empty()) return;
+    auto* ta = getNamedValue("this");
+    if (!ta) return;
+    auto* self = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+    auto* st = getClassStruct(cls.name);
+    if (!st) return;
+    for (auto& ns : cls.nonlocal_slots) {
+        unsigned pi = 0;
+        if (!getPropertyIndex(cls.name, ns.slot, pi)) continue;
+        auto* cap_gep = builder_.CreateStructGEP(st, self, pi);
+        auto* cell = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0),
+                                         cap_gep, ns.slot + ".cell");
+        auto* cst = getClassStruct(ns.cell_class);
+        if (!cst) continue;
+        auto* vgep = builder_.CreateStructGEP(cst, cell, 0);
+        llvm::Type* vt = nullptr;
+        if (current_tu_)
+            for (auto& c : current_tu_->classes)
+                if (c.name == ns.cell_class) {
+                    if (!c.properties.empty()) vt = getPropertyType(c, "v");
+                    break;
+                }
+        if (!vt) continue;
+        setNamedTypedValue(ns.var, vgep, vt);
+    }
+}
+
 // -- Top level --
 void CodeGen::generateTranslationUnit(TranslationUnit& tu) {
     // Create ALL class action function declarations first

@@ -673,7 +673,10 @@ bool CodeGen::callReturnsArcRef(const CallExpr& e) {
     // `return sliceCall()` retains at return — a known small leak, not UAF.)
     const TypeNode* rt = callReturnTypeNode(e);
     if (!rt) return false;
-    return isArcRefType(*rt) || isStringType(*rt);
+    // M-FN-2: function-returning calls too — the caller's function-value store
+    // consumes the temp (like class refs), so `return f()` transferring rc=1 is
+    // safe and skips the extra retain-at-return.
+    return isArcRefType(*rt) || isStringType(*rt) || rt->isFunction();
 }
 
 // M8 structs: a struct-returning call whose fields hold ARC refs. Used ONLY by
@@ -1797,9 +1800,11 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
 
     // M-FN-2: fill capture slots with the current values of captured outer locals
     // (by value). obj is the hidden-class instance; store each cap_i = outer value.
+    // nonlocal 捕获：槽存 cell 对象引用（共享可变，retain 由下方 cap_is_ref 处理）。
     for (size_t i = 0; i < e.capture_names.size(); i++) {
         auto* outer = getNamedValue(e.capture_names[i]);
         if (!outer) continue;
+        bool is_nl = i < e.nonlocal_cells.size() && !e.nonlocal_cells[i].empty();
         unsigned pi = 0;
         if (!getPropertyIndex(e.hidden_class_name, e.capture_slots[i], pi)) continue;
         auto* st = getClassStruct(e.hidden_class_name);
@@ -1813,7 +1818,11 @@ llvm::Value* CodeGen::generateLambda(const LambdaExpr& e) {
         // 固定数组捕获：外层局部是数据指针 alloca（`int[N] a` 存 `a_arr[0]` 指针）。
         // 属性类型是 [N x T] → 需先取数据指针，再加载数组值（深拷贝进闭包）。
         llvm::Value* val = nullptr;
-        if (pt->isArrayTy()) {
+        if (is_nl) {
+            auto oit = cell_owners_.find(e.capture_names[i]);
+            if (oit == cell_owners_.end()) continue;
+            val = oit->second;   // 共享 cell 对象
+        } else if (pt->isArrayTy()) {
             auto* data = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), outer, e.capture_names[i] + ".data");
             val = builder_.CreateLoad(pt, data, e.capture_names[i] + ".cap");
         } else {

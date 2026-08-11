@@ -2657,6 +2657,114 @@ void Sema::collectLambdaCaptures(Stmt& stmt, const std::set<std::string>& locals
     }
 }
 
+// ---- M-FN-2 nonlocal：收集当前 lambda body 内的 `nonlocal name;`（不进入嵌套
+// lambda —— 嵌套 lambda 的 nonlocal 属于它自己）。----
+void Sema::collectExprNonlocal(Expr& e, std::set<std::string>& out) {
+    if (e.kind == ExprKind::Lambda) return;  // 跳过嵌套 lambda body
+    switch (e.kind) {
+        case ExprKind::Assignment: {
+            auto& a = static_cast<AssignmentExpr&>(e);
+            collectExprNonlocal(*a.target, out);
+            collectExprNonlocal(*a.value, out);
+            break;
+        }
+        case ExprKind::BinaryOp: {
+            auto& b = static_cast<BinaryOpExpr&>(e);
+            collectExprNonlocal(*b.lhs, out);
+            collectExprNonlocal(*b.rhs, out);
+            break;
+        }
+        case ExprKind::UnaryOp:
+            collectExprNonlocal(*static_cast<UnaryOpExpr&>(e).operand, out);
+            break;
+        case ExprKind::Call: {
+            auto& c = static_cast<CallExpr&>(e);
+            collectExprNonlocal(*c.callee, out);
+            for (auto& a : c.args) collectExprNonlocal(*a, out);
+            break;
+        }
+        case ExprKind::MemberAccess:
+            collectExprNonlocal(*static_cast<MemberAccessExpr&>(e).object, out);
+            break;
+        case ExprKind::Subscript: {
+            auto& s = static_cast<SubscriptExpr&>(e);
+            collectExprNonlocal(*s.array, out);
+            collectExprNonlocal(*s.index, out);
+            break;
+        }
+        case ExprKind::NewExpr:
+            for (auto& a : static_cast<NewExpr&>(e).args) collectExprNonlocal(*a, out);
+            break;
+        case ExprKind::NewArrayExpr:
+            for (auto& d : static_cast<NewArrayExpr&>(e).dimensions) collectExprNonlocal(*d, out);
+            break;
+        case ExprKind::Ternary: {
+            auto& t = static_cast<TernaryExpr&>(e);
+            collectExprNonlocal(*t.condition, out);
+            collectExprNonlocal(*t.true_expr, out);
+            collectExprNonlocal(*t.false_expr, out);
+            break;
+        }
+        case ExprKind::TupleExpr:
+            for (auto& el : static_cast<TupleExpr&>(e).elements) collectExprNonlocal(*el, out);
+            break;
+        default: break;
+    }
+}
+
+void Sema::collectLambdaNonlocal(Stmt& stmt, std::set<std::string>& out) {
+    switch (stmt.kind) {
+        case StmtKind::NonlocalStmt:
+            for (auto& n : static_cast<NonlocalStmt&>(stmt).names) out.insert(n);
+            break;
+        case StmtKind::Block:
+            for (auto& s : static_cast<BlockStmt&>(stmt).statements)
+                if (s) collectLambdaNonlocal(*s, out);
+            break;
+        case StmtKind::VarDeclStmt:
+            for (auto& d : static_cast<VarDeclStmt&>(stmt).decls)
+                if (d.init_expr) collectExprNonlocal(*d.init_expr, out);
+            break;
+        case StmtKind::ExprStmt:
+            if (static_cast<ExprStmt&>(stmt).expression)
+                collectExprNonlocal(*static_cast<ExprStmt&>(stmt).expression, out);
+            break;
+        case StmtKind::IfStmt: {
+            auto& i = static_cast<IfStmt&>(stmt);
+            if (i.then_block) collectLambdaNonlocal(*i.then_block, out);
+            if (i.else_block) collectLambdaNonlocal(*i.else_block, out);
+            break;
+        }
+        case StmtKind::WhileStmt:
+            if (static_cast<WhileStmt&>(stmt).body)
+                collectLambdaNonlocal(*static_cast<WhileStmt&>(stmt).body, out);
+            break;
+        case StmtKind::ForStmt: {
+            auto& f = static_cast<ForStmt&>(stmt);
+            if (f.init) collectLambdaNonlocal(*f.init, out);
+            if (f.body) collectLambdaNonlocal(*f.body, out);
+            break;
+        }
+        case StmtKind::ForInStmt:
+            if (static_cast<ForInStmt&>(stmt).body)
+                collectLambdaNonlocal(*static_cast<ForInStmt&>(stmt).body, out);
+            break;
+        case StmtKind::ReturnStmt:
+            if (static_cast<ReturnStmt&>(stmt).value)
+                collectExprNonlocal(*static_cast<ReturnStmt&>(stmt).value, out);
+            break;
+        case StmtKind::DestructureStmt:
+            if (static_cast<DestructureStmt&>(stmt).value)
+                collectExprNonlocal(*static_cast<DestructureStmt&>(stmt).value, out);
+            break;
+        case StmtKind::MatchStmt:
+            for (auto& a : static_cast<MatchStmt&>(stmt).arms)
+                if (a.body) collectLambdaNonlocal(*a.body, out);
+            break;
+        default: break;
+    }
+}
+
 TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     // Create a hidden class: __lambda_N
     std::string cls_name = "__lambda_" + std::to_string(lambda_counter_++);
@@ -2673,22 +2781,92 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
     std::vector<std::string> captures;
     if (expr.body) collectLambdaCaptures(*expr.body, locals, params, captures);
 
+    // ---- M-FN-2 nonlocal：预扫描 `nonlocal name;`（按引用捕获外层函数变量）----
+    std::set<std::string> nonlocal_names;
+    if (expr.body) collectLambdaNonlocal(*expr.body, nonlocal_names);
+    if (!nonlocal_names.empty() && in_lambda_body_ > 0) {
+        error(expr.range, "nonlocal inside a nested lambda is not supported yet");
+        nonlocal_names.clear();
+    }
+    if (!nonlocal_names.empty() && in_struct_method_) {
+        error(expr.range, "nonlocal inside a struct method's lambda is not supported yet");
+        nonlocal_names.clear();
+    }
+    // 保证每个 nonlocal 名都在捕获集里（只写不读也需共享 cell）。
+    for (auto& n : nonlocal_names)
+        if (std::find(captures.begin(), captures.end(), n) == captures.end())
+            captures.push_back(n);
+
     ClassDecl cls;
     cls.name = cls_name;
     cls.range = expr.range;
 
     // Capture slots as hidden-class properties: cap_0, cap_1, ...
+    // nonlocal 捕获的槽类型 = cell 类引用（__cell_N），外层变量提升为堆 cell。
     std::vector<TypeNode> cap_types;
     for (size_t i = 0; i < captures.size(); i++) {
-        auto* sym = symbol_table_.lookup(captures[i]);
+        const std::string& cname = captures[i];
+        bool is_nl = nonlocal_names.count(cname) != 0;
+        auto* sym = symbol_table_.lookup(cname);
         PropertyDecl prop;
         std::string slot = "cap_" + std::to_string(i);
-        TypeNode cty = sym ? TypeNodeFromTypeInfo(*sym) : TypeNode();
+        TypeNode cty;
+        if (is_nl) {
+            // 校验：解析到外层函数变量 + 非 lambda 参数 + 标量类型（v1）
+            bool is_param = std::find(params.begin(), params.end(), cname) != params.end();
+            if (!sym) {
+                error(expr.range, "nonlocal '" + cname + "' does not resolve to an outer variable");
+                is_nl = false;
+            } else if (is_param) {
+                error(expr.range, "cannot 'nonlocal' a lambda parameter '" + cname + "'");
+                is_nl = false;
+            } else if (isGlobalName(cname) || sym->kind == TypeKind::Class ||
+                       sym->kind == TypeKind::Interface || sym->kind == TypeKind::Struct ||
+                       sym->kind == TypeKind::Enum || sym->kind == TypeKind::Function ||
+                       sym->kind == TypeKind::Slice || sym->kind == TypeKind::String) {
+                error(expr.range, "nonlocal '" + cname + "' must be a scalar-typed outer local (v1), got '" +
+                      typeName(*sym) + "'");
+                is_nl = false;
+            }
+        }
+        if (is_nl) {
+            // 创建/复用 cell 类（每标量类型一个 __cell_N，单属性 v:T）
+            std::string tkey = typeName(*sym);
+            auto cit = cell_class_by_type_.find(tkey);
+            std::string ccell;
+            if (cit == cell_class_by_type_.end()) {
+                ccell = "__cell_" + std::to_string(cell_counter_++);
+                ClassDecl cell;
+                cell.name = ccell;
+                cell.range = expr.range;
+                PropertyDecl cv;
+                cv.name = "v";
+                cv.type = TypeNodeFromTypeInfo(*sym);
+                cv.range = expr.range;
+                cell.properties.push_back(std::move(cv));
+                if (current_tu_) {
+                    current_tu_->classes.push_back(std::move(cell));
+                    class_indices_[current_tu_->classes.back().name] =
+                        current_tu_->classes.size() - 1;
+                }
+                cell_class_by_type_[tkey] = ccell;
+            } else {
+                ccell = cit->second;
+            }
+            cty.class_name = ccell;                 // 槽类型 = cell 类引用
+            expr.nonlocal_cells.push_back(ccell);   // 平行于 capture_names
+            current_func_nonlocal_vars_.insert(cname);  // 传播给外层函数/action
+            current_func_nonlocal_cell_class_[cname] = ccell;
+            cls.nonlocal_slots.push_back(ClassDecl::NonlocalSlot{slot, cname, ccell});
+        } else {
+            cty = sym ? TypeNodeFromTypeInfo(*sym) : TypeNode();
+            expr.nonlocal_cells.push_back("");
+        }
         prop.name = slot;
         prop.type = cty;
         prop.range = expr.range;
         cls.properties.push_back(std::move(prop));
-        expr.capture_names.push_back(captures[i]);
+        expr.capture_names.push_back(cname);
         expr.capture_slots.push_back(slot);
         cap_types.push_back(cty);
     }
@@ -2705,10 +2883,13 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
 
     // Prepend capture copies to the __call body: `T name = this.cap_i;` so the
     // original body's references to `name` resolve to the local copy.
+    // nonlocal 捕获跳过（共享 cell：codegen 在 __call 开头注入 cell 属性 GEP 别名，
+    // 读写直接打到外层变量所在堆 cell）。
     if (!captures.empty()) {
         if (auto* block = dynamic_cast<BlockStmt*>(action.body.get())) {
             std::vector<std::unique_ptr<Stmt>> pre;
             for (size_t i = 0; i < captures.size(); i++) {
+                if (i < expr.nonlocal_cells.size() && !expr.nonlocal_cells[i].empty()) continue;
                 VarDecl d;
                 d.name = captures[i];
                 d.type = cap_types[i];

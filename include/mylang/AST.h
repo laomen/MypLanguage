@@ -6,6 +6,8 @@
 #include "Type.h"
 
 #include <memory>
+#include <set>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -149,6 +151,11 @@ struct ActionDecl {
     bool has_async = false;  // @async: 可挂起的异步 IO 方法（await 形态3）
     bool has_region = false;  // @region: 调用作用域为内存 region（自动回收）
     int coro_stack_kb = 0;    // @coro(stack=N): coroutine stack size in KB (0 = default 128KB)
+    // M-FN-2 nonlocal: 本函数/action 中被某 lambda 以 `nonlocal` 按引用捕获的
+    // 参数/局部变量名。codegen 在函数序言把这些变量提升为堆 cell（共享可变）。
+    std::set<std::string> nonlocal_captures;
+    // nonlocal 变量名 → 其 cell 类（__cell_N）。
+    std::map<std::string, std::string> nonlocal_cell_class;
 };
 
 struct EventDecl {
@@ -198,6 +205,14 @@ struct ClassDecl {
     // M-FN-2 named lambda: the lambda's own name (empty for normal classes), so
     // the __call body visit can bind the self-reference.
     std::string lambda_name;
+    // M-FN-2 nonlocal (lambda hidden classes only): cap_i 槽 → {外层变量名, cell 类}。
+    // codegen 生成 __call body 前据此把 cap_i 里的 cell 对象属性 GEP 注册为别名。
+    struct NonlocalSlot {
+        std::string slot;       // "cap_i"
+        std::string var;        // 外层变量名
+        std::string cell_class; // __cell_N
+    };
+    std::vector<NonlocalSlot> nonlocal_slots;
     // 关联类型绑定：type Item = int;  —— 实现接口的关联类型（§三-5）
     std::unordered_map<std::string, TypeNode> associated_type_bindings;
     SourceRange range;
@@ -521,6 +536,8 @@ struct LambdaExpr : Expr {
     // M-FN-2 closure capture (by value): outer local names + hidden-class slot names.
     std::vector<std::string> capture_names;  // outer variable names (ordered)
     std::vector<std::string> capture_slots;  // hidden class property names ("cap_i")
+    // M-FN-2 nonlocal (按引用捕获): 与 capture_names 平行——""=按值，否则为 cell 类名。
+    std::vector<std::string> nonlocal_cells;
     LambdaExpr(std::vector<ParamDecl> p, std::shared_ptr<Stmt> b, SourceRange r)
         : Expr(ExprKind::Lambda, r), params(std::move(p)), body(std::move(b)) {}
 };
@@ -590,6 +607,7 @@ enum class StmtKind {
     MatchStmt,
     TryStmt,
     ThrowStmt,
+    NonlocalStmt,
 };
 
 struct Stmt {
@@ -627,6 +645,14 @@ struct ThrowStmt : Stmt {
     std::string throw_type;   // "string" | class name (set by Sema)
     ThrowStmt(std::unique_ptr<Expr> e, SourceRange r)
         : Stmt(StmtKind::ThrowStmt, r), expr(std::move(e)) {}
+};
+
+// nonlocal k, m;  — lambda 内声明按引用捕获外层函数变量（共享可变）。
+// 仅允许出现在 lambda body 顶层语句（嵌套块内亦可，但须解析到外层函数变量）。
+struct NonlocalStmt : Stmt {
+    std::vector<std::string> names;
+    NonlocalStmt(std::vector<std::string> n, SourceRange r)
+        : Stmt(StmtKind::NonlocalStmt, r), names(std::move(n)) {}
 };
 
 struct VarDeclStmt : Stmt {
@@ -777,6 +803,9 @@ struct FuncDecl {
     std::vector<ParamDecl> params;
     std::shared_ptr<BlockStmt> body; // shared: generic insts share the template body
     SourceRange range;
+    // M-FN-2 nonlocal: 被 lambda nonlocal 捕获的参数名（序言提升为 cell）。
+    std::set<std::string> nonlocal_captures;
+    std::map<std::string, std::string> nonlocal_cell_class;
     std::vector<std::string> type_params;    // generic function template params <T,U>
     std::vector<TypeNode> inst_type_args;    // monomorphized instance concrete args
     bool is_generic_inst = false;            // monomorphized instance (not a template)

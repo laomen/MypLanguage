@@ -528,6 +528,22 @@ private:
     void setNamedTypedValue(const std::string& name, llvm::Value* ptr, llvm::Type* ty);
     llvm::Value* getNamedValue(const std::string& name);
     llvm::Type* getNamedValueType(const std::string& name);
+
+    // ---- M-FN-2 nonlocal（按引用捕获）----
+    // 当前函数/action 中被 lambda `nonlocal` 捕获的变量名（codegen 序言把参数/
+    // 局部提升为堆 cell；generateVarDecl/形参分配处读取）。
+    std::set<std::string> current_fn_nonlocal_vars_;
+    // nonlocal 变量名 → 其 cell 类（__cell_N），sema 注解于 decl.nonlocal_cell_class。
+    std::map<std::string, std::string> current_fn_nonlocal_cell_class_;
+    // 外层函数里 nonlocal 变量名 → cell 对象（供 generateLambda 捕获 cell 对象）。
+    std::map<std::string, llvm::Value*> cell_owners_;
+    // 把变量提升为堆 cell（共享可变）：分配 __cell_N、存初值、把属性 GEP 注册为
+    // 命名值（T*，读写与栈 alloca 一致）、登记 cell 所有者 + ARC 作用域退出释放。
+    llvm::Value* promoteNonlocalToCell(const std::string& name, llvm::Type* vt,
+                                       llvm::Value* init);
+    // lambda __call 开头注入 nonlocal 别名：把 this.cap_i（cell 对象）的属性 GEP
+    // 注册为外层变量名，使 body 读写直达共享 cell。
+    void setupNonlocalAliases(const ClassDecl& cls);
     // M3: guard a signed length/dimension against negative values — emit a
     // branch to myp_bounds_error (deterministic abort, no OOB) and return a
     // zero-extended i64 copy safe to multiply into a byte size. Accepts any

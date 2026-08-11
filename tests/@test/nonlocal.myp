@@ -1,0 +1,87 @@
+// M-FN-2 nonlocal：lambda 按引用（共享可变）捕获外层函数变量。
+// 覆盖：计数器、多变量、函数参数捕获、类方法内 lambda、递归命名闭包。
+// v1 仅支持标量类型；嵌套 lambda/struct 方法内暂不支持（sema 报错）。
+import test;
+
+@test void test_nonlocal_counter() {
+    int k = 0;
+    (int) -> int inc = (int d) => {
+        nonlocal k;
+        k = k + 1;
+        return k;
+    };
+    Test.assertEq(inc(0), 1, "counter first");
+    Test.assertEq(inc(0), 2, "counter second");
+    Test.assertEq(inc(0), 3, "counter third");
+    Test.assertEq(k, 3, "outer sees all writes");
+    Test.report("test_nonlocal_counter", true);
+}
+
+@test void test_nonlocal_multi() {
+    int a = 10;
+    int b = 100;
+    (int) -> int F = (int x) => {
+        nonlocal a, b;
+        a = a + 1;
+        b = b + a;
+        return b;
+    };
+    Test.assertEq(F(0), 111, "a=11 b=111");
+    Test.assertEq(F(0), 123, "a=12 b=123");
+    Test.assertEq(a, 12, "outer a=12");
+    Test.assertEq(b, 123, "outer b=123");
+    Test.report("test_nonlocal_multi", true);
+}
+
+// 顶层函数返回闭包（非嵌套 lambda）——nonlocal 捕获函数参数（codegen 序言提升为 cell）
+(int) -> int makeCounter(int start) {
+    (int) -> int c = (int d) => {
+        nonlocal start;
+        start = start + 1;
+        return start;
+    };
+    return c;
+}
+
+@test void test_nonlocal_func_param() {
+    (int) -> int c1 = makeCounter(5);
+    (int) -> int c2 = makeCounter(100);
+    Test.assertEq(c1(0), 6, "c1 first");
+    Test.assertEq(c1(0), 7, "c1 second");
+    Test.assertEq(c2(0), 101, "c2 independent");
+    Test.assertEq(c2(0), 102, "c2 second");
+    Test.report("test_nonlocal_func_param", true);
+}
+
+class Acc {
+    action:
+        int addTo(int base) {
+            (int) -> int f = (int d) => {
+                nonlocal base;
+                base = base + d;
+                return base;
+            };
+            return f(1) + f(2);
+        }
+}
+
+@test void test_nonlocal_in_class_method() {
+    Acc acc = new Acc();
+    // base=10：f(1)→11, f(2)→13，返回 24
+    Test.assertEq(acc.addTo(10), 24, "class method lambda");
+    Test.report("test_nonlocal_in_class_method", true);
+}
+
+@test void test_nonlocal_recursive_closure() {
+    // 命名递归闭包（M-FN-2 __self）+ nonlocal：递归过程中修改外层变量
+    int total = 0;
+    (int) -> int f = fn f(int x) => {
+        nonlocal total;
+        total = total + x;
+        if (x <= 0) return total;
+        return f(x - 1);
+    };
+    Test.assertEq(f(5), 15, "sum 5+4+3+2+1+0");
+    Test.assertEq(total, 15, "outer total=15");
+    Test.report("test_nonlocal_recursive_closure", true);
+}

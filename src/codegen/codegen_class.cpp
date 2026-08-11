@@ -902,6 +902,10 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     builder_.SetInsertPoint(bb);
     pushScope();
     if (debug_mode_) beginFunctionDebug(func, fn, action.range);
+    // M-FN-2 nonlocal: 本 action 被 lambda 按引用捕获的参数 → 序言提升为堆 cell。
+    current_fn_nonlocal_vars_ = action.nonlocal_captures;
+    current_fn_nonlocal_cell_class_ = action.nonlocal_cell_class;
+    cell_owners_.clear();
 
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
@@ -912,6 +916,11 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
 
     for (size_t i = 0; i < action.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
+        // nonlocal 参数：提升为堆 cell（共享可变），读写走 cell 属性 GEP。
+        if (current_fn_nonlocal_vars_.count(action.params[i].name)) {
+            promoteNonlocalToCell(action.params[i].name, getLLVMType(pt), func->getArg(i + 1));
+            continue;
+        }
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(action.params[i].name, a);
@@ -949,6 +958,9 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     if (fn_region) { in_region_function_ = true; emitRegionEnter(); }
 
     // Generate action body (stdlib actions use __myp_* intrinsics in their source code)
+    // M-FN-2 nonlocal: lambda __call 开头注入 cell 属性别名（body 读写直达共享 cell）。
+    if (action.body && cls.name.rfind("__lambda_", 0) == 0)
+        setupNonlocalAliases(cls);
     if (action.body)
         generateBlock(static_cast<const BlockStmt&>(*action.body));
     if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator()) {
@@ -965,6 +977,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     current_region_mark_ = nullptr;
     current_is_coro_ = false;
     popScope();
+    current_fn_nonlocal_vars_.clear();
+    current_fn_nonlocal_cell_class_.clear();
     if (debug_mode_) endFunctionDebug();
 }
 
@@ -1071,9 +1085,18 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     builder_.SetInsertPoint(bb);
     pushScope();
     if (debug_mode_) beginFunctionDebug(func, fn, action.range);
+    // M-FN-2 nonlocal: 本 static action 被 lambda 按引用捕获的参数 → 序言提升为 cell。
+    current_fn_nonlocal_vars_ = action.nonlocal_captures;
+    current_fn_nonlocal_cell_class_ = action.nonlocal_cell_class;
+    cell_owners_.clear();
 
     for (size_t i = 0; i < action.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(action.params[i].type);
+        // nonlocal 参数：提升为堆 cell（共享可变）。
+        if (current_fn_nonlocal_vars_.count(action.params[i].name)) {
+            promoteNonlocalToCell(action.params[i].name, getLLVMType(pt), func->getArg(i));
+            continue;
+        }
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), action.params[i].name);
         builder_.CreateStore(func->getArg(i), a);
         setNamedValue(action.params[i].name, a);
@@ -1110,6 +1133,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     in_region_function_ = false;
     current_region_mark_ = nullptr;
     popScope();
+    current_fn_nonlocal_vars_.clear();
+    current_fn_nonlocal_cell_class_.clear();
     if (debug_mode_) endFunctionDebug();
 }
 
@@ -1394,6 +1419,10 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     builder_.SetInsertPoint(bb);
     pushScope();
     if (debug_mode_) beginFunctionDebug(func, fn, fn_decl.range);
+    // M-FN-2 nonlocal: 本函数被 lambda 按引用捕获的参数 → 序言提升为堆 cell。
+    current_fn_nonlocal_vars_ = fn_decl.nonlocal_captures;
+    current_fn_nonlocal_cell_class_ = fn_decl.nonlocal_cell_class;
+    cell_owners_.clear();
 
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
@@ -1404,6 +1433,11 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
 
     for (size_t i = 0; i < fn_decl.params.size(); ++i) {
         TypeInfo pt = typeNodeToCodegenType(fn_decl.params[i].type);
+        // nonlocal 参数：提升为堆 cell（共享可变），读写走 cell 属性 GEP。
+        if (current_fn_nonlocal_vars_.count(fn_decl.params[i].name)) {
+            promoteNonlocalToCell(fn_decl.params[i].name, getLLVMType(pt), func->getArg(i + 1));
+            continue;
+        }
         auto* a = createEntryBlockAlloca(func, getLLVMType(pt), fn_decl.params[i].name);
         builder_.CreateStore(func->getArg(i + 1), a);
         setNamedValue(fn_decl.params[i].name, a);
@@ -1435,6 +1469,8 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
     in_region_function_ = false;
     current_region_mark_ = nullptr;
     popScope();
+    current_fn_nonlocal_vars_.clear();
+    current_fn_nonlocal_cell_class_.clear();
     if (debug_mode_) endFunctionDebug();
 }
 
@@ -1490,11 +1526,21 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     builder_.SetInsertPoint(bb);
     pushScope();
     if (debug_mode_) beginFunctionDebug(func, decl.name, decl.range);
+    // M-FN-2 nonlocal: 本函数被 lambda 按引用捕获的参数/局部 → 序言提升为堆 cell。
+    current_fn_nonlocal_vars_ = decl.nonlocal_captures;
+    current_fn_nonlocal_cell_class_ = decl.nonlocal_cell_class;
+    cell_owners_.clear();
 
     i = 0;
     for (auto& arg : func->args()) {
         if (i < decl.params.size()) {
             TypeInfo pt = typeNodeToCodegenType(decl.params[i].type);
+            // nonlocal 参数：提升为堆 cell（共享可变），读写走 cell 属性 GEP。
+            if (current_fn_nonlocal_vars_.count(decl.params[i].name)) {
+                promoteNonlocalToCell(decl.params[i].name, getLLVMType(pt), &arg);
+                ++i;
+                continue;
+            }
             auto* a = createEntryBlockAlloca(func, getLLVMType(pt), decl.params[i].name);
             builder_.CreateStore(&arg, a);
             if (pt.kind == TypeKind::Slice)
@@ -1531,6 +1577,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
         if (test_mode_) {
             popScope();
             current_function_ = nullptr;
+            current_fn_nonlocal_vars_.clear();
+            current_fn_nonlocal_cell_class_.clear();
             return;
         }
         in_main_ = true;
@@ -1560,6 +1608,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
     current_region_mark_ = nullptr;
     current_is_coro_ = false;
     popScope();
+    current_fn_nonlocal_vars_.clear();
+    current_fn_nonlocal_cell_class_.clear();
     if (decl.name == "main") {
         in_main_ = false;
     }

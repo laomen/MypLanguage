@@ -139,6 +139,38 @@ NamedLambda ::= 'fn' Identifier '(' ParamList? ')' '=>' '{' Stmt* '}'
 - **类型检查**：`fn name(...)` 的类型由参数/返回类型决定；body 内 `name` 在符号表
   声明为该函数类型（作用域 = body）。
 
+### 4.5 `nonlocal`：按引用（共享可变）捕获（additive，M-FN-2）
+
+默认按值捕获只读，闭包无法修改外层标量。`nonlocal` 提供**显式按引用捕获**——lambda
+与外层函数共享同一个可变单元（堆 cell），读写互相可见，是 Go/C++ `[&]`/Python
+`nonlocal` 的 MYP 形态。这是 Man or Boy、带状态迭代器、记忆化等标准算法的前提。
+
+```myp
+int counter() {
+    int k = 0;
+    (int) -> int inc = (int d) => {
+        nonlocal k;          // 按引用捕获 k（共享可变）
+        k = k + 1;
+        return k;
+    };
+    return inc;              // 返回闭包，k 仍在共享 cell 中存活
+}
+```
+
+- **语法**：`nonlocal 变量名 (, 变量名)* ;` —— 仅允许出现在 **lambda body 顶层**
+  （块/if/循环内亦可），且变量必须解析到**外层函数/action 的参数或局部变量**。
+- **语义**：捕获槽存共享 **cell 对象**（隐藏类 `__cell_N`，单属性 `v:T`，ARC 管理）；
+  lambda 内对该变量的读写直接打到外层变量所在 cell；外层函数同样读写同一 cell。
+- **实现**：codegen 在函数/action 序言把 nonlocal 变量提升为堆 cell（属性 GEP 注册为
+  命名值，读写与栈 alloca 一致）；lambda 捕获 cell 对象（retain），`__call` 开头注入
+  cell 属性 GEP 别名；函数退出释放本帧引用（有闭包持有则 cell 存活，无则回收）。
+- **v1 边界**：
+  - 仅支持**标量类型**（int/long/double/float/bool/byte…），字符串/class/slice/函数
+    等引用类型暂不支持（sema 报错）；
+  - **嵌套 lambda**（lambda 内的 lambda）内 nonlocal 暂不支持（sema 报错）；
+  - struct 方法内 nonlocal 暂不支持（sema 报错）；
+  - 生命周期安全：cell 按引用计数，闭包逃逸函数后仍可用（见 `test_nonlocal_func_param`）。
+
 ---
 
 ## 5. 类型检查

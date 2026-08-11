@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <functional>
 #include <set>
+#include <map>
 
 namespace mylang {
 
@@ -104,6 +105,25 @@ private:
     // __call body, calls to `name` resolve to the lambda's own tramp (this).
     std::string lambda_self_name_;
     std::string lambda_self_class_;
+    // ---- M-FN-2 nonlocal（按引用捕获）----
+    // >0 = 正在类型检查某个 lambda 的 __call body（用于"nonlocal 仅 lambda 内"校验）
+    int in_lambda_body_ = 0;
+    // 当前函数/action 的 nonlocal 捕获 accumulator（visitLambda 时填入，函数体
+    // 结束赋给 decl.nonlocal_captures，供 codegen 序言把变量提升为 cell）。
+    std::set<std::string> current_func_nonlocal_vars_;
+    // nonlocal 变量名 → cell 类（平行于 current_func_nonlocal_vars_）。
+    std::map<std::string, std::string> current_func_nonlocal_cell_class_;
+    // visitStmt 可能触发单态化重分配 tu.functions/classes → decl/action 引用悬垂。
+    // 先在 visitFuncBody/action 体内把 accumulator 拷到下面成员（安全），再由调用方
+    // 按索引重取后赋给 decl.nonlocal_captures。
+    std::set<std::string> last_func_nonlocal_vars_;
+    std::map<std::string, std::string> last_func_nonlocal_cell_class_;
+    // 已合成的 cell 类：类型名 → __cell_N（每个标量类型复用同一个 cell 类）。
+    std::map<std::string, std::string> cell_class_by_type_;
+    int cell_counter_ = 0;
+    void collectLambdaNonlocal(Stmt& stmt, std::set<std::string>& out);
+    void collectExprNonlocal(Expr& e, std::set<std::string>& out);
+    StmtResult visitNonlocalStmt(NonlocalStmt& stmt);
 
     TypeInfo substituteTypeParams(const TypeNode& node,
                                   const std::vector<std::string>& type_params,

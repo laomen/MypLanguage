@@ -399,6 +399,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "ref")     kind = TokenKind::Keyword_ref;
     else if (value == "operator") kind = TokenKind::Keyword_operator;
     else if (value == "macro")   kind = TokenKind::Keyword_macro;
+    else if (value == "nonlocal") kind = TokenKind::Keyword_nonlocal;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

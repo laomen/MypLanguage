@@ -731,6 +731,29 @@ Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) { ... }
 
 - 运行时表示：胖指针 `{closure, call_fn}` + 统一 tramp。
 - 捕获：标量/字符串**深拷贝**、class 引用**浅拷贝**（共享实例）、支持嵌套 lambda。
+- **`nonlocal` 按引用捕获**（共享可变）：lambda 内声明 `nonlocal 变量名;` 后，对该
+  变量的读写直达外层函数的同一存储（堆 cell，ARC 管理），闭包与外层互相可见——带状态
+  闭包的标准写法（v1：仅标量类型；嵌套 lambda / struct 方法内暂不支持）。
+
+```myp
+// 非局部捕获：lambda 修改外层计数器
+int counter() {
+    int k = 0;
+    (int) -> int inc = (int d) => {
+        nonlocal k;
+        k = k + 1;
+        return k;
+    };
+    return inc;              // 返回闭包，k 在共享 cell 中存活
+}
+(int) -> int c = counter();
+c(0);                        // 1
+c(0);                        // 2
+```
+
+- 经典 **Man or Boy** 测试（Knuth，递归闭包 + 一等函数 thunk + `nonlocal`）以 Go 参考
+  实现为准：`A(10, 1, -1, -1, 1, 0) = -67`（见 `tests/@test/man_or_boy.myp`），验证
+  闭包按引用捕获 + 递归 thunk 传递的正确性。
 
 ---
 

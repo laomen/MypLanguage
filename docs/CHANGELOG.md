@@ -27,7 +27,30 @@
 
 ## 编译器版本历史
 
-### v3.12.0（当前）— 内存系列收尾（M5–M9）
+### v3.12.1（当前）— 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
+- **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
+  setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总
+  `tests: N, assertions: X passed, Y failed`；断言 API 全系支持自定义 `msg`
+  （assert/assertTrue/False/assertEq/Neq/assertLongEq/Neq/assertFloatEq/Neq/
+  assertStrEq/Neq/assertNull/NotNull/fail/report）；`tests/test_myp_test.sh` 17 项检查。
+- **Man or Boy 测试（Knuth）**：`tests/@test/man_or_boy.myp`——递归闭包把自身作为 thunk
+  递归传递（M-FN-2 `__self`）+ 一等函数实参。以 Go 参考实现为准：`A(10,1,-1,-1,1,0) = -67`
+  （k 按值每帧独立 + 按名 thunk）；含 `A(-1..10)` 全序列 12 断言。
+- **lambda `nonlocal` 按引用捕获（M-FN-2 additive）**：lambda 内 `nonlocal k;` 显式按引用
+  捕获外层函数参数/局部变量（共享可变）。codegen 在函数/action 序言把变量提升为堆 cell
+  （隐藏类 `__cell_N` 单属性 `v:T`，ARC 管理），lambda 捕获 cell 对象、`__call` 开头注入
+  属性 GEP 别名——读写与外层直达同一存储；函数退出释放本帧引用，闭包逃逸后 cell 仍存活。
+  v1 边界：仅标量类型；嵌套 lambda / struct 方法内暂不支持（sema 报错）。Man or Boy 得以
+  自然书写（不再需要 slice 盒/每帧副本）。`tests/@test/nonlocal`（5 测试 15 断言）。
+- **修复：函数返回闭包 retain-at-return 缺失（M-FN-1 潜在 bug）**：`TypeKind::Function`
+  未纳入返回 retain 集 → 作用域退出释放闭包 → 返回悬垂（单闭包场景内存未复用侥幸通过，
+  多闭包暴露）。补：返回 fat pointer 的 closure（index 0）retain + `return <lambda>` /
+  `return f()`（函数返回值）走 `arc_skip_retain_return_` 干净转移 rc=1。
+- **修复：`visitFuncBody`/class action 体访问后 decl/action 引用悬垂（UAF）**：单态化重
+  分配 `tu.functions`/`tu.classes` 使 `decl.nonlocal_captures` 赋值越界；改经成员暂存 +
+  按索引重取赋值（ASAN 暴露）。
+
+### v3.12.0 — 内存系列收尾（M5–M9）
 - **M8 · 全量引用计数**：`string`（`myp_alloc_str`，`MYP_STR_TYPE_ID`）、动态数组
   `T[]` 与 `slice` backing（`myp_alloc_slice_backing`，`MYP_ARR_TYPE_ID`，24B 头
   `{rc, type_id, elem_size, count, cap}`）全部改为引用计数——作用域/覆盖自动释放，

@@ -368,6 +368,7 @@ Stmt             ::= Block
                    | ReturnStmt | BreakStmt | ContinueStmt
                    | AwaitStmt | MappingStmt
                    | MatchStmt | TryStmt | ThrowStmt
+                   | NonlocalStmt
                    | ExprStmt ';'?
 
 Block            ::= '{' Stmt* '}'
@@ -422,6 +423,9 @@ CatchClause      ::= 'catch' '(' (Type Identifier | Identifier)? ')' Block
                  // 有类型: 按类型匹配（'string' 或异常类名）; 无类型: 兜底（捕获一切，变量为 string 消息）
 FinallyClause    ::= 'finally' Block
 ThrowStmt        ::= 'throw' Expression? ';'   // 无表达式 = 在 catch 内重抛当前异常
+NonlocalStmt     ::= 'nonlocal' Identifier (',' Identifier)* ';'
+                 // 仅允许在 lambda body 内：按引用（共享可变）捕获外层函数/action
+                 // 的参数或局部变量（v1：仅标量类型；嵌套 lambda / struct 方法内不支持）
 TryExpr          ::= 'try' Expression 'catch' '(' Identifier ')' Expression
                  // 表达式式: 成功→try 值, 失败→catch 值（类型须兼容）
 
@@ -472,6 +476,7 @@ Primary          ::= IntegerLiteral | FloatLiteral | BoolLiteral
 
 TupleLiteral     ::= '(' Expression (',' Expression)+ ')'   // ≥2 元素（含尾逗号）
 LambdaExpression ::= '(' ParamList? ')' '=>' '{' Stmt* '}'   // FatArrow '=>'
+                 // body 内可用 NonlocalStmt 按引用捕获外层函数变量（共享可变）
 ArgumentList     ::= Expression (',' Expression)*
 ```
 

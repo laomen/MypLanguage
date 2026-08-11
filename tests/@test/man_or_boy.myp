@@ -1,16 +1,14 @@
-// Man or Boy 测试（Knuth 经典）：递归闭包 + 一等函数 thunk 参数 + 可变计数。
+// Man or Boy 测试（Knuth 经典）：递归闭包 + 一等函数 thunk 参数 + 按引用捕获。
 // 意义：验证语言能表达"递归闭包把自身作为 thunk 递归传递"（M-FN-2 __self +
-// 命名 lambda 自引用），且忠实还原 ALGOL 60 求值语义。
+// 命名 lambda 自引用），且 `nonlocal` 提供闭包按引用（共享可变）捕获——
+// 标准 ALGOL 60 语义 `value k`（k 按值，每层 A 帧独立）+ 按名 thunk 得以自然书写。
 //
-// ALGOL 60 原文：`value k; integer k;` —— k 按值传递（每层 A 帧独立），
-// x1..x5 为过程形参（按名 = thunk）。因此：
-//   - k 用 slice[1] 承载可变；B 递减"自己帧"的 k 后，把当前值作为
-//     **新副本**传给递归 A（= 按值；不能共享同一 slice，否则 k 变成
-//     按引用，结果将偏离标准值）
-//   - x1..x5 是函数值（thunk），B 递归时把自身作为 x1 传递
+//   - `nonlocal k;`：lambda B 按引用捕获外层函数 A 的参数 k，`k = k - 1` 直接改
+//     共享 cell（无需 slice 盒/每帧副本）；递归 `A(k, B, ...)` 传 k 的值（每帧独立）
+//   - x1..x5 为函数值（thunk），B 递归时把自身作为 x1 传递
 //
 // 标准结果（以 Go 参考实现为准——k 按值传参、闭包 b 按引用捕获 k 并 k--、
-// 递归时传当前 k 的值；等价于 ALGOL 60 的 `value k` + 按名 thunk）：
+// 递归时传当前 k 的值）：
 //   A(-1)=1 A(0)=1 A(1)=0 A(2)=-2 A(3)=0 A(4)=1 A(5)=0 A(6)=1
 //   A(7)=-1 A(8)=-10 A(9)=-30 A(10)=-67
 import test;
@@ -20,14 +18,13 @@ import test;
     return (int d) => { return n; };
 }
 
-int A(slice<int> k, (int) -> int x1, (int) -> int x2, (int) -> int x3, (int) -> int x4, (int) -> int x5) {
+int A(int k, (int) -> int x1, (int) -> int x2, (int) -> int x3, (int) -> int x4, (int) -> int x5) {
     (int) -> int B = (int d) => {
-        k[0] = k[0] - 1;
-        slice<int> k2 = new slice<int>(1);   // 按值：传新副本
-        k2[0] = k[0];
-        return A(k2, B, x1, x2, x3, x4);
+        nonlocal k;
+        k = k - 1;
+        return A(k, B, x1, x2, x3, x4);
     };
-    if (k[0] <= 0) return x4(0) + x5(0);
+    if (k <= 0) return x4(0) + x5(0);
     return B(0);
 }
 
@@ -39,9 +36,7 @@ int A(slice<int> k, (int) -> int x1, (int) -> int x2, (int) -> int x3, (int) -> 
     exp[8]=-1; exp[9]=-10; exp[10]=-30; exp[11]=-67;
 
     for (int n = -1; n <= 10; n = n + 1) {
-        slice<int> k = new slice<int>(1);
-        k[0] = n;
-        int r = A(k, K(1), K(-1), K(-1), K(1), K(0));
+        int r = A(n, K(1), K(-1), K(-1), K(1), K(0));
         Test.assertEq(r, exp[n + 1], "Man or Boy A(" + n + ")");
     }
     Test.report("test_man_or_boy", true);
