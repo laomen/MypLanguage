@@ -1,0 +1,27 @@
+// interface_method_index: 接口方法索引修复 → @test
+// ISecond 有 before/shared，Second.shared() 须正确分派为 22
+
+import test;
+
+interface IFirst {
+    int shared();
+}
+
+interface ISecond {
+    int before();
+    int shared();
+}
+
+class Second {
+    interface class ISecond;
+    action:
+        int before() { return 11; }
+        int shared() { return 22; }
+}
+
+@test void test_interface_method_index() {
+    ISecond value = new Second();
+    Test.assertEq(value.shared(), 22, "shared=22");
+    Test.assertEq(value.before(), 11, "before=11");
+    Test.report("test_interface_method_index", true);
+}

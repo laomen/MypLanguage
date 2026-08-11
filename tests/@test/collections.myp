@@ -1,0 +1,30 @@
+// collections: ArrayList, HashMap, Set → @test
+
+import test;
+import collections;
+
+@test void test_collections() {
+    ArrayList<int> list = new ArrayList<int>();
+    list.add(10); list.add(20); list.add(30);
+    Test.assertEq(list.get(0), 10, "list0");
+    Test.assertEq(list.size(), 3, "sz");
+    list.set(1, 25);
+    Test.assertEq(list.get(1), 25, "set1");
+    Test.assertEq(list.isEmpty() ? 1 : 0, 0, "empty=false");
+
+    HashMap<int, string> hm = new HashMap<int, string>();
+    hm.put(1, "one"); hm.put(2, "two");
+    string v = hm.get(1, "?");
+    Test.assertStrEq(v, "one", "hm1");
+    Test.assertEq(hm.contains(2) ? 1 : 0, 1, "has2=true");
+    hm.remove(1);
+    Test.assertEq(hm.contains(1) ? 1 : 0, 0, "after_rm=false");
+
+    Set<int> s = new Set<int>();
+    s.add(42); s.add(17);
+    Test.assertEq(s.contains(42) ? 1 : 0, 1, "s42=true");
+    Test.assertEq(s.contains(99) ? 1 : 0, 0, "s99=false");
+    Test.assertEq(s.size(), 2, "s sz");
+
+    Test.report("test_collections", true);
+}

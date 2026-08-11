@@ -1,4 +1,6 @@
-// 实例级 mapping（函数内局部）
+// 实例级 mapping（函数内局部）→ @test
+
+import test;
 import env;
 
 class Printer {
@@ -14,7 +16,6 @@ class Main {
     action:
         @constructor Main() {
             Printer p;
-            // 实例级 mapping（函数内局部）
             mapping() {
                 Main.fire -> Printer.print;
             }
@@ -25,8 +26,12 @@ class Main {
         fire(int v);
 }
 
-int main() {
+@test void test_instance_mapping() {
+    Test.captureStart();
     Main m = new Main();
     Printer p2;
-    return 0;
+    Test.captureEnd();
+    Test.assertOutputContains("v=42", "fire 42");
+    Test.assertOutputContains("v=99", "fire 99");
+    Test.report("test_instance_mapping", true);
 }
