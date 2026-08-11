@@ -1,0 +1,54 @@
+// mapping 数据传递：tuple（元组）——事件参数 / action 解构 / 三元素 / 嵌套 / lambda 变换
+import env;
+
+class Sink {
+    action:
+        void onPair((int, string) t) {
+            (int a, string b) = t;            // 解构 tuple 参数
+            Console.writeString("pair="); Console.write(a);
+            Console.writeString(","); Console.writeString(b);
+            Console.writeString("\n");
+        }
+        void onTri((int, int, int) t) {
+            Console.writeString("tri="); Console.write(t.0);
+            Console.writeString(","); Console.write(t.1);
+            Console.writeString(","); Console.write(t.2);
+            Console.writeString("\n");
+        }
+        void onNested(((int, int), int) t) {
+            (int, int) inner = t.0;           // 嵌套 tuple：先取内层再访问
+            Console.writeString("nest="); Console.write(inner.0);
+            Console.writeString(","); Console.write(inner.1);
+            Console.writeString(","); Console.write(t.1);
+            Console.writeString("\n");
+        }
+        void onLam((int, int) t) {
+            Console.writeString("lam="); Console.write(t.0);
+            Console.writeString(","); Console.write(t.1);
+            Console.writeString("\n");
+        }
+}
+
+class Src {
+    action:
+        @constructor Src() {
+            evPair((1, "x"));
+            evTri((1, 2, 3));
+            evNested(((4, 5), 6));
+            evLam((7, 8));
+        }
+    event:
+        evPair((int, string) t);
+        evTri((int, int, int) t);
+        evNested(((int, int), int) t);
+        evLam((int, int) t);
+}
+
+mapping() {
+    Src.evPair -> Sink.onPair;
+    Src.evTri -> Sink.onTri;
+    Src.evNested -> Sink.onNested;
+    Src.evLam -> ((int, int) t) => { return (t.0 + t.1, t.0 - t.1); } -> Sink.onLam;
+}
+
+int main(){ Src s = new Src(); Sink k = new Sink(); return 0; }
