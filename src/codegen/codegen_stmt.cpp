@@ -793,8 +793,13 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
 void CodeGen::generateIfStmt(const IfStmt& s) {
     if (!s.condition) return;
+    size_t before_cond = arc_pending_temps_.size();
     auto* c = generateExpr(*s.condition);
     if (!c->getType()->isIntegerTy(1)) c = builder_.CreateICmpNE(c, llvm::ConstantInt::get(c->getType(), 0));
+    // M7: condition temps (e.g. a @weak upgrade / class-returning call) are
+    // used only to derive the branch i1 — release them here so a branch body's
+    // statement-end flush cannot grab them in a conditional block (leak).
+    arcReleaseConditionTemps(before_cond);
     auto* f = builder_.GetInsertBlock()->getParent();
     auto* tbb = llvm::BasicBlock::Create(ctx_, "then", f);
     auto* ebb = llvm::BasicBlock::Create(ctx_, "else");
@@ -826,8 +831,10 @@ void CodeGen::generateWhileStmt(const WhileStmt& s) {
     builder_.CreateBr(cbb);
     builder_.SetInsertPoint(cbb);
     if (s.condition) {
+        size_t before_cond = arc_pending_temps_.size();
         auto* c = generateExpr(*s.condition);
         if (!c->getType()->isIntegerTy(1)) c = builder_.CreateICmpNE(c, llvm::ConstantInt::get(c->getType(), 0));
+        arcReleaseConditionTemps(before_cond);
         builder_.CreateCondBr(c, bbb, abb);
     } else builder_.CreateBr(bbb);
     f->insert(f->end(), bbb);
@@ -859,8 +866,10 @@ void CodeGen::generateForStmt(const ForStmt& s) {
     builder_.CreateBr(cbb);
     builder_.SetInsertPoint(cbb);
     if (s.condition) {
+        size_t before_cond = arc_pending_temps_.size();
         auto* c = generateExpr(*s.condition);
         if (!c->getType()->isIntegerTy(1)) c = builder_.CreateICmpNE(c, llvm::ConstantInt::get(c->getType(), 0));
+        arcReleaseConditionTemps(before_cond);
         builder_.CreateCondBr(c, bbb, abb);
     } else builder_.CreateBr(bbb);
     f->insert(f->end(), bbb);
@@ -1173,7 +1182,9 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                 (s.value->kind == ExprKind::Call &&
                  (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
                   callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
-                  callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value))))) {
+                  callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))) ||
+                (s.value->kind == ExprKind::MemberAccess &&
+                 isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value)))) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -1194,7 +1205,9 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                     (s.value->kind == ExprKind::Call &&
                      (callReturnsArcRef(static_cast<const CallExpr&>(*s.value)) ||
                       callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
-                      callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))))) {
+                      callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))) ||
+                    (s.value->kind == ExprKind::MemberAccess &&
+                     isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value))))) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }
@@ -1421,6 +1434,11 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                         v = builder_.CreateIntCast(v, pt, true);
                                     else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
                                         v = builder_.CreateSIToFP(v, pt);
+                                }
+                                // M7: weak field → myp_weak_store (no retain/release).
+                                if (storePropertyField(gep, v, cls, id.name)) {
+                                    builder_.CreateStore(v, gep);
+                                    return v;
                                 }
                                 // ARC: this.prop is a strong slot owned by the object.
                                 const TypeNode* prop_tn = nullptr;
@@ -1812,6 +1830,11 @@ assign_gep:
                                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy())
                                             v = builder_.CreateFPToSI(v, pt);
                                     }
+                                    // M7: weak static field → myp_weak_store.
+                                    if (storePropertyField(gep, v, cls, ma.member_name)) {
+                                        builder_.CreateStore(v, gep);
+                                        return v;
+                                    }
                                     // ARC: static property = process-global strong slot.
                                     const TypeNode* prop_tn = nullptr;
                                     for (auto& p : cls.properties)
@@ -1953,6 +1976,11 @@ assign_gep:
                         if (pt->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, pt, true);
                         else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, pt);
                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, pt);
+                    }
+                    // M7: weak field → myp_weak_store (no retain/release).
+                    if (storePropertyField(gep, v, cls, ma.member_name)) {
+                        builder_.CreateStore(v, gep);
+                        return v;
                     }
                     // ARC: obj.prop is a strong slot owned by the object.
                     const TypeNode* prop_tn = nullptr;

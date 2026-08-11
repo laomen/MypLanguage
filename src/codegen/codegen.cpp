@@ -1109,6 +1109,23 @@ llvm::Value* CodeGen::arcEndBranch(size_t before, llvm::Value* branch_result) {
     }
     return owned;
 }
+// M7/ARC: release temps created during a branch-condition evaluation (a
+// class-returning call, a @weak upgrade, `new`, etc.). The branch uses only the
+// derived i1, never the temps, so they can be released here (current, always-
+// executed block) instead of being grabbed by a branch body's statement-end
+// flush in a CONDITIONAL block — that would release them on only one path and
+// leak on the other.
+void CodeGen::arcReleaseConditionTemps(size_t before) {
+    if (arc_pending_temps_.size() <= before) return;
+    for (auto it = arc_pending_temps_.begin() + (ptrdiff_t)before;
+         it != arc_pending_temps_.end(); ++it) {
+        if (runtime_release_ && builder_.GetInsertBlock() &&
+            !builder_.GetInsertBlock()->getTerminator())
+            builder_.CreateCall(runtime_release_, {*it});
+    }
+    arc_pending_temps_.erase(arc_pending_temps_.begin() + (ptrdiff_t)before,
+                             arc_pending_temps_.end());
+}
 // End of statement: release any `new` temporaries nobody stored.
 void CodeGen::arcFlushTemps() {
     if (arc_pending_temps_.empty()) return;
@@ -1149,11 +1166,93 @@ bool CodeGen::isFreshArcExpr(const Expr& e) {
     if (e.kind == ExprKind::NewExpr || e.kind == ExprKind::Call ||
         e.kind == ExprKind::Lambda || e.kind == ExprKind::NewArrayExpr)
         return true;
+    // M7: a @weak property read performs a weak→strong upgrade at runtime
+    // (myp_weak_load retains), so it yields a FRESH strong reference — stores
+    // / var-decls must not retain it a second time.
+    if (e.kind == ExprKind::MemberAccess)
+        return isWeakMemberAccess(static_cast<const MemberAccessExpr&>(e));
     // M8: string concatenation `a + b` is a BinaryOp whose result is a fresh
     // counted string (rc=1). Without this, `s = s + "x"` / `string t = a + b`
     // RETAINED the concat result (rc 1→2), so releasing the slot only dropped
     // it to 1 — one leaked reference per concatenation.
     return isStringConcatExpr(e);
+}
+
+// M7: is `obj.weakProp` a read of a @weak property? A weak read upgrades to a
+// fresh strong ref at runtime, so it must be treated as fresh by the ARC store
+// / var-decl paths (no extra retain).
+bool CodeGen::isWeakMemberAccess(const MemberAccessExpr& e) {
+    if (!current_tu_) return false;
+    std::string cls;
+    if (e.object->kind == ExprKind::ThisExpr) {
+        cls = current_class_name_;
+    } else if (e.object->kind == ExprKind::Identifier) {
+        auto& id = static_cast<const IdentifierExpr&>(*e.object);
+        auto vc = var_class_map_.find(id.name);
+        if (vc != var_class_map_.end()) cls = vc->second;
+        else if (static_property_globals_.find(id.name) != static_property_globals_.end())
+            cls = id.name;   // static class: ClassName.prop
+    } else if (!e.resolved_object_class.empty()) {
+        cls = e.resolved_object_class;
+    }
+    if (cls.empty()) return false;
+    for (auto& c : current_tu_->classes) {
+        if (c.name != cls) continue;
+        for (auto& p : c.properties)
+            if (p.name == e.member_name) return p.weak;
+        return false;
+    }
+    return false;
+}
+
+// M7: load a class property field. Weak fields go through myp_weak_load — a
+// weak→strong upgrade returning a FRESH strong ref (rc+1), pushed as a temp the
+// store/var-decl consumes or the statement-end flush releases. Strong fields
+// load directly (borrowed, no retain).
+llvm::Value* CodeGen::loadPropertyField(llvm::Value* gep, const ClassDecl& cls,
+                                        const std::string& member_name) {
+    if (!gep) return nullptr;
+    bool weak = false;
+    for (auto& p : cls.properties)
+        if (p.name == member_name) { weak = p.weak; break; }
+    if (weak) {
+        if (!runtime_weak_load_) {
+            auto* pt = llvm::PointerType::get(ctx_, 0);
+            auto* ft = llvm::FunctionType::get(pt, {pt}, false);
+            runtime_weak_load_ = llvm::Function::Create(ft,
+                llvm::Function::ExternalLinkage, "myp_weak_load", module_.get());
+        }
+        auto* obj = builder_.CreateCall(runtime_weak_load_->getFunctionType(),
+                                        runtime_weak_load_, {gep});
+        arcPushTemp(obj);
+        return obj;
+    }
+    auto* pt = getPropertyType(cls, member_name);
+    if (pt->isArrayTy()) return gep;
+    return builder_.CreateLoad(pt, gep);
+}
+
+// M7: store into a class property field. Weak fields go through myp_weak_store
+// (no retain/release; the registry keeps the slot's weak observer updated) and
+// the caller skips the strong arcStoreRef. Returns true when the field is weak.
+bool CodeGen::storePropertyField(llvm::Value* gep, llvm::Value* v,
+                                 const ClassDecl& cls, const std::string& member_name) {
+    if (!gep || !v) return false;
+    for (auto& p : cls.properties) {
+        if (p.name != member_name) continue;
+        if (!p.weak) return false;
+        if (!runtime_weak_store_) {
+            auto* pt = llvm::PointerType::get(ctx_, 0);
+            auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                {pt, pt}, false);
+            runtime_weak_store_ = llvm::Function::Create(ft,
+                llvm::Function::ExternalLinkage, "myp_weak_store", module_.get());
+        }
+        builder_.CreateCall(runtime_weak_store_->getFunctionType(),
+                            runtime_weak_store_, {gep, v});
+        return true;
+    }
+    return false;
 }
 void CodeGen::setNamedValue(const std::string& n, llvm::Value* a) {
     if (named_values_.empty()) named_values_.emplace_back();

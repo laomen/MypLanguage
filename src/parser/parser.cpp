@@ -230,7 +230,8 @@ void Parser::parseClassSection(ClassDecl& cls) {
                !check(TokenKind::Keyword_struct) &&
                !check(TokenKind::Keyword_interface) &&
                !isAtEnd()) {
-            if (checkType() || check(TokenKind::Keyword_const)) {
+            if (checkType() || check(TokenKind::Keyword_const) ||
+                (check(TokenKind::At) && peekNext().value == "weak")) {
                 cls.properties.push_back(parsePropertyDecl());
             } else {
                 break;
@@ -426,6 +427,13 @@ std::vector<std::unique_ptr<Expr>> Parser::parseCallArgs() {
 PropertyDecl Parser::parsePropertyDecl() {
     PropertyDecl decl;
     decl.range = previous().range;
+    // M7: optional @weak annotation before the type (weak reference field).
+    if (check(TokenKind::At)) {
+        advance(); // consume @
+        std::string annot = parseIdentifier("expected annotation name");
+        if (annot == "weak") decl.weak = true;
+        else diag_.error(previous().range, "unknown property annotation '@" + annot + "'");
+    }
     // Check for 'const' before the type
     if (check(TokenKind::Keyword_const)) {
         advance(); // consume 'const'
@@ -556,7 +564,8 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
             }
             continue;
         }
-        if (checkType() || check(TokenKind::Keyword_void)) {
+        if (checkType() || check(TokenKind::Keyword_void) ||
+            (check(TokenKind::At) && peekNext().value == "weak")) {
             // Look ahead up to 3 tokens to distinguish property vs method:
             //   property: type name ; or type name = expr ;
             //   method:   type name ( params ) { body }

@@ -1,0 +1,21 @@
+// Negative: @weak is only valid on a class / interface reference field.
+// A weak reference must point at a ref-counted object; a string, slice or
+// numeric field has no object to weak-reference (and the runtime weak registry
+// keys on the object header). Also rejected: @weak on a struct field (phase 1).
+import env;
+
+class Bad {
+    property:
+        @weak string name;        // error: must be class/interface ref
+        @weak int count;          // error: must be class/interface ref
+        @weak slice<int> data;    // error: must be class/interface ref
+}
+
+struct S {
+    int x;
+}
+
+class Bad2 {
+    property:
+        S s;
+}

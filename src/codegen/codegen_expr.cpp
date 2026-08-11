@@ -545,7 +545,6 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         arcPushTemp(r);
     return r;
 }
-
 std::string CodeGen::memberObjectClassName(const Expr& obj) {
     if (obj.kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(obj);
@@ -2013,9 +2012,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                         auto* st = getClassStruct(cls.name);
                         if (st) {
                             auto* gep = builder_.CreateStructGEP(st, sit->second, pi);
-                            auto* pt = getPropertyType(cls, e.member_name);
-                            if (pt->isArrayTy()) return gep;
-                            return builder_.CreateLoad(pt, gep);
+                            return loadPropertyField(gep, cls, e.member_name);
                         }
                     }
                 }
@@ -2157,8 +2154,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                             auto* st = getClassStruct(cls.name);
                             if (st) {
                                 auto* gep = builder_.CreateStructGEP(st, tp, pi);
-                                auto* pt = getPropertyType(cls, e.member_name);
-                                return builder_.CreateLoad(pt, gep);
+                                return loadPropertyField(gep, cls, e.member_name);
                             }
                         }
                     }
@@ -2188,9 +2184,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                         auto* st = getClassStruct(cls.name);
                         if (st) {
                             auto* gep = builder_.CreateStructGEP(st, op, pi);
-                            auto* pt = getPropertyType(cls, e.member_name);
-                            if (pt->isArrayTy()) return gep;
-                            return builder_.CreateLoad(pt, gep);
+                            return loadPropertyField(gep, cls, e.member_name);
                         }
                     }
                 }
@@ -2236,9 +2230,7 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                     auto* st = getClassStruct(cls.name);
                     if (st) {
                         auto* gep = builder_.CreateStructGEP(st, op, pi);
-                        auto* pt = getPropertyType(cls, e.member_name);
-                        if (pt->isArrayTy()) return gep;
-                        return builder_.CreateLoad(pt, gep);
+                        return loadPropertyField(gep, cls, e.member_name);
                     }
                 }
             }

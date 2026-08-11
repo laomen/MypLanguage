@@ -562,6 +562,8 @@ void Sema::visitStructDecl(StructDecl& decl) {
         auto& prop = decl.properties[i];
         TypeInfo ft = typeNodeToTypeInfo(prop.type);
         member_types.emplace(prop.name, ft);
+        if (prop.weak)
+            error(prop.range, "@weak is not supported on struct fields yet");
         if (ft.kind == TypeKind::Void && prop.type.class_name.empty()) {
             error(prop.range, "cannot declare field of type 'void'");
         }
@@ -693,6 +695,19 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     symbol_table_.enterScope();
 
     for (auto& prop : decl.properties) {
+        // M7: @weak only on class/interface reference fields (not string/
+        // slice/numeric/struct), and not const.
+        if (prop.weak) {
+            TypeInfo pti = typeNodeToTypeInfo(prop.type);
+            bool ref_ok = (pti.kind == TypeKind::Class) ||
+                          (pti.kind == TypeKind::Interface);
+            if (!ref_ok)
+                error(prop.range, "@weak property '" + prop.name +
+                      "' must be a class or interface reference type");
+            if (prop.is_const)
+                error(prop.range, "@weak property '" + prop.name +
+                      "' cannot also be const");
+        }
         if (!symbol_table_.declare(prop.name, typeNodeToTypeInfo(prop.type))) {
             error(prop.range, "duplicate member '" + prop.name + "' in class '" + decl.name + "'");
         }

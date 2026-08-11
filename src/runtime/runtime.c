@@ -1789,6 +1789,156 @@ void myp_retain(void* obj) {
     atomic_fetch_add_explicit(&h->rc, 1, memory_order_relaxed);
 }
 
+// ---- M7: weak references ----
+// A `@weak` class field stores a plain pointer to its target (no retain). A
+// global chained-hash registry maps target object → the set of weak-slot
+// ADDRESSES pointing at it. When an object's rc hits 0 it nulls every
+// registered slot first (so no reader ever sees a dangling weak), drops the
+// registry entry, then frees. Weak holders unregister their slots when THEY are
+// destroyed (their destroy stub calls myp_weak_clear), so a target's list never
+// holds addresses into freed holder memory.
+// All weak ops share ONE global spinlock; weak fields are rare so it is
+// effectively uncontended. The lock also makes myp_weak_load's weak→strong
+// upgrade race-free against destruction: while the lock is held the target
+// cannot be freed, so the retain inside the critical section is safe.
+typedef struct myp_weak_entry {
+    struct myp_weak_entry* next;   // hash-bucket chain
+    void* target;                  // the weak-referenced object
+    void** slots;                  // dynamic array of weak slot addresses
+    size_t count, cap;
+} myp_weak_entry_t;
+
+#define MYP_WEAK_BUCKETS 64
+static myp_weak_entry_t* myp_weak_table[MYP_WEAK_BUCKETS];
+static pthread_spinlock_t myp_weak_lock;
+static pthread_once_t myp_weak_lock_once = PTHREAD_ONCE_INIT;
+static void myp_weak_lock_init(void) { pthread_spin_init(&myp_weak_lock, PTHREAD_PROCESS_PRIVATE); }
+static void myp_weak_lock_ensure(void) { pthread_once(&myp_weak_lock_once, myp_weak_lock_init); }
+
+static unsigned myp_weak_hash(void* p) {
+    uintptr_t v = (uintptr_t)p;
+    return (unsigned)((v >> 4) ^ (v >> 12) ^ (v >> 20)) % MYP_WEAK_BUCKETS;
+}
+static myp_weak_entry_t* myp_weak_find_locked(void* target) {
+    unsigned b = myp_weak_hash(target);
+    for (myp_weak_entry_t* e = myp_weak_table[b]; e; e = e->next)
+        if (e->target == target) return e;
+    return NULL;
+}
+static void myp_weak_remove_entry_locked(myp_weak_entry_t* e) {
+    unsigned b = myp_weak_hash(e->target);
+    myp_weak_entry_t** link = &myp_weak_table[b];
+    while (*link && *link != e) link = &(*link)->next;
+    if (*link) *link = e->next;
+    free(e->slots);
+    free(e);
+}
+static void myp_weak_add_locked(void* target, void** slot) {
+    myp_weak_entry_t* e = myp_weak_find_locked(target);
+    if (!e) {
+        e = (myp_weak_entry_t*)calloc(1, sizeof(myp_weak_entry_t));
+        if (!e) return;
+        e->target = target;
+        unsigned b = myp_weak_hash(target);
+        e->next = myp_weak_table[b];
+        myp_weak_table[b] = e;
+    }
+    if (e->count >= e->cap) {
+        size_t nc = e->cap ? e->cap * 2 : 4;
+        void** ns = (void**)realloc(e->slots, nc * sizeof(void*));
+        if (!ns) return;
+        e->slots = ns;
+        e->cap = nc;
+    }
+    e->slots[e->count++] = (void*)slot;
+}
+static void myp_weak_remove_locked(void* target, void** slot) {
+    myp_weak_entry_t* e = myp_weak_find_locked(target);
+    if (!e) return;
+    for (size_t i = 0; i < e->count; i++) {
+        if ((void*)e->slots[i] == slot) {
+            e->slots[i] = e->slots[--e->count];
+            if (e->count == 0) myp_weak_remove_entry_locked(e);
+            return;
+        }
+    }
+}
+
+// Set a weak field to `obj` (no retain) and keep the registry consistent.
+void myp_weak_store(void** slot, void* obj) {
+    myp_weak_lock_ensure();
+    pthread_spin_lock(&myp_weak_lock);
+    void* old = *slot;
+    if (old != obj) {
+        if (old) myp_weak_remove_locked(old, slot);
+        *slot = obj;
+        if (obj) myp_weak_add_locked(obj, slot);
+    }
+    pthread_spin_unlock(&myp_weak_lock);
+}
+
+// The HOLDER is being destroyed: unregister this weak slot and null it. Called
+// from the holder's destroy stub before the holder's memory is freed.
+void myp_weak_clear(void** slot) {
+    myp_weak_lock_ensure();
+    pthread_spin_lock(&myp_weak_lock);
+    void* old = *slot;
+    *slot = NULL;
+    if (old) myp_weak_remove_locked(old, slot);
+    pthread_spin_unlock(&myp_weak_lock);
+}
+
+// Weak→strong upgrade: return a STRONG ref (rc+1) or NULL if the target died.
+// Caller owns the returned ref (release it like a fresh value).
+void* myp_weak_load(void** slot) {
+    myp_weak_lock_ensure();
+    pthread_spin_lock(&myp_weak_lock);
+    void* obj = *slot;
+    if (obj) myp_retain(obj);   // atomic; target cannot be freed while lock held
+    pthread_spin_unlock(&myp_weak_lock);
+    return obj;
+}
+
+// Called by myp_release when an object's rc hits 0: null all weak slots
+// observing it and drop its registry entry. Returns 1 if this thread is the
+// true last owner (should free); 0 if a concurrent weak_load re-bumped rc under
+// the lock first (the object lives; the new owner will free it).
+static int myp_weak_notify_death(void* obj) {
+    myp_weak_lock_ensure();
+    pthread_spin_lock(&myp_weak_lock);
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    if (atomic_load_explicit(&h->rc, memory_order_relaxed) != 0) {
+        pthread_spin_unlock(&myp_weak_lock);
+        return 0;   // someone re-bumped rc — object lives
+    }
+    myp_weak_entry_t* e = myp_weak_find_locked(obj);
+    if (e) {
+        for (size_t i = 0; i < e->count; i++)
+            *((void**)e->slots[i]) = NULL;
+        myp_weak_remove_entry_locked(e);
+    }
+    pthread_spin_unlock(&myp_weak_lock);
+    return 1;
+}
+
+// Free the whole weak registry at process exit (only entry/slot-array blocks;
+// slot addresses may dangle but are never dereferenced here).
+void myp_weak_free_all(void) {
+    myp_weak_lock_ensure();
+    pthread_spin_lock(&myp_weak_lock);
+    for (int i = 0; i < MYP_WEAK_BUCKETS; i++) {
+        myp_weak_entry_t* e = myp_weak_table[i];
+        while (e) {
+            myp_weak_entry_t* next = e->next;
+            free(e->slots);
+            free(e);
+            e = next;
+        }
+        myp_weak_table[i] = NULL;
+    }
+    pthread_spin_unlock(&myp_weak_lock);
+}
+
 // Forward decl — defined after myp_free_object, used by myp_release below.
 static void myp_free_class_array(void* data);
 
@@ -1812,6 +1962,12 @@ uint32_t myp_release(void* obj) {
     uint32_t new_rc = old_rc - 1;
     if (new_rc == 0) {
         atomic_thread_fence(memory_order_acquire);
+        // M7: null weak observers BEFORE freeing. If a concurrent weak_load
+        // re-bumped rc under the weak lock, we are not the true last owner —
+        // leave the object alive; the new owner frees it on its own release.
+        if (!myp_weak_notify_death(obj)) {
+            return atomic_load_explicit(&h->rc, memory_order_relaxed);
+        }
         // Cache type_id BEFORE the destroy stub runs — the stub frees the
         // object, so reading h->* afterward would be a use-after-free.
         uint32_t tid = h->type_id;
@@ -5339,6 +5495,8 @@ static void __myp_coro_register_cleanup(void) {
     // still live (leaked / program-lifetime). Runs after main returns when all
     // @thread workers have been joined, so no thread is still using blocks.
     atexit(myp_free_alloc_list_global);
+    // M7: free the weak registry (entry/slot-array blocks only).
+    atexit(myp_weak_free_all);
     atexit(__myp_coro_cleanup_all);
 }
 

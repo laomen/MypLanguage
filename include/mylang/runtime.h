@@ -34,6 +34,16 @@ void* myp_alloc_object(size_t size, uint32_t type_id);
 void myp_retain(void* obj);
 uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);
+// M7 weak references: a `@weak` class field stores a plain pointer to its
+// target (no retain) in a slot whose ADDRESS is registered in a global weak
+// registry. myp_weak_store sets the slot + updates the registry; myp_weak_load
+// upgrades weak→strong (returns a fresh strong ref the caller must release, or
+// NULL if the target died); myp_weak_clear unregisters + nulls the slot (called
+// from a holder's destroy stub when the HOLDER is freed). When a target's rc
+// hits 0, myp_release nulls every registered slot before freeing.
+void myp_weak_store(void** slot, void* obj);
+void* myp_weak_load(void** slot);
+void myp_weak_clear(void** slot);
 // Ref-counted class arrays (§五-1): `new T[n]` with a class element type. A
 // 24-byte header { count:u64, elem_size:u32, pad:u32, rc:u32, type_id:u32 }
 // (rc/type_id at the same obj-8/obj-4 offsets as a class-object header) sits

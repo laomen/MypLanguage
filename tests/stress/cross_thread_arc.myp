@@ -19,6 +19,16 @@ import sync;
         int done = 0;
         Node sharedNode;    // 场景 A：共享实例（main 永久持有）
         Node tempNode;      // 场景 B：跨线程最后持有者释放
+        WeakHolder wk;      // M7：跨线程 weak 升级/存储（weak 登记表 spinlock 并发）
+}
+
+// M7: weak 引用 holder —— set 弱存、get 弱→强升级（返回强引用，调用方释放）。
+class WeakHolder {
+    action:
+        void set(Node n) { node = n; }        // @weak 存储（不计数，登记表更新）
+        Node get() { return node; }           // @weak 升级（返回强引用）
+    property:
+        @weak Node node;
 }
 
 class Node {
@@ -45,6 +55,15 @@ class Worker {
                 h.set(Shared.sharedNode);   // retain(shared) + release(old) —— 并发 rc 操作
                 int x = Shared.sharedNode.val();
                 i = i + 1;
+            }
+            // M7: 跨线程 weak —— 每 worker 私有 WeakHolder 弱存共享节点 + 升级读
+            WeakHolder wh = new WeakHolder();
+            long j = 0;
+            while (j < 20000) {
+                wh.set(Shared.sharedNode);   // weak store（并发登记表更新）
+                Node w = wh.get();           // weak→强升级（若存活返回强引用）
+                if (w != null) { int x = w.val(); }
+                j = j + 1;
             }
             // 场景 B：mutex 保护下清空 tempNode（槽无竞争），release 在本 worker 线程
             Mutex.lock(Shared.mutex);

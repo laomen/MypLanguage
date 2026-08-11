@@ -198,6 +198,16 @@ private:
     // True for NewExpr / CallExpr / LambdaExpr results: transfer (no retain)
     // at a strong slot.
     bool isFreshArcExpr(const Expr& e);
+    // M7: is `obj.weakProp` a read of a @weak property (fresh strong upgrade)?
+    bool isWeakMemberAccess(const MemberAccessExpr& e);
+    // M7: load a class property field — weak → myp_weak_load (fresh strong
+    // temp), strong → plain load (borrowed).
+    llvm::Value* loadPropertyField(llvm::Value* gep, const ClassDecl& cls,
+                                   const std::string& member_name);
+    // M7: store into a class property field. Returns true if the field is weak
+    // (handled via myp_weak_store; caller must skip the strong arcStoreRef).
+    bool storePropertyField(llvm::Value* gep, llvm::Value* v,
+                            const ClassDecl& cls, const std::string& member_name);
     // §五-5 形态3: is the awaited operand a call to an @async-annotated
     // function/static method (an await-able async IO operation)?
     bool isAsyncCallTarget(const Expr* callee) const;
@@ -209,6 +219,10 @@ private:
     bool arc_skip_retain_return_ = false;
     void arcPushTemp(llvm::Value* v);
     void arcConsumeTemp(llvm::Value* v);
+    // M7: release temps created during a condition evaluation (the branch uses
+    // only the derived i1) — prevents a conditional-block flush from leaking
+    // them on the other path.
+    void arcReleaseConditionTemps(size_t before);
     void arcFlushTemps();
     // Release branch-created temporaries inside the branch block; transfer the
     // branch result if it is a fresh class-ref temp (returns it for the merge
@@ -296,6 +310,10 @@ private:
     llvm::Function* runtime_ord_ = nullptr;
     // In-place string append (`s = s + x` fast path, M4): runtime myp_str_append
     llvm::Function* runtime_str_append_ = nullptr;
+    // M7 weak references: runtime myp_weak_store / myp_weak_load / myp_weak_clear
+    llvm::Function* runtime_weak_store_ = nullptr;
+    llvm::Function* runtime_weak_load_ = nullptr;
+    llvm::Function* runtime_weak_clear_ = nullptr;
 
     // ---- RTTI (§五-4) ----
     llvm::Function* runtime_type_id_ = nullptr;

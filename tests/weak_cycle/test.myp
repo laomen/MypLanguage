@@ -1,0 +1,127 @@
+// weak_cycle: M7 `@weak` 弱引用 —— 打破强环 + 自动置空
+//
+// 覆盖：
+//  1) 双向环（parent→child 强，child→parent @weak）断开强引用后全部回收
+//  2) weak 读取 = 弱→强升级：目标活着返回强引用、已销毁返回 null
+//  3) weak 存储不计数（弱回指不阻止 parent 释放）
+//  4) 自环经 weak 断开
+//  5) 观察者模式（发布者被订阅者 weak 持有）
+import env;
+import memory;
+
+class Parent {
+    action:
+        void setChild(Child c) { child = c; }
+        void clearChild() { child = null; }
+        int tag() { return t; }
+    property:
+        Child child;       // 强引用
+        int t = 0;
+}
+
+class Child {
+    action:
+        void setParent(Parent p) { parent = p; }   // @weak 存储（不计数）
+        Parent getParent() { return parent; }      // @weak 读取（升级强引用）
+    property:
+        @weak Parent parent;
+}
+
+class SelfCycler {
+    action:
+        void setSelf(SelfCycler s) { self = s; }   // @weak 自环
+        SelfCycler getSelf() { return self; }
+    property:
+        @weak SelfCycler self;
+}
+
+class Publisher {
+    action:
+        int hits() { return count; }
+    property:
+        int count = 0;
+}
+
+class Subscriber {
+    action:
+        void subscribe(Publisher p) { pub = p; }   // @weak：订阅者弱持有发布者
+        int pubAlive() { Publisher q = pub; return (q == null) ? 0 : 1; }
+    property:
+        @weak Publisher pub;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            long base = Memory.liveObjectCount();
+
+            // 1) 双向环：断开强引用后全部回收
+            long b1 = Memory.liveObjectCount();
+            {
+                Parent p = new Parent();
+                Child c = new Child();
+                p.setChild(c);          // 强：p → c
+                c.setParent(p);         // 弱：c → p（不计数）
+                if (c.getParent() == null) { Console.writeString("FAIL weak read alive\n"); return; }
+                if (c.getParent().tag() != 0) { Console.writeString("FAIL weak tag\n"); return; }
+                long held = Memory.liveObjectCount();
+                if (held != b1 + 2L) { Console.writeString("FAIL count " + (held - b1) + "\n"); return; }
+                p.clearChild();         // 断开 p → c 强
+                c.setParent(null);      // 断开 c → p 弱
+                p = null;
+                c = null;
+            }
+            if (Memory.liveObjectCount() != b1) { Console.writeString("FAIL cycle leak\n"); return; }
+
+            // 2) 目标销毁后 weak 读返回 null
+            long b2 = Memory.liveObjectCount();
+            {
+                Child c = new Child();
+                {
+                    Parent p = new Parent();
+                    c.setParent(p);      // weak
+                    if (c.getParent() == null) { Console.writeString("FAIL alive\n"); return; }
+                }   // p 在块结束销毁 → weak 槽自动置 null
+                if (c.getParent() != null) { Console.writeString("FAIL weak not nulled\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b2) { Console.writeString("FAIL nulled leak\n"); return; }
+
+            // 3) weak 不阻止目标释放：只被 weak 持有的对象可回收
+            long b3 = Memory.liveObjectCount();
+            {
+                Parent p = new Parent();   // rc=1（本地）
+                Child c = new Child();
+                c.setParent(p);            // weak（不 +rc）
+                p = null;                  // p rc→0 → 释放（weak 不阻止）
+                if (Memory.liveObjectCount() != b3 + 1L) { Console.writeString("FAIL weak holds\n"); return; }
+                if (c.getParent() != null) { Console.writeString("FAIL weak after drop\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b3) { Console.writeString("FAIL b3 leak\n"); return; }
+
+            // 4) 自环经 weak 断开
+            long b4 = Memory.liveObjectCount();
+            {
+                SelfCycler s = new SelfCycler();
+                s.setSelf(s);              // weak 自环
+                s = null;                  // 直接回收（weak 不计数）
+            }
+            if (Memory.liveObjectCount() != b4) { Console.writeString("FAIL self cycle\n"); return; }
+
+            // 5) 观察者：订阅者弱持有发布者，发布者先死则订阅者读得 null
+            long b5 = Memory.liveObjectCount();
+            {
+                Subscriber sub = new Subscriber();
+                {
+                    Publisher pub = new Publisher();
+                    sub.subscribe(pub);    // weak
+                    if (sub.pubAlive() != 1) { Console.writeString("FAIL observer alive\n"); return; }
+                }   // pub 销毁
+                if (sub.pubAlive() != 0) { Console.writeString("FAIL observer null\n"); return; }
+            }
+            if (Memory.liveObjectCount() != b5) { Console.writeString("FAIL observer leak\n"); return; }
+
+            if (Memory.liveObjectCount() != base) { Console.writeString("FAIL overall\n"); return; }
+            Console.writeString("PASS weak refs (cycle broken + auto-null)\n");
+        }
+}
+int main() { Main m = new Main(); return 0; }

@@ -324,6 +324,23 @@ void CodeGen::generateArcSupport(TranslationUnit& tu) {
         if (st) {
             for (size_t pi = 0; pi < cls.properties.size(); pi++) {
                 auto& prop = cls.properties[pi];
+                if (prop.weak) {
+                    // M7: weak field — unregister + null the slot (the holder
+                    // is being destroyed; the slot address must not dangle in
+                    // the target's weak registry).
+                    auto* gep = b.CreateStructGEP(st, self, pi);
+                    if (!runtime_weak_clear_) {
+                        auto* pt = llvm::PointerType::get(ctx_, 0);
+                        auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                            {pt}, false);
+                        runtime_weak_clear_ = llvm::Function::Create(ft,
+                            llvm::Function::ExternalLinkage, "myp_weak_clear",
+                            module_.get());
+                    }
+                    b.CreateCall(runtime_weak_clear_->getFunctionType(),
+                                 runtime_weak_clear_, {gep});
+                    continue;
+                }
                 if (isCountedArrayType(prop.type)) {
                     // M8: dynamic T[] field — release the counted backing.
                     auto* gep = b.CreateStructGEP(st, self, pi);

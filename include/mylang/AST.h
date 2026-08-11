@@ -167,6 +167,7 @@ struct PropertyDecl {
     std::shared_ptr<Expr> init_expr;
     SourceRange range;
     bool is_const = false;
+    bool weak = false;   // M7: @weak — weak reference (no retain, auto-null on target death)
 };
 
 // ---- Struct ----

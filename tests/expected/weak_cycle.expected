@@ -1,0 +1,1 @@
+PASS weak refs (cycle broken + auto-null)
