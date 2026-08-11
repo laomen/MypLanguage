@@ -1,6 +1,7 @@
-// rtti: 运行时类型信息（§五-4）Rtti.typeId / typeOf / sameType
-// 覆盖：不同类 → 不同 type_id/类名；同类实例 id 相同；sameType 正/反；null → 0/""
-import env;
+// rtti: 运行时类型信息 → @test
+// 覆盖：typeId / typeOf / sameType；同类同 id；null → 0/""
+
+import test;
 import rtti;
 
 class Tank {
@@ -26,7 +27,7 @@ class Sniper {
         int range;
 }
 
-int pmRun() {
+@test void test_rtti() {
     Tank t = new Tank();
     t.setLabel("T-90"); t.setHp(100);
     Tank t2 = new Tank();
@@ -39,28 +40,29 @@ int pmRun() {
     string n1 = Rtti.typeOf<Tank>(t);
     string n2 = Rtti.typeOf<Soldier>(s);
     string n3 = Rtti.typeOf<Sniper>(sn);
-    Console.writeString("typeOf: " + n1 + " / " + n2 + " / " + n3);
-    Console.writeString("\n");
+    Test.assertStrEq(n1, "Tank", "typeOf Tank");
+    Test.assertStrEq(n2, "Soldier", "typeOf Soldier");
+    Test.assertStrEq(n3, "Sniper", "typeOf Sniper");
 
     // typeId：同类恒定、跨类不同
     int id1 = Rtti.typeId<Tank>(t);
     int id2 = Rtti.typeId<Tank>(t2);
     int id3 = Rtti.typeId<Soldier>(s);
     int id4 = Rtti.typeId<Sniper>(sn);
-    Console.writeString("typeId: t=" + id1 + " t2=" + id2 + " s=" + id3 + " sn=" + id4);
-    Console.writeString("\n");
+    Test.assertEq(id1, id2, "同类 id 相同");
+    Test.assertNeq(id1, id3, "Tank/Soldier id 不同");
+    Test.assertNeq(id1, id4, "Tank/Sniper id 不同");
+    Test.assertNeq(id3, id4, "Soldier/Sniper id 不同");
 
     // sameType 正 / 反
-    Console.writeString("same(t,t2)=" + Rtti.sameType<Tank, Tank>(t, t2));
-    Console.writeString(" same(t,s)=" + Rtti.sameType<Tank, Soldier>(t, s));
-    Console.writeString(" same(s,sn)=" + Rtti.sameType<Soldier, Sniper>(s, sn));
-    Console.writeString("\n");
+    Test.assertEq(Rtti.sameType<Tank, Tank>(t, t2), 1, "same(t,t2)");
+    Test.assertEq(Rtti.sameType<Tank, Soldier>(t, s), 0, "same(t,s)");
+    Test.assertEq(Rtti.sameType<Soldier, Sniper>(s, sn), 0, "same(s,sn)");
 
     // null → typeId 0 / typeOf ""
     Tank nul = null;
-    Console.writeString("null: id=" + Rtti.typeId<Tank>(nul) + " name='" + Rtti.typeOf<Tank>(nul) + "'");
-    Console.writeString("\n");
-    return 0;
-}
+    Test.assertEq(Rtti.typeId<Tank>(nul), 0, "null id=0");
+    Test.assertStrEq(Rtti.typeOf<Tank>(nul), "", "null name=''");
 
-int main() { int c = pmRun(); return c; }
+    Test.report("test_rtti", true);
+}

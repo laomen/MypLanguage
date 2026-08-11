@@ -1,0 +1,66 @@
+// 管道 (|>) 回归测试 — 算子组件流水线（转 @test）
+// 验证: 实例管道 / 类名实例化 / 左结合链式 / 类名混用 / 三段链
+
+import test;
+import setops;
+
+class ScaleOp {
+    interface class SetOp;
+    action:
+        void setK(double k) { k_ = k; }
+        double[] transform(double[] A) {
+            int n = 4;
+            double[] B = new double[n];
+            int i = 0; while (i < n) { B[i] = A[i] * k_; i = i + 1; }
+            return B;
+        }
+    property:
+        double k_ = 1.0;
+}
+
+class OffsetOp {
+    interface class SetOp;
+    action:
+        double[] transform(double[] A) {
+            int n = 4;
+            double[] B = new double[n];
+            int i = 0; while (i < n) { B[i] = A[i] + 1.0; i = i + 1; }
+            return B;
+        }
+}
+
+@test void test_pipe() {
+    double[] A = new double[4];
+    int i = 0; while (i < 4) { A[i] = i * 1.0; i = i + 1; }   // [0,1,2,3]
+
+    // 1) 实例管道: A |> scale  = A*2 → [0,2,4,6]
+    ScaleOp scale = new ScaleOp();
+    scale.setK(2.0);
+    double[] B = A |> scale;
+    Test.assertFloatEq(B[0], 0.0, 1e-9); Test.assertFloatEq(B[1], 2.0, 1e-9);
+    Test.assertFloatEq(B[2], 4.0, 1e-9); Test.assertFloatEq(B[3], 6.0, 1e-9);
+
+    // 2) 类名实例化: A |> ScaleOp (新实例 k_=1.0) → [0,1,2,3]
+    double[] C = A |> ScaleOp;
+    Test.assertFloatEq(C[0], 0.0, 1e-9); Test.assertFloatEq(C[1], 1.0, 1e-9);
+    Test.assertFloatEq(C[2], 2.0, 1e-9); Test.assertFloatEq(C[3], 3.0, 1e-9);
+
+    // 3) 链式: A |> scale |> off  = (A*2)+1 → [1,3,5,7]
+    OffsetOp off = new OffsetOp();
+    double[] D = A |> scale |> off;
+    Test.assertFloatEq(D[0], 1.0, 1e-9); Test.assertFloatEq(D[1], 3.0, 1e-9);
+    Test.assertFloatEq(D[2], 5.0, 1e-9); Test.assertFloatEq(D[3], 7.0, 1e-9);
+
+    // 4) 链式 + 类名混用: A |> ScaleOp |> off = off.transform(scale(A))
+    //    (ScaleOp 新实例 k_=1.0) → [1,2,3,4]
+    double[] E = A |> ScaleOp |> off;
+    Test.assertFloatEq(E[0], 1.0, 1e-9); Test.assertFloatEq(E[1], 2.0, 1e-9);
+    Test.assertFloatEq(E[2], 3.0, 1e-9); Test.assertFloatEq(E[3], 4.0, 1e-9);
+
+    // 5) 三段链: A |> scale |> off |> scale = ((A*2)+1)*2 → [2,6,10,14]
+    double[] F = A |> scale |> off |> scale;
+    Test.assertFloatEq(F[0], 2.0, 1e-9); Test.assertFloatEq(F[1], 6.0, 1e-9);
+    Test.assertFloatEq(F[2], 10.0, 1e-9); Test.assertFloatEq(F[3], 14.0, 1e-9);
+
+    Test.report("test_pipe", true);
+}
