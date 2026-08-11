@@ -1453,39 +1453,59 @@ typedef struct myp_alloc_node {
     struct myp_alloc_node* prev;
 } myp_alloc_node_t;
 
-static pthread_key_t myp_alloc_key;
-static pthread_once_t myp_alloc_key_once = PTHREAD_ONCE_INIT;
+// M6: PROCESS-GLOBAL alloc list. ARC blocks (class instances, counted strings,
+// arrays, slice backings) are all tracked here so leaked / program-lifetime
+// objects can be freed once at process exit. A node is pushed/removed under a
+// single spinlock — the critical section is two pointer writes — so an object
+// allocated on thread A and freed (rc→0) on thread B is safe. (The old TLS
+// list was thread-local: a foreign node's prev/next point into another
+// thread's list, so cross-thread free corrupted the list and double-freed at
+// the allocating thread's exit.) The list is freed ONLY at process exit (after
+// all @thread workers are joined), never per-thread.
+static pthread_spinlock_t myp_alloc_lock;
+static pthread_once_t myp_alloc_lock_once = PTHREAD_ONCE_INIT;
+static void myp_alloc_lock_init(void) {
+    pthread_spin_init(&myp_alloc_lock, PTHREAD_PROCESS_PRIVATE);
+}
+static void myp_alloc_lock_ensure(void) {
+    pthread_once(&myp_alloc_lock_once, myp_alloc_lock_init);
+}
+static myp_alloc_node_t* myp_alloc_head = NULL;
 
-static void myp_free_alloc_list(void* ptr) {
-    myp_alloc_node_t* node = (myp_alloc_node_t*)ptr;
+static void myp_alloc_list_push(myp_alloc_node_t* node) {
+    myp_alloc_lock_ensure();
+    pthread_spin_lock(&myp_alloc_lock);
+    node->next = myp_alloc_head;
+    node->prev = NULL;
+    if (myp_alloc_head) myp_alloc_head->prev = node;
+    myp_alloc_head = node;
+    pthread_spin_unlock(&myp_alloc_lock);
+}
+
+static void myp_alloc_list_remove(myp_alloc_node_t* node) {
+    myp_alloc_lock_ensure();
+    pthread_spin_lock(&myp_alloc_lock);
+    if (node->prev) node->prev->next = node->next;
+    else myp_alloc_head = node->next;
+    if (node->next) node->next->prev = node->prev;
+    pthread_spin_unlock(&myp_alloc_lock);
+}
+
+// Free every tracked block still alive at process exit (leaked or
+// program-lifetime objects). Runs on the main thread after all workers are
+// joined, so no other thread can be using them.
+static void myp_free_alloc_list_global(void) {
+    myp_alloc_node_t* node;
+    myp_alloc_lock_ensure();
+    pthread_spin_lock(&myp_alloc_lock);
+    node = myp_alloc_head;
+    myp_alloc_head = NULL;
+    pthread_spin_unlock(&myp_alloc_lock);
     while (node) {
         myp_alloc_node_t* next = node->next;
         free(node);
         node = next;
     }
-}
-
-static void myp_make_alloc_key(void) {
-    pthread_key_create(&myp_alloc_key, myp_free_alloc_list);
-}
-
-static void myp_alloc_list_push(myp_alloc_node_t* node) {
-    pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    myp_alloc_node_t* head =
-        (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
-    node->next = head;
-    node->prev = NULL;
-    if (head) head->prev = node;
-    pthread_setspecific(myp_alloc_key, node);
-}
-
-static void myp_alloc_list_remove(myp_alloc_node_t* node) {
-    pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    if (node->prev)
-        node->prev->next = node->next;
-    else
-        pthread_setspecific(myp_alloc_key, node->next);
-    if (node->next) node->next->prev = node->prev;
 }
 
 // Forward decl — chunked bump arena defined below (after myp_free).
@@ -1611,7 +1631,7 @@ int64_t myp_diag_arena_used(void) {
 // §7 of docs/arc.md).
 
 typedef struct myp_obj_header {
-    uint32_t rc;
+    _Atomic uint32_t rc;       // M6: atomic — objects may be shared across threads
     uint32_t type_id;
 } myp_obj_header_t;
 
@@ -1637,8 +1657,8 @@ typedef struct myp_arr_header {
     uint64_t count;
     uint32_t elem_size;
     uint32_t pad;
-    uint32_t rc;        // == myp_obj_header.rc   (at obj-8)
-    uint32_t type_id;   // == MYP_ARR_TYPE_ID     (at obj-4)
+    _Atomic uint32_t rc;     // == myp_obj_header.rc   (at obj-8)
+    uint32_t type_id;        // == MYP_ARR_TYPE_ID     (at obj-4)
 } myp_arr_header_t;
 #define MYP_ARR_HEADER_SIZE ((size_t)sizeof(myp_arr_header_t))
 
@@ -1765,7 +1785,8 @@ void myp_retain(void* obj) {
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
     if (myp_strict_checks && !myp_header_type_id_ok(h->type_id))
         myp_strict_abort_header(obj, h->type_id);
-    h->rc++;
+    // M6: relaxed atomic increment — safe for concurrent retain across threads.
+    atomic_fetch_add_explicit(&h->rc, 1, memory_order_relaxed);
 }
 
 // Forward decl — defined after myp_free_object, used by myp_release below.
@@ -1777,12 +1798,20 @@ uint32_t myp_release(void* obj) {
     if (myp_strict_checks) {
         if (!myp_header_type_id_ok(h->type_id))
             myp_strict_abort_header(obj, h->type_id);
-        if (h->rc == 0) myp_strict_abort_underflow(obj);
+        if (atomic_load_explicit(&h->rc, memory_order_relaxed) == 0)
+            myp_strict_abort_underflow(obj);
     }
-    if (h->rc == 0) return 0;          // safety: never underflow
-    h->rc--;
-    uint32_t new_rc = h->rc;
+    // M6: release-acquire on the count. The last release (rc→0) takes an
+    // acquire fence so all prior writes to the object by any thread are
+    // visible before it is freed. atomic_fetch_sub returns the OLD value.
+    uint32_t old_rc = atomic_fetch_sub_explicit(&h->rc, 1, memory_order_release);
+    if (old_rc == 0) {   // safety: never underflow (non-strict restore)
+        atomic_store_explicit(&h->rc, 0, memory_order_relaxed);
+        return 0;
+    }
+    uint32_t new_rc = old_rc - 1;
     if (new_rc == 0) {
+        atomic_thread_fence(memory_order_acquire);
         // Cache type_id BEFORE the destroy stub runs — the stub frees the
         // object, so reading h->* afterward would be a use-after-free.
         uint32_t tid = h->type_id;
@@ -1974,17 +2003,14 @@ void myp_region_free_all(void);
 void myp_free_all(void) {
     // Restore terminal if we changed it to raw mode
     myp_restore_term();
-    // slice<class> backing retains its elements. Release those arrays before
-    // the raw allocation-list fallback frees any still-live ARC blocks.
+    // slice<class> backing retains its elements. Release those arrays so the
+    // process-exit raw free (myp_free_alloc_list_global via atexit) sees no
+    // still-live element refs dangling past their backing.
     myp_release_class_slices_from_depth(0);
-    // Trigger the pthread key destructor which calls myp_free_alloc_list
-    pthread_once(&myp_alloc_key_once, myp_make_alloc_key);
-    myp_alloc_node_t* head = (myp_alloc_node_t*)pthread_getspecific(myp_alloc_key);
-    if (head) {
-        myp_free_alloc_list(head);
-        pthread_setspecific(myp_alloc_key, NULL);
-    }
-    // Also free the region arena (thread-local)
+    // M6: the alloc list is PROCESS-GLOBAL (see above) and freed only at
+    // process exit — never here. A worker thread may exit while its objects
+    // are still referenced by other threads, so per-thread list free would
+    // double-free / UAF. TLS resources (region/bump arenas) are still freed.
     myp_region_free_all();
     // Also free the bump arena chunks (non-ARC allocations: strings/slices/arrays)
     myp_arena_free_all();
@@ -2212,9 +2238,12 @@ char* myp_str_append(char* s, const char* x) {
         myp_release(s);
         return r;
     }
+    char* base = (char*)s - MYP_OBJ_HEADER_SIZE;
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)s - MYP_OBJ_HEADER_SIZE);
     size_t la = strlen(s), lb = strlen(x);
-    if (h->type_id == MYP_STR_TYPE_ID && h->rc == 1) {
+    // M6: atomic relaxed load of rc (unique counted string fast path).
+    if (h->type_id == MYP_STR_TYPE_ID &&
+        atomic_load_explicit(&h->rc, memory_order_relaxed) == 1) {
         // Unique counted string → in-place: unlink the intrusive alloc-list
         // node (realloc may move the block), realloc, relink, extend.
         char* base = (char*)s - MYP_OBJ_HEADER_SIZE;
@@ -5303,6 +5332,13 @@ void __myp_coro_thread_cleanup(void) {
 
 __attribute__((constructor))
 static void __myp_coro_register_cleanup(void) {
+    // M6: free the process-global ARC tracking list at exit. atexit handlers
+    // run LIFO, so register this FIRST and the coroutine cleanup SECOND: the
+    // coroutine cleanup runs first (releasing frame-slot objects → removed
+    // from the tracking list at rc==0), then the raw free handles whatever is
+    // still live (leaked / program-lifetime). Runs after main returns when all
+    // @thread workers have been joined, so no thread is still using blocks.
+    atexit(myp_free_alloc_list_global);
     atexit(__myp_coro_cleanup_all);
 }
 

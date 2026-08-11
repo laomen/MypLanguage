@@ -1,0 +1,96 @@
+// stress/cross_thread_arc.myp — M6 跨线程原子 ARC
+//
+// 场景 A（并发 retain/release）：N 个 @thread worker 各持私有 Holder，
+// 反复 h.set(共享 Node)——属性存储 = retain(new) + release(old)，对同一共享
+// 实例的 rc 并发操作。修复前 rc++/rc-- 非原子 → 数据竞争（TSan 报 race、
+// 可能 UAF）；原子 rc 后无竞态。共享 Node 由 main 永久持有（rc≥1），不提前释放。
+//
+// 场景 B（跨线程最后持有者释放）：main 创建 Node 放入静态槽，worker 在
+// mutex 保护下清空该槽 → rc 归 0 → 在 worker 线程上释放（跨线程 free）。
+// 旧的 TLS 分配列表会在此损坏（node 的 prev/next 指向别的线程列表）；
+// 全局分配列表 + spinlock 后安全。main 随后继续分配验证列表无损坏。
+import env;
+import sync;
+
+@static class Shared {
+    property:
+        int mutex;
+        int cond;
+        int done = 0;
+        Node sharedNode;    // 场景 A：共享实例（main 永久持有）
+        Node tempNode;      // 场景 B：跨线程最后持有者释放
+}
+
+class Node {
+    action:
+        int val() { return v; }
+        void setV(int x) { v = x; }
+    property:
+        int v = 0;
+}
+
+class Holder {
+    action:
+        void set(Node n) { node = n; }   // 属性存储 → retain(n) + release(old)
+    property:
+        Node node;
+}
+
+class Worker {
+    action:
+        @startup void run() {
+            Holder h = new Holder();
+            long i = 0;
+            while (i < 20000) {
+                h.set(Shared.sharedNode);   // retain(shared) + release(old) —— 并发 rc 操作
+                int x = Shared.sharedNode.val();
+                i = i + 1;
+            }
+            // 场景 B：mutex 保护下清空 tempNode（槽无竞争），release 在本 worker 线程
+            Mutex.lock(Shared.mutex);
+            Node t = Shared.tempNode;
+            Shared.tempNode = null;         // release(t) → rc 0 → 本线程跨线程释放
+            Mutex.unlock(Shared.mutex);
+            Mutex.lock(Shared.mutex);
+            Shared.done = Shared.done + 1;
+            CondVar.signal(Shared.cond);
+            Mutex.unlock(Shared.mutex);
+        }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            Shared.mutex = Mutex.create();
+            Shared.cond = CondVar.create();
+            Shared.sharedNode = new Node();   // main 永久持有 → rc≥1
+            Shared.tempNode = new Node();
+
+            Worker w1 = new Worker() @thread;
+            Worker w2 = new Worker() @thread;
+            Worker w3 = new Worker() @thread;
+            Worker w4 = new Worker() @thread;
+
+            Mutex.lock(Shared.mutex);
+            while (Shared.done < 4) { CondVar.wait(Shared.cond, Shared.mutex); }
+            Mutex.unlock(Shared.mutex);
+
+            // 场景 A：共享节点应仍存活（main 持有）且字段完好
+            int sv = Shared.sharedNode.val();
+            if (sv != 0) { Console.writeString("FAIL shared node\n"); return; }
+            // 场景 B：tempNode 已被 worker 跨线程释放 → 槽为 null
+            if (Shared.tempNode != null) { Console.writeString("FAIL temp not freed\n"); return; }
+            // 跨线程 free 后继续分配，验证全局分配列表无损坏
+            long acc = 0;
+            long i = 0;
+            while (i < 10000) {
+                Node n = new Node();
+                n.setV(7);
+                acc = acc + n.val();
+                i = i + 1;
+            }
+            if (acc != 70000L) { Console.writeString("FAIL post-free alloc\n"); return; }
+            Console.writeString("PASS cross-thread ARC\n");
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

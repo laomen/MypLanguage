@@ -18,7 +18,7 @@ MYPCC="${MYPCC:-./build/mypc}"
 TIMEOUT_COMPILE=120
 TIMEOUT_RUN=240
 
-TESTS="coro_flood coro_switch_storm channel_stress parallel_stress async_io_stress"
+TESTS="coro_flood coro_switch_storm channel_stress parallel_stress async_io_stress cross_thread_arc"
 
 # 对生成程序启用 sanitizer（codegen 插桩 + runtime 链接）
 SAN_ENV=""
