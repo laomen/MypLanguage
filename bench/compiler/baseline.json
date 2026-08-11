@@ -1,0 +1,29 @@
+{
+  "mypc": "/home/xlkj/code/MYPLanguage/build/mypc",
+  "commit": "06fe610",
+  "runs": 3,
+  "results": [
+    {"bench":"P1","n":1000,"total_ms":92,"frontend_ms":53,"rss_kb":42988}
+    ,{"bench":"P1","n":2000,"total_ms":190,"frontend_ms":141,"rss_kb":52082}
+    ,{"bench":"P1","n":4000,"total_ms":486,"frontend_ms":419,"rss_kb":70242}
+    ,{"bench":"P1","n":8000,"total_ms":1500,"frontend_ms":1394,"rss_kb":107386}
+    ,{"bench":"P2","n":1000,"total_ms":84,"frontend_ms":44,"rss_kb":53734}
+    ,{"bench":"P2","n":2000,"total_ms":140,"frontend_ms":89,"rss_kb":71076}
+    ,{"bench":"P2","n":4000,"total_ms":258,"frontend_ms":188,"rss_kb":107408}
+    ,{"bench":"P3","n":1000,"total_ms":165,"frontend_ms":120,"rss_kb":75864}
+    ,{"bench":"P3","n":2000,"total_ms":374,"frontend_ms":311,"rss_kb":116338}
+    ,{"bench":"P3","n":4000,"total_ms":1022,"frontend_ms":914,"rss_kb":196388}
+    ,{"bench":"P4","n":1000,"total_ms":58,"frontend_ms":22,"rss_kb":39902}
+    ,{"bench":"P4","n":2000,"total_ms":88,"frontend_ms":43,"rss_kb":44960}
+    ,{"bench":"P4","n":4000,"total_ms":152,"frontend_ms":119,"rss_kb":57606}
+    ,{"bench":"P5","n":1000,"total_ms":104,"frontend_ms":62,"rss_kb":44690}
+    ,{"bench":"P5","n":2000,"total_ms":217,"frontend_ms":161,"rss_kb":56466}
+    ,{"bench":"P5","n":4000,"total_ms":567,"frontend_ms":496,"rss_kb":77424}
+    ,{"bench":"P6","n":1000,"total_ms":329,"frontend_ms":272,"rss_kb":72680}
+    ,{"bench":"P6","n":2000,"total_ms":924,"frontend_ms":841,"rss_kb":111156}
+    ,{"bench":"P6","n":4000,"total_ms":2970,"frontend_ms":2865,"rss_kb":189518}
+    ,{"bench":"P7","n":1000,"total_ms":818,"frontend_ms":750,"rss_kb":108224}
+    ,{"bench":"P7","n":2000,"total_ms":2430,"frontend_ms":2331,"rss_kb":180648}
+    ,{"bench":"P7","n":4000,"total_ms":8646,"frontend_ms":8513,"rss_kb":325294}
+  ]
+}

@@ -23,6 +23,19 @@ SLOPE_TOL=${SLOPE_TOL:-3.0}
 JSON=${JSON:-}
 TIME_BIN=${TIME_BIN:-/usr/bin/time}
 
+# ---- 基线回退校验模式 ----
+#   bash run.sh --check [baseline.json]   → 跑全量并与基线比对（超 CHECK_TOL 判定回退，exit 1）
+CHECK_BASELINE=${CHECK_BASELINE:-}
+CHECK_TOL=${CHECK_TOL:-1.3}
+if [ "${1:-}" = "--check" ]; then
+    CHECK_BASELINE="${CHECK_BASELINE:-${2:-baseline.json}}"
+    if [ ! -f "$CHECK_BASELINE" ]; then
+        echo "error: 基线文件不存在: $CHECK_BASELINE (先跑一次生成 baseline.json)" >&2
+        exit 1
+    fi
+    shift 2 2>/dev/null || shift
+fi
+
 # mypc 用 argv[0] 定位 stdlib —— 必须用绝对路径调用
 case "$MYPCC" in
     /*) : ;;
@@ -39,7 +52,9 @@ if [ ! -x "$TIME_BIN" ]; then
 fi
 
 BENCHES="${*:-P1 P2 P3 P4 P5 P6 P7}"
+[ -n "$CHECK_BASELINE" ] && BENCHES="P1 P2 P3 P4 P5 P6 P7"
 WORK=$(mktemp -d /tmp/myp_compiler_bench.XXXXXX)
+RESULTS="$WORK/results.tsv"
 trap 'rm -rf "$WORK"' EXIT
 
 # ---- 工具函数 ----
@@ -130,10 +145,41 @@ $(awk '/Maximum resident set size/{print $NF}' "$tf" | head -1)"
         fi
         printf '%-4s %-8d %-10s %-14s %-10s %-22s\n' "$p" "$n" "${med}ms" "${front}ms" "$medrss" "$slope"
         json_item "$p" "$n" "$med" "$front" "$medrss" "$first"; first=0
+        printf '%s %d %d %d %d\n' "$p" "$n" "$med" "$front" "$medrss" >> "$RESULTS"
         prev_n=$n; prev_t=$med
     done
     prev_n=0; prev_t=0
 done
 json_end
 [ -n "$JSON" ] && echo "JSON 结果: $JSON"
+
+# ---- 基线回退校验 ----
+if [ -n "$CHECK_BASELINE" ]; then
+    echo
+    echo "== 基线回退校验 ($(basename "$CHECK_BASELINE"), 容差 x$CHECK_TOL) =="
+    python3 - "$CHECK_BASELINE" "$RESULTS" "$CHECK_TOL" <<'PY'
+import json, sys
+base = json.load(open(sys.argv[1]))
+bmap = {(r["bench"], r["n"]): r for r in base["results"]}
+cur = {}
+for line in open(sys.argv[2]):
+    p = line.split()
+    if len(p) == 5:
+        cur[(p[0], int(p[1]))] = int(p[2])
+tol = float(sys.argv[3])
+rows = [(k, bmap[k]["total_ms"], cur[k]) for k in bmap if k in cur and bmap[k]["total_ms"] > 0]
+rows.sort()
+regress = 0
+print("%-5s %6s %9s %9s %7s  %s" % ("bench", "n", "base", "cur", "ratio", "verdict"))
+for (b, n), base_ms, cur_ms in rows:
+    ratio = cur_ms / base_ms
+    bad = ratio > tol
+    regress += bad
+    print("%-5s %6d %9d %9d %7.2f  %s" % (b, n, base_ms, cur_ms, ratio, "REGRESS" if bad else "ok"))
+print("\n回退项: %d / %d (容差 x%.2f)" % (regress, len(rows), tol))
+sys.exit(1 if regress else 0)
+PY
+    [ $? -ne 0 ] && rc=1
+fi
+
 exit $rc

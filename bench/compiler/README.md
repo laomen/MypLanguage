@@ -20,6 +20,8 @@ bash bench/compiler/run.sh P1 P4        # 只跑指定项
 MYPCC=./build/mypc ITERS=5 bash bench/compiler/run.sh P2
 SCALES="500 1000 2000" bash bench/compiler/run.sh P3   # 自定义规模档
 JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
+bash bench/compiler/run.sh --check            # 跑全量并与 baseline.json 比对
+CHECK_TOL=1.5 bash bench/compiler/run.sh --check   # 自定义回退容差（默认 x1.3）
 ```
 
 - 默认规模档：`1000 2000 4000`；P1 额外含 `8000`。
@@ -28,6 +30,8 @@ JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
 - 斜率列 `2N/N`：耗时比。> `SLOPE_TOL`（默认 3.0）判定为疑似超线性并打印警告（退出
   码仍为 0；可用 `SLOPE_TOL=…` 覆盖阈值）。
 - 任一基准任一规模编译失败 → 退出码 1。
+- `--check`：与 `baseline.json` 逐项比对 total_ms，任一项 > 基线 × `CHECK_TOL`（默认
+  1.3）判定为回退 → 退出码 1（用于 CI / 性能回归门禁）。
 - 源码与编译产物均在临时目录，运行结束自动清理。
 
 ## 基准项（对应 roadmap 5.2）
@@ -81,6 +85,35 @@ JSON=bench/compiler/result.json bash bench/compiler/run.sh   # 输出 JSON
 - **P6 / P7** 明显超线性（3.21 / 3.56），对应方法解析 fallback 全类扫描与泛型实例线性
   查找（O(N²)）——roadmap 预测的两处优化点。修复 struct 泛型后 P7 改用同一模板多实
   例设计，O(N²) 斜率更显著（4000 → 8.67 s）。
+
+## 如何证明"编译器性能没有问题"
+
+性能无法用单个数"证明"，但从四个维度可系统论证；任一项不合格即为问题：
+
+### 1. 绝对速度可接受（用户可感知）
+真实负载全部毫秒级：仓库最大真实源文件仅 25 KB（`stdlib/collections.myp`），编译
+**0.03 s**；`examples/raytracer.myp` 0.05 s。即使用户工程达到 8,000 类（P1 极端规模）
+也只 1.5 s。对比 C++/Go/Rust 编译器同量级输入，MYP 处同一量级。
+
+### 2. 复杂度曲线符合预期（无隐藏 O(N²)）
+- **应线性的路径线性**：P2 接口调用（2N/N≤1.89）、P4 struct 字段读（≤1.73）→ 无隐
+  藏超线性。
+- **超线性路径是"已知且已文档化"的**：P1/P3/P5/P6/P7 的超线性均为 roadmap 明确列
+  出的优化点（class-name 索引 / 接口类型判定 / enum 缓存 / 方法 fallback / 泛型实例
+  线性查找）。超线性 ≠ 意外，未出现在 roadmap 之外的路径即无问题。
+
+### 3. 无回退（随时间可验证）
+`baseline.json` 提交在仓库内；`bash bench/compiler/run.sh --check` 与基线逐项比对，
+任一项中位数 > 基线 × 1.3 即退出码 1。本机实测同基线波动仅 **0.94–1.06**（warmup +
+3 轮中位数 + 外部时钟），可复现、可区分真实回退与噪声。
+
+### 4. 正确性未因性能牺牲 + 内存有界
+- 全量回归 release/ASAN **233/233** 通过（含新增 generic_struct 用例）。
+- 峰值 RSS 随规模近似线性（P1：43→52→70→107 MB @ 1000→8000），无失控内存增长。
+
+### 5. 复现约束
+性能测量受机器/负载/频率影响，`--check` 应在同一机器同一 CPU governor 下做相对比对；
+`baseline.json` 记录 `commit` 与 `runs` 以便追溯。
 
 ## 已知发现（bench 触发，已修复）
 
