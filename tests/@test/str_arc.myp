@@ -1,8 +1,8 @@
-import env;
+// M8 string refcount regression → @test
+// 字符串抖动须被回收（不拖到进程退出泄漏）
+
+import test;
 import text;
-// M8 string refcount regression: medium-lifetime string churn must be
-// reclaimed (not held to process exit). Compare RSS: before counted strings
-// this loop leaked ~40MB; with refcount it stays flat.
 
 class Holder {
     action:
@@ -20,20 +20,16 @@ string buildBig() {
     return s;
 }
 
-int runTest() {
+@test void test_str_arc() {
     for (int round = 0; round < 200; round = round + 1) {
         string s = buildBig();
         string t = s;              // alias -> retain
         string u = t + "!";        // concat -> new counted string
         string v = Str.substring(s, 10, 40);  // copy substring
-        // property-style churn through a class
         Holder h = new Holder();
         h.setName(u);
         string got = h.getName();
-        if (got != u) return 1;
+        Test.assertStrEq(got, u, "str churn holder");
     }
-    Console.writeString("string churn done\n");
-    return 0;
+    Test.report("test_str_arc", true);
 }
-
-int main() { int c = runTest(); return c; }

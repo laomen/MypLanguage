@@ -1,0 +1,15 @@
+// struct 前向引用回归 → @test
+// struct Holder 引用后声明的 Item（两阶段注册）
+
+import test;
+
+struct Holder { Item it; }
+struct Item { int v; }
+
+@test void test_struct_fwdref() {
+    Holder h;
+    Item tmp = h.it;
+    tmp.v = 42;
+    Test.assertEq(tmp.v, 42, "fwdref 字段访问");
+    Test.report("test_struct_fwdref", true);
+}

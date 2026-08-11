@@ -1,0 +1,34 @@
+// array_ret: 函数返回数组共享存储 → @test
+// 嵌套调用返回数组不覆写外层；Str.split 独立
+
+import test;
+import fs;
+import text;
+
+string[] mk(int tag) {
+    string[2] r;
+    r[0] = "A" + tag;
+    r[1] = "B" + tag;
+    return r;
+}
+
+@test void test_array_ret() {
+    // 嵌套调用：外层数组不被内层覆写
+    string[] c = mk(1);
+    string[] d = mk(2);
+    Test.assertStrEq(c[0], "A1", "c0");
+    Test.assertStrEq(c[1], "B1", "c1");
+    Test.assertStrEq(d[0], "A2", "d0");
+    Test.assertStrEq(d[1], "B2", "d1");
+
+    // split 独立
+    string[] s1 = Str.split("x,y", ",");
+    string[] s2 = Str.split("p,q,r", ",");
+    Test.assertStrEq(s1[0], "x", "s1[0]");
+    Test.assertStrEq(s1[1], "y", "s1[1]");
+    Test.assertStrEq(s2[0], "p", "s2[0]");
+    Test.assertStrEq(s2[1], "q", "s2[1]");
+    Test.assertStrEq(s2[2], "r", "s2[2]");
+
+    Test.report("test_array_ret", true);
+}

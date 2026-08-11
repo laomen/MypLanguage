@@ -1,0 +1,62 @@
+// slice 引用计数回归 → @test
+// 1) slice<class> 局部释放  2) slice<int> 拷贝共享  3) 属性随拥有者释放
+
+import test;
+import memory;
+
+class Item {
+    action:
+        @constructor Item(int v) { val = v; }
+    property:
+        int val;
+}
+
+int makeItems(int seed) {
+    slice<Item> s = new slice<Item>(256);
+    int i = 0;
+    int sum = 0;
+    while (i < 256) {
+        s[i] = new Item(i + seed);
+        sum = sum + s[i].val;
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Owner {
+    action:
+        @constructor Owner() { data = new slice<int>(1024); }
+    property:
+        slice<int> data;
+}
+
+@test void test_slice_arc() {
+    // 1) slice<class> 局部释放：live 回到基线
+    long base = Memory.liveObjectCount();
+    int r = 0;
+    long total = 0L;
+    while (r < 100) {
+        total = total + makeItems(r);
+        r = r + 1;
+    }
+    long after = Memory.liveObjectCount();
+    Test.assertEq(after, base, "1) slice<class> 局部释放回基线");
+
+    // 2) slice<int> 拷贝：b = a 共享，双双释放无 double free
+    slice<int> a = new slice<int>(8);
+    int i = 0;
+    while (i < 8) { a[i] = i * 10; i = i + 1; }
+    slice<int> b = a;           // 别名拷贝
+    b[0] = 999;                 // 共享底层：a[0] 也变
+    Test.assertEq(a[0], 999, "2) 拷贝共享 a[0]");
+    Test.assertEq(b[7], 70, "2) 拷贝共享 b[7]");
+
+    // 3) Owner 持有 slice 属性：反复创建释放不累积（LSan 验无泄漏）
+    int rounds = 5000;
+    r = 0;
+    while (r < rounds) {
+        Owner o = new Owner();
+        r = r + 1;
+    }
+    Test.report("test_slice_arc", true);
+}

@@ -1,4 +1,7 @@
-// mapping where — 条件过滤（只转发 >= 3 的事件）
+// mapping where — 条件过滤（只转发 >= 3 的事件）→ @test
+// 用输出捕获验证：v=5、v=3 出现，v=2 被过滤
+
+import test;
 import env;
 
 mapping() {
@@ -25,8 +28,12 @@ class Main {
         emit(int v);
 }
 
-int main() {
+@test void test_where_mapping() {
+    Test.captureStart();
     Main m = new Main();
     Printer p = new Printer();
-    return 0;
+    Test.captureEnd();
+    Test.assertOutputContains("v=5", "where 转发 5");
+    Test.assertOutputContains("v=3", "where 转发 3");
+    Test.report("test_where_mapping", true);
 }

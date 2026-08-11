@@ -1,0 +1,43 @@
+// struct 基础验证 → @test
+// struct 定义、字段读写、字段运算、多个实例独立、字段拷贝
+
+import test;
+
+struct Point {
+    int x;
+    int y;
+    string name;
+}
+
+@test void test_struct_linkedlist() {
+    Point p;
+    p.x = 10;
+    p.y = 20;
+    p.name = "P1";
+    Test.assertEq(p.x, 10, "p.x");
+    Test.assertEq(p.y, 20, "p.y");
+    Test.assertStrEq(p.name, "P1", "p.name");
+
+    int sum = p.x + p.y;
+    Test.assertEq(sum, 30, "p.x+p.y");
+
+    p.x = p.x * 2;
+    Test.assertEq(p.x, 20, "p.x*2");
+
+    Point q;
+    q.x = 5;
+    q.y = 15;
+    q.name = "P2";
+    Test.assertEq(q.x, 5, "q.x");
+    Test.assertEq(q.y, 15, "q.y");
+    Test.assertStrEq(q.name, "P2", "q.name");
+
+    Point r;
+    r.x = p.x;
+    r.y = q.y;
+    r.name = "P3";
+    Test.assertEq(r.x, 20, "r.x = p.x");
+    Test.assertEq(r.y, 15, "r.y = q.y");
+
+    Test.report("test_struct_linkedlist", true);
+}
