@@ -55,8 +55,30 @@
   语句末 flush 抢占 → 分支后 `arcReleaseConditionTemps` 释放，修另一路径泄漏。
 - **`string + 非 string` 拼接泄漏修复**：`stringifyForConcat` 转换临时在
   `myp_strcat` 后显式 release（修 `"s"+i` 每拼接漏 1）。
-- **回归基线**：release 219/219、ASAN 219/219、ASAN stress 6/6、TSan 2/2、OOM 注入
-  13/13、BNCT 正常。
+- **mapping 数据传递测试集（`tests/map_data_*`）**：系统覆盖 mapping 传递的数据特性
+  矩阵——标量家族（int/long/float/double/bool）、string、多参数事件、事件链返回值
+  （double/string/bool）、where 过滤、lambda 变换、`slice<T>`、tuple（含解构/嵌套/
+  lambda）、struct（含 class 引用字段/string/嵌套/链返回）、class 引用、interface 胖
+  指针（虚表分派）。随测试修复 7 个真实 bug：
+  - slice `.length`/`.size` 字段形式：codegen 生成 `ptrtoint(&s)` 当长度 → extractvalue；
+    sema 标成 `()->int` → 字段返回 int、调用形式经 visitCall 拦截。
+  - action 参数 slice 登记缺失（`generateClassAction` 漏 `var_slice_types_`）→ `a[i]`
+    LLVM verify 崩溃。
+  - interface 事件参数 upcast：`paramIfaceName` 不识别 `fire_<Class>_<Event>` → fire
+    调用处具体类实参未提升为 `{data,vtable}` fat pointer。
+  - struct 内 class 引用字段 i32 占位：`buildStructTypes` 早于 `buildClassStructTypes`，
+    `typeNodeToLLVMType` 经 `getClassStruct` 落回 i32 → `h.p.get()` 生成 `Payload_get(i32)`；
+    加 TU class 名 fallback 恒返回 ptr。
+  - struct 字段 store 缺 interface upcast（单层 `h.s=c` + 链式 `w.h.s=c`）：Circle* 直接
+    存进 `{ptr,ptr}` 字段、vtable 未初始化 → 虚表分派 SIGSEGV；两处均补 buildInterfaceFat。
+- **ARC 覆盖补强**：`map_data_struct_iface`（struct 含 interface 字段：拷贝共享 retain
+  平衡/覆盖释放/嵌套链式/级联零泄漏）、`weak_multi_sub`（多个 `@weak` 槽共享同一目标、
+  销毁全置空、先后销毁顺序无泄漏）。
+- **fuzz 回归（变异模糊测试 `tools/fuzz_myp.py`）**：3000 迭代 ×2 全 CLEAN；修复 void
+  函数 `return <void-expr>;` 生成非法 IR（`emitFunctionReturn` 归零 void 值走 `ret void`）；
+  HANG 确认重跑 timeout 4s→20s（排除大 stdlib 种子并行负载假阳性）。
+- **回归基线**：release 227/227、ASAN 227/227、ASAN stress 6/6、TSan 6/6、OOM 注入
+  13/13、fuzz 3000 迭代 0 崩溃。
 
 ### v3.11.20
 - **内存生命周期 P0 加固**：
