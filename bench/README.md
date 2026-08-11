@@ -23,6 +23,7 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 |------|--------|------|
 | `sieve` | 字节数组内存带宽 + 分支 + 紧致循环 | N=10⁷ |
 | `sieve_odd` | 只筛奇数的埃氏筛：减半字节数组 + 步长 2p 紧凑内层循环（sieve 优化变体） | N=10⁷ |
+| `montepi` | 蒙特卡洛求 π：LCG 随机数 + 双精度乘加/分支（FP 分支密集） | N=10⁸ 点 |
 | `matmul` | 浮点乘加 + 自动向量化（分块 64 写法，内层 C/B 连续可向量化） | 512×512 |
 | `nbody` | 浮点除法 + sqrt + O(N²) 嵌套访存 | 5000 体 × 2 步 |
 | `nbodybg` | **benchmarksgame n-body**：5 体太阳系引力（忠实复刻官方数据/算法，10 对/步） | 5×10⁶ 步 |

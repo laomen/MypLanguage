@@ -1,0 +1,45 @@
+// bench/myp/montepi.myp — 蒙特卡洛求 π
+// 单位正方形内撒 N 个随机点，落在单位圆内比例 ×4 = π 估计。
+// 31 位 LCG（与其它基准同款）保证 MYP/C++/Go 随机序列逐位一致 → verify 精确一致。
+// 测：随机数生成 + 双精度乘加/分支（含 FP 分支密集）。
+//
+// 输出（机器可解析）：
+//   verify <count>   落在圆内的点数（三语言必须一致）
+//   ms <elapsed>     实测毫秒
+import env;
+import time;
+
+int mcCount(int n, long seed) {
+    long rng = seed;
+    int inside = 0;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) & 0x7FFFFFFFL;
+        double x = double(rng >> 7) / 16777216.0;
+        rng = (rng * 1103515245L + 12345L) & 0x7FFFFFFFL;
+        double y = double(rng >> 7) / 16777216.0;
+        if (x * x + y * y <= 1.0) inside = inside + 1;
+        i = i + 1;
+    }
+    return inside;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int N = 100000000;
+            long t0 = Time.nowMs();
+            int c = mcCount(N, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(c);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

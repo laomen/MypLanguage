@@ -38,7 +38,7 @@ case "$MYPCC" in
     *) MYPCC="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")" ;;
 esac
 
-names=(sieve sieve_odd matmul nbody nbodybg mandelbrot hashmap tripleloop raytracer gol fft astar sha256 quicksort nqueens bst dijkstra base64 alphabeta spmv kmeans bigint huffman convolution knapsack kmp radixsort sobel floyd heapsort crc32 dotprod slicevec slicemat parcomp parreduce)
+names=(sieve sieve_odd montepi matmul nbody nbodybg mandelbrot hashmap tripleloop raytracer gol fft astar sha256 quicksort nqueens bst dijkstra base64 alphabeta spmv kmeans bigint huffman convolution knapsack kmp radixsort sobel floyd heapsort crc32 dotprod slicevec slicemat parcomp parreduce)
 mkdir -p out
 
 # verify 数值一致性（整数精确、浮点容差 1e-3 相对误差）
