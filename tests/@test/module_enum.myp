@@ -1,0 +1,15 @@
+// 跨模块 enum 可见性回归测试 → @test
+// 通过 ./helpers/helper.myp 提供 Color/Box/makeBox（helper 不参与 @test 发现）
+import test;
+import "./helpers/helper.myp";
+
+@test void test_module_enum() {
+    // 直接使用导入模块的 enum 类型（此前报 unknown type 'Color'）
+    Color c = Color.GREEN;
+    // 通过导入模块函数拿到含 enum 字段的 struct
+    Box b = makeBox();
+    bool ok = (b.id == 7) && (b.c == Color.BLUE);
+    ok = ok && (c == Color.GREEN);
+    Test.assert(ok, "module_enum");
+    Test.report("test_module_enum", true);
+}

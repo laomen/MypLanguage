@@ -1,8 +1,0 @@
-[Interface 验证]
-Circle: area=78.5397
- perim=31.4159
-
-Rect: area=12
- perim=14
-
-[OK] Interface 验证通过

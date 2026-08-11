@@ -1,0 +1,58 @@
+// result: §五-3 值式错误传播 Result<T,E> 回归测试 → @test
+// 覆盖：构造（ok/err）、门控访问、工厂、getOr、组合子（map/andThen/mapErr）、
+//       resultTry 异常桥（无异常 ok / string 抛错 / Error 对象抛错，消息稳定不漂移）
+import test;
+import result;
+
+int risky(int v) {
+    if (v < 0) throw "negative: " + v;
+    if (v > 100) { ParseError e = new ParseError(); e.setDetail("too big"); throw e; }
+    return v * 2;
+}
+
+@test void test_result() {
+    // 1) 构造 + 门控访问
+    Result<int, string> ok = new Result<int, string>(42);
+    Result<int, string> bad = new Result<int, string>();
+    bad.setErr("oops");
+    Test.assert(ok.isOk(), "ok isOk");
+    Test.assertEq(ok.get(), 42, "ok get");
+    Test.assert(bad.isErr(), "bad isErr");
+    Test.assertStrEq(bad.getErr(), "oops", "bad getErr");
+
+    // 2) 工厂 + getOr
+    Result<int, string> f1 = resultOk<int, string>(7);
+    Result<int, string> f2 = resultErr<int, string>("bad");
+    Test.assertEq(f1.get(), 7, "f1 get");
+    Test.assertEq(f2.getOr(-1), -1, "f2 getOr(-1)");
+    Test.assertEq(f2.getOr(99), 99, "f2 getOr(99)");
+
+    // 3) resultMap
+    Result<string, string> m1 = resultMap<int, string, string>(f1, (int x) => { return "v" + x; });
+    Result<string, string> m2 = resultMap<int, string, string>(f2, (int x) => { return "v" + x; });
+    Test.assertStrEq(m1.get(), "v7", "m1");
+    Test.assert(m2.isErr(), "m2 isErr");
+    Test.assertStrEq(m2.getErr(), "bad", "m2 getErr");
+
+    // 4) resultAndThen
+    Result<int, string> a1 = resultAndThen<int, int, string>(f1, (int x) => { return resultOk<int, string>(x * 3); });
+    Result<int, string> a2 = resultAndThen<int, int, string>(f2, (int x) => { return resultOk<int, string>(x * 3); });
+    Test.assertEq(a1.get(), 21, "a1");
+    Test.assert(a2.isErr(), "a2 isErr");
+
+    // 5) resultMapErr
+    Result<int, string> me = resultMapErr<int, string, string>(f2, (string e) => { return "E:" + e; });
+    Test.assertStrEq(me.getErr(), "E:bad", "me");
+
+    // 6) resultTry 异常桥（string 抛错 / Error 对象抛错；消息稳定——后抛不覆写先存）
+    Result<int, string> t1 = resultTry<int>(() => { return risky(5); });
+    Result<int, string> t2 = resultTry<int>(() => { return risky(-3); });
+    Result<int, string> t3 = resultTry<int>(() => { return risky(200); });
+    Test.assert(t1.isOk(), "t1 isOk");
+    Test.assertEq(t1.get(), 10, "t1 get");
+    Test.assert(t2.isErr(), "t2 isErr");
+    Test.assertStrEq(t2.getErr(), "negative: -3", "t2 getErr");
+    Test.assert(t3.isErr(), "t3 isErr");
+    Test.assertStrEq(t3.getErr(), "parse error: :0 too big", "t3 getErr");
+    Test.report("test_result", true);
+}

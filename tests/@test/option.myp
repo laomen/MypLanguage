@@ -1,0 +1,31 @@
+// option: Option<T> 可空值容器 + `T?` 语法糖（§三-1，additive）→ @test
+import test;
+import option;
+
+@test void test_option() {
+    // none / some + 门控访问
+    Option<int> none = new Option<int>();
+    Option<int> some = new Option<int>(42);
+    Test.assert(none.isNone() && some.isSome(), "ok1");
+    Test.assertEq(some.get(), 42, "get");
+    // getOr 安全默认值
+    Test.assertEq(none.getOr(7), 7, "noneOr");
+    Test.assertEq(some.getOr(7), 42, "someOr");
+    // set/clear 变异
+    none.set(5);
+    Test.assert(none.isSome(), "set some");
+    Test.assertEq(none.get(), 5, "set");
+    none.clear();
+    Test.assert(none.isNone(), "cleared");
+    // 字符串 Option
+    Option<string> s = new Option<string>("hi");
+    Test.assertStrEq(s.getOr("default"), "hi", "s");
+    // `T?` 语法糖 ≡ Option<T>
+    int? n = new Option<int>();
+    int? v = new Option<int>(99);
+    Test.assert(n.isNone() && v.isSome(), "sugar");
+    Test.assertEq(v.get(), 99, "sugar get");
+    string? sv = new Option<string>("world");
+    Test.assertStrEq(sv.get(), "world", "sv");
+    Test.report("test_option", true);
+}

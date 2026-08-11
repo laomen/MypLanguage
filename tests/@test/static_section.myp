@@ -1,0 +1,20 @@
+// static: section — static methods without instance → @test
+import test;
+
+class Calculator {
+    static:
+        int add(int a, int b) { return a + b; }
+        double mul(double a, double b) { return a * b; }
+        string greet(string name) { return "Hello, " + name; }
+}
+
+@test void test_static_section() {
+    int sum = Calculator.add(10, 20);
+    double prod = Calculator.mul(3.0, 4.0);
+    string msg = Calculator.greet("MYP");
+
+    Test.assertEq(sum, 30, "sum");
+    Test.assertFloatEq(prod, 12.0, 0.0001, "prod");
+    Test.assertStrEq(msg, "Hello, MYP", "msg");
+    Test.report("test_static_section", true);
+}

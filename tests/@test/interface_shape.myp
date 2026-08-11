@@ -1,0 +1,40 @@
+// Interface 验证 → @test
+// 验证：interface 声明、class 实现 interface、编译器接口完整性检查
+import test;
+
+interface IShape {
+    double area();
+    double perimeter();
+}
+
+class Circle {
+    interface class IShape;
+    action:
+        @constructor Circle() { radius = 5.0; }
+        double area() { return 3.14159 * radius * radius; }
+        double perimeter() { return 2.0 * 3.14159 * radius; }
+    property:
+        double radius = 1.0;
+}
+
+class Rectangle {
+    interface class IShape;
+    action:
+        @constructor Rectangle() { width = 3.0; height = 4.0; }
+        double area() { return width * height; }
+        double perimeter() { return 2.0 * (width + height); }
+    property:
+        double width = 1.0;
+        double height = 1.0;
+}
+
+@test void test_interface_shape() {
+    Circle c = new Circle();
+    Test.assertFloatEq(c.area(), 78.5397, 0.001, "circle area");
+    Test.assertFloatEq(c.perimeter(), 31.4159, 0.001, "circle perim");
+
+    Rectangle r = new Rectangle();
+    Test.assertFloatEq(r.area(), 12.0, 0.001, "rect area");
+    Test.assertFloatEq(r.perimeter(), 14.0, 0.001, "rect perim");
+    Test.report("test_interface_shape", true);
+}

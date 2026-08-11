@@ -1,0 +1,29 @@
+// 嵌套 struct 和返回 struct 测试 → @test
+import test;
+
+struct Inner {
+    double val;
+}
+
+struct Outer {
+    Inner inner;
+    string label;
+
+    Inner getInner() {
+        return inner;
+    }
+}
+
+@test void test_nested_struct() {
+    Outer o;
+    o.label = "test";
+    o.inner.val = 3.14;
+
+    Test.assertStrEq(o.label, "test", "label");
+    Test.assertFloatEq(o.inner.val, 3.14, 0.0001, "inner.val");
+
+    // 调用 struct 方法返回 struct
+    Inner i2 = o.getInner();
+    Test.assertFloatEq(i2.val, 3.14, 0.0001, "returned.val");
+    Test.report("test_nested_struct", true);
+}
