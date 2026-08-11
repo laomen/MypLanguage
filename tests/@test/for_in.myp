@@ -1,0 +1,83 @@
+// for_in: §四-2 集合迭代 → @test（输出捕获）
+import test;
+import env;
+import collections;
+import memory;
+
+class Node {
+    action:
+    @constructor Node(int v) { val = v; }
+    int getVal() { return val; }
+    void setVal(int v) { val = v; }
+    property: int val = 0;
+}
+
+@test void test_for_in() {
+    int[4] arr;
+    arr[0] = 1; arr[1] = 2; arr[2] = 3; arr[3] = 4;
+
+    Test.captureStart();
+    Console.writeString("[for_in]\n");
+    int sum = 0;
+    for (x in arr) { sum += x; }
+    Console.writeString("arr_sum="); Console.write(sum);
+    Console.writeString(" ");
+    for (int x in arr) Console.writeString("" + x);
+    Console.writeString(" ");
+    ArrayList<int> list = new ArrayList<int>();
+    list.add(10); list.add(20); list.add(30);
+    for (x in list) Console.writeString("" + x);
+    Console.writeString(" ");
+    for (x in arr) Console.writeString("" + x);
+    Console.writeString(" ");
+    for (i in 0 .. 5) Console.writeString("" + i);
+    Console.writeString(" ");
+    slice<int> sl = new slice<int>(3);
+    sl[0] = 7; sl[1] = 8; sl[2] = 9;
+    for (x in sl) Console.writeString("" + x);
+    Console.writeString(" ");
+    for (x in arr) {
+        if (x == 2) { continue; }
+        if (x == 4) { break; }
+        Console.writeString("" + x);
+    }
+    Console.writeString(" ");
+    for (i in 0 .. 2) {
+        for (j in 0 .. 2) {
+            Console.writeString("" + (i * 3 + j));
+        }
+    }
+    Console.writeString("\n");
+    Node[3] nodes;
+    nodes[0] = new Node(10);
+    nodes[1] = new Node(20);
+    nodes[2] = new Node(30);
+    long b = Memory.liveObjectCount();
+    for (n in nodes) Console.writeString("" + n.getVal());
+    long a = Memory.liveObjectCount();
+    Console.writeString(" arr_leak=" + (a - b));
+    Console.writeString(" ");
+    ArrayList<Node> nl = new ArrayList<Node>();
+    nl.add(new Node(100));
+    nl.add(new Node(200));
+    long c = Memory.liveObjectCount();
+    for (n in nl) Console.writeString("" + n.getVal());
+    long d = Memory.liveObjectCount();
+    Console.writeString(" list_leak=" + (d - c));
+    Console.writeString(" ");
+    ArrayList<string> strs = new ArrayList<string>();
+    strs.add("alpha"); strs.add("beta");
+    for (s in strs) { Console.writeString(s); Console.writeString(","); }
+    Console.writeString("\n");
+    (int) -> int sumArr = (int mul) => {
+        int s = 0;
+        for (x in arr) { s += x * mul; }
+        return s;
+    };
+    Console.writeString("caparr=");
+    Console.write(sumArr(10));
+    string cap = Test.captureEnd();
+    string expected = "[for_in]\narr_sum=10\n 1234 102030 1234 01234 789 13 0134\n102030 arr_leak=0 100200 list_leak=0 alpha,beta,\ncaparr=100\n";
+    Test.assertStrEq(cap, expected, "for_in 全量输出逐字节一致");
+    Test.report("test_for_in", true);
+}
