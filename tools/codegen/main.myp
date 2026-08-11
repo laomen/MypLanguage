@@ -1,8 +1,9 @@
 // main.myp — tools/codegen CLI
 //
 // 用法:
-//   mypc run tools/codegen/main.myp <generator> <schema.json> [-o outdir]
-//   生成器: serde（P0b：struct toJson/fromJson）
+//   mypc run tools/codegen/main.myp <generator> <schema.json> [-o outdir] [--verify]
+//   生成器: serde | ffi | autodiff | idl | orm | embed
+//   --verify: 生成后调 MYP_CC 编译校验产出（失败即返回非 0）
 //
 // 关联: tools/codegen/design.md §10
 
@@ -10,6 +11,7 @@ import env;
 import args;
 import fs;
 import io;
+import process;
 import text;
 import "./model.myp";
 import "./schema.myp";
@@ -42,6 +44,41 @@ int writeFile(string path, string content) {
     return 0;
 }
 
+// 定位 mypc（同 tools/pm）：MYP_CC → ./build/mypc → build/mypc → PATH(mypc)
+string findCompiler() {
+    string cc = Console.getEnv("MYP_CC");
+    if (Str.len(cc) > 0 && Fs.isFile(cc) != 0) return cc;
+    if (Fs.isFile("./build/mypc") != 0) return "./build/mypc";
+    if (Fs.isFile("build/mypc") != 0) return "build/mypc";
+    return "mypc";
+}
+
+// 编译校验产出文件（--verify）：mypc <file> -o <tmp> --emit-llvm
+// （--emit-llvm 走完 codegen 后跳过链接——生成文件无 main，独立链接会失败；
+//   校验目标正是"生成代码可编译且 IR 合法"，而非可执行）。返回 0=通过
+int verify(string genFile) {
+    string base = Fs.join(Fs.dirname(genFile), "__verify__");
+    int r = Process.run(findCompiler() + " " + genFile + " -o " + base + " --emit-llvm");
+    if (r == 0) {
+        Console.writeLine("verify OK: " + genFile);
+    } else {
+        Console.writeLine("verify FAIL: " + genFile);
+    }
+    if (Fs.isFile(base + ".ll") != 0) Fs.removeRecursive(base + ".ll");
+    return r;
+}
+
+// 写产出 + 可选编译校验
+int emitFile(string outPath, string content, int verifyFlag) {
+    if (writeFile(outPath, content) != 0) {
+        Console.writeLine("error: 写文件失败: " + outPath);
+        return 1;
+    }
+    Console.writeLine("生成: " + outPath);
+    if (verifyFlag == 1) return verify(outPath);
+    return 0;
+}
+
 int run() {
     if (Args.count() < 3) {
         Console.writeLine("用法: mypc run tools/codegen/main.myp <serde> <schema.json> [-o outdir]");
@@ -50,11 +87,15 @@ int run() {
     string gen = Args.get(1);
     string schemaFile = Args.get(2);
     string outDir = ".";
+    int doVerify = 0;
     int i = 3;
     while (i < Args.count()) {
         if (Args.get(i) == "-o" && i + 1 < Args.count()) {
             outDir = Args.get(i + 1);
             i = i + 2;
+        } else if (Args.get(i) == "--verify") {
+            doVerify = 1;
+            i = i + 1;
         } else {
             i = i + 1;
         }
@@ -69,63 +110,33 @@ int run() {
     if (gen == "serde") {
         SerdeGen g = new SerdeGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "serde_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else if (gen == "ffi") {
         FfiGen g = new FfiGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "ffi_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else if (gen == "autodiff") {
         AutodiffGen g = new AutodiffGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "autodiff_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else if (gen == "idl") {
         IdlGen g = new IdlGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "idl_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else if (gen == "orm") {
         OrmGen g = new OrmGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "orm_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else if (gen == "embed") {
         EmbedGen g = new EmbedGen();
         string out = g.gen(s);
-        if (Fs.mkdirP(outDir) != 0) { /* 已存在也 OK */ }
         string outPath = Fs.join(outDir, "embed_gen.myp");
-        if (writeFile(outPath, out) != 0) {
-            Console.writeLine("error: 写文件失败: " + outPath);
-            return 1;
-        }
-        Console.writeLine("生成: " + outPath);
+        if (emitFile(outPath, out, doVerify) != 0) return 1;
     } else {
         Console.writeLine("未知生成器: " + gen + "（支持: serde, ffi, autodiff, idl, orm, embed）");
         return 1;

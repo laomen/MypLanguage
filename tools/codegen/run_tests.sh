@@ -92,5 +92,11 @@ out8=$("$MYPCC" run tests/test_embed.myp 2>&1) || { echo "FAIL: 编译/运行 te
 echo "$out8" | grep -q "embed ok" \
     || { echo "FAIL: embed 输出不符"; echo "$out8"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed）"
+# 11) --verify：生成后自动编译校验（--emit-llvm 走完 codegen 跳过链接）
+out9=$("$MYPCC" run main.myp orm tests/schema_orm.json -o "$WORK" --verify 2>&1) \
+    || { echo "FAIL: --verify 命令失败"; echo "$out9"; exit 1; }
+echo "$out9" | grep -q "verify OK" \
+    || { echo "FAIL: --verify 未报 verify OK"; echo "$out9"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed + --verify）"
 exit 0

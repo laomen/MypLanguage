@@ -204,7 +204,8 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 | **P3** | ✅ `gen_idl.myp`（P3a 协议层 + **P3b socket 传输**） | P2 | P3a：`schema_idl.json` + `test_idl.myp`：Calc{add/echo/mul3} JSON-RPC 进程内验证（add=7/echo=hi!/mul3=7.5/未知方法 ok:0）。P3b：生成 `<Svc>_server_once`（accept→recvLine→dispatch→sendLine）+ `<Svc>_client_call`（connect→sendLine→recvLine），`test_idl_socket.myp` 用 @thread 服务器 + 真实 TCP 回环验证 |
 | **P4** | ✅ `gen_orm.myp`：tables → 实体 struct + CRUD SQL 生成 | P3 | `schema_orm.json` + `test_orm.myp`：Player{id key,name,hp}/Item{id key,price double,label} 的 CREATE/INSERT/SELECT_ALL/SELECT_BY_KEY/UPDATE/DELETE 语句精确匹配；类型映射 int/long/bool→INTEGER、double/float→REAL、string→TEXT |
 | **P5** | ✅ `gen_embed.myp`：文件 → `<Name>_content()` 字符串常量（资源嵌入） | P4 | `schema_embed.json` + `test_embed.myp`：Greeting/Config 嵌入内容与源文件字节级 round-trip 一致（utf8/引号/反斜杠/制表符/`\\n` 双重转义）。配套扩标准库：`File.readAll()`（同步字节级读全文件）、`Str.ord`/`Str.chr` |
-| 规划 | DSL / `--verify` 编译校验增强 | P5 | 各自验收 |
+| **P6** | ✅ `--verify`：生成后自动编译校验（`mypc <file> --emit-llvm` 走完 codegen 跳过链接） | P5 | 7 个生成器产出全部 `verify OK`；`run_tests.sh` 第 11 步覆盖。定位 mypc：`MYP_CC` → `./build/mypc` → `build/mypc` → PATH（同 `tools/pm`） |
+| 规划 | DSL 生成器 | P6 | 各自验收 |
 
 ## 11. 风险与决策
 
