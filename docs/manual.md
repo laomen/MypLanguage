@@ -2634,10 +2634,10 @@ import test;
 | 断言 | 说明 |
 |------|------|
 | `Test.assert(bool, msg="")` / `assertTrue` / `assertFalse` | 布尔条件（`msg` 为失败时打印的自定义消息）|
-| `Test.assertEq(a, b)` / `assertNeq(a, b)` | 整数相等/不等 |
-| `Test.assertLongEq(a, b)` / `assertLongNeq(a, b)` | 长整数 |
-| `Test.assertFloatEq(a, b, eps)` / `assertFloatNeq(a, b, eps)` | 浮点（带容差）|
-| `Test.assertStrEq(a, b)` / `assertStrNeq(a, b)` | 字符串 |
+| `Test.assertEq(a, b, msg="")` / `assertNeq(a, b, msg="")` | 整数相等/不等 |
+| `Test.assertLongEq(a, b, msg="")` / `assertLongNeq(a, b)` | 长整数 |
+| `Test.assertFloatEq(a, b, eps, msg="")` / `assertFloatNeq(a, b, eps)` | 浮点（带容差）|
+| `Test.assertStrEq(a, b, msg="")` / `assertStrNeq(a, b)` | 字符串 |
 | `Test.assertNull<T>(p)` / `assertNotNull<T>(p)` | 空引用（泛型，任意 class）|
 | `Test.fail(msg)` | 硬失败：记录失败并打印消息（不中断后续断言）|
 | `Test.report(name, passed)` | 报告单个测试 PASS/FAIL |

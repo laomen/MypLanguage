@@ -46,3 +46,15 @@ class Node {
     Test.assertEq(acc, 4950);
     Test.report("test_cycles", true);
 }
+
+// @test 也支持类 action（运行器 new 实例并调用）
+class Calculator {
+    action:
+        int add(int a, int b) { return a + b; }
+
+        @test void test_add() {
+            Test.assertEq(add(2, 3), 5, "2+3");
+            Test.assertEq(add(-1, 1), 0, "-1+1");
+            Test.report("test_add", true);
+        }
+}

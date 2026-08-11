@@ -25,16 +25,19 @@ class Test {
             else __myp_assert_msg(!cond, msg);
         }
 
-        // 整数相等/不等断言
-        void assertEq(int a, int b) {
+        // 整数相等/不等断言（可带消息）
+        void assertEq(int a, int b, string msg = "") {
+            if (msg != "") __myp_test_set_msg(msg);
             __myp_assert_eq(a, b);
         }
-        void assertNeq(int a, int b) {
+        void assertNeq(int a, int b, string msg = "") {
+            if (msg != "") __myp_test_set_msg(msg);
             __myp_assert_neq(a, b);
         }
 
         // 长整数相等/不等断言
-        void assertLongEq(long a, long b) {
+        void assertLongEq(long a, long b, string msg = "") {
+            if (msg != "") __myp_test_set_msg(msg);
             __myp_assert_long_eq(a, b);
         }
         void assertLongNeq(long a, long b) {
@@ -42,17 +45,19 @@ class Test {
         }
 
         // 浮点相等断言（带容差）
-        void assertFloatEq(double a, double b, double eps) {
+        void assertFloatEq(double a, double b, double eps, string msg = "") {
             double diff = a - b;
             if (diff < 0.0) diff = -diff;
+            if (msg != "") __myp_test_set_msg(msg);
             __myp_assert(diff <= eps);
         }
         void assertFloatNeq(double a, double b, double eps) {
             __myp_assert_float_neq(a, b, eps);
         }
 
-        // 字符串相等断言
-        void assertStrEq(string a, string b) {
+        // 字符串相等断言（可带消息）
+        void assertStrEq(string a, string b, string msg = "") {
+            if (msg != "") __myp_test_set_msg(msg);
             __myp_assert_str_eq(a, b);
         }
         void assertStrNeq(string a, string b) {

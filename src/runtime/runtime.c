@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <setjmp.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <string.h>
@@ -3680,10 +3681,33 @@ void myp_error_clear(void) {
 static int myp_test_pass_count = 0;
 static int myp_test_fail_count = 0;
 
+// Optional per-assertion user message (set by Test.assertXxx(a,b,msg) via
+// __myp_test_set_msg). Consumed by the NEXT assertion failure: if set, the
+// failure prints the message instead of the default value detail. Cleared
+// regardless of pass/fail so one message is consumed by exactly one assertion.
+static const char* myp_test_cur_msg = NULL;
+void myp_test_set_msg(const char* m) { myp_test_cur_msg = m; }
+
+// Record one failed assertion. Prints the pending user message if set,
+// otherwise the default detail (e.g. "1 != 2").
+static void myp_test_fail(const char* fmt, ...) {
+    if (myp_test_cur_msg) {
+        fprintf(stderr, "  ASSERTION FAILED: %s\n", myp_test_cur_msg);
+        myp_test_cur_msg = NULL;
+    } else {
+        fprintf(stderr, "  ASSERTION FAILED: ");
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        fprintf(stderr, "\n");
+    }
+    myp_test_fail_count++;
+}
+
 void myp_assert(int cond) {
     if (!cond) {
-        fprintf(stderr, "  ASSERTION FAILED\n");
-        myp_test_fail_count++;
+        myp_test_fail("");
     } else {
         myp_test_pass_count++;
     }
@@ -3702,8 +3726,7 @@ void myp_assert_msg(int cond, const char* msg) {
 
 void myp_assert_eq(int a, int b) {
     if (a != b) {
-        fprintf(stderr, "  ASSERTION FAILED: %d != %d\n", a, b);
-        myp_test_fail_count++;
+        myp_test_fail("%d != %d", a, b);
     } else {
         myp_test_pass_count++;
     }
@@ -3712,8 +3735,7 @@ void myp_assert_eq(int a, int b) {
 void myp_assert_str_eq(const char* a, const char* b) {
     int eq = (a == b) || (a && b && strcmp(a, b) == 0);
     if (!eq) {
-        fprintf(stderr, "  ASSERTION FAILED: \"%s\" != \"%s\"\n", a ? a : "null", b ? b : "null");
-        myp_test_fail_count++;
+        myp_test_fail("\"%s\" != \"%s\"", a ? a : "null", b ? b : "null");
     } else {
         myp_test_pass_count++;
     }
@@ -3721,8 +3743,7 @@ void myp_assert_str_eq(const char* a, const char* b) {
 
 void myp_assert_neq(int a, int b) {
     if (a == b) {
-        fprintf(stderr, "  ASSERTION FAILED: %d == %d (expected not equal)\n", a, b);
-        myp_test_fail_count++;
+        myp_test_fail("%d == %d (expected not equal)", a, b);
     } else {
         myp_test_pass_count++;
     }
@@ -3730,8 +3751,7 @@ void myp_assert_neq(int a, int b) {
 
 void myp_assert_long_eq(int64_t a, int64_t b) {
     if (a != b) {
-        fprintf(stderr, "  ASSERTION FAILED: %ld != %ld\n", (long)a, (long)b);
-        myp_test_fail_count++;
+        myp_test_fail("%ld != %ld", (long)a, (long)b);
     } else {
         myp_test_pass_count++;
     }
@@ -3740,8 +3760,7 @@ void myp_assert_long_eq(int64_t a, int64_t b) {
 void myp_assert_str_neq(const char* a, const char* b) {
     int eq = (a == b) || (a && b && strcmp(a, b) == 0);
     if (eq) {
-        fprintf(stderr, "  ASSERTION FAILED: \"%s\" == \"%s\" (expected not equal)\n", a ? a : "null", b ? b : "null");
-        myp_test_fail_count++;
+        myp_test_fail("\"%s\" == \"%s\" (expected not equal)", a ? a : "null", b ? b : "null");
     } else {
         myp_test_pass_count++;
     }
