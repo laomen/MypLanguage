@@ -30,7 +30,7 @@ private:
 
     // ---- Pass 1: Collect declarations ----
     void visitTranslationUnit(TranslationUnit& tu);
-    void visitClassDecl(ClassDecl& decl);
+    void visitClassDecl(TranslationUnit& tu, size_t ci);
     void visitStructDecl(StructDecl& decl);
     void declareStructName(StructDecl& decl);
     void visitInterfaceDecl(InterfaceDecl& decl);

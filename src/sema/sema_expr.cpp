@@ -2080,7 +2080,7 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             current_tu_->classes.push_back(std::move(inst));
             class_indices_[current_tu_->classes.back().name] =
                 current_tu_->classes.size() - 1;
-            visitClassDecl(current_tu_->classes.back());
+            visitClassDecl(*current_tu_, current_tu_->classes.size() - 1);
             // Now it's registered; look up the result
             auto* lookup_result = symbol_table_.lookup(mangled);
             if (lookup_result) result = *lookup_result;
@@ -2935,7 +2935,7 @@ TypeInfo Sema::visitLambda(LambdaExpr& expr, const TypeInfo* expected_fn) {
         current_tu_->classes.push_back(std::move(cls));
         class_indices_[current_tu_->classes.back().name] =
             current_tu_->classes.size() - 1;
-        visitClassDecl(current_tu_->classes.back());
+        visitClassDecl(*current_tu_, current_tu_->classes.size() - 1);
     }
 
     // First-class function value: the lambda's type is its function type.

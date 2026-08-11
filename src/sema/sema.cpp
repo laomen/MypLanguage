@@ -482,9 +482,13 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
         }
     }
     // Also register nested structs inside classes
-    for (auto& cls : tu.classes) {
-        for (auto& st : cls.structs) {
-            visitStructDecl(st);
+    // ⚠ visitStructDecl 解析字段类型可能触发 monomorphization（tu.classes 重分配），
+    // range-for 缓存迭代器会悬垂（UAF）→ 按下标循环每轮重取，只访问起始时的类。
+    size_t nc_structs = tu.classes.size();
+    for (size_t i = 0; i < nc_structs; i++) {
+        size_t ns = tu.classes[i].structs.size();
+        for (size_t j = 0; j < ns; j++) {
+            visitStructDecl(tu.classes[i].structs[j]);
         }
     }
 
@@ -495,13 +499,19 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     for (auto& ff : tu.ffis) {
         visitFFI(ff);
     }
-    for (auto& cls : tu.classes) {
-        visitClassDecl(cls);
+    // ⚠ visitClassDecl 解析泛型成员类型会触发 monomorphization（tu.classes
+    // push_back → 重分配），range-for 缓存迭代器悬垂 → 读已释放内存（UAF，
+    // 表现为误报 duplicate class name ''）。按下标循环每轮重取 tu.classes[i]，
+    // 且只访问循环开始时的类（新增泛型实例由 analyze 的索引循环另行处理）。
+    size_t nc = tu.classes.size();
+    for (size_t i = 0; i < nc; i++) {
+        visitClassDecl(tu, i);
     }
     // Check interface implementations
-    for (auto& cls : tu.classes) {
-        if (!cls.interface_class_name.empty()) {
-            checkInterfaceImpl(cls);
+    size_t nc_if = tu.classes.size();
+    for (size_t i = 0; i < nc_if; i++) {
+        if (!tu.classes[i].interface_class_name.empty()) {
+            checkInterfaceImpl(tu.classes[i]);
         }
     }
     for (auto& iface : tu.interfaces) {
@@ -734,23 +744,47 @@ void Sema::detectStructRecursion() {
             dfs(e.first);
 }
 
-void Sema::visitClassDecl(ClassDecl& decl) {
-    if (symbol_table_.lookup(decl.name)) {
-        error(decl.range, "duplicate class name '" + decl.name + "'");
+void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
+    // ⚠ typeNodeToTypeInfo 解析成员类型可能触发 monomorphization（tu.classes
+    // push_back → 重分配），持有 tu.classes[ci] 成员引用跨该调用会悬垂（UAF）。
+    // 故先快照本类全部成员（properties 字段级拷贝——PropertyDecl move-only；
+    // actions/functions/events 整段拷贝），再在快照上处理。
+    const std::string cls_name = tu.classes[ci].name;
+    const bool cls_is_inst = tu.classes[ci].is_generic_inst;
+    const SourceRange cls_range = tu.classes[ci].range;
+
+    struct PropSnap {
+        std::string name;
+        TypeNode type;
+        SourceRange range;
+        bool weak = false;
+        bool is_const = false;
+    };
+    std::vector<PropSnap> props;
+    props.reserve(tu.classes[ci].properties.size());
+    for (auto& p : tu.classes[ci].properties)
+        props.push_back(PropSnap{p.name, p.type, p.range, p.weak, p.is_const});
+    std::vector<ActionDecl> actions = tu.classes[ci].actions;
+    std::vector<ActionDecl> static_actions = tu.classes[ci].static_actions;
+    std::vector<FuncDecl> functions = tu.classes[ci].functions;
+    std::vector<EventDecl> events = tu.classes[ci].events;
+
+    if (symbol_table_.lookup(cls_name)) {
+        error(cls_range, "duplicate class name '" + cls_name + "'");
         return;
     }
 
     TypeInfo class_type(TypeKind::Class);
-    class_type.class_name = decl.name;
-    symbol_table_.declare(decl.name, class_type);
+    class_type.class_name = cls_name;
+    symbol_table_.declare(cls_name, class_type);
 
     // Register generic type parameters as valid types within the class scope
-    for (auto& tp : decl.type_params) {
+    for (auto& tp : tu.classes[ci].type_params) {
         TypeInfo tp_type(TypeKind::Int);
         // 约束类型参数（where T : I，§三-5）→ 注册为接口类型，使模板体内
         // T 上的方法调用 / T::Item 可静态检查（运行时单态化到具体类）。
-        auto cit = decl.type_param_constraints.find(tp);
-        if (cit != decl.type_param_constraints.end()) {
+        auto cit = tu.classes[ci].type_param_constraints.find(tp);
+        if (cit != tu.classes[ci].type_param_constraints.end()) {
             tp_type = TypeInfo(TypeKind::Interface);
             tp_type.class_name = cit->second;
         }
@@ -758,12 +792,12 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     }
 
     // Set current class name for member type resolution
-    current_class_name_ = decl.name;
+    current_class_name_ = cls_name;
 
     // Enter class scope to register members
     symbol_table_.enterScope();
 
-    for (auto& prop : decl.properties) {
+    for (auto& prop : props) {
         // M7: @weak only on class/interface reference fields (not string/
         // slice/numeric/struct), and not const.
         if (prop.weak) {
@@ -778,20 +812,20 @@ void Sema::visitClassDecl(ClassDecl& decl) {
                       "' cannot also be const");
         }
         if (!symbol_table_.declare(prop.name, typeNodeToTypeInfo(prop.type))) {
-            error(prop.range, "duplicate member '" + prop.name + "' in class '" + decl.name + "'");
+            error(prop.range, "duplicate member '" + prop.name + "' in class '" + cls_name + "'");
         }
     }
 
-    for (auto& action : decl.actions) {
+    for (auto& action : actions) {
         // 构造器：不注册为可调用 action（构造器不能直接调用，同名重载合法）；
         // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
         if (action.has_constructor) {
             if (action.has_startup) {
                 error(action.range, "cannot be both @constructor and @startup");
             }
-            if (action.name != decl.name && !decl.is_generic_inst) {
+            if (action.name != cls_name && !cls_is_inst) {
                 error(action.range, "constructor name '" + action.name +
-                      "' must match class name '" + decl.name + "'");
+                      "' must match class name '" + cls_name + "'");
             }
             if (typeNodeToTypeInfo(action.return_type).kind != TypeKind::Void) {
                 error(action.range, "constructor '" + action.name + "' must have void return type");
@@ -806,7 +840,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         }
         populateFuncTypeMeta(func_type, action.params);
         if (!symbol_table_.declare(action.name, func_type)) {
-            error(action.range, "duplicate action '" + action.name + "' in class '" + decl.name + "'");
+            error(action.range, "duplicate action '" + action.name + "' in class '" + cls_name + "'");
         }
     }
 
@@ -814,13 +848,13 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     // from actions and other function: methods regardless of declaration order).
     // Previously only resolved via the in_class_method_ fallback, which missed
     // methods declared later in the section.
-    for (auto& fn : decl.functions) {
+    for (auto& fn : functions) {
         // 构造器：不注册为可调用 function（构造器不能直接调用，同名重载合法）；
         // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
         if (fn.has_constructor) {
-            if (fn.name != decl.name && !decl.is_generic_inst) {
+            if (fn.name != cls_name && !cls_is_inst) {
                 error(fn.range, "constructor name '" + fn.name +
-                      "' must match class name '" + decl.name + "'");
+                      "' must match class name '" + cls_name + "'");
             }
             if (typeNodeToTypeInfo(fn.return_type).kind != TypeKind::Void) {
                 error(fn.range, "constructor '" + fn.name + "' must have void return type");
@@ -835,25 +869,25 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         }
         populateFuncTypeMeta(func_type, fn.params);
         if (!symbol_table_.declare(fn.name, func_type)) {
-            error(fn.range, "duplicate function '" + fn.name + "' in class '" + decl.name + "'");
+            error(fn.range, "duplicate function '" + fn.name + "' in class '" + cls_name + "'");
         }
     }
 
     // Register static actions in GLOBAL scope (accessible as ClassName.method)
-    for (size_t sa_idx = 0; sa_idx < decl.static_actions.size(); sa_idx++) {
-        auto& action = decl.static_actions[sa_idx];
+    for (size_t sa_idx = 0; sa_idx < static_actions.size(); sa_idx++) {
+        auto& action = static_actions[sa_idx];
         // Generic static method: List.map<T,U>(...) — register for call resolution
         // (monomorphization happens at the call site; the template isn't callable
         // directly since its type params are placeholders).
         if (!action.type_params.empty()) {
-            std::string gkey = decl.name + "::" + action.name;
+            std::string gkey = cls_name + "::" + action.name;
             GenericStaticMethodInfo ginfo;
-            // Find the class index (decl may be a generic instance clone; use the
+            // Find the class index (may be a generic instance clone; use the
             // original template's index for stable registration).
-            for (size_t ci = 0; ci < current_tu_->classes.size(); ci++) {
-                if (current_tu_->classes[ci].name == decl.name &&
-                    !current_tu_->classes[ci].is_generic_inst) {
-                    ginfo.class_index = (int)ci;
+            for (size_t cj = 0; cj < current_tu_->classes.size(); cj++) {
+                if (current_tu_->classes[cj].name == cls_name &&
+                    !current_tu_->classes[cj].is_generic_inst) {
+                    ginfo.class_index = (int)cj;
                     break;
                 }
             }
@@ -869,7 +903,7 @@ void Sema::visitClassDecl(ClassDecl& decl) {
         }
         populateFuncTypeMeta(func_type, action.params);
         // Register as ClassName.methodName in global scope
-        std::string static_name = decl.name + "." + action.name;
+        std::string static_name = cls_name + "." + action.name;
         symbol_table_.declare(static_name, func_type);
         // Also register bare name for direct calls from any context
         if (!symbol_table_.lookup(action.name)) {
@@ -884,9 +918,9 @@ void Sema::visitClassDecl(ClassDecl& decl) {
     };
     std::vector<FireFunc> fire_funcs;
 
-    for (auto& event : decl.events) {
+    for (auto& event : events) {
         if (symbol_table_.lookup(event.name)) {
-            error(event.range, "duplicate event '" + event.name + "' in class '" + decl.name + "'");
+            error(event.range, "duplicate event '" + event.name + "' in class '" + cls_name + "'");
         } else {
             TypeInfo event_type(TypeKind::Function);
             event_type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
@@ -897,11 +931,11 @@ void Sema::visitClassDecl(ClassDecl& decl) {
 
             // Prepare fire_ClassName_EventName registration
             FireFunc ff;
-            ff.name = "fire_" + decl.name + "_" + event.name;
+            ff.name = "fire_" + cls_name + "_" + event.name;
             ff.type = TypeInfo(TypeKind::Function);
             ff.type.return_type = std::make_shared<TypeInfo>(TypeKind::Void);
             TypeInfo instance_type(TypeKind::Class);
-            instance_type.class_name = decl.name;
+            instance_type.class_name = cls_name;
             ff.type.param_types.push_back(instance_type);
             for (auto& param : event.params) {
                 ff.type.param_types.push_back(typeNodeToTypeInfo(param.type));
