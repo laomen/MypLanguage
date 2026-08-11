@@ -96,6 +96,7 @@ M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写�
 | 3 | **文档生成** | 无 doc-comment → API 文档 | P2 |
 | 4 | **stdlib 缺口** | ~~crypto/hash~~ ✅（`stdlib/crypto.myp`：CRC32 + MD5 + SHA-1 + SHA-256，已知向量回归）、~~`sprintf` 格式化~~ ✅（`stdlib/fmt.myp`：Fmt 类——%d/%u/%x/%X/%o/%b + %.Nf/%.Ne/%.Ng + 宽度/填充，runtime 补 snprintf FFI）、~~随机分布~~ ✅（`random.myp`：range/exponential/poisson）、~~HTTP 客户端~~ ✅（`stdlib/http.myp`：基于 `net.myp` TCP——URL 解析 + GET/POST + 状态行/响应头 + Content-Length/chunked/关闭定界体；自包含 TcpServer 测试）。**剩余**：SQL、时区、压缩 | P2 |
 | 5 | ~~**`mypc run`（仿 `go run`）+ 单类文件自动 `main`**~~ | ✅ **已实施（additive）**：①`mypc run file.myp [args]`——编译到临时产物 → 链接 → 直接运行 → 清理，退出码=程序退出码，args 透传。②**单类文件无 `main` 也可 run**：**约束：类必须带 `@startup` 注解**——编译器在 sema Pass 1 后注入合成 `main()`（实例化该类并触发其 `@startup` 入口；`is_auto_main` 标志豁免 main() 直接调用限制）；无 `@startup` / 多 `@startup` 类报错提示。正常编译（非 run）仍要求显式 main（行为不变）。`tests/test_myp_run.sh` 8 断言 | P1 |
+| 6 | **代码生成框架 `tools/codegen`（规划项目）** | 🔜 **规划**（设计见 `tools/codegen/design.md`）：**MYP 自举的 schema 驱动 codegen**（torchgen 式）——JSON schema → 模型 → 发射器 → 生成 MYP/C/C++ 源码。统一引擎承载生成器生态：**P0 serde**（方案 A 正式化，`toJson/fromJson` 生成，round-trip 验收）→ **P1 FFI 绑定**（重构手写 `hdf5_bridge.c`/`sdl_bridge.c`，资源 RAII）→ **P2 autodiff**（deeplearning 反向生成）→ **P3 IDL/RPC** → P4 orm/DSL。纯外部工具（层级 1，不改编译器，复用 `json.myp`+`fmt.myp`+`fs.myp`），与编译器内 `@derive`（§三-7 方案 B）互补——先做外部 codegen 验证 schema/模型/发射器设计。`MYP_CC` 子进程模式同 `tools/pm` | P1 |
 
 ## 七、官方 roadmap（design.md §11，已有规划）
 
@@ -149,3 +150,4 @@ M4 与 M8 的收益。M5/M6/M7 会改变或扩展所有权语义，必须先写�
 - **D3**：§三/§四/§五 各 P1 项的实施顺序（建议：五-1[ARC] → 三-1[`Option`] → 三-3[一等函数] → 五-2[同步原语] → 四-2[for-in] → 三-2[元组]；ARC 与 `Option` 并行不冲突）？
 - **D4**：Windows 移植是否正式立项（当前为"后续再说"）？
 - **D5**：§三-7（`@derive(Json)` 派生序列化宏，方案 B）是否立项？若否，是否先落地降级方案 A（外部 `tools/serde.myp` 代码生成器）作为过渡？（设计见 `docs/serde_macro.md`，含 A/B/C/D 四方案对比）
+- **D6**：**先做 `tools/codegen` 框架（§六-6，规划项目）**——已倾向：P0 serde（方案 A 正式化）→ P1 FFI → P2 autodiff → P3 IDL。编译器内 `@derive`（方案 B）延后，模型层（TypeDecl/Field）设计对齐以便未来复用。（设计见 `tools/codegen/design.md`）
