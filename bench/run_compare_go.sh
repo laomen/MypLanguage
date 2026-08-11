@@ -23,7 +23,7 @@ ITERS=${1:-3}
 mkdir -p out
 
 names=(
-    sieve matmul nbody mandelbrot tripleloop fft sha256 quicksort knapsack
+    sieve sieve_odd matmul nbody mandelbrot tripleloop fft sha256 quicksort knapsack
     kmp crc32 radixsort sobel floyd heapsort convolution base64 spmv kmeans
     huffman bigint
     channel_pingpong io_socket

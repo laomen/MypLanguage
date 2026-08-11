@@ -1,0 +1,51 @@
+// bench/myp/sieve_odd.myp — 只筛奇数的埃氏筛（sieve 的经典优化变体）
+// 数组下标 i ↔ 奇数 2*i+3（3,5,7,...）。素数 2 单独计数。
+// 测：减半的字节数组 + 步长 2p 的紧凑内层循环（不同访存/索引模式）。
+//
+// 输出（机器可解析）：
+//   verify <count>   素数个数（MYP 与 C++/Go 必须一致）
+//   ms <elapsed>     实测毫秒
+import env;
+import time;
+
+int countPrimesOdd(int n) {
+    // 只表示奇数 3,5,7,...：idx = (k-3)/2 ↔ k = 2*idx+3
+    byte[] comp = new byte[(n - 3) / 2 + 1];
+    int count = 1;                    // 素数 2
+    int p = 3;
+    while (p <= n) {
+        int idx = (p - 3) / 2;
+        if (comp[idx] == 0) {
+            count = count + 1;
+            // 只标记奇数倍：从 p*p 起，步长 2p。p*p 用 long 防 int 溢出。
+            long step = p;
+            long j = step * step;
+            while (j <= n) {
+                comp[(j - 3) / 2] = 1;
+                j = j + step + step;
+            }
+        }
+        p = p + 2;                    // 只遍历奇数
+    }
+    return count;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int N = 10000000;
+            long t0 = Time.nowMs();
+            int c = countPrimesOdd(N);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.write(c);
+            Console.writeString("\nms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
