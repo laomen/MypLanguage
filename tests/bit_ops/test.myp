@@ -1,0 +1,67 @@
+// P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr（LLVM intrinsic 直映）。
+// 注意：0x80000000 等 ≥2^31 的字面量在 MYP 中是 long（64 位）——旋转/反转按 64 位。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // popcount：1 的个数
+            Console.writeLong(popcount(0));
+            Console.writeString("\n");
+            Console.writeLong(popcount(0xF0F0));       // 8
+            Console.writeString("\n");
+            Console.writeLong(popcount(0xFFFFFFFFL));  // 32（long）
+            Console.writeString("\n");
+            // clz：前导零（0 时定义为位宽，zero_poison=false）
+            Console.writeLong(clz(1));                 // 31
+            Console.writeString("\n");
+            Console.writeLong(clz(0L));                // 64
+            Console.writeString("\n");
+            // ctz：尾随零
+            Console.writeLong(ctz(0x80000000));        // 31（long 值）
+            Console.writeString("\n");
+            Console.writeLong(ctz(0x100000000L));      // 32（long）
+            Console.writeString("\n");
+            // bitreverse：位反转（int 32 位 → 0x80000000 显示为有符号 -2147483648）
+            Console.writeLong(bitreverse(0x1));
+            Console.writeString("\n");
+            Console.writeLong(bitreverse(0x0F));       // 0xF0000000 → -268435456
+            Console.writeString("\n");
+            // rotl / rotr：循环移位（int 32 位）
+            Console.writeLong(rotl(0x40000000, 1));    // 0x80000000 → -2147483648
+            Console.writeString("\n");
+            Console.writeLong(rotr(0x1, 1));           // 0x80000000 → -2147483648
+            Console.writeString("\n");
+            Console.writeLong(rotl(0x40000001, 1));    // 0x80000002 → -2147483646
+            Console.writeString("\n");
+            Console.writeLong(rotr(0x2, 1));           // 0x1
+            Console.writeString("\n");
+            // long 64 位旋转
+            Console.writeLong(rotl(0xF0000000L, 4));   // 0xF00000000 = 64424509440
+            Console.writeString("\n");
+            Console.writeLong(rotr(0xF0000000L, 60));  // 同 0xF00000000
+            Console.writeString("\n");
+            // 多态：byte/short/uint
+            byte b = 0x0F;
+            Console.writeLong(popcount(b));            // 4
+            Console.writeString("\n");
+            short s = 0x000F;
+            Console.writeLong(clz(s));                 // 12（16 位：16-4）
+            Console.writeString("\n");
+            uint u = uint(0xF0F0F0F0);
+            Console.writeLong(popcount(u));            // 16
+            Console.writeString("\n");
+            // 32 位内字面量直接比较（避开 ≥2^31 → long 的符号扩展陷阱）
+            Console.writeBool(rotl(0x0F, 4) == 0xF0);
+            Console.writeString("\n");
+            Console.writeBool(rotr(0xF0, 4) == 0x0F);
+            Console.writeString("\n");
+            Console.writeBool(popcount(0xF0F) == 8);   // 0b111100001111 → 8
+            Console.writeString("\n");
+            Console.writeString("BITOPS_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

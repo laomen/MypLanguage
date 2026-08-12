@@ -552,6 +552,41 @@ TypeInfo Sema::visitParse(CallExpr& expr, const std::string& name) {
     return TypeInfo(ret);
 }
 
+// P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr —— LLVM intrinsic
+// 直映。多态：返回类型 = 实参整型类型（rotl/rotr 第二实参为移位量，任意整型）。
+TypeInfo Sema::visitBitOps(CallExpr& expr, const std::string& name) {
+    auto is_int_kind = [](TypeKind k) {
+        return k == TypeKind::Byte || k == TypeKind::Short ||
+               k == TypeKind::Int || k == TypeKind::Long ||
+               k == TypeKind::UByte || k == TypeKind::UShort ||
+               k == TypeKind::UInt || k == TypeKind::ULong ||
+               k == TypeKind::Char;
+    };
+    bool unary = (name == "popcount" || name == "clz" || name == "ctz" ||
+                  name == "bitreverse");
+    size_t want = unary ? 1 : 2;
+    if (expr.args.size() != want) {
+        error(expr.range, name + " takes " + std::to_string(want) +
+              " argument(s)");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto ot = visitExpr(*expr.args[0]);
+    if (!is_int_kind(ot.kind)) {
+        error(expr.range, name + " expects an integer argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    if (!unary) {
+        auto st = visitExpr(*expr.args[1]);
+        if (!is_int_kind(st.kind)) {
+            error(expr.range, name + " shift amount must be an integer");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
+    TypeKind ret = ot.kind;
+    expr.resolved_kind = ret;
+    return TypeInfo(ret);
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1302,6 +1337,11 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
             bc_id.name == "parseUint" || bc_id.name == "parseUlong" ||
             bc_id.name == "parseFloat" || bc_id.name == "parseDouble")
             return visitParse(expr, bc_id.name);
+        // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
+        if (bc_id.name == "popcount" || bc_id.name == "clz" ||
+            bc_id.name == "ctz" || bc_id.name == "bitreverse" ||
+            bc_id.name == "rotl" || bc_id.name == "rotr")
+            return visitBitOps(expr, bc_id.name);
     }
 
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.

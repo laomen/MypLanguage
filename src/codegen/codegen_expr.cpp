@@ -642,6 +642,59 @@ llvm::Value* CodeGen::generateParse(const CallExpr& e, const std::string& name) 
     return v;
 }
 
+// P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr —— LLVM intrinsic
+// 直映（ctpop/ctlz/cttz/bitreverse/fshl/fshr）。多态：返回类型 = 实参整型宽度；
+// clz/ctz 用 zero_poison=false（0 时定义为位宽）；rotl/rotr 移位量统一到同宽。
+llvm::Value* CodeGen::generateBitOps(const CallExpr& e, const std::string& name) {
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    bool unary = (name == "popcount" || name == "clz" || name == "ctz" ||
+                  name == "bitreverse");
+    size_t want = unary ? 1 : 2;
+    if (e.args.size() != want) {
+        diag_.error(e.range, name + " takes " + std::to_string(want) + " argument(s)");
+        return llvm::ConstantInt::get(i32, 0);
+    }
+    auto* v = generateExpr(*e.args[0]);
+    auto* ty = v->getType();
+    if (!ty->isIntegerTy()) {
+        diag_.error(e.range, name + " expects an integer argument");
+        return llvm::ConstantInt::get(i32, 0);
+    }
+    llvm::Function* fn = nullptr;
+    llvm::Value* result = nullptr;
+    if (name == "popcount") {
+        fn = llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::ctpop, {ty});
+        result = builder_.CreateCall(fn->getFunctionType(), fn,
+            std::vector<llvm::Value*>{v}, "popcount");
+    } else if (name == "clz") {
+        fn = llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::ctlz, {ty});
+        auto* zp = llvm::ConstantInt::getFalse(ctx_);
+        result = builder_.CreateCall(fn->getFunctionType(), fn,
+            std::vector<llvm::Value*>{v, zp}, "clz");
+    } else if (name == "ctz") {
+        fn = llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::cttz, {ty});
+        auto* zp = llvm::ConstantInt::getFalse(ctx_);
+        result = builder_.CreateCall(fn->getFunctionType(), fn,
+            std::vector<llvm::Value*>{v, zp}, "ctz");
+    } else if (name == "bitreverse") {
+        fn = llvm::Intrinsic::getDeclaration(module_.get(), llvm::Intrinsic::bitreverse, {ty});
+        result = builder_.CreateCall(fn->getFunctionType(), fn,
+            std::vector<llvm::Value*>{v}, "bitreverse");
+    } else {  // rotl / rotr
+        auto* n = generateExpr(*e.args[1]);
+        if (!n->getType()->isIntegerTy()) {
+            diag_.error(e.range, name + " shift amount must be an integer");
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        if (n->getType() != ty) n = builder_.CreateZExtOrTrunc(n, ty);
+        auto id = (name == "rotl") ? llvm::Intrinsic::fshl : llvm::Intrinsic::fshr;
+        fn = llvm::Intrinsic::getDeclaration(module_.get(), id, {ty});
+        result = builder_.CreateCall(fn->getFunctionType(), fn,
+            std::vector<llvm::Value*>{v, v, n}, name.c_str());
+    }
+    return result;
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -1602,6 +1655,12 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 if (v->getType()->isFloatingPointTy())
                     return builder_.CreateFPToSI(v, llvm::Type::getInt32Ty(ctx_));
                 return v;
+            }
+            // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
+            else if (id.name == "popcount" || id.name == "clz" ||
+                     id.name == "ctz" || id.name == "bitreverse" ||
+                     id.name == "rotl" || id.name == "rotr") {
+                return generateBitOps(e, id.name);
             }
             // Atomic intrinsics: generate LLVM atomic instructions directly
             else if (id.name == "__myp_atomic_add_i32" ||
