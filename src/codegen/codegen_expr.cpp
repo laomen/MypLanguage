@@ -2403,6 +2403,33 @@ llvm::Value* CodeGen::generateSliceElementAddress(const Expr* arr, llvm::Value* 
 }
 
 llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
+    // P1 D10（docs §6.3）：string 下标 s[i] : char。用 myp_str_substring(s,i,i+1)
+    // + myp_ord 的安全路径（越界钳制，与 Str.* FFI 一致），返回 char（i8）。
+    // 用 resolved_kind==String 判定（exprIsString 会把 string[] 也当字符串——两者
+    // 都是指针局部，会误伤 files[i] 这类动态数组下标）。
+    if (e.array->resolved_kind == TypeKind::String) {
+        auto* sptr = generateExpr(*e.array);
+        auto* idx = generateExpr(*e.index);
+        auto* i32 = llvm::Type::getInt32Ty(ctx_);
+        auto* sub = module_->getFunction("myp_str_substring");
+        if (!sub) {
+            auto* ft = llvm::FunctionType::get(llvm::PointerType::get(ctx_, 0),
+                {llvm::PointerType::get(ctx_, 0), i32, i32}, false);
+            sub = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_str_substring", module_.get());
+        }
+        auto* ord = module_->getFunction("myp_ord");
+        if (!ord) {
+            auto* ft = llvm::FunctionType::get(i32, {llvm::PointerType::get(ctx_, 0)}, false);
+            ord = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_ord", module_.get());
+        }
+        auto* start = (idx->getType() == i32) ? idx : builder_.CreateTrunc(idx, i32);
+        auto* one = llvm::ConstantInt::get(i32, 1);
+        auto* end = builder_.CreateAdd(start, one);
+        auto* ch = builder_.CreateCall(sub, {sptr, start, end}, "substr");
+        auto* code = builder_.CreateCall(ord, {ch}, "ord");
+        if (runtime_release_) builder_.CreateCall(runtime_release_, {ch});
+        return builder_.CreateTrunc(code, llvm::Type::getInt8Ty(ctx_));
+    }
     // slice<T>[i] (incl. nested slice<slice<T>> rows[i][j]) — unpack the slice
     // value, bounds-check, GEP, load.
     if (const TypeInfo* sti = sliceTypeOfExpr(e.array.get())) {

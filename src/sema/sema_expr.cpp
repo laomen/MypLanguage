@@ -1623,7 +1623,12 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
 TypeInfo Sema::visitSubscript(SubscriptExpr& expr) {
     auto arr_type = visitExpr(*expr.array);
     auto idx_type = visitExpr(*expr.index);
-
+    // P1 D10（docs §6.3）：string 下标 s[i] : char —— 取第 i 个字符（字符码 u8）
+    if (arr_type.kind == TypeKind::String) {
+        if (!expectNumeric(idx_type, expr.index->range))
+            return TypeInfo(TypeKind::Void);
+        return TypeInfo(TypeKind::Char);
+    }
     if (arr_type.kind != TypeKind::Array && arr_type.kind != TypeKind::Slice) {
         error(expr.range, "cannot index non-array type '" + typeName(arr_type) + "'");
         return TypeInfo(TypeKind::Void);

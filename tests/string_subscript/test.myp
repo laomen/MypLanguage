@@ -1,0 +1,39 @@
+// P1 D10（docs/type_system_design §6.3）：string 下标 s[i] : char。
+//   越界/负数/空串钳制返回 0（与 Str.* FFI 一致，安全非崩溃）。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            string s = "Hello";
+            char c0 = s[0];
+            Console.writeString("" + c0);   // 'H'
+            Console.writeString("\n");
+            Console.writeString("" + s[1]); // 'e'
+            Console.writeString("\n");
+            Console.writeString("" + s[4]); // 'o'
+            Console.writeString("\n");
+            Console.writeLong(s[99]);       // 越界 → 0
+            Console.writeString("\n");
+            Console.writeLong(s[-1]);       // 负索引 → 0
+            Console.writeString("\n");
+            Console.writeString("x" + s[0]); // 拼接字符 → "xH"
+            Console.writeString("\n");
+            string e2 = "";
+            Console.writeLong(e2[0]);       // 空串 → 0
+            Console.writeString("\n");
+            // 遍历取字符并拼回（验证逐字符）
+            string acc = "";
+            for (int i = 0; i < 5; i = i + 1) {
+                acc = acc + s[i];
+            }
+            Console.writeString(acc);
+            Console.writeString("\n");
+            if (s[0] == 'H' && s[1] == 'e' && s[4] == 'o' && s[99] == 0)
+                Console.writeString("SIDX_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
