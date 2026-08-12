@@ -1,0 +1,231 @@
+// memory.myp — GpuBuffer / GpuBufferF：显式显存缓冲（L2 显式缓冲）
+//
+// 生命周期：
+//   GpuBuffer buf = new GpuBuffer(x, n);   // 分配设备内存 + 一次 H2D
+//   buf.copyToHost(y, 0, 0, n);            // 需要时拷回主机
+//   buf.free();                            // 显式释放（M1 无 finalizer，
+//                                          //  设备内存必须手动释放；重复调用安全）
+//
+// 两个类：GpuBuffer（double[]，8 字节/元素）与 GpuBufferF（float[]，4 字节/元素）。
+// MYP 不支持按数组元素类型重载构造函数/方法，故按 cuda.myp 的 *F 惯例拆成两个类。
+// GPU 不可用时 valid()==0，拷贝为 no-op；CPU 回退由上层 @gpu for 路径保证。
+
+import gpu.backend;
+import gpu.stream;
+
+class GpuBuffer {
+    action:
+        @constructor
+        GpuBuffer(double[] host, int n) {
+            n_ = n;
+            elemSize_ = 8;
+            dev_ = 0L;
+            if (GpuBackend.available() == 1) {
+                dev_ = GpuBackend.alloc(n * 8);
+                if (dev_ != 0L) {
+                    GpuBackend.copyH2D(dev_, host, 0, 0, n);
+                }
+            }
+        }
+
+        // 设备句柄（0 = 未分配，如 GPU 不可用）
+        long devicePtr() { return dev_; }
+
+        // 元素个数
+        int size() { return n_; }
+
+        // 字节数
+        int byteSize() { return n_ * elemSize_; }
+
+        // 单元素字节数（8 = double）
+        int elemSize() { return elemSize_; }
+
+        // 是否成功分配（1 = 有效）
+        int valid() { if (dev_ != 0L) return 1; return 0; }
+
+        // 主机 → 设备（元素偏移）
+        void copyFromHost(double[] host, int srcOff, int dstOff, int len) {
+            GpuBackend.copyH2D(dev_, host, srcOff, dstOff, len);
+        }
+
+        // 设备 → 主机（元素偏移）
+        void copyToHost(double[] host, int srcOff, int dstOff, int len) {
+            GpuBackend.copyD2H(host, dev_, srcOff, dstOff, len);
+        }
+
+        // 设备 → 设备（同元素类型缓冲；len 个元素）
+        void copyFromBuffer(GpuBuffer src, int srcOff, int dstOff, int len) {
+            GpuBackend.copyD2D(dev_, long(dstOff) * long(elemSize_),
+                               src.devicePtr(), long(srcOff) * long(src.elemSize()),
+                               long(len) * long(elemSize_));
+        }
+
+        // ---- M2 异步（流上排队；需 GpuStream.sync() 后取回）----
+        void copyFromHostAsync(double[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyH2DAsync(dev_, host, srcOff, dstOff, len, s.handle());
+        }
+        void copyToHostAsync(double[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyD2HAsync(host, dev_, srcOff, dstOff, len, s.handle());
+        }
+        void copyFromBufferAsync(GpuBuffer src, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyD2DAsync(dev_, long(dstOff) * long(elemSize_),
+                                    src.devicePtr(), long(srcOff) * long(src.elemSize()),
+                                    long(len) * long(elemSize_), s.handle());
+        }
+
+        // 显式释放设备内存（重复调用安全）
+        void free() {
+            if (dev_ != 0L) {
+                GpuBackend.free(dev_);
+                dev_ = 0L;
+            }
+        }
+
+    property:
+        long dev_;
+        int n_;
+        int elemSize_;
+}
+
+class GpuBufferF {
+    action:
+        @constructor
+        GpuBufferF(float[] host, int n) {
+            n_ = n;
+            elemSize_ = 4;
+            dev_ = 0L;
+            if (GpuBackend.available() == 1) {
+                dev_ = GpuBackend.alloc(n * 4);
+                if (dev_ != 0L) {
+                    GpuBackend.copyH2DF(dev_, host, 0, 0, n);
+                }
+            }
+        }
+
+        // 设备句柄（0 = 未分配，如 GPU 不可用）
+        long devicePtr() { return dev_; }
+
+        // 元素个数
+        int size() { return n_; }
+
+        // 字节数
+        int byteSize() { return n_ * elemSize_; }
+
+        // 单元素字节数（4 = float）
+        int elemSize() { return elemSize_; }
+
+        // 是否成功分配（1 = 有效）
+        int valid() { if (dev_ != 0L) return 1; return 0; }
+
+        // 主机 float[] → 设备（元素偏移）
+        void copyFromHost(float[] host, int srcOff, int dstOff, int len) {
+            GpuBackend.copyH2DF(dev_, host, srcOff, dstOff, len);
+        }
+
+        // 设备 → 主机 float[]（元素偏移）
+        void copyToHost(float[] host, int srcOff, int dstOff, int len) {
+            GpuBackend.copyD2HF(host, dev_, srcOff, dstOff, len);
+        }
+
+        // 设备 → 设备（同元素类型缓冲；len 个元素）
+        void copyFromBuffer(GpuBufferF src, int srcOff, int dstOff, int len) {
+            GpuBackend.copyD2D(dev_, long(dstOff) * long(elemSize_),
+                               src.devicePtr(), long(srcOff) * long(src.elemSize()),
+                               long(len) * long(elemSize_));
+        }
+
+        // ---- M2 异步（流上排队；需 GpuStream.sync() 后取回）----
+        void copyFromHostAsync(float[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyH2DFAsync(dev_, host, srcOff, dstOff, len, s.handle());
+        }
+        void copyToHostAsync(float[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyD2HFAsync(host, dev_, srcOff, dstOff, len, s.handle());
+        }
+        void copyFromBufferAsync(GpuBufferF src, int srcOff, int dstOff, int len, GpuStream s) {
+            GpuBackend.copyD2DAsync(dev_, long(dstOff) * long(elemSize_),
+                                    src.devicePtr(), long(srcOff) * long(src.elemSize()),
+                                    long(len) * long(elemSize_), s.handle());
+        }
+
+        // 显式释放设备内存（重复调用安全）
+        void free() {
+            if (dev_ != 0L) {
+                GpuBackend.free(dev_);
+                dev_ = 0L;
+            }
+        }
+
+    property:
+        long dev_;
+        int n_;
+        int elemSize_;
+}
+
+// GpuPool — 设备内存池（M4）：复用空闲块，减少 cuMemAlloc/cuMemFree 次数。
+//
+// 用法：
+//   GpuPool pool = new GpuPool(64);          // 最多缓存 64 块空闲内存
+//   long dev = pool.alloc(4096);             // 取一块（复用池中块或新分配）
+//   ... 使用 dev ...
+//   pool.free(dev, 4096);                    // 归还（bytes 为分配时字节数）
+//   pool.destroy();                          // 释放池中所有块（必须调用）
+//
+// 说明：free 需传回分配时的字节数以便按大小复用；池满时直接释放到后端。
+class GpuPool {
+    action:
+        @constructor GpuPool(int cap) {
+            cap_ = cap;
+            if (cap_ < 1) cap_ = 1;
+            slots_ = new long[cap_];
+            sizes_ = new int[cap_];
+            count_ = 0;
+        }
+
+        // 取一块 ≥ bytes 的设备内存（0 = 失败）
+        long alloc(int bytes) {
+            int i = 0;
+            while (i < count_) {
+                if (sizes_[i] >= bytes) {
+                    long dev = slots_[i];
+                    // 从空闲表移除（与末尾交换）
+                    count_ = count_ - 1;
+                    slots_[i] = slots_[count_];
+                    sizes_[i] = sizes_[count_];
+                    return dev;
+                }
+                i = i + 1;
+            }
+            return GpuBackend.alloc(bytes);
+        }
+
+        // 归还一块（bytes 为分配时字节数）；池满则直接释放
+        void free(long dev, int bytes) {
+            if (dev == 0L) return;
+            if (count_ < cap_) {
+                slots_[count_] = dev;
+                sizes_[count_] = bytes;
+                count_ = count_ + 1;
+            } else {
+                GpuBackend.free(dev);
+            }
+        }
+
+        // 当前缓存空闲块数
+        int count() { return count_; }
+
+        // 释放池中所有空闲块（调用后 count()==0）
+        void destroy() {
+            int i = 0;
+            while (i < count_) {
+                GpuBackend.free(slots_[i]);
+                i = i + 1;
+            }
+            count_ = 0;
+        }
+
+    property:
+        long[] slots_;
+        int[] sizes_;
+        int count_;
+        int cap_;
+}

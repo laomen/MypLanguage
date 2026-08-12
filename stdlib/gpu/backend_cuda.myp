@@ -1,0 +1,93 @@
+// backend_cuda.myp — CUDA 后端实现（M1 唯一后端）
+//
+// 约定：
+//   · 设备内存句柄用 long（内部为设备指针的整数形式，MYP 无裸指针）。
+//   · 数组拷贝的 srcOff/dstOff 为"元素"偏移（double 8 字节 / float 4 字节），
+//     len 为元素个数；d2d 拷贝用字节偏移。
+//   · 返回 0 = 失败 / GPU 不可用；1 = 成功。
+
+class CudaBackend {
+    static:
+        // 后端名称
+        string name() { return "CUDA"; }
+
+        // GPU 是否可用（1 = 可用；0 = CPU 回退）
+        int available() { return __myp_cuda_available(); }
+
+        // 设备数量
+        int count() { return __myp_cuda_count(); }
+
+        // 分配 bytes 字节设备内存 → 句柄（0 = 失败）
+        long alloc(int bytes) {
+            return __myp_gpu_alloc(long(bytes));
+        }
+
+        // 释放设备内存
+        int free(long dev) {
+            return __myp_gpu_free(dev);
+        }
+
+        // 主机 double[] → 设备（元素偏移）
+        int copyH2D(long dev, double[] host, int srcOff, int dstOff, int len) {
+            return __myp_gpu_copy_h2d(dev, host, srcOff, dstOff, len);
+        }
+
+        // 设备 → 主机 double[]
+        int copyD2H(double[] host, long dev, int srcOff, int dstOff, int len) {
+            return __myp_gpu_copy_d2h(host, dev, srcOff, dstOff, len);
+        }
+
+        // 主机 float[] → 设备
+        int copyH2DF(long dev, float[] host, int srcOff, int dstOff, int len) {
+            return __myp_gpu_copy_h2d_f(dev, host, srcOff, dstOff, len);
+        }
+
+        // 设备 → 主机 float[]
+        int copyD2HF(float[] host, long dev, int srcOff, int dstOff, int len) {
+            return __myp_gpu_copy_d2h_f(host, dev, srcOff, dstOff, len);
+        }
+
+        // 设备 → 设备（字节偏移）
+        int copyD2D(long dst, long dstOff, long src, long srcOff, long bytes) {
+            return __myp_gpu_copy_d2d(dst, dstOff, src, srcOff, bytes);
+        }
+
+        // 同步：阻塞直到所有内核完成
+        int sync() {
+            return __myp_gpu_sync();
+        }
+
+        // ---- 流（M2：异步拷贝 / 事件；句柄用 long）----
+        long streamCreate() { return __myp_gpu_stream_create(); }
+        int streamSync(long s) { return __myp_gpu_stream_sync(s); }
+        int streamDestroy(long s) { return __myp_gpu_stream_destroy(s); }
+
+        // 主机 double[] → 设备（异步，流上排队）
+        int copyH2DAsync(long dev, double[] host, int srcOff, int dstOff, int len, long stream) {
+            return __myp_gpu_copy_h2d_async(dev, host, srcOff, dstOff, len, stream);
+        }
+        // 设备 → 主机 double[]（异步）
+        int copyD2HAsync(double[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            return __myp_gpu_copy_d2h_async(host, dev, srcOff, dstOff, len, stream);
+        }
+        // 主机 float[] → 设备（异步）
+        int copyH2DFAsync(long dev, float[] host, int srcOff, int dstOff, int len, long stream) {
+            return __myp_gpu_copy_h2d_async_f(dev, host, srcOff, dstOff, len, stream);
+        }
+        // 设备 → 主机 float[]（异步）
+        int copyD2HFAsync(float[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            return __myp_gpu_copy_d2h_async_f(host, dev, srcOff, dstOff, len, stream);
+        }
+        // 设备 → 设备（异步，字节偏移）
+        int copyD2DAsync(long dst, long dstOff, long src, long srcOff, long bytes, long stream) {
+            return __myp_gpu_copy_d2d_async(dst, dstOff, src, srcOff, bytes, stream);
+        }
+
+        // 事件
+        long eventCreate() { return __myp_gpu_event_create(); }
+        int eventRecord(long ev, long stream) { return __myp_gpu_event_record(ev, stream); }
+        int eventWait(long ev, long stream) { return __myp_gpu_event_wait(ev, stream); }
+        int eventSync(long ev) { return __myp_gpu_event_sync(ev); }
+        double eventElapsed(long evStart, long evEnd) { return __myp_gpu_event_elapsed(evStart, evEnd); }
+        int eventDestroy(long ev) { return __myp_gpu_event_destroy(ev); }
+}

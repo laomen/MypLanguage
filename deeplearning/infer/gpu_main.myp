@@ -1,0 +1,149 @@
+// gpu_main.myp — GPU 算子卸载验证（XOR + 批量 MNIST，GPU vs CPU 对比）
+//
+// 运行（需 MYP_GPU=1 才真正卸载；否则 @gpu for 回退 CPU）：
+//   MYP_GPU=1 ./build/mypc ... 编译产物
+//   ./build/mypc deeplearning/infer/gpu_main.myp -o /tmp/infer_gpu --stdlib stdlib
+//   MYP_GPU=1 /tmp/infer_gpu
+import env;
+import cuda;
+import "./runtime.myp";
+import "./model_loader.myp";
+
+class GpuInferApp {
+    action:
+        @constructor GpuInferApp() {
+            int gpu = Cuda.available();
+            Console.writeString("Cuda.available="); Console.writeLong(gpu); Console.writeLine("");
+            if (gpu == 1) {
+                Console.writeString("GPU: "); Console.writeLine(Cuda.name());
+            }
+
+            int xGpu = runXor(1);
+            int xCpu = runXor(0);
+            Console.writeString("XOR  gpu="); Console.writeLong(xGpu);
+            Console.writeString("/4  cpu="); Console.writeLong(xCpu);
+            Console.writeLine("/4");
+
+            int mGpu = runMnist(1);
+            int mCpu = runMnist(0);
+            Console.writeString("MNIST gpu="); Console.writeLong(mGpu);
+            Console.writeString("/100 cpu="); Console.writeLong(mCpu);
+            Console.writeLine("/100");
+        }
+
+        int runXor(int useGpu) {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            ModelLoader loader = new ModelLoader();
+            int ok = loader.load("./deeplearning/infer/models/xor_model.json", rt);
+            if (ok == 0) return -1;
+            int inTid = loader.tensorId("input");
+            int probTid = loader.tensorId("prob");
+
+            int pass = 0;
+            pass = pass + xorCase(rt, inTid, probTid, useGpu, 0.0, 0.0, 0);
+            pass = pass + xorCase(rt, inTid, probTid, useGpu, 0.0, 1.0, 1);
+            pass = pass + xorCase(rt, inTid, probTid, useGpu, 1.0, 0.0, 1);
+            pass = pass + xorCase(rt, inTid, probTid, useGpu, 1.0, 1.0, 0);
+            return pass;
+        }
+
+        int xorCase(InferenceRuntime rt, int inTid, int probTid, int useGpu, double x0, double x1, int want) {
+            rt.setFlat(inTid, 0, x0);
+            rt.setFlat(inTid, 1, x1);
+            if (useGpu == 1) rt.runGpu();
+            else rt.run();
+            int p = rt.argmax1d(probTid);
+            if (p == want) return 1;
+            return 0;
+        }
+
+        int runMnist(int useGpu) {
+            loadTestImages();
+            loadTestLabels();
+            if (numTest <= 0) return -1;
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(200000);
+            ModelLoader loader = new ModelLoader();
+            int ok = loader.loadBatched("./deeplearning/infer/models/mnist_model.json", rt, numTest);
+            if (ok == 0) return -1;
+            int inputTid = loader.tensorId("input");
+            int probTid = loader.tensorId("prob");
+
+            int s = 0;
+            while (s < numTest) {
+                int j = 0;
+                while (j < 784) {
+                    rt.setFlat(inputTid, j * numTest + s, testPixels[s * 784 + j]);
+                    j = j + 1;
+                }
+                s = s + 1;
+            }
+
+            if (useGpu == 1) rt.runGpu();
+            else rt.run();
+
+            int correct = 0;
+            s = 0;
+            while (s < numTest) {
+                int pred = rt.argmaxCol(probTid, s);
+                if (pred == testLabels[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct;
+        }
+
+        void loadTestImages() {
+            string p = "./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte";
+            int fd = __myp_io_fopen(p, "rb");
+            if (fd < 0) { numTest = 0; return; }
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            int rows = __myp_io_read_i32be();
+            int cols = __myp_io_read_i32be();
+            if (count > 100) count = 100;
+            numTest = count;
+
+            int i = 0;
+            while (i < count) {
+                int j = 0;
+                while (j < 784) {
+                    int b = __myp_io_read_byte();
+                    if (b < 0) { numTest = i; __myp_io_fclose(); return; }
+                    testPixels[i * 784 + j] = b / 255.0;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTestLabels() {
+            string p = "./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte";
+            int fd = __myp_io_fopen(p, "rb");
+            if (fd < 0) { numTest = 0; return; }
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            if (count > numTest) count = numTest;
+
+            int i = 0;
+            while (i < count) {
+                int b = __myp_io_read_byte();
+                if (b < 0) break;
+                testLabels[i] = b;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+    property:
+        int numTest;
+        double[78400] testPixels;
+        int[100] testLabels;
+}
+
+int main() {
+    GpuInferApp app = new GpuInferApp();
+    return 0;
+}

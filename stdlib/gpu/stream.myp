@@ -1,0 +1,81 @@
+// stream.myp — GpuStream / GpuEvent：异步流与事件（L3 异步）
+//
+// 用法：
+//   GpuStream s = new GpuStream();
+//   buf.copyToHostAsync(host, 0, 0, n, s);   // 异步 D2H（在流上排队，不阻塞）
+//   s.sync();                                 // 阻塞直到该流全部完成
+//   s.destroy();                              // 显式销毁
+//
+//   GpuEvent start = new GpuEvent();
+//   start.record(s);                          // 在流上打点
+//   ... 更多流操作 ...
+//   GpuEvent end = new GpuEvent();
+//   end.record(s);
+//   end.sync();
+//   double ms = start.elapsedSince(end);      // 两端点耗时（毫秒）
+//
+// 说明：
+//   · 异步拷贝在指定流上排队（可多流并发重叠）；主机数组须在流执行完成前保持有效。
+//   · 流/事件用毕必须 destroy()（M2 无 finalizer）。
+//   · 无 GPU 时句柄为 0，各方法为 no-op，不崩溃（CPU 回退由上层保证）。
+
+import gpu.backend;
+
+class GpuStream {
+    action:
+        @constructor GpuStream() {
+            h_ = GpuBackend.streamCreate();
+        }
+
+        // 流句柄（0 = 不可用）
+        long handle() { return h_; }
+
+        // 阻塞直到该流上所有操作完成（返回 0 失败）
+        int sync() { return GpuBackend.streamSync(h_); }
+
+        // 显式销毁（重复调用安全）
+        void destroy() {
+            if (h_ != 0L) {
+                GpuBackend.streamDestroy(h_);
+                h_ = 0L;
+            }
+        }
+
+    property:
+        long h_;
+}
+
+class GpuEvent {
+    action:
+        @constructor GpuEvent() {
+            h_ = GpuBackend.eventCreate();
+        }
+
+        // 事件句柄（0 = 不可用）
+        long handle() { return h_; }
+
+        // 在流上记录本事件（返回 0 失败）
+        int record(GpuStream s) { return GpuBackend.eventRecord(h_, s.handle()); }
+
+        // 让流等待本事件（跨流依赖；返回 0 失败）
+        int wait(GpuStream s) { return GpuBackend.eventWait(h_, s.handle()); }
+
+        // 阻塞等待本事件完成（返回 0 失败）
+        int sync() { return GpuBackend.eventSync(h_); }
+
+        // 自 start 到本事件的毫秒（两者均需已完成）
+        double elapsedSince(GpuEvent start) {
+            return GpuBackend.eventElapsed(start.handle(), h_);
+        }
+
+        // 显式销毁（重复调用安全）
+        void destroy() {
+            if (h_ != 0L) {
+                GpuBackend.eventDestroy(h_);
+                h_ = 0L;
+            }
+        }
+
+    property:
+        long h_;
+}

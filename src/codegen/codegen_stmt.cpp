@@ -623,7 +623,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                     }
                     auto* bs = builder_.CreateMul(total_na,
                         llvm::ConstantInt::get(alloca_lt, es_na));
-                    array_byte_sizes_[d.name] = bs;
+                    array_byte_sizes_[d.name] = {current_function_, bs};
                 }
             } else {
                 builder_.CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)), ptr_a);

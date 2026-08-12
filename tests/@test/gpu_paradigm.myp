@@ -1,0 +1,353 @@
+// GPU 范式库（stdlib/gpu）M1 回归测试
+//   · L1 宿主数组 API（Gpu.add/sum/...，GPU 或 CPU 回退结果一致）
+//   · L2 GpuBuffer 显式显存（元数据不依赖 GPU；设备往返仅在 GPU 可用时校验）
+// 运行时设置 MYP_GPU=1 会走真实 GPU 路径，否则走 CPU 回退，两者均应通过。
+import test;
+import text;
+import gpu;
+
+@test void test_gpu_paradigm_l1() {
+    long n = 1024L;
+    double[] a = new double[n];
+    double[] b = new double[n];
+    double[] out = new double[n];
+    for (long i = 0L; i < n; i = i + 1L) { a[i] = 1.0; b[i] = 2.0; }
+
+    Gpu.add(a, b, out, n);
+    Test.assertFloatEq(out[0], 3.0, 0.0001, "gpu.add[0]");
+    Test.assertFloatEq(out[1023], 3.0, 0.0001, "gpu.add[1023]");
+
+    Gpu.scale(out, 2.0, n);
+    Test.assertFloatEq(out[0], 6.0, 0.0001, "gpu.scale");
+
+    double s = Gpu.sum(a, n);
+    Test.assertFloatEq(s, 1024.0, 0.0001, "gpu.sum");
+
+    double mx = Gpu.max(out, n);
+    Test.assertFloatEq(mx, 6.0, 0.0001, "gpu.max");
+
+    int k = Gpu.argmax(out, n);
+    Test.assertEq(k, 0, "gpu.argmax");
+
+    Test.report("test_gpu_paradigm_l1", true);
+}
+
+@test void test_gpu_paradigm_l2_buffer() {
+    int n = 1024;
+
+    // double[] 缓冲
+    double[] src = new double[n];
+    for (int i = 0; i < n; i = i + 1) src[i] = 3.0;
+    GpuBuffer buf = new GpuBuffer(src, n);
+    Test.assertEq(buf.size(), n, "buf.size");
+    Test.assertEq(buf.byteSize(), 8192, "buf.byteSize");
+    Test.assertEq(buf.elemSize(), 8, "buf.elemSize");
+
+    if (buf.valid() == 1) {
+        // GPU 可用：设备往返校验
+        double[] back = new double[n];
+        buf.copyToHost(back, 0, 0, n);
+        Test.assertFloatEq(back[0], 3.0, 0.0001, "buf roundtrip[0]");
+        Test.assertFloatEq(back[n - 1], 3.0, 0.0001, "buf roundtrip[last]");
+
+        // 部分拷贝 + 设备→设备
+        double[] half = new double[n];
+        for (int i = 0; i < n; i = i + 1) half[i] = 7.0;
+        buf.copyFromHost(half, 0, 512, 512);
+        buf.copyToHost(back, 512, 512, 512);
+        Test.assertFloatEq(back[512], 7.0, 0.0001, "buf partial[512]");
+        Test.assertFloatEq(back[0], 3.0, 0.0001, "buf partial[0]");
+
+        GpuBuffer dst = new GpuBuffer(half, n);
+        dst.copyFromBuffer(buf, 0, 0, n);
+        double[] copy = new double[n];
+        dst.copyToHost(copy, 0, 0, n);
+        Test.assertFloatEq(copy[0], 3.0, 0.0001, "buf d2d[0]");
+        Test.assertFloatEq(copy[512], 7.0, 0.0001, "buf d2d[512]");
+        dst.free();
+
+        // 同步
+        int rc = GpuDevice.sync();
+        Test.assertEq(rc, 1, "gpu sync");
+
+        buf.free();
+        Test.assertEq(buf.valid(), 0, "buf freed");
+    } else {
+        // GPU 不可用：句柄应为 0（优雅降级）
+        Test.assertLongEq(buf.devicePtr(), 0L, "buf no-gpu handle");
+        buf.free(); // 释放应为 no-op，不崩溃
+    }
+
+    // float[] 缓冲（GpuBufferF）
+    float[] fsrc = new float[n];
+    for (int i = 0; i < n; i = i + 1) fsrc[i] = float(1.5);
+    GpuBufferF fbuf = new GpuBufferF(fsrc, n);
+    Test.assertEq(fbuf.size(), n, "fbuf.size");
+    Test.assertEq(fbuf.byteSize(), 4096, "fbuf.byteSize");
+    Test.assertEq(fbuf.elemSize(), 4, "fbuf.elemSize");
+    if (fbuf.valid() == 1) {
+        float[] fback = new float[n];
+        fbuf.copyToHost(fback, 0, 0, n);
+        Test.assertFloatEq(fback[0], 1.5, 0.0001, "fbuf roundtrip");
+        fbuf.free();
+    }
+
+    Test.report("test_gpu_paradigm_l2_buffer", true);
+}
+
+@test void test_gpu_paradigm_device() {
+    // 设备信息接口（无 GPU 时返回 0/空，不应崩溃）
+    string backend = Gpu.backend();
+    Test.assertStrEq(backend, "CUDA", "gpu backend name");
+    int n = Gpu.deviceCount();
+    if (n > 0) {
+        string nm = Gpu.deviceName();
+        int hasName = 0;
+        if (Str.len(nm) > 0) hasName = 1;
+        Test.assertEq(hasName, 1, "device name non-empty");
+        long mem = Gpu.deviceMemory();
+        long memPos = 0L;
+        if (mem > 0L) memPos = 1L;
+        Test.assertLongEq(memPos, 1L, "device memory > 0");
+    }
+    Test.report("test_gpu_paradigm_device", true);
+}
+
+@test void test_gpu_paradigm_m2_stream() {
+    int n = 1024;
+
+    // 流 + 事件元数据（不依赖 GPU）
+    GpuStream s = new GpuStream();
+    s.sync();                                    // 无 GPU 时句柄 0 → no-op，不崩溃
+    s.destroy();                                 // no-op，不崩溃
+
+    GpuEvent ev = new GpuEvent();
+    ev.destroy();
+
+    if (Gpu.available() == 0) {
+        Test.report("test_gpu_paradigm_m2_stream", true);  // 无 GPU：仅验证 API 不崩溃
+        return;
+    }
+
+    // ---- 异步 H2D + D2H 往返（单流）----
+    double[] src = new double[n];
+    for (int i = 0; i < n; i = i + 1) src[i] = 2.5;
+    GpuBuffer buf = new GpuBuffer(src, n);
+
+    GpuStream st = new GpuStream();
+    double[] back = new double[n];
+    buf.copyToHostAsync(back, 0, 0, n, st);   // 异步 D2H
+    st.sync();                                  // 阻塞直到完成
+    Test.assertFloatEq(back[0], 2.5, 0.0001, "async d2h[0]");
+    Test.assertFloatEq(back[n - 1], 2.5, 0.0001, "async d2h[last]");
+
+    // ---- 异步部分 H2D + D2D ----
+    double[] half = new double[n];
+    for (int i = 0; i < n; i = i + 1) half[i] = 9.0;
+    buf.copyFromHostAsync(half, 0, 512, 512, st);   // 异步 H2D 到 512 偏移
+    GpuBuffer dst = new GpuBuffer(half, n);
+    dst.copyFromBufferAsync(buf, 0, 0, n, st);      // 异步 D2D
+    st.sync();
+    double[] copy = new double[n];
+    dst.copyToHost(copy, 0, 0, n);                  // 同步取回（流已完成）
+    Test.assertFloatEq(copy[0], 2.5, 0.0001, "async d2d[0]");
+    Test.assertFloatEq(copy[512], 9.0, 0.0001, "async d2d[512]");
+
+    // ---- 双流并发异步拷贝 ----
+    GpuStream s1 = new GpuStream();
+    GpuStream s2 = new GpuStream();
+    double[] o1 = new double[n];
+    double[] o2 = new double[n];
+    buf.copyToHostAsync(o1, 0, 0, n, s1);
+    dst.copyToHostAsync(o2, 0, 0, n, s2);
+    s1.sync();
+    s2.sync();
+    Test.assertFloatEq(o1[0], 2.5, 0.0001, "stream1[0]");
+    Test.assertFloatEq(o2[0], 2.5, 0.0001, "stream2[0]");
+    s1.destroy();
+    s2.destroy();
+
+    // ---- 事件计时 ----
+    GpuStream es = new GpuStream();
+    GpuEvent start = new GpuEvent();
+    GpuEvent end = new GpuEvent();
+    start.record(es);
+    buf.copyFromHostAsync(src, 0, 0, n, es);   // 往流上加一点工作
+    end.record(es);
+    end.sync();
+    double ms = start.elapsedSince(end);
+    // CUDA 时钟量化：紧邻事件间 elapsed 可能为微小负值（~-10µs），
+    // 只要不是离谱值（垃圾/巨大）即视为正常。
+    int msOk = 0;
+    if (ms > -1.0 && ms < 1000.0) msOk = 1;
+    Test.assertEq(msOk, 1, "event elapsed sane");
+    start.destroy();
+    end.destroy();
+    es.destroy();
+
+    // ---- float 异步 ----
+    float[] fsrc = new float[n];
+    for (int i = 0; i < n; i = i + 1) fsrc[i] = float(4.0);
+    GpuBufferF fbuf = new GpuBufferF(fsrc, n);
+    GpuStream fs = new GpuStream();
+    float[] fback = new float[n];
+    fbuf.copyToHostAsync(fback, 0, 0, n, fs);
+    fs.sync();
+    Test.assertFloatEq(fback[0], 4.0, 0.0001, "async float d2h");
+    fs.destroy();
+    fbuf.free();
+
+    dst.free();
+    buf.free();
+    st.destroy();
+
+    Test.report("test_gpu_paradigm_m2_stream", true);
+}
+
+@test void test_gpu_paradigm_m3_resident() {
+    int n = 2048;
+    float[] a = new float[n];
+    for (int i = 0; i < n; i = i + 1) a[i] = float(i);
+
+    if (Gpu.available() == 0) {
+        // 无 GPU：resident 忽略 → CPU 顺序执行，仍应正确
+        long dev0 = 0L;
+        @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev0) {
+            float v = a[p];
+            a[p] = v * float(2.0);
+        }
+        double d = a[100];
+        Test.assertFloatEq(d, 200.0, 0.01, "cpu resident");
+        Test.report("test_gpu_paradigm_m3_resident", true);
+        return;
+    }
+
+    // GPU：设备驻留 —— H2D 一次，内核直接操作设备内存，D2H 一次
+    GpuBufferF buf = new GpuBufferF(a, n);
+    long dev = buf.devicePtr();
+    long devNonZero = 0L;
+    if (dev != 0L) devNonZero = 1L;
+    Test.assertLongEq(devNonZero, 1L, "resident dev non-zero");
+
+    // 设备驻留内核：a 每个元素 ×2（在设备上，不逐算子传输）
+    @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+        float v = a[p];
+        a[p] = v * float(2.0);
+    }
+
+    // 此时主机 a 未被更新（设备驻留语义）
+    double before = a[100];
+    Test.assertFloatEq(before, 100.0, 0.01, "host unchanged before D2H");
+
+    buf.copyToHost(a, 0, 0, n);   // D2H 一次取回
+    double d0 = a[0];
+    double d100 = a[100];
+    double d2047 = a[2047];
+    Test.assertFloatEq(d0, 0.0, 0.01, "resident[0]");
+    Test.assertFloatEq(d100, 200.0, 0.01, "resident[100]");
+    Test.assertFloatEq(d2047, 4094.0, 0.01, "resident[2047]");
+    buf.free();
+
+    Test.report("test_gpu_paradigm_m3_resident", true);
+}
+
+@test void test_gpu_paradigm_m4_ops() {
+    int n = 1024;
+
+    // ---- L1 补全：saxpy / dot（CPU 回退与 GPU 结果一致）----
+    double[] a = new double[n];
+    double[] b = new double[n];
+    double[] o = new double[n];
+    for (int i = 0; i < n; i = i + 1) { a[i] = double(i); b[i] = 2.0; }
+    Gpu.saxpy(3.0, a, b, o, n);
+    Test.assertFloatEq(o[0], 2.0, 0.0001, "saxpy[0]");
+    Test.assertFloatEq(o[100], 302.0, 0.0001, "saxpy[100]");
+    double d = Gpu.dot(a, b, n);
+    Test.assertFloatEq(d, 2.0 * double(n) * double(n - 1) / 2.0, 2.0, "dot");
+
+    // ---- GpuPool 元数据（不依赖 GPU）----
+    GpuPool pool = new GpuPool(8);
+    Test.assertEq(pool.count(), 0, "pool init");
+
+    if (Gpu.available() == 0) {
+        pool.destroy();
+        Test.report("test_gpu_paradigm_m4_ops", true);
+        return;
+    }
+
+    // ---- L2 double 缓冲计算（设备驻留）----
+    double[] src = new double[n];
+    for (int i = 0; i < n; i = i + 1) src[i] = 1.0;
+    GpuBuffer bufA = new GpuBuffer(src, n);
+    GpuBuffer bufB = new GpuBuffer(src, n);
+    GpuBuffer bufOut = new GpuBuffer(src, n);
+
+    Gpu.mapBuf(bufA, bufOut, 2.0, n);            // out = a * 2
+    double[] back = new double[n];
+    bufOut.copyToHost(back, 0, 0, n);
+    Test.assertFloatEq(back[0], 2.0, 0.0001, "mapBuf[0]");
+    Test.assertFloatEq(back[n - 1], 2.0, 0.0001, "mapBuf[last]");
+
+    Gpu.addBuf(bufA, bufB, bufOut, n);           // out = a + b
+    bufOut.copyToHost(back, 0, 0, n);
+    Test.assertFloatEq(back[0], 2.0, 0.0001, "addBuf[0]");
+
+    Gpu.scaleBuf(bufA, 3.0, n);                  // a *= 3
+    double s = Gpu.sumBuf(bufA, n);              // 设备原子归约
+    Test.assertFloatEq(s, 3.0 * double(n), 0.5, "sumBuf");
+    double mx = Gpu.maxBuf(bufA, n);
+    Test.assertFloatEq(mx, 3.0, 0.0001, "maxBuf");
+    int ai = Gpu.argmaxBuf(bufA, n);
+    Test.assertEq(ai, 0, "argmaxBuf");
+
+    // gemmBuf: C = A·B（2×2）
+    double[] Am = new double[4];
+    double[] Bm = new double[4];
+    double[] Cm = new double[4];
+    Am[0] = 1.0; Am[1] = 2.0; Am[2] = 3.0; Am[3] = 4.0;
+    Bm[0] = 5.0; Bm[1] = 6.0; Bm[2] = 7.0; Bm[3] = 8.0;
+    GpuBuffer bA = new GpuBuffer(Am, 4);
+    GpuBuffer bB = new GpuBuffer(Bm, 4);
+    GpuBuffer bC = new GpuBuffer(Cm, 4);
+    Gpu.gemmBuf(bA, bB, bC, 2, 2, 2);
+    double[] Cback = new double[4];
+    bC.copyToHost(Cback, 0, 0, 4);
+    Test.assertFloatEq(Cback[0], 19.0, 0.01, "gemm[0]");
+    Test.assertFloatEq(Cback[1], 22.0, 0.01, "gemm[1]");
+    Test.assertFloatEq(Cback[2], 43.0, 0.01, "gemm[2]");
+    Test.assertFloatEq(Cback[3], 50.0, 0.01, "gemm[3]");
+
+    // ---- L2 float 缓冲（GpuBufferF）----
+    float[] fs = new float[n];
+    for (int i = 0; i < n; i = i + 1) fs[i] = float(1.0);
+    GpuBufferF fA = new GpuBufferF(fs, n);
+    GpuBufferF fO = new GpuBufferF(fs, n);
+    Gpu.mapBufF(fA, fO, float(2.0), n);
+    float[] fback = new float[n];
+    fO.copyToHost(fback, 0, 0, n);
+    double fd = fback[0];
+    Test.assertFloatEq(fd, 2.0, 0.0001, "mapBufF[0]");
+    float fs2 = Gpu.sumBufF(fA, n);
+    double fsum = fs2;
+    Test.assertFloatEq(fsum, double(n), 0.5, "sumBufF");
+
+    // ---- GpuPool 复用 ----
+    long p1 = pool.alloc(1024);
+    long p1nz = 0L;
+    if (p1 != 0L) p1nz = 1L;
+    Test.assertLongEq(p1nz, 1L, "pool alloc");
+    pool.free(p1, 1024);
+    Test.assertEq(pool.count(), 1, "pool cached");
+    long p2 = pool.alloc(1024);
+    long p2same = 0L;
+    if (p2 == p1) p2same = 1L;
+    Test.assertLongEq(p2same, 1L, "pool reuse");
+    pool.free(p2, 1024);
+    pool.destroy();
+    Test.assertEq(pool.count(), 0, "pool destroyed");
+
+    bufA.free(); bufB.free(); bufOut.free();
+    bA.free(); bB.free(); bC.free();
+    fA.free(); fO.free();
+    Test.report("test_gpu_paradigm_m4_ops", true);
+}

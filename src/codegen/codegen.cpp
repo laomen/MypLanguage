@@ -2455,6 +2455,91 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_cuda_warp_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
         llvm::Function::ExternalLinkage, "myp_gpu_warp_size", module_.get());
     intrinsic_map_["__myp_cuda_warp"] = runtime_cuda_warp_;
+
+    // ---- GPU explicit memory / stream FFIs (M1 paradigm library stdlib/gpu) ----
+    // 句柄统一为 i64（long）；数组参数为 opaque ptr。
+    auto* gpu_alloc_h = llvm::Function::Create(llvm::FunctionType::get(i64, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_alloc_handle", module_.get());
+    intrinsic_map_["__myp_gpu_alloc"] = gpu_alloc_h;
+    auto* gpu_free_h = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_free_handle", module_.get());
+    intrinsic_map_["__myp_gpu_free"] = gpu_free_h;
+    auto* gpu_sync = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_sync_all", module_.get());
+    intrinsic_map_["__myp_gpu_sync"] = gpu_sync;
+    auto* gpu_stream_c = llvm::Function::Create(llvm::FunctionType::get(i64, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_stream_create_h", module_.get());
+    intrinsic_map_["__myp_gpu_stream_create"] = gpu_stream_c;
+    auto* gpu_stream_s = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_stream_sync_h", module_.get());
+    intrinsic_map_["__myp_gpu_stream_sync"] = gpu_stream_s;
+    auto* gpu_stream_d = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_stream_destroy_h", module_.get());
+    intrinsic_map_["__myp_gpu_stream_destroy"] = gpu_stream_d;
+    // d2d（字节偏移）
+    auto* gpu_d2d = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, i64, i64, i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2d", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2d"] = gpu_d2d;
+    // h2d / d2h（double[] 与 float[] 变体；数组参数为 opaque ptr）
+    auto* gpu_h2d_d = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, p, i32, i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_h2d_d", module_.get());
+    intrinsic_map_["__myp_gpu_copy_h2d"] = gpu_h2d_d;
+    auto* gpu_d2h_d = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p, i64, i32, i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2h_d", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2h"] = gpu_d2h_d;
+    auto* gpu_h2d_f = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, p, i32, i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_h2d_f", module_.get());
+    intrinsic_map_["__myp_gpu_copy_h2d_f"] = gpu_h2d_f;
+    auto* gpu_d2h_f = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p, i64, i32, i32, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2h_f", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2h_f"] = gpu_d2h_f;
+
+    // ---- M2: async copies (stream) + events ----
+    // 异步拷贝：sync 版 + 末尾流句柄（i64）
+    auto* gpu_h2d_async_d = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, p, i32, i32, i32, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_h2d_async_d", module_.get());
+    intrinsic_map_["__myp_gpu_copy_h2d_async"] = gpu_h2d_async_d;
+    auto* gpu_d2h_async_d = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p, i64, i32, i32, i32, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2h_async_d", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2h_async"] = gpu_d2h_async_d;
+    auto* gpu_h2d_async_f = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, p, i32, i32, i32, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_h2d_async_f", module_.get());
+    intrinsic_map_["__myp_gpu_copy_h2d_async_f"] = gpu_h2d_async_f;
+    auto* gpu_d2h_async_f = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p, i64, i32, i32, i32, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2h_async_f", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2h_async_f"] = gpu_d2h_async_f;
+    auto* gpu_d2d_async = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, i64, i64, i64, i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_copy_d2d_async", module_.get());
+    intrinsic_map_["__myp_gpu_copy_d2d_async"] = gpu_d2d_async;
+    // 事件
+    auto* gpu_ev_create = llvm::Function::Create(llvm::FunctionType::get(i64, {}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_create_h", module_.get());
+    intrinsic_map_["__myp_gpu_event_create"] = gpu_ev_create;
+    auto* gpu_ev_record = llvm::Function::Create(llvm::FunctionType::get(i32, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_record_h", module_.get());
+    intrinsic_map_["__myp_gpu_event_record"] = gpu_ev_record;
+    auto* gpu_ev_wait = llvm::Function::Create(llvm::FunctionType::get(i32, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_wait_h", module_.get());
+    intrinsic_map_["__myp_gpu_event_wait"] = gpu_ev_wait;
+    auto* gpu_ev_sync = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_sync_h", module_.get());
+    intrinsic_map_["__myp_gpu_event_sync"] = gpu_ev_sync;
+    auto* gpu_ev_elapsed = llvm::Function::Create(llvm::FunctionType::get(d, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_elapsed_ms", module_.get());
+    intrinsic_map_["__myp_gpu_event_elapsed"] = gpu_ev_elapsed;
+    auto* gpu_ev_destroy = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_event_destroy_h", module_.get());
+    intrinsic_map_["__myp_gpu_event_destroy"] = gpu_ev_destroy;
 }
 
 // -- Output --

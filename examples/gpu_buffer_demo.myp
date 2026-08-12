@@ -1,0 +1,102 @@
+// gpu_buffer_demo.myp — M1 GPU 范式库演示（L1 宿主数组 + L2 显式显存）
+//
+// 运行（有 NVIDIA GPU 且驱动可用）：
+//   ./build/mypc examples/gpu_buffer_demo.myp -o /tmp/gpu_demo --stdlib stdlib
+//   MYP_GPU=1 /tmp/gpu_demo
+// 无 GPU / 未设 MYP_GPU 时自动 CPU 回退，结果一致。
+
+import env;
+import time;
+import gpu;
+
+class GpuDemo {
+    action:
+        @constructor GpuDemo() {
+            Console.writeLine("backend=" + Gpu.backend() + "  devices=" + Gpu.deviceCount());
+            if (Gpu.available() == 1) {
+                Console.writeLine("device=" + Gpu.deviceName() +
+                                  "  mem=" + (Gpu.deviceMemory() / (1024L * 1024L)) + "MB" +
+                                  "  cc=" + Gpu.deviceCapability());
+            } else {
+                Console.writeLine("GPU unavailable (set MYP_GPU=1) — CPU fallback");
+            }
+
+            // ---- L1 零配置：宿主数组，自动传输 / 自动回退 ----
+            long n = 1048576L;
+            double[] a = new double[n];
+            double[] b = new double[n];
+            double[] out = new double[n];
+            for (long i = 0L; i < n; i = i + 1L) { a[i] = 1.0; b[i] = 2.0; }
+
+            long t0 = Time.nowMs();
+            Gpu.add(a, b, out, n);
+            double s = Gpu.sum(out, n);
+            double mx = Gpu.max(out, n);
+            int k = Gpu.argmax(out, n);
+            long t1 = Time.nowMs();
+
+            Console.writeLine("L1 add+sum+max+argmax (" + n + " elems): " + (t1 - t0) + "ms");
+            Console.writeLine("  sum=" + s + "  max=" + mx + "  argmax=" + k);
+
+            // ---- L2 显式显存：GpuBuffer 分配 + H2D 一次，D2H 取回 ----
+            int m = 1048576;
+            double[] src = new double[m];
+            for (int i = 0; i < m; i = i + 1) src[i] = 1.0;
+
+            long t2 = Time.nowMs();
+            GpuBuffer buf = new GpuBuffer(src, m);   // 分配设备内存 + 一次 H2D
+            double[] back = new double[m];
+            buf.copyToHost(back, 0, 0, m);           // D2H
+            long t3 = Time.nowMs();
+
+            Console.writeLine("L2 buffer alloc+roundtrip (" + m + " elems): " + (t3 - t2) + "ms"
+                              + "  valid=" + buf.valid() + "  bytes=" + buf.byteSize()
+                              + "  back[last]=" + back[m - 1]);
+
+            // ---- L2 设备→设备（D2D） ----
+            double[] twice = new double[m];
+            for (int i = 0; i < m; i = i + 1) twice[i] = 5.0;
+            GpuBuffer dst = new GpuBuffer(twice, m);
+            dst.copyFromBuffer(buf, 0, 0, m);        // buf → dst（设备内，零主机拷贝）
+            double[] dcopy = new double[m];
+            dst.copyToHost(dcopy, 0, 0, m);
+            Console.writeLine("L2 D2D copy: dcopy[last]=" + dcopy[m - 1]);
+            dst.free();
+            buf.free();
+
+            // ---- L3 异步 / 流：双流并发异步拷贝 ----
+            GpuBuffer b1 = new GpuBuffer(src, m);
+            GpuBuffer b2 = new GpuBuffer(src, m);
+            GpuStream s1 = new GpuStream();
+            GpuStream s2 = new GpuStream();
+            double[] r1 = new double[m];
+            double[] r2 = new double[m];
+            long t4 = Time.nowMs();
+            b1.copyToHostAsync(r1, 0, 0, m, s1);   // 异步 D2H（不阻塞）
+            b2.copyToHostAsync(r2, 0, 0, m, s2);   // 另一条流同时排队
+            s1.sync();
+            s2.sync();
+            long t5 = Time.nowMs();
+            Console.writeLine("L3 dual-stream async D2H (" + m + " elems): " + (t5 - t4) + "ms"
+                              + "  r1[0]=" + r1[0] + "  r2[0]=" + r2[0]);
+
+            // 事件计时
+            GpuStream es = new GpuStream();
+            GpuEvent st = new GpuEvent();
+            GpuEvent en = new GpuEvent();
+            st.record(es);
+            b1.copyFromHostAsync(src, 0, 0, m, es);
+            en.record(es);
+            en.sync();
+            Console.writeLine("L3 event elapsed: " + st.elapsedSince(en) + "ms");
+            st.destroy(); en.destroy(); es.destroy();
+            s1.destroy(); s2.destroy();
+            b1.free(); b2.free();
+            Console.writeLine("demo done");
+        }
+}
+
+int main() {
+    GpuDemo d = new GpuDemo();
+    return 0;
+}

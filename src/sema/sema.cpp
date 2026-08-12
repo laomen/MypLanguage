@@ -1340,6 +1340,35 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
             // Error already reported
         }
     }
+
+    // M3 设备驻留子句 resident(arr = dev) 校验：
+    //   · 仅 @gpu for 可用
+    //   · arr 须为作用域内数组变量；dev 须为 long 变量
+    if (!stmt.resident.empty()) {
+        if (!stmt.gpu) {
+            error(stmt.range,
+                "'resident(...)' is only valid on '@gpu for'");
+        } else {
+            for (auto& [arr, dev] : stmt.resident) {
+                auto* at = symbol_table_.lookup(arr);
+                if (!at) {
+                    error(stmt.range, "resident array '" + arr + "' not found in scope");
+                } else if (at->kind != TypeKind::Array) {
+                    error(stmt.range, "resident '" + arr + "' is not an array (got '" +
+                          typeName(*at) + "')");
+                }
+                auto* dt = symbol_table_.lookup(dev);
+                if (!dt) {
+                    error(stmt.range, "resident device-pointer variable '" + dev +
+                          "' not found in scope");
+                } else if (dt->kind != TypeKind::Long) {
+                    error(stmt.range, "resident device-pointer variable '" + dev +
+                          "' must be 'long' (got '" + typeName(*dt) + "')");
+                }
+            }
+        }
+    }
+
     symbol_table_.enterScope();
     if (stmt.init) visitStmt(*stmt.init);
     if (stmt.condition) {
@@ -2114,6 +2143,73 @@ void Sema::registerIntrinsics() {
     add_atomic("__myp_atomic_add_f64", TypeKind::Double, {TypeKind::Array, TypeKind::Int, TypeKind::Double}, {TypeKind::Double});
     add_atomic("__myp_atomic_load_i32", TypeKind::Int, {TypeKind::Array, TypeKind::Int}, {TypeKind::Int});
     add_atomic("__myp_atomic_store_i32", TypeKind::Void, {TypeKind::Array, TypeKind::Int, TypeKind::Int}, {TypeKind::Int});
+
+    // GPU 显式显存 / 流 FFI（M1 范式库 stdlib/gpu 使用）
+    // 句柄统一用 long；带数组参数的用 add_gpu_arr 注册（元素类型显式指定）。
+    add_intrinsic("__myp_gpu_alloc", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_free", TypeKind::Int, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_copy_d2d", TypeKind::Int,
+                  {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_sync", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_stream_create", TypeKind::Long, {});
+    add_intrinsic("__myp_gpu_stream_sync", TypeKind::Int, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_stream_destroy", TypeKind::Int, {TypeKind::Long});
+
+    // M2：异步拷贝 / 事件（流句柄为 long）
+    add_intrinsic("__myp_gpu_copy_d2d_async", TypeKind::Int,
+                  {TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_event_create", TypeKind::Long, {});
+    add_intrinsic("__myp_gpu_event_record", TypeKind::Int, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_event_wait", TypeKind::Int, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_event_sync", TypeKind::Int, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_event_elapsed", TypeKind::Double, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_event_destroy", TypeKind::Int, {TypeKind::Long});
+
+    auto add_gpu_arr = [&](const std::string& name, TypeKind ret, std::vector<TypeKind> params, std::vector<TypeKind> elem_types) {
+        TypeInfo t(TypeKind::Function);
+        t.return_type = std::make_shared<TypeInfo>(ret);
+        size_t ei = 0;
+        for (auto p : params) {
+            if (p == TypeKind::Array) {
+                TypeInfo arr(TypeKind::Array);
+                arr.element_type = std::make_shared<TypeInfo>(
+                    ei < elem_types.size() ? elem_types[ei] : TypeKind::Int);
+                t.param_types.push_back(arr);
+                ei++;
+            } else {
+                t.param_types.push_back(TypeInfo(p));
+            }
+        }
+        symbol_table_.declare(name, t);
+    };
+    // __myp_gpu_copy_h2d(dev, double[] host, srcOff, dstOff, len) -> int
+    add_gpu_arr("__myp_gpu_copy_h2d", TypeKind::Int,
+                {TypeKind::Long, TypeKind::Array, TypeKind::Int, TypeKind::Int, TypeKind::Int},
+                {TypeKind::Double});
+    // __myp_gpu_copy_d2h(double[] host, dev, srcOff, dstOff, len) -> int
+    add_gpu_arr("__myp_gpu_copy_d2h", TypeKind::Int,
+                {TypeKind::Array, TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Int},
+                {TypeKind::Double});
+    // float 变体
+    add_gpu_arr("__myp_gpu_copy_h2d_f", TypeKind::Int,
+                {TypeKind::Long, TypeKind::Array, TypeKind::Int, TypeKind::Int, TypeKind::Int},
+                {TypeKind::Float});
+    add_gpu_arr("__myp_gpu_copy_d2h_f", TypeKind::Int,
+                {TypeKind::Array, TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Int},
+                {TypeKind::Float});
+    // M2 异步拷贝（带流句柄）
+    add_gpu_arr("__myp_gpu_copy_h2d_async", TypeKind::Int,
+                {TypeKind::Long, TypeKind::Array, TypeKind::Int, TypeKind::Int, TypeKind::Int, TypeKind::Long},
+                {TypeKind::Double});
+    add_gpu_arr("__myp_gpu_copy_d2h_async", TypeKind::Int,
+                {TypeKind::Array, TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Int, TypeKind::Long},
+                {TypeKind::Double});
+    add_gpu_arr("__myp_gpu_copy_h2d_async_f", TypeKind::Int,
+                {TypeKind::Long, TypeKind::Array, TypeKind::Int, TypeKind::Int, TypeKind::Int, TypeKind::Long},
+                {TypeKind::Float});
+    add_gpu_arr("__myp_gpu_copy_d2h_async_f", TypeKind::Int,
+                {TypeKind::Array, TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Int, TypeKind::Long},
+                {TypeKind::Float});
 
     // Thread pool (v6)
     add_intrinsic("__myp_pool_thread_count", TypeKind::Int, {});

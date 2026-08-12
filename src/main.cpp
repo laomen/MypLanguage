@@ -87,6 +87,13 @@ static std::string getDir(const std::string& path) {
     return path.substr(0, pos);
 }
 
+// 点分模块名 → 目录层级路径：gpu.backend → gpu/backend
+static std::string dotToSlash(const std::string& name) {
+    std::string s = name;
+    for (auto& c : s) if (c == '.') c = '/';
+    return s;
+}
+
 // Absolute directory of the running executable — robust to a RELATIVE argv[0]
 // (e.g. `../../build/mypc run x.myp`), which previously made stdlib lookup fail.
 // Uses /proc/self/exe (Linux); falls back to argv[0] on failure (non-Linux).
@@ -122,34 +129,35 @@ static bool loadModule(const std::string& module_name,
             path = source_dir + "/" + file_path;
         }
     } else {
-        // Try multiple locations:
-        // 1. <stdlib_path>/ModuleName.myp
-        // 2. source_dir/../stdlib/ModuleName.myp
-        // 3. source_dir/stdlib/ModuleName.myp
-        // 4. <package_path>/Module/src/Module.myp or <package_path>/Module/Module.myp
-        std::string stdlib_name = module_name + ".myp";
-        std::string cwd_path = stdlib_path + "/" + stdlib_name;
-        std::string parent_path = source_dir + "/../stdlib/" + stdlib_name;
-        std::string sibling_path = source_dir + "/stdlib/" + stdlib_name;
+        // 点分模块名（gpu.backend）优先映射为子目录（stdlib/gpu/backend.myp），
+        // 扁平名（env / gpu）保持原样；再按多个位置尝试：
+        //   1. <stdlib_path>/<rel>
+        //   2. source_dir/../stdlib/<rel>
+        //   3. source_dir/stdlib/<rel>
+        //   4. <package_path>/<module>/src/<module>.myp 或 <package_path>/<module>/<module>.myp
+        std::string slash_name = dotToSlash(module_name);
+        std::vector<std::string> rel_candidates;
+        rel_candidates.push_back(slash_name + ".myp");          // gpu.backend → gpu/backend.myp
+        if (slash_name != module_name)
+            rel_candidates.push_back(module_name + ".myp");     // 扁平兜底（旧行为）
 
-        if (fileExists(cwd_path))
-            path = cwd_path;
-        else if (fileExists(parent_path))
-            path = parent_path;
-        else if (fileExists(sibling_path))
-            path = sibling_path;
-        else if (!package_path.empty()) {
-            // Package format: <package_path>/<module>/src/<module>.myp
-            std::string pkg_src = package_path + "/" + module_name + "/src/" + module_name + ".myp";
-            std::string pkg_root = package_path + "/" + module_name + "/" + module_name + ".myp";
-            if (fileExists(pkg_src))
-                path = pkg_src;
-            else if (fileExists(pkg_root))
-                path = pkg_root;
-            else
-                path = cwd_path;
-        } else
-            path = cwd_path;
+        path.clear();
+        for (auto& rel : rel_candidates) {
+            std::string cwd_path = stdlib_path + "/" + rel;
+            std::string parent_path = source_dir + "/../stdlib/" + rel;
+            std::string sibling_path = source_dir + "/stdlib/" + rel;
+            if (fileExists(cwd_path))      { path = cwd_path; break; }
+            if (fileExists(parent_path))   { path = parent_path; break; }
+            if (fileExists(sibling_path))  { path = sibling_path; break; }
+            if (!package_path.empty()) {
+                std::string pkg_src = package_path + "/" + slash_name + "/src/" + module_name + ".myp";
+                std::string pkg_root = package_path + "/" + slash_name + "/" + module_name + ".myp";
+                if (fileExists(pkg_src))      { path = pkg_src; break; }
+                if (fileExists(pkg_root))     { path = pkg_root; break; }
+            }
+        }
+        if (path.empty())
+            path = stdlib_path + "/" + rel_candidates[0];
     }
 
     // Normalize path for consistent dedup keys
@@ -193,8 +201,13 @@ static bool loadModule(const std::string& module_name,
         tu.enums.push_back(std::move(e));
     for (auto& s : sub_ast->structs)
         tu.structs.push_back(std::move(s));
-    // Recursively load sub-imports
-    std::string sub_dir = is_path ? getDir(path) : source_dir;
+    // Recursively load sub-imports.
+    // 相对路径 import（is_path）一律以"被导入文件所在目录"为基准解析。
+    // 这使得 stdlib 子目录模块（如 stdlib/gpu/backend.myp）能被
+    // `import "./gpu/backend.myp";` 正确加载，不受用户源码目录影响。
+    // 注：旧实现是 is_path ? getDir(path) : source_dir，导致"名字导入的 stdlib
+    // 模块内部"再出现相对路径 import 时，被错误地解析到用户源码目录。
+    std::string sub_dir = getDir(path);
     for (auto& imp : sub_ast->imports) {
         if (!loadModule(imp.module_name, imp.file_path, imp.is_path,
                         sub_dir, stdlib_path, package_path, tu, diag, loaded))

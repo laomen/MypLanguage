@@ -118,16 +118,22 @@ ImportDecl Parser::parseImport() {
     ImportDecl decl;
     decl.range = previous().range;
 
-    // Support two forms:
-    //   import ModuleName;        -- stdlib module (loaded from stdlib/ModuleName.myp)
-    //   import "path/file.myp";   -- user file path (loaded relative to source file)
+    // Support three forms:
+    //   import ModuleName;        -- stdlib module (stdlib/ModuleName.myp)
+    //   import gpu.backend;       -- stdlib 子模块（点分名 → stdlib/gpu/backend.myp）
+    //   import "path/file.myp";   -- user file path (resolved relative to source file)
     if (check(TokenKind::StringLiteral)) {
         auto tok = advance();
         decl.is_path = true;
         decl.file_path = tok.value;
         decl.range = tok.range;
     } else {
+        // 点分模块名：gpu / gpu.backend / gpu.backend_cuda / ...
         decl.module_name = parseIdentifier("expected module name after 'import'");
+        while (match(TokenKind::Dot)) {
+            std::string part = parseIdentifier("expected module name after '.'");
+            decl.module_name = decl.module_name + "." + part;
+        }
     }
     consume(TokenKind::Semicolon, "expected ';' after import");
     return decl;

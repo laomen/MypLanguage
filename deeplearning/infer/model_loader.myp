@@ -1,0 +1,200 @@
+// model_loader.myp — JSON 模型描述加载器
+// 把图结构（tensors / ops / weights）从代码中解耦为 JSON 描述。
+//
+// 用法：
+//   ModelLoader loader = new ModelLoader();
+//   int ok = loader.load("models/xor_model.json", rt);
+//   int inputTid = loader.tensorId("input");
+//
+// 模型 JSON 格式：
+//   {
+//     "name": "xor",
+//     "tensors": [ { "name": "input", "rows": 2, "cols": 1 }, ... ],
+//     "ops": [
+//       { "type": "dense",   "inputs": ["input","w1","b1"], "output": "h" },
+//       { "type": "relu",    "inputs": ["h"],               "output": "h_relu" },
+//       { "type": "softmax", "inputs": ["logits"],          "output": "prob" }
+//     ],
+//     "inputs":  ["input"],
+//     "outputs": ["prob"],
+//     "weights": [ { "name": "w1", "values": [1.0, -1.0, ...] }, ... ]
+//   }
+import env;
+import io;
+import json;
+import "./runtime.myp";
+
+class ModelLoader {
+    action:
+        // 加载 JSON 模型到运行时。成功返回 1，失败返回 0。
+        int load(string filePath, InferenceRuntime rt) {
+            try {
+                File f = new File();
+                int ok = f.open(filePath, "rb");
+                string content = f.readAll();
+                f.close();
+                try {
+                    Json j = new Json(content);
+                    int r = parseModel(j, rt, 0);
+                    j.free();
+                    return r;
+                } catch (JsonError e) {
+                    return 0;
+                }
+            } catch (FileError e) {
+                return 0;
+            }
+        }
+
+        // 批式加载：非 weight 张量的列宽统一覆盖为 batch（激活沿列并行）
+        int loadBatched(string filePath, InferenceRuntime rt, int batch) {
+            try {
+                File f = new File();
+                int ok = f.open(filePath, "rb");
+                string content = f.readAll();
+                f.close();
+                try {
+                    Json j = new Json(content);
+                    int r = parseModel(j, rt, batch);
+                    j.free();
+                    return r;
+                } catch (JsonError e) {
+                    return 0;
+                }
+            } catch (FileError e) {
+                return 0;
+            }
+        }
+
+        // 张量名 → id（找不到返回 -1）
+        int tensorId(string name) {
+            int i = 0;
+            while (i < nameCount_) {
+                if (names_[i] == name) return ids_[i];
+                i = i + 1;
+            }
+            return -1;
+        }
+
+        int tensorCount() {
+            return nameCount_;
+        }
+
+    function:
+        int arrLen(Json j, string path) {
+            if (j.type(path) == -1) return 0;
+            return j.arrayLen(path);
+        }
+
+        int parseModel(Json j, InferenceRuntime rt, int batch) {
+            nameCount_ = 0;
+            // ---- tensors：注册形状 ----
+            // role="weight" 的张量形状固定；其余激活张量在批式加载时列宽 = batch
+            int tn = arrLen(j, "tensors");
+            int t = 0;
+            while (t < tn) {
+                string p = "tensors." + t;
+                string nm = j.getString(p + ".name");
+                int rows = j.getInt(p + ".rows");
+                int cols = j.getInt(p + ".cols");
+                int rw = 0;
+                if (j.type(p + ".role") != -1) {
+                    string role = j.getString(p + ".role");
+                    if (role == "weight") rw = 1;
+                }
+                if (batch > 0 && rw == 0) cols = batch;
+                int id = rt.addTensor(rows, cols);
+                if (id < 0) return 0;
+                names_[nameCount_] = nm;
+                ids_[nameCount_] = id;
+                isWeight_[nameCount_] = rw;
+                nameCount_ = nameCount_ + 1;
+                t = t + 1;
+            }
+            // ---- ops：按类型接线 ----
+            int on = arrLen(j, "ops");
+            int o = 0;
+            while (o < on) {
+                string op = "ops." + o;
+                string type = j.getString(op + ".type");
+                int a = tensorId(j.getString(op + ".inputs.0"));
+                if (type == "dense") {
+                    int b = tensorId(j.getString(op + ".inputs.1"));
+                    int c = tensorId(j.getString(op + ".inputs.2"));
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addDense(a, b, c, out);
+                } else if (type == "relu") {
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addRelu(a, out);
+                } else if (type == "softmax") {
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addSoftmax(a, out);
+                } else if (type == "sigmoid") {
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addSigmoid(a, out);
+                } else if (type == "add") {
+                    int b = tensorId(j.getString(op + ".inputs.1"));
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addAdd(a, b, out);
+                } else if (type == "matmul") {
+                    int b = tensorId(j.getString(op + ".inputs.1"));
+                    int out = tensorId(j.getString(op + ".output"));
+                    rt.addMatmul(a, b, out);
+                }
+                o = o + 1;
+            }
+            // ---- weights：内联数组 或 二进制文件引用 ----
+            // 内联：{name, values:[...]}；二进制：{name, file, offset, count}
+            // （offset/count 以 double 计；可选顶层 weight_header = 文件头部要跳过的 int32 个数）
+            int wn = arrLen(j, "weights");
+            int wi = 0;
+            while (wi < wn) {
+                string wp = "weights." + wi;
+                string nm = j.getString(wp + ".name");
+                int tid = tensorId(nm);
+                if (tid >= 0) {
+                    if (j.type(wp + ".values") != -1) {
+                        int vn = j.arrayLen(wp + ".values");
+                        int v = 0;
+                        while (v < vn) {
+                            rt.setFlat(tid, v, j.getDouble(wp + ".values." + v));
+                            v = v + 1;
+                        }
+                    } else if (j.type(wp + ".file") != -1) {
+                        string path = j.getString(wp + ".file");
+                        int headerI32 = 0;
+                        if (j.type("weight_header") != -1) headerI32 = j.getInt("weight_header");
+                        int off = j.getInt(wp + ".offset");
+                        int cnt = j.getInt(wp + ".count");
+                        int r = loadBinaryWeights(path, headerI32, off, cnt, tid, rt);
+                        if (r == 0) return 0;
+                    }
+                }
+                wi = wi + 1;
+            }
+            return 1;
+        }
+
+        // 从二进制文件读取权重：先跳过 headerI32 个 int32，再跳过 offset 个 double，读 count 个 double
+        int loadBinaryWeights(string path, int headerI32, int offset, int count, int tid, InferenceRuntime rt) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int i = 0;
+            while (i < headerI32) { int x = __myp_io_read_i32be(); i = i + 1; }
+            i = 0;
+            while (i < offset) { double x = __myp_io_read_double(); i = i + 1; }
+            i = 0;
+            while (i < count) {
+                rt.setFlat(tid, i, __myp_io_read_double());
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            return 1;
+        }
+
+    property:
+        string[64] names_;
+        int[64] ids_;
+        int[64] isWeight_;
+        int nameCount_;
+}

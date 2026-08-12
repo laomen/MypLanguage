@@ -1,0 +1,43 @@
+{
+  "ffi": [
+    {
+      "name": "myp_h5_dataset_size",
+      "ret": "long",
+      "params": [
+        { "type": "long", "name": "fileId" },
+        { "type": "string", "name": "path" }
+      ]
+    },
+    {
+      "name": "myp_h5_read_double",
+      "ret": "long",
+      "params": [
+        { "type": "long", "name": "fileId" },
+        { "type": "string", "name": "path" },
+        { "type": "double[]", "name": "buffer" },
+        { "type": "long", "name": "size" }
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "H5File",
+      "handle": "long",
+      "invalid": "-1",
+      "open": {
+        "c": "myp_h5_open",
+        "ret": "long",
+        "params": [
+          { "type": "string", "name": "path" }
+        ]
+      },
+      "close": {
+        "c": "myp_h5_close",
+        "ret": "void",
+        "params": [
+          { "type": "long", "name": "handle" }
+        ]
+      }
+    }
+  ]
+}

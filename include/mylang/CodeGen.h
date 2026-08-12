@@ -442,7 +442,11 @@ private:
     std::string ptx_code_;  // Generated PTX for @gpu for kernels
     bool cuda_enabled_ = false;
     // Track array byte sizes for GPU data transfer
-    std::unordered_map<std::string, llvm::Value*> array_byte_sizes_;
+    // 局部动态数组的字节大小缓存：键=变量名，值=(所属函数, 字节数)。
+    // 按函数作用域：不同函数同名的局部数组互不污染（M4 GpuOps 大量用 a/b/o
+    // 等短名局部，若无函数作用域会让后续函数的同名参数读到别人的字节数 →
+    // @gpu for 少传/多传数据）。
+    std::unordered_map<std::string, std::pair<llvm::Function*, llvm::Value*>> array_byte_sizes_;
     /// Fixed-array local variable name → byte size（用于 return 时堆拷贝，避免悬垂指针）
     std::unordered_map<std::string, uint64_t> stack_array_sizes_;
 

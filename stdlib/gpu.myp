@@ -1,0 +1,221 @@
+// gpu.myp — MYP 通用 GPU 编程范式库：门面（用户唯一入口）
+//
+// 用法（L1 零配置）：
+//   import gpu;
+//   Gpu.add(a, b, out, n);          // 逐元素加法（自动 GPU / CPU 回退）
+//   double s = Gpu.sum(a, n);       // 归约
+//   double m = Gpu.max(a, n);
+//   int k = Gpu.argmax(a, n);
+//   Gpu.gemm(A, B, C, m, n, k);     // 矩阵乘
+//
+// 用法（L2 显式显存）：
+//   GpuBuffer buf = new GpuBuffer(x, n);   // 分配 + H2D
+//   buf.copyToHost(y, 0, 0, n);            // 取回
+//   buf.free();                            // 显式释放
+//
+// 设备信息：
+//   Gpu.backend();        // "CUDA"
+//   Gpu.deviceName();     // "NVIDIA ..."
+//   Gpu.deviceCount();
+//
+// 说明：本文件是门面；GpuBuffer/GpuDevice/GpuBackend 定义在 gpu/ 子目录，
+// import gpu 后一并可见（模块合并进同一翻译单元）。
+// 子目录模块用点分模块名导入（gpu.backend → stdlib/gpu/backend.myp）。
+
+import gpu.backend;
+import gpu.backend_cuda;
+import gpu.device;
+import gpu.memory;
+import gpu.stream;
+import gpu.ops;
+import cuda;
+
+class Gpu {
+    static:
+        // ---- L1：宿主数组（自动传输 / CPU 回退）----
+
+        // out[i] = a[i] + b[i]
+        void add(double[] a, double[] b, double[] out, long n) {
+            Vectors.add(a, b, out, n);
+        }
+        // out[i] = a[i] - b[i]
+        void sub(double[] a, double[] b, double[] out, long n) {
+            Vectors.sub(a, b, out, n);
+        }
+        // out[i] = a[i] * b[i]
+        void mul(double[] a, double[] b, double[] out, long n) {
+            Vectors.mul(a, b, out, n);
+        }
+        // data[i] = data[i] * s
+        void scale(double[] data, double s, long n) {
+            Vectors.scale(data, s, n);
+        }
+        // Σ a[i]
+        double sum(double[] a, long n) {
+            return Vectors.sum(a, n);
+        }
+        // 最大值
+        double max(double[] a, long n) {
+            return Vectors.max(a, n);
+        }
+        // 最小值
+        double min(double[] a, long n) {
+            return Vectors.min(a, n);
+        }
+        // 最大元素下标
+        int argmax(double[] a, long n) {
+            return Vectors.argmax(a, n);
+        }
+        // C[m×n] = A[m×k] · B[k×n]（行主序）
+        void gemm(double[] A, double[] B, double[] C, long m, long n, long k) {
+            Matrix.matmul(A, B, C, m, n, k);
+        }
+        // C[m×n] = A[m×k] · B[k×n]（float）
+        void gemmF(float[] A, float[] B, float[] C, long m, long n, long k) {
+            Matrix.matmulF(A, B, C, m, n, k);
+        }
+
+        // ---- L1 补全：宿主数组原语（自动传输 / CPU 回退）----
+
+        // data[i] = data[i] + s
+        void addScalar(double[] data, double s, long n) {
+            Vectors.addScalar(data, s, n);
+        }
+        // data[i] = s
+        void fill(double[] data, double s, long n) {
+            Vectors.fill(data, s, n);
+        }
+        // out[i] = alpha * x[i] + y[i]
+        void saxpy(double alpha, double[] x, double[] y, double[] out, long n) {
+            Vectors.saxpy(alpha, x, y, out, n);
+        }
+        // dst[i] = src[i]
+        void copy(double[] dst, double[] src, long n) {
+            Vectors.copy(dst, src, n);
+        }
+        // data[i] = -data[i]
+        void negate(double[] data, long n) {
+            Vectors.negate(data, n);
+        }
+        // data[i] = clamp(data[i], lo, hi)
+        void clamp(double[] data, double lo, double hi, long n) {
+            Vectors.clamp(data, lo, hi, n);
+        }
+        // Σ a[i] * b[i]
+        double dot(double[] a, double[] b, long n) {
+            return Vectors.dot(a, b, n);
+        }
+        double dotF(float[] a, float[] b, long n) {
+            return Vectors.dotF(a, b, n);
+        }
+        // 均值 / 方差 / 标准差
+        double mean(double[] a, long n) { return Vectors.mean(a, n); }
+        double variance(double[] a, long n) { return Vectors.variance(a, n); }
+        double stddev(double[] a, long n) { return Vectors.stddev(a, n); }
+        // 二范数 / 二范数平方 / 归一化
+        double norm(double[] a, long n) { return Vectors.norm(a, n); }
+        double normSquared(double[] a, long n) { return Vectors.normSquared(a, n); }
+        void normalize(double[] data, long n) { Vectors.normalize(data, n); }
+        // 数学：sqrt / exp / log / abs / pow
+        void sqrt(double[] data, long n) { Vectors.sqrt(data, n); }
+        void exp(double[] data, long n) { Vectors.exp(data, n); }
+        void log(double[] data, long n) { Vectors.log(data, n); }
+        void abs(double[] data, long n) { Vectors.abs(data, n); }
+        void pow(double[] data, double p, long n) { Vectors.pow(data, p, n); }
+        // float 变体归约
+        float maxF(float[] a, long n) { return Vectors.maxF(a, n); }
+        float minF(float[] a, long n) { return Vectors.minF(a, n); }
+        int argmaxF(float[] a, long n) { return Vectors.argmaxF(a, n); }
+        // 转置：T[i*rows+j] = A[j*cols+i]
+        void transpose(double[] a, double[] t, long rows, long cols) {
+            Matrix.transpose(a, t, rows, cols);
+        }
+
+        // ---- L2 显式缓冲计算（设备驻留，零逐算子传输）----
+        // 仅在缓冲区有效（GPU 可用）时执行；CPU 回退请用 L1 宿主数组版。
+
+        void mapBuf(GpuBuffer in, GpuBuffer out, double s, long n) {
+            if (in.valid() == 1 && out.valid() == 1) GpuOps.mapD(in.devicePtr(), out.devicePtr(), n, s);
+        }
+        void addBuf(GpuBuffer a, GpuBuffer b, GpuBuffer out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.addD(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void subBuf(GpuBuffer a, GpuBuffer b, GpuBuffer out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.subD(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void mulBuf(GpuBuffer a, GpuBuffer b, GpuBuffer out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.mulD(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void scaleBuf(GpuBuffer buf, double s, long n) {
+            if (buf.valid() == 1) GpuOps.scaleD(buf.devicePtr(), n, s);
+        }
+        void axpyBuf(double alpha, GpuBuffer x, GpuBuffer y, GpuBuffer out, long n) {
+            if (x.valid() == 1 && y.valid() == 1 && out.valid() == 1) GpuOps.axpyD(x.devicePtr(), y.devicePtr(), out.devicePtr(), n, alpha);
+        }
+        double sumBuf(GpuBuffer in, long n) {
+            if (in.valid() == 1) return GpuOps.sumD(in.devicePtr(), n);
+            return 0.0;
+        }
+        double maxBuf(GpuBuffer in, long n) {
+            if (in.valid() == 1) return GpuOps.maxD(in.devicePtr(), n);
+            return 0.0;
+        }
+        double minBuf(GpuBuffer in, long n) {
+            if (in.valid() == 1) return GpuOps.minD(in.devicePtr(), n);
+            return 0.0;
+        }
+        int argmaxBuf(GpuBuffer in, long n) {
+            if (in.valid() == 1) return GpuOps.argmaxD(in.devicePtr(), n);
+            return 0;
+        }
+        void gemmBuf(GpuBuffer A, GpuBuffer B, GpuBuffer C, long m, long n, long k) {
+            if (A.valid() == 1 && B.valid() == 1 && C.valid() == 1) GpuOps.gemmD(A.devicePtr(), B.devicePtr(), C.devicePtr(), m, n, k);
+        }
+
+        // ---- L2 float 缓冲（GpuBufferF）----
+        void mapBufF(GpuBufferF in, GpuBufferF out, float s, long n) {
+            if (in.valid() == 1 && out.valid() == 1) GpuOps.mapF(in.devicePtr(), out.devicePtr(), n, s);
+        }
+        void addBufF(GpuBufferF a, GpuBufferF b, GpuBufferF out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.addF(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void subBufF(GpuBufferF a, GpuBufferF b, GpuBufferF out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.subF(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void mulBufF(GpuBufferF a, GpuBufferF b, GpuBufferF out, long n) {
+            if (a.valid() == 1 && b.valid() == 1 && out.valid() == 1) GpuOps.mulF(a.devicePtr(), b.devicePtr(), out.devicePtr(), n);
+        }
+        void scaleBufF(GpuBufferF buf, float s, long n) {
+            if (buf.valid() == 1) GpuOps.scaleF(buf.devicePtr(), n, s);
+        }
+        void axpyBufF(float alpha, GpuBufferF x, GpuBufferF y, GpuBufferF out, long n) {
+            if (x.valid() == 1 && y.valid() == 1 && out.valid() == 1) GpuOps.axpyF(x.devicePtr(), y.devicePtr(), out.devicePtr(), n, alpha);
+        }
+        float sumBufF(GpuBufferF in, long n) {
+            if (in.valid() == 1) return GpuOps.sumF(in.devicePtr(), n);
+            return float(0.0);
+        }
+        float maxBufF(GpuBufferF in, long n) {
+            if (in.valid() == 1) return GpuOps.maxF(in.devicePtr(), n);
+            return float(0.0);
+        }
+        float minBufF(GpuBufferF in, long n) {
+            if (in.valid() == 1) return GpuOps.minF(in.devicePtr(), n);
+            return float(0.0);
+        }
+        int argmaxBufF(GpuBufferF in, long n) {
+            if (in.valid() == 1) return GpuOps.argmaxF(in.devicePtr(), n);
+            return 0;
+        }
+        void gemmBufF(GpuBufferF A, GpuBufferF B, GpuBufferF C, long m, long n, long k) {
+            if (A.valid() == 1 && B.valid() == 1 && C.valid() == 1) GpuOps.gemmF(A.devicePtr(), B.devicePtr(), C.devicePtr(), m, n, k);
+        }
+
+        // ---- 后端 / 设备 ----
+        string backend() { return GpuBackend.name(); }
+        int available() { return GpuBackend.available(); }
+        int deviceCount() { return GpuDevice.count(); }
+        string deviceName() { return GpuDevice.name(); }
+        long deviceMemory() { return GpuDevice.memory(); }
+        int deviceCapability() { return GpuDevice.capability(); }
+}

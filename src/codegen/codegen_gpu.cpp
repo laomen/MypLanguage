@@ -645,6 +645,8 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             if (is_double) {
                                 if (val->getType()->isIntegerTy())
                                     val = kb.CreateSIToFP(val, double_ty);
+                                else if (val->getType()->isFloatTy())
+                                    val = kb.CreateFPExt(val, double_ty);  // float→double
                                 return kb.CreateAtomicRMW(llvm::AtomicRMWInst::FAdd, elem_ptr, val,
                                     llvm::MaybeAlign(), llvm::AtomicOrdering::SequentiallyConsistent);
                             } else {
@@ -1218,24 +1220,39 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
             auto& vds = static_cast<const VarDeclStmt&>(stmt);
             auto* kernel_func = kb.GetInsertBlock()->getParent();
             for (auto& d : vds.decls) {
-                // Evaluate init expr ONCE to get value and type
+                // 用「声明类型」确定变量类型（不能用初始化表达式类型——
+                // `double x = <float expr>` 必须分配 double 并 fpext）。
                 llvm::Value* init_val = nullptr;
                 llvm::Type* var_ty = i64_ty;
+                llvm::Type* declared_ty = getLLVMType(typeNodeToCodegenType(d.type));
+                if (declared_ty) var_ty = declared_ty;
                 if (d.init_expr) {
                     init_val = emitKernelExpr(*d.init_expr, kb, kernel_vars,
                                                kernel_arg_values, loop_var_name, tid_val);
-                    if (init_val) var_ty = init_val->getType();
+                    if (init_val && !declared_ty) var_ty = init_val->getType();
                 }
                 // Create alloca for mutable local variable
                 llvm::BasicBlock& entry_b = kernel_func->getEntryBlock();
                 llvm::IRBuilder<> entry_kb(&entry_b, entry_b.getFirstInsertionPt());
                 auto* alloca_p = entry_kb.CreateAlloca(var_ty, nullptr, d.name);
                 kernel_vars[d.name] = alloca_p;
-                
+
                 if (init_val) {
-                    if (init_val->getType() != var_ty) {
-                        if (var_ty->isIntegerTy() && init_val->getType()->isIntegerTy())
-                            init_val = kb.CreateIntCast(init_val, var_ty, true);
+                    llvm::Type* src = init_val->getType();
+                    llvm::Type* dst = var_ty;
+                    if (src != dst) {
+                        if (src->isDoubleTy() && dst->isFloatTy())
+                            init_val = kb.CreateFPTrunc(init_val, dst);
+                        else if (src->isFloatTy() && dst->isDoubleTy())
+                            init_val = kb.CreateFPExt(init_val, dst);
+                        else if (src->isFloatingPointTy() && dst->isIntegerTy())
+                            init_val = kb.CreateFPToSI(init_val, dst);
+                        else if (src->isIntegerTy() && dst->isFloatingPointTy())
+                            init_val = kb.CreateSIToFP(init_val, dst);
+                        else if (src->isIntegerTy() && dst->isIntegerTy())
+                            init_val = kb.CreateIntCast(init_val, dst, true);
+                        else if (src->isFloatingPointTy() && dst->isFloatingPointTy())
+                            init_val = kb.CreateFPExt(init_val, dst);
                     }
                     kb.CreateStore(init_val, alloca_p);
                 }
@@ -1855,12 +1872,47 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         }
     }
 
+    // ---- M3.5 内核优化：默认 O2（与宿主 -O 解耦），MYP_GPU_KERNEL_OPT 可覆盖 ----
+    // 之前内核以 -O0 直出 PTX（只内联+删死码），卷积等大循环未展开/向量化。
+    // 这里对内核模块跑 LLVM 默认模块管线（SROA/InstCombine/GVN/LICM/循环展开/
+    // 向量化等），再用对应 CodeGenOptLevel 生成 PTX。
+    unsigned kopt = 2;
+    if (const char* env = getenv("MYP_GPU_KERNEL_OPT")) {
+        std::string want(env);
+        if (want == "O0") kopt = 0;
+        else if (want == "O1") kopt = 1;
+        else if (want == "O2") kopt = 2;
+        else if (want == "O3") kopt = 3;
+    }
+    tm->setOptLevel(kopt >= 3 ? llvm::CodeGenOptLevel::Aggressive :
+                   kopt == 2 ? llvm::CodeGenOptLevel::Default :
+                   kopt == 1 ? llvm::CodeGenOptLevel::Less :
+                               llvm::CodeGenOptLevel::None);
+    if (kopt > 0) {
+        llvm::OptimizationLevel OL =
+            kopt >= 3 ? llvm::OptimizationLevel::O3 :
+            kopt == 2 ? llvm::OptimizationLevel::O2 :
+                        llvm::OptimizationLevel::O1;
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+        llvm::PassBuilder PB(tm);  // 带 TM → TTI 注册，向量化有成本模型
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OL);
+        MPM.addPass(llvm::VerifierPass());
+        MPM.run(*ptx_mod, MAM);
+    }
+
     // Emit PTX
     llvm::legacy::PassManager pm;
     llvm::SmallString<16384> ptx_buf;
     llvm::raw_svector_ostream ptx_os(ptx_buf);
 
-    tm->setOptLevel(llvm::CodeGenOptLevel::None);
     if (tm->addPassesToEmitFile(pm, ptx_os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
         diag_.warn(SourceRange{}, "NVPTX cannot emit PTX");
         delete tm;
@@ -1932,8 +1984,16 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     };
     std::vector<ArrayAlloc> array_allocs;
 
+    // M3 设备驻留：resident(arr = devVar) — 被标记数组跳过 H2D/D2H/释放，
+    // 内核直接使用 devVar（long）所持设备指针。
+    std::map<std::string, std::string> resident_dev;
+    for (auto& [arr, dev] : s.resident)
+        resident_dev[arr] = dev;
+
+
     for (auto& ka : kernel_args_) {
         if (!ka.is_array) continue;
+        if (resident_dev.count(ka.name)) continue;  // M3: 设备驻留，跳过传输
 
         llvm::Value* host_ptr = nullptr;
         llvm::Value* byte_size = nullptr;
@@ -1950,29 +2010,32 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
             auto bsit = array_byte_sizes_.find(ka.name);
             bool bs_valid = false;
             if (bsit != array_byte_sizes_.end()) {
-                auto* bs_val = bsit->second;
-                if (llvm::isa<llvm::Constant>(bs_val))
-                    bs_valid = true;
-                else if (auto* bi = llvm::dyn_cast<llvm::Instruction>(bs_val))
-                    bs_valid = (bi->getFunction() == func);
+                // 仅信任属于当前函数的字节数（函数参数/跨函数同名局部不会被
+                // 其它函数的缓存污染）。
+                bs_valid = (bsit->second.first == func);
             }
             if (bs_valid) {
-                byte_size = bsit->second;
+                byte_size = bsit->second.second;
             } else {
                 auto eit = array_elem_types_.find(ka.name);
+                uint64_t elem_sz = 8;
                 if (eit != array_elem_types_.end()) {
-                    auto* elem_size = llvm::ConstantInt::get(i64_ty,
-                        eit->second->isDoubleTy() ? 8 :
-                        eit->second->isIntegerTy(32) ? 4 : 8);
-                    // Transfer exactly the elements the kernel touches (0..n-1).
-                    // NOTE: do NOT pad to a large minimum size here — the host
-                    // arrays may be exactly n elements, and a padded copy-back
-                    // would write past the end of the host array (heap overflow).
-                    byte_size = builder_.CreateMul(n_val, elem_size, ka.name + "_sz");
-                } else {
-                    byte_size = builder_.CreateMul(n_val, llvm::ConstantInt::get(i64_ty, 8),
-                                                   ka.name + "_sz");
+                    if (eit->second->isDoubleTy()) elem_sz = 8;
+                    else if (eit->second->isFloatTy()) elem_sz = 4;
+                    else if (eit->second->isIntegerTy(32)) elem_sz = 4;
                 }
+                // 从 ref-counted 数组头（obj-24: count * elem_size）读取真实字节数。
+                // loop_bound × elem_size 对参数/属性数组超/欠传输（kernel 访问可能
+                // 超出 loop_bound 或数组小于 loop_bound），改用真实大小最稳妥。
+                // 注意：固定栈数组（double[1] 等）无数组头，不能被 @gpu for 捕获；
+                //       调用方需用 new 分配（如 double[] acc = new double[1]）。
+                auto* i8_ty = llvm::Type::getInt8Ty(ctx_);
+                auto* hdr = builder_.CreateGEP(i8_ty, loaded,
+                    llvm::ConstantInt::get(i64_ty, -(int64_t)24), ka.name + "_hdr");
+                auto* cnt_ptr = builder_.CreateBitCast(hdr, llvm::PointerType::get(i64_ty, 0));
+                auto* cnt = builder_.CreateLoad(i64_ty, cnt_ptr, ka.name + "_cnt");
+                byte_size = builder_.CreateMul(cnt, llvm::ConstantInt::get(i64_ty, elem_sz),
+                                               ka.name + "_sz");
             }
         }
 
@@ -2013,11 +2076,25 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         llvm::Value* store_val = nullptr;
         if (ka.is_array) {
             // For arrays: pass pointer to GPU device pointer
-            auto gpit = gpu_ptr_map.find(ka.name);
-            if (gpit != gpu_ptr_map.end()) {
-                auto* tmp = builder_.CreateAlloca(ptr_ty);
-                builder_.CreateStore(gpit->second, tmp);
-                store_val = tmp;
+            auto rdit = resident_dev.find(ka.name);
+            if (rdit != resident_dev.end()) {
+                // M3 设备驻留：设备指针来自 devVar（long，i64）的值
+                auto* nv = getNamedValue(rdit->second);
+                if (nv) {
+                    auto* dev_val = builder_.CreateLoad(builder_.getInt64Ty(), nv,
+                                                        ka.name + "_dev");
+                    auto* dev_ptr = builder_.CreateIntToPtr(dev_val, ptr_ty, ka.name + "_devptr");
+                    auto* tmp = builder_.CreateAlloca(ptr_ty);
+                    builder_.CreateStore(dev_ptr, tmp);
+                    store_val = tmp;
+                }
+            } else {
+                auto gpit = gpu_ptr_map.find(ka.name);
+                if (gpit != gpu_ptr_map.end()) {
+                    auto* tmp = builder_.CreateAlloca(ptr_ty);
+                    builder_.CreateStore(gpit->second, tmp);
+                    store_val = tmp;
+                }
             }
         } else {
             // Scalar: store value in temp alloca

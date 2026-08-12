@@ -210,7 +210,7 @@ private:
                 v.init ? cloneStmt(*v.init, args) : nullptr,
                 v.condition ? cloneExpr(*v.condition, args) : nullptr,
                 v.step ? cloneExpr(*v.step, args) : nullptr,
-                v.body ? cloneStmt(*v.body, args) : nullptr, v.range, v.parallel, v.gpu);
+                v.body ? cloneStmt(*v.body, args) : nullptr, v.range, v.parallel, v.gpu, v.resident);
         }
         case StmtKind::ForInStmt: {
             auto& v = static_cast<const ForInStmt&>(s);

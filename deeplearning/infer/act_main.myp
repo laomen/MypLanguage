@@ -1,0 +1,92 @@
+// act_main.myp — G4：通用激活端到端测试
+// act_test.onnx（opset14）：x[1,8] → 三独立分支 Clip(x,0,6) / LeakyRelu(0.2) / HardSwish
+// 输出与 onnxruntime 参考逐元素对比（SiLU 由 tests/@test/act_opt.myp 手工参考验证，
+// 因本环境 onnx/ort 未注册 SiLU schema）。
+import env;
+import cuda;
+import "./pb.myp";
+import "./runtime.myp";
+import "./onnx_loader.myp";
+
+class ActTestApp {
+    action:
+        @constructor ActTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/act_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("act load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            int inT = loader.tensorId("x");
+            if (inT < 0) { Console.writeLine("input not found"); return; }
+            double[] buf = new double[32];
+            readF32("./deeplearning/data/onnx/act_input.f32", buf, 8);
+            int i = 0;
+            while (i < 8) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            rt.run();
+
+            int ok6 = checkOut(rt, loader.tensorId("y6"), "/tmp/act_y6.bin", 8, "Clip");
+            // 调试：打印 y6 实际输出
+            int dtid = loader.tensorId("y6");
+            Console.writeString("y6 actual: ");
+            int di = 0;
+            while (di < 8) { Console.writeFloat(rt.getFlat(dtid, di)); di = di + 1; }
+            int okl = checkOut(rt, loader.tensorId("yl"), "/tmp/act_yl.bin", 8, "LeakyRelu");
+            int okh = checkOut(rt, loader.tensorId("yh"), "/tmp/act_yh.bin", 8, "HardSwish");
+            if (ok6 == 1 && okl == 1 && okh == 1) Console.writeLine("ACT ALL OK");
+            else Console.writeLine("ACT MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        // 对比输出张量（tid）与参考文件，返回 1=通过
+        int checkOut(InferenceRuntime rt, int tid, string path, int n, string label) {
+            if (tid < 0) return 0;
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString(label);
+            Console.writeString(" max diff: ");
+            Console.writeFloat(maxD);
+            if (maxD < 1.0e-4) { Console.writeLine("  OK"); return 1; }
+            Console.writeLine("  MISMATCH");
+            return 0;
+        }
+}
+
+int main() {
+    ActTestApp app = new ActTestApp();
+    return 0;
+}

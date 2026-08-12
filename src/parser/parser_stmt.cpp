@@ -489,9 +489,28 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
         step = parseExpr();
     }
     consume(TokenKind::RightParen, "expected ')' after for clauses");
+
+    // @gpu for 设备驻留子句（M3）：resident(arr1 = dev1, arr2 = dev2)
+    // 仅在 "for (...)" 后紧跟标识符 resident + '(' 时识别（否则当作普通语句体）。
+    std::vector<std::pair<std::string, std::string>> resident;
+    if (check(TokenKind::Identifier) && peek().value == "resident" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // resident
+        consume(TokenKind::LeftParen, "expected '(' after 'resident'");
+        while (true) {
+            std::string arr = parseIdentifier("expected array name in resident clause");
+            consume(TokenKind::Equal, "expected '=' in resident clause");
+            std::string dev = parseIdentifier("expected device-pointer variable after '='");
+            resident.push_back({arr, dev});
+            if (!match(TokenKind::Comma)) break;
+        }
+        consume(TokenKind::RightParen, "expected ')' after resident clause");
+    }
+
     auto body = parseStatement();
     return std::make_unique<ForStmt>(std::move(init), std::move(cond),
-                                      std::move(step), std::move(body), r);
+                                      std::move(step), std::move(body), r,
+                                      false, false, std::move(resident));
 }
 
 std::unique_ptr<Stmt> Parser::parseForInStmt(bool parenthesized, bool has_explicit_type) {

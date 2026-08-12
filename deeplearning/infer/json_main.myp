@@ -1,0 +1,74 @@
+// json_main.myp — 通用 JSON 模型推理入口（图结构完全由 JSON 描述）
+import env;
+import "./runtime.myp";
+import "./model_loader.myp";
+
+int expectXor(int x0, int x1) {
+    if (x0 == x1) return 0;
+    return 1;
+}
+
+int runCase(InferenceRuntime rt, int inputTid, int probTid, double x0, double x1) {
+    rt.setFlat(inputTid, 0, x0);
+    rt.setFlat(inputTid, 1, x1);
+    rt.run();
+    return rt.argmax1d(probTid);
+}
+
+class JsonInferApp {
+    action:
+        @constructor JsonInferApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+
+            ModelLoader loader = new ModelLoader();
+            int ok = loader.load("./deeplearning/infer/models/xor_model.json", rt);
+            if (ok == 0) {
+                Console.writeLine("model load failed");
+                return;
+            }
+
+            int inputTid = loader.tensorId("input");
+            int probTid = loader.tensorId("prob");
+
+            int pass = 0;
+            int total = 4;
+
+            int a0 = runCase(rt, inputTid, probTid, 0.0, 0.0);
+            printProb(rt, probTid);
+            if (a0 == expectXor(0, 0)) pass = pass + 1;
+
+            int a1 = runCase(rt, inputTid, probTid, 0.0, 1.0);
+            printProb(rt, probTid);
+            if (a1 == expectXor(0, 1)) pass = pass + 1;
+
+            int a2 = runCase(rt, inputTid, probTid, 1.0, 0.0);
+            printProb(rt, probTid);
+            if (a2 == expectXor(1, 0)) pass = pass + 1;
+
+            int a3 = runCase(rt, inputTid, probTid, 1.0, 1.0);
+            printProb(rt, probTid);
+            if (a3 == expectXor(1, 1)) pass = pass + 1;
+
+            Console.writeString("JSON XOR accuracy: ");
+            Console.writeLong(pass);
+            Console.writeString("/");
+            Console.writeLong(total);
+            Console.writeLine("");
+        }
+
+        void printProb(InferenceRuntime rt, int probTid) {
+            double p0 = rt.getFlat(probTid, 0);
+            double p1 = rt.getFlat(probTid, 1);
+            Console.writeString("p0=");
+            Console.writeFloat(p0);
+            Console.writeString(" p1=");
+            Console.writeFloat(p1);
+            Console.writeLine("");
+        }
+}
+
+int main() {
+    JsonInferApp app = new JsonInferApp();
+    return 0;
+}

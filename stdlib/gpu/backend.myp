@@ -1,0 +1,61 @@
+// backend.myp — GpuBackend：后端接口 + 注册（M1：唯一后端为 CUDA）
+//
+// 用户一般不直接调用 GpuBackend（GpuBuffer/GpuDevice 已封装）。
+// 它是"后端即插即用点"：新增后端时写 backend_xxx.myp 并把这里的转发
+// 换成可配置注册表（M5 多后端）。当前所有方法转发到 CudaBackend。
+
+import gpu.backend_cuda;
+
+class GpuBackend {
+    static:
+        string name() { return CudaBackend.name(); }
+        int available() { return CudaBackend.available(); }
+        int count() { return CudaBackend.count(); }
+
+        long alloc(int bytes) { return CudaBackend.alloc(bytes); }
+        int free(long dev) { return CudaBackend.free(dev); }
+
+        int copyH2D(long dev, double[] host, int srcOff, int dstOff, int len) {
+            return CudaBackend.copyH2D(dev, host, srcOff, dstOff, len);
+        }
+        int copyD2H(double[] host, long dev, int srcOff, int dstOff, int len) {
+            return CudaBackend.copyD2H(host, dev, srcOff, dstOff, len);
+        }
+        int copyH2DF(long dev, float[] host, int srcOff, int dstOff, int len) {
+            return CudaBackend.copyH2DF(dev, host, srcOff, dstOff, len);
+        }
+        int copyD2HF(float[] host, long dev, int srcOff, int dstOff, int len) {
+            return CudaBackend.copyD2HF(host, dev, srcOff, dstOff, len);
+        }
+        int copyD2D(long dst, long dstOff, long src, long srcOff, long bytes) {
+            return CudaBackend.copyD2D(dst, dstOff, src, srcOff, bytes);
+        }
+        int sync() { return CudaBackend.sync(); }
+
+        long streamCreate() { return CudaBackend.streamCreate(); }
+        int streamSync(long s) { return CudaBackend.streamSync(s); }
+        int streamDestroy(long s) { return CudaBackend.streamDestroy(s); }
+
+        int copyH2DAsync(long dev, double[] host, int srcOff, int dstOff, int len, long stream) {
+            return CudaBackend.copyH2DAsync(dev, host, srcOff, dstOff, len, stream);
+        }
+        int copyD2HAsync(double[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            return CudaBackend.copyD2HAsync(host, dev, srcOff, dstOff, len, stream);
+        }
+        int copyH2DFAsync(long dev, float[] host, int srcOff, int dstOff, int len, long stream) {
+            return CudaBackend.copyH2DFAsync(dev, host, srcOff, dstOff, len, stream);
+        }
+        int copyD2HFAsync(float[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            return CudaBackend.copyD2HFAsync(host, dev, srcOff, dstOff, len, stream);
+        }
+        int copyD2DAsync(long dst, long dstOff, long src, long srcOff, long bytes, long stream) {
+            return CudaBackend.copyD2DAsync(dst, dstOff, src, srcOff, bytes, stream);
+        }
+
+        long eventCreate() { return CudaBackend.eventCreate(); }
+        int eventRecord(long ev, long stream) { return CudaBackend.eventRecord(ev, stream); }
+        int eventWait(long ev, long stream) { return CudaBackend.eventWait(ev, stream); }
+        int eventSync(long ev) { return CudaBackend.eventSync(ev); }
+        double eventElapsed(long evStart, long evEnd) { return CudaBackend.eventElapsed(evStart, evEnd); }
+        int eventDestroy(long ev) { return CudaBackend.eventDestroy(ev); }
+}

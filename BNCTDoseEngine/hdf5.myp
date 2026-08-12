@@ -1,11 +1,37 @@
 // hdf5.myp — HDF5 截面数据读取
 import env;
 
-// FFI 声明 (使用 __ 前缀避免与类方法名冲突)
-ffi long myp_h5_open(string path);
-ffi void myp_h5_close(long fileId);
+// ── 由 tools/codegen schema_hdf5.json 生成同构接口，兼容 BNCT 现有调用 ──
 ffi long myp_h5_dataset_size(long fileId, string path);
 ffi long myp_h5_read_double(long fileId, string path, double[] buffer, long size);
+ffi long myp_h5_open(string path);
+ffi void myp_h5_close(long handle);
+
+class H5File {
+    action:
+        @constructor H5File() {
+            handle_ = -1;
+        }
+
+        long open(string path) {
+            handle_ = myp_h5_open(path);
+            return handle_;
+        }
+
+        void close() {
+            if (handle_ != -1) {
+                myp_h5_close(handle_);
+                handle_ = -1;
+            }
+        }
+
+        long getHandle() {
+            return handle_;
+        }
+
+    property:
+        long handle_;
+}
 
 class H5 {
     static:
@@ -17,13 +43,14 @@ class H5 {
         }
 
         double[] loadDataset(string filePath, string datasetPath) {
-            long fid = myp_h5_open(filePath);
+            H5File f = new H5File();
+            long fid = f.open(filePath);
             if (fid < 0L) { double[] e; return e; }
             long n = myp_h5_dataset_size(fid, datasetPath);
-            if (n <= 0L) { myp_h5_close(fid); double[] e; return e; }
+            if (n <= 0L) { f.close(); double[] e; return e; }
             double[] data = new double[n];
             long read = myp_h5_read_double(fid, datasetPath, data, n);
-            myp_h5_close(fid);
+            f.close();
             if (read != n) { double[] e; return e; }
             return data;
         }

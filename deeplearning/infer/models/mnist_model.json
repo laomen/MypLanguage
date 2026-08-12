@@ -1,0 +1,29 @@
+{
+  "name": "mnist_mlp",
+  "weight_header": 3,
+  "tensors": [
+    { "name": "input",   "rows": 784, "cols": 1 },
+    { "name": "w1",      "rows": 64,  "cols": 784, "role": "weight" },
+    { "name": "b1",      "rows": 64,  "cols": 1,   "role": "weight" },
+    { "name": "h",       "rows": 64,  "cols": 1 },
+    { "name": "h_relu",  "rows": 64,  "cols": 1 },
+    { "name": "w2",      "rows": 10,  "cols": 64,  "role": "weight" },
+    { "name": "b2",      "rows": 10,  "cols": 1,   "role": "weight" },
+    { "name": "logits",  "rows": 10,  "cols": 1 },
+    { "name": "prob",    "rows": 10,  "cols": 1 }
+  ],
+  "ops": [
+    { "type": "dense",   "inputs": ["input", "w1", "b1"], "output": "h" },
+    { "type": "relu",    "inputs": ["h"],                 "output": "h_relu" },
+    { "type": "dense",   "inputs": ["h_relu", "w2", "b2"], "output": "logits" },
+    { "type": "softmax", "inputs": ["logits"],            "output": "prob" }
+  ],
+  "inputs":  ["input"],
+  "outputs": ["prob"],
+  "weights": [
+    { "name": "w1", "file": "deeplearning/data/mnist_weights.bin", "offset": 0,     "count": 50176 },
+    { "name": "w2", "file": "deeplearning/data/mnist_weights.bin", "offset": 50176, "count": 640 },
+    { "name": "b1", "file": "deeplearning/data/mnist_weights.bin", "offset": 50816, "count": 64 },
+    { "name": "b2", "file": "deeplearning/data/mnist_weights.bin", "offset": 50880, "count": 10 }
+  ]
+}

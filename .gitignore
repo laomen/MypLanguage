@@ -34,3 +34,8 @@ raylib-master*
 mypview/
 __pycache__/
 BNCTDoseEngine/build/
+
+# Python virtual environments（不打包）
+**/onnxvenv/
+**/venv/
+**/.venv/

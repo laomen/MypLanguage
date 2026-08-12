@@ -1,0 +1,617 @@
+// ops.myp — Core inference operators (CPU/FP32 style using double)
+import env;
+import math;
+
+class InferOps {
+    static:
+        // y = W x + b（batch 沿列并行）
+        // x: [inDim, batch], W: [outDim, inDim], b: [outDim, 1], y: [outDim, batch]
+        void dense(
+            float[] arena,
+            int xOff, int inDim, int batch,
+            int wOff, int outDim,
+            int bOff,
+            int yOff
+        ) {
+            int i = 0;
+            while (i < outDim) {
+                int k = 0;
+                while (k < batch) {
+                    float sum = arena[bOff + i];
+                    int j = 0;
+                    while (j < inDim) {
+                        sum = sum + arena[wOff + i * inDim + j] * arena[xOff + j * batch + k];
+                        j = j + 1;
+                    }
+                    arena[yOff + i * batch + k] = sum;
+                    k = k + 1;
+                }
+                i = i + 1;
+            }
+        }
+
+        // y = W x（无偏置；batch 沿列）
+        // x: [inDim, batch], W: [outDim, inDim], y: [outDim, batch]
+        void matmul(float[] arena, int xOff, int inDim, int batch, int wOff, int outDim, int yOff) {
+            int i = 0;
+            while (i < outDim) {
+                int k = 0;
+                while (k < batch) {
+                    float sum = float(0.0);
+                    int j = 0;
+                    while (j < inDim) {
+                        sum = sum + arena[wOff + i * inDim + j] * arena[xOff + j * batch + k];
+                        j = j + 1;
+                    }
+                    arena[yOff + i * batch + k] = sum;
+                    k = k + 1;
+                }
+                i = i + 1;
+            }
+        }
+
+        void relu(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float v = arena[inOff + i];
+                if (v > float(0.0)) arena[outOff + i] = v;
+                else arena[outOff + i] = float(0.0);
+                i = i + 1;
+            }
+        }
+
+        void sigmoid(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float x = arena[inOff + i];
+                float e = float(Math.exp(float(0.0) - x));
+                arena[outOff + i] = float(1.0) / (float(1.0) + e);
+                i = i + 1;
+            }
+        }
+
+        // 每列一个样本，沿行做 softmax（batch=1 时等价于整行 softmax）
+        void softmax(float[] arena, int inOff, int outOff, int rows, int cols) {
+            int k = 0;
+            while (k < cols) {
+                float maxv = arena[inOff + 0 * cols + k];
+                int i = 1;
+                while (i < rows) {
+                    float v = arena[inOff + i * cols + k];
+                    if (v > maxv) maxv = v;
+                    i = i + 1;
+                }
+
+                float sum = float(0.0);
+                i = 0;
+                while (i < rows) {
+                    float e = float(Math.exp(arena[inOff + i * cols + k] - maxv));
+                    arena[outOff + i * cols + k] = e;
+                    sum = sum + e;
+                    i = i + 1;
+                }
+
+                i = 0;
+                while (i < rows) {
+                    arena[outOff + i * cols + k] = arena[outOff + i * cols + k] / sum;
+                    i = i + 1;
+                }
+                k = k + 1;
+            }
+        }
+
+        void add(float[] arena, int aOff, int bOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                arena[outOff + i] = arena[aOff + i] + arena[bOff + i];
+                i = i + 1;
+            }
+        }
+
+        // ---- CNN：4D NCHW 行优先（flat = N*C*H*W）----
+
+        // 卷积（支持 group、strides、pads、dilations）
+        // x: [N, C, H, W]，w: [yC, C/group, kh, kw]，b: [yC]，y: [N, yC, yH, yW]
+        void conv(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yH, int yW,
+            int kh, int kw,
+            int sh, int sw, int pt, int pb, int pl, int pr,
+            int dh, int dw, int group
+        ) {
+            int cpg = xC / group;          // 每组的输入通道
+            int ocpg = yC / group;          // 每组的输出通道
+            int wc = cpg * kh * kw;         // 每个输出通道的权重数
+            int n = 0;
+            while (n < xN) {
+                int oc = 0;
+                while (oc < yC) {
+                    int g = oc / ocpg;
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float sum = float(0.0);
+                            if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
+                            int ic = 0;
+                            while (ic < cpg) {
+                                int cIn = g * cpg + ic;
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int iy = oy * sh - pt + ky * dh;
+                                    if (iy >= 0 && iy < xH) {
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            int ix = ox * sw - pl + kx * dw;
+                                            if (ix >= 0 && ix < xW) {
+                                                float xv = arena[xOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix];
+                                                float wv = arena[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                                sum = sum + xv * wv;
+                                            }
+                                            kx = kx + 1;
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                ic = ic + 1;
+                            }
+                            arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量。
+        // 参数与 conv 相同，唯一区别：y 处写 max(sum, 0)。
+        void convRelu(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yH, int yW,
+            int kh, int kw,
+            int sh, int sw, int pt, int pb, int pl, int pr,
+            int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int wc = cpg * kh * kw;
+            int n = 0;
+            while (n < xN) {
+                int oc = 0;
+                while (oc < yC) {
+                    int g = oc / ocpg;
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float sum = float(0.0);
+                            if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
+                            int ic = 0;
+                            while (ic < cpg) {
+                                int cIn = g * cpg + ic;
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int iy = oy * sh - pt + ky * dh;
+                                    if (iy >= 0 && iy < xH) {
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            int ix = ox * sw - pl + kx * dw;
+                                            if (ix >= 0 && ix < xW) {
+                                                float xv = arena[xOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix];
+                                                float wv = arena[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                                sum = sum + xv * wv;
+                                            }
+                                            kx = kx + 1;
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                ic = ic + 1;
+                            }
+                            if (sum > float(0.0)) arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                            else arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = float(0.0);
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 最大池化：x: [N,C,H,W] → y: [N,C,yH,yW]
+        void maxpool(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int yOff, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float best = float(0.0) - float(1.0e30);
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            float v = arena[xOff + n * xC * xH * xW + c * xH * xW + iy * xW + ix];
+                                            if (v > best) best = v;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            arena[yOff + n * xC * yH * yW + c * yH * yW + oy * yW + ox] = best;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 全局平均池化：x: [N,C,H,W] → y: [N,C,1,1]
+        void gapool(float[] arena, int xOff, int xN, int xC, int xH, int xW, int yOff) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    float sum = float(0.0);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        sum = sum + arena[xOff + n * xC * xH * xW + c * xH * xW + i];
+                        i = i + 1;
+                    }
+                    arena[yOff + n * xC + c] = sum / float(xH * xW);
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // Flatten：数据已连续，按 flat 拷贝
+        void flatten(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                arena[outOff + i] = arena[inOff + i];
+                i = i + 1;
+            }
+        }
+
+        // ---- G2：NHWC 布局（x:[N,H,W,C] 行优先）----
+
+        // NCHW→NHWC 转置：x:[N,C,H,W] → y:[N,H,W,C]
+        void transposeNCHW2NHWC(float[] arena, int xOff, int xN, int xC, int xH, int xW, int yOff) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int h = 0;
+                    while (h < xH) {
+                        int w = 0;
+                        while (w < xW) {
+                            arena[yOff + ((n * xH + h) * xW + w) * xC + c] = arena[xOff + ((n * xC + c) * xH + h) * xW + w];
+                            w = w + 1;
+                        }
+                        h = h + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // NHWC 卷积：x:[N,H,W,Cin]，w:[Cout,KH,KW,Cin]，b:[Cout]，y:[N,Hout,Wout,Cout]
+        void convNHWC(
+            float[] arena,
+            int xOff, int xN, int xH, int xW, int xC,
+            int wOff, int bOff,
+            int yOff, int yH, int yW, int yC,
+            int kh, int kw,
+            int sh, int sw, int pt, int pb, int pl, int pr,
+            int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int n = 0;
+            while (n < xN) {
+                int oy = 0;
+                while (oy < yH) {
+                    int ox = 0;
+                    while (ox < yW) {
+                        int co = 0;
+                        while (co < yC) {
+                            int g = co / ocpg;
+                            float sum = float(0.0);
+                            if (bOff >= 0) sum = arena[bOff + co];   // 无偏置卷积（bOff=-1）
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky * dh;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx * dw;
+                                        if (ix >= 0 && ix < xW) {
+                                            int ic = 0;
+                                            while (ic < cpg) {
+                                                int cIn = g * cpg + ic;
+                                                float xv = arena[xOff + ((n * xH + iy) * xW + ix) * xC + cIn];
+                                                float wv = arena[wOff + ((co * kh + ky) * kw + kx) * cpg + ic];
+                                                sum = sum + xv * wv;
+                                                ic = ic + 1;
+                                            }
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = sum;
+                            co = co + 1;
+                        }
+                        ox = ox + 1;
+                    }
+                    oy = oy + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // NHWC 卷积 + ReLU（G1 融合的 NHWC 对应）：y 处写 max(sum,0)
+        void convNHWCRelu(
+            float[] arena,
+            int xOff, int xN, int xH, int xW, int xC,
+            int wOff, int bOff,
+            int yOff, int yH, int yW, int yC,
+            int kh, int kw,
+            int sh, int sw, int pt, int pb, int pl, int pr,
+            int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int n = 0;
+            while (n < xN) {
+                int oy = 0;
+                while (oy < yH) {
+                    int ox = 0;
+                    while (ox < yW) {
+                        int co = 0;
+                        while (co < yC) {
+                            int g = co / ocpg;
+                            float sum = float(0.0);
+                            if (bOff >= 0) sum = arena[bOff + co];   // 无偏置卷积（bOff=-1）
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky * dh;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx * dw;
+                                        if (ix >= 0 && ix < xW) {
+                                            int ic = 0;
+                                            while (ic < cpg) {
+                                                int cIn = g * cpg + ic;
+                                                float xv = arena[xOff + ((n * xH + iy) * xW + ix) * xC + cIn];
+                                                float wv = arena[wOff + ((co * kh + ky) * kw + kx) * cpg + ic];
+                                                sum = sum + xv * wv;
+                                                ic = ic + 1;
+                                            }
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            float ov = sum;
+                            if (ov > float(0.0)) arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = ov;
+                            else arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = float(0.0);
+                            co = co + 1;
+                        }
+                        ox = ox + 1;
+                    }
+                    oy = oy + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // NHWC 最大池化：x:[N,H,W,C] → y:[N,yH,yW,C]
+        void maxpoolNHWC(
+            float[] arena,
+            int xOff, int xN, int xH, int xW, int xC,
+            int yOff, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int oy = 0;
+                while (oy < yH) {
+                    int ox = 0;
+                    while (ox < yW) {
+                        int c = 0;
+                        while (c < xC) {
+                            float best = float(0.0) - float(1.0e30);
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            float v = arena[xOff + ((n * xH + iy) * xW + ix) * xC + c];
+                                            if (v > best) best = v;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            arena[yOff + ((n * yH + oy) * yW + ox) * xC + c] = best;
+                            c = c + 1;
+                        }
+                        ox = ox + 1;
+                    }
+                    oy = oy + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // NHWC 全局平均池化：x:[N,H,W,C] → y:[N,C]（按通道平均 H*W）
+        void gapoolNHWC(float[] arena, int xOff, int xN, int xH, int xW, int xC, int yOff) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    float sum = float(0.0);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        int h = i / xW;
+                        int w = i % xW;
+                        sum = sum + arena[xOff + ((n * xH + h) * xW + w) * xC + c];
+                        i = i + 1;
+                    }
+                    arena[yOff + n * xC + c] = sum / float(xH * xW);
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // ---- G3：BatchNormalization ----
+        // y[n,c,h,w] = (x - mean[c]) * invStd[c] + bias[c]，invStd[c]=scale[c]/sqrt(var[c]+eps)
+        // x:[N,C,H,W] NCHW；scale/bias/mean/var 均为 [C]（flat 下标 = 通道）
+        void batchnorm(float[] arena, int xOff, int xN, int xC, int xH, int xW, int yOff,
+                       int sOff, int bOff, int mOff, int vOff, double eps) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    double scale = arena[sOff + c];
+                    double mean = arena[mOff + c];
+                    double variance = arena[vOff + c];
+                    double bias = arena[bOff + c];
+                    double invStd = scale / Math.sqrt(variance + eps);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        int idx = n * xC * xH * xW + c * xH * xW + i;
+                        double xv = arena[xOff + idx];
+                        arena[yOff + idx] = float((xv - mean) * invStd + bias);
+                        i = i + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // G3：BatchNormalization（NHWC）：x:[N,H,W,C]，通道 = p % C
+        void batchnormNHWC(float[] arena, int xOff, int xN, int xH, int xW, int xC, int yOff,
+                           int sOff, int bOff, int mOff, int vOff, double eps) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    double scale = arena[sOff + c];
+                    double mean = arena[mOff + c];
+                    double variance = arena[vOff + c];
+                    double bias = arena[bOff + c];
+                    double invStd = scale / Math.sqrt(variance + eps);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        int h = i / xW;
+                        int w = i % xW;
+                        int idx = ((n * xH + h) * xW + w) * xC + c;
+                        double xv = arena[xOff + idx];
+                        arena[yOff + idx] = float((xv - mean) * invStd + bias);
+                        i = i + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // ---- G4：通用激活（逐元素，布局无关；flat n = 元素数）----
+        // ReLU6：y = min(max(x, 0), 6)
+        void relu6(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float v = arena[inOff + i];
+                if (v > float(6.0)) v = float(6.0);
+                if (v < float(0.0)) v = float(0.0);
+                arena[outOff + i] = v;
+                i = i + 1;
+            }
+        }
+        // LeakyRelu：y = x>0 ? x : alpha*x（alpha 默认 0.01）
+        void leakyrelu(float[] arena, int inOff, int outOff, int n, double alpha) {
+            int i = 0;
+            while (i < n) {
+                double v = arena[inOff + i];
+                if (v > 0.0) arena[outOff + i] = float(v);
+                else arena[outOff + i] = float(alpha * v);
+                i = i + 1;
+            }
+        }
+        // SiLU / Swish：y = x * sigmoid(x) = x / (1 + exp(-x))
+        void silu(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                double x = arena[inOff + i];
+                double s = x / (1.0 + Math.exp(0.0 - x));
+                arena[outOff + i] = float(s);
+                i = i + 1;
+            }
+        }
+        // HardSwish：y = x * relu6(x+3) / 6
+        void hardswish(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                double x = arena[inOff + i];
+                double r = x + 3.0;
+                if (r < 0.0) r = 0.0;
+                if (r > 6.0) r = 6.0;
+                arena[outOff + i] = float(x * r / 6.0);
+                i = i + 1;
+            }
+        }
+        // Clip：y = clamp(x, min, max)；minOff/maxOff 为标量边界偏移（-1 = 不限）
+        void clip(float[] arena, int inOff, int outOff, int n, int minOff, int maxOff) {
+            double lo = 0.0;
+            double hi = 0.0;
+            int hasLo = 0;
+            int hasHi = 0;
+            if (minOff >= 0) { double mv = arena[minOff + 0]; lo = mv; hasLo = 1; }
+            if (maxOff >= 0) { double mv = arena[maxOff + 0]; hi = mv; hasHi = 1; }
+            int i = 0;
+            while (i < n) {
+                double v = arena[inOff + i];
+                if (hasLo == 1 && v < lo) v = lo;
+                if (hasHi == 1 && v > hi) v = hi;
+                arena[outOff + i] = float(v);
+                i = i + 1;
+            }
+        }
+}

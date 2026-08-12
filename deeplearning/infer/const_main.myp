@@ -1,0 +1,70 @@
+// const_main.myp — G2：常量折叠端到端测试
+// 加载带 Constant 节点的极简 ONNX（x[1,4] + c[1,4]=[1,2,3,4] → Add → Relu → y），
+// 验证：无 Constant 算子运行时支持也能加载（折叠为持久张量），输出 = relu(x+c)。
+// 参考（onnxruntime）：x=[0.5,-2,3,1] → y=[1.5,0,6,5]
+import env;
+import cuda;
+import "./pb.myp";
+import "./runtime.myp";
+import "./onnx_loader.myp";
+
+class ConstInferApp {
+    action:
+        @constructor ConstInferApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/const_fold_test.onnx", rt);
+            if (ok == 0) {
+                Console.writeLine("onnx load failed");
+                return;
+            }
+            Console.writeString("graph: const_folded=");
+            Console.writeLong(loader.foldCount());
+            Console.writeString("  ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            int inputTid = loader.tensorId("x");
+            int outTid = loader.tensorId("y");
+            if (inputTid < 0 || outTid < 0) {
+                Console.writeLine("tensor not found");
+                return;
+            }
+
+            // 输入 [1,4] = [0.5, -2, 3, 1]
+            rt.setFlat(inputTid, 0, 0.5);
+            rt.setFlat(inputTid, 1, 0.0 - 2.0);
+            rt.setFlat(inputTid, 2, 3.0);
+            rt.setFlat(inputTid, 3, 1.0);
+
+            rt.run();
+
+            Console.writeString("out: ");
+            int i = 0;
+            while (i < 4) {
+                Console.writeFloat(rt.getFlat(outTid, i));
+                i = i + 1;
+            }
+            // 校验
+            double d0 = rt.getFlat(outTid, 0) - 1.5;
+            double d1 = rt.getFlat(outTid, 1) - 0.0;
+            double d2 = rt.getFlat(outTid, 2) - 6.0;
+            double d3 = rt.getFlat(outTid, 3) - 5.0;
+            if (d0 < 0.0) d0 = 0.0 - d0;
+            if (d1 < 0.0) d1 = 0.0 - d1;
+            if (d2 < 0.0) d2 = 0.0 - d2;
+            if (d3 < 0.0) d3 = 0.0 - d3;
+            if (d0 < 1.0e-4 && d1 < 1.0e-4 && d2 < 1.0e-4 && d3 < 1.0e-4) {
+                Console.writeLine("CONST FOLD OK");
+            } else {
+                Console.writeLine("CONST FOLD MISMATCH");
+            }
+        }
+}
+
+int main() {
+    ConstInferApp app = new ConstInferApp();
+    return 0;
+}

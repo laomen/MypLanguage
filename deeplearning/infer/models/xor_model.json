@@ -1,0 +1,40 @@
+{
+  "name": "xor",
+  "tensors": [
+    { "name": "input",   "rows": 2, "cols": 1 },
+    { "name": "w1",      "rows": 4, "cols": 2, "role": "weight" },
+    { "name": "b1",      "rows": 4, "cols": 1, "role": "weight" },
+    { "name": "h",       "rows": 4, "cols": 1 },
+    { "name": "h_relu",  "rows": 4, "cols": 1 },
+    { "name": "w2",      "rows": 2, "cols": 4, "role": "weight" },
+    { "name": "b2",      "rows": 2, "cols": 1, "role": "weight" },
+    { "name": "logits",  "rows": 2, "cols": 1 },
+    { "name": "prob",    "rows": 2, "cols": 1 }
+  ],
+  "ops": [
+    { "type": "dense",   "inputs": ["input", "w1", "b1"], "output": "h" },
+    { "type": "relu",    "inputs": ["h"],                 "output": "h_relu" },
+    { "type": "dense",   "inputs": ["h_relu", "w2", "b2"], "output": "logits" },
+    { "type": "softmax", "inputs": ["logits"],            "output": "prob" }
+  ],
+  "inputs":  ["input"],
+  "outputs": ["prob"],
+  "weights": [
+    {
+      "name": "w1",
+      "values": [1.0, -1.0, -1.0, 1.0, 1.0, 1.0, -1.0, -1.0]
+    },
+    {
+      "name": "b1",
+      "values": [0.0, 0.0, -1.0, 1.0]
+    },
+    {
+      "name": "w2",
+      "values": [-2.0, -2.0, 1.0, 1.0, 2.0, 2.0, -1.0, -1.0]
+    },
+    {
+      "name": "b2",
+      "values": [0.0, 0.0]
+    }
+  ]
+}

@@ -1,0 +1,366 @@
+// ops.myp — GpuOps：设备驻留计算原语（L2/L3，零逐算子传输）
+//
+// 与 GpuBuffer/GpuBufferF 配套：输入输出数据常驻设备，内核用 resident() 直接
+// 操作设备指针（dev 为 long，来自 GpuBackend.alloc / buffer.devicePtr()）。
+// 归约的局部缓冲也是小设备块，只把小数量的 partials/累加器 D2H。
+//
+// 约定：
+//   · 仅当 GPU 可用（dev != 0）时调用——CPU 回退由 Gpu 门面的 L1 宿主数组版提供。
+//   · 每个内核内部创建 `new T[1]` 类型载具 + resident(arr = dev) 映射；载具的
+//     宿主数据不使用（resident 模式跳过传输），仅提供数组类型给内核索引。
+//   · double 版无后缀，float 版带 *F 后缀（与 cuda.myp 惯例一致）。
+
+import gpu.backend;
+import gpu.memory;
+import atomic;
+
+class GpuOps {
+    static:
+        int blockSize() { return 256; }
+
+        // ==================== 逐元素（double） ====================
+
+        // out[i] = in[i] * s
+        void mapD(long devIn, long devOut, long n, double s) {
+            double[] a = new double[1];
+            double[] b = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devIn, b = devOut) {
+                b[p] = a[p] * s;
+            }
+        }
+        // out[i] = a[i] + b[i]
+        void addD(long devA, long devB, long devOut, long n) {
+            double[] a = new double[1];
+            double[] b = new double[1];
+            double[] o = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] + b[p];
+            }
+        }
+        // out[i] = a[i] - b[i]
+        void subD(long devA, long devB, long devOut, long n) {
+            double[] a = new double[1];
+            double[] b = new double[1];
+            double[] o = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] - b[p];
+            }
+        }
+        // out[i] = a[i] * b[i]
+        void mulD(long devA, long devB, long devOut, long n) {
+            double[] a = new double[1];
+            double[] b = new double[1];
+            double[] o = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] * b[p];
+            }
+        }
+        // a[i] = a[i] * s（原地）
+        void scaleD(long dev, long n, double s) {
+            double[] a = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = dev) {
+                a[p] = a[p] * s;
+            }
+        }
+        // out[i] = alpha * x[i] + y[i]
+        void axpyD(long devX, long devY, long devOut, long n, double alpha) {
+            double[] x = new double[1];
+            double[] y = new double[1];
+            double[] o = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(x = devX, y = devY, o = devOut) {
+                o[p] = alpha * x[p] + y[p];
+            }
+        }
+
+        // ==================== 逐元素（float） ====================
+
+        void mapF(long devIn, long devOut, long n, float s) {
+            float[] a = new float[1];
+            float[] b = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devIn, b = devOut) {
+                b[p] = a[p] * s;
+            }
+        }
+        void addF(long devA, long devB, long devOut, long n) {
+            float[] a = new float[1];
+            float[] b = new float[1];
+            float[] o = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] + b[p];
+            }
+        }
+        void subF(long devA, long devB, long devOut, long n) {
+            float[] a = new float[1];
+            float[] b = new float[1];
+            float[] o = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] - b[p];
+            }
+        }
+        void mulF(long devA, long devB, long devOut, long n) {
+            float[] a = new float[1];
+            float[] b = new float[1];
+            float[] o = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = devA, b = devB, o = devOut) {
+                o[p] = a[p] * b[p];
+            }
+        }
+        void scaleF(long dev, long n, float s) {
+            float[] a = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = dev) {
+                a[p] = a[p] * s;
+            }
+        }
+        void axpyF(long devX, long devY, long devOut, long n, float alpha) {
+            float[] x = new float[1];
+            float[] y = new float[1];
+            float[] o = new float[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(x = devX, y = devY, o = devOut) {
+                o[p] = alpha * x[p] + y[p];
+            }
+        }
+
+        // ==================== GEMM ====================
+
+        // C[m×n] = A[m×k] · B[k×n]（行主序，每线程一个输出元素）
+        void gemmD(long devA, long devB, long devC, long m, long n, long k) {
+            double[] A = new double[1];
+            double[] B = new double[1];
+            double[] C = new double[1];
+            @gpu for (long idx = 0L; idx < m * n; idx = idx + 1L) resident(A = devA, B = devB, C = devC) {
+                long i = idx / n;
+                long j = idx % n;
+                double s = 0.0;
+                long t = 0L;
+                while (t < k) {
+                    s = s + A[i * k + t] * B[t * n + j];
+                    t = t + 1L;
+                }
+                C[idx] = s;
+            }
+        }
+        void gemmF(long devA, long devB, long devC, long m, long n, long k) {
+            float[] A = new float[1];
+            float[] B = new float[1];
+            float[] C = new float[1];
+            @gpu for (long idx = 0L; idx < m * n; idx = idx + 1L) resident(A = devA, B = devB, C = devC) {
+                long i = idx / n;
+                long j = idx % n;
+                float s = float(0.0);
+                long t = 0L;
+                while (t < k) {
+                    s = s + A[i * k + t] * B[t * n + j];
+                    t = t + 1L;
+                }
+                C[idx] = s;
+            }
+        }
+
+        // ==================== 归约 ====================
+
+        // Σ a[i]（设备原子累加器，只 D2H 1 个值）
+        double sumD(long dev, long n) {
+            double[] accHost = new double[1];
+            accHost[0] = 0.0;
+            GpuBuffer acc = new GpuBuffer(accHost, 1);
+            long accDev = acc.devicePtr();
+            double[] a = new double[1];
+            double[] ac = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = dev, ac = accDev) {
+                Atomic.addDouble(ac, 0, a[p]);
+            }
+            acc.copyToHost(accHost, 0, 0, 1);
+            acc.free();
+            return accHost[0];
+        }
+        // Σ a[i]（float，设备原子累加器 double）
+        float sumF(long dev, long n) {
+            double[] accHost = new double[1];
+            accHost[0] = 0.0;
+            GpuBuffer acc = new GpuBuffer(accHost, 1);
+            long accDev = acc.devicePtr();
+            float[] a = new float[1];
+            double[] ac = new double[1];
+            @gpu for (long p = 0L; p < n; p = p + 1L) resident(a = dev, ac = accDev) {
+                Atomic.addDouble(ac, 0, a[p]);
+            }
+            acc.copyToHost(accHost, 0, 0, 1);
+            acc.free();
+            double d = accHost[0];
+            return float(d);
+        }
+
+        // max（块归约 → 小设备 partials → D2H → CPU 扫描）
+        double maxD(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] ph = new double[blocks];
+            GpuBuffer pbuf = new GpuBuffer(ph, blocks);
+            long pdev = pbuf.devicePtr();
+            double[] a = new double[1];
+            double[] lm = new double[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev) {
+                double b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v > b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pbuf.free();
+            double m = ph[0];
+            long i = 1L;
+            while (i < blocks) { if (ph[i] > m) m = ph[i]; i = i + 1L; }
+            return m;
+        }
+        float maxF(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] ph = new float[blocks];
+            GpuBufferF pbuf = new GpuBufferF(ph, blocks);
+            long pdev = pbuf.devicePtr();
+            float[] a = new float[1];
+            float[] lm = new float[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev) {
+                float b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v > b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pbuf.free();
+            float m = ph[0];
+            long i = 1L;
+            while (i < blocks) { if (ph[i] > m) m = ph[i]; i = i + 1L; }
+            return m;
+        }
+
+        // min（块归约）
+        double minD(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] ph = new double[blocks];
+            GpuBuffer pbuf = new GpuBuffer(ph, blocks);
+            long pdev = pbuf.devicePtr();
+            double[] a = new double[1];
+            double[] lm = new double[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev) {
+                double b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v < b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pbuf.free();
+            double m = ph[0];
+            long i = 1L;
+            while (i < blocks) { if (ph[i] < m) m = ph[i]; i = i + 1L; }
+            return m;
+        }
+        float minF(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] ph = new float[blocks];
+            GpuBufferF pbuf = new GpuBufferF(ph, blocks);
+            long pdev = pbuf.devicePtr();
+            float[] a = new float[1];
+            float[] lm = new float[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev) {
+                float b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v < b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pbuf.free();
+            float m = ph[0];
+            long i = 1L;
+            while (i < blocks) { if (ph[i] < m) m = ph[i]; i = i + 1L; }
+            return m;
+        }
+
+        // argmax（块归约，返回首个达到最大值的下标；索引存 double 便于 D2H）
+        int argmaxD(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] ph = new double[blocks];
+            double[] pih = new double[blocks];
+            GpuBuffer pbuf = new GpuBuffer(ph, blocks);
+            GpuBuffer pibuf = new GpuBuffer(pih, blocks);
+            long pdev = pbuf.devicePtr();
+            long pidev = pibuf.devicePtr();
+            double[] a = new double[1];
+            double[] lm = new double[1];
+            double[] li = new double[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev, li = pidev) {
+                long bi = p * bs;
+                double b = a[bi];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v > b) { b = v; bi = idx; } }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+                li[p] = double(bi);
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pibuf.copyToHost(pih, 0, 0, blocks);
+            pbuf.free();
+            pibuf.free();
+            double m = ph[0];
+            int bi = int(pih[0]);
+            long i = 1L;
+            while (i < blocks) { if (ph[i] > m) { m = ph[i]; bi = int(pih[i]); } i = i + 1L; }
+            return bi;
+        }
+        int argmaxF(long dev, long n) {
+            int bs = GpuOps.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] ph = new float[blocks];
+            double[] pih = new double[blocks];
+            GpuBufferF pbuf = new GpuBufferF(ph, blocks);
+            GpuBuffer pibuf = new GpuBuffer(pih, blocks);
+            long pdev = pbuf.devicePtr();
+            long pidev = pibuf.devicePtr();
+            float[] a = new float[1];
+            float[] lm = new float[1];
+            double[] li = new double[1];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) resident(a = dev, lm = pdev, li = pidev) {
+                long bi = p * bs;
+                float b = a[bi];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v > b) { b = v; bi = idx; } }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+                li[p] = double(bi);
+            }
+            pbuf.copyToHost(ph, 0, 0, blocks);
+            pibuf.copyToHost(pih, 0, 0, blocks);
+            pbuf.free();
+            pibuf.free();
+            float m = ph[0];
+            int bi = int(pih[0]);
+            long i = 1L;
+            while (i < blocks) { if (ph[i] > m) { m = ph[i]; bi = int(pih[i]); } i = i + 1L; }
+            return bi;
+        }
+}

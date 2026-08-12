@@ -705,10 +705,15 @@ struct ForStmt : Stmt {
     std::unique_ptr<Stmt> body;
     bool parallel;  // @parallel for
     bool gpu;       // @gpu for
+    // @gpu for 设备驻留（M3）：resident(arr = devPtr) 子句。
+    // 键 = 被捕获数组名；值 = 持有该数组设备指针的 long 变量名。
+    // 被标记数组跳过 H2D/D2H/释放，内核直接用设备指针。
+    std::vector<std::pair<std::string, std::string>> resident;
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
-            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false)
+            std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false,
+            std::vector<std::pair<std::string, std::string>> res = {})
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
-          step(std::move(s)), body(std::move(b)), parallel(par), gpu(g) {}
+          step(std::move(s)), body(std::move(b)), parallel(par), gpu(g), resident(std::move(res)) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

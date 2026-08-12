@@ -1,0 +1,111 @@
+// mnist_batch.myp — 批量 MNIST 推理：一次前向处理全部测试样本
+import env;
+import "./runtime.myp";
+import "./model_loader.myp";
+
+class MnistBatchApp {
+    action:
+        @constructor MnistBatchApp() {
+            loadTestImages();
+            loadTestLabels();
+            if (numTest <= 0) {
+                Console.writeLine("No test samples loaded");
+                return;
+            }
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(200000);
+
+            ModelLoader loader = new ModelLoader();
+            int ok = loader.loadBatched("./deeplearning/infer/models/mnist_model.json", rt, numTest);
+            if (ok == 0) {
+                Console.writeLine("model load failed (need deeplearning/data/mnist_weights.bin)");
+                return;
+            }
+            int inputTid = loader.tensorId("input");
+            int probTid = loader.tensorId("prob");
+
+            // 把 numTest 个样本排成 [784, numTest] 一次灌入
+            int s = 0;
+            while (s < numTest) {
+                int j = 0;
+                while (j < 784) {
+                    rt.setFlat(inputTid, j * numTest + s, testPixels[s * 784 + j]);
+                    j = j + 1;
+                }
+                s = s + 1;
+            }
+
+            rt.run();
+
+            int correct = 0;
+            s = 0;
+            while (s < numTest) {
+                int pred = rt.argmaxCol(probTid, s);
+                if (pred == testLabels[s]) correct = correct + 1;
+                s = s + 1;
+            }
+
+            int pct = correct * 100 / numTest;
+            Console.writeString("Batched MNIST accuracy: ");
+            Console.writeLong(pct);
+            Console.writeString("% (");
+            Console.writeLong(correct);
+            Console.writeString("/");
+            Console.writeLong(numTest);
+            Console.writeLine(")");
+        }
+
+        void loadTestImages() {
+            string p = "./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte";
+            int fd = __myp_io_fopen(p, "rb");
+            if (fd < 0) { numTest = 0; return; }
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            int rows = __myp_io_read_i32be();
+            int cols = __myp_io_read_i32be();
+            if (count > 100) count = 100;
+            numTest = count;
+
+            int i = 0;
+            while (i < count) {
+                int j = 0;
+                while (j < 784) {
+                    int b = __myp_io_read_byte();
+                    if (b < 0) { numTest = i; __myp_io_fclose(); return; }
+                    testPixels[i * 784 + j] = b / 255.0;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        void loadTestLabels() {
+            string p = "./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte";
+            int fd = __myp_io_fopen(p, "rb");
+            if (fd < 0) { numTest = 0; return; }
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            if (count > numTest) count = numTest;
+
+            int i = 0;
+            while (i < count) {
+                int b = __myp_io_read_byte();
+                if (b < 0) break;
+                testLabels[i] = b;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+    property:
+        int numTest;
+        double[78400] testPixels;
+        int[100] testLabels;
+}
+
+int main() {
+    MnistBatchApp app = new MnistBatchApp();
+    return 0;
+}

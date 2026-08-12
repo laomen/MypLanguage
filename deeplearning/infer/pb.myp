@@ -1,0 +1,134 @@
+// pb.myp — 极简 protobuf wire-format 读取器（纯 MYP，零依赖）
+//
+// 用于在运行时直接解析 ONNX（ModelProto）二进制文件。
+// 只实现读取所需子集：varint / 64-bit / 32-bit / length-delimited 四类 wire type，
+// 支持任意嵌套消息（以「进入 payload 子区间」方式递归）。float32→double 手写解码。
+import env;
+import math;
+import text;
+
+class PbReader {
+    action:
+        void init(int[] data, int len) {
+            data_ = data;
+            len_ = len;
+            pos_ = 0;
+            subEnd_ = len;
+            field_ = 0;
+            wire_ = 0;
+        }
+
+        bool atEnd() { return pos_ >= subEnd_; }
+        int pos() { return pos_; }
+        int field() { return field_; }
+        int wire() { return wire_; }
+
+        void seek(int p) { pos_ = p; }
+
+        // 读取下一个字段的 tag；子区间结束返回 -1，否则返回 field number
+        int nextTag() {
+            if (atEnd()) return -1;
+            long v = readVarint64();
+            field_ = int(v >> 3);
+            wire_ = int(v & 7L);
+            return field_;
+        }
+
+        long readVarint64() {
+            long v = 0L;
+            int shift = 0;
+            while (true) {
+                int b = data_[pos_];
+                pos_ = pos_ + 1;
+                v = v | (long(b & 127) << shift);
+                if ((b & 128) == 0) return v;
+                shift = shift + 7;
+            }
+        }
+
+        int readVarint() { return int(readVarint64()); }
+
+        // length-delimited 字段的 payload 字节数
+        int readLen() { return int(readVarint64()); }
+
+        // 当前字段 payload 起始字节偏移（用于之后直接读浮点数据）
+        int payloadOff() { return pos_; }
+
+        void skipBytes(int n) { pos_ = pos_ + n; }
+
+        // 跳过当前字段（nextTag 之后调用）
+        void skipField() {
+            if (wire_ == 0) { long v = readVarint64(); }
+            else if (wire_ == 1) { pos_ = pos_ + 8; }
+            else if (wire_ == 2) { int n = readLen(); pos_ = pos_ + n; }
+            else if (wire_ == 5) { pos_ = pos_ + 4; }
+        }
+
+        // payload 字节 → string
+        string readString(int n) {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            while (i < n) {
+                sb.append(__myp_chr(data_[pos_ + i]));
+                i = i + 1;
+            }
+            pos_ = pos_ + n;
+            return sb.toString();
+        }
+
+        // 4 字节小端 → 32 位位型（可含负数位型，位模式不变）
+        int readU32() {
+            int b0 = data_[pos_];
+            int b1 = data_[pos_ + 1];
+            int b2 = data_[pos_ + 2];
+            int b3 = data_[pos_ + 3];
+            pos_ = pos_ + 4;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+
+        // 8 字节小端 → 64 位（高位存进 outHi，低位存进 outLo）
+        void readU64(int[] outLo, int[] outHi, int k) {
+            long v = 0L;
+            int i = 0;
+            while (i < 8) {
+                int b = data_[pos_ + i];
+                v = v | (long(b) << (i * 8));
+                i = i + 1;
+            }
+            pos_ = pos_ + 8;
+            outLo[k] = int(v & 0xFFFFFFFFL);
+            outHi[k] = int(v >> 32);
+        }
+
+    property:
+        int[] data_;
+        int len_;
+        int pos_;
+        int subEnd_;
+        int field_;
+        int wire_;
+}
+
+// float32（IEEE754 位型）→ double
+class F32 {
+    static:
+        double toDouble(int bits) {
+            int sign = (bits >> 31) & 1;
+            int exp = (bits >> 23) & 255;
+            int man = bits & 8388607;   // 2^23 - 1
+            double s = 1.0;
+            if (sign == 1) s = -1.0;
+            if (exp == 0) {
+                if (man == 0) return 0.0;
+                // 非规格化：man * 2^-149
+                return s * (man / 8388608.0) * 1.401298464324817e-45;
+            }
+            if (exp == 255) {
+                return s * 1.0e300;   // inf/nan 近似（推理用不到）
+            }
+            double v = (8388608 + man) / 8388608.0;   // 1.man
+            v = v * Math.pow(2.0, exp - 127);
+            if (sign == 1) return -v;
+            return v;
+        }
+}

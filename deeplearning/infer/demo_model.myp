@@ -1,0 +1,82 @@
+// demo_model.myp — Build a tiny 2-layer XOR inference graph
+import env;
+import "./runtime.myp";
+
+class XorDemo {
+    action:
+        // Build graph: input(2) -> dense(4) -> relu -> dense(2) -> softmax
+        void build(InferenceRuntime rt) {
+            inputTid = rt.addTensor(2, 1);
+            w1Tid = rt.addTensor(4, 2);
+            b1Tid = rt.addTensor(4, 1);
+            hTid = rt.addTensor(4, 1);
+            hReluTid = rt.addTensor(4, 1);
+            w2Tid = rt.addTensor(2, 4);
+            b2Tid = rt.addTensor(2, 1);
+            logitsTid = rt.addTensor(2, 1);
+            probTid = rt.addTensor(2, 1);
+
+            rt.addDense(inputTid, w1Tid, b1Tid, hTid);
+            rt.addRelu(hTid, hReluTid);
+            rt.addDense(hReluTid, w2Tid, b2Tid, logitsTid);
+            rt.addSoftmax(logitsTid, probTid);
+
+            // Layer 1 weights
+            // h0 = relu(x0 - x1)
+            rt.setElem(w1Tid, 0, 0, 1.0);  rt.setElem(w1Tid, 0, 1, -1.0);
+            // h1 = relu(x1 - x0)
+            rt.setElem(w1Tid, 1, 0, -1.0); rt.setElem(w1Tid, 1, 1, 1.0);
+            // h2 = relu(x0 + x1 - 1)
+            rt.setElem(w1Tid, 2, 0, 1.0);  rt.setElem(w1Tid, 2, 1, 1.0);
+            // h3 = relu(1 - x0 - x1)
+            rt.setElem(w1Tid, 3, 0, -1.0); rt.setElem(w1Tid, 3, 1, -1.0);
+
+            rt.setElem(b1Tid, 0, 0, 0.0);
+            rt.setElem(b1Tid, 1, 0, 0.0);
+            rt.setElem(b1Tid, 2, 0, -1.0);
+            rt.setElem(b1Tid, 3, 0, 1.0);
+
+            // Layer 2 weights
+            // class0 logits
+            rt.setElem(w2Tid, 0, 0, -2.0);
+            rt.setElem(w2Tid, 0, 1, -2.0);
+            rt.setElem(w2Tid, 0, 2, 1.0);
+            rt.setElem(w2Tid, 0, 3, 1.0);
+            // class1 logits
+            rt.setElem(w2Tid, 1, 0, 2.0);
+            rt.setElem(w2Tid, 1, 1, 2.0);
+            rt.setElem(w2Tid, 1, 2, -1.0);
+            rt.setElem(w2Tid, 1, 3, -1.0);
+
+            rt.setElem(b2Tid, 0, 0, 0.0);
+            rt.setElem(b2Tid, 1, 0, 0.0);
+        }
+
+        int infer(InferenceRuntime rt, double x0, double x1) {
+            rt.setElem(inputTid, 0, 0, x0);
+            rt.setElem(inputTid, 1, 0, x1);
+            rt.run();
+            return rt.argmax1d(probTid);
+        }
+
+        void printProb(InferenceRuntime rt) {
+            double p0 = rt.getElem(probTid, 0, 0);
+            double p1 = rt.getElem(probTid, 1, 0);
+            Console.writeString("p0=");
+            Console.writeFloat(p0);
+            Console.writeString(" p1=");
+            Console.writeFloat(p1);
+            Console.writeLine("");
+        }
+
+    property:
+        int inputTid;
+        int w1Tid;
+        int b1Tid;
+        int hTid;
+        int hReluTid;
+        int w2Tid;
+        int b2Tid;
+        int logitsTid;
+        int probTid;
+}

@@ -1,0 +1,748 @@
+// runtime.myp — Tiny static-graph inference runtime
+import env;
+import gpu;
+import "./tensor.myp";
+import "./ops.myp";
+import "./gpu_ops.myp";
+import "./pb.myp";   // F32（分发时把 BN eps 位型解析为 double）
+
+class InferenceRuntime {
+    action:
+        void init(int arenaCapacity) {
+            arenaTop_ = 0;
+            tensorCount_ = 0;
+            opCount_ = 0;
+            arenaCap_ = arenaCapacity;
+            if (arenaCap_ < 1) arenaCap_ = 1;
+            arena = new float[arenaCap_];
+        }
+
+        // 重建 arena 到指定容量（用于 ONNX 路径：加载器先做内存规划再建 arena）
+        void resizeArena(int cap) {
+            arena = new float[cap];
+            arenaCap_ = cap;
+        }
+
+        // 边界转换：调用方仍传 double，内部以 float（FP32）存储
+        void setFlat(int tid, int index, double v) {
+            arena[tOff_[tid] + index] = float(v);
+        }
+
+        double getFlat(int tid, int index) {
+            double v = arena[tOff_[tid] + index];
+            return v;
+        }
+
+        int addTensor(int rows, int cols) {
+            int id = tensorCount_;
+            int n = TensorOps.size(rows, cols);
+            if (arenaTop_ + n > arenaCap_) return -1;
+            tRows_[id] = rows;
+            tCols_[id] = cols;
+            tN_[id] = rows;
+            tC_[id] = cols;
+            tH_[id] = 1;
+            tW_[id] = 1;
+            tOff_[id] = arenaTop_;
+            int i = 0;
+            while (i < n) {
+                arena[arenaTop_ + i] = float(0.0);
+                i = i + 1;
+            }
+            arenaTop_ = arenaTop_ + n;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        // 4D 张量（NCHW 行优先），bump 分配
+        int addTensor4(int d0, int d1, int d2, int d3) {
+            int id = tensorCount_;
+            int n = d0 * d1 * d2 * d3;
+            if (arenaTop_ + n > arenaCap_) return -1;
+            tRows_[id] = d0 * d1;
+            tCols_[id] = d2 * d3;
+            tN_[id] = d0;
+            tC_[id] = d1;
+            tH_[id] = d2;
+            tW_[id] = d3;
+            tOff_[id] = arenaTop_;
+            arenaTop_ = arenaTop_ + n;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        // 在指定偏移登记 CNN 张量（运行时视角 4D NCHW；rows=N*C, cols=H*W）
+        int addTensorPlanned4(int d0, int d1, int d2, int d3, int offset) {
+            int id = tensorCount_;
+            tRows_[id] = d0 * d1;
+            tCols_[id] = d2 * d3;
+            tN_[id] = d0;
+            tC_[id] = d1;
+            tH_[id] = d2;
+            tW_[id] = d3;
+            tOff_[id] = offset;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        // 在指定偏移登记 FC 张量（2D 视图：rows/cols 即真实维度）
+        int addTensorPlanned2(int rows, int cols, int offset) {
+            int id = tensorCount_;
+            tRows_[id] = rows;
+            tCols_[id] = cols;
+            tN_[id] = rows;
+            tC_[id] = cols;
+            tH_[id] = 1;
+            tW_[id] = 1;
+            tOff_[id] = offset;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        void setElem(int tid, int r, int c, double v) {
+            int idx = tOff_[tid] + TensorOps.flatIndex(tCols_[tid], r, c);
+            arena[idx] = float(v);
+        }
+
+        double getElem(int tid, int r, int c) {
+            int idx = tOff_[tid] + TensorOps.flatIndex(tCols_[tid], r, c);
+            double v = arena[idx];
+            return v;
+        }
+
+        void addDense(int inputTid, int weightTid, int biasTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 1;
+            opA_[id] = inputTid;
+            opB_[id] = weightTid;
+            opC_[id] = biasTid;
+            opD_[id] = outputTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addRelu(int inputTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 2;
+            opA_[id] = inputTid;
+            opB_[id] = outputTid;
+            opC_[id] = 0;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addSoftmax(int inputTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 3;
+            opA_[id] = inputTid;
+            opB_[id] = outputTid;
+            opC_[id] = 0;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addSigmoid(int inputTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 4;
+            opA_[id] = inputTid;
+            opB_[id] = outputTid;
+            opC_[id] = 0;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addAdd(int aTid, int bTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 5;
+            opA_[id] = aTid;
+            opB_[id] = bTid;
+            opC_[id] = outputTid;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addMatmul(int aTid, int bTid, int outputTid) {
+            int id = opCount_;
+            opKind_[id] = 6;
+            opA_[id] = aTid;
+            opB_[id] = bTid;
+            opC_[id] = outputTid;
+            opD_[id] = 0;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addConv(int inTid, int wTid, int bTid, int outTid,
+                     int strideH, int strideW, int padT, int padB, int padL, int padR,
+                     int dilH, int dilW, int group) {
+            int id = opCount_;
+            opKind_[id] = 7;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = strideH; opP1_[id] = strideW; opP2_[id] = padT; opP3_[id] = padB;
+            opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
+            opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
+        // 融合 Conv+ReLU（G1，opKind=11）：参数同 addConv
+        void addConvRelu(int inTid, int wTid, int bTid, int outTid,
+                         int strideH, int strideW, int padT, int padB, int padL, int padR,
+                         int dilH, int dilW, int group) {
+            int id = opCount_;
+            opKind_[id] = 11;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = strideH; opP1_[id] = strideW; opP2_[id] = padT; opP3_[id] = padB;
+            opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
+            opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addMaxPool(int inTid, int outTid, int kh, int kw,
+                        int sh, int sw, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 8;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addGAPool(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 9;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        void addFlatten(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 10;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        // ---- G2：NHWC 布局算子（布局变换 NCHW→NHWC，opt-in）----
+        // 张量元数据约定（NHWC 区）：激活 [N,H,W,C]→(tN,tC,tH,tW)=(N,H,W,C)；
+        // 权重 [Cout,KH,KW,Cin]→(Cout,KH,KW,Cin)；偏置/FC 不变。
+
+        // NCHW→NHWC 转置
+        void addTransposeNCHW2NHWC(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 12;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        // NHWC 卷积（参数同 addConv）
+        void addConvNHWC(int inTid, int wTid, int bTid, int outTid,
+                         int strideH, int strideW, int padT, int padB, int padL, int padR,
+                         int dilH, int dilW, int group) {
+            int id = opCount_;
+            opKind_[id] = 13;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = strideH; opP1_[id] = strideW; opP2_[id] = padT; opP3_[id] = padB;
+            opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
+            opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
+        // NHWC 卷积 + ReLU（G1 融合在 NHWC 布局的对应）
+        void addConvNHWCRelu(int inTid, int wTid, int bTid, int outTid,
+                             int strideH, int strideW, int padT, int padB, int padL, int padR,
+                             int dilH, int dilW, int group) {
+            int id = opCount_;
+            opKind_[id] = 14;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = strideH; opP1_[id] = strideW; opP2_[id] = padT; opP3_[id] = padB;
+            opP4_[id] = padL; opP5_[id] = padR; opP6_[id] = dilH; opP7_[id] = dilW;
+            opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
+        // NHWC 最大池化
+        void addMaxPoolNHWC(int inTid, int outTid, int kh, int kw,
+                            int sh, int sw, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 15;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
+            opCount_ = opCount_ + 1;
+        }
+
+        // NHWC 全局平均池化：读 [N,H,W,C]，写 [N,C]
+        void addGAPoolNHWC(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 16;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        // ---- G3：BatchNormalization ----
+        // y[n,c,...] = (x - mean[c]) * invStd[c] + bias[c]，invStd = scale/sqrt(var+eps)
+        // 参数张量均为 [C] 初始器；eps 以位型 + hasEps 传入，分发时解析为 double。
+        void addBatchNorm(int inTid, int outTid, int sT, int bT, int mT, int vT, int epsBits, int hasEps) {
+            int id = opCount_;
+            opKind_[id] = 17;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opC_[id] = sT;
+            opD_[id] = bT;
+            opP0_[id] = mT;
+            opP1_[id] = vT;
+            opP2_[id] = epsBits;
+            opP3_[id] = hasEps;
+            opCount_ = opCount_ + 1;
+        }
+        // G3：BatchNormalization（NHWC）
+        void addBatchNormNHWC(int inTid, int outTid, int sT, int bT, int mT, int vT, int epsBits, int hasEps) {
+            int id = opCount_;
+            opKind_[id] = 18;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opC_[id] = sT;
+            opD_[id] = bT;
+            opP0_[id] = mT;
+            opP1_[id] = vT;
+            opP2_[id] = epsBits;
+            opP3_[id] = hasEps;
+            opCount_ = opCount_ + 1;
+        }
+
+        // ---- G4：通用激活（逐元素，布局无关）----
+        void addReLU6(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 19;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+        void addLeakyRelu(int inTid, int outTid, int alphaBits, int hasAlpha) {
+            int id = opCount_;
+            opKind_[id] = 20;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = alphaBits;
+            opP1_[id] = hasAlpha;
+            opCount_ = opCount_ + 1;
+        }
+        void addSiLU(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 21;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+        void addHardSwish(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 22;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+        // G4：Clip（ReLU6 = Clip(x,0,6)）：min/max 为标量张量 id（-1 = 不限）
+        void addClip(int inTid, int outTid, int minTid, int maxTid) {
+            int id = opCount_;
+            opKind_[id] = 23;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = minTid;
+            opP1_[id] = maxTid;
+            opCount_ = opCount_ + 1;
+        }
+
+        int opCount() { return opCount_; }
+        int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
+
+        void run() {
+            int i = 0;
+            while (i < opCount_) {
+                if (opKind_[i] == 1) {
+                    int xa = opA_[i];
+                    int wb = opB_[i];
+                    int bc = opC_[i];
+                    int yd = opD_[i];
+                    InferOps.dense(arena, tOff_[xa], tRows_[xa], tCols_[xa], tOff_[wb], tRows_[wb], tOff_[bc], tOff_[yd]);
+                } else if (opKind_[i] == 2) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    InferOps.relu(arena, tOff_[xa], tOff_[yb], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 3) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    InferOps.softmax(arena, tOff_[xa], tOff_[yb], tRows_[xa], tCols_[xa]);
+                } else if (opKind_[i] == 4) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    InferOps.sigmoid(arena, tOff_[xa], tOff_[yb], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 5) {
+                    int aa = opA_[i];
+                    int bb = opB_[i];
+                    int oc = opC_[i];
+                    InferOps.add(arena, tOff_[aa], tOff_[bb], tOff_[oc], tRows_[aa] * tCols_[aa]);
+                } else if (opKind_[i] == 6) {
+                    int xa = opA_[i];
+                    int wb = opB_[i];
+                    int yd = opC_[i];
+                    InferOps.matmul(arena, tOff_[xa], tRows_[xa], tCols_[xa], tOff_[wb], tRows_[wb], tOff_[yd]);
+                } else if (opKind_[i] == 7) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    InferOps.conv(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 11) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    InferOps.convRelu(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 8) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.maxpool(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 9) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.gapool(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
+                } else if (opKind_[i] == 10) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.flatten(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 12) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.transposeNCHW2NHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
+                } else if (opKind_[i] == 13) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    InferOps.convNHWC(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tC_[wb], tH_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 14) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    InferOps.convNHWCRelu(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tC_[wb], tH_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 15) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.maxpoolNHWC(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tC_[yd], tH_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 16) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.gapoolNHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
+                } else if (opKind_[i] == 17) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double eps = 1.0e-5;
+                    if (opP3_[i] == 1) eps = F32.toDouble(opP2_[i]);
+                    InferOps.batchnorm(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd],
+                        tOff_[opC_[i]], tOff_[opD_[i]], tOff_[opP0_[i]], tOff_[opP1_[i]], eps);
+                } else if (opKind_[i] == 18) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double eps = 1.0e-5;
+                    if (opP3_[i] == 1) eps = F32.toDouble(opP2_[i]);
+                    InferOps.batchnormNHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd],
+                        tOff_[opC_[i]], tOff_[opD_[i]], tOff_[opP0_[i]], tOff_[opP1_[i]], eps);
+                } else if (opKind_[i] == 19) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.relu6(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 20) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double alpha = 0.01;
+                    if (opP1_[i] == 1) alpha = F32.toDouble(opP0_[i]);
+                    InferOps.leakyrelu(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa], alpha);
+                } else if (opKind_[i] == 21) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.silu(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 22) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.hardswish(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 23) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int minOff = -1; if (opP0_[i] >= 0) minOff = tOff_[opP0_[i]];
+                    int maxOff = -1; if (opP1_[i] >= 0) maxOff = tOff_[opP1_[i]];
+                    InferOps.clip(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa], minOff, maxOff);
+                }
+                i = i + 1;
+            }
+        }
+
+        // GPU 执行：M3 设备驻留。
+        // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
+        // 操作设备内存（零逐算子传输），最后一次 D2H 取回。
+        // GPU 不可用时 dev=0，@gpu for 自动回退 CPU（结果一致，arenaBuf no-op）。
+        void runGpu() {
+            long dev = 0L;
+            GpuBufferF arenaBuf = null;
+            if (GpuBackend.available() == 1) {
+                arenaBuf = new GpuBufferF(arena, arenaCap_);
+                dev = arenaBuf.devicePtr();
+            }
+            int i = 0;
+            while (i < opCount_) {
+                if (opKind_[i] == 1) {
+                    int xa = opA_[i];
+                    int wb = opB_[i];
+                    int bc = opC_[i];
+                    int yd = opD_[i];
+                    int work = tRows_[wb] * tCols_[xa];
+                    GpuInferOps.dense(arena, work, tOff_[xa], tRows_[xa], tOff_[wb], tRows_[wb], tCols_[xa], tOff_[bc], tOff_[yd], dev);
+                } else if (opKind_[i] == 2) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    GpuInferOps.relu(arena, tRows_[xa] * tCols_[xa], tOff_[xa], tOff_[yb], dev);
+                } else if (opKind_[i] == 3) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    GpuInferOps.softmax(arena, tRows_[xa] * tCols_[xa], tOff_[xa], tOff_[yb], tRows_[xa], tCols_[xa], dev);
+                } else if (opKind_[i] == 4) {
+                    int xa = opA_[i];
+                    int yb = opB_[i];
+                    GpuInferOps.sigmoid(arena, tRows_[xa] * tCols_[xa], tOff_[xa], tOff_[yb], dev);
+                } else if (opKind_[i] == 5) {
+                    int aa = opA_[i];
+                    int bb = opB_[i];
+                    int oc = opC_[i];
+                    GpuInferOps.add(arena, tRows_[aa] * tCols_[aa], tOff_[aa], tOff_[bb], tOff_[oc], dev);
+                } else if (opKind_[i] == 6) {
+                    int xa = opA_[i];
+                    int wb = opB_[i];
+                    int yd = opC_[i];
+                    int work = tRows_[wb] * tCols_[xa];
+                    GpuInferOps.matmul(arena, work, tOff_[xa], tRows_[xa], tOff_[wb], tRows_[wb], tCols_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 7) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    int work = tensorSize(yd);
+                    GpuInferOps.conv(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 11) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    int work = tensorSize(yd);
+                    GpuInferOps.convRelu(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 8) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.maxpool(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 9) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.gapool(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 10) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(xa);
+                    GpuInferOps.flatten(arena, work, tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 12) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(xa);
+                    GpuInferOps.transposeNCHW2NHWC(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 13) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    int work = tensorSize(yd);
+                    GpuInferOps.convNHWC(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tC_[wb], tH_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 14) {
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
+                    int work = tensorSize(yd);
+                    GpuInferOps.convNHWCRelu(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tC_[wb], tH_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 15) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.maxpoolNHWC(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tC_[yd], tH_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 16) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.gapoolNHWC(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 17) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double eps = 1.0e-5;
+                    if (opP3_[i] == 1) eps = F32.toDouble(opP2_[i]);
+                    GpuInferOps.batchnorm(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd],
+                        tOff_[opC_[i]], tOff_[opD_[i]], tOff_[opP0_[i]], tOff_[opP1_[i]], eps, dev);
+                } else if (opKind_[i] == 18) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double eps = 1.0e-5;
+                    if (opP3_[i] == 1) eps = F32.toDouble(opP2_[i]);
+                    GpuInferOps.batchnormNHWC(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd],
+                        tOff_[opC_[i]], tOff_[opD_[i]], tOff_[opP0_[i]], tOff_[opP1_[i]], eps, dev);
+                } else if (opKind_[i] == 19) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.relu6(arena, work, tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 20) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double alpha = 0.01;
+                    if (opP1_[i] == 1) alpha = F32.toDouble(opP0_[i]);
+                    GpuInferOps.leakyrelu(arena, work, tOff_[xa], tOff_[yd], alpha, dev);
+                } else if (opKind_[i] == 21) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.silu(arena, work, tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 22) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.hardswish(arena, work, tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 23) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    int minOff = -1; if (opP0_[i] >= 0) minOff = tOff_[opP0_[i]];
+                    int maxOff = -1; if (opP1_[i] >= 0) maxOff = tOff_[opP1_[i]];
+                    GpuInferOps.clip(arena, work, tOff_[xa], tOff_[yd], minOff, maxOff, dev);
+                }
+                i = i + 1;
+            }
+            if (dev != 0L) {
+                arenaBuf.copyToHost(arena, 0, 0, arenaCap_);
+                arenaBuf.free();
+            }
+        }
+
+        int argmax1d(int tid) {
+            int n = tRows_[tid] * tCols_[tid];
+            int bi = 0;
+            double bv = arena[tOff_[tid] + 0];
+            int i = 1;
+            while (i < n) {
+                double v = arena[tOff_[tid] + i];
+                if (v > bv) { bv = v; bi = i; }
+                i = i + 1;
+            }
+            return bi;
+        }
+
+        // 指定列（样本）的行 argmax
+        int argmaxCol(int tid, int col) {
+            int batch = tCols_[tid];
+            int rows = tRows_[tid];
+            int bi = 0;
+            double bv = arena[tOff_[tid] + 0 * batch + col];
+            int i = 1;
+            while (i < rows) {
+                double v = arena[tOff_[tid] + i * batch + col];
+                if (v > bv) { bv = v; bi = i; }
+                i = i + 1;
+            }
+            return bi;
+        }
+
+        int tensorSize(int tid) {
+            return tRows_[tid] * tCols_[tid];
+        }
+
+        // 算子足迹：涉及张量的最大 [偏移, 偏移+大小)，作为 @gpu for 传输上界
+        int fp2(int a, int b) {
+            int m = tOff_[a] + tensorSize(a);
+            int m2 = tOff_[b] + tensorSize(b);
+            if (m2 > m) m = m2;
+            return m;
+        }
+        int fp3(int a, int b, int c) {
+            int m = fp2(a, b);
+            int m2 = tOff_[c] + tensorSize(c);
+            if (m2 > m) m = m2;
+            return m;
+        }
+        int fp4(int a, int b, int c, int d) {
+            int m = fp3(a, b, c);
+            int m2 = tOff_[d] + tensorSize(d);
+            if (m2 > m) m = m2;
+            return m;
+        }
+
+    property:
+        float[] arena;
+        int[512] tRows_;
+        int[512] tCols_;
+        int[512] tN_;
+        int[512] tC_;
+        int[512] tH_;
+        int[512] tW_;
+        int[512] tOff_;
+        int[512] opKind_;
+        int[512] opA_;
+        int[512] opB_;
+        int[512] opC_;
+        int[512] opD_;
+        int[512] opP0_;
+        int[512] opP1_;
+        int[512] opP2_;
+        int[512] opP3_;
+        int[512] opP4_;
+        int[512] opP5_;
+        int[512] opP6_;
+        int[512] opP7_;
+        int[512] opP8_;
+        int arenaCap_;
+        int arenaTop_;
+        int tensorCount_;
+        int opCount_;
+}

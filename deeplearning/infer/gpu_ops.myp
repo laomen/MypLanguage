@@ -1,0 +1,515 @@
+// gpu_ops.myp — GPU 算子（@gpu for 卸载 + M3 设备驻留，与 CPU 同一 arena 布局）
+//
+// 与 ops.myp 的 InferOps 语义一致，仅把 kernel 改为 @gpu for。
+// - MYP_GPU=1 且有 CUDA 驱动时真正卸载到 GPU；
+// - 否则 @gpu for 自动回退 CPU 顺序执行（结果一致）。
+//
+// M3 设备驻留（resident(a = dev)）：调用方（runGpu）先把整块 arena H2D 到
+// GpuBufferF 一次，把 dev = arenaBuf.devicePtr() 传给每个算子；内核直接操作
+// 设备内存，不再每个算子 H2D/D2H 整块搬运。循环上界 = work（实际输出数，
+// 传输已跳过，无需再用足印上界）。
+import env;
+import math;
+
+class GpuInferOps {
+    static:
+        // y = W x + b（batch 沿列；每线程算一个输出元素 + 串行归约 j）
+        // n = arena 长度（传输范围），work = 有效输出数 = outDim*batch
+        void dense(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long i = p / batch;
+                    long k = p % batch;
+                    float sum = a[bOff + i];
+                    long j = 0L;
+                    while (j < xRows) {
+                        sum = sum + a[wOff + i * xRows + j] * a[xOff + j * batch + k];
+                        j = j + 1L;
+                    }
+                    a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // y = W x（无偏置；batch 沿列）
+        void matmul(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long i = p / batch;
+                    long k = p % batch;
+                    float sum = float(0.0);
+                    long j = 0L;
+                    while (j < xRows) {
+                        sum = sum + a[wOff + i * xRows + j] * a[xOff + j * batch + k];
+                        j = j + 1L;
+                    }
+                    a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // 逐元素 ReLU
+        void relu(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float v = a[inOff + p];
+                    if (v > float(0.0)) a[outOff + p] = v;
+                    else a[outOff + p] = float(0.0);
+                }
+            }
+        }
+
+        // 逐元素 Sigmoid
+        void sigmoid(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float x = a[inOff + p];
+                    float e = float(Math.exp(float(0.0) - x));
+                    a[outOff + p] = float(1.0) / (float(1.0) + e);
+                }
+            }
+        }
+
+        // 每列一个样本，沿行 softmax（每线程重算列 max/sum）
+        void softmax(float[] a, int work, int inOff, int outOff, int rows, int cols, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long i = p / cols;
+                    long k = p % cols;
+                    float m = a[inOff + 0 * cols + k];
+                    long j = 1L;
+                    while (j < rows) {
+                        float v = a[inOff + j * cols + k];
+                        if (v > m) m = v;
+                        j = j + 1L;
+                    }
+                    float s = float(0.0);
+                    j = 0L;
+                    while (j < rows) {
+                        s = s + float(Math.exp(a[inOff + j * cols + k] - m));
+                        j = j + 1L;
+                    }
+                    a[outOff + i * cols + k] = float(Math.exp(a[inOff + i * cols + k] - m)) / s;
+                }
+            }
+        }
+
+        // 逐元素相加
+        void add(float[] a, int work, int aOff, int bOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    a[outOff + p] = a[aOff + p] + a[bOff + p];
+                }
+            }
+        }
+
+        // ---- CNN：4D NCHW，每线程算一个输出元素 ----
+
+        // 卷积（支持 group/strides/pads/dilations）
+        // x: [N,C,H,W] flat N*C*H*W；w: [yC, C/group, kh, kw]；b: [yC]；y: [N,yC,yH,yW]
+        void conv(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oc = (p / (yW * yH)) % yC;
+                    long nn = p / (yW * yH * yC);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = oc / ocpg;
+                    int wc = cpg * kh * kw;
+                    float sum = float(0.0);
+                    if (bOff >= 0) sum = a[bOff + oc];   // 无偏置卷积（bOff=-1）
+                    int ic = 0;
+                    while (ic < cpg) {
+                        long cIn = g * cpg + ic;
+                        int ky = 0;
+                        while (ky < kh) {
+                            long iy = oy * sh - pt + ky * dh;
+                            if (iy >= 0 && iy < xH) {
+                                int kx = 0;
+                                while (kx < kw) {
+                                    long ix = ox * sw - pl + kx * dw;
+                                    if (ix >= 0 && ix < xW) {
+                                        sum = sum + a[xOff + nn * xC * xH * xW + cIn * xH * xW + iy * xW + ix]
+                                                   * a[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                    }
+                                    kx = kx + 1;
+                                }
+                            }
+                            ky = ky + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    a[yOff + p] = sum;
+                }
+            }
+        }
+
+        // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量（少一次
+        // kernel 启动 + 少一次中间张量读写）。参数与 conv 相同，y 处写 max(sum,0)。
+        void convRelu(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int kh, int kw,
+                  int sh, int sw, int pt, int pb, int pl, int pr,
+                  int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oc = (p / (yW * yH)) % yC;
+                    long nn = p / (yW * yH * yC);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = oc / ocpg;
+                    int wc = cpg * kh * kw;
+                    float sum = float(0.0);
+                    if (bOff >= 0) sum = a[bOff + oc];   // 无偏置卷积（bOff=-1）
+                    int ic = 0;
+                    while (ic < cpg) {
+                        long cIn = g * cpg + ic;
+                        int ky = 0;
+                        while (ky < kh) {
+                            long iy = oy * sh - pt + ky * dh;
+                            if (iy >= 0 && iy < xH) {
+                                int kx = 0;
+                                while (kx < kw) {
+                                    long ix = ox * sw - pl + kx * dw;
+                                    if (ix >= 0 && ix < xW) {
+                                        sum = sum + a[xOff + nn * xC * xH * xW + cIn * xH * xW + iy * xW + ix]
+                                                   * a[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                    }
+                                    kx = kx + 1;
+                                }
+                            }
+                            ky = ky + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    if (sum > float(0.0)) a[yOff + p] = sum;
+                    else a[yOff + p] = float(0.0);
+                }
+            }
+        }
+
+        // 最大池化：x: [N,C,H,W] → y: [N,C,yH,yW]
+        void maxpool(float[] a, int work,
+                     int xOff, int xN, int xC, int xH, int xW,
+                     int yOff, int yH, int yW,
+                     int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long c = (p / (yW * yH)) % xC;
+                    long nn = p / (yW * yH * xC);
+                    float best = float(0.0) - float(1.0e30);
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx;
+                                if (ix >= 0 && ix < xW) {
+                                    float v = a[xOff + nn * xC * xH * xW + c * xH * xW + iy * xW + ix];
+                                    if (v > best) best = v;
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    a[yOff + p] = best;
+                }
+            }
+        }
+
+        // 全局平均池化：x: [N,C,H,W] → y: [N,C,1,1]（work = N*C）
+        void gapool(float[] a, int work,
+                    int xOff, int xN, int xC, int xH, int xW, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long nn = p / xC;
+                    float sum = float(0.0);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        sum = sum + a[xOff + nn * xC * xH * xW + c * xH * xW + i];
+                        i = i + 1;
+                    }
+                    a[yOff + p] = sum / float(xH * xW);
+                }
+            }
+        }
+
+        // Flatten：数据连续，直接拷贝
+        void flatten(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    a[outOff + p] = a[inOff + p];
+                }
+            }
+        }
+
+        // ---- G2：NHWC 布局（x:[N,H,W,C] 行优先）----
+
+        // NCHW→NHWC 转置：x:[N,C,H,W] → y:[N,H,W,C]（每线程一个元素）
+        void transposeNCHW2NHWC(float[] a, int work,
+                int xOff, int xN, int xC, int xH, int xW, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long h = (p / xC) % xH;
+                    long w = (p / (xC * xH)) % xW;
+                    long nn = p / (xC * xH * xW);
+                    a[yOff + ((nn * xH + h) * xW + w) * xC + c] = a[xOff + ((nn * xC + c) * xH + h) * xW + w];
+                }
+            }
+        }
+
+        // NHWC 卷积：x:[N,H,W,Cin]，w:[Cout,KH,KW,Cin]，b:[Cout]，y:[N,Hout,Wout,Cout]
+        // 每线程算一个输出元素（co,ox,oy,nn），串行归约 cpg*kh*kw
+        void convNHWC(float[] a, int work,
+                int xOff, int xN, int xH, int xW, int xC,
+                int wOff, int bOff,
+                int yOff, int yH, int yW, int yC,
+                int kh, int kw,
+                int sh, int sw, int pt, int pb, int pl, int pr,
+                int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long co = p % yC;
+                    long ox = (p / yC) % yW;
+                    long oy = (p / (yC * yW)) % yH;
+                    long nn = p / (yC * yW * yH);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = co / ocpg;
+                    float sum = float(0.0);
+                    if (bOff >= 0) sum = a[bOff + co];   // 无偏置卷积（bOff=-1）
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky * dh;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx * dw;
+                                if (ix >= 0 && ix < xW) {
+                                    int ic = 0;
+                                    while (ic < cpg) {
+                                        long cIn = g * cpg + ic;
+                                        sum = sum + a[xOff + ((nn * xH + iy) * xW + ix) * xC + cIn]
+                                                   * a[wOff + ((co * kh + ky) * kw + kx) * cpg + ic];
+                                        ic = ic + 1;
+                                    }
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    a[yOff + p] = sum;
+                }
+            }
+        }
+
+        // NHWC 卷积 + ReLU（G1 融合的 NHWC 对应）：y 处写 max(sum,0)
+        void convNHWCRelu(float[] a, int work,
+                int xOff, int xN, int xH, int xW, int xC,
+                int wOff, int bOff,
+                int yOff, int yH, int yW, int yC,
+                int kh, int kw,
+                int sh, int sw, int pt, int pb, int pl, int pr,
+                int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long co = p % yC;
+                    long ox = (p / yC) % yW;
+                    long oy = (p / (yC * yW)) % yH;
+                    long nn = p / (yC * yW * yH);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = co / ocpg;
+                    float sum = float(0.0);
+                    if (bOff >= 0) sum = a[bOff + co];   // 无偏置卷积（bOff=-1）
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky * dh;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx * dw;
+                                if (ix >= 0 && ix < xW) {
+                                    int ic = 0;
+                                    while (ic < cpg) {
+                                        long cIn = g * cpg + ic;
+                                        sum = sum + a[xOff + ((nn * xH + iy) * xW + ix) * xC + cIn]
+                                                   * a[wOff + ((co * kh + ky) * kw + kx) * cpg + ic];
+                                        ic = ic + 1;
+                                    }
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    if (sum > float(0.0)) a[yOff + p] = sum;
+                    else a[yOff + p] = float(0.0);
+                }
+            }
+        }
+
+        // NHWC 最大池化：x:[N,H,W,C] → y:[N,yH,yW,C]
+        void maxpoolNHWC(float[] a, int work,
+                int xOff, int xN, int xH, int xW, int xC,
+                int yOff, int yH, int yW,
+                int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long ox = (p / xC) % yW;
+                    long oy = (p / (xC * yW)) % yH;
+                    long nn = p / (xC * yW * yH);
+                    float best = float(0.0) - float(1.0e30);
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx;
+                                if (ix >= 0 && ix < xW) {
+                                    float v = a[xOff + ((nn * xH + iy) * xW + ix) * xC + c];
+                                    if (v > best) best = v;
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    a[yOff + p] = best;
+                }
+            }
+        }
+
+        // NHWC 全局平均池化：x:[N,H,W,C] → y:[N,C]（work = N*C）
+        void gapoolNHWC(float[] a, int work,
+                int xOff, int xN, int xH, int xW, int xC, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long nn = p / xC;
+                    float sum = float(0.0);
+                    int i = 0;
+                    while (i < xH * xW) {
+                        long h = i / xW;
+                        long w = i % xW;
+                        sum = sum + a[xOff + ((nn * xH + h) * xW + w) * xC + c];
+                        i = i + 1;
+                    }
+                    a[yOff + p] = sum / float(xH * xW);
+                }
+            }
+        }
+
+        // ---- G3：BatchNormalization ----
+        // 每线程一个元素；通道 = (p/(H*W))%C（NCHW）。eps 由宿主解析传入，
+        // Math.sqrt → libdevice __nv_sqrt；内核局部仅用 float（@gpu for 不支持 double 声明）。
+        void batchnorm(float[] a, int work,
+                       int xOff, int xN, int xC, int xH, int xW, int yOff,
+                       int sOff, int bOff, int mOff, int vOff, double eps, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = (p / (xH * xW)) % xC;
+                    float scale = a[sOff + c];
+                    float mean = a[mOff + c];
+                    float variance = a[vOff + c];
+                    float bias = a[bOff + c];
+                    float invStd = scale / float(Math.sqrt(float(variance) + float(eps)));
+                    a[yOff + p] = float((a[xOff + p] - mean) * invStd + bias);
+                }
+            }
+        }
+
+        // G3：BatchNormalization（NHWC）：通道 = p % C
+        void batchnormNHWC(float[] a, int work,
+                           int xOff, int xN, int xH, int xW, int xC, int yOff,
+                           int sOff, int bOff, int mOff, int vOff, double eps, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    float scale = a[sOff + c];
+                    float mean = a[mOff + c];
+                    float variance = a[vOff + c];
+                    float bias = a[bOff + c];
+                    float invStd = scale / float(Math.sqrt(float(variance) + float(eps)));
+                    a[yOff + p] = float((a[xOff + p] - mean) * invStd + bias);
+                }
+            }
+        }
+
+        // ---- G4：通用激活（逐元素，布局无关）----
+        // ReLU6：y = min(max(x,0),6)
+        void relu6(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float v = a[inOff + p];
+                    if (v > float(6.0)) v = float(6.0);
+                    if (v < float(0.0)) v = float(0.0);
+                    a[outOff + p] = v;
+                }
+            }
+        }
+        // LeakyRelu：y = x>0 ? x : alpha*x
+        void leakyrelu(float[] a, int work, int inOff, int outOff, double alpha, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float v = a[inOff + p];
+                    if (v > float(0.0)) a[outOff + p] = v;
+                    else a[outOff + p] = float(alpha) * v;
+                }
+            }
+        }
+        // SiLU / Swish：y = x * sigmoid(x) = x / (1 + exp(-x))
+        void silu(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float x = a[inOff + p];
+                    float s = x / float(1.0 + Math.exp(float(0.0) - x));
+                    a[outOff + p] = s;
+                }
+            }
+        }
+        // HardSwish：y = x * relu6(x+3) / 6
+        void hardswish(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float x = a[inOff + p];
+                    float r = x + float(3.0);
+                    if (r < float(0.0)) r = float(0.0);
+                    if (r > float(6.0)) r = float(6.0);
+                    a[outOff + p] = x * r / float(6.0);
+                }
+            }
+        }
+        // Clip：y = clamp(x, min, max)；minOff/maxOff 为标量边界偏移（-1 = 不限）
+        void clip(float[] a, int work, int inOff, int outOff, int minOff, int maxOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float v = a[inOff + p];
+                    if (minOff >= 0 && v < a[minOff + 0]) v = a[minOff + 0];
+                    if (maxOff >= 0 && v > a[maxOff + 0]) v = a[maxOff + 0];
+                    a[outOff + p] = v;
+                }
+            }
+        }
+}

@@ -253,7 +253,7 @@ class Vectors {
 
         // sum = Σ a[i]（GPU 原子归约）
         double sum(double[] a, long n) {
-            double[1] acc;
+            double[] acc = new double[1];
             acc[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
                 Atomic.addDouble(acc, 0, a[i]);
@@ -262,7 +262,7 @@ class Vectors {
         }
         // mean = Σ a[i] / n（GPU 原子归约）
         double mean(double[] a, long n) {
-            double[1] acc;
+            double[] acc = new double[1];
             acc[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
                 Atomic.addDouble(acc, 0, a[i]);
@@ -271,8 +271,8 @@ class Vectors {
         }
         // variance = Σ (a[i]-mean)^2 / n（GPU 原子归约，单遍）
         double variance(double[] a, long n) {
-            double[1] s;
-            double[1] sq;
+            double[] s = new double[1];
+            double[] sq = new double[1];
             s[0] = 0.0;
             sq[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
@@ -284,8 +284,8 @@ class Vectors {
         }
         // stddev = sqrt(variance)（GPU 原子归约）
         double stddev(double[] a, long n) {
-            double[1] s;
-            double[1] sq;
+            double[] s = new double[1];
+            double[] sq = new double[1];
             s[0] = 0.0;
             sq[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
@@ -298,7 +298,7 @@ class Vectors {
         }
         // normSquared = Σ a[i]^2（GPU 原子归约）
         double normSquared(double[] a, long n) {
-            double[1] acc;
+            double[] acc = new double[1];
             acc[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
                 Atomic.addDouble(acc, 0, a[i] * a[i]);
@@ -307,7 +307,7 @@ class Vectors {
         }
         // norm = sqrt(Σ a[i]^2)（GPU 原子归约）
         double norm(double[] a, long n) {
-            double[1] acc;
+            double[] acc = new double[1];
             acc[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
                 Atomic.addDouble(acc, 0, a[i] * a[i]);
@@ -316,7 +316,7 @@ class Vectors {
         }
         // 单位化：data[i] /= ||data||（先 GPU 求模，再 GPU 归一化）
         void normalize(double[] data, long n) {
-            double[1] acc;
+            double[] acc = new double[1];
             acc[0] = 0.0;
             @gpu for (long i = 0L; i < n; i = i + 1L) {
                 Atomic.addDouble(acc, 0, data[i] * data[i]);
@@ -342,13 +342,158 @@ class Vectors {
             }
             return m;
         }
-        // 内积 Σ a[i]*b[i]（CPU 顺序）
+        // 内积 Σ a[i]*b[i]（GPU 原子归约）
         double dot(double[] a, double[] b, long n) {
-            double sum = 0.0;
-            for (long i = 0L; i < n; i = i + 1L) {
-                sum = sum + a[i] * b[i];
+            double[] acc = new double[1];
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                double d = a[i] * b[i];
+                Atomic.addDouble(acc, 0, d);
             }
-            return sum;
+            return acc[0];
+        }
+        // float 版内积（float 数组，双精度累加避免舍入）
+        double dotF(float[] a, float[] b, long n) {
+            double[] acc = new double[1];
+            acc[0] = 0.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                double d = a[i] * b[i];
+                Atomic.addDouble(acc, 0, d);
+            }
+            return acc[0];
+        }
+
+        // ---- GPU 块归约（max/min/argmax）：GPU 每块取局部极值，CPU 扫描块表 ----
+        // 归约块大小
+        int blockSize() { return 256; }
+
+        // 最大值（GPU 块归约）
+        double max(double[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] lm = new double[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                double b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v > b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            double m = lm[0];
+            long i = 1L;
+            while (i < blocks) { if (lm[i] > m) m = lm[i]; i = i + 1L; }
+            return m;
+        }
+        // float 版最大值
+        float maxF(float[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] lm = new float[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                float b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v > b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            float m = lm[0];
+            long i = 1L;
+            while (i < blocks) { if (lm[i] > m) m = lm[i]; i = i + 1L; }
+            return m;
+        }
+        // 最小值（GPU 块归约）
+        double min(double[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] lm = new double[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                double b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v < b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            double m = lm[0];
+            long i = 1L;
+            while (i < blocks) { if (lm[i] < m) m = lm[i]; i = i + 1L; }
+            return m;
+        }
+        // float 版最小值
+        float minF(float[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] lm = new float[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                float b = a[p * bs];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v < b) b = v; }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+            }
+            float m = lm[0];
+            long i = 1L;
+            while (i < blocks) { if (lm[i] < m) m = lm[i]; i = i + 1L; }
+            return m;
+        }
+        // 最大值下标（GPU 块归约，返回首个达到最大值的下标）
+        int argmax(double[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            double[] lm = new double[blocks];
+            long[] li = new long[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                long bi = p * bs;
+                double b = a[bi];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { double v = a[idx]; if (v > b) { b = v; bi = idx; } }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+                li[p] = bi;
+            }
+            double m = lm[0];
+            int bi = int(li[0]);
+            long i = 1L;
+            while (i < blocks) { if (lm[i] > m) { m = lm[i]; bi = int(li[i]); } i = i + 1L; }
+            return bi;
+        }
+        // float 版最大值下标
+        int argmaxF(float[] a, long n) {
+            int bs = Vectors.blockSize();
+            int blocks = int((n + bs - 1) / bs);
+            float[] lm = new float[blocks];
+            long[] li = new long[blocks];
+            @gpu for (long p = 0L; p < blocks; p = p + 1L) {
+                long bi = p * bs;
+                float b = a[bi];
+                long j = 1L;
+                while (j < bs) {
+                    long idx = p * bs + j;
+                    if (idx < n) { float v = a[idx]; if (v > b) { b = v; bi = idx; } }
+                    j = j + 1L;
+                }
+                lm[p] = b;
+                li[p] = bi;
+            }
+            float m = lm[0];
+            int bi = int(li[0]);
+            long i = 1L;
+            while (i < blocks) { if (lm[i] > m) { m = lm[i]; bi = int(li[i]); } i = i + 1L; }
+            return bi;
         }
 }
 
@@ -398,6 +543,38 @@ class Matrix {
                 for (long j = 0L; j < cols; j = j + 1L) {
                     t[j * rows + i] = a[i * cols + j];
                 }
+            }
+        }
+
+        // C[m×n] = A[m×k] · B[k×n]（GPU GEMM，每线程算一个输出元素）
+        // A/B/C 均行主序（row-major）
+        void matmul(double[] a, double[] b, double[] c, long m, long n, long k) {
+            long total = m * n;
+            @gpu for (long idx = 0L; idx < total; idx = idx + 1L) {
+                long i = idx / n;
+                long j = idx % n;
+                double s = 0.0;
+                long t = 0L;
+                while (t < k) {
+                    s = s + a[i * k + t] * b[t * n + j];
+                    t = t + 1L;
+                }
+                c[idx] = s;
+            }
+        }
+        // float 版 GEMM（FP32 全速）
+        void matmulF(float[] a, float[] b, float[] c, long m, long n, long k) {
+            long total = m * n;
+            @gpu for (long idx = 0L; idx < total; idx = idx + 1L) {
+                long i = idx / n;
+                long j = idx % n;
+                float s = float(0.0);
+                long t = 0L;
+                while (t < k) {
+                    s = s + a[i * k + t] * b[t * n + j];
+                    t = t + 1L;
+                }
+                c[idx] = s;
             }
         }
 }

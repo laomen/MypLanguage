@@ -1,0 +1,33 @@
+// device.myp — GpuDevice：设备查询 / 选择 / 同步
+//
+// M1 提供查询与同步；setCurrent（多设备选择）随 M5 多后端加入。
+
+class GpuDevice {
+    static:
+        // 设备数量（0 = 无 / 不可用）
+        int count() { return __myp_cuda_count(); }
+
+        // GPU 名称
+        string name() { return __myp_cuda_name(); }
+
+        // 显存（字节）
+        long memory() { return __myp_cuda_memory(); }
+
+        // 计算能力（如 8.6 → 860）
+        int capability() { return __myp_cuda_capability(); }
+
+        // 流式多处理器（SM）数量
+        int multiProcessors() { return __myp_cuda_multiprocessors(); }
+
+        // 每块最大线程数
+        int maxThreads() { return __myp_cuda_max_threads(); }
+
+        // 线程束大小（通常 32）
+        int warpSize() { return __myp_cuda_warp(); }
+
+        // GPU 是否可用
+        int available() { return __myp_cuda_available(); }
+
+        // 同步：阻塞直到所有内核完成（返回 0 失败）
+        int sync() { return __myp_gpu_sync(); }
+}
