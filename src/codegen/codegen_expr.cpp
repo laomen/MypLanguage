@@ -588,6 +588,26 @@ llvm::Value* CodeGen::generateBitcast(const CallExpr& e) {
     return builder_.CreateBitCast(v, target);
 }
 
+// P1 bytes(s) / str(bytes)（docs §6.3）：string ↔ ubyte[] 互转。
+// bytes(s)：myp_str_to_bytes(s) → 计数 ubyte[] backing data 指针（rc=1，动态数组
+// 槽位直接持有）。str(bytes)：myp_bytes_to_str(ubyte[] data) → 计数字符串（rc=1，
+// 走字符串 temp/ARC 路径）。sema 已保证实参类型匹配。
+llvm::Value* CodeGen::generateBytesStr(const CallExpr& e, const std::string& name) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    if (e.args.size() != 1) {
+        diag_.error(e.range, name + " takes exactly one argument");
+        return llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+    }
+    auto* arg = generateExpr(*e.args[0]);
+    const char* fn_name = (name == "bytes") ? "myp_str_to_bytes" : "myp_bytes_to_str";
+    auto* fn = module_->getFunction(fn_name);
+    if (!fn) {
+        auto* ft = llvm::FunctionType::get(ptr_ty, {ptr_ty}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+    }
+    return builder_.CreateCall(fn, {arg}, "bytesstr");
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -837,6 +857,10 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
         auto& bid = static_cast<const IdentifierExpr&>(*e.callee);
         if (bid.name == "bitcast" && !e.call_type_args.empty())
             return generateBitcast(e);
+        // P1 bytes(s) / str(bytes)（docs §6.3）：sema 只在实参类型匹配时拦截，
+        // 这里同名直接走内建（用户同名函数由 sema 已解析到别的路径）。
+        if (bid.name == "bytes" || bid.name == "str")
+            return generateBytesStr(e, bid.name);
     }
     // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
     // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.

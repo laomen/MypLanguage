@@ -2133,6 +2133,30 @@ void* myp_alloc_slice_backing(uint64_t count, uint32_t elem_size, uint32_t elem_
     return base + MYP_ARR_HEADER_SIZE;  // element-data pointer
 }
 
+// P1（docs/type_system_design §6.3）：string ↔ ubyte[] 互转（bytes(s)/str(bytes)）。
+// bytes(s)：把字符串字节拷贝进一个计数 ubyte[] backing（myp_alloc_slice_backing，
+// elem_kind=scalar），返回 data 指针（与 `new ubyte[n]` 同一 ABI，MYP 动态数组槽位
+// 直接持有该引用）。str(bytes)：从 ubyte[] data 指针（头部 count 为长度）构造计数
+// 字符串（rc=1）。
+void* myp_str_to_bytes(const char* s) {
+    if (!s) s = "";
+    size_t len = strlen(s);
+    void* data = myp_alloc_slice_backing((uint64_t)len, 1, MYP_ARR_ELEM_SCALAR);
+    if (!data) return NULL;
+    memcpy(data, s, len);
+    return data;
+}
+char* myp_bytes_to_str(const void* data) {
+    if (!data) return myp_strdup("");
+    myp_arr_header_t* h = (myp_arr_header_t*)((const char*)data - MYP_ARR_HEADER_SIZE);
+    uint64_t n = h->count;
+    char* r = (char*)myp_alloc((size_t)n + 1);
+    if (!r) return NULL;
+    memcpy(r, data, (size_t)n);
+    r[n] = '\0';
+    return r;
+}
+
 typedef struct myp_class_slice_cleanup {
     struct myp_class_slice_cleanup* next;
     void* data;

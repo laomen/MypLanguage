@@ -502,6 +502,30 @@ TypeInfo Sema::visitBitcast(CallExpr& expr) {
     return target_ti;
 }
 
+// P1 bytes(s) / str(bytes)（docs §6.3）：string ↔ ubyte[] 互转。
+// 仅当实参类型匹配时作为内建（bytes 收 string；str 收 ubyte[] 动态数组），否则
+// 返回 Void 让调用方落到普通函数解析（用户同名函数不受影响）。
+TypeInfo Sema::visitBytesStr(CallExpr& expr, const std::string& name) {
+    if (expr.args.size() != 1) {
+        error(expr.range, name + " takes exactly one argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto ot = visitExpr(*expr.args[0]);
+    if (name == "bytes") {
+        if (ot.kind != TypeKind::String) return TypeInfo(TypeKind::Void);  // 非 string → 普通解析
+        TypeInfo rt(TypeKind::Array);
+        rt.element_type = std::make_shared<TypeInfo>(TypeKind::UByte);
+        expr.resolved_kind = TypeKind::Array;
+        return rt;
+    }
+    // str(bytes)：收 ubyte[]（或 u8 元素的定长数组）
+    bool is_ubyte_arr = (ot.kind == TypeKind::Array && ot.element_type &&
+                         ot.element_type->kind == TypeKind::UByte);
+    if (!is_ubyte_arr) return TypeInfo(TypeKind::Void);   // 非 ubyte[] → 普通解析
+    expr.resolved_kind = TypeKind::String;
+    return TypeInfo(TypeKind::String);
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1243,6 +1267,10 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         auto& bc_id = static_cast<const IdentifierExpr&>(*expr.callee);
         if (bc_id.name == "bitcast" && !expr.call_type_args.empty())
             return visitBitcast(expr);
+        // P1 bytes(s) / str(bytes)（docs §6.3）：string ↔ ubyte[]。仅当实参类型
+        // 匹配时才拦截（bytes 收 string、str 收 ubyte[]），用户同名函数不冲突。
+        if (bc_id.name == "bytes" || bc_id.name == "str")
+            return visitBytesStr(expr, bc_id.name);
     }
 
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.

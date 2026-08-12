@@ -1,0 +1,44 @@
+// P1 bytes(s)/str(bytes)（docs/type_system_design §6.3）：string ↔ ubyte[] 互转。
+//   IO/序列化刚需；UTF-8 字节往返、逐字节修改、空串、下标读取。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            ubyte[] b = bytes("ABC");
+            Console.writeLong(b[0]);   // 65
+            Console.writeString("\n");
+            Console.writeLong(b[1]);   // 66
+            Console.writeString("\n");
+            Console.writeLong(b[2]);   // 67
+            Console.writeString("\n");
+            Console.writeString(str(b));   // "ABC"
+            Console.writeString("\n");
+            // UTF-8 字节往返（"世界" 是 6 字节 UTF-8）
+            string zh = "Hello, 世界";
+            ubyte[] zb = bytes(zh);
+            Console.writeString(str(zb));  // 原样
+            Console.writeString("\n");
+            Console.writeLong(zb[7]);      // '世' 首字节
+            Console.writeString("\n");
+            // 空串
+            Console.writeString("[" + str(bytes("")) + "]");
+            Console.writeString("\n");
+            // 逐字节累加
+            long sum = 0;
+            for (int i = 0; i < 3; i = i + 1) { sum = sum + b[i]; }
+            Console.writeLong(sum);        // 198
+            Console.writeString("\n");
+            // 修改字节再转回
+            ubyte[] m = bytes("AB");
+            m[0] = 88u;                    // 'X'
+            Console.writeString(str(m));   // "XB"
+            Console.writeString("\n");
+            if (b[0] == 65 && str(bytes("XYZ")) == "XYZ" && sum == 198)
+                Console.writeString("BS_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
