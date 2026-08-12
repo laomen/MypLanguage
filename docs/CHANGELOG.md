@@ -75,6 +75,23 @@
     `kernel.sync()` 两阶段；CPU 单线程降级；`tests/test_gpu_tile` GPU PASS。
   - **§3.3 块同步**：`kernel.sync()` → `llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)`
     → PTX `bar.sync 0`；sema 发散分支检查（if/while 内 sync → 警告，防死锁）。
+  - **P1 ① 数学 intrinsic 混合方案（§6.3）**：`@gpu for` 内 math 映射改为**混合**——
+    native（sqrt/fabs/floor/ceil/trunc）走 `llvm.*` 原生指令（零 libdevice），超越
+    （sin/cos/exp/log/tan/pow/atan2 等）保留 `__nv_*`+libdevice（NVPTX 对超越 intrinsic
+    无 libcall，纯 intrinsic 会 "no libcall available for flog"）；`tests/test_gpu_math_float`
+    GPU 全 PASS。
+  - **P1 ② HAL + CPU 一等后端（§7.5/7.6）**：`GpuHAL`（`active()` 探测 cuda→cpu、
+    `isGpu/isCpu/vendor`）；`CpuBackend`（available 恒 1、alloc 伪句柄 1、copy no-op、
+    流/事件 no-op、sync 恒 1）；`GpuBackend` 按 HAL 分派 cuda/cpu（`backend.myp`）；
+    `GpuBuffer/GpuBufferF` 加 `host_` 属性 + CPU 分支（构造 host 直通、copyFromHost/
+    copyToHost/copyFromBuffer/async 全逐元素直通）——CPU 成为一等后端；
+    `GpuDevice.sync` CPU 模式返回 1；`tests/test_gpu_hal`（手动 @startup 测试，双模式
+    PASS：CPU backend=CPU / GPU CUDA）、`tests/@test/gpu_paradigm` 适配双模式 gate
+    （流/事件/驻留/kernel-ops 用 `GpuHAL.isGpu()` 判断）。
+  - **bug 修复（@gpu for float 标量捕获）**：`analyzeGpuCapturedVars`/`analyzeGpuTileCapturedVars`
+    标量类型判断缺 `isFloatTy()` → 捕获 float 标量被置为 i64 → kernel 参数类型错位 →
+    GPU 结果垃圾（影响所有捕获 float 标量的 `@gpu for`，如 GpuOps.mapF 的 s 参数）；
+    已加 `isFloatTy()` 修复，`gpu_paradigm` GPU 模式 mapBufF 全 PASS。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

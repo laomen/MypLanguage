@@ -98,7 +98,9 @@ import gpu;
 @test void test_gpu_paradigm_device() {
     // 设备信息接口（无 GPU 时返回 0/空，不应崩溃）
     string backend = Gpu.backend();
-    Test.assertStrEq(backend, "CUDA", "gpu backend name");
+    int nameOk = 0;
+    if (backend == "CUDA" || backend == "CPU") nameOk = 1;
+    Test.assertEq(nameOk, 1, "gpu backend name");
     int n = Gpu.deviceCount();
     if (n > 0) {
         string nm = Gpu.deviceName();
@@ -124,7 +126,7 @@ import gpu;
     GpuEvent ev = new GpuEvent();
     ev.destroy();
 
-    if (Gpu.available() == 0) {
+    if (GpuHAL.isGpu() == 0) {
         Test.report("test_gpu_paradigm_m2_stream", true);  // 无 GPU：仅验证 API 不崩溃
         return;
     }
@@ -209,7 +211,7 @@ import gpu;
     float[] a = new float[n];
     for (int i = 0; i < n; i = i + 1) a[i] = float(i);
 
-    if (Gpu.available() == 0) {
+    if (GpuHAL.isGpu() == 0) {
         // 无 GPU：resident 忽略 → CPU 顺序执行，仍应正确
         long dev0 = 0L;
         @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev0) {
@@ -269,7 +271,7 @@ import gpu;
     GpuPool pool = new GpuPool(8);
     Test.assertEq(pool.count(), 0, "pool init");
 
-    if (Gpu.available() == 0) {
+    if (GpuHAL.isGpu() == 0) {
         pool.destroy();
         Test.report("test_gpu_paradigm_m4_ops", true);
         return;

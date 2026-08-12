@@ -126,7 +126,8 @@ void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loo
                     kai.is_array = true;
                     kai.type = ptr_ty;
                 } else if (val_type->isIntegerTy(64) || val_type->isIntegerTy(32) ||
-                           val_type->isDoubleTy() || val_type->isPointerTy()) {
+                           val_type->isDoubleTy() || val_type->isFloatTy() ||
+                           val_type->isPointerTy()) {
                     kai.type = val_type;
                 } else {
                     kai.type = i64_ty;  // default
@@ -209,7 +210,8 @@ void CodeGen::analyzeGpuTileCapturedVars(const GpuTileStmt& stmt) {
                     kai.is_array = true;
                     kai.type = ptr_ty;
                 } else if (val_type->isIntegerTy(64) || val_type->isIntegerTy(32) ||
-                           val_type->isDoubleTy() || val_type->isPointerTy()) {
+                           val_type->isDoubleTy() || val_type->isFloatTy() ||
+                           val_type->isPointerTy()) {
                     kai.type = val_type;
                 } else {
                     kai.type = i64_ty;

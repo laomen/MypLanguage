@@ -1,0 +1,54 @@
+// P1 ② GpuHAL + CPU 一等后端测试（gpu_library_design §7.5/7.6）
+// 无 GPU（未设 MYP_GPU）时 GpuHAL.active() 应返回 "cpu"，GpuBuffer 用 host 引用
+// 直通（copyToHost 读回构造时数据）。GPU 环境应返回 "cuda"。
+import env;
+import math;
+import gpu.hal;
+import gpu.backend;
+import gpu.memory;
+
+class Main {
+    action:
+        @startup void go() {
+            string backend = GpuHAL.active();
+            Console.writeString("hal backend="); Console.writeLine(backend);
+            Console.writeString("hal vendor="); Console.writeLine(GpuHAL.vendor());
+            Console.writeString("backend name="); Console.writeLine(GpuBackend.name());
+
+            // GpuBuffer 数据往返（GPU 模式 H2D/D2H；CPU 模式 host 引用直通）
+            double[] x = new double[4];
+            x[0] = 1.5; x[1] = 2.5; x[2] = 3.5; x[3] = 4.5;
+            GpuBuffer b = new GpuBuffer(x, 4);
+            double[] y = new double[4];
+            b.copyToHost(y, 0, 0, 4);
+            long err = 0L;
+            if (Math.abs(y[0] - 1.5) > 1e-12) err = err + 1L;
+            if (Math.abs(y[1] - 2.5) > 1e-12) err = err + 1L;
+            if (Math.abs(y[2] - 3.5) > 1e-12) err = err + 1L;
+            if (Math.abs(y[3] - 4.5) > 1e-12) err = err + 1L;
+            // 更新后取回
+            double[] z = new double[4];
+            z[0] = 9.0; z[1] = 8.0; z[2] = 7.0; z[3] = 6.0;
+            b.copyFromHost(z, 0, 0, 4);
+            b.copyToHost(y, 0, 0, 4);
+            if (Math.abs(y[0] - 9.0) > 1e-12) err = err + 1L;
+            if (Math.abs(y[3] - 6.0) > 1e-12) err = err + 1L;
+
+            // float 版
+            float[] xf = new float[2];
+            xf[0] = 1.25f; xf[1] = 2.75f;
+            GpuBufferF bf = new GpuBufferF(xf, 2);
+            float[] yf = new float[2];
+            bf.copyToHost(yf, 0, 0, 2);
+            if (Math.abs(yf[0] - 1.25) > 1e-6) err = err + 1L;
+            if (Math.abs(yf[1] - 2.75) > 1e-6) err = err + 1L;
+
+            Console.writeLine("gpu hal cpu-backend: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

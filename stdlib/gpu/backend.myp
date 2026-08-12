@@ -1,61 +1,125 @@
-// backend.myp — GpuBackend：后端接口 + 注册（M1：唯一后端为 CUDA）
+// backend.myp — GpuBackend：后端接口 + 注册（gpu_library_design §7.5 落地）
 //
 // 用户一般不直接调用 GpuBackend（GpuBuffer/GpuDevice 已封装）。
-// 它是"后端即插即用点"：新增后端时写 backend_xxx.myp 并把这里的转发
-// 换成可配置注册表（M5 多后端）。当前所有方法转发到 CudaBackend。
+// 按 GpuHAL.active() 分派到激活适配器（cuda / cpu）：新增后端（如 amd）时
+// 写 backend_xxx.myp 并扩展 GpuHAL.select 探测即可，此处无需改。
 
 import gpu.backend_cuda;
+import gpu.backend_cpu;
+import gpu.hal;
 
 class GpuBackend {
     static:
-        string name() { return CudaBackend.name(); }
-        int available() { return CudaBackend.available(); }
-        int count() { return CudaBackend.count(); }
+        // 激活适配器是否为 CPU（避免每次查字符串）
+        int isCpu() {
+            if (GpuHAL.active() == "cpu") return 1;
+            return 0;
+        }
 
-        long alloc(long bytes) { return CudaBackend.alloc(bytes); }
-        int free(long dev) { return CudaBackend.free(dev); }
+        string name() {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.name();
+            return CudaBackend.name();
+        }
+        // available()：激活后端可用性（CPU 恒 1 = 一等后端；GPU 看驱动）
+        int available() {
+            if (GpuBackend.isCpu() == 1) return 1;
+            return CudaBackend.available();
+        }
+        int count() {
+            if (GpuBackend.isCpu() == 1) return 1;
+            return CudaBackend.count();
+        }
+
+        long alloc(long bytes) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.alloc(bytes);
+            return CudaBackend.alloc(bytes);
+        }
+        int free(long dev) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.free(dev);
+            return CudaBackend.free(dev);
+        }
 
         int copyH2D(long dev, double[] host, int srcOff, int dstOff, int len) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyH2D(dev, host, srcOff, dstOff, len);
             return CudaBackend.copyH2D(dev, host, srcOff, dstOff, len);
         }
         int copyD2H(double[] host, long dev, int srcOff, int dstOff, int len) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2H(host, dev, srcOff, dstOff, len);
             return CudaBackend.copyD2H(host, dev, srcOff, dstOff, len);
         }
         int copyH2DF(long dev, float[] host, int srcOff, int dstOff, int len) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyH2DF(dev, host, srcOff, dstOff, len);
             return CudaBackend.copyH2DF(dev, host, srcOff, dstOff, len);
         }
         int copyD2HF(float[] host, long dev, int srcOff, int dstOff, int len) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2HF(host, dev, srcOff, dstOff, len);
             return CudaBackend.copyD2HF(host, dev, srcOff, dstOff, len);
         }
         int copyD2D(long dst, long dstOff, long src, long srcOff, long bytes) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2D(dst, dstOff, src, srcOff, bytes);
             return CudaBackend.copyD2D(dst, dstOff, src, srcOff, bytes);
         }
-        int sync() { return CudaBackend.sync(); }
+        int sync() {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.sync();
+            return CudaBackend.sync();
+        }
 
-        long streamCreate() { return CudaBackend.streamCreate(); }
-        int streamSync(long s) { return CudaBackend.streamSync(s); }
-        int streamDestroy(long s) { return CudaBackend.streamDestroy(s); }
+        long streamCreate() {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.streamCreate();
+            return CudaBackend.streamCreate();
+        }
+        int streamSync(long s) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.streamSync(s);
+            return CudaBackend.streamSync(s);
+        }
+        int streamDestroy(long s) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.streamDestroy(s);
+            return CudaBackend.streamDestroy(s);
+        }
 
         int copyH2DAsync(long dev, double[] host, int srcOff, int dstOff, int len, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyH2DAsync(dev, host, srcOff, dstOff, len, stream);
             return CudaBackend.copyH2DAsync(dev, host, srcOff, dstOff, len, stream);
         }
         int copyD2HAsync(double[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2HAsync(host, dev, srcOff, dstOff, len, stream);
             return CudaBackend.copyD2HAsync(host, dev, srcOff, dstOff, len, stream);
         }
         int copyH2DFAsync(long dev, float[] host, int srcOff, int dstOff, int len, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyH2DFAsync(dev, host, srcOff, dstOff, len, stream);
             return CudaBackend.copyH2DFAsync(dev, host, srcOff, dstOff, len, stream);
         }
         int copyD2HFAsync(float[] host, long dev, int srcOff, int dstOff, int len, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2HFAsync(host, dev, srcOff, dstOff, len, stream);
             return CudaBackend.copyD2HFAsync(host, dev, srcOff, dstOff, len, stream);
         }
         int copyD2DAsync(long dst, long dstOff, long src, long srcOff, long bytes, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.copyD2DAsync(dst, dstOff, src, srcOff, bytes, stream);
             return CudaBackend.copyD2DAsync(dst, dstOff, src, srcOff, bytes, stream);
         }
 
-        long eventCreate() { return CudaBackend.eventCreate(); }
-        int eventRecord(long ev, long stream) { return CudaBackend.eventRecord(ev, stream); }
-        int eventWait(long ev, long stream) { return CudaBackend.eventWait(ev, stream); }
-        int eventSync(long ev) { return CudaBackend.eventSync(ev); }
-        double eventElapsed(long evStart, long evEnd) { return CudaBackend.eventElapsed(evStart, evEnd); }
-        int eventDestroy(long ev) { return CudaBackend.eventDestroy(ev); }
+        long eventCreate() {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventCreate();
+            return CudaBackend.eventCreate();
+        }
+        int eventRecord(long ev, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventRecord(ev, stream);
+            return CudaBackend.eventRecord(ev, stream);
+        }
+        int eventWait(long ev, long stream) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventWait(ev, stream);
+            return CudaBackend.eventWait(ev, stream);
+        }
+        int eventSync(long ev) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventSync(ev);
+            return CudaBackend.eventSync(ev);
+        }
+        double eventElapsed(long evStart, long evEnd) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventElapsed(evStart, evEnd);
+            return CudaBackend.eventElapsed(evStart, evEnd);
+        }
+        int eventDestroy(long ev) {
+            if (GpuBackend.isCpu() == 1) return CpuBackend.eventDestroy(ev);
+            return CudaBackend.eventDestroy(ev);
+        }
 }

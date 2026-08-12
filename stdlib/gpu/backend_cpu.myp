@@ -1,0 +1,53 @@
+// backend_cpu.myp — CPU 适配器（gpu_library_design §7.6 落地）
+//
+// "CPU 一等后端"：available() 恒 1。alloc/copy 为 host 直通语义——设备句柄是
+// 伪值（1），数据始终在 host（GpuBuffer 配合保存 host 数组引用，见 memory.myp）；
+// 流/事件为 no-op（同步语义）。kernel 执行：@gpu for 的 CPU 回退由 codegen 编译期
+// 生成（顺序循环 / @parallel for），非运行时解释。
+
+class CpuBackend {
+    static:
+        string name() { return "CPU"; }
+
+        // CPU 恒可用（一等后端）
+        int available() { return 1; }
+        int count() { return 1; }
+
+        // 伪句柄（数据在 host）；0 = 失败
+        long alloc(long bytes) { return 1L; }
+        int free(long dev) { return 1; }
+
+        // copy 为 host 直通：数据已在 host，no-op
+        int copyH2D(long dev, double[] host, int srcOff, int dstOff, int len) { return 1; }
+        int copyD2H(double[] host, long dev, int srcOff, int dstOff, int len) { return 1; }
+        int copyH2DF(long dev, float[] host, int srcOff, int dstOff, int len) { return 1; }
+        int copyD2HF(float[] host, long dev, int srcOff, int dstOff, int len) { return 1; }
+        int copyD2D(long dst, long dstOff, long src, long srcOff, long bytes) { return 1; }
+
+        // CPU 一等后端：无内核可同步，恒同步成功。
+        int sync() { return 1; }
+
+        // 流/事件 no-op（同步语义）
+        long streamCreate() { return 0L; }
+        int streamSync(long s) { return 0; }
+        int streamDestroy(long s) { return 0; }
+
+        int copyH2DAsync(long dev, double[] host, int srcOff, int dstOff, int len, long stream) { return 1; }
+        int copyD2HAsync(double[] host, long dev, int srcOff, int dstOff, int len, long stream) { return 1; }
+        int copyH2DFAsync(long dev, float[] host, int srcOff, int dstOff, int len, long stream) { return 1; }
+        int copyD2HFAsync(float[] host, long dev, int srcOff, int dstOff, int len, long stream) { return 1; }
+        int copyD2DAsync(long dst, long dstOff, long src, long srcOff, long bytes, long stream) { return 1; }
+
+        long eventCreate() { return 0L; }
+        int eventRecord(long ev, long stream) { return 0; }
+        int eventWait(long ev, long stream) { return 0; }
+        int eventSync(long ev) { return 0; }
+        double eventElapsed(long evStart, long evEnd) { return 0.0; }
+        int eventDestroy(long ev) { return 0; }
+
+        // 能力（§7.4 最小）：host 参数
+        string vendor() { return "cpu"; }
+        int warpSize() { return 1; }
+        int maxThreadsPerBlock() { return 1; }
+        long memory() { return 0L; }
+}

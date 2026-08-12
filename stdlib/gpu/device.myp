@@ -2,6 +2,8 @@
 //
 // M1 提供查询与同步；setCurrent（多设备选择）随 M5 多后端加入。
 
+import gpu.hal;
+
 class GpuDevice {
     static:
         // 设备数量（0 = 无 / 不可用）
@@ -28,6 +30,10 @@ class GpuDevice {
         // GPU 是否可用
         int available() { return __myp_cuda_available(); }
 
-        // 同步：阻塞直到所有内核完成（返回 0 失败）
-        int sync() { return __myp_gpu_sync(); }
+        // 同步：阻塞直到所有内核完成（返回 0 失败）。
+        // CPU 一等后端（无 CUDA）：无内核可同步，恒返回 1。
+        int sync() {
+            if (GpuHAL.isCpu() == 1) return 1;
+            return __myp_gpu_sync();
+        }
 }

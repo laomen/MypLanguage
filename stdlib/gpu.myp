@@ -24,6 +24,7 @@
 
 import gpu.backend;
 import gpu.backend_cuda;
+import gpu.hal;
 import gpu.device;
 import gpu.memory;
 import gpu.stream;

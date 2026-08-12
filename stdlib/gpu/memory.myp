@@ -12,6 +12,10 @@
 
 import gpu.backend;
 import gpu.stream;
+import gpu.hal;
+
+// CPU 模式（无 GPU）：GpuBuffer 保存 host 数组引用（数据即 host），
+// copy 为 host 直通——"CPU 一等后端"（gpu_library_design §7.6）。
 
 class GpuBuffer {
     action:
@@ -20,7 +24,10 @@ class GpuBuffer {
             n_ = n;
             elemSize_ = 8;
             dev_ = 0L;
-            if (GpuBackend.available() == 1) {
+            if (GpuHAL.active() == "cpu") {
+                host_ = host;   // CPU 一等后端：数据即 host
+                dev_ = 1L;      // 伪句柄（valid）
+            } else if (GpuBackend.available() == 1) {
                 dev_ = GpuBackend.alloc(long(n) * 8L);
                 if (dev_ != 0L) {
                     GpuBackend.copyH2D(dev_, host, 0, 0, n);
@@ -45,16 +52,31 @@ class GpuBuffer {
 
         // 主机 → 设备（元素偏移）
         void copyFromHost(double[] host, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = host[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyH2D(dev_, host, srcOff, dstOff, len);
         }
 
         // 设备 → 主机（元素偏移）
         void copyToHost(double[] host, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host[dstOff + i] = host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2H(host, dev_, srcOff, dstOff, len);
         }
 
         // 设备 → 设备（同元素类型缓冲；len 个元素）
         void copyFromBuffer(GpuBuffer src, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = src.host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2D(dev_, long(dstOff) * long(elemSize_),
                                src.devicePtr(), long(srcOff) * long(src.elemSize()),
                                long(len) * long(elemSize_));
@@ -62,12 +84,27 @@ class GpuBuffer {
 
         // ---- M2 异步（流上排队；需 GpuStream.sync() 后取回）----
         void copyFromHostAsync(double[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = host[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyH2DAsync(dev_, host, srcOff, dstOff, len, s.handle());
         }
         void copyToHostAsync(double[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host[dstOff + i] = host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2HAsync(host, dev_, srcOff, dstOff, len, s.handle());
         }
         void copyFromBufferAsync(GpuBuffer src, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = src.host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2DAsync(dev_, long(dstOff) * long(elemSize_),
                                     src.devicePtr(), long(srcOff) * long(src.elemSize()),
                                     long(len) * long(elemSize_), s.handle());
@@ -85,6 +122,7 @@ class GpuBuffer {
         long dev_;
         int n_;
         int elemSize_;
+        double[] host_;   // CPU 模式的数据引用（GPU 模式空）
 }
 
 class GpuBufferF {
@@ -94,7 +132,10 @@ class GpuBufferF {
             n_ = n;
             elemSize_ = 4;
             dev_ = 0L;
-            if (GpuBackend.available() == 1) {
+            if (GpuHAL.active() == "cpu") {
+                host_ = host;   // CPU 一等后端：数据即 host
+                dev_ = 1L;      // 伪句柄（valid）
+            } else if (GpuBackend.available() == 1) {
                 dev_ = GpuBackend.alloc(long(n) * 4L);
                 if (dev_ != 0L) {
                     GpuBackend.copyH2DF(dev_, host, 0, 0, n);
@@ -119,16 +160,31 @@ class GpuBufferF {
 
         // 主机 float[] → 设备（元素偏移）
         void copyFromHost(float[] host, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = host[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyH2DF(dev_, host, srcOff, dstOff, len);
         }
 
         // 设备 → 主机 float[]（元素偏移）
         void copyToHost(float[] host, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host[dstOff + i] = host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2HF(host, dev_, srcOff, dstOff, len);
         }
 
         // 设备 → 设备（同元素类型缓冲；len 个元素）
         void copyFromBuffer(GpuBufferF src, int srcOff, int dstOff, int len) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = src.host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2D(dev_, long(dstOff) * long(elemSize_),
                                src.devicePtr(), long(srcOff) * long(src.elemSize()),
                                long(len) * long(elemSize_));
@@ -136,12 +192,27 @@ class GpuBufferF {
 
         // ---- M2 异步（流上排队；需 GpuStream.sync() 后取回）----
         void copyFromHostAsync(float[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = host[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyH2DFAsync(dev_, host, srcOff, dstOff, len, s.handle());
         }
         void copyToHostAsync(float[] host, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host[dstOff + i] = host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2HFAsync(host, dev_, srcOff, dstOff, len, s.handle());
         }
         void copyFromBufferAsync(GpuBufferF src, int srcOff, int dstOff, int len, GpuStream s) {
+            if (GpuHAL.active() == "cpu") {
+                int i = 0;
+                while (i < len) { host_[dstOff + i] = src.host_[srcOff + i]; i = i + 1; }
+                return;
+            }
             GpuBackend.copyD2DAsync(dev_, long(dstOff) * long(elemSize_),
                                     src.devicePtr(), long(srcOff) * long(src.elemSize()),
                                     long(len) * long(elemSize_), s.handle());
@@ -159,6 +230,7 @@ class GpuBufferF {
         long dev_;
         int n_;
         int elemSize_;
+        float[] host_;   // CPU 模式的数据引用（GPU 模式空）
 }
 
 // GpuPool — 设备内存池（M4）：复用空闲块，减少 cuMemAlloc/cuMemFree 次数。

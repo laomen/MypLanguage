@@ -1,0 +1,37 @@
+// hal.myp — GpuHAL：硬件抽象层（gpu_library_design §7.5 落地）
+//
+// 激活后端探测（cuda → cpu）+ 能力查询入口。GpuBackend 按激活后端分派，
+// 用户代码不直接依赖具体后端。
+// 探测顺序：cuda（有驱动 + 设备）→ cpu（恒可用，"CPU 一等后端"）。
+//
+// 注意：CUDA 激活受 MYP_GPU=1 环境变量控制（GPU 默认禁用，见 runtime_gpu.c），
+// 未设 MYP_GPU 时 active() 自然落到 "cpu"。探测幂等（runtime 缓存驱动状态）。
+
+import gpu.backend_cuda;
+
+class GpuHAL {
+    static:
+        // 激活后端名（"cuda" / "cpu"）
+        string active() {
+            if (CudaBackend.available() == 1) return "cuda";
+            return "cpu";
+        }
+
+        // 是否 GPU 后端（1 = GPU）
+        int isGpu() {
+            if (GpuHAL.active() == "cuda") return 1;
+            return 0;
+        }
+
+        // 是否 CPU 后端（1 = CPU 一等后端）
+        int isCpu() {
+            if (GpuHAL.active() == "cpu") return 1;
+            return 0;
+        }
+
+        // 厂商名（能力查询入口，§7.4 最小版）
+        string vendor() {
+            if (GpuHAL.active() == "cuda") return "nvidia";
+            return "cpu";
+        }
+}
