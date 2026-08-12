@@ -528,6 +528,30 @@ TypeInfo Sema::visitBytesStr(CallExpr& expr, const std::string& name) {
     return TypeInfo(TypeKind::String);
 }
 
+// P2 parse* 全族（docs §6.2）：统一 strtol/strtoull/strtod 语义（带符号与基数，
+// 0x 前缀支持），失败回 0。parseInt/Long → 有符号；parseUint/Ulong → 无符号；
+// parseFloat/Double → 浮点。仅当实参是 string 时作为内建。
+TypeInfo Sema::visitParse(CallExpr& expr, const std::string& name) {
+    if (expr.args.size() != 1) {
+        error(expr.range, name + " takes exactly one argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto ot = visitExpr(*expr.args[0]);
+    if (ot.kind != TypeKind::String) {
+        error(expr.range, name + " expects a string argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    TypeKind ret;
+    if (name == "parseInt")       ret = TypeKind::Int;
+    else if (name == "parseLong") ret = TypeKind::Long;
+    else if (name == "parseUint") ret = TypeKind::UInt;
+    else if (name == "parseUlong")ret = TypeKind::ULong;
+    else if (name == "parseFloat")ret = TypeKind::Float;
+    else                          ret = TypeKind::Double;
+    expr.resolved_kind = ret;
+    return TypeInfo(ret);
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1273,6 +1297,11 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         // 匹配时才拦截（bytes 收 string、str 收 ubyte[]），用户同名函数不冲突。
         if (bc_id.name == "bytes" || bc_id.name == "str")
             return visitBytesStr(expr, bc_id.name);
+        // P2 parse* 全族（docs §6.2）：parseInt/Long/Uint/Ulong/Float/Double(s)
+        if (bc_id.name == "parseInt" || bc_id.name == "parseLong" ||
+            bc_id.name == "parseUint" || bc_id.name == "parseUlong" ||
+            bc_id.name == "parseFloat" || bc_id.name == "parseDouble")
+            return visitParse(expr, bc_id.name);
     }
 
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.

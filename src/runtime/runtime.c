@@ -469,13 +469,48 @@ double myp_atof(const char* s) {
     return atof(s);
 }
 
-// String to int (decimal; 非数字前缀解析失败返回 0)
+// String to int (decimal; 非数字前缀解析失败返回 0)。供 stdlib Str.toInt 使用。
 int32_t myp_str_to_int(const char* s) {
     if (!s) return 0;
     char* end = NULL;
     long v = strtol(s, &end, 10);
     if (end == s) return 0;   // 无有效数字
     return (int32_t)v;
+}
+
+// P2（docs/type_system_design §6.2）：parse* 全族。统一 strtol/strtoull/strtod
+// 语义（带符号与基数，0x 前缀支持）；失败（无有效数字）回 0（保留现状）。
+int32_t myp_str_parse_int(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    long long v = strtoll(s, &end, 0);
+    if (end == s) return 0;
+    return (int32_t)v;
+}
+int64_t myp_str_to_long(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    long long v = strtoll(s, &end, 0);
+    if (end == s) return 0;
+    return (int64_t)v;
+}
+uint32_t myp_str_to_uint(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (end == s) return 0;
+    return (uint32_t)v;
+}
+uint64_t myp_str_to_ulong(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (end == s) return 0;
+    return (uint64_t)v;
+}
+float myp_str_to_float(const char* s) {
+    if (!s) return 0.0f;
+    return (float)strtod(s, NULL);
 }
 
 // ======================

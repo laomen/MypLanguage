@@ -69,6 +69,7 @@ private:
     TypeInfo visitCall(CallExpr& expr);
     TypeInfo visitBitcast(CallExpr& expr);
     TypeInfo visitBytesStr(CallExpr& expr, const std::string& name);
+    TypeInfo visitParse(CallExpr& expr, const std::string& name);
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐
     void populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params);

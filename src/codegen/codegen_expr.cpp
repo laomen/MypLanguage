@@ -611,6 +611,37 @@ llvm::Value* CodeGen::generateBytesStr(const CallExpr& e, const std::string& nam
     return builder_.CreateCall(fn, {arg}, "bytesstr");
 }
 
+// P2 parse* 全族（docs §6.2）：统一 strtol/strtoull/strtod 语义。runtime helper：
+// parseLong→myp_str_to_long；parseUint→myp_str_to_ulong(trunc i32)；parseUlong→
+// myp_str_to_ulong；parseFloat→myp_str_to_float；parseDouble→myp_atof；parseInt→
+// myp_str_to_long(trunc i32)。
+llvm::Value* CodeGen::generateParse(const CallExpr& e, const std::string& name) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    if (e.args.size() != 1) {
+        diag_.error(e.range, name + " takes exactly one argument");
+        return llvm::ConstantInt::get(i32, 0);
+    }
+    auto* arg = generateExpr(*e.args[0]);
+    const char* fn_name = "myp_str_to_long";
+    llvm::Type* ret_ty = i64;
+    if (name == "parseLong")          { fn_name = "myp_str_to_long"; ret_ty = i64; }
+    else if (name == "parseInt")      { fn_name = "myp_str_parse_int"; ret_ty = i32; }
+    else if (name == "parseUlong")    { fn_name = "myp_str_to_ulong"; ret_ty = i64; }
+    else if (name == "parseUint")     { fn_name = "myp_str_to_uint"; ret_ty = i32; }
+    else if (name == "parseFloat")    { fn_name = "myp_str_to_float"; ret_ty = llvm::Type::getFloatTy(ctx_); }
+    else if (name == "parseDouble")   { fn_name = "myp_atof"; ret_ty = llvm::Type::getDoubleTy(ctx_); }
+    auto* fn = module_->getFunction(fn_name);
+    if (!fn) {
+        auto* ft = llvm::FunctionType::get(ret_ty, {ptr_ty}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, fn_name, module_.get());
+    }
+    llvm::Value* v = builder_.CreateCall(fn->getFunctionType(), fn,
+        std::vector<llvm::Value*>{arg}, "parse");
+    return v;
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -864,6 +895,11 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
         // 这里同名直接走内建（用户同名函数由 sema 已解析到别的路径）。
         if (bid.name == "bytes" || bid.name == "str")
             return generateBytesStr(e, bid.name);
+        // P2 parse* 全族（docs §6.2）
+        if (bid.name == "parseInt" || bid.name == "parseLong" ||
+            bid.name == "parseUint" || bid.name == "parseUlong" ||
+            bid.name == "parseFloat" || bid.name == "parseDouble")
+            return generateParse(e, bid.name);
     }
     // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
     // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.

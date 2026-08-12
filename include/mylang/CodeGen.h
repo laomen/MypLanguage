@@ -712,6 +712,7 @@ private:
     llvm::Value* generateCall(const CallExpr& expr);
     llvm::Value* generateBitcast(const CallExpr& expr);
     llvm::Value* generateBytesStr(const CallExpr& expr, const std::string& name);
+    llvm::Value* generateParse(const CallExpr& expr, const std::string& name);
     // True if a call returns an ARC-owned class / class-array reference (the
     // caller owns the returned +1 and must store it or release it).
     bool callReturnsArcRef(const CallExpr& e);

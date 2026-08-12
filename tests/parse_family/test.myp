@@ -1,0 +1,61 @@
+// P2 §6.2：parse* 全族 —— parseInt/parseLong/parseUint/parseUlong/
+// parseFloat/parseDouble，统一 strtol/strtoull/strtod 语义（0x 前缀），失败回 0。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // parseInt：十进制、负号、0x 十六进制、失败回 0、前缀解析
+            Console.writeLong(parseInt("123"));
+            Console.writeString("\n");
+            Console.writeLong(parseInt("-45"));
+            Console.writeString("\n");
+            Console.writeLong(parseInt("0x1F"));       // 31
+            Console.writeString("\n");
+            Console.writeLong(parseInt("abc"));        // 0
+            Console.writeString("\n");
+            Console.writeLong(parseInt("12abc"));      // 12（前缀解析）
+            Console.writeString("\n");
+            // parseLong：最大 long、0x 全 64 位
+            Console.writeLong(parseLong("9223372036854775807"));
+            Console.writeString("\n");
+            Console.writeLong(parseLong("0x7FFFFFFFFFFFFFFF"));
+            Console.writeString("\n");
+            Console.writeLong(parseLong("-9223372036854775807"));
+            Console.writeString("\n");
+            // parseUint
+            Console.writeLong(parseUint("4294967295"));
+            Console.writeString("\n");
+            Console.writeLong(parseUint("0xFFFFFFFF"));
+            Console.writeString("\n");
+            // parseUlong：u64 范围（用 long 比较验证，不直接传 writeLong）
+            ulong ul = parseUlong("1234567890123456789");
+            Console.writeBool(ul == 1234567890123456789L);
+            Console.writeString("\n");
+            // 0xFFFFFFFFFFFFFFFF = 2^64-1（无字面量可表示，用 > max_long 验证）
+            ulong umax = parseUlong("0xFFFFFFFFFFFFFFFF");
+            Console.writeBool(umax > 9223372036854775807L);
+            Console.writeString("\n");
+            ulong ufail = parseUlong("notanumber");
+            Console.writeBool(ufail == 0L);
+            Console.writeString("\n");
+            // parseFloat / parseDouble（strtod 语义，含 0x1pN 十六进制浮点）
+            Console.writeString("f=" + parseFloat("2.5"));
+            Console.writeString("\n");
+            Console.writeString("d=" + parseDouble("3.75"));
+            Console.writeString("\n");
+            Console.writeString("d2=" + parseDouble("0x1p3"));
+            Console.writeString("\n");
+            Console.writeString("d3=" + parseDouble("abc"));
+            Console.writeString("\n");
+            // 组合验证
+            long total = parseInt("100") + parseLong("200") + parseUint("300") * 1L;
+            Console.writeLong(total);
+            Console.writeString("\n");
+            Console.writeString("PARSE_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
