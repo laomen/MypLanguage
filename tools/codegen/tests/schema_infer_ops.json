@@ -1,0 +1,21 @@
+{
+  "ops": [
+    {
+      "name": "relu6",
+      "body": "float v = arena[ix + inOff]; if (v > float(6.0)) v = float(6.0); if (v < float(0.0)) v = float(0.0); arena[ix + outOff] = v;"
+    },
+    {
+      "name": "leakyrelu",
+      "params": ["alpha"],
+      "body": "float v = arena[ix + inOff]; if (v > float(0.0)) arena[ix + outOff] = v; else arena[ix + outOff] = float(alpha) * v;"
+    },
+    {
+      "name": "silu",
+      "body": "float x = arena[ix + inOff]; float s = x / float(1.0 + Math.exp(float(0.0) - x)); arena[ix + outOff] = s;"
+    },
+    {
+      "name": "hardswish",
+      "body": "float x = arena[ix + inOff]; float r = x + float(3.0); if (r < float(0.0)) r = float(0.0); if (r > float(6.0)) r = float(6.0); arena[ix + outOff] = x * r / float(6.0);"
+    }
+  ]
+}

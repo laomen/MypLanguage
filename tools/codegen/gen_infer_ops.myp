@@ -1,0 +1,108 @@
+// gen_infer_ops.myp — infer 算子生成器（P8：推理框架算子 codegen）
+// ops schema（JSON "ops" 段）→ CPU/GPU 双份逐元素内核。
+// 每条算子（name/params/body）：
+//   body = 逐元素语句，约定使用：
+//     arena[ix + inOff] 读输入、arena[ix + outOff] 写输出、
+//     params 名（如 alpha）为 double 标量参数。
+// 生成：
+//   GenCpuOps.<name>(arena, inOff, outOff, n[, double p...])    —— CPU 顺序
+//   GenGpuOps.<name>(a, work, inOff, outOff[, double p...], dev) —— @gpu for
+// CPU/GPU 数学体相同（逐元素布局无关），GPU 仅外层改 @gpu for + 缓冲区名 a。
+
+import env;
+import text;
+import "./model.myp";
+import "./emit.myp";
+
+class InferOpsGen {
+    action:
+        @constructor InferOpsGen() {}
+
+        // 生成 MYP 源码里的字符串字面量（inner 为原始文本，自动转义引号/反斜杠）
+        string lit(string inner) {
+            string e = Str.replaceAll(Str.replaceAll(inner, "\\", "\\\\"), "\"", "\\\"");
+            return "\"" + e + "\"";
+        }
+
+        // 标量参数声明段（不含逗号）："double alpha" 等
+        string paramsDecl(OpsOp o, string sep) {
+            string s = "";
+            int i = 0;
+            while (i < o.paramCount()) {
+                if (i > 0) s = s + sep;
+                s = s + "double " + o.paramAt(i);
+                i = i + 1;
+            }
+            return s;
+        }
+
+        // CPU 内核：顺序 while 循环
+        void emitCpuKernel(Emitter e, OpsOp o) {
+            string pd = "";
+            if (o.paramCount() > 0) pd = ", " + paramsDecl(o, ", ");
+            e.block("void " + o.name + "(float[] arena, int inOff, int outOff, int n" + pd + ")");
+            e.line("int i = 0;");
+            e.line("while (i < n) {");
+            e.push();
+            e.line("int ix = i;");
+            e.line(o.body);
+            e.line("i = i + 1;");
+            e.pop();
+            e.line("}");
+            e.endBlock();
+            e.line("");
+        }
+
+        // GPU 内核：@gpu for 每线程一个元素（缓冲区名 a，resident）
+        void emitGpuKernel(Emitter e, OpsOp o) {
+            string gbody = Str.replaceAll(o.body, "arena", "a");
+            string pd = "";
+            if (o.paramCount() > 0) pd = ", " + paramsDecl(o, ", ");
+            e.block("void " + o.name + "(float[] a, int work, int inOff, int outOff" + pd + ", long dev)");
+            e.line("@gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {");
+            e.push();
+            e.line("if (p < work) {");
+            e.push();
+            e.line("int ix = int(p);");
+            e.line(gbody);
+            e.pop();
+            e.line("}");
+            e.pop();
+            e.line("}");
+            e.endBlock();
+            e.line("");
+        }
+
+        string gen(Schema s) {
+            if (s.hasOpsDecl() == 0) return "";
+            OpsDecl od = s.opsDecl();
+            Emitter e = new Emitter();
+            e.line("// ── 由 tools/codegen 生成，勿手改 ──");
+            e.line("// infer_ops：ops schema → CPU/GPU 双份逐元素内核（P8）");
+            e.line("import env;");
+            e.line("import math;");
+            e.line("");
+            e.block("class GenCpuOps");
+            e.line("static:");
+            e.push();
+            int i = 0;
+            while (i < od.opCount()) {
+                emitCpuKernel(e, od.opAt(i));
+                i = i + 1;
+            }
+            e.pop();
+            e.endBlock();
+            e.line("");
+            e.block("class GenGpuOps");
+            e.line("static:");
+            e.push();
+            i = 0;
+            while (i < od.opCount()) {
+                emitGpuKernel(e, od.opAt(i));
+                i = i + 1;
+            }
+            e.pop();
+            e.endBlock();
+            return e.text();
+        }
+}

@@ -176,6 +176,26 @@ class SchemaParser {
                 }
                 s.setDsl(d);
             }
+            // ops 段：infer 逐元素算子（infer_ops 生成器）
+            if (j.type("ops") != -1) {
+                OpsDecl od = new OpsDecl();
+                int on = arrLen(j, "ops");
+                int oi = 0;
+                while (oi < on) {
+                    string op = "ops." + oi;
+                    OpsOp o = new OpsOp();
+                    o.set(j.getString(op + ".name"), j.getString(op + ".body"));
+                    int pn = arrLen(j, op + ".params");
+                    int pi = 0;
+                    while (pi < pn) {
+                        o.addParam(j.getString(op + ".params." + pi));
+                        pi = pi + 1;
+                    }
+                    od.addOp(o);
+                    oi = oi + 1;
+                }
+                s.setOps(od);
+            }
             j.free();
             return s;
         }

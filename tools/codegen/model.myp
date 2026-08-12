@@ -231,6 +231,34 @@ class DslDecl {
         ArrayList<DslOp> ops;
 }
 
+// infer 算子（infer_ops 生成器）：逐元素激活 schema 条目
+class OpsOp {
+    action:
+        @constructor OpsOp() {
+            name = "";
+            body = "";
+            params = new ArrayList<string>();
+        }
+        void set(string nm, string bd) { name = nm; body = bd; }
+        void addParam(string p) { params.add(p); }
+        int paramCount() { return params.size(); }
+        string paramAt(int i) { return params.get(i); }
+    property:
+        string name;      // 算子名（生成函数名）
+        string body;      // 逐元素语句（用 arena/ix/inOff/outOff + 参数名）
+        ArrayList<string> params;  // 标量 double 参数（如 alpha）
+}
+
+class OpsDecl {
+    action:
+        @constructor OpsDecl() { ops = new ArrayList<OpsOp>(); }
+        void addOp(OpsOp o) { ops.add(o); }
+        int opCount() { return ops.size(); }
+        OpsOp opAt(int i) { return ops.get(i); }
+    property:
+        ArrayList<OpsOp> ops;
+}
+
 class Schema {
     action:
         @constructor Schema() {
@@ -244,6 +272,8 @@ class Schema {
             embeds = new ArrayList<EmbedDecl>();
             dsl = new DslDecl();
             hasDsl = 0;
+            ops = new OpsDecl();
+            hasOps = 0;
         }
         void addType(TypeDecl t) { types.add(t); }
         int typeCount() { return types.size(); }
@@ -268,6 +298,9 @@ class Schema {
         void setDsl(DslDecl d) { dsl = d; hasDsl = 1; }
         int hasDslDecl() { return hasDsl; }
         DslDecl dslDecl() { return dsl; }
+        void setOps(OpsDecl d) { ops = d; hasOps = 1; }
+        int hasOpsDecl() { return hasOps; }
+        OpsDecl opsDecl() { return ops; }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;
@@ -279,4 +312,6 @@ class Schema {
         ArrayList<EmbedDecl> embeds;
         DslDecl dsl;
         int hasDsl;
+        OpsDecl ops;
+        int hasOps;
 }

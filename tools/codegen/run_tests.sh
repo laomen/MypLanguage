@@ -15,7 +15,7 @@ if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 export MYP_CC="$MYPCC"   # 让 main.myp --verify 的子进程定位到同一编译器
 
 WORK=$(mktemp -d /tmp/myp_codegen_test.XXXXXX)
-trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp tests/dsl_gen.myp' EXIT
+trap 'rm -rf "$WORK" tests/serde_gen.myp tests/ffi_gen.myp tests/autodiff_gen.myp tests/idl_gen.myp tests/orm_gen.myp tests/embed_gen.myp tests/dsl_gen.myp tests/infer_ops_gen.myp' EXIT
 
 # 1) 生成 serde 代码
 if ! "$MYPCC" run main.myp serde tests/schema.json -o "$WORK" >/dev/null 2>&1; then
@@ -108,5 +108,15 @@ outA=$("$MYPCC" run tests/test_dsl.myp 2>&1) || { echo "FAIL: 编译/运行 test
 echo "$outA" | grep -q "dsl ok" \
     || { echo "FAIL: dsl 输出不符"; echo "$outA"; exit 1; }
 
-echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed + --verify + dsl）"
+# 13) infer_ops：ops schema → CPU/GPU 双份逐元素内核；与手写内核数值一致性
+generated_cpu="$WORK/infer_ops_gen.myp"
+if ! "$MYPCC" run main.myp infer_ops tests/schema_infer_ops.json -o "$WORK" >/dev/null 2>&1; then
+    echo "FAIL: 生成 infer_ops 代码"; exit 1
+fi
+cp "$WORK/infer_ops_gen.myp" tests/infer_ops_gen.myp
+outB=$("$MYPCC" run tests/test_infer_ops.myp 2>&1) || { echo "FAIL: 编译/运行 test_infer_ops"; echo "$outB"; exit 1; }
+echo "$outB" | grep -q "INFER_OPS_GEN ALL OK" \
+    || { echo "FAIL: infer_ops 生成内核与手写不一致"; echo "$outB"; exit 1; }
+
+echo "codegen 自测通过（serde + ffi + resources + autodiff + idl + idl_socket + orm + embed + --verify + dsl + infer_ops）"
 exit 0

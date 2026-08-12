@@ -1,0 +1,121 @@
+// test_infer_ops.myp — infer_ops codegen 验证
+// 生成的 CPU/GPU 内核（GenCpuOps/GenGpuOps）与手写内核（InferOps/GpuInferOps）
+// 在确定性输入上数值一致性对比。CPU 全跑；GPU 在 MYP_GPU=1 时真跑（否则回退 CPU）。
+import env;
+import math;
+import gpu;
+import "./infer_ops_gen.myp";
+import "../../../deeplearning/infer/ops.myp";
+import "../../../deeplearning/infer/gpu_ops.myp";
+
+class InferOpsGenTest {
+    action:
+        @constructor InferOpsGenTest() {
+            int n = 512;
+            float[] src = new float[n];
+            int i = 0;
+            while (i < n) {
+                double r = ((i * 37 + 13) % 1000) / 1000.0;
+                src[i] = float(r * 6.0 - 3.0);
+                i = i + 1;
+            }
+
+            int fail = 0;
+            Console.writeLine("=== infer_ops codegen 生成内核 vs 手写内核 ===");
+
+            // ---- relu6 ----
+            float[] a1 = new float[n]; float[] a2 = new float[n];
+            copyTo(a1, src, n); copyTo(a2, src, n);
+            InferOps.relu6(a1, 0, 0, n);
+            GenCpuOps.relu6(a2, 0, 0, n);
+            if (report("relu6 CPU", maxDiff(a1, a2, n)) == 0) fail = 1;
+            if (report("relu6 GPU", gpuDiff("relu6", src, n)) == 0) fail = 1;
+
+            // ---- leakyrelu(0.2) ----
+            copyTo(a1, src, n); copyTo(a2, src, n);
+            InferOps.leakyrelu(a1, 0, 0, n, 0.2);
+            GenCpuOps.leakyrelu(a2, 0, 0, n, 0.2);
+            if (report("leakyrelu CPU", maxDiff(a1, a2, n)) == 0) fail = 1;
+            if (report("leakyrelu GPU", gpuDiff("leakyrelu", src, n)) == 0) fail = 1;
+
+            // ---- silu ----
+            copyTo(a1, src, n); copyTo(a2, src, n);
+            InferOps.silu(a1, 0, 0, n);
+            GenCpuOps.silu(a2, 0, 0, n);
+            if (report("silu CPU", maxDiff(a1, a2, n)) == 0) fail = 1;
+            if (report("silu GPU", gpuDiff("silu", src, n)) == 0) fail = 1;
+
+            // ---- hardswish ----
+            copyTo(a1, src, n); copyTo(a2, src, n);
+            InferOps.hardswish(a1, 0, 0, n);
+            GenCpuOps.hardswish(a2, 0, 0, n);
+            if (report("hardswish CPU", maxDiff(a1, a2, n)) == 0) fail = 1;
+            if (report("hardswish GPU", gpuDiff("hardswish", src, n)) == 0) fail = 1;
+
+            if (fail == 0) {
+                Console.writeLine("INFER_OPS_GEN ALL OK");
+            } else {
+                Console.writeLine("INFER_OPS_GEN FAIL");
+            }
+        }
+
+        // 运行生成 GPU 内核 vs 手写 GPU 内核（各自独立设备缓冲，D2H 后对比）
+        double gpuDiff(string op, float[] src, int n) {
+            float[] g1 = new float[n]; float[] g2 = new float[n];
+            copyTo(g1, src, n); copyTo(g2, src, n);
+            GpuBufferF hb = new GpuBufferF(g1, n);
+            GpuBufferF gb = new GpuBufferF(g2, n);
+            long hd = hb.devicePtr();
+            long gd = gb.devicePtr();
+            if (op == "relu6") {
+                GpuInferOps.relu6(g1, n, 0, 0, hd);
+                GenGpuOps.relu6(g2, n, 0, 0, gd);
+            } else if (op == "leakyrelu") {
+                GpuInferOps.leakyrelu(g1, n, 0, 0, 0.2, hd);
+                GenGpuOps.leakyrelu(g2, n, 0, 0, 0.2, gd);
+            } else if (op == "silu") {
+                GpuInferOps.silu(g1, n, 0, 0, hd);
+                GenGpuOps.silu(g2, n, 0, 0, gd);
+            } else {
+                GpuInferOps.hardswish(g1, n, 0, 0, hd);
+                GenGpuOps.hardswish(g2, n, 0, 0, gd);
+            }
+            hb.copyToHost(g1, 0, 0, n);
+            gb.copyToHost(g2, 0, 0, n);
+            double d = maxDiff(g1, g2, n);
+            hb.free();
+            gb.free();
+            return d;
+        }
+
+        int report(string name, double d) {
+            if (d < 1e-6) {
+                Console.writeLine("  " + name + " OK (max diff " + d + ")");
+                return 1;
+            }
+            Console.writeLine("  " + name + " MISMATCH (max diff " + d + ")");
+            return 0;
+        }
+
+        void copyTo(float[] dst, float[] src, int n) {
+            int i = 0;
+            while (i < n) { dst[i] = src[i]; i = i + 1; }
+        }
+
+        double maxDiff(float[] a, float[] b, int n) {
+            double m = 0.0;
+            int i = 0;
+            while (i < n) {
+                double d = a[i] - b[i];
+                if (d < 0.0) d = -d;
+                if (d > m) m = d;
+                i = i + 1;
+            }
+            return m;
+        }
+}
+
+int main() {
+    InferOpsGenTest t = new InferOpsGenTest();
+    return 0;
+}
