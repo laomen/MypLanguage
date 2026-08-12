@@ -1037,7 +1037,7 @@ class InferenceRuntime {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
                     int work = tensorSize(yd);
-                    GpuInferOps.conv3d(arena, work,
+                    GpuInferOps.conv3dTiled(arena, work,
                         tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
                         tOff_[wb], bOff,
                         tOff_[yd], tC_[yd], tD_[yd], tH_[yd], tW_[yd],

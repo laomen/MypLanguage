@@ -754,11 +754,15 @@ struct GpuTileStmt : Stmt {
     bool has_grid = false;          // 是否带 grid(nb) 子句
     std::unique_ptr<Expr> grid_expr; // grid 块数表达式（sema 求值）
     int64_t grid_val = 1;           // sema 求值结果（默认单块）
+    // 设备驻留：resident(arr = devPtr) 子句（同 @gpu for M3）——被标记数组
+    // 跳过 H2D/D2H，kernel 直接用 dev 变量所持设备指针。
+    std::vector<std::pair<std::string, std::string>> resident;
     GpuTileStmt(TypeNode st, std::string nm, std::unique_ptr<Expr> ge, bool hg,
+                std::vector<std::pair<std::string, std::string>> res,
                 std::unique_ptr<Stmt> b, SourceRange r)
         : Stmt(StmtKind::GpuTileStmt, r), shared_type(std::move(st)),
           name(std::move(nm)), body(std::move(b)), has_grid(hg),
-          grid_expr(std::move(ge)) {}
+          grid_expr(std::move(ge)), resident(std::move(res)) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

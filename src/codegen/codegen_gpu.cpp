@@ -1841,7 +1841,11 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     gpu_ctx_ntid_ = ntid;
     gpu_ctx_ctaid_ = ctaid;
     gpu_ctx_tid_ = tid_val;
-    gpu_ctx_n_arg_ = llvm::ConstantInt::get(i64_ty, s.grid_val);
+    // tile 内 kernel.gx = grid 块数；grid 运行时无法传入 kernel → 置 0（conv3d
+    // tiled 不用 kernel.gx）。字面量 grid 时仍可为常量。
+    gpu_ctx_n_arg_ = (s.grid_val > 0)
+        ? llvm::ConstantInt::get(i64_ty, s.grid_val)
+        : llvm::ConstantInt::get(i64_ty, 0);
 
     kernel_vars_map[s.name] = shared_gv;
     gpu_shared_arrays_[s.name] = elem_llvm;
@@ -1967,7 +1971,16 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
 
     builder_.SetInsertPoint(launch_bb);
-    auto* grid_i32 = llvm::ConstantInt::get(i32_ty, s.grid_val);
+    // grid 维度：字面量 → 常量；运行时表达式 → host 求值（如 conv3d 的 nTiles）
+    llvm::Value* grid_v;
+    if (s.has_grid && s.grid_val <= 0) {
+        grid_v = generateExpr(*s.grid_expr);
+    } else {
+        grid_v = llvm::ConstantInt::get(i64_ty, s.grid_val);
+    }
+    if (grid_v->getType() != i64_ty)
+        grid_v = builder_.CreateIntCast(grid_v, i64_ty, false);
+    auto* grid_i32 = builder_.CreateIntCast(grid_v, i32_ty, false, "grid");
     auto* block_i32 = llvm::ConstantInt::get(i32_ty, 256);
 
     // ---- Data transfer for captured arrays ----
@@ -1980,8 +1993,15 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     };
     std::vector<ArrayAlloc> array_allocs;
 
+    // M3 设备驻留：resident(arr = devVar) — 被标记数组跳过 H2D/D2H/释放，
+    // kernel 直接用 devVar（long）所持设备指针（同 generateGpuKernel）。
+    std::map<std::string, std::string> resident_dev;
+    for (auto& [arr, dev] : s.resident)
+        resident_dev[arr] = dev;
+
     for (auto& ka : kernel_args_) {
         if (!ka.is_array) continue;
+        if (resident_dev.count(ka.name)) continue;  // M3: 设备驻留，跳过传输
         llvm::Value* host_ptr = nullptr;
         llvm::Value* byte_size = nullptr;
         auto* nv = getNamedValue(ka.name);
@@ -2030,11 +2050,25 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     for (auto& ka : kernel_args_) {
         llvm::Value* store_val = nullptr;
         if (ka.is_array) {
-            auto gpit = gpu_ptr_map.find(ka.name);
-            if (gpit != gpu_ptr_map.end()) {
-                auto* tmp = builder_.CreateAlloca(ptr_ty);
-                builder_.CreateStore(gpit->second, tmp);
-                store_val = tmp;
+            auto rdit = resident_dev.find(ka.name);
+            if (rdit != resident_dev.end()) {
+                // M3 设备驻留：设备指针来自 devVar（long，i64）的值
+                auto* nv = getNamedValue(rdit->second);
+                if (nv) {
+                    auto* dev_val = builder_.CreateLoad(builder_.getInt64Ty(), nv,
+                                                        ka.name + "_dev");
+                    auto* dev_ptr = builder_.CreateIntToPtr(dev_val, ptr_ty, ka.name + "_devptr");
+                    auto* tmp = builder_.CreateAlloca(ptr_ty);
+                    builder_.CreateStore(dev_ptr, tmp);
+                    store_val = tmp;
+                }
+            } else {
+                auto gpit = gpu_ptr_map.find(ka.name);
+                if (gpit != gpu_ptr_map.end()) {
+                    auto* tmp = builder_.CreateAlloca(ptr_ty);
+                    builder_.CreateStore(gpit->second, tmp);
+                    store_val = tmp;
+                }
             }
         } else {
             auto* nv = getNamedValue(ka.name);

@@ -251,6 +251,136 @@ class GpuInferOps {
             }
         }
 
+        // Conv3D tiled：共享内存版（gpu_library_design §2.3 ① / §9 P0 验收载体）。
+        // 每块处理 4×8×8=256 输出 tile：块线程协作载入输入 patch + 权重到 __shared__，
+        // kernel.sync() 两阶段后 256 线程各算一个输出——输入只读一次、权重每块读一次。
+        // 共享池 float[6144]（24KB，2 块/SM 保占用率）：patch 段 + 权重段。超限回退 conv3d。
+        void conv3dTiled(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yD, int yH, int yW,
+                  int kd, int kh, int kw,
+                  int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                  int dd, int dh, int dw, int group, long dev) {
+            int TD = 16; int TH = 16; int TW = 16;   // 输出 tile（4096 输出/块，每线程 16）
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int pz = (TD - 1) * sd + kd;          // 输入 patch 尺寸（含窗口跨度）
+            int ph = (TH - 1) * sh + kh;
+            int pw = (TW - 1) * sw + kw;
+            int patchSz = cpg * pz * ph * pw;
+            int wSz = cpg * kd * kh * kw;         // 每块权重段（仅 oc 对应）
+            if (patchSz + wSz > 6000) {          // 共享超限 → 回退 thread-per-output
+                GpuInferOps.conv3d(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
+                       yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
+                       dd, dh, dw, group, dev);
+                return;
+            }
+            int zT = (yD + TD - 1) / TD;
+            int hT = (yH + TH - 1) / TH;
+            int wT = (yW + TW - 1) / TW;
+            int perPlane = zT * hT * wT;
+            int nTiles = xN * yC * perPlane;
+            @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
+                // 解码 tile 坐标
+                long tb = kernel.bx;
+                long plane = tb / long(perPlane);
+                long rest = tb % long(perPlane);
+                long zt = rest / long(hT * wT);
+                long yt = (rest / long(wT)) % long(hT);
+                long xt = rest % long(wT);
+                long nn = plane / long(yC);
+                long oc = plane % long(yC);
+                long g = oc / long(ocpg);
+                long oz0 = zt * long(TD);
+                long oy0 = yt * long(TH);
+                long ox0 = xt * long(TW);
+                long tid = kernel.tx;
+                // 阶段一：协作载入输入 patch——每线程负责整行（ix 连续，
+                // 合并访问 + 少除法：每行一次坐标解码而非每元素多次）
+                long rows = long(cpg) * long(pz) * long(ph);
+                long rr = tid;
+                while (rr < rows) {
+                    long ic = rr / (long(pz) * long(ph));
+                    long iz = (rr / long(ph)) % long(pz);
+                    long iy = rr % long(ph);
+                    long gx0 = ox0 * long(sw) - long(pl);
+                    long gy = oy0 * long(sh) - long(pt) + iy;
+                    long gz = oz0 * long(sd) - long(pdt) + iz;
+                    bool inY = (gy >= 0L && gy < long(xH));
+                    bool inZ = (gz >= 0L && gz < long(xD));
+                    long ix = 0L;
+                    while (ix < long(pw)) {
+                        long gx = gx0 + ix;
+                        float v = 0.0f;
+                        if (inY && inZ && gx >= 0L && gx < long(xW)) {
+                            long cIn = g * long(cpg) + ic;
+                            v = a[xOff + nn * xC * xD * xH * xW + cIn * xD * xH * xW
+                                  + gz * xH * xW + gy * xW + gx];
+                        }
+                        smem[(ic * long(pz) + iz) * long(ph) * long(pw)
+                             + iy * long(pw) + ix] = v;
+                        ix = ix + 1L;
+                    }
+                    rr = rr + 256;
+                }
+                // 协作载入权重（oc 对应段）
+                long j = tid;
+                while (j < long(wSz)) {
+                    long jx = j % long(kw);
+                    long jy = (j / long(kw)) % long(kh);
+                    long jz = (j / (long(kw) * long(kh))) % long(kd);
+                    long jic = j / (long(kw) * long(kh) * long(kd));
+                    smem[long(patchSz) + j] = a[wOff + oc * (cpg * kd * kh * kw)
+                        + jic * kd * kh * kw + jz * kh * kw + jy * kw + jx];
+                    j = j + 256;
+                }
+                kernel.sync();
+                // 阶段二：256 线程各算 16 个输出（16×16×16 tile = 4096 输出）
+                long r = 0L;
+                while (r < 16L) {
+                    long oi = r * 256L + tid;
+                    long od = oi / long(TH * TW);
+                    long oh = (oi / long(TW)) % long(TH);
+                    long ow = oi % long(TW);
+                    long oz = oz0 + od;
+                    long oy = oy0 + oh;
+                    long ox = ox0 + ow;
+                    if (oz < long(yD) && oy < long(yH) && ox < long(yW)) {
+                        float sum = 0.0f;
+                        if (bOff >= 0) sum = a[bOff + oc];
+                        long ic = 0L;
+                        while (ic < long(cpg)) {
+                            long kz = 0L;
+                            while (kz < long(kd)) {
+                                long ky = 0L;
+                                while (ky < long(kh)) {
+                                    // 预计算行基址（每 kx 迭代只递增，无乘法）
+                                    long piRow = ic * (long(pz) * long(ph) * long(pw))
+                                        + (od * long(sd) + kz) * (long(ph) * long(pw))
+                                        + (oh * long(sh) + ky) * long(pw) + ow * long(sw);
+                                    long wiRow = ic * (long(kd) * long(kh) * long(kw))
+                                        + kz * (long(kh) * long(kw)) + ky * long(kw);
+                                    long kx = 0L;
+                                    while (kx < long(kw)) {
+                                        sum = sum + smem[piRow + kx]
+                                                   * smem[long(patchSz) + wiRow + kx];
+                                        kx = kx + 1L;
+                                    }
+                                    ky = ky + 1L;
+                                }
+                                kz = kz + 1L;
+                            }
+                            ic = ic + 1L;
+                        }
+                        a[yOff + ((nn * long(yC) + oc) * long(yD) + oz) * long(yH)
+                            * long(yW) + oy * long(yW) + ox] = sum;
+                    }
+                    r = r + 1L;
+                }
+            }
+        }
+
         // MaxPool3D：thread-per-output
         void maxpool3d(float[] a, int work,
                   int xOff, int xN, int xC, int xD, int xH, int xW,

@@ -724,6 +724,22 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
         has_grid = true;
     }
 
+    // 设备驻留子句（M3）：resident(arr1 = dev1, ...) —— 同 @gpu for
+    std::vector<std::pair<std::string, std::string>> resident;
+    if (check(TokenKind::Identifier) && peek().value == "resident" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // resident
+        consume(TokenKind::LeftParen, "expected '(' after 'resident'");
+        while (true) {
+            std::string arr = parseIdentifier("expected array name in resident clause");
+            consume(TokenKind::Equal, "expected '=' in resident clause");
+            std::string dev = parseIdentifier("expected device-pointer variable after '='");
+            resident.push_back({arr, dev});
+            if (!match(TokenKind::Comma)) break;
+        }
+        consume(TokenKind::RightParen, "expected ')' after resident clause");
+    }
+
     // body：parseBlock 不消费开 '{'，须先 match 消费（同 parseStatement）
     std::unique_ptr<Stmt> body;
     if (match(TokenKind::LeftBrace)) {
@@ -736,7 +752,7 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
     range.begin_offset = start.begin_offset;
     range.end_offset = previous().range.end_offset;
     return std::make_unique<GpuTileStmt>(std::move(shared_type), name,
-        std::move(grid_expr), has_grid, std::move(body), range);
+        std::move(grid_expr), has_grid, std::move(resident), std::move(body), range);
 }
 
 }  // namespace {ns}

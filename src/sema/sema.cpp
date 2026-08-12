@@ -1420,21 +1420,42 @@ Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
             " bytes) exceeds the 48KB limit (NV sm_75)");
     }
 
-    // grid(nb) 子句：块数须为编译期整数字面量（>0），默认 1
+    // grid(nb) 子句：块数须为正整数。字面量 → grid_val（编译期）；否则为运行时
+    // 表达式（host 求值，如 conv3d 的 nTiles），grid_val 置 -1 标记。
     if (stmt.has_grid) {
         TypeInfo gt = visitExpr(*stmt.grid_expr);
         if (!isNumericKind(gt.kind)) {
             error(stmt.grid_expr->range, "grid must be an integer (block count)");
+            stmt.grid_val = -1;
         } else if (stmt.grid_expr->kind == ExprKind::IntegerLiteral) {
             stmt.grid_val = static_cast<const IntegerLiteralExpr&>(*stmt.grid_expr).value;
             if (stmt.grid_val <= 0)
                 error(stmt.grid_expr->range, "grid must be a positive block count");
         } else {
-            error(stmt.grid_expr->range,
-                "grid must be a compile-time integer constant (e.g. grid(64))");
+            stmt.grid_val = -1;  // 运行时表达式（codegen 在 launch 点求值）
         }
     } else {
         stmt.grid_val = 1;
+    }
+
+    // M3 设备驻留子句 resident(arr = dev) 校验（同 @gpu for）：
+    // arr 须为作用域内数组变量；dev 须为 long 变量。
+    for (auto& [arr, dev] : stmt.resident) {
+        auto* at = symbol_table_.lookup(arr);
+        if (!at) {
+            error(stmt.range, "resident array '" + arr + "' not found in scope");
+        } else if (at->kind != TypeKind::Array) {
+            error(stmt.range, "resident '" + arr + "' is not an array (got '" +
+                  typeName(*at) + "')");
+        }
+        auto* dt = symbol_table_.lookup(dev);
+        if (!dt) {
+            error(stmt.range, "resident device-pointer variable '" + dev +
+                  "' not found in scope");
+        } else if (dt->kind != TypeKind::Long) {
+            error(stmt.range, "resident device-pointer variable '" + dev +
+                  "' must be 'long' (got '" + typeName(*dt) + "')");
+        }
     }
 
     // 进入 kernel 上下文（kernel.bx/tx/gid/... 隐式可见），声明共享数组局部可见
