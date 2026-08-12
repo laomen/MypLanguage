@@ -28,11 +28,11 @@ deeplearning/
 │   ├── ops.myp            # CPU 算子内核（batch-aware，FP32）
 │   ├── gpu_ops.myp        # GPU 算子内核（@gpu for resident，FP32）
 │   ├── tensor.myp         # 张量索引辅助
-│   ├── model_loader.myp   # JSON 模型加载器（与 ONNX 路径汇合到同一 runtime）
 │   ├── tools/             # Python 辅助（onnxruntime 交叉校验 / fixture 生成）
 │   └── *_main.myp         # 各里程碑端到端验证入口
+├── json_tool/             # JSON 图小工具（独立）：model_loader + XOR/MNIST 演示 + CLI
 ├── data/                  # 模型 / 输入 / 数据集（git 忽略）
-└── docs/                  # 本文档 + gpu_paradigm.md（路线图）
+└── docs/                  # 本文档 + usage.md + gpu_paradigm.md（路线图）
 ```
 
 ---

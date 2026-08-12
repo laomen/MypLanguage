@@ -1,6 +1,6 @@
 // main.myp — Minimal inference framework demo
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./demo_model.myp";
 
 int expectXor(int x0, int x1) {

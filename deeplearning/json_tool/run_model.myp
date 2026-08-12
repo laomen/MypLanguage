@@ -1,15 +1,15 @@
 // run_model.myp — 通用推理 CLI：任意 JSON 模型 + 命令行输入 → 输出张量
 //
 // 构建：
-//   ./build/mypc deeplearning/infer/run_model.myp -o /tmp/run_model --stdlib stdlib
+//   ./build/mypc deeplearning/json_tool/run_model.myp -o /tmp/run_model --stdlib stdlib
 // 用法：
 //   /tmp/run_model <model.json> <inputName> <outputName> <rows> <cols> <v0> <v1> ...
 // 示例（XOR，输入 (0,1) 期望输出 p0≈0.018 / p1≈0.982）：
-//   /tmp/run_model deeplearning/infer/models/xor_model.json input prob 2 1 0.0 1.0
+//   /tmp/run_model deeplearning/json_tool/models/xor_model.json input prob 2 1 0.0 1.0
 import args;
 import env;
 import text;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 // 简易 double 解析：支持 "-12.5" / "0.0" / "3"

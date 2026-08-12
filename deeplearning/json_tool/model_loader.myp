@@ -22,7 +22,7 @@
 import env;
 import io;
 import json;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 
 class ModelLoader {
     action:

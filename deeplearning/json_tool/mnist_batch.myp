@@ -1,6 +1,6 @@
 // mnist_batch.myp — 批量 MNIST 推理：一次前向处理全部测试样本
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 class MnistBatchApp {
@@ -17,7 +17,7 @@ class MnistBatchApp {
             rt.init(200000);
 
             ModelLoader loader = new ModelLoader();
-            int ok = loader.loadBatched("./deeplearning/infer/models/mnist_model.json", rt, numTest);
+            int ok = loader.loadBatched("./deeplearning/json_tool/models/mnist_model.json", rt, numTest);
             if (ok == 0) {
                 Console.writeLine("model load failed (need deeplearning/data/mnist_weights.bin)");
                 return;

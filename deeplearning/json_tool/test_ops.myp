@@ -4,7 +4,7 @@
 //   sigmoid(1)≈0.7310586 → sum[1]≈1.4621172
 import env;
 import math;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 class TestOpsApp {
@@ -14,7 +14,7 @@ class TestOpsApp {
             rt.init(4096);
 
             ModelLoader loader = new ModelLoader();
-            int ok = loader.load("./deeplearning/infer/models/sigmoid_model.json", rt);
+            int ok = loader.load("./deeplearning/json_tool/models/sigmoid_model.json", rt);
             if (ok == 0) {
                 Console.writeLine("ops test: FAIL (load)");
                 return;
@@ -31,8 +31,9 @@ class TestOpsApp {
             double exp1 = 2.0 * (1.0 / (1.0 + Math.exp(-1.0)));
 
             int pass = 1;
-            if (Math.abs(s0 - 1.0) > 1e-9) pass = 0;
-            if (Math.abs(s1 - exp1) > 1e-9) pass = 0;
+            // FP32 arena：容差用 1e-6（FP32 精度 ~1e-7），勿用 1e-9
+            if (Math.abs(s0 - 1.0) > 1e-6) pass = 0;
+            if (Math.abs(s1 - exp1) > 1e-6) pass = 0;
 
             Console.writeString("ops test (sigmoid+add): ");
             if (pass == 1) {

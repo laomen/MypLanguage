@@ -1,6 +1,6 @@
 // json_main.myp — 通用 JSON 模型推理入口（图结构完全由 JSON 描述）
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 int expectXor(int x0, int x1) {
@@ -22,7 +22,7 @@ class JsonInferApp {
             rt.init(4096);
 
             ModelLoader loader = new ModelLoader();
-            int ok = loader.load("./deeplearning/infer/models/xor_model.json", rt);
+            int ok = loader.load("./deeplearning/json_tool/models/xor_model.json", rt);
             if (ok == 0) {
                 Console.writeLine("model load failed");
                 return;

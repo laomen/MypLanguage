@@ -1,7 +1,7 @@
 // mnist_main.myp — MNIST inference entry using InferenceRuntime
 // 图结构由 models/mnist_model.json 描述，权重仍从二进制加载。
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 class MnistInferApp {
@@ -18,7 +18,7 @@ class MnistInferApp {
             rt.init(120000);
 
             ModelLoader loader = new ModelLoader();
-            int ok = loader.load("./deeplearning/infer/models/mnist_model.json", rt);
+            int ok = loader.load("./deeplearning/json_tool/models/mnist_model.json", rt);
             if (ok == 0) {
                 Console.writeLine("model load failed (need deeplearning/data/mnist_weights.bin)");
                 return;

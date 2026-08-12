@@ -1,6 +1,6 @@
 // mnist_model.myp — Build MNIST 784->64->10 inference graph
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 
 class MnistModel {
     action:

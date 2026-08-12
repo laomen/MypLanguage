@@ -1,6 +1,6 @@
 // demo_model.myp — Build a tiny 2-layer XOR inference graph
 import env;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 
 class XorDemo {
     action:

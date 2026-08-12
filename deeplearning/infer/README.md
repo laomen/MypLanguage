@@ -1,127 +1,58 @@
 # DeepLearning Inference Framework (MYP)
 
-A general-purpose, JSON-driven static-graph inference framework implemented in MYP.
+A general-purpose, static-graph inference framework implemented in MYP, driven by real ONNX models.
 
 > 📚 相关文档（`deeplearning/docs/`）：
 > - [`design.md`](../docs/design.md) — 架构设计说明（运行时 / opKind / 图 pass 管线 / 扩展指南）
 > - [`usage.md`](../docs/usage.md) — 使用说明（构建运行 / 环境变量 / 回归测试 / 交叉校验）
 > - [`gpu_paradigm.md`](../docs/gpu_paradigm.md) — GPU 范式库 + 推理框架路线图（M1-M4 / G1-G4）
+>
+> 📦 JSON 图小工具（XOR/MNIST 演示、通用 CLI、GPU 卸载验证）已移出，见
+> [`../json_tool/`](../json_tool/README.md)。
 
 ## Capabilities
 
 - **CPU, static-graph execution** with a flat arena tensor memory
-- **Batch-aware operators** (batch = tensor columns, one sample per column):
-  - `dense` — Y = W·X + b (matmul + bias, batch parallel)
-  - `relu`, `sigmoid` — elementwise activations
-  - `softmax` — per-sample (per-column) normalization
-  - `add` — elementwise add (residual-style connections)
-- **JSON model descriptions** — graph structure (tensors/ops/weights) fully decoupled from code
-- **Weight sources** — inline JSON arrays or binary file references (`file`/`offset`/`count` + optional `weight_header`)
-- **Batch loading** — `loadBatched` overrides activation tensor width to a runtime batch size
-- **Generic CLI runner** — run any model with command-line inputs
+- **Batch-aware operators** (batch = tensor columns, one sample per column)
+- **ONNX model loading** — pure-MYP protobuf reader + graph-pass optimizer pipeline
+- **GPU offload** — `runGpu()` with device-resident kernels, automatic CPU fallback
+- **Graph fusions** — Conv+BN / Conv+ReLU / GAP+Flatten / DCE / constant folding / NHWC layout
+- **Memory planning** — first-fit region reuse for activations, persistent weights
 
 ## Layout
 
 ```
 deeplearning/infer/
-├── runtime.myp       # InferenceRuntime: tensor/op registry + executor
-├── ops.myp           # operator kernels (batch-aware)
+├── runtime.myp       # InferenceRuntime: tensor/op registry + run()/runGpu()
+├── ops.myp           # CPU operator kernels (FP32)
+├── gpu_ops.myp       # GPU operator kernels (@gpu for resident)
 ├── tensor.myp        # tensor indexing helpers
-├── model_loader.myp  # JSON model loader (inline + binary weights, batch)
 ├── pb.myp            # protobuf wire-format reader (varint / len-delimited / skip)
-├── onnx_loader.myp   # pure-MYP ONNX reader: .onnx -> runtime graph + weights
-├── run_model.myp     # generic CLI inference runner
-├── json_main.myp     # JSON-driven XOR demo
-├── mnist_main.myp    # MNIST single-sample loop (JSON graph + binary weights)
-├── mnist_batch.myp   # MNIST batched single-pass inference
+├── onnx_loader.myp   # pure-MYP ONNX reader + graph optimizer (pass pipeline)
 ├── onnx_main.myp     # read real mnist_mlp.onnx, run MNIST, report accuracy
 ├── resnet_main.myp   # read real ResNet50.onnx, run ImageNet image, top-5 + labels
 ├── r18_main.myp      # G4: real ResNet18 (resnet18_v1_7.onnx) — 20 BN fused, top-5 vs ORT
 ├── act_main.myp      # G4: activation ops (Clip/LeakyRelu/HardSwish) vs onnxruntime
 ├── bn_main.myp       # G3: BN end-to-end (fold / standalone / bn_norelu regression)
-├── test_ops.myp      # sigmoid/add operator verification
-├── models/
-│   ├── xor_model.json      # XOR: structure + inline weights
-│   ├── sigmoid_model.json  # sigmoid + add check
-│   └── mnist_model.json    # MNIST 784->64->10: structure + binary weights
+├── const_main.myp    # G2: constant folding end-to-end
 ├── tools/
 │   ├── make_mnist_mlp_onnx.py  # test-fixture generator: mnist_weights.bin -> mnist_mlp.onnx
 │   ├── cross_check_onnx.py     # onnxruntime cross-validation (accuracy + sample0 probs)
 │   └── prep_imagenet_input.py  # real photo -> 224x224 ImageNet-normalized f32 input
 ├── data/ (in deeplearning/data)
 │   ├── onnx/gluon_resnet50_v1b_Opset16.onnx  # 98MB ImageNet CNN (also mnist_mlp.onnx)
+│   ├── onnx/resnet18_v1_7.onnx               # 45MB ResNet18 (G4 real BN model)
 │   ├── onnx/resnet_input.f32                 # preprocessed image input
 │   └── imagenet/classes.txt                  # 1000 ImageNet class labels
-└── (demo_model.myp / mnist_model.myp / main.myp = code-defined equivalents, kept for reference)
+└── (JSON 图小工具已移到 ../json_tool/，见其 README)
 ```
-
-## Build & Run
-
-From repository root, all use `--stdlib stdlib`:
-
-```bash
-# XOR — code-defined demo
-./build/mypc deeplearning/infer/main.myp -o /tmp/myp_main --stdlib stdlib && /tmp/myp_main
-
-# XOR — JSON-driven demo
-./build/mypc deeplearning/infer/json_main.myp -o /tmp/myp_json_main --stdlib stdlib && /tmp/myp_json_main
-
-# MNIST — single-sample loop (needs deeplearning/data/mnist_weights.bin)
-./build/mypc deeplearning/infer/mnist_main.myp -o /tmp/myp_mnist_main --stdlib stdlib && /tmp/myp_mnist_main
-
-# MNIST — batched: all 100 test samples in one forward pass
-./build/mypc deeplearning/infer/mnist_batch.myp -o /tmp/myp_mnist_batch --stdlib stdlib && /tmp/myp_mnist_batch
-
-# Operator verification (sigmoid + add)
-./build/mypc deeplearning/infer/test_ops.myp -o /tmp/myp_test_ops --stdlib stdlib && /tmp/myp_test_ops
-```
-
-## Generic CLI Runner
-
-```bash
-./build/mypc deeplearning/infer/run_model.myp -o /tmp/run_model --stdlib stdlib
-
-# usage: run_model <model.json> <input> <output> <rows> <cols> <v0> <v1> ...
-/tmp/run_model deeplearning/infer/models/xor_model.json input prob 2 1 0.0 1.0
-# prints output[prob]: 0.0179862 0.982014
-
-/tmp/run_model deeplearning/infer/models/sigmoid_model.json x sum 2 1 0.0 1.0
-# prints output[sum]: 1 1.46212
-```
-
-## Model JSON Format
-
-```json
-{
-  "name": "model",
-  "weight_header": 3,
-  "tensors": [
-    { "name": "input", "rows": 784, "cols": 1 },
-    { "name": "w1",    "rows": 64,  "cols": 784, "role": "weight" }
-  ],
-  "ops": [
-    { "type": "dense",   "inputs": ["input", "w1", "b1"], "output": "h" },
-    { "type": "relu",    "inputs": ["h"],                 "output": "h_relu" },
-    { "type": "softmax", "inputs": ["logits"],            "output": "prob" }
-  ],
-  "inputs":  ["input"],
-  "outputs": ["prob"],
-  "weights": [
-    { "name": "w1", "values": [1.0, -1.0, ...] },
-    { "name": "w2", "file": "data/weights.bin", "offset": 50176, "count": 640 }
-  ]
-}
-```
-
-- `role: "weight"` tensors keep fixed shapes under `loadBatched`; activation tensors get width = batch.
-- Inline `values` or binary `file` + `offset`/`count` (in doubles) per weight; `weight_header` = int32 values to skip at file start.
 
 ## Reading Real ONNX Models
 
 `onnx_loader.myp` is a **pure-MYP protobuf wire-format reader** — no Python, no onnxruntime at
 runtime. It opens a real `.onnx` file, parses the `ModelProto`/`GraphProto`/`NodeProto`/
 `TensorProto`/`ValueInfoProto` messages directly, infers shapes, classifies weights/biases
-(including `transB`), and builds the same `InferenceRuntime` graph used by the JSON path.
+(including `transB`), and builds the `InferenceRuntime` graph.
 
 ```bash
 # MNIST MLP from a real .onnx — prints sample0 probs + accuracy

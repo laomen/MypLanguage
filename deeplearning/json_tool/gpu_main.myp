@@ -2,11 +2,11 @@
 //
 // 运行（需 MYP_GPU=1 才真正卸载；否则 @gpu for 回退 CPU）：
 //   MYP_GPU=1 ./build/mypc ... 编译产物
-//   ./build/mypc deeplearning/infer/gpu_main.myp -o /tmp/infer_gpu --stdlib stdlib
+//   ./build/mypc deeplearning/json_tool/gpu_main.myp -o /tmp/infer_gpu --stdlib stdlib
 //   MYP_GPU=1 /tmp/infer_gpu
 import env;
 import cuda;
-import "./runtime.myp";
+import "../infer/runtime.myp";
 import "./model_loader.myp";
 
 class GpuInferApp {
@@ -35,7 +35,7 @@ class GpuInferApp {
             InferenceRuntime rt = new InferenceRuntime();
             rt.init(4096);
             ModelLoader loader = new ModelLoader();
-            int ok = loader.load("./deeplearning/infer/models/xor_model.json", rt);
+            int ok = loader.load("./deeplearning/json_tool/models/xor_model.json", rt);
             if (ok == 0) return -1;
             int inTid = loader.tensorId("input");
             int probTid = loader.tensorId("prob");
@@ -66,7 +66,7 @@ class GpuInferApp {
             InferenceRuntime rt = new InferenceRuntime();
             rt.init(200000);
             ModelLoader loader = new ModelLoader();
-            int ok = loader.loadBatched("./deeplearning/infer/models/mnist_model.json", rt, numTest);
+            int ok = loader.loadBatched("./deeplearning/json_tool/models/mnist_model.json", rt, numTest);
             if (ok == 0) return -1;
             int inputTid = loader.tensorId("input");
             int probTid = loader.tensorId("prob");
