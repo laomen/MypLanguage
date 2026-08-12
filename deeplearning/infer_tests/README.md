@@ -16,6 +16,7 @@
 | `act_main.myp` | G4 | 激活端到端（Clip / LeakyRelu / HardSwish vs ORT） | `data/onnx/act_test.onnx` |
 | `const_main.myp` | G2 | 常量折叠端到端 | `data/onnx/const_fold_test.onnx` |
 | `onnx_main.myp` | 早期 | MNIST MLP 推理 + 准确率（78/100） | `data/onnx/mnist_mlp.onnx` |
+| **`run_onnx.myp`** | **F7** | **通用 ONNX 运行器**：任意模型 + .f32 输入 → 推理 → top-k / 输出 / .bin（跑新模型零样板） | 任意 `.onnx` |
 
 ## 构建与运行
 
@@ -39,6 +40,26 @@ MYP_GPU=1 /tmp/r18    # → output sum 0.101238，top-5 与 ORT 一致，GPU ~51
 ./build/mypc deeplearning/infer_tests/bn_main.myp -o /tmp/bn --stdlib stdlib
 /tmp/bn               # → BN FOLD / STANDALONE / NORELU 全 OK
 ```
+
+## 通用 ONNX 运行器（F7）
+
+跑**任意** ONNX 模型，无需为每个模型写 main：
+
+```bash
+./build/mypc deeplearning/infer_tests/run_onnx.myp -o /tmp/run_onnx --stdlib stdlib
+
+# 分类模型：top-5
+/tmp/run_onnx deeplearning/data/onnx/resnet18_v1_7.onnx data resnetv15_dense0_fwd \
+              deeplearning/data/onnx/resnet_input.f32 --topk 5
+
+# 任意输出：打印 sum + 前 10 值，并把输出写为 float32 .bin（供 ORT 交叉校验）
+/tmp/run_onnx <model.onnx> <inputName> <outputName> <input.f32> -o /tmp/out.bin
+
+# GPU
+MYP_GPU=1 /tmp/run_onnx <model.onnx> <inputName> <outputName> <input.f32> --topk 5
+```
+
+> 输入 .f32 = float32 小端，元素数 = 输入张量元素数（`tensorSize`）。
 
 ## 环境变量
 

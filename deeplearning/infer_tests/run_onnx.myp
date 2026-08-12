@@ -1,0 +1,214 @@
+// run_onnx.myp — F7：通用 ONNX 运行器
+// 任意 ONNX 模型 + 输入 .f32 文件 → 推理 → 打印输出 / top-k。消除每个模型的样板 main。
+//
+// 用法（仓库根）：
+//   ./build/mypc deeplearning/infer_tests/run_onnx.myp -o /tmp/run_onnx --stdlib stdlib
+//   /tmp/run_onnx <model.onnx> <inputName> <outputName> <input.f32> [--topk N]
+//   MYP_GPU=1 /tmp/run_onnx ...    # GPU 卸载（无 GPU 自动回退 CPU）
+//
+// 输入：input.f32 = float32 小端，元素数须等于输入张量元素数（tensorSize）。
+// 输出：--topk N → 打印 top-N 索引+值（分类模型）；否则打印 output sum + 前 10 个值；
+//       -o out.bin → 把输出张量写为 float32 小端二进制（供 ORT 交叉校验等）。
+import env;
+import cuda;
+import args;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class RunOnnxApp {
+    action:
+        @constructor RunOnnxApp() {
+            if (Args.count() < 5) {
+                Console.writeLine("用法: run_onnx <model.onnx> <inputName> <outputName> <input.f32> [--topk N] [-o out.bin]");
+                return;
+            }
+            string modelPath = Args.get(1);
+            string inName = Args.get(2);
+            string outName = Args.get(3);
+            string inputFile = Args.get(4);
+            int topk = 0;
+            string outPath = "";
+            int i = 5;
+            while (i < Args.count()) {
+                if (Args.get(i) == "--topk" && i + 1 < Args.count()) {
+                    topk = parseInt(Args.get(i + 1));
+                    i = i + 2;
+                } else if (Args.get(i) == "-o" && i + 1 < Args.count()) {
+                    outPath = Args.get(i + 1);
+                    i = i + 2;
+                } else {
+                    i = i + 1;
+                }
+            }
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(1024);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load(modelPath, rt);
+            if (ok == 0) {
+                Console.writeLine("onnx load failed: " + modelPath);
+                return;
+            }
+            int inTid = loader.tensorId(inName);
+            int outTid = loader.tensorId(outName);
+            if (inTid < 0 || outTid < 0) {
+                Console.writeString("tensor not found (in=");
+                Console.writeLong(inTid);
+                Console.writeString(" out=");
+                Console.writeLong(outTid);
+                Console.writeLine(")");
+                return;
+            }
+
+            // 读输入 .f32（float32 小端，n = 输入张量元素数）
+            int n = rt.tensorSize(inTid);
+            int fd = __myp_io_fopen(inputFile, "rb");
+            if (fd < 0) {
+                Console.writeLine("no input file: " + inputFile);
+                return;
+            }
+            int j = 0;
+            while (j < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                rt.setFlat(inTid, j, F32.toDouble(bits));
+                j = j + 1;
+            }
+            __myp_io_fclose();
+            if (j < n) {
+                Console.writeString("input short (");
+                Console.writeLong(j);
+                Console.writeString("/");
+                Console.writeLong(n);
+                Console.writeLine(")");
+                return;
+            }
+
+            // 设备 + 推理
+            int useGpu = Cuda.available();
+            Console.writeString("device: ");
+            if (useGpu == 1) {
+                Console.writeString(Cuda.name());
+                Console.writeString(" (GPU)");
+            } else {
+                Console.writeString("CPU");
+            }
+            Console.writeLine("");
+            Console.writeString("graph: nodes=");
+            Console.writeLong(loader.nodeCount());
+            Console.writeString(" ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeString(" bn_fused=");
+            Console.writeLong(loader.bnCount());
+            Console.writeString(" convRelu_fused=");
+            Console.writeLong(loader.fuseCount());
+            Console.writeLine("");
+
+            long t0 = __myp_now_ms();
+            if (useGpu == 1) rt.runGpu();
+            else rt.run();
+            long t1 = __myp_now_ms();
+            Console.writeString("inference: ");
+            Console.writeLong(t1 - t0);
+            Console.writeLine(" ms");
+
+            // 先写二进制输出（再打印 top-k——打印会改输出张量找 top，故必须先写）
+            int m = rt.tensorSize(outTid);
+            if (Str.len(outPath) > 0) {
+                int ofd = __myp_io_fopen(outPath, "wb");
+                if (ofd < 0) {
+                    Console.writeLine("cannot write: " + outPath);
+                    return;
+                }
+                int t = 0;
+                while (t < m) {
+                    int bits = F32.toBits(rt.getFlat(outTid, t));
+                    __myp_io_write_byte(bits & 255);
+                    __myp_io_write_byte((bits >> 8) & 255);
+                    __myp_io_write_byte((bits >> 16) & 255);
+                    __myp_io_write_byte((bits >> 24) & 255);
+                    t = t + 1;
+                }
+                __myp_io_fclose();
+                Console.writeString("wrote ");
+                Console.writeString(outPath);
+                Console.writeString(" (输出");
+                Console.writeLong(m);
+                Console.writeString(" float32)");
+                Console.writeLine("");
+            }
+
+            // 输出
+            if (topk > 0) {
+                printTopK(rt, outTid, m, topk);
+            } else {
+                double ssum = 0.0;
+                int t = 0;
+                while (t < m) { ssum = ssum + rt.getFlat(outTid, t); t = t + 1; }
+                Console.writeString("output sum: ");
+                Console.writeFloat(ssum);
+                Console.writeLine("");
+                int show = m;
+                if (show > 10) show = 10;
+                Console.writeString("first ");
+                Console.writeLong(show);
+                Console.writeLine(":");
+                t = 0;
+                while (t < show) {
+                    Console.writeFloat(rt.getFlat(outTid, t));
+                    Console.writeString(" ");
+                    t = t + 1;
+                }
+                Console.writeLine("");
+            }
+        }
+
+        void printTopK(InferenceRuntime rt, int tid, int n, int k) {
+            Console.writeString("top-");
+            Console.writeLong(k);
+            Console.writeLine(":");
+            int c = 0;
+            while (c < k) {
+                int bi = -1;
+                double bv = 0.0 - 1.0e30;
+                int t = 0;
+                while (t < n) {
+                    double v = rt.getFlat(tid, t);
+                    if (v > bv) { bv = v; bi = t; }
+                    t = t + 1;
+                }
+                if (bi < 0) break;
+                Console.writeString("  #");
+                Console.writeLong(c + 1);
+                Console.writeString(" [");
+                Console.writeLong(bi);
+                Console.writeString("] ");
+                Console.writeFloat(bv);
+                Console.writeLine("");
+                rt.setFlat(tid, bi, 0.0 - 1.0e30);
+                c = c + 1;
+            }
+        }
+
+        int parseInt(string s) {
+            int r = 0;
+            int i = 0;
+            int n = Str.len(s);
+            while (i < n) {
+                int c = Str.ord(Str.substring(s, i, i + 1));
+                if (c >= 48 && c <= 57) r = r * 10 + (c - 48);
+                i = i + 1;
+            }
+            return r;
+        }
+}
+
+int main() {
+    RunOnnxApp app = new RunOnnxApp();
+    return 0;
+}

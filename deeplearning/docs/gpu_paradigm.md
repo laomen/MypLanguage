@@ -722,15 +722,16 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | 量化/稀疏/动态形状 | ❌ F4 |
 | 算子库对接（cuDNN/cuBLAS） | ❌ F1 |
 
-### F7. 通用 ONNX 运行器（消除新模型样板）——已归档（暂缓）
-- **问题**：跑新 ONNX 模型需复制 `r18_main/resnet_main` 写一个 ~20 行 main
-  （改模型路径 + 输入/输出张量名 + 喂输入），有样板重复。
-- **目标**：一个通用 CLI `run_onnx.myp <model.onnx> <input> <output> <data.f32>`——
-  仿 json_tool 的 `run_model`（已为 JSON 图提供），但走 ONNX 路径。
-- **内容**：命令行传模型路径 + 输入/输出张量名 + 输入数据文件；加载 → 推理 →
-  输出张量；支持 `-o` 写结果 / 打印 top-k（可选）。
-- **收益**：新增模型验证零样板——放 .onnx + 数据文件即可跑。
-- **状态**：已归档标记（2026-08-12），排期见 §16 F7。
+### F7. 通用 ONNX 运行器（消除新模型样板）——已实现（2026-08-12）
+- **实现**：`deeplearning/infer_tests/run_onnx.myp`——通用 CLI
+  `run_onnx <model.onnx> <inputName> <outputName> <input.f32> [--topk N] [-o out.bin]`。
+  加载任意 ONNX → 喂 .f32 输入 → 推理（CPU/GPU）→ 打印 top-k 或 output sum/first，
+  可 `-o out.bin` 写 float32 二进制输出（供 ORT 交叉校验）。
+- **配套**：`pb.myp` `F32` 补 `toBits(double)`（double→float32 位型，纯 MYP
+  IEEE754 编码 round-to-nearest）——MYP 无 bit_cast，供写 .bin 输出。
+- **验证**：resnet18 top-5 [975,976,978,977,449] 与 ORT 一致，out.bin 位级正确
+  （sum 0.101238）；GPU 21ms；非分类模型（bn_fold ops=1）；回归 237/237。
+- **说明**：跑新模型零样板——放 .onnx + .f32 输入即可。已实现，无需再归档。
 
 ### F8. 算子覆盖扩展（高频缺失算子）——已归档（暂缓）
 - **现状**：仅 15 个算子（CNN 前馈分类够用），主流模型大多缺算子。

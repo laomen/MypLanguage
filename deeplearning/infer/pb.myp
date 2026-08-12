@@ -109,7 +109,7 @@ class PbReader {
         int wire_;
 }
 
-// float32（IEEE754 位型）→ double
+// float32（IEEE754 位型）↔ double
 class F32 {
     static:
         double toDouble(int bits) {
@@ -130,5 +130,41 @@ class F32 {
             v = v * Math.pow(2.0, exp - 127);
             if (sign == 1) return -v;
             return v;
+        }
+
+        // double → float32 位型（IEEE754 编码，round-to-nearest）
+        // MYP 无 bit_cast/doubleToBits，用纯数学求位型（供写 .bin 输出等）。
+        int toBits(double x) {
+            int sign = 0;
+            if (x < 0.0) { sign = 1; x = 0.0 - x; }
+            if (x == 0.0) { if (sign == 1) return -2147483648; return 0; }   // ±0
+            if (x != x) return 2143289344;      // 0x7FC00000 NaN
+            if (x > 3.4028234663852886e38) {    // ±inf
+                if (sign == 1) return -8388608; // 0xFF800000
+                return 2139095040;              // 0x7F800000
+            }
+            // 归一化到 [1,2)：x = m * 2^e
+            int e = 0;
+            double m = x;
+            while (m >= 2.0) { m = m / 2.0; e = e + 1; }
+            while (m < 1.0) { m = m * 2.0; e = e - 1; }
+            int expBits = e + 127;
+            // 取 23 位尾数 + 第 24 位舍入（round-to-nearest）
+            double frac = m - 1.0;
+            int mant = 0;
+            int b = 0;
+            while (b < 23) {
+                frac = frac * 2.0;
+                if (frac >= 1.0) { mant = mant | (1 << (22 - b)); frac = frac - 1.0; }
+                b = b + 1;
+            }
+            frac = frac * 2.0;
+            if (frac >= 1.0) {
+                mant = mant + 1;
+                if (mant >= 8388608) { mant = 0; expBits = expBits + 1; }   // 进位
+            }
+            int bits = (expBits << 23) | mant;
+            if (sign == 1) bits = bits | -2147483648;   // 置符号位 bit31
+            return bits;
         }
 }
