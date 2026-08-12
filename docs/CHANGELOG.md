@@ -65,6 +65,16 @@
 - **GPU/CPU 共享 `emitConversion`（§7.1 单一权威）**：GPU kernel 的 `ExprKind::Convert`
   分支改为调用共享自由函数 `convertIntegerValue`——消除 GPU 内重复转换逻辑（bool↔int/fp、
   char 无符号语义、fp↔int、float↔double、指针 bitcast 全覆盖，避免两套转换漂移）。
+- **GPU 原语（gpu_library_design §9 P0 §3.1-3.3 落地）**：
+  - **§3.1 `kernel` 执行上下文**：`@gpu for`/`@gpu tile` body 内隐式保留标识符
+    `kernel.gid(=p)/bx(blockIdx.x)/tx(threadIdx.x)/bd(blockDim.x)/gx(ceil(n/bd))`（long）
+    + `kernel.sync()`（void）；sema 拦截 + codegen NVVM intrinsic 直映；CPU 回退模拟
+    （gid=p/tx=p%256/bx=p/256/bd=256）；`tests/test_gpu_kernel_ctx` GPU PASS。
+  - **§3.2 `@gpu tile`**：`@gpu tile (T name[dim...]) [grid(nb)] { body }`——块内
+    `__shared__`（addrspace 3、编译期常量维度、sema 48KB 上限校验）；协作 body +
+    `kernel.sync()` 两阶段；CPU 单线程降级；`tests/test_gpu_tile` GPU PASS。
+  - **§3.3 块同步**：`kernel.sync()` → `llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)`
+    → PTX `bar.sync 0`；sema 发散分支检查（if/while 内 sync → 警告，防死锁）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
