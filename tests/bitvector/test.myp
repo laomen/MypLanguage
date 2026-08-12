@@ -99,6 +99,37 @@ class Main {
             Console.writeLong(uint(flags));          // 8
             Console.writeString("\n");
 
+            // ---- §5.1 补全：~ 一元取反 ----
+            Console.writeLong(~0);                   // -1
+            Console.writeString("\n");
+            Console.writeLong(~0x0F);                // -16
+            Console.writeString("\n");
+            Console.writeLong(uint(~v8));            // ~0x5A... v8=0xB5 → ~0xB5&0xFF=0x4A=74
+            Console.writeString("\n");
+            bitvector<32> inv32 = bitvector<32>(0x0F0F0F0F);
+            Console.writeLong(uint(~inv32));         // 0xF0F0F0F0 = 4042322160
+            Console.writeString("\n");
+
+            // ---- §5.1 补全：写索引 v[i] = x（读-改-写）----
+            bitvector<8> f = bitvector<8>(0);
+            f[0] = true;
+            f[3] = true;
+            f[7] = true;
+            Console.writeBool(f[0]);                 // true
+            Console.writeString("\n");
+            Console.writeBool(f[3]);                 // true
+            Console.writeString("\n");
+            Console.writeBool(f[1]);                 // false
+            Console.writeString("\n");
+            Console.writeLong(uint(f));              // 0b10001001 = 0x89 = 137
+            Console.writeString("\n");
+            f[0] = false;
+            Console.writeLong(uint(f));              // 0x88 = 136
+            Console.writeString("\n");
+            // ~ 与索引组合
+            Console.writeBool((~f)[7]);              // ~0x88=0x77, bit7=0 → false
+            Console.writeString("\n");
+
             Console.writeString("BITVECTOR_OK\n");
         }
 }

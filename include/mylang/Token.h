@@ -111,6 +111,7 @@ enum class TokenKind : uint16_t {
     Amp,            // &
     Caret,          // ^
     Pipe,           // |
+    Tilde,          // ~
 
     // Logical
     AndAnd,         // &&

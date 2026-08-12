@@ -559,6 +559,8 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
     switch (e.op) {
         case UnaryOpKind::Negate: return o->getType()->isFloatingPointTy() ? builder_.CreateFNeg(o) : builder_.CreateNeg(o);
         case UnaryOpKind::Not:    return builder_.CreateNot(o);
+        // §5.1 ~x：位取反（iN 按位非 = xor -1）
+        case UnaryOpKind::BitNot: return builder_.CreateNot(o);
     }
     return nullptr;
 }

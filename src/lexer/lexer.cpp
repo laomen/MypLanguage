@@ -172,6 +172,9 @@ void Lexer::scanToken() {
         case '^':
             tokens_.emplace_back(TokenKind::Caret, currentRange());
             break;
+        case '~':
+            tokens_.emplace_back(TokenKind::Tilde, currentRange());
+            break;
 
         // String literals
         case '"': {

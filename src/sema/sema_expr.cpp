@@ -485,6 +485,20 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
                 return TypeInfo(TypeKind::Bit);
             expectBool(operand_type, expr.operand->range);
             return TypeInfo(TypeKind::Bool);
+        case UnaryOpKind::BitNot: {
+            // §5.1 ~x：整型/bitvector/bit 位取反（float/bool 拒绝）。
+            bool ok = operand_type.kind == TypeKind::BitVector ||
+                      operand_type.kind == TypeKind::Bit ||
+                      (isNumericKind(operand_type.kind) &&
+                       operand_type.kind != TypeKind::Float &&
+                       operand_type.kind != TypeKind::Double);
+            if (!ok) {
+                error(expr.operand->range, "'~' requires an integer or bitvector "
+                      "operand (got '" + typeName(operand_type) + "')");
+                return TypeInfo(TypeKind::Int);
+            }
+            return operand_type;
+        }
     }
     return TypeInfo(TypeKind::Void);
 }

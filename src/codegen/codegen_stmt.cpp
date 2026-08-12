@@ -1603,6 +1603,42 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                 }
             }
         }
+        // §5.1 bitvector<N>[i] = x：读-改-写背衬整数（置位/清位第 i 位）。
+        if (ss.array->resolved_kind == TypeKind::BitVector) {
+            llvm::Value* slot = nullptr;
+            if (ss.array->kind == ExprKind::Identifier) {
+                auto& boid = static_cast<const IdentifierExpr&>(*ss.array);
+                slot = getNamedValue(boid.name);
+            }
+            if (!slot) {
+                diag_.error(e.range, "cannot assign to bitvector element (unsupported target)");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            llvm::Type* bt = nullptr;
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(slot))
+                bt = ai->getAllocatedType();
+            else
+                bt = getNamedValueType(static_cast<const IdentifierExpr&>(*ss.array).name);
+            if (!bt || !bt->isIntegerTy()) {
+                diag_.error(e.range, "bitvector element assignment target has no integer backing");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            auto* cur = builder_.CreateLoad(bt, slot, "bvcur");
+            auto* idx = generateExpr(*ss.index);
+            auto* val = generateExpr(*e.value);      // bit（i1）
+            llvm::Value* shifted = idx;
+            if (shifted->getType() != bt) shifted = builder_.CreateZExtOrTrunc(shifted, bt);
+            auto* one = llvm::ConstantInt::get(bt, 1);
+            auto* bitmask = builder_.CreateShl(one, shifted, "bvbitmsk");
+            auto* cleared = builder_.CreateAnd(cur, builder_.CreateNot(bitmask), "bvclr");
+            llvm::Value* wide = val;
+            if (wide->getType()->isIntegerTy(1)) wide = builder_.CreateZExt(wide, bt);
+            else wide = builder_.CreateZExtOrTrunc(wide, bt);
+            auto* placed = builder_.CreateShl(wide, shifted, "bvput");
+            auto* nv = builder_.CreateOr(cleared, placed, "bvnew");
+            builder_.CreateStore(nv, slot);
+            return val;
+        }
         auto* a = generateExpr(*ss.array);
         auto* i = generateExpr(*ss.index);
         llvm::Type* elem_ty = llvm::Type::getInt32Ty(ctx_);

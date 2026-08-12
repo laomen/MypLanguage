@@ -454,7 +454,7 @@ struct BinaryOpExpr : Expr {
 };
 
 enum class UnaryOpKind {
-    Negate, Not,
+    Negate, Not, BitNot,
 };
 
 struct UnaryOpExpr : Expr {

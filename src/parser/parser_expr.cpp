@@ -418,6 +418,12 @@ std::unique_ptr<Expr> Parser::parseUnary() {
         return std::make_unique<UnaryOpExpr>(
             UnaryOpKind::Not, std::move(operand), previous().range);
     }
+    if (match(TokenKind::Tilde)) {
+        // §5.1 一元取反：~x（整型/bitvector/bit 位取反）
+        auto operand = parseUnary();
+        return std::make_unique<UnaryOpExpr>(
+            UnaryOpKind::BitNot, std::move(operand), previous().range);
+    }
     if (match(TokenKind::Minus)) {
         auto operand = parseUnary();
         return std::make_unique<UnaryOpExpr>(
