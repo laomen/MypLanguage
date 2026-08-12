@@ -27,8 +27,21 @@ message(STATUS "Found LLVM: ${LLVM_DIR} (${LLVM_PACKAGE_VERSION})")
 include_directories(${LLVM_INCLUDE_DIRS})
 add_definitions(${LLVM_DEFINITIONS})
 
-# Get LLVM library list for linking
-llvm_map_components_to_libnames(myp_llvm_libs
+# ---- GPU offload (optional; can be fully excluded for CI/minimal builds) ----
+# Usage: cmake -DMYP_ENABLE_GPU=OFF
+#   → 不链接 NVPTX、不编译 GPU 代码（codegen_gpu 内核路径 / runtime_gpu.c）；
+#     `@gpu for` 编译为 CPU 顺序回退（语义保持，无 GPU 加速）。
+#   CI 若因 NVPTX/CUDA 构建失败，用 -DMYP_ENABLE_GPU=OFF 即可纯 CPU 构建。
+option(MYP_ENABLE_GPU "Build with GPU (CUDA/NVPTX) offload support" ON)
+if(MYP_ENABLE_GPU)
+    add_compile_definitions(MYP_ENABLE_GPU=1)
+    message(STATUS "GPU offload enabled (NVPTX + CUDA runtime)")
+else()
+    message(STATUS "GPU offload DISABLED — @gpu for compiles to CPU fallback")
+endif()
+
+# Get LLVM library list for linking（nvptx 组件仅 GPU 构建解析，llvm_map 给完整路径）
+set(MYP_LLVM_COMPONENTS
     core
     support
     mc
@@ -42,18 +55,21 @@ llvm_map_components_to_libnames(myp_llvm_libs
     x86info
     x86asmparser
     x86disassembler
-    nvptxdesc
-    nvptxcodegen
-    nvptxinfo
 )
+if(MYP_ENABLE_GPU)
+    list(APPEND MYP_LLVM_COMPONENTS nvptxdesc nvptxcodegen nvptxinfo)
+endif()
+llvm_map_components_to_libnames(myp_llvm_libs ${MYP_LLVM_COMPONENTS})
 
-# ---- CUDA (optional, for GPU offload) ----
-find_package(CUDAToolkit QUIET)
-if(CUDAToolkit_FOUND)
-    message(STATUS "Found CUDA Toolkit: ${CUDAToolkit_VERSION} at ${CUDAToolkit_INCLUDE_DIRS}")
-    add_compile_definitions(MYP_CUDA_ENABLED=1)
-else()
-    message(STATUS "CUDA Toolkit not found — GPU offload disabled (CPU fallback only)")
+# ---- CUDA (optional, only when GPU enabled; runtime activation via dlopen) ----
+if(MYP_ENABLE_GPU)
+    find_package(CUDAToolkit QUIET)
+    if(CUDAToolkit_FOUND)
+        message(STATUS "Found CUDA Toolkit: ${CUDAToolkit_VERSION} at ${CUDAToolkit_INCLUDE_DIRS}")
+        add_compile_definitions(MYP_CUDA_ENABLED=1)
+    else()
+        message(STATUS "CUDA Toolkit not found — GPU offload disabled (CPU fallback only)")
+    endif()
 endif()
 
 # ---- Sources ----
@@ -238,13 +254,14 @@ find_package(PkgConfig)
 if(PkgConfig_FOUND)
     pkg_check_modules(HDF5 hdf5)
 endif()
-add_library(myp_runtime STATIC
+set(MYP_RUNTIME_SRCS
     src/runtime/runtime.c
     src/runtime/coro_ctx.S
     src/runtime/myp_stdlib.c
     src/runtime/sdl_bridge.c
     src/runtime/runtime_gpu.c
 )
+add_library(myp_runtime STATIC ${MYP_RUNTIME_SRCS})
 
 target_include_directories(myp_runtime
     PUBLIC

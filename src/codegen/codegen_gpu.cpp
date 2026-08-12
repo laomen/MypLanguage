@@ -20,7 +20,9 @@
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/ADT/SmallString.h>
 
+#ifdef MYP_ENABLE_GPU
 #include <llvm/IR/IntrinsicsNVPTX.h>
+#endif
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Linker/Linker.h>
 #include <llvm/Support/SourceMgr.h>
@@ -29,11 +31,13 @@
 #include <llvm/Transforms/IPO/GlobalDCE.h>
 #include <llvm/Transforms/Instrumentation/ThreadSanitizer.h>
 
-// NVPTX target initialization (must be at global scope)
+// NVPTX target initialization (must be at global scope) — 仅 GPU 构建需要
+#ifdef MYP_ENABLE_GPU
 extern "C" void LLVMInitializeNVPTXTargetInfo(void);
 extern "C" void LLVMInitializeNVPTXTarget(void);
 extern "C" void LLVMInitializeNVPTXTargetMC(void);
 extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
+#endif
 
 #include <cstdlib>
 #include <iostream>
@@ -1680,6 +1684,7 @@ static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag) {
 }
 
 bool CodeGen::generateGpuKernel(const ForStmt& s) {
+#ifdef MYP_ENABLE_GPU
     // Create a new module for PTX generation
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
     ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
@@ -2157,6 +2162,11 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
                std::to_string(ptx_str.size()) + " bytes)");
 
     return true;
+#else
+    // GPU offload 未编译（-DMYP_ENABLE_GPU=OFF）：@gpu for 走 CPU 顺序回退
+    (void)s;
+    return false;
+#endif
 }
 
 }  // namespace mylang

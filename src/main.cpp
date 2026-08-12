@@ -515,7 +515,8 @@ static bool loadModule(const std::string& module_name,
         }
     }
 
-    // Build GPU runtime object
+    // Build GPU runtime object（runtime_gpu.c 是 dlopen 胶水，任何 Linux 可编译；
+    // 保留以提供 stdlib cuda/gpu 的设备信息符号。GPU offload 的剔除在编译器 NVPTX 层）
     std::string gpu_c;
     if (fileExists("src/runtime/runtime_gpu.c"))
         gpu_c = "src/runtime/runtime_gpu.c";
