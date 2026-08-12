@@ -21,7 +21,7 @@ class GpuBuffer {
             elemSize_ = 8;
             dev_ = 0L;
             if (GpuBackend.available() == 1) {
-                dev_ = GpuBackend.alloc(n * 8);
+                dev_ = GpuBackend.alloc(long(n) * 8L);
                 if (dev_ != 0L) {
                     GpuBackend.copyH2D(dev_, host, 0, 0, n);
                 }
@@ -95,7 +95,7 @@ class GpuBufferF {
             elemSize_ = 4;
             dev_ = 0L;
             if (GpuBackend.available() == 1) {
-                dev_ = GpuBackend.alloc(n * 4);
+                dev_ = GpuBackend.alloc(long(n) * 4L);
                 if (dev_ != 0L) {
                     GpuBackend.copyH2DF(dev_, host, 0, 0, n);
                 }
@@ -195,7 +195,7 @@ class GpuPool {
                 }
                 i = i + 1;
             }
-            return GpuBackend.alloc(bytes);
+            return GpuBackend.alloc(long(bytes));
         }
 
         // 归还一块（bytes 为分配时字节数）；池满则直接释放

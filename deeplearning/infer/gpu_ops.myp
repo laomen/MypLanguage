@@ -1160,17 +1160,20 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     if (mode == 0) {
-                        float sum = 0.0f;
+                        // double 累加：与 CPU/ORT 一致精度（float 顺序累加在
+                        // 大 S（如 192³=7M）下损失严重：sum~2e5 时分辨率仅 ~0.016，
+                        // 均值相对误差 ~1e-3，经深层网络放大成大误差）
+                        double sum = 0.0;
                         int i = 0;
-                        while (i < total) { sum = sum + a[inOff + i]; i = i + 1; }
-                        a[outOff + 0] = sum / total;
+                        while (i < total) { double xv = a[inOff + i]; sum = sum + xv; i = i + 1; }
+                        a[outOff + 0] = float(sum / total);
                     } else {
                         int nc = int(p);
                         int base = nc * S;
-                        float sum = 0.0f;
+                        double sum = 0.0;
                         int i = 0;
-                        while (i < S) { sum = sum + a[inOff + base + i]; i = i + 1; }
-                        a[outOff + nc] = sum / S;
+                        while (i < S) { double xv = a[inOff + base + i]; sum = sum + xv; i = i + 1; }
+                        a[outOff + nc] = float(sum / S);
                     }
                 }
             }

@@ -7,6 +7,7 @@
 //   → planMemory → buildRuntime
 import env;
 import math;
+import fmt;
 import "./pb.myp";
 import "./runtime.myp";
 
@@ -290,6 +291,22 @@ class Graph {
             if (s < 0) { addShapeD5(name, d0, d1, d2, d3, d4); return; }
             shD0_[s] = d0; shD1_[s] = d1; shD2_[s] = d2; shD3_[s] = d3; shD4_[s] = d4; shR5_[s] = is5;
         }
+
+        // 调试：load 后 dump 各 Resize 折叠 sizes
+        void dumpResizeSizes() {
+            int fd = __myp_io_fopen("/tmp/resize_dbg.txt", "wb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < nCount_) {
+                if (nType_[i] == "Resize") {
+                    __myp_io_write("Resize out=" + nOut0_[i]);
+                    __myp_io_write(" rsz=" + Fmt.i(nRszD_[i]) + "," + Fmt.i(nRszH_[i]) + "," + Fmt.i(nRszW_[i]));
+                    __myp_io_write(" in=" + nIn0_[i] + "\n");
+                }
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
         int optimize(InferenceRuntime rt) {
             if (Console.getEnv("MYP_NO_REUSE") == "1") noReuse_ = 1;
             foldShapeChains();            // P3：先折叠输入形状已知的 Resize sizes 链
@@ -307,6 +324,7 @@ class Graph {
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
             rt.resizeArena(peak);
             if (buildRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            if (Console.getEnv("MYP_RSZ_DBG") == "1") dumpResizeSizes();
             return 1;
         }
 
@@ -520,10 +538,13 @@ class Graph {
             int sh = rawSt(i, 1); if (sh == 0) sh = 1;
             int sw = rawSt(i, 2); if (sw == 0) sw = 1;
             nSD3_[i] = sd; nSH_[i] = sh; nSW_[i] = sw;
-            // pads [pdt,pdb,pt,pb,pl,pr]
-            nPDT_[i] = rawPd(i, 0); nPDB_[i] = rawPd(i, 1);
-            nPT_[i] = rawPd(i, 2); nPB_[i] = rawPd(i, 3);
-            nPL_[i] = rawPd(i, 4); nPR_[i] = rawPd(i, 5);
+            // pads：ONNX 3D 格式 [d_begin, h_begin, w_begin, d_end, h_end, w_end]
+            // （此前按 [pdt,pdb,pt,pb,pl,pr] 顺序读取——PyTorch 风格。对称 padding
+            // 时各维 top==bottom 看不出；非对称 pads（如 [1,0,0,1,0,0]）会错位，
+            // 导致 Conv/AvgPool 输出形状与切片位置错误）
+            nPDT_[i] = rawPd(i, 0); nPDB_[i] = rawPd(i, 3);
+            nPT_[i] = rawPd(i, 1); nPB_[i] = rawPd(i, 4);
+            nPL_[i] = rawPd(i, 2); nPR_[i] = rawPd(i, 5);
             // dilations [dd,dh,dw]
             int dd = rawDl(i, 0); if (dd == 0) dd = 1;
             int dh = rawDl(i, 1); if (dh == 0) dh = 1;
@@ -539,7 +560,8 @@ class Graph {
                 if (t == "") { i = i + 1; continue; }   // 死节点（折叠/融合消掉）跳过
                 // P3：形状链节点（Shape/Constant/Cast/ReduceProd/Unsqueeze/Gather）由
                 // foldShapeChains 折叠；仍活着则先尝试折叠（形状随 inferShapes 推进逐步已知）
-                if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather") {
+                if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather" ||
+                    ((t == "Slice" || t == "Concat") && (i64Count(nIn0_[i]) > 0 || i64Count(nIn1_[i]) > 0))) {
                     foldShapeChains();
                     if (nType_[i] != "") { i = i + 1; continue; }   // 仍未折叠：跳过
                     t = "";
@@ -1263,6 +1285,26 @@ class Graph {
             }
             return 1;
         }
+        // 判断 name 是否由「尚未折叠的 shape 链节点」产出（int64 值后续才可知）。
+        // 用于 Concat 折叠的部分折叠保护：避免把不完整的链（缺前缀/后缀）当完整折叠。
+        int i64ChainAlive(string name) {
+            int i = 0;
+            while (i < nCount_) {
+                if (nType_[i] == "") { i = i + 1; continue; }
+                if (nOut0_[i] == name) {
+                    string tp = nType_[i];
+                    if (tp == "Constant" || tp == "Shape" || tp == "ReduceProd" ||
+                        tp == "Unsqueeze" || tp == "Gather" || tp == "Slice" ||
+                        tp == "Concat" || tp == "Cast") {
+                        return 1;
+                    }
+                    return 0;
+                }
+                i = i + 1;
+            }
+            return 0;
+        }
+
         int foldShapeChains() {
             // P3：int64 形状链折叠（Shape/Slice/Concat/Cast/Unsqueeze/Gather/ReduceProd）。
             // 可两次调用（inferShapes 前折叠 Resize sizes 链；后折叠剩余链）。幂等。
@@ -1380,23 +1422,39 @@ class Graph {
                 } else if (t == "Concat") {
                     // 仅折叠 int64 链（float Concat 是运行时算子）
                     if (i64Count(nIn0_[i]) > 0 || i64Count(nIn1_[i]) > 0) {
-                        long[] v = new long[64];
-                        int outc = 0;
-                        int slot = 0;
-                        while (slot < 3) {
-                            string nm;
-                            if (slot == 0) nm = nIn0_[i];
-                            else if (slot == 1) nm = nIn1_[i];
-                            else nm = nIn2_[i];
-                            if (nm == "") { slot = 3; break; }
-                            if (i64Count(nm) > 0) {
-                                int c = i64Count(nm);
-                                int k = 0;
-                                while (k < c && outc < 64) { v[outc] = i64Get(nm, k); outc = outc + 1; k = k + 1; }
-                            }
-                            slot = slot + 1;
+                        // 部分折叠保护：若任一输入是「尚未折叠的 shape 链节点」
+                        // （其 int64 值后续才可知），本次不折叠，留给 inferShapes
+                        // 推进后的内部 foldShapeChains（避免丢掉前缀/后缀）。
+                        int wait = 0;
+                        int wslot = 0;
+                        while (wslot < 3) {
+                            string wnm;
+                            if (wslot == 0) wnm = nIn0_[i];
+                            else if (wslot == 1) wnm = nIn1_[i];
+                            else wnm = nIn2_[i];
+                            if (wnm == "") { wslot = 3; break; }
+                            if (i64ChainAlive(wnm) == 1) { wait = 1; wslot = 3; break; }
+                            wslot = wslot + 1;
                         }
-                        if (outc > 0) { i64Reg(nOut0_[i], v, outc); nType_[i] = ""; }
+                        if (wait == 0) {
+                            long[] v = new long[64];
+                            int outc = 0;
+                            int slot = 0;
+                            while (slot < 3) {
+                                string nm;
+                                if (slot == 0) nm = nIn0_[i];
+                                else if (slot == 1) nm = nIn1_[i];
+                                else nm = nIn2_[i];
+                                if (nm == "") { slot = 3; break; }
+                                if (i64Count(nm) > 0) {
+                                    int c = i64Count(nm);
+                                    int k = 0;
+                                    while (k < c && outc < 64) { v[outc] = i64Get(nm, k); outc = outc + 1; k = k + 1; }
+                                }
+                                slot = slot + 1;
+                            }
+                            if (outc > 0) { i64Reg(nOut0_[i], v, outc); nType_[i] = ""; }
+                        }
                     }
                 } else if (t == "Cast") {
                     int to = nCastTo_[i];
@@ -1674,6 +1732,15 @@ class Graph {
                 tName_[tCount_] = nm;
                 tId_[tCount_] = tid;
                 tCount_ = tCount_ + 1;
+                if (Console.getEnv("MYP_DUMP_TENSORS") == "1") {
+                    int fd = __myp_io_fopen("/tmp/fine_tensors.txt", "ab");
+                    if (fd >= 0) {
+                        __myp_io_write("t" + Fmt.i(tid) + " name=" + nm +
+                                       " d0=" + Fmt.i(d0) + " d1=" + Fmt.i(d1) + " d2=" + Fmt.i(d2) + " d3=" + Fmt.i(d3) +
+                                       " d4=" + Fmt.i((shR5_[si] == 1) ? shD4_[si] : 1) + " r5=" + Fmt.i(shR5_[si]) + " off=" + Fmt.i(off) + "\n");
+                        __myp_io_fclose();
+                    }
+                }
                 si = si + 1;
             }
             // 2) 接线算子（按拓扑序：G2 转置节点先于消费者执行）
@@ -1912,9 +1979,14 @@ class Graph {
                     int N = shD0_[is], C = shD1_[is], inH = shD2_[is], inW = shD3_[is];
                     int outH = shD2_[os], outW = shD3_[os];
                     if (shR5_[is] == 1) {
-                        // 3D：Resize3D（trilinear/nearest）
+                        // 3D：Resize3D（trilinear/nearest）——5D NCDHW，
+                        // D=shD2, H=shD3, W=shD4（此前误用 4D 的 shD2/shD3，
+                        // 立方体张量各维相等才未暴露；非立方输入（如 1×2×11）
+                        // 会读错尺寸导致输出全错）
                         int inD = shD2_[is], outD = shD2_[os];
-                        rt.addResize3d(a, out, inD, inH, inW, outD, outH, outW, nMode_[ni], nTransform_[ni]);
+                        int inH3 = shD3_[is], inW3 = shD4_[is];
+                        int outH3 = shD3_[os], outW3 = shD4_[os];
+                        rt.addResize3d(a, out, inD, inH3, inW3, outD, outH3, outW3, nMode_[ni], nTransform_[ni]);
                     } else {
                         rt.addResize2d(a, out, N, C, inH, inW, outH, outW, nMode_[ni], nTransform_[ni]);
                     }

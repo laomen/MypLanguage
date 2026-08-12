@@ -18,8 +18,8 @@ class CudaBackend {
         int count() { return __myp_cuda_count(); }
 
         // 分配 bytes 字节设备内存 → 句柄（0 = 失败）
-        long alloc(int bytes) {
-            return __myp_gpu_alloc(long(bytes));
+        long alloc(long bytes) {
+            return __myp_gpu_alloc(bytes);
         }
 
         // 释放设备内存

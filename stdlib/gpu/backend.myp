@@ -12,7 +12,7 @@ class GpuBackend {
         int available() { return CudaBackend.available(); }
         int count() { return CudaBackend.count(); }
 
-        long alloc(int bytes) { return CudaBackend.alloc(bytes); }
+        long alloc(long bytes) { return CudaBackend.alloc(bytes); }
         int free(long dev) { return CudaBackend.free(dev); }
 
         int copyH2D(long dev, double[] host, int srcOff, int dstOff, int len) {
