@@ -39,21 +39,29 @@ namespace mylang {
 CodeGen::CodeGen(DiagnosticEngine& diag) : diag_(diag), builder_(ctx_) {}
 CodeGen::~CodeGen() = default;
 
-// uint32：按源表达式类型做整数转换——无符号源加宽用 ZExt（0xFFFFFFFFu → i64 = 4294967295，
-// 不是 -1）。arg 可为空（回退有符号 SExt，保持旧行为）。其余转换同原内联逻辑。
+// P0 单一转换权威（docs/type_system_design.md §7.1）：赋值/属性/数组-slice 元素/return/
+// 调用实参/变量初始化全部收敛到这一个 emit 函数，杜绝各消费点"无符号源一律 SExt"的 D1 类错误。
+// 无符号源加宽用 ZExt（0xFFFFFFFFu → i64 = 4294967295，不是 -1）；无符号→浮点用 UIToFP。
+// src 可为空（回退有符号 SExt，保持旧行为）。
 llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
                                         llvm::Type* expected, const Expr* src) {
     if (!v || v->getType() == expected) return v;
-    if (v->getType()->isIntegerTy() && expected->isIntegerTy()) {
-        bool src_unsigned = src &&
-            (src->resolved_kind == TypeKind::UByte ||
-             src->resolved_kind == TypeKind::UShort ||
-             src->resolved_kind == TypeKind::UInt ||
-             src->resolved_kind == TypeKind::ULong);
+    bool src_unsigned = src &&
+        (src->resolved_kind == TypeKind::UByte ||
+         src->resolved_kind == TypeKind::UShort ||
+         src->resolved_kind == TypeKind::UInt ||
+         src->resolved_kind == TypeKind::ULong);
+    auto& ctx = v->getContext();
+    // bool → 整型：0/1 零扩展（i1 源 SExt 值 1 → -1，必须 ZExt）
+    if (v->getType()->isIntegerTy(1) && expected->isIntegerTy() && !expected->isIntegerTy(1))
+        return b.CreateZExt(v, expected);
+    // 整型 → bool：n ≠ 0（截断最低位对 2 会错）
+    if (expected->isIntegerTy(1) && v->getType()->isIntegerTy() && !v->getType()->isIntegerTy(1))
+        return b.CreateICmpNE(v, llvm::ConstantInt::get(v->getType(), 0));
+    if (v->getType()->isIntegerTy() && expected->isIntegerTy())
         return b.CreateIntCast(v, expected, !src_unsigned);
-    }
     if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())
-        return b.CreateSIToFP(v, expected);
+        return src_unsigned ? b.CreateUIToFP(v, expected) : b.CreateSIToFP(v, expected);
     if (v->getType()->isFloatingPointTy() && expected->isIntegerTy())
         return b.CreateFPToSI(v, expected);
     if (v->getType()->isFloatTy() && expected->isDoubleTy())

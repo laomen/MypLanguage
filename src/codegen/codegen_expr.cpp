@@ -541,31 +541,9 @@ llvm::Value* CodeGen::generateConvert(const ConvertExpr& e) {
     auto* v = generateExpr(*e.operand);
     llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
     if (!v) return llvm::ConstantInt::get(target, 0);
-    if (v->getType() == target) return v;
-
-    bool src_unsigned = (e.operand->resolved_kind == TypeKind::UByte ||
-                         e.operand->resolved_kind == TypeKind::UShort ||
-                         e.operand->resolved_kind == TypeKind::UInt ||
-                         e.operand->resolved_kind == TypeKind::ULong);
-    auto* sty = v->getType();
-
-    if (target->isIntegerTy()) {
-        if (sty->isIntegerTy()) {
-            unsigned sw = sty->getIntegerBitWidth(), tw = target->getIntegerBitWidth();
-            if (tw < sw) return builder_.CreateTrunc(v, target);            // 宽→窄
-            if (tw > sw) return src_unsigned ? builder_.CreateZExt(v, target)
-                                             : builder_.CreateSExt(v, target);  // 窄→宽
-            return v;
-        }
-        if (sty->isFloatingPointTy()) return builder_.CreateFPToSI(v, target);
-    }
-    if (target->isFloatingPointTy()) {
-        if (sty->isFloatingPointTy()) return builder_.CreateFPCast(v, target);
-        if (sty->isIntegerTy())
-            return src_unsigned ? builder_.CreateUIToFP(v, target)
-                                : builder_.CreateSIToFP(v, target);
-    }
-    return v;
+    // P0：显式 cast 也收敛到单一转换权威（convertIntegerValue），保证无符号源
+    // ZExt/UIToFP、bool↔int、fp↔fp 与隐式路径完全一致（docs/type_system_design §7.1）。
+    return convertIntegerValue(builder_, v, target, e.operand.get());
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
@@ -2960,14 +2938,8 @@ llvm::Value* CodeGen::generateTryExpr(const TryExpr& e) {
     // Merge via PHI (cast fallback to the success type if needed)
     func->insert(func->end(), merge_bb);
     builder_.SetInsertPoint(merge_bb);
-    if (v2->getType() != v1->getType()) {
-        if (v1->getType()->isIntegerTy() && v2->getType()->isIntegerTy())
-            v2 = builder_.CreateIntCast(v2, v1->getType(), true);
-        else if (v1->getType()->isFloatingPointTy() && v2->getType()->isIntegerTy())
-            v2 = builder_.CreateSIToFP(v2, v1->getType());
-        else if (v1->getType()->isIntegerTy() && v2->getType()->isFloatingPointTy())
-            v2 = builder_.CreateFPToSI(v2, v1->getType());
-    }
+    if (v2->getType() != v1->getType())
+        v2 = convertIntegerValue(builder_, v2, v1->getType(), e.catch_expr.get());
     auto* phi = builder_.CreatePHI(v1->getType(), 2, "try_expr_result");
     phi->addIncoming(v1, last_try);
     phi->addIncoming(v2, last_catch);

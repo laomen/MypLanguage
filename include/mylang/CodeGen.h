@@ -691,7 +691,7 @@ private:
     void emitRegionExit();
     static bool typeIsReference(const TypeInfo& t);
     // Emit the actual function return (in_main cleanup + region exit + ret).
-    void emitFunctionReturn(llvm::Value* ret_val);
+    void emitFunctionReturn(llvm::Value* ret_val, const Expr* src = nullptr);
     void generateBreakStmt(const BreakStmt& stmt);
     void generateContinueStmt(const ContinueStmt& stmt);
     void generateAwaitStmt(const AwaitStmt& stmt);

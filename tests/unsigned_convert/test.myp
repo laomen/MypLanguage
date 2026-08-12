@@ -1,0 +1,53 @@
+// P0/D1 regression: unsigned sources must NOT be sign-extended in
+// assignment / array element / slice element / return / bare-property paths.
+// 修前 同一合法程序两种值（声明 4294967295 vs 赋值 -1）。
+import env;
+
+long retU(uint v) { return v; }         // return：必须 4294967295
+long retB(ubyte b) { return b; }        // return ubyte：必须 200
+
+class Main {
+    property:
+        long p;
+        uint pa;
+        ubyte pb;
+    action:
+        long test() {
+            uint u = 0xFFFFFFFFu;
+            long z;
+            z = u;                      // 赋值：必须 4294967295（修前 -1）
+            p = u;                      // 裸属性赋值（Identifier 分支）：必须 4294967295
+            pa = u;                     // 无符号属性
+            long[] a = new long[2];
+            a[0] = u;                   // 数组元素：必须 4294967295
+            a[1] = 0;
+            long r = retU(u);           // return 路径
+            return z + p + pa + a[0] + r;
+        }
+        long test2() {
+            ubyte b = 200u;
+            long[] arr = new long[1];
+            arr[0] = b;                 // 数组元素 ubyte：必须 200（修前 -56）
+            long d = retB(b);
+            // slice 元素存储
+            slice<long> s = new slice<long>(1);
+            s[0] = b;                   // slice 元素 ubyte：必须 200
+            // float/double 路径回归
+            double fv;
+            fv = 1.5f;                  // float→double 赋值
+            p = 3;                      // int→long 赋值
+            pb = 250u;                  // ubyte 赋值
+            return arr[0] + d + s[0] + long(fv) + p + pb;
+        }
+        @startup void run() {
+            Console.writeLong(test());
+            Console.writeString("\n");
+            Console.writeLong(test2());
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

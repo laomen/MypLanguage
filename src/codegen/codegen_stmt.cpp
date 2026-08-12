@@ -1024,7 +1024,7 @@ void CodeGen::generateForInStmt(const ForInStmt& s) {
     popScope();
 }
 
-void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
+void CodeGen::emitFunctionReturn(llvm::Value* ret_val, const Expr* src) {
     // `return voidExpr;` inside a void function (e.g. `return f();` where f
     // returns void) — the expression's void value must NOT be handed to
     // CreateRet ("return instr that returns non-void in Function of void
@@ -1082,15 +1082,7 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
         if (ret_val) {
             llvm::Type* rt = current_function_->getReturnType();
             if (ret_val->getType() != rt) {
-                if (rt->isIntegerTy() && ret_val->getType()->isIntegerTy())
-                    ret_val = builder_.CreateIntCast(ret_val, rt, true);
-                else if (rt->isFloatingPointTy() && ret_val->getType()->isIntegerTy())
-                    ret_val = builder_.CreateSIToFP(ret_val, rt);
-                else if (rt->isIntegerTy() && ret_val->getType()->isFloatingPointTy())
-                    ret_val = builder_.CreateFPToSI(ret_val, rt);
-                else if (rt->isPointerTy() && ret_val->getType()->isPointerTy())
-                    ret_val = builder_.CreateBitCast(ret_val, rt);
-                else if (rt->isStructTy() && ret_val->getType()->isStructTy()) {
+                if (rt->isStructTy() && ret_val->getType()->isStructTy()) {
                     // Tuple return: rebuild with declared element types
                     // (handles promotions like return (5, "x") in (int, string)).
                     auto* dst_st = llvm::cast<llvm::StructType>(rt);
@@ -1107,6 +1099,8 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val) {
                         agg = builder_.CreateInsertValue(agg, el, i);
                     }
                     ret_val = agg;
+                } else {
+                    ret_val = convertIntegerValue(builder_, ret_val, rt, src);
                 }
             }
             // ARC (§五-1): retain-at-return — a returned class/interface
@@ -1182,16 +1176,8 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
             v = generateExpr(*s.value);
             v = heapCopyArrayReturn(v, s.value.get());
             llvm::Type* rt = current_function_->getReturnType();
-            if (v->getType() != rt) {
-                if (rt->isIntegerTy() && v->getType()->isIntegerTy())
-                    v = builder_.CreateIntCast(v, rt, true);
-                else if (rt->isFloatingPointTy() && v->getType()->isIntegerTy())
-                    v = builder_.CreateSIToFP(v, rt);
-                else if (rt->isIntegerTy() && v->getType()->isFloatingPointTy())
-                    v = builder_.CreateFPToSI(v, rt);
-                else if (rt->isPointerTy() && v->getType()->isPointerTy())
-                    v = builder_.CreateBitCast(v, rt);
-            }
+            if (v->getType() != rt)
+                v = convertIntegerValue(builder_, v, rt, s.value.get());
             // ARC: `return new T()` / `return new T[n]` / `return f()` (f returns
             // a class ref) in a try-with-finally — consume the fresh temp now;
             // emitFunctionReturn skips the extra retain later.
@@ -1231,7 +1217,7 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }
-    emitFunctionReturn(v);
+    emitFunctionReturn(v, s.value.get());
 }
 
 llvm::Value* CodeGen::heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr) {
@@ -1449,16 +1435,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                 auto* gep = builder_.CreateStructGEP(st, tp, pi);
                                 auto* pt = getPropertyType(cls, id.name);
                                 auto* v = generateExpr(*e.value);
-                                if (v->getType() != pt) {
-                                    if (pt->isIntegerTy() && v->getType()->isIntegerTy())
-                                        v = builder_.CreateIntCast(v, pt, true);
-                                    else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
-                                        v = builder_.CreateSIToFP(v, pt);
-                                    else if (pt->isDoubleTy() && v->getType()->isFloatTy())
-                                        v = builder_.CreateFPExt(v, pt);
-                                    else if (pt->isFloatTy() && v->getType()->isDoubleTy())
-                                        v = builder_.CreateFPTrunc(v, pt);
-                                }
+                                if (v->getType() != pt)
+                                    v = convertIntegerValue(builder_, v, pt, e.value.get());
                                 // M7: weak field → myp_weak_store (no retain/release).
                                 if (storePropertyField(gep, v, cls, id.name)) {
                                     builder_.CreateStore(v, gep);
@@ -1549,15 +1527,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         } else if (a->getType()->isPointerTy()) {
             at_v = getNamedValueType(id.name);
         }
-        if (at_v && v->getType() != at_v) {
-            if (at_v->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, at_v, true);
-            else if (at_v->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, at_v);
-            else if (at_v->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, at_v);
-            // 浮点宽窄转换：float→double FPExt，double→float FPTrunc。此前缺失 →
-            // float 原样 store 进 double 槽 = 位重解释成垃圾值（~5.28e-315）。
-            else if (at_v->isDoubleTy() && v->getType()->isFloatTy()) v = builder_.CreateFPExt(v, at_v);
-            else if (at_v->isFloatTy() && v->getType()->isDoubleTy()) v = builder_.CreateFPTrunc(v, at_v);
-        }
+        if (at_v && v->getType() != at_v)
+            v = convertIntegerValue(builder_, v, at_v, e.value.get());
         // ARC: class-local assignment — retain the new owner (unless fresh),
         // release the old value. Self/alias assignment is safe (retain-then-release).
         if (isArcClassLocal(a)) {
@@ -1602,18 +1573,8 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                 if (p) {
                     auto* elem_ty = getLLVMType(*sti->element_type);
                     auto* v = generateExpr(*e.value);
-                    if (v->getType() != elem_ty) {
-                        if (elem_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateSIToFP(v, elem_ty);
-                        else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
-                            v = builder_.CreateFPToSI(v, elem_ty);
-                        else if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateIntCast(v, elem_ty, true);
-                        else if (elem_ty->isDoubleTy() && v->getType()->isFloatTy())
-                            v = builder_.CreateFPExt(v, elem_ty);
-                        else if (elem_ty->isFloatTy() && v->getType()->isDoubleTy())
-                            v = builder_.CreateFPTrunc(v, elem_ty);
-                    }
+                    if (v->getType() != elem_ty)
+                        v = convertIntegerValue(builder_, v, elem_ty, e.value.get());
                     // ARC: slice<T> of classes — element is a strong slot.
                     if (sti->element_type->kind == TypeKind::Class) {
                         auto* old = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), p);
@@ -1758,18 +1719,8 @@ assign_gep:
                 }
             }
         }
-        if (v->getType() != elem_ty) {
-            if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
-                v = builder_.CreateIntCast(v, elem_ty, true);
-            else if (elem_ty->isFloatingPointTy() && v->getType()->isIntegerTy())
-                v = builder_.CreateSIToFP(v, elem_ty);
-            else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
-                v = builder_.CreateFPToSI(v, elem_ty);
-            else if (elem_ty->isDoubleTy() && v->getType()->isFloatTy())
-                v = builder_.CreateFPExt(v, elem_ty);
-            else if (elem_ty->isFloatTy() && v->getType()->isDoubleTy())
-                v = builder_.CreateFPTrunc(v, elem_ty);
-        }
+        if (v->getType() != elem_ty)
+            v = convertIntegerValue(builder_, v, elem_ty, e.value.get());
         // ARC: T[] of classes — element is a strong slot (retain unless fresh,
         // release the overwritten element). Slice handled above.
         if (elem_is_class) {
@@ -1815,13 +1766,7 @@ assign_gep:
                         auto* v = generateExpr(*e.value);
                         auto* ft = st3_as->getElementType(fi);
                         if (v->getType() != ft) {
-                            if (ft->isIntegerTy() && v->getType()->isIntegerTy())
-                                v = builder_.CreateIntCast(v, ft, true);
-                            else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
-                                v = builder_.CreateSIToFP(v, ft);
-                            else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
-                                v = builder_.CreateFPToSI(v, ft);
-                            else if (ft->isStructTy() && isInterfaceFatType(ft) &&
+                            if (ft->isStructTy() && isInterfaceFatType(ft) &&
                                      v->getType()->isPointerTy() && current_tu_) {
                                 // struct field is an interface fat pointer:
                                 // upcast the concrete instance (ptr) → {data, vtable}.
@@ -1834,6 +1779,8 @@ assign_gep:
                                     auto* fp = buildInterfaceFat(v, iface_name, cls_name);
                                     if (fp) v = fp;
                                 }
+                            } else {
+                                v = convertIntegerValue(builder_, v, ft, e.value.get());
                             }
                         }
                         // M8 structs: an OWNED struct local's ARC field is a
@@ -1872,18 +1819,8 @@ assign_gep:
                                     auto* gep = builder_.CreateStructGEP(st, sit->second, pi);
                                     auto* v = generateExpr(*e.value);
                                     auto* pt = getPropertyType(cls, ma.member_name);
-                                    if (v->getType() != pt) {
-                                        if (pt->isIntegerTy() && v->getType()->isIntegerTy())
-                                            v = builder_.CreateIntCast(v, pt, true);
-                                        else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
-                                            v = builder_.CreateSIToFP(v, pt);
-                                        else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy())
-                                            v = builder_.CreateFPToSI(v, pt);
-                                        else if (pt->isDoubleTy() && v->getType()->isFloatTy())
-                                            v = builder_.CreateFPExt(v, pt);
-                                        else if (pt->isFloatTy() && v->getType()->isDoubleTy())
-                                            v = builder_.CreateFPTrunc(v, pt);
-                                    }
+                                    if (v->getType() != pt)
+                                        v = convertIntegerValue(builder_, v, pt, e.value.get());
                                     // M7: weak static field → myp_weak_store.
                                     if (storePropertyField(gep, v, cls, ma.member_name)) {
                                         builder_.CreateStore(v, gep);
@@ -1951,13 +1888,7 @@ assign_gep:
                 if (ft) {
                     auto* v = generateExpr(*e.value);
                     if (v->getType() != ft) {
-                        if (ft->isIntegerTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateIntCast(v, ft, true);
-                        else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateSIToFP(v, ft);
-                        else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
-                            v = builder_.CreateFPToSI(v, ft);
-                        else if (ft->isStructTy() && isInterfaceFatType(ft) &&
+                        if (ft->isStructTy() && isInterfaceFatType(ft) &&
                                  v->getType()->isPointerTy() && current_tu_) {
                             // Chained struct field store into an interface field:
                             // upcast the concrete instance (ptr) → {data, vtable}.
@@ -1977,6 +1908,8 @@ assign_gep:
                                 auto* fp = buildInterfaceFat(v, iface_name, cls_name);
                                 if (fp) v = fp;
                             }
+                        } else {
+                            v = convertIntegerValue(builder_, v, ft, e.value.get());
                         }
                     }
                     builder_.CreateStore(v, addr);
@@ -2000,14 +1933,8 @@ assign_gep:
                         auto* fgep = builder_.CreateStructGEP(st, elem_ptr, fi);
                         auto* ft = st->getElementType(fi);
                         auto* v = generateExpr(*e.value);
-                        if (v->getType() != ft) {
-                            if (ft->isIntegerTy() && v->getType()->isIntegerTy())
-                                v = builder_.CreateIntCast(v, ft, true);
-                            else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
-                                v = builder_.CreateSIToFP(v, ft);
-                            else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
-                                v = builder_.CreateFPToSI(v, ft);
-                        }
+                        if (v->getType() != ft)
+                            v = convertIntegerValue(builder_, v, ft, e.value.get());
                         builder_.CreateStore(v, fgep);
                         return v;
                     }
@@ -2023,14 +1950,8 @@ assign_gep:
                     auto* gep = builder_.CreateStructGEP(st, op, fi);
                     auto* v = generateExpr(*e.value);
                     auto* ft = st->getElementType(fi);
-                    if (v->getType() != ft) {
-                        if (ft->isIntegerTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateIntCast(v, ft, true);
-                        else if (ft->isFloatingPointTy() && v->getType()->isIntegerTy())
-                            v = builder_.CreateSIToFP(v, ft);
-                        else if (ft->isIntegerTy() && v->getType()->isFloatingPointTy())
-                            v = builder_.CreateFPToSI(v, ft);
-                    }
+                    if (v->getType() != ft)
+                        v = convertIntegerValue(builder_, v, ft, e.value.get());
                     builder_.CreateStore(v, gep);
                     return v;
                 }
@@ -2047,13 +1968,8 @@ assign_gep:
                     auto* gep = builder_.CreateStructGEP(st, op, pi);
                     auto* v = generateExpr(*e.value);
                     auto* pt = getPropertyType(cls, ma.member_name);
-                    if (v->getType() != pt) {
-                        if (pt->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, pt, true);
-                        else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, pt);
-                        else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, pt);
-                        else if (pt->isDoubleTy() && v->getType()->isFloatTy()) v = builder_.CreateFPExt(v, pt);
-                        else if (pt->isFloatTy() && v->getType()->isDoubleTy()) v = builder_.CreateFPTrunc(v, pt);
-                    }
+                    if (v->getType() != pt)
+                        v = convertIntegerValue(builder_, v, pt, e.value.get());
                     // M7: weak field → myp_weak_store (no retain/release).
                     if (storePropertyField(gep, v, cls, ma.member_name)) {
                         builder_.CreateStore(v, gep);
