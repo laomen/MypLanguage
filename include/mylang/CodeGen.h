@@ -714,6 +714,8 @@ private:
     llvm::Value* generateBytesStr(const CallExpr& expr, const std::string& name);
     llvm::Value* generateBytesOf(const CallExpr& expr);
     llvm::Value* generateParse(const CallExpr& expr, const std::string& name);
+    // §6.2 P4 parseIntOpt：(value:int, ok:bool) 元组——myp_str_parse_int_opt(s,&ok)。
+    llvm::Value* generateParseOpt(const CallExpr& expr);
     llvm::Value* generateBitOps(const CallExpr& expr, const std::string& name);
     // §9.5 多态数学 intrinsic（__myp_math_* 一元实数/abs/trunc）：按实参类型
     // 发 LLVM 标量 intrinsic（f32→llvm.sqrt.f32、f64→llvm.sqrt.f64；整型 abs

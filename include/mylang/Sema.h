@@ -73,6 +73,8 @@ private:
     TypeInfo visitBytesStr(CallExpr& expr, const std::string& name);
     TypeInfo visitBytesOf(CallExpr& expr);
     TypeInfo visitParse(CallExpr& expr, const std::string& name);
+    // §6.2 P4 parseIntOpt：返回 (value:int, ok:bool) 元组，区分合法 0 与解析失败。
+    TypeInfo visitParseOpt(CallExpr& expr);
     TypeInfo visitBitOps(CallExpr& expr, const std::string& name);
     // §9.5 多态数学 intrinsic（__myp_math_*）：一元实数函数/abs/trunc 按实参
     // 类型定返回类型（f32→f32、f64→f64；整型原样返回供泛型体 Int 占位符检查，

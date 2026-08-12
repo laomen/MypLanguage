@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <errno.h>
 #include <string.h>
 #include <ctype.h>
@@ -485,6 +486,15 @@ int32_t myp_str_parse_int(const char* s) {
     char* end = NULL;
     long long v = strtoll(s, &end, 0);
     if (end == s) return 0;
+    return (int32_t)v;
+}
+// §6.2 P4 parseIntOpt：可区分"合法 0"与"失败"（*ok = 是否有有效数字）。
+int32_t myp_str_parse_int_opt(const char* s, bool* ok) {
+    if (!s) { if (ok) *ok = false; return 0; }
+    char* end = NULL;
+    long long v = strtoll(s, &end, 0);
+    if (end == s) { if (ok) *ok = false; return 0; }
+    if (ok) *ok = true;
     return (int32_t)v;
 }
 int64_t myp_str_to_long(const char* s) {

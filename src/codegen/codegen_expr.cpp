@@ -713,6 +713,34 @@ llvm::Value* CodeGen::generateParse(const CallExpr& e, const std::string& name) 
     return v;
 }
 
+// §6.2 P4 parseIntOpt(s) → (value:int, ok:bool) 元组。调
+// myp_str_parse_int_opt(s, &ok)，打包成 {i32, i1} 结构体（= (int,bool) 元组）。
+llvm::Value* CodeGen::generateParseOpt(const CallExpr& e) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* i1 = llvm::Type::getInt1Ty(ctx_);
+    if (e.args.size() != 1) {
+        diag_.error(e.range, "parseIntOpt takes exactly one string argument");
+        return llvm::ConstantInt::get(i32, 0);
+    }
+    auto* sp = generateExpr(*e.args[0]);
+    auto* ok_slot = builder_.CreateAlloca(i1);
+    auto* fn = module_->getFunction("myp_str_parse_int_opt");
+    if (!fn) {
+        auto* ft = llvm::FunctionType::get(i32, {ptr_ty, ptr_ty}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_str_parse_int_opt", module_.get());
+    }
+    auto* v = builder_.CreateCall(fn->getFunctionType(), fn,
+        std::vector<llvm::Value*>{sp, ok_slot}, "parse");
+    auto* ok = builder_.CreateLoad(i1, ok_slot);
+    auto* st = llvm::StructType::get(ctx_, {i32, i1});
+    llvm::Value* agg = llvm::UndefValue::get(st);
+    agg = builder_.CreateInsertValue(agg, v, 0);
+    agg = builder_.CreateInsertValue(agg, ok, 1);
+    return agg;
+}
+
 // P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr —— LLVM intrinsic
 // 直映（ctpop/ctlz/cttz/bitreverse/fshl/fshr）。多态：返回类型 = 实参整型宽度；
 // clz/ctz 用 zero_poison=false（0 时定义为位宽）；rotl/rotr 移位量统一到同宽。
@@ -1105,6 +1133,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             bid.name == "parseUint" || bid.name == "parseUlong" ||
             bid.name == "parseFloat" || bid.name == "parseDouble")
             return generateParse(e, bid.name);
+        // P4 parseIntOpt(s) → (value:int, ok:bool)
+        if (bid.name == "parseIntOpt")
+            return generateParseOpt(e);
         // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul → overflow intrinsic
         if (bid.name == "checkedAdd" || bid.name == "checkedMul")
             return generateCheckedOp(e, bid.name);

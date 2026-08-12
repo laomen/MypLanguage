@@ -1,0 +1,9 @@
+parseIntOpt(123): v=123 ok=true
+parseIntOpt(abc): v=0 ok=false
+parseIntOpt(0): v=0 ok=true
+parseIntOpt(0xFF): v=255 ok=true
+parseIntOpt(-42): v=-42 ok=true
+parseIntOpt(empty): v=0 ok=false
+t.0=7 t.1=true
+parseInt(abc)=0
+PARSE_OPT_OK

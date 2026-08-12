@@ -663,6 +663,25 @@ TypeInfo Sema::visitParse(CallExpr& expr, const std::string& name) {
     return TypeInfo(ret);
 }
 
+// §6.2 P4 parseIntOpt：返回 (value:int, ok:bool) 元组——用 ok 区分合法 0 与解析
+// 失败（parseInt 失败回 0 无法区分）。
+TypeInfo Sema::visitParseOpt(CallExpr& expr) {
+    if (expr.args.size() != 1) {
+        error(expr.range, "parseIntOpt takes exactly one string argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto ot = visitExpr(*expr.args[0]);
+    if (ot.kind != TypeKind::String) {
+        error(expr.range, "parseIntOpt expects a string argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    TypeInfo tt(TypeKind::Tuple);
+    tt.tuple_types.push_back(TypeKind::Int);
+    tt.tuple_types.push_back(TypeKind::Bool);
+    expr.resolved_kind = TypeKind::Tuple;
+    return tt;
+}
+
 // P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr —— LLVM intrinsic
 // 直映。多态：返回类型 = 实参整型类型（rotl/rotr 第二实参为移位量，任意整型）。
 TypeInfo Sema::visitBitOps(CallExpr& expr, const std::string& name) {
@@ -1575,6 +1594,9 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
             bc_id.name == "parseUint" || bc_id.name == "parseUlong" ||
             bc_id.name == "parseFloat" || bc_id.name == "parseDouble")
             return visitParse(expr, bc_id.name);
+        // P4 parseIntOpt(s)：(value:int, ok:bool)——区分合法 0 与失败
+        if (bc_id.name == "parseIntOpt")
+            return visitParseOpt(expr);
         // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
         if (bc_id.name == "popcount" || bc_id.name == "clz" ||
             bc_id.name == "ctz" || bc_id.name == "bitreverse" ||

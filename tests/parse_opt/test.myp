@@ -1,0 +1,41 @@
+// P4 §6.2 parseIntOpt：返回 (value:int, ok:bool) 元组，用 ok 区分合法 0 与解析
+// 失败（parseInt 失败回 0 无法区分）。strtoll base 0（0x 前缀/前导零八进制）。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            (int v, bool ok) = parseIntOpt("123");
+            Console.writeString("parseIntOpt(123): v=" + v + " ok=" + ok);
+            Console.writeString("\n");
+            (int v2, bool ok2) = parseIntOpt("abc");
+            Console.writeString("parseIntOpt(abc): v=" + v2 + " ok=" + ok2);
+            Console.writeString("\n");
+            (int v3, bool ok3) = parseIntOpt("0");
+            Console.writeString("parseIntOpt(0): v=" + v3 + " ok=" + ok3);
+            Console.writeString("\n");
+            (int v4, bool ok4) = parseIntOpt("0xFF");
+            Console.writeString("parseIntOpt(0xFF): v=" + v4 + " ok=" + ok4);
+            Console.writeString("\n");
+            (int v5, bool ok5) = parseIntOpt("-42");
+            Console.writeString("parseIntOpt(-42): v=" + v5 + " ok=" + ok5);
+            Console.writeString("\n");
+            (int v6, bool ok6) = parseIntOpt("");
+            Console.writeString("parseIntOpt(empty): v=" + v6 + " ok=" + ok6);
+            Console.writeString("\n");
+            (int, bool) t = parseIntOpt("7");
+            Console.writeString("t.0=" + t.0 + " t.1=" + t.1);
+            Console.writeString("\n");
+
+            // 与 parseInt 对照：parseInt("abc") 回 0 无法区分
+            int p = parseInt("abc");
+            Console.writeString("parseInt(abc)=" + p);
+            Console.writeString("\n");
+
+            Console.writeString("PARSE_OPT_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
