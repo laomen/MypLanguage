@@ -87,6 +87,9 @@ llvm::Value* CodeGen::generateTupleExpr(const TupleExpr& e) {
 
 llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
     auto val = e.value;
+    // 字符字面量 'A' → char（u8）→ i8（0..255 位型；供 s[i]/拼接 char 路径识别）
+    if (e.is_char)
+        return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), (uint64_t)val, false);
     // 'u' suffix → 无符号：按值定宽（0xFFu→i8, 0xFFFFu→i16, 0xFFFFFFFFu→i32, 更大→i64）
     if (e.is_unsigned) {
         if (val >= 0 && val <= 0xFF) return llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), (uint64_t)val, false);

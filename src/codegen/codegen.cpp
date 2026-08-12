@@ -46,11 +46,13 @@ CodeGen::~CodeGen() = default;
 llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
                                         llvm::Type* expected, const Expr* src) {
     if (!v || v->getType() == expected) return v;
+    // char = u8 语义（§4.1）：与无符号同族（ZExt/UIToFP），0xFF char→int=255 而非 -1。
     bool src_unsigned = src &&
         (src->resolved_kind == TypeKind::UByte ||
          src->resolved_kind == TypeKind::UShort ||
          src->resolved_kind == TypeKind::UInt ||
-         src->resolved_kind == TypeKind::ULong);
+         src->resolved_kind == TypeKind::ULong ||
+         src->resolved_kind == TypeKind::Char);
     auto& ctx = v->getContext();
     // bool → 整型：0/1 零扩展（i1 源 SExt 值 1 → -1，必须 ZExt）
     if (v->getType()->isIntegerTy(1) && expected->isIntegerTy() && !expected->isIntegerTy(1))

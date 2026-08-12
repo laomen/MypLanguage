@@ -1,0 +1,44 @@
+// P1 D7（docs/type_system_design §4.1）：char = u8 语义。
+//   char↔byte 隐式互换已移除（显式）；char→int 是 ZExt（0xFF → 255 非 -1）；
+//   字符字面量 'A' 是 Char 类型；s[i]/拼接输出字符本身。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            char c = 'A';
+            int ci = c;                 // char→int ZExt = 65
+            Console.writeLong(ci);
+            Console.writeString("\n");
+            char c2 = 'Z';
+            int d = c2 - c;             // 'Z'-'A' = 25
+            Console.writeLong(d);
+            Console.writeString("\n");
+            int a1 = c + 1;             // 66
+            Console.writeLong(a1);
+            Console.writeString("\n");
+            // u8 语义：0xFF char → int = 255（非 -1）
+            char ff = char(255);
+            int ffv = ff;
+            Console.writeLong(ffv);
+            Console.writeString("\n");
+            // char 字面量是 Char 类型（非 byte）
+            char lit = 'B';
+            Console.writeLong(lit);     // 66
+            Console.writeString("\n");
+            // char 拼接输出字符本身
+            Console.writeString("x" + 'A');  // "xA"
+            Console.writeString("\n");
+            // char 下标读取
+            string s = "Hi";
+            char sc = s[0];
+            Console.writeString("" + sc);    // "H"
+            Console.writeString("\n");
+            if (ci == 65 && d == 25 && a1 == 66 && ffv == 255 && lit == 66)
+                Console.writeString("CHAR_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}
