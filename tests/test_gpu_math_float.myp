@@ -2,6 +2,7 @@
 // - float[] + Math.sqrt(float) → __nv_sqrtf（float 返回，无提升）
 // - double[] + Math.sqrt(double)/Math.exp(double) → __nv_sqrt/__nv_exp（回归）
 // - Math.abs(int) kernel 内 → 内联整型 abs
+// - kernel 内显式转换走共享 convertIntegerValue（§7.1 单一权威）
 // 手动运行（需 GPU + libdevice）：./build/mypc tests/test_gpu_math_float.myp
 import env;
 import math;
@@ -59,6 +60,26 @@ class Main {
                 if (iv[i] != int(i)) err4 = err4 + 1L;
             }
             Console.writeLine("gpu int abs: " + (err4 == 0L ? "PASS" : "FAIL"));
+
+            // ---- kernel 内显式转换（共享 convertIntegerValue）：int→double / double→int / float→double ----
+            double[] conv = new double[256];
+            int[] back = new int[256];
+            for (long i = 0L; i < n; i = i + 1L) { conv[i] = 0.0; back[i] = 0; }
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                int kv = int(i);
+                double dv = double(kv);        // int → double（SIToFP）
+                float qv = float(kv) * 0.5f;   // int → float
+                double ev = double(qv);        // float → double（FPExt）
+                conv[i] = dv + ev;
+                back[i] = int(conv[i]);        // double → int（FPToSI）
+            }
+            long err5 = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                double expected = double(int(i)) + (float(int(i)) * 0.5f);
+                if (Math.abs(conv[i] - expected) > 0.001) err5 = err5 + 1L;
+                if (back[i] != int(i) + int(int(i) * 0.5)) err5 = err5 + 1L;
+            }
+            Console.writeLine("gpu kernel converts: " + (err5 == 0L ? "PASS" : "FAIL"));
         }
 }
 int main() {

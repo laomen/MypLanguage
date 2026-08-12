@@ -386,29 +386,11 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                        loop_var_name, tid_val);
             if (!op) return llvm::ConstantInt::get(i64_ty, 0);
             llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
-            if (op->getType() == target) return op;
-            bool src_unsigned = (e.operand->resolved_kind == TypeKind::UByte ||
-                                 e.operand->resolved_kind == TypeKind::UShort ||
-                                 e.operand->resolved_kind == TypeKind::UInt ||
-                                 e.operand->resolved_kind == TypeKind::ULong);
-            auto* sty = op->getType();
-            if (target->isIntegerTy()) {
-                if (sty->isIntegerTy()) {
-                    unsigned sw = sty->getIntegerBitWidth(), tw = target->getIntegerBitWidth();
-                    if (tw < sw) return kb.CreateTrunc(op, target);
-                    if (tw > sw) return src_unsigned ? kb.CreateZExt(op, target)
-                                                     : kb.CreateSExt(op, target);
-                    return op;
-                }
-                if (sty->isFloatingPointTy()) return kb.CreateFPToSI(op, target);
-            }
-            if (target->isFloatingPointTy()) {
-                if (sty->isFloatingPointTy()) return kb.CreateFPCast(op, target);
-                if (sty->isIntegerTy())
-                    return src_unsigned ? kb.CreateUIToFP(op, target)
-                                        : kb.CreateSIToFP(op, target);
-            }
-            return op;
+            // §7.1 单一转换权威：与 CPU codegen 共用 convertIntegerValue
+            // （bool↔int/fp、char 无符号语义、int↔int / fp↔int / float↔double /
+            // 指针 bitcast 全覆盖），消除 GPU 内重复转换逻辑。GPU kernel 不支持
+            // bit/bitvector/bitfield 目标类型（此类代码本就不应出现在 kernel 内）。
+            return convertIntegerValue(kb, op, target, e.operand.get());
         }
         case ExprKind::Call: {
             auto& e = static_cast<const CallExpr&>(expr);
