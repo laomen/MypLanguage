@@ -37,7 +37,7 @@ class InferOps {
             while (i < outDim) {
                 int k = 0;
                 while (k < batch) {
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int j = 0;
                     while (j < inDim) {
                         sum = sum + arena[wOff + i * inDim + j] * arena[xOff + j * batch + k];
@@ -54,8 +54,8 @@ class InferOps {
             int i = 0;
             while (i < n) {
                 float v = arena[inOff + i];
-                if (v > float(0.0)) arena[outOff + i] = v;
-                else arena[outOff + i] = float(0.0);
+                if (v > 0.0f) arena[outOff + i] = v;
+                else arena[outOff + i] = 0.0f;
                 i = i + 1;
             }
         }
@@ -64,8 +64,8 @@ class InferOps {
             int i = 0;
             while (i < n) {
                 float x = arena[inOff + i];
-                float e = float(Math.exp(float(0.0) - x));
-                arena[outOff + i] = float(1.0) / (float(1.0) + e);
+                float e = float(Math.exp(0.0f - x));
+                arena[outOff + i] = 1.0f / (1.0f + e);
                 i = i + 1;
             }
         }
@@ -82,7 +82,7 @@ class InferOps {
                     i = i + 1;
                 }
 
-                float sum = float(0.0);
+                float sum = 0.0f;
                 i = 0;
                 while (i < rows) {
                     float e = float(Math.exp(arena[inOff + i * cols + k] - maxv));
@@ -133,7 +133,7 @@ class InferOps {
                     while (oy < yH) {
                         int ox = 0;
                         while (ox < yW) {
-                            float sum = float(0.0);
+                            float sum = 0.0f;
                             if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
                             int ic = 0;
                             while (ic < cpg) {
@@ -191,7 +191,7 @@ class InferOps {
                     while (oy < yH) {
                         int ox = 0;
                         while (ox < yW) {
-                            float sum = float(0.0);
+                            float sum = 0.0f;
                             if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
                             int ic = 0;
                             while (ic < cpg) {
@@ -215,8 +215,8 @@ class InferOps {
                                 }
                                 ic = ic + 1;
                             }
-                            if (sum > float(0.0)) arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
-                            else arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = float(0.0);
+                            if (sum > 0.0f) arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                            else arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = 0.0f;
                             ox = ox + 1;
                         }
                         oy = oy + 1;
@@ -242,7 +242,7 @@ class InferOps {
                     while (oy < yH) {
                         int ox = 0;
                         while (ox < yW) {
-                            float best = float(0.0) - float(1.0e30);
+                            float best = 0.0f - 1.0e30f;
                             int ky = 0;
                             while (ky < kh) {
                                 int iy = oy * sh - pt + ky;
@@ -276,7 +276,7 @@ class InferOps {
             while (n < xN) {
                 int c = 0;
                 while (c < xC) {
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int i = 0;
                     while (i < xH * xW) {
                         sum = sum + arena[xOff + n * xC * xH * xW + c * xH * xW + i];
@@ -342,7 +342,7 @@ class InferOps {
                         int co = 0;
                         while (co < yC) {
                             int g = co / ocpg;
-                            float sum = float(0.0);
+                            float sum = 0.0f;
                             if (bOff >= 0) sum = arena[bOff + co];   // 无偏置卷积（bOff=-1）
                             int ky = 0;
                             while (ky < kh) {
@@ -398,7 +398,7 @@ class InferOps {
                         int co = 0;
                         while (co < yC) {
                             int g = co / ocpg;
-                            float sum = float(0.0);
+                            float sum = 0.0f;
                             if (bOff >= 0) sum = arena[bOff + co];   // 无偏置卷积（bOff=-1）
                             int ky = 0;
                             while (ky < kh) {
@@ -423,8 +423,8 @@ class InferOps {
                                 ky = ky + 1;
                             }
                             float ov = sum;
-                            if (ov > float(0.0)) arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = ov;
-                            else arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = float(0.0);
+                            if (ov > 0.0f) arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = ov;
+                            else arena[yOff + ((n * yH + oy) * yW + ox) * yC + co] = 0.0f;
                             co = co + 1;
                         }
                         ox = ox + 1;
@@ -450,7 +450,7 @@ class InferOps {
                     while (ox < yW) {
                         int c = 0;
                         while (c < xC) {
-                            float best = float(0.0) - float(1.0e30);
+                            float best = 0.0f - 1.0e30f;
                             int ky = 0;
                             while (ky < kh) {
                                 int iy = oy * sh - pt + ky;
@@ -484,7 +484,7 @@ class InferOps {
             while (n < xN) {
                 int c = 0;
                 while (c < xC) {
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int i = 0;
                     while (i < xH * xW) {
                         int h = i / xW;
@@ -559,8 +559,8 @@ class InferOps {
             int i = 0;
             while (i < n) {
                 float v = arena[inOff + i];
-                if (v > float(6.0)) v = float(6.0);
-                if (v < float(0.0)) v = float(0.0);
+                if (v > 6.0f) v = 6.0f;
+                if (v < 0.0f) v = 0.0f;
                 arena[outOff + i] = v;
                 i = i + 1;
             }
@@ -883,20 +883,20 @@ class InferOps {
                     while (y < outH) {
                         int x = 0;
                         while (x < outW) {
-                            float sy = float(0.0);
-                            float sx = float(0.0);
+                            float sy = 0.0f;
+                            float sx = 0.0f;
                             if (transform == 0) {
                                 // align_corners：src = dst * (in-1)/(out-1)
-                                sy = (outH > 1) ? float(y) * float(inH - 1) / float(outH - 1) : float(0.0);
-                                sx = (outW > 1) ? float(x) * float(inW - 1) / float(outW - 1) : float(0.0);
+                                sy = (outH > 1) ? float(y) * float(inH - 1) / float(outH - 1) : 0.0f;
+                                sx = (outW > 1) ? float(x) * float(inW - 1) / float(outW - 1) : 0.0f;
                             } else if (transform == 2) {
                                 // asymmetric：src = dst * in/out
                                 sy = float(y) * float(inH) / float(outH);
                                 sx = float(x) * float(inW) / float(outW);
                             } else {
                                 // half_pixel：src = (dst + 0.5) * in/out - 0.5
-                                sy = (float(y) + float(0.5)) * float(inH) / float(outH) - float(0.5);
-                                sx = (float(x) + float(0.5)) * float(inW) / float(outW) - float(0.5);
+                                sy = (float(y) + 0.5f) * float(inH) / float(outH) - 0.5f;
+                                sx = (float(x) + 0.5f) * float(inW) / float(outW) - 0.5f;
                             }
                             int base = (n * C + c) * inH * inW;
                             int obase = (n * C + c) * outH * outW;
@@ -915,10 +915,10 @@ class InferOps {
                                 int ix = int(sx);
                                 float fy = sy - float(iy);
                                 float fx = sx - float(ix);
-                                if (iy < 0) { iy = 0; fy = float(0.0); }
-                                if (iy >= inH - 1) { iy = inH - 1; fy = float(0.0); }
-                                if (ix < 0) { ix = 0; fx = float(0.0); }
-                                if (ix >= inW - 1) { ix = inW - 1; fx = float(0.0); }
+                                if (iy < 0) { iy = 0; fy = 0.0f; }
+                                if (iy >= inH - 1) { iy = inH - 1; fy = 0.0f; }
+                                if (ix < 0) { ix = 0; fx = 0.0f; }
+                                if (ix >= inW - 1) { ix = inW - 1; fx = 0.0f; }
                                 int iy2 = iy + 1;
                                 int ix2 = ix + 1;
                                 if (iy2 >= inH) iy2 = inH - 1;
@@ -927,7 +927,7 @@ class InferOps {
                                 float v01 = arena[offIn + base + iy * inW + ix2];
                                 float v10 = arena[offIn + base + iy2 * inW + ix];
                                 float v11 = arena[offIn + base + iy2 * inW + ix2];
-                                float v = v00 * (float(1.0) - fx) * (float(1.0) - fy) + v01 * fx * (float(1.0) - fy) + v10 * (float(1.0) - fx) * fy + v11 * fx * fy;
+                                float v = v00 * (1.0f - fx) * (1.0f - fy) + v01 * fx * (1.0f - fy) + v10 * (1.0f - fx) * fy + v11 * fx * fy;
                                 arena[offOut + obase + y * outW + x] = v;
                             }
                             x = x + 1;

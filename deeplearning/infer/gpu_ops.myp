@@ -37,7 +37,7 @@ class GpuInferOps {
                 if (p < work) {
                     long i = p / batch;
                     long k = p % batch;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     long j = 0L;
                     while (j < xRows) {
                         sum = sum + a[wOff + i * xRows + j] * a[xOff + j * batch + k];
@@ -53,8 +53,8 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float v = a[inOff + p];
-                    if (v > float(0.0)) a[outOff + p] = v;
-                    else a[outOff + p] = float(0.0);
+                    if (v > 0.0f) a[outOff + p] = v;
+                    else a[outOff + p] = 0.0f;
                 }
             }
         }
@@ -64,8 +64,8 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float x = a[inOff + p];
-                    float e = float(Math.exp(float(0.0) - x));
-                    a[outOff + p] = float(1.0) / (float(1.0) + e);
+                    float e = float(Math.exp(0.0f - x));
+                    a[outOff + p] = 1.0f / (1.0f + e);
                 }
             }
         }
@@ -83,7 +83,7 @@ class GpuInferOps {
                         if (v > m) m = v;
                         j = j + 1L;
                     }
-                    float s = float(0.0);
+                    float s = 0.0f;
                     j = 0L;
                     while (j < rows) {
                         s = s + float(Math.exp(a[inOff + j * cols + k] - m));
@@ -124,7 +124,7 @@ class GpuInferOps {
                     int ocpg = yC / group;
                     long g = oc / ocpg;
                     int wc = cpg * kh * kw;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     if (bOff >= 0) sum = a[bOff + oc];   // 无偏置卷积（bOff=-1）
                     int ic = 0;
                     while (ic < cpg) {
@@ -171,7 +171,7 @@ class GpuInferOps {
                     int ocpg = yC / group;
                     long g = oc / ocpg;
                     int wc = cpg * kh * kw;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     if (bOff >= 0) sum = a[bOff + oc];   // 无偏置卷积（bOff=-1）
                     int ic = 0;
                     while (ic < cpg) {
@@ -194,8 +194,8 @@ class GpuInferOps {
                         }
                         ic = ic + 1;
                     }
-                    if (sum > float(0.0)) a[yOff + p] = sum;
-                    else a[yOff + p] = float(0.0);
+                    if (sum > 0.0f) a[yOff + p] = sum;
+                    else a[yOff + p] = 0.0f;
                 }
             }
         }
@@ -211,7 +211,7 @@ class GpuInferOps {
                     long oy = (p / yW) % yH;
                     long c = (p / (yW * yH)) % xC;
                     long nn = p / (yW * yH * xC);
-                    float best = float(0.0) - float(1.0e30);
+                    float best = 0.0f - 1.0e30f;
                     int ky = 0;
                     while (ky < kh) {
                         long iy = oy * sh - pt + ky;
@@ -240,7 +240,7 @@ class GpuInferOps {
                 if (p < work) {
                     long c = p % xC;
                     long nn = p / xC;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int i = 0;
                     while (i < xH * xW) {
                         sum = sum + a[xOff + nn * xC * xH * xW + c * xH * xW + i];
@@ -294,7 +294,7 @@ class GpuInferOps {
                     int cpg = xC / group;
                     int ocpg = yC / group;
                     long g = co / ocpg;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     if (bOff >= 0) sum = a[bOff + co];   // 无偏置卷积（bOff=-1）
                     int ky = 0;
                     while (ky < kh) {
@@ -339,7 +339,7 @@ class GpuInferOps {
                     int cpg = xC / group;
                     int ocpg = yC / group;
                     long g = co / ocpg;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     if (bOff >= 0) sum = a[bOff + co];   // 无偏置卷积（bOff=-1）
                     int ky = 0;
                     while (ky < kh) {
@@ -362,8 +362,8 @@ class GpuInferOps {
                         }
                         ky = ky + 1;
                     }
-                    if (sum > float(0.0)) a[yOff + p] = sum;
-                    else a[yOff + p] = float(0.0);
+                    if (sum > 0.0f) a[yOff + p] = sum;
+                    else a[yOff + p] = 0.0f;
                 }
             }
         }
@@ -379,7 +379,7 @@ class GpuInferOps {
                     long ox = (p / xC) % yW;
                     long oy = (p / (xC * yW)) % yH;
                     long nn = p / (xC * yW * yH);
-                    float best = float(0.0) - float(1.0e30);
+                    float best = 0.0f - 1.0e30f;
                     int ky = 0;
                     while (ky < kh) {
                         long iy = oy * sh - pt + ky;
@@ -408,7 +408,7 @@ class GpuInferOps {
                 if (p < work) {
                     long c = p % xC;
                     long nn = p / xC;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int i = 0;
                     while (i < xH * xW) {
                         long h = i / xW;
@@ -423,7 +423,8 @@ class GpuInferOps {
 
         // ---- G3：BatchNormalization ----
         // 每线程一个元素；通道 = (p/(H*W))%C（NCHW）。eps 由宿主解析传入，
-        // Math.sqrt → libdevice __nv_sqrt；内核局部仅用 float（@gpu for 不支持 double 声明）。
+        // Math.sqrt → libdevice __nv_sqrt；内核局部用 float（与 ORT float32 输出一致，
+        // 混型运算已支持，double 局部也可用但无需更高精度）。
         void batchnorm(float[] a, int work,
                        int xOff, int xN, int xC, int xH, int xW, int yOff,
                        int sOff, int bOff, int mOff, int vOff, double eps, long dev) {
@@ -463,8 +464,8 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float v = a[inOff + p];
-                    if (v > float(6.0)) v = float(6.0);
-                    if (v < float(0.0)) v = float(0.0);
+                    if (v > 6.0f) v = 6.0f;
+                    if (v < 0.0f) v = 0.0f;
                     a[outOff + p] = v;
                 }
             }
@@ -474,7 +475,7 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float v = a[inOff + p];
-                    if (v > float(0.0)) a[outOff + p] = v;
+                    if (v > 0.0f) a[outOff + p] = v;
                     else a[outOff + p] = float(alpha) * v;
                 }
             }
@@ -484,7 +485,7 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float x = a[inOff + p];
-                    float s = x / float(1.0 + Math.exp(float(0.0) - x));
+                    float s = x / float(1.0 + Math.exp(0.0f - x));
                     a[outOff + p] = s;
                 }
             }
@@ -494,10 +495,10 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float x = a[inOff + p];
-                    float r = x + float(3.0);
-                    if (r < float(0.0)) r = float(0.0);
-                    if (r > float(6.0)) r = float(6.0);
-                    a[outOff + p] = x * r / float(6.0);
+                    float r = x + 3.0f;
+                    if (r < 0.0f) r = 0.0f;
+                    if (r > 6.0f) r = 6.0f;
+                    a[outOff + p] = x * r / 6.0f;
                 }
             }
         }
@@ -650,7 +651,7 @@ class GpuInferOps {
         void sub(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    float bv = float(0.0);
+                    float bv = 0.0f;
                     if (bSize <= 1) bv = a[bOff + 0];
                     float v = a[aOff + p];
                     if (bSize <= 1) a[outOff + p] = v - bv;
@@ -663,7 +664,7 @@ class GpuInferOps {
         void div(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    float bv = float(0.0);
+                    float bv = 0.0f;
                     if (bSize <= 1) bv = a[bOff + 0];
                     float v = a[aOff + p];
                     if (bSize <= 1) a[outOff + p] = v / bv;
@@ -676,7 +677,7 @@ class GpuInferOps {
         void mul(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    float bv = float(0.0);
+                    float bv = 0.0f;
                     if (bSize <= 1) bv = a[bOff + 0];
                     float v = a[aOff + p];
                     if (bSize <= 1) a[outOff + p] = v * bv;
@@ -700,11 +701,11 @@ class GpuInferOps {
                 if (p < work) {
                     int nc = int(p);
                     int base = nc * S;
-                    float sum = float(0.0);
+                    float sum = 0.0f;
                     int i = 0;
                     while (i < S) { sum = sum + a[xOff + base + i]; i = i + 1; }
                     float mean = sum / S;
-                    float ss = float(0.0);
+                    float ss = 0.0f;
                     i = 0;
                     while (i < S) { float d = a[xOff + base + i] - mean; ss = ss + d * d; i = i + 1; }
                     float variance = ss / S;
@@ -726,14 +727,14 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     if (mode == 0) {
-                        float sum = float(0.0);
+                        float sum = 0.0f;
                         int i = 0;
                         while (i < total) { sum = sum + a[inOff + i]; i = i + 1; }
                         a[outOff + 0] = sum / total;
                     } else {
                         int nc = int(p);
                         int base = nc * S;
-                        float sum = float(0.0);
+                        float sum = 0.0f;
                         int i = 0;
                         while (i < S) { sum = sum + a[inOff + base + i]; i = i + 1; }
                         a[outOff + nc] = sum / S;
@@ -786,8 +787,8 @@ class GpuInferOps {
                     t = t / outH;
                     int c = t % C;
                     int n = t / C;
-                    float sy = float(0.0);
-                    float sx = float(0.0);
+                    float sy = 0.0f;
+                    float sx = 0.0f;
                     if (transform == 0) {
                         if (outH > 1) sy = float(y) * float(inH - 1) / float(outH - 1);
                         if (outW > 1) sx = float(x) * float(inW - 1) / float(outW - 1);
@@ -795,8 +796,8 @@ class GpuInferOps {
                         sy = float(y) * float(inH) / float(outH);
                         sx = float(x) * float(inW) / float(outW);
                     } else {
-                        sy = (float(y) + float(0.5)) * float(inH) / float(outH) - float(0.5);
-                        sx = (float(x) + float(0.5)) * float(inW) / float(outW) - float(0.5);
+                        sy = (float(y) + 0.5f) * float(inH) / float(outH) - 0.5f;
+                        sx = (float(x) + 0.5f) * float(inW) / float(outW) - 0.5f;
                     }
                     int base = (n * C + c) * inH * inW;
                     int obase = (n * C + c) * outH * outW;
@@ -813,10 +814,10 @@ class GpuInferOps {
                         int ix = int(sx);
                         float fy = sy - float(iy);
                         float fx = sx - float(ix);
-                        if (iy < 0) { iy = 0; fy = float(0.0); }
-                        if (iy >= inH - 1) { iy = inH - 1; fy = float(0.0); }
-                        if (ix < 0) { ix = 0; fx = float(0.0); }
-                        if (ix >= inW - 1) { ix = inW - 1; fx = float(0.0); }
+                        if (iy < 0) { iy = 0; fy = 0.0f; }
+                        if (iy >= inH - 1) { iy = inH - 1; fy = 0.0f; }
+                        if (ix < 0) { ix = 0; fx = 0.0f; }
+                        if (ix >= inW - 1) { ix = inW - 1; fx = 0.0f; }
                         int iy2 = iy + 1;
                         int ix2 = ix + 1;
                         if (iy2 >= inH) iy2 = inH - 1;
@@ -825,7 +826,7 @@ class GpuInferOps {
                         float v01 = a[offIn + base + iy * inW + ix2];
                         float v10 = a[offIn + base + iy2 * inW + ix];
                         float v11 = a[offIn + base + iy2 * inW + ix2];
-                        float v = v00 * (float(1.0) - fx) * (float(1.0) - fy) + v01 * fx * (float(1.0) - fy) + v10 * (float(1.0) - fx) * fy + v11 * fx * fy;
+                        float v = v00 * (1.0f - fx) * (1.0f - fy) + v01 * fx * (1.0f - fy) + v10 * (1.0f - fx) * fy + v11 * fx * fy;
                         a[offOut + obase + y * outW + x] = v;
                     }
                 }

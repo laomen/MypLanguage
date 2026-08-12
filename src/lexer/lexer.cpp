@@ -335,8 +335,11 @@ Token Lexer::scanNumber() {
 
     auto kind = is_float ? TokenKind::FloatLiteral : TokenKind::IntegerLiteral;
 
-    // Long suffix: 42L or 0xFFL
-    if (!is_float && (peek() == 'L' || peek() == 'l')) {
+    // float32 后缀：1.5f / 1.0e30F（仅浮点字面量；整数字面量无 f 后缀）
+    if (is_float && (peek() == 'f' || peek() == 'F')) {
+        advance(); // consume the f32 suffix
+        kind = TokenKind::FloatLiteral32;
+    } else if (!is_float && (peek() == 'L' || peek() == 'l')) {
         advance(); // consume the suffix
         kind = TokenKind::LongLiteral;
     } else if (!is_float && (peek() == 'u' || peek() == 'U')) {

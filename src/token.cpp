@@ -7,6 +7,7 @@ const char* Token::kindName(TokenKind kind) {
         case TokenKind::IntegerLiteral:   return "integer literal";
         case TokenKind::UIntLiteral:      return "uint literal";
         case TokenKind::FloatLiteral:     return "float literal";
+        case TokenKind::FloatLiteral32:   return "float32 literal";
         case TokenKind::StringLiteral:    return "string literal";
         case TokenKind::CharLiteral:      return "char literal";
         case TokenKind::BoolLiteral:      return "bool literal";

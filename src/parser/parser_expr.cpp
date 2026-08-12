@@ -31,7 +31,7 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         }
         case ExprKind::FloatLiteral: {
             auto& v = static_cast<const FloatLiteralExpr&>(e);
-            return std::make_unique<FloatLiteralExpr>(v.value, v.range);
+            return std::make_unique<FloatLiteralExpr>(v.value, v.range, v.is_f32);
         }
         case ExprKind::BoolLiteral: {
             auto& v = static_cast<const BoolLiteralExpr&>(e);
@@ -559,6 +559,10 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (match(TokenKind::FloatLiteral)) {
         double val = std::stod(previous().value);
         return std::make_unique<FloatLiteralExpr>(val, previous().range);
+    }
+    if (match(TokenKind::FloatLiteral32)) {
+        double val = std::stod(previous().value);
+        return std::make_unique<FloatLiteralExpr>(val, previous().range, true);
     }
     if (match(TokenKind::BoolLiteral) || match(TokenKind::Keyword_true)) {
         return std::make_unique<BoolLiteralExpr>(true, previous().range);

@@ -106,6 +106,7 @@ llvm::Value* CodeGen::generateIntegerLiteral(const IntegerLiteralExpr& e) {
 }
 
 llvm::Value* CodeGen::generateFloatLiteral(const FloatLiteralExpr& e) {
+    if (e.is_f32) return llvm::ConstantFP::get(llvm::Type::getFloatTy(ctx_), e.value);
     return llvm::ConstantFP::get(llvm::Type::getDoubleTy(ctx_), e.value);
 }
 

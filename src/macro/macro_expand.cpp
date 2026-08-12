@@ -64,7 +64,7 @@ private:
         }
         case ExprKind::FloatLiteral: {
             auto& v = static_cast<const FloatLiteralExpr&>(e);
-            return std::make_unique<FloatLiteralExpr>(v.value, v.range);
+            return std::make_unique<FloatLiteralExpr>(v.value, v.range, v.is_f32);
         }
         case ExprKind::BoolLiteral: {
             auto& v = static_cast<const BoolLiteralExpr&>(e);

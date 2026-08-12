@@ -197,7 +197,7 @@ TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {
 }
 
 TypeInfo Sema::visitFloatLiteral(FloatLiteralExpr& expr) {
-    return TypeInfo(TypeKind::Double);
+    return expr.is_f32 ? TypeInfo(TypeKind::Float) : TypeInfo(TypeKind::Double);
 }
 
 TypeInfo Sema::visitBoolLiteral(BoolLiteralExpr& expr) {
@@ -727,7 +727,7 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
         }
         case ExprKind::FloatLiteral: {
             auto& v = static_cast<const FloatLiteralExpr&>(e);
-            return std::make_unique<FloatLiteralExpr>(v.value, v.range);
+            return std::make_unique<FloatLiteralExpr>(v.value, v.range, v.is_f32);
         }
         case ExprKind::BoolLiteral: {
             auto& v = static_cast<const BoolLiteralExpr&>(e);

@@ -348,8 +348,9 @@ struct IntegerLiteralExpr : Expr {
 
 struct FloatLiteralExpr : Expr {
     double value;
-    FloatLiteralExpr(double v, SourceRange r)
-        : Expr(ExprKind::FloatLiteral, r), value(v) {}
+    bool is_f32;   // 0.5f 后缀 → float32 字面量
+    FloatLiteralExpr(double v, SourceRange r, bool f32 = false)
+        : Expr(ExprKind::FloatLiteral, r), value(v), is_f32(f32) {}
 };
 
 struct BoolLiteralExpr : Expr {

@@ -747,9 +747,10 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
   `readF32Init` 读 f32 初始器；Resize 输出尺寸 sizes>scales>属性；ReduceMean axes 属性(≤17)/输入(18+)）；
   runtime（addSub/addDiv/addMul/addSqrt/addReduceMean/addInstanceNorm/addResize2d + 分发）；
   ops/gpu_ops 内核；loader（字符串 mode/coord、floats scales、keepdims、axes 属性）。
-- **MYP 坑（记录）**：表达式不可混用 float/double（`float - double` 即 LLVM 错）；
-  `float→double 赋值`是位重解释垃圾（初始化才正确）；`double()` 强转、`0.0f` 字面量、
-  `int→double` 隐式均不支持 → 全用 float 运算或 double 初始化 + `float(int)` 强转。
+- **MYP 语言支持（已随编译器完善，2026-08）**：混型 float/double/int 运算已支持（codegen 自动
+  插 FPExt/FPTrunc，commit c3de8f5）；`0.0f`/`1.0e30f` float32 字面量后缀已支持（commit 待填，
+  消除 `float(0.0)` 之类 95 处仿真转换）；除法可直接 `sum / S`。仍保留：`float(Math.*)` 显式
+  转换（Math 库返回 double）、int→float 索引转换（语言必需）、double 累加→float 落盘（精度选择）。
 - **修复**：topoSort 同一输入多次（如 Mul(x,x)）indeg 按槽位+2 但递减-1 → 卡环，
   改按匹配槽位数递减。
 - **验证**：`ops2d_test.onnx`（IN+Resize+ReduceMean+Sub+Mul+Sqrt+Div 全链）+ `ops2d_main.myp`

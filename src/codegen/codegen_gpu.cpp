@@ -226,7 +226,8 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::FloatLiteral: {
             auto& e = static_cast<const FloatLiteralExpr&>(expr);
-            return llvm::ConstantFP::get(double_ty, e.value);
+            return e.is_f32 ? llvm::ConstantFP::get(float_ty, e.value)
+                            : llvm::ConstantFP::get(double_ty, e.value);
         }
         case ExprKind::BoolLiteral: {
             auto& e = static_cast<const BoolLiteralExpr&>(expr);
