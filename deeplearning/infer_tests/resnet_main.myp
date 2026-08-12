@@ -5,9 +5,9 @@
 // GPU：设 MYP_GPU=1 且 CUDA 可用时用 runGpu()（FP32 内核），否则 CPU run()
 import env;
 import cuda;
-import "./pb.myp";
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class ResnetInferApp {
     action:

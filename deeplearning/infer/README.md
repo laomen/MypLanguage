@@ -9,6 +9,8 @@ A general-purpose, static-graph inference framework implemented in MYP, driven b
 >
 > 📦 JSON 图小工具（XOR/MNIST 演示、通用 CLI、GPU 卸载验证）已移出，见
 > [`../json_tool/`](../json_tool/README.md)。
+> 🧪 端到端验证入口（r18/resnet/bn/act/const/onnx `*_main.myp`）已移出，见
+> [`../infer_tests/`](../infer_tests/README.md)。
 
 ## Capabilities
 
@@ -29,22 +31,11 @@ deeplearning/infer/
 ├── tensor.myp        # tensor indexing helpers
 ├── pb.myp            # protobuf wire-format reader (varint / len-delimited / skip)
 ├── onnx_loader.myp   # pure-MYP ONNX reader + graph optimizer (pass pipeline)
-├── onnx_main.myp     # read real mnist_mlp.onnx, run MNIST, report accuracy
-├── resnet_main.myp   # read real ResNet50.onnx, run ImageNet image, top-5 + labels
-├── r18_main.myp      # G4: real ResNet18 (resnet18_v1_7.onnx) — 20 BN fused, top-5 vs ORT
-├── act_main.myp      # G4: activation ops (Clip/LeakyRelu/HardSwish) vs onnxruntime
-├── bn_main.myp       # G3: BN end-to-end (fold / standalone / bn_norelu regression)
-├── const_main.myp    # G2: constant folding end-to-end
 ├── tools/
 │   ├── make_mnist_mlp_onnx.py  # test-fixture generator: mnist_weights.bin -> mnist_mlp.onnx
 │   ├── cross_check_onnx.py     # onnxruntime cross-validation (accuracy + sample0 probs)
 │   └── prep_imagenet_input.py  # real photo -> 224x224 ImageNet-normalized f32 input
-├── data/ (in deeplearning/data)
-│   ├── onnx/gluon_resnet50_v1b_Opset16.onnx  # 98MB ImageNet CNN (also mnist_mlp.onnx)
-│   ├── onnx/resnet18_v1_7.onnx               # 45MB ResNet18 (G4 real BN model)
-│   ├── onnx/resnet_input.f32                 # preprocessed image input
-│   └── imagenet/classes.txt                  # 1000 ImageNet class labels
-└── (JSON 图小工具已移到 ../json_tool/，见其 README)
+└── (纯核心：无验证入口；端到端验证在 ../infer_tests/，JSON 小工具在 ../json_tool/)
 ```
 
 ## Reading Real ONNX Models

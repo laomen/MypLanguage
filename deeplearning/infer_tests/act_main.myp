@@ -4,9 +4,9 @@
 // 因本环境 onnx/ort 未注册 SiLU schema）。
 import env;
 import cuda;
-import "./pb.myp";
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class ActTestApp {
     action:

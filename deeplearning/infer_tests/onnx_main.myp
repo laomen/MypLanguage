@@ -2,8 +2,8 @@
 // 加载 deeplearning/data/onnx/mnist_mlp.onnx（784→64→10 MLP），
 // 在 MNIST 测试集上逐样本前向，计算准确率（应与 CPU 版 78% 一致）。
 import env;
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class OnnxInferApp {
     action:

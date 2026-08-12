@@ -5,9 +5,9 @@
 // 模型上工作，top-5 与 onnxruntime 一致。
 import env;
 import cuda;
-import "./pb.myp";
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class R18InferApp {
     action:

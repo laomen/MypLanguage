@@ -33,7 +33,7 @@ MYP_GPU=1 /tmp/<out>
 MYP_GPU=1 MYP_LAYOUT_NHWC=1 /tmp/<out>
 ```
 
-### 端到端验证入口
+### 端到端验证入口（`deeplearning/infer_tests/`）
 
 | 入口 | 用途 | 数据 |
 |------|------|------|
@@ -47,7 +47,7 @@ MYP_GPU=1 MYP_LAYOUT_NHWC=1 /tmp/<out>
 示例（ResNet18）：
 
 ```bash
-./build/mypc deeplearning/infer/r18_main.myp -o /tmp/r18 --stdlib stdlib
+./build/mypc deeplearning/infer_tests/r18_main.myp -o /tmp/r18 --stdlib stdlib
 /tmp/r18                      # CPU，~5s
 MYP_GPU=1 /tmp/r18            # GPU，~51ms，output sum 0.101238 与 CPU/ORT 一致
 ```

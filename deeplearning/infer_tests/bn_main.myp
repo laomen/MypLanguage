@@ -4,9 +4,9 @@
 // 2) bn_standalone_test.onnx（x→BN→Relu）：验证独立 BatchNormalization 算子（opKind 17）。
 import env;
 import cuda;
-import "./pb.myp";
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class BNTestApp {
     action:

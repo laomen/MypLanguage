@@ -4,9 +4,9 @@
 // 参考（onnxruntime）：x=[0.5,-2,3,1] → y=[1.5,0,6,5]
 import env;
 import cuda;
-import "./pb.myp";
-import "./runtime.myp";
-import "./onnx_loader.myp";
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
 
 class ConstInferApp {
     action:
