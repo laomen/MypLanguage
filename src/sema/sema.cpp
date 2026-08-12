@@ -1353,8 +1353,12 @@ Sema::StmtResult Sema::visitIfStmt(IfStmt& stmt) {
         auto cond_type = visitExpr(*stmt.condition);
         expectBool(cond_type, stmt.condition->range);
     }
+    // §3.3 kernel 上下文内 if 分支 = 发散控制流（aligned barrier 需 uniform）
+    bool div = false;
+    if (in_gpu_for_) { in_gpu_divergent_++; div = true; }
     if (stmt.then_block) visitStmt(*stmt.then_block);
     if (stmt.else_block) visitStmt(*stmt.else_block);
+    if (div) in_gpu_divergent_--;
     return {};
 }
 
@@ -1365,7 +1369,11 @@ Sema::StmtResult Sema::visitWhileStmt(WhileStmt& stmt) {
     }
     bool saved = in_loop_;
     in_loop_ = true;
+    // §3.3 kernel 上下文内循环 = 发散控制流
+    bool div = false;
+    if (in_gpu_for_) { in_gpu_divergent_++; div = true; }
     if (stmt.body) visitStmt(*stmt.body);
+    if (div) in_gpu_divergent_--;
     in_loop_ = saved;
     return {};
 }

@@ -1591,6 +1591,12 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
             kma.member_name == "sync") {
             if (!expr.args.empty())
                 error(expr.range, "kernel.sync() takes no arguments");
+            // §3.3：aligned barrier（bar.sync 0）要求 uniform 控制流，发散分支内
+            // 的 sync 会死锁——警告（保守：if/while body 一律视为发散）。
+            if (in_gpu_divergent_ > 0)
+                diag_.warn(expr.range,
+                    "kernel.sync() inside divergent (thread-dependent) control "
+                    "flow may deadlock; place it at a uniform point");
             return TypeInfo(TypeKind::Void);
         }
     }

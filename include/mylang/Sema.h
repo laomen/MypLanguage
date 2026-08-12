@@ -87,7 +87,11 @@ private:
     TypeInfo visitCheckedOp(CallExpr& expr, const std::string& name);
     // §3.1 kernel 执行上下文：@gpu for body 内 `kernel.gid/bx/tx/bd/gx`（long）
     // 与 `kernel.sync()`（void）隐式可见（保留标识符，仅 @gpu for body 内解析）。
+    // §3.1 kernel 执行上下文（@gpu for / @gpu tile body 内）
     bool in_gpu_for_ = false;
+    // §3.3 发散控制流深度（kernel 上下文内 if/while body）：>0 时 kernel.sync()
+    // 位于线程相关分支 → 警告（aligned barrier 需 uniform 控制流，否则死锁）。
+    int in_gpu_divergent_ = 0;
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐
     void populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params);
