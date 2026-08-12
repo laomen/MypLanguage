@@ -2,6 +2,11 @@
 
 A general-purpose, JSON-driven static-graph inference framework implemented in MYP.
 
+> 📚 相关文档（`deeplearning/docs/`）：
+> - [`design.md`](../docs/design.md) — 架构设计说明（运行时 / opKind / 图 pass 管线 / 扩展指南）
+> - [`usage.md`](../docs/usage.md) — 使用说明（构建运行 / 环境变量 / 回归测试 / 交叉校验）
+> - [`gpu_paradigm.md`](../docs/gpu_paradigm.md) — GPU 范式库 + 推理框架路线图（M1-M4 / G1-G4）
+
 ## Capabilities
 
 - **CPU, static-graph execution** with a flat arena tensor memory
