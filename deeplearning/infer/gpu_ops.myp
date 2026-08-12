@@ -598,4 +598,50 @@ class GpuInferOps {
                 }
             }
         }
+        // Slice：沿任意轴切片（支持负 step 反向）；轴循环展开（GPU codegen 不支持内核内 while）
+        void sliceOp(float[] a, int work, int offIn, int offOut,
+                     int cnt, int id0, int id1, int id2, int id3,
+                     int od0, int od1, int od2, int od3,
+                     int ax0, int st0, int sp0, int ax1, int st1, int sp1,
+                     int ax2, int st2, int sp2, int ax3, int st3, int sp3, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int x3 = i % od3;
+                    int t = i / od3;
+                    int x2 = t % od2;
+                    t = t / od2;
+                    int x1 = t % od1;
+                    int x0 = t / od1;
+                    int c0 = x0, c1 = x1, c2 = x2, c3 = x3;
+                    int oc = x0; int ic = 0;
+                    if (cnt >= 1) {
+                        oc = x0;
+                        if (ax0 == 0) oc = x0; else if (ax0 == 1) oc = x1; else if (ax0 == 2) oc = x2; else oc = x3;
+                        ic = st0 + oc * sp0;
+                        if (ax0 == 0) c0 = ic; else if (ax0 == 1) c1 = ic; else if (ax0 == 2) c2 = ic; else c3 = ic;
+                    }
+                    if (cnt >= 2) {
+                        oc = x0;
+                        if (ax1 == 0) oc = x0; else if (ax1 == 1) oc = x1; else if (ax1 == 2) oc = x2; else oc = x3;
+                        ic = st1 + oc * sp1;
+                        if (ax1 == 0) c0 = ic; else if (ax1 == 1) c1 = ic; else if (ax1 == 2) c2 = ic; else c3 = ic;
+                    }
+                    if (cnt >= 3) {
+                        oc = x0;
+                        if (ax2 == 0) oc = x0; else if (ax2 == 1) oc = x1; else if (ax2 == 2) oc = x2; else oc = x3;
+                        ic = st2 + oc * sp2;
+                        if (ax2 == 0) c0 = ic; else if (ax2 == 1) c1 = ic; else if (ax2 == 2) c2 = ic; else c3 = ic;
+                    }
+                    if (cnt >= 4) {
+                        oc = x0;
+                        if (ax3 == 0) oc = x0; else if (ax3 == 1) oc = x1; else if (ax3 == 2) oc = x2; else oc = x3;
+                        ic = st3 + oc * sp3;
+                        if (ax3 == 0) c0 = ic; else if (ax3 == 1) c1 = ic; else if (ax3 == 2) c2 = ic; else c3 = ic;
+                    }
+                    int inFlat = ((c0 * id1 + c1) * id2 + c2) * id3 + c3;
+                    a[offOut + i] = a[offIn + inFlat];
+                }
+            }
+        }
 }

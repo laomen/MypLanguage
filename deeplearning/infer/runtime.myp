@@ -407,6 +407,28 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- F8：Slice（opKind 27）----
+        // 沿任意轴切片；ax/st/sp 为调整后的 轴索引/start/step（cnt 轴，最多 4）；
+        // od/id 为输出/输入 4D 维度（内存行优先序）。
+        void addSlice(int inTid, int outTid, int cnt,
+                      int id0, int id1, int id2, int id3,
+                      int od0, int od1, int od2, int od3,
+                      int ax0, int st0, int sp0, int ax1, int st1, int sp1,
+                      int ax2, int st2, int sp2, int ax3, int st3, int sp3) {
+            int id = opCount_;
+            opKind_[id] = 27;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            sCnt_[id] = cnt;
+            sId_[id * 4 + 0] = id0; sId_[id * 4 + 1] = id1; sId_[id * 4 + 2] = id2; sId_[id * 4 + 3] = id3;
+            sOd_[id * 4 + 0] = od0; sOd_[id * 4 + 1] = od1; sOd_[id * 4 + 2] = od2; sOd_[id * 4 + 3] = od3;
+            sAx_[id * 4 + 0] = ax0; sSt_[id * 4 + 0] = st0; sSp_[id * 4 + 0] = sp0;
+            sAx_[id * 4 + 1] = ax1; sSt_[id * 4 + 1] = st1; sSp_[id * 4 + 1] = sp1;
+            sAx_[id * 4 + 2] = ax2; sSt_[id * 4 + 2] = st2; sSp_[id * 4 + 2] = sp2;
+            sAx_[id * 4 + 3] = ax3; sSt_[id * 4 + 3] = st3; sSp_[id * 4 + 3] = sp3;
+            opCount_ = opCount_ + 1;
+        }
+
         int opCount() { return opCount_; }
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
@@ -558,6 +580,18 @@ class InferenceRuntime {
                     int id0 = opP5_[i], id1 = opP6_[i], id2 = opP7_[i], id3 = opP8_[i];
                     InferOps.transpose(arena, tOff_[xa], tOff_[yd],
                                        id0, id1, id2, id3, p0, p1, p2, p3, pc);
+                } else if (opKind_[i] == 27) {
+                    // F8：Slice —— 沿任意轴切片
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int cnt = sCnt_[i];
+                    int id0 = sId_[i * 4 + 0], id1 = sId_[i * 4 + 1], id2 = sId_[i * 4 + 2], id3 = sId_[i * 4 + 3];
+                    int od0 = sOd_[i * 4 + 0], od1 = sOd_[i * 4 + 1], od2 = sOd_[i * 4 + 2], od3 = sOd_[i * 4 + 3];
+                    int ax0 = sAx_[i * 4 + 0], st0 = sSt_[i * 4 + 0], sp0 = sSp_[i * 4 + 0];
+                    int ax1 = sAx_[i * 4 + 1], st1 = sSt_[i * 4 + 1], sp1 = sSp_[i * 4 + 1];
+                    int ax2 = sAx_[i * 4 + 2], st2 = sSt_[i * 4 + 2], sp2 = sSp_[i * 4 + 2];
+                    int ax3 = sAx_[i * 4 + 3], st3 = sSt_[i * 4 + 3], sp3 = sSp_[i * 4 + 3];
+                    InferOps.sliceOp(arena, tOff_[xa], tOff_[yd], cnt, id0, id1, id2, id3, od0, od1, od2, od3,
+                                     ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
                 }
                 i = i + 1;
             }
@@ -744,6 +778,19 @@ class InferenceRuntime {
                     int work = tensorSize(yd);
                     GpuInferOps.transpose(arena, work, tOff_[xa], tOff_[yd],
                                           id0, id1, id2, id3, p0, p1, p2, p3, pc, dev);
+                } else if (opKind_[i] == 27) {
+                    // F8：Slice —— 沿任意轴切片
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int cnt = sCnt_[i];
+                    int id0 = sId_[i * 4 + 0], id1 = sId_[i * 4 + 1], id2 = sId_[i * 4 + 2], id3 = sId_[i * 4 + 3];
+                    int od0 = sOd_[i * 4 + 0], od1 = sOd_[i * 4 + 1], od2 = sOd_[i * 4 + 2], od3 = sOd_[i * 4 + 3];
+                    int ax0 = sAx_[i * 4 + 0], st0 = sSt_[i * 4 + 0], sp0 = sSp_[i * 4 + 0];
+                    int ax1 = sAx_[i * 4 + 1], st1 = sSt_[i * 4 + 1], sp1 = sSp_[i * 4 + 1];
+                    int ax2 = sAx_[i * 4 + 2], st2 = sSt_[i * 4 + 2], sp2 = sSp_[i * 4 + 2];
+                    int ax3 = sAx_[i * 4 + 3], st3 = sSt_[i * 4 + 3], sp3 = sSp_[i * 4 + 3];
+                    int work = tensorSize(yd);
+                    GpuInferOps.sliceOp(arena, work, tOff_[xa], tOff_[yd], cnt, id0, id1, id2, id3, od0, od1, od2, od3,
+                                        ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3, dev);
                 }
                 i = i + 1;
             }
@@ -828,6 +875,13 @@ class InferenceRuntime {
         int[512] opP6_;
         int[512] opP7_;
         int[512] opP8_;
+        // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
+        int[512] sCnt_;
+        int[2048] sAx_;
+        int[2048] sSt_;
+        int[2048] sSp_;
+        int[2048] sOd_;
+        int[2048] sId_;
         int arenaCap_;
         int arenaTop_;
         int tensorCount_;

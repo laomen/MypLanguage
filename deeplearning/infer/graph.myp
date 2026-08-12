@@ -200,6 +200,13 @@ class Graph {
                     // F8：4D 通用常量输入 → CNN 激活登记 + 直接拷贝（Concat 的非常量输入/常量）
                     markGeneric4DConst(nIn0_[i]);
                     if (t == "Concat") { markGeneric4DConst(nIn1_[i]); markGeneric4DConst(nIn2_[i]); }
+                    if (t == "Reshape") markInt64Param(nIn1_[i]);   // shape 参数（int64）不登记为 f32 张量
+                } else if (t == "Slice") {
+                    // F8：starts/ends/axes/steps 参数初始器（int64）不登记为 f32 张量
+                    markInt64Param(nIn1_[i]);
+                    markInt64Param(nIn2_[i]);
+                    markInt64Param(nIn3_[i]);
+                    markInt64Param(nIn4_[i]);
                 }
                 i = i + 1;
             }
@@ -241,6 +248,14 @@ class Graph {
             wRole_[wi] = 4;
             wTrans_[wi] = 0;
             setShapeKind(name, Kind.CNN_ACT());
+        }
+        // F8：int64 参数初始器（Reshape shape / Slice starts 等）标死——
+        // 不登记为 f32 运行时张量（readI64Init 直接从 file_ 读，不依赖 runtime 张量）。
+        void markInt64Param(string name) {
+            int wi = initIdx(name);
+            if (wi < 0) return;
+            if (wType_[wi] != 7) return;   // 仅 int64 参数
+            markDeadTensor(name);
         }
         int isNodeOutput(string name) {
             int i = 0;
@@ -345,7 +360,7 @@ class Graph {
                     int prod = 1;
                     int d = 0;
                     while (d < sc) {
-                        int v = i64Tmp_[d];
+                        int v = int(i64TmpL_[d]);
                         if (v == -1) { inferIdx = d; outd[d] = 1; }
                         else if (v == 0) {
                             if (d < 4) { outd[d] = (d == 0) ? shD0_[a] : ((d == 1) ? shD1_[a] : ((d == 2) ? shD2_[a] : shD3_[a])); }
@@ -405,12 +420,89 @@ class Graph {
                     od[2] = (p2 == 0) ? id0 : ((p2 == 1) ? id1 : ((p2 == 2) ? id2 : id3));
                     od[3] = (p3 == 0) ? id0 : ((p3 == 1) ? id1 : ((p3 == 2) ? id2 : id3));
                     addShapeD4(nOut0_[i], od[0], od[1], od[2], od[3]);
+                } else if (t == "Slice") {
+                    // F8：starts/ends/axes/steps 为 int64 初始器输入（opset 10+）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int sc = readI64Init(nIn1_[i], 8);   // starts
+                    if (sc <= 0) return 0;
+                    int k = 0;
+                    while (k < sc) { slSt_[k] = i64TmpL_[k]; k = k + 1; }
+                    int ec = readI64Init(nIn2_[i], 8);   // ends
+                    if (ec <= 0) return 0;
+                    k = 0;
+                    while (k < ec) { slEn_[k] = i64TmpL_[k]; k = k + 1; }
+                    int ac = readI64Init(nIn3_[i], 8);   // axes（可缺省 → 0..）
+                    k = 0;
+                    while (k < ac) { slAx_[k] = i64TmpL_[k]; k = k + 1; }
+                    int pc = readI64Init(nIn4_[i], 8);   // steps（可缺省 → 全 1）
+                    k = 0;
+                    while (k < pc) { slSp_[k] = i64TmpL_[k]; k = k + 1; }
+                    int cnt = sc;
+                    if (cnt > 4) cnt = 4;
+                    nSlN_[i] = cnt;
+                    int id0 = shD0_[a], id1 = shD1_[a], id2 = shD2_[a], id3 = shD3_[a];
+                    int[] odim = new int[4];
+                    odim[0] = id0; odim[1] = id1; odim[2] = id2; odim[3] = id3;
+                    k = 0;
+                    while (k < cnt) {
+                        int ax = 0;
+                        if (ac > 0) ax = int(slAx_[k]);
+                        else ax = k;
+                        int step = 1;
+                        if (pc > 0) step = int(slSp_[k]);
+                        if (step == 0) return 0;   // 步长不能为 0
+                        int D = (ax == 0) ? id0 : ((ax == 1) ? id1 : ((ax == 2) ? id2 : id3));
+                        int co = sliceAxis(D, slSt_[k], slEn_[k], step, ax, i, k);
+                        if (ax >= 0 && ax < 4) odim[ax] = co;
+                        k = k + 1;
+                    }
+                    addShapeD4(nOut0_[i], odim[0], odim[1], odim[2], odim[3]);
                 } else {
                     return 0;   // 不支持的算子
                 }
                 i = i + 1;
             }
             return 1;
+        }
+        // F8：计算单轴切片（stIn/enIn 为全 int64 long）；写 nSlAx_/nSlSt_/nSlSp_
+        // （nodeIdx 第 k 轴），返回输出长度（count）。支持负 step 反向。
+        int sliceAxis(int D, long stIn, long enIn, int step, int ax, int nodeIdx, int k) {
+            nSlAx_[nodeIdx * 4 + k] = ax;
+            nSlSp_[nodeIdx * 4 + k] = step;
+            int st;
+            int cnt = 0;
+            if (step > 0) {
+                long stL = stIn;
+                long enL = enIn;
+                if (stL == 9223372036854775807L) stL = long(D);
+                if (stL < 0L) stL = stL + long(D);
+                if (enL == 9223372036854775807L) enL = long(D);
+                if (enL < 0L) enL = enL + long(D);
+                if (stL < 0L) stL = 0L;
+                if (stL > long(D)) stL = long(D);
+                if (enL < 0L) enL = 0L;
+                if (enL > long(D)) enL = long(D);
+                st = int(stL);
+                int en = int(enL);
+                if (en > st) cnt = (en - st + step - 1) / step;
+            } else {
+                long stL = stIn;
+                long enL = enIn;
+                if (stL == 9223372036854775807L) stL = long(D - 1);
+                if (stL < 0L) stL = stL + long(D);
+                if (enL == 9223372036854775807L) enL = -1L;
+                if (enL < 0L) enL = enL + long(D);
+                if (stL < -1L) stL = -1L;
+                if (stL > long(D - 1)) stL = long(D - 1);
+                if (enL < -1L) enL = -1L;
+                if (enL > long(D - 1)) enL = long(D - 1);
+                st = int(stL);
+                int en = int(enL);
+                int nsp = 0 - step;
+                if (st > en) cnt = (st - en + nsp - 1) / nsp;
+            }
+            nSlSt_[nodeIdx * 4 + k] = st;
+            return cnt;
         }
         int fuseConvBN() {
             int i = 0;
@@ -1010,6 +1102,20 @@ class Graph {
                     int is = shapeIdx(nIn0_[ni]);
                     int id0 = shD0_[is], id1 = shD1_[is], id2 = shD2_[is], id3 = shD3_[is];
                     rt.addTranspose(a, out, p0, p1, p2, p3, pc, id0, id1, id2, id3);
+                } else if (t == "Slice") {
+                    // F8：切片（调整后 start/step/axis 存 nSl*_；维度 = 形状表）
+                    int cnt = nSlN_[ni];
+                    if (cnt < 1) return 0;
+                    int is = shapeIdx(nIn0_[ni]);
+                    int id0 = shD0_[is], id1 = shD1_[is], id2 = shD2_[is], id3 = shD3_[is];
+                    int os = shapeIdx(effectiveOut(ni));
+                    int od0 = shD0_[os], od1 = shD1_[os], od2 = shD2_[os], od3 = shD3_[os];
+                    int ax0 = nSlAx_[ni * 4 + 0], st0 = nSlSt_[ni * 4 + 0], sp0 = nSlSp_[ni * 4 + 0];
+                    int ax1 = nSlAx_[ni * 4 + 1], st1 = nSlSt_[ni * 4 + 1], sp1 = nSlSp_[ni * 4 + 1];
+                    int ax2 = nSlAx_[ni * 4 + 2], st2 = nSlSt_[ni * 4 + 2], sp2 = nSlSp_[ni * 4 + 2];
+                    int ax3 = nSlAx_[ni * 4 + 3], st3 = nSlSt_[ni * 4 + 3], sp3 = nSlSp_[ni * 4 + 3];
+                    rt.addSlice(a, out, cnt, id0, id1, id2, id3, od0, od1, od2, od3,
+                                ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
                 } else {
                     return 0;
                 }
@@ -1107,9 +1213,9 @@ class Graph {
             return F32.toDouble(bits);
         }
 
-        // F8：读 int64 初始器值（Reshape 的 shape / 未来 Slice 的 starts 等）。
+        // F8：读 int64 初始器值（Reshape 的 shape / Slice 的 starts/ends/axes/steps 等）。
         // 支持 raw_data（8 字节小端，wKind_==1 且 wType_==7）与 int64_data
-        // （packed varint，wKind_==3）。返回读取个数（<=maxn）；值写入 i64Tmp_。
+        // （packed varint，wKind_==3）。返回读取个数（<=maxn）；值写入 i64TmpL_（全 int64 long）。
         int readI64Init(string name, int maxn) {
             int wi = initIdx(name);
             if (wi < 0) return 0;
@@ -1117,11 +1223,14 @@ class Graph {
             if (wKind_[wi] == 1) {
                 int j = 0;
                 while (j < wLen_[wi] / 8 && cnt < maxn) {
-                    int b0 = file_[wOff_[wi] + j * 8];
-                    int b1 = file_[wOff_[wi] + j * 8 + 1];
-                    int b2 = file_[wOff_[wi] + j * 8 + 2];
-                    int b3 = file_[wOff_[wi] + j * 8 + 3];
-                    i64Tmp_[cnt] = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                    long v = 0L;
+                    int k = 0;
+                    while (k < 8) {
+                        int b = file_[wOff_[wi] + j * 8 + k];
+                        v = v | (long(b) << (k * 8));
+                        k = k + 1;
+                    }
+                    i64TmpL_[cnt] = v;
                     cnt = cnt + 1;
                     j = j + 1;
                 }
@@ -1130,7 +1239,7 @@ class Graph {
                 pb_.seek(wOff_[wi]);
                 while (pb_.pos() < end && cnt < maxn) {
                     long v = pb_.readVarint64();
-                    i64Tmp_[cnt] = int(v);
+                    i64TmpL_[cnt] = v;
                     cnt = cnt + 1;
                 }
             }
@@ -1141,7 +1250,15 @@ class Graph {
         int[] file_;
         int fileLen_;
         PbReader pb_;
-        int[512] i64Tmp_;   // F8：readI64Init 暂存
+        long[512] i64TmpL_;   // F8：readI64Init 暂存（全 int64 long）
+        long[512] slSt_;      // F8：Slice starts（long，临时）
+        long[512] slEn_;      // F8：Slice ends
+        long[512] slAx_;      // F8：Slice axes（可缺省）
+        long[512] slSp_;      // F8：Slice steps（可缺省）
+        int[512] nSlN_;       // F8：Slice 每节点切片轴数
+        int[2048] nSlAx_;     // F8：Slice 每节点每轴索引 [node*4+k]
+        int[2048] nSlSt_;     // F8：Slice 调整后 start
+        int[2048] nSlSp_;     // F8：Slice step
 
         string[256] wName_;
         int[256] wRows_;

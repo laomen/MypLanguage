@@ -525,7 +525,7 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | **G4** | **通用激活算子 + 真实带 BN 模型验证已实现**：ReLU6/LeakyRelu/SiLU/HardSwish/Clip（opKind 19-23，CPU+GPU）；真实 ResNet18（resnet18_v1_7.onnx，20 BN 全融合）端到端 top-5/output sum 与 ORT 逐位一致（GPU 51ms） | 否 |
 | **G5** | **图优化器解耦为通用组件已实现**：新增 `graph.myp`（`Graph`：格式无关图 IR + 8 pass + planMemory + buildRuntime + 图构建 API）；`onnx_loader.myp` 变薄为纯 ONNX 解析器；OnnxLoader 公共接口不变，infer_tests 零改动 | 否 |
 | **F7** | **通用 ONNX 运行器已实现**（`run_onnx.myp` + `run_onnx.sh`：任意 ONNX → 推理 → top-k / out.bin） | 否 |
-| **F8** | **算子覆盖扩展——第一批（Concat/Reshape/Transpose）已实现**（opKind 24-26，CPU+GPU）；Slice/Resize/ConvTranspose/ReduceMean/LayerNorm/GELU 仍为未来项（详见 §16） | 否 |
+| **F8** | **算子覆盖扩展——第一批（Concat/Reshape/Transpose/Slice）已实现**（opKind 24-27，CPU+GPU）；Resize/ConvTranspose/ReduceMean/LayerNorm/GELU 仍为未来项（详见 §16） | 否 |
 | **F1-F6/F9** | **未来支持项**（暂不实现，仅标记）：cuDNN/cuBLAS 算子库对接、厂商 BYOC、量化/稀疏/动态形状、训练支持、LLM 推理 | 视项而定 |
 
 > **M5 暂缓（2026-08-12）**：多后端（HIP/ROCm、SYCL、Metal、WebGPU）需要对应硬件才能
@@ -735,25 +735,32 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
   （sum 0.101238）；GPU 21ms；非分类模型（bn_fold ops=1）；回归 237/237。
 - **说明**：跑新模型零样板——放 .onnx + .f32 输入即可。已实现，无需再归档。
 
-### F8. 算子覆盖扩展（高频缺失算子）——第一批（Concat/Reshape/Transpose）已实现（2026-08-12）
+### F8. 算子覆盖扩展（高频缺失算子）——第一批（Concat/Reshape/Transpose/Slice）已实现（2026-08-12）
 - **第一批已实现**：`Concat`（2-3 输入，axis 0-3，CPU+GPU）、`Reshape`
-  （shape 初始器，-1 推断 / 0 复制维）、`Transpose`（perm 0-4 元，缺省反转），
-  opKind 24/25/26（CPU+GPU）。解锁 DenseNet / YOLO neck / EfficientNet / ViT 等。
+  （shape 初始器，-1 推断 / 0 复制维）、`Transpose`（perm 0-4 元，缺省反转）、
+  `Slice`（starts/ends/axes/steps，支持负索引 / 负 step 反向 / INT64_MAX，
+  CPU+GPU），opKind 24-27。解锁 DenseNet / YOLO neck / EfficientNet / ViT 等。
 - **实现**：graph.myp（NodeField PERM0-3/PERM_N + nP0_..nPc_ 数组 + `readI64Init`
-  读 int64 初始器；inferShapes/bindRuntime 分支）+ runtime（addReshape/addConcat/
-  addTranspose + 分发）+ ops/gpu_ops（内核）。关键点：
+  读 int64 初始器（全 int64 long，支持 INT64_MAX 检测）+ `sliceAxis` helper +
+  `markInt64Param`（int64 参数初始器标死，不登记为 f32 张量）；inferShapes/bindRuntime
+  分支）+ runtime（addReshape/addConcat/addTranspose/addSlice + 分发）+
+  ops/gpu_ops（内核）。关键点：
   - 图维度（shD0..3）即内存行优先维（NCHW 与 NHWC 均适用），内核直接用图维度
     而非 runtime 的 tN_/tC_/tH_/tW_（NHWC 下会交换）；
   - concat 内核用各输入自身轴长计算 inFlat（batch>1 时 stride 才正确）；
   - `classifyShapes`：4D 通用常量（Concat 输入）标记 CNN 激活 + 直接拷贝；
-    4D 图输入（首消费者为 Concat/Transpose/Reshape）按 CNN 激活定型。
-- **验证**：合成 `tensorops_test.onnx`（Concat+Reshape+Transpose 链）+ ORT 交叉
-  校验（`tools/make_tensorops_onnx.py` 生成 + `tensorops_main.myp` 端到端）——
-  CPU/GPU 均 max diff=0（位精确）；另测 3 输入 concat、axis=0/1/2 batch>1、
-  2D FC concat、Transpose batch>1 全部位精确；ResNet18/50 回归正常；回归 237/237。
+    4D 图输入（首消费者为 Concat/Transpose/Reshape）按 CNN 激活定型；
+  - Slice 缺省 axes = [0..len(starts)-1]（ONNX 语义）；GPU 内核轴循环需展开
+    （内核内 while 导致 GPU codegen 失败）。
+- **验证**：合成 `tensorops_test.onnx`（Concat+Reshape+Transpose 链）+ `slice_test.onnx`
+  （四路 Slice：正区间/负索引/负 step 反向/INT64_MAX + 两段 Concat）+ ORT 交叉校验
+  （`tools/make_tensorops_onnx.py`/`tools/make_slice_onnx.py` 生成 + `tensorops_main.myp`/
+  `slice_main.myp` 端到端）——CPU/GPU 均 max diff=0（位精确）；另测 3 输入 concat、
+  axis=0/1/2 batch>1、2D FC concat、Transpose batch>1 全部位精确；ResNet18/50 回归
+  正常；回归 237/237。
 - **已知限制**：2D/FC concat 输出平铺正确（作图输出时与 ORT 一致），
   但 concat 后接 FC 权重算子时维度交换语义未充分验证（罕见路径）。
-- **剩余 F8 算子**（排期见 §16）：`Slice`/`Resize`/`ConvTranspose`/`ReduceMean`
+- **剩余 F8 算子**（排期见 §16）：`Resize`/`ConvTranspose`/`ReduceMean`
   → `LayerNorm`/`GELU`（Transformer 门槛）。加算子流程同第一批。
 - **状态**：第一批已实现（2026-08-12）；其余仍归档标记。
 

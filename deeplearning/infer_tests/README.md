@@ -18,6 +18,7 @@
 | `onnx_main.myp` | 早期 | MNIST MLP 推理 + 准确率（78/100） | `data/onnx/mnist_mlp.onnx` |
 | **`run_onnx.myp`** | **F7** | **通用 ONNX 运行器**：任意模型 + .f32 输入 → 推理 → top-k / 输出 / .bin（跑新模型零样板） | 任意 `.onnx` |
 | `tensorops_main.myp` | **F8** | 张量操作端到端（Concat/Reshape/Transpose vs ORT，位精确） | `data/onnx/tensorops_test.onnx`（`tools/make_tensorops_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
+| `slice_main.myp` | **F8** | Slice 端到端（正区间/负索引/负 step/INT64_MAX vs ORT，位精确） | `data/onnx/slice_test.onnx`（`tools/make_slice_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 
 ## 构建与运行
 
