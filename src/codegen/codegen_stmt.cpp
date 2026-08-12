@@ -1504,7 +1504,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                 auto* cur = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), a);
                 llvm::Value* rhs = generateExpr(*bin.rhs);
                 bool rhs_was_ptr = rhs->getType()->isPointerTy();
-                rhs = stringifyForConcat(rhs);
+                rhs = stringifyForConcat(rhs, bin.rhs.get());
                 auto* app = builder_.CreateCall(
                     runtime_str_append_->getFunctionType(),
                     runtime_str_append_, {cur, rhs});

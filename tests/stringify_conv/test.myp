@@ -1,0 +1,38 @@
+// P1 stringify 修复（docs/type_system_design §6.1）：D2 f32 拼接崩溃、
+// D3 无符号拼成有符号、D4 byte/short 符号不一致、char 输出字符本身。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeString("x" + 1.5f);         // D2: f32 → "x1.5"（修前编译崩溃）
+            Console.writeString("\n");
+            Console.writeString("x" + 0xFFFFFFFFu);  // D3: uint → "x4294967295"（修前 "x-1"）
+            Console.writeString("\n");
+            Console.writeString("x" + 0x123456789ABCDEF0u); // D3: ulong → 正数十进制
+            Console.writeString("\n");
+            byte b = -1;
+            Console.writeString("x" + b);            // D4: byte(-1) → "x-1"（修前 "x255"）
+            Console.writeString("\n");
+            short s = -1;
+            Console.writeString("x" + s);            // D4: short(-1) → "x-1"
+            Console.writeString("\n");
+            char c = 'A';
+            Console.writeString("x" + c);            // char → 字符本身 "xA"（非码值 "65"）
+            Console.writeString("\n");
+            Console.writeString("x" + 1.5);          // f64 回归 → "x1.5"
+            Console.writeString("\n");
+            Console.writeString("x" + true);         // bool → "xtrue"
+            Console.writeString("\n");
+            uint u2 = 4294967295u;
+            Console.writeString("u=" + u2);          // D3 via 变量 → "u=4294967295"
+            Console.writeString("\n");
+            long neg = -5;
+            Console.writeString("n=" + neg);         // 有符号回归 → "n=-5"
+            Console.writeString("\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

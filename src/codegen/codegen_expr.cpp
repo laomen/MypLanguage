@@ -340,8 +340,8 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         auto* ptr_type = llvm::PointerType::get(ctx_, 0);
         bool l_was_ptr = l->getType()->isPointerTy();   // operand already a string?
         bool r_was_ptr = r->getType()->isPointerTy();
-        l = stringifyForConcat(l);
-        r = stringifyForConcat(r);
+        l = stringifyForConcat(l, e.lhs.get());
+        r = stringifyForConcat(r, e.rhs.get());
         // Call runtime myp_strcat(l, r)
         auto* sc = module_->getFunction("myp_strcat");
         if (!sc) {
@@ -748,14 +748,15 @@ bool CodeGen::isStringConcatExpr(const Expr& e) {
     return exprIsString(*b.lhs) || exprIsString(*b.rhs);
 }
 
-// M4: convert a scalar operand to a string for concatenation. Pointer operands
-// (already strings) pass through borrowed. Returns a FRESH counted string only
-// for converted scalars (caller releases it after use).
-llvm::Value* CodeGen::stringifyForConcat(llvm::Value* v) {
+// P1（docs/type_system_design §6.1）：把标量操作数转成字符串用于拼接。指针操作数
+// （已是字符串）借用直通。仅对转换出的标量返回 FRESH 计数字符串（调用方用后释放）。
+// 修 D2（f32 拼接编译崩溃）、D3（无符号拼成有符号）、D4（byte/short 符号不一致）；
+// char 按 §4.1 语义输出字符本身（非码值）。src 提供无符号/char 判定。
+llvm::Value* CodeGen::stringifyForConcat(llvm::Value* v, const Expr* src) {
     if (!v) return v;
-    if (v->getType()->isPointerTy()) return v;
+    if (v->getType()->isPointerTy()) return v;   // already a string (borrowed)
     auto* ptr_type = llvm::PointerType::get(ctx_, 0);
-    // bool (i1) → myp_to_string_bool(i32)（sext 0/1 → "true"/"false"）
+    // bool (i1) → myp_to_string_bool(i32)（zext 0/1 → "true"/"false"）
     if (v->getType()->isIntegerTy(1)) {
         auto* ext = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
         auto* fn = module_->getFunction("myp_to_string_bool");
@@ -765,21 +766,42 @@ llvm::Value* CodeGen::stringifyForConcat(llvm::Value* v) {
         }
         return builder_.CreateCall(fn, {ext});
     }
-    // byte (i8) / short (i16) 等窄整数 → 先加宽到 i32 再格式化
-    if (v->getType()->isIntegerTy() &&
-        !v->getType()->isIntegerTy(32) &&
-        !v->getType()->isIntegerTy(64)) {
-        if (v->getType()->isIntegerTy(8))
-            v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
-        else if (v->getType()->isIntegerTy(16))
-            v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
-        else
-            v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+    bool src_unsigned = src &&
+        (src->resolved_kind == TypeKind::UByte ||
+         src->resolved_kind == TypeKind::UShort ||
+         src->resolved_kind == TypeKind::UInt ||
+         src->resolved_kind == TypeKind::ULong);
+    bool src_is_char = src && src->resolved_kind == TypeKind::Char;
+    // char（i8）→ 字符本身（myp_chr），修 D10 的 "x" + 'A' == "65" 语义坑
+    if (src_is_char && v->getType()->isIntegerTy(8)) {
+        auto* code = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+        auto* fn = module_->getFunction("myp_chr");
+        if (!fn) {
+            auto* ft = llvm::FunctionType::get(ptr_type, {llvm::Type::getInt32Ty(ctx_)}, false);
+            fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_chr", module_.get());
+        }
+        return builder_.CreateCall(fn, {code});
     }
-    auto fn_name = std::string("myp_to_string_") +
-        (v->getType()->isIntegerTy(32) ? "i32" :
-         v->getType()->isIntegerTy(64) ? "i64" :
-         v->getType()->isDoubleTy() ? "double" : "i32");
+    auto fn_name = std::string("myp_to_string_");
+    if (v->getType()->isIntegerTy()) {
+        if (src_unsigned) {
+            // 无符号：窄型 ZExt 到 i32，再 u32/u64 十进制（修 D3：0xFFFFFFFFu → "4294967295"）
+            if (v->getType()->isIntegerTy(8) || v->getType()->isIntegerTy(16))
+                v = builder_.CreateZExt(v, llvm::Type::getInt32Ty(ctx_));
+            fn_name += v->getType()->isIntegerTy(32) ? "u32" : "u64";
+        } else {
+            // 有符号：byte/short 一律 SExt 到 i32（修 D4：byte(-1) → "-1"，非 "255"）
+            if (v->getType()->isIntegerTy(8) || v->getType()->isIntegerTy(16))
+                v = builder_.CreateSExt(v, llvm::Type::getInt32Ty(ctx_));
+            fn_name += v->getType()->isIntegerTy(32) ? "i32" : "i64";
+        }
+    } else if (v->getType()->isFloatTy()) {
+        fn_name += "float";               // 修 D2：f32 → myp_to_string_float(%g)
+    } else if (v->getType()->isDoubleTy()) {
+        fn_name += "double";
+    } else {
+        fn_name += "i32";
+    }
     auto* conv_fn = module_->getFunction(fn_name);
     if (!conv_fn) {
         auto* ft = llvm::FunctionType::get(ptr_type, {v->getType()}, false);

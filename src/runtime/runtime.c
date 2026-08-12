@@ -2530,6 +2530,19 @@ char* myp_to_string_double(double val) {
 char* myp_to_string_bool(int32_t val) {
     return myp_strcat(val ? "true" : "false", "");
 }
+// P1（docs/type_system_design §6.1）：无符号十进制 + f32 格式化（修 D3 无符号拼成
+// 有符号、D2 f32 拼接编译崩溃）。u32/u64 直接 myp_itoa_common(neg=0)；float 用 %g。
+char* myp_to_string_u32(uint32_t val) {
+    return myp_itoa_common((uint64_t)val, 0);
+}
+char* myp_to_string_u64(uint64_t val) {
+    return myp_itoa_common(val, 0);
+}
+char* myp_to_string_float(float val) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%g", (double)val);
+    return myp_strcat(buf, "");
+}
 
 // ======================
 // printf-style formatting (stdlib/fmt.myp)

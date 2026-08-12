@@ -733,7 +733,7 @@ private:
     // M4: convert a scalar operand to a string for concatenation (bool/byte/
     // short/int/long/double → myp_to_string_*). Pointer operands pass through
     // (borrowed). Result is a fresh counted string only when converted.
-    llvm::Value* stringifyForConcat(llvm::Value* v);
+    llvm::Value* stringifyForConcat(llvm::Value* v, const Expr* src = nullptr);
     // Resolve the class (mangled for generics) of a member-access object
     // expression: identifier (var/static), this, array element, `new X<...>()`,
     // or a call (via its return type).
