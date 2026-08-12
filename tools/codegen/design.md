@@ -1,6 +1,6 @@
 # tools/codegen — MYP 代码生成框架（torchgen 式）
 
-> 状态：**P0-P7 已实施（2026-08-11）** · 框架完成
+> 状态：**P0-P8 已实施（2026-08-12）** · 框架完成
 > 定位：**MYP 自举的 schema 驱动代码生成框架**——声明式 schema → 生成 MYP/C/C++ 源码。
 > 对标：PyTorch torchgen（算子 schema → C++/CUDA/Python）、gRPC/Thrift（IDL → 各语言 stub）。
 > 关联：`docs/next_improvements.md` §六-6、`docs/serde_macro.md`（编译器内 `@derive` 为另一路线）、
@@ -232,3 +232,24 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 **下一步**：P0 已闭环（框架 + serde 生成器 + 自测）。下一步按 §10 实施 **P1 `gen_ffi.myp`**
 （C 函数 → ffi 声明 + 资源 RAII，重构 hdf5/sdl 手写桥），以及 P0 延伸：数组字段、
 class 属性方法化 toJson/fromJson。
+
+---
+
+## P8 infer_ops（推理框架算子 codegen）——试运行已落地，后续暂缓
+
+> **2026-08-12 试运行**：ops schema（JSON "ops" 段：name/params/body）→ 生成
+> 逐元素激活的 **CPU + GPU 双份内核**（`GenCpuOps`/`GenGpuOps`），消除手写重复。
+> 验证：CPU 生成 vs 手写 max diff<2.4e-7（FP32），GPU bit-exact（diff 0，真实
+> launch）；`--verify` 编译通过；codegen 自测套件新增步骤 13 全过。
+> 文件：`gen_infer_ops.myp` / `tests/schema_infer_ops.json` / `tests/test_infer_ops.myp`。
+
+**后续方向（已记录，暂不实施）**：
+1. **conv 类算子**：schema 需要结构化布局/分组参数（NCHW/NHWC × fuse × bias），
+   body 之外要描述索引规则（`ix` 反解 ox/oy/oc/nn）——是下一个最有价值的扩展。
+2. **runtime 分发生成**：opKind 分配 + run()/runGpu() 接线分支也由 schema 生成
+   （消除 graph.myp buildRuntime 的逐算子手写分支）。
+3. **替换手写内核**：让生成代码正式接管 ops.myp / gpu_ops.myp 的激活段
+   （先由数值一致性测试确认全等再切）。
+4. **接入主构建**：目前 infer 不依赖生成产物；未来可 gen 到 infer/ 并纳入回归。
+
+> 记录：2026-08-12（G5 之后、P8 试运行之后）。
