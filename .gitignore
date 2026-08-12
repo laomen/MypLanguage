@@ -40,3 +40,9 @@ BNCTDoseEngine/build/
 **/onnxvenv/
 **/venv/
 **/.venv/
+
+# 中间设计文档（不再追踪；仅保留设计文档/用户手册/readme）
+docs/*.md
+!docs/design.md
+!docs/manual.md
+!docs/manual_en.md
