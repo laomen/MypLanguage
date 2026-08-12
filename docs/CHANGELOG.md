@@ -27,7 +27,21 @@
 
 ## 编译器版本历史
 
-### v3.12.2（当前）— 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
+### v3.12.2（当前）— 类型系统增强（P0/P1/P2）+ 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
+- **类型系统增强（type_system_design §3-§7/§9，P0/P1/P2 全部落地）**：
+  - **单一转换权威（§7.1）**：`convertIntegerValue` 收敛 5+ 处内联转换（赋值/属性/数组元素/return/调用实参/变量初始化），无符号源统一 ZExt（修 D1：`long z; z = 0xFFFFFFFFu;` 不再 `-1`）。
+  - **隐式转换格重写（§3.2，无损隐式/有损显式）**：移除 `Int/Long→UInt`、`Int/Long→Float` 隐式与 `char↔byte` 互换；`i64/u64→f64` 改显式；`ulong` 补全（小无符号→大无符号隐式 ZExt，跨符号/浮点显式）。
+  - **bool 入转换链（D6）**：`int(b)`=b?1:0、`bool(n)`=n≠0、`bool(f)`=f≠0；隐式 bool↔整型仍禁。
+  - **char=u8 语义定稿（D7）**：byte=有符号 i8、ubyte=无符号 i8、char=u8 语义别名（0xFF→255 非负）；char 字面量生成 i8；三处符号矛盾消除。
+  - **string 转换统一（修 D2/D3/D4）**：`"x"+f32` 不再编译崩溃、无符号拼接成无符号十进制、char 拼接输出字符；runtime 新增 `myp_to_string_u32/u64/float`。
+  - **string 能力**：比较操作符 `< <= > >=`（词法）、`s[i] : char`、`bytes(s)`/`str(bytes)`（string↔ubyte[]）。
+  - **parse* 全族（§6.2）**：`parseInt/Long/Uint/Ulong/Float/Double(s)` 统一 strtol/strtoull/strtod 语义（`0x` 前缀，失败回 0）。
+  - **位操作原语（§5.3）**：`popcount/clz/ctz/bitreverse/rotl/rotr`（LLVM ctpop/ctlz/cttz/bitreverse/fshl/fshr 直映，多态同宽返回）。
+  - **bit + bitvector<N>（§5.1）**：`bit`=i1（`bit(x)`=x≠0）；`bitvector<8/16/32/64>`=iN——索引 `v[i]:bit`、`&|^<<>>`、`~` 取反、写索引 `v[i]=x`、`bitvector<N>(uint)`/`uintN(bv)` 互转、`bytesOf(bitvector<N>)`→ubyte[]。
+  - **bitfield（§5.1）**：结构体位域打包（背衬整数 ≤8→i8/≤16→i16/≤32→i32/其余 i64）；读=位提取 bit/uint、写=读-改-写；支持类属性 `this.bf` 与数组元素 `arr[i].field`。
+  - **bitcast<T,U>（§5.2）**：位保持重解释（同宽 8/16/32/64，跨宽显式错误）——`bitcast<uint>(1.0f)==0x3F800000`。
+  - **泛型 where T : Trait（§9）**：内置数值 trait `Numeric/Integer/Float/Ordered` + 泛型函数/静态方法 `T f<T where T : Trait>`，实例化时约束校验（零运行时开销）。
+  - 测试：`tests/bitvector`、`tests/bitfield`、`tests/bitcast`、`tests/bit_ops`、`tests/parse_family`、`tests/generic_traits`、`tests/stringify_conv`、`tests/string_cmp`、`tests/string_subscript`、`tests/bool_convert`、`tests/char_semantics`、`tests/bytes_str`、`tests/unsigned_convert` 等。
 - **§9.5 多态数学 intrinsic + `Math` 库按 trait 重写**（§9.5 全部落地，CPU + GPU）：
   - `__myp_math_*` 一元实数/abs/trunc intrinsic 类型感知：sema 按实参类型定返回类型
     （f32→f32、f64→f64）；CPU codegen 按实参类型发 LLVM 标量 intrinsic
