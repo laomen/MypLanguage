@@ -740,8 +740,11 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 - **第二批（2D 通用，秩无关设计）**：`Sub`/`Div`/`Mul`/`Sqrt`（标量/同尺寸/逐通道广播）、
   `ReduceMean`（全/空间规约，mode 0/1）、`InstanceNormalization`（per-(n,c) 空间归一化，
   秩无关：S=空间乘积）、`Resize`（nearest/linear，align_corners/half_pixel/asymmetric）、
-  `AveragePool`（opKind 36/37，count_include_pad 0/1，NCHW+NHWC）、`Split` 内核就绪
-  （多输出接线待拆分处理），opKind 28-37，CPU+GPU。
+  `AveragePool`（opKind 36/37，count_include_pad 0/1，NCHW+NHWC），opKind 28-37，CPU+GPU。
+- **第三批（2D 补齐，2026-08）**：`Pad`（opKind 38/39，constant/reflect/edge + value，NCHW+NHWC）、
+  `ConvTranspose`（opKind 40，group=1，strides/pads/output_padding/bias，NCHW）、
+  `Split` 多输出接线（loader 收 4 输出 + split attr/输入；graph inferShapes 算 start/len 并
+  逐输出 addSplit；`isNodeOutput`/classifyShapes 覆盖多输出）。F8 2D 全部完成。
 - **秩无关设计**（2D/3D 通用）：元素级 flat n；InstanceNorm/ReduceMean 用 (N,C,空间乘积 S)——
   3D 时 S=D·H·W 即可；Split 用 5 维解码（2D d4=1，3D 真实）。
 - **实现**：graph.myp（inferShapes/buildRuntime + NodeField MODE/TRANSFORM/UPSH/UPSW/KEEP/AXES0-3；

@@ -169,6 +169,11 @@ class OnnxLoader {
                     if (aname == "mode") {
                         if (sv == "linear" || sv == "bilinear") g_.nodeInt(ni, NodeField.MODE(), 1);
                         else g_.nodeInt(ni, NodeField.MODE(), 0);   // nearest
+                        // F8：Pad mode（与 Resize 共用 "mode" 属性名；Resize 忽略 PADMODE，Pad 忽略 MODE）
+                        if (sv == "constant") g_.nodeInt(ni, NodeField.PADMODE(), 0);
+                        else if (sv == "reflect") g_.nodeInt(ni, NodeField.PADMODE(), 1);
+                        else if (sv == "edge") g_.nodeInt(ni, NodeField.PADMODE(), 2);
+                        else if (sv == "wrap") g_.nodeInt(ni, NodeField.PADMODE(), 3);
                     }
                     if (aname == "coordinate_transformation_mode") {
                         if (sv == "align_corners") g_.nodeInt(ni, NodeField.TRANSFORM(), 0);
@@ -199,6 +204,7 @@ class OnnxLoader {
                         else g_.nodeInt(ni, NodeField.PR(), v);
                     }
                     else if (aname == "dilations") { if (idx == 0) g_.nodeInt(ni, NodeField.DH(), v); else g_.nodeInt(ni, NodeField.DW(), v); }
+                    else if (aname == "output_padding") { if (idx == 0) g_.nodeInt(ni, NodeField.OPH(), v); else g_.nodeInt(ni, NodeField.OPW(), v); }   // F8：ConvTranspose
                     else if (aname == "kernel_shape") { if (idx == 0) g_.nodeInt(ni, NodeField.KH(), v); else g_.nodeInt(ni, NodeField.KW(), v); }
                     else if (aname == "perm") {   // F8：Transpose perm（ints 非打包）
                         if (idx == 0) g_.nodeInt(ni, NodeField.PERM0(), v);
@@ -213,6 +219,13 @@ class OnnxLoader {
                         else if (idx == 2) g_.nodeInt(ni, NodeField.AXES2(), v);
                         else g_.nodeInt(ni, NodeField.AXES3(), v);
                         g_.nodeInt(ni, NodeField.AXES_N(), idx + 1);
+                    }
+                    else if (aname == "split") {   // F8：Split 各输出尺寸（缺省 → 均分）
+                        if (idx == 0) g_.nodeInt(ni, NodeField.SPLIT0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.SPLIT1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.SPLIT2(), v);
+                        else g_.nodeInt(ni, NodeField.SPLIT3(), v);
+                        g_.nodeInt(ni, NodeField.SPLIT_N(), idx + 1);
                     }
                     idx = idx + 1;
                 } else if (f == 5) {    // t（Constant 节点的 value：TensorProto）记录字节，稍后折叠

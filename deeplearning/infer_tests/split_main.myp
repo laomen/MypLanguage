@@ -1,0 +1,85 @@
+// split_main.myp — F8：Split 多输出端到端测试（axis=1, split=[1,3] vs ORT）
+// split_test.onnx（opset13）：x[1,4,8,8] → Split(axis=1, split=[1,3]) → y0[1,1,8,8], y1[1,3,8,8]
+// 输入 x 与 ORT 参考 y0/y1 由 tools/make_split_onnx.py 生成（data/onnx/）。
+// 运行：./build/mypc deeplearning/infer_tests/split_main.myp -o /tmp/sp --stdlib stdlib && /tmp/sp
+import env;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class SplitTestApp {
+    action:
+        @constructor SplitTestApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2048);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load("./deeplearning/data/onnx/split_test.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            Console.writeString("graph: ops=");
+            Console.writeLong(rt.opCount());
+            Console.writeLine("");
+
+            int inT = loader.tensorId("x");
+            int y0T = loader.tensorId("y0");
+            int y1T = loader.tensorId("y1");
+            if (inT < 0 || y0T < 0 || y1T < 0) { Console.writeLine("tensor not found"); return; }
+            int nIn = rt.tensorSize(inT);
+            double[] buf = new double[512];
+            readF32("./deeplearning/data/onnx/split_test.f32", buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            rt.run();
+            int ok0 = checkOut(rt, y0T, "./deeplearning/data/onnx/split_test_ort0.bin", rt.tensorSize(y0T));
+            int ok1 = checkOut(rt, y1T, "./deeplearning/data/onnx/split_test_ort1.bin", rt.tensorSize(y1T));
+            if (ok0 == 1 && ok1 == 1) Console.writeLine("SPLIT ALL OK");
+            else Console.writeLine("SPLIT MISMATCH");
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        int checkOut(InferenceRuntime rt, int tid, string path, int n) {
+            if (tid < 0) return 0;
+            int fd = __myp_io_fopen(path, "rb");
+            double maxD = 0.0;
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                double rv = F32.toDouble(bits);
+                double dv = rt.getFlat(tid, i) - rv;
+                if (dv < 0.0) dv = 0.0 - dv;
+                if (dv > maxD) maxD = dv;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("max diff vs ORT: ");
+            Console.writeFloat(maxD);
+            if (maxD < 1.0e-4) { Console.writeLine("  OK"); return 1; }
+            Console.writeLine("  MISMATCH");
+            return 0;
+        }
+}
+
+int main() {
+    SplitTestApp app = new SplitTestApp();
+    return 0;
+}

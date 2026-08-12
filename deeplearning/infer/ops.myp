@@ -168,6 +168,65 @@ class InferOps {
             }
         }
 
+        // ConvTranspose（转置卷积/反卷积，group=1）：x[N,Cin,H,W] → y[N,Cout,yH,yW]
+        // 权重 W[Cin,Cout,kh,kw]（ONNX 布局，直接拷贝，不转置）。
+        // gather 公式：y[n,co,oh,ow] = Σ_{ci,ky,kx} x[n,ci,ih,iw] * W[ci,co,ky,kx]
+        //   其中 ih=(oh+pt-ky)/sh 需整除且 0<=ih<H（iw 同理）。output_padding 已含在 yH/yW。
+        void convTranspose(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int oc = 0;
+                while (oc < yC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float sum = 0.0f;
+                            if (bOff >= 0) sum = arena[bOff + oc];
+                            int ic = 0;
+                            while (ic < xC) {
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int inum = oy + pt - ky;
+                                    if (inum >= 0 && inum % sh == 0) {
+                                        int iy = inum / sh;
+                                        if (iy >= 0 && iy < xH) {
+                                            int kx = 0;
+                                            while (kx < kw) {
+                                                int wnum = ox + pl - kx;
+                                                if (wnum >= 0 && wnum % sw == 0) {
+                                                    int iw = wnum / sw;
+                                                    if (iw >= 0 && iw < xW) {
+                                                        float xv = arena[xOff + n * xC * xH * xW + ic * xH * xW + iy * xW + iw];
+                                                        float wv = arena[wOff + ((ic * yC + oc) * kh + ky) * kw + kx];
+                                                        sum = sum + xv * wv;
+                                                    }
+                                                }
+                                                kx = kx + 1;
+                                            }
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                ic = ic + 1;
+                            }
+                            arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量。
         // 参数与 conv 相同，唯一区别：y 处写 max(sum, 0)。
         void convRelu(
@@ -312,6 +371,69 @@ class InferOps {
                             ox = ox + 1;
                         }
                         oy = oy + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // Pad：constant/reflect/edge（ONNX Pad opset11+；pads = [N,C,H,W] 各轴 begin/end）
+        // mode: 0=constant, 1=reflect, 2=edge。cval 仅 constant 用（float 位型经宿主解码为 double）。
+        void pad(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int yOff, int yN, int yC, int yH, int yW,
+            int pnB, int pcB, int phB, int pwB, int pnE, int pcE, int phE, int pwE,
+            int mode, double cval
+        ) {
+            int n = 0;
+            while (n < yN) {
+                int c = 0;
+                while (c < yC) {
+                    int h = 0;
+                    while (h < yH) {
+                        int w = 0;
+                        while (w < yW) {
+                            int sn = n - pnB;
+                            int sc = c - pcB;
+                            int sh = h - phB;
+                            int sw = w - pwB;
+                            int inb = 1;
+                            if (sn < 0 || sn >= xN) inb = 0;
+                            if (sc < 0 || sc >= xC) inb = 0;
+                            if (sh < 0 || sh >= xH) inb = 0;
+                            if (sw < 0 || sw >= xW) inb = 0;
+                            float v = 0.0f;
+                            if (inb == 1) {
+                                v = arena[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                            } else if (mode == 1) {
+                                if (sn < 0) sn = 0 - sn;
+                                if (sc < 0) sc = 0 - sc;
+                                if (sh < 0) sh = 0 - sh;
+                                if (sw < 0) sw = 0 - sw;
+                                if (sn >= xN) sn = 2 * (xN - 1) - sn;
+                                if (sc >= xC) sc = 2 * (xC - 1) - sc;
+                                if (sh >= xH) sh = 2 * (xH - 1) - sh;
+                                if (sw >= xW) sw = 2 * (xW - 1) - sw;
+                                v = arena[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                            } else if (mode == 2) {
+                                if (sn < 0) sn = 0;
+                                if (sc < 0) sc = 0;
+                                if (sh < 0) sh = 0;
+                                if (sw < 0) sw = 0;
+                                if (sn >= xN) sn = xN - 1;
+                                if (sc >= xC) sc = xC - 1;
+                                if (sh >= xH) sh = xH - 1;
+                                if (sw >= xW) sw = xW - 1;
+                                v = arena[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                            } else {
+                                v = float(cval);
+                            }
+                            arena[yOff + ((n * yC + c) * yH + h) * yW + w] = v;
+                            w = w + 1;
+                        }
+                        h = h + 1;
                     }
                     c = c + 1;
                 }
@@ -568,6 +690,68 @@ class InferOps {
                         ox = ox + 1;
                     }
                     oy = oy + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // Pad（NHWC）：pads 在逻辑轴 [N,H,W,C] 上的 begin/end（内存元数据 (tN,tC,tH,tW)=(N,H,W,C)）
+        void padNHWC(
+            float[] arena,
+            int xOff, int xN, int xH, int xW, int xC,
+            int yOff, int yN, int yH, int yW, int yC,
+            int pnB, int phB, int pwB, int pcB, int pnE, int phE, int pwE, int pcE,
+            int mode, double cval
+        ) {
+            int n = 0;
+            while (n < yN) {
+                int h = 0;
+                while (h < yH) {
+                    int w = 0;
+                    while (w < yW) {
+                        int c = 0;
+                        while (c < yC) {
+                            int sn = n - pnB;
+                            int sc = c - pcB;
+                            int sh = h - phB;
+                            int sw = w - pwB;
+                            int inb = 1;
+                            if (sn < 0 || sn >= xN) inb = 0;
+                            if (sc < 0 || sc >= xC) inb = 0;
+                            if (sh < 0 || sh >= xH) inb = 0;
+                            if (sw < 0 || sw >= xW) inb = 0;
+                            float v = 0.0f;
+                            if (inb == 1) {
+                                v = arena[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                            } else if (mode == 1) {
+                                if (sn < 0) sn = 0 - sn;
+                                if (sc < 0) sc = 0 - sc;
+                                if (sh < 0) sh = 0 - sh;
+                                if (sw < 0) sw = 0 - sw;
+                                if (sn >= xN) sn = 2 * (xN - 1) - sn;
+                                if (sc >= xC) sc = 2 * (xC - 1) - sc;
+                                if (sh >= xH) sh = 2 * (xH - 1) - sh;
+                                if (sw >= xW) sw = 2 * (xW - 1) - sw;
+                                v = arena[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                            } else if (mode == 2) {
+                                if (sn < 0) sn = 0;
+                                if (sc < 0) sc = 0;
+                                if (sh < 0) sh = 0;
+                                if (sw < 0) sw = 0;
+                                if (sn >= xN) sn = xN - 1;
+                                if (sc >= xC) sc = xC - 1;
+                                if (sh >= xH) sh = xH - 1;
+                                if (sw >= xW) sw = xW - 1;
+                                v = arena[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                            } else {
+                                v = float(cval);
+                            }
+                            arena[yOff + ((n * yH + h) * yW + w) * yC + c] = v;
+                            c = c + 1;
+                        }
+                        w = w + 1;
+                    }
+                    h = h + 1;
                 }
                 n = n + 1;
             }

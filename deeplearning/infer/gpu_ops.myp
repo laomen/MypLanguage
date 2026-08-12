@@ -152,6 +152,51 @@ class GpuInferOps {
             }
         }
 
+        // ConvTranspose（转置卷积，group=1）：thread-per-output，权重 W[Cin,Cout,kh,kw]
+        void convTranspose(float[] a, int work,
+                  int xOff, int xN, int xC, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yH, int yW,
+                  int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oc = (p / (yW * yH)) % yC;
+                    long nn = p / (yW * yH * yC);
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + oc];
+                    int ic = 0;
+                    while (ic < xC) {
+                        int ky = 0;
+                        while (ky < kh) {
+                            long inum = oy + pt - ky;
+                            if (inum >= 0 && inum % sh == 0) {
+                                long iy = inum / sh;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        long wnum = ox + pl - kx;
+                                        if (wnum >= 0 && wnum % sw == 0) {
+                                            long iw = wnum / sw;
+                                            if (iw >= 0 && iw < xW) {
+                                                sum = sum + a[xOff + nn * xC * xH * xW + ic * xH * xW + iy * xW + iw]
+                                                           * a[wOff + ((ic * yC + oc) * kh + ky) * kw + kx];
+                                            }
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                            }
+                            ky = ky + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    a[yOff + p] = sum;
+                }
+            }
+        }
+
         // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量（少一次
         // kernel 启动 + 少一次中间张量读写）。参数与 conv 相同，y 处写 max(sum,0)。
         void convRelu(float[] a, int work,
@@ -265,6 +310,60 @@ class GpuInferOps {
                     if (cip == 1) cnt = kh * kw;
                     if (cnt > 0) a[yOff + p] = sum / cnt;
                     else a[yOff + p] = 0.0f;
+                }
+            }
+        }
+
+        // Pad：constant/reflect/edge（thread-per-output；mode 0=const,1=reflect,2=edge）
+        void pad(float[] a, int work,
+                 int xOff, int xN, int xC, int xH, int xW,
+                 int yOff, int yN, int yC, int yH, int yW,
+                 int pnB, int pcB, int phB, int pwB, int pnE, int pcE, int phE, int pwE,
+                 int mode, double cval, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long w = p % yW;
+                    long t = p / yW;
+                    long h = t % yH;
+                    t = t / yH;
+                    long c = t % yC;
+                    long n = t / yC;
+                    long sn = n - pnB;
+                    long sc = c - pcB;
+                    long sh = h - phB;
+                    long sw = w - pwB;
+                    int inb = 1;
+                    if (sn < 0 || sn >= xN) inb = 0;
+                    if (sc < 0 || sc >= xC) inb = 0;
+                    if (sh < 0 || sh >= xH) inb = 0;
+                    if (sw < 0 || sw >= xW) inb = 0;
+                    float v = 0.0f;
+                    if (inb == 1) {
+                        v = a[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                    } else if (mode == 1) {
+                        if (sn < 0) sn = 0L - sn;
+                        if (sc < 0) sc = 0L - sc;
+                        if (sh < 0) sh = 0L - sh;
+                        if (sw < 0) sw = 0L - sw;
+                        if (sn >= xN) sn = long(2 * (xN - 1)) - sn;
+                        if (sc >= xC) sc = long(2 * (xC - 1)) - sc;
+                        if (sh >= xH) sh = long(2 * (xH - 1)) - sh;
+                        if (sw >= xW) sw = long(2 * (xW - 1)) - sw;
+                        v = a[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                    } else if (mode == 2) {
+                        if (sn < 0) sn = 0L;
+                        if (sc < 0) sc = 0L;
+                        if (sh < 0) sh = 0L;
+                        if (sw < 0) sw = 0L;
+                        if (sn >= xN) sn = long(xN - 1);
+                        if (sc >= xC) sc = long(xC - 1);
+                        if (sh >= xH) sh = long(xH - 1);
+                        if (sw >= xW) sw = long(xW - 1);
+                        v = a[xOff + ((sn * xC + sc) * xH + sh) * xW + sw];
+                    } else {
+                        v = float(cval);
+                    }
+                    a[yOff + p] = v;
                 }
             }
         }
@@ -469,6 +568,60 @@ class GpuInferOps {
                     if (cip == 1) cnt = kh * kw;
                     if (cnt > 0) a[yOff + p] = sum / cnt;
                     else a[yOff + p] = 0.0f;
+                }
+            }
+        }
+
+        // Pad（NHWC）：x:[N,H,W,C] → y:[N,yH,yW,C]
+        void padNHWC(float[] a, int work,
+                 int xOff, int xN, int xH, int xW, int xC,
+                 int yOff, int yN, int yH, int yW, int yC,
+                 int pnB, int phB, int pwB, int pcB, int pnE, int phE, int pwE, int pcE,
+                 int mode, double cval, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % yC;
+                    long t = p / yC;
+                    long w = t % yW;
+                    t = t / yW;
+                    long h = t % yH;
+                    long n = t / yH;
+                    long sn = n - pnB;
+                    long sc = c - pcB;
+                    long sh = h - phB;
+                    long sw = w - pwB;
+                    int inb = 1;
+                    if (sn < 0 || sn >= xN) inb = 0;
+                    if (sc < 0 || sc >= xC) inb = 0;
+                    if (sh < 0 || sh >= xH) inb = 0;
+                    if (sw < 0 || sw >= xW) inb = 0;
+                    float v = 0.0f;
+                    if (inb == 1) {
+                        v = a[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                    } else if (mode == 1) {
+                        if (sn < 0) sn = 0L - sn;
+                        if (sc < 0) sc = 0L - sc;
+                        if (sh < 0) sh = 0L - sh;
+                        if (sw < 0) sw = 0L - sw;
+                        if (sn >= xN) sn = long(2 * (xN - 1)) - sn;
+                        if (sc >= xC) sc = long(2 * (xC - 1)) - sc;
+                        if (sh >= xH) sh = long(2 * (xH - 1)) - sh;
+                        if (sw >= xW) sw = long(2 * (xW - 1)) - sw;
+                        v = a[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                    } else if (mode == 2) {
+                        if (sn < 0) sn = 0L;
+                        if (sc < 0) sc = 0L;
+                        if (sh < 0) sh = 0L;
+                        if (sw < 0) sw = 0L;
+                        if (sn >= xN) sn = long(xN - 1);
+                        if (sc >= xC) sc = long(xC - 1);
+                        if (sh >= xH) sh = long(xH - 1);
+                        if (sw >= xW) sw = long(xW - 1);
+                        v = a[xOff + ((sn * xH + sh) * xW + sw) * xC + sc];
+                    } else {
+                        v = float(cval);
+                    }
+                    a[yOff + p] = v;
                 }
             }
         }

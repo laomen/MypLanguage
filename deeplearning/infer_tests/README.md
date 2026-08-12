@@ -21,6 +21,9 @@
 | `slice_main.myp` | **F8** | Slice 端到端（正区间/负索引/负 step/INT64_MAX vs ORT，位精确） | `data/onnx/slice_test.onnx`（`tools/make_slice_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `ops2d_main.myp` | **F8** | 2D 通用算子端到端（Sub/Div/Mul/Sqrt/ReduceMean/InstanceNorm/Resize vs ORT） | `data/onnx/ops2d_test.onnx`（`tools/make_2dops_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `avgpool_main.myp` | **F8** | AveragePool 端到端（count_include_pad 0/1 + 下采样 vs ORT） | `data/onnx/avgpool_test.onnx`（`tools/make_avgpool_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
+| `pad_main.myp` | **F8** | Pad 端到端（constant/edge/reflect + value vs ORT，位精确） | `data/onnx/pad_test.onnx`（`tools/make_pad_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
+| `convt_main.myp` | **F8** | ConvTranspose 端到端（strides=2/pads/output_padding/bias vs ORT） | `data/onnx/convt_test.onnx`（`tools/make_convt_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
+| `split_main.myp` | **F8** | Split 多输出端到端（axis=1, split=[1,3]，两输出 vs ORT，位精确） | `data/onnx/split_test.onnx`（`tools/make_split_onnx.py` 生成，含 .f32 + 两 ORT 参考 .bin） |
 
 ## 构建与运行
 

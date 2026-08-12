@@ -59,6 +59,14 @@ class NodeField {
         int AXES3() { return 33; }
         int AXES_N() { return 34; }      // F8：axes 元素数
         int CIP() { return 35; }         // F8：AveragePool count_include_pad（0/1）
+        int PADMODE() { return 36; }     // F8：Pad mode（0=const,1=reflect,2=edge）
+        int OPH() { return 37; }         // F8：ConvTranspose output_padding 高
+        int OPW() { return 38; }         // F8：ConvTranspose output_padding 宽
+        int SPLIT0() { return 39; }      // F8：Split 输出 0 的尺寸（split attr）
+        int SPLIT1() { return 40; }
+        int SPLIT2() { return 41; }
+        int SPLIT3() { return 42; }
+        int SPLIT_N() { return 43; }     // F8：Split 尺寸个数
 }
 
 class Graph {
@@ -99,12 +107,22 @@ class Graph {
             nKeep_[i] = 0; nRedMode_[i] = 0;                                   // F8: ReduceMean
             nAx0_[i] = 0; nAx1_[i] = 0; nAx2_[i] = 0; nAx3_[i] = 0; nAxN_[i] = 0;
             nCip_[i] = 0;                                                      // F8: AveragePool count_include_pad
+            nPadMode_[i] = 0; nPadCval_[i] = 0;                                // F8: Pad mode / constant_value
+            nOutPadH_[i] = 0; nOutPadW_[i] = 0;                                // F8: ConvTranspose output_padding
+            nOut1_[i] = ""; nOut2_[i] = ""; nOut3_[i] = ""; nOutN_[i] = 0;   // F8: Split 多输出
+            nSplitN_[i] = 0; nSp0_[i] = 0; nSp1_[i] = 0; nSp2_[i] = 0; nSp3_[i] = 0;
             return i;
         }
         void endNode() { nCount_ = nCount_ + 1; }
         void nodeType(int i, string v) { nType_[i] = v; }
         void nodeIn(int i, int slot, string v) { if (slot==0) nIn0_[i]=v; else if (slot==1) nIn1_[i]=v; else if (slot==2) nIn2_[i]=v; else if (slot==3) nIn3_[i]=v; else nIn4_[i]=v; }
-        void nodeOut(int i, string v) { nOut0_[i] = v; }
+        void nodeOut(int i, string v) {
+            if (nOut0_[i] == "") nOut0_[i] = v;
+            else if (nOut1_[i] == "") nOut1_[i] = v;
+            else if (nOut2_[i] == "") nOut2_[i] = v;
+            else nOut3_[i] = v;
+            nOutN_[i] = nOutN_[i] + 1;   // F8：Split 多输出计数
+        }
         void nodeInt(int i, int code, int v) {
             if (code == NodeField.TRANSB()) nTransB_[i] = v;
             else if (code == NodeField.AXIS()) nAxis_[i] = v;
@@ -142,6 +160,14 @@ class Graph {
             else if (code == NodeField.AXES3()) nAx3_[i] = v;
             else if (code == NodeField.AXES_N()) nAxN_[i] = v;
             else if (code == NodeField.CIP()) nCip_[i] = v;
+            else if (code == NodeField.PADMODE()) nPadMode_[i] = v;
+            else if (code == NodeField.OPH()) nOutPadH_[i] = v;
+            else if (code == NodeField.OPW()) nOutPadW_[i] = v;
+            else if (code == NodeField.SPLIT0()) nSp0_[i] = v;
+            else if (code == NodeField.SPLIT1()) nSp1_[i] = v;
+            else if (code == NodeField.SPLIT2()) nSp2_[i] = v;
+            else if (code == NodeField.SPLIT3()) nSp3_[i] = v;
+            else if (code == NodeField.SPLIT_N()) nSplitN_[i] = v;
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             wName_[wCount_] = nm; wRows_[wCount_] = rows; wCols_[wCount_] = cols;
@@ -222,6 +248,10 @@ class Graph {
                 } else if (t == "Conv") {
                     markCNNWeight(nIn1_[i]);
                     markCNNBias(nIn2_[i]);
+                } else if (t == "ConvTranspose") {
+                    // F8：权重 [Cin,Cout,kh,kw] 直接拷贝（wRole_=2 无需转置）
+                    markCNNWeight(nIn1_[i]);
+                    markCNNBias(nIn2_[i]);
                 } else if (t == "Concat" || t == "Transpose" || t == "Reshape") {
                     // F8：4D 通用常量输入 → CNN 激活登记 + 直接拷贝（Concat 的非常量输入/常量）
                     markGeneric4DConst(nIn0_[i]);
@@ -237,6 +267,13 @@ class Graph {
                     // F8：scale/bias [C] 常量 → FC_B 登记（addTensorPlanned2(d0,1)）
                     markFCBias(nIn1_[i]);
                     markFCBias(nIn2_[i]);
+                } else if (t == "Pad") {
+                    // F8：pads（int64）与 constant_value（f32）参数不登记为 f32 激活张量
+                    markInt64Param(nIn1_[i]);
+                    markParamDead(nIn2_[i]);
+                } else if (t == "Split") {
+                    // F8：split 尺寸输入（opset13+，int64）不登记为 f32 张量
+                    markInt64Param(nIn1_[i]);
                 } else if (t == "Resize" || t == "Upsample") {
                     // F8：scales/sizes 参数初始器不登记为激活（读自 file_）
                     markParamDead(nIn1_[i]);
@@ -267,6 +304,11 @@ class Graph {
                     k = shapeKind(nIn0_[i]);
                 }
                 setShapeKind(nOut0_[i], k);
+                if (t == "Split") {   // F8：Split 所有输出沿用主输入 kind
+                    setShapeKind(nOut1_[i], k);
+                    setShapeKind(nOut2_[i], k);
+                    setShapeKind(nOut3_[i], k);
+                }
                 i = i + 1;
             }
             return 1;
@@ -301,7 +343,7 @@ class Graph {
         int isNodeOutput(string name) {
             int i = 0;
             while (i < nCount_) {
-                if (nOut0_[i] == name) return 1;
+                if (nOut0_[i] == name || nOut1_[i] == name || nOut2_[i] == name || nOut3_[i] == name) return 1;
                 i = i + 1;
             }
             return 0;
@@ -370,7 +412,20 @@ class Graph {
             while (i < nCount_) {
                 string t = nType_[i];
                 if (t == "") { i = i + 1; continue; }   // 死节点（折叠/融合消掉）跳过
-                if (t == "Conv") {
+                if (t == "ConvTranspose") {
+                    // F8：转置卷积（group=1；权重 [Cin,Cout,kh,kw]，d1=Cout，d2=kh，d3=kw）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int w = shapeIdx(nIn1_[i]); if (w < 0) return 0;
+                    int N = shD0_[a]; int Cin = shD1_[a]; int H = shD2_[a]; int W = shD3_[a];
+                    int Cout = shD1_[w];
+                    int kh = nKH_[i]; if (kh <= 0) kh = shD2_[w];
+                    int kw = nKW_[i]; if (kw <= 0) kw = shD3_[w];
+                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
+                    int yH = (H - 1) * sh_ - nPT_[i] - nPB_[i] + kh + nOutPadH_[i];
+                    int yW = (W - 1) * sw_ - nPL_[i] - nPR_[i] + kw + nOutPadW_[i];
+                    addShapeD4(nOut0_[i], N, Cout, yH, yW);
+                } else if (t == "Conv") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int w = shapeIdx(nIn1_[i]); if (w < 0) return 0;
                     int N = shD0_[a]; int H = shD2_[a]; int W = shD3_[a];
@@ -395,6 +450,20 @@ class Graph {
                     int yH = (H + nPT_[i] + nPB_[i] - kh) / nSH_[i] + 1;
                     int yW = (W + nPL_[i] + nPR_[i] - kw) / nSW_[i] + 1;
                     addShapeD4(nOut0_[i], N, C, yH, yW);
+                } else if (t == "Pad") {
+                    // F8：pads = [N,C,H,W] 各轴 begin/end（int64 初始器输入，opset11+）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int pc = readI64Init(nIn1_[i], 8);
+                    if (pc < 8) return 0;
+                    int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int phB = int(i64TmpL_[2]); int pwB = int(i64TmpL_[3]);
+                    int pnE = int(i64TmpL_[4]); int pcE = int(i64TmpL_[5]); int phE = int(i64TmpL_[6]); int pwE = int(i64TmpL_[7]);
+                    nPadB_[i * 4 + 0] = pnB; nPadB_[i * 4 + 1] = pcB; nPadB_[i * 4 + 2] = phB; nPadB_[i * 4 + 3] = pwB;
+                    nPadE_[i * 4 + 0] = pnE; nPadE_[i * 4 + 1] = pcE; nPadE_[i * 4 + 2] = phE; nPadE_[i * 4 + 3] = pwE;
+                    double cv = 0.0;
+                    if (nIn2_[i] != "") { int cvc = readF32Init(nIn2_[i], 1); if (cvc > 0) cv = f32Tmp_[0]; }
+                    nPadCval_[i] = F32.toBits(cv);
+                    addShapeD4(nOut0_[i], shD0_[a] + pnB + pnE, shD1_[a] + pcB + pcE,
+                               shD2_[a] + phB + phE, shD3_[a] + pwB + pwE);
                 } else if (t == "GlobalAveragePool") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     addShapeD4(nOut0_[i], shD0_[a], shD1_[a], 1, 1);
@@ -525,6 +594,39 @@ class Graph {
                         k = k + 1;
                     }
                     addShapeD4(nOut0_[i], odim[0], odim[1], odim[2], odim[3]);
+                } else if (t == "Split") {
+                    // F8：沿 axis 分割为 nOutN_ 个输出（split attr 或均分；starts/lens 存 nSplitSt_/nSplitLn_）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int axis = nAxis_[i]; if (axis < 0) axis = 0;
+                    int D = (axis == 0) ? shD0_[a] : ((axis == 1) ? shD1_[a] : ((axis == 2) ? shD2_[a] : shD3_[a]));
+                    int no = nOutN_[i]; if (no < 1) no = 1;
+                    int ns = nSplitN_[i];
+                    int fromInput = 0;
+                    if (ns <= 0 && nIn1_[i] != "") { ns = readI64Init(nIn1_[i], 4); fromInput = 1; }   // opset13+：split 为输入
+                    int acc = 0;
+                    int j = 0;
+                    while (j < no && j < 4) {
+                        int sz;
+                        if (ns > j) {
+                            if (fromInput == 1) sz = int(i64TmpL_[j]);
+                            else sz = (j == 0) ? nSp0_[i] : ((j == 1) ? nSp1_[i] : ((j == 2) ? nSp2_[i] : nSp3_[i]));
+                        } else {
+                            sz = D / no;
+                        }
+                        if (j == no - 1) sz = D - acc;   // 最后一份吸收余数
+                        if (sz < 0) sz = 0;
+                        nSplitSt_[i * 4 + j] = acc;
+                        nSplitLn_[i * 4 + j] = sz;
+                        acc = acc + sz;
+                        int d0 = shD0_[a], d1 = shD1_[a], d2 = shD2_[a], d3 = shD3_[a];
+                        if (axis == 0) d0 = sz;
+                        else if (axis == 1) d1 = sz;
+                        else if (axis == 2) d2 = sz;
+                        else d3 = sz;
+                        string onm = (j == 0) ? nOut0_[i] : ((j == 1) ? nOut1_[i] : ((j == 2) ? nOut2_[i] : nOut3_[i]));
+                        addShapeD4(onm, d0, d1, d2, d3);
+                        j = j + 1;
+                    }
                 } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
                     // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -922,7 +1024,7 @@ class Graph {
                 nNHWC_[i] = 0;
                 string t = nType_[i];
                 if (t == "Conv") nNHWC_[i] = 1;                       // 卷积主干始终 NHWC
-                else if (t == "MaxPool" || t == "AveragePool" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
+                else if (t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
                     int p0 = producerNHWC(nIn0_[i]);
                     int p1 = producerNHWC(nIn1_[i]);
                     if (p0 == 1 || p1 == 1) nNHWC_[i] = 1;
@@ -943,7 +1045,7 @@ class Graph {
             i = 0;
             while (i < nCount_) {
                 string t = nType_[i];
-                if (nNHWC_[i] == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
+                if (nNHWC_[i] == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Pad" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
                     ensureNHWCInput(i, 0);
                     if (t == "Conv") markWeightNHWC(nIn1_[i]);
                     if (t == "Add") ensureNHWCInput(i, 1);
@@ -1187,6 +1289,28 @@ class Graph {
                 } else if (t == "Clip") {
                     // G4：Clip（ReLU6=Clip(x,0,6)）；min/max 为标量输入（opset 11+）
                     rt.addClip(a, out, tensorId(nIn1_[ni]), tensorId(nIn2_[ni]));
+                } else if (t == "ConvTranspose") {
+                    // F8：ConvTranspose（group=1；kh/kw 由权重张量 tH_[w]/tW_[w] 给出）
+                    int w = tensorId(nIn1_[ni]);
+                    int b = tensorId(nIn2_[ni]);
+                    rt.addConvTranspose(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni],
+                                        nOutPadH_[ni], nOutPadW_[ni], nGroup_[ni]);
+                } else if (t == "Split") {
+                    // F8：沿 axis 复制 [start, start+len) 到每个输出（一个输出一个 op）
+                    int inS = shapeIdx(nIn0_[ni]);
+                    int d0 = 1, d1 = 1, d2 = 1, d3 = 1;
+                    if (inS >= 0) { d0 = shD0_[inS]; d1 = shD1_[inS]; d2 = shD2_[inS]; d3 = shD3_[inS]; }
+                    int no = nOutN_[ni]; if (no < 1) no = 1;
+                    int j = 0;
+                    while (j < no && j < 4) {
+                        string onm = (j == 0) ? nOut0_[ni] : ((j == 1) ? nOut1_[ni] : ((j == 2) ? nOut2_[ni] : nOut3_[ni]));
+                        int o = tensorId(onm);
+                        if (o >= 0) {
+                            rt.addSplit(a, o, nAxis_[ni], nSplitSt_[ni * 4 + j], nSplitLn_[ni * 4 + j],
+                                        d0, d1, d2, d3, 1);
+                        }
+                        j = j + 1;
+                    }
                 } else if (t == "Conv") {
                     int w = tensorId(nIn1_[ni]);
                     int b = tensorId(nIn2_[ni]);
@@ -1208,6 +1332,16 @@ class Graph {
                     // F8：AveragePool（cip = count_include_pad）
                     if (nNHWC_[ni] == 1) rt.addAvgPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
                     else rt.addAvgPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
+                } else if (t == "Pad") {
+                    // F8：Pad（NHWC 时 pads 从逻辑 [N,C,H,W] 重排为 [N,H,W,C]）
+                    if (nNHWC_[ni] == 1) rt.addPadNHWC(a, out,
+                        nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3], nPadB_[ni * 4 + 1],
+                        nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3], nPadE_[ni * 4 + 1],
+                        nPadMode_[ni], nPadCval_[ni]);
+                    else rt.addPad(a, out,
+                        nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 1], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3],
+                        nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 1], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3],
+                        nPadMode_[ni], nPadCval_[ni]);
                 } else if (t == "GlobalAveragePool") {
                     // G2：out 已是融合后的 flatten 输出（fuseGapFlatten 改写）；GAP 布局无关
                     if (nNHWC_[ni] == 1) rt.addGAPoolNHWC(a, out);
@@ -1504,6 +1638,23 @@ class Graph {
         int[512] nAx3_;
         int[512] nAxN_;         // F8：axes 元素数
         int[512] nCip_;         // F8：AveragePool count_include_pad
+        int[2048] nPadB_;       // F8：Pad 各轴 begin [node*4+k]（逻辑 [N,C,H,W]）
+        int[2048] nPadE_;       // F8：Pad 各轴 end
+        int[512] nPadMode_;     // F8：Pad mode（0=const,1=reflect,2=edge）
+        int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
+        int[512] nOutPadH_;     // F8：ConvTranspose output_padding 高
+        int[512] nOutPadW_;     // F8：ConvTranspose output_padding 宽
+        string[512] nOut1_;     // F8：Split 第 2/3/4 输出
+        string[512] nOut2_;
+        string[512] nOut3_;
+        int[512] nOutN_;        // F8：Split 输出个数
+        int[512] nSplitN_;      // F8：Split split attr 尺寸个数
+        int[512] nSp0_;         // F8：Split 各输出尺寸
+        int[512] nSp1_;
+        int[512] nSp2_;
+        int[512] nSp3_;
+        int[2048] nSplitSt_;    // F8：Split 各输出沿 axis 的 start [node*4+j]
+        int[2048] nSplitLn_;    // F8：Split 各输出沿 axis 的 len
         int[512] nEpsInt_;       // G3：BN epsilon 属性位型
         int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
         int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型

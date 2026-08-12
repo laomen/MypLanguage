@@ -201,6 +201,23 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- F8：ConvTranspose（opKind 40，group=1）----
+        // 权重 [Cin,Cout,kh,kw] 直接拷贝（ONNX 布局）；outPad 已并入输出形状（内核用不到）
+        void addConvTranspose(int inTid, int wTid, int bTid, int outTid,
+                              int sh, int sw, int pt, int pb, int pl, int pr,
+                              int outPadH, int outPadW, int group) {
+            int id = opCount_;
+            opKind_[id] = 40;
+            opA_[id] = inTid;
+            opB_[id] = wTid;
+            opC_[id] = bTid;
+            opD_[id] = outTid;
+            opP0_[id] = sh; opP1_[id] = sw; opP2_[id] = pt; opP3_[id] = pb;
+            opP4_[id] = pl; opP5_[id] = pr; opP6_[id] = outPadH; opP7_[id] = outPadW;
+            opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
         void addMaxPool(int inTid, int outTid, int kh, int kw,
                         int sh, int sw, int pt, int pb, int pl, int pr) {
             int id = opCount_;
@@ -308,6 +325,36 @@ class InferenceRuntime {
             opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
             opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
             opP8_[id] = cip;
+            opCount_ = opCount_ + 1;
+        }
+
+        // ---- F8：Pad（opKind 38 NCHW / 39 NHWC）----
+        // pads = 各轴 begin/end；mode 0=constant,1=reflect,2=edge；cval 位型（constant 用）
+        void addPad(int inTid, int outTid,
+                    int pnB, int pcB, int phB, int pwB, int pnE, int pcE, int phE, int pwE,
+                    int mode, int cvalBits) {
+            int id = opCount_;
+            opKind_[id] = 38;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = pnB; opP1_[id] = pcB; opP2_[id] = phB; opP3_[id] = pwB;
+            opP4_[id] = pnE; opP5_[id] = pcE; opP6_[id] = phE; opP7_[id] = pwE;
+            opP8_[id] = mode;
+            pCval_[id] = cvalBits;
+            opCount_ = opCount_ + 1;
+        }
+        // NHWC Pad：pads 已在 graph 按逻辑轴 [N,H,W,C] 重排为 (pn,ph,pw,pc)
+        void addPadNHWC(int inTid, int outTid,
+                        int pnB, int phB, int pwB, int pcB, int pnE, int phE, int pwE, int pcE,
+                        int mode, int cvalBits) {
+            int id = opCount_;
+            opKind_[id] = 39;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = pnB; opP1_[id] = phB; opP2_[id] = pwB; opP3_[id] = pcB;
+            opP4_[id] = pnE; opP5_[id] = phE; opP6_[id] = pwE; opP7_[id] = pcE;
+            opP8_[id] = mode;
+            pCval_[id] = cvalBits;
             opCount_ = opCount_ + 1;
         }
 
@@ -551,6 +598,16 @@ class InferenceRuntime {
                         tH_[wb], tW_[wb],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 40) {
+                    // F8：ConvTranspose（group=1）
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
+                    InferOps.convTranspose(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
@@ -574,6 +631,14 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 38) {
+                    // F8：Pad
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double cv = F32.toDouble(pCval_[i]);
+                    InferOps.pad(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                                 tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
+                                 opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
+                                 opP8_[i], cv);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     InferOps.gapool(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
@@ -616,6 +681,14 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tC_[yd], tH_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
+                } else if (opKind_[i] == 39) {
+                    // F8：Pad（NHWC）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double cv = F32.toDouble(pCval_[i]);
+                    InferOps.padNHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                                     tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
+                                     opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
+                                     opP8_[i], cv);
                 } else if (opKind_[i] == 16) {
                     int xa = opA_[i]; int yd = opB_[i];
                     InferOps.gapoolNHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
@@ -779,6 +852,17 @@ class InferenceRuntime {
                         tH_[wb], tW_[wb],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 40) {
+                    // F8：ConvTranspose（group=1）
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
+                    int work = tensorSize(yd);
+                    GpuInferOps.convTranspose(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
+                        tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], dev);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
@@ -805,6 +889,15 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 38) {
+                    // F8：Pad
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double cv = F32.toDouble(pCval_[i]);
+                    GpuInferOps.pad(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                                    tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
+                                    opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
+                                    opP8_[i], cv, dev);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = tensorSize(yd);
@@ -855,6 +948,15 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tC_[yd], tH_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], dev);
+                } else if (opKind_[i] == 39) {
+                    // F8：Pad（NHWC）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double cv = F32.toDouble(pCval_[i]);
+                    GpuInferOps.padNHWC(arena, work, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                                        tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
+                                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
+                                        opP8_[i], cv, dev);
                 } else if (opKind_[i] == 16) {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = tensorSize(yd);
@@ -1059,6 +1161,7 @@ class InferenceRuntime {
         int[512] opP6_;
         int[512] opP7_;
         int[512] opP8_;
+        int[512] pCval_;      // F8：Pad constant_value（float 位型）
         // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
         int[512] sCnt_;
         int[2048] sAx_;
