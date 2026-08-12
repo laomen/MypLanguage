@@ -577,6 +577,19 @@ class InferenceRuntime {
             opP4_[id] = outH; opP5_[id] = outW; opP6_[id] = mode; opP7_[id] = transform;
             opCount_ = opCount_ + 1;
         }
+        // Resize3D（opKind 45）：N/C 由张量给出；mode 0=nearest 1=trilinear；transform 0=align_corners 1=half_pixel 2=asymmetric
+        void addResize3d(int inTid, int outTid,
+                         int inD, int inH, int inW, int outD, int outH, int outW,
+                         int mode, int transform) {
+            int id = opCount_;
+            opKind_[id] = 45;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = inD; opP1_[id] = inH; opP2_[id] = inW;
+            opP3_[id] = outD; opP4_[id] = outH; opP5_[id] = outW;
+            opP6_[id] = mode; opP7_[id] = transform;
+            opCount_ = opCount_ + 1;
+        }
         // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
         // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
         void addSplit(int inTid, int outTid, int axis, int start, int len,
@@ -689,6 +702,13 @@ class InferenceRuntime {
                         tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2]);
+                } else if (opKind_[i] == 45) {
+                    // 3D：Resize3D（N/C 由张量给出）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.resize3d(arena, tOff_[xa], tOff_[yd],
+                        tN_[xa], tC_[xa],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i]);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
@@ -965,6 +985,14 @@ class InferenceRuntime {
                         tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], dev);
+                } else if (opKind_[i] == 45) {
+                    // 3D：Resize3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.resize3d(arena, work, tOff_[xa], tOff_[yd],
+                        tN_[xa], tC_[xa],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], dev);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）

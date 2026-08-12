@@ -1342,4 +1342,99 @@ class InferOps {
                 n = n + 1;
             }
         }
+
+        // Resize3D：x[N,C,inD,inH,inW] → y[N,C,outD,outH,outW]（3D 扩展）
+        // mode：0 = nearest，1 = trilinear；transform：0 = align_corners，1 = half_pixel，2 = asymmetric
+        void resize3d(float[] arena, int offIn, int offOut,
+                      int N, int C, int inD, int inH, int inW, int outD, int outH, int outW,
+                      int mode, int transform) {
+            int n = 0;
+            while (n < N) {
+                int c = 0;
+                while (c < C) {
+                    int z = 0;
+                    while (z < outD) {
+                        int y = 0;
+                        while (y < outH) {
+                            int x = 0;
+                            while (x < outW) {
+                                float sz = 0.0f;
+                                float sy = 0.0f;
+                                float sx = 0.0f;
+                                if (transform == 0) {
+                                    // align_corners：src = dst * (in-1)/(out-1)
+                                    sz = (outD > 1) ? float(z) * float(inD - 1) / float(outD - 1) : 0.0f;
+                                    sy = (outH > 1) ? float(y) * float(inH - 1) / float(outH - 1) : 0.0f;
+                                    sx = (outW > 1) ? float(x) * float(inW - 1) / float(outW - 1) : 0.0f;
+                                } else if (transform == 2) {
+                                    // asymmetric：src = dst * in/out
+                                    sz = float(z) * float(inD) / float(outD);
+                                    sy = float(y) * float(inH) / float(outH);
+                                    sx = float(x) * float(inW) / float(outW);
+                                } else {
+                                    // half_pixel：src = (dst + 0.5) * in/out - 0.5
+                                    sz = (float(z) + 0.5f) * float(inD) / float(outD) - 0.5f;
+                                    sy = (float(y) + 0.5f) * float(inH) / float(outH) - 0.5f;
+                                    sx = (float(x) + 0.5f) * float(inW) / float(outW) - 0.5f;
+                                }
+                                int base = (n * C + c) * inD * inH * inW;
+                                int obase = (n * C + c) * outD * outH * outW;
+                                if (mode == 0) {
+                                    // nearest
+                                    int iz = int(sz);
+                                    int iy = int(sy);
+                                    int ix = int(sx);
+                                    if (iz < 0) iz = 0;
+                                    if (iz >= inD) iz = inD - 1;
+                                    if (iy < 0) iy = 0;
+                                    if (iy >= inH) iy = inH - 1;
+                                    if (ix < 0) ix = 0;
+                                    if (ix >= inW) ix = inW - 1;
+                                    arena[offOut + obase + z * outH * outW + y * outW + x] = arena[offIn + base + iz * inH * inW + iy * inW + ix];
+                                } else {
+                                    // trilinear
+                                    int iz = int(sz);
+                                    int iy = int(sy);
+                                    int ix = int(sx);
+                                    float fz = sz - float(iz);
+                                    float fy = sy - float(iy);
+                                    float fx = sx - float(ix);
+                                    if (iz < 0) { iz = 0; fz = 0.0f; }
+                                    if (iz >= inD - 1) { iz = inD - 1; fz = 0.0f; }
+                                    if (iy < 0) { iy = 0; fy = 0.0f; }
+                                    if (iy >= inH - 1) { iy = inH - 1; fy = 0.0f; }
+                                    if (ix < 0) { ix = 0; fx = 0.0f; }
+                                    if (ix >= inW - 1) { ix = inW - 1; fx = 0.0f; }
+                                    int iz2 = iz + 1; if (iz2 >= inD) iz2 = inD - 1;
+                                    int iy2 = iy + 1; if (iy2 >= inH) iy2 = inH - 1;
+                                    int ix2 = ix + 1; if (ix2 >= inW) ix2 = inW - 1;
+                                    float w000 = (1.0f - fx) * (1.0f - fy) * (1.0f - fz);
+                                    float w100 = fx * (1.0f - fy) * (1.0f - fz);
+                                    float w010 = (1.0f - fx) * fy * (1.0f - fz);
+                                    float w110 = fx * fy * (1.0f - fz);
+                                    float w001 = (1.0f - fx) * (1.0f - fy) * fz;
+                                    float w101 = fx * (1.0f - fy) * fz;
+                                    float w011 = (1.0f - fx) * fy * fz;
+                                    float w111 = fx * fy * fz;
+                                    float v = arena[offIn + base + iz * inH * inW + iy * inW + ix] * w000
+                                            + arena[offIn + base + iz * inH * inW + iy * inW + ix2] * w100
+                                            + arena[offIn + base + iz * inH * inW + iy2 * inW + ix] * w010
+                                            + arena[offIn + base + iz * inH * inW + iy2 * inW + ix2] * w110
+                                            + arena[offIn + base + iz2 * inH * inW + iy * inW + ix] * w001
+                                            + arena[offIn + base + iz2 * inH * inW + iy * inW + ix2] * w101
+                                            + arena[offIn + base + iz2 * inH * inW + iy2 * inW + ix] * w011
+                                            + arena[offIn + base + iz2 * inH * inW + iy2 * inW + ix2] * w111;
+                                    arena[offOut + obase + z * outH * outW + y * outW + x] = v;
+                                }
+                                x = x + 1;
+                            }
+                            y = y + 1;
+                        }
+                        z = z + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
 }

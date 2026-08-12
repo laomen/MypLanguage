@@ -1152,4 +1152,86 @@ class GpuInferOps {
                 }
             }
         }
+
+        // Resize3D：thread-per-output（trilinear/nearest）
+        void resize3d(float[] a, int work, int offIn, int offOut,
+                      int N, int C, int inD, int inH, int inW, int outD, int outH, int outW,
+                      int mode, int transform, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int x = i % outW;
+                    int t = i / outW;
+                    int y = t % outH;
+                    t = t / outH;
+                    int z = t % outD;
+                    t = t / outD;
+                    int c = t % C;
+                    int n = t / C;
+                    float sz = 0.0f;
+                    float sy = 0.0f;
+                    float sx = 0.0f;
+                    if (transform == 0) {
+                        if (outD > 1) sz = float(z) * float(inD - 1) / float(outD - 1);
+                        if (outH > 1) sy = float(y) * float(inH - 1) / float(outH - 1);
+                        if (outW > 1) sx = float(x) * float(inW - 1) / float(outW - 1);
+                    } else if (transform == 2) {
+                        sz = float(z) * float(inD) / float(outD);
+                        sy = float(y) * float(inH) / float(outH);
+                        sx = float(x) * float(inW) / float(outW);
+                    } else {
+                        sz = (float(z) + 0.5f) * float(inD) / float(outD) - 0.5f;
+                        sy = (float(y) + 0.5f) * float(inH) / float(outH) - 0.5f;
+                        sx = (float(x) + 0.5f) * float(inW) / float(outW) - 0.5f;
+                    }
+                    int base = (n * C + c) * inD * inH * inW;
+                    int obase = (n * C + c) * outD * outH * outW;
+                    if (mode == 0) {
+                        int iz = int(sz);
+                        int iy = int(sy);
+                        int ix = int(sx);
+                        if (iz < 0) iz = 0;
+                        if (iz >= inD) iz = inD - 1;
+                        if (iy < 0) iy = 0;
+                        if (iy >= inH) iy = inH - 1;
+                        if (ix < 0) ix = 0;
+                        if (ix >= inW) ix = inW - 1;
+                        a[offOut + obase + z * outH * outW + y * outW + x] = a[offIn + base + iz * inH * inW + iy * inW + ix];
+                    } else {
+                        int iz = int(sz);
+                        int iy = int(sy);
+                        int ix = int(sx);
+                        float fz = sz - float(iz);
+                        float fy = sy - float(iy);
+                        float fx = sx - float(ix);
+                        if (iz < 0) { iz = 0; fz = 0.0f; }
+                        if (iz >= inD - 1) { iz = inD - 1; fz = 0.0f; }
+                        if (iy < 0) { iy = 0; fy = 0.0f; }
+                        if (iy >= inH - 1) { iy = inH - 1; fy = 0.0f; }
+                        if (ix < 0) { ix = 0; fx = 0.0f; }
+                        if (ix >= inW - 1) { ix = inW - 1; fx = 0.0f; }
+                        int iz2 = iz + 1; if (iz2 >= inD) iz2 = inD - 1;
+                        int iy2 = iy + 1; if (iy2 >= inH) iy2 = inH - 1;
+                        int ix2 = ix + 1; if (ix2 >= inW) ix2 = inW - 1;
+                        float w000 = (1.0f - fx) * (1.0f - fy) * (1.0f - fz);
+                        float w100 = fx * (1.0f - fy) * (1.0f - fz);
+                        float w010 = (1.0f - fx) * fy * (1.0f - fz);
+                        float w110 = fx * fy * (1.0f - fz);
+                        float w001 = (1.0f - fx) * (1.0f - fy) * fz;
+                        float w101 = fx * (1.0f - fy) * fz;
+                        float w011 = (1.0f - fx) * fy * fz;
+                        float w111 = fx * fy * fz;
+                        float v = a[offIn + base + iz * inH * inW + iy * inW + ix] * w000
+                                + a[offIn + base + iz * inH * inW + iy * inW + ix2] * w100
+                                + a[offIn + base + iz * inH * inW + iy2 * inW + ix] * w010
+                                + a[offIn + base + iz * inH * inW + iy2 * inW + ix2] * w110
+                                + a[offIn + base + iz2 * inH * inW + iy * inW + ix] * w001
+                                + a[offIn + base + iz2 * inH * inW + iy * inW + ix2] * w101
+                                + a[offIn + base + iz2 * inH * inW + iy2 * inW + ix] * w011
+                                + a[offIn + base + iz2 * inH * inW + iy2 * inW + ix2] * w111;
+                        a[offOut + obase + z * outH * outW + y * outW + x] = v;
+                    }
+                }
+            }
+        }
 }

@@ -25,7 +25,20 @@ class OnnxLoader {
             if (doNHWC_ == 1) g_.setLayoutNHWC(1);
             pb_.init(file_, fileLen_);
             if (parseModel() == 0) return 0;
+            int k = 0;
+            while (k < inpCnt_) {   // P3：输入形状注入（动态维度）
+                g_.setShape(inpName_[k], inpD0_[k], inpD1_[k], inpD2_[k], inpD3_[k], inpD4_[k], inpR5_[k]);
+                k = k + 1;
+            }
             return g_.optimize(rt);
+        }
+        // P3：加载前声明输入形状（动态维度模型；rank5=1 表示 5D NCDHW）
+        void setInputShape(string name, int d0, int d1, int d2, int d3, int d4, int rank5) {
+            if (inpCnt_ >= 8) return;
+            inpName_[inpCnt_] = name;
+            inpD0_[inpCnt_] = d0; inpD1_[inpCnt_] = d1; inpD2_[inpCnt_] = d2;
+            inpD3_[inpCnt_] = d3; inpD4_[inpCnt_] = d4; inpR5_[inpCnt_] = rank5;
+            inpCnt_ = inpCnt_ + 1;
         }
 
         // 名称 → 张量 id（找不到返回 -1）—— 委托 Graph
@@ -156,13 +169,14 @@ class OnnxLoader {
                     int bits = pb_.readU32();
                     if (aname == "epsilon") { g_.nodeInt(ni, NodeField.EPS_INT(), bits); g_.nodeInt(ni, NodeField.HAS_EPS(), 1); }
                     if (aname == "alpha") { g_.nodeInt(ni, NodeField.ALPHA_INT(), bits); g_.nodeInt(ni, NodeField.HAS_ALPHA(), 1); }
-                } else if (f == 3) {    // int64 单值（transB / axis / group）
+                } else if (f == 3) {    // int64 单值（transB / axis / group / to）
                     int v = pb_.readVarint();
                     if (aname == "transB") g_.nodeInt(ni, NodeField.TRANSB(), v);
                     if (aname == "axis") g_.nodeInt(ni, NodeField.AXIS(), v);
                     if (aname == "group") g_.nodeInt(ni, NodeField.GROUP(), v);
                     if (aname == "keepdims") g_.nodeInt(ni, NodeField.KEEP(), v);
                     if (aname == "count_include_pad") g_.nodeInt(ni, NodeField.CIP(), v);
+                    if (aname == "to") g_.nodeInt(ni, NodeField.CAST_TO(), v);   // P3：Cast dtype
                 } else if (f == 4) {    // string 单值（Resize mode / coord）
                     int l = pb_.readLen(); int po = pb_.payloadOff();
                     string sv = pb_.readString(l);
@@ -420,11 +434,10 @@ class OnnxLoader {
                 int f = pb_.nextTag();
                 if (f == -1) break;
                 if (f == 1) { v = pb_.readVarint(); }
-                else if (f == 2) { int l = pb_.readLen(); int po = pb_.payloadOff(); pb_.skipBytes(l); }
+                else if (f == 2) { int l = pb_.readLen(); int po = pb_.payloadOff(); pb_.skipBytes(l); v = 0; }   // dim_param：动态维 → 0
                 else { pb_.skipField(); }
             }
-            if (v <= 0) v = 1;
-            return v;
+            return v;   // 动态维（dim_param 或 dim_value=0）返回 0，供 inferShapes 覆盖
         }
 
     property:
@@ -433,4 +446,12 @@ class OnnxLoader {
         PbReader pb_;
         Graph g_;
         int doNHWC_;
+        string[8] inpName_;     // P3：输入形状注入表
+        int[8] inpD0_;
+        int[8] inpD1_;
+        int[8] inpD2_;
+        int[8] inpD3_;
+        int[8] inpD4_;
+        int[8] inpR5_;
+        int inpCnt_;
 }
