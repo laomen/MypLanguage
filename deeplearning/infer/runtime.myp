@@ -279,6 +279,21 @@ class InferenceRuntime {
             opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr;
             opCount_ = opCount_ + 1;
         }
+        // ---- 3D：AveragePool3D（opKind 43）----
+        // kd/kh/kw + sd/sh/sw + 6 pads（pb/pl/pr 存 opX_，cip 存 opX_[3]）
+        void addAvgPool3D(int inTid, int outTid, int kd, int kh, int kw,
+                          int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                          int cip) {
+            int id = opCount_;
+            opKind_[id] = 43;
+            opA_[id] = inTid; opB_[id] = outTid;
+            opP0_[id] = kd; opP1_[id] = kh; opP2_[id] = kw;
+            opP3_[id] = sd; opP4_[id] = sh; opP5_[id] = sw;
+            opP6_[id] = pdt; opP7_[id] = pdb; opP8_[id] = pt;
+            opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr;
+            opX_[id * 4 + 3] = cip;
+            opCount_ = opCount_ + 1;
+        }
 
         void addMaxPool(int inTid, int outTid, int kh, int kw,
                         int sh, int sw, int pt, int pb, int pl, int pr) {
@@ -417,6 +432,20 @@ class InferenceRuntime {
             opP4_[id] = pnE; opP5_[id] = phE; opP6_[id] = pwE; opP7_[id] = pcE;
             opP8_[id] = mode;
             pCval_[id] = cvalBits;
+            opCount_ = opCount_ + 1;
+        }
+        // ---- 3D：Pad3D（opKind 44）----
+        // 10 个 pad（N,C,D,H,W 各 begin/end）；mode + cval 存 opX_
+        void addPad3D(int inTid, int outTid,
+                      int pnB, int pnE, int pcB, int pcE, int pdB, int pdE, int phB, int phE, int pwB, int pwE,
+                      int mode, int cvalBits) {
+            int id = opCount_;
+            opKind_[id] = 44;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = pnB; opP1_[id] = pnE; opP2_[id] = pcB; opP3_[id] = pcE; opP4_[id] = pdB;
+            opP5_[id] = pdE; opP6_[id] = phB; opP7_[id] = phE; opP8_[id] = pwB;
+            opX_[id * 4 + 0] = pwE; opX_[id * 4 + 1] = mode; opX_[id * 4 + 2] = cvalBits;
             opCount_ = opCount_ + 1;
         }
 
@@ -702,6 +731,15 @@ class InferenceRuntime {
                         tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2]);
+                } else if (opKind_[i] == 43) {
+                    // 3D：AveragePool3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.avgpool3d(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2],
+                        opX_[i * 4 + 3]);
                 } else if (opKind_[i] == 45) {
                     // 3D：Resize3D（N/C 由张量给出）
                     int xa = opA_[i]; int yd = opB_[i];
@@ -740,6 +778,14 @@ class InferenceRuntime {
                                  tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
                                  opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
                                  opP8_[i], cv);
+                } else if (opKind_[i] == 44) {
+                    // 3D：Pad3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    double cv = F32.toDouble(opX_[i * 4 + 2]);
+                    InferOps.pad3d(arena, tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                                 tOff_[yd], tN_[yd], tC_[yd], tD_[yd], tH_[yd], tW_[yd],
+                                 opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0],
+                                 opX_[i * 4 + 1], cv);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     InferOps.gapool(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
@@ -985,6 +1031,16 @@ class InferenceRuntime {
                         tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
                         opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], dev);
+                } else if (opKind_[i] == 43) {
+                    // 3D：AveragePool3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.avgpool3d(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2],
+                        opX_[i * 4 + 3], dev);
                 } else if (opKind_[i] == 45) {
                     // 3D：Resize3D
                     int xa = opA_[i]; int yd = opB_[i];
@@ -1028,6 +1084,15 @@ class InferenceRuntime {
                                     tOff_[yd], tN_[yd], tC_[yd], tH_[yd], tW_[yd],
                                     opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i],
                                     opP8_[i], cv, dev);
+                } else if (opKind_[i] == 44) {
+                    // 3D：Pad3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    double cv = F32.toDouble(opX_[i * 4 + 2]);
+                    GpuInferOps.pad3d(arena, work, tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                                    tOff_[yd], tN_[yd], tC_[yd], tD_[yd], tH_[yd], tW_[yd],
+                                    opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0],
+                                    opX_[i * 4 + 1], cv, dev);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = tensorSize(yd);

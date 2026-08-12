@@ -604,6 +604,20 @@ class Graph {
                     int yH = (H + nPT_[i] + nPB_[i] - kh) / sh_ + 1;
                     int yW = (W + nPL_[i] + nPR_[i] - kw) / sw_ + 1;
                     addShapeD5(nOut0_[i], N, C, yD, yH, yW);
+                } else if (t == "AveragePool3D") {
+                    // 3D：各向异性核 kd/kh/kw + 6 pads + cip
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int N = shD0_[a]; int C = shD1_[a]; int D = shD2_[a]; int H = shD3_[a]; int W = shD4_[a];
+                    int kd = nKD3_[i]; if (kd <= 0) kd = 1;
+                    int kh = nKH_[i]; if (kh <= 0) kh = 1;
+                    int kw = nKW_[i]; if (kw <= 0) kw = 1;
+                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + nPDT_[i] + nPDB_[i] - kd) / sd + 1;
+                    int yH = (H + nPT_[i] + nPB_[i] - kh) / sh_ + 1;
+                    int yW = (W + nPL_[i] + nPR_[i] - kw) / sw_ + 1;
+                    addShapeD5(nOut0_[i], N, C, yD, yH, yW);
                 } else if (t == "MaxPool") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int N = shD0_[a]; int C = shD1_[a]; int H = shD2_[a]; int W = shD3_[a];
@@ -619,19 +633,34 @@ class Graph {
                     int yW = (W + nPL_[i] + nPR_[i] - kw) / nSW_[i] + 1;
                     addShapeD4(nOut0_[i], N, C, yH, yW);
                 } else if (t == "Pad") {
-                    // F8：pads = [N,C,H,W] 各轴 begin/end（int64 初始器输入，opset11+）
+                    // F8：pads = [N,C,(D,)H,W] 各轴 begin/end（int64 初始器输入，opset11+）
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
-                    int pc = readI64Init(nIn1_[i], 8);
-                    if (pc < 8) return 0;
-                    int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int phB = int(i64TmpL_[2]); int pwB = int(i64TmpL_[3]);
-                    int pnE = int(i64TmpL_[4]); int pcE = int(i64TmpL_[5]); int phE = int(i64TmpL_[6]); int pwE = int(i64TmpL_[7]);
-                    nPadB_[i * 4 + 0] = pnB; nPadB_[i * 4 + 1] = pcB; nPadB_[i * 4 + 2] = phB; nPadB_[i * 4 + 3] = pwB;
-                    nPadE_[i * 4 + 0] = pnE; nPadE_[i * 4 + 1] = pcE; nPadE_[i * 4 + 2] = phE; nPadE_[i * 4 + 3] = pwE;
-                    double cv = 0.0;
-                    if (nIn2_[i] != "") { int cvc = readF32Init(nIn2_[i], 1); if (cvc > 0) cv = f32Tmp_[0]; }
-                    nPadCval_[i] = F32.toBits(cv);
-                    addShapeD4(nOut0_[i], shD0_[a] + pnB + pnE, shD1_[a] + pcB + pcE,
-                               shD2_[a] + phB + phE, shD3_[a] + pwB + pwE);
+                    int is5 = shR5_[a];
+                    if (is5 == 1) {
+                        int pc = readI64Init(nIn1_[i], 10);
+                        if (pc < 10) return 0;
+                        int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int pdB = int(i64TmpL_[2]); int phB = int(i64TmpL_[3]); int pwB = int(i64TmpL_[4]);
+                        int pnE = int(i64TmpL_[5]); int pcE = int(i64TmpL_[6]); int pdE = int(i64TmpL_[7]); int phE = int(i64TmpL_[8]); int pwE = int(i64TmpL_[9]);
+                        nPadB5_[i * 5 + 0] = pnB; nPadB5_[i * 5 + 1] = pcB; nPadB5_[i * 5 + 2] = pdB; nPadB5_[i * 5 + 3] = phB; nPadB5_[i * 5 + 4] = pwB;
+                        nPadE5_[i * 5 + 0] = pnE; nPadE5_[i * 5 + 1] = pcE; nPadE5_[i * 5 + 2] = pdE; nPadE5_[i * 5 + 3] = phE; nPadE5_[i * 5 + 4] = pwE;
+                        double cv = 0.0;
+                        if (nIn2_[i] != "") { int cvc = readF32Init(nIn2_[i], 1); if (cvc > 0) cv = f32Tmp_[0]; }
+                        nPadCval_[i] = F32.toBits(cv);
+                        addShapeD5(nOut0_[i], shD0_[a] + pnB + pnE, shD1_[a] + pcB + pcE,
+                                   shD2_[a] + pdB + pdE, shD3_[a] + phB + phE, shD4_[a] + pwB + pwE);
+                    } else {
+                        int pc = readI64Init(nIn1_[i], 8);
+                        if (pc < 8) return 0;
+                        int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int phB = int(i64TmpL_[2]); int pwB = int(i64TmpL_[3]);
+                        int pnE = int(i64TmpL_[4]); int pcE = int(i64TmpL_[5]); int phE = int(i64TmpL_[6]); int pwE = int(i64TmpL_[7]);
+                        nPadB_[i * 4 + 0] = pnB; nPadB_[i * 4 + 1] = pcB; nPadB_[i * 4 + 2] = phB; nPadB_[i * 4 + 3] = pwB;
+                        nPadE_[i * 4 + 0] = pnE; nPadE_[i * 4 + 1] = pcE; nPadE_[i * 4 + 2] = phE; nPadE_[i * 4 + 3] = pwE;
+                        double cv = 0.0;
+                        if (nIn2_[i] != "") { int cvc = readF32Init(nIn2_[i], 1); if (cvc > 0) cv = f32Tmp_[0]; }
+                        nPadCval_[i] = F32.toBits(cv);
+                        addShapeD4(nOut0_[i], shD0_[a] + pnB + pnE, shD1_[a] + pcB + pcE,
+                                   shD2_[a] + phB + phE, shD3_[a] + pwB + pwE);
+                    }
                 } else if (t == "GlobalAveragePool") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     addShapeD4(nOut0_[i], shD0_[a], shD1_[a], 1, 1);
@@ -1723,6 +1752,15 @@ class Graph {
                     int kw = nKW_[ni]; if (kw <= 0) kw = 1;
                     rt.addMaxPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
                         nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                } else if (t == "AveragePool3D") {
+                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
+                    int kd = nKD3_[ni]; if (kd <= 0) kd = 1;
+                    int kh = nKH_[ni]; if (kh <= 0) kh = 1;
+                    int kw = nKW_[ni]; if (kw <= 0) kw = 1;
+                    rt.addAvgPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
+                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
                 } else if (t == "MaxPool") {
                     if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
                     else rt.addMaxPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
@@ -1732,7 +1770,16 @@ class Graph {
                     else rt.addAvgPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
                 } else if (t == "Pad") {
                     // F8：Pad（NHWC 时 pads 从逻辑 [N,C,H,W] 重排为 [N,H,W,C]）
-                    if (nNHWC_[ni] == 1) rt.addPadNHWC(a, out,
+                    int is5 = 0;
+                    int pin = shapeIdx(nIn0_[ni]);
+                    if (pin >= 0 && shR5_[pin] == 1) is5 = 1;
+                    if (is5 == 1) {
+                        // 3D：10 个 pad（N,C,D,H,W 各 begin/end）
+                        rt.addPad3D(a, out,
+                            nPadB5_[ni * 5 + 0], nPadE5_[ni * 5 + 0], nPadB5_[ni * 5 + 1], nPadE5_[ni * 5 + 1], nPadB5_[ni * 5 + 2],
+                            nPadE5_[ni * 5 + 2], nPadB5_[ni * 5 + 3], nPadE5_[ni * 5 + 3], nPadB5_[ni * 5 + 4], nPadE5_[ni * 5 + 4],
+                            nPadMode_[ni], nPadCval_[ni]);
+                    } else if (nNHWC_[ni] == 1) rt.addPadNHWC(a, out,
                         nPadB_[ni * 4 + 0], nPadB_[ni * 4 + 2], nPadB_[ni * 4 + 3], nPadB_[ni * 4 + 1],
                         nPadE_[ni * 4 + 0], nPadE_[ni * 4 + 2], nPadE_[ni * 4 + 3], nPadE_[ni * 4 + 1],
                         nPadMode_[ni], nPadCval_[ni]);
@@ -2185,6 +2232,8 @@ class Graph {
         int[512] nCip_;         // F8：AveragePool count_include_pad
         int[2048] nPadB_;       // F8：Pad 各轴 begin [node*4+k]（逻辑 [N,C,H,W]）
         int[2048] nPadE_;       // F8：Pad 各轴 end
+        int[2560] nPadB5_;      // 3D：Pad 各轴 begin [node*5+k]（逻辑 [N,C,D,H,W]）
+        int[2560] nPadE5_;      // 3D：Pad 各轴 end
         int[512] nPadMode_;     // F8：Pad mode（0=const,1=reflect,2=edge）
         int[512] nPadCval_;     // F8：Pad constant_value（float 位型）
         int[512] nOutPadH_;     // F8：ConvTranspose output_padding 高
