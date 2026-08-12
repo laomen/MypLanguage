@@ -394,6 +394,23 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::Call: {
             auto& e = static_cast<const CallExpr&>(expr);
+            // §3.1 kernel.sync()：块内屏障（NVPTX bar.sync 0 / llvm.nvvm.barrier0）。
+            if (e.callee->kind == ExprKind::MemberAccess) {
+                auto& kma = static_cast<const MemberAccessExpr&>(*e.callee);
+                if (kma.object->kind == ExprKind::Identifier &&
+                    static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
+                    kma.member_name == "sync") {
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    // kernel.sync() → PTX bar.sync 0。LLVM 21 把旧 llvm.nvvm.barrier0
+                    // 升级为 llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)，NVPTX 后端
+                    // 降级为 bar.sync 0（必须用真实 intrinsic，手动函数会变 extern call）。
+                    auto* bar = llvm::Intrinsic::getDeclaration(cur_mod,
+                        llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
+                    auto* zero = llvm::ConstantInt::get(
+                        llvm::Type::getInt32Ty(cur_mod->getContext()), 0);
+                    return kb.CreateCall(bar, {zero});
+                }
+            }
             // Handle math functions
             std::string callee_name;
             if (e.callee->kind == ExprKind::Identifier)
@@ -831,6 +848,24 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::MemberAccess: {
             auto& e = static_cast<const MemberAccessExpr&>(expr);
+            // §3.1 kernel 执行上下文字段（线程不变量）：gid/bx/tx/bd/gx。
+            if (e.object->kind == ExprKind::Identifier) {
+                auto& ko = static_cast<const IdentifierExpr&>(*e.object);
+                if (ko.name == "kernel") {
+                    if (e.member_name == "gid") return gpu_ctx_tid_;
+                    if (e.member_name == "bx")  return gpu_ctx_ctaid_;
+                    if (e.member_name == "tx")  return gpu_ctx_tid_x_;
+                    if (e.member_name == "bd")  return gpu_ctx_ntid_;
+                    if (e.member_name == "gx") {
+                        // ceil(n / bd) = (n + bd - 1) / bd
+                        auto* one = llvm::ConstantInt::get(i64_ty, 1);
+                        auto* num = kb.CreateAdd(gpu_ctx_n_arg_,
+                            kb.CreateSub(gpu_ctx_ntid_, one), "gx_num");
+                        return kb.CreateUDiv(num, gpu_ctx_ntid_, "gx");
+                    }
+                    return llvm::ConstantInt::get(i64_ty, 0);
+                }
+            }
             // Three cases:
             // 1. ClassName.property (static class) — look up in static_property_globals_
             // 2. obj.property (struct field) — struct GEP access
@@ -1859,6 +1894,13 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto* bid_offset = kb.CreateMul(ctaid, ntid, "bid_off");
     auto* tid_val = kb.CreateAdd(bid_offset, tid_x, "tid");
 
+    // §3.1 kernel 执行上下文：存当前块/线程值供 emitKernelExpr 的 kernel.xxx 读取
+    gpu_ctx_tid_x_ = tid_x;
+    gpu_ctx_ntid_ = ntid;
+    gpu_ctx_ctaid_ = ctaid;
+    gpu_ctx_tid_ = tid_val;
+    gpu_ctx_n_arg_ = n_arg;
+
     // Generate tid < n check
     auto* cond_check = kb.CreateICmpSLT(tid_val, n_arg);
     auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kernel_func);
@@ -2207,7 +2249,16 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     builder_.SetInsertPoint(cpu_bb);
     diag_.warn(s.range, "'@gpu for' GPU fallback — running on CPU");
     const_cast<ForStmt&>(s).gpu = false;
+    // CPU 回退模拟 kernel 上下文：gid=p/tx=p%256/bx=p/256/bd=256/gx=ceil(n/256)，
+    // kernel.sync() 空操作（generateCall/generateMemberAccess 读取这些标志）。
+    // loop_var 在 generateGpuKernel 开头已提取。
+    gpu_cpu_fallback_ = true;
+    gpu_cpu_loop_var_ = loop_var;
+    gpu_cpu_bound_ = n_val;
     generateForStmt(s);
+    gpu_cpu_fallback_ = false;
+    gpu_cpu_loop_var_.clear();
+    gpu_cpu_bound_ = nullptr;
     const_cast<ForStmt&>(s).gpu = true;
     builder_.CreateBr(gpu_done_bb);
 

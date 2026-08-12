@@ -83,6 +83,9 @@ private:
     // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul 返回 (value, overflow:bool)
     // 元组——@llvm.sadd/smul.with.overflow 直映（有符号整型，按实参类型选位宽）。
     TypeInfo visitCheckedOp(CallExpr& expr, const std::string& name);
+    // §3.1 kernel 执行上下文：@gpu for body 内 `kernel.gid/bx/tx/bd/gx`（long）
+    // 与 `kernel.sync()`（void）隐式可见（保留标识符，仅 @gpu for body 内解析）。
+    bool in_gpu_for_ = false;
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐
     void populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params);

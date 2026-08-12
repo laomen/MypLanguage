@@ -468,6 +468,21 @@ private:
     // When true, CUDA libdevice.10.bc is linked into the kernel module at
     // compile time so the generated PTX is self-contained.
     bool gpu_math_used_ = false;
+    // §3.1 kernel 执行上下文（@gpu for 内核内当前块/线程值，generateGpuKernel
+    // 填充，emitKernelExpr 读取）：tid_x=threadIdx.x、ntid=blockDim.x、
+    // ctaid=blockIdx.x、tid=全局线程 id（=循环变量 p）、n_arg=循环上界。
+    llvm::Value* gpu_ctx_tid_x_ = nullptr;
+    llvm::Value* gpu_ctx_ntid_ = nullptr;
+    llvm::Value* gpu_ctx_ctaid_ = nullptr;
+    llvm::Value* gpu_ctx_tid_ = nullptr;
+    llvm::Value* gpu_ctx_n_arg_ = nullptr;
+    // CPU 回退（运行时无 GPU / MYP_GPU 未设）时模拟 kernel 上下文：
+    // 置标志后普通 generateForStmt 编译 body，kernel.gid/tx/bx/bd/gx 按
+    // 顺序循环变量 p 计算（gid=p、tx=p%256、bx=p/256、bd=256、gx=ceil(n/256)），
+    // kernel.sync() 为空操作。
+    bool gpu_cpu_fallback_ = false;
+    std::string gpu_cpu_loop_var_;
+    llvm::Value* gpu_cpu_bound_ = nullptr;
 
     // AST walk helpers for GPU kernel body compilation
     void collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,

@@ -872,6 +872,14 @@ llvm::Value* CodeGen::generateCheckedOp(const CallExpr& e, const std::string& na
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
+    // §3.1 CPU 回退：kernel.sync() 为空操作（真实 GPU 路径在 emitKernelExpr）。
+    if (gpu_cpu_fallback_ && e.callee->kind == ExprKind::MemberAccess) {
+        auto& kma = static_cast<const MemberAccessExpr&>(*e.callee);
+        if (kma.object->kind == ExprKind::Identifier &&
+            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
+            kma.member_name == "sync")
+            return nullptr;
+    }
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
     // a +1 it OWNS (the callee's retain-at-return / `return new` transfer). If
@@ -2392,6 +2400,34 @@ llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
 }
 
 llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
+    // §3.1 CPU 回退模拟 kernel 上下文字段（真实 GPU 路径在 emitKernelExpr）：
+    // gid=p、tx=p%256、bx=p/256、bd=256、gx=ceil(n/256)。
+    if (gpu_cpu_fallback_ && e.object->kind == ExprKind::Identifier) {
+        auto& oi = static_cast<const IdentifierExpr&>(*e.object);
+        if (oi.name == "kernel") {
+            auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+            auto* bd_c = llvm::ConstantInt::get(i64_ty, 256);
+            auto* va = getNamedValue(gpu_cpu_loop_var_);
+            llvm::Value* p;
+            if (va)
+                p = builder_.CreateLoad(i64_ty, va, gpu_cpu_loop_var_);
+            else
+                p = llvm::ConstantInt::get(i64_ty, 0);
+            if (e.member_name == "gid") return p;
+            if (e.member_name == "tx")
+                return builder_.CreateURem(p, bd_c, "tx");
+            if (e.member_name == "bx")
+                return builder_.CreateUDiv(p, bd_c, "bx");
+            if (e.member_name == "bd") return bd_c;
+            if (e.member_name == "gx") {
+                auto* one = llvm::ConstantInt::get(i64_ty, 1);
+                auto* num = builder_.CreateAdd(gpu_cpu_bound_,
+                    builder_.CreateSub(bd_c, one), "gx_num");
+                return builder_.CreateUDiv(num, bd_c, "gx");
+            }
+            return llvm::ConstantInt::get(i64_ty, 0);
+        }
+    }
     // Slice field access: s.length / s.size / s.data — value-type {ptr, len}.
     // Must come before the generic field fallback (which treated `s.length`
     // as a pointer-deref and generated `ptrtoint(&s)` garbage as the length).

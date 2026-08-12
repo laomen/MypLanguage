@@ -1419,7 +1419,11 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
     if (stmt.step) visitExpr(*stmt.step);
     bool saved = in_loop_;
     in_loop_ = true;
+    // §3.1 kernel 执行上下文：@gpu for body 内 `kernel` 保留标识符隐式可见。
+    bool saved_gpu = in_gpu_for_;
+    if (stmt.gpu) in_gpu_for_ = true;
     if (stmt.body) visitStmt(*stmt.body);
+    in_gpu_for_ = saved_gpu;
     in_loop_ = saved;
     symbol_table_.leaveScope();
     return {};

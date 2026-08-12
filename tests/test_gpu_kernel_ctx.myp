@@ -1,0 +1,46 @@
+// §3.1 kernel 执行上下文（docs/gpu_library_design）
+// @gpu for body 内隐式 kernel 保留标识符：gid(=p)/bx(blockIdx.x)/tx(threadIdx.x)/
+// bd(blockDim.x)/gx(ceil(n/bd)) + kernel.sync()（块内屏障）。
+// GPU 手动测试（需 CUDA 设备；无 GPU 时 CPU 回退、kernel.xxx 不可用）。
+import env;
+import math;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 1024L;              // 4 个 block × 256 线程
+            long bd = 256L;
+            long gx = (n + bd - 1L) / bd;  // 4
+
+            long[] gid_out = new long[1024];
+            long[] tx_out  = new long[1024];
+            long[] bx_out  = new long[1024];
+            long[] bd_out  = new long[1024];
+            long[] gx_out  = new long[1024];
+
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                gid_out[p] = kernel.gid;   // 恒等 == p
+                tx_out[p]  = kernel.tx;    // == p % 256
+                bx_out[p]  = kernel.bx;    // == p / 256
+                bd_out[p]  = kernel.bd;    // == 256
+                gx_out[p]  = kernel.gx;    // == ceil(n/256)
+                kernel.sync();             // 块内屏障（编译验证）
+            }
+
+            long err = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                if (gid_out[i] != i) err = err + 1L;
+                if (tx_out[i]  != (i % 256L)) err = err + 1L;
+                if (bx_out[i]  != (i / 256L)) err = err + 1L;
+                if (bd_out[i]  != 256L) err = err + 1L;
+                if (gx_out[i]  != gx) err = err + 1L;
+            }
+            Console.writeLine("kernel ctx: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

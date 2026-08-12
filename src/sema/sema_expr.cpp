@@ -215,6 +215,11 @@ TypeInfo Sema::visitNullLiteral(NullLiteralExpr& expr) {
 }
 
 TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
+    // §3.1 kernel 执行上下文：@gpu for body 内 `kernel` 是保留上下文对象
+    // （字段经 visitMemberAccess 解析），裸引用占位不报错。
+    if (in_gpu_for_ && expr.name == "kernel")
+        return TypeInfo(TypeKind::Int);
+
     auto* type = symbol_table_.lookup(expr.name);
     if (type) return *type;
 
@@ -1578,6 +1583,17 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     // P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。必须是
     // 带显式类型实参的调用（bitcast<uint>(x) / bitcast<float,uint>(x)），且不是
     // 用户声明的函数——在此提前拦截，避免落到 generic_functions_ 解析。
+    // §3.1 kernel 执行上下文：kernel.sync()（@gpu for body 内块同步，void）。
+    if (in_gpu_for_ && expr.callee->kind == ExprKind::MemberAccess) {
+        auto& kma = static_cast<const MemberAccessExpr&>(*expr.callee);
+        if (kma.object->kind == ExprKind::Identifier &&
+            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
+            kma.member_name == "sync") {
+            if (!expr.args.empty())
+                error(expr.range, "kernel.sync() takes no arguments");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
     if (expr.callee->kind == ExprKind::Identifier) {
         auto& bc_id = static_cast<const IdentifierExpr&>(*expr.callee);
         if (bc_id.name == "bitcast" && !expr.call_type_args.empty())
@@ -1798,6 +1814,16 @@ bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
 }
 
 TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
+    // §3.1 kernel 执行上下文字段（@gpu for body 内隐式）：gid/bx/tx/bd/gx → long。
+    if (in_gpu_for_ && expr.object->kind == ExprKind::Identifier &&
+        static_cast<const IdentifierExpr&>(*expr.object).name == "kernel") {
+        if (expr.member_name == "gid" || expr.member_name == "bx" ||
+            expr.member_name == "tx" || expr.member_name == "bd" ||
+            expr.member_name == "gx")
+            return TypeInfo(TypeKind::Long);
+        error(expr.range, "unknown kernel context member '" + expr.member_name + "'");
+        return TypeInfo(TypeKind::Long);
+    }
     auto obj_type = visitExpr(*expr.object);
 
     // Record the object's resolved class so codegen can emit field access on a
