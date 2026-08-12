@@ -2,6 +2,7 @@
 // 输入 input_coarse[1,1,16,16,16]（注入形状），输出 output_coarse[1,6,160,160,160]。
 // 写 myp 输出到 coarse_myp.bin，由 tools/check_coarse.py 与 ORT 参考比较。
 import env;
+import cuda;
 import "../infer/pb.myp";
 import "../infer/runtime.myp";
 import "../infer/onnx_loader.myp";
@@ -28,14 +29,26 @@ class CoarseApp {
             if (inT < 0 || outT < 0) { Console.writeLine("tensor not found"); return; }
             int nIn = rt.tensorSize(inT);
             Console.writeString("input size="); Console.writeLong(nIn); Console.writeLine("");
-            double[] buf = new double[4096];
+            double[] buf = new double[nIn + 16];
             readF32("./deeplearning/data/onnx/coarse_in.f32", buf, nIn);
             int i = 0;
             while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
 
-            rt.run();
+            int useGpu = 0;
+            if (Console.getEnv("MYP_GPU") == "1") useGpu = 1;
+            Console.writeString("device: ");
+            if (useGpu == 1) { Console.writeString(Cuda.name()); Console.writeString(" (GPU)"); }
+            else { Console.writeString("CPU"); }
+            Console.writeLine("");
+            long t0 = __myp_now_ms();
+            if (useGpu == 1) rt.runGpu();
+            else rt.run();
+            long t1 = __myp_now_ms();
             int m = rt.tensorSize(outT);
             Console.writeString("out size="); Console.writeLong(m); Console.writeLine("");
+            Console.writeString("coarse infer: ");
+            Console.writeLong(t1 - t0);
+            Console.writeLine(" ms");
             // 写输出
             int fd = __myp_io_fopen("./deeplearning/data/onnx/coarse_myp.bin", "wb");
             if (fd >= 0) {

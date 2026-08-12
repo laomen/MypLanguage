@@ -1130,21 +1130,25 @@ class GpuInferOps {
                 if (p < work) {
                     int nc = int(p);
                     int base = nc * S;
-                    float sum = 0.0f;
+                    // double 累加：与 CPU/ORT 一致的精度（float 累加经 20+ 层
+                    // InstanceNorm 累积 ~0.4 误差）
+                    double sum = 0.0;
                     int i = 0;
-                    while (i < S) { sum = sum + a[xOff + base + i]; i = i + 1; }
-                    float mean = sum / S;
-                    float ss = 0.0f;
+                    while (i < S) { double xv = a[xOff + base + i]; sum = sum + xv; i = i + 1; }
+                    double mean = sum / S;
+                    double ss = 0.0;
                     i = 0;
-                    while (i < S) { float d = a[xOff + base + i] - mean; ss = ss + d * d; i = i + 1; }
-                    float variance = ss / S;
+                    while (i < S) { double xv = a[xOff + base + i]; double d = xv - mean; ss = ss + d * d; i = i + 1; }
+                    double variance = ss / S;
                     int c = nc % C;
-                    float scale = a[sOff + c];
-                    float bias = a[bOff + c];
-                    float invStd = scale / float(Math.sqrt(variance) + eps);
+                    double scale = a[sOff + c];
+                    double bias = a[bOff + c];
+                    // 正确公式：sqrt(variance + eps)（此前误为 sqrt(variance) + eps，
+                    // 小方差通道差异 ~4-8%，经深层网络累积成大误差）
+                    double invStd = scale / Math.sqrt(variance + eps);
                     i = 0;
                     while (i < S) {
-                        a[yOff + base + i] = (a[xOff + base + i] - mean) * invStd + bias;
+                        a[yOff + base + i] = float((a[xOff + base + i] - mean) * invStd + bias);
                         i = i + 1;
                     }
                 }

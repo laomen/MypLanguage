@@ -1,21 +1,22 @@
-// resize3d_main.myp — 3D 扩展端到端测试（Conv3D → InstanceNorm → ReLU → MaxPool3D）
-// resize3d_test.onnx（opset13）：x[1,2,8,8,8] → Conv3D(w[3,2,3,3,3],s1,p1)
-//   → InstanceNorm(scale[3],bias[3]) → ReLU → MaxPool3D(k2,s2) → y[1,3,4,4,4]
-// 输入 x 与 ORT 参考 y 由 tools/make_conv3d_onnx.py 生成（data/onnx/）。
-// 运行：./build/mypc deeplearning/infer_tests/resize3d_main.myp -o /tmp/c3 --stdlib stdlib && /tmp/c3
+// coarselike32_main.myp — 3D 中尺度（32³）回归测试：预处理 + Conv3D → InstanceNorm → ReLU → MaxPool3D
+// coarselike32.onnx（opset12）：x[1,1,16,16,16] → Resize(16→32) → 归一化
+//   → Conv3D(w[2,1,3,3,3]) → InstanceNorm → ReLU → MaxPool3D(k2,s2) → y[1,2,16,16,16]
+// 模型/输入/ORT 参考由 tools/make_coarselike_onnx.py 生成：
+//   COARSELIKE_IN_D=16 COARSELIKE_RES_D=32 COARSELIKE_TAG=32 python tools/make_coarselike_onnx.py
+// 运行：./build/mypc --stdlib stdlib deeplearning/infer_tests/coarselike32_main.myp -o /tmp/c3 && /tmp/c3
 import env;
 import cuda;
 import "../infer/pb.myp";
 import "../infer/runtime.myp";
 import "../infer/onnx_loader.myp";
 
-class Resize3dTestApp {
+class Coarselike32App {
     action:
-        @constructor Resize3dTestApp() {
+        @constructor Coarselike32App() {
             InferenceRuntime rt = new InferenceRuntime();
             rt.init(4096);
             OnnxLoader loader = new OnnxLoader();
-            int ok = loader.load("./deeplearning/data/onnx/resize3d_test.onnx", rt);
+            int ok = loader.load("./deeplearning/data/onnx/coarselike32.onnx", rt);
             if (ok == 0) { Console.writeLine("load failed"); return; }
             Console.writeString("graph: ops=");
             Console.writeLong(rt.opCount());
@@ -26,7 +27,7 @@ class Resize3dTestApp {
             if (inT < 0 || outT < 0) { Console.writeLine("tensor not found"); return; }
             int nIn = rt.tensorSize(inT);
             double[] buf = new double[nIn + 16];
-            readF32("./deeplearning/data/onnx/resize3d_test.f32", buf, nIn);
+            readF32("./deeplearning/data/onnx/coarselike32_in.f32", buf, nIn);
             int i = 0;
             while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
 
@@ -36,20 +37,20 @@ class Resize3dTestApp {
             Console.writeString("out size=");
             Console.writeLong(m);
             Console.writeLine("");
-            int okC = checkOut(rt, outT, "./deeplearning/data/onnx/resize3d_test_ort.bin", m);
-            if (okC == 1) Console.writeLine("RESIZE3D CPU OK");
-            else Console.writeLine("RESIZE3D CPU MISMATCH");
+            int okC = checkOut(rt, outT, "./deeplearning/data/onnx/coarselike32_ort.bin", m);
+            if (okC == 1) Console.writeLine("COARSELIKE CPU OK");
+            else Console.writeLine("COARSELIKE CPU MISMATCH");
 
             // GPU
             if (Cuda.available() == 1) {
                 i = 0;
                 while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
                 rt.runGpu();
-                int okG = checkOut(rt, outT, "./deeplearning/data/onnx/resize3d_test_ort.bin", m);
-                if (okG == 1) Console.writeLine("RESIZE3D GPU OK");
-                else Console.writeLine("RESIZE3D GPU MISMATCH");
+                int okG = checkOut(rt, outT, "./deeplearning/data/onnx/coarselike32_ort.bin", m);
+                if (okG == 1) Console.writeLine("COARSELIKE GPU OK");
+                else Console.writeLine("COARSELIKE GPU MISMATCH");
             } else {
-                Console.writeLine("RESIZE3D GPU SKIP (no device)");
+                Console.writeLine("COARSELIKE GPU SKIP (no device)");
             }
         }
 
@@ -98,6 +99,6 @@ class Resize3dTestApp {
 }
 
 int main() {
-    Resize3dTestApp app = new Resize3dTestApp();
+    Coarselike32App app = new Coarselike32App();
     return 0;
 }

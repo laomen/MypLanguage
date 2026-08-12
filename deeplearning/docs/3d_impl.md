@@ -113,3 +113,28 @@
    → 这是当前优先方向，见 gpu_paradigm.md / 3D GPU 核。
 
 > TODO(perf)：待 GPU 方向完成后，再回头优化 CPU 核性能。
+
+## 8. GPU 正确性修复：InstanceNorm 公式 bug（coarse_model 端到端）
+
+**现象**：真实 coarse_model（3D U-Net，160³）GPU 输出 vs ORT max diff 0.767
+（确定性、同一索引），而 CPU 匹配（6.1e-3，float32 漂移）。小尺寸测试（8³/32³）
+全过 → 是**尺度相关**的核 bug。
+
+**定位方法**（逐 op dump）：在 runGpu 的 op 循环末尾按 op 索引 dump 输出张量
+（D2H 该张量范围），与「正确 16³ 输入的 ORT 参考」逐 op 对比，找到第一个分叉
+算子。**注意**：run 结束后 dump 会因 arena 内存复用而显示垃圾——必须**每个 op
+执行完立即 dump**。
+
+**根因**：GPU `instancenorm` 核用 `invStd = scale / (Math.sqrt(variance) + eps)`，
+而正确公式是 `scale / Math.sqrt(variance + eps)`（eps 在根号内，CPU 核一直正确）。
+小方差通道（var~1.2e-4）两者差 4-8%；经 143 层 U-Net 累积 → 输出 0.767 误差。
+
+**另一发现**：float 累加方差经 20+ 层 InstanceNorm 也会累积 ~0.4 误差 → GPU 核
+需用 **double 累加**（与 CPU/ORT 一致）才能匹配到 float32 漂移水平。
+
+**修复**（`gpu_ops.myp` instancenorm）：
+- 正确公式 `Math.sqrt(variance + eps)`
+- sum/ss/variance/invStd 用 double 累加
+
+**验证**：coarse_model GPU vs ORT max diff 0.767 → **0.0065**（与 CPU 同级）；
+237/237 编译器测试、全部 3D/2D infer 测试 CPU+GPU 通过。

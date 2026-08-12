@@ -3,16 +3,21 @@
 验证：Shape→Slice→Concat→Resize(sizes) 折叠、Clip、ReduceMean(all)、
 Sub/Mul/Div/Sqrt/Add 标量广播、Cast(int64→float)、Conv3D、InstanceNorm、MaxPool3D。
 """
-import numpy as np, onnx
+import numpy as np, onnx, os
 from onnx import helper, TensorProto, numpy_helper
 import onnxruntime as ort
 
-OUT = "deeplearning/data/onnx/coarselike.onnx"
-IN_F32 = "deeplearning/data/onnx/coarselike_in.f32"
-ORT_BIN = "deeplearning/data/onnx/coarselike_ort.bin"
+# 尺寸参数：IN_D=输入边长，RES_D=Resize 目标边长（默认 4→8，可设 16→32 测中尺度）
+IN_D = int(os.environ.get("COARSELIKE_IN_D", "4"))
+RES_D = int(os.environ.get("COARSELIKE_RES_D", "8"))
+TAG = os.environ.get("COARSELIKE_TAG", "")
+
+OUT = f"deeplearning/data/onnx/coarselike{TAG}.onnx"
+IN_F32 = f"deeplearning/data/onnx/coarselike{TAG}_in.f32"
+ORT_BIN = f"deeplearning/data/onnx/coarselike{TAG}_ort.bin"
 
 np.random.seed(11)
-x = np.random.randn(1, 1, 4, 4, 4).astype(np.float32)
+x = np.random.randn(1, 1, IN_D, IN_D, IN_D).astype(np.float32)
 w = (np.random.randn(2, 1, 3, 3, 3) * 0.3).astype(np.float32)
 b = np.array([0.1, -0.2], dtype=np.float32)
 scale = np.array([1.3, 0.8], dtype=np.float32)
@@ -55,11 +60,11 @@ nodes = [
 
 graph = helper.make_graph(
     nodes, "coarselike",
-    inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1, 4, 4, 4])],
-    outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2, 4, 4, 4])],
+    inputs=[helper.make_tensor_value_info("x", TensorProto.FLOAT, [1, 1, IN_D, IN_D, IN_D])],
+    outputs=[helper.make_tensor_value_info("y", TensorProto.FLOAT, [1, 2, RES_D // 2, RES_D // 2, RES_D // 2])],
     initializer=[
         const_i64("st", [0]), const_i64("en", [2]), const_i64("ax", [0]),
-        const_i64("dst", [8, 8, 8]),
+        const_i64("dst", [RES_D, RES_D, RES_D]),
         const_f32("roi", []), const_f32("scales", []),
         const_f32("minv", [0.0]), const_f32("maxv", [6.0]),
         const_f32("one", [1.0]), const_f32("eps", [1.0e-5]),
