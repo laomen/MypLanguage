@@ -564,6 +564,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         if (runtime_name == "myp_math_sinh")  return emit_math_gpu("__nv_sinh");
                         if (runtime_name == "myp_math_cosh")  return emit_math_gpu("__nv_cosh");
                         if (runtime_name == "myp_math_tanh")  return emit_math_gpu("__nv_tanh");
+                        if (runtime_name == "myp_math_trunc") return emit_math_gpu("__nv_trunc");
                         if (runtime_name == "myp_math_pow")   return emit_math_pow_gpu();
                         return emit_math_gpu("__nv_sqrt"); // fallback
                     }

@@ -698,6 +698,68 @@ TypeInfo Sema::visitBitOps(CallExpr& expr, const std::string& name) {
     return TypeInfo(ret);
 }
 
+// §9.5 多态数学 intrinsic：一元实数函数（sqrt/floor/ceil/trunc/sin/cos/tan/
+// asin/acos/atan/sinh/cosh/tanh/exp/log）与 abs 按实参类型定返回类型
+// （f32→f32、f64→f64），支撑 Math 库 `fn<T where T : Float/Numeric> T f(T v)`
+// 泛型包装。整型实参原样返回（仅泛型体 Int 占位符检查路径；实例化由 where
+// 约束把关，用户层不会拿到 llvm.sqrt.i32）。pow/atan2 固定 Double（双参），
+// abs_int 固定 Int（整型绝对值），与注册签名一致，拦截仅是统一入口。
+TypeInfo Sema::visitMathIntrinsic(CallExpr& expr, const std::string& name) {
+    std::string fn = name.substr(2);  // "__" → "myp_math_*"（runtime 名）
+    bool unary_real = (fn == "myp_math_sqrt" || fn == "myp_math_floor" ||
+                       fn == "myp_math_ceil" || fn == "myp_math_trunc" ||
+                       fn == "myp_math_sin" || fn == "myp_math_cos" ||
+                       fn == "myp_math_tan" || fn == "myp_math_asin" ||
+                       fn == "myp_math_acos" || fn == "myp_math_atan" ||
+                       fn == "myp_math_sinh" || fn == "myp_math_cosh" ||
+                       fn == "myp_math_tanh" || fn == "myp_math_exp" ||
+                       fn == "myp_math_log" || fn == "myp_math_abs");
+    bool binary_double = (fn == "myp_math_pow" || fn == "myp_math_atan2");
+    bool abs_int = (fn == "myp_math_abs_int");
+    auto is_numeric_kind = [](TypeKind k) {
+        return k == TypeKind::Byte || k == TypeKind::Short ||
+               k == TypeKind::Int || k == TypeKind::Long ||
+               k == TypeKind::UByte || k == TypeKind::UShort ||
+               k == TypeKind::UInt || k == TypeKind::ULong ||
+               k == TypeKind::Char || k == TypeKind::Float ||
+               k == TypeKind::Double;
+    };
+    if (unary_real) {
+        if (expr.args.size() != 1) {
+            error(expr.range, name + " takes exactly one argument");
+            return TypeInfo(TypeKind::Void);
+        }
+        auto at = visitExpr(*expr.args[0]);
+        if (!is_numeric_kind(at.kind)) {
+            error(expr.range, name + " expects a numeric argument");
+            return TypeInfo(TypeKind::Void);
+        }
+        TypeKind ret = at.kind;
+        expr.resolved_kind = ret;
+        return TypeInfo(ret);
+    }
+    if (binary_double) {
+        if (expr.args.size() != 2) {
+            error(expr.range, name + " takes exactly two arguments");
+            return TypeInfo(TypeKind::Void);
+        }
+        for (auto& a : expr.args) visitExpr(*a);
+        expr.resolved_kind = TypeKind::Double;
+        return TypeInfo(TypeKind::Double);
+    }
+    if (abs_int) {
+        if (expr.args.size() != 1) {
+            error(expr.range, name + " takes exactly one argument");
+            return TypeInfo(TypeKind::Void);
+        }
+        visitExpr(*expr.args[0]);
+        expr.resolved_kind = TypeKind::Int;
+        return TypeInfo(TypeKind::Int);
+    }
+    // 未知 __myp_math_*（理论上不会到达）
+    return TypeInfo(TypeKind::Void);
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1486,6 +1548,12 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
             bc_id.name == "ctz" || bc_id.name == "bitreverse" ||
             bc_id.name == "rotl" || bc_id.name == "rotr")
             return visitBitOps(expr, bc_id.name);
+        // §9.5 多态数学 intrinsic：__myp_math_sqrt/abs/floor/ceil/trunc/sin/cos/
+        // tan/asin/acos/atan/sinh/cosh/tanh/exp/log 按实参类型定返回类型
+        // （f32→f32、f64→f64），支撑 Math 库泛型包装（where T : Float/Numeric）。
+        // __myp_math_atan2/pow/abs_int 不拦截（保持固定 double/int 签名）。
+        if (bc_id.name.rfind("__myp_math_", 0) == 0)
+            return visitMathIntrinsic(expr, bc_id.name);
     }
 
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.

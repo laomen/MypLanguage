@@ -86,7 +86,7 @@ class Device {
         // 向上取整
         double ceil(double v)   { return Math.ceil(v); }
         // 截断取整（返回 int）
-        int trunc(double v)     { return Math.trunc(v); }
+        int trunc(double v)     { return int(v); }
 
         // 三角函数
         double sin(double v)    { return Math.sin(v); }

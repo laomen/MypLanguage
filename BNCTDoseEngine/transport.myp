@@ -122,9 +122,9 @@ class Transport {
                     // ============================================
                     // 3. 体素索引 (使用 Mesh 的坐标转换)
                     // ============================================
-                    long ix = Math.trunc((x - ox) / DataManager.mesh.dx);
-                    long iy = Math.trunc((y - oy) / DataManager.mesh.dy);
-                    long iz = Math.trunc((z - oz) / voxSize);
+                    long ix = long((x - ox) / DataManager.mesh.dx);
+                    long iy = long((y - oy) / DataManager.mesh.dy);
+                    long iz = long((z - oz) / voxSize);
                     if (ix < 0L) ix = 0L; if (ix >= nx) ix = nx - 1L;
                     if (iy < 0L) iy = 0L; if (iy >= ny) iy = ny - 1L;
                     if (iz < 0L) iz = 0L; if (iz >= nz) iz = nz - 1L;

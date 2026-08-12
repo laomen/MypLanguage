@@ -1,5 +1,9 @@
 // math.myp — MYP 标准库：数学函数（静态类，无需实例化）
 // __myp_math_* 是编译器内置函数（intrinsic），仅 stdlib 可用
+// §9.5：一元实数/abs/trunc 改为泛型（where T : Float / Numeric），
+// f32 实参返回 f32（走 llvm.sqrt.f32 等标量 intrinsic），消灭 float(...) 样板。
+// 破坏性：trunc 改 T→T（原 int trunc(double)，迁移 int(x)/long(x)）。
+// 删除 absInt/minLong/maxLong/clampDouble（由泛型 abs/min/max/clamp 取代）。
 
 class Math {
     static:
@@ -7,55 +11,46 @@ class Math {
         double pi() { return 3.141592653589793; }
         double e() { return 2.718281828459045; }
 
-        // 基本函数
-        double sqrt(double v)   { return __myp_math_sqrt(v); }
-        double abs(double v)    { return __myp_math_abs(v); }
-        double floor(double v)  { return __myp_math_floor(v); }
-        double ceil(double v)   { return __myp_math_ceil(v); }
-        int trunc(double v)     { return __myp_trunc(v); }
+        // 基本函数（一元实数：f32→f32、f64→f64）
+        T sqrt<T where T : Float>(T v)  { return __myp_math_sqrt(v); }
+        T abs<T where T : Numeric>(T v) { return __myp_math_abs(v); }
+        T floor<T where T : Float>(T v) { return __myp_math_floor(v); }
+        T ceil<T where T : Float>(T v)  { return __myp_math_ceil(v); }
+        // 截断取整：T→T（§9.5 破坏性变更，原为 int trunc(double)）
+        T trunc<T where T : Float>(T v) { return __myp_math_trunc(v); }
 
         // 三角函数
-        double sin(double v)    { return __myp_math_sin(v); }
-        double cos(double v)    { return __myp_math_cos(v); }
-        double tan(double v)    { return __myp_math_tan(v); }
+        T sin<T where T : Float>(T v)   { return __myp_math_sin(v); }
+        T cos<T where T : Float>(T v)   { return __myp_math_cos(v); }
+        T tan<T where T : Float>(T v)   { return __myp_math_tan(v); }
 
         // 反三角函数
-        double asin(double v)   { return __myp_math_asin(v); }
-        double acos(double v)   { return __myp_math_acos(v); }
-        double atan(double v)   { return __myp_math_atan(v); }
+        T asin<T where T : Float>(T v)  { return __myp_math_asin(v); }
+        T acos<T where T : Float>(T v)  { return __myp_math_acos(v); }
+        T atan<T where T : Float>(T v)  { return __myp_math_atan(v); }
         double atan2(double y, double x) { return __myp_math_atan2(y, x); }
 
         // 双曲函数
-        double sinh(double v)   { return __myp_math_sinh(v); }
-        double cosh(double v)   { return __myp_math_cosh(v); }
-        double tanh(double v)   { return __myp_math_tanh(v); }
+        T sinh<T where T : Float>(T v)  { return __myp_math_sinh(v); }
+        T cosh<T where T : Float>(T v)  { return __myp_math_cosh(v); }
+        T tanh<T where T : Float>(T v)  { return __myp_math_tanh(v); }
 
         // 指数对数
-        double exp(double v)    { return __myp_math_exp(v); }
-        double log(double v)    { return __myp_math_log(v); }
+        T exp<T where T : Float>(T v)   { return __myp_math_exp(v); }
+        T log<T where T : Float>(T v)   { return __myp_math_log(v); }
         double pow(double base, double exp) { return __myp_math_pow(base, exp); }
 
-        // 整数运算
-        int absInt(int v)       { return __myp_math_abs_int(v); }
-        int min(int a, int b)   { if (a < b) return a; return b; }
-        int max(int a, int b)   { if (a > b) return a; return b; }
-        long minLong(long a, long b)   { if (a < b) return a; return b; }
-        long maxLong(long a, long b)   { if (a > b) return a; return b; }
+        // 通用数值/有序泛型（§9）：int/long/float/double/string 共用
+        T min<T where T : Ordered>(T a, T b)   { if (a < b) return a; return b; }
+        T max<T where T : Ordered>(T a, T b)   { if (a > b) return a; return b; }
+        T clamp<T where T : Ordered>(T v, T lo, T hi) {
+            if (v < lo) return lo;
+            if (v > hi) return hi;
+            return v;
+        }
+        T lerp<T where T : Float>(T a, T b, T t) { return a + (b - a) * t; }
 
-        // 实用函数
-        int clamp(int v, int lo, int hi) {
-            if (v < lo) return lo;
-            if (v > hi) return hi;
-            return v;
-        }
-        double clampDouble(double v, double lo, double hi) {
-            if (v < lo) return lo;
-            if (v > hi) return hi;
-            return v;
-        }
-        double lerp(double a, double b, double t) {
-            return a + (b - a) * t;
-        }
+        // 实用函数（角度换算保持 double）
         double degToRad(double deg) { return deg * Math.pi() / 180.0; }
         double radToDeg(double rad) { return rad * 180.0 / Math.pi(); }
 }

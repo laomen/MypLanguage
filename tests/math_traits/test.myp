@@ -1,0 +1,89 @@
+// §9.5 多态数学：Math 库泛型化（where T : Float / Numeric / Ordered）。
+// - Math.sqrt/exp/... 一元实数：f32→f32、f64→f64（float 无需 float(...) 样板）
+// - Math.abs：整型→整型（llvm.abs）、f32→f32、f64→f64
+// - Math.min/max/clamp：int/double/string 通用
+// - 破坏性：Math.trunc 改 T→T（原 int trunc(double)），int(x)/long(x) 迁移
+import env;
+import math;
+
+class Main {
+    action:
+        @startup void run() {
+            // ---- 一元实数：double→double ----
+            double d = Math.sqrt(2.0);
+            Console.writeString("sqrt(2.0)=" + d);
+            Console.writeString("\n");
+            double e = Math.exp(1.0);
+            Console.writeString("exp(1.0)=" + e);
+            Console.writeString("\n");
+            double lg = Math.log(Math.e());
+            Console.writeString("log(e)=" + lg);
+            Console.writeString("\n");
+            double fl = Math.floor(3.7);
+            Console.writeString("floor(3.7)=" + fl);
+            Console.writeString("\n");
+            double cl = Math.ceil(3.2);
+            Console.writeString("ceil(3.2)=" + cl);
+            Console.writeString("\n");
+            double s = Math.sin(0.0);
+            Console.writeString("sin(0)=" + s);
+            Console.writeString("\n");
+
+            // ---- 一元实数：float→float（无 float() 样板）----
+            float fs = Math.sqrt(4.0f);
+            Console.writeString("sqrt(4.0f)=" + fs);
+            Console.writeString("\n");
+            float fe = Math.exp(1.0f);
+            Console.writeString("exp(1.0f)=" + fe);
+            Console.writeString("\n");
+
+            // ---- abs：整型→整型 / f32→f32 / f64→f64 ----
+            int ai = Math.abs(-5);
+            Console.writeString("abs(-5)=" + ai);
+            Console.writeString("\n");
+            long al = Math.abs(-10000000000L);
+            Console.writeString("abs(-10^10L)=" + al);
+            Console.writeString("\n");
+            double ad = Math.abs(-2.5);
+            Console.writeString("abs(-2.5)=" + ad);
+            Console.writeString("\n");
+            float af = Math.abs(-3.5f);
+            Console.writeString("abs(-3.5f)=" + af);
+            Console.writeString("\n");
+
+            // ---- min/max/clamp：int/double/string 通用 ----
+            int mn = Math.min(10, 3);
+            Console.writeString("min(10,3)=" + mn);
+            Console.writeString("\n");
+            double md = Math.max(1.5, 2.5);
+            Console.writeString("max(1.5,2.5)=" + md);
+            Console.writeString("\n");
+            Console.writeString("min(abc,abd)=" + Math.min("abc", "abd"));
+            Console.writeString("\n");
+            int cp = Math.clamp(15, 0, 10);
+            Console.writeString("clamp(15,0,10)=" + cp);
+            Console.writeString("\n");
+
+            // ---- 破坏性：trunc T→T，int(x)/long(x) 迁移 ----
+            double t = Math.trunc(7.99);
+            Console.writeString("trunc(7.99)=" + t);
+            Console.writeString("\n");
+            int ti = int(Math.trunc(7.99));
+            Console.writeString("int(trunc(7.99))=" + ti);
+            Console.writeString("\n");
+            long tl = long(3.99);
+            Console.writeString("long(3.99)=" + tl);
+            Console.writeString("\n");
+
+            // ---- pow/atan2 保持 double ----
+            double pw = Math.pow(2.0, 10.0);
+            Console.writeString("pow(2,10)=" + pw);
+            Console.writeString("\n");
+
+            Console.writeString("MATH_TRAITS_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

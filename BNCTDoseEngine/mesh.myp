@@ -52,9 +52,9 @@ struct Mesh {
         double iy_d = (y - origin_y) / dy;
         double iz_d = (z - origin_z) / dz;
         VoxelIndex vi;
-        vi.i = Math.trunc(ix_d);
-        vi.j = Math.trunc(iy_d);
-        vi.k = Math.trunc(iz_d);
+        vi.i = long(ix_d);
+        vi.j = long(iy_d);
+        vi.k = long(iz_d);
         return vi;
     }
 

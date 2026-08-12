@@ -45,7 +45,7 @@ class Json {
 
         int getInt(string path) {
             double v = myp_json_get_number(handle_, path);
-            return Math.trunc(v);
+            return int(v);
         }
 
         double getDouble(string path) {

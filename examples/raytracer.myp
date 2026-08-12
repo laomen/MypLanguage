@@ -260,8 +260,8 @@ class RayTracer {
                 p.x = ro.x + rd.x * h.t;
                 p.y = 0.0;
                 p.z = ro.z + rd.z * h.t;
-                int ix = Math.trunc(Math.floor(p.x));
-                int iz = Math.trunc(Math.floor(p.z));
+                int ix = int(Math.floor(p.x));
+                int iz = int(Math.floor(p.z));
                 double checker = 1.0;
                 if ((ix + iz) % 2 != 0) checker = 0.72;
                 Vec3 n = makeVec3(0.0, 1.0, 0.0);
@@ -372,7 +372,7 @@ class RayTracer {
         int clampByte(double v) {
             if (v < 0.0) v = 0.0;
             if (v > 1.0) v = 1.0;
-            return Math.trunc(v * 255.0);
+            return int(v * 255.0);
         }
 
         // 场景：6 个球体（mat: 0 漫反射, 1 镜面, 2 玻璃）+ 光源

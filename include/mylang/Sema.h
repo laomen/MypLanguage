@@ -74,6 +74,10 @@ private:
     TypeInfo visitBytesOf(CallExpr& expr);
     TypeInfo visitParse(CallExpr& expr, const std::string& name);
     TypeInfo visitBitOps(CallExpr& expr, const std::string& name);
+    // §9.5 多态数学 intrinsic（__myp_math_*）：一元实数函数/abs/trunc 按实参
+    // 类型定返回类型（f32→f32、f64→f64；整型原样返回供泛型体 Int 占位符检查，
+    // 实例化由 where T : Float/Numeric 约束把关）。
+    TypeInfo visitMathIntrinsic(CallExpr& expr, const std::string& name);
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);
     // §四-1：填充 Function TypeInfo 的参数元数据（名/默认值），与 param_types 对齐
     void populateFuncTypeMeta(TypeInfo& ft, const std::vector<ParamDecl>& params);

@@ -766,6 +766,56 @@ llvm::Value* CodeGen::generateBitOps(const CallExpr& e, const std::string& name)
     return result;
 }
 
+// §9.5 多态数学 intrinsic：一元实数（sqrt/floor/ceil/trunc/sin/cos/tan/asin/
+// acos/atan/sinh/cosh/tanh/exp/log）与 abs 按实参类型发 LLVM 标量 intrinsic，
+// 支持 Math 库泛型包装的 float 参数（f32 → llvm.sqrt.f32 等）。abs 整型 →
+// llvm.abs.iN。返回 nullptr = 不拦截（pow/atan2/abs_int 走 runtime 调用）。
+llvm::Value* CodeGen::generatePolyMathIntrinsic(const CallExpr& e, const std::string& id) {
+    std::string fn = id.substr(2);  // "__" → "myp_math_*"（runtime 名）
+    if (fn == "myp_math_pow" || fn == "myp_math_atan2" || fn == "myp_math_abs_int")
+        return nullptr;
+    if (e.args.size() < 1) {
+        diag_.error(e.range, id + " requires 1 argument");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    auto* v = generateExpr(*e.args[0]);
+    if (!v) return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    auto* ty = v->getType();
+    // abs：整型 → llvm.abs.iN；浮点 → llvm.fabs
+    if (fn == "myp_math_abs") {
+        if (ty->isIntegerTy())
+            return builder_.CreateIntrinsic(llvm::Intrinsic::abs, {ty},
+                {v, llvm::ConstantInt::getFalse(ctx_)}, {}, "mypmath");
+        return builder_.CreateUnaryIntrinsic(llvm::Intrinsic::fabs, v, nullptr, "mypmath");
+    }
+    llvm::Intrinsic::ID mid = llvm::Intrinsic::not_intrinsic;
+    if (fn == "myp_math_sqrt") mid = llvm::Intrinsic::sqrt;
+    else if (fn == "myp_math_floor") mid = llvm::Intrinsic::floor;
+    else if (fn == "myp_math_ceil") mid = llvm::Intrinsic::ceil;
+    else if (fn == "myp_math_trunc") mid = llvm::Intrinsic::trunc;
+    else if (fn == "myp_math_sin") mid = llvm::Intrinsic::sin;
+    else if (fn == "myp_math_cos") mid = llvm::Intrinsic::cos;
+    else if (fn == "myp_math_tan") mid = llvm::Intrinsic::tan;
+    else if (fn == "myp_math_asin") mid = llvm::Intrinsic::asin;
+    else if (fn == "myp_math_acos") mid = llvm::Intrinsic::acos;
+    else if (fn == "myp_math_atan") mid = llvm::Intrinsic::atan;
+    else if (fn == "myp_math_sinh") mid = llvm::Intrinsic::sinh;
+    else if (fn == "myp_math_cosh") mid = llvm::Intrinsic::cosh;
+    else if (fn == "myp_math_tanh") mid = llvm::Intrinsic::tanh;
+    else if (fn == "myp_math_exp") mid = llvm::Intrinsic::exp;
+    else if (fn == "myp_math_log") mid = llvm::Intrinsic::log;
+    if (mid == llvm::Intrinsic::not_intrinsic)
+        return nullptr;
+    // 整型实参（理论仅泛型体检查/用户直接误用 __myp_math_*）：提为 double
+    // 再调用（设计：整型 → f64）。正常路径（where T : Float 实例化）不会到达。
+    if (ty->isIntegerTy()) {
+        auto* f64 = llvm::Type::getDoubleTy(ctx_);
+        auto* d = builder_.CreateSIToFP(v, f64);
+        return builder_.CreateUnaryIntrinsic(mid, d, nullptr, "mypmath");
+    }
+    return builder_.CreateUnaryIntrinsic(mid, v, nullptr, "mypmath");
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -1631,6 +1681,12 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
 
     if (!callee && e.callee->kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(*e.callee);
+        // §9.5 多态数学 intrinsic：在 resolve 到 runtime 函数（double 签名）之前
+        // 拦截，按实参类型发 LLVM 标量 intrinsic（float 实参不被提升成 double）。
+        if (id.name.rfind("__myp_math_", 0) == 0) {
+            auto* mv = generatePolyMathIntrinsic(e, id.name);
+            if (mv) return mv;
+        }
         callee = module_->getFunction(id.name);
         if (!callee) {
             // Intrinsic functions (lookup via map)
