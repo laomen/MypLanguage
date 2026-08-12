@@ -9,6 +9,8 @@
 # 说明:
 #   - GPU 测试 (cuda.myp / @gpu for) 不在 run_tests.sh 套件内 (独立文件),
 #     且需要 NVIDIA GPU, 故 CI 不跑; 留待 self-hosted runner
+#   - CI 用 -DMYP_ENABLE_GPU=OFF 纯 CPU 构建: 不链接 LLVM NVPTX、不查 CUDA,
+#     @gpu for 编译为 CPU 回退 —— 避免 CI 环境 LLVM NVPTX/CUDA 组件缺失导致构建失败
 #   - LLVM 21 从 apt.llvm.org 安装 (GitHub 镜像不预装)
 #   - 公共仓库: 完全免费
 
@@ -41,9 +43,9 @@ jobs:
           sudo apt-get install -y llvm-21-dev libllvm21 clang-21 || true
           llvm-config-21 --version
 
-      - name: Build mypc (Release)
+      - name: Build mypc (Release, CPU-only)
         run: |
-          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DMYP_ENABLE_GPU=OFF
           cmake --build build -j"$(nproc)"
 
       - name: Test suite (regression + negative + framework + no-crash)
@@ -52,9 +54,9 @@ jobs:
       - name: Fuzz (fixed seed)
         run: python3 tests/fuzz_test.py --count 200 --seed 42
 
-      - name: Build mypc (ASAN)
+      - name: Build mypc (ASAN, CPU-only)
         run: |
-          cmake -B build-asan -DMYP_SANITIZE=ON
+          cmake -B build-asan -DMYP_SANITIZE=ON -DMYP_ENABLE_GPU=OFF
           cmake --build build-asan -j"$(nproc)"
 
       - name: Test suite (ASAN)
