@@ -524,7 +524,7 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | **G3** | **BatchNormalization 已实现**：独立 BN 算子（opKind 17/18，CPU+GPU）**+ Conv+BN 融合**（`fuseConvBN`，BN 折进卷积权重/偏置，随后 G1 再融合 Conv+ReLU → 单算子） | 否 |
 | **G4** | **通用激活算子 + 真实带 BN 模型验证已实现**：ReLU6/LeakyRelu/SiLU/HardSwish/Clip（opKind 19-23，CPU+GPU）；真实 ResNet18（resnet18_v1_7.onnx，20 BN 全融合）端到端 top-5/output sum 与 ORT 逐位一致（GPU 51ms） | 否 |
 | **G5** | **图优化器解耦为通用组件已实现**：新增 `graph.myp`（`Graph`：格式无关图 IR + 8 pass + planMemory + buildRuntime + 图构建 API）；`onnx_loader.myp` 变薄为纯 ONNX 解析器；OnnxLoader 公共接口不变，infer_tests 零改动 | 否 |
-| **F1-F6** | **未来支持项**（暂不实现，仅标记）：cuDNN/cuBLAS 算子库对接、厂商 BYOC、量化/稀疏/动态形状、训练支持（详见 §16） | 视项而定 |
+| **F1-F8** | **未来支持项**（暂不实现，仅标记）：cuDNN/cuBLAS 算子库对接、厂商 BYOC、量化/稀疏/动态形状、训练支持、**通用 ONNX 运行器（F7）**、**算子覆盖扩展（F8）**（详见 §16） | 视项而定 |
 
 > **M5 暂缓（2026-08-12）**：多后端（HIP/ROCm、SYCL、Metal、WebGPU）需要对应硬件才能
 > 验证。当前无 AMD/Intel/Apple 硬件，故**暂不实现**。扩展路径（§11：编译器 target +
@@ -721,6 +721,42 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | 运行时/内存/设备调度 | ✅ InferenceRuntime；缺显式流/多设备（M2） |
 | 量化/稀疏/动态形状 | ❌ F4 |
 | 算子库对接（cuDNN/cuBLAS） | ❌ F1 |
+
+### F7. 通用 ONNX 运行器（消除新模型样板）——已归档（暂缓）
+- **问题**：跑新 ONNX 模型需复制 `r18_main/resnet_main` 写一个 ~20 行 main
+  （改模型路径 + 输入/输出张量名 + 喂输入），有样板重复。
+- **目标**：一个通用 CLI `run_onnx.myp <model.onnx> <input> <output> <data.f32>`——
+  仿 json_tool 的 `run_model`（已为 JSON 图提供），但走 ONNX 路径。
+- **内容**：命令行传模型路径 + 输入/输出张量名 + 输入数据文件；加载 → 推理 →
+  输出张量；支持 `-o` 写结果 / 打印 top-k（可选）。
+- **收益**：新增模型验证零样板——放 .onnx + 数据文件即可跑。
+- **状态**：已归档标记（2026-08-12），排期见 §16 F7。
+
+### F8. 算子覆盖扩展（高频缺失算子）——已归档（暂缓）
+- **现状**：仅 15 个算子（CNN 前馈分类够用），主流模型大多缺算子。
+- **高频缺失算子（补上即可解锁大片模型）**：
+  | 算子 | 解锁模型 |
+  |------|----------|
+  | `Concat` | DenseNet / SSD / U-Net / YOLO neck |
+  | `Reshape` / `Transpose` | YOLO / EfficientNet / ViT / BERT |
+  | `Slice` | YOLO / EfficientNet |
+  | `Resize`(Upsample) | 检测 / 分割 / GAN |
+  | `ConvTranspose` | U-Net / GAN / 检测 |
+  | `ReduceMean` | EfficientNet SE / 注意力 |
+  | `LayerNorm` + `GELU` | 一切 Transformer（ViT/BERT/LLM 共用） |
+- **LLM 额外缺口**（见下）：`Embedding`/`Gather`、动态形状（KV cache）、FP16/INT8、GEMM 优化。
+- **加算子流程**：graph.myp（inferShapes+buildRuntime）+ runtime（addXxx）+ ops/gpu_ops（CPU/GPU 内核）——每个 ~几十行。
+- **建议顺序**：先 `Concat`+`Reshape`（最通用）→ `Transpose`/`Slice`/`Resize`/`ConvTranspose`/`ReduceMean` → `LayerNorm`/`GELU`（Transformer 门槛）。
+- **状态**：已归档标记（2026-08-12），排期见 §16 F8。
+
+### F9. LLM（生成式 Transformer）推理——已归档（暂缓）
+- **差距**：① 算子缺 `Embedding`/`Gather`/`LayerNorm`/`GELU`/RoPE（Cos/Sin/Concat/Slice）；
+  ② **动态形状**——decode 循环 KV cache 逐 token 增长，而当前框架静态形状
+  （inferShapes 固定维度 + planMemory 固定 arena）；prefill（静态）或可跑，decode 不行；
+  ③ 精度仅 FP32（7B 模型 28GB）；④ GEMM 朴素无优化（LLM 是 matmul 密集）；⑤ KV cache 未建模。
+- **可增量路径**：先跑小模型静态 prefill（补 Embedding/Gather/LayerNorm/Reshape/Transpose）→
+  再加 KV cache 动态形状支持 decode。
+- **状态**：已归档标记（2026-08-12），与 F8 的 Transformer 算子高度重叠。
 
 ---
 
