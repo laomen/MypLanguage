@@ -28,8 +28,7 @@
 ## 编译器版本历史
 
 ### v3.12.2（当前）— 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
-- **§9.5 多态数学 intrinsic + `Math` 库按 trait 重写**（`docs/type_system_design.md` §9.5，
-  CPU + GPU 全部落地）：
+- **§9.5 多态数学 intrinsic + `Math` 库按 trait 重写**（§9.5 全部落地，CPU + GPU）：
   - `__myp_math_*` 一元实数/abs/trunc intrinsic 类型感知：sema 按实参类型定返回类型
     （f32→f32、f64→f64）；CPU codegen 按实参类型发 LLVM 标量 intrinsic
     （`llvm.sqrt.f32` 等；整型 `abs`→`llvm.abs.iN`、浮点→`llvm.fabs`；`trunc`→`llvm.trunc`）；
