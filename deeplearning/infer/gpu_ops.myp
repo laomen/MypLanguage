@@ -65,7 +65,7 @@ class GpuInferOps {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     float x = a[inOff + p];
-                    float e = float(Math.exp(0.0f - x));
+                    float e = Math.exp(0.0f - x);
                     a[outOff + p] = 1.0f / (1.0f + e);
                 }
             }
@@ -87,10 +87,10 @@ class GpuInferOps {
                     float s = 0.0f;
                     j = 0L;
                     while (j < rows) {
-                        s = s + float(Math.exp(a[inOff + j * cols + k] - m));
+                        s = s + Math.exp(a[inOff + j * cols + k] - m);
                         j = j + 1L;
                     }
-                    a[outOff + i * cols + k] = float(Math.exp(a[inOff + i * cols + k] - m)) / s;
+                    a[outOff + i * cols + k] = Math.exp(a[inOff + i * cols + k] - m) / s;
                 }
             }
         }
@@ -865,7 +865,7 @@ class GpuInferOps {
                     float mean = a[mOff + c];
                     float variance = a[vOff + c];
                     float bias = a[bOff + c];
-                    float invStd = scale / float(Math.sqrt(float(variance) + float(eps)));
+                    float invStd = scale / Math.sqrt(float(variance) + float(eps));
                     a[yOff + p] = float((a[xOff + p] - mean) * invStd + bias);
                 }
             }
@@ -882,7 +882,7 @@ class GpuInferOps {
                     float mean = a[mOff + c];
                     float variance = a[vOff + c];
                     float bias = a[bOff + c];
-                    float invStd = scale / float(Math.sqrt(float(variance) + float(eps)));
+                    float invStd = scale / Math.sqrt(float(variance) + float(eps));
                     a[yOff + p] = float((a[xOff + p] - mean) * invStd + bias);
                 }
             }
@@ -1120,7 +1120,7 @@ class GpuInferOps {
         void sqrt1(float[] a, int work, int inOff, int outOff, long dev) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    a[outOff + p] = float(Math.sqrt(a[inOff + p]));
+                    a[outOff + p] = Math.sqrt(a[inOff + p]);
                 }
             }
         }

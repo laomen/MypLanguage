@@ -64,7 +64,7 @@ class InferOps {
             int i = 0;
             while (i < n) {
                 float x = arena[inOff + i];
-                float e = float(Math.exp(0.0f - x));
+                float e = Math.exp(0.0f - x);
                 arena[outOff + i] = 1.0f / (1.0f + e);
                 i = i + 1;
             }
@@ -85,7 +85,7 @@ class InferOps {
                 float sum = 0.0f;
                 i = 0;
                 while (i < rows) {
-                    float e = float(Math.exp(arena[inOff + i * cols + k] - maxv));
+                    float e = Math.exp(arena[inOff + i * cols + k] - maxv);
                     arena[outOff + i * cols + k] = e;
                     sum = sum + e;
                     i = i + 1;
@@ -1319,7 +1319,7 @@ class InferOps {
         // Sqrt：y = sqrt(x)
         void sqrt1(float[] arena, int inOff, int outOff, int n) {
             int i = 0;
-            while (i < n) { arena[outOff + i] = float(Math.sqrt(arena[inOff + i])); i = i + 1; }
+            while (i < n) { arena[outOff + i] = Math.sqrt(arena[inOff + i]); i = i + 1; }
         }
         // InstanceNormalization：per-(n,c) 在 S=空间元素数 上 mean/var（biased）+ affine
         // x: [N,C,S] flat；scale/bias: [C]；eps。秩无关（2D S=H*W；3D S=D*H*W）。
