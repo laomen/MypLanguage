@@ -27,7 +27,29 @@
 
 ## 编译器版本历史
 
-### v3.12.1（当前）— 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
+### v3.12.2（当前）— 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
+- **§9.5 多态数学 intrinsic + `Math` 库按 trait 重写**（`docs/type_system_design.md` §9.5，
+  CPU + GPU 全部落地）：
+  - `__myp_math_*` 一元实数/abs/trunc intrinsic 类型感知：sema 按实参类型定返回类型
+    （f32→f32、f64→f64）；CPU codegen 按实参类型发 LLVM 标量 intrinsic
+    （`llvm.sqrt.f32` 等；整型 `abs`→`llvm.abs.iN`、浮点→`llvm.fabs`；`trunc`→`llvm.trunc`）；
+    GPU kernel 内按实参类型选 libdevice `__nv_xf`（float）`/__nv_x`（double），
+    整型 `abs` 内联 `select(x<0,-x,x)`（返回同宽整型）。
+  - `Math` 库泛型化：`T sqrt/exp/log/sin/cos/tan/asin/acos/atan/sinh/cosh/tanh/floor/
+    ceil/trunc<T where T : Float>`、`abs<T where T : Numeric>`、`min/max/clamp<T where
+    T : Ordered>`（int/double/string 通用）、`lerp<T where T : Float>`；`pow`/`atan2`
+    保持 double。
+  - **破坏性变更（标准库 API）**：`Math.trunc` 返回类型 `int`→`T`（T→T 向零取整）；
+    删除 `Math.absInt`/`minLong`/`maxLong`/`clampDouble`（由泛型 `abs`/`min`/`max`/`clamp`
+    取代）。迁移：`int(Math.trunc(x))`→`int(x)`；long 上下文 `Math.trunc(x)`→`long(x)`。
+  - f32 数学不再需要 `float(Math.exp(...))` 样板（float 实参直接返回 float，精度/性能更好）。
+  - 测试：`tests/math_traits`（CPU 泛型数学）、`tests/test_gpu_math_float`（GPU：float
+    sqrt/exp-log 组合/double 回归/kernel 内 int abs/显式转换全 PASS）。
+- **GPU/CPU 共享 `emitConversion`（§7.1 单一权威）**：GPU kernel 的 `ExprKind::Convert`
+  分支改为调用共享自由函数 `convertIntegerValue`——消除 GPU 内重复转换逻辑（bool↔int/fp、
+  char 无符号语义、fp↔int、float↔double、指针 bitcast 全覆盖，避免两套转换漂移）。
+
+### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总
   `tests: N, assertions: X passed, Y failed`；断言 API 全系支持自定义 `msg`
