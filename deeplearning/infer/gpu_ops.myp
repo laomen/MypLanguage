@@ -703,11 +703,11 @@ class GpuInferOps {
                     float sum = float(0.0);
                     int i = 0;
                     while (i < S) { sum = sum + a[xOff + base + i]; i = i + 1; }
-                    float mean = sum / float(S);
+                    float mean = sum / S;
                     float ss = float(0.0);
                     i = 0;
                     while (i < S) { float d = a[xOff + base + i] - mean; ss = ss + d * d; i = i + 1; }
-                    float variance = ss / float(S);
+                    float variance = ss / S;
                     int c = nc % C;
                     float scale = a[sOff + c];
                     float bias = a[bOff + c];
@@ -729,14 +729,14 @@ class GpuInferOps {
                         float sum = float(0.0);
                         int i = 0;
                         while (i < total) { sum = sum + a[inOff + i]; i = i + 1; }
-                        a[outOff + 0] = sum / float(total);
+                        a[outOff + 0] = sum / total;
                     } else {
                         int nc = int(p);
                         int base = nc * S;
                         float sum = float(0.0);
                         int i = 0;
                         while (i < S) { sum = sum + a[inOff + base + i]; i = i + 1; }
-                        a[outOff + nc] = sum / float(S);
+                        a[outOff + nc] = sum / S;
                     }
                 }
             }
