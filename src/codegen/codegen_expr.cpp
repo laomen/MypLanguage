@@ -307,8 +307,16 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     auto* r = generateExpr(*e.rhs);
     if (l->getType() != r->getType()) {
         if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
-            if (!l->getType()->isDoubleTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getDoubleTy(ctx_));
-            if (!r->getType()->isDoubleTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getDoubleTy(ctx_));
+            // 混型提升为 double：int→SIToFP，float→FPExt。此前漏了 float→double，
+            // 导致 fsub(float,double) 触发 LLVM verify 失败。
+            if (!l->getType()->isDoubleTy()) {
+                if (l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getDoubleTy(ctx_));
+                else if (l->getType()->isFloatTy()) l = builder_.CreateFPExt(l, llvm::Type::getDoubleTy(ctx_));
+            }
+            if (!r->getType()->isDoubleTy()) {
+                if (r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getDoubleTy(ctx_));
+                else if (r->getType()->isFloatTy()) r = builder_.CreateFPExt(r, llvm::Type::getDoubleTy(ctx_));
+            }
         } else if (l->getType()->isFloatTy() || r->getType()->isFloatTy()) {
             if (!l->getType()->isFloatTy() && l->getType()->isIntegerTy()) l = builder_.CreateSIToFP(l, llvm::Type::getFloatTy(ctx_));
             if (!r->getType()->isFloatTy() && r->getType()->isIntegerTy()) r = builder_.CreateSIToFP(r, llvm::Type::getFloatTy(ctx_));

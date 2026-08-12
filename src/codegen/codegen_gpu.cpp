@@ -210,6 +210,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
     auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    auto* float_ty = llvm::Type::getFloatTy(ctx_);
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
 
     switch (expr.kind) {
@@ -274,10 +275,21 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             // Type promotion
             if (l->getType() != r->getType()) {
                 if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
-                    if (!l->getType()->isDoubleTy() && l->getType()->isIntegerTy())
-                        l = kb.CreateSIToFP(l, double_ty);
-                    if (!r->getType()->isDoubleTy() && r->getType()->isIntegerTy())
-                        r = kb.CreateSIToFP(r, double_ty);
+                    // 混型提升为 double：int→SIToFP，float→FPExt（此前漏了
+                    // float→double → fsub(float,double) LLVM verify 失败）。
+                    if (!l->getType()->isDoubleTy()) {
+                        if (l->getType()->isIntegerTy()) l = kb.CreateSIToFP(l, double_ty);
+                        else if (l->getType()->isFloatTy()) l = kb.CreateFPExt(l, double_ty);
+                    }
+                    if (!r->getType()->isDoubleTy()) {
+                        if (r->getType()->isIntegerTy()) r = kb.CreateSIToFP(r, double_ty);
+                        else if (r->getType()->isFloatTy()) r = kb.CreateFPExt(r, double_ty);
+                    }
+                } else if (l->getType()->isFloatTy() || r->getType()->isFloatTy()) {
+                    if (!l->getType()->isFloatTy() && l->getType()->isIntegerTy())
+                        l = kb.CreateSIToFP(l, float_ty);
+                    if (!r->getType()->isFloatTy() && r->getType()->isIntegerTy())
+                        r = kb.CreateSIToFP(r, float_ty);
                 } else if (l->getType()->isIntegerTy() && r->getType()->isIntegerTy()) {
                     auto lw = l->getType()->getIntegerBitWidth();
                     auto rw = r->getType()->getIntegerBitWidth();
@@ -1008,6 +1020,10 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                                 val = kb.CreateFPToSI(val, ft);
                                             else if (ft->isIntegerTy() && val->getType()->isIntegerTy())
                                                 val = kb.CreateIntCast(val, ft, true);
+                                            else if (ft->isDoubleTy() && val->getType()->isFloatTy())
+                                                val = kb.CreateFPExt(val, ft);
+                                            else if (ft->isFloatTy() && val->getType()->isDoubleTy())
+                                                val = kb.CreateFPTrunc(val, ft);
                                         }
                                         kb.CreateStore(val, fgep);
                                         return val;
@@ -1068,6 +1084,10 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                 val = kb.CreateFPToSI(val, et);
                             else if (et->isIntegerTy() && val->getType()->isIntegerTy())
                                 val = kb.CreateIntCast(val, et, true);
+                            else if (et->isDoubleTy() && val->getType()->isFloatTy())
+                                val = kb.CreateFPExt(val, et);
+                            else if (et->isFloatTy() && val->getType()->isDoubleTy())
+                                val = kb.CreateFPTrunc(val, et);
                         }
                         kb.CreateStore(val, gep);
                         return val;
@@ -1108,6 +1128,10 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         val = kb.CreateFPToSI(val, elem_ty);
                     else if (elem_ty->isIntegerTy() && val->getType()->isIntegerTy())
                         val = kb.CreateIntCast(val, elem_ty, true);
+                    else if (elem_ty->isDoubleTy() && val->getType()->isFloatTy())
+                        val = kb.CreateFPExt(val, elem_ty);
+                    else if (elem_ty->isFloatTy() && val->getType()->isDoubleTy())
+                        val = kb.CreateFPTrunc(val, elem_ty);
                 }
                 auto* gep = kb.CreateGEP(elem_ty, arr, zextIndexValue(kb, idx));
                 kb.CreateStore(val, gep);
@@ -1129,6 +1153,12 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                 val = kb.CreateSIToFP(val, alloca_p->getAllocatedType());
                             else if (alloca_p->getAllocatedType()->isIntegerTy() && val->getType()->isDoubleTy())
                                 val = kb.CreateFPToSI(val, alloca_p->getAllocatedType());
+                            // 浮点宽窄转换：float→double FPExt，double→float FPTrunc。
+                            // 此前缺失 → float 原样 store 进 double 槽 = 位重解释垃圾值。
+                            else if (alloca_p->getAllocatedType()->isDoubleTy() && val->getType()->isFloatTy())
+                                val = kb.CreateFPExt(val, alloca_p->getAllocatedType());
+                            else if (alloca_p->getAllocatedType()->isFloatTy() && val->getType()->isDoubleTy())
+                                val = kb.CreateFPTrunc(val, alloca_p->getAllocatedType());
                         }
                         kb.CreateStore(val, alloca_p);
                     }

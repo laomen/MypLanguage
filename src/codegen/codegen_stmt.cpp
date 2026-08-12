@@ -1454,6 +1454,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                         v = builder_.CreateIntCast(v, pt, true);
                                     else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy())
                                         v = builder_.CreateSIToFP(v, pt);
+                                    else if (pt->isDoubleTy() && v->getType()->isFloatTy())
+                                        v = builder_.CreateFPExt(v, pt);
+                                    else if (pt->isFloatTy() && v->getType()->isDoubleTy())
+                                        v = builder_.CreateFPTrunc(v, pt);
                                 }
                                 // M7: weak field → myp_weak_store (no retain/release).
                                 if (storePropertyField(gep, v, cls, id.name)) {
@@ -1549,6 +1553,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
             if (at_v->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, at_v, true);
             else if (at_v->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, at_v);
             else if (at_v->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, at_v);
+            // 浮点宽窄转换：float→double FPExt，double→float FPTrunc。此前缺失 →
+            // float 原样 store 进 double 槽 = 位重解释成垃圾值（~5.28e-315）。
+            else if (at_v->isDoubleTy() && v->getType()->isFloatTy()) v = builder_.CreateFPExt(v, at_v);
+            else if (at_v->isFloatTy() && v->getType()->isDoubleTy()) v = builder_.CreateFPTrunc(v, at_v);
         }
         // ARC: class-local assignment — retain the new owner (unless fresh),
         // release the old value. Self/alias assignment is safe (retain-then-release).
@@ -1601,6 +1609,10 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                             v = builder_.CreateFPToSI(v, elem_ty);
                         else if (elem_ty->isIntegerTy() && v->getType()->isIntegerTy())
                             v = builder_.CreateIntCast(v, elem_ty, true);
+                        else if (elem_ty->isDoubleTy() && v->getType()->isFloatTy())
+                            v = builder_.CreateFPExt(v, elem_ty);
+                        else if (elem_ty->isFloatTy() && v->getType()->isDoubleTy())
+                            v = builder_.CreateFPTrunc(v, elem_ty);
                     }
                     // ARC: slice<T> of classes — element is a strong slot.
                     if (sti->element_type->kind == TypeKind::Class) {
@@ -1753,6 +1765,10 @@ assign_gep:
                 v = builder_.CreateSIToFP(v, elem_ty);
             else if (elem_ty->isIntegerTy() && v->getType()->isFloatingPointTy())
                 v = builder_.CreateFPToSI(v, elem_ty);
+            else if (elem_ty->isDoubleTy() && v->getType()->isFloatTy())
+                v = builder_.CreateFPExt(v, elem_ty);
+            else if (elem_ty->isFloatTy() && v->getType()->isDoubleTy())
+                v = builder_.CreateFPTrunc(v, elem_ty);
         }
         // ARC: T[] of classes — element is a strong slot (retain unless fresh,
         // release the overwritten element). Slice handled above.
@@ -1863,6 +1879,10 @@ assign_gep:
                                             v = builder_.CreateSIToFP(v, pt);
                                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy())
                                             v = builder_.CreateFPToSI(v, pt);
+                                        else if (pt->isDoubleTy() && v->getType()->isFloatTy())
+                                            v = builder_.CreateFPExt(v, pt);
+                                        else if (pt->isFloatTy() && v->getType()->isDoubleTy())
+                                            v = builder_.CreateFPTrunc(v, pt);
                                     }
                                     // M7: weak static field → myp_weak_store.
                                     if (storePropertyField(gep, v, cls, ma.member_name)) {
@@ -2031,6 +2051,8 @@ assign_gep:
                         if (pt->isIntegerTy() && v->getType()->isIntegerTy()) v = builder_.CreateIntCast(v, pt, true);
                         else if (pt->isFloatingPointTy() && v->getType()->isIntegerTy()) v = builder_.CreateSIToFP(v, pt);
                         else if (pt->isIntegerTy() && v->getType()->isFloatingPointTy()) v = builder_.CreateFPToSI(v, pt);
+                        else if (pt->isDoubleTy() && v->getType()->isFloatTy()) v = builder_.CreateFPExt(v, pt);
+                        else if (pt->isFloatTy() && v->getType()->isDoubleTy()) v = builder_.CreateFPTrunc(v, pt);
                     }
                     // M7: weak field → myp_weak_store (no retain/release).
                     if (storePropertyField(gep, v, cls, ma.member_name)) {
