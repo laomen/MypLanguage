@@ -523,6 +523,7 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | **G2** | **图级进阶已实现**：GAP+Flatten 融合（`fuseGapFlatten`）、DCE（`eliminateDeadNodes`）、常量折叠（`foldConstants`）、布局变换 NCHW→NHWC（`layoutNHWC`，opt-in）；精度缩放 FP16/INT8 转 F4 未来项 | 否 |
 | **G3** | **BatchNormalization 已实现**：独立 BN 算子（opKind 17/18，CPU+GPU）**+ Conv+BN 融合**（`fuseConvBN`，BN 折进卷积权重/偏置，随后 G1 再融合 Conv+ReLU → 单算子） | 否 |
 | **G4** | **通用激活算子 + 真实带 BN 模型验证已实现**：ReLU6/LeakyRelu/SiLU/HardSwish/Clip（opKind 19-23，CPU+GPU）；真实 ResNet18（resnet18_v1_7.onnx，20 BN 全融合）端到端 top-5/output sum 与 ORT 逐位一致（GPU 51ms） | 否 |
+| **G5** | **图优化器解耦为通用组件已实现**：新增 `graph.myp`（`Graph`：格式无关图 IR + 8 pass + planMemory + buildRuntime + 图构建 API）；`onnx_loader.myp` 变薄为纯 ONNX 解析器；OnnxLoader 公共接口不变，infer_tests 零改动 | 否 |
 | **F1-F6** | **未来支持项**（暂不实现，仅标记）：cuDNN/cuBLAS 算子库对接、厂商 BYOC、量化/稀疏/动态形状、训练支持（详见 §16） | 视项而定 |
 
 > **M5 暂缓（2026-08-12）**：多后端（HIP/ROCm、SYCL、Metal、WebGPU）需要对应硬件才能
@@ -644,6 +645,22 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 > · **MYP 坑（G4 新记）**：`data` 是保留字（GPU BN 内核局部名用 `variance`）；LLVM verify
 >   报 clip 内核 `lo = arena[...]` 赋值不自动做 float→double 扩展 → 先声明 double 初值
 >   变量 `double mv = arena[...]; lo = mv;`。
+>
+> **G5 已实现（2026-08-12）**：图优化器解耦为通用组件（纯 MYP 库层）：
+> · **`graph.myp` 新增 `class Graph`**：格式无关的图 IR（权重/节点/形状/规划/张量表）+
+>   全部图 pass（foldConstants/inferShapes/classifyShapes/fuseConvBN/fuseConvRelu/
+>   fuseGapFlatten/eliminateDeadNodes/layoutNHWC/topoSort）+ planMemory + buildRuntime +
+>   **图构建 API**（setFile/addWeight/addShapeD/addGraphOutput/beginNode/endNode/nodeType/
+>   nodeIn/nodeOut/nodeInt→`NodeField` 字段码）+ optimize(rt) 管线编排。
+> · **`onnx_loader.myp` 变薄**（1432→340 行）：只留 protobuf 解析，把 ONNX 属性名映射为
+>   `NodeField` 字段码填充 Graph。
+> · **MYP 约束（G5 新记）**：① `function:` 区方法是**类私有**（跨类不可调）→ 图构建 API
+>   必须放 `action:`；② 跨类**不能直接读字段**（`a.x_[0]` 报 "expected function name"）
+>   → 用公开方法暴露接口；③ 跨类方法调用正常（`g_.nodeInt(...)` 可调）。
+> · **OnnxLoader 公共接口不变**（load/tensorId/bnCount/fuseCount/...）→ infer_tests 零改动；
+>   Graph 持 `file_` + 自己的 `pb_`（foldConstants/writeWeight 需从原始字节读权重）。
+> · **验证**：MNIST 78%、r18 0.101238（CPU/GPU）、resnet50 336.658（含 NHWC）、bn 3 用例、
+>   act/const 全过，输出与重构前逐位一致；回归 **237/237**。
 >
 > **F1-F6 说明**：cuDNN 当前未安装（仅 cuBLAS 已装）；cuDNN 对 conv 收益巨大但暂不排期。
 > 均先标记为未来支持项，不阻塞当前里程碑。

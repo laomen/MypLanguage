@@ -1,8 +1,8 @@
 # MYP 深度学习推理框架 — 设计说明
 
 > 适用范围：`deeplearning/infer/`（纯 MYP 实现的通用静态图推理框架）
-> 里程碑路线图见同目录 `gpu_paradigm.md` §14（M1-M4 / G1-G4 / F1-F6）。
-> 文档版本：2026-08-12（G4 之后）。
+> 里程碑路线图见同目录 `gpu_paradigm.md` §14（M1-M4 / G1-G5 / F1-F6）。
+> 文档版本：2026-08-12（G5 重构之后）。
 
 ---
 
@@ -23,7 +23,9 @@
 deeplearning/
 ├── infer/
 │   ├── pb.myp             # protobuf wire-format 读取器（读 .onnx）
-│   ├── onnx_loader.myp    # ONNX 解析 + 图 pass 管线 + buildRuntime（框架核心，~67KB）
+│   ├── graph.myp          # ★ G5：通用图优化器组件（格式无关）：图 IR + 8 个 pass +
+│   │                      #   planMemory + buildRuntime + 图构建 API（~1070 行）
+│   ├── onnx_loader.myp    # ONNX 解析器（薄）：protobuf 解析 → 填充 Graph（~340 行）
 │   ├── runtime.myp        # InferenceRuntime：张量/算子注册表 + run()/runGpu() 分发
 │   ├── ops.myp            # CPU 算子内核（batch-aware，FP32）
 │   ├── gpu_ops.myp        # GPU 算子内核（@gpu for resident，FP32）
@@ -89,16 +91,39 @@ deeplearning/
 
 ---
 
-## 4. ONNX 加载与图优化（`onnx_loader.myp`）
+## 4. 图优化器（`graph.myp`）与 ONNX 解析器（`onnx_loader.myp`）
 
-### 4.1 解析
+> **G5 重构（2026-08-12）**：把图优化器从 ONNX loader 分离为**通用组件** `Graph`
+> （`graph.myp`）。架构分层：
+>
+> ```
+> onnx_loader.myp（薄解析器，ONNX 专属）           graph.myp（Graph，格式无关）
+> ──────────────────────────────                  ─────────────────────────────
+> readFile / pb_ 字节读取                         图 IR（权重/节点/形状/规划/张量表）
+> parseModel/Graph/Node/Attr/Tensor/ValueInfo     foldConstants / inferShapes /
+>   → 经图构建 API 填充 Graph                       classifyShapes / fuseConvBN /
+>   （setFile/addWeight/addShapeD/addGraphOutput/  fuseConvRelu / fuseGapFlatten /
+>    beginNode/endNode/nodeType/nodeIn/nodeOut/    eliminateDeadNodes / layoutNHWC /
+>    nodeInt→NodeField）                            topoSort / planMemory / buildRuntime
+>                                                 optimize(rt) = 管线编排
+> ```
+>
+> 关键点：
+> - **Graph 只认图 IR**（op_type 字符串 + 输入 + 属性字段码 `NodeField` + 形状），
+>   不关心图从哪来；ONNX 解析器把 ONNX 属性名映射为 `NodeField` 字段码。
+> - **MYP 约束**：`function:` 区方法是类私有（跨类不可调）→ 图构建 API 放 `action:`（公共）；
+>   跨类只能调方法、不能直接读字段（`a.x_[0]` 编译报错），所以 Graph 用公开方法暴露构建接口。
+> - `OnnxLoader` 公共接口（`load/tensorId/各统计访问器`）保持不变 → infer_tests 零改动。
+> - `foldConstants`/`writeWeight` 仍从原始文件字节（`file_`）读权重 → Graph 持有 `file_` + 自己的 `pb_`。
+
+### 4.1 解析（onnx_loader.myp）
 
 - 用 `pb.myp` 手写 protobuf wire 解析 `ModelProto/GraphProto/NodeProto/TensorProto/ValueInfoProto`。
 - 权重支持 `float_data / raw_data / double_data`；dims 从 `repeated int64 dims` 读取。
 - 关键字段号（实测验证）：AttributeProto `t`(TensorProto) = **field 5**（非 6，6 是 g=GraphProto）；
   BatchNormalization epsilon = AttributeProto `f` = field 2（wire type 5，`readU32()` 4 字节小端）。
 
-### 4.2 Pass 管线（`load()` 内顺序）
+### 4.2 Pass 管线（`Graph.optimize()` 内顺序）
 
 ```
 foldConstants → inferShapes → classifyShapes → fuseConvBN → fuseConvRelu
