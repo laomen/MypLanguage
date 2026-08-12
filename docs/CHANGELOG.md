@@ -44,6 +44,7 @@
   - **字面量增强（§4.3）**：下划线分隔 `1_000_000`/`0xFF_FF`/`1_000.5`/`1e1_0`/`1_000L`（lexer `scanNumber` 扫描剥离，parser 零改动）+ 二进制 `0b` / 显式八进制 `0o` 前缀（parser `parseIntegerLiteralValue` 统一解析；前导零 `0755` C 风格八进制保留）。
   - **checked 溢出变体（§4.2 P3）**：`checkedAdd/checkedMul(a,b)` 返回 `(value, overflow:bool)` 元组——`@llvm.sadd/smul.with.overflow.iN` 直映（有符号整型，公共类型提升），声明式解构与字段访问均可用；`tests/checked_overflow`。
   - **parseIntOpt（§6.2 P4）**：`parseIntOpt(s)` 返回 `(value:int, ok:bool)` 元组，用 `ok` 区分合法 `0` 与解析失败（`parseInt` 失败回 0 无法区分）；runtime `myp_str_parse_int_opt`；`tests/parse_opt`。
+  - **manual.md §3 文档重写（P4）**：类型系统章同步最新落地——无损隐式/有损显式提升格、bool 入转换链、char=u8、显式转换（含 bool/bit）、新增 `bit`/`bitvector<N>`/`bitfield`/`bitcast`/位操作原语/`checkedAdd`/`checkedMul`/`parse*` 与 `parseIntOpt`/数值 trait 与 `Math` 多态、字面量 `0b`/`0o`/下划线；示例全部经 mypc 验证。
   - 测试：`tests/bitvector`、`tests/bitfield`、`tests/bitcast`、`tests/bit_ops`、`tests/parse_family`、`tests/generic_traits`、`tests/stringify_conv`、`tests/string_cmp`、`tests/string_subscript`、`tests/bool_convert`、`tests/char_semantics`、`tests/bytes_str`、`tests/unsigned_convert`、`tests/numeric_underscore` 等。
 - **§9.5 多态数学 intrinsic + `Math` 库按 trait 重写**（§9.5 全部落地，CPU + GPU）：
   - `__myp_math_*` 一元实数/abs/trunc intrinsic 类型感知：sema 按实参类型定返回类型

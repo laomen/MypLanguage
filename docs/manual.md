@@ -111,11 +111,21 @@ int a;              // 默认初始化为 0
 3.14        // 浮点 (double)
 1.0e-5      // 科学计数法
 0xFF        // 十六进制
+0b1010      // 二进制 (= 10)
+0o17        // 八进制 (= 15)
+0755        // 前导零 C 风格八进制 (= 493)
+1_000_000   // 下划线分隔 (= 1000000)
+0xFF_FF     // 十六进制 + 下划线 (= 65535)
+1_000.5     // 浮点 + 下划线
+1e1_0       // 指数 + 下划线 (= 1e10)
 true false  // 布尔
 'A' '\n'    // 字符 (支持 \n \t \\ \' \" \0)
 "hello"     // 字符串 (支持 \n \t \\ \" \0)
 null        // 空值
 ```
+
+> 字面量后缀：`42L`（long）、`0xFFu`（无符号，按值定宽）、`1.5f`（float32）、
+> `1_000_000L`（下划线可与后缀组合）。下划线仅作可读性分隔（数字之间），编译期剥离。
 
 > **`null` 语义**：`null` 可赋给**引用类型**（class/interface/struct 指针），并可用
 > `x == null` 判断。**`string` 是值语义**（字符缓冲），**不能**赋 `null`（编译报错）。
@@ -193,20 +203,41 @@ var v = A |> ScaleOp;
 | `string` | 字符串指针 | 指针 |
 | `void` | 无类型 | — |
 
-### 数字提升
+### 数字提升（无损隐式 / 有损显式）
 
-数字类型之间自动隐式转换：
+**隐式转换仅限无损**（拓宽/保精度）；任何可能丢数据/回绕/截断必须显式 cast。
 
 ```
-byte/char → short → int → long → float → double
+有符号整型拓宽（同符号）：  i8 → i16 → i32 → i64        （SExt）
+无符号整型拓宽（同符号）：  u8 → u16 → u32 → u64        （ZExt）
+整型 → 浮点：i8/i16/i32、u8/u16/u32 → f64（32 位内精确）
+浮点拓宽：                f32 → f64                     （FPExt）
+字符：                    char → i32/u32/i64            （ZExt，char 语义 = u8）
 ```
 
 ```myp
 int a = 42;
-long b = a;       // ✅ int → long 自动提升
-double c = a;     // ✅ int → double 自动提升
+long b = a;       // ✅ int → long 自动提升（SExt）
+double c = a;     // ✅ int → double 自动提升（32 位内精确）
 int d = b;        // ❌ long → int 不会自动降级
+double e = 3.0f;  // ✅ float → double 自动提升
+int f = 0xFF;     // ✅ int → int
 ```
+
+**必须显式 cast（有损）**：
+- 跨符号：`int→uint`、`uint→int`、`char↔byte`（char 是 u8 语义别名，与有符号 byte 不互换）；
+- 整型→浮点超精度：**`i64/u64 → f64`**、`int/long → float` 改显式（静默丢精度代价高于多写 `double(x)`）；
+- 一切窄化：`long→int`、`double→float`、`int→byte`；
+- `ulong` 参与：小无符号→大无符号隐式（ZExt），跨符号/浮点显式（与 `uint` 族对称）。
+
+```myp
+long big = 9007199254740993L;
+double dd = double(big);   // 显式（|x|≥2^53 丢精度，不静默）
+int g = int(big);          // 显式窄化
+```
+
+> **溢出语义**：有符号/无符号溢出 = **回绕**（确定性，无 UB）；需要检测的场合用
+> `checkedAdd(a,b)`/`checkedMul(a,b)`（返回 `(value, overflow:bool)` 元组，见下）。
 
 ### 无符号类型（uint 族）
 
@@ -234,15 +265,18 @@ long v = a * 4294967296L; // uint→long ZExt → 4294967295 << 32
 > 注：无符号值要打印为 `long` 时，经二元运算（如 `x * 1L`）显式拓宽；`ulong`
 > 不隐式转 `long`（值可能溢出有符号范围）。
 
-### 显式类型转换 `uint8(x)`（v3.11.1）
+### 显式类型转换 `uint8(x)`
 
 内置类型名当函数调用使用即显式转换：`uint8(x)`/`byte(x)`/`int(x)`/`long(x)`/
-`double(x)` 等。规则：
+`double(x)`/`bool(x)` 等。规则：
 
-- **宽→窄截断**：`byte(200L)` → -56（0xC8 截为 i8）。
+- **宽→窄截断**：`byte(200L)` → -56（0xC8 截为 i8）；`long(3.99)` → 3。
 - **窄→宽按源符号**：无符号源 ZExt（`uint8`→`long` 为 0..255），有符号源 SExt。
 - **double↔int**：`int(3.99)` → 3（截断）；`double(42)` → 42.0。
 - **int↔uint 位保持**：`uint(-1)` → 4294967295。
+- **bool 入转换链**：`int(b)` → b?1:0；`bool(n)`/`bool(f)` → 值≠0；`double(b)` → 0.0/1.0。
+- **char = u8 语义**：`char(0xFF)` 是 u8 值；`char`→`int` ZExt（0xFF → 255，非 -1）。
+- **bit(x)** = x≠0；`bitvector<N>(uint)` 位保持；`uintN(bv)` 直通（见下）。
 
 典型用途：从 `long` 计算值填充字节数组（此前无强转做不到）：
 
@@ -253,6 +287,92 @@ while (i < n) {
     rng = (rng * 1103515245L + 12345L) % 2147483648L;
     in[i] = uint8((rng >> 16) & 0xFFL);   // 显式截断到字节
 }
+```
+
+### 位类型：`bit` / `bitvector<N>` / `bitfield`（v3.12，additive）
+
+- **`bit`**：单比特（LLVM i1）。`bit(x)` = x≠0；`bool(bit)` 直通；可作布尔上下文。
+- **`bitvector<N>`**：定长位向量（N = 8/16/32/64，底层 LLVM `iN`）。
+  `bitvector<8>` 等价 u8 的位视图。支持索引 `v[i] : bit`、位运算 `& | ^ ~ << >>`、
+  写索引 `v[i] = x`、`bitvector<N>(uintN)` 位保持互转、`bytesOf(bv)` → `ubyte[]`。
+- **`bitfield`**：结构体位域打包（背衬整数 ≤8→i8/≤16→i16/≤32→i32/其余 i64），
+  字段访问即位提取/读-改-写。用于文件头/协议/GPU 控制字。
+
+```myp
+bitvector<8> bv = bitvector<8>(0x5A);
+bit bit0 = bv[0];               // bit 0
+bv[1] = bit(1);                 // 写索引
+uint u = uint(bv);              // 直通 0x5A
+ubyte[] bytes = bytesOf(bv);    // 序列化（内建，无需 import）
+
+bitfield Flags { bit read; bit write; bit[6] reserved; }
+Flags f;                        // 零初始化，打包为 1 字节
+f.write = bit(1);               // 也可 f.write = true（bool→bit 隐式）
+Console.writeLong(int(f.write) << 1);
+```
+
+### `bitcast<T,U>(x)`（位重解释，v3.12）
+
+`bitcast` 保持位、不解释值（数值转换 `T(x)` 是改值）。要求同宽（8/16/32/64），
+跨宽显式错误。
+
+```myp
+uint bits = bitcast<uint>(1.0f);   // 0x3F800000（float 的位模式）
+float back = bitcast<float>(bits); // 1.0
+```
+
+### 位操作原语（v3.12）
+
+整型族位操作直映 LLVM intrinsic（返回类型 = 实参整型类型）：
+`popcount(x)`、`clz(x)`/`ctz(x)`（0 → 位宽）、`bitreverse(x)`、`rotl(x,n)`/`rotr(x,n)`。
+
+```myp
+Console.writeLong(popcount(0b1011));     // 3
+Console.writeLong(rotr(0b1000, 1));      // 4
+```
+
+### 溢出检测：`checkedAdd` / `checkedMul`（v3.12）
+
+返回 `(value, overflow:bool)` 元组（有符号整型，数值公共类型提升）。
+
+```myp
+(int v, bool ov) = checkedAdd(2147483647, 1);  // v=-2147483648, ov=true
+(int ok2, bool no) = checkedAdd(1, 2);         // ok2=3, no=false
+(int, bool) t = checkedMul(46341, 46341);      // t.0 溢出值, t.1=true
+```
+
+### 解析：`parse*` 与 `parseIntOpt`（v3.12）
+
+统一 `strtol/strtoull/strtod` 语义（**带符号与基数**，`0x` 前缀、前导零八进制）；
+失败回 0。
+
+```myp
+int a = parseInt("42");        // 42
+long b = parseLong("0xFF");    // 255（hex）
+double c = parseDouble("3.14");// 3.14
+float f = parseFloat("1.5");
+uint u = parseUint("4294967295");
+
+// parseIntOpt 区分“合法 0”与“失败”（parseInt 失败回 0 无法区分）：
+(int v, bool ok) = parseIntOpt("42");   // v=42, ok=true
+(int v2, bool ok2) = parseIntOpt("abc");// v2=0, ok2=false
+(int v3, bool ok3) = parseIntOpt("0");  // v3=0, ok3=true（合法 0）
+```
+
+### 数值 trait 与 `Math` 多态（v3.12）
+
+内置数值 trait：`Numeric`（`+ - * / %`）、`Integer`、`Float`、`Ordered`（`< <= > >=`，
+含 string）。泛型函数/静态方法可约束 `where T : Trait`，实例化时校验，零运行时开销。
+
+```myp
+T twice<T where T : Numeric>(T v) { return v + v; }
+Console.writeLong(twice(21));          // 42
+Console.writeString("" + twice(1.5)); // 3
+
+// Math 库多态：float 实参返回 float（GPU kernel 内走 __nv_xf）
+float s = Math.sqrt(4.0f);     // 2.0f（无需 float(...) 包装）
+double d = Math.sqrt(2.0);     // double
+double p = Math.pow(2.0, 10.0);// double（幂保持 double）
 ```
 
 ### 复合类型
