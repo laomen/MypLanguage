@@ -270,6 +270,55 @@ class InferOps {
             }
         }
 
+        // AveragePool：x: [N,C,H,W] → y: [N,C,yH,yW]
+        // yH/yW 由 graph 按 (H+padT+padB-kh)/sh+1 计算；cip = count_include_pad：
+        // 0（默认）= 除数只算窗口内在界元素（ONNX 默认），1 = 除数为 kh*kw（含 pad，pad 贡献 0）。
+        // 秩无关：2D 直接用 (N,C,H,W)；3D 由调用方按 (N,C,DH,DW) 展开（D 维并入 C 或拆层）。
+        void avgpool(
+            float[] arena,
+            int xOff, int xN, int xC, int xH, int xW,
+            int yOff, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, int cip
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            double sum = 0.0;
+                            int cnt = 0;
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            sum = sum + arena[xOff + n * xC * xH * xW + c * xH * xW + iy * xW + ix];
+                                            cnt = cnt + 1;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            if (cip == 1) cnt = kh * kw;
+                            if (cnt > 0) arena[yOff + n * xC * yH * yW + c * yH * yW + oy * yW + ox] = float(sum / cnt);
+                            else arena[yOff + n * xC * yH * yW + c * yH * yW + oy * yW + ox] = 0.0f;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // 全局平均池化：x: [N,C,H,W] → y: [N,C,1,1]
         void gapool(float[] arena, int xOff, int xN, int xC, int xH, int xW, int yOff) {
             int n = 0;
@@ -468,6 +517,52 @@ class InferOps {
                                 ky = ky + 1;
                             }
                             arena[yOff + ((n * yH + oy) * yW + ox) * xC + c] = best;
+                            c = c + 1;
+                        }
+                        ox = ox + 1;
+                    }
+                    oy = oy + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // AveragePool（NHWC）：x:[N,H,W,C] → y:[N,yH,yW,C]（元数据 (tN,tC,tH,tW)=(N,H,W,C)）
+        void avgpoolNHWC(
+            float[] arena,
+            int xOff, int xN, int xH, int xW, int xC,
+            int yOff, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, int cip
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int oy = 0;
+                while (oy < yH) {
+                    int ox = 0;
+                    while (ox < yW) {
+                        int c = 0;
+                        while (c < xC) {
+                            double sum = 0.0;
+                            int cnt = 0;
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            sum = sum + arena[xOff + ((n * xH + iy) * xW + ix) * xC + c];
+                                            cnt = cnt + 1;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            if (cip == 1) cnt = kh * kw;
+                            if (cnt > 0) arena[yOff + ((n * yH + oy) * yW + ox) * xC + c] = float(sum / cnt);
+                            else arena[yOff + ((n * yH + oy) * yW + ox) * xC + c] = 0.0f;
                             c = c + 1;
                         }
                         ox = ox + 1;

@@ -162,6 +162,7 @@ class OnnxLoader {
                     if (aname == "axis") g_.nodeInt(ni, NodeField.AXIS(), v);
                     if (aname == "group") g_.nodeInt(ni, NodeField.GROUP(), v);
                     if (aname == "keepdims") g_.nodeInt(ni, NodeField.KEEP(), v);
+                    if (aname == "count_include_pad") g_.nodeInt(ni, NodeField.CIP(), v);
                 } else if (f == 4) {    // string 单值（Resize mode / coord）
                     int l = pb_.readLen(); int po = pb_.payloadOff();
                     string sv = pb_.readString(l);

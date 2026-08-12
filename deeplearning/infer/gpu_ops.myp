@@ -233,6 +233,42 @@ class GpuInferOps {
             }
         }
 
+        // AveragePool：x: [N,C,H,W] → y: [N,C,yH,yW]（thread-per-output；cip=count_include_pad）
+        void avgpool(float[] a, int work,
+                     int xOff, int xN, int xC, int xH, int xW,
+                     int yOff, int yH, int yW,
+                     int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, int cip, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long c = (p / (yW * yH)) % xC;
+                    long nn = p / (yW * yH * xC);
+                    float sum = 0.0f;
+                    int cnt = 0;
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx;
+                                if (ix >= 0 && ix < xW) {
+                                    sum = sum + a[xOff + nn * xC * xH * xW + c * xH * xW + iy * xW + ix];
+                                    cnt = cnt + 1;
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    if (cip == 1) cnt = kh * kw;
+                    if (cnt > 0) a[yOff + p] = sum / cnt;
+                    else a[yOff + p] = 0.0f;
+                }
+            }
+        }
+
         // 全局平均池化：x: [N,C,H,W] → y: [N,C,1,1]（work = N*C）
         void gapool(float[] a, int work,
                     int xOff, int xN, int xC, int xH, int xW, int yOff, long dev) {
@@ -397,6 +433,42 @@ class GpuInferOps {
                         ky = ky + 1;
                     }
                     a[yOff + p] = best;
+                }
+            }
+        }
+
+        // AveragePool（NHWC）：x:[N,H,W,C] → y:[N,yH,yW,C]
+        void avgpoolNHWC(float[] a, int work,
+                int xOff, int xN, int xH, int xW, int xC,
+                int yOff, int yH, int yW,
+                int kh, int kw, int sh, int sw, int pt, int pb, int pl, int pr, int cip, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long c = p % xC;
+                    long ox = (p / xC) % yW;
+                    long oy = (p / (xC * yW)) % yH;
+                    long nn = p / (xC * yW * yH);
+                    float sum = 0.0f;
+                    int cnt = 0;
+                    int ky = 0;
+                    while (ky < kh) {
+                        long iy = oy * sh - pt + ky;
+                        if (iy >= 0 && iy < xH) {
+                            int kx = 0;
+                            while (kx < kw) {
+                                long ix = ox * sw - pl + kx;
+                                if (ix >= 0 && ix < xW) {
+                                    sum = sum + a[xOff + ((nn * xH + iy) * xW + ix) * xC + c];
+                                    cnt = cnt + 1;
+                                }
+                                kx = kx + 1;
+                            }
+                        }
+                        ky = ky + 1;
+                    }
+                    if (cip == 1) cnt = kh * kw;
+                    if (cnt > 0) a[yOff + p] = sum / cnt;
+                    else a[yOff + p] = 0.0f;
                 }
             }
         }

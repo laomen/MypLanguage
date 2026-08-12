@@ -212,6 +212,20 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- F8：AveragePool（opKind 36 NCHW / 37 NHWC）----
+        // cip = count_include_pad（0=默认，除数排除 pad；1=含 pad）
+        void addAvgPool(int inTid, int outTid, int kh, int kw,
+                        int sh, int sw, int pt, int pb, int pl, int pr, int cip) {
+            int id = opCount_;
+            opKind_[id] = 36;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
+            opP8_[id] = cip;
+            opCount_ = opCount_ + 1;
+        }
+
         void addGAPool(int inTid, int outTid) {
             int id = opCount_;
             opKind_[id] = 9;
@@ -282,6 +296,18 @@ class InferenceRuntime {
             opB_[id] = outTid;
             opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
             opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
+            opCount_ = opCount_ + 1;
+        }
+        // NHWC AveragePool
+        void addAvgPoolNHWC(int inTid, int outTid, int kh, int kw,
+                            int sh, int sw, int pt, int pb, int pl, int pr, int cip) {
+            int id = opCount_;
+            opKind_[id] = 37;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pb; opP6_[id] = pl; opP7_[id] = pr;
+            opP8_[id] = cip;
             opCount_ = opCount_ + 1;
         }
 
@@ -541,6 +567,13 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 36) {
+                    // F8：AveragePool
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.avgpool(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     InferOps.gapool(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
@@ -576,6 +609,13 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tC_[yd], tH_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 37) {
+                    // F8：AveragePool（NHWC）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.avgpoolNHWC(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tC_[yd], tH_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
                 } else if (opKind_[i] == 16) {
                     int xa = opA_[i]; int yd = opB_[i];
                     InferOps.gapoolNHWC(arena, tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa], tOff_[yd]);
@@ -757,6 +797,14 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tH_[yd], tW_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 36) {
+                    // F8：AveragePool
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.avgpool(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], dev);
                 } else if (opKind_[i] == 9) {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = tensorSize(yd);
@@ -799,6 +847,14 @@ class InferenceRuntime {
                         tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
                         tOff_[yd], tC_[yd], tH_[yd],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 37) {
+                    // F8：AveragePool（NHWC）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.avgpoolNHWC(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tC_[yd], tH_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i], dev);
                 } else if (opKind_[i] == 16) {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = tensorSize(yd);

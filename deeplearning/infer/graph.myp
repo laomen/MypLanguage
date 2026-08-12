@@ -58,6 +58,7 @@ class NodeField {
         int AXES2() { return 32; }
         int AXES3() { return 33; }
         int AXES_N() { return 34; }      // F8：axes 元素数
+        int CIP() { return 35; }         // F8：AveragePool count_include_pad（0/1）
 }
 
 class Graph {
@@ -97,6 +98,7 @@ class Graph {
             nMode_[i] = 0; nTransform_[i] = 0; nUpSH_[i] = 0; nUpSW_[i] = 0;   // F8: Resize/Upsample
             nKeep_[i] = 0; nRedMode_[i] = 0;                                   // F8: ReduceMean
             nAx0_[i] = 0; nAx1_[i] = 0; nAx2_[i] = 0; nAx3_[i] = 0; nAxN_[i] = 0;
+            nCip_[i] = 0;                                                      // F8: AveragePool count_include_pad
             return i;
         }
         void endNode() { nCount_ = nCount_ + 1; }
@@ -139,6 +141,7 @@ class Graph {
             else if (code == NodeField.AXES2()) nAx2_[i] = v;
             else if (code == NodeField.AXES3()) nAx3_[i] = v;
             else if (code == NodeField.AXES_N()) nAxN_[i] = v;
+            else if (code == NodeField.CIP()) nCip_[i] = v;
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             wName_[wCount_] = nm; wRows_[wCount_] = rows; wCols_[wCount_] = cols;
@@ -257,7 +260,7 @@ class Graph {
                 string t = nType_[i];
                 if (t == "") { i = i + 1; continue; }
                 int k = Kind.FC_ACT();
-                if (t == "Conv" || t == "MaxPool" || t == "GlobalAveragePool") k = Kind.CNN_ACT();
+                if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool") k = Kind.CNN_ACT();
                 else if (t == "Gemm" || t == "MatMul" || t == "Flatten") k = Kind.FC_ACT();
                 else {
                     // Relu / Sigmoid / Softmax / Add：沿用主输入 kind
@@ -308,7 +311,7 @@ class Graph {
             while (i < nCount_) {
                 if (nIn0_[i] == name || nIn1_[i] == name || nIn2_[i] == name) {
                     string t = nType_[i];
-                    if (t == "Conv" || t == "MaxPool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
+                    if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = shapeIdx(name);
                     if (s >= 0 && (shD2_[s] > 1 || shD3_[s] > 1)) return Kind.CNN_ACT();
@@ -379,6 +382,13 @@ class Graph {
                     int yW = (W + nPL_[i] + nPR_[i] - nDW_[i] * (kw - 1) - 1) / nSW_[i] + 1;
                     addShapeD4(nOut0_[i], N, yC, yH, yW);
                 } else if (t == "MaxPool") {
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int N = shD0_[a]; int C = shD1_[a]; int H = shD2_[a]; int W = shD3_[a];
+                    int kh = nKH_[i]; int kw = nKW_[i];
+                    int yH = (H + nPT_[i] + nPB_[i] - kh) / nSH_[i] + 1;
+                    int yW = (W + nPL_[i] + nPR_[i] - kw) / nSW_[i] + 1;
+                    addShapeD4(nOut0_[i], N, C, yH, yW);
+                } else if (t == "AveragePool") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int N = shD0_[a]; int C = shD1_[a]; int H = shD2_[a]; int W = shD3_[a];
                     int kh = nKH_[i]; int kw = nKW_[i];
@@ -912,7 +922,7 @@ class Graph {
                 nNHWC_[i] = 0;
                 string t = nType_[i];
                 if (t == "Conv") nNHWC_[i] = 1;                       // 卷积主干始终 NHWC
-                else if (t == "MaxPool" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
+                else if (t == "MaxPool" || t == "AveragePool" || t == "Add" || t == "Relu" || t == "BatchNormalization") {
                     int p0 = producerNHWC(nIn0_[i]);
                     int p1 = producerNHWC(nIn1_[i]);
                     if (p0 == 1 || p1 == 1) nNHWC_[i] = 1;
@@ -933,7 +943,7 @@ class Graph {
             i = 0;
             while (i < nCount_) {
                 string t = nType_[i];
-                if (nNHWC_[i] == 1 && (t == "Conv" || t == "MaxPool" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
+                if (nNHWC_[i] == 1 && (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "Add" || t == "Relu" || t == "GlobalAveragePool" || t == "BatchNormalization")) {
                     ensureNHWCInput(i, 0);
                     if (t == "Conv") markWeightNHWC(nIn1_[i]);
                     if (t == "Add") ensureNHWCInput(i, 1);
@@ -1194,6 +1204,10 @@ class Graph {
                 } else if (t == "MaxPool") {
                     if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
                     else rt.addMaxPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
+                } else if (t == "AveragePool") {
+                    // F8：AveragePool（cip = count_include_pad）
+                    if (nNHWC_[ni] == 1) rt.addAvgPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
+                    else rt.addAvgPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nCip_[ni]);
                 } else if (t == "GlobalAveragePool") {
                     // G2：out 已是融合后的 flatten 输出（fuseGapFlatten 改写）；GAP 布局无关
                     if (nNHWC_[ni] == 1) rt.addGAPoolNHWC(a, out);
@@ -1489,6 +1503,7 @@ class Graph {
         int[512] nAx2_;
         int[512] nAx3_;
         int[512] nAxN_;         // F8：axes 元素数
+        int[512] nCip_;         // F8：AveragePool count_include_pad
         int[512] nEpsInt_;       // G3：BN epsilon 属性位型
         int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
         int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型
