@@ -1,0 +1,109 @@
+// P2 §5.1 bitfield（结构体位域）：bit a; bit b; bit[N] r; 打包成背衬整数。
+// 字段读取 = 位提取（1 位→bit，N 位→uint）；写入 = 读-改-写。
+import env;
+
+// 8 位打包示例（read bit0、write bit1、reserved bit2..7）
+bitfield Flags {
+    bit read;
+    bit write;
+    bit[6] reserved;
+}
+
+// 16 位打包
+bitfield ControlWord {
+    bit enabled;
+    bit[3] mode;
+    bit[4] priority;
+    bit[8] code;
+}
+
+// 32 位打包（GPU/协议控制字场景）
+bitfield GpuReg {
+    bit valid;
+    bit[7] opcode;
+    bit[8] offset;
+    bit[16] data;
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // ---- 零初始化 ----
+            Flags f0;
+            Console.writeBool(f0.read);    // false
+            Console.writeString("\n");
+            Console.writeLong(f0.reserved); // 0
+            Console.writeString("\n");
+
+            // ---- 8 位：单 bit 读写 ----
+            Flags f;
+            f.read = true;
+            f.write = false;
+            f.reserved = uint(0x15);       // 010101
+            Console.writeBool(f.read);
+            Console.writeString("\n");
+            Console.writeBool(f.write);
+            Console.writeString("\n");
+            Console.writeLong(f.reserved); // 21
+            Console.writeString("\n");
+            // 打包验证：0b010101 + write(bit1=0) + read(bit0=1) = 0b01010101 = 85
+            Console.writeLong(byte(f.read) | (byte(f.write) << 1) | (byte(f.reserved) << 2));
+            Console.writeString("\n");
+
+            // ---- 写入不串扰相邻字段 ----
+            f.reserved = uint(0x3F);
+            Console.writeBool(f.read);     // true（未被 reserved 覆盖）
+            Console.writeString("\n");
+            Console.writeLong(f.reserved); // 63
+            Console.writeString("\n");
+            f.read = false;
+            Console.writeLong(f.reserved); // 63（read 位翻转不影响 reserved）
+            Console.writeString("\n");
+
+            // ---- 16 位 ----
+            ControlWord cw;
+            cw.enabled = true;
+            cw.mode = uint(5);
+            cw.priority = uint(0xA);
+            cw.code = uint(0x7F);
+            Console.writeBool(cw.enabled);
+            Console.writeString("\n");
+            Console.writeLong(cw.mode);    // 5
+            Console.writeString("\n");
+            Console.writeLong(cw.priority); // 10
+            Console.writeString("\n");
+            Console.writeLong(cw.code);    // 127
+            Console.writeString("\n");
+            // 打包：code(0x7F)<<8 | priority(0xA)<<4 | mode(5)<<1 | enabled(1)
+            //      = 0x7F00 | 0xA0 | 0x0A | 1 = 0x7FAB = 32683
+            Console.writeLong(uint(cw.enabled) | (uint(cw.mode) << 1) |
+                              (uint(cw.priority) << 4) | (uint(cw.code) << 8));
+            Console.writeString("\n");
+
+            // ---- 32 位 ----
+            GpuReg reg;
+            reg.valid = true;
+            reg.opcode = uint(0x41);       // 0100 0001
+            reg.offset = uint(0xAB);
+            reg.data = uint(0xBEEF);
+            Console.writeBool(reg.valid);
+            Console.writeString("\n");
+            Console.writeLong(reg.opcode); // 65
+            Console.writeString("\n");
+            Console.writeLong(reg.offset); // 171
+            Console.writeString("\n");
+            Console.writeLong(reg.data);   // 48879
+            Console.writeString("\n");
+            // 打包：data<<16 | offset<<8 | opcode<<1 | valid
+            //      = 0xBEEF0000 | 0xAB00 | 0x82 | 1 = 0xBEEFAB83 = 3201556355
+            Console.writeLong(uint(reg.valid) | (uint(reg.opcode) << 1) |
+                              (uint(reg.offset) << 8) | (uint(reg.data) << 16));
+            Console.writeString("\n");
+
+            Console.writeString("BITFIELD_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

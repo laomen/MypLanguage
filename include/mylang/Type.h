@@ -18,6 +18,7 @@ enum class TypeKind : uint8_t {
     Bool,
     Bit,       // 单比特（LLVM i1，bit(x)=x≠0）
     BitVector, // 定长位向量 bitvector<N>（N=8/16/32/64，LLVM iN）
+    Bitfield,  // 结构体位域 bitfield Name（打包成整数背衬）
     String,
     Void,
     Null,
@@ -43,6 +44,7 @@ struct TypeInfo {
     std::shared_ptr<TypeInfo> element_type;
     int array_size = 0; // >0 for fixed-size arrays like int[200]
     int bitvector_width = 0; // >0 for bitvector<N> (8/16/32/64)
+    int bitfield_bits = 0;   // >0 for bitfield 类型（总位数，决定背衬整数宽度）
 
     // For Function types
     std::shared_ptr<TypeInfo> return_type;

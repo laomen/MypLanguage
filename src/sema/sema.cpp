@@ -465,6 +465,13 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     for (auto& st : tu.structs) {
         visitStructDecl(st);
     }
+    // §5.1 bitfield：先声明名字（可互相引用/被引用），再登记字段布局。
+    for (auto& bf : tu.bitfields) {
+        declareBitfieldName(bf);
+    }
+    for (auto& bf : tu.bitfields) {
+        visitBitfieldDecl(bf);
+    }
     // Register generic class templates
     for (size_t i = 0; i < tu.classes.size(); i++) {
         if (!tu.classes[i].type_params.empty()) {
@@ -626,6 +633,40 @@ void Sema::declareStructName(StructDecl& decl) {
     struct_type.class_name = type_key;
     symbol_table_.declare(type_key, struct_type);
     declared_struct_names_.insert(type_key);
+}
+
+// §5.1 bitfield：声明类型名（如 Flags），供变量/参数/字段引用。
+void Sema::declareBitfieldName(BitfieldDecl& decl) {
+    if (symbol_table_.lookup(decl.name)) {
+        error(decl.range, "duplicate bitfield name '" + decl.name + "'");
+        return;
+    }
+    TypeInfo bf_type(TypeKind::Bitfield);
+    bf_type.class_name = decl.name;
+    bf_type.bitfield_bits = decl.total_bits;
+    symbol_table_.declare(decl.name, bf_type);
+}
+
+// §5.1 bitfield：登记字段布局（offset/width）与成员类型（bit→Bit，bit[N]→UInt）。
+void Sema::visitBitfieldDecl(BitfieldDecl& decl) {
+    bitfield_bits_[decl.name] = decl.total_bits;
+    auto& layout = bitfield_layout_[decl.name];
+    auto& mtypes = bitfield_member_types_[decl.name];
+    layout.clear();
+    mtypes.clear();
+    for (auto& f : decl.fields) {
+        if (layout.count(f.name)) {
+            error(f.range, "duplicate bitfield field '" + f.name + "' in '" +
+                  decl.name + "'");
+            continue;
+        }
+        BitfieldFieldInfo info;
+        info.offset = f.offset;
+        info.width = f.bit_width;
+        layout.emplace(f.name, info);
+        mtypes.emplace(f.name,
+            TypeInfo(f.bit_width == 1 ? TypeKind::Bit : TypeKind::UInt));
+    }
 }
 
 void Sema::visitStructDecl(StructDecl& decl) {

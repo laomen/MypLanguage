@@ -2276,6 +2276,38 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
         }
     }
 
+    // §5.1 bitfield field read: f.read : bit（1 位）/ f.reserved : uint（N 位）。
+    // 值类型背衬整数，(v >> offset) & mask，1 位截断到 i1，N 位零扩展到 i32。
+    if (e.object->resolved_kind == TypeKind::Bitfield) {
+        int off = -1, width = 1;
+        if (current_tu_) {
+            for (auto& bf : current_tu_->bitfields) {
+                for (auto& fld : bf.fields) {
+                    if (fld.name == e.member_name) { off = fld.offset; width = fld.bit_width; break; }
+                }
+                if (off >= 0) break;
+            }
+        }
+        if (off < 0) {
+            diag_.error(e.range, "unknown bitfield field '" + e.member_name + "'");
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        }
+        auto* bv = generateExpr(*e.object);
+        auto* ty = bv->getType();
+        if (!ty->isIntegerTy())
+            return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        auto* shifted = builder_.CreateLShr(bv, llvm::ConstantInt::get(ty, off), "bfld");
+        if (width == 1) {
+            auto* masked = builder_.CreateAnd(shifted, llvm::ConstantInt::get(ty, 1));
+            return builder_.CreateTrunc(masked, llvm::Type::getInt1Ty(ctx_));
+        }
+        uint64_t mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+        auto* masked = builder_.CreateAnd(shifted, llvm::ConstantInt::get(ty, mask));
+        auto* i32 = llvm::Type::getInt32Ty(ctx_);
+        if (ty->getIntegerBitWidth() < 32) return builder_.CreateZExt(masked, i32);
+        return builder_.CreateZExtOrTrunc(masked, i32);
+    }
+
     // Static class property access: ClassName.property
     if (e.object->kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);

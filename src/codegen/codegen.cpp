@@ -619,6 +619,17 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
         bv.bitvector_width = tn.bitvector_width;
         return getLLVMType(bv);
     }
+    // §5.1 bitfield：类名解析到打包背衬（Flags → iN）
+    if (!tn.class_name.empty() && current_tu_) {
+        for (auto& bf : current_tu_->bitfields) {
+            if (bf.name == tn.class_name) {
+                TypeInfo bft(TypeKind::Bitfield);
+                bft.class_name = bf.name;
+                bft.bitfield_bits = bf.total_bits;
+                return getLLVMType(bft);
+            }
+        }
+    }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
 
@@ -671,6 +682,13 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
                 case 64: return llvm::Type::getInt64Ty(ctx_);
                 default: return llvm::Type::getInt32Ty(ctx_);
             }
+        }
+        case TypeKind::Bitfield: {
+            // 打包背衬：总位数 ≤8→i8，≤16→i16，≤32→i32，其余 i64。
+            if (t.bitfield_bits <= 8) return llvm::Type::getInt8Ty(ctx_);
+            if (t.bitfield_bits <= 16) return llvm::Type::getInt16Ty(ctx_);
+            if (t.bitfield_bits <= 32) return llvm::Type::getInt32Ty(ctx_);
+            return llvm::Type::getInt64Ty(ctx_);
         }
         case TypeKind::Byte:   case TypeKind::UByte: case TypeKind::Char:
             return llvm::Type::getInt8Ty(ctx_);
@@ -831,6 +849,17 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
         TypeInfo bv(TypeKind::BitVector);
         bv.bitvector_width = node.bitvector_width;
         return bv;
+    }
+    // §5.1 bitfield：类名解析到打包背衬（Flags → iN）
+    if (!node.class_name.empty() && current_tu_) {
+        for (auto& bf : current_tu_->bitfields) {
+            if (bf.name == node.class_name) {
+                TypeInfo bft(TypeKind::Bitfield);
+                bft.class_name = bf.name;
+                bft.bitfield_bits = bf.total_bits;
+                return bft;
+            }
+        }
     }
     return builtinTypeToInfo(node.basic_type);
 }

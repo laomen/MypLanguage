@@ -33,6 +33,8 @@ private:
     void visitClassDecl(TranslationUnit& tu, size_t ci);
     void visitStructDecl(StructDecl& decl);
     void declareStructName(StructDecl& decl);
+    void visitBitfieldDecl(BitfieldDecl& decl);
+    void declareBitfieldName(BitfieldDecl& decl);
     void visitInterfaceDecl(InterfaceDecl& decl);
     void visitFuncDecl(FuncDecl& decl);
     void visitEnumDecl(EnumDecl& decl);
@@ -197,6 +199,13 @@ private:
     std::unordered_map<std::string, size_t> class_indices_;
     std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
         struct_member_types_;
+    // ---- Bitfield tracking (§5.1) ----
+    struct BitfieldFieldInfo { int offset = 0; int width = 1; };
+    std::unordered_map<std::string, std::unordered_map<std::string, BitfieldFieldInfo>>
+        bitfield_layout_;
+    std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
+        bitfield_member_types_;
+    std::unordered_map<std::string, int> bitfield_bits_;
     std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
         interface_member_types_;
     std::string current_struct_type_key_;  // Qualified type key for the current struct

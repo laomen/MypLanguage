@@ -403,6 +403,7 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "operator") kind = TokenKind::Keyword_operator;
     else if (value == "macro")   kind = TokenKind::Keyword_macro;
     else if (value == "nonlocal") kind = TokenKind::Keyword_nonlocal;
+    else if (value == "bitfield") kind = TokenKind::Keyword_bitfield;
 
     // Type keywords
     else if (value == "byte")     kind = TokenKind::Type_byte;

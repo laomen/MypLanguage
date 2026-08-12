@@ -57,6 +57,7 @@ private:
     ImportDecl parseImport();
     std::unique_ptr<ClassDecl> parseClass();
     std::unique_ptr<StructDecl> parseStruct();
+    std::unique_ptr<BitfieldDecl> parseBitfieldDecl();
     std::unique_ptr<InterfaceDecl> parseInterface();
     std::unique_ptr<MappingDecl> parseMapping();
     std::unique_ptr<FuncDecl> parseFunction(bool allow_void_return = true);

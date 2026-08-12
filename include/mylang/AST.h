@@ -190,6 +190,20 @@ struct StructDecl {
     SourceRange range;
 };
 
+// ---- Bitfield（结构体位域，§5.1）----
+struct BitfieldField {
+    std::string name;
+    int bit_width = 1;  // 1 for `bit`, N for `bit[N]`
+    int offset = 0;     // 位偏移（parser 按声明顺序从 LSB 起累计）
+    SourceRange range;
+};
+struct BitfieldDecl {
+    std::string name;
+    std::vector<BitfieldField> fields;
+    int total_bits = 0;
+    SourceRange range;
+};
+
 // ---- Class ----
 struct ClassDecl {
     std::string name;
@@ -863,6 +877,7 @@ struct TypeAliasDecl {
 struct TranslationUnit {
     std::vector<ImportDecl> imports;
     std::vector<StructDecl> structs;     // file-level structs
+    std::vector<BitfieldDecl> bitfields; // file-level bitfields (§5.1)
     std::vector<ClassDecl> classes;
     std::vector<InterfaceDecl> interfaces;
     std::vector<MappingDecl> mappings;

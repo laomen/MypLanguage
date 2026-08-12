@@ -1737,6 +1737,50 @@ assign_gep:
     // obj.prop = value  (only allowed via this.prop — properties are private)
     if (e.target->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.target);
+        // §5.1 bitfield field write: f.field = value —— 读-改-写背衬整数。
+        if (ma.object->resolved_kind == TypeKind::Bitfield) {
+            int off = -1, width = 1;
+            if (current_tu_) {
+                for (auto& bf : current_tu_->bitfields)
+                    for (auto& fld : bf.fields)
+                        if (fld.name == ma.member_name) { off = fld.offset; width = fld.bit_width; break; }
+            }
+            llvm::Value* slot = nullptr;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                slot = getNamedValue(oi.name);
+            }
+            if (off < 0 || !slot) {
+                diag_.error(e.range, "cannot assign to bitfield field '" +
+                          ma.member_name + "'");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            llvm::Type* backing_ty = nullptr;
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(slot))
+                backing_ty = ai->getAllocatedType();
+            else
+                backing_ty = getNamedValueType(
+                    static_cast<const IdentifierExpr&>(*ma.object).name);
+            if (!backing_ty || !backing_ty->isIntegerTy()) {
+                diag_.error(e.range, "bitfield assignment target has no integer backing");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            auto* cur = builder_.CreateLoad(backing_ty, slot, "bfcur");
+            auto* val = generateExpr(*e.value);
+            llvm::Value* wide_val =
+                builder_.CreateZExtOrTrunc(val, backing_ty, "bfval");
+            uint64_t field_mask = (width >= 64) ? ~0ULL : ((1ULL << width) - 1);
+            auto* fmask = llvm::ConstantInt::get(backing_ty, field_mask);
+            auto* shifted = builder_.CreateShl(fmask,
+                llvm::ConstantInt::get(backing_ty, off), "bfmsk");
+            auto* cleared = builder_.CreateAnd(cur, builder_.CreateNot(shifted), "bfclr");
+            auto* bits = builder_.CreateAnd(wide_val, fmask, "bfbits");
+            auto* placed = builder_.CreateShl(bits,
+                llvm::ConstantInt::get(backing_ty, off), "bfput");
+            auto* nv = builder_.CreateOr(cleared, placed, "bfnew");
+            builder_.CreateStore(nv, slot);
+            return val;
+        }
         llvm::Value* op = nullptr;
         // Only 'this.prop = value' is allowed — external property assignment is rejected by Sema
         if (ma.object->kind == ExprKind::ThisExpr) {

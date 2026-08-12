@@ -41,6 +41,10 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
                 auto st = parseStruct();
                 if (st) tu->structs.push_back(std::move(*st));
             }
+        } else if (match(TokenKind::Keyword_bitfield)) {
+            // bitfield Flags { bit a; bit[6] r; } —— 结构体位域（§5.1）
+            auto bf = parseBitfieldDecl();
+            if (bf) tu->bitfields.push_back(std::move(*bf));
         } else if (match(TokenKind::Keyword_interface)) {
             auto iface = parseInterface();
             if (iface) tu->interfaces.push_back(std::move(*iface));
@@ -608,6 +612,51 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
     }
 
     consume(TokenKind::RightBrace, "expected '}' after struct body");
+    return decl;
+}
+
+// ==============================
+// Bitfield: "bitfield" id "{" { bit [N] id ";" } "}"（§5.1）
+// 字段类型只能是 bit（1 位）或 bit[N]（N 位）；按声明顺序从 LSB 起打包。
+// ==============================
+
+std::unique_ptr<BitfieldDecl> Parser::parseBitfieldDecl() {
+    auto decl = std::make_unique<BitfieldDecl>();
+    decl->range = previous().range;   // 'bitfield' token
+    decl->name = parseIdentifier("expected bitfield name");
+    consume(TokenKind::LeftBrace, "expected '{' after bitfield name");
+    int offset = 0;
+    while (!check(TokenKind::RightBrace) && !isAtEnd()) {
+        BitfieldField f;
+        f.range = peek().range;
+        if (!match(TokenKind::Type_bit)) {
+            diag_.error(peek().range,
+                std::string("expected 'bit' or 'bit[N]' field in bitfield (got '") +
+                Token::kindName(peek().kind) + "')");
+            break;
+        }
+        f.bit_width = 1;
+        if (match(TokenKind::LeftBracket)) {
+            if (check(TokenKind::IntegerLiteral)) {
+                try { f.bit_width = (int)std::stoll(advance().value); }
+                catch (...) { f.bit_width = 0; }
+            } else {
+                diag_.error(peek().range, "expected integer width in bit[N]");
+            }
+            consume(TokenKind::RightBracket, "expected ']' after bit width");
+        }
+        if (f.bit_width <= 0) {
+            diag_.error(f.range, "bitfield field width must be >= 1");
+            f.bit_width = 1;
+        }
+        f.name = parseIdentifier("expected bitfield field name");
+        f.offset = offset;
+        offset += f.bit_width;
+        decl->fields.push_back(std::move(f));
+        consume(TokenKind::Semicolon, "expected ';' after bitfield field");
+    }
+    consume(TokenKind::RightBrace, "expected '}' after bitfield body");
+    decl->total_bits = offset;
     return decl;
 }
 

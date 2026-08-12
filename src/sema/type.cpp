@@ -12,6 +12,9 @@ bool TypeInfo::operator==(const TypeInfo& other) const {
             for (size_t i = 0; i < type_args.size(); i++)
                 if (type_args[i] != other.type_args[i]) return false;
             return true;
+        case TypeKind::Bitfield:
+            return class_name == other.class_name &&
+                   bitfield_bits == other.bitfield_bits;
         case TypeKind::Struct:
         case TypeKind::Enum:
         case TypeKind::Interface:

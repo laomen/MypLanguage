@@ -61,6 +61,7 @@ enum class TokenKind : uint16_t {
     Keyword_operator,
     Keyword_macro,
     Keyword_nonlocal,
+    Keyword_bitfield,
 
     // ----- Types (also keywords) -----
     Type_byte,

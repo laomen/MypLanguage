@@ -1680,6 +1680,25 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         return TypeInfo(TypeKind::Void);
     }
 
+    // §5.1 bitfield member access — f.read : bit（1 位）/ f.reserved : uint（N 位）
+    if (obj_type.kind == TypeKind::Bitfield) {
+        auto lit = bitfield_layout_.find(obj_type.class_name);
+        if (lit == bitfield_layout_.end()) {
+            error(expr.range, "unknown bitfield '" + obj_type.class_name + "'");
+            return TypeInfo(TypeKind::Void);
+        }
+        auto fit = lit->second.find(expr.member_name);
+        if (fit != lit->second.end())
+            return TypeInfo(fit->second.width == 1 ? TypeKind::Bit : TypeKind::UInt);
+        auto mit = bitfield_member_types_.find(obj_type.class_name);
+        if (mit != bitfield_member_types_.end() &&
+            mit->second.find(expr.member_name) != mit->second.end())
+            return mit->second.at(expr.member_name);
+        error(expr.range, "bitfield '" + obj_type.class_name +
+              "' has no field '" + expr.member_name + "'");
+        return TypeInfo(TypeKind::Void);
+    }
+
     // Enum variant access — Color.Red
     if (obj_type.kind == TypeKind::Enum) {
         // Find the enum and variant
@@ -2399,6 +2418,14 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
             st_type.class_name = lookup_name;
             return st_type;
         }
+        // §5.1 bitfield type（Flags）：打包位结构体，值类型
+        if (existing && existing->kind == TypeKind::Bitfield) {
+            TypeInfo bf_type(TypeKind::Bitfield);
+            bf_type.class_name = lookup_name;
+            auto bit = bitfield_bits_.find(lookup_name);
+            bf_type.bitfield_bits = (bit != bitfield_bits_.end()) ? bit->second : 0;
+            return bf_type;
+        }
         // Verify class exists
         bool class_found = false;
         if (current_tu_) {
@@ -2472,6 +2499,7 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Null:   return "null";
         case TypeKind::Class:  return type.class_name;
         case TypeKind::Struct: return type.class_name;
+        case TypeKind::Bitfield: return "bitfield " + type.class_name;
         case TypeKind::Interface: return type.class_name;
         case TypeKind::Array:
             if (type.element_type) return typeName(*type.element_type) + "[]";
@@ -2507,6 +2535,9 @@ std::string Sema::typeName(const TypeInfo& type) const {
 bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
     if (lhs.kind == rhs.kind) {
         if (lhs.kind == TypeKind::Class) return lhs.class_name == rhs.class_name;
+        if (lhs.kind == TypeKind::Bitfield)
+            return lhs.class_name == rhs.class_name &&
+                   lhs.bitfield_bits == rhs.bitfield_bits;
         if (lhs.kind == TypeKind::Array) {
             if (lhs.element_type && rhs.element_type)
                 return typesCompatible(*lhs.element_type, *rhs.element_type);
