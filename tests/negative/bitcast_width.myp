@@ -1,0 +1,14 @@
+// 负测试：bitcast 跨宽必须报错（docs/type_system_design §5.2：同宽强制）
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            uint x = bitcast<uint>(1.0);   // double(64) → uint(32)：宽度不匹配
+            Console.writeLong(x);
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

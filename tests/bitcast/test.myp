@@ -1,0 +1,47 @@
+// P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。
+//   - bitcast<U>(x) 单参推断源；bitcast<T,U>(x) 两参显式源
+//   - 位保持：float↔uint、double↔long、uint↔float
+//   - 同宽强制（跨宽必须用显式 cast，见 tests/negative/bitcast_width.myp）
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // float → uint：1.0f = 0x3F800000 = 1065353216
+            uint a = bitcast<uint>(1.0f);
+            Console.writeLong(a);
+            Console.writeString("\n");
+            // uint → float：位还原
+            float b = bitcast<float>(a);
+            Console.writeFloat(b);
+            Console.writeString("\n");
+            // double → long：1.0 = 0x3FF0000000000000 = 4607182418800017408
+            long c = bitcast<long>(1.0);
+            Console.writeLong(c);
+            Console.writeString("\n");
+            // 两参显式源：bitcast<float,uint>(1.0f)
+            uint d = bitcast<float,uint>(1.0f);
+            Console.writeLong(d);
+            Console.writeString("\n");
+            // uint → float（两参）：2.0f = 0x40000000 = 1073741824
+            float e = bitcast<uint,float>(0x40000000u);
+            Console.writeFloat(e);
+            Console.writeString("\n");
+            // int ↔ uint 同宽位保持：-1 → 4294967295
+            int negi = -1;
+            uint f = bitcast<uint>(negi);
+            Console.writeLong(f);
+            Console.writeString("\n");
+            // float → uint 两参 + 负数 float
+            uint g = bitcast<float,uint>(-2.0f);   // 0xC0000000 = 3221225472
+            Console.writeLong(g);
+            Console.writeString("\n");
+            // 验证往返一致性
+            if (a == d && c == 4607182418800017408L && b == 1.0f && e == 2.0f)
+                Console.writeString("BC_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

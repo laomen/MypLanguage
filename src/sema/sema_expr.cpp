@@ -445,6 +445,51 @@ TypeInfo Sema::visitConvert(ConvertExpr& expr) {
     return TypeInfo(expr.to_kind);
 }
 
+// P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。与 cast（改值）
+// 相反，bitcast 保持位不变（float↔uint 等）。语法：bitcast<U>(x)（源从操作数推断）
+// 或 bitcast<T,U>(x)（显式源）。要求源/目标同宽。
+TypeInfo Sema::visitBitcast(CallExpr& expr) {
+    if (expr.args.size() != 1) {
+        error(expr.range, "bitcast takes exactly one argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    if (expr.call_type_args.size() < 1 || expr.call_type_args.size() > 2) {
+        error(expr.range, "bitcast requires one or two type arguments: bitcast<U>(x) or bitcast<T,U>(x)");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto operand_ti = visitExpr(*expr.args[0]);
+    TypeInfo target_ti = typeNodeToTypeInfo(expr.call_type_args.back());
+    TypeInfo source_ti = (expr.call_type_args.size() == 2)
+        ? typeNodeToTypeInfo(expr.call_type_args[0])
+        : operand_ti;
+    if (expr.call_type_args.size() == 2 && !typesCompatible(source_ti, operand_ti)) {
+        error(expr.range, "bitcast source type '" + typeName(source_ti) +
+              "' does not match operand type '" + typeName(operand_ti) + "'");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto bitcast_width = [](TypeKind k) -> int {
+        switch (k) {
+            case TypeKind::Byte: case TypeKind::UByte: case TypeKind::Char: return 8;
+            case TypeKind::Short: case TypeKind::UShort: return 16;
+            case TypeKind::Int: case TypeKind::UInt: case TypeKind::Float: return 32;
+            case TypeKind::Long: case TypeKind::ULong: case TypeKind::Double: return 64;
+            default: return 0;
+        }
+    };
+    int sw = bitcast_width(source_ti.kind), tw = bitcast_width(target_ti.kind);
+    if (sw == 0 || tw == 0) {
+        error(expr.range, "bitcast requires numeric source and target types (integer/float/char)");
+        return TypeInfo(TypeKind::Void);
+    }
+    if (sw != tw) {
+        error(expr.range, "bitcast requires source and target of the same width (" +
+              std::to_string(sw) + " vs " + std::to_string(tw) + " bits)");
+        return TypeInfo(TypeKind::Void);
+    }
+    expr.resolved_kind = target_ti.kind;
+    return target_ti;
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1179,9 +1224,17 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         }
     }
 
+    // P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。必须是
+    // 带显式类型实参的调用（bitcast<uint>(x) / bitcast<float,uint>(x)），且不是
+    // 用户声明的函数——在此提前拦截，避免落到 generic_functions_ 解析。
+    if (expr.callee->kind == ExprKind::Identifier) {
+        auto& bc_id = static_cast<const IdentifierExpr&>(*expr.callee);
+        if (bc_id.name == "bitcast" && !expr.call_type_args.empty())
+            return visitBitcast(expr);
+    }
+
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
-    if (expr.callee->kind == ExprKind::MemberAccess) {
-        auto& gma = static_cast<MemberAccessExpr&>(*expr.callee);
+    if (expr.callee->kind == ExprKind::MemberAccess) {        auto& gma = static_cast<MemberAccessExpr&>(*expr.callee);
         if (gma.object->kind == ExprKind::Identifier) {
             auto& gso = static_cast<IdentifierExpr&>(*gma.object);
             std::string gkey = gso.name + "::" + gma.member_name;

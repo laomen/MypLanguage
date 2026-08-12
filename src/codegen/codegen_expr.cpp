@@ -546,6 +546,28 @@ llvm::Value* CodeGen::generateConvert(const ConvertExpr& e) {
     return convertIntegerValue(builder_, v, target, e.operand.get());
 }
 
+// P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。LLVM bitcast
+// 同宽直接转换；sema 已校验源/目标同宽（这里再做一次 LLVM 宽度防御）。指针与
+// 同宽整数也可 bitcast（方便 `bitcast<long>(ptr)` 之类的位操作）。
+llvm::Value* CodeGen::generateBitcast(const CallExpr& e) {
+    if (e.args.size() != 1) {
+        diag_.error(e.range, "bitcast takes exactly one argument");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    auto* v = generateExpr(*e.args[0]);
+    llvm::Type* target = typeNodeToLLVMType(e.call_type_args.back());
+    if (!v) return llvm::ConstantInt::get(target, 0);
+    if (v->getType() == target) return v;
+    unsigned sw = module_->getDataLayout().getTypeAllocSize(v->getType());
+    unsigned tw = module_->getDataLayout().getTypeAllocSize(target);
+    if (sw != tw) {
+        diag_.error(e.range, "bitcast requires source and target types of the same size (" +
+                      std::to_string(sw) + " vs " + std::to_string(tw) + " bytes)");
+        return llvm::ConstantInt::get(target, 0);
+    }
+    return builder_.CreateBitCast(v, target);
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -767,6 +789,13 @@ llvm::Value* CodeGen::stringifyForConcat(llvm::Value* v) {
 }
 
 llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
+    // P0 bitcast<T,U>(x)：位保持重解释（docs/type_system_design §5.2）。sema 已
+    // 校验类型实参个数/同宽；这里按最后类型实参（目标）生成位转换。
+    if (e.callee->kind == ExprKind::Identifier) {
+        auto& bid = static_cast<const IdentifierExpr&>(*e.callee);
+        if (bid.name == "bitcast" && !e.call_type_args.empty())
+            return generateBitcast(e);
+    }
     // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
     // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.
     const std::string SELF_SUFFIX = "__self";
