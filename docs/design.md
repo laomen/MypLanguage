@@ -1422,9 +1422,9 @@ MYPLanguage/
 │   ├── xs_loader / hdf5_bridge.c / cross_section_db.myp
 │   └── ...
 ├── deeplearning/
-│   ├── code/                  # MLP + MNIST 训练/推理
-│   ├── component/
-│   └── data/                  # MNIST IDX 数据集
+│   ├── infer/                 # 通用 ONNX 推理框架（G1-G4 图优化 + BN/激活 + GPU）
+│   │   └── tools/             # onnxruntime 交叉校验 / 预处理脚本
+│   └── data/                  # MNIST IDX / ONNX 模型 / ImageNet 输入
 ├── vscode-myp/                # VS Code 扩展（语法高亮 + LSP + DAP 调试）
 ├── docs/                      # 设计文档（design/grammar/manual/manual_en/coro/
 │   └── ...                    #   exceptions/operators/metaprogramming/constructor/

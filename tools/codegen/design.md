@@ -11,7 +11,7 @@
 ## 1. 定位与背景
 
 MYP 无运行时反射，且手写桥接/序列化/样板代码是生态痛点（`hdf5_bridge.c`、
-`sdl_bridge.c` 手写 C、`mlp.myp` 手写 forward/backward、每类手写 JSON）。
+`sdl_bridge.c` 手写 C、`deeplearning/infer` 手写 forward/backward、每类手写 JSON）。
 **代码生成**是 MYP 对"反射"的系统性替代——把"遍历类型/字段/算子自动产出代码"
 从运行时搬到**编译期（工具期）**。
 
