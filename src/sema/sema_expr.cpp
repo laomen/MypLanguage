@@ -438,9 +438,15 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
 
 TypeInfo Sema::visitConvert(ConvertExpr& expr) {
     auto ot = visitExpr(*expr.operand);
-    if (!isNumericKind(ot.kind)) {
+    // P1 D6（docs/type_system_design §3.4）：bool 入显式转换链。int(b)/long(b)/
+    // double(b)/float(b) 与 bool(n)/bool(f) 都是显式 cast；隐式 bool↔整型仍禁
+    // （expectBool 严格）。string 仍不入 T(x)（那是 parse，§6.2）。
+    bool src_ok = isNumericKind(ot.kind) || ot.kind == TypeKind::Bool;
+    bool dst_ok = isNumericKind(expr.to_kind) || expr.to_kind == TypeKind::Bool;
+    if (!src_ok || !dst_ok) {
         error(expr.range, "cannot convert '" + typeName(ot) + "' to '" +
-              typeName(TypeInfo(expr.to_kind)) + "' (conversion operand must be numeric)");
+              typeName(TypeInfo(expr.to_kind)) +
+              "' (conversion operand and target must be numeric or bool)");
     }
     return TypeInfo(expr.to_kind);
 }

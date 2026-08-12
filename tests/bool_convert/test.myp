@@ -1,0 +1,41 @@
+// P1 D6（docs/type_system_design §3.4）：bool 入显式转换链。
+//   int(b)/long(b)/double(b)/float(b) → 0/1 拓宽；bool(n)/bool(f) → n≠0。
+//   隐式 bool↔整型仍禁（expectBool 严格）；string 仍不入 T(x)。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            int a = int(5 > 3);         // bool→int → 1
+            Console.writeLong(a);
+            Console.writeString("\n");
+            long b = long(false);       // bool→long → 0
+            Console.writeLong(b);
+            Console.writeString("\n");
+            double d = double(true);    // bool→double → 1.0
+            Console.writeString("d=" + d);
+            Console.writeString("\n");
+            bool c = bool(7);           // int→bool → true
+            Console.writeString("c=" + c);
+            Console.writeString("\n");
+            bool e = bool(0);           // int→bool → false
+            Console.writeString("e=" + e);
+            Console.writeString("\n");
+            bool f = bool(0.0);         // double→bool → false
+            Console.writeString("f=" + f);
+            Console.writeString("\n");
+            bool g = bool(-2.5);        // double→bool → true
+            Console.writeString("g=" + g);
+            Console.writeString("\n");
+            float h = float(true);      // bool→float → 1.0
+            Console.writeString("h=" + h);
+            Console.writeString("\n");
+            // 验证：bool(非零)=true、bool(零)=false 往返一致
+            if (a == 1 && b == 0 && c && !e && !f && g && d == 1.0 && h == 1.0f)
+                Console.writeString("BOOL_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

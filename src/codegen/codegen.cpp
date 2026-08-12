@@ -55,9 +55,18 @@ llvm::Value* convertIntegerValue(llvm::IRBuilder<>& b, llvm::Value* v,
     // bool → 整型：0/1 零扩展（i1 源 SExt 值 1 → -1，必须 ZExt）
     if (v->getType()->isIntegerTy(1) && expected->isIntegerTy() && !expected->isIntegerTy(1))
         return b.CreateZExt(v, expected);
+    // bool → 浮点：0.0/1.0
+    if (v->getType()->isIntegerTy(1) && expected->isFloatingPointTy()) {
+        auto* zero = llvm::ConstantFP::get(expected, 0.0);
+        auto* one = llvm::ConstantFP::get(expected, 1.0);
+        return b.CreateSelect(v, one, zero);
+    }
     // 整型 → bool：n ≠ 0（截断最低位对 2 会错）
     if (expected->isIntegerTy(1) && v->getType()->isIntegerTy() && !v->getType()->isIntegerTy(1))
         return b.CreateICmpNE(v, llvm::ConstantInt::get(v->getType(), 0));
+    // 浮点 → bool：n ≠ 0.0
+    if (expected->isIntegerTy(1) && v->getType()->isFloatingPointTy())
+        return b.CreateFCmpONE(v, llvm::ConstantFP::get(v->getType(), 0.0));
     if (v->getType()->isIntegerTy() && expected->isIntegerTy())
         return b.CreateIntCast(v, expected, !src_unsigned);
     if (v->getType()->isIntegerTy() && expected->isFloatingPointTy())

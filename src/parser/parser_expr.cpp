@@ -17,6 +17,7 @@ static TypeKind typeTokenToKind(TokenKind k) {
         case TokenKind::Type_uint:  case TokenKind::Type_uint32: return TypeKind::UInt;
         case TokenKind::Type_ulong: case TokenKind::Type_uint64: return TypeKind::ULong;
         case TokenKind::Type_char:  return TypeKind::Char;
+        case TokenKind::Type_bool:  return TypeKind::Bool;
         case TokenKind::Type_float: return TypeKind::Float;
         case TokenKind::Type_double:return TypeKind::Double;
         default: return TypeKind::Void;
