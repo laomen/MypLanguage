@@ -1,0 +1,52 @@
+// P3 §4.2 checked 溢出变体：checkedAdd/checkedMul 返回 (value, overflow:bool)。
+// 有符号整型（byte/short/int/long），数值公共类型提升（字面量按值定宽），
+// @llvm.sadd/smul.with.overflow 直映；声明式解构 + 字段访问 t.0/t.1。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // ---- int 溢出检测 ----
+            (int v, bool ov) = checkedAdd(2147483647, 1);
+            Console.writeString("add(MAX,1): v=" + v + " ov=" + ov);
+            Console.writeString("\n");
+            (int v2, bool ov2) = checkedAdd(1, 2);
+            Console.writeString("add(1,2): v=" + v2 + " ov=" + ov2);
+            Console.writeString("\n");
+            (int v3, bool ov3) = checkedMul(46341, 46341);
+            Console.writeString("mul(46341,46341): v=" + v3 + " ov=" + ov3);
+            Console.writeString("\n");
+            (int v4, bool ov4) = checkedMul(100, 100);
+            Console.writeString("mul(100,100): v=" + v4 + " ov=" + ov4);
+            Console.writeString("\n");
+
+            // ---- long 溢出检测（按值定宽 2147483648 是 long）----
+            (long v5, bool ov5) = checkedAdd(9223372036854775807L, 1L);
+            Console.writeString("ladd(MAX,1): v=" + v5 + " ov=" + ov5);
+            Console.writeString("\n");
+            (long v6, bool ov6) = checkedAdd(100L, 200L);
+            Console.writeString("ladd(100,200): v=" + v6 + " ov=" + ov6);
+            Console.writeString("\n");
+
+            // ---- 公共类型提升：int + byte 字面量 → int ----
+            (int v7, bool ov7) = checkedAdd(2147483647, 1);
+            Console.writeString("add(MAX,1byte): v=" + v7 + " ov=" + ov7);
+            Console.writeString("\n");
+
+            // ---- 字段访问形式 ----
+            (int, bool) t = checkedAdd(10, 20);
+            Console.writeString("t.0=" + t.0 + " t.1=" + t.1);
+            Console.writeString("\n");
+
+            // ---- 无溢出边界 ----
+            (int v8, bool ov8) = checkedAdd(-2147483647 - 1, 0);
+            Console.writeString("add(MIN,0): v=" + v8 + " ov=" + ov8);
+            Console.writeString("\n");
+
+            Console.writeString("CHECKED_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

@@ -816,6 +816,33 @@ llvm::Value* CodeGen::generatePolyMathIntrinsic(const CallExpr& e, const std::st
     return builder_.CreateUnaryIntrinsic(mid, v, nullptr, "mypmath");
 }
 
+// §4.2 P3：checkedAdd/checkedMul → @llvm.sadd.with.overflow.iN / smul.with.overflow.iN
+// （sema 已校验同型有符号整型）。返回 {iN, i1} 结构体，即 MYP 元组 (value, overflow)。
+llvm::Value* CodeGen::generateCheckedOp(const CallExpr& e, const std::string& name) {
+    if (e.args.size() < 2) {
+        diag_.error(e.range, name + " requires 2 arguments");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    auto* a = generateExpr(*e.args[0]);
+    auto* b = generateExpr(*e.args[1]);
+    if (!a->getType()->isIntegerTy() || !b->getType()->isIntegerTy()) {
+        diag_.error(e.range, name + " expects signed integer arguments");
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+    }
+    // 公共类型 = 较宽位宽（与 sema commonNumericKind 一致：有符号拓宽）
+    unsigned aw = a->getType()->getIntegerBitWidth();
+    unsigned bw = b->getType()->getIntegerBitWidth();
+    auto* cty = llvm::Type::getIntNTy(ctx_, std::max(aw, bw));
+    if (a->getType() != cty) a = builder_.CreateSExtOrTrunc(a, cty);
+    if (b->getType() != cty) b = builder_.CreateSExtOrTrunc(b, cty);
+    llvm::Intrinsic::ID oid = (name == "checkedAdd")
+        ? llvm::Intrinsic::sadd_with_overflow
+        : llvm::Intrinsic::smul_with_overflow;
+    auto* fn = llvm::Intrinsic::getDeclaration(module_.get(), oid, {cty});
+    return builder_.CreateCall(fn->getFunctionType(), fn,
+        std::vector<llvm::Value*>{a, b}, "checked");
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller
@@ -827,6 +854,7 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
         arcPushTemp(r);
     return r;
 }
+
 std::string CodeGen::memberObjectClassName(const Expr& obj) {
     if (obj.kind == ExprKind::Identifier) {
         auto& oi = static_cast<const IdentifierExpr&>(obj);
@@ -1077,6 +1105,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             bid.name == "parseUint" || bid.name == "parseUlong" ||
             bid.name == "parseFloat" || bid.name == "parseDouble")
             return generateParse(e, bid.name);
+        // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul → overflow intrinsic
+        if (bid.name == "checkedAdd" || bid.name == "checkedMul")
+            return generateCheckedOp(e, bid.name);
     }
     // M-FN-2 named lambda self-recursion: sema marked `<hidden>__self`; call the
     // lambda's own tramp with `this` as the closure — `tramp(this, args...)`.

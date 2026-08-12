@@ -720,6 +720,9 @@ private:
     // →llvm.abs；其余一元实数 → llvm.sin/exp/…）。返回 nullptr 表示不拦截
     //（pow/atan2/abs_int 走 runtime 调用）。
     llvm::Value* generatePolyMathIntrinsic(const CallExpr& expr, const std::string& name);
+    // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul → @llvm.sadd/smul.with.overflow
+    // （按实参整型位宽选 iN，返回 {iN, i1} 结构体 = 元组 (value, overflow)）。
+    llvm::Value* generateCheckedOp(const CallExpr& expr, const std::string& name);
     // True if a call returns an ARC-owned class / class-array reference (the
     // caller owns the returned +1 and must store it or release it).
     bool callReturnsArcRef(const CallExpr& e);

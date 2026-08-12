@@ -1,0 +1,10 @@
+add(MAX,1): v=-2147483648 ov=true
+add(1,2): v=3 ov=false
+mul(46341,46341): v=-2147479015 ov=true
+mul(100,100): v=10000 ov=false
+ladd(MAX,1): v=-9223372036854775808 ov=true
+ladd(100,200): v=300 ov=false
+add(MAX,1byte): v=-2147483648 ov=true
+t.0=30 t.1=false
+add(MIN,0): v=-2147483648 ov=false
+CHECKED_OK

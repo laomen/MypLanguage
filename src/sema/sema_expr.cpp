@@ -760,6 +760,38 @@ TypeInfo Sema::visitMathIntrinsic(CallExpr& expr, const std::string& name) {
     return TypeInfo(TypeKind::Void);
 }
 
+// §4.2 P3：checked 溢出变体——checkedAdd/checkedMul(a, b) 返回 (value, overflow:bool)
+// 元组。仅接收有符号整型（byte/short/int/long）；codegen 直映
+// @llvm.sadd.with.overflow / @llvm.smul.with.overflow（按实参类型选位宽）。
+TypeInfo Sema::visitCheckedOp(CallExpr& expr, const std::string& name) {
+    auto is_signed_int = [](TypeKind k) {
+        return k == TypeKind::Byte || k == TypeKind::Short ||
+               k == TypeKind::Int || k == TypeKind::Long;
+    };
+    if (expr.args.size() != 2) {
+        error(expr.range, name + " takes exactly two signed integer arguments");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto lt = visitExpr(*expr.args[0]);
+    auto rt = visitExpr(*expr.args[1]);
+    if (!is_signed_int(lt.kind) || !is_signed_int(rt.kind)) {
+        error(expr.range, name + " expects signed integer arguments (int/long/byte/short)");
+        return TypeInfo(TypeKind::Void);
+    }
+    // 数值公共类型提升（字面量按值定宽：checkedAdd(2147483647, 1) → Int 公共），
+    // 检测的是提升后公共类型的溢出。
+    TypeKind common = commonNumericKind(lt.kind, rt.kind);
+    if (!is_signed_int(common)) {
+        error(expr.range, name + " arguments must promote to a signed integer type");
+        return TypeInfo(TypeKind::Void);
+    }
+    TypeInfo tt(TypeKind::Tuple);
+    tt.tuple_types.push_back(common);    // value 类型 = 公共类型
+    tt.tuple_types.push_back(TypeKind::Bool);
+    expr.resolved_kind = TypeKind::Tuple;
+    return tt;
+}
+
 TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index) {
     if (!current_tu_ || tu_index < 0) return TypeInfo(TypeKind::Void);
     FuncDecl& templ = current_tu_->functions[tu_index];
@@ -1554,6 +1586,9 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         // __myp_math_atan2/pow/abs_int 不拦截（保持固定 double/int 签名）。
         if (bc_id.name.rfind("__myp_math_", 0) == 0)
             return visitMathIntrinsic(expr, bc_id.name);
+        // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul 返回 (value, overflow)
+        if (bc_id.name == "checkedAdd" || bc_id.name == "checkedMul")
+            return visitCheckedOp(expr, bc_id.name);
     }
 
     // Generic static method call: StaticClass.genericMethod<...>(...) or inferred.
