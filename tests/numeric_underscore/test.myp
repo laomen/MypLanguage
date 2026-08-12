@@ -1,0 +1,49 @@
+// P4 §4.3 字面量增强：下划线分隔 + 二进制 0b / 显式八进制 0o 前缀。
+// - 1_000_000 = 1000000；0xFF_FF = 65535；1_000.5；1e1_0；1_000L；0xFFu
+// - 0b1010 = 10；0b1111_1111 = 255
+// - 0o17 = 15；0o755 = 493；前导零 0755 保持 C 风格八进制 = 493
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            // ---- 下划线分隔 ----
+            Console.writeString("1_000_000 = " + 1_000_000);
+            Console.writeString("\n");
+            Console.writeString("0xFF_FF = " + 0xFF_FF);
+            Console.writeString("\n");
+            Console.writeString("1_000.5 = " + 1_000.5);
+            Console.writeString("\n");
+            Console.writeString("1e1_0 = " + 1e1_0);
+            Console.writeString("\n");
+            Console.writeString("1_000L = " + 1_000L);
+            Console.writeString("\n");
+            Console.writeString("0xFFu = " + 0xFFu);
+            Console.writeString("\n");
+
+            // ---- 二进制 0b ----
+            Console.writeString("0b1010 = " + 0b1010);
+            Console.writeString("\n");
+            Console.writeString("0b1111_1111 = " + 0b1111_1111);
+            Console.writeString("\n");
+
+            // ---- 显式八进制 0o + 前导零 ----
+            Console.writeString("0o17 = " + 0o17);
+            Console.writeString("\n");
+            Console.writeString("0o755 = " + 0o755);
+            Console.writeString("\n");
+            Console.writeString("0755 = " + 0755);
+            Console.writeString("\n");
+
+            // ---- 与变量/运算混合 ----
+            int n = 10_000 + 0b10 + 0o10;
+            Console.writeString("n = " + n);
+            Console.writeString("\n");
+
+            Console.writeString("NUMERIC_UNDERSCORE_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

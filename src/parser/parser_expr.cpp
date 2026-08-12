@@ -6,6 +6,16 @@
 
 namespace mylang {
 
+// 整数字面量解析（§4.3 P2/P4）：统一进制前缀——0x/0X 十六进制、0b/0B 二进制、
+// 0o/0O 八进制、前导零（0755）C 风格八进制、其余十进制（stoll base 0）。
+static int64_t parseIntegerLiteralValue(const std::string& s) {
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B'))
+        return std::stoll(s.substr(2), nullptr, 2);
+    if (s.size() > 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O'))
+        return std::stoll(s.substr(2), nullptr, 8);
+    return std::stoll(s, nullptr, 0);
+}
+
 static TypeKind typeTokenToKind(TokenKind k) {
     switch (k) {
         case TokenKind::Type_byte:  case TokenKind::Type_int8:   return TypeKind::Byte;
@@ -550,7 +560,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         consume(TokenKind::Less, "expected '<' after bitvector");
         int bw = 0;
         if (check(TokenKind::IntegerLiteral)) {
-            try { bw = (int)std::stoll(advance().value); }
+            try { bw = (int)parseIntegerLiteralValue(advance().value); }
             catch (...) { bw = 0; }
         } else {
             diag_.error(peek().range, "expected integer width in bitvector<N>");
@@ -578,15 +588,15 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         }
     }
     if (match(TokenKind::IntegerLiteral)) {
-        int64_t val = std::stoll(previous().value, nullptr, 0);
+        int64_t val = parseIntegerLiteralValue(previous().value);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range);
     }
     if (match(TokenKind::LongLiteral)) {
-        int64_t val = std::stoll(previous().value, nullptr, 0);
+        int64_t val = parseIntegerLiteralValue(previous().value);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range, true);
     }
     if (match(TokenKind::UIntLiteral)) {
-        int64_t val = std::stoll(previous().value, nullptr, 0);
+        int64_t val = parseIntegerLiteralValue(previous().value);
         return std::make_unique<IntegerLiteralExpr>(val, previous().range, false, true);
     }
     if (match(TokenKind::FloatLiteral)) {

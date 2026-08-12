@@ -1,5 +1,6 @@
 #include "mylang/Lexer.h"
 
+#include <algorithm>
 #include <cctype>
 #include <string>
 #include <utility>
@@ -295,45 +296,48 @@ Token Lexer::scanNumber() {
     std::string value;
     value += source_[start_offset];
 
-    // Hex integer: 0xFF
-    if (value[0] == '0' && (peek() == 'x' || peek() == 'X')) {
-        value += advance();
-        while (std::isxdigit(static_cast<unsigned char>(peek()))) {
-            value += advance();
-        }
-        auto kind = TokenKind::IntegerLiteral;
-        if (peek() == 'L' || peek() == 'l') {
-            advance();
-            kind = TokenKind::LongLiteral;
-        } else if (peek() == 'u' || peek() == 'U') {
-            advance();
-            kind = TokenKind::UIntLiteral;
-        }
-        return Token(kind,
-            SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
-            value);
-    }
+    // 进制前缀：0x/0X 十六进制、0b/0B 二进制、0o/0O 八进制（§4.3 P2/P4）
+    bool hex = false, binary = false, octal = false;
+    if (value[0] == '0' && (peek() == 'x' || peek() == 'X')) { value += advance(); hex = true; }
+    else if (value[0] == '0' && (peek() == 'b' || peek() == 'B')) { value += advance(); binary = true; }
+    else if (value[0] == '0' && (peek() == 'o' || peek() == 'O')) { value += advance(); octal = true; }
 
-    // Decimal number
+    auto is_digit = [&](char c) -> bool {
+        if (binary) return c == '0' || c == '1';
+        if (octal) return c >= '0' && c <= '7';
+        if (hex) return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+        return std::isdigit(static_cast<unsigned char>(c)) != 0;
+    };
+    // 收集数字（含下划线分隔：下划线后必须跟 digit、前一字符不能是下划线）
+    auto collect_digits = [&]() {
+        while (true) {
+            if (is_digit(peek())) {
+                value += advance();
+            } else if (peek() == '_' && value.back() != '_' &&
+                       offset_ + 1 < source_.size() && is_digit(source_[offset_ + 1])) {
+                value += advance();
+            } else break;
+        }
+    };
+    collect_digits();
+
+    // 仅十进制允许小数/指数；hex/binary/octal 为整数
     bool is_float = false;
-    while (std::isdigit(static_cast<unsigned char>(peek())) || peek() == '.') {
-        if (peek() == '.') {
-            if (is_float) break; // second dot -> stop
-            // Check for ".." range operator — don't consume if followed by
-            // another dot. Guard: the '.' may be the last char ("5." at EOF),
-            // so source_[offset_ + 1] would read out of bounds.
+    if (!hex && !binary && !octal) {
+        while (peek() == '.') {
+            // ".." 范围符不消费；守卫：'.' 可能是末尾字符（"5." at EOF）
             if (offset_ + 1 < source_.size() && source_[offset_ + 1] == '.') break;
+            if (is_float) break;  // second dot -> stop
+            is_float = true;
+            value += advance();
+            collect_digits();
+        }
+        if (peek() == 'e' || peek() == 'E') {
+            value += advance();
+            if (peek() == '+' || peek() == '-') value += advance();
+            collect_digits();
             is_float = true;
         }
-        value += advance();
-    }
-
-    // Float exponent
-    if (peek() == 'e' || peek() == 'E') {
-        value += advance();
-        if (peek() == '+' || peek() == '-') value += advance();
-        while (std::isdigit(static_cast<unsigned char>(peek()))) value += advance();
-        is_float = true;
     }
 
     auto kind = is_float ? TokenKind::FloatLiteral : TokenKind::IntegerLiteral;
@@ -349,6 +353,10 @@ Token Lexer::scanNumber() {
         advance(); // consume the suffix
         kind = TokenKind::UIntLiteral;
     }
+
+    // P4 下划线分隔（1_000_000 / 0xFF_FF / 1_000.5）：剥离下划线
+    // （range 用 offset_，与 value 长度无关，不受影响）
+    value.erase(std::remove(value.begin(), value.end(), '_'), value.end());
 
     return Token(kind, SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}}, value);
 }
