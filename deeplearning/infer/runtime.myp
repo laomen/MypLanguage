@@ -63,8 +63,27 @@ class InferenceRuntime {
             tCols_[id] = d2 * d3;
             tN_[id] = d0;
             tC_[id] = d1;
+            tD_[id] = 1;
             tH_[id] = d2;
             tW_[id] = d3;
+            tOff_[id] = arenaTop_;
+            arenaTop_ = arenaTop_ + n;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        // 5D 张量（NCDHW 行优先，3D 扩展），bump 分配
+        int addTensor5(int d0, int d1, int d2, int d3, int d4) {
+            int id = tensorCount_;
+            int n = d0 * d1 * d2 * d3 * d4;
+            if (arenaTop_ + n > arenaCap_) return -1;
+            tRows_[id] = d0 * d1;
+            tCols_[id] = d2 * d3 * d4;
+            tN_[id] = d0;
+            tC_[id] = d1;
+            tD_[id] = d2;
+            tH_[id] = d3;
+            tW_[id] = d4;
             tOff_[id] = arenaTop_;
             arenaTop_ = arenaTop_ + n;
             tensorCount_ = tensorCount_ + 1;
@@ -78,8 +97,24 @@ class InferenceRuntime {
             tCols_[id] = d2 * d3;
             tN_[id] = d0;
             tC_[id] = d1;
+            tD_[id] = 1;
             tH_[id] = d2;
             tW_[id] = d3;
+            tOff_[id] = offset;
+            tensorCount_ = tensorCount_ + 1;
+            return id;
+        }
+
+        // 在指定偏移登记 5D CNN 张量（NCDHW；rows=N*C, cols=D*H*W，3D 扩展）
+        int addTensorPlanned5(int d0, int d1, int d2, int d3, int d4, int offset) {
+            int id = tensorCount_;
+            tRows_[id] = d0 * d1;
+            tCols_[id] = d2 * d3 * d4;
+            tN_[id] = d0;
+            tC_[id] = d1;
+            tD_[id] = d2;
+            tH_[id] = d3;
+            tW_[id] = d4;
             tOff_[id] = offset;
             tensorCount_ = tensorCount_ + 1;
             return id;
@@ -215,6 +250,33 @@ class InferenceRuntime {
             opP0_[id] = sh; opP1_[id] = sw; opP2_[id] = pt; opP3_[id] = pb;
             opP4_[id] = pl; opP5_[id] = pr; opP6_[id] = outPadH; opP7_[id] = outPadW;
             opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+
+        // ---- 3D：Conv3D（opKind 41）----
+        // 权重 [Cout,Cin,kd,kh,kw]；sd/sh/sw 与 6 个 pads；dd/dh/dw/group 存 opX_
+        void addConv3D(int inTid, int wTid, int bTid, int outTid,
+                       int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                       int dd, int dh, int dw, int group) {
+            int id = opCount_;
+            opKind_[id] = 41;
+            opA_[id] = inTid; opB_[id] = wTid; opC_[id] = bTid; opD_[id] = outTid;
+            opP0_[id] = sd; opP1_[id] = sh; opP2_[id] = sw; opP3_[id] = pdt; opP4_[id] = pdb;
+            opP5_[id] = pt; opP6_[id] = pb; opP7_[id] = pl; opP8_[id] = pr;
+            opX_[id * 4 + 0] = dd; opX_[id * 4 + 1] = dh; opX_[id * 4 + 2] = dw; opX_[id * 4 + 3] = group;
+            opCount_ = opCount_ + 1;
+        }
+        // ---- 3D：MaxPool3D（opKind 42）----
+        // kd/kh/kw + sd/sh/sw + 6 pads（pb/pl/pr 存 opX_）
+        void addMaxPool3D(int inTid, int outTid, int kd, int kh, int kw,
+                          int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 42;
+            opA_[id] = inTid; opB_[id] = outTid;
+            opP0_[id] = kd; opP1_[id] = kh; opP2_[id] = kw;
+            opP3_[id] = sd; opP4_[id] = sh; opP5_[id] = sw;
+            opP6_[id] = pdt; opP7_[id] = pdb; opP8_[id] = pt;
+            opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr;
             opCount_ = opCount_ + 1;
         }
 
@@ -608,6 +670,25 @@ class InferenceRuntime {
                         tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
                         tH_[wb], tW_[wb],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
+                } else if (opKind_[i] == 41) {
+                    // 3D：Conv3D（权重 [Cout,Cin,kd,kh,kw]；kd=tD_[wb]）
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
+                    InferOps.conv3d(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        tD_[wb], tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i],
+                        opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], opX_[i * 4 + 3]);
+                } else if (opKind_[i] == 42) {
+                    // 3D：MaxPool3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.maxpool3d(arena,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2]);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
@@ -863,6 +944,27 @@ class InferenceRuntime {
                         tOff_[yd], tC_[yd], tH_[yd], tW_[yd],
                         tH_[wb], tW_[wb],
                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], dev);
+                } else if (opKind_[i] == 41) {
+                    // 3D：Conv3D
+                    int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
+                    int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
+                    int work = tensorSize(yd);
+                    GpuInferOps.conv3d(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[wb], bOff,
+                        tOff_[yd], tC_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        tD_[wb], tH_[wb], tW_[wb],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i],
+                        opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], opX_[i * 4 + 3], dev);
+                } else if (opKind_[i] == 42) {
+                    // 3D：MaxPool3D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.maxpool3d(arena, work,
+                        tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
+                        tOff_[yd], tD_[yd], tH_[yd], tW_[yd],
+                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                        opP6_[i], opP7_[i], opP8_[i], opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], dev);
                 } else if (opKind_[i] == 11) {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];   // 无偏置卷积（bc=-1）
@@ -1144,6 +1246,7 @@ class InferenceRuntime {
         int[512] tCols_;
         int[512] tN_;
         int[512] tC_;
+        int[512] tD_;      // 3D 扩展：第 5 维（深度 D，NCDHW）
         int[512] tH_;
         int[512] tW_;
         int[512] tOff_;
@@ -1161,6 +1264,7 @@ class InferenceRuntime {
         int[512] opP6_;
         int[512] opP7_;
         int[512] opP8_;
+        int[2048] opX_;       // 3D：额外参数 [id*4+k]（Conv3D dd/dh/dw/group，MaxPool3D pb/pl/pr）
         int[512] pCval_;      // F8：Pad constant_value（float 位型）
         // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
         int[512] sCnt_;

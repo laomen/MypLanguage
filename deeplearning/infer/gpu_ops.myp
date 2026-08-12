@@ -197,6 +197,101 @@ class GpuInferOps {
             }
         }
 
+        // Conv3D：thread-per-output（权重 [Cout,Cin,kd,kh,kw]）
+        void conv3d(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int wOff, int bOff,
+                  int yOff, int yC, int yD, int yH, int yW,
+                  int kd, int kh, int kw,
+                  int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+                  int dd, int dh, int dw, int group, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oz = (p / (yW * yH)) % yD;
+                    long oc = (p / (yW * yH * yD)) % yC;
+                    long nn = p / (yW * yH * yD * yC);
+                    int cpg = xC / group;
+                    int ocpg = yC / group;
+                    long g = oc / ocpg;
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + oc];
+                    int ic = 0;
+                    while (ic < cpg) {
+                        long cIn = g * cpg + ic;
+                        int kz = 0;
+                        while (kz < kd) {
+                            long iz = oz * sd - pdt + kz * dd;
+                            if (iz >= 0 && iz < xD) {
+                                int ky = 0;
+                                while (ky < kh) {
+                                    long iy = oy * sh - pt + ky * dh;
+                                    if (iy >= 0 && iy < xH) {
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            long ix = ox * sw - pl + kx * dw;
+                                            if (ix >= 0 && ix < xW) {
+                                                sum = sum + a[xOff + nn * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix]
+                                                           * a[wOff + oc * (cpg * kd * kh * kw) + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                            }
+                                            kx = kx + 1;
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                            }
+                            kz = kz + 1;
+                        }
+                        ic = ic + 1;
+                    }
+                    a[yOff + p] = sum;
+                }
+            }
+        }
+
+        // MaxPool3D：thread-per-output
+        void maxpool3d(float[] a, int work,
+                  int xOff, int xN, int xC, int xD, int xH, int xW,
+                  int yOff, int yD, int yH, int yW,
+                  int kd, int kh, int kw,
+                  int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long ox = p % yW;
+                    long oy = (p / yW) % yH;
+                    long oz = (p / (yW * yH)) % yD;
+                    long c = (p / (yW * yH * yD)) % xC;
+                    long nn = p / (yW * yH * yD * xC);
+                    float best = 0.0f - 1.0e30f;
+                    int kz = 0;
+                    while (kz < kd) {
+                        long iz = oz * sd - pdt + kz;
+                        if (iz >= 0 && iz < xD) {
+                            int ky = 0;
+                            while (ky < kh) {
+                                long iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        long ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            float v = a[xOff + nn * xC * xD * xH * xW + c * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                            if (v > best) best = v;
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                        }
+                        kz = kz + 1;
+                    }
+                    a[yOff + p] = best;
+                }
+            }
+        }
+
         // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量（少一次
         // kernel 启动 + 少一次中间张量读写）。参数与 conv 相同，y 处写 max(sum,0)。
         void convRelu(float[] a, int work,

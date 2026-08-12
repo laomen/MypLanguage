@@ -195,17 +195,54 @@ class OnnxLoader {
                     if (rem > 0) pb_.skipBytes(rem);
                 } else if (f == 8) {    // ints：非打包，每个 varint 一个字段
                     int v = pb_.readVarint();
-                    if (aname == "strides") { if (idx == 0) g_.nodeInt(ni, NodeField.SH(), v); else g_.nodeInt(ni, NodeField.SW(), v); }
-                    else if (aname == "pads") {
-                        // pads = [top, left, bottom, right]（2D）
-                        if (idx == 0) g_.nodeInt(ni, NodeField.PT(), v);
-                        else if (idx == 1) g_.nodeInt(ni, NodeField.PL(), v);
-                        else if (idx == 2) g_.nodeInt(ni, NodeField.PB(), v);
-                        else g_.nodeInt(ni, NodeField.PR(), v);
+                    string nt = g_.nodeTypeAt(ni);
+                    int is3d = 0;
+                    if (nt == "Conv3D" || nt == "MaxPool3D" || nt == "AveragePool3D" || nt == "ConvTranspose3D") is3d = 1;
+                    if (aname == "strides") {
+                        // 通用捕获原始 strides（normalize3D 按秩映射 2D/3D）
+                        if (idx == 0) g_.nodeInt(ni, NodeField.ST0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.ST1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.ST2(), v);
+                        if (is3d == 1) { if (idx == 0) g_.nodeInt(ni, NodeField.SD3(), v); else if (idx == 1) g_.nodeInt(ni, NodeField.SH(), v); else g_.nodeInt(ni, NodeField.SW(), v); }
+                        else { if (idx == 0) g_.nodeInt(ni, NodeField.SH(), v); else g_.nodeInt(ni, NodeField.SW(), v); }
                     }
-                    else if (aname == "dilations") { if (idx == 0) g_.nodeInt(ni, NodeField.DH(), v); else g_.nodeInt(ni, NodeField.DW(), v); }
+                    else if (aname == "pads") {
+                        // 通用捕获原始 pads
+                        if (idx == 0) g_.nodeInt(ni, NodeField.PD0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.PD1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.PD2(), v);
+                        else if (idx == 3) g_.nodeInt(ni, NodeField.PD3(), v);
+                        else if (idx == 4) g_.nodeInt(ni, NodeField.PD4(), v);
+                        else if (idx == 5) g_.nodeInt(ni, NodeField.PD5(), v);
+                        if (is3d == 1) {
+                            // pads = [pdt,pdb,pt,pb,pl,pr]（3D）
+                            if (idx == 0) g_.nodeInt(ni, NodeField.PDT(), v);
+                            else if (idx == 1) g_.nodeInt(ni, NodeField.PDB(), v);
+                            else if (idx == 2) g_.nodeInt(ni, NodeField.PT(), v);
+                            else if (idx == 3) g_.nodeInt(ni, NodeField.PB(), v);
+                            else if (idx == 4) g_.nodeInt(ni, NodeField.PL(), v);
+                            else g_.nodeInt(ni, NodeField.PR(), v);
+                        } else {
+                            // pads = [top, left, bottom, right]（2D）
+                            if (idx == 0) g_.nodeInt(ni, NodeField.PT(), v);
+                            else if (idx == 1) g_.nodeInt(ni, NodeField.PL(), v);
+                            else if (idx == 2) g_.nodeInt(ni, NodeField.PB(), v);
+                            else g_.nodeInt(ni, NodeField.PR(), v);
+                        }
+                    }
+                    else if (aname == "dilations") {
+                        if (idx == 0) g_.nodeInt(ni, NodeField.DL0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.DL1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.DL2(), v);
+                        if (is3d == 1) { if (idx == 0) g_.nodeInt(ni, NodeField.DD3(), v); else if (idx == 1) g_.nodeInt(ni, NodeField.DH(), v); else g_.nodeInt(ni, NodeField.DW(), v); } else { if (idx == 0) g_.nodeInt(ni, NodeField.DH(), v); else g_.nodeInt(ni, NodeField.DW(), v); }
+                    }
                     else if (aname == "output_padding") { if (idx == 0) g_.nodeInt(ni, NodeField.OPH(), v); else g_.nodeInt(ni, NodeField.OPW(), v); }   // F8：ConvTranspose
-                    else if (aname == "kernel_shape") { if (idx == 0) g_.nodeInt(ni, NodeField.KH(), v); else g_.nodeInt(ni, NodeField.KW(), v); }
+                    else if (aname == "kernel_shape") {
+                        if (idx == 0) g_.nodeInt(ni, NodeField.KK0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.KK1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.KK2(), v);
+                        if (is3d == 1) { if (idx == 0) g_.nodeInt(ni, NodeField.KD3(), v); else if (idx == 1) g_.nodeInt(ni, NodeField.KH(), v); else g_.nodeInt(ni, NodeField.KW(), v); } else { if (idx == 0) g_.nodeInt(ni, NodeField.KH(), v); else g_.nodeInt(ni, NodeField.KW(), v); }
+                    }
                     else if (aname == "perm") {   // F8：Transpose perm（ints 非打包）
                         if (idx == 0) g_.nodeInt(ni, NodeField.PERM0(), v);
                         else if (idx == 1) g_.nodeInt(ni, NodeField.PERM1(), v);

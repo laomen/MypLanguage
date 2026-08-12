@@ -67,6 +67,26 @@ class NodeField {
         int SPLIT2() { return 41; }
         int SPLIT3() { return 42; }
         int SPLIT_N() { return 43; }     // F8：Split 尺寸个数
+        int SD3() { return 44; }         // 3D：strides 第 1 个（sd）
+        int DD3() { return 45; }         // 3D：dilations 第 1 个（dd）
+        int KD3() { return 46; }         // 3D：kernel_shape 第 1 个（kd）
+        int PDT() { return 47; }         // 3D：pads D-begin
+        int PDB() { return 48; }         // 3D：pads D-end
+        int ST0() { return 49; }         // 原始 strides[0..2]（2D/3D 通用捕获）
+        int ST1() { return 50; }
+        int ST2() { return 51; }
+        int PD0() { return 52; }         // 原始 pads[0..5]（2D/3D 通用捕获）
+        int PD1() { return 53; }
+        int PD2() { return 54; }
+        int PD3() { return 55; }
+        int PD4() { return 56; }
+        int PD5() { return 57; }
+        int DL0() { return 58; }         // 原始 dilations[0..2]
+        int DL1() { return 59; }
+        int DL2() { return 60; }
+        int KK0() { return 61; }         // 原始 kernel_shape[0..2]
+        int KK1() { return 62; }
+        int KK2() { return 63; }
 }
 
 class Graph {
@@ -115,7 +135,14 @@ class Graph {
         }
         void endNode() { nCount_ = nCount_ + 1; }
         void nodeType(int i, string v) { nType_[i] = v; }
+        string nodeTypeAt(int i) { return nType_[i]; }
         void nodeIn(int i, int slot, string v) { if (slot==0) nIn0_[i]=v; else if (slot==1) nIn1_[i]=v; else if (slot==2) nIn2_[i]=v; else if (slot==3) nIn3_[i]=v; else nIn4_[i]=v; }
+        string nodeInAt(int i, int slot) { if (slot==0) return nIn0_[i]; if (slot==1) return nIn1_[i]; if (slot==2) return nIn2_[i]; if (slot==3) return nIn3_[i]; return nIn4_[i]; }
+        int shapeRank5(string name) { int s = shapeIdx(name); if (s < 0) return 0; return shR5_[s]; }
+        int rawSt(int i, int k) { return nSt3_[i * 3 + k]; }
+        int rawPd(int i, int k) { return nPd3_[i * 6 + k]; }
+        int rawDl(int i, int k) { return nDl3_[i * 3 + k]; }
+        int rawKk(int i, int k) { return nKk3_[i * 3 + k]; }
         void nodeOut(int i, string v) {
             if (nOut0_[i] == "") nOut0_[i] = v;
             else if (nOut1_[i] == "") nOut1_[i] = v;
@@ -168,6 +195,26 @@ class Graph {
             else if (code == NodeField.SPLIT2()) nSp2_[i] = v;
             else if (code == NodeField.SPLIT3()) nSp3_[i] = v;
             else if (code == NodeField.SPLIT_N()) nSplitN_[i] = v;
+            else if (code == NodeField.SD3()) nSD3_[i] = v;   // 3D
+            else if (code == NodeField.DD3()) nDD3_[i] = v;   // 3D
+            else if (code == NodeField.KD3()) nKD3_[i] = v;   // 3D
+            else if (code == NodeField.PDT()) nPDT_[i] = v;   // 3D
+            else if (code == NodeField.PDB()) nPDB_[i] = v;   // 3D
+            else if (code == NodeField.ST0()) nSt3_[i * 3 + 0] = v;
+            else if (code == NodeField.ST1()) nSt3_[i * 3 + 1] = v;
+            else if (code == NodeField.ST2()) nSt3_[i * 3 + 2] = v;
+            else if (code == NodeField.PD0()) nPd3_[i * 6 + 0] = v;
+            else if (code == NodeField.PD1()) nPd3_[i * 6 + 1] = v;
+            else if (code == NodeField.PD2()) nPd3_[i * 6 + 2] = v;
+            else if (code == NodeField.PD3()) nPd3_[i * 6 + 3] = v;
+            else if (code == NodeField.PD4()) nPd3_[i * 6 + 4] = v;
+            else if (code == NodeField.PD5()) nPd3_[i * 6 + 5] = v;
+            else if (code == NodeField.DL0()) nDl3_[i * 3 + 0] = v;
+            else if (code == NodeField.DL1()) nDl3_[i * 3 + 1] = v;
+            else if (code == NodeField.DL2()) nDl3_[i * 3 + 2] = v;
+            else if (code == NodeField.KK0()) nKk3_[i * 3 + 0] = v;
+            else if (code == NodeField.KK1()) nKk3_[i * 3 + 1] = v;
+            else if (code == NodeField.KK2()) nKk3_[i * 3 + 2] = v;
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             wName_[wCount_] = nm; wRows_[wCount_] = rows; wCols_[wCount_] = cols;
@@ -179,12 +226,14 @@ class Graph {
         void addGraphOutput(string nm) { if (goCount_ < 64) { goName_[goCount_] = nm; goCount_ = goCount_ + 1; } }
         // 登记形状（解析器调用）；addShapeD4 为内部实现
         void addShapeD(string name, int[] dims, int dimCount) {
-            int d0 = 1; int d1 = 1; int d2 = 1; int d3 = 1;
+            int d0 = 1; int d1 = 1; int d2 = 1; int d3 = 1; int d4 = 1;
             if (dimCount >= 1) d0 = dims[0];
             if (dimCount >= 2) d1 = dims[1];
             if (dimCount >= 3) d2 = dims[2];
             if (dimCount >= 4) d3 = dims[3];
-            addShapeD4(name, d0, d1, d2, d3);
+            if (dimCount >= 5) d4 = dims[4];
+            if (dimCount >= 5) addShapeD5(name, d0, d1, d2, d3, d4);
+            else addShapeD4(name, d0, d1, d2, d3);
         }
         void addShapeD4(string name, int d0, int d1, int d2, int d3) {
             if (shapeIdx(name) >= 0) return;
@@ -196,7 +245,28 @@ class Graph {
             shKind_[sCount_] = Kind.FC_ACT();
             shDead_[sCount_] = 0;
             shNHWC_[sCount_] = 0;
+            shR5_[sCount_] = 0;
             sCount_ = sCount_ + 1;
+        }
+        // 3D：5D 张量（N,C,D,H,W）
+        void addShapeD5(string name, int d0, int d1, int d2, int d3, int d4) {
+            if (shapeIdx(name) >= 0) return;
+            shName_[sCount_] = name;
+            shD0_[sCount_] = d0;
+            shD1_[sCount_] = d1;
+            shD2_[sCount_] = d2;
+            shD3_[sCount_] = d3;
+            shD4_[sCount_] = d4;
+            shKind_[sCount_] = Kind.FC_ACT();
+            shDead_[sCount_] = 0;
+            shNHWC_[sCount_] = 0;
+            shR5_[sCount_] = 1;
+            sCount_ = sCount_ + 1;
+        }
+        // 3D：按源张量秩复制输出形状（5D → addShapeD5，否则 addShapeD4）
+        void copyShape(string name, int src) {
+            if (shR5_[src] == 1) addShapeD5(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src], shD4_[src]);
+            else addShapeD4(name, shD0_[src], shD1_[src], shD2_[src], shD3_[src]);
         }
         void resetCounts() { wCount_=0; nCount_=0; sCount_=0; tCount_=0; goCount_=0; fuseCount_=0; gapCount_=0; dceCount_=0; foldCount_=0; bnCount_=0; noReuse_=0; doNHWC_=0; }
         int optimize(InferenceRuntime rt) {
@@ -246,6 +316,10 @@ class Graph {
                 } else if (t == "MatMul") {
                     markFCWeight(nIn1_[i], 0);             // MatMul 无 transB，wire=[K,N]
                 } else if (t == "Conv") {
+                    markCNNWeight(nIn1_[i]);
+                    markCNNBias(nIn2_[i]);
+                } else if (t == "Conv3D") {
+                    // 3D：权重 [Cout,Cin,kd,kh,kw] / 偏置 [Cout]
                     markCNNWeight(nIn1_[i]);
                     markCNNBias(nIn2_[i]);
                 } else if (t == "ConvTranspose") {
@@ -298,6 +372,7 @@ class Graph {
                 if (t == "") { i = i + 1; continue; }
                 int k = Kind.FC_ACT();
                 if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool") k = Kind.CNN_ACT();
+                else if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") k = Kind.CNN_ACT();   // 3D
                 else if (t == "Gemm" || t == "MatMul" || t == "Flatten") k = Kind.FC_ACT();
                 else {
                     // Relu / Sigmoid / Softmax / Add：沿用主输入 kind
@@ -354,6 +429,7 @@ class Graph {
                 if (nIn0_[i] == name || nIn1_[i] == name || nIn2_[i] == name) {
                     string t = nType_[i];
                     if (t == "Conv" || t == "MaxPool" || t == "AveragePool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
+                    if (t == "Conv3D" || t == "MaxPool3D" || t == "AveragePool3D") return Kind.CNN_ACT();   // 3D
                     // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
                     int s = shapeIdx(name);
                     if (s >= 0 && (shD2_[s] > 1 || shD3_[s] > 1)) return Kind.CNN_ACT();
@@ -407,11 +483,39 @@ class Graph {
             }
             return -1;
         }
+        // 3D：按输入秩识别 Conv/MaxPool/AveragePool/ConvTranspose 的 2D/3D。
+        // 输入为 5D（NCDHW）→ 改名为 xxx3D 并从通用原始 attr 重映射 3D 字段。
+        // 必须在 inferShapes 内（节点拓扑序）调用：此时生产者输出形状已登记，
+        // 下游 3D 池化的输入秩已知。
+        void normalize3DNode(int i) {
+            string t = nType_[i];
+            if (t != "Conv" && t != "MaxPool" && t != "AveragePool" && t != "ConvTranspose") return;
+            if (shapeRank5(nIn0_[i]) != 1) return;
+            nType_[i] = t + "3D";
+            // strides [sd,sh,sw]
+            int sd = rawSt(i, 0); if (sd == 0) sd = 1;
+            int sh = rawSt(i, 1); if (sh == 0) sh = 1;
+            int sw = rawSt(i, 2); if (sw == 0) sw = 1;
+            nSD3_[i] = sd; nSH_[i] = sh; nSW_[i] = sw;
+            // pads [pdt,pdb,pt,pb,pl,pr]
+            nPDT_[i] = rawPd(i, 0); nPDB_[i] = rawPd(i, 1);
+            nPT_[i] = rawPd(i, 2); nPB_[i] = rawPd(i, 3);
+            nPL_[i] = rawPd(i, 4); nPR_[i] = rawPd(i, 5);
+            // dilations [dd,dh,dw]
+            int dd = rawDl(i, 0); if (dd == 0) dd = 1;
+            int dh = rawDl(i, 1); if (dh == 0) dh = 1;
+            int dw = rawDl(i, 2); if (dw == 0) dw = 1;
+            nDD3_[i] = dd; nDH_[i] = dh; nDW_[i] = dw;
+            // kernel_shape [kd,kh,kw]
+            nKD3_[i] = rawKk(i, 0); nKH_[i] = rawKk(i, 1); nKW_[i] = rawKk(i, 2);
+        }
         int inferShapes() {
             int i = 0;
             while (i < nCount_) {
                 string t = nType_[i];
                 if (t == "") { i = i + 1; continue; }   // 死节点（折叠/融合消掉）跳过
+                normalize3DNode(i);
+                t = nType_[i];
                 if (t == "ConvTranspose") {
                     // F8：转置卷积（group=1；权重 [Cin,Cout,kh,kw]，d1=Cout，d2=kh，d3=kw）
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -436,6 +540,39 @@ class Graph {
                     int yH = (H + nPT_[i] + nPB_[i] - nDH_[i] * (kh - 1) - 1) / nSH_[i] + 1;
                     int yW = (W + nPL_[i] + nPR_[i] - nDW_[i] * (kw - 1) - 1) / nSW_[i] + 1;
                     addShapeD4(nOut0_[i], N, yC, yH, yW);
+                } else if (t == "Conv3D") {
+                    // 3D：权重 [Cout,Cin,kd,kh,kw]（5D）；kd/kh/kw = shD2/shD3/shD4
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int w = shapeIdx(nIn1_[i]); if (w < 0) return 0;
+                    int N = shD0_[a]; int D = shD2_[a]; int H = shD3_[a]; int W = shD4_[a];
+                    int yC = shD0_[w];
+                    int kd = shD2_[w]; int kh = shD3_[w]; int kw = shD4_[w];
+                    if (nKD3_[i] > 0) kd = nKD3_[i];
+                    if (nKH_[i] > 0) kh = nKH_[i];
+                    if (nKW_[i] > 0) kw = nKW_[i];
+                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
+                    int dd = nDD3_[i]; if (dd <= 0) dd = 1;
+                    int dh = nDH_[i]; if (dh <= 0) dh = 1;
+                    int dw = nDW_[i]; if (dw <= 0) dw = 1;
+                    int yD = (D + nPDT_[i] + nPDB_[i] - dd * (kd - 1) - 1) / sd + 1;
+                    int yH = (H + nPT_[i] + nPB_[i] - dh * (kh - 1) - 1) / sh_ + 1;
+                    int yW = (W + nPL_[i] + nPR_[i] - dw * (kw - 1) - 1) / sw_ + 1;
+                    addShapeD5(nOut0_[i], N, yC, yD, yH, yW);
+                } else if (t == "MaxPool3D") {
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int N = shD0_[a]; int C = shD1_[a]; int D = shD2_[a]; int H = shD3_[a]; int W = shD4_[a];
+                    int kd = nKD3_[i]; if (kd <= 0) kd = 1;
+                    int kh = nKH_[i]; if (kh <= 0) kh = 1;
+                    int kw = nKW_[i]; if (kw <= 0) kw = 1;
+                    int sd = nSD3_[i]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[i]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[i]; if (sw_ <= 0) sw_ = 1;
+                    int yD = (D + nPDT_[i] + nPDB_[i] - kd) / sd + 1;
+                    int yH = (H + nPT_[i] + nPB_[i] - kh) / sh_ + 1;
+                    int yW = (W + nPL_[i] + nPR_[i] - kw) / sw_ + 1;
+                    addShapeD5(nOut0_[i], N, C, yD, yH, yW);
                 } else if (t == "MaxPool") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int N = shD0_[a]; int C = shD1_[a]; int H = shD2_[a]; int W = shD3_[a];
@@ -485,7 +622,7 @@ class Graph {
                 } else if (t == "Add" || t == "Relu" || t == "Sigmoid" || t == "Softmax" || t == "BatchNormalization"
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
-                    addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                    copyShape(nOut0_[i], a);
                 } else if (t == "Reshape") {
                     // F8：shape 来自输入[1]（int64 初始器）；-1 = 由总元素数推断，0 = 复制对应输入维
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -630,7 +767,7 @@ class Graph {
                 } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
                     // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
-                    addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                    copyShape(nOut0_[i], a);
                 } else if (t == "ReduceMean") {
                     // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -669,7 +806,7 @@ class Graph {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int s = shapeIdx(nIn1_[i]); if (s < 0) return 0;
                     int b = shapeIdx(nIn2_[i]); if (b < 0) return 0;
-                    addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                    copyShape(nOut0_[i], a);
                 } else if (t == "Resize" || t == "Upsample") {
                     // F8：2D 上采样（nearest/linear）。输出尺寸：sizes 初始器 > scales 初始器 > Upsample scales 属性
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -1187,6 +1324,7 @@ class Graph {
             while (si < sCount_) {
                 if (shDead_[si] == 1) { planOff_[si] = 0; si = si + 1; continue; }   // G2：死张量不分配
                 int size = shD0_[si] * shD1_[si] * shD2_[si] * shD3_[si];
+                if (shR5_[si] == 1) size = size * shD4_[si];   // 3D：5D 张量乘 D 维
                 int producer = planProducer_[si];
                 int lastUse = planLastUse_[si];
                 int persist = 0;
@@ -1242,6 +1380,8 @@ class Graph {
                     tid = rt.addTensorPlanned2(d0, 1, off);             // [Cout] → [Cout,1]
                 } else if (kind == Kind.FC_C()) {
                     tid = rt.addTensorPlanned2(d0, d1, off);            // G2：折叠常量，直接拷贝 [d0,d1]
+                } else if (shR5_[si] == 1) {
+                    tid = rt.addTensorPlanned5(d0, d1, d2, d3, shD4_[si], off);  // 3D：CNN 权重/激活 NCDHW
                 } else if (shNHWC_[si] == 1) {
                     tid = rt.addTensorPlanned4(d0, d2, d3, d1, off);    // G2：NHWC 激活 [N,H,W,C] / 权重 [Cout,KH,KW,Cin]
                 } else {
@@ -1325,6 +1465,28 @@ class Graph {
                         // G3：BN 折叠的普通卷积（可能无 relu，勿套 relu）
                         rt.addConv(a, w, b, out, nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
                     }
+                } else if (t == "Conv3D") {
+                    // 3D：kd/kh/kw 由权重张量 tD_[w]/tH_[w]/tW_[w] 给出
+                    int w = tensorId(nIn1_[ni]);
+                    int b = tensorId(nIn2_[ni]);
+                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
+                    int dd = nDD3_[ni]; if (dd <= 0) dd = 1;
+                    int dh = nDH_[ni]; if (dh <= 0) dh = 1;
+                    int dw = nDW_[ni]; if (dw <= 0) dw = 1;
+                    rt.addConv3D(a, w, b, out, sd, sh_, sw_,
+                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni],
+                        dd, dh, dw, nGroup_[ni]);
+                } else if (t == "MaxPool3D") {
+                    int sd = nSD3_[ni]; if (sd <= 0) sd = 1;
+                    int sh_ = nSH_[ni]; if (sh_ <= 0) sh_ = 1;
+                    int sw_ = nSW_[ni]; if (sw_ <= 0) sw_ = 1;
+                    int kd = nKD3_[ni]; if (kd <= 0) kd = 1;
+                    int kh = nKH_[ni]; if (kh <= 0) kh = 1;
+                    int kw = nKW_[ni]; if (kw <= 0) kw = 1;
+                    rt.addMaxPool3D(a, out, kd, kh, kw, sd, sh_, sw_,
+                        nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
                 } else if (t == "MaxPool") {
                     if (nNHWC_[ni] == 1) rt.addMaxPoolNHWC(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
                     else rt.addMaxPool(a, out, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPB_[ni], nPL_[ni], nPR_[ni]);
@@ -1428,7 +1590,9 @@ class Graph {
                     int bT = tensorId(nIn2_[ni]);
                     if (sT < 0 || bT < 0) return 0;
                     int is = shapeIdx(nIn0_[ni]);
-                    int N = shD0_[is], C = shD1_[is], S = shD2_[is] * shD3_[is];
+                    int N = shD0_[is], C = shD1_[is];
+                    int S = shD2_[is] * shD3_[is];
+                    if (shR5_[is] == 1) S = shD2_[is] * shD3_[is] * shD4_[is];   // 3D：D*H*W
                     rt.addInstanceNorm(a, sT, bT, out, N, C, S, nEpsInt_[ni], nHasEps_[ni]);
                 } else if (t == "Resize" || t == "Upsample") {
                     int is = shapeIdx(nIn0_[ni]);
@@ -1655,6 +1819,15 @@ class Graph {
         int[512] nSp3_;
         int[2048] nSplitSt_;    // F8：Split 各输出沿 axis 的 start [node*4+j]
         int[2048] nSplitLn_;    // F8：Split 各输出沿 axis 的 len
+        int[512] nSD3_;         // 3D：Conv3D/MaxPool3D 等 strides[0]（sd）
+        int[512] nDD3_;         // 3D：dilations[0]（dd）
+        int[512] nKD3_;         // 3D：kernel_shape[0]（kd）
+        int[512] nPDT_;         // 3D：pads D-begin
+        int[512] nPDB_;         // 3D：pads D-end
+        int[1536] nSt3_;        // 原始 strides[node*3+k]（2D/3D 通用捕获）
+        int[3072] nPd3_;        // 原始 pads[node*6+k]
+        int[1536] nDl3_;        // 原始 dilations[node*3+k]
+        int[1536] nKk3_;        // 原始 kernel_shape[node*3+k]
         int[512] nEpsInt_;       // G3：BN epsilon 属性位型
         int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
         int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型
@@ -1684,6 +1857,8 @@ class Graph {
         int[512] shD1_;
         int[512] shD2_;
         int[512] shD3_;
+        int[512] shD4_;       // 3D：5D 张量的 D 维
+        int[512] shR5_;       // 3D：1 = 5D 张量（N,C,D,H,W）
         int[512] shKind_;
         int[512] shNHWC_;        // G2：1 = 张量以 NHWC (N,H,W,C) 登记
         int[512] shDead_;        // G2：1 = 死张量（不分配/不登记）

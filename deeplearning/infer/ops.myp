@@ -227,6 +227,130 @@ class InferOps {
             }
         }
 
+        // Conv3D：x[N,Cin,D,H,W] → y[N,Cout,yD,yH,yW]（3D 扩展，权重 [Cout,Cin,kd,kh,kw]）
+        // 参数：pdt/pdb/pt/pb/pl/pr = 6 个 pad（d/w/h 各 begin/end），dd/dh/dw = 膨胀。
+        void conv3d(
+            float[] arena,
+            int xOff, int xN, int xC, int xD, int xH, int xW,
+            int wOff, int bOff,
+            int yOff, int yC, int yD, int yH, int yW,
+            int kd, int kh, int kw,
+            int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+            int dd, int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int wc = cpg * kd * kh * kw;
+            int n = 0;
+            while (n < xN) {
+                int oc = 0;
+                while (oc < yC) {
+                    int g = oc / ocpg;
+                    int oz = 0;
+                    while (oz < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                float sum = 0.0f;
+                                if (bOff >= 0) sum = arena[bOff + oc];
+                                int ic = 0;
+                                while (ic < cpg) {
+                                    int cIn = g * cpg + ic;
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz * sd - pdt + kz * dd;
+                                        if (iz >= 0 && iz < xD) {
+                                            int ky = 0;
+                                            while (ky < kh) {
+                                                int iy = oy * sh - pt + ky * dh;
+                                                if (iy >= 0 && iy < xH) {
+                                                    int kx = 0;
+                                                    while (kx < kw) {
+                                                        int ix = ox * sw - pl + kx * dw;
+                                                        if (ix >= 0 && ix < xW) {
+                                                            float xv = arena[xOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                            float wv = arena[wOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                            sum = sum + xv * wv;
+                                                        }
+                                                        kx = kx + 1;
+                                                    }
+                                                }
+                                                ky = ky + 1;
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                arena[yOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox] = sum;
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        oz = oz + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // MaxPool3D：x[N,C,D,H,W] → y[N,C,yD,yH,yW]
+        void maxpool3d(
+            float[] arena,
+            int xOff, int xN, int xC, int xD, int xH, int xW,
+            int yOff, int yD, int yH, int yW,
+            int kd, int kh, int kw,
+            int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr
+        ) {
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oz = 0;
+                    while (oz < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                float best = 0.0f - 1.0e30f;
+                                int kz = 0;
+                                while (kz < kd) {
+                                    int iz = oz * sd - pdt + kz;
+                                    if (iz >= 0 && iz < xD) {
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy * sh - pt + ky;
+                                            if (iy >= 0 && iy < xH) {
+                                                int kx = 0;
+                                                while (kx < kw) {
+                                                    int ix = ox * sw - pl + kx;
+                                                    if (ix >= 0 && ix < xW) {
+                                                        float v = arena[xOff + n * xC * xD * xH * xW + c * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                        if (v > best) best = v;
+                                                    }
+                                                    kx = kx + 1;
+                                                }
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                    }
+                                    kz = kz + 1;
+                                }
+                                arena[yOff + n * xC * yD * yH * yW + c * yD * yH * yW + oz * yH * yW + oy * yW + ox] = best;
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        oz = oz + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
         // 融合 Conv+ReLU（G1）：卷积输出直接过 ReLU，不写回中间张量。
         // 参数与 conv 相同，唯一区别：y 处写 max(sum, 0)。
         void convRelu(
