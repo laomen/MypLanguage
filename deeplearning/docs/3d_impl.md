@@ -89,3 +89,27 @@
   `[N,C,D,H*W]`，复用 4D concat 核（od3=H*W）。
 - **f32/f64 混合**：核内用 float 累加（`float` / `0.0f` 字面量），
   避免 double 降低 GPU kernel 兼容性；大模型累积误差 <1e-3。
+
+## 7. ⚠️ 性能问题（已标记，后续优化）
+
+**现状**：CPU 朴素核 vs onnxruntime 差距 ~1000×（coarse_model：ORT 0.9s，MYP ~20min）。
+**这不是语言解释开销**（MYP 编译为 LLVM 原生码），而是「朴素标量单线程核 vs 工业级优化」。
+
+差距来源（相乘）：
+- 单线程 vs OpenMP 多线程（8-16×）
+- 无 SIMD 向量化（AVX2/AVX-512）vs 一次 8/16 float（4-8×）
+- 无 Winograd（3×3 核 ~2.25× 乘法减少）/ im2col+GEMM
+- 内层 padding 边界分支 + 乘除索引预计算缺失（2-3×）
+- 无 cache 分块/布局重排（2-4×）
+- 算子融合较少（Conv+BN+ReLU 折叠有做，但中间张量读写仍多）
+
+**后续优化路线（按收益排序，独立任务）**：
+1. 多线程（最简单，8-16×）
+2. 内层边界检查外提 / 索引预计算（2-3×）
+3. im2col + 复用现有 dense GEMM（2-5×）
+4. Winograd 3×3（~2×）
+5. 向量化（依赖编译器支持）
+6. **GPU 加速**（每输出一线程，天然并行；当前已铺好 `@gpu for` 核）
+   → 这是当前优先方向，见 gpu_paradigm.md / 3D GPU 核。
+
+> TODO(perf)：待 GPU 方向完成后，再回头优化 CPU 核性能。

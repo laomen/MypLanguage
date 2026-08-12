@@ -2,6 +2,7 @@
 // pad3d_avgpool3d.onnx（opset12）：x[1,2,8,8,8] → Pad(constant, [1,1,1]) → [1,2,10,10,10]
 //   → AveragePool(k2,s2) → y[1,2,5,5,5]；另 AveragePool(k[1,2,2],s[1,2,2]) → y2[1,2,8,4,4]
 import env;
+import cuda;
 import "../infer/pb.myp";
 import "../infer/runtime.myp";
 import "../infer/onnx_loader.myp";
@@ -30,8 +31,21 @@ class Pad3dAvgpool3dApp {
             rt.run();
             int okC = checkOut(rt, yT, "./deeplearning/data/onnx/pad3d_avgpool3d_y.bin");
             int okC2 = checkOut(rt, y2T, "./deeplearning/data/onnx/pad3d_avgpool3d_y2.bin");
-            if (okC == 1 && okC2 == 1) Console.writeLine("PAD3D+AVGPOOL3D ALL OK");
-            else Console.writeLine("PAD3D+AVGPOOL3D MISMATCH");
+            if (okC == 1 && okC2 == 1) Console.writeLine("PAD3D+AVGPOOL3D CPU OK");
+            else Console.writeLine("PAD3D+AVGPOOL3D CPU MISMATCH");
+
+            // GPU
+            if (Cuda.available() == 1) {
+                i = 0;
+                while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+                rt.runGpu();
+                int okG = checkOut(rt, yT, "./deeplearning/data/onnx/pad3d_avgpool3d_y.bin");
+                int okG2 = checkOut(rt, y2T, "./deeplearning/data/onnx/pad3d_avgpool3d_y2.bin");
+                if (okG == 1 && okG2 == 1) Console.writeLine("PAD3D+AVGPOOL3D GPU OK");
+                else Console.writeLine("PAD3D+AVGPOOL3D GPU MISMATCH");
+            } else {
+                Console.writeLine("PAD3D+AVGPOOL3D GPU SKIP");
+            }
         }
 
         void readF32(string path, double[] out, int n) {
