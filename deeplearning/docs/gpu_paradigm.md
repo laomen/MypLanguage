@@ -675,7 +675,7 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 | long 句柄安全 | GpuBuffer 封装 + ARC 兜底 + 调试断言 |
 | 两套传输模型混淆 | 文档明确：L1 隐式，L2+ 显式；默认隐式 |
 | 后端差异 | 接口最小化，编译器 target 逐步做 |
-| MYP 无泛型 | GpuBuffer 用 elemBytes + 分类型工厂 |
+| ~~MYP 无泛型~~（已修正：MYP 有**单态泛型**，`ArrayList<T>` 等） | GpuBuffer 仍按元素字节分型（GpuBuffer/GpuBufferF）：元素字节数是**值**（4/8）非类型，单态泛型参数是类型；dtype 维度未来可用泛型 `T` 单态化（如算子内核） |
 | 简单 API 掩盖传输开销 | 文档给性能提示；*Buf/*Async 供需要的人 |
 
 ---
