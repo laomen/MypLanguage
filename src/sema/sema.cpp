@@ -1219,6 +1219,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitForStmt(static_cast<ForStmt&>(stmt));
         case StmtKind::ForInStmt:
             return visitForInStmt(static_cast<ForInStmt&>(stmt));
+        case StmtKind::GpuTileStmt:
+            return visitGpuTileStmt(static_cast<GpuTileStmt&>(stmt));
         case StmtKind::ReturnStmt:
             return visitReturnStmt(static_cast<ReturnStmt&>(stmt));
         case StmtKind::BreakStmt:
@@ -1365,6 +1367,80 @@ Sema::StmtResult Sema::visitWhileStmt(WhileStmt& stmt) {
     in_loop_ = true;
     if (stmt.body) visitStmt(*stmt.body);
     in_loop_ = saved;
+    return {};
+}
+
+Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
+    // §3.2 共享内存声明校验：维度编译期常量、48KB 上限、grid 常量、body 校验。
+    // 提取维度（shared_type 嵌套 element_type，外层→内层）
+    std::vector<int64_t> dims;
+    const TypeNode* t = &stmt.shared_type;
+    while (t && t->element_type) {
+        if (t->array_size <= 0) {
+            error(stmt.shared_type.range,
+                "@gpu tile shared array dimension must be a compile-time "
+                "constant (e.g. float[32][32])");
+            return {};
+        }
+        dims.push_back(t->array_size);
+        t = t->element_type.get();
+    }
+    if (dims.empty()) {
+        error(stmt.shared_type.range,
+            "@gpu tile requires an array type (e.g. float[32][32])");
+        return {};
+    }
+    std::reverse(dims.begin(), dims.end());
+    stmt.dim_vals = dims;
+
+    // 元素类型 + 字节数（48KB 上限）
+    TypeInfo elem = typeNodeToTypeInfo(*t);
+    stmt.elem_type_info = elem;
+    auto elemBytes = [](const TypeInfo& e) -> int64_t {
+        switch (e.kind) {
+            case TypeKind::Double: case TypeKind::Long: case TypeKind::ULong: return 8;
+            case TypeKind::Float:  case TypeKind::Int:  case TypeKind::UInt:  return 4;
+            case TypeKind::Short:  case TypeKind::UShort: case TypeKind::Char: return 2;
+            default: return 1; // byte/ubyte/bool 等
+        }
+    };
+    int64_t total = 1;
+    for (auto d : dims) total *= d;
+    if (total * elemBytes(elem) > 48 * 1024) {
+        error(stmt.range,
+            "@gpu tile shared array size (" + std::to_string(total * elemBytes(elem)) +
+            " bytes) exceeds the 48KB limit (NV sm_75)");
+    }
+
+    // grid(nb) 子句：块数须为编译期整数字面量（>0），默认 1
+    if (stmt.has_grid) {
+        TypeInfo gt = visitExpr(*stmt.grid_expr);
+        if (!isNumericKind(gt.kind)) {
+            error(stmt.grid_expr->range, "grid must be an integer (block count)");
+        } else if (stmt.grid_expr->kind == ExprKind::IntegerLiteral) {
+            stmt.grid_val = static_cast<const IntegerLiteralExpr&>(*stmt.grid_expr).value;
+            if (stmt.grid_val <= 0)
+                error(stmt.grid_expr->range, "grid must be a positive block count");
+        } else {
+            error(stmt.grid_expr->range,
+                "grid must be a compile-time integer constant (e.g. grid(64))");
+        }
+    } else {
+        stmt.grid_val = 1;
+    }
+
+    // 进入 kernel 上下文（kernel.bx/tx/gid/... 隐式可见），声明共享数组局部可见
+    bool saved_gpu = in_gpu_for_;
+    in_gpu_for_ = true;
+    symbol_table_.enterScope();
+    if (symbol_table_.lookup(stmt.name)) {
+        error(stmt.range, "shared array name '" + stmt.name + "' already declared");
+    } else {
+        symbol_table_.declare(stmt.name, typeNodeToTypeInfo(stmt.shared_type));
+    }
+    if (stmt.body) visitStmt(*stmt.body);
+    symbol_table_.leaveScope();
+    in_gpu_for_ = saved_gpu;
     return {};
 }
 

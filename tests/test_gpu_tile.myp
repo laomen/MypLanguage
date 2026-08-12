@@ -1,0 +1,35 @@
+// §3.2 @gpu tile 共享内存（docs/gpu_library_design）
+// 块内 __shared__ 数组 + kernel.bx/tx/gid + kernel.sync() 两阶段协作。
+// GPU 手动测试（需 CUDA 设备 + MYP_GPU=1；无 GPU 时单线程 CPU 降级）。
+import env;
+import math;
+
+class Main {
+    action:
+        @startup void go() {
+            // 2 块 × 256 线程，每块共享 long[256]
+            long n = 512L;
+            long[] out = new long[512];
+
+            @gpu tile (long[256] smem) grid(2) {
+                // 阶段一：各线程写共享数组（协作载入）
+                smem[kernel.tx] = kernel.bx + 1L;
+                kernel.sync();               // 块内屏障
+                // 阶段二：读共享数组到全局（验证跨线程可见）
+                out[kernel.gid] = smem[kernel.tx];  // gid = bx*256 + tx
+            }
+
+            long err = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                long expected = (i / 256L) + 1L;  // 块 0 → 1、块 1 → 2
+                if (out[i] != expected) err = err + 1L;
+            }
+            Console.writeLine("gpu tile smem: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

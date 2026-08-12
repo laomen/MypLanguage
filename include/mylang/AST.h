@@ -622,6 +622,7 @@ enum class StmtKind {
     WhileStmt,
     ForStmt,
     ForInStmt,
+    GpuTileStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
@@ -737,6 +738,27 @@ struct ForStmt : Stmt {
             std::vector<std::pair<std::string, std::string>> res = {})
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
           step(std::move(s)), body(std::move(b)), parallel(par), gpu(g), resident(std::move(res)) {}
+};
+
+// @gpu tile (float[32][32] smem) { ... } — 块内共享内存 + 协作 kernel body
+// （docs/gpu_library_design §3.2）。共享数组在 body 内可见（编译期静态
+// __shared__，维度须编译期常量，NV sm_75 上限 48KB），host 侧不可捕获。
+// kernel.bx/tx 定位输出 tile、kernel.sync() 控制阶段；grid(nb) 子句指定块数
+// （默认 1）。
+struct GpuTileStmt : Stmt {
+    TypeNode shared_type;           // float[32][32]（完整数组类型，维度编译期常量）
+    std::string name;               // 共享数组名（body 内局部可见）
+    std::unique_ptr<Stmt> body;
+    TypeInfo elem_type_info;        // sema 解析的共享数组元素类型
+    std::vector<int64_t> dim_vals;  // sema 求值维度（外层→内层）
+    bool has_grid = false;          // 是否带 grid(nb) 子句
+    std::unique_ptr<Expr> grid_expr; // grid 块数表达式（sema 求值）
+    int64_t grid_val = 1;           // sema 求值结果（默认单块）
+    GpuTileStmt(TypeNode st, std::string nm, std::unique_ptr<Expr> ge, bool hg,
+                std::unique_ptr<Stmt> b, SourceRange r)
+        : Stmt(StmtKind::GpuTileStmt, r), shared_type(std::move(st)),
+          name(std::move(nm)), body(std::move(b)), has_grid(hg),
+          grid_expr(std::move(ge)) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

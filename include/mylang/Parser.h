@@ -98,6 +98,8 @@ private:
     std::unique_ptr<Stmt> parseContinueStmt();
     std::unique_ptr<Stmt> parseAwaitStmt();
     std::unique_ptr<Stmt> parseMappingStmt();
+    // @gpu tile (float[32][32] smem) [grid(nb)] { body } — 共享内存协作 kernel
+    std::unique_ptr<Stmt> parseGpuTileStmt();
 
     // Expressions (precedence climbing)
     std::unique_ptr<Expr> parseExpr();

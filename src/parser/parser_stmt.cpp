@@ -53,7 +53,13 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
             }
         } else if (annot == "gpu") {
             if (!check(TokenKind::Keyword_for)) {
-                diag_.error(previous().range, "'@gpu' must be followed by 'for'");
+                // @gpu tile (float[32][32] smem) [grid(nb)] { body }
+                if (check(TokenKind::Identifier) && peek().value == "tile") {
+                    advance(); // consume 'tile'
+                    return parseGpuTileStmt();
+                }
+                diag_.error(previous().range,
+                    "'@gpu' must be followed by 'for' or 'tile'");
             } else {
                 advance();
                 auto stmt = parseForStmt();
@@ -681,6 +687,56 @@ std::unique_ptr<Stmt> Parser::parseTryStmt() {
 
     return std::make_unique<TryStmt>(std::move(try_block), std::move(catches),
         std::move(finally_block), r);
+}
+
+// @gpu tile (float[32][32] smem) [grid(nb)] { body }
+// 解析共享内存声明：元素类型 + [dim]... 数组维度（编译期字面量）+ 名字，
+// 可选 grid(nb) 子句，最后是协作 body（块或单语句）。
+std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
+    auto start = previous().range;
+    consume(TokenKind::LeftParen, "expected '(' after '@gpu tile'");
+    TypeNode shared_type = parseType();
+    while (match(TokenKind::LeftBracket)) {
+        int arr_size = 0;
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { arr_size = (int)std::stoll(tok.value); }
+            catch (...) { arr_size = 0; }
+        }
+        consume(TokenKind::RightBracket, "expected ']' in shared array type");
+        auto elem = std::make_unique<TypeNode>(std::move(shared_type));
+        shared_type = TypeNode{};
+        shared_type.element_type = std::move(elem);
+        shared_type.array_size = arr_size;
+        shared_type.range = peek().range;
+    }
+    std::string name = parseIdentifier("expected shared array name");
+    consume(TokenKind::RightParen, "expected ')' after shared array declaration");
+
+    // 可选 grid(nb)：块数（kernel.bx 取值 0..nb-1），默认 1
+    bool has_grid = false;
+    std::unique_ptr<Expr> grid_expr;
+    if (check(TokenKind::Identifier) && peek().value == "grid") {
+        advance(); // consume 'grid'
+        consume(TokenKind::LeftParen, "expected '(' after 'grid'");
+        grid_expr = parseExpr();
+        consume(TokenKind::RightParen, "expected ')' after grid expression");
+        has_grid = true;
+    }
+
+    // body：parseBlock 不消费开 '{'，须先 match 消费（同 parseStatement）
+    std::unique_ptr<Stmt> body;
+    if (match(TokenKind::LeftBrace)) {
+        body = parseBlock();
+    } else {
+        body = parseStatement();
+    }
+
+    SourceRange range;
+    range.begin_offset = start.begin_offset;
+    range.end_offset = previous().range.end_offset;
+    return std::make_unique<GpuTileStmt>(std::move(shared_type), name,
+        std::move(grid_expr), has_grid, std::move(body), range);
 }
 
 }  // namespace {ns}

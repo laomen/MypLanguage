@@ -39,6 +39,10 @@ extern "C" void LLVMInitializeNVPTXTargetMC(void);
 extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
 #endif
 
+// §3.2 前向声明：CUDA libdevice 链接（generateGpuTile 在定义前调用）
+namespace mylang { class DiagnosticEngine; }
+namespace mylang { static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag); }
+
 #include <cstdlib>
 #include <iostream>
 
@@ -144,6 +148,84 @@ void CodeGen::analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loo
             }
         }
 
+        kernel_args_.push_back(kai);
+    }
+}
+
+// §3.2 @gpu tile 捕获变量分析：收集 body 引用的外部变量（排除共享数组名），
+// 类型解析逻辑与 analyzeGpuCapturedVars 相同（无 init/condition/step）。
+void CodeGen::analyzeGpuTileCapturedVars(const GpuTileStmt& stmt) {
+    kernel_args_.clear();
+
+    std::set<std::string> all_refs;
+    std::set<std::string> loop_decls;
+    loop_decls.insert(stmt.name);  // 共享数组不捕获（kernel 内声明）
+
+    if (stmt.body)
+        collectStmtIdentifiers(*stmt.body, all_refs, loop_decls);
+    for (auto& ld : loop_decls)
+        all_refs.erase(ld);
+
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+
+    for (auto& name : all_refs) {
+        if (name == "Math" || name == "Atomic" || name == "Console")
+            continue;
+        if (name.rfind("__myp_", 0) == 0)
+            continue;
+
+        KernelArgInfo kai;
+        kai.name = name;
+        kai.is_array = false;
+        kai.array_arg_idx = -1;
+        kai.size_arg_idx = -1;
+
+        auto* nv = getNamedValue(name);
+        if (nv) {
+            llvm::Type* val_type = nullptr;
+            if (llvm::isa<llvm::AllocaInst>(nv))
+                val_type = llvm::cast<llvm::AllocaInst>(nv)->getAllocatedType();
+            if (!val_type)
+                val_type = getNamedValueType(name);
+
+            bool is_array_here = false;
+            if (array_elem_types_.find(name) != array_elem_types_.end()) {
+                if (llvm::isa<llvm::AllocaInst>(nv)) {
+                    llvm::Type* aty = llvm::cast<llvm::AllocaInst>(nv)->getAllocatedType();
+                    if (aty->isPointerTy())
+                        is_array_here = true;
+                } else {
+                    is_array_here = true;
+                }
+            }
+            if (is_array_here) {
+                kai.is_array = true;
+                kai.type = ptr_ty;
+            } else if (val_type) {
+                if (val_type->isArrayTy()) {
+                    kai.is_array = true;
+                    kai.type = ptr_ty;
+                } else if (val_type->isIntegerTy(64) || val_type->isIntegerTy(32) ||
+                           val_type->isDoubleTy() || val_type->isPointerTy()) {
+                    kai.type = val_type;
+                } else {
+                    kai.type = i64_ty;
+                }
+            } else {
+                kai.type = i64_ty;
+            }
+        } else {
+            auto sit = static_property_globals_.find(name);
+            if (sit != static_property_globals_.end()) {
+                kai.is_array = false;
+                kai.type = ptr_ty;
+            } else {
+                continue;
+            }
+        }
         kernel_args_.push_back(kai);
     }
 }
@@ -519,7 +601,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
                     // GPU mode: call CUDA libdevice device functions
-                    if (gpu_for_stmt_) {
+                    if (gpu_kernel_mode_) {
                         if (std::string(n) == "myp_math_sqrt")  return emit_math_gpu("__nv_sqrt");
                         if (std::string(n) == "myp_math_sin")   return emit_math_gpu("__nv_sin");
                         if (std::string(n) == "myp_math_cos")   return emit_math_gpu("__nv_cos");
@@ -565,7 +647,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
-                    if (gpu_for_stmt_) return emit_math_gpu_2("__nv_atan2");
+                    if (gpu_kernel_mode_) return emit_math_gpu_2("__nv_atan2");
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
@@ -577,7 +659,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 if (callee_name.find("__myp_math_") == 0 && e.args.size() >= 1) {
                     std::string runtime_name = callee_name.substr(2); // __myp_math_log -> myp_math_log
                     // GPU mode: call CUDA libdevice device functions
-                    if (gpu_for_stmt_) {
+                    if (gpu_kernel_mode_) {
                         // 2-arg functions first (atan2)
                         if (runtime_name == "myp_math_atan2" && e.args.size() >= 2)
                             return emit_math_gpu_2("__nv_atan2");
@@ -645,7 +727,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
-                    if (gpu_for_stmt_) return emit_math_pow_gpu();
+                    if (gpu_kernel_mode_) return emit_math_pow_gpu();
                     return kb.CreateCall(
                         llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
@@ -728,7 +810,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     // In GPU kernel mode (gpu_for_stmt_), the kernel is a SEPARATE
                     // LLVM module — calling main-module functions would produce a
                     // cross-module reference that fails LLVM verification.
-                    if (!gpu_for_stmt_) {
+                    if (!gpu_kernel_mode_) {
                         auto* callee_fn = module_->getFunction(fn_name);
                         if (callee_fn) {
                             std::vector<llvm::Value*> call_args;
@@ -1012,9 +1094,15 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             // Try to infer element type
             if (e.array->kind == ExprKind::Identifier) {
                 auto& id = static_cast<const IdentifierExpr&>(*e.array);
-                auto eit = array_elem_types_.find(id.name);
-                if (eit != array_elem_types_.end())
-                    elem_ty = eit->second;
+                // §3.2 @gpu tile 共享数组：元素类型来自 gpu_shared_arrays_
+                auto sit2 = gpu_shared_arrays_.find(id.name);
+                if (sit2 != gpu_shared_arrays_.end()) {
+                    elem_ty = sit2->second;
+                } else {
+                    auto eit = array_elem_types_.find(id.name);
+                    if (eit != array_elem_types_.end())
+                        elem_ty = eit->second;
+                }
             } else if (e.array->kind == ExprKind::MemberAccess) {
                 auto& ma = static_cast<const MemberAccessExpr&>(*e.array);
                 if (ma.object->kind == ExprKind::Identifier) {
@@ -1153,9 +1241,15 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 llvm::Type* elem_ty = double_ty;
                 if (ss.array->kind == ExprKind::Identifier) {
                     auto& id = static_cast<const IdentifierExpr&>(*ss.array);
-                    auto eit = array_elem_types_.find(id.name);
-                    if (eit != array_elem_types_.end())
-                        elem_ty = eit->second;
+                    // §3.2 @gpu tile 共享数组：元素类型来自 gpu_shared_arrays_
+                    auto st2 = gpu_shared_arrays_.find(id.name);
+                    if (st2 != gpu_shared_arrays_.end()) {
+                        elem_ty = st2->second;
+                    } else {
+                        auto eit = array_elem_types_.find(id.name);
+                        if (eit != array_elem_types_.end())
+                            elem_ty = eit->second;
+                    }
                 } else if (ss.array->kind == ExprKind::MemberAccess) {
                     auto& ma = static_cast<const MemberAccessExpr&>(*ss.array);
                     if (ma.object->kind == ExprKind::Identifier) {
@@ -1680,6 +1774,353 @@ void CodeGen::generateGpuFor(const ForStmt& s) {
     }
 }
 
+// §3.2 @gpu tile：共享内存协作 kernel（docs/gpu_library_design）。
+// 共享数组 = 块内 __shared__（addrspace(3)，展平 [total x T]）；body 每个线程
+// 执行一次，kernel.bx/tx/gid 定位协作职责，kernel.sync()（bar.sync 0）控制阶段。
+// grid(nb) 指定块数（默认 1），block 固定 256。CPU 回退 = 单线程执行（降级）。
+void CodeGen::generateGpuTile(const GpuTileStmt& s) {
+#ifdef MYP_ENABLE_GPU
+    analyzeGpuTileCapturedVars(s);
+
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_tile", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+
+    // 共享数组：addrspace(3) 展平数组 [total x T]
+    int64_t total = 1;
+    for (auto d : s.dim_vals) total *= d;
+    llvm::Type* elem_llvm = getLLVMType(s.elem_type_info);
+    llvm::Type* shared_ty = llvm::ArrayType::get(elem_llvm, (uint64_t)total);
+    auto* shared_gv = new llvm::GlobalVariable(*ptx_mod, shared_ty, false,
+        llvm::GlobalValue::InternalLinkage,
+        llvm::ConstantAggregateZero::get(shared_ty), "smem", nullptr,
+        llvm::GlobalValue::NotThreadLocal, 3 /* addrspace(3) = __shared__ */);
+
+    // kernel 签名：仅捕获变量（tile 无循环上界 n）
+    std::vector<llvm::Type*> kernel_param_types;
+    for (auto& ka : kernel_args_) kernel_param_types.push_back(ka.type);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                        kernel_param_types, false);
+    auto* kernel_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                               "myp_kernel", ptx_mod.get());
+    kernel_func->setCallingConv(llvm::CallingConv::PTX_Kernel);
+
+    std::map<std::string, llvm::Value*> kernel_vars_map;
+    std::vector<llvm::Value*> kernel_arg_values;
+    int arg_idx = 0;
+    for (auto& ka : kernel_args_) {
+        auto* arg = kernel_func->getArg(arg_idx++);
+        arg->setName(ka.name);
+        kernel_vars_map[ka.name] = arg;
+        kernel_arg_values.push_back(arg);
+    }
+
+    // kernel body：tid = blockIdx.x*blockDim.x + threadIdx.x
+    auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);
+    llvm::IRBuilder<> kb(entry_bb);
+    auto* tid_x = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "tid_x");
+    auto* ntid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+        i64_ty, false, "ctaid");
+    auto* tid_val = kb.CreateAdd(kb.CreateMul(ctaid, ntid, "bid_off"), tid_x, "tid");
+
+    // §3.1 kernel 上下文（tile 内）：gid=bx*256+tx、bx=ctaid.x、tx=tid.x、
+    // bd=ntid.x、gx=grid 块数。
+    gpu_ctx_tid_x_ = tid_x;
+    gpu_ctx_ntid_ = ntid;
+    gpu_ctx_ctaid_ = ctaid;
+    gpu_ctx_tid_ = tid_val;
+    gpu_ctx_n_arg_ = llvm::ConstantInt::get(i64_ty, s.grid_val);
+
+    kernel_vars_map[s.name] = shared_gv;
+    gpu_shared_arrays_[s.name] = elem_llvm;
+
+    gpu_kernel_mode_ = true;
+    gpu_math_unsupported_ = false;
+    gpu_math_used_ = false;
+    if (s.body) emitKernelStmt(*s.body, kb, kernel_vars_map, kernel_arg_values,
+                               "", tid_val);
+    gpu_kernel_mode_ = false;
+    gpu_shared_arrays_.clear();
+    if (!kb.GetInsertBlock()->getTerminator()) kb.CreateRetVoid();
+
+    // ---- NVPTX 目标 + 校验 + PTX 生成（O2 内核优化）----
+    std::string ts = "nvptx64-nvidia-cuda";
+    std::string err;
+    static bool nvptx_initialized = false;
+    if (!nvptx_initialized) {
+        LLVMInitializeNVPTXTargetInfo();
+        LLVMInitializeNVPTXTarget();
+        LLVMInitializeNVPTXTargetMC();
+        LLVMInitializeNVPTXAsmPrinter();
+        nvptx_initialized = true;
+    }
+    auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
+    auto* tm = tgt ? tgt->createTargetMachine(
+        llvm::Triple(ts), "", "", llvm::TargetOptions{}, llvm::Reloc::PIC_)
+                   : nullptr;
+    if (!tm) {
+        diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
+        // 无 PTX → 单线程 CPU 回退（下方共用）
+    }
+    if (tm) ptx_mod->setDataLayout(tm->createDataLayout());
+
+    std::string verify_err;
+    llvm::raw_string_ostream verify_os(verify_err);
+    bool mod_ok = tm && !llvm::verifyModule(*ptx_mod, &verify_os);
+    if (tm && !mod_ok) {
+        diag_.warn(SourceRange{}, "GPU kernel verification failed: " + verify_err);
+        delete tm; tm = nullptr;
+    }
+    if (mod_ok && gpu_math_used_ && !linkGpuLibdevice(ptx_mod.get(), &diag_)) {
+        diag_.warn(s.range,
+            "'@gpu tile' uses libdevice math but libdevice.10.bc was not found; "
+            "running single-threaded on CPU");
+        delete tm; tm = nullptr;
+    }
+
+    std::string ptx_str;
+    if (tm) {
+        unsigned kopt = 2;
+        if (const char* env = getenv("MYP_GPU_KERNEL_OPT")) {
+            std::string want(env);
+            if (want == "O0") kopt = 0;
+            else if (want == "O1") kopt = 1;
+            else if (want == "O2") kopt = 2;
+            else if (want == "O3") kopt = 3;
+        }
+        tm->setOptLevel(kopt >= 3 ? llvm::CodeGenOptLevel::Aggressive :
+                       kopt == 2 ? llvm::CodeGenOptLevel::Default :
+                       kopt == 1 ? llvm::CodeGenOptLevel::Less :
+                                   llvm::CodeGenOptLevel::None);
+        if (kopt > 0) {
+            llvm::OptimizationLevel OL =
+                kopt >= 3 ? llvm::OptimizationLevel::O3 :
+                kopt == 2 ? llvm::OptimizationLevel::O2 :
+                            llvm::OptimizationLevel::O1;
+            llvm::LoopAnalysisManager LAM;
+            llvm::FunctionAnalysisManager FAM;
+            llvm::CGSCCAnalysisManager CGAM;
+            llvm::ModuleAnalysisManager MAM;
+            llvm::PassBuilder PB(tm);
+            PB.registerModuleAnalyses(MAM);
+            PB.registerCGSCCAnalyses(CGAM);
+            PB.registerFunctionAnalyses(FAM);
+            PB.registerLoopAnalyses(LAM);
+            PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+            llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OL);
+            MPM.addPass(llvm::VerifierPass());
+            MPM.run(*ptx_mod, MAM);
+        }
+        llvm::legacy::PassManager pm;
+        llvm::SmallString<16384> ptx_buf;
+        llvm::raw_svector_ostream ptx_os(ptx_buf);
+        if (tm->addPassesToEmitFile(pm, ptx_os, nullptr,
+                                    llvm::CodeGenFileType::AssemblyFile)) {
+            diag_.warn(SourceRange{}, "NVPTX cannot emit PTX");
+        } else {
+            pm.run(*ptx_mod);
+            ptx_str = std::string(ptx_buf.data(), ptx_buf.size());
+        }
+        delete tm;
+    }
+
+    // 无可用 PTX → 直接单线程 CPU 执行（降级）
+    if (ptx_str.empty()) {
+        diag_.warn(s.range, "'@gpu tile' running single-threaded on CPU (no PTX)");
+        generateGpuTileCpuFallback(s);
+        return;
+    }
+
+    // Embed PTX as a global string constant in the main module
+    auto* ptx_global = builder_.CreateGlobalString(ptx_str, "__myp_ptx_kernel");
+
+    // ---- Generate GPU launch + CPU fallback at the call site ----
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch", func);
+    auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "gpu_cpu_fallback", func);
+
+    auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+    auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok,
+        llvm::ConstantInt::get(i32_ty, 0), "gpu_ok_cmp");
+    builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
+
+    // === GPU path ===
+    builder_.SetInsertPoint(gpu_bb);
+    auto* kernel_ctx = builder_.CreateCall(runtime_gpu_load_kernel_,
+        {ptx_global, builder_.CreateGlobalString("myp_kernel", "kn")}, "kernel_ctx");
+    auto* kernel_ok = builder_.CreateICmpNE(kernel_ctx,
+        llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)), "k_ok");
+    auto* launch_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch_run", func);
+    auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
+    builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
+
+    builder_.SetInsertPoint(launch_bb);
+    auto* grid_i32 = llvm::ConstantInt::get(i32_ty, s.grid_val);
+    auto* block_i32 = llvm::ConstantInt::get(i32_ty, 256);
+
+    // ---- Data transfer for captured arrays ----
+    struct ArrayAlloc {
+        llvm::Value* gpu_ptr;
+        llvm::Value* host_ptr;
+        llvm::Value* byte_size;
+        bool needs_copyback;
+        std::string name;
+    };
+    std::vector<ArrayAlloc> array_allocs;
+
+    for (auto& ka : kernel_args_) {
+        if (!ka.is_array) continue;
+        llvm::Value* host_ptr = nullptr;
+        llvm::Value* byte_size = nullptr;
+        auto* nv = getNamedValue(ka.name);
+        if (nv) {
+            auto* loaded = builder_.CreateLoad(ptr_ty, nv, ka.name);
+            host_ptr = loaded;
+            auto bsit = array_byte_sizes_.find(ka.name);
+            bool bs_valid = false;
+            if (bsit != array_byte_sizes_.end())
+                bs_valid = (bsit->second.first == func);
+            if (bs_valid) {
+                byte_size = bsit->second.second;
+            } else {
+                auto eit = array_elem_types_.find(ka.name);
+                uint64_t elem_sz = 8;
+                if (eit != array_elem_types_.end()) {
+                    if (eit->second->isDoubleTy()) elem_sz = 8;
+                    else if (eit->second->isFloatTy()) elem_sz = 4;
+                    else if (eit->second->isIntegerTy(32)) elem_sz = 4;
+                }
+                auto* i8_ty = llvm::Type::getInt8Ty(ctx_);
+                auto* hdr = builder_.CreateGEP(i8_ty, loaded,
+                    llvm::ConstantInt::get(i64_ty, -(int64_t)24), ka.name + "_hdr");
+                auto* cnt_ptr = builder_.CreateBitCast(hdr, llvm::PointerType::get(i64_ty, 0));
+                auto* cnt = builder_.CreateLoad(i64_ty, cnt_ptr, ka.name + "_cnt");
+                byte_size = builder_.CreateMul(cnt, llvm::ConstantInt::get(i64_ty, elem_sz),
+                                               ka.name + "_sz");
+            }
+        }
+        if (host_ptr && byte_size) {
+            auto* gpu_ptr = builder_.CreateCall(runtime_gpu_alloc_, {byte_size},
+                                                 ka.name + "_gpu");
+            builder_.CreateCall(runtime_gpu_to_device_, {gpu_ptr, host_ptr, byte_size});
+            array_allocs.push_back({gpu_ptr, host_ptr, byte_size, true, ka.name});
+        }
+    }
+
+    // ---- Build kernel launch args ----
+    int total_args = (int)kernel_args_.size();
+    auto* args_arr = builder_.CreateAlloca(ptr_ty,
+        llvm::ConstantInt::get(i32_ty, total_args), "gpu_args");
+    std::map<std::string, llvm::Value*> gpu_ptr_map;
+    for (auto& aa : array_allocs) gpu_ptr_map[aa.name] = aa.gpu_ptr;
+
+    int arg_pos = 0;
+    for (auto& ka : kernel_args_) {
+        llvm::Value* store_val = nullptr;
+        if (ka.is_array) {
+            auto gpit = gpu_ptr_map.find(ka.name);
+            if (gpit != gpu_ptr_map.end()) {
+                auto* tmp = builder_.CreateAlloca(ptr_ty);
+                builder_.CreateStore(gpit->second, tmp);
+                store_val = tmp;
+            }
+        } else {
+            auto* nv = getNamedValue(ka.name);
+            if (nv) {
+                auto* val = builder_.CreateLoad(ka.type, nv, ka.name);
+                auto* tmp = builder_.CreateAlloca(ka.type);
+                builder_.CreateStore(val, tmp);
+                store_val = tmp;
+            }
+        }
+        if (!store_val) {
+            auto* tmp = builder_.CreateAlloca(ka.type);
+            builder_.CreateStore(llvm::ConstantInt::get(i64_ty, 0), tmp);
+            store_val = tmp;
+        }
+        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty, arg_pos) };
+        auto* ap = builder_.CreateGEP(ptr_ty, args_arr, idxs);
+        builder_.CreateStore(builder_.CreateBitCast(store_val, ptr_ty), ap);
+        arg_pos++;
+    }
+
+    // Launch kernel
+    builder_.CreateCall(runtime_gpu_launch_,
+        {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty),
+         llvm::ConstantInt::get(i32_ty, total_args)});
+
+    // ---- Copy back results ----
+    for (auto& aa : array_allocs) {
+        if (aa.needs_copyback)
+            builder_.CreateCall(runtime_gpu_to_host_,
+                {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+        builder_.CreateCall(runtime_gpu_free_, {aa.gpu_ptr});
+    }
+    builder_.CreateCall(runtime_gpu_destroy_kernel_, {kernel_ctx});
+    builder_.CreateBr(gpu_done_bb);
+
+    // === CPU fallback（单线程降级）===
+    builder_.SetInsertPoint(cpu_bb);
+    generateGpuTileCpuFallback(s);
+    builder_.CreateBr(gpu_done_bb);
+
+    builder_.SetInsertPoint(gpu_done_bb);
+
+#ifdef MYP_CUDA_ENABLED
+    cuda_enabled_ = true;
+#endif
+
+    diag_.warn(s.range, "'@gpu tile' PTX kernel generated (" +
+               std::to_string(ptx_str.size()) + " bytes)");
+#else
+    (void)s;
+    diag_.warn(s.range, "'@gpu tile' GPU offload not built (MYP_ENABLE_GPU=OFF); "
+               "running single-threaded on CPU");
+    generateGpuTileCpuFallback(s);
+#endif
+}
+
+// §3.2 CPU 回退（降级）：单线程执行 @gpu tile body。共享数组用 host 栈数组，
+// kernel.bx/tx/gid=0（无协作）、bd=256、gx=grid 块数、kernel.sync() 空操作。
+void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
+    diag_.warn(s.range, "'@gpu tile' GPU fallback — single-threaded CPU execution");
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    int64_t total = 1;
+    for (auto d : s.dim_vals) total *= d;
+    llvm::Type* elem_llvm = getLLVMType(s.elem_type_info);
+    // 共享数组用"指针变量"表示（同 `long[] data`）：存储区 [total x T] + 存
+    // 元素指针的变量，使 body 里 smem[i] 走标准数组 GEP/load/store 路径。
+    auto* storage = builder_.CreateAlloca(elem_llvm,
+        llvm::ConstantInt::get(i64_ty, total), s.name + "_stor");
+    auto* st_ptr = builder_.CreateBitCast(storage,
+        llvm::PointerType::get(elem_llvm, 0), s.name + "_p");
+    auto* pv = builder_.CreateAlloca(ptr_ty, nullptr, s.name);
+    builder_.CreateStore(st_ptr, pv);
+    named_values_.emplace_back();
+    named_values_.back()[s.name] = pv;
+    array_elem_types_[s.name] = elem_llvm;
+    gpu_cpu_fallback_ = true;
+    gpu_cpu_loop_var_.clear();
+    gpu_cpu_bound_ = llvm::ConstantInt::get(i64_ty, s.grid_val);
+    if (s.body) generateStmt(*s.body);
+    gpu_cpu_fallback_ = false;
+    gpu_cpu_bound_ = nullptr;
+    named_values_.pop_back();
+}
+
 static std::string findLibDevicePath() {
     const char* env = getenv("MYP_CUDA_LIBDEVICE");
     if (env && *env) {
@@ -1910,6 +2351,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Compile loop body into kernel
     kb.SetInsertPoint(body_bb);
     gpu_for_stmt_ = &s;  // Mark GPU kernel mode (affects emitKernelExpr)
+    gpu_kernel_mode_ = true;
     gpu_math_unsupported_ = false;
     gpu_math_used_ = false;
     if (s.body) {
@@ -1917,6 +2359,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
                        loop_var, tid_val);
     }
     gpu_for_stmt_ = nullptr;
+    gpu_kernel_mode_ = false;
     if (gpu_math_unsupported_) {
         // Kernel uses transcendental math (sin/cos/tan/exp/log/pow) which needs
         // CUDA libdevice — the runtime doesn't link libdevice, so fall back to CPU.

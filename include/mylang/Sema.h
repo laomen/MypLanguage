@@ -49,6 +49,8 @@ private:
     StmtResult visitWhileStmt(WhileStmt& stmt);
     StmtResult visitForStmt(ForStmt& stmt);
     StmtResult visitForInStmt(ForInStmt& stmt);
+    // §3.2 @gpu tile（共享内存协作 kernel）：校验维度/上限/grid，声明共享数组。
+    StmtResult visitGpuTileStmt(GpuTileStmt& stmt);
     // §四-2 × 泛型：ForInStmt 注解逻辑（正常访问 + 单态化重注解共用）。
     bool annotateForInStmt(ForInStmt& stmt, const TypeInfo& it_type);
     void annotateForInsInStmt(Stmt& s, const std::vector<ParamDecl>& params);

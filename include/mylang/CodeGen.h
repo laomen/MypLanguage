@@ -460,6 +460,9 @@ private:
     };
     std::vector<KernelArgInfo> kernel_args_;
     const ForStmt* gpu_for_stmt_ = nullptr;
+    // 是否正在编译 GPU kernel body（@gpu for / @gpu tile）。emitKernelExpr 用
+    // 它判断是否走 libdevice 数学/内核语义；@gpu tile 的 body 无 ForStmt。
+    bool gpu_kernel_mode_ = false;
     // Set when the GPU kernel body uses a math function that requires CUDA
     // libdevice (sin/cos/tan/exp/log/pow). The runtime does not link libdevice,
     // so such kernels must fall back to CPU.
@@ -483,6 +486,9 @@ private:
     bool gpu_cpu_fallback_ = false;
     std::string gpu_cpu_loop_var_;
     llvm::Value* gpu_cpu_bound_ = nullptr;
+    // §3.2 当前 @gpu tile 的共享数组：名字 → 元素 LLVM 类型（emitKernelExpr
+    // Subscript 用它确定 GEP/load 的元素类型；名字不进入捕获参数）。
+    std::map<std::string, llvm::Type*> gpu_shared_arrays_;
 
     // AST walk helpers for GPU kernel body compilation
     void collectExprIdentifiers(const Expr& expr, std::set<std::string>& out,
@@ -490,6 +496,11 @@ private:
     void collectStmtIdentifiers(const Stmt& stmt, std::set<std::string>& out,
                                 std::set<std::string>& loop_decls) const;
     void analyzeGpuCapturedVars(const ForStmt& stmt, const std::string& loop_var);
+    void analyzeGpuTileCapturedVars(const GpuTileStmt& stmt);
+    // §3.2 @gpu tile：共享内存协作 kernel（PTX + launch + CPU 回退）
+    void generateGpuTile(const GpuTileStmt& stmt);
+    // §3.2 @gpu tile CPU 回退（降级）：单线程执行 body，共享数组 = host 栈数组
+    void generateGpuTileCpuFallback(const GpuTileStmt& stmt);
 
     // Kernel body codegen (uses kb on PTX module)
     llvm::Value* emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,

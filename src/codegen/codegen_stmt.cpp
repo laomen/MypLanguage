@@ -55,6 +55,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::WhileStmt: generateWhileStmt(static_cast<const WhileStmt&>(s)); break;
         case StmtKind::ForStmt: generateForStmt(static_cast<const ForStmt&>(s)); break;
         case StmtKind::ForInStmt: generateForInStmt(static_cast<const ForInStmt&>(s)); break;
+        case StmtKind::GpuTileStmt: generateGpuTile(static_cast<const GpuTileStmt&>(s)); break;
         case StmtKind::ReturnStmt: generateReturnStmt(static_cast<const ReturnStmt&>(s)); break;
         case StmtKind::BreakStmt:   generateBreakStmt(static_cast<const BreakStmt&>(s)); break;
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;
