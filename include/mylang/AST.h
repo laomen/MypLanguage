@@ -342,8 +342,9 @@ struct IntegerLiteralExpr : Expr {
     int64_t value;
     bool is_long;      // L suffix: 42L → long
     bool is_unsigned;  // u suffix: 42u / 0xFFu → uint/ulong（无符号字面量）
-    IntegerLiteralExpr(int64_t v, SourceRange r, bool l = false, bool u = false)
-        : Expr(ExprKind::IntegerLiteral, r), value(v), is_long(l), is_unsigned(u) {}
+    bool is_char;      // 字符字面量 'A' → char（u8 语义，§4.1）
+    IntegerLiteralExpr(int64_t v, SourceRange r, bool l = false, bool u = false, bool ch = false)
+        : Expr(ExprKind::IntegerLiteral, r), value(v), is_long(l), is_unsigned(u), is_char(ch) {}
 };
 
 struct FloatLiteralExpr : Expr {

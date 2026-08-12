@@ -15,7 +15,7 @@ long crc32(int n, int seed) {
     uint[] table = new uint[256];
     i = 0;
     while (i < 256) {
-        uint c = i;
+        uint c = uint(i);
         int k = 0;
         while (k < 8) {
             if ((c & 1u) != 0u) c = 0xEDB88320u ^ (c >> 1);

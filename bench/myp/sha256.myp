@@ -19,7 +19,7 @@ long sha256(int msglen, int seed) {
     int i = 0;
     while (i < msglen) {
         rng = (rng * 1103515245L + 12345L) % 2147483648L;
-        msg[i] = (rng >> 16) & 0xFFL;   // long→uint 截断（值 0..255）
+        msg[i] = uint((rng >> 16) & 0xFFL);   // long→uint 显式（值 0..255）
         i = i + 1;
     }
     // 填充：0x80 + 零 + 8 字节长度（bit 数）
@@ -39,14 +39,14 @@ long sha256(int msglen, int seed) {
         i = i + 1;
     }
     long bitlen = msglen * 8L;
-    data[total - 8] = (bitlen >> 56) & 0xFFL;
-    data[total - 7] = (bitlen >> 48) & 0xFFL;
-    data[total - 6] = (bitlen >> 40) & 0xFFL;
-    data[total - 5] = (bitlen >> 32) & 0xFFL;
-    data[total - 4] = (bitlen >> 24) & 0xFFL;
-    data[total - 3] = (bitlen >> 16) & 0xFFL;
-    data[total - 2] = (bitlen >> 8) & 0xFFL;
-    data[total - 1] = bitlen & 0xFFL;
+    data[total - 8] = uint((bitlen >> 56) & 0xFFL);
+    data[total - 7] = uint((bitlen >> 48) & 0xFFL);
+    data[total - 6] = uint((bitlen >> 40) & 0xFFL);
+    data[total - 5] = uint((bitlen >> 32) & 0xFFL);
+    data[total - 4] = uint((bitlen >> 24) & 0xFFL);
+    data[total - 3] = uint((bitlen >> 16) & 0xFFL);
+    data[total - 2] = uint((bitlen >> 8) & 0xFFL);
+    data[total - 1] = uint(bitlen & 0xFFL);
 
     // K 常量（64）与 H 初值（8）
     uint[] K = new uint[64];

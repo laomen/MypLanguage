@@ -179,6 +179,8 @@ TypeInfo Sema::visitTryExpr(TryExpr& expr) {
 
 TypeInfo Sema::visitIntegerLiteral(IntegerLiteralExpr& expr) {
     auto val = expr.value;
+    // 字符字面量 'A' → char（u8 语义，§4.1）
+    if (expr.is_char) return TypeInfo(TypeKind::Char);
     // u suffix → 无符号：按值定宽（同有符号字面量：小值→ubyte/ushort，大→uint/ulong）
     if (expr.is_unsigned) {
         if (val >= 0 && val <= 0xFF) return TypeInfo(TypeKind::UByte);
@@ -2384,40 +2386,40 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
     }
     if (rhs.kind == TypeKind::Null && lhs.kind == TypeKind::Class) return true;
 
+    // P1（docs/type_system_design §3.2 隐式转换格）：无损/同符号拓宽才隐式。
+    // 移除：char↔byte 互换（char=u8，§4.1）、Int→UInt/Long→UInt、Int→Float/Long→Float、
+    //       i64/u64→f64（2026-08-12 决定：i8/i16/i32 与 u8/u16/u32→f64 精确保留隐式）。
+    // 保留：同符号整型拓宽（SExt/ZExt）、i8/i16/i32→f64、u8/u16/u32→f64、f32→f64、
+    //       无损跨符号小整型→大整型（UByte→Int/Long 等值域内可全表示）。
     auto promotes = [](TypeKind from, TypeKind to) -> bool {
         if (from == to) return true;
-        // char and byte are interchangeable
-        if ((from == TypeKind::Char && to == TypeKind::Byte) ||
-            (from == TypeKind::Byte && to == TypeKind::Char))
-            return true;
         switch (from) {
-            case TypeKind::Byte:
-            case TypeKind::Char:
-                return to == TypeKind::Short || to == TypeKind::Int || to == TypeKind::Long ||
-                       to == TypeKind::Float || to == TypeKind::Double ||
-                       to == TypeKind::UInt;   // uint32: 字面量/小值 → uint（非负，位保持）
-            case TypeKind::Short:
-                return to == TypeKind::Int || to == TypeKind::Long ||
-                       to == TypeKind::Float || to == TypeKind::Double ||
-                       to == TypeKind::UInt;
-            case TypeKind::Int:
-                return to == TypeKind::Long || to == TypeKind::Float || to == TypeKind::Double ||
-                       to == TypeKind::UInt;
-            case TypeKind::Long:
-                return to == TypeKind::Float || to == TypeKind::Double ||
-                       to == TypeKind::UInt;   // uint32: long→uint 隐式截断（C 语义，codegen trunc）
-            case TypeKind::Float:
+            case TypeKind::Byte:   // i8：同符号拓宽 + f64（f32/uint 显式）
+                return to == TypeKind::Short || to == TypeKind::Int ||
+                       to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::Char:   // char = u8 语义（§4.1）：u8 族 + i32/i64/f64（ZExt）
+                return to == TypeKind::UByte || to == TypeKind::UShort ||
+                       to == TypeKind::UInt || to == TypeKind::ULong ||
+                       to == TypeKind::Int || to == TypeKind::Long ||
+                       to == TypeKind::Double;
+            case TypeKind::Short:  // i16
+                return to == TypeKind::Int || to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::Int:    // i32（Int→Float/UInt 显式）
+                return to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::Long:   // i64：f64 改显式（决定）
+                return false;
+            case TypeKind::Float:  // f32
                 return to == TypeKind::Double;
-            // uint32 族拓宽（codegen 用 ZExt 加宽，见 generateCallImpl/generateVarDecl）：
-            case TypeKind::UByte:
-                return to == TypeKind::UShort || to == TypeKind::Int ||
-                       to == TypeKind::Long || to == TypeKind::UInt || to == TypeKind::ULong;
-            case TypeKind::UShort:
-                return to == TypeKind::Int || to == TypeKind::Long ||
-                       to == TypeKind::UInt || to == TypeKind::ULong;
-            case TypeKind::UInt:
-                return to == TypeKind::Long || to == TypeKind::ULong;
-            case TypeKind::ULong:
+            case TypeKind::UByte:  // u8
+                return to == TypeKind::UShort || to == TypeKind::UInt ||
+                       to == TypeKind::ULong || to == TypeKind::Int ||
+                       to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::UShort: // u16
+                return to == TypeKind::UInt || to == TypeKind::ULong ||
+                       to == TypeKind::Int || to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::UInt:   // u32
+                return to == TypeKind::ULong || to == TypeKind::Long || to == TypeKind::Double;
+            case TypeKind::ULong:  // u64：无隐式（f64 改显式）
                 return false;
             default: return false;
         }

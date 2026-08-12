@@ -2,8 +2,8 @@
 import test;
 
 @test void test_float_type() {
-    // float 可声明并使用（函数返回等）
-    float a = 0;
+    // float 可声明并使用（函数返回等）；int→f32 隐式已移除（§3.2），用 0.0f 字面量
+    float a = 0.0f;
     Test.assert(true, "float_exists");
     Test.report("test_float_type", true);
 }

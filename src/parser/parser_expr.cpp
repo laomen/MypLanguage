@@ -28,7 +28,8 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
     switch (e.kind) {
         case ExprKind::IntegerLiteral: {
             auto& v = static_cast<const IntegerLiteralExpr&>(e);
-            return std::make_unique<IntegerLiteralExpr>(v.value, v.range);
+            return std::make_unique<IntegerLiteralExpr>(v.value, v.range,
+                v.is_long, v.is_unsigned, v.is_char);
         }
         case ExprKind::FloatLiteral: {
             auto& v = static_cast<const FloatLiteralExpr&>(e);
@@ -624,7 +625,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     if (match(TokenKind::CharLiteral)) {
         // char literal value is a single-character string
         int64_t val = previous().value.empty() ? 0 : (int64_t)(unsigned char)previous().value[0];
-        return std::make_unique<IntegerLiteralExpr>(val, previous().range);
+        return std::make_unique<IntegerLiteralExpr>(val, previous().range, false, false, true);
     }
     if (match(TokenKind::NullLiteral) || match(TokenKind::Keyword_null)) {
         return std::make_unique<NullLiteralExpr>(previous().range);
