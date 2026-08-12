@@ -503,29 +503,67 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 // generateGpuKernel links NVIDIA's libdevice.10.bc bitcode into the
                 // kernel module at compile time, so __nv_sin/__nv_cos/__nv_exp/...
                 // are resolved and the emitted PTX is fully self-contained.
+                // §6.3 统一数学：LLVM intrinsic 化——把 __nv_* libdevice 调用改为
+                // llvm.* intrinsic（NVPTX/AMDGPU 均原生下降，摆脱厂商数学库）。
+                auto nvMathIntrinsic = [](const std::string& nv) -> llvm::Intrinsic::ID {
+                    if (nv == "__nv_sqrt")  return llvm::Intrinsic::sqrt;
+                    if (nv == "__nv_sin")   return llvm::Intrinsic::sin;
+                    if (nv == "__nv_cos")   return llvm::Intrinsic::cos;
+                    if (nv == "__nv_tan")   return llvm::Intrinsic::tan;
+                    if (nv == "__nv_exp")   return llvm::Intrinsic::exp;
+                    if (nv == "__nv_log")   return llvm::Intrinsic::log;
+                    if (nv == "__nv_fabs")  return llvm::Intrinsic::fabs;
+                    if (nv == "__nv_floor") return llvm::Intrinsic::floor;
+                    if (nv == "__nv_ceil")  return llvm::Intrinsic::ceil;
+                    if (nv == "__nv_trunc") return llvm::Intrinsic::trunc;
+                    if (nv == "__nv_asin")  return llvm::Intrinsic::asin;
+                    if (nv == "__nv_acos")  return llvm::Intrinsic::acos;
+                    if (nv == "__nv_atan")  return llvm::Intrinsic::atan;
+                    if (nv == "__nv_sinh")  return llvm::Intrinsic::sinh;
+                    if (nv == "__nv_cosh")  return llvm::Intrinsic::cosh;
+                    if (nv == "__nv_tanh")  return llvm::Intrinsic::tanh;
+                    if (nv == "__nv_pow")   return llvm::Intrinsic::pow;
+                    if (nv == "__nv_atan2") return llvm::Intrinsic::atan2;
+                    return llvm::Intrinsic::not_intrinsic;
+                };
                 auto emit_math_gpu = [&](const char* nv) -> llvm::Value* {
                     if (e.args.size() < 1) return nullptr;
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
-                    gpu_math_used_ = true;
-                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                    // §9.5 GPU：按实参类型选 libdevice 变体——float 实参走
-                    // __nv_xf（float 版，返回 float），double 走 __nv_x；整型
-                    // abs 内联 select（返回同宽整型，与 Math.abs<T:Numeric> 的
-                    // int 实例返回类型匹配），其余整型实数提升 f64。
-                    std::string fname = nv;
-                    llvm::Type* arg_ty = double_ty;
-                    if (a->getType()->isFloatTy()) {
-                        arg_ty = float_ty;
-                        if (fname.back() != 'f') fname += 'f';
-                    } else if (a->getType()->isIntegerTy()) {
-                        if (fname == "__nv_fabs") {
+                    std::string nvname = nv;
+                    // §9.5 整型 abs 内联 select（返回同宽整型）；其余整型提升 f64
+                    if (a->getType()->isIntegerTy()) {
+                        if (nvname == "__nv_fabs") {
                             auto* zero = llvm::ConstantInt::get(a->getType(), 0);
                             auto* neg = kb.CreateSub(zero, a);
                             auto* isneg = kb.CreateICmpSLT(a, zero);
                             return kb.CreateSelect(isneg, neg, a);
                         }
+                        a = kb.CreateSIToFP(a, double_ty);
+                    }
+                    // §6.3：NVPTX 有原生指令的数学（sqrt/fabs/floor/ceil/trunc）
+                    // 用 LLVM intrinsic——直接降为指令，无需 libdevice；其余超越
+                    // （sin/cos/tan/exp/log/asin/...）NVPTX 无指令，llvm.* 会降为
+                    // flog/fexp 等 libcall（libdevice 只提供 __nv_*，无此名），
+                    // 故仍走 __nv_* + libdevice。跨厂商时超越侧换 AMDGPU ocml 即可。
+                    if (a->getType()->isFloatingPointTy()) {
+                        bool native = (nvname == "__nv_sqrt" || nvname == "__nv_fabs" ||
+                                       nvname == "__nv_floor" || nvname == "__nv_ceil" ||
+                                       nvname == "__nv_trunc");
+                        llvm::Intrinsic::ID id = nvMathIntrinsic(nvname);
+                        if (native && id != llvm::Intrinsic::not_intrinsic)
+                            return kb.CreateIntrinsic(id, {a->getType()}, {a});
+                    }
+                    // 超越 → __nv_* + libdevice
+                    gpu_math_used_ = true;
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    std::string fname = nvname;
+                    llvm::Type* arg_ty = double_ty;
+                    if (a->getType()->isFloatTy()) {
+                        arg_ty = float_ty;
+                        if (fname.back() != 'f') fname += 'f';
+                    } else if (a->getType()->isIntegerTy()) {
                         a = kb.CreateSIToFP(a, double_ty);
                     }
                     auto* fn = cur_mod->getFunction(fname);
@@ -542,9 +580,9 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
+                    // 超越（pow）→ __nv_powf/__nv_pow + libdevice
                     gpu_math_used_ = true;
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                    // §9.5：双 float → __nv_powf；否则提升 f64 → __nv_pow
                     if (a->getType()->isFloatTy() && b->getType()->isFloatTy()) {
                         auto* fn = cur_mod->getFunction("__nv_powf");
                         if (!fn)
@@ -564,7 +602,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             llvm::Function::ExternalLinkage, "__nv_pow", cur_mod);
                     return kb.CreateCall(fn, {a, b});
                 };
-                // Generic 2-argument GPU math (atan2)
+                // §6.3 统一数学：2 参数（atan2）→ llvm.atan2（f32/f64 按实参自动选）
                 auto emit_math_gpu_2 = [&](const char* nv) -> llvm::Value* {
                     if (e.args.size() < 2) return nullptr;
                     auto* a = emitKernelExpr(*e.args[0], kb, kernel_vars,
@@ -572,9 +610,10 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     auto* b = emitKernelExpr(*e.args[1], kb, kernel_vars,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
+                    (void)nv;
+                    // 超越（atan2）→ __nv_atan2f/__nv_atan2 + libdevice
                     gpu_math_used_ = true;
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                    // §9.5：双 float → __nv_atan2f；否则提升 f64 → __nv_atan2
                     if (a->getType()->isFloatTy() && b->getType()->isFloatTy()) {
                         auto* fn = cur_mod->getFunction("__nv_atan2f");
                         if (!fn)
@@ -587,11 +626,11 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     if (!b->getType()->isDoubleTy() && b->getType()->isIntegerTy()) b = kb.CreateSIToFP(b, double_ty);
                     if (a->getType()->isFloatTy()) a = kb.CreateFPExt(a, double_ty);
                     if (b->getType()->isFloatTy()) b = kb.CreateFPExt(b, double_ty);
-                    auto* fn = cur_mod->getFunction(nv);
+                    auto* fn = cur_mod->getFunction("__nv_atan2");
                     if (!fn)
                         fn = llvm::Function::Create(
                             llvm::FunctionType::get(double_ty, {double_ty, double_ty}, false),
-                            llvm::Function::ExternalLinkage, nv, cur_mod);
+                            llvm::Function::ExternalLinkage, "__nv_atan2", cur_mod);
                     return kb.CreateCall(fn, {a, b});
                 };
                 // Math functions
