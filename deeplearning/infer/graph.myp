@@ -637,10 +637,19 @@ class Graph {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     int is5 = shR5_[a];
                     if (is5 == 1) {
-                        int pc = readI64Init(nIn1_[i], 10);
+                        int pc = i64Count(nIn1_[i]);
+                        int fromPool = 0;
+                        if (pc >= 10) fromPool = 1;
+                        else { pc = readI64Init(nIn1_[i], 10); }
                         if (pc < 10) return 0;
-                        int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int pdB = int(i64TmpL_[2]); int phB = int(i64TmpL_[3]); int pwB = int(i64TmpL_[4]);
-                        int pnE = int(i64TmpL_[5]); int pcE = int(i64TmpL_[6]); int pdE = int(i64TmpL_[7]); int phE = int(i64TmpL_[8]); int pwE = int(i64TmpL_[9]);
+                        int pnB, pcB, pdB, phB, pwB, pnE, pcE, pdE, phE, pwE;
+                        if (fromPool == 1) {
+                            pnB = int(i64Get(nIn1_[i], 0)); pcB = int(i64Get(nIn1_[i], 1)); pdB = int(i64Get(nIn1_[i], 2)); phB = int(i64Get(nIn1_[i], 3)); pwB = int(i64Get(nIn1_[i], 4));
+                            pnE = int(i64Get(nIn1_[i], 5)); pcE = int(i64Get(nIn1_[i], 6)); pdE = int(i64Get(nIn1_[i], 7)); phE = int(i64Get(nIn1_[i], 8)); pwE = int(i64Get(nIn1_[i], 9));
+                        } else {
+                            pnB = int(i64TmpL_[0]); pcB = int(i64TmpL_[1]); pdB = int(i64TmpL_[2]); phB = int(i64TmpL_[3]); pwB = int(i64TmpL_[4]);
+                            pnE = int(i64TmpL_[5]); pcE = int(i64TmpL_[6]); pdE = int(i64TmpL_[7]); phE = int(i64TmpL_[8]); pwE = int(i64TmpL_[9]);
+                        }
                         nPadB5_[i * 5 + 0] = pnB; nPadB5_[i * 5 + 1] = pcB; nPadB5_[i * 5 + 2] = pdB; nPadB5_[i * 5 + 3] = phB; nPadB5_[i * 5 + 4] = pwB;
                         nPadE5_[i * 5 + 0] = pnE; nPadE5_[i * 5 + 1] = pcE; nPadE5_[i * 5 + 2] = pdE; nPadE5_[i * 5 + 3] = phE; nPadE5_[i * 5 + 4] = pwE;
                         double cv = 0.0;
@@ -649,10 +658,19 @@ class Graph {
                         addShapeD5(nOut0_[i], shD0_[a] + pnB + pnE, shD1_[a] + pcB + pcE,
                                    shD2_[a] + pdB + pdE, shD3_[a] + phB + phE, shD4_[a] + pwB + pwE);
                     } else {
-                        int pc = readI64Init(nIn1_[i], 8);
+                        int pc = i64Count(nIn1_[i]);
+                        int fromPool = 0;
+                        if (pc >= 8) fromPool = 1;
+                        else { pc = readI64Init(nIn1_[i], 8); }
                         if (pc < 8) return 0;
-                        int pnB = int(i64TmpL_[0]); int pcB = int(i64TmpL_[1]); int phB = int(i64TmpL_[2]); int pwB = int(i64TmpL_[3]);
-                        int pnE = int(i64TmpL_[4]); int pcE = int(i64TmpL_[5]); int phE = int(i64TmpL_[6]); int pwE = int(i64TmpL_[7]);
+                        int pnB, pcB, phB, pwB, pnE, pcE, phE, pwE;
+                        if (fromPool == 1) {
+                            pnB = int(i64Get(nIn1_[i], 0)); pcB = int(i64Get(nIn1_[i], 1)); phB = int(i64Get(nIn1_[i], 2)); pwB = int(i64Get(nIn1_[i], 3));
+                            pnE = int(i64Get(nIn1_[i], 4)); pcE = int(i64Get(nIn1_[i], 5)); phE = int(i64Get(nIn1_[i], 6)); pwE = int(i64Get(nIn1_[i], 7));
+                        } else {
+                            pnB = int(i64TmpL_[0]); pcB = int(i64TmpL_[1]); phB = int(i64TmpL_[2]); pwB = int(i64TmpL_[3]);
+                            pnE = int(i64TmpL_[4]); pcE = int(i64TmpL_[5]); phE = int(i64TmpL_[6]); pwE = int(i64TmpL_[7]);
+                        }
                         nPadB_[i * 4 + 0] = pnB; nPadB_[i * 4 + 1] = pcB; nPadB_[i * 4 + 2] = phB; nPadB_[i * 4 + 3] = pwB;
                         nPadE_[i * 4 + 0] = pnE; nPadE_[i * 4 + 1] = pcE; nPadE_[i * 4 + 2] = phE; nPadE_[i * 4 + 3] = pwE;
                         double cv = 0.0;
