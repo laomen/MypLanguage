@@ -657,6 +657,31 @@ llvm::Value* CodeGen::generateBytesStr(const CallExpr& e, const std::string& nam
     return builder_.CreateCall(fn, {arg}, "bytesstr");
 }
 
+// §5.1 bytesOf(bitvector<N>) → ubyte[]：myp_uint_to_bytes(zext(v,i64), N/8)，
+// 返回计数 ubyte[] backing（rc=1，动态数组槽位直接持有）。
+llvm::Value* CodeGen::generateBytesOf(const CallExpr& e) {
+    auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    if (e.args.size() != 1) {
+        diag_.error(e.range, "bytesOf takes exactly one argument");
+        return llvm::ConstantPointerNull::get(ptr_ty);
+    }
+    auto* v = generateExpr(*e.args[0]);
+    llvm::Type* vt = v ? v->getType() : llvm::Type::getInt32Ty(ctx_);
+    unsigned bits = vt->isIntegerTy() ? vt->getIntegerBitWidth() : 32;
+    int nbytes = (int)((bits + 7) / 8);
+    if (nbytes < 1) nbytes = 1;
+    auto* wide = (vt == i64) ? v : builder_.CreateZExtOrTrunc(v, i64, "bvi64");
+    auto* fn = module_->getFunction("myp_uint_to_bytes");
+    if (!fn) {
+        auto* ft = llvm::FunctionType::get(ptr_ty, {i64, i32}, false);
+        fn = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                    "myp_uint_to_bytes", module_.get());
+    }
+    return builder_.CreateCall(fn, {wide, llvm::ConstantInt::get(i32, nbytes)}, "bvo");
+}
+
 // P2 parse* 全族（docs §6.2）：统一 strtol/strtoull/strtod 语义。runtime helper：
 // parseLong→myp_str_to_long；parseUint→myp_str_to_ulong(trunc i32)；parseUlong→
 // myp_str_to_ulong；parseFloat→myp_str_to_float；parseDouble→myp_atof；parseInt→
@@ -994,6 +1019,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
         // 这里同名直接走内建（用户同名函数由 sema 已解析到别的路径）。
         if (bid.name == "bytes" || bid.name == "str")
             return generateBytesStr(e, bid.name);
+        // §5.1 bytesOf(bitvector<N>) → ubyte[]
+        if (bid.name == "bytesOf")
+            return generateBytesOf(e);
         // P2 parse* 全族（docs §6.2）
         if (bid.name == "parseInt" || bid.name == "parseLong" ||
             bid.name == "parseUint" || bid.name == "parseUlong" ||

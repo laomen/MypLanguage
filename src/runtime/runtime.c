@@ -2181,6 +2181,17 @@ void* myp_str_to_bytes(const char* s) {
     memcpy(data, s, len);
     return data;
 }
+// bytesOf(bitvector<N>)（§5.1）：把位向量值按小端写进 nbytes 个字节的计数
+// ubyte[] backing（MYP_ARR_ELEM_SCALAR），返回 data 指针（同 new ubyte[n] ABI）。
+void* myp_uint_to_bytes(uint64_t v, int32_t nbytes) {
+    if (nbytes <= 0) nbytes = 1;
+    if (nbytes > 8) nbytes = 8;
+    void* data = myp_alloc_slice_backing((uint64_t)nbytes, 1, MYP_ARR_ELEM_SCALAR);
+    if (!data) return NULL;
+    for (int i = 0; i < nbytes; i++)
+        ((uint8_t*)data)[i] = (uint8_t)(v >> (8 * i));
+    return data;
+}
 char* myp_bytes_to_str(const void* data) {
     if (!data) return myp_strdup("");
     myp_arr_header_t* h = (myp_arr_header_t*)((const char*)data - MYP_ARR_HEADER_SIZE);

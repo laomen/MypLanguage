@@ -25,6 +25,18 @@ bitfield GpuReg {
     bit[16] data;
 }
 
+// §5.1 补全：bitfield 类属性
+class RegHolder {
+    property:
+        Flags f;
+    action:
+        void set(int r) {
+            this.f.read = true;
+            this.f.reserved = uint(r);
+        }
+        int getPacked() { return int(this.f.read) | (int(this.f.reserved) << 1); }
+}
+
 class Main {
     action:
         @startup void run() {
@@ -98,6 +110,29 @@ class Main {
             //      = 0xBEEF0000 | 0xAB00 | 0x82 | 1 = 0xBEEFAB83 = 3201556355
             Console.writeLong(uint(reg.valid) | (uint(reg.opcode) << 1) |
                               (uint(reg.offset) << 8) | (uint(reg.data) << 16));
+            Console.writeString("\n");
+
+            // ---- §5.1 补全：bitfield 类属性（this.f 读改写）----
+            RegHolder rh = new RegHolder();
+            rh.set(21);
+            Console.writeBool(rh.f.read);            // true（set 内 this.f.read=true）
+            Console.writeString("\n");
+            Console.writeLong(rh.f.reserved);        // 21
+            Console.writeString("\n");
+            Console.writeLong(rh.getPacked());       // 1 | 42 = 43
+            Console.writeString("\n");
+
+            // ---- §5.1 补全：bitfield 数组 ----
+            Flags[] fa = new Flags[3];
+            fa[0].read = true;
+            fa[1].reserved = uint(5);
+            fa[2].read = true;
+            fa[2].reserved = uint(0x3F);
+            Console.writeBool(fa[0].read);           // true
+            Console.writeString("\n");
+            Console.writeLong(fa[1].reserved);       // 5
+            Console.writeString("\n");
+            Console.writeLong(fa[2].reserved);       // 63
             Console.writeString("\n");
 
             Console.writeString("BITFIELD_OK\n");

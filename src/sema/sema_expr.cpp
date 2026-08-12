@@ -624,6 +624,21 @@ TypeInfo Sema::visitBytesStr(CallExpr& expr, const std::string& name) {
     return TypeInfo(TypeKind::String);
 }
 
+// §5.1 bytesOf(bitvector<N>) → ubyte[]（序列化刚需）。仅当实参是 bitvector 时
+// 作为内建，否则返回 Void 走普通函数解析（用户同名函数不受影响）。
+TypeInfo Sema::visitBytesOf(CallExpr& expr) {
+    if (expr.args.size() != 1) {
+        error(expr.range, "bytesOf takes exactly one argument");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto ot = visitExpr(*expr.args[0]);
+    if (ot.kind != TypeKind::BitVector) return TypeInfo(TypeKind::Void);
+    TypeInfo rt(TypeKind::Array);
+    rt.element_type = std::make_shared<TypeInfo>(TypeKind::UByte);
+    expr.resolved_kind = TypeKind::Array;
+    return rt;
+}
+
 // P2 parse* 全族（docs §6.2）：统一 strtol/strtoull/strtod 语义（带符号与基数，
 // 0x 前缀支持），失败回 0。parseInt/Long → 有符号；parseUint/Ulong → 无符号；
 // parseFloat/Double → 浮点。仅当实参是 string 时作为内建。
@@ -1458,6 +1473,9 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         // 匹配时才拦截（bytes 收 string、str 收 ubyte[]），用户同名函数不冲突。
         if (bc_id.name == "bytes" || bc_id.name == "str")
             return visitBytesStr(expr, bc_id.name);
+        // §5.1 bytesOf(bitvector<N>) → ubyte[]（序列化刚需）
+        if (bc_id.name == "bytesOf")
+            return visitBytesOf(expr);
         // P2 parse* 全族（docs §6.2）：parseInt/Long/Uint/Ulong/Float/Double(s)
         if (bc_id.name == "parseInt" || bc_id.name == "parseLong" ||
             bc_id.name == "parseUint" || bc_id.name == "parseUlong" ||

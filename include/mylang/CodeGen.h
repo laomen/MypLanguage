@@ -712,6 +712,7 @@ private:
     llvm::Value* generateCall(const CallExpr& expr);
     llvm::Value* generateBitcast(const CallExpr& expr);
     llvm::Value* generateBytesStr(const CallExpr& expr, const std::string& name);
+    llvm::Value* generateBytesOf(const CallExpr& expr);
     llvm::Value* generateParse(const CallExpr& expr, const std::string& name);
     llvm::Value* generateBitOps(const CallExpr& expr, const std::string& name);
     // True if a call returns an ARC-owned class / class-array reference (the

@@ -1785,18 +1785,76 @@ assign_gep:
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
                 slot = getNamedValue(oi.name);
+            } else if (ma.object->kind == ExprKind::MemberAccess) {
+                // this.flags —— 类属性的 bitfield 字段写：GEP 到属性槽
+                auto& oma = static_cast<const MemberAccessExpr&>(*ma.object);
+                if (oma.object->kind == ExprKind::ThisExpr &&
+                    !current_class_name_.empty() && current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
+                        unsigned pi = 0;
+                        if (getPropertyIndex(cls.name, oma.member_name, pi)) {
+                            auto* ta = getNamedValue("this");
+                            if (ta) {
+                                auto* tp = builder_.CreateLoad(
+                                    llvm::PointerType::get(ctx_, 0), ta, "this");
+                                auto* st = getClassStruct(cls.name);
+                                if (st)
+                                    slot = builder_.CreateStructGEP(st, tp, pi);
+                            }
+                            break;
+                        }
+                    }
+                }
+            } else if (ma.object->kind == ExprKind::Subscript) {
+                // arr[i].field —— bitfield 数组元素字段写：GEP 到元素槽
+                auto& ss = static_cast<const SubscriptExpr&>(*ma.object);
+                if (ss.array->kind == ExprKind::Identifier) {
+                    auto& aname = static_cast<const IdentifierExpr&>(*ss.array).name;
+                    auto eit = array_elem_types_.find(aname);
+                    if (eit != array_elem_types_.end()) {
+                        auto* ap = getNamedValue(aname);
+                        if (ap) {
+                            auto* arrp = builder_.CreateLoad(
+                                llvm::PointerType::get(ctx_, 0), ap, "barr");
+                            auto* idx = generateExpr(*ss.index);
+                            slot = builder_.CreateGEP(eit->second, arrp,
+                                zextIndexValue(builder_, idx), "bfelem");
+                        }
+                    }
+                }
             }
             if (off < 0 || !slot) {
                 diag_.error(e.range, "cannot assign to bitfield field '" +
                           ma.member_name + "'");
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
             }
+            // 背衬类型：alloca → 分配类型；类属性 → 属性声明类型（opaque ptr
+            // 无法 getElementType）；数组元素 → array_elem_types_
             llvm::Type* backing_ty = nullptr;
-            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(slot))
+            if (auto* ai = llvm::dyn_cast<llvm::AllocaInst>(slot)) {
                 backing_ty = ai->getAllocatedType();
-            else
-                backing_ty = getNamedValueType(
-                    static_cast<const IdentifierExpr&>(*ma.object).name);
+            } else if (ma.object->kind == ExprKind::MemberAccess) {
+                auto& oma = static_cast<const MemberAccessExpr&>(*ma.object);
+                if (current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
+                        for (auto& p : cls.properties) {
+                            if (p.name == oma.member_name) {
+                                backing_ty = typeNodeToLLVMType(p.type);
+                                break;
+                            }
+                        }
+                    }
+                }
+            } else if (ma.object->kind == ExprKind::Subscript) {
+                auto& ss = static_cast<const SubscriptExpr&>(*ma.object);
+                if (ss.array->kind == ExprKind::Identifier) {
+                    auto& aname = static_cast<const IdentifierExpr&>(*ss.array).name;
+                    auto eit = array_elem_types_.find(aname);
+                    if (eit != array_elem_types_.end()) backing_ty = eit->second;
+                }
+            }
             if (!backing_ty || !backing_ty->isIntegerTy()) {
                 diag_.error(e.range, "bitfield assignment target has no integer backing");
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);

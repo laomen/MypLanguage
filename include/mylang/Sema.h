@@ -71,6 +71,7 @@ private:
     TypeInfo visitCall(CallExpr& expr);
     TypeInfo visitBitcast(CallExpr& expr);
     TypeInfo visitBytesStr(CallExpr& expr, const std::string& name);
+    TypeInfo visitBytesOf(CallExpr& expr);
     TypeInfo visitParse(CallExpr& expr, const std::string& name);
     TypeInfo visitBitOps(CallExpr& expr, const std::string& name);
     TypeInfo visitMemberAccess(MemberAccessExpr& expr);

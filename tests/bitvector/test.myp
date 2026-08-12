@@ -130,6 +130,27 @@ class Main {
             Console.writeBool((~f)[7]);              // ~0x88=0x77, bit7=0 → false
             Console.writeString("\n");
 
+            // ---- §5.1 补全：bytesOf(bitvector<N>) → ubyte[]（小端序列化）----
+            bitvector<32> bw = bitvector<32>(0xDEADBEEF);
+            ubyte[] bws = bytesOf(bw);
+            Console.writeLong(bws[0]);               // 0xEF = 239
+            Console.writeString("\n");
+            Console.writeLong(bws[1]);               // 0xBE = 190
+            Console.writeString("\n");
+            Console.writeLong(bws[2]);               // 0xAD = 173
+            Console.writeString("\n");
+            Console.writeLong(bws[3]);               // 0xDE = 222
+            Console.writeString("\n");
+            bitvector<8> b8 = bitvector<8>(0x5A);
+            Console.writeLong(bytesOf(b8)[0]);       // 0x5A = 90
+            Console.writeString("\n");
+            bitvector<64> b64 = bitvector<64>(0x0102030405060708L);
+            ubyte[] bq = bytesOf(b64);
+            Console.writeLong(bq[0]);                // 0x08 = 8
+            Console.writeString("\n");
+            Console.writeLong(bq[7]);                // 0x01 = 1
+            Console.writeString("\n");
+
             Console.writeString("BITVECTOR_OK\n");
         }
 }
