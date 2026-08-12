@@ -614,4 +614,92 @@ class InferOps {
                 i = i + 1;
             }
         }
+
+        // ---- F8：张量操作（Concat / Transpose / Reshape）----
+        // Reshape：连续拷贝（输入输出元素数相同、内存布局不变）
+        void copyFlat(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                arena[outOff + i] = arena[inOff + i];
+                i = i + 1;
+            }
+        }
+        // Concat：沿 axis 拼接 2-3 个输入
+        // od0..od3 = 输出 4D 维度；ax0/ax1/ax2 = 各输入沿 axis 的长度；非 axis 维各输入一致
+        // inFlat 用所选输入的自身轴长（aLen）计算，batch>1 时 stride 才正确。
+        void concat(float[] arena, int off0, int off1, int off2, int offO,
+                    int od0, int od1, int od2, int od3,
+                    int ax0, int ax1, int ax2, int axis, int nIn) {
+            int total = od0 * od1 * od2 * od3;
+            int i = 0;
+            while (i < total) {
+                int x3 = i % od3;
+                int t = i / od3;
+                int x2 = t % od2;
+                t = t / od2;
+                int x1 = t % od1;
+                int x0 = t / od1;
+                int ac = 0;
+                if (axis == 0) ac = x0;
+                else if (axis == 1) ac = x1;
+                else if (axis == 2) ac = x2;
+                else ac = x3;
+                int which = 0;
+                int local = ac;
+                int aLen = ax0;
+                if (local >= aLen) {
+                    local = local - aLen;
+                    which = 1;
+                    aLen = ax1;
+                    if (nIn >= 3 && local >= aLen) { local = local - aLen; which = 2; aLen = ax2; }
+                }
+                int inOff = 0;
+                if (which == 0) inOff = off0;
+                else if (which == 1) inOff = off1;
+                else inOff = off2;
+                int inFlat = 0;
+                if (axis == 0) inFlat = ((local * od1 + x1) * od2 + x2) * od3 + x3;
+                else if (axis == 1) inFlat = ((x0 * aLen + local) * od2 + x2) * od3 + x3;
+                else if (axis == 2) inFlat = ((x0 * od1 + x1) * aLen + local) * od3 + x3;
+                else inFlat = ((x0 * od1 + x1) * od2 + x2) * aLen + local;
+                arena[offO + i] = arena[inOff + inFlat];
+                i = i + 1;
+            }
+        }
+        // Transpose：按 perm 转置 4D 张量（pc = perm 元素数，0 = 缺省反转）
+        void transpose(float[] arena, int offIn, int offOut,
+                       int id0, int id1, int id2, int id3,
+                       int p0, int p1, int p2, int p3, int pc) {
+            int perm0 = p0, perm1 = p1, perm2 = p2, perm3 = p3;
+            if (pc == 0) { perm0 = 3; perm1 = 2; perm2 = 1; perm3 = 0; }
+            else if (pc == 1) { perm1 = 1; perm2 = 2; perm3 = 3; }
+            else if (pc == 2) { perm2 = 2; perm3 = 3; }
+            else if (pc == 3) { perm3 = 3; }
+            int od0 = (perm0 == 0) ? id0 : ((perm0 == 1) ? id1 : ((perm0 == 2) ? id2 : id3));
+            int od1 = (perm1 == 0) ? id0 : ((perm1 == 1) ? id1 : ((perm1 == 2) ? id2 : id3));
+            int od2 = (perm2 == 0) ? id0 : ((perm2 == 1) ? id1 : ((perm2 == 2) ? id2 : id3));
+            int od3 = (perm3 == 0) ? id0 : ((perm3 == 1) ? id1 : ((perm3 == 2) ? id2 : id3));
+            // 逆 perm：invPerm[perm[k]] = k
+            int inv0 = (perm0 == 0) ? 0 : ((perm1 == 0) ? 1 : ((perm2 == 0) ? 2 : 3));
+            int inv1 = (perm0 == 1) ? 0 : ((perm1 == 1) ? 1 : ((perm2 == 1) ? 2 : 3));
+            int inv2 = (perm0 == 2) ? 0 : ((perm1 == 2) ? 1 : ((perm2 == 2) ? 2 : 3));
+            int inv3 = (perm0 == 3) ? 0 : ((perm1 == 3) ? 1 : ((perm2 == 3) ? 2 : 3));
+            int total = od0 * od1 * od2 * od3;
+            int i = 0;
+            while (i < total) {
+                int o3 = i % od3;
+                int t = i / od3;
+                int o2 = t % od2;
+                t = t / od2;
+                int o1 = t % od1;
+                int o0 = t / od1;
+                int i0 = (inv0 == 0) ? o0 : ((inv0 == 1) ? o1 : ((inv0 == 2) ? o2 : o3));
+                int i1 = (inv1 == 0) ? o0 : ((inv1 == 1) ? o1 : ((inv1 == 2) ? o2 : o3));
+                int i2 = (inv2 == 0) ? o0 : ((inv2 == 1) ? o1 : ((inv2 == 2) ? o2 : o3));
+                int i3 = (inv3 == 0) ? o0 : ((inv3 == 1) ? o1 : ((inv3 == 2) ? o2 : o3));
+                int inFlat = ((i0 * id1 + i1) * id2 + i2) * id3 + i3;
+                arena[offOut + i] = arena[offIn + inFlat];
+                i = i + 1;
+            }
+        }
 }

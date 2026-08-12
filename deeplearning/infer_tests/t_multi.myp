@@ -1,0 +1,74 @@
+// t_multi.myp — 多输入 ONNX 测试：加载模型，设置全部输入，运行，写输出
+// 用法: t_multi <model.onnx> <out.bin> <in1.f32> <in2.f32> ...
+import env;
+import args;
+import "../infer/pb.myp";
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class TMulti {
+    action:
+        @constructor TMulti() {
+            if (Args.count() < 5) { Console.writeLine("usage: t_multi <model> <out.bin> <inname1> <f1> <inname2> <f2> ..."); return; }
+            string modelPath = Args.get(1);
+            string outPath = Args.get(2);
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.load(modelPath, rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            int a = 3;
+            while (a + 1 < Args.count()) {
+                string inName = Args.get(a);
+                string inFile = Args.get(a + 1);
+                int tid = loader.tensorId(inName);
+                if (tid < 0) { Console.writeString("no tensor "); Console.writeLine(inName); return; }
+                int n = rt.tensorSize(tid);
+                int fd = __myp_io_fopen(inFile, "rb");
+                if (fd < 0) { Console.writeLine("no file " + inFile); return; }
+                int j = 0;
+                while (j < n) {
+                    int b0 = __myp_io_read_byte();
+                    int b1 = __myp_io_read_byte();
+                    int b2 = __myp_io_read_byte();
+                    int b3 = __myp_io_read_byte();
+                    if (b0 < 0 || b3 < 0) break;
+                    int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                    rt.setFlat(tid, j, F32.toDouble(bits));
+                    j = j + 1;
+                }
+                __myp_io_fclose();
+                Console.writeString("in "); Console.writeString(inName);
+                Console.writeString(" tid="); Console.writeLong(tid);
+                Console.writeString(" n="); Console.writeLong(n);
+                Console.writeString(" got="); Console.writeLong(j);
+                Console.writeLine("");
+                a = a + 2;
+            }
+            int outTid = -1;
+            // 输出 = 最后一个图输出（用 loader 未暴露，取 y 名称由调用方传）
+            outTid = loader.tensorId("y");
+            if (outTid < 0) { Console.writeLine("no output y"); return; }
+            rt.run();
+            int m = rt.tensorSize(outTid);
+            int ofd = __myp_io_fopen(outPath, "wb");
+            int t = 0;
+            while (t < m) {
+                int bits = F32.toBits(rt.getFlat(outTid, t));
+                __myp_io_write_byte(bits & 255);
+                __myp_io_write_byte((bits >> 8) & 255);
+                __myp_io_write_byte((bits >> 16) & 255);
+                __myp_io_write_byte((bits >> 24) & 255);
+                t = t + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("wrote "); Console.writeString(outPath);
+            Console.writeString(" ("); Console.writeLong(m); Console.writeString(" floats)");
+            Console.writeLine("");
+        }
+}
+
+int main() {
+    TMulti app = new TMulti();
+    return 0;
+}

@@ -43,6 +43,11 @@ class NodeField {
         int CONST_VAL() { return 17; }
         int CONST_OFF() { return 18; }
         int CONST_LEN() { return 19; }
+        int PERM0() { return 20; }
+        int PERM1() { return 21; }
+        int PERM2() { return 22; }
+        int PERM3() { return 23; }
+        int PERM_N() { return 24; }
 }
 
 class Graph {
@@ -78,6 +83,7 @@ class Graph {
             nTransB_[i] = 0; nAxis_[i] = -1;
             nSH_[i] = 1; nSW_[i] = 1; nPT_[i] = 0; nPB_[i] = 0; nPL_[i] = 0; nPR_[i] = 0;
             nDH_[i] = 1; nDW_[i] = 1; nGroup_[i] = 1; nKH_[i] = 0; nKW_[i] = 0;
+            nP0_[i] = 0; nP1_[i] = 0; nP2_[i] = 0; nP3_[i] = 0; nPc_[i] = 0;   // F8: Transpose perm
             return i;
         }
         void endNode() { nCount_ = nCount_ + 1; }
@@ -104,7 +110,12 @@ class Graph {
             else if (code == NodeField.HAS_ALPHA()) nHasAlpha_[i] = v;
             else if (code == NodeField.CONST_VAL()) nConstVal_[i] = v;
             else if (code == NodeField.CONST_OFF()) nConstOff_[i] = v;
-            else nConstLen_[i] = v;
+            else if (code == NodeField.CONST_LEN()) nConstLen_[i] = v;
+            else if (code == NodeField.PERM0()) nP0_[i] = v;
+            else if (code == NodeField.PERM1()) nP1_[i] = v;
+            else if (code == NodeField.PERM2()) nP2_[i] = v;
+            else if (code == NodeField.PERM3()) nP3_[i] = v;
+            else nPc_[i] = v;
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             wName_[wCount_] = nm; wRows_[wCount_] = rows; wCols_[wCount_] = cols;
@@ -185,6 +196,10 @@ class Graph {
                 } else if (t == "Conv") {
                     markCNNWeight(nIn1_[i]);
                     markCNNBias(nIn2_[i]);
+                } else if (t == "Concat" || t == "Transpose" || t == "Reshape") {
+                    // F8：4D 通用常量输入 → CNN 激活登记 + 直接拷贝（Concat 的非常量输入/常量）
+                    markGeneric4DConst(nIn0_[i]);
+                    if (t == "Concat") { markGeneric4DConst(nIn1_[i]); markGeneric4DConst(nIn2_[i]); }
                 }
                 i = i + 1;
             }
@@ -214,6 +229,19 @@ class Graph {
             }
             return 1;
         }
+        // F8：把 4D 通用常量（非 Conv 权重/偏置）标记为 CNN 激活（buildRuntime 4D 登记）
+        // 并设 wRole_=4（写权重时直接拷贝，不做 FC 转置）
+        void markGeneric4DConst(string name) {
+            int wi = initIdx(name);
+            if (wi < 0) return;
+            if (wRole_[wi] == 2 || wRole_[wi] == 3) return;   // Conv 权重/偏置不覆盖
+            int s = shapeIdx(name);
+            if (s < 0) return;
+            if (shD2_[s] <= 1 && shD3_[s] <= 1) return;       // 非 4D 不处理
+            wRole_[wi] = 4;
+            wTrans_[wi] = 0;
+            setShapeKind(name, Kind.CNN_ACT());
+        }
         int isNodeOutput(string name) {
             int i = 0;
             while (i < nCount_) {
@@ -228,6 +256,9 @@ class Graph {
                 if (nIn0_[i] == name || nIn1_[i] == name || nIn2_[i] == name) {
                     string t = nType_[i];
                     if (t == "Conv" || t == "MaxPool" || t == "GlobalAveragePool" || t == "BatchNormalization") return Kind.CNN_ACT();
+                    // F8：Concat/Transpose/Reshape 等 —— 若张量本身 4D 则按 CNN 激活
+                    int s = shapeIdx(name);
+                    if (s >= 0 && (shD2_[s] > 1 || shD3_[s] > 1)) return Kind.CNN_ACT();
                     return Kind.FC_ACT();
                 }
                 i = i + 1;
@@ -303,6 +334,77 @@ class Graph {
                            || t == "ReLU6" || t == "LeakyRelu" || t == "SiLU" || t == "HardSwish" || t == "Clip") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
                     addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                } else if (t == "Reshape") {
+                    // F8：shape 来自输入[1]（int64 初始器）；-1 = 由总元素数推断，0 = 复制对应输入维
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int sc = readI64Init(nIn1_[i], 8);
+                    if (sc <= 0) return 0;
+                    int total = shD0_[a] * shD1_[a] * shD2_[a] * shD3_[a];
+                    int[] outd = new int[8];
+                    int inferIdx = -1;
+                    int prod = 1;
+                    int d = 0;
+                    while (d < sc) {
+                        int v = i64Tmp_[d];
+                        if (v == -1) { inferIdx = d; outd[d] = 1; }
+                        else if (v == 0) {
+                            if (d < 4) { outd[d] = (d == 0) ? shD0_[a] : ((d == 1) ? shD1_[a] : ((d == 2) ? shD2_[a] : shD3_[a])); }
+                            else outd[d] = 1;
+                        }
+                        else outd[d] = v;
+                        prod = prod * outd[d];
+                        d = d + 1;
+                    }
+                    if (inferIdx >= 0 && prod > 0) outd[inferIdx] = total / prod;
+                    int od0 = 1, od1 = 1, od2 = 1, od3 = 1;
+                    if (sc >= 1) od0 = outd[0];
+                    if (sc >= 2) od1 = outd[1];
+                    if (sc >= 3) od2 = outd[2];
+                    if (sc >= 4) od3 = outd[3];
+                    addShapeD4(nOut0_[i], od0, od1, od2, od3);
+                } else if (t == "Concat") {
+                    // F8：沿 axis 拼接（2-3 输入），输出 = 各输入沿 axis 之和，其余维同输入0
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int axis = nAxis_[i];
+                    if (axis < 0) axis = 0;
+                    int[] dims = new int[4];
+                    dims[0] = shD0_[a]; dims[1] = shD1_[a]; dims[2] = shD2_[a]; dims[3] = shD3_[a];
+                    // 沿 axis 累计（最多 3 输入，与 runtime opA/opB/opC 一致）
+                    int axisSum = 0;
+                    int slot = 0;
+                    while (slot < 3) {
+                        string nm;
+                        if (slot == 0) nm = nIn0_[i];
+                        else if (slot == 1) nm = nIn1_[i];
+                        else nm = nIn2_[i];
+                        if (nm == "") { slot = 3; break; }
+                        int s = shapeIdx(nm); if (s < 0) return 0;
+                        int av = (axis == 0) ? shD0_[s] : ((axis == 1) ? shD1_[s] : ((axis == 2) ? shD2_[s] : shD3_[s]));
+                        axisSum = axisSum + av;
+                        slot = slot + 1;
+                    }
+                    if (axis == 0) dims[0] = axisSum;
+                    else if (axis == 1) dims[1] = axisSum;
+                    else if (axis == 2) dims[2] = axisSum;
+                    else dims[3] = axisSum;
+                    addShapeD4(nOut0_[i], dims[0], dims[1], dims[2], dims[3]);
+                } else if (t == "Transpose") {
+                    // F8：perm 属性（缺省 = 反转维度）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int nd = 4;
+                    int p0, p1, p2, p3;
+                    if (nPc_[i] >= 4) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = nP2_[i]; p3 = nP3_[i]; }
+                    else if (nPc_[i] == 3) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = nP2_[i]; p3 = 3; }
+                    else if (nPc_[i] == 2) { p0 = nP0_[i]; p1 = nP1_[i]; p2 = 2; p3 = 3; }
+                    else if (nPc_[i] == 1) { p0 = nP0_[i]; p1 = 1; p2 = 2; p3 = 3; }
+                    else { p0 = 3; p1 = 2; p2 = 1; p3 = 0; }   // 缺省反转
+                    int id0 = shD0_[a], id1 = shD1_[a], id2 = shD2_[a], id3 = shD3_[a];
+                    int[] od = new int[4];
+                    od[0] = (p0 == 0) ? id0 : ((p0 == 1) ? id1 : ((p0 == 2) ? id2 : id3));
+                    od[1] = (p1 == 0) ? id0 : ((p1 == 1) ? id1 : ((p1 == 2) ? id2 : id3));
+                    od[2] = (p2 == 0) ? id0 : ((p2 == 1) ? id1 : ((p2 == 2) ? id2 : id3));
+                    od[3] = (p3 == 0) ? id0 : ((p3 == 1) ? id1 : ((p3 == 2) ? id2 : id3));
+                    addShapeD4(nOut0_[i], od[0], od[1], od[2], od[3]);
                 } else {
                     return 0;   // 不支持的算子
                 }
@@ -879,6 +981,35 @@ class Graph {
                     if (sT < 0 || bT < 0 || mT < 0 || vT < 0) return 0;
                     if (nNHWC_[ni] == 1) rt.addBatchNormNHWC(a, out, sT, bT, mT, vT, nEpsInt_[ni], nHasEps_[ni]);
                     else rt.addBatchNorm(a, out, sT, bT, mT, vT, nEpsInt_[ni], nHasEps_[ni]);
+                } else if (t == "Reshape") {
+                    // F8：连续拷贝（输出形状已由 inferShapes 按 shape 初始器登记）
+                    rt.addReshape(a, out);
+                } else if (t == "Concat") {
+                    // F8：2-3 输入沿 axis 拼接（维度 = 输出形状表；轴长 = 各输入沿 axis）
+                    int b = tensorId(nIn1_[ni]);
+                    int c = tensorId(nIn2_[ni]);
+                    int nIn = 2;
+                    if (c >= 0) nIn = 3;
+                    int axis = nAxis_[ni];
+                    if (axis < 0) axis = 0;
+                    int os = shapeIdx(effectiveOut(ni));
+                    int od0 = shD0_[os], od1 = shD1_[os], od2 = shD2_[os], od3 = shD3_[os];
+                    int ax0 = 0, ax1 = 0, ax2 = 0;
+                    int s0 = shapeIdx(nIn0_[ni]);
+                    if (s0 >= 0) ax0 = (axis == 0) ? shD0_[s0] : ((axis == 1) ? shD1_[s0] : ((axis == 2) ? shD2_[s0] : shD3_[s0]));
+                    int s1 = shapeIdx(nIn1_[ni]);
+                    if (s1 >= 0) ax1 = (axis == 0) ? shD0_[s1] : ((axis == 1) ? shD1_[s1] : ((axis == 2) ? shD2_[s1] : shD3_[s1]));
+                    int s2 = shapeIdx(nIn2_[ni]);
+                    if (s2 >= 0) ax2 = (axis == 0) ? shD0_[s2] : ((axis == 1) ? shD1_[s2] : ((axis == 2) ? shD2_[s2] : shD3_[s2]));
+                    rt.addConcat(a, b, c, out, axis, nIn, od0, od1, od2, od3, ax0, ax1, ax2);
+                } else if (t == "Transpose") {
+                    // F8：perm 转置（输入维度 = 输入形状表）
+                    int p0 = nP0_[ni], p1 = nP1_[ni], p2 = nP2_[ni], p3 = nP3_[ni];
+                    int pc = nPc_[ni];
+                    if (pc == 0) { p0 = 3; p1 = 2; p2 = 1; p3 = 0; }
+                    int is = shapeIdx(nIn0_[ni]);
+                    int id0 = shD0_[is], id1 = shD1_[is], id2 = shD2_[is], id3 = shD3_[is];
+                    rt.addTranspose(a, out, p0, p1, p2, p3, pc, id0, id1, id2, id3);
                 } else {
                     return 0;
                 }
@@ -976,10 +1107,41 @@ class Graph {
             return F32.toDouble(bits);
         }
 
+        // F8：读 int64 初始器值（Reshape 的 shape / 未来 Slice 的 starts 等）。
+        // 支持 raw_data（8 字节小端，wKind_==1 且 wType_==7）与 int64_data
+        // （packed varint，wKind_==3）。返回读取个数（<=maxn）；值写入 i64Tmp_。
+        int readI64Init(string name, int maxn) {
+            int wi = initIdx(name);
+            if (wi < 0) return 0;
+            int cnt = 0;
+            if (wKind_[wi] == 1) {
+                int j = 0;
+                while (j < wLen_[wi] / 8 && cnt < maxn) {
+                    int b0 = file_[wOff_[wi] + j * 8];
+                    int b1 = file_[wOff_[wi] + j * 8 + 1];
+                    int b2 = file_[wOff_[wi] + j * 8 + 2];
+                    int b3 = file_[wOff_[wi] + j * 8 + 3];
+                    i64Tmp_[cnt] = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                    cnt = cnt + 1;
+                    j = j + 1;
+                }
+            } else if (wKind_[wi] == 3) {
+                int end = wOff_[wi] + wLen_[wi];
+                pb_.seek(wOff_[wi]);
+                while (pb_.pos() < end && cnt < maxn) {
+                    long v = pb_.readVarint64();
+                    i64Tmp_[cnt] = int(v);
+                    cnt = cnt + 1;
+                }
+            }
+            return cnt;
+        }
+
     property:
         int[] file_;
         int fileLen_;
         PbReader pb_;
+        int[512] i64Tmp_;   // F8：readI64Init 暂存
 
         string[256] wName_;
         int[256] wRows_;
@@ -1021,6 +1183,11 @@ class Graph {
         int[512] nGroup_;
         int[512] nKH_;
         int[512] nKW_;
+        int[512] nP0_;          // F8：Transpose perm[0]
+        int[512] nP1_;          // F8：Transpose perm[1]
+        int[512] nP2_;          // F8：Transpose perm[2]
+        int[512] nP3_;          // F8：Transpose perm[3]
+        int[512] nPc_;          // F8：perm 元素个数
         int[512] nEpsInt_;       // G3：BN epsilon 属性位型
         int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
         int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型

@@ -367,6 +367,46 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- F8：张量操作算子 ----
+        // Reshape：连续拷贝（输出形状由 graph 按 shape 初始器登记）
+        void addReshape(int inTid, int outTid) {
+            int id = opCount_;
+            opKind_[id] = 24;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opCount_ = opCount_ + 1;
+        }
+        // Concat：沿 axis 拼接（2-3 输入；a2=-1 表示无第三输入）
+        // od0..od3 = 输出 4D 维度；ax0/ax1/ax2 = 各输入沿 axis 的长度（内存行优先序）
+        void addConcat(int a0T, int a1T, int a2T, int outT, int axis, int nIn,
+                       int od0, int od1, int od2, int od3,
+                       int ax0, int ax1, int ax2) {
+            int id = opCount_;
+            opKind_[id] = 25;
+            opA_[id] = a0T;
+            opB_[id] = a1T;
+            opC_[id] = a2T;
+            opD_[id] = outT;
+            opP0_[id] = axis;
+            opP1_[id] = nIn;
+            opP2_[id] = od0; opP3_[id] = od1; opP4_[id] = od2; opP5_[id] = od3;
+            opP6_[id] = ax0; opP7_[id] = ax1; opP8_[id] = ax2;
+            opCount_ = opCount_ + 1;
+        }
+        // Transpose：perm 转置（pc=perm 元素数；0=缺省反转）
+        // id0..id3 = 输入 4D 维度（内存行优先序）
+        void addTranspose(int inTid, int outTid, int p0, int p1, int p2, int p3, int pc,
+                          int id0, int id1, int id2, int id3) {
+            int id = opCount_;
+            opKind_[id] = 26;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = p0; opP1_[id] = p1; opP2_[id] = p2; opP3_[id] = p3;
+            opP4_[id] = pc;
+            opP5_[id] = id0; opP6_[id] = id1; opP7_[id] = id2; opP8_[id] = id3;
+            opCount_ = opCount_ + 1;
+        }
+
         int opCount() { return opCount_; }
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
@@ -496,6 +536,28 @@ class InferenceRuntime {
                     int minOff = -1; if (opP0_[i] >= 0) minOff = tOff_[opP0_[i]];
                     int maxOff = -1; if (opP1_[i] >= 0) maxOff = tOff_[opP1_[i]];
                     InferOps.clip(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa], minOff, maxOff);
+                } else if (opKind_[i] == 24) {
+                    // F8：Reshape —— 连续拷贝
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.copyFlat(arena, tOff_[xa], tOff_[yd], tRows_[xa] * tCols_[xa]);
+                } else if (opKind_[i] == 25) {
+                    // F8：Concat —— 沿 axis 拼接（维度/轴长 = op 参数，内存行优先）
+                    int a0 = opA_[i]; int a1 = opB_[i]; int a2 = opC_[i]; int yd = opD_[i];
+                    int axis = opP0_[i]; int nIn = opP1_[i];
+                    int od0 = opP2_[i], od1 = opP3_[i], od2 = opP4_[i], od3 = opP5_[i];
+                    int ax0 = opP6_[i], ax1 = opP7_[i], ax2 = opP8_[i];
+                    int off2 = 0;
+                    if (a2 >= 0) off2 = tOff_[a2];
+                    InferOps.concat(arena, tOff_[a0], tOff_[a1], off2, tOff_[yd],
+                                    od0, od1, od2, od3, ax0, ax1, ax2, axis, nIn);
+                } else if (opKind_[i] == 26) {
+                    // F8：Transpose —— perm 转置（输入维度 = op 参数）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int p0 = opP0_[i], p1 = opP1_[i], p2 = opP2_[i], p3 = opP3_[i];
+                    int pc = opP4_[i];
+                    int id0 = opP5_[i], id1 = opP6_[i], id2 = opP7_[i], id3 = opP8_[i];
+                    InferOps.transpose(arena, tOff_[xa], tOff_[yd],
+                                       id0, id1, id2, id3, p0, p1, p2, p3, pc);
                 }
                 i = i + 1;
             }
@@ -657,6 +719,31 @@ class InferenceRuntime {
                     int minOff = -1; if (opP0_[i] >= 0) minOff = tOff_[opP0_[i]];
                     int maxOff = -1; if (opP1_[i] >= 0) maxOff = tOff_[opP1_[i]];
                     GpuInferOps.clip(arena, work, tOff_[xa], tOff_[yd], minOff, maxOff, dev);
+                } else if (opKind_[i] == 24) {
+                    // F8：Reshape —— 连续拷贝
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.copyFlat(arena, work, tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 25) {
+                    // F8：Concat —— 沿 axis 拼接（维度/轴长 = op 参数）
+                    int a0 = opA_[i]; int a1 = opB_[i]; int a2 = opC_[i]; int yd = opD_[i];
+                    int axis = opP0_[i]; int nIn = opP1_[i];
+                    int od0 = opP2_[i], od1 = opP3_[i], od2 = opP4_[i], od3 = opP5_[i];
+                    int ax0 = opP6_[i], ax1 = opP7_[i], ax2 = opP8_[i];
+                    int off2 = 0;
+                    if (a2 >= 0) off2 = tOff_[a2];
+                    int work = tensorSize(yd);
+                    GpuInferOps.concat(arena, work, tOff_[a0], tOff_[a1], off2, tOff_[yd],
+                                       od0, od1, od2, od3, ax0, ax1, ax2, axis, nIn, dev);
+                } else if (opKind_[i] == 26) {
+                    // F8：Transpose —— perm 转置（输入维度 = op 参数）
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int p0 = opP0_[i], p1 = opP1_[i], p2 = opP2_[i], p3 = opP3_[i];
+                    int pc = opP4_[i];
+                    int id0 = opP5_[i], id1 = opP6_[i], id2 = opP7_[i], id3 = opP8_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.transpose(arena, work, tOff_[xa], tOff_[yd],
+                                          id0, id1, id2, id3, p0, p1, p2, p3, pc, dev);
                 }
                 i = i + 1;
             }

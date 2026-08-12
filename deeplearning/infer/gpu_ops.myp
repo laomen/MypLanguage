@@ -512,4 +512,90 @@ class GpuInferOps {
                 }
             }
         }
+
+        // ---- F8：张量操作（Reshape / Concat / Transpose）----
+        // Reshape：连续拷贝
+        void copyFlat(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    a[outOff + p] = a[inOff + p];
+                }
+            }
+        }
+        // Concat：沿 axis 拼接 2-3 输入
+        void concat(float[] a, int work, int off0, int off1, int off2, int offO,
+                    int od0, int od1, int od2, int od3,
+                    int ax0, int ax1, int ax2, int axis, int nIn, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int x3 = i % od3;
+                    int t = i / od3;
+                    int x2 = t % od2;
+                    t = t / od2;
+                    int x1 = t % od1;
+                    int x0 = t / od1;
+                    int ac = x3;
+                    if (axis == 0) ac = x0;
+                    else if (axis == 1) ac = x1;
+                    else if (axis == 2) ac = x2;
+                    int which = 0;
+                    int local = ac;
+                    int aLen = ax0;
+                    if (local >= aLen) {
+                        local = local - aLen;
+                        which = 1;
+                        aLen = ax1;
+                        if (nIn >= 3 && local >= aLen) { local = local - aLen; which = 2; aLen = ax2; }
+                    }
+                    int inOff = off0;
+                    if (which == 1) inOff = off1;
+                    else if (which == 2) inOff = off2;
+                    int inFlat = 0;
+                    if (axis == 0) inFlat = ((local * od1 + x1) * od2 + x2) * od3 + x3;
+                    else if (axis == 1) inFlat = ((x0 * aLen + local) * od2 + x2) * od3 + x3;
+                    else if (axis == 2) inFlat = ((x0 * od1 + x1) * aLen + local) * od3 + x3;
+                    else inFlat = ((x0 * od1 + x1) * od2 + x2) * aLen + local;
+                    a[offO + i] = a[inOff + inFlat];
+                }
+            }
+        }
+        // Transpose：按 perm 转置 4D（pc = perm 元素数，0 = 缺省反转）
+        void transpose(float[] a, int work, int offIn, int offOut,
+                       int id0, int id1, int id2, int id3,
+                       int p0, int p1, int p2, int p3, int pc, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int perm0 = p0, perm1 = p1, perm2 = p2, perm3 = p3;
+                    if (pc == 0) { perm0 = 3; perm1 = 2; perm2 = 1; perm3 = 0; }
+                    else if (pc == 1) { perm1 = 1; perm2 = 2; perm3 = 3; }
+                    else if (pc == 2) { perm2 = 2; perm3 = 3; }
+                    else if (pc == 3) { perm3 = 3; }
+                    int od0 = id3, od1 = id3, od2 = id3, od3 = id3;
+                    if (perm0 == 0) od0 = id0; else if (perm0 == 1) od0 = id1; else if (perm0 == 2) od0 = id2;
+                    if (perm1 == 0) od1 = id0; else if (perm1 == 1) od1 = id1; else if (perm1 == 2) od1 = id2;
+                    if (perm2 == 0) od2 = id0; else if (perm2 == 1) od2 = id1; else if (perm2 == 2) od2 = id2;
+                    if (perm3 == 0) od3 = id0; else if (perm3 == 1) od3 = id1; else if (perm3 == 2) od3 = id2;
+                    int inv0 = 3, inv1 = 3, inv2 = 3, inv3 = 3;
+                    if (perm0 == 0) inv0 = 0; else if (perm1 == 0) inv0 = 1; else if (perm2 == 0) inv0 = 2;
+                    if (perm0 == 1) inv1 = 0; else if (perm1 == 1) inv1 = 1; else if (perm2 == 1) inv1 = 2;
+                    if (perm0 == 2) inv2 = 0; else if (perm1 == 2) inv2 = 1; else if (perm2 == 2) inv2 = 2;
+                    if (perm0 == 3) inv3 = 0; else if (perm1 == 3) inv3 = 1; else if (perm2 == 3) inv3 = 2;
+                    int i = int(p);
+                    int o3 = i % od3;
+                    int t = i / od3;
+                    int o2 = t % od2;
+                    t = t / od2;
+                    int o1 = t % od1;
+                    int o0 = t / od1;
+                    int i0 = o3, i1 = o3, i2 = o3, i3 = o3;
+                    if (inv0 == 0) i0 = o0; else if (inv0 == 1) i0 = o1; else if (inv0 == 2) i0 = o2;
+                    if (inv1 == 0) i1 = o0; else if (inv1 == 1) i1 = o1; else if (inv1 == 2) i1 = o2;
+                    if (inv2 == 0) i2 = o0; else if (inv2 == 1) i2 = o1; else if (inv2 == 2) i2 = o2;
+                    if (inv3 == 0) i3 = o0; else if (inv3 == 1) i3 = o1; else if (inv3 == 2) i3 = o2;
+                    int inFlat = ((i0 * id1 + i1) * id2 + i2) * id3 + i3;
+                    a[offOut + i] = a[offIn + inFlat];
+                }
+            }
+        }
 }

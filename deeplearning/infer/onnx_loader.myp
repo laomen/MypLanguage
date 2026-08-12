@@ -173,6 +173,13 @@ class OnnxLoader {
                     }
                     else if (aname == "dilations") { if (idx == 0) g_.nodeInt(ni, NodeField.DH(), v); else g_.nodeInt(ni, NodeField.DW(), v); }
                     else if (aname == "kernel_shape") { if (idx == 0) g_.nodeInt(ni, NodeField.KH(), v); else g_.nodeInt(ni, NodeField.KW(), v); }
+                    else if (aname == "perm") {   // F8：Transpose perm（ints 非打包）
+                        if (idx == 0) g_.nodeInt(ni, NodeField.PERM0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.PERM1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.PERM2(), v);
+                        else g_.nodeInt(ni, NodeField.PERM3(), v);
+                        g_.nodeInt(ni, NodeField.PERM_N(), idx + 1);
+                    }
                     idx = idx + 1;
                 } else if (f == 5) {    // t（Constant 节点的 value：TensorProto）记录字节，稍后折叠
                     int l = pb_.readLen(); int po = pb_.payloadOff();
@@ -211,6 +218,11 @@ class OnnxLoader {
                     payloadLen = pb_.readLen();
                     payloadOff = pb_.payloadOff();
                     pb_.skipBytes(payloadLen);  // 前进游标，跳过 payload（仅记录偏移，稍后从 file_ 读取）
+                } else if (f == 7) {   // int64_data(7)：packed varint（F8：Reshape shape / Slice 参数）
+                    payloadKind = 3;
+                    payloadLen = pb_.readLen();
+                    payloadOff = pb_.payloadOff();
+                    pb_.skipBytes(payloadLen);
                 } else if (f == 10) {   // double_data(10)：packed f64
                     payloadKind = 2;
                     payloadLen = pb_.readLen();
