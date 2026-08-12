@@ -1,0 +1,67 @@
+// §9.5 GPU：Math 库多态在 kernel 内的 float/double 选型（__nv_xf vs __nv_x）。
+// - float[] + Math.sqrt(float) → __nv_sqrtf（float 返回，无提升）
+// - double[] + Math.sqrt(double)/Math.exp(double) → __nv_sqrt/__nv_exp（回归）
+// - Math.abs(int) kernel 内 → 内联整型 abs
+// 手动运行（需 GPU + libdevice）：./build/mypc tests/test_gpu_math_float.myp
+import env;
+import math;
+
+class Main {
+    action:
+        @startup void run() {
+            long n = 256L;
+
+            // ---- float 路径：Math.sqrt(float) → __nv_sqrtf ----
+            float[] f = new float[256];
+            for (long i = 0L; i < n; i = i + 1L) f[i] = 4.0f;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                f[i] = Math.sqrt(f[i]);
+            }
+            long err = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                if (Math.abs(f[i] - 2.0f) > 0.0001f) err = err + 1L;
+            }
+            Console.writeLine("gpu float sqrt: " + (err == 0L ? "PASS" : "FAIL"));
+
+            // ---- float 路径：Math.exp/log 组合 ----
+            float[] g = new float[256];
+            for (long i = 0L; i < n; i = i + 1L) g[i] = 1.0f;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                g[i] = Math.log(Math.exp(g[i]));
+            }
+            long err3 = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                if (Math.abs(g[i] - 1.0f) > 0.001f) err3 = err3 + 1L;
+            }
+            Console.writeLine("gpu float exp/log: " + (err3 == 0L ? "PASS" : "FAIL"));
+
+            // ---- double 回归：Math.sqrt(double)/Math.exp(double) → __nv_sqrt ----
+            double[] d = new double[256];
+            for (long i = 0L; i < n; i = i + 1L) d[i] = 9.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                d[i] = Math.sqrt(d[i]) + Math.exp(0.0);
+            }
+            long err2 = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                double expected = 3.0 + 1.0;
+                if (Math.abs(d[i] - expected) > 0.0001) err2 = err2 + 1L;
+            }
+            Console.writeLine("gpu double math: " + (err2 == 0L ? "PASS" : "FAIL"));
+
+            // ---- kernel 内 Math.abs(int) → 内联整型 abs ----
+            int[] iv = new int[256];
+            for (long i = 0L; i < n; i = i + 1L) iv[i] = 0 - int(i);
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                iv[i] = Math.abs(iv[i]);
+            }
+            long err4 = 0L;
+            for (long i = 0L; i < n; i = i + 1L) {
+                if (iv[i] != int(i)) err4 = err4 + 1L;
+            }
+            Console.writeLine("gpu int abs: " + (err4 == 0L ? "PASS" : "FAIL"));
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

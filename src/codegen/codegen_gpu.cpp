@@ -428,16 +428,30 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a) return nullptr;
                     gpu_math_used_ = true;
-                    if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy())
-                        a = kb.CreateSIToFP(a, double_ty);
-                    if (a->getType()->isFloatTy())
-                        a = kb.CreateFPExt(a, double_ty);
                     llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                    auto* fn = cur_mod->getFunction(nv);
+                    // §9.5 GPU：按实参类型选 libdevice 变体——float 实参走
+                    // __nv_xf（float 版，返回 float），double 走 __nv_x；整型
+                    // abs 内联 select（返回同宽整型，与 Math.abs<T:Numeric> 的
+                    // int 实例返回类型匹配），其余整型实数提升 f64。
+                    std::string fname = nv;
+                    llvm::Type* arg_ty = double_ty;
+                    if (a->getType()->isFloatTy()) {
+                        arg_ty = float_ty;
+                        if (fname.back() != 'f') fname += 'f';
+                    } else if (a->getType()->isIntegerTy()) {
+                        if (fname == "__nv_fabs") {
+                            auto* zero = llvm::ConstantInt::get(a->getType(), 0);
+                            auto* neg = kb.CreateSub(zero, a);
+                            auto* isneg = kb.CreateICmpSLT(a, zero);
+                            return kb.CreateSelect(isneg, neg, a);
+                        }
+                        a = kb.CreateSIToFP(a, double_ty);
+                    }
+                    auto* fn = cur_mod->getFunction(fname);
                     if (!fn)
                         fn = llvm::Function::Create(
-                            llvm::FunctionType::get(double_ty, {double_ty}, false),
-                            llvm::Function::ExternalLinkage, nv, cur_mod);
+                            llvm::FunctionType::get(arg_ty, {arg_ty}, false),
+                            llvm::Function::ExternalLinkage, fname, cur_mod);
                     return kb.CreateCall(fn, {a});
                 };
                 auto emit_math_pow_gpu = [&]() -> llvm::Value* {
@@ -448,9 +462,20 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
                     gpu_math_used_ = true;
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    // §9.5：双 float → __nv_powf；否则提升 f64 → __nv_pow
+                    if (a->getType()->isFloatTy() && b->getType()->isFloatTy()) {
+                        auto* fn = cur_mod->getFunction("__nv_powf");
+                        if (!fn)
+                            fn = llvm::Function::Create(
+                                llvm::FunctionType::get(float_ty, {float_ty, float_ty}, false),
+                                llvm::Function::ExternalLinkage, "__nv_powf", cur_mod);
+                        return kb.CreateCall(fn, {a, b});
+                    }
                     if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy()) a = kb.CreateSIToFP(a, double_ty);
                     if (!b->getType()->isDoubleTy() && b->getType()->isIntegerTy()) b = kb.CreateSIToFP(b, double_ty);
-                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    if (a->getType()->isFloatTy()) a = kb.CreateFPExt(a, double_ty);
+                    if (b->getType()->isFloatTy()) b = kb.CreateFPExt(b, double_ty);
                     auto* fn = cur_mod->getFunction("__nv_pow");
                     if (!fn)
                         fn = llvm::Function::Create(
@@ -467,9 +492,20 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                                               kernel_arg_values, loop_var_name, tid_val);
                     if (!a || !b) return nullptr;
                     gpu_math_used_ = true;
+                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    // §9.5：双 float → __nv_atan2f；否则提升 f64 → __nv_atan2
+                    if (a->getType()->isFloatTy() && b->getType()->isFloatTy()) {
+                        auto* fn = cur_mod->getFunction("__nv_atan2f");
+                        if (!fn)
+                            fn = llvm::Function::Create(
+                                llvm::FunctionType::get(float_ty, {float_ty, float_ty}, false),
+                                llvm::Function::ExternalLinkage, "__nv_atan2f", cur_mod);
+                        return kb.CreateCall(fn, {a, b});
+                    }
                     if (!a->getType()->isDoubleTy() && a->getType()->isIntegerTy()) a = kb.CreateSIToFP(a, double_ty);
                     if (!b->getType()->isDoubleTy() && b->getType()->isIntegerTy()) b = kb.CreateSIToFP(b, double_ty);
-                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                    if (a->getType()->isFloatTy()) a = kb.CreateFPExt(a, double_ty);
+                    if (b->getType()->isFloatTy()) b = kb.CreateFPExt(b, double_ty);
                     auto* fn = cur_mod->getFunction(nv);
                     if (!fn)
                         fn = llvm::Function::Create(
