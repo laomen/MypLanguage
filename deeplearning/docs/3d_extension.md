@@ -88,6 +88,38 @@
 
 ---
 
+## 3.5 图优化器影响评估（无需重做，只需扩展）
+
+G5 解耦后的 `graph.myp`（`Graph`：格式无关 IR + pass）按 `nType_` 字符串分派，
+**绝大多数 pass 与维度无关**，3D 扩展是「针对性扩展」而非重写：
+
+| pass | 对 3D 的影响 | 动作 |
+|---|---|---|
+| `inferShapes` | Conv/MaxPool/Resize 输出需多算 D 维（`shD4_`） | **扩展**：Conv3D/Pool3D/Resize3D 各加 ~3-5 行 D 计算 |
+| `classifyShapes` | `Conv`/`MaxPool` 已按 type → `CNN_ACT`（type 判定即可覆盖 5D）；仅 `consumerKind` 的 4D 检查（`d2>1||d3>1`）需顺带认 5D | 微调（几行） |
+| `fuseConvBN` | 目标模型用 `InstanceNormalization`（mean/var 数据依赖），**非 BatchNormalization** → 该 pass 不会触发，逻辑无需改 | 无（语义上正确跳过 IN） |
+| `fuseConvRelu` | 3D U-Net 模式是 `Conv→IN→Relu`（IN 隔开）→ 不触发 | 无；后续可加 `IN+Relu` 融合作优化 |
+| `fuseGapFlatten` | 3D 模型用 MaxPool/AvgPool，不触发 | 无 |
+| `eliminateDeadNodes` / `topoSort` | 纯图结构，维度无关 | 无 |
+| `layoutNHWC` | 3D 走 NCHW（不启用 NHWC） | 无（3D 不开 NHWC） |
+| `planMemory` | `size = d0*d1*d2*d3`（1 行） | **扩展**：乘 `*d4` |
+| `buildRuntime` | 张量登记 `addTensorPlanned4` + 新算子分发 | **扩展**：`addTensorPlanned5` + Conv3D/IN/Resize3D 分发 |
+| `foldConstants` | 现主处理 f32 常量 | **新增**：P3 扩 int64 常量折叠（Shape/Slice/Concat/ReduceProd/Cast on int64） |
+
+**关键点**：
+- 融合 pass（Conv+BN / Conv+Relu / GAP+Flatten）对 3D U-Net **基本不触发**（IN 隔在
+  Conv 与 Relu 之间），所以这些 pass 无需为 3D 改动——它们的价值主要在 2D CNN。
+- 真正的新机制是 **Shape/int64 常量折叠**（P3）：输入形状注入后把 `Shape→Slice→
+  Concat→Resize`、`Shape→ReduceProd→Cast` 折叠为常量。这属于 `foldConstants` 的
+  **扩展**（加 int64 常量路径 + Shape 折叠），不是重做。
+- 形状表 `shD0_..shD4_` 与 `addShapeD(name,dims,dimCount)` 已按 dimCount 读 dims，
+  放开 5 维即可；`addShapeD4` 平移为 `addShapeD5`。
+
+**结论**：图优化器整体框架复用，3D 扩展的图侧工作量集中在 inferShapes（D 维计算）
+与 foldConstants（int64 折叠），约占总估时 1.5-2.5 天，无重构风险。
+
+---
+
 ## 4. 两条路线对比
 
 | | 路线 1：通用 N-D 张量 | 路线 2：固定 5D NCDHW（**推荐**） |
