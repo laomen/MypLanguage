@@ -29,12 +29,14 @@ enum class BuiltinType {
     Byte, Short, Int, Long,
     UByte, UShort, UInt, ULong,
     Char, Float, Double, Bool, String, Void,
+    Bit, BitVector,
 };
 
 struct TypeNode {
     BuiltinType basic_type = BuiltinType::Int;
     std::string class_name;
     std::vector<TypeNode> type_args; // generic arguments
+    int bitvector_width = 0;         // >0 for bitvector<N> (8/16/32/64)
     bool is_generic_param = false;   // true if this is a type param reference   // non-empty if user-defined type
     std::shared_ptr<TypeNode> element_type; // non-null if array type
     int array_size = 0;       // >0 if fixed-size array like Type[10]
@@ -50,6 +52,7 @@ struct TypeNode {
         : basic_type(other.basic_type), class_name(other.class_name),
           type_args(other.type_args), is_generic_param(other.is_generic_param),
           range(other.range), array_size(other.array_size),
+          bitvector_width(other.bitvector_width),
           is_inferred(other.is_inferred),
           is_tuple(other.is_tuple),
           func_param_types(other.func_param_types),
@@ -63,6 +66,7 @@ struct TypeNode {
             is_generic_param = other.is_generic_param;
             range = other.range;
             array_size = other.array_size;
+            bitvector_width = other.bitvector_width;
             is_inferred = other.is_inferred;
             is_tuple = other.is_tuple;
             func_param_types = other.func_param_types;
@@ -448,9 +452,10 @@ struct UnaryOpExpr : Expr {
 // 类型关键字后跟 '(' 解析为转换（宽→窄截断，窄→宽按源符号扩展，int↔float 转换）。
 struct ConvertExpr : Expr {
     TypeKind to_kind;                     // 目标内置类型
+    int to_bitvector_width = 0;           // >0：bitvector<N>(x) 目标宽度
     std::unique_ptr<Expr> operand;
-    ConvertExpr(TypeKind k, std::unique_ptr<Expr> opnd, SourceRange range_)
-        : Expr(ExprKind::Convert, range_), to_kind(k), operand(std::move(opnd)) {}
+    ConvertExpr(TypeKind k, std::unique_ptr<Expr> opnd, SourceRange range_, int bw = 0)
+        : Expr(ExprKind::Convert, range_), to_kind(k), to_bitvector_width(bw), operand(std::move(opnd)) {}
 };
 
 struct CallExpr : Expr {

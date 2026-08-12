@@ -324,7 +324,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     }
     const TypeNode& dt = resolved_tp ? *resolved_tp : d.type;
 
-    TypeInfo vt = builtinTypeToInfo(dt.basic_type);
+    TypeInfo vt = typeNodeToCodegenType(dt);
     // Detect class type from parser's type node
     if (!dt.class_name.empty() && getClassStruct(dt.class_name)) {
         vt = TypeInfo(TypeKind::Class); vt.class_name = dt.class_name;
@@ -667,7 +667,7 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         TypeInfo tt = typeNodeToCodegenType(dt);
         lt = getLLVMType(tt);
     } else {
-        vt = builtinTypeToInfo(dt.basic_type);
+        vt = typeNodeToCodegenType(dt);
         bool arc_class = false;
         if (isStringType(dt)) {
             // M8: strings are counted — the local owns a strong string ref.

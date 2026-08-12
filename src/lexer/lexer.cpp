@@ -426,6 +426,8 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "double")   kind = TokenKind::Type_double;
     else if (value == "bool")     kind = TokenKind::Type_bool;
     else if (value == "string")   kind = TokenKind::Type_string;
+    else if (value == "bit")      kind = TokenKind::Type_bit;
+    else if (value == "bitvector") kind = TokenKind::Type_bitvector;
 
     return Token(kind,
         SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},

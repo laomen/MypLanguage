@@ -25,6 +25,8 @@ bool TypeInfo::operator==(const TypeInfo& other) const {
             return tuple_types == other.tuple_types;
         case TypeKind::Assoc:
             return true; // 抽象关联类型按 kind 匹配
+        case TypeKind::BitVector:
+            return bitvector_width == other.bitvector_width;
         default:
             return true; // basic types match by kind alone
     }

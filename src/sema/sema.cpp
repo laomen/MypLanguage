@@ -1792,7 +1792,7 @@ void Sema::error(const SourceRange& range, const std::string& msg) {
 }
 
 bool Sema::expectBool(const TypeInfo& type, const SourceRange& range) {
-    if (type.kind != TypeKind::Bool) {
+    if (type.kind != TypeKind::Bool && type.kind != TypeKind::Bit) {
         error(range, "expected boolean expression, got '" + typeName(type) + "'");
         return false;
     }

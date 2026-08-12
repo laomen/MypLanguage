@@ -541,7 +541,7 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
                 // 前瞻：方法（type name ( ... )）vs 属性（type name ;）
                 int ahead = current_;
                 auto isTypeKind = [](TokenKind k) {
-                    return (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) ||
+                    return (k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) ||
                            k == TokenKind::Keyword_void || k == TokenKind::Identifier;
                 };
                 if (ahead < (int)tokens_.size() && isTypeKind(tokens_[ahead].kind)) {
@@ -579,7 +579,7 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
             int ahead = current_;
             // Skip type tokens (may be void too)
             auto isTypeKind = [](TokenKind k) {
-                return (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) ||
+                return (k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) ||
                        k == TokenKind::Keyword_void ||
                        k == TokenKind::Identifier;
             };

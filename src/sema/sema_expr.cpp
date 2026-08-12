@@ -331,6 +331,17 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
         case BinaryOpKind::Eq: case BinaryOpKind::Ne: {
             TypeInfo op_ret = resolveOperator();
             if (op_ret.kind != TypeKind::Void) return op_ret;
+            // §5.1 bitvector<N>：同宽位向量 == / != → bool。
+            if (lhs_type.kind == TypeKind::BitVector ||
+                rhs_type.kind == TypeKind::BitVector) {
+                if (lhs_type.kind != TypeKind::BitVector ||
+                    rhs_type.kind != TypeKind::BitVector ||
+                    lhs_type.bitvector_width != rhs_type.bitvector_width) {
+                    error(expr.range, "bitvector comparison requires both "
+                          "operands to be bitvector<N> of the same width");
+                }
+                return TypeInfo(TypeKind::Bool);
+            }
             return TypeInfo(TypeKind::Bool);
         }
 
@@ -370,6 +381,37 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
         case BinaryOpKind::BitAnd: case BinaryOpKind::BitOr:
         case BinaryOpKind::BitXor: case BinaryOpKind::Shl:
         case BinaryOpKind::Shr:
+            // §5.1 bitvector<N>：同宽位向量位运算/移位 → 同宽 bitvector。
+            // 移位（<< >>）右操作数允许任意整型（移位量）；& | ^ 要求同宽 bitvector。
+            if (lhs_type.kind == TypeKind::BitVector ||
+                rhs_type.kind == TypeKind::BitVector) {
+                if (expr.op == BinaryOpKind::Shl || expr.op == BinaryOpKind::Shr) {
+                    if (lhs_type.kind != TypeKind::BitVector ||
+                        (rhs_type.kind != TypeKind::BitVector &&
+                         !isNumericKind(rhs_type.kind))) {
+                        error(expr.range, "bitvector shift requires a bitvector "
+                              "left operand and an integer or bitvector shift amount");
+                        return TypeInfo(TypeKind::Int);
+                    }
+                    if (rhs_type.kind == TypeKind::BitVector &&
+                        lhs_type.bitvector_width != rhs_type.bitvector_width) {
+                        error(expr.range, "bitvector shift amount bitvector must "
+                              "match operand width");
+                    }
+                } else {
+                    if (lhs_type.kind != TypeKind::BitVector ||
+                        rhs_type.kind != TypeKind::BitVector ||
+                        lhs_type.bitvector_width != rhs_type.bitvector_width) {
+                        error(expr.range, "bitvector bitwise operations require "
+                              "both operands to be bitvector<N> of the same width");
+                        return TypeInfo(TypeKind::Int);
+                    }
+                }
+                expr.lhs_unsigned = true;
+                expr.rhs_unsigned = true;
+                expr.result_unsigned = true;
+                return lhs_type;
+            }
             if (!expectNumeric(lhs_type, expr.lhs->range) ||
                 !expectNumeric(rhs_type, expr.rhs->range)) {
                 return TypeInfo(TypeKind::Int);
@@ -438,6 +480,9 @@ TypeInfo Sema::visitUnaryOp(UnaryOpExpr& expr) {
                 return TypeInfo(TypeKind::Int);
             return operand_type;
         case UnaryOpKind::Not:
+            // §5.1：!bit → bit（i1 逻辑非）；!bool → bool（既有）。
+            if (operand_type.kind == TypeKind::Bit)
+                return TypeInfo(TypeKind::Bit);
             expectBool(operand_type, expr.operand->range);
             return TypeInfo(TypeKind::Bool);
     }
@@ -449,9 +494,46 @@ TypeInfo Sema::visitConvert(ConvertExpr& expr) {
     // P1 D6（docs/type_system_design §3.4）：bool 入显式转换链。int(b)/long(b)/
     // double(b)/float(b) 与 bool(n)/bool(f) 都是显式 cast；隐式 bool↔整型仍禁
     // （expectBool 严格）。string 仍不入 T(x)（那是 parse，§6.2）。
-    bool src_ok = isNumericKind(ot.kind) || ot.kind == TypeKind::Bool;
-    bool dst_ok = isNumericKind(expr.to_kind) || expr.to_kind == TypeKind::Bool;
-    if (!src_ok || !dst_ok) {
+    bool src_nb = isNumericKind(ot.kind) || ot.kind == TypeKind::Bool;
+    bool dst_nb = isNumericKind(expr.to_kind) || expr.to_kind == TypeKind::Bool;
+    // §5.1 bit：bit(x) = x≠0（任意数值/bool）；bool(bit) 直通。
+    if (expr.to_kind == TypeKind::Bit) {
+        if (!src_nb) {
+            error(expr.range, "cannot convert '" + typeName(ot) +
+                  "' to 'bit' (operand must be numeric or bool)");
+        }
+        return TypeInfo(TypeKind::Bit);
+    }
+    // §5.1 bitvector<N>：bitvector<N>(x) 位保持（整型/bitvector 截断或零扩展到 N 位）。
+    if (expr.to_kind == TypeKind::BitVector) {
+        bool int_family = (ot.kind != TypeKind::Float && ot.kind != TypeKind::Double &&
+                           isNumericKind(ot.kind));
+        bool src_ok = int_family || ot.kind == TypeKind::BitVector;
+        if (!src_ok) {
+            error(expr.range, "cannot convert '" + typeName(ot) +
+                  "' to 'bitvector<N>' (operand must be an integer or bitvector)");
+        }
+        TypeInfo bv(TypeKind::BitVector);
+        bv.bitvector_width = expr.to_bitvector_width;
+        return bv;
+    }
+    // uintN(bv)：bitvector → 整型，位保持直通。
+    if (ot.kind == TypeKind::BitVector) {
+        if (!dst_nb) {
+            error(expr.range, "cannot convert 'bitvector' to '" +
+                  typeName(TypeInfo(expr.to_kind)) + "'");
+        }
+        return TypeInfo(expr.to_kind);
+    }
+    // bit → bool/numeric：bool 直通，numeric = 0/1。
+    if (ot.kind == TypeKind::Bit) {
+        if (expr.to_kind != TypeKind::Bool && !dst_nb) {
+            error(expr.range, "cannot convert 'bit' to '" +
+                  typeName(TypeInfo(expr.to_kind)) + "'");
+        }
+        return TypeInfo(expr.to_kind);
+    }
+    if (!src_nb || !dst_nb) {
         error(expr.range, "cannot convert '" + typeName(ot) + "' to '" +
               typeName(TypeInfo(expr.to_kind)) +
               "' (conversion operand and target must be numeric or bool)");
@@ -1728,6 +1810,12 @@ TypeInfo Sema::visitSubscript(SubscriptExpr& expr) {
             return TypeInfo(TypeKind::Void);
         return TypeInfo(TypeKind::Char);
     }
+    // §5.1 bitvector<N>：v[i] : bit —— 提取第 i 位（i 任意整型）。
+    if (arr_type.kind == TypeKind::BitVector) {
+        if (!expectNumeric(idx_type, expr.index->range))
+            return TypeInfo(TypeKind::Void);
+        return TypeInfo(TypeKind::Bit);
+    }
     if (arr_type.kind != TypeKind::Array && arr_type.kind != TypeKind::Slice) {
         error(expr.range, "cannot index non-array type '" + typeName(arr_type) + "'");
         return TypeInfo(TypeKind::Void);
@@ -2351,6 +2439,12 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
         case BuiltinType::Double: return TypeInfo(TypeKind::Double);
         case BuiltinType::Bool:   return TypeInfo(TypeKind::Bool);
         case BuiltinType::String: return TypeInfo(TypeKind::String);
+        case BuiltinType::Bit:    return TypeInfo(TypeKind::Bit);
+        case BuiltinType::BitVector: {
+            TypeInfo bv(TypeKind::BitVector);
+            bv.bitvector_width = node.bitvector_width;
+            return bv;
+        }
         case BuiltinType::Void:   return TypeInfo(TypeKind::Void);
     }
     return TypeInfo(TypeKind::Void);
@@ -2370,6 +2464,9 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Float:  return "float";
         case TypeKind::Double: return "double";
         case TypeKind::Bool:   return "bool";
+        case TypeKind::Bit:    return "bit";
+        case TypeKind::BitVector:
+            return "bitvector<" + std::to_string(type.bitvector_width) + ">";
         case TypeKind::String: return "string";
         case TypeKind::Void:   return "void";
         case TypeKind::Null:   return "null";
@@ -2440,6 +2537,10 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
     }
     // 抽象关联类型（§三-5）：Assoc 与任意类型兼容（双向通配）
     if (lhs.kind == TypeKind::Assoc || rhs.kind == TypeKind::Assoc) return true;
+    // §5.1 bit ↔ bool：同 i1 语义，隐式互转（bit=true 即 bool；bool→bit 无损）。
+    if ((lhs.kind == TypeKind::Bit && rhs.kind == TypeKind::Bool) ||
+        (lhs.kind == TypeKind::Bool && rhs.kind == TypeKind::Bit))
+        return true;
     // Implicit numeric promotion: Int ↔ Long are compatible
     if ((lhs.kind == TypeKind::Int && rhs.kind == TypeKind::Long) ||
         (lhs.kind == TypeKind::Long && rhs.kind == TypeKind::Int))

@@ -84,6 +84,8 @@ enum class TokenKind : uint16_t {
     Type_double,
     Type_bool,
     Type_string,
+    Type_bit,
+    Type_bitvector,
 
     // ----- Operators -----
     Plus,           // +

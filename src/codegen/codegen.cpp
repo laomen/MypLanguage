@@ -613,6 +613,12 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
                         return llvm::PointerType::get(ctx_, 0);
         }
     }
+    // bitvector<N> — LLVM iN（宽度来自 TypeNode，builtinTypeToInfo 无法携带）
+    if (tn.basic_type == BuiltinType::BitVector) {
+        TypeInfo bv(TypeKind::BitVector);
+        bv.bitvector_width = tn.bitvector_width;
+        return getLLVMType(bv);
+    }
     return getLLVMType(builtinTypeToInfo(tn.basic_type));
 }
 
@@ -644,6 +650,9 @@ TypeInfo CodeGen::builtinTypeToInfo(BuiltinType bt) const {
         case BuiltinType::UByte:  return TypeInfo(TypeKind::UByte);
         case BuiltinType::UShort: return TypeInfo(TypeKind::UShort);
         case BuiltinType::ULong:  return TypeInfo(TypeKind::ULong);
+        case BuiltinType::Bit:    return TypeInfo(TypeKind::Bit);
+        case BuiltinType::BitVector:
+            return TypeInfo(TypeKind::BitVector);
         case BuiltinType::Void:   return TypeInfo(TypeKind::Void);
     }
     return TypeInfo(TypeKind::Int);
@@ -652,7 +661,17 @@ TypeInfo CodeGen::builtinTypeToInfo(BuiltinType bt) const {
 llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
     switch (t.kind) {
         case TypeKind::Void:   return llvm::Type::getVoidTy(ctx_);
-        case TypeKind::Bool:   return llvm::Type::getInt1Ty(ctx_);
+        case TypeKind::Bool:
+        case TypeKind::Bit:    return llvm::Type::getInt1Ty(ctx_);
+        case TypeKind::BitVector: {
+            switch (t.bitvector_width) {
+                case 8:  return llvm::Type::getInt8Ty(ctx_);
+                case 16: return llvm::Type::getInt16Ty(ctx_);
+                case 32: return llvm::Type::getInt32Ty(ctx_);
+                case 64: return llvm::Type::getInt64Ty(ctx_);
+                default: return llvm::Type::getInt32Ty(ctx_);
+            }
+        }
         case TypeKind::Byte:   case TypeKind::UByte: case TypeKind::Char:
             return llvm::Type::getInt8Ty(ctx_);
         case TypeKind::Short:  case TypeKind::UShort:
@@ -806,6 +825,12 @@ TypeInfo CodeGen::typeNodeToCodegenType(const TypeNode& node) {
                 }
             }
         }
+    }
+    // bitvector<N> — 携带宽度
+    if (node.basic_type == BuiltinType::BitVector) {
+        TypeInfo bv(TypeKind::BitVector);
+        bv.bitvector_width = node.bitvector_width;
+        return bv;
     }
     return builtinTypeToInfo(node.basic_type);
 }

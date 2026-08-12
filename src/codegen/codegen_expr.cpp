@@ -309,7 +309,10 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
 
     auto* l = generateExpr(*e.lhs);
     auto* r = generateExpr(*e.rhs);
-    if (l->getType() != r->getType()) {
+    // §5.1 bitvector<N>：位向量运算保持自身宽度，不做数值提升（v8 << 2 在 8 位内）。
+    bool bv_op = (e.lhs->resolved_kind == TypeKind::BitVector ||
+                  e.rhs->resolved_kind == TypeKind::BitVector);
+    if (l->getType() != r->getType() && !bv_op) {
         if (l->getType()->isDoubleTy() || r->getType()->isDoubleTy()) {
             // 混型提升为 double：int→SIToFP，float→FPExt。此前漏了 float→double，
             // 导致 fsub(float,double) 触发 LLVM verify 失败。
@@ -502,14 +505,14 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         case BinaryOpKind::BitOr:  return builder_.CreateOr(l, r);
         case BinaryOpKind::BitXor: return builder_.CreateXor(l, r);
         case BinaryOpKind::Shl: {
-            // Shift amount must match value type
+            // Shift amount must match value type (bitvector: 任意整型移位量截断到同宽)
             if (r->getType() != l->getType())
-                r = builder_.CreateZExt(r, l->getType());
+                r = builder_.CreateZExtOrTrunc(r, l->getType());
             return builder_.CreateShl(l, r);
         }
         case BinaryOpKind::Shr: {
             if (r->getType() != l->getType())
-                r = builder_.CreateZExt(r, l->getType());
+                r = builder_.CreateZExtOrTrunc(r, l->getType());
             // uint32：无符号右移 = 逻辑右移（LShr），有符号 = 算术右移（AShr）
             return e.result_unsigned ? builder_.CreateLShr(l, r) : builder_.CreateAShr(l, r);
         }
@@ -562,8 +565,49 @@ llvm::Value* CodeGen::generateUnaryOp(const UnaryOpExpr& e) {
 
 llvm::Value* CodeGen::generateConvert(const ConvertExpr& e) {
     auto* v = generateExpr(*e.operand);
+    // §5.1 bit(x)：x≠0（任意数值/bool）；bit→bit 直通。
+    if (e.to_kind == TypeKind::Bit) {
+        auto* i1 = llvm::Type::getInt1Ty(ctx_);
+        if (!v) return llvm::ConstantInt::get(i1, 0);
+        if (v->getType() == i1) return v;
+        if (v->getType()->isIntegerTy())
+            return builder_.CreateICmpNE(v, llvm::ConstantInt::get(v->getType(), 0), "bit");
+        if (v->getType()->isFloatingPointTy())
+            return builder_.CreateFCmpONE(v, llvm::ConstantFP::get(v->getType(), 0.0), "bit");
+        return v;
+    }
+    // §5.1 bitvector<N>(x)：位保持（截断/零扩展到 N 位）。
+    if (e.to_kind == TypeKind::BitVector) {
+        TypeInfo bv(TypeKind::BitVector);
+        bv.bitvector_width = e.to_bitvector_width;
+        llvm::Type* target = getLLVMType(bv);
+        if (!v) return llvm::ConstantInt::get(target, 0);
+        if (v->getType() == target) return v;
+        return builder_.CreateZExtOrTrunc(v, target, "bvcast");
+    }
     llvm::Type* target = getLLVMType(TypeInfo(e.to_kind));
     if (!v) return llvm::ConstantInt::get(target, 0);
+    // 源 bitvector → 整型/浮点：位保持直通（按无符号零扩展/截断）。
+    if (e.operand->resolved_kind == TypeKind::BitVector) {
+        if (target->isIntegerTy()) return builder_.CreateZExtOrTrunc(v, target, "bv2int");
+        if (target->isFloatingPointTy()) {
+            auto* i32 = llvm::Type::getInt32Ty(ctx_);
+            auto* z = builder_.CreateZExtOrTrunc(v, i32, "bv2i32");
+            return builder_.CreateSIToFP(z, target, "bv2fp");
+        }
+        return v;
+    }
+    // 源 bit → 整型/浮点：0/1 零扩展。
+    if (e.operand->resolved_kind == TypeKind::Bit &&
+        v->getType() == llvm::Type::getInt1Ty(ctx_)) {
+        if (target->isIntegerTy()) return builder_.CreateZExt(v, target, "bit2int");
+        if (target->isFloatingPointTy()) {
+            auto* i32 = llvm::Type::getInt32Ty(ctx_);
+            auto* z = builder_.CreateZExt(v, i32, "bit2i32");
+            return builder_.CreateSIToFP(z, target, "bit2fp");
+        }
+        return v;
+    }
     // P0：显式 cast 也收敛到单一转换权威（convertIntegerValue），保证无符号源
     // ZExt/UIToFP、bool↔int、fp↔fp 与隐式路径完全一致（docs/type_system_design §7.1）。
     return convertIntegerValue(builder_, v, target, e.operand.get());
@@ -1965,10 +2009,10 @@ void CodeGen::generateFFIDecl(const FFIDecl& decl) {
         if (p.type.isArray()) {
             pts.push_back(llvm::PointerType::get(ctx_, 0));
         } else {
-            pts.push_back(getLLVMType(builtinTypeToInfo(p.type.basic_type)));
+            pts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
         }
     }
-    auto* rt = getLLVMType(builtinTypeToInfo(decl.return_type.basic_type));
+    auto* rt = getLLVMType(typeNodeToCodegenType(decl.return_type));
     auto* ft = llvm::FunctionType::get(rt, pts, false);
     llvm::Function::Create(ft, llvm::Function::ExternalLinkage, decl.name, module_.get());
 }
@@ -2551,6 +2595,20 @@ llvm::Value* CodeGen::generateSubscript(const SubscriptExpr& e) {
         auto* code = builder_.CreateCall(ord, {ch}, "ord");
         if (runtime_release_) builder_.CreateCall(runtime_release_, {ch});
         return builder_.CreateTrunc(code, llvm::Type::getInt8Ty(ctx_));
+    }
+    // §5.1 bitvector<N>[i] : bit —— 提取第 i 位（i1）。位向量值 = LLVM iN，
+    // (v >> i) & 1 后截断到 i1。
+    if (e.array->resolved_kind == TypeKind::BitVector) {
+        auto* a = generateExpr(*e.array);
+        auto* idx = generateExpr(*e.index);
+        auto* ty = a->getType();
+        auto* shifted = idx;
+        if (shifted->getType() != ty)
+            shifted = builder_.CreateZExtOrTrunc(shifted, ty);
+        auto* bit = builder_.CreateLShr(a, shifted, "bvbit");
+        auto* one = llvm::ConstantInt::get(ty, 1);
+        auto* masked = builder_.CreateAnd(bit, one);
+        return builder_.CreateTrunc(masked, llvm::Type::getInt1Ty(ctx_));
     }
     // slice<T>[i] (incl. nested slice<slice<T>> rows[i][j]) — unpack the slice
     // value, bounds-check, GEP, load.

@@ -18,6 +18,8 @@ static TypeKind typeTokenToKind(TokenKind k) {
         case TokenKind::Type_ulong: case TokenKind::Type_uint64: return TypeKind::ULong;
         case TokenKind::Type_char:  return TypeKind::Char;
         case TokenKind::Type_bool:  return TypeKind::Bool;
+        case TokenKind::Type_bit:   return TypeKind::Bit;
+        case TokenKind::Type_bitvector: return TypeKind::BitVector;
         case TokenKind::Type_float: return TypeKind::Float;
         case TokenKind::Type_double:return TypeKind::Double;
         default: return TypeKind::Void;
@@ -82,7 +84,7 @@ static std::unique_ptr<Expr> cloneExpr(const Expr& e) {
             auto& v = static_cast<const ConvertExpr&>(e);
             auto o = cloneExpr(*v.operand);
             if (!o) return nullptr;
-            return std::make_unique<ConvertExpr>(v.to_kind, std::move(o), v.range);
+            return std::make_unique<ConvertExpr>(v.to_kind, std::move(o), v.range, v.to_bitvector_width);
         }
         case ExprKind::Ternary: {
             auto& v = static_cast<const TernaryExpr&>(e);
@@ -533,6 +535,29 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         }
         return std::make_unique<IdentifierExpr>("__error__", peek().range);
     }
+    // bitvector<N>(x) —— 带宽度目标的显式转换（先于通用类型关键字转换处理，
+    // 因为 bitvector 后跟 '<' 而非 '('）。
+    if (check(TokenKind::Type_bitvector) && current_ + 2 < tokens_.size() &&
+        tokens_[current_ + 1].kind == TokenKind::Less) {
+        SourceRange r = peek().range;
+        advance();                          // bitvector
+        consume(TokenKind::Less, "expected '<' after bitvector");
+        int bw = 0;
+        if (check(TokenKind::IntegerLiteral)) {
+            try { bw = (int)std::stoll(advance().value); }
+            catch (...) { bw = 0; }
+        } else {
+            diag_.error(peek().range, "expected integer width in bitvector<N>");
+        }
+        consumeGenericClose("expected '>' after bitvector width");
+        if (match(TokenKind::LeftParen)) {
+            auto op = parseExpr();
+            consume(TokenKind::RightParen, "expected ')' after conversion operand");
+            return std::make_unique<ConvertExpr>(TypeKind::BitVector, std::move(op), r, bw);
+        }
+        diag_.error(r, "expected '(' after bitvector<N>");
+        return std::make_unique<IdentifierExpr>("__error__", r);
+    }
     // 显式类型转换：uint8(x) / long(x) / double(x)（类型关键字后跟 '('）
     if (!isAtEnd()) {
         TypeKind ck = typeTokenToKind(peek().kind);
@@ -943,6 +968,20 @@ TypeNode Parser::parseType() {
     else if (match(TokenKind::Type_double))node.basic_type = BuiltinType::Double;
     else if (match(TokenKind::Type_bool))  node.basic_type = BuiltinType::Bool;
     else if (match(TokenKind::Type_string))node.basic_type = BuiltinType::String;
+    else if (match(TokenKind::Type_bit))   node.basic_type = BuiltinType::Bit;
+    else if (match(TokenKind::Type_bitvector)) {
+        // bitvector<N> — 定长位向量；N 为编译期整数字面量（8/16/32/64）。
+        node.basic_type = BuiltinType::BitVector;
+        consume(TokenKind::Less, "expected '<' after 'bitvector'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { node.bitvector_width = (int)std::stoll(tok.value); }
+            catch (...) { node.bitvector_width = 0; }
+        } else {
+            diag_.error(peek().range, "expected integer width in bitvector<N>");
+        }
+        consumeGenericClose("expected '>' after bitvector width");
+    }
     else if (match(TokenKind::Keyword_void)) node.basic_type = BuiltinType::Void;
     else if (match(TokenKind::Keyword_var)) {
         // var — type inference marker (actual type resolved in Sema)
@@ -1015,7 +1054,7 @@ std::string Parser::parseIdentifier(const std::string& error_msg) {
 }
 
 bool Parser::isTypeToken(TokenKind k) const {
-    if (k >= TokenKind::Type_byte && k <= TokenKind::Type_string) return true;
+    if (k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) return true;
     if (k == TokenKind::Keyword_void) return true;
     if (k == TokenKind::Keyword_var) return true;
     if (k == TokenKind::Identifier) return true;
@@ -1206,6 +1245,8 @@ bool Parser::checkType() const {
         case TokenKind::Type_double:
         case TokenKind::Type_bool:
         case TokenKind::Type_string:
+        case TokenKind::Type_bit:
+        case TokenKind::Type_bitvector:
         case TokenKind::Identifier:
         case TokenKind::Keyword_void:
         case TokenKind::Keyword_var:
