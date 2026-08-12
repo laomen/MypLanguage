@@ -48,3 +48,8 @@ docs/*.md
 !docs/manual_en.md
 !docs/grammar.md
 !docs/CHANGELOG.md
+
+# 本地工作区杂项（不追踪）
+tests_mix.myp
+deeplearning/docs/infer_dx.md
+deeplearning/infer_tests/seg_liver_main.myp

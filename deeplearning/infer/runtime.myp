@@ -14,16 +14,22 @@ class InferenceRuntime {
             arenaTop_ = 0;
             tensorCount_ = 0;
             opCount_ = 0;
-            arenaCap_ = arenaCapacity;
+            statsOff_ = arenaCapacity;
+            arenaCap_ = arenaCapacity + statsSize();
             if (arenaCap_ < 1) arenaCap_ = 1;
             arena = new float[arenaCap_];
         }
 
-        // 重建 arena 到指定容量（用于 ONNX 路径：加载器先做内存规划再建 arena）
+        // 重建 arena 到指定容量（用于 ONNX 路径：加载器先做内存规划再建 arena）。
+        // 尾部预留 statsSize() 个 float 作为全 resident 归约暂存区（instancenorm/reduceMean）。
         void resizeArena(int cap) {
-            arena = new float[cap];
-            arenaCap_ = cap;
+            statsOff_ = cap;
+            arena = new float[cap + statsSize()];
+            arenaCap_ = cap + statsSize();
         }
+
+        // 全 resident 归约暂存区大小（float 数）：nC*pt*2 + nC*2，1M 覆盖 nC≤1023
+        int statsSize() { return 1048576; }
 
         // 边界转换：调用方仍传 double，内部以 float（FP32）存储
         void setFlat(int tid, int index, double v) {
@@ -951,17 +957,24 @@ class InferenceRuntime {
         // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
         // 操作设备内存（零逐算子传输），最后一次 D2H 取回。
         // GPU 不可用时 dev=0，@gpu for 自动回退 CPU（结果一致，arenaBuf no-op）。
+        // MYP_PROF_GPU=1 时按算子类型统计耗时（H2D/算子循环/D2H 三段 + 分型汇总）。
         void runGpu() {
             long dev = 0L;
             GpuBufferF arenaBuf = null;
             int gpuActive = 0;
+            int prof = 0;
+            if (Console.getEnv("MYP_PROF_GPU") == "1") prof = 1;
+            long tH2D0 = __myp_now_ms();
             if (GpuBackend.available() == 1) {
                 arenaBuf = new GpuBufferF(arena, arenaCap_);
                 dev = arenaBuf.devicePtr();
                 gpuActive = 1;
             }
+            long tH2D1 = __myp_now_ms();
+            long tLoop0 = __myp_now_ms();
             int i = 0;
             while (i < opCount_) {
+                long tOp0 = __myp_now_ms();
                 if (Console.getEnv("MYP_LOG_OPS") == "1") {
                     int fd = __myp_io_fopen("/tmp/fine_ops.txt", "ab");
                     __myp_io_write("op " + Fmt.i(i) + " kind=" + Fmt.i(opKind_[i]) + " xa=" + Fmt.i(opA_[i]) + " xb=" + Fmt.i(opB_[i]) + " xc=" + Fmt.i(opC_[i]) + " xd=" + Fmt.i(opD_[i]) + " szY=" + Fmt.i(tensorSize(opB_[i])) + " P0=" + Fmt.i(opP0_[i]) + " P1=" + Fmt.i(opP1_[i]) + " P2=" + Fmt.i(opP2_[i]) + " P3=" + Fmt.i(opP3_[i]) + " P4=" + Fmt.i(opP4_[i]) + " P5=" + Fmt.i(opP5_[i]) + "\n");
@@ -1260,7 +1273,7 @@ class InferenceRuntime {
                     int xa = opA_[i]; int yd = opB_[i];
                     int work = (opP0_[i] == 0) ? 1 : (opP1_[i] * opP2_[i]);
                     GpuInferOps.reduceMean(arena, work, tOff_[xa], tOff_[yd],
-                                           opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], dev);
+                                           opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], dev, statsOff_);
                 } else if (opKind_[i] == 31) {
                     int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
                     GpuInferOps.sub(arena, tensorSize(oc), tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(bb), opP0_[i], opP1_[i], dev);
@@ -1280,7 +1293,7 @@ class InferenceRuntime {
                     if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
                     int work = opP0_[i] * opP1_[i];
                     GpuInferOps.instancenorm(arena, work, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
-                                             opP0_[i], opP1_[i], opP2_[i], eps, dev);
+                                             opP0_[i], opP1_[i], opP2_[i], eps, dev, statsOff_);
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -1317,14 +1330,112 @@ class InferenceRuntime {
                         }
                     }
                 }
+                if (prof == 1) {
+                    int k = opKind_[i];
+                    gpuOpMs_[k] = gpuOpMs_[k] + (__myp_now_ms() - tOp0);
+                    gpuOpCnt_[k] = gpuOpCnt_[k] + 1;
+                }
                 i = i + 1;
             }
+            long tLoop1 = __myp_now_ms();
             // 用 int 标志 gpuActive 判断（勿用 dev != 0L：设备指针高地址低 32 位
             // 可能为 0，MYP 的 long 比较会误判为相等）。
+            long tD2H0 = __myp_now_ms();
             if (gpuActive == 1) {
                 arenaBuf.copyToHost(arena, 0, 0, arenaCap_);
                 arenaBuf.free();
             }
+            long tD2H1 = __myp_now_ms();
+            if (prof == 1) {
+                printGpuProfile(tH2D1 - tH2D0, tLoop1 - tLoop0, tD2H1 - tD2H0);
+            }
+        }
+
+        // GPU 性能剖析（MYP_PROF_GPU=1 时 runGpu 末尾调用）：
+        // 输出 H2D / 算子循环 / D2H 三段耗时，并按算子类型降序列出累计耗时。
+        void printGpuProfile(long h2dMs, long loopMs, long d2hMs) {
+            Console.writeLine("==== MYP GPU PROFILE ====");
+            Console.writeLine("H2D=" + Fmt.f(double(h2dMs), 0) + "ms  ops-loop=" + Fmt.f(double(loopMs), 0) + "ms  D2H=" + Fmt.f(double(d2hMs), 0) + "ms  ops=" + Fmt.i(opCount_));
+            int[] sk = new int[64];
+            long[] sm = new long[64];
+            int n = 0;
+            int k = 0;
+            while (k < 64) {
+                if (gpuOpCnt_[k] > 0) { sk[n] = k; sm[n] = gpuOpMs_[k]; n = n + 1; }
+                k = k + 1;
+            }
+            // 按累计耗时降序（选择排序）
+            int a = 0;
+            while (a < n) {
+                int bm = a;
+                int b = a + 1;
+                while (b < n) {
+                    if (sm[b] > sm[bm]) bm = b;
+                    b = b + 1;
+                }
+                int tk = sk[a]; sk[a] = sk[bm]; sk[bm] = tk;
+                long tm = sm[a]; sm[a] = sm[bm]; sm[bm] = tm;
+                a = a + 1;
+            }
+            int p = 0;
+            while (p < n) {
+                int kk = sk[p];
+                long ms = sm[p];
+                double avg = double(ms) / double(gpuOpCnt_[kk]);
+                Console.writeLine("  kind=" + Fmt.i(kk, 2) + "  " + opKindName(kk) + "  n=" + Fmt.i(gpuOpCnt_[kk], 3) + "  ms=" + Fmt.f(double(ms), 0, 7) + "  avg=" + Fmt.f(avg, 1));
+                p = p + 1;
+            }
+            Console.writeLine("==== end ====");
+        }
+
+        // opKind 的可读名称（供剖析输出）
+        string opKindName(int k) {
+            if (k == 1) return "dense";
+            if (k == 2) return "relu";
+            if (k == 3) return "softmax";
+            if (k == 4) return "sigmoid";
+            if (k == 5) return "add";
+            if (k == 6) return "matmul";
+            if (k == 7) return "conv";
+            if (k == 8) return "maxpool";
+            if (k == 9) return "gapool";
+            if (k == 10) return "flatten";
+            if (k == 11) return "convRelu";
+            if (k == 12) return "transposeNCHW2NHWC";
+            if (k == 13) return "convNHWC";
+            if (k == 14) return "convNHWCRelu";
+            if (k == 15) return "maxpoolNHWC";
+            if (k == 16) return "gapoolNHWC";
+            if (k == 17) return "batchnorm";
+            if (k == 18) return "batchnormNHWC";
+            if (k == 19) return "relu6";
+            if (k == 20) return "leakyrelu";
+            if (k == 21) return "silu";
+            if (k == 22) return "hardswish";
+            if (k == 23) return "clip";
+            if (k == 24) return "reshape/copy";
+            if (k == 25) return "concat";
+            if (k == 26) return "transpose";
+            if (k == 27) return "slice";
+            if (k == 28) return "resize2d";
+            if (k == 29) return "split";
+            if (k == 30) return "reduceMean";
+            if (k == 31) return "sub";
+            if (k == 32) return "div";
+            if (k == 33) return "mul";
+            if (k == 34) return "sqrt";
+            if (k == 35) return "instancenorm";
+            if (k == 36) return "avgpool";
+            if (k == 37) return "avgpoolNHWC";
+            if (k == 38) return "pad";
+            if (k == 39) return "padNHWC";
+            if (k == 40) return "convTranspose";
+            if (k == 41) return "conv3d";
+            if (k == 42) return "maxpool3d";
+            if (k == 43) return "avgpool3d";
+            if (k == 44) return "pad3d";
+            if (k == 45) return "resize3d";
+            return "kind" + Fmt.i(k);
         }
 
         int argmax1d(int tid) {
@@ -1414,6 +1525,9 @@ class InferenceRuntime {
         int[512] opP8_;
         int[2048] opX_;       // 3D：额外参数 [id*4+k]（Conv3D dd/dh/dw/group，MaxPool3D pb/pl/pr）
         int[512] pCval_;      // F8：Pad constant_value（float 位型）
+        long[64] gpuOpMs_;    // GPU profiling：按 opKind 累计耗时（ms，MYP_PROF_GPU=1）
+        int[64] gpuOpCnt_;    // GPU profiling：按 opKind 计数
+        int statsOff_;        // 全 resident 归约暂存区（arena 尾部预留）偏移
         // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
         int[512] sCnt_;
         int[2048] sAx_;

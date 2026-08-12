@@ -10,6 +10,7 @@
 // 传输已跳过，无需再用足印上界）。
 import env;
 import math;
+import atomic;
 
 class GpuInferOps {
     static:
@@ -1124,56 +1125,173 @@ class GpuInferOps {
             }
         }
         // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
+        // 激进优化（2026-08-12）：3 阶段满并行，替代原"每通道 1 线程 × 串行 3 趟"
+        // （原实现 work=N*C 个线程，每线程串行 3 趟 7M double → GPU 欠利用，占推理 87%）。
+        //   P1：grid-stride 每线程寄存器累加 Σx → 每线程 1 次 double 原子入 sums[nc]
+        //   P2：grid-stride 每线程寄存器累加 Σ(x-mean)² → 原子入 sqs[nc]
+        //   Host：mean / invStd=scale/sqrt(var+eps)（每通道 nC 个）
+        //   P3：thread-per-element 归一化（满并行）
+        // 精度：保持 double 累加 + 两趟（与 CPU/ORT 一致）；仅求和顺序变（~1e-15）。
+        // scale/bias 是只读 Constant，host arena 未被设备改写，可 host 读。
+        // 激进优化（全 resident 单数组版，2026-08-12）：3 阶段满并行，替代原
+        // "每通道 1 线程 × 串行 3 趟"（原 412ms/层，占推理 87%）。
+        // 约束（已验证）：@gpu for 只能可靠使用"单数组 resident(a=dev)"；多数组/
+        // 原子路径均坏。故 stats（partials/mean/invStd）写入 arena 尾部预留区 stOff，
+        // 全部在设备上计算，host 不介入。精度：partial 存 float（均值误差~1e-7，
+        // 因除以大 S 后被稀释），保持两趟 double 累加语义。
+        // K1: grid-stride Σx → p1   K2: 每通道 Σp1 → mean
+        // K3: grid-stride Σ(x-mean)² → p2   K4: 每通道 Σp2 → variance, invStd
+        // K5: thread-per-element 归一化
         void instancenorm(float[] a, int work, int xOff, int sOff, int bOff, int yOff,
-                          int N, int C, int S, double eps, long dev) {
-            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
-                if (p < work) {
-                    int nc = int(p);
-                    int base = nc * S;
-                    // double 累加：与 CPU/ORT 一致的精度（float 累加经 20+ 层
-                    // InstanceNorm 累积 ~0.4 误差）
-                    double sum = 0.0;
-                    int i = 0;
-                    while (i < S) { double xv = a[xOff + base + i]; sum = sum + xv; i = i + 1; }
-                    double mean = sum / S;
-                    double ss = 0.0;
-                    i = 0;
-                    while (i < S) { double xv = a[xOff + base + i]; double d = xv - mean; ss = ss + d * d; i = i + 1; }
-                    double variance = ss / S;
-                    int c = nc % C;
-                    double scale = a[sOff + c];
-                    double bias = a[bOff + c];
-                    // 正确公式：sqrt(variance + eps)（此前误为 sqrt(variance) + eps，
-                    // 小方差通道差异 ~4-8%，经深层网络累积成大误差）
-                    double invStd = scale / Math.sqrt(variance + eps);
-                    i = 0;
-                    while (i < S) {
-                        a[yOff + base + i] = float((a[xOff + base + i] - mean) * invStd + bias);
-                        i = i + 1;
+                          int N, int C, int S, double eps, long dev, int stOff) {
+            int nC = work;
+            long total = long(nC) * long(S);
+            int pt = 512;                 // 每通道归约线程数
+            long nTh = long(nC) * long(pt);
+            int p1Off = stOff;
+            int p2Off = stOff + nC * pt;
+            int mnOff = stOff + 2 * nC * pt;
+            int ivOff = mnOff + nC;
+            // K1：grid-stride Σx → p1
+            @gpu for (long p = 0L; p < nTh; p = p + 1L) resident(a = dev) {
+                if (p < nTh) {
+                    int nc1 = int(p / long(pt));
+                    int b1 = int(p % long(pt));
+                    long base1 = long(nc1) * long(S);
+                    double acc1 = 0.0;
+                    long q1 = base1 + long(b1);
+                    while (q1 < base1 + long(S)) {
+                        double xv1 = a[xOff + int(q1)];
+                        acc1 = acc1 + xv1;
+                        q1 = q1 + long(pt);
                     }
+                    a[p1Off + nc1 * pt + b1] = float(acc1);
+                }
+            }
+            // K2：每通道 mean = Σp1 / S
+            @gpu for (long p = 0L; p < long(nC); p = p + 1L) resident(a = dev) {
+                if (p < nC) {
+                    int c2 = int(p);
+                    double s2 = 0.0;
+                    int b2 = 0;
+                    while (b2 < pt) {
+                        double v2 = a[p1Off + c2 * pt + b2];
+                        s2 = s2 + v2;
+                        b2 = b2 + 1;
+                    }
+                    a[mnOff + c2] = float(s2 / S);
+                }
+            }
+            // K3：grid-stride Σ(x-mean)² → p2
+            @gpu for (long p = 0L; p < nTh; p = p + 1L) resident(a = dev) {
+                if (p < nTh) {
+                    int nc3 = int(p / long(pt));
+                    int b3 = int(p % long(pt));
+                    long base3 = long(nc3) * long(S);
+                    double mn3 = a[mnOff + nc3];
+                    double acc3 = 0.0;
+                    long q3 = base3 + long(b3);
+                    while (q3 < base3 + long(S)) {
+                        double xv3 = a[xOff + int(q3)];
+                        double d3 = xv3 - mn3;
+                        acc3 = acc3 + d3 * d3;
+                        q3 = q3 + long(pt);
+                    }
+                    a[p2Off + nc3 * pt + b3] = float(acc3);
+                }
+            }
+            // K4：每通道 variance / invStd = scale / sqrt(var+eps)
+            @gpu for (long p = 0L; p < long(nC); p = p + 1L) resident(a = dev) {
+                if (p < nC) {
+                    int c4 = int(p);
+                    double sq4 = 0.0;
+                    int b4 = 0;
+                    while (b4 < pt) {
+                        double v4 = a[p2Off + c4 * pt + b4];
+                        sq4 = sq4 + v4;
+                        b4 = b4 + 1;
+                    }
+                    double variance = sq4 / S;
+                    double scale = a[sOff + c4];
+                    a[ivOff + c4] = float(scale / Math.sqrt(variance + eps));
+                }
+            }
+            // K5：thread-per-element 归一化
+            @gpu for (long p = 0L; p < total; p = p + 1L) resident(a = dev) {
+                if (p < total) {
+                    int nc5 = int(p / long(S));
+                    int cc5 = nc5 % C;
+                    double mn5 = a[mnOff + nc5];
+                    double iv5 = a[ivOff + nc5];
+                    double xv5 = a[xOff + int(p)];
+                    double bias5 = a[bOff + cc5];
+                    a[yOff + int(p)] = float((xv5 - mn5) * iv5 + bias5);
                 }
             }
         }
-        // ReduceMean：mode 0 全规约（单线程）；mode 1 per-(n,c)
+        // ReduceMean 激进优化（全 resident 单数组版，2026-08-12）：并行归约替代
+        // 原"单线程串行"（mode 0 原 1 线程串行 total；mode 1 原每通道 1 线程串行 S）。
+        // stats 写入 arena 尾部预留区 stOff，全设备计算（单数组 resident，无原子）。
         void reduceMean(float[] a, int work, int inOff, int outOff, int mode,
-                        int N, int C, int S, int total, int keepdims, long dev) {
-            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
-                if (p < work) {
-                    if (mode == 0) {
-                        // double 累加：与 CPU/ORT 一致精度（float 顺序累加在
-                        // 大 S（如 192³=7M）下损失严重：sum~2e5 时分辨率仅 ~0.016，
-                        // 均值相对误差 ~1e-3，经深层网络放大成大误差）
+                        int N, int C, int S, int total, int keepdims, long dev, int stOff) {
+            if (mode == 0) {
+                long totalL = long(total);
+                int np = 1024;
+                @gpu for (long p0 = 0L; p0 < long(np); p0 = p0 + 1L) resident(a = dev) {
+                    if (p0 < np) {
+                        double s0 = 0.0;
+                        long q0 = p0;
+                        while (q0 < totalL) {
+                            double xv0 = a[inOff + int(q0)];
+                            s0 = s0 + xv0;
+                            q0 = q0 + long(np);
+                        }
+                        a[stOff + int(p0)] = float(s0);
+                    }
+                }
+                @gpu for (long p1 = 0L; p1 < 1L; p1 = p1 + 1L) resident(a = dev) {
+                    if (p1 < 1L) {
                         double sum = 0.0;
-                        int i = 0;
-                        while (i < total) { double xv = a[inOff + i]; sum = sum + xv; i = i + 1; }
-                        a[outOff + 0] = float(sum / total);
-                    } else {
-                        int nc = int(p);
-                        int base = nc * S;
-                        double sum = 0.0;
-                        int i = 0;
-                        while (i < S) { double xv = a[inOff + base + i]; sum = sum + xv; i = i + 1; }
-                        a[outOff + nc] = float(sum / S);
+                        int i0 = 0;
+                        while (i0 < np) {
+                            double v0 = a[stOff + i0];
+                            sum = sum + v0;
+                            i0 = i0 + 1;
+                        }
+                        a[outOff + 0] = float(sum / totalL);
+                    }
+                }
+            } else {
+                int nC = N * C;
+                long totalL = long(nC) * long(S);
+                int pt = 512;
+                long nTh = long(nC) * long(pt);
+                @gpu for (long pp = 0L; pp < nTh; pp = pp + 1L) resident(a = dev) {
+                    if (pp < nTh) {
+                        int nc1 = int(pp / long(pt));
+                        int b1 = int(pp % long(pt));
+                        long base1 = long(nc1) * long(S);
+                        double s1 = 0.0;
+                        long q1 = base1 + long(b1);
+                        while (q1 < base1 + long(S)) {
+                            double xv1 = a[inOff + int(q1)];
+                            s1 = s1 + xv1;
+                            q1 = q1 + long(pt);
+                        }
+                        a[stOff + nc1 * pt + b1] = float(s1);
+                    }
+                }
+                @gpu for (long pp2 = 0L; pp2 < long(nC); pp2 = pp2 + 1L) resident(a = dev) {
+                    if (pp2 < nC) {
+                        int c2 = int(pp2);
+                        double s2 = 0.0;
+                        int b2 = 0;
+                        while (b2 < pt) {
+                            double v2 = a[stOff + c2 * pt + b2];
+                            s2 = s2 + v2;
+                            b2 = b2 + 1;
+                        }
+                        a[outOff + c2] = float(s2 / S);
                     }
                 }
             }

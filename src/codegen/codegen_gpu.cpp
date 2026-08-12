@@ -1760,14 +1760,17 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // used in the kernel's first parameter, exclude it from args
     // (the bound variable is already passed as kernel param 0)
     std::set<std::string> bound_var_names;
+    std::string bound_var_name;   // 循环边界标识符名（body 里引用它时映射到 n 参数）
     if (s.condition && s.condition->kind == ExprKind::BinaryOp) {
         auto& cond = static_cast<const BinaryOpExpr&>(*s.condition);
         if (cond.lhs->kind == ExprKind::Identifier &&
             static_cast<const IdentifierExpr&>(*cond.lhs).name != loop_var) {
             bound_var_names.insert(static_cast<const IdentifierExpr&>(*cond.lhs).name);
+            bound_var_name = static_cast<const IdentifierExpr&>(*cond.lhs).name;
         } else if (cond.rhs->kind == ExprKind::Identifier &&
                    static_cast<const IdentifierExpr&>(*cond.rhs).name != loop_var) {
             bound_var_names.insert(static_cast<const IdentifierExpr&>(*cond.rhs).name);
+            bound_var_name = static_cast<const IdentifierExpr&>(*cond.rhs).name;
         }
     }
     // Also exclude the loop variable itself
@@ -1809,6 +1812,13 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         kernel_vars_map[ka.name] = arg;
         kernel_arg_values.push_back(arg);
     }
+
+    // 循环边界变量被排除在 kernel_args_ 之外（作为 param_0=n 传入）；把它的名字
+    // 映射到 n 参数，使 kernel body 里对边界变量的引用（如 if (p < nTh)）正确解析。
+    // 否则 body 引用边界标识符时找不到值 → 内核形同空转（此前多数组/原子归约
+    // 全挂的根因：边界用 long 局部标识符时整 kernel 不执行）。
+    if (!bound_var_name.empty())
+        kernel_vars_map[bound_var_name] = n_arg;
 
     // Build kernel body
     auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);

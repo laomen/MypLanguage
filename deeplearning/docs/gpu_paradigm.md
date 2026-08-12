@@ -786,3 +786,7 @@ TargetMachine 注册 TTI 成本模型），PTX 生成用 `CodeGenOptLevel::Defau
 
 **下一步建议：从 M1 开始实现，先验证"显式显存 + GpuBuffer"这条范式链路；随后 M3.5 内核优化
 与 G1 图融合是两条"低成本高收益"的加速路径。**
+
+> 前瞻路线（算子库效率分类、跨厂商 NVIDIA/AMD 统一范式、声明式原语
+> `@gpu reduce/scan/scatter/tile` 设计 + CPU 回退语义）：见
+> [`docs/gpu_library_design.md`](../../docs/gpu_library_design.md)。
