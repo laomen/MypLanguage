@@ -161,6 +161,32 @@ class OnnxLoader {
                     if (aname == "transB") g_.nodeInt(ni, NodeField.TRANSB(), v);
                     if (aname == "axis") g_.nodeInt(ni, NodeField.AXIS(), v);
                     if (aname == "group") g_.nodeInt(ni, NodeField.GROUP(), v);
+                    if (aname == "keepdims") g_.nodeInt(ni, NodeField.KEEP(), v);
+                } else if (f == 4) {    // string 单值（Resize mode / coord）
+                    int l = pb_.readLen(); int po = pb_.payloadOff();
+                    string sv = pb_.readString(l);
+                    if (aname == "mode") {
+                        if (sv == "linear" || sv == "bilinear") g_.nodeInt(ni, NodeField.MODE(), 1);
+                        else g_.nodeInt(ni, NodeField.MODE(), 0);   // nearest
+                    }
+                    if (aname == "coordinate_transformation_mode") {
+                        if (sv == "align_corners") g_.nodeInt(ni, NodeField.TRANSFORM(), 0);
+                        else if (sv == "asymmetric") g_.nodeInt(ni, NodeField.TRANSFORM(), 2);
+                        else g_.nodeInt(ni, NodeField.TRANSFORM(), 1);   // half_pixel 等
+                    }
+                } else if (f == 7) {    // floats（Upsample scales，packed 4-byte fixed32）
+                    int l = pb_.readLen();
+                    int fi = 0;
+                    if (aname == "scales") {
+                        while (fi < l / 4 && fi < 4) {
+                            int bits = pb_.readU32();
+                            if (fi == 0) g_.nodeInt(ni, NodeField.UPSH(), bits);
+                            else if (fi == 1) g_.nodeInt(ni, NodeField.UPSW(), bits);
+                            fi = fi + 1;
+                        }
+                    }
+                    int rem = l - fi * 4;
+                    if (rem > 0) pb_.skipBytes(rem);
                 } else if (f == 8) {    // ints：非打包，每个 varint 一个字段
                     int v = pb_.readVarint();
                     if (aname == "strides") { if (idx == 0) g_.nodeInt(ni, NodeField.SH(), v); else g_.nodeInt(ni, NodeField.SW(), v); }
@@ -179,6 +205,13 @@ class OnnxLoader {
                         else if (idx == 2) g_.nodeInt(ni, NodeField.PERM2(), v);
                         else g_.nodeInt(ni, NodeField.PERM3(), v);
                         g_.nodeInt(ni, NodeField.PERM_N(), idx + 1);
+                    }
+                    else if (aname == "axes") {   // F8：ReduceMean axes（属性，opset<=17）
+                        if (idx == 0) g_.nodeInt(ni, NodeField.AXES0(), v);
+                        else if (idx == 1) g_.nodeInt(ni, NodeField.AXES1(), v);
+                        else if (idx == 2) g_.nodeInt(ni, NodeField.AXES2(), v);
+                        else g_.nodeInt(ni, NodeField.AXES3(), v);
+                        g_.nodeInt(ni, NodeField.AXES_N(), idx + 1);
                     }
                     idx = idx + 1;
                 } else if (f == 5) {    // t（Constant 节点的 value：TensorProto）记录字节，稍后折叠

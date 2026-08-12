@@ -429,6 +429,58 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
+        // ---- F8：2D 补齐（opKind 28-35，秩无关设计）----
+        // Resize2D（opKind 28）：nearest/bilinear 上采样
+        void addResize2d(int inTid, int outTid,
+                         int N, int C, int inH, int inW, int outH, int outW,
+                         int mode, int transform) {
+            int id = opCount_;
+            opKind_[id] = 28;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = N; opP1_[id] = C; opP2_[id] = inH; opP3_[id] = inW;
+            opP4_[id] = outH; opP5_[id] = outW; opP6_[id] = mode; opP7_[id] = transform;
+            opCount_ = opCount_ + 1;
+        }
+        // Split（opKind 29）：沿 axis 复制 [start, start+len)（一个输出一个 op）
+        // d0..d4 为输入 5 维（2D 时 d4=1）；len = 该输出沿 axis 长度
+        void addSplit(int inTid, int outTid, int axis, int start, int len,
+                      int d0, int d1, int d2, int d3, int d4) {
+            int id = opCount_;
+            opKind_[id] = 29;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = axis; opP1_[id] = start; opP2_[id] = len;
+            opP3_[id] = d0; opP4_[id] = d1; opP5_[id] = d2; opP6_[id] = d3; opP7_[id] = d4;
+            opCount_ = opCount_ + 1;
+        }
+        // ReduceMean（opKind 30）：mode 0 = 全规约；mode 1 = 空间维规约 per-(n,c)
+        void addReduceMean(int inTid, int outTid, int mode,
+                           int N, int C, int S, int total, int keepdims) {
+            int id = opCount_;
+            opKind_[id] = 30;
+            opA_[id] = inTid;
+            opB_[id] = outTid;
+            opP0_[id] = mode; opP1_[id] = N; opP2_[id] = C; opP3_[id] = S;
+            opP4_[id] = total; opP5_[id] = keepdims;
+            opCount_ = opCount_ + 1;
+        }
+        // Sub / Div / Mul（opKind 31-33）：逐元素（b 标量/同尺寸/逐通道广播；C=通道数, S=空间乘积）
+        void addSub(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 31; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
+        void addDiv(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 32; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
+        void addMul(int aTid, int bTid, int outTid, int C, int S) { int id = opCount_; opKind_[id] = 33; opA_[id] = aTid; opB_[id] = bTid; opC_[id] = outTid; opP0_[id] = C; opP1_[id] = S; opCount_ = opCount_ + 1; }
+        // Sqrt（opKind 34）：y = sqrt(x)
+        void addSqrt(int inTid, int outTid) { int id = opCount_; opKind_[id] = 34; opA_[id] = inTid; opB_[id] = outTid; opCount_ = opCount_ + 1; }
+        // InstanceNormalization（opKind 35）：per-(n,c) 空间归一化（秩无关，S=空间乘积）
+        void addInstanceNorm(int inTid, int sTid, int bTid, int outTid,
+                             int N, int C, int S, int epsBits, int hasEps) {
+            int id = opCount_;
+            opKind_[id] = 35;
+            opA_[id] = inTid; opB_[id] = sTid; opC_[id] = bTid; opD_[id] = outTid;
+            opP0_[id] = N; opP1_[id] = C; opP2_[id] = S; opP3_[id] = epsBits; opP4_[id] = hasEps;
+            opCount_ = opCount_ + 1;
+        }
+
         int opCount() { return opCount_; }
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
@@ -592,6 +644,42 @@ class InferenceRuntime {
                     int ax3 = sAx_[i * 4 + 3], st3 = sSt_[i * 4 + 3], sp3 = sSp_[i * 4 + 3];
                     InferOps.sliceOp(arena, tOff_[xa], tOff_[yd], cnt, id0, id1, id2, id3, od0, od1, od2, od3,
                                      ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
+                } else if (opKind_[i] == 28) {
+                    // F8：Resize2D —— nearest/bilinear
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.resize2d(arena, tOff_[xa], tOff_[yd],
+                                      opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                                      opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 29) {
+                    // F8：Split —— 沿 axis 复制 [start, start+len)
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.splitOp(arena, tOff_[xa], tOff_[yd],
+                                     opP0_[i], opP1_[i], opP2_[i],
+                                     opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i]);
+                } else if (opKind_[i] == 30) {
+                    // F8：ReduceMean —— 全/空间规约
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.reduceMean(arena, tOff_[xa], tOff_[yd],
+                                        opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
+                } else if (opKind_[i] == 31) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    InferOps.sub(arena, tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(oc), tensorSize(bb), opP0_[i], opP1_[i]);
+                } else if (opKind_[i] == 32) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    InferOps.div(arena, tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(oc), tensorSize(bb), opP0_[i], opP1_[i]);
+                } else if (opKind_[i] == 33) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    InferOps.mul(arena, tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(oc), tensorSize(bb), opP0_[i], opP1_[i]);
+                } else if (opKind_[i] == 34) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    InferOps.sqrt1(arena, tOff_[xa], tOff_[yd], tensorSize(yd));
+                } else if (opKind_[i] == 35) {
+                    // F8：InstanceNormalization —— per-(n,c) 空间归一化
+                    int xa = opA_[i]; int sT = opB_[i]; int bT = opC_[i]; int yd = opD_[i];
+                    double eps = 1.0e-5;
+                    if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
+                    InferOps.instancenorm(arena, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
+                                          opP0_[i], opP1_[i], opP2_[i], eps);
                 }
                 i = i + 1;
             }
@@ -791,6 +879,46 @@ class InferenceRuntime {
                     int work = tensorSize(yd);
                     GpuInferOps.sliceOp(arena, work, tOff_[xa], tOff_[yd], cnt, id0, id1, id2, id3, od0, od1, od2, od3,
                                         ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3, dev);
+                } else if (opKind_[i] == 28) {
+                    // F8：Resize2D
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.resize2d(arena, work, tOff_[xa], tOff_[yd],
+                                         opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i],
+                                         opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 29) {
+                    // F8：Split
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = tensorSize(yd);
+                    GpuInferOps.splitOp(arena, work, tOff_[xa], tOff_[yd],
+                                        opP0_[i], opP1_[i], opP2_[i],
+                                        opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], dev);
+                } else if (opKind_[i] == 30) {
+                    // F8：ReduceMean
+                    int xa = opA_[i]; int yd = opB_[i];
+                    int work = (opP0_[i] == 0) ? 1 : (opP1_[i] * opP2_[i]);
+                    GpuInferOps.reduceMean(arena, work, tOff_[xa], tOff_[yd],
+                                           opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i], dev);
+                } else if (opKind_[i] == 31) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    GpuInferOps.sub(arena, tensorSize(oc), tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(bb), opP0_[i], opP1_[i], dev);
+                } else if (opKind_[i] == 32) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    GpuInferOps.div(arena, tensorSize(oc), tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(bb), opP0_[i], opP1_[i], dev);
+                } else if (opKind_[i] == 33) {
+                    int aa = opA_[i]; int bb = opB_[i]; int oc = opC_[i];
+                    GpuInferOps.mul(arena, tensorSize(oc), tOff_[aa], tOff_[bb], tOff_[oc], tensorSize(bb), opP0_[i], opP1_[i], dev);
+                } else if (opKind_[i] == 34) {
+                    int xa = opA_[i]; int yd = opB_[i];
+                    GpuInferOps.sqrt1(arena, tensorSize(yd), tOff_[xa], tOff_[yd], dev);
+                } else if (opKind_[i] == 35) {
+                    // F8：InstanceNormalization
+                    int xa = opA_[i]; int sT = opB_[i]; int bT = opC_[i]; int yd = opD_[i];
+                    double eps = 1.0e-5;
+                    if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
+                    int work = opP0_[i] * opP1_[i];
+                    GpuInferOps.instancenorm(arena, work, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
+                                             opP0_[i], opP1_[i], opP2_[i], eps, dev);
                 }
                 i = i + 1;
             }

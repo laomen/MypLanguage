@@ -737,4 +737,208 @@ class InferOps {
                 i = i + 1;
             }
         }
+
+        // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样 ----
+        // 设计原则：2D/3D 通用。元素级用 flat n；InstanceNorm/ReduceMean 用
+        // (N, C, 空间乘积 S)；Split 用 rank≤5 的 5 维解码（2D 时 d4=1，3D 时真实）。
+        // MYP 坑：表达式内不可混用 float/double —— 一律先赋值 double 临时量。
+        // Sub：y = a - b（bSize==1 标量；bSize==n 同尺寸；bSize==C 逐通道广播 [1,C,1,1]）
+        void sub(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+            int i = 0;
+            if (bSize <= 1) {
+                double bv = arena[bOff + 0];
+                while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av - bv); i = i + 1; }
+            } else if (bSize == n) {
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av - bv2); i = i + 1; }
+            } else {
+                // 逐通道：b[(i/S)%C]
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av - bv2); i = i + 1; }
+            }
+        }
+        // Div：y = a / b（同上广播）
+        void div(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+            int i = 0;
+            if (bSize <= 1) {
+                double bv = arena[bOff + 0];
+                while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av / bv); i = i + 1; }
+            } else if (bSize == n) {
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av / bv2); i = i + 1; }
+            } else {
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av / bv2); i = i + 1; }
+            }
+        }
+        // Mul：y = a * b（同上广播）
+        void mul(float[] arena, int aOff, int bOff, int outOff, int n, int bSize, int C, int S) {
+            int i = 0;
+            if (bSize <= 1) {
+                double bv = arena[bOff + 0];
+                while (i < n) { double av = arena[aOff + i]; arena[outOff + i] = float(av * bv); i = i + 1; }
+            } else if (bSize == n) {
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + i]; arena[outOff + i] = float(av * bv2); i = i + 1; }
+            } else {
+                while (i < n) { double av = arena[aOff + i]; double bv2 = arena[bOff + (i / S) % C]; arena[outOff + i] = float(av * bv2); i = i + 1; }
+            }
+        }
+        // Sqrt：y = sqrt(x)
+        void sqrt1(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) { arena[outOff + i] = float(Math.sqrt(arena[inOff + i])); i = i + 1; }
+        }
+        // InstanceNormalization：per-(n,c) 在 S=空间元素数 上 mean/var（biased）+ affine
+        // x: [N,C,S] flat；scale/bias: [C]；eps。秩无关（2D S=H*W；3D S=D*H*W）。
+        void instancenorm(float[] arena, int xOff, int sOff, int bOff, int yOff,
+                          int N, int C, int S, double eps) {
+            int n = 0;
+            while (n < N) {
+                int c = 0;
+                while (c < C) {
+                    int base = (n * C + c) * S;
+                    double sf = float(S);
+                    double sum = 0.0;
+                    int i = 0;
+                    while (i < S) { double xv = arena[xOff + base + i]; sum = sum + xv; i = i + 1; }
+                    double mean = sum / sf;
+                    double ss = 0.0;
+                    i = 0;
+                    while (i < S) { double xv = arena[xOff + base + i]; double d = xv - mean; ss = ss + d * d; i = i + 1; }
+                    double variance = ss / sf;
+                    double scale = arena[sOff + c];
+                    double bias = arena[bOff + c];
+                    double invStd = scale / Math.sqrt(variance + eps);
+                    i = 0;
+                    while (i < S) { double xv = arena[xOff + base + i]; arena[yOff + base + i] = float((xv - mean) * invStd + bias); i = i + 1; }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+        // ReduceMean：mode 0 = 全规约（输出 1 元素）；mode 1 = 空间维规约（per-(n,c)）
+        void reduceMean(float[] arena, int inOff, int outOff, int mode,
+                        int N, int C, int S, int total, int keepdims) {
+            if (mode == 0) {
+                double sum = 0.0;
+                int i = 0;
+                while (i < total) { double xv = arena[inOff + i]; sum = sum + xv; i = i + 1; }
+                double td = float(total);
+                arena[outOff + 0] = float(sum / td);
+            } else {
+                double sf = float(S);
+                int n = 0;
+                while (n < N) {
+                    int c = 0;
+                    while (c < C) {
+                        int base = (n * C + c) * S;
+                        double sum = 0.0;
+                        int i = 0;
+                        while (i < S) { double xv = arena[inOff + base + i]; sum = sum + xv; i = i + 1; }
+                        arena[outOff + n * C + c] = float(sum / sf);
+                        c = c + 1;
+                    }
+                    n = n + 1;
+                }
+            }
+        }
+        // Split：从输入沿 axis 复制 [start, start+len) 到输出（秩 ≤5，5 维解码）
+        // 输出形状 = 输入形状仅 axis 维 = len；od 由 d/axis/len 内部推出（2D 时 d4=1）。
+        void splitOp(float[] arena, int offIn, int offOut,
+                     int axis, int start, int len,
+                     int d0, int d1, int d2, int d3, int d4) {
+            int od0 = d0, od1 = d1, od2 = d2, od3 = d3, od4 = d4;
+            if (axis == 0) od0 = len;
+            else if (axis == 1) od1 = len;
+            else if (axis == 2) od2 = len;
+            else if (axis == 3) od3 = len;
+            else od4 = len;
+            int total = od0 * od1 * od2 * od3 * od4;
+            int i = 0;
+            while (i < total) {
+                int x4 = i % od4;
+                int t = i / od4;
+                int x3 = t % od3;
+                t = t / od3;
+                int x2 = t % od2;
+                t = t / od2;
+                int x1 = t % od1;
+                int x0 = t / od1;
+                int c0 = x0, c1 = x1, c2 = x2, c3 = x3, c4 = x4;
+                if (axis == 0) c0 = x0 + start;
+                else if (axis == 1) c1 = x1 + start;
+                else if (axis == 2) c2 = x2 + start;
+                else if (axis == 3) c3 = x3 + start;
+                else c4 = x4 + start;
+                int inFlat = (((c0 * d1 + c1) * d2 + c2) * d3 + c3) * d4 + c4;
+                arena[offOut + i] = arena[offIn + inFlat];
+                i = i + 1;
+            }
+        }
+        // Resize2D：nearest / bilinear 上采样（坐标变换 align_corners / half_pixel / asymmetric）
+        // x: [N,C,inH,inW] flat；y: [N,C,outH,outW] flat。mode: 0=nearest, 1=linear。
+        // 全 float 运算（MYP 不支持 float→double 赋值/混合，且 arena 为 float，与 ORT float32 一致）。
+        void resize2d(float[] arena, int offIn, int offOut,
+                      int N, int C, int inH, int inW, int outH, int outW,
+                      int mode, int transform) {
+            int n = 0;
+            while (n < N) {
+                int c = 0;
+                while (c < C) {
+                    int y = 0;
+                    while (y < outH) {
+                        int x = 0;
+                        while (x < outW) {
+                            float sy = float(0.0);
+                            float sx = float(0.0);
+                            if (transform == 0) {
+                                // align_corners：src = dst * (in-1)/(out-1)
+                                sy = (outH > 1) ? float(y) * float(inH - 1) / float(outH - 1) : float(0.0);
+                                sx = (outW > 1) ? float(x) * float(inW - 1) / float(outW - 1) : float(0.0);
+                            } else if (transform == 2) {
+                                // asymmetric：src = dst * in/out
+                                sy = float(y) * float(inH) / float(outH);
+                                sx = float(x) * float(inW) / float(outW);
+                            } else {
+                                // half_pixel：src = (dst + 0.5) * in/out - 0.5
+                                sy = (float(y) + float(0.5)) * float(inH) / float(outH) - float(0.5);
+                                sx = (float(x) + float(0.5)) * float(inW) / float(outW) - float(0.5);
+                            }
+                            int base = (n * C + c) * inH * inW;
+                            int obase = (n * C + c) * outH * outW;
+                            if (mode == 0) {
+                                // nearest
+                                int iy = int(sy);
+                                int ix = int(sx);
+                                if (iy < 0) iy = 0;
+                                if (iy >= inH) iy = inH - 1;
+                                if (ix < 0) ix = 0;
+                                if (ix >= inW) ix = inW - 1;
+                                arena[offOut + obase + y * outW + x] = arena[offIn + base + iy * inW + ix];
+                            } else {
+                                // bilinear
+                                int iy = int(sy);
+                                int ix = int(sx);
+                                float fy = sy - float(iy);
+                                float fx = sx - float(ix);
+                                if (iy < 0) { iy = 0; fy = float(0.0); }
+                                if (iy >= inH - 1) { iy = inH - 1; fy = float(0.0); }
+                                if (ix < 0) { ix = 0; fx = float(0.0); }
+                                if (ix >= inW - 1) { ix = inW - 1; fx = float(0.0); }
+                                int iy2 = iy + 1;
+                                int ix2 = ix + 1;
+                                if (iy2 >= inH) iy2 = inH - 1;
+                                if (ix2 >= inW) ix2 = inW - 1;
+                                float v00 = arena[offIn + base + iy * inW + ix];
+                                float v01 = arena[offIn + base + iy * inW + ix2];
+                                float v10 = arena[offIn + base + iy2 * inW + ix];
+                                float v11 = arena[offIn + base + iy2 * inW + ix2];
+                                float v = v00 * (float(1.0) - fx) * (float(1.0) - fy) + v01 * fx * (float(1.0) - fy) + v10 * (float(1.0) - fx) * fy + v11 * fx * fy;
+                                arena[offOut + obase + y * outW + x] = v;
+                            }
+                            x = x + 1;
+                        }
+                        y = y + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
 }

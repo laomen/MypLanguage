@@ -48,6 +48,16 @@ class NodeField {
         int PERM2() { return 22; }
         int PERM3() { return 23; }
         int PERM_N() { return 24; }
+        int MODE() { return 25; }        // F8：Resize mode（0=nearest,1=linear）
+        int TRANSFORM() { return 26; }   // F8：Resize coord（0=align_corners,1=half_pixel）
+        int UPSH() { return 27; }        // F8：Upsample scales 高（floats）
+        int UPSW() { return 28; }        // F8：Upsample scales 宽
+        int KEEP() { return 29; }        // F8：ReduceMean keepdims
+        int AXES0() { return 30; }       // F8：ReduceMean axes[0]（属性，opset<=17）
+        int AXES1() { return 31; }
+        int AXES2() { return 32; }
+        int AXES3() { return 33; }
+        int AXES_N() { return 34; }      // F8：axes 元素数
 }
 
 class Graph {
@@ -84,6 +94,9 @@ class Graph {
             nSH_[i] = 1; nSW_[i] = 1; nPT_[i] = 0; nPB_[i] = 0; nPL_[i] = 0; nPR_[i] = 0;
             nDH_[i] = 1; nDW_[i] = 1; nGroup_[i] = 1; nKH_[i] = 0; nKW_[i] = 0;
             nP0_[i] = 0; nP1_[i] = 0; nP2_[i] = 0; nP3_[i] = 0; nPc_[i] = 0;   // F8: Transpose perm
+            nMode_[i] = 0; nTransform_[i] = 0; nUpSH_[i] = 0; nUpSW_[i] = 0;   // F8: Resize/Upsample
+            nKeep_[i] = 0; nRedMode_[i] = 0;                                   // F8: ReduceMean
+            nAx0_[i] = 0; nAx1_[i] = 0; nAx2_[i] = 0; nAx3_[i] = 0; nAxN_[i] = 0;
             return i;
         }
         void endNode() { nCount_ = nCount_ + 1; }
@@ -115,7 +128,17 @@ class Graph {
             else if (code == NodeField.PERM1()) nP1_[i] = v;
             else if (code == NodeField.PERM2()) nP2_[i] = v;
             else if (code == NodeField.PERM3()) nP3_[i] = v;
-            else nPc_[i] = v;
+            else if (code == NodeField.PERM_N()) nPc_[i] = v;
+            else if (code == NodeField.MODE()) nMode_[i] = v;
+            else if (code == NodeField.TRANSFORM()) nTransform_[i] = v;
+            else if (code == NodeField.UPSH()) nUpSH_[i] = v;
+            else if (code == NodeField.UPSW()) nUpSW_[i] = v;
+            else if (code == NodeField.KEEP()) nKeep_[i] = v;
+            else if (code == NodeField.AXES0()) nAx0_[i] = v;
+            else if (code == NodeField.AXES1()) nAx1_[i] = v;
+            else if (code == NodeField.AXES2()) nAx2_[i] = v;
+            else if (code == NodeField.AXES3()) nAx3_[i] = v;
+            else if (code == NodeField.AXES_N()) nAxN_[i] = v;
         }
         void addWeight(string nm, int rows, int cols, int dt, int kind, int off, int len) {
             wName_[wCount_] = nm; wRows_[wCount_] = rows; wCols_[wCount_] = cols;
@@ -207,6 +230,15 @@ class Graph {
                     markInt64Param(nIn2_[i]);
                     markInt64Param(nIn3_[i]);
                     markInt64Param(nIn4_[i]);
+                } else if (t == "InstanceNormalization") {
+                    // F8：scale/bias [C] 常量 → FC_B 登记（addTensorPlanned2(d0,1)）
+                    markFCBias(nIn1_[i]);
+                    markFCBias(nIn2_[i]);
+                } else if (t == "Resize" || t == "Upsample") {
+                    // F8：scales/sizes 参数初始器不登记为激活（读自 file_）
+                    markParamDead(nIn1_[i]);
+                    markParamDead(nIn2_[i]);
+                    markParamDead(nIn3_[i]);
                 }
                 i = i + 1;
             }
@@ -257,6 +289,12 @@ class Graph {
             if (wType_[wi] != 7) return;   // 仅 int64 参数
             markDeadTensor(name);
         }
+        // F8：任意参数初始器标死（Resize scales/sizes 等，读自 file_）
+        void markParamDead(string name) {
+            int wi = initIdx(name);
+            if (wi < 0) return;
+            markDeadTensor(name);
+        }
         int isNodeOutput(string name) {
             int i = 0;
             while (i < nCount_) {
@@ -296,6 +334,26 @@ class Graph {
             int i = initIdx(name);
             if (i >= 0) { wRole_[i] = 3; setShapeKind(name, Kind.CNN_B()); }
         }
+        // F8：读 float32 初始器值（Resize scales 等）。
+        // 支持 raw_data（wKind_==1，4 字节小端）与 float_data。返回读取个数。
+        int readF32Init(string name, int maxn) {
+            int wi = initIdx(name);
+            if (wi < 0) return 0;
+            int cnt = 0;
+            int j = 0;
+            while (j < wLen_[wi] / 4 && cnt < maxn) {
+                int b0 = file_[wOff_[wi] + j * 4];
+                int b1 = file_[wOff_[wi] + j * 4 + 1];
+                int b2 = file_[wOff_[wi] + j * 4 + 2];
+                int b3 = file_[wOff_[wi] + j * 4 + 3];
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                f32Tmp_[cnt] = F32.toDouble(bits);
+                cnt = cnt + 1;
+                j = j + 1;
+            }
+            return cnt;
+        }
+
         int initIdx(string name) {
             int i = 0;
             while (i < wCount_) {
@@ -457,6 +515,81 @@ class Graph {
                         k = k + 1;
                     }
                     addShapeD4(nOut0_[i], odim[0], odim[1], odim[2], odim[3]);
+                } else if (t == "Sub" || t == "Div" || t == "Mul" || t == "Sqrt") {
+                    // F8：秩无关逐元素（输出形状 = 输入 0；标量/同形状广播）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                } else if (t == "ReduceMean") {
+                    // F8：mode 0 = 全规约（标量）；mode 1 = 空间维规约（per-(n,c)，秩无关）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int nAx = readI64Init(nIn1_[i], 8);   // axes 输入（opset18+；可缺省）
+                    if (nAx <= 0 && nAxN_[i] > 0) {
+                        // 属性形式（opset<=17）
+                        nAx = nAxN_[i];
+                        i64TmpL_[0] = nAx0_[i];
+                        i64TmpL_[1] = nAx1_[i];
+                        i64TmpL_[2] = nAx2_[i];
+                        i64TmpL_[3] = nAx3_[i];
+                    }
+                    int mode = 0;
+                    if (nAx > 0) {
+                        int c0 = 0, c1 = 0, c2 = 0, c3 = 0;
+                        int k = 0;
+                        while (k < nAx) {
+                            int ax = int(i64TmpL_[k]);
+                            if (ax == 0) c0 = 1;
+                            else if (ax == 1) c1 = 1;
+                            else if (ax == 2) c2 = 1;
+                            else if (ax == 3) c3 = 1;
+                            k = k + 1;
+                        }
+                        if (c0 == 1 || c1 == 1) mode = 0;          // 含 N/C → 全规约
+                        else if (c2 == 1 && c3 == 1) mode = 1;     // 空间维
+                        else return 0;                              // 单空间维等 → 暂不支持
+                    }
+                    nRedMode_[i] = mode;
+                    int N = shD0_[a]; int C = shD1_[a];
+                    int S = shD2_[a] * shD3_[a];
+                    if (mode == 0) addShapeD4(nOut0_[i], 1, 1, 1, 1);
+                    else addShapeD4(nOut0_[i], N, C, 1, 1);   // keepdims 0/1 均按 [N,C,1,1]
+                } else if (t == "InstanceNormalization") {
+                    // F8：per-(n,c) 空间归一化（秩无关；scale/bias 为 [C] 常量）
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int s = shapeIdx(nIn1_[i]); if (s < 0) return 0;
+                    int b = shapeIdx(nIn2_[i]); if (b < 0) return 0;
+                    addShapeD4(nOut0_[i], shD0_[a], shD1_[a], shD2_[a], shD3_[a]);
+                } else if (t == "Resize" || t == "Upsample") {
+                    // F8：2D 上采样（nearest/linear）。输出尺寸：sizes 初始器 > scales 初始器 > Upsample scales 属性
+                    int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    int N = shD0_[a], C = shD1_[a], H = shD2_[a], W = shD3_[a];
+                    int outH = H, outW = W;
+                    if (t == "Upsample") {
+                        double sh = F32.toDouble(nUpSH_[i]);
+                        double sw = F32.toDouble(nUpSW_[i]);
+                        if (sh == 0.0) sh = 1.0;
+                        if (sw == 0.0) sw = 1.0;
+                        double hd = float(H);
+                        double wd = float(W);
+                        outH = int(hd * sh);
+                        outW = int(wd * sw);
+                    } else {
+                        int szc = readI64Init(nIn3_[i], 8);   // sizes [N,C,outH,outW]
+                        if (szc >= 4) {
+                            outH = int(i64TmpL_[2]);
+                            outW = int(i64TmpL_[3]);
+                        } else {
+                            int sc2 = readF32Init(nIn2_[i], 8);   // scales [1,1,sh,sw]
+                            if (sc2 >= 3) {
+                                double hd = float(H);
+                                double wd = float(W);
+                                outH = int(hd * f32Tmp_[2]);
+                                outW = int(wd * f32Tmp_[3]);
+                            }
+                        }
+                    }
+                    if (outH < 1) outH = 1;
+                    if (outW < 1) outW = 1;
+                    addShapeD4(nOut0_[i], N, C, outH, outW);
                 } else {
                     return 0;   // 不支持的算子
                 }
@@ -894,7 +1027,12 @@ class Graph {
                 int j = 0;
                 while (j < nCount_) {
                     if (nType_[j] == "" || indeg[j] < 0) { j = j + 1; continue; }
-                    if (nIn0_[j] == out || nIn1_[j] == out || nIn2_[j] == out) indeg[j] = indeg[j] - 1;
+                    // 同一输入多次出现（如 Mul(x,x)）按匹配槽位数递减（修复环误判）
+                    int dec = 0;
+                    if (nIn0_[j] == out) dec = dec + 1;
+                    if (nIn1_[j] == out) dec = dec + 1;
+                    if (nIn2_[j] == out) dec = dec + 1;
+                    indeg[j] = indeg[j] - dec;
                     j = j + 1;
                 }
             }
@@ -1116,6 +1254,40 @@ class Graph {
                     int ax3 = nSlAx_[ni * 4 + 3], st3 = nSlSt_[ni * 4 + 3], sp3 = nSlSp_[ni * 4 + 3];
                     rt.addSlice(a, out, cnt, id0, id1, id2, id3, od0, od1, od2, od3,
                                 ax0, st0, sp0, ax1, st1, sp1, ax2, st2, sp2, ax3, st3, sp3);
+                } else if (t == "Sub") {
+                    int b = tensorId(nIn1_[ni]);
+                    int is = shapeIdx(nIn0_[ni]);
+                    rt.addSub(a, b, out, shD1_[is], shD2_[is] * shD3_[is]);
+                } else if (t == "Div") {
+                    int b = tensorId(nIn1_[ni]);
+                    int is = shapeIdx(nIn0_[ni]);
+                    rt.addDiv(a, b, out, shD1_[is], shD2_[is] * shD3_[is]);
+                } else if (t == "Mul") {
+                    int b = tensorId(nIn1_[ni]);
+                    int is = shapeIdx(nIn0_[ni]);
+                    rt.addMul(a, b, out, shD1_[is], shD2_[is] * shD3_[is]);
+                } else if (t == "Sqrt") {
+                    rt.addSqrt(a, out);
+                } else if (t == "ReduceMean") {
+                    int mode = nRedMode_[ni];
+                    int is = shapeIdx(nIn0_[ni]);
+                    int N = shD0_[is], C = shD1_[is];
+                    int S = shD2_[is] * shD3_[is];
+                    int total = N * C * S;
+                    rt.addReduceMean(a, out, mode, N, C, S, total, nKeep_[ni]);
+                } else if (t == "InstanceNormalization") {
+                    int sT = tensorId(nIn1_[ni]);
+                    int bT = tensorId(nIn2_[ni]);
+                    if (sT < 0 || bT < 0) return 0;
+                    int is = shapeIdx(nIn0_[ni]);
+                    int N = shD0_[is], C = shD1_[is], S = shD2_[is] * shD3_[is];
+                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, nEpsInt_[ni], nHasEps_[ni]);
+                } else if (t == "Resize" || t == "Upsample") {
+                    int is = shapeIdx(nIn0_[ni]);
+                    int os = shapeIdx(effectiveOut(ni));
+                    int N = shD0_[is], C = shD1_[is], inH = shD2_[is], inW = shD3_[is];
+                    int outH = shD2_[os], outW = shD3_[os];
+                    rt.addResize2d(a, out, N, C, inH, inW, outH, outW, nMode_[ni], nTransform_[ni]);
                 } else {
                     return 0;
                 }
@@ -1251,6 +1423,7 @@ class Graph {
         int fileLen_;
         PbReader pb_;
         long[512] i64TmpL_;   // F8：readI64Init 暂存（全 int64 long）
+        double[512] f32Tmp_;  // F8：readF32Init 暂存（float 转 double）
         long[512] slSt_;      // F8：Slice starts（long，临时）
         long[512] slEn_;      // F8：Slice ends
         long[512] slAx_;      // F8：Slice axes（可缺省）
@@ -1305,6 +1478,17 @@ class Graph {
         int[512] nP2_;          // F8：Transpose perm[2]
         int[512] nP3_;          // F8：Transpose perm[3]
         int[512] nPc_;          // F8：perm 元素个数
+        int[512] nMode_;        // F8：Resize mode（0=nearest,1=linear）
+        int[512] nTransform_;   // F8：Resize coord（0=align_corners,1=half_pixel）
+        int[512] nUpSH_;        // F8：Upsample scales 高（floats 位型 → 需 F32 解码）
+        int[512] nUpSW_;        // F8：Upsample scales 宽
+        int[512] nKeep_;        // F8：ReduceMean keepdims（0/1）
+        int[512] nRedMode_;     // F8：ReduceMean mode（0=全规约,1=空间规约）
+        int[512] nAx0_;         // F8：ReduceMean axes[0]（属性形式）
+        int[512] nAx1_;
+        int[512] nAx2_;
+        int[512] nAx3_;
+        int[512] nAxN_;         // F8：axes 元素数
         int[512] nEpsInt_;       // G3：BN epsilon 属性位型
         int[512] nHasEps_;       // G3：1 = 有 epsilon 属性
         int[512] nAlphaInt_;     // G4：LeakyRelu alpha 属性位型

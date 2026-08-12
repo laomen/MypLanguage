@@ -644,4 +644,191 @@ class GpuInferOps {
                 }
             }
         }
+
+        // ---- F8：秩无关逐元素 / 规约 / 归一化 / 分割 / 上采样（GPU）----
+        // Sub：y = a - b（bSize==1 标量；bSize==n 同尺寸；bSize==C 逐通道广播）
+        void sub(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float bv = float(0.0);
+                    if (bSize <= 1) bv = a[bOff + 0];
+                    float v = a[aOff + p];
+                    if (bSize <= 1) a[outOff + p] = v - bv;
+                    else if (bSize == work) a[outOff + p] = v - a[bOff + p];
+                    else a[outOff + p] = v - a[bOff + (int(p) / S) % C];
+                }
+            }
+        }
+        // Div：y = a / b
+        void div(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float bv = float(0.0);
+                    if (bSize <= 1) bv = a[bOff + 0];
+                    float v = a[aOff + p];
+                    if (bSize <= 1) a[outOff + p] = v / bv;
+                    else if (bSize == work) a[outOff + p] = v / a[bOff + p];
+                    else a[outOff + p] = v / a[bOff + (int(p) / S) % C];
+                }
+            }
+        }
+        // Mul：y = a * b
+        void mul(float[] a, int work, int aOff, int bOff, int outOff, int bSize, int C, int S, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    float bv = float(0.0);
+                    if (bSize <= 1) bv = a[bOff + 0];
+                    float v = a[aOff + p];
+                    if (bSize <= 1) a[outOff + p] = v * bv;
+                    else if (bSize == work) a[outOff + p] = v * a[bOff + p];
+                    else a[outOff + p] = v * a[bOff + (int(p) / S) % C];
+                }
+            }
+        }
+        // Sqrt：y = sqrt(x)
+        void sqrt1(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    a[outOff + p] = float(Math.sqrt(a[inOff + p]));
+                }
+            }
+        }
+        // InstanceNormalization：逐 (n,c) 线程，S 上归约（float 累加）
+        void instancenorm(float[] a, int work, int xOff, int sOff, int bOff, int yOff,
+                          int N, int C, int S, double eps, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int nc = int(p);
+                    int base = nc * S;
+                    float sum = float(0.0);
+                    int i = 0;
+                    while (i < S) { sum = sum + a[xOff + base + i]; i = i + 1; }
+                    float mean = sum / float(S);
+                    float ss = float(0.0);
+                    i = 0;
+                    while (i < S) { float d = a[xOff + base + i] - mean; ss = ss + d * d; i = i + 1; }
+                    float variance = ss / float(S);
+                    int c = nc % C;
+                    float scale = a[sOff + c];
+                    float bias = a[bOff + c];
+                    float invStd = scale / float(Math.sqrt(variance) + eps);
+                    i = 0;
+                    while (i < S) {
+                        a[yOff + base + i] = (a[xOff + base + i] - mean) * invStd + bias;
+                        i = i + 1;
+                    }
+                }
+            }
+        }
+        // ReduceMean：mode 0 全规约（单线程）；mode 1 per-(n,c)
+        void reduceMean(float[] a, int work, int inOff, int outOff, int mode,
+                        int N, int C, int S, int total, int keepdims, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    if (mode == 0) {
+                        float sum = float(0.0);
+                        int i = 0;
+                        while (i < total) { sum = sum + a[inOff + i]; i = i + 1; }
+                        a[outOff + 0] = sum / float(total);
+                    } else {
+                        int nc = int(p);
+                        int base = nc * S;
+                        float sum = float(0.0);
+                        int i = 0;
+                        while (i < S) { sum = sum + a[inOff + base + i]; i = i + 1; }
+                        a[outOff + nc] = sum / float(S);
+                    }
+                }
+            }
+        }
+        // Split：沿 axis 复制 [start, start+len)（5 维解码，2D 时 d4=1；od 内部推出）
+        void splitOp(float[] a, int work, int offIn, int offOut,
+                     int axis, int start, int len,
+                     int d0, int d1, int d2, int d3, int d4, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int od0 = d0, od1 = d1, od2 = d2, od3 = d3, od4 = d4;
+                    if (axis == 0) od0 = len;
+                    else if (axis == 1) od1 = len;
+                    else if (axis == 2) od2 = len;
+                    else if (axis == 3) od3 = len;
+                    else od4 = len;
+                    int i = int(p);
+                    int x4 = i % od4;
+                    int t = i / od4;
+                    int x3 = t % od3;
+                    t = t / od3;
+                    int x2 = t % od2;
+                    t = t / od2;
+                    int x1 = t % od1;
+                    int x0 = t / od1;
+                    int c0 = x0, c1 = x1, c2 = x2, c3 = x3, c4 = x4;
+                    if (axis == 0) c0 = x0 + start;
+                    else if (axis == 1) c1 = x1 + start;
+                    else if (axis == 2) c2 = x2 + start;
+                    else if (axis == 3) c3 = x3 + start;
+                    else c4 = x4 + start;
+                    int inFlat = (((c0 * d1 + c1) * d2 + c2) * d3 + c3) * d4 + c4;
+                    a[offOut + i] = a[offIn + inFlat];
+                }
+            }
+        }
+        // Resize2D：nearest/bilinear（thread-per-output-element）
+        void resize2d(float[] a, int work, int offIn, int offOut,
+                      int N, int C, int inH, int inW, int outH, int outW,
+                      int mode, int transform, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int i = int(p);
+                    int x = i % outW;
+                    int t = i / outW;
+                    int y = t % outH;
+                    t = t / outH;
+                    int c = t % C;
+                    int n = t / C;
+                    float sy = float(0.0);
+                    float sx = float(0.0);
+                    if (transform == 0) {
+                        if (outH > 1) sy = float(y) * float(inH - 1) / float(outH - 1);
+                        if (outW > 1) sx = float(x) * float(inW - 1) / float(outW - 1);
+                    } else if (transform == 2) {
+                        sy = float(y) * float(inH) / float(outH);
+                        sx = float(x) * float(inW) / float(outW);
+                    } else {
+                        sy = (float(y) + float(0.5)) * float(inH) / float(outH) - float(0.5);
+                        sx = (float(x) + float(0.5)) * float(inW) / float(outW) - float(0.5);
+                    }
+                    int base = (n * C + c) * inH * inW;
+                    int obase = (n * C + c) * outH * outW;
+                    if (mode == 0) {
+                        int iy = int(sy);
+                        int ix = int(sx);
+                        if (iy < 0) iy = 0;
+                        if (iy >= inH) iy = inH - 1;
+                        if (ix < 0) ix = 0;
+                        if (ix >= inW) ix = inW - 1;
+                        a[offOut + obase + y * outW + x] = a[offIn + base + iy * inW + ix];
+                    } else {
+                        int iy = int(sy);
+                        int ix = int(sx);
+                        float fy = sy - float(iy);
+                        float fx = sx - float(ix);
+                        if (iy < 0) { iy = 0; fy = float(0.0); }
+                        if (iy >= inH - 1) { iy = inH - 1; fy = float(0.0); }
+                        if (ix < 0) { ix = 0; fx = float(0.0); }
+                        if (ix >= inW - 1) { ix = inW - 1; fx = float(0.0); }
+                        int iy2 = iy + 1;
+                        int ix2 = ix + 1;
+                        if (iy2 >= inH) iy2 = inH - 1;
+                        if (ix2 >= inW) ix2 = inW - 1;
+                        float v00 = a[offIn + base + iy * inW + ix];
+                        float v01 = a[offIn + base + iy * inW + ix2];
+                        float v10 = a[offIn + base + iy2 * inW + ix];
+                        float v11 = a[offIn + base + iy2 * inW + ix2];
+                        float v = v00 * (float(1.0) - fx) * (float(1.0) - fy) + v01 * fx * (float(1.0) - fy) + v10 * (float(1.0) - fx) * fy + v11 * fx * fy;
+                        a[offOut + obase + y * outW + x] = v;
+                    }
+                }
+            }
+        }
 }

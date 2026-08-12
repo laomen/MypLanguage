@@ -45,6 +45,7 @@ MYP_GPU=1 MYP_LAYOUT_NHWC=1 /tmp/<out>
 | `onnx_main.myp` | MNIST MLP 推理 + 准确率（78/100） | `data/onnx/mnist_mlp.onnx` |
 | `tensorops_main.myp` | **F8：张量操作端到端**（Concat/Reshape/Transpose vs ORT，位精确） | `data/onnx/tensorops_test.onnx`（`tools/make_tensorops_onnx.py` 生成） |
 | `slice_main.myp` | **F8：Slice 端到端**（正区间/负索引/负 step/INT64_MAX vs ORT，位精确） | `data/onnx/slice_test.onnx`（`tools/make_slice_onnx.py` 生成） |
+| `ops2d_main.myp` | **F8：2D 通用算子端到端**（Sub/Div/Mul/Sqrt/ReduceMean/InstanceNorm/Resize vs ORT，float 精度） | `data/onnx/ops2d_test.onnx`（`tools/make_2dops_onnx.py` 生成） |
 
 示例（ResNet18）：
 
