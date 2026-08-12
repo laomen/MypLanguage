@@ -1287,6 +1287,27 @@ bool Parser::parseTypeParamConstraints(ClassDecl& cls) {
     return true;
 }
 
+// §9 泛型函数 where 约束：fn<T where T : Trait>(...)。与类的 where 子句同构；
+// Trait 可以是内置数值 trait（Numeric/Integer/Float/Ordered）或接口名。
+bool Parser::parseGenericWhereClause(std::vector<std::string>& type_params,
+                                     std::unordered_map<std::string, std::string>& out) {
+    if (!match(TokenKind::Keyword_where)) return true;
+    do {
+        std::string param = parseIdentifier("expected type parameter in where clause");
+        consume(TokenKind::Colon, "expected ':' after type parameter in where clause");
+        std::string trait = parseIdentifier("expected trait or interface name in where clause");
+        bool found = false;
+        for (auto& tp : type_params) if (tp == param) { found = true; break; }
+        if (!found) {
+            diag_.error(previous().range,
+                "where clause references unknown type parameter '" + param + "'");
+            return false;
+        }
+        out[param] = trait;
+    } while (match(TokenKind::Comma));
+    return true;
+}
+
 std::vector<TypeNode> Parser::parseTypeArgList() {
     std::vector<TypeNode> args;
     do {

@@ -720,6 +720,21 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
         }
     }
 
+    // §9 泛型函数 where 约束：fn<T where T : Numeric> —— 实例化前校验具体类型实参。
+    for (auto& [tp, trait] : templ.type_param_constraints) {
+        size_t ti = templ.type_params.size();
+        for (size_t k = 0; k < templ.type_params.size(); k++)
+            if (templ.type_params[k] == tp) { ti = k; break; }
+        if (ti >= concrete.size()) continue;
+        TypeInfo ct = typeNodeToTypeInfo(concrete[ti]);
+        if (!satisfiesTraitConstraint(ct, trait)) {
+            error(expr.range, "type argument '" + typeName(ct) +
+                "' does not satisfy constraint '" + tp + " : " + trait +
+                "' for generic function '" + name + "'");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
+
     // 3) Mangled instance name; reuse if already instantiated.
     std::string mangled = name;
     for (auto& c : concrete)
@@ -830,6 +845,21 @@ TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_n
             error(expr.range, "cannot infer type parameter '" + templ.type_params[ti] +
                 "' for generic static method '" + cls_name + "." + method +
                 "' (pass explicit args: " + cls_name + "." + method + "<...>(...))");
+            return TypeInfo(TypeKind::Void);
+        }
+    }
+
+    // §9 泛型静态方法 where 约束：实例化前校验具体类型实参。
+    for (auto& [tp, trait] : templ.type_param_constraints) {
+        size_t ti = templ.type_params.size();
+        for (size_t k = 0; k < templ.type_params.size(); k++)
+            if (templ.type_params[k] == tp) { ti = k; break; }
+        if (ti >= concrete.size()) continue;
+        TypeInfo ct = typeNodeToTypeInfo(concrete[ti]);
+        if (!satisfiesTraitConstraint(ct, trait)) {
+            error(expr.range, "type argument '" + typeName(ct) +
+                "' does not satisfy constraint '" + tp + " : " + trait +
+                "' for generic static method '" + cls_name + "." + method + "'");
             return TypeInfo(TypeKind::Void);
         }
     }

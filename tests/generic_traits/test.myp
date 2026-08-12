@@ -1,0 +1,69 @@
+// P2 §9：泛型函数 where T : Trait 约束 + 内置数值 trait。
+// Numeric（+ - * / %）、Ordered（< <= > >=，含 string）、Float、Integer。
+import env;
+
+// 顶层泛型函数带 where 约束
+T min<T where T : Ordered>(T a, T b) { if (a < b) return a; return b; }
+T max<T where T : Ordered>(T a, T b) { if (a > b) return a; return b; }
+T add<T where T : Numeric>(T a, T b) { return a + b; }
+T twice<T where T : Numeric>(T a) { return a + a; }
+T triple<T where T : Numeric>(T a) { return a * 3; }
+T lerp<T where T : Float>(T a, T b, T t) { return a + (b - a) * t; }
+T intSum<T where T : Integer>(T a, T b) { return a + b; }
+
+// 泛型静态方法带 where 约束
+class Util {
+    static:
+        T clamp<T where T : Ordered>(T v, T lo, T hi) {
+            if (v < lo) return lo;
+            if (v > hi) return hi;
+            return v;
+        }
+        T mul<T where T : Numeric>(T a, T b) { return a * b; }
+}
+
+class Main {
+    action:
+        @startup void run() {
+            // Ordered：int / double / string
+            Console.writeLong(min(3, 7));                 // 3
+            Console.writeString("\n");
+            Console.writeLong(max(3, 7));                 // 7
+            Console.writeString("\n");
+            Console.writeString("m=" + min(2.5, 1.5));    // 1.5
+            Console.writeString("\n");
+            Console.writeString("s=" + min("abc", "abd")); // abc
+            Console.writeString("\n");
+            // Numeric：int / double
+            Console.writeLong(add(10, 5));                // 15
+            Console.writeString("\n");
+            Console.writeString("d=" + add(1.5, 2.25));   // 3.75
+            Console.writeString("\n");
+            Console.writeLong(twice(21));                 // 42
+            Console.writeString("\n");
+            Console.writeLong(triple(14));                // 42
+            Console.writeString("\n");
+            // Float：仅 float/double
+            Console.writeString("f=" + lerp(0.0, 10.0, 0.5)); // 5
+            Console.writeString("\n");
+            // Integer：整型族（不含浮点）
+            Console.writeLong(intSum(20, 22));            // 42
+            Console.writeString("\n");
+            // 静态方法
+            Console.writeLong(Util.clamp(5, 1, 10));      // 5
+            Console.writeString("\n");
+            Console.writeLong(Util.clamp(0, 1, 10));      // 1
+            Console.writeString("\n");
+            Console.writeLong(Util.clamp(99, 1, 10));     // 10
+            Console.writeString("\n");
+            Console.writeString("s=" + Util.clamp("b", "a", "c")); // b
+            Console.writeString("\n");
+            Console.writeLong(Util.mul(6, 7));            // 42
+            Console.writeString("\n");
+            Console.writeString("GEN_TRAIT_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

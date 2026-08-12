@@ -1807,6 +1807,39 @@ bool Sema::isUnsignedKind(TypeKind k) const {
            k == TypeKind::UInt || k == TypeKind::ULong;
 }
 
+// §9 内置数值 trait：类型 t 是否满足约束（Numeric/Integer/Float/Ordered；
+// 非内建 trait 名按接口实现检查，与泛型类 where T : I 一致）。
+bool Sema::satisfiesTraitConstraint(const TypeInfo& t, const std::string& trait) const {
+    auto is_int_family = [](TypeKind k) {
+        return k == TypeKind::Byte || k == TypeKind::Short ||
+               k == TypeKind::Int || k == TypeKind::Long ||
+               k == TypeKind::UByte || k == TypeKind::UShort ||
+               k == TypeKind::UInt || k == TypeKind::ULong ||
+               k == TypeKind::Char;
+    };
+    if (trait == "Numeric")
+        return is_int_family(t.kind) || t.kind == TypeKind::Float ||
+               t.kind == TypeKind::Double;
+    if (trait == "Integer")
+        return is_int_family(t.kind);
+    if (trait == "Float")
+        return t.kind == TypeKind::Float || t.kind == TypeKind::Double;
+    if (trait == "Ordered")
+        return is_int_family(t.kind) || t.kind == TypeKind::Float ||
+               t.kind == TypeKind::Double || t.kind == TypeKind::String;
+    // 接口约束：类实现检查
+    if (t.kind == TypeKind::Class) {
+        if (!current_tu_) return false;
+        for (auto& c : current_tu_->classes) {
+            if (c.name == t.class_name && c.interface_class_name == trait)
+                return true;
+        }
+    }
+    if (t.kind == TypeKind::Interface && t.class_name == trait)
+        return true;
+    return false;
+}
+
 // Wider of two numeric kinds; Void if not promotable either way.
 TypeKind Sema::commonNumericKind(TypeKind a, TypeKind b) const {
     if (a == b) return a;

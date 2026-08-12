@@ -1,0 +1,13 @@
+// §9 负测试：约束违规应被拒绝 —— bool 不满足 Ordered
+T min<T where T : Ordered>(T a, T b) { if (a < b) return a; return b; }
+import env;
+class Main {
+    action:
+        @startup void run() {
+            Console.writeBool(min(true, false));
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

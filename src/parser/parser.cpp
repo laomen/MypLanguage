@@ -348,6 +348,8 @@ ActionDecl Parser::parseActionDecl() {
                     decl.type_params.push_back(parseIdentifier("expected type parameter name"));
                 }
             }
+            // §9 泛型静态方法 where 约束：foo<T where T : Numeric>(...)，在 <...> 内
+            parseGenericWhereClause(decl.type_params, decl.type_param_constraints);
             consumeGenericClose("expected '>' after generic type parameters");
         }
     }
@@ -744,6 +746,8 @@ std::unique_ptr<FuncDecl> Parser::parseFunction(bool allow_void_return) {
                     func->type_params.push_back(parseIdentifier("expected type parameter name"));
                 }
             }
+            // §9 泛型函数 where 约束：fn<T where T : Numeric>(...)，在 <...> 内
+            parseGenericWhereClause(func->type_params, func->type_param_constraints);
             consumeGenericClose("expected '>' after generic type parameters");
         }
     }

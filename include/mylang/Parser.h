@@ -58,6 +58,8 @@ private:
     std::unique_ptr<ClassDecl> parseClass();
     std::unique_ptr<StructDecl> parseStruct();
     std::unique_ptr<BitfieldDecl> parseBitfieldDecl();
+    bool parseGenericWhereClause(std::vector<std::string>& type_params,
+                                 std::unordered_map<std::string, std::string>& out);
     std::unique_ptr<InterfaceDecl> parseInterface();
     std::unique_ptr<MappingDecl> parseMapping();
     std::unique_ptr<FuncDecl> parseFunction(bool allow_void_return = true);

@@ -146,6 +146,8 @@ struct ActionDecl {
     std::vector<ParamDecl> params;
     // Generic static method: List.map<T, U>(...) — type params on a static action.
     std::vector<std::string> type_params;
+    // §9 泛型静态方法约束：T → trait/接口 名（List.map<T where T : Numeric>）
+    std::unordered_map<std::string, std::string> type_param_constraints;
     std::shared_ptr<Stmt> body;  // nullptr if declaration only
     SourceRange range;
     bool has_startup = false;
@@ -833,6 +835,8 @@ struct FuncDecl {
     std::set<std::string> nonlocal_captures;
     std::map<std::string, std::string> nonlocal_cell_class;
     std::vector<std::string> type_params;    // generic function template params <T,U>
+    // 泛型函数约束：T → trait/接口 名（fn<T where T : Numeric>，§9）
+    std::unordered_map<std::string, std::string> type_param_constraints;
     std::vector<TypeNode> inst_type_args;    // monomorphized instance concrete args
     bool is_generic_inst = false;            // monomorphized instance (not a template)
     bool has_test = false;

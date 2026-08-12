@@ -139,6 +139,9 @@ private:
     bool isNumericKind(TypeKind k) const;
     bool isUnsignedKind(TypeKind k) const;
     TypeKind commonNumericKind(TypeKind a, TypeKind b) const;
+    // §9 内置数值 trait 约束：类型 t 是否满足 trait（Numeric/Integer/Float/Ordered，
+    // 或接口名 → 类实现检查）。
+    bool satisfiesTraitConstraint(const TypeInfo& t, const std::string& trait) const;
     // Conservative "does this statement guarantee control never falls off its
     // end" (return/throw/infinite-loop/all-arms-return). Used to flag non-void
     // functions missing a return at the end.
