@@ -1,0 +1,36 @@
+// P1 §6.4：string 词法比较操作符（< <= > >=），消除 "只能用 Str.cmp" 的不对称。
+import env;
+
+class Main {
+    action:
+        @startup void run() {
+            Console.writeBool("abc" < "abd");   // true
+            Console.writeString("\n");
+            Console.writeBool("abc" < "abc");   // false
+            Console.writeString("\n");
+            Console.writeBool("abc" <= "abc");  // true
+            Console.writeString("\n");
+            Console.writeBool("z" > "a");       // true
+            Console.writeString("\n");
+            Console.writeBool("b" >= "c");      // false
+            Console.writeString("\n");
+            Console.writeBool("abc" == "abc");  // true（既有 == 回归）
+            Console.writeString("\n");
+            Console.writeBool("abc" != "abd");  // true（既有 != 回归）
+            Console.writeString("\n");
+            string s = "hello";
+            Console.writeBool(s > "hello");     // false
+            Console.writeString("\n");
+            Console.writeBool(s > "hell");      // true（长于 + 词法更大）
+            Console.writeString("\n");
+            Console.writeBool("Hello" < "hello"); // true（ASCII 'H' < 'h'）
+            Console.writeString("\n");
+            if ("abc" < "abd" && "abc" <= "abc" && "z" > "a" && s > "hell" &&
+                !(s > "hello") && "abc" == "abc" && "abc" != "abd")
+                Console.writeString("SCMP_OK\n");
+        }
+}
+int main() {
+    Main m = new Main() @thread;
+    return 0;
+}

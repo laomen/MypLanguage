@@ -455,6 +455,14 @@ int32_t myp_str_eq(const char* a, const char* b) {
     return strcmp(a, b) == 0 ? 1 : 0;
 }
 
+// P1（docs/type_system_design §6.4）：string 词法比较（strcmp 语义），供
+// `< <= > >=` 操作符使用。返回 -1/0/1。
+int32_t myp_str_cmp(const char* a, const char* b) {
+    if (!a || !b) return (a == b) ? 0 : (a ? 1 : -1);
+    int c = strcmp(a, b);
+    return c < 0 ? -1 : (c > 0 ? 1 : 0);
+}
+
 // String to double (for parsing data files)
 double myp_atof(const char* s) {
     if (!s) return 0.0;

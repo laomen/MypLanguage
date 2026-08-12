@@ -369,6 +369,26 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             return builder_.CreateICmpNE(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
         }
     }
+    // P1 §6.4：string 词法比较（< <= > >=），经 myp_str_cmp（strcmp 语义）
+    if ((e.op == BinaryOpKind::Lt || e.op == BinaryOpKind::Gt ||
+         e.op == BinaryOpKind::Le || e.op == BinaryOpKind::Ge) &&
+        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp) {
+        auto* cmp = module_->getFunction("myp_str_cmp");
+        if (!cmp) {
+            auto* ft = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_),
+                {llvm::PointerType::get(ctx_, 0), llvm::PointerType::get(ctx_, 0)}, false);
+            cmp = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_str_cmp", module_.get());
+        }
+        auto* c = builder_.CreateCall(cmp, {l, r}, "strcmp");
+        auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        switch (e.op) {
+            case BinaryOpKind::Lt: return builder_.CreateICmpSLT(c, zero);
+            case BinaryOpKind::Gt: return builder_.CreateICmpSGT(c, zero);
+            case BinaryOpKind::Le: return builder_.CreateICmpSLE(c, zero);
+            case BinaryOpKind::Ge: return builder_.CreateICmpSGE(c, zero);
+            default: break;
+        }
+    }
 
     switch (e.op) {
         case BinaryOpKind::Add: return fp ? builder_.CreateFAdd(l, r) : builder_.CreateAdd(l, r);

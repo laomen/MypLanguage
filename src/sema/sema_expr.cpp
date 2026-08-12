@@ -336,6 +336,12 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
         case BinaryOpKind::Le: case BinaryOpKind::Ge: {
             TypeInfo op_ret = resolveOperator();
             if (op_ret.kind != TypeKind::Void) return op_ret;
+            // P1 §6.4：string 词法比较（strcmp），消除 "只能用 Str.cmp" 的不对称
+            if (lhs_type.kind == TypeKind::String || rhs_type.kind == TypeKind::String) {
+                if (lhs_type.kind != TypeKind::String || rhs_type.kind != TypeKind::String)
+                    error(expr.range, "string comparison requires both operands to be strings");
+                return TypeInfo(TypeKind::Bool);
+            }
             if (!expectNumeric(lhs_type, expr.lhs->range))
                 return TypeInfo(TypeKind::Bool);
             // uint32：无符号比较（codegen 选 ULT/UGT/ULE/UGE）。
