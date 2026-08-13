@@ -16,19 +16,27 @@ long parreduce(int n, int seed) {
         a[i] = int((rng >> 16) % 1000);
         i = i + 1;
     }
-    int[] perThread = new int[64];
-    i = 0;
-    while (i < 64) {
-        perThread[i] = 0;
-        i = i + 1;
-    }
-    @parallel for (int j = 0; j < n; j = j + 1) {
-        int wid = Parallel.workerId();
-        perThread[wid] = perThread[wid] + a[j];
+    // 分块并行：每线程一个连续块，局部 s 累加，块末写一次槽位（与 C++ std::thread 同构）。
+    // 原逐元素 perThread[wid]+=a[j] 有缓存行乒乓（16 槽位同缓存行）+ 每元素内存访问 → 慢 ~3x。
+    int nT = Parallel.threadCount();
+    if (nT < 1) nT = 1;
+    int chunk = (n + nT - 1) / nT;
+    long[] perThread = new long[nT + 8];
+    @parallel for (int k = 0; k < nT; k = k + 1) {
+        int begin = k * chunk;
+        int end = begin + chunk;
+        if (end > n) end = n;
+        long s = 0;
+        int j = begin;
+        while (j < end) {
+            s = s + a[j];
+            j = j + 1;
+        }
+        perThread[k] = s;
     }
     long sum = 0;
     i = 0;
-    while (i < 64) {
+    while (i < nT) {
         sum = sum + perThread[i];
         i = i + 1;
     }

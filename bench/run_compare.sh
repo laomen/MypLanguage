@@ -12,7 +12,7 @@
 # 脚本取多轮最小值，输出 MYP(ms) / C++(ms) / 比值(C++÷MYP) / verify。
 #
 # 说明：
-#   - 比值 > 1 表示 C++ 更快；比值越接近 1，MYP 的代码生成越接近 C++。
+#   - ratio = C++ms ÷ MYPms。> 1 表示 MYP 更快（C++ 耗时更多）；< 1 表示 C++ 更快。
 #   - 若要启用 C++ 自动向量化（-march=native），取消下方注释。
 set -u
 cd "$(dirname "$0")"
@@ -113,5 +113,5 @@ for name in "${names[@]}"; do
 done
 
 echo ""
-echo "注: 比值 C++/MYP > 1 表示 C++ 更快；verify 两语言一致才有对比意义。"
-echo "    hashmap 一项包含 MYP 泛型/类实例 ARC 成本，与 std::unordered_map 非纯 CPU 对比。"
+echo "注: 比值 C++/MYP > 1 表示 MYP 更快（C++ 耗时更多）；< 1 表示 C++ 更快。"
+echo "    verify 两语言一致才有对比意义；hashmap 含 MYP 泛型 ARC 成本，非纯 CPU 对比。"
