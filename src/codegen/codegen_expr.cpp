@@ -209,6 +209,17 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_cuda_multiprocessors_ && e.name == "__myp_cuda_multiprocessors") return runtime_cuda_multiprocessors_;
         if (runtime_cuda_max_threads_ && e.name == "__myp_cuda_max_threads") return runtime_cuda_max_threads_;
         if (runtime_cuda_warp_ && e.name == "__myp_cuda_warp") return runtime_cuda_warp_;
+        if (runtime_gpu_vendor_ && e.name == "__myp_gpu_vendor") return runtime_gpu_vendor_;
+        if (runtime_gpu_gfx_arch_ && e.name == "__myp_gpu_gfx_arch") return runtime_gpu_gfx_arch_;
+        if (runtime_gpu_shared_per_block_ && e.name == "__myp_gpu_shared_per_block") return runtime_gpu_shared_per_block_;
+        if (runtime_gpu_regs_per_block_ && e.name == "__myp_gpu_regs_per_block") return runtime_gpu_regs_per_block_;
+        if (runtime_gpu_max_grid_dim_ && e.name == "__myp_gpu_max_grid_dim") return runtime_gpu_max_grid_dim_;
+        if (runtime_gpu_max_block_dim_ && e.name == "__myp_gpu_max_block_dim") return runtime_gpu_max_block_dim_;
+        if (runtime_gpu_clock_mhz_ && e.name == "__myp_gpu_clock_mhz") return runtime_gpu_clock_mhz_;
+        if (runtime_gpu_concurrent_kernels_ && e.name == "__myp_gpu_concurrent_kernels") return runtime_gpu_concurrent_kernels_;
+        if (runtime_gpu_mem_alignment_ && e.name == "__myp_gpu_mem_alignment") return runtime_gpu_mem_alignment_;
+        if (runtime_gpu_double_precision_ && e.name == "__myp_gpu_double_precision") return runtime_gpu_double_precision_;
+        if (runtime_gpu_atomics64_ && e.name == "__myp_gpu_atomics64") return runtime_gpu_atomics64_;
         if (runtime_io_fopen_ && e.name == "__myp_io_fopen") return runtime_io_fopen_;
         if (runtime_io_fclose_ && e.name == "__myp_io_fclose") return runtime_io_fclose_;
         if (runtime_io_read_line_ && e.name == "__myp_io_read_line") return runtime_io_read_line_;

@@ -2518,6 +2518,19 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_cuda_max_threads", TypeKind::Int, {});
     add_intrinsic("__myp_cuda_warp", TypeKind::Int, {});
 
+    // §7.4 厂商探测 + 能力查询（vendor-neutral __myp_gpu_* 前缀）
+    add_intrinsic("__myp_gpu_vendor", TypeKind::String, {});
+    add_intrinsic("__myp_gpu_gfx_arch", TypeKind::String, {});
+    add_intrinsic("__myp_gpu_shared_per_block", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_regs_per_block", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_max_grid_dim", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_max_block_dim", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_clock_mhz", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_concurrent_kernels", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_mem_alignment", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_double_precision", TypeKind::Int, {});
+    add_intrinsic("__myp_gpu_atomics64", TypeKind::Int, {});
+
     // File I/O intrinsics
     add_intrinsic("__myp_io_fopen", TypeKind::Int, {TypeKind::String, TypeKind::String});
     add_intrinsic("__myp_io_fclose", TypeKind::Void, {});

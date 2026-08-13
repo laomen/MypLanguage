@@ -29,9 +29,9 @@ class GpuHAL {
             return 0;
         }
 
-        // 厂商名（能力查询入口，§7.4 最小版）
+        // 厂商名（§7.4 真实设备探测：runtime 返回 "nvidia"/"amd"/"cpu"）。
+        // 无 GPU（MYP_GPU 未开 / 无驱动）→ "cpu"（CPU 一等后端）。
         string vendor() {
-            if (GpuHAL.active() == "cuda") return "nvidia";
-            return "cpu";
+            return __myp_gpu_vendor();
         }
 }

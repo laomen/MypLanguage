@@ -1,0 +1,66 @@
+// §9.5 ④ / §7.4 厂商探测 + 能力查询测试
+// 打印真实设备能力；GPU 模式（MYP_GPU=1）断言 NVIDIA 真实值，
+// CPU 回退模式断言 vendor=="cpu" 且 capability==0。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+import gpu.device;
+
+class Main {
+    action:
+        @startup void go() {
+            int fail = 0;
+
+            // ---- §7.4 厂商探测 ----
+            string vend = GpuDevice.vendor();
+            string halv = GpuHAL.vendor();
+            Console.writeLine("vendor   = " + vend + "  (GpuHAL: " + halv + ")");
+            Console.writeLine("gfxArch  = [" + GpuDevice.gfxArch() + "]");
+
+            if (GpuHAL.isGpu() == 1) {
+                // ---- GPU 模式：真实 NVIDIA 能力 ----
+                Console.writeLine("name           = " + GpuDevice.name());
+                Console.writeLine("capability     = " + GpuDevice.capability());
+                Console.writeLine("multiProcessors= " + GpuDevice.multiProcessors());
+                Console.writeLine("maxThreads     = " + GpuDevice.maxThreads());
+                Console.writeLine("warpSize       = " + GpuDevice.warpSize());
+                Console.writeLine("sharedPerBlock = " + GpuDevice.sharedPerBlock());
+                Console.writeLine("regsPerBlock   = " + GpuDevice.regsPerBlock());
+                Console.writeLine("maxGridDim     = " + GpuDevice.maxGridDim());
+                Console.writeLine("maxBlockDim    = " + GpuDevice.maxBlockDim());
+                Console.writeLine("clock(MHz)     = " + GpuDevice.clock());
+                Console.writeLine("concurrent     = " + GpuDevice.concurrentKernels());
+                Console.writeLine("memAlignment   = " + GpuDevice.memAlignment());
+                Console.writeLine("doublePrec     = " + GpuDevice.doublePrecision());
+                Console.writeLine("atomics64      = " + GpuDevice.atomics64());
+                Console.writeLine("memory         = " + GpuDevice.memory());
+
+                if (vend != "nvidia" && vend != "amd") { Console.writeLine("FAIL: bad vendor " + vend); fail = 1; }
+                if (halv != vend) { Console.writeLine("FAIL: GpuHAL.vendor " + halv + " != " + vend); fail = 1; }
+                int cap = GpuDevice.capability();
+                if (cap < 600) { Console.writeLine("FAIL: capability too low " + cap); fail = 1; }
+                int ws = GpuDevice.warpSize();
+                if (ws != 32) { Console.writeLine("FAIL: warpSize " + ws + " (expect 32)"); fail = 1; }
+                if (GpuDevice.sharedPerBlock() <= 0) { Console.writeLine("FAIL: sharedPerBlock"); fail = 1; }
+                if (GpuDevice.regsPerBlock() <= 0) { Console.writeLine("FAIL: regsPerBlock"); fail = 1; }
+                if (GpuDevice.maxGridDim() <= 0) { Console.writeLine("FAIL: maxGridDim"); fail = 1; }
+                if (GpuDevice.maxBlockDim() <= 0) { Console.writeLine("FAIL: maxBlockDim"); fail = 1; }
+                if (GpuDevice.clock() <= 0) { Console.writeLine("FAIL: clock"); fail = 1; }
+                if (GpuDevice.memAlignment() < 16) { Console.writeLine("FAIL: memAlignment"); fail = 1; }
+                if (GpuDevice.concurrentKernels() != 1) { Console.writeLine("FAIL: concurrentKernels"); fail = 1; }
+                if (GpuDevice.atomics64() != 1) { Console.writeLine("FAIL: atomics64"); fail = 1; }
+            } else {
+                // ---- CPU 回退：无 GPU，能力全 0 / vendor=cpu ----
+                Console.writeLine("capability     = " + GpuDevice.capability() + " (cpu)");
+                if (vend != "cpu") { Console.writeLine("FAIL: cpu vendor " + vend); fail = 1; }
+                if (GpuDevice.capability() != 0) { Console.writeLine("FAIL: cpu capability != 0"); fail = 1; }
+                if (GpuDevice.warpSize() != 0) { Console.writeLine("FAIL: cpu warpSize != 0"); fail = 1; }
+                if (GpuDevice.sharedPerBlock() != 0) { Console.writeLine("FAIL: cpu sharedPerBlock != 0"); fail = 1; }
+            }
+
+            Console.writeLine("gpu query: " + (fail == 0 ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

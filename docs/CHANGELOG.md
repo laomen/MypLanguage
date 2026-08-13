@@ -246,8 +246,29 @@
     magic + kernel 符号（llvm-readobj）+ AMD 二进制 CPU 回退语义 + NV PTX 无回归。
   - **受限（无硬件留待）**：`@gpu stride`/scatter（gridDim 无 AMDGCN intrinsic）
     AMD 回退 CPU；`@gpu tile` __shared__ 对象发射；数学 NV libdevice（AMD 走
-    LLVM intrinsic/ocml）；厂商探测/能力查询。
+    LLVM intrinsic/ocml）。
   - CMake：AMDGPU LLVM 组件；`MYP_ENABLE_ROCM` 选项。回归 263/263。
+
+### v3.13.1 — P4 §9.5 ④ 厂商探测 + 能力查询（§7.4）落地
+  - **runtime_gpu.c 厂商探测**：`myp_gpu_vendor()` → "nvidia"/"cpu"（无 GPU），
+    `myp_gpu_gfx_arch()` → ""（NV 无此概念）；ROCm 版返回 "amd"。
+  - **runtime_gpu.c 能力查询**：`myp_gpu_shared_per_block/regs_per_block/
+    max_grid_dim/max_block_dim/clock_mhz/concurrent_kernels/mem_alignment/
+    double_precision/atomics64`，统一 `cuDeviceGetAttribute`（属性 ID 对齐
+    /usr/include/cuda.h：MAX_BLOCK_DIM_X=2、MAX_GRID_DIM_X=5、MAX_SHARED_MEMORY_
+    PER_BLOCK=8、MAX_REGISTERS_PER_BLOCK=12、CLOCK_RATE=13、CONCURRENT_KERNELS=31）。
+  - **runtime_rocm.c HIP 镜像**：`hipDeviceGetAttribute` 同 ABI 补全（vendor="amd"）。
+  - **codegen/sema**：注册 vendor-neutral intrinsic `__myp_gpu_vendor/gfx_arch/
+    shared_per_block/regs_per_block/max_grid_dim/max_block_dim/clock_mhz/
+    concurrent_kernels/mem_alignment/double_precision/atomics64`。
+  - **stdlib/gpu/device.myp**：`GpuDevice` 补齐 §7.4 全部字段（vendor/gfxArch/
+    sharedPerBlock/regsPerBlock/maxGridDim/maxBlockDim/clock/concurrentKernels/
+    memAlignment/doublePrecision/atomics64）；`GpuHAL.vendor()` 改真实设备探测。
+  - **实测 RTX 2070 SUPER**（`test_gpu_query.myp` 双模式 PASS）：vendor=nvidia、
+    capability=705、sharedPerBlock=49152、regsPerBlock=65536、maxGridDim=2147483647、
+    maxBlockDim=1024、clock=1815MHz、concurrent=1、atomics64=1（sm_60+）、
+    doublePrecision=0（sm_75 消费卡 FP64 1/32）。CPU 回退 vendor=cpu、能力全 0。
+  - 回归 263/263 + AMD 交叉编译（tests/cross_compile_amd.sh）无回归。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

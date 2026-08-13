@@ -27,6 +27,41 @@ class GpuDevice {
         // 线程束大小（通常 32）
         int warpSize() { return __myp_cuda_warp(); }
 
+        // ---- §7.4 厂商探测 + 能力查询 ----
+
+        // 厂商名：无 GPU → "cpu"；NVIDIA → "nvidia"；AMD(ROCm) → "amd"
+        string vendor() { return __myp_gpu_vendor(); }
+
+        // AMD GCN 架构字符串（如 "gfx1030"；NVIDIA 为空串）
+        string gfxArch() { return __myp_gpu_gfx_arch(); }
+
+        // 每块最大共享内存（字节）
+        int sharedPerBlock() { return __myp_gpu_shared_per_block(); }
+
+        // 每块最大寄存器数
+        int regsPerBlock() { return __myp_gpu_regs_per_block(); }
+
+        // 最大 grid 尺寸（x 维）
+        int maxGridDim() { return __myp_gpu_max_grid_dim(); }
+
+        // 最大 block 尺寸（x 维）
+        int maxBlockDim() { return __myp_gpu_max_block_dim(); }
+
+        // 核心时钟（MHz）
+        int clock() { return __myp_gpu_clock_mhz(); }
+
+        // 并发内核支持（1 = 支持）
+        int concurrentKernels() { return __myp_gpu_concurrent_kernels(); }
+
+        // 向量化访问所需对齐字节（float4/double2 = 16）
+        int memAlignment() { return __myp_gpu_mem_alignment(); }
+
+        // 双精度算力（0 = 慢速 FP64，1 = 常规 FP64）
+        int doublePrecision() { return __myp_gpu_double_precision(); }
+
+        // 64 位原子支持（1 = 支持）
+        int atomics64() { return __myp_gpu_atomics64(); }
+
         // GPU 是否可用
         int available() { return __myp_cuda_available(); }
 

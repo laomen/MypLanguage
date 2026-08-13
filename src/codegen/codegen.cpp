@@ -2551,6 +2551,45 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::Function::ExternalLinkage, "myp_gpu_warp_size", module_.get());
     intrinsic_map_["__myp_cuda_warp"] = runtime_cuda_warp_;
 
+    // §7.4 厂商探测 + 能力查询（vendor-neutral __myp_gpu_* 前缀；ROCm 构建
+    // 同 ABI 由 runtime_rocm.c 提供 → 同一份 stdlib 两端可用）。
+    auto* gpu_str0_ft = llvm::FunctionType::get(p, {}, false);
+    runtime_gpu_vendor_ = llvm::Function::Create(gpu_str0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_vendor", module_.get());
+    intrinsic_map_["__myp_gpu_vendor"] = runtime_gpu_vendor_;
+    runtime_gpu_gfx_arch_ = llvm::Function::Create(gpu_str0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_gfx_arch", module_.get());
+    intrinsic_map_["__myp_gpu_gfx_arch"] = runtime_gpu_gfx_arch_;
+
+    auto* gpu_i0_ft = llvm::FunctionType::get(i32, {}, false);
+    runtime_gpu_shared_per_block_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_shared_per_block", module_.get());
+    intrinsic_map_["__myp_gpu_shared_per_block"] = runtime_gpu_shared_per_block_;
+    runtime_gpu_regs_per_block_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_regs_per_block", module_.get());
+    intrinsic_map_["__myp_gpu_regs_per_block"] = runtime_gpu_regs_per_block_;
+    runtime_gpu_max_grid_dim_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_max_grid_dim", module_.get());
+    intrinsic_map_["__myp_gpu_max_grid_dim"] = runtime_gpu_max_grid_dim_;
+    runtime_gpu_max_block_dim_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_max_block_dim", module_.get());
+    intrinsic_map_["__myp_gpu_max_block_dim"] = runtime_gpu_max_block_dim_;
+    runtime_gpu_clock_mhz_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_clock_mhz", module_.get());
+    intrinsic_map_["__myp_gpu_clock_mhz"] = runtime_gpu_clock_mhz_;
+    runtime_gpu_concurrent_kernels_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_concurrent_kernels", module_.get());
+    intrinsic_map_["__myp_gpu_concurrent_kernels"] = runtime_gpu_concurrent_kernels_;
+    runtime_gpu_mem_alignment_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_mem_alignment", module_.get());
+    intrinsic_map_["__myp_gpu_mem_alignment"] = runtime_gpu_mem_alignment_;
+    runtime_gpu_double_precision_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_double_precision", module_.get());
+    intrinsic_map_["__myp_gpu_double_precision"] = runtime_gpu_double_precision_;
+    runtime_gpu_atomics64_ = llvm::Function::Create(gpu_i0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_atomics64", module_.get());
+    intrinsic_map_["__myp_gpu_atomics64"] = runtime_gpu_atomics64_;
+
     // ---- GPU explicit memory / stream FFIs (M1 paradigm library stdlib/gpu) ----
     // 句柄统一为 i64（long）；数组参数为 opaque ptr。
     auto* gpu_alloc_h = llvm::Function::Create(llvm::FunctionType::get(i64, {i64}, false),

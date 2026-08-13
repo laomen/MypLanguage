@@ -247,6 +247,48 @@ int myp_gpu_warp_size(void) {
     return n;
 }
 
+// ---- §7.4 厂商探测 + 能力查询 ----
+// 通用属性查询：CU_DEVICE_ATTRIBUTE_* 的整数 ID（值见下方各函数注释，
+// 与 CUDA driver cuda.h 一致）。无 GPU / 查询失败 → 0。
+static int gpu_attr(int id) {
+    if (!dev_initialized) myp_gpu_init();
+    if (!avail || !p_cuDeviceGetAttribute) return 0;
+    int n = 0;
+    return (p_cuDeviceGetAttribute(&n, id, dev) == 0) ? n : 0;
+}
+
+// 厂商名：CUDA 运行期设备恒为 NVIDIA；无 GPU（MYP_GPU 未开/无驱动）→ "cpu"。
+// 与 runtime_rocm.c 的 "amd" 组成完整厂商探测（同 ABI，链接期二选一）。
+const char* myp_gpu_vendor(void) {
+    if (!dev_initialized) myp_gpu_init();
+    return avail ? myp_strdup("nvidia") : myp_strdup("cpu");
+}
+
+// AMD 专属：GCN 架构字符串（如 "gfx1030"）。CUDA 运行期无此概念 → 空串。
+const char* myp_gpu_gfx_arch(void) {
+    return myp_strdup("");
+}
+
+// 每块最大共享内存（字节）。CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK=8
+int myp_gpu_shared_per_block(void) { return gpu_attr(8); }
+// 每块最大寄存器数。CU_DEVICE_ATTRIBUTE_MAX_REGISTERS_PER_BLOCK=12
+int myp_gpu_regs_per_block(void) { return gpu_attr(12); }
+// 最大 grid 尺寸（x 维）。CU_DEVICE_ATTRIBUTE_MAX_GRID_DIM_X=5
+int myp_gpu_max_grid_dim(void) { return gpu_attr(5); }
+// 最大 block 尺寸（x 维）。CU_DEVICE_ATTRIBUTE_MAX_BLOCK_DIM_X=2
+int myp_gpu_max_block_dim(void) { return gpu_attr(2); }
+// 核心时钟（MHz）。CU_DEVICE_ATTRIBUTE_CLOCK_RATE=13 单位为 kHz → /1000
+int myp_gpu_clock_mhz(void) { return gpu_attr(13) / 1000; }
+// 并发内核支持（1=可并发）。CU_DEVICE_ATTRIBUTE_CONCURRENT_KERNELS=31
+int myp_gpu_concurrent_kernels(void) { return gpu_attr(31); }
+// 向量化访问所需对齐字节（float4/double2=16B，NVIDIA/AMD 均满足）
+int myp_gpu_mem_alignment(void) { return 16; }
+// 双精度算力：capability>=800（如 A100/H100）视为常规 FP64 → 1；
+// sm_70/75 消费卡（RTX）FP64 为 1/32 慢速 → 0（启发式，按 compute capability）。
+int myp_gpu_double_precision(void) { return myp_gpu_compute_capability() >= 800 ? 1 : 0; }
+// 64 位原子（原子加/交换）：sm_60+ 全局 64 位原子 → 1。
+int myp_gpu_atomics64(void) { return myp_gpu_compute_capability() >= 600 ? 1 : 0; }
+
 void* myp_gpu_alloc(size_t sz) {
     if (!avail) return NULL;
     void* p; return (p_cuMemAlloc(&p,sz)==0) ? p : NULL;

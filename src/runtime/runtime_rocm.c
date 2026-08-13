@@ -43,6 +43,7 @@ typedef struct hipDeviceProp_t* hipDeviceProp;
 
 typedef int (*hipInit_t)(unsigned int);
 typedef int (*hipGetDeviceCount_t)(int*);
+typedef int (*hipDeviceGetAttribute_t)(int*, int, int);
 typedef int (*hipDeviceProp_tfn)(hipDeviceProp, int);
 typedef int (*hipMalloc_t)(void**, size_t);
 typedef int (*hipFree_t)(void*);
@@ -66,6 +67,7 @@ typedef int (*hipStreamWaitEvent_t)(hipStream, hipEvent, unsigned);
 static void* lib = NULL;
 static hipInit_t p_hipInit = NULL;
 static hipGetDeviceCount_t p_hipGetDeviceCount = NULL;
+static hipDeviceGetAttribute_t p_hipDeviceGetAttribute = NULL;
 static hipMalloc_t p_hipMalloc = NULL;
 static hipFree_t p_hipFree = NULL;
 static hipMemcpy_t p_hipMemcpy = NULL;
@@ -110,7 +112,8 @@ int myp_gpu_init(void) {
         return 0;
     }
 #define LOAD(name) p_##name = (name##_t)dlsym(lib, #name)
-    LOAD(hipInit); LOAD(hipGetDeviceCount); LOAD(hipMalloc); LOAD(hipFree);
+    LOAD(hipInit); LOAD(hipGetDeviceCount); LOAD(hipDeviceGetAttribute);
+    LOAD(hipMalloc); LOAD(hipFree);
     LOAD(hipMemcpy); LOAD(hipMemcpyAsync); LOAD(hipDeviceSynchronize);
     LOAD(hipModuleLoadData); LOAD(hipModuleGetFunction); LOAD(hipLaunchKernel);
     LOAD(hipStreamCreate); LOAD(hipStreamSynchronize); LOAD(hipStreamDestroy);
@@ -226,5 +229,30 @@ __attribute__((noreturn)) void myp_gpu_scatter_check_fail(const char* msg) {
             msg ? msg : "unknown");
     exit(1);
 }
+
+// ---- §7.4 厂商探测 + 能力查询（HIP 镜像，ABI 与 runtime_gpu.c 一致）----
+// 无 AMD 硬件：编译期验证为主（MYP_ENABLE_ROCM=ON 时本文件参与构建）。
+// 属性 ID 与 CUDA CU_DEVICE_ATTRIBUTE_* 对齐（HIP 复用同一套枚举值）。
+
+const char* myp_gpu_vendor(void) { return myp_strdup("amd"); }
+
+// GCN 架构字符串（如 "gfx1030"）：完整实现需 hipGetDeviceProperties 的
+// gcnArchName 字段（需 hipDeviceProp_t 布局）。无硬件前返回空串。
+const char* myp_gpu_gfx_arch(void) { return myp_strdup(""); }
+
+static int rocm_attr(int id) {
+    if (!avail || !p_hipDeviceGetAttribute) return 0;
+    int n = 0;
+    return (p_hipDeviceGetAttribute(&n, id, 0) == 0) ? n : 0;
+}
+int myp_gpu_shared_per_block(void)   { return rocm_attr(8); }   // MaxSharedMemoryPerBlock
+int myp_gpu_regs_per_block(void)     { return rocm_attr(12); }  // MaxRegistersPerBlock
+int myp_gpu_max_grid_dim(void)       { return rocm_attr(5); }   // MaxGridDimX
+int myp_gpu_max_block_dim(void)      { return rocm_attr(2); }   // MaxBlockDimX
+int myp_gpu_clock_mhz(void)          { return rocm_attr(13) / 1000; }  // ClockRate(kHz)
+int myp_gpu_concurrent_kernels(void) { return rocm_attr(31); }  // ConcurrentKernels
+int myp_gpu_mem_alignment(void)      { return 16; }             // float4/double2 对齐
+int myp_gpu_double_precision(void)   { return 1; }              // CDNA/RDNA FP64 常规
+int myp_gpu_atomics64(void)          { return 1; }              // GCN 全局 64 位原子
 
 #endif  // MYP_ENABLE_ROCM

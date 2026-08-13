@@ -348,6 +348,18 @@ private:
     llvm::Function* runtime_cuda_multiprocessors_ = nullptr;
     llvm::Function* runtime_cuda_max_threads_ = nullptr;
     llvm::Function* runtime_cuda_warp_ = nullptr;
+    // §7.4 厂商探测 + 能力查询（vendor-neutral __myp_gpu_* 前缀）
+    llvm::Function* runtime_gpu_vendor_ = nullptr;
+    llvm::Function* runtime_gpu_gfx_arch_ = nullptr;
+    llvm::Function* runtime_gpu_shared_per_block_ = nullptr;
+    llvm::Function* runtime_gpu_regs_per_block_ = nullptr;
+    llvm::Function* runtime_gpu_max_grid_dim_ = nullptr;
+    llvm::Function* runtime_gpu_max_block_dim_ = nullptr;
+    llvm::Function* runtime_gpu_clock_mhz_ = nullptr;
+    llvm::Function* runtime_gpu_concurrent_kernels_ = nullptr;
+    llvm::Function* runtime_gpu_mem_alignment_ = nullptr;
+    llvm::Function* runtime_gpu_double_precision_ = nullptr;
+    llvm::Function* runtime_gpu_atomics64_ = nullptr;
 
     // ---- Init function ----
     llvm::Function* init_func_ = nullptr;
