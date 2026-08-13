@@ -193,13 +193,14 @@ class InferenceRuntime {
             opCount_ = opCount_ + 1;
         }
 
-        void addAdd(int aTid, int bTid, int outputTid) {
+        void addAdd(int aTid, int bTid, int outputTid, int doRelu) {
             int id = opCount_;
             opKind_[id] = 5;
             opA_[id] = aTid;
             opB_[id] = bTid;
             opC_[id] = outputTid;
             opD_[id] = 0;
+            opRelu_[id] = doRelu;
             opCount_ = opCount_ + 1;
         }
 
@@ -657,12 +658,14 @@ class InferenceRuntime {
         // Sqrt（opKind 34）：y = sqrt(x)
         void addSqrt(int inTid, int outTid) { int id = opCount_; opKind_[id] = 34; opA_[id] = inTid; opB_[id] = outTid; opCount_ = opCount_ + 1; }
         // InstanceNormalization（opKind 35）：per-(n,c) 空间归一化（秩无关，S=空间乘积）
+        // doRelu=1 时输出直接过 ReLU（图优化 IN+Relu 融合，省一次 arena 往返）
         void addInstanceNorm(int inTid, int sTid, int bTid, int outTid,
-                             int N, int C, int S, int epsBits, int hasEps) {
+                             int N, int C, int S, int epsBits, int hasEps, int doRelu) {
             int id = opCount_;
             opKind_[id] = 35;
             opA_[id] = inTid; opB_[id] = sTid; opC_[id] = bTid; opD_[id] = outTid;
             opP0_[id] = N; opP1_[id] = C; opP2_[id] = S; opP3_[id] = epsBits; opP4_[id] = hasEps;
+            opRelu_[id] = doRelu;
             opCount_ = opCount_ + 1;
         }
 
@@ -698,7 +701,7 @@ class InferenceRuntime {
                     int aa = opA_[i];
                     int bb = opB_[i];
                     int oc = opC_[i];
-                    InferOps.add(arena, tOff_[aa], tOff_[bb], tOff_[oc], tRows_[aa] * tCols_[aa]);
+                    InferOps.add(arena, tOff_[aa], tOff_[bb], tOff_[oc], tRows_[aa] * tCols_[aa], opRelu_[i]);
                 } else if (opKind_[i] == 6) {
                     int xa = opA_[i];
                     int wb = opB_[i];
@@ -951,7 +954,7 @@ class InferenceRuntime {
                     double eps = 1.0e-5;
                     if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
                     InferOps.instancenorm(arena, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
-                                          opP0_[i], opP1_[i], opP2_[i], eps);
+                                          opP0_[i], opP1_[i], opP2_[i], eps, opRelu_[i]);
                 }
                 if (prof == 1) {
                     int k = opKind_[i];
@@ -1055,7 +1058,7 @@ class InferenceRuntime {
                     int aa = opA_[i];
                     int bb = opB_[i];
                     int oc = opC_[i];
-                    GpuInferOps.add(arena, tRows_[aa] * tCols_[aa], tOff_[aa], tOff_[bb], tOff_[oc], dev);
+                    GpuInferOps.add(arena, tRows_[aa] * tCols_[aa], tOff_[aa], tOff_[bb], tOff_[oc], dev, opRelu_[i]);
                 } else if (opKind_[i] == 6) {
                     int xa = opA_[i];
                     int wb = opB_[i];
@@ -1349,7 +1352,7 @@ class InferenceRuntime {
                     if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
                     int work = opP0_[i] * opP1_[i];
                     GpuInferOps.instancenorm(arena, work, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
-                                             opP0_[i], opP1_[i], opP2_[i], eps, dev, statsOff_);
+                                             opP0_[i], opP1_[i], opP2_[i], eps, dev, statsOff_, opRelu_[i]);
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -1585,6 +1588,7 @@ class InferenceRuntime {
         int[64] gpuOpCnt_;    // GPU profiling：按 opKind 计数
         long[64] cpuOpMs_;    // CPU profiling：按 opKind 累计耗时（ms，MYP_PROF_CPU=1）
         int[64] cpuOpCnt_;    // CPU profiling：按 opKind 计数
+        int[512] opRelu_;     // 图优化：1 = op 输出直接过 ReLU（IN+Relu 融合等）
         int statsOff_;        // 全 resident 归约暂存区（arena 尾部预留）偏移
         // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
         int[512] sCnt_;

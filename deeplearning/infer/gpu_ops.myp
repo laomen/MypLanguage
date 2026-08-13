@@ -194,11 +194,17 @@ class GpuInferOps {
             }
         }
 
-        // 逐元素相加
-        void add(float[] a, int work, int aOff, int bOff, int outOff, long dev) {
+        // 逐元素相加（doRelu=1：输出直接过 ReLU，图优化 Add+Relu 融合）
+        void add(float[] a, int work, int aOff, int bOff, int outOff, long dev, int doRelu) {
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
-                    a[outOff + p] = a[aOff + p] + a[bOff + p];
+                    if (doRelu == 1) {
+                        float v = a[aOff + p] + a[bOff + p];
+                        if (v < 0.0f) v = 0.0f;
+                        a[outOff + p] = v;
+                    } else {
+                        a[outOff + p] = a[aOff + p] + a[bOff + p];
+                    }
                 }
             }
         }
@@ -1449,7 +1455,7 @@ class GpuInferOps {
         // K3: grid-stride Σ(x-mean)² → p2   K4: 每通道 Σp2 → variance, invStd
         // K5: thread-per-element 归一化
         void instancenorm(float[] a, int work, int xOff, int sOff, int bOff, int yOff,
-                          int N, int C, int S, double eps, long dev, int stOff) {
+                          int N, int C, int S, double eps, long dev, int stOff, int doRelu) {
             int nC = work;
             long total = long(nC) * long(S);
             int pt = 512;                 // 每通道归约线程数
@@ -1536,10 +1542,20 @@ class GpuInferOps {
                     int cc5 = nc5 % C;
                     double bias5 = a[bOff + cc5];
                     long q5 = base5 + long(b5);
-                    while (q5 < base5 + long(S)) {
-                        double xv5 = a[xOff + int(q5)];
-                        a[yOff + int(q5)] = float((xv5 - mn5) * iv5 + bias5);
-                        q5 = q5 + long(pt5);
+                    if (doRelu == 1) {
+                        while (q5 < base5 + long(S)) {
+                            double xv5 = a[xOff + int(q5)];
+                            float v5 = float((xv5 - mn5) * iv5 + bias5);
+                            if (v5 < 0.0f) v5 = 0.0f;
+                            a[yOff + int(q5)] = v5;
+                            q5 = q5 + long(pt5);
+                        }
+                    } else {
+                        while (q5 < base5 + long(S)) {
+                            double xv5 = a[xOff + int(q5)];
+                            a[yOff + int(q5)] = float((xv5 - mn5) * iv5 + bias5);
+                            q5 = q5 + long(pt5);
+                        }
                     }
                 }
             }

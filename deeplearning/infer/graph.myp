@@ -316,6 +316,7 @@ class Graph {
             classifyShapes();
             fuseConvBN();
             fuseConvRelu();
+            fuseReluOp();
             fuseGapFlatten();
             eliminateDeadNodes();
             if (doNHWC_ == 1) { if (layoutNHWC() == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
@@ -1137,6 +1138,40 @@ class Graph {
             }
             return 1;
         }
+        int fuseReluOp() {
+            // G6：InstanceNormalization→Relu 融合（IN 输出直接过 ReLU，省一次 arena 往返）。
+            // 注：Add→Relu 融合实测因 arena 布局变化反回退（relu 中间张量不分配→conv 缓存命中变差），不启用。
+            int i = 0;
+            while (i < nCount_) {
+                if (nType_[i] != "InstanceNormalization") { i = i + 1; continue; }
+                string eff = effectiveOut(i);
+                if (isGraphOutput(eff) == 1) { i = i + 1; continue; }
+                int j = 0;
+                while (j < nCount_) {
+                    if (nType_[j] == "Relu" && nIn0_[j] == eff) break;
+                    j = j + 1;
+                }
+                if (j >= nCount_) { i = i + 1; continue; }
+                int consumers = 0;
+                int k = 0;
+                while (k < nCount_) {
+                    if (nType_[k] == "") { k = k + 1; continue; }
+                    if (nIn0_[k] == eff || nIn1_[k] == eff || nIn2_[k] == eff || nIn3_[k] == eff || nIn4_[k] == eff) consumers = consumers + 1;
+                    k = k + 1;
+                }
+                if (consumers != 1) { i = i + 1; continue; }
+                nFused_[i] = 1;
+                nFusedOut_[i] = nOut0_[j];
+                nFusedBy_[j] = i;
+                nRelu_[i] = 1;
+                nType_[j] = "";
+                markDeadTensor(nOut0_[i]);
+                if (eff != nOut0_[i]) markDeadTensor(eff);
+                fuseCount_ = fuseCount_ + 1;
+                i = i + 1;
+            }
+            return 1;
+        }
         int isGraphOutput(string name) {
             int i = 0;
             while (i < goCount_) {
@@ -1761,7 +1796,7 @@ class Graph {
                     rt.addMatmul(a, w, out);
                 } else if (t == "Add") {
                     int b = tensorId(nIn1_[ni]);
-                    rt.addAdd(a, b, out);
+                    rt.addAdd(a, b, out, nRelu_[ni]);
                 } else if (t == "Relu") {
                     rt.addRelu(a, out);
                 } else if (t == "Sigmoid") {
@@ -1972,7 +2007,7 @@ class Graph {
                     int N = shD0_[is], C = shD1_[is];
                     int S = shD2_[is] * shD3_[is];
                     if (shR5_[is] == 1) S = shD2_[is] * shD3_[is] * shD4_[is];   // 3D：D*H*W
-                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, nEpsInt_[ni], nHasEps_[ni]);
+                    rt.addInstanceNorm(a, sT, bT, out, N, C, S, nEpsInt_[ni], nHasEps_[ni], nRelu_[ni]);
                 } else if (t == "Resize" || t == "Upsample") {
                     int is = shapeIdx(nIn0_[ni]);
                     int os = shapeIdx(effectiveOut(ni));

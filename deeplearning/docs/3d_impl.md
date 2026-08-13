@@ -197,10 +197,14 @@ patch 重载、L2 感知调度；`gapool` 块归约未动（不在本模型）�
 6. **MYP_PROF_CPU=1 剖析**（runtime.run() 按 opKind 累计，复用 GPU 版 opKindName）——定位 **conv3d 占 95%**（fine 56 conv = 42.4s / ops-loop 44.5s）。
 7. SIMD 需 `MYP_FAST_MATH=1`（FP 重排/收缩 FMA）。
 
-**实测（fine_model_liver_vessel 96³，16 核 CPU，O3+fastmath）**：fine CPU **212s→19.2s（11×）**（conv3d 42.4s→19.2s）；coarse **56.5s→7.23s（7.8×）**。ORT CPU 16 核 2.14s / 单线程 2.11s（图优化+融合后计算量小）→ MYP CPU 仍慢 **~9×**（conv 未 im2col；resize/relu/add 等未融合，占 ~2s）。
+**实测（fine_model_liver_vessel 96³，16 核 CPU，O3+fastmath）**：fine CPU **212s→19.4s（11×）**（conv3d 42.4s→17.4s）；coarse **56.5s→5.89s（9.6×）**。ORT CPU 16 核 2.14s / 单线程 2.11s（图优化+融合后计算量小）→ MYP CPU 仍慢 **~9×**（conv 是瓶颈，占 ops-loop 90%）。
 
-**正确性**：fine vs ORT rel 2.1e-3（FINE MATCH OK，4-wide 未引入误差）；coarse COARSE MATCH OK；conv3d 通用性（k5/s2、k3/d2）GPU vs CPU diff=0；回归 266/266。
+## 10.1 执行策略 + 图优化（2026-08-14，空间并行 + ReLU 融合）
 
-**脚本**：`bench/fine_cpu_bench.myp`（CPU fine，同 GPU 输入，O3 编译，写 /tmp/seg_liver_cpu.f32）；`deeplearning/infer/tools/bench_fine_ort.py`（ORT CPU 对比，显式喂 [1,1,96,96,96]）；`bench/cpu_conv_simd.myp`（conv SIMD 可行性：去 if vs 4-wide）。
+- **conv3d 空间并行**（`@parallel` 从 oc 维 → 空间 (oz,oy) 维，oc 内层）：每线程固定空间行遍历全部 oc，输入窗口在 oc 循环内复用（LLVM LICM 提升输入 load），避免 oc 并行时输入从内存重读 yC 倍。**coarse 7.23→5.89s（+22%）**；fine 因大权重（Cin=256/yC=128 → 权重 3.5MB > L2）重读抵消，持平。
+- **IN+ReLU 图融合**（`fuseReluOp` + runtime `opRelu_` 标记贯穿 Graph→runtime→InferOps→gpu_ops）：IN 输出直接过 ReLU（doRelu 分支外提，无开销），省一次 arena 往返。fine ops 209→185，正确性 OK（coarse/fine vs ORT、GPU/CPU 全 MATCH）。
+- **Add+ReLU 融合 → 回退**：实测因 arena 布局变化（relu 中间张量不分配 → conv 缓存命中变差）反回退 0.9s（18.5→19.4s）。**经验：element-wise 融合收益（省 1 次往返）易被内存布局副作用抵消；conv 才是计算/带宽瓶颈**。add 的 doRelu 机制保留（Graph 未启用）。
+- **实测**：coarse CPU 5.89s / GPU 599ms；fine CPU 19.4s（conv3d 17.4s 占 90%）；ops-loop 18.5s。
+- **正确性**：fine/coarse vs ORT MATCH OK（CPU+GPU）；回归 266/266。
 
-**⏳ 剩余**：fine 仍慢 ~9×（2.14s vs 19.2s）——resize3d/relu/add 等 element-wise 算子融合（省内存往返）+ conv+relu/bn 融合；conv 用 8-wide 展开进一步 SIMD；instancenorm float 累加（带宽再减半）。
+**⏳ 剩余**：fine 仍慢 ~9×（2.14s vs 19.4s）——**conv3d 是唯一瓶颈（17.4s）**，需算子级突破：oc 分组 × 空间分块 tiling（权重/输入 tile 适配 L2，针对 Cin=256/yC=128 的大权重 conv）；或 im2col+GEMM（小输入可用）/ Winograd（k=3）。
