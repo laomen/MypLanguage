@@ -344,6 +344,7 @@ enum class ExprKind {
     MacroParam,
     Quote,
     Convert,    // 显式类型转换：uint8(x) / long(x) / double(x) ...
+    GpuReduceExpr,  // §8.2 @gpu reduce 表达式形式（无 -> out，结果作为表达式值）
 };
 
 struct Expr {
@@ -814,9 +815,20 @@ struct GpuReduceStmt : Stmt {
           end_expr(std::move(ee)), out_name(std::move(on)) {}
 };
 
+// §8.2 @gpu reduce 表达式形式：`double s = @gpu reduce (acc,x)=>... init V over a[lo..hi);`
+// 与语句形式同构但无 `-> out`——结果直接作为表达式值。codegen 用合成临时标量承接
+// （stmt.out_name 为编译期生成的唯一临时名）。result_kind 为元素类型（sema 填充）。
+struct GpuReduceExpr : Expr {
+    std::unique_ptr<GpuReduceStmt> stmt;
+    TypeKind result_kind = TypeKind::Int;
+    GpuReduceExpr(std::unique_ptr<GpuReduceStmt> s, SourceRange r)
+        : Expr(ExprKind::GpuReduceExpr, r), stmt(std::move(s)) {}
+};
+
 // §8.3 @gpu scan（docs/gpu_library_design §8.3）：声明式前缀和。
-// 语法：@gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
-// 语义：b[lo+i] = init∘a[lo]∘…∘a[lo+i]（inclusive 前缀，op 可结合）。
+// 语法：@gpu scan [(exclusive)] (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
+// 语义（inclusive，默认）：b[lo+i] = init∘a[lo]∘…∘a[lo+i]（op 可结合）。
+// exclusive 变体：b[lo+0]=init，b[lo+i] = init∘a[lo]∘…∘a[lo+i-1]（不含自身）。
 // GPU 两遍：K1 每块块内和 → partials → host 顺序块前缀 offsets → K2 每块用
 // offsets[bid] 初始化 acc 扫块内写 b。CPU 回退顺序前缀扫描。
 struct GpuScanStmt : Stmt {
@@ -829,6 +841,7 @@ struct GpuScanStmt : Stmt {
     std::unique_ptr<Expr> begin_expr;
     std::unique_ptr<Expr> end_expr;
     std::string out_name;           // -> b（输出数组）
+    bool exclusive = false;         // exclusive 变体（b[i]=前缀至 i-1，b[0]=init）
     int64_t block_val = 0;
     GpuScanStmt(std::string acc, std::string x, std::unique_ptr<Stmt> ob,
                 std::unique_ptr<Expr> ie, std::string an,

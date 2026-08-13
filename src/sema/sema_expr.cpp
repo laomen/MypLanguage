@@ -110,6 +110,11 @@ TypeInfo Sema::visitExpr(Expr& expr) {
             result = visitExpr(*na.value);
             break;
         }
+        case ExprKind::GpuReduceExpr: {
+            // §8.2 @gpu reduce 表达式形式
+            result = visitGpuReduceExpr(static_cast<GpuReduceExpr&>(expr));
+            break;
+        }
         case ExprKind::Await: {
             if (!in_coro_method_) {
                 error(expr.range, "'await' is only allowed inside an '@coro' method");

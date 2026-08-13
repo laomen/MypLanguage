@@ -42,6 +42,53 @@ class Main {
             Console.writeLine("slice: " + (err == 0L ? "OK" : "FAIL") + " c256=" + c[256L] + " c511=" + c[511L]);
 
             Console.writeLine("gpu scan: " + (err == 0L ? "PASS" : "FAIL"));
+
+            // ---- §8.3 exclusive 变体：b[0]=init，b[i]=前缀至 i-1（不含自身）----
+            float[] e = new float[n];
+            @gpu scan(exclusive) (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> e;
+            long eerr = 0L;
+            i = 0L;
+            while (i < n) {
+                // 全量 exclusive：e[i] = 0+1+...+(i-1) = i(i-1)/2
+                float exp = float(i * (i - 1L) / 2L);
+                if (Math.abs(e[i] - exp) > 1.0f) eerr = eerr + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("exclusive-full: " + (eerr == 0L ? "OK" : "FAIL") +
+                " e0=" + e[0L] + " e1=" + e[1L] + " e1023=" + e[1023L]);
+
+            // 子区间 [256, 512) exclusive：e[256]=init=0；e[256+k] = a[256]..a[256+k-1] 之和
+            float[] f = new float[n];
+            @gpu scan(exclusive) (acc, x) => { return acc + x; } init 0.0f over a[256L..512L) -> f;
+            long ferr = 0L;
+            i = 256L;
+            while (i < 512L) {
+                long k = i - 256L;
+                float exp = float(k * (k - 1L) / 2L + 256L * k);   // k 个 a[256..] 项，k=0 时 0
+                if (Math.abs(f[i] - exp) > 1.0f) ferr = ferr + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("exclusive-slice: " + (ferr == 0L ? "OK" : "FAIL") +
+                " f256=" + f[256L] + " f511=" + f[511L]);
+
+            // 非零 init exclusive：e[i] = init + 前缀（0+1+..+(i-1)）
+            float[] g = new float[n];
+            @gpu scan(exclusive) (acc, x) => { return acc + x; } init 5.0f over a[0..n) -> g;
+            long gerr = 0L;
+            i = 0L;
+            while (i < n) {
+                float exp = 5.0f + float(i * (i - 1L) / 2L);
+                if (Math.abs(g[i] - exp) > 1.0f) gerr = gerr + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("exclusive-init5: " + (gerr == 0L ? "OK" : "FAIL") +
+                " g0=" + g[0L] + " g1=" + g[1L] + " g1023=" + g[1023L]);
+
+            if (err == 0L && eerr == 0L && ferr == 0L && gerr == 0L) {
+                Console.writeLine("gpu scan: PASS");
+            } else {
+                Console.writeLine("gpu scan: FAIL");
+            }
         }
 }
 

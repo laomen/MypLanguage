@@ -77,7 +77,7 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                 // §8.2 @gpu reduce (acc, x) => { ... } init V over a[lo..hi) -> out
                 if (check(TokenKind::Identifier) && peek().value == "reduce") {
                     advance(); // consume 'reduce'
-                    return parseGpuReduceStmt();
+                    return parseGpuReduceStmt(false);
                 }
                 // §8.3 @gpu scan (acc, x) => { ... } init V over a[lo..hi) -> b
                 if (check(TokenKind::Identifier) && peek().value == "scan") {
@@ -850,7 +850,11 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
 
 // §8.2 @gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;
 // 声明式归约：out = fold(init, a[lo..hi))，op 为 (acc, x) => acc⊕x。
-std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
+// §8.2 @gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out
+//   （语句形式，expr_form=false）；或表达式形式（expr_form=true，无 `-> out`，
+//   合成临时输出名，结果作为表达式值）。
+// 可选 block(n) 子句（§3.7 块大小）。
+std::unique_ptr<Stmt> Parser::parseGpuReduceStmt(bool expr_form) {
     auto start = previous().range;
     // (acc, x)
     consume(TokenKind::LeftParen, "expected '(' after '@gpu reduce'");
@@ -886,9 +890,15 @@ std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
         diag_.error(begin->range, "expected '<lo>..<hi>' range in '@gpu reduce'");
     }
     consume(TokenKind::RightParen, "expected ')' after reduce range");
-    // -> out
-    consume(TokenKind::Arrow, "expected '->' after reduce range");
-    std::string out = parseIdentifier("expected output variable after '->'");
+    // 输出目标：语句形式 `-> out`；表达式形式合成唯一临时标量名
+    std::string out;
+    if (!expr_form) {
+        consume(TokenKind::Arrow, "expected '->' after reduce range");
+        out = parseIdentifier("expected output variable after '->'");
+    } else {
+        static int rd_tmp_seq = 0;
+        out = "__gpu_rdtmp_" + std::to_string(rd_tmp_seq++);
+    }
     // 可选 block(n) 子句（§3.7 块大小）
     int64_t block_val = 0;
     if (check(TokenKind::Identifier) && peek().value == "block" &&
@@ -904,7 +914,7 @@ std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
         }
         consume(TokenKind::RightParen, "expected ')' after block size");
     }
-    match(TokenKind::Semicolon);
+    if (!expr_form) match(TokenKind::Semicolon);
     SourceRange range;
     range.begin_offset = start.begin_offset;
     range.end_offset = previous().range.end_offset;
@@ -914,10 +924,22 @@ std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
     return st;
 }
 
-// §8.3 @gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
-// 声明式前缀和：b[lo+i] = init∘a[lo]∘…∘a[lo+i]。语法同 reduce，-> 后是输出数组名。
+// §8.3 @gpu scan [(exclusive)] (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
+// 声明式前缀和：b[lo+i] = init∘a[lo]∘…∘a[lo+i]（默认 inclusive；exclusive 变体
+// b[lo+0]=init、b[lo+i]=init∘…∘a[lo+i-1]）。语法同 reduce，-> 后是输出数组名。
 std::unique_ptr<Stmt> Parser::parseGpuScanStmt() {
     auto start = previous().range;
+    // 可选变体子句：@gpu scan(exclusive) (acc, x) => ...
+    bool exclusive = false;
+    if (check(TokenKind::LeftParen) && peekNext().kind == TokenKind::Identifier &&
+        peekNext().value == "exclusive" &&
+        tokens_.size() > (size_t)current_ + 2 &&
+        tokens_[current_ + 2].kind == TokenKind::RightParen) {
+        advance(); // (
+        advance(); // exclusive
+        advance(); // )
+        exclusive = true;
+    }
     consume(TokenKind::LeftParen, "expected '(' after '@gpu scan'");
     std::string acc = parseIdentifier("expected accumulator parameter name");
     consume(TokenKind::Comma, "expected ',' between op parameters");
@@ -972,6 +994,7 @@ std::unique_ptr<Stmt> Parser::parseGpuScanStmt() {
     auto st = std::make_unique<GpuScanStmt>(acc, x, std::move(body),
         std::move(init), arr, std::move(lo), std::move(hi), out, range);
     st->block_val = block_val;
+    st->exclusive = exclusive;
     return st;
 }
 

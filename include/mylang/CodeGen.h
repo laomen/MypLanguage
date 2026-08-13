@@ -529,6 +529,8 @@ private:
     void generateGpuTile(const GpuTileStmt& stmt);
     // §8.2 @gpu reduce：声明式归约（grid 分块 + host 合并；CPU 回退顺序 fold）
     void generateGpuReduce(const GpuReduceStmt& stmt);
+    // §8.2 @gpu reduce 表达式形式：合成临时标量承接结果，复用 generateGpuReduce
+    llvm::Value* generateGpuReduceExpr(const GpuReduceExpr& expr);
     // §8.3 @gpu scan：声明式前缀和（两遍：K1 块和 + host 块前缀 + K2 块内 scan）
     void generateGpuScan(const GpuScanStmt& stmt);
     // §8.4 @gpu scatter：声明式散点（grid-stride 写 kernel；unique 预扫校验；
@@ -537,10 +539,16 @@ private:
     // §8.2/8.3 K1 块和 kernel PTX：每块 tx==0 串行归约块内区间 → partials[bid]
     std::string emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
                                 llvm::Type* elem_ty, int block_size,
-                                const std::string& kernel_name);
-    // §8.3 K2 块内 scan kernel PTX：acc = init⊕offsets[bid]，扫块内写 b[i]=acc
+                                const std::string& kernel_name);    // §8.6 块内并行：ping-pong 共享内存 halving 树（BS 线程协作，块大小须 2 的幂）
+    std::string emitBlockSumTreePtx(const Expr& op_expr, const Expr& init_expr,
+                                    llvm::Type* elem_ty, int block_size,
+                                    const std::string& kernel_name);    // §8.3 K2 块内 scan kernel PTX：acc = init⊕offsets[bid]，扫块内写 b[i]=acc
+    //（exclusive=true：b[i]=acc 取更新前 → 不含自身，b[块首]=offsets[bid]）
     std::string emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
-                              llvm::Type* elem_ty, int block_size);
+                              llvm::Type* elem_ty, int block_size, bool exclusive);
+    // §8.3 K2 块内 scan kernel PTX（Hillis-Steele 并行版，inclusive；块大小 2 的幂）
+    std::string emitScanK2HsPtx(const Expr& op_expr, const Expr& init_expr,
+                                llvm::Type* elem_ty, int block_size);
     // §8.2 host 顺序归约：acc=init（或 src[0]）；for i in [start,cnt): x=src[i]; acc=op(acc,x)；out=acc
     void emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_ty,
                      const GpuReduceStmt& stmt, llvm::Value* out_slot, bool use_init);
@@ -551,9 +559,19 @@ private:
                             llvm::Value* blocks, llvm::Value* bs,
                             llvm::Type* elem_ty, const GpuReduceStmt& stmt,
                             llvm::Value* out_slot);
+    // §8.6 块内并行 CPU 镜像：同 emitBlockSumTreePtx 的 halving 树（bs 须 2 的幂）
+    void emitSeqBlockTreeReduce(llvm::Value* a_src, llvm::Value* cnt,
+                                llvm::Value* blocks, int bs,
+                                llvm::Type* elem_ty, const GpuReduceStmt& stmt,
+                                llvm::Value* out_slot);
     // §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；dst[i]=acc
     void emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
                      llvm::Type* elem_ty, const GpuScanStmt& stmt);
+    // §8.3 块内并行 CPU 镜像（inclusive）：块和 → offsets → 每块 Hillis-Steele →
+    // b = offsets[j]∘local（同 GPU K1+HS 顺序 → 位级一致；bs 须 2 的幂）
+    void emitSeqScanBlocked(llvm::Value* a_src, llvm::Value* b_src,
+                            llvm::Value* cnt, llvm::Value* blocks, int bs,
+                            llvm::Type* elem_ty, const GpuScanStmt& stmt);
     // §8.4 scatter 写 kernel PTX（grid-stride）：b[idx[p]] = a[p]
     //（unique/any）；atomic=true 用 atomicrmw（atomic_add）。
     std::string emitScatterPtx(llvm::Type* elem_ty, int block_size,

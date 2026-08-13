@@ -1,0 +1,72 @@
+// bench/gpu_reduce_scan.myp — §8.2/8.3 声明式 reduce/scan 性能基准
+//
+// 用法（对比 GPU vs CPU 回退）：
+//   ./build/mypc -O2 bench/gpu_reduce_scan.myp
+//   MYP_GPU=0 ./bench/gpu_reduce_scan.out     # CPU 回退
+//   MYP_GPU=1 ./bench/gpu_reduce_scan.out     # GPU
+//   MYP_GPU=1 MYP_PROF_GPU=1 ./bench/gpu_reduce_scan.out   # 附带每 kernel 耗时
+//
+// 目的：块内并行（shuffle 树 / Hillis-Steele）改造前后的性能基线——
+// 记录"ms/op"，改造后复测应不降反升。
+// 已知（既有 bug，非本次改动引入）：16M 的 scan 在连续多段后段错误
+// （entry-block 动态 alloca 累积 + 大扫描）；1M/4M 稳定，作为对比基线。
+import env;
+import math;
+import time;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            // 规模与次数（越大越能看出 kernel 本身；4M float = 16MB）
+            long[] ns = new long[2];
+            ns[0] = 1L * 1024L * 1024L;
+            ns[1] = 4L * 1024L * 1024L;
+            int[] reps = new int[2];
+            reps[0] = 30;   // 1M
+            reps[1] = 15;   // 4M
+
+            int k = 0;
+            while (k < 2) {
+                long n = ns[k];
+                int rep = reps[k];
+                float[] a = new float[n];
+                long i = 0L;
+                while (i < n) { a[i] = float(i % 997L) * 0.5f + 0.25f; i = i + 1L; }
+                float s = 0.0f;
+                float[] b = new float[n];
+
+                // warmup（JIT / 首次分配）
+                @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> s;
+                @gpu scan (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> b;
+
+                // ---- reduce ----
+                long t0 = Time.nowMs();
+                int r = 0;
+                while (r < rep) {
+                    @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> s;
+                    r = r + 1;
+                }
+                long t1 = Time.nowMs();
+                double msop = double(t1 - t0) / double(rep);
+                Console.writeLine("reduce n=" + n + " x" + rep + " : " + long(t1 - t0) +
+                    " ms (" + msop + " ms/op)  s=" + s);
+
+                // ---- scan ----
+                long t2 = Time.nowMs();
+                r = 0;
+                while (r < rep) {
+                    @gpu scan (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> b;
+                    r = r + 1;
+                }
+                long t3 = Time.nowMs();
+                msop = double(t3 - t2) / double(rep);
+                Console.writeLine("scan  n=" + n + " x" + rep + " : " + long(t3 - t2) +
+                    " ms (" + msop + " ms/op)  blast=" + b[n - 1L]);
+
+                k = k + 1;
+            }
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

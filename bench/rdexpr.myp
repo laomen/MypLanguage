@@ -1,0 +1,31 @@
+// reduce 表达式形式验证：double s = @gpu reduce ... over a[0..n);
+import env;
+import math;
+import time;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 1024L;
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = float(i); i = i + 1L; }
+            // 表达式形式（无 -> out）：s = 0+1+...+1023
+            float s = @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n);
+            float expect = float(n * (n - 1L) / 2L);
+            Console.writeLine("expr-reduce: s=" + s + " expect=" + expect +
+                (Math.abs(s - expect) < 1.0f ? " OK" : " FAIL"));
+            // 表达式形式可参与运算（嵌套）
+            float s2 = (@gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n)) * 2.0f;
+            Console.writeLine("expr-reduce*2: s2=" + s2 + (Math.abs(s2 - expect * 2.0f) < 2.0f ? " OK" : " FAIL"));
+            // int 元素
+            int[] ia = new int[n];
+            i = 0L;
+            while (i < n) { ia[i] = int(i); i = i + 1L; }
+            int is = @gpu reduce (acc, x) => { return acc + x; } init int(0) over ia[0..n);
+            Console.writeLine("expr-int: is=" + is + (is == 523776 ? " OK" : " FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

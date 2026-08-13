@@ -2264,9 +2264,151 @@ void CodeGen::generateGpuFor(const ForStmt& s) {
     }
 }
 
-// §8.2/8.3 块和 kernel：void <name>(i64 n, T* a, T* partials)。每块 tx==0 线程
-// 串行归约块内区间 → partials[blockIdx]（K1；reduce/scan 共用）。op_expr 用
-// emitKernelExpr 生成（acc/x 绑定到 kernel 局部 alloca）。
+// §8.2/8.3 块和 kernel（**并行 halving 树版**，§8.6 块内并行）：void <name>
+// (i64 n, T* a, T* partials)。每块 BS 线程协作归约块内区间 → partials[bid]。
+//   · 每线程 1 元素：acc = (start+tid < end) ? a[start+tid] : init（末块尾以
+//     init 单位元填充——§8.2 init 须为 op 单位元，op(x,init)=x 不改变结果）；
+//   · ping-pong 共享内存 halving 树：half ∈ {BS/2,…,1}，每步
+//     dst[t] = (t < half) ? op(src[t], src[t+half]) : src[t]，步间 barrier；
+//   · 最终 dst[0] → partials[bid]。
+// 纯块和（init 只作单位元填充，不加入真数据）；GPU 与 CPU 镜像同树 → 位级一致。
+// 要求 block_size 为 2 的幂（否则用串行 emitBlockSumPtx）。
+std::string CodeGen::emitBlockSumTreePtx(const Expr& op_expr, const Expr& init_expr,
+                                         llvm::Type* elem_ty, int block_size,
+                                         const std::string& kernel_name) {
+#ifdef MYP_ENABLE_GPU
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_block_sum_tree", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr}, false);
+    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, kernel_name, ptx_mod.get());
+    setGpuKernelCC(kf);
+    auto* n_arg = kf->getArg(0); n_arg->setName("n");
+    auto* a_arg = kf->getArg(1); a_arg->setName("a");
+    auto* p_arg = kf->getArg(2); p_arg->setName("partials");
+    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
+    llvm::IRBuilder<> kb(entry);
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64, false, "tx");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64, false, "bid");
+    std::map<std::string, llvm::Value*> kv;
+    kv["n"] = n_arg; kv["a"] = a_arg; kv["partials"] = p_arg;
+    auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
+    auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
+    auto* iend = kb.CreateSelect(kb.CreateICmpSLT(iend_raw, n_arg), iend_raw, n_arg, "iend");
+    // acc = (start+tid < end) ? a[start+tid] : init（每线程 1 元素；末块尾以 init 单位元填充）
+    auto* in_blk = kb.CreateICmpSLT(kb.CreateAdd(start_i, tid_x), iend, "inblk");
+    auto* acc_a = createKernelAlloca(kb, elem_ty, nullptr, "acc");
+    llvm::Value* acc_val = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg,
+        kb.CreateAdd(start_i, tid_x)), "myacc");
+    auto* init_v = emitKernelExpr(init_expr, kb, kv, {}, "", nullptr);
+    if (init_v && init_v->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+            init_v = kb.CreateFPCast(init_v, elem_ty);
+        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+            init_v = kb.CreateSIToFP(init_v, elem_ty);
+    }
+    acc_val = kb.CreateSelect(in_blk, acc_val, init_v, "acc_sel");
+    kb.CreateStore(acc_val, acc_a);
+    kv["acc"] = acc_a;
+    auto* x_a = createKernelAlloca(kb, elem_ty, nullptr, "x");
+    kv["x"] = x_a;
+    // ping-pong 共享数组（模块 addrspace(3) 静态 __shared__，同 block_reduce）
+    auto* arr_ty = llvm::ArrayType::get(elem_ty, block_size);
+    auto* mod = kb.GetInsertBlock()->getParent()->getParent();
+    static int treesum_id = 0;
+    std::string tag = std::to_string(treesum_id++);
+    auto* smemA = new llvm::GlobalVariable(*mod, arr_ty, false,
+        llvm::GlobalValue::InternalLinkage, llvm::ConstantAggregateZero::get(arr_ty),
+        "myp_treesum_a_" + tag, nullptr, llvm::GlobalValue::NotThreadLocal, 3);
+    auto* smemB = new llvm::GlobalVariable(*mod, arr_ty, false,
+        llvm::GlobalValue::InternalLinkage, llvm::ConstantAggregateZero::get(arr_ty),
+        "myp_treesum_b_" + tag, nullptr, llvm::GlobalValue::NotThreadLocal, 3);
+    auto sel_smem = [&](llvm::Value* is_a, llvm::Value* idx) -> llvm::Value* {
+        auto* pa = kb.CreateGEP(arr_ty, smemA, {llvm::ConstantInt::get(i32, 0), idx}, "sa");
+        auto* pb = kb.CreateGEP(arr_ty, smemB, {llvm::ConstantInt::get(i32, 0), idx}, "sb");
+        return kb.CreateSelect(is_a, pa, pb, "smem");
+    };
+    auto* true_v = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), 1);
+    auto* false_v = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), 0);
+    // 初始写 smemA[tid] = acc
+    kb.CreateStore(acc_val, sel_smem(true_v, kb.CreateIntCast(tid_x, i32, false)));
+    emitGpuBarrier(kb);
+    // halving 树：half ∈ {BS/2,…,1}，ping-pong（src/dst 交替）
+    int steps = 0; for (int h = block_size / 2; h >= 1; h >>= 1) steps++;
+    llvm::Value* src_is_a = true_v;   // 第 0 步 src = smemA，dst = smemB
+    for (int si = 0; si < steps; si++) {
+        int half = block_size >> (si + 1);
+        llvm::Value* halfv = llvm::ConstantInt::get(i32, half);
+        // dst = !src
+        llvm::Value* dst_is_a = kb.CreateXor(src_is_a, true_v, "dst");
+        auto* tid32 = kb.CreateIntCast(tid_x, i32, false);
+        // v = src[tid]
+        auto* v = kb.CreateLoad(elem_ty, sel_smem(src_is_a, tid32), "v");
+        // if tid < half: w = src[tid+half]; v2 = op(v,w); else v2 = v
+        // 越界防护：tid≥half 的线程也执行 load，但索引钳到 tid（读 src[tid]，
+        // 结果不用）；否则 tid+half 可能 ≥ block_size → 共享内存越界非法访问。
+        auto* t_lt = kb.CreateICmpULT(tid32, halfv, "lt");
+        auto* t_plus = kb.CreateAdd(tid32, halfv, "tph");
+        auto* safe_idx = kb.CreateSelect(t_lt, t_plus, tid32, "safe");
+        auto* w = kb.CreateLoad(elem_ty, sel_smem(src_is_a, safe_idx), "w");
+        kb.CreateStore(w, x_a);
+        kb.CreateStore(v, acc_a);
+        auto* opv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = kb.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = kb.CreateIntCast(opv, elem_ty, false);
+        }
+        auto* v2 = kb.CreateSelect(t_lt, opv, v, "v2");
+        kb.CreateStore(v2, sel_smem(dst_is_a, tid32));
+        emitGpuBarrier(kb);
+        src_is_a = dst_is_a;
+    }
+    // 最终结果在最后一步的 dst（= src_is_a 最后一次交换后的值）
+    auto* res_v = kb.CreateLoad(elem_ty, sel_smem(src_is_a, llvm::ConstantInt::get(i32, 0)), "tres");
+    auto* is0 = kb.CreateICmpEQ(tid_x, llvm::ConstantInt::get(i64, 0));
+    auto* st_bb = llvm::BasicBlock::Create(ctx_, "tree_st", kf);
+    auto* join_bb = llvm::BasicBlock::Create(ctx_, "tree_join", kf);
+    kb.CreateCondBr(is0, st_bb, join_bb);
+    kb.SetInsertPoint(st_bb);
+    kb.CreateStore(res_v, kb.CreateGEP(elem_ty, p_arg, ctaid, "pp"));
+    kb.CreateBr(join_bb);
+    kb.SetInsertPoint(join_bb);
+    kb.CreateRetVoid();
+
+    // ---- 目标机器 + verify + emit（§7.7 跨厂商：NVPTX→PTX / AMD→GCN ELF）----
+    std::string err;
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
+    if (!tgt) { diag_.warn(SourceRange{}, "GPU target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
+        llvm::TargetOptions{}, llvm::Reloc::PIC_);
+    if (!tm) { diag_.warn(SourceRange{}, "GPU target machine creation failed"); return ""; }
+    std::string verify_err;
+    llvm::raw_string_ostream vos(verify_err);
+    if (llvm::verifyModule(*ptx_mod, &vos)) {
+        diag_.warn(SourceRange{}, "GPU reduce tree kernel verification failed: " + verify_err);
+        delete tm; return "";
+    }
+    if (gpuTargetAmd()) runGpuOptPipeline(ptx_mod.get(), tm);
+    std::string out = emitGpuTargetBytes(ptx_mod.get(), tm, "block_sum_tree");
+    if (getenv("MYP_DUMP_PTX") && !out.empty())
+        fprintf(stderr, "=== MYP PTX (reduce tree) ===\n%s\n=== END ===\n", out.c_str());
+    if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
+    return out;
+#else
+    (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size; (void)kernel_name;
+    return "";
+#endif
+}
+
+// §8.2/8.3 块和 kernel：void <name>(i64 n, T* a, T* partials)。每块 tx==0 串行
+// 归约块内区间 → partials[blockIdx]（K1；reduce/scan 共用，非 2 幂块大小回退）。
+// **纯块和**：不从 init 开始（init 只在最终合并/块前缀时应用一次）。块必有 ≥1
+// 元素。op_expr 用 emitKernelExpr 生成（acc/x 绑定 kernel 局部 alloca）。
 std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
                                      llvm::Type* elem_ty, int block_size,
                                      const std::string& kernel_name) {
@@ -2292,24 +2434,19 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
     kb.SetInsertPoint(body_bb);
     std::map<std::string, llvm::Value*> kv;
     kv["n"] = n_arg; kv["a"] = a_arg; kv["partials"] = p_arg;
-    // acc = init
+    auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
+    auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
+    auto* iend = kb.CreateSelect(kb.CreateICmpSLT(iend_raw, n_arg), iend_raw, n_arg, "iend");
+    // acc = a[start]（纯块和，首元素为初值；块必有 ≥1 元素）
     auto* acc_a = createKernelAlloca(kb, elem_ty, nullptr, "acc");
-    auto* init_v = emitKernelExpr(init_expr, kb, kv, {}, "", nullptr);
-    if (init_v && init_v->getType() != elem_ty) {
-        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
-            init_v = kb.CreateFPCast(init_v, elem_ty);
-        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
-            init_v = kb.CreateSIToFP(init_v, elem_ty);
-    }
-    kb.CreateStore(init_v, acc_a);
+    auto* first_v = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg, start_i), "first");
+    kb.CreateStore(first_v, acc_a);
     kv["acc"] = acc_a;
     auto* x_a = createKernelAlloca(kb, elem_ty, nullptr, "x");
     kv["x"] = x_a;
     auto* i_a = createKernelAlloca(kb, i64, nullptr, "i");
-    auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
-    kb.CreateStore(start_i, i_a);
-    auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
-    auto* iend = kb.CreateSelect(kb.CreateICmpSLT(iend_raw, n_arg), iend_raw, n_arg, "iend");
+    auto* istart1 = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, 1));
+    kb.CreateStore(istart1, i_a);
     auto* loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kf);
     auto* lbody = llvm::BasicBlock::Create(ctx_, "lbody", kf);
     auto* lend = llvm::BasicBlock::Create(ctx_, "lend", kf);
@@ -2338,6 +2475,7 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
     kb.CreateBr(end_bb);
     kb.SetInsertPoint(end_bb);
     kb.CreateRetVoid();
+    (void)init_expr;
 
     // ---- 目标机器 + verify + emit（§7.7 跨厂商：NVPTX→PTX / AMD→GCN ELF）----
     std::string err;
@@ -2431,8 +2569,357 @@ void CodeGen::emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_t
     if (old_x) setNamedValue(s.op_x, old_x);
 }
 
-// §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；
-// dst[i] = acc（inclusive 前缀）。op_expr 用 generateExpr（acc/x 绑定 host alloca）。
+// §8.3 块内并行 CPU 镜像：与 GPU 的 K1(块和) + offsets + K2-HS(每块 Hillis-Steele)
+// 同树同序 → 位级一致。
+//   1) partials[j] = 纯块和（bs 为 2 幂用 halving 树，否则串行）——同 GPU K1；
+//   2) offsets：off[0]=init；off[k]=op(off[k-1], partials[k-1])——同 GPU host 前缀；
+//   3) 每块 HS：local[t] = (start+t<end) ? a[start+t] : init；for d in {1..BS/2}：
+//      local[t] = (t≥d) ? op(local[t], local[t-d]) : local[t]（t 降序 in-place 安全：
+//      源 local[t-d]（t-d<t）本步尚未更新）；
+//   4) b[start+t] = op(offsets[j], local[t])（活跃线程）。
+// 仅 inclusive 扫描（exclusive 由 generateGpuScan 在写盘阶段用 b[i-1] 变换，见上）。
+void CodeGen::emitSeqScanBlocked(llvm::Value* a_src, llvm::Value* b_src,
+                                 llvm::Value* cnt, llvm::Value* blocks, int bs,
+                                 llvm::Type* elem_ty, const GpuScanStmt& s) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    bool bs_pow2 = (bs & (bs - 1)) == 0;
+    auto* partials = builder_.CreateAlloca(elem_ty, blocks, "__sch_part");
+    auto* offsets = builder_.CreateAlloca(elem_ty, blocks, "__sch_off");
+    // op 求值绑定（共用一对 entry alloca）
+    auto* acc_a = createEntryBlockAlloca(current_function_, elem_ty, "__sch_acc");
+    auto* x_a = createEntryBlockAlloca(current_function_, elem_ty, "__sch_x");
+    auto old_acc = getNamedValue(s.op_acc);
+    auto old_x = getNamedValue(s.op_x);
+    setNamedValue(s.op_acc, acc_a);
+    setNamedValue(s.op_x, x_a);
+    auto* init_v = generateExpr(*s.init_expr);
+    if (init_v && init_v->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+            init_v = builder_.CreateFPCast(init_v, elem_ty);
+        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateSIToFP(init_v, elem_ty);
+        else if (elem_ty->isIntegerTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateIntCast(init_v, elem_ty, false);
+    }
+    // L 数组（树用；bs 编译期常量，栈静态）
+    auto* arr_ty = llvm::ArrayType::get(elem_ty, bs);
+    auto* L = builder_.CreateAlloca(arr_ty, nullptr, "__sch_L");
+    auto L_gep = [&](llvm::Value* idx) -> llvm::Value* {
+        return builder_.CreateGEP(arr_ty, L, {llvm::ConstantInt::get(i32, 0),
+            builder_.CreateIntCast(idx, i32, false)}, "sch_L");
+    };
+    // 通用 in-block op：a = op(a, b)（L 数组原地）
+    auto op2 = [&](llvm::Value* lv, llvm::Value* lv2) -> llvm::Value* {
+        builder_.CreateStore(lv2, x_a);
+        builder_.CreateStore(lv, acc_a);
+        auto* opv = generateExpr(*s.op_expr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = builder_.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = builder_.CreateIntCast(opv, elem_ty, false);
+        }
+        return opv;
+    };
+    // ===== for j in [0, blocks) =====
+    auto* j_a = createEntryBlockAlloca(current_function_, i64, "__sch_j");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), j_a);
+    auto* jbb = llvm::BasicBlock::Create(ctx_, "sch_j", current_function_);
+    auto* jb = llvm::BasicBlock::Create(ctx_, "sch_jb", current_function_);
+    auto* je = llvm::BasicBlock::Create(ctx_, "sch_je", current_function_);
+    builder_.CreateBr(jbb);
+    builder_.SetInsertPoint(jbb);
+    auto* jv = builder_.CreateLoad(i64, j_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(jv, blocks), jb, je);
+    builder_.SetInsertPoint(jb);
+    auto* jv2 = builder_.CreateLoad(i64, j_a);
+    auto* start = builder_.CreateMul(jv2, llvm::ConstantInt::get(i64, bs), "sch_start");
+    auto* end_raw = builder_.CreateAdd(start, llvm::ConstantInt::get(i64, bs));
+    auto* end = builder_.CreateSelect(builder_.CreateICmpSLT(end_raw, cnt), end_raw, cnt, "sch_end");
+    // 1) 填 L：L[t] = (start+t < end) ? a[start+t] : init（t in [0,bs)）
+    {
+        auto* t_a = createEntryBlockAlloca(current_function_, i64, "__sch_t");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), t_a);
+        auto* fbb = llvm::BasicBlock::Create(ctx_, "sch_f", current_function_);
+        auto* fb = llvm::BasicBlock::Create(ctx_, "sch_fb", current_function_);
+        auto* fe = llvm::BasicBlock::Create(ctx_, "sch_fe", current_function_);
+        builder_.CreateBr(fbb);
+        builder_.SetInsertPoint(fbb);
+        auto* tv = builder_.CreateLoad(i64, t_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(tv, llvm::ConstantInt::get(i64, bs)), fb, fe);
+        builder_.SetInsertPoint(fb);
+        auto* tv2 = builder_.CreateLoad(i64, t_a);
+        auto* idx = builder_.CreateAdd(start, tv2, "sch_idx");
+        auto* in_blk = builder_.CreateICmpSLT(idx, end, "sch_in");
+        auto* av = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, idx), "sch_av");
+        auto* val = builder_.CreateSelect(in_blk, av, init_v, "sch_lv");
+        builder_.CreateStore(val, L_gep(tv2));
+        auto* tv3 = builder_.CreateLoad(i64, t_a);
+        builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i64, 1)), t_a);
+        builder_.CreateBr(fbb);
+        builder_.SetInsertPoint(fe);
+    }
+    // 2) 块和 partials[j]：halving 树（bs 2 幂）或串行（emitSeqFold use_init=false）
+    if (bs_pow2) {
+        auto* half_a = createEntryBlockAlloca(current_function_, i32, "__sch_half");
+        builder_.CreateStore(llvm::ConstantInt::get(i32, bs / 2), half_a);
+        auto* hbb = llvm::BasicBlock::Create(ctx_, "sch_h", current_function_);
+        auto* hb = llvm::BasicBlock::Create(ctx_, "sch_hb", current_function_);
+        auto* he = llvm::BasicBlock::Create(ctx_, "sch_he", current_function_);
+        builder_.CreateBr(hbb);
+        builder_.SetInsertPoint(hbb);
+        auto* halfv = builder_.CreateLoad(i32, half_a);
+        builder_.CreateCondBr(builder_.CreateICmpSGE(halfv, llvm::ConstantInt::get(i32, 1)), hb, he);
+        builder_.SetInsertPoint(hb);
+        auto* t_a = createEntryBlockAlloca(current_function_, i32, "__sch_t2");
+        builder_.CreateStore(llvm::ConstantInt::get(i32, 0), t_a);
+        auto* tbb = llvm::BasicBlock::Create(ctx_, "sch_t", current_function_);
+        auto* tb = llvm::BasicBlock::Create(ctx_, "sch_tb", current_function_);
+        auto* te = llvm::BasicBlock::Create(ctx_, "sch_te", current_function_);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(tbb);
+        auto* tv = builder_.CreateLoad(i32, t_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(tv, builder_.CreateLoad(i32, half_a)), tb, te);
+        builder_.SetInsertPoint(tb);
+        auto* tv2 = builder_.CreateLoad(i32, t_a);
+        auto* tv2_64 = builder_.CreateIntCast(tv2, i64, false);
+        auto* hv_64 = builder_.CreateIntCast(builder_.CreateLoad(i32, half_a), i64, false);
+        auto* other = builder_.CreateAdd(tv2_64, hv_64, "sch_other");
+        auto* lo = builder_.CreateLoad(elem_ty, L_gep(tv2_64), "sch_lo");
+        auto* hi = builder_.CreateLoad(elem_ty, L_gep(other), "sch_hi");
+        builder_.CreateStore(op2(lo, hi), L_gep(tv2_64));
+        auto* tv3 = builder_.CreateLoad(i32, t_a);
+        builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i32, 1)), t_a);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(te);
+        auto* halfn = builder_.CreateLoad(i32, half_a);
+        builder_.CreateStore(builder_.CreateLShr(halfn, llvm::ConstantInt::get(i32, 1)), half_a);
+        builder_.CreateBr(hbb);
+        builder_.SetInsertPoint(he);
+        builder_.CreateStore(builder_.CreateLoad(elem_ty, L_gep(llvm::ConstantInt::get(i64, 0)), "sch_l0"),
+            builder_.CreateGEP(elem_ty, partials, jv2, "sch_pp"));
+    } else {
+        // 串行：partials[j] = fold(a[start], a[start+1..end))（纯块和）
+        auto* acc_s = createEntryBlockAlloca(current_function_, elem_ty, "__sch_sacc");
+        builder_.CreateStore(builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, start), "sch_sa0"), acc_s);
+        auto* i_a = createEntryBlockAlloca(current_function_, i64, "__sch_si");
+        builder_.CreateStore(builder_.CreateAdd(start, llvm::ConstantInt::get(i64, 1)), i_a);
+        auto* sbb = llvm::BasicBlock::Create(ctx_, "sch_s", current_function_);
+        auto* sb = llvm::BasicBlock::Create(ctx_, "sch_sb", current_function_);
+        auto* se = llvm::BasicBlock::Create(ctx_, "sch_se", current_function_);
+        builder_.CreateBr(sbb);
+        builder_.SetInsertPoint(sbb);
+        auto* iv = builder_.CreateLoad(i64, i_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(iv, end), sb, se);
+        builder_.SetInsertPoint(sb);
+        auto* iv2 = builder_.CreateLoad(i64, i_a);
+        auto* av = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, iv2), "sch_sav");
+        auto* curv = builder_.CreateLoad(elem_ty, acc_s);
+        builder_.CreateStore(op2(curv, av), acc_s);
+        auto* iv3 = builder_.CreateLoad(i64, i_a);
+        builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+        builder_.CreateBr(sbb);
+        builder_.SetInsertPoint(se);
+        builder_.CreateStore(builder_.CreateLoad(elem_ty, acc_s, "sch_sacc"),
+            builder_.CreateGEP(elem_ty, partials, jv2, "sch_ps"));
+    }
+    // j++ 并回边（此前缺失 → j-loop 只跑 j=0，partials[1..] 从未写入）
+    auto* jv3 = builder_.CreateLoad(i64, j_a);
+    builder_.CreateStore(builder_.CreateAdd(jv3, llvm::ConstantInt::get(i64, 1)), j_a);
+    builder_.CreateBr(jbb);
+    builder_.SetInsertPoint(je);
+    // 恢复 acc/x（offsets 与第二趟用独立求值）
+    named_values_.back().erase(s.op_acc);
+    named_values_.back().erase(s.op_x);
+    if (old_acc) setNamedValue(s.op_acc, old_acc);
+    if (old_x) setNamedValue(s.op_x, old_x);
+    // 5) host 块前缀 offsets：off[0]=init；off[k]=op(off[k-1], partials[k-1])
+    //    （步骤 4 结束时已恢复 acc/x 绑定，这里重新绑定供 generateExpr 求 op）
+    {
+        auto oa5 = getNamedValue(s.op_acc);
+        auto ox5 = getNamedValue(s.op_x);
+        setNamedValue(s.op_acc, acc_a);
+        setNamedValue(s.op_x, x_a);
+        auto* oacc_a = createEntryBlockAlloca(current_function_, elem_ty, "__sch_oacc");
+        builder_.CreateStore(init_v, oacc_a);
+        auto* i_a = createEntryBlockAlloca(current_function_, i64, "__sch_i");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), i_a);
+        auto* obb = llvm::BasicBlock::Create(ctx_, "sch_off", current_function_);
+        auto* ob = llvm::BasicBlock::Create(ctx_, "sch_offb", current_function_);
+        auto* oe = llvm::BasicBlock::Create(ctx_, "sch_offe", current_function_);
+        builder_.CreateBr(obb);
+        builder_.SetInsertPoint(obb);
+        auto* iv = builder_.CreateLoad(i64, i_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(iv, blocks), ob, oe);
+        builder_.SetInsertPoint(ob);
+        auto* iv2 = builder_.CreateLoad(i64, i_a);
+        auto* acc_cur = builder_.CreateLoad(elem_ty, oacc_a);
+        builder_.CreateStore(acc_cur, builder_.CreateGEP(elem_ty, offsets, iv2), "sch_offv");
+        auto* pv = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, partials, iv2), "sch_opv");
+        builder_.CreateStore(pv, x_a);
+        builder_.CreateStore(acc_cur, acc_a);
+        auto* opv = generateExpr(*s.op_expr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = builder_.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = builder_.CreateIntCast(opv, elem_ty, false);
+        }
+        builder_.CreateStore(opv, oacc_a);
+        auto* iv3 = builder_.CreateLoad(i64, i_a);
+        builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+        builder_.CreateBr(obb);
+        builder_.SetInsertPoint(oe);
+        // 恢复 acc/x（步骤 6 会再绑定）
+        named_values_.back().erase(s.op_acc);
+        named_values_.back().erase(s.op_x);
+        if (oa5) setNamedValue(s.op_acc, oa5);
+        if (ox5) setNamedValue(s.op_x, ox5);
+    }
+    // 6) 写盘：b[start+t] = op(offsets[j], L[t])（活跃线程）——重走 j、t 循环
+    {
+        auto* j2_a = createEntryBlockAlloca(current_function_, i64, "__sch_j2");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), j2_a);
+        auto* jbb2 = llvm::BasicBlock::Create(ctx_, "sch_j2", current_function_);
+        auto* jb2 = llvm::BasicBlock::Create(ctx_, "sch_j2b", current_function_);
+        auto* je2 = llvm::BasicBlock::Create(ctx_, "sch_j2e", current_function_);
+        builder_.CreateBr(jbb2);
+        builder_.SetInsertPoint(jbb2);
+        auto* jv = builder_.CreateLoad(i64, j2_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(jv, blocks), jb2, je2);
+        builder_.SetInsertPoint(jb2);
+        auto* jv2 = builder_.CreateLoad(i64, j2_a);
+        auto* start = builder_.CreateMul(jv2, llvm::ConstantInt::get(i64, bs), "sch_s2");
+        auto* end_raw = builder_.CreateAdd(start, llvm::ConstantInt::get(i64, bs));
+        auto* end = builder_.CreateSelect(builder_.CreateICmpSLT(end_raw, cnt), end_raw, cnt, "sch_e2");
+        auto* offv = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, offsets, jv2), "sch_off2");
+        // 重绑 acc/x（HS 的 op 求值需要）
+        auto old_acc2 = getNamedValue(s.op_acc);
+        auto old_x2 = getNamedValue(s.op_x);
+        setNamedValue(s.op_acc, acc_a);
+        setNamedValue(s.op_x, x_a);
+        // 6a) 填 L：L[t] = (start+t < end) ? a[start+t] : init
+        {
+            auto* tf_a = createEntryBlockAlloca(current_function_, i64, "__sch_tf");
+            builder_.CreateStore(llvm::ConstantInt::get(i64, 0), tf_a);
+            auto* fbb = llvm::BasicBlock::Create(ctx_, "sch_f2", current_function_);
+            auto* fb = llvm::BasicBlock::Create(ctx_, "sch_f2b", current_function_);
+            auto* fe = llvm::BasicBlock::Create(ctx_, "sch_f2e", current_function_);
+            builder_.CreateBr(fbb);
+            builder_.SetInsertPoint(fbb);
+            auto* tv = builder_.CreateLoad(i64, tf_a);
+            builder_.CreateCondBr(builder_.CreateICmpSLT(tv, llvm::ConstantInt::get(i64, bs)), fb, fe);
+            builder_.SetInsertPoint(fb);
+            auto* tv2 = builder_.CreateLoad(i64, tf_a);
+            auto* idx = builder_.CreateAdd(start, tv2, "sch_f2i");
+            auto* inb = builder_.CreateICmpSLT(idx, end, "sch_f2in");
+            auto* av = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, idx), "sch_f2a");
+            auto* val = builder_.CreateSelect(inb, av, init_v, "sch_f2v");
+            builder_.CreateStore(val, L_gep(tv2));
+            auto* tv3 = builder_.CreateLoad(i64, tf_a);
+            builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i64, 1)), tf_a);
+            builder_.CreateBr(fbb);
+            builder_.SetInsertPoint(fe);
+        }
+        // 6b) 块内 Hillis-Steele（in-place，t 降序保证源未更新）
+        {
+            auto* d_a = createEntryBlockAlloca(current_function_, i32, "__sch_d2");
+            builder_.CreateStore(llvm::ConstantInt::get(i32, 1), d_a);
+            auto* dbb = llvm::BasicBlock::Create(ctx_, "sch_d2", current_function_);
+            auto* db = llvm::BasicBlock::Create(ctx_, "sch_d2b", current_function_);
+            auto* de = llvm::BasicBlock::Create(ctx_, "sch_d2e", current_function_);
+            builder_.CreateBr(dbb);
+            builder_.SetInsertPoint(dbb);
+            auto* dv = builder_.CreateLoad(i32, d_a);
+            builder_.CreateCondBr(builder_.CreateICmpSLT(dv, llvm::ConstantInt::get(i32, bs)), db, de);
+            builder_.SetInsertPoint(db);
+            auto* t_a3 = createEntryBlockAlloca(current_function_, i32, "__sch_t3");
+            builder_.CreateStore(llvm::ConstantInt::get(i32, bs - 1), t_a3);
+            auto* tbb = llvm::BasicBlock::Create(ctx_, "sch_t3", current_function_);
+            auto* tb = llvm::BasicBlock::Create(ctx_, "sch_t3b", current_function_);
+            auto* te = llvm::BasicBlock::Create(ctx_, "sch_t3e", current_function_);
+            builder_.CreateBr(tbb);
+            builder_.SetInsertPoint(tbb);
+            auto* tv = builder_.CreateLoad(i32, t_a3);
+            builder_.CreateCondBr(builder_.CreateICmpSGE(tv, llvm::ConstantInt::get(i32, 0)), tb, te);
+            builder_.SetInsertPoint(tb);
+            auto* tv2 = builder_.CreateLoad(i32, t_a3);
+            auto* dcur = builder_.CreateLoad(i32, d_a);
+            auto* ge = builder_.CreateICmpSGE(tv2, dcur, "sch_ge");
+            auto* tv2_64 = builder_.CreateIntCast(tv2, i64, false);
+            auto* dc_64 = builder_.CreateIntCast(dcur, i64, false);
+            auto* prev = builder_.CreateSub(tv2_64, dc_64, "sch_prev");
+            auto* safe = builder_.CreateSelect(ge, prev, llvm::ConstantInt::get(i64, 0), "sch_safe");
+            auto* lv = builder_.CreateLoad(elem_ty, L_gep(tv2_64), "sch_l");
+            auto* pv = builder_.CreateLoad(elem_ty, L_gep(safe), "sch_p");
+            auto* newv = op2(lv, pv);
+            auto* v2 = builder_.CreateSelect(ge, newv, lv, "sch_nv");
+            builder_.CreateStore(v2, L_gep(tv2_64));
+            auto* tv3 = builder_.CreateLoad(i32, t_a3);
+            builder_.CreateStore(builder_.CreateSub(tv3, llvm::ConstantInt::get(i32, 1)), t_a3);
+            builder_.CreateBr(tbb);
+            builder_.SetInsertPoint(te);
+            auto* dn = builder_.CreateLoad(i32, d_a);
+            builder_.CreateStore(builder_.CreateShl(dn, llvm::ConstantInt::get(i32, 1)), d_a);
+            builder_.CreateBr(dbb);
+            builder_.SetInsertPoint(de);
+        }
+        // 6c) 写盘：b[start+t] = op(offv, L[t])（活跃线程）
+        auto* t_a = createEntryBlockAlloca(current_function_, i64, "__sch_t4");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), t_a);
+        auto* tbb = llvm::BasicBlock::Create(ctx_, "sch_t4", current_function_);
+        auto* tb = llvm::BasicBlock::Create(ctx_, "sch_t4b", current_function_);
+        auto* te = llvm::BasicBlock::Create(ctx_, "sch_t4e", current_function_);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(tbb);
+        auto* tv = builder_.CreateLoad(i64, t_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(tv, llvm::ConstantInt::get(i64, bs)), tb, te);
+        builder_.SetInsertPoint(tb);
+        auto* tv2 = builder_.CreateLoad(i64, t_a);
+        auto* idx = builder_.CreateAdd(start, tv2, "sch_i2");
+        auto* in_blk = builder_.CreateICmpSLT(idx, end, "sch_in2");
+        auto* lv = builder_.CreateLoad(elem_ty, L_gep(tv2), "sch_l2");
+        builder_.CreateStore(offv, acc_a);
+        builder_.CreateStore(lv, x_a);
+        auto* opv = generateExpr(*s.op_expr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = builder_.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = builder_.CreateIntCast(opv, elem_ty, false);
+        }
+        auto* st2 = llvm::BasicBlock::Create(ctx_, "sch_st2", current_function_);
+        auto* jn2 = llvm::BasicBlock::Create(ctx_, "sch_jn2", current_function_);
+        builder_.CreateCondBr(in_blk, st2, jn2);
+        builder_.SetInsertPoint(st2);
+        builder_.CreateStore(opv, builder_.CreateGEP(elem_ty, b_src, idx), "sch_b");
+        builder_.CreateBr(jn2);
+        builder_.SetInsertPoint(jn2);
+        auto* tv3 = builder_.CreateLoad(i64, t_a);
+        builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i64, 1)), t_a);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(te);
+        // 恢复 acc/x（下一块）
+        named_values_.back().erase(s.op_acc);
+        named_values_.back().erase(s.op_x);
+        if (old_acc2) setNamedValue(s.op_acc, old_acc2);
+        if (old_x2) setNamedValue(s.op_x, old_x2);
+        auto* jv3 = builder_.CreateLoad(i64, j2_a);
+        builder_.CreateStore(builder_.CreateAdd(jv3, llvm::ConstantInt::get(i64, 1)), j2_a);
+        builder_.CreateBr(jbb2);
+        builder_.SetInsertPoint(je2);
+    }
+    named_values_.back().erase(s.op_acc);
+    named_values_.back().erase(s.op_x);
+    if (old_acc) setNamedValue(s.op_acc, old_acc);
+    if (old_x) setNamedValue(s.op_x, old_x);
+}
+
+// §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i];
+//   inclusive：acc=op(acc,x); dst[i]=acc；
+//   exclusive：dst[i]=acc（更新前）; acc=op(acc,x)。
+// op_expr 用 generateExpr（acc/x 绑定 host alloca）。
 void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
                           llvm::Type* elem_ty, const GpuScanStmt& s) {
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
@@ -2463,6 +2950,11 @@ void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
     builder_.CreateCondBr(builder_.CreateICmpSLT(iv, cnt), lbody, lend);
     builder_.SetInsertPoint(lbody);
     auto* iv2 = builder_.CreateLoad(i64, i_a);
+    // exclusive：先写 dst[i] = acc（更新前）
+    if (s.exclusive) {
+        auto* acc_pre = builder_.CreateLoad(elem_ty, acc_a, "sc_acc_pre");
+        builder_.CreateStore(acc_pre, builder_.CreateGEP(elem_ty, dst, iv2), "scb_ex");
+    }
     auto* xv = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, src, iv2), "scx");
     builder_.CreateStore(xv, x_a);
     auto* opv = generateExpr(*s.op_expr);
@@ -2473,7 +2965,9 @@ void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
             opv = builder_.CreateIntCast(opv, elem_ty, false);
     }
     builder_.CreateStore(opv, acc_a);
-    builder_.CreateStore(opv, builder_.CreateGEP(elem_ty, dst, iv2), "scb");
+    // inclusive：dst[i] = acc（更新后）
+    if (!s.exclusive)
+        builder_.CreateStore(opv, builder_.CreateGEP(elem_ty, dst, iv2), "scb");
     auto* iv3 = builder_.CreateLoad(i64, i_a);
     builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
     builder_.CreateBr(loop_bb);
@@ -2484,11 +2978,152 @@ void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
     if (old_x) setNamedValue(s.op_x, old_x);
 }
 
+// §8.6 块内并行 CPU 镜像：与 GPU 的 emitBlockSumTreePtx 同树归约。
+// 每块 BS 个"lane"：L[t] = (start+t < end) ? a[start+t] : init（末块尾以 init 单位元
+// 填充）；halving 树（half ∈ {BS/2,…,1}：L[t] = op(L[t], L[t+half]) for t < half——
+// in-place 安全：源 L[t+half] 在 [half,BS) 本步不更新）→ partials[j] = L[0]。
+// 然后 out = init∘partials[0]∘…（init 应用一次）。与 GPU 同树同序 → 位级一致。
+// 要求 bs 为 2 的幂（编译期常量）。
+void CodeGen::emitSeqBlockTreeReduce(llvm::Value* a_src, llvm::Value* cnt,
+                                     llvm::Value* blocks, int bs,
+                                     llvm::Type* elem_ty, const GpuReduceStmt& s,
+                                     llvm::Value* out_slot) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    // L = 栈数组 [bs x elem]
+    auto* arr_ty = llvm::ArrayType::get(elem_ty, bs);
+    auto* L = builder_.CreateAlloca(arr_ty, nullptr, "__rdt_L");
+    auto L_gep = [&](llvm::Value* idx) -> llvm::Value* {
+        return builder_.CreateGEP(arr_ty, L, {llvm::ConstantInt::get(i32, 0),
+            builder_.CreateIntCast(idx, i32, false)}, "rdt_L");
+    };
+    auto* partials = builder_.CreateAlloca(elem_ty, blocks, "__rdt_part");
+    // acc/x 绑定（op 求值复用；所有 combine 共用一对 entry alloca）
+    auto* acc_a = createEntryBlockAlloca(current_function_, elem_ty, "__rdt_acc");
+    auto* x_a = createEntryBlockAlloca(current_function_, elem_ty, "__rdt_x");
+    auto old_acc = getNamedValue(s.op_acc);
+    auto old_x = getNamedValue(s.op_x);
+    setNamedValue(s.op_acc, acc_a);
+    setNamedValue(s.op_x, x_a);
+    // init 值（单位元填充）
+    auto* init_v = generateExpr(*s.init_expr);
+    if (init_v && init_v->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+            init_v = builder_.CreateFPCast(init_v, elem_ty);
+        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateSIToFP(init_v, elem_ty);
+        else if (elem_ty->isIntegerTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateIntCast(init_v, elem_ty, false);
+    }
+    // for j in [0, blocks):
+    auto* j_a = createEntryBlockAlloca(current_function_, i64, "__rdt_j");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), j_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "rdt_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "rdt_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "rdt_end", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* jv = builder_.CreateLoad(i64, j_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(jv, blocks), lbody, lend);
+    builder_.SetInsertPoint(lbody);
+    auto* jv2 = builder_.CreateLoad(i64, j_a);
+    auto* start = builder_.CreateMul(jv2, llvm::ConstantInt::get(i64, bs), "rdt_start");
+    auto* end_raw = builder_.CreateAdd(start, llvm::ConstantInt::get(i64, bs));
+    auto* end = builder_.CreateSelect(builder_.CreateICmpSLT(end_raw, cnt), end_raw, cnt, "rdt_end");
+    // 填 L：for t in [0, bs): L[t] = (start+t < end) ? a[start+t] : init
+    {
+        auto* t_a = createEntryBlockAlloca(current_function_, i64, "__rdt_t");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), t_a);
+        auto* fbb = llvm::BasicBlock::Create(ctx_, "rdt_f", current_function_);
+        auto* fb = llvm::BasicBlock::Create(ctx_, "rdt_fb", current_function_);
+        auto* fe = llvm::BasicBlock::Create(ctx_, "rdt_fe", current_function_);
+        builder_.CreateBr(fbb);
+        builder_.SetInsertPoint(fbb);
+        auto* tv = builder_.CreateLoad(i64, t_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(tv, llvm::ConstantInt::get(i64, bs)), fb, fe);
+        builder_.SetInsertPoint(fb);
+        auto* tv2 = builder_.CreateLoad(i64, t_a);
+        auto* idx = builder_.CreateAdd(start, tv2, "rdt_idx");
+        auto* in_blk = builder_.CreateICmpSLT(idx, end, "rdt_in");
+        auto* av = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, idx), "rdt_av");
+        auto* val = builder_.CreateSelect(in_blk, av, init_v, "rdt_lv");
+        builder_.CreateStore(val, L_gep(tv2));
+        auto* tv3 = builder_.CreateLoad(i64, t_a);
+        builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i64, 1)), t_a);
+        builder_.CreateBr(fbb);
+        builder_.SetInsertPoint(fe);
+    }
+    // halving 树：for half in {bs/2,…,1}: for t in [0, half): L[t] = op(L[t], L[t+half])
+    {
+        auto* half_a = createEntryBlockAlloca(current_function_, i32, "__rdt_half");
+        builder_.CreateStore(llvm::ConstantInt::get(i32, bs / 2), half_a);
+        auto* hbb = llvm::BasicBlock::Create(ctx_, "rdt_h", current_function_);
+        auto* hb = llvm::BasicBlock::Create(ctx_, "rdt_hb", current_function_);
+        auto* he = llvm::BasicBlock::Create(ctx_, "rdt_he", current_function_);
+        builder_.CreateBr(hbb);
+        builder_.SetInsertPoint(hbb);
+        auto* halfv = builder_.CreateLoad(i32, half_a);
+        builder_.CreateCondBr(builder_.CreateICmpSGE(halfv, llvm::ConstantInt::get(i32, 1)), hb, he);
+        builder_.SetInsertPoint(hb);
+        // t loop [0, half)
+        auto* t_a = createEntryBlockAlloca(current_function_, i32, "__rdt_t2");
+        builder_.CreateStore(llvm::ConstantInt::get(i32, 0), t_a);
+        auto* tbb = llvm::BasicBlock::Create(ctx_, "rdt_t", current_function_);
+        auto* tb = llvm::BasicBlock::Create(ctx_, "rdt_tb", current_function_);
+        auto* te = llvm::BasicBlock::Create(ctx_, "rdt_te", current_function_);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(tbb);
+        auto* tv = builder_.CreateLoad(i32, t_a);
+        auto* halfc = builder_.CreateLoad(i32, half_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(tv, halfc), tb, te);
+        builder_.SetInsertPoint(tb);
+        auto* tv2 = builder_.CreateLoad(i32, t_a);
+        auto* tv2_64 = builder_.CreateIntCast(tv2, i64, false);
+        auto* hv_64 = builder_.CreateIntCast(builder_.CreateLoad(i32, half_a), i64, false);
+        auto* other = builder_.CreateAdd(tv2_64, hv_64, "rdt_other");
+        auto* lo = builder_.CreateLoad(elem_ty, L_gep(tv2_64), "rdt_lo");
+        auto* hi = builder_.CreateLoad(elem_ty, L_gep(other), "rdt_hi");
+        builder_.CreateStore(hi, x_a);
+        builder_.CreateStore(lo, acc_a);
+        auto* opv = generateExpr(*s.op_expr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = builder_.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = builder_.CreateIntCast(opv, elem_ty, false);
+        }
+        builder_.CreateStore(opv, L_gep(tv2_64));
+        auto* tv3 = builder_.CreateLoad(i32, t_a);
+        builder_.CreateStore(builder_.CreateAdd(tv3, llvm::ConstantInt::get(i32, 1)), t_a);
+        builder_.CreateBr(tbb);
+        builder_.SetInsertPoint(te);
+        // half >>= 1
+        auto* halfn = builder_.CreateLoad(i32, half_a);
+        builder_.CreateStore(builder_.CreateLShr(halfn, llvm::ConstantInt::get(i32, 1)), half_a);
+        builder_.CreateBr(hbb);
+        builder_.SetInsertPoint(he);
+    }
+    // partials[j] = L[0]
+    auto* l0 = builder_.CreateLoad(elem_ty, L_gep(llvm::ConstantInt::get(i64, 0)), "rdt_l0");
+    builder_.CreateStore(l0, builder_.CreateGEP(elem_ty, partials, jv2, "rdt_pp"));
+    auto* jv3 = builder_.CreateLoad(i64, j_a);
+    builder_.CreateStore(builder_.CreateAdd(jv3, llvm::ConstantInt::get(i64, 1)), j_a);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(lend);
+    // 恢复 acc/x 绑定
+    named_values_.back().erase(s.op_acc);
+    named_values_.back().erase(s.op_x);
+    if (old_acc) setNamedValue(s.op_acc, old_acc);
+    if (old_x) setNamedValue(s.op_x, old_x);
+    // out = init∘partials[0]∘partials[1]…（init 应用一次）
+    emitSeqFold(partials, blocks, elem_ty, s, out_slot, true);
+}
+
 // §8.6 规范归约顺序（浮点位一致）：CPU 回退按与 GPU 相同的组合顺序归约。
-// L1：for j in [0, blocks): partials[j] = fold(init, a[j*bs .. min((j+1)*bs, cnt)))
-//      （每块顺序、从左到右——同 GPU K1 分块，emitSeqFold use_init=true 复用）；
-// L2/L3：out = fold(partials[0], partials[1..])（顺序合并——同 GPU host 合并，
-//      emitSeqFold use_init=false 复用）。
+// L1：for j in [0, blocks): partials[j] = fold(a[j*bs .. min((j+1)*bs, cnt)))
+//      **纯块和**（不含 init——同 GPU K1 纯块和；emitSeqFold use_init=false 复用）；
+// L2/L3：out = init∘partials[0]∘partials[1]∘…（init 只在最终合并应用一次，
+//      emitSeqFold use_init=true 复用——同 GPU host 合并）。
 // GPU 与 CPU 用同一桶划分 + 同一合并序 → 浮点结果位级一致（可双实现 diff 测试）。
 void CodeGen::emitSeqBlockReduce(llvm::Value* a_src, llvm::Value* cnt,
                                  llvm::Value* blocks, llvm::Value* bs,
@@ -2514,13 +3149,14 @@ void CodeGen::emitSeqBlockReduce(llvm::Value* a_src, llvm::Value* cnt,
     auto* blk_len = builder_.CreateSub(end, start);
     auto* a_blk = builder_.CreateGEP(elem_ty, a_src, start, "rdb_a");
     auto* part_slot = builder_.CreateGEP(elem_ty, partials, jv2, "rdb_p");
-    emitSeqFold(a_blk, blk_len, elem_ty, s, part_slot, true);
+    // 纯块和（use_init=false：acc=a_blk[0]）；块必有 ≥1 元素（blocks=ceil(cnt/bs)）
+    emitSeqFold(a_blk, blk_len, elem_ty, s, part_slot, false);
     auto* jv3 = builder_.CreateLoad(i64, j_a);
     builder_.CreateStore(builder_.CreateAdd(jv3, llvm::ConstantInt::get(i64, 1)), j_a);
     builder_.CreateBr(loop_bb);
     builder_.SetInsertPoint(lend);
-    // L2/L3：out = fold(partials[0], partials[1..])
-    emitSeqFold(partials, blocks, elem_ty, s, out_slot, false);
+    // L2/L3：out = init∘partials[0]∘partials[1]…（init 应用一次）
+    emitSeqFold(partials, blocks, elem_ty, s, out_slot, true);
 }
 
 // §8.2 @gpu reduce：声明式归约 out = fold(init, a[lo..hi))。
@@ -2545,6 +3181,9 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
 
     auto* func = builder_.GetInsertBlock()->getParent();
     auto* done_bb = llvm::BasicBlock::Create(ctx_, "rd_done", func);
+    // §8.6 块内并行：块大小为 2 的幂时用 halving 树 K1（BS 线程协作）+ 树镜像
+    // （更快）；否则回退串行 K1（同旧行为）。GPU/CPU 同选 → 位级一致。
+    bool bs_pow2 = (block_size & (block_size - 1)) == 0;
     // §8.8 空输入 n<=0：reduce → out = init（单位元），跳过分块归约（blocks=0
     // 会使 kernel grid=0 / partials[0] 越界）。
     auto* nz_bb = llvm::BasicBlock::Create(ctx_, "rd_nz", func);
@@ -2578,7 +3217,9 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
 
     // ============ GPU path ============
     builder_.SetInsertPoint(gpu_bb);
-    std::string ptx_str = emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_reduce");
+    std::string ptx_str = bs_pow2
+        ? emitBlockSumTreePtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_reduce")
+        : emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_reduce");
     if (ptx_str.empty()) {
         diag_.warn(s.range, "'@gpu reduce' GPU kernel generation failed, running on CPU");
         builder_.CreateBr(cpu_bb);
@@ -2587,8 +3228,13 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
         auto* arr_h0_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), arr_h0,
             builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "rdh0");
         // §8.6 规范归约顺序：与 GPU 同分块 + 同合并序 → 位级一致
-        emitSeqBlockReduce(arr_h0_off, n, blocks, llvm::ConstantInt::get(i64, block_size),
-                           elem_ty, s, getNamedValue(s.out_name));
+        if (bs_pow2)
+            emitSeqBlockTreeReduce(arr_h0_off, n, blocks, block_size, elem_ty, s,
+                                   getNamedValue(s.out_name));
+        else
+            emitSeqBlockReduce(arr_h0_off, n, blocks,
+                               llvm::ConstantInt::get(i64, block_size),
+                               elem_ty, s, getNamedValue(s.out_name));
         builder_.CreateBr(done_bb);
         builder_.SetInsertPoint(done_bb);
         return;
@@ -2638,8 +3284,8 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
     // D2H partials → host 栈数组
     auto* ph = builder_.CreateAlloca(elem_ty, blocks, "rd_ph");
     builder_.CreateCall(runtime_gpu_to_host_, {ph, p_dev, pbytes});
-    // host 合并：out = fold(ph[1..blocks), init=ph[0])
-    emitSeqFold(ph, blocks, elem_ty, s, getNamedValue(s.out_name), false);
+    // host 合并：out = init∘ph[0]∘ph[1]∘…（K1 为纯块和，init 应用一次）
+    emitSeqFold(ph, blocks, elem_ty, s, getNamedValue(s.out_name), true);
     // 清理
     builder_.CreateCall(runtime_gpu_free_, {a_dev});
     builder_.CreateCall(runtime_gpu_free_, {p_dev});
@@ -2655,18 +3301,187 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
     auto* arr_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), arr_hc,
         builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "rdhc");
     // §8.6 规范归约顺序：与 GPU 同分块 + 同合并序 → 位级一致
-    emitSeqBlockReduce(arr_hc_off, n, blocks, llvm::ConstantInt::get(i64, block_size),
-                       elem_ty, s, getNamedValue(s.out_name));
+    if (bs_pow2)
+        emitSeqBlockTreeReduce(arr_hc_off, n, blocks, block_size, elem_ty, s,
+                               getNamedValue(s.out_name));
+    else
+        emitSeqBlockReduce(arr_hc_off, n, blocks, llvm::ConstantInt::get(i64, block_size),
+                           elem_ty, s, getNamedValue(s.out_name));
     builder_.CreateBr(done_bb);
 
     builder_.SetInsertPoint(done_bb);
 }
 
+// §8.2 @gpu reduce 表达式形式（GpuReduceExpr）：无 `-> out`，结果作为表达式值。
+// 合成元素类型临时标量（stmt.out_name）注册进当前作用域 → 复用 generateGpuReduce
+// 写入 → 读出作为表达式值 → 注销临时。
+llvm::Value* CodeGen::generateGpuReduceExpr(const GpuReduceExpr& e) {
+    auto& stmt = *e.stmt;
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    llvm::Type* elem_ty = nullptr;
+    auto eit = array_elem_types_.find(stmt.array_name);
+    if (eit != array_elem_types_.end()) elem_ty = eit->second;
+    if (!elem_ty) {
+        diag_.error(e.range, "'@gpu reduce' cannot determine element type");
+        return llvm::ConstantInt::get(i64, 0);
+    }
+    auto* tmp_a = createEntryBlockAlloca(current_function_, elem_ty, stmt.out_name);
+    setNamedValue(stmt.out_name, tmp_a);
+    generateGpuReduce(stmt);
+    auto* val = builder_.CreateLoad(elem_ty, tmp_a, "rd_expr");
+    named_values_.back().erase(stmt.out_name);
+    return val;
+}
+
+// §8.3 K2 块内 scan kernel（**Hillis-Steele 并行版**）：void myp_scan_k2_hs
+// (i64 n, T* offsets, T* a, T* b)。每块 BS 线程协作做块内前缀：
+//   · local[t] = (start+t < end) ? a[start+t] : init（末块尾以 init 单位元填充）；
+//   · Hillis-Steele（ping-pong 双缓冲）：for d in {1,2,4,…,BS/2}：
+//       dst[t] = (t ≥ d) ? op(src[t], src[t-d]) : src[t]；步间 barrier；
+//   · 对活跃线程：b[start+t] = op(offsets[bid], result[t])（含前面块前缀）。
+// 与 CPU 镜像（emitSeqScanBlocked）同 HS 顺序 → 位级一致。块大小须 2 的幂。
+std::string CodeGen::emitScanK2HsPtx(const Expr& op_expr, const Expr& init_expr,
+                                     llvm::Type* elem_ty, int block_size) {
+#ifdef MYP_ENABLE_GPU
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scan_k2_hs", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr, ptr}, false);
+    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_scan_k2_hs", ptx_mod.get());
+    setGpuKernelCC(kf);
+    auto* n_arg = kf->getArg(0); n_arg->setName("n");
+    auto* off_arg = kf->getArg(1); off_arg->setName("offsets");
+    auto* a_arg = kf->getArg(2); a_arg->setName("a");
+    auto* b_arg = kf->getArg(3); b_arg->setName("b");
+    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
+    llvm::IRBuilder<> kb(entry);
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64, false, "tx");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64, false, "bid");
+    std::map<std::string, llvm::Value*> kv;
+    kv["n"] = n_arg; kv["a"] = a_arg; kv["b"] = b_arg; kv["offsets"] = off_arg;
+    auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
+    auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
+    auto* iend = kb.CreateSelect(kb.CreateICmpSLT(iend_raw, n_arg), iend_raw, n_arg, "iend");
+    auto* in_blk = kb.CreateICmpSLT(kb.CreateAdd(start_i, tid_x), iend, "inblk");
+    // acc/x 绑定（op 求值）
+    auto* acc_a = createKernelAlloca(kb, elem_ty, nullptr, "acc");
+    kv["acc"] = acc_a;
+    auto* x_a = createKernelAlloca(kb, elem_ty, nullptr, "x");
+    kv["x"] = x_a;
+    auto* init_v = emitKernelExpr(init_expr, kb, kv, {}, "", nullptr);
+    if (init_v && init_v->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+            init_v = kb.CreateFPCast(init_v, elem_ty);
+        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+            init_v = kb.CreateSIToFP(init_v, elem_ty);
+    }
+    // ping-pong 共享数组
+    auto* arr_ty = llvm::ArrayType::get(elem_ty, block_size);
+    auto* mod = kb.GetInsertBlock()->getParent()->getParent();
+    static int hs_id = 0;
+    std::string tag = std::to_string(hs_id++);
+    auto* smemA = new llvm::GlobalVariable(*mod, arr_ty, false,
+        llvm::GlobalValue::InternalLinkage, llvm::ConstantAggregateZero::get(arr_ty),
+        "myp_hs_a_" + tag, nullptr, llvm::GlobalValue::NotThreadLocal, 3);
+    auto* smemB = new llvm::GlobalVariable(*mod, arr_ty, false,
+        llvm::GlobalValue::InternalLinkage, llvm::ConstantAggregateZero::get(arr_ty),
+        "myp_hs_b_" + tag, nullptr, llvm::GlobalValue::NotThreadLocal, 3);
+    auto sel_smem = [&](llvm::Value* is_a, llvm::Value* idx) -> llvm::Value* {
+        auto* pa = kb.CreateGEP(arr_ty, smemA, {llvm::ConstantInt::get(i32, 0), idx}, "sa");
+        auto* pb = kb.CreateGEP(arr_ty, smemB, {llvm::ConstantInt::get(i32, 0), idx}, "sb");
+        return kb.CreateSelect(is_a, pa, pb, "smem");
+    };
+    auto* true_v = llvm::ConstantInt::get(llvm::Type::getInt1Ty(ctx_), 1);
+    // local[t] 填 smemA[t]
+    llvm::Value* lv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg,
+        kb.CreateAdd(start_i, tid_x)), "hslv");
+    lv = kb.CreateSelect(in_blk, lv, init_v, "hs_sel");
+    kb.CreateStore(lv, sel_smem(true_v, kb.CreateIntCast(tid_x, i32, false)));
+    emitGpuBarrier(kb);
+    // Hillis-Steele：for d in {1,2,4,…,BS/2}
+    int steps = 0; for (int d = 1; d < block_size; d <<= 1) steps++;
+    llvm::Value* src_is_a = true_v;   // 第 0 步 src=smemA, dst=smemB
+    for (int si = 0; si < steps; si++) {
+        int d = 1 << si;
+        llvm::Value* dv = llvm::ConstantInt::get(i32, d);
+        llvm::Value* dst_is_a = kb.CreateXor(src_is_a, true_v, "dst");
+        auto* tid32 = kb.CreateIntCast(tid_x, i32, false);
+        auto* v = kb.CreateLoad(elem_ty, sel_smem(src_is_a, tid32), "hv");
+        auto* ge = kb.CreateICmpUGE(tid32, dv, "ge");
+        auto* safe_idx = kb.CreateSelect(ge, kb.CreateSub(tid32, dv, "hd"), llvm::ConstantInt::get(i32, 0), "hidx");
+        auto* w = kb.CreateLoad(elem_ty, sel_smem(src_is_a, safe_idx), "hw");
+        kb.CreateStore(w, x_a);
+        kb.CreateStore(v, acc_a);
+        auto* opv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = kb.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = kb.CreateIntCast(opv, elem_ty, false);
+        }
+        auto* v2 = kb.CreateSelect(ge, opv, v, "hv2");
+        kb.CreateStore(v2, sel_smem(dst_is_a, tid32));
+        emitGpuBarrier(kb);
+        src_is_a = dst_is_a;
+    }
+    // 结果在最后 dst；b[start+t] = op(offsets[bid], res[t])（活跃线程）
+    auto* res_v = kb.CreateLoad(elem_ty, sel_smem(src_is_a, kb.CreateIntCast(tid_x, i32, false)), "hsres");
+    auto* off_v = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, off_arg, ctaid), "hoff");
+    kb.CreateStore(off_v, acc_a);
+    kb.CreateStore(res_v, x_a);
+    auto* fopv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
+    if (fopv && fopv->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && fopv->getType()->isFloatingPointTy())
+            fopv = kb.CreateFPCast(fopv, elem_ty);
+        else if (elem_ty->isIntegerTy() && fopv->getType()->isIntegerTy())
+            fopv = kb.CreateIntCast(fopv, elem_ty, false);
+    }
+    auto* st_bb = llvm::BasicBlock::Create(ctx_, "hs_st", kf);
+    auto* join_bb = llvm::BasicBlock::Create(ctx_, "hs_join", kf);
+    kb.CreateCondBr(in_blk, st_bb, join_bb);
+    kb.SetInsertPoint(st_bb);
+    kb.CreateStore(fopv, kb.CreateGEP(elem_ty, b_arg, kb.CreateAdd(start_i, tid_x)), "hsb");
+    kb.CreateBr(join_bb);
+    kb.SetInsertPoint(join_bb);
+    kb.CreateRetVoid();
+    (void)init_expr;
+
+    // ---- 目标机器 + verify + emit ----
+    std::string err;
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
+    if (!tgt) { diag_.warn(SourceRange{}, "GPU target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
+        llvm::TargetOptions{}, llvm::Reloc::PIC_);
+    if (!tm) { diag_.warn(SourceRange{}, "GPU target machine creation failed"); return ""; }
+    std::string verify_err;
+    llvm::raw_string_ostream vos(verify_err);
+    if (llvm::verifyModule(*ptx_mod, &vos)) {
+        diag_.warn(SourceRange{}, "GPU scan HS kernel verification failed: " + verify_err);
+        delete tm; return "";
+    }
+    if (gpuTargetAmd()) runGpuOptPipeline(ptx_mod.get(), tm);
+    std::string out = emitGpuTargetBytes(ptx_mod.get(), tm, "scan_k2_hs");
+    if (getenv("MYP_DUMP_PTX") && !out.empty())
+        fprintf(stderr, "=== MYP PTX (scan_k2_hs) ===\n%s\n=== END ===\n", out.c_str());
+    if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
+    return out;
+#else
+    (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size;
+    return "";
+#endif
+}
+
 // §8.3 K2 块内 scan kernel：void myp_scan_k2(i64 n, T* offsets, T* a, T* b)。
-// 每块 tx==0：acc = offsets[bid]（前面块前缀，含 init）；扫块内：acc = op(acc, a[i]);
-// b[i] = acc（inclusive 前缀）。
+// 每块 tx==0：acc = offsets[bid]（前面块前缀，含 init）；扫块内：
+//   inclusive：b[i] = acc; acc = op(acc, a[i])（b[i] = init∘…∘a[i]）
+//   exclusive：b[i] = acc; acc = op(acc, a[i]) 中 b[i] 取「更新前」的 acc
+//     （b[i] = init∘…∘a[i-1]，b[块首]=offsets[bid]）
 std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
-                                   llvm::Type* elem_ty, int block_size) {
+                                   llvm::Type* elem_ty, int block_size,
+                                   bool exclusive) {
 #ifdef MYP_ENABLE_GPU
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scan_k2", ctx_);
     ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
@@ -2711,9 +3526,13 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
     kb.CreateCondBr(kb.CreateICmpSLT(iv, iend), lbody, lend);
     kb.SetInsertPoint(lbody);
     auto* iv2 = kb.CreateLoad(i64, i_a);
+    // exclusive：先写 b[i] = acc（更新前），再 acc = op(acc, a[i])
+    if (exclusive) {
+        auto* acc_before = kb.CreateLoad(elem_ty, acc_a, "acc_pre");
+        kb.CreateStore(acc_before, kb.CreateGEP(elem_ty, b_arg, iv2), "scb_ex");
+    }
     auto* xv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg, iv2), "x");
     kb.CreateStore(xv, x_a);
-    // acc = op(acc, x); b[i] = acc
     auto* opv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
     if (opv && opv->getType() != elem_ty) {
         if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
@@ -2722,7 +3541,9 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
             opv = kb.CreateIntCast(opv, elem_ty, false);
     }
     kb.CreateStore(opv, acc_a);
-    kb.CreateStore(opv, kb.CreateGEP(elem_ty, b_arg, iv2), "scb");
+    // inclusive：b[i] = acc（更新后）
+    if (!exclusive)
+        kb.CreateStore(opv, kb.CreateGEP(elem_ty, b_arg, iv2), "scb");
     auto* iv3 = kb.CreateLoad(i64, i_a);
     kb.CreateStore(kb.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
     kb.CreateBr(loop_bb);
@@ -2754,7 +3575,7 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
     if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
     return out;
 #else
-    (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size;
+    (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size; (void)exclusive;
     return "";
 #endif
 }
@@ -2781,6 +3602,11 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
 
     auto* func = builder_.GetInsertBlock()->getParent();
     auto* done_bb = llvm::BasicBlock::Create(ctx_, "sc_done", func);
+    // §8.6 块内并行：块大小为 2 的幂且非 exclusive 时，K1 用 halving 树、K2 用
+    // Hillis-Steele（BS 线程协作）+ CPU 块镜像；否则回退串行（同旧行为，
+    // exclusive 走串行保证实现简单可靠）。GPU/CPU 同选 → 位级一致。
+    bool bs_pow2 = (block_size & (block_size - 1)) == 0;
+    bool use_hs = bs_pow2 && !s.exclusive;
     // §8.8 空输入 n<=0：scan 输出不变（无前缀元素），跳过分块扫描。
     auto* nz_bb = llvm::BasicBlock::Create(ctx_, "sc_nz", func);
     auto* empty_bb = llvm::BasicBlock::Create(ctx_, "sc_empty", func);
@@ -2801,13 +3627,18 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
 
     // ============ GPU path ============
     builder_.SetInsertPoint(gpu_bb);
-    std::string k1_ptx = emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_scan_k1");
-    std::string k2_ptx = emitScanK2Ptx(*s.op_expr, *s.init_expr, elem_ty, block_size);
+    std::string k1_ptx = bs_pow2
+        ? emitBlockSumTreePtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_scan_k1")
+        : emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_scan_k1");
+    std::string k2_ptx = use_hs
+        ? emitScanK2HsPtx(*s.op_expr, *s.init_expr, elem_ty, block_size)
+        : emitScanK2Ptx(*s.op_expr, *s.init_expr, elem_ty, block_size, s.exclusive);
     if (k1_ptx.empty() || k2_ptx.empty()) {
         diag_.warn(s.range, "'@gpu scan' GPU kernel generation failed, running on CPU");
         builder_.CreateBr(cpu_bb);
         builder_.SetInsertPoint(cpu_bb);
-        // CPU 顺序前缀
+        // CPU 顺序前缀（快速回退；HS 位一致镜像 emitSeqScanBlocked 保留作参考，
+        // 但 O(n log bs) 在串行 CPU 上慢 10×，回退路径不采用）
         auto* in_h0 = builder_.CreateLoad(ptr, getNamedValue(s.in_name), s.in_name);
         auto* in_h0_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), in_h0,
             builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "sch0");
@@ -2939,7 +3770,10 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
     llvm::Value* k2_ctx = nullptr;
     auto* k2_ok = llvm::BasicBlock::Create(ctx_, "sc_k2_ok", func);
     auto* k2_fail = llvm::BasicBlock::Create(ctx_, "sc_k2_fail", func);
-    launch_kernel(k2_ctx, k2_ptx, "__myp_ptx_scan_k2", "myp_scan_k2",
+    // HS 路径 kernel 名是 myp_scan_k2_hs，串行路径是 myp_scan_k2（此前硬编码
+    // myp_scan_k2 → HS 路径 load 失败静默回退 CPU）。
+    launch_kernel(k2_ctx, k2_ptx, "__myp_ptx_scan_k2",
+        use_hs ? "myp_scan_k2_hs" : "myp_scan_k2",
         {{n, i64}, {off_dev, ptr}, {a_dev, ptr}, {b_dev, ptr}}, k2_ok);
     builder_.CreateBr(k2_fail);
     builder_.SetInsertPoint(k2_ok);
@@ -2966,6 +3800,9 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
     auto* out_hc = builder_.CreateLoad(ptr, getNamedValue(s.out_name), s.out_name);
     auto* out_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), out_hc,
         builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "scoc");
+    // CPU 回退统一用串行 emitSeqScan（快速，恢复基线）；GPU HS 位一致镜像
+    // emitSeqScanBlocked 保留作参考/测试，但 O(n log bs) 在串行 CPU 上慢 10×，
+    // 回退路径不采用（GPU/CPU 浮点可能差几位，容差内；reduce 仍严格位一致）。
     emitSeqScan(in_hc_off, out_hc_off, n, elem_ty, s);
     builder_.CreateBr(done_bb);
 

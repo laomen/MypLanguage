@@ -68,6 +68,8 @@ llvm::Value* CodeGen::generateExpr(const Expr& e) {
         case ExprKind::TupleExpr:      return generateTupleExpr(static_cast<const TupleExpr&>(e));
         case ExprKind::NamedArg:       // 防御：sema 已把命名实参重排消除；残留时生成其值
             return generateExpr(*static_cast<const NamedArgExpr&>(e).value);
+        case ExprKind::GpuReduceExpr:  // §8.2 @gpu reduce 表达式形式
+            return generateGpuReduceExpr(static_cast<const GpuReduceExpr&>(e));
     }
     return nullptr;
 }

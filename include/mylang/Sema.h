@@ -54,6 +54,9 @@ private:
     // §8.2 @gpu reduce（声明式归约）：out = fold(init, a[lo..hi))。校验 op 返回
     // 类型 = 数组元素 = init = acc；提取 return 表达式到 stmt.op_expr。
     StmtResult visitGpuReduceStmt(GpuReduceStmt& stmt);
+    // §8.2 @gpu reduce 表达式形式（GpuReduceExpr）：声明合成临时标量后复用
+    // visitGpuReduceStmt 校验；表达式结果类型 = 数组元素类型。
+    TypeInfo visitGpuReduceExpr(GpuReduceExpr& expr);
     // §8.3 @gpu scan（声明式前缀和）：b[lo+i] = init∘a[lo]∘…。同 reduce 校验。
     StmtResult visitGpuScanStmt(GpuScanStmt& stmt);
     // §8.4 @gpu scatter（声明式散点）：b[idx[lo_i+p]] = a[lo_a+p]。校验 a/b 同

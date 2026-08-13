@@ -1588,6 +1588,30 @@ Sema::StmtResult Sema::visitGpuReduceStmt(GpuReduceStmt& stmt) {
     return {};
 }
 
+// §8.2 @gpu reduce 表达式形式（GpuReduceExpr）：无 `-> out`，结果作为表达式值。
+// 合成临时输出标量（元素类型）声明进符号表后，复用 visitGpuReduceStmt 全量校验；
+// 表达式结果类型 = 数组元素类型。
+TypeInfo Sema::visitGpuReduceExpr(GpuReduceExpr& expr) {
+    auto& stmt = *expr.stmt;
+    auto* at = symbol_table_.lookup(stmt.array_name);
+    if (!at || at->kind != TypeKind::Array || !at->element_type) {
+        error(stmt.range, "'@gpu reduce' array '" + stmt.array_name +
+              "' must be a 'T[]' dynamic array");
+        return TypeInfo(TypeKind::Int);
+    }
+    TypeKind et = at->element_type->kind;
+    if (et != TypeKind::Float && et != TypeKind::Double && et != TypeKind::Int) {
+        error(stmt.range, "'@gpu reduce' element type must be float/double/int "
+              "(got '" + typeName(*at->element_type) + "')");
+        return TypeInfo(TypeKind::Int);
+    }
+    // 声明合成临时输出标量（元素类型），使 visitGpuReduceStmt 的 out 校验通过
+    symbol_table_.declare(stmt.out_name, *at->element_type);
+    visitGpuReduceStmt(stmt);
+    expr.result_kind = et;
+    return TypeInfo(et);
+}
+
 // §8.3 @gpu scan：前缀和 b[lo+i] = init∘a[lo]∘…∘a[lo+i]。in/out 均为 T[]，
 // init/op 同 reduce 校验。提取 return 表达式到 stmt.op_expr。
 Sema::StmtResult Sema::visitGpuScanStmt(GpuScanStmt& stmt) {

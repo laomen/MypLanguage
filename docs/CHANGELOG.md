@@ -331,6 +331,30 @@
     时寄存器声明 `<N>` 含 %r0（用 %r4 须 `<5>`）；ptxas 拒绝 `[reg+reg]` 寻址
     （改用 `add.u64` 合成地址）。
 
+### v3.13.5 — P6 ② 声明式 reduce/scan 块内并行（§8.2/8.3，用户选）
+- **reduce 块内并行 halving 树**（§8.6 规范树，`emitBlockSumTreePtx`）：2 的幂块
+  大小时 K1 改 ping-pong 共享内存树（每线程 1 元素，末块尾以 init 单位元填充），
+  CPU 镜像 `emitSeqBlockTreeReduce` 同树 → **位级一致**（`test_gpu_reduce_bit`
+  GPU==CPU==1177075682）；非 2 幂回退串行 K1（纯块和，修正 init 双计 bug）。
+- **reduce 表达式形式**（`GpuReduceExpr`）：`float s = @gpu reduce ... over
+  a[0..n);` 无 `-> out`，parser 3-token lookahead 区分 lambda，sema 合成
+  `__gpu_rdtmp_N` 临时，可嵌套/参与运算（`bench/rdexpr.myp` 双模式 PASS）。
+- **scan Hillis-Steele 块内并行**（`emitScanK2HsPtx`）：inclusive + 2 的幂块 →
+  K2 改 ping-pong 双缓冲 HS（d∈{1,2,4,…}，kernel 名 `myp_scan_k2_hs`）；launch
+  按 `use_hs` 选 kernel 名（否则静默回退 CPU）。
+- **scan exclusive 变体**：`@gpu scan(exclusive) ...`（K2 写前落盘 / CPU 写前
+  先存）；`test_gpu_scan.myp` 增 exclusive 全量/子区间/非零 init 三 case 双模式 PASS。
+- **CPU 回退权衡**：scan 回退统一串行 `emitSeqScan`（HS 位一致镜像
+  `emitSeqScanBlocked` 在串行 CPU 上慢 ~10× 不采用）→ GPU/CPU 浮点差几个 ulp
+  （容差内）；reduce 位级一致不受影响。
+- **性能验证**（`bench/gpu_reduce_scan.myp`，基线 `BASELINE_gpu_reduce_scan.md`）：
+  GPU reduce 1M 0.87–0.97→0.67–0.9、scan 1M 1.6–2.0→1.2、reduce 4M 2.9–3.2→2.07、
+  scan 4M 5.6–6.4→4.07 ms/op——**全面改善，无性能回退**；CPU 回退持平。
+- **坑**：树 kernel `src[tid+half]` 越界（tid≥half 线程）→ 非法内存访问，须
+  `select` 钳索引到 tid；scan j-loop 缺 j++ 回边 → partials 只算 block 0；offsets
+  循环须重绑 acc/x（步骤 4 恢复后步骤 5 复用未绑定 → "undefined variable acc/x"）。
+- 回归 266/266 + AMD 交叉编译 + GPU 双模式（reduce/scan/algo/reduce_bit）PASS。
+
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总

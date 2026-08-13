@@ -101,7 +101,7 @@ private:
     // @gpu tile (float[32][32] smem) [grid(nb)] { body } — 共享内存协作 kernel
     std::unique_ptr<Stmt> parseGpuTileStmt();
     // §8.2 @gpu reduce (acc, x) => { ... } init V over a[lo..hi) -> out — 声明式归约
-    std::unique_ptr<Stmt> parseGpuReduceStmt();
+    std::unique_ptr<Stmt> parseGpuReduceStmt(bool expr_form = false);
     // §8.3 @gpu scan (acc, x) => { ... } init V over a[lo..hi) -> b — 声明式前缀和
     std::unique_ptr<Stmt> parseGpuScanStmt();
     // §8.4 @gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi) — 声明式散点

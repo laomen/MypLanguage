@@ -408,6 +408,23 @@ std::unique_ptr<Expr> Parser::parseMultiplicative() {
 }
 
 std::unique_ptr<Expr> Parser::parseUnary() {
+    // §8.2 @gpu reduce 表达式形式：`double s = @gpu reduce (acc,x)=>... init V over a[lo..hi);`
+    // 在表达式上下文识别（@ gpu reduce 三 token）；语句形式由 parseStatement 处理
+    // （带 `-> out`）。表达式形式结果 = 归约值。
+    if (check(TokenKind::At) && peekNext().kind == TokenKind::Identifier &&
+        peekNext().value == "gpu" && tokens_.size() > (size_t)current_ + 2 &&
+        tokens_[current_ + 2].kind == TokenKind::Identifier &&
+        tokens_[current_ + 2].value == "reduce") {
+        SourceRange r = peek().range;
+        advance(); // @
+        advance(); // gpu
+        advance(); // reduce
+        auto st = parseGpuReduceStmt(true);
+        // 表达式形式必然产出 GpuReduceStmt（expr_form=true 时合成临时输出名）
+        auto rd = std::unique_ptr<GpuReduceStmt>(
+            static_cast<GpuReduceStmt*>(st.release()));
+        return std::make_unique<GpuReduceExpr>(std::move(rd), r);
+    }
     // await expr — coroutine suspend with value passing (expression form, C2).
     // The operand is a FULL expression: `await n * 2` == `await (n * 2)`.
     if (match(TokenKind::Keyword_await)) {
@@ -801,7 +818,9 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         advance();
         // Check if this might be a lambda: look ahead for ') =>'
         size_t saved = current_;
-        if (!isAtEnd()) {
+        // §8.2：'(' 后紧跟 '@'（如 `(@gpu reduce ...)` 分组）不可能是 lambda
+        // （lambda 参数是标识符/类型，不会是 '@'）→ 直接按分组表达式解析。
+        if (!isAtEnd() && !(check(TokenKind::At))) {
             for (size_t i = saved; i < tokens_.size(); i++) {
                 if (tokens_[i].kind == TokenKind::RightParen && i + 1 < tokens_.size()
                     && tokens_[i + 1].kind == TokenKind::FatArrow) {
