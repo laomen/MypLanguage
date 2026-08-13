@@ -623,6 +623,7 @@ enum class StmtKind {
     ForStmt,
     ForInStmt,
     GpuTileStmt,
+    GpuReduceStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
@@ -781,6 +782,34 @@ struct GpuTileStmt : Stmt {
           name(std::move(nm)), body(std::move(b)), has_grid(hg),
           grid_expr(std::move(ge)), resident(std::move(res)),
           stream_expr(std::move(se)), has_stream(hs) {}
+};
+
+// §8.2 @gpu reduce（docs/gpu_library_design §8.2）：声明式归约。
+// 语法：@gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;
+// 语义：out = fold(init, a[lo..hi))，op 为 (acc, x) => acc⊕x（须可结合）。
+// GPU 用 grid-stride 每线程累加 + kernel.block_reduce + 每块写 partials +
+// host 顺序合并；CPU 回退顺序 fold。sema 解析 op 返回类型（须 = 数组元素
+// = init = acc 类型，支持 float/double/int）。
+struct GpuReduceStmt : Stmt {
+    std::string op_acc;             // op 累加器参数名（"acc"）
+    std::string op_x;               // op 元素参数名（"x"）
+    std::unique_ptr<Stmt> op_body;  // { return acc + x; } 原始 op 体
+    std::unique_ptr<Expr> op_expr;  // sema 提取的 return 表达式（codegen 用它）
+    std::unique_ptr<Expr> init_expr;    // init V（归约起点/单位元）
+    std::string array_name;         // over a（捕获数组）
+    std::unique_ptr<Expr> begin_expr;   // lo（左闭）
+    std::unique_ptr<Expr> end_expr;     // hi（右开）
+    std::string out_name;           // -> out（host 标量变量，结果写入）
+    // §3.7 @gpu reduce block(n)：块大小（0 = 默认 256）。
+    int64_t block_val = 0;
+    GpuReduceStmt(std::string acc, std::string x, std::unique_ptr<Stmt> ob,
+                  std::unique_ptr<Expr> ie, std::string an,
+                  std::unique_ptr<Expr> be, std::unique_ptr<Expr> ee,
+                  std::string on, SourceRange r)
+        : Stmt(StmtKind::GpuReduceStmt, r), op_acc(std::move(acc)),
+          op_x(std::move(x)), op_body(std::move(ob)), init_expr(std::move(ie)),
+          array_name(std::move(an)), begin_expr(std::move(be)),
+          end_expr(std::move(ee)), out_name(std::move(on)) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

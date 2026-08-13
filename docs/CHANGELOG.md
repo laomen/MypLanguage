@@ -174,6 +174,19 @@
     - 测试 `tests/test_gpu_vec4.myp` 双模式 PASS（打包读分量和、打包写 +1000 只改
       每组第 0 分量）；格式化/LSP/viz/tmLanguage 关键字同步。
     - 回归 109/109 + 负测试 61 + 框架 82（259/259）。
+  - **P3 ① `@gpu reduce`（§8.2 声明式归约）**：
+    - 语法：`@gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;`
+      （AST `GpuReduceStmt` + parser + sema + codegen）。
+    - 语义：`out = fold(init, a[lo..hi))`，op 为 (acc, x) => acc⊕x（须可结合）。
+    - sema 校验元素/init/op 返回/out 类型一致（float/double/int）；提取 return 表达式
+      到 `stmt.op_expr`；op_body 访问时临时设 `current_return_type_` 为元素类型。
+    - codegen：GPU H2D a 范围 → 单 kernel（每块 tx==0 串行归约块内区间 →
+      partials[blockIdx]）→ D2H → host 顺序合并 → out；CPU 回退顺序 fold。op 用
+      emitKernelExpr（GPU）/ generateExpr（CPU），acc/x 绑定。
+    - **坑**：launch args 数组每元素须为"指向参数值的指针"（void** 约定），直接存
+      设备指针值导致 cuLaunchKernel 内部 segfault。
+    - 测试 `tests/test_gpu_reduce.myp` 双模式 PASS（sum 全量/子区间、max、
+      block(128)）。回归 109/109 + 负测试 61 + 框架 82（259/259）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

@@ -1221,6 +1221,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitForInStmt(static_cast<ForInStmt&>(stmt));
         case StmtKind::GpuTileStmt:
             return visitGpuTileStmt(static_cast<GpuTileStmt&>(stmt));
+        case StmtKind::GpuReduceStmt:
+            return visitGpuReduceStmt(static_cast<GpuReduceStmt&>(stmt));
         case StmtKind::ReturnStmt:
             return visitReturnStmt(static_cast<ReturnStmt&>(stmt));
         case StmtKind::BreakStmt:
@@ -1498,6 +1500,87 @@ Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
     if (stmt.body) visitStmt(*stmt.body);
     symbol_table_.leaveScope();
     in_gpu_for_ = saved_gpu;
+    return {};
+}
+
+// §8.2 @gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;
+// 声明式归约 out = fold(init, a[lo..hi))。校验：
+//   · 数组元素类型 = init = op 返回 = out 类型（支持 float/double/int）；
+//   · begin/end 为整型；block(n) 32 倍数 ≤1024；
+// 把 op 的 return 表达式提取到 stmt.op_expr（codegen 用它）。
+Sema::StmtResult Sema::visitGpuReduceStmt(GpuReduceStmt& stmt) {
+    // 数组：须为 T[] 动态数组
+    auto* at = symbol_table_.lookup(stmt.array_name);
+    if (!at || at->kind != TypeKind::Array || !at->element_type) {
+        error(stmt.range, "'@gpu reduce' array '" + stmt.array_name +
+              "' must be a 'T[]' dynamic array (got '" +
+              (at ? typeName(*at) : std::string("(not found)")) + "')");
+        return {};
+    }
+    TypeKind et = at->element_type->kind;
+    if (et != TypeKind::Float && et != TypeKind::Double && et != TypeKind::Int) {
+        error(stmt.range, "'@gpu reduce' element type must be float/double/int "
+              "(got '" + typeName(*at->element_type) + "')");
+        return {};
+    }
+    // out：host 标量变量（float/double/int）
+    auto* ot = symbol_table_.lookup(stmt.out_name);
+    if (!ot || ot->kind != et) {
+        error(stmt.range, "'@gpu reduce' output '" + stmt.out_name +
+              "' must be a '" + typeName(*at->element_type) + "' scalar");
+        return {};
+    }
+    // init：与元素同类型
+    TypeInfo init_t = visitExpr(*stmt.init_expr);
+    if (init_t.kind != et) {
+        error(stmt.init_expr->range, "'@gpu reduce' init must be '" +
+              typeName(*at->element_type) + "' (got '" + typeName(init_t) + "')");
+        return {};
+    }
+    // range：begin/end 整型
+    auto bt = visitExpr(*stmt.begin_expr);
+    if (!isNumericKind(bt.kind)) {
+        error(stmt.begin_expr->range, "'@gpu reduce' range bound must be an integer");
+        return {};
+    }
+    auto ht = visitExpr(*stmt.end_expr);
+    if (!isNumericKind(ht.kind)) {
+        error(stmt.end_expr->range, "'@gpu reduce' range bound must be an integer");
+        return {};
+    }
+    // op body：声明 acc/x 为元素类型后访问，提取 return 表达式
+    // （current_return_type_ 临时设为元素类型，使 `return acc + x;` 通过类型检查）
+    auto saved_ret = current_return_type_;
+    current_return_type_ = *at->element_type;
+    symbol_table_.enterScope();
+    symbol_table_.declare(stmt.op_acc, *at->element_type);
+    symbol_table_.declare(stmt.op_x, *at->element_type);
+    if (stmt.op_body) visitStmt(*stmt.op_body);
+    symbol_table_.leaveScope();
+    current_return_type_ = saved_ret;
+    if (stmt.op_body && stmt.op_body->kind == StmtKind::Block) {
+        auto& blk = static_cast<BlockStmt&>(*stmt.op_body);
+        for (auto& s : blk.statements) {
+            if (s->kind == StmtKind::ReturnStmt) {
+                auto& r = static_cast<ReturnStmt&>(*s);
+                if (r.value) {
+                    stmt.op_expr = std::move(r.value);
+                    break;
+                }
+            }
+        }
+    }
+    if (!stmt.op_expr) {
+        error(stmt.range, "'@gpu reduce' op body must contain a 'return <expr>;'");
+        return {};
+    }
+    // §3.7 block(n) 约束
+    if (stmt.block_val > 0) {
+        if (stmt.block_val % 32 != 0)
+            error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");
+        else if (stmt.block_val > 1024)
+            error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
+    }
     return {};
 }
 

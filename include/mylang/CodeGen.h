@@ -502,6 +502,13 @@ private:
     void analyzeGpuTileCapturedVars(const GpuTileStmt& stmt);
     // §3.2 @gpu tile：共享内存协作 kernel（PTX + launch + CPU 回退）
     void generateGpuTile(const GpuTileStmt& stmt);
+    // §8.2 @gpu reduce：声明式归约（grid 分块 + host 合并；CPU 回退顺序 fold）
+    void generateGpuReduce(const GpuReduceStmt& stmt);
+    // §8.2 生成 reduce kernel PTX（每块 tx==0 串行归约 → partials[bid]）；失败返回空串
+    std::string emitReducePtx(const GpuReduceStmt& stmt, llvm::Type* elem_ty, int block_size);
+    // §8.2 host 顺序归约：acc=init（或 src[0]）；for i in [start,cnt): x=src[i]; acc=op(acc,x)；out=acc
+    void emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_ty,
+                     const GpuReduceStmt& stmt, llvm::Value* out_slot, bool use_init);
     // §3.2 @gpu tile CPU 回退（降级）：单线程执行 body，共享数组 = host 栈数组
     void generateGpuTileCpuFallback(const GpuTileStmt& stmt);
 

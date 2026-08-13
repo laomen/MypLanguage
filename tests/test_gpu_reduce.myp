@@ -1,0 +1,40 @@
+// P3 ① @gpu reduce（§8.2 声明式归约）测试
+// 语法：@gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;
+// 语义：out = fold(init, a[lo..hi))。GPU 分块归约 + host 合并；CPU 回退顺序 fold。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 1024L;
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = float(i); i = i + 1L; }
+
+            // 全量 sum：0+1+...+1023 = 523776
+            float s = 0.0f;
+            @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> s;
+            float err = Math.abs(s - 523776.0f);
+            Console.writeLine("sum: " + (err < 1.0f ? "OK" : "FAIL") + " s=" + s);
+
+            // 子区间 [256, 512)：256+...+511 = (256+511)*256/2 = 98176
+            float s2 = 0.0f;
+            @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[256L..512L) -> s2;
+            float err2 = Math.abs(s2 - 98176.0f);
+            Console.writeLine("slice: " + (err2 < 1.0f ? "OK" : "FAIL") + " s2=" + s2);
+
+            // max：block(128) 分块 + host 合并
+            float mx = -1.0f;
+            @gpu reduce (acc, x) => { return (x > acc) ? x : acc; } init -1.0f over a[0..n) -> mx block(128);
+            float err3 = Math.abs(mx - 1023.0f);
+            Console.writeLine("max: " + (err3 < 1.0f ? "OK" : "FAIL") + " mx=" + mx);
+
+            float total_err = (err < 1.0f && err2 < 1.0f && err3 < 1.0f) ? 0.0f : 1.0f;
+            Console.writeLine("gpu reduce: " + (total_err == 0.0f ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

@@ -74,8 +74,13 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                         return stmt;
                     }
                 }
+                // §8.2 @gpu reduce (acc, x) => { ... } init V over a[lo..hi) -> out
+                if (check(TokenKind::Identifier) && peek().value == "reduce") {
+                    advance(); // consume 'reduce'
+                    return parseGpuReduceStmt();
+                }
                 diag_.error(previous().range,
-                    "'@gpu' must be followed by 'for', 'tile', or 'stride for'");
+                    "'@gpu' must be followed by 'for', 'tile', 'stride for', or 'reduce'");
             } else {
                 advance();
                 auto stmt = parseForStmt();
@@ -829,6 +834,72 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
     auto st = std::make_unique<GpuTileStmt>(std::move(shared_type), name,
         std::move(grid_expr), has_grid, std::move(resident), std::move(body), range,
         std::move(stream_expr), has_stream);
+    st->block_val = block_val;
+    return st;
+}
+
+// §8.2 @gpu reduce (acc, x) => { return <op>; } init V over a[lo..hi) -> out;
+// 声明式归约：out = fold(init, a[lo..hi))，op 为 (acc, x) => acc⊕x。
+std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
+    auto start = previous().range;
+    // (acc, x)
+    consume(TokenKind::LeftParen, "expected '(' after '@gpu reduce'");
+    std::string acc = parseIdentifier("expected accumulator parameter name");
+    consume(TokenKind::Comma, "expected ',' between op parameters");
+    std::string x = parseIdentifier("expected element parameter name");
+    consume(TokenKind::RightParen, "expected ')' after op parameters");
+    consume(TokenKind::FatArrow, "expected '=>' after op parameters");
+    consume(TokenKind::LeftBrace, "expected '{' for op body");
+    auto body = parseBlock();
+    // init V
+    if (check(TokenKind::Identifier) && peek().value == "init") {
+        advance(); // consume 'init'
+    } else {
+        diag_.error(peek().range, "expected 'init <expr>' in '@gpu reduce'");
+    }
+    auto init = parseExpr();
+    // over a[lo..hi)
+    if (check(TokenKind::Identifier) && peek().value == "over") {
+        advance(); // consume 'over'
+    } else {
+        diag_.error(peek().range, "expected 'over <array>[<lo>..<hi>)' in '@gpu reduce'");
+    }
+    std::string arr = parseIdentifier("expected array name after 'over'");
+    consume(TokenKind::LeftBracket, "expected '[' after array name");
+    auto begin = parseExpr();   // 0..n → RangeExpr（parseExpr 消费 '..'）
+    std::unique_ptr<Expr> lo, hi;
+    if (begin->kind == ExprKind::Range) {
+        auto& r = static_cast<RangeExpr&>(*begin);
+        lo = std::move(r.start);
+        hi = std::move(r.end);
+    } else {
+        diag_.error(begin->range, "expected '<lo>..<hi>' range in '@gpu reduce'");
+    }
+    consume(TokenKind::RightParen, "expected ')' after reduce range");
+    // -> out
+    consume(TokenKind::Arrow, "expected '->' after reduce range");
+    std::string out = parseIdentifier("expected output variable after '->'");
+    // 可选 block(n) 子句（§3.7 块大小）
+    int64_t block_val = 0;
+    if (check(TokenKind::Identifier) && peek().value == "block" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // block
+        consume(TokenKind::LeftParen, "expected '(' after 'block'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { block_val = (int64_t)std::stoll(tok.value); }
+            catch (...) { block_val = 0; }
+        } else {
+            diag_.error(peek().range, "block size must be an integer literal");
+        }
+        consume(TokenKind::RightParen, "expected ')' after block size");
+    }
+    match(TokenKind::Semicolon);
+    SourceRange range;
+    range.begin_offset = start.begin_offset;
+    range.end_offset = previous().range.end_offset;
+    auto st = std::make_unique<GpuReduceStmt>(acc, x, std::move(body),
+        std::move(init), arr, std::move(lo), std::move(hi), out, range);
     st->block_val = block_val;
     return st;
 }

@@ -100,6 +100,8 @@ private:
     std::unique_ptr<Stmt> parseMappingStmt();
     // @gpu tile (float[32][32] smem) [grid(nb)] { body } — 共享内存协作 kernel
     std::unique_ptr<Stmt> parseGpuTileStmt();
+    // §8.2 @gpu reduce (acc, x) => { ... } init V over a[lo..hi) -> out — 声明式归约
+    std::unique_ptr<Stmt> parseGpuReduceStmt();
 
     // Expressions (precedence climbing)
     std::unique_ptr<Expr> parseExpr();
