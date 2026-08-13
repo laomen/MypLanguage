@@ -101,6 +101,17 @@
     `e.wait(s2)` 支持跨流依赖。测试 `tests/test_gpu_stream.myp` GPU PASS（双流并发、
     同流有序、事件跨流依赖）；回归 109/109、gpu_paradigm GPU 57/57（非 stream 同步路径
     不变）。推理框架 `runGpu` 接入（H2D/D2H 重叠）待 P1 ③ 融合后 ⏳。
+  - **P2 ① `kernel.shfl_down(v, delta)`（§3.4 warp shuffle）**：`@gpu for/tile` body 内
+    块/warp shuffle——sema 拦截（返回 v 类型，支持 double/float/int）+ GPU codegen
+    （NVPTX `shfl.sync.down`，LLVM 21 只有 i32/f32 → double 拆 2×i32 重组）+ CPU 回退
+    （无 warp 语义返回 v）。
+    - **driver 595.84 坑**：`shfl.sync.down` 用 `clamp=-1`（越界返回自身）时**整个
+      shfl 不交换**（lane 0 也返回自身）；改用 `clamp=31`（nvcc 同款）保证交换，
+      越界 lane（lane+delta>=32）手动用自身 v 替换（`lane >= 32-delta` select）。
+    - NVPTX target 从默认 sm_30 改为 **sm_75**（RTX 2070，PTX `.target sm_75`，
+      与 `kernel.sync()`/conv3d 兼容，回归全绿）。
+    - 测试 `tests/test_gpu_shfl.myp` GPU PASS（double/float/int，delta=16/4/1，
+      越界返回自身断言）。调试开关 `MYP_DUMP_PTX=1` 编译时打印 kernel PTX。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

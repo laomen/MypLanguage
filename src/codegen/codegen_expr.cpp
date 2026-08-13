@@ -872,13 +872,21 @@ llvm::Value* CodeGen::generateCheckedOp(const CallExpr& e, const std::string& na
 }
 
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
-    // §3.1 CPU 回退：kernel.sync() 为空操作（真实 GPU 路径在 emitKernelExpr）。
+    // §3.1 CPU 回退：kernel.sync() 为空操作；§3.4 shfl/块归约无 warp 语义
+    // → 返回实参 0（v 本身）（真实 GPU 路径在 emitKernelExpr）。
     if (gpu_cpu_fallback_ && e.callee->kind == ExprKind::MemberAccess) {
         auto& kma = static_cast<const MemberAccessExpr&>(*e.callee);
         if (kma.object->kind == ExprKind::Identifier &&
-            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
-            kma.member_name == "sync")
-            return nullptr;
+            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel") {
+            if (kma.member_name == "sync")
+                return nullptr;
+            if (kma.member_name == "shfl_down" ||
+                kma.member_name == "block_reduce_sum" ||
+                kma.member_name == "block_reduce_max") {
+                if (!e.args.empty()) return generateExpr(*e.args[0]);
+                return nullptr;
+            }
+        }
     }
     llvm::Value* r = generateCallImpl(e);
     // ARC: a call that returns a class / class-array reference hands the caller

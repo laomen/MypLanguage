@@ -1587,17 +1587,46 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     if (in_gpu_for_ && expr.callee->kind == ExprKind::MemberAccess) {
         auto& kma = static_cast<const MemberAccessExpr&>(*expr.callee);
         if (kma.object->kind == ExprKind::Identifier &&
-            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
-            kma.member_name == "sync") {
-            if (!expr.args.empty())
-                error(expr.range, "kernel.sync() takes no arguments");
-            // §3.3：aligned barrier（bar.sync 0）要求 uniform 控制流，发散分支内
-            // 的 sync 会死锁——警告（保守：if/while body 一律视为发散）。
-            if (in_gpu_divergent_ > 0)
-                diag_.warn(expr.range,
-                    "kernel.sync() inside divergent (thread-dependent) control "
-                    "flow may deadlock; place it at a uniform point");
-            return TypeInfo(TypeKind::Void);
+            static_cast<const IdentifierExpr&>(*kma.object).name == "kernel") {
+            if (kma.member_name == "sync") {
+                if (!expr.args.empty())
+                    error(expr.range, "kernel.sync() takes no arguments");
+                // §3.3：aligned barrier（bar.sync 0）要求 uniform 控制流，发散分支内
+                // 的 sync 会死锁——警告（保守：if/while body 一律视为发散）。
+                if (in_gpu_divergent_ > 0)
+                    diag_.warn(expr.range,
+                        "kernel.sync() inside divergent (thread-dependent) control "
+                        "flow may deadlock; place it at a uniform point");
+                return TypeInfo(TypeKind::Void);
+            }
+            // §3.4 warp shuffle：kernel.shfl_down(v, delta) —— 返回 v 的类型。
+            else if (kma.member_name == "shfl_down") {
+                if (expr.args.size() != 2) {
+                    error(expr.range, "kernel.shfl_down(v, delta) takes 2 arguments");
+                    return TypeInfo(TypeKind::Double);
+                }
+                TypeInfo vt = visitExpr(*expr.args[0]);
+                visitExpr(*expr.args[1]);
+                if (vt.kind != TypeKind::Double && vt.kind != TypeKind::Float &&
+                    vt.kind != TypeKind::Int)
+                    error(expr.range, "kernel.shfl_down supports double/float/int");
+                return vt;
+            }
+            // §3.4 块归约：kernel.block_reduce_sum/max(v) —— 返回 v 的类型。
+            else if (kma.member_name == "block_reduce_sum" ||
+                     kma.member_name == "block_reduce_max") {
+                if (expr.args.size() != 1) {
+                    error(expr.range, "kernel." + kma.member_name +
+                          "(v) takes 1 argument");
+                    return TypeInfo(TypeKind::Double);
+                }
+                TypeInfo vt = visitExpr(*expr.args[0]);
+                if (vt.kind != TypeKind::Double && vt.kind != TypeKind::Float &&
+                    vt.kind != TypeKind::Int)
+                    error(expr.range, "kernel." + kma.member_name +
+                          " supports double/float/int");
+                return vt;
+            }
         }
     }
     if (expr.callee->kind == ExprKind::Identifier) {

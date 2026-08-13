@@ -482,17 +482,70 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             if (e.callee->kind == ExprKind::MemberAccess) {
                 auto& kma = static_cast<const MemberAccessExpr&>(*e.callee);
                 if (kma.object->kind == ExprKind::Identifier &&
-                    static_cast<const IdentifierExpr&>(*kma.object).name == "kernel" &&
-                    kma.member_name == "sync") {
-                    llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                    // kernel.sync() → PTX bar.sync 0。LLVM 21 把旧 llvm.nvvm.barrier0
-                    // 升级为 llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)，NVPTX 后端
-                    // 降级为 bar.sync 0（必须用真实 intrinsic，手动函数会变 extern call）。
-                    auto* bar = llvm::Intrinsic::getDeclaration(cur_mod,
-                        llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
-                    auto* zero = llvm::ConstantInt::get(
-                        llvm::Type::getInt32Ty(cur_mod->getContext()), 0);
-                    return kb.CreateCall(bar, {zero});
+                    static_cast<const IdentifierExpr&>(*kma.object).name == "kernel") {
+                    if (kma.member_name == "sync") {
+                        llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                        // kernel.sync() → PTX bar.sync 0。LLVM 21 把旧 llvm.nvvm.barrier0
+                        // 升级为 llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)，NVPTX 后端
+                        // 降级为 bar.sync 0（必须用真实 intrinsic，手动函数会变 extern call）。
+                        auto* bar = llvm::Intrinsic::getDeclaration(cur_mod,
+                            llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
+                        auto* zero = llvm::ConstantInt::get(
+                            llvm::Type::getInt32Ty(cur_mod->getContext()), 0);
+                        return kb.CreateCall(bar, {zero});
+                    }
+                    // §3.4 kernel.shfl_down(v, delta)：warp 内 lane 方向移位 delta，
+                    // 越界返回自身。NVPTX shfl.sync.down（LLVM 21 只有 i32/f32 →
+                    // double 拆 2×i32 重组）。
+                    if (kma.member_name == "shfl_down") {
+                        auto* v = emitKernelExpr(*e.args[0], kb, kernel_vars, kernel_arg_values, loop_var_name, tid_val);
+                        auto* delta = emitKernelExpr(*e.args[1], kb, kernel_vars, kernel_arg_values, loop_var_name, tid_val);
+                        auto* mask = llvm::ConstantInt::get(i32_ty, -1);   // 全掩码
+                        auto* clamp = llvm::ConstantInt::get(i32_ty, -1);  // 越界返回自身
+                        if (delta->getType() != i32_ty)
+                            delta = kb.CreateIntCast(delta, i32_ty, false);
+                        // driver 595.84 对 clamp<0 的 shfl.sync.down JIT 有 bug
+                        // （整个 shfl 不交换，lane 0 也返回自身）→ 用 clamp=31
+                        // 保证交换；越界 lane（lane+delta>=32）手动用自身 v 替换。
+                        auto* clamp31 = llvm::ConstantInt::get(i32_ty, 31);
+                        // lane = tid % 32（gpu_ctx_tid_x_ 是 i64 tid_x）
+                        auto* tx32 = kb.CreateTrunc(gpu_ctx_tid_x_, i32_ty, "tx32");
+                        auto* lane = kb.CreateAnd(tx32,
+                            llvm::ConstantInt::get(i32_ty, 31), "lane");
+                        auto* in_range = kb.CreateICmpULT(lane,
+                            kb.CreateSub(llvm::ConstantInt::get(i32_ty, 32), delta,
+                                         "shfl_bound"), "shfl_ok");
+                        llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                        if (v->getType()->isDoubleTy()) {
+                            auto* bits = kb.CreateBitCast(v, i64_ty, "shfl_bits");
+                            auto* lo = kb.CreateTrunc(bits, i32_ty, "lo");
+                            auto* hi = kb.CreateLShr(bits, llvm::ConstantInt::get(i64_ty, 32));
+                            hi = kb.CreateTrunc(hi, i32_ty, "hi");
+                            auto* f_i32 = llvm::Intrinsic::getDeclaration(cur_mod,
+                                llvm::Intrinsic::nvvm_shfl_sync_down_i32);
+                            auto* lo2 = kb.CreateCall(f_i32, {mask, lo, delta, clamp31});
+                            auto* hi2 = kb.CreateCall(f_i32, {mask, hi, delta, clamp31});
+                            auto* lo_z = kb.CreateZExt(lo2, i64_ty);
+                            auto* hi_z = kb.CreateZExt(hi2, i64_ty);
+                            hi_z = kb.CreateShl(hi_z, llvm::ConstantInt::get(i64_ty, 32));
+                            auto* nb = kb.CreateOr(lo_z, hi_z);
+                            auto* res = kb.CreateBitCast(nb, double_ty, "shfl_d");
+                            return kb.CreateSelect(in_range, res, v, "shfl_sel");
+                        }
+                        if (v->getType()->isFloatTy()) {
+                            auto* f_f32 = llvm::Intrinsic::getDeclaration(cur_mod,
+                                llvm::Intrinsic::nvvm_shfl_sync_down_f32);
+                            auto* res = kb.CreateCall(f_f32, {mask, v, delta, clamp31});
+                            return kb.CreateSelect(in_range, res, v, "shfl_sel");
+                        }
+                        if (v->getType()->isIntegerTy(32)) {
+                            auto* f_i32 = llvm::Intrinsic::getDeclaration(cur_mod,
+                                llvm::Intrinsic::nvvm_shfl_sync_down_i32);
+                            auto* res = kb.CreateCall(f_i32, {mask, v, delta, clamp31});
+                            return kb.CreateSelect(in_range, res, v, "shfl_sel");
+                        }
+                        return v;  // 其他类型降级
+                    }
                 }
             }
             // Handle math functions
@@ -1939,7 +1992,7 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     }
     auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
     auto* tm = tgt ? tgt->createTargetMachine(
-        llvm::Triple(ts), "", "", llvm::TargetOptions{}, llvm::Reloc::PIC_)
+        llvm::Triple(ts), "sm_75", "", llvm::TargetOptions{}, llvm::Reloc::PIC_)
                    : nullptr;
     if (!tm) {
         diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
@@ -2005,6 +2058,11 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
             ptx_str = std::string(ptx_buf.data(), ptx_buf.size());
         }
         delete tm;
+    }
+
+    // MYP_DUMP_PTX：临时调试——打印生成的 kernel PTX。
+    if (!ptx_str.empty() && getenv("MYP_DUMP_PTX")) {
+        fprintf(stderr, "=== MYP PTX (tile) ===\n%s\n=== END ===\n", ptx_str.c_str());
     }
 
     // 无可用 PTX → 直接单线程 CPU 执行（降级）
@@ -2505,7 +2563,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     }
 
     auto* tm = tgt->createTargetMachine(
-        llvm::Triple(std::string(ts)), "", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
+        llvm::Triple(std::string(ts)), "sm_75", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
     if (!tm) {
         diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
         return false;
@@ -2584,6 +2642,9 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     delete tm;
 
     std::string ptx_str(std::string(ptx_buf.data(), ptx_buf.size()));
+    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty()) {
+        fprintf(stderr, "=== MYP PTX (for) ===\n%s\n=== END ===\n", ptx_str.c_str());
+    }
     if (ptx_str.empty()) {
         diag_.warn(SourceRange{}, "NVPTX emitted empty PTX");
         return false;

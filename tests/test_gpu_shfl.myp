@@ -1,0 +1,75 @@
+// P2 ① kernel.shfl_down 测试（gpu_library_design §3.4 warp shuffle）
+// kernel.shfl_down(v, delta)：warp 内 lane 方向移位 delta；越界返回自身。
+// 手动 @startup/main 结构（GPU 模式运行：MYP_GPU=1）。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            if (GpuHAL.isGpu() == 0) {
+                Console.writeLine("gpu shfl: SKIP (no gpu)");
+                return;
+            }
+            long err = 0L;
+            long n = 2048L;  // 8 blocks × 256 线程
+
+            // ---- double 版：v = tx；shfl_down(v, 16) ----
+            // lane(=tx%32) < 16 → tx+16（同 warp）；lane >= 16 → 越界返回自身 tx
+            double[] out = new double[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                double v = double(kernel.tx);
+                double sd = kernel.shfl_down(v, 16);
+                out[p] = sd;
+            }
+            long i = 0L;
+            while (i < n) {
+                long tx = i % 256L;
+                double expect;
+                if (tx % 32L < 16L) expect = double(tx + 16L);
+                else expect = double(tx);
+                if (Math.abs(out[i] - expect) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // ---- float 版：v = float(tx)；shfl_down(v, 4) ----
+            float[] fo = new float[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                float v = float(kernel.tx);
+                float sd = kernel.shfl_down(v, 4);
+                fo[p] = sd;
+            }
+            i = 0L;
+            while (i < n) {
+                long tx = i % 256L;
+                double expect;
+                if (tx % 32L < 28L) expect = double(tx + 4L);
+                else expect = double(tx);
+                if (Math.abs(fo[i] - expect) > 1e-6) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // ---- int 版：v = tx；shfl_down(v, 1) ----
+            int[] io = new int[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                int v = int(kernel.tx);
+                int sd = kernel.shfl_down(v, 1);
+                io[p] = sd;
+            }
+            i = 0L;
+            while (i < n) {
+                long tx = i % 256L;
+                long expect;
+                if (tx % 32L < 31L) expect = tx + 1L;
+                else expect = tx;
+                if (io[i] != expect) err = err + 1L;
+                i = i + 1L;
+            }
+
+            Console.writeLine("gpu shfl: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
