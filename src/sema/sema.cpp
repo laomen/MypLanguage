@@ -1458,6 +1458,16 @@ Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
         }
     }
 
+    // §4.1 @gpu tile stream(s)：s 须为 GpuStream 实例。
+    if (stmt.has_stream) {
+        TypeInfo st = visitExpr(*stmt.stream_expr);
+        bool is_stream = (st.kind == TypeKind::Class && st.class_name == "GpuStream");
+        if (!is_stream) {
+            error(stmt.range, "'stream(...)' argument must be a 'GpuStream' (got '" +
+                  typeName(st) + "')");
+        }
+    }
+
     // 进入 kernel 上下文（kernel.bx/tx/gid/... 隐式可见），声明共享数组局部可见
     bool saved_gpu = in_gpu_for_;
     in_gpu_for_ = true;
@@ -1511,6 +1521,20 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
                     error(stmt.range, "resident device-pointer variable '" + dev +
                           "' must be 'long' (got '" + typeName(*dt) + "')");
                 }
+            }
+        }
+    }
+
+    // §4.1 @gpu stream(s)：仅 @gpu for 可用，s 须为 GpuStream 实例。
+    if (stmt.has_stream) {
+        if (!stmt.gpu) {
+            error(stmt.range, "'stream(...)' is only valid on '@gpu for'");
+        } else {
+            TypeInfo st = visitExpr(*stmt.stream_expr);
+            bool is_stream = (st.kind == TypeKind::Class && st.class_name == "GpuStream");
+            if (!is_stream) {
+                error(stmt.range, "'stream(...)' argument must be a 'GpuStream' (got '" +
+                      typeName(st) + "')");
             }
         }
     }

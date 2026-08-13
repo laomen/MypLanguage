@@ -733,11 +733,17 @@ struct ForStmt : Stmt {
     // 键 = 被捕获数组名；值 = 持有该数组设备指针的 long 变量名。
     // 被标记数组跳过 H2D/D2H/释放，内核直接用设备指针。
     std::vector<std::pair<std::string, std::string>> resident;
+    // @gpu for 异步流子句（§4.1）：stream(s) —— 把 kernel 排队到 GpuStream s（异步，
+    // 需 s.sync() 后才读回捕获数组）；无子句 = 默认流（保持现状同步）。
+    std::unique_ptr<Expr> stream_expr;   // stream 子句的 GpuStream 表达式
+    bool has_stream = false;
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
             std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false,
-            std::vector<std::pair<std::string, std::string>> res = {})
+            std::vector<std::pair<std::string, std::string>> res = {},
+            std::unique_ptr<Expr> se = nullptr, bool hs = false)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
-          step(std::move(s)), body(std::move(b)), parallel(par), gpu(g), resident(std::move(res)) {}
+          step(std::move(s)), body(std::move(b)), parallel(par), gpu(g), resident(std::move(res)),
+          stream_expr(std::move(se)), has_stream(hs) {}
 };
 
 // @gpu tile (float[32][32] smem) { ... } — 块内共享内存 + 协作 kernel body
@@ -757,12 +763,17 @@ struct GpuTileStmt : Stmt {
     // 设备驻留：resident(arr = devPtr) 子句（同 @gpu for M3）——被标记数组
     // 跳过 H2D/D2H，kernel 直接用 dev 变量所持设备指针。
     std::vector<std::pair<std::string, std::string>> resident;
+    // @gpu tile 异步流子句（§4.1）：stream(s) —— 把 kernel 排队到 GpuStream s。
+    std::unique_ptr<Expr> stream_expr;
+    bool has_stream = false;
     GpuTileStmt(TypeNode st, std::string nm, std::unique_ptr<Expr> ge, bool hg,
                 std::vector<std::pair<std::string, std::string>> res,
-                std::unique_ptr<Stmt> b, SourceRange r)
+                std::unique_ptr<Stmt> b, SourceRange r,
+                std::unique_ptr<Expr> se = nullptr, bool hs = false)
         : Stmt(StmtKind::GpuTileStmt, r), shared_type(std::move(st)),
           name(std::move(nm)), body(std::move(b)), has_grid(hg),
-          grid_expr(std::move(ge)), resident(std::move(res)) {}
+          grid_expr(std::move(ge)), resident(std::move(res)),
+          stream_expr(std::move(se)), has_stream(hs) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

@@ -221,17 +221,31 @@ void* myp_gpu_load_kernel(const char* ptx, const char* name) {
     return (void*)k;
 }
 
-int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, unsigned int n) {
+// 启动 kernel。stream 为 CUstream 句柄（0 = 默认流）。
+// stream==0 时保持同步（launch 后 cuCtxSynchronize，兼容现状）；
+// stream!=0 时异步排队到该流（调用方须在读取结果前 streamSync）。
+int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, unsigned int n, long stream) {
     if (!avail||!kctx) return 0;
     kernel_t* k = (kernel_t*)kctx;
     (void)n;
-    fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u\n", gx, bx);
-    int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0,NULL, args,NULL);
+    fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u stream=%ld\n", gx, bx, stream);
+    int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0, (CUstream)(intptr_t)stream, args, NULL);
     if (r!=0) { fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %d\n", r); return 0; }
-    r = p_cuCtxSynchronize();
-    if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %d\n", r); return 0; }
-    fprintf(stderr, "[myp GPU] kernel done\n");
+    if (stream == 0) {
+        r = p_cuCtxSynchronize();
+        if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %d\n", r); return 0; }
+        fprintf(stderr, "[myp GPU] kernel done\n");
+    } else {
+        fprintf(stderr, "[myp GPU] kernel queued async on stream\n");
+    }
     return 1;
+}
+
+// 异步设备 → 主机（排队到流；须 streamSync 后取回）。@gpu for/tile stream 模式
+// 的捕获数组回拷用（kernel 异步时同步 D2H 会读未完成数据）。
+void myp_gpu_to_host_async(void* d, const void* s, size_t sz, long stream) {
+    if (!avail || !p_cuMemcpyDtoHAsync || sz == 0) return;
+    p_cuMemcpyDtoHAsync(d, s, sz, (CUstream)(intptr_t)stream);
 }
 
 void myp_gpu_destroy_kernel(void* kctx) {

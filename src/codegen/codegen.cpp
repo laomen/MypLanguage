@@ -2494,11 +2494,17 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_gpu_to_host_ = llvm::Function::Create(gpu_to_host_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_to_host", module_.get());
 
+    // §4.1 @gpu stream(s)：异步 D2H 回拷（排队到流，void(void*, const void*, size_t, long stream)）
+    auto* gpu_to_host_async_ft = llvm::FunctionType::get(v, {p, p, i64, i64}, false);
+    runtime_gpu_to_host_async_ = llvm::Function::Create(gpu_to_host_async_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_to_host_async", module_.get());
+
     auto* gpu_load_ft = llvm::FunctionType::get(p, {p, p}, false);
     runtime_gpu_load_kernel_ = llvm::Function::Create(gpu_load_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_load_kernel", module_.get());
 
-    auto* gpu_launch_ft = llvm::FunctionType::get(i32, {p, i32, i32, p, i32}, false);
+    // §4.1 stream(s)：myp_gpu_launch(kctx, gx, bx, args, n, long stream)
+    auto* gpu_launch_ft = llvm::FunctionType::get(i32, {p, i32, i32, p, i32, i64}, false);
     runtime_gpu_launch_ = llvm::Function::Create(gpu_launch_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_launch", module_.get());
 

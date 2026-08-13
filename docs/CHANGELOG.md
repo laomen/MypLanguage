@@ -92,6 +92,15 @@
     标量类型判断缺 `isFloatTy()` → 捕获 float 标量被置为 i64 → kernel 参数类型错位 →
     GPU 结果垃圾（影响所有捕获 float 标量的 `@gpu for`，如 GpuOps.mapF 的 s 参数）；
     已加 `isFloatTy()` 修复，`gpu_paradigm` GPU 模式 mapBufF 全 PASS。
+  - **P1 ④ `@gpu stream(s)`（§4.1，语言级）**：`@gpu for (...) stream(s)` 与
+    `@gpu tile (...) stream(s)`——把 kernel 异步排队到 `GpuStream`（launch 不阻塞；
+    stream==0 默认流保持同步）。语法（for/tile 子句）+ sema（校验 GpuStream 类型）+
+    codegen（launch 点求值 `s.handle()` 传 `myp_gpu_launch(..., stream)`；捕获数组 D2H
+    回拷在 stream 模式改用同流异步 `myp_gpu_to_host_async`）+ runtime（`myp_gpu_launch`
+    加 stream 参数，stream!=0 去掉自动 `cuCtxSynchronize`）。`GpuEvent.record(s)` +
+    `e.wait(s2)` 支持跨流依赖。测试 `tests/test_gpu_stream.myp` GPU PASS（双流并发、
+    同流有序、事件跨流依赖）；回归 109/109、gpu_paradigm GPU 57/57（非 stream 同步路径
+    不变）。推理框架 `runGpu` 接入（H2D/D2H 重叠）待 P1 ③ 融合后 ⏳。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

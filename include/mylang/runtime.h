@@ -214,9 +214,12 @@ void  myp_gpu_free(void* ptr);
 void  myp_gpu_to_device(void* dst, const void* src, size_t size);
 void  myp_gpu_to_host(void* dst, const void* src, size_t size);
 void* myp_gpu_load_kernel(const char* ptx_str, const char* kernel_name);
+// §4.1 @gpu stream(s)：stream 为 CUstream 句柄（0 = 默认流同步）。
 int   myp_gpu_launch(void* kernel_ctx, unsigned int grid_dim_x, unsigned int block_dim_x,
-                     void** args, unsigned int num_args);
+                     void** args, unsigned int num_args, long stream);
 void  myp_gpu_destroy_kernel(void* kernel_ctx);
+// §4.1 @gpu stream(s)：异步 D2H 回拷（排队到流，须 streamSync 后取回）。
+void  myp_gpu_to_host_async(void* dst, const void* src, size_t size, long stream);
 // Device info (returns 0 / empty if GPU unavailable)
 int    myp_gpu_device_count(void);
 const char* myp_gpu_device_name(void);   // static buffer, valid until next call

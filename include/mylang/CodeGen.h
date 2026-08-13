@@ -334,6 +334,7 @@ private:
     llvm::Function* runtime_gpu_free_ = nullptr;
     llvm::Function* runtime_gpu_to_device_ = nullptr;
     llvm::Function* runtime_gpu_to_host_ = nullptr;
+    llvm::Function* runtime_gpu_to_host_async_ = nullptr;
     llvm::Function* runtime_gpu_load_kernel_ = nullptr;
     llvm::Function* runtime_gpu_launch_ = nullptr;
     llvm::Function* runtime_gpu_destroy_kernel_ = nullptr;
@@ -709,6 +710,9 @@ private:
     void generateParallelFor(const ForStmt& stmt);
     void generateGpuFor(const ForStmt& stmt);
     bool generateGpuKernel(const ForStmt& stmt);
+    // §4.1 @gpu stream(s)：求值 GpuStream 实例的 handle()（long 句柄）。
+    // 返回 i64；无 stream 时返回 0（默认流同步）。
+    llvm::Value* emitGpuStreamHandle(const Expr* stream_expr);
     void generateReturnStmt(const ReturnStmt& stmt);
     /// 若返回表达式是固定数组栈变量，则堆拷贝后返回新指针（修复返回悬垂/共享存储）
     llvm::Value* heapCopyArrayReturn(llvm::Value* v, const Expr* value_expr);

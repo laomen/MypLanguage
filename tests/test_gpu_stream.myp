@@ -1,0 +1,85 @@
+// P1 ④ @gpu stream(s) 测试（gpu_library_design §4.1）
+// @gpu for ... stream(s) 把 kernel 异步排队到流 s（launch 不阻塞）；捕获数组的
+// D2H 回拷也排到同流，须 s.sync() 后才可靠读回。
+// 手动 @startup/main 结构（GPU 模式运行：MYP_GPU=1）。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            if (GpuHAL.isGpu() == 0) {
+                Console.writeLine("gpu stream: SKIP (no gpu)");
+                return;
+            }
+            long err = 0L;
+
+            // ---- 测试 1：双流并发正确性（s1/s2 各算各的数组）----
+            long n = 4096L;
+            double[] a = new double[n];
+            double[] b = new double[n];
+            long i = 0L;
+            while (i < n) { a[i] = 1.0; b[i] = 1.0; i = i + 1L; }
+            GpuStream s1 = new GpuStream();
+            GpuStream s2 = new GpuStream();
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s1) {
+                a[p] = a[p] * double(2.0);
+            }
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s2) {
+                b[p] = b[p] * double(3.0);
+            }
+            s1.sync();
+            s2.sync();
+            if (Math.abs(a[0] - 2.0) > 1e-9) err = err + 1L;
+            if (Math.abs(a[n - 1] - 2.0) > 1e-9) err = err + 1L;
+            if (Math.abs(b[0] - 3.0) > 1e-9) err = err + 1L;
+            if (Math.abs(b[n - 1] - 3.0) > 1e-9) err = err + 1L;
+            s1.destroy();
+            s2.destroy();
+
+            // ---- 测试 2：同流有序（同一流两次 kernel 串行累加）----
+            double[] c = new double[n];
+            i = 0L;
+            while (i < n) { c[i] = 1.0; i = i + 1L; }
+            GpuStream s = new GpuStream();
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s) {
+                c[p] = c[p] + double(1.0);
+            }
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s) {
+                c[p] = c[p] + double(1.0);
+            }
+            s.sync();
+            if (Math.abs(c[0] - 3.0) > 1e-9) err = err + 1L;
+            if (Math.abs(c[100] - 3.0) > 1e-9) err = err + 1L;
+            s.destroy();
+
+            // ---- 测试 3：事件跨流依赖（s2 等 s1 的 ×2 完成后再 +1）----
+            double[] d = new double[n];
+            i = 0L;
+            while (i < n) { d[i] = 1.0; i = i + 1L; }
+            GpuStream s3 = new GpuStream();
+            GpuStream s4 = new GpuStream();
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s3) {
+                d[p] = d[p] * double(2.0);
+            }
+            GpuEvent ev = new GpuEvent();
+            ev.record(s3);      // s3 完成时打点（在 D2H 之后）
+            ev.wait(s4);        // s4 等待该事件
+            @gpu for (long p = 0L; p < n; p = p + 1L) stream(s4) {
+                d[p] = d[p] + double(1.0);
+            }
+            s3.sync();
+            s4.sync();
+            if (Math.abs(d[0] - 3.0) > 1e-9) err = err + 1L;
+            if (Math.abs(d[512] - 3.0) > 1e-9) err = err + 1L;
+            s3.destroy();
+            s4.destroy();
+            ev.destroy();
+
+            Console.writeLine("gpu stream: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

@@ -1815,6 +1815,32 @@ void CodeGen::generateGpuFor(const ForStmt& s) {
     }
 }
 
+// §4.1 @gpu stream(s)：求值 GpuStream 实例的 handle()（long 句柄）。
+// 构造 `s.handle()` 调用并 generateExpr（launch 点 host 求值，同 grid 运行时
+// 表达式）。返回 i64；无 stream 或失败返回 0（默认流 = 同步）。
+llvm::Value* CodeGen::emitGpuStreamHandle(const Expr* stream_expr) {
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    if (!stream_expr) return llvm::ConstantInt::get(i64_ty, 0);
+    SourceRange r = stream_expr->range;
+    std::unique_ptr<Expr> obj;
+    if (stream_expr->kind == ExprKind::Identifier) {
+        obj = std::make_unique<IdentifierExpr>(
+            static_cast<const IdentifierExpr&>(*stream_expr).name, r);
+    } else {
+        // sema 已保证 GpuStream 类型；非标识符形式（属性/下标）暂降级默认流。
+        diag_.warn(r, "'stream(...)' expects a 'GpuStream' variable; using default stream");
+        return llvm::ConstantInt::get(i64_ty, 0);
+    }
+    auto ma = std::make_unique<MemberAccessExpr>(std::move(obj), "handle", r);
+    ma->resolved_object_class = "GpuStream";
+    std::vector<std::unique_ptr<Expr>> args;
+    auto call = std::make_unique<CallExpr>(std::move(ma), std::move(args), r);
+    llvm::Value* h = generateExpr(*call);
+    if (!h) return llvm::ConstantInt::get(i64_ty, 0);
+    if (h->getType() != i64_ty) h = builder_.CreateIntCast(h, i64_ty, false);
+    return h;
+}
+
 // §3.2 @gpu tile：共享内存协作 kernel（docs/gpu_library_design）。
 // 共享数组 = 块内 __shared__（addrspace(3)，展平 [total x T]）；body 每个线程
 // 执行一次，kernel.bx/tx/gid 定位协作职责，kernel.sync()（bar.sync 0）控制阶段。
@@ -2131,16 +2157,27 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
         arg_pos++;
     }
 
+    // §4.1 @gpu stream(s)：stream 句柄（0 = 默认流同步）。
+    llvm::Value* stream_h = s.has_stream
+        ? emitGpuStreamHandle(s.stream_expr.get())
+        : llvm::ConstantInt::get(i64_ty, 0);
     // Launch kernel
     builder_.CreateCall(runtime_gpu_launch_,
         {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty),
-         llvm::ConstantInt::get(i32_ty, total_args)});
+         llvm::ConstantInt::get(i32_ty, total_args), stream_h});
 
     // ---- Copy back results ----
     for (auto& aa : array_allocs) {
-        if (aa.needs_copyback)
-            builder_.CreateCall(runtime_gpu_to_host_,
-                {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+        if (aa.needs_copyback) {
+            if (s.has_stream) {
+                // stream 模式：异步 D2H 排队到同流（须 s.sync() 后取回）
+                builder_.CreateCall(runtime_gpu_to_host_async_,
+                    {aa.host_ptr, aa.gpu_ptr, aa.byte_size, stream_h});
+            } else {
+                builder_.CreateCall(runtime_gpu_to_host_,
+                    {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+            }
+        }
         builder_.CreateCall(runtime_gpu_free_, {aa.gpu_ptr});
     }
     builder_.CreateCall(runtime_gpu_destroy_kernel_, {kernel_ctx});
@@ -2742,16 +2779,26 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         arg_pos++;
     }
 
+    // §4.1 @gpu stream(s)：stream 句柄（0 = 默认流同步）。
+    llvm::Value* stream_h = s.has_stream
+        ? emitGpuStreamHandle(s.stream_expr.get())
+        : llvm::ConstantInt::get(i64_ty, 0);
     // Launch kernel
     builder_.CreateCall(runtime_gpu_launch_,
         {kernel_ctx, grid_i32, block_i32, builder_.CreateBitCast(args_arr, ptr_ty),
-         llvm::ConstantInt::get(i32_ty, total_args)});
+         llvm::ConstantInt::get(i32_ty, total_args), stream_h});
 
     // ---- Copy back results ----
     for (auto& aa : array_allocs) {
         if (aa.needs_copyback) {
-            builder_.CreateCall(runtime_gpu_to_host_,
-                {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+            if (s.has_stream) {
+                // stream 模式：异步 D2H 排队到同流（须 s.sync() 后取回）
+                builder_.CreateCall(runtime_gpu_to_host_async_,
+                    {aa.host_ptr, aa.gpu_ptr, aa.byte_size, stream_h});
+            } else {
+                builder_.CreateCall(runtime_gpu_to_host_,
+                    {aa.host_ptr, aa.gpu_ptr, aa.byte_size});
+            }
         }
         builder_.CreateCall(runtime_gpu_free_, {aa.gpu_ptr});
     }

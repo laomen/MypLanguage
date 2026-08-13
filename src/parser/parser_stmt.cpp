@@ -513,10 +513,23 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
         consume(TokenKind::RightParen, "expected ')' after resident clause");
     }
 
+    // @gpu for 异步流子句（§4.1）：stream(s) —— s 为 GpuStream 实例（排队到该流）。
+    std::unique_ptr<Expr> stream_expr;
+    bool has_stream = false;
+    if (check(TokenKind::Identifier) && peek().value == "stream" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // stream
+        consume(TokenKind::LeftParen, "expected '(' after 'stream'");
+        stream_expr = parseExpr();
+        consume(TokenKind::RightParen, "expected ')' after stream expression");
+        has_stream = true;
+    }
+
     auto body = parseStatement();
     return std::make_unique<ForStmt>(std::move(init), std::move(cond),
                                       std::move(step), std::move(body), r,
-                                      false, false, std::move(resident));
+                                      false, false, std::move(resident),
+                                      std::move(stream_expr), has_stream);
 }
 
 std::unique_ptr<Stmt> Parser::parseForInStmt(bool parenthesized, bool has_explicit_type) {
@@ -740,6 +753,18 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
         consume(TokenKind::RightParen, "expected ')' after resident clause");
     }
 
+    // @gpu tile 异步流子句（§4.1）：stream(s)。
+    std::unique_ptr<Expr> stream_expr;
+    bool has_stream = false;
+    if (check(TokenKind::Identifier) && peek().value == "stream" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // stream
+        consume(TokenKind::LeftParen, "expected '(' after 'stream'");
+        stream_expr = parseExpr();
+        consume(TokenKind::RightParen, "expected ')' after stream expression");
+        has_stream = true;
+    }
+
     // body：parseBlock 不消费开 '{'，须先 match 消费（同 parseStatement）
     std::unique_ptr<Stmt> body;
     if (match(TokenKind::LeftBrace)) {
@@ -752,7 +777,8 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
     range.begin_offset = start.begin_offset;
     range.end_offset = previous().range.end_offset;
     return std::make_unique<GpuTileStmt>(std::move(shared_type), name,
-        std::move(grid_expr), has_grid, std::move(resident), std::move(body), range);
+        std::move(grid_expr), has_grid, std::move(resident), std::move(body), range,
+        std::move(stream_expr), has_stream);
 }
 
 }  // namespace {ns}
