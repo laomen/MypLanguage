@@ -1,6 +1,7 @@
 // ops.myp — Core inference operators (CPU/FP32 style using double)
 import env;
 import math;
+import pool;
 
 class InferOps {
     static:
@@ -243,8 +244,7 @@ class InferOps {
             int wc = cpg * kd * kh * kw;
             int n = 0;
             while (n < xN) {
-                int oc = 0;
-                while (oc < yC) {
+                @parallel for (int oc = 0; oc < yC; oc = oc + 1) {
                     int g = oc / ocpg;
                     int oz = 0;
                     while (oz < yD) {
@@ -290,7 +290,6 @@ class InferOps {
                         }
                         oz = oz + 1;
                     }
-                    oc = oc + 1;
                 }
                 n = n + 1;
             }
@@ -306,8 +305,7 @@ class InferOps {
         ) {
             int n = 0;
             while (n < xN) {
-                int c = 0;
-                while (c < xC) {
+                @parallel for (int c = 0; c < xC; c = c + 1) {
                     int oz = 0;
                     while (oz < yD) {
                         int oy = 0;
@@ -345,7 +343,6 @@ class InferOps {
                         }
                         oz = oz + 1;
                     }
-                    c = c + 1;
                 }
                 n = n + 1;
             }
@@ -363,8 +360,7 @@ class InferOps {
         ) {
             int n = 0;
             while (n < xN) {
-                int c = 0;
-                while (c < xC) {
+                @parallel for (int c = 0; c < xC; c = c + 1) {
                     int oz = 0;
                     while (oz < yD) {
                         int oy = 0;
@@ -406,7 +402,6 @@ class InferOps {
                         }
                         oz = oz + 1;
                     }
-                    c = c + 1;
                 }
                 n = n + 1;
             }

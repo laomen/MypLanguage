@@ -1,0 +1,36 @@
+// bench/cpu_conv_timer.myp — 量化 CPU conv3d 在不同 -O 级别下的耗时
+// 单层: x[1,16,64,64,64] w[32,16,3,3,3] s=1 d=1 pads=1 -> y[1,32,64,64,64]
+import env;
+import "../deeplearning/infer/ops.myp";
+
+class CpuConvTimer {
+    action:
+        @constructor CpuConvTimer() {
+            int xN = 1, xC = 16, xD = 64, xH = 64, xW = 64;
+            int yC = 32, kd = 3, kh = 3, kw = 3;
+            int yD = xD, yH = xH, yW = xW;
+            int xSz = xN * xC * xD * xH * xW;
+            int wSz = yC * xC * kd * kh * kw;
+            int ySz = xN * yC * yD * yH * yW;
+            float[] arena = new float[xSz + wSz + ySz + 64];
+            int xOff = 0, wOff = xSz, yOff = xSz + wSz;
+            int i = 0;
+            while (i < xSz) { arena[xOff + i] = float(double(i % 13) / 10.0 - 0.5); i = i + 1; }
+            i = 0;
+            while (i < wSz) { arena[wOff + i] = float(double(i % 7) / 6.0 - 0.3); i = i + 1; }
+            // warmup + 计时
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, -1, yOff,
+                            yC, yD, yH, yW, kd, kh, kw, 1, 1, 1,
+                            1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            long t0 = __myp_now_ms();
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, -1, yOff,
+                            yC, yD, yH, yW, kd, kh, kw, 1, 1, 1,
+                            1, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            long t1 = __myp_now_ms();
+            Console.writeString("cpu conv3d 32x16x64^3: ");
+            Console.writeLong(t1 - t0);
+            Console.writeLine(" ms");
+        }
+}
+
+int main() { CpuConvTimer app = new CpuConvTimer(); return 0; }

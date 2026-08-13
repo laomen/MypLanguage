@@ -1,0 +1,27 @@
+// bench/par_overhead.myp — 测 @parallel 单次调用固定开销
+import env;
+import pool;
+
+class ParOverhead {
+    action:
+        @constructor ParOverhead() {
+            // 空循环体 @parallel 1000 次
+            long t0 = __myp_now_ms();
+            int r = 0;
+            while (r < 1000) {
+                @parallel for (int i = 0; i < 1000; i = i + 1) {
+                    int dummy = i * 2;
+                }
+                r = r + 1;
+            }
+            long t1 = __myp_now_ms();
+            Console.writeString("@parallel x1000 (body=1000 trivial iters): ");
+            Console.writeLong(t1 - t0);
+            Console.writeLine(" ms  => per-call ");
+            long per = (t1 - t0) / 1000;
+            Console.writeLong(per);
+            Console.writeLine(" ms");
+        }
+}
+
+int main() { ParOverhead app = new ParOverhead(); return 0; }

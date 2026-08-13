@@ -1,0 +1,82 @@
+// bench/fine_cpu_bench.myp — CPU 版 fine 模型推理基准（与 GPU 同一输入）
+// 输入：/tmp/seg_liver_in.f32（[1,1,96,96,96] 真实肝 CT，z-score HU）
+// 输出：/tmp/seg_liver_cpu.f32（[1,3,96,96,96]）
+// 编译必须加 -O3（mypc 默认 -O0 会慢 ~11x）
+import env;
+import "../deeplearning/infer/pb.myp";
+import "../deeplearning/infer/runtime.myp";
+import "../deeplearning/infer/onnx_loader.myp";
+
+class FineCpuBench {
+    action:
+        @constructor FineCpuBench() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+            OnnxLoader loader = new OnnxLoader();
+            loader.setInputShape("input_fine", 1, 1, 96, 96, 96, 1);
+            int ok = loader.load("./deeplearning/data/onnx/fine_model_liver_vessel.onnx", rt);
+            if (ok == 0) { Console.writeLine("load failed"); return; }
+            int inT = loader.tensorId("input_fine");
+            int outT = loader.tensorId("output_fine");
+            if (inT < 0 || outT < 0) { Console.writeLine("tensor not found"); return; }
+            int nIn = rt.tensorSize(inT);
+            int nOut = rt.tensorSize(outT);
+            Console.writeString("graph: nodes="); Console.writeLong(loader.nodeCount());
+            Console.writeString(" ops="); Console.writeLong(rt.opCount());
+            Console.writeString(" in="); Console.writeLong(nIn);
+            Console.writeString(" out="); Console.writeLong(nOut);
+            Console.writeLine("");
+
+            double[] buf = new double[nIn + 16];
+            readF32("/tmp/seg_liver_in.f32", buf, nIn);
+            int i = 0;
+            while (i < nIn) { rt.setFlat(inT, i, buf[i]); i = i + 1; }
+            Console.writeLine("device: CPU");
+
+            // warmup
+            rt.run();
+            // 计时 1 次
+            long t0 = __myp_now_ms();
+            rt.run();
+            long t1 = __myp_now_ms();
+            long dt = t1 - t0;
+            Console.writeString("fine cpu infer: ");
+            Console.writeLong(dt);
+            Console.writeLine(" ms");
+
+            // 写输出供 ORT/GPU 对比
+            int fd = __myp_io_fopen("/tmp/seg_liver_cpu.f32", "wb");
+            if (fd >= 0) {
+                int j = 0;
+                while (j < nOut) {
+                    int bits = F32.toBits(rt.getFlat(outT, j));
+                    __myp_io_write_byte(bits & 255);
+                    __myp_io_write_byte((bits >> 8) & 255);
+                    __myp_io_write_byte((bits >> 16) & 255);
+                    __myp_io_write_byte((bits >> 24) & 255);
+                    j = j + 1;
+                }
+                __myp_io_fclose();
+                Console.writeLine("wrote /tmp/seg_liver_cpu.f32");
+            }
+        }
+
+        void readF32(string path, double[] out, int n) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) { Console.writeLine("read fail: " + path); return; }
+            int i = 0;
+            while (i < n) {
+                int b0 = __myp_io_read_byte();
+                int b1 = __myp_io_read_byte();
+                int b2 = __myp_io_read_byte();
+                int b3 = __myp_io_read_byte();
+                if (b0 < 0 || b3 < 0) break;
+                int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                out[i] = F32.toDouble(bits);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+}
+
+int main() { FineCpuBench app = new FineCpuBench(); return 0; }
