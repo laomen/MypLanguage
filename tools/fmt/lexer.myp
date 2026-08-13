@@ -75,7 +75,8 @@ class Tok {
                 || w == "struct" || w == "function" || w == "byte" || w == "short"
                 || w == "int" || w == "long" || w == "ubyte" || w == "ushort"
                 || w == "uint" || w == "ulong" || w == "char" || w == "float"
-                || w == "double" || w == "bool" || w == "string") return 1;
+                || w == "double" || w == "bool" || w == "string"
+                || w == "float4" || w == "double2" || w == "int4") return 1;
             return 0;
         }
 

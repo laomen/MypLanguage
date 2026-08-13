@@ -436,6 +436,9 @@ Token Lexer::scanIdentifierOrKeyword() {
     else if (value == "char")     kind = TokenKind::Type_char;
     else if (value == "float")    kind = TokenKind::Type_float;
     else if (value == "double")   kind = TokenKind::Type_double;
+    else if (value == "float4")   kind = TokenKind::Type_float4;   // §3.6 向量类型
+    else if (value == "double2")  kind = TokenKind::Type_double2;
+    else if (value == "int4")     kind = TokenKind::Type_int4;
     else if (value == "bool")     kind = TokenKind::Type_bool;
     else if (value == "string")   kind = TokenKind::Type_string;
     else if (value == "bit")      kind = TokenKind::Type_bit;

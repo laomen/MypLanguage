@@ -14,7 +14,7 @@ enum class TypeKind : uint8_t {
     Byte, Short, Int, Long,
     UByte, UShort, UInt, ULong,
     Char,
-    Float, Double,
+    Float, Double, Float4, Double2, Int4,
     Bool,
     Bit,       // 单比特（LLVM i1，bit(x)=x≠0）
     BitVector, // 定长位向量 bitvector<N>（N=8/16/32/64，LLVM iN）

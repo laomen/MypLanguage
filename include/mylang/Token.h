@@ -86,6 +86,11 @@ enum class TokenKind : uint16_t {
     Type_bool,
     Type_string,
     Type_bit,
+    // §3.6 向量类型（固定 lane：float4/double2/int4），位于 Type_bitvector 之前
+    //（parser.cpp 用 Type_byte..Type_bitvector 连续范围判断）。
+    Type_float4,
+    Type_double2,
+    Type_int4,
     Type_bitvector,
 
     // ----- Operators -----

@@ -76,6 +76,9 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Type_char:          return "char";
         case TokenKind::Type_float:         return "float";
         case TokenKind::Type_double:        return "double";
+        case TokenKind::Type_float4:        return "float4";
+        case TokenKind::Type_double2:       return "double2";
+        case TokenKind::Type_int4:          return "int4";
         case TokenKind::Type_bool:          return "bool";
         case TokenKind::Type_string:        return "string";
 

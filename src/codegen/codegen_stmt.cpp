@@ -727,6 +727,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
         auto sz = module_->getDataLayout().getTypeAllocSize(lt);
         builder_.CreateMemSet(a, llvm::ConstantInt::get(llvm::Type::getInt8Ty(ctx_), 0),
                               llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), sz), llvm::Align(8));
+    } else if (lt->isVectorTy()) {
+        // §3.6 向量变量未初始化 → 零向量（ConstantInt 只接受整数类型）
+        builder_.CreateStore(llvm::ConstantAggregateZero::get(lt), a);
     } else {
         builder_.CreateStore(llvm::ConstantInt::get(lt, 0), a);
     }
@@ -1873,6 +1876,75 @@ assign_gep:
             auto* placed = builder_.CreateShl(bits,
                 llvm::ConstantInt::get(backing_ty, off), "bfput");
             auto* nv = builder_.CreateOr(cleared, placed, "bfnew");
+            builder_.CreateStore(nv, slot);
+            return val;
+        }
+        // §3.6 向量成员写：v.x = value —— 读-改-写（load + insertelement + store）。
+        if (ma.object->resolved_kind == TypeKind::Float4 ||
+            ma.object->resolved_kind == TypeKind::Double2 ||
+            ma.object->resolved_kind == TypeKind::Int4) {
+            llvm::Value* slot = nullptr;
+            llvm::Type* vec_ty = nullptr;
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
+                slot = getNamedValue(oi.name);
+                if (auto* ai = slot ? llvm::dyn_cast<llvm::AllocaInst>(slot) : nullptr)
+                    vec_ty = ai->getAllocatedType();
+            } else if (ma.object->kind == ExprKind::MemberAccess) {
+                // this.vec —— 类属性（float4 属性）
+                auto& oma = static_cast<const MemberAccessExpr&>(*ma.object);
+                if (oma.object->kind == ExprKind::ThisExpr &&
+                    !current_class_name_.empty() && current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
+                        unsigned pi = 0;
+                        if (getPropertyIndex(cls.name, oma.member_name, pi)) {
+                            auto* ta = getNamedValue("this");
+                            if (ta) {
+                                auto* tp = builder_.CreateLoad(
+                                    llvm::PointerType::get(ctx_, 0), ta, "this");
+                                auto* st = getClassStruct(cls.name);
+                                if (st) {
+                                    slot = builder_.CreateStructGEP(st, tp, pi);
+                                    for (auto& p : cls.properties)
+                                        if (p.name == oma.member_name) {
+                                            vec_ty = typeNodeToLLVMType(p.type);
+                                            break;
+                                        }
+                                }
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!slot || !vec_ty || !vec_ty->isVectorTy()) {
+                diag_.error(e.range, "cannot assign to vector component");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            const std::string names = (ma.object->resolved_kind == TypeKind::Double2)
+                ? "xy" : "xyzw";
+            if (ma.member_name.size() != 1 ||
+                names.find(ma.member_name[0]) == std::string::npos) {
+                diag_.error(e.range, "vector has no component '" + ma.member_name + "'");
+                return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+            }
+            auto* i32 = llvm::Type::getInt32Ty(ctx_);
+            // 组件下标显式映射（'w'-'x' 在 ASCII 里是 -1）。
+            unsigned idx = (ma.member_name[0] == 'x') ? 0 :
+                           (ma.member_name[0] == 'y') ? 1 :
+                           (ma.member_name[0] == 'z') ? 2 : 3;
+            auto* cur = builder_.CreateLoad(vec_ty, slot, "vcv");
+            auto* val = generateExpr(*e.value);
+            auto* scalar_ty = vec_ty->getScalarType();
+            if (val->getType() != scalar_ty) {
+                if (val->getType()->isFloatingPointTy() && scalar_ty->isFloatingPointTy())
+                    val = builder_.CreateFPCast(val, scalar_ty);
+                else if (val->getType()->isIntegerTy() && scalar_ty->isIntegerTy())
+                    val = builder_.CreateIntCast(val, scalar_ty, false);
+            }
+            auto* nv = builder_.CreateInsertElement(cur, val,
+                llvm::ConstantInt::get(i32, idx), "vcn");
             builder_.CreateStore(nv, slot);
             return val;
         }

@@ -380,6 +380,7 @@ void handleCompletion(const std::string& id, const std::string& /*params*/) {
         "void", "byte", "short", "int", "long", "ubyte", "ushort", "uint", "ulong",
         "uint8", "uint16", "uint32", "uint64", "int8", "int16", "int32", "int64",
         "char", "float", "double", "bool", "string",
+        "float4", "double2", "int4",
         "mapping", "if", "else", "while", "for", "return", "break", "continue",
         "static", "true", "false", "null", "this", "new", "struct", "function",
         "var"
@@ -603,6 +604,9 @@ std::string typeToBasicTypeName(BuiltinType bt) {
         case BuiltinType::Int: return "int";
         case BuiltinType::Float: return "float";
         case BuiltinType::Double: return "double";
+        case BuiltinType::Float4: return "float4";
+        case BuiltinType::Double2: return "double2";
+        case BuiltinType::Int4: return "int4";
         case BuiltinType::Bool: return "bool";
         case BuiltinType::Byte: return "byte";
         case BuiltinType::Short: return "short";

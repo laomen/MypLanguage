@@ -42,7 +42,7 @@
       "name": "keyword.control.myp"
     },
     "types": {
-      "match": "\\b(void|byte|short|int|long|ubyte|ushort|uint|ulong|char|float|double|bool|string)\\b",
+      "match": "\\b(void|byte|short|int|long|ubyte|ushort|uint|ulong|char|float|double|float4|double2|int4|bool|string)\\b",
       "name": "storage.type.primitive.myp"
     },
     "sections": {

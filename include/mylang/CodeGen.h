@@ -754,6 +754,9 @@ private:
     // →llvm.abs；其余一元实数 → llvm.sin/exp/…）。返回 nullptr 表示不拦截
     //（pow/atan2/abs_int 走 runtime 调用）。
     llvm::Value* generatePolyMathIntrinsic(const CallExpr& expr, const std::string& name);
+    // §3.6 向量打包访问：load4(float[] a, long i) : float4 / store4(..., float4 v)。
+    // GEP + <4 x float> 打包 load/store（CPU 回退与 host 侧；GPU 走 emitKernelExpr）。
+    llvm::Value* emitVec4Access(const CallExpr& expr, const std::string& name);
     // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul → @llvm.sadd/smul.with.overflow
     // （按实参整型位宽选 iN，返回 {iN, i1} 结构体 = 元组 (value, overflow)）。
     llvm::Value* generateCheckedOp(const CallExpr& expr, const std::string& name);

@@ -82,6 +82,9 @@ private:
     // 类型定返回类型（f32→f32、f64→f64；整型原样返回供泛型体 Int 占位符检查，
     // 实例化由 where T : Float/Numeric 约束把关）。
     TypeInfo visitMathIntrinsic(CallExpr& expr, const std::string& name);
+    // §3.6 向量打包访问：load4(float[] a, long i) : float4 —— 16B 打包读
+    // a[4i..4i+3]；store4(float[] a, long i, float4 v) —— 打包写。
+    TypeInfo visitVec4Access(CallExpr& expr, const std::string& name);
     // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul 返回 (value, overflow:bool)
     // 元组——@llvm.sadd/smul.with.overflow 直映（有符号整型，按实参类型选位宽）。
     TypeInfo visitCheckedOp(CallExpr& expr, const std::string& name);

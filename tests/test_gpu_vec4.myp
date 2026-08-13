@@ -1,0 +1,49 @@
+// P2 ③ @gpu vec4（§3.6 向量化访问）测试：float4 类型 + load4/store4 打包访问。
+// 语义：load4(a, i) 打包读 a[4i..4i+3] 为 float4（16B）；v.x/y/z/w 分量访问；
+// store4(a, i, v) 打包写。GPU 模式 @gpu for 内打包；CPU 回退同语义。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 4096L;
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = float(i); i = i + 1L; }
+            double[] out = new double[n / 4L];
+
+            // GPU/CPU 打包读：out[j] = 4 分量和 = (4j)+(4j+1)+(4j+2)+(4j+3) = 16j+6
+            @gpu for (long j = 0L; j < n / 4L; j = j + 1L) block(128) {
+                float4 v = load4(a, j);
+                out[j] = double(v.x) + double(v.y) + double(v.z) + double(v.w);
+            }
+            long err = 0L;
+            i = 0L;
+            while (i < n / 4L) {
+                double exp = double(16L * i + 6L);
+                if (Math.abs(out[i] - exp) > 1e-3) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // 打包写：store4 只把每组第 0 分量 +1000 写回（其余分量保持原值）
+            @gpu for (long j = 0L; j < n / 4L; j = j + 1L) block(256) {
+                float4 v = load4(a, j);
+                v.x = v.x + 1000.0f;
+                store4(a, j, v);
+            }
+            i = 0L;
+            while (i < n) {
+                float expf = (i % 4L == 0L) ? float(i) + 1000.0f : float(i);
+                if (Math.abs(a[i] - expf) > 1e-3) err = err + 1L;
+                i = i + 1L;
+            }
+
+            Console.writeLine("gpu vec4: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

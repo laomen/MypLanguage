@@ -109,6 +109,9 @@ static bool isTypeKeyword(TokenKind k) {
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:
+        case TokenKind::Type_float4:
+        case TokenKind::Type_double2:
+        case TokenKind::Type_int4:
         case TokenKind::Type_bool:
         case TokenKind::Type_string:
         case TokenKind::Keyword_void:

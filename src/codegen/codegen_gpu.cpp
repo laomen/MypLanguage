@@ -687,6 +687,28 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 callee_name = static_cast<const IdentifierExpr&>(*e.callee).name;
 
             if (!callee_name.empty()) {
+                // §3.6 向量打包访问：load4(a, i) / store4(a, i, v) —— kernel 内
+                // <4 x float> 打包 load/store（与 CPU 回退同语义，未对齐 16B）。
+                if (callee_name == "load4" || callee_name == "store4") {
+                    auto* f4 = llvm::FixedVectorType::get(float_ty, 4);
+                    auto* ap = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                        kernel_arg_values, loop_var_name, tid_val);
+                    auto* idx = emitKernelExpr(*e.args[1], kb, kernel_vars,
+                        kernel_arg_values, loop_var_name, tid_val);
+                    if (!ap) return llvm::ConstantInt::get(i64_ty, 0);
+                    if (idx->getType() != i64_ty)
+                        idx = kb.CreateIntCast(idx, i64_ty, false);
+                    auto* elem_off = kb.CreateMul(idx,
+                        llvm::ConstantInt::get(i64_ty, 4), "v4off");
+                    auto* p = kb.CreateGEP(float_ty, ap, elem_off, "v4p");
+                    if (callee_name == "store4") {
+                        auto* v = emitKernelExpr(*e.args[2], kb, kernel_vars,
+                            kernel_arg_values, loop_var_name, tid_val);
+                        kb.CreateAlignedStore(v, p, llvm::Align(4));
+                        return nullptr;
+                    }
+                    return kb.CreateAlignedLoad(f4, p, llvm::Align(4), "v4");
+                }
                 // GPU math: emit calls to CUDA libdevice device functions (__nv_*).
                 // generateGpuKernel links NVIDIA's libdevice.10.bc bitcode into the
                 // kernel module at compile time, so __nv_sin/__nv_cos/__nv_exp/...
@@ -1175,6 +1197,26 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                     return llvm::ConstantInt::get(i64_ty, 0);
                 }
             }
+            // §3.6 向量成员读：float4.x/y/z/w → extractelement（resolved_kind 标记）。
+            if (e.object->resolved_kind == TypeKind::Float4 ||
+                e.object->resolved_kind == TypeKind::Double2 ||
+                e.object->resolved_kind == TypeKind::Int4) {
+                auto* objv = emitKernelExpr(*e.object, kb, kernel_vars,
+                    kernel_arg_values, loop_var_name, tid_val);
+                if (objv && objv->getType()->isVectorTy()) {
+                    const std::string names = (e.object->resolved_kind == TypeKind::Double2)
+                        ? "xy" : "xyzw";
+                    if (e.member_name.size() == 1 &&
+                        names.find(e.member_name[0]) != std::string::npos) {
+                        unsigned idx = (e.member_name[0] == 'x') ? 0 :
+                                       (e.member_name[0] == 'y') ? 1 :
+                                       (e.member_name[0] == 'z') ? 2 : 3;
+                        return kb.CreateExtractElement(objv,
+                            llvm::ConstantInt::get(i32_ty, idx), "vec_comp");
+                    }
+                }
+                return llvm::ConstantInt::get(i64_ty, 0);
+            }
             // Three cases:
             // 1. ClassName.property (static class) — look up in static_property_globals_
             // 2. obj.property (struct field) — struct GEP access
@@ -1361,6 +1403,52 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         }
         case ExprKind::Assignment: {
             auto& e = static_cast<const AssignmentExpr&>(expr);
+            // §3.6 向量成员写：v.x = value → load + insertelement + store。
+            if (e.target->kind == ExprKind::MemberAccess) {
+                auto& tma = static_cast<const MemberAccessExpr&>(*e.target);
+                if (tma.object->resolved_kind == TypeKind::Float4 ||
+                    tma.object->resolved_kind == TypeKind::Double2 ||
+                    tma.object->resolved_kind == TypeKind::Int4) {
+                    // v.x = value → 读 v 的 alloca，insertelement，写回 alloca。
+                    llvm::Value* slot = nullptr;
+                    if (tma.object->kind == ExprKind::Identifier) {
+                        auto& oid = static_cast<const IdentifierExpr&>(*tma.object);
+                        auto vit = kernel_vars.find(oid.name);
+                        if (vit != kernel_vars.end() && llvm::isa<llvm::AllocaInst>(vit->second))
+                            slot = vit->second;
+                    }
+                    auto* val = emitKernelExpr(*e.value, kb, kernel_vars,
+                        kernel_arg_values, loop_var_name, tid_val);
+                    if (slot && val) {
+                        auto* objv = kb.CreateLoad(
+                            llvm::cast<llvm::AllocaInst>(slot)->getAllocatedType(),
+                            slot, "vcv");
+                        const std::string names =
+                            (tma.object->resolved_kind == TypeKind::Double2) ? "xy" : "xyzw";
+                        if (tma.member_name.size() == 1 &&
+                            names.find(tma.member_name[0]) != std::string::npos) {
+                            unsigned idx = (tma.member_name[0] == 'x') ? 0 :
+                                           (tma.member_name[0] == 'y') ? 1 :
+                                           (tma.member_name[0] == 'z') ? 2 : 3;
+                            auto* scalar_ty = objv->getType()->getScalarType();
+                            if (val->getType() != scalar_ty) {
+                                if (val->getType()->isIntegerTy() && scalar_ty->isFloatingPointTy())
+                                    val = kb.CreateSIToFP(val, scalar_ty);
+                                else if (val->getType()->isFloatingPointTy() && scalar_ty->isIntegerTy())
+                                    val = kb.CreateFPToSI(val, scalar_ty);
+                                else if (val->getType()->isIntegerTy() && scalar_ty->isIntegerTy())
+                                    val = kb.CreateIntCast(val, scalar_ty, false);
+                                else if (val->getType()->isFloatingPointTy() && scalar_ty->isFloatingPointTy())
+                                    val = kb.CreateFPCast(val, scalar_ty);
+                            }
+                            auto* nv = kb.CreateInsertElement(objv, val,
+                                llvm::ConstantInt::get(i32_ty, idx), "vec_set");
+                            kb.CreateStore(nv, slot);
+                            return val;
+                        }
+                    }
+                }
+            }
             // v[i].field = value — struct-array / slice-of-struct element field
             // write inside a @parallel for body.
             if (e.target->kind == ExprKind::MemberAccess) {

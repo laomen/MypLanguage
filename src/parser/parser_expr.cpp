@@ -32,6 +32,9 @@ static TypeKind typeTokenToKind(TokenKind k) {
         case TokenKind::Type_bitvector: return TypeKind::BitVector;
         case TokenKind::Type_float: return TypeKind::Float;
         case TokenKind::Type_double:return TypeKind::Double;
+        case TokenKind::Type_float4: return TypeKind::Float4;
+        case TokenKind::Type_double2:return TypeKind::Double2;
+        case TokenKind::Type_int4:   return TypeKind::Int4;
         default: return TypeKind::Void;
     }
 }
@@ -982,6 +985,9 @@ TypeNode Parser::parseType() {
     else if (match(TokenKind::Type_char))  node.basic_type = BuiltinType::Char;
     else if (match(TokenKind::Type_float)) node.basic_type = BuiltinType::Float;
     else if (match(TokenKind::Type_double))node.basic_type = BuiltinType::Double;
+    else if (match(TokenKind::Type_float4)) node.basic_type = BuiltinType::Float4;   // §3.6 向量
+    else if (match(TokenKind::Type_double2))node.basic_type = BuiltinType::Double2;
+    else if (match(TokenKind::Type_int4))   node.basic_type = BuiltinType::Int4;
     else if (match(TokenKind::Type_bool))  node.basic_type = BuiltinType::Bool;
     else if (match(TokenKind::Type_string))node.basic_type = BuiltinType::String;
     else if (match(TokenKind::Type_bit))   node.basic_type = BuiltinType::Bit;
@@ -1259,6 +1265,9 @@ bool Parser::checkType() const {
         case TokenKind::Type_char:
         case TokenKind::Type_float:
         case TokenKind::Type_double:
+        case TokenKind::Type_float4:
+        case TokenKind::Type_double2:
+        case TokenKind::Type_int4:
         case TokenKind::Type_bool:
         case TokenKind::Type_string:
         case TokenKind::Type_bit:

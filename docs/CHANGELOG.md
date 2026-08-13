@@ -160,6 +160,20 @@
     - **§5.3 静态检查**：tile `block_val` < 共享最大维度 → 警告（防协作覆盖不完/
       越界）；负测试 3 个（block 非 32 倍数 / >1024 / 非 @gpu for 用 block）。
     - 回归 109/109 + 负测试 61 + 框架 82（259/259）；gpu_block 双模式 PASS。
+  - **P2 ③ `float4/double2/int4` 向量类型 + `load4/store4` 打包访问（§3.6）**：
+    - 语言级向量类型：TypeKind/BuiltinType/Token/lexer/parser/sema/codegen 全链路
+      → LLVM `<4 x float>` / `<2 x double>` / `<4 x i32>`（FixedVectorType）。
+    - 组件访问 `v.x/y/z/w`：sema 校验 + codegen extract/insertelement（CPU 侧
+      generateMemberAccess/generateAssignment + GPU kernel 侧 emitKernelExpr）。
+    - 打包原语 `load4(float[] a, long i)` / `store4(a, i, v)`：GEP + `<4 x float>`
+      打包读/写（CPU/host 走 emitVec4Access，kernel 走 emitKernelExpr）。
+    - **坑**：`ConstantInt::get` 不接受向量类型（未初始化向量清零须
+      ConstantAggregateZero）；组件下标 `'w'-'x'` 在 ASCII 为 -1 须显式映射；
+      动态数组数据指针不保证 16B 对齐 → 向量访问用 align 4（未对齐，host movups
+      安全；NVPTX 对非 16B 对齐拆标量，功能正确）。
+    - 测试 `tests/test_gpu_vec4.myp` 双模式 PASS（打包读分量和、打包写 +1000 只改
+      每组第 0 分量）；格式化/LSP/viz/tmLanguage 关键字同步。
+    - 回归 109/109 + 负测试 61 + 框架 82（259/259）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

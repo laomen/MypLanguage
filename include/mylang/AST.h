@@ -28,7 +28,7 @@ struct BlockStmt;
 enum class BuiltinType {
     Byte, Short, Int, Long,
     UByte, UShort, UInt, ULong,
-    Char, Float, Double, Bool, String, Void,
+    Char, Float, Double, Float4, Double2, Int4, Bool, String, Void,
     Bit, BitVector,
 };
 

@@ -651,6 +651,9 @@ TypeInfo CodeGen::builtinTypeToInfo(BuiltinType bt) const {
         case BuiltinType::Int:    return TypeInfo(TypeKind::Int);
         case BuiltinType::Float:  return TypeInfo(TypeKind::Float);
         case BuiltinType::Double: return TypeInfo(TypeKind::Double);
+        case BuiltinType::Float4: return TypeInfo(TypeKind::Float4);   // §3.6 向量
+        case BuiltinType::Double2:return TypeInfo(TypeKind::Double2);
+        case BuiltinType::Int4:   return TypeInfo(TypeKind::Int4);
         case BuiltinType::Bool:   return TypeInfo(TypeKind::Bool);
         case BuiltinType::Byte:   return TypeInfo(TypeKind::Byte);
         case BuiltinType::Short:  return TypeInfo(TypeKind::Short);
@@ -700,6 +703,13 @@ llvm::Type* CodeGen::getLLVMType(const TypeInfo& t) {
             return llvm::Type::getInt64Ty(ctx_);
         case TypeKind::Float:  return llvm::Type::getFloatTy(ctx_);
         case TypeKind::Double: return llvm::Type::getDoubleTy(ctx_);
+        // §3.6 向量类型：LLVM 定长向量（NVPTX ld/st.global.vN 打包的载体）。
+        case TypeKind::Float4:
+            return llvm::FixedVectorType::get(llvm::Type::getFloatTy(ctx_), 4);
+        case TypeKind::Double2:
+            return llvm::FixedVectorType::get(llvm::Type::getDoubleTy(ctx_), 2);
+        case TypeKind::Int4:
+            return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx_), 4);
         case TypeKind::String:    return llvm::PointerType::get(ctx_, 0);
         case TypeKind::Null:
         case TypeKind::Function:  return getFunctionValueType();

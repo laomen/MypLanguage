@@ -687,6 +687,47 @@ TypeInfo Sema::visitParseOpt(CallExpr& expr) {
     return tt;
 }
 
+// §3.6 向量打包访问：load4(float[] a, long i) : float4 —— 16B 打包读
+// a[4i..4i+3]（i 为 4 元素组索引）；store4(float[] a, long i, float4 v) —— 打包写。
+// 数组元素须为 float（对齐 16B 由调用方保证；尾部不足 4 个元素用标量兜底）。
+TypeInfo Sema::visitVec4Access(CallExpr& expr, const std::string& name) {
+    if (expr.args.size() < 2) {
+        error(expr.range, name + " expects (float[] a, long i"
+              + (name == "store4" ? std::string(", float4 v)") : std::string(")")));
+        return TypeInfo(TypeKind::Void);
+    }
+    auto at = visitExpr(*expr.args[0]);
+    if (at.kind != TypeKind::Array || !at.element_type ||
+        at.element_type->kind != TypeKind::Float) {
+        error(expr.args[0]->range,
+              name + " first argument must be a 'float[]' (got '" +
+              typeName(at) + "')");
+        return TypeInfo(TypeKind::Void);
+    }
+    auto it = visitExpr(*expr.args[1]);
+    if (!isNumericKind(it.kind)) {
+        error(expr.args[1]->range, name + " second argument must be an integer index");
+        return TypeInfo(TypeKind::Void);
+    }
+    if (name == "store4") {
+        if (expr.args.size() < 3) {
+            error(expr.range, "store4 expects (float[] a, long i, float4 v)");
+            return TypeInfo(TypeKind::Void);
+        }
+        auto vt = visitExpr(*expr.args[2]);
+        if (vt.kind != TypeKind::Float4) {
+            error(expr.args[2]->range,
+                  "store4 third argument must be a 'float4' (got '" +
+                  typeName(vt) + "')");
+            return TypeInfo(TypeKind::Void);
+        }
+        expr.resolved_kind = TypeKind::Void;
+        return TypeInfo(TypeKind::Void);
+    }
+    expr.resolved_kind = TypeKind::Float4;
+    return TypeInfo(TypeKind::Float4);
+}
+
 // P2 §5.3：位操作原语 popcount/clz/ctz/bitreverse/rotl/rotr —— LLVM intrinsic
 // 直映。多态：返回类型 = 实参整型类型（rotl/rotr 第二实参为移位量，任意整型）。
 TypeInfo Sema::visitBitOps(CallExpr& expr, const std::string& name) {
@@ -1077,6 +1118,9 @@ TypeNode Sema::TypeNodeFromTypeInfo(const TypeInfo& t) {
         case TypeKind::Int:    n.basic_type = BuiltinType::Int; break;
         case TypeKind::Float:  n.basic_type = BuiltinType::Float; break;
         case TypeKind::Double: n.basic_type = BuiltinType::Double; break;
+        case TypeKind::Float4: n.basic_type = BuiltinType::Float4; break;   // §3.6
+        case TypeKind::Double2:n.basic_type = BuiltinType::Double2; break;
+        case TypeKind::Int4:   n.basic_type = BuiltinType::Int4; break;
         case TypeKind::Bool:   n.basic_type = BuiltinType::Bool; break;
         case TypeKind::Byte:   n.basic_type = BuiltinType::Byte; break;
         case TypeKind::Short:  n.basic_type = BuiltinType::Short; break;
@@ -1659,6 +1703,9 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         // __myp_math_atan2/pow/abs_int 不拦截（保持固定 double/int 签名）。
         if (bc_id.name.rfind("__myp_math_", 0) == 0)
             return visitMathIntrinsic(expr, bc_id.name);
+        // §3.6 向量打包访问：load4(float[] a, long i) / store4(float[] a, long i, float4 v)
+        if (bc_id.name == "load4" || bc_id.name == "store4")
+            return visitVec4Access(expr, bc_id.name);
         // §4.2 P3 checked 溢出变体：checkedAdd/checkedMul 返回 (value, overflow)
         if (bc_id.name == "checkedAdd" || bc_id.name == "checkedMul")
             return visitCheckedOp(expr, bc_id.name);
@@ -1973,6 +2020,26 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         }
         error(expr.range, "enum '" + obj_type.class_name +
               "' has no variant '" + expr.member_name + "'");
+        return TypeInfo(TypeKind::Void);
+    }
+
+    // §3.6 向量类型成员访问：float4.x/y/z/w → float、double2.x/y → double、
+    // int4.x/y/z/w → int（LLVM extractelement）。
+    if (obj_type.kind == TypeKind::Float4 ||
+        obj_type.kind == TypeKind::Double2 ||
+        obj_type.kind == TypeKind::Int4) {
+        const std::string names = (obj_type.kind == TypeKind::Double2)
+            ? "xy" : "xyzw";
+        if (expr.member_name.size() == 1 &&
+            names.find(expr.member_name[0]) != std::string::npos) {
+            if (obj_type.kind == TypeKind::Int4)
+                return TypeInfo(TypeKind::Int);
+            if (obj_type.kind == TypeKind::Double2)
+                return TypeInfo(TypeKind::Double);
+            return TypeInfo(TypeKind::Float);
+        }
+        error(expr.range, "'" + typeName(obj_type) + "' has no component '" +
+              expr.member_name + "'");
         return TypeInfo(TypeKind::Void);
     }
 
@@ -2712,6 +2779,9 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
         case BuiltinType::Char:   return TypeInfo(TypeKind::Char);
         case BuiltinType::Float:  return TypeInfo(TypeKind::Float);
         case BuiltinType::Double: return TypeInfo(TypeKind::Double);
+        case BuiltinType::Float4: return TypeInfo(TypeKind::Float4);   // §3.6 向量
+        case BuiltinType::Double2:return TypeInfo(TypeKind::Double2);
+        case BuiltinType::Int4:   return TypeInfo(TypeKind::Int4);
         case BuiltinType::Bool:   return TypeInfo(TypeKind::Bool);
         case BuiltinType::String: return TypeInfo(TypeKind::String);
         case BuiltinType::Bit:    return TypeInfo(TypeKind::Bit);
@@ -2738,6 +2808,9 @@ std::string Sema::typeName(const TypeInfo& type) const {
         case TypeKind::Char:   return "char";
         case TypeKind::Float:  return "float";
         case TypeKind::Double: return "double";
+        case TypeKind::Float4: return "float4";   // §3.6 向量
+        case TypeKind::Double2:return "double2";
+        case TypeKind::Int4:   return "int4";
         case TypeKind::Bool:   return "bool";
         case TypeKind::Bit:    return "bit";
         case TypeKind::BitVector:

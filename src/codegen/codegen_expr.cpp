@@ -871,6 +871,39 @@ llvm::Value* CodeGen::generateCheckedOp(const CallExpr& e, const std::string& na
         std::vector<llvm::Value*>{a, b}, "checked");
 }
 
+// §3.6 向量打包访问：load4(float[] a, long i) → <4 x float> 打包读（i 为 4 元素
+// 组索引，元素偏移 i*4）；store4(a, i, v) → 打包写。CPU 回退与 host 侧共用
+// （LLVM 向量 load/store；GPU kernel 走 emitKernelExpr 的等价实现）。
+llvm::Value* CodeGen::emitVec4Access(const CallExpr& e, const std::string& name) {
+    auto* f32 = llvm::Type::getFloatTy(ctx_);
+    auto* f4 = llvm::FixedVectorType::get(f32, 4);
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    if (e.args.size() < 2) {
+        diag_.error(e.range, name + " expects (float[] a, long i"
+                    + (name == "store4" ? std::string(", float4 v)") : std::string(")")));
+        return nullptr;
+    }
+    auto* ap = generateExpr(*e.args[0]);
+    if (!ap) return nullptr;
+    auto* idx = generateExpr(*e.args[1]);
+    if (idx->getType() != i64) idx = builder_.CreateIntCast(idx, i64, false);
+    auto* elem_off = builder_.CreateMul(idx, llvm::ConstantInt::get(i64, 4), "v4off");
+    auto* p = builder_.CreateGEP(f32, ap, elem_off, "v4p");
+    // 对齐 4（标量对齐）：动态数组数据指针不保证 16B 对齐 → 未对齐向量访问
+    //（host 用 movups 安全；GPU NVPTX 对非 16B 对齐拆标量，功能正确，性能收益
+    // 需 16B 对齐数组——后续优化）。
+    if (name == "store4") {
+        if (e.args.size() < 3) {
+            diag_.error(e.range, "store4 expects (float[] a, long i, float4 v)");
+            return nullptr;
+        }
+        auto* v = generateExpr(*e.args[2]);
+        builder_.CreateAlignedStore(v, p, llvm::Align(4));
+        return nullptr;
+    }
+    return builder_.CreateAlignedLoad(f4, p, llvm::Align(4), "v4");
+}
+
 llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     // §3.1 CPU 回退：kernel.sync() 为空操作；§3.4 shfl/块归约无 warp 语义
     // → 返回实参 0（v 本身）（真实 GPU 路径在 emitKernelExpr）。
@@ -1765,6 +1798,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             auto* mv = generatePolyMathIntrinsic(e, id.name);
             if (mv) return mv;
         }
+        // §3.6 向量打包访问：load4/store4（CPU 回退 + host 侧；GPU 走 emitKernelExpr）。
+        if (id.name == "load4" || id.name == "store4")
+            return emitVec4Access(e, id.name);
         callee = module_->getFunction(id.name);
         if (!callee) {
             // Intrinsic functions (lookup via map)
@@ -2467,6 +2503,34 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                     return builder_.CreateExtractValue(objv, idx, "tup_field");
             }
         }
+    }
+
+    // §3.6 向量成员访问：float4.x/y/z/w → extractelement（值类型，resolved_kind
+    // 由 sema 标记在 object 上）。double2.x/y、int4.x/y/z/w 同机制。
+    if (e.object->resolved_kind == TypeKind::Float4 ||
+        e.object->resolved_kind == TypeKind::Double2 ||
+        e.object->resolved_kind == TypeKind::Int4) {
+        auto* objv = generateExpr(*e.object);
+        if (!objv || !objv->getType()->isVectorTy())
+            return llvm::UndefValue::get(llvm::Type::getFloatTy(ctx_));
+        auto* vt = llvm::cast<llvm::FixedVectorType>(objv->getType());
+        const std::string names = (e.object->resolved_kind == TypeKind::Double2)
+            ? "xy" : "xyzw";
+        if (e.member_name.size() == 1 &&
+            names.find(e.member_name[0]) != std::string::npos) {
+            auto* i32 = llvm::Type::getInt32Ty(ctx_);
+            // 组件下标显式映射（'w'-'x' 在 ASCII 里是 -1，不能直接相减）。
+            unsigned idx = (e.member_name[0] == 'x') ? 0 :
+                           (e.member_name[0] == 'y') ? 1 :
+                           (e.member_name[0] == 'z') ? 2 : 3;
+            return builder_.CreateExtractElement(objv,
+                llvm::ConstantInt::get(i32, idx), "vec_comp");
+        }
+        const char* vname = (e.object->resolved_kind == TypeKind::Float4) ? "float4"
+            : (e.object->resolved_kind == TypeKind::Double2) ? "double2" : "int4";
+        diag_.error(e.range, std::string(vname) + " has no component '" +
+                     e.member_name + "'");
+        return llvm::UndefValue::get(vt->getElementType());
     }
 
     // §5.1 bitfield field read: f.read : bit（1 位）/ f.reserved : uint（N 位）。
