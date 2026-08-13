@@ -1,0 +1,101 @@
+// bench/op_verify.myp — 临时验证 §2.3 ②③ 优化算子正确性（CPU vs GPU）
+//  tiled GEMM（dense/matmul，M/K/N≥32）+ softmax thread-per-column
+import env;
+import cuda;
+import "../deeplearning/infer/pb.myp";
+import "../deeplearning/infer/runtime.myp";
+
+class OpVerifyApp {
+    action:
+        @constructor OpVerifyApp() {
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4096);
+
+            // ---- matmul tiled：x[K,N]=[64,64]，w[M,K]=[64,64]，y[M,N] ----
+            int M = 64; int K = 64; int N = 64;
+            int xT = rt.addTensor(K, N);
+            int wT = rt.addTensor(M, K);
+            int yT = rt.addTensor(M, N);
+            int i = 0;
+            while (i < K * N) { rt.setFlat(xT, i, double((i * 7) % 13) / 10.0 + 0.1); i = i + 1; }
+            i = 0;
+            while (i < M * K) { rt.setFlat(wT, i, double((i * 3) % 17) / 10.0 - 0.5); i = i + 1; }
+            rt.addMatmul(xT, wT, yT);
+            rt.run();
+            double[] cpuY = new double[M * N];
+            i = 0;
+            while (i < M * N) { cpuY[i] = rt.getFlat(yT, i); i = i + 1; }
+            if (Cuda.available() == 1) {
+                rt.runGpu();
+                double mx = 0.0;
+                i = 0;
+                while (i < M * N) {
+                    double d = rt.getFlat(yT, i) - cpuY[i];
+                    if (d < 0.0) d = 0.0 - d;
+                    if (d > mx) mx = d;
+                    i = i + 1;
+                }
+                Console.writeLine("matmul tiled GPU vs CPU max err: " + mx +
+                    (mx < 1e-3 ? " OK" : " FAIL"));
+            } else {
+                Console.writeLine("matmul SKIP (no GPU)");
+            }
+
+            // ---- dense（带偏置）tiled ----
+            int xT2 = rt.addTensor(K, N);
+            int wT2 = rt.addTensor(M, K);
+            int bT2 = rt.addTensor(M, 1);
+            int yT2 = rt.addTensor(M, N);
+            i = 0;
+            while (i < K * N) { rt.setFlat(xT2, i, double((i * 11) % 19) / 10.0 - 0.3); i = i + 1; }
+            i = 0;
+            while (i < M * K) { rt.setFlat(wT2, i, double((i * 5) % 23) / 10.0 + 0.2); i = i + 1; }
+            i = 0;
+            while (i < M) { rt.setFlat(bT2, i, double((i * 13) % 7) / 10.0); i = i + 1; }
+            rt.addDense(xT2, wT2, bT2, yT2);
+            rt.run();
+            double[] cpuY2 = new double[M * N];
+            i = 0;
+            while (i < M * N) { cpuY2[i] = rt.getFlat(yT2, i); i = i + 1; }
+            if (Cuda.available() == 1) {
+                rt.runGpu();
+                double mx = 0.0;
+                i = 0;
+                while (i < M * N) {
+                    double d = rt.getFlat(yT2, i) - cpuY2[i];
+                    if (d < 0.0) d = 0.0 - d;
+                    if (d > mx) mx = d;
+                    i = i + 1;
+                }
+                Console.writeLine("dense tiled GPU vs CPU max err: " + mx +
+                    (mx < 1e-3 ? " OK" : " FAIL"));
+            }
+
+            // ---- softmax thread-per-column：[rows=10, cols=1000] ----
+            int rows = 10; int cols = 1000;
+            int sT = rt.addTensor(rows, cols);
+            int oT = rt.addTensor(rows, cols);
+            i = 0;
+            while (i < rows * cols) { rt.setFlat(sT, i, double(i % 997) / 100.0 - 3.0); i = i + 1; }
+            rt.addSoftmax(sT, oT);
+            rt.run();
+            double[] cpuS = new double[rows * cols];
+            i = 0;
+            while (i < rows * cols) { cpuS[i] = rt.getFlat(oT, i); i = i + 1; }
+            if (Cuda.available() == 1) {
+                rt.runGpu();
+                double mx = 0.0;
+                i = 0;
+                while (i < rows * cols) {
+                    double d = rt.getFlat(oT, i) - cpuS[i];
+                    if (d < 0.0) d = 0.0 - d;
+                    if (d > mx) mx = d;
+                    i = i + 1;
+                }
+                Console.writeLine("softmax col GPU vs CPU max err: " + mx +
+                    (mx < 1e-4 ? " OK" : " FAIL"));
+            }
+        }
+}
+
+int main() { OpVerifyApp app = new OpVerifyApp(); return 0; }

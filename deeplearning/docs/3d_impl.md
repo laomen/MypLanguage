@@ -138,3 +138,35 @@
 
 **验证**：coarse_model GPU vs ORT max diff 0.767 → **0.0065**（与 CPU 同级）；
 237/237 编译器测试、全部 3D/2D infer 测试 CPU+GPU 通过。
+
+## 9. GPU 性能：conv3d 寄存器 tiling（2026-08-13，§2.3 ①）
+
+**基线**（fine_model_liver_vessel 96³，RTX 2070 SUPER，MYP_PROF_GPU=1）：
+总 3090ms，其中 **conv3d 2253ms（73%）** 为唯一瓶颈；instancenorm 245ms、
+H2D/D2H ~450ms（整 arena 3.2GB）。
+
+**根因排查**：16³ tile 版 `conv3dTiled` 把全部输入通道 patch 一次装共享，真实模型
+**56 个 conv 中 54 个（Cin≥16）共享超限回退 thread-per-output** → tiled 实际未生效
+（≈原版 2.2s 是回退的假象）。
+
+**重写（v3）**：`conv3dTiled` = **输出通道分组（OC_GRP=4）+ 输入通道分块（CC，
+任意 Cin 进 tiled）+ W 寄存器滑窗（RW=4）**。块 = (nn, oc组, 4×8×32 空间 tile)，
+256 线程各算 4oc×4W=16 输出；每 (ic,kz,ky) 载 6 输入 + 4oc×3 权重 → 16 输出
+（每输出共享读 ~1.1，原 thread-per-output 全局读+L1）。要求 group=1、dil=1、
+stride=1、k≤3（fine 模型全满足；否则回退 conv3d）。
+
+**实测**：conv3d **2253 → 1029 ms（2.2×）**；总推理 **3090 → 1777 ms（1.7×）**。
+avgpool3d double→float（FP64=1/32 吞吐）15 → 0 ms。coarse_model GPU 591ms
+（16³→160³）。**正确性**：与旧验证输出逐位一致（diff 0.0）；coarse vs ORT 6.1e-3
+（float32 漂移）✅；conv3d_main GPU vs ORT OK；回归 266/266。
+
+**坑（本次）**：
+1. patch 载入 D/H 维漏 `-pdt/-pt` 偏移（x 有 -pl）→ 卷积窗口整体偏移 → 输出错
+   （vs 正确 diff 22.7）；加回偏移后逐位一致。
+2. v1（per-oc 块）反而比回退慢：同一空间 tile 的 patch 被 yC 个块重复载入
+   （yC× 冗余全局读）→ 必须 OC_GRP 分组摊薄。
+3. `@gpu tile` 内 `float wbase = ...` 应为 `long`（索引）→ 编译错。
+
+**⏳ 剩余**：conv3d 仍 ~1.0s（未达 <0.5s）——进一步需更大 OC_GRP / 共享 tile 摊薄
+patch 重载、L2 感知调度；`gapool` 块归约未动（不在本模型）。CPU 核性能
+（~1000× vs ORT）仍留待（§7 TODO）。

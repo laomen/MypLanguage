@@ -17,6 +17,10 @@ class GpuInferOps {
         // y = W x + b（batch 沿列；每线程算一个输出元素 + 串行归约 j）
         // n = arena 长度（传输范围），work = 有效输出数 = outDim*batch
         void dense(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev) {
+            if (outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
+                GpuInferOps.denseTiled(a, work, xOff, xRows, wOff, outDim, batch, bOff, yOff, dev);
+                return;
+            }
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     long i = p / batch;
@@ -34,6 +38,10 @@ class GpuInferOps {
 
         // y = W x（无偏置；batch 沿列）
         void matmul(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev) {
+            if (outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
+                GpuInferOps.denseTiled(a, work, xOff, xRows, wOff, outDim, batch, -1, yOff, dev);
+                return;
+            }
             @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
                 if (p < work) {
                     long i = p / batch;
@@ -45,6 +53,92 @@ class GpuInferOps {
                         j = j + 1L;
                     }
                     a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // §2.3 ② 分块 GEMM（dense 用）：y[outDim,batch] = W[outDim,xRows]·x[xRows,batch]
+        // （+bias）。块 = 32×32 输出 tile；K 分块（BK=32）载 W/x tile 到共享；256 线程
+        // 各算 2×2 子 tile（每 k 载 2W+2x → 4 FMA，寄存器复用）。尺寸不足/过小回退
+        // thread-per-output。bOff<0 表示无偏置（matmul）。
+        void denseTiled(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev) {
+            if (outDim < 32 || batch < 32 || long(outDim) * long(batch) < 4096L) {
+                GpuInferOps.dense(a, work, xOff, xRows, wOff, outDim, batch, bOff, yOff, dev);
+                return;
+            }
+            int TM = 32; int TN = 32; int BK = 32;
+            int mT = (outDim + TM - 1) / TM;
+            int nT = (batch + TN - 1) / TN;
+            int nTiles = mT * nT;
+            int nKB = (xRows + BK - 1) / BK;
+            @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
+                long tb = kernel.bx;
+                long mi = tb / long(nT);
+                long ni = tb % long(nT);
+                long tid = kernel.tx;
+                long ti = tid / 16L;              // 16×16 线程网格 → 2×2 子 tile
+                long tj = tid % 16L;
+                long i0 = mi * 32L + ti * 2L;
+                long j0 = ni * 32L + tj * 2L;
+                float a00 = 0.0f; float a01 = 0.0f; float a10 = 0.0f; float a11 = 0.0f;
+                if (bOff >= 0 && i0 < long(outDim)) {
+                    float bv = a[bOff + i0];
+                    a00 = bv; a01 = bv;
+                    if (i0 + 1L < long(outDim)) { float bv2 = a[bOff + i0 + 1L]; a10 = bv2; a11 = bv2; }
+                }
+                int kb = 0;
+                while (kb < nKB) {
+                    // 载 W tile [32×32] → smem[0,1024)
+                    long rr = tid;
+                    while (rr < 1024L) {
+                        long wi = rr / 32L;
+                        long wk = rr % 32L;
+                        float wv = 0.0f;
+                        long gi = mi * 32L + wi;
+                        long gk = long(kb) * 32L + wk;
+                        if (gi < long(outDim) && gk < long(xRows))
+                            wv = a[wOff + gi * long(xRows) + gk];
+                        smem[rr] = wv;
+                        rr = rr + 256L;
+                    }
+                    // 载 x tile [32×32] → smem[1024,2048)
+                    rr = tid;
+                    while (rr < 1024L) {
+                        long xk = rr / 32L;
+                        long xj = rr % 32L;
+                        float xv = 0.0f;
+                        long gk2 = long(kb) * 32L + xk;
+                        long gj = ni * 32L + xj;
+                        if (gk2 < long(xRows) && gj < long(batch))
+                            xv = a[xOff + gk2 * long(batch) + gj];
+                        smem[1024L + rr] = xv;
+                        rr = rr + 256L;
+                    }
+                    kernel.sync();
+                    long k = 0L;
+                    while (k < 32L) {
+                        float w0 = smem[(ti * 2L) * 32L + k];
+                        float w1 = smem[(ti * 2L + 1L) * 32L + k];
+                        float x0 = smem[1024L + k * 32L + tj * 2L];
+                        float x1 = smem[1024L + k * 32L + tj * 2L + 1L];
+                        a00 = a00 + w0 * x0;
+                        a01 = a01 + w0 * x1;
+                        a10 = a10 + w1 * x0;
+                        a11 = a11 + w1 * x1;
+                        k = k + 1L;
+                    }
+                    kernel.sync();
+                    kb = kb + 1;
+                }
+                // 写 2×2 输出（边界）
+                long base = i0 * long(batch) + j0;
+                if (i0 < long(outDim)) {
+                    if (j0 < long(batch)) a[yOff + base + 0L] = a00;
+                    if (j0 + 1L < long(batch)) a[yOff + base + 1L] = a01;
+                }
+                if (i0 + 1L < long(outDim)) {
+                    if (j0 < long(batch)) a[yOff + base + long(batch)] = a10;
+                    if (j0 + 1L < long(batch)) a[yOff + base + long(batch) + 1L] = a11;
                 }
             }
         }
@@ -71,26 +165,31 @@ class GpuInferOps {
             }
         }
 
-        // 每列一个样本，沿行 softmax（每线程重算列 max/sum）
+        // 每列一个样本，沿行 softmax。§2.3 ③：thread-per-column 两遍（先 max 再
+        // sum 再写），消除原 thread-per-element 每元素 O(rows) 冗余重扫（总读
+        // O(rows²·cols) → O(rows·cols)）。列数=并行度；列少时每线程工作小（快）。
         void softmax(float[] a, int work, int inOff, int outOff, int rows, int cols, long dev) {
-            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
-                if (p < work) {
-                    long i = p / cols;
-                    long k = p % cols;
-                    float m = a[inOff + 0 * cols + k];
+            @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {
+                if (p < cols) {
+                    long k = p;
+                    float m = a[inOff + 0L * long(cols) + k];
                     long j = 1L;
-                    while (j < rows) {
-                        float v = a[inOff + j * cols + k];
+                    while (j < long(rows)) {
+                        float v = a[inOff + j * long(cols) + k];
                         if (v > m) m = v;
                         j = j + 1L;
                     }
                     float s = 0.0f;
                     j = 0L;
-                    while (j < rows) {
-                        s = s + Math.exp(a[inOff + j * cols + k] - m);
+                    while (j < long(rows)) {
+                        s = s + Math.exp(a[inOff + j * long(cols) + k] - m);
                         j = j + 1L;
                     }
-                    a[outOff + i * cols + k] = Math.exp(a[inOff + i * cols + k] - m) / s;
+                    j = 0L;
+                    while (j < long(rows)) {
+                        a[outOff + j * long(cols) + k] = Math.exp(a[inOff + j * long(cols) + k] - m) / s;
+                        j = j + 1L;
+                    }
                 }
             }
         }
@@ -251,10 +350,11 @@ class GpuInferOps {
             }
         }
 
-        // Conv3D tiled：共享内存版（gpu_library_design §2.3 ① / §9 P0 验收载体）。
-        // 每块处理 4×8×8=256 输出 tile：块线程协作载入输入 patch + 权重到 __shared__，
-        // kernel.sync() 两阶段后 256 线程各算一个输出——输入只读一次、权重每块读一次。
-        // 共享池 float[6144]（24KB，2 块/SM 保占用率）：patch 段 + 权重段。超限回退 conv3d。
+        // Conv3D 寄存器 tiling + 输出通道分组 + 输入通道分块（§2.3 ① 性能版 v3）。
+        // v2（OC_GRP=4,RW=2）实测 conv3d 2814→1121ms（fine_model 96³）；v3 把 RW 提到 4：
+        // 每 (ic,kz,ky) 载 6 输入 + 4oc×3 权重 → 4×4 输出（每输出共享读 ~2→1.1）。
+        // 块 = (nn, oc组, TD×TH×TW=4×8×32)，256 线程（4od×8oh×8wstrip×4W）。
+        // 要求 group=1、dil=1、sd=sh=sw=1、kd/kh/kw≤3（否则回退 conv3d）。
         void conv3dTiled(float[] a, int work,
                   int xOff, int xN, int xC, int xD, int xH, int xW,
                   int wOff, int bOff,
@@ -262,121 +362,223 @@ class GpuInferOps {
                   int kd, int kh, int kw,
                   int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
                   int dd, int dh, int dw, int group, long dev) {
-            int TD = 16; int TH = 16; int TW = 16;   // 输出 tile（4096 输出/块，每线程 16）
+            int TD = 4; int TH = 8; int TW = 32;   // 空间输出 tile（4×8×32=1024 输出）
+            int RW = 4;                            // W 寄存器条（每线程 4 连续输出）
+            int OC_GRP = 4;                        // 输出通道/块（输入复用）
+            int KWMAX = 4;                         // 寄存器窗最大 kw
             int cpg = xC / group;
-            int ocpg = yC / group;
-            int pz = (TD - 1) * sd + kd;          // 输入 patch 尺寸（含窗口跨度）
-            int ph = (TH - 1) * sh + kh;
-            int pw = (TW - 1) * sw + kw;
-            int patchSz = cpg * pz * ph * pw;
-            int wSz = cpg * kd * kh * kw;         // 每块权重段（仅 oc 对应）
-            if (patchSz + wSz > 6000) {          // 共享超限 → 回退 thread-per-output
+            if (group != 1 || dd != 1 || dh != 1 || dw != 1 ||
+                sd != 1 || sh != 1 || sw != 1 ||
+                kd > 3 || kh > 3 || kw > KWMAX) {
                 GpuInferOps.conv3d(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
                        yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
                        dd, dh, dw, group, dev);
                 return;
             }
+            int pz = (TD - 1) + kd;                // 输入 patch 尺寸（stride=1,dil=1）
+            int ph = (TH - 1) + kh;
+            int pw = (TW - 1) + (RW - 1) + KWMAX;  // W 窗含 RW 条 + KWMAX 宽
+            int perChan = pz * ph * pw + OC_GRP * kd * kh * kw;
+            int CC = 6144 / perChan;               // 通道分块（共享 ≤24KB）
+            if (CC < 1) CC = 1;
+            if (CC > 4) CC = 4;
+            int patchSz = CC * pz * ph * pw;
+            int wSz = OC_GRP * CC * kd * kh * kw;
             int zT = (yD + TD - 1) / TD;
             int hT = (yH + TH - 1) / TH;
             int wT = (yW + TW - 1) / TW;
             int perPlane = zT * hT * wT;
-            int nTiles = xN * yC * perPlane;
+            int nGroups = (yC + OC_GRP - 1) / OC_GRP;
+            int nChunks = (cpg + CC - 1) / CC;
+            int nTiles = xN * nGroups * perPlane;
             @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
-                // 解码 tile 坐标
                 long tb = kernel.bx;
                 long plane = tb / long(perPlane);
                 long rest = tb % long(perPlane);
                 long zt = rest / long(hT * wT);
                 long yt = (rest / long(wT)) % long(hT);
                 long xt = rest % long(wT);
-                long nn = plane / long(yC);
-                long oc = plane % long(yC);
-                long g = oc / long(ocpg);
+                long nn = plane / long(nGroups);
+                long og = plane % long(nGroups);
                 long oz0 = zt * long(TD);
                 long oy0 = yt * long(TH);
                 long ox0 = xt * long(TW);
                 long tid = kernel.tx;
-                // 阶段一：协作载入输入 patch——每线程负责整行（ix 连续，
-                // 合并访问 + 少除法：每行一次坐标解码而非每元素多次）
-                long rows = long(cpg) * long(pz) * long(ph);
-                long rr = tid;
-                while (rr < rows) {
-                    long ic = rr / (long(pz) * long(ph));
-                    long iz = (rr / long(ph)) % long(pz);
-                    long iy = rr % long(ph);
-                    long gx0 = ox0 * long(sw) - long(pl);
-                    long gy = oy0 * long(sh) - long(pt) + iy;
-                    long gz = oz0 * long(sd) - long(pdt) + iz;
-                    bool inY = (gy >= 0L && gy < long(xH));
-                    bool inZ = (gz >= 0L && gz < long(xD));
-                    long ix = 0L;
-                    while (ix < long(pw)) {
-                        long gx = gx0 + ix;
+                long od = tid / long(TH * (TW / RW));   // TD=4
+                long oh = (tid / long(TW / RW)) % long(TH);
+                long ws = tid % long(TW / RW);          // TW/RW=8 条
+                long oxL0 = ws * long(RW);
+                long patchTot = long(patchSz);
+                long oc0 = og * long(OC_GRP) + 0L;
+                long oc1 = og * long(OC_GRP) + 1L;
+                long oc2 = og * long(OC_GRP) + 2L;
+                long oc3 = og * long(OC_GRP) + 3L;
+                float A0 = 0.0f; float A1 = 0.0f; float A2 = 0.0f; float A3 = 0.0f;   // oc0
+                float B0 = 0.0f; float B1 = 0.0f; float B2 = 0.0f; float B3 = 0.0f;   // oc1
+                float C0 = 0.0f; float C1 = 0.0f; float C2 = 0.0f; float C3 = 0.0f;   // oc2
+                float D0 = 0.0f; float D1 = 0.0f; float D2 = 0.0f; float D3 = 0.0f;   // oc3
+                if (bOff >= 0) {
+                    if (oc0 < long(yC)) { float bv = a[bOff + oc0]; A0 = bv; A1 = bv; A2 = bv; A3 = bv; }
+                    if (oc1 < long(yC)) { float bv = a[bOff + oc1]; B0 = bv; B1 = bv; B2 = bv; B3 = bv; }
+                    if (oc2 < long(yC)) { float bv = a[bOff + oc2]; C0 = bv; C1 = bv; C2 = bv; C3 = bv; }
+                    if (oc3 < long(yC)) { float bv = a[bOff + oc3]; D0 = bv; D1 = bv; D2 = bv; D3 = bv; }
+                }
+                long c = 0L;
+                while (c < long(nChunks)) {
+                    // 协作载入输入 patch 块（CC 通道；越界填 0）
+                    long rr = tid;
+                    while (rr < patchTot) {
+                        long ic = rr / (long(pz) * long(ph) * long(pw));
+                        long iz = (rr / (long(ph) * long(pw))) % long(pz);
+                        long iy = (rr / long(pw)) % long(ph);
+                        long ix = rr % long(pw);
                         float v = 0.0f;
-                        if (inY && inZ && gx >= 0L && gx < long(xW)) {
-                            long cIn = g * long(cpg) + ic;
-                            v = a[xOff + nn * xC * xD * xH * xW + cIn * xD * xH * xW
-                                  + gz * xH * xW + gy * xW + gx];
+                        long gcin = c * long(CC) + ic;
+                        if (gcin < long(cpg)) {
+                            long gz = oz0 - long(pdt) + iz;
+                            long gy = oy0 - long(pt) + iy;
+                            long gx = ox0 - long(pl) + ix;
+                            if (gz >= 0L && gz < long(xD) && gy >= 0L && gy < long(xH)
+                                && gx >= 0L && gx < long(xW)) {
+                                v = a[xOff + nn * long(xC) * long(xD) * long(xH) * long(xW)
+                                      + gcin * long(xD) * long(xH) * long(xW)
+                                      + gz * long(xH) * long(xW) + gy * long(xW) + gx];
+                            }
                         }
-                        smem[(ic * long(pz) + iz) * long(ph) * long(pw)
-                             + iy * long(pw) + ix] = v;
-                        ix = ix + 1L;
+                        smem[((ic * long(pz) + iz) * long(ph) + iy) * long(pw) + ix] = v;
+                        rr = rr + 256L;
                     }
-                    rr = rr + 256;
-                }
-                // 协作载入权重（oc 对应段）
-                long j = tid;
-                while (j < long(wSz)) {
-                    long jx = j % long(kw);
-                    long jy = (j / long(kw)) % long(kh);
-                    long jz = (j / (long(kw) * long(kh))) % long(kd);
-                    long jic = j / (long(kw) * long(kh) * long(kd));
-                    smem[long(patchSz) + j] = a[wOff + oc * (cpg * kd * kh * kw)
-                        + jic * kd * kh * kw + jz * kh * kw + jy * kw + jx];
-                    j = j + 256;
-                }
-                kernel.sync();
-                // 阶段二：256 线程各算 16 个输出（16×16×16 tile = 4096 输出）
-                long r = 0L;
-                while (r < 16L) {
-                    long oi = r * 256L + tid;
-                    long od = oi / long(TH * TW);
-                    long oh = (oi / long(TW)) % long(TH);
-                    long ow = oi % long(TW);
-                    long oz = oz0 + od;
-                    long oy = oy0 + oh;
-                    long ox = ox0 + ow;
-                    if (oz < long(yD) && oy < long(yH) && ox < long(yW)) {
-                        float sum = 0.0f;
-                        if (bOff >= 0) sum = a[bOff + oc];
-                        long ic = 0L;
-                        while (ic < long(cpg)) {
+                    // 协作载入权重块（OC_GRP 输出通道 × CC 输入通道；越界填 0）
+                    long j = tid;
+                    while (j < long(wSz)) {
+                        long ocIdx = j / (long(CC) * long(kd) * long(kh) * long(kw));
+                        long rem = j % (long(CC) * long(kd) * long(kh) * long(kw));
+                        long jic = rem / (long(kd) * long(kh) * long(kw));
+                        long jz = (rem / (long(kh) * long(kw))) % long(kd);
+                        long jy = (rem / long(kw)) % long(kh);
+                        long jx = rem % long(kw);
+                        float wv = 0.0f;
+                        long ocJ = og * long(OC_GRP) + ocIdx;
+                        long gcin2 = c * long(CC) + jic;
+                        if (ocJ < long(yC) && gcin2 < long(cpg)) {
+                            wv = a[wOff + ocJ * long(cpg) * long(kd) * long(kh) * long(kw)
+                                    + gcin2 * long(kd) * long(kh) * long(kw)
+                                    + jz * long(kh) * long(kw) + jy * long(kw) + jx];
+                        }
+                        smem[long(patchSz) + j] = wv;
+                        j = j + 256L;
+                    }
+                    kernel.sync();
+                    // 寄存器滑窗累积（4 oc × 4 W；kw 均匀分支）
+                    long ic2 = 0L;
+                    while (ic2 < long(CC)) {
+                        long gcin3 = c * long(CC) + ic2;
+                        if (gcin3 < long(cpg)) {
                             long kz = 0L;
                             while (kz < long(kd)) {
+                                long iz = od + kz;
                                 long ky = 0L;
                                 while (ky < long(kh)) {
-                                    // 预计算行基址（每 kx 迭代只递增，无乘法）
-                                    long piRow = ic * (long(pz) * long(ph) * long(pw))
-                                        + (od * long(sd) + kz) * (long(ph) * long(pw))
-                                        + (oh * long(sh) + ky) * long(pw) + ow * long(sw);
-                                    long wiRow = ic * (long(kd) * long(kh) * long(kw))
-                                        + kz * (long(kh) * long(kw)) + ky * long(kw);
-                                    long kx = 0L;
-                                    while (kx < long(kw)) {
-                                        sum = sum + smem[piRow + kx]
-                                                   * smem[long(patchSz) + wiRow + kx];
-                                        kx = kx + 1L;
+                                    long iy = oh + ky;
+                                    long base = ((ic2 * long(pz) + iz) * long(ph) + iy) * long(pw) + oxL0;
+                                    long wbA = ((0L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
+                                    long wbB = ((1L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
+                                    long wbC = ((2L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
+                                    long wbD = ((3L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
+                                    if (kw == 1) {
+                                        float r0 = smem[base + 0L];
+                                        float r1 = smem[base + 1L];
+                                        float r2 = smem[base + 2L];
+                                        float r3 = smem[base + 3L];
+                                        float wa = smem[patchTot + wbA + 0L];
+                                        float wb = smem[patchTot + wbB + 0L];
+                                        float wc = smem[patchTot + wbC + 0L];
+                                        float wd = smem[patchTot + wbD + 0L];
+                                        A0 = A0 + r0 * wa; A1 = A1 + r1 * wa; A2 = A2 + r2 * wa; A3 = A3 + r3 * wa;
+                                        B0 = B0 + r0 * wb; B1 = B1 + r1 * wb; B2 = B2 + r2 * wb; B3 = B3 + r3 * wb;
+                                        C0 = C0 + r0 * wc; C1 = C1 + r1 * wc; C2 = C2 + r2 * wc; C3 = C3 + r3 * wc;
+                                        D0 = D0 + r0 * wd; D1 = D1 + r1 * wd; D2 = D2 + r2 * wd; D3 = D3 + r3 * wd;
+                                    } else if (kw == 2) {
+                                        float r0 = smem[base + 0L];
+                                        float r1 = smem[base + 1L];
+                                        float r2 = smem[base + 2L];
+                                        float r3 = smem[base + 3L];
+                                        float r4 = smem[base + 4L];
+                                        float w0a = smem[patchTot + wbA + 0L]; float w1a = smem[patchTot + wbA + 1L];
+                                        float w0b = smem[patchTot + wbB + 0L]; float w1b = smem[patchTot + wbB + 1L];
+                                        float w0c = smem[patchTot + wbC + 0L]; float w1c = smem[patchTot + wbC + 1L];
+                                        float w0d = smem[patchTot + wbD + 0L]; float w1d = smem[patchTot + wbD + 1L];
+                                        A0 = A0 + r0 * w0a + r1 * w1a; A1 = A1 + r1 * w0a + r2 * w1a;
+                                        A2 = A2 + r2 * w0a + r3 * w1a; A3 = A3 + r3 * w0a + r4 * w1a;
+                                        B0 = B0 + r0 * w0b + r1 * w1b; B1 = B1 + r1 * w0b + r2 * w1b;
+                                        B2 = B2 + r2 * w0b + r3 * w1b; B3 = B3 + r3 * w0b + r4 * w1b;
+                                        C0 = C0 + r0 * w0c + r1 * w1c; C1 = C1 + r1 * w0c + r2 * w1c;
+                                        C2 = C2 + r2 * w0c + r3 * w1c; C3 = C3 + r3 * w0c + r4 * w1c;
+                                        D0 = D0 + r0 * w0d + r1 * w1d; D1 = D1 + r1 * w0d + r2 * w1d;
+                                        D2 = D2 + r2 * w0d + r3 * w1d; D3 = D3 + r3 * w0d + r4 * w1d;
+                                    } else {
+                                        float r0 = smem[base + 0L];
+                                        float r1 = smem[base + 1L];
+                                        float r2 = smem[base + 2L];
+                                        float r3 = smem[base + 3L];
+                                        float r4 = smem[base + 4L];
+                                        float r5 = smem[base + 5L];
+                                        float w0a = smem[patchTot + wbA + 0L]; float w1a = smem[patchTot + wbA + 1L]; float w2a = smem[patchTot + wbA + 2L];
+                                        float w0b = smem[patchTot + wbB + 0L]; float w1b = smem[patchTot + wbB + 1L]; float w2b = smem[patchTot + wbB + 2L];
+                                        float w0c = smem[patchTot + wbC + 0L]; float w1c = smem[patchTot + wbC + 1L]; float w2c = smem[patchTot + wbC + 2L];
+                                        float w0d = smem[patchTot + wbD + 0L]; float w1d = smem[patchTot + wbD + 1L]; float w2d = smem[patchTot + wbD + 2L];
+                                        A0 = A0 + r0 * w0a + r1 * w1a + r2 * w2a; A1 = A1 + r1 * w0a + r2 * w1a + r3 * w2a;
+                                        A2 = A2 + r2 * w0a + r3 * w1a + r4 * w2a; A3 = A3 + r3 * w0a + r4 * w1a + r5 * w2a;
+                                        B0 = B0 + r0 * w0b + r1 * w1b + r2 * w2b; B1 = B1 + r1 * w0b + r2 * w1b + r3 * w2b;
+                                        B2 = B2 + r2 * w0b + r3 * w1b + r4 * w2b; B3 = B3 + r3 * w0b + r4 * w1b + r5 * w2b;
+                                        C0 = C0 + r0 * w0c + r1 * w1c + r2 * w2c; C1 = C1 + r1 * w0c + r2 * w1c + r3 * w2c;
+                                        C2 = C2 + r2 * w0c + r3 * w1c + r4 * w2c; C3 = C3 + r3 * w0c + r4 * w1c + r5 * w2c;
+                                        D0 = D0 + r0 * w0d + r1 * w1d + r2 * w2d; D1 = D1 + r1 * w0d + r2 * w1d + r3 * w2d;
+                                        D2 = D2 + r2 * w0d + r3 * w1d + r4 * w2d; D3 = D3 + r3 * w0d + r4 * w1d + r5 * w2d;
                                     }
                                     ky = ky + 1L;
                                 }
                                 kz = kz + 1L;
                             }
-                            ic = ic + 1L;
                         }
-                        a[yOff + ((nn * long(yC) + oc) * long(yD) + oz) * long(yH)
-                            * long(yW) + oy * long(yW) + ox] = sum;
+                        ic2 = ic2 + 1L;
                     }
-                    r = r + 1L;
+                    kernel.sync();
+                    c = c + 1L;
+                }
+                // 写 16 个输出（4 oc × 4 W；越界 oc/空间跳过）
+                long oz = oz0 + od;
+                long oy = oy0 + oh;
+                long ox1 = ox0 + oxL0;
+                if (oz < long(yD) && oy < long(yH)) {
+                    long yb0 = (nn * long(yC) + oc0) * long(yD) * long(yH) * long(yW) + oz * long(yH) * long(yW) + oy * long(yW);
+                    long yb1 = (nn * long(yC) + oc1) * long(yD) * long(yH) * long(yW) + oz * long(yH) * long(yW) + oy * long(yW);
+                    long yb2 = (nn * long(yC) + oc2) * long(yD) * long(yH) * long(yW) + oz * long(yH) * long(yW) + oy * long(yW);
+                    long yb3 = (nn * long(yC) + oc3) * long(yD) * long(yH) * long(yW) + oz * long(yH) * long(yW) + oy * long(yW);
+                    if (oc0 < long(yC)) {
+                        if (ox1 + 0L < long(yW)) a[yOff + yb0 + ox1 + 0L] = A0;
+                        if (ox1 + 1L < long(yW)) a[yOff + yb0 + ox1 + 1L] = A1;
+                        if (ox1 + 2L < long(yW)) a[yOff + yb0 + ox1 + 2L] = A2;
+                        if (ox1 + 3L < long(yW)) a[yOff + yb0 + ox1 + 3L] = A3;
+                    }
+                    if (oc1 < long(yC)) {
+                        if (ox1 + 0L < long(yW)) a[yOff + yb1 + ox1 + 0L] = B0;
+                        if (ox1 + 1L < long(yW)) a[yOff + yb1 + ox1 + 1L] = B1;
+                        if (ox1 + 2L < long(yW)) a[yOff + yb1 + ox1 + 2L] = B2;
+                        if (ox1 + 3L < long(yW)) a[yOff + yb1 + ox1 + 3L] = B3;
+                    }
+                    if (oc2 < long(yC)) {
+                        if (ox1 + 0L < long(yW)) a[yOff + yb2 + ox1 + 0L] = C0;
+                        if (ox1 + 1L < long(yW)) a[yOff + yb2 + ox1 + 1L] = C1;
+                        if (ox1 + 2L < long(yW)) a[yOff + yb2 + ox1 + 2L] = C2;
+                        if (ox1 + 3L < long(yW)) a[yOff + yb2 + ox1 + 3L] = C3;
+                    }
+                    if (oc3 < long(yC)) {
+                        if (ox1 + 0L < long(yW)) a[yOff + yb3 + ox1 + 0L] = D0;
+                        if (ox1 + 1L < long(yW)) a[yOff + yb3 + ox1 + 1L] = D1;
+                        if (ox1 + 2L < long(yW)) a[yOff + yb3 + ox1 + 2L] = D2;
+                        if (ox1 + 3L < long(yW)) a[yOff + yb3 + ox1 + 3L] = D3;
+                    }
                 }
             }
         }
@@ -437,7 +639,9 @@ class GpuInferOps {
                     long oz = (p / (yW * yH)) % yD;
                     long c = (p / (yW * yH * yD)) % xC;
                     long nn = p / (yW * yH * yD * xC);
-                    double sum = 0.0;
+                    // §2.3 ⑤：float 累加（窗口小，无精度风险；double 在 GPU 上
+                    // 慢 1/32——RTX 消费卡 FP64 吞吐仅为 FP32 的 1/32）
+                    float sum = 0.0f;
                     int cnt = 0;
                     int kz = 0;
                     while (kz < kd) {
@@ -465,7 +669,7 @@ class GpuInferOps {
                     int div = cnt;
                     if (cip == 1) div = kd * kh * kw;
                     if (div < 1) div = 1;
-                    a[yOff + p] = float(sum / div);
+                    a[yOff + p] = sum / float(div);
                 }
             }
         }
