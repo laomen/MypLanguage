@@ -1,0 +1,70 @@
+// bench/myp/spectral_norm.myp — spectral-norm（Benchmarks Game 标准算法）
+// N=5500，10 次幂迭代；verify = sqrt(vBv/vv)（标准值 ~1.274224153，容差 1e-3）。
+// 测：O(N²) 浮点乘加 + 求平方根。
+import env;
+import math;
+import time;
+
+double spectralNorm(int n) {
+    double[] u = new double[n];
+    double[] v = new double[n];
+    int i = 0;
+    while (i < n) { u[i] = 1.0; v[i] = 0.0; i = i + 1; }
+    int it = 0;
+    while (it < 10) {
+        int j = 0;
+        while (j < n) {
+            double s = 0.0;
+            int i2 = 0;
+            while (i2 < n) {
+                double av = 1.0 / (double(((i2 + j) * (i2 + j + 1)) / 2) + double(j) + 1.0);
+                s = s + av * u[i2];
+                i2 = i2 + 1;
+            }
+            v[j] = s;
+            j = j + 1;
+        }
+        j = 0;
+        while (j < n) {
+            double s = 0.0;
+            int i2 = 0;
+            while (i2 < n) {
+                double av = 1.0 / (double(((j + i2) * (j + i2 + 1)) / 2) + double(i2) + 1.0);
+                s = s + av * v[i2];
+                i2 = i2 + 1;
+            }
+            u[j] = s;
+            j = j + 1;
+        }
+        it = it + 1;
+    }
+    double vBv = 0.0;
+    double vv = 0.0;
+    i = 0;
+    while (i < n) {
+        vBv = vBv + u[i] * v[i];
+        vv = vv + v[i] * v[i];
+        i = i + 1;
+    }
+    return Math.sqrt(vBv / vv);
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 5500;
+            long t0 = Time.nowMs();
+            double v = spectralNorm(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(v);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

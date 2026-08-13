@@ -1,0 +1,52 @@
+// bench/myp/binary_trees.myp — binary-trees（Benchmarks Game 风格）
+// 完美二叉树，深度 4..17（偶步长），数组存储 + 递归 item_check。
+// verify = 各深度 item_check 总和（三语同实现 → 精确一致）。
+// 测：递归 + 树遍历 + 内存访问。
+import env;
+import time;
+
+void buildTree(int[] tree, int d, int pos, int val) {
+    tree[pos] = val;
+    if (d > 0) {
+        buildTree(tree, d - 1, 2 * pos + 1, val - 1);
+        buildTree(tree, d - 1, 2 * pos + 2, val - 1);
+    }
+}
+
+int itemCheck(int[] tree, int pos, int size) {
+    if (2 * pos + 2 >= size) return tree[pos];
+    return tree[pos] + itemCheck(tree, 2 * pos + 1, size) + itemCheck(tree, 2 * pos + 2, size);
+}
+
+long binTrees(int maxDepth) {
+    int size = (1 << (maxDepth + 1)) - 1;
+    int[] tree = new int[size];
+    long check = 0;
+    int d = 4;
+    while (d <= maxDepth) {
+        buildTree(tree, d, 0, d);
+        check = check + long(itemCheck(tree, 0, size));
+        d = d + 2;
+    }
+    return check;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int maxDepth = 17;
+            long t0 = Time.nowMs();
+            long v = binTrees(maxDepth);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

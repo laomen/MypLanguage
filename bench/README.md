@@ -62,9 +62,17 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `dot_f64` | double 点积（浮点归约，无 fast-math 时向量化受限） | 10⁶ 元素 |
 | `lcs` | 最长公共子序列 DP（二维表内存访问 + 数据相关分支） | 2000×2000 |
 | `fib_matrix` | 矩阵快速幂斐波那契（ALU + 小矩阵乘 + 位循环） | fib(10⁸)×5×10⁴ |
+| `fannkuch` | **Benchmarks Game** fannkuch-redux（排列 + 数组翻转 + 整型 ALU） | N=11 |
+| `spectral_norm` | **Benchmarks Game** spectral-norm（O(N²) 浮点幂迭代 + 开方） | N=5500 |
+| `binary_trees` | **Benchmarks Game** binary-trees（数组树递归构建 + item_check） | 深度 4..17 |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。
+
+> 后三项为 [Benchmarks Game](https://benchmarksgame-team.pages.debian.net/) 标准算法
+> （fannkuch-redux / spectral-norm / binary-trees），与官方同算法同规模；verify 为
+> 数学常数（fannkuch(11)=51、spectral(5500)=1.123046、binary-trees checksum），MYP/
+> C++/Go 三语言一致（spectral 用 numpy 复核）。
 
 ## 解读指南
 
@@ -309,18 +317,3 @@ RSS，覆盖类/接口/struct/enum/方法解析/泛型的 N/2N/4N 复杂度曲�
 bash bench/compiler/run.sh            # P1..P7 全量基线
 ```
 
-## Python 对比（MYP vs CPython）
-
-```bash
-bash bench/run_compare_py.sh [iterations]   # 默认 3 轮取最小 ms；PY=python3 可换
-```
-
-- 9 个纯 Python 基准（`bench/py/*.py`，**无 numpy**，与 MYP 同算法同规模），对比解释型
-  vs LLVM 编译的真实差距；verify 与 MYP 完全对拍（整数精确、浮点 1e-3 容差）。
-- 实测（MYP `-O2` vs CPython 3.x，16 核单线程）：sieve **79×**、montepi **232×**、
-  nbody **140×**、tripleloop **204×**、matrix_int_mul **1037×**、fib_matrix **60×**、
-  dot_f64 **12.5×**、lcs **61×**（Py/MYP，>1 = Python 慢）。
-- quicksort 仅 **5.4×**：Python 用内置 `list.sort()`（C 实现的 Timsort），MYP 用手写
-  Lomuto 快排——显示标准库 C 加速 vs 纯语言实现的差距（与 C++ 对比的 matmul 等同理）。
-- 规模需 Python 能在可接受时间跑完（montepi 10⁸ 点 Python ~22s）；numpy 版不在本
-  脚本内（C 加速库，非语言对比）。

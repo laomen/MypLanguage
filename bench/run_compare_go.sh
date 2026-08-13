@@ -26,6 +26,7 @@ names=(
     sieve sieve_odd montepi matmul nbody mandelbrot tripleloop fft sha256 quicksort knapsack
     kmp crc32 radixsort sobel floyd heapsort convolution base64 spmv kmeans
     huffman bigint
+    fannkuch spectral_norm binary_trees
     channel_pingpong io_socket
     coro_switch coro_spawn
 )
