@@ -1,0 +1,2727 @@
+// parser.myp — 递归下降解析器（F2/F3）
+//
+// 对拍基准: src/parser/parser.cpp + parser_stmt.cpp + parser_expr.cpp
+// （mypc --frontend-dump ast，format.md §4）。
+// 产出 AstTU；含嵌套泛型 `>>` 拆分（pending_ 合成 '>'）、语句/表达式/类型全语法。
+// 错误恢复：consume 报错后继续；保证解析循环推进。
+
+import collections;
+import text;
+import "./ast.myp";
+import "./diag.myp";
+import "./token.myp";
+import "./lexer.myp";
+
+ffi long myp_str_to_long(string s);
+ffi double myp_str_to_double(string s);
+
+class Parser {
+    action:
+        @constructor Parser(ArrayList<Tok> toks, DiagEngine diag) {
+            tokens_ = toks;
+            diag_ = diag;
+            current_ = 0;
+            pendingN_ = 0;
+            silent_ = 0;
+            aliasNames_ = new ArrayList<string>();
+            aliasTypes_ = new ArrayList<AstType>();
+            recursionDepth_ = 0;
+        }
+
+        // ---- 顶层 ----
+        AstTU parse() {
+            AstTU tu = new AstTU();
+            while (isAtEnd() == 0) {
+                int before = current_;
+                string k = peekKind();
+                if (k == "import") {
+                    advance();
+                    tu.imports().add(parseImport());
+                } else if (k == "class") {
+                    advance();
+                    AstClass c = parseClass();
+                    if (c != null) tu.classes().add(c);
+                } else if (k == "struct") {
+                    advance();
+                    AstStruct s = parseStruct();
+                    if (s != null) tu.structs().add(s);
+                } else if (k == "bitfield") {
+                    advance();
+                    AstBitfield b = parseBitfieldDecl();
+                    if (b != null) tu.bitfields().add(b);
+                } else if (k == "interface") {
+                    advance();
+                    AstInterface i = parseInterface();
+                    if (i != null) tu.interfaces().add(i);
+                } else if (k == "mapping") {
+                    advance();
+                    AstMapping m = parseMapping();
+                    if (m != null) tu.mappings().add(m);
+                } else if (k == "ffi") {
+                    advance();
+                    AstFFI f = parseFFIDecl();
+                    if (f != null) tu.ffis().add(f);
+                } else if (k == "enum") {
+                    advance();
+                    AstEnum e = parseEnumDecl();
+                    if (e != null) tu.enums().add(e);
+                } else if (k == "macro") {
+                    advance();
+                    AstMacro m = parseMacroDecl();
+                    if (m != null) tu.macros().add(m);
+                } else if (k == "@") {
+                    // @static class 或顶层函数注解
+                    string n1 = peekNextKind();
+                    string n2 = peekNext2Kind();
+                    if (n1 == "static" && n2 == "class") {
+                        advance(); advance(); advance();
+                        AstClass c = parseClass();
+                        if (c != null) { c.setIsStatic(1); tu.classes().add(c); }
+                    } else {
+                        AstFunction f = parseFunction();
+                        if (f != null) tu.functions().add(f);
+                    }
+                } else if (k == "const") {
+                    AstFunction fd = parseConstDecl();
+                    if (fd != null) tu.functions().add(fd);
+                } else if (k == "identifier" && curVal() == "type"
+                           && peekNextKind() == "identifier" && peekNext2Kind() == "=") {
+                    AstTypeAlias ta = parseTypeAlias();
+                    if (ta != null) tu.typeAliases().add(ta);
+                } else if (checkType() != 0 || k == "void"
+                           || (k == "(" && scanFunctionType() != 0)
+                           || (k == "(" && scanTupleType() != 0)) {
+                    AstFunction f = parseFunction();
+                    if (f != null) tu.functions().add(f);
+                } else {
+                    diag_.error(peekLine(), peekCol(), "unexpected token '" + k + "'");
+                    synchronize();
+                }
+                if (current_ == before) advance();
+            }
+            return tu;
+        }
+
+        AstImport parseImport() {
+            AstImport d = new AstImport();
+            if (curKind() == "string") {
+                d.setIsPath(1);
+                d.setPath(curVal());
+                advance();
+            } else {
+                d.setName(parseIdentifier("expected module name after 'import'"));
+                while (matchKind(".") != 0) {
+                    string part = parseIdentifier("expected module name after '.'");
+                    d.setName(d.name_ + "." + part);
+                }
+            }
+            consume(";", "expected ';' after import");
+            return d;
+        }
+
+        AstClass parseClass() {
+            AstClass c = new AstClass();
+            c.setName(parseIdentifier("expected class name"));
+            if (matchKind("<") != 0) {
+                ArrayList<string> tps = parseTypeParamList();
+                for (int i = 0; i < tps.size(); i = i + 1) c.typeParams().add(tps.get(i));
+                parseTypeParamConstraints(c.constraints_);
+                consumeGenericClose("expected '>' after generic parameters");
+            }
+            consume("{", "expected '{' after class name");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                int before = current_;
+                string k = curKind();
+                if (k == "action" || k == "event" || k == "property" || k == "function"
+                    || k == "struct" || k == "static") {
+                    parseClassSection(c);
+                } else if (k == "interface") {
+                    parseInterfaceClassDecl(c);
+                } else if (k == "const") {
+                    AstProp p = parsePropertyDecl();
+                    c.props().add(p);
+                } else if (k == "identifier" && curVal() == "type"
+                           && peekNextKind() == "identifier" && peekNext2Kind() == "=") {
+                    advance();
+                    string nm = parseIdentifier("expected associated type name");
+                    consume("=", "expected '=' in associated type binding");
+                    AstType bt = parseType();
+                    consume(";", "expected ';' after associated type binding");
+                    AstPair p = new AstPair();
+                    p.setK(nm);
+                    p.setTypeStr(bt.str());
+                    c.assocTypes().add(p);
+                } else {
+                    diag_.error(peekLine(), peekCol(), "expected 'action:', 'event:', 'property:', 'function:', 'struct:', or 'interface class'");
+                    synchronize();
+                }
+                if (current_ == before) advance();
+            }
+            consume("}", "expected '}' after class body");
+            return c;
+        }
+
+        void parseClassSection(AstClass c) {
+            string sec = curKind();
+            advance(); // 段关键字
+            if (sec == "struct") {
+                // 嵌套 struct 声明（无 ':'）——镜像 C++ parseClassSection
+                AstStruct s = parseStruct();
+                if (s != null) { s.setParent(c.name_); c.structs().add(s); }
+                return;
+            }
+            consume(":", "expected ':' after '" + sec + "'");
+            if (sec == "static") {
+                c.setIsStatic(1);
+                while (sectionMore(c) == 1) {
+                    if (checkType() != 0 || curKind() == "void" || curKind() == "@") {
+                        c.staticActions().add(parseActionDecl());
+                    } else break;
+                }
+            } else if (sec == "action") {
+                while (sectionMore(c) == 1) {
+                    if (checkType() != 0 || curKind() == "void" || curKind() == "@") {
+                        AstAction a = parseActionDecl();
+                        if (a.name_ == c.name_) a.setCtor(1);
+                        c.actions().add(a);
+                    } else break;
+                }
+            } else if (sec == "event") {
+                while (sectionMore(c) == 1) {
+                    if (curKind() == "identifier") {
+                        c.events().add(parseEventDecl());
+                    } else break;
+                }
+            } else if (sec == "property") {
+                while (sectionMore(c) == 1) {
+                    if (checkType() != 0 || curKind() == "const"
+                        || (curKind() == "@" && peekNextVal() == "weak")) {
+                        c.props().add(parsePropertyDecl());
+                    } else break;
+                }
+            } else if (sec == "function") {
+                while (sectionMore(c) == 1) {
+                    if (checkType() != 0 || curKind() == "void") {
+                        AstFunction f = parseFunction();
+                        if (f != null) { if (f.name_ == c.name_) f.setCtor(1); c.funcs().add(f); }
+                    } else break;
+                }
+            }
+        }
+
+        // 类段继续条件：非右花括号且非其他段关键字。
+        int sectionMore(AstClass c) {
+            string k = curKind();
+            if (k == "}" || k == "action" || k == "event" || k == "property"
+                || k == "function" || k == "struct" || k == "interface") return 0;
+            if (isAtEnd() != 0) return 0;
+            return 1;
+        }
+
+        AstAction parseActionDecl() {
+            AstAction d = new AstAction();
+            if (curKind() == "@") {
+                advance();
+                string annot = parseIdentifier("expected annotation name");
+                if (annot == "startup") d.setStartup(1);
+                if (annot == "constructor") d.setCtor(1);
+                if (annot == "test") d.setTest(1);
+                if (annot == "async") d.setAsync(1);
+                if (annot == "region") d.setRegion(1);
+                if (annot == "coro") {
+                    d.setCoro(1);
+                    if (curKind() == "(") {
+                        advance();
+                        string kw = parseIdentifier("expected 'stack' in @coro(stack=N)");
+                        consume("=", "expected '=' in @coro(stack=N)");
+                        if (curKind() == "integer") {
+                            d.setStack(int(myp_str_to_long(curVal())));
+                            advance();
+                        }
+                        consume(")", "expected ')' after @coro(stack=N)");
+                    }
+                }
+            }
+            if (d.ctor_ != 0) {
+                AstType t = new AstType();
+                t.setBasicName("void");
+                d.setRet(t);
+                d.setName(parseIdentifier("expected constructor name"));
+            } else {
+                d.setRet(parseType());
+                d.setName(parseIdentifier("expected action name"));
+                if (matchKind("<") != 0) {
+                    if (curKind() == "identifier") {
+                        d.typeParams().add(parseIdentifier("expected type parameter name"));
+                        while (matchKind(",") != 0) {
+                            d.typeParams().add(parseIdentifier("expected type parameter name"));
+                        }
+                    }
+                    parseGenericWhereClause(d.typeParams_, d.constraints_);
+                    consumeGenericClose("expected '>' after generic type parameters");
+                }
+            }
+            consume("(", "expected '(' after action name");
+            if (curKind() != ")") {
+                ArrayList<AstParam> ps = parseParamList(1);
+                for (int i = 0; i < ps.size(); i = i + 1) d.params().add(ps.get(i));
+            }
+            consume(")", "expected ')' after parameters");
+            if (matchKind(";") != 0) {
+                // 仅声明
+            } else if (matchKind("{") != 0) {
+                d.setBody(parseBlock());
+            } else {
+                diag_.error(peekLine(), peekCol(), "expected ';' or '{' after action signature");
+            }
+            return d;
+        }
+
+        AstEvent parseEventDecl() {
+            AstEvent d = new AstEvent();
+            d.setName(parseIdentifier("expected event name"));
+            consume("(", "expected '(' after event name");
+            if (curKind() != ")") {
+                ArrayList<AstParam> ps = parseParamList(0);
+                for (int i = 0; i < ps.size(); i = i + 1) d.params().add(ps.get(i));
+            }
+            consume(")", "expected ')' after parameters");
+            consume(";", "expected ';' after event declaration");
+            return d;
+        }
+
+        ArrayList<AstParam> parseParamList(int allowDefault) {
+            ArrayList<AstParam> ps = new ArrayList<AstParam>();
+            ps.add(parseParam(allowDefault));
+            while (matchKind(",") != 0) ps.add(parseParam(allowDefault));
+            return ps;
+        }
+
+        AstParam parseParam(int allowDefault) {
+            AstParam p = new AstParam();
+            if (matchKind("ref") != 0) p.setRef(1);
+            p.setType(parseType());
+            if (curKind() == "identifier" || curKind() == "," || curKind() == ")") {
+                if (curKind() == "identifier") {
+                    p.setName(parseIdentifier("expected parameter name"));
+                    if (allowDefault != 0 && matchKind("=") != 0) {
+                        p.setHasDefault(1);
+                        p.setDefaultExpr(parseExpr());
+                    }
+                }
+            }
+            return p;
+        }
+
+        AstProp parsePropertyDecl() {
+            AstProp d = new AstProp();
+            if (curKind() == "@") {
+                advance();
+                string annot = parseIdentifier("expected annotation name");
+                if (annot == "weak") d.setWeak(1);
+            }
+            if (curKind() == "const") { advance(); d.setConst(1); }
+            d.setType(parseType());
+            d.setName(parseIdentifier("expected property name"));
+            if (matchKind("=") != 0) d.setInit(parseExpr());
+            consume(";", "expected ';' after property declaration");
+            return d;
+        }
+
+        void parseInterfaceClassDecl(AstClass c) {
+            matchKind("interface");
+            consume("class", "expected 'class' after 'interface'");
+            c.setIface(parseIdentifier("expected interface class name"));
+            consume(";", "expected ';' after interface class declaration");
+        }
+
+        AstInterface parseInterface() {
+            AstInterface d = new AstInterface();
+            d.setName(parseIdentifier("expected interface name"));
+            consume("{", "expected '{' after interface name");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                if (curKind() == "identifier") {
+                    if (curVal() == "type" && peekNextKind() == "identifier") {
+                        advance();
+                        d.assocTypeDecls().add(parseIdentifier("expected associated type name"));
+                        consume(";", "expected ';' after associated type declaration");
+                    } else if (peekNextKind() == "(") {
+                        d.events().add(parseEventDecl());
+                    } else {
+                        d.actions().add(parseActionDecl());
+                    }
+                } else if (checkType() != 0 || curKind() == "void") {
+                    d.actions().add(parseActionDecl());
+                } else {
+                    diag_.error(peekLine(), peekCol(), "expected action or event declaration");
+                    advance();
+                }
+            }
+            consume("}", "expected '}' after interface body");
+            return d;
+        }
+
+        AstStruct parseStruct() {
+            AstStruct d = new AstStruct();
+            if (curKind() == "identifier" && peekNextKind() == "::") {
+                d.setParent(parseIdentifier("expected class name"));
+                consume("::", "expected '::'");
+                d.setName(parseIdentifier("expected struct name"));
+            } else {
+                d.setName(parseIdentifier("expected struct name"));
+            }
+            consume("{", "expected '{' after struct name");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                string k = curKind();
+                if (k == "action") {
+                    advance();
+                    consume(":", "expected ':' after 'action'");
+                    while (curKind() != "}" && isAtEnd() == 0
+                           && (checkType() != 0 || curKind() == "void" || curKind() == "@")) {
+                        if (curKind() == "@") {
+                            AstFunction f = parseFunction();
+                            if (f != null) { if (f.name_ == d.name_) f.setCtor(1); d.funcs().add(f); }
+                        } else if (structMethodAhead() != 0) {
+                            AstFunction f = parseFunction();
+                            if (f != null) { if (f.name_ == d.name_) f.setCtor(1); d.funcs().add(f); }
+                        } else break;
+                    }
+                } else if (k == "operator") {
+                    advance();
+                    consume(":", "expected ':' after 'operator'");
+                    while (curKind() != "}" && isAtEnd() == 0 && curKind() == "@") {
+                        AstFunction f = parseFunction();
+                        if (f != null) d.funcs().add(f);
+                    }
+                } else if (checkType() != 0 || curKind() == "void"
+                           || (curKind() == "@" && peekNextVal() == "weak")) {
+                    if (structMethodAhead() != 0) {
+                        AstFunction f = parseFunction();
+                        if (f != null) { if (f.name_ == d.name_) f.setCtor(1); d.funcs().add(f); }
+                    } else {
+                        d.props().add(parsePropertyDecl());
+                    }
+                } else break;
+            }
+            consume("}", "expected '}' after struct body");
+            return d;
+        }
+
+        // struct 方法前瞻：type [name] '(' → 方法；否则属性。
+        // 镜像 C++ isTypeKind：内置类型 || void || identifier。
+        int structMethodAhead() {
+            int a = current_;
+            if (a < size()) {
+                string k = kindAt(a);
+                if (isTypeTokenStr(k) != 0 || k == "void" || k == "identifier") {
+                    a = a + 1;
+                    if (a < size() && kindAt(a) == "identifier") a = a + 1;
+                }
+            }
+            if (a < size() && kindAt(a) == "(") return 1;
+            return 0;
+        }
+
+        AstBitfield parseBitfieldDecl() {
+            AstBitfield d = new AstBitfield();
+            d.setName(parseIdentifier("expected bitfield name"));
+            consume("{", "expected '{' after bitfield name");
+            int offset = 0;
+            while (curKind() != "}" && isAtEnd() == 0) {
+                AstBitfieldField f = new AstBitfieldField();
+                if (curKind() != "bit") {
+                    diag_.error(peekLine(), peekCol(), "expected 'bit' or 'bit[N]' field in bitfield");
+                    break;
+                }
+                advance();
+                f.setWidth(1);
+                if (matchKind("[") != 0) {
+                    if (curKind() == "integer") {
+                        f.setWidth(int(myp_str_to_long(curVal())));
+                        advance();
+                    }
+                    consume("]", "expected ']' after bit width");
+                }
+                if (f.width_ <= 0) { diag_.error(peekLine(), peekCol(), "bitfield field width must be >= 1"); f.setWidth(1); }
+                f.setName(parseIdentifier("expected bitfield field name"));
+                f.setOffset(offset);
+                offset = offset + f.width_;
+                d.fields().add(f);
+                consume(";", "expected ';' after bitfield field");
+            }
+            consume("}", "expected '}' after bitfield body");
+            d.setTotalBits(offset);
+            return d;
+        }
+
+        AstFunction parseFunction() {
+            AstFunction f = new AstFunction();
+            if (curKind() == "@") {
+                advance();
+                string annot = "";
+                if (curKind() == "macro") { annot = "macro"; advance(); }
+                else annot = parseIdentifier("expected annotation name");
+                if (annot == "test") f.setTest(1);
+                else if (annot == "constructor") f.setCtor(1);
+                else if (annot == "async") f.setAsync(1);
+                else if (annot == "region") f.setRegion(1);
+                else if (annot == "eval") f.setEval(1);
+                else if (annot == "macro") f.setMacro(1);
+                else if (annot == "coro") {
+                    f.setCoro(1);
+                    if (curKind() == "(") {
+                        advance();
+                        string kw = parseIdentifier("expected 'stack' in @coro(stack=N)");
+                        consume("=", "expected '=' in @coro(stack=N)");
+                        if (curKind() == "integer") { f.setStack(int(myp_str_to_long(curVal()))); advance(); }
+                        consume(")", "expected ')' after @coro(stack=N)");
+                    }
+                } else if (annot == "op") {
+                    consume("(", "expected '(' after '@op'");
+                    if (curKind() == "string") {
+                        int ol = peekLine();
+                        int oc = peekCol();
+                        string op = curVal();
+                        advance();
+                        // 镜像 C++：仅支持 + - * / % == != < > <= >=
+                        int valid = 0;
+                        if (op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
+                            || op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">=") valid = 1;
+                        if (valid != 0) f.setOp(op);
+                        else diag_.error(ol, oc, "unsupported operator symbol '@op(\"" + op + "\")'");
+                    }
+                    consume(")", "expected ')' after operator symbol");
+                }
+            }
+            if (f.ctor_ != 0) {
+                AstType t = new AstType();
+                t.setBasicName("void");
+                f.setRet(t);
+                f.setName(parseIdentifier("expected constructor name"));
+            } else {
+                f.setRet(parseType());
+                f.setName(parseIdentifier("expected function name"));
+                if (matchKind("<") != 0) {
+                    if (curKind() == "identifier") {
+                        f.typeParams().add(parseIdentifier("expected type parameter name"));
+                        while (matchKind(",") != 0) {
+                            f.typeParams().add(parseIdentifier("expected type parameter name"));
+                        }
+                    }
+                    parseGenericWhereClause(f.typeParams_, f.constraints_);
+                    consumeGenericClose("expected '>' after generic type parameters");
+                }
+            }
+            consume("(", "expected '(' after function name");
+            if (curKind() != ")") {
+                ArrayList<AstParam> ps = parseParamList(1);
+                for (int i = 0; i < ps.size(); i = i + 1) f.params().add(ps.get(i));
+            }
+            consume(")", "expected ')' after parameters");
+            consume("{", "expected '{' for function body");
+            f.setBody(parseBlock());
+            return f;
+        }
+
+        // 顶层 const：const Type name = expr;  → 伪函数（return expr）。
+        AstFunction parseConstDecl() {
+            AstFunction f = new AstFunction();
+            advance(); // const
+            f.setRet(parseType());
+            f.setName(parseIdentifier("expected constant name"));
+            f.setConstDecl(1);
+            consume("=", "expected '=' in const declaration");
+            AstExpr ie = parseExpr();
+            consume(";", "expected ';' after const declaration");
+            AstStmt ret = new AstStmt();
+            ret.setKind("Return");
+            ret.setValue(ie);
+            AstStmt blk = new AstStmt();
+            blk.setKind("Block");
+            blk.bodyStmts().add(ret);
+            f.setBody(blk);
+            return f;
+        }
+
+        AstMapping parseMapping() {
+            AstMapping d = new AstMapping();
+            consume("(", "expected '(' after 'mapping'");
+            consume(")", "expected ')' after '('");
+            if (matchKind("@") != 0) {
+                string annot = parseIdentifier("expected annotation name");
+                if (annot == "scope") d.setScope(1);
+            }
+            consume("{", "expected '{' for mapping body");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                int before = current_;
+                // 源事件（首节点）
+                AstMappingNode first = new AstMappingNode();
+                first.setSrc(parseIdentifier("expected instance/class name in mapping"));
+                consume(".", "expected '.' in mapping chain");
+                first.setMember(parseIdentifier("expected event/action name in mapping"));
+                AstExpr whereExpr = null;
+                if (matchKind("where") != 0) whereExpr = parseExpr();
+                consume("->", "expected '->' after event");
+                int firstTarget = 1;
+                while (true) {
+                    if (firstTarget == 0) matchKind(",");
+                    firstTarget = 0;
+                    AstMappingChain chain = new AstMappingChain();
+                    chain.setWhere(whereExpr);
+                    AstMappingNode ev = new AstMappingNode();
+                    ev.setSrc(first.src_);
+                    ev.setMember(first.member_);
+                    chain.nodes().add(ev);
+                    while (true) {
+                        AstMappingNode t = new AstMappingNode();
+                        if (curKind() == "(") {
+                            // lambda 节点
+                            advance();
+                            AstExpr lam = parseLambdaExprBody();
+                            t.setIsLambda(1);
+                            t.setLambda(lam);
+                        } else {
+                            t.setSrc(parseIdentifier("expected target name in mapping"));
+                            if (matchKind("(") != 0) {
+                                int param = 0;
+                                if (curKind() != ")") {
+                                    AstExpr pe = parseExpr();
+                                    if (pe.kind_ == "Integer") param = int(pe.value_);
+                                }
+                                consume(")", "expected ')' after transformer param");
+                                t.setIsTransformer(1);
+                                t.setTrParam(param);
+                                if (t.src_ == "delay") t.setTrKind(0);
+                                else if (t.src_ == "throttle") t.setTrKind(1);
+                            } else if (matchKind(".") != 0) {
+                                t.setMember(parseIdentifier("expected action name"));
+                                t.setIsFunction(0);
+                            } else {
+                                t.setIsFunction(1);
+                            }
+                        }
+                        chain.nodes().add(t);
+                        if (matchKind("->") != 0) {
+                            // 继续链
+                        } else break;
+                    }
+                    d.chains().add(chain);
+                    if (curKind() != ",") break;
+                }
+                consume(";", "expected ';' after mapping chain");
+                if (current_ == before) advance();
+            }
+            consume("}", "expected '}' after mapping body");
+            return d;
+        }
+
+        AstEnum parseEnumDecl() {
+            AstEnum d = new AstEnum();
+            d.setName(parseIdentifier("expected enum name"));
+            consume("{", "expected '{' after enum name");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                AstEnumVariant v = new AstEnumVariant();
+                v.setName(parseIdentifier("expected variant name"));
+                if (matchKind("(") != 0) {
+                    if (curKind() != ")") {
+                        ArrayList<AstParam> ps = parseParamList(0);
+                        for (int i = 0; i < ps.size(); i = i + 1) v.params().add(ps.get(i));
+                    }
+                    consume(")", "expected ')' after variant parameters");
+                }
+                d.variants().add(v);
+                consume(";", "expected ';' after variant");
+            }
+            consume("}", "expected '}' after enum body");
+            return d;
+        }
+
+        AstMacro parseMacroDecl() {
+            AstMacro d = new AstMacro();
+            d.setName(parseIdentifier("expected macro name"));
+            consume("(", "expected '(' after macro name");
+            if (curKind() != ")") {
+                // $name 形参
+                while (true) {
+                    matchKind("$");
+                    d.params().add(parseIdentifier("expected macro parameter name"));
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+            }
+            consume(")", "expected ')' after macro parameters");
+            consume("{", "expected '{' for macro body");
+            d.setBody(parseBlock());
+            return d;
+        }
+
+        AstFFI parseFFIDecl() {
+            AstFFI d = new AstFFI();
+            d.setRet(parseType());
+            d.setName(parseIdentifier("expected ffi name"));
+            consume("(", "expected '(' after ffi name");
+            if (curKind() != ")") {
+                ArrayList<AstParam> ps = parseParamList(0);
+                for (int i = 0; i < ps.size(); i = i + 1) d.params().add(ps.get(i));
+            }
+            consume(")", "expected ')' after parameters");
+            consume(";", "expected ';' after ffi declaration");
+            return d;
+        }
+
+        AstTypeAlias parseTypeAlias() {
+            AstTypeAlias d = new AstTypeAlias();
+            advance(); // type
+            d.setName(parseIdentifier("expected type alias name"));
+            consume("=", "expected '=' in type alias");
+            d.setType(parseType());
+            consume(";", "expected ';' after type alias");
+            // 注册别名（镜像 C++ aliases_）：后续 parseType 遇 identifier 时替换
+            aliasNames_.add(d.name_);
+            aliasTypes_.add(d.type_);
+            return d;
+        }
+        // 别名替换：命中则返回别名类型，否则返回 null。
+        AstType lookupAlias(string name) {
+            for (int i = 0; i < aliasNames_.size(); i = i + 1) {
+                if (aliasNames_.get(i) == name) return aliasTypes_.get(i);
+            }
+            return null;
+        }
+
+        // ---- 语句 ----
+        AstStmt parseBlock() {
+            AstStmt b = new AstStmt();
+            b.setKind("Block");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                int before = current_;
+                AstStmt s = parseStatement();
+                if (s != null) b.bodyStmts().add(s);
+                if (current_ == before) advance();
+            }
+            consume("}", "expected '}' after block");
+            return b;
+        }
+
+        AstStmt parseStatement() {
+            int sl = peekLine();
+            int sc = peekCol();
+            AstStmt s = parseStatementBody();
+            if (s != null) s.setPos(sl, sc);
+            return s;
+        }
+
+        AstStmt parseStatementBody() {
+            string k = curKind();
+            if (k == "{") { advance(); return parseBlock(); }
+            if (k == "if") { advance(); return parseIfStmt(); }
+            if (k == "while") { advance(); return parseWhileStmt(); }
+            if (k == "@") {
+                return parseAnnotatedStatement();
+            }
+            if (k == "for") { advance(); return parseForStmt(); }
+            if (k == "return") { advance(); return parseReturnStmt(); }
+            if (k == "break") { advance(); return parseBreakStmt(); }
+            if (k == "continue") { advance(); return parseContinueStmt(); }
+            if (k == "await") { advance(); return parseAwaitStmt(); }
+            if (k == "mapping") { advance(); return parseMappingStmt(); }
+            if (k == "nonlocal") {
+                AstStmt s = new AstStmt();
+                s.setKind("Nonlocal");
+                advance();
+                while (true) {
+                    s.names().add(parseIdentifier("expected variable name after 'nonlocal'"));
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+                consume(";", "expected ';' after nonlocal declaration");
+                return s;
+            }
+            if (k == "match") { advance(); return parseMatchStmt(); }
+            if (k == "try") { advance(); return parseTryStmt(); }
+            if (k == "throw") { advance(); return parseThrowStmt(); }
+            if (k == "const") { return parseVarDeclStmt(); }
+            if (k == "$" && isMacroStmtPlaceholder() != 0) {
+                // 宏体语句占位：`$param` 后跟 }/;/$/EOF 才算；否则是表达式（如 `$x = ...`）。
+                advance();
+                string pn = parseIdentifier("expected macro parameter name after '$'");
+                matchKind(";");
+                AstStmt es = new AstStmt();
+                es.setKind("ExprStmt");
+                AstExpr mp = new AstExpr();
+                mp.setKind("MacroParam");
+                mp.setName(pn);
+                es.setExpr(mp);
+                return es;
+            }
+            // 宏参数表达式语句（`$x = ...` / `foo($a);`）走 parseExpr
+            if (k == "$") {
+                AstStmt es2 = new AstStmt();
+                es2.setKind("ExprStmt");
+                es2.setExpr(parseExpr());
+                consume(";", "expected ';' after expression");
+                return es2;
+            }
+            if (checkType() != 0 || k == "void") {
+                return parseVarDeclMaybe();
+            }
+            if (k == "(" && scanFunctionType() != 0) {
+                // 函数类型变量声明：(A,B) -> R name = lambda
+                int saved = current_;
+                AstType dummy = parseType();
+                if (curKind() == "identifier") { current_ = saved; return parseVarDeclStmt(); }
+                current_ = saved;
+            }
+            if (k == "(" && scanDestructureAssign() != 0) {
+                return parseDestructureStmt();
+            }
+            if (k == "(" && scanTupleVarDecl() != 0) {
+                // tuple var decl
+                int saved = current_;
+                AstType dummy = parseType();
+                if (curKind() == "identifier") { current_ = saved; return parseVarDeclStmt(); }
+                current_ = saved;
+            }
+            AstStmt es2 = new AstStmt();
+            es2.setKind("ExprStmt");
+            es2.setExpr(parseExpr());
+            consume(";", "expected ';' after expression");
+            return es2;
+        }
+
+        AstStmt parseAnnotatedStatement() {
+            advance(); // @
+            string annot = parseIdentifier("expected annotation name");
+            if (annot == "parallel") {
+                if (curKind() != "for") {
+                    diag_.error(peekLine(), peekCol(), "'@parallel' must be followed by 'for'");
+                } else {
+                    advance();
+                    AstStmt s = parseForStmt();
+                    if (s != null) s.setParallel(1);
+                    return s;
+                }
+            } else if (annot == "gpu") {
+                if (curKind() != "for") {
+                    string nv = curVal();
+                    if (curKind() == "identifier" && nv == "tile") {
+                        advance();
+                        return parseGpuTileStmt();
+                    }
+                    if (curKind() == "identifier" && nv == "stride") {
+                        advance();
+                        if (curKind() != "for") {
+                            diag_.error(peekLine(), peekCol(), "'@gpu stride' must be followed by 'for'");
+                        } else {
+                            advance();
+                            AstStmt s = parseForStmt();
+                            if (s != null) { s.setGpu(1); s.setStride(1); }
+                            return s;
+                        }
+                    }
+                    if (curKind() == "identifier" && nv == "reduce") {
+                        advance();
+                        return parseGpuReduceStmt();
+                    }
+                    if (curKind() == "identifier" && nv == "scan") {
+                        advance();
+                        return parseGpuScanStmt();
+                    }
+                    if (curKind() == "identifier" && nv == "scatter") {
+                        advance();
+                        return parseGpuScatterStmt();
+                    }
+                    diag_.error(peekLine(), peekCol(), "'@gpu' must be followed by 'for', 'tile', 'stride for', or 'reduce'");
+                } else {
+                    advance();
+                    AstStmt s = parseForStmt();
+                    if (s != null) s.setGpu(1);
+                    return s;
+                }
+            } else {
+                diag_.error(peekLine(), peekCol(), "unknown annotation '@" + annot + "' in statement");
+            }
+            // 错误恢复：当作表达式语句
+            AstStmt es = new AstStmt();
+            es.setKind("ExprStmt");
+            es.setExpr(parseExpr());
+            consume(";", "expected ';' after expression");
+            return es;
+        }
+
+        // 变量声明 vs 表达式消歧（简化 + 前瞻）。
+        AstStmt parseVarDeclMaybe() {
+            if (curKind() == "identifier") {
+                int next = current_ + 1;
+                if (next < size() && kindAt(next) == "identifier") return parseVarDeclStmt();
+                if (next < size() && kindAt(next) == "::" && next + 1 < size() && kindAt(next + 1) == "identifier") return parseVarDeclStmt();
+                if (next < size() && kindAt(next) == "[") {
+                    int n2 = next + 1, n3 = next + 2, n4 = next + 3;
+                    if (n2 < size() && kindAt(n2) == "]" && n3 < size() && kindAt(n3) == "identifier") return parseVarDeclStmt();
+                    if (n3 < size() && kindAt(n2) == "integer" && kindAt(n3) == "]" && n4 < size() && kindAt(n4) == "identifier") return parseVarDeclStmt();
+                    if (n3 < size() && kindAt(n2) == "integer" && kindAt(n3) == "]" && n4 < size() && kindAt(n4) == "=") {
+                        int saved = current_;
+                        AstType dummy = parseType();
+                        if (curKind() == "identifier" || curKind() == "void" || checkType() != 0) {
+                            current_ = saved;
+                            return parseVarDeclStmt();
+                        }
+                        current_ = saved;
+                    }
+                }
+                if (next < size() && kindAt(next) == "<") {
+                    int saved = current_;
+                    AstType dummy = parseType();
+                    if (curKind() == "identifier") { current_ = saved; return parseVarDeclStmt(); }
+                    current_ = saved;
+                }
+            } else {
+                int saved = current_;
+                AstType dummy = parseType();
+                // 类型后跟 identifier 或 $（quote 插值变量名）→ 变量声明
+                if (curKind() == "identifier" || curKind() == "$") { current_ = saved; return parseVarDeclStmt(); }
+                current_ = saved;
+            }
+            if (curKind() == "(" && scanFunctionType() != 0) {
+                int saved = current_;
+                AstType dummy = parseType();
+                if (curKind() == "identifier") { current_ = saved; return parseVarDeclStmt(); }
+                current_ = saved;
+            }
+            AstStmt es = new AstStmt();
+            es.setKind("ExprStmt");
+            es.setExpr(parseExpr());
+            consume(";", "expected ';' after expression");
+            return es;
+        }
+
+        AstStmt parseVarDeclStmt() {
+            int isVar = curKind() == "var" ? 1 : 0;
+            AstType shared = parseType();
+            AstStmt s = new AstStmt();
+            s.setKind("VarDecl");
+            while (true) {
+                AstVar v = new AstVar();
+                v.setType(shared);
+                if (isVar != 0) v.setInferred(1);
+                if (matchKind("$") != 0) {
+                    int nl = peekLine(); int nc = peekCol();
+                    v.setName("$" + parseIdentifier("expected variable name after '$'"));
+                    v.setNamePos(nl, nc);
+                } else {
+                    int nl2 = peekLine(); int nc2 = peekCol();
+                    v.setName(parseIdentifier("expected variable name"));
+                    v.setNamePos(nl2, nc2);
+                }
+                if (matchKind("=") != 0) v.setInit(parseExpr());
+                if (matchKind("@") != 0) {
+                    string annot = parseIdentifier("expected annotation name");
+                    if (annot == "thread") v.setThread(1);
+                    else if (annot == "threadpool") v.setThreadpool(1);
+                }
+                s.decls().add(v);
+                if (matchKind(",") != 0) {
+                    // 继续
+                } else break;
+            }
+            consume(";", "expected ';' after variable declaration");
+            return s;
+        }
+
+        AstStmt parseDestructureStmt() {
+            AstDestructureTarget root = new AstDestructureTarget();
+            advance(); // (
+            while (true) {
+                AstDestructureTarget child = new AstDestructureTarget();
+                parseDestructureElement(child);
+                root.elements().add(child);
+                if (matchKind(",") != 0) {
+                    if (curKind() == ")") break;
+                } else break;
+            }
+            consume(")", "expected ')' after destructure target");
+            consume("=", "expected '=' after destructure target");
+            AstStmt s = new AstStmt();
+            s.setKind("Destructure");
+            s.setTarget(root);
+            s.setValue(parseExpr());
+            consume(";", "expected ';' after destructure assignment");
+            s.setIsDecl(destructureHasType(root));
+            return s;
+        }
+
+        void parseDestructureElement(AstDestructureTarget t) {
+            if (curKind() == "(") {
+                advance();
+                while (true) {
+                    AstDestructureTarget child = new AstDestructureTarget();
+                    parseDestructureElement(child);
+                    t.elements().add(child);
+                    if (matchKind(",") != 0) {
+                        if (curKind() == ")") break;
+                    } else break;
+                }
+                consume(")", "expected ')' in destructure target");
+                return;
+            }
+            int hasType = 0;
+            if (curKind() == "identifier") {
+                string nt = peekNextKind();
+                if (nt == "identifier" || nt == "<" || nt == "[") {
+                    t.setType(parseType());
+                    hasType = 1;
+                }
+            } else if (isTypeTokenStr(curKind()) != 0) {
+                t.setType(parseType());
+                hasType = 1;
+            }
+            t.setHasType(hasType);
+            t.setName(parseIdentifier("expected variable name in destructure target"));
+        }
+
+        int destructureHasType(AstDestructureTarget t) {
+            if (Str.len(t.name_) != 0 && t.hasType_ != 0) return 1;
+            for (int i = 0; i < t.elements().size(); i = i + 1) {
+                if (destructureHasType(t.elements().get(i)) != 0) return 1;
+            }
+            return 0;
+        }
+
+        AstStmt parseIfStmt() {
+            consume("(", "expected '(' after 'if'");
+            AstStmt s = new AstStmt();
+            s.setKind("If");
+            s.setCondition(parseExpr());
+            consume(")", "expected ')' after condition");
+            s.setThen(parseStatement());
+            if (matchKind("else") != 0) s.setElse(parseStatement());
+            return s;
+        }
+
+        AstStmt parseWhileStmt() {
+            consume("(", "expected '(' after 'while'");
+            AstStmt s = new AstStmt();
+            s.setKind("While");
+            s.setCondition(parseExpr());
+            consume(")", "expected ')' after condition");
+            s.setBody(parseStatement());
+            return s;
+        }
+
+        AstStmt parseForStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("For");
+            // for-in 检测
+            if (curKind() == "(") {
+                if (peekNextKind() == "identifier" && peekNext2Val() == "in") return parseForInStmt(1, 0);
+                if (peekNext2Kind() == "identifier" && peekNext3Val() == "in") return parseForInStmt(1, 1);
+            }
+            // 无括号 range for：for i in expr
+            if (curKind() != "(" && curKind() == "identifier") {
+                int saved = current_;
+                string vn = parseIdentifier("expected variable name");
+                if (curKind() == "identifier" && curVal() == "in") {
+                    advance();
+                    AstExpr re = parseExpr();
+                    AstStmt body = parseStatement();
+                    if (re.kind_ == "Range") {
+                        // 变换为 for (int i = start; i < end; i = i + 1)
+                        AstVar initDecl = new AstVar();
+                        initDecl.setName(vn);
+                        AstType t = new AstType();
+                        t.setBasicName("int");
+                        initDecl.setType(t);
+                        initDecl.setInit(re.start_);
+                        AstStmt initVar = new AstStmt();
+                        initVar.setKind("VarDecl");
+                        initVar.decls().add(initDecl);
+                        AstExpr idEnd = new AstExpr();
+                        idEnd.setKind("Identifier");
+                        idEnd.setName(vn);
+                        AstExpr cond = new AstExpr();
+                        cond.setKind("Binary");
+                        cond.setOp("<");
+                        cond.setLhs(idEnd);
+                        cond.setRhs(re.end_);
+                        AstExpr idStep = new AstExpr();
+                        idStep.setKind("Identifier");
+                        idStep.setName(vn);
+                        AstExpr one = new AstExpr();
+                        one.setKind("Integer");
+                        one.setValue(1L);
+                        AstExpr add = new AstExpr();
+                        add.setKind("Binary");
+                        add.setOp("+");
+                        add.setLhs(idStep);
+                        add.setRhs(one);
+                        AstExpr idTarget = new AstExpr();
+                        idTarget.setKind("Identifier");
+                        idTarget.setName(vn);
+                        AstExpr step = new AstExpr();
+                        step.setKind("Assign");
+                        step.setLhs(idTarget);
+                        step.setRhs(add);
+                        s.setInit(initVar);
+                        s.setCondition(cond);
+                        s.setStep(step);
+                        s.setBody(body);
+                        return s;
+                    }
+                    // 集合迭代 → ForInStmt
+                    AstStmt fi = new AstStmt();
+                    fi.setKind("ForIn");
+                    fi.setVarName(vn);
+                    fi.setHasType(0);
+                    fi.setIterable(re);
+                    fi.setBody(body);
+                    return fi;
+                }
+                current_ = saved;
+            }
+            consume("(", "expected '(' after 'for'");
+            if (checkType() != 0 || curKind() == "var" || curKind() == "const") {
+                s.setInit(parseVarDeclStmt());
+            } else {
+                consume(";", "expected ';' after for init");
+            }
+            if (curKind() != ";") s.setCondition(parseExpr());
+            consume(";", "expected ';' after for condition");
+            if (curKind() != ")") s.setStep(parseExpr());
+            consume(")", "expected ')' after for clauses");
+            // resident / stream / block 子句
+            if (curKind() == "identifier" && curVal() == "resident" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'resident'");
+                while (true) {
+                    string arr = parseIdentifier("expected array name in resident clause");
+                    consume("=", "expected '=' in resident clause");
+                    string dev = parseIdentifier("expected device-pointer variable after '='");
+                    AstPair p = new AstPair();
+                    p.setK(arr);
+                    p.setV(dev);
+                    s.resident().add(p);
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+                consume(")", "expected ')' after resident clause");
+            }
+            if (curKind() == "identifier" && curVal() == "stream" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'stream'");
+                s.setStream(parseExpr());
+                consume(")", "expected ')' after stream expression");
+            }
+            if (curKind() == "identifier" && curVal() == "block" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'block'");
+                if (curKind() == "integer") { s.setBlock(int(myp_str_to_long(curVal()))); advance(); }
+                consume(")", "expected ')' after block size");
+            }
+            s.setBody(parseStatement());
+            return s;
+        }
+
+        AstStmt parseForInStmt(int paren, int hasExplicitType) {
+            AstStmt s = new AstStmt();
+            s.setKind("ForIn");
+            if (paren != 0) consume("(", "expected '(' after 'for'");
+            if (hasExplicitType != 0) {
+                s.setVarType(parseType());
+                s.setHasType(1);
+                s.setVarName(parseIdentifier("expected variable name"));
+            } else {
+                s.setVarName(parseIdentifier("expected variable name"));
+            }
+            if (curKind() == "identifier" && curVal() == "in") advance();
+            else diag_.error(peekLine(), peekCol(), "expected 'in' in for-in");
+            s.setIterable(parseExpr());
+            if (paren != 0) consume(")", "expected ')' after for-in iterable");
+            s.setBody(parseStatement());
+            return s;
+        }
+
+        AstStmt parseReturnStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Return");
+            if (curKind() != ";") s.setValue(parseExpr());
+            consume(";", "expected ';' after return");
+            return s;
+        }
+
+        AstStmt parseBreakStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Break");
+            consume(";", "expected ';' after break");
+            return s;
+        }
+
+        AstStmt parseContinueStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Continue");
+            consume(";", "expected ';' after continue");
+            return s;
+        }
+
+        AstStmt parseAwaitStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Await");
+            if (curKind() == ";") {
+                advance();
+                return s;
+            }
+            s.setExpr(parseExpr());
+            if (curKind() == "identifier" && curVal() == "timeout") {
+                advance();
+                s.setTimeout(parseExpr());
+                consume(";", "expected ';' after await timeout");
+                return s;
+            }
+            consume(";", "expected ';' after await expression");
+            return s;
+        }
+
+        AstStmt parseMappingStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("MappingStmt");
+            s.setMapping(parseMapping());
+            return s;
+        }
+
+        AstStmt parseThrowStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Throw");
+            if (curKind() == ";") {
+                advance();
+                return s;
+            }
+            s.setExpr(parseExpr());
+            consume(";", "expected ';' after throw expression");
+            return s;
+        }
+
+        AstStmt parseMatchStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Match");
+            consume("(", "expected '(' after 'match'");
+            s.setSubject(parseExpr());
+            consume(")", "expected ')' after match subject");
+            consume("{", "expected '{' for match body");
+            while (curKind() != "}" && isAtEnd() == 0) {
+                AstMatchArm a = new AstMatchArm();
+                a.setEnum(parseIdentifier("expected enum type in match arm"));
+                consume(".", "expected '.' after enum type");
+                a.setVariant(parseIdentifier("expected variant name"));
+                a.setIndex(-1);  // C++ 解析期恒 -1（sema 解析）
+                if (matchKind("(") != 0) {
+                    // 绑定变量
+                    while (true) {
+                        a.bindings().add(parseIdentifier("expected binding name"));
+                        if (matchKind(",") != 0) {
+                            // 继续
+                        } else break;
+                    }
+                    consume(")", "expected ')' after match bindings");
+                }
+                consume("=>", "expected '=>' after match arm pattern");
+                consume("{", "expected '{' for match arm body");
+                a.setBody(parseBlock());
+                s.arms().add(a);
+                // arm 可用逗号分隔，也可换行分隔（while 条件 curKind()!="}" 终止）。
+                matchKind(",");
+            }
+            consume("}", "expected '}' after match body");
+            return s;
+        }
+
+        AstStmt parseTryStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("Try");
+            consume("{", "expected '{' after 'try'");
+            s.setTryBlock(parseBlock());
+            while (curKind() == "catch") {
+                advance();
+                AstCatch c = new AstCatch();
+                consume("(", "expected '(' after 'catch'");
+                if (curKind() == "identifier" && peekNextKind() == "identifier") {
+                    // 类型化 catch：catch (Error e)
+                    c.setType(parseIdentifier("expected catch type"));
+                    c.setVar(parseIdentifier("expected catch variable"));
+                } else if (isTypeTokenStr(curKind()) != 0 && peekNextKind() == "identifier") {
+                    // 类型化 catch：catch (string s) —— 类型关键字
+                    c.setType(curVal());
+                    advance();
+                    c.setVar(parseIdentifier("expected catch variable"));
+                } else {
+                    c.setVar(parseIdentifier("expected catch variable"));
+                }
+                consume(")", "expected ')' after catch clause");
+                consume("{", "expected '{' for catch block");
+                c.setBlock(parseBlock());
+                s.catches().add(c);
+            }
+            if (matchKind("finally") != 0) {
+                consume("{", "expected '{' for finally block");
+                s.setFinallyBlock(parseBlock());
+            }
+            return s;
+        }
+
+        // GPU 语句（结构化解析，尽量对齐 C++ dump）
+        AstStmt parseGpuTileStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("GpuTile");
+            consume("(", "expected '(' after '@gpu tile'");
+            // parseType 已吃下数组维度（double[64]），随后是共享数组名。
+            s.setSharedType(parseType());
+            s.setName(parseIdentifier("expected shared array name"));
+            consume(")", "expected ')' after shared array declaration");
+            if (curKind() == "identifier" && curVal() == "grid" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'grid'");
+                s.setHasGrid(1);
+                s.setGridExpr(parseExpr());
+                // 注意：grid_val 解析期不设（C++ 默认 1，sema 才求值）
+                consume(")", "expected ')' after grid blocks");
+            }
+            if (curKind() == "identifier" && curVal() == "resident" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'resident'");
+                while (true) {
+                    string arr = parseIdentifier("expected array name");
+                    consume("=", "expected '=' in resident clause");
+                    string dev = parseIdentifier("expected device-pointer variable");
+                    AstPair p = new AstPair();
+                    p.setK(arr);
+                    p.setV(dev);
+                    s.resident().add(p);
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+                consume(")", "expected ')' after resident clause");
+            }
+            if (curKind() == "identifier" && curVal() == "stream" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'stream'");
+                s.setStream(parseExpr());
+                consume(")", "expected ')' after stream expression");
+            }
+            if (curKind() == "identifier" && curVal() == "block" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'block'");
+                if (curKind() == "integer") { s.setBlock(int(myp_str_to_long(curVal()))); advance(); }
+                consume(")", "expected ')' after block size");
+            }
+            consume("{", "expected '{' for gpu tile body");
+            s.setBody(parseBlock());
+            return s;
+        }
+
+        AstStmt parseGpuReduceStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("GpuReduce");
+            consume("(", "expected '(' after '@gpu reduce'");
+            s.setAcc(parseIdentifier("expected accumulator name"));
+            consume(",", "expected ',' in reduce op");
+            s.setX(parseIdentifier("expected element name"));
+            consume(")", "expected ')' after reduce op params");
+            consume("=>", "expected '=>' in reduce op");
+            consume("{", "expected '{' for reduce op body");
+            s.setOpBody(parseBlock());
+            if (curKind() == "identifier" && curVal() == "init") advance();
+            else perr("expected 'init <expr>' in '@gpu reduce'");
+            s.setInitExpr(parseExpr());
+            if (curKind() == "identifier" && curVal() == "over") advance();
+            else perr("expected 'over <array>[<lo>..<hi>)' in '@gpu reduce'");
+            s.setArr(parseIdentifier("expected array name after 'over'"));
+            consume("[", "expected '[' after array name");
+            // parseExpr 已把 <lo>..<hi> 解析成 Range → 拆分 lo/hi
+            s.setBeginExpr(parseExpr());
+            AstExpr re2 = s.beginExpr_;
+            if (re2.kind_ == "Range") {
+                s.setEndExpr(re2.end_);
+                s.setBeginExpr(re2.start_);
+            }
+            consume(")", "expected ')' after reduce range");
+            consume("->", "expected '->' after reduce range");
+            s.setOut(parseIdentifier("expected output variable after '->'"));
+            // 可选 block(n)
+            if (curKind() == "identifier" && curVal() == "block" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'block'");
+                if (curKind() == "integer") { s.setBlock(int(myp_str_to_long(curVal()))); advance(); }
+                else perr("block size must be an integer literal");
+                consume(")", "expected ')' after block size");
+            }
+            matchKind(";");
+            return s;
+        }
+
+        AstStmt parseGpuScanStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("GpuScan");
+            // 可选变体：scan(exclusive)
+            if (curKind() == "(" && peekNextKind() == "identifier"
+                && peekNextVal() == "exclusive" && peekNext2Kind() == ")") {
+                advance(); advance(); advance();
+                s.setExclusive(1);
+            }
+            consume("(", "expected '(' after '@gpu scan'");
+            s.setAcc(parseIdentifier("expected accumulator name"));
+            consume(",", "expected ',' in scan op");
+            s.setX(parseIdentifier("expected element name"));
+            consume(")", "expected ')' after scan op params");
+            consume("=>", "expected '=>' in scan op");
+            consume("{", "expected '{' for scan op body");
+            s.setOpBody(parseBlock());
+            if (curKind() == "identifier" && curVal() == "init") advance();
+            else perr("expected 'init <expr>' in '@gpu scan'");
+            s.setInitExpr(parseExpr());
+            if (curKind() == "identifier" && curVal() == "over") advance();
+            else perr("expected 'over <array>[<lo>..<hi>)' in '@gpu scan'");
+            s.setInName(parseIdentifier("expected input array name after 'over'"));
+            consume("[", "expected '[' after input array");
+            // parseExpr 已把 <lo>..<hi> 解析成 Range → 拆分 lo/hi
+            s.setBeginExpr(parseExpr());
+            AstExpr re = s.beginExpr_;
+            if (re.kind_ == "Range") {
+                s.setEndExpr(re.end_);
+                s.setBeginExpr(re.start_);
+            }
+            consume(")", "expected ')' after scan range");
+            consume("->", "expected '->' after scan range");
+            s.setOut(parseIdentifier("expected output array after '->'"));
+            // 可选 block(n)
+            if (curKind() == "identifier" && curVal() == "block" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'block'");
+                if (curKind() == "integer") { s.setBlock(int(myp_str_to_long(curVal()))); advance(); }
+                else perr("block size must be an integer literal");
+                consume(")", "expected ')' after block size");
+            }
+            matchKind(";");
+            return s;
+        }
+
+        AstStmt parseGpuScatterStmt() {
+            AstStmt s = new AstStmt();
+            s.setKind("GpuScatter");
+            // 可选冲突模式：scatter(unique|atomic_add|any)
+            if (curKind() == "(") {
+                advance();
+                int ml = peekLine();
+                int mc = peekCol();
+                string m = parseIdentifier("expected conflict mode (unique|atomic_add|any)");
+                if (m == "unique") s.setMode(1);
+                else if (m == "atomic_add") s.setMode(2);
+                else if (m == "any") s.setMode(0);
+                else diag_.error(ml, mc, "unknown scatter conflict mode '" + m + "' (expected unique|atomic_add|any)");
+                consume(")", "expected ')' after scatter mode");
+            }
+            s.setArr(parseIdentifier("expected input array name after 'scatter'"));
+            consume("[", "expected '[' after input array");
+            // parseExpr 已把 <lo>..<hi> 解析成 Range → 拆分 lo/hi
+            s.setABegin(parseExpr());
+            AstExpr r1 = s.aBegin_;
+            if (r1.kind_ == "Range") {
+                s.setAEnd(r1.end_);
+                s.setABegin(r1.start_);
+            }
+            consume(")", "expected ')' after input range");
+            if (curKind() == "identifier" && curVal() == "to") advance();
+            else perr("expected 'to <output>' in '@gpu scatter'");
+            s.setOut(parseIdentifier("expected output array name after 'to'"));
+            if (curKind() == "identifier" && curVal() == "by") {
+                advance();
+                s.setIdxName(parseIdentifier("expected index array name after 'by'"));
+                consume("[", "expected '[' after index array");
+                // parseExpr 已把 <lo>..<hi> 解析成 Range → 拆分 lo/hi
+                s.setIdxBegin(parseExpr());
+                AstExpr r2 = s.idxBegin_;
+                if (r2.kind_ == "Range") {
+                    s.setIdxEnd(r2.end_);
+                    s.setIdxBegin(r2.start_);
+                }
+                consume(")", "expected ')' after index range");
+            } else {
+                perr("expected 'by <index-array>[<lo>..<hi>)' in '@gpu scatter'");
+            }
+            // 可选 block(n)
+            if (curKind() == "identifier" && curVal() == "block" && peekNextKind() == "(") {
+                advance();
+                consume("(", "expected '(' after 'block'");
+                if (curKind() == "integer") { s.setBlock(int(myp_str_to_long(curVal()))); advance(); }
+                else perr("block size must be an integer literal");
+                consume(")", "expected ')' after block size");
+            }
+            matchKind(";");
+            return s;
+        }
+
+        // ---- 表达式 ----
+        AstExpr parseExpr() {
+            return parseAssignment();
+        }
+
+        AstExpr parseAssignment() {
+            AstExpr expr = parsePipe();
+            string k = curKind();
+            if (k == "=") {
+                advance();
+                AstExpr value = parseAssignment();
+                AstExpr a = new AstExpr();
+                a.setKind("Assign");
+                a.setLhs(expr);
+                a.setRhs(value);
+                return a;
+            }
+            // 复合赋值 desugar：a += b → a = a + b（镜像 C++）。
+            string cop = "";
+            if (k == "+=") cop = "+";
+            else if (k == "-=") cop = "-";
+            else if (k == "*=") cop = "*";
+            else if (k == "/=") cop = "/";
+            else if (k == "%=") cop = "%";
+            if (Str.len(cop) != 0) {
+                advance();
+                AstExpr value = parseAssignment();
+                AstExpr bin = new AstExpr();
+                bin.setKind("Binary");
+                bin.setOp(cop);
+                bin.setLhs(expr.cloneExpr());
+                bin.setRhs(value);
+                AstExpr a = new AstExpr();
+                a.setKind("Assign");
+                a.setLhs(expr);
+                a.setRhs(bin);
+                return a;
+            }
+            // 三元
+            if (k == "?") {
+                advance();
+                AstExpr te = parseExpr();
+                consume(":", "expected ':' in ternary");
+                AstExpr fe = parseExpr();
+                AstExpr t = new AstExpr();
+                t.setKind("Ternary");
+                t.setCondition(expr);
+                t.setTrueExpr(te);
+                t.setFalseExpr(fe);
+                return t;
+            }
+            return expr;
+        }
+
+        AstExpr parsePipe() {
+            AstExpr expr = parseOr();
+            while (curKind() == "|>") {
+                advance();
+                AstExpr rhs = parseOr();
+                AstExpr p = new AstExpr();
+                p.setKind("Pipe");
+                p.setLhs(expr);
+                p.setRhs(rhs);
+                expr = p;
+            }
+            return expr;
+        }
+
+        AstExpr parseOr() {
+            AstExpr expr = parseAnd();
+            while (curKind() == "||") {
+                advance();
+                AstExpr rhs = parseAnd();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp("||");
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            return expr;
+        }
+
+        AstExpr parseAnd() {
+            AstExpr expr = parseEquality();
+            while (curKind() == "&&") {
+                advance();
+                AstExpr rhs = parseEquality();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp("&&");
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            return expr;
+        }
+
+        AstExpr parseEquality() {
+            AstExpr expr = parseRelational();
+            while (curKind() == "==" || curKind() == "!=") {
+                string op = curKind();
+                advance();
+                AstExpr rhs = parseRelational();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp(op);
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            return expr;
+        }
+
+        AstExpr parseRelational() {
+            AstExpr expr = parseAdditive();
+            while (curKind() == "<" || curKind() == ">" || curKind() == "<=" || curKind() == ">=") {
+                string op = curKind();
+                advance();
+                AstExpr rhs = parseAdditive();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp(op);
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            return expr;
+        }
+
+        AstExpr parseAdditive() {
+            AstExpr expr = parseMultiplicative();
+            while (curKind() == "+" || curKind() == "-") {
+                string op = curKind();
+                advance();
+                AstExpr rhs = parseMultiplicative();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp(op);
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            // 范围：a..b（低于加法优先级，但在此处理）
+            if (curKind() == "..") {
+                advance();
+                AstExpr end = parseMultiplicative();
+                AstExpr r = new AstExpr();
+                r.setKind("Range");
+                r.setStart(expr);
+                r.setEnd(end);
+                expr = r;
+            }
+            return expr;
+        }
+
+        AstExpr parseMultiplicative() {
+            AstExpr expr = parseUnary();
+            while (curKind() == "*" || curKind() == "/" || curKind() == "%" || curKind() == "&" || curKind() == "|" || curKind() == "^" || curKind() == "<<" || curKind() == ">>") {
+                string op = curKind();
+                advance();
+                AstExpr rhs = parseUnary();
+                AstExpr b = new AstExpr();
+                b.setKind("Binary");
+                b.setOp(op);
+                b.setLhs(expr);
+                b.setRhs(rhs);
+                expr = b;
+            }
+            return expr;
+        }
+
+        AstExpr parseUnary() {
+            string k = curKind();
+            if (k == "!" || k == "-" || k == "~") {
+                string op = k;
+                advance();
+                AstExpr operand = parseUnary();
+                AstExpr u = new AstExpr();
+                u.setKind("Unary");
+                u.setOp(op);
+                u.setOperand(operand);
+                return u;
+            }
+            // 前缀 ++/--：收集整串差值后 desugar 为 `x = x ± N`（镜像 C++，线性防 OOM）。
+            if (k == "++" || k == "--") {
+                int net = 0;
+                while (curKind() == "++") { net = net + 1; advance(); }
+                while (curKind() == "--") { net = net - 1; advance(); }
+                AstExpr operand = parseUnary();
+                if (net == 0) return operand;  // ++--x 抵消
+                int absnet = net < 0 ? -net : net;
+                string op = net < 0 ? "-" : "+";
+                AstExpr delta = new AstExpr();
+                delta.setKind("Integer");
+                delta.setValue(long(absnet));
+                AstExpr bin = new AstExpr();
+                bin.setKind("Binary");
+                bin.setOp(op);
+                bin.setLhs(operand.cloneExpr());
+                bin.setRhs(delta);
+                AstExpr a = new AstExpr();
+                a.setKind("Assign");
+                a.setLhs(operand);
+                a.setRhs(bin);
+                return a;
+            }
+            if (k == "await") {
+                advance();
+                // await; / await) / await, — 无值挂起（操作数为空）
+                if (curKind() == ";" || curKind() == ")" || curKind() == ",") {
+                    AstExpr a0 = new AstExpr();
+                    a0.setKind("Await");
+                    return a0;
+                }
+                // 操作数是完整表达式：await n * 2 == await (n * 2)
+                AstExpr op = parseExpr();
+                AstExpr a = new AstExpr();
+                a.setKind("Await");
+                a.setOperand(op);
+                // 可选 timeout 子句：await Signal.go timeout 100（C10）
+                if (curKind() == "identifier" && curVal() == "timeout") {
+                    advance();
+                    a.setTimeout(parseExpr());
+                }
+                return a;
+            }
+            // bitvector<N>(x) —— 带宽度目标的显式转换（先于通用类型转换）
+            if (k == "bitvector" && peekNextKind() == "<") {
+                advance();  // bitvector
+                consume("<", "expected '<' after bitvector");
+                int bw = 0;
+                if (curKind() == "integer") {
+                    bw = int(myp_str_to_long(curVal()));
+                    advance();
+                } else {
+                    perr("expected integer width in bitvector<N>");
+                }
+                consumeGenericClose("expected '>' after bitvector width");
+                if (matchKind("(") != 0) {
+                    AstExpr c = new AstExpr();
+                    c.setKind("Convert");
+                    c.setToKind("bitvector");
+                    c.setBw(bw);
+                    c.setOperand(parseExpr());
+                    consume(")", "expected ')' after conversion operand");
+                    return c;
+                }
+                perr("expected '(' after bitvector<N>");
+                AstExpr e2 = new AstExpr();
+                e2.setKind("Identifier");
+                e2.setName("__error__");
+                return e2;
+            }
+            // 显式转换：类型关键字 '(' → Convert
+            if (isTypeTokenStr(k) != 0 && peekNextKind() == "(") {
+                AstExpr c = new AstExpr();
+                c.setKind("Convert");
+                c.setToKind(canonTypeName(k));
+                advance();
+                consume("(", "expected '(' after conversion type");
+                c.setOperand(parseExpr());
+                consume(")", "expected ')' after conversion operand");
+                return c;
+            }
+            return parsePostfix();
+        }
+
+        AstExpr parsePostfix() {
+            AstExpr expr = parsePrimary();
+            while (true) {
+                string k = curKind();
+                if (k == "(") {
+                    // 调用
+                    ArrayList<AstExpr> args = new ArrayList<AstExpr>();
+                    ArrayList<AstType> typeArgs = new ArrayList<AstType>();
+                    advance();
+                    if (curKind() != ")") {
+                        args.add(parseExpr());
+                        while (matchKind(",") != 0) args.add(parseExpr());
+                    }
+                    int cpl = peekLine();
+                    int cpc = peekCol();
+                    consume(")", "expected ')' after arguments");
+                    AstExpr c = new AstExpr();
+                    c.setKind("Call");
+                    c.setPos(cpl, cpc);
+                    c.setCallee(expr);
+                    for (int i = 0; i < args.size(); i = i + 1) c.args().add(args.get(i));
+                    for (int j = 0; j < typeArgs.size(); j = j + 1) c.callTypeArgs().add(typeArgs.get(j));
+                    expr = c;
+                } else if (k == ".") {
+                    advance();
+                    string mem;
+                    int ml = peekLine();
+                    int mc = peekCol();
+                    if (curKind() == "integer") {
+                        mem = curVal();
+                        advance();
+                    } else {
+                        mem = parseIdentifier("expected member name");
+                    }
+                    AstExpr m = new AstExpr();
+                    m.setKind("Member");
+                    m.setPos(ml, mc);
+                    m.setArray(expr);
+                    m.setMemberName(mem);
+                    expr = m;
+                } else if (k == "[") {
+                    advance();
+                    AstExpr idx = parseExpr();
+                    consume("]", "expected ']' after subscript");
+                    AstExpr s = new AstExpr();
+                    s.setKind("Subscript");
+                    s.setArray(expr);
+                    s.setIndex(idx);
+                    expr = s;
+                } else if (k == "++" || k == "--") {
+                    // 后缀 ++/--：desugar 为 a = a ± 1（镜像 C++）。
+                    advance();
+                    AstExpr one = new AstExpr();
+                    one.setKind("Integer");
+                    one.setValue(1L);
+                    AstExpr bin = new AstExpr();
+                    bin.setKind("Binary");
+                    bin.setOp((k == "++" ? "+" : "-"));
+                    bin.setLhs(expr.cloneExpr());
+                    bin.setRhs(one);
+                    AstExpr a = new AstExpr();
+                    a.setKind("Assign");
+                    a.setLhs(expr);
+                    a.setRhs(bin);
+                    expr = a;
+                } else if (k == "<" && (expr.kind_ == "Identifier" || expr.kind_ == "Member") && scanGenericCall() != 0) {
+                    // 泛型调用：foo<int>(...) 或 obj.method<T>(...)
+                    ArrayList<AstType> tas = parseTypeArgList();
+                    // 期望紧跟 '('
+                    ArrayList<AstExpr> args = new ArrayList<AstExpr>();
+                    ArrayList<AstType> ta2 = new ArrayList<AstType>();
+                    for (int i = 0; i < tas.size(); i = i + 1) ta2.add(tas.get(i));
+                    int hadParen = curKind() == "(" ? 1 : 0;
+                    int cpl2 = 0;
+                    int cpc2 = 0;
+                    if (curKind() == "(") {
+                        advance();
+                        if (curKind() != ")") {
+                            args.add(parseExpr());
+                            while (matchKind(",") != 0) args.add(parseExpr());
+                        }
+                        cpl2 = peekLine();
+                        cpc2 = peekCol();
+                        consume(")", "expected ')' after arguments");
+                    }
+                    AstExpr c = new AstExpr();
+                    c.setKind("Call");
+                    if (hadParen != 0) c.setPos(cpl2, cpc2);
+                    c.setCallee(expr);
+                    for (int j = 0; j < args.size(); j = j + 1) c.args().add(args.get(j));
+                    for (int kk = 0; kk < ta2.size(); kk = kk + 1) c.callTypeArgs().add(ta2.get(kk));
+                    expr = c;
+                } else {
+                    break;
+                }
+            }
+            return expr;
+        }
+
+        // 泛型调用前瞻（镜像 C++ scanGenericTypeArgs 的纯 token 扫描）：
+        // `<` 深度匹配 `>`；内部出现 `(`/`)`/`{`/`}`/`&&`/`||`/`=`/`==`/`!=`
+        // `;`/`:` → 非泛型调用（如 `a < size()`）；`[` 后只允许整数或立即 `]`。
+        // 最终 `>` 后必须是 `(`。
+        int scanGenericCall() {
+            int i = current_;
+            if (i >= tokens_.size() || kindAt(i) != "<") return 0;
+            i = i + 1;
+            if (i >= tokens_.size() || kindAt(i) == ">") return 0;  // <>()
+            int depth = 1;
+            while (i < tokens_.size()) {
+                string k = kindAt(i);
+                if (k == "<") { depth = depth + 1; i = i + 1; continue; }
+                if (k == ">") {
+                    depth = depth - 1;
+                    if (depth == 0) {
+                        i = i + 1;
+                        if (i < tokens_.size() && kindAt(i) == "(") return 1;
+                        return 0;
+                    }
+                    i = i + 1; continue;
+                }
+                if (k == "(" || k == ")" || k == "{" || k == "}" || k == "&&" || k == "||"
+                    || k == "=" || k == "==" || k == "!=" || k == ";" || k == ":") {
+                    return 0;  // 类型内不允许这些 token → 非泛型调用
+                }
+                if (k == "[") {
+                    i = i + 1;
+                    if (i < tokens_.size() && kindAt(i) == "integer") i = i + 1;
+                    else if (i < tokens_.size() && kindAt(i) == "]") { }
+                    else return 0;
+                    if (i >= tokens_.size() || kindAt(i) != "]") return 0;
+                    i = i + 1;
+                    continue;
+                }
+                if (k == "eof") return 0;
+                i = i + 1;
+            }
+            return 0;
+        }
+
+        // 整数字面量值（镜像 C++ parseIntegerLiteralValue）：0b/0B 二进制、0o/0O 八进制，其余 base0。
+        long parseIntValue(string s) {
+            if (Str.len(s) > 2 && __myp_ord(Str.substring(s, 0, 1)) == 48
+                && (__myp_ord(Str.substring(s, 1, 2)) == 98 || __myp_ord(Str.substring(s, 1, 2)) == 66)) {
+                return parseIntBase(s, 2);
+            }
+            if (Str.len(s) > 2 && __myp_ord(Str.substring(s, 0, 1)) == 48
+                && (__myp_ord(Str.substring(s, 1, 2)) == 111 || __myp_ord(Str.substring(s, 1, 2)) == 79)) {
+                return parseIntBase(s, 8);
+            }
+            return myp_str_to_long(s);
+        }
+        long parseIntBase(string s, int base) {
+            long val = 0;
+            for (int i = 2; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int d = -1;
+                if (c >= 48 && c <= 57) d = c - 48;
+                else if (c >= 97 && c <= 102) d = c - 87;
+                else if (c >= 65 && c <= 70) d = c - 55;
+                if (d < 0 || d >= base) d = 0;
+                val = val * base + d;
+            }
+            return val;
+        }
+
+        // 递归深度守卫（镜像 C++ ParserDepthGuard 300）：超限报错并跳过平衡括号。
+        AstExpr parsePrimary() {
+            int sl = peekLine();
+            int sc = peekCol();
+            recursionDepth_ = recursionDepth_ + 1;
+            if (recursionDepth_ >= 300) {
+                recursionDepth_ = recursionDepth_ - 1;
+                diag_.error(peekLine(), peekCol(), "expression nested too deeply");
+                int nest = 0;
+                while (isAtEnd() == 0) {
+                    string k = curKind();
+                    if (k == "(") nest = nest + 1;
+                    else if (k == ")") {
+                        nest = nest - 1;
+                        if (nest <= 0) { advance(); break; }
+                    }
+                    advance();
+                }
+                AstExpr er = new AstExpr();
+                er.setKind("Identifier");
+                er.setName("__error__");
+                er.setPos(sl, sc);
+                return er;
+            }
+            AstExpr r = parsePrimaryInner();
+            recursionDepth_ = recursionDepth_ - 1;
+            if (r != null) r.setPos(sl, sc);
+            return r;
+        }
+
+        AstExpr parsePrimaryInner() {
+            string k = curKind();
+            if (k == "integer") {
+                AstExpr e = new AstExpr();
+                e.setKind("Integer");
+                e.setValue(parseIntValue(curVal()));
+                advance();
+                return e;
+            }
+            if (k == "long") {
+                AstExpr e = new AstExpr();
+                e.setKind("Integer");
+                e.setValue(parseIntValue(curVal()));
+                e.setIsLong(1);
+                advance();
+                return e;
+            }
+            if (k == "uint") {
+                AstExpr e = new AstExpr();
+                e.setKind("Integer");
+                e.setValue(parseIntValue(curVal()));
+                e.setIsUnsigned(1);
+                advance();
+                return e;
+            }
+            if (k == "float" || k == "float32") {
+                AstExpr e = new AstExpr();
+                e.setKind("Float");
+                e.setFval(myp_str_to_double(curVal()));
+                if (k == "float32") e.setF32(1);
+                advance();
+                return e;
+            }
+            if (k == "string") {
+                string sval = curVal();
+                advance();
+                // 字符串插值："Hello, $name" → StringLiteral 与 Identifier 拼接。
+                // 镜像 C++：while (pos < size)；`$` 后无合法名则不动，result 为
+                // null 时返回原字符串（如 "$" / "$."）。
+                AstExpr result = null;
+                int pos = 0;
+                while (pos < Str.len(sval)) {
+                    int dpos = -1;
+                    for (int i = pos; i < Str.len(sval); i = i + 1) {
+                        if (__myp_ord(Str.substring(sval, i, i + 1)) == 36) { dpos = i; break; }
+                    }
+                    if (dpos < 0) {
+                        string part = Str.substring(sval, pos, Str.len(sval));
+                        AstExpr lit = new AstExpr();
+                        lit.setKind("String");
+                        lit.setStringValue(part);
+                        if (result != null) {
+                            AstExpr b = new AstExpr();
+                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
+                            result = b;
+                        } else {
+                            result = lit;
+                        }
+                        break;
+                    }
+                    if (dpos > pos) {
+                        string part = Str.substring(sval, pos, dpos);
+                        AstExpr lit = new AstExpr();
+                        lit.setKind("String");
+                        lit.setStringValue(part);
+                        if (result != null) {
+                            AstExpr b = new AstExpr();
+                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
+                            result = b;
+                        } else {
+                            result = lit;
+                        }
+                    }
+                    pos = dpos + 1;
+                    int e2 = pos;
+                    while (e2 < Str.len(sval)) {
+                        int c = __myp_ord(Str.substring(sval, e2, e2 + 1));
+                        if (Lex.isAlnum(c) != 0 || c == 95) e2 = e2 + 1; else break;
+                    }
+                    if (e2 > pos) {
+                        string vname = Str.substring(sval, pos, e2);
+                        AstExpr ident = new AstExpr();
+                        ident.setKind("Identifier");
+                        ident.setName(vname);
+                        if (result != null) {
+                            AstExpr b = new AstExpr();
+                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(ident);
+                            result = b;
+                        } else {
+                            result = ident;
+                        }
+                    }
+                    pos = e2;
+                }
+                if (result != null) return result;
+                AstExpr plain = new AstExpr();
+                plain.setKind("String");
+                plain.setStringValue(sval);
+                return plain;
+            }
+            if (k == "char") {
+                AstExpr e = new AstExpr();
+                e.setKind("Integer");
+                e.setValue(long(__myp_ord(curVal())));
+                e.setIsChar(1);
+                advance();
+                return e;
+            }
+            if (k == "bool") {
+                AstExpr e = new AstExpr();
+                e.setKind("Bool");
+                if (curVal() == "true") e.setValue(1L); else e.setValue(0L);
+                advance();
+                return e;
+            }
+            if (k == "null") {
+                AstExpr e = new AstExpr();
+                e.setKind("Null");
+                advance();
+                return e;
+            }
+            if (k == "true") {
+                AstExpr e = new AstExpr();
+                e.setKind("Bool");
+                e.setValue(1L);
+                advance();
+                return e;
+            }
+            if (k == "false") {
+                AstExpr e = new AstExpr();
+                e.setKind("Bool");
+                e.setValue(0L);
+                advance();
+                return e;
+            }
+            if (k == "this") {
+                AstExpr e = new AstExpr();
+                e.setKind("This");
+                advance();
+                return e;
+            }
+            if (k == "identifier") {
+                // quote { ... } —— 上下文关键字（M4 编译期 AST 模板），仅后跟 '{' 时生效。
+                if (curVal() == "quote" && peekNextKind() == "{") {
+                    advance();
+                    consume("{", "expected '{' after 'quote'");
+                    AstExpr q = new AstExpr();
+                    q.setKind("Quote");
+                    q.setBodyStmt(parseBlock());
+                    return q;
+                }
+                // 命名递归闭包：fn name(params) => body（M-FN-2，body 内 name 自引用）
+                if (curVal() == "fn" && peekNextKind() == "identifier" && peekNext2Kind() == "(") {
+                    advance();
+                    string lname = parseIdentifier("expected lambda name after 'fn'");
+                    consume("(", "expected '(' after lambda name");
+                    AstExpr lam = parseLambdaExprBody();
+                    lam.setName(lname);
+                    return lam;
+                }
+                AstExpr e = new AstExpr();
+                e.setKind("Identifier");
+                e.setName(curVal());
+                advance();
+                return e;
+            }
+            if (k == "new") {
+                return parseNewExpr();
+            }
+            if (k == "(") {
+                // lambda / 元组 / 括号：`(...)` 匹配后跟 `=>` 即 lambda
+                if (scanLambda() != 0) {
+                    advance();
+                    return parseLambdaExprBody();
+                }
+                // 元组字面量：scanTupleExpr
+                if (scanTupleExpr() != 0) {
+                    advance();
+                    AstExpr t = new AstExpr();
+                    t.setKind("Tuple");
+                    while (true) {
+                        t.elements().add(parseExpr());
+                        if (matchKind(",") != 0) {
+                            if (curKind() == ")") break;
+                        } else break;
+                    }
+                    consume(")", "expected ')' after tuple");
+                    return t;
+                }
+                advance();
+                AstExpr inner = parseExpr();
+                consume(")", "expected ')' after expression");
+                return inner;
+            }
+            if (k == "try") {
+                advance();
+                AstExpr te = parseExpr();
+                consume("catch", "expected 'catch' in try expression");
+                consume("(", "expected '(' after catch");
+                string cv = parseIdentifier("expected catch variable");
+                consume(")", "expected ')' after catch variable");
+                AstExpr ce = parseExpr();
+                AstExpr t = new AstExpr();
+                t.setKind("TryExpr");
+                t.setTryExpr(te);
+                t.setCatchVarName(cv);
+                t.setCatchExpr(ce);
+                return t;
+            }
+            if (k == "$") {
+                advance();
+                string pn = parseIdentifier("expected macro parameter name after '$'");
+                AstExpr e = new AstExpr();
+                e.setKind("MacroParam");
+                e.setName(pn);
+                return e;
+            }
+            if (k == "@" && peekNextVal() == "gpu") {
+                advance();
+                advance();
+                if (curKind() == "identifier" && curVal() == "reduce") {
+                    advance();
+                    AstExpr e = new AstExpr();
+                    e.setKind("GpuReduceExpr");
+                    e.setStmt(parseGpuReduceStmt());
+                    return e;
+                }
+            }
+            // 错误
+            perr("unexpected token '" + k + "' in expression");
+            AstExpr er = new AstExpr();
+            er.setKind("Identifier");
+            er.setName("__error__");
+            advance();
+            return er;
+        }
+
+        AstExpr parseNewExpr() {
+            advance(); // new
+            AstExpr e = new AstExpr();
+            // new double[n] 动态数组
+            if (isTypeTokenStr(curKind()) != 0 && peekNextKind() == "[") {
+                e.setKind("NewArray");
+                // 元素类型只取基础类型（parseType 会贪吃 [n]，把 n 当类型维度留下 → 错误）。
+                AstType et = new AstType();
+                et.setBasicName(canonTypeName(curKind()));
+                advance();
+                e.setElemType(et);
+                while (curKind() == "[") {
+                    advance();
+                    AstExpr dim = parseExpr();
+                    consume("]", "expected ']' after dimension");
+                    e.dimensions().add(dim);
+                }
+                return e;
+            }
+            e.setKind("New");
+            if (curKind() == "identifier") {
+                e.setClassName(curVal());
+                advance();
+            }
+            // 泛型类型实参
+            if (curKind() == "<") {
+                ArrayList<AstType> tal = parseTypeArgList();
+                for (int i = 0; i < tal.size(); i = i + 1) e.typeArgs().add(tal.get(i));
+            }
+            // new double[n]（基本类型 + [ 维度）—— 动态数组
+            if (curKind() == "[") {
+                // 前面已当作类处理，实际是数组
+                e.setKind("NewArray");
+                if (Str.len(e.className_) != 0) {
+                    AstType et = new AstType();
+                    et.setBasicName(canonTypeName(e.className_));
+                    e.setElemType(et);
+                    e.setClassName("");
+                    e.typeArgs().clear();
+                }
+                while (curKind() == "[") {
+                    advance();
+                    AstExpr dim = parseExpr();
+                    consume("]", "expected ']' after dimension");
+                    e.dimensions().add(dim);
+                }
+                return e;
+            }
+            consume("(", "expected '(' after 'new'");
+            if (curKind() != ")") {
+                e.args().add(parseExpr());
+                while (matchKind(",") != 0) e.args().add(parseExpr());
+            }
+            consume(")", "expected ')' after new arguments");
+            return e;
+        }
+
+        // lambda 体（'(' 已消费）
+        AstExpr parseLambdaExprBody() {
+            AstExpr e = new AstExpr();
+            e.setKind("Lambda");
+            // 参数
+            if (curKind() != ")") {
+                // 每个参数：type? name 或 name
+                while (true) {
+                    AstParam p = new AstParam();
+                    // 判断是否有类型：当前是类型token 且下一个是 identifier/','/')'
+                    int hasType = 0;
+                    if (curKind() == "(" && scanTupleType() != 0) {
+                        // 元组类型参数：(int, int) t
+                        p.setType(parseType()); hasType = 1;
+                    } else if (curKind() == "identifier") {
+                        // 可能是类型或参数名——用下一个 token 判断
+                        string nt = peekNextKind();
+                        if (nt == "identifier") { p.setType(parseType()); hasType = 1; }
+                    } else if (isTypeTokenStr(curKind()) != 0) {
+                        // 内置类型关键字
+                        // 但 `int x` 是类型+名；`x` 是名。检查下一个是否是 ')' 或 ',' → 只是名
+                        string nt = peekNextKind();
+                        if (nt == "identifier") { p.setType(parseType()); hasType = 1; }
+                    }
+                    if (hasType == 0) {
+                        p.setName(parseIdentifier("expected lambda parameter"));
+                    } else {
+                        p.setName(parseIdentifier("expected lambda parameter"));
+                    }
+                    e.params().add(p);
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+            }
+            consume(")", "expected ')' after lambda parameters");
+            consume("=>", "expected '=>' in lambda");
+            if (curKind() == "{") {
+                advance();
+                e.setBodyStmt(parseBlock());
+            } else {
+                AstStmt ret = new AstStmt();
+                ret.setKind("Return");
+                ret.setValue(parseExpr());
+                AstStmt blk = new AstStmt();
+                blk.setKind("Block");
+                blk.bodyStmts().add(ret);
+                e.setBodyStmt(blk);
+            }
+            return e;
+        }
+
+        // ---- 类型 ----
+        AstType parseType() {
+            AstType t = new AstType();
+            // 函数类型：(A,B)->R / ()->R
+            if (curKind() == "(" && scanFunctionType() != 0) {
+                advance();
+                if (curKind() != ")") {
+                    while (true) {
+                        t.funcParamTypes().add(parseType());
+                        if (matchKind(",") != 0) {
+                            // 继续
+                        } else break;
+                    }
+                }
+                consume(")", "expected ')' in function type");
+                consume("->", "expected '->' in function type");
+                t.setFuncReturn(parseType());
+                return t;
+            }
+            // 元组类型：(A,B)
+            if (curKind() == "(" && scanTupleType() != 0) {
+                advance();
+                t.setIsTuple(1);
+                while (true) {
+                    t.funcParamTypes().add(parseType());
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+                consume(")", "expected ')' in tuple type");
+                return t;
+            }
+            // 基本类型或用户类型
+            if (isTypeTokenStr(curKind()) != 0) {
+                string bname = canonTypeName(curKind());
+                // var：类型推断占位 → int（镜像 C++ is_inferred placeholder）
+                if (bname == "var") bname = "int";
+                t.setBasicName(bname);
+                if (curKind() == "bitvector") {
+                    // bitvector<N> — 定长位向量
+                    advance();
+                    consume("<", "expected '<' after 'bitvector'");
+                    if (curKind() == "integer") {
+                        t.setBitvectorWidth(int(myp_str_to_long(curVal())));
+                        advance();
+                    } else {
+                        perr("expected integer width in bitvector<N>");
+                    }
+                    consumeGenericClose("expected '>' after bitvector width");
+                } else {
+                    advance();
+                }
+            } else if (curKind() == "identifier") {
+                t.setClassName(curVal());
+                advance();
+                // 类型别名替换（解析期，镜像 C++ aliases_）
+                AstType al = lookupAlias(t.className_);
+                if (al != null) t = al;
+                // 泛型实参
+                if (curKind() == "<") {
+                    ArrayList<AstType> tal = parseTypeArgList();
+                    for (int i = 0; i < tal.size(); i = i + 1) t.typeArgs().add(tal.get(i));
+                }
+                // 关联类型 Class::Item
+                if (curKind() == "::") {
+                    advance();
+                    string item = parseIdentifier("expected associated type name");
+                    t.setClassName(t.className_ + "::" + item);
+                }
+            } else if (curKind() == "void") {
+                t.setBasicName("void");
+                advance();
+            } else {
+                perr("expected type");
+                advance();
+            }
+            // 数组维度
+            while (curKind() == "[") {
+                advance();
+                // 外层 wrap 承载尺寸（str() 读 wrap.arraySize_；此前误放在 inner 导致 string[]）。
+                AstType wrap = new AstType();
+                wrap.setElement(t);
+                wrap.setArraySize(0);
+                if (curKind() == "integer") {
+                    wrap.setArraySize(int(myp_str_to_long(curVal())));
+                    advance();
+                }
+                consume("]", "expected ']' after array type");
+                t = wrap;
+            }
+            // Option 语法糖：Type? ≡ Option<Type>（镜像 C++）
+            if (curKind() == "?") {
+                advance();
+                AstType inner = t;
+                t = new AstType();
+                t.setClassName("Option");
+                t.typeArgs().add(inner);
+            }
+            return t;
+        }
+
+        ArrayList<AstType> parseTypeArgList() {
+            ArrayList<AstType> args = new ArrayList<AstType>();
+            if (curKind() == "<") {
+                advance();
+                while (true) {
+                    args.add(parseType());
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+                consumeGenericClose("expected '>' after type arguments");
+            }
+            return args;
+        }
+
+        ArrayList<string> parseTypeParamList() {
+            ArrayList<string> tps = new ArrayList<string>();
+            if (curKind() == "identifier") {
+                tps.add(parseIdentifier("expected type parameter name"));
+                while (matchKind(",") != 0) {
+                    tps.add(parseIdentifier("expected type parameter name"));
+                }
+            }
+            return tps;
+        }
+
+        void parseTypeParamConstraints(ArrayList<AstPair> out) {
+            // where T : I 在 <...> 内（where 是关键字，token kind 为 "where"）
+            if (curKind() == "where" || (curKind() == "identifier" && curVal() == "where")) {
+                advance();
+                while (true) {
+                    string tp = parseIdentifier("expected type parameter name");
+                    consume(":", "expected ':' in type constraint");
+                    string iface = parseIdentifier("expected interface name");
+                    AstPair p = new AstPair();
+                    p.setK(tp);
+                    p.setV(iface);
+                    ArrayList<AstPair> w = out;
+                    w.add(p);
+                    if (matchKind(",") != 0) {
+                        // 继续
+                    } else break;
+                }
+            }
+        }
+
+        void parseGenericWhereClause(ArrayList<string> tps, ArrayList<AstPair> out) {
+            parseTypeParamConstraints(out);
+        }
+
+        // ---- token 工具 ----
+        string peekKind() {
+            return curKind();
+        }
+        // 相对当前偏移取 token（pending 合成的 '>' 优先；pendingN_ 个合成 '>' 在最前）。
+        Tok peekAt(int off) {
+            if (pendingN_ != 0) {
+                if (off < pendingN_) return pending_[pendingN_ - 1 - off];
+                int i = current_ + (off - pendingN_);
+                if (i >= tokens_.size()) { Tok e = new Tok("eof", "", 0, 0); return e; }
+                return tokens_.get(i);
+            }
+            int i = current_ + off;
+            if (i >= tokens_.size()) { Tok e = new Tok("eof", "", 0, 0); return e; }
+            return tokens_.get(i);
+        }
+        string curKind() { return peekAt(0).kind(); }
+        string curVal() { return peekAt(0).value(); }
+        string peekNextKind() { return peekAt(1).kind(); }
+        string peekNextVal() { return peekAt(1).value(); }
+        string peekNext2Kind() { return peekAt(2).kind(); }
+        string peekNext2Val() { return peekAt(2).value(); }
+        string peekNext3Kind() { return peekAt(3).kind(); }
+        string peekNext3Val() { return peekAt(3).value(); }
+        Tok tokAt(int i) {
+            if (i < 0 || i >= tokens_.size()) {
+                Tok eofTok = new Tok("eof", "", 0, 0);
+                return eofTok;
+            }
+            return tokens_.get(i);
+        }
+        int size() { return tokens_.size(); }
+        // MYP 注意：对返回的类实例直接方法链（peekAt(0).line()）会产生垃圾值，
+        // 必须先存入局部变量再取字段。
+        int peekLine() { Tok t = peekAt(0); return t.line(); }
+        int peekCol() { Tok t = peekAt(0); return t.col(); }
+        void advance() {
+            if (pendingN_ != 0) { pendingN_ = pendingN_ - 1; return; }
+            if (current_ < tokens_.size() - 1) current_ = current_ + 1;
+            else current_ = tokens_.size() - 1;
+        }
+        int matchKind(string k) {
+            if (curKind() == k) { advance(); return 1; }
+            return 0;
+        }
+        int checkType() {
+            string k = curKind();
+            if (k == "identifier") {
+                // 需要区分类型 vs 表达式——在语句位置，identifier 后跟 identifier 才是类型
+                // 简化：在此语境调用方已判断
+                return 1;
+            }
+            return isTypeTokenStr(k);
+        }
+        int isTypeTokenStr(string k) {
+            if (k == "byte" || k == "short" || k == "int" || k == "long" || k == "ubyte"
+                || k == "ushort" || k == "uint" || k == "ulong" || k == "uint8" || k == "uint16"
+                || k == "uint32" || k == "uint64" || k == "int8" || k == "int16" || k == "int32"
+                || k == "int64" || k == "char" || k == "float" || k == "double" || k == "float4"
+                || k == "double2" || k == "int4" || k == "bool" || k == "string" || k == "bit"
+                || k == "bitvector" || k == "var") return 1;
+            return 0;
+        }
+        // 类型别名规范化（镜像 C++ parseType 的 BuiltinType 映射）
+        string canonTypeName(string k) {
+            if (k == "uint8") return "ubyte";
+            if (k == "uint16") return "ushort";
+            if (k == "uint32") return "uint";
+            if (k == "uint64") return "ulong";
+            if (k == "int8") return "byte";
+            if (k == "int16") return "short";
+            if (k == "int32") return "int";
+            if (k == "int64") return "long";
+            return k;
+        }
+        void consume(string k, string msg) {
+            if (curKind() == k) { advance(); return; }
+            perr(msg);
+        }
+        void consumeGenericClose(string msg) {
+            if (curKind() == ">") { advance(); return; }
+            if (curKind() == ">>") {
+                // 嵌套泛型 `Box<Vec<int>>` 闭合 `>>` 拆成两个 '>'：消费真实 `>>`，
+                // 压入合成 '>'（peekAt/advance 优先消费 pending）。
+                advance();
+                if (pendingN_ < 16) {
+                    pending_[pendingN_] = new Tok(">", "", 0, 0);
+                    pendingN_ = pendingN_ + 1;
+                }
+                return;
+            }
+            perr(msg);
+        }
+        // 宏语句占位判定（镜像 C++ isMacroStmtPlaceholder）：`$` Identifier 后跟 }/;/$/EOF。
+        int isMacroStmtPlaceholder() {
+            if (curKind() != "$") return 0;
+            if (current_ + 1 >= tokens_.size()) return 0;
+            if (kindAt(current_ + 1) != "identifier") return 0;
+            if (current_ + 2 >= tokens_.size()) return 1;
+            string nk = kindAt(current_ + 2);
+            if (nk == "}" || nk == ";" || nk == "$") return 1;
+            return 0;
+        }
+        // 诊断（silent_=1 时静默，供前瞻扫描使用）。
+        void perr(string msg) {
+            if (silent_ == 0) diag_.error(peekLine(), peekCol(), msg);
+        }
+        int isAtEnd() {
+            if (curKind() == "eof") return 1;
+            return 0;
+        }
+        string kindAt(int i) { return tokAt(i).kind(); }
+        string valAt(int i) { return tokAt(i).value(); }
+        string parseIdentifier(string msg) {
+            if (curKind() == "identifier") {
+                string v = curVal();
+                advance();
+                return v;
+            }
+            perr(msg);
+            return "__error__";
+        }
+        void synchronize() {
+            // 镜像 C++：先 advance，previous 为 ';' 时停（current 在 ';' 之后）；
+            // 遇 class/enum/match/import/mapping/if/while/for/return 停（current 在该 token）。
+            int guard = 0;
+            advance();
+            while (isAtEnd() == 0 && guard < 2000) {
+                if (current_ > 0 && kindAt(current_ - 1) == ";") break;
+                string k = curKind();
+                if (k == "class" || k == "enum" || k == "match" || k == "import"
+                    || k == "mapping" || k == "if" || k == "while" || k == "for"
+                    || k == "return") return;
+                advance();
+                guard = guard + 1;
+            }
+        }
+
+        // ---- 诊断前瞻（静默）----
+        int scanFunctionType() {
+            // '(' 后（可为空）类型列表 ')' '->' —— `() -> T` 也是函数类型
+            int saved = current_;
+            int ok = 0;
+            if (curKind() == "(") {
+                advance();
+                int depth = 1;
+                int guard = 0;
+                while (guard < 1000 && depth > 0) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") depth = depth - 1;
+                    if (k == "eof") break;
+                    if (depth == 0) {
+                        advance();
+                        break;
+                    }
+                    advance();
+                    guard = guard + 1;
+                }
+                if (curKind() == "->") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        int scanTupleType() {
+            int saved = current_;
+            int ok = 0;
+            int topComma = 0;
+            if (curKind() == "(") {
+                int depth = 0;
+                int guard = 0;
+                while (guard < 1000) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") {
+                        depth = depth - 1;
+                        if (depth == 0) { advance(); break; }
+                    } else if (k == "," && depth == 1) {
+                        topComma = 1;
+                    } else if (k == "eof") break;
+                    advance();
+                    guard = guard + 1;
+                }
+                if (topComma != 0 && curKind() != "->") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        // lambda 前瞻：`(` 匹配 `)` 后跟 `=>`（覆盖 `() =>` / `(int v) =>` / `(a, b) =>`）。
+        int scanLambda() {
+            int saved = current_;
+            int ok = 0;
+            if (curKind() == "(") {
+                advance();
+                int depth = 1;
+                int guard = 0;
+                while (guard < 1000 && depth > 0) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") {
+                        depth = depth - 1;
+                        if (depth == 0) { advance(); break; }
+                    } else if (k == "eof") break;
+                    advance();
+                    guard = guard + 1;
+                }
+                if (curKind() == "=>") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        int scanTupleExpr() {
+            int saved = current_;
+            int ok = 0;
+            int topComma = 0;
+            if (curKind() == "(") {
+                int depth = 0;
+                int guard = 0;
+                while (guard < 1000) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") {
+                        depth = depth - 1;
+                        if (depth == 0) { advance(); break; }
+                    } else if (k == "," && depth == 1) {
+                        topComma = 1;
+                    } else if (k == "eof") break;
+                    advance();
+                    guard = guard + 1;
+                }
+                if (topComma != 0 && curKind() != "=>") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        int scanDestructureAssign() {
+            int saved = current_;
+            int ok = 0;
+            int topComma = 0;
+            if (curKind() == "(") {
+                int depth = 0;
+                int guard = 0;
+                while (guard < 1000) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") {
+                        depth = depth - 1;
+                        if (depth == 0) { advance(); break; }
+                    } else if (k == "," && depth == 1) {
+                        topComma = 1;
+                    } else if (k == "eof") break;
+                    advance();
+                    guard = guard + 1;
+                }
+                if (topComma != 0 && curKind() == "=") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        int scanTupleVarDecl() {
+            int saved = current_;
+            int ok = 0;
+            int topComma = 0;
+            if (curKind() == "(") {
+                int depth = 0;
+                int guard = 0;
+                while (guard < 1000) {
+                    string k = curKind();
+                    if (k == "(") depth = depth + 1;
+                    else if (k == ")") {
+                        depth = depth - 1;
+                        if (depth == 0) { advance(); break; }
+                    } else if (k == "," && depth == 1) {
+                        topComma = 1;
+                    } else if (k == "eof") break;
+                    advance();
+                    guard = guard + 1;
+                }
+                if (topComma != 0 && curKind() == "identifier") ok = 1;
+            }
+            current_ = saved;
+            return ok;
+        }
+
+        DiagEngine diags() { return diag_; }
+
+    property:
+        ArrayList<Tok> tokens_;
+        DiagEngine diag_;
+        int current_;
+        Tok[16] pending_;
+        int pendingN_;
+        int silent_;
+        ArrayList<string> aliasNames_;
+        ArrayList<AstType> aliasTypes_;
+        int recursionDepth_;
+}
+

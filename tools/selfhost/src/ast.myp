@@ -1,0 +1,1621 @@
+// ast.myp — AST 节点类 + 无损 dump（F2）
+//
+// 对拍基准: src/frontend_dump.cpp dumpAST（tools/selfhost/format.md §4）。
+// 节点用扁平 class + kind 字符串（MYP 无继承），dump 按 kind 分派复刻 C++ 输出。
+// 缩进 2 空格/层；字符串经 Dump.esc 转义；哈希容器字段（constraints/assoc）排序。
+// float 值用 Fmt.g(v,17)（≡ C %.17g）。
+
+import collections;
+import text;
+import fmt;
+
+// 转义 + 缩进工具（与 format.md §2 一致）。
+@static class Dump {
+    static:
+        string esc(string s) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c == 10) sb.append("\\n");
+                else if (c == 9) sb.append("\\t");
+                else if (c == 13) sb.append("\\r");
+                else if (c == 34) sb.append("\\\"");
+                else if (c == 92) sb.append("\\\\");
+                else if (c == 1) sb.append("\\0");
+                else sb.append(__myp_chr(c));
+            }
+            return sb.toString();
+        }
+        string pad(int n) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < n; i = i + 1) sb.append(" ");
+            return sb.toString();
+        }
+        string joinList(ArrayList<string> v) {
+            ArrayList<string> w = v;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < w.size(); i = i + 1) {
+                if (i != 0) sb.append(",");
+                sb.append(Dump.esc(w.get(i)));
+            }
+            return sb.toString();
+        }
+        void line(StringBuilder sb, int ind, string s) {
+            sb.append(Dump.pad(ind));
+            sb.append(s);
+            sb.append("\n");
+        }
+}
+
+// ---- 类型 ----
+class AstType {
+    action:
+        @constructor AstType() {
+            basicName_ = "";
+            className_ = "";
+            typeArgs_ = new ArrayList<AstType>();
+            element_ = null;
+            arraySize_ = 0;
+            genericParam_ = 0;
+            funcParamTypes_ = new ArrayList<AstType>();
+            funcReturn_ = null;
+            isTuple_ = 0;
+            bitvectorWidth_ = 0;
+        }
+        ArrayList<AstType> typeArgs() { return typeArgs_; }
+        ArrayList<AstType> funcParamTypes() { return funcParamTypes_; }
+        void setBasicName(string v) { basicName_ = v; }
+        void setClassName(string v) { className_ = v; }
+        void setElement(AstType v) { element_ = v; }
+        void setArraySize(int v) { arraySize_ = v; }
+        void setGenericParam(int v) { genericParam_ = v; }
+        void setFuncReturn(AstType v) { funcReturn_ = v; }
+        void setIsTuple(int v) { isTuple_ = v; }
+        void setBitvectorWidth(int v) { bitvectorWidth_ = v; }
+        string str() {
+            if (element_ != null) {
+                StringBuilder s = new StringBuilder();
+                s.append(element_.str());
+                s.append("[");
+                if (arraySize_ > 0) s.append("" + arraySize_);
+                s.append("]");
+                return s.toString();
+            }
+            if (Str.len(className_) != 0) {
+                StringBuilder s = new StringBuilder();
+                s.append(className_);
+                if (typeArgs_.size() != 0) {
+                    s.append("<");
+                    for (int i = 0; i < typeArgs_.size(); i = i + 1) {
+                        if (i != 0) s.append(",");
+                        s.append(typeArgs_.get(i).str());
+                    }
+                    s.append(">");
+                }
+                return s.toString();
+            }
+            // 注：MYP 字符串插值会把 "$T" 当 $T 宏引用 → 用 __myp_chr(36) 拼出 "$T"。
+            if (genericParam_ != 0) return __myp_chr(36) + "T";
+            if (funcReturn_ != null) {
+                StringBuilder s = new StringBuilder();
+                s.append("(");
+                for (int i = 0; i < funcParamTypes_.size(); i = i + 1) {
+                    if (i != 0) s.append(",");
+                    s.append(funcParamTypes_.get(i).str());
+                }
+                s.append(")->");
+                s.append(funcReturn_.str());
+                return s.toString();
+            }
+            if (isTuple_ != 0) {
+                StringBuilder s = new StringBuilder();
+                s.append("(");
+                for (int i = 0; i < funcParamTypes_.size(); i = i + 1) {
+                    if (i != 0) s.append(",");
+                    s.append(funcParamTypes_.get(i).str());
+                }
+                s.append(")");
+                return s.toString();
+            }
+            // bitvector<N> → "bitvector8"（C++ typeNodeToString: "bitvector"+width）
+            if (basicName_ == "bitvector" && bitvectorWidth_ != 0) {
+                return basicName_ + "" + bitvectorWidth_;
+            }
+            return basicName_;
+        }
+    property:
+        string basicName_;
+        string className_;
+        ArrayList<AstType> typeArgs_;
+        AstType element_;
+        int arraySize_;
+        int genericParam_;
+        ArrayList<AstType> funcParamTypes_;
+        AstType funcReturn_;
+        int isTuple_;
+        int bitvectorWidth_;
+}
+
+// ---- 声明 ----
+class AstParam {
+    action:
+        @constructor AstParam() {
+            name_ = "";
+            type_ = null;
+            ref_ = 0;
+            hasDefault_ = 0;
+            defaultExpr_ = null;
+        }
+        void setName(string v) { name_ = v; }
+        void setType(AstType v) { type_ = v; }
+        void setRef(int v) { ref_ = v; }
+        void setHasDefault(int v) { hasDefault_ = v; }
+        void setDefaultExpr(AstExpr v) { defaultExpr_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            StringBuilder s = new StringBuilder();
+            s.append(Dump.pad(ind));
+            s.append("(Param name=\"");
+            s.append(Dump.esc(name_));
+            s.append("\" type=");
+            if (type_ != null) s.append(type_.str()); else s.append("?");
+            s.append(" ref=");
+            s.append("" + ref_);
+            if (hasDefault_ != 0) s.append(" hasDefault=1");
+            s.append(")\n");
+            sb.append(s.toString());
+            if (defaultExpr_ != null) defaultExpr_.dump(sb, ind);
+        }
+    property:
+        string name_;
+        AstType type_;
+        int ref_;
+        int hasDefault_;
+        AstExpr defaultExpr_;
+}
+
+class AstVar {
+    action:
+        @constructor AstVar() {
+            name_ = "";
+            type_ = null;
+            const_ = 0;
+            thread_ = 0;
+            threadpool_ = 0;
+            isInferred_ = 0;
+            init_ = null;
+        }
+        void setName(string v) { name_ = v; }
+        void setNamePos(int l, int c) { nameLine_ = l; nameCol_ = c; }
+        void setType(AstType v) { type_ = v; }
+        void setInferred(int v) { isInferred_ = v; }
+        void setConst(int v) { const_ = v; }
+        void setThread(int v) { thread_ = v; }
+        void setThreadpool(int v) { threadpool_ = v; }
+        void setInit(AstExpr v) { init_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            StringBuilder s = new StringBuilder();
+            s.append(Dump.pad(ind));
+            s.append("(Var name=\"");
+            s.append(Dump.esc(name_));
+            s.append("\" type=");
+            if (type_ != null) s.append(type_.str()); else s.append("?");
+            s.append(" const=");
+            s.append("" + const_);
+            s.append(" thread=");
+            s.append("" + thread_);
+            s.append(" threadpool=");
+            s.append("" + threadpool_);
+            s.append(")\n");
+            sb.append(s.toString());
+            if (init_ != null) init_.dump(sb, ind);
+        }
+    property:
+        string name_;
+        int nameLine_;
+        int nameCol_;
+        AstType type_;
+        int const_;
+        int thread_;
+        int threadpool_;
+        int isInferred_;
+        AstExpr init_;
+}
+
+class AstProp {
+    action:
+        @constructor AstProp() {
+            name_ = "";
+            type_ = null;
+            const_ = 0;
+            weak_ = 0;
+            init_ = null;
+        }
+        void setName(string v) { name_ = v; }
+        void setType(AstType v) { type_ = v; }
+        void setConst(int v) { const_ = v; }
+        void setWeak(int v) { weak_ = v; }
+        void setInit(AstExpr v) { init_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            StringBuilder s = new StringBuilder();
+            s.append(Dump.pad(ind));
+            s.append("(Property name=\"");
+            s.append(Dump.esc(name_));
+            s.append("\" type=");
+            if (type_ != null) s.append(type_.str()); else s.append("?");
+            s.append(" const=");
+            s.append("" + const_);
+            s.append(" weak=");
+            s.append("" + weak_);
+            s.append(")\n");
+            sb.append(s.toString());
+            if (init_ != null) init_.dump(sb, ind);
+        }
+    property:
+        string name_;
+        AstType type_;
+        int const_;
+        int weak_;
+        AstExpr init_;
+}
+
+class AstAction {
+    action:
+        @constructor AstAction() {
+            name_ = "";
+            ret_ = null;
+            startup_ = 0;
+            ctor_ = 0;
+            test_ = 0;
+            coro_ = 0;
+            async_ = 0;
+            region_ = 0;
+            stack_ = 0;
+            typeParams_ = new ArrayList<string>();
+            constraints_ = new ArrayList<AstPair>();
+            params_ = new ArrayList<AstParam>();
+            body_ = null;
+        }
+        ArrayList<string> typeParams() { return typeParams_; }
+        ArrayList<AstPair> constraints() { return constraints_; }
+        ArrayList<AstParam> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void setRet(AstType v) { ret_ = v; }
+        void setStartup(int v) { startup_ = v; }
+        void setCtor(int v) { ctor_ = v; }
+        void setTest(int v) { test_ = v; }
+        void setCoro(int v) { coro_ = v; }
+        void setAsync(int v) { async_ = v; }
+        void setRegion(int v) { region_ = v; }
+        void setStack(int v) { stack_ = v; }
+        void setBody(AstStmt v) { body_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            StringBuilder s = new StringBuilder();
+            s.append(Dump.pad(ind));
+            s.append("(Action name=\"");
+            s.append(Dump.esc(name_));
+            s.append("\" ret=");
+            if (ret_ != null) s.append(ret_.str()); else s.append("?");
+            s.append(" startup=");
+            s.append("" + startup_);
+            s.append(" ctor=");
+            s.append("" + ctor_);
+            s.append(" test=");
+            s.append("" + test_);
+            s.append(" coro=");
+            s.append("" + coro_);
+            s.append(" async=");
+            s.append("" + async_);
+            s.append(" region=");
+            s.append("" + region_);
+            s.append(" stack=");
+            s.append("" + stack_);
+            s.append(")\n");
+            sb.append(s.toString());
+            AstNode.dumpTypeParams(sb, ind + 2, typeParams_);
+            AstNode.dumpConstraints(sb, ind + 2, constraints_);
+            for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+            if (body_ != null) body_.dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        AstType ret_;
+        int startup_;
+        int ctor_;
+        int test_;
+        int coro_;
+        int async_;
+        int region_;
+        int stack_;
+        ArrayList<string> typeParams_;
+        ArrayList<AstPair> constraints_;
+        ArrayList<AstParam> params_;
+        AstStmt body_;
+}
+
+class AstEvent {
+    action:
+        @constructor AstEvent() {
+            name_ = "";
+            params_ = new ArrayList<AstParam>();
+        }
+        ArrayList<AstParam> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Event name=\"" + Dump.esc(name_) + "\")");
+            for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        ArrayList<AstParam> params_;
+}
+
+class AstStruct {
+    action:
+        @constructor AstStruct() {
+            name_ = "";
+            parent_ = "";
+            props_ = new ArrayList<AstProp>();
+            funcs_ = new ArrayList<AstFunction>();
+        }
+        ArrayList<AstProp> props() { return props_; }
+        ArrayList<AstFunction> funcs() { return funcs_; }
+        void setName(string v) { name_ = v; }
+        void setParent(string v) { parent_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Struct name=\"" + Dump.esc(name_) + "\" parent=\"" + Dump.esc(parent_) + "\")");
+            for (int i = 0; i < props_.size(); i = i + 1) props_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < funcs_.size(); i = i + 1) funcs_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        string parent_;
+        ArrayList<AstProp> props_;
+        ArrayList<AstFunction> funcs_;
+}
+
+class AstBitfieldField {
+    action:
+        @constructor AstBitfieldField() { name_ = ""; width_ = 0; offset_ = 0; }
+        void setName(string v) { name_ = v; }
+        void setWidth(int v) { width_ = v; }
+        void setOffset(int v) { offset_ = v; }
+    property:
+        string name_;
+        int width_;
+        int offset_;
+}
+
+class AstBitfield {
+    action:
+        @constructor AstBitfield() {
+            name_ = "";
+            totalBits_ = 0;
+            fields_ = new ArrayList<AstBitfieldField>();
+        }
+        ArrayList<AstBitfieldField> fields() { return fields_; }
+        void setName(string v) { name_ = v; }
+        void setTotalBits(int v) { totalBits_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Bitfield name=\"" + Dump.esc(name_) + "\" totalBits=" + totalBits_ + ")");
+            for (int i = 0; i < fields_.size(); i = i + 1) {
+                AstBitfieldField f = fields_.get(i);
+                Dump.line(sb, ind + 2, "(Field name=\"" + Dump.esc(f.name_) + "\" width=" + f.width_ + " offset=" + f.offset_ + ")");
+            }
+        }
+    property:
+        string name_;
+        int totalBits_;
+        ArrayList<AstBitfieldField> fields_;
+}
+
+class AstClass {
+    action:
+        @constructor AstClass() {
+            name_ = "";
+            isStatic_ = 0;
+            isGenericInst_ = 0;
+            lambda_ = "";
+            iface_ = "";
+            typeParams_ = new ArrayList<string>();
+            constraints_ = new ArrayList<AstPair>();
+            instTypeArgs_ = new ArrayList<AstType>();
+            assocTypes_ = new ArrayList<AstPair>();
+            nonlocalSlots_ = new ArrayList<AstNonlocalSlot>();
+            actions_ = new ArrayList<AstAction>();
+            staticActions_ = new ArrayList<AstAction>();
+            events_ = new ArrayList<AstEvent>();
+            props_ = new ArrayList<AstProp>();
+            funcs_ = new ArrayList<AstFunction>();
+            structs_ = new ArrayList<AstStruct>();
+        }
+        ArrayList<string> typeParams() { return typeParams_; }
+        ArrayList<AstPair> constraints() { return constraints_; }
+        ArrayList<AstType> instTypeArgs() { return instTypeArgs_; }
+        ArrayList<AstPair> assocTypes() { return assocTypes_; }
+        ArrayList<AstNonlocalSlot> nonlocalSlots() { return nonlocalSlots_; }
+        ArrayList<AstAction> actions() { return actions_; }
+        ArrayList<AstAction> staticActions() { return staticActions_; }
+        ArrayList<AstEvent> events() { return events_; }
+        ArrayList<AstProp> props() { return props_; }
+        ArrayList<AstFunction> funcs() { return funcs_; }
+        ArrayList<AstStruct> structs() { return structs_; }
+        void setName(string v) { name_ = v; }
+        void setIsStatic(int v) { isStatic_ = v; }
+        void setIsGenericInst(int v) { isGenericInst_ = v; }
+        void setLambda(string v) { lambda_ = v; }
+        void setIface(string v) { iface_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Class name=\"" + Dump.esc(name_) + "\" isStatic=" + isStatic_ + " isGenericInst=" + isGenericInst_ + " lambda=" + lambda_ + " iface=\"" + Dump.esc(iface_) + "\")");
+            AstNode.dumpTypeParams(sb, ind + 2, typeParams_);
+            AstNode.dumpConstraints(sb, ind + 2, constraints_);
+            for (int i = 0; i < instTypeArgs_.size(); i = i + 1)
+                Dump.line(sb, ind + 2, "(InstTypeArg type=" + instTypeArgs_.get(i).str() + ")");
+            ArrayList<AstPair> assoc = AstNode.sortedPairs(assocTypes_);
+            for (int i = 0; i < assoc.size(); i = i + 1) {
+                AstPair p = assoc.get(i);
+                Dump.line(sb, ind + 2, "(AssocType name=\"" + Dump.esc(p.k) + "\" type=" + p.typeStr + ")");
+            }
+            for (int i = 0; i < nonlocalSlots_.size(); i = i + 1) {
+                AstNonlocalSlot ns = nonlocalSlots_.get(i);
+                Dump.line(sb, ind + 2, "(NonlocalSlot slot=\"" + Dump.esc(ns.slot) + "\" var=\"" + Dump.esc(ns.varName_) + "\" cell=\"" + Dump.esc(ns.cell) + "\")");
+            }
+            for (int i = 0; i < actions_.size(); i = i + 1) actions_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < staticActions_.size(); i = i + 1) {
+                Dump.line(sb, ind + 2, "(Static)");
+                staticActions_.get(i).dump(sb, ind + 4);
+            }
+            for (int i = 0; i < events_.size(); i = i + 1) events_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < props_.size(); i = i + 1) props_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < funcs_.size(); i = i + 1) funcs_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < structs_.size(); i = i + 1) structs_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        int isStatic_;
+        int isGenericInst_;
+        string lambda_;
+        string iface_;
+        ArrayList<string> typeParams_;
+        ArrayList<AstPair> constraints_;
+        ArrayList<AstType> instTypeArgs_;
+        ArrayList<AstPair> assocTypes_;
+        ArrayList<AstNonlocalSlot> nonlocalSlots_;
+        ArrayList<AstAction> actions_;
+        ArrayList<AstAction> staticActions_;
+        ArrayList<AstEvent> events_;
+        ArrayList<AstProp> props_;
+        ArrayList<AstFunction> funcs_;
+        ArrayList<AstStruct> structs_;
+}
+
+class AstInterface {
+    action:
+        @constructor AstInterface() {
+            name_ = "";
+            assocTypeDecls_ = new ArrayList<string>();
+            actions_ = new ArrayList<AstAction>();
+            events_ = new ArrayList<AstEvent>();
+        }
+        ArrayList<string> assocTypeDecls() { return assocTypeDecls_; }
+        ArrayList<AstAction> actions() { return actions_; }
+        ArrayList<AstEvent> events() { return events_; }
+        void setName(string v) { name_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Interface name=\"" + Dump.esc(name_) + "\")");
+            for (int i = 0; i < assocTypeDecls_.size(); i = i + 1)
+                Dump.line(sb, ind + 2, "(AssocTypeDecl name=\"" + Dump.esc(assocTypeDecls_.get(i)) + "\")");
+            for (int i = 0; i < actions_.size(); i = i + 1) actions_.get(i).dump(sb, ind + 2);
+            for (int i = 0; i < events_.size(); i = i + 1) events_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        ArrayList<string> assocTypeDecls_;
+        ArrayList<AstAction> actions_;
+        ArrayList<AstEvent> events_;
+}
+
+class AstFunction {
+    action:
+        @constructor AstFunction() {
+            name_ = "";
+            ret_ = null;
+            genericInst_ = 0;
+            test_ = 0;
+            autoMain_ = 0;
+            region_ = 0;
+            coro_ = 0;
+            async_ = 0;
+            stack_ = 0;
+            op_ = "";
+            eval_ = 0;
+            macro_ = 0;
+            ctor_ = 0;
+            constDecl_ = 0;
+            typeParams_ = new ArrayList<string>();
+            constraints_ = new ArrayList<AstPair>();
+            instTypeArgs_ = new ArrayList<AstType>();
+            params_ = new ArrayList<AstParam>();
+            body_ = null;
+        }
+        ArrayList<string> typeParams() { return typeParams_; }
+        ArrayList<AstPair> constraints() { return constraints_; }
+        ArrayList<AstType> instTypeArgs() { return instTypeArgs_; }
+        ArrayList<AstParam> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void setRet(AstType v) { ret_ = v; }
+        void setGenericInst(int v) { genericInst_ = v; }
+        void setTest(int v) { test_ = v; }
+        void setAutoMain(int v) { autoMain_ = v; }
+        void setRegion(int v) { region_ = v; }
+        void setCoro(int v) { coro_ = v; }
+        void setAsync(int v) { async_ = v; }
+        void setStack(int v) { stack_ = v; }
+        void setOp(string v) { op_ = v; }
+        void setEval(int v) { eval_ = v; }
+        void setMacro(int v) { macro_ = v; }
+        void setCtor(int v) { ctor_ = v; }
+        void setConstDecl(int v) { constDecl_ = v; }
+        void setBody(AstStmt v) { body_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Function name=\"" + Dump.esc(name_) + "\" ret=" + (ret_ != null ? ret_.str() : "?") + " genericInst=" + genericInst_ + " test=" + test_ + " autoMain=" + autoMain_ + " region=" + region_ + " coro=" + coro_ + " async=" + async_ + " stack=" + stack_ + " op=\"" + Dump.esc(op_) + "\" eval=" + eval_ + " macro=" + macro_ + " ctor=" + ctor_ + " constDecl=" + constDecl_ + ")");
+            AstNode.dumpTypeParams(sb, ind + 2, typeParams_);
+            AstNode.dumpConstraints(sb, ind + 2, constraints_);
+            for (int i = 0; i < instTypeArgs_.size(); i = i + 1)
+                Dump.line(sb, ind + 2, "(InstTypeArg type=" + instTypeArgs_.get(i).str() + ")");
+            for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+            if (body_ != null) body_.dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        AstType ret_;
+        int genericInst_;
+        int test_;
+        int autoMain_;
+        int region_;
+        int coro_;
+        int async_;
+        int stack_;
+        string op_;
+        int eval_;
+        int macro_;
+        int ctor_;
+        int constDecl_;
+        ArrayList<string> typeParams_;
+        ArrayList<AstPair> constraints_;
+        ArrayList<AstType> instTypeArgs_;
+        ArrayList<AstParam> params_;
+        AstStmt body_;
+}
+
+class AstEnum {
+    action:
+        @constructor AstEnum() {
+            name_ = "";
+            variants_ = new ArrayList<AstEnumVariant>();
+        }
+        ArrayList<AstEnumVariant> variants() { return variants_; }
+        void setName(string v) { name_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Enum name=\"" + Dump.esc(name_) + "\")");
+            for (int i = 0; i < variants_.size(); i = i + 1) variants_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        ArrayList<AstEnumVariant> variants_;
+}
+
+class AstEnumVariant {
+    action:
+        @constructor AstEnumVariant() {
+            name_ = "";
+            params_ = new ArrayList<AstParam>();
+        }
+        ArrayList<AstParam> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Variant name=\"" + Dump.esc(name_) + "\")");
+            for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        ArrayList<AstParam> params_;
+}
+
+class AstFFI {
+    action:
+        @constructor AstFFI() {
+            name_ = "";
+            ret_ = null;
+            params_ = new ArrayList<AstParam>();
+        }
+        ArrayList<AstParam> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void setRet(AstType v) { ret_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(FFI name=\"" + Dump.esc(name_) + "\" ret=" + (ret_ != null ? ret_.str() : "?") + ")");
+            for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        AstType ret_;
+        ArrayList<AstParam> params_;
+}
+
+class AstMappingNode {
+    action:
+        @constructor AstMappingNode() {
+            src_ = "";
+            member_ = "";
+            isFunction_ = 0;
+            isLambda_ = 0;
+            isTransformer_ = 0;
+            trKind_ = 0;
+            trParam_ = 0;
+            lambda_ = null;
+        }
+        void setSrc(string v) { src_ = v; }
+        void setMember(string v) { member_ = v; }
+        void setIsFunction(int v) { isFunction_ = v; }
+        void setIsLambda(int v) { isLambda_ = v; }
+        void setIsTransformer(int v) { isTransformer_ = v; }
+        void setTrKind(int v) { trKind_ = v; }
+        void setTrParam(int v) { trParam_ = v; }
+        void setLambda(AstExpr v) { lambda_ = v; }
+    property:
+        string src_;
+        string member_;
+        int isFunction_;
+        int isLambda_;
+        int isTransformer_;
+        int trKind_;
+        int trParam_;
+        AstExpr lambda_;
+}
+
+class AstMappingChain {
+    action:
+        @constructor AstMappingChain() {
+            nodes_ = new ArrayList<AstMappingNode>();
+            where_ = null;
+        }
+        ArrayList<AstMappingNode> nodes() { return nodes_; }
+        void setWhere(AstExpr v) { where_ = v; }
+    property:
+        ArrayList<AstMappingNode> nodes_;
+        AstExpr where_;
+}
+
+class AstMapping {
+    action:
+        @constructor AstMapping() {
+            scope_ = 0;
+            chains_ = new ArrayList<AstMappingChain>();
+        }
+        ArrayList<AstMappingChain> chains() { return chains_; }
+        void setScope(int v) { scope_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Mapping scope=" + scope_ + ")");
+            for (int i = 0; i < chains_.size(); i = i + 1) {
+                AstMappingChain ch = chains_.get(i);
+                Dump.line(sb, ind + 2, "(Chain)");
+                for (int j = 0; j < ch.nodes().size(); j = j + 1) {
+                    AstMappingNode n = ch.nodes().get(j);
+                    Dump.line(sb, ind + 4, "(Node src=\"" + Dump.esc(n.src_) + "\" member=\"" + Dump.esc(n.member_) + "\" isFunction=" + n.isFunction_ + " isLambda=" + n.isLambda_ + " isTransformer=" + n.isTransformer_ + " trKind=" + n.trKind_ + " trParam=" + n.trParam_ + ")");
+                    if (n.lambda_ != null) n.lambda_.dump(sb, ind + 4);
+                }
+                if (ch.where_ != null) {
+                    Dump.line(sb, ind + 4, "(Where)");
+                    ch.where_.dump(sb, ind + 6);
+                }
+            }
+        }
+    property:
+        int scope_;
+        ArrayList<AstMappingChain> chains_;
+}
+
+class AstMacro {
+    action:
+        @constructor AstMacro() {
+            name_ = "";
+            params_ = new ArrayList<string>();
+            body_ = null;
+        }
+        ArrayList<string> params() { return params_; }
+        void setName(string v) { name_ = v; }
+        void setBody(AstStmt v) { body_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Macro name=\"" + Dump.esc(name_) + "\")");
+            for (int i = 0; i < params_.size(); i = i + 1)
+                Dump.line(sb, ind + 2, "(Param name=\"" + Dump.esc(params_.get(i)) + "\")");
+            if (body_ != null) body_.dump(sb, ind + 2);
+        }
+    property:
+        string name_;
+        ArrayList<string> params_;
+        AstStmt body_;
+}
+
+class AstImport {
+    action:
+        @constructor AstImport() { name_ = ""; path_ = ""; isPath_ = 0; }
+        void setName(string v) { name_ = v; }
+        void setPath(string v) { path_ = v; }
+        void setIsPath(int v) { isPath_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(Import name=\"" + Dump.esc(name_) + "\" path=\"" + Dump.esc(path_) + "\" isPath=" + isPath_ + ")");
+        }
+    property:
+        string name_;
+        string path_;
+        int isPath_;
+}
+
+class AstTypeAlias {
+    action:
+        @constructor AstTypeAlias() { name_ = ""; type_ = null; }
+        void setName(string v) { name_ = v; }
+        void setType(AstType v) { type_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            Dump.line(sb, ind, "(TypeAlias name=\"" + Dump.esc(name_) + "\" type=" + (type_ != null ? type_.str() : "?") + ")");
+        }
+    property:
+        string name_;
+        AstType type_;
+}
+
+// ---- 语句（扁平：kind 字符串 + 字段）----
+class AstStmt {
+    action:
+        @constructor AstStmt() {
+            kind_ = "";
+            line_ = 0;
+            col_ = 0;
+            bodyStmts_ = new ArrayList<AstStmt>();
+            condition_ = null;
+            then_ = null;
+            else_ = null;
+            body_ = null;
+            init_ = null;
+            step_ = null;
+            value_ = null;
+            expr_ = null;
+            decls_ = new ArrayList<AstVar>();
+            target_ = null;
+            isDecl_ = 0;
+            varName_ = "";
+            varType_ = null;
+            hasType_ = 0;
+            iterKind_ = 0;
+            className_ = "";
+            sizeFn_ = "";
+            getFn_ = "";
+            arrSize_ = -1;
+            parallel_ = 0;
+            gpu_ = 0;
+            stride_ = 0;
+            block_ = 0;
+            resident_ = new ArrayList<AstPair>();
+            stream_ = null;
+            subject_ = null;
+            arms_ = new ArrayList<AstMatchArm>();
+            tryBlock_ = null;
+            catches_ = new ArrayList<AstCatch>();
+            finallyBlock_ = null;
+            mapping_ = null;
+            names_ = new ArrayList<string>();
+            acc_ = "";
+            x_ = "";
+            arr_ = "";
+            out_ = "";
+            exclusive_ = 0;
+            inName_ = "";
+            idxName_ = "";
+            mode_ = 0;
+            aBegin_ = null;
+            aEnd_ = null;
+            idxBegin_ = null;
+            idxEnd_ = null;
+            sharedType_ = null;
+            name_ = "";
+            hasGrid_ = 0;
+            gridVal_ = 1;
+            gridExpr_ = null;
+            opBody_ = null;
+            opExpr_ = null;
+            initExpr_ = null;
+            beginExpr_ = null;
+            endExpr_ = null;
+            timeout_ = null;
+            iterable_ = null;
+        }
+        ArrayList<AstStmt> bodyStmts() { return bodyStmts_; }
+        ArrayList<AstVar> decls() { return decls_; }
+        ArrayList<AstPair> resident() { return resident_; }
+        ArrayList<AstMatchArm> arms() { return arms_; }
+        ArrayList<AstCatch> catches() { return catches_; }
+        ArrayList<string> names() { return names_; }
+        void setKind(string v) { kind_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
+        void setCondition(AstExpr v) { condition_ = v; }
+        void setThen(AstStmt v) { then_ = v; }
+        void setElse(AstStmt v) { else_ = v; }
+        void setBody(AstStmt v) { body_ = v; }
+        void setInit(AstStmt v) { init_ = v; }
+        void setStep(AstExpr v) { step_ = v; }
+        void setValue(AstExpr v) { value_ = v; }
+        void setExpr(AstExpr v) { expr_ = v; }
+        void setTarget(AstDestructureTarget v) { target_ = v; }
+        void setIsDecl(int v) { isDecl_ = v; }
+        void setVarName(string v) { varName_ = v; }
+        void setVarType(AstType v) { varType_ = v; }
+        void setHasType(int v) { hasType_ = v; }
+        void setIterKind(int v) { iterKind_ = v; }
+        void setClassName(string v) { className_ = v; }
+        void setSizeFn(string v) { sizeFn_ = v; }
+        void setGetFn(string v) { getFn_ = v; }
+        void setArrSize(int v) { arrSize_ = v; }
+        void setParallel(int v) { parallel_ = v; }
+        void setGpu(int v) { gpu_ = v; }
+        void setStride(int v) { stride_ = v; }
+        void setBlock(int v) { block_ = v; }
+        void setStream(AstExpr v) { stream_ = v; }
+        void setSubject(AstExpr v) { subject_ = v; }
+        void setTryBlock(AstStmt v) { tryBlock_ = v; }
+        void setFinallyBlock(AstStmt v) { finallyBlock_ = v; }
+        void setMapping(AstMapping v) { mapping_ = v; }
+        void setAcc(string v) { acc_ = v; }
+        void setX(string v) { x_ = v; }
+        void setArr(string v) { arr_ = v; }
+        void setOut(string v) { out_ = v; }
+        void setExclusive(int v) { exclusive_ = v; }
+        void setInName(string v) { inName_ = v; }
+        void setIdxName(string v) { idxName_ = v; }
+        void setMode(int v) { mode_ = v; }
+        void setABegin(AstExpr v) { aBegin_ = v; }
+        void setAEnd(AstExpr v) { aEnd_ = v; }
+        void setIdxBegin(AstExpr v) { idxBegin_ = v; }
+        void setIdxEnd(AstExpr v) { idxEnd_ = v; }
+        void setSharedType(AstType v) { sharedType_ = v; }
+        void setName(string v) { name_ = v; }
+        void setHasGrid(int v) { hasGrid_ = v; }
+        void setGridVal(int v) { gridVal_ = v; }
+        void setGridExpr(AstExpr v) { gridExpr_ = v; }
+        void setOpBody(AstStmt v) { opBody_ = v; }
+        void setOpExpr(AstExpr v) { opExpr_ = v; }
+        void setInitExpr(AstExpr v) { initExpr_ = v; }
+        void setBeginExpr(AstExpr v) { beginExpr_ = v; }
+        void setEndExpr(AstExpr v) { endExpr_ = v; }
+        void setTimeout(AstExpr v) { timeout_ = v; }
+        void setIterable(AstExpr v) { iterable_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            if (kind_ == "Block") {
+                Dump.line(sb, ind, "(Block)");
+                for (int i = 0; i < bodyStmts_.size(); i = i + 1) bodyStmts_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "VarDecl") {
+                Dump.line(sb, ind, "(VarDecl)");
+                for (int i = 0; i < decls_.size(); i = i + 1) decls_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "Destructure") {
+                Dump.line(sb, ind, "(Destructure isDecl=" + isDecl_ + ")");
+                if (target_ != null) target_.dump(sb, ind + 2);
+                if (value_ != null) value_.dump(sb, ind + 2);
+            } else if (kind_ == "ExprStmt") {
+                Dump.line(sb, ind, "(ExprStmt)");
+                if (expr_ != null) expr_.dump(sb, ind + 2);
+            } else if (kind_ == "If") {
+                Dump.line(sb, ind, "(If)");
+                if (condition_ != null) condition_.dump(sb, ind + 2);
+                if (then_ != null) then_.dump(sb, ind + 2);
+                if (else_ != null) else_.dump(sb, ind + 2);
+            } else if (kind_ == "While") {
+                Dump.line(sb, ind, "(While)");
+                if (condition_ != null) condition_.dump(sb, ind + 2);
+                if (body_ != null) body_.dump(sb, ind + 2);
+            } else if (kind_ == "For") {
+                Dump.line(sb, ind, "(For parallel=" + parallel_ + " gpu=" + gpu_ + " stride=" + stride_ + " block=" + block_ + ")");
+                for (int i = 0; i < resident_.size(); i = i + 1) {
+                    AstPair p = resident_.get(i);
+                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k) + "\" dev=\"" + Dump.esc(p.v) + "\")");
+                }
+                if (init_ != null) init_.dump(sb, ind + 2);
+                if (condition_ != null) condition_.dump(sb, ind + 2);
+                if (step_ != null) step_.dump(sb, ind + 2);
+                if (stream_ != null) stream_.dump(sb, ind + 2);
+                if (body_ != null) body_.dump(sb, ind + 2);
+            } else if (kind_ == "ForIn") {
+                // C++ TypeNode 默认 basic_type=Int：未显式类型时 dump 出 "int"
+                Dump.line(sb, ind, "(ForIn name=\"" + Dump.esc(varName_) + "\" type=" + (varType_ != null ? varType_.str() : "int") + " hasType=" + hasType_ + " iterKind=" + iterKind_ + " class=\"" + Dump.esc(className_) + "\" sizeFn=\"" + Dump.esc(sizeFn_) + "\" getFn=\"" + Dump.esc(getFn_) + "\" arrSize=" + arrSize_ + ")");
+                if (iterable_ != null) iterable_.dump(sb, ind + 2);
+                if (body_ != null) body_.dump(sb, ind + 2);
+            } else if (kind_ == "Return") {
+                Dump.line(sb, ind, "(Return)");
+                if (value_ != null) value_.dump(sb, ind + 2);
+            } else if (kind_ == "Break") {
+                Dump.line(sb, ind, "(Break)");
+            } else if (kind_ == "Continue") {
+                Dump.line(sb, ind, "(Continue)");
+            } else if (kind_ == "Await") {
+                Dump.line(sb, ind, "(Await)");
+                if (expr_ != null) expr_.dump(sb, ind + 2);
+                if (timeout_ != null) timeout_.dump(sb, ind + 2);
+            } else if (kind_ == "MappingStmt") {
+                Dump.line(sb, ind, "(MappingStmt)");
+                if (mapping_ != null) mapping_.dump(sb, ind + 2);
+            } else if (kind_ == "Match") {
+                Dump.line(sb, ind, "(Match)");
+                if (subject_ != null) subject_.dump(sb, ind + 2);
+                for (int i = 0; i < arms_.size(); i = i + 1) {
+                    AstMatchArm a = arms_.get(i);
+                    Dump.line(sb, ind + 2, "(Arm enum=\"" + Dump.esc(a.enum_) + "\" variant=\"" + Dump.esc(a.variant_) + "\" index=" + a.index_ + " bindings=[" + Dump.joinList(a.bindings_) + "])");
+                    if (a.body_ != null) a.body_.dump(sb, ind + 4);
+                }
+            } else if (kind_ == "Try") {
+                Dump.line(sb, ind, "(Try)");
+                if (tryBlock_ != null) tryBlock_.dump(sb, ind + 2);
+                for (int i = 0; i < catches_.size(); i = i + 1) {
+                    AstCatch c = catches_.get(i);
+                    Dump.line(sb, ind + 2, "(Catch var=\"" + Dump.esc(c.var_) + "\" type=\"" + Dump.esc(c.type_) + "\")");
+                    if (c.block_ != null) c.block_.dump(sb, ind + 4);
+                }
+                if (finallyBlock_ != null) finallyBlock_.dump(sb, ind + 2);
+            } else if (kind_ == "Throw") {
+                Dump.line(sb, ind, "(Throw)");
+                if (expr_ != null) expr_.dump(sb, ind + 2);
+            } else if (kind_ == "Nonlocal") {
+                Dump.line(sb, ind, "(Nonlocal names=[" + Dump.joinList(names_) + "])");
+            } else if (kind_ == "GpuTile") {
+                Dump.line(sb, ind, "(GpuTile name=\"" + Dump.esc(name_) + "\" hasGrid=" + hasGrid_ + " grid=" + gridVal_ + " block=" + block_ + ")");
+                if (sharedType_ != null) Dump.line(sb, ind + 2, "(SharedType type=" + sharedType_.str() + ")");
+                if (gridExpr_ != null) gridExpr_.dump(sb, ind + 2);
+                for (int i = 0; i < resident_.size(); i = i + 1) {
+                    AstPair p = resident_.get(i);
+                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k) + "\" dev=\"" + Dump.esc(p.v) + "\")");
+                }
+                if (stream_ != null) stream_.dump(sb, ind + 2);
+                if (body_ != null) body_.dump(sb, ind + 2);
+            } else if (kind_ == "GpuReduce") {
+                Dump.line(sb, ind, "(GpuReduce acc=\"" + Dump.esc(acc_) + "\" x=\"" + Dump.esc(x_) + "\" arr=\"" + Dump.esc(arr_) + "\" out=\"" + Dump.esc(out_) + "\" block=" + block_ + ")");
+                if (opBody_ != null) opBody_.dump(sb, ind + 2);
+                if (opExpr_ != null) opExpr_.dump(sb, ind + 2);
+                if (initExpr_ != null) initExpr_.dump(sb, ind + 2);
+                if (beginExpr_ != null) beginExpr_.dump(sb, ind + 2);
+                if (endExpr_ != null) endExpr_.dump(sb, ind + 2);
+            } else if (kind_ == "GpuScan") {
+                Dump.line(sb, ind, "(GpuScan acc=\"" + Dump.esc(acc_) + "\" x=\"" + Dump.esc(x_) + "\" in=\"" + Dump.esc(inName_) + "\" out=\"" + Dump.esc(out_) + "\" exclusive=" + exclusive_ + " block=" + block_ + ")");
+                if (opBody_ != null) opBody_.dump(sb, ind + 2);
+                if (opExpr_ != null) opExpr_.dump(sb, ind + 2);
+                if (initExpr_ != null) initExpr_.dump(sb, ind + 2);
+                if (beginExpr_ != null) beginExpr_.dump(sb, ind + 2);
+                if (endExpr_ != null) endExpr_.dump(sb, ind + 2);
+            } else if (kind_ == "GpuScatter") {
+                Dump.line(sb, ind, "(GpuScatter a=\"" + Dump.esc(arr_) + "\" b=\"" + Dump.esc(out_) + "\" idx=\"" + Dump.esc(idxName_) + "\" mode=" + mode_ + " block=" + block_ + ")");
+                if (aBegin_ != null) aBegin_.dump(sb, ind + 2);
+                if (aEnd_ != null) aEnd_.dump(sb, ind + 2);
+                if (idxBegin_ != null) idxBegin_.dump(sb, ind + 2);
+                if (idxEnd_ != null) idxEnd_.dump(sb, ind + 2);
+            } else {
+                Dump.line(sb, ind, "(Stmt)");
+            }
+        }
+    property:
+        string kind_;
+        int line_;
+        int col_;
+        ArrayList<AstStmt> bodyStmts_;
+        AstExpr condition_;
+        AstStmt then_;
+        AstStmt else_;
+        AstStmt body_;
+        AstStmt init_;
+        AstExpr step_;
+        AstExpr value_;
+        AstExpr expr_;
+        ArrayList<AstVar> decls_;
+        AstDestructureTarget target_;
+        int isDecl_;
+        string varName_;
+        AstType varType_;
+        int hasType_;
+        int iterKind_;
+        string className_;
+        string sizeFn_;
+        string getFn_;
+        int arrSize_;
+        int parallel_;
+        int gpu_;
+        int stride_;
+        int block_;
+        ArrayList<AstPair> resident_;
+        AstExpr stream_;
+        AstExpr subject_;
+        ArrayList<AstMatchArm> arms_;
+        AstStmt tryBlock_;
+        ArrayList<AstCatch> catches_;
+        AstStmt finallyBlock_;
+        AstMapping mapping_;
+        ArrayList<string> names_;
+        string acc_;
+        string x_;
+        string arr_;
+        string out_;
+        int exclusive_;
+        string inName_;
+        string idxName_;
+        int mode_;
+        AstExpr aBegin_;
+        AstExpr aEnd_;
+        AstExpr idxBegin_;
+        AstExpr idxEnd_;
+        AstType sharedType_;
+        string name_;
+        int hasGrid_;
+        int gridVal_;
+        AstExpr gridExpr_;
+        AstStmt opBody_;
+        AstExpr opExpr_;
+        AstExpr initExpr_;
+        AstExpr beginExpr_;
+        AstExpr endExpr_;
+        AstExpr timeout_;
+        AstExpr iterable_;
+}
+
+class AstMatchArm {
+    action:
+        @constructor AstMatchArm() {
+            enum_ = "";
+            variant_ = "";
+            index_ = 0;
+            bindings_ = new ArrayList<string>();
+            body_ = null;
+        }
+        ArrayList<string> bindings() { return bindings_; }
+        void setEnum(string v) { enum_ = v; }
+        void setVariant(string v) { variant_ = v; }
+        void setIndex(int v) { index_ = v; }
+        void setBody(AstStmt v) { body_ = v; }
+    property:
+        string enum_;
+        string variant_;
+        int index_;
+        ArrayList<string> bindings_;
+        AstStmt body_;
+}
+
+class AstCatch {
+    action:
+        @constructor AstCatch() { var_ = ""; type_ = ""; block_ = null; }
+        void setVar(string v) { var_ = v; }
+        void setType(string v) { type_ = v; }
+        void setBlock(AstStmt v) { block_ = v; }
+    property:
+        string var_;
+        string type_;
+        AstStmt block_;
+}
+
+class AstDestructureTarget {
+    action:
+        @constructor AstDestructureTarget() {
+            name_ = "";
+            type_ = null;
+            hasType_ = 0;
+            elements_ = new ArrayList<AstDestructureTarget>();
+        }
+        ArrayList<AstDestructureTarget> elements() { return elements_; }
+        void setName(string v) { name_ = v; }
+        void setType(AstType v) { type_ = v; }
+        void setHasType(int v) { hasType_ = v; }
+        void dump(StringBuilder sb, int ind) {
+            if (elements_.size() != 0) {
+                Dump.line(sb, ind, "(DestructureTarget)");
+                for (int i = 0; i < elements_.size(); i = i + 1) elements_.get(i).dump(sb, ind + 2);
+            } else {
+                // C++ TypeNode 默认 Int：未显式类型时 dump "int"
+                Dump.line(sb, ind, "(DestructureLeaf name=\"" + Dump.esc(name_) + "\" type=" + (type_ != null ? type_.str() : "int") + " hasType=" + hasType_ + ")");
+            }
+        }
+    property:
+        string name_;
+        AstType type_;
+        int hasType_;
+        ArrayList<AstDestructureTarget> elements_;
+}
+
+// ---- 表达式（扁平）----
+class AstExpr {
+    action:
+        @constructor AstExpr() {
+            kind_ = "";
+            line_ = 0;
+            col_ = 0;
+            value_ = 0L;
+            isLong_ = 0;
+            isUnsigned_ = 0;
+            isChar_ = 0;
+            f32_ = 0;
+            fval_ = 0.0;
+            name_ = "";
+            op_ = "";
+            lhs_ = null;
+            rhs_ = null;
+            operand_ = null;
+            toKind_ = "";
+            bw_ = 0;
+            callee_ = null;
+            args_ = new ArrayList<AstExpr>();
+            callTypeArgs_ = new ArrayList<AstType>();
+            resolved_ = "";
+            structType_ = "";
+            structCtor_ = "";
+            memberName_ = "";
+            resolvedClass_ = "";
+            valueClass_ = "";
+            sliceElem_ = "";
+            array_ = null;
+            index_ = null;
+            className_ = "";
+            typeArgs_ = new ArrayList<AstType>();
+            ctor_ = "";
+            elemType_ = null;
+            dimensions_ = new ArrayList<AstExpr>();
+            condition_ = null;
+            trueExpr_ = null;
+            falseExpr_ = null;
+            start_ = null;
+            end_ = null;
+            enumName_ = "";
+            variantIndex_ = 0;
+            params_ = new ArrayList<AstParam>();
+            hiddenClass_ = "";
+            captureNames_ = new ArrayList<string>();
+            captureSlots_ = new ArrayList<string>();
+            nonlocalCells_ = new ArrayList<string>();
+            targetKind_ = "";
+            classType_ = "";
+            method_ = "transform";
+            catchVarName_ = "";
+            tryExpr_ = null;
+            catchExpr_ = null;
+            timeout_ = null;
+            elements_ = new ArrayList<AstExpr>();
+            namedName_ = "";
+            namedValue_ = null;
+            stmt_ = null;
+            resultKind_ = "int";
+            stringValue_ = "";
+            bodyStmt_ = null;
+            lhsUnsigned_ = 0;
+            rhsUnsigned_ = 0;
+            resultUnsigned_ = 0;
+            opCall_ = 0;
+            type_ = null;
+            resolvedKind_ = "";
+            argsVisited_ = 0;
+        }
+        void setType(AstType v) { type_ = v; }
+        void setResolvedKind(string v) { resolvedKind_ = v; }
+        void setArgsVisited(int v) { argsVisited_ = v; }
+        ArrayList<AstExpr> args() { return args_; }
+        ArrayList<AstType> callTypeArgs() { return callTypeArgs_; }
+        ArrayList<AstType> typeArgs() { return typeArgs_; }
+        ArrayList<AstExpr> dimensions() { return dimensions_; }
+        ArrayList<AstParam> params() { return params_; }
+        ArrayList<string> captureNames() { return captureNames_; }
+        ArrayList<string> captureSlots() { return captureSlots_; }
+        ArrayList<string> nonlocalCells() { return nonlocalCells_; }
+        ArrayList<AstExpr> elements() { return elements_; }
+        void setArgs(ArrayList<AstExpr> v) { args_ = v; }
+        void setCallTypeArgs(ArrayList<AstType> v) { callTypeArgs_ = v; }
+        void setTypeArgs(ArrayList<AstType> v) { typeArgs_ = v; }
+        void setDimensions(ArrayList<AstExpr> v) { dimensions_ = v; }
+        void setParams(ArrayList<AstParam> v) { params_ = v; }
+        void setCaptureNames(ArrayList<string> v) { captureNames_ = v; }
+        void setCaptureSlots(ArrayList<string> v) { captureSlots_ = v; }
+        void setNonlocalCells(ArrayList<string> v) { nonlocalCells_ = v; }
+        void setElements(ArrayList<AstExpr> v) { elements_ = v; }
+        void setKind(string v) { kind_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
+        void setValue(long v) { value_ = v; }
+        void setIsLong(int v) { isLong_ = v; }
+        void setIsUnsigned(int v) { isUnsigned_ = v; }
+        void setIsChar(int v) { isChar_ = v; }
+        void setF32(int v) { f32_ = v; }
+        void setFval(double v) { fval_ = v; }
+        void setName(string v) { name_ = v; }
+        void setOp(string v) { op_ = v; }
+        void setLhs(AstExpr v) { lhs_ = v; }
+        void setRhs(AstExpr v) { rhs_ = v; }
+        void setOperand(AstExpr v) { operand_ = v; }
+        void setToKind(string v) { toKind_ = v; }
+        void setBw(int v) { bw_ = v; }
+        void setCallee(AstExpr v) { callee_ = v; }
+        void setResolved(string v) { resolved_ = v; }
+        void setStructType(string v) { structType_ = v; }
+        void setStructCtor(string v) { structCtor_ = v; }
+        void setMemberName(string v) { memberName_ = v; }
+        void setResolvedClass(string v) { resolvedClass_ = v; }
+        void setValueClass(string v) { valueClass_ = v; }
+        void setSliceElem(string v) { sliceElem_ = v; }
+        void setArray(AstExpr v) { array_ = v; }
+        void setIndex(AstExpr v) { index_ = v; }
+        void setClassName(string v) { className_ = v; }
+        void setCtor(string v) { ctor_ = v; }
+        void setElemType(AstType v) { elemType_ = v; }
+        void setCondition(AstExpr v) { condition_ = v; }
+        void setTrueExpr(AstExpr v) { trueExpr_ = v; }
+        void setFalseExpr(AstExpr v) { falseExpr_ = v; }
+        void setStart(AstExpr v) { start_ = v; }
+        void setEnd(AstExpr v) { end_ = v; }
+        void setEnumName(string v) { enumName_ = v; }
+        void setVariantIndex(int v) { variantIndex_ = v; }
+        void setHiddenClass(string v) { hiddenClass_ = v; }
+        void setTargetKind(string v) { targetKind_ = v; }
+        void setClassType(string v) { classType_ = v; }
+        void setMethod(string v) { method_ = v; }
+        void setCatchVarName(string v) { catchVarName_ = v; }
+        void setTryExpr(AstExpr v) { tryExpr_ = v; }
+        void setCatchExpr(AstExpr v) { catchExpr_ = v; }
+        void setTimeout(AstExpr v) { timeout_ = v; }
+        void setNamedName(string v) { namedName_ = v; }
+        void setNamedValue(AstExpr v) { namedValue_ = v; }
+        void setStmt(AstStmt v) { stmt_ = v; }
+        void setResultKind(string v) { resultKind_ = v; }
+        void setStringValue(string v) { stringValue_ = v; }
+        void setBodyStmt(AstStmt v) { bodyStmt_ = v; }
+        void setLhsUnsigned(int v) { lhsUnsigned_ = v; }
+        void setRhsUnsigned(int v) { rhsUnsigned_ = v; }
+        void setResultUnsigned(int v) { resultUnsigned_ = v; }
+        void setOpCall(int v) { opCall_ = v; }
+        // 浅克隆（复合赋值 desugar：lhs 在 Assign.lhs 与 Binary.lhs 出现两次，共享子节点）。
+        AstExpr cloneExpr() {
+            AstExpr c = new AstExpr();
+            c.setKind(kind_);
+            c.setValue(value_);
+            c.setIsLong(isLong_);
+            c.setIsUnsigned(isUnsigned_);
+            c.setIsChar(isChar_);
+            c.setF32(f32_);
+            c.setFval(fval_);
+            c.setName(name_);
+            c.setOp(op_);
+            c.setLhs(lhs_);
+            c.setRhs(rhs_);
+            c.setOperand(operand_);
+            c.setToKind(toKind_);
+            c.setBw(bw_);
+            c.setCallee(callee_);
+            c.setArgs(args_);
+            c.setCallTypeArgs(callTypeArgs_);
+            c.setResolved(resolved_);
+            c.setStructType(structType_);
+            c.setStructCtor(structCtor_);
+            c.setMemberName(memberName_);
+            c.setResolvedClass(resolvedClass_);
+            c.setArray(array_);
+            c.setIndex(index_);
+            c.setClassName(className_);
+            c.setTypeArgs(typeArgs_);
+            c.setCtor(ctor_);
+            c.setElemType(elemType_);
+            c.setDimensions(dimensions_);
+            c.setCondition(condition_);
+            c.setTrueExpr(trueExpr_);
+            c.setFalseExpr(falseExpr_);
+            c.setStart(start_);
+            c.setEnd(end_);
+            c.setEnumName(enumName_);
+            c.setVariantIndex(variantIndex_);
+            c.setParams(params_);
+            c.setHiddenClass(hiddenClass_);
+            c.setCaptureNames(captureNames_);
+            c.setCaptureSlots(captureSlots_);
+            c.setNonlocalCells(nonlocalCells_);
+            c.setTargetKind(targetKind_);
+            c.setClassType(classType_);
+            c.setMethod(method_);
+            c.setCatchVarName(catchVarName_);
+            c.setTryExpr(tryExpr_);
+            c.setCatchExpr(catchExpr_);
+            c.setTimeout(timeout_);
+            c.setElements(elements_);
+            c.setNamedName(namedName_);
+            c.setNamedValue(namedValue_);
+            c.setStmt(stmt_);
+            c.setResultKind(resultKind_);
+            c.setStringValue(stringValue_);
+            c.setBodyStmt(bodyStmt_);
+            c.setLhsUnsigned(lhsUnsigned_);
+            c.setRhsUnsigned(rhsUnsigned_);
+            c.setResultUnsigned(resultUnsigned_);
+            c.setOpCall(opCall_);
+            return c;
+        }
+        // sema 模式：表达式行尾追加 " : <type>"。
+        // 依赖 Sema 已设置 type_/resolvedKind_（AST 模式二者为空 → 无后缀）。
+        string tsfx() {
+            if (type_ != null) return " : " + type_.str();
+            if (Str.len(resolvedKind_) != 0) return " : " + resolvedKind_;
+            return "";
+        }
+        void dump(StringBuilder sb, int ind) {
+            if (kind_ == "Integer") {
+                Dump.line(sb, ind, "(Integer value=" + value_ + " long=" + isLong_ + " unsigned=" + isUnsigned_ + " char=" + isChar_ + ")" + tsfx());
+            } else if (kind_ == "Float") {
+                Dump.line(sb, ind, "(Float value=" + Fmt.g(fval_, 17) + " f32=" + f32_ + ")" + tsfx());
+            } else if (kind_ == "Bool") {
+                Dump.line(sb, ind, "(Bool value=" + (value_ != 0L ? 1 : 0) + ")" + tsfx());
+            } else if (kind_ == "String") {
+                Dump.line(sb, ind, "(String value=\"" + Dump.esc(stringValue_) + "\")" + tsfx());
+            } else if (kind_ == "Null") {
+                Dump.line(sb, ind, "(Null)" + tsfx());
+            } else if (kind_ == "Identifier") {
+                Dump.line(sb, ind, "(Identifier name=\"" + Dump.esc(name_) + "\")" + tsfx());
+            } else if (kind_ == "This") {
+                Dump.line(sb, ind, "(This)" + tsfx());
+            } else if (kind_ == "Binary") {
+                Dump.line(sb, ind, "(Binary op=" + op_ + " lhsUnsigned=" + lhsUnsigned_ + " rhsUnsigned=" + rhsUnsigned_ + " resultUnsigned=" + resultUnsigned_ + " opCall=" + opCall_ + ")" + tsfx());
+                if (lhs_ != null) lhs_.dump(sb, ind + 2);
+                if (rhs_ != null) rhs_.dump(sb, ind + 2);
+            } else if (kind_ == "Unary") {
+                Dump.line(sb, ind, "(Unary op=" + op_ + ")" + tsfx());
+                if (operand_ != null) operand_.dump(sb, ind + 2);
+            } else if (kind_ == "Convert") {
+                Dump.line(sb, ind, "(Convert to=" + toKind_ + " bw=" + bw_ + ")" + tsfx());
+                if (operand_ != null) operand_.dump(sb, ind + 2);
+            } else if (kind_ == "Call") {
+                Dump.line(sb, ind, "(Call typeArgs=[" + AstNode.joinTypes(callTypeArgs_) + "] resolved=\"" + Dump.esc(resolved_) + "\" structType=\"" + Dump.esc(structType_) + "\" structCtor=\"" + Dump.esc(structCtor_) + "\")" + tsfx());
+                if (callee_ != null) callee_.dump(sb, ind + 2);
+                for (int i = 0; i < args_.size(); i = i + 1) args_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "Member") {
+                Dump.line(sb, ind, "(Member name=\"" + Dump.esc(memberName_) + "\" resolvedClass=\"" + Dump.esc(resolvedClass_) + "\")" + tsfx());
+                if (array_ != null) array_.dump(sb, ind + 2);
+            } else if (kind_ == "Subscript") {
+                Dump.line(sb, ind, "(Subscript)" + tsfx());
+                if (array_ != null) array_.dump(sb, ind + 2);
+                if (index_ != null) index_.dump(sb, ind + 2);
+            } else if (kind_ == "New") {
+                Dump.line(sb, ind, "(New class=\"" + Dump.esc(className_) + "\" typeArgs=[" + AstNode.joinTypes(typeArgs_) + "] ctor=\"" + Dump.esc(ctor_) + "\")" + tsfx());
+                for (int i = 0; i < args_.size(); i = i + 1) args_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "NewArray") {
+                Dump.line(sb, ind, "(NewArray elem=" + (elemType_ != null ? elemType_.str() : "?") + ")" + tsfx());
+                for (int i = 0; i < dimensions_.size(); i = i + 1) dimensions_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "Assign") {
+                Dump.line(sb, ind, "(Assign)" + tsfx());
+                if (lhs_ != null) lhs_.dump(sb, ind + 2);
+                if (rhs_ != null) rhs_.dump(sb, ind + 2);
+            } else if (kind_ == "Ternary") {
+                Dump.line(sb, ind, "(Ternary)" + tsfx());
+                if (condition_ != null) condition_.dump(sb, ind + 2);
+                if (trueExpr_ != null) trueExpr_.dump(sb, ind + 2);
+                if (falseExpr_ != null) falseExpr_.dump(sb, ind + 2);
+            } else if (kind_ == "Range") {
+                Dump.line(sb, ind, "(Range)" + tsfx());
+                if (start_ != null) start_.dump(sb, ind + 2);
+                if (end_ != null) end_.dump(sb, ind + 2);
+            } else if (kind_ == "EnumVariant") {
+                Dump.line(sb, ind, "(EnumVariant enum=\"" + Dump.esc(enumName_) + "\" index=" + variantIndex_ + ")" + tsfx());
+                for (int i = 0; i < args_.size(); i = i + 1) args_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "Lambda") {
+                Dump.line(sb, ind, "(Lambda name=\"" + Dump.esc(name_) + "\" hiddenClass=\"" + Dump.esc(hiddenClass_) + "\" captures=[" + Dump.joinList(captureNames_) + "] slots=[" + Dump.joinList(captureSlots_) + "] nonlocal=[" + Dump.joinList(nonlocalCells_) + "])" + tsfx());
+                for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
+                if (bodyStmt_ != null) bodyStmt_.dump(sb, ind + 2);
+            } else if (kind_ == "Pipe") {
+                Dump.line(sb, ind, "(Pipe target=\"" + Dump.esc(targetKind_) + "\" class=\"" + Dump.esc(classType_) + "\" method=\"" + Dump.esc(method_) + "\")" + tsfx());
+                if (lhs_ != null) lhs_.dump(sb, ind + 2);
+                if (rhs_ != null) rhs_.dump(sb, ind + 2);
+            } else if (kind_ == "TryExpr") {
+                Dump.line(sb, ind, "(TryExpr catchVar=\"" + Dump.esc(catchVarName_) + "\")" + tsfx());
+                if (tryExpr_ != null) tryExpr_.dump(sb, ind + 2);
+                if (catchExpr_ != null) catchExpr_.dump(sb, ind + 2);
+            } else if (kind_ == "Await") {
+                Dump.line(sb, ind, "(Await)" + tsfx());
+                if (operand_ != null) operand_.dump(sb, ind + 2);
+                if (timeout_ != null) timeout_.dump(sb, ind + 2);
+            } else if (kind_ == "Tuple") {
+                Dump.line(sb, ind, "(Tuple)" + tsfx());
+                for (int i = 0; i < elements_.size(); i = i + 1) elements_.get(i).dump(sb, ind + 2);
+            } else if (kind_ == "NamedArg") {
+                Dump.line(sb, ind, "(NamedArg name=\"" + Dump.esc(namedName_) + "\")" + tsfx());
+                if (namedValue_ != null) namedValue_.dump(sb, ind + 2);
+            } else if (kind_ == "MacroParam") {
+                Dump.line(sb, ind, "(MacroParam name=\"" + Dump.esc(name_) + "\")" + tsfx());
+            } else if (kind_ == "Quote") {
+                Dump.line(sb, ind, "(Quote)" + tsfx());
+                if (bodyStmt_ != null) bodyStmt_.dump(sb, ind + 2);
+            } else if (kind_ == "GpuReduceExpr") {
+                Dump.line(sb, ind, "(GpuReduceExpr result=" + resultKind_ + ")" + tsfx());
+                if (stmt_ != null) stmt_.dump(sb, ind + 2);
+            } else {
+                Dump.line(sb, ind, "(Expr)" + tsfx());
+            }
+        }
+    property:
+        string kind_;
+        int line_;
+        int col_;
+        long value_;
+        int isLong_;
+        int isUnsigned_;
+        int isChar_;
+        int f32_;
+        double fval_;
+        string name_;
+        string op_;
+        AstExpr lhs_;
+        AstExpr rhs_;
+        AstExpr operand_;
+        string toKind_;
+        int bw_;
+        AstExpr callee_;
+        ArrayList<AstExpr> args_;
+        ArrayList<AstType> callTypeArgs_;
+        string resolved_;
+        string structType_;
+        string structCtor_;
+        string memberName_;
+        string resolvedClass_;
+        string valueClass_;
+        string sliceElem_;
+        AstExpr array_;
+        AstExpr index_;
+        string className_;
+        ArrayList<AstType> typeArgs_;
+        string ctor_;
+        AstType elemType_;
+        ArrayList<AstExpr> dimensions_;
+        AstExpr condition_;
+        AstExpr trueExpr_;
+        AstExpr falseExpr_;
+        AstExpr start_;
+        AstExpr end_;
+        string enumName_;
+        int variantIndex_;
+        ArrayList<AstParam> params_;
+        string hiddenClass_;
+        ArrayList<string> captureNames_;
+        ArrayList<string> captureSlots_;
+        ArrayList<string> nonlocalCells_;
+        string targetKind_;
+        string classType_;
+        string method_;
+        string catchVarName_;
+        AstExpr tryExpr_;
+        AstExpr catchExpr_;
+        AstExpr timeout_;
+        ArrayList<AstExpr> elements_;
+        string namedName_;
+        AstExpr namedValue_;
+        AstStmt stmt_;
+        string resultKind_;
+        string stringValue_;
+        AstStmt bodyStmt_;
+        int lhsUnsigned_;
+        int rhsUnsigned_;
+        int resultUnsigned_;
+        int opCall_;
+        AstType type_;
+        int argsVisited_;
+        string resolvedKind_;
+}
+
+// ---- 通用 ----
+class AstPair {
+    action:
+        @constructor AstPair() { k = ""; v = ""; typeStr = ""; }
+        void setK(string v) { k = v; }
+        void setV(string val) { v = val; }
+        void setTypeStr(string v) { typeStr = v; }
+    property:
+        string k;
+        string v;
+        string typeStr;
+}
+
+class AstNonlocalSlot {
+    action:
+        @constructor AstNonlocalSlot() { slot = ""; varName_ = ""; cell = ""; }
+        void setSlot(string v) { slot = v; }
+        void setVarName(string v) { varName_ = v; }
+        void setCell(string v) { cell = v; }
+    property:
+        string slot;
+        string varName_;
+        string cell;
+}
+
+// 平移单元。
+class AstTU {
+    action:
+        @constructor AstTU() {
+            imports_ = new ArrayList<AstImport>();
+            structs_ = new ArrayList<AstStruct>();
+            bitfields_ = new ArrayList<AstBitfield>();
+            classes_ = new ArrayList<AstClass>();
+            interfaces_ = new ArrayList<AstInterface>();
+            mappings_ = new ArrayList<AstMapping>();
+            functions_ = new ArrayList<AstFunction>();
+            enums_ = new ArrayList<AstEnum>();
+            ffis_ = new ArrayList<AstFFI>();
+            macros_ = new ArrayList<AstMacro>();
+            typeAliases_ = new ArrayList<AstTypeAlias>();
+        }
+        ArrayList<AstImport> imports() { return imports_; }
+        ArrayList<AstStruct> structs() { return structs_; }
+        ArrayList<AstBitfield> bitfields() { return bitfields_; }
+        ArrayList<AstClass> classes() { return classes_; }
+        ArrayList<AstInterface> interfaces() { return interfaces_; }
+        ArrayList<AstMapping> mappings() { return mappings_; }
+        ArrayList<AstFunction> functions() { return functions_; }
+        ArrayList<AstEnum> enums() { return enums_; }
+        ArrayList<AstFFI> ffis() { return ffis_; }
+        ArrayList<AstMacro> macros() { return macros_; }
+        ArrayList<AstTypeAlias> typeAliases() { return typeAliases_; }
+        void dump(StringBuilder sb) {
+            sb.append("(TranslationUnit)\n");
+            for (int i = 0; i < imports_.size(); i = i + 1) imports_.get(i).dump(sb, 2);
+            for (int i = 0; i < structs_.size(); i = i + 1) structs_.get(i).dump(sb, 2);
+            for (int i = 0; i < bitfields_.size(); i = i + 1) bitfields_.get(i).dump(sb, 2);
+            for (int i = 0; i < classes_.size(); i = i + 1) classes_.get(i).dump(sb, 2);
+            for (int i = 0; i < interfaces_.size(); i = i + 1) interfaces_.get(i).dump(sb, 2);
+            for (int i = 0; i < mappings_.size(); i = i + 1) mappings_.get(i).dump(sb, 2);
+            for (int i = 0; i < functions_.size(); i = i + 1) functions_.get(i).dump(sb, 2);
+            for (int i = 0; i < enums_.size(); i = i + 1) enums_.get(i).dump(sb, 2);
+            for (int i = 0; i < ffis_.size(); i = i + 1) ffis_.get(i).dump(sb, 2);
+            for (int i = 0; i < macros_.size(); i = i + 1) macros_.get(i).dump(sb, 2);
+            for (int i = 0; i < typeAliases_.size(); i = i + 1) typeAliases_.get(i).dump(sb, 2);
+        }
+    property:
+        ArrayList<AstImport> imports_;
+        ArrayList<AstStruct> structs_;
+        ArrayList<AstBitfield> bitfields_;
+        ArrayList<AstClass> classes_;
+        ArrayList<AstInterface> interfaces_;
+        ArrayList<AstMapping> mappings_;
+        ArrayList<AstFunction> functions_;
+        ArrayList<AstEnum> enums_;
+        ArrayList<AstFFI> ffis_;
+        ArrayList<AstMacro> macros_;
+        ArrayList<AstTypeAlias> typeAliases_;
+}
+
+// ---- 公共工具 ----
+@static class AstNode {
+    static:
+        void dumpTypeParams(StringBuilder sb, int ind, ArrayList<string> tps) {
+            ArrayList<string> w = tps;
+            for (int i = 0; i < w.size(); i = i + 1)
+                Dump.line(sb, ind, "(TypeParam name=\"" + Dump.esc(w.get(i)) + "\")");
+        }
+        void dumpConstraints(StringBuilder sb, int ind, ArrayList<AstPair> cs) {
+            ArrayList<AstPair> sorted = AstNode.sortedPairs(cs);
+            for (int i = 0; i < sorted.size(); i = i + 1) {
+                AstPair p = sorted.get(i);
+                Dump.line(sb, ind, "(Constraint name=\"" + Dump.esc(p.k) + "\" iface=\"" + Dump.esc(p.v) + "\")");
+            }
+        }
+        string joinTypes(ArrayList<AstType> ts) {
+            ArrayList<AstType> w = ts;
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < w.size(); i = i + 1) {
+                if (i != 0) sb.append(",");
+                sb.append(w.get(i).str());
+            }
+            return sb.toString();
+        }
+        ArrayList<AstPair> sortedPairs(ArrayList<AstPair> list) {
+            ArrayList<AstPair> w = list;
+            int n = w.size();
+            for (int i = 1; i < n; i = i + 1) {
+                AstPair key = w.get(i);
+                int j = i - 1;
+                while (j >= 0 && Str.cmp(w.get(j).k, key.k) > 0) {
+                    w.set(j + 1, w.get(j));
+                    j = j - 1;
+                }
+                w.set(j + 1, key);
+            }
+            return w;
+        }
+}
+

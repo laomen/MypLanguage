@@ -1,0 +1,361 @@
+// main.myp — myp_self CLI 驱动。入口 int selfMain()。
+//
+// myp_self 是全自举编译器（tools/selfhost，非 GPU）的命令行驱动。
+// 各 mode 随里程碑推进：
+//   F1 tokens ✅（本文件 + token/lexer/diag）
+//   F2-F3 ast / F4 sema / G1+ compile / G4 run/fmt。
+//
+// 关联: tools/selfhost/design.md §3 D1、roadmap.md F1；
+// 对拍: src/main.cpp（C++ mypc --frontend-dump），契约 format.md。
+
+import env;
+import args;
+import io;
+import fs;
+import text;
+import "./diag.myp";
+import "./token.myp";
+import "./lexer.myp";
+import "./ast.myp";
+import "./parser.myp";
+import "./sema.myp";
+
+// 去重集合：参数 ArrayList 方法调用会崩溃 → 用内部用 ArrayList 的辅助类
+// （其方法在类内调用 list，正常）。
+class LoadedSet {
+    action:
+        @constructor LoadedSet() { set_ = new ArrayList<string>(); }
+        void add(string s) { set_.add(s); }
+        int has(string s) {
+            for (int i = 0; i < set_.size(); i = i + 1) {
+                if (set_.get(i) == s) return 1;
+            }
+            return 0;
+        }
+    property:
+        ArrayList<string> set_;
+}
+
+// dump 输出辅助 + 前端模式实现。
+@static class Frontend {
+    static:
+        // 读文件为字符串（字节级；调用前须用 Fs.exists 判存在）。
+        string readFile(string path) {
+            File f = new File();
+            f.open(path, "r");
+            string s = f.readAll();
+            f.close();
+            return s;
+        }
+
+        // 确定性转义（format.md §2）：\n \t \r \" \\ \0。
+        // 注：MYP 串无法承载 NUL 字节，lexer 用 0x01 哨兵表示 \0，此处映射回 \0。
+        string escape(string s) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c == 10) sb.append("\\n");
+                else if (c == 9) sb.append("\\t");
+                else if (c == 13) sb.append("\\r");
+                else if (c == 34) sb.append("\\\"");
+                else if (c == 92) sb.append("\\\\");
+                else if (c == 1) sb.append("\\0");  // 0x01 哨兵 → \0
+                else sb.append(__myp_chr(c));
+            }
+            return sb.toString();
+        }
+
+        // 诊断排序比较（line, col, msg 升序，与 C++ 一致）。
+        int diagLess(Diag a, Diag b) {
+            if (a.line() != b.line()) { if (a.line() < b.line()) return 1; return 0; }
+            if (a.col() != b.col()) { if (a.col() < b.col()) return 1; return 0; }
+            // 同位置保持产生顺序（C++ 不按 msg 排序）
+            return 0;
+        }
+
+        void printDiagnostics(DiagEngine diag) {
+            Console.writeLine("(Diagnostics)");
+            ArrayList<Diag> list = diag.get();
+            int n = list.size();
+            // 插入排序（稳定升序）。
+            for (int i = 1; i < n; i = i + 1) {
+                Diag key = list.get(i);
+                int j = i - 1;
+                while (j >= 0 && Frontend.diagLess(key, list.get(j)) == 1) {
+                    list.set(j + 1, list.get(j));
+                    j = j - 1;
+                }
+                list.set(j + 1, key);
+            }
+            for (int i = 0; i < n; i = i + 1) {
+                Diag d = list.get(i);
+                Console.writeLine("  (Diag line=" + d.line() + " col=" + d.col()
+                    + " sev=" + d.sev() + " msg=\"" + Frontend.escape(d.msg()) + "\")");
+            }
+        }
+
+        // F1：tokens 模式（对拍 mypc --frontend-dump tokens）。
+        int tokens(string file) {
+            if (Fs.exists(file) == 0) {
+                Console.writeLine("Error: cannot open file '" + file + "'");
+                return 1;
+            }
+            string src = Frontend.readFile(file);
+            Lexer lx = new Lexer(src);
+            ArrayList<Tok> toks = lx.tokenize();
+            DiagEngine diag = lx.diags();
+
+            Console.writeLine("MYP_FRONTEND_DUMP v1");
+            Console.writeLine("(Mode tokens)");
+            for (int i = 0; i < toks.size(); i = i + 1) {
+                Tok t = toks.get(i);
+                Console.writeLine("token " + t.begin() + ":" + t.end() + " " + t.kind()
+                    + " \"" + Frontend.escape(t.value()) + "\"");
+            }
+            Frontend.printDiagnostics(diag);
+            int ok2 = 1;
+            if (diag.errorCount() != 0) ok2 = 0;
+            Console.writeLine("(Result ok=" + ok2 + " errors=" + diag.errorCount() + ")");
+            if (diag.errorCount() != 0) return 1;
+            return 0;
+        }
+
+        // 诊断段追加到 StringBuilder（排序后）。
+        void appendDiagnostics(StringBuilder sb, DiagEngine diag) {
+            sb.append("(Diagnostics)\n");
+            ArrayList<Diag> list = diag.get();
+            int n = list.size();
+            for (int i = 1; i < n; i = i + 1) {
+                Diag key = list.get(i);
+                int j = i - 1;
+                while (j >= 0 && Frontend.diagLess(key, list.get(j)) == 1) {
+                    list.set(j + 1, list.get(j));
+                    j = j - 1;
+                }
+                list.set(j + 1, key);
+            }
+            for (int i = 0; i < n; i = i + 1) {
+                Diag d = list.get(i);
+                sb.append("  (Diag line=" + d.line() + " col=" + d.col()
+                    + " sev=" + d.sev() + " msg=\"" + Frontend.escape(d.msg()) + "\")\n");
+            }
+        }
+
+        // 点分模块名 → 目录层级：gpu.backend → gpu/backend。
+        string dotToSlash(string name) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Str.len(name); i = i + 1) {
+                int c = __myp_ord(Str.substring(name, i, i + 1));
+                if (c == 46) sb.append("/");
+                else sb.append(__myp_chr(c));
+            }
+            return sb.toString();
+        }
+
+        // stdlib 路径探测：./stdlib 或 <exe>/../stdlib。
+        string stdlibResolve() {
+            if (Fs.exists("./stdlib/env.myp") != 0) return "./stdlib";
+            if (Fs.exists("../stdlib/env.myp") != 0) return "../stdlib";
+            return "./stdlib";
+        }
+
+        // 路径规范化：去掉 "./" 片段与空段，作为 dedup key（对齐 C++ normalizePath）。
+        string normalizePath(string p) {
+            ArrayList<string> parts = new ArrayList<string>();
+            int start = 0;
+            for (int i = 0; i <= Str.len(p); i = i + 1) {
+                if (i == Str.len(p) || __myp_ord(Str.substring(p, i, i + 1)) == 47) {
+                    string seg = Str.substring(p, start, i);
+                    if (Str.len(seg) != 0 && seg != ".") parts.add(seg);
+                    start = i + 1;
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < parts.size(); i = i + 1) {
+                if (i != 0) sb.append("/");
+                sb.append(parts.get(i));
+            }
+            return sb.toString();
+        }
+
+        // 递归加载 import 并合并（对齐 C++ loadModule：合并 7 类声明；imports/macros/typeAliases 不合并）。
+        int loadModule(AstTU tu, AstImport imp, string sourceDir, LoadedSet loaded, DiagEngine diag) {
+            string path = "";
+            if (imp.isPath_ != 0) {
+                if (Str.len(imp.path_) != 0 && __myp_ord(Str.substring(imp.path_, 0, 1)) == 47) {
+                    path = imp.path_;
+                } else {
+                    path = sourceDir + "/" + imp.path_;
+                }
+            } else {
+                string slash = Frontend.dotToSlash(imp.name_);
+                string stdlib = Frontend.stdlibResolve();
+                string p1 = stdlib + "/" + slash + ".myp";
+                string p2 = sourceDir + "/../stdlib/" + slash + ".myp";
+                string p3 = sourceDir + "/stdlib/" + slash + ".myp";
+                if (Fs.exists(p1) != 0) path = p1;
+                else if (Fs.exists(p2) != 0) path = p2;
+                else if (Fs.exists(p3) != 0) path = p3;
+                else path = p1;
+            }
+            path = Frontend.normalizePath(path);
+            string key = path;
+            if (imp.isPath_ == 0) key = imp.name_;
+            if (loaded.has(key) != 0) return 1;
+            loaded.add(key);
+            if (Fs.exists(path) == 0) {
+                // 镜像 C++：路径 import 失败只打 stderr（stdout 不输出，也不加诊断）；
+                // 名字 import 失败才加诊断。
+                if (imp.isPath_ == 0) {
+                    diag.error(0, 0, "cannot find import '" + imp.name_ + "'");
+                }
+                return 0;
+            }
+            string src = Frontend.readFile(path);
+            Lexer lx = new Lexer(src);
+            ArrayList<Tok> toks = lx.tokenize();
+            DiagEngine subDiag = lx.diags();
+            Parser pr = new Parser(toks, subDiag);
+            AstTU sub = pr.parse();
+            // 合并 7 类声明
+            for (int i = 0; i < sub.classes().size(); i = i + 1) tu.classes().add(sub.classes().get(i));
+            for (int i = 0; i < sub.interfaces().size(); i = i + 1) tu.interfaces().add(sub.interfaces().get(i));
+            for (int i = 0; i < sub.mappings().size(); i = i + 1) tu.mappings().add(sub.mappings().get(i));
+            for (int i = 0; i < sub.functions().size(); i = i + 1) tu.functions().add(sub.functions().get(i));
+            for (int i = 0; i < sub.ffis().size(); i = i + 1) tu.ffis().add(sub.ffis().get(i));
+            for (int i = 0; i < sub.enums().size(); i = i + 1) tu.enums().add(sub.enums().get(i));
+            for (int i = 0; i < sub.structs().size(); i = i + 1) tu.structs().add(sub.structs().get(i));
+            string subDir = Fs.dirname(path);
+            for (int i = 0; i < sub.imports().size(); i = i + 1) {
+                AstImport si = sub.imports().get(i);
+                if (Frontend.loadModule(tu, si, subDir, loaded, diag) == 0) return 0;
+            }
+            return 1;
+        }
+
+        // F2：ast 模式（对拍 mypc --frontend-dump ast，含 import 合并）。
+        int ast(string file) {
+            if (Fs.exists(file) == 0) {
+                Console.writeLine("Error: cannot open file '" + file + "'");
+                return 1;
+            }
+            string src = Frontend.readFile(file);
+            Lexer lx = new Lexer(src);
+            ArrayList<Tok> toks = lx.tokenize();
+            DiagEngine diag = lx.diags();
+            Parser pr = new Parser(toks, diag);
+            AstTU tu = pr.parse();
+            if (diag.errorCount() == 0) {
+                LoadedSet loaded = new LoadedSet();
+                string sourceDir = Fs.dirname(file);
+                for (int i = 0; i < tu.imports().size(); i = i + 1) {
+                    AstImport imp = tu.imports().get(i);
+                    if (Frontend.loadModule(tu, imp, sourceDir, loaded, diag) == 0) break;
+                }
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append("MYP_FRONTEND_DUMP v1\n");
+            sb.append("(Mode ast)\n");
+            tu.dump(sb);
+            Frontend.appendDiagnostics(sb, diag);
+            int ok2 = 1;
+            if (diag.errorCount() != 0) ok2 = 0;
+            sb.append("(Result ok=" + ok2 + " errors=" + diag.errorCount() + ")\n");
+            Console.writeString(sb.toString());
+            if (diag.errorCount() != 0) return 1;
+            return 0;
+        }
+
+        // F4：sema 模式（对拍 mypc --frontend-dump sema，含 import 合并 + 类型推断）。
+        int sema(string file) {
+            if (Fs.exists(file) == 0) {
+                Console.writeLine("Error: cannot open file '" + file + "'");
+                return 1;
+            }
+            string src = Frontend.readFile(file);
+            Lexer lx = new Lexer(src);
+            ArrayList<Tok> toks = lx.tokenize();
+            DiagEngine diag = lx.diags();
+            Parser pr = new Parser(toks, diag);
+            AstTU tu = pr.parse();
+            if (diag.errorCount() == 0) {
+                LoadedSet loaded = new LoadedSet();
+                string sourceDir = Fs.dirname(file);
+                for (int i = 0; i < tu.imports().size(); i = i + 1) {
+                    AstImport imp = tu.imports().get(i);
+                    if (Frontend.loadModule(tu, imp, sourceDir, loaded, diag) == 0) break;
+                }
+            }
+            // C++ Sema 构造 diag_.reset() 清除 parser/loadModule 的 diag
+            diag.reset();
+            Sema se = new Sema(diag);
+            se.analyze(tu);
+            StringBuilder sb = new StringBuilder();
+            sb.append("MYP_FRONTEND_DUMP v1\n");
+            sb.append("(Mode sema)\n");
+            tu.dump(sb);
+            Frontend.appendDiagnostics(sb, diag);
+            int ok2 = 1;
+            if (diag.errorCount() != 0) ok2 = 0;
+            sb.append("(Result ok=" + ok2 + " errors=" + diag.errorCount() + ")\n");
+            Console.writeString(sb.toString());
+            if (diag.errorCount() != 0) return 1;
+            return 0;
+        }
+}
+
+@static class Cli {
+    static:
+        int run() {
+            int argc = Args.count();
+            if (argc < 2) {
+                Cli.printHelp();
+                return 1;
+            }
+            string arg = Args.get(1);
+            if (arg == "--version") {
+                Console.writeLine("MYP Self-Hosted Compiler v0.1.0 (F1 lexer)");
+                return 0;
+            }
+            if (arg == "--help" || arg == "-h") {
+                Cli.printHelp();
+                return 0;
+            }
+            if (arg == "--frontend-dump") {
+                if (argc < 4) {
+                    Console.writeLine("myp_self: --frontend-dump requires <mode> <file.myp>");
+                    return 1;
+                }
+                string mode = Args.get(2);
+                string file = Args.get(3);
+                if (mode == "tokens") return Frontend.tokens(file);
+                if (mode == "ast") return Frontend.ast(file);
+                if (mode == "sema") return Frontend.sema(file);
+                Console.writeLine("myp_self: unknown mode '" + mode + "'");
+                return 1;
+            }
+            Cli.printHelp();
+            return 1;
+        }
+
+        void printHelp() {
+            Console.writeLine("Usage: myp_self <file.myp> [options]");
+            Console.writeLine("       myp_self --frontend-dump <tokens|ast|sema> <file.myp>");
+            Console.writeLine("       myp_self run <file.myp> [args...]");
+            Console.writeLine("       myp_self fmt [--check] <file.myp> ...");
+            Console.writeLine("Options:");
+            Console.writeLine("  --version       Show version");
+            Console.writeLine("  --help, -h      Show this help");
+        }
+}
+
+// CLI 分发（main() 只允许实例创建 + 顶层函数调用）
+int selfMain() {
+    return Cli.run();
+}
+
+int main() {
+    int code = selfMain();
+    return code;
+}
+

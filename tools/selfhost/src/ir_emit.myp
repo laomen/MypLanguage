@@ -1,0 +1,3 @@
+// ir_emit.myp — LLVM IR 文本发射器（G1 实现）：类型表/模块/全局/函数骨架/指令。
+// 对拍基准: mypc --emit-llvm（design.md §3 D4）。
+// 当前为空壳（F0 占位）。

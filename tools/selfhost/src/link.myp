@@ -1,0 +1,3 @@
+// link.myp — llc + gcc 链接 C runtime / run / fmt 子命令（G4 实现）。
+// 对拍基准: src/main.cpp linkObjects + runFile（design.md §3 D4/D5）。
+// 当前为空壳（F0 占位）。

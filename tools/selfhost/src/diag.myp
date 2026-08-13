@@ -1,0 +1,49 @@
+// diag.myp — 诊断引擎（F1：lexer 错误；F4 扩展为完整语义诊断）
+//
+// 对拍基准: include/mylang/DiagnosticEngine.h + runFrontendDump 诊断段
+// （format.md §1/§2：Diag 记录含 line/col/sev/msg，输出前按 line,col,msg 排序）。
+
+import collections;
+
+// 单条诊断。
+class Diag {
+    action:
+        @constructor Diag(int line, int col, string sev, string msg) {
+            line_ = line;
+            col_ = col;
+            sev_ = sev;
+            msg_ = msg;
+        }
+        int line() { return line_; }
+        int col() { return col_; }
+        string sev() { return sev_; }
+        string msg() { return msg_; }
+    property:
+        int line_;
+        int col_;
+        string sev_;
+        string msg_;
+}
+
+// 诊断收集器：记录 + 错误计数。
+class DiagEngine {
+    action:
+        @constructor DiagEngine() {
+            list_ = new ArrayList<Diag>();
+            errors_ = 0;
+        }
+        void error(int line, int col, string msg) {
+            list_.add(new Diag(line, col, "error", msg));
+            errors_ = errors_ + 1;
+        }
+        void reset() {
+            list_.clear();
+            errors_ = 0;
+        }
+        int errorCount() { return errors_; }
+        ArrayList<Diag> get() { return list_; }
+    property:
+        ArrayList<Diag> list_;
+        int errors_;
+}
+

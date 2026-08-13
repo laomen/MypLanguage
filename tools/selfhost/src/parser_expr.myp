@@ -1,0 +1,3 @@
+// parser_expr.myp — 表达式 parser（F3 实现），按 docs/grammar.md §6 优先级表。
+// 对拍基准: src/parser/parser_expr.cpp。
+// 当前为空壳（F0 占位）。

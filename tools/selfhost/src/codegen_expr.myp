@@ -1,0 +1,3 @@
+// codegen_expr.myp — 表达式 → IR（G2 实现）。
+// 对拍基准: src/codegen/codegen_expr.cpp。
+// 当前为空壳（F0 占位）。

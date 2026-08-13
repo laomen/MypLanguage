@@ -1,0 +1,390 @@
+// lexer.myp — 完整词法器（F1）：逐字符复刻 src/lexer/lexer.cpp。
+//
+// 对拍基准: mypc --frontend-dump tokens（format.md §3 + §2 确定性规则）。
+// 必须复刻的 C++ 语义细节：
+//   - 算子/标点 token 的 range = {pos_after, pos_after}（dump 显示 N:N）；
+//   - 标识符/字面量 range = {start, pos_after}；EOF = {0,0}；
+//   - 数字：0x/0b/0o 前缀、_ 分隔（前后规则）、小数/指数（仅十进制）、
+//     L/l、u/U、f/F 后缀；value 去下划线、不含后缀；
+//   - 字符串/char 转义全集 + 未知转义诊断；
+//   - 注释跳过（不产出 token）；块注释/字符串内换行的行计数 quirks（与 C++ 一致）。
+
+import text;
+import collections;
+import "./diag.myp";
+import "./token.myp";
+
+// 字符分类（基于 __myp_ord）。
+@static class Lex {
+    static:
+        int isAlpha(int c) {
+            if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) return 1;
+            return 0;
+        }
+        int isDigit(int c) {
+            if (c >= 48 && c <= 57) return 1;
+            return 0;
+        }
+        int isHex(int c) {
+            if (Lex.isDigit(c) != 0) return 1;
+            if ((c >= 97 && c <= 102) || (c >= 65 && c <= 70)) return 1;
+            return 0;
+        }
+        int isAlnum(int c) {
+            if (Lex.isAlpha(c) != 0 || Lex.isDigit(c) != 0) return 1;
+            return 0;
+        }
+}
+
+class Lexer {
+    action:
+        @constructor Lexer(string src) {
+            source_ = src;
+            pos_ = 0;
+            line_ = 1;
+            col_ = 1;
+            diag_ = new DiagEngine();
+            valueLastC_ = 0;
+        }
+
+        // 逐 token 扫描（跳过空白/注释），EOF 收尾。
+        ArrayList<Tok> tokenize() {
+            ArrayList<Tok> out = new ArrayList<Tok>();
+            while (isAtEnd() == 0) {
+                skipWhitespace();
+                if (isAtEnd() != 0) break;
+                scanToken(out);
+            }
+            out.add(new Tok("eof", "", 0, 0));
+            // 回填 line/col（从 begin 偏移算），供 parser 诊断真实位置。
+            fillLineCol(out);
+            return out;
+        }
+
+        // 根据源文本回填每个 token 的 line/col（1-based；EOF 保持 0,0）。
+        // 对齐 C++：单词/字面量 token 列 = 首字符列（begin 即 start_offset）；
+        // 算子 token（value==""）列 = 末字符列 = begin-1（begin 是消费后的 pos_）。
+        void fillLineCol(ArrayList<Tok> toks) {
+            ArrayList<int> starts = new ArrayList<int>();
+            starts.add(0);
+            for (int p = 0; p < Str.len(source_); p = p + 1) {
+                if (__myp_ord(Str.substring(source_, p, p + 1)) == 10) starts.add(p + 1);
+            }
+            for (int ti = 0; ti < toks.size(); ti = ti + 1) {
+                Tok t = toks.get(ti);
+                if (t.kind() == "eof") continue;
+                int off = t.begin();
+                if (Str.len(t.value()) == 0) off = off - 1;
+                if (off < 0) off = 0;
+                int line = 1;
+                int ls = 0;
+                for (int i = 0; i < starts.size(); i = i + 1) {
+                    if (starts.get(i) <= off) { line = i + 1; ls = starts.get(i); }
+                }
+                int col = off - ls + 1;
+                if (col < 1) col = 1;
+                t.setLineCol(line, col);
+            }
+        }
+
+        DiagEngine diags() { return diag_; }
+
+        // ---- 内部扫描 ----
+        void skipWhitespace() {
+            while (isAtEnd() == 0) {
+                int c = peek();
+                if (c == 32 || c == 9 || c == 10 || c == 13) advance();
+                else break;
+            }
+        }
+
+        void scanToken(ArrayList<Tok> out) {
+            int c = advance();
+            if (c == 40) { out.add(new Tok("(", "", pos_, pos_)); }
+            else if (c == 41) { out.add(new Tok(")", "", pos_, pos_)); }
+            else if (c == 123) { out.add(new Tok("{", "", pos_, pos_)); }
+            else if (c == 125) { out.add(new Tok("}", "", pos_, pos_)); }
+            else if (c == 91) { out.add(new Tok("[", "", pos_, pos_)); }
+            else if (c == 93) { out.add(new Tok("]", "", pos_, pos_)); }
+            else if (c == 59) { out.add(new Tok(";", "", pos_, pos_)); }
+            else if (c == 58) {
+                if (matchCh(58) != 0) out.add(new Tok("::", "", pos_, pos_));
+                else out.add(new Tok(":", "", pos_, pos_));
+            }
+            else if (c == 44) { out.add(new Tok(",", "", pos_, pos_)); }
+            else if (c == 46) {
+                if (matchCh(46) != 0) out.add(new Tok("..", "", pos_, pos_));
+                else out.add(new Tok(".", "", pos_, pos_));
+            }
+            else if (c == 64) { out.add(new Tok("@", "", pos_, pos_)); }
+            else if (c == 36) { out.add(new Tok("$", "", pos_, pos_)); }
+            else if (c == 63) { out.add(new Tok("?", "", pos_, pos_)); }
+            else if (c == 43) {
+                if (matchCh(43) != 0) out.add(new Tok("++", "", pos_, pos_));
+                else if (matchCh(61) != 0) out.add(new Tok("+=", "", pos_, pos_));
+                else out.add(new Tok("+", "", pos_, pos_));
+            }
+            else if (c == 45) {
+                if (matchCh(62) != 0) out.add(new Tok("->", "", pos_, pos_));
+                else if (matchCh(45) != 0) out.add(new Tok("--", "", pos_, pos_));
+                else if (matchCh(61) != 0) out.add(new Tok("-=", "", pos_, pos_));
+                else out.add(new Tok("-", "", pos_, pos_));
+            }
+            else if (c == 42) {
+                if (matchCh(61) != 0) out.add(new Tok("*=", "", pos_, pos_));
+                else out.add(new Tok("*", "", pos_, pos_));
+            }
+            else if (c == 47) {
+                if (peek() == 47 || peek() == 42) { scanComment(); }
+                else if (matchCh(61) != 0) out.add(new Tok("/=", "", pos_, pos_));
+                else out.add(new Tok("/", "", pos_, pos_));
+            }
+            else if (c == 37) {
+                if (matchCh(61) != 0) out.add(new Tok("%=", "", pos_, pos_));
+                else out.add(new Tok("%", "", pos_, pos_));
+            }
+            else if (c == 33) {
+                if (matchCh(61) != 0) out.add(new Tok("!=", "", pos_, pos_));
+                else out.add(new Tok("!", "", pos_, pos_));
+            }
+            else if (c == 61) {
+                if (matchCh(61) != 0) out.add(new Tok("==", "", pos_, pos_));
+                else if (peek() == 62) { advance(); out.add(new Tok("=>", "", pos_, pos_)); }
+                else out.add(new Tok("=", "", pos_, pos_));
+            }
+            else if (c == 60) {
+                if (matchCh(61) != 0) out.add(new Tok("<=", "", pos_, pos_));
+                else if (matchCh(60) != 0) out.add(new Tok("<<", "", pos_, pos_));
+                else out.add(new Tok("<", "", pos_, pos_));
+            }
+            else if (c == 62) {
+                if (matchCh(61) != 0) out.add(new Tok(">=", "", pos_, pos_));
+                else if (matchCh(62) != 0) out.add(new Tok(">>", "", pos_, pos_));
+                else out.add(new Tok(">", "", pos_, pos_));
+            }
+            else if (c == 38) {
+                if (matchCh(38) != 0) out.add(new Tok("&&", "", pos_, pos_));
+                else out.add(new Tok("&", "", pos_, pos_));
+            }
+            else if (c == 124) {
+                if (matchCh(124) != 0) out.add(new Tok("||", "", pos_, pos_));
+                else if (peek() == 62) { advance(); out.add(new Tok("|>", "", pos_, pos_)); }
+                else out.add(new Tok("|", "", pos_, pos_));
+            }
+            else if (c == 94) { out.add(new Tok("^", "", pos_, pos_)); }
+            else if (c == 126) { out.add(new Tok("~", "", pos_, pos_)); }
+            else if (c == 34) { scanString(out); }
+            else if (c == 39) { scanChar(out); }
+            else {
+                if (Lex.isAlpha(c) != 0 || c == 95) scanIdentifierOrKeyword(out);
+                else if (Lex.isDigit(c) != 0) scanNumber(out);
+                else diag_.error(line_, col_, "unexpected character '" + __myp_chr(c) + "'");
+            }
+        }
+
+        void scanComment() {
+            int next = advance();
+            if (next == 47) {
+                // 行注释：跳到行尾。
+                while (isAtEnd() == 0 && peek() != 10) advance();
+            } else if (next == 42) {
+                // 块注释。
+                while (isAtEnd() == 0) {
+                    if (peek() == 42 && isAtEnd() == 0) {
+                        advance();
+                        if (peek() == 47) { advance(); break; }
+                    } else {
+                        // 与 C++ 一致的额外行计数（advance 也会 +1）。
+                        if (peek() == 10) { line_ = line_ + 1; }
+                        advance();
+                    }
+                }
+                if (isAtEnd() != 0) diag_.error(line_, col_, "unterminated block comment");
+            }
+        }
+
+        void scanString(ArrayList<Tok> out) {
+            int start_offset = pos_ - 1;
+            StringBuilder val = new StringBuilder();
+            while (isAtEnd() == 0 && peek() != 34) {
+                // 与 C++ 一致：多行字符串内换行的额外行计数。
+                if (peek() == 10) { line_ = line_ + 1; col_ = 0; }
+                if (peek() == 92) {
+                    advance();
+                    int e = peek();
+                    if (e == 110) val.append("\n");
+                    else if (e == 116) val.append("\t");
+                    else if (e == 114) val.append("\r");
+                    else if (e == 92) val.append("\\");
+                    else if (e == 34) val.append("\"");
+                    else if (e == 39) val.append("'");
+                    else if (e == 101) val.append(__myp_chr(27));
+                    // \0：MYP 串无法容 NUL → 0x01 哨兵（Frontend.escape 映射回 \0；T2 先例）。
+                    else if (e == 48) val.append(__myp_chr(1));
+                    else diag_.error(line_, col_, "unknown escape sequence");
+                    if (isAtEnd() == 0) advance();
+                } else {
+                    val.append(__myp_chr(advance()));
+                }
+            }
+            if (isAtEnd() != 0) diag_.error(line_, col_, "unterminated string literal");
+            else advance();
+            out.add(new Tok("string", val.toString(), start_offset, pos_));
+        }
+
+        void scanChar(ArrayList<Tok> out) {
+            if (isAtEnd() != 0) {
+                diag_.error(line_, col_, "empty character literal");
+                return;
+            }
+            int ch = 0;
+            if (peek() == 92) {
+                advance();
+                int e = peek();
+                if (e == 110) ch = 10;
+                else if (e == 116) ch = 9;
+                else if (e == 114) ch = 13;
+                else if (e == 92) ch = 92;
+                else if (e == 39) ch = 39;
+                else if (e == 101) ch = 27;
+                // \0：MYP 串无法容 NUL → 0x01 哨兵（同上）。
+                else if (e == 48) ch = 1;
+                else {
+                    diag_.error(line_, col_, "unknown escape sequence in char literal");
+                    ch = e;
+                }
+                if (isAtEnd() == 0) advance();
+            } else {
+                ch = advance();
+            }
+            if (peek() != 39) diag_.error(line_, col_, "unclosed character literal");
+            else advance();
+            // 与 C++ 一致：start = pos - 3（单字符 'X'；转义字符时 C++ 也如此，复刻）。
+            out.add(new Tok("char", __myp_chr(ch), pos_ - 3, pos_));
+        }
+
+        void scanNumber(ArrayList<Tok> out) {
+            int start_offset = pos_ - 1;
+            int first = ordAt(start_offset);
+            StringBuilder value = new StringBuilder();
+            value.append(__myp_chr(first));
+            valueLastC_ = first;
+            int hex = 0, binary = 0, octal = 0;
+            if (first == 48 && (peek() == 120 || peek() == 88)) { value.append(__myp_chr(advance())); hex = 1; }
+            else if (first == 48 && (peek() == 98 || peek() == 66)) { value.append(__myp_chr(advance())); binary = 1; }
+            else if (first == 48 && (peek() == 111 || peek() == 79)) { value.append(__myp_chr(advance())); octal = 1; }
+
+            collectDigits(value, hex, binary, octal);
+
+            int is_float = 0;
+            if (hex == 0 && binary == 0 && octal == 0) {
+                while (peek() == 46) {
+                    // ".." 范围符不消费；第二次 '.' 停止。
+                    if (pos_ + 1 < len() && ordAt(pos_ + 1) == 46) break;
+                    if (is_float != 0) break;
+                    is_float = 1;
+                    value.append(__myp_chr(advance()));
+                    collectDigits(value, hex, binary, octal);
+                }
+                if (peek() == 101 || peek() == 69) {
+                    value.append(__myp_chr(advance()));
+                    if (peek() == 43 || peek() == 45) value.append(__myp_chr(advance()));
+                    collectDigits(value, hex, binary, octal);
+                    is_float = 1;
+                }
+            }
+
+            string kind = "integer";
+            if (is_float != 0) kind = "float";
+            if (is_float != 0 && (peek() == 102 || peek() == 70)) { advance(); kind = "float32"; }
+            else if (is_float == 0 && (peek() == 76 || peek() == 108)) { advance(); kind = "long"; }
+            else if (is_float == 0 && (peek() == 117 || peek() == 85)) { advance(); kind = "uint"; }
+
+            out.add(new Tok(kind, stripUnderscores(value.toString()), start_offset, pos_));
+        }
+
+        void collectDigits(StringBuilder value, int hex, int binary, int octal) {
+            while (true) {
+                if (isDigitFor(peek(), hex, binary, octal) != 0) {
+                    appendNumChar(value, advance());
+                } else if (peek() == 95 && valueLastC_ != 95
+                           && pos_ + 1 < len()
+                           && isDigitFor(ordAt(pos_ + 1), hex, binary, octal) != 0) {
+                    appendNumChar(value, advance());
+                } else break;
+            }
+        }
+
+        void appendNumChar(StringBuilder value, int c) {
+            value.append(__myp_chr(c));
+            valueLastC_ = c;
+        }
+
+        void scanIdentifierOrKeyword(ArrayList<Tok> out) {
+            int start_offset = pos_ - 1;
+            StringBuilder value = new StringBuilder();
+            value.append(__myp_chr(ordAt(start_offset)));
+            while (Lex.isAlnum(peek()) != 0 || peek() == 95) {
+                value.append(__myp_chr(advance()));
+            }
+            string w = value.toString();
+            string kind = "identifier";
+            if (TokKind.isKeywordOrType(w) != 0) kind = w;
+            out.add(new Tok(kind, w, start_offset, pos_));
+        }
+
+        // ---- 字符/位置工具（与 C++ advance/match/peek 一致）----
+        int ordAt(int i) {
+            if (i >= Str.len(source_)) return -1;
+            return __myp_ord(Str.substring(source_, i, i + 1));
+        }
+        int peek() {
+            if (pos_ >= Str.len(source_)) return 0;
+            return __myp_ord(Str.substring(source_, pos_, pos_ + 1));
+        }
+        int advance() {
+            int c = ordAt(pos_);
+            pos_ = pos_ + 1;
+            col_ = col_ + 1;
+            if (c == 10) { line_ = line_ + 1; col_ = 0; }
+            return c;
+        }
+        int matchCh(int expected) {
+            if (pos_ >= Str.len(source_)) return 0;
+            if (__myp_ord(Str.substring(source_, pos_, pos_ + 1)) != expected) return 0;
+            advance();
+            return 1;
+        }
+        int isAtEnd() {
+            if (pos_ >= Str.len(source_)) return 1;
+            return 0;
+        }
+        int len() { return Str.len(source_); }
+
+        // 按当前进制判定数字字符。
+        int isDigitFor(int c, int hex, int binary, int octal) {
+            if (binary != 0) { if (c == 48 || c == 49) return 1; return 0; }
+            if (octal != 0) { if (c >= 48 && c <= 55) return 1; return 0; }
+            if (hex != 0) return Lex.isHex(c);
+            return Lex.isDigit(c);
+        }
+
+        // 去下划线（1_000 → 1000）。
+        string stripUnderscores(string s) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c != 95) sb.append(__myp_chr(c));
+            }
+            return sb.toString();
+        }
+
+    property:
+        string source_;
+        int pos_;
+        int line_;
+        int col_;
+        int valueLastC_;
+        DiagEngine diag_;
+}
+

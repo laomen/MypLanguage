@@ -1,0 +1,3 @@
+// codegen.myp — 顶层/全局/函数 codegen 入口（G1-G2 实现）。
+// 对拍基准: src/codegen/codegen.cpp。
+// 当前为空壳（F0 占位）。
