@@ -1,0 +1,164 @@
+// bench/cpu_conv_simd.myp — conv3d SIMD 可行性：去 if vs 4-wide ox 展开
+// x[1,16,64,64,64] w[32,16,3,3,3] s=1 d=1 pad=0 -> y[1,32,62,62,62]
+//   A = InferOps.conv3d（@parallel，带 if）
+//   B = 无 if 版（@parallel）
+//   C = 4-wide ox 展开 + 无 if（@parallel，SLP 打包 4 个连续输出）
+import env;
+import pool;
+import "../deeplearning/infer/ops.myp";
+
+class CpuConvSimd {
+    action:
+        @constructor CpuConvSimd() {
+            int xN = 1, xC = 16, xD = 64, xH = 64, xW = 64;
+            int yC = 32, kd = 3, kh = 3, kw = 3;
+            int yD = xD - kd + 1, yH = xH - kh + 1, yW = xW - kw + 1;
+            int xSz = xN * xC * xD * xH * xW;
+            int wSz = yC * xC * kd * kh * kw;
+            int ySz = xN * yC * yD * yH * yW;
+            float[] arena = new float[xSz + wSz + ySz + 64];
+            int xOff = 0, wOff = xSz, yOff = xSz + wSz;
+            int i = 0;
+            while (i < xSz) { arena[xOff + i] = float(double(i % 13) / 10.0 - 0.5); i = i + 1; }
+            i = 0;
+            while (i < wSz) { arena[wOff + i] = float(double(i % 7) / 6.0 - 0.3); i = i + 1; }
+            long t0 = __myp_now_ms();
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, -1, yOff,
+                            yC, yD, yH, yW, kd, kh, kw, 1, 1, 1,
+                            0, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+            long t1 = __myp_now_ms();
+            convNoPad(arena, xOff, xC, xD, xH, xW, wOff, yOff, yC);
+            long t2 = __myp_now_ms();
+            conv4w(arena, xOff, xC, xD, xH, xW, wOff, yOff, yC);
+            long t3 = __myp_now_ms();
+            Console.writeString("A conv3d(if): "); Console.writeLong(t1 - t0); Console.writeLine(" ms");
+            Console.writeString("B convNoPad:  "); Console.writeLong(t2 - t1); Console.writeLine(" ms");
+            Console.writeString("C conv4w:     "); Console.writeLong(t3 - t2); Console.writeLine(" ms");
+        }
+
+        void convNoPad(float[] a, int xOff, int xC, int xD, int xH, int xW,
+                       int wOff, int yOff, int yC) {
+            int kd = 3, kh = 3, kw = 3;
+            int yD = xD - kd + 1;
+            int yH = xH - kh + 1;
+            int yW = xW - kw + 1;
+            @parallel for (int oc = 0; oc < yC; oc = oc + 1) {
+                int oz = 0;
+                while (oz < yD) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float sum = 0.0f;
+                            int ic = 0;
+                            while (ic < xC) {
+                                int kz = 0;
+                                while (kz < kd) {
+                                    int iz = oz + kz;
+                                    int ky = 0;
+                                    while (ky < kh) {
+                                        int iy = oy + ky;
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            int ix = ox + kx;
+                                            sum = sum + a[wOff + oc * xC * kd * kh * kw + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx]
+                                                       * a[xOff + ic * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                            kx = kx + 1;
+                                        }
+                                        ky = ky + 1;
+                                    }
+                                    kz = kz + 1;
+                                }
+                                ic = ic + 1;
+                            }
+                            a[yOff + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox] = sum;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    oz = oz + 1;
+                }
+            }
+        }
+
+        void conv4w(float[] a, int xOff, int xC, int xD, int xH, int xW,
+                    int wOff, int yOff, int yC) {
+            int kd = 3, kh = 3, kw = 3;
+            int yD = xD - kd + 1;
+            int yH = xH - kh + 1;
+            int yW = xW - kw + 1;
+            @parallel for (int oc = 0; oc < yC; oc = oc + 1) {
+                int oz = 0;
+                while (oz < yD) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            if (ox + 3 < yW) {
+                                float s0 = 0.0f, s1 = 0.0f, s2 = 0.0f, s3 = 0.0f;
+                                int ic = 0;
+                                while (ic < xC) {
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz + kz;
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy + ky;
+                                            int kx = 0;
+                                            while (kx < kw) {
+                                                float wv = a[wOff + oc * xC * kd * kh * kw + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                int xb = xOff + ic * xD * xH * xW + iz * xH * xW + iy * xW + ox + kx;
+                                                s0 = s0 + wv * a[xb + 0];
+                                                s1 = s1 + wv * a[xb + 1];
+                                                s2 = s2 + wv * a[xb + 2];
+                                                s3 = s3 + wv * a[xb + 3];
+                                                kx = kx + 1;
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                int ob = yOff + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox;
+                                a[ob + 0] = s0;
+                                a[ob + 1] = s1;
+                                a[ob + 2] = s2;
+                                a[ob + 3] = s3;
+                                ox = ox + 4;
+                            } else {
+                                float sum = 0.0f;
+                                int ic = 0;
+                                while (ic < xC) {
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz + kz;
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy + ky;
+                                            int kx = 0;
+                                            while (kx < kw) {
+                                                int ix = ox + kx;
+                                                sum = sum + a[wOff + oc * xC * kd * kh * kw + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx]
+                                                           * a[xOff + ic * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                kx = kx + 1;
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                a[yOff + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox] = sum;
+                                ox = ox + 1;
+                            }
+                        }
+                        oy = oy + 1;
+                    }
+                    oz = oz + 1;
+                }
+            }
+        }
+}
+
+int main() { CpuConvSimd app = new CpuConvSimd(); return 0; }

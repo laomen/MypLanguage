@@ -246,11 +246,132 @@ class InferOps {
             while (n < xN) {
                 @parallel for (int oc = 0; oc < yC; oc = oc + 1) {
                     int g = oc / ocpg;
+                    // 中间段 ox：ix=ox*sw-pl+kx*dw 对全部 kx 都落在 [0,xW) 内（无边界判断）
+                    int oxL = 0;
+                    if (pl > 0) oxL = (pl + sw - 1) / sw;
+                    int numer = xW + pl - (kw - 1) * dw;
+                    int oxR = 0;
+                    if (numer > 0) oxR = (numer + sw - 1) / sw;
+                    if (oxR > yW) oxR = yW;
                     int oz = 0;
                     while (oz < yD) {
                         int oy = 0;
                         while (oy < yH) {
+                            // 1) 左边界（带 ix if）
                             int ox = 0;
+                            while (ox < oxL && ox < yW) {
+                                float sum = 0.0f;
+                                if (bOff >= 0) sum = arena[bOff + oc];
+                                int ic = 0;
+                                while (ic < cpg) {
+                                    int cIn = g * cpg + ic;
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz * sd - pdt + kz * dd;
+                                        if (iz >= 0 && iz < xD) {
+                                            int ky = 0;
+                                            while (ky < kh) {
+                                                int iy = oy * sh - pt + ky * dh;
+                                                if (iy >= 0 && iy < xH) {
+                                                    int kx = 0;
+                                                    while (kx < kw) {
+                                                        int ix = ox * sw - pl + kx * dw;
+                                                        if (ix >= 0 && ix < xW) {
+                                                            float xv = arena[xOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                            float wv = arena[wOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                            sum = sum + xv * wv;
+                                                        }
+                                                        kx = kx + 1;
+                                                    }
+                                                }
+                                                ky = ky + 1;
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                arena[yOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox] = sum;
+                                ox = ox + 1;
+                            }
+                            // 2) 中间 4-wide（无 ix if，4 个连续 ox 共享输入读；sw=1 时连续 → SIMD）
+                            while (ox + 3 < oxR) {
+                                float s0 = 0.0f;
+                                float s1 = 0.0f;
+                                float s2 = 0.0f;
+                                float s3 = 0.0f;
+                                if (bOff >= 0) { s0 = arena[bOff + oc]; s1 = arena[bOff + oc]; s2 = arena[bOff + oc]; s3 = arena[bOff + oc]; }
+                                int ic = 0;
+                                while (ic < cpg) {
+                                    int cIn = g * cpg + ic;
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz * sd - pdt + kz * dd;
+                                        if (iz >= 0 && iz < xD) {
+                                            int ky = 0;
+                                            while (ky < kh) {
+                                                int iy = oy * sh - pt + ky * dh;
+                                                if (iy >= 0 && iy < xH) {
+                                                    int kx = 0;
+                                                    while (kx < kw) {
+                                                        float wv = arena[wOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                        int xb = xOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ox * sw - pl + kx * dw;
+                                                        s0 = s0 + wv * arena[xb + 0];
+                                                        s1 = s1 + wv * arena[xb + sw];
+                                                        s2 = s2 + wv * arena[xb + 2 * sw];
+                                                        s3 = s3 + wv * arena[xb + 3 * sw];
+                                                        kx = kx + 1;
+                                                    }
+                                                }
+                                                ky = ky + 1;
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                int ob = yOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox;
+                                arena[ob + 0] = s0;
+                                arena[ob + 1] = s1;
+                                arena[ob + 2] = s2;
+                                arena[ob + 3] = s3;
+                                ox = ox + 4;
+                            }
+                            // 3) 中间尾部（ix 已知界内，去 ix if）
+                            while (ox < oxR) {
+                                float sum = 0.0f;
+                                if (bOff >= 0) sum = arena[bOff + oc];
+                                int ic = 0;
+                                while (ic < cpg) {
+                                    int cIn = g * cpg + ic;
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz * sd - pdt + kz * dd;
+                                        if (iz >= 0 && iz < xD) {
+                                            int ky = 0;
+                                            while (ky < kh) {
+                                                int iy = oy * sh - pt + ky * dh;
+                                                if (iy >= 0 && iy < xH) {
+                                                    int kx = 0;
+                                                    while (kx < kw) {
+                                                        int ix = ox * sw - pl + kx * dw;
+                                                        float xv = arena[xOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                        float wv = arena[wOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                        sum = sum + xv * wv;
+                                                        kx = kx + 1;
+                                                    }
+                                                }
+                                                ky = ky + 1;
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                arena[yOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox] = sum;
+                                ox = ox + 1;
+                            }
+                            // 4) 右边界（带 ix if）
                             while (ox < yW) {
                                 float sum = 0.0f;
                                 if (bOff >= 0) sum = arena[bOff + oc];
@@ -1325,14 +1446,19 @@ class InferOps {
                 int c = 0;
                 while (c < C) {
                     int base = (n * C + c) * S;
+                    // 一趟同时算 Σx 与 Σx²（double 累加保精度；内存读同 float 带宽）
+                    // 原 3 趟（sum/ss/normalize）→ 2 趟，省 1/3 内存读（带宽受限算子）
                     double sum = 0.0;
+                    double sumSq = 0.0;
                     int i = 0;
-                    while (i < S) { double xv = arena[xOff + base + i]; sum = sum + xv; i = i + 1; }
+                    while (i < S) {
+                        double xv = arena[xOff + base + i];
+                        sum = sum + xv;
+                        sumSq = sumSq + xv * xv;
+                        i = i + 1;
+                    }
                     double mean = sum / S;
-                    double ss = 0.0;
-                    i = 0;
-                    while (i < S) { double xv = arena[xOff + base + i]; double d = xv - mean; ss = ss + d * d; i = i + 1; }
-                    double variance = ss / S;
+                    double variance = sumSq / S - mean * mean;
                     double scale = arena[sOff + c];
                     double bias = arena[bOff + c];
                     double invStd = scale / Math.sqrt(variance + eps);

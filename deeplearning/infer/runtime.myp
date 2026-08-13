@@ -670,8 +670,12 @@ class InferenceRuntime {
         int tensorOff(int tid) { return tOff_[tid]; }   // 调试用
 
         void run() {
+            int prof = 0;
+            if (Console.getEnv("MYP_PROF_CPU") == "1") prof = 1;
             int i = 0;
             while (i < opCount_) {
+                long tOp0 = 0L;
+                if (prof == 1) tOp0 = __myp_now_ms();
                 if (opKind_[i] == 1) {
                     int xa = opA_[i];
                     int wb = opB_[i];
@@ -949,8 +953,56 @@ class InferenceRuntime {
                     InferOps.instancenorm(arena, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
                                           opP0_[i], opP1_[i], opP2_[i], eps);
                 }
+                if (prof == 1) {
+                    int k = opKind_[i];
+                    cpuOpMs_[k] = cpuOpMs_[k] + (__myp_now_ms() - tOp0);
+                    cpuOpCnt_[k] = cpuOpCnt_[k] + 1;
+                }
                 i = i + 1;
             }
+            if (prof == 1) printCpuProfile();
+        }
+
+        // CPU 性能剖析（MYP_PROF_CPU=1 时 run 末尾调用）：按算子类型降序耗时
+        void printCpuProfile() {
+            Console.writeLine("==== MYP CPU PROFILE ====");
+            Console.writeLine("ops-loop=" + Fmt.f(double(totalCpuMs()), 0) + "ms  ops=" + Fmt.i(opCount_));
+            int[] sk = new int[64];
+            long[] sm = new long[64];
+            int n = 0;
+            int k = 0;
+            while (k < 64) {
+                if (cpuOpCnt_[k] > 0) { sk[n] = k; sm[n] = cpuOpMs_[k]; n = n + 1; }
+                k = k + 1;
+            }
+            int a = 0;
+            while (a < n) {
+                int bm = a;
+                int b = a + 1;
+                while (b < n) {
+                    if (sm[b] > sm[bm]) bm = b;
+                    b = b + 1;
+                }
+                int tk = sk[a]; sk[a] = sk[bm]; sk[bm] = tk;
+                long tm = sm[a]; sm[a] = sm[bm]; sm[bm] = tm;
+                a = a + 1;
+            }
+            int p = 0;
+            while (p < n) {
+                int kk = sk[p];
+                long ms = sm[p];
+                double avg = double(ms) / double(cpuOpCnt_[kk]);
+                Console.writeLine("  kind=" + Fmt.i(kk, 2) + "  " + opKindName(kk) + "  n=" + Fmt.i(cpuOpCnt_[kk], 3) + "  ms=" + Fmt.f(double(ms), 0, 7) + "  avg=" + Fmt.f(avg, 1));
+                p = p + 1;
+            }
+            Console.writeLine("==== end ====");
+        }
+
+        long totalCpuMs() {
+            long s = 0L;
+            int k = 0;
+            while (k < 64) { s = s + cpuOpMs_[k]; k = k + 1; }
+            return s;
         }
 
         // GPU 执行：M3 设备驻留。
@@ -1531,6 +1583,8 @@ class InferenceRuntime {
         int[512] pCval_;      // F8：Pad constant_value（float 位型）
         long[64] gpuOpMs_;    // GPU profiling：按 opKind 累计耗时（ms，MYP_PROF_GPU=1）
         int[64] gpuOpCnt_;    // GPU profiling：按 opKind 计数
+        long[64] cpuOpMs_;    // CPU profiling：按 opKind 累计耗时（ms，MYP_PROF_CPU=1）
+        int[64] cpuOpCnt_;    // CPU profiling：按 opKind 计数
         int statsOff_;        // 全 resident 归约暂存区（arena 尾部预留）偏移
         // ---- F8：Slice 参数（按 op id 索引；per-axis [id*4+k]）----
         int[512] sCnt_;

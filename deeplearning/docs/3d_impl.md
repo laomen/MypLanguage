@@ -184,20 +184,23 @@ float 漂移）；coarse vs ORT 6.1e-3（float32 漂移）✅；conv3d_main GPU 
 patch 重载、L2 感知调度；`gapool` 块归约未动（不在本模型）。CPU 核性能
 （~1000× vs ORT）仍留待（§7 TODO）。
 
-## 10. CPU 并行化（2026-08-14，@parallel）
+## 10. CPU 并行化 + SIMD（2026-08-14，@parallel + 4-wide）
 
-**根因**：CPU 推理之前极慢，两个主因：(1) **mypc 默认 `-O0`**（`main.cpp` 默认 `opt_level=0`），编译 CPU 推理时没带 `-O3` → 单层 conv3d 32×16×64³ O0 12682ms vs O3 1150ms（11×）；(2) 纯单线程。
+**根因**：CPU 推理之前极慢，两个主因：(1) **mypc 默认 `-O0`**（`main.cpp` 默认 `opt_level=0`），编译 CPU 推理时没带 `-O3` → 单层 conv3d 32×16×64³ O0 12682ms vs O3 1150ms（11×）；(2) 纯单线程 + 标量循环。
 
-**落地**（`ops.myp`）：
-- **conv3d 输出通道维 `@parallel`**（各 oc 写独立区域，无竞争）：fine 212s→60s、coarse 56.5s→16.4s（3.5×）。
-- **maxpool3d / avgpool3d 通道维 `@parallel`**：fine 60s→42s（小收益，无害）。
-- **instancenorm / reduceMean 并行化 → 负优化已回退**：coarse 16s→32s。原因：double 累加内存带宽饱和 + 通道数小（coarse 输出 6 类）负载不均衡，多线程反而更慢。→ **经验：`@parallel` 只对计算密集算子（conv）有效，带宽受限算子保持串行**。
-- `@parallel` 固定开销 ~29µs/call（可忽略）；需 `import pool;`。
+**落地**（`ops.myp` + `runtime.myp`）：
+1. **conv3d 输出通道维 `@parallel`**（各 oc 写独立区域，无竞争）。
+2. **maxpool3d / avgpool3d 通道维 `@parallel`**（无害小收益）。
+3. **instancenorm / reduceMean 并行化 → 负优化已回退**：coarse 16s→32s。原因：double 累加内存带宽饱和 + 通道数小（coarse 输出 6 类）负载不均衡。→ **经验：`@parallel` 只对计算密集算子（conv）有效，带宽受限算子保持串行**。
+4. **conv3d 4-wide ox 展开（SIMD，核心）**：中间段 4 个连续 ox 共享输入读、去 padding 边界 if，LLVM **SLP 向量化**打包 4 个独立累加 → 单层 conv3d（32×16×64³，O3+fastmath）396→129ms（3.1×）。边界 ox（左/右）+ 中间尾部用带/不带 if 标量兜底。**完全通用**：任意 kd/kh/kw/stride/dilation/pad（边界公式 oxL=ceil(pl/sw)、oxR=ceil((xW+pl-(kw-1)*dw)/sw)），sw=1 时输入连续 SIMD 收益最大。
+5. **instancenorm 3 趟 → 2 趟**：一趟同时算 Σx 与 Σx²（double 累加保精度；内存读同 float 带宽），省 1/3 内存读。
+6. **MYP_PROF_CPU=1 剖析**（runtime.run() 按 opKind 累计，复用 GPU 版 opKindName）——定位 **conv3d 占 95%**（fine 56 conv = 42.4s / ops-loop 44.5s）。
+7. SIMD 需 `MYP_FAST_MATH=1`（FP 重排/收缩 FMA）。
 
-**实测（fine_model_liver_vessel 96³，16 核 CPU，O3）**：fine CPU **212s→41.9s（5.1×）**；ORT CPU 16 核 2.21s / 单线程 2.11s（图优化+融合后计算量小）→ MYP CPU 仍慢 ~19×（conv3d 为标量 6 层循环，未 im2col/SIMD；剩余差距在算子级）。
+**实测（fine_model_liver_vessel 96³，16 核 CPU，O3+fastmath）**：fine CPU **212s→19.2s（11×）**（conv3d 42.4s→19.2s）；coarse **56.5s→7.23s（7.8×）**。ORT CPU 16 核 2.14s / 单线程 2.11s（图优化+融合后计算量小）→ MYP CPU 仍慢 **~9×**（conv 未 im2col；resize/relu/add 等未融合，占 ~2s）。
 
-**正确性**：fine vs ORT rel 2.1e-3（FINE MATCH OK）；coarse COARSE MATCH OK；回归 266/266。
+**正确性**：fine vs ORT rel 2.1e-3（FINE MATCH OK，4-wide 未引入误差）；coarse COARSE MATCH OK；conv3d 通用性（k5/s2、k3/d2）GPU vs CPU diff=0；回归 266/266。
 
-**脚本**：`bench/fine_cpu_bench.myp`（CPU fine，同 GPU 输入，O3 编译，写 /tmp/seg_liver_cpu.f32）；`deeplearning/infer/tools/bench_fine_ort.py`（ORT CPU 对比，显式喂 [1,1,96,96,96]）。
+**脚本**：`bench/fine_cpu_bench.myp`（CPU fine，同 GPU 输入，O3 编译，写 /tmp/seg_liver_cpu.f32）；`deeplearning/infer/tools/bench_fine_ort.py`（ORT CPU 对比，显式喂 [1,1,96,96,96]）；`bench/cpu_conv_simd.myp`（conv SIMD 可行性：去 if vs 4-wide）。
 
-**⏳ 剩余**：conv3d CPU 改 im2col+GEMM / 分支外提释放 SIMD（当前内层边界 if 阻挡向量化）；conv+relu/bn 融合省内存往返；instancenorm 改 float 累加降带宽（GPU 已改，CPU 未改）。
+**⏳ 剩余**：fine 仍慢 ~9×（2.14s vs 19.2s）——resize3d/relu/add 等 element-wise 算子融合（省内存往返）+ conv+relu/bn 融合；conv 用 8-wide 展开进一步 SIMD；instancenorm float 累加（带宽再减半）。
