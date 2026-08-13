@@ -1475,6 +1475,15 @@ Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
         } else if (stmt.block_val > 1024) {
             error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
         }
+        // §5.3 静态检查：块大小小于最大共享维度 → 协作覆盖不完（如
+        // smem[kernel.tx] 时 tx ∈ [0, block_val) 无法写满 dim），sync 后读垃圾。
+        int64_t max_dim = 0;
+        for (auto d : dims) if (d > max_dim) max_dim = d;
+        if (max_dim > 0 && stmt.block_val < max_dim) {
+            diag_.warn(stmt.range, "'block(...)' size (" + std::to_string(stmt.block_val) +
+                 ") is smaller than shared array dimension (" +
+                 std::to_string(max_dim) + "); threads may not cover the array");
+        }
     }
 
     // 进入 kernel 上下文（kernel.bx/tx/gid/... 隐式可见），声明共享数组局部可见

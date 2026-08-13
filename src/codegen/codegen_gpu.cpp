@@ -2226,7 +2226,9 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
         llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)), "k_ok");
     auto* launch_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch_run", func);
     auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
-    builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
+    // §5.2 kernel 加载失败 → 走 CPU 回退（cpu_bb），而不是静默跳过 gpu_done_bb
+    // （旧行为：load_kernel 失败时什么都不做，捕获数组保持未初始化 → 结果错）。
+    builder_.CreateCondBr(kernel_ok, launch_bb, cpu_bb);
 
     builder_.SetInsertPoint(launch_bb);
     // grid 维度：字面量 → 常量；运行时表达式 → host 求值（如 conv3d 的 nTiles）
@@ -2857,7 +2859,8 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr_ty)), "k_ok");
     auto* launch_bb = llvm::BasicBlock::Create(ctx_, "gpu_launch_run", func);
     auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
-    builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
+    // §5.2 kernel 加载失败 → 走 CPU 回退（cpu_bb），而非静默跳过 gpu_done_bb。
+    builder_.CreateCondBr(kernel_ok, launch_bb, cpu_bb);
 
     // Launch kernel —— §3.7 @gpu block(n)：块大小可调（默认 256），grid=ceil(n/block)。
     builder_.SetInsertPoint(launch_bb);

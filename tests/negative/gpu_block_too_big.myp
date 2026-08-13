@@ -1,0 +1,13 @@
+// §3.7 block(n) 约束负测试：> maxThreadsPerBlock(1024) → 编译报错
+// EXPECT ERROR: 'block(...)' size exceeds maxThreadsPerBlock
+class Main {
+    action:
+        @startup void go() {
+            long n = 2048L;
+            double[] out = new double[n];
+            @gpu for (long i = 0L; i < n; i = i + 1L) block(2048) {
+                out[i] = double(i);
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

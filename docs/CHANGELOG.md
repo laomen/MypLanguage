@@ -148,6 +148,18 @@
       128 断言；block(512)+stride 每 i 恰一次；tile block(64) 共享归约（GPU 专属）。
       GPU launch 打印 grid/block 正确（64/128、16/512、32/64）。
     - 回归 109/109 + 负测试 58 + 框架 82（自举可视化 1/1，含 myp_viz 重建）。
+  - **P2 ⑤ 工具层（§5 计时/错误友好化/静态检查）**：
+    - **§5.1 per-kernel 计时**：`runtime_gpu.c` 的 `myp_gpu_launch` 在
+      `MYP_PROF_GPU=1` 时用单调时钟量同步 launch（stream==0）耗时，打印
+      `kernel done: X.XXX ms`（per-kernel，无需 GpuEvent）。
+    - **§5.2 错误友好化**：CUDA 错误码 → 可读字符串表（`gpu_err_str`）；`MYP_GPU=1`
+      初始化失败逐点诊断（dlopen/cuInit/无设备/cuCtxCreate）；PTX 加载与 kernel 查找
+      失败打印详情；launch/sync 失败映射可读信息；移除过时"PTX kernel parameter
+      issues"注释。**codegen 修复**：`load_kernel` 失败改走 CPU 回退（原跳
+      `gpu_done_bb` 静默跳过 → 捕获数组未初始化 → 结果错）。
+    - **§5.3 静态检查**：tile `block_val` < 共享最大维度 → 警告（防协作覆盖不完/
+      越界）；负测试 3 个（block 非 32 倍数 / >1024 / 非 @gpu for 用 block）。
+    - 回归 109/109 + 负测试 61 + 框架 82（259/259）；gpu_block 双模式 PASS。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

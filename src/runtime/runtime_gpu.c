@@ -1,9 +1,11 @@
 // runtime_gpu.c — CUDA GPU offload runtime
+#define _POSIX_C_SOURCE 200809L   // clock_gettime(CLOCK_MONOTONIC) — §5.1 per-kernel profiling
 #include "mylang/runtime.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <time.h>
 #include <dlfcn.h>
 
 typedef int CUresult;
@@ -78,18 +80,56 @@ static cuMemcpyDtoHAsync_t p_cuMemcpyDtoHAsync = NULL;
 static cuMemcpyDtoDAsync_t p_cuMemcpyDtoDAsync = NULL;
 
 typedef int (*cuDeviceGetCount_t)(int*);
+
+// §5.2 错误友好化：CUDA driver error code → 可读字符串。无 cuGetErrorName 硬依赖
+//（静态表覆盖常见错误码，避免多一次 dlsym 与符号差异）。
+static const char* gpu_err_str(CUresult r) {
+    switch (r) {
+        case 0:   return "success";
+        case 1:   return "invalid value";
+        case 2:   return "out of memory";
+        case 3:   return "driver not initialized";
+        case 4:   return "driver deinitialized";
+        case 46:  return "device unavailable";
+        case 100: return "no CUDA device";
+        case 101: return "invalid device";
+        case 201: return "invalid context";
+        case 202: return "context already current";
+        case 209: return "no binary image is applicable for the device";
+        case 218: return "invalid PTX (compile error)";
+        case 300: return "invalid source";
+        case 301: return "file not found";
+        case 400: return "invalid handle";
+        case 500: return "not found";
+        case 600: return "not ready";
+        case 700: return "illegal memory access";
+        case 701: return "launch out of resources";
+        case 702: return "launch timed out";
+        case 709: return "context is destroyed";
+        case 710: return "device-side assert triggered";
+        case 719: return "launch failed";
+        case 999: return "unknown error";
+        default:  return "unknown error code";
+    }
+}
+
 int myp_gpu_init(void) {
     if (avail) return 1;
-    // Allow enabling GPU via environment variable MYP_GPU=1
-    // Default is CPU (disabled) due to PTX kernel parameter issues
+    // GPU offload 默认关闭：须 MYP_GPU=1 环境变量显式启用（CPU 为一等后端，
+    // 无 GPU 时正常回退；启用但失败时下方给出明确诊断）。
     static int check_env = -1;
     if (check_env == -1) {
         const char* env = getenv("MYP_GPU");
         check_env = (env && env[0] == '1') ? 1 : 0;
     }
     if (!check_env) return 0;
+    // MYP_GPU=1 显式要求 GPU 但初始化失败 → 明确诊断（不再静默回退）。
     lib = dlopen("libcuda.so.1", RTLD_LAZY|RTLD_LOCAL);
-    if (!lib) return 0;
+    if (!lib) {
+        fprintf(stderr, "[myp GPU] MYP_GPU=1 but cannot load libcuda.so.1 "
+                        "(CUDA driver missing?) — falling back to CPU\n");
+        return 0;
+    }
     p_cuInit = (cuInit_t)dlsym(lib,"cuInit");
     p_cuCtxCreate = (cuCtxCreate_t)dlsym(lib,"cuCtxCreate_v2");
     p_cuModuleLoadData = (cuModuleLoadData_t)dlsym(lib,"cuModuleLoadData");
@@ -124,15 +164,26 @@ int myp_gpu_init(void) {
     if (!p_cuInit||!p_cuCtxCreate||!p_cuModuleLoadData||!p_cuModuleGetFunction||
         !p_cuLaunchKernel||!p_cuMemAlloc||!p_cuMemFree||!p_cuMemcpyHtoD||
         !p_cuMemcpyDtoH||!p_cuCtxSynchronize) { dlclose(lib);lib=NULL; return 0; }
-    if (p_cuInit(0)!=0) { dlclose(lib);lib=NULL; return 0; }
+    int ir = p_cuInit(0);
+    if (ir != 0) {
+        fprintf(stderr, "[myp GPU] cuInit failed: %s — falling back to CPU\n",
+                gpu_err_str(ir));
+        dlclose(lib);lib=NULL; return 0;
+    }
     // Check that at least one CUDA device is available
     cuDeviceGetCount_t p_cuDeviceGetCount = (cuDeviceGetCount_t)dlsym(lib,"cuDeviceGetCount");
     int nd = 0;
     if (!p_cuDeviceGetCount || p_cuDeviceGetCount(&nd)!=0 || nd <= 0) {
+        fprintf(stderr, "[myp GPU] no CUDA-capable device found — falling back to CPU\n");
         dlclose(lib); lib = NULL; return 0;
     }
     if (p_cuDeviceGet) p_cuDeviceGet(&dev, 0);
-    if (p_cuCtxCreate(&ctx,0,0)!=0) { dlclose(lib);lib=NULL; return 0; }
+    int cr = p_cuCtxCreate(&ctx,0,0);
+    if (cr != 0) {
+        fprintf(stderr, "[myp GPU] cuCtxCreate failed: %s — falling back to CPU\n",
+                gpu_err_str(cr));
+        dlclose(lib);lib=NULL; return 0;
+    }
     avail = 1;
     dev_count = nd;
     dev_initialized = 1;
@@ -215,9 +266,18 @@ void* myp_gpu_load_kernel(const char* ptx, const char* name) {
 
     // The compiler JIT-links CUDA libdevice into the PTX at compile time, so the
     // PTX is fully self-contained (no external __nv_* references). Just load it.
-    if (p_cuModuleLoadData(&k->mod, ptx) != 0) { free(k); return NULL; }
-
-    if (p_cuModuleGetFunction(&k->fn, k->mod, name)!=0) { free(k); return NULL; }
+    CUresult lr = p_cuModuleLoadData(&k->mod, ptx);
+    if (lr != 0) {
+        fprintf(stderr, "[myp GPU] PTX module load failed: %s — falling back to CPU\n",
+                gpu_err_str(lr));
+        free(k); return NULL;
+    }
+    CUresult fr = p_cuModuleGetFunction(&k->fn, k->mod, name);
+    if (fr != 0) {
+        fprintf(stderr, "[myp GPU] kernel function '%s' not found in module: %s — "
+                        "falling back to CPU\n", name, gpu_err_str(fr));
+        free(k); return NULL;
+    }
     return (void*)k;
 }
 
@@ -228,13 +288,26 @@ int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, un
     if (!avail||!kctx) return 0;
     kernel_t* k = (kernel_t*)kctx;
     (void)n;
+    // §5.1 per-kernel 计时：MYP_PROF_GPU=1 时用单调时钟量同步 launch 耗时（
+    // stream==0 同步路径 launch 阻塞到完成，host 时钟已足够精确）。
+    static int prof = -1;
+    if (prof == -1) { const char* e = getenv("MYP_PROF_GPU"); prof = (e && e[0]=='1') ? 1 : 0; }
+    struct timespec t0, t1;
+    if (prof && stream == 0) clock_gettime(CLOCK_MONOTONIC, &t0);
     fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u stream=%ld\n", gx, bx, stream);
     int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0, (CUstream)(intptr_t)stream, args, NULL);
-    if (r!=0) { fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %d\n", r); return 0; }
+    if (r!=0) { fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %s\n", gpu_err_str(r)); return 0; }
     if (stream == 0) {
         r = p_cuCtxSynchronize();
-        if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %d\n", r); return 0; }
-        fprintf(stderr, "[myp GPU] kernel done\n");
+        if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %s\n", gpu_err_str(r)); return 0; }
+        if (prof) {
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
+                        (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
+            fprintf(stderr, "[myp GPU] kernel done: %.3f ms\n", ms);
+        } else {
+            fprintf(stderr, "[myp GPU] kernel done\n");
+        }
     } else {
         fprintf(stderr, "[myp GPU] kernel queued async on stream\n");
     }
