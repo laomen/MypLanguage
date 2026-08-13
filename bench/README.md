@@ -58,6 +58,10 @@ MYPCC=/path/to/mypc bash bench/run_compare.sh
 | `slicemat` | 嵌套 slice<slice<int>> 矩阵求和（二维运行时切片） | 2048×2048 |
 | `parcomp` | 并行计算：MYP @parallel for vs C++ std::thread（16 线程分块） | 10⁶ 迭代×200 浮点 |
 | `parreduce` | 并行归约：@parallel for + Atomic（每线程槽位）vs std::thread 各自累加 | 10⁶ 随机整数 |
+| `matrix_int_mul` | 整型矩阵乘法（int SIMD/ALU 循环） | 256×256 |
+| `dot_f64` | double 点积（浮点归约，无 fast-math 时向量化受限） | 10⁶ 元素 |
+| `lcs` | 最长公共子序列 DP（二维表内存访问 + 数据相关分支） | 2000×2000 |
+| `fib_matrix` | 矩阵快速幂斐波那契（ALU + 小矩阵乘 + 位循环） | fib(10⁸)×5×10⁴ |
 
 每个二进制打印 `verify <值>` 和 `ms <毫秒>` 两行；脚本取多轮最小 ms、校验两语言
 verify 一致（浮点容差 1e-3）、输出比值表。

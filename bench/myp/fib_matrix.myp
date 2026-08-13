@@ -1,0 +1,55 @@
+// bench/myp/fib_matrix.myp — 矩阵快速幂求斐波那契 fib(10^8) mod 1e9+7
+// [[1,1],[1,0]]^n 的 (0,1) 元素。verify = 结果（精确整数）。
+// 测 ALU + 小矩阵乘 + 位循环。
+import env;
+import time;
+
+// 2×2 矩阵乘 mod M（long 保精度）
+long fibMatrix(int n) {
+    long M = 1000000007L;
+    long a00 = 1L, a01 = 1L, a10 = 1L, a11 = 0L;   // A
+    long r00 = 1L, r01 = 0L, r10 = 0L, r11 = 1L;   // R = I
+    while (n > 0) {
+        if ((n & 1) == 1) {
+            // R = R * A
+            long n00 = (r00 * a00 + r01 * a10) % M;
+            long n01 = (r00 * a01 + r01 * a11) % M;
+            long n10 = (r10 * a00 + r11 * a10) % M;
+            long n11 = (r10 * a01 + r11 * a11) % M;
+            r00 = n00; r01 = n01; r10 = n10; r11 = n11;
+        }
+        // A = A * A
+        long m00 = (a00 * a00 + a01 * a10) % M;
+        long m01 = (a00 * a01 + a01 * a11) % M;
+        long m10 = (a10 * a00 + a11 * a10) % M;
+        long m11 = (a10 * a01 + a11 * a11) % M;
+        a00 = m00; a01 = m01; a10 = m10; a11 = m11;
+        n = n >> 1;
+    }
+    return r01;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 100000000;
+            long t0 = Time.nowMs();
+            long v = 0;
+            int r = 0;
+            while (r < 50000) {
+                v = v + fibMatrix(n);
+                r = r + 1;
+            }
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

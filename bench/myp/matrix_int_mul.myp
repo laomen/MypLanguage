@@ -1,0 +1,59 @@
+// bench/myp/matrix_int_mul.myp — 整型矩阵乘法 256×256 (int)
+// 测：整型乘加 + 整型循环/SIMD（MYP 尚无单独整型矩阵基准）。
+// verify = 结果矩阵的迹（精确整数）。
+import env;
+import time;
+
+long matrixIntMul(int n) {
+    int[] A = new int[n * n];
+    int[] B = new int[n * n];
+    int[] C = new int[n * n];
+    int i = 0;
+    while (i < n * n) {
+        A[i] = (i % 1000);
+        B[i] = (i % 7);
+        C[i] = 0;
+        i = i + 1;
+    }
+    int i0 = 0;
+    while (i0 < n) {
+        int k0 = 0;
+        while (k0 < n) {
+            int av = A[i0 * n + k0];
+            int j1 = 0;
+            while (j1 < n) {
+                C[i0 * n + j1] = C[i0 * n + j1] + av * B[k0 * n + j1];
+                j1 = j1 + 1;
+            }
+            k0 = k0 + 1;
+        }
+        i0 = i0 + 1;
+    }
+    long trace = 0;
+    i = 0;
+    while (i < n) {
+        trace = trace + C[i * n + i];
+        i = i + 1;
+    }
+    return trace;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 256;
+            long t0 = Time.nowMs();
+            long tr = matrixIntMul(n);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(tr);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

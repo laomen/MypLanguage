@@ -1,0 +1,59 @@
+// bench/myp/lcs.myp — 最长公共子序列（DP，扁平表）
+// 两段 2000 长伪随机 4 字符序列，O(n²) DP，verify = LCS 长度（精确整数）。
+// 测二维 DP 内存访问 + 数据相关分支。
+import env;
+import time;
+
+int lcs(int n, int seed) {
+    byte[] s = new byte[n];
+    byte[] t = new byte[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        s[i] = byte((rng >> 16) % 4);
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        t[i] = byte((rng >> 16) % 4);
+        i = i + 1;
+    }
+    int W = n + 1;
+    int[] dp = new int[W * W];
+    i = 0;
+    while (i < W * W) { dp[i] = 0; i = i + 1; }
+    int ii = 1;
+    while (ii <= n) {
+        int j = 1;
+        while (j <= n) {
+            if (s[ii - 1] == t[j - 1]) {
+                dp[ii * W + j] = dp[(ii - 1) * W + (j - 1)] + 1;
+            } else if (dp[(ii - 1) * W + j] >= dp[ii * W + (j - 1)]) {
+                dp[ii * W + j] = dp[(ii - 1) * W + j];
+            } else {
+                dp[ii * W + j] = dp[ii * W + (j - 1)];
+            }
+            j = j + 1;
+        }
+        ii = ii + 1;
+    }
+    return dp[n * W + n];
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 2000;
+            long t0 = Time.nowMs();
+            int v = lcs(n, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeLong(v);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

@@ -1,0 +1,46 @@
+// bench/myp/dot_f64.myp — double 点积（浮点归约）
+// N=10^6 两个 double 数组，verify = 内积和（浮点容差 1e-3 相对）。
+// 测 MYP 无 fast-math 时的浮点归约（不能重排/收缩 FMA）vs C++ -O3。
+import env;
+import time;
+
+double dotF64(int n, int seed) {
+    double[] a = new double[n];
+    double[] b = new double[n];
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        a[i] = double(int((rng >> 16) % 1000)) / 100.0;
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        b[i] = double(int((rng >> 16) % 1000)) / 100.0;
+        i = i + 1;
+    }
+    double sum = 0.0;
+    i = 0;
+    while (i < n) {
+        sum = sum + a[i] * b[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 1000000;
+            long t0 = Time.nowMs();
+            double s = dotF64(n, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(s);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}
