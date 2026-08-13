@@ -2326,9 +2326,48 @@ void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
     if (old_x) setNamedValue(s.op_x, old_x);
 }
 
+// §8.6 规范归约顺序（浮点位一致）：CPU 回退按与 GPU 相同的组合顺序归约。
+// L1：for j in [0, blocks): partials[j] = fold(init, a[j*bs .. min((j+1)*bs, cnt)))
+//      （每块顺序、从左到右——同 GPU K1 分块，emitSeqFold use_init=true 复用）；
+// L2/L3：out = fold(partials[0], partials[1..])（顺序合并——同 GPU host 合并，
+//      emitSeqFold use_init=false 复用）。
+// GPU 与 CPU 用同一桶划分 + 同一合并序 → 浮点结果位级一致（可双实现 diff 测试）。
+void CodeGen::emitSeqBlockReduce(llvm::Value* a_src, llvm::Value* cnt,
+                                 llvm::Value* blocks, llvm::Value* bs,
+                                 llvm::Type* elem_ty, const GpuReduceStmt& s,
+                                 llvm::Value* out_slot) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* partials = builder_.CreateAlloca(elem_ty, blocks, "__rd_part");
+    auto* j_a = createEntryBlockAlloca(current_function_, i64, "__rd_j");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), j_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "rdb_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "rdb_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "rdb_end", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* jv = builder_.CreateLoad(i64, j_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(jv, blocks), lbody, lend);
+    builder_.SetInsertPoint(lbody);
+    auto* jv2 = builder_.CreateLoad(i64, j_a);
+    auto* start = builder_.CreateMul(jv2, bs, "rdb_start");
+    auto* end_raw = builder_.CreateAdd(start, bs);
+    auto* end = builder_.CreateSelect(builder_.CreateICmpSLT(end_raw, cnt), end_raw, cnt,
+                                      "rdb_end");
+    auto* blk_len = builder_.CreateSub(end, start);
+    auto* a_blk = builder_.CreateGEP(elem_ty, a_src, start, "rdb_a");
+    auto* part_slot = builder_.CreateGEP(elem_ty, partials, jv2, "rdb_p");
+    emitSeqFold(a_blk, blk_len, elem_ty, s, part_slot, true);
+    auto* jv3 = builder_.CreateLoad(i64, j_a);
+    builder_.CreateStore(builder_.CreateAdd(jv3, llvm::ConstantInt::get(i64, 1)), j_a);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(lend);
+    // L2/L3：out = fold(partials[0], partials[1..])
+    emitSeqFold(partials, blocks, elem_ty, s, out_slot, false);
+}
+
 // §8.2 @gpu reduce：声明式归约 out = fold(init, a[lo..hi))。
 // GPU：H2D a 范围 → 单 kernel（每块 tx==0 归约 → partials[bid]）→ D2H partials →
-// host 顺序合并 → out。CPU 回退：顺序 fold 整个范围。
+// host 顺序合并 → out。CPU 回退：§8.6 规范归约顺序（分块部分和 + 合并）。
 void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* i32 = llvm::Type::getInt32Ty(ctx_);
@@ -2345,14 +2384,36 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
     auto* hi = generateExpr(*s.end_expr);
     if (hi->getType() != i64) hi = builder_.CreateSExtOrTrunc(hi, i64);
     auto* n = builder_.CreateSub(hi, lo, "rdn");
+
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* done_bb = llvm::BasicBlock::Create(ctx_, "rd_done", func);
+    // §8.8 空输入 n<=0：reduce → out = init（单位元），跳过分块归约（blocks=0
+    // 会使 kernel grid=0 / partials[0] 越界）。
+    auto* nz_bb = llvm::BasicBlock::Create(ctx_, "rd_nz", func);
+    auto* empty_bb = llvm::BasicBlock::Create(ctx_, "rd_empty", func);
+    builder_.CreateCondBr(builder_.CreateICmpSLE(n, llvm::ConstantInt::get(i64, 0)),
+                          empty_bb, nz_bb);
+    builder_.SetInsertPoint(empty_bb);
+    {
+        auto* init_v = generateExpr(*s.init_expr);
+        if (init_v && init_v->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+                init_v = builder_.CreateFPCast(init_v, elem_ty);
+            else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+                init_v = builder_.CreateSIToFP(init_v, elem_ty);
+            else if (elem_ty->isIntegerTy() && init_v->getType()->isIntegerTy())
+                init_v = builder_.CreateIntCast(init_v, elem_ty, false);
+        }
+        builder_.CreateStore(init_v, getNamedValue(s.out_name));
+    }
+    builder_.CreateBr(done_bb);
+    builder_.SetInsertPoint(nz_bb);
     auto* blocks = builder_.CreateUDiv(
         builder_.CreateAdd(n, llvm::ConstantInt::get(i64, block_size - 1)),
         llvm::ConstantInt::get(i64, block_size), "rdblk");
 
-    auto* func = builder_.GetInsertBlock()->getParent();
     auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "rd_gpu", func);
     auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "rd_cpu", func);
-    auto* done_bb = llvm::BasicBlock::Create(ctx_, "rd_done", func);
     auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
     auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok, llvm::ConstantInt::get(i32, 0));
     builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
@@ -2367,7 +2428,9 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
         auto* arr_h0 = builder_.CreateLoad(ptr, getNamedValue(s.array_name), s.array_name);
         auto* arr_h0_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), arr_h0,
             builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "rdh0");
-        emitSeqFold(arr_h0_off, n, elem_ty, s, getNamedValue(s.out_name), true);
+        // §8.6 规范归约顺序：与 GPU 同分块 + 同合并序 → 位级一致
+        emitSeqBlockReduce(arr_h0_off, n, blocks, llvm::ConstantInt::get(i64, block_size),
+                           elem_ty, s, getNamedValue(s.out_name));
         builder_.CreateBr(done_bb);
         builder_.SetInsertPoint(done_bb);
         return;
@@ -2433,7 +2496,9 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
     auto* arr_hc = builder_.CreateLoad(ptr, getNamedValue(s.array_name), s.array_name);
     auto* arr_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), arr_hc,
         builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "rdhc");
-    emitSeqFold(arr_hc_off, n, elem_ty, s, getNamedValue(s.out_name), true);
+    // §8.6 规范归约顺序：与 GPU 同分块 + 同合并序 → 位级一致
+    emitSeqBlockReduce(arr_hc_off, n, blocks, llvm::ConstantInt::get(i64, block_size),
+                       elem_ty, s, getNamedValue(s.out_name));
     builder_.CreateBr(done_bb);
 
     builder_.SetInsertPoint(done_bb);
@@ -2572,14 +2637,23 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
     auto* hi = generateExpr(*s.end_expr);
     if (hi->getType() != i64) hi = builder_.CreateSExtOrTrunc(hi, i64);
     auto* n = builder_.CreateSub(hi, lo, "scn");
+
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* done_bb = llvm::BasicBlock::Create(ctx_, "sc_done", func);
+    // §8.8 空输入 n<=0：scan 输出不变（无前缀元素），跳过分块扫描。
+    auto* nz_bb = llvm::BasicBlock::Create(ctx_, "sc_nz", func);
+    auto* empty_bb = llvm::BasicBlock::Create(ctx_, "sc_empty", func);
+    builder_.CreateCondBr(builder_.CreateICmpSLE(n, llvm::ConstantInt::get(i64, 0)),
+                          empty_bb, nz_bb);
+    builder_.SetInsertPoint(empty_bb);
+    builder_.CreateBr(done_bb);
+    builder_.SetInsertPoint(nz_bb);
     auto* blocks = builder_.CreateUDiv(
         builder_.CreateAdd(n, llvm::ConstantInt::get(i64, block_size - 1)),
         llvm::ConstantInt::get(i64, block_size), "scblk");
 
-    auto* func = builder_.GetInsertBlock()->getParent();
     auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "sc_gpu", func);
     auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "sc_cpu", func);
-    auto* done_bb = llvm::BasicBlock::Create(ctx_, "sc_done", func);
     auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
     auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok, llvm::ConstantInt::get(i32, 0));
     builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
@@ -3010,13 +3084,21 @@ void CodeGen::generateGpuScatter(const GpuScatterStmt& s) {
     builder_.CreateUnreachable();
     builder_.SetInsertPoint(len_ok_bb);
     auto* n = n_a;
+    auto* done_bb = llvm::BasicBlock::Create(ctx_, "st_done", func);
+    // §8.8 空输入 n<=0：scatter 无元素，直接结束（b 不变）。
+    auto* nz_bb = llvm::BasicBlock::Create(ctx_, "st_nz", func);
+    auto* empty_bb = llvm::BasicBlock::Create(ctx_, "st_empty", func);
+    builder_.CreateCondBr(builder_.CreateICmpSLE(n, llvm::ConstantInt::get(i64, 0)),
+                          empty_bb, nz_bb);
+    builder_.SetInsertPoint(empty_bb);
+    builder_.CreateBr(done_bb);
+    builder_.SetInsertPoint(nz_bb);
     auto* blocks = builder_.CreateUDiv(
         builder_.CreateAdd(n, llvm::ConstantInt::get(i64, block_size - 1)),
         llvm::ConstantInt::get(i64, block_size), "stblk");
 
     auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "st_gpu", func);
     auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "st_cpu", func);
-    auto* done_bb = llvm::BasicBlock::Create(ctx_, "st_done", func);
     auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
     auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok, llvm::ConstantInt::get(i32, 0));
     builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);

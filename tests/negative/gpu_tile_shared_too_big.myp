@@ -1,0 +1,15 @@
+// §8.8 @gpu tile 静态检查负测试：共享数组超 48KB（NV sm_75 上限）→ 编译报错
+// EXPECT ERROR: exceeds the 48KB limit
+class Main {
+    action:
+        @startup void go() {
+            long n = 1024L;
+            double[] out = new double[n];
+            @gpu tile (double[7000] smem) {   // 7000*8 = 56000 > 49152
+                smem[kernel.tx] = double(kernel.bx);
+                kernel.sync();
+                out[kernel.gid] = smem[kernel.tx];
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

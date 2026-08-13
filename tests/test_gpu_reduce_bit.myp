@@ -1,0 +1,35 @@
+// P3 ⑤ §8.6 规范归约顺序（浮点位一致）diff 测试
+// float 加法不严格可结合：GPU 分块归约 + host 合并 与 CPU 全量顺序归约可能差 1 ulp。
+// §8.6 定义规范树：GPU 与 CPU 回退按同一分块（L1 每块顺序部分和）+ 同一合并序
+// （L2/L3 顺序合并）→ 位级一致。本测试打印归约结果的 32 位 bit 模式；
+// MYP_GPU=0 与 MYP_GPU=1 两跑的输出须逐字节一致（双实现 diff）。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            // 大数组 + 非平凡值（0.1 不可精确表示 + 递增扰动）→ 关联顺序敏感
+            long n = 100000L;
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) {
+                a[i] = 0.1f + float(i % 17L) * 0.001f;
+                i = i + 1L;
+            }
+            // 默认 block(256)
+            float s = 0.0f;
+            @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> s;
+            int bits = bitcast<int>(s);
+            Console.writeLine("reduce_bits=" + bits + " s=" + s);
+
+            // block(128) 变体（不同分块 → 双模式仍须一致）
+            float s2 = 0.0f;
+            @gpu reduce (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> s2 block(128);
+            int bits2 = bitcast<int>(s2);
+            Console.writeLine("reduce128_bits=" + bits2 + " s2=" + s2);
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

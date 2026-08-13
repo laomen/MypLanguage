@@ -521,6 +521,13 @@ private:
     // §8.2 host 顺序归约：acc=init（或 src[0]）；for i in [start,cnt): x=src[i]; acc=op(acc,x)；out=acc
     void emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_ty,
                      const GpuReduceStmt& stmt, llvm::Value* out_slot, bool use_init);
+    // §8.6 规范归约顺序：L1 每块顺序归约（同 GPU K1 分块：partials[j] = fold(init,
+    // a[j*bs .. min((j+1)*bs, cnt)))）→ L2/L3 顺序合并 partials（同 GPU host 合并）。
+    // GPU 与 CPU 按同一组合顺序 → 浮点位级一致（可双实现 diff 测试）。
+    void emitSeqBlockReduce(llvm::Value* a_src, llvm::Value* cnt,
+                            llvm::Value* blocks, llvm::Value* bs,
+                            llvm::Type* elem_ty, const GpuReduceStmt& stmt,
+                            llvm::Value* out_slot);
     // §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；dst[i]=acc
     void emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
                      llvm::Type* elem_ty, const GpuScanStmt& stmt);

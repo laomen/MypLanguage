@@ -217,6 +217,17 @@
     - 测试 `tests/test_gpu_tile_degrade.myp` 双模式 PASS（块内前缀和/thread0-load/
       smem-reuse）；`tests/test_gpu_tile.myp` 现 CPU 降级也 PASS（旧回退只写
       out[0] → err=511；新回退覆盖全部输出 → err=0）。回归 262/262。
+  - **P3 ⑤ 规范归约顺序 + CPU 回退 + 静态检查（§8.6-8.8）**：
+    - §8.6 规范归约顺序（浮点位一致）：reduce CPU 回退改 `emitSeqBlockReduce`
+      （L1 每块顺序部分和 + L2/L3 顺序合并，与 GPU 同分块同合并序）→ 位级一致。
+      验证 `test_gpu_reduce_bit.myp`：100000 float 归约 block(256)/block(128)，
+      `bitcast<int>(s)` 位模式双模式逐字节一致。
+    - §8.8 静态检查：三原语（reduce/scan/scatter）空输入 n≤0 运行时守卫
+      （reduce → out=init 单位元；scan/scatter → 输出不变；原实现 blocks=0 →
+      grid=0 / partials[0] 越界）；tile 48KB 上限负测试 `gpu_tile_shared_too_big.myp`。
+    - §8.7 CPU 回退效率：L1 块部分和天然可并行（跨块并行不改变单块计算 → 位一致
+      保持），@parallel for 接入留性能类（同 P2⑥/P1③④）。
+    - 回归 109/109 + 负测试 65 + 框架 82（263/263）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
