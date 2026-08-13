@@ -3533,8 +3533,12 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
 #endif
 }
 
-// §3.2 CPU 回退（降级）：单线程执行 @gpu tile body。共享数组用 host 栈数组，
-// kernel.bx/tx/gid=0（无协作）、bd=block_size、gx=grid 块数、kernel.sync() 空操作。
+// §3.2/§8.5 CPU 回退（降级）：忽略 tiling，退化为顺序嵌套循环（§8.5）。
+// 共享数组 → host 栈数组；协作载入 + kernel.sync() → 顺序赋值 + 空操作；
+// body 遍历展平线程网格 p ∈ [0, grid*block) 每线程执行一次：
+// kernel.gid=p、bx=p/bd、tx=p%bd、bd=block_size、gx=grid 块数。
+// 每线程只读写自己 smem 槽的 tile（协作载入 → 本线程写 → 读回）→ GPU/CPU 产出
+// 相同（"语义不变的降级"）。
 void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
     diag_.warn(s.range, "'@gpu tile' GPU fallback — single-threaded CPU execution");
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
@@ -3542,8 +3546,8 @@ void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
     int64_t total = 1;
     for (auto d : s.dim_vals) total *= d;
     llvm::Type* elem_llvm = getLLVMType(s.elem_type_info);
-    // 共享数组用"指针变量"表示（同 `long[] data`）：存储区 [total x T] + 存
-    // 元素指针的变量，使 body 里 smem[i] 走标准数组 GEP/load/store 路径。
+    // §8.5 降级 1：smem 声明退化为普通局部数组（host 栈数组）。body 里 smem[i]
+    // 走标准数组 GEP/load/store 路径（指针变量 + array_elem_types_ 注解）。
     auto* storage = builder_.CreateAlloca(elem_llvm,
         llvm::ConstantInt::get(i64_ty, total), s.name + "_stor");
     auto* st_ptr = builder_.CreateBitCast(storage,
@@ -3553,13 +3557,42 @@ void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
     named_values_.emplace_back();
     named_values_.back()[s.name] = pv;
     array_elem_types_[s.name] = elem_llvm;
+    // §8.5 降级 2/3：顺序循环遍历展平线程网格（kernel.sync() 为空操作）。
+    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
+    llvm::Value* total_th;
+    if (s.has_grid && s.grid_val <= 0) {
+        // 运行时 grid 表达式（如 conv3d 的 nTiles）：host 求值
+        auto* gv = generateExpr(*s.grid_expr);
+        if (gv->getType() != i64_ty) gv = builder_.CreateIntCast(gv, i64_ty, false);
+        total_th = builder_.CreateMul(gv, llvm::ConstantInt::get(i64_ty, block_size));
+    } else {
+        int64_t grid = s.grid_val > 0 ? s.grid_val : 1;
+        total_th = llvm::ConstantInt::get(i64_ty, grid * block_size);
+    }
+    auto* p_a = createEntryBlockAlloca(current_function_, i64_ty, "__tile_p");
+    builder_.CreateStore(llvm::ConstantInt::get(i64_ty, 0), p_a);
     gpu_cpu_fallback_ = true;
-    gpu_cpu_loop_var_.clear();
-    gpu_cpu_bound_ = llvm::ConstantInt::get(i64_ty, s.grid_val);
-    gpu_cpu_block_ = (s.block_val > 0) ? (int)s.block_val : 256;   // §3.7 block(n)
+    gpu_cpu_loop_var_ = "__tile_p";
+    gpu_cpu_bound_ = total_th;
+    gpu_cpu_block_ = block_size;   // §3.7 block(n)
+    named_values_.back()["__tile_p"] = p_a;
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "tile_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "tile_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "tile_end", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* pv2 = builder_.CreateLoad(i64_ty, p_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(pv2, total_th), lbody, lend);
+    builder_.SetInsertPoint(lbody);
     if (s.body) generateStmt(*s.body);
+    auto* pv3 = builder_.CreateLoad(i64_ty, p_a);
+    builder_.CreateStore(builder_.CreateAdd(pv3, llvm::ConstantInt::get(i64_ty, 1)), p_a);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(lend);
     gpu_cpu_fallback_ = false;
     gpu_cpu_bound_ = nullptr;
+    gpu_cpu_loop_var_.clear();
+    named_values_.back().erase("__tile_p");
     named_values_.pop_back();
 }
 

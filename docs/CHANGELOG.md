@@ -207,6 +207,16 @@
     - 测试 `tests/test_gpu_scatter.myp` 双模式 PASS（unique 全量/逆序、any 冲突、
       atomic_add 浮点/整型、子区间 + 未写槽保持）；负测试 3 个。
       回归 109/109 + 负测试 64 + 框架 82（262/262）。
+  - **P3 ④ `@gpu tile`（§8.5 优化降级语义）**：
+    - GPU 实现（§3.2 共享内存协作 kernel）已有；本次补齐 §8.5 CPU 降级语义：
+      重写 `generateGpuTileCpuFallback` —— smem → host 栈数组；**顺序循环遍历展平
+      线程网格 p ∈ [0, grid*block)**（kernel.gid=p、bx=p/bd、tx=p%bd），
+      kernel.sync() 空操作；运行时 grid 表达式在降级点 host 求值。
+    - 降级对"每线程读写自己/更低槽"的 tile 模式语义不变（协作载入 → 本线程写 →
+      读回；thread0 全量载入 + sync；多块 smem 复用无残留污染）。
+    - 测试 `tests/test_gpu_tile_degrade.myp` 双模式 PASS（块内前缀和/thread0-load/
+      smem-reuse）；`tests/test_gpu_tile.myp` 现 CPU 降级也 PASS（旧回退只写
+      out[0] → err=511；新回退覆盖全部输出 → err=0）。回归 262/262。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

@@ -1,0 +1,85 @@
+// P3 ④ @gpu tile（§8.5 优化降级语义）测试
+// tile 是调度/优化指令，不是计算：GPU 用 shared memory 分块（§3.2 实现）；
+// CPU 回退 = 忽略 tiling，退化为顺序嵌套循环（§8.5）：
+//   1) smem 声明 → 普通局部数组（host 栈数组）
+//   2) 协作载入 + kernel.sync() → 顺序赋值 + 空操作（单线程有序天然安全）
+//   3) body 其余逻辑不变（遍历展平线程网格 p ∈ [0, grid*block)，每线程执行一次）
+// 本测试用"语义不变的降级"模式（每线程只读写自己/更低槽）→ GPU 与 CPU 产出相同。
+import env;
+import math;
+
+class Main {
+    action:
+        @startup void go() {
+            long err = 0L;
+            long n = 256L;
+            long[] a = new long[n];
+            long[] out = new long[n];
+            long i = 0L;
+            while (i < n) { a[i] = i + 1L; i = i + 1L; }
+
+            // 1) 块内前缀和：每线程协作载入自己的输入到 smem，sync 后读自己及
+            //    更低槽（降级下更低线程先执行 → 已写），写 out[gid]。
+            @gpu tile (long[64] smem) grid(4) block(64) {
+                smem[kernel.tx] = a[kernel.gid];
+                kernel.sync();
+                long s = 0L;
+                long k = 0L;
+                while (k <= kernel.tx) { s = s + smem[k]; k = k + 1L; }
+                out[kernel.gid] = s;
+            }
+            // 期望：out[bx*64+tx] = Σ_{j=0..tx} a[bx*64+j]
+            // = (tx+1)*(bx*64+1) + tx*(tx+1)/2
+            i = 0L;
+            while (i < n) {
+                long bx = i / 64L;
+                long tx = i % 64L;
+                long exp = (tx + 1L) * (bx * 64L + 1L) + tx * (tx + 1L) / 2L;
+                if (out[i] != exp) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("tile block-prefix: " + (err == 0L ? "OK" : "FAIL") +
+                " (err=" + err + ")");
+
+            // 2) thread-0 载入全部 + sync + 各线程读（块内跨线程 smem 可见）。
+            //    降级下块内 tx=0 先执行全量载入 → 后续线程读到已写槽。
+            i = 0L;
+            while (i < n) { out[i] = 0L; i = i + 1L; }
+            @gpu tile (long[64] smem2) grid(4) block(64) {
+                if (kernel.tx == 0L) {
+                    long k = 0L;
+                    while (k < 64L) { smem2[k] = a[kernel.bx * 64L + k]; k = k + 1L; }
+                }
+                kernel.sync();
+                out[kernel.gid] = smem2[kernel.tx] * 2L;
+            }
+            i = 0L;
+            while (i < n) {
+                if (out[i] != a[i] * 2L) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("tile thread0-load: " + (err == 0L ? "OK" : "FAIL") +
+                " (err=" + err + ")");
+
+            // 3) 多块 smem 复用无残留污染：块 1 值 = f(块 1)，不被块 0 残留影响。
+            i = 0L;
+            while (i < n) { out[i] = 0L; i = i + 1L; }
+            @gpu tile (long[64] smem3) grid(4) block(64) {
+                smem3[kernel.tx] = kernel.bx * 100L + kernel.tx;
+                kernel.sync();
+                out[kernel.gid] = smem3[kernel.tx];
+            }
+            i = 0L;
+            while (i < n) {
+                long exp = (i / 64L) * 100L + (i % 64L);
+                if (out[i] != exp) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("tile smem-reuse: " + (err == 0L ? "OK" : "FAIL") +
+                " (err=" + err + ")");
+
+            Console.writeLine("gpu tile degrade: " + (err == 0L ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }
