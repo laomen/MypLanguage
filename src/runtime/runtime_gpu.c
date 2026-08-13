@@ -17,6 +17,7 @@ typedef int (*cuInit_t)(unsigned int);
 typedef int (*cuCtxCreate_t)(CUcontext*, unsigned int, int);
 typedef int (*cuModuleLoadData_t)(CUmodule*, const void*);
 typedef int (*cuModuleGetFunction_t)(CUfunction*, CUmodule, const char*);
+typedef int (*cuModuleGetGlobal_t)(unsigned long long*, size_t*, CUmodule, const char*);
 typedef int (*cuLaunchKernel_t)(CUfunction, unsigned int,unsigned int,unsigned int,
     unsigned int,unsigned int,unsigned int,unsigned int,void*,void**,void**);
 typedef int (*cuMemAlloc_t)(void**, size_t);
@@ -25,6 +26,9 @@ typedef int (*cuMemcpyHtoD_t)(void*, const void*, size_t);
 typedef int (*cuMemcpyDtoH_t)(void*, const void*, size_t);
 typedef int (*cuMemcpyDtoD_t)(void*, const void*, size_t);
 typedef int (*cuCtxSynchronize_t)(void);
+typedef int (*cuCtxSetCurrent_t)(CUcontext);
+typedef int (*cuGetErrorName_t)(int, const char**);
+typedef int (*cuCtxGetCurrent_t)(CUcontext*);
 typedef int CUdevice;
 typedef int (*cuDeviceGet_t)(CUdevice*, int);
 typedef int (*cuDeviceGetName_t)(char*, int, CUdevice);
@@ -50,6 +54,7 @@ static cuInit_t p_cuInit = NULL;
 static cuCtxCreate_t p_cuCtxCreate = NULL;
 static cuModuleLoadData_t p_cuModuleLoadData = NULL;
 static cuModuleGetFunction_t p_cuModuleGetFunction = NULL;
+static cuModuleGetGlobal_t p_cuModuleGetGlobal = NULL;
 static cuLaunchKernel_t p_cuLaunchKernel = NULL;
 static cuMemAlloc_t p_cuMemAlloc = NULL;
 static cuMemFree_t p_cuMemFree = NULL;
@@ -57,6 +62,9 @@ static cuMemcpyHtoD_t p_cuMemcpyHtoD = NULL;
 static cuMemcpyDtoH_t p_cuMemcpyDtoH = NULL;
 static cuMemcpyDtoD_t p_cuMemcpyDtoD = NULL;
 static cuCtxSynchronize_t p_cuCtxSynchronize = NULL;
+static cuCtxSetCurrent_t p_cuCtxSetCurrent = NULL;
+static cuGetErrorName_t p_cuGetErrorName = NULL;
+static cuCtxGetCurrent_t p_cuCtxGetCurrent = NULL;
 static int avail = 0;
 static CUcontext ctx = NULL;
 static CUdevice dev = 0;
@@ -134,6 +142,7 @@ int myp_gpu_init(void) {
     p_cuCtxCreate = (cuCtxCreate_t)dlsym(lib,"cuCtxCreate_v2");
     p_cuModuleLoadData = (cuModuleLoadData_t)dlsym(lib,"cuModuleLoadData");
     p_cuModuleGetFunction = (cuModuleGetFunction_t)dlsym(lib,"cuModuleGetFunction");
+    p_cuModuleGetGlobal = (cuModuleGetGlobal_t)dlsym(lib,"cuModuleGetGlobal");
     p_cuLaunchKernel = (cuLaunchKernel_t)dlsym(lib,"cuLaunchKernel");
     p_cuMemAlloc = (cuMemAlloc_t)dlsym(lib,"cuMemAlloc_v2");
     p_cuMemFree = (cuMemFree_t)dlsym(lib,"cuMemFree_v2");
@@ -142,6 +151,9 @@ int myp_gpu_init(void) {
     p_cuMemcpyDtoD = (cuMemcpyDtoD_t)dlsym(lib,"cuMemcpyDtoD_v2");
     if (!p_cuMemcpyDtoD) p_cuMemcpyDtoD = (cuMemcpyDtoD_t)dlsym(lib,"cuMemcpyDtoD");
     p_cuCtxSynchronize = (cuCtxSynchronize_t)dlsym(lib,"cuCtxSynchronize");
+    p_cuCtxSetCurrent = (cuCtxSetCurrent_t)dlsym(lib,"cuCtxSetCurrent");
+    p_cuGetErrorName = (cuGetErrorName_t)dlsym(lib,"cuGetErrorName");
+    p_cuCtxGetCurrent = (cuCtxGetCurrent_t)dlsym(lib,"cuCtxGetCurrent");
     p_cuDeviceGet = (cuDeviceGet_t)dlsym(lib,"cuDeviceGet");
     p_cuDeviceGetName = (cuDeviceGetName_t)dlsym(lib,"cuDeviceGetName");
     p_cuDeviceGetAttribute = (cuDeviceGetAttribute_t)dlsym(lib,"cuDeviceGetAttribute");
@@ -367,6 +379,85 @@ void myp_gpu_destroy_kernel(void* kctx) {
     if (!avail||!kctx) return;
     kernel_t* k = (kernel_t*)kctx;
     free(k);
+}
+
+// §P5 ② kernel printk/assert staging：runtime 分配设备缓冲 + 计数器，kernel 以
+// 附加参数（i64 设备指针）直接持有——避免 cuModuleGetGlobal（其依赖当前上下文
+// TLS，在 MYP 协程/@thread 下不可靠 → CUDA_ERROR_INVALID_CONTEXT）。
+//
+// 记录布局（7×i64 = 56B）：[0]type(0=printk/1=assert) [1]fmt_id [2]gid
+//   [3..5]a0..a2（int=zext i64 / double=位型 i64） [6]mask（bit_i=1 表示 a_i 为 double）
+// 宿主 mini-printf：按格式串文本 + 每转换符消费一个 arg（int/double 由 mask 定）。
+// assert 失败 → 打印并 exit(1)（契约违约，同 scatter unique）。
+#define MYP_PF_REC 7
+#define MYP_PF_MAX 1024
+static void* gpu_pf_buf = NULL;
+static void* gpu_pf_cnt = NULL;
+static void* gpu_pf_fail = NULL;
+static int gpu_pf_inited = 0;
+static void myp_gpu_printf_ensure(void) {
+    if (gpu_pf_inited) return;
+    gpu_pf_inited = 1;
+    if (!avail) return;
+    if (p_cuMemAlloc(&gpu_pf_buf, (size_t)MYP_PF_MAX * MYP_PF_REC * 8) != 0) gpu_pf_buf = NULL;
+    if (p_cuMemAlloc(&gpu_pf_cnt, 8) != 0) gpu_pf_cnt = NULL;
+    if (p_cuMemAlloc(&gpu_pf_fail, 8) != 0) gpu_pf_fail = NULL;
+}
+long myp_gpu_printf_buf(void)  { myp_gpu_printf_ensure(); return (long)(intptr_t)gpu_pf_buf; }
+long myp_gpu_printf_cnt(void)  { myp_gpu_printf_ensure(); return (long)(intptr_t)gpu_pf_cnt; }
+long myp_gpu_printf_fail(void) { myp_gpu_printf_ensure(); return (long)(intptr_t)gpu_pf_fail; }
+
+void myp_gpu_flush_printf(long pbuf, long pcnt, long pfail,
+                          const char** fmts, int nfmt) {
+    if (!avail || !pcnt) return;
+    long long cnt = 0, fail = 0;
+    p_cuMemcpyDtoH(&cnt, (void*)(intptr_t)pcnt, 8);
+    if (pfail) p_cuMemcpyDtoH(&fail, (void*)(intptr_t)pfail, 8);
+    if (cnt < 0) cnt = 0;
+    if (cnt > MYP_PF_MAX) cnt = MYP_PF_MAX;
+    if (cnt > 0 && pbuf) {
+        long long* rec = (long long*)calloc((size_t)cnt * MYP_PF_REC, sizeof(long long));
+        if (rec) {
+            p_cuMemcpyDtoH(rec, (void*)(intptr_t)pbuf,
+                           (size_t)cnt * MYP_PF_REC * sizeof(long long));
+            for (long long i = 0; i < cnt; i++) {
+                long long* r = rec + i * MYP_PF_REC;
+                long long type = r[0], fid = r[1], gid = r[2], mask = r[6];
+                const char* fmt = (fid >= 0 && fid < (long long)nfmt) ? fmts[fid] : "(?)";
+                if (type == 1)
+                    fprintf(stdout, "kernel[gid=%lld] ASSERT FAIL: ", (long long)gid);
+                else
+                    fprintf(stdout, "kernel[gid=%lld] ", (long long)gid);
+                int ai = 0;
+                const long long* av = &r[3];
+                for (const char* p = fmt; *p; p++) {
+                    if (*p != '%') { fputc(*p, stdout); continue; }
+                    p++;
+                    if (*p == '%') { fputc('%', stdout); continue; }
+                    if (*p == 'l') p++;   // %ld/%lf → 跳过长修饰
+                    if (ai > 2) { fputs("%?", stdout); continue; }
+                    int is_double = (int)((mask >> ai) & 1LL);
+                    if (is_double) {
+                        double d; memcpy(&d, &av[ai], 8);
+                        fprintf(stdout, "%g", d);
+                    } else {
+                        fprintf(stdout, "%lld", (long long)av[ai]);
+                    }
+                    ai++;
+                }
+                fputc('\n', stdout);
+            }
+            free(rec);
+        }
+    }
+    // 重置计数器与失败标志（下个 kernel 从 0 起）
+    if (pcnt) { long long z = 0; p_cuMemcpyHtoD((void*)(intptr_t)pcnt, &z, 8); }
+    if (pfail) { long long z = 0; p_cuMemcpyHtoD((void*)(intptr_t)pfail, &z, 8); }
+    if (fail) {
+        fprintf(stderr, "[myp GPU] @gpu kernel ASSERT FAILED — aborting "
+                        "(device-side assert, §P5 ②)\n");
+        exit(1);
+    }
 }
 
 // §8.4 @gpu scatter(unique) 索引预扫失败（越界 / 重复）→ 打印并退出。

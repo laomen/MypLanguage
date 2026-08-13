@@ -286,6 +286,25 @@
     假设循环从 0 起（非 0 起始在 GPU 下执行 p=0 分支 → 越界读，须体内处理边界）；
     静态方法须类名限定调用。
 
+### v3.13.3 — P5 ② kernel 内 printk/assert 调试（§9.6）
+  - **`kernel.printk(fmt, v...)` / `kernel.assert(cond, fmt, v...)`**（`@gpu for`
+    内核内；fmt 字符串字面量，值参 int/long/double/float ≤3）。
+  - **GPU staging**：runtime 分配设备缓冲/计数器（`myp_gpu_printf_buf/cnt/fail`）
+    + kernel 末尾 3 个附加 i64 参数传指针（**避开 cuModuleGetGlobal**——协程/
+    @thread 上下文下返回 CUDA_ERROR_INVALID_CONTEXT）；kernel 内 atomicrmw 领槽
+    （仅 printk/断言失败才领）+ 写 7×i64 记录；launch 后 `myp_gpu_flush_printf`
+    回读 mini-printf 打印、清零；assert 失败 exit(1)。
+  - **CPU 回退**：宿主 `myp_printf`/`myp_assert_abort`，前缀 `kernel[gid=<循环变量>] `
+    与 GPU 一致 → 单格式双模式输出逐字节相同。
+  - **格式**：值参类型匹配（int→%d、long→%ld、double→%g）；GPU 按 mask 宽容打印。
+    多格式记录顺序受 GPU 线程调度影响（非确定性，同 CUDA printf）。
+  - 测试 `test_gpu_printk.myp`（printk+assert 通过，双模式输出 IDENTICAL）、
+    `test_gpu_assert_fail.myp`（断言失败双模式 exit 1 + 消息一致）；负测试 3
+    （格式非字面量/参数过多/类型不符）。回归 266/266 + AMD 交叉编译无回归。
+  - 踩坑：O2 GlobalDCE 删只写不读的模块全局 → 改 runtime 缓冲 + 附加参数；
+    cuModuleGetGlobal 协程 201；领槽 atomicrmw 须 gate 在 do_write 内（否则通过
+    assert 也消耗槽位）；`@gpu for` 边界按 `<` 处理（`i<=n` GPU 只到 n-1）。
+
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总

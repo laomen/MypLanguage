@@ -401,6 +401,25 @@ void myp_print_long(int64_t val) { char b[64]; snprintf(b, sizeof b, "%ld\n", (l
 void myp_print_float(double val) { char b[64]; snprintf(b, sizeof b, "%g", val); myp_out_write(b); fflush(stdout); }
 void myp_print_bool(int32_t val) { myp_out_write(val ? "true" : "false"); fflush(stdout); }
 
+// §P5 ② printf 风格格式化（CPU 回退路径的 kernel.printk / kernel.assert 用）。
+// vsnprintf 进缓冲 → myp_out_write（与 myp_print* 同输出流）。
+void myp_printf(const char* fmt, ...) {
+    if (!fmt) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    myp_out_write(buf);
+    fflush(stdout);
+}
+
+// §P5 ② kernel.assert CPU 回退硬失败（noreturn）——与 GPU staging 的 exit(1) 对齐。
+void myp_assert_abort(const char* msg) {
+    fprintf(stderr, "[myp] kernel.assert FAILED: %s\n", msg ? msg : "");
+    exit(1);
+}
+
 void myp_flush(void) { fflush(stdout); }
 
 // Terminal size (for TUI rendering)

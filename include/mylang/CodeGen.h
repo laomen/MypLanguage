@@ -360,6 +360,17 @@ private:
     llvm::Function* runtime_gpu_mem_alignment_ = nullptr;
     llvm::Function* runtime_gpu_double_precision_ = nullptr;
     llvm::Function* runtime_gpu_atomics64_ = nullptr;
+    // §P5 ② kernel printk/assert 调试
+    llvm::Function* runtime_printf_ = nullptr;            // myp_printf（宿主，CPU 回退）
+    llvm::Function* runtime_assert_abort_ = nullptr;      // myp_assert_abort（CPU 回退 assert 硬失败）
+    llvm::Function* runtime_gpu_flush_printf_ = nullptr;  // myp_gpu_flush_printf（staging 回读）
+    llvm::Function* runtime_gpu_printf_buf_ = nullptr;    // 设备缓冲/计数器指针访问器
+    llvm::Function* runtime_gpu_printf_cnt_ = nullptr;
+    llvm::Function* runtime_gpu_printf_fail_ = nullptr;
+    // per-kernel printk 状态（generateGpuKernel 内重置）
+    std::vector<std::string> gpu_kernel_fmts_;           // fmt_id → 格式串
+    std::map<std::string, int> gpu_kernel_fmt_id_;       // 格式串 → fmt_id
+    bool gpu_kernel_printf_used_ = false;
 
     // ---- Init function ----
     llvm::Function* init_func_ = nullptr;
@@ -564,6 +575,14 @@ private:
         std::map<std::string, llvm::Value*>& kernel_vars,
         const std::vector<llvm::Value*>& kernel_arg_values,
         const std::string& loop_var_name, llvm::Value* tid_val);
+    // §P5 ② kernel.printk / kernel.assert：kernel 内写 staging 记录（设备全局
+    // myp_pbuf + 原子槽位 myp_pcnt；assert 失败置 myp_pfail）。
+    llvm::Value* emitKernelPrintk(const CallExpr& e, llvm::IRBuilder<>& kb,
+        std::map<std::string, llvm::Value*>& kernel_vars,
+        const std::vector<llvm::Value*>& kernel_arg_values,
+        const std::string& loop_var_name, llvm::Value* tid_val, bool is_assert);
+    // §P5 ② kernel.printk / kernel.assert CPU 回退：宿主 myp_printf / 硬失败。
+    llvm::Value* emitCpuPrintk(const CallExpr& e, bool is_assert);
     void emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
         std::map<std::string, llvm::Value*>& kernel_vars,
         const std::vector<llvm::Value*>& kernel_arg_values,

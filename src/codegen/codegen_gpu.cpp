@@ -662,6 +662,13 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         // AMD s_barrier）。
                         return emitGpuBarrier(kb);
                     }
+                    // §P5 ② kernel.printk(fmt, a, b, c) / kernel.assert(cond, fmt, ...)：
+                    // 写设备 staging 记录（myp_pbuf/myp_pcnt/myp_pfail），launch 后
+                    // 宿主 myp_gpu_flush_printf 回读格式化打印；assert 失败 exit(1)。
+                    if (kma.member_name == "printk" || kma.member_name == "assert") {
+                        return emitKernelPrintk(e, kb, kernel_vars, kernel_arg_values,
+                            loop_var_name, tid_val, kma.member_name == "assert");
+                    }
                     // §3.4 kernel.shfl_down(v, delta)：warp 内 lane 方向移位 delta，
                     // 越界返回自身。NVPTX shfl.sync.down（LLVM 21 只有 i32/f32 →
                     // double 拆 2×i32 重组）。
@@ -3873,9 +3880,135 @@ static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag) {
     return true;
 }
 
+// §P5 ② kernel.printk / kernel.assert：kernel 内把记录写入设备 staging 全局。
+//
+// 记录布局（7×i64=56B，myp_pbuf 平铺 [MAXREC*7 x i64]）：
+//   [0] type（0=printk 1=assert） [1] fmt_id [2] gid（线性线程号）
+//   [3..5] a0..a2（int=zext i64；double/float=位型 i64） [6] mask（bit_i=1 → a_i 为 double）
+// 槽位由 myp_pcnt（原子计数器，atomicrmw add）领取；assert 失败同时置 myp_pfail。
+// 宿主 myp_gpu_flush_printf 在 launch 后回读（见 generateGpuKernel launch 尾）。
+llvm::Value* CodeGen::emitKernelPrintk(const CallExpr& e, llvm::IRBuilder<>& kb,
+    std::map<std::string, llvm::Value*>& kernel_vars,
+    const std::vector<llvm::Value*>& kernel_arg_values,
+    const std::string& loop_var_name, llvm::Value* tid_val, bool is_assert) {
+    auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
+    auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
+    auto* i1_ty = llvm::Type::getInt1Ty(ctx_);
+    auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    constexpr unsigned kMax = 1024;
+
+    // 格式串（StringLiteralExpr）→ fmt_id（本 kernel 内唯一）
+    int val_start = is_assert ? 2 : 1;   // 值参起点（assert: cond, fmt, v...；printk: fmt, v...）
+    std::string fmt = "(fmt?)";
+    if ((size_t)val_start - 1 < e.args.size() &&
+        e.args[val_start - 1]->kind == ExprKind::StringLiteral) {
+        fmt = static_cast<const StringLiteralExpr&>(*e.args[val_start - 1]).value;
+    }
+    int fid = 0;
+    auto fit = gpu_kernel_fmt_id_.find(fmt);
+    if (fit != gpu_kernel_fmt_id_.end()) {
+        fid = fit->second;
+    } else {
+        fid = (int)gpu_kernel_fmts_.size();
+        gpu_kernel_fmts_.push_back(fmt);
+        gpu_kernel_fmt_id_[fmt] = fid;
+    }
+    gpu_kernel_printf_used_ = true;
+
+    // §P5 ② 设备指针来自 kernel 末尾 3 个 i64 参数（宿主 launch 时传入；runtime
+    // 分配缓冲/计数器）。inttoptr 成 addrspace(1) 指针——避免模块全局被 O2
+    // GlobalDCE 删除，也避免 cuModuleGetGlobal 的上下文 TLS 依赖。
+    auto getarg = [&](const char* name) -> llvm::Value* {
+        auto it = kernel_vars.find(name);
+        if (it != kernel_vars.end()) return it->second;   // i64 参数值
+        return llvm::ConstantInt::get(i64_ty, 0);
+    };
+    auto* asp1 = llvm::PointerType::get(ctx_, 1);
+    auto* pbuf = kb.CreateIntToPtr(getarg("myp_pbuf"), asp1, "pf_pbuf");
+    auto* pcnt = kb.CreateIntToPtr(getarg("myp_pcnt"), asp1, "pf_pcnt");
+    auto* pfail = kb.CreateIntToPtr(getarg("myp_pfail"), asp1, "pf_pfail");
+
+    // 写入条件：printk → 恒真；assert → !cond
+    llvm::Value* do_write = llvm::ConstantInt::get(i1_ty, 1);
+    if (is_assert) {
+        auto* cond = emitKernelExpr(*e.args[0], kb, kernel_vars, kernel_arg_values,
+                                    loop_var_name, tid_val);
+        auto* c0 = kb.CreateICmpEQ(cond, llvm::ConstantInt::get(cond->getType(), 0), "asrt0");
+        do_write = c0;   // 断言失败（cond==0）时写记录
+    }
+
+    // 仅 do_write 才领槽（atomicrmw）——否则 assert 通过的线程也消耗槽位，
+    // 计数器与记录数不符（flush 读到上一 kernel 的残留记录）。
+    auto* claim_bb = llvm::BasicBlock::Create(ctx_, "pf_claim",
+        kb.GetInsertBlock()->getParent());
+    auto* write_bb = llvm::BasicBlock::Create(ctx_, "pf_write",
+        kb.GetInsertBlock()->getParent());
+    auto* skip_bb = llvm::BasicBlock::Create(ctx_, "pf_skip",
+        kb.GetInsertBlock()->getParent());
+    kb.CreateCondBr(do_write, claim_bb, skip_bb);
+
+    kb.SetInsertPoint(claim_bb);
+    // slot = atomicrmw add pcnt, 1（NVPTX atom.add.u64，sm_60+ 支持）
+    auto* slot = kb.CreateAtomicRMW(llvm::AtomicRMWInst::Add, pcnt,
+        llvm::ConstantInt::get(i64_ty, 1), llvm::MaybeAlign(),
+        llvm::AtomicOrdering::SequentiallyConsistent);
+    auto* in_range = kb.CreateICmpULT(slot, llvm::ConstantInt::get(i64_ty, kMax));
+    kb.CreateCondBr(in_range, write_bb, skip_bb);
+
+    kb.SetInsertPoint(write_bb);
+    // pbuf 平铺 [kMax*7 x i64]；按 slot*7 单索引定位记录基址。
+    auto* rec = kb.CreateInBoundsGEP(i64_ty, pbuf,
+        kb.CreateMul(slot, llvm::ConstantInt::get(i64_ty, 7), "pf_base"), "pf_rec");
+    auto st = [&](int field, llvm::Value* val) {
+        kb.CreateStore(val, kb.CreateInBoundsGEP(i64_ty, rec,
+            llvm::ConstantInt::get(i32_ty, field)));
+    };
+    st(0, llvm::ConstantInt::get(i64_ty, is_assert ? 1 : 0));      // type
+    st(1, llvm::ConstantInt::get(i64_ty, fid));                    // fmt_id
+    st(2, kb.CreateIntCast(tid_val, i64_ty, false, "pf_gid"));     // gid
+    long long mask = 0;
+    int nval = (int)e.args.size() - val_start;
+    if (nval > 3) nval = 3;
+    for (int i = 0; i < 3; i++) {
+        llvm::Value* v = llvm::ConstantInt::get(i64_ty, 0);
+        if (i < nval) {
+            auto* av = emitKernelExpr(*e.args[val_start + i], kb, kernel_vars,
+                                      kernel_arg_values, loop_var_name, tid_val);
+            if (!av) av = llvm::ConstantInt::get(i64_ty, 0);
+            if (av->getType()->isDoubleTy()) {
+                v = kb.CreateBitCast(av, i64_ty, "pf_d");
+                mask |= (1LL << i);
+            } else if (av->getType()->isFloatTy()) {
+                auto* d = kb.CreateFPExt(av, double_ty, "pf_f2d");
+                v = kb.CreateBitCast(d, i64_ty, "pf_d");
+                mask |= (1LL << i);
+            } else if (av->getType()->isIntegerTy(32)) {
+                v = kb.CreateZExt(av, i64_ty, "pf_i");
+            } else if (av->getType()->isIntegerTy(64)) {
+                v = av;
+            } else if (av->getType()->isIntegerTy(1)) {
+                v = kb.CreateZExt(av, i64_ty, "pf_b");
+            } else {
+                v = llvm::ConstantInt::get(i64_ty, 0);
+            }
+        }
+        st(3 + i, v);
+    }
+    st(6, llvm::ConstantInt::get(i64_ty, mask));
+    if (is_assert)
+        kb.CreateStore(llvm::ConstantInt::get(i64_ty, 1), pfail);
+    kb.CreateBr(skip_bb);
+    kb.SetInsertPoint(skip_bb);
+    return nullptr;   // void
+}
+
 bool CodeGen::generateGpuKernel(const ForStmt& s) {
 #ifdef MYP_ENABLE_GPU
     gpu_amd_grid_used_ = false;
+    // §P5 ② kernel printk/assert 状态（每次 kernel 重置）
+    gpu_kernel_fmts_.clear();
+    gpu_kernel_fmt_id_.clear();
+    gpu_kernel_printf_used_ = false;
     // Create a new module for PTX generation
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
     ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
@@ -3946,10 +4079,13 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     }
     kernel_args_ = filtered_args;
 
-    // Build kernel function signature: (i64 n, captured_vars...)
+    // Build kernel function signature: (i64 n, captured_vars...,
+    //                                    i64 myp_pbuf, i64 myp_pcnt, i64 myp_pfail)
+    // §P5 ② 末尾 3 个 i64 为 printk/assert staging 设备指针（非 printk kernel 传 0）。
     // tid is NOT a parameter — computed from blockIdx/threadIdx NVVM intrinsics
     std::vector<llvm::Type*> kernel_param_types;
     kernel_param_types.push_back(i64_ty);  // n (loop bound)
+    (void)ptr_ty; (void)double_ty;
 
     std::map<std::string, llvm::Value*> kernel_vars_map;
     std::vector<llvm::Value*> kernel_arg_values;
@@ -3957,6 +4093,10 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     for (auto& ka : kernel_args_) {
         kernel_param_types.push_back(ka.type);
     }
+    // §P5 ② printk/assert staging 设备指针（i64）——非 printk kernel 宿主传 0
+    kernel_param_types.push_back(i64_ty);
+    kernel_param_types.push_back(i64_ty);
+    kernel_param_types.push_back(i64_ty);
 
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), kernel_param_types, false);
     auto* kernel_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
@@ -3972,6 +4112,14 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         auto* arg = kernel_func->getArg(arg_idx++);
         arg->setName(ka.name);
         kernel_vars_map[ka.name] = arg;
+        kernel_arg_values.push_back(arg);
+    }
+
+    // §P5 ② printk/assert staging 设备指针（i64 参数；非 printk kernel 由宿主传 0）
+    for (const char* pn : {"myp_pbuf", "myp_pcnt", "myp_pfail"}) {
+        auto* arg = kernel_func->getArg(arg_idx++);
+        arg->setName(pn);
+        kernel_vars_map[pn] = arg;
         kernel_arg_values.push_back(arg);
     }
 
@@ -4284,9 +4432,9 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     }
 
     // ---- Build kernel launch args ----
-    // Kernel signature: (i64 n, captured_vars...)
-    // Args array: pointer to n, pointer to each captured var
-    int total_args = 1 + (int)kernel_args_.size();
+    // Kernel signature: (i64 n, captured_vars..., i64 pbuf, i64 pcnt, i64 pfail)
+    // Args array: pointer to n, pointer to each captured var, 3 staging pointers
+    int total_args = 1 + (int)kernel_args_.size() + 3;   // §P5 ② 末尾 3 个 staging 指针
 
     auto* args_arr = builder_.CreateAlloca(ptr_ty, llvm::ConstantInt::get(i32_ty, total_args),
                                            "gpu_args");
@@ -4353,6 +4501,25 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         arg_pos++;
     }
 
+    // §P5 ② printk/assert staging 设备指针（kernel 末尾 3 个 i64 参数；非 printk
+    // kernel 传 0）。先算好供 launch 与 flush 复用。
+    llvm::Value* pf_pbuf = llvm::ConstantInt::get(i64_ty, 0);
+    llvm::Value* pf_pcnt = llvm::ConstantInt::get(i64_ty, 0);
+    llvm::Value* pf_pfail = llvm::ConstantInt::get(i64_ty, 0);
+    if (gpu_kernel_printf_used_ && runtime_gpu_printf_buf_) {
+        pf_pbuf = builder_.CreateCall(runtime_gpu_printf_buf_, {});
+        pf_pcnt = builder_.CreateCall(runtime_gpu_printf_cnt_, {});
+        pf_pfail = builder_.CreateCall(runtime_gpu_printf_fail_, {});
+    }
+    for (llvm::Value* pv : {pf_pbuf, pf_pcnt, pf_pfail}) {
+        auto* tmp = builder_.CreateAlloca(i64_ty);
+        builder_.CreateStore(pv, tmp);
+        llvm::Value* idxs[] = { llvm::ConstantInt::get(i32_ty, arg_pos) };
+        auto* ap = builder_.CreateGEP(ptr_ty, args_arr, idxs);
+        builder_.CreateStore(builder_.CreateBitCast(tmp, ptr_ty), ap);
+        arg_pos++;
+    }
+
     // §4.1 @gpu stream(s)：stream 句柄（0 = 默认流同步）。
     llvm::Value* stream_h = s.has_stream
         ? emitGpuStreamHandle(s.stream_expr.get())
@@ -4375,6 +4542,24 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
             }
         }
         builder_.CreateCall(runtime_gpu_free_, {aa.gpu_ptr});
+    }
+
+    // §P5 ② kernel printk/assert：回读 staging 记录并打印（宿主侧格式化）。
+    // 同步 cuMemcpyDtoH 会等异步 kernel 完成（stream 模式也安全）；assert 失败
+    // 在 runtime 内 exit(1)。
+    if (gpu_kernel_printf_used_ && runtime_gpu_flush_printf_) {
+        int nfmt = (int)gpu_kernel_fmts_.size();
+        auto* fmt_arr = builder_.CreateAlloca(ptr_ty,
+            llvm::ConstantInt::get(i32_ty, nfmt < 1 ? 1 : nfmt), "pf_fmts");
+        for (int i = 0; i < nfmt; i++) {
+            auto* g = builder_.CreateGlobalStringPtr(gpu_kernel_fmts_[i], "pf_fmt");
+            auto* slotp = builder_.CreateGEP(ptr_ty, fmt_arr,
+                llvm::ConstantInt::get(i32_ty, i));
+            builder_.CreateStore(g, slotp);
+        }
+        builder_.CreateCall(runtime_gpu_flush_printf_,
+            {pf_pbuf, pf_pcnt, pf_pfail, builder_.CreateBitCast(fmt_arr, ptr_ty),
+             llvm::ConstantInt::get(i32_ty, nfmt)});
     }
 
     // Destroy kernel

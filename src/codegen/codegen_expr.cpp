@@ -930,6 +930,10 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
                 if (!e.args.empty()) return generateExpr(*e.args[0]);
                 return nullptr;
             }
+            // §P5 ② kernel.printk / kernel.assert CPU 回退：宿主 printf / 硬失败
+            //（调试在双模式均可用，输出与 GPU staging 对齐）。
+            if (kma.member_name == "printk" || kma.member_name == "assert")
+                return emitCpuPrintk(e, kma.member_name == "assert");
         }
     }
     llvm::Value* r = generateCallImpl(e);
@@ -941,6 +945,65 @@ llvm::Value* CodeGen::generateCall(const CallExpr& e) {
     if (r && r->getType()->isPointerTy() && callReturnsArcRef(e))
         arcPushTemp(r);
     return r;
+}
+
+// §P5 ② kernel.printk / kernel.assert CPU 回退：宿主 printf / 硬失败。
+// kernel.printk(fmt, v...) → myp_printf("kernel[gid=%lld] " + fmt + "\n", gid, v...)；
+// kernel.assert(cond, fmt, v...) → !cond 时 myp_printf("kernel[gid=%lld] ASSERT FAIL: "
+// + fmt + "\n", gid, v...) + myp_assert_abort（exit 1）。
+// 前缀与 GPU staging flush 一致（kernel[gid=<循环变量>]）→ 双模式输出逐字节相同。
+// args 按实际类型传（%d→i32，%g→double；long→i64 配 %ld）。
+llvm::Value* CodeGen::emitCpuPrintk(const CallExpr& e, bool is_assert) {
+    int val_start = is_assert ? 2 : 1;   // 值参起点
+    std::string fmt = "(fmt?)";
+    if ((size_t)val_start - 1 < e.args.size() &&
+        e.args[val_start - 1]->kind == ExprKind::StringLiteral) {
+        fmt = static_cast<const StringLiteralExpr&>(*e.args[val_start - 1]).value;
+    }
+    std::string full = (is_assert ? "kernel[gid=%lld] ASSERT FAIL: "
+                                  : "kernel[gid=%lld] ") + fmt + "\n";
+
+    // 当前循环变量值 = gid（CPU 回退的 kernel.gid 模拟）
+    llvm::Value* gid = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_), 0);
+    if (!gpu_cpu_loop_var_.empty()) {
+        auto* nv = getNamedValue(gpu_cpu_loop_var_);
+        if (nv) gid = builder_.CreateLoad(builder_.getInt64Ty(), nv);
+    }
+
+    auto build_call = [&]() {
+        std::vector<llvm::Value*> cargs;
+        cargs.push_back(builder_.CreateGlobalStringPtr(full, "cpa_fmt"));
+        cargs.push_back(gid);
+        int nval = (int)e.args.size() - val_start;
+        if (nval > 3) nval = 3;
+        for (int i = 0; i < nval; i++) {
+            auto* av = generateExpr(*e.args[val_start + i]);
+            if (av) cargs.push_back(av);
+        }
+        builder_.CreateCall(runtime_printf_, cargs);
+    };
+
+    if (is_assert) {
+        auto* cond = generateExpr(*e.args[0]);
+        if (!cond) cond = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+        auto* c0 = builder_.CreateICmpEQ(cond,
+            llvm::ConstantInt::get(cond->getType(), 0), "cpa_c0");
+        auto* fail_bb = llvm::BasicBlock::Create(ctx_, "cpa_fail",
+            builder_.GetInsertBlock()->getParent());
+        auto* cont_bb = llvm::BasicBlock::Create(ctx_, "cpa_cont",
+            builder_.GetInsertBlock()->getParent());
+        builder_.CreateCondBr(c0, fail_bb, cont_bb);
+        builder_.SetInsertPoint(fail_bb);
+        build_call();
+        if (runtime_assert_abort_)
+            builder_.CreateCall(runtime_assert_abort_,
+                {builder_.CreateGlobalStringPtr(fmt, "cpa_msg")});
+        builder_.CreateBr(cont_bb);
+        builder_.SetInsertPoint(cont_bb);
+        return nullptr;
+    }
+    build_call();
+    return nullptr;
 }
 
 std::string CodeGen::memberObjectClassName(const Expr& obj) {

@@ -1,0 +1,15 @@
+// §P5 ② kernel.printk 负测试：值参须 int/long/double/float → 编译报错
+// EXPECT ERROR: value arg must be int/long/double/float
+import gpu;
+class Main {
+    action:
+        @startup void go() {
+            long n = 8L;
+            double[] a = new double[n];
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                a[i] = 1.0;
+                kernel.printk("i=%d s=%d", int(i), "not-a-number");
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

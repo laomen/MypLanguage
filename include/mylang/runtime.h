@@ -187,6 +187,10 @@ char* myp_fmt_double_f(double v, int32_t prec);
 char* myp_fmt_double_e(double v, int32_t prec);
 char* myp_fmt_double_g(double v, int32_t prec);
 
+// ---- §P5 ② kernel printk/assert 调试 ----
+// printf 风格格式化（%d/%f 等）写 stdout（CPU 回退路径的 kernel.printk 用）。
+void myp_printf(const char* fmt, ...);
+
 // ---- Hashing (stdlib/crypto.myp) ----
 int32_t myp_crc32(const char* msg);
 char* myp_hash_md5(const char* msg);
@@ -220,6 +224,17 @@ int   myp_gpu_launch(void* kernel_ctx, unsigned int grid_dim_x, unsigned int blo
 void  myp_gpu_destroy_kernel(void* kernel_ctx);
 // §4.1 @gpu stream(s)：异步 D2H 回拷（排队到流，须 streamSync 后取回）。
 void  myp_gpu_to_host_async(void* dst, const void* src, size_t size, long stream);
+// §P5 ② 回读 kernel printk/assert staging 记录并打印（mini-printf；assert 失败
+// → 打印并 exit(1)）。pbuf/pcnt/pfail 为 runtime 分配的设备缓冲/计数器指针
+// （kernel 附加参数直接持有，避免 cuModuleGetGlobal 的 TLS 依赖）。
+// fmts 为宿主侧格式串指针数组（每格式一个）。读取后把 cnt/fail 清零（下个
+// kernel 从 0 起）。
+void  myp_gpu_flush_printf(long pbuf, long pcnt, long pfail,
+                           const char** fmts, int nfmt);
+// §P5 ② printk staging 设备指针访问器（惰性分配，返回 long 句柄/0=不可用）。
+long  myp_gpu_printf_buf(void);
+long  myp_gpu_printf_cnt(void);
+long  myp_gpu_printf_fail(void);
 // Device info (returns 0 / empty if GPU unavailable)
 int    myp_gpu_device_count(void);
 const char* myp_gpu_device_name(void);   // static buffer, valid until next call

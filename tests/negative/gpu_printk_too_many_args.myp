@@ -1,0 +1,15 @@
+// §P5 ② kernel.printk 负测试：值参最多 3 个 → 编译报错
+// EXPECT ERROR: at most 3 value arguments
+import gpu;
+class Main {
+    action:
+        @startup void go() {
+            long n = 8L;
+            double[] a = new double[n];
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                a[i] = 1.0;
+                kernel.printk("i=%d a=%d b=%d c=%d", int(i), 1, 2, 3, 4);
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

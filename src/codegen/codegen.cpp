@@ -2590,6 +2590,29 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::Function::ExternalLinkage, "myp_gpu_atomics64", module_.get());
     intrinsic_map_["__myp_gpu_atomics64"] = runtime_gpu_atomics64_;
 
+    // §P5 ② kernel printk/assert：宿主 printf（CPU 回退路径用，变参）+ GPU
+    // staging 回读（kernel 模块内 myp_pbuf/myp_pcnt/myp_pfail 记录 → 格式化打印；
+    // assert 失败 exit(1)）。
+    auto* printf_ft = llvm::FunctionType::get(v, {p}, true);   // myp_printf(fmt, ...)
+    runtime_printf_ = llvm::Function::Create(printf_ft,
+        llvm::Function::ExternalLinkage, "myp_printf", module_.get());
+    auto* assert_ft = llvm::FunctionType::get(v, {p}, false);
+    runtime_assert_abort_ = llvm::Function::Create(assert_ft,
+        llvm::Function::ExternalLinkage, "myp_assert_abort", module_.get());
+    runtime_assert_abort_->addFnAttr(llvm::Attribute::NoReturn);
+    // myp_gpu_flush_printf(long pbuf, long pcnt, long pfail, const char** fmts, int nfmt)
+    auto* flush_ft = llvm::FunctionType::get(v, {i64, i64, i64, p, i32}, false);
+    runtime_gpu_flush_printf_ = llvm::Function::Create(flush_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_flush_printf", module_.get());
+    // printk staging 设备指针访问器（惰性分配，返回 long）
+    auto* p0_ft = llvm::FunctionType::get(i64, {}, false);
+    runtime_gpu_printf_buf_ = llvm::Function::Create(p0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_printf_buf", module_.get());
+    runtime_gpu_printf_cnt_ = llvm::Function::Create(p0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_printf_cnt", module_.get());
+    runtime_gpu_printf_fail_ = llvm::Function::Create(p0_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_printf_fail", module_.get());
+
     // ---- GPU explicit memory / stream FFIs (M1 paradigm library stdlib/gpu) ----
     // 句柄统一为 i64（long）；数组参数为 opaque ptr。
     auto* gpu_alloc_h = llvm::Function::Create(llvm::FunctionType::get(i64, {i64}, false),

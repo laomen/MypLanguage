@@ -1,0 +1,55 @@
+// P5 ② kernel.printk / kernel.assert 调试测试（§9.6）
+//
+// kernel.printk(fmt, v...) 从 @gpu for kernel 内打印（GPU：launch 后宿主回读
+// staging 记录 + mini-printf；CPU 回退：宿主 myp_printf），前缀统一
+// "kernel[gid=<循环变量>] " → 双模式输出逐字节一致。
+// kernel.assert(cond, fmt, ...) 断言失败 → exit(1)（契约违约，见
+// test_gpu_assert_fail.myp 验证退出码）。
+//
+// 值参类型与格式匹配（同 printf）：int→%d、double→%g、long→%ld。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 8L;
+            long err = 0L;
+            double[] a = new double[n];
+
+            // ---- printk：前 3 元素打印（int + double 参数，单格式 → 双模式
+            //      顺序一致；多格式顺序受 GPU 线程调度影响，非确定性，勿 diff），
+            //      同时做真计算 ----
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                a[i] = double(i) * 2.0;
+                if (i < 3L) {
+                    kernel.printk("i=%d val=%g", int(i), a[i]);
+                }
+            }
+            long i = 0L;
+            while (i < n) {
+                if (Math.abs(a[i] - double(i) * 2.0) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("printk compute: " + (err == 0L ? "OK" : "FAIL"));
+
+            // ---- assert 通过：j 恒在 [0, n) ----
+            long aerr = 0L;
+            @gpu for (long j = 0L; j < n; j = j + 1L) {
+                a[j] = a[j] + 1.0;
+                kernel.assert(j < n, "j=%d out of range", int(j));
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(a[i] - (double(i) * 2.0 + 1.0)) > 1e-9) aerr = aerr + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("assert pass: " + (aerr == 0L ? "OK" : "FAIL"));
+
+            Console.writeLine("gpu printk: " + (err == 0L && aerr == 0L ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

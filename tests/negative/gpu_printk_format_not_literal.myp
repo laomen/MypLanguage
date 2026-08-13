@@ -1,0 +1,16 @@
+// §P5 ② kernel.printk 负测试：格式串须为字符串字面量 → 编译报错
+// EXPECT ERROR: format must be a string literal
+import gpu;
+class Main {
+    action:
+        @startup void go() {
+            long n = 8L;
+            double[] a = new double[n];
+            string f = "i=%d";
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                a[i] = 1.0;
+                kernel.printk(f, int(i));
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

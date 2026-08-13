@@ -1,0 +1,27 @@
+// P5 ② kernel.assert 失败测试（§9.6）
+//
+// kernel.assert(cond, fmt, ...) 断言失败 → GPU staging exit(1) / CPU 回退
+// myp_assert_abort exit(1)。本文件故意触发失败（i 越界），验证退出码非 0 +
+// 失败消息。运行方式：MYP_GPU=0/1 各跑一次，两者均应退出 1。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 8L;
+            double[] a = new double[n];
+
+            // i 越界到 n（本应 [0,n)）→ 断言失败 → 打印 + exit(1)。
+            // 注意：@gpu for 边界按 < 处理（tid < bound），故用 n+1 让 i 达 n。
+            @gpu for (long i = 0L; i < n + 1L; i = i + 1L) {   // i = 0..8（含 8，越界）
+                a[i % n] = double(i);
+                kernel.assert(i < n, "i=%d out of range [0,%d)", int(i), int(n));
+            }
+            Console.writeLine("UNREACHABLE: assert should have fired");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

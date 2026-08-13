@@ -1671,6 +1671,43 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
                           " supports double/float/int");
                 return vt;
             }
+            // §P5 ② kernel.printk(fmt, v...) / kernel.assert(cond, fmt, v...)
+            // 调试：格式串须为字面量；值参 int/long/double/float（最多 3）。
+            else if (kma.member_name == "printk" || kma.member_name == "assert") {
+                bool is_assert = (kma.member_name == "assert");
+                int need = is_assert ? 2 : 1;   // assert: cond+fmt；printk: fmt
+                int val_start = need;
+                if ((int)expr.args.size() < need) {
+                    error(expr.range, "kernel." + kma.member_name +
+                          " needs a format string");
+                    return TypeInfo(TypeKind::Void);
+                }
+                // assert 的 cond（布尔/整型）
+                if (is_assert) {
+                    TypeInfo ct = visitExpr(*expr.args[0]);
+                    if (ct.kind != TypeKind::Bool && ct.kind != TypeKind::Int &&
+                        ct.kind != TypeKind::Long)
+                        error(expr.args[0]->range, "kernel.assert cond must be bool/int");
+                }
+                // 格式串须为字符串字面量（编译期嵌入格式表）
+                if (expr.args[val_start - 1]->kind != ExprKind::StringLiteral)
+                    error(expr.range, "kernel." + kma.member_name +
+                          " format must be a string literal");
+                // 值参（最多 3 个，int/long/double/float）
+                int nval = (int)expr.args.size() - need;
+                if (nval > 3)
+                    error(expr.range, "kernel." + kma.member_name +
+                          " takes at most 3 value arguments");
+                for (int i = val_start; i < (int)expr.args.size(); i++) {
+                    TypeInfo vt = visitExpr(*expr.args[i]);
+                    if (vt.kind != TypeKind::Int && vt.kind != TypeKind::Long &&
+                        vt.kind != TypeKind::Double && vt.kind != TypeKind::Float &&
+                        vt.kind != TypeKind::Bool)
+                        error(expr.args[i]->range, "kernel." + kma.member_name +
+                              " value arg must be int/long/double/float");
+                }
+                return TypeInfo(TypeKind::Void);
+            }
         }
     }
     if (expr.callee->kind == ExprKind::Identifier) {
