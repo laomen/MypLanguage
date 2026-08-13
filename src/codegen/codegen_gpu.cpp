@@ -2645,11 +2645,30 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     gpu_ctx_tid_ = tid_val;
     gpu_ctx_n_arg_ = n_arg;
 
-    // Generate tid < n check
-    auto* cond_check = kb.CreateICmpSLT(tid_val, n_arg);
+    // Generate tid < n check（@gpu stride：grid-stride 循环头）
     auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kernel_func);
     auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kernel_func);
-    kb.CreateCondBr(cond_check, body_bb, end_bb);
+    llvm::BasicBlock* loop_bb = nullptr;   // stride 模式循环头（body 后回跳）
+    llvm::Value* loop_var_kv = tid_val;   // 普通 @gpu for：body 里循环变量 = tid
+    if (s.stride) {
+        // §3.5 grid-stride：i = tid；while (i < n) { body; i += ntid*nctaid; }
+        auto* nctaid = kb.CreateIntCast(
+            kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
+                llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+            i64_ty, false, "nctaid");
+        auto* nthreads = kb.CreateMul(ntid, nctaid, "nthreads");
+        loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kernel_func);
+        kb.CreateBr(loop_bb);
+        kb.SetInsertPoint(loop_bb);
+        auto* i_phi = kb.CreatePHI(i64_ty, 2, "i");
+        i_phi->addIncoming(tid_val, entry_bb);
+        auto* cond_s = kb.CreateICmpSLT(i_phi, n_arg);
+        kb.CreateCondBr(cond_s, body_bb, end_bb);
+        loop_var_kv = i_phi;
+    } else {
+        auto* cond_check = kb.CreateICmpSLT(tid_val, n_arg);
+        kb.CreateCondBr(cond_check, body_bb, end_bb);
+    }
 
     // Compile loop body into kernel
     kb.SetInsertPoint(body_bb);
@@ -2659,7 +2678,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     gpu_math_used_ = false;
     if (s.body) {
         emitKernelStmt(*s.body, kb, kernel_vars_map, kernel_arg_values,
-                       loop_var, tid_val);
+                       loop_var, loop_var_kv);
     }
     gpu_for_stmt_ = nullptr;
     gpu_kernel_mode_ = false;
@@ -2669,8 +2688,23 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         diag_.warn(s.range, "'@gpu for' uses libdevice math (sin/cos/tan/exp/log/pow); falling back to CPU");
         return false;
     }
-    if (!kb.GetInsertBlock()->getTerminator())
-        kb.CreateBr(end_bb);
+    if (!kb.GetInsertBlock()->getTerminator()) {
+        if (s.stride && loop_var_kv) {
+            auto* i_phi = llvm::dyn_cast<llvm::PHINode>(loop_var_kv);
+            if (i_phi) {
+                auto* nctaid = kb.CreateIntCast(
+                    kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
+                        llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
+                    i64_ty, false, "nctaid2");
+                auto* nthreads = kb.CreateMul(ntid, nctaid, "nthreads2");
+                auto* i_next = kb.CreateAdd(i_phi, nthreads, "i_next");
+                i_phi->addIncoming(i_next, kb.GetInsertBlock());
+                kb.CreateBr(loop_bb);
+            }
+        } else {
+            kb.CreateBr(end_bb);
+        }
+    }
 
     kb.SetInsertPoint(end_bb);
     kb.CreateRetVoid();
@@ -3014,7 +3048,24 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     gpu_cpu_fallback_ = true;
     gpu_cpu_loop_var_ = loop_var;
     gpu_cpu_bound_ = n_val;
-    generateForStmt(s);
+    if (s.stride) {
+        // §3.5 CPU 回退：顺序遍历全部 i（step 改 +1；GPU 用 nThreads=ntid*nctaid）
+        auto& mut_s = const_cast<ForStmt&>(s);
+        auto saved_step = std::move(mut_s.step);
+        auto* id1 = new IdentifierExpr(loop_var, s.range);
+        auto* one = new IntegerLiteralExpr(1, s.range);
+        auto* add = new BinaryOpExpr(std::unique_ptr<Expr>(id1),
+                                     BinaryOpKind::Add,
+                                     std::unique_ptr<Expr>(one), s.range);
+        auto* id2 = new IdentifierExpr(loop_var, s.range);
+        mut_s.step = std::make_unique<AssignmentExpr>(std::unique_ptr<Expr>(id2),
+                                                      std::unique_ptr<Expr>(add),
+                                                      s.range);
+        generateForStmt(s);
+        mut_s.step = std::move(saved_step);
+    } else {
+        generateForStmt(s);
+    }
     gpu_cpu_fallback_ = false;
     gpu_cpu_loop_var_.clear();
     gpu_cpu_bound_ = nullptr;

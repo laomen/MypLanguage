@@ -1,0 +1,44 @@
+// P2 ② @gpu stride for（§3.5 grid-stride）测试
+// 语义：i = kernel.gid；while (i < n) { body; i += nThreads }（nThreads = ntid*nctaid）。
+// 普通 @gpu for 是 nThreads==n 的特例；stride 是通用化（grid 控制时每线程多元素）。
+// 手动 @startup/main 结构（GPU 模式：MYP_GPU=1；CPU 回退 step=1 顺序）。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long err = 0L;
+            long n = 8192L;
+            long nTh = 128L;   // 用户步长（GPU 忽略，用 nThreads；CPU 用 step=1）
+            double[] out = new double[n];
+
+            // stride：每个 i ∈ [0,n) 恰好被处理一次，out[i] = i
+            @gpu stride for (long i = 0L; i < n; i = i + nTh) {
+                out[i] = double(i);
+            }
+
+            long i = 0L;
+            while (i < n) {
+                if (Math.abs(out[i] - double(i)) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // stride 内独立写（每 i 只写自己，无竞争）：sq[j] = j*j
+            double[] sq = new double[n];
+            @gpu stride for (long j = 0L; j < n; j = j + nTh) {
+                sq[j] = double(j) * double(j);
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(sq[i] - double(i) * double(i)) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            Console.writeLine("gpu stride: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

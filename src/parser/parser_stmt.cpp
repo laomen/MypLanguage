@@ -58,8 +58,24 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                     advance(); // consume 'tile'
                     return parseGpuTileStmt();
                 }
+                // @gpu stride for (long i = 0L; i < n; i = i + nTh) { body }
+                if (check(TokenKind::Identifier) && peek().value == "stride") {
+                    advance(); // consume 'stride'
+                    if (!check(TokenKind::Keyword_for)) {
+                        diag_.error(previous().range,
+                            "'@gpu stride' must be followed by 'for'");
+                    } else {
+                        advance(); // consume 'for'
+                        auto stmt = parseForStmt();
+                        if (auto* fs = dynamic_cast<ForStmt*>(stmt.get())) {
+                            fs->gpu = true;
+                            fs->stride = true;
+                        }
+                        return stmt;
+                    }
+                }
                 diag_.error(previous().range,
-                    "'@gpu' must be followed by 'for' or 'tile'");
+                    "'@gpu' must be followed by 'for', 'tile', or 'stride for'");
             } else {
                 advance();
                 auto stmt = parseForStmt();

@@ -127,6 +127,15 @@
     - 测试 `tests/test_gpu_shfl.myp` 扩展 GPU PASS（block_reduce_sum=256/块、
       block_reduce_max=255/块、float 版）。回归 109/109 + 负测试 58 + 框架 82；
       conv3d vs ORT 7e-7；CPU 回退返回 v。
+  - **P2 ② `@gpu stride for`（§3.5 grid-stride）**：`@gpu stride for (long i = 0L;
+    i < n; i = i + nTh) { body }`——grid-stride 循环：i = kernel.gid；while (i < n)
+    { body; i += nThreads }（nThreads = ntid*nctaid，kernel 内读 gridDim，忽略用户
+    step）。语法（parser @gpu stride 分支）+ codegen（kernel 内 PHI 循环头 + body
+    回跳 + i 步进；loop_var 映射到循环 PHI）+ CPU 回退（**step 改 +1 顺序遍历全部**，
+    因为用户 step 是 GPU 步长，CPU 须遍历所有 i）。普通 `@gpu for` 是 nThreads==n
+    的特例。测试 `tests/test_gpu_stride.myp` 双模式 PASS（GPU 覆盖所有 i、CPU 顺序）。
+    注：每线程多元素（grid 受限）需配合 P2 ④ `@gpu block(n)` 控制 grid。
+    回归 109/109 + 负测试 58 + 框架 82；gpu_paradigm GPU 57/57；conv3d 7e-7。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

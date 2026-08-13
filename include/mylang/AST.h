@@ -737,13 +737,16 @@ struct ForStmt : Stmt {
     // 需 s.sync() 后才读回捕获数组）；无子句 = 默认流（保持现状同步）。
     std::unique_ptr<Expr> stream_expr;   // stream 子句的 GpuStream 表达式
     bool has_stream = false;
+    // @gpu stride for（§3.5）：grid-stride —— 每线程处理 i, i+nThreads, ...；
+    // GPU 用 nThreads=ntid*nctaid 步长（忽略用户 step），CPU 回退用 step=1 顺序。
+    bool stride = false;
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
             std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false,
             std::vector<std::pair<std::string, std::string>> res = {},
-            std::unique_ptr<Expr> se = nullptr, bool hs = false)
+            std::unique_ptr<Expr> se = nullptr, bool hs = false, bool str = false)
         : Stmt(StmtKind::ForStmt, r), init(std::move(i)), condition(std::move(cond)),
           step(std::move(s)), body(std::move(b)), parallel(par), gpu(g), resident(std::move(res)),
-          stream_expr(std::move(se)), has_stream(hs) {}
+          stream_expr(std::move(se)), has_stream(hs), stride(str) {}
 };
 
 // @gpu tile (float[32][32] smem) { ... } — 块内共享内存 + 协作 kernel body
