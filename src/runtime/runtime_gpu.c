@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <time.h>
 #include <dlfcn.h>
+#include <alloca.h>
 
 typedef int CUresult;
 typedef struct CUctx_st* CUcontext;
@@ -48,6 +49,16 @@ typedef int (*cuStreamWaitEvent_t)(CUstream, CUevent, unsigned int);
 typedef int (*cuMemcpyHtoDAsync_t)(void*, const void*, size_t, CUstream);
 typedef int (*cuMemcpyDtoHAsync_t)(void*, const void*, size_t, CUstream);
 typedef int (*cuMemcpyDtoDAsync_t)(void*, const void*, size_t, CUstream);
+// §P6 ② CUDA Graph（图内存）：流捕获 → 图 → 实例化 → 重放。
+typedef struct CUgraph_st* CUgraph;
+typedef struct CUgraphExec_st* CUgraphExec;
+typedef int (*cuStreamBeginCapture_t)(CUstream, unsigned int);
+typedef int (*cuStreamEndCapture_t)(CUstream, CUgraph*);
+typedef int (*cuGraphInstantiate_t)(CUgraphExec*, CUgraph, unsigned long long);
+typedef int (*cuGraphLaunch_t)(CUgraphExec, CUstream);
+typedef int (*cuGraphDestroy_t)(CUgraph);
+typedef int (*cuGraphExecDestroy_t)(CUgraphExec);
+typedef int (*cuStreamIsCapturing_t)(CUstream, unsigned int*);
 
 static void* lib = NULL;
 static cuInit_t p_cuInit = NULL;
@@ -86,6 +97,14 @@ static cuStreamWaitEvent_t p_cuStreamWaitEvent = NULL;
 static cuMemcpyHtoDAsync_t p_cuMemcpyHtoDAsync = NULL;
 static cuMemcpyDtoHAsync_t p_cuMemcpyDtoHAsync = NULL;
 static cuMemcpyDtoDAsync_t p_cuMemcpyDtoDAsync = NULL;
+// §P6 ② CUDA Graph 函数指针
+static cuStreamBeginCapture_t p_cuStreamBeginCapture = NULL;
+static cuStreamEndCapture_t p_cuStreamEndCapture = NULL;
+static cuGraphInstantiate_t p_cuGraphInstantiate = NULL;
+static cuGraphLaunch_t p_cuGraphLaunch = NULL;
+static cuGraphDestroy_t p_cuGraphDestroy = NULL;
+static cuGraphExecDestroy_t p_cuGraphExecDestroy = NULL;
+static cuStreamIsCapturing_t p_cuStreamIsCapturing = NULL;
 
 typedef int (*cuDeviceGetCount_t)(int*);
 
@@ -173,6 +192,14 @@ int myp_gpu_init(void) {
     if (!p_cuMemcpyDtoHAsync) p_cuMemcpyDtoHAsync = (cuMemcpyDtoHAsync_t)dlsym(lib,"cuMemcpyDtoHAsync");
     p_cuMemcpyDtoDAsync = (cuMemcpyDtoDAsync_t)dlsym(lib,"cuMemcpyDtoDAsync_v2");
     if (!p_cuMemcpyDtoDAsync) p_cuMemcpyDtoDAsync = (cuMemcpyDtoDAsync_t)dlsym(lib,"cuMemcpyDtoDAsync");
+    // §P6 ② CUDA Graph
+    p_cuStreamBeginCapture = (cuStreamBeginCapture_t)dlsym(lib,"cuStreamBeginCapture");
+    p_cuStreamEndCapture = (cuStreamEndCapture_t)dlsym(lib,"cuStreamEndCapture");
+    p_cuGraphInstantiate = (cuGraphInstantiate_t)dlsym(lib,"cuGraphInstantiate");
+    p_cuGraphLaunch = (cuGraphLaunch_t)dlsym(lib,"cuGraphLaunch");
+    p_cuGraphDestroy = (cuGraphDestroy_t)dlsym(lib,"cuGraphDestroy");
+    p_cuGraphExecDestroy = (cuGraphExecDestroy_t)dlsym(lib,"cuGraphExecDestroy");
+    p_cuStreamIsCapturing = (cuStreamIsCapturing_t)dlsym(lib,"cuStreamIsCapturing");
     if (!p_cuInit||!p_cuCtxCreate||!p_cuModuleLoadData||!p_cuModuleGetFunction||
         !p_cuLaunchKernel||!p_cuMemAlloc||!p_cuMemFree||!p_cuMemcpyHtoD||
         !p_cuMemcpyDtoH||!p_cuCtxSynchronize) { dlclose(lib);lib=NULL; return 0; }
@@ -381,6 +408,31 @@ void myp_gpu_destroy_kernel(void* kctx) {
     free(k);
 }
 
+// ============================================================================
+// §P6 ③ BYOC：自定义 PTX 内核加载与启动（宿主侧 FFI）。
+// 约定：PTX 必须自包含（编译期已 JIT 链接 libdevice）；参数以 long[] 传递，
+// 每项 8 字节——设备指针直接放指针值，标量放数值（double 按位型放 long）。
+// ============================================================================
+
+// 加载自定义 PTX 模块中的 kernel，返回内核句柄（0 = 失败）。
+long myp_gpu_byoc_load(const char* ptx, const char* name) {
+    if (!avail || !ptx || !name) return 0;
+    void* k = myp_gpu_load_kernel(ptx, name);
+    return (long)(intptr_t)k;
+}
+
+// 启动自定义内核：args 为 host long[]（每项 8B），n 为参数个数。
+// 内部构造 void** 指向各 8B 参数存储后交给 cuLaunchKernel。
+// stream==0 同步，!=0 异步排队。返回 1 成功 / 0 失败。
+int myp_gpu_byoc_launch(long kctx, int grid, int block, const long* args, int n, long stream) {
+    if (!avail || kctx == 0 || !args || n <= 0) return 0;
+    if (n > 64) return 0;  // cuLaunchKernel 参数上限
+    void** ptrs = (void**)alloca((size_t)n * sizeof(void*));
+    for (int i = 0; i < n; i++) ptrs[i] = (void*)&args[i];
+    return myp_gpu_launch((void*)(intptr_t)kctx, (unsigned int)grid, (unsigned int)block,
+                          ptrs, (unsigned int)n, stream);
+}
+
 // §P5 ② kernel printk/assert staging：runtime 分配设备缓冲 + 计数器，kernel 以
 // 附加参数（i64 设备指针）直接持有——避免 cuModuleGetGlobal（其依赖当前上下文
 // TLS，在 MYP 协程/@thread 下不可靠 → CUDA_ERROR_INVALID_CONTEXT）。
@@ -560,6 +612,74 @@ int myp_gpu_stream_destroy_h(long s) {
     if (!avail || s == 0 || !p_cuStreamDestroy) return 0;
     p_cuStreamDestroy((CUstream)(intptr_t)s);
     return 1;
+}
+
+// ============================================================================
+// §P6 ② CUDA Graph（图内存）FFI
+// 范式：流捕获（cuStreamBeginCapture/EndCapture）→ 图 → 实例化（Exec）→ 重放。
+// 捕获模式用 THREAD_LOCAL(1)，与 @thread/协程上下文兼容（同线程内的流操作被捕获）。
+// 捕获期间该流上的内核启动与异步拷贝会被记录成图；重放时无需再经过启动路径。
+// 注意：图捕获只能记录「持久化」的资源操作；内核若每次 launch 重新 new[] 分配，
+// 其指针会在重放时失效。故图测试须配合 resident() 内核 + GpuBuffer（devicePtr 持久）。
+// ============================================================================
+
+// 开始捕获流 s 上的后续操作。返回 1 成功 / 0 失败。
+int myp_gpu_graph_capture_begin(long stream) {
+    if (!avail || stream == 0 || !p_cuStreamBeginCapture) return 0;
+    if (p_cuCtxSetCurrent) p_cuCtxSetCurrent(ctx);
+    return (p_cuStreamBeginCapture((CUstream)(intptr_t)stream, 1 /*THREAD_LOCAL*/) == 0) ? 1 : 0;
+}
+
+// 结束捕获，返回图句柄（0 = 失败）。
+long myp_gpu_graph_capture_end(long stream) {
+    if (!avail || stream == 0 || !p_cuStreamEndCapture) return 0;
+    if (p_cuCtxSetCurrent) p_cuCtxSetCurrent(ctx);
+    CUgraph g = NULL;
+    int r = p_cuStreamEndCapture((CUstream)(intptr_t)stream, &g);
+    if (r != 0) {
+        fprintf(stderr, "[myp GPU] cuStreamEndCapture failed: %s\n", gpu_err_str(r));
+        return 0;
+    }
+    if (g == NULL) {
+        fprintf(stderr, "[myp GPU] cuStreamEndCapture returned null graph\n");
+        return 0;
+    }
+    return (long)(intptr_t)g;
+}
+
+// 实例化图 → 可执行图（exec），返回 exec 句柄（0 = 失败）。
+long myp_gpu_graph_instantiate(long graph) {
+    if (!avail || graph == 0 || !p_cuGraphInstantiate) return 0;
+    // cuGraphInstantiate 依赖当前线程上下文 TLS；协程/@thread 上下文可能因
+    // cuCtxCreate 所在线程而异——强制把 ctx 置为当前再实例化（同 cuModuleGetGlobal
+    // 教训：避免依赖隐式当前上下文）。
+    if (p_cuCtxSetCurrent) p_cuCtxSetCurrent(ctx);
+    CUgraphExec e = NULL;
+    int r = p_cuGraphInstantiate(&e, (CUgraph)(intptr_t)graph, 0ULL);
+    if (r != 0) {
+        fprintf(stderr, "[myp GPU] cuGraphInstantiate failed: %s\n", gpu_err_str(r));
+        return 0;
+    }
+    return (long)(intptr_t)e;
+}
+
+// 在流上重放可执行图。返回 1 成功 / 0 失败。
+int myp_gpu_graph_launch(long exec, long stream) {
+    if (!avail || exec == 0 || !p_cuGraphLaunch) return 0;
+    if (p_cuCtxSetCurrent) p_cuCtxSetCurrent(ctx);
+    return (p_cuGraphLaunch((CUgraphExec)(intptr_t)exec, (CUstream)(intptr_t)stream) == 0) ? 1 : 0;
+}
+
+// 销毁图（重复调用安全）。
+void myp_gpu_graph_destroy(long graph) {
+    if (graph == 0 || !p_cuGraphDestroy) return;
+    p_cuGraphDestroy((CUgraph)(intptr_t)graph);
+}
+
+// 销毁可执行图（重复调用安全）。
+void myp_gpu_graph_exec_destroy(long exec) {
+    if (exec == 0 || !p_cuGraphExecDestroy) return;
+    p_cuGraphExecDestroy((CUgraphExec)(intptr_t)exec);
 }
 
 // ============================================================================

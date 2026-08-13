@@ -271,6 +271,7 @@ set(MYP_RUNTIME_SRCS
     src/runtime/myp_stdlib.c
     src/runtime/sdl_bridge.c
     src/runtime/runtime_gpu.c
+    src/runtime/runtime_lib.c
 )
 if(MYP_ENABLE_ROCM)
     list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)

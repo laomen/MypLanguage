@@ -542,12 +542,39 @@ static bool loadModule(const std::string& module_name,
         }
     }
 
+    // Build vendor-lib hook object（runtime_lib.c：cuBLAS 等厂商库，dlopen 惰性加载）。
+    // 与 runtime_gpu.c 同款缓存编译；无依赖，任何 Linux 可编译。
+    std::string lib_c;
+    if (fileExists("src/runtime/runtime_lib.c"))
+        lib_c = "src/runtime/runtime_lib.c";
+    else if (fileExists(runtime_dir + "/src/runtime/runtime_lib.c"))
+        lib_c = runtime_dir + "/src/runtime/runtime_lib.c";
+    std::string lib_obj;
+    if (!lib_c.empty()) {
+        lib_obj = "";
+        std::string cached = cacheObj(lib_c, "-O2");
+        if (!cached.empty() && fileExists(cached)) {
+            lib_obj = cached;
+        } else {
+            lib_obj = tmpObj("lib");
+            std::string compile_lib = "gcc -I" + inc_path + " -fPIC -O2" + san_flags + " -c " + lib_c + " -o " + lib_obj + " 2>&1";
+            if (std::system(compile_lib.c_str()) != 0) {
+                std::cerr << "Failed to compile vendor-lib runtime\n";
+                return false;
+            }
+            if (!cached.empty()) {
+                if (::rename(lib_obj.c_str(), cached.c_str()) == 0)
+                    lib_obj = cached;
+            }
+        }
+    }
+
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     } else if (static_lib) {
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -556,7 +583,7 @@ static bool loadModule(const std::string& module_name,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj
+        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj
                  + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());

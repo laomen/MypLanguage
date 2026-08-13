@@ -30,6 +30,8 @@ import gpu.memory;
 import gpu.stream;
 import gpu.ops;
 import gpu.algo;
+import gpu.graph;
+import gpu.byoc;
 import cuda;
 
 class Gpu {

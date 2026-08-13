@@ -2697,6 +2697,50 @@ void CodeGen::declareRuntimeFunctions() {
     auto* gpu_ev_destroy = llvm::Function::Create(llvm::FunctionType::get(i32, {i64}, false),
         llvm::Function::ExternalLinkage, "myp_gpu_event_destroy_h", module_.get());
     intrinsic_map_["__myp_gpu_event_destroy"] = gpu_ev_destroy;
+
+    // ---- §P6 ② CUDA Graph（图内存）----
+    auto* gpu_graph_cap_begin = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_capture_begin", module_.get());
+    intrinsic_map_["__myp_gpu_graph_capture_begin"] = gpu_graph_cap_begin;
+    auto* gpu_graph_cap_end = llvm::Function::Create(
+        llvm::FunctionType::get(i64, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_capture_end", module_.get());
+    intrinsic_map_["__myp_gpu_graph_capture_end"] = gpu_graph_cap_end;
+    auto* gpu_graph_inst = llvm::Function::Create(
+        llvm::FunctionType::get(i64, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_instantiate", module_.get());
+    intrinsic_map_["__myp_gpu_graph_instantiate"] = gpu_graph_inst;
+    auto* gpu_graph_launch = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_launch", module_.get());
+    intrinsic_map_["__myp_gpu_graph_launch"] = gpu_graph_launch;
+    auto* gpu_graph_destroy = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_destroy", module_.get());
+    intrinsic_map_["__myp_gpu_graph_destroy"] = gpu_graph_destroy;
+    auto* gpu_graph_exec_destroy = llvm::Function::Create(
+        llvm::FunctionType::get(v, {i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_graph_exec_destroy", module_.get());
+    intrinsic_map_["__myp_gpu_graph_exec_destroy"] = gpu_graph_exec_destroy;
+
+    // ---- §P6 ③ BYOC：自定义 PTX 内核加载/启动（args 为 long[] opaque ptr）----
+    auto* gpu_byoc_load = llvm::Function::Create(
+        llvm::FunctionType::get(i64, {p, p}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_byoc_load", module_.get());
+    intrinsic_map_["__myp_gpu_byoc_load"] = gpu_byoc_load;
+    auto* gpu_byoc_launch = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, i32, i32, p, i32, i64}, false),
+        llvm::Function::ExternalLinkage, "myp_gpu_byoc_launch", module_.get());
+    intrinsic_map_["__myp_gpu_byoc_launch"] = gpu_byoc_launch;
+    // ---- §P6 ③ BYOC：cuBLAS SGEMM 厂商库 hook ----
+    auto* cublas_avail = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
+        llvm::Function::ExternalLinkage, "myp_cublas_available", module_.get());
+    intrinsic_map_["__myp_cublas_available"] = cublas_avail;
+    auto* cublas_sgemm = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {i64, i64, i64, i32, i32, i32, d, d}, false),
+        llvm::Function::ExternalLinkage, "myp_cublas_sgemm", module_.get());
+    intrinsic_map_["__myp_cublas_sgemm"] = cublas_sgemm;
 }
 
 // -- Output --

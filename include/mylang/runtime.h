@@ -243,7 +243,26 @@ int    myp_gpu_compute_capability(void); // major*100 + minor, e.g. 860
 int    myp_gpu_multi_processors(void);   // number of streaming multiprocessors
 int    myp_gpu_max_threads_per_block(void);
 int    myp_gpu_warp_size(void);
+// ---- §P6 ② CUDA Graph（图内存）：流捕获 → 图 → 实例化 → 重放 ----
+// 捕获模式 THREAD_LOCAL，与 @thread/协程上下文兼容。图测试须用 resident()
+// 内核 + GpuBuffer（持久指针），重放时才不会悬空。
+int  myp_gpu_graph_capture_begin(long stream);
+long myp_gpu_graph_capture_end(long stream);      // 返回图句柄 / 0
+long myp_gpu_graph_instantiate(long graph);       // 返回 exec 句柄 / 0
+int  myp_gpu_graph_launch(long exec, long stream);
+void myp_gpu_graph_destroy(long graph);
+void myp_gpu_graph_exec_destroy(long exec);
 
+// ---- §P6 ③ BYOC：自定义 PTX 内核加载/启动（宿主侧 FFI）----
+// args 为 host long[]（每项 8B：设备指针放指针值，标量放数值，double 放位型）。
+long myp_gpu_byoc_load(const char* ptx, const char* name);  // 内核句柄 / 0
+int  myp_gpu_byoc_launch(long kctx, int grid, int block, const long* args, int n, long stream);
+
+// ---- §P6 ③ BYOC：厂商库 hook（cuBLAS SGEMM，dlopen 惰性加载）----
+int myp_cublas_available(void);
+// 列主序：C[m×n] = alpha·A[m×k]·B[k×n] + beta·C（A/B/C 设备指针，float）。
+int myp_cublas_sgemm(long devA, long devB, long devC, int m, int n, int k,
+                     double alpha, double beta);
 // ---- String to double ----
 double myp_atof(const char* s);
 

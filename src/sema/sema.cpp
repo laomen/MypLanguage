@@ -2680,6 +2680,27 @@ void Sema::registerIntrinsics() {
                 {TypeKind::Array, TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Int, TypeKind::Long},
                 {TypeKind::Float});
 
+    // §P6 ② CUDA Graph（图内存）：流捕获 → 图 → 实例化 → 重放
+    add_intrinsic("__myp_gpu_graph_capture_begin", TypeKind::Int, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_graph_capture_end", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_graph_instantiate", TypeKind::Long, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_graph_launch", TypeKind::Int, {TypeKind::Long, TypeKind::Long});
+    add_intrinsic("__myp_gpu_graph_destroy", TypeKind::Void, {TypeKind::Long});
+    add_intrinsic("__myp_gpu_graph_exec_destroy", TypeKind::Void, {TypeKind::Long});
+
+    // §P6 ③ BYOC：自定义 PTX 内核加载/启动（args 为 long[]）
+    add_intrinsic("__myp_gpu_byoc_load", TypeKind::Long,
+                  {TypeKind::String, TypeKind::String});
+    add_gpu_arr("__myp_gpu_byoc_launch", TypeKind::Int,
+                {TypeKind::Long, TypeKind::Int, TypeKind::Int, TypeKind::Array, TypeKind::Int, TypeKind::Long},
+                {TypeKind::Long});
+    // §P6 ③ BYOC：cuBLAS SGEMM 厂商库 hook
+    add_intrinsic("__myp_cublas_available", TypeKind::Int, {});
+    add_intrinsic("__myp_cublas_sgemm", TypeKind::Int,
+                  {TypeKind::Long, TypeKind::Long, TypeKind::Long,
+                   TypeKind::Int, TypeKind::Int, TypeKind::Int,
+                   TypeKind::Double, TypeKind::Double});
+
     // Thread pool (v6)
     add_intrinsic("__myp_pool_thread_count", TypeKind::Int, {});
 

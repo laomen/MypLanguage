@@ -1,0 +1,59 @@
+// byoc.myp — §P6 ③ BYOC：Bring Your Own Code
+//   · GpuByoc：加载/启动自定义 PTX 内核（宿主 FFI，参数以 long[] 传递）
+//   · GpuLib  ：互操作厂商库（cuBLAS SGEMM，dlopen 惰性加载，无编译期依赖）
+//
+// 用法（自定义 PTX）：
+//   GpuByoc byoc = new GpuByoc();
+//   long k = byoc.load(ptx, "dbl");            // 加载 PTX 中的 entry 函数
+//   long[] args = new long[3];                 // 8B/项：指针放指针值、标量放数值
+//   args[0] = in.devicePtr();  args[1] = out.devicePtr();  args[2] = long(n);
+//   byoc.launch(k, 1, 256, args, 3, 0L);       // grid=1 block=256 同步执行
+//   out.copyToHost(h, 0, 0, n);                // 回读校验
+//
+// 用法（cuBLAS SGEMM，列主序）：
+//   GpuLib lib = new GpuLib();
+//   if (lib.cublasAvailable() == 1) {
+//       lib.sgemm(devA, devB, devC, m, n, k, 1.0, 0.0);
+//   }
+//
+// 说明：
+//   · PTX 必须自包含（MYP 编译期已 JIT 链接 libdevice，宿主侧不再解析外部符号）。
+//   · 参数只支持 8B 项（long/指针；double 按位型放 long，float 需自行按 f32 扩展）。
+//   · stream=0 同步；!=0 异步排队，须 s.sync() 后读回。
+//   · CPU 后端下 load 返回 0、launch/sgemm 返回 0（调用方走回退）。
+
+import gpu.backend;
+import gpu.memory;
+import gpu.stream;
+
+// 自定义 PTX 内核的加载与启动。
+class GpuByoc {
+    action:
+        // 加载自包含 PTX 中的 entry 函数，返回内核句柄（0 = 失败）
+        long load(string ptx, string name) {
+            return GpuBackend.byocLoad(ptx, name);
+        }
+
+        // 启动：grid/block 为一维；args 为 host long[]（每项 8B）；stream 0=同步。
+        // 返回 1 成功 / 0 失败。
+        int launch(long kctx, int grid, int block, long[] args, int n, long stream) {
+            return GpuBackend.byocLaunch(kctx, grid, block, args, n, stream);
+        }
+}
+
+// 厂商库互操作 hook（当前：cuBLAS SGEMM）。
+class GpuLib {
+    action:
+        // cuBLAS 是否可用（dlopen libcublas 成功）
+        int cublasAvailable() {
+            return GpuBackend.cublasAvailable();
+        }
+
+        // 列主序 SGEMM：C[m×n] = alpha·A[m×k]·B[k×n] + beta·C。
+        // devA/devB/devC 为 GpuBuffer 的设备指针（float 数据）。
+        // 返回 1 成功 / 0 失败。
+        int sgemm(long devA, long devB, long devC, int m, int n, int k,
+                  double alpha, double beta) {
+            return GpuBackend.cublasSgemm(devA, devB, devC, m, n, k, alpha, beta);
+        }
+}

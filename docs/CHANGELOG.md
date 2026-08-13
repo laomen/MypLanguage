@@ -305,6 +305,32 @@
     cuModuleGetGlobal 协程 201；领槽 atomicrmw 须 gate 在 do_write 内（否则通过
     assert 也消耗槽位）；`@gpu for` 边界按 `<` 处理（`i<=n` GPU 只到 n-1）。
 
+### v3.13.4 — P6 ② 图内存（CUDA Graph）+ P6 ③ BYOC（§9.7）
+  - **图内存**：`stdlib/gpu/graph.myp` 的 `GpuGraph`（captureBegin/captureEnd/
+    instantiate）与 `GpuGraphExec`（launch 重放/destroy）。宿主 FFI
+    `myp_gpu_graph_capture_begin/end/instantiate/launch/destroy/exec_destroy`
+    （`runtime_gpu.c`，dlopen libcuda）。机制：**流捕获**（`cuStreamBeginCapture`
+    THREAD_LOCAL → `cuStreamEndCapture` → `cuGraphInstantiate` → `cuGraphLaunch`
+    重放）。约束：内核须 `resident()` + `GpuBuffer`（持久 `devicePtr`），捕获段
+    只排内核。
+  - **关键坑**：`cuGraphInstantiate` 在 MYP 协程上下文段错误（同 cuModuleGetGlobal
+    的 TLS 问题）→ 所有图入口先 `cuCtxSetCurrent(ctx)` 强制上下文当前即修复。
+  - **BYOC 自定义 PTX**：`stdlib/gpu/byoc.myp` 的 `GpuByoc`（load/launch），宿主
+    FFI `myp_gpu_byoc_load/launch`（参数 `long[]`：指针放指针值、标量放数值、
+    double 放位型）；启动手写自包含 PTX（`tests/test_gpu_byoc.myp` 的 `dbl`）。
+  - **BYOC 厂商库 hook**：`runtime_lib.c`（独立编译，dlopen libcublas 惰性加载，
+    缺库回退）暴露 `myp_cublas_available/sgemm` → `GpuLib` 列主序 SGEMM；
+    测试与 host 参考误差 <1e-4。
+  - 注册：sema `add_intrinsic`/`add_gpu_arr` + codegen `declareRuntimeFunctions`
+    intrinsic_map（`__myp_gpu_graph_*`/`__myp_gpu_byoc_*`/`__myp_cublas_*`）。
+  - 测试 `test_gpu_graph.myp`（3 resident 内核捕获→重放逐位一致 + 二次重放幂等，
+    CPU 模式 no-op）、`test_gpu_byoc.myp`（PTX dbl 全 n 逐位 + cuBLAS SGEMM）。
+    回归 266/266 + AMD 交叉编译 + 既有 GPU 测试（algo/printk/query）GPU 模式无回归。
+  - 踩坑：range-for（`for k in 0..n`）解析提前 return，**不解析 resident/stream
+    子句**——`resident`+`stream` 必须配标准 `for(;;)`；`@gpu for` 内嵌 PTX 手写
+    时寄存器声明 `<N>` 含 %r0（用 %r4 须 `<5>`）；ptxas 拒绝 `[reg+reg]` 寻址
+    （改用 `add.u64` 合成地址）。
+
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总

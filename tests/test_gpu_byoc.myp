@@ -1,0 +1,161 @@
+// P6 ③ BYOC 测试（§9.7）：自定义 PTX 内核 + 厂商库（cuBLAS）互操作
+//   · GpuByoc：加载手写 PTX（b[i] = a[i]*2.0）并在 GpuBuffer 设备指针上启动
+//   · GpuLib  ：cuBLAS SGEMM（列主序 C = alpha·A·B + beta·C），对 float 设备指针
+// 需 GPU（MYP_GPU=1）；libcublas 缺失时 cuBLAS 部分 SKIP。CPU 模式整体 SKIP。
+import env;
+import math;
+import gpu;
+import gpu.byoc;
+import gpu.memory;
+
+class Main {
+    action:
+        @startup void go() {
+            int fail = 0;
+
+            if (GpuHAL.isGpu() == 0) {
+                Console.writeLine("byoc: SKIP (CPU mode)");
+                return;
+            }
+
+            // ================= 1) 自定义 PTX 内核 =================
+            // dbl: b[i] = a[i] * 2.0（gid = blockIdx*blockDim + threadIdx，越界保护）
+            string ptx =
+                ".version 7.5\n" +
+                ".target sm_75\n" +
+                ".address_size 64\n" +
+                "\n" +
+                ".visible .entry dbl(\n" +
+                "    .param .u64 a,\n" +
+                "    .param .u64 b,\n" +
+                "    .param .u64 n\n" +
+                ")\n" +
+                "{\n" +
+                "    .reg .pred %p<2>;\n" +
+                "    .reg .u64 %rd<7>;\n" +
+                "    .reg .u32 %r<5>;\n" +
+                "    .reg .f64 %fd<3>;\n" +
+                "\n" +
+                "    ld.param.u64 %rd1, [a];\n" +
+                "    ld.param.u64 %rd2, [b];\n" +
+                "    ld.param.u64 %rd3, [n];\n" +
+                "\n" +
+                "    mov.u32 %r1, %tid.x;\n" +
+                "    mov.u32 %r2, %ctaid.x;\n" +
+                "    mov.u32 %r3, %ntid.x;\n" +
+                "    mul.lo.u32 %r4, %r2, %r3;\n" +    // gid = bx*bd + tx
+                "    add.u32 %r4, %r4, %r1;\n" +
+                "    cvt.u64.u32 %rd4, %r4;\n" +        // gid (u64)
+                "\n" +
+                "    setp.ge.u64 %p1, %rd4, %rd3;\n" +  // gid >= n ?
+                "    @%p1 bra L_skip;\n" +
+                "\n" +
+                "    mul.lo.u64 %rd5, %rd4, 8;\n" +     // off = gid*8 bytes
+                "    add.u64 %rd6, %rd1, %rd5;\n" +     // pa = a + off
+                "    ld.global.f64 %fd1, [%rd6];\n" +   // v = a[gid]
+                "    mul.f64 %fd2, %fd1, 0d4000000000000000;\n" +  // v*2.0
+                "    add.u64 %rd6, %rd2, %rd5;\n" +     // pb = b + off
+                "    st.global.f64 [%rd6], %fd2;\n" +   // b[gid] = v*2.0
+                "\n" +
+                "L_skip:\n" +
+                "    ret;\n" +
+                "}\n";
+
+            GpuByoc byoc = new GpuByoc();
+            long k = byoc.load(ptx, "dbl");
+            Console.writeLine("byoc.load: " + (k != 0L ? "OK" : "FAIL") +
+                " (kctx=" + k + ")");
+            if (k == 0L) { Console.writeLine("FAIL: byoc load"); fail = 1; }
+
+            int n = 1024;
+            double[] h = new double[n];
+            int i = 0;
+            while (i < n) { h[i] = double(i) * 0.25; i = i + 1; }
+            GpuBuffer in = new GpuBuffer(h, n);
+            GpuBuffer out = new GpuBuffer(h, n);   // 预分配，内核将覆盖
+            long[] args = new long[3];
+            args[0] = in.devicePtr();
+            args[1] = out.devicePtr();
+            args[2] = long(n);
+            int l = byoc.launch(k, 4, 256, args, 3, 0L);   // grid=4 block=256 = 1024 线程，同步
+            double[] oh = new double[n];
+            out.copyToHost(oh, 0, 0, n);
+            long err = 0L;
+            i = 0;
+            while (i < n) {
+                double want = h[i] * 2.0;
+                if (oh[i] != want) err = err + 1L;
+                i = i + 1;
+            }
+            Console.writeLine("byoc.dbl: launch=" + l + " mismatch=" + err +
+                " " + ((l == 1 && err == 0L) ? "OK" : "FAIL"));
+            if (l != 1 || err != 0L) fail = 1;
+            in.free();
+            out.free();
+
+            // ================= 2) cuBLAS SGEMM（列主序）=================
+            GpuLib lib = new GpuLib();
+            int av = lib.cublasAvailable();
+            Console.writeLine("cublas.available: " + av);
+            if (av != 1) {
+                Console.writeLine("cublas: SKIP (libcublas not found)");
+            } else {
+                int m = 4, k2 = 3, n2 = 5;
+                // A(m×k) / B(k×n) / C(m×n)，均列主序：元素 (i,j) 在 [i + j*行数]
+                float[] Ah = new float[m * k2];
+                float[] Bh = new float[k2 * n2];
+                int idx = 0;
+                i = 0;
+                while (i < m * k2) { Ah[i] = float(i + 1) * 0.5f; i = i + 1; }
+                i = 0;
+                while (i < k2 * n2) { Bh[i] = float((i * 7 + 3) % 11) * 0.25f; i = i + 1; }
+                GpuBufferF dA = new GpuBufferF(Ah, m * k2);
+                GpuBufferF dB = new GpuBufferF(Bh, k2 * n2);
+                GpuBufferF dC = new GpuBufferF(Bh, m * n2);  // C 缓冲（数据将被覆盖）
+                // host 参考（列主序 C = A·B）
+                float[] Cref = new float[m * n2];
+                int c = 0;
+                int j = 0;
+                while (j < n2) {
+                    i = 0;
+                    while (i < m) {
+                        float acc = 0.0f;
+                        int t = 0;
+                        while (t < k2) {
+                            acc = acc + Ah[i + t * m] * Bh[t + j * k2];
+                            t = t + 1;
+                        }
+                        Cref[i + j * m] = acc;
+                        i = i + 1;
+                    }
+                    j = j + 1;
+                }
+                int sg = lib.sgemm(dA.devicePtr(), dB.devicePtr(), dC.devicePtr(),
+                                   m, n2, k2, 1.0, 0.0);
+                float[] Ch = new float[m * n2];
+                dC.copyToHost(Ch, 0, 0, m * n2);
+                long cerr = 0L;
+                i = 0;
+                while (i < m * n2) {
+                    float diff = Ch[i] - Cref[i];
+                    if (diff < 0.0f) diff = -diff;
+                    if (diff > 1.0e-4f) cerr = cerr + 1L;
+                    i = i + 1;
+                }
+                Console.writeLine("cublas.sgemm: call=" + sg + " mismatch=" + cerr +
+                    " " + ((sg == 1 && cerr == 0L) ? "OK" : "FAIL"));
+                Console.writeLine("  C00=" + Ch[0] + " ref=" + Cref[0] +
+                    "  C11=" + Ch[1 + 1 * m] + " ref=" + Cref[1 + 1 * m] +
+                    "  C34=" + Ch[3 + 4 * m] + " ref=" + Cref[3 + 4 * m]);
+                if (sg != 1 || cerr != 0L) fail = 1;
+                dA.free();
+                dB.free();
+                dC.free();
+            }
+
+            if (fail == 1) { Console.writeLine("byoc: FAIL"); return; }
+            Console.writeLine("byoc: OK");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

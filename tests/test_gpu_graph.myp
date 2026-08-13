@@ -1,0 +1,146 @@
+// P6 ② CUDA Graph（图内存）测试（§9.7）
+// 流捕获 → 图 → 实例化 → 重放：3 个 resident 内核的序列录成图，重放输出与
+// 逐内核执行逐位一致；第 2 次重放幂等。捕获需 GPU（MYP_GPU=1）；
+// CPU 模式验证 GpuGraph no-op 不崩溃。
+//
+// 要点：
+//   · 图重放要求内核用 resident() + GpuBuffer（devicePtr 持久），否则 new[]
+//     临时数组指针在重放时悬空。
+//   · 捕获前用 copyFromHost 复位设备数据；捕获段内只排内核（无 H2D/D2H）。
+import env;
+import math;
+import gpu;
+import gpu.graph;
+import gpu.memory;
+import gpu.stream;
+
+class Main {
+    action:
+        @startup void go() {
+            int fail = 0;
+            int n = 4096;
+
+            // 初始数据（每次执行前复位用）
+            double[] in0 = new double[n];
+            double[] in1 = new double[n];
+            int i = 0;
+            while (i < n) {
+                in0[i] = double(i) * 0.5;
+                in1[i] = double(i * 3 % 7) + 1.0;
+                i = i + 1;
+            }
+
+            if (GpuHAL.isGpu() == 0) {
+                Console.writeLine("graph: CPU mode — 验证 no-op");
+                GpuStream s = new GpuStream();
+                GpuGraph g = new GpuGraph();
+                int cb = g.captureBegin(s);
+                int ce = g.captureEnd(s);
+                Console.writeLine("cpu captureBegin=" + cb + " captureEnd=" + ce +
+                    " valid=" + g.valid());
+                g.destroy();
+                s.destroy();
+                Console.writeLine("graph: OK (CPU no-op)");
+                return;
+            }
+
+            GpuStream s = new GpuStream();
+            GpuBuffer bufA = new GpuBuffer(in0, n);
+            GpuBuffer bufB = new GpuBuffer(in1, n);
+
+            // host 镜像数组（resident 名称绑定需要；不参与传输）
+            double[] a = new double[n];
+            double[] b = new double[n];
+            long da_ = bufA.devicePtr();
+            long db_ = bufB.devicePtr();
+
+            // ---- 参考（非图）：连续 3 个 resident 内核 ----
+            // k1: b = a + 1.0 ;  k2: b = b * 2.0 ;  k3: a = a + b
+            bufA.copyFromHost(in0, 0, 0, n);
+            bufB.copyFromHost(in1, 0, 0, n);
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                b[k] = a[k] + 1.0;
+            }
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                b[k] = b[k] * 2.0;
+            }
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                a[k] = a[k] + b[k];
+            }
+            s.sync();
+            double[] refB = new double[n];
+            double[] refA = new double[n];
+            bufB.copyToHost(refB, 0, 0, n);
+            bufA.copyToHost(refA, 0, 0, n);
+
+            // ---- 图：捕获同一内核序列 ----
+            bufA.copyFromHost(in0, 0, 0, n);
+            bufB.copyFromHost(in1, 0, 0, n);
+            GpuGraph g = new GpuGraph();
+            int cb = g.captureBegin(s);
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                b[k] = a[k] + 1.0;
+            }
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                b[k] = b[k] * 2.0;
+            }
+            @gpu for (long k = 0L; k < n; k = k + 1L) resident(a = da_, b = db_) stream(s) {
+                a[k] = a[k] + b[k];
+            }
+            int ce = g.captureEnd(s);
+            Console.writeLine("graph captureBegin=" + cb + " captureEnd=" + ce +
+                " valid=" + g.valid() + " graphHandle=" + g.handle());
+            if (cb != 1 || ce != 1 || g.valid() != 1) {
+                Console.writeLine("FAIL: graph capture failed");
+                fail = 1;
+            }
+            GpuGraphExec exec = g.instantiate();
+            Console.writeLine("graph execValid=" + exec.valid());
+
+            if (fail == 0) {
+                // ---- 第 1 次重放：与逐内核参考逐位一致 ----
+                int l1 = exec.launch(s);
+                s.sync();
+                double[] gB = new double[n];
+                bufB.copyToHost(gB, 0, 0, n);
+                long errB = 0L;
+                i = 0;
+                while (i < n) {
+                    if (gB[i] != refB[i]) errB = errB + 1L;
+                    i = i + 1;
+                }
+                Console.writeLine("graph replay1: launch=" + l1 + " mismatch=" + errB +
+                    " " + ((l1 == 1 && errB == 0L) ? "OK (bit-identical)" : "FAIL"));
+                if (l1 != 1 || errB != 0L) fail = 1;
+
+                // ---- 第 2 次重放（复位后重放，验证幂等）----
+                bufA.copyFromHost(in0, 0, 0, n);
+                bufB.copyFromHost(in1, 0, 0, n);
+                int l2 = exec.launch(s);
+                s.sync();
+                double[] gB2 = new double[n];
+                bufB.copyToHost(gB2, 0, 0, n);
+                long err2 = 0L;
+                i = 0;
+                while (i < n) {
+                    if (gB2[i] != refB[i]) err2 = err2 + 1L;
+                    i = i + 1;
+                }
+                Console.writeLine("graph replay2: launch=" + l2 + " mismatch=" + err2 +
+                    " " + ((l2 == 1 && err2 == 0L) ? "OK (idempotent)" : "FAIL"));
+                if (l2 != 1 || err2 != 0L) fail = 1;
+            }
+
+            // ---- 清理 ----
+            exec.destroy();
+            g.destroy();
+            bufA.free();
+            bufB.free();
+            s.destroy();
+
+            if (fail == 1) { Console.writeLine("graph: FAIL"); return; }
+            Console.writeLine("graph: OK");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

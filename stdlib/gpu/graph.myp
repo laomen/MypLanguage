@@ -1,0 +1,108 @@
+// graph.myp — §P6 ② CUDA Graph（图内存）：预编译重放，消除反复启动开销
+//
+// 用法：
+//   GpuStream s = new GpuStream();
+//   GpuBuffer in = new GpuBuffer(n);          // 持久设备缓冲（图重放需要稳定指针）
+//   GpuBuffer out = new GpuBuffer(n);
+//   ...
+//   // 1) 捕获：把流上的一段「内核序列」录成图
+//   GpuGraph g = new GpuGraph();
+//   g.captureBegin(s);
+//   @gpu for (long i = 0L; i < n; i = i + 1L) resident(a = da, b = db) stream(s) {
+//       b[i] = a[i] * 2.0;
+//   }
+//   // ... 可继续排入更多内核 / 异步拷贝，都会进图
+//   g.captureEnd(s);
+//
+//   // 2) 实例化（编译成可执行图，一次）
+//   GpuGraphExec exec = g.instantiate();
+//
+//   // 3) 重放：整段内核序列只经一次 cuGraphLaunch，多次执行无逐内核启动开销
+//   exec.launch(s);      // 第 1 次
+//   exec.launch(s);      // 第 2 次
+//   s.sync();
+//
+//   // 4) 释放
+//   exec.destroy();  g.destroy();  s.destroy();
+//
+// 说明：
+//   · 捕获只能用「持久资源」：内核必须 resident() 且数据在 GpuBuffer（devicePtr
+//     在重放时依然有效）。若内核每 launch 都 new[] 临时数组，指针会在重放时悬空。
+//   · 捕获后、重放前对 buffer 的 host 侧写入要用 copyToHost/copyToDevice 走流，
+//     重放读的是设备内存。
+//   · CPU 后端下所有方法为 no-op（captureEnd 返回 0L 表示图不可用）。
+//   · 图与可执行图用毕必须 destroy()（M2 无 finalizer）。
+
+import gpu.backend;
+import gpu.stream;
+
+// 捕获中的图（capture 段对象）。captureBegin/captureEnd 配对使用。
+class GpuGraph {
+    action:
+        @constructor GpuGraph() { g_ = 0L; }
+
+        // 开始捕获流 s 上的后续 GPU 操作（返回 1 成功 / 0 失败）
+        int captureBegin(GpuStream s) {
+            return GpuBackend.graphCaptureBegin(s.handle());
+        }
+
+        // 结束捕获，得到图（返回 1 成功 / 0 失败；成功后本对象持有图）
+        int captureEnd(GpuStream s) {
+            g_ = GpuBackend.graphCaptureEnd(s.handle());
+            if (g_ != 0L) return 1;
+            return 0;
+        }
+
+        // 是否捕获到有效图
+        int valid() { if (g_ != 0L) return 1; return 0; }
+
+        // 图句柄（调试用，0 = 不可用）
+        long handle() { return g_; }
+
+        // 实例化为可执行图（编译一次，可反复重放）。失败返回 null 图 exec。
+        GpuGraphExec instantiate() {
+            return new GpuGraphExec(g_);
+        }
+
+        // 销毁图（重复调用安全）
+        void destroy() {
+            if (g_ != 0L) {
+                GpuBackend.graphDestroy(g_);
+                g_ = 0L;
+            }
+        }
+
+    property:
+        long g_;
+}
+
+// 已实例化的可执行图：launch() 可反复重放。
+class GpuGraphExec {
+    action:
+        @constructor GpuGraphExec(long g) {
+            if (g != 0L) { e_ = GpuBackend.graphInstantiate(g); }
+            else { e_ = 0L; }
+        }
+
+        // 是否实例化成功
+        int valid() { if (e_ != 0L) return 1; return 0; }
+
+        // 在流 s 上重放整段图（返回 1 成功 / 0 失败）
+        int launch(GpuStream s) {
+            return GpuBackend.graphLaunch(e_, s.handle());
+        }
+
+        // 可执行图句柄（调试用）
+        long handle() { return e_; }
+
+        // 销毁（重复调用安全）
+        void destroy() {
+            if (e_ != 0L) {
+                GpuBackend.graphExecDestroy(e_);
+                e_ = 0L;
+            }
+        }
+
+    property:
+        long e_;
+}

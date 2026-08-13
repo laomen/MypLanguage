@@ -122,4 +122,51 @@ class GpuBackend {
             if (GpuBackend.isCpu() == 1) return CpuBackend.eventDestroy(ev);
             return CudaBackend.eventDestroy(ev);
         }
+
+        // §P6 ② CUDA Graph（图内存）：流捕获 → 图 → 实例化 → 重放。
+        // CPU 后端为 no-op（返回 0/0L）。捕获只在 GPU 激活时可用。
+        int graphCaptureBegin(long stream) {
+            if (GpuBackend.isCpu() == 1) return 0;
+            return __myp_gpu_graph_capture_begin(stream);
+        }
+        long graphCaptureEnd(long stream) {
+            if (GpuBackend.isCpu() == 1) return 0L;
+            return __myp_gpu_graph_capture_end(stream);
+        }
+        long graphInstantiate(long graph) {
+            if (GpuBackend.isCpu() == 1) return 0L;
+            return __myp_gpu_graph_instantiate(graph);
+        }
+        int graphLaunch(long exec, long stream) {
+            if (GpuBackend.isCpu() == 1) return 0;
+            return __myp_gpu_graph_launch(exec, stream);
+        }
+        void graphDestroy(long graph) {
+            if (GpuBackend.isCpu() == 1) return;
+            __myp_gpu_graph_destroy(graph);
+        }
+        void graphExecDestroy(long exec) {
+            if (GpuBackend.isCpu() == 1) return;
+            __myp_gpu_graph_exec_destroy(exec);
+        }
+
+        // §P6 ③ BYOC：自定义 PTX 内核加载/启动（host long[] 参数）。
+        long byocLoad(string ptx, string name) {
+            if (GpuBackend.isCpu() == 1) return 0L;
+            return __myp_gpu_byoc_load(ptx, name);
+        }
+        int byocLaunch(long kctx, int grid, int block, long[] args, int n, long stream) {
+            if (GpuBackend.isCpu() == 1) return 0;
+            return __myp_gpu_byoc_launch(kctx, grid, block, args, n, stream);
+        }
+        // §P6 ③ BYOC：厂商库（cuBLAS）hook。
+        int cublasAvailable() {
+            if (GpuBackend.isCpu() == 1) return 0;
+            return __myp_cublas_available();
+        }
+        int cublasSgemm(long devA, long devB, long devC, int m, int n, int k,
+                        double alpha, double beta) {
+            if (GpuBackend.isCpu() == 1) return 0;
+            return __myp_cublas_sgemm(devA, devB, devC, m, n, k, alpha, beta);
+        }
 }
