@@ -112,6 +112,21 @@
       与 `kernel.sync()`/conv3d 兼容，回归全绿）。
     - 测试 `tests/test_gpu_shfl.myp` GPU PASS（double/float/int，delta=16/4/1，
       越界返回自身断言）。调试开关 `MYP_DUMP_PTX=1` 编译时打印 kernel PTX。
+  - **P2 ① `kernel.block_reduce_sum/max(v)`（§3.4 块归约）**：块内归约（warp shuffle
+    树 → lane0 写 shared[warp] → `bar.sync` → warp0 归约 shared → `bar.sync` →
+    broadcast 读 shared[0]）。sema 拦截（返回 v 类型）+ GPU codegen（emitKernelExpr）。
+    - **三个关键实现坑**：
+      ① shared 必须是**kernel 模块 addrspace(3) GlobalVariable**（真 `.shared`）——
+        `alloca(addrspace 3)` 会被 NVPTX 降到 `.local` + `cvta.shared` → error 700
+        非法地址；
+      ② `CreateGEP` 源类型用**数组类型 `[8 x T]`**（不是元素 T），否则地址算错 →
+        PTX verify 失败 → GPU kernel 生成失败 → 静默 CPU fallback（表现为
+        "undefined variable 'kernel'"）；
+      ③ `smem[warp]`/`smem[0]` 写必须**仅 lane0 条件 store**（同 warp 全 lane 写同一
+        slot 竞争 → 结果未定义/0）。
+    - 测试 `tests/test_gpu_shfl.myp` 扩展 GPU PASS（block_reduce_sum=256/块、
+      block_reduce_max=255/块、float 版）。回归 109/109 + 负测试 58 + 框架 82；
+      conv3d vs ORT 7e-7；CPU 回退返回 v。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

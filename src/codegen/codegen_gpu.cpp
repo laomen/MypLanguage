@@ -546,6 +546,139 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                         }
                         return v;  // 其他类型降级
                     }
+                    // §3.4 kernel.block_reduce_sum/max(v)：块内归约。
+                    // warp 内 shuffle 树 → lane0 写 shared[warp] → sync → warp0
+                    // 归约 shared → sync → 读 shared[0]。block 固定 256 → 8 warps，
+                    // shared[8] 在 kernel entry 块（addrspace 3 静态 __shared__）。
+                    if (kma.member_name == "block_reduce_sum" ||
+                        kma.member_name == "block_reduce_max") {
+                        bool is_sum = (kma.member_name == "block_reduce_sum");
+                        auto* v = emitKernelExpr(*e.args[0], kb, kernel_vars,
+                            kernel_arg_values, loop_var_name, tid_val);
+                        llvm::Type* fnty = v->getType();
+                        if (!fnty->isDoubleTy() && !fnty->isFloatTy() &&
+                            !fnty->isIntegerTy(32))
+                            return v;
+                        llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
+                        // 类型专用 shfl_down（clamp=31；warp0 归约只需 lane0，非
+                        // lane0 结果丢弃，越界不影响 lane0）
+                        auto shfl_d = [&](llvm::Value* val, llvm::Value* off) -> llvm::Value* {
+                            auto* mask = llvm::ConstantInt::get(i32_ty, -1);
+                            auto* c31 = llvm::ConstantInt::get(i32_ty, 31);
+                            if (fnty->isDoubleTy()) {
+                                auto* bits = kb.CreateBitCast(val, i64_ty);
+                                auto* lo = kb.CreateTrunc(bits, i32_ty);
+                                auto* hi = kb.CreateLShr(bits, llvm::ConstantInt::get(i64_ty, 32));
+                                hi = kb.CreateTrunc(hi, i32_ty);
+                                auto* fi = llvm::Intrinsic::getDeclaration(cur_mod,
+                                    llvm::Intrinsic::nvvm_shfl_sync_down_i32);
+                                auto* lo2 = kb.CreateCall(fi, {mask, lo, off, c31});
+                                auto* hi2 = kb.CreateCall(fi, {mask, hi, off, c31});
+                                auto* lo_z = kb.CreateZExt(lo2, i64_ty);
+                                auto* hi_z = kb.CreateZExt(hi2, i64_ty);
+                                hi_z = kb.CreateShl(hi_z, llvm::ConstantInt::get(i64_ty, 32));
+                                return kb.CreateBitCast(kb.CreateOr(lo_z, hi_z), double_ty);
+                            }
+                            if (fnty->isFloatTy()) {
+                                auto* ff = llvm::Intrinsic::getDeclaration(cur_mod,
+                                    llvm::Intrinsic::nvvm_shfl_sync_down_f32);
+                                return kb.CreateCall(ff, {mask, val, off, c31});
+                            }
+                            auto* fi = llvm::Intrinsic::getDeclaration(cur_mod,
+                                llvm::Intrinsic::nvvm_shfl_sync_down_i32);
+                            return kb.CreateCall(fi, {mask, val, off, c31});
+                        };
+                        auto combine = [&](llvm::Value* a, llvm::Value* b) -> llvm::Value* {
+                            if (is_sum) {
+                                if (fnty->isDoubleTy() || fnty->isFloatTy())
+                                    return kb.CreateFAdd(a, b);
+                                return kb.CreateAdd(a, b);
+                            }
+                            if (fnty->isDoubleTy() || fnty->isFloatTy())
+                                return kb.CreateSelect(kb.CreateFCmpOGT(a, b), a, b);
+                            return kb.CreateSelect(kb.CreateICmpSGT(a, b), a, b);
+                        };
+                        auto* tx32 = kb.CreateTrunc(gpu_ctx_tid_x_, i32_ty, "tx32");
+                        auto* lane = kb.CreateAnd(tx32, llvm::ConstantInt::get(i32_ty, 31), "lane");
+                        auto* warp = kb.CreateLShr(tx32, llvm::ConstantInt::get(i32_ty, 5), "warp");
+                        // shared[8] = kernel 模块 addrspace(3) 全局（真 __shared__）。
+                        // NVPTX 对 alloca(addrspace 3) 会降到 .local → cvta.shared
+                        // 非法访问（error 700）；GlobalVariable(addrspace 3) 才是
+                        // 真 .shared（同 @gpu tile 的 smem）。
+                        auto* smem_arr = llvm::ArrayType::get(fnty, 8);
+                        auto* smem_mod = kb.GetInsertBlock()->getParent()->getParent();
+                        static int blkred_id = 0;
+                        auto* smem = new llvm::GlobalVariable(*smem_mod, smem_arr,
+                            false, llvm::GlobalValue::InternalLinkage,
+                            llvm::ConstantAggregateZero::get(smem_arr),
+                            "myp_blkred_smem_" + std::to_string(blkred_id++),
+                            nullptr, llvm::GlobalValue::NotThreadLocal, 3);
+                        auto smem_gep = [&](llvm::Value* idx) -> llvm::Value* {
+                            return kb.CreateGEP(smem_arr, smem,
+                                {llvm::ConstantInt::get(i32_ty, 0), idx});
+                        };
+                        auto* bar = llvm::Intrinsic::getDeclaration(cur_mod,
+                            llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
+                        auto* zero = llvm::ConstantInt::get(i32_ty, 0);
+                        auto* zval = llvm::Constant::getNullValue(fnty);
+                        // 1) warp 内树归约（所有线程）
+                        auto* acc = v;
+                        for (int off : {16, 8, 4, 2, 1}) {
+                            auto* o = llvm::ConstantInt::get(i32_ty, off);
+                            acc = combine(acc, shfl_d(acc, o));
+                        }
+                        // 2) lane0 写 smem[warp]（条件 store，避免同 warp 写竞争）
+                        auto* is_l0 = kb.CreateICmpEQ(lane,
+                            llvm::ConstantInt::get(i32_ty, 0));
+                        auto* st_bb = llvm::BasicBlock::Create(ctx_, "blkred_st",
+                            kb.GetInsertBlock()->getParent());
+                        auto* st_join = llvm::BasicBlock::Create(ctx_, "blkred_st_join",
+                            kb.GetInsertBlock()->getParent());
+                        kb.CreateCondBr(is_l0, st_bb, st_join);
+                        kb.SetInsertPoint(st_bb);
+                        kb.CreateStore(acc, smem_gep(warp));
+                        kb.CreateBr(st_join);
+                        kb.SetInsertPoint(st_join);
+                        // 3) sync（uniform，所有线程）
+                        kb.CreateCall(bar, {zero});
+                        // 4) warp0 归约 shared（lane<8 有效；shfl 只 warp0 内 uniform）
+                        auto* cur_bb = kb.GetInsertBlock();
+                        auto* then_bb = llvm::BasicBlock::Create(ctx_, "blkred_then",
+                            cur_bb->getParent());
+                        auto* join_bb = llvm::BasicBlock::Create(ctx_, "blkred_join",
+                            cur_bb->getParent());
+                        kb.CreateCondBr(kb.CreateICmpEQ(warp, llvm::ConstantInt::get(i32_ty, 0)),
+                                        then_bb, join_bb);
+                        kb.SetInsertPoint(then_bb);
+                        // lane 0..7 有效（8 warps）；lane>=8 归零（clamp 读避免越界）
+                        auto* lane_c = kb.CreateAnd(lane, llvm::ConstantInt::get(i32_ty, 7));
+                        llvm::Value* acc2 = kb.CreateLoad(fnty, smem_gep(lane_c));
+                        acc2 = kb.CreateSelect(
+                            kb.CreateICmpULT(lane, llvm::ConstantInt::get(i32_ty, 8)),
+                            acc2, zval);
+                        for (int off : {4, 2, 1}) {
+                            auto* o = llvm::ConstantInt::get(i32_ty, off);
+                            acc2 = combine(acc2, shfl_d(acc2, o));
+                        }
+                        auto* is_l0b = kb.CreateICmpEQ(lane,
+                            llvm::ConstantInt::get(i32_ty, 0));
+                        auto* st2_bb = llvm::BasicBlock::Create(ctx_, "blkred_st2",
+                            kb.GetInsertBlock()->getParent());
+                        auto* st2_join = llvm::BasicBlock::Create(ctx_, "blkred_st2_join",
+                            kb.GetInsertBlock()->getParent());
+                        kb.CreateCondBr(is_l0b, st2_bb, st2_join);
+                        kb.SetInsertPoint(st2_bb);
+                        kb.CreateStore(acc2, smem_gep(llvm::ConstantInt::get(i32_ty, 0)));
+                        kb.CreateBr(st2_join);
+                        kb.SetInsertPoint(st2_join);
+                        kb.CreateBr(join_bb);
+                        kb.SetInsertPoint(join_bb);
+                        // 5) sync（uniform）
+                        kb.CreateCall(bar, {zero});
+                        // 6) 读 smem[0]（所有线程 broadcast）
+                        return kb.CreateLoad(fnty, smem_gep(llvm::ConstantInt::get(i32_ty, 0)),
+                            "blkred_result");
+                    }
                 }
             }
             // Handle math functions

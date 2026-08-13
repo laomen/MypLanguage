@@ -67,6 +67,45 @@ class Main {
                 i = i + 1L;
             }
 
+            // ---- block_reduce_sum：每线程 v=1.0 → 每块（256 线程）和 = 256 ----
+            double[] bs = new double[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                double v = double(1.0);
+                double s = kernel.block_reduce_sum(v);
+                bs[p] = s;
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(bs[i] - 256.0) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // ---- block_reduce_max：v = tx → 每块最大 = 255 ----
+            double[] bm = new double[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                double v = double(kernel.tx);
+                double m = kernel.block_reduce_max(v);
+                bm[p] = m;
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(bm[i] - 255.0) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // ---- float block_reduce_sum：每线程 v=1.0f → 块和 256 ----
+            float[] fs = new float[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                float v = float(1.0);
+                float s = kernel.block_reduce_sum(v);
+                fs[p] = s;
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(fs[i] - 256.0) > 1e-4) err = err + 1L;
+                i = i + 1L;
+            }
+
             Console.writeLine("gpu shfl: " + (err == 0L ? "PASS" : "FAIL") +
                 " (err=" + err + ")");
         }
