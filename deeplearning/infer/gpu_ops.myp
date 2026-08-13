@@ -350,11 +350,14 @@ class GpuInferOps {
             }
         }
 
-        // Conv3D 寄存器 tiling + 输出通道分组 + 输入通道分块（§2.3 ① 性能版 v3）。
-        // v2（OC_GRP=4,RW=2）实测 conv3d 2814→1121ms（fine_model 96³）；v3 把 RW 提到 4：
-        // 每 (ic,kz,ky) 载 6 输入 + 4oc×3 权重 → 4×4 输出（每输出共享读 ~2→1.1）。
-        // 块 = (nn, oc组, TD×TH×TW=4×8×32)，256 线程（4od×8oh×8wstrip×4W）。
-        // 要求 group=1、dil=1、sd=sh=sw=1、kd/kh/kw≤3（否则回退 conv3d）。
+        // Conv3D 通用 tiled（§2.3 ① 通用版，2026-08-13）：共享内存分块 + 输出通道
+        // 分组（OC_GRP=4，输入窗口跨 oc 寄存器复用）+ 输入通道分块（CC，任意 Cin）。
+        // **通用性**：任意核大小 kd/kh/kw、任意 stride/dilation、任意 pads 都走
+        // 该共享路径——patch 尺寸按 stride/dilation 自适应，compute 窗口循环通用
+        // （不假设 k≤3 / s=1 / d=1）。仅 group=1（group>1 罕见回退）；共享超限
+        // （超大核/大 stride）回退 thread-per-output conv3d。
+        // 每线程算 RW=4 连续 W 输出 × 4 oc（每 (ic,kz,ky,kx) 载 4 输入 + 4 权重 → 16 FMA）。
+        // 块序 og 最快 → 同空间 tile 各 oc-group 连续执行，L2 跨组缓存 patch。
         void conv3dTiled(float[] a, int work,
                   int xOff, int xN, int xC, int xD, int xH, int xW,
                   int wOff, int bOff,
@@ -363,27 +366,31 @@ class GpuInferOps {
                   int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
                   int dd, int dh, int dw, int group, long dev) {
             int TD = 4; int TH = 8; int TW = 32;   // 空间输出 tile（4×8×32=1024 输出）
-            int RW = 4;                            // W 寄存器条（每线程 4 连续输出）
+            int RW = 4;                            // 每线程连续 W 输出数
             int OC_GRP = 4;                        // 输出通道/块（输入复用）
-            int KWMAX = 4;                         // 寄存器窗最大 kw
             int cpg = xC / group;
-            if (group != 1 || dd != 1 || dh != 1 || dw != 1 ||
-                sd != 1 || sh != 1 || sw != 1 ||
-                kd > 3 || kh > 3 || kw > KWMAX) {
+            if (group != 1) {   // group>1 罕见 → 回退通用 thread-per-output conv3d
                 GpuInferOps.conv3d(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
                        yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
                        dd, dh, dw, group, dev);
                 return;
             }
-            int pz = (TD - 1) + kd;                // 输入 patch 尺寸（stride=1,dil=1）
-            int ph = (TH - 1) + kh;
-            int pw = (TW - 1) + (RW - 1) + KWMAX;  // W 窗含 RW 条 + KWMAX 宽
+            // 通用 patch 尺寸（含 stride/dilation 跨度）
+            int pz = (TD - 1) * sd + (kd - 1) * dd + 1;
+            int ph = (TH - 1) * sh + (kh - 1) * dh + 1;
+            int pw = (TW - 1) * sw + (kw - 1) * dw + 1;
             int perChan = pz * ph * pw + OC_GRP * kd * kh * kw;
             int CC = 6144 / perChan;               // 通道分块（共享 ≤24KB）
             if (CC < 1) CC = 1;
             if (CC > 4) CC = 4;
             int patchSz = CC * pz * ph * pw;
             int wSz = OC_GRP * CC * kd * kh * kw;
+            if (patchSz + wSz > 6144) {   // 超大核 / 大 stride → 共享超限回退
+                GpuInferOps.conv3d(a, work, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC,
+                       yD, yH, yW, kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr,
+                       dd, dh, dw, group, dev);
+                return;
+            }
             int zT = (yD + TD - 1) / TD;
             int hT = (yH + TH - 1) / TH;
             int wT = (yW + TW - 1) / TW;
@@ -393,27 +400,27 @@ class GpuInferOps {
             int nTiles = xN * nGroups * perPlane;
             @gpu tile (float[6144] smem) grid(nTiles) resident(a = dev) {
                 long tb = kernel.bx;
-                long plane = tb / long(perPlane);
-                long rest = tb % long(perPlane);
+                long og = tb % long(nGroups);       // og 最快 → L2 跨组缓存 patch
+                long tile = tb / long(nGroups);
+                long nn = tile / long(perPlane);
+                long rest = tile % long(perPlane);
                 long zt = rest / long(hT * wT);
                 long yt = (rest / long(wT)) % long(hT);
                 long xt = rest % long(wT);
-                long nn = plane / long(nGroups);
-                long og = plane % long(nGroups);
                 long oz0 = zt * long(TD);
                 long oy0 = yt * long(TH);
                 long ox0 = xt * long(TW);
                 long tid = kernel.tx;
-                long od = tid / long(TH * (TW / RW));   // TD=4
+                long od = tid / long(TH * (TW / RW));
                 long oh = (tid / long(TW / RW)) % long(TH);
-                long ws = tid % long(TW / RW);          // TW/RW=8 条
+                long ws = tid % long(TW / RW);
                 long oxL0 = ws * long(RW);
                 long patchTot = long(patchSz);
                 long oc0 = og * long(OC_GRP) + 0L;
                 long oc1 = og * long(OC_GRP) + 1L;
                 long oc2 = og * long(OC_GRP) + 2L;
                 long oc3 = og * long(OC_GRP) + 3L;
-                float A0 = 0.0f; float A1 = 0.0f; float A2 = 0.0f; float A3 = 0.0f;   // oc0
+                float A0 = 0.0f; float A1 = 0.0f; float A2 = 0.0f; float A3 = 0.0f;   // oc0: W0..W3
                 float B0 = 0.0f; float B1 = 0.0f; float B2 = 0.0f; float B3 = 0.0f;   // oc1
                 float C0 = 0.0f; float C1 = 0.0f; float C2 = 0.0f; float C3 = 0.0f;   // oc2
                 float D0 = 0.0f; float D1 = 0.0f; float D2 = 0.0f; float D3 = 0.0f;   // oc3
@@ -425,7 +432,7 @@ class GpuInferOps {
                 }
                 long c = 0L;
                 while (c < long(nChunks)) {
-                    // 协作载入输入 patch 块（CC 通道；越界填 0）
+                    // 协作载入输入 patch 块（CC 通道；通用 stride/dilation；越界填 0）
                     long rr = tid;
                     while (rr < patchTot) {
                         long ic = rr / (long(pz) * long(ph) * long(pw));
@@ -435,9 +442,9 @@ class GpuInferOps {
                         float v = 0.0f;
                         long gcin = c * long(CC) + ic;
                         if (gcin < long(cpg)) {
-                            long gz = oz0 - long(pdt) + iz;
-                            long gy = oy0 - long(pt) + iy;
-                            long gx = ox0 - long(pl) + ix;
+                            long gz = oz0 * long(sd) - long(pdt) + iz;
+                            long gy = oy0 * long(sh) - long(pt) + iy;
+                            long gx = ox0 * long(sw) - long(pl) + ix;
                             if (gz >= 0L && gz < long(xD) && gy >= 0L && gy < long(xH)
                                 && gx >= 0L && gx < long(xW)) {
                                 v = a[xOff + nn * long(xC) * long(xD) * long(xH) * long(xW)
@@ -469,72 +476,37 @@ class GpuInferOps {
                         j = j + 256L;
                     }
                     kernel.sync();
-                    // 寄存器滑窗累积（4 oc × 4 W；kw 均匀分支）
+                    // 通用窗口累积（4 W × 4 oc；stride/dilation 经索引体现，无核大小假设）
                     long ic2 = 0L;
                     while (ic2 < long(CC)) {
                         long gcin3 = c * long(CC) + ic2;
                         if (gcin3 < long(cpg)) {
                             long kz = 0L;
                             while (kz < long(kd)) {
-                                long iz = od + kz;
+                                long iz = od * long(sd) + kz * long(dd);
                                 long ky = 0L;
                                 while (ky < long(kh)) {
-                                    long iy = oh + ky;
-                                    long base = ((ic2 * long(pz) + iz) * long(ph) + iy) * long(pw) + oxL0;
-                                    long wbA = ((0L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
-                                    long wbB = ((1L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
-                                    long wbC = ((2L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
-                                    long wbD = ((3L * long(CC) + ic2) * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
-                                    if (kw == 1) {
-                                        float r0 = smem[base + 0L];
-                                        float r1 = smem[base + 1L];
-                                        float r2 = smem[base + 2L];
-                                        float r3 = smem[base + 3L];
-                                        float wa = smem[patchTot + wbA + 0L];
-                                        float wb = smem[patchTot + wbB + 0L];
-                                        float wc = smem[patchTot + wbC + 0L];
-                                        float wd = smem[patchTot + wbD + 0L];
-                                        A0 = A0 + r0 * wa; A1 = A1 + r1 * wa; A2 = A2 + r2 * wa; A3 = A3 + r3 * wa;
-                                        B0 = B0 + r0 * wb; B1 = B1 + r1 * wb; B2 = B2 + r2 * wb; B3 = B3 + r3 * wb;
-                                        C0 = C0 + r0 * wc; C1 = C1 + r1 * wc; C2 = C2 + r2 * wc; C3 = C3 + r3 * wc;
-                                        D0 = D0 + r0 * wd; D1 = D1 + r1 * wd; D2 = D2 + r2 * wd; D3 = D3 + r3 * wd;
-                                    } else if (kw == 2) {
-                                        float r0 = smem[base + 0L];
-                                        float r1 = smem[base + 1L];
-                                        float r2 = smem[base + 2L];
-                                        float r3 = smem[base + 3L];
-                                        float r4 = smem[base + 4L];
-                                        float w0a = smem[patchTot + wbA + 0L]; float w1a = smem[patchTot + wbA + 1L];
-                                        float w0b = smem[patchTot + wbB + 0L]; float w1b = smem[patchTot + wbB + 1L];
-                                        float w0c = smem[patchTot + wbC + 0L]; float w1c = smem[patchTot + wbC + 1L];
-                                        float w0d = smem[patchTot + wbD + 0L]; float w1d = smem[patchTot + wbD + 1L];
-                                        A0 = A0 + r0 * w0a + r1 * w1a; A1 = A1 + r1 * w0a + r2 * w1a;
-                                        A2 = A2 + r2 * w0a + r3 * w1a; A3 = A3 + r3 * w0a + r4 * w1a;
-                                        B0 = B0 + r0 * w0b + r1 * w1b; B1 = B1 + r1 * w0b + r2 * w1b;
-                                        B2 = B2 + r2 * w0b + r3 * w1b; B3 = B3 + r3 * w0b + r4 * w1b;
-                                        C0 = C0 + r0 * w0c + r1 * w1c; C1 = C1 + r1 * w0c + r2 * w1c;
-                                        C2 = C2 + r2 * w0c + r3 * w1c; C3 = C3 + r3 * w0c + r4 * w1c;
-                                        D0 = D0 + r0 * w0d + r1 * w1d; D1 = D1 + r1 * w0d + r2 * w1d;
-                                        D2 = D2 + r2 * w0d + r3 * w1d; D3 = D3 + r3 * w0d + r4 * w1d;
-                                    } else {
-                                        float r0 = smem[base + 0L];
-                                        float r1 = smem[base + 1L];
-                                        float r2 = smem[base + 2L];
-                                        float r3 = smem[base + 3L];
-                                        float r4 = smem[base + 4L];
-                                        float r5 = smem[base + 5L];
-                                        float w0a = smem[patchTot + wbA + 0L]; float w1a = smem[patchTot + wbA + 1L]; float w2a = smem[patchTot + wbA + 2L];
-                                        float w0b = smem[patchTot + wbB + 0L]; float w1b = smem[patchTot + wbB + 1L]; float w2b = smem[patchTot + wbB + 2L];
-                                        float w0c = smem[patchTot + wbC + 0L]; float w1c = smem[patchTot + wbC + 1L]; float w2c = smem[patchTot + wbC + 2L];
-                                        float w0d = smem[patchTot + wbD + 0L]; float w1d = smem[patchTot + wbD + 1L]; float w2d = smem[patchTot + wbD + 2L];
-                                        A0 = A0 + r0 * w0a + r1 * w1a + r2 * w2a; A1 = A1 + r1 * w0a + r2 * w1a + r3 * w2a;
-                                        A2 = A2 + r2 * w0a + r3 * w1a + r4 * w2a; A3 = A3 + r3 * w0a + r4 * w1a + r5 * w2a;
-                                        B0 = B0 + r0 * w0b + r1 * w1b + r2 * w2b; B1 = B1 + r1 * w0b + r2 * w1b + r3 * w2b;
-                                        B2 = B2 + r2 * w0b + r3 * w1b + r4 * w2b; B3 = B3 + r3 * w0b + r4 * w1b + r5 * w2b;
-                                        C0 = C0 + r0 * w0c + r1 * w1c + r2 * w2c; C1 = C1 + r1 * w0c + r2 * w1c + r3 * w2c;
-                                        C2 = C2 + r2 * w0c + r3 * w1c + r4 * w2c; C3 = C3 + r3 * w0c + r4 * w1c + r5 * w2c;
-                                        D0 = D0 + r0 * w0d + r1 * w1d + r2 * w2d; D1 = D1 + r1 * w0d + r2 * w1d + r3 * w2d;
-                                        D2 = D2 + r2 * w0d + r3 * w1d + r4 * w2d; D3 = D3 + r3 * w0d + r4 * w1d + r5 * w2d;
+                                    long iy = oh * long(sh) + ky * long(dh);
+                                    long rowBase = ((ic2 * long(pz) + iz) * long(ph) + iy) * long(pw)
+                                                 + oxL0 * long(sw);
+                                    long wbase0 = (ic2 * long(kd) + kz) * long(kh) * long(kw) + ky * long(kw);
+                                    long ocStride = long(CC) * long(kd) * long(kh) * long(kw);
+                                    long kx = 0L;
+                                    while (kx < long(kw)) {
+                                        long col = kx * long(dw);
+                                        float v0 = smem[rowBase + col];
+                                        float v1 = smem[rowBase + col + long(sw)];
+                                        float v2 = smem[rowBase + col + 2L * long(sw)];
+                                        float v3 = smem[rowBase + col + 3L * long(sw)];
+                                        float w0 = smem[patchTot + wbase0 + kx];
+                                        float w1 = smem[patchTot + ocStride + wbase0 + kx];
+                                        float w2 = smem[patchTot + 2L * ocStride + wbase0 + kx];
+                                        float w3 = smem[patchTot + 3L * ocStride + wbase0 + kx];
+                                        A0 = A0 + v0 * w0; A1 = A1 + v1 * w0; A2 = A2 + v2 * w0; A3 = A3 + v3 * w0;
+                                        B0 = B0 + v0 * w1; B1 = B1 + v1 * w1; B2 = B2 + v2 * w1; B3 = B3 + v3 * w1;
+                                        C0 = C0 + v0 * w2; C1 = C1 + v1 * w2; C2 = C2 + v2 * w2; C3 = C3 + v3 * w2;
+                                        D0 = D0 + v0 * w3; D1 = D1 + v1 * w3; D2 = D2 + v2 * w3; D3 = D3 + v3 * w3;
+                                        kx = kx + 1L;
                                     }
                                     ky = ky + 1L;
                                 }
@@ -1550,16 +1522,25 @@ class GpuInferOps {
                     a[ivOff + c4] = float(scale / Math.sqrt(variance + eps));
                 }
             }
-            // K5：thread-per-element 归一化
-            @gpu for (long p = 0L; p < total; p = p + 1L) resident(a = dev) {
-                if (p < total) {
-                    int nc5 = int(p / long(S));
-                    int cc5 = nc5 % C;
+            // K5：归一化——每线程 pt5 元素网格步进（除法仅线程级一次，循环内顺序访问
+            // 无除法；pt5=1024 保持足够线程数/MLP——此前 256 线程太少反更慢）
+            int pt5 = 1024;
+            long nTh5 = long(nC) * long(pt5);
+            @gpu for (long p = 0L; p < nTh5; p = p + 1L) resident(a = dev) {
+                if (p < nTh5) {
+                    int nc5 = int(p / long(pt5));
+                    int b5 = int(p % long(pt5));
+                    long base5 = long(nc5) * long(S);
                     double mn5 = a[mnOff + nc5];
                     double iv5 = a[ivOff + nc5];
-                    double xv5 = a[xOff + int(p)];
+                    int cc5 = nc5 % C;
                     double bias5 = a[bOff + cc5];
-                    a[yOff + int(p)] = float((xv5 - mn5) * iv5 + bias5);
+                    long q5 = base5 + long(b5);
+                    while (q5 < base5 + long(S)) {
+                        double xv5 = a[xOff + int(q5)];
+                        a[yOff + int(q5)] = float((xv5 - mn5) * iv5 + bias5);
+                        q5 = q5 + long(pt5);
+                    }
                 }
             }
         }

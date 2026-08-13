@@ -1037,6 +1037,10 @@ class InferenceRuntime {
                     int xa = opA_[i]; int wb = opB_[i]; int bc = opC_[i]; int yd = opD_[i];
                     int bOff = -1; if (bc >= 0) bOff = tOff_[bc];
                     int work = tensorSize(yd);
+                    if (Console.getEnv("MYP_DEBUG_CONV") == "1") {
+                        Console.writeString("conv " + " C" + tC_[xa] + ">" + tC_[yd] + " " + tD_[yd] + "x" + tH_[yd] + "x" + tW_[yd] + " k" + tD_[wb] + "x" + tH_[wb] + "x" + tW_[wb]);
+                        Console.writeLine("");
+                    }
                     GpuInferOps.conv3dTiled(arena, work,
                         tOff_[xa], tN_[xa], tC_[xa], tD_[xa], tH_[xa], tW_[xa],
                         tOff_[wb], bOff,

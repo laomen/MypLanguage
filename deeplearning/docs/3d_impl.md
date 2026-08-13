@@ -155,10 +155,21 @@ H2D/D2H ~450ms（整 arena 3.2GB）。
 （每输出共享读 ~1.1，原 thread-per-output 全局读+L1）。要求 group=1、dil=1、
 stride=1、k≤3（fine 模型全满足；否则回退 conv3d）。
 
-**实测**：conv3d **2253 → 1029 ms（2.2×）**；总推理 **3090 → 1777 ms（1.7×）**。
+**通用化（2026-08-14）**：v3 曾把 `stride=1、k≤3` 写死（针对 fine 模型特调）。
+已重写为**通用算子**：任意 kd/kh/kw、stride、dilation 都走同一条 tiled 路径
+（仅 group≠1 或共享超限回退 thread-per-output）。权重共享布局
+`((ocIdx*CC+jic)*kd+jz)*kh*kw+jy*kw+jx`，计算侧 `wbase=(ic2*kd+kz)*kh*kw+ky*kw`
++ `ocStride=CC*kd*kh*kw` 逐 oc 偏移。**坑**：初版 compute 多加 `ic2*kd*kh*kw`
+→ diff 344 错（cooperative 载入与 compute 读取的共享布局必须严格一致）；
+权重读应写 `smem[patchTot + ocStride*ocIdx + wbase + kx]`（ocIdx=0..3）。
+**验证**：bench/conv3d_gen_main.myp —— k=5/stride=2 GPU vs CPU diff=0 ✅、
+k=3/dilation=2 diff=0 ✅；fine 模型（全 s=1/d=1）逐位一致。
+
+**实测**：conv3d **2253 → 990 ms（2.3×）**；总推理 **3090 → 1686 ms（1.8×）**。
 avgpool3d double→float（FP64=1/32 吞吐）15 → 0 ms。coarse_model GPU 591ms
-（16³→160³）。**正确性**：与旧验证输出逐位一致（diff 0.0）；coarse vs ORT 6.1e-3
-（float32 漂移）✅；conv3d_main GPU vs ORT OK；回归 266/266。
+（16³→160³）。**正确性**：conv3d 与旧验证输出逐位一致（diff=1e-5 仅 avgpool
+float 漂移）；coarse vs ORT 6.1e-3（float32 漂移）✅；conv3d_main GPU vs ORT OK；
+通用参数测试 ✅；回归 266/266。
 
 **坑（本次）**：
 1. patch 载入 D/H 维漏 `-pdt/-pt` 偏移（x 有 -pl）→ 卷积窗口整体偏移 → 输出错
@@ -166,6 +177,8 @@ avgpool3d double→float（FP64=1/32 吞吐）15 → 0 ms。coarse_model GPU 591
 2. v1（per-oc 块）反而比回退慢：同一空间 tile 的 patch 被 yC 个块重复载入
    （yC× 冗余全局读）→ 必须 OC_GRP 分组摊薄。
 3. `@gpu tile` 内 `float wbase = ...` 应为 `long`（索引）→ 编译错。
+4. 通用化时权重共享索引：cooperative 载入按 `((ocIdx*CC+jic)*kd+jz)*kh*kw+jy*kw+jx`，
+   compute 读取必须一致（wbase + ocStride*ocIdx），多加 `ic2*kd*kh*kw` → diff 344。
 
 **⏳ 剩余**：conv3d 仍 ~1.0s（未达 <0.5s）——进一步需更大 OC_GRP / 共享 tile 摊薄
 patch 重载、L2 感知调度；`gapool` 块归约未动（不在本模型）。CPU 核性能
