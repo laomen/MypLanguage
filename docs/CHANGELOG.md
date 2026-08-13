@@ -270,6 +270,22 @@
     doublePrecision=0（sm_75 消费卡 FP64 1/32）。CPU 回退 vendor=cpu、能力全 0。
   - 回归 263/263 + AMD 交叉编译（tests/cross_compile_amd.sh）无回归。
 
+### v3.13.2 — P5 ④ 并行算法库（stdlib/gpu/algo.myp，GpuAlgo）
+  - **compact**（流压缩）：keep 的 inclusive 前缀和（§8 scan）→ 目标位置
+    pos[i]=off[i]-keep[i]（exclusive）→ 条件写（@gpu for）；返回保留数。
+  - **unique**（相邻去重）：change[i]=(i==0 或 a[i]!=a[i-1]) → 对 change 做 compact。
+  - **histogram**：ones 数组 + `@gpu scatter(atomic_add)` → hist[idx[i]] += 1
+    （整数原子计数位一致；host 预扫越界自保，越界返回 0）。
+  - **sort**（原地升序）：确定性 odd-even 转置比较交换网络（每轮偶相+奇相两个
+    独立 kernel launch 提供隐式全局同步；n 轮有序；O(n²)，radix/bitonic 留后续）。
+  - **双实现位一致**：GPU 与 CPU 回退跑同一算法序列 → 输出逐字节相同。
+    `tests/test_gpu_algo.myp`（n=2048：质数 compact / i/8 unique / LCG 16 桶
+    histogram / 0..999 重复值 sort）MYP_GPU=0/1 双模式输出 IDENTICAL；AMD
+    交叉编译（MYP_GPU_TARGET=amdgcn）二进制 CPU 回退语义 PASS。回归 263/263。
+  - 踩坑记录：`@gpu scan` int init 须 `init int(0)`（字面量 0 为 byte）；`@gpu for`
+    假设循环从 0 起（非 0 起始在 GPU 下执行 p=0 分支 → 越界读，须体内处理边界）；
+    静态方法须类名限定调用。
+
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总

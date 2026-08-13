@@ -29,6 +29,7 @@ import gpu.device;
 import gpu.memory;
 import gpu.stream;
 import gpu.ops;
+import gpu.algo;
 import cuda;
 
 class Gpu {

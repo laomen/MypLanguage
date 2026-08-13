@@ -1,0 +1,126 @@
+// P5 ④ GpuAlgo 并行算法库测试（§9.6）
+// compact / unique / histogram / sort；建在 §8 原语之上，双模式位一致。
+// 双模式验证：MYP_GPU=0 与 MYP_GPU=1 各跑一次，输出逐字节相同即双实现位一致。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+import gpu.algo;
+
+class Main {
+    action:
+        @startup void go() {
+            int fail = 0;
+            long i = 0L;
+            long n = 2048L;
+
+            // ============ compact：质数过滤 ============
+            double[] a = new double[n];
+            int[] keep = new int[n];
+            i = 0L;
+            while (i < n) {
+                a[i] = double(i);
+                keep[i] = (i >= 2L && Main.isPrime(i) == 1) ? 1 : 0;
+                i = i + 1L;
+            }
+            double[] cp = new double[n];
+            int cnt = GpuAlgo.compact(n, a, keep, cp);
+            long expect = 0L;
+            i = 2L;
+            while (i < n) { if (Main.isPrime(i) == 1) expect = expect + 1L; i = i + 1L; }
+            long j = 0L;
+            i = 2L;
+            while (i < n) {
+                if (Main.isPrime(i) == 1) {
+                    if (cp[j] != double(i)) { Console.writeLine("FAIL compact value @" + j); fail = 1; }
+                    j = j + 1L;
+                }
+                i = i + 1L;
+            }
+            Console.writeLine("compact: " + ((long(cnt) == expect && fail == 0) ? "OK" : "FAIL") +
+                " cnt=" + cnt + " cp0=" + cp[0L] + " cplast=" + cp[long(cnt) - 1L]);
+
+            // ============ unique：a[i] = i/8 → 每 8 个一组相同 → 去重后每 8 留 1 ============
+            double[] u = new double[n];
+            i = 0L;
+            while (i < n) { u[i] = double(i / 8L); i = i + 1L; }
+            double[] uo = new double[n];
+            int uc = GpuAlgo.unique(n, u, uo);
+            long uexp = (n + 7L) / 8L;
+            long err = 0L;
+            i = 0L;
+            while (i < uexp) {
+                if (uo[i] != double(i)) err = err + 1L;   // a[i]=i/8 → unique = 0,1,2,...
+                i = i + 1L;
+            }
+            Console.writeLine("unique: " + ((long(uc) == uexp && err == 0L) ? "OK" : "FAIL") +
+                " cnt=" + uc + " uo0=" + uo[0L] + " uolast=" + uo[long(uc) - 1L]);
+
+            // ============ histogram：LCG 随机进 16 桶，Σhist==n 且各桶可核验 ============
+            int B = 16;
+            int[] idx = new int[n];
+            long seed = 20260813L;
+            i = 0L;
+            while (i < n) {
+                seed = (seed * 1103515245L + 12345L) % 2147483648L;   // ANSI C LCG，无溢出
+                idx[i] = int(seed % long(B));
+                i = i + 1L;
+            }
+            int[] hist = new int[B];
+            int hok = GpuAlgo.histogram(n, idx, B, hist);
+            long sum = 0L;
+            i = 0L;
+            while (i < B) { sum = sum + long(hist[i]); i = i + 1L; }
+            // host 参考直方图
+            long hfail = 0L;
+            long[] href = new long[B];
+            i = 0L;
+            while (i < n) { href[idx[i]] = href[idx[i]] + 1L; i = i + 1L; }
+            i = 0L;
+            while (i < B) {
+                if (long(hist[i]) != href[i]) { hfail = hfail + 1L; Console.writeLine("FAIL hist bin " + i); fail = 1; }
+                i = i + 1L;
+            }
+            Console.writeLine("histogram: " + (hok == 1 && sum == n && hfail == 0L ? "OK" : "FAIL") +
+                " sum=" + sum + " h0=" + hist[0] + " h15=" + hist[B - 1]);
+
+            // ============ sort：LCG 随机 + 重复值 → odd-even 升序 ============
+            double[] s = new double[n];
+            seed = 987654321L;
+            i = 0L;
+            while (i < n) {
+                seed = (seed * 1103515245L + 12345L) % 2147483648L;   // 0..2^31-1
+                s[i] = double(seed % 1000L);   // 0..999，必有重复
+                i = i + 1L;
+            }
+            GpuAlgo.sort(n, s);
+            long sortErr = 0L;
+            i = 1L;
+            while (i < n) {
+                if (s[i - 1L] > s[i]) sortErr = sortErr + 1L;
+                i = i + 1L;
+            }
+            // 位一致校验和（双模式 diff 关键）：有序数组顺序求和
+            double chk = 0.0;
+            i = 0L;
+            while (i < n) { chk = chk + s[i]; i = i + 1L; }
+            Console.writeLine("sort: " + (sortErr == 0L ? "OK" : "FAIL") +
+                " s0=" + s[0L] + " smid=" + s[n / 2L] + " slast=" + s[n - 1L] +
+                " checksum=" + chk);
+
+            Console.writeLine("gpu algo: " + (fail == 0 ? "PASS" : "FAIL"));
+        }
+
+    static:
+        int isPrime(long x) {
+            if (x < 2L) return 0;
+            long d = 2L;
+            while (d * d <= x) {
+                if (x % d == 0L) return 0;
+                d = d + 1L;
+            }
+            return 1;
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

@@ -1,0 +1,105 @@
+// algo.myp — GpuAlgo：并行算法库（P5 ④，§9.6）
+//
+// 建在 §8 声明式原语（reduce/scan/scatter）之上；宿主数组 L1 风格——方法与
+// Vectors/Gpu 一致：数组进、数组出，GPU/CPU 回退自动（@gpu 原语内建双路径）。
+//
+// 双实现位一致：GPU 与 CPU 回退跑**同一算法序列** → 结果逐字节相同：
+//   · compact/unique —— keep/change 的 inclusive 前缀和（§8 scan）+ 条件写
+//   · histogram       —— @gpu scatter(atomic_add) 整数原子计数（整数加法与
+//                         顺序无关 → GPU atom.add.i32 与 CPU 顺序累加一致）
+//   · sort            —— 确定性 odd-even 转置比较交换网络（GPU/CPU 同一比较
+//                         序列；每相独立 kernel launch 提供隐式全局同步）
+//
+// 提供：compact（流压缩）/ unique（相邻去重）/ histogram（直方图）/ sort（排序）。
+// 约定：数组下标 long；返回 int 计数/状态码；sort 原地升序。
+
+class GpuAlgo {
+    static:
+        // ==================== 直方图 histogram ====================
+        // hist[0..B) 统计 idx[i]∈[0,B) 出现次数（int 计数）。
+        // 实现：ones 数组（@gpu for 并行填充）+ @gpu scatter(atomic_add)
+        //   ones[0..n) to hist by idx[0..n) → hist[idx[i]] += 1。
+        // 返回 1=成功；idx 越界（<0 或 ≥B）→ 0 且不写任何桶（host 预扫自保，
+        //   scatter atomic_add 无边界检查）。
+        int histogram(long n, int[] idx, int B, int[] hist) {
+            if (n == 0L || B <= 0) return 0;
+            long i = 0L;
+            while (i < n) {
+                if (idx[i] < 0 || idx[i] >= B) return 0;
+                i = i + 1L;
+            }
+            i = 0L;
+            while (i < B) { hist[i] = 0; i = i + 1L; }
+            int[] ones = new int[n];
+            @gpu for (long p = 0L; p < n; p = p + 1L) { ones[p] = 1; }
+            @gpu scatter(atomic_add) ones[0..n) to hist by idx[0..n);
+            return 1;
+        }
+
+        // ==================== 流压缩 compact ====================
+        // 把 keep[i]==1 的元素按原顺序打包到 out[0..cnt)，返回 cnt（= Σkeep）。
+        // 实现：keep 的 inclusive 前缀和 off（§8 scan）→ 目标位置
+        //   pos[i] = off[i]-keep[i]（exclusive 计数）→ 条件写 out[pos[i]]=a[i]。
+        int compact(long n, double[] a, int[] keep, double[] out) {
+            if (n == 0L) return 0;
+            int[] off = new int[n];
+            @gpu scan (acc, x) => { return acc + x; } init int(0) over keep[0..n) -> off;
+            int total = off[n - 1L];   // inclusive 末位 = 保留总数
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                if (keep[p] == 1) {
+                    long pos = long(off[p]) - long(keep[p]);
+                    out[pos] = a[p];
+                }
+            }
+            return total;
+        }
+
+        // ==================== 相邻去重 unique ====================
+        // 去掉相邻重复（a[i]==a[i-1] 只留首次），写 out[0..cnt)，返回 cnt。
+        // 实现：change[i] = (i==0 或 a[i]!=a[i-1]) → 对 change 做 compact。
+        int unique(long n, double[] a, double[] out) {
+            if (n == 0L) return 0;
+            int[] chg = new int[n];
+            // @gpu for 要求循环从 0 起（thread tid → p = tid）；p=0 边界在体内处理。
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                if (p == 0L) { chg[p] = 1; }
+                else { chg[p] = (a[p] == a[p - 1L]) ? 0 : 1; }
+            }
+            int[] off = new int[n];
+            @gpu scan (acc, x) => { return acc + x; } init int(0) over chg[0..n) -> off;
+            int total = off[n - 1L];
+            @gpu for (long p = 0L; p < n; p = p + 1L) {
+                if (chg[p] == 1) {
+                    long pos = long(off[p]) - long(chg[p]);
+                    out[pos] = a[p];
+                }
+            }
+            return total;
+        }
+
+        // ==================== 排序 sort ====================
+        // 原地升序（odd-even 转置比较交换网络）。
+        // 确定性：GPU/CPU 同一比较序列 → 位一致。每轮 = 偶相 + 奇相两个独立
+        // kernel launch（隐式全局同步）；n 轮后有序。O(n²)（正确性优先；
+        // radix/bitonic 性能路径留后续，§10.3 未覆盖）。
+        void sort(long n, double[] a) {
+            long k = 0L;
+            while (k < n) {
+                @gpu for (long p = 0L; p < n; p = p + 1L) {
+                    double t = a[p];
+                    if (p % 2L == 0L && p + 1L < n && a[p] > a[p + 1L]) {
+                        a[p] = a[p + 1L];
+                        a[p + 1L] = t;
+                    }
+                }
+                @gpu for (long p = 0L; p < n; p = p + 1L) {
+                    double t = a[p];
+                    if (p % 2L == 1L && p + 1L < n && a[p] > a[p + 1L]) {
+                        a[p] = a[p + 1L];
+                        a[p + 1L] = t;
+                    }
+                }
+                k = k + 1L;
+            }
+        }
+}
