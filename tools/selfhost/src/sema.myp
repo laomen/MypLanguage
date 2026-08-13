@@ -607,6 +607,11 @@ class Sema {
                 currentClass_ = "";
                 inClass_ = 0;
                 inMain_ = f.name_ == "main" ? 1 : 0;
+                // F4-G2：泛型函数的类型参数占位符（T/R/E）也进 curGeneric_，
+                // 使 declareParam 的 tryInstantiate 能识别占位符并延迟实例化
+                // （否则 resultMap<T,R,E> 的 Result<T,E> 参数会生成 Result_T_E_inst）。
+                curGeneric_.clear();
+                for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
                 currentRet_ = typeToKind(f.ret_);
                 inCoro_ = f.coro_ != 0 ? 1 : 0;
                 loopDepth_ = 0;
@@ -617,6 +622,7 @@ class Sema {
                 if (f.typeParams().size() != 0) markAllStmt(f.body_);
                 else visitStmt(f.body_);
                 sym_.leaveScope();
+                curGeneric_.clear();
             }
             // struct 方法体（隐式 this 字段访问）
             for (int si2 = 0; si2 < tu.structs().size(); si2 = si2 + 1) {
@@ -692,6 +698,9 @@ class Sema {
                     currentRet_ = typeToKind(a.ret_);
                     inCoro_ = a.coro_ != 0 ? 1 : 0;
                     loopDepth_ = 0;
+                    // F4-G2：叠加方法自身类型参数（map<T,R> 的 T/R）→ 占位符延迟实例化
+                    int gbase = curGeneric_.size();
+                    for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
                     sym_.enterScope();
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j));
@@ -699,6 +708,7 @@ class Sema {
                     if (a.typeParams().size() != 0) markAllStmt(a.body_);
                     else visitStmt(a.body_);
                     sym_.leaveScope();
+                    while (curGeneric_.size() > gbase) curGeneric_.remove(curGeneric_.size() - 1);
                 }
                 // 静态 action（@static class 的方法）
                 for (int sai = 0; sai < c.staticActions().size(); sai = sai + 1) {
@@ -707,6 +717,9 @@ class Sema {
                     currentRet_ = typeToKind(a.ret_);
                     inCoro_ = a.coro_ != 0 ? 1 : 0;
                     loopDepth_ = 0;
+                    // F4-G2：叠加方法自身类型参数
+                    int gbase2 = curGeneric_.size();
+                    for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
                     sym_.enterScope();
                     for (int j = 0; j < a.params().size(); j = j + 1) {
                         declareParam(a.params().get(j));
@@ -714,6 +727,7 @@ class Sema {
                     if (a.typeParams().size() != 0) markAllStmt(a.body_);
                     else visitStmt(a.body_);
                     sym_.leaveScope();
+                    while (curGeneric_.size() > gbase2) curGeneric_.remove(curGeneric_.size() - 1);
                 }
                 for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
                     AstFunction f = c.funcs().get(fi);
@@ -721,6 +735,9 @@ class Sema {
                     currentRet_ = typeToKind(f.ret_);
                     inCoro_ = f.coro_ != 0 ? 1 : 0;
                     loopDepth_ = 0;
+                    // F4-G2：叠加函数自身类型参数
+                    int gbase3 = curGeneric_.size();
+                    for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
                     sym_.enterScope();
                     for (int j = 0; j < f.params().size(); j = j + 1) {
                         declareParam(f.params().get(j));
@@ -728,6 +745,7 @@ class Sema {
                     if (f.typeParams().size() != 0) markAllStmt(f.body_);
                     else visitStmt(f.body_);
                     sym_.leaveScope();
+                    while (curGeneric_.size() > gbase3) curGeneric_.remove(curGeneric_.size() - 1);
                 }
                 sym_.leaveScope();
             }
@@ -1090,9 +1108,10 @@ class Sema {
             string inst = baseName;
             for (int i = 0; i < typeArgs.size(); i = i + 1) inst = inst + "_" + instClassName(typeArgs.get(i));
             inst = inst + "_inst";
-            for (int i = 0; i < instDone_.size(); i = i + 1) {
-                if (instDone_.get(i) == inst) return;
-            }
+            // F4-G2：作用域感知去重（C++ symbol_table_.lookup 沿作用域链搜索）。
+            // 同一作用域链内已声明 → 去重；作用域弹出后再触发 → 追加字节相同的克隆，
+            // 复现参考端 dump 的重复 _inst 类声明（规范实例仍唯一，克隆共享 typeArgs）。
+            if (sym_.lookup(inst) == "class") return;
             if (tu_ == null) return;
             AstClass tmpl = null;
             for (int i = 0; i < tu_.classes().size(); i = i + 1) {
@@ -1101,9 +1120,16 @@ class Sema {
             if (tmpl == null) return;
             ArrayList<string> tps = tmpl.typeParams();
             if (tps.size() == 0) return;
-            instDone_.add(inst);
-            instNames_.add(inst);
-            instTAs_.add(typeArgs);
+            // 规范实例登记（首次创建才记录；克隆共享 typeArgs）
+            int canonical = 0;
+            for (int i = 0; i < instDone_.size(); i = i + 1) {
+                if (instDone_.get(i) == inst) { canonical = 1; break; }
+            }
+            if (canonical == 0) {
+                instDone_.add(inst);
+                instNames_.add(inst);
+                instTAs_.add(typeArgs);
+            }
             AstClass nc = new AstClass();
             nc.setName(inst);
             nc.setIsStatic(tmpl.isStatic_);
@@ -1127,11 +1153,25 @@ class Sema {
             }
             for (int i = 0; i < tmpl.funcs().size(); i = i + 1) nc.funcs().add(cloneFunction(tmpl.funcs().get(i), tps, typeArgs));
             tu_.classes().add(nc);
+            // F4-G2：声明实例到当前作用域（C++ visitClassDecl 注册类）
+            sym_.declare(inst, "class");
+            // F4-G2：级联——实例属性类型可能引用其他泛型类（如 FfiParam 有
+            // ArrayList<string> 成员）→ 触发嵌套实例化，复现参考端的重复克隆。
+            for (int i = 0; i < nc.props().size(); i = i + 1) {
+                AstType ppt = nc.props().get(i).type_;
+                if (ppt != null && ppt.typeArgs().size() > 0) tryInstantiate(ppt.className_, ppt.typeArgs());
+            }
         }
         // 触发泛型类实例化（类型引用带 typeArgs，递归内层）
         void tryInstantiate(string cn, ArrayList<AstType> tas) {
             if (Str.len(cn) == 0) return;
             if (tas.size() == 0) return;
+            // C++ has_placeholder：类型实参是当前泛型参数占位符（T/E）→ 延迟实例化，
+            // 否则模板体内 `new Option<T>()` 会生成 Option_T_inst 幽灵实例。
+            for (int i = 0; i < tas.size(); i = i + 1) {
+                AstType ta = tas.get(i);
+                if (ta != null && (inGeneric(ta.className_) != 0 || inGeneric(ta.basicName_) != 0)) return;
+            }
             for (int i = 0; i < tas.size(); i = i + 1) {
                 AstType ta = tas.get(i);
                 if (ta != null && ta.typeArgs().size() > 0) tryInstantiate(ta.className_, ta.typeArgs());
@@ -2300,9 +2340,19 @@ class Sema {
                 e.setResolvedKind("class");
                 if (Str.len(e.className_) != 0) {
                     if (e.typeArgs().size() > 0 && isGenericClass(e.className_) != 0) {
-                        string iname = e.className_;
-                        for (int i = 0; i < e.typeArgs().size(); i = i + 1) iname = iname + "_" + instClassName(e.typeArgs().get(i));
-                        e.setResolvedClass(iname + "_inst");
+                        // C++ has_placeholder：实参含泛型占位符 → resolvedClass 用模板名
+                        int hasPh = 0;
+                        for (int i = 0; i < e.typeArgs().size(); i = i + 1) {
+                            AstType taa = e.typeArgs().get(i);
+                            if (taa != null && (inGeneric(taa.className_) != 0 || inGeneric(taa.basicName_) != 0)) { hasPh = 1; break; }
+                        }
+                        if (hasPh != 0) {
+                            e.setResolvedClass(e.className_);
+                        } else {
+                            string iname = e.className_;
+                            for (int i = 0; i < e.typeArgs().size(); i = i + 1) iname = iname + "_" + instClassName(e.typeArgs().get(i));
+                            e.setResolvedClass(iname + "_inst");
+                        }
                     } else {
                         e.setResolvedClass(e.className_);
                     }
