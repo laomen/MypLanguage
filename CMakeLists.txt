@@ -40,6 +40,14 @@ else()
     message(STATUS "GPU offload DISABLED — @gpu for compiles to CPU fallback")
 endif()
 
+# §9.5 P4 跨厂商（AMD）：ROCm/HIP 运行时（runtime_rocm.c）。无 AMD 硬件时保持
+# OFF（交叉编译验证走 MYP_GPU_TARGET=amdgcn 编译期 GCN 发射 + CPU 回退语义）。
+option(MYP_ENABLE_ROCM "Build with ROCm/HIP runtime (AMD GPU)" OFF)
+if(MYP_ENABLE_ROCM)
+    add_compile_definitions(MYP_ENABLE_ROCM=1)
+    message(STATUS "ROCm/HIP runtime enabled (runtime_rocm.c)")
+endif()
+
 # Get LLVM library list for linking（nvptx 组件仅 GPU 构建解析，llvm_map 给完整路径）
 set(MYP_LLVM_COMPONENTS
     core
@@ -58,6 +66,9 @@ set(MYP_LLVM_COMPONENTS
 )
 if(MYP_ENABLE_GPU)
     list(APPEND MYP_LLVM_COMPONENTS nvptxdesc nvptxcodegen nvptxinfo)
+    # §9.5 P4 跨厂商：AMDGPU 后端（交叉编译 GCN code object；无 AMD 硬件时仅验证产出）。
+    list(APPEND MYP_LLVM_COMPONENTS amdgpuinfo amdgpudesc amdgpucodegen
+         amdgpuasmparser amdgpuutils amdgputargetmca amdgpudisassembler)
 endif()
 llvm_map_components_to_libnames(myp_llvm_libs ${MYP_LLVM_COMPONENTS})
 
@@ -261,6 +272,9 @@ set(MYP_RUNTIME_SRCS
     src/runtime/sdl_bridge.c
     src/runtime/runtime_gpu.c
 )
+if(MYP_ENABLE_ROCM)
+    list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)
+endif()
 add_library(myp_runtime STATIC ${MYP_RUNTIME_SRCS})
 
 target_include_directories(myp_runtime

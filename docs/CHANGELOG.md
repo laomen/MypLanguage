@@ -229,6 +229,26 @@
       保持），@parallel for 接入留性能类（同 P2⑥/P1③④）。
     - 回归 109/109 + 负测试 65 + 框架 82（263/263）。
 
+### v3.13 — P4 跨厂商（AMD）编译期落地（无 AMD 硬件，交叉编译验证）
+  - **§9.5/§6.4 AMDGPU 后端 + GCN 交叉编译**：
+    - `MYP_GPU_TARGET=amdgcn` 让 `@gpu for`/reduce/scan 内核编译期发射
+      `amdgcn-amd-amdhsa` GCN ELF code object（`ObjectFile` 直接出 ELF，EM_AMDGPU，
+      含 `myp_kernel` 符号），写 `MYP_GPU_EMIT_FILE`（默认 /tmp/myp_kernel.gcn）；
+    - codegen 参数化：双后端 init（`ensureGpuTargetsInited`）、kernel CC
+      （NV PTX_Kernel / AMD AMDGPU_KERNEL）、线程索引（NVVM sreg ↔ AMDGCN
+      workitem/workgroup.id.x）、kernel alloca addrspace(5)（AMD private）、
+      blockDim = launch 常量、`kernel.sync()`（bar.sync 0 ↔ s_barrier）、
+      O2 管线消解 AMDGCN 无法选中的构造（声明式 kernel）。
+  - **§9.5 ③ runtime_rocm.c 骨架**（`-DMYP_ENABLE_ROCM=ON`）：dlopen
+    libamdhip64 + HIP 函数指针镜像 myp_gpu_* ABI（hipModuleLoadData/hipLaunchKernel/
+    hipMemcpy/stream/event），无 ROCm 不构建。
+  - **§9.5 ⑤ 交叉编译验证** `tests/cross_compile_amd.sh`（无硬件）：GCN ELF
+    magic + kernel 符号（llvm-readobj）+ AMD 二进制 CPU 回退语义 + NV PTX 无回归。
+  - **受限（无硬件留待）**：`@gpu stride`/scatter（gridDim 无 AMDGCN intrinsic）
+    AMD 回退 CPU；`@gpu tile` __shared__ 对象发射；数学 NV libdevice（AMD 走
+    LLVM intrinsic/ocml）；厂商探测/能力查询。
+  - CMake：AMDGPU LLVM 组件；`MYP_ENABLE_ROCM` 选项。回归 263/263。
+
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
   setjmp/longjmp 异常隔离），退出码反映失败；`tests/@test/` 目录自动发现 + 汇总

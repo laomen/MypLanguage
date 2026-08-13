@@ -22,6 +22,7 @@
 
 #ifdef MYP_ENABLE_GPU
 #include <llvm/IR/IntrinsicsNVPTX.h>
+#include <llvm/IR/IntrinsicsAMDGPU.h>
 #endif
 #include <llvm/IRReader/IRReader.h>
 #include <llvm/Linker/Linker.h>
@@ -37,11 +38,184 @@ extern "C" void LLVMInitializeNVPTXTargetInfo(void);
 extern "C" void LLVMInitializeNVPTXTarget(void);
 extern "C" void LLVMInitializeNVPTXTargetMC(void);
 extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
+// §9.5 P4 跨厂商（AMD）：AMDGPU 后端初始化（交叉编译 GCN code object）
+extern "C" void LLVMInitializeAMDGPUTargetInfo(void);
+extern "C" void LLVMInitializeAMDGPUTarget(void);
+extern "C" void LLVMInitializeAMDGPUTargetMC(void);
+extern "C" void LLVMInitializeAMDGPUAsmPrinter(void);
 #endif
 
 // §3.2 前向声明：CUDA libdevice 链接（generateGpuTile 在定义前调用）
 namespace mylang { class DiagnosticEngine; }
 namespace mylang { static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag); }
+
+#ifdef MYP_ENABLE_GPU
+// ============================================================================
+// §7.7 / §6.4 编译期 GpuTarget：跨厂商参数化（单源 → NVPTX / AMDGPU）。
+// 激活目标由 MYP_GPU_TARGET 选择（默认 NVPTX；"amdgcn"/"amdgpu"/"gcn" → AMD）。
+// MYP_GPU_ARCH 指定架构（AMD 默认 gfx1030 / NV 固定 sm_75）。无 AMD 硬件时
+// AMD 路径仅用于交叉编译验证产出（§9.5 ⑤），运行期仍回退 CPU。
+// ============================================================================
+static bool gpuTargetAmd() {
+    const char* e = getenv("MYP_GPU_TARGET");
+    return e && (strcmp(e, "amdgcn") == 0 || strcmp(e, "amdgpu") == 0 ||
+                 strcmp(e, "gcn") == 0);
+}
+static std::string gpuTargetTriple() {
+    return gpuTargetAmd() ? "amdgcn-amd-amdhsa" : "nvptx64-nvidia-cuda";
+}
+static std::string gpuTargetArch() {
+    if (gpuTargetAmd()) {
+        const char* a = getenv("MYP_GPU_ARCH");
+        return (a && *a) ? std::string(a) : std::string("gfx1030");
+    }
+    return "sm_75";
+}
+// 两个后端都初始化（静态一次；libLLVM 统一符号，安全）。
+static void ensureGpuTargetsInited() {
+    static bool inited = false;
+    if (inited) return;
+    LLVMInitializeNVPTXTargetInfo();
+    LLVMInitializeNVPTXTarget();
+    LLVMInitializeNVPTXTargetMC();
+    LLVMInitializeNVPTXAsmPrinter();
+    LLVMInitializeAMDGPUTargetInfo();
+    LLVMInitializeAMDGPUTarget();
+    LLVMInitializeAMDGPUTargetMC();
+    LLVMInitializeAMDGPUAsmPrinter();
+    inited = true;
+}
+// 线程/网格索引 intrinsic（跨厂商）：NVVM sreg ↔ AMDGCN workitem/workgroup。
+// LLVM 21 把 AMDGCN intrinsic 放在独立 `enum AMDGCNIntrinsics : unsigned`
+// （值即主 Intrinsic::ID 编号空间），故参数用 unsigned、内部转 Intrinsic::ID。
+static llvm::Value* emitGpuIndex(llvm::IRBuilder<>& kb, unsigned nvvm_id,
+                                 unsigned amdgcn_id) {
+    unsigned id = gpuTargetAmd() ? amdgcn_id : nvvm_id;
+    return kb.CreateIntrinsic(static_cast<llvm::Intrinsic::ID>(id),
+        llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>());
+}
+static llvm::Value* emitGpuThreadIdx(llvm::IRBuilder<>& kb) {
+    return emitGpuIndex(kb, llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
+                        llvm::Intrinsic::amdgcn_workitem_id_x);
+}
+static llvm::Value* emitGpuBlockIdx(llvm::IRBuilder<>& kb) {
+    return emitGpuIndex(kb, llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
+                        llvm::Intrinsic::amdgcn_workgroup_id_x);
+}
+// blockDim（workgroup size）：NV → nvvm ntid.x；AMD → 无 intrinsic，workgroup 大小
+// 即 launch 块大小（编译期已知常量，语义正确）。
+static llvm::Value* emitGpuBlockDim(llvm::IRBuilder<>& kb, int block_size) {
+    if (gpuTargetAmd())
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(kb.getContext()),
+                                      block_size);
+    return emitGpuIndex(kb, llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x, 0);
+}
+// gridDim（网格数）：NV → nvvm nctaid.x；AMD → 无 intrinsic（AMDGCN 无直接查询），
+// 置标记 → 调用方（grid-stride / scatter）走 CPU 回退（§6.4 留待 implicitarg）。
+static bool gpu_amd_grid_used_ = false;
+static llvm::Value* emitGpuGridDim(llvm::IRBuilder<>& kb) {
+    if (gpuTargetAmd()) {
+        gpu_amd_grid_used_ = true;
+        return llvm::ConstantInt::get(llvm::Type::getInt64Ty(kb.getContext()), 0);
+    }
+    return emitGpuIndex(kb, llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x, 0);
+}
+// §3.1 kernel.sync()：块内屏障（NVPTX bar.sync 0 / AMD s_barrier）。
+static llvm::Value* emitGpuBarrier(llvm::IRBuilder<>& kb) {
+    auto id = static_cast<llvm::Intrinsic::ID>(
+        gpuTargetAmd() ? static_cast<unsigned>(llvm::Intrinsic::amdgcn_s_barrier)
+                       : static_cast<unsigned>(llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all));
+    if (gpuTargetAmd())
+        return kb.CreateIntrinsic(id, llvm::ArrayRef<llvm::Type*>(),
+                                  llvm::ArrayRef<llvm::Value*>());
+    // NVVM barrier 需 i32 屏障号参数（bar.sync 0）
+    llvm::Value* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(kb.getContext()), 0);
+    return kb.CreateIntrinsic(id, llvm::ArrayRef<llvm::Type*>(),
+                              llvm::ArrayRef<llvm::Value*>(zero));
+}
+// §7.7 跨厂商 kernel 调用约定：NVPTX → PTX_Kernel；AMD → AMDGPU_KERNEL（后端要求）。
+static void setGpuKernelCC(llvm::Function* f) {
+    f->setCallingConv(gpuTargetAmd() ? llvm::CallingConv::AMDGPU_KERNEL
+                                     : llvm::CallingConv::PTX_Kernel);
+}
+// §6.4 AMDGPU：kernel 内 alloca 必须 addrspace(5)（private/栈）；NVPTX 用
+// addrspace(0)（generic）。所有 kernel 局部变量/临时 alloca 都走此帮助函数。
+static llvm::AllocaInst* createKernelAlloca(llvm::IRBuilder<>& kb, llvm::Type* ty,
+                                            llvm::Value* array_size,
+                                            const llvm::Twine& name) {
+    unsigned as = gpuTargetAmd() ? 5 : 0;
+    return kb.CreateAlloca(ty, as, array_size, name);
+}
+// §7.7 GpuCompiler 发射：NVPTX → PTX 文本（AssemblyFile）；AMD → GCN ELF code
+// object（ObjectFile，供 hipModuleLoadData 加载）。返回空 = 失败。
+static std::string emitGpuModule(llvm::Module* mod, llvm::TargetMachine* tm,
+                                 bool amd, bool object) {
+    llvm::legacy::PassManager pm;
+    llvm::SmallString<32768> buf;
+    llvm::raw_svector_ostream os(buf);
+    auto ft = (amd && object) ? llvm::CodeGenFileType::ObjectFile
+                              : llvm::CodeGenFileType::AssemblyFile;
+    if (tm->addPassesToEmitFile(pm, os, nullptr, ft)) {
+        delete tm;
+        return "";
+    }
+    pm.run(*mod);
+    delete tm;
+    return std::string(buf.data(), buf.size());
+}
+// §3.5 内核优化管线（默认 O2，MYP_GPU_KERNEL_OPT 覆盖）：SROA/InstCombine/GVN/
+// LICM/循环展开/向量化。AMD 声明式 kernel（block_sum/scan_k2）需它把某些构造
+// （如 dynamic_stackalloc）消解成 AMDGPU 可选中形式（@gpu for 已验证）。
+static void runGpuOptPipeline(llvm::Module* mod, llvm::TargetMachine* tm) {
+    unsigned kopt = 2;
+    if (const char* env = getenv("MYP_GPU_KERNEL_OPT")) {
+        std::string want(env);
+        if (want == "O0") kopt = 0;
+        else if (want == "O1") kopt = 1;
+        else if (want == "O2") kopt = 2;
+        else if (want == "O3") kopt = 3;
+    }
+    tm->setOptLevel(kopt >= 3 ? llvm::CodeGenOptLevel::Aggressive :
+                   kopt == 2 ? llvm::CodeGenOptLevel::Default :
+                   kopt == 1 ? llvm::CodeGenOptLevel::Less :
+                               llvm::CodeGenOptLevel::None);
+    if (kopt <= 0) return;
+    llvm::OptimizationLevel OL =
+        kopt >= 3 ? llvm::OptimizationLevel::O3 :
+        kopt == 2 ? llvm::OptimizationLevel::O2 :
+                    llvm::OptimizationLevel::O1;
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+    llvm::PassBuilder PB(tm);
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+    llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(OL);
+    MPM.addPass(llvm::VerifierPass());
+    MPM.run(*mod, MAM);
+}
+// §9.5 ⑤ 交叉编译验证：AMD 目标时把 GCN ELF 写到文件（默认 /tmp/myp_kernel.gcn，
+// MYP_GPU_EMIT_FILE 覆盖），返回空 → 运行期回退 CPU（无 AMD runtime/HIP）。
+static std::string emitGpuTargetBytes(llvm::Module* mod, llvm::TargetMachine* tm,
+                                      const std::string& label) {
+    bool amd = gpuTargetAmd();
+    std::string bytes = emitGpuModule(mod, tm, amd, amd);
+    if (amd && !bytes.empty()) {
+        const char* p = getenv("MYP_GPU_EMIT_FILE");
+        std::string path = (p && *p) ? p : "/tmp/myp_kernel.gcn";
+        FILE* f = fopen(path.c_str(), "wb");
+        if (f) { fwrite(bytes.data(), 1, bytes.size(), f); fclose(f); }
+        fprintf(stderr, "[myp GPU] AMD cross-compile (%s): wrote GCN code object "
+                "(%zu bytes) to %s\n", label.c_str(), bytes.size(), path.c_str());
+    }
+    return amd ? std::string("") : bytes;   // AMD → 空 → 调用方走 CPU 回退
+}
+#endif
+
 
 #include <cstdlib>
 #include <iostream>
@@ -417,7 +591,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                             return kb.CreateFPToSI(v, i64);
                         } else {
                             // Struct, array, or other aggregate: store to alloca and get address
-                            auto* alloca = kb.CreateAlloca(ty);
+                            auto* alloca = createKernelAlloca(kb, ty, nullptr, "");
                             kb.CreateStore(v, alloca);
                             return kb.CreatePtrToInt(
                                 kb.CreateBitCast(alloca, llvm::PointerType::get(ctx_, 0)), i64);
@@ -484,15 +658,9 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 if (kma.object->kind == ExprKind::Identifier &&
                     static_cast<const IdentifierExpr&>(*kma.object).name == "kernel") {
                     if (kma.member_name == "sync") {
-                        llvm::Module* cur_mod = kb.GetInsertBlock()->getParent()->getParent();
-                        // kernel.sync() → PTX bar.sync 0。LLVM 21 把旧 llvm.nvvm.barrier0
-                        // 升级为 llvm.nvvm.barrier.cta.sync.aligned.all(i32 0)，NVPTX 后端
-                        // 降级为 bar.sync 0（必须用真实 intrinsic，手动函数会变 extern call）。
-                        auto* bar = llvm::Intrinsic::getDeclaration(cur_mod,
-                            llvm::Intrinsic::nvvm_barrier_cta_sync_aligned_all);
-                        auto* zero = llvm::ConstantInt::get(
-                            llvm::Type::getInt32Ty(cur_mod->getContext()), 0);
-                        return kb.CreateCall(bar, {zero});
+                        // kernel.sync() → 块内屏障（§7.7 跨厂商：NVPTX bar.sync 0 /
+                        // AMD s_barrier）。
+                        return emitGpuBarrier(kb);
                     }
                     // §3.4 kernel.shfl_down(v, delta)：warp 内 lane 方向移位 delta，
                     // 越界返回自身。NVPTX shfl.sync.down（LLVM 21 只有 i32/f32 →
@@ -1729,10 +1897,10 @@ void CodeGen::emitKernelStmt(const Stmt& stmt, llvm::IRBuilder<>& kb,
                                                kernel_arg_values, loop_var_name, tid_val);
                     if (init_val && !declared_ty) var_ty = init_val->getType();
                 }
-                // Create alloca for mutable local variable
+                // Create alloca for mutable local variable（§6.4 AMD → addrspace(5)）
                 llvm::BasicBlock& entry_b = kernel_func->getEntryBlock();
                 llvm::IRBuilder<> entry_kb(&entry_b, entry_b.getFirstInsertionPt());
-                auto* alloca_p = entry_kb.CreateAlloca(var_ty, nullptr, d.name);
+                auto* alloca_p = createKernelAlloca(entry_kb, var_ty, nullptr, d.name);
                 kernel_vars[d.name] = alloca_p;
 
                 if (init_val) {
@@ -2097,23 +2265,19 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
                                      const std::string& kernel_name) {
 #ifdef MYP_ENABLE_GPU
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_block_sum", ctx_);
-    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* ptr = llvm::PointerType::get(ctx_, 0);
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr}, false);
     auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, kernel_name, ptx_mod.get());
-    kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    setGpuKernelCC(kf);
     auto* n_arg = kf->getArg(0); n_arg->setName("n");
     auto* a_arg = kf->getArg(1); a_arg->setName("a");
     auto* p_arg = kf->getArg(2); p_arg->setName("partials");
     auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
     llvm::IRBuilder<> kb(entry);
-    auto* tid_x = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "tx");
-    auto* ctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "bid");
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64, false, "tx");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64, false, "bid");
     auto* is0 = kb.CreateICmpEQ(tid_x, llvm::ConstantInt::get(i64, 0));
     auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kf);
     auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kf);
@@ -2122,7 +2286,7 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
     std::map<std::string, llvm::Value*> kv;
     kv["n"] = n_arg; kv["a"] = a_arg; kv["partials"] = p_arg;
     // acc = init
-    auto* acc_a = kb.CreateAlloca(elem_ty, nullptr, "acc");
+    auto* acc_a = createKernelAlloca(kb, elem_ty, nullptr, "acc");
     auto* init_v = emitKernelExpr(init_expr, kb, kv, {}, "", nullptr);
     if (init_v && init_v->getType() != elem_ty) {
         if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
@@ -2132,9 +2296,9 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
     }
     kb.CreateStore(init_v, acc_a);
     kv["acc"] = acc_a;
-    auto* x_a = kb.CreateAlloca(elem_ty, nullptr, "x");
+    auto* x_a = createKernelAlloca(kb, elem_ty, nullptr, "x");
     kv["x"] = x_a;
-    auto* i_a = kb.CreateAlloca(i64, nullptr, "i");
+    auto* i_a = createKernelAlloca(kb, i64, nullptr, "i");
     auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
     kb.CreateStore(start_i, i_a);
     auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
@@ -2168,40 +2332,27 @@ std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
     kb.SetInsertPoint(end_bb);
     kb.CreateRetVoid();
 
-    // ---- 目标机器 + verify + emit PTX（同 generateGpuKernel）----
+    // ---- 目标机器 + verify + emit（§7.7 跨厂商：NVPTX→PTX / AMD→GCN ELF）----
     std::string err;
-    static bool nvptx_rd_init = false;
-    if (!nvptx_rd_init) {
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
-        nvptx_rd_init = true;
-    }
-    auto* tgt = llvm::TargetRegistry::lookupTarget("nvptx64-nvidia-cuda", err);
-    if (!tgt) { diag_.warn(SourceRange{}, "NVPTX target not available: " + err); return ""; }
-    auto* tm = tgt->createTargetMachine(llvm::Triple("nvptx64-nvidia-cuda"), "sm_75", "",
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
+    if (!tgt) { diag_.warn(SourceRange{}, "GPU target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
         llvm::TargetOptions{}, llvm::Reloc::PIC_);
-    if (!tm) { diag_.warn(SourceRange{}, "NVPTX target machine creation failed"); return ""; }
+    if (!tm) { diag_.warn(SourceRange{}, "GPU target machine creation failed"); return ""; }
     std::string verify_err;
     llvm::raw_string_ostream vos(verify_err);
     if (llvm::verifyModule(*ptx_mod, &vos)) {
         diag_.warn(SourceRange{}, "GPU reduce kernel verification failed: " + verify_err);
         delete tm; return "";
     }
-    llvm::legacy::PassManager pm;
-    llvm::SmallString<16384> buf;
-    llvm::raw_svector_ostream os(buf);
-    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
-        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX"); delete tm; return "";
-    }
-    pm.run(*ptx_mod);
-    delete tm;
-    std::string ptx_str(buf.data(), buf.size());
-    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty())
-        fprintf(stderr, "=== MYP PTX (reduce) ===\n%s\n=== END ===\n", ptx_str.c_str());
-    if (ptx_str.empty()) { diag_.warn(SourceRange{}, "NVPTX emitted empty PTX"); return ""; }
-    return ptx_str;
+    // AMD：先跑 O2 管线（@gpu for 同款），消解 AMDGPU ISel 无法选中的构造
+    if (gpuTargetAmd()) runGpuOptPipeline(ptx_mod.get(), tm);
+    std::string out = emitGpuTargetBytes(ptx_mod.get(), tm, "block_sum");
+    if (getenv("MYP_DUMP_PTX") && !out.empty())
+        fprintf(stderr, "=== MYP PTX (reduce) ===\n%s\n=== END ===\n", out.c_str());
+    if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
+    return out;
 #else
     (void)s; (void)elem_ty; (void)block_size;
     return "";
@@ -2511,24 +2662,20 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
                                    llvm::Type* elem_ty, int block_size) {
 #ifdef MYP_ENABLE_GPU
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scan_k2", ctx_);
-    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* ptr = llvm::PointerType::get(ctx_, 0);
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr, ptr}, false);
     auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_scan_k2", ptx_mod.get());
-    kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    setGpuKernelCC(kf);
     auto* n_arg = kf->getArg(0); n_arg->setName("n");
     auto* off_arg = kf->getArg(1); off_arg->setName("offsets");
     auto* a_arg = kf->getArg(2); a_arg->setName("a");
     auto* b_arg = kf->getArg(3); b_arg->setName("b");
     auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
     llvm::IRBuilder<> kb(entry);
-    auto* tid_x = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "tx");
-    auto* ctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "bid");
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64, false, "tx");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64, false, "bid");
     auto* is0 = kb.CreateICmpEQ(tid_x, llvm::ConstantInt::get(i64, 0));
     auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kf);
     auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kf);
@@ -2537,13 +2684,13 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
     std::map<std::string, llvm::Value*> kv;
     kv["n"] = n_arg; kv["a"] = a_arg; kv["b"] = b_arg; kv["offsets"] = off_arg;
     // acc = offsets[bid]（已含 init + 前面块前缀）
-    auto* acc_a = kb.CreateAlloca(elem_ty, nullptr, "acc");
+    auto* acc_a = createKernelAlloca(kb, elem_ty, nullptr, "acc");
     auto* offv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, off_arg, ctaid), "off");
     kb.CreateStore(offv, acc_a);
     kv["acc"] = acc_a;
-    auto* x_a = kb.CreateAlloca(elem_ty, nullptr, "x");
+    auto* x_a = createKernelAlloca(kb, elem_ty, nullptr, "x");
     kv["x"] = x_a;
-    auto* i_a = kb.CreateAlloca(i64, nullptr, "i");
+    auto* i_a = createKernelAlloca(kb, i64, nullptr, "i");
     auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
     kb.CreateStore(start_i, i_a);
     auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
@@ -2578,40 +2725,27 @@ std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
     kb.CreateRetVoid();
     (void)init_expr;
 
-    // ---- 目标机器 + verify + emit PTX（同 emitBlockSumPtx）----
+    // ---- 目标机器 + verify + emit（§7.7 跨厂商）----
     std::string err;
-    static bool nvptx_sc_init = false;
-    if (!nvptx_sc_init) {
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
-        nvptx_sc_init = true;
-    }
-    auto* tgt = llvm::TargetRegistry::lookupTarget("nvptx64-nvidia-cuda", err);
-    if (!tgt) { diag_.warn(SourceRange{}, "NVPTX target not available: " + err); return ""; }
-    auto* tm = tgt->createTargetMachine(llvm::Triple("nvptx64-nvidia-cuda"), "sm_75", "",
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
+    if (!tgt) { diag_.warn(SourceRange{}, "GPU target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
         llvm::TargetOptions{}, llvm::Reloc::PIC_);
-    if (!tm) { diag_.warn(SourceRange{}, "NVPTX target machine creation failed"); return ""; }
+    if (!tm) { diag_.warn(SourceRange{}, "GPU target machine creation failed"); return ""; }
     std::string verify_err;
     llvm::raw_string_ostream vos(verify_err);
     if (llvm::verifyModule(*ptx_mod, &vos)) {
         diag_.warn(SourceRange{}, "GPU scan kernel verification failed: " + verify_err);
         delete tm; return "";
     }
-    llvm::legacy::PassManager pm;
-    llvm::SmallString<16384> buf;
-    llvm::raw_svector_ostream os(buf);
-    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
-        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX"); delete tm; return "";
-    }
-    pm.run(*ptx_mod);
-    delete tm;
-    std::string ptx_str(buf.data(), buf.size());
-    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty())
-        fprintf(stderr, "=== MYP PTX (scan_k2) ===\n%s\n=== END ===\n", ptx_str.c_str());
-    if (ptx_str.empty()) { diag_.warn(SourceRange{}, "NVPTX emitted empty PTX"); return ""; }
-    return ptx_str;
+    // AMD：先跑 O2 管线，消解 AMDGPU ISel 无法选中的构造
+    if (gpuTargetAmd()) runGpuOptPipeline(ptx_mod.get(), tm);
+    std::string out = emitGpuTargetBytes(ptx_mod.get(), tm, "scan_k2");
+    if (getenv("MYP_DUMP_PTX") && !out.empty())
+        fprintf(stderr, "=== MYP PTX (scan_k2) ===\n%s\n=== END ===\n", out.c_str());
+    if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
+    return out;
 #else
     (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size;
     return "";
@@ -2837,8 +2971,9 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
 std::string CodeGen::emitScatterPtx(llvm::Type* elem_ty, int block_size,
                                     bool atomic_add, const std::string& kernel_name) {
 #ifdef MYP_ENABLE_GPU
+    gpu_amd_grid_used_ = false;
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scatter", ctx_);
-    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* i32 = llvm::Type::getInt32Ty(ctx_);
     auto* ptr = llvm::PointerType::get(ctx_, 0);
@@ -2846,28 +2981,20 @@ std::string CodeGen::emitScatterPtx(llvm::Type* elem_ty, int block_size,
         {i64, ptr, ptr, ptr}, false);
     auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
         kernel_name, ptx_mod.get());
-    kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    setGpuKernelCC(kf);
     auto* n_arg = kf->getArg(0); n_arg->setName("n");
     auto* a_arg = kf->getArg(1); a_arg->setName("a");
     auto* idx_arg = kf->getArg(2); idx_arg->setName("idx");
     auto* b_arg = kf->getArg(3); b_arg->setName("b");
     auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
     llvm::IRBuilder<> kb(entry);
-    auto* tid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "tx");
-    auto* ntid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "ntid");
-    auto* ctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "bid");
-    auto* nctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "nb");
+    auto* tid = kb.CreateIntCast(emitGpuThreadIdx(kb), i64, false, "tx");
+    auto* ntid = kb.CreateIntCast(emitGpuBlockDim(kb, block_size), i64, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64, false, "bid");
+    auto* nctaid = kb.CreateIntCast(emitGpuGridDim(kb), i64, false, "nb");
     auto* gid0 = kb.CreateAdd(kb.CreateMul(ctaid, ntid, "b0"), tid, "gid");
     auto* stride = kb.CreateMul(ntid, nctaid, "stride");
-    auto* gid_a = kb.CreateAlloca(i64, nullptr, "gid");
+    auto* gid_a = createKernelAlloca(kb, i64, nullptr, "gid");
     kb.CreateStore(gid0, gid_a);
     auto* loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kf);
     auto* lbody = llvm::BasicBlock::Create(ctx_, "lbody", kf);
@@ -2897,42 +3024,34 @@ std::string CodeGen::emitScatterPtx(llvm::Type* elem_ty, int block_size,
     kb.CreateBr(loop_bb);
     kb.SetInsertPoint(lend);
     kb.CreateRetVoid();
-    (void)block_size;
-
-    // ---- 目标机器 + verify + emit PTX（同 emitBlockSumPtx）----
-    std::string err;
-    static bool nvptx_st_init = false;
-    if (!nvptx_st_init) {
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
-        nvptx_st_init = true;
+    // §6.4 AMD：grid-stride 需 gridDim（AMDGCN 无直接 intrinsic）→ 回退 CPU
+    if (gpu_amd_grid_used_) {
+        diag_.warn(SourceRange{},
+            "AMD target: grid-stride scatter unsupported (no gridDim intrinsic); running on CPU");
+        return "";
     }
-    auto* tgt = llvm::TargetRegistry::lookupTarget("nvptx64-nvidia-cuda", err);
-    if (!tgt) { diag_.warn(SourceRange{}, "NVPTX target not available: " + err); return ""; }
-    auto* tm = tgt->createTargetMachine(llvm::Triple("nvptx64-nvidia-cuda"), "sm_75", "",
+
+    // ---- 目标机器 + verify + emit（§7.7 跨厂商）----
+    std::string err;
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
+    if (!tgt) { diag_.warn(SourceRange{}, "GPU target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
         llvm::TargetOptions{}, llvm::Reloc::PIC_);
-    if (!tm) { diag_.warn(SourceRange{}, "NVPTX target machine creation failed"); return ""; }
+    if (!tm) { diag_.warn(SourceRange{}, "GPU target machine creation failed"); return ""; }
     std::string verify_err;
     llvm::raw_string_ostream vos(verify_err);
     if (llvm::verifyModule(*ptx_mod, &vos)) {
         diag_.warn(SourceRange{}, "GPU scatter kernel verification failed: " + verify_err);
         delete tm; return "";
     }
-    llvm::legacy::PassManager pm;
-    llvm::SmallString<16384> buf;
-    llvm::raw_svector_ostream os(buf);
-    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
-        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX"); delete tm; return "";
-    }
-    pm.run(*ptx_mod);
-    delete tm;
-    std::string ptx_str(buf.data(), buf.size());
-    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty())
-        fprintf(stderr, "=== MYP PTX (scatter) ===\n%s\n=== END ===\n", ptx_str.c_str());
-    if (ptx_str.empty()) { diag_.warn(SourceRange{}, "NVPTX emitted empty PTX"); return ""; }
-    return ptx_str;
+    // AMD：先跑 O2 管线，消解 AMDGPU ISel 无法选中的构造
+    if (gpuTargetAmd()) runGpuOptPipeline(ptx_mod.get(), tm);
+    std::string out = emitGpuTargetBytes(ptx_mod.get(), tm, "scatter");
+    if (getenv("MYP_DUMP_PTX") && !out.empty())
+        fprintf(stderr, "=== MYP PTX (scatter) ===\n%s\n=== END ===\n", out.c_str());
+    if (out.empty()) { diag_.warn(SourceRange{}, "GPU emitted empty code"); return ""; }
+    return out;
 #else
     (void)elem_ty; (void)block_size; (void)atomic_add;
     return "";
@@ -3249,23 +3368,37 @@ llvm::Value* CodeGen::emitGpuStreamHandle(const Expr* stream_expr) {
 // grid(nb) 指定块数（默认 1），block 固定 256。CPU 回退 = 单线程执行（降级）。
 void CodeGen::generateGpuTile(const GpuTileStmt& s) {
 #ifdef MYP_ENABLE_GPU
+    gpu_amd_grid_used_ = false;
+    // §6.4 AMD 留待：tile 的 __shared__ 对象发射（addrspace(3) 无初始值 + body
+    // 内 alloca addrspace(5)）需 AMDGPU 专项；无硬件时先走单线程 CPU 降级。
+    if (gpuTargetAmd()) {
+        diag_.warn(s.range, "AMD target: '@gpu tile' shared-memory emission 留待 "
+            "§6.4; single-threaded CPU fallback");
+        generateGpuTileCpuFallback(s);
+        return;
+    }
     analyzeGpuTileCapturedVars(s);
 
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_tile", ctx_);
-    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
 
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
+    // §3.7 @gpu tile block(n)：块大小可调（默认 256；AMD workgroup 大小 = 该常量）
+    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
 
-    // 共享数组：addrspace(3) 展平数组 [total x T]
+    // 共享数组：addrspace(3) 展平数组 [total x T]（AMDGPU 不支持 addrspace(3)
+    // 带初始值 → AMD 用 nullptr 初始值，__shared__ 本应使用前写入；NVPTX 可显式零）。
     int64_t total = 1;
     for (auto d : s.dim_vals) total *= d;
     llvm::Type* elem_llvm = getLLVMType(s.elem_type_info);
     llvm::Type* shared_ty = llvm::ArrayType::get(elem_llvm, (uint64_t)total);
+    llvm::Constant* shared_init = gpuTargetAmd()
+        ? nullptr : llvm::ConstantAggregateZero::get(shared_ty);
     auto* shared_gv = new llvm::GlobalVariable(*ptx_mod, shared_ty, false,
         llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantAggregateZero::get(shared_ty), "smem", nullptr,
+        shared_init, "smem", nullptr,
         llvm::GlobalValue::NotThreadLocal, 3 /* addrspace(3) = __shared__ */);
 
     // kernel 签名：仅捕获变量（tile 无循环上界 n）
@@ -3275,7 +3408,7 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
                                         kernel_param_types, false);
     auto* kernel_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                                "myp_kernel", ptx_mod.get());
-    kernel_func->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    setGpuKernelCC(kernel_func);
 
     std::map<std::string, llvm::Value*> kernel_vars_map;
     std::vector<llvm::Value*> kernel_arg_values;
@@ -3290,18 +3423,9 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     // kernel body：tid = blockIdx.x*blockDim.x + threadIdx.x
     auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);
     llvm::IRBuilder<> kb(entry_bb);
-    auto* tid_x = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "tid_x");
-    auto* ntid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "ntid");
-    auto* ctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "ctaid");
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64_ty, false, "tid_x");
+    auto* ntid = kb.CreateIntCast(emitGpuBlockDim(kb, block_size), i64_ty, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64_ty, false, "ctaid");
     auto* tid_val = kb.CreateAdd(kb.CreateMul(ctaid, ntid, "bid_off"), tid_x, "tid");
 
     // §3.1 kernel 上下文（tile 内）：gid=bx*256+tx、bx=ctaid.x、tx=tid.x、
@@ -3328,23 +3452,16 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     gpu_shared_arrays_.clear();
     if (!kb.GetInsertBlock()->getTerminator()) kb.CreateRetVoid();
 
-    // ---- NVPTX 目标 + 校验 + PTX 生成（O2 内核优化）----
-    std::string ts = "nvptx64-nvidia-cuda";
+    // ---- 目标机器 + 校验 + 生成（§7.7 跨厂商：NVPTX→PTX / AMD→GCN ELF）----
     std::string err;
-    static bool nvptx_initialized = false;
-    if (!nvptx_initialized) {
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
-        nvptx_initialized = true;
-    }
-    auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
+    ensureGpuTargetsInited();
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
     auto* tm = tgt ? tgt->createTargetMachine(
-        llvm::Triple(ts), "sm_75", "", llvm::TargetOptions{}, llvm::Reloc::PIC_)
+        llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "",
+        llvm::TargetOptions{}, llvm::Reloc::PIC_)
                    : nullptr;
     if (!tm) {
-        diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
+        diag_.warn(SourceRange{}, "GPU target machine creation failed");
         // 无 PTX → 单线程 CPU 回退（下方共用）
     }
     if (tm) ptx_mod->setDataLayout(tm->createDataLayout());
@@ -3396,17 +3513,8 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
             MPM.addPass(llvm::VerifierPass());
             MPM.run(*ptx_mod, MAM);
         }
-        llvm::legacy::PassManager pm;
-        llvm::SmallString<16384> ptx_buf;
-        llvm::raw_svector_ostream ptx_os(ptx_buf);
-        if (tm->addPassesToEmitFile(pm, ptx_os, nullptr,
-                                    llvm::CodeGenFileType::AssemblyFile)) {
-            diag_.warn(SourceRange{}, "NVPTX cannot emit PTX");
-        } else {
-            pm.run(*ptx_mod);
-            ptx_str = std::string(ptx_buf.data(), ptx_buf.size());
-        }
-        delete tm;
+        // §7.7：AMD 目标 → GCN ELF 写文件，返回空 → 下方 CPU 降级
+        ptx_str = emitGpuTargetBytes(ptx_mod.get(), tm, "tile");
     }
 
     // MYP_DUMP_PTX：临时调试——打印生成的 kernel PTX。
@@ -3457,8 +3565,7 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     if (grid_v->getType() != i64_ty)
         grid_v = builder_.CreateIntCast(grid_v, i64_ty, false);
     auto* grid_i32 = builder_.CreateIntCast(grid_v, i32_ty, false, "grid");
-    // §3.7 @gpu tile block(n)：块大小可调（默认 256）。
-    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
+    // §3.7 @gpu tile block(n)：块大小可调（默认 256；已 hoist 到函数顶部）
     auto* block_i32 = llvm::ConstantInt::get(i32_ty, block_size);
 
     // ---- Data transfer for captured arrays ----
@@ -3768,14 +3875,17 @@ static bool linkGpuLibdevice(llvm::Module* ptx_mod, DiagnosticEngine* diag) {
 
 bool CodeGen::generateGpuKernel(const ForStmt& s) {
 #ifdef MYP_ENABLE_GPU
+    gpu_amd_grid_used_ = false;
     // Create a new module for PTX generation
     auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_kernel", ctx_);
-    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    ptx_mod->setTargetTriple(llvm::Triple(gpuTargetTriple()));
 
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
     auto* i32_ty = llvm::Type::getInt32Ty(ctx_);
     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
     auto* double_ty = llvm::Type::getDoubleTy(ctx_);
+    // §3.7 @gpu block(n)：块大小可调（默认 256；AMD workgroup 大小 = 该常量）
+    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
 
     // Extract loop variable name from init statement
     std::string loop_var;
@@ -3851,8 +3961,8 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), kernel_param_types, false);
     auto* kernel_func = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
                                                 "myp_kernel", ptx_mod.get());
-    // Mark as PTX kernel entry point (generates .entry in PTX, not .func)
-    kernel_func->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    // Mark as kernel entry point（§7.7 跨厂商：NVPTX .entry / AMD amdgpu_kernel）
+    setGpuKernelCC(kernel_func);
 
     int arg_idx = 0;
     auto* n_arg = kernel_func->getArg(arg_idx++);
@@ -3876,19 +3986,10 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);
     llvm::IRBuilder<> kb(entry_bb);
 
-    // Compute tid = blockIdx.x * blockDim.x + threadIdx.x using NVVM intrinsics
-    auto* tid_x = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "tid_x");
-    auto* ntid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "ntid");
-    auto* ctaid = kb.CreateIntCast(
-        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
-            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-        i64_ty, false, "ctaid");
+    // Compute tid = blockIdx.x * blockDim.x + threadIdx.x（§7.7 跨厂商 intrinsic）
+    auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64_ty, false, "tid_x");
+    auto* ntid = kb.CreateIntCast(emitGpuBlockDim(kb, block_size), i64_ty, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(emitGpuBlockIdx(kb), i64_ty, false, "ctaid");
     auto* bid_offset = kb.CreateMul(ctaid, ntid, "bid_off");
     auto* tid_val = kb.CreateAdd(bid_offset, tid_x, "tid");
 
@@ -3906,10 +4007,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     llvm::Value* loop_var_kv = tid_val;   // 普通 @gpu for：body 里循环变量 = tid
     if (s.stride) {
         // §3.5 grid-stride：i = tid；while (i < n) { body; i += ntid*nctaid; }
-        auto* nctaid = kb.CreateIntCast(
-            kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
-                llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-            i64_ty, false, "nctaid");
+        auto* nctaid = kb.CreateIntCast(emitGpuGridDim(kb), i64_ty, false, "nctaid");
         auto* nthreads = kb.CreateMul(ntid, nctaid, "nthreads");
         loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kernel_func);
         kb.CreateBr(loop_bb);
@@ -3946,10 +4044,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         if (s.stride && loop_var_kv) {
             auto* i_phi = llvm::dyn_cast<llvm::PHINode>(loop_var_kv);
             if (i_phi) {
-                auto* nctaid = kb.CreateIntCast(
-                    kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
-                        llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()),
-                    i64_ty, false, "nctaid2");
+                auto* nctaid = kb.CreateIntCast(emitGpuGridDim(kb), i64_ty, false, "nctaid2");
                 auto* nthreads = kb.CreateMul(ntid, nctaid, "nthreads2");
                 auto* i_next = kb.CreateAdd(i_phi, nthreads, "i_next");
                 i_phi->addIncoming(i_next, kb.GetInsertBlock());
@@ -3963,30 +4058,27 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     kb.SetInsertPoint(end_bb);
     kb.CreateRetVoid();
 
-    // Store PTX for later use
-    std::string ts = "nvptx64-nvidia-cuda";
-    std::string err;
-
-    // Initialize NVPTX target
-    static bool nvptx_initialized = false;
-    if (!nvptx_initialized) {
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
-        nvptx_initialized = true;
+    // §6.4 AMD：grid-stride 需 gridDim（AMDGCN 无直接 intrinsic）→ 不发射对象，
+    // 继续下方 gpu/cpu 双块（空 PTX → 运行期 cpu_bb，stride step 修复正确）。
+    if (gpu_amd_grid_used_) {
+        diag_.warn(s.range,
+            "AMD target: '@gpu stride' has no gridDim intrinsic; runtime CPU fallback");
     }
 
-    auto* tgt = llvm::TargetRegistry::lookupTarget(ts, err);
+    // Store PTX for later use（§7.7 跨厂商：NVPTX→PTX / AMD→GCN ELF）
+    std::string err;
+    ensureGpuTargetsInited();
+
+    auto* tgt = llvm::TargetRegistry::lookupTarget(gpuTargetTriple(), err);
     if (!tgt) {
-        diag_.warn(SourceRange{}, "NVPTX target not available: " + err);
+        diag_.warn(SourceRange{}, "GPU target not available: " + err);
         return false;
     }
 
     auto* tm = tgt->createTargetMachine(
-        llvm::Triple(std::string(ts)), "sm_75", "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
+        llvm::Triple(gpuTargetTriple()), gpuTargetArch(), "", llvm::TargetOptions{}, llvm::Reloc::PIC_);
     if (!tm) {
-        diag_.warn(SourceRange{}, "NVPTX target machine creation failed");
+        diag_.warn(SourceRange{}, "GPU target machine creation failed");
         return false;
     }
     ptx_mod->setDataLayout(tm->createDataLayout());
@@ -4001,9 +4093,8 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     }
 
     // Link CUDA libdevice so __nv_* math calls (sin/cos/exp/log/pow/...) are
-    // self-contained in the emitted PTX. If libdevice is unavailable, fall back
-    // to CPU execution (the loop still runs correctly, just not on the GPU).
-    if (gpu_math_used_) {
+    // self-contained in the emitted PTX（NV 专属；AMD 用 LLVM intrinsic / ocml，留 §6.4）。
+    if (gpu_math_used_ && !gpuTargetAmd()) {
         if (!linkGpuLibdevice(ptx_mod.get(), &diag_)) {
             diag_.warn(s.range,
                 "'@gpu for' uses libdevice math (sin/cos/exp/log/pow) but "
@@ -4049,29 +4140,29 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
         MPM.run(*ptx_mod, MAM);
     }
 
-    // Emit PTX
-    llvm::legacy::PassManager pm;
-    llvm::SmallString<16384> ptx_buf;
-    llvm::raw_svector_ostream ptx_os(ptx_buf);
-
-    if (tm->addPassesToEmitFile(pm, ptx_os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
-        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX");
+    // Emit（§7.7 跨厂商：NV → PTX 文本；AMD → GCN ELF 写文件，嵌入空 PTX）
+    std::string ptx_str;
+    if (gpuTargetAmd() && !gpu_amd_grid_used_) {
+        // §9.5 ⑤ 交叉编译：GCN code object 写文件（emitGpuTargetBytes 副作用），
+        // 嵌入空 PTX → 运行期 myp_gpu_load_kernel 失败 → cpu_bb 回退。
+        ptx_str = emitGpuTargetBytes(ptx_mod.get(), tm, "for");
+        ptx_code_ = "";
+    } else if (gpuTargetAmd()) {
+        // grid-stride 无 gridDim intrinsic：不发射对象，运行期 CPU 回退
+        ptx_code_ = "";
         delete tm;
-        return false;
+    } else {
+        ptx_str = emitGpuTargetBytes(ptx_mod.get(), tm, "for");
+        if (getenv("MYP_DUMP_PTX") && !ptx_str.empty()) {
+            fprintf(stderr, "=== MYP PTX (for) ===\n%s\n=== END ===\n", ptx_str.c_str());
+        }
+        if (ptx_str.empty()) {
+            diag_.warn(SourceRange{}, "GPU emitted empty code");
+            delete tm;
+            return false;
+        }
+        ptx_code_ = ptx_str;
     }
-    pm.run(*ptx_mod);
-    delete tm;
-
-    std::string ptx_str(std::string(ptx_buf.data(), ptx_buf.size()));
-    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty()) {
-        fprintf(stderr, "=== MYP PTX (for) ===\n%s\n=== END ===\n", ptx_str.c_str());
-    }
-    if (ptx_str.empty()) {
-        diag_.warn(SourceRange{}, "NVPTX emitted empty PTX");
-        return false;
-    }
-
-    ptx_code_ = ptx_str;
 
     // Embed PTX as a global string constant in the main module
     auto* ptx_global = builder_.CreateGlobalString(ptx_str, "__myp_ptx_kernel");
@@ -4113,7 +4204,6 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
 
     // Launch kernel —— §3.7 @gpu block(n)：块大小可调（默认 256），grid=ceil(n/block)。
     builder_.SetInsertPoint(launch_bb);
-    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
     auto* block_i32 = llvm::ConstantInt::get(i32_ty, block_size);
     auto* grid_val = builder_.CreateUDiv(
         builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty, block_size - 1)),
