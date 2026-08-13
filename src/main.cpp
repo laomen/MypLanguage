@@ -486,13 +486,25 @@ static bool loadModule(const std::string& module_name,
     }
 #endif
 
-    // Build SDL bridge object (if exists)
+    // Build SDL bridge object — ONLY when the program actually references
+    // myp_sdl_* symbols (i.e. it imports stdlib/sdl.myp and calls into it).
+    // sdl_bridge.o calls SDL2 functions, so linking it unconditionally forced
+    // -lSDL2 into DT_NEEDED (plus transitive libpulse/libasound/libsamplerate)
+    // on EVERY program, even console-only binaries like the bench suite. We
+    // detect the need by scanning undefined symbols in the object files.
     std::string sdl_obj;
     std::string sdl_libs;
     std::string sdl_c;
-    if (fileExists("src/runtime/sdl_bridge.c"))
+    bool need_sdl = false;
+    {
+        std::string nm_cmd = "nm -u";
+        for (const auto& o : obj_files) nm_cmd += " " + o;
+        nm_cmd += " 2>/dev/null | grep -q 'myp_sdl_'";
+        need_sdl = (std::system(nm_cmd.c_str()) == 0);
+    }
+    if (need_sdl && fileExists("src/runtime/sdl_bridge.c"))
         sdl_c = "src/runtime/sdl_bridge.c";
-    else if (fileExists(runtime_dir + "/src/runtime/sdl_bridge.c"))
+    else if (need_sdl && fileExists(runtime_dir + "/src/runtime/sdl_bridge.c"))
         sdl_c = runtime_dir + "/src/runtime/sdl_bridge.c";
     if (!sdl_c.empty()) {
         sdl_obj = "";
