@@ -541,11 +541,29 @@ std::unique_ptr<Stmt> Parser::parseForStmt() {
         has_stream = true;
     }
 
+    // §3.7 @gpu for block(n)：块大小（默认 256）。
+    int64_t block_val = 0;
+    if (check(TokenKind::Identifier) && peek().value == "block" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // block
+        consume(TokenKind::LeftParen, "expected '(' after 'block'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { block_val = (int64_t)std::stoll(tok.value); }
+            catch (...) { block_val = 0; }
+        } else {
+            diag_.error(peek().range, "block size must be an integer literal");
+        }
+        consume(TokenKind::RightParen, "expected ')' after block size");
+    }
+
     auto body = parseStatement();
-    return std::make_unique<ForStmt>(std::move(init), std::move(cond),
+    auto st = std::make_unique<ForStmt>(std::move(init), std::move(cond),
                                       std::move(step), std::move(body), r,
                                       false, false, std::move(resident),
                                       std::move(stream_expr), has_stream);
+    st->block_val = block_val;
+    return st;
 }
 
 std::unique_ptr<Stmt> Parser::parseForInStmt(bool parenthesized, bool has_explicit_type) {
@@ -781,6 +799,22 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
         has_stream = true;
     }
 
+    // §3.7 @gpu tile block(n)：块大小（默认 256）。
+    int64_t block_val = 0;
+    if (check(TokenKind::Identifier) && peek().value == "block" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance(); // block
+        consume(TokenKind::LeftParen, "expected '(' after 'block'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { block_val = (int64_t)std::stoll(tok.value); }
+            catch (...) { block_val = 0; }
+        } else {
+            diag_.error(peek().range, "block size must be an integer literal");
+        }
+        consume(TokenKind::RightParen, "expected ')' after block size");
+    }
+
     // body：parseBlock 不消费开 '{'，须先 match 消费（同 parseStatement）
     std::unique_ptr<Stmt> body;
     if (match(TokenKind::LeftBrace)) {
@@ -792,9 +826,11 @@ std::unique_ptr<Stmt> Parser::parseGpuTileStmt() {
     SourceRange range;
     range.begin_offset = start.begin_offset;
     range.end_offset = previous().range.end_offset;
-    return std::make_unique<GpuTileStmt>(std::move(shared_type), name,
+    auto st = std::make_unique<GpuTileStmt>(std::move(shared_type), name,
         std::move(grid_expr), has_grid, std::move(resident), std::move(body), range,
         std::move(stream_expr), has_stream);
+    st->block_val = block_val;
+    return st;
 }
 
 }  // namespace {ns}

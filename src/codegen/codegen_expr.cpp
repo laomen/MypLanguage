@@ -2414,7 +2414,8 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
         auto& oi = static_cast<const IdentifierExpr&>(*e.object);
         if (oi.name == "kernel") {
             auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
-            auto* bd_c = llvm::ConstantInt::get(i64_ty, 256);
+            // §3.7 block(n)：bd = 块大小（默认 256），gx = ceil(bound / bd)
+            auto* bd_c = llvm::ConstantInt::get(i64_ty, gpu_cpu_block_);
             auto* va = getNamedValue(gpu_cpu_loop_var_);
             llvm::Value* p;
             if (va)

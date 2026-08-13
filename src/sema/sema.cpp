@@ -1468,6 +1468,15 @@ Sema::StmtResult Sema::visitGpuTileStmt(GpuTileStmt& stmt) {
         }
     }
 
+    // §3.7 @gpu tile block(n)：块大小须为 32 的倍数，≤ 1024。
+    if (stmt.block_val > 0) {
+        if (stmt.block_val % 32 != 0) {
+            error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");
+        } else if (stmt.block_val > 1024) {
+            error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
+        }
+    }
+
     // 进入 kernel 上下文（kernel.bx/tx/gid/... 隐式可见），声明共享数组局部可见
     bool saved_gpu = in_gpu_for_;
     in_gpu_for_ = true;
@@ -1536,6 +1545,17 @@ Sema::StmtResult Sema::visitForStmt(ForStmt& stmt) {
                 error(stmt.range, "'stream(...)' argument must be a 'GpuStream' (got '" +
                       typeName(st) + "')");
             }
+        }
+    }
+
+    // §3.7 @gpu block(n)：块大小须为 32 的倍数，≤ maxThreads(1024)。
+    if (stmt.block_val > 0) {
+        if (!stmt.gpu) {
+            error(stmt.range, "'block(...)' is only valid on '@gpu for'");
+        } else if (stmt.block_val % 32 != 0) {
+            error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");
+        } else if (stmt.block_val > 1024) {
+            error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
         }
     }
 

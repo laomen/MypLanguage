@@ -2239,7 +2239,9 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
     if (grid_v->getType() != i64_ty)
         grid_v = builder_.CreateIntCast(grid_v, i64_ty, false);
     auto* grid_i32 = builder_.CreateIntCast(grid_v, i32_ty, false, "grid");
-    auto* block_i32 = llvm::ConstantInt::get(i32_ty, 256);
+    // §3.7 @gpu tile block(n)：块大小可调（默认 256）。
+    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
+    auto* block_i32 = llvm::ConstantInt::get(i32_ty, block_size);
 
     // ---- Data transfer for captured arrays ----
     struct ArrayAlloc {
@@ -2396,7 +2398,7 @@ void CodeGen::generateGpuTile(const GpuTileStmt& s) {
 }
 
 // §3.2 CPU 回退（降级）：单线程执行 @gpu tile body。共享数组用 host 栈数组，
-// kernel.bx/tx/gid=0（无协作）、bd=256、gx=grid 块数、kernel.sync() 空操作。
+// kernel.bx/tx/gid=0（无协作）、bd=block_size、gx=grid 块数、kernel.sync() 空操作。
 void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
     diag_.warn(s.range, "'@gpu tile' GPU fallback — single-threaded CPU execution");
     auto* i64_ty = llvm::Type::getInt64Ty(ctx_);
@@ -2418,6 +2420,7 @@ void CodeGen::generateGpuTileCpuFallback(const GpuTileStmt& s) {
     gpu_cpu_fallback_ = true;
     gpu_cpu_loop_var_.clear();
     gpu_cpu_bound_ = llvm::ConstantInt::get(i64_ty, s.grid_val);
+    gpu_cpu_block_ = (s.block_val > 0) ? (int)s.block_val : 256;   // §3.7 block(n)
     if (s.body) generateStmt(*s.body);
     gpu_cpu_fallback_ = false;
     gpu_cpu_bound_ = nullptr;
@@ -2856,13 +2859,14 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "gpu_done", func);
     builder_.CreateCondBr(kernel_ok, launch_bb, gpu_done_bb);
 
-    // Launch kernel
+    // Launch kernel —— §3.7 @gpu block(n)：块大小可调（默认 256），grid=ceil(n/block)。
     builder_.SetInsertPoint(launch_bb);
+    int block_size = (s.block_val > 0) ? (int)s.block_val : 256;
+    auto* block_i32 = llvm::ConstantInt::get(i32_ty, block_size);
     auto* grid_val = builder_.CreateUDiv(
-        builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty, 255)),
-        llvm::ConstantInt::get(i64_ty, 256), "grid");
+        builder_.CreateAdd(n_val, llvm::ConstantInt::get(i64_ty, block_size - 1)),
+        llvm::ConstantInt::get(i64_ty, block_size), "grid");
     auto* grid_i32 = builder_.CreateIntCast(grid_val, i32_ty, false);
-    auto* block_i32 = llvm::ConstantInt::get(i32_ty, 256);
 
     // ---- Data transfer for captured arrays ----
     struct ArrayAlloc {
@@ -3042,12 +3046,13 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     builder_.SetInsertPoint(cpu_bb);
     diag_.warn(s.range, "'@gpu for' GPU fallback — running on CPU");
     const_cast<ForStmt&>(s).gpu = false;
-    // CPU 回退模拟 kernel 上下文：gid=p/tx=p%256/bx=p/256/bd=256/gx=ceil(n/256)，
+    // CPU 回退模拟 kernel 上下文：gid=p/tx=p%bd/bx=p/bd/bd=block_size/gx=ceil(n/bd)，
     // kernel.sync() 空操作（generateCall/generateMemberAccess 读取这些标志）。
     // loop_var 在 generateGpuKernel 开头已提取。
     gpu_cpu_fallback_ = true;
     gpu_cpu_loop_var_ = loop_var;
     gpu_cpu_bound_ = n_val;
+    gpu_cpu_block_ = block_size;   // §3.7 block(n) 供 kernel.bd 模拟（默认 256）
     if (s.stride) {
         // §3.5 CPU 回退：顺序遍历全部 i（step 改 +1；GPU 用 nThreads=ntid*nctaid）
         auto& mut_s = const_cast<ForStmt&>(s);

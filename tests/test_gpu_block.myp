@@ -1,0 +1,59 @@
+// P2 ④ @gpu block(n)（§3.7 块大小可调）测试
+// 语义：@gpu for (...) block(n) / @gpu tile (...) block(n) 用 n 作为块大小
+// （默认 256），grid = ceil(n / block)。kernel.bd 反映实际块大小。
+// 手动 @startup/main 结构（GPU：MYP_GPU=1；CPU 回退 step=1 顺序，bd 用 block_val）。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long err = 0L;
+            long n = 8192L;
+
+            // block(128)：bd 应为 128；每线程写自己的 gid
+            double[] bd = new double[n];
+            @gpu for (long i = 0L; i < n; i = i + 1L) block(128) {
+                bd[kernel.gid] = double(kernel.bd);
+            }
+            long i = 0L;
+            while (i < n) {
+                if (Math.abs(bd[i] - 128.0) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // block(512) + stride：每线程多元素（nThreads = ntid*nctaid = 512*grid），
+            // 结果 out[j] = j 仍须每元素恰好一次
+            double[] out = new double[n];
+            @gpu stride for (long j = 0L; j < n; j = j + 1L) block(512) {
+                out[j] = double(j);
+            }
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(out[i] - double(i)) > 1e-9) err = err + 1L;
+                i = i + 1L;
+            }
+
+            // tile block(64)：共享数组归约，bd 应反映 64（仅 GPU 模式；CPU 单线程
+            // fallback 归约会读未写共享区，故只在 GPU 后端跑）
+            if (GpuHAL.isGpu() == 1) {
+                long nblk = 32L;   // 32 块 × 64 线程 = 2048 线程
+                @gpu tile (double[64] sm) grid(nblk) block(64) {
+                    sm[kernel.tx] = double(kernel.bd);   // 每块每线程写 bd = 64
+                    kernel.sync();
+                    if (kernel.tx == 0L) {
+                        double s = 0.0;
+                        long k = 0L;
+                        while (k < 64L) { s = s + sm[k]; k = k + 1L; }
+                        if (Math.abs(s - 64.0 * 64.0) > 1e-9) err = err + 1L;
+                    }
+                }
+            }
+
+            Console.writeLine("gpu block: " + (err == 0L ? "PASS" : "FAIL") +
+                " (err=" + err + ")");
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

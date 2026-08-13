@@ -484,6 +484,8 @@ private:
     // 置标志后普通 generateForStmt 编译 body，kernel.gid/tx/bx/bd/gx 按
     // 顺序循环变量 p 计算（gid=p、tx=p%256、bx=p/256、bd=256、gx=ceil(n/256)），
     // kernel.sync() 为空操作。
+    // §3.1 CPU 回退模拟：bd = 块大小（@gpu block(n)，默认 256）
+    int gpu_cpu_block_ = 256;
     bool gpu_cpu_fallback_ = false;
     std::string gpu_cpu_loop_var_;
     llvm::Value* gpu_cpu_bound_ = nullptr;

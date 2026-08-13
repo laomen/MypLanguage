@@ -740,6 +740,8 @@ struct ForStmt : Stmt {
     // @gpu stride for（§3.5）：grid-stride —— 每线程处理 i, i+nThreads, ...；
     // GPU 用 nThreads=ntid*nctaid 步长（忽略用户 step），CPU 回退用 step=1 顺序。
     bool stride = false;
+    // §3.7 @gpu block(n)：块大小（0 = 默认 256；32 的倍数，≤ maxThreads）。
+    int64_t block_val = 0;
     ForStmt(std::unique_ptr<Stmt> i, std::unique_ptr<Expr> cond,
             std::unique_ptr<Expr> s, std::unique_ptr<Stmt> b, SourceRange r, bool par = false, bool g = false,
             std::vector<std::pair<std::string, std::string>> res = {},
@@ -769,6 +771,8 @@ struct GpuTileStmt : Stmt {
     // @gpu tile 异步流子句（§4.1）：stream(s) —— 把 kernel 排队到 GpuStream s。
     std::unique_ptr<Expr> stream_expr;
     bool has_stream = false;
+    // §3.7 @gpu tile block(n)：块大小（0 = 默认 256）。
+    int64_t block_val = 0;
     GpuTileStmt(TypeNode st, std::string nm, std::unique_ptr<Expr> ge, bool hg,
                 std::vector<std::pair<std::string, std::string>> res,
                 std::unique_ptr<Stmt> b, SourceRange r,

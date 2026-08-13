@@ -136,6 +136,18 @@
     的特例。测试 `tests/test_gpu_stride.myp` 双模式 PASS（GPU 覆盖所有 i、CPU 顺序）。
     注：每线程多元素（grid 受限）需配合 P2 ④ `@gpu block(n)` 控制 grid。
     回归 109/109 + 负测试 58 + 框架 82；gpu_paradigm GPU 57/57；conv3d 7e-7。
+  - **P2 ④ `@gpu block(n)`（§3.7 块大小/占用率可调）**：`@gpu for (...) block(n)` /
+    `@gpu tile (...) block(n)` 用 n 作块大小（默认 256），grid=ceil(n/block)（for /
+    stride）或用户 grid（tile）；块大小须为 32 的倍数且 ≤1024（sema 校验，越界报错）。
+    - 语法：AST `ForStmt`/`GpuTileStmt` 加 `block_val`；parser 加 `block(n)` 子句
+      （tile 顺序：grid → resident → stream → block）。
+    - codegen：`generateGpuKernel`/`generateGpuTile` launch 的 `block_i32` 与 grid
+      用 block_val；CPU 回退的 `kernel.bd` 模拟（`gpu_cpu_block_` 新成员）随 block_val，
+      `gx=ceil(bound/bd)` 同步。
+    - 测试 `tests/test_gpu_block.myp` 双模式 PASS：block(128) 每线程写 kernel.bd=
+      128 断言；block(512)+stride 每 i 恰一次；tile block(64) 共享归约（GPU 专属）。
+      GPU launch 打印 grid/block 正确（64/128、16/512、32/64）。
+    - 回归 109/109 + 负测试 58 + 框架 82（自举可视化 1/1，含 myp_viz 重建）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
