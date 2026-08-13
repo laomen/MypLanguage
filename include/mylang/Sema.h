@@ -54,6 +54,8 @@ private:
     // §8.2 @gpu reduce（声明式归约）：out = fold(init, a[lo..hi))。校验 op 返回
     // 类型 = 数组元素 = init = acc；提取 return 表达式到 stmt.op_expr。
     StmtResult visitGpuReduceStmt(GpuReduceStmt& stmt);
+    // §8.3 @gpu scan（声明式前缀和）：b[lo+i] = init∘a[lo]∘…。同 reduce 校验。
+    StmtResult visitGpuScanStmt(GpuScanStmt& stmt);
     // §四-2 × 泛型：ForInStmt 注解逻辑（正常访问 + 单态化重注解共用）。
     bool annotateForInStmt(ForInStmt& stmt, const TypeInfo& it_type);
     void annotateForInsInStmt(Stmt& s, const std::vector<ParamDecl>& params);

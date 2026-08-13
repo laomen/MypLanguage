@@ -79,6 +79,11 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                     advance(); // consume 'reduce'
                     return parseGpuReduceStmt();
                 }
+                // §8.3 @gpu scan (acc, x) => { ... } init V over a[lo..hi) -> b
+                if (check(TokenKind::Identifier) && peek().value == "scan") {
+                    advance(); // consume 'scan'
+                    return parseGpuScanStmt();
+                }
                 diag_.error(previous().range,
                     "'@gpu' must be followed by 'for', 'tile', 'stride for', or 'reduce'");
             } else {
@@ -899,6 +904,67 @@ std::unique_ptr<Stmt> Parser::parseGpuReduceStmt() {
     range.begin_offset = start.begin_offset;
     range.end_offset = previous().range.end_offset;
     auto st = std::make_unique<GpuReduceStmt>(acc, x, std::move(body),
+        std::move(init), arr, std::move(lo), std::move(hi), out, range);
+    st->block_val = block_val;
+    return st;
+}
+
+// §8.3 @gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
+// 声明式前缀和：b[lo+i] = init∘a[lo]∘…∘a[lo+i]。语法同 reduce，-> 后是输出数组名。
+std::unique_ptr<Stmt> Parser::parseGpuScanStmt() {
+    auto start = previous().range;
+    consume(TokenKind::LeftParen, "expected '(' after '@gpu scan'");
+    std::string acc = parseIdentifier("expected accumulator parameter name");
+    consume(TokenKind::Comma, "expected ',' between op parameters");
+    std::string x = parseIdentifier("expected element parameter name");
+    consume(TokenKind::RightParen, "expected ')' after op parameters");
+    consume(TokenKind::FatArrow, "expected '=>' after op parameters");
+    consume(TokenKind::LeftBrace, "expected '{' for op body");
+    auto body = parseBlock();
+    if (check(TokenKind::Identifier) && peek().value == "init") {
+        advance();
+    } else {
+        diag_.error(peek().range, "expected 'init <expr>' in '@gpu scan'");
+    }
+    auto init = parseExpr();
+    if (check(TokenKind::Identifier) && peek().value == "over") {
+        advance();
+    } else {
+        diag_.error(peek().range, "expected 'over <array>[<lo>..<hi>)' in '@gpu scan'");
+    }
+    std::string arr = parseIdentifier("expected input array name after 'over'");
+    consume(TokenKind::LeftBracket, "expected '[' after input array name");
+    auto begin = parseExpr();
+    std::unique_ptr<Expr> lo, hi;
+    if (begin->kind == ExprKind::Range) {
+        auto& r = static_cast<RangeExpr&>(*begin);
+        lo = std::move(r.start);
+        hi = std::move(r.end);
+    } else {
+        diag_.error(begin->range, "expected '<lo>..<hi>' range in '@gpu scan'");
+    }
+    consume(TokenKind::RightParen, "expected ')' after scan range");
+    consume(TokenKind::Arrow, "expected '->' after scan range");
+    std::string out = parseIdentifier("expected output array after '->'");
+    int64_t block_val = 0;
+    if (check(TokenKind::Identifier) && peek().value == "block" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance();
+        consume(TokenKind::LeftParen, "expected '(' after 'block'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { block_val = (int64_t)std::stoll(tok.value); }
+            catch (...) { block_val = 0; }
+        } else {
+            diag_.error(peek().range, "block size must be an integer literal");
+        }
+        consume(TokenKind::RightParen, "expected ')' after block size");
+    }
+    match(TokenKind::Semicolon);
+    SourceRange range;
+    range.begin_offset = start.begin_offset;
+    range.end_offset = previous().range.end_offset;
+    auto st = std::make_unique<GpuScanStmt>(acc, x, std::move(body),
         std::move(init), arr, std::move(lo), std::move(hi), out, range);
     st->block_val = block_val;
     return st;

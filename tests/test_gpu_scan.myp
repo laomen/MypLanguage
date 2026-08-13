@@ -1,0 +1,48 @@
+// P3 ② @gpu scan（§8.3 声明式前缀和）测试
+// 语法：@gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
+// 语义：b[lo+i] = init∘a[lo]∘…∘a[lo+i]（inclusive 前缀）。
+// GPU 两遍（K1 块和 + host 块前缀 + K2 块内 scan）；CPU 回退顺序前缀扫描。
+// 手动 @startup/main 结构。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 1024L;
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = float(i); i = i + 1L; }
+            float[] b = new float[n];
+
+            // 前缀和：b[i] = 0+1+...+i = i(i+1)/2
+            @gpu scan (acc, x) => { return acc + x; } init 0.0f over a[0..n) -> b;
+            long err = 0L;
+            i = 0L;
+            while (i < n) {
+                float exp = float(i * (i + 1L) / 2L);
+                if (Math.abs(b[i] - exp) > 1.0f) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("full: " + (err == 0L ? "OK" : "FAIL") +
+                " b0=" + b[0L] + " b1023=" + b[1023L]);
+
+            // 子区间 [256, 512)：b[256+i] = 前缀从 a[256] 起（不计前面）
+            float[] c = new float[n];
+            @gpu scan (acc, x) => { return acc + x; } init 0.0f over a[256L..512L) -> c;
+            err = 0L;
+            i = 256L;
+            while (i < 512L) {
+                long k = i - 256L;
+                float exp = float(k * (k + 1L) / 2L + 256L * (k + 1L));
+                if (Math.abs(c[i] - exp) > 1.0f) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("slice: " + (err == 0L ? "OK" : "FAIL") + " c256=" + c[256L] + " c511=" + c[511L]);
+
+            Console.writeLine("gpu scan: " + (err == 0L ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

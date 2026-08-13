@@ -1223,6 +1223,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitGpuTileStmt(static_cast<GpuTileStmt&>(stmt));
         case StmtKind::GpuReduceStmt:
             return visitGpuReduceStmt(static_cast<GpuReduceStmt&>(stmt));
+        case StmtKind::GpuScanStmt:
+            return visitGpuScanStmt(static_cast<GpuScanStmt&>(stmt));
         case StmtKind::ReturnStmt:
             return visitReturnStmt(static_cast<ReturnStmt&>(stmt));
         case StmtKind::BreakStmt:
@@ -1575,6 +1577,74 @@ Sema::StmtResult Sema::visitGpuReduceStmt(GpuReduceStmt& stmt) {
         return {};
     }
     // §3.7 block(n) 约束
+    if (stmt.block_val > 0) {
+        if (stmt.block_val % 32 != 0)
+            error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");
+        else if (stmt.block_val > 1024)
+            error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
+    }
+    return {};
+}
+
+// §8.3 @gpu scan：前缀和 b[lo+i] = init∘a[lo]∘…∘a[lo+i]。in/out 均为 T[]，
+// init/op 同 reduce 校验。提取 return 表达式到 stmt.op_expr。
+Sema::StmtResult Sema::visitGpuScanStmt(GpuScanStmt& stmt) {
+    auto* at = symbol_table_.lookup(stmt.in_name);
+    if (!at || at->kind != TypeKind::Array || !at->element_type) {
+        error(stmt.range, "'@gpu scan' input '" + stmt.in_name +
+              "' must be a 'T[]' dynamic array");
+        return {};
+    }
+    TypeKind et = at->element_type->kind;
+    if (et != TypeKind::Float && et != TypeKind::Double && et != TypeKind::Int) {
+        error(stmt.range, "'@gpu scan' element type must be float/double/int "
+              "(got '" + typeName(*at->element_type) + "')");
+        return {};
+    }
+    auto* ot = symbol_table_.lookup(stmt.out_name);
+    if (!ot || ot->kind != TypeKind::Array || !ot->element_type ||
+        ot->element_type->kind != et) {
+        error(stmt.range, "'@gpu scan' output '" + stmt.out_name +
+              "' must be a '" + typeName(*at->element_type) + "[]' array");
+        return {};
+    }
+    TypeInfo init_t = visitExpr(*stmt.init_expr);
+    if (init_t.kind != et) {
+        error(stmt.init_expr->range, "'@gpu scan' init must be '" +
+              typeName(*at->element_type) + "' (got '" + typeName(init_t) + "')");
+        return {};
+    }
+    auto bt = visitExpr(*stmt.begin_expr);
+    if (!isNumericKind(bt.kind)) {
+        error(stmt.begin_expr->range, "'@gpu scan' range bound must be an integer");
+        return {};
+    }
+    auto ht = visitExpr(*stmt.end_expr);
+    if (!isNumericKind(ht.kind)) {
+        error(stmt.end_expr->range, "'@gpu scan' range bound must be an integer");
+        return {};
+    }
+    auto saved_ret = current_return_type_;
+    current_return_type_ = *at->element_type;
+    symbol_table_.enterScope();
+    symbol_table_.declare(stmt.op_acc, *at->element_type);
+    symbol_table_.declare(stmt.op_x, *at->element_type);
+    if (stmt.op_body) visitStmt(*stmt.op_body);
+    symbol_table_.leaveScope();
+    current_return_type_ = saved_ret;
+    if (stmt.op_body && stmt.op_body->kind == StmtKind::Block) {
+        auto& blk = static_cast<BlockStmt&>(*stmt.op_body);
+        for (auto& s : blk.statements) {
+            if (s->kind == StmtKind::ReturnStmt) {
+                auto& r = static_cast<ReturnStmt&>(*s);
+                if (r.value) { stmt.op_expr = std::move(r.value); break; }
+            }
+        }
+    }
+    if (!stmt.op_expr) {
+        error(stmt.range, "'@gpu scan' op body must contain a 'return <expr>;'");
+        return {};
+    }
     if (stmt.block_val > 0) {
         if (stmt.block_val % 32 != 0)
             error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");

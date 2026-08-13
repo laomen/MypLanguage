@@ -624,6 +624,7 @@ enum class StmtKind {
     ForInStmt,
     GpuTileStmt,
     GpuReduceStmt,
+    GpuScanStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
@@ -809,6 +810,32 @@ struct GpuReduceStmt : Stmt {
         : Stmt(StmtKind::GpuReduceStmt, r), op_acc(std::move(acc)),
           op_x(std::move(x)), op_body(std::move(ob)), init_expr(std::move(ie)),
           array_name(std::move(an)), begin_expr(std::move(be)),
+          end_expr(std::move(ee)), out_name(std::move(on)) {}
+};
+
+// §8.3 @gpu scan（docs/gpu_library_design §8.3）：声明式前缀和。
+// 语法：@gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;
+// 语义：b[lo+i] = init∘a[lo]∘…∘a[lo+i]（inclusive 前缀，op 可结合）。
+// GPU 两遍：K1 每块块内和 → partials → host 顺序块前缀 offsets → K2 每块用
+// offsets[bid] 初始化 acc 扫块内写 b。CPU 回退顺序前缀扫描。
+struct GpuScanStmt : Stmt {
+    std::string op_acc;
+    std::string op_x;
+    std::unique_ptr<Stmt> op_body;
+    std::unique_ptr<Expr> op_expr;  // sema 提取
+    std::unique_ptr<Expr> init_expr;
+    std::string in_name;            // over a
+    std::unique_ptr<Expr> begin_expr;
+    std::unique_ptr<Expr> end_expr;
+    std::string out_name;           // -> b（输出数组）
+    int64_t block_val = 0;
+    GpuScanStmt(std::string acc, std::string x, std::unique_ptr<Stmt> ob,
+                std::unique_ptr<Expr> ie, std::string an,
+                std::unique_ptr<Expr> be, std::unique_ptr<Expr> ee,
+                std::string on, SourceRange r)
+        : Stmt(StmtKind::GpuScanStmt, r), op_acc(std::move(acc)),
+          op_x(std::move(x)), op_body(std::move(ob)), init_expr(std::move(ie)),
+          in_name(std::move(an)), begin_expr(std::move(be)),
           end_expr(std::move(ee)), out_name(std::move(on)) {}
 };
 

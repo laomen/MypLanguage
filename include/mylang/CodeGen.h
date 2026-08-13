@@ -504,11 +504,21 @@ private:
     void generateGpuTile(const GpuTileStmt& stmt);
     // §8.2 @gpu reduce：声明式归约（grid 分块 + host 合并；CPU 回退顺序 fold）
     void generateGpuReduce(const GpuReduceStmt& stmt);
-    // §8.2 生成 reduce kernel PTX（每块 tx==0 串行归约 → partials[bid]）；失败返回空串
-    std::string emitReducePtx(const GpuReduceStmt& stmt, llvm::Type* elem_ty, int block_size);
+    // §8.3 @gpu scan：声明式前缀和（两遍：K1 块和 + host 块前缀 + K2 块内 scan）
+    void generateGpuScan(const GpuScanStmt& stmt);
+    // §8.2/8.3 K1 块和 kernel PTX：每块 tx==0 串行归约块内区间 → partials[bid]
+    std::string emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
+                                llvm::Type* elem_ty, int block_size,
+                                const std::string& kernel_name);
+    // §8.3 K2 块内 scan kernel PTX：acc = init⊕offsets[bid]，扫块内写 b[i]=acc
+    std::string emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
+                              llvm::Type* elem_ty, int block_size);
     // §8.2 host 顺序归约：acc=init（或 src[0]）；for i in [start,cnt): x=src[i]; acc=op(acc,x)；out=acc
     void emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_ty,
                      const GpuReduceStmt& stmt, llvm::Value* out_slot, bool use_init);
+    // §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；dst[i]=acc
+    void emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
+                     llvm::Type* elem_ty, const GpuScanStmt& stmt);
     // §3.2 @gpu tile CPU 回退（降级）：单线程执行 body，共享数组 = host 栈数组
     void generateGpuTileCpuFallback(const GpuTileStmt& stmt);
 

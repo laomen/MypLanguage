@@ -102,6 +102,8 @@ private:
     std::unique_ptr<Stmt> parseGpuTileStmt();
     // §8.2 @gpu reduce (acc, x) => { ... } init V over a[lo..hi) -> out — 声明式归约
     std::unique_ptr<Stmt> parseGpuReduceStmt();
+    // §8.3 @gpu scan (acc, x) => { ... } init V over a[lo..hi) -> b — 声明式前缀和
+    std::unique_ptr<Stmt> parseGpuScanStmt();
 
     // Expressions (precedence climbing)
     std::unique_ptr<Expr> parseExpr();

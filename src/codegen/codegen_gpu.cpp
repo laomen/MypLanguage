@@ -2089,18 +2089,19 @@ void CodeGen::generateGpuFor(const ForStmt& s) {
     }
 }
 
-// §8.2 @gpu reduce 的 GPU kernel：void myp_reduce(i64 n, T* a, T* partials)。
-// body：每块 tx==0 线程串行归约块内区间 → partials[blockIdx]（块间并行、块内
-// 单线程——正确性优先，后续可升级 block_reduce）。op_expr 用 emitKernelExpr
-// 生成（acc/x 绑定到 kernel 局部 alloca）。
-std::string CodeGen::emitReducePtx(const GpuReduceStmt& s, llvm::Type* elem_ty, int block_size) {
+// §8.2/8.3 块和 kernel：void <name>(i64 n, T* a, T* partials)。每块 tx==0 线程
+// 串行归约块内区间 → partials[blockIdx]（K1；reduce/scan 共用）。op_expr 用
+// emitKernelExpr 生成（acc/x 绑定到 kernel 局部 alloca）。
+std::string CodeGen::emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
+                                     llvm::Type* elem_ty, int block_size,
+                                     const std::string& kernel_name) {
 #ifdef MYP_ENABLE_GPU
-    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_reduce", ctx_);
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_block_sum", ctx_);
     ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
     auto* i64 = llvm::Type::getInt64Ty(ctx_);
     auto* ptr = llvm::PointerType::get(ctx_, 0);
     auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr}, false);
-    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_reduce", ptx_mod.get());
+    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, kernel_name, ptx_mod.get());
     kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
     auto* n_arg = kf->getArg(0); n_arg->setName("n");
     auto* a_arg = kf->getArg(1); a_arg->setName("a");
@@ -2122,7 +2123,7 @@ std::string CodeGen::emitReducePtx(const GpuReduceStmt& s, llvm::Type* elem_ty, 
     kv["n"] = n_arg; kv["a"] = a_arg; kv["partials"] = p_arg;
     // acc = init
     auto* acc_a = kb.CreateAlloca(elem_ty, nullptr, "acc");
-    auto* init_v = emitKernelExpr(*s.init_expr, kb, kv, {}, "", nullptr);
+    auto* init_v = emitKernelExpr(init_expr, kb, kv, {}, "", nullptr);
     if (init_v && init_v->getType() != elem_ty) {
         if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
             init_v = kb.CreateFPCast(init_v, elem_ty);
@@ -2149,7 +2150,7 @@ std::string CodeGen::emitReducePtx(const GpuReduceStmt& s, llvm::Type* elem_ty, 
     auto* iv2 = kb.CreateLoad(i64, i_a);
     auto* xv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg, iv2), "x");
     kb.CreateStore(xv, x_a);
-    auto* opv = emitKernelExpr(*s.op_expr, kb, kv, {}, "", nullptr);
+    auto* opv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
     if (opv && opv->getType() != elem_ty) {
         if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
             opv = kb.CreateFPCast(opv, elem_ty);
@@ -2272,6 +2273,59 @@ void CodeGen::emitSeqFold(llvm::Value* src, llvm::Value* cnt, llvm::Type* elem_t
     if (old_x) setNamedValue(s.op_x, old_x);
 }
 
+// §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；
+// dst[i] = acc（inclusive 前缀）。op_expr 用 generateExpr（acc/x 绑定 host alloca）。
+void CodeGen::emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
+                          llvm::Type* elem_ty, const GpuScanStmt& s) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* acc_a = createEntryBlockAlloca(current_function_, elem_ty, "__sc_acc");
+    auto* init_v = generateExpr(*s.init_expr);
+    if (init_v && init_v->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+            init_v = builder_.CreateFPCast(init_v, elem_ty);
+        else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateSIToFP(init_v, elem_ty);
+        else if (elem_ty->isIntegerTy() && init_v->getType()->isIntegerTy())
+            init_v = builder_.CreateIntCast(init_v, elem_ty, false);
+    }
+    builder_.CreateStore(init_v, acc_a);
+    auto* x_a = createEntryBlockAlloca(current_function_, elem_ty, "__sc_x");
+    auto* i_a = createEntryBlockAlloca(current_function_, i64, "__sc_i");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), i_a);
+    auto old_acc = getNamedValue(s.op_acc);
+    auto old_x = getNamedValue(s.op_x);
+    setNamedValue(s.op_acc, acc_a);
+    setNamedValue(s.op_x, x_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "scs_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "scs_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "scs_end", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* iv = builder_.CreateLoad(i64, i_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(iv, cnt), lbody, lend);
+    builder_.SetInsertPoint(lbody);
+    auto* iv2 = builder_.CreateLoad(i64, i_a);
+    auto* xv = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, src, iv2), "scx");
+    builder_.CreateStore(xv, x_a);
+    auto* opv = generateExpr(*s.op_expr);
+    if (opv && opv->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+            opv = builder_.CreateFPCast(opv, elem_ty);
+        else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+            opv = builder_.CreateIntCast(opv, elem_ty, false);
+    }
+    builder_.CreateStore(opv, acc_a);
+    builder_.CreateStore(opv, builder_.CreateGEP(elem_ty, dst, iv2), "scb");
+    auto* iv3 = builder_.CreateLoad(i64, i_a);
+    builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(lend);
+    named_values_.back().erase(s.op_acc);
+    named_values_.back().erase(s.op_x);
+    if (old_acc) setNamedValue(s.op_acc, old_acc);
+    if (old_x) setNamedValue(s.op_x, old_x);
+}
+
 // §8.2 @gpu reduce：声明式归约 out = fold(init, a[lo..hi))。
 // GPU：H2D a 范围 → 单 kernel（每块 tx==0 归约 → partials[bid]）→ D2H partials →
 // host 顺序合并 → out。CPU 回退：顺序 fold 整个范围。
@@ -2305,7 +2359,7 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
 
     // ============ GPU path ============
     builder_.SetInsertPoint(gpu_bb);
-    std::string ptx_str = emitReducePtx(s, elem_ty, block_size);
+    std::string ptx_str = emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_reduce");
     if (ptx_str.empty()) {
         diag_.warn(s.range, "'@gpu reduce' GPU kernel generation failed, running on CPU");
         builder_.CreateBr(cpu_bb);
@@ -2384,6 +2438,325 @@ void CodeGen::generateGpuReduce(const GpuReduceStmt& s) {
 
     builder_.SetInsertPoint(done_bb);
 }
+
+// §8.3 K2 块内 scan kernel：void myp_scan_k2(i64 n, T* offsets, T* a, T* b)。
+// 每块 tx==0：acc = offsets[bid]（前面块前缀，含 init）；扫块内：acc = op(acc, a[i]);
+// b[i] = acc（inclusive 前缀）。
+std::string CodeGen::emitScanK2Ptx(const Expr& op_expr, const Expr& init_expr,
+                                   llvm::Type* elem_ty, int block_size) {
+#ifdef MYP_ENABLE_GPU
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scan_k2", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {i64, ptr, ptr, ptr}, false);
+    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage, "myp_scan_k2", ptx_mod.get());
+    kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    auto* n_arg = kf->getArg(0); n_arg->setName("n");
+    auto* off_arg = kf->getArg(1); off_arg->setName("offsets");
+    auto* a_arg = kf->getArg(2); a_arg->setName("a");
+    auto* b_arg = kf->getArg(3); b_arg->setName("b");
+    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
+    llvm::IRBuilder<> kb(entry);
+    auto* tid_x = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "tx");
+    auto* ctaid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "bid");
+    auto* is0 = kb.CreateICmpEQ(tid_x, llvm::ConstantInt::get(i64, 0));
+    auto* body_bb = llvm::BasicBlock::Create(ctx_, "body", kf);
+    auto* end_bb = llvm::BasicBlock::Create(ctx_, "end", kf);
+    kb.CreateCondBr(is0, body_bb, end_bb);
+    kb.SetInsertPoint(body_bb);
+    std::map<std::string, llvm::Value*> kv;
+    kv["n"] = n_arg; kv["a"] = a_arg; kv["b"] = b_arg; kv["offsets"] = off_arg;
+    // acc = offsets[bid]（已含 init + 前面块前缀）
+    auto* acc_a = kb.CreateAlloca(elem_ty, nullptr, "acc");
+    auto* offv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, off_arg, ctaid), "off");
+    kb.CreateStore(offv, acc_a);
+    kv["acc"] = acc_a;
+    auto* x_a = kb.CreateAlloca(elem_ty, nullptr, "x");
+    kv["x"] = x_a;
+    auto* i_a = kb.CreateAlloca(i64, nullptr, "i");
+    auto* start_i = kb.CreateMul(ctaid, llvm::ConstantInt::get(i64, block_size), "istart");
+    kb.CreateStore(start_i, i_a);
+    auto* iend_raw = kb.CreateAdd(start_i, llvm::ConstantInt::get(i64, block_size));
+    auto* iend = kb.CreateSelect(kb.CreateICmpSLT(iend_raw, n_arg), iend_raw, n_arg, "iend");
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kf);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "lbody", kf);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "lend", kf);
+    kb.CreateBr(loop_bb);
+    kb.SetInsertPoint(loop_bb);
+    auto* iv = kb.CreateLoad(i64, i_a);
+    kb.CreateCondBr(kb.CreateICmpSLT(iv, iend), lbody, lend);
+    kb.SetInsertPoint(lbody);
+    auto* iv2 = kb.CreateLoad(i64, i_a);
+    auto* xv = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg, iv2), "x");
+    kb.CreateStore(xv, x_a);
+    // acc = op(acc, x); b[i] = acc
+    auto* opv = emitKernelExpr(op_expr, kb, kv, {}, "", nullptr);
+    if (opv && opv->getType() != elem_ty) {
+        if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+            opv = kb.CreateFPCast(opv, elem_ty);
+        else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+            opv = kb.CreateIntCast(opv, elem_ty, false);
+    }
+    kb.CreateStore(opv, acc_a);
+    kb.CreateStore(opv, kb.CreateGEP(elem_ty, b_arg, iv2), "scb");
+    auto* iv3 = kb.CreateLoad(i64, i_a);
+    kb.CreateStore(kb.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+    kb.CreateBr(loop_bb);
+    kb.SetInsertPoint(lend);
+    kb.CreateBr(end_bb);
+    kb.SetInsertPoint(end_bb);
+    kb.CreateRetVoid();
+    (void)init_expr;
+
+    // ---- 目标机器 + verify + emit PTX（同 emitBlockSumPtx）----
+    std::string err;
+    static bool nvptx_sc_init = false;
+    if (!nvptx_sc_init) {
+        LLVMInitializeNVPTXTargetInfo();
+        LLVMInitializeNVPTXTarget();
+        LLVMInitializeNVPTXTargetMC();
+        LLVMInitializeNVPTXAsmPrinter();
+        nvptx_sc_init = true;
+    }
+    auto* tgt = llvm::TargetRegistry::lookupTarget("nvptx64-nvidia-cuda", err);
+    if (!tgt) { diag_.warn(SourceRange{}, "NVPTX target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple("nvptx64-nvidia-cuda"), "sm_75", "",
+        llvm::TargetOptions{}, llvm::Reloc::PIC_);
+    if (!tm) { diag_.warn(SourceRange{}, "NVPTX target machine creation failed"); return ""; }
+    std::string verify_err;
+    llvm::raw_string_ostream vos(verify_err);
+    if (llvm::verifyModule(*ptx_mod, &vos)) {
+        diag_.warn(SourceRange{}, "GPU scan kernel verification failed: " + verify_err);
+        delete tm; return "";
+    }
+    llvm::legacy::PassManager pm;
+    llvm::SmallString<16384> buf;
+    llvm::raw_svector_ostream os(buf);
+    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
+        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX"); delete tm; return "";
+    }
+    pm.run(*ptx_mod);
+    delete tm;
+    std::string ptx_str(buf.data(), buf.size());
+    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty())
+        fprintf(stderr, "=== MYP PTX (scan_k2) ===\n%s\n=== END ===\n", ptx_str.c_str());
+    if (ptx_str.empty()) { diag_.warn(SourceRange{}, "NVPTX emitted empty PTX"); return ""; }
+    return ptx_str;
+#else
+    (void)op_expr; (void)init_expr; (void)elem_ty; (void)block_size;
+    return "";
+#endif
+}
+
+// §8.3 @gpu scan：前缀和 b[lo+i] = init∘a[lo]∘…∘a[lo+i]。
+// GPU 两遍：K1 块和 → D2H partials → host 块前缀 offsets → H2D → K2 块内 scan → D2H b。
+// CPU 回退：顺序前缀扫描。
+void CodeGen::generateGpuScan(const GpuScanStmt& s) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    llvm::Type* elem_ty = nullptr;
+    auto eit = array_elem_types_.find(s.in_name);
+    if (eit != array_elem_types_.end()) elem_ty = eit->second;
+    if (!elem_ty) { diag_.error(s.range, "'@gpu scan' cannot determine element type"); return; }
+    uint64_t esz = module_->getDataLayout().getTypeAllocSize(elem_ty);
+    int block_size = s.block_val > 0 ? (int)s.block_val : 256;
+
+    auto* lo = generateExpr(*s.begin_expr);
+    if (lo->getType() != i64) lo = builder_.CreateSExtOrTrunc(lo, i64);
+    auto* hi = generateExpr(*s.end_expr);
+    if (hi->getType() != i64) hi = builder_.CreateSExtOrTrunc(hi, i64);
+    auto* n = builder_.CreateSub(hi, lo, "scn");
+    auto* blocks = builder_.CreateUDiv(
+        builder_.CreateAdd(n, llvm::ConstantInt::get(i64, block_size - 1)),
+        llvm::ConstantInt::get(i64, block_size), "scblk");
+
+    auto* func = builder_.GetInsertBlock()->getParent();
+    auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "sc_gpu", func);
+    auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "sc_cpu", func);
+    auto* done_bb = llvm::BasicBlock::Create(ctx_, "sc_done", func);
+    auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+    auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok, llvm::ConstantInt::get(i32, 0));
+    builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
+
+    // ============ GPU path ============
+    builder_.SetInsertPoint(gpu_bb);
+    std::string k1_ptx = emitBlockSumPtx(*s.op_expr, *s.init_expr, elem_ty, block_size, "myp_scan_k1");
+    std::string k2_ptx = emitScanK2Ptx(*s.op_expr, *s.init_expr, elem_ty, block_size);
+    if (k1_ptx.empty() || k2_ptx.empty()) {
+        diag_.warn(s.range, "'@gpu scan' GPU kernel generation failed, running on CPU");
+        builder_.CreateBr(cpu_bb);
+        builder_.SetInsertPoint(cpu_bb);
+        // CPU 顺序前缀
+        auto* in_h0 = builder_.CreateLoad(ptr, getNamedValue(s.in_name), s.in_name);
+        auto* in_h0_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), in_h0,
+            builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "sch0");
+        auto* out_h0 = builder_.CreateLoad(ptr, getNamedValue(s.out_name), s.out_name);
+        auto* out_h0_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), out_h0,
+            builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "sco0");
+        emitSeqScan(in_h0_off, out_h0_off, n, elem_ty, s);
+        builder_.CreateBr(done_bb);
+        builder_.SetInsertPoint(done_bb);
+        return;
+    }
+    // 设备分配
+    auto* in_va = getNamedValue(s.in_name);
+    auto* in_h = builder_.CreateLoad(ptr, in_va, s.in_name);
+    auto* in_h_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), in_h,
+        builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "sch");
+    auto* out_va = getNamedValue(s.out_name);
+    auto* out_h = builder_.CreateLoad(ptr, out_va, s.out_name);
+    auto* out_h_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), out_h,
+        builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "sco");
+    auto* nbytes = builder_.CreateMul(n, llvm::ConstantInt::get(i64, esz));
+    auto* a_dev = builder_.CreateCall(runtime_gpu_alloc_, {nbytes}, "sc_ad");
+    builder_.CreateCall(runtime_gpu_to_device_, {a_dev, in_h_off, nbytes});
+    auto* b_dev = builder_.CreateCall(runtime_gpu_alloc_, {nbytes}, "sc_bd");
+    auto* pbytes = builder_.CreateMul(blocks, llvm::ConstantInt::get(i64, esz));
+    auto* p_dev = builder_.CreateCall(runtime_gpu_alloc_, {pbytes}, "sc_pd");
+
+    // 通用 launch helper（本地 lambda）：load + args + launch
+    auto launch_kernel = [&](llvm::Value*& kctx_out, const std::string& ptx_str,
+                             const std::string& gname, const std::string& kname,
+                             std::vector<std::pair<llvm::Value*, llvm::Type*>> arg_vals,
+                             llvm::BasicBlock* ok_bb) {
+        auto* ptx_global = builder_.CreateGlobalString(ptx_str, gname);
+        auto* kctx = builder_.CreateCall(runtime_gpu_load_kernel_,
+            {ptx_global, builder_.CreateGlobalString(kname, "k")}, "sc_k");
+        auto* k_ok = builder_.CreateICmpNE(kctx,
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr)), "k_ok");
+        auto* lb = llvm::BasicBlock::Create(ctx_, "sc_lb", func);
+        auto* fall_bb = llvm::BasicBlock::Create(ctx_, "sc_fall", func);
+        builder_.CreateCondBr(k_ok, lb, fall_bb);
+        builder_.SetInsertPoint(lb);
+        unsigned nargs = (unsigned)arg_vals.size();
+        auto* args_a = builder_.CreateAlloca(ptr, llvm::ConstantInt::get(i32, nargs), "sc_args");
+        for (unsigned i = 0; i < nargs; i++) {
+            auto* tmp = builder_.CreateAlloca(arg_vals[i].second);
+            auto* v = arg_vals[i].first;
+            if (v->getType() != arg_vals[i].second)
+                v = builder_.CreateBitCast(v, arg_vals[i].second);
+            builder_.CreateStore(v, tmp);
+            builder_.CreateStore(builder_.CreateBitCast(tmp, ptr),
+                builder_.CreateGEP(ptr, args_a, llvm::ConstantInt::get(i32, i)));
+        }
+        builder_.CreateCall(runtime_gpu_launch_,
+            {kctx, builder_.CreateIntCast(blocks, i32, false),
+             llvm::ConstantInt::get(i32, block_size),
+             builder_.CreateBitCast(args_a, ptr),
+             llvm::ConstantInt::get(i32, nargs),
+             llvm::ConstantInt::get(i64, 0)});
+        builder_.CreateBr(ok_bb);
+        builder_.SetInsertPoint(fall_bb);
+        kctx_out = nullptr;
+    };
+
+    // K1：块和 → partials
+    llvm::Value* k1_ctx = nullptr;
+    auto* k1_ok = llvm::BasicBlock::Create(ctx_, "sc_k1_ok", func);
+    auto* k1_fail = llvm::BasicBlock::Create(ctx_, "sc_k1_fail", func);
+    launch_kernel(k1_ctx, k1_ptx, "__myp_ptx_scan_k1", "myp_scan_k1",
+        {{n, i64}, {a_dev, ptr}, {p_dev, ptr}}, k1_ok);
+    builder_.CreateBr(k1_fail);
+    builder_.SetInsertPoint(k1_ok);
+    // D2H partials
+    auto* ph = builder_.CreateAlloca(elem_ty, blocks, "sc_ph");
+    builder_.CreateCall(runtime_gpu_to_host_, {ph, p_dev, pbytes});
+    // host 块前缀 offsets：off[0]=init; off[k]=op(off[k-1], ph[k-1])
+    auto* off_h = builder_.CreateAlloca(elem_ty, blocks, "sc_off");
+    {
+        auto* acc_a = createEntryBlockAlloca(current_function_, elem_ty, "__sc_acc");
+        auto* init_v = generateExpr(*s.init_expr);
+        if (init_v && init_v->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && init_v->getType()->isFloatingPointTy())
+                init_v = builder_.CreateFPCast(init_v, elem_ty);
+            else if (elem_ty->isFloatingPointTy() && init_v->getType()->isIntegerTy())
+                init_v = builder_.CreateSIToFP(init_v, elem_ty);
+        }
+        builder_.CreateStore(init_v, acc_a);
+        auto* x_a = createEntryBlockAlloca(current_function_, elem_ty, "__sc_x");
+        auto* i_a = createEntryBlockAlloca(current_function_, i64, "__sc_i");
+        builder_.CreateStore(llvm::ConstantInt::get(i64, 0), i_a);
+        auto old_acc = getNamedValue(s.op_acc);
+        auto old_x = getNamedValue(s.op_x);
+        setNamedValue(s.op_acc, acc_a);
+        setNamedValue(s.op_x, x_a);
+        auto* loop_bb = llvm::BasicBlock::Create(ctx_, "scf_loop", current_function_);
+        auto* lbody = llvm::BasicBlock::Create(ctx_, "scf_body", current_function_);
+        auto* lend = llvm::BasicBlock::Create(ctx_, "scf_end", current_function_);
+        builder_.CreateBr(loop_bb);
+        builder_.SetInsertPoint(loop_bb);
+        auto* iv = builder_.CreateLoad(i64, i_a);
+        builder_.CreateCondBr(builder_.CreateICmpSLT(iv, blocks), lbody, lend);
+        builder_.SetInsertPoint(lbody);
+        // off[k] = acc; acc = op(acc, ph[k])
+        auto* iv2 = builder_.CreateLoad(i64, i_a);
+        auto* acc_cur = builder_.CreateLoad(elem_ty, acc_a);
+        builder_.CreateStore(acc_cur, builder_.CreateGEP(elem_ty, off_h, iv2), "scoff");
+        auto* pv = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, ph, iv2), "scpv");
+        builder_.CreateStore(pv, x_a);
+        auto* opv = generateExpr(*s.op_expr);
+        if (opv && opv->getType() != elem_ty) {
+            if (elem_ty->isFloatingPointTy() && opv->getType()->isFloatingPointTy())
+                opv = builder_.CreateFPCast(opv, elem_ty);
+            else if (elem_ty->isIntegerTy() && opv->getType()->isIntegerTy())
+                opv = builder_.CreateIntCast(opv, elem_ty, false);
+        }
+        builder_.CreateStore(opv, acc_a);
+        auto* iv3 = builder_.CreateLoad(i64, i_a);
+        builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+        builder_.CreateBr(loop_bb);
+        builder_.SetInsertPoint(lend);
+        named_values_.back().erase(s.op_acc);
+        named_values_.back().erase(s.op_x);
+        if (old_acc) setNamedValue(s.op_acc, old_acc);
+        if (old_x) setNamedValue(s.op_x, old_x);
+    }
+    // H2D offsets
+    auto* off_dev = builder_.CreateCall(runtime_gpu_alloc_, {pbytes}, "sc_od");
+    builder_.CreateCall(runtime_gpu_to_device_, {off_dev, off_h, pbytes});
+    // K2：块内 scan
+    llvm::Value* k2_ctx = nullptr;
+    auto* k2_ok = llvm::BasicBlock::Create(ctx_, "sc_k2_ok", func);
+    auto* k2_fail = llvm::BasicBlock::Create(ctx_, "sc_k2_fail", func);
+    launch_kernel(k2_ctx, k2_ptx, "__myp_ptx_scan_k2", "myp_scan_k2",
+        {{n, i64}, {off_dev, ptr}, {a_dev, ptr}, {b_dev, ptr}}, k2_ok);
+    builder_.CreateBr(k2_fail);
+    builder_.SetInsertPoint(k2_ok);
+    // D2H b
+    builder_.CreateCall(runtime_gpu_to_host_, {out_h_off, b_dev, nbytes});
+    builder_.CreateCall(runtime_gpu_free_, {a_dev});
+    builder_.CreateCall(runtime_gpu_free_, {b_dev});
+    builder_.CreateCall(runtime_gpu_free_, {p_dev});
+    builder_.CreateCall(runtime_gpu_free_, {off_dev});
+    builder_.CreateBr(done_bb);
+
+    // GPU kernel load 失败 → CPU fallback
+    builder_.SetInsertPoint(k1_fail);
+    builder_.CreateBr(cpu_bb);
+    builder_.SetInsertPoint(k2_fail);
+    builder_.CreateBr(cpu_bb);
+
+    // ============ CPU fallback ============
+    builder_.SetInsertPoint(cpu_bb);
+    diag_.warn(s.range, "'@gpu scan' GPU fallback — running on CPU");
+    auto* in_hc = builder_.CreateLoad(ptr, getNamedValue(s.in_name), s.in_name);
+    auto* in_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), in_hc,
+        builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "schc");
+    auto* out_hc = builder_.CreateLoad(ptr, getNamedValue(s.out_name), s.out_name);
+    auto* out_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), out_hc,
+        builder_.CreateMul(lo, llvm::ConstantInt::get(i64, esz)), "scoc");
+    emitSeqScan(in_hc_off, out_hc_off, n, elem_ty, s);
+    builder_.CreateBr(done_bb);
+
+    builder_.SetInsertPoint(done_bb);
+}
+
 
 
 // §4.1 @gpu stream(s)：求值 GpuStream 实例的 handle()（long 句柄）。

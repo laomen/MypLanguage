@@ -187,6 +187,15 @@
       设备指针值导致 cuLaunchKernel 内部 segfault。
     - 测试 `tests/test_gpu_reduce.myp` 双模式 PASS（sum 全量/子区间、max、
       block(128)）。回归 109/109 + 负测试 61 + 框架 82（259/259）。
+  - **P3 ② `@gpu scan`（§8.3 声明式前缀和）**：
+    - 语法：`@gpu scan (acc, x) => { return <op>; } init V over a[lo..hi) -> b;`
+      （AST `GpuScanStmt` + parser + sema 校验 in/out 均 T[] + codegen）。
+    - GPU 两遍：K1 块和（`emitBlockSumPtx`，从 emitReducePtx 重构通用化）→ D2H
+      partials → host 顺序块前缀 offsets → H2D → K2 块内 scan（acc=offsets[bid]，
+      扫块内 acc=op(acc,a[i])、b[i]=acc）→ D2H b；CPU 回退顺序前缀扫描
+      （`emitSeqScan`）。
+    - 测试 `tests/test_gpu_scan.myp` 双模式 PASS（全量前缀和、子区间前缀）。
+      回归 109/109 + 负测试 61 + 框架 82（259/259）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
