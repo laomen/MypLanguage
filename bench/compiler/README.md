@@ -133,3 +133,22 @@ int main() { Box<T0> b = new Box<T0>(); T0 v = b.get(); return 0; }
   泛型类/函数以 struct 实参即可正常编译链接与运行。
 - 回归保护：`tests/@test/generic_struct.myp`（Box<Point> 属性存/取、id<Point> 传递、
   多 struct 实参独立实例，7 断言）。
+
+## 跨编译器编译时间对比（compare_compile.sh）
+
+```bash
+bash bench/compiler/compare_compile.sh [iters]   # 默认 3 轮取中位数
+```
+
+对同一组基准源码（`bench/myp` / `bench/cpp` / `bench/go`，同算法同规模），分别用
+`mypc -O2` / `g++ -O3` / `go build` 编译，测完整编译时间（外部高精度时钟，含编译器
+初始化/前端/后端）。比值 = 对方编译 ms ÷ mypc ms（>1 = 对方更慢）。
+
+实测（mypc vs g++ vs go，3 轮中位数）：
+| | MYP(ms) | C++(ms) | Go(ms) | C++/MYP | Go/MYP |
+|---|---|---|---|---|---|
+| 范围 | 38-57 | 57-148 | 73-80 | 1.4-3.0 | 1.3-2.1 |
+
+即 **mypc 编译快于 g++ 1.4-3.0×、快于 go build 1.3-2.1×**（quicksort 3.0×、fft/nbody
+2.6× vs g++；montepi 2.1×、mandelbrot 2.0× vs go）。MYP 走 LLVM 后端但整体编译时延
+低（无独立预编译头/模块解析开销；go 有 toolchain 常驻开销）。
