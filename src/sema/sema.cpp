@@ -1225,6 +1225,8 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
             return visitGpuReduceStmt(static_cast<GpuReduceStmt&>(stmt));
         case StmtKind::GpuScanStmt:
             return visitGpuScanStmt(static_cast<GpuScanStmt&>(stmt));
+        case StmtKind::GpuScatterStmt:
+            return visitGpuScatterStmt(static_cast<GpuScatterStmt&>(stmt));
         case StmtKind::ReturnStmt:
             return visitReturnStmt(static_cast<ReturnStmt&>(stmt));
         case StmtKind::BreakStmt:
@@ -1643,6 +1645,71 @@ Sema::StmtResult Sema::visitGpuScanStmt(GpuScanStmt& stmt) {
     }
     if (!stmt.op_expr) {
         error(stmt.range, "'@gpu scan' op body must contain a 'return <expr>;'");
+        return {};
+    }
+    if (stmt.block_val > 0) {
+        if (stmt.block_val % 32 != 0)
+            error(stmt.range, "'block(...)' size must be a multiple of 32 (warp size)");
+        else if (stmt.block_val > 1024)
+            error(stmt.range, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
+    }
+    return {};
+}
+
+// §8.4 @gpu scatter：b[idx[lo_i+p]] = a[lo_a+p]（冲突语义显式）。
+// a/b 须同元素类型 T[]（float/double/int）；idx 须整型[]（int/long）；
+// 两区间界须整型；mode ∈ {0=any, 1=unique, 2=atomic_add}。
+Sema::StmtResult Sema::visitGpuScatterStmt(GpuScatterStmt& stmt) {
+    auto* at = symbol_table_.lookup(stmt.a_name);
+    if (!at || at->kind != TypeKind::Array || !at->element_type) {
+        error(stmt.range, "'@gpu scatter' input '" + stmt.a_name +
+              "' must be a 'T[]' dynamic array");
+        return {};
+    }
+    TypeKind et = at->element_type->kind;
+    if (et != TypeKind::Float && et != TypeKind::Double && et != TypeKind::Int) {
+        error(stmt.range, "'@gpu scatter' element type must be float/double/int "
+              "(got '" + typeName(*at->element_type) + "')");
+        return {};
+    }
+    auto* bt = symbol_table_.lookup(stmt.b_name);
+    if (!bt || bt->kind != TypeKind::Array || !bt->element_type ||
+        bt->element_type->kind != et) {
+        error(stmt.range, "'@gpu scatter' output '" + stmt.b_name +
+              "' must be a '" + typeName(*at->element_type) + "[]' array");
+        return {};
+    }
+    auto* it = symbol_table_.lookup(stmt.idx_name);
+    if (!it || it->kind != TypeKind::Array || !it->element_type ||
+        it->element_type->kind != TypeKind::Int) {
+        error(stmt.range, "'@gpu scatter' index '" + stmt.idx_name +
+              "' must be an 'int[]' array");
+        return {};
+    }
+    // 冲突模式：any/unique/atomic_add 均合法（parser 已限定）
+    if (stmt.mode < 0 || stmt.mode > 2) {
+        error(stmt.range, "'@gpu scatter' conflict mode must be any/unique/atomic_add");
+        return {};
+    }
+    // 两区间界：整型
+    auto ab = visitExpr(*stmt.a_begin);
+    if (!isNumericKind(ab.kind)) {
+        error(stmt.a_begin->range, "'@gpu scatter' range bound must be an integer");
+        return {};
+    }
+    auto ae = visitExpr(*stmt.a_end);
+    if (!isNumericKind(ae.kind)) {
+        error(stmt.a_end->range, "'@gpu scatter' range bound must be an integer");
+        return {};
+    }
+    auto ib = visitExpr(*stmt.idx_begin);
+    if (!isNumericKind(ib.kind)) {
+        error(stmt.idx_begin->range, "'@gpu scatter' index range bound must be an integer");
+        return {};
+    }
+    auto ie = visitExpr(*stmt.idx_end);
+    if (!isNumericKind(ie.kind)) {
+        error(stmt.idx_end->range, "'@gpu scatter' index range bound must be an integer");
         return {};
     }
     if (stmt.block_val > 0) {

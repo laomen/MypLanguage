@@ -104,6 +104,8 @@ private:
     std::unique_ptr<Stmt> parseGpuReduceStmt();
     // §8.3 @gpu scan (acc, x) => { ... } init V over a[lo..hi) -> b — 声明式前缀和
     std::unique_ptr<Stmt> parseGpuScanStmt();
+    // §8.4 @gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi) — 声明式散点
+    std::unique_ptr<Stmt> parseGpuScatterStmt();
 
     // Expressions (precedence climbing)
     std::unique_ptr<Expr> parseExpr();

@@ -2522,6 +2522,12 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_gpu_destroy_kernel_ = llvm::Function::Create(gpu_destroy_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_destroy_kernel", module_.get());
 
+    // §8.4 @gpu scatter(unique) 索引预扫失败（越界/重复）→ 打印并退出（noreturn）
+    auto* gpu_sc_fail_ft = llvm::FunctionType::get(v, {p}, false);
+    runtime_gpu_scatter_check_fail_ = llvm::Function::Create(gpu_sc_fail_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_scatter_check_fail", module_.get());
+    runtime_gpu_scatter_check_fail_->addFnAttr(llvm::Attribute::NoReturn);
+
     // CUDA device info intrinsics
     runtime_cuda_count_ = llvm::Function::Create(llvm::FunctionType::get(i32, {}, false),
         llvm::Function::ExternalLinkage, "myp_gpu_device_count", module_.get());

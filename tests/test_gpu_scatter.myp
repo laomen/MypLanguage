@@ -1,0 +1,114 @@
+// P3 ③ @gpu scatter（§8.4 声明式散点，冲突语义显式）测试
+// 语法：@gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi);
+// 语义：b[idx[lo_i+p]] = a[lo_a+p]（p ∈ [0,n)，n = 两区间公共长度）。
+// 冲突模式：unique = idx 无重复（运行时预扫校验，越界/重复报错）；
+// atomic_add = b[idx] += a（GPU 原子 / CPU 顺序累加）；any = 冲突任一胜出（默认）。
+// GPU：grid-stride 写/原子 kernel；CPU 回退顺序写/累加。
+import env;
+import math;
+import gpu;
+
+class Main {
+    action:
+        @startup void go() {
+            long n = 100L;
+            int[] idx = new int[n];
+            float[] a = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = float(i); idx[i] = int(i); i = i + 1L; }
+
+            // 1) unique 全量：b1[idx[i]] = a[i]，idx = 0..99 → b1[i] = a[i]
+            float[] b1 = new float[n];
+            @gpu scatter(unique) a[0..n) to b1 by idx[0..n);
+            long err = 0L;
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(b1[i] - a[i]) > 0.001f) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("unique: " + (err == 0L ? "OK" : "FAIL") +
+                " b1[0]=" + b1[0L] + " b1[99]=" + b1[99L]);
+
+            // 2) unique 逆序 idx：idx[i] = n-1-i → b1[j] = a[n-1-j]
+            i = 0L;
+            while (i < n) { idx[i] = int(n - 1L - i); i = i + 1L; }
+            float[] b2 = new float[n];
+            @gpu scatter(unique) a[0..n) to b2 by idx[0..n);
+            err = 0L;
+            i = 0L;
+            while (i < n) {
+                if (Math.abs(b2[i] - a[n - 1L - i]) > 0.001f) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("unique_rev: " + (err == 0L ? "OK" : "FAIL") +
+                " b2[0]=" + b2[0L] + " b2[99]=" + b2[99L]);
+
+            // 3) any 冲突：idx[i] = i%10（重复）。b3[j] = 某 a[p]（p%10==j）。
+            // 只验证每槽等于候选集之一（实现无关，任一胜出）。
+            i = 0L;
+            while (i < n) { idx[i] = int(i % 10L); i = i + 1L; }
+            float[] b3 = new float[n];
+            @gpu scatter a[0..n) to b3 by idx[0..n);   // 默认 any
+            err = 0L;
+            i = 0L;
+            while (i < 10L) {
+                bool ok = false;
+                long p = i;
+                while (p < n) { if (Math.abs(b3[i] - a[p]) <= 0.001f) ok = true; p = p + 10L; }
+                if (!ok) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("any: " + (err == 0L ? "OK" : "FAIL") +
+                " b3[0]=" + b3[0L] + " b3[5]=" + b3[5L]);
+
+            // 4) atomic_add 冲突：idx[i] = i%10，b4[j] = Σ a[p]（p%10==j）
+            // = Σ p = 10*j + (0+10+...+90) = 10*j + 450
+            float[] b4 = new float[n];
+            @gpu scatter(atomic_add) a[0..n) to b4 by idx[0..n);
+            err = 0L;
+            i = 0L;
+            while (i < 10L) {
+                float exp = float(10L * i + 450L);
+                if (Math.abs(b4[i] - exp) > 0.01f) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("atomic_add: " + (err == 0L ? "OK" : "FAIL") +
+                " b4[0]=" + b4[0L] + " b4[9]=" + b4[9L]);
+
+            // 5) 子区间：a[10..50) → b5 by idx[10..50)，idx[k] = k-10 → b5[j] = a[10+j]
+            i = 0L;
+            while (i < n) { idx[i] = int(i - 10L); i = i + 1L; }
+            float[] b5 = new float[n];
+            @gpu scatter(unique) a[10L..50L) to b5 by idx[10L..50L);
+            err = 0L;
+            i = 0L;
+            while (i < 40L) {
+                if (Math.abs(b5[i] - a[10L + i]) > 0.001f) err = err + 1L;
+                i = i + 1L;
+            }
+            // 未写槽保持 0
+            i = 40L;
+            while (i < n) { if (b5[i] != 0.0f) err = err + 1L; i = i + 1L; }
+            Console.writeLine("slice: " + (err == 0L ? "OK" : "FAIL") +
+                " b5[0]=" + b5[0L] + " b5[39]=" + b5[39L] + " b5[40]=" + b5[40L]);
+
+            // 6) int 元素 + atomic_add
+            int[] ai = new int[n];
+            int[] bi = new int[n];
+            i = 0L;
+            while (i < n) { ai[i] = int(i); idx[i] = int(i % 10L); i = i + 1L; }
+            @gpu scatter(atomic_add) ai[0..n) to bi by idx[0..n);
+            err = 0L;
+            i = 0L;
+            while (i < 10L) {
+                if (bi[i] != int(10L * i + 450L)) err = err + 1L;
+                i = i + 1L;
+            }
+            Console.writeLine("int_atomic: " + (err == 0L ? "OK" : "FAIL") +
+                " bi[0]=" + bi[0] + " bi[9]=" + bi[9]);
+
+            Console.writeLine("gpu scatter: " + (err == 0L ? "PASS" : "FAIL"));
+        }
+}
+
+int main() { Main m = new Main() @thread; return 0; }

@@ -196,6 +196,17 @@
       （`emitSeqScan`）。
     - 测试 `tests/test_gpu_scan.myp` 双模式 PASS（全量前缀和、子区间前缀）。
       回归 109/109 + 负测试 61 + 框架 82（259/259）。
+  - **P3 ③ `@gpu scatter`（§8.4 声明式散点，冲突语义显式）**：
+    - 语法：`@gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi);`
+      （AST `GpuScatterStmt` + parser + sema 校验 a/b 同 T[]、idx 须 int[]）。
+      冲突模式默认 any（实现无关）；unique = idx 无重复（运行时预扫校验，越界/
+      重复报错退出）；atomic_add = b[idx]+=a（GPU 原子 / CPU 顺序累加）。
+    - GPU：H2D a 范围 + idx 范围 + 整块 b（保留未写槽）→ unique 预扫（host）→
+      grid-stride 写/原子 kernel（`emitScatterPtx`，atomicrmw Add/FAdd）→ D2H 整块
+      b；CPU 回退顺序写/累加（`emitSeqScatter`）。两区间长度运行时校验相等。
+    - 测试 `tests/test_gpu_scatter.myp` 双模式 PASS（unique 全量/逆序、any 冲突、
+      atomic_add 浮点/整型、子区间 + 未写槽保持）；负测试 3 个。
+      回归 109/109 + 负测试 64 + 框架 82（262/262）。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经

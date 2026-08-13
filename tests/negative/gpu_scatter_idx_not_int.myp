@@ -1,0 +1,15 @@
+// §8.4 @gpu scatter 负测试：索引数组须为 int[] → 编译报错
+// EXPECT ERROR: index 'idx' must be an 'int[]' array
+class Main {
+    action:
+        @startup void go() {
+            long n = 10L;
+            float[] idx = new float[n];
+            float[] a = new float[n];
+            float[] b = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = 0.0f; idx[i] = 0.0f; i = i + 1L; }
+            @gpu scatter a[0..n) to b by idx[0..n);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

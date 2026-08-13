@@ -1,0 +1,15 @@
+// §8.4 @gpu scatter 负测试：未知冲突模式 → 编译报错
+// EXPECT ERROR: unknown scatter conflict mode
+class Main {
+    action:
+        @startup void go() {
+            long n = 10L;
+            int[] idx = new int[n];
+            float[] a = new float[n];
+            float[] b = new float[n];
+            long i = 0L;
+            while (i < n) { a[i] = 0.0f; idx[i] = int(i); i = i + 1L; }
+            @gpu scatter(bogus) a[0..n) to b by idx[0..n);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

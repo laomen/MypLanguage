@@ -625,6 +625,7 @@ enum class StmtKind {
     GpuTileStmt,
     GpuReduceStmt,
     GpuScanStmt,
+    GpuScatterStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
@@ -837,6 +838,34 @@ struct GpuScanStmt : Stmt {
           op_x(std::move(x)), op_body(std::move(ob)), init_expr(std::move(ie)),
           in_name(std::move(an)), begin_expr(std::move(be)),
           end_expr(std::move(ee)), out_name(std::move(on)) {}
+};
+
+// §8.4 @gpu scatter（docs/gpu_library_design §8.4）：声明式散点，冲突语义显式。
+// 语法：@gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi);
+// 语义：b[idx[lo_i+p]] = a[lo_a+p]（p ∈ [0,n)，n = 两区间公共长度）。
+// 冲突模式：unique = idx 须无重复（运行时预扫校验，越界/重复报错）；
+// atomic_add = b[idx] += a（GPU 原子 / CPU 顺序累加，规范顺序一致）；
+// any = 冲突任一生效（实现无关，语义即"不确定"；默认）。
+// GPU：grid-stride 写 kernel（unique/any 普通写；atomic_add 用 atomicrmw）；
+// CPU 回退顺序写/累加。
+struct GpuScatterStmt : Stmt {
+    std::string a_name;             // 输入数组（值源）
+    std::unique_ptr<Expr> a_begin;  // a[lo..hi) 左闭
+    std::unique_ptr<Expr> a_end;    // a[lo..hi) 右开
+    std::string b_name;             // 输出数组（目标）
+    std::string idx_name;           // 索引数组（int[]，元素作下标）
+    std::unique_ptr<Expr> idx_begin;    // idx[lo..hi) 左闭
+    std::unique_ptr<Expr> idx_end;      // idx[lo..hi) 右开
+    int mode = 0;                   // 0=any, 1=unique, 2=atomic_add
+    int64_t block_val = 0;          // §3.7 block(n)：块大小（0 = 默认 256）
+    GpuScatterStmt(std::string an, std::unique_ptr<Expr> ab,
+                   std::unique_ptr<Expr> ae, std::string bn, std::string in,
+                   std::unique_ptr<Expr> ib, std::unique_ptr<Expr> ie,
+                   int md, SourceRange r)
+        : Stmt(StmtKind::GpuScatterStmt, r), a_name(std::move(an)),
+          a_begin(std::move(ab)), a_end(std::move(ae)), b_name(std::move(bn)),
+          idx_name(std::move(in)), idx_begin(std::move(ib)),
+          idx_end(std::move(ie)), mode(md) {}
 };
 
 // for (x in coll) { ... } — 集合迭代（§四-2，additive）。

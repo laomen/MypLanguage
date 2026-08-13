@@ -338,6 +338,8 @@ private:
     llvm::Function* runtime_gpu_load_kernel_ = nullptr;
     llvm::Function* runtime_gpu_launch_ = nullptr;
     llvm::Function* runtime_gpu_destroy_kernel_ = nullptr;
+    // §8.4 unique 模式索引校验失败（越界/重复）→ 打印并退出（noreturn）
+    llvm::Function* runtime_gpu_scatter_check_fail_ = nullptr;
     // CUDA device info
     llvm::Function* runtime_cuda_count_ = nullptr;
     llvm::Function* runtime_cuda_name_ = nullptr;
@@ -506,6 +508,9 @@ private:
     void generateGpuReduce(const GpuReduceStmt& stmt);
     // §8.3 @gpu scan：声明式前缀和（两遍：K1 块和 + host 块前缀 + K2 块内 scan）
     void generateGpuScan(const GpuScanStmt& stmt);
+    // §8.4 @gpu scatter：声明式散点（grid-stride 写 kernel；unique 预扫校验；
+    // atomic_add 原子；CPU 回退顺序写/累加）
+    void generateGpuScatter(const GpuScatterStmt& stmt);
     // §8.2/8.3 K1 块和 kernel PTX：每块 tx==0 串行归约块内区间 → partials[bid]
     std::string emitBlockSumPtx(const Expr& op_expr, const Expr& init_expr,
                                 llvm::Type* elem_ty, int block_size,
@@ -519,6 +524,19 @@ private:
     // §8.3 host 顺序前缀扫描：acc=init；for i in [0,cnt): x=src[i]; acc=op(acc,x)；dst[i]=acc
     void emitSeqScan(llvm::Value* src, llvm::Value* dst, llvm::Value* cnt,
                      llvm::Type* elem_ty, const GpuScanStmt& stmt);
+    // §8.4 scatter 写 kernel PTX（grid-stride）：b[idx[p]] = a[p]
+    //（unique/any）；atomic=true 用 atomicrmw（atomic_add）。
+    std::string emitScatterPtx(llvm::Type* elem_ty, int block_size,
+                               bool atomic_add, const std::string& kernel_name);
+    // §8.4 host 顺序散点（CPU 回退）：b[idx[lo_i+p]] = a[lo_a+p]（unique/any）；
+    // atomic_add 顺序累加（规范顺序）。
+    void emitSeqScatter(llvm::Value* a_src, llvm::Value* idx_src,
+                        llvm::Value* b_src, llvm::Value* cnt,
+                        llvm::Type* elem_ty, bool atomic_add);
+    // §8.4 unique 模式 host 预扫：越界/重复 → runtime_gpu_scatter_check_fail_。
+    // idx 元素 i32；b 目标数据指针（长度从 backing 头 -24 读）。
+    void emitScatterIdxCheck(llvm::Value* idx_src, llvm::Value* cnt,
+                             llvm::Value* b_src);
     // §3.2 @gpu tile CPU 回退（降级）：单线程执行 body，共享数组 = host 栈数组
     void generateGpuTileCpuFallback(const GpuTileStmt& stmt);
 

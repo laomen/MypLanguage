@@ -2757,6 +2757,382 @@ void CodeGen::generateGpuScan(const GpuScanStmt& s) {
     builder_.SetInsertPoint(done_bb);
 }
 
+// §8.4 scatter 写 kernel PTX（grid-stride）：void <name>(i64 n, T* a, i32* idx, T* b)。
+// 每线程 gid = bid*blockDim + tid，处理 p = gid, gid+stride, ...（stride = blockDim*gridDim）。
+// unique/any：b[idx[p]] = a[p]；atomic_add：atomicrmw（Add / FAdd）。
+std::string CodeGen::emitScatterPtx(llvm::Type* elem_ty, int block_size,
+                                    bool atomic_add, const std::string& kernel_name) {
+#ifdef MYP_ENABLE_GPU
+    auto ptx_mod = std::make_unique<llvm::Module>("myp_gpu_scatter", ctx_);
+    ptx_mod->setTargetTriple(llvm::Triple("nvptx64-nvidia-cuda"));
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+        {i64, ptr, ptr, ptr}, false);
+    auto* kf = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+        kernel_name, ptx_mod.get());
+    kf->setCallingConv(llvm::CallingConv::PTX_Kernel);
+    auto* n_arg = kf->getArg(0); n_arg->setName("n");
+    auto* a_arg = kf->getArg(1); a_arg->setName("a");
+    auto* idx_arg = kf->getArg(2); idx_arg->setName("idx");
+    auto* b_arg = kf->getArg(3); b_arg->setName("b");
+    auto* entry = llvm::BasicBlock::Create(ctx_, "entry", kf);
+    llvm::IRBuilder<> kb(entry);
+    auto* tid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_tid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "tx");
+    auto* ntid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ntid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "ntid");
+    auto* ctaid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_ctaid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "bid");
+    auto* nctaid = kb.CreateIntCast(
+        kb.CreateIntrinsic(llvm::Intrinsic::nvvm_read_ptx_sreg_nctaid_x,
+            llvm::ArrayRef<llvm::Type*>(), llvm::ArrayRef<llvm::Value*>()), i64, false, "nb");
+    auto* gid0 = kb.CreateAdd(kb.CreateMul(ctaid, ntid, "b0"), tid, "gid");
+    auto* stride = kb.CreateMul(ntid, nctaid, "stride");
+    auto* gid_a = kb.CreateAlloca(i64, nullptr, "gid");
+    kb.CreateStore(gid0, gid_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "loop", kf);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "lbody", kf);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "lend", kf);
+    kb.CreateBr(loop_bb);
+    kb.SetInsertPoint(loop_bb);
+    auto* gv = kb.CreateLoad(i64, gid_a);
+    kb.CreateCondBr(kb.CreateICmpSLT(gv, n_arg), lbody, lend);
+    kb.SetInsertPoint(lbody);
+    auto* gv2 = kb.CreateLoad(i64, gid_a);
+    auto* av = kb.CreateLoad(elem_ty, kb.CreateGEP(elem_ty, a_arg, gv2), "av");
+    auto* j32 = kb.CreateLoad(i32, kb.CreateGEP(i32, idx_arg, gv2), "j");
+    auto* j = kb.CreateSExt(j32, i64, "j64");
+    auto* bp = kb.CreateGEP(elem_ty, b_arg, j, "bp");
+    if (atomic_add) {
+        if (elem_ty->isFloatingPointTy())
+            kb.CreateAtomicRMW(llvm::AtomicRMWInst::FAdd, bp, av, llvm::MaybeAlign(),
+                llvm::AtomicOrdering::SequentiallyConsistent);
+        else
+            kb.CreateAtomicRMW(llvm::AtomicRMWInst::Add, bp, av, llvm::MaybeAlign(),
+                llvm::AtomicOrdering::SequentiallyConsistent);
+    } else {
+        kb.CreateStore(av, bp);
+    }
+    auto* gv3 = kb.CreateLoad(i64, gid_a);
+    kb.CreateStore(kb.CreateAdd(gv3, stride), gid_a);
+    kb.CreateBr(loop_bb);
+    kb.SetInsertPoint(lend);
+    kb.CreateRetVoid();
+    (void)block_size;
+
+    // ---- 目标机器 + verify + emit PTX（同 emitBlockSumPtx）----
+    std::string err;
+    static bool nvptx_st_init = false;
+    if (!nvptx_st_init) {
+        LLVMInitializeNVPTXTargetInfo();
+        LLVMInitializeNVPTXTarget();
+        LLVMInitializeNVPTXTargetMC();
+        LLVMInitializeNVPTXAsmPrinter();
+        nvptx_st_init = true;
+    }
+    auto* tgt = llvm::TargetRegistry::lookupTarget("nvptx64-nvidia-cuda", err);
+    if (!tgt) { diag_.warn(SourceRange{}, "NVPTX target not available: " + err); return ""; }
+    auto* tm = tgt->createTargetMachine(llvm::Triple("nvptx64-nvidia-cuda"), "sm_75", "",
+        llvm::TargetOptions{}, llvm::Reloc::PIC_);
+    if (!tm) { diag_.warn(SourceRange{}, "NVPTX target machine creation failed"); return ""; }
+    std::string verify_err;
+    llvm::raw_string_ostream vos(verify_err);
+    if (llvm::verifyModule(*ptx_mod, &vos)) {
+        diag_.warn(SourceRange{}, "GPU scatter kernel verification failed: " + verify_err);
+        delete tm; return "";
+    }
+    llvm::legacy::PassManager pm;
+    llvm::SmallString<16384> buf;
+    llvm::raw_svector_ostream os(buf);
+    if (tm->addPassesToEmitFile(pm, os, nullptr, llvm::CodeGenFileType::AssemblyFile)) {
+        diag_.warn(SourceRange{}, "NVPTX cannot emit PTX"); delete tm; return "";
+    }
+    pm.run(*ptx_mod);
+    delete tm;
+    std::string ptx_str(buf.data(), buf.size());
+    if (getenv("MYP_DUMP_PTX") && !ptx_str.empty())
+        fprintf(stderr, "=== MYP PTX (scatter) ===\n%s\n=== END ===\n", ptx_str.c_str());
+    if (ptx_str.empty()) { diag_.warn(SourceRange{}, "NVPTX emitted empty PTX"); return ""; }
+    return ptx_str;
+#else
+    (void)elem_ty; (void)block_size; (void)atomic_add;
+    return "";
+#endif
+}
+
+// §8.4 host 顺序散点（CPU 回退）：for p in [0,cnt): j = sext(idx[p]);
+// atomic_add ? b[j] += a[p]（规范顺序）: b[j] = a[p]。idx 元素 i32。
+void CodeGen::emitSeqScatter(llvm::Value* a_src, llvm::Value* idx_src,
+                             llvm::Value* b_src, llvm::Value* cnt,
+                             llvm::Type* elem_ty, bool atomic_add) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* i_a = createEntryBlockAlloca(current_function_, i64, "__st_i");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), i_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "st_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "st_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "st_end", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* iv = builder_.CreateLoad(i64, i_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(iv, cnt), lbody, lend);
+    builder_.SetInsertPoint(lbody);
+    auto* iv2 = builder_.CreateLoad(i64, i_a);
+    auto* av = builder_.CreateLoad(elem_ty, builder_.CreateGEP(elem_ty, a_src, iv2), "stv");
+    auto* j32 = builder_.CreateLoad(i32, builder_.CreateGEP(i32, idx_src, iv2), "stj");
+    auto* j = builder_.CreateSExt(j32, i64, "stj64");
+    auto* bp = builder_.CreateGEP(elem_ty, b_src, j, "stbp");
+    if (atomic_add) {
+        auto* cur = builder_.CreateLoad(elem_ty, bp);
+        auto* nv = elem_ty->isFloatingPointTy()
+            ? builder_.CreateFAdd(cur, av)
+            : builder_.CreateAdd(cur, av);
+        builder_.CreateStore(nv, bp);
+    } else {
+        builder_.CreateStore(av, bp);
+    }
+    auto* iv3 = builder_.CreateLoad(i64, i_a);
+    builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(lend);
+}
+
+// §8.4 unique 模式 host 预扫：len_b = *(i64*)((char*)b_src - 24)（backing count）。
+// for p in [0,cnt): j = sext(idx[p])；越界（j<0 || j>=len_b）或重复 → 报错退出。
+// idx 元素 i32；mark = 每槽 1 字节，len_b 大小。
+void CodeGen::emitScatterIdxCheck(llvm::Value* idx_src, llvm::Value* cnt,
+                                  llvm::Value* b_src) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* i8 = llvm::Type::getInt8Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    auto* len_b = builder_.CreateLoad(i64,
+        builder_.CreateGEP(i8, b_src, llvm::ConstantInt::get(i64, -24)), "b_len");
+    // mark：ref-counted byte backing（myp_alloc_slice_backing），用后 myp_release。
+    // 不能 myp_alloc/myp_free（myp_alloc 现为计数字符串专用，直接 free 指针非法）。
+    auto* alloc_sb = module_->getFunction("myp_alloc_slice_backing");
+    if (!alloc_sb) {
+        auto* ft = llvm::FunctionType::get(ptr, {i64, i32, i32}, false);
+        alloc_sb = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+            "myp_alloc_slice_backing", module_.get());
+    }
+    auto* mark = builder_.CreateCall(alloc_sb,
+        {len_b, llvm::ConstantInt::get(i32, 1), llvm::ConstantInt::get(i32, 1)},
+        "st_mark");
+    builder_.CreateMemSet(mark, llvm::ConstantInt::get(i8, 0), len_b, llvm::Align(1));
+    auto* i_a = createEntryBlockAlloca(current_function_, i64, "__chk_i");
+    builder_.CreateStore(llvm::ConstantInt::get(i64, 0), i_a);
+    auto* loop_bb = llvm::BasicBlock::Create(ctx_, "chk_loop", current_function_);
+    auto* lbody = llvm::BasicBlock::Create(ctx_, "chk_body", current_function_);
+    auto* lend = llvm::BasicBlock::Create(ctx_, "chk_end", current_function_);
+    auto* oob_fail_bb = llvm::BasicBlock::Create(ctx_, "chk_oob", current_function_);
+    auto* dup_check_bb = llvm::BasicBlock::Create(ctx_, "chk_dupchk", current_function_);
+    auto* dup_fail_bb = llvm::BasicBlock::Create(ctx_, "chk_dup", current_function_);
+    auto* ok_bb = llvm::BasicBlock::Create(ctx_, "chk_ok", current_function_);
+    builder_.CreateBr(loop_bb);
+    builder_.SetInsertPoint(loop_bb);
+    auto* iv = builder_.CreateLoad(i64, i_a);
+    builder_.CreateCondBr(builder_.CreateICmpSLT(iv, cnt), lbody, lend);
+    builder_.SetInsertPoint(lbody);
+    auto* iv2 = builder_.CreateLoad(i64, i_a);
+    auto* j32 = builder_.CreateLoad(i32, builder_.CreateGEP(i32, idx_src, iv2), "chk_j");
+    auto* j = builder_.CreateSExt(j32, i64, "chk_j64");
+    auto* oob = builder_.CreateOr(
+        builder_.CreateICmpSLT(j, llvm::ConstantInt::get(i64, 0)),
+        builder_.CreateICmpSGE(j, len_b));
+    builder_.CreateCondBr(oob, oob_fail_bb, dup_check_bb);
+    // 越界 fail（noreturn）
+    builder_.SetInsertPoint(oob_fail_bb);
+    builder_.CreateCall(runtime_gpu_scatter_check_fail_,
+        {builder_.CreateGlobalString("scatter index out of bounds", "st_msg1")});
+    builder_.CreateUnreachable();
+    // 重复检测：mark[j] != 0 → dup_fail_bb；否则标记后继续
+    builder_.SetInsertPoint(dup_check_bb);
+    auto* mv = builder_.CreateLoad(i8, builder_.CreateGEP(i8, mark, j), "chk_m");
+    auto* is_dup = builder_.CreateICmpNE(mv, llvm::ConstantInt::get(i8, 0));
+    builder_.CreateCondBr(is_dup, dup_fail_bb, ok_bb);
+    builder_.SetInsertPoint(ok_bb);
+    builder_.CreateStore(llvm::ConstantInt::get(i8, 1),
+        builder_.CreateGEP(i8, mark, j));
+    auto* iv3 = builder_.CreateLoad(i64, i_a);
+    builder_.CreateStore(builder_.CreateAdd(iv3, llvm::ConstantInt::get(i64, 1)), i_a);
+    builder_.CreateBr(loop_bb);
+    // 重复 fail（noreturn）
+    builder_.SetInsertPoint(dup_fail_bb);
+    builder_.CreateCall(runtime_gpu_scatter_check_fail_,
+        {builder_.CreateGlobalString("scatter index duplicate", "st_msg2")});
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(lend);
+    builder_.CreateCall(runtime_release_, {mark});
+}
+
+// §8.4 @gpu scatter：b[idx[lo_i+p]] = a[lo_a+p]（p ∈ [0,n)，n = 两区间公共长度，
+// 运行时校验 n_a == n_i）。
+// GPU：H2D a 范围 + H2D idx 范围 + H2D 整块 b（保留未写槽）→ unique 预扫（host）
+// → grid-stride 写/原子 kernel → D2H 整块 b。CPU 回退：unique 预扫 → 顺序写/累加。
+void CodeGen::generateGpuScatter(const GpuScatterStmt& s) {
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* i32 = llvm::Type::getInt32Ty(ctx_);
+    auto* ptr = llvm::PointerType::get(ctx_, 0);
+    llvm::Type* elem_ty = nullptr;
+    auto eit = array_elem_types_.find(s.a_name);
+    if (eit != array_elem_types_.end()) elem_ty = eit->second;
+    if (!elem_ty) { diag_.error(s.range, "'@gpu scatter' cannot determine element type"); return; }
+    uint64_t esz = module_->getDataLayout().getTypeAllocSize(elem_ty);
+    int block_size = s.block_val > 0 ? (int)s.block_val : 256;
+    bool atomic_add = (s.mode == 2);
+    bool unique = (s.mode == 1);
+
+    auto* lo_a = generateExpr(*s.a_begin);
+    if (lo_a->getType() != i64) lo_a = builder_.CreateSExtOrTrunc(lo_a, i64);
+    auto* hi_a = generateExpr(*s.a_end);
+    if (hi_a->getType() != i64) hi_a = builder_.CreateSExtOrTrunc(hi_a, i64);
+    auto* n_a = builder_.CreateSub(hi_a, lo_a, "sta_n");
+    auto* lo_i = generateExpr(*s.idx_begin);
+    if (lo_i->getType() != i64) lo_i = builder_.CreateSExtOrTrunc(lo_i, i64);
+    auto* hi_i = generateExpr(*s.idx_end);
+    if (hi_i->getType() != i64) hi_i = builder_.CreateSExtOrTrunc(hi_i, i64);
+    auto* n_i = builder_.CreateSub(hi_i, lo_i, "sti_n");
+
+    auto* func = builder_.GetInsertBlock()->getParent();
+    // 运行时校验：n_a == n_i（契约，违约 → 报错退出）
+    auto* len_ok_bb = llvm::BasicBlock::Create(ctx_, "st_len_ok", func);
+    auto* len_fail_bb = llvm::BasicBlock::Create(ctx_, "st_len_fail", func);
+    builder_.CreateCondBr(builder_.CreateICmpEQ(n_a, n_i), len_ok_bb, len_fail_bb);
+    builder_.SetInsertPoint(len_fail_bb);
+    builder_.CreateCall(runtime_gpu_scatter_check_fail_,
+        {builder_.CreateGlobalString("a and idx range lengths differ", "st_lmsg")});
+    builder_.CreateUnreachable();
+    builder_.SetInsertPoint(len_ok_bb);
+    auto* n = n_a;
+    auto* blocks = builder_.CreateUDiv(
+        builder_.CreateAdd(n, llvm::ConstantInt::get(i64, block_size - 1)),
+        llvm::ConstantInt::get(i64, block_size), "stblk");
+
+    auto* gpu_bb = llvm::BasicBlock::Create(ctx_, "st_gpu", func);
+    auto* cpu_bb = llvm::BasicBlock::Create(ctx_, "st_cpu", func);
+    auto* done_bb = llvm::BasicBlock::Create(ctx_, "st_done", func);
+    auto* gpu_ok = builder_.CreateCall(runtime_gpu_init_, {}, "gpu_ok");
+    auto* gpu_ok_i1 = builder_.CreateICmpNE(gpu_ok, llvm::ConstantInt::get(i32, 0));
+    builder_.CreateCondBr(gpu_ok_i1, gpu_bb, cpu_bb);
+
+    // ============ GPU path ============
+    builder_.SetInsertPoint(gpu_bb);
+    std::string kname = atomic_add ? "myp_scatter_add" : "myp_scatter";
+    std::string ptx_str = emitScatterPtx(elem_ty, block_size, atomic_add, kname);
+    if (ptx_str.empty()) {
+        diag_.warn(s.range, "'@gpu scatter' GPU kernel generation failed, running on CPU");
+        builder_.CreateBr(cpu_bb);
+        builder_.SetInsertPoint(cpu_bb);
+        // CPU：unique 预扫 + 顺序写/累加
+        auto* a_hc = builder_.CreateLoad(ptr, getNamedValue(s.a_name), s.a_name);
+        auto* a_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), a_hc,
+            builder_.CreateMul(lo_a, llvm::ConstantInt::get(i64, esz)), "stahc");
+        auto* idx_hc = builder_.CreateLoad(ptr, getNamedValue(s.idx_name), s.idx_name);
+        auto* idx_hc_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), idx_hc,
+            builder_.CreateMul(lo_i, llvm::ConstantInt::get(i64, 4)), "stihc");
+        auto* b_hc = builder_.CreateLoad(ptr, getNamedValue(s.b_name), s.b_name);
+        if (unique) emitScatterIdxCheck(idx_hc_off, n, b_hc);
+        emitSeqScatter(a_hc_off, idx_hc_off, b_hc, n, elem_ty, atomic_add);
+        builder_.CreateBr(done_bb);
+        builder_.SetInsertPoint(done_bb);
+        return;
+    }
+    auto* ptx_global = builder_.CreateGlobalString(ptx_str, "__myp_ptx_scatter");
+    auto* kctx = builder_.CreateCall(runtime_gpu_load_kernel_,
+        {ptx_global, builder_.CreateGlobalString(kname, "kn")}, "st_k");
+    auto* k_ok = builder_.CreateICmpNE(kctx,
+        llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(ptr)), "k_ok");
+    auto* launch_bb = llvm::BasicBlock::Create(ctx_, "st_launch", func);
+    auto* gpu_done_bb = llvm::BasicBlock::Create(ctx_, "st_gpu_done", func);
+    builder_.CreateCondBr(k_ok, launch_bb, cpu_bb);
+
+    builder_.SetInsertPoint(launch_bb);
+    // host 指针
+    auto* a_va = getNamedValue(s.a_name);
+    auto* a_h = builder_.CreateLoad(ptr, a_va, s.a_name);
+    auto* a_h_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), a_h,
+        builder_.CreateMul(lo_a, llvm::ConstantInt::get(i64, esz)), "stah");
+    auto* idx_va = getNamedValue(s.idx_name);
+    auto* idx_h = builder_.CreateLoad(ptr, idx_va, s.idx_name);
+    auto* idx_h_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), idx_h,
+        builder_.CreateMul(lo_i, llvm::ConstantInt::get(i64, 4)), "stih");
+    auto* b_va = getNamedValue(s.b_name);
+    auto* b_h = builder_.CreateLoad(ptr, b_va, s.b_name);
+    // unique 预扫（host，kernel 前）
+    if (unique) emitScatterIdxCheck(idx_h_off, n, b_h);
+    // len_b = backing count（b_h - 24）
+    auto* len_b = builder_.CreateLoad(i64,
+        builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), b_h,
+            llvm::ConstantInt::get(i64, -24)), "st_blen");
+    auto* b_nbytes = builder_.CreateMul(len_b, llvm::ConstantInt::get(i64, esz));
+    // H2D
+    auto* nbytes = builder_.CreateMul(n, llvm::ConstantInt::get(i64, esz));
+    auto* a_dev = builder_.CreateCall(runtime_gpu_alloc_, {nbytes}, "st_ad");
+    builder_.CreateCall(runtime_gpu_to_device_, {a_dev, a_h_off, nbytes});
+    auto* inbytes = builder_.CreateMul(n, llvm::ConstantInt::get(i64, 4));
+    auto* idx_dev = builder_.CreateCall(runtime_gpu_alloc_, {inbytes}, "st_id");
+    builder_.CreateCall(runtime_gpu_to_device_, {idx_dev, idx_h_off, inbytes});
+    auto* b_dev = builder_.CreateCall(runtime_gpu_alloc_, {b_nbytes}, "st_bd");
+    builder_.CreateCall(runtime_gpu_to_device_, {b_dev, b_h, b_nbytes});
+    // args: n, a_dev, idx_dev, b_dev（void** 约定）
+    const unsigned nargs = 4;
+    auto* args_a = builder_.CreateAlloca(ptr, llvm::ConstantInt::get(i32, nargs), "st_args");
+    auto* t0 = builder_.CreateAlloca(i64);
+    builder_.CreateStore(n, t0);
+    builder_.CreateStore(builder_.CreateBitCast(t0, ptr),
+        builder_.CreateGEP(ptr, args_a, llvm::ConstantInt::get(i32, 0)));
+    auto* a_tmp = builder_.CreateAlloca(ptr);
+    builder_.CreateStore(a_dev, a_tmp);
+    builder_.CreateStore(builder_.CreateBitCast(a_tmp, ptr),
+        builder_.CreateGEP(ptr, args_a, llvm::ConstantInt::get(i32, 1)));
+    auto* i_tmp = builder_.CreateAlloca(ptr);
+    builder_.CreateStore(idx_dev, i_tmp);
+    builder_.CreateStore(builder_.CreateBitCast(i_tmp, ptr),
+        builder_.CreateGEP(ptr, args_a, llvm::ConstantInt::get(i32, 2)));
+    auto* b_tmp = builder_.CreateAlloca(ptr);
+    builder_.CreateStore(b_dev, b_tmp);
+    builder_.CreateStore(builder_.CreateBitCast(b_tmp, ptr),
+        builder_.CreateGEP(ptr, args_a, llvm::ConstantInt::get(i32, 3)));
+    builder_.CreateCall(runtime_gpu_launch_,
+        {kctx, builder_.CreateIntCast(blocks, i32, false),
+         llvm::ConstantInt::get(i32, block_size),
+         builder_.CreateBitCast(args_a, ptr),
+         llvm::ConstantInt::get(i32, nargs),
+         llvm::ConstantInt::get(i64, 0)});
+    // D2H 整块 b
+    builder_.CreateCall(runtime_gpu_to_host_, {b_h, b_dev, b_nbytes});
+    // 清理
+    builder_.CreateCall(runtime_gpu_free_, {a_dev});
+    builder_.CreateCall(runtime_gpu_free_, {idx_dev});
+    builder_.CreateCall(runtime_gpu_free_, {b_dev});
+    builder_.CreateCall(runtime_gpu_destroy_kernel_, {kctx});
+    builder_.CreateBr(gpu_done_bb);
+    builder_.SetInsertPoint(gpu_done_bb);
+    builder_.CreateBr(done_bb);
+
+    // ============ CPU fallback ============
+    builder_.SetInsertPoint(cpu_bb);
+    diag_.warn(s.range, "'@gpu scatter' GPU fallback — running on CPU");
+    auto* a_hc2 = builder_.CreateLoad(ptr, getNamedValue(s.a_name), s.a_name);
+    auto* a_hc2_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), a_hc2,
+        builder_.CreateMul(lo_a, llvm::ConstantInt::get(i64, esz)), "stahc");
+    auto* idx_hc2 = builder_.CreateLoad(ptr, getNamedValue(s.idx_name), s.idx_name);
+    auto* idx_hc2_off = builder_.CreateGEP(llvm::Type::getInt8Ty(ctx_), idx_hc2,
+        builder_.CreateMul(lo_i, llvm::ConstantInt::get(i64, 4)), "stihc");
+    auto* b_hc2 = builder_.CreateLoad(ptr, getNamedValue(s.b_name), s.b_name);
+    if (unique) emitScatterIdxCheck(idx_hc2_off, n, b_hc2);
+    emitSeqScatter(a_hc2_off, idx_hc2_off, b_hc2, n, elem_ty, atomic_add);
+    builder_.CreateBr(done_bb);
+
+    builder_.SetInsertPoint(done_bb);
+}
+
 
 
 // §4.1 @gpu stream(s)：求值 GpuStream 实例的 handle()（long 句柄）。

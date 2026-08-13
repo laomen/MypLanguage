@@ -327,6 +327,15 @@ void myp_gpu_destroy_kernel(void* kctx) {
     free(k);
 }
 
+// §8.4 @gpu scatter(unique) 索引预扫失败（越界 / 重复）→ 打印并退出。
+// 契约违约（unique 模式要求 idx 无重复且 0≤idx<len(b)），而非可回退的降级，
+// 故直接终止而非返回（返回会静默产生未定义结果，违背"冲突必须显式声明"）。
+__attribute__((noreturn)) void myp_gpu_scatter_check_fail(const char* msg) {
+    fprintf(stderr, "[myp GPU] @gpu scatter(unique) index check failed: %s\n",
+            msg ? msg : "unknown");
+    exit(1);
+}
+
 // ============================================================================
 // M1 显式显存 / 流 FFI（范式库 stdlib/gpu 使用）
 // 约定：设备内存句柄统一用 long（指针按位宽安全地转成整数），MYP 侧不暴露裸指针。

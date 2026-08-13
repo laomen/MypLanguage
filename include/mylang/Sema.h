@@ -56,6 +56,9 @@ private:
     StmtResult visitGpuReduceStmt(GpuReduceStmt& stmt);
     // §8.3 @gpu scan（声明式前缀和）：b[lo+i] = init∘a[lo]∘…。同 reduce 校验。
     StmtResult visitGpuScanStmt(GpuScanStmt& stmt);
+    // §8.4 @gpu scatter（声明式散点）：b[idx[lo_i+p]] = a[lo_a+p]。校验 a/b 同
+    // 元素类型 T[]、idx 整型[]、两区间整界；冲突模式合法。
+    StmtResult visitGpuScatterStmt(GpuScatterStmt& stmt);
     // §四-2 × 泛型：ForInStmt 注解逻辑（正常访问 + 单态化重注解共用）。
     bool annotateForInStmt(ForInStmt& stmt, const TypeInfo& it_type);
     void annotateForInsInStmt(Stmt& s, const std::vector<ParamDecl>& params);

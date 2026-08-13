@@ -1,0 +1,15 @@
+// §8.4 @gpu scatter 负测试：输出数组元素类型须与输入一致 → 编译报错
+// EXPECT ERROR: output 'b' must be a 'float[]' array
+class Main {
+    action:
+        @startup void go() {
+            long n = 10L;
+            int[] idx = new int[n];
+            float[] a = new float[n];
+            int[] b = new int[n];
+            long i = 0L;
+            while (i < n) { a[i] = 0.0f; idx[i] = int(i); i = i + 1L; }
+            @gpu scatter a[0..n) to b by idx[0..n);
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

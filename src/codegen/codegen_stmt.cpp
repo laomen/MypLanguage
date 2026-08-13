@@ -58,6 +58,7 @@ void CodeGen::generateStmt(const Stmt& s) {
         case StmtKind::GpuTileStmt: generateGpuTile(static_cast<const GpuTileStmt&>(s)); break;
         case StmtKind::GpuReduceStmt: generateGpuReduce(static_cast<const GpuReduceStmt&>(s)); break;
         case StmtKind::GpuScanStmt: generateGpuScan(static_cast<const GpuScanStmt&>(s)); break;
+        case StmtKind::GpuScatterStmt: generateGpuScatter(static_cast<const GpuScatterStmt&>(s)); break;
         case StmtKind::ReturnStmt: generateReturnStmt(static_cast<const ReturnStmt&>(s)); break;
         case StmtKind::BreakStmt:   generateBreakStmt(static_cast<const BreakStmt&>(s)); break;
         case StmtKind::ContinueStmt: generateContinueStmt(static_cast<const ContinueStmt&>(s)); break;

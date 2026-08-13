@@ -84,6 +84,11 @@ std::unique_ptr<Stmt> Parser::parseStatement() {
                     advance(); // consume 'scan'
                     return parseGpuScanStmt();
                 }
+                // §8.4 @gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi)
+                if (check(TokenKind::Identifier) && peek().value == "scatter") {
+                    advance(); // consume 'scatter'
+                    return parseGpuScatterStmt();
+                }
                 diag_.error(previous().range,
                     "'@gpu' must be followed by 'for', 'tile', 'stride for', or 'reduce'");
             } else {
@@ -966,6 +971,84 @@ std::unique_ptr<Stmt> Parser::parseGpuScanStmt() {
     range.end_offset = previous().range.end_offset;
     auto st = std::make_unique<GpuScanStmt>(acc, x, std::move(body),
         std::move(init), arr, std::move(lo), std::move(hi), out, range);
+    st->block_val = block_val;
+    return st;
+}
+
+// §8.4 @gpu scatter [(unique|atomic_add|any)] a[lo..hi) to b by idx[lo..hi) [block(n)];
+// 声明式散点：b[idx[lo_i+p]] = a[lo_a+p]（冲突语义显式，默认 any）。
+std::unique_ptr<Stmt> Parser::parseGpuScatterStmt() {
+    auto start = previous().range;
+    // 可选冲突模式：scatter(unique) / scatter(atomic_add) / scatter(any)
+    int mode = 0;   // 0=any（默认）, 1=unique, 2=atomic_add
+    if (match(TokenKind::LeftParen)) {
+        std::string m = parseIdentifier("expected conflict mode (unique|atomic_add|any)");
+        if (m == "unique") mode = 1;
+        else if (m == "atomic_add") mode = 2;
+        else if (m == "any") mode = 0;
+        else diag_.error(previous().range,
+            "unknown scatter conflict mode '" + m + "' (expected unique|atomic_add|any)");
+        consume(TokenKind::RightParen, "expected ')' after scatter mode");
+    }
+    // a[lo..hi)
+    std::string a = parseIdentifier("expected input array name after 'scatter'");
+    consume(TokenKind::LeftBracket, "expected '[' after input array name");
+    auto ab = parseExpr();
+    std::unique_ptr<Expr> a_lo, a_hi;
+    if (ab->kind == ExprKind::Range) {
+        auto& r = static_cast<RangeExpr&>(*ab);
+        a_lo = std::move(r.start);
+        a_hi = std::move(r.end);
+    } else {
+        diag_.error(ab->range, "expected '<lo>..<hi>' range for scatter input");
+    }
+    consume(TokenKind::RightParen, "expected ')' after scatter input range");
+    // to b
+    if (check(TokenKind::Identifier) && peek().value == "to") {
+        advance(); // consume 'to'
+    } else {
+        diag_.error(peek().range, "expected 'to <output>' in '@gpu scatter'");
+    }
+    std::string b = parseIdentifier("expected output array name after 'to'");
+    // by idx[lo..hi)
+    if (check(TokenKind::Identifier) && peek().value == "by") {
+        advance(); // consume 'by'
+    } else {
+        diag_.error(peek().range, "expected 'by <index-array>[<lo>..<hi>)' in '@gpu scatter'");
+    }
+    std::string idx = parseIdentifier("expected index array name after 'by'");
+    consume(TokenKind::LeftBracket, "expected '[' after index array name");
+    auto ib = parseExpr();
+    std::unique_ptr<Expr> i_lo, i_hi;
+    if (ib->kind == ExprKind::Range) {
+        auto& r = static_cast<RangeExpr&>(*ib);
+        i_lo = std::move(r.start);
+        i_hi = std::move(r.end);
+    } else {
+        diag_.error(ib->range, "expected '<lo>..<hi>' range for scatter index");
+    }
+    consume(TokenKind::RightParen, "expected ')' after scatter index range");
+    // 可选 block(n)
+    int64_t block_val = 0;
+    if (check(TokenKind::Identifier) && peek().value == "block" &&
+        peekNext().kind == TokenKind::LeftParen) {
+        advance();
+        consume(TokenKind::LeftParen, "expected '(' after 'block'");
+        if (check(TokenKind::IntegerLiteral)) {
+            auto tok = advance();
+            try { block_val = (int64_t)std::stoll(tok.value); }
+            catch (...) { block_val = 0; }
+        } else {
+            diag_.error(peek().range, "block size must be an integer literal");
+        }
+        consume(TokenKind::RightParen, "expected ')' after block size");
+    }
+    match(TokenKind::Semicolon);
+    SourceRange range;
+    range.begin_offset = start.begin_offset;
+    range.end_offset = previous().range.end_offset;
+    auto st = std::make_unique<GpuScatterStmt>(a, std::move(a_lo), std::move(a_hi),
+        b, idx, std::move(i_lo), std::move(i_hi), mode, range);
     st->block_val = block_val;
     return st;
 }
