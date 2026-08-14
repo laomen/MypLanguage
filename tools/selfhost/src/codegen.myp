@@ -906,6 +906,9 @@ class CodeGen {
             string k = st.kind_;
             if (k == "Block") {
                 for (int i = 0; i < st.bodyStmts().size(); i = i + 1) {
+                    // 当前块已被终止（throw/return/break 等）→ 新开 dead 块，
+                    // 后续语句是死代码但必须合法（同 C++ generateBlock）。
+                    if (terminated_ != 0) openBlock(newBlock("dead"));
                     genStmt(st.bodyStmts().get(i));
                 }
             } else if (k == "VarDecl") {
@@ -1084,6 +1087,10 @@ class CodeGen {
                 genForIn(st);
             } else if (k == "Destructure") {
                 genDestructure(st);
+            } else if (k == "Try") {
+                genTryStmt(st);
+            } else if (k == "Throw") {
+                genThrowStmt(st);
             }
             // 其余（GpuTile 等）留 G3。
             // ARC：语句末释放未消费的 fresh temp（new/调用/拼接）。
@@ -1262,6 +1269,197 @@ class CodeGen {
                     else sb_.append("  store " + oldT + " " + conv2 + ", ptr " + dst + "\n");
                 }
             }
+        }
+
+        // longjmp 到当前最内层 handler（throw 传播出本函数 / rethrow）。
+        void emitLongjmpOuter() {
+            string jb = newTmp();
+            sb_.append("  " + jb + " = call ptr @myp_exception_get_jmpbuf()\n");
+            sb_.append("  call void @__myp_longjmp(ptr " + jb + ", i32 1)\n");
+            sb_.append("  unreachable\n");
+            terminated_ = 1;
+        }
+
+        // throw 语句：throw "msg"（string）/ throw;（rethrow）。
+        // 类实例 throw（typed exception）需 type_id 分配，留 G3-B。
+        void genThrowStmt(AstStmt st) {
+            string tt = st.throwType_;
+            if (tt == "rethrow") {
+                // throw; —— 重抛当前异常到外层 handler。
+                //（catch 入口已 pop 本 try handler，故不再 pop。）
+                emitLongjmpOuter();
+                return;
+            }
+            if (tt == "string") {
+                string msg = genExpr(st.expr_);
+                sb_.append("  call void @myp_throw(ptr " + msg + ")\n");
+                // myp_throw 已拷贝消息；释放本语句 fresh temp（字符串字面量等）。
+                flushTemps();
+                emitLongjmpOuter();
+                return;
+            }
+            // 类/接口异常（Phase B）：暂不实现，保持旧行为（不发射）。
+        }
+
+        // try / catch / finally：setjmp + handler 栈 + 类型分发（string 版）。
+        // 返回/break/continue 穿越 finally 的转发（C++ finally_ctx 模式）留 G3。
+        void genTryStmt(AstStmt st) {
+            int hasCatch = st.catches().size() > 0 ? 1 : 0;
+            int hasFinally = st.finallyBlock_ != null ? 1 : 0;
+            // per-try jmp_buf + finally 标志（inline alloca，setjmp 前；SP 在
+            // setjmp 点之下，longjmp 恢复后仍有效）。
+            string jb = newTmp();
+            sb_.append("  " + jb + " = alloca %myp_jmp_buf, align 8\n");
+            string flagA = "";
+            if (hasFinally != 0) {
+                flagA = newTmp();
+                sb_.append("  " + flagA + " = alloca i8, align 1\n");
+            }
+            sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
+            string r = newTmp();
+            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            string isErr = newTmp();
+            sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
+
+            string tryB = newBlock("try_block");
+            string dispatchB = hasCatch != 0 ? newBlock("catch_dispatch") : "";
+            string propagateB = "";
+            string finallyB = hasFinally != 0 ? newBlock("finally_block") : "";
+            string mergeB = newBlock("try_end");
+            string rethrowB = "";
+
+            if (hasCatch != 0) {
+                sb_.append("  br i1 " + isErr + ", label %" + dispatchB + ", label %" + tryB + "\n");
+                terminated_ = 1;
+            } else if (hasFinally != 0) {
+                propagateB = newBlock("try_propagate");
+                sb_.append("  br i1 " + isErr + ", label %" + propagateB + ", label %" + tryB + "\n");
+                terminated_ = 1;
+            } else {
+                sb_.append("  br i1 " + isErr + ", label %" + mergeB + ", label %" + tryB + "\n");
+                terminated_ = 1;
+            }
+
+            // === try 块 ===
+            openBlock(tryB);
+            genStmt(st.tryBlock_);
+            if (terminated_ == 0) {
+                if (hasFinally != 0) {
+                    sb_.append("  store i8 0, ptr " + flagA + "\n");
+                    emitBr(finallyB);
+                } else {
+                    sb_.append("  call void @myp_exception_pop()\n");
+                    emitBr(mergeB);
+                }
+            }
+
+            // === catch 类型分发 ===
+            if (hasCatch != 0) {
+                openBlock(dispatchB);
+                string etype = newTmp();
+                sb_.append("  " + etype + " = call i32 @myp_exception_get_type()\n");
+                string nomatch = "";
+                if (hasFinally != 0) {
+                    if (Str.len(propagateB) == 0) propagateB = newBlock("try_propagate");
+                    nomatch = propagateB;
+                } else {
+                    rethrowB = newBlock("catch_rethrow");
+                    nomatch = rethrowB;
+                }
+                int n = st.catches().size();
+                for (int i = 0; i < n; i = i + 1) {
+                    AstCatch cc = st.catches().get(i);
+                    string catchB = newBlock("catch_" + i);
+                    string nxt = "";
+                    if (i + 1 < n) nxt = newBlock("catch_chk_" + (i + 1));
+                    else nxt = nomatch;
+                    // 类型匹配：string → type 0；类/接口留 G3-B/C（永不匹配）
+                    string cty = cc.type_;
+                    if (Str.len(cty) == 0) cty = "string";
+                    if (cty == "string") {
+                        string m = newTmp();
+                        sb_.append("  " + m + " = icmp eq i32 " + etype + ", 0\n");
+                        sb_.append("  br i1 " + m + ", label %" + catchB + ", label %" + nxt + "\n");
+                    } else {
+                        sb_.append("  br label %" + nxt + "\n");
+                    }
+                    terminated_ = 1;
+                    // catch 体
+                    openBlock(catchB);
+                    if (hasFinally == 0) {
+                        sb_.append("  call void @myp_exception_pop()\n");
+                    }
+                    bindCatchVar(cc);
+                    genStmt(cc.block_);
+                    if (terminated_ == 0) {
+                        if (hasFinally != 0) {
+                            sb_.append("  store i8 0, ptr " + flagA + "\n");
+                            emitBr(finallyB);
+                        } else {
+                            emitBr(mergeB);
+                        }
+                    }
+                    if (i + 1 < n) openBlock(nxt);
+                }
+            }
+
+            // === 无匹配 catch 的传播（带 finally）===
+            if (Str.len(propagateB) != 0) {
+                openBlock(propagateB);
+                sb_.append("  store i8 1, ptr " + flagA + "\n");
+                emitBr(finallyB);
+            }
+
+            // === finally 块 ===
+            if (hasFinally != 0) {
+                openBlock(finallyB);
+                sb_.append("  call void @myp_exception_pop()\n");
+                genStmt(st.finallyBlock_);
+                if (terminated_ == 0) {
+                    string flag = newTmp();
+                    sb_.append("  " + flag + " = load i8, ptr " + flagA + "\n");
+                    string is1 = newTmp();
+                    sb_.append("  " + is1 + " = icmp eq i8 " + flag + ", 1\n");
+                    string finMerge = newBlock("fin_merge");
+                    if (Str.len(rethrowB) == 0) rethrowB = newBlock("catch_rethrow");
+                    sb_.append("  br i1 " + is1 + ", label %" + rethrowB + ", label %" + finMerge + "\n");
+                    terminated_ = 1;
+                    openBlock(finMerge);
+                    emitBr(mergeB);
+                }
+            }
+
+            // === rethrow：无 finally 时 pop 本 handler 后 longjmp 外层 ===
+            if (Str.len(rethrowB) != 0) {
+                openBlock(rethrowB);
+                if (hasFinally == 0) {
+                    sb_.append("  call void @myp_exception_pop()\n");
+                }
+                emitLongjmpOuter();
+            }
+
+            openBlock(mergeB);
+        }
+
+        // 绑定 catch 变量（string 版）：myp_get_error + strdup 拷贝。
+        void bindCatchVar(AstCatch cc) {
+            if (Str.len(cc.var_) == 0) return;
+            string err = newTmp();
+            sb_.append("  " + err + " = call ptr @myp_get_error()\n");
+            string dup = newTmp();
+            sb_.append("  " + dup + " = call ptr @myp_strdup(ptr " + err + ")\n");
+            string ev = newTmp();
+            sb_.append("  " + ev + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr null, ptr " + ev + "\n");
+            sb_.append("  store ptr " + dup + ", ptr " + ev + "\n");
+            localNames_.add(cc.var_);
+            localTypes_.add("ptr");
+            localAstTypes_.add(null);
+            localAllocas_.add(ev);
+            localElemTypes_.add("");
+            localIsSlice_.add(0);
+            localIsArc_.add(1);
+            arcSlotNames_.add(ev);
         }
 
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
@@ -1725,6 +1923,16 @@ class CodeGen {
             }
             if (k == "Call") {
                 AstExpr callee = e.callee_;
+                // __myp_throw(msg)：记录错误 + longjmp 到最内层 handler
+                //（C++ generateCall 内联特判，与 throw 语句一致）。
+                if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "__myp_throw") {
+                    if (e.args().size() > 0) {
+                        string msg = genExpr(e.args().get(0));
+                        sb_.append("  call void @myp_throw(ptr " + msg + ")\n");
+                    }
+                    emitLongjmpOuter();
+                    return "0";
+                }
                 string fn = "";
                 string thisV = "";
                 // 函数值间接调用：callee 是函数类型变量/参数 → call_fn(closure, args)

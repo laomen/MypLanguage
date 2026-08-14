@@ -854,6 +854,7 @@ class AstStmt {
             endExpr_ = null;
             timeout_ = null;
             iterable_ = null;
+            throwType_ = "";
         }
         ArrayList<AstStmt> bodyStmts() { return bodyStmts_; }
         ArrayList<AstVar> decls() { return decls_; }
@@ -915,6 +916,7 @@ class AstStmt {
         void setEndExpr(AstExpr v) { endExpr_ = v; }
         void setTimeout(AstExpr v) { timeout_ = v; }
         void setIterable(AstExpr v) { iterable_ = v; }
+        void setThrowType(string v) { throwType_ = v; }
         AstExpr iterable() { return iterable_; }
         string loopVarName() { return varName_; }
         int loopHasType() { return hasType_; }
@@ -1091,6 +1093,7 @@ class AstStmt {
         AstExpr endExpr_;
         AstExpr timeout_;
         AstExpr iterable_;
+        string throwType_;
 }
 
 class AstMatchArm {

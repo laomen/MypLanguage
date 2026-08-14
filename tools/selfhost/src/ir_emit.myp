@@ -320,6 +320,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare ptr @myp_get_error()\n");
             sb.append("\n");
+            sb.append("declare ptr @myp_strdup(ptr)\n");
+            sb.append("\n");
             sb.append("declare void @myp_exception_push(ptr)\n");
             sb.append("\n");
             sb.append("declare void @myp_exception_pop()\n");

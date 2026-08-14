@@ -2370,7 +2370,15 @@ class Sema {
                     sym_.leaveScope();
                 } else if (s.body_ != null) visitStmt(s.body_);
             } else if (k == "Throw") {
-                if (s.expr_ != null) visitExpr(s.expr_);
+                // C++ visitThrowStmt：确定 throw_type（rethrow/string/类名）。
+                if (s.expr_ == null) {
+                    s.setThrowType("rethrow");
+                } else {
+                    string t = visitExpr(s.expr_);
+                    if (t == "string") s.setThrowType("string");
+                    else if (t == "class" || t == "interface") s.setThrowType("class");
+                    else s.setThrowType("");
+                }
             } else if (k == "Match") {
                 if (s.subject_ != null) visitExpr(s.subject_);
                 for (int i = 0; i < s.arms().size(); i = i + 1) {
@@ -2400,6 +2408,10 @@ class Sema {
                     sym_.leaveScope();
                 }
             } else if (k == "Try") {
+                // C++ visitTryStmt：try/catch/finally 体内允许函数调用
+                //（临时清 inMain_，与 C++ in_main_function_ 一致）。
+                int savedMain = inMain_;
+                inMain_ = 0;
                 if (s.tryBlock_ != null) visitStmt(s.tryBlock_);
                 for (int i = 0; i < s.catches().size(); i = i + 1) {
                     AstCatch ct = s.catches().get(i);
@@ -2418,6 +2430,7 @@ class Sema {
                     sym_.leaveScope();
                 }
                 if (s.finallyBlock_ != null) visitStmt(s.finallyBlock_);
+                inMain_ = savedMain;
             } else if (k == "Destructure") {
                 AstExpr dv = s.value_;
                 if (dv != null) visitExpr(dv);
