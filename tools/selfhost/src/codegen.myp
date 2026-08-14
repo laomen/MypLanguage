@@ -500,6 +500,10 @@ class CodeGen {
             sb_ = new StringBuilder();
             stringGlobals_ = new StringBuilder();
             strCounter_ = 0;
+            mappingInitCalls_ = new StringBuilder();
+            mappingHandlers_ = new StringBuilder();
+            instanceGlobals_ = new ArrayList<string>();
+            curFnScope_ = 0;
             // preamble 先构建一次：FFI 声明与之去重（避免 llc "invalid redefinition"，
             // 如 stdlib/text.myp 的 `ffi int myp_strlen` 与 preamble 内建重复）。
             string pre = IrEmit.preamble();
@@ -533,6 +537,8 @@ class CodeGen {
             emitArcSupport();
             // 接口 vtable + __myp_error_vtables（函数体之前，catch (Error) 分发用）
             emitInterfaceVTables();
+            // mapping 实例全局（__myp_inst_<src>，handler 取目标实例用）
+            emitInstanceGlobals();
             // 顶层函数（按名去重：泛型实例函数可能被 sema 重复追加）
             ArrayList<string> doneFns = new ArrayList<string>();
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
@@ -611,7 +617,22 @@ class CodeGen {
                     if (a.ctor_ != 0) genConstructor(c.name_, a);
                     else genInstanceAction(c.name_, a);
                 }
+                // 事件 fire 函数（fire_<Class>_<Event> → myp_event_fire）
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    genEventFire(c.name_, c.events().get(ei));
+                }
             }
+            // 顶层 mapping：生成 handler 函数 + __myp_init 注册调用。
+            genTopMappings();
+            if (Str.len(mappingInitCalls_.toString()) != 0) {
+                sb_.append("define internal void @__myp_init() {\n");
+                sb_.append("body:\n");
+                sb_.append(mappingInitCalls_.toString());
+                sb_.append("  ret void\n");
+                sb_.append("}\n\n");
+            }
+            // handler 函数（顶层 + 语句内 mapping）
+            sb_.append(mappingHandlers_.toString());
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
             StringBuilder out = new StringBuilder();
             out.append(pre);
@@ -883,6 +904,340 @@ class CodeGen {
             curClass_ = saveCls;
         }
 
+        // 事件 fire 函数：fire_<Class>_<Event>(ptr self, params...) → 打包参数进
+        // 栈上 struct + myp_event_fire(event_id, self, data) + process_all。
+        void genEventFire(string cls, AstEvent ev) {
+            int eid = eventId(cls, ev.name_);
+            string fn = "fire_" + cls + "_" + ev.name_;
+            ArrayList<AstParam> ps = ev.params();
+            ArrayList<string> lt = new ArrayList<string>();
+            StringBuilder sig = new StringBuilder();
+            sig.append("ptr %self");
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                string t = llvmType(ps.get(i).type_);
+                lt.add(t);
+                sig.append(", " + t + " %evp" + i);
+            }
+            sb_.append("define internal void @" + fn + "(" + sig.toString() + ") {\n");
+            sb_.append("entry:\n");
+            if (ps.size() > 0) {
+                StringBuilder st = new StringBuilder();
+                st.append("{");
+                for (int i = 0; i < lt.size(); i = i + 1) {
+                    if (i != 0) st.append(", ");
+                    st.append(lt.get(i));
+                }
+                st.append("}");
+                string structT = st.toString();
+                string data = newTmp();
+                sb_.append("  " + data + " = alloca " + structT + ", align 8\n");
+                for (int i = 0; i < ps.size(); i = i + 1) {
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + structT + ", ptr " + data + ", i32 0, i32 " + i + "\n");
+                    sb_.append("  store " + lt.get(i) + " %evp" + i + ", ptr " + gep + "\n");
+                }
+                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr " + data + ")\n");
+            } else {
+                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr null)\n");
+            }
+            sb_.append("  call void @myp_event_process_all()\n");
+            sb_.append("  ret void\n");
+            sb_.append("}\n\n");
+        }
+
+        // ---- mapping / event ----
+
+        AstFunction findFunc(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name_ == name && f.typeParams().size() == 0) return f;
+            }
+            return null;
+        }
+
+        AstAction findAction(string cls, string name) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name) return c.actions().get(ai);
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name) return c.staticActions().get(ai);
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 类方法/静态方法/function 段的形参 LLVM 类型列表（不含 this）。
+        ArrayList<string> methodParamLts(string cls, string name) {
+            ArrayList<string> out = new ArrayList<string>();
+            if (tu_ == null) return out;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.name_ == name) {
+                        for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type_));
+                        return out;
+                    }
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    AstAction a = c.staticActions().get(ai);
+                    if (a.name_ == name) {
+                        for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type_));
+                        return out;
+                    }
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.name_ == name) {
+                        for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type_));
+                        return out;
+                    }
+                }
+                return out;
+            }
+            return out;
+        }
+
+        // 顶层函数形参 LLVM 类型列表。
+        ArrayList<string> funcParamLts(string name) {
+            ArrayList<string> out = new ArrayList<string>();
+            AstFunction f = findFunc(name);
+            if (f == null) return out;
+            for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type_));
+            return out;
+        }
+
+        int hasInstanceGlobal(string name) {
+            for (int i = 0; i < instanceGlobals_.size(); i = i + 1) {
+                if (instanceGlobals_.get(i) == name) return 1;
+            }
+            return 0;
+        }
+
+        void addInstanceGlobal(string name) {
+            if (Str.len(name) == 0 || hasInstanceGlobal(name) != 0) return;
+            instanceGlobals_.add(name);
+            stringGlobals_.append("@__myp_inst_" + name + " = internal global ptr null\n");
+        }
+
+        // 顶层 mapping 节点的实例全局（C++ generateClassInstanceGlobals）。
+        void emitInstanceGlobals() {
+            if (tu_ == null) return;
+            for (int mi = 0; mi < tu_.mappings().size(); mi = mi + 1) {
+                AstMapping m = tu_.mappings().get(mi);
+                for (int ci = 0; ci < m.chains().size(); ci = ci + 1) {
+                    AstMappingChain ch = m.chains().get(ci);
+                    for (int ni = 0; ni < ch.nodes().size(); ni = ni + 1) {
+                        addInstanceGlobal(ch.nodes().get(ni).src_);
+                    }
+                }
+            }
+        }
+
+        // { T0, T1, ... } 匿名结构体文本。
+        string structTypeList(ArrayList<string> ts) {
+            StringBuilder st = new StringBuilder();
+            st.append("{");
+            for (int i = 0; i < ts.size(); i = i + 1) {
+                if (i != 0) st.append(", ");
+                st.append(ts.get(i));
+            }
+            st.append("}");
+            return st.toString();
+        }
+
+        // 生成 mapping 链的 handler 函数（写进 mappingHandlers_）+ 注册调用
+        // （写进 regCalls：顶层 → __myp_init；语句内 → 当前函数体 sb_）。
+        void genMappingChain(AstMappingChain ch, StringBuilder regCalls) {
+            ArrayList<AstMappingNode> nds = ch.nodes();
+            if (nds.size() < 2) return;
+            AstMappingNode src = nds.get(0);
+            string srcCls = findEventClass(src.src_, src.member_);
+            if (Str.len(srcCls) == 0) return;
+            AstEvent ev = findEvent(srcCls, src.member_);
+            int eid = eventId(srcCls, src.member_);
+            string hname = "handler_" + src.src_ + "_" + src.member_;
+
+            // handler 是独立函数：保存外部上下文，切到 mappingHandlers_ 缓冲。
+            StringBuilder saveSb = sb_;
+            string saveCls = curClass_;
+            ArrayList<string> sLN = localNames_;
+            ArrayList<string> sLT = localTypes_;
+            ArrayList<AstType> sLAT = localAstTypes_;
+            ArrayList<string> sLA = localAllocas_;
+            ArrayList<string> sLE = localElemTypes_;
+            ArrayList<int> sLS = localIsSlice_;
+            ArrayList<int> sLArc = localIsArc_;
+            int sTerm = terminated_;
+            string sBlock = curBlock_;
+
+            sb_ = mappingHandlers_;
+            curClass_ = "";
+            terminated_ = 0;
+            curBlock_ = "entry";
+            localNames_ = new ArrayList<string>();
+            localTypes_ = new ArrayList<string>();
+            localAstTypes_ = new ArrayList<AstType>();
+            localAllocas_ = new ArrayList<string>();
+            localElemTypes_ = new ArrayList<string>();
+            localIsSlice_ = new ArrayList<int>();
+            localIsArc_ = new ArrayList<int>();
+
+            sb_.append("define internal void @" + hname + "(ptr %inst, ptr %data) {\n");
+            sb_.append("entry:\n");
+
+            ArrayList<AstParam> ps = ev != null ? ev.params() : new ArrayList<AstParam>();
+            ArrayList<string> evT = new ArrayList<string>();
+            for (int pi = 0; pi < ps.size(); pi = pi + 1) evT.add(llvmType(ps.get(pi).type_));
+
+            // where 子句：解包事件参数 → 求值条件 → false 则 return
+            if (ch.where_ != null && ps.size() > 0) {
+                string structT = structTypeList(evT);
+                for (int pi = 0; pi < ps.size(); pi = pi + 1) {
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + structT + ", ptr %data, i32 0, i32 " + pi + "\n");
+                    string lv = newTmp();
+                    sb_.append("  " + lv + " = load " + evT.get(pi) + ", ptr " + gep + "\n");
+                    string a = newTmp();
+                    sb_.append("  " + a + " = alloca " + evT.get(pi) + ", align 8\n");
+                    sb_.append("  store " + evT.get(pi) + " " + lv + ", ptr " + a + "\n");
+                    localNames_.add(ps.get(pi).name_);
+                    localTypes_.add(evT.get(pi));
+                    localAstTypes_.add(ps.get(pi).type_);
+                    localAllocas_.add(a);
+                    localElemTypes_.add("");
+                    localIsSlice_.add(0);
+                    localIsArc_.add(0);
+                }
+                string condV = genExpr(ch.where_);
+                string ct = exprLlvmType(ch.where_);
+                string ci = newTmp();
+                sb_.append("  " + ci + " = icmp ne " + ct + " " + condV + ", 0\n");
+                string contB = newBlock("wh_cont");
+                string skipB = newBlock("wh_skip");
+                sb_.append("  br i1 " + ci + ", label %" + contB + ", label %" + skipB + "\n");
+                sb_.append(skipB + ":\n");
+                sb_.append("  ret void\n");
+                sb_.append(contB + ":\n");
+                // where 参数出作用域（target 阶段不再可见）
+                localNames_ = new ArrayList<string>();
+                localTypes_ = new ArrayList<string>();
+                localAstTypes_ = new ArrayList<AstType>();
+                localAllocas_ = new ArrayList<string>();
+                localElemTypes_ = new ArrayList<string>();
+                localIsSlice_ = new ArrayList<int>();
+                localIsArc_ = new ArrayList<int>();
+            }
+
+            // targets
+            string prevT = "";
+            string prevV = "";
+            int havePrev = 0;
+            for (int i = 1; i < nds.size(); i++) {
+                AstMappingNode tgt = nds.get(i);
+                if (tgt.isLambda_ != 0 || tgt.isTransformer_ != 0) continue;
+                string callee = "";
+                string instV = "";
+                ArrayList<AstParam> tparams = null;
+                AstType tret = null;
+                if (tgt.isFunction_ != 0) {
+                    callee = tgt.src_;
+                    AstFunction tf = findFunc(tgt.src_);
+                    if (tf != null) { tparams = tf.params(); tret = tf.ret_; }
+                } else {
+                    string tcls = tgt.src_;
+                    callee = tcls + "_" + tgt.member_;
+                    AstAction ta = findAction(tcls, tgt.member_);
+                    if (ta != null) { tparams = ta.params(); tret = ta.ret_; }
+                    if (hasInstanceGlobal(tcls) != 0) {
+                        instV = newTmp();
+                        sb_.append("  " + instV + " = load ptr, ptr @__myp_inst_" + tcls + "\n");
+                    } else if (isStaticAction(tcls, tgt.member_) == 0) {
+                        instV = "%inst";
+                    }
+                }
+                StringBuilder as = new StringBuilder();
+                int hasArg = 0;
+                if (Str.len(instV) != 0) {
+                    as.append("ptr " + instV);
+                    hasArg = 1;
+                }
+                if (i == 1 && ps.size() > 0) {
+                    string structT = structTypeList(evT);
+                    for (int pi = 0; pi < ps.size(); pi = pi + 1) {
+                        string gep = newTmp();
+                        sb_.append("  " + gep + " = getelementptr " + structT + ", ptr %data, i32 0, i32 " + pi + "\n");
+                        string lv = newTmp();
+                        sb_.append("  " + lv + " = load " + evT.get(pi) + ", ptr " + gep + "\n");
+                        if (hasArg != 0) as.append(", ");
+                        as.append(evT.get(pi) + " " + lv);
+                        hasArg = 1;
+                    }
+                } else if (havePrev != 0) {
+                    if (hasArg != 0) as.append(", ");
+                    as.append(prevT + " " + prevV);
+                    hasArg = 1;
+                }
+                string retLt = "void";
+                if (tret != null) retLt = llvmType(tret);
+                if (retLt == "void") {
+                    sb_.append("  call void @" + callee + "(" + as.toString() + ")\n");
+                } else {
+                    string r = newTmp();
+                    sb_.append("  " + r + " = call " + retLt + " @" + callee + "(" + as.toString() + ")\n");
+                    prevT = retLt;
+                    prevV = r;
+                    havePrev = 1;
+                }
+            }
+            sb_.append("  ret void\n");
+            sb_.append("}\n\n");
+
+            // 恢复外部上下文
+            sb_ = saveSb;
+            curClass_ = saveCls;
+            localNames_ = sLN;
+            localTypes_ = sLT;
+            localAstTypes_ = sLAT;
+            localAllocas_ = sLA;
+            localElemTypes_ = sLE;
+            localIsSlice_ = sLS;
+            localIsArc_ = sLArc;
+            terminated_ = sTerm;
+            curBlock_ = sBlock;
+
+            regCalls.append("  call void @myp_event_register(i32 " + eid + ", ptr null, ptr @" + hname + ")\n");
+        }
+
+        // 顶层 mapping：handler 写 mappingHandlers_，注册写 mappingInitCalls_。
+        void genTopMappings() {
+            if (tu_ == null) return;
+            for (int mi = 0; mi < tu_.mappings().size(); mi = mi + 1) {
+                AstMapping m = tu_.mappings().get(mi);
+                for (int ci = 0; ci < m.chains().size(); ci = ci + 1) {
+                    genMappingChain(m.chains().get(ci), mappingInitCalls_);
+                }
+            }
+        }
+
+        // 语句内 mapping：注册调用进当前函数体 sb_，handler 进 mappingHandlers_。
+        void genMappingStmtLocal(AstMapping mp) {
+            if (mp.scope_ != 0) {
+                sb_.append("  call void @myp_event_push_scope()\n");
+                curFnScope_ = 1;
+            }
+            for (int ci = 0; ci < mp.chains().size(); ci = ci + 1) {
+                genMappingChain(mp.chains().get(ci), sb_);
+            }
+        }
+
         // __lambda_N_tramp(ptr self, params...) -> ret：调用 __lambda_N___call(self, params...)。
         // 供 lambda 表达式的 fat pointer {closure, call_fn} 引用（call_fn = tramp）。
         void genLambdaTramp(AstClass c) {
@@ -1052,6 +1407,7 @@ class CodeGen {
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
             threadHandles_ = new ArrayList<string>();
+            curFnScope_ = 0;
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -1100,10 +1456,19 @@ class CodeGen {
             StringBuilder saveSb = sb_;
             StringBuilder bodyBuf = new StringBuilder();
             sb_ = bodyBuf;
+            // main 入口先调用 __myp_init() 注册顶层 mapping handler（同 C++）。
+            if (isMainFunc_ != 0 && tu_ != null && tu_.mappings().size() > 0) {
+                sb_.append("  call void @__myp_init()\n");
+            }
             if (body != null) genStmt(body);
             // 隐式 return（body 未 terminated 时；sema 保证非 void 函数必有 return，
             // 此处兜底避免 llc 报 "missing terminator"）。
             if (terminated_ == 0) {
+                // @scope mapping：函数退出前解注册（恢复到 push 时 handler 数）
+                if (curFnScope_ != 0) {
+                    sb_.append("  call void @myp_event_pop_scope()\n");
+                    curFnScope_ = 0;
+                }
                 // 函数末释放全部仍存活的 ARC 局部（C++ arcReleaseAllScopes）。
                 releaseArcSlots();
                 if (retLt == "void") {
@@ -1271,6 +1636,19 @@ class CodeGen {
                             string it = exprLlvmType(v.init_);
                             iv = convertValue(iv, it, "ptr");
                             storeNew(va, iv, isFreshTemp(iv));
+                            // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
+                            if (v.init_.kind_ == "New") {
+                                string cn = v.init_.className_;
+                                if (Str.len(v.init_.resolvedClass_) != 0) cn = v.init_.resolvedClass_;
+                                string gname = "";
+                                if (hasInstanceGlobal(cn) != 0) gname = cn;
+                                else if (hasInstanceGlobal(v.name_) != 0) gname = v.name_;
+                                if (Str.len(gname) != 0) {
+                                    string loaded = newTmp();
+                                    sb_.append("  " + loaded + " = load ptr, ptr " + va + "\n");
+                                    sb_.append("  store ptr " + loaded + ", ptr @__myp_inst_" + gname + "\n");
+                                }
+                            }
                         }
                     } else {
                         sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr " + va + ", align " + al + "\n");
@@ -1284,6 +1662,10 @@ class CodeGen {
                 }
             } else if (k == "ExprStmt") {
                 if (st.expr_ != null) genExpr(st.expr_);
+            } else if (k == "MappingStmt") {
+                // 语句内 mapping()（函数体内）：handler 注册在当前函数体，
+                // 函数退出 @scope 自动解注册。
+                if (st.mapping_ != null) genMappingStmtLocal(st.mapping_);
             } else if (k == "Return") {
                 // try-with-finally 内 return → 存值、flag=2、先跑 finally
                 if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
@@ -2701,6 +3083,23 @@ class CodeGen {
                     sb_.append("  " + t + " = extractvalue " + objT + " " + objV + ", " + mname + "\n");
                     return t;
                 }
+                // slice.length / slice.size() / slice.data()
+                if (mObj != null && mObj.kind_ == "Identifier" && isSliceVar(mObj.name_) != 0) {
+                    if (mname == "size" || mname == "length") {
+                        string sv = genExpr(mObj);
+                        string len = newTmp();
+                        sb_.append("  " + len + " = extractvalue { ptr, i64 } " + sv + ", 1\n");
+                        string t = newTmp();
+                        sb_.append("  " + t + " = trunc i64 " + len + " to i32\n");
+                        return t;
+                    }
+                    if (mname == "data") {
+                        string sv = genExpr(mObj);
+                        string data = newTmp();
+                        sb_.append("  " + data + " = extractvalue { ptr, i64 } " + sv + ", 0\n");
+                        return data;
+                    }
+                }
                 string gep = memberAddr(e);
                 string ft = memberFieldType(e);
                 if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
@@ -2722,6 +3121,9 @@ class CodeGen {
                 }
                 string fn = "";
                 string thisV = "";
+                string mCls = "";      // 方法所属类（形参类型查找用）
+                string mName = "";     // 方法/函数/事件名
+                int isEvCall = 0;      // 事件 fire 调用
                 // 泛型函数/泛型静态方法调用：sema 已单态化到具体实例（e.resolved_），
                 // 直接调用实例函数（同 C++ generateCall 的 resolved_call_name 分支）。
                 if (Str.len(e.resolved_) != 0) {
@@ -2758,8 +3160,19 @@ class CodeGen {
                         fn = Str.substring(fn, 2, Str.len(fn));
                     } else if (isTopLevelFunc(fn) == 0 && hasMethodInClass(curClass_, fn) != 0) {
                         // 类内裸方法调用 → this.method()（Class_method(ptr this, ...)）
+                        mCls = curClass_;
+                        mName = fn;
                         fn = curClass_ + "_" + fn;
                         thisV = loadThis();
+                    } else if (isTopLevelFunc(fn) == 0 && hasEventInClass(curClass_, fn) != 0) {
+                        // 类内裸事件 fire → fire_Class_Event(this, ...)
+                        mCls = curClass_;
+                        mName = fn;
+                        isEvCall = 1;
+                        fn = "fire_" + curClass_ + "_" + fn;
+                        thisV = loadThis();
+                    } else if (isTopLevelFunc(fn) != 0) {
+                        mName = fn;
                     }
                 } else if (callee != null && callee.kind_ == "Member") {
                     AstExpr obj = callee.array_;
@@ -2787,6 +3200,8 @@ class CodeGen {
                     }
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
+                        mCls = obj.name_;
+                        mName = mname;
                     } else if (obj != null && obj.kind_ == "Identifier") {
                         // 接口变量方法调用 → vtable 间接调用
                         AstType oat = varAstType(obj.name_);
@@ -2808,12 +3223,16 @@ class CodeGen {
                         }
                         if (Str.len(cls2) == 0) cls2 = "Object";
                         fn = cls2 + "_" + mname;
+                        mCls = cls2;
+                        mName = mname;
                         thisV = genExpr(obj);
                     } else {
                         // 实例方法 Class_method(ptr this, args...)
                         string cls = callee.resolvedClass_;
                         if (Str.len(cls) == 0) cls = "Object";
                         fn = cls + "_" + mname;
+                        mCls = cls;
+                        mName = mname;
                         thisV = genExpr(obj);
                     }
                 }
@@ -2829,6 +3248,19 @@ class CodeGen {
                     && (callee.name_ == "__myp_atof" || callee.name_ == "__myp_io_read_double")) {
                     retLt = "double";
                 }
+                // 期望的形参 LLVM 类型（实参提升：float→double、int→long 等，
+                // 同 C++ generateCall 的 convertIntegerValue）
+                ArrayList<string> expParams = null;
+                if (isEvCall != 0) {
+                    AstEvent evc = findEvent(mCls, mName);
+                    if (evc != null) {
+                        expParams = new ArrayList<string>();
+                        for (int pi = 0; pi < evc.params().size(); pi = pi + 1) expParams.add(llvmType(evc.params().get(pi).type_));
+                    }
+                } else if (Str.len(mName) != 0) {
+                    if (isTopLevelFunc(mName) != 0) expParams = funcParamLts(mName);
+                    else if (Str.len(mCls) != 0) expParams = methodParamLts(mCls, mName);
+                }
                 StringBuilder as = new StringBuilder();
                 if (Str.len(thisV) != 0) {
                     as.append("ptr " + thisV);
@@ -2837,6 +3269,10 @@ class CodeGen {
                     AstExpr a = e.args().get(i);
                     string av = genExpr(a);
                     string at = exprLlvmType(a);
+                    if (expParams != null && i < expParams.size()) {
+                        av = convertValue(av, at, expParams.get(i));
+                        at = expParams.get(i);
+                    }
                     if (i != 0 || Str.len(thisV) != 0) as.append(", ");
                     as.append(at + " " + av);
                 }
@@ -3069,6 +3505,14 @@ class CodeGen {
                     return "i32";
                 }
             }
+            // slice 参数：元素类型取自参数 AST 类型
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) {
+                    AstType pt = paramAstTypes_.get(i);
+                    if (pt != null && isSliceType(pt) != 0) return sliceElemType(pt);
+                    return "i32";
+                }
+            }
             return "i32";
         }
 
@@ -3076,6 +3520,14 @@ class CodeGen {
         int isSliceVar(string name) {
             for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
                 if (localNames_.get(i) == name) return localIsSlice_.get(i);
+            }
+            // slice 参数：按参数 AST 类型识别（参数无 localIsSlice_ 表项）
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) {
+                    AstType pt = paramAstTypes_.get(i);
+                    if (pt != null && isSliceType(pt) != 0) return 1;
+                    return 0;
+                }
             }
             return 0;
         }
@@ -3565,6 +4017,92 @@ class CodeGen {
             return 0;
         }
 
+        // cls 是否有名为 name 的事件。
+        int hasEventInClass(string cls, string name) {
+            if (tu_ == null || Str.len(cls) == 0) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    if (c.events().get(ei).name_ == name) return 1;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // 全局事件 ID（按类序、类内事件序编号；与 C++ event_id_map_ 一致，
+        // 泛型模板跳过 + 按名去重，保证 fire 函数与注册用同一 ID）。
+        int eventId(string cls, string ev) {
+            if (tu_ == null) return 0;
+            int eid = 0;
+            ArrayList<string> seen = new ArrayList<string>();
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass c = tu_.classes().get(i);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < seen.size(); di = di + 1) {
+                    if (seen.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                seen.add(c.name_);
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    if (c.name_ == cls && c.events().get(ei).name_ == ev) return eid;
+                    eid = eid + 1;
+                }
+            }
+            return 0;
+        }
+
+        // 找拥有事件 evName 的类（优先按类名 srcClass，回退全类名搜）。
+        string findEventClass(string srcClass, string evName) {
+            if (tu_ == null) return "";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (Str.len(srcClass) != 0 && c.name_ != srcClass) continue;
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    if (c.events().get(ei).name_ == evName) return c.name_;
+                }
+            }
+            if (Str.len(srcClass) != 0) {
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    AstClass c = tu_.classes().get(ci);
+                    for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                        if (c.events().get(ei).name_ == evName) return c.name_;
+                    }
+                }
+            }
+            return "";
+        }
+
+        // 事件参数列表（按类名 + 事件名）。
+        AstEvent findEvent(string clsName, string evName) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != clsName) continue;
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    if (c.events().get(ei).name_ == evName) return c.events().get(ei);
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 类是否有静态 action name（mapping 目标为静态方法时无需实例指针）。
+        int isStaticAction(string cls, string name) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name) return 1;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
         // name 是否为顶层函数或 FFI。
         int isTopLevelFunc(string name) {
             if (tu_ == null) return 0;
@@ -3693,4 +4231,8 @@ class CodeGen {
         string finallyRetSlot_;
         ArrayList<int> tryArcBases_;
         ArrayList<string> threadHandles_;
+        StringBuilder mappingInitCalls_;
+        StringBuilder mappingHandlers_;
+        ArrayList<string> instanceGlobals_;
+        int curFnScope_;
 }
