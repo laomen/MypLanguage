@@ -1238,6 +1238,23 @@ class CodeGen {
                 }
                 return ov;
             }
+            if (k == "Convert") {
+                // 显式类型转换 int(x)/long(x)/double(x)/bit(x)/bitvector<N>(x)
+                string ov = genExpr(e.operand_);
+                string ot = exprLlvmType(e.operand_);
+                string toK = e.toKind_;
+                if (toK == "bit") {
+                    return toI1(ov, ot);
+                }
+                if (Str.startsWith(toK, "bitvector") != 0 || toK == "bitvector") {
+                    return convertValue(ov, ot, "i" + e.bw_);
+                }
+                string toLt = IrEmit.kindType(toK);
+                if (Str.len(toLt) == 0 || toLt == "i32") {
+                    if (Str.len(toK) == 0) toLt = "i32";
+                }
+                return convertValue(ov, ot, toLt);
+            }
             if (k == "Binary") {
                 string op = e.op_;
                 if (op == "&&" || op == "||") {
@@ -1662,6 +1679,11 @@ class CodeGen {
             if (k == "Unary") {
                 if (e.op_ == "!") return "i1";
                 return exprLlvmType(e.operand_);
+            }
+            if (k == "Convert") {
+                if (e.toKind_ == "bit") return "i1";
+                if (Str.startsWith(e.toKind_, "bitvector") != 0) return "i" + e.bw_;
+                return IrEmit.kindType(e.toKind_);
             }
             if (k == "Identifier") {
                 string nm = e.name_;
