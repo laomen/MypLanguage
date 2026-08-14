@@ -622,6 +622,8 @@ class CodeGen {
             }
             // 类结构体类型定义（属性布局）
             emitClassTypes();
+            // @static class 全局实例（ClassName.prop 访问）
+            emitStaticClassGlobals();
             // struct 类型定义（%Point = type { ... }）
             emitStructTypes();
             // 类 type_id 全局（max/type_name 表）——函数体之前（catch 分发用）
@@ -772,6 +774,36 @@ class CodeGen {
             }
         }
 
+        // @static class：为每个带属性的静态类发射全局结构体实例
+        // `@__myp_static_<Cls> = global %<Cls> zeroinitializer`，属性访问
+        // ClassName.prop → GEP 进该全局（同 C++ static_property_globals_）。
+        void emitStaticClassGlobals() {
+            if (tu_ == null) return;
+            ArrayList<string> emitted = new ArrayList<string>();
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.isStatic() == 0) continue;
+                if (c.props().size() == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < emitted.size(); di = di + 1) {
+                    if (emitted.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                emitted.add(c.name_);
+                stringGlobals_.append("@__myp_static_" + c.name_ + " = global %" + c.name_ + " zeroinitializer\n");
+            }
+        }
+
+        // name 是否为 @static class（其属性是全局，ClassName.prop 访问）。
+        int isStaticClassName(string name) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ == name && c.isStatic() != 0) return 1;
+            }
+            return 0;
+        }
+
         // 类属性 → 索引（成员 GEP 用）。
         int propIndex(string cls, string prop) {
             if (tu_ == null) return 0;
@@ -843,6 +875,14 @@ class CodeGen {
                     return gep;
                 }
             }
+            // @static class：ClassName.prop → GEP 进全局实例（@__myp_static_<Cls>）
+            if (obj != null && obj.kind_ == "Identifier" && isStaticClassName(obj.name_) != 0) {
+                string cls = obj.name_;
+                int idx = propIndex(cls, m.memberName_);
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr @__myp_static_" + cls + ", i32 0, i32 " + idx + "\n");
+                return gep;
+            }
             string objV = genExpr(obj);
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -861,6 +901,10 @@ class CodeGen {
                 if (oat != null && Str.len(oat.className_) != 0 && isStructName(oat.className_) != 0) {
                     return structFieldType(oat.className_, m.memberName_);
                 }
+            }
+            // @static class：ClassName.prop → 类属性类型
+            if (obj != null && obj.kind_ == "Identifier" && isStaticClassName(obj.name_) != 0) {
+                return propType(obj.name_, m.memberName_);
             }
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -916,6 +960,11 @@ class CodeGen {
                 }
             } else if (arr.kind_ == "Member") {
                 string cls = arr.resolvedClass_;
+                // @static class 属性下标：Shared.counter[0] → 类名从对象标识符取
+                AstExpr sobj = arr.array_;
+                if (sobj != null && sobj.kind_ == "Identifier" && isStaticClassName(sobj.name_) != 0) {
+                    cls = sobj.name_;
+                }
                 if (Str.len(cls) == 0) cls = "Object";
                 string et = propElemLt(cls, arr.memberName_);
                 if (Str.len(et) != 0) return et;
@@ -931,6 +980,11 @@ class CodeGen {
                 if (hasMember(arr.name_) != 0) return propIsSlice(curClass_, arr.name_);
             } else if (arr.kind_ == "Member") {
                 string cls = arr.resolvedClass_;
+                // @static class 属性下标
+                AstExpr sobj = arr.array_;
+                if (sobj != null && sobj.kind_ == "Identifier" && isStaticClassName(sobj.name_) != 0) {
+                    cls = sobj.name_;
+                }
                 if (Str.len(cls) == 0) cls = "Object";
                 return propIsSlice(cls, arr.memberName_);
             }
@@ -3676,6 +3730,41 @@ class CodeGen {
                 // 为 event_id + myp_timer_create（同 C++ 内联特判）
                 if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "__myp_timer_create") {
                     return genTimerCreate(e);
+                }
+                // __myp_atomic_* 内建：直接生成 LLVM atomicrmw / load / store
+                //（同 C++ generateCall 内联特判，无运行时调用）。
+                if (callee != null && callee.kind_ == "Identifier") {
+                    string an = callee.name_;
+                    if (an == "__myp_atomic_add_i32" || an == "__myp_atomic_sub_i32"
+                        || an == "__myp_atomic_xchg_i32" || an == "__myp_atomic_add_f64"
+                        || an == "__myp_atomic_load_i32" || an == "__myp_atomic_store_i32") {
+                        string elemT = "i32";
+                        if (an == "__myp_atomic_add_f64") elemT = "double";
+                        string arrV = genExpr(e.args().get(0));
+                        string idxV = genExpr(e.args().get(1));
+                        string idxT = exprLlvmType(e.args().get(1));
+                        string ap = newTmp();
+                        sb_.append("  " + ap + " = getelementptr " + elemT + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                        if (an == "__myp_atomic_load_i32") {
+                            string t = newTmp();
+                            sb_.append("  " + t + " = load i32, ptr " + ap + "\n");
+                            return t;
+                        }
+                        string vv = genExpr(e.args().get(2));
+                        string vt = exprLlvmType(e.args().get(2));
+                        vv = convertValue(vv, vt, elemT);
+                        if (an == "__myp_atomic_store_i32") {
+                            sb_.append("  store i32 " + vv + ", ptr " + ap + "\n");
+                            return "0";
+                        }
+                        string op = "add";
+                        if (an == "__myp_atomic_sub_i32") op = "sub";
+                        else if (an == "__myp_atomic_xchg_i32") op = "xchg";
+                        else if (an == "__myp_atomic_add_f64") op = "fadd";
+                        string t = newTmp();
+                        sb_.append("  " + t + " = atomicrmw " + op + " ptr " + ap + ", " + elemT + " " + vv + " seq_cst\n");
+                        return t;
+                    }
                 }
                 string fn = "";
                 string thisV = "";
