@@ -114,13 +114,15 @@ class CodeGen {
                 }
                 stringGlobals_.append("declare " + fret + " @" + ff.name_ + "(" + fps.toString() + ")\n");
             }
+            // 类结构体类型定义（属性布局）
+            emitClassTypes();
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
                 genFunction(f);
             }
-            // 类方法（@static 类静态方法 + 实例方法；泛型类模板跳过）
+            // 类方法（@static 类静态方法 + 实例方法 + function 段；泛型类模板跳过）
             for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
                 AstClass c = tu.classes().get(ci);
                 if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
@@ -128,8 +130,12 @@ class CodeGen {
                 for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
                     genStaticAction(c.name_, c.staticActions().get(ai));
                 }
+                // 实例方法（this 指针）
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    genInstanceAction(c.name_, c.actions().get(ai));
+                }
             }
-            // 顺序：preamble → 字符串全局 → 函数 → attributes
+            // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
             StringBuilder out = new StringBuilder();
             out.append(IrEmit.preamble());
             out.append(stringGlobals_.toString());
@@ -139,6 +145,88 @@ class CodeGen {
             return out.toString();
         }
 
+        // 类结构体类型：%ClassName = type { <prop types> }（空类用 i8 占位）。
+        void emitClassTypes() {
+            if (tu_ == null) return;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                StringBuilder ms = new StringBuilder();
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (pi != 0) ms.append(", ");
+                    ms.append(IrEmit.llvmType(c.props().get(pi).type_));
+                }
+                if (c.props().size() == 0) ms.append("i8");
+                stringGlobals_.append("%" + c.name_ + " = type { " + ms.toString() + " }\n");
+            }
+        }
+
+        // 类属性 → 索引（成员 GEP 用）。
+        int propIndex(string cls, string prop) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (c.props().get(pi).name_ == prop) return pi;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // 类属性 → LLVM 类型。
+        string propType(string cls, string prop) {
+            if (tu_ == null) return "i32";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (c.props().get(pi).name_ == prop) {
+                        return IrEmit.llvmType(c.props().get(pi).type_);
+                    }
+                }
+                return "i32";
+            }
+            return "i32";
+        }
+
+        // 类实例大小（属性类型大小之和，new Class 用）。
+        int classSize(string cls) {
+            if (tu_ == null) return 1;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                int sz = 0;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    sz = sz + IrEmit.typeSize(IrEmit.llvmType(c.props().get(pi).type_));
+                }
+                if (sz == 0) sz = 1;
+                return sz;
+            }
+            return 1;
+        }
+
+        // Member 表达式的字段地址（obj.field / this.field → GEP）。
+        string memberAddr(AstExpr m) {
+            AstExpr obj = m.array_;
+            string objV = genExpr(obj);
+            string cls = m.resolvedClass_;
+            if (Str.len(cls) == 0) cls = "Object";
+            string field = m.memberName_;
+            int idx = propIndex(cls, field);
+            string gep = newTmp();
+            sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + objV + ", i32 0, i32 " + idx + "\n");
+            return gep;
+        }
+
+        // Member 表达式的字段 LLVM 类型。
+        string memberFieldType(AstExpr m) {
+            string cls = m.resolvedClass_;
+            if (Str.len(cls) == 0) cls = "Object";
+            return propType(cls, m.memberName_);
+        }
+
         void genFunction(AstFunction f) {
             genFuncBody(f.name_, f.params(), f.ret_, f.body_);
         }
@@ -146,6 +234,22 @@ class CodeGen {
         // @static 类方法：Class_method(params)，无 this。
         void genStaticAction(string cls, AstAction a) {
             genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
+        }
+
+        // 实例方法：Class_method(ptr this, params...)。
+        void genInstanceAction(string cls, AstAction a) {
+            ArrayList<AstParam> ps = new ArrayList<AstParam>();
+            AstParam tp = new AstParam();
+            tp.setName("this");
+            AstType ptrT = new AstType();
+            ptrT.setClassName(cls);
+            tp.setType(ptrT);
+            ps.add(tp);
+            for (int i = 0; i < a.params().size(); i = i + 1) ps.add(a.params().get(i));
+            string saveCls = curClass_;
+            curClass_ = cls;
+            genFuncBody(cls + "_" + a.name_, ps, a.ret_, a.body_);
+            curClass_ = saveCls;
         }
 
         // 通用方法体：参数 alloca + store + body + 隐式 return。
@@ -442,6 +546,21 @@ class CodeGen {
             }
             if (k == "Identifier") {
                 string nm = e.name_;
+                if (hasVar(nm) != 0) {
+                    string lt = varType(nm);
+                    int al = IrEmit.alignOf(lt);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                    return t;
+                }
+                if (hasMember(nm) != 0) {
+                    // this.field（实例方法内裸属性名）
+                    string gep = thisMemberAddr(nm);
+                    string ft = propType(curClass_, nm);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
+                    return t;
+                }
                 string lt = varType(nm);
                 int al = IrEmit.alignOf(lt);
                 string t = newTmp();
@@ -524,10 +643,17 @@ class CodeGen {
                 AstExpr lhs = e.lhs_;
                 if (lhs != null && lhs.kind_ == "Identifier") {
                     string nm = lhs.name_;
-                    string lt = varType(nm);
-                    rv = convertValue(rv, rt, lt);
-                    int al = IrEmit.alignOf(lt);
-                    sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                    if (hasVar(nm) != 0) {
+                        string lt = varType(nm);
+                        rv = convertValue(rv, rt, lt);
+                        int al = IrEmit.alignOf(lt);
+                        sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                    } else if (hasMember(nm) != 0) {
+                        string gep = thisMemberAddr(nm);
+                        string ft = propType(curClass_, nm);
+                        rv = convertValue(rv, rt, ft);
+                        sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
+                    }
                 } else if (lhs != null && lhs.kind_ == "Subscript") {
                     // arr[i] = v
                     AstExpr arr = lhs.array_;
@@ -543,6 +669,12 @@ class CodeGen {
                     sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                     rv = convertValue(rv, rt, elemLt);
                     sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
+                } else if (lhs != null && lhs.kind_ == "Member") {
+                    // obj.field = v / this.field = v
+                    string gep = memberAddr(lhs);
+                    string ft = memberFieldType(lhs);
+                    rv = convertValue(rv, rt, ft);
+                    sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                 }
                 return rv;
             }
@@ -584,9 +716,25 @@ class CodeGen {
                 sb_.append("  " + t + " = load " + elemLt + ", ptr " + gep + "\n");
                 return t;
             }
+            if (k == "New") {
+                // 类实例：myp_alloc_object(size, type_id)。构造器调用留 G3 后续。
+                string cls = e.className_;
+                int sz = classSize(cls);
+                string t = newTmp();
+                sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+                return t;
+            }
+            if (k == "Member") {
+                string gep = memberAddr(e);
+                string ft = memberFieldType(e);
+                string t = newTmp();
+                sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
+                return t;
+            }
             if (k == "Call") {
                 AstExpr callee = e.callee_;
                 string fn = "";
+                string thisV = "";
                 if (callee != null && callee.kind_ == "Identifier") {
                     fn = callee.name_;
                     // 内建 intrinsic __myp_X → runtime myp_X（去掉两个下划线）
@@ -594,20 +742,28 @@ class CodeGen {
                         fn = Str.substring(fn, 2, Str.len(fn));
                     }
                 } else if (callee != null && callee.kind_ == "Member") {
-                    // 静态方法 Class.method(args)（对象是类名）；实例方法留 G3 后续
                     AstExpr obj = callee.array_;
                     string mname = callee.memberName_;
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
+                    } else {
+                        // 实例方法 Class_method(ptr this, args...)
+                        string cls = callee.resolvedClass_;
+                        if (Str.len(cls) == 0) cls = "Object";
+                        fn = cls + "_" + mname;
+                        thisV = genExpr(obj);
                     }
                 }
                 string retLt = IrEmit.kindType(e.resolvedKind_);
                 StringBuilder as = new StringBuilder();
+                if (Str.len(thisV) != 0) {
+                    as.append("ptr " + thisV);
+                }
                 for (int i = 0; i < e.args().size(); i = i + 1) {
                     AstExpr a = e.args().get(i);
                     string av = genExpr(a);
                     string at = exprLlvmType(a);
-                    if (i != 0) as.append(", ");
+                    if (i != 0 || Str.len(thisV) != 0) as.append(", ");
                     as.append(at + " " + av);
                 }
                 if (retLt == "void") {
@@ -693,6 +849,48 @@ class CodeGen {
             return 0;
         }
 
+        // name 是否为当前函数作用域内的变量（参数或局部）。
+        int hasVar(string name) {
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) return 1;
+            }
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == name) return 1;
+            }
+            return 0;
+        }
+
+        // name 是否为当前类的属性成员。
+        int hasMember(string name) {
+            if (Str.len(curClass_) == 0 || tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != curClass_) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (c.props().get(pi).name_ == name) return 1;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // load this 指针（实例方法内）。
+        string loadThis() {
+            string t = newTmp();
+            sb_.append("  " + t + " = load ptr, ptr %this.addr, align 8\n");
+            return t;
+        }
+
+        // this.field 的地址（实例方法内裸属性名）。
+        string thisMemberAddr(string field) {
+            string thisV = loadThis();
+            string cls = curClass_;
+            int idx = propIndex(cls, field);
+            string gep = newTmp();
+            sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + thisV + ", i32 0, i32 " + idx + "\n");
+            return gep;
+        }
+
         // double 常量 → LLVM 浮点文本（%e 格式，llc 接受）。
         string floatLiteral(double v) {
             string s = "" + v;
@@ -751,4 +949,5 @@ class CodeGen {
         StringBuilder stringGlobals_;
         int strCounter_;
         AstTU tu_;
+        string curClass_;
 }
