@@ -858,6 +858,7 @@ class AstStmt {
             throwType_ = "";
         }
         ArrayList<AstStmt> bodyStmts() { return bodyStmts_; }
+        void setBodyStmts(ArrayList<AstStmt> v) { bodyStmts_ = v; }
         ArrayList<AstVar> decls() { return decls_; }
         ArrayList<AstPair> resident() { return resident_; }
         ArrayList<AstMatchArm> arms() { return arms_; }

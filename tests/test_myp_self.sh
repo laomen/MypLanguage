@@ -29,6 +29,11 @@ bad() { say "  FAIL: $*"; FAIL=$((FAIL+1)); }
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# 防 OOM：自编译生成的 .ll 很大，llc/gcc 内存占用高（用户环境曾爆内存）。
+if ulimit -v >/dev/null 2>&1; then
+    ulimit -v 8388608 || true   # 8GB
+fi
+
 # ---- 采样语料（F0-6）：覆盖纯函数/类/import/负例 ----
 SAMPLES_OK=(
     "examples/hello.myp"

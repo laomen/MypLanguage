@@ -790,6 +790,8 @@ class CodeGen {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
+                // @macro 过程宏：仅编译期求值，不发射运行时函数（同 C++）
+                if (f.macro_ != 0) continue;
                 // test 模式：跳过用户 main（测试运行器生成新的 main，同 C++）
                 if (testMode_ != 0 && f.name_ == "main") continue;
                 int dup = 0;

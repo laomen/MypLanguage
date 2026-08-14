@@ -246,6 +246,24 @@ class SymbolTable {
 }
 
 // ---- 语义分析 ----
+class EvalVal {
+    action:
+        @constructor EvalVal() {
+            kind_ = "int";
+            ival_ = 0L;
+            sval_ = "";
+            stmts_ = new ArrayList<AstStmt>();
+        }
+        void setKind(string v) { kind_ = v; }
+        void setIval(long v) { ival_ = v; }
+        void setSval(string v) { sval_ = v; }
+    property:
+        string kind_;            // "int" | "str" | "ast"
+        long ival_;
+        string sval_;
+        ArrayList<AstStmt> stmts_;
+}
+
 class Sema {
     action:
         @constructor Sema(DiagEngine diag) {
@@ -288,6 +306,13 @@ class Sema {
             macroNames_ = new ArrayList<string>();
             macroParams_ = new ArrayList<ArrayList<string>>();
             macroBodies_ = new ArrayList<AstStmt>();
+            pmFuncNames_ = new ArrayList<string>();
+            pmFuncs_ = new ArrayList<AstFunction>();
+            pmLocalNames_ = new ArrayList<string>();
+            pmLocalVals_ = new ArrayList<EvalVal>();
+            pmBreak_ = 0;
+            pmContinue_ = 0;
+            pmDepth_ = 0;
             startupMethods_ = new ArrayList<string>();
             lambdaCounter_ = 0;
             cellCounter_ = 0;
@@ -597,9 +622,20 @@ class Sema {
                 macroParams_.add(m.params());
                 macroBodies_.add(m.body_);
             }
-            // 展开顶层函数体
+            // 收集 @macro 过程宏函数（M4）
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
+                if (f.macro_ != 0) {
+                    pmFuncNames_.add(f.name_);
+                    pmFuncs_.add(f);
+                }
+            }
+            // 展开顶层函数体（@macro 过程宏体不在此展开——其体内语句由编译期
+            // 解释器求值，且深克隆会破坏共享子指针；生成代码的嵌套 M3 宏在
+            // expandBlockStmts 内另行展开）
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                AstFunction f = tu.functions().get(i);
+                if (f.macro_ != 0) continue;
                 if (f.body_ != null) expandBlockStmts(f.body_, 0);
             }
             // 展开类方法/构造器体
@@ -729,6 +765,7 @@ class Sema {
             if (block == null || block.kind_ != "Block") return;
             if (depth > 100) return;
             ArrayList<AstStmt> out = new ArrayList<AstStmt>();
+            int changed = 0;
             for (int i = 0; i < block.bodyStmts().size(); i = i + 1) {
                 AstStmt st = block.bodyStmts().get(i);
                 // 递归展开嵌套块
@@ -756,14 +793,458 @@ class Sema {
                                     }
                                     expanded = 1;
                                 }
+                            } else {
+                                // M4：过程宏调用 → 编译期求值生成语句
+                                int pi = procMacroIndex(ca.name_);
+                                if (pi >= 0) {
+                                    ArrayList<AstStmt> gen = evalProcMacro(pmFuncs_.get(pi), ex.args());
+                                    if (gen != null) {
+                                        // 生成代码中嵌套 M3 宏再展开
+                                        AstStmt tmp = new AstStmt();
+                                        tmp.setKind("Block");
+                                        for (int j = 0; j < gen.size(); j = j + 1) tmp.bodyStmts().add(gen.get(j));
+                                        expandBlockStmts(tmp, depth + 1);
+                                        for (int j = 0; j < tmp.bodyStmts().size(); j = j + 1) {
+                                            out.add(tmp.bodyStmts().get(j));
+                                        }
+                                        expanded = 1;
+                                    }
+                                }
                             }
                         }
                     }
                 }
                 if (expanded == 0) out.add(st);
+                else changed = 1;
             }
-            block.bodyStmts().clear();
-            for (int i = 0; i < out.size(); i = i + 1) block.bodyStmts().add(out.get(i));
+            // 仅在确有展开时重建块；且用整体替换列表（setBodyStmts），绝不在
+            // clear 后向同一槽位重放原指针 —— 那会触发 storeRef 的 release 旧
+            // 值（恰为同一对象）→ 双重释放 → 内存损坏/崩溃。
+            if (changed != 0) {
+                block.setBodyStmts(out);
+            }
+        }
+
+        // ---- M4 过程宏（@macro StmtList + quote{}）编译期求值 ----
+        int procMacroIndex(string name) {
+            for (int i = 0; i < pmFuncNames_.size(); i = i + 1) {
+                if (pmFuncNames_.get(i) == name) return i;
+            }
+            return -1;
+        }
+
+        EvalVal pmFindLocal(string name) {
+            for (int i = 0; i < pmLocalNames_.size(); i = i + 1) {
+                if (pmLocalNames_.get(i) == name) return pmLocalVals_.get(i);
+            }
+            return null;
+        }
+
+        void pmSetLocal(string name, EvalVal v) {
+            for (int i = 0; i < pmLocalNames_.size(); i = i + 1) {
+                if (pmLocalNames_.get(i) == name) {
+                    pmLocalVals_.set(i, v);
+                    return;
+                }
+            }
+            pmLocalNames_.add(name);
+            pmLocalVals_.add(v);
+        }
+
+        // 深拷贝 ast 值（语句列表）——保证每个局部变量独占其列表，原地拼接
+        // 不会污染别名（alias = out 语义）。
+        EvalVal pmCloneAst(EvalVal v) {
+            EvalVal nv = new EvalVal();
+            nv.setKind("ast");
+            for (int j = 0; j < v.stmts_.size(); j = j + 1) nv.stmts_.add(cloneStmtI(v.stmts_.get(j)));
+            return nv;
+        }
+
+        int pmToBool(EvalVal v) {
+            if (v == null) return 0;
+            if (v.kind_ == "str") return 0;
+            return v.ival_ != 0 ? 1 : 0;
+        }
+
+        long pmEq(EvalVal a, EvalVal b) {
+            if (a.kind_ == "str" || b.kind_ == "str") return (a.sval_ == b.sval_) ? 1L : 0L;
+            return (a.ival_ == b.ival_) ? 1L : 0L;
+        }
+
+        // 过程宏入口：编译期求值 @macro 函数体，返回生成的语句列表。
+        ArrayList<AstStmt> evalProcMacro(AstFunction fn, ArrayList<AstExpr> args) {
+            if (fn == null || fn.body_ == null) return null;
+            if (args.size() != fn.params().size()) return null;
+            // 用全新列表替代 clear()：ArrayList.clear() 只把 cnt 置 0、不释放
+            // 元素，后续 append 会向同一槽位重新 store 相同指针 → release 旧值
+            // （恰是同一对象）→ 双重释放/悬垂指针。直接换新列表彻底避免。
+            pmLocalNames_ = new ArrayList<string>();
+            pmLocalVals_ = new ArrayList<EvalVal>();
+            ArrayList<EvalVal> argVals = new ArrayList<EvalVal>();
+            for (int i = 0; i < args.size(); i = i + 1) {
+                EvalVal v = evalExprI(args.get(i));
+                if (v == null) return null;
+                argVals.add(v);
+            }
+            pmLocalNames_ = new ArrayList<string>();
+            pmLocalVals_ = new ArrayList<EvalVal>();
+            for (int i = 0; i < fn.params().size(); i = i + 1) {
+                pmSetLocal(fn.params().get(i).name_, argVals.get(i));
+            }
+            int sb = pmBreak_;
+            int sc = pmContinue_;
+            pmBreak_ = 0;
+            pmContinue_ = 0;
+            EvalVal r = evalStmtI(fn.body_);
+            pmBreak_ = sb;
+            pmContinue_ = sc;
+            if (r == null || r.kind_ != "ast") return null;
+            return r.stmts_;
+        }
+
+        // 表达式求值（编译期解释器子集）。
+        EvalVal evalExprI(AstExpr e) {
+            if (e == null) return null;
+            string k = e.kind_;
+            if (k == "Integer") {
+                EvalVal v = new EvalVal();
+                v.setKind("int");
+                v.setIval(e.value_);
+                return v;
+            }
+            if (k == "String") {
+                EvalVal v = new EvalVal();
+                v.setKind("str");
+                v.setSval(e.stringValue_);
+                return v;
+            }
+            if (k == "Identifier") {
+                EvalVal lv = pmFindLocal(e.name_);
+                if (lv != null) return lv;
+                EvalVal v = new EvalVal();
+                return v;
+            }
+            if (k == "Quote") return evalQuoteI(e);
+            if (k == "Binary") return evalBinaryI(e);
+            if (k == "Assign") {
+                // 注意：链式字段访问（e.lhs_.name_ / e.rhs_.lhs_.kind_）在 MYP
+                // 会产生垃圾值 → 必须先拆成局部变量（自举编译器已知坑）。
+                AstExpr lhsE = e.lhs_;
+                string tname = lhsE != null ? lhsE.name_ : "";
+                AstExpr rhsE = e.rhs_;
+                // 快路径：out = out + quote{...} —— 原地追加（避免 O(n²)）
+                if (rhsE != null && rhsE.kind_ == "Binary" && rhsE.op_ == "+") {
+                    AstExpr rhsL = rhsE.lhs_;
+                    if (rhsL != null && rhsL.kind_ == "Identifier" && rhsL.name_ == tname) {
+                        EvalVal cur = pmFindLocal(tname);
+                        if (cur != null && cur.kind_ == "ast") {
+                            EvalVal rhs = evalExprI(rhsE.rhs_);
+                            if (rhs != null && rhs.kind_ == "ast") {
+                                for (int j = 0; j < rhs.stmts_.size(); j = j + 1) cur.stmts_.add(rhs.stmts_.get(j));
+                                return cur;
+                            }
+                        }
+                    }
+                }
+                EvalVal v = evalExprI(rhsE);
+                if (v == null) return null;
+                EvalVal stored = v;
+                if (v.kind_ == "ast") {
+                    // 深拷贝，避免别名共享（alias = out 语义）
+                    stored = pmCloneAst(v);
+                }
+                pmSetLocal(tname, stored);
+                return stored;
+            }
+            if (k == "Unary") {
+                EvalVal v = evalExprI(e.operand_);
+                if (v == null) return null;
+                EvalVal r = new EvalVal();
+                r.setKind("int");
+                if (e.op_ == "!") r.setIval((pmToBool(v) == 0) ? 1L : 0L);
+                else r.setIval(-v.ival_);
+                return r;
+            }
+            EvalVal v = new EvalVal();
+            return v;
+        }
+
+        EvalVal evalBinaryI(AstExpr b) {
+            EvalVal l = evalExprI(b.lhs_);
+            EvalVal r = evalExprI(b.rhs_);
+            if (l == null || r == null) return null;
+            if (b.op_ == "+" && l.kind_ == "ast" && r.kind_ == "ast") {
+                EvalVal out = new EvalVal();
+                out.setKind("ast");
+                for (int i = 0; i < l.stmts_.size(); i = i + 1) out.stmts_.add(cloneStmtI(l.stmts_.get(i)));
+                for (int i = 0; i < r.stmts_.size(); i = i + 1) out.stmts_.add(cloneStmtI(r.stmts_.get(i)));
+                return out;
+            }
+            if (b.op_ == "+" && l.kind_ == "str" && r.kind_ == "str") {
+                EvalVal out = new EvalVal();
+                out.setKind("str");
+                out.setSval(l.sval_ + r.sval_);
+                return out;
+            }
+            EvalVal o = new EvalVal();
+            o.setKind("int");
+            if (b.op_ == "==") o.setIval(pmEq(l, r));
+            else if (b.op_ == "!=") o.setIval((pmEq(l, r) == 0) ? 1L : 0L);
+            else if (b.op_ == "<") o.setIval((l.ival_ < r.ival_) ? 1L : 0L);
+            else if (b.op_ == ">") o.setIval((l.ival_ > r.ival_) ? 1L : 0L);
+            else if (b.op_ == "<=") o.setIval((l.ival_ <= r.ival_) ? 1L : 0L);
+            else if (b.op_ == ">=") o.setIval((l.ival_ >= r.ival_) ? 1L : 0L);
+            else if (b.op_ == "&&") o.setIval((pmToBool(l) != 0 && pmToBool(r) != 0) ? 1L : 0L);
+            else if (b.op_ == "||") o.setIval((pmToBool(l) != 0 || pmToBool(r) != 0) ? 1L : 0L);
+            else if (b.op_ == "+") o.setIval(l.ival_ + r.ival_);
+            else if (b.op_ == "-") o.setIval(l.ival_ - r.ival_);
+            else if (b.op_ == "*") o.setIval(l.ival_ * r.ival_);
+            else if (b.op_ == "/") o.setIval(l.ival_ / r.ival_);
+            else if (b.op_ == "%") o.setIval(l.ival_ % r.ival_);
+            else if (b.op_ == "&") o.setIval(l.ival_ & r.ival_);
+            else if (b.op_ == "|") o.setIval(l.ival_ | r.ival_);
+            else if (b.op_ == "^") o.setIval(l.ival_ ^ r.ival_);
+            else if (b.op_ == "<<") o.setIval(l.ival_ << (r.ival_ & 63));
+            else if (b.op_ == ">>") o.setIval(l.ival_ >> (r.ival_ & 63));
+            else o.setIval(0L);
+            return o;
+        }
+
+        // quote{...} → Ast 值（语句列表）。
+        EvalVal evalQuoteI(AstExpr q) {
+            EvalVal v = new EvalVal();
+            v.setKind("ast");
+            AstStmt body = q.bodyStmt_;
+            if (body != null && body.kind_ == "Block") {
+                for (int i = 0; i < body.bodyStmts().size(); i = i + 1) {
+                    AstStmt st = body.bodyStmts().get(i);
+                    // 语句位置 $x：Ast 值内联（链式字段访问需拆局部变量）
+                    if (st != null && st.kind_ == "ExprStmt") {
+                        AstExpr stE = st.expr_;
+                        if (stE != null && stE.kind_ == "MacroParam") {
+                            EvalVal lv = pmFindLocal(stE.name_);
+                            if (lv != null && lv.kind_ == "ast") {
+                                for (int j = 0; j < lv.stmts_.size(); j = j + 1) v.stmts_.add(cloneStmtI(lv.stmts_.get(j)));
+                                continue;
+                            }
+                        }
+                    }
+                    v.stmts_.add(cloneStmtI(st));
+                }
+            }
+            return v;
+        }
+
+        // 语句深克隆 + $param 插值（M4 quote）。
+        AstStmt cloneStmtI(AstStmt s) {
+            if (s == null) return null;
+            AstStmt c = new AstStmt();
+            c.setKind(s.kind_);
+            c.setPos(s.line_, s.col_);
+            c.setEndPos(s.endLine_, s.endCol_);
+            if (s.kind_ == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) c.bodyStmts().add(cloneStmtI(s.bodyStmts().get(i)));
+            } else if (s.kind_ == "ExprStmt") {
+                c.setExpr(cloneExprI(s.expr_));
+            } else if (s.kind_ == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar v = s.decls().get(i);
+                    AstVar nv = new AstVar();
+                    string nm = v.name_;
+                    // $name 变量名插值
+                    if (Str.len(nm) > 0 && Str.startsWith(nm, "$") != 0) {
+                        string key = Str.substring(nm, 1, Str.len(nm));
+                        EvalVal lv = pmFindLocal(key);
+                        if (lv != null && lv.kind_ == "str") nm = lv.sval_;
+                        else nm = "__error__";
+                    }
+                    nv.setName(nm);
+                    nv.setType(v.type_);
+                    nv.setConst(v.const_);
+                    nv.setThread(v.thread_);
+                    nv.setThreadpool(v.threadpool_);
+                    nv.setInferred(v.isInferred_);
+                    nv.setInit(cloneExprI(v.init_));
+                    c.decls().add(nv);
+                }
+            } else if (s.kind_ == "Return") {
+                c.setValue(cloneExprI(s.value_));
+            } else if (s.kind_ == "If") {
+                c.setCondition(cloneExprI(s.condition_));
+                c.setThen(cloneStmtI(s.then_));
+                c.setElse(cloneStmtI(s.else_));
+            } else if (s.kind_ == "While") {
+                c.setCondition(cloneExprI(s.condition_));
+                c.setBody(cloneStmtI(s.body_));
+            } else if (s.kind_ == "For") {
+                c.setInit(cloneStmtI(s.init_));
+                c.setCondition(cloneExprI(s.condition_));
+                c.setStep(cloneExprI(s.step_));
+                c.setBody(cloneStmtI(s.body_));
+                c.setParallel(s.parallel_);
+                c.setGpu(s.gpu_);
+                c.setStride(s.stride_);
+                c.setBlock(s.block_);
+                c.setStream(cloneExprI(s.stream_));
+            } else if (s.kind_ == "Break" || s.kind_ == "Continue") {
+                // 无字段
+            } else {
+                c.setExpr(cloneExprI(s.expr_));
+                c.setCondition(cloneExprI(s.condition_));
+                c.setBody(cloneStmtI(s.body_));
+            }
+            return c;
+        }
+
+        // 表达式深克隆 + $param 插值（M4 quote）。
+        AstExpr cloneExprI(AstExpr e) {
+            if (e == null) return null;
+            if (e.kind_ == "MacroParam") {
+                EvalVal lv = pmFindLocal(e.name_);
+                if (lv != null) {
+                    if (lv.kind_ == "int") {
+                        AstExpr lit = new AstExpr();
+                        lit.setKind("Integer");
+                        lit.setValue(lv.ival_);
+                        lit.setPos(e.line_, e.col_);
+                        return lit;
+                    }
+                    if (lv.kind_ == "str") {
+                        AstExpr lit = new AstExpr();
+                        lit.setKind("String");
+                        lit.setStringValue(lv.sval_);
+                        lit.setPos(e.line_, e.col_);
+                        return lit;
+                    }
+                    if (lv.kind_ == "ast") {
+                        if (lv.stmts_.size() == 1) {
+                            AstStmt s0 = lv.stmts_.get(0);
+                            if (s0.kind_ == "ExprStmt" && s0.expr_ != null) return cloneExprI(s0.expr_);
+                        }
+                    }
+                }
+                return e.cloneExpr();
+            }
+            AstExpr c = e.cloneExpr();
+            c.setLhs(cloneExprI(e.lhs_));
+            c.setRhs(cloneExprI(e.rhs_));
+            c.setOperand(cloneExprI(e.operand_));
+            c.setCallee(cloneExprI(e.callee_));
+            c.setArray(cloneExprI(e.array_));
+            c.setIndex(cloneExprI(e.index_));
+            c.setCondition(cloneExprI(e.condition_));
+            c.setTrueExpr(cloneExprI(e.trueExpr_));
+            c.setFalseExpr(cloneExprI(e.falseExpr_));
+            c.setStart(cloneExprI(e.start_));
+            c.setEnd(cloneExprI(e.end_));
+            c.setTryExpr(cloneExprI(e.tryExpr_));
+            c.setCatchExpr(cloneExprI(e.catchExpr_));
+            c.setTimeout(cloneExprI(e.timeout_));
+            c.setNamedValue(cloneExprI(e.namedValue_));
+            ArrayList<AstExpr> na = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.args().size(); i = i + 1) na.add(cloneExprI(e.args().get(i)));
+            c.setArgs(na);
+            ArrayList<AstExpr> nd = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.dimensions().size(); i = i + 1) nd.add(cloneExprI(e.dimensions().get(i)));
+            c.setDimensions(nd);
+            ArrayList<AstExpr> nel = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.elements().size(); i = i + 1) nel.add(cloneExprI(e.elements().get(i)));
+            c.setElements(nel);
+            return c;
+        }
+
+        // 语句解释器（返回 return/break/continue 信号）。
+        EvalVal evalStmtI(AstStmt s) {
+            if (s == null) return null;
+            string k = s.kind_;
+            if (k == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) {
+                    EvalVal r = evalStmtI(s.bodyStmts().get(i));
+                    if (r != null) return r;
+                }
+                return null;
+            }
+            if (k == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar d = s.decls().get(i);
+                    if (d.init_ != null) {
+                        EvalVal v = evalExprI(d.init_);
+                        if (v == null) return null;
+                        // ast 值声明时深拷贝：alias = out 各自独占列表
+                        if (v.kind_ == "ast") v = pmCloneAst(v);
+                        pmSetLocal(d.name_, v);
+                    } else {
+                        pmSetLocal(d.name_, new EvalVal());
+                    }
+                }
+                return null;
+            }
+            if (k == "ExprStmt") {
+                if (s.expr_ != null) {
+                    if (evalExprI(s.expr_) == null) return null;
+                }
+                return null;
+            }
+            if (k == "Return") {
+                if (s.value_ == null) return new EvalVal();
+                return evalExprI(s.value_);
+            }
+            if (k == "If") {
+                EvalVal c = evalExprI(s.condition_);
+                if (c == null) return null;
+                if (pmToBool(c) != 0) {
+                    if (s.then_ != null) return evalStmtI(s.then_);
+                } else {
+                    if (s.else_ != null) return evalStmtI(s.else_);
+                }
+                return null;
+            }
+            if (k == "While") {
+                while (true) {
+                    EvalVal c = evalExprI(s.condition_);
+                    if (c == null) return null;
+                    if (pmToBool(c) == 0) break;
+                    EvalVal r = evalStmtI(s.body_);
+                    if (r != null) {
+                        if (pmBreak_ != 0) { pmBreak_ = 0; return null; }
+                        if (pmContinue_ != 0) { pmContinue_ = 0; continue; }
+                        return r;
+                    }
+                }
+                return null;
+            }
+            if (k == "For") {
+                if (s.init_ != null) {
+                    EvalVal r = evalStmtI(s.init_);
+                    if (r != null) return r;
+                }
+                while (true) {
+                    if (s.condition_ != null) {
+                        EvalVal c = evalExprI(s.condition_);
+                        if (c == null) return null;
+                        if (pmToBool(c) == 0) break;
+                    }
+                    EvalVal r = evalStmtI(s.body_);
+                    if (r != null) {
+                        if (pmBreak_ != 0) { pmBreak_ = 0; break; }
+                        if (pmContinue_ != 0) { pmContinue_ = 0; }
+                        else return r;
+                    }
+                    if (s.step_ != null) {
+                        if (evalExprI(s.step_) == null) return null;
+                    }
+                }
+                return null;
+            }
+            if (k == "Break") {
+                pmBreak_ = 1;
+                return new EvalVal();
+            }
+            if (k == "Continue") {
+                pmContinue_ = 1;
+                return new EvalVal();
+            }
+            return null;
         }
 
         void analyze(AstTU tu) {
@@ -4890,6 +5371,13 @@ class Sema {
         ArrayList<string> macroNames_;
         ArrayList<ArrayList<string>> macroParams_;
         ArrayList<AstStmt> macroBodies_;
+        ArrayList<string> pmFuncNames_;
+        ArrayList<AstFunction> pmFuncs_;
+        ArrayList<string> pmLocalNames_;
+        ArrayList<EvalVal> pmLocalVals_;
+        int pmBreak_;
+        int pmContinue_;
+        int pmDepth_;
         ArrayList<string> startupMethods_;
         int lambdaCounter_;
         int cellCounter_;
