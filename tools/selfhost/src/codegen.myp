@@ -82,6 +82,7 @@ class CodeGen {
             tryArcBases_ = new ArrayList<int>();
             threadHandles_ = new ArrayList<string>();
             testMode_ = 0;
+            curFnCoro_ = 0;
         }
 
         void setTestMode(int v) { testMode_ = v; }
@@ -365,6 +366,7 @@ class CodeGen {
         void releaseArcSlots() {
             for (int i = 0; i < arcSlotNames_.size(); i = i + 1) {
                 string old = newTmp();
+                emitCoroFrameClear(arcSlotNames_.get(i));
                 sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
                 sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             }
@@ -374,6 +376,7 @@ class CodeGen {
         void releaseArcSlotsFrom(int base) {
             for (int i = arcSlotNames_.size() - 1; i >= base; i = i - 1) {
                 string old = newTmp();
+                emitCoroFrameClear(arcSlotNames_.get(i));
                 sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
                 sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             }
@@ -394,6 +397,43 @@ class CodeGen {
                 entryAllocas_.append("  store " + lt + " zeroinitializer, ptr " + va + "\n");
             }
             return va;
+        }
+
+        // §五-1 收尾: 协程帧 ARC 镜像。@coro 函数体里 class/string 局部槽的
+        // 存活对象镜像进运行时帧表（__myp_coro_frame_set/clear），
+        // Coro.destroy / 未捕获异常时由 trampoline 统一释放（无泄漏、无
+        // double-free）。同 C++ emitCoroFrameSet/emitCoroFrameClear。
+        int isCoroClassLocal(AstType t) {
+            AstType rt = resolveType(t);
+            if (rt == null) return 0;
+            if (rt.element_ != null) return 0;          // 数组（动态/定长）
+            if (rt.className_ == "slice") return 0;
+            if (Str.len(rt.className_) == 0) return 0;
+            if (isEnumName(rt.className_) != 0) return 0;
+            if (isStructName(rt.className_) != 0) return 0;
+            if (isInterfaceName(rt.className_) != 0) return 0;
+            return 1;                                    // 类实例
+        }
+        // 声明处镜像：class / string（同 C++ arc_decl_class || arc_decl_string）。
+        int isCoroFrameTrackedDecl(AstType t) {
+            AstType rt = resolveType(t);
+            if (rt == null) return 0;
+            if (rt.str() == "string") return 1;
+            return isCoroClassLocal(rt);
+        }
+        void emitCoroFrameSet(string va, string objV) {
+            if (curFnCoro_ == 0) return;
+            string slot = newTmp();
+            sb_.append("  " + slot + " = ptrtoint ptr " + va + " to i64\n");
+            string oi = newTmp();
+            sb_.append("  " + oi + " = ptrtoint ptr " + objV + " to i64\n");
+            sb_.append("  call void @__myp_coro_frame_set(i64 " + slot + ", i64 " + oi + ")\n");
+        }
+        void emitCoroFrameClear(string va) {
+            if (curFnCoro_ == 0) return;
+            string slot = newTmp();
+            sb_.append("  " + slot + " = ptrtoint ptr " + va + " to i64\n");
+            sb_.append("  call void @__myp_coro_frame_clear(i64 " + slot + ")\n");
         }
 
         // 类型转换（整数扩展/截断 + int↔fp）。返回转换后的值名。
@@ -427,6 +467,56 @@ class CodeGen {
             }
             if (from == "float" && to == "double") {
                 sb_.append("  " + t + " = fpext float " + v + " to double\n");
+                return t;
+            }
+            return v;
+        }
+
+        // 标量/指针 → i64（协程入口槽/返回值/事件参数打包；同 C++ castToI64）。
+        string castToI64(string v, string vt) {
+            if (vt == "i64") return v;
+            string t = newTmp();
+            if (IrEmit.isIntType(vt) != 0) {
+                sb_.append("  " + t + " = sext " + vt + " " + v + " to i64\n");
+                return t;
+            }
+            if (vt == "double") {
+                sb_.append("  " + t + " = bitcast double " + v + " to i64\n");
+                return t;
+            }
+            if (vt == "float") {
+                string e = newTmp();
+                sb_.append("  " + e + " = fpext float " + v + " to double\n");
+                sb_.append("  " + t + " = bitcast double " + e + " to i64\n");
+                return t;
+            }
+            if (vt == "ptr") {
+                sb_.append("  " + t + " = ptrtoint ptr " + v + " to i64\n");
+                return t;
+            }
+            return v;
+        }
+
+        // i64 → 标量/指针（协程入口槽解包）。
+        string i64ToType(string v, string to) {
+            if (to == "i64") return v;
+            string t = newTmp();
+            if (IrEmit.isIntType(to) != 0) {
+                sb_.append("  " + t + " = trunc i64 " + v + " to " + to + "\n");
+                return t;
+            }
+            if (to == "double") {
+                sb_.append("  " + t + " = bitcast i64 " + v + " to double\n");
+                return t;
+            }
+            if (to == "float") {
+                string d = newTmp();
+                sb_.append("  " + d + " = bitcast i64 " + v + " to double\n");
+                sb_.append("  " + t + " = fptrunc double " + d + " to float\n");
+                return t;
+            }
+            if (to == "ptr") {
+                sb_.append("  " + t + " = inttoptr i64 " + v + " to " + to + "\n");
                 return t;
             }
             return v;
@@ -557,6 +647,8 @@ class CodeGen {
                 if (dup != 0) continue;
                 doneFns.add(f.name_);
                 genFunction(f);
+                // @coro 顶层函数入口包装（spawn 时被引用）
+                if (f.coro_ != 0) genCoroFuncEntry(f);
             }
             // 预发射 lambda tramp：lambda 表达式在函数体内构建 fat pointer 时
             // 引用 @cls_tramp，须在函数体之前定义（同 C++ generateTranslationUnit）。
@@ -625,6 +717,11 @@ class CodeGen {
                 // 事件 fire 函数（fire_<Class>_<Event> → myp_event_fire）
                 for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
                     genEventFire(c.name_, c.events().get(ei));
+                }
+                // @coro 方法入口包装（__myp_coro_entry_Cls_m，spawn 时被引用）
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.coro_ != 0) genCoroEntry(c.name_, a);
                 }
             }
             // 顶层 mapping：生成 handler 函数 + __myp_init 注册调用。
@@ -843,12 +940,16 @@ class CodeGen {
         void genFunction(AstFunction f) {
             curTypeParams_ = f.typeParams();
             curTypeArgs_ = f.instTypeArgs();
+            curFnCoro_ = f.coro_;
             genFuncBody(f.name_, f.params(), f.ret_, f.body_);
         }
 
         // @static 类方法：Class_method(params)，无 this。
         void genStaticAction(string cls, AstAction a) {
+            // Coro 静态内建：方法体空 → 直接发运行时调用（__myp_coro_* 隐藏）
+            if (cls == "Coro") { genCoroBuiltin(cls, a); return; }
             setupTypeParams(cls);
+            curFnCoro_ = a.coro_;
             genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
         }
 
@@ -891,6 +992,7 @@ class CodeGen {
             for (int i = 0; i < f.params().size(); i = i + 1) ps.add(f.params().get(i));
             string saveCls = curClass_;
             curClass_ = cls;
+            curFnCoro_ = f.coro_;
             genFuncBody(cls + "_" + f.name_, ps, f.ret_, f.body_);
             curClass_ = saveCls;
         }
@@ -907,6 +1009,7 @@ class CodeGen {
             for (int i = 0; i < a.params().size(); i = i + 1) ps.add(a.params().get(i));
             string saveCls = curClass_;
             curClass_ = cls;
+            curFnCoro_ = a.coro_;
             genFuncBody(fn, ps, a.ret_, a.body_);
             curClass_ = saveCls;
         }
@@ -975,6 +1078,50 @@ class CodeGen {
                     if (c.staticActions().get(ai).name_ == name) return c.staticActions().get(ai);
                 }
                 return null;
+            }
+            return null;
+        }
+
+        // 类方法是否 @coro。
+        int isCoroMethod(string cls, string name) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name) return c.actions().get(ai).coro_;
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name) return c.staticActions().get(ai).coro_;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // 类方法 @coro(stack=N) 栈大小（KB；0 = 默认 128KB）。
+        int coroStackKb(string cls, string name) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name) return c.actions().get(ai).stack_;
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name) return c.staticActions().get(ai).stack_;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // 顶层函数是否 @coro（调用 spawn 用；@async 不 spawn，await 直接调用）。
+        AstFunction findFuncCoro(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name_ == name && f.coro_ != 0) return f;
             }
             return null;
         }
@@ -1260,6 +1407,258 @@ class CodeGen {
             for (int ci = 0; ci < mp.chains().size(); ci = ci + 1) {
                 genMappingChain(mp.chains().get(ci), sb_);
             }
+        }
+
+        // ---- 协程 ----
+
+        // Coro 静态内建方法：方法体空，codegen 直接发运行时调用
+        //（__myp_coro_* 对用户隐藏，同 C++ generateCoroBuiltin）。
+        void genCoroBuiltin(string cls, AstAction a) {
+            string name = a.name_;
+            string rt = "";
+            string retLt = "void";
+            if (name == "scheduler") rt = "__myp_coro_scheduler";
+            else if (name == "sleep") { rt = "__myp_coro_sleep"; retLt = "i64"; }
+            else if (name == "resume") { rt = "__myp_coro_resume"; retLt = "i64"; }
+            else if (name == "yield") { rt = "__myp_coro_yield"; retLt = "i64"; }
+            else if (name == "isActive") { rt = "__myp_coro_is_active"; retLt = "i64"; }
+            else if (name == "current") { rt = "__myp_coro_current_handle"; retLt = "i64"; }
+            else if (name == "count") { rt = "__myp_coro_count"; retLt = "i64"; }
+            else if (name == "status") { rt = "__myp_coro_status"; retLt = "i64"; }
+            else if (name == "destroy") { rt = "__myp_coro_destroy"; }
+            else if (name == "result") { rt = "__myp_coro_result"; retLt = "i64"; }
+            else if (name == "waitEvent") { rt = "__myp_coro_wait_event"; retLt = "i64"; }
+            else if (name == "waitEventTimeout") { rt = "__myp_coro_wait_event_timeout"; retLt = "i64"; }
+            else if (name == "waitFd") { rt = "__myp_coro_wait_fd"; retLt = "i64"; }
+            else if (name == "requestCancel") { rt = "__myp_coro_request_cancel"; }
+            else if (name == "cancelRequested") { rt = "__myp_coro_cancel_requested"; retLt = "i64"; }
+            else if (name == "clearCancel") { rt = "__myp_coro_cancel_clear"; }
+            else if (name == "waitAny") { rt = "__myp_coro_wait_any"; retLt = "i64"; }
+            else if (name == "waitAnyOf") { rt = "__myp_coro_wait_any_of"; retLt = "i64"; }
+            else {
+                genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
+                return;
+            }
+            ArrayList<AstParam> ps = a.params();
+            ArrayList<string> pt = new ArrayList<string>();
+            for (int i = 0; i < ps.size(); i = i + 1) pt.add(llvmType(ps.get(i).type_));
+            StringBuilder sig = new StringBuilder();
+            StringBuilder fwd = new StringBuilder();
+            for (int i = 0; i < pt.size(); i = i + 1) {
+                if (i != 0) { sig.append(", "); fwd.append(", "); }
+                sig.append(pt.get(i) + " %" + i);
+                fwd.append(pt.get(i) + " %" + i);
+            }
+            sb_.append("define internal " + retLt + " @" + cls + "_" + name + "(" + sig.toString() + ") {\n");
+            sb_.append("entry:\n");
+            if (retLt == "void") {
+                sb_.append("  call void @" + rt + "(" + fwd.toString() + ")\n");
+                sb_.append("  ret void\n");
+            } else {
+                string r = newTmp();
+                sb_.append("  " + r + " = call i64 @" + rt + "(" + fwd.toString() + ")\n");
+                sb_.append("  ret i64 " + r + "\n");
+            }
+            sb_.append("}\n\n");
+        }
+
+        // @coro 方法入口包装：__myp_coro_entry_Cls_m() → 取入口槽 → 调真实方法。
+        void genCoroEntry(string cls, AstAction a) {
+            string fn = "__myp_coro_entry_" + cls + "_" + a.name_;
+            sb_.append("define void @" + fn + "() {\n");
+            sb_.append("entry:\n");
+            string s0 = newTmp();
+            sb_.append("  " + s0 + " = call i64 @__myp_coro_get_entry_arg(i64 0)\n");
+            string thisPtr = i64ToType(s0, "ptr");
+            StringBuilder as = new StringBuilder();
+            as.append("ptr " + thisPtr);
+            for (int i = 0; i < a.params().size(); i = i + 1) {
+                string slot = newTmp();
+                sb_.append("  " + slot + " = call i64 @__myp_coro_get_entry_arg(i64 " + (i + 1) + ")\n");
+                string lt = llvmType(a.params().get(i).type_);
+                string v = i64ToType(slot, lt);
+                as.append(", " + lt + " " + v);
+            }
+            string retLt = llvmType(a.ret_);
+            if (retLt == "void") {
+                sb_.append("  call void @" + cls + "_" + a.name_ + "(" + as.toString() + ")\n");
+            } else {
+                string r = newTmp();
+                sb_.append("  " + r + " = call " + retLt + " @" + cls + "_" + a.name_ + "(" + as.toString() + ")\n");
+            }
+            sb_.append("  ret void\n");
+            sb_.append("}\n\n");
+        }
+
+        // @coro 顶层函数入口包装：__myp_coro_entry_f() → 取槽 → 调真实函数。
+        void genCoroFuncEntry(AstFunction f) {
+            string fn = "__myp_coro_entry_" + f.name_;
+            sb_.append("define void @" + fn + "() {\n");
+            sb_.append("entry:\n");
+            StringBuilder as = new StringBuilder();
+            for (int i = 0; i < f.params().size(); i = i + 1) {
+                string slot = newTmp();
+                sb_.append("  " + slot + " = call i64 @__myp_coro_get_entry_arg(i64 " + (i + 1) + ")\n");
+                string lt = llvmType(f.params().get(i).type_);
+                string v = i64ToType(slot, lt);
+                if (i != 0) as.append(", ");
+                as.append(lt + " " + v);
+            }
+            string retLt = llvmType(f.ret_);
+            if (retLt == "void") {
+                sb_.append("  call void @" + f.name_ + "(" + as.toString() + ")\n");
+            } else {
+                string r = newTmp();
+                sb_.append("  " + r + " = call " + retLt + " @" + f.name_ + "(" + as.toString() + ")\n");
+            }
+            sb_.append("  ret void\n");
+            sb_.append("}\n\n");
+        }
+
+        // @coro 调用 → 创建协程 + 传参 + 首启，返回 handle（i64）。
+        string genCoroSpawn(string target, AstExpr e, string thisV, int isMethod, int stackKb) {
+            int stackBytes = 128 * 1024;
+            if (stackKb > 0) stackBytes = stackKb * 1024;
+            string h = newTmp();
+            sb_.append("  " + h + " = call i64 @__myp_coro_create(i64 " + stackBytes + ")\n");
+            string slot0 = "0";
+            if (isMethod != 0 && Str.len(thisV) != 0) slot0 = castToI64(thisV, "ptr");
+            sb_.append("  call void @__myp_coro_set_entry_arg(i64 0, i64 " + slot0 + ")\n");
+            for (int i = 0; i < e.args().size(); i = i + 1) {
+                string av = genExpr(e.args().get(i));
+                string at = exprLlvmType(e.args().get(i));
+                string slot = castToI64(av, at);
+                sb_.append("  call void @__myp_coro_set_entry_arg(i64 " + (i + 1) + ", i64 " + slot + ")\n");
+            }
+            string ep = newTmp();
+            sb_.append("  " + ep + " = ptrtoint ptr @__myp_coro_entry_" + target + " to i64\n");
+            sb_.append("  call void @__myp_coro_set_entry(i64 " + h + ", i64 " + ep + ")\n");
+            string rr = newTmp();
+            sb_.append("  " + rr + " = call i64 @__myp_coro_resume(i64 " + h + ", i64 0)\n");
+            return h;
+        }
+
+        // callee 是否为 @async 目标（await 时直接调用，不 spawn）。
+        int isAsyncCallTarget(AstExpr callee) {
+            if (callee == null || tu_ == null) return 0;
+            if (callee.kind_ == "Identifier") {
+                for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                    AstFunction f = tu_.functions().get(i);
+                    if (f.name_ == callee.name_ && f.async_ != 0) return 1;
+                }
+                if (Str.len(curClass_) != 0) {
+                    for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                        AstClass c = tu_.classes().get(ci);
+                        if (c.name_ != curClass_) continue;
+                        for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                            if (c.actions().get(ai).name_ == callee.name_ && c.actions().get(ai).async_ != 0) return 1;
+                        }
+                        for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                            if (c.staticActions().get(ai).name_ == callee.name_ && c.staticActions().get(ai).async_ != 0) return 1;
+                        }
+                        return 0;
+                    }
+                }
+                return 0;
+            }
+            if (callee.kind_ == "Member") {
+                AstExpr obj = callee.array_;
+                string mn = callee.memberName_;
+                if (obj != null && obj.kind_ == "Identifier") {
+                    // 类名接收者（静态）：Async.sleep
+                    for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                        AstClass c = tu_.classes().get(ci);
+                        if (c.name_ != obj.name_) continue;
+                        for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                            if (c.actions().get(ai).name_ == mn && c.actions().get(ai).async_ != 0) return 1;
+                        }
+                        for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                            if (c.staticActions().get(ai).name_ == mn && c.staticActions().get(ai).async_ != 0) return 1;
+                        }
+                        return 0;
+                    }
+                    // 实例接收者：f.readLineAsync() → 按变量类型解析所属类
+                    AstType oat = varAstType(obj.name_);
+                    if (oat != null) {
+                        AstType rt = resolveType(oat);
+                        if (rt != null && Str.len(rt.className_) != 0) {
+                            string cn = classInstName(rt);
+                            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                                AstClass c = tu_.classes().get(ci);
+                                if (c.name_ != cn) continue;
+                                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                                    if (c.actions().get(ai).name_ == mn && c.actions().get(ai).async_ != 0) return 1;
+                                }
+                                return 0;
+                            }
+                        }
+                    }
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // __myp_timer_create("eventName", delay_ms[, interval_ms]) →
+        // myp_timer_create(event_id, this, delay, delay, interval)（同 C++）。
+        string genTimerCreate(AstExpr e) {
+            int eid = -1;
+            if (e.args().size() > 0 && e.args().get(0).kind_ == "String") {
+                eid = eventId(curClass_, e.args().get(0).stringValue_);
+            }
+            string delay = "0";
+            if (e.args().size() > 1) {
+                string dv = genExpr(e.args().get(1));
+                delay = castToI64(dv, exprLlvmType(e.args().get(1)));
+            }
+            string interval = "0";
+            if (e.args().size() > 2) {
+                string iv = genExpr(e.args().get(2));
+                interval = castToI64(iv, exprLlvmType(e.args().get(2)));
+            }
+            string thisV = loadThis();
+            string r = newTmp();
+            sb_.append("  " + r + " = call i32 @myp_timer_create(i32 " + eid + ", ptr " + thisV + ", i64 " + delay + ", i64 " + delay + ", i64 " + interval + ")\n");
+            return r;
+        }
+
+        // await 表达式/语句核心：@async 直接调用；事件等待；否则 yield。
+        string genAwaitCore(AstExpr op, AstExpr timeout) {            // await <@async 调用> → 直接调用（返回值即 await 值）
+            if (op != null && op.kind_ == "Call") {
+                if (isAsyncCallTarget(op.callee_) != 0) {
+                    return genExpr(op);
+                }
+            }
+            // await Class.event（+ timeout）→ 事件等待
+            if (op != null && op.kind_ == "Member") {
+                AstExpr obj = op.array_;
+                if (obj != null && obj.kind_ == "Identifier") {
+                    string evCls = obj.name_;
+                    string evName = op.memberName_;
+                    if (hasEventInClass(evCls, evName) != 0) {
+                        int eid = eventId(evCls, evName);
+                        if (timeout != null) {
+                            string tv = genExpr(timeout);
+                            string t64 = castToI64(tv, exprLlvmType(timeout));
+                            string r = newTmp();
+                            sb_.append("  " + r + " = call i64 @__myp_coro_wait_event_timeout(i64 " + eid + ", i64 " + t64 + ", i64 0)\n");
+                            return r;
+                        }
+                        string r = newTmp();
+                        sb_.append("  " + r + " = call i64 @__myp_coro_wait_event(i64 " + eid + ", i64 0)\n");
+                        return r;
+                    }
+                }
+            }
+            // await expr / await; → 挂起传出值
+            string out = "0";
+            if (op != null) {
+                string ov = genExpr(op);
+                out = castToI64(ov, exprLlvmType(op));
+            }
+            string r = newTmp();
+            sb_.append("  " + r + " = call i64 @__myp_coro_yield(i64 " + out + ")\n");
+            return r;
         }
 
         // @test 单个用例的异常隔离：push handler + setjmp；非零 = 未捕获异常 →
@@ -1737,13 +2136,12 @@ class CodeGen {
                     // 遮蔽由 varAlloca 的 last-match 解析）
                     int isArc = isArcType(rvt);
                     string va = "";
-                    if (isArc != 0) {
-                        // ARC 槽：alloca 在 entry 块（跨块释放需支配性）
-                        va = entryAlloca(lt);
-                    } else {
-                        va = newTmp();
-                        sb_.append("  " + va + " = alloca " + lt + ", align " + al + "\n");
-                    }
+                    // 所有局部变量（ARC 与非 ARC）的 alloca 都提升到 entry 块：
+                    // 循环体内声明局部变量时，inline alloca 是动态 alloca，每次
+                    // 迭代都会压低栈指针且永不恢复（-O0），循环次数多时栈无限增长
+                    // → 64KB 协程栈溢出（coro_wait_compact N=50000 崩溃）。同
+                    // C++ createEntryBlockAlloca。
+                    va = entryAlloca(lt);
                     localNames_.add(v.name_);
                     localTypes_.add(lt);
                     localAstTypes_.add(rvt);
@@ -1771,6 +2169,12 @@ class CodeGen {
                             string it = exprLlvmType(v.init_);
                             iv = convertValue(iv, it, "ptr");
                             storeNew(va, iv, isFreshTemp(iv));
+                            // §五-1 收尾: class/string 局部镜像进协程帧（destroy/异常释放）
+                            if (isCoroFrameTrackedDecl(rvt) != 0) {
+                                string cv = newTmp();
+                                sb_.append("  " + cv + " = load ptr, ptr " + va + "\n");
+                                emitCoroFrameSet(va, cv);
+                            }
                             // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
                             if (v.init_.kind_ == "New") {
                                 string cn = v.init_.className_;
@@ -1801,6 +2205,9 @@ class CodeGen {
                 // 语句内 mapping()（函数体内）：handler 注册在当前函数体，
                 // 函数退出 @scope 自动解注册。
                 if (st.mapping_ != null) genMappingStmtLocal(st.mapping_);
+            } else if (k == "Await") {
+                // await expr;（语句形式，丢弃值）
+                genAwaitCore(st.expr_, st.timeout_);
             } else if (k == "Return") {
                 // try-with-finally 内 return → 存值、flag=2、先跑 finally
                 if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
@@ -1847,6 +2254,11 @@ class CodeGen {
                     if (curRetLt_ == "ptr") {
                         if (isFreshTemp(v) != 0) consumeTemp(v);
                         else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+                    }
+                    // @coro 方法：return 值存入协程结果槽（Coro.result 可取）
+                    if (curFnCoro_ != 0 && curRetLt_ != "void") {
+                        string sv = castToI64(v, curRetLt_);
+                        sb_.append("  call void @__myp_coro_set_result(i64 " + sv + ")\n");
                     }
                     flushTemps();
                     sb_.append("  ret " + curRetLt_ + " " + v + "\n");
@@ -3016,6 +3428,12 @@ class CodeGen {
                         rv = convertValue(rv, rt, lt);
                         if (varIsArc(nm) != 0) {
                             storeRef(varAlloca(nm), rv, isFreshTemp(rv));
+                            // §五-1 收尾: 类局部赋值镜像进协程帧（覆盖旧对象，同 C++）
+                            if (isCoroClassLocal(varAstType(nm)) != 0) {
+                                string cv = newTmp();
+                                sb_.append("  " + cv + " = load ptr, ptr " + varAlloca(nm) + "\n");
+                                emitCoroFrameSet(varAlloca(nm), cv);
+                            }
                         } else {
                             int al = IrEmit.alignOf(lt);
                             sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
@@ -3254,6 +3672,11 @@ class CodeGen {
                     emitLongjmpOuter();
                     return "0";
                 }
+                // __myp_timer_create("eventName", delay[, interval]) → 解析事件名
+                // 为 event_id + myp_timer_create（同 C++ 内联特判）
+                if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "__myp_timer_create") {
+                    return genTimerCreate(e);
+                }
                 string fn = "";
                 string thisV = "";
                 string mCls = "";      // 方法所属类（形参类型查找用）
@@ -3383,6 +3806,14 @@ class CodeGen {
                     && (callee.name_ == "__myp_atof" || callee.name_ == "__myp_io_read_double")) {
                     retLt = "double";
                 }
+                // @coro 方法/函数调用 → 创建协程 + 传参 + 首启，返回 handle（i64）
+                if (Str.len(mName) != 0) {
+                    if (isTopLevelFunc(mName) != 0 && findFuncCoro(mName) != null) {
+                        return genCoroSpawn(mName, e, "", 0, 0);
+                    } else if (Str.len(mCls) != 0 && isCoroMethod(mCls, mName) != 0) {
+                        return genCoroSpawn(mCls + "_" + mName, e, thisV, 1, coroStackKb(mCls, mName));
+                    }
+                }
                 // 期望的形参 LLVM 类型（实参提升：float→double、int→long 等，
                 // 同 C++ generateCall 的 convertIntegerValue）
                 ArrayList<string> expParams = null;
@@ -3425,6 +3856,9 @@ class CodeGen {
             }
             if (k == "TryExpr") {
                 return genTryExpr(e);
+            }
+            if (k == "Await") {
+                return genAwaitCore(e.operand_, e.timeout_);
             }
             // Member/Subscript 等留 G2。
             return "0";
@@ -4374,4 +4808,5 @@ class CodeGen {
         ArrayList<string> instanceGlobals_;
         int curFnScope_;
         int testMode_;
+        int curFnCoro_;
 }
