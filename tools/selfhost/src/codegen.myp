@@ -1293,6 +1293,10 @@ class CodeGen {
             if (k == "Lambda") {
                 return genLambda(e);
             }
+            if (k == "NamedArg") {
+                if (e.namedValue_ != null) return genExpr(e.namedValue_);
+                return "0";
+            }
             if (k == "Tuple") {
                 // 元组字面量 (a, b, ...) → 匿名结构体 {T0, T1, ...} insertvalue 构造
                 ArrayList<AstExpr> els = e.elements();
@@ -1823,6 +1827,7 @@ class CodeGen {
             if (k == "Null") return "ptr";
             if (k == "This") return "ptr";
             if (k == "Lambda") return "{ ptr, ptr }";
+            if (k == "NamedArg") return exprLlvmType(e.namedValue_);
             if (k == "Tuple") {
                 StringBuilder ty = new StringBuilder();
                 ty.append("{ ");
