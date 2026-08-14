@@ -5,6 +5,9 @@
 import "./ast.myp";
 import "./ir_emit.myp";
 
+// double → LLVM %e 文本（与 mypc --emit-llvm 的 double 常量格式一致）。
+ffi string myp_fmt_double_e(double v, int precision);
+
 class CodeGen {
     action:
         @constructor CodeGen() {
@@ -844,7 +847,21 @@ class CodeGen {
             }
             if (k == "Bool") return "i1";
             if (k == "String") return "ptr";
-            if (k == "Identifier") return varType(e.name_);
+            if (k == "Identifier") {
+                string nm = e.name_;
+                if (hasVar(nm) != 0) return varType(nm);
+                if (hasMember(nm) != 0) return propType(curClass_, nm);
+                return varType(nm);
+            }
+            if (k == "Member") return memberFieldType(e);
+            if (k == "Subscript") {
+                AstExpr arr = e.array_;
+                if (arr != null && arr.kind_ == "Identifier") {
+                    return varElemType(arr.name_);
+                }
+                return IrEmit.kindType(e.resolvedKind_);
+            }
+            if (k == "New") return "ptr";
             return IrEmit.kindType(e.resolvedKind_);
         }
 
@@ -933,11 +950,9 @@ class CodeGen {
             return gep;
         }
 
-        // double 常量 → LLVM 浮点文本（%e 格式，llc 接受）。
+        // double 常量 → LLVM 浮点文本（%e 格式，与 mypc --emit-llvm 一致）。
         string floatLiteral(double v) {
-            string s = "" + v;
-            if (Str.cmp(s, "0") == 0 || s == "0.0") return "0.000000e+00";
-            return s;
+            return myp_fmt_double_e(v, 6);
         }
 
         // 字符串字面量 → 全局常量 + GEP 到 data ptr。
