@@ -4618,6 +4618,25 @@ class CodeGen {
             if (k == "Subscript") {
                 AstExpr arr = e.array_;
                 AstExpr idx = e.index_;
+                // string 下标 s[i] : char —— myp_str_substring(s,i,i+1)+myp_ord
+                // 安全路径（越界/负数钳制），返回 char（i8）。同 C++ generateSubscript。
+                if (arr != null && arr.resolvedKind_ == "string") {
+                    string sptr = genExpr(arr);
+                    string iv = genExpr(idx);
+                    string it = exprLlvmType(idx);
+                    string start = convertValue(iv, it, "i32");
+                    string one = "1";
+                    string end = newTmp();
+                    sb_.append("  " + end + " = add i32 " + start + ", " + one + "\n");
+                    string ch = newTmp();
+                    sb_.append("  " + ch + " = call ptr @myp_str_substring(ptr " + sptr + ", i32 " + start + ", i32 " + end + ")\n");
+                    string code = newTmp();
+                    sb_.append("  " + code + " = call i32 @myp_ord(ptr " + ch + ")\n");
+                    sb_.append("  call i32 @myp_release(ptr " + ch + ")\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = trunc i32 " + code + " to i8\n");
+                    return t;
+                }
                 // bitvector<N>[i] → (v >> i) & 1 → i1
                 if (e.resolvedKind_ == "bit" && arr != null) {
                     string arrT = exprLlvmType(arr);
@@ -5407,7 +5426,10 @@ class CodeGen {
             }
             if (k == "Subscript") {
                 if (e.resolvedKind_ == "bit") return "i1";   // bitvector<N>[i]
-                return subscriptElemLt(e.array_);
+                // string 下标 s[i] : char（i8）
+                AstExpr sarr = e.array_;
+                if (sarr != null && sarr.resolvedKind_ == "string") return "i8";
+                return subscriptElemLt(sarr);
             }
             if (k == "New") {
                 if (e.className_ == "slice") return "{ ptr, i64 }";
