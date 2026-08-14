@@ -6,7 +6,7 @@ import "./ast.myp";
 @static class IrEmit {
     static:
         // AstType → LLVM IR 类型字符串。
-        // 类/接口/数组/切片/函数/元组一律 ptr（G2/G3 再细化布局）。
+        // 类/接口/数组/函数/元组一律 ptr；slice<T> = {ptr, i64} fat pointer。
         string llvmType(AstType t) {
             if (t == null) return "i32";
             string s = t.str();
@@ -18,7 +18,23 @@ import "./ast.myp";
             if (s == "float") return "float";
             if (s == "double") return "double";
             if (s == "void") return "void";
+            if (t.className_ == "slice") return "{ ptr, i64 }";
             return "ptr";
+        }
+
+        // slice<T> 的元素 LLVM 类型（t 为 slice 类型时）。
+        string sliceElemType(AstType t) {
+            if (t == null) return "i32";
+            ArrayList<AstType> tas = t.typeArgs();
+            if (tas.size() > 0) return IrEmit.llvmType(tas.get(0));
+            return "i32";
+        }
+
+        // t 是否为 slice 类型。
+        int isSlice(AstType t) {
+            if (t == null) return 0;
+            if (t.className_ == "slice") return 1;
+            return 0;
         }
 
         // sema resolvedKind → LLVM 类型（表达式 resultKind 用）。
@@ -42,6 +58,7 @@ import "./ast.myp";
             if (lt == "i1") return "false";
             if (lt == "double" || lt == "float") return "0.000000e+00";
             if (lt == "ptr") return "null";
+            if (Str.startsWith(lt, "{") != 0) return "zeroinitializer";
             return "0";
         }
 

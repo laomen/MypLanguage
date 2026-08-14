@@ -18,6 +18,7 @@ class CodeGen {
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
             localElemTypes_ = new ArrayList<string>();
+            localIsSlice_ = new ArrayList<int>();
             isMainFunc_ = 0;
             curBlock_ = "entry";
             blockCounter_ = 0;
@@ -292,6 +293,7 @@ class CodeGen {
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
             localElemTypes_ = new ArrayList<string>();
+            localIsSlice_ = new ArrayList<int>();
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -357,14 +359,20 @@ class CodeGen {
                     sb_.append("  %" + v.name_ + " = alloca " + lt + ", align " + al + "\n");
                     localNames_.add(v.name_);
                     localTypes_.add(lt);
-                    // 记录数组元素类型（数组变量下标 GEP 用）
+                    // 记录数组/slice 元素类型（下标 GEP / extractvalue 用）
                     string elemLt = "";
+                    int isSlice = 0;
                     AstType vt2 = v.type_;
                     if (vt2 != null) {
                         AstType elt = vt2.element_;
                         if (elt != null) elemLt = IrEmit.llvmType(elt);
+                        else if (vt2.className_ == "slice") {
+                            elemLt = IrEmit.sliceElemType(vt2);
+                            isSlice = 1;
+                        }
                     }
                     localElemTypes_.add(elemLt);
+                    localIsSlice_.add(isSlice);
                     sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr %" + v.name_ + ", align " + al + "\n");
                     if (v.init_ != null) {
                         string iv = genExpr(v.init_);
@@ -481,6 +489,15 @@ class CodeGen {
             string sizeV = "0";
             if (ik == 1) {
                 sizeV = "" + st.arrSize_;
+            } else if (ik == 2) {
+                // slice：extractvalue len
+                string collL = newTmp();
+                sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
+                string len64 = newTmp();
+                sb_.append("  " + len64 + " = extractvalue { ptr, i64 } " + collL + ", 1\n");
+                string ti = newTmp();
+                sb_.append("  " + ti + " = trunc i64 " + len64 + " to i32\n");
+                sizeV = ti;
             } else if (ik == 3) {
                 AstExpr re = coll;
                 AstExpr rEnd = re.end_;
@@ -504,6 +521,7 @@ class CodeGen {
             localNames_.add(varName);
             localTypes_.add(elemLt);
             localElemTypes_.add("");
+            localIsSlice_.add(0);
             string condB = newBlock("for_cond");
             string bodyB = newBlock("for_body");
             string stepB = newBlock("for_step");
@@ -525,6 +543,18 @@ class CodeGen {
                 sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
                 string gep = newTmp();
                 sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + collL + ", i32 " + idx1 + "\n");
+                string el = newTmp();
+                sb_.append("  " + el + " = load " + elemLt + ", ptr " + gep + "\n");
+                elem = el;
+            } else if (ik == 2) {
+                // slice：extractvalue data + GEP
+                string collL = newTmp();
+                sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
+                string data = newTmp();
+                sb_.append("  " + data + " = extractvalue { ptr, i64 } " + collL + ", 0\n");
+                string idx64 = convertValue(idx1, "i32", "i64");
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", i64 " + idx64 + "\n");
                 string el = newTmp();
                 sb_.append("  " + el + " = load " + elemLt + ", ptr " + gep + "\n");
                 elem = el;
@@ -688,7 +718,7 @@ class CodeGen {
                         sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                     }
                 } else if (lhs != null && lhs.kind_ == "Subscript") {
-                    // arr[i] = v
+                    // arr[i] = v / sl[i] = v
                     AstExpr arr = lhs.array_;
                     AstExpr idx = lhs.index_;
                     string arrV = genExpr(arr);
@@ -698,8 +728,16 @@ class CodeGen {
                     if (arr != null && arr.kind_ == "Identifier") {
                         elemLt = varElemType(arr.name_);
                     }
-                    string gep = newTmp();
-                    sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                    string gep;
+                    if (arr != null && arr.kind_ == "Identifier" && isSliceVar(arr.name_) != 0) {
+                        string data = newTmp();
+                        sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
+                        gep = newTmp();
+                        sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+                    } else {
+                        gep = newTmp();
+                        sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                    }
                     rv = convertValue(rv, rt, elemLt);
                     sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
                 } else if (lhs != null && lhs.kind_ == "Member") {
@@ -743,6 +781,16 @@ class CodeGen {
                 if (arr != null && arr.kind_ == "Identifier") {
                     elemLt = varElemType(arr.name_);
                 }
+                if (arr != null && arr.kind_ == "Identifier" && isSliceVar(arr.name_) != 0) {
+                    // slice：extractvalue data + GEP
+                    string data = newTmp();
+                    sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load " + elemLt + ", ptr " + gep + "\n");
+                    return t;
+                }
                 string gep = newTmp();
                 sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                 string t = newTmp();
@@ -750,6 +798,9 @@ class CodeGen {
                 return t;
             }
             if (k == "New") {
+                if (e.className_ == "slice") {
+                    return genSliceNew(e);
+                }
                 // 类实例：myp_alloc_object(size, type_id) + 属性默认值 + 构造器调用。
                 // 泛型实例用 resolvedClass（Box_int_inst），模板名用 className。
                 string cls = e.className_;
@@ -811,6 +862,23 @@ class CodeGen {
                 } else if (callee != null && callee.kind_ == "Member") {
                     AstExpr obj = callee.array_;
                     string mname = callee.memberName_;
+                    // slice.size() / length() / data()
+                    if (obj != null && obj.kind_ == "Identifier" && isSliceVar(obj.name_) != 0) {
+                        if (mname == "size" || mname == "length") {
+                            string sv = genExpr(obj);
+                            string len = newTmp();
+                            sb_.append("  " + len + " = extractvalue { ptr, i64 } " + sv + ", 1\n");
+                            string t = newTmp();
+                            sb_.append("  " + t + " = trunc i64 " + len + " to i32\n");
+                            return t;
+                        }
+                        if (mname == "data") {
+                            string sv = genExpr(obj);
+                            string data = newTmp();
+                            sb_.append("  " + data + " = extractvalue { ptr, i64 } " + sv + ", 0\n");
+                            return data;
+                        }
+                    }
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
                     } else {
@@ -921,6 +989,33 @@ class CodeGen {
             return "i32";
         }
 
+        // name 是否为 slice 局部变量。
+        int isSliceVar(string name) {
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == name) return localIsSlice_.get(i);
+            }
+            return 0;
+        }
+
+        // new slice<T>(n)：myp_alloc_slice_backing + 构造 {data, len} fat pointer。
+        string genSliceNew(AstExpr e) {
+            AstType et = e.typeArgs().size() > 0 ? e.typeArgs().get(0) : null;
+            string elemLt = IrEmit.llvmType(et);
+            int elemSize = IrEmit.typeSize(elemLt);
+            string nv = genExpr(e.args().get(0));
+            string nt = exprLlvmType(e.args().get(0));
+            string n64 = convertValue(nv, nt, "i64");
+            int elemKind = 1;
+            if (elemLt == "ptr") elemKind = 0;
+            string data = newTmp();
+            sb_.append("  " + data + " = call ptr @myp_alloc_slice_backing(i64 " + n64 + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
+            string p0 = newTmp();
+            sb_.append("  " + p0 + " = insertvalue { ptr, i64 } poison, ptr " + data + ", 0\n");
+            string p1 = newTmp();
+            sb_.append("  " + p1 + " = insertvalue { ptr, i64 } " + p0 + ", i64 " + n64 + ", 1\n");
+            return p1;
+        }
+
         // name 是否为类名（@static 类方法调用判断）。
         int isClassName(string name) {
             if (tu_ == null) return 0;
@@ -1019,6 +1114,7 @@ class CodeGen {
         ArrayList<string> localNames_;
         ArrayList<string> localTypes_;
         ArrayList<string> localElemTypes_;
+        ArrayList<int> localIsSlice_;
         int isMainFunc_;
         string curBlock_;
         int blockCounter_;
