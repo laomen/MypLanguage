@@ -79,6 +79,7 @@ class CodeGen {
             localIsArc_ = new ArrayList<int>();
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
+            threadHandles_ = new ArrayList<string>();
         }
 
         string newTmp() {
@@ -902,6 +903,7 @@ class CodeGen {
             arcSlotNames_ = new ArrayList<string>();
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
+            threadHandles_ = new ArrayList<string>();
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -974,6 +976,11 @@ class CodeGen {
                 for (int i = 0; i < st.decls().size(); i = i + 1) {
                     AstVar v = st.decls().get(i);
                     AstType rvt = resolveType(v.type_);
+                    // @thread：new Cls() @thread —— 专用线程启动路径
+                    if (v.thread_ != 0) {
+                        genThreadVar(v, rvt);
+                        continue;
+                    }
                     // 定长数组 T[N]：alloca [N x T]，decay 为首元素地址存入 ptr 槽
                     //（下标/传参/返回均按数据指针，同 C++ createEntryBlockAlloca + GEP）。
                     if (rvt != null && rvt.element_ != null && rvt.arraySize_ > 0) {
@@ -1068,6 +1075,17 @@ class CodeGen {
                     return;
                 }
                 if (isMainFunc_ != 0) {
+                    // 停止 + 销毁全部 @thread 句柄（先于 event_process_all/free_all）
+                    for (int hi = 0; hi < threadHandles_.size(); hi = hi + 1) {
+                        string t = newTmp();
+                        sb_.append("  " + t + " = load ptr, ptr " + threadHandles_.get(hi) + "\n");
+                        sb_.append("  call void @myp_thread_stop(ptr " + t + ")\n");
+                    }
+                    for (int hi = 0; hi < threadHandles_.size(); hi = hi + 1) {
+                        string t = newTmp();
+                        sb_.append("  " + t + " = load ptr, ptr " + threadHandles_.get(hi) + "\n");
+                        sb_.append("  call void @myp_thread_destroy(ptr " + t + ")\n");
+                    }
                     sb_.append("  call void @myp_event_process_all()\n");
                     sb_.append("  call void @myp_free_all()\n");
                 }
@@ -1321,6 +1339,53 @@ class CodeGen {
             destructureWalk(tgt, tv, tt, st.isDecl_);
         }
 
+        // cls 类的 @startup action 函数名（"@Main_run"；无则 "null"）。
+        string findStartupFn(string cls) {
+            if (tu_ == null || Str.len(cls) == 0) return "null";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.startup_ != 0) return "@" + cls + "_" + a.name_;
+                }
+            }
+            return "null";
+        }
+
+        // @thread 变量：new Cls() @thread —— 建实例、找 @startup、myp_thread_create
+        // + run_loop；实例指针存入变量槽（m 仍指向实例）；线程句柄登记，main 末
+        // stop/destroy（同 C++ generateVarDecl @thread 分支）。
+        void genThreadVar(AstVar v, AstType rvt) {
+            string inst = "null";
+            if (v.init_ != null) {
+                inst = genExpr(v.init_);
+                if (isFreshTemp(inst) != 0) consumeTemp(inst);   // 线程 startup_arg 持有实例
+            }
+            // 实例指针存入变量槽（m 可继续用）
+            string va = newTmp();
+            sb_.append("  " + va + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr " + inst + ", ptr " + va + "\n");
+            localNames_.add(v.name_);
+            localTypes_.add("ptr");
+            localAstTypes_.add(rvt);
+            localAllocas_.add(va);
+            localElemTypes_.add("");
+            localIsSlice_.add(0);
+            localIsArc_.add(0);
+            // 启动函数（@startup action）
+            string startupFn = findStartupFn(rvt.className_);
+            // 创建线程 + 运行
+            string thr = newTmp();
+            sb_.append("  " + thr + " = call ptr @myp_thread_create(ptr " + startupFn + ", ptr " + inst + ")\n");
+            string thrA = newTmp();
+            sb_.append("  " + thrA + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr " + thr + ", ptr " + thrA + "\n");
+            threadHandles_.add(thrA);
+            sb_.append("  call void @myp_thread_associate_instance(ptr " + inst + ", ptr " + thr + ")\n");
+            sb_.append("  call void @myp_thread_run_loop(ptr " + thr + ")\n");
+        }
+
         // 递归解包元组结构体。
         void destructureWalk(AstDestructureTarget tgt, string aggV, string aggT, int isDecl) {
             ArrayList<AstDestructureTarget> els = tgt.elements();
@@ -1379,8 +1444,14 @@ class CodeGen {
         void genThrowStmt(AstStmt st) {
             string tt = st.throwType_;
             if (tt == "rethrow") {
-                // throw; —— 重抛当前异常到外层 handler。
-                //（catch 入口已 pop 本 try handler，故不再 pop。）
+                // throw; 在 try-with-finally 内 → flag=1 先跑 finally 再向外重抛
+                //（catch 入口对 hasFinally 不 pop，直接 longjmp 会重入本 handler 死循环）
+                if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
+                    FinallyCtx fc = finallyStack_.get(finallyStack_.size() - 1);
+                    sb_.append("  store i8 1, ptr " + fc.flagSlot() + "\n");
+                    emitBr(fc.finallyB());
+                    return;
+                }
                 emitLongjmpOuter();
                 return;
             }
@@ -2854,4 +2925,5 @@ class CodeGen {
         ArrayList<int> localIsArc_;
         ArrayList<FinallyCtx> finallyStack_;
         string finallyRetSlot_;
+        ArrayList<string> threadHandles_;
 }
