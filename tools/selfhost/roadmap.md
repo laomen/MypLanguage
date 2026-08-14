@@ -269,11 +269,11 @@
 
 ### 任务
 
-- [ ] **H1-1** stage1：`mypc` 编译 `tools/selfhost/src/*.myp` → `build/myp_self`。
-- [ ] **H1-2** stage2：`myp_self` 编译同样源码 → `build/myp_self2`。
-- [ ] **H1-3** stage3：`myp_self2` 编译同样源码 → `build/myp_self3`。
-- [ ] **H1-4** 自举判定：stage2/stage3 对同一语料（前端 dump + 产物运行）行为一致；全量回归
-      （`tests/test_myp_self.sh`：tokens/ast/sema/compile 四模式）三代全绿。
+- [x] **H1-1** stage1：`mypc` 编译 `tools/selfhost/src/*.myp` → `build/myp_self`。
+- [x] **H1-2** stage2：`myp_self` 编译同样源码 → `build/myp_self2`。
+- [x] **H1-3** stage3：`myp_self2` 编译同样源码 → `build/myp_self3`。
+- [x] **H1-4** 自举判定：stage2/stage3 对同一语料（前端 dump + 产物运行）行为一致
+      ——`tests/test_myp_bootstrap.sh`（15/15，2026-08-14）。
 - [ ] **H1-5** 性能基准：`myp_self` vs `mypc` 编译耗时（记录基线，≤10x，目标 ≤3x）。
 - [ ] **H1-6** 文档收口：`docs/self_hosting.md`（T5 完成状态）、`docs/CHANGELOG.md`（精简内联）、
       README 工具清单；`run_tests.sh` 接入；`-O0`/`-O2`/ASAN 三套回归。
