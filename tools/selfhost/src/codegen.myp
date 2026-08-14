@@ -2113,6 +2113,11 @@ class CodeGen {
                         genThreadVar(v, rvt);
                         continue;
                     }
+                    // @threadpool：Cls[N] pool @threadpool —— 每元素一个线程
+                    if (v.threadpool_ != 0) {
+                        genThreadPoolVar(v, rvt);
+                        continue;
+                    }
                     // 定长数组 T[N]：alloca [N x T]，decay 为首元素地址存入 ptr 槽
                     //（下标/传参/返回均按数据指针，同 C++ createEntryBlockAlloca + GEP）。
                     if (rvt != null && rvt.element_ != null && rvt.arraySize_ > 0) {
@@ -2602,6 +2607,50 @@ class CodeGen {
             threadHandles_.add(thrA);
             sb_.append("  call void @myp_thread_associate_instance(ptr " + inst + ", ptr " + thr + ")\n");
             sb_.append("  call void @myp_thread_run_loop(ptr " + thr + ")\n");
+        }
+
+        // @threadpool 变量：Cls[N] pool @threadpool —— 分配 [N x ptr] 实例指针
+        // 数组，逐个 myp_alloc_object + @startup 线程（同 C++ generateVarDecl
+        // @threadpool 分支）。变量值 = 首元素地址（下标 pool[i] 走 GEP）。
+        void genThreadPoolVar(AstVar v, AstType rvt) {
+            AstType elem = rvt != null ? rvt.element_ : null;
+            string elemCls = elem != null ? elem.className_ : "";
+            int poolSize = rvt != null && rvt.arraySize_ > 0 ? rvt.arraySize_ : 4;
+            if (Str.len(elemCls) == 0) return;
+            string arrLt = "[" + poolSize + " x ptr]";
+            string arrA = newTmp() + ".arr";
+            sb_.append("  " + arrA + " = alloca " + arrLt + ", align 8\n");
+            string first = newTmp();
+            sb_.append("  " + first + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 0\n");
+            string va = newTmp();
+            sb_.append("  " + va + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr " + first + ", ptr " + va + "\n");
+            localNames_.add(v.name_);
+            localTypes_.add("ptr");
+            localAstTypes_.add(rvt);
+            localAllocas_.add(va);
+            localElemTypes_.add("ptr");
+            localIsSlice_.add(0);
+            localIsArc_.add(0);
+            string startupFn = findStartupFn(elemCls);
+            int sz = classSize(elemCls);
+            int tid = classTypeId(elemCls);
+            for (int i = 0; i < poolSize; i = i + 1) {
+                string obj = newTmp();
+                sb_.append("  " + obj + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 " + tid + ")\n");
+                sb_.append("  call void @llvm.memset.p0.i64(ptr " + obj + ", i8 0, i64 " + sz + ", i1 false)\n");
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 " + i + "\n");
+                sb_.append("  store ptr " + obj + ", ptr " + gep + "\n");
+                string thr = newTmp();
+                sb_.append("  " + thr + " = call ptr @myp_thread_create(ptr " + startupFn + ", ptr " + obj + ")\n");
+                string thrA = newTmp();
+                sb_.append("  " + thrA + " = alloca ptr, align 8\n");
+                sb_.append("  store ptr " + thr + ", ptr " + thrA + "\n");
+                threadHandles_.add(thrA);
+                sb_.append("  call void @myp_thread_associate_instance(ptr " + obj + ", ptr " + thr + ")\n");
+                sb_.append("  call void @myp_thread_run_loop(ptr " + thr + ")\n");
+            }
         }
 
         // 递归解包元组结构体。
