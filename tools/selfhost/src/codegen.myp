@@ -163,6 +163,10 @@ class CodeGen {
             if (rt != null && Str.len(rt.className_) != 0 && isInterfaceName(rt.className_) != 0) {
                 return "{ ptr, ptr }";
             }
+            // 枚举类型 → 结构体值 { i32, [N x i8] }
+            if (rt != null && Str.len(rt.className_) != 0 && isEnumName(rt.className_) != 0) {
+                return enumLlvmType(rt.className_);
+            }
             return IrEmit.llvmType(rt);
         }
 
@@ -234,7 +238,7 @@ class CodeGen {
 
         // ---- ARC（计数引用）----
         // string/类实例/接口/动态数组 → LLVM ptr，均走 myp_retain/myp_release。
-        // 定长数组是栈数组（非计数）；struct/slice/函数值是结构体值类型。
+        // 定长数组是栈数组（非计数）；struct/slice/函数值/enum 是结构体值类型。
         int isArcType(AstType t) {
             AstType rt = resolveType(t);
             if (rt == null) return 0;
@@ -244,7 +248,10 @@ class CodeGen {
                 return 0;                           // T[N] 定长数组（栈）
             }
             if (rt.className_ == "slice") return 0;
-            if (Str.len(rt.className_) != 0) return 1;   // 类实例/接口引用
+            if (Str.len(rt.className_) != 0) {
+                if (isEnumName(rt.className_) != 0) return 0;   // 枚举是值类型
+                return 1;   // 类实例/接口引用
+            }
             return 0;
         }
 
@@ -1200,6 +1207,8 @@ class CodeGen {
                 genForIn(st);
             } else if (k == "Destructure") {
                 genDestructure(st);
+            } else if (k == "Match") {
+                genMatchStmt(st);
             } else if (k == "Try") {
                 genTryStmt(st);
             } else if (k == "Throw") {
@@ -1816,6 +1825,129 @@ class CodeGen {
             return t;
         }
 
+        // 枚举变体构造：Option.Some(42) / Color.Red → { i32 disc, [N x i8] payload }。
+        string genEnumVariant(string enumName, string variantName, AstExpr call) {
+            int vi = enumVariantIndex(enumName, variantName);
+            string st = enumLlvmType(enumName);
+            string agg = "poison";
+            string d1 = newTmp();
+            sb_.append("  " + d1 + " = insertvalue " + st + " " + agg + ", i32 " + vi + ", 0\n");
+            agg = d1;
+            if (call.args().size() > 0) {
+                int maxp = enumMaxPayload(enumName);
+                string buf = newTmp();
+                sb_.append("  " + buf + " = alloca [" + maxp + " x i8]\n");
+                for (int ai = 0; ai < call.args().size(); ai = ai + 1) {
+                    AstExpr a = call.args().get(ai);
+                    string av = genExpr(a);
+                    string at = exprLlvmType(a);
+                    int off = enumPayloadOffset(enumName, vi, ai);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr i8, ptr " + buf + ", i32 " + off + "\n");
+                    sb_.append("  store " + at + " " + av + ", ptr " + gep + "\n");
+                }
+                string payload = newTmp();
+                sb_.append("  " + payload + " = load [" + maxp + " x i8], ptr " + buf + "\n");
+                string d2 = newTmp();
+                sb_.append("  " + d2 + " = insertvalue " + st + " " + agg + ", [" + maxp + " x i8] " + payload + ", 1\n");
+                agg = d2;
+            }
+            return agg;
+        }
+
+        // match (subject) { Enum.Variant(a,b) => {...} ... }：extract disc + 链式
+        // icmp 分发 + 载荷字段解包绑定（C++ generateMatchStmt）。
+        void genMatchStmt(AstStmt s) {
+            if (s.subject_ == null) return;
+            string subjectV = genExpr(s.subject_);
+            string subjectT = exprLlvmType(s.subject_);
+            string enumName = "";
+            if (s.arms().size() > 0) enumName = s.arms().get(0).enum_;
+            // 判别式（元素 0）
+            string disc = newTmp();
+            sb_.append("  " + disc + " = extractvalue " + subjectT + " " + subjectV + ", 0\n");
+            int n = s.arms().size();
+            if (n == 0) return;
+            string mergeB = newBlock("match_end");
+            string chkB = newBlock("match_check_0");
+            emitBr(chkB);
+            for (int i = 0; i < n; i = i + 1) {
+                AstMatchArm arm = s.arms().get(i);
+                openBlock(chkB);
+                string cmp = newTmp();
+                sb_.append("  " + cmp + " = icmp eq i32 " + disc + ", " + arm.index_ + "\n");
+                string armB = newBlock("match_arm" + i);
+                string nxt = "";
+                if (i + 1 < n) nxt = newBlock("match_check" + (i + 1));
+                else nxt = mergeB;
+                sb_.append("  br i1 " + cmp + ", label %" + armB + ", label %" + nxt + "\n");
+                terminated_ = 1;
+                openBlock(armB);
+                // 载荷解包绑定
+                if (arm.bindings().size() > 0) {
+                    string subjA = newTmp();
+                    sb_.append("  " + subjA + " = alloca " + subjectT + "\n");
+                    sb_.append("  store " + subjectT + " " + subjectV + ", ptr " + subjA + "\n");
+                    int maxp = enumMaxPayload(enumName);
+                    if (maxp > 0) {
+                        string payloadPtr = newTmp();
+                        sb_.append("  " + payloadPtr + " = getelementptr " + subjectT + ", ptr " + subjA + ", i32 0, i32 1\n");
+                        for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
+                            // 找到 variant 的参数字段类型
+                            AstParam vp = findEnumVariantParam(enumName, arm.index_, bi);
+                            string bindT = vp != null ? llvmType(vp.type_) : "i32";
+                            int off = enumPayloadOffset(enumName, arm.index_, bi);
+                            string fieldPtr = newTmp();
+                            sb_.append("  " + fieldPtr + " = getelementptr i8, ptr " + payloadPtr + ", i32 " + off + "\n");
+                            string loaded = newTmp();
+                            sb_.append("  " + loaded + " = load " + bindT + ", ptr " + fieldPtr + "\n");
+                            string bindA = newTmp();
+                            sb_.append("  " + bindA + " = alloca " + bindT + "\n");
+                            sb_.append("  store " + bindT + " " + loaded + ", ptr " + bindA + "\n");
+                            localNames_.add(arm.bindings().get(bi));
+                            localTypes_.add(bindT);
+                            localAstTypes_.add(vp != null ? vp.type_ : null);
+                            localAllocas_.add(bindA);
+                            localElemTypes_.add("");
+                            localIsSlice_.add(0);
+                            localIsArc_.add(vp != null ? isArcType(vp.type_) : 0);
+                        }
+                    } else {
+                        for (int bi = 0; bi < arm.bindings().size(); bi = bi + 1) {
+                            string bindA = newTmp();
+                            sb_.append("  " + bindA + " = alloca i32\n");
+                            sb_.append("  store i32 0, ptr " + bindA + "\n");
+                            localNames_.add(arm.bindings().get(bi));
+                            localTypes_.add("i32");
+                            localAstTypes_.add(null);
+                            localAllocas_.add(bindA);
+                            localElemTypes_.add("");
+                            localIsSlice_.add(0);
+                            localIsArc_.add(0);
+                        }
+                    }
+                }
+                genStmt(arm.body_);
+                if (terminated_ == 0) emitBr(mergeB);
+                chkB = nxt;
+            }
+            openBlock(mergeB);
+        }
+
+        // 枚举 variant 的第 fieldIdx 个参数（null 无）。
+        AstParam findEnumVariantParam(string enumName, int variantIndex, int fieldIdx) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
+                AstEnum en = tu_.enums().get(i);
+                if (en.name_ != enumName) continue;
+                if (variantIndex < 0 || variantIndex >= en.variants().size()) return null;
+                AstEnumVariant v = en.variants().get(variantIndex);
+                if (fieldIdx < 0 || fieldIdx >= v.params().size()) return null;
+                return v.params().get(fieldIdx);
+            }
+            return null;
+        }
+
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
         string genExpr(AstExpr e) {
             if (e == null) return "0";
@@ -2022,6 +2154,22 @@ class CodeGen {
                 }
                 int isCmp = 0;
                 if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") isCmp = 1;
+                // 枚举结构体比较：比较判别式（元素 0，忽略载荷，同 C++）
+                if (isCmp != 0 && Str.startsWith(lt, "{ i32") != 0 && Str.startsWith(rt, "{ i32") != 0) {
+                    string ld = newTmp();
+                    sb_.append("  " + ld + " = extractvalue " + lt + " " + lv + ", 0\n");
+                    string rd = newTmp();
+                    sb_.append("  " + rd + " = extractvalue " + rt + " " + rv + ", 0\n");
+                    string pred = "eq";
+                    if (op == "!=") pred = "ne";
+                    else if (op == "<") pred = "slt";
+                    else if (op == "<=") pred = "sle";
+                    else if (op == ">") pred = "sgt";
+                    else if (op == ">=") pred = "sge";
+                    string t = newTmp();
+                    sb_.append("  " + t + " = icmp " + pred + " i32 " + ld + ", " + rd + "\n");
+                    return t;
+                }
                 // 操作数统一类型（算术 → resolvedKind；比较 → 较宽整数侧）
                 string opLt = lt;
                 if (isCmp == 0) {
@@ -2260,6 +2408,15 @@ class CodeGen {
             }
             if (k == "Member") {
                 string mname = e.memberName_;
+                // 枚举变体（无参）：Color.Red / Shape.Point
+                AstExpr mObj = e.array_;
+                if (mObj != null && mObj.kind_ == "Identifier" && isEnumName(mObj.name_) != 0) {
+                    int vi = enumVariantIndex(mObj.name_, mname);
+                    string st = enumLlvmType(mObj.name_);
+                    string d1 = newTmp();
+                    sb_.append("  " + d1 + " = insertvalue " + st + " poison, i32 " + vi + ", 0\n");
+                    return d1;
+                }
                 // 元组字段访问 t.0 / t.1 → extractvalue
                 if (isDigits(mname) != 0) {
                     AstExpr obj = e.array_;
@@ -2326,6 +2483,10 @@ class CodeGen {
                             sb_.append("  " + data + " = extractvalue { ptr, i64 } " + sv + ", 0\n");
                             return data;
                         }
+                    }
+                    // 枚举变体构造：Option.Some(42) / Color.Red（无参）
+                    if (obj != null && obj.kind_ == "Identifier" && isEnumName(obj.name_) != 0) {
+                        return genEnumVariant(obj.name_, mname, e);
                     }
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
@@ -2506,6 +2667,13 @@ class CodeGen {
                         }
                     }
                 }
+                // 枚举变体构造 → { i32, [N x i8] }（枚举名在 callee.resolvedClass_）
+                if (e.resolvedKind_ == "enum") {
+                    AstExpr callee = e.callee_;
+                    if (callee != null && callee.kind_ == "Member" && Str.len(callee.resolvedClass_) != 0) {
+                        return enumLlvmType(callee.resolvedClass_);
+                    }
+                }
                 return IrEmit.kindType(e.resolvedKind_);
             }
             if (k == "Subscript") {
@@ -2646,6 +2814,73 @@ class CodeGen {
             AstType t = new AstType();
             t.setClassName(name);
             return t;
+        }
+
+        // name 是否为枚举名。
+        int isEnumName(string name) {
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
+                if (tu_.enums().get(i).name_ == name) return 1;
+            }
+            return 0;
+        }
+
+        // 枚举结构体 LLVM 类型（匿名字面量，同 C++ getEnumStructType）：
+        // { i32 } 或 { i32, [max_payload x i8] }。
+        string enumLlvmType(string name) {
+            int maxp = enumMaxPayload(name);
+            if (maxp > 0) return "{ i32, [" + maxp + " x i8] }";
+            return "{ i32 }";
+        }
+
+        // 枚举最大载荷字节数（各 variant 参数字节和的最大值）。
+        int enumMaxPayload(string name) {
+            if (tu_ == null) return 0;
+            int maxp = 0;
+            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
+                AstEnum en = tu_.enums().get(i);
+                if (en.name_ != name) continue;
+                for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
+                    int sz = 0;
+                    AstEnumVariant v = en.variants().get(vi);
+                    for (int pi = 0; pi < v.params().size(); pi = pi + 1) {
+                        sz = sz + IrEmit.typeSize(llvmType(v.params().get(pi).type_));
+                    }
+                    if (sz > maxp) maxp = sz;
+                }
+                break;
+            }
+            return maxp;
+        }
+
+        // 枚举 variant 名 → 索引（-1 未找到）。
+        int enumVariantIndex(string enumName, string variantName) {
+            if (tu_ == null) return -1;
+            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
+                AstEnum en = tu_.enums().get(i);
+                if (en.name_ != enumName) continue;
+                for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
+                    if (en.variants().get(vi).name_ == variantName) return vi;
+                }
+            }
+            return -1;
+        }
+
+        // 枚举 variant 的字段偏移（字节，字段 idx 之前所有参数字节和）。
+        int enumPayloadOffset(string enumName, int variantIndex, int fieldIdx) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
+                AstEnum en = tu_.enums().get(i);
+                if (en.name_ != enumName) continue;
+                if (variantIndex < 0 || variantIndex >= en.variants().size()) return 0;
+                AstEnumVariant v = en.variants().get(variantIndex);
+                int off = 0;
+                for (int pi = 0; pi < fieldIdx && pi < v.params().size(); pi = pi + 1) {
+                    off = off + IrEmit.typeSize(llvmType(v.params().get(pi).type_));
+                }
+                return off;
+            }
+            return 0;
         }
 
         // 类 → 编译期异常 type_id（1 起；0 = string）。与 C++ class_type_ids_
