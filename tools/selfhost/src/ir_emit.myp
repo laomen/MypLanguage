@@ -388,6 +388,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare void @myp_free_object(ptr)\n");
             sb.append("\n");
+            sb.append("declare void @myp_weak_clear(ptr)\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_pool_ensure_global()\n");
             sb.append("\n");
             sb.append("declare void @myp_pool_parallel_for(ptr, i32, i32, i32, ptr, ptr)\n");
