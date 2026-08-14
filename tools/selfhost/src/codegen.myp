@@ -115,7 +115,12 @@ class CodeGen {
 
         // AstType → LLVM 类型（先替换泛型类型参数）。
         string llvmType(AstType t) {
-            return IrEmit.llvmType(resolveType(t));
+            AstType rt = resolveType(t);
+            // 接口类型 → fat pointer { data, vtable }
+            if (rt != null && Str.len(rt.className_) != 0 && isInterfaceName(rt.className_) != 0) {
+                return "{ ptr, ptr }";
+            }
+            return IrEmit.llvmType(rt);
         }
 
         // slice<T> 元素 LLVM 类型（先替换泛型类型参数）。
@@ -394,6 +399,8 @@ class CodeGen {
             emitClassTypes();
             // 类 type_id 全局（release/max/type_name 表）——函数体之前（catch 分发用）
             emitTypeIdGlobals();
+            // 接口 vtable + __myp_error_vtables（函数体之前，catch (Error) 分发用）
+            emitInterfaceVTables();
             // 顶层函数（按名去重：泛型实例函数可能被 sema 重复追加）
             ArrayList<string> doneFns = new ArrayList<string>();
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
@@ -1379,13 +1386,14 @@ class CodeGen {
                     nomatch = rethrowB;
                 }
                 int n = st.catches().size();
+                int ncls = classTypeCount();
                 for (int i = 0; i < n; i = i + 1) {
                     AstCatch cc = st.catches().get(i);
                     string catchB = newBlock("catch_" + i);
                     string nxt = "";
                     if (i + 1 < n) nxt = newBlock("catch_chk_" + (i + 1));
                     else nxt = nomatch;
-                    // 类型匹配：string → type 0；类 → type_id；接口留 Phase C
+                    // 类型匹配：string → type 0；类 → type_id；接口 → error_vtables[etype]
                     string cty = cc.type_;
                     if (Str.len(cty) == 0) cty = "string";
                     if (cty == "string") {
@@ -1396,8 +1404,18 @@ class CodeGen {
                         string m = newTmp();
                         sb_.append("  " + m + " = icmp eq i32 " + etype + ", " + classTypeId(cty) + "\n");
                         sb_.append("  br i1 " + m + ", label %" + catchB + ", label %" + nxt + "\n");
+                    } else if (isInterfaceName(cty) != 0) {
+                        // 接口 catch：__myp_error_vtables[etype] != null
+                        string idx = newTmp();
+                        sb_.append("  " + idx + " = sext i32 " + etype + " to i64\n");
+                        string gep = newTmp();
+                        sb_.append("  " + gep + " = getelementptr [" + (ncls + 1) + " x ptr], ptr @__myp_error_vtables, i64 0, i64 " + idx + "\n");
+                        string vt = newTmp();
+                        sb_.append("  " + vt + " = load ptr, ptr " + gep + "\n");
+                        string m = newTmp();
+                        sb_.append("  " + m + " = icmp ne ptr " + vt + ", null\n");
+                        sb_.append("  br i1 " + m + ", label %" + catchB + ", label %" + nxt + "\n");
                     } else {
-                        // 接口 catch（Error 等）：Phase C，永不匹配
                         sb_.append("  br label %" + nxt + "\n");
                     }
                     terminated_ = 1;
@@ -1458,35 +1476,108 @@ class CodeGen {
             openBlock(mergeB);
         }
 
-        // 绑定 catch 变量：string → myp_get_error + strdup；类 → myp_exception_get_object。
+        // 绑定 catch 变量：string → myp_get_error + strdup；类 → myp_exception_get_object；
+        // 接口 → fat pointer { data=object, vtable=error_vtables[type] }。
         void bindCatchVar(AstCatch cc) {
             if (Str.len(cc.var_) == 0) return;
             string cty = cc.type_;
             if (Str.len(cty) == 0) cty = "string";
-            string bound = "";
             if (cty == "string") {
                 string err = newTmp();
                 sb_.append("  " + err + " = call ptr @myp_get_error()\n");
                 string dup = newTmp();
                 sb_.append("  " + dup + " = call ptr @myp_strdup(ptr " + err + ")\n");
-                bound = dup;
-            } else {
-                // 类实例：异常载体持有的引用转移到 catch 槽
-                bound = newTmp();
-                sb_.append("  " + bound + " = call ptr @myp_exception_get_object()\n");
+                string ev = newTmp();
+                sb_.append("  " + ev + " = alloca ptr, align 8\n");
+                sb_.append("  store ptr null, ptr " + ev + "\n");
+                sb_.append("  store ptr " + dup + ", ptr " + ev + "\n");
+                localNames_.add(cc.var_);
+                localTypes_.add("ptr");
+                localAstTypes_.add(null);
+                localAllocas_.add(ev);
+                localElemTypes_.add("");
+                localIsSlice_.add(0);
+                localIsArc_.add(1);
+                arcSlotNames_.add(ev);
+                return;
             }
-            string ev = newTmp();
-            sb_.append("  " + ev + " = alloca ptr, align 8\n");
-            sb_.append("  store ptr null, ptr " + ev + "\n");
-            sb_.append("  store ptr " + bound + ", ptr " + ev + "\n");
+            if (isInterfaceName(cty) != 0) {
+                // 接口 catch：fat pointer { data, vtable }
+                int ncls = classTypeCount();
+                string obj = newTmp();
+                sb_.append("  " + obj + " = call ptr @myp_exception_get_object()\n");
+                string et2 = newTmp();
+                sb_.append("  " + et2 + " = call i32 @myp_exception_get_type()\n");
+                string idx = newTmp();
+                sb_.append("  " + idx + " = sext i32 " + et2 + " to i64\n");
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr [" + (ncls + 1) + " x ptr], ptr @__myp_error_vtables, i64 0, i64 " + idx + "\n");
+                string vt = newTmp();
+                sb_.append("  " + vt + " = load ptr, ptr " + gep + "\n");
+                string ev = newTmp();
+                sb_.append("  " + ev + " = alloca { ptr, ptr }, align 8\n");
+                string dp = newTmp();
+                sb_.append("  " + dp + " = getelementptr { ptr, ptr }, ptr " + ev + ", i32 0, i32 0\n");
+                sb_.append("  store ptr " + obj + ", ptr " + dp + "\n");
+                string vp = newTmp();
+                sb_.append("  " + vp + " = getelementptr { ptr, ptr }, ptr " + ev + ", i32 0, i32 1\n");
+                sb_.append("  store ptr " + vt + ", ptr " + vp + "\n");
+                localNames_.add(cc.var_);
+                localTypes_.add("{ ptr, ptr }");
+                localAstTypes_.add(ifaceAstType(cty));
+                localAllocas_.add(ev);
+                localElemTypes_.add("");
+                localIsSlice_.add(0);
+                localIsArc_.add(0);
+                return;
+            }
+            // 类实例：异常载体持有的引用转移到 catch 槽
+            string bound = newTmp();
+            sb_.append("  " + bound + " = call ptr @myp_exception_get_object()\n");
+            string ev2 = newTmp();
+            sb_.append("  " + ev2 + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr null, ptr " + ev2 + "\n");
+            sb_.append("  store ptr " + bound + ", ptr " + ev2 + "\n");
             localNames_.add(cc.var_);
             localTypes_.add("ptr");
             localAstTypes_.add(null);
-            localAllocas_.add(ev);
+            localAllocas_.add(ev2);
             localElemTypes_.add("");
             localIsSlice_.add(0);
             localIsArc_.add(1);
-            arcSlotNames_.add(ev);
+            arcSlotNames_.add(ev2);
+        }
+
+        // 接口方法调用：obj 是 { data, vtable } 胖指针 → extract data/vtable，
+        // GEP vtable[methodIndex] 取函数指针后间接调用（this= data）。
+        string genIfaceCall(AstExpr obj, string ifaceName, string mname, AstExpr call) {
+            int midx = interfaceMethodIndex(ifaceName, mname);
+            string objV = genExpr(obj);
+            string data = newTmp();
+            sb_.append("  " + data + " = extractvalue { ptr, ptr } " + objV + ", 0\n");
+            string vt = newTmp();
+            sb_.append("  " + vt + " = extractvalue { ptr, ptr } " + objV + ", 1\n");
+            string fp = newTmp();
+            sb_.append("  " + fp + " = getelementptr ptr, ptr " + vt + ", i32 " + midx + "\n");
+            string fnv = newTmp();
+            sb_.append("  " + fnv + " = load ptr, ptr " + fp + "\n");
+            string retLt = exprLlvmType(call);
+            StringBuilder as = new StringBuilder();
+            as.append("ptr " + data);
+            for (int i = 0; i < call.args().size(); i = i + 1) {
+                AstExpr a = call.args().get(i);
+                string av = genExpr(a);
+                string at = exprLlvmType(a);
+                as.append(", " + at + " " + av);
+            }
+            if (retLt == "void") {
+                sb_.append("  call void " + fnv + "(" + as.toString() + ")\n");
+                return "";
+            }
+            string t = newTmp();
+            sb_.append("  " + t + " = call " + retLt + " " + fnv + "(" + as.toString() + ")\n");
+            if (retLt == "ptr") addFreshTemp(t);
+            return t;
         }
 
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
@@ -2002,6 +2093,17 @@ class CodeGen {
                     }
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
+                    } else if (obj != null && obj.kind_ == "Identifier") {
+                        // 接口变量方法调用 → vtable 间接调用
+                        AstType oat = varAstType(obj.name_);
+                        if (oat != null && isInterfaceName(oat.className_) != 0) {
+                            return genIfaceCall(obj, oat.className_, mname, e);
+                        }
+                        // 实例方法 Class_method(ptr this, args...)
+                        string cls2 = callee.resolvedClass_;
+                        if (Str.len(cls2) == 0) cls2 = "Object";
+                        fn = cls2 + "_" + mname;
+                        thisV = genExpr(obj);
                     } else {
                         // 实例方法 Class_method(ptr this, args...)
                         string cls = callee.resolvedClass_;
@@ -2215,6 +2317,45 @@ class CodeGen {
             return 0;
         }
 
+        // name 是否为接口名。
+        int isInterfaceName(string name) {
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
+                if (tu_.interfaces().get(i).name_ == name) return 1;
+            }
+            return 0;
+        }
+
+        // 接口名 → 方法名 → vtable 索引（-1 未找到）。
+        int interfaceMethodIndex(string ifaceName, string methodName) {
+            if (tu_ == null) return -1;
+            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
+                AstInterface ifc = tu_.interfaces().get(i);
+                if (ifc.name_ != ifaceName) continue;
+                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                    if (ifc.actions().get(ai).name_ == methodName) return ai;
+                }
+            }
+            return -1;
+        }
+
+        // cls 类是否实现了 iface 接口（AstClass.iface_）。
+        int classImplements(string cls, string iface) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ == cls && c.iface_ == iface) return 1;
+            }
+            return 0;
+        }
+
+        // 接口名 → AstType（className 置为接口名，供 varAstType 识别接口局部）。
+        AstType ifaceAstType(string name) {
+            AstType t = new AstType();
+            t.setClassName(name);
+            return t;
+        }
+
         // 类 → 编译期异常 type_id（1 起；0 = string）。与 C++ class_type_ids_
         // 一致：按 tu.classes 顺序、泛型模板跳过、按名去重。
         int classTypeId(string name) {
@@ -2255,6 +2396,26 @@ class CodeGen {
             return out;
         }
 
+        // 类数量（type id 上限）。不经过 classTypeNames().size()（方法返回值
+        // 上调用 .size() 会落到裸 ArrayList_size，见 §接口）；本地 seen.size() 正常。
+        int classTypeCount() {
+            if (tu_ == null) return 0;
+            int n = 0;
+            ArrayList<string> seen = new ArrayList<string>();
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass c = tu_.classes().get(i);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < seen.size(); di = di + 1) {
+                    if (seen.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                seen.add(c.name_);
+                n = n + 1;
+            }
+            return n;
+        }
+
         // 发射 __myp_release_table / __myp_max_type_id / __myp_type_name_table。
         // 有类时 release_table 须 ≥ max_tid+1（myp_release 按 tid 索引，越界=UB）。
         void emitTypeIdGlobals() {
@@ -2279,6 +2440,54 @@ class CodeGen {
             }
             tbl.append("]\n");
             sb.append(tbl.toString());
+            stringGlobals_.append(sb.toString());
+        }
+
+        // 发射接口 vtable（__myp_vtable_<iface>_<cls>）+ Error 接口查找表
+        // __myp_error_vtables（type_id → vtable；null = 该类未实现 Error）。
+        void emitInterfaceVTables() {
+            if (tu_ == null) return;
+            StringBuilder sb = new StringBuilder();
+            ArrayList<string> doneVt = new ArrayList<string>();
+            for (int ii = 0; ii < tu_.interfaces().size(); ii = ii + 1) {
+                AstInterface ifc = tu_.interfaces().get(ii);
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    AstClass cls = tu_.classes().get(ci);
+                    if (cls.iface_ != ifc.name_) continue;
+                    if (cls.typeParams().size() != 0 && cls.isGenericInst_ == 0) continue;
+                    string vkey = ifc.name_ + "_" + cls.name_;
+                    int dup = 0;
+                    for (int di = 0; di < doneVt.size(); di = di + 1) {
+                        if (doneVt.get(di) == vkey) { dup = 1; break; }
+                    }
+                    if (dup != 0) continue;
+                    doneVt.add(vkey);
+                    StringBuilder arr = new StringBuilder();
+                    arr.append("@__myp_vtable_" + vkey + " = internal constant [" + ifc.actions().size() + " x ptr] [");
+                    for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                        if (ai != 0) arr.append(", ");
+                        arr.append("ptr @" + cls.name_ + "_" + ifc.actions().get(ai).name_);
+                    }
+                    arr.append("]\n");
+                    sb.append(arr.toString());
+                }
+            }
+            // __myp_error_vtables：仅当本 TU 声明了 Error 接口
+            if (isInterfaceName("Error") != 0) {
+                ArrayList<string> names = classTypeNames();
+                int n = names.size();
+                StringBuilder ev = new StringBuilder();
+                ev.append("@__myp_error_vtables = internal constant [" + (n + 1) + " x ptr] [ptr null");
+                for (int i = 0; i < n; i = i + 1) {
+                    if (classImplements(names.get(i), "Error") != 0) {
+                        ev.append(", ptr @__myp_vtable_Error_" + names.get(i));
+                    } else {
+                        ev.append(", ptr null");
+                    }
+                }
+                ev.append("]\n");
+                sb.append(ev.toString());
+            }
             stringGlobals_.append(sb.toString());
         }
 
