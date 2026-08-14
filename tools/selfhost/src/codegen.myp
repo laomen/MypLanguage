@@ -564,7 +564,15 @@ class CodeGen {
                 return t;
             }
             if (fromInt != 0 && (to == "double" || to == "float")) {
-                sb_.append("  " + t + " = sitofp " + from + " " + v + " to " + to + "\n");
+                if (from == "i1") {
+                    // bool→fp：先零扩展到 i32（true=1），再转 fp；
+                    // sitofp i1 → -1.0 是错的。
+                    string e = newTmp();
+                    sb_.append("  " + e + " = zext i1 " + v + " to i32\n");
+                    sb_.append("  " + t + " = sitofp i32 " + e + " to " + to + "\n");
+                } else {
+                    sb_.append("  " + t + " = sitofp " + from + " " + v + " to " + to + "\n");
+                }
                 return t;
             }
             if ((from == "double" || from == "float") && toInt != 0) {
@@ -582,9 +590,9 @@ class CodeGen {
             return v;
         }
 
-        // kind 是否为无符号整型（uint/ulong/ubyte/ushort）。
+        // kind 是否为无符号整型（uint/ulong/ubyte/ushort/char）。
         int isUnsignedKind(string kind) {
-            return (kind == "uint" || kind == "ulong" || kind == "ubyte" || kind == "ushort") ? 1 : 0;
+            return (kind == "uint" || kind == "ulong" || kind == "ubyte" || kind == "ushort" || kind == "char") ? 1 : 0;
         }
 
         // 类型转换（带无符号源）：un != 0 时整数扩宽用 zext，否则 sext。
@@ -604,6 +612,15 @@ class CodeGen {
                     sb_.append("  " + t + " = sext " + from + " " + v + " to " + to + "\n");
                 }
                 return t;
+            }
+            return convertValue(v, from, to);
+        }
+
+        // 按源表达式 kind 的有符号性做整数转换（uint/ulong/ubyte/ushort/char
+        // → zext；其余有符号 sext）。用于赋值/声明/返回/数组元素等存储路径。
+        string convertExpr(string v, string from, string to, AstExpr src) {
+            if (src != null && Str.len(src.resolvedKind_) != 0) {
+                return convertValueU(v, from, to, isUnsignedKind(src.resolvedKind_));
             }
             return convertValue(v, from, to);
         }
@@ -3111,7 +3128,7 @@ class CodeGen {
                         if (v.init_ != null) {
                             string iv = genExpr(v.init_);
                             string it = exprLlvmType(v.init_);
-                            iv = convertValue(iv, it, lt);
+                            iv = convertExpr(iv, it, lt, v.init_);
                             sb_.append("  store " + lt + " " + iv + ", ptr " + va + ", align " + al + "\n");
                         }
                     }
@@ -3131,7 +3148,7 @@ class CodeGen {
                     if (st.value_ != null) {
                         string v = genExpr(st.value_);
                         string vt = exprLlvmType(st.value_);
-                        v = convertValue(v, vt, curRetLt_);
+                        v = convertExpr(v, vt, curRetLt_, st.value_);
                         if (curRetLt_ == "ptr") {
                             if (isFreshTemp(v) != 0) consumeTemp(v);
                             else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
@@ -3166,7 +3183,7 @@ class CodeGen {
                 if (st.value_ != null) {
                     string v = genExpr(st.value_);
                     string vt = exprLlvmType(st.value_);
-                    v = convertValue(v, vt, curRetLt_);
+                    v = convertExpr(v, vt, curRetLt_, st.value_);
                     // ARC：返回引用值——fresh 转移 +1，否则 retain（调用方取得引用）
                     if (curRetLt_ == "ptr") {
                         if (isFreshTemp(v) != 0) consumeTemp(v);
@@ -4216,7 +4233,9 @@ class CodeGen {
                 string ov = genExpr(e.operand_);
                 string ot = exprLlvmType(e.operand_);
                 string toK = e.toKind_;
-                if (toK == "bit") {
+                if (toK == "bit" || toK == "bool") {
+                    // bool(x)/bit(x)：非零判定（fcmp une / icmp ne），
+                    // 不能用 fptosi double→i1（截断非零值会误判为 0）
                     return toI1(ov, ot);
                 }
                 if (Str.startsWith(toK, "bitvector") != 0 || toK == "bitvector") {
@@ -4345,8 +4364,8 @@ class CodeGen {
                         if (IrEmit.intWidth(rt) > IrEmit.intWidth(lt)) opLt = rt;
                     }
                 }
-                if (lt != opLt) { lv = convertValue(lv, lt, opLt); lt = opLt; }
-                if (rt != opLt) { rv = convertValue(rv, rt, opLt); rt = opLt; }
+                if (lt != opLt) { lv = convertValueU(lv, lt, opLt, lhsE != null ? isUnsignedKind(lhsE.resolvedKind_) : 0); lt = opLt; }
+                if (rt != opLt) { rv = convertValueU(rv, rt, opLt, rhsE != null ? isUnsignedKind(rhsE.resolvedKind_) : 0); rt = opLt; }
                 int isFp = 0;
                 if (opLt == "double" || opLt == "float") isFp = 1;
                 // 无符号整数运算：任一操作数为无符号整型 → 用无符号除/取模/比较/逻辑右移
@@ -4427,7 +4446,7 @@ class CodeGen {
                     string nm = lhs.name_;
                     if (hasVar(nm) != 0) {
                         string lt = varType(nm);
-                        rv = convertValue(rv, rt, lt);
+                        rv = convertExpr(rv, rt, lt, e.rhs_);
                         if (lt == "{ ptr, i64 }") {
                             storeSliceSlot(varAlloca(nm), rv, isFreshSliceExpr(e.rhs_));
                         } else if (varIsArc(nm) != 0) {
@@ -4445,7 +4464,7 @@ class CodeGen {
                     } else if (hasMember(nm) != 0) {
                         string gep = thisMemberAddr(nm);
                         string ft = propType(curClass_, nm);
-                        rv = convertValue(rv, rt, ft);
+                        rv = convertExpr(rv, rt, ft, e.rhs_);
                         if (ft == "ptr") {
                             storeRef(gep, rv, isFreshTemp(rv));
                         } else {
@@ -4503,7 +4522,7 @@ class CodeGen {
                         gep = newTmp();
                         sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                     }
-                    rv = convertValue(rv, rt, elemLt);
+                    rv = convertExpr(rv, rt, elemLt, e.rhs_);
                     if (elemLt == "{ ptr, i64 }") {
                         // slice 元素（含嵌套 slice<slice<T>>）：retain 新 backing，释放旧。
                         storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs_));
@@ -4558,7 +4577,7 @@ class CodeGen {
                             }
                         }
                     } else {
-                        rv = convertValue(rv, rt, ft);
+                        rv = convertExpr(rv, rt, ft, e.rhs_);
                     }
                     if (ft == "ptr") {
                         storeRef(gep, rv, isFreshTemp(rv));
