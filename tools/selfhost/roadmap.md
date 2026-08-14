@@ -15,7 +15,7 @@
 | F3 | 表达式 parser | parser_expr | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
 | F4 | 语义分析 | type / diag / sema | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
 | G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
-| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | 🔄 **进行中**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获) 已对拍；默认参数/元组待补） |
+| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | ✅ **基本完成**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获)/元组/默认命名参数 已对拍） |
 | G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段 已对拍；mapping/异常/协程待补） |
 | G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
 | H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
@@ -201,8 +201,8 @@
 - [x] **G2-1** 变量声明/赋值/作用域 + 基本类型运算（含数字提升、比较、短路 `&&`/`||`）。
 - [x] **G2-2** 控制流：if/while/for/for-in/range/break/continue/return。
 - [x] **G2-3** 数组/切片/字符串：`new T[n]`、下标、字符串拼接 ✅；`slice<T>` fat pointer 已对拍（`27ed30c`：new/下标/size/data/for-in，验收 47/10 均与 mypc 一致）。
-- [ ] **G2-4** 函数调用：顶层函数 ✅；默认/命名参数、多值返回、元组待补。
-- [ ] **G2-5** lambda/闭包：fat pointer + 捕获 + `nonlocal` cell（进行中：基本闭包 + 捕获 + 间接调用）。
+- [x] **G2-4** 函数调用：顶层函数 ✅；默认/命名参数（sema normalizeCallArgs 归一化，codegen 零额外逻辑）、多值返回、元组（字面量/解构/字段访问 t.0）均已对拍（`565ef47`/`e00cef3`）。
+- [ ] **G2-5** lambda/闭包：fat pointer + 捕获（按值）已对拍；`nonlocal` cell（按引用捕获）待补。
 - [x] **G2-6** 内建/FFI：`__myp_*` → `myp_*`（去两个下划线）。
 - [x] **G2-7** 复合赋值 desugar 的 IR 对齐（parser 已 desugar 为 Assign）。
 
