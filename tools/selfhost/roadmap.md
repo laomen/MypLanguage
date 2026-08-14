@@ -220,13 +220,13 @@
 
 ### 任务
 
-- [ ] **G3-1** 类实例分配/构造器/成员访问/方法调用（含 `var_class_map_` 解析）。
+- [x] **G3-1** 类实例分配/构造器/成员访问/方法调用（含 `var_class_map_` 解析）。
 - [ ] **G3-2** ARC 插桩：对象头 `{rc,type_id}`、retain/release、`__myp_release_table`、
       作用域退出释放、`@weak`、跨线程原子 ARC。
 - [ ] **G3-3** mapping/event：`__myp_inst_X` 全局、mapping 注册、事件 fire/dispatch。
 - [x] **G3-4** 异常：throw/catch/finally 展开 + 错误消息拷贝（string/typed class/Error 接口/finally+return/TryExpr 全链路，`790512b`..`03bfdfb`）。
-- [ ] **G3-5** 协程/`@thread`/`@threadpool`/`@async`/await：对接 runtime coro/线程表。
-- [ ] **G3-6** 泛型单态化：`T` 替换、`foo_int_inst`、`T::Item` 关联类型。
+- [ ] **G3-5** 协程/`@threadpool`/`@async`/await：对接 runtime coro（@thread 已做，`2edea55`）。
+- [x] **G3-6** 泛型单态化：`T` 替换、`foo_int_inst`、`T::Item` 关联类型。
 - [ ] **G3-7** `@gpu` 源文件 CPU 顺序回退（语义保持，无 GPU 发射）。
 - [ ] **G3-8** `@parallel for`、`@startup` 自动 main、`@test` 生成器（`codegen_test`）。
 
