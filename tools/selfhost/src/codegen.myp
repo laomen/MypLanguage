@@ -8,6 +8,46 @@ import "./ir_emit.myp";
 // double → LLVM %e 文本（与 mypc --emit-llvm 的 double 常量格式一致）。
 ffi string myp_fmt_double_e(double v, int precision);
 
+// try-with-finally 的控制流上下文（C++ FinallyCtx）。
+class FinallyCtx {
+    action:
+        @constructor FinallyCtx() {
+            flagSlot_ = "";
+            finallyB_ = "";
+            mergeB_ = "";
+            outerFinallyB_ = "";
+            outerFlagSlot_ = "";
+            breakB_ = "";
+            continueB_ = "";
+            inFinally_ = 0;
+        }
+        void setFlagSlot(string v) { flagSlot_ = v; }
+        void setFinallyB(string v) { finallyB_ = v; }
+        void setMergeB(string v) { mergeB_ = v; }
+        void setOuterFinallyB(string v) { outerFinallyB_ = v; }
+        void setOuterFlagSlot(string v) { outerFlagSlot_ = v; }
+        void setBreakB(string v) { breakB_ = v; }
+        void setContinueB(string v) { continueB_ = v; }
+        void setInFinally(int v) { inFinally_ = v; }
+        string flagSlot() { return flagSlot_; }
+        string finallyB() { return finallyB_; }
+        string mergeB() { return mergeB_; }
+        string outerFinallyB() { return outerFinallyB_; }
+        string outerFlagSlot() { return outerFlagSlot_; }
+        string breakB() { return breakB_; }
+        string continueB() { return continueB_; }
+        int inFinally() { return inFinally_; }
+    property:
+        string flagSlot_;
+        string finallyB_;
+        string mergeB_;
+        string outerFinallyB_;
+        string outerFlagSlot_;
+        string breakB_;
+        string continueB_;
+        int inFinally_;
+}
+
 class CodeGen {
     action:
         @constructor CodeGen() {
@@ -37,6 +77,8 @@ class CodeGen {
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
             localIsArc_ = new ArrayList<int>();
+            finallyStack_ = new ArrayList<FinallyCtx>();
+            finallyRetSlot_ = "";
         }
 
         string newTmp() {
@@ -858,6 +900,8 @@ class CodeGen {
             localIsArc_ = new ArrayList<int>();
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
+            finallyStack_ = new ArrayList<FinallyCtx>();
+            finallyRetSlot_ = "";
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -884,6 +928,12 @@ class CodeGen {
             }
             sb_.append(linkage + " " + retLt + " @" + fn + "(" + ps.toString() + ") {\n");
             sb_.append("entry:\n");
+            // finally+return 的返回值槽（entry 块 alloca，支配 finally 分发块；
+            // 非 void 函数预分配，C++ finally_ret_slot_）。
+            if (retLt != "void") {
+                finallyRetSlot_ = newTmp();
+                sb_.append("  " + finallyRetSlot_ + " = alloca " + retLt + ", align 8\n");
+            }
             // 参数 alloca（倒序，模拟 C++ createEntryBlockAlloca 在 entry 头插入）
             for (int i = paramNames_.size() - 1; i >= 0; i = i - 1) {
                 string lt = paramTypes_.get(i);
@@ -995,6 +1045,28 @@ class CodeGen {
             } else if (k == "ExprStmt") {
                 if (st.expr_ != null) genExpr(st.expr_);
             } else if (k == "Return") {
+                // try-with-finally 内 return → 存值、flag=2、先跑 finally
+                if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
+                    if (st.value_ != null) {
+                        string v = genExpr(st.value_);
+                        string vt = exprLlvmType(st.value_);
+                        v = convertValue(v, vt, curRetLt_);
+                        if (curRetLt_ == "ptr") {
+                            if (isFreshTemp(v) != 0) consumeTemp(v);
+                            else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+                        }
+                        if (Str.len(finallyRetSlot_) == 0) {
+                            finallyRetSlot_ = newTmp();
+                            sb_.append("  " + finallyRetSlot_ + " = alloca " + curRetLt_ + ", align 8\n");
+                        }
+                        sb_.append("  store " + curRetLt_ + " " + v + ", ptr " + finallyRetSlot_ + "\n");
+                    }
+                    flushTemps();
+                    FinallyCtx fcx = finallyStack_.get(finallyStack_.size() - 1);
+                    sb_.append("  store i8 2, ptr " + fcx.flagSlot() + "\n");
+                    emitBr(fcx.finallyB());
+                    return;
+                }
                 if (isMainFunc_ != 0) {
                     sb_.append("  call void @myp_event_process_all()\n");
                     sb_.append("  call void @myp_free_all()\n");
@@ -1089,8 +1161,22 @@ class CodeGen {
                 emitBr(condB);
                 openBlock(endB);
             } else if (k == "Break") {
+                // try-with-finally 内 break → flag=3、先跑 finally
+                if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
+                    FinallyCtx fcx = finallyStack_.get(finallyStack_.size() - 1);
+                    sb_.append("  store i8 3, ptr " + fcx.flagSlot() + "\n");
+                    emitBr(fcx.finallyB());
+                    return;
+                }
                 if (loopBreak_.size() > 0) emitBr(loopBreak_.get(loopBreak_.size() - 1));
             } else if (k == "Continue") {
+                // try-with-finally 内 continue → flag=4、先跑 finally
+                if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
+                    FinallyCtx fcx = finallyStack_.get(finallyStack_.size() - 1);
+                    sb_.append("  store i8 4, ptr " + fcx.flagSlot() + "\n");
+                    emitBr(fcx.finallyB());
+                    return;
+                }
                 if (loopContinue_.size() > 0) emitBr(loopContinue_.get(loopContinue_.size() - 1));
             } else if (k == "ForIn") {
                 genForIn(st);
@@ -1359,6 +1445,22 @@ class CodeGen {
                 terminated_ = 1;
             }
 
+            // === 建立 finally 控制流上下文（return/break/continue 转发）===
+            if (hasFinally != 0) {
+                FinallyCtx fc = new FinallyCtx();
+                fc.setFlagSlot(flagA);
+                fc.setFinallyB(finallyB);
+                fc.setMergeB(mergeB);
+                if (finallyStack_.size() > 0) {
+                    FinallyCtx outer = finallyStack_.get(finallyStack_.size() - 1);
+                    fc.setOuterFinallyB(outer.finallyB());
+                    fc.setOuterFlagSlot(outer.flagSlot());
+                }
+                if (loopBreak_.size() > 0) fc.setBreakB(loopBreak_.get(loopBreak_.size() - 1));
+                if (loopContinue_.size() > 0) fc.setContinueB(loopContinue_.get(loopContinue_.size() - 1));
+                finallyStack_.add(fc);
+            }
+
             // === try 块 ===
             openBlock(tryB);
             genStmt(st.tryBlock_);
@@ -1445,23 +1547,86 @@ class CodeGen {
                 emitBr(finallyB);
             }
 
-            // === finally 块 ===
+            // === finally 块（5 模式分发：0 merge / 1 rethrow / 2 return / 3 break / 4 continue）===
             if (hasFinally != 0) {
+                FinallyCtx fc = finallyStack_.get(finallyStack_.size() - 1);
+                fc.setInFinally(1);
                 openBlock(finallyB);
                 sb_.append("  call void @myp_exception_pop()\n");
                 genStmt(st.finallyBlock_);
+                fc.setInFinally(0);
                 if (terminated_ == 0) {
                     string flag = newTmp();
                     sb_.append("  " + flag + " = load i8, ptr " + flagA + "\n");
-                    string is1 = newTmp();
-                    sb_.append("  " + is1 + " = icmp eq i8 " + flag + ", 1\n");
                     string finMerge = newBlock("fin_merge");
+                    string finRet = newBlock("fin_ret");
+                    string finBreak = newBlock("fin_break");
+                    string finCont = newBlock("fin_cont");
                     if (Str.len(rethrowB) == 0) rethrowB = newBlock("catch_rethrow");
-                    sb_.append("  br i1 " + is1 + ", label %" + rethrowB + ", label %" + finMerge + "\n");
+                    string c0 = newTmp();
+                    sb_.append("  " + c0 + " = icmp eq i8 " + flag + ", 0\n");
+                    string chk1 = newBlock("fin_chk1");
+                    sb_.append("  br i1 " + c0 + ", label %" + finMerge + ", label %" + chk1 + "\n");
                     terminated_ = 1;
+                    openBlock(chk1);
+                    string c1 = newTmp();
+                    sb_.append("  " + c1 + " = icmp eq i8 " + flag + ", 1\n");
+                    string chk2 = newBlock("fin_chk2");
+                    sb_.append("  br i1 " + c1 + ", label %" + rethrowB + ", label %" + chk2 + "\n");
+                    terminated_ = 1;
+                    openBlock(chk2);
+                    string c2 = newTmp();
+                    sb_.append("  " + c2 + " = icmp eq i8 " + flag + ", 2\n");
+                    string chk3 = newBlock("fin_chk3");
+                    sb_.append("  br i1 " + c2 + ", label %" + finRet + ", label %" + chk3 + "\n");
+                    terminated_ = 1;
+                    openBlock(chk3);
+                    string c3 = newTmp();
+                    sb_.append("  " + c3 + " = icmp eq i8 " + flag + ", 3\n");
+                    sb_.append("  br i1 " + c3 + ", label %" + finBreak + ", label %" + finCont + "\n");
+                    terminated_ = 1;
+                    // mode 0 → 正常结束
                     openBlock(finMerge);
                     emitBr(mergeB);
+                    // mode 2 → return（先转发外层 finally）
+                    openBlock(finRet);
+                    if (Str.len(fc.outerFinallyB()) != 0) {
+                        sb_.append("  store i8 2, ptr " + fc.outerFlagSlot() + "\n");
+                        emitBr(fc.outerFinallyB());
+                    } else if (Str.len(finallyRetSlot_) != 0) {
+                        string rv = newTmp();
+                        sb_.append("  " + rv + " = load " + curRetLt_ + ", ptr " + finallyRetSlot_ + "\n");
+                        sb_.append("  ret " + curRetLt_ + " " + rv + "\n");
+                        terminated_ = 1;
+                    } else if (curRetLt_ == "void") {
+                        sb_.append("  ret void\n");
+                        terminated_ = 1;
+                    } else {
+                        sb_.append("  unreachable\n");
+                        terminated_ = 1;
+                    }
+                    // mode 3 → break（先转发外层 finally）
+                    openBlock(finBreak);
+                    if (Str.len(fc.outerFinallyB()) != 0) {
+                        sb_.append("  store i8 3, ptr " + fc.outerFlagSlot() + "\n");
+                        emitBr(fc.outerFinallyB());
+                    } else if (Str.len(fc.breakB()) != 0) {
+                        emitBr(fc.breakB());
+                    } else {
+                        emitBr(mergeB);
+                    }
+                    // mode 4 → continue（先转发外层 finally）
+                    openBlock(finCont);
+                    if (Str.len(fc.outerFinallyB()) != 0) {
+                        sb_.append("  store i8 4, ptr " + fc.outerFlagSlot() + "\n");
+                        emitBr(fc.outerFinallyB());
+                    } else if (Str.len(fc.continueB()) != 0) {
+                        emitBr(fc.continueB());
+                    } else {
+                        emitBr(mergeB);
+                    }
                 }
+                finallyStack_.remove(finallyStack_.size() - 1);
             }
 
             // === rethrow：无 finally 时 pop 本 handler 后 longjmp 外层 ===
@@ -2134,8 +2299,64 @@ class CodeGen {
                 if (retLt == "ptr") addFreshTemp(t);
                 return t;
             }
+            if (k == "TryExpr") {
+                return genTryExpr(e);
+            }
             // Member/Subscript 等留 G2。
             return "0";
+        }
+
+        // 表达式 try：try <expr> catch (e) <expr>（C++ generateTryExpr）。
+        // 成功路径求值 tryExpr_，异常路径绑定 catch 变量后求值 catchExpr_，
+        // merge 用 phi 汇合两个值。
+        string genTryExpr(AstExpr e) {
+            string jb = newTmp();
+            sb_.append("  " + jb + " = alloca %myp_jmp_buf, align 8\n");
+            sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
+            string r = newTmp();
+            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            string isErr = newTmp();
+            sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
+            string tryB = newBlock("try_expr_try");
+            string catchB = newBlock("try_expr_catch");
+            string mergeB = newBlock("try_expr_merge");
+            sb_.append("  br i1 " + isErr + ", label %" + catchB + ", label %" + tryB + "\n");
+            terminated_ = 1;
+            // 成功路径
+            openBlock(tryB);
+            string v1 = genExpr(e.tryExpr_);
+            string t1 = exprLlvmType(e.tryExpr_);
+            if (terminated_ == 0) emitBr(mergeB);
+            // 异常路径：绑定 catch 变量（string 消息拷贝）
+            openBlock(catchB);
+            if (Str.len(e.catchVarName_) != 0) {
+                string err = newTmp();
+                sb_.append("  " + err + " = call ptr @myp_get_error()\n");
+                string dup = newTmp();
+                sb_.append("  " + dup + " = call ptr @myp_strdup(ptr " + err + ")\n");
+                string ev = newTmp();
+                sb_.append("  " + ev + " = alloca ptr, align 8\n");
+                sb_.append("  store ptr null, ptr " + ev + "\n");
+                sb_.append("  store ptr " + dup + ", ptr " + ev + "\n");
+                localNames_.add(e.catchVarName_);
+                localTypes_.add("ptr");
+                localAstTypes_.add(null);
+                localAllocas_.add(ev);
+                localElemTypes_.add("");
+                localIsSlice_.add(0);
+                localIsArc_.add(1);
+                arcSlotNames_.add(ev);
+            }
+            string v2 = genExpr(e.catchExpr_);
+            string t2 = exprLlvmType(e.catchExpr_);
+            if (terminated_ == 0) emitBr(mergeB);
+            // merge：phi 汇合
+            openBlock(mergeB);
+            if (t2 != t1) v2 = convertValue(v2, t2, t1);
+            string phi = newTmp();
+            sb_.append("  " + phi + " = phi " + t1 + " [ " + v1 + ", %" + tryB + " ], [ " + v2 + ", %" + catchB + " ]\n");
+            sb_.append("  call void @myp_exception_pop()\n");
+            return phi;
         }
 
         // 表达式 → LLVM 类型。
@@ -2631,4 +2852,6 @@ class CodeGen {
         ArrayList<string> pendingTemps_;
         ArrayList<string> arcSlotNames_;
         ArrayList<int> localIsArc_;
+        ArrayList<FinallyCtx> finallyStack_;
+        string finallyRetSlot_;
 }
