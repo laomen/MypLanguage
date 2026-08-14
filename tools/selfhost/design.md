@@ -1,6 +1,6 @@
 # MYP 全自举编译器——详细设计（tools/selfhost）
 
-> 状态：**G2 推进中（2026-08-14）**｜版本：0.5（范围：只做全自举，非 GPU）
+> 状态：**H1 自举编译链跑通（2026-08-14）**｜版本：0.6（范围：只做全自举，非 GPU）
 > 目标：用 MYP 完整重写 `mypc`（前端 + 非 GPU codegen + 驱动），交付 `myp_self`，
 > 完成两级自举验证。**不做**混合编译（C++ 代做 codegen）、**不做** GPU。
 > 前置阅读：`docs/self_hosting.md`、`docs/grammar.md`（规格 v1.0）、`src/lexer/`、`src/parser/`、

@@ -15,8 +15,8 @@
 | F3 | 表达式 parser | parser_expr | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
 | F4 | 语义分析 | type / diag / sema | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
 | G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
-| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | 🔄 **进行中**（控制流/数组/字符串/短路/intrinsic/slice 已对拍；lambda 闭包进行中；默认参数待补） |
-| G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化已对拍；ARC/mapping/异常/协程待补） |
+| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | 🔄 **进行中**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获) 已对拍；默认参数/元组待补） |
+| G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段 已对拍；mapping/异常/协程待补） |
 | G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
 | H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
 
@@ -261,6 +261,11 @@
 ## H1：两级自举验证 + 全量回归
 
 > 目标：证明自举成立，收口文档与回归接入。
+> **阶段性达成（2026-08-14，ec80997）**：两级自举编译链已跑通——`mypc → myp_self
+> → myp_self3 → myp_self4` 全部编译成功，self3/self4 对 hello/lam2 行为一致
+> （42/34）；为跑通需补齐的运行时语义（定长数组 `[N x T]` 布局、ARC 引用计数、
+> Unary/Ternary/Null/This、function 段方法、泛型实例体类型替换）均已落地。
+> 剩余：全量回归接入 + 性能基准 + 文档收口。
 
 ### 任务
 
