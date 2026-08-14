@@ -18,6 +18,10 @@ import "./ast.myp";
             if (s == "float") return "float";
             if (s == "double") return "double";
             if (s == "void") return "void";
+            // bitvector<N> → iN（底层 LLVM 整数）
+            if (Str.startsWith(s, "bitvector") != 0 && t.bitvectorWidth_ != 0) {
+                return "i" + t.bitvectorWidth_;
+            }
             if (t.className_ == "slice") return "{ ptr, i64 }";
             if (t.funcReturn_ != null) return "{ ptr, ptr }";
             if (t.isTuple_ != 0) {
@@ -218,6 +222,8 @@ import "./ast.myp";
             sb.append("declare ptr @myp_bytes_to_str(ptr)\n");
             sb.append("\n");
             sb.append("declare i32 @myp_str_parse_int(ptr)\n");
+            sb.append("\n");
+            sb.append("declare i32 @myp_str_parse_int_opt(ptr, ptr)\n");
             sb.append("\n");
             sb.append("declare i64 @myp_str_to_long(ptr)\n");
             sb.append("\n");

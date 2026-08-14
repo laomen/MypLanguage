@@ -118,7 +118,11 @@ class CodeGen {
         string toI1(string v, string vt) {
             if (vt == "i1") return v;
             string t = newTmp();
-            sb_.append("  " + t + " = icmp ne " + vt + " " + v + ", 0\n");
+            if (vt == "double" || vt == "float") {
+                sb_.append("  " + t + " = fcmp une " + vt + " " + v + ", 0.000000e+00\n");
+            } else {
+                sb_.append("  " + t + " = icmp ne " + vt + " " + v + ", 0\n");
+            }
             return t;
         }
 
@@ -393,6 +397,28 @@ class CodeGen {
             string fv = newTmp();
             sb_.append("  " + fv + " = load { ptr, ptr }, ptr " + fat + "\n");
             return fv;
+        }
+
+        // 具体类实例 ptr → 接口 fat pointer（无法识别具体类则直通原值）。
+        string upcastIface(AstExpr argE, string ifaceName, string argV) {
+            string clsName = "";
+            if (argE != null && argE.kind_ == "New") {
+                clsName = argE.className_;
+                if (Str.len(argE.resolvedClass_) != 0) clsName = argE.resolvedClass_;
+            } else if (argE != null && argE.kind_ == "Identifier") {
+                AstType ivt = varAstType(argE.name_);
+                if (ivt != null) {
+                    AstType irt = resolveType(ivt);
+                    if (irt != null && Str.len(irt.className_) != 0
+                        && isInterfaceName(irt.className_) == 0
+                        && isStructName(irt.className_) == 0
+                        && isEnumName(irt.className_) == 0) {
+                        clsName = classInstName(irt);
+                    }
+                }
+            }
+            if (Str.len(clsName) != 0) return buildIfaceFat(argV, ifaceName, clsName);
+            return argV;
         }
 
         // 释放当前函数全部 ARC 局部槽（返回前/函数末尾）。
@@ -833,6 +859,8 @@ class CodeGen {
                     if (a.coro_ != 0) genCoroEntry(c.name_, a);
                 }
             }
+            // struct 方法体（顶层 + 类嵌套；同 C++ generateStructMethods）。
+            emitStructMethods();
             // 顶层 mapping：生成 handler 函数 + __myp_init 注册调用。
             genTopMappings();
             if (Str.len(mappingInitCalls_.toString()) != 0) {
@@ -1003,6 +1031,32 @@ class CodeGen {
                     return gep;
                 }
             }
+            // 链式 struct 字段：a.b.c / o.inner.x —— 内层 Member 是 struct 字段
+            if (obj != null && obj.kind_ == "Member") {
+                string innerT = memberFieldType(obj);
+                if (Str.startsWith(innerT, "%") != 0) {
+                    string stName = Str.substring(innerT, 1, Str.len(innerT));
+                    string innerAddr = memberAddr(obj);
+                    int idx = structFieldIndex(stName, m.memberName_);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + innerT + ", ptr " + innerAddr + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
+            // struct 返回调用结果的字段访问：cfg.getPoint().name —— 存临时 alloca 再 GEP
+            if (obj != null && obj.kind_ == "Call") {
+                string sname2 = callRetStructName(obj);
+                if (Str.len(sname2) != 0) {
+                    string callV = genExpr(obj);
+                    string tmp = newTmp();
+                    sb_.append("  " + tmp + " = alloca %" + sname2 + ", align 8\n");
+                    sb_.append("  store %" + sname2 + " " + callV + ", ptr " + tmp + "\n");
+                    int idx = structFieldIndex(sname2, m.memberName_);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr %" + sname2 + ", ptr " + tmp + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
             string objV = genExpr(obj);
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -1035,9 +1089,59 @@ class CodeGen {
                     return structFieldType(stName, m.memberName_);
                 }
             }
+            // 链式 struct 字段：a.b.c → 内层字段类型
+            if (obj != null && obj.kind_ == "Member") {
+                string innerT = memberFieldType(obj);
+                if (Str.startsWith(innerT, "%") != 0) {
+                    string stName = Str.substring(innerT, 1, Str.len(innerT));
+                    return structFieldType(stName, m.memberName_);
+                }
+            }
+            // struct 返回调用结果字段：cfg.getPoint().name
+            if (obj != null && obj.kind_ == "Call") {
+                string sname2 = callRetStructName(obj);
+                if (Str.len(sname2) != 0) {
+                    return structFieldType(sname2, m.memberName_);
+                }
+            }
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
             return propType(cls, m.memberName_);
+        }
+
+        // Member 表达式的字段 AstType（struct 字段 / 链式 / 元素 / 调用结果；null=无）。
+        AstType memberFieldAstType(AstExpr m) {
+            AstExpr obj = m.array_;
+            if (obj == null) return null;
+            string mname = m.memberName_;
+            if (obj.kind_ == "Identifier") {
+                AstType oat = varAstType(obj.name_);
+                if (oat != null) {
+                    AstType rt = resolveType(oat);
+                    if (rt != null && Str.len(rt.className_) != 0 && isStructName(rt.className_) != 0) {
+                        return structFieldAstType(rt.className_, mname);
+                    }
+                }
+            } else if (obj.kind_ == "Member") {
+                AstType inner = memberFieldAstType(obj);
+                if (inner != null) {
+                    AstType rt = resolveType(inner);
+                    if (rt != null && Str.len(rt.className_) != 0 && isStructName(rt.className_) != 0) {
+                        return structFieldAstType(rt.className_, mname);
+                    }
+                }
+            } else if (obj.kind_ == "Subscript") {
+                AstExpr sarr = obj.array_;
+                string elemT = subscriptElemLt(sarr);
+                if (Str.startsWith(elemT, "%") != 0) {
+                    string stName = Str.substring(elemT, 1, Str.len(elemT));
+                    return structFieldAstType(stName, mname);
+                }
+            } else if (obj.kind_ == "Call") {
+                string sname2 = callRetStructName(obj);
+                if (Str.len(sname2) != 0) return structFieldAstType(sname2, mname);
+            }
+            return null;
         }
 
         // 类 cls 属性 name 的数组/slice 元素 LLVM 类型（非数组返回 ""）。
@@ -1223,6 +1327,72 @@ class CodeGen {
             curClass_ = saveCls;
         }
 
+        // struct 方法：struct_<key>_<method>(ptr this, params...)（this 为结构体指针）。
+        void genStructMethod(string key, AstFunction f) {
+            ArrayList<AstParam> ps = new ArrayList<AstParam>();
+            AstParam tp = new AstParam();
+            tp.setName("this");
+            AstType ptrT = new AstType();
+            ptrT.setClassName("Object");   // 非 struct → llvmType = ptr
+            tp.setType(ptrT);
+            ps.add(tp);
+            for (int i = 0; i < f.params().size(); i = i + 1) ps.add(f.params().get(i));
+            string saveCls = curClass_;
+            curClass_ = key;
+            curFnCoro_ = f.coro_;
+            curFnRegion_ = f.region_;
+            genFuncBody("struct_" + key + "_" + f.name_, ps, f.ret_, f.body_);
+            curClass_ = saveCls;
+        }
+
+        // struct 方法调用：struct_<key>_<method>(ptr this, args...)（this = 结构体指针）。
+        string genStructMethodCall(string key, string mname, AstExpr e, string thisV) {
+            ArrayList<string> exp = structMethodParamLts(key, mname);
+            StringBuilder as = new StringBuilder();
+            as.append("ptr " + thisV);
+            for (int i = 0; i < e.args().size(); i = i + 1) {
+                AstExpr a = e.args().get(i);
+                string av = genExpr(a);
+                string at = exprLlvmType(a);
+                if (i < exp.size()) {
+                    av = convertValueU(av, at, exp.get(i), isUnsignedKind(a.resolvedKind_));
+                    at = exp.get(i);
+                }
+                as.append(", " + at + " " + av);
+            }
+            string retLt = exprLlvmType(e);
+            if (retLt == "void") {
+                sb_.append("  call void @struct_" + key + "_" + mname + "(" + as.toString() + ")\n");
+                return "";
+            }
+            string t = newTmp();
+            sb_.append("  " + t + " = call " + retLt + " @struct_" + key + "_" + mname + "(" + as.toString() + ")\n");
+            if (retLt == "ptr") addFreshTemp(t);
+            return t;
+        }
+
+        // 发射全部 struct 方法（顶层 + 类嵌套；同 C++ generateStructMethods）。
+        void emitStructMethods() {
+            if (tu_ == null) return;
+            for (int si = 0; si < tu_.structs().size(); si = si + 1) {
+                AstStruct st = tu_.structs().get(si);
+                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                    genStructMethod(st.name_, st.funcs().get(fi));
+                }
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                for (int si = 0; si < c.structs().size(); si = si + 1) {
+                    AstStruct st = c.structs().get(si);
+                    string key = c.name_ + "::" + st.name_;
+                    for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                        genStructMethod(key, st.funcs().get(fi));
+                    }
+                }
+            }
+        }
+
         // 事件 fire 函数：fire_<Class>_<Event>(ptr self, params...) → 打包参数进
         // 栈上 struct + myp_event_fire(event_id, self, data) + process_all。
         void genEventFire(string cls, AstEvent ev) {
@@ -1368,12 +1538,154 @@ class CodeGen {
             return out;
         }
 
+        // 类 cls 方法 name 的返回 AstType（null = 未找到）。
+        AstType methodRetAstType(string cls, string name) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name) return c.actions().get(ai).ret_;
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name) return c.staticActions().get(ai).ret_;
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    if (c.funcs().get(fi).name_ == name) return c.funcs().get(fi).ret_;
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 类 cls 方法 name 的第 idx 个形参 AstType（null = 未找到）。
+        AstType methodParamAstType(string cls, string name, int idx) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name && idx < c.actions().get(ai).params().size()) return c.actions().get(ai).params().get(idx).type_;
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    if (c.staticActions().get(ai).name_ == name && idx < c.staticActions().get(ai).params().size()) return c.staticActions().get(ai).params().get(idx).type_;
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    if (c.funcs().get(fi).name_ == name && idx < c.funcs().get(fi).params().size()) return c.funcs().get(fi).params().get(idx).type_;
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 第 idx 个形参的接口名（"" = 非接口）。用于 concrete→interface 上转。
+        string callParamIfaceName(string mCls, string mName, int isEvCall, int idx) {
+            if (isEvCall != 0) {
+                AstEvent evc = findEvent(mCls, mName);
+                if (evc != null && idx < evc.params().size()) {
+                    AstType pt = resolveType(evc.params().get(idx).type_);
+                    if (pt != null && Str.len(pt.className_) != 0 && isInterfaceName(pt.className_) != 0) return pt.className_;
+                }
+                return "";
+            }
+            if (Str.len(mCls) != 0) {
+                AstType pt = methodParamAstType(mCls, mName, idx);
+                if (pt != null) {
+                    AstType rpt = resolveType(pt);
+                    if (rpt != null && Str.len(rpt.className_) != 0 && isInterfaceName(rpt.className_) != 0) return rpt.className_;
+                }
+                return "";
+            }
+            if (Str.len(mName) != 0) {
+                AstFunction f = findFunc(mName);
+                if (f != null && idx < f.params().size()) {
+                    AstType rpt = resolveType(f.params().get(idx).type_);
+                    if (rpt != null && Str.len(rpt.className_) != 0 && isInterfaceName(rpt.className_) != 0) return rpt.className_;
+                }
+            }
+            return "";
+        }
+
+        // struct 返回调用 → struct 名（"" = 非 struct 返回）。
+        string callRetStructName(AstExpr e) {
+            if (e == null || e.resolvedKind_ != "struct") return "";
+            AstExpr callee = e.callee_;
+            if (callee == null) return "";
+            AstType rt = null;
+            if (callee.kind_ == "Identifier") {
+                rt = findFuncRetAstType(callee.name_, e.args().size());
+                if (rt == null) rt = methodRetAstType(curClass_, callee.name_);
+            } else if (callee.kind_ == "Member") {
+                // struct 方法调用：obj 是 struct 变量 → struct.funcs 返回类型
+                AstExpr obj = callee.array_;
+                if (obj != null && obj.kind_ == "Identifier") {
+                    AstType oat = varAstType(obj.name_);
+                    if (oat != null) {
+                        AstType srt = resolveType(oat);
+                        if (srt != null && Str.len(srt.className_) != 0 && isStructName(srt.className_) != 0) {
+                            AstStruct st = findStructByName(srt.className_);
+                            if (st != null) {
+                                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                                    AstFunction mf = st.funcs().get(fi);
+                                    if (mf.name_ == callee.memberName_) rt = mf.ret_;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (rt == null) {
+                    string cls = callee.resolvedClass_;
+                    if (Str.len(cls) == 0) cls = "Object";
+                    rt = methodRetAstType(cls, callee.memberName_);
+                }
+            }
+            if (rt != null) {
+                AstType rrt = resolveType(rt);
+                if (rrt != null && Str.len(rrt.className_) != 0 && isStructName(rrt.className_) != 0) {
+                    return rrt.className_;
+                }
+            }
+            return "";
+        }
+
         // 顶层函数形参 LLVM 类型列表。
         ArrayList<string> funcParamLts(string name) {
             ArrayList<string> out = new ArrayList<string>();
             AstFunction f = findFunc(name);
             if (f == null) return out;
             for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type_));
+            return out;
+        }
+
+        // 按名字找 struct（顶层 + 类嵌套）。
+        AstStruct findStructByName(string name) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                if (tu_.structs().get(i).name_ == name) return tu_.structs().get(i);
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                for (int si = 0; si < c.structs().size(); si = si + 1) {
+                    AstStruct st = c.structs().get(si);
+                    if (st.name_ == name) return st;
+                    if ((c.name_ + "::" + st.name_) == name) return st;
+                }
+            }
+            return null;
+        }
+
+        // struct 方法形参 LLVM 类型列表（key 为 struct 名/带 parent 前缀）。
+        ArrayList<string> structMethodParamLts(string key, string name) {
+            ArrayList<string> out = new ArrayList<string>();
+            AstStruct st = findStructByName(key);
+            if (st == null) return out;
+            for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                AstFunction f = st.funcs().get(fi);
+                if (f.name_ == name) {
+                    for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type_));
+                    return out;
+                }
+            }
             return out;
         }
 
@@ -4148,7 +4460,18 @@ class CodeGen {
                     // obj.field = v / this.field = v
                     string gep = memberAddr(lhs);
                     string ft = memberFieldType(lhs);
-                    rv = convertValue(rv, rt, ft);
+                    if (ft == "{ ptr, ptr }" && rt == "ptr") {
+                        // concrete 类 → interface 上转（struct 字段 / 类属性）
+                        AstType fa = memberFieldAstType(lhs);
+                        if (fa != null) {
+                            AstType frt = resolveType(fa);
+                            if (frt != null && Str.len(frt.className_) != 0 && isInterfaceName(frt.className_) != 0) {
+                                rv = upcastIface(e.rhs_, frt.className_, rv);
+                            }
+                        }
+                    } else {
+                        rv = convertValue(rv, rt, ft);
+                    }
                     if (ft == "ptr") {
                         storeRef(gep, rv, isFreshTemp(rv));
                     } else {
@@ -4406,6 +4729,36 @@ class CodeGen {
                         if (Str.len(r) != 0) return r;
                     }
                 }
+                // P3 §4.2 checkedAdd/checkedMul → llvm.sadd/smul.with.overflow.iN
+                if (callee != null && callee.kind_ == "Identifier"
+                    && (callee.name_ == "checkedAdd" || callee.name_ == "checkedMul")) {
+                    string av0 = genExpr(e.args().get(0));
+                    string at0 = exprLlvmType(e.args().get(0));
+                    string av1 = genExpr(e.args().get(1));
+                    string at1 = exprLlvmType(e.args().get(1));
+                    string ct = IrEmit.intWidth(at0) >= IrEmit.intWidth(at1) ? at0 : at1;
+                    av0 = convertValueU(av0, at0, ct, 0);
+                    av1 = convertValueU(av1, at1, ct, 0);
+                    string intr = callee.name_ == "checkedAdd" ? "llvm.sadd.with.overflow." + ct : "llvm.smul.with.overflow." + ct;
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call { " + ct + ", i1 } @" + intr + "(" + ct + " " + av0 + ", " + ct + " " + av1 + ")\n");
+                    return t;
+                }
+                // P4 §6.2 parseIntOpt(s) → { i32, i1 } 元组
+                if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "parseIntOpt") {
+                    string sp = genExpr(e.args().get(0));
+                    string ok = newTmp();
+                    sb_.append("  " + ok + " = alloca i1\n");
+                    string v = newTmp();
+                    sb_.append("  " + v + " = call i32 @myp_str_parse_int_opt(ptr " + sp + ", ptr " + ok + ")\n");
+                    string okv = newTmp();
+                    sb_.append("  " + okv + " = load i1, ptr " + ok + "\n");
+                    string p0 = newTmp();
+                    sb_.append("  " + p0 + " = insertvalue { i32, i1 } poison, i32 " + v + ", 0\n");
+                    string p1 = newTmp();
+                    sb_.append("  " + p1 + " = insertvalue { i32, i1 } " + p0 + ", i1 " + okv + ", 1\n");
+                    return p1;
+                }
                 // P0 bitcast<T,U>(x)：位保持重解释 → LLVM bitcast 指令
                 if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "bitcast") {
                     AstExpr arg = e.args().get(0);
@@ -4537,6 +4890,16 @@ class CodeGen {
                     if (obj != null && obj.kind_ == "Identifier" && isEnumName(obj.name_) != 0) {
                         return genEnumVariant(obj.name_, mname, e);
                     }
+                    // struct 变量方法调用：struct_<Name>_<method>(ptr alloca, ...)
+                    if (obj != null && obj.kind_ == "Identifier") {
+                        AstType sOat = varAstType(obj.name_);
+                        if (sOat != null) {
+                            AstType sRt = resolveType(sOat);
+                            if (sRt != null && Str.len(sRt.className_) != 0 && isStructName(sRt.className_) != 0) {
+                                return genStructMethodCall(sRt.className_, mname, e, varAlloca(obj.name_));
+                            }
+                        }
+                    }
                     if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
                         fn = obj.name_ + "_" + mname;
                         mCls = obj.name_;
@@ -4566,6 +4929,17 @@ class CodeGen {
                         mName = mname;
                         thisV = genExpr(obj);
                     } else {
+                        // obj 是 Member/Subscript/Call：接口值（{ptr,ptr}）→ vtable 间接调用
+                        if (exprLlvmType(obj) == "{ ptr, ptr }") {
+                            string iname = callee.resolvedClass_;
+                            AstType fa = memberFieldAstType(obj);
+                            if (fa != null) {
+                                AstType frt = resolveType(fa);
+                                if (frt != null && Str.len(frt.className_) != 0 && isInterfaceName(frt.className_) != 0) iname = frt.className_;
+                            }
+                            if (Str.len(iname) == 0) iname = "Object";
+                            return genIfaceCall(obj, iname, mname, e);
+                        }
                         // 实例方法 Class_method(ptr this, args...)
                         string cls = callee.resolvedClass_;
                         if (Str.len(cls) == 0) cls = "Object";
@@ -4620,8 +4994,16 @@ class CodeGen {
                     string av = genExpr(a);
                     string at = exprLlvmType(a);
                     if (expParams != null && i < expParams.size()) {
-                        av = convertValueU(av, at, expParams.get(i), isUnsignedKind(a.resolvedKind_));
-                        at = expParams.get(i);
+                        string pt = expParams.get(i);
+                        if (at == "ptr" && pt == "{ ptr, ptr }") {
+                            // concrete 类 → interface 上转（虚表分派）
+                            string iname = callParamIfaceName(mCls, mName, isEvCall, i);
+                            if (Str.len(iname) != 0) av = upcastIface(a, iname, av);
+                            at = "{ ptr, ptr }";
+                        } else {
+                            av = convertValueU(av, at, pt, isUnsignedKind(a.resolvedKind_));
+                            at = pt;
+                        }
                     }
                     if (i != 0 || Str.len(thisV) != 0) as.append(", ");
                     as.append(at + " " + av);
@@ -4739,6 +5121,10 @@ class CodeGen {
                     int rs = (rhs != null && rhs.resolvedKind_ == "string") ? 1 : 0;
                     if (ls != 0 || rs != 0) return "ptr";
                 }
+                // bitvector 位运算/移位 → 与左操作数同宽（iN）
+                if (e.resolvedKind_ == "bitvector" && lhs != null) {
+                    return exprLlvmType(lhs);
+                }
                 return IrEmit.kindType(e.resolvedKind_);
             }
             if (k == "Tuple") {
@@ -4825,6 +5211,21 @@ class CodeGen {
                         if (e.args().size() > 0) return exprLlvmType(e.args().get(0));
                     }
                 }
+                // P3 §4.2 checkedAdd/checkedMul → { iN, i1 }（公共位宽）
+                if (callee2 != null && callee2.kind_ == "Identifier"
+                    && (callee2.name_ == "checkedAdd" || callee2.name_ == "checkedMul")) {
+                    string at0 = e.args().size() > 0 ? exprLlvmType(e.args().get(0)) : "i32";
+                    string at1 = e.args().size() > 1 ? exprLlvmType(e.args().get(1)) : "i32";
+                    string ct = IrEmit.intWidth(at0) >= IrEmit.intWidth(at1) ? at0 : at1;
+                    return "{ " + ct + ", i1 }";
+                }
+                // P4 §6.2 parseIntOpt → { i32, i1 }
+                if (callee2 != null && callee2.kind_ == "Identifier" && callee2.name_ == "parseIntOpt") {
+                    return "{ i32, i1 }";
+                }
+                // struct 返回调用 → %Name（值类型，非 ptr）
+                string sname = callRetStructName(e);
+                if (Str.len(sname) != 0) return "%" + sname;
                 // slice 返回调用 → { ptr, i64 } fat pointer（kindType("slice")=ptr 错）
                 if (e.resolvedKind_ == "slice") return "{ ptr, i64 }";
                 return IrEmit.kindType(e.resolvedKind_);
