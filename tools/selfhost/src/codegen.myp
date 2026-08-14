@@ -15,6 +15,13 @@ class CodeGen {
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
             isMainFunc_ = 0;
+            curBlock_ = "entry";
+            blockCounter_ = 0;
+            terminated_ = 0;
+            loopBreak_ = new ArrayList<string>();
+            loopContinue_ = new ArrayList<string>();
+            stringGlobals_ = new StringBuilder();
+            strCounter_ = 0;
         }
 
         string newTmp() {
@@ -23,18 +30,90 @@ class CodeGen {
             return t;
         }
 
+        // 新基本块名（hint.0 / hint.1 ...）。
+        string newBlock(string hint) {
+            string b = hint + "." + blockCounter_;
+            blockCounter_ = blockCounter_ + 1;
+            return b;
+        }
+
+        // 开始新基本块。
+        void openBlock(string b) {
+            sb_.append(b + ":\n");
+            curBlock_ = b;
+            terminated_ = 0;
+        }
+
+        // 无条件跳转（结束当前 block）。
+        void emitBr(string target) {
+            sb_.append("  br label %" + target + "\n");
+            terminated_ = 1;
+        }
+
+        // 条件值转 i1（非 i1 用 icmp ne 0 转换，同 C++）。
+        string toI1(string v, string vt) {
+            if (vt == "i1") return v;
+            string t = newTmp();
+            sb_.append("  " + t + " = icmp ne " + vt + " " + v + ", 0\n");
+            return t;
+        }
+
+        // 类型转换（整数扩展/截断 + int↔fp）。返回转换后的值名。
+        string convertValue(string v, string from, string to) {
+            if (from == to) return v;
+            int fromInt = IrEmit.isIntType(from);
+            int toInt = IrEmit.isIntType(to);
+            string t = newTmp();
+            if (fromInt != 0 && toInt != 0) {
+                int fw = IrEmit.intWidth(from);
+                int tw = IrEmit.intWidth(to);
+                if (tw < fw) {
+                    sb_.append("  " + t + " = trunc " + from + " " + v + " to " + to + "\n");
+                } else {
+                    // 有符号扩展（MYP 整数默认有符号）
+                    sb_.append("  " + t + " = sext " + from + " " + v + " to " + to + "\n");
+                }
+                return t;
+            }
+            if (fromInt != 0 && (to == "double" || to == "float")) {
+                sb_.append("  " + t + " = sitofp " + from + " " + v + " to " + to + "\n");
+                return t;
+            }
+            if ((from == "double" || from == "float") && toInt != 0) {
+                sb_.append("  " + t + " = fptosi " + from + " " + v + " to " + to + "\n");
+                return t;
+            }
+            if (from == "double" && to == "float") {
+                sb_.append("  " + t + " = fptrunc double " + v + " to float\n");
+                return t;
+            }
+            if (from == "float" && to == "double") {
+                sb_.append("  " + t + " = fpext float " + v + " to double\n");
+                return t;
+            }
+            return v;
+        }
+
         // 顶层入口：生成完整 IR 文本。
         string generate(AstTU tu) {
-            sb_.append(IrEmit.preamble());
+            // 函数体写 sb_；字符串全局写 stringGlobals_（module 级，跨函数共享）。
+            sb_ = new StringBuilder();
+            stringGlobals_ = new StringBuilder();
+            strCounter_ = 0;
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
                 genFunction(f);
             }
-            sb_.append("attributes #0 = { returns_twice }\n");
-            sb_.append("attributes #1 = { noreturn }\n");
-            return sb_.toString();
+            // 顺序：preamble → 字符串全局 → 函数 → attributes
+            StringBuilder out = new StringBuilder();
+            out.append(IrEmit.preamble());
+            out.append(stringGlobals_.toString());
+            out.append(sb_.toString());
+            out.append("attributes #0 = { returns_twice }\n");
+            out.append("attributes #1 = { noreturn }\n");
+            return out.toString();
         }
 
         void genFunction(AstFunction f) {
@@ -42,6 +121,11 @@ class CodeGen {
             paramTypes_ = new ArrayList<string>();
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
+            blockCounter_ = 0;
+            curBlock_ = "entry";
+            terminated_ = 0;
+            loopBreak_ = new ArrayList<string>();
+            loopContinue_ = new ArrayList<string>();
             string fn = f.name_;
             isMainFunc_ = 0;
             if (fn == "main") isMainFunc_ = 1;
@@ -74,6 +158,16 @@ class CodeGen {
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
             if (f.body_ != null) genStmt(f.body_);
+            // 隐式 return（body 未 terminated 时；sema 保证非 void 函数必有 return，
+            // 此处兜底避免 llc 报 "missing terminator"）。
+            if (terminated_ == 0) {
+                if (retLt == "void") {
+                    sb_.append("  ret void\n");
+                } else {
+                    sb_.append("  ret " + retLt + " " + IrEmit.zeroValue(retLt) + "\n");
+                }
+                terminated_ = 1;
+            }
             sb_.append("}\n\n");
         }
 
@@ -97,7 +191,8 @@ class CodeGen {
                     if (v.init_ != null) {
                         string iv = genExpr(v.init_);
                         string it = exprLlvmType(v.init_);
-                        sb_.append("  store " + it + " " + iv + ", ptr %" + v.name_ + ", align " + al + "\n");
+                        iv = convertValue(iv, it, lt);
+                        sb_.append("  store " + lt + " " + iv + ", ptr %" + v.name_ + ", align " + al + "\n");
                     }
                 }
             } else if (k == "ExprStmt") {
@@ -114,8 +209,80 @@ class CodeGen {
                 } else {
                     sb_.append("  ret void\n");
                 }
+                terminated_ = 1;
+            } else if (k == "If") {
+                if (st.condition_ != null) {
+                    string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    string thenB = newBlock("then");
+                    string elseB = newBlock("else");
+                    string endB = newBlock("ifcont");
+                    int hasElse = 0;
+                    if (st.else_ != null) hasElse = 1;
+                    sb_.append("  br i1 " + cond + ", label %" + thenB + ", label %" + (hasElse != 0 ? elseB : endB) + "\n");
+                    terminated_ = 1;
+                    openBlock(thenB);
+                    genStmt(st.then_);
+                    if (terminated_ == 0) emitBr(endB);
+                    if (hasElse != 0) {
+                        openBlock(elseB);
+                        genStmt(st.else_);
+                        if (terminated_ == 0) emitBr(endB);
+                    }
+                    openBlock(endB);
+                }
+            } else if (k == "While") {
+                string condB = newBlock("while_cond");
+                string bodyB = newBlock("while_body");
+                string endB = newBlock("while_end");
+                emitBr(condB);
+                openBlock(condB);
+                loopBreak_.add(endB);
+                loopContinue_.add(condB);
+                if (st.condition_ != null) {
+                    string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    sb_.append("  br i1 " + cond + ", label %" + bodyB + ", label %" + endB + "\n");
+                    terminated_ = 1;
+                } else {
+                    emitBr(bodyB);
+                }
+                openBlock(bodyB);
+                genStmt(st.body_);
+                if (terminated_ == 0) emitBr(condB);
+                loopBreak_.remove(loopBreak_.size() - 1);
+                loopContinue_.remove(loopContinue_.size() - 1);
+                openBlock(endB);
+            } else if (k == "For") {
+                if (st.init_ != null) genStmt(st.init_);
+                string condB = newBlock("for_cond");
+                string bodyB = newBlock("for_body");
+                string stepB = newBlock("for_step");
+                string endB = newBlock("for_end");
+                emitBr(condB);
+                openBlock(condB);
+                if (st.condition_ != null) {
+                    string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    sb_.append("  br i1 " + cond + ", label %" + bodyB + ", label %" + endB + "\n");
+                    terminated_ = 1;
+                } else {
+                    emitBr(bodyB);
+                }
+                openBlock(bodyB);
+                loopBreak_.add(endB);
+                loopContinue_.add(stepB);
+                genStmt(st.body_);
+                if (terminated_ == 0) emitBr(stepB);
+                loopBreak_.remove(loopBreak_.size() - 1);
+                loopContinue_.remove(loopContinue_.size() - 1);
+                openBlock(stepB);
+                if (st.step_ != null) genExpr(st.step_);
+                emitBr(condB);
+                openBlock(endB);
+            } else if (k == "Break") {
+                if (loopBreak_.size() > 0) emitBr(loopBreak_.get(loopBreak_.size() - 1));
+            } else if (k == "Continue") {
+                if (loopContinue_.size() > 0) emitBr(loopContinue_.get(loopContinue_.size() - 1));
             }
-            // If/While/For/ForIn 等留 G2。
+            // ForIn 等留 G2。
         }
 
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
@@ -135,6 +302,9 @@ class CodeGen {
                 if (e.value_ != 0L) return "true";
                 return "false";
             }
+            if (k == "String") {
+                return stringLiteral(e.stringValue_);
+            }
             if (k == "Identifier") {
                 string nm = e.name_;
                 string lt = varType(nm);
@@ -144,12 +314,58 @@ class CodeGen {
                 return t;
             }
             if (k == "Binary") {
+                string op = e.op_;
+                // 短路 && / ||：alloca 存结果避免 phi（语义与 C++ 一致）。
+                if (op == "&&" || op == "||") {
+                    int isAnd = 0;
+                    if (op == "&&") isAnd = 1;
+                    string c = toI1(genExpr(e.lhs_), exprLlvmType(e.lhs_));
+                    string resAlloca = newTmp() + ".res";
+                    sb_.append("  " + resAlloca + " = alloca i1\n");
+                    if (isAnd != 0) sb_.append("  store i1 false, ptr " + resAlloca + "\n");
+                    else sb_.append("  store i1 true, ptr " + resAlloca + "\n");
+                    string rhsB = newBlock(isAnd != 0 ? "land.rhs" : "lor.rhs");
+                    string endB = newBlock(isAnd != 0 ? "land.end" : "lor.end");
+                    if (isAnd != 0) {
+                        sb_.append("  br i1 " + c + ", label %" + rhsB + ", label %" + endB + "\n");
+                    } else {
+                        sb_.append("  br i1 " + c + ", label %" + endB + ", label %" + rhsB + "\n");
+                    }
+                    terminated_ = 1;
+                    openBlock(rhsB);
+                    string d = toI1(genExpr(e.rhs_), exprLlvmType(e.rhs_));
+                    sb_.append("  store i1 " + d + ", ptr " + resAlloca + "\n");
+                    emitBr(endB);
+                    openBlock(endB);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load i1, ptr " + resAlloca + "\n");
+                    return t;
+                }
                 string lv = genExpr(e.lhs_);
                 string rv = genExpr(e.rhs_);
                 string lt = exprLlvmType(e.lhs_);
+                string rt = exprLlvmType(e.rhs_);
+                // 字符串拼接（+ 且操作数为 ptr）：myp_strcat(l, r)
+                if (op == "+" && (lt == "ptr" || rt == "ptr")) {
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @myp_strcat(ptr " + lv + ", ptr " + rv + ")\n");
+                    return t;
+                }
+                int isCmp = 0;
+                if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") isCmp = 1;
+                // 操作数统一类型（算术 → resolvedKind；比较 → 较宽整数侧）
+                string opLt = lt;
+                if (isCmp == 0) {
+                    opLt = IrEmit.kindType(e.resolvedKind_);
+                } else {
+                    if (IrEmit.isIntType(lt) != 0 && IrEmit.isIntType(rt) != 0) {
+                        if (IrEmit.intWidth(rt) > IrEmit.intWidth(lt)) opLt = rt;
+                    }
+                }
+                if (lt != opLt) { lv = convertValue(lv, lt, opLt); lt = opLt; }
+                if (rt != opLt) { rv = convertValue(rv, rt, opLt); rt = opLt; }
                 int isFp = 0;
-                if (lt == "double" || lt == "float") isFp = 1;
-                string op = e.op_;
+                if (opLt == "double" || opLt == "float") isFp = 1;
                 string insn = "";
                 if (op == "+") { if (isFp != 0) insn = "fadd"; else insn = "add"; }
                 else if (op == "-") { if (isFp != 0) insn = "fsub"; else insn = "sub"; }
@@ -164,13 +380,32 @@ class CodeGen {
                 else if (op == ">=") { if (isFp != 0) insn = "fcmp oge"; else insn = "icmp sge"; }
                 else insn = "add";
                 string t = newTmp();
-                sb_.append("  " + t + " = " + insn + " " + lt + " " + lv + ", " + rv + "\n");
+                sb_.append("  " + t + " = " + insn + " " + opLt + " " + lv + ", " + rv + "\n");
                 return t;
+            }
+            if (k == "Assign") {
+                string rv = genExpr(e.rhs_);
+                string rt = exprLlvmType(e.rhs_);
+                AstExpr lhs = e.lhs_;
+                if (lhs != null && lhs.kind_ == "Identifier") {
+                    string nm = lhs.name_;
+                    string lt = varType(nm);
+                    rv = convertValue(rv, rt, lt);
+                    int al = IrEmit.alignOf(lt);
+                    sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                }
+                return rv;
             }
             if (k == "Call") {
                 AstExpr callee = e.callee_;
                 string fn = "";
-                if (callee != null && callee.kind_ == "Identifier") fn = callee.name_;
+                if (callee != null && callee.kind_ == "Identifier") {
+                    fn = callee.name_;
+                    // 内建 intrinsic __myp_X → runtime myp_X（去掉两个下划线）
+                    if (Str.startsWith(fn, "__myp_") != 0) {
+                        fn = Str.substring(fn, 2, Str.len(fn));
+                    }
+                }
                 string retLt = IrEmit.kindType(e.resolvedKind_);
                 StringBuilder as = new StringBuilder();
                 for (int i = 0; i < e.args().size(); i = i + 1) {
@@ -188,7 +423,7 @@ class CodeGen {
                 sb_.append("  " + t + " = call " + retLt + " @" + fn + "(" + as.toString() + ")\n");
                 return t;
             }
-            // Member/Subscript/Assign 等留 G2。
+            // Member/Subscript 等留 G2。
             return "0";
         }
 
@@ -249,6 +484,40 @@ class CodeGen {
             return s;
         }
 
+        // 字符串字面量 → 全局常量 + GEP 到 data ptr。
+        // M8：immortal counted string { rc=0x7FFFFFFF, type_id=0xFFFFFFFE, [N x i8] }。
+        string stringLiteral(string val) {
+            int n = Str.len(val);
+            string gvName = "@str";
+            if (strCounter_ > 0) gvName = "@str." + strCounter_;
+            strCounter_ = strCounter_ + 1;
+            string sz = "" + (n + 1);
+            string body = escapeLlvmString(val);
+            stringGlobals_.append(gvName + " = private unnamed_addr global { i32, i32, [" + sz + " x i8] } { i32 2147483647, i32 -2, [" + sz + " x i8] c\"" + body + "\\00\" }\n");
+            return "getelementptr ({ i32, i32, [" + sz + " x i8] }, ptr " + gvName + ", i32 0, i32 2)";
+        }
+
+        // LLVM c"..." 转义（\0A 换行 \09 tab \0D CR \22 引号 \5C 反斜杠 \00 NUL）。
+        string escapeLlvmString(string s) {
+            StringBuilder sb = new StringBuilder();
+            string hex = "0123456789ABCDEF";
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c == 10) sb.append("\\0A");
+                else if (c == 9) sb.append("\\09");
+                else if (c == 13) sb.append("\\0D");
+                else if (c == 34) sb.append("\\22");
+                else if (c == 92) sb.append("\\5C");
+                else if (c >= 32 && c < 127) sb.append(__myp_chr(c));
+                else {
+                    sb.append("\\");
+                    sb.append(__myp_chr(__myp_ord(Str.substring(hex, c / 16, c / 16 + 1))));
+                    sb.append(__myp_chr(__myp_ord(Str.substring(hex, c % 16, c % 16 + 1))));
+                }
+            }
+            return sb.toString();
+        }
+
     property:
         StringBuilder sb_;
         int tmp_;
@@ -257,4 +526,11 @@ class CodeGen {
         ArrayList<string> localNames_;
         ArrayList<string> localTypes_;
         int isMainFunc_;
+        string curBlock_;
+        int blockCounter_;
+        int terminated_;
+        ArrayList<string> loopBreak_;
+        ArrayList<string> loopContinue_;
+        StringBuilder stringGlobals_;
+        int strCounter_;
 }

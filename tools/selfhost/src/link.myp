@@ -45,7 +45,7 @@ import process;
         int link(string llPath, string outPath, string stdlib) {
             string llc = Link.findLlc();
             string objPath = outPath + ".o";
-            string cmd = llc + " " + llPath + " -filetype=obj -o " + objPath + " 2>&1";
+            string cmd = llc + " " + llPath + " -filetype=obj -relocation-model=pic -o " + objPath + " 2>&1";
             if (Process.run(cmd) != 0) {
                 Console.writeLine("llc failed");
                 return 1;
