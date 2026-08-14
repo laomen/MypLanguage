@@ -1870,7 +1870,45 @@ class CodeGen {
             int havePrev = 0;
             for (int i = 1; i < nds.size(); i++) {
                 AstMappingNode tgt = nds.get(i);
-                if (tgt.isLambda_ != 0 || tgt.isTransformer_ != 0) continue;
+                if (tgt.isLambda_ != 0 && tgt.lambda_ != null) {
+                    // lambda 变换节点：调 __lambda_N___call(实例, 入参)，结果成为下一节点的入参
+                    AstExpr lex = tgt.lambda_;
+                    string cls = lex.hiddenClass_;
+                    string callee = cls + "___call";
+                    string inst = newTmp();
+                    sb_.append("  " + inst + " = load ptr, ptr @__myp_lambda_" + cls + "\n");
+                    StringBuilder as = new StringBuilder();
+                    as.append("ptr " + inst);
+                    ArrayList<string> lparams = methodParamLts(cls, "__call");
+                    if (i == 1 && ps.size() > 0) {
+                        string structT = structTypeList(evT);
+                        for (int pi = 0; pi < ps.size() && pi < lparams.size(); pi++) {
+                            string gep = newTmp();
+                            sb_.append("  " + gep + " = getelementptr " + structT + ", ptr %data, i32 0, i32 " + pi + "\n");
+                            string lv = newTmp();
+                            sb_.append("  " + lv + " = load " + evT.get(pi) + ", ptr " + gep + "\n");
+                            lv = convertValue(lv, evT.get(pi), lparams.get(pi));
+                            as.append(", " + lparams.get(pi) + " " + lv);
+                        }
+                    } else if (havePrev != 0) {
+                        string pt = lparams.size() > 0 ? lparams.get(0) : prevT;
+                        string pv = convertValue(prevV, prevT, pt);
+                        as.append(", " + pt + " " + pv);
+                    }
+                    AstType lret = methodRetAstType(cls, "__call");
+                    string retLt = lret != null ? llvmType(lret) : "void";
+                    if (retLt == "void") {
+                        sb_.append("  call void @" + callee + "(" + as.toString() + ")\n");
+                    } else {
+                        string r = newTmp();
+                        sb_.append("  " + r + " = call " + retLt + " @" + callee + "(" + as.toString() + ")\n");
+                        prevT = retLt;
+                        prevV = r;
+                        havePrev = 1;
+                    }
+                    continue;
+                }
+                if (tgt.isTransformer_ != 0) continue;
                 string callee = "";
                 string instV = "";
                 ArrayList<AstParam> tparams = null;
@@ -1940,6 +1978,25 @@ class CodeGen {
             localIsArc_ = sLArc;
             terminated_ = sTerm;
             curBlock_ = sBlock;
+
+            // 实例化 mapping 链中的 lambda 实例（零初始化；入参来自事件数据/上一节点）
+            for (int li = 1; li < nds.size(); li++) {
+                AstMappingNode lnode = nds.get(li);
+                if (lnode.isLambda_ == 0 || lnode.lambda_ == null) continue;
+                AstExpr le = lnode.lambda_;
+                string lcls = le.hiddenClass_;
+                if (Str.len(lcls) == 0) continue;
+                string gname = "__myp_lambda_" + lcls;
+                if (Str.contains(stringGlobals_.toString(), "@" + gname) == 0) {
+                    stringGlobals_.append("@" + gname + " = internal global ptr null\n");
+                }
+                int lsz = classSize(lcls);
+                if (lsz < 1) lsz = 1;
+                string lin = newTmp();
+                regCalls.append("  " + lin + " = call ptr @myp_alloc_object(i64 " + lsz + ", i32 0)\n");
+                regCalls.append("  call void @llvm.memset.p0.i64(ptr " + lin + ", i8 0, i64 " + lsz + ", i1 false)\n");
+                regCalls.append("  store ptr " + lin + ", ptr @" + gname + "\n");
+            }
 
             regCalls.append("  call void @myp_event_register(i32 " + eid + ", ptr null, ptr @" + hname + ")\n");
         }
