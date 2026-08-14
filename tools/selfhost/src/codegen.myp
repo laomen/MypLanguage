@@ -1,3 +1,260 @@
-// codegen.myp — 顶层/全局/函数 codegen 入口（G1-G2 实现）。
-// 对拍基准: src/codegen/codegen.cpp。
-// 当前为空壳（F0 占位）。
+// codegen.myp — 顶层/全局/函数 codegen（G1 最小闭环：hello 级）。
+// 对拍基准: src/codegen/codegen.cpp（design.md §3 D4）。G1 只覆盖基本类型、
+// 函数定义/调用、return；类/ARC/异常/协程/泛型/mapping 留 G2/G3。
+
+import "./ast.myp";
+import "./ir_emit.myp";
+
+class CodeGen {
+    action:
+        @constructor CodeGen() {
+            sb_ = new StringBuilder();
+            tmp_ = 0;
+            paramNames_ = new ArrayList<string>();
+            paramTypes_ = new ArrayList<string>();
+            localNames_ = new ArrayList<string>();
+            localTypes_ = new ArrayList<string>();
+            isMainFunc_ = 0;
+        }
+
+        string newTmp() {
+            string t = "%t" + tmp_;
+            tmp_ = tmp_ + 1;
+            return t;
+        }
+
+        // 顶层入口：生成完整 IR 文本。
+        string generate(AstTU tu) {
+            sb_.append(IrEmit.preamble());
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                AstFunction f = tu.functions().get(i);
+                // 泛型函数模板跳过（只发射单态化实例，同 C++）
+                if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
+                genFunction(f);
+            }
+            sb_.append("attributes #0 = { returns_twice }\n");
+            sb_.append("attributes #1 = { noreturn }\n");
+            return sb_.toString();
+        }
+
+        void genFunction(AstFunction f) {
+            paramNames_ = new ArrayList<string>();
+            paramTypes_ = new ArrayList<string>();
+            localNames_ = new ArrayList<string>();
+            localTypes_ = new ArrayList<string>();
+            string fn = f.name_;
+            isMainFunc_ = 0;
+            if (fn == "main") isMainFunc_ = 1;
+            string retLt = IrEmit.llvmType(f.ret_);
+            string linkage = "define";
+            if (isMainFunc_ == 0) linkage = "define internal";
+            for (int i = 0; i < f.params().size(); i = i + 1) {
+                AstParam p = f.params().get(i);
+                paramNames_.add(p.name_);
+                paramTypes_.add(IrEmit.llvmType(p.type_));
+            }
+            StringBuilder ps = new StringBuilder();
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (i != 0) ps.append(", ");
+                ps.append(paramTypes_.get(i));
+                ps.append(" %");
+                ps.append(paramNames_.get(i));
+            }
+            sb_.append(linkage + " " + retLt + " @" + fn + "(" + ps.toString() + ") {\n");
+            sb_.append("entry:\n");
+            // 参数 alloca（倒序，模拟 C++ createEntryBlockAlloca 在 entry 头插入）
+            for (int i = paramNames_.size() - 1; i >= 0; i = i - 1) {
+                string lt = paramTypes_.get(i);
+                int al = IrEmit.alignOf(lt);
+                sb_.append("  %" + paramNames_.get(i) + ".addr = alloca " + lt + ", align " + al + "\n");
+            }
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                string lt = paramTypes_.get(i);
+                int al = IrEmit.alignOf(lt);
+                sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
+            }
+            if (f.body_ != null) genStmt(f.body_);
+            sb_.append("}\n\n");
+        }
+
+        // 语句 → IR。
+        void genStmt(AstStmt st) {
+            if (st == null) return;
+            string k = st.kind_;
+            if (k == "Block") {
+                for (int i = 0; i < st.bodyStmts().size(); i = i + 1) {
+                    genStmt(st.bodyStmts().get(i));
+                }
+            } else if (k == "VarDecl") {
+                for (int i = 0; i < st.decls().size(); i = i + 1) {
+                    AstVar v = st.decls().get(i);
+                    string lt = IrEmit.llvmType(v.type_);
+                    int al = IrEmit.alignOf(lt);
+                    sb_.append("  %" + v.name_ + " = alloca " + lt + ", align " + al + "\n");
+                    localNames_.add(v.name_);
+                    localTypes_.add(lt);
+                    sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr %" + v.name_ + ", align " + al + "\n");
+                    if (v.init_ != null) {
+                        string iv = genExpr(v.init_);
+                        string it = exprLlvmType(v.init_);
+                        sb_.append("  store " + it + " " + iv + ", ptr %" + v.name_ + ", align " + al + "\n");
+                    }
+                }
+            } else if (k == "ExprStmt") {
+                if (st.expr_ != null) genExpr(st.expr_);
+            } else if (k == "Return") {
+                if (isMainFunc_ != 0) {
+                    sb_.append("  call void @myp_event_process_all()\n");
+                    sb_.append("  call void @myp_free_all()\n");
+                }
+                if (st.value_ != null) {
+                    string v = genExpr(st.value_);
+                    string vt = exprLlvmType(st.value_);
+                    sb_.append("  ret " + vt + " " + v + "\n");
+                } else {
+                    sb_.append("  ret void\n");
+                }
+            }
+            // If/While/For/ForIn 等留 G2。
+        }
+
+        // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
+        string genExpr(AstExpr e) {
+            if (e == null) return "0";
+            string k = e.kind_;
+            if (k == "Integer") {
+                long v = e.value_;
+                if (e.isChar_ != 0) return "" + v;
+                if (e.isUnsigned_ != 0) return "" + v;
+                return "" + v;
+            }
+            if (k == "Float") {
+                return floatLiteral(e.fval_);
+            }
+            if (k == "Bool") {
+                if (e.value_ != 0L) return "true";
+                return "false";
+            }
+            if (k == "Identifier") {
+                string nm = e.name_;
+                string lt = varType(nm);
+                int al = IrEmit.alignOf(lt);
+                string t = newTmp();
+                sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                return t;
+            }
+            if (k == "Binary") {
+                string lv = genExpr(e.lhs_);
+                string rv = genExpr(e.rhs_);
+                string lt = exprLlvmType(e.lhs_);
+                int isFp = 0;
+                if (lt == "double" || lt == "float") isFp = 1;
+                string op = e.op_;
+                string insn = "";
+                if (op == "+") { if (isFp != 0) insn = "fadd"; else insn = "add"; }
+                else if (op == "-") { if (isFp != 0) insn = "fsub"; else insn = "sub"; }
+                else if (op == "*") { if (isFp != 0) insn = "fmul"; else insn = "mul"; }
+                else if (op == "/") { if (isFp != 0) insn = "fdiv"; else insn = "sdiv"; }
+                else if (op == "%") { if (isFp != 0) insn = "frem"; else insn = "srem"; }
+                else if (op == "==") { if (isFp != 0) insn = "fcmp oeq"; else insn = "icmp eq"; }
+                else if (op == "!=") { if (isFp != 0) insn = "fcmp one"; else insn = "icmp ne"; }
+                else if (op == "<") { if (isFp != 0) insn = "fcmp olt"; else insn = "icmp slt"; }
+                else if (op == "<=") { if (isFp != 0) insn = "fcmp ole"; else insn = "icmp sle"; }
+                else if (op == ">") { if (isFp != 0) insn = "fcmp ogt"; else insn = "icmp sgt"; }
+                else if (op == ">=") { if (isFp != 0) insn = "fcmp oge"; else insn = "icmp sge"; }
+                else insn = "add";
+                string t = newTmp();
+                sb_.append("  " + t + " = " + insn + " " + lt + " " + lv + ", " + rv + "\n");
+                return t;
+            }
+            if (k == "Call") {
+                AstExpr callee = e.callee_;
+                string fn = "";
+                if (callee != null && callee.kind_ == "Identifier") fn = callee.name_;
+                string retLt = IrEmit.kindType(e.resolvedKind_);
+                StringBuilder as = new StringBuilder();
+                for (int i = 0; i < e.args().size(); i = i + 1) {
+                    AstExpr a = e.args().get(i);
+                    string av = genExpr(a);
+                    string at = exprLlvmType(a);
+                    if (i != 0) as.append(", ");
+                    as.append(at + " " + av);
+                }
+                if (retLt == "void") {
+                    sb_.append("  call void @" + fn + "(" + as.toString() + ")\n");
+                    return "";
+                }
+                string t = newTmp();
+                sb_.append("  " + t + " = call " + retLt + " @" + fn + "(" + as.toString() + ")\n");
+                return t;
+            }
+            // Member/Subscript/Assign 等留 G2。
+            return "0";
+        }
+
+        // 表达式 → LLVM 类型。
+        string exprLlvmType(AstExpr e) {
+            if (e == null) return "i32";
+            string k = e.kind_;
+            if (k == "Integer") {
+                if (e.isChar_ != 0) return "i8";
+                if (e.isUnsigned_ != 0) {
+                    long v = e.value_;
+                    if (v <= 255L) return "i8";
+                    if (v <= 65535L) return "i16";
+                    if (v <= 4294967295L) return "i32";
+                    return "i64";
+                }
+                if (e.isLong_ != 0) return "i64";
+                long v = e.value_;
+                if (v >= -2147483648L && v <= 2147483647L) return "i32";
+                return "i64";
+            }
+            if (k == "Float") {
+                if (e.f32_ != 0) return "float";
+                return "double";
+            }
+            if (k == "Bool") return "i1";
+            if (k == "String") return "ptr";
+            if (k == "Identifier") return varType(e.name_);
+            return IrEmit.kindType(e.resolvedKind_);
+        }
+
+        // 变量（参数/局部）对应的 alloca 名。
+        string varAlloca(string name) {
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) return "%" + name + ".addr";
+            }
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == name) return "%" + name;
+            }
+            return "%" + name;
+        }
+
+        // 变量（参数/局部）的 LLVM 类型。
+        string varType(string name) {
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) return paramTypes_.get(i);
+            }
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == name) return localTypes_.get(i);
+            }
+            return "i32";
+        }
+
+        // double 常量 → LLVM 浮点文本（%e 格式，llc 接受）。
+        string floatLiteral(double v) {
+            string s = "" + v;
+            if (Str.cmp(s, "0") == 0 || s == "0.0") return "0.000000e+00";
+            return s;
+        }
+
+    property:
+        StringBuilder sb_;
+        int tmp_;
+        ArrayList<string> paramNames_;
+        ArrayList<string> paramTypes_;
+        ArrayList<string> localNames_;
+        ArrayList<string> localTypes_;
+        int isMainFunc_;
+}

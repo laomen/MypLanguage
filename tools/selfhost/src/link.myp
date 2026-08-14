@@ -1,3 +1,78 @@
-// link.myp — llc + gcc 链接 C runtime / run / fmt 子命令（G4 实现）。
-// 对拍基准: src/main.cpp linkObjects + runFile（design.md §3 D4/D5）。
-// 当前为空壳（F0 占位）。
+// link.myp — llc + gcc 链接 C runtime（G1 雏形；run/fmt 子命令留 G4）。
+// 对拍基准: src/main.cpp linkObjects（design.md §3 D4/D5）。
+
+import fs;
+import process;
+
+@static class Link {
+    static:
+        // 探测 llc：本机 llc 不在 PATH（llc-21 / /usr/lib/llvm-21/bin/llc）。
+        string findLlc() {
+            if (Fs.isFile("/usr/bin/llc-21") != 0) return "/usr/bin/llc-21";
+            if (Fs.isFile("/usr/lib/llvm-21/bin/llc") != 0) return "/usr/lib/llvm-21/bin/llc";
+            if (Fs.isFile("/usr/bin/llc-20") != 0) return "/usr/bin/llc-20";
+            if (Fs.isFile("/usr/lib/llvm-20/bin/llc") != 0) return "/usr/lib/llvm-20/bin/llc";
+            return "llc";
+        }
+
+        // 定位 runtime.c：优先 cwd 的 src/runtime/runtime.c，否则 stdlib 父目录。
+        string findRuntimeC(string stdlib) {
+            if (Fs.isFile("src/runtime/runtime.c") != 0) return "src/runtime/runtime.c";
+            string rtDir = Fs.dirname(stdlib);
+            string cand = rtDir + "/src/runtime/runtime.c";
+            if (Fs.isFile(cand) != 0) return cand;
+            return "src/runtime/runtime.c";
+        }
+
+        // 定位 coro_ctx.S（x86-64 协程上下文切换汇编）。
+        string findCoroCtx(string stdlib) {
+            if (Fs.isFile("src/runtime/coro_ctx.S") != 0) return "src/runtime/coro_ctx.S";
+            string rtDir = Fs.dirname(stdlib);
+            string cand = rtDir + "/src/runtime/coro_ctx.S";
+            if (Fs.isFile(cand) != 0) return cand;
+            return "";
+        }
+
+        // 定位 include 目录（runtime.h）。
+        string findIncDir(string stdlib) {
+            if (Fs.isFile("include/mylang/runtime.h") != 0) return "include";
+            string rtDir = Fs.dirname(stdlib);
+            if (Fs.isFile(rtDir + "/include/mylang/runtime.h") != 0) return rtDir + "/include";
+            return "include";
+        }
+
+        // llPath(.ll) → llc → obj → gcc 链接 runtime → outPath 可执行。
+        int link(string llPath, string outPath, string stdlib) {
+            string llc = Link.findLlc();
+            string objPath = outPath + ".o";
+            string cmd = llc + " " + llPath + " -filetype=obj -o " + objPath + " 2>&1";
+            if (Process.run(cmd) != 0) {
+                Console.writeLine("llc failed");
+                return 1;
+            }
+            string inc = Link.findIncDir(stdlib);
+            string rtObj = "/tmp/myp_self_rt.o";
+            string runtimeC = Link.findRuntimeC(stdlib);
+            cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + runtimeC + " -o " + rtObj + " 2>&1";
+            if (Process.run(cmd) != 0) {
+                Console.writeLine("runtime compile failed");
+                return 1;
+            }
+            string ctxObj = "/tmp/myp_self_ctx.o";
+            string ctxAsm = Link.findCoroCtx(stdlib);
+            if (Str.len(ctxAsm) != 0) {
+                cmd = "gcc -c " + ctxAsm + " -o " + ctxObj + " 2>&1";
+                if (Process.run(cmd) != 0) {
+                    Console.writeLine("coro_ctx compile failed");
+                    return 1;
+                }
+            }
+            cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj
+                + " -o " + outPath + " -lpthread -lm -ldl -Wl,--gc-sections 2>&1";
+            if (Process.run(cmd) != 0) {
+                Console.writeLine("link failed");
+                return 1;
+            }
+            return 0;
+        }
+}
