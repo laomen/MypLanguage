@@ -199,8 +199,14 @@ class CodeGen {
         }
 
         // slice<T> 元素 LLVM 类型（先替换泛型类型参数）。
+        // 用 codegen 的 llvmType（struct→%Name、接口→{ptr,ptr}、枚举→{i32,[N x i8]}），
+        // 而非 IrEmit.llvmType（其对 struct/接口一律 ptr，slice<Vec> 会错）。
         string sliceElemType(AstType t) {
-            return IrEmit.sliceElemType(resolveType(t));
+            AstType rt = resolveType(t);
+            if (rt == null) return "i32";
+            ArrayList<AstType> tas = rt.typeArgs();
+            if (tas.size() > 0) return llvmType(tas.get(0));
+            return "i32";
         }
 
         // t 是否为 slice（先替换泛型类型参数）。
@@ -290,6 +296,7 @@ class CodeGen {
             if (e == null) return 0;
             string k = e.kind_;
             if (k == "New" || k == "Call" || k == "Lambda") return 1;
+            if (k == "Binary" && e.opCall_ != 0) return 1;   // @op 重载结果 = fresh slice
             return 0;
         }
 
@@ -355,6 +362,22 @@ class CodeGen {
                 sb_.append("  call void @myp_retain(ptr " + value + ")\n");
                 sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
             }
+        }
+
+        // 向 slice 槽（alloca 或元素 GEP）store {ptr,i64}：fresh 转移 rc=1，
+        // 否则 retain 新 backing；释放旧 backing（同 C++ arcStoreSlice）。
+        void storeSliceSlot(string dst, string value, int fresh) {
+            string old = newTmp();
+            sb_.append("  " + old + " = load { ptr, i64 }, ptr " + dst + "\n");
+            string oldData = newTmp();
+            sb_.append("  " + oldData + " = extractvalue { ptr, i64 } " + old + ", 0\n");
+            if (fresh == 0) {
+                string newData = newTmp();
+                sb_.append("  " + newData + " = extractvalue { ptr, i64 } " + value + ", 0\n");
+                sb_.append("  call void @myp_retain(ptr " + newData + ")\n");
+            }
+            sb_.append("  call i32 @myp_release(ptr " + oldData + ")\n");
+            sb_.append("  store { ptr, i64 } " + value + ", ptr " + dst + "\n");
         }
 
         // 具体类实例 ptr → 接口 fat pointer { data, vtable }（C++ buildInterfaceFat）。
@@ -540,6 +563,20 @@ class CodeGen {
                 return t;
             }
             return convertValue(v, from, to);
+        }
+
+        // @op 运算符重载函数查找：按符号 + 两实参 LLVM 类型匹配（返回函数名）。
+        string findOpFuncName(string sym, string lt, string rt) {
+            if (tu_ == null) return "";
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.op_ != sym) continue;
+                if (f.params().size() != 2) continue;
+                string p0 = llvmType(f.params().get(0).type_);
+                string p1 = llvmType(f.params().get(1).type_);
+                if (p0 == lt && p1 == rt) return f.name_;
+            }
+            return "";
         }
 
         // 标量/指针 → i64（协程入口槽/返回值/事件参数打包；同 C++ castToI64）。
@@ -953,6 +990,19 @@ class CodeGen {
                 sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr @__myp_static_" + cls + ", i32 0, i32 " + idx + "\n");
                 return gep;
             }
+            // struct 元素成员：v[i].field（v 是 slice/数组，元素是 struct 值）
+            if (obj != null && obj.kind_ == "Subscript") {
+                AstExpr sarr = obj.array_;
+                string elemT = subscriptElemLt(sarr);
+                if (Str.startsWith(elemT, "%") != 0) {
+                    string stName = Str.substring(elemT, 1, Str.len(elemT));
+                    string elemAddr = subscriptElemAddr(sarr, obj.index_);
+                    int idx = structFieldIndex(stName, m.memberName_);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + elemT + ", ptr " + elemAddr + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
             string objV = genExpr(obj);
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -975,6 +1025,15 @@ class CodeGen {
             // @static class：ClassName.prop → 类属性类型
             if (obj != null && obj.kind_ == "Identifier" && isStaticClassName(obj.name_) != 0) {
                 return propType(obj.name_, m.memberName_);
+            }
+            // struct 元素成员：v[i].field → struct 字段类型
+            if (obj != null && obj.kind_ == "Subscript") {
+                AstExpr sarr = obj.array_;
+                string elemT = subscriptElemLt(sarr);
+                if (Str.startsWith(elemT, "%") != 0) {
+                    string stName = Str.substring(elemT, 1, Str.len(elemT));
+                    return structFieldType(stName, m.memberName_);
+                }
             }
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -1059,6 +1118,28 @@ class CodeGen {
                 return propIsSlice(cls, arr.memberName_);
             }
             return 0;
+        }
+
+        // Subscript 元素地址（不 load）：arr[i] → GEP 指针（slice 先 extract data）。
+        // 用于 v[i].field 成员访问（元素是 struct 值时须取地址再 GEP 字段）。
+        string subscriptElemAddr(AstExpr arr, AstExpr idx) {
+            string arrV = genExpr(arr);
+            string idxV = genExpr(idx);
+            string idxT = exprLlvmType(idx);
+            string elemLt = subscriptElemLt(arr);
+            int isSl = subscriptIsSlice(arr);
+            if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
+            string gep;
+            if (isSl != 0) {
+                string data = newTmp();
+                sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
+                gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+            } else {
+                gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+            }
+            return gep;
         }
 
         void genFunction(AstFunction f) {
@@ -2759,6 +2840,13 @@ class CodeGen {
                     if (curRetLt_ == "ptr") {
                         if (isFreshTemp(v) != 0) consumeTemp(v);
                         else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+                    } else if (curRetLt_ == "{ ptr, i64 }") {
+                        // slice 返回：fresh 转移 rc=1，否则 retain backing（同 C++）
+                        if (isFreshSliceExpr(st.value_) == 0) {
+                            string sd = newTmp();
+                            sb_.append("  " + sd + " = extractvalue { ptr, i64 } " + v + ", 0\n");
+                            sb_.append("  call void @myp_retain(ptr " + sd + ")\n");
+                        }
                     }
                     // @coro 方法：return 值存入协程结果槽（Coro.result 可取）
                     if (curFnCoro_ != 0 && curRetLt_ != "void") {
@@ -3884,6 +3972,17 @@ class CodeGen {
                 }
                 int isCmp = 0;
                 if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") isCmp = 1;
+                // @op 运算符重载（slice+slice、slice*k 等）→ 调用 @op 函数
+                if (e.opCall_ != 0) {
+                    string ofn = findOpFuncName(op, lt, rt);
+                    if (Str.len(ofn) != 0) {
+                        string oret = exprLlvmType(e);
+                        string t = newTmp();
+                        sb_.append("  " + t + " = call " + oret + " @" + ofn + "(" + lt + " " + lv + ", " + rt + " " + rv + ")\n");
+                        if (oret == "ptr") addFreshTemp(t);
+                        return t;
+                    }
+                }
                 // 枚举结构体比较：比较判别式（元素 0，忽略载荷，同 C++）
                 if (isCmp != 0 && Str.startsWith(lt, "{ i32") != 0 && Str.startsWith(rt, "{ i32") != 0) {
                     string ld = newTmp();
@@ -3991,7 +4090,9 @@ class CodeGen {
                     if (hasVar(nm) != 0) {
                         string lt = varType(nm);
                         rv = convertValue(rv, rt, lt);
-                        if (varIsArc(nm) != 0) {
+                        if (lt == "{ ptr, i64 }") {
+                            storeSliceSlot(varAlloca(nm), rv, isFreshSliceExpr(e.rhs_));
+                        } else if (varIsArc(nm) != 0) {
                             storeRef(varAlloca(nm), rv, isFreshTemp(rv));
                             // §五-1 收尾: 类局部赋值镜像进协程帧（覆盖旧对象，同 C++）
                             if (isCoroClassLocal(varAstType(nm)) != 0) {
@@ -4022,6 +4123,8 @@ class CodeGen {
                     string idxT = exprLlvmType(idx);
                     string elemLt = subscriptElemLt(arr);
                     int isSl = subscriptIsSlice(arr);
+                    // 嵌套 slice：rows[i]（slice 值）再下标 → 须 extractvalue data
+                    if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
                     string gep;
                     if (isSl != 0) {
                         string data = newTmp();
@@ -4033,7 +4136,10 @@ class CodeGen {
                         sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                     }
                     rv = convertValue(rv, rt, elemLt);
-                    if (elemLt == "ptr") {
+                    if (elemLt == "{ ptr, i64 }") {
+                        // slice 元素（含嵌套 slice<slice<T>>）：retain 新 backing，释放旧。
+                        storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs_));
+                    } else if (elemLt == "ptr") {
                         storeRef(gep, rv, isFreshTemp(rv));
                     } else {
                         sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
@@ -4087,6 +4193,9 @@ class CodeGen {
                 string idxT = exprLlvmType(idx);
                 string elemLt = subscriptElemLt(arr);
                 int isSl = subscriptIsSlice(arr);
+                // 数组表达式本身为 slice 值（slice<slice<T>> 的 rows[i] 再下标）：
+                // 其结果 LLVM 类型是 { ptr, i64 } → 须 extractvalue data 再 GEP。
+                if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
                 if (isSl != 0) {
                     // slice：extractvalue data + GEP
                     string data = newTmp();
@@ -4716,12 +4825,17 @@ class CodeGen {
                         if (e.args().size() > 0) return exprLlvmType(e.args().get(0));
                     }
                 }
+                // slice 返回调用 → { ptr, i64 } fat pointer（kindType("slice")=ptr 错）
+                if (e.resolvedKind_ == "slice") return "{ ptr, i64 }";
                 return IrEmit.kindType(e.resolvedKind_);
             }
             if (k == "Subscript") {
                 return subscriptElemLt(e.array_);
             }
-            if (k == "New") return "ptr";
+            if (k == "New") {
+                if (e.className_ == "slice") return "{ ptr, i64 }";
+                return "ptr";
+            }
             return IrEmit.kindType(e.resolvedKind_);
         }
 

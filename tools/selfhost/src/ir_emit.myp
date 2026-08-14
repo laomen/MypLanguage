@@ -74,8 +74,9 @@ import "./ast.myp";
             if (kind == "double") return "double";
             if (kind == "void") return "void";
             if (kind == "string" || kind == "class" || kind == "interface"
-                || kind == "array" || kind == "slice" || kind == "struct"
+                || kind == "array" || kind == "struct"
                 || kind == "enum" || kind == "tuple") return "ptr";
+            if (kind == "slice") return "{ ptr, i64 }";
             if (kind == "function") return "{ ptr, ptr }";
             return "i32";
         }
