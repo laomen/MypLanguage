@@ -541,6 +541,10 @@ float myp_str_to_float(const char* s) {
     if (!s) return 0.0f;
     return (float)strtod(s, NULL);
 }
+double myp_str_to_double(const char* s) {
+    if (!s) return 0.0;
+    return strtod(s, NULL);
+}
 
 // ======================
 // String Utilities

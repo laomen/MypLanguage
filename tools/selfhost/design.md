@@ -289,6 +289,19 @@ Declared -> Materializing -> Ready
 - 不通过放宽 dump 契约掩盖差异；发现参考实现非确定或错误时，先修 C++ oracle，再同步
   `format.md` 和 MYP 实现。
 
+> **已确认 C++ oracle 缺口（2026-08-14 排查，暂缓，先记后修）**
+> - **接口默认方法体不类型检查**：`tests/@test/interface_default.myp` 的 `IShape`
+>   默认 `describe()` 内，C++ 把所有表达式标成默认 `: int`——字符串字面量 `"area="`
+>   、`area()`（返回 double）、`perimeter()`、整个 `+` 拼接全是 `: int`。根因：C++
+>   不 sema 接口默认方法体（表达式保持默认 resolved_kind=Int）。
+> - 按 F4-O 流程应**先修 C++ oracle**（让 mypc 类型检查接口默认方法体，输出正确的
+>   string/double），再同步 MYP（当前 MYP 未类型检查 → 无后缀，与 C++ 的 `: int`
+>   对不上）。影响面：含接口默认方法的少数文件。
+> - 排查方法论备忘：对拍差异里 "Float/String 字面量被标 int" 要先看是否
+>   两端 rc=1（引用未定义符号的坏文件，错误路径级联差异），不要误判为干净 C++ bug。
+>   `test_autodiff`/`test_ffi`（未定义 f1/myp_math_sqrt）、`transport.myp`
+>   （未 import data_manager）均属此类。
+
 ### 4.3 从前端到完整自举
 
 | 门禁 | 必须满足后才能进入下一阶段 |

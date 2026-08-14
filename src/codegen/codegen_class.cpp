@@ -1110,6 +1110,19 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
         // Record slice element type for slice operations
         if (pt.kind == TypeKind::Slice)
             var_slice_types_[action.params[i].name] = pt;
+        // 类参数：注册 var_class_map_（含类型参数 T→具体类）→ 静态方法内
+        // `list.method()`（如 ArrayList<T> 参数 .add/.get）精确解析到具体实例
+        // 类，而非 best-class 误选模板签名（此前漏注册 → LLVM verify 失败）。
+        if (pt.kind == TypeKind::Class) {
+            std::string cn = pt.class_name;
+            if (!action.params[i].type.type_args.empty()) {
+                cn = action.params[i].type.class_name;
+                for (auto& ta : action.params[i].type.type_args)
+                    cn += "_" + mangleConcreteTypeNode(ta);
+                cn += "_inst";
+            }
+            var_class_map_[action.params[i].name] = cn;
+        }
     }
 
     // @region (static action)

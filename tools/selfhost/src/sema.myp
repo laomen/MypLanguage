@@ -22,7 +22,10 @@ class SymbolEntry {
             elementClass_ = "";
             elementElem_ = "";
             className_ = "";
+            funcRet_ = "";
+                arraySize_ = -1;
             tupleTypes_ = new ArrayList<string>();
+            funcParamTypes_ = new ArrayList<string>();
             instArgs_ = new ArrayList<string>();
         }
         void addTupleType(string t) { tupleTypes_.add(t); }
@@ -30,6 +33,15 @@ class SymbolEntry {
         void setElementClass(string v) { elementClass_ = v; }
         void setElementElem(string v) { elementElem_ = v; }
         void setClassName(string v) { className_ = v; }
+        void setFuncRet(string v) { funcRet_ = v; }
+        void addFuncParamType(string v) { funcParamTypes_.add(v); }
+        ArrayList<string> functionParamTypes() { return funcParamTypes_; }
+            void setArraySize(int v) { arraySize_ = v; }
+        string kind() { return type_; }
+        string elementKind() { return elementType_; }
+        string elementClass() { return elementClass_; }
+        string className() { return className_; }
+        int arraySize() { return arraySize_; }
         void addInstArg(string v) { instArgs_.add(v); }
     property:
         string name_;
@@ -38,7 +50,10 @@ class SymbolEntry {
         string elementClass_;
         string elementElem_;
         string className_;
+        string funcRet_;
+            int arraySize_;
         ArrayList<string> tupleTypes_;
+        ArrayList<string> funcParamTypes_;
         ArrayList<string> instArgs_;
 }
 
@@ -74,10 +89,30 @@ class SymbolTable {
         void declare(string name, string type) {
             entries_.add(new SymbolEntry(name, type));
         }
+        // 函数类型变量：(int)->int f → type="function" + funcRet 记录返回类型
+        void declareFunc(string name, string retKind, ArrayList<AstType> params) {
+            SymbolEntry e = new SymbolEntry(name, "function");
+            e.setFuncRet(retKind);
+            for (int i = 0; i < params.size(); i = i + 1) e.addFuncParamType(TKind.typeKindOf(params.get(i)));
+            entries_.add(e);
+        }
         // 数组/切片变量：记录元素类型（供 Subscript 返回元素类型）。
         void declareElem(string name, string type, string elem) {
             SymbolEntry e = new SymbolEntry(name, type);
             e.setElementType(elem);
+            entries_.add(e);
+        }
+            void declareFixedElem(string name, string elem, int size) {
+                SymbolEntry e = new SymbolEntry(name, "array");
+                e.setElementType(elem);
+                e.setArraySize(size);
+                entries_.add(e);
+            }
+        void declareFixedElemClass(string name, string elem, string elemCls, int size) {
+            SymbolEntry e = new SymbolEntry(name, "array");
+            e.setElementType(elem);
+            e.setElementClass(elemCls);
+            e.setArraySize(size);
             entries_.add(e);
         }
         void declareElemClass(string name, string type, string elem, string elemCls) {
@@ -154,7 +189,9 @@ class SymbolTable {
                 || k == "double2" || k == "int4") return 1;
             return 0;
         }
-        // 数字提升（numeric_common）：double>float>ulong>long>uint>int>(u)byte/short→uint
+        // 数字提升（算术 numeric_common，对齐 C++ sema_expr.cpp）：
+        // double>float>ulong>long>uint>int>ubyte/ushort→uint；byte/short 也 → int。
+        // 注意：无 `l==r` 短路——byte+byte 提升为 int。三元用 ternaryCommon（见下）。
         string numericCommon(string l, string r) {
             if (l == "double" || r == "double") return "double";
             if (l == "float" || r == "float") return "float";
@@ -164,6 +201,28 @@ class SymbolTable {
             if (l == "int" || r == "int") return "int";
             if (l == "ubyte" || r == "ubyte" || l == "ushort" || r == "ushort") return "uint";
             return "int";
+        }
+        // 三元提升（对齐 C++ commonNumericKind）：a==b → a；否则 b 可提升到 a → a，
+        // a 可提升到 b → b（C++ promotes 关系，见下）。
+        int promotesTo(string from, string to) {
+            if (from == to) return 1;
+            if (from == "byte")   return (to == "short" || to == "int" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "char")   return (to == "ubyte" || to == "ushort" || to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "short")  return (to == "int" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "int")    return (to == "long" || to == "double") ? 1 : 0;
+            if (from == "long")   return 0;
+            if (from == "float")  return (to == "double") ? 1 : 0;
+            if (from == "ubyte")  return (to == "ushort" || to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "ushort") return (to == "uint" || to == "ulong" || to == "int" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "uint")   return (to == "ulong" || to == "long" || to == "double") ? 1 : 0;
+            if (from == "ulong")  return 0;
+            return 0;
+        }
+        string ternaryCommon(string a, string b) {
+            if (a == b) return a;
+            if (TKind.promotesTo(b, a) != 0) return a;
+            if (TKind.promotesTo(a, b) != 0) return b;
+            return "void";
         }
         // AstType → TypeKind 字符串（typeKindToString），供符号表/返回类型用。
         string typeKindOf(AstType t) {
@@ -222,8 +281,17 @@ class Sema {
             gsActions_ = new ArrayList<AstAction>();
             enumNames_ = new ArrayList<string>();
             enumVariants_ = new ArrayList<ArrayList<string>>();
+            bitfieldNames_ = new ArrayList<string>();
+            bitfieldFieldNames_ = new ArrayList<ArrayList<string>>();
+            bitfieldFieldWidths_ = new ArrayList<ArrayList<int>>();
             threadVars_ = new ArrayList<string>();
             startupMethods_ = new ArrayList<string>();
+            lambdaCounter_ = 0;
+            cellCounter_ = 0;
+            cellClassByTypeKey_ = new ArrayList<string>();
+            cellClassByTypeVal_ = new ArrayList<string>();
+            lambdaSelfName_ = "";
+            lambdaSelfClass_ = "";
             currentClass_ = "";
             inClass_ = 0;
             inStruct_ = 0;
@@ -232,6 +300,8 @@ class Sema {
             currentRet_ = "";
             loopDepth_ = 0;
             inCoro_ = 0;
+            currentMethodName_ = "";
+            inDiscardStmt_ = 0;
             tu_ = null;
         }
         void addMethod(string c, string m, AstType r, int np, ArrayList<AstParam> ps, int cor) {
@@ -275,6 +345,12 @@ class Sema {
             int idx = -1;
             ArrayList<string> tp = findClassTypeParams(base);
             for (int i = 0; i < tp.size(); i = i + 1) {
+                string assocPrefix = tp.get(i) + "::";
+                if (Str.len(rn) > Str.len(assocPrefix)
+                    && Str.substring(rn, 0, Str.len(assocPrefix)) == assocPrefix
+                    && en != null && i < en.instArgs_.size()) {
+                    return associatedTypeKind(en.instArgs_.get(i) + "::" + Str.substring(rn, Str.len(assocPrefix), Str.len(rn)));
+                }
                 if (tp.get(i) == rn) { idx = i; break; }
             }
             if (idx >= 0 && en != null && idx < en.instArgs_.size()) {
@@ -296,9 +372,20 @@ class Sema {
             if (Str.len(rn) == 0) rn = rt.basicName_;
             ArrayList<string> tp = findClassTypeParams(base);
             for (int i = 0; i < tp.size(); i = i + 1) {
+                string assocPrefix = tp.get(i) + "::";
+                if (Str.len(rn) > Str.len(assocPrefix)
+                    && Str.substring(rn, 0, Str.len(assocPrefix)) == assocPrefix
+                    && i < targs.size()) {
+                    AstType owner = targs.get(i);
+                    string ownerName = Str.len(owner.className_) != 0 ? owner.className_ : owner.basicName_;
+                    return associatedTypeKind(ownerName + "::" + Str.substring(rn, Str.len(assocPrefix), Str.len(rn)));
+                }
                 if (tp.get(i) == rn && i < targs.size()) {
                     AstType ta = targs.get(i);
-                    if (Str.len(ta.className_) != 0) return ta.className_;
+                    if (Str.len(ta.className_) != 0) {
+                        if (ta.typeArgs().size() > 0) return instClassName(ta);
+                        return ta.className_;
+                    }
                     return ta.basicName_;
                 }
             }
@@ -493,11 +580,41 @@ class Sema {
         void analyze(AstTU tu) {
             tu_ = tu;
             registerIntrinsics();
+            for (int bi = 0; bi < tu.bitfields().size(); bi = bi + 1) {
+                AstBitfield bf = tu.bitfields().get(bi);
+                bitfieldNames_.add(bf.name_);
+                ArrayList<string> names = new ArrayList<string>();
+                ArrayList<int> widths = new ArrayList<int>();
+                for (int fi = 0; fi < bf.fields().size(); fi = fi + 1) {
+                    AstBitfieldField field = bf.fields().get(fi);
+                    names.add(field.name_);
+                    widths.add(field.width_);
+                }
+                bitfieldFieldNames_.add(names);
+                bitfieldFieldWidths_.add(widths);
+            }
             // 收集 struct（须在类/方法收集前，使 typeToKind 能识别 struct 返回类型）
             for (int si = 0; si < tu.structs().size(); si = si + 1) {
                 AstStruct st = tu.structs().get(si);
                 structNames_.add(st.name_);
                 structProps_.add(st.props());
+                for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                    AstProp prop = st.props().get(pi);
+                    AstType embedded = prop.type_;
+                    while (embedded != null && embedded.element_ != null) embedded = embedded.element_;
+                    if (embedded != null && embedded.className_ == st.name_) {
+                        diag_.error(st.line_, st.col_, "recursive struct definition (infinite size): '"
+                            + st.name_ + "' is embedded by value in a cycle");
+                    }
+                    for (int pj = 0; pj < pi; pj = pj + 1) {
+                        if (st.props().get(pj).name_ == prop.name_) {
+                            diag_.error(prop.line_, prop.col_, "duplicate field '" + prop.name_
+                                + "' in struct '" + st.name_ + "'");
+                            break;
+                        }
+                    }
+                    if (prop.init_ != null) markAllExpr(prop.init_);
+                }
                 // 收集 struct 方法（findMethodRet 需要）
                 ArrayList<AstFunction> sfuncs = st.funcs();
                 for (int sfj = 0; sfj < sfuncs.size(); sfj = sfj + 1) {
@@ -517,11 +634,66 @@ class Sema {
                 for (int j2 = 0; j2 < iacts.size(); j2 = j2 + 1) {
                     AstAction a2 = iacts.get(j2);
                     interfaceMethods_.add(new MethodSig(ifc.name_, a2.name_, a2.ret_ != null ? typeToKind(a2.ret_) : "void", a2.params().size(), a2.params(), 0, a2.ret_));
+                    // C++ 不类型检查接口默认体（保持默认 Int）→ 整树标 int
+                    if (a2.body_ != null) markAllStmt(a2.body_);
+                }
+            }
+            // C++ checkInterfaceImpl：实现 interface class 的类须实现接口无默认体 action。
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass cl = tu.classes().get(ci);
+                if (Str.len(cl.iface_) == 0) continue;
+                AstInterface implIface = null;
+                for (int ii2 = 0; ii2 < tu.interfaces().size(); ii2 = ii2 + 1) {
+                    if (tu.interfaces().get(ii2).name_ == cl.iface_) { implIface = tu.interfaces().get(ii2); break; }
+                }
+                if (implIface == null) {
+                    diag_.error(cl.line_, cl.col_, "interface '" + cl.iface_ + "' not found");
+                    continue;
+                }
+                ArrayList<AstAction> iacts2 = implIface.actions();
+                for (int ji = 0; ji < iacts2.size(); ji = ji + 1) {
+                    AstAction ia2 = iacts2.get(ji);
+                    if (ia2.body_ != null) continue;  // 默认实现 → 可省略
+                    int foundImpl = 0;
+                    ArrayList<AstAction> clActs = cl.actions();
+                    for (int ka = 0; ka < clActs.size(); ka = ka + 1) {
+                        if (clActs.get(ka).name_ == ia2.name_) { foundImpl = 1; break; }
+                    }
+                    if (foundImpl == 0) {
+                        ArrayList<AstAction> clStatics = cl.staticActions();
+                        for (int kb = 0; kb < clStatics.size(); kb = kb + 1) {
+                            if (clStatics.get(kb).name_ == ia2.name_) { foundImpl = 1; break; }
+                        }
+                    }
+                    if (foundImpl == 0) {
+                        diag_.error(cl.line_, cl.col_, "class '" + cl.name_ + "' does not implement action '"
+                            + ia2.name_ + "' from interface '" + implIface.name_ + "'");
+                    }
+                }
+                // 关联类型绑定校验（C++ checkInterfaceImpl）：接口声明 type Item → 类必须绑定。
+                ArrayList<string> ifaceAssocs = implIface.assocTypeDecls();
+                for (int ja = 0; ja < ifaceAssocs.size(); ja = ja + 1) {
+                    string atName = ifaceAssocs.get(ja);
+                    int bound = 0;
+                    ArrayList<AstPair> clAssocs = cl.assocTypes();
+                    for (int kb = 0; kb < clAssocs.size(); kb = kb + 1) {
+                        if (clAssocs.get(kb).k == atName) { bound = 1; break; }
+                    }
+                    if (bound == 0) {
+                        diag_.error(cl.line_, cl.col_, "class '" + cl.name_ + "' does not bind associated type '"
+                            + atName + "' from interface '" + implIface.name_ + "' (add `type " + atName + " = ...;`)");
+                    }
                 }
             }
             // 收集 enum（变体访问解析）
             for (int ei = 0; ei < tu.enums().size(); ei = ei + 1) {
                 AstEnum en = tu.enums().get(ei);
+                for (int ej = 0; ej < enumNames_.size(); ej = ej + 1) {
+                    if (enumNames_.get(ej) == en.name_) {
+                        diag_.error(en.line_, en.col_, "duplicate enum name '" + en.name_ + "'");
+                        break;
+                    }
+                }
                 enumNames_.add(en.name_);
                 ArrayList<string> vs = new ArrayList<string>();
                 ArrayList<AstEnumVariant> vv = en.variants();
@@ -531,11 +703,34 @@ class Sema {
             // 收集类：第一遍只收类名/属性（使 addMethod 的 typeToKind 能看到全部类）
             for (int i = 0; i < tu.classes().size(); i = i + 1) {
                 AstClass c = tu.classes().get(i);
+                for (int cj = 0; cj < classNames_.size(); cj = cj + 1) {
+                    if (classNames_.get(cj) == c.name_) {
+                        diag_.error(c.line_, c.col_, "duplicate class name '" + c.name_ + "'");
+                        break;
+                    }
+                }
                 classTypeParams_.add(c.typeParams());
                 classNames_.add(c.name_);
                 classProps_.add(c.props());
                 classActions_.add(c.actions());
                 classFuncs_.add(c.funcs());
+            }
+            for (int i = 0; i < tu.classes().size(); i = i + 1) {
+                AstClass c = tu.classes().get(i);
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    AstProp prop = c.props().get(pi);
+                    if (prop.weak_ != 0) {
+                        string weakKind = typeToKind(prop.type_);
+                        if (weakKind != "class" && weakKind != "interface") {
+                            diag_.error(prop.line_, prop.col_, "@weak property '" + prop.name_
+                                + "' must be a class or interface reference type");
+                        }
+                        if (prop.const_ != 0) {
+                            diag_.error(prop.line_, prop.col_, "@weak property '" + prop.name_
+                                + "' cannot also be const");
+                        }
+                    }
+                }
             }
             for (int i = 0; i < tu.classes().size(); i = i + 1) {
                 AstClass c = tu.classes().get(i);
@@ -545,7 +740,19 @@ class Sema {
                 // 收集方法签名（静态方法优先，含泛型）
                 for (int j = 0; j < c.actions().size(); j = j + 1) {
                     AstAction a = c.actions().get(j);
+                    if (a.ctor_ != 0) {
+                        if (a.startup_ != 0)
+                            diag_.error(a.line_, a.col_, "cannot be both @constructor and @startup");
+                        if (a.name_ != c.name_)
+                            diag_.error(a.line_, a.col_, "constructor name '" + a.name_ + "' must match class name '" + c.name_ + "'");
+                        if (typeToKind(a.ret_) != "void")
+                            diag_.error(a.line_, a.col_, "constructor '" + a.name_ + "' must have void return type");
+                    }
                     addMethod(c.name_, a.name_, a.ret_, a.params().size(), a.params(), a.coro_);
+                    for (int pi = 0; pi < a.params().size(); pi = pi + 1) {
+                        AstExpr defaultExpr = a.params().get(pi).defaultExpression();
+                        if (defaultExpr != null) markAllExpr(defaultExpr);
+                    }
                     if (a.startup_ != 0) startupMethods_.add(c.name_ + "." + a.name_);
                 }
                 for (int j = 0; j < c.staticActions().size(); j = j + 1) {
@@ -575,6 +782,12 @@ class Sema {
             // 收集顶层函数
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
+                for (int fj = 0; fj < i; fj = fj + 1) {
+                    if (tu.functions().get(fj).name_ == f.name_) {
+                        diag_.error(f.line_, f.col_, "duplicate function name '" + f.name_ + "'");
+                        break;
+                    }
+                }
                 funcNames_.add(f.name_);
                 funcRet_.add(f.ret_);
                 funcParams_.add(f.params());
@@ -593,6 +806,33 @@ class Sema {
                 funcNames_.add(f.name_);
                 funcRet_.add(f.ret_);
                 funcParams_.add(f.params());
+            }
+            for (int i = 0; i < tu.macros().size(); i = i + 1) {
+                AstMacro m = tu.macros().get(i);
+                if (m.body_ != null) markAllStmt(m.body_);
+            }
+            // C++ 在 Pass1 声明诊断后不进入任何 body 分析；未访问 Expr 的
+            // resolved_kind 默认仍为 Int。自托管 AST 初值为空，故只补默认注解。
+            if (diag_.errorCount() != 0) {
+                for (int i = 0; i < tu.functions().size(); i = i + 1)
+                    if (tu.functions().get(i).body_ != null) markAllStmt(tu.functions().get(i).body_);
+                for (int i = 0; i < tu.structs().size(); i = i + 1) {
+                    AstStruct st = tu.structs().get(i);
+                    for (int j = 0; j < st.funcs().size(); j = j + 1)
+                        if (st.funcs().get(j).body_ != null) markAllStmt(st.funcs().get(j).body_);
+                }
+                for (int i = 0; i < tu.classes().size(); i = i + 1) {
+                    AstClass c = tu.classes().get(i);
+                    for (int j = 0; j < c.props().size(); j = j + 1)
+                        if (c.props().get(j).init_ != null) markAllExpr(c.props().get(j).init_);
+                    for (int j = 0; j < c.actions().size(); j = j + 1)
+                        if (c.actions().get(j).body_ != null) markAllStmt(c.actions().get(j).body_);
+                    for (int j = 0; j < c.staticActions().size(); j = j + 1)
+                        if (c.staticActions().get(j).body_ != null) markAllStmt(c.staticActions().get(j).body_);
+                    for (int j = 0; j < c.funcs().size(); j = j + 1)
+                        if (c.funcs().get(j).body_ != null) markAllStmt(c.funcs().get(j).body_);
+                }
+                return;
             }
             // 顶层 mapping：处理 where 子句与 lambda 节点
             for (int mi = 0; mi < tu.mappings().size(); mi = mi + 1) {
@@ -616,45 +856,29 @@ class Sema {
                 inCoro_ = f.coro_ != 0 ? 1 : 0;
                 loopDepth_ = 0;
                 sym_.enterScope();
+                int topFCheck = f.typeParams().size() == 0 ? 1 : 0;
                 for (int j = 0; j < f.params().size(); j = j + 1) {
-                    declareParam(f.params().get(j));
+                    declareParam(f.params().get(j), topFCheck);
                 }
-                if (f.typeParams().size() != 0) markAllStmt(f.body_);
+                if (f.typeParams().size() != 0 || f.macro_ != 0) markAllStmt(f.body_);
                 else visitStmt(f.body_);
                 sym_.leaveScope();
                 curGeneric_.clear();
             }
-            // struct 方法体（隐式 this 字段访问）
-            for (int si2 = 0; si2 < tu.structs().size(); si2 = si2 + 1) {
-                AstStruct st2 = tu.structs().get(si2);
-                ArrayList<AstFunction> sfuncs2 = st2.funcs();
-                for (int sfj2 = 0; sfj2 < sfuncs2.size(); sfj2 = sfj2 + 1) {
-                    AstFunction f = sfuncs2.get(sfj2);
-                    if (f.body_ == null) continue;
-                    currentClass_ = st2.name_;
-                    inStruct_ = 1;
-                    inClass_ = 1;
-                    inMain_ = 0;
-                    currentRet_ = typeToKind(f.ret_);
-                    inCoro_ = f.coro_ != 0 ? 1 : 0;
-                    loopDepth_ = 0;
-                    sym_.enterScope();
-                    for (int j = 0; j < f.params().size(); j = j + 1) {
-                        declareParam(f.params().get(j));
-                    }
-                    if (f.typeParams().size() != 0) markAllStmt(f.body_);
-                    else visitStmt(f.body_);
-                    sym_.leaveScope();
-                }
-                inStruct_ = 0;
-            }
             int ncls = tu.classes().size();
+            // === F4-G2b：全局双 pass 类访问（复现 C++ Pass1/Pass2 作用域弹出）===
+            // C++ visitClassDecl(Pass1) 解析属性类型 → 触发泛型实例化#1（实例名声明在
+            // 类作用域，结束时弹出）；随后 Pass2 以新作用域访问 action body，此时
+            // `new ArrayList<Diag>()` 的去重缓存失效 → 实例化#2 → dump 出现重复 _inst
+            // 类。MYP 必须同样：Pass A 处理全部类属性后弹作用域，Pass B 再以新作用域
+            // 访问 body，否则只出一份实例，与参考端不一致（如 diag.myp / codegen 工具）。
+            // ---- Pass A：全部类的属性声明（弹作用域）----
             for (int ci = 0; ci < ncls; ci = ci + 1) {
                 AstClass c = tu.classes().get(ci);
                 if (c.isGenericInst_ != 0) continue;  // 泛型实例类不重新分析（body 保持 int）
                 curGeneric_.clear();
-                ArrayList<string> ctp2 = c.typeParams();
-                for (int gi = 0; gi < ctp2.size(); gi = gi + 1) curGeneric_.add(ctp2.get(gi));
+                ArrayList<string> ctpA = c.typeParams();
+                for (int gi = 0; gi < ctpA.size(); gi = gi + 1) curGeneric_.add(ctpA.get(gi));
                 // 收集类内嵌套 struct（struct 成员访问需要）
                 for (int ns = 0; ns < c.structs().size(); ns = ns + 1) {
                     AstStruct st = c.structs().get(ns);
@@ -692,23 +916,161 @@ class Sema {
                     // C++ 不 visit 属性默认值（resolved_kind 保持默认 Int）→ markAllExpr 置 int
                     if (p.init_ != null) markAllExpr(p.init_);
                 }
+                // Pass A 补充：C++ visitClassDecl 在类作用域内按 props → actions →
+                // functions → static_actions → events 顺序解析成员类型（返回类型+
+                // 形参），每类都会触发泛型实例化。MYP 必须同序处理，否则尾部 _inst
+                // 顺序与参考端不一致（如 ast.myp：Dump.joinList 的 ArrayList<string>
+                // 形参应先于 AstType 的 ArrayList<AstType> 属性被实例化）。
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.ret_ != null && a.ret_.typeArgs().size() > 0) tryInstantiate(a.ret_.className_, a.ret_.typeArgs());
+                    ArrayList<AstParam> ap = a.params();
+                    for (int j = 0; j < ap.size(); j = j + 1) {
+                        AstType pt2 = ap.get(j).type_;
+                        if (pt2 != null && pt2.typeArgs().size() > 0) tryInstantiate(pt2.className_, pt2.typeArgs());
+                    }
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.ret_ != null && f.ret_.typeArgs().size() > 0) tryInstantiate(f.ret_.className_, f.ret_.typeArgs());
+                    ArrayList<AstParam> fp = f.params();
+                    for (int j = 0; j < fp.size(); j = j + 1) {
+                        AstType pt2 = fp.get(j).type_;
+                        if (pt2 != null && pt2.typeArgs().size() > 0) tryInstantiate(pt2.className_, pt2.typeArgs());
+                    }
+                }
+                for (int sai = 0; sai < c.staticActions().size(); sai = sai + 1) {
+                    AstAction a = c.staticActions().get(sai);
+                    // C++ visitClassDecl 对泛型静态方法只注册模板、不解析成员类型
+                    // （continue，模板不可直接调用）→ 模板形参里的 ArrayList<T> 不会
+                    // 在类分析期触发实例化；MYP 若不跳过会生成 ArrayList_T_inst 幽灵。
+                    if (a.typeParams().size() > 0) continue;
+                    if (a.ret_ != null && a.ret_.typeArgs().size() > 0) tryInstantiate(a.ret_.className_, a.ret_.typeArgs());
+                    ArrayList<AstParam> sp = a.params();
+                    for (int j = 0; j < sp.size(); j = j + 1) {
+                        AstType pt2 = sp.get(j).type_;
+                        if (pt2 != null && pt2.typeArgs().size() > 0) tryInstantiate(pt2.className_, pt2.typeArgs());
+                    }
+                }
+                for (int evi = 0; evi < c.events().size(); evi = evi + 1) {
+                    ArrayList<AstParam> ep = c.events().get(evi).params();
+                    for (int j = 0; j < ep.size(); j = j + 1) {
+                        AstType pt2 = ep.get(j).type_;
+                        if (pt2 != null && pt2.typeArgs().size() > 0) tryInstantiate(pt2.className_, pt2.typeArgs());
+                    }
+                }
+                sym_.leaveScope();  // ← 弹出属性作用域：prop 触发的泛型实例从符号表移除
+            }
+            // ---- Pass B：全部类的 action/function body（新作用域，复现 C++ Pass2）----
+            // C++ 主循环用 tu.classes.size() 动态上界：body 分析期间新创建的类
+            // （嵌套 lambda / 泛型实例）也会被后续迭代访问。固定 ncls 会漏掉
+            // Pass B 内生成的嵌套 lambda（其 __call body 从未类型检查）。
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                if (c.isGenericInst_ != 0) continue;  // 泛型实例类不重新分析（body 保持 int）
+                curGeneric_.clear();
+                ArrayList<string> ctp2 = c.typeParams();
+                for (int gi = 0; gi < ctp2.size(); gi = gi + 1) curGeneric_.add(ctp2.get(gi));
+                currentClass_ = c.name_;
+                inClass_ = 1;
+                inMain_ = 0;
+                // C++ buildCurrentClassMemberTypes 在进入方法作用域前解析当前类的
+                // props/actions/functions/events 类型。由此产生的泛型实例声明在全局
+                // 符号层，后续类可以复用；若省略此步，实例只会在方法体的临时作用域
+                // 创建并被弹出，造成后续类重复生成 _inst。
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    AstType ptb = c.props().get(pi).type_;
+                    if (ptb != null && ptb.typeArgs().size() > 0) tryInstantiate(ptb.className_, ptb.typeArgs());
+                }
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction ab = c.actions().get(ai);
+                    if (ab.ret_ != null && ab.ret_.typeArgs().size() > 0) tryInstantiate(ab.ret_.className_, ab.ret_.typeArgs());
+                    for (int pi = 0; pi < ab.params().size(); pi = pi + 1) {
+                        AstType ptb = ab.params().get(pi).type_;
+                        if (ptb != null && ptb.typeArgs().size() > 0) tryInstantiate(ptb.className_, ptb.typeArgs());
+                    }
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction fb = c.funcs().get(fi);
+                    if (fb.ret_ != null && fb.ret_.typeArgs().size() > 0) tryInstantiate(fb.ret_.className_, fb.ret_.typeArgs());
+                    for (int pi = 0; pi < fb.params().size(); pi = pi + 1) {
+                        AstType ptb = fb.params().get(pi).type_;
+                        if (ptb != null && ptb.typeArgs().size() > 0) tryInstantiate(ptb.className_, ptb.typeArgs());
+                    }
+                }
+                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                    ArrayList<AstParam> ebp = c.events().get(ei).params();
+                    for (int pi = 0; pi < ebp.size(); pi = pi + 1) {
+                        AstType ptb = ebp.get(pi).type_;
+                        if (ptb != null && ptb.typeArgs().size() > 0) tryInstantiate(ptb.className_, ptb.typeArgs());
+                    }
+                }
+                sym_.enterScope();
+                sym_.declare("this", "class");
                 for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
                     AstAction a = c.actions().get(ai);
                     if (a.body_ == null) continue;
                     currentRet_ = typeToKind(a.ret_);
                     inCoro_ = a.coro_ != 0 ? 1 : 0;
+                    currentMethodName_ = a.name_;
                     loopDepth_ = 0;
                     // F4-G2：叠加方法自身类型参数（map<T,R> 的 T/R）→ 占位符延迟实例化
                     int gbase = curGeneric_.size();
                     for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
                     sym_.enterScope();
+                    // M-FN-2 nonlocal：named lambda 的 __call 内把 nonlocal 变量
+                    // 按其 cell 属性类型声明进作用域（body 引用解析；实际存储由
+                    // codegen 注入别名）。对齐 C++ visitClassDecl action 循环。
+                    if (Str.startsWith(c.name_, "__lambda_") != 0 && Str.len(c.lambda_) != 0 && a.name_ == "__call") {
+                        // M-FN-2 named lambda 自引用：把自名声明为自身函数类型
+                        // （body 里 `B(0)` 解析；实际递归走自身 trampoline）。
+                        string selfRet = a.ret_ != null ? typeToKind(a.ret_) : "int";
+                        ArrayList<AstType> selfParams = new ArrayList<AstType>();
+                        for (int spi = 0; spi < a.params().size(); spi = spi + 1) {
+                            AstType spp = a.params().get(spi).type_;
+                            selfParams.add(spp != null ? spp : new AstType());
+                        }
+                        sym_.declareFunc(c.lambda_, selfRet, selfParams);
+                        lambdaSelfName_ = c.lambda_;
+                        lambdaSelfClass_ = c.name_;
+                        for (int nsi = 0; nsi < c.nonlocalSlots().size(); nsi = nsi + 1) {
+                            AstNonlocalSlot ns = c.nonlocalSlots().get(nsi);
+                            for (int cj = 0; cj < tu.classes().size(); cj = cj + 1) {
+                                AstClass cc = tu.classes().get(cj);
+                                if (cc.name_ != ns.cell) continue;
+                                if (cc.props().size() != 0) sym_.declare(ns.varName_, typeToKind(cc.props().get(0).type_));
+                                break;
+                            }
+                        }
+                    }
                     for (int j = 0; j < a.params().size(); j = j + 1) {
-                        declareParam(a.params().get(j));
+                        declareParam(a.params().get(j), 1);
                     }
                     if (a.typeParams().size() != 0) markAllStmt(a.body_);
                     else visitStmt(a.body_);
+                    lambdaSelfName_ = "";
+                    lambdaSelfClass_ = "";
                     sym_.leaveScope();
                     while (curGeneric_.size() > gbase) curGeneric_.remove(curGeneric_.size() - 1);
+                    currentMethodName_ = "";
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.body_ == null) continue;
+                    currentRet_ = typeToKind(f.ret_);
+                    inCoro_ = f.coro_ != 0 ? 1 : 0;
+                    loopDepth_ = 0;
+                    // F4-G2：叠加函数自身类型参数
+                    int gbase3 = curGeneric_.size();
+                    for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
+                    sym_.enterScope();
+                    for (int j = 0; j < f.params().size(); j = j + 1) {
+                        declareParam(f.params().get(j), 1);
+                    }
+                    if (f.typeParams().size() != 0) markAllStmt(f.body_);
+                    else visitStmt(f.body_);
+                    sym_.leaveScope();
+                    while (curGeneric_.size() > gbase3) curGeneric_.remove(curGeneric_.size() - 1);
                 }
                 // 静态 action（@static class 的方法）
                 for (int sai = 0; sai < c.staticActions().size(); sai = sai + 1) {
@@ -722,32 +1084,38 @@ class Sema {
                     for (int gi = 0; gi < a.typeParams().size(); gi = gi + 1) curGeneric_.add(a.typeParams().get(gi));
                     sym_.enterScope();
                     for (int j = 0; j < a.params().size(); j = j + 1) {
-                        declareParam(a.params().get(j));
+                        declareParam(a.params().get(j), 1);
                     }
                     if (a.typeParams().size() != 0) markAllStmt(a.body_);
                     else visitStmt(a.body_);
                     sym_.leaveScope();
                     while (curGeneric_.size() > gbase2) curGeneric_.remove(curGeneric_.size() - 1);
                 }
-                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
-                    AstFunction f = c.funcs().get(fi);
+                sym_.leaveScope();
+            }
+            // C++ checks top-level struct methods after all class bodies.
+            for (int si2 = 0; si2 < tu.structs().size(); si2 = si2 + 1) {
+                AstStruct st2 = tu.structs().get(si2);
+                ArrayList<AstFunction> sfuncs2 = st2.funcs();
+                for (int sfj2 = 0; sfj2 < sfuncs2.size(); sfj2 = sfj2 + 1) {
+                    AstFunction f = sfuncs2.get(sfj2);
                     if (f.body_ == null) continue;
+                    currentClass_ = st2.name_;
+                    inStruct_ = 1;
+                    inClass_ = 1;
+                    inMain_ = 0;
                     currentRet_ = typeToKind(f.ret_);
                     inCoro_ = f.coro_ != 0 ? 1 : 0;
                     loopDepth_ = 0;
-                    // F4-G2：叠加函数自身类型参数
-                    int gbase3 = curGeneric_.size();
-                    for (int gi = 0; gi < f.typeParams().size(); gi = gi + 1) curGeneric_.add(f.typeParams().get(gi));
                     sym_.enterScope();
                     for (int j = 0; j < f.params().size(); j = j + 1) {
-                        declareParam(f.params().get(j));
+                        declareParam(f.params().get(j), 0);
                     }
                     if (f.typeParams().size() != 0) markAllStmt(f.body_);
                     else visitStmt(f.body_);
                     sym_.leaveScope();
-                    while (curGeneric_.size() > gbase3) curGeneric_.remove(curGeneric_.size() - 1);
                 }
-                sym_.leaveScope();
+                inStruct_ = 0;
             }
         }
 
@@ -799,15 +1167,27 @@ class Sema {
             if (k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong") return 1;
             return 0;
         }
-        // 类型兼容（近似 C++ typesCompatible）：同类型、数字互相、null→class
+        // 类型兼容：同类型、无损数字拓宽、null→class。
         int typesCompat(string a, string b) {
             if (a == b) return 1;
-            if (isNumKind(a) != 0 && isNumKind(b) != 0) return 1;
+            if (a == "bool" && b == "bit") return 1;
+            if (a == "bit" && b == "bool") return 1;
+            if (isNumKind(a) != 0 && isNumKind(b) != 0) {
+                if ((a == "int" && b == "long") || (a == "long" && b == "int")) return 1;
+                return TKind.promotesTo(b, a);
+            }
             if (a == "null" && b == "class") return 1;
             if (a == "class" && b == "null") return 1;
             // 接口变量可赋实现类实例
             if (a == "interface" && b == "class") return 1;
             return 0;
+        }
+        // 构造器实参兼容：actual 只能提升到 parameter，禁止 double→int 等收窄。
+        int ctorArgCompat(string parameter, string actual) {
+            if (parameter == actual) return 1;
+            if (isNumKind(parameter) != 0 && isNumKind(actual) != 0)
+                return TKind.promotesTo(actual, parameter);
+            return typesCompat(parameter, actual);
         }
         // typeName（C++ typeName）：有 AstType 用 str()（tuple/array/class 精确），否则 kind 名
         string typeNameOf(string kind, AstType t) {
@@ -866,10 +1246,40 @@ class Sema {
             }
             return 0;
         }
+        string associatedTypeKind(string name) {
+            if (tu_ == null) return "";
+            for (int i = 1; i + 1 < Str.len(name); i = i + 1) {
+                if (Str.substring(name, i, i + 2) == "::") {
+                    string owner = Str.substring(name, 0, i);
+                    string item = Str.substring(name, i + 2, Str.len(name));
+                    for (int j = 0; j < tu_.classes().size(); j = j + 1) {
+                        AstClass cls = tu_.classes().get(j);
+                        if (cls.name_ != owner) continue;
+                        for (int k = 0; k < cls.assocTypes().size(); k = k + 1) {
+                            AstPair binding = cls.assocTypes().get(k);
+                            if (binding.k == item) return binding.typeStr;
+                        }
+                    }
+                    return "assoc";
+                }
+            }
+            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
+                AstInterface iface = tu_.interfaces().get(i);
+                for (int j = 0; j < iface.assocTypeDecls().size(); j = j + 1) {
+                    if (iface.assocTypeDecls().get(j) == name) return "assoc";
+                }
+            }
+            return "";
+        }
         string typeToKind(AstType t) {
             if (t != null && (inGeneric(t.basicName_) != 0 || inGeneric(t.className_) != 0)) return "int";
+            if (t != null) {
+                string assocKind = associatedTypeKind(Str.len(t.className_) != 0 ? t.className_ : t.basicName_);
+                if (Str.len(assocKind) != 0) return assocKind;
+            }
             if (t != null && Str.len(t.className_) != 0 && inInterface(t.className_) != 0) return "interface";
             if (t != null && Str.len(t.className_) != 0 && inStructName(t.className_) != 0) return "struct";
+            if (t != null && Str.len(t.className_) != 0 && findBitfield(t.className_) >= 0) return "bitfield";
             if (t != null && Str.len(t.className_) != 0 && t.className_ != "slice") {
                 // 已知类 → class；enum → enum；未知类型 → void（C++ unknown type 诊断）
                 if (findClass(t.className_) >= 0) return "class";
@@ -877,6 +1287,22 @@ class Sema {
                 return "void";
             }
             return TKind.typeKindOf(t);
+        }
+        int findBitfield(string name) {
+            for (int i = 0; i < bitfieldNames_.size(); i = i + 1) {
+                if (bitfieldNames_.get(i) == name) return i;
+            }
+            return -1;
+        }
+        string bitfieldMemberType(string name, string member) {
+            int index = findBitfield(name);
+            if (index < 0) return "";
+            ArrayList<string> names = bitfieldFieldNames_.get(index);
+            ArrayList<int> widths = bitfieldFieldWidths_.get(index);
+            for (int i = 0; i < names.size(); i = i + 1) {
+                if (names.get(i) == member) return widths.get(i) == 1 ? "bit" : "uint";
+            }
+            return "";
         }
         int inInterface(string n) {
             for (int i = 0; i < interfaceNames_.size(); i = i + 1) {
@@ -914,6 +1340,37 @@ class Sema {
             }
             return cn;
         }
+        string currentClassMemberType(string name) {
+            if (Str.len(currentClass_) == 0) return "";
+            int ci = findClass(currentClass_);
+            if (ci < 0) return "";
+            string pt = findPropType(ci, name);
+            if (Str.len(pt) != 0) return pt;
+            if (hasMethod(currentClass_, name) != 0) return "function";
+            return "";
+        }
+        AstType currentClassMemberAstType(string name) {
+            if (Str.len(currentClass_) == 0) return null;
+            int ci = findClass(currentClass_);
+            if (ci < 0) return null;
+            return findPropTypeAst(ci, name);
+        }
+        string currentClassMemberClassName(string name) {
+            if (Str.len(currentClass_) == 0) return "";
+            int ci = findClass(currentClass_);
+            if (ci < 0) return "";
+            return findPropTypeClass(ci, name);
+        }
+        string currentStructMemberClassName(string name) {
+            if (Str.len(currentClass_) == 0) return "";
+            int si = findStruct(currentClass_);
+            if (si < 0) return "";
+            AstType pt = findStructPropAst(si, name);
+            if (pt == null) return "";
+            if (pt.typeArgs().size() > 0) return instClassName(pt);
+            if (Str.len(pt.className_) != 0) return pt.className_;
+            return "";
+        }
         // struct 字段类型
         string findStructProp(int si, string name) {
             ArrayList<AstProp> ps = structProps_.get(si);
@@ -942,7 +1399,24 @@ class Sema {
             return findStructProp(si, name);
         }
         // @op 运算符重载匹配：返回返回类型 kind（空 = 未命中）
-        string resolveOp(string sym, string lt, string rt) {
+        string resolveOp(string sym, AstExpr lhs, string lt, string rt) {
+            string structName = "";
+            if (lt == "struct" && lhs != null && lhs.kind_ == "Identifier") structName = sym_.lookupClass(lhs.name_);
+            else if (lt == "struct" && lhs != null) {
+                structName = lhs.valueClass_;
+                if (Str.len(structName) == 0) structName = lhs.resolvedClass_;
+            }
+            int si = findStruct(structName);
+            if (si >= 0) {
+                ArrayList<AstFunction> funcs = tu_.structs().get(si).funcs();
+                for (int i = 0; i < funcs.size(); i = i + 1) {
+                    AstFunction f = funcs.get(i);
+                    if (f.op_ != sym || f.params().size() != 1) continue;
+                    AstType pt = f.params().get(0).type_;
+                    string pk = pt != null ? typeToKind(pt) : "void";
+                    if (typesCompatKind(pk, rt) != 0) return f.ret_ != null ? typeToKind(f.ret_) : "void";
+                }
+            }
             for (int i = 0; i < opSyms_.size(); i = i + 1) {
                 if (opSyms_.get(i) != sym) continue;
                 ArrayList<AstParam> ps = opParams_.get(i);
@@ -1010,15 +1484,32 @@ class Sema {
         // 类型替换：类型参数 T → 具体类型（C++ substituteTypeNode）
         AstType substituteType(AstType t, ArrayList<string> tps, ArrayList<AstType> concrete) {
             if (t == null) return null;
+            // 直接命中类型参数：T、U、E 等，且数组元素/泛型实参中的占位符也要替换。
             for (int i = 0; i < tps.size(); i = i + 1) {
-                if (t.className_ == tps.get(i) && i < concrete.size()) return concrete.get(i);
+                if (i >= concrete.size()) break;
+                string tp = tps.get(i);
+                string assocPrefix = tp + "::";
+                string typeName = Str.len(t.className_) != 0 ? t.className_ : t.basicName_;
+                if (Str.len(typeName) > Str.len(assocPrefix)
+                    && Str.substring(typeName, 0, Str.len(assocPrefix)) == assocPrefix) {
+                    AstType owner = concrete.get(i);
+                    string ownerName = Str.len(owner.className_) != 0 ? owner.className_ : owner.basicName_;
+                    AstType assoc = new AstType();
+                    assoc.setClassName(ownerName + "::" + Str.substring(typeName, Str.len(assocPrefix), Str.len(typeName)));
+                    return assoc;
+                }
+                if (t.genericParam_ != 0) return concrete.get(i);
+                if ((t.className_ == tp || t.basicName_ == tp) && Str.len(tp) != 0) return concrete.get(i);
             }
             if (t.element_ != null) {
                 AstType sub = substituteType(t.element_, tps, concrete);
                 if (sub != t.element_) {
                     AstType r = new AstType();
+                    r.setClassName(t.className_);
+                    r.setBasicName(t.basicName_);
                     r.setElement(sub);
                     r.setArraySize(t.arraySize_);
+                    for (int i = 0; i < t.typeArgs().size(); i = i + 1) r.typeArgs().add(t.typeArgs().get(i));
                     return r;
                 }
             }
@@ -1063,6 +1554,7 @@ class Sema {
         AstAction cloneAction(AstAction a, ArrayList<string> tps, ArrayList<AstType> concrete) {
             AstAction na = new AstAction();
             na.setName(a.name_);
+            na.setPos(a.line_, a.col_);
             na.setRet(substituteType(a.ret_, tps, concrete));
             na.setStartup(a.startup_);
             na.setCtor(a.ctor_);
@@ -1096,12 +1588,60 @@ class Sema {
             nf.setCtor(f.ctor_);
             nf.setConstDecl(f.constDecl_);
             for (int j = 0; j < f.typeParams().size(); j = j + 1) nf.typeParams().add(f.typeParams().get(j));
-            ArrayList<AstPair> fc = f.constraints();
-            for (int j = 0; j < fc.size(); j = j + 1) nf.constraints().add(fc.get(j));
             for (int j = 0; j < f.instTypeArgs().size(); j = j + 1) nf.instTypeArgs().add(substituteType(f.instTypeArgs().get(j), tps, concrete));
             for (int j = 0; j < f.params().size(); j = j + 1) nf.params().add(cloneParam(f.params().get(j), tps, concrete));
             nf.setBody(f.body_);
             return nf;
+        }
+        int typeMatchesGenericParam(AstType t, string tpName) {
+            if (t == null) return 0;
+            if (t.genericParam_ != 0) return 1;
+            if (Str.len(t.className_) != 0 && t.className_ == tpName) return 1;
+            if (Str.len(t.basicName_) != 0 && t.basicName_ == tpName) return 1;
+            if (t.element_ != null && typeMatchesGenericParam(t.element_, tpName) != 0) return 1;
+            for (int i = 0; i < t.typeArgs().size(); i = i + 1) {
+                if (typeMatchesGenericParam(t.typeArgs().get(i), tpName) != 0) return 1;
+            }
+            for (int i = 0; i < t.funcParamTypes().size(); i = i + 1) {
+                if (typeMatchesGenericParam(t.funcParamTypes().get(i), tpName) != 0) return 1;
+            }
+            if (t.funcReturn_ != null && typeMatchesGenericParam(t.funcReturn_, tpName) != 0) return 1;
+            return 0;
+        }
+        AstType inferConcreteTypeForGenericParam(AstType paramType, AstExpr arg, string tpName) {
+            if (arg == null) return null;
+            if (paramType != null && paramType.element_ != null && typeMatchesGenericParam(paramType.element_, tpName) != 0) {
+                AstType at = argElemToAstType(arg);
+                if (at != null) return at;
+            }
+            if (typeMatchesGenericParam(paramType, tpName) != 0) {
+                AstType at = argToAstType(arg);
+                if (at != null) return at;
+            }
+            return null;
+        }
+        // 生成泛型函数实例（C++ resolveGenericCall：id<int>(x) -> id_int_inst）
+        string instantiateGenericFunction(string baseName, ArrayList<AstType> typeArgs) {
+            if (tu_ == null) return "";
+            AstFunction templ = null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name_ == baseName && f.typeParams().size() > 0 && f.genericInst_ == 0) { templ = f; break; }
+            }
+            if (templ == null) return "";
+            if (typeArgs.size() != templ.typeParams().size()) return "";
+            string instName = baseName;
+            for (int i = 0; i < typeArgs.size(); i = i + 1) instName = instName + "_" + instClassName(typeArgs.get(i));
+            instName = instName + "_inst";
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                if (tu_.functions().get(i).name_ == instName) return instName;
+            }
+            AstFunction nf = cloneFunction(templ, templ.typeParams(), typeArgs);
+            nf.setName(instName);
+            nf.setGenericInst(1);
+            for (int i = 0; i < typeArgs.size(); i = i + 1) nf.instTypeArgs().add(typeArgs.get(i));
+            tu_.functions().add(nf);
+            return instName;
         }
         // 生成泛型类实例（C++ typeNodeToTypeInfo 单态化：克隆模板 + 替换类型参数）
         void instantiateClass(string baseName, ArrayList<AstType> typeArgs) {
@@ -1148,7 +1688,9 @@ class Sema {
                 np.setType(substituteType(p.type_, tps, typeArgs));
                 np.setConst(p.const_);
                 np.setWeak(p.weak_);
-                np.setInit(p.init_);
+                // C++ 泛型实例属性不拷贝 init_expr（sema_expr.cpp 单态化只拷
+                // name/type/range）→ dump 不出 (Integer) 初始化节点。
+                np.setInit(null);
                 nc.props().add(np);
             }
             for (int i = 0; i < tmpl.funcs().size(); i = i + 1) nc.funcs().add(cloneFunction(tmpl.funcs().get(i), tps, typeArgs));
@@ -1297,6 +1839,13 @@ class Sema {
         AstType argToAstType(AstExpr a) {
             AstType t = new AstType();
             if (a == null) { t.setBasicName("int"); return t; }
+            if (a.kind_ == "Tuple") {
+                t.setIsTuple(1);
+                for (int i = 0; i < a.elements().size(); i = i + 1) {
+                    t.funcParamTypes().add(argToAstType(a.elements().get(i)));
+                }
+                return t;
+            }
             if (a.kind_ == "Identifier") {
                 SymbolEntry en = sym_.lookupEntry(a.name_);
                 if (en != null) {
@@ -1359,9 +1908,45 @@ class Sema {
             if (Str.len(findIfaceMethodRet(cls, meth)) != 0) return 1;
             return 0;
         }
-        // 声明参数并访问其默认值表达式（类型推断）。
-        void declareParam(AstParam p) {
-            if (p.defaultExpr_ != null) visitExpr(p.defaultExpr_);
+        string genericConstraintInterface(string name) {
+            if (tu_ == null) return "";
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass cls = tu_.classes().get(i);
+                if (cls.name_ != currentClass_) continue;
+                for (int j = 0; j < cls.constraints().size(); j = j + 1) {
+                    AstPair constraint = cls.constraints().get(j);
+                    if (constraint.k == name && inInterface(constraint.v) != 0) return constraint.v;
+                }
+                break;
+            }
+            return "";
+        }
+        int isGenericAssocType(string name) {
+            for (int i = 1; i + 1 < Str.len(name); i = i + 1) {
+                if (Str.substring(name, i, i + 2) == "::") {
+                    return inGeneric(Str.substring(name, 0, i));
+                }
+            }
+            return 0;
+        }
+        // 声明参数并访问其默认值表达式（类型推断）。checkDefault=1 时按 C++
+        // checkParamDefaults 校验默认值类型（struct 方法不校验）。
+        void declareParam(AstParam p, int checkDefault) {
+            AstExpr defaultExpr = p.defaultExpression();
+            if (checkDefault != 0 && defaultExpr != null) {
+                string defaultKind = visitExpr(defaultExpr);
+                string paramKind = p.type_ != null ? typeToKind(p.type_) : "void";
+                if (Str.len(paramKind) != 0 && paramKind != "void" && typesCompat(paramKind, defaultKind) == 0) {
+                    AstExpr de = defaultExpr;
+                    int dline = de.line_;
+                    int dcol = de.col_;
+                    diag_.error(dline, dcol, "default value for parameter '" + p.name_
+                        + "' has type '" + defaultKind + "', expected '" + paramKind + "'");
+                }
+            } else if (checkDefault == 0 && defaultExpr != null) {
+                // C++ 不访问 struct 方法默认值（保持默认 Int）→ 整树标 int
+                markAllExpr(defaultExpr);
+            }
             AstType pt = p.type_;
             if (pt != null && pt.typeArgs().size() > 0) tryInstantiate(pt.className_, pt.typeArgs());
             if (pt != null && pt.isTuple_ != 0 && pt.funcParamTypes().size() != 0) {
@@ -1377,8 +1962,16 @@ class Sema {
                     sym_.declareElemClass2(p.name_, "slice", typeToKind(sl), sl.className_, sl2b != null ? typeToKind(sl2b) : "");
                 }
                 else sym_.declareElem(p.name_, "slice", sl != null ? typeToKind(sl) : "int");
+            } else if (pt != null && pt.funcReturn_ != null) {
+                // F4-L：函数类型形参 (int)->int f → 记录返回类型，供 f(v) 调用解析
+                // （此前缺此分支，函数形参调用被解析成 void）。
+                string fret = typeToKind(pt.funcReturn_);
+                sym_.declareFunc(p.name_, fret, pt.funcParamTypes());
             } else if (pt != null && Str.len(pt.className_) != 0) {
-                if (inGeneric(pt.className_) != 0) sym_.declare(p.name_, "int");
+                string constrainedIface = genericConstraintInterface(pt.className_);
+                if (Str.len(constrainedIface) != 0) sym_.declareClass(p.name_, "interface", constrainedIface);
+                else if (inGeneric(pt.className_) != 0) sym_.declare(p.name_, "int");
+                else if (isGenericAssocType(pt.className_) != 0) sym_.declare(p.name_, "assoc");
                 else if (pt.typeArgs().size() > 0) sym_.declareClassInst(p.name_, typeToKind(pt), instClassName(pt), pt.typeArgs());
                 else sym_.declareClass(p.name_, typeToKind(pt), instClassName(pt));
             } else {
@@ -1509,6 +2102,8 @@ class Sema {
                 if (e.catchExpr_ != null) markAllExpr(e.catchExpr_);
             } else if (e.kind_ == "Lambda") {
                 if (e.bodyStmt_ != null) markAllStmt(e.bodyStmt_);
+            } else if (e.kind_ == "Quote") {
+                if (e.bodyStmt_ != null) markAllStmt(e.bodyStmt_);
             } else if (e.kind_ == "EnumVariant") {
                 for (int i = 0; i < e.args().size(); i = i + 1) markAllExpr(e.args().get(i));
             }
@@ -1542,7 +2137,10 @@ class Sema {
                             visitExpr(xe);
                         }
                     } else {
+                        int savedDiscard = inDiscardStmt_;
+                        if (xe.kind_ == "Call") inDiscardStmt_ = 1;
                         visitExpr(xe);
+                        inDiscardStmt_ = savedDiscard;
                     }
                 }
             } else if (k == "VarDecl") {
@@ -1550,12 +2148,19 @@ class Sema {
                     AstVar v = s.decls().get(i);
                     AstType vt3 = v.type_;
                     if (v.thread_ != 0) threadVars_.add(v.name_);
-                    if (vt3 != null && vt3.typeArgs().size() > 0) tryInstantiate(vt3.className_, vt3.typeArgs());
+                    if (vt3 != null && vt3.typeArgs().size() > 0) {
+                        if (checkGenericClassConstraint(vt3.className_, vt3.typeArgs(), s.line_, s.col_) == 0) {
+                            tryInstantiate(vt3.className_, vt3.typeArgs());
+                        }
+                    }
                     string vt = typeToKind(vt3);
                     // void 变量检查（C++：cannot declare variable of type 'void' / unknown type）
                     if (vt3 != null && vt == "void") {
-                        int dl = v.nameLine_;
-                        int dc = v.nameCol_;
+                        // 位置 = 类型 token（C++ decl.range 指向类型，非变量名）
+                        int dl = 0;
+                        int dc = 0;
+                        if (vt3.line() != 0 && vt3.col() != 0) { dl = vt3.line(); dc = vt3.col(); }
+                        else { dl = v.nameLine_; dc = v.nameCol_; }
                         if (dl == 0) { dl = s.line_; dc = s.col_; }
                         string cn2 = vt3.className_;
                         if (Str.len(cn2) != 0) {
@@ -1563,9 +2168,31 @@ class Sema {
                         } else {
                             diag_.error(dl, dc, "cannot declare variable of type 'void'");
                         }
+                        // C++ visitVarDecl 对 void/unknown 类型提前 return：不访问 init
+                        //（保持默认 Int）、不声明变量 → 后续引用报 undefined symbol。
+                        if (v.init_ != null) markAllExpr(v.init_);
+                        continue;
                     }
                     string it = "void";
-                    if (v.init_ != null) it = visitExpr(v.init_);
+                    if (v.init_ != null) {
+                        // MYP 注意：链式字段访问（v.init_.kind_）产生垃圾 → 先用局部变量。
+                        AstExpr initLocal = v.init_;
+                        // F4-L：lambda 赋给函数类型变量 → 设名字（命名 lambda 自引用），
+                        // visitLambda 据此合成 __lambda_N 类。上下文返回类型 = 声明返回类型
+                        //（C++ visitVarDecl 传 expected_fn 给 visitLambda）。
+                        // MYP 注意：链式字段访问（v.type_.funcReturn_）产生垃圾 → 先取局部。
+                        AstType vtLambda = v.type_;
+                        if (initLocal.kind_ == "Lambda" && vt == "function") {
+                            initLocal.setName(v.name_);
+                            if (vtLambda != null) {
+                                AstType frLambda = vtLambda.funcReturn_;
+                                if (frLambda != null) lambdaExpectedRet_ = frLambda;
+                            }
+                        }
+                        it = visitExpr(initLocal);
+                        lambdaExpectedRet_ = null;
+                        if (initLocal.kind_ == "Lambda") initLocal.setResolvedKind("int");
+                    }
                     // 类型检查（C++：cannot initialize variable ...）
                     if (v.type_ != null && Str.len(it) != 0 && it != "void"
                         && v.isInferred_ == 0 && typesCompat(vt, it) == 0) {
@@ -1602,11 +2229,31 @@ class Sema {
                         }
                     }
                     AstType vt2 = v.type_;
-                    if (vt2 != null && vt2.isTuple_ != 0 && vt2.funcParamTypes().size() != 0) {
+                    if (v.isInferred_ != 0) {
+                        // F4：var 推断——用初始值类型声明（C++ infer from init）
+                        if (it == "class") {
+                            AstExpr iev2 = v.init_;
+                            string icn = "";
+                            if (iev2 != null && Str.len(iev2.resolvedClass_) != 0) icn = iev2.resolvedClass_;
+                            if (Str.len(icn) != 0) sym_.declareClass(v.name_, "class", icn);
+                            else sym_.declare(v.name_, it);
+                        } else if (it == "array") {
+                            AstExpr iev3 = v.init_;
+                            string elemK = "int";
+                            if (iev3 != null && iev3.kind_ == "NewArray" && iev3.elemType_ != null) elemK = typeToKind(iev3.elemType_);
+                            sym_.declareElem(v.name_, "array", elemK);
+                        } else if (it == "function") {
+                            sym_.declare(v.name_, "function");
+                        } else {
+                            sym_.declare(v.name_, it);
+                        }
+                    } else if (vt2 != null && vt2.isTuple_ != 0 && vt2.funcParamTypes().size() != 0) {
                         sym_.declareTuple(v.name_, "tuple", vt2.funcParamTypes());
                     } else if (vt2 != null && vt2.element_ != null) {
                         AstType el2 = vt2.element_;
-                        if (Str.len(el2.className_) != 0) sym_.declareElemClass(v.name_, "array", typeToKind(el2), el2.className_);
+                        if (Str.len(el2.className_) != 0 && vt2.arraySize_ > 0) sym_.declareFixedElemClass(v.name_, typeToKind(el2), el2.className_, vt2.arraySize_);
+                        else if (Str.len(el2.className_) != 0) sym_.declareElemClass(v.name_, "array", typeToKind(el2), el2.className_);
+                        else if (vt2.arraySize_ > 0) sym_.declareFixedElem(v.name_, typeToKind(el2), vt2.arraySize_);
                         else sym_.declareElem(v.name_, "array", typeToKind(el2));
                     } else if (vt2 != null && vt2.className_ == "slice") {
                         AstType sl2 = vt2.typeArgs().size() > 0 ? vt2.typeArgs().get(0) : null;
@@ -1619,18 +2266,29 @@ class Sema {
                         if (inGeneric(vt2.className_) != 0) sym_.declare(v.name_, "int");
                         else if (vt2.typeArgs().size() > 0) sym_.declareClassInst(v.name_, typeToKind(vt2), instClassName(vt2), vt2.typeArgs());
                         else sym_.declareClass(v.name_, typeToKind(vt2), instClassName(vt2));
+                    } else if (vt2 != null && vt2.funcReturn_ != null) {
+                        // F4-L：函数类型变量 (A)->R f → 记录返回类型供调用 f(...) 解析
+                        string fret = typeToKind(vt2.funcReturn_);
+                        sym_.declareFunc(v.name_, fret, vt2.funcParamTypes());
                     } else {
                         sym_.declare(v.name_, vt);
                     }
                 }
             } else if (k == "If") {
                 if (s.condition_ != null) visitExpr(s.condition_);
+                // §3.3 kernel 上下文内 if 分支 = 发散控制流（aligned barrier 需 uniform）
+                int savedDiv = inGpuDivergent_;
+                if (inGpuFor_ != 0) inGpuDivergent_ = inGpuDivergent_ + 1;
                 if (s.then_ != null) visitStmt(s.then_);
                 if (s.else_ != null) visitStmt(s.else_);
+                inGpuDivergent_ = savedDiv;
             } else if (k == "While") {
                 if (s.condition_ != null) visitExpr(s.condition_);
                 loopDepth_ = loopDepth_ + 1;
+                int savedDiv2 = inGpuDivergent_;
+                if (inGpuFor_ != 0) inGpuDivergent_ = inGpuDivergent_ + 1;
                 if (s.body_ != null) visitStmt(s.body_);
+                inGpuDivergent_ = savedDiv2;
                 loopDepth_ = loopDepth_ - 1;
             } else if (k == "For") {
                 // block(...) 仅限 @gpu for；@gpu for 的 block 大小校验（C++）
@@ -1638,21 +2296,22 @@ class Sema {
                     diag_.error(s.line_, s.col_, "'block(...)' is only valid on '@gpu for'");
                 } else if (s.gpu_ != 0 && s.block_ != 0) {
                     if (s.block_ % 32 != 0) {
-                        diag_.error(s.line_, s.col_, "'block(...)' size must be a multiple of 32 (warp size)");
+                        diag_.error(s.line_, s.col_ + 5, "'block(...)' size must be a multiple of 32 (warp size)");
                     } else if (s.block_ > 1024) {
-                        diag_.error(s.line_, s.col_, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
+                        diag_.error(s.line_, s.col_ + 5, "'block(...)' size exceeds maxThreadsPerBlock (1024)");
                     }
+                }
+                int savedForGpu = inGpuFor_;
+                if (s.gpu_ != 0) {
+                    if (s.stream_ != null) visitExpr(s.stream_);
+                    inGpuFor_ = 1;
                 }
                 if (s.init_ != null) visitStmt(s.init_);                if (s.condition_ != null) visitExpr(s.condition_);
                 if (s.step_ != null) visitExpr(s.step_);
                 loopDepth_ = loopDepth_ + 1;
                 if (s.body_ != null) visitStmt(s.body_);
                 loopDepth_ = loopDepth_ - 1;
-            } else if (k == "ForIn") {
-                if (s.iterable_ != null) visitExpr(s.iterable_);
-                loopDepth_ = loopDepth_ + 1;
-                if (s.body_ != null) visitStmt(s.body_);
-                loopDepth_ = loopDepth_ - 1;
+                inGpuFor_ = savedForGpu;
             } else if (k == "Break" || k == "Continue") {
                 if (loopDepth_ == 0) {
                     diag_.error(s.line_, s.col_, "break/continue outside loop");
@@ -1668,14 +2327,77 @@ class Sema {
                     }
                 }
             } else if (k == "ForIn") {
-                if (s.iterable_ != null) visitExpr(s.iterable_);
-                if (s.body_ != null) visitStmt(s.body_);
+                AstExpr iterable = s.iterable();
+                if (iterable != null) visitExpr(iterable);
+                string elemType = "void";
+                if (iterable != null && iterable.kindName() == "Range") {
+                    elemType = "int";
+                    s.setIterKind(3);
+                } else if (iterable != null && iterable.kindName() == "Identifier") {
+                    SymbolEntry iterableSym = sym_.lookupEntry(iterable.identifierName());
+                    if (iterableSym != null && iterableSym.kind() == "array" && iterableSym.arraySize() > 0) {
+                        elemType = iterableSym.elementKind();
+                        s.setIterKind(1);
+                        s.setArrSize(iterableSym.arraySize());
+                        if (Str.len(iterableSym.elementClass()) != 0) elemType = "class:" + iterableSym.elementClass();
+                    } else if (iterableSym != null && iterableSym.kind() == "slice") {
+                        elemType = iterableSym.elementKind();
+                        s.setIterKind(2);
+                        if (Str.len(iterableSym.elementClass()) != 0) elemType = "class:" + iterableSym.elementClass();
+                    } else if (iterableSym != null && iterableSym.kind() == "class" && Str.len(iterableSym.className()) != 0) {
+                        string className = iterableSym.className();
+                        string baseName = resolveBase(className);
+                        AstType getAst = findMethodRetAst(baseName, "get");
+                        string getType = substRet(baseName, getAst, iterableSym);
+                        if (Str.len(getType) != 0) {
+                            elemType = getType;
+                            if (findClass(getType) >= 0) elemType = "class:" + getType;
+                            s.setClassName(className);
+                            s.setSizeFn(className + "_size");
+                            s.setGetFn(className + "_get");
+                        }
+                    }
+                }
+                if (elemType != "void") {
+                    sym_.enterScope();
+                    AstType loopType = s.loopVarType();
+                    if (Str.startsWith(elemType, "class:") != 0) {
+                        sym_.declareClass(s.loopVarName(), "class", Str.substring(elemType, 6, Str.len(elemType)));
+                    } else sym_.declare(s.loopVarName(), s.loopHasType() != 0 && loopType != null ? typeToKind(loopType) : elemType);
+                    loopDepth_ = loopDepth_ + 1;
+                    if (s.body_ != null) visitStmt(s.body_);
+                    loopDepth_ = loopDepth_ - 1;
+                    sym_.leaveScope();
+                } else if (s.body_ != null) visitStmt(s.body_);
             } else if (k == "Throw") {
                 if (s.expr_ != null) visitExpr(s.expr_);
             } else if (k == "Match") {
                 if (s.subject_ != null) visitExpr(s.subject_);
                 for (int i = 0; i < s.arms().size(); i = i + 1) {
-                    if (s.arms().get(i).body_ != null) visitStmt(s.arms().get(i).body_);
+                    AstMatchArm arm = s.arms().get(i);
+                    int enumIndex = findEnum(arm.enum_);
+                    if (enumIndex < 0) {
+                        diag_.error(s.line_, s.col_, "unknown enum type '" + arm.enum_ + "'");
+                        continue;
+                    }
+                    ArrayList<AstEnumVariant> variants = tu_.enums().get(enumIndex).variants();
+                    int variantIndex = -1;
+                    for (int vi = 0; vi < variants.size(); vi = vi + 1) {
+                        if (variants.get(vi).name_ == arm.variant_) { variantIndex = vi; break; }
+                    }
+                    if (variantIndex < 0) {
+                        diag_.error(s.line_, s.col_, "unknown variant '" + arm.variant_ + "' in enum '" + arm.enum_ + "'");
+                        continue;
+                    }
+                    arm.setIndex(variantIndex);
+                    AstEnumVariant variant = variants.get(variantIndex);
+                    sym_.enterScope();
+                    for (int bi = 0; bi < arm.bindings().size() && bi < variant.params().size(); bi = bi + 1) {
+                        AstType bt = variant.params().get(bi).type_;
+                        sym_.declare(arm.bindings().get(bi), bt != null ? typeToKind(bt) : "void");
+                    }
+                    if (arm.body_ != null) visitStmt(arm.body_);
+                    sym_.leaveScope();
                 }
             } else if (k == "Try") {
                 if (s.tryBlock_ != null) visitStmt(s.tryBlock_);
@@ -1685,7 +2407,12 @@ class Sema {
                     if (Str.len(ct.var_) != 0) {
                         string cty = ct.type_;
                         if (Str.len(cty) == 0) cty = "string";
-                        sym_.declare(ct.var_, cty);
+                        // F4：catch 绑定若是类/接口/struct 名 → declareClass（kind +
+                        // 类名），否则 Identifier 会 dump 成类名、Member 无法解析。
+                        if (findClass(cty) >= 0) sym_.declareClass(ct.var_, "class", cty);
+                        else if (inInterface(cty) != 0) sym_.declareClass(ct.var_, "interface", cty);
+                        else if (inStructName(cty) != 0) sym_.declareClass(ct.var_, "struct", cty);
+                        else sym_.declare(ct.var_, cty);
                     }
                     if (ct.block_ != null) visitStmt(ct.block_);
                     sym_.leaveScope();
@@ -1694,6 +2421,22 @@ class Sema {
             } else if (k == "Destructure") {
                 AstExpr dv = s.value_;
                 if (dv != null) visitExpr(dv);
+                if (dv != null && dv.kind_ == "Tuple" && s.isDecl_ == 0) {
+                    int tupleN = dv.elements().size();
+                    int targetN = s.target_.elements().size();
+                    int checkN = tupleN < targetN ? tupleN : targetN;
+                    for (int di = 0; di < checkN; di = di + 1) {
+                        AstDestructureTarget dt = s.target_.elements().get(di);
+                        AstExpr de = dv.elements().get(di);
+                        SymbolEntry existing = sym_.lookupEntry(dt.name_);
+                        if (dt.name_ != "_" && existing != null
+                            && typesCompat(existing.type_, de.resolvedKind_) == 0) {
+                            diag_.error(dt.line_, dt.col_, "destructure: cannot assign '"
+                                + de.resolvedKind_ + "' to '" + dt.name_ + "' of type '"
+                                + existing.type_ + "'");
+                        }
+                    }
+                }
                 // arity 检查（C++ destructure：tuple 元素数 vs 顶层绑定数）
                 if (dv != null && dv.kind_ == "Call") {
                     AstExpr cl = dv.callee_;
@@ -1703,12 +2446,14 @@ class Sema {
                             int valN = frt.funcParamTypes().size();
                             int tgtN = s.target_.elements().size();
                             if (tgtN != valN) {
-                                diag_.error(s.line_, s.col_, "destructure: tuple has " + valN + " elements but target binds " + tgtN);
+                                int dstLine = s.endLine_ != 0 ? s.endLine_ : s.line_;
+                                int dstCol = s.endCol_ != 0 ? s.endCol_ : s.col_;
+                                diag_.error(dstLine, dstCol, "destructure: tuple has " + valN + " elements but target binds " + tgtN);
                             }
                         }
                     }
                 }
-                declareDestructureTarget(s.target_);
+                if (s.isDecl_ != 0) declareDestructureTarget(s.target_);
             } else if (k == "Await") {
                 if (inCoro_ == 0) {
                     diag_.error(s.line_, s.col_, "'await' is only allowed inside an '@coro' method");
@@ -1740,17 +2485,44 @@ class Sema {
                 AstMapping mp2 = s.mapping_;
                 if (mp2 != null) analyzeMapping(mp2);
             } else if (k == "GpuTile") {
-                // C++：block(...)/stream(...) 仅限 @gpu for 内
-                if (inGpuFor_ == 0 && s.gridExpr_ != null) {
-                    diag_.error(s.line_, s.col_, "'block(...)' is only valid on '@gpu for'");
+                long sharedCount = 1L;
+                AstType sharedDim = s.sharedType_;
+                while (sharedDim != null && sharedDim.element_ != null) {
+                    if (sharedDim.arraySize_ > 0) sharedCount = sharedCount * sharedDim.arraySize_;
+                    sharedDim = sharedDim.element_;
                 }
-                if (s.gridExpr_ != null) visitExpr(s.gridExpr_);
+                string sharedKind = sharedDim != null ? typeToKind(sharedDim) : "int";
+                long sharedBytes = 1L;
+                if (sharedKind == "double" || sharedKind == "long" || sharedKind == "ulong") sharedBytes = 8L;
+                else if (sharedKind == "float" || sharedKind == "int" || sharedKind == "uint") sharedBytes = 4L;
+                else if (sharedKind == "short" || sharedKind == "ushort" || sharedKind == "char") sharedBytes = 2L;
+                long sharedTotal = sharedCount * sharedBytes;
+                if (sharedTotal > 49152L) {
+                    diag_.error(0, 0, "@gpu tile shared array size (" + sharedTotal
+                        + " bytes) exceeds the 48KB limit (NV sm_75)");
+                }
+                if (s.gridExpr_ != null) {
+                    visitExpr(s.gridExpr_);
+                    long gridLiteral = s.gridExpr_.integerValue();
+                    if (s.gridExpr_.kind_ == "Integer" || gridLiteral > 0) {
+                        s.setGridVal(int(gridLiteral));
+                    } else s.setGridVal(-1);
+                }
                 if (s.stream_ != null) visitExpr(s.stream_);
+                int savedTileGpu = inGpuFor_;
+                inGpuFor_ = 1;
+                sym_.enterScope();
+                AstType sharedElem = s.sharedType_;
+                while (sharedElem != null && sharedElem.element_ != null) sharedElem = sharedElem.element_;
+                sym_.declareElem(s.name_, "array", sharedElem != null ? typeToKind(sharedElem) : "int");
                 if (s.body_ != null) visitStmt(s.body_);
+                sym_.leaveScope();
+                inGpuFor_ = savedTileGpu;
             } else if (k == "GpuReduce" || k == "GpuScan") {
                 sym_.enterScope();
-                sym_.declare(s.acc_, "int");
-                sym_.declare(s.x_, "int");
+                string opKind = s.initExpr_ != null ? visitExpr(s.initExpr_) : "int";
+                sym_.declare(s.acc_, opKind);
+                sym_.declare(s.x_, opKind);
                 if (s.opBody_ != null) visitStmt(s.opBody_);
                 // C++：把 op 体的单 Return 表达式提取到 op_expr（Return 置空）
                 AstStmt ob = s.opBody_;
@@ -1771,6 +2543,41 @@ class Sema {
                 if (s.body_ != null) visitStmt(s.body_);
                 sym_.leaveScope();
             } else if (k == "GpuScatter") {
+                int scatterOK = 1;
+                SymbolEntry scatterIn = sym_.lookupEntry(s.arr_);
+                if (scatterIn == null || scatterIn.type_ != "array" || Str.len(scatterIn.elementType_) == 0) {
+                    diag_.error(0, 0, "'@gpu scatter' input '" + s.arr_ + "' must be a 'T[]' dynamic array");
+                    scatterOK = 0;
+                } else if (scatterIn.elementType_ != "float" && scatterIn.elementType_ != "double"
+                    && scatterIn.elementType_ != "int") {
+                    diag_.error(0, 0, "'@gpu scatter' element type must be float/double/int (got '"
+                        + scatterIn.elementType_ + "')");
+                    scatterOK = 0;
+                }
+                if (scatterOK != 0) {
+                    SymbolEntry scatterOut = sym_.lookupEntry(s.out_);
+                    if (scatterOut == null || scatterOut.type_ != "array"
+                        || scatterOut.elementType_ != scatterIn.elementType_) {
+                        diag_.error(0, 0, "'@gpu scatter' output '" + s.out_
+                            + "' must be a '" + scatterIn.elementType_ + "[]' array");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK != 0) {
+                    SymbolEntry scatterIdx = sym_.lookupEntry(s.idxName_);
+                    if (scatterIdx == null || scatterIdx.type_ != "array" || scatterIdx.elementType_ != "int") {
+                        diag_.error(0, 0, "'@gpu scatter' index '" + s.idxName_
+                            + "' must be an 'int[]' array");
+                        scatterOK = 0;
+                    }
+                }
+                if (scatterOK == 0) {
+                    if (s.aBegin_ != null) markAllExpr(s.aBegin_);
+                    if (s.aEnd_ != null) markAllExpr(s.aEnd_);
+                    if (s.idxBegin_ != null) markAllExpr(s.idxBegin_);
+                    if (s.idxEnd_ != null) markAllExpr(s.idxEnd_);
+                    return;
+                }
                 if (s.aBegin_ != null) visitExpr(s.aBegin_);
                 if (s.aEnd_ != null) visitExpr(s.aEnd_);
                 if (s.idxBegin_ != null) visitExpr(s.idxBegin_);
@@ -1819,10 +2626,19 @@ class Sema {
             if (k == "Null") { e.setResolvedKind("null"); return "null"; }
             if (k == "This") { e.setResolvedKind("class"); return "class"; }
             if (k == "Identifier") {
+                if (inGpuFor_ != 0 && e.name_ == "kernel") {
+                    e.setResolvedKind("int");
+                    return "int";
+                }
                 string t = sym_.lookup(e.name_);
                 if (Str.len(t) == 0 && inStruct_ != 0) {
                     // struct 方法内隐式 this 字段访问
                     t = structPropType(currentClass_, e.name_);
+                }
+                if (Str.len(t) == 0 && inClass_ != 0) {
+                    // F4-G2: 类作用域已弹出，但裸属性/方法仍可从当前类成员表回退解析。
+                    string mt = currentClassMemberType(e.name_);
+                    if (Str.len(mt) != 0) t = mt;
                 }
                 if (Str.len(t) == 0) {
                     // 内置函数 / 普通函数名 → function
@@ -1857,6 +2673,12 @@ class Sema {
                 string op = e.op_;
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
                     || op == "&&" || op == "||") {
+                    string opr = resolveOp(op, e.lhs_, l, r);
+                    if (Str.len(opr) != 0) {
+                        e.setOpCall(1);
+                        e.setResolvedKind(opr);
+                        return opr;
+                    }
                     if (op == "<" || op == ">" || op == "<=" || op == ">=") {
                         // C++：只有关系比较 < > <= >= 设置 unsigned 标志（== != 不设置）
                         int lu = isUnsignedKind(l) != 0 ? 1 : 0;
@@ -1876,11 +2698,30 @@ class Sema {
                     return "string";
                 }
                 // @op 运算符重载（slice+slice 等），C++ resolveOperator 先于数字检查
-                string opr = resolveOp(op, l, r);
+                string opr = resolveOp(op, e.lhs_, l, r);
                 if (Str.len(opr) != 0) {
                     e.setOpCall(1);
                     e.setResolvedKind(opr);
                     return opr;
+                }
+                // C++ 级联错误恢复：操作数为 void → 直接返回 int（不报 numeric 错）
+                if (l == "void" || r == "void") {
+                    e.setResolvedKind("int");
+                    return "int";
+                }
+                if ((op == "&" || op == "|" || op == "^") && l == "bitvector" && r == "bitvector") {
+                    e.setLhsUnsigned(1);
+                    e.setRhsUnsigned(1);
+                    e.setResultUnsigned(1);
+                    e.setResolvedKind("bitvector");
+                    return "bitvector";
+                }
+                if ((op == "<<" || op == ">>") && l == "bitvector") {
+                    e.setLhsUnsigned(1);
+                    e.setRhsUnsigned(1);
+                    e.setResultUnsigned(1);
+                    e.setResolvedKind("bitvector");
+                    return "bitvector";
                 }
                 // 算术/位运算：操作数须为数字（C++ expectNumeric）
                 if (isNumKind(l) == 0) {
@@ -1888,6 +2729,7 @@ class Sema {
                     int lc = 0;
                     AstExpr lp = e.lhs_;
                     if (lp != null) { ll = lp.line_; lc = lp.col_; }
+                    if (lp != null && lp.kind_ == "Identifier" && lc >= 2) lc = lc - 2;
                     diag_.error(ll, lc, "expected numeric type, got '" + exprTypeName(lp, l) + "'");
                 } else if (isNumKind(r) == 0) {
                     int rl = 0;
@@ -1915,7 +2757,11 @@ class Sema {
             if (k == "Unary") {
                 string o = visitExpr(e.operand_);
                 string op = e.op_;
-                if (op == "!") { e.setResolvedKind("bool"); return "bool"; }
+                if (op == "!") {
+                    string t = o == "bit" ? "bit" : "bool";
+                    e.setResolvedKind(t);
+                    return t;
+                }
                 e.setResolvedKind(o);
                 return o;
             }
@@ -1928,13 +2774,14 @@ class Sema {
                 return o;
             }
             if (k == "Assign") {
-                // 左值检查（C++：target must be variable/field/array element）
+                // 左值检查（C++：target must be variable/field/array element，
+                // 位置 = Assign 节点 range = RHS 末 token）
                 AstExpr lt = e.lhs_;
                 if (lt != null) {
                     string lk = lt.kind_;
                     if (lk != "Identifier" && lk != "Member" && lk != "Subscript" && lk != "Tuple") {
-                        int ll2 = lt.line_;
-                        int lc2 = lt.col_;
+                        int ll2 = e.line_;
+                        int lc2 = e.col_;
                         diag_.error(ll2, lc2, "cannot assign to this expression (target must be a variable, field, or array element)");
                         // C++ 不 visit 子表达式（resolved_kind 默认 Int）
                         lt.setResolvedKind("int");
@@ -1945,27 +2792,169 @@ class Sema {
                     }
                 }
                 string l = visitExpr(e.lhs_);
-                if (e.rhs_ != null) visitExpr(e.rhs_);
+                string r = e.rhs_ != null ? visitExpr(e.rhs_) : "void";
+                if (l != "void" && r != "void" && typesCompat(l, r) == 0) {
+                    diag_.error(e.line_, e.col_, "cannot assign value of type '" + r
+                        + "' to variable of type '" + l + "'");
+                }
                 e.setResolvedKind(l);
                 return l;
             }
             if (k == "Ternary") {
                 if (e.condition_ != null) visitExpr(e.condition_);
                 string t = e.trueExpr_ != null ? visitExpr(e.trueExpr_) : "void";
-                if (e.falseExpr_ != null) visitExpr(e.falseExpr_);
+                string f = e.falseExpr_ != null ? visitExpr(e.falseExpr_) : "void";
+                if (TKind.isNumeric(t) != 0 && TKind.isNumeric(f) != 0) {
+                    // C++ visitTernary 用 commonNumericKind（a==b→a），非 numeric_common
+                    string common = TKind.ternaryCommon(t, f);
+                    if (common != "void") {
+                        e.setResolvedKind(common);
+                        return common;
+                    }
+                }
                 e.setResolvedKind(t);
                 return t;
             }
             if (k == "Range") {
                 if (e.start_ != null) visitExpr(e.start_);
                 if (e.end_ != null) visitExpr(e.end_);
-                e.setResolvedKind("array");
-                return "array";
+                e.setResolvedKind("int");
+                return "int";
             }
             if (k == "Call") {
                 string ret = "void";
                 AstExpr callee = e.callee_;
+                int callFailed = 0;  // callee 不可调用 → 实参不 visit，标 int（C++ 提前返回）
+                // C++ visitCall：@coro 方法自递归（值使用）拒绝——@coro 调用生成句柄。
+                if (inCoro_ != 0 && Str.len(currentMethodName_) != 0 && inDiscardStmt_ == 0 && callee != null) {
+                    int selfCall = 0;
+                    if (callee.kind_ == "Identifier" && callee.name_ == currentMethodName_) selfCall = 1;
+                    else if (callee.kind_ == "Member" && callee.array_ != null && callee.array_.kind_ == "This"
+                        && callee.memberName_ == currentMethodName_) selfCall = 1;
+                    if (selfCall != 0) {
+                        int curIsCoro = 0;
+                        for (int ci2 = 0; ci2 < tu_.classes().size(); ci2 = ci2 + 1) {
+                            AstClass cl2 = tu_.classes().get(ci2);
+                            if (cl2.name_ != currentClass_) continue;
+                            ArrayList<AstAction> acts2 = cl2.actions();
+                            for (int ai2 = 0; ai2 < acts2.size(); ai2 = ai2 + 1) {
+                                if (acts2.get(ai2).name_ == currentMethodName_ && acts2.get(ai2).coro_ != 0) { curIsCoro = 1; break; }
+                            }
+                            if (curIsCoro != 0) break;
+                        }
+                        if (curIsCoro != 0) {
+                            diag_.error(e.line_, e.col_, "recursive call to '@coro' method '" + currentMethodName_
+                                + "' is not supported: an '@coro' call spawns a new coroutine and returns a handle, not the method's return value. Move the recursion into a plain function and call it from the '@coro' body");
+                            if (callee != null) markAllExpr(callee);
+                            for (int ci3 = 0; ci3 < e.args().size(); ci3 = ci3 + 1) markAllExpr(e.args().get(ci3));
+                            e.setResolvedKind("void");
+                            return "void";
+                        }
+                    }
+                }
+                // GPU kernel 上下文方法由 C++ visitCall 提前拦截；callee/object
+                // 不走常规 Member 解析，保持默认 Int。
+                if (inGpuFor_ != 0 && callee != null && callee.kind_ == "Member") {
+                    AstExpr ko = callee.array_;
+                    if (ko != null && ko.kind_ == "Identifier" && ko.name_ == "kernel") {
+                        string km = callee.memberName_;
+                        ko.setResolvedKind("int");
+                        callee.setResolvedKind("int");
+                        if (km == "sync") {
+                            if (e.args().size() != 0) diag_.error(e.line_, e.col_, "kernel.sync() takes no arguments");
+                            // §3.3：aligned barrier（bar.sync 0）要求 uniform 控制流，发散分支内
+                            // 的 sync 会死锁——警告（保守：if/while body 一律视为发散）。
+                            if (inGpuDivergent_ > 0) {
+                                diag_.warn(e.line_, e.col_, "kernel.sync() inside divergent (thread-dependent) control flow may deadlock; place it at a uniform point");
+                            }
+                            e.setResolvedKind("void");
+                            return "void";
+                        }
+                        if (km == "shfl_down") {
+                            if (e.args().size() != 2) {
+                                diag_.error(e.line_, e.col_, "kernel.shfl_down(v, delta) takes 2 arguments");
+                                e.setResolvedKind("double");
+                                return "double";
+                            }
+                            string kr = visitExpr(e.args().get(0));
+                            visitExpr(e.args().get(1));
+                            if (kr != "double" && kr != "float" && kr != "int") {
+                                diag_.error(e.line_, e.col_, "kernel.shfl_down supports double/float/int");
+                            }
+                            e.setResolvedKind(kr);
+                            return kr;
+                        }
+                        if (km == "block_reduce_sum" || km == "block_reduce_max") {
+                            if (e.args().size() != 1) {
+                                diag_.error(e.line_, e.col_, "kernel." + km + "(v) takes 1 argument");
+                                e.setResolvedKind("double");
+                                return "double";
+                            }
+                            string kr2 = visitExpr(e.args().get(0));
+                            if (kr2 != "double" && kr2 != "float" && kr2 != "int") {
+                                diag_.error(e.line_, e.col_, "kernel." + km + " supports double/float/int");
+                            }
+                            e.setResolvedKind(kr2);
+                            return kr2;
+                        }
+                        if (km == "printk" || km == "assert") {
+                            int isAssert = km == "assert" ? 1 : 0;
+                            int need = isAssert != 0 ? 2 : 1;
+                            if (e.args().size() < need) {
+                                diag_.error(e.line_, e.col_, "kernel." + km + " needs a format string");
+                                e.setResolvedKind("void");
+                                return "void";
+                            }
+                            if (isAssert != 0) {
+                                string condKind = visitExpr(e.args().get(0));
+                                if (condKind != "bool" && condKind != "int" && condKind != "long") {
+                                    AstExpr condArg = e.args().get(0);
+                                    diag_.error(condArg.line_, condArg.col_, "kernel.assert cond must be bool/int");
+                                }
+                            }
+                            AstExpr fmtArg = e.args().get(need - 1);
+                            fmtArg.setResolvedKind("int");
+                            if (fmtArg.kind_ != "String") {
+                                diag_.error(e.line_, e.col_, "kernel." + km + " format must be a string literal");
+                            }
+                            int nval = e.args().size() - need;
+                            if (nval > 3) {
+                                diag_.error(e.line_, e.col_, "kernel." + km + " takes at most 3 value arguments");
+                            }
+                            for (int i = need; i < e.args().size(); i = i + 1) {
+                                AstExpr valueArg = e.args().get(i);
+                                string valueKind = visitExpr(valueArg);
+                                if (valueKind != "int" && valueKind != "long" && valueKind != "double"
+                                    && valueKind != "float" && valueKind != "bool") {
+                                    diag_.error(valueArg.line_, valueArg.col_, "kernel." + km
+                                        + " value arg must be int/long/double/float");
+                                }
+                            }
+                            e.setResolvedKind("void");
+                            return "void";
+                        }
+                    }
+                }
                 if (callee != null) {
+                    if (callee.array_ != null) {
+                        AstExpr enumObject = callee.array_;
+                        int enumIndex = findEnum(enumObject.name_);
+                        int isVariant = 0;
+                        if (enumIndex >= 0) {
+                            ArrayList<AstEnumVariant> variants = tu_.enums().get(enumIndex).variants();
+                            for (int vi = 0; vi < variants.size(); vi = vi + 1)
+                                if (variants.get(vi).name_ == callee.memberName_) { isVariant = 1; break; }
+                        }
+                        if (isVariant != 0) {
+                            for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
+                            e.setArgsVisited(1);
+                            enumObject.setResolvedKind("enum");
+                            callee.setResolvedKind("function");
+                            callee.setResolvedClass(enumObject.name_);
+                            e.setResolvedKind("enum");
+                            return "enum";
+                        }
+                    }
                     int gsi = -1;
                     if (callee.kind_ == "Member") gsi = findGenericStatic(callee);
                     if (gsi >= 0) {
@@ -1973,6 +2962,98 @@ class Sema {
                         ret = resolveGenericStaticCall(e, callee, gsi);
                     } else if (callee.kind_ == "Identifier") {
                         string fn = callee.name_;
+                        // F4-G1：泛型函数调用 id<int>(x) / max2(a, b) 解析为具体 _inst 函数。
+                        int hasGenericFn = 0;
+                        AstFunction genericFn = null;
+                                    for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                            AstFunction f = tu_.functions().get(i);
+                            if (f.name_ == fn && f.typeParams().size() > 0 && f.genericInst_ == 0) { genericFn = f; hasGenericFn = 1; break; }
+                        }
+                        if (hasGenericFn != 0) {
+                            for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
+                            e.setArgsVisited(1);
+                            ArrayList<AstType> concrete = new ArrayList<AstType>();
+                            if (e.callTypeArgs().size() > 0) {
+                                for (int i = 0; i < e.callTypeArgs().size(); i = i + 1) concrete.add(e.callTypeArgs().get(i));
+                            } else {
+                                for (int ti = 0; ti < genericFn.typeParams().size(); ti = ti + 1) {
+                                    int found = 0;
+                                    string tpName = genericFn.typeParams().get(ti);
+                                    for (int pi = 0; pi < genericFn.params().size() && pi < e.args().size(); pi = pi + 1) {
+                                        AstType pt = genericFn.params().get(pi).type_;
+                                        if (pt == null) continue;
+                                        AstType at = inferConcreteTypeForGenericParam(pt, e.args().get(pi), tpName);
+                                        if (at != null) {
+                                            concrete.add(at);
+                                            found = 1;
+                                            break;
+                                        }
+                                    }
+                                    if (found == 0) { break; }
+                                }
+                            }
+                            // C++ resolveGenericCall：无法推断 → 报错并返回 Void。
+                            if (concrete.size() < genericFn.typeParams().size() && e.callTypeArgs().size() == 0) {
+                                string missTp = genericFn.typeParams().get(concrete.size());
+                                diag_.error(e.line_, e.col_, "cannot infer type parameter '" + missTp
+                                    + "' for generic function '" + fn + "' (pass explicit args: " + fn + "<...>(...))");
+                                e.setResolvedKind("void");
+                                callee.setResolvedKind("int");
+                                return "void";
+                            }
+                            // §9 泛型函数 where 约束校验（C++ satisfiesTraitConstraint）。
+                            ArrayList<AstPair> gcons = genericFn.constraints();
+                            for (int ci2 = 0; ci2 < gcons.size(); ci2 = ci2 + 1) {
+                                string gtp = gcons.get(ci2).k;
+                                string gtrait = gcons.get(ci2).v;
+                                int gi2 = -1;
+                                for (int k3 = 0; k3 < genericFn.typeParams().size(); k3 = k3 + 1) {
+                                    if (genericFn.typeParams().get(k3) == gtp) { gi2 = k3; break; }
+                                }
+                                if (gi2 >= 0 && gi2 < concrete.size()) {
+                                    string ckind = typeToKind(concrete.get(gi2));
+                                    if (satisfiesTraitAst(concrete.get(gi2), gtrait) == 0) {
+                                        diag_.error(e.line_, e.col_, "type argument '" + ckind
+                                            + "' does not satisfy constraint '" + gtp + " : " + gtrait
+                                            + "' for generic function '" + fn + "'");
+                                        e.setResolvedKind("void");
+                                        callee.setResolvedKind("int");
+                                        return "void";
+                                    }
+                                }
+                            }
+                            if (concrete.size() == genericFn.typeParams().size()) {
+                                string instName = instantiateGenericFunction(fn, concrete);
+                                if (Str.len(instName) != 0) {
+                                    e.setResolved(instName);
+                                    AstFunction inst = null;
+                                    for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                                        if (tu_.functions().get(i).name_ == instName) { inst = tu_.functions().get(i); break; }
+                                    }
+                                    if (inst != null) {
+                                        // §四-1：泛型实例函数同样做默认/命名实参归一化，
+                                        // 缺省 clone 需访问（C++ 在实参循环中访问）。
+                                        if (normalizeCallArgs(e, inst.params()) != 0) {
+                                            for (int gi = 0; gi < e.args().size(); gi = gi + 1) {
+                                                if (Str.len(e.args().get(gi).resolvedKind_) == 0) visitExpr(e.args().get(gi));
+                                            }
+                                        }
+                                        AstType sret = substituteType(inst.ret_, genericFn.typeParams(), concrete);
+                                        string rk = sret != null ? typeToKind(sret) : "void";
+                                        if (sret != null && sret.typeArgs().size() > 0) {
+                                            tryInstantiate(sret.className_, sret.typeArgs());
+                                        }
+                                        if (rk == "class" || rk == "struct" || rk == "interface") {
+                                            string vc = gsRetValueClass(sret);
+                                            if (Str.len(vc) != 0) e.setValueClass(vc);
+                                        }
+                                        e.setResolvedKind(rk);
+                                        callee.setResolvedKind("int");
+                                        return rk;
+                                    }
+                                }
+                            }
+                        }
                         if (fn == "bitcast") {
                             // P0 bitcast<T,U>(x)：位保持重解释，源/目标同宽
                             callee.setResolvedKind("int");
@@ -2002,49 +3083,164 @@ class Sema {
                             callee.setResolvedKind("int");
                             string ir = intrRet(fn);
                             if (Str.len(ir) != 0) ret = ir;
+                            else if (fn == "checkedAdd" || fn == "checkedMul" || fn == "parseIntOpt") ret = "tuple";
+                            else if (fn == "parseInt") ret = "int";
+                            else if (fn == "parseLong") ret = "long";
+                            else if (fn == "parseUint") ret = "uint";
+                            else if (fn == "parseUlong") ret = "ulong";
+                            else if (fn == "parseFloat") ret = "float";
+                            else if (fn == "parseDouble") ret = "double";
+                            else if (fn == "bytes" || fn == "bytesOf") ret = "array";
+                            else if (fn == "str") ret = "string";
+                            else if (fn == "load4") ret = "float4";
+                            else if (fn == "store4") ret = "void";
+                            else if (fn == "bytesOf") ret = "array";
+                            else if ((fn == "popcount" || fn == "clz" || fn == "ctz" || fn == "bitreverse"
+                                || fn == "rotl" || fn == "rotr") && e.args().size() > 0) {
+                                ret = visitExpr(e.args().get(0));
+                                for (int ai = 1; ai < e.args().size(); ai = ai + 1) visitExpr(e.args().get(ai));
+                                e.setArgsVisited(1);
+                            }
                             else {
                                 string fr2 = findFuncRet(fn, e.args().size());
                                 if (Str.len(fr2) != 0) ret = fr2;
                             }
                         } else {
+                            // F4：struct 函数式构造 Buffer(args)（对齐 C++
+                            // resolveStructConstruction——在 visit callee 前拦截）。
+                            int isStructCtor = 0;
+                            int sci = findStruct(fn);
+                            if (sci >= 0 && tu_ != null) {
+                                AstStruct st = null;
+                                for (int si3 = 0; si3 < tu_.structs().size(); si3 = si3 + 1) {
+                                    if (tu_.structs().get(si3).name_ == fn) { st = tu_.structs().get(si3); break; }
+                                }
+                                if (st != null) {
+                                    ArrayList<string> scnames = new ArrayList<string>();
+                                    ArrayList<ArrayList<AstParam>> scparams = new ArrayList<ArrayList<AstParam>>();
+                                    ArrayList<AstFunction> sfs = st.funcs();
+                                    for (int j = 0; j < sfs.size(); j = j + 1) {
+                                        AstFunction f = sfs.get(j);
+                                        if (f.ctor_ != 0) { scnames.add(f.name_); scparams.add(f.params()); }
+                                    }
+                                    if (scnames.size() != 0) {
+                                        // 实参类型：命名赋值实参只访问其值（C++ resolveStructConstruction），
+                                        // 否则访问整个实参。匹配成功后归一化（命名→NamedArg、重排、缺省补全）。
+                                        ArrayList<string> argKinds = new ArrayList<string>();
+                                        for (int j = 0; j < e.args().size(); j = j + 1) {
+                                            AstExpr ar = e.args().get(j);
+                                            if (ar != null && ar.kind_ == "Assign" && ar.rhs_ != null) argKinds.add(visitExpr(ar.rhs_));
+                                            else if (ar != null) argKinds.add(visitExpr(ar));
+                                            else argKinds.add("void");
+                                        }
+                                        e.setArgsVisited(1);
+                                        int best = -1;
+                                        int bestScore = 1 << 30;
+                                        int ambiguous = 0;
+                                        for (int j = 0; j < scnames.size(); j = j + 1) {
+                                            ArrayList<AstParam> ps = scparams.get(j);
+                                            ArrayList<int> plan = planCallArgs(e, ps);
+                                            if (plan == null) continue;
+                                            int argsOK = 1;
+                                            int promos = 0;
+                                            for (int k2 = 0; k2 < ps.size(); k2 = k2 + 1) {
+                                                if (plan.get(k2) < 0) continue;  // 缺省
+                                                AstParam p = ps.get(k2);
+                                                string pk = p.type_ != null ? typeToKind(p.type_) : "void";
+                                                string at = argKinds.get(plan.get(k2));
+                                                if (ctorArgCompat(pk, at) == 0) { argsOK = 0; break; }
+                                                if (pk != at) promos = promos + 1;
+                                            }
+                                            if (argsOK == 0) continue;
+                                            if (best < 0 || promos < bestScore) { best = j; bestScore = promos; ambiguous = 0; }
+                                            else if (promos == bestScore) ambiguous = 1;
+                                        }
+                                        if (best >= 0 && ambiguous == 0) {
+                                            isStructCtor = 1;
+                                            callee.setResolvedKind("int");
+                                            normalizeCallArgs(e, scparams.get(best));
+                                            e.setArgsVisited(1);
+                                            // C++ struct 构造缺省补全的默认值不被访问（保持默认 Int）
+                                            for (int dj = 0; dj < e.args().size(); dj = dj + 1) {
+                                                if (Str.len(e.args().get(dj).resolvedKind_) == 0) markAllExpr(e.args().get(dj));
+                                            }
+                                            e.setStructType(fn);
+                                            e.setStructCtor("struct_" + fn + "_" + scnames.get(best) + mangleParams(scparams.get(best)));
+                                            ret = "struct";
+                                        } else if (best < 0) {
+                                            StringBuilder asb = new StringBuilder();
+                                            for (int j = 0; j < argKinds.size(); j = j + 1) {
+                                                if (j != 0) asb.append(", ");
+                                                asb.append(argKinds.get(j));
+                                            }
+                                            diag_.error(e.line_, e.col_, "no matching constructor for '" + fn + "(" + asb.toString() + ")'");
+                                            isStructCtor = 1;
+                                            callee.setResolvedKind("int");
+                                            ret = "struct";
+                                        }
+                                    }
+                                }
+                            }
+                            if (isStructCtor == 0) {
                             visitExpr(callee);
+                            // M-FN-2 named lambda 自递归：lambda body 内 `name(args)`
+                            // 路由到自身 trampoline（codegen 识别 __self 标记）。
+                            if (Str.len(lambdaSelfName_) != 0 && callee.kind_ == "Identifier" && callee.name_ == lambdaSelfName_) {
+                                e.setResolved(lambdaSelfClass_ + "__self");
+                            }
                             string ir = intrRet(fn);
                             if (Str.len(ir) != 0) ret = ir;
                             else {
+                                // §四-1：默认/命名实参归一化（顶层函数，非内建）
+                                int topNormFailed = 0;
+                                ArrayList<AstParam> topParams = findFuncParams(fn);
+                                if (topParams != null) {
+                                    if (normalizeCallArgs(e, topParams) == 0) { topNormFailed = 1; ret = "void"; }
+                                    else e.setCallParamTypes(paramKinds(topParams));
+                                }
                                 // @coro 顶层函数调用返回协程句柄（long）
                                 int isCor = 0;
                                 for (int ci2 = 0; ci2 < coroNames_.size(); ci2 = ci2 + 1) {
                                     if (coroNames_.get(ci2) == fn) { isCor = 1; break; }
                                 }
-                                if (isCor != 0) {
+                                if (topNormFailed == 0 && isCor != 0) {
                                     ret = "long";
-                                } else {
+                                } else if (topNormFailed == 0) {
                                     string fr = findFuncRet(fn, e.args().size());
                                     if (Str.len(fr) != 0) {
                                         ret = fr;
-                                    } else if (inClass_ != 0) {
+                                    } else {
+                                        // F4-L：函数类型变量调用 f(21) → 用声明的返回类型
+                                        SymbolEntry fve = sym_.lookupEntry(fn);
+                                        if (fve != null && Str.len(fve.funcRet_) != 0) {
+                                            ret = fve.funcRet_;
+                                            e.setCallParamTypes(fve.functionParamTypes());
+                                        } else if (inClass_ != 0) {
                                         string mr = findMethodRet(currentClass_, fn, e.args().size());
                                         if (Str.len(mr) != 0) {
                                             ret = mr;
+                                            // 链式调用 (m()).member：记录返回类名
+                                            string rcl2 = findMethodRetClass(currentClass_, fn);
+                                            if (Str.len(rcl2) != 0) e.setResolvedClass(rcl2);
                                         } else {
-                                            // C++：'X' is not callable（类内未知函数名）
+                                            // C++：'X' is not callable（位置 = Call range = ')'）
                                             string cr = callee.resolvedKind_;
                                             if (cr != "function") {
-                                                int nl = callee.line_;
-                                                int nc = callee.col_;
-                                                diag_.error(nl, nc, "'" + fn + "' is not callable");
+                                                diag_.error(e.line_, e.col_, "'" + fn + "' is not callable");
+                                                callFailed = 1;
                                             }
                                         }
                                     } else {
                                         // C++：'X' is not callable
                                         string cr = callee.resolvedKind_;
                                         if (cr != "function") {
-                                            int nl = callee.line_;
-                                            int nc = callee.col_;
-                                            diag_.error(nl, nc, "'" + fn + "' is not callable");
+                                            diag_.error(e.line_, e.col_, "'" + fn + "' is not callable");
+                                            callFailed = 1;
                                         }
                                     }
                                 }
+                            }
+                            }
                             }
                         }
                     } else if (callee.kind_ == "Member") {
@@ -2062,6 +3258,13 @@ class Sema {
                         string cn = "";
                         if (mo != null && mo.kind_ == "Identifier") {
                             cn = sym_.lookupClass(mo.name_);
+                            if (Str.len(cn) == 0 && mo.name_ == "this" && inClass_ != 0) cn = currentClass_;
+                            if (Str.len(cn) == 0 && inClass_ != 0) {
+                                // F4-G2b：类作用域已弹出（双 pass），裸属性实例
+                                // 从当前类成员表回退解析（同 Member-visit 路径）。
+                                cn = currentClassMemberClassName(mo.name_);
+                                if (Str.len(cn) == 0 && inStruct_ != 0) cn = currentStructMemberClassName(mo.name_);
+                            }
                             if (Str.len(cn) == 0) cn = mo.name_;
                         } else if (mo != null && (mo.kind_ == "Call" || mo.kind_ == "Subscript" || mo.kind_ == "Member")) {
                             cn = mo.valueClass_;
@@ -2069,13 +3272,19 @@ class Sema {
                         }
                         if (Str.len(cn) != 0) {
                             string base3 = resolveBase(cn);
+                            ArrayList<AstParam> anyMps = findMethodParams(base3, callee.memberName_);
+                            int normFailed = 0;
+                            if (anyMps != null) {
+                                if (normalizeCallArgs(e, anyMps) == 0) { normFailed = 1; ret = "void"; }
+                                else e.setCallParamTypes(paramKinds(anyMps));
+                            }
                             string fr = findMethodRet(base3, callee.memberName_, e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName_);
-                            if (Str.len(fr) != 0) {
+                            if (normFailed == 0 && Str.len(fr) != 0) {
                                 // @thread 实例的 @startup 方法禁止手动调用（C++）
                                 if (mo != null && mo.kind_ == "Identifier" && isThreadVar(mo.name_) != 0
                                     && isStartupMethod(base3, callee.memberName_) != 0) {
-                                    diag_.error(e.line_, e.col_, "cannot manually call '@startup' method '" + callee.memberName_ + "' on a @thread instance (auto-invoked in the worker thread)");
+                                    diag_.error(callee.line_, callee.col_, "cannot manually call '@startup' method '" + callee.memberName_ + "' on a @thread instance (auto-invoked in the worker thread)");
                                 }
                                 // @coro 方法调用返回协程句柄（long）
                                 if (isMethodCoro(base3, callee.memberName_) != 0) ret = "long";
@@ -2089,6 +3298,13 @@ class Sema {
                                         string sub = "";
                                         if (men != null && men.instArgs_.size() > 0) {
                                             sub = substRet(base3, mrt, men);
+                                        } else if (mo != null && mo.kind_ == "Identifier") {
+                                            // F4-G2b：类作用域已弹出（双 pass），裸属性
+                                            // 实例的 typeArgs 从当前类成员表回退解析。
+                                            AstType pta = currentClassMemberAstType(mo.name_);
+                                            if (pta != null && pta.typeArgs().size() > 0) {
+                                                sub = substRetAst(base3, mrt, pta.typeArgs());
+                                            }
                                         } else if (mo != null) {
                                             // 链式调用：t.m().get() —— mo 是 Call，用其返回实例的 typeArgs
                                             string vcn = mo.valueClass_;
@@ -2118,7 +3334,7 @@ class Sema {
                                 }
                                 // 默认参数补全（C++ normalizeArgsToParamDecls）
                                 ArrayList<AstParam> mps = findMethodParams(base3, callee.memberName_);
-                                if (mps != null) fillDefaultArgs(e, mps);
+                                if (normFailed == 0 && mps != null) fillDefaultArgs(e, mps);
                             }
                         } else if (inClass_ != 0) {
                             string fr = findMethodRet(currentClass_, callee.memberName_, e.args().size());
@@ -2137,15 +3353,96 @@ class Sema {
                         visitExpr(callee);
                     }
                 }
-                if (e.argsVisited_ == 0) {
+                if (e.argsVisited_ == 0 && callFailed == 0) {
                     for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
+                } else if (callFailed != 0) {
+                    // C++ visitCall 对不可调用 callee 提前返回、不访问实参（默认 Int）
+                    for (int i = 0; i < e.args().size(); i = i + 1) markAllExpr(e.args().get(i));
+                    e.setArgsVisited(1);
+                }
+                // C++ visitCall：lambda 实参匹配具体函数类型形参时，visitLambda 被直接
+                // 调用（不经 visitExpr 调度器），resolved_kind 保持默认 Int；其余路径
+                // 为 Function。MYP visitLambda 一律置 function → 此处回退 int 对齐。
+                ArrayList<string> cptLambda = e.callParamTypes();
+                if (cptLambda != null) {
+                    for (int i = 0; i < e.args().size() && i < cptLambda.size(); i = i + 1) {
+                        AstExpr argL = e.args().get(i);
+                        if (argL != null && argL.kind_ == "Lambda" && cptLambda.get(i) == "function") {
+                            argL.setResolvedKind("int");
+                        }
+                    }
+                }
+                if (e.callParamTypes() != null) {
+                    ArrayList<string> cpts = e.callParamTypes();
+                    // 任一形参 kind 未解析（void，如泛型占位符未替换）→ 跳过检查，
+                    // 避免对合法泛型方法调用误报。
+                    int anyVoidParam = 0;
+                    for (int i = 0; i < cpts.size(); i = i + 1) {
+                        if (cpts.get(i) == "void") { anyVoidParam = 1; break; }
+                    }
+                    if (anyVoidParam == 0) {
+                        for (int i = 0; i < e.args().size() && i < cpts.size(); i = i + 1) {
+                            AstExpr argi = e.args().get(i);
+                            string at = argi != null ? argi.resolvedKind_ : "void";
+                            // C++ 用 visitLambda 返回的 Function 类型做实参检查（而非
+                            // resolved_kind 注解），lambda 实参匹配函数形参时按 function 检查。
+                            if (argi != null && argi.kind_ == "Lambda" && cpts.get(i) == "function") {
+                                at = "function";
+                            }
+                            string pt = cpts.get(i);
+                            if (Str.len(at) != 0 && Str.len(pt) != 0 && typesCompat(pt, at) == 0) {
+                                int al = argi != null ? argi.line_ : 0;
+                                int ac = argi != null ? argi.col_ : 0;
+                                diag_.error(al, ac, "argument " + (i + 1) + ": expected '" + pt + "', got '" + at + "'");
+                            }
+                        }
+                    }
                 }
                 e.setResolvedKind(ret);
                 return ret;
             }
             if (k == "Member") {
+                AstExpr kernelObj = e.array_;
+                if (inGpuFor_ != 0 && kernelObj != null && kernelObj.kind_ == "Identifier" && kernelObj.name_ == "kernel") {
+                    kernelObj.setResolvedKind("int");
+                    if (e.memberName_ == "gid" || e.memberName_ == "bx" || e.memberName_ == "tx"
+                        || e.memberName_ == "bd" || e.memberName_ == "gx") {
+                        e.setResolvedKind("long");
+                        return "long";
+                    }
+                    diag_.error(e.line_, e.col_, "unknown kernel context member '" + e.memberName_ + "'");
+                    e.setResolvedKind("long");
+                    return "long";
+                }
                 string o = e.array_ != null ? visitExpr(e.array_) : "void";
                 string t = "void";
+                // C++ visitMemberAccess：void/非类对象访问成员 → 报错并返回 void，
+                // 不设 resolvedClass（否则会错误回退到当前类"has no member"）。
+                if (o == "void") {
+                    diag_.error(e.line_, e.col_, "cannot access member of non-class type 'void'");
+                    e.setResolvedKind("void");
+                    return "void";
+                }
+                if (o == "bitfield") {
+                    AstExpr bitObject = e.array_;
+                    string bitfieldName = "";
+                    if (bitObject != null && bitObject.kind_ == "Identifier") bitfieldName = sym_.lookupClass(bitObject.name_);
+                    else if (bitObject != null) {
+                        bitfieldName = bitObject.valueClassName();
+                        if (Str.len(bitfieldName) == 0) bitfieldName = bitObject.resolvedClassName();
+                    }
+                    string bitType = bitfieldMemberType(bitfieldName, e.memberName_);
+                    if (Str.len(bitType) != 0) {
+                        e.setResolvedClass(bitfieldName);
+                        e.setResolvedKind(bitType);
+                        return bitType;
+                    }
+                }
+                if (o == "float4" && (e.memberName_ == "x" || e.memberName_ == "y"
+                    || e.memberName_ == "z" || e.memberName_ == "w")) {
+                    e.setResolvedKind("float");
+                    return "float";
+                }
                 // slice.size()/.length() → int，slice.data() → array（C++ slice 内建）
                 if (o == "slice") {
                     if (e.memberName_ == "size" || e.memberName_ == "length") {
@@ -2176,9 +3473,14 @@ class Sema {
                     AstExpr arr = e.array_;
                     string cn = "";
                     if (arr != null && arr.kind_ == "Identifier") {
-                        // 实例变量优先（符号表类名），否则当类名处理
+                        // 实例变量优先（符号表类名）；若是当前 struct 的字段，再回退到 struct 成员类型。
                         cn = sym_.lookupClass(arr.name_);
                         if (Str.len(cn) == 0 && arr.name_ == "this" && inClass_ != 0) cn = currentClass_;
+                        if (Str.len(cn) == 0 && inClass_ != 0) {
+                            cn = currentClassMemberClassName(arr.name_);
+                            if (Str.len(cn) == 0 && inStruct_ != 0) cn = currentStructMemberClassName(arr.name_);
+                            if (Str.len(cn) == 0) cn = arr.name_;
+                        }
                         if (Str.len(cn) == 0) cn = arr.name_;
                     } else if (arr != null && (arr.kind_ == "Call" || arr.kind_ == "Subscript" || arr.kind_ == "Member" || arr.kind_ == "New")) {
                         // 方法调用结果 / 数组元素 / 属性 / new → 用其值类名
@@ -2269,6 +3571,7 @@ class Sema {
                 string o = e.array_ != null ? visitExpr(e.array_) : "void";
                 if (e.index_ != null) visitExpr(e.index_);
                 string et = "array";
+                if (o == "bitvector") et = "bit";
                 // 数组/切片变量 → 元素类型；string 下标 → char
                 AstExpr sa = e.array_;
                 if (sa != null && sa.kind_ == "Identifier") {
@@ -2278,6 +3581,26 @@ class Sema {
                         if (Str.len(en.elementClass_) != 0) e.setResolvedClass(en.elementClass_);
                         // 嵌套 slice：rows[i] 元素是 slice → 记录深层元素
                         if (et == "slice" && Str.len(en.elementElem_) != 0) e.setSliceElem(en.elementElem_);
+                    } else if (inStruct_ != 0) {
+                        // F4：struct 方法内裸字段下标 energies[0] → 元素类型。
+                        // 注意：struct 方法分析时 inClass_ 也=1，故 inStruct_ 必须
+                        // 排在 inClass_ 之前，否则被 else-if 链跳过。
+                        int ssi = findStruct(currentClass_);
+                        if (ssi >= 0) {
+                            AstType pt = findStructPropAst(ssi, sa.name_);
+                            if (pt != null && pt.element_ != null) {
+                                AstType el = pt.element_;
+                                et = typeToKind(el);
+                                if (Str.len(el.className_) != 0) e.setResolvedClass(el.className_);
+                            }
+                        }
+                    } else if (inClass_ != 0) {
+                        AstType pt = currentClassMemberAstType(sa.name_);
+                        if (pt != null && pt.element_ != null) {
+                            AstType el = pt.element_;
+                            et = typeToKind(el);
+                            if (Str.len(el.className_) != 0) e.setResolvedClass(el.className_);
+                        }
                     }
                 } else if (sa != null && sa.kind_ == "Subscript") {
                     // 嵌套 slice 双下标：rows[i][j] → 内层返回 slice，取深层元素
@@ -2286,16 +3609,42 @@ class Sema {
                         string se = sa.sliceElem_;
                         if (Str.len(se) != 0) et = se;
                     }
+                } else if (sa != null && sa.kind_ == "Call") {
+                    AstExpr bytesCallee = sa.callee_;
+                    if (bytesCallee != null && bytesCallee.kind_ == "Identifier" && bytesCallee.name_ == "bytesOf") et = "ubyte";
                 } else if (sa != null && sa.kind_ == "Member") {
                     // obj.prop 数组属性 → 元素类型
                     AstExpr mo2 = sa.array_;
                     if (mo2 != null && mo2.kind_ == "Identifier") {
                         string cn2 = sym_.lookupClass(mo2.name_);
+                        if (Str.len(cn2) == 0 && mo2.name_ == "this" && inClass_ != 0) cn2 = currentClass_;
+                        if (Str.len(cn2) == 0 && inClass_ != 0) {
+                            AstType pt = currentClassMemberAstType(mo2.name_);
+                            if (pt != null && Str.len(pt.className_) != 0) cn2 = pt.className_;
+                        }
                         if (Str.len(cn2) == 0) cn2 = mo2.name_;
                         int ci2 = findClass(cn2);
                         if (ci2 >= 0) {
                             AstType pt2 = findPropTypeAst(ci2, sa.memberName_);
-                            if (pt2 != null && pt2.element_ != null) et = typeToKind(pt2.element_);
+                            if (pt2 != null && pt2.element_ != null) {
+                                // MYP 注意：链式字段访问（pt2.element_.xxx）产生垃圾
+                                // → 先取局部变量再读字段（同本文件既有规避模式）。
+                                AstType elt = pt2.element_;
+                                et = typeToKind(elt);
+                                // F4：数组元素是类/struct → 记 resolvedClass，供链式 .name 解析
+                                if (Str.len(elt.className_) != 0) e.setResolvedClass(elt.className_);
+                            }
+                        } else {
+                            // F4：struct 变量 .数组字段 下标（ba.data[0]）→ 元素类型
+                            int ssi2 = findStruct(cn2);
+                            if (ssi2 >= 0) {
+                                AstType sp2 = findStructPropAst(ssi2, sa.memberName_);
+                                if (sp2 != null && sp2.element_ != null) {
+                                    AstType elt2 = sp2.element_;
+                                    et = typeToKind(elt2);
+                                    if (Str.len(elt2.className_) != 0) e.setResolvedClass(elt2.className_);
+                                }
+                            }
                         }
                     }
                 }
@@ -2312,29 +3661,106 @@ class Sema {
                 }
                 // 泛型类实例化（C++ typeNodeToTypeInfo 单态化 → 生成 _inst 类）
                 if (e.typeArgs().size() > 0) tryInstantiate(e.className_, e.typeArgs());
-                for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
                 // 解析构造器名（类中 ctor 标记的 action/function）
                 string cn = e.className_;
+                string resolvedClass = cn;
+                if (Str.len(e.className_) != 0) {
+                    if (e.typeArgs().size() > 0 && isGenericClass(e.className_) != 0) {
+                        int hasPh = 0;
+                        for (int i = 0; i < e.typeArgs().size(); i = i + 1) {
+                            AstType taa = e.typeArgs().get(i);
+                            if (taa != null && (inGeneric(taa.className_) != 0 || inGeneric(taa.basicName_) != 0)) { hasPh = 1; break; }
+                        }
+                        if (hasPh == 0) {
+                            string iname = e.className_;
+                            for (int i = 0; i < e.typeArgs().size(); i = i + 1) iname = iname + "_" + instClassName(e.typeArgs().get(i));
+                            resolvedClass = iname + "_inst";
+                        }
+                    }
+                }
                 string ctor = "";
+                int sawCtor = 0;
+                ArrayList<string> ctorArgKinds = new ArrayList<string>();
                 if (tu_ != null) {
-                    for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                        AstClass cl = tu_.classes().get(i);
-                        if (cl.name_ == cn) {
+                    ArrayList<string> classNames = new ArrayList<string>();
+                    if (resolvedClass != cn) classNames.add(resolvedClass);
+                    classNames.add(cn);
+                    for (int ci = 0; ci < classNames.size(); ci = ci + 1) {
+                        string candidate = classNames.get(ci);
+                        for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                            AstClass cl = tu_.classes().get(i);
+                            if (cl.name_ != candidate) continue;
+                            // F4：构造器重载解析（对齐 C++ resolveNewConstructor）。
+                            // 收集 action:/function: 段构造器候选，按实参个数+类型
+                            // 兼容打分选最优（默认参数允许缺省）；无候选 → legacy 默认。
+                            ArrayList<string> candNames = new ArrayList<string>();
+                            ArrayList<ArrayList<AstParam>> candParams = new ArrayList<ArrayList<AstParam>>();
                             ArrayList<AstAction> acts = cl.actions();
                             for (int j = 0; j < acts.size(); j = j + 1) {
                                 AstAction a = acts.get(j);
-                                if (a.ctor_ != 0) { ctor = cn + "_" + a.name_ + mangleParams(a.params()); break; }
+                                if (a.ctor_ != 0) { candNames.add(a.name_); candParams.add(a.params()); }
                             }
-                            if (Str.len(ctor) == 0) {
-                                ArrayList<AstFunction> fs = cl.funcs();
-                                for (int j = 0; j < fs.size(); j = j + 1) {
-                                    AstFunction f = fs.get(j);
-                                    if (f.ctor_ != 0) { ctor = cn + "_" + f.name_ + mangleParams(f.params()); break; }
+                            ArrayList<AstFunction> fs = cl.funcs();
+                            for (int j = 0; j < fs.size(); j = j + 1) {
+                                AstFunction f = fs.get(j);
+                                if (f.ctor_ != 0) { candNames.add(f.name_); candParams.add(f.params()); }
+                            }
+                            if (candNames.size() == 0) break;  // 无构造器 → legacy
+                            sawCtor = 1;
+                            // 实参类型：命名赋值实参只访问其值（C++ resolveNewConstructor），
+                            // 否则访问整个实参。
+                            ArrayList<string> argKinds = new ArrayList<string>();
+                            for (int j = 0; j < e.args().size(); j = j + 1) {
+                                AstExpr ar = e.args().get(j);
+                                if (ar != null && ar.kind_ == "Assign" && ar.rhs_ != null) argKinds.add(visitExpr(ar.rhs_));
+                                else if (ar != null) argKinds.add(visitExpr(ar));
+                                else argKinds.add("void");
+                            }
+                            ctorArgKinds = argKinds;
+                            int best = -1;
+                            int bestScore = 1 << 30;
+                            int ambiguous = 0;
+                            for (int j = 0; j < candNames.size(); j = j + 1) {
+                                ArrayList<AstParam> ps = candParams.get(j);
+                                ArrayList<int> plan = planCallArgs(e, ps);
+                                if (plan == null) continue;
+                                int argsOK = 1;
+                                int promos = 0;
+                                for (int k2 = 0; k2 < ps.size(); k2 = k2 + 1) {
+                                    if (plan.get(k2) < 0) continue;  // 缺省
+                                    AstParam p = ps.get(k2);
+                                    string pk = p.type_ != null ? typeToKind(p.type_) : "void";
+                                    string at = argKinds.get(plan.get(k2));
+                                    if (ctorArgCompat(pk, at) == 0) { argsOK = 0; break; }
+                                    if (pk != at) promos = promos + 1;
+                                }
+                                if (argsOK == 0) continue;
+                                if (best < 0 || promos < bestScore) { best = j; bestScore = promos; ambiguous = 0; }
+                                else if (promos == bestScore) ambiguous = 1;
+                            }
+                            if (best >= 0 && ambiguous == 0) {
+                                ctor = candidate + "_" + candNames.get(best) + mangleParams(candParams.get(best));
+                                // 规范化实参：命名→NamedArg、重排到形参序、缺省补全。
+                                normalizeCallArgs(e, candParams.get(best));
+                                // C++ 构造器缺省补全的默认值不被访问（保持默认 Int）
+                                for (int dj = 0; dj < e.args().size(); dj = dj + 1) {
+                                    if (Str.len(e.args().get(dj).resolvedKind_) == 0) markAllExpr(e.args().get(dj));
                                 }
                             }
-                            break;
+                            if (Str.len(ctor) != 0) break;
                         }
+                        if (Str.len(ctor) != 0) break;
                     }
+                }
+                if (sawCtor != 0 && Str.len(ctor) == 0) {
+                    StringBuilder asb = new StringBuilder();
+                    for (int i = 0; i < ctorArgKinds.size(); i = i + 1) {
+                        if (i != 0) asb.append(", ");
+                        asb.append(ctorArgKinds.get(i));
+                    }
+                    int dl = e.endLine_ != 0 ? e.endLine_ : e.line_;
+                    int dc = e.endCol_ != 0 ? e.endCol_ : e.col_;
+                    diag_.error(dl, dc, "no matching constructor for '" + resolvedClass + "(" + asb.toString() + ")'");
                 }
                 e.setCtor(ctor);
                 e.setResolvedKind("class");
@@ -2357,6 +3783,10 @@ class Sema {
                         e.setResolvedClass(e.className_);
                     }
                 }
+                if (sawCtor == 0) {
+                    // legacy（无构造器）：访问全部实参（有构造器时匹配阶段已访问其值）
+                    for (int i = 0; i < e.args().size(); i = i + 1) visitExpr(e.args().get(i));
+                }
                 return "class";
             }
             if (k == "NewArray") {
@@ -2369,8 +3799,12 @@ class Sema {
                 e.setResolvedKind("tuple");
                 return "tuple";
             }
-            if (k == "MacroParam") { e.setResolvedKind("void"); return "void"; }
-            if (k == "Quote") { e.setResolvedKind("void"); return "void"; }
+            if (k == "MacroParam") { e.setResolvedKind("int"); return "int"; }
+            if (k == "Quote") {
+                if (e.bodyStmt_ != null) markAllStmt(e.bodyStmt_);
+                e.setResolvedKind("int");
+                return "void";
+            }
             if (k == "Await") {
                 if (inCoro_ == 0) {
                     diag_.error(e.line_, e.col_, "'await' is only allowed inside an '@coro' method");
@@ -2404,13 +3838,193 @@ class Sema {
                 return t;
             }
             if (k == "Pipe") {
-                if (e.lhs_ != null) visitExpr(e.lhs_);
-                if (e.rhs_ != null) visitExpr(e.rhs_);
-                e.setResolvedKind("void");
-                return "void";
+                string leftKind = e.lhs_ != null ? visitExpr(e.lhs_) : "void";
+                AstExpr target = e.rhs_;
+                string cls = "";
+                if (target != null && target.kind_ == "Identifier") {
+                    cls = sym_.lookupClass(target.name_);
+                    if (Str.len(cls) != 0) e.setTargetKind("instance");
+                    else if (findClass(target.name_) >= 0) {
+                        cls = target.name_;
+                        e.setTargetKind("class");
+                    }
+                    target.setResolvedKind("int");
+                } else if (target != null) {
+                    visitExpr(target);
+                }
+                if (Str.len(cls) != 0) {
+                    e.setClassType(cls);
+                    string ret = findMethodRet(resolveBase(cls), e.method_, 1);
+                    if (Str.len(ret) != 0) leftKind = ret;
+                }
+                e.setResolvedKind(leftKind);
+                return leftKind;
             }
             if (k == "Lambda") {
-                if (e.bodyStmt_ != null) visitStmt(e.bodyStmt_);
+                // F4-L：合成 __lambda_N 类（C++ visitLambda）——__call action +
+                // 捕获槽 cap_i 属性 + body 前置捕获拷贝。
+                string cls = "__lambda_" + lambdaCounter_;
+                lambdaCounter_ = lambdaCounter_ + 1;
+                e.setHiddenClass(cls);
+                ArrayList<string> params = new ArrayList<string>();
+                for (int i = 0; i < e.params().size(); i = i + 1) {
+                    string pn = e.params().get(i).name_;
+                    if (Str.len(pn) != 0 && listHas(params, pn) == 0) params.add(pn);
+                }
+                ArrayList<string> locals = new ArrayList<string>();
+                for (int i = 0; i < params.size(); i = i + 1) locals.add(params.get(i));
+                if (Str.len(e.name_) != 0) locals.add(e.name_);
+                if (e.bodyStmt_ != null) collectStmtLocals(e.bodyStmt_, locals);
+                ArrayList<string> captures = new ArrayList<string>();
+                if (e.bodyStmt_ != null) collectStmtCaptures(e.bodyStmt_, params, locals, captures);
+                // M-FN-2 nonlocal：收集 `nonlocal name;` 声明并加入捕获集（只写不读也
+                // 共享 cell）。非嵌套、非 struct 方法校验略（正语料不触发）。
+                ArrayList<string> nonlocalNames = new ArrayList<string>();
+                if (e.bodyStmt_ != null) collectStmtNonlocal(e.bodyStmt_, nonlocalNames);
+                for (int i = 0; i < nonlocalNames.size(); i = i + 1) {
+                    if (listHas(captures, nonlocalNames.get(i)) == 0) captures.add(nonlocalNames.get(i));
+                }
+                AstClass lc = new AstClass();
+                lc.setName(cls);
+                lc.setLambda(e.name_);
+                AstStmt body = e.bodyStmt_;
+                if (captures.size() != 0) {
+                    // 捕获拷贝语句：T cap = this.cap_i; ——插入原 Block 开头
+                    // （body 是 Block 时直接 prepend，否则包一层）。
+                    ArrayList<AstStmt> preStmts = new ArrayList<AstStmt>();
+                    for (int i = 0; i < captures.size(); i = i + 1) {
+                        string cap = captures.get(i);
+                        int isNl = listHas(nonlocalNames, cap);
+                        SymbolEntry ce = sym_.lookupEntry(cap);
+                        AstType cty = ce != null ? entryToAstType(ce) : new AstType();
+                        AstProp cp = new AstProp();
+                        cp.setName("cap_" + i);
+                        if (isNl != 0) {
+                            // nonlocal：槽类型 = cell 类引用（__cell_N），共享可变 cell；
+                            // 跳过捕获拷贝（codegen 注入 cell 属性别名）。
+                            string ccell = nonlocalCellClass(cty);
+                            AstType cellType = new AstType();
+                            cellType.setClassName(ccell);
+                            cp.setType(cellType);
+                            lc.props().add(cp);
+                            e.captureNames().add(cap);
+                            e.captureSlots().add("cap_" + i);
+                            e.nonlocalCells().add(ccell);
+                            AstNonlocalSlot ns = new AstNonlocalSlot();
+                            ns.setSlot("cap_" + i);
+                            ns.setVarName(cap);
+                            ns.setCell(ccell);
+                            lc.nonlocalSlots().add(ns);
+                        } else {
+                            cp.setType(cty);
+                            lc.props().add(cp);
+                            e.captureNames().add(cap);
+                            e.captureSlots().add("cap_" + i);
+                            e.nonlocalCells().add("");
+                            AstExpr th = new AstExpr();
+                            th.setKind("This");
+                            AstExpr ma = new AstExpr();
+                            ma.setKind("Member");
+                            ma.setMemberName("cap_" + i);
+                            ma.setArray(th);
+                            AstVar vd = new AstVar();
+                            vd.setName(cap);
+                            vd.setType(cty);
+                            vd.setInit(ma);
+                            AstStmt vs = new AstStmt();
+                            vs.setKind("VarDecl");
+                            vs.decls().add(vd);
+                            preStmts.add(vs);
+                        }
+                    }
+                    if (preStmts.size() != 0) {
+                        if (body != null && body.kind_ == "Block") {
+                            // 重建 Block：前置捕获拷贝 + 原块语句（ArrayList 无 insert）。
+                            AstStmt nb = new AstStmt();
+                            nb.setKind("Block");
+                            for (int i = 0; i < preStmts.size(); i = i + 1) nb.bodyStmts().add(preStmts.get(i));
+                            for (int i = 0; i < body.bodyStmts().size(); i = i + 1) nb.bodyStmts().add(body.bodyStmts().get(i));
+                            body = nb;
+                        } else {
+                            AstStmt nb = new AstStmt();
+                            nb.setKind("Block");
+                            for (int i = 0; i < preStmts.size(); i = i + 1) nb.bodyStmts().add(preStmts.get(i));
+                            if (body != null) nb.bodyStmts().add(body);
+                            body = nb;
+                        }
+                        // C++ 共享 body：Lambda 表达式节点 dump 也带捕获拷贝
+                        e.setBodyStmt(body);
+                    }
+                }
+                AstAction call = new AstAction();
+                call.setName("__call");
+                AstType rty = new AstType();
+                rty.setBasicName("int");
+                call.setRet(rty);
+                for (int i = 0; i < e.params().size(); i = i + 1) call.params().add(e.params().get(i));
+                call.setBody(body);
+                lc.actions().add(call);
+                if (tu_ != null) {
+                    tu_.classes().add(lc);
+                    // 登记类成员表（供 body 里 this.cap_i / 成员解析）
+                    classNames_.add(cls);
+                    classProps_.add(lc.props());
+                }
+                // 在 lambda 类上下文类型检查 __call body（对齐 C++ visitClassDecl）
+                string saveCls = currentClass_;
+                int saveInCls = inClass_;
+                int saveInSt = inStruct_;
+                currentClass_ = cls;
+                inClass_ = 1;
+                inStruct_ = 0;
+                sym_.enterScope();
+                sym_.declare("this", "class");
+                for (int i = 0; i < call.params().size(); i = i + 1) {
+                    AstParam p = call.params().get(i);
+                    sym_.declare(p.name_, typeToKind(p.type_));
+                }
+                for (int i = 0; i < captures.size(); i = i + 1) {
+                    SymbolEntry ce = sym_.lookupEntry(captures.get(i));
+                    if (ce != null) {
+                        if (Str.len(ce.className_) != 0) sym_.declareClass(captures.get(i), "class", ce.className_);
+                        else if (Str.len(ce.elementType_) != 0 || Str.len(ce.elementClass_) != 0) {
+                            AstType elt2 = new AstType();
+                            if (Str.len(ce.elementClass_) != 0) elt2.setClassName(ce.elementClass_);
+                            else elt2.setBasicName(ce.elementType_);
+                            if (Str.len(ce.elementClass_) != 0) sym_.declareElemClass(captures.get(i), "array", typeToKind(elt2), ce.elementClass_);
+                               else if (ce.arraySize_ > 0) sym_.declareFixedElem(captures.get(i), typeToKind(elt2), ce.arraySize_);
+                               else sym_.declareElem(captures.get(i), "array", typeToKind(elt2));
+                        } else sym_.declare(captures.get(i), ce.type_);
+                    }
+                }
+                // C++ visitLambda 不内联访问完整 __call body（body 只在主 class-body
+                // pass 分析一次）；否则嵌套 lambda 在首次访问就生成 __lambda_N，主 pass
+                // 再生成一次 → 重复/编号漂移。返回类型：上下文类型（lambdaExpectedRet_）
+                // 优先；否则只 visit 第一个 return 的值推断（等价 C++ inferLambdaReturn）。
+                if (lambdaExpectedRet_ != null) {
+                    call.setRet(lambdaExpectedRet_);
+                    lambdaExpectedRet_ = null;
+                } else {
+                    AstExpr returnValue = null;
+                    if (body != null && body.kind_ == "Return") returnValue = body.value_;
+                    else if (body != null && body.kind_ == "Block") {
+                        for (int i = 0; i < body.bodyStmts().size(); i = i + 1) {
+                            AstStmt stmt = body.bodyStmts().get(i);
+                            if (stmt.kind_ == "Return" && stmt.value_ != null) {
+                                returnValue = stmt.value_;
+                                break;
+                            }
+                        }
+                    }
+                    if (returnValue != null) {
+                        visitExpr(returnValue);
+                        call.setRet(argToAstType(returnValue));
+                    }
+                }
+                sym_.leaveScope();
+                currentClass_ = saveCls;
+                inClass_ = saveInCls;
+                inStruct_ = saveInSt;
                 e.setResolvedKind("function");
                 return "function";
             }
@@ -2475,7 +4089,7 @@ class Sema {
                                 AstEvent ev = evs.get(y);
                                 if (ev.name_ == evName) {
                                     ArrayList<AstParam> evp = ev.params();
-                                    for (int p = 0; p < evp.size(); p = p + 1) declareParam(evp.get(p));
+                                    for (int p = 0; p < evp.size(); p = p + 1) declareParam(evp.get(p), 0);
                                     foundEv = 1;
                                     break;
                                 }
@@ -2489,7 +4103,10 @@ class Sema {
                 ArrayList<AstMappingNode> nds2 = ch.nodes();
                 for (int j = 0; j < nds2.size(); j = j + 1) {
                     AstMappingNode nn = nds2.get(j);
-                    if (nn.lambda_ != null) visitExpr(nn.lambda_);
+                    if (nn.lambda_ != null) {
+                        visitExpr(nn.lambda_);
+                        nn.lambda_.setResolvedKind("int");
+                    }
                 }
             }
         }
@@ -2526,6 +4143,262 @@ class Sema {
                 as.add(de.cloneExpr());
             }
         }
+        // 顶层函数形参列表（默认/命名实参归一化用；仅顶层函数，排除泛型实例）
+        ArrayList<AstParam> findFuncParams(string name) {
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name_ == name && f.typeParams().size() == 0) return f.params();
+            }
+            return null;
+        }
+        // 形参类型 kind 列表（per-arg 类型检查用）
+        ArrayList<string> paramKinds(ArrayList<AstParam> ps) {
+            ArrayList<string> out = new ArrayList<string>();
+            for (int i = 0; i < ps.size(); i = i + 1) {
+                out.add(ps.get(i).type_ != null ? typeToKind(ps.get(i).type_) : "void");
+            }
+            return out;
+        }
+        // C++ namedArgName：赋值实参 LHS 为形参名 → 返回形参名（否则空）
+        string namedArgNameOf(AstExpr a, ArrayList<AstParam> params) {
+            if (a == null || a.kind_ != "Assign") return "";
+            AstExpr tgt = a.lhs_;
+            if (tgt == null || tgt.kind_ != "Identifier") return "";
+            for (int i = 0; i < params.size(); i = i + 1) {
+                if (params.get(i).name_ == tgt.name_) return tgt.name_;
+            }
+            return "";
+        }
+        // C++ satisfiesTraitConstraint：具体类型 AstType 是否满足约束 trait。
+        int satisfiesTraitAst(AstType ct, string trait) {
+            string k = ct != null ? typeToKind(ct) : "void";
+            if (trait == "Numeric") return TKind.isNumeric(k) != 0 ? 1 : 0;
+            if (trait == "Integer") {
+                if (k == "byte" || k == "short" || k == "int" || k == "long"
+                    || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong" || k == "char") return 1;
+                return 0;
+            }
+            if (trait == "Float") return (k == "float" || k == "double") ? 1 : 0;
+            if (trait == "Ordered") {
+                if (k == "byte" || k == "short" || k == "int" || k == "long"
+                    || k == "ubyte" || k == "ushort" || k == "uint" || k == "ulong"
+                    || k == "char" || k == "float" || k == "double" || k == "string") return 1;
+                return 0;
+            }
+            // 接口约束：类实现检查 / 接口类型本身
+            if (k == "class" && ct != null && Str.len(ct.className_) != 0) {
+                string cls = ct.className_;
+                for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                    AstClass c = tu_.classes().get(i);
+                    if (c.name_ == cls && c.iface_ == trait) return 1;
+                }
+                return 0;
+            }
+            if (k == "interface" && ct != null && ct.className_ == trait) return 1;
+            return 0;
+        }
+        // 泛型类 where 约束校验（C++ typeNodeToTypeInfo M2）。任一约束失败返回 1。
+        int checkGenericClassConstraint(string cn, ArrayList<AstType> tas, int line, int col) {
+            int ti2 = -1;
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass c = tu_.classes().get(i);
+                if (c.name_ == cn) { ti2 = i; break; }
+            }
+            if (ti2 < 0) return 0;
+            AstClass tpl = tu_.classes().get(ti2);
+            ArrayList<AstPair> cons = tpl.constraints();
+            for (int ci3 = 0; ci3 < cons.size(); ci3 = ci3 + 1) {
+                string tp = cons.get(ci3).k;
+                string trait = cons.get(ci3).v;
+                int idx = -1;
+                for (int k3 = 0; k3 < tpl.typeParams().size(); k3 = k3 + 1) {
+                    if (tpl.typeParams().get(k3) == tp) { idx = k3; break; }
+                }
+                if (idx < 0 || idx >= tas.size()) continue;
+                AstType arg = tas.get(idx);
+                if (satisfiesTraitAst(arg, trait) == 0) {
+                    diag_.error(line, col, "type argument '" + typeToKind(arg)
+                        + "' does not satisfy constraint '" + tp + " : " + trait
+                        + "' for generic class '" + cn + "'");
+                    return 1;
+                }
+            }
+            return 0;
+        }
+        // C++ planArgMapping：返回每个形参对应的实参索引（-1=缺省），失败返回 null。
+        ArrayList<int> planCallArgs(AstExpr e, ArrayList<AstParam> params) {
+            ArrayList<AstExpr> args = e.args();
+            int nparam = params.size();
+            ArrayList<int> plan = new ArrayList<int>();
+            for (int i = 0; i < nparam; i = i + 1) plan.add(-1);
+            int positional = 0;
+            ArrayList<string> namedNames = new ArrayList<string>();
+            ArrayList<int> namedIdx = new ArrayList<int>();
+            for (int ai = 0; ai < args.size(); ai = ai + 1) {
+                AstExpr a = args.get(ai);
+                string nn = namedArgNameOf(a, params);
+                if (a.kind_ == "NamedArg") { namedNames.add(a.namedName_); namedIdx.add(ai); }
+                else if (Str.len(nn) != 0) { namedNames.add(nn); namedIdx.add(ai); }
+                else positional = positional + 1;
+            }
+            if (positional > nparam) return null;
+            int pi = 0;
+            for (int ai = 0; ai < args.size(); ai = ai + 1) {
+                AstExpr a = args.get(ai);
+                if (a.kind_ == "NamedArg") continue;
+                if (Str.len(namedArgNameOf(a, params)) != 0) continue;
+                plan.set(pi, ai);
+                pi = pi + 1;
+            }
+            for (int ni = 0; ni < namedNames.size(); ni = ni + 1) {
+                int found = 0;
+                for (int i = 0; i < nparam; i = i + 1) {
+                    if (params.get(i).name_ == namedNames.get(ni)) {
+                        if (plan.get(i) >= 0) return null;  // 位置+命名重叠
+                        plan.set(i, namedIdx.get(ni));
+                        found = 1;
+                        break;
+                    }
+                }
+                if (found == 0) return null;
+            }
+            for (int i = 0; i < namedNames.size(); i = i + 1)
+                for (int j = i + 1; j < namedNames.size(); j = j + 1)
+                    if (namedNames.get(i) == namedNames.get(j)) return null;
+            for (int i = 0; i < nparam; i = i + 1)
+                if (plan.get(i) < 0 && params.get(i).defaultExpr_ == null) return null;  // 必填缺失
+            return plan;
+        }
+        // 规范化调用实参（镜像 C++ normalizeArgsToParamDecls）：命名赋值实参 →
+        // NamedArg、重排到形参序、缺省默认补全。成功改写 e.args() 返回 1；
+        // 失败按 C++ 发诊断并置 argsVisited（实参不再访问），返回 0。
+        int normalizeCallArgs(AstExpr e, ArrayList<AstParam> params) {
+            ArrayList<AstExpr> args = e.args();
+            int nparam = params.size();
+            if (nparam == 0) {
+                if (args.size() != 0) {
+                    diag_.error(e.line_, e.col_, "call takes no arguments, but " + args.size() + " given");
+                    for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                    e.setArgsVisited(1);
+                    return 0;
+                }
+                return 1;
+            }
+            // 命名赋值实参 → NamedArg
+            for (int ai = 0; ai < args.size(); ai = ai + 1) {
+                AstExpr a = args.get(ai);
+                string nn = namedArgNameOf(a, params);
+                if (Str.len(nn) != 0 && a.kind_ == "Assign") {
+                    AstExpr na = new AstExpr();
+                    na.setKind("NamedArg");
+                    na.setPos(a.line_, a.col_);
+                    na.setNamedName(nn);
+                    na.setNamedValue(a.rhs_);
+                    args.set(ai, na);
+                }
+            }
+            int positional = 0;
+            ArrayList<string> namedNames = new ArrayList<string>();
+            for (int ai = 0; ai < args.size(); ai = ai + 1) {
+                AstExpr a = args.get(ai);
+                if (a.kind_ == "NamedArg") namedNames.add(a.namedName_);
+                else positional = positional + 1;
+            }
+            // 重复命名实参（C++ fits 拒绝，无额外诊断）
+            for (int i = 0; i < namedNames.size(); i = i + 1)
+                for (int j = i + 1; j < namedNames.size(); j = j + 1)
+                    if (namedNames.get(i) == namedNames.get(j)) {
+                        for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                        e.setArgsVisited(1);
+                        return 0;
+                    }
+            if (positional > nparam) {
+                diag_.error(e.line_, e.col_, "too many arguments: expected at most " + nparam + ", got " + args.size());
+                for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                e.setArgsVisited(1);
+                return 0;
+            }
+            int anyNamed = namedNames.size() != 0 ? 1 : 0;
+            if (anyNamed != 0) {
+                for (int ni = 0; ni < namedNames.size(); ni = ni + 1) {
+                    int found = 0;
+                    for (int pi = 0; pi < nparam; pi = pi + 1)
+                        if (params.get(pi).name_ == namedNames.get(ni)) { found = 1; break; }
+                    if (found == 0) {
+                        diag_.error(e.line_, e.col_, "unknown named argument '" + namedNames.get(ni) + "'");
+                        for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                        e.setArgsVisited(1);
+                        return 0;
+                    }
+                }
+                for (int pi = 0; pi < positional && pi < nparam; pi = pi + 1) {
+                    for (int ni = 0; ni < namedNames.size(); ni = ni + 1) {
+                        if (namedNames.get(ni) == params.get(pi).name_) {
+                            diag_.error(e.line_, e.col_, "parameter '" + params.get(pi).name_ + "' given both by position and by name");
+                            for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                            e.setArgsVisited(1);
+                            return 0;
+                        }
+                    }
+                }
+            }
+            ArrayList<int> provided = new ArrayList<int>();
+            for (int pi = 0; pi < nparam; pi = pi + 1) provided.add(0);
+            for (int pi = 0; pi < positional && pi < nparam; pi = pi + 1) provided.set(pi, 1);
+            for (int ni = 0; ni < namedNames.size(); ni = ni + 1)
+                for (int pi = 0; pi < nparam; pi = pi + 1)
+                    if (params.get(pi).name_ == namedNames.get(ni)) provided.set(pi, 1);
+            for (int pi = 0; pi < nparam; pi = pi + 1) {
+                if (provided.get(pi) == 0 && params.get(pi).defaultExpr_ == null) {
+                    diag_.error(e.line_, e.col_, "missing required argument '" + params.get(pi).name_ + "'");
+                    for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                    e.setArgsVisited(1);
+                    return 0;
+                }
+            }
+            // 成功：位置实参 + 命名实参按形参序重排 + 缺省补全
+            ArrayList<AstExpr> posArgs = new ArrayList<AstExpr>();
+            ArrayList<string> namedN = new ArrayList<string>();
+            ArrayList<AstExpr> namedV = new ArrayList<AstExpr>();
+            for (int ai = 0; ai < args.size(); ai = ai + 1) {
+                AstExpr a = args.get(ai);
+                if (a.kind_ == "NamedArg") { namedN.add(a.namedName_); namedV.add(a.namedValue_); }
+                else posArgs.add(a);
+            }
+            ArrayList<int> nameToIdx = new ArrayList<int>();
+            for (int pi = 0; pi < nparam; pi = pi + 1) {
+                int idx = -1;
+                for (int nj = 0; nj < namedN.size(); nj = nj + 1)
+                    if (namedN.get(nj) == params.get(pi).name_) { idx = nj; break; }
+                nameToIdx.add(idx);
+            }
+            ArrayList<int> provided2 = new ArrayList<int>();
+            ArrayList<int> argOfParam = new ArrayList<int>();
+            for (int pi = 0; pi < nparam; pi = pi + 1) { provided2.add(0); argOfParam.add(-1); }
+            for (int i = 0; i < posArgs.size(); i = i + 1) { provided2.set(i, 1); argOfParam.set(i, i); }
+            for (int pi = 0; pi < nparam; pi = pi + 1) {
+                if (nameToIdx.get(pi) >= 0) { provided2.set(pi, 1); argOfParam.set(pi, posArgs.size() + nameToIdx.get(pi)); }
+            }
+            ArrayList<AstExpr> out = new ArrayList<AstExpr>();
+            for (int pi = 0; pi < nparam; pi = pi + 1) {
+                if (provided2.get(pi) != 0) {
+                    int src = argOfParam.get(pi);
+                    if (src < posArgs.size()) out.add(posArgs.get(src));
+                    else out.add(namedV.get(src - posArgs.size()));
+                } else {
+                    AstParam p = params.get(pi);
+                    if (p.defaultExpr_ == null) {
+                        diag_.error(e.line_, e.col_, "cannot use default value for parameter '" + p.name_ + "' (non-constant expression)");
+                        for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                        e.setArgsVisited(1);
+                        return 0;
+                    }
+                    out.add(p.defaultExpr_.cloneExpr());
+                }
+            }
+            e.setArgs(out);
+            return 1;
+        }
         // 递归声明解构目标叶子变量。
         void declareDestructureTarget(AstDestructureTarget t) {
             if (t == null) return;
@@ -2534,6 +4407,220 @@ class Sema {
             } else {
                 if (Str.len(t.name_) != 0) sym_.declare(t.name_, typeToKind(t.type_));
             }
+        }
+        // ---- F4-L lambda 捕获分析（对齐 C++ collectLambdaLocals/Captures）----
+        int listHas(ArrayList<string> ls, string s) {
+            for (int i = 0; i < ls.size(); i = i + 1) {
+                if (ls.get(i) == s) return 1;
+            }
+            return 0;
+        }
+        // 符号条目 → AstType（cap 属性 / 捕获拷贝局部变量的类型）
+        AstType entryToAstType(SymbolEntry en) {
+            AstType t = new AstType();
+            if (en == null) { t.setBasicName("int"); return t; }
+            if (Str.len(en.elementType_) != 0 || Str.len(en.elementClass_) != 0) {
+                AstType el = new AstType();
+                if (Str.len(en.elementClass_) != 0) el.setClassName(en.elementClass_);
+                else el.setBasicName(en.elementType_);
+                t.setElement(el);
+                    if (en.arraySize_ > 0) t.setArraySize(en.arraySize_);
+                return t;
+            }
+            if (Str.len(en.className_) != 0) { t.setClassName(en.className_); return t; }
+            // F4-L：函数类型符号（(int)->int）——funcRet_ 有值则重建完整函数类型
+            // （捕获槽 / 捕获拷贝 Var 需 dump 出完整类型，而不是裸 "function"）。
+            if (en.type_ == "function" && Str.len(en.funcRet_) != 0) {
+                AstType ret = new AstType();
+                ret.setBasicName(en.funcRet_);
+                t.setFuncReturn(ret);
+                for (int i = 0; i < en.funcParamTypes_.size(); i = i + 1) {
+                    AstType pt = new AstType();
+                    pt.setBasicName(en.funcParamTypes_.get(i));
+                    t.funcParamTypes().add(pt);
+                }
+                return t;
+            }
+            t.setBasicName(en.type_);
+            return t;
+        }
+        // 语句局部变量名（VarDecl 的变量名；不进入嵌套 lambda）
+        void collectStmtLocals(AstStmt st, ArrayList<string> locals) {
+            if (st == null) return;
+            string k = st.kind_;
+            if (k == "Block") {
+                for (int i = 0; i < st.bodyStmts().size(); i = i + 1) collectStmtLocals(st.bodyStmts().get(i), locals);
+            } else if (k == "VarDecl") {
+                for (int i = 0; i < st.decls().size(); i = i + 1) {
+                    string nm = st.decls().get(i).name_;
+                    if (Str.len(nm) != 0 && listHas(locals, nm) == 0) locals.add(nm);
+                }
+            } else if (k == "If") {
+                collectStmtLocals(st.then_, locals);
+                collectStmtLocals(st.else_, locals);
+            } else if (k == "While") {
+                collectStmtLocals(st.body_, locals);
+            } else if (k == "For") {
+                collectStmtLocals(st.init_, locals);
+                collectStmtLocals(st.body_, locals);
+            } else if (k == "ForIn") {
+                collectStmtLocals(st.body_, locals);
+            }
+        }
+        // 表达式遍历：收集 Identifier（用于捕获）
+        void collectExprCaptures(AstExpr e, ArrayList<string> params, ArrayList<string> locals, ArrayList<string> out) {
+            if (e == null) return;
+            string k = e.kind_;
+            if (k == "Identifier") {
+                string nm = e.name_;
+                if (listHas(params, nm) != 0) return;
+                if (listHas(locals, nm) != 0) return;
+                // 引用外层符号（符号表里有）→ 捕获（去重，按首次出现顺序）
+                if (Str.len(sym_.lookup(nm)) != 0 && listHas(out, nm) == 0) out.add(nm);
+                return;
+            }
+            // C++ collectExprCaptures 对嵌套 Lambda 递归：用外层 locals/params
+            // 扫描内层 body，把内层引用的外层符号也捕获到外层（base 这类）。
+            // 内层参数（如 y）此时未进符号表 → sym_.lookup 为空，不会被误捕获。
+            if (k == "Lambda") {
+                if (e.bodyStmt_ != null) collectStmtCaptures(e.bodyStmt_, params, locals, out);
+                return;
+            }
+            if (k == "Binary") { collectExprCaptures(e.lhs_, params, locals, out); collectExprCaptures(e.rhs_, params, locals, out); }
+            else if (k == "Unary") { collectExprCaptures(e.operand_, params, locals, out); }
+            else if (k == "Convert") { collectExprCaptures(e.operand_, params, locals, out); }
+            else if (k == "Assign") { collectExprCaptures(e.lhs_, params, locals, out); collectExprCaptures(e.rhs_, params, locals, out); }
+            else if (k == "Ternary") { collectExprCaptures(e.condition_, params, locals, out); collectExprCaptures(e.trueExpr_, params, locals, out); collectExprCaptures(e.falseExpr_, params, locals, out); }
+            else if (k == "Member") { collectExprCaptures(e.array_, params, locals, out); }
+            else if (k == "Subscript") { collectExprCaptures(e.array_, params, locals, out); collectExprCaptures(e.index_, params, locals, out); }
+            else if (k == "Call") {
+                collectExprCaptures(e.callee_, params, locals, out);
+                for (int i = 0; i < e.args().size(); i = i + 1) collectExprCaptures(e.args().get(i), params, locals, out);
+            } else if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1) collectExprCaptures(e.args().get(i), params, locals, out);
+            } else if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1) collectExprCaptures(e.dimensions().get(i), params, locals, out);
+            } else if (k == "Tuple") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) collectExprCaptures(e.elements().get(i), params, locals, out);
+            } else if (k == "Await") { collectExprCaptures(e.operand_, params, locals, out); }
+            else if (k == "NamedArg") { collectExprCaptures(e.namedValue_, params, locals, out); }
+        }
+        // 语句遍历：收集捕获（Return/ExprStmt/VarDecl init/If/While/For/ForIn/Match）
+        void collectStmtCaptures(AstStmt st, ArrayList<string> params, ArrayList<string> locals, ArrayList<string> out) {
+            if (st == null) return;
+            string k = st.kind_;
+            if (k == "Block") {
+                for (int i = 0; i < st.bodyStmts().size(); i = i + 1) collectStmtCaptures(st.bodyStmts().get(i), params, locals, out);
+            } else if (k == "VarDecl") {
+                for (int i = 0; i < st.decls().size(); i = i + 1) collectExprCaptures(st.decls().get(i).init_, params, locals, out);
+            } else if (k == "ExprStmt") {
+                collectExprCaptures(st.expr_, params, locals, out);
+            } else if (k == "Return") {
+                collectExprCaptures(st.value_, params, locals, out);
+            } else if (k == "If") {
+                collectExprCaptures(st.condition_, params, locals, out);
+                collectStmtCaptures(st.then_, params, locals, out);
+                collectStmtCaptures(st.else_, params, locals, out);
+            } else if (k == "While") {
+                collectExprCaptures(st.condition_, params, locals, out);
+                collectStmtCaptures(st.body_, params, locals, out);
+            } else if (k == "For") {
+                collectStmtCaptures(st.init_, params, locals, out);
+                collectExprCaptures(st.condition_, params, locals, out);
+                collectExprCaptures(st.step_, params, locals, out);
+                collectStmtCaptures(st.body_, params, locals, out);
+            } else if (k == "ForIn") {
+                collectExprCaptures(st.iterable_, params, locals, out);
+                collectStmtCaptures(st.body_, params, locals, out);
+            } else if (k == "Match") {
+                collectExprCaptures(st.subject_, params, locals, out);
+                for (int i = 0; i < st.arms().size(); i = i + 1) {
+                    if (st.arms().get(i).body_ != null) collectStmtCaptures(st.arms().get(i).body_, params, locals, out);
+                }
+            }
+        }
+        // ---- M-FN-2 nonlocal：收集当前 lambda body 内的 `nonlocal name;`（不进入
+        // 嵌套 lambda —— 嵌套 lambda 的 nonlocal 属于它自己）。----
+        void collectExprNonlocal(AstExpr e, ArrayList<string> out) {
+            if (e == null) return;
+            if (e.kind_ == "Lambda") return;
+            string k = e.kind_;
+            if (k == "Binary") { collectExprNonlocal(e.lhs_, out); collectExprNonlocal(e.rhs_, out); }
+            else if (k == "Unary") { collectExprNonlocal(e.operand_, out); }
+            else if (k == "Assign") { collectExprNonlocal(e.lhs_, out); collectExprNonlocal(e.rhs_, out); }
+            else if (k == "Member") { collectExprNonlocal(e.array_, out); }
+            else if (k == "Subscript") { collectExprNonlocal(e.array_, out); collectExprNonlocal(e.index_, out); }
+            else if (k == "Call") {
+                collectExprNonlocal(e.callee_, out);
+                for (int i = 0; i < e.args().size(); i = i + 1) collectExprNonlocal(e.args().get(i), out);
+            } else if (k == "New") {
+                for (int i = 0; i < e.args().size(); i = i + 1) collectExprNonlocal(e.args().get(i), out);
+            } else if (k == "NewArray") {
+                for (int i = 0; i < e.dimensions().size(); i = i + 1) collectExprNonlocal(e.dimensions().get(i), out);
+            } else if (k == "Ternary") {
+                collectExprNonlocal(e.condition_, out);
+                collectExprNonlocal(e.trueExpr_, out);
+                collectExprNonlocal(e.falseExpr_, out);
+            } else if (k == "Tuple") {
+                for (int i = 0; i < e.elements().size(); i = i + 1) collectExprNonlocal(e.elements().get(i), out);
+            }
+        }
+        void collectStmtNonlocal(AstStmt st, ArrayList<string> out) {
+            if (st == null) return;
+            string k = st.kind_;
+            if (k == "Block") {
+                for (int i = 0; i < st.bodyStmts().size(); i = i + 1) collectStmtNonlocal(st.bodyStmts().get(i), out);
+            } else if (k == "Nonlocal") {
+                for (int i = 0; i < st.names().size(); i = i + 1) {
+                    string n = st.names().get(i);
+                    if (listHas(out, n) == 0) out.add(n);
+                }
+            } else if (k == "VarDecl") {
+                for (int i = 0; i < st.decls().size(); i = i + 1) collectExprNonlocal(st.decls().get(i).init_, out);
+            } else if (k == "ExprStmt") {
+                collectExprNonlocal(st.expr_, out);
+            } else if (k == "Return") {
+                collectExprNonlocal(st.value_, out);
+            } else if (k == "If") {
+                collectExprNonlocal(st.condition_, out);
+                collectStmtNonlocal(st.then_, out);
+                collectStmtNonlocal(st.else_, out);
+            } else if (k == "While") {
+                collectExprNonlocal(st.condition_, out);
+                collectStmtNonlocal(st.body_, out);
+            } else if (k == "For") {
+                collectStmtNonlocal(st.init_, out);
+                collectExprNonlocal(st.condition_, out);
+                collectExprNonlocal(st.step_, out);
+                collectStmtNonlocal(st.body_, out);
+            } else if (k == "ForIn") {
+                collectExprNonlocal(st.iterable_, out);
+                collectStmtNonlocal(st.body_, out);
+            } else if (k == "Match") {
+                collectExprNonlocal(st.subject_, out);
+                for (int i = 0; i < st.arms().size(); i = i + 1) {
+                    if (st.arms().get(i).body_ != null) collectStmtNonlocal(st.arms().get(i).body_, out);
+                }
+            }
+        }
+        // 查找/复用 nonlocal cell 类（按类型复用，C++ cell_class_by_type_）
+        string nonlocalCellClass(AstType t) {
+            string key = t != null ? t.str() : "int";
+            for (int i = 0; i < cellClassByTypeKey_.size(); i = i + 1) {
+                if (cellClassByTypeKey_.get(i) == key) return cellClassByTypeVal_.get(i);
+            }
+            string ccell = "__cell_" + cellCounter_;
+            cellCounter_ = cellCounter_ + 1;
+            AstClass cell = new AstClass();
+            cell.setName(ccell);
+            AstProp cv = new AstProp();
+            cv.setName("v");
+            cv.setType(t != null ? t : new AstType());
+            cell.props().add(cv);
+            if (tu_ != null) tu_.classes().add(cell);
+            cellClassByTypeKey_.add(key);
+            cellClassByTypeVal_.add(ccell);
+            return ccell;
         }
 
     property:
@@ -2553,10 +4640,14 @@ class Sema {
         int inClass_;
         int inStruct_;
         int inGpuFor_;
+        int inGpuDivergent_;
         int inMain_;
         string currentRet_;
         int loopDepth_;
         int inCoro_;
+        string currentMethodName_;
+        int inDiscardStmt_;
+        AstType lambdaExpectedRet_;
         AstTU tu_;
         ArrayList<string> coroNames_;
         ArrayList<string> curGeneric_;
@@ -2578,7 +4669,16 @@ class Sema {
         ArrayList<AstAction> gsActions_;
         ArrayList<string> enumNames_;
         ArrayList<ArrayList<string>> enumVariants_;
+        ArrayList<string> bitfieldNames_;
+        ArrayList<ArrayList<string>> bitfieldFieldNames_;
+        ArrayList<ArrayList<int>> bitfieldFieldWidths_;
         ArrayList<string> threadVars_;
         ArrayList<string> startupMethods_;
+        int lambdaCounter_;
+        int cellCounter_;
+        ArrayList<string> cellClassByTypeKey_;
+        ArrayList<string> cellClassByTypeVal_;
+        string lambdaSelfName_;
+        string lambdaSelfClass_;
 }
 

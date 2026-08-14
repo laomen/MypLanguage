@@ -6,6 +6,7 @@
 #include "mylang/DiagnosticEngine.h"
 #include "mylang/Eval.h"
 #include "mylang/Fmt.h"
+#include "mylang/FrontendDump.h"
 #include "mylang/Macro.h"
 #include "mylang/Lexer.h"
 #include "mylang/Parser.h"
@@ -214,6 +215,76 @@ static bool loadModule(const std::string& module_name,
             return false;
     }
     return true;
+}
+
+// --frontend-dump <tokens|ast|sema> — deterministic front-end dump used as the
+// acceptance oracle for the MYP self-hosted compiler (tools/selfhost, F0).
+// Prints the frozen format (see include/mylang/FrontendDump.h) to stdout and
+// returns 0 on success, 1 if diagnostics were produced.
+static int runFrontendDump(const std::string& mode, const std::string& filename,
+                           const std::string& stdlib_path,
+                           const std::string& package_path) {
+    mylang::SourceManager source_mgr;
+    if (!source_mgr.loadFile(filename)) {
+        std::cerr << "Error: cannot open file '" << filename << "'\n";
+        return 1;
+    }
+    mylang::DiagnosticEngine diag(source_mgr);
+
+    std::cout << "MYP_FRONTEND_DUMP v1\n";
+    std::cout << "(Mode " << mode << ")\n";
+
+    mylang::Lexer lexer(source_mgr, diag);
+    auto tokens = lexer.tokenize();
+
+    if (mode == "tokens") {
+        mylang::dumpTokens(std::cout, tokens);
+    } else if (mode == "ast" || mode == "sema") {
+        mylang::Parser parser(tokens, diag);
+        auto ast = parser.parse();
+        if (!diag.hasErrors()) {
+            std::string source_dir = getDir(filename);
+            std::unordered_set<std::string> loaded;
+            for (auto& imp : ast->imports) {
+                if (!loadModule(imp.module_name, imp.file_path, imp.is_path,
+                                source_dir, stdlib_path, package_path, *ast, diag, loaded))
+                    break;
+            }
+        }
+        if (mode == "ast") {
+            mylang::dumpAST(std::cout, *ast, false);
+        } else {
+            mylang::Sema sema(diag);
+            sema.analyze(*ast);
+            mylang::dumpSema(std::cout, *ast);
+        }
+    } else {
+        std::cerr << "Error: unknown --frontend-dump mode '" << mode << "'\n";
+        return 1;
+    }
+
+    // Diagnostics (sorted by line, col, message for determinism) + result.
+    auto diags = diag.getDiagnostics();
+    std::sort(diags.begin(), diags.end(),
+              [](const mylang::Diagnostic& a, const mylang::Diagnostic& b) {
+                  if (a.range.begin.line != b.range.begin.line)
+                      return a.range.begin.line < b.range.begin.line;
+                  if (a.range.begin.column != b.range.begin.column)
+                      return a.range.begin.column < b.range.begin.column;
+                  return a.message < b.message;
+              });
+    std::cout << "(Diagnostics)\n";
+    for (auto& d : diags) {
+        const char* sev = d.severity == 1 ? "error"
+                        : d.severity == 2 ? "warning" : "info";
+        std::cout << "  (Diag line=" << d.range.begin.line
+                  << " col=" << d.range.begin.column
+                  << " sev=" << sev
+                  << " msg=\"" << mylang::escapeDumpString(d.message) << "\")\n";
+    }
+    std::cout << "(Result ok=" << (diag.hasErrors() ? 0 : 1)
+              << " errors=" << diag.errorCount() << ")\n";
+    return diag.hasErrors() ? 1 : 0;
 }
 
 [[nodiscard]] static std::string doCompile(mylang::TranslationUnit& ast,
@@ -702,7 +773,7 @@ static int findSubcommand(int argc, char* argv[]) {
         if (a == "run") return i;
         if (a == "fmt") return i;
         // Flags that consume a following value → skip the value.
-        if (a == "--stdlib" || a == "--package-path" || a == "--passes" || a == "-o") {
+        if (a == "--stdlib" || a == "--package-path" || a == "--passes" || a == "-o" || a == "--frontend-dump") {
             i++;
             continue;
         }
@@ -832,6 +903,7 @@ static int realMain(int argc, char* argv[]) {
     std::string stdlib_path = "stdlib";
     std::string package_path = "";
     std::string output_name_v;
+    std::string frontend_dump_mode;
     int opt_level = 0;
     bool trace_enabled = false;
     bool emit_llvm = false;
@@ -866,6 +938,7 @@ static int realMain(int argc, char* argv[]) {
             std::cout << "  -g, --debug     Emit DWARF debug info (line/var/type)\n";
             std::cout << "  --passes <p>    Run custom MYP pass pipeline (e.g. myp-pass)\n";
             std::cout << "  --macro-expand  Dump expanded AST after macro expansion\n";
+            std::cout << "  --frontend-dump <tokens|ast|sema>  Deterministic front-end dump\n";
             std::cout << "  --version       Show version number\n";
             std::cout << "  --help, -h      Show this help message\n";
             return 0;
@@ -896,6 +969,9 @@ static int realMain(int argc, char* argv[]) {
             macro_expand = true;
         } else if (arg == "--emit-llvm") {
             emit_llvm = true;
+        } else if (arg == "--frontend-dump") {
+            if (i + 1 >= argc) { std::cerr << "Error: --frontend-dump requires an argument\n"; return 1; }
+            frontend_dump_mode = argv[++i];
         } else {
             filenames.push_back(arg);
         }
@@ -917,6 +993,15 @@ static int realMain(int argc, char* argv[]) {
 
     if (trace_enabled) {
         std::cout << "Event tracing enabled (--trace)\n";
+    }
+
+    // --frontend-dump: deterministic front-end oracle (self-hosting F0).
+    if (!frontend_dump_mode.empty()) {
+        if (filenames.size() != 1) {
+            std::cerr << "Error: --frontend-dump requires exactly one input file\n";
+            return 1;
+        }
+        return runFrontendDump(frontend_dump_mode, filenames[0], stdlib_path, package_path);
     }
 
     // Determine output name

@@ -36,6 +36,13 @@ class ArrayList<T> {
             cnt_ = 0;
         }
 
+        // 删除 index 处元素（后续元素前移；越界忽略）。
+        void remove(int index) {
+            if (index < 0 || index >= cnt_) return;
+            for (int i = index; i + 1 < cnt_; i = i + 1) data_[i] = data_[i + 1];
+            cnt_ = cnt_ - 1;
+        }
+
     function:
         void grow() {
             int nc = cap_ * 2;

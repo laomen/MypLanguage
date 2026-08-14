@@ -24,6 +24,13 @@ bool SymbolTable::declare(const std::string& name, const TypeInfo& type) {
     return true;
 }
 
+void SymbolTable::redeclare(const std::string& name, const TypeInfo& type) {
+    if (scopes_.empty()) {
+        scopes_.emplace_back();
+    }
+    scopes_.back().symbols[name] = type;
+}
+
 const TypeInfo* SymbolTable::lookup(const std::string& name) const {
     for (auto it = scopes_.rbegin(); it != scopes_.rend(); ++it) {
         auto found = it->symbols.find(name);

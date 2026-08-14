@@ -13,6 +13,7 @@ import args;
 import io;
 import fs;
 import text;
+import process;
 import "./diag.myp";
 import "./token.myp";
 import "./lexer.myp";
@@ -69,7 +70,8 @@ class LoadedSet {
         int diagLess(Diag a, Diag b) {
             if (a.line() != b.line()) { if (a.line() < b.line()) return 1; return 0; }
             if (a.col() != b.col()) { if (a.col() < b.col()) return 1; return 0; }
-            // 同位置保持产生顺序（C++ 不按 msg 排序）
+            int cm = Str.cmp(a.msg(), b.msg());
+            if (cm != 0) { if (cm < 0) return 1; return 0; }
             return 0;
         }
 
@@ -160,7 +162,11 @@ class LoadedSet {
         }
 
         // 路径规范化：去掉 "./" 片段与空段，作为 dedup key（对齐 C++ normalizePath）。
+        // 注意：必须保留前导 '/'（绝对路径）——否则 /home/x 会退化成 home/x，
+        // Fs.exists 找不到文件、loadModule 中断整个 import 链（绝对路径根文件必挂）。
         string normalizePath(string p) {
+            int hasRoot = 0;
+            if (Str.len(p) != 0 && __myp_ord(Str.substring(p, 0, 1)) == 47) hasRoot = 1;
             ArrayList<string> parts = new ArrayList<string>();
             int start = 0;
             for (int i = 0; i <= Str.len(p); i = i + 1) {
@@ -171,6 +177,7 @@ class LoadedSet {
                 }
             }
             StringBuilder sb = new StringBuilder();
+            if (hasRoot != 0) sb.append("/");
             for (int i = 0; i < parts.size(); i = i + 1) {
                 if (i != 0) sb.append("/");
                 sb.append(parts.get(i));
@@ -306,6 +313,54 @@ class LoadedSet {
 
 @static class Cli {
     static:
+        string findCompiler() {
+            string cc = Console.getEnv("MYP_CC");
+            if (Str.len(cc) > 0 && Fs.isFile(cc) != 0) return cc;
+            if (Fs.isFile("./build/mypc") != 0) return "./build/mypc";
+            if (Fs.isFile("build/mypc") != 0) return "build/mypc";
+            return "mypc";
+        }
+
+        string findStdlib(string compiler) {
+            string s = Console.getEnv("MYP_STDLIB");
+            if (Str.len(s) > 0 && Fs.isDir(s) != 0) return s;
+            string dir = Fs.dirname(compiler);
+            string root = Fs.dirname(dir);
+            string cand = Fs.join(root, "stdlib");
+            if (Fs.isDir(cand) != 0) return cand;
+            return "";
+        }
+
+        string quoteShell(string s) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("\"");
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                string ch = Str.substring(s, i, i + 1);
+                if (ch == "\"") sb.append("\\\"");
+                else if (ch == "\\") sb.append("\\\\");
+                else sb.append(ch);
+            }
+            sb.append("\"");
+            return sb.toString();
+        }
+
+        int delegateToMypc(string subcmd) {
+            string compiler = Cli.findCompiler();
+            StringBuilder cmd = new StringBuilder();
+            cmd.append(compiler);
+            if (subcmd == "run") {
+                string stdlib = Cli.findStdlib(compiler);
+                if (Str.len(stdlib) > 0) cmd.append(" --stdlib " + stdlib);
+            }
+            cmd.append(" " + subcmd);
+            int i = 2;
+            while (i < Args.count()) {
+                cmd.append(" " + Cli.quoteShell(Args.get(i)));
+                i = i + 1;
+            }
+            return Process.run(cmd.toString());
+        }
+
         int run() {
             int argc = Args.count();
             if (argc < 2) {
@@ -320,6 +375,16 @@ class LoadedSet {
             if (arg == "--help" || arg == "-h") {
                 Cli.printHelp();
                 return 0;
+            }
+            if (arg == "run") {
+                if (argc < 3) {
+                    Console.writeLine("Usage: myp_self run <file.myp> [args...]");
+                    return 1;
+                }
+                return Cli.delegateToMypc("run");
+            }
+            if (arg == "fmt") {
+                return Cli.delegateToMypc("fmt");
             }
             if (arg == "--frontend-dump") {
                 if (argc < 4) {

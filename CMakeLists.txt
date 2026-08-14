@@ -90,6 +90,7 @@ set(SOURCES
     src/token.cpp
     src/lexer/lexer.cpp
     src/ast/ast.cpp
+    src/frontend_dump.cpp
     src/parser/parser.cpp
     src/parser/parser_stmt.cpp
     src/parser/parser_expr.cpp
@@ -256,6 +257,41 @@ add_custom_command(
     VERBATIM
 )
 add_custom_target(myp_viz2 ALL DEPENDS ${MYP_VIZ_OUT})
+
+# ---- Self-Hosted Compiler skeleton (tools/selfhost, built with mypc) ----
+# 全自举编译器（T5，非 GPU）：CLI 骨架。见 tools/selfhost/design.md + roadmap.md。
+# F0 仅构建骨架（main.myp）；F1+ 把实现的模块加入 MYP_SELF_MODULES 随构建。
+# 依赖 mypc（C++ 编译器作为 stage0 编译本自举编译器）。
+set(MYP_SELF_SRC ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp)
+set(MYP_SELF_MODULES
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/token.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/lexer.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/ast.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/parser.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/parser_expr.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/type.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/diag.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/sema.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/ir_emit.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_expr.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_stmt.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_class.myp
+    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/link.myp
+)
+set(MYP_SELF_OUT ${CMAKE_BINARY_DIR}/myp_self)
+
+add_custom_command(
+    OUTPUT ${MYP_SELF_OUT}
+    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_SELF_SRC} -o ${MYP_SELF_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} mypc
+    COMMENT "Building self-hosted compiler skeleton (tools/selfhost -> myp_self)"
+    VERBATIM
+)
+add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)

@@ -18,6 +18,10 @@ public:
     void leaveScope();
 
     bool declare(const std::string& name, const TypeInfo& type);
+    // Overwrite the binding in the current scope (create if absent). Used by
+    // tuple destructure declarations so a re-declared name shadows the previous
+    // one (MYP last-wins), instead of silently keeping the stale first type.
+    void redeclare(const std::string& name, const TypeInfo& type);
     const TypeInfo* lookup(const std::string& name) const;
 
     bool isGlobalScope() const;

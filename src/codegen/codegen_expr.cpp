@@ -378,9 +378,14 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         return cat;
     }
 
-    // For string equality (== / !=), use myp_str_eq for content comparison
+    // For string equality (== / !=), use myp_str_eq for content comparison.
+    // Only when BOTH operands are actually string-typed: a bare isPointerTy()
+    // check would also match class refs and array pointers, wrongly doing a
+    // strcmp on their memory (class instances with equal first bytes compared
+    // "equal"; null comparisons called strcmp(NULL) and crashed).
     if (runtime_str_eq_ && (e.op == BinaryOpKind::Eq || e.op == BinaryOpKind::Ne) &&
-        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp) {
+        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp &&
+        e.lhs->resolved_kind == TypeKind::String && e.rhs->resolved_kind == TypeKind::String) {
         auto* result = builder_.CreateCall(runtime_str_eq_, {l, r}, "streq");
         if (e.op == BinaryOpKind::Ne) {
             return builder_.CreateICmpEQ(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
@@ -388,10 +393,13 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
             return builder_.CreateICmpNE(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
         }
     }
-    // P1 §6.4：string 词法比较（< <= > >=），经 myp_str_cmp（strcmp 语义）
+    // P1 §6.4：string 词法比较（< <= > >=），经 myp_str_cmp（strcmp 语义）。
+    // 同样仅限 string 操作数——类/数组指针的 < > 应比较地址（LLVM 整数比较），
+    // 而非把指针内容当字符串。
     if ((e.op == BinaryOpKind::Lt || e.op == BinaryOpKind::Gt ||
          e.op == BinaryOpKind::Le || e.op == BinaryOpKind::Ge) &&
-        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp) {
+        l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp &&
+        e.lhs->resolved_kind == TypeKind::String && e.rhs->resolved_kind == TypeKind::String) {
         auto* cmp = module_->getFunction("myp_str_cmp");
         if (!cmp) {
             auto* ft = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_),
@@ -1013,9 +1021,24 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
         auto& oi = static_cast<const IdentifierExpr&>(obj);
         auto v = var_class_map_.find(oi.name);
         if (v != var_class_map_.end()) return v->second;
-        if (current_tu_)
+        if (current_tu_) {
             for (auto& c : current_tu_->classes)
                 if (c.name == oi.name) return c.name;   // static call
+            // Bare property inside a method (`functions_` → `this.functions_`):
+            // resolve the property's concrete class (e.g. ArrayList_AstFunction_inst)
+            // so `functions_.get(i).dump(...)` chains dispatch to the property's
+            // element class instead of the name-only fallback.
+            if (!current_class_name_.empty()) {
+                for (auto& c : current_tu_->classes) {
+                    if (c.name != current_class_name_) continue;
+                    for (auto& p : c.properties) {
+                        if (p.name == oi.name && !p.type.class_name.empty())
+                            return mangleConcreteTypeNode(p.type);
+                    }
+                    break;
+                }
+            }
+        }
         return "";
     }
     if (obj.kind == ExprKind::ThisExpr) return current_class_name_;
@@ -1037,6 +1060,39 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
             cn += "_inst";
         }
         return cn;
+    }
+    // Property access (`this.list_` / `obj.list_`): resolve the property's
+    // concrete class so `this.list_.method()` and `obj.list_.method()` chains
+    // dispatch to the property's type (e.g. ArrayList_AstFunction_inst) instead
+    // of the name-only fallback picking the first class with that method name.
+    // Without this, `functions_.get(i).dump(...)` inside a dump method resolved
+    // `.dump` to the first class defining `dump` (AstParam) — wrong method.
+    if (obj.kind == ExprKind::MemberAccess) {
+        auto& ma = static_cast<const MemberAccessExpr&>(obj);
+        std::string owner;
+        if (ma.object->kind == ExprKind::ThisExpr) {
+            owner = current_class_name_;
+        } else if (ma.object->kind == ExprKind::Identifier) {
+            auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+            auto v = var_class_map_.find(oid.name);
+            if (v != var_class_map_.end()) owner = v->second;
+            else if (current_tu_)
+                for (auto& c : current_tu_->classes)
+                    if (c.name == oid.name) { owner = c.name; break; }  // static
+        }
+        if (!owner.empty() && current_tu_) {
+            for (auto& c : current_tu_->classes) {
+                if (c.name != owner) continue;
+                for (auto& prop : c.properties) {
+                    if (prop.name == ma.member_name) {
+                        if (prop.type.class_name.empty()) return "";
+                        return mangleConcreteTypeNode(prop.type);
+                    }
+                }
+                break;
+            }
+        }
+        return "";
     }
     if (obj.kind == ExprKind::Call)
         return callReturnClassName(static_cast<const CallExpr&>(obj));
@@ -1702,7 +1758,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             // the template's placeholder signature.
             else if (ma.object->kind == ExprKind::Subscript ||
                      ma.object->kind == ExprKind::NewExpr ||
-                     ma.object->kind == ExprKind::Call) {
+                     ma.object->kind == ExprKind::Call ||
+                     ma.object->kind == ExprKind::MemberAccess) {
                 obj_cls = memberObjectClassName(*ma.object);
             }
             for (auto& cls : current_tu_->classes) {
@@ -1751,7 +1808,8 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     if (cls.name == oid2.name) { fb_obj_cls = cls.name; break; }
             } else if (ma.object->kind == ExprKind::Subscript ||
                        ma.object->kind == ExprKind::NewExpr ||
-                       ma.object->kind == ExprKind::Call) {
+                       ma.object->kind == ExprKind::Call ||
+                       ma.object->kind == ExprKind::MemberAccess) {
                 fb_obj_cls = memberObjectClassName(*ma.object);
             }
             // First, if the object is a KNOWN class name (static method call like

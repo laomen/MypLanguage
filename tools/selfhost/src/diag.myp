@@ -36,6 +36,9 @@ class DiagEngine {
             list_.add(new Diag(line, col, "error", msg));
             errors_ = errors_ + 1;
         }
+        void warn(int line, int col, string msg) {
+            list_.add(new Diag(line, col, "warning", msg));
+        }
         void reset() {
             list_.clear();
             errors_ = 0;

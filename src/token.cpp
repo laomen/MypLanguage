@@ -53,6 +53,8 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Keyword_ref:        return "ref";
         case TokenKind::Keyword_operator:   return "operator";
         case TokenKind::Keyword_macro:      return "macro";
+        case TokenKind::Keyword_nonlocal:   return "nonlocal";
+        case TokenKind::Keyword_bitfield:   return "bitfield";
         case TokenKind::Keyword_where:      return "where";
         case TokenKind::Keyword_await:      return "await";
         case TokenKind::Keyword_const:      return "const";
@@ -81,6 +83,8 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Type_int4:          return "int4";
         case TokenKind::Type_bool:          return "bool";
         case TokenKind::Type_string:        return "string";
+        case TokenKind::Type_bit:           return "bit";
+        case TokenKind::Type_bitvector:     return "bitvector";
 
         case TokenKind::Plus:               return "+";
         case TokenKind::Minus:              return "-";
@@ -128,6 +132,7 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Amp:                return "&";
         case TokenKind::Caret:              return "^";
         case TokenKind::Pipe:               return "|";
+        case TokenKind::Tilde:              return "~";
         case TokenKind::PipeForward:        return "|>";
         default:                            return "?";
     }

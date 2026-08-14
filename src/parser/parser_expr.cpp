@@ -856,8 +856,14 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return l;
     }
     if (check(TokenKind::Identifier)) {
-        return std::make_unique<IdentifierExpr>(
-            parseIdentifier("expected identifier"), previous().range);
+        // ⚠ Function-argument evaluation order is unspecified in C++: passing
+        // `parseIdentifier(...)` and `previous().range` as sibling arguments let
+        // the compiler read previous() BEFORE the parse advances, so the
+        // identifier got the previous token's range (e.g. the `{` of a block)
+        // instead of its own → wrong "undefined symbol" diagnostics. Sequence
+        // the parse first, then read the freshly-advanced previous().
+        std::string nm = parseIdentifier("expected identifier");
+        return std::make_unique<IdentifierExpr>(nm, previous().range);
     }
     if (check(TokenKind::Dollar)) {
         // Macro template parameter: $name → MacroParamExpr placeholder.

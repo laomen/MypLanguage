@@ -64,6 +64,9 @@ class AstType {
         }
         ArrayList<AstType> typeArgs() { return typeArgs_; }
         ArrayList<AstType> funcParamTypes() { return funcParamTypes_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setBasicName(string v) { basicName_ = v; }
         void setClassName(string v) { className_ = v; }
         void setElement(AstType v) { element_ = v; }
@@ -134,6 +137,8 @@ class AstType {
         AstType funcReturn_;
         int isTuple_;
         int bitvectorWidth_;
+        int line_;
+        int col_;
 }
 
 // ---- 声明 ----
@@ -151,6 +156,7 @@ class AstParam {
         void setRef(int v) { ref_ = v; }
         void setHasDefault(int v) { hasDefault_ = v; }
         void setDefaultExpr(AstExpr v) { defaultExpr_ = v; }
+        AstExpr defaultExpression() { return defaultExpr_; }
         void dump(StringBuilder sb, int ind) {
             StringBuilder s = new StringBuilder();
             s.append(Dump.pad(ind));
@@ -231,6 +237,7 @@ class AstProp {
             init_ = null;
         }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setType(AstType v) { type_ = v; }
         void setConst(int v) { const_ = v; }
         void setWeak(int v) { weak_ = v; }
@@ -252,6 +259,8 @@ class AstProp {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         AstType type_;
         int const_;
         int weak_;
@@ -262,6 +271,8 @@ class AstAction {
     action:
         @constructor AstAction() {
             name_ = "";
+            line_ = 0;
+            col_ = 0;
             ret_ = null;
             startup_ = 0;
             ctor_ = 0;
@@ -279,6 +290,7 @@ class AstAction {
         ArrayList<AstPair> constraints() { return constraints_; }
         ArrayList<AstParam> params() { return params_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setRet(AstType v) { ret_ = v; }
         void setStartup(int v) { startup_ = v; }
         void setCtor(int v) { ctor_ = v; }
@@ -318,6 +330,8 @@ class AstAction {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         AstType ret_;
         int startup_;
         int ctor_;
@@ -360,6 +374,7 @@ class AstStruct {
         ArrayList<AstProp> props() { return props_; }
         ArrayList<AstFunction> funcs() { return funcs_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setParent(string v) { parent_ = v; }
         void dump(StringBuilder sb, int ind) {
             Dump.line(sb, ind, "(Struct name=\"" + Dump.esc(name_) + "\" parent=\"" + Dump.esc(parent_) + "\")");
@@ -368,6 +383,8 @@ class AstStruct {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         string parent_;
         ArrayList<AstProp> props_;
         ArrayList<AstFunction> funcs_;
@@ -440,6 +457,7 @@ class AstClass {
         ArrayList<AstFunction> funcs() { return funcs_; }
         ArrayList<AstStruct> structs() { return structs_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setIsStatic(int v) { isStatic_ = v; }
         void setIsGenericInst(int v) { isGenericInst_ = v; }
         void setLambda(string v) { lambda_ = v; }
@@ -471,6 +489,8 @@ class AstClass {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         int isStatic_;
         int isGenericInst_;
         string lambda_;
@@ -542,6 +562,7 @@ class AstFunction {
         ArrayList<AstType> instTypeArgs() { return instTypeArgs_; }
         ArrayList<AstParam> params() { return params_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setRet(AstType v) { ret_ = v; }
         void setGenericInst(int v) { genericInst_ = v; }
         void setTest(int v) { test_ = v; }
@@ -567,6 +588,8 @@ class AstFunction {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         AstType ret_;
         int genericInst_;
         int test_;
@@ -595,12 +618,15 @@ class AstEnum {
         }
         ArrayList<AstEnumVariant> variants() { return variants_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void dump(StringBuilder sb, int ind) {
             Dump.line(sb, ind, "(Enum name=\"" + Dump.esc(name_) + "\")");
             for (int i = 0; i < variants_.size(); i = i + 1) variants_.get(i).dump(sb, ind + 2);
         }
     property:
         string name_;
+        int line_;
+        int col_;
         ArrayList<AstEnumVariant> variants_;
 }
 
@@ -837,6 +863,7 @@ class AstStmt {
         ArrayList<string> names() { return names_; }
         void setKind(string v) { kind_ = v; }
         void setPos(int l, int c) { line_ = l; col_ = c; }
+        void setEndPos(int l, int c) { endLine_ = l; endCol_ = c; }
         void setCondition(AstExpr v) { condition_ = v; }
         void setThen(AstStmt v) { then_ = v; }
         void setElse(AstStmt v) { else_ = v; }
@@ -888,6 +915,10 @@ class AstStmt {
         void setEndExpr(AstExpr v) { endExpr_ = v; }
         void setTimeout(AstExpr v) { timeout_ = v; }
         void setIterable(AstExpr v) { iterable_ = v; }
+        AstExpr iterable() { return iterable_; }
+        string loopVarName() { return varName_; }
+        int loopHasType() { return hasType_; }
+        AstType loopVarType() { return varType_; }
         void dump(StringBuilder sb, int ind) {
             if (kind_ == "Block") {
                 Dump.line(sb, ind, "(Block)");
@@ -1001,6 +1032,8 @@ class AstStmt {
         string kind_;
         int line_;
         int col_;
+        int endLine_;
+        int endCol_;
         ArrayList<AstStmt> bodyStmts_;
         AstExpr condition_;
         AstStmt then_;
@@ -1104,6 +1137,7 @@ class AstDestructureTarget {
         }
         ArrayList<AstDestructureTarget> elements() { return elements_; }
         void setName(string v) { name_ = v; }
+        void setPos(int l, int c) { line_ = l; col_ = c; }
         void setType(AstType v) { type_ = v; }
         void setHasType(int v) { hasType_ = v; }
         void dump(StringBuilder sb, int ind) {
@@ -1117,6 +1151,8 @@ class AstDestructureTarget {
         }
     property:
         string name_;
+        int line_;
+        int col_;
         AstType type_;
         int hasType_;
         ArrayList<AstDestructureTarget> elements_;
@@ -1129,6 +1165,8 @@ class AstExpr {
             kind_ = "";
             line_ = 0;
             col_ = 0;
+            endLine_ = 0;
+            endCol_ = 0;
             value_ = 0L;
             isLong_ = 0;
             isUnsigned_ = 0;
@@ -1192,6 +1230,7 @@ class AstExpr {
             type_ = null;
             resolvedKind_ = "";
             argsVisited_ = 0;
+            callParamTypes_ = null;
         }
         void setType(AstType v) { type_ = v; }
         void setResolvedKind(string v) { resolvedKind_ = v; }
@@ -1216,7 +1255,13 @@ class AstExpr {
         void setElements(ArrayList<AstExpr> v) { elements_ = v; }
         void setKind(string v) { kind_ = v; }
         void setPos(int l, int c) { line_ = l; col_ = c; }
+        string kindName() { return kind_; }
+        string identifierName() { return name_; }
+        string resolvedClassName() { return resolvedClass_; }
+        string valueClassName() { return valueClass_; }
+        void setEndPos(int l, int c) { endLine_ = l; endCol_ = c; }
         void setValue(long v) { value_ = v; }
+        long integerValue() { return value_; }
         void setIsLong(int v) { isLong_ = v; }
         void setIsUnsigned(int v) { isUnsigned_ = v; }
         void setIsChar(int v) { isChar_ = v; }
@@ -1262,6 +1307,8 @@ class AstExpr {
         void setStmt(AstStmt v) { stmt_ = v; }
         void setResultKind(string v) { resultKind_ = v; }
         void setStringValue(string v) { stringValue_ = v; }
+        ArrayList<string> callParamTypes() { return callParamTypes_; }
+        void setCallParamTypes(ArrayList<string> v) { callParamTypes_ = v; }
         void setBodyStmt(AstStmt v) { bodyStmt_ = v; }
         void setLhsUnsigned(int v) { lhsUnsigned_ = v; }
         void setRhsUnsigned(int v) { rhsUnsigned_ = v; }
@@ -1271,6 +1318,8 @@ class AstExpr {
         AstExpr cloneExpr() {
             AstExpr c = new AstExpr();
             c.setKind(kind_);
+            c.setPos(line_, col_);
+            c.setEndPos(endLine_, endCol_);
             c.setValue(value_);
             c.setIsLong(isLong_);
             c.setIsUnsigned(isUnsigned_);
@@ -1434,6 +1483,8 @@ class AstExpr {
         string kind_;
         int line_;
         int col_;
+        int endLine_;
+        int endCol_;
         long value_;
         int isLong_;
         int isUnsigned_;
@@ -1497,6 +1548,7 @@ class AstExpr {
         AstType type_;
         int argsVisited_;
         string resolvedKind_;
+        ArrayList<string> callParamTypes_;
 }
 
 // ---- 通用 ----

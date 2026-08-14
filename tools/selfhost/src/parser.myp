@@ -121,6 +121,8 @@ class Parser {
 
         AstClass parseClass() {
             AstClass c = new AstClass();
+            Tok classPrev = tokAt(current_ - 1);
+            c.setPos(classPrev.line(), classPrev.col());
             c.setName(parseIdentifier("expected class name"));
             if (matchKind("<") != 0) {
                 ArrayList<string> tps = parseTypeParamList();
@@ -170,18 +172,23 @@ class Parser {
                 if (s != null) { s.setParent(c.name_); c.structs().add(s); }
                 return;
             }
+            int sectionLine = peekLine();
+            int sectionCol = peekCol();
             consume(":", "expected ':' after '" + sec + "'");
             if (sec == "static") {
                 c.setIsStatic(1);
                 while (sectionMore(c) == 1) {
                     if (checkType() != 0 || curKind() == "void" || curKind() == "@") {
-                        c.staticActions().add(parseActionDecl());
+                        AstAction a = parseActionDecl();
+                        a.setPos(sectionLine, sectionCol);
+                        c.staticActions().add(a);
                     } else break;
                 }
             } else if (sec == "action") {
                 while (sectionMore(c) == 1) {
                     if (checkType() != 0 || curKind() == "void" || curKind() == "@") {
                         AstAction a = parseActionDecl();
+                        a.setPos(sectionLine, sectionCol);
                         if (a.name_ == c.name_) a.setCtor(1);
                         c.actions().add(a);
                     } else break;
@@ -315,6 +322,8 @@ class Parser {
 
         AstProp parsePropertyDecl() {
             AstProp d = new AstProp();
+            Tok propPrev = tokAt(current_ - 1);
+            d.setPos(propPrev.line(), propPrev.col());
             if (curKind() == "@") {
                 advance();
                 string annot = parseIdentifier("expected annotation name");
@@ -363,6 +372,8 @@ class Parser {
 
         AstStruct parseStruct() {
             AstStruct d = new AstStruct();
+            Tok structPrev = tokAt(current_ - 1);
+            d.setPos(structPrev.line(), structPrev.col());
             if (curKind() == "identifier" && peekNextKind() == "::") {
                 d.setParent(parseIdentifier("expected class name"));
                 consume("::", "expected '::'");
@@ -456,6 +467,8 @@ class Parser {
 
         AstFunction parseFunction() {
             AstFunction f = new AstFunction();
+            Tok functionPrev = tokAt(current_ - 1);
+            f.setPos(functionPrev.line(), functionPrev.col());
             if (curKind() == "@") {
                 advance();
                 string annot = "";
@@ -617,6 +630,8 @@ class Parser {
 
         AstEnum parseEnumDecl() {
             AstEnum d = new AstEnum();
+            Tok enumPrev = tokAt(current_ - 1);
+            d.setPos(enumPrev.line(), enumPrev.col());
             d.setName(parseIdentifier("expected enum name"));
             consume("{", "expected '{' after enum name");
             while (curKind() != "}" && isAtEnd() == 0) {
@@ -948,11 +963,14 @@ class Parser {
             s.setTarget(root);
             s.setValue(parseExpr());
             consume(";", "expected ';' after destructure assignment");
+            Tok dstEnd = tokAt(current_ - 1);
+            s.setEndPos(dstEnd.line(), dstEnd.col());
             s.setIsDecl(destructureHasType(root));
             return s;
         }
 
         void parseDestructureElement(AstDestructureTarget t) {
+            t.setPos(peekLine(), peekCol());
             if (curKind() == "(") {
                 advance();
                 while (true) {
@@ -1472,8 +1490,10 @@ class Parser {
             if (k == "=") {
                 advance();
                 AstExpr value = parseAssignment();
+                Tok assignEnd = tokAt(current_ - 1);
                 AstExpr a = new AstExpr();
                 a.setKind("Assign");
+                a.setPos(assignEnd.line(), assignEnd.col());
                 a.setLhs(expr);
                 a.setRhs(value);
                 return a;
@@ -1488,6 +1508,7 @@ class Parser {
             if (Str.len(cop) != 0) {
                 advance();
                 AstExpr value = parseAssignment();
+                Tok compoundEnd = tokAt(current_ - 1);
                 AstExpr bin = new AstExpr();
                 bin.setKind("Binary");
                 bin.setOp(cop);
@@ -1495,6 +1516,7 @@ class Parser {
                 bin.setRhs(value);
                 AstExpr a = new AstExpr();
                 a.setKind("Assign");
+                a.setPos(compoundEnd.line(), compoundEnd.col());
                 a.setLhs(expr);
                 a.setRhs(bin);
                 return a;
@@ -2215,7 +2237,10 @@ class Parser {
                 e.args().add(parseExpr());
                 while (matchKind(",") != 0) e.args().add(parseExpr());
             }
+            int el = peekLine();
+            int ec = peekCol();
             consume(")", "expected ')' after new arguments");
+            e.setEndPos(el, ec);
             return e;
         }
 
@@ -2274,6 +2299,8 @@ class Parser {
         // ---- 类型 ----
         AstType parseType() {
             AstType t = new AstType();
+            // 记录类型 token 位置（C++ decl.range = 类型位置，供 unknown type 诊断）
+            t.setPos(peekLine(), peekCol());
             // 函数类型：(A,B)->R / ()->R
             if (curKind() == "(" && scanFunctionType() != 0) {
                 advance();

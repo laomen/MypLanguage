@@ -1128,14 +1128,17 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
                         const TypeInfo& et = tup.tuple_types[idx];
                         idx++;
                         if (ds.is_decl) {
-                            // Declare: explicit type or infer from element
+                            // Declare: explicit type or infer from element.
+                            // redeclare (not declare) so a same-scope name shadow
+                            // takes the destructured element type (MYP last-wins);
+                            // declare() would silently keep the stale first type.
                             TypeInfo lt = t.has_type ? typeNodeToTypeInfo(t.type) : et;
                             if (t.has_type && !typesCompatible(lt, et)) {
                                 error(t.range, "destructure: variable '" + t.name +
                                     "' declared as '" + typeName(lt) + "' but element is '" +
                                     typeName(et) + "'");
                             }
-                            symbol_table_.declare(t.name, lt);
+                            symbol_table_.redeclare(t.name, lt);
                         } else {
                             auto* existing = symbol_table_.lookup(t.name);
                             if (!existing) {

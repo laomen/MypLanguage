@@ -23,6 +23,8 @@ node_modules/
 *.bin
 deeplearning/data/
 
+/go/
+
 # Large downloaded archives
 *.zip
 raylib-master*
