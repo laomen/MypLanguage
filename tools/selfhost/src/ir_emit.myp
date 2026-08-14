@@ -87,6 +87,7 @@ import "./ast.myp";
             if (lt == "ptr") return "null";
             if (Str.startsWith(lt, "{") != 0) return "zeroinitializer";
             if (Str.startsWith(lt, "[") != 0) return "zeroinitializer";
+            if (Str.startsWith(lt, "%") != 0) return "zeroinitializer";   // 命名 struct
             return "0";
         }
 

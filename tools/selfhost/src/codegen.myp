@@ -167,6 +167,10 @@ class CodeGen {
             if (rt != null && Str.len(rt.className_) != 0 && isEnumName(rt.className_) != 0) {
                 return enumLlvmType(rt.className_);
             }
+            // struct 类型 → 命名结构体 %Point
+            if (rt != null && Str.len(rt.className_) != 0 && isStructName(rt.className_) != 0) {
+                return "%" + rt.className_;
+            }
             return IrEmit.llvmType(rt);
         }
 
@@ -250,6 +254,7 @@ class CodeGen {
             if (rt.className_ == "slice") return 0;
             if (Str.len(rt.className_) != 0) {
                 if (isEnumName(rt.className_) != 0) return 0;   // 枚举是值类型
+                if (isStructName(rt.className_) != 0) return 0; // struct 是值类型
                 return 1;   // 类实例/接口引用
             }
             return 0;
@@ -447,6 +452,8 @@ class CodeGen {
             }
             // 类结构体类型定义（属性布局）
             emitClassTypes();
+            // struct 类型定义（%Point = type { ... }）
+            emitStructTypes();
             // 类 type_id 全局（release/max/type_name 表）——函数体之前（catch 分发用）
             emitTypeIdGlobals();
             // 接口 vtable + __myp_error_vtables（函数体之前，catch (Error) 分发用）
@@ -600,6 +607,18 @@ class CodeGen {
         // Member 表达式的字段地址（obj.field / this.field → GEP）。
         string memberAddr(AstExpr m) {
             AstExpr obj = m.array_;
+            // struct 成员：obj 是 struct 局部（alloca 指针）→ 直接 GEP alloca
+            if (obj != null && obj.kind_ == "Identifier") {
+                AstType oat = varAstType(obj.name_);
+                if (oat != null && Str.len(oat.className_) != 0 && isStructName(oat.className_) != 0) {
+                    string stName = oat.className_;
+                    string base = varAlloca(obj.name_);
+                    int idx = structFieldIndex(stName, m.memberName_);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr %" + stName + ", ptr " + base + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
             string objV = genExpr(obj);
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
@@ -612,6 +631,13 @@ class CodeGen {
 
         // Member 表达式的字段 LLVM 类型。
         string memberFieldType(AstExpr m) {
+            AstExpr obj = m.array_;
+            if (obj != null && obj.kind_ == "Identifier") {
+                AstType oat = varAstType(obj.name_);
+                if (oat != null && Str.len(oat.className_) != 0 && isStructName(oat.className_) != 0) {
+                    return structFieldType(oat.className_, m.memberName_);
+                }
+            }
             string cls = m.resolvedClass_;
             if (Str.len(cls) == 0) cls = "Object";
             return propType(cls, m.memberName_);
@@ -2619,6 +2645,22 @@ class CodeGen {
             if (k == "This") return "ptr";
             if (k == "Lambda") return "{ ptr, ptr }";
             if (k == "NamedArg") return exprLlvmType(e.namedValue_);
+            if (k == "Binary") {
+                string op = e.op_;
+                // 比较/逻辑运算产物恒为 i1（泛型函数内 resolvedKind 为 int，
+                // 但 codegen 的 genExpr 仍产出 i1 → 不能按 resolvedKind 判）
+                if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
+                    || op == "&&" || op == "||") return "i1";
+                // 字符串拼接 → ptr
+                AstExpr lhs = e.lhs_;
+                AstExpr rhs = e.rhs_;
+                if (op == "+") {
+                    int ls = (lhs != null && lhs.resolvedKind_ == "string") ? 1 : 0;
+                    int rs = (rhs != null && rhs.resolvedKind_ == "string") ? 1 : 0;
+                    if (ls != 0 || rs != 0) return "ptr";
+                }
+                return IrEmit.kindType(e.resolvedKind_);
+            }
             if (k == "Tuple") {
                 StringBuilder ty = new StringBuilder();
                 ty.append("{ ");
@@ -2823,6 +2865,104 @@ class CodeGen {
                 if (tu_.enums().get(i).name_ == name) return 1;
             }
             return 0;
+        }
+
+        // name 是否为 struct 名（顶层 + 类内嵌套）。
+        int isStructName(string name) {
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                if (tu_.structs().get(i).name_ == name) return 1;
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                    if (tu_.classes().get(ci).structs().get(si).name_ == name) return 1;
+                }
+            }
+            return 0;
+        }
+
+        // struct 字段索引（按声明顺序）。
+        int structFieldIndex(string name, string field) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                if (st.name_ != name) continue;
+                for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                    if (st.props().get(pi).name_ == field) return pi;
+                }
+                return 0;
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                    AstStruct st = tu_.classes().get(ci).structs().get(si);
+                    if (st.name_ != name) continue;
+                    for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                        if (st.props().get(pi).name_ == field) return pi;
+                    }
+                }
+            }
+            return 0;
+        }
+
+        // struct 字段 LLVM 类型。
+        string structFieldType(string name, string field) {
+            if (tu_ == null) return "i32";
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                if (st.name_ != name) continue;
+                for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                    if (st.props().get(pi).name_ == field) return llvmType(st.props().get(pi).type_);
+                }
+                return "i32";
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                    AstStruct st = tu_.classes().get(ci).structs().get(si);
+                    if (st.name_ != name) continue;
+                    for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                        if (st.props().get(pi).name_ == field) return llvmType(st.props().get(pi).type_);
+                    }
+                }
+            }
+            return "i32";
+        }
+
+        // struct 字段 AstType（ARC 判断用）。
+        AstType structFieldAstType(string name, string field) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                if (st.name_ != name) continue;
+                for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                    if (st.props().get(pi).name_ == field) return st.props().get(pi).type_;
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 发射 struct 类型定义（%Point = type { ... }）。
+        void emitStructTypes() {
+            if (tu_ == null) return;
+            ArrayList<string> done = new ArrayList<string>();
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                int dup = 0;
+                for (int di = 0; di < done.size(); di = di + 1) {
+                    if (done.get(di) == st.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                done.add(st.name_);
+                StringBuilder m = new StringBuilder();
+                m.append("%" + st.name_ + " = type {");
+                for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                    if (pi != 0) m.append(", ");
+                    m.append(llvmType(st.props().get(pi).type_));
+                }
+                if (st.props().size() == 0) m.append(" i8");
+                m.append(" }\n");
+                sb_.append(m.toString());
+            }
         }
 
         // 枚举结构体 LLVM 类型（匿名字面量，同 C++ getEnumStructType）：
