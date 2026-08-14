@@ -2376,8 +2376,20 @@ class Sema {
                 } else {
                     string t = visitExpr(s.expr_);
                     if (t == "string") s.setThrowType("string");
-                    else if (t == "class" || t == "interface") s.setThrowType("class");
-                    else s.setThrowType("");
+                    else if (t == "class" || t == "interface") {
+                        AstExpr xe = s.expr_;
+                        string cn = "";
+                        if (xe.kind_ == "New") {
+                            cn = xe.resolvedClass_;
+                            if (Str.len(cn) == 0) cn = xe.className_;
+                        } else if (xe.kind_ == "Identifier") {
+                            cn = sym_.lookupClass(xe.name_);
+                        } else if (xe.kind_ == "Member") {
+                            cn = xe.resolvedClass_;
+                        }
+                        if (Str.len(cn) != 0) s.setThrowType(cn);
+                        else s.setThrowType("class");
+                    } else s.setThrowType("");
                 }
             } else if (k == "Match") {
                 if (s.subject_ != null) visitExpr(s.subject_);
