@@ -285,6 +285,9 @@ class Sema {
             bitfieldFieldNames_ = new ArrayList<ArrayList<string>>();
             bitfieldFieldWidths_ = new ArrayList<ArrayList<int>>();
             threadVars_ = new ArrayList<string>();
+            macroNames_ = new ArrayList<string>();
+            macroParams_ = new ArrayList<ArrayList<string>>();
+            macroBodies_ = new ArrayList<AstStmt>();
             startupMethods_ = new ArrayList<string>();
             lambdaCounter_ = 0;
             cellCounter_ = 0;
@@ -576,6 +579,191 @@ class Sema {
             addIntr("__myp_cublas_sgemm", "int");
             addIntr("__myp_pool_thread_count", "int");
             addIntr("__myp_trunc", "int");
+        }
+
+        // ---- M3 声明式宏展开（在符号收集之前运行）----
+        int macroIndex(string name) {
+            for (int i = 0; i < macroNames_.size(); i = i + 1) {
+                if (macroNames_.get(i) == name) return i;
+            }
+            return -1;
+        }
+
+        void expandMacros(AstTU tu) {
+            if (tu == null) return;
+            for (int i = 0; i < tu.macros().size(); i = i + 1) {
+                AstMacro m = tu.macros().get(i);
+                macroNames_.add(m.name_);
+                macroParams_.add(m.params());
+                macroBodies_.add(m.body_);
+            }
+            // 展开顶层函数体
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                AstFunction f = tu.functions().get(i);
+                if (f.body_ != null) expandBlockStmts(f.body_, 0);
+            }
+            // 展开类方法/构造器体
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.body_ != null) expandBlockStmts(a.body_, 0);
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    AstAction a = c.staticActions().get(ai);
+                    if (a.body_ != null) expandBlockStmts(a.body_, 0);
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    AstFunction f = c.funcs().get(fi);
+                    if (f.body_ != null) expandBlockStmts(f.body_, 0);
+                }
+            }
+            // 展开 struct 方法体
+            for (int si = 0; si < tu.structs().size(); si = si + 1) {
+                AstStruct st = tu.structs().get(si);
+                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                    AstFunction f = st.funcs().get(fi);
+                    if (f.body_ != null) expandBlockStmts(f.body_, 0);
+                }
+            }
+        }
+
+        // 深克隆表达式并替换 $param（params/args 平行）。
+        AstExpr deepCloneExpr(AstExpr e, ArrayList<string> params, ArrayList<AstExpr> args) {
+            if (e == null) return null;
+            if (e.kind_ == "MacroParam") {
+                for (int i = 0; i < params.size(); i = i + 1) {
+                    if (i >= args.size()) break;
+                    if (params.get(i) == e.name_) return deepCloneExpr(args.get(i), params, args);
+                }
+            }
+            AstExpr c = e.cloneExpr();
+            c.setLhs(deepCloneExpr(e.lhs_, params, args));
+            c.setRhs(deepCloneExpr(e.rhs_, params, args));
+            c.setOperand(deepCloneExpr(e.operand_, params, args));
+            c.setCallee(deepCloneExpr(e.callee_, params, args));
+            c.setArray(deepCloneExpr(e.array_, params, args));
+            c.setIndex(deepCloneExpr(e.index_, params, args));
+            c.setCondition(deepCloneExpr(e.condition_, params, args));
+            c.setTrueExpr(deepCloneExpr(e.trueExpr_, params, args));
+            c.setFalseExpr(deepCloneExpr(e.falseExpr_, params, args));
+            c.setStart(deepCloneExpr(e.start_, params, args));
+            c.setEnd(deepCloneExpr(e.end_, params, args));
+            c.setTryExpr(deepCloneExpr(e.tryExpr_, params, args));
+            c.setCatchExpr(deepCloneExpr(e.catchExpr_, params, args));
+            c.setTimeout(deepCloneExpr(e.timeout_, params, args));
+            c.setNamedValue(deepCloneExpr(e.namedValue_, params, args));
+            ArrayList<AstExpr> na = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.args().size(); i = i + 1) na.add(deepCloneExpr(e.args().get(i), params, args));
+            c.setArgs(na);
+            ArrayList<AstExpr> nd = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.dimensions().size(); i = i + 1) nd.add(deepCloneExpr(e.dimensions().get(i), params, args));
+            c.setDimensions(nd);
+            ArrayList<AstExpr> nel = new ArrayList<AstExpr>();
+            for (int i = 0; i < e.elements().size(); i = i + 1) nel.add(deepCloneExpr(e.elements().get(i), params, args));
+            c.setElements(nel);
+            return c;
+        }
+
+        // 深克隆语句并替换 $param。
+        AstStmt deepCloneStmt(AstStmt s, ArrayList<string> params, ArrayList<AstExpr> args) {
+            if (s == null) return null;
+            AstStmt c = new AstStmt();
+            c.setKind(s.kind_);
+            c.setPos(s.line_, s.col_);
+            c.setEndPos(s.endLine_, s.endCol_);
+            if (s.kind_ == "Block") {
+                for (int i = 0; i < s.bodyStmts().size(); i = i + 1) c.bodyStmts().add(deepCloneStmt(s.bodyStmts().get(i), params, args));
+            } else if (s.kind_ == "ExprStmt") {
+                c.setExpr(deepCloneExpr(s.expr_, params, args));
+            } else if (s.kind_ == "If") {
+                c.setCondition(deepCloneExpr(s.condition_, params, args));
+                c.setThen(deepCloneStmt(s.then_, params, args));
+                c.setElse(deepCloneStmt(s.else_, params, args));
+            } else if (s.kind_ == "While") {
+                c.setCondition(deepCloneExpr(s.condition_, params, args));
+                c.setBody(deepCloneStmt(s.body_, params, args));
+            } else if (s.kind_ == "For") {
+                c.setInit(deepCloneStmt(s.init_, params, args));
+                c.setCondition(deepCloneExpr(s.condition_, params, args));
+                c.setStep(deepCloneExpr(s.step_, params, args));
+                c.setBody(deepCloneStmt(s.body_, params, args));
+                c.setParallel(s.parallel_);
+                c.setGpu(s.gpu_);
+                c.setStride(s.stride_);
+                c.setBlock(s.block_);
+                c.setStream(deepCloneExpr(s.stream_, params, args));
+            } else if (s.kind_ == "VarDecl") {
+                for (int i = 0; i < s.decls().size(); i = i + 1) {
+                    AstVar v = s.decls().get(i);
+                    AstVar nv = new AstVar();
+                    nv.setName(v.name_);
+                    nv.setType(v.type_);
+                    nv.setConst(v.const_);
+                    nv.setThread(v.thread_);
+                    nv.setThreadpool(v.threadpool_);
+                    nv.setInferred(v.isInferred_);
+                    nv.setInit(deepCloneExpr(v.init_, params, args));
+                    c.decls().add(nv);
+                }
+            } else if (s.kind_ == "Return") {
+                c.setValue(deepCloneExpr(s.value_, params, args));
+            } else if (s.kind_ == "Await") {
+                c.setExpr(deepCloneExpr(s.expr_, params, args));
+                c.setTimeout(deepCloneExpr(s.timeout_, params, args));
+            } else if (s.kind_ == "Throw") {
+                c.setExpr(deepCloneExpr(s.expr_, params, args));
+            } else if (s.kind_ == "Break" || s.kind_ == "Continue") {
+                // 无字段
+            } else {
+                // 其他语句：浅拷贝关键字段（宏体不常用）
+                c.setExpr(deepCloneExpr(s.expr_, params, args));
+                c.setCondition(deepCloneExpr(s.condition_, params, args));
+                c.setBody(deepCloneStmt(s.body_, params, args));
+            }
+            return c;
+        }
+
+        // 递归展开块内宏调用（语句位置）。depth 限深。
+        void expandBlockStmts(AstStmt block, int depth) {
+            if (block == null || block.kind_ != "Block") return;
+            if (depth > 100) return;
+            ArrayList<AstStmt> out = new ArrayList<AstStmt>();
+            for (int i = 0; i < block.bodyStmts().size(); i = i + 1) {
+                AstStmt st = block.bodyStmts().get(i);
+                // 递归展开嵌套块
+                if (st != null) {
+                    AstStmt b = st.body_;
+                    if (b != null) expandBlockStmts(b, depth + 1);
+                    AstStmt t = st.then_;
+                    if (t != null) expandBlockStmts(t, depth + 1);
+                    AstStmt el = st.else_;
+                    if (el != null) expandBlockStmts(el, depth + 1);
+                }
+                // 宏调用（语句位置）：name(args) → 展开
+                int expanded = 0;
+                if (st != null && st.kind_ == "ExprStmt") {
+                    AstExpr ex = st.expr_;
+                    if (ex != null && ex.kind_ == "Call") {
+                        AstExpr ca = ex.callee_;
+                        if (ca != null && ca.kind_ == "Identifier") {
+                            int mi = macroIndex(ca.name_);
+                            if (mi >= 0) {
+                                AstStmt body = deepCloneStmt(macroBodies_.get(mi), macroParams_.get(mi), ex.args());
+                                if (body != null && body.kind_ == "Block") {
+                                    for (int j = 0; j < body.bodyStmts().size(); j = j + 1) {
+                                        out.add(body.bodyStmts().get(j));
+                                    }
+                                    expanded = 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (expanded == 0) out.add(st);
+            }
+            block.bodyStmts().clear();
+            for (int i = 0; i < out.size(); i = i + 1) block.bodyStmts().add(out.get(i));
         }
 
         void analyze(AstTU tu) {
@@ -4699,6 +4887,9 @@ class Sema {
         ArrayList<ArrayList<string>> bitfieldFieldNames_;
         ArrayList<ArrayList<int>> bitfieldFieldWidths_;
         ArrayList<string> threadVars_;
+        ArrayList<string> macroNames_;
+        ArrayList<ArrayList<string>> macroParams_;
+        ArrayList<AstStmt> macroBodies_;
         ArrayList<string> startupMethods_;
         int lambdaCounter_;
         int cellCounter_;

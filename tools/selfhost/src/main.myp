@@ -335,6 +335,7 @@ class LoadedSet {
             }
             diag.reset();
             Sema se = new Sema(diag);
+            se.expandMacros(tu);
             se.analyze(tu);
             if (diag.errorCount() != 0) {
                 Frontend.printDiagnostics(diag);
