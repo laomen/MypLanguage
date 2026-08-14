@@ -130,9 +130,11 @@ class CodeGen {
                 for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
                     genStaticAction(c.name_, c.staticActions().get(ai));
                 }
-                // 实例方法（this 指针）
+                // 实例方法（this 指针）+ 构造器
                 for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    genInstanceAction(c.name_, c.actions().get(ai));
+                    AstAction a = c.actions().get(ai);
+                    if (a.ctor_ != 0) genConstructor(c.name_, a);
+                    else genInstanceAction(c.name_, a);
                 }
             }
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
@@ -238,6 +240,15 @@ class CodeGen {
 
         // 实例方法：Class_method(ptr this, params...)。
         void genInstanceAction(string cls, AstAction a) {
+            genInstanceActionNamed(cls + "_" + a.name_, cls, a);
+        }
+
+        // 构造器：Class_Class_<paramTypes>(ptr this, params...)。
+        void genConstructor(string cls, AstAction a) {
+            genInstanceActionNamed(cls + "_" + a.name_ + mangleParams(a.params()), cls, a);
+        }
+
+        void genInstanceActionNamed(string fn, string cls, AstAction a) {
             ArrayList<AstParam> ps = new ArrayList<AstParam>();
             AstParam tp = new AstParam();
             tp.setName("this");
@@ -248,8 +259,27 @@ class CodeGen {
             for (int i = 0; i < a.params().size(); i = i + 1) ps.add(a.params().get(i));
             string saveCls = curClass_;
             curClass_ = cls;
-            genFuncBody(cls + "_" + a.name_, ps, a.ret_, a.body_);
+            genFuncBody(fn, ps, a.ret_, a.body_);
             curClass_ = saveCls;
+        }
+
+        // 构造器 mangle（与 sema mangleType/mangleParams 一致）。
+        string mangleType(AstType t) {
+            if (t == null) return "unknown";
+            if (t.element_ != null) return mangleType(t.element_) + "_arr";
+            if (Str.len(t.className_) != 0) {
+                string s = t.className_;
+                ArrayList<AstType> tas = t.typeArgs();
+                for (int i = 0; i < tas.size(); i = i + 1) s = s + "_" + mangleType(tas.get(i));
+                return s;
+            }
+            return t.basicName_;
+        }
+
+        string mangleParams(ArrayList<AstParam> ps) {
+            string s = "";
+            for (int i = 0; i < ps.size(); i = i + 1) s = s + "_" + mangleType(ps.get(i).type_);
+            return s;
         }
 
         // 通用方法体：参数 alloca + store + body + 隐式 return。
@@ -717,11 +747,23 @@ class CodeGen {
                 return t;
             }
             if (k == "New") {
-                // 类实例：myp_alloc_object(size, type_id)。构造器调用留 G3 后续。
+                // 类实例：myp_alloc_object(size, type_id) + 构造器调用。
                 string cls = e.className_;
                 int sz = classSize(cls);
                 string t = newTmp();
                 sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+                string ctor = e.ctor_;
+                if (Str.len(ctor) != 0) {
+                    StringBuilder as = new StringBuilder();
+                    as.append("ptr " + t);
+                    for (int i = 0; i < e.args().size(); i = i + 1) {
+                        AstExpr a = e.args().get(i);
+                        string av = genExpr(a);
+                        string at = exprLlvmType(a);
+                        as.append(", " + at + " " + av);
+                    }
+                    sb_.append("  call void @" + ctor + "(" + as.toString() + ")\n");
+                }
                 return t;
             }
             if (k == "Member") {
