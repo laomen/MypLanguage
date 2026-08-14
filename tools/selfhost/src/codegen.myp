@@ -81,7 +81,10 @@ class CodeGen {
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
             threadHandles_ = new ArrayList<string>();
+            testMode_ = 0;
         }
+
+        void setTestMode(int v) { testMode_ = v; }
 
         string newTmp() {
             string t = "%t" + tmp_;
@@ -545,6 +548,8 @@ class CodeGen {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
+                // test 模式：跳过用户 main（测试运行器生成新的 main，同 C++）
+                if (testMode_ != 0 && f.name_ == "main") continue;
                 int dup = 0;
                 for (int di = 0; di < doneFns.size(); di = di + 1) {
                     if (doneFns.get(di) == f.name_) { dup = 1; break; }
@@ -633,6 +638,8 @@ class CodeGen {
             }
             // handler 函数（顶层 + 语句内 mapping）
             sb_.append(mappingHandlers_.toString());
+            // test 模式：生成测试运行器 main（逐个调用 @test 函数/action，异常隔离）
+            if (testMode_ != 0) genTestRunner();
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
             StringBuilder out = new StringBuilder();
             out.append(pre);
@@ -1014,6 +1021,23 @@ class CodeGen {
             return out;
         }
 
+        // 内建 runtime 函数形参 LLVM 类型（fn 已去 __ 前缀；供实参提升，
+        // 尤其 bool→i32 的断言类内建，同 C++ intrinsic_map_ + 签名）。
+        ArrayList<string> intrParamLts(string fn) {
+            ArrayList<string> out = new ArrayList<string>();
+            if (fn == "myp_assert" || fn == "myp_test_summary") { out.add("i32"); return out; }
+            if (fn == "myp_assert_msg") { out.add("i32"); out.add("ptr"); return out; }
+            if (fn == "myp_test_set_msg" || fn == "myp_test_fail_msg") { out.add("ptr"); return out; }
+            if (fn == "myp_assert_eq" || fn == "myp_assert_neq") { out.add("i32"); out.add("i32"); return out; }
+            if (fn == "myp_assert_long_eq" || fn == "myp_assert_long_neq") { out.add("i64"); out.add("i64"); return out; }
+            if (fn == "myp_assert_str_eq" || fn == "myp_assert_str_neq") { out.add("ptr"); out.add("ptr"); return out; }
+            if (fn == "myp_test_report") { out.add("ptr"); out.add("i32"); return out; }
+            if (fn == "myp_assert_float_neq") { out.add("double"); out.add("double"); out.add("double"); return out; }
+            if (fn == "myp_assert_null" || fn == "myp_assert_not_null"
+                || fn == "myp_test_capture_contains" || fn == "myp_test_capture_eq") { out.add("ptr"); return out; }
+            return out;
+        }
+
         int hasInstanceGlobal(string name) {
             for (int i = 0; i < instanceGlobals_.size(); i = i + 1) {
                 if (instanceGlobals_.get(i) == name) return 1;
@@ -1236,6 +1260,117 @@ class CodeGen {
             for (int ci = 0; ci < mp.chains().size(); ci = ci + 1) {
                 genMappingChain(mp.chains().get(ci), sb_);
             }
+        }
+
+        // @test 单个用例的异常隔离：push handler + setjmp；非零 = 未捕获异常 →
+        // 打 FAIL + fail_msg + pop，继续下一用例。
+        void emitTestProtectedCall(string label, string callInstr) {
+            string jb = newTmp();
+            sb_.append("  " + jb + " = alloca %myp_jmp_buf, align 8\n");
+            sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
+            string r = newTmp();
+            sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");
+            string isErr = newTmp();
+            sb_.append("  " + isErr + " = icmp ne i32 " + r + ", 0\n");
+            string okB = newBlock("test_call");
+            string excB = newBlock("test_exc");
+            string nextB = newBlock("test_next");
+            sb_.append("  br i1 " + isErr + ", label %" + excB + ", label %" + okB + "\n");
+            sb_.append(okB + ":\n");
+            sb_.append("  " + callInstr + "\n");
+            sb_.append("  call void @myp_exception_pop()\n");
+            sb_.append("  br label %" + nextB + "\n");
+            sb_.append(excB + ":\n");
+            string failLbl = stringLiteral("  FAIL: " + label + " (uncaught exception)\n");
+            sb_.append("  call i32 (ptr, ...) @printf(ptr " + failLbl + ")\n");
+            string msg = stringLiteral("uncaught exception in " + label);
+            sb_.append("  call void @myp_test_fail_msg(ptr " + msg + ")\n");
+            sb_.append("  call void @myp_exception_pop()\n");
+            sb_.append("  br label %" + nextB + "\n");
+            sb_.append(nextB + ":\n");
+        }
+
+        // 测试运行器 main（mypc --test 等价）：收集 @test 函数/action，逐个异常
+        // 隔离调用，末了 myp_test_summary(n) 作为退出码。
+        void genTestRunner() {
+            if (tu_ == null) return;
+            // 收集 @test 顶层函数（去重，泛型模板跳过）
+            ArrayList<string> testFns = new ArrayList<string>();
+            ArrayList<string> seenF = new ArrayList<string>();
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.test_ == 0) continue;
+                if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < seenF.size(); di = di + 1) {
+                    if (seenF.get(di) == f.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                seenF.add(f.name_);
+                testFns.add(f.name_);
+            }
+            // 收集 @test action（实例 + 静态）
+            ArrayList<string> actCls = new ArrayList<string>();
+            ArrayList<string> actName = new ArrayList<string>();
+            ArrayList<int> actStatic = new ArrayList<int>();
+            ArrayList<string> seenC = new ArrayList<string>();
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < seenC.size(); di = di + 1) {
+                    if (seenC.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                seenC.add(c.name_);
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    AstAction a = c.actions().get(ai);
+                    if (a.test_ != 0) { actCls.add(c.name_); actName.add(a.name_); actStatic.add(0); }
+                }
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    AstAction a = c.staticActions().get(ai);
+                    if (a.test_ != 0) { actCls.add(c.name_); actName.add(a.name_); actStatic.add(1); }
+                }
+            }
+
+            int nTests = testFns.size() + actCls.size();
+
+            sb_.append("declare i32 @printf(ptr, ...)\n\n");
+            sb_.append("define i32 @main() {\n");
+            sb_.append("entry:\n");
+            if (tu_.mappings().size() > 0) sb_.append("  call void @__myp_init()\n");
+            string hdr = stringLiteral("=== MYP Test Runner ===\n");
+            sb_.append("  call i32 (ptr, ...) @printf(ptr " + hdr + ")\n");
+
+            for (int fi = 0; fi < testFns.size(); fi = fi + 1) {
+                string fname = testFns.get(fi);
+                string lbl = stringLiteral("  RUN: " + fname + "\n");
+                sb_.append("  call i32 (ptr, ...) @printf(ptr " + lbl + ")\n");
+                emitTestProtectedCall(fname, "call void @" + fname + "()");
+            }
+            for (int ai = 0; ai < actCls.size(); ai = ai + 1) {
+                string cls = actCls.get(ai);
+                string nm = actName.get(ai);
+                int isStatic = actStatic.get(ai);
+                string lbl = stringLiteral("  RUN: " + cls + "." + nm + "\n");
+                sb_.append("  call i32 (ptr, ...) @printf(ptr " + lbl + ")\n");
+                if (isStatic != 0) {
+                    emitTestProtectedCall(cls + "." + nm, "call void @" + cls + "_" + nm + "()");
+                } else {
+                    int sz = classSize(cls);
+                    string inst = newTmp();
+                    sb_.append("  " + inst + " = call ptr @myp_alloc(i64 " + sz + ")\n");
+                    sb_.append("  call void @llvm.memset.p0.i64(ptr " + inst + ", i8 0, i64 " + sz + ", i1 false)\n");
+                    emitTestProtectedCall(cls + "." + nm, "call void @" + cls + "_" + nm + "(ptr " + inst + ")");
+                }
+            }
+
+            string done = stringLiteral("=== MYP Tests Complete ===\n");
+            sb_.append("  call i32 (ptr, ...) @printf(ptr " + done + ")\n");
+            string sum = newTmp();
+            sb_.append("  " + sum + " = call i32 @myp_test_summary(i32 " + nTests + ")\n");
+            sb_.append("  ret i32 " + sum + "\n");
+            sb_.append("}\n\n");
         }
 
         // __lambda_N_tramp(ptr self, params...) -> ret：调用 __lambda_N___call(self, params...)。
@@ -3260,6 +3395,9 @@ class CodeGen {
                 } else if (Str.len(mName) != 0) {
                     if (isTopLevelFunc(mName) != 0) expParams = funcParamLts(mName);
                     else if (Str.len(mCls) != 0) expParams = methodParamLts(mCls, mName);
+                } else if (callee != null && callee.kind_ == "Identifier"
+                    && Str.startsWith(callee.name_, "__myp_") != 0) {
+                    expParams = intrParamLts(fn);
                 }
                 StringBuilder as = new StringBuilder();
                 if (Str.len(thisV) != 0) {
@@ -4235,4 +4373,5 @@ class CodeGen {
         StringBuilder mappingHandlers_;
         ArrayList<string> instanceGlobals_;
         int curFnScope_;
+        int testMode_;
 }
