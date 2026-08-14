@@ -76,6 +76,7 @@ class CodeGen {
             curTypeArgs_ = new ArrayList<AstType>();
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
+            sliceSlotNames_ = new ArrayList<string>();
             localIsArc_ = new ArrayList<int>();
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
@@ -283,6 +284,15 @@ class CodeGen {
             return 0;
         }
 
+        // slice 初始化是否 fresh（new slice / 返回 slice 的调用 → rc=1 转移）；
+        // 否则为别名拷贝，须 retain backing（同 C++ isFreshArcExpr 的 slice 部分）。
+        int isFreshSliceExpr(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind_;
+            if (k == "New" || k == "Call" || k == "Lambda") return 1;
+            return 0;
+        }
+
         void addFreshTemp(string v) {
             pendingTemps_.add(v);
         }
@@ -370,6 +380,7 @@ class CodeGen {
                 sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
                 sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             }
+            releaseSliceSlots();
         }
 
         // 释放 [base, end) 的 ARC 槽（块作用域退出，C++ popScope）。
@@ -381,6 +392,39 @@ class CodeGen {
                 sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             }
             while (arcSlotNames_.size() > base) arcSlotNames_.remove(arcSlotNames_.size() - 1);
+        }
+
+        // 释放单个 slice 槽（load {ptr,i64} → extract 0 → myp_release backing）。
+        void releaseSliceSlot(string va) {
+            emitCoroFrameClear(va);
+            string fat = newTmp();
+            sb_.append("  " + fat + " = load { ptr, i64 }, ptr " + va + "\n");
+            string data = newTmp();
+            sb_.append("  " + data + " = extractvalue { ptr, i64 } " + fat + ", 0\n");
+            sb_.append("  call i32 @myp_release(ptr " + data + ")\n");
+        }
+
+        // 释放全部 slice 槽（函数末）。
+        void releaseSliceSlots() {
+            for (int i = 0; i < sliceSlotNames_.size(); i = i + 1) {
+                releaseSliceSlot(sliceSlotNames_.get(i));
+            }
+        }
+
+        // 释放 [base, end) 的 slice 槽（块作用域退出，C++ popScope）。
+        void releaseSliceSlotsFrom(int base) {
+            for (int i = sliceSlotNames_.size() - 1; i >= base; i = i - 1) {
+                releaseSliceSlot(sliceSlotNames_.get(i));
+            }
+            while (sliceSlotNames_.size() > base) sliceSlotNames_.remove(sliceSlotNames_.size() - 1);
+        }
+
+        // @region 出口：myp_arena_release(mark)（释放函数内 region 临时分配）。
+        void emitRegionExit() {
+            if (Str.len(curRegionMark_) == 0) return;
+            string m = newTmp();
+            sb_.append("  " + m + " = load ptr, ptr %" + curRegionMark_ + "\n");
+            sb_.append("  call void @myp_arena_release(ptr " + m + ")\n");
         }
 
         // 入口块 alloca（ARC 槽：跨块释放需 alloca 在 entry 块支配所有块，
@@ -470,6 +514,32 @@ class CodeGen {
                 return t;
             }
             return v;
+        }
+
+        // kind 是否为无符号整型（uint/ulong/ubyte/ushort）。
+        int isUnsignedKind(string kind) {
+            return (kind == "uint" || kind == "ulong" || kind == "ubyte" || kind == "ushort") ? 1 : 0;
+        }
+
+        // 类型转换（带无符号源）：un != 0 时整数扩宽用 zext，否则 sext。
+        string convertValueU(string v, string from, string to, int un) {
+            if (from == to) return v;
+            int fromInt = IrEmit.isIntType(from);
+            int toInt = IrEmit.isIntType(to);
+            string t = newTmp();
+            if (fromInt != 0 && toInt != 0) {
+                int fw = IrEmit.intWidth(from);
+                int tw = IrEmit.intWidth(to);
+                if (tw < fw) {
+                    sb_.append("  " + t + " = trunc " + from + " " + v + " to " + to + "\n");
+                } else if (un != 0) {
+                    sb_.append("  " + t + " = zext " + from + " " + v + " to " + to + "\n");
+                } else {
+                    sb_.append("  " + t + " = sext " + from + " " + v + " to " + to + "\n");
+                }
+                return t;
+            }
+            return convertValue(v, from, to);
         }
 
         // 标量/指针 → i64（协程入口槽/返回值/事件参数打包；同 C++ castToI64）。
@@ -995,6 +1065,7 @@ class CodeGen {
             curTypeParams_ = f.typeParams();
             curTypeArgs_ = f.instTypeArgs();
             curFnCoro_ = f.coro_;
+            curFnRegion_ = f.region_;
             genFuncBody(f.name_, f.params(), f.ret_, f.body_);
         }
 
@@ -1004,6 +1075,7 @@ class CodeGen {
             if (cls == "Coro") { genCoroBuiltin(cls, a); return; }
             setupTypeParams(cls);
             curFnCoro_ = a.coro_;
+            curFnRegion_ = a.region_;
             genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
         }
 
@@ -1047,6 +1119,7 @@ class CodeGen {
             string saveCls = curClass_;
             curClass_ = cls;
             curFnCoro_ = f.coro_;
+            curFnRegion_ = f.region_;
             genFuncBody(cls + "_" + f.name_, ps, f.ret_, f.body_);
             curClass_ = saveCls;
         }
@@ -1064,6 +1137,7 @@ class CodeGen {
             string saveCls = curClass_;
             curClass_ = cls;
             curFnCoro_ = a.coro_;
+            curFnRegion_ = a.region_;
             genFuncBody(fn, ps, a.ret_, a.body_);
             curClass_ = saveCls;
         }
@@ -1490,6 +1564,7 @@ class CodeGen {
             else if (name == "waitAny") { rt = "__myp_coro_wait_any"; retLt = "i64"; }
             else if (name == "waitAnyOf") { rt = "__myp_coro_wait_any_of"; retLt = "i64"; }
             else {
+                curFnRegion_ = a.region_;
                 genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
                 return;
             }
@@ -1674,6 +1749,80 @@ class CodeGen {
             string r = newTmp();
             sb_.append("  " + r + " = call i32 @myp_timer_create(i32 " + eid + ", ptr " + thisV + ", i64 " + delay + ", i64 " + delay + ", i64 " + interval + ")\n");
             return r;
+        }
+
+        // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
+        // → LLVM intrinsic（多态：类型 = 实参 LLVM 宽度）。
+        string genBitOpBuiltin(AstExpr e, string name) {
+            AstExpr arg = e.args().get(0);
+            string argV = genExpr(arg);
+            string argT = exprLlvmType(arg);
+            string intr = "";
+            if (name == "popcount") intr = "llvm.ctpop." + argT;
+            else if (name == "clz") intr = "llvm.ctlz." + argT;
+            else if (name == "ctz") intr = "llvm.cttz." + argT;
+            else if (name == "bitreverse") intr = "llvm.bitreverse." + argT;
+            else if (name == "rotl") intr = "llvm.fshl." + argT;
+            else if (name == "rotr") intr = "llvm.fshr." + argT;
+            string t = newTmp();
+            if (name == "rotl" || name == "rotr") {
+                AstExpr sh = e.args().get(1);
+                string shV = genExpr(sh);
+                string shT = exprLlvmType(sh);
+                shV = convertValue(shV, shT, argT);
+                sb_.append("  " + t + " = call " + argT + " @" + intr + "(" + argT + " " + argV + ", " + argT + " " + argV + ", " + argT + " " + shV + ")\n");
+            } else if (name == "clz" || name == "ctz") {
+                sb_.append("  " + t + " = call " + argT + " @" + intr + "(" + argT + " " + argV + ", i1 false)\n");
+            } else {
+                sb_.append("  " + t + " = call " + argT + " @" + intr + "(" + argT + " " + argV + ")\n");
+            }
+            return t;
+        }
+
+        // §9.5 多态数学 intrinsic：__myp_math_* 一元（除 pow/atan2/abs_int）
+        // → LLVM 标量 intrinsic，按实参 LLVM 类型（同 C++ generatePolyMathIntrinsic）。
+        string genPolyMathIntrinsic(AstExpr e, string id) {
+            AstExpr arg = e.args().get(0);
+            string av = genExpr(arg);
+            string at = exprLlvmType(arg);
+            string op = "";
+            if (id == "__myp_math_sqrt") op = "sqrt";
+            else if (id == "__myp_math_floor") op = "floor";
+            else if (id == "__myp_math_ceil") op = "ceil";
+            else if (id == "__myp_math_trunc") op = "trunc";
+            else if (id == "__myp_math_sin") op = "sin";
+            else if (id == "__myp_math_cos") op = "cos";
+            else if (id == "__myp_math_tan") op = "tan";
+            else if (id == "__myp_math_asin") op = "asin";
+            else if (id == "__myp_math_acos") op = "acos";
+            else if (id == "__myp_math_atan") op = "atan";
+            else if (id == "__myp_math_sinh") op = "sinh";
+            else if (id == "__myp_math_cosh") op = "cosh";
+            else if (id == "__myp_math_tanh") op = "tanh";
+            else if (id == "__myp_math_exp") op = "exp";
+            else if (id == "__myp_math_log") op = "log";
+            else if (id == "__myp_math_abs") op = "abs";
+            else return "";
+            string t = newTmp();
+            if (op == "abs") {
+                if (IrEmit.isIntType(at) != 0) {
+                    sb_.append("  " + t + " = call " + at + " @llvm.abs." + at + "(" + at + " " + av + ", i1 false)\n");
+                } else {
+                    string fty = at == "float" ? "f32" : "f64";
+                    sb_.append("  " + t + " = call " + at + " @llvm.fabs." + fty + "(" + at + " " + av + ")\n");
+                }
+                return t;
+            }
+            // 一元实数：整型实参提为 double（正常泛型路径不会到达）
+            if (IrEmit.isIntType(at) != 0) {
+                string d = newTmp();
+                sb_.append("  " + d + " = sitofp " + at + " " + av + " to double\n");
+                av = d;
+                at = "double";
+            }
+            string fty = at == "float" ? "f32" : "f64";
+            sb_.append("  " + t + " = call " + at + " @llvm." + op + "." + fty + "(" + at + " " + av + ")\n");
+            return t;
         }
 
         // await 表达式/语句核心：@async 直接调用；事件等待；否则 yield。
@@ -1979,6 +2128,9 @@ class CodeGen {
 
         // 通用方法体：参数 alloca + store + body + 隐式 return。
         void genFuncBody(string fn, ArrayList<AstParam> params, AstType retT, AstStmt body) {
+            int isRegion = curFnRegion_;
+            curFnRegion_ = 0;
+            curRegionMark_ = "";
             paramNames_ = new ArrayList<string>();
             paramTypes_ = new ArrayList<string>();
             paramAstTypes_ = new ArrayList<AstType>();
@@ -1991,6 +2143,7 @@ class CodeGen {
             localIsArc_ = new ArrayList<int>();
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
+            sliceSlotNames_ = new ArrayList<string>();
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
@@ -2040,6 +2193,15 @@ class CodeGen {
                 int al = IrEmit.alignOf(lt);
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
+            // @region：入口 materialize 一个 region chunk（myp_arena_mark），
+            // 出口 myp_arena_release 释放回基线（同 C++ emitRegionEnter/Exit）。
+            if (isRegion != 0) {
+                curRegionMark_ = "region_mark";
+                sb_.append("  %region_mark = alloca ptr, align 8\n");
+                string m = newTmp();
+                sb_.append("  " + m + " = call ptr @myp_arena_mark()\n");
+                sb_.append("  store ptr " + m + ", ptr %region_mark\n");
+            }
             // 函数体生成到独立缓冲：ARC 槽 alloca 进 entryAllocas_，body IR 进 bodyBuf。
             entryAllocas_ = new StringBuilder();
             StringBuilder saveSb = sb_;
@@ -2058,6 +2220,8 @@ class CodeGen {
                     sb_.append("  call void @myp_event_pop_scope()\n");
                     curFnScope_ = 0;
                 }
+                // @region：出口释放 region 临时分配（先于 ARC 槽释放，同 C++）
+                emitRegionExit();
                 // 函数末释放全部仍存活的 ARC 局部（C++ arcReleaseAllScopes）。
                 releaseArcSlots();
                 if (retLt == "void") {
@@ -2204,6 +2368,7 @@ class CodeGen {
             ArrayList<int> sli = localIsArc_;
             ArrayList<string> sp = pendingTemps_;
             ArrayList<string> sar = arcSlotNames_;
+            ArrayList<string> ssl = sliceSlotNames_;
             ArrayList<string> slb = loopBreak_;
             ArrayList<string> slc = loopContinue_;
             string scb = curBlock_;
@@ -2226,6 +2391,7 @@ class CodeGen {
             localIsArc_ = new ArrayList<int>();
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
+            sliceSlotNames_ = new ArrayList<string>();
             loopBreak_ = new ArrayList<string>();
             loopContinue_ = new ArrayList<string>();
             curBlock_ = "entry";
@@ -2315,6 +2481,7 @@ class CodeGen {
             localIsArc_ = sli;
             pendingTemps_ = sp;
             arcSlotNames_ = sar;
+            sliceSlotNames_ = ssl;
             loopBreak_ = slb;
             loopContinue_ = slc;
             curBlock_ = scb;
@@ -2337,6 +2504,7 @@ class CodeGen {
             string k = st.kind_;
             if (k == "Block") {
                 int arcBase = arcSlotNames_.size();
+                int sliceBase = sliceSlotNames_.size();
                 int locBase = localNames_.size();
                 for (int i = 0; i < st.bodyStmts().size(); i = i + 1) {
                     // 当前块已被终止（throw/return/break 等）→ 新开 dead 块，
@@ -2351,8 +2519,10 @@ class CodeGen {
                 // 会再次释放这些槽 → 双重释放（myp_viz scanString 段错误根因）。
                 if (terminated_ == 0) {
                     releaseArcSlotsFrom(arcBase);
+                    releaseSliceSlotsFrom(sliceBase);
                 } else {
                     while (arcSlotNames_.size() > arcBase) arcSlotNames_.remove(arcSlotNames_.size() - 1);
+                    while (sliceSlotNames_.size() > sliceBase) sliceSlotNames_.remove(sliceSlotNames_.size() - 1);
                 }
                 // 弹出本块局部变量表（遮蔽恢复）
                 while (localNames_.size() > locBase) localNames_.remove(localNames_.size() - 1);
@@ -2477,6 +2647,24 @@ class CodeGen {
                     }
                     localElemTypes_.add(elemLt);
                     localIsSlice_.add(isSlice);
+                    if (isSlice != 0) {
+                        // slice<T> 值类型 {ptr,i64}：拥有槽，作用域退出释放 backing。
+                        sliceSlotNames_.add(va);
+                        sb_.append("  store { ptr, i64 } zeroinitializer, ptr " + va + "\n");
+                        if (v.init_ != null) {
+                            string iv = genExpr(v.init_);
+                            string it = exprLlvmType(v.init_);
+                            iv = convertValue(iv, it, "{ ptr, i64 }");
+                            // 别名拷贝须 retain backing；fresh（new slice/call）转移 rc=1
+                            if (isFreshSliceExpr(v.init_) == 0) {
+                                string fd = newTmp();
+                                sb_.append("  " + fd + " = extractvalue { ptr, i64 } " + iv + ", 0\n");
+                                sb_.append("  call void @myp_retain(ptr " + fd + ")\n");
+                            }
+                            sb_.append("  store { ptr, i64 } " + iv + ", ptr " + va + ", align " + al + "\n");
+                        }
+                        continue;
+                    }
                     if (isArc != 0) {
                         // 引用局部（string/类/动态数组）：拥有槽，函数末释放
                         arcSlotNames_.add(va);
@@ -2577,9 +2765,11 @@ class CodeGen {
                         string sv = castToI64(v, curRetLt_);
                         sb_.append("  call void @__myp_coro_set_result(i64 " + sv + ")\n");
                     }
+                    emitRegionExit();
                     flushTemps();
                     sb_.append("  ret " + curRetLt_ + " " + v + "\n");
                 } else {
+                    emitRegionExit();
                     flushTemps();
                     sb_.append("  ret void\n");
                 }
@@ -3723,20 +3913,28 @@ class CodeGen {
                 if (rt != opLt) { rv = convertValue(rv, rt, opLt); rt = opLt; }
                 int isFp = 0;
                 if (opLt == "double" || opLt == "float") isFp = 1;
+                // 无符号整数运算：任一操作数为无符号整型 → 用无符号除/取模/比较/逻辑右移
+                int un = 0;
+                if (isFp == 0 && IrEmit.isIntType(opLt) != 0
+                    && (isUnsignedKind(e.resolvedKind_) != 0
+                        || (lhsE != null && isUnsignedKind(lhsE.resolvedKind_) != 0)
+                        || (rhsE != null && isUnsignedKind(rhsE.resolvedKind_) != 0))) {
+                    un = 1;
+                }
                 string insn = "";
                 if (op == "+") { if (isFp != 0) insn = "fadd"; else insn = "add"; }
                 else if (op == "-") { if (isFp != 0) insn = "fsub"; else insn = "sub"; }
                 else if (op == "*") { if (isFp != 0) insn = "fmul"; else insn = "mul"; }
-                else if (op == "/") { if (isFp != 0) insn = "fdiv"; else insn = "sdiv"; }
-                else if (op == "%") { if (isFp != 0) insn = "frem"; else insn = "srem"; }
+                else if (op == "/") { if (isFp != 0) insn = "fdiv"; else insn = (un != 0 ? "udiv" : "sdiv"); }
+                else if (op == "%") { if (isFp != 0) insn = "frem"; else insn = (un != 0 ? "urem" : "srem"); }
                 else if (op == "==") { if (isFp != 0) insn = "fcmp oeq"; else insn = "icmp eq"; }
                 else if (op == "!=") { if (isFp != 0) insn = "fcmp one"; else insn = "icmp ne"; }
-                else if (op == "<") { if (isFp != 0) insn = "fcmp olt"; else insn = "icmp slt"; }
-                else if (op == "<=") { if (isFp != 0) insn = "fcmp ole"; else insn = "icmp sle"; }
-                else if (op == ">") { if (isFp != 0) insn = "fcmp ogt"; else insn = "icmp sgt"; }
-                else if (op == ">=") { if (isFp != 0) insn = "fcmp oge"; else insn = "icmp sge"; }
+                else if (op == "<") { if (isFp != 0) insn = "fcmp olt"; else insn = (un != 0 ? "icmp ult" : "icmp slt"); }
+                else if (op == "<=") { if (isFp != 0) insn = "fcmp ole"; else insn = (un != 0 ? "icmp ule" : "icmp sle"); }
+                else if (op == ">") { if (isFp != 0) insn = "fcmp ogt"; else insn = (un != 0 ? "icmp ugt" : "icmp sgt"); }
+                else if (op == ">=") { if (isFp != 0) insn = "fcmp oge"; else insn = (un != 0 ? "icmp uge" : "icmp sge"); }
                 else if (op == "<<") insn = "shl";
-                else if (op == ">>") insn = "ashr";
+                else if (op == ">>") insn = (un != 0 ? "lshr" : "ashr");
                 else if (op == "&") insn = "and";
                 else if (op == "|") insn = "or";
                 else if (op == "^") insn = "xor";
@@ -4079,6 +4277,78 @@ class CodeGen {
                         return t;
                     }
                 }
+                // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
+                // → LLVM intrinsic（返回类型 = 实参 LLVM 宽度）。
+                if (callee != null && callee.kind_ == "Identifier") {
+                    string bn = callee.name_;
+                    if (bn == "popcount" || bn == "clz" || bn == "ctz" || bn == "bitreverse"
+                        || bn == "rotl" || bn == "rotr") {
+                        return genBitOpBuiltin(e, bn);
+                    }
+                }
+                // §9.5 多态数学 intrinsic：__myp_math_* 一元（除 pow/atan2/abs_int）
+                // → LLVM 标量 intrinsic（按实参类型，同 C++ generatePolyMathIntrinsic）。
+                if (callee != null && callee.kind_ == "Identifier") {
+                    string mn = callee.name_;
+                    if (Str.startsWith(mn, "__myp_math_") != 0
+                        && mn != "__myp_math_pow" && mn != "__myp_math_atan2"
+                        && mn != "__myp_math_abs_int") {
+                        string r = genPolyMathIntrinsic(e, mn);
+                        if (Str.len(r) != 0) return r;
+                    }
+                }
+                // P0 bitcast<T,U>(x)：位保持重解释 → LLVM bitcast 指令
+                if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "bitcast") {
+                    AstExpr arg = e.args().get(0);
+                    string srcV = genExpr(arg);
+                    string srcT = exprLlvmType(arg);
+                    string dst = exprLlvmType(e);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = bitcast " + srcT + " " + srcV + " to " + dst + "\n");
+                    return t;
+                }
+                // P1 bytes(s) / str(bytes)：string ↔ ubyte[] 互转
+                if (callee != null && callee.kind_ == "Identifier"
+                    && (callee.name_ == "bytes" || callee.name_ == "str")) {
+                    string argV = genExpr(e.args().get(0));
+                    string fn2 = callee.name_ == "bytes" ? "myp_str_to_bytes" : "myp_bytes_to_str";
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @" + fn2 + "(ptr " + argV + ")\n");
+                    addFreshTemp(t);
+                    return t;
+                }
+                // P2 parse* 全族 → runtime helper
+                if (callee != null && callee.kind_ == "Identifier") {
+                    string pn = callee.name_;
+                    string pfn = "";
+                    string prt = "";
+                    if (pn == "parseLong") { pfn = "myp_str_to_long"; prt = "i64"; }
+                    else if (pn == "parseInt") { pfn = "myp_str_parse_int"; prt = "i32"; }
+                    else if (pn == "parseUlong") { pfn = "myp_str_to_ulong"; prt = "i64"; }
+                    else if (pn == "parseUint") { pfn = "myp_str_to_uint"; prt = "i32"; }
+                    else if (pn == "parseFloat") { pfn = "myp_str_to_float"; prt = "float"; }
+                    else if (pn == "parseDouble") { pfn = "myp_atof"; prt = "double"; }
+                    if (Str.len(pfn) != 0) {
+                        string argV = genExpr(e.args().get(0));
+                        string t = newTmp();
+                        sb_.append("  " + t + " = call " + prt + " @" + pfn + "(ptr " + argV + ")\n");
+                        return t;
+                    }
+                }
+                // RTTI：__myp_type_id / __myp_type_name → myp_obj_type_id/name
+                if (callee != null && callee.kind_ == "Identifier"
+                    && (callee.name_ == "__myp_type_id" || callee.name_ == "__myp_type_name")) {
+                    string argV = genExpr(e.args().get(0));
+                    if (callee.name_ == "__myp_type_id") {
+                        string t = newTmp();
+                        sb_.append("  " + t + " = call i32 @myp_obj_type_id(ptr " + argV + ")\n");
+                        return t;
+                    }
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @myp_obj_type_name(ptr " + argV + ")\n");
+                    addFreshTemp(t);
+                    return t;
+                }
                 string fn = "";
                 string thisV = "";
                 string mCls = "";      // 方法所属类（形参类型查找用）
@@ -4241,7 +4511,7 @@ class CodeGen {
                     string av = genExpr(a);
                     string at = exprLlvmType(a);
                     if (expParams != null && i < expParams.size()) {
-                        av = convertValue(av, at, expParams.get(i));
+                        av = convertValueU(av, at, expParams.get(i), isUnsignedKind(a.resolvedKind_));
                         at = expParams.get(i);
                     }
                     if (i != 0 || Str.len(thisV) != 0) as.append(", ");
@@ -4420,13 +4690,31 @@ class CodeGen {
                 // 内建 FFI 固定签名（泛型模板体内 resolvedKind 被标 int）
                 AstExpr callee2 = e.callee_;
                 if (callee2 != null && callee2.kind_ == "Identifier"
-                    && Str.startsWith(callee2.name_, "__myp_math_") != 0
-                    && callee2.name_ != "__myp_math_abs_int") {
+                    && Str.startsWith(callee2.name_, "__myp_math_") != 0) {
+                    string mn = callee2.name_;
+                    if (mn == "__myp_math_abs_int") return "i32";
+                    if (mn == "__myp_math_pow" || mn == "__myp_math_atan2") return "double";
+                    // §9.5 一元多态数学：返回类型 = 实参 LLVM 类型
+                    //（abs 整型→整型；其余整型实参提为 double）。
+                    if (e.args().size() > 0) {
+                        string at = exprLlvmType(e.args().get(0));
+                        if (mn == "__myp_math_abs") return at;
+                        if (IrEmit.isIntType(at) != 0) return "double";
+                        return at;
+                    }
                     return "double";
                 }
                 if (callee2 != null && callee2.kind_ == "Identifier"
                     && (callee2.name_ == "__myp_atof" || callee2.name_ == "__myp_io_read_double")) {
                     return "double";
+                }
+                // P2 位操作原语：返回类型 = 实参 LLVM 宽度（byte 字面量按 i32 物化）
+                if (callee2 != null && callee2.kind_ == "Identifier") {
+                    string bn = callee2.name_;
+                    if (bn == "popcount" || bn == "clz" || bn == "ctz" || bn == "bitreverse"
+                        || bn == "rotl" || bn == "rotr") {
+                        if (e.args().size() > 0) return exprLlvmType(e.args().get(0));
+                    }
                 }
                 return IrEmit.kindType(e.resolvedKind_);
             }
@@ -5199,6 +5487,7 @@ class CodeGen {
         ArrayList<AstType> curTypeArgs_;
         ArrayList<string> pendingTemps_;
         ArrayList<string> arcSlotNames_;
+        ArrayList<string> sliceSlotNames_;
         StringBuilder entryAllocas_;
         ArrayList<int> localIsArc_;
         ArrayList<FinallyCtx> finallyStack_;
@@ -5211,6 +5500,8 @@ class CodeGen {
         int curFnScope_;
         int testMode_;
         int curFnCoro_;
+        int curFnRegion_;
+        string curRegionMark_;
         int parallelCounter_;
         StringBuilder parallelBodies_;
 }

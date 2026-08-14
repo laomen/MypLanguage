@@ -3714,6 +3714,7 @@ double myp_math_tanh(double v)    { return tanh(v); }
 double myp_math_exp(double v)     { return exp(v); }
 double myp_math_log(double v)     { return log(v); }
 double myp_math_pow(double b, double e) { return pow(b, e); }
+double myp_math_trunc(double v)   { return trunc(v); }
 int32_t myp_math_abs_int(int32_t v) { return v < 0 ? -v : v; }
 
 // ======================
