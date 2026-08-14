@@ -16,7 +16,7 @@
 | F4 | 语义分析 | type / diag / sema | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
 | G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
 | G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | ✅ **基本完成**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获)/元组/默认命名参数 已对拍） |
-| G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段 已对拍；mapping/异常/协程待补） |
+| G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段/**异常全链路（string/typed/接口/finally/TryExpr）** 已对拍；mapping/@startup/协程待补） |
 | G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
 | H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
 
@@ -224,7 +224,7 @@
 - [ ] **G3-2** ARC 插桩：对象头 `{rc,type_id}`、retain/release、`__myp_release_table`、
       作用域退出释放、`@weak`、跨线程原子 ARC。
 - [ ] **G3-3** mapping/event：`__myp_inst_X` 全局、mapping 注册、事件 fire/dispatch。
-- [ ] **G3-4** 异常：throw/catch/finally 展开 + 错误消息拷贝（`myp_strdup` 契约）。
+- [x] **G3-4** 异常：throw/catch/finally 展开 + 错误消息拷贝（string/typed class/Error 接口/finally+return/TryExpr 全链路，`790512b`..`03bfdfb`）。
 - [ ] **G3-5** 协程/`@thread`/`@threadpool`/`@async`/await：对接 runtime coro/线程表。
 - [ ] **G3-6** 泛型单态化：`T` 替换、`foo_int_inst`、`T::Item` 关联类型。
 - [ ] **G3-7** `@gpu` 源文件 CPU 顺序回退（语义保持，无 GPU 发射）。
