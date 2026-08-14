@@ -219,6 +219,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare ptr @myp_str_to_bytes(ptr)\n");
             sb.append("\n");
+            sb.append("declare ptr @myp_uint_to_bytes(i64, i32)\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_bytes_to_str(ptr)\n");
             sb.append("\n");
             sb.append("declare i32 @myp_str_parse_int(ptr)\n");

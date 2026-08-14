@@ -187,19 +187,31 @@ class CodeGen {
         // AstType → LLVM 类型（先替换泛型类型参数）。
         string llvmType(AstType t) {
             AstType rt = resolveType(t);
+            string tn = typeName(rt);
             // 接口类型 → fat pointer { data, vtable }
-            if (rt != null && Str.len(rt.className_) != 0 && isInterfaceName(rt.className_) != 0) {
+            if (rt != null && Str.len(tn) != 0 && isInterfaceName(tn) != 0) {
                 return "{ ptr, ptr }";
             }
             // 枚举类型 → 结构体值 { i32, [N x i8] }
-            if (rt != null && Str.len(rt.className_) != 0 && isEnumName(rt.className_) != 0) {
-                return enumLlvmType(rt.className_);
+            if (rt != null && Str.len(tn) != 0 && isEnumName(tn) != 0) {
+                return enumLlvmType(tn);
             }
             // struct 类型 → 命名结构体 %Point
-            if (rt != null && Str.len(rt.className_) != 0 && isStructName(rt.className_) != 0) {
-                return "%" + rt.className_;
+            if (rt != null && Str.len(tn) != 0 && isStructName(tn) != 0) {
+                return "%" + tn;
+            }
+            // bitfield 类型 → 打包背衬整数（i8/i16/i32/i64）
+            if (rt != null && Str.len(tn) != 0 && isBitfieldName(tn) != 0) {
+                return bitfieldLlvmType(tn);
             }
             return IrEmit.llvmType(rt);
+        }
+
+        // 类型名（className 优先，否则 basicName；new Flags[3] 的 elemType 只有 basicName）。
+        string typeName(AstType t) {
+            if (t == null) return "";
+            if (Str.len(t.className_) != 0) return t.className_;
+            return t.basicName_;
         }
 
         // slice<T> 元素 LLVM 类型（先替换泛型类型参数）。
@@ -286,9 +298,11 @@ class CodeGen {
                 return 0;                           // T[N] 定长数组（栈）
             }
             if (rt.className_ == "slice") return 0;
+            // 仅类实例/接口/字符串是引用；内建标量（bool/bit/int...）className 为空 → 0。
             if (Str.len(rt.className_) != 0) {
-                if (isEnumName(rt.className_) != 0) return 0;   // 枚举是值类型
-                if (isStructName(rt.className_) != 0) return 0; // struct 是值类型
+                if (isEnumName(rt.className_) != 0) return 0;     // 枚举是值类型
+                if (isStructName(rt.className_) != 0) return 0;   // struct 是值类型
+                if (isBitfieldName(rt.className_) != 0) return 0; // bitfield 是值类型（整数背衬）
                 return 1;   // 类实例/接口引用
             }
             return 0;
@@ -540,6 +554,9 @@ class CodeGen {
                 int tw = IrEmit.intWidth(to);
                 if (tw < fw) {
                     sb_.append("  " + t + " = trunc " + from + " " + v + " to " + to + "\n");
+                } else if (from == "i1") {
+                    // bool/bit → 整数：零扩展（0/1）
+                    sb_.append("  " + t + " = zext " + from + " " + v + " to " + to + "\n");
                 } else {
                     // 有符号扩展（MYP 整数默认有符号）
                     sb_.append("  " + t + " = sext " + from + " " + v + " to " + to + "\n");
@@ -581,7 +598,7 @@ class CodeGen {
                 int tw = IrEmit.intWidth(to);
                 if (tw < fw) {
                     sb_.append("  " + t + " = trunc " + from + " " + v + " to " + to + "\n");
-                } else if (un != 0) {
+                } else if (un != 0 || from == "i1") {
                     sb_.append("  " + t + " = zext " + from + " " + v + " to " + to + "\n");
                 } else {
                     sb_.append("  " + t + " = sext " + from + " " + v + " to " + to + "\n");
@@ -4207,7 +4224,8 @@ class CodeGen {
                 if (Str.len(toLt) == 0 || toLt == "i32") {
                     if (Str.len(toK) == 0) toLt = "i32";
                 }
-                return convertValue(ov, ot, toLt);
+                // uint/ulong/ubyte/ushort 目标 → 零扩展（位保持）；int(x) 有符号。
+                return convertValueU(ov, ot, toLt, isUnsignedKind(toK));
             }
             if (k == "Binary") {
                 string op = e.op_;
@@ -4314,7 +4332,12 @@ class CodeGen {
                 // 操作数统一类型（算术 → resolvedKind；比较 → 较宽整数侧）
                 string opLt = lt;
                 if (isCmp == 0) {
-                    opLt = IrEmit.kindType(e.resolvedKind_);
+                    if (e.resolvedKind_ == "bitvector" && lhsE != null) {
+                        // bitvector 位运算：结果宽度 = 左操作数（iN）
+                        opLt = exprLlvmType(lhsE);
+                    } else {
+                        opLt = IrEmit.kindType(e.resolvedKind_);
+                    }
                 } else {
                     if (IrEmit.isIntType(lt) != 0 && IrEmit.isIntType(rt) != 0) {
                         if (IrEmit.intWidth(rt) > IrEmit.intWidth(lt)) opLt = rt;
@@ -4327,7 +4350,8 @@ class CodeGen {
                 // 无符号整数运算：任一操作数为无符号整型 → 用无符号除/取模/比较/逻辑右移
                 int un = 0;
                 if (isFp == 0 && IrEmit.isIntType(opLt) != 0
-                    && (isUnsignedKind(e.resolvedKind_) != 0
+                    && (e.resolvedKind_ == "bitvector"
+                        || isUnsignedKind(e.resolvedKind_) != 0
                         || (lhsE != null && isUnsignedKind(lhsE.resolvedKind_) != 0)
                         || (rhsE != null && isUnsignedKind(rhsE.resolvedKind_) != 0))) {
                     un = 1;
@@ -4426,6 +4450,36 @@ class CodeGen {
                             sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                         }
                     }
+                } else if (lhs != null && lhs.kind_ == "Subscript" && lhs.resolvedKind_ == "bit") {
+                    // bitvector<N>[i] = v → 读-改-写背衬整数
+                    AstExpr arr = lhs.array_;
+                    string arrT = exprLlvmType(arr);
+                    string slot = "";
+                    if (arr != null && arr.kind_ == "Identifier") slot = varAlloca(arr.name_);
+                    if (Str.len(slot) != 0 && IrEmit.isIntType(arrT) != 0) {
+                        string cur = newTmp();
+                        sb_.append("  " + cur + " = load " + arrT + ", ptr " + slot + "\n");
+                        string iv = genExpr(lhs.index_);
+                        string it = exprLlvmType(lhs.index_);
+                        iv = convertValue(iv, it, arrT);
+                        string one = newTmp();
+                        sb_.append("  " + one + " = shl " + arrT + " 1, " + iv + "\n");
+                        string notm = newTmp();
+                        sb_.append("  " + notm + " = xor " + arrT + " " + one + ", -1\n");
+                        string cleared = newTmp();
+                        sb_.append("  " + cleared + " = and " + arrT + " " + cur + ", " + notm + "\n");
+                        string val = genExpr(e.rhs_);
+                        string vt = exprLlvmType(e.rhs_);
+                        val = convertValue(val, vt, arrT);
+                        string b = newTmp();
+                        sb_.append("  " + b + " = and " + arrT + " " + val + ", 1\n");
+                        string placed = newTmp();
+                        sb_.append("  " + placed + " = shl " + arrT + " " + b + ", " + iv + "\n");
+                        string nv = newTmp();
+                        sb_.append("  " + nv + " = or " + arrT + " " + cleared + ", " + placed + "\n");
+                        sb_.append("  store " + arrT + " " + nv + ", ptr " + slot + "\n");
+                        return rv;
+                    }
                 } else if (lhs != null && lhs.kind_ == "Subscript") {
                     // arr[i] = v / sl[i] = v
                     AstExpr arr = lhs.array_;
@@ -4456,6 +4510,38 @@ class CodeGen {
                     } else {
                         sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
                     }
+                } else if (lhs != null && lhs.kind_ == "Member"
+                    && Str.len(lhs.resolvedClass_) != 0 && isBitfieldName(lhs.resolvedClass_) != 0) {
+                    // bitfield 字段写：f.read = v → 读-改-写背衬整数
+                    string bfName = lhs.resolvedClass_;
+                    string mname = lhs.memberName_;
+                    AstExpr obj = lhs.array_;
+                    int off = bitfieldFieldOffset(bfName, mname);
+                    int width = bitfieldFieldWidth(bfName, mname);
+                    string slot = bitfieldSlotAddr(obj);
+                    string bft = bitfieldBackingType(obj);
+                    string cur = newTmp();
+                    sb_.append("  " + cur + " = load " + bft + ", ptr " + slot + "\n");
+                    string val = genExpr(e.rhs_);
+                    string vt = exprLlvmType(e.rhs_);
+                    val = convertValue(val, vt, bft);
+                    int mask = (1 << width) - 1;
+                    if (width >= 30) mask = -1;
+                    string fmask = "" + mask;
+                    string shifted = newTmp();
+                    sb_.append("  " + shifted + " = shl " + bft + " " + fmask + ", " + off + "\n");
+                    string notm = newTmp();
+                    sb_.append("  " + notm + " = xor " + bft + " " + shifted + ", -1\n");
+                    string cleared = newTmp();
+                    sb_.append("  " + cleared + " = and " + bft + " " + cur + ", " + notm + "\n");
+                    string bits = newTmp();
+                    sb_.append("  " + bits + " = and " + bft + " " + val + ", " + fmask + "\n");
+                    string placed = newTmp();
+                    sb_.append("  " + placed + " = shl " + bft + " " + bits + ", " + off + "\n");
+                    string nv = newTmp();
+                    sb_.append("  " + nv + " = or " + bft + " " + cleared + ", " + placed + "\n");
+                    sb_.append("  store " + bft + " " + nv + ", ptr " + slot + "\n");
+                    return rv;
                 } else if (lhs != null && lhs.kind_ == "Member") {
                     // obj.field = v / this.field = v
                     string gep = memberAddr(lhs);
@@ -4511,6 +4597,23 @@ class CodeGen {
             if (k == "Subscript") {
                 AstExpr arr = e.array_;
                 AstExpr idx = e.index_;
+                // bitvector<N>[i] → (v >> i) & 1 → i1
+                if (e.resolvedKind_ == "bit" && arr != null) {
+                    string arrT = exprLlvmType(arr);
+                    if (IrEmit.isIntType(arrT) != 0 && subscriptIsSlice(arr) == 0) {
+                        string av = genExpr(arr);
+                        string iv = genExpr(idx);
+                        string it = exprLlvmType(idx);
+                        iv = convertValue(iv, it, arrT);
+                        string sh = newTmp();
+                        sb_.append("  " + sh + " = lshr " + arrT + " " + av + ", " + iv + "\n");
+                        string m = newTmp();
+                        sb_.append("  " + m + " = and " + arrT + " " + sh + ", 1\n");
+                        string t = newTmp();
+                        sb_.append("  " + t + " = trunc " + arrT + " " + m + " to i1\n");
+                        return t;
+                    }
+                }
                 string arrV = genExpr(arr);
                 string idxV = genExpr(idx);
                 string idxT = exprLlvmType(idx);
@@ -4650,6 +4753,36 @@ class CodeGen {
                         return data;
                     }
                 }
+                // bitfield 字段读取：f.read / this.f.read / fa[0].read → 位提取
+                if (mObj != null && Str.len(e.resolvedClass_) != 0 && isBitfieldName(e.resolvedClass_) != 0) {
+                    string bfName = e.resolvedClass_;
+                    int off = bitfieldFieldOffset(bfName, mname);
+                    int width = bitfieldFieldWidth(bfName, mname);
+                    string bv = genExpr(mObj);
+                    string bft = exprLlvmType(mObj);
+                    string sh = newTmp();
+                    sb_.append("  " + sh + " = lshr " + bft + " " + bv + ", " + off + "\n");
+                    if (width == 1) {
+                        string m = newTmp();
+                        sb_.append("  " + m + " = and " + bft + " " + sh + ", 1\n");
+                        string t = newTmp();
+                        sb_.append("  " + t + " = trunc " + bft + " " + m + " to i1\n");
+                        return t;
+                    }
+                    int mask = (1 << width) - 1;
+                    if (width >= 30) mask = -1;
+                    string m = newTmp();
+                    sb_.append("  " + m + " = and " + bft + " " + sh + ", " + mask + "\n");
+                    if (bft == "i32") return m;
+                    if (bft == "i64") {
+                        string t2 = newTmp();
+                        sb_.append("  " + t2 + " = trunc i64 " + m + " to i32\n");
+                        return t2;
+                    }
+                    string t = newTmp();
+                    sb_.append("  " + t + " = zext " + bft + " " + m + " to i32\n");
+                    return t;
+                }
                 string gep = memberAddr(e);
                 string ft = memberFieldType(e);
                 if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
@@ -4776,6 +4909,22 @@ class CodeGen {
                     string fn2 = callee.name_ == "bytes" ? "myp_str_to_bytes" : "myp_bytes_to_str";
                     string t = newTmp();
                     sb_.append("  " + t + " = call ptr @" + fn2 + "(ptr " + argV + ")\n");
+                    addFreshTemp(t);
+                    return t;
+                }
+                // §5.1 bytesOf(bitvector<N>) → myp_uint_to_bytes(zext(v,i64), N/8)
+                if (callee != null && callee.kind_ == "Identifier" && callee.name_ == "bytesOf") {
+                    string av = genExpr(e.args().get(0));
+                    string at = exprLlvmType(e.args().get(0));
+                    int nbytes = 4;
+                    if (at == "i1") nbytes = 1;
+                    else if (at == "i8") nbytes = 1;
+                    else if (at == "i16") nbytes = 2;
+                    else if (at == "i32") nbytes = 4;
+                    else if (at == "i64") nbytes = 8;
+                    string wide = convertValue(av, at, "i64");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @myp_uint_to_bytes(i64 " + wide + ", i32 " + nbytes + ")\n");
                     addFreshTemp(t);
                     return t;
                 }
@@ -5157,6 +5306,11 @@ class CodeGen {
                 return varType(nm);
             }
             if (k == "Member") {
+                // bitfield 字段：bit → i1；bit[N] → uint/i32
+                if (Str.len(e.resolvedClass_) != 0 && isBitfieldName(e.resolvedClass_) != 0) {
+                    if (e.resolvedKind_ == "bit") return "i1";
+                    return "i32";
+                }
                 if (isDigits(e.memberName_) != 0) {
                     return IrEmit.kindType(e.resolvedKind_);
                 }
@@ -5231,6 +5385,7 @@ class CodeGen {
                 return IrEmit.kindType(e.resolvedKind_);
             }
             if (k == "Subscript") {
+                if (e.resolvedKind_ == "bit") return "i1";   // bitvector<N>[i]
                 return subscriptElemLt(e.array_);
             }
             if (k == "New") {
@@ -5427,6 +5582,83 @@ class CodeGen {
                 }
             }
             return 0;
+        }
+
+        // name 是否为 bitfield 名。
+        int isBitfieldName(string name) {
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            for (int i = 0; i < tu_.bitfields().size(); i = i + 1) {
+                if (tu_.bitfields().get(i).name_ == name) return 1;
+            }
+            return 0;
+        }
+
+        // bitfield 总位数（0 = 未知）。
+        int bitfieldTotalBits(string name) {
+            for (int i = 0; i < tu_.bitfields().size(); i = i + 1) {
+                if (tu_.bitfields().get(i).name_ == name) return tu_.bitfields().get(i).totalBits_;
+            }
+            return 0;
+        }
+
+        // bitfield 字段偏移（bit）。
+        int bitfieldFieldOffset(string name, string member) {
+            for (int i = 0; i < tu_.bitfields().size(); i = i + 1) {
+                AstBitfield bf = tu_.bitfields().get(i);
+                if (bf.name_ != name) continue;
+                for (int fi = 0; fi < bf.fields().size(); fi = fi + 1) {
+                    if (bf.fields().get(fi).name_ == member) return bf.fields().get(fi).offset_;
+                }
+            }
+            return 0;
+        }
+
+        // bitfield 字段位宽（1 = 单 bit）。
+        int bitfieldFieldWidth(string name, string member) {
+            for (int i = 0; i < tu_.bitfields().size(); i = i + 1) {
+                AstBitfield bf = tu_.bitfields().get(i);
+                if (bf.name_ != name) continue;
+                for (int fi = 0; fi < bf.fields().size(); fi = fi + 1) {
+                    if (bf.fields().get(fi).name_ == member) return bf.fields().get(fi).width_;
+                }
+            }
+            return 1;
+        }
+
+        // bitfield 名 → LLVM 背衬整数类型（i8/i16/i32/i64）。
+        string bitfieldLlvmType(string name) {
+            int bits = bitfieldTotalBits(name);
+            if (bits <= 8) return "i8";
+            if (bits <= 16) return "i16";
+            if (bits <= 32) return "i32";
+            return "i64";
+        }
+
+        // bitfield 对象的背衬槽地址（局部 alloca / this.f GEP / arr[i] 元素 GEP）。
+        string bitfieldSlotAddr(AstExpr obj) {
+            if (obj == null) return "";
+            if (obj.kind_ == "Identifier") return varAlloca(obj.name_);
+            if (obj.kind_ == "Member") return memberAddr(obj);
+            if (obj.kind_ == "Subscript") return subscriptElemAddr(obj.array_, obj.index_);
+            return "";
+        }
+
+        // bitfield 对象的背衬 LLVM 类型（i8/i16/i32）。
+        string bitfieldBackingType(AstExpr obj) {
+            if (obj == null) return "i8";
+            if (obj.kind_ == "Identifier") {
+                AstType oat = varAstType(obj.name_);
+                if (oat != null) {
+                    AstType rt = resolveType(oat);
+                    if (rt != null && Str.len(rt.className_) != 0 && isBitfieldName(rt.className_) != 0) {
+                        return bitfieldLlvmType(rt.className_);
+                    }
+                }
+                return varType(obj.name_);
+            }
+            if (obj.kind_ == "Member") return memberFieldType(obj);
+            if (obj.kind_ == "Subscript") return subscriptElemLt(obj.array_);
+            return "i8";
         }
 
         // struct 字段索引（按声明顺序）。
@@ -5702,7 +5934,7 @@ class CodeGen {
                         sb.append("  call i32 @myp_release(ptr " + data + ")\n");
                     } else if (rt != null && (rt.str() == "string"
                         || (Str.len(rt.className_) != 0 && isEnumName(rt.className_) == 0
-                            && isStructName(rt.className_) == 0))) {
+                            && isStructName(rt.className_) == 0 && isBitfieldName(rt.className_) == 0))) {
                         // string / 类实例引用
                         string v = newTmp();
                         sb.append("  " + v + " = load ptr, ptr " + gep + "\n");
