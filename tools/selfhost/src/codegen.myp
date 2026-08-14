@@ -1997,6 +1997,7 @@ class CodeGen {
             threadHandles_ = new ArrayList<string>();
             curFnScope_ = 0;
             blockCounter_ = 0;
+            parallelBodies_ = new StringBuilder();
             curBlock_ = "entry";
             terminated_ = 0;
             loopBreak_ = new ArrayList<string>();
@@ -2071,6 +2072,263 @@ class CodeGen {
             sb_.append(entryAllocas_.toString());
             sb_.append(bodyBuf.toString());
             sb_.append("}\n\n");
+            // @parallel for 生成的并行 body 函数（须在本函数关闭后输出到模块）。
+            sb_.append(parallelBodies_.toString());
+        }
+
+        // @parallel for 是否可并行化（init 是带命名变量的 VarDecl）。
+        // 注意：不读 st.init_.kind_（自举 codegen 里嵌套语句的 kind_ 字符串
+        // 读取有悬挂指针 bug），改用 decls()/name_（VarDecl 独有，稳定可用）。
+        int canParallelizeFor(AstStmt st) {
+            if (st.init_ == null) return 0;
+            if (st.init_.decls().size() == 0) return 0;
+            string n = st.init_.decls().get(0).name_;
+            if (Str.len(n) == 0) return 0;
+            return 1;
+        }
+
+        // @parallel for 数据并行：提取 start/end/step + 收集外层变量捕获 +
+        // 生成 chunk-body 函数 + myp_pool_parallel_for 调用（同 C++ generateParallelFor）。
+        void genParallelFor(AstStmt st) {
+            AstVar d0 = st.init_.decls().get(0);
+            string loopVar = d0.name_;
+            string startV = "0";
+            if (d0.init_ != null) startV = convertValue(genExpr(d0.init_), exprLlvmType(d0.init_), "i32");
+            string endV = "0";
+            // 条件 i < N / i <= N：上界取 rhs。逐级局部变量展开（自举 codegen
+            // 的嵌套字段链 a.b.c 有偏移 bug，拆开访问才正确）。
+            AstExpr cond = st.condition_;
+            if (cond != null) {
+                AstExpr bound = cond.rhs_;
+                if (bound != null) endV = convertValue(genExpr(bound), exprLlvmType(bound), "i32");
+            }
+            string stepV = "1";
+            // 步进 i = i + K：增量 = Assign.rhs(+).rhs。
+            AstExpr stepE = st.step_;
+            if (stepE != null) {
+                AstExpr stepRhs = stepE.rhs_;
+                if (stepRhs != null) {
+                    AstExpr inc = stepRhs.rhs_;
+                    if (inc != null) stepV = convertValue(genExpr(inc), exprLlvmType(inc), "i32");
+                }
+            }
+            // 收集捕获（参数 + 局部，循环变量除外；同名遮蔽取最后）。
+            ArrayList<string> capNames = new ArrayList<string>();
+            ArrayList<string> capTypes = new ArrayList<string>();
+            ArrayList<string> capAllocas = new ArrayList<string>();
+            ArrayList<AstType> capAst = new ArrayList<AstType>();
+            ArrayList<string> capElem = new ArrayList<string>();
+            ArrayList<int> capSlice = new ArrayList<int>();
+            ArrayList<int> capArc = new ArrayList<int>();
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                addCapture(capNames, capTypes, capAllocas, capAst, capElem, capSlice, capArc,
+                    paramNames_.get(i), paramTypes_.get(i), "%" + paramNames_.get(i) + ".addr",
+                    paramAstTypes_.get(i), "", 0, 0);
+            }
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == loopVar) continue;
+                addCapture(capNames, capTypes, capAllocas, capAst, capElem, capSlice, capArc,
+                    localNames_.get(i), localTypes_.get(i), localAllocas_.get(i),
+                    localAstTypes_.get(i), localElemTypes_.get(i), localIsSlice_.get(i), localIsArc_.get(i));
+            }
+            string capT = "";
+            string capA = "null";
+            if (capNames.size() > 0) {
+                capT = "%parallel_cap." + parallelCounter_;
+                StringBuilder ms = new StringBuilder();
+                for (int i = 0; i < capTypes.size(); i = i + 1) {
+                    if (i != 0) ms.append(", ");
+                    ms.append(capTypes.get(i));
+                }
+                stringGlobals_.append(capT + " = type { " + ms.toString() + " }\n");
+                capA = newTmp() + ".cap";
+                sb_.append("  " + capA + " = alloca " + capT + ", align 8\n");
+                for (int i = 0; i < capNames.size(); i = i + 1) {
+                    string cv = newTmp();
+                    sb_.append("  " + cv + " = load " + capTypes.get(i) + ", ptr " + capAllocas.get(i) + "\n");
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + capT + ", ptr " + capA + ", i32 0, i32 " + i + "\n");
+                    sb_.append("  store " + capTypes.get(i) + " " + cv + ", ptr " + gep + "\n");
+                }
+            }
+            string bodyFn = "parallel_body_" + loopVar + "." + parallelCounter_;
+            parallelCounter_ = parallelCounter_ + 1;
+            genParallelBody(bodyFn, loopVar, capNames, capTypes, capAst, capElem, capSlice, capArc, capT, st.body_);
+            string pool = newTmp();
+            sb_.append("  " + pool + " = call ptr @myp_pool_ensure_global()\n");
+            sb_.append("  call void @myp_pool_parallel_for(ptr " + pool + ", i32 " + startV + ", i32 " + endV + ", i32 " + stepV + ", ptr @" + bodyFn + ", ptr " + capA + ")\n");
+        }
+
+        // 捕获去重：同名取最后（内层遮蔽优先）。
+        void addCapture(ArrayList<string> names, ArrayList<string> types, ArrayList<string> allocas,
+                        ArrayList<AstType> ast, ArrayList<string> elem, ArrayList<int> slice, ArrayList<int> arc,
+                        string name, string t, string a, AstType at, string et, int sl, int ar) {
+            for (int i = 0; i < names.size(); i = i + 1) {
+                if (names.get(i) == name) {
+                    types.set(i, t);
+                    allocas.set(i, a);
+                    ast.set(i, at);
+                    elem.set(i, et);
+                    slice.set(i, sl);
+                    arc.set(i, ar);
+                    return;
+                }
+            }
+            names.add(name);
+            types.add(t);
+            allocas.add(a);
+            ast.add(at);
+            elem.add(et);
+            slice.add(sl);
+            arc.add(ar);
+        }
+
+        // 生成并行 body 函数：void fn(i32 start, i32 end, i32 step, ptr arg)
+        // —— 解包捕获 → 循环变量 alloca → chunk 循环跑用户 body。
+        void genParallelBody(string fn, string loopVar,
+                             ArrayList<string> capNames, ArrayList<string> capTypes,
+                             ArrayList<AstType> capAst, ArrayList<string> capElem,
+                             ArrayList<int> capSlice, ArrayList<int> capArc,
+                             string capT, AstStmt body) {
+            // 保存外层函数状态
+            StringBuilder saveSb = sb_;
+            ArrayList<string> spn = paramNames_;
+            ArrayList<string> spt = paramTypes_;
+            ArrayList<AstType> spa = paramAstTypes_;
+            ArrayList<string> sln = localNames_;
+            ArrayList<string> slt = localTypes_;
+            ArrayList<AstType> sla = localAstTypes_;
+            ArrayList<string> sll = localAllocas_;
+            ArrayList<string> sle = localElemTypes_;
+            ArrayList<int> sls = localIsSlice_;
+            ArrayList<int> sli = localIsArc_;
+            ArrayList<string> sp = pendingTemps_;
+            ArrayList<string> sar = arcSlotNames_;
+            ArrayList<string> slb = loopBreak_;
+            ArrayList<string> slc = loopContinue_;
+            string scb = curBlock_;
+            int sbc = blockCounter_;
+            int ster = terminated_;
+            string sret = curRetLt_;
+            int smain = isMainFunc_;
+            StringBuilder sea = entryAllocas_;
+
+            // 建立 body 函数作用域
+            paramNames_ = new ArrayList<string>();
+            paramTypes_ = new ArrayList<string>();
+            paramAstTypes_ = new ArrayList<AstType>();
+            localNames_ = new ArrayList<string>();
+            localTypes_ = new ArrayList<string>();
+            localAstTypes_ = new ArrayList<AstType>();
+            localAllocas_ = new ArrayList<string>();
+            localElemTypes_ = new ArrayList<string>();
+            localIsSlice_ = new ArrayList<int>();
+            localIsArc_ = new ArrayList<int>();
+            pendingTemps_ = new ArrayList<string>();
+            arcSlotNames_ = new ArrayList<string>();
+            loopBreak_ = new ArrayList<string>();
+            loopContinue_ = new ArrayList<string>();
+            curBlock_ = "entry";
+            blockCounter_ = 0;
+            terminated_ = 0;
+            curRetLt_ = "void";
+            isMainFunc_ = 0;
+            entryAllocas_ = new StringBuilder();
+
+            StringBuilder headBuf = new StringBuilder();
+            sb_ = headBuf;
+            headBuf.append("define internal void @" + fn + "(i32 %start, i32 %end, i32 %step, ptr %arg) {\n");
+            headBuf.append("entry:\n");
+            for (int i = 0; i < capNames.size(); i = i + 1) {
+                string gep = newTmp();
+                headBuf.append("  " + gep + " = getelementptr " + capT + ", ptr %arg, i32 0, i32 " + i + "\n");
+                string cv = newTmp();
+                headBuf.append("  " + cv + " = load " + capTypes.get(i) + ", ptr " + gep + "\n");
+                string va = newTmp();
+                int al = IrEmit.alignOf(capTypes.get(i));
+                headBuf.append("  " + va + " = alloca " + capTypes.get(i) + ", align " + al + "\n");
+                headBuf.append("  store " + capTypes.get(i) + " " + cv + ", ptr " + va + "\n");
+                localNames_.add(capNames.get(i));
+                localTypes_.add(capTypes.get(i));
+                localAstTypes_.add(capAst.get(i));
+                localAllocas_.add(va);
+                localElemTypes_.add(capElem.get(i));
+                localIsSlice_.add(capSlice.get(i));
+                localIsArc_.add(capArc.get(i));
+            }
+            string ia = newTmp();
+            headBuf.append("  " + ia + " = alloca i32, align 4\n");
+            headBuf.append("  store i32 %start, ptr " + ia + "\n");
+            localNames_.add(loopVar);
+            localTypes_.add("i32");
+            localAstTypes_.add(null);
+            localAllocas_.add(ia);
+            localElemTypes_.add("");
+            localIsSlice_.add(0);
+            localIsArc_.add(0);
+            // 循环骨架写进独立缓冲：body 内局部变量的 entry alloca 在 genStmt 时
+            // 累积到 entryAllocas_，须插入 entry 块（captures/循环变量之后、
+            // br ploop.cond 之前）。
+            StringBuilder loopBuf = new StringBuilder();
+            sb_ = loopBuf;
+            string condB = newBlock("ploop.cond");
+            string bodyB = newBlock("ploop.body");
+            string stepB = newBlock("ploop.step");
+            string endB = newBlock("ploop.end");
+            loopBuf.append("  br label %" + condB + "\n");
+            openBlock(condB);
+            string iCur = newTmp();
+            loopBuf.append("  " + iCur + " = load i32, ptr " + ia + "\n");
+            string ok = newTmp();
+            loopBuf.append("  " + ok + " = icmp slt i32 " + iCur + ", %end\n");
+            loopBuf.append("  br i1 " + ok + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            loopBreak_.add(endB);
+            loopContinue_.add(stepB);
+            if (body != null) genStmt(body);
+            if (terminated_ == 0) emitBr(stepB);
+            loopBreak_.remove(loopBreak_.size() - 1);
+            loopContinue_.remove(loopContinue_.size() - 1);
+            openBlock(stepB);
+            string iNext = newTmp();
+            loopBuf.append("  " + iNext + " = add i32 " + iCur + ", %step\n");
+            loopBuf.append("  store i32 " + iNext + ", ptr " + ia + "\n");
+            loopBuf.append("  br label %" + condB + "\n");
+            openBlock(endB);
+            loopBuf.append("  ret void\n");
+            terminated_ = 1;
+            // body 函数内累积的 entry alloca（body 局部变量）
+            string bodyEntryAllocas = entryAllocas_.toString();
+
+            // 恢复外层状态
+            sb_ = saveSb;
+            paramNames_ = spn;
+            paramTypes_ = spt;
+            paramAstTypes_ = spa;
+            localNames_ = sln;
+            localTypes_ = slt;
+            localAstTypes_ = sla;
+            localAllocas_ = sll;
+            localElemTypes_ = sle;
+            localIsSlice_ = sls;
+            localIsArc_ = sli;
+            pendingTemps_ = sp;
+            arcSlotNames_ = sar;
+            loopBreak_ = slb;
+            loopContinue_ = slc;
+            curBlock_ = scb;
+            blockCounter_ = sbc;
+            terminated_ = ster;
+            curRetLt_ = sret;
+            isMainFunc_ = smain;
+            entryAllocas_ = sea;
+            // 输出 body 函数到模块缓冲：head（captures/循环变量）+ entry alloca
+            // + 循环骨架（本函数关闭后由 genFuncBody 统一输出）。
+            parallelBodies_.append(headBuf.toString());
+            parallelBodies_.append(bodyEntryAllocas);
+            parallelBodies_.append(loopBuf.toString());
+            parallelBodies_.append("}\n\n");
         }
 
         // 语句 → IR。
@@ -2372,6 +2630,12 @@ class CodeGen {
                 loopContinue_.remove(loopContinue_.size() - 1);
                 openBlock(endB);
             } else if (k == "For") {
+                // @parallel for：数据并行（生成并行 body 函数 + myp_pool_parallel_for）。
+                // 无法并行化（非规范 for 形态）时回退串行。
+                if (st.parallel_ != 0 && canParallelizeFor(st) != 0) {
+                    genParallelFor(st);
+                    return;
+                }
                 if (st.init_ != null) genStmt(st.init_);
                 string condB = newBlock("for_cond");
                 string bodyB = newBlock("for_body");
@@ -4947,4 +5211,6 @@ class CodeGen {
         int curFnScope_;
         int testMode_;
         int curFnCoro_;
+        int parallelCounter_;
+        StringBuilder parallelBodies_;
 }
