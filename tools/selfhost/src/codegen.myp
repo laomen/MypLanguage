@@ -15,8 +15,11 @@ class CodeGen {
             tmp_ = 0;
             paramNames_ = new ArrayList<string>();
             paramTypes_ = new ArrayList<string>();
+            paramAstTypes_ = new ArrayList<AstType>();
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
+            localAstTypes_ = new ArrayList<AstType>();
+            localAllocas_ = new ArrayList<string>();
             localElemTypes_ = new ArrayList<string>();
             localIsSlice_ = new ArrayList<int>();
             isMainFunc_ = 0;
@@ -27,6 +30,13 @@ class CodeGen {
             loopContinue_ = new ArrayList<string>();
             stringGlobals_ = new StringBuilder();
             strCounter_ = 0;
+            cellOwnerNames_ = new ArrayList<string>();
+            cellOwnerVals_ = new ArrayList<string>();
+            curTypeParams_ = new ArrayList<string>();
+            curTypeArgs_ = new ArrayList<AstType>();
+            pendingTemps_ = new ArrayList<string>();
+            arcSlotNames_ = new ArrayList<string>();
+            localIsArc_ = new ArrayList<int>();
         }
 
         string newTmp() {
@@ -61,6 +71,143 @@ class CodeGen {
             string t = newTmp();
             sb_.append("  " + t + " = icmp ne " + vt + " " + v + ", 0\n");
             return t;
+        }
+
+        // ---- 泛型实例体内的类型参数替换（C++ current_type_params_）----
+        // 泛型类模板的 body 由所有实例共享，其局部变量类型仍是 T 占位 →
+        // 发射前把 T 解析为具体类型（typeParams/instTypeArgs 平行）。
+        AstType resolveType(AstType t) {
+            if (t == null) return null;
+            for (int i = 0; i < curTypeParams_.size(); i = i + 1) {
+                if (i >= curTypeArgs_.size()) break;
+                string tp = curTypeParams_.get(i);
+                if (t.genericParam_ != 0) return curTypeArgs_.get(i);
+                if (Str.len(tp) != 0 && (t.className_ == tp || t.basicName_ == tp)) {
+                    return curTypeArgs_.get(i);
+                }
+            }
+            if (t.element_ != null) {
+                AstType sub = resolveType(t.element_);
+                if (sub != t.element_) {
+                    AstType r = new AstType();
+                    r.setClassName(t.className_);
+                    r.setBasicName(t.basicName_);
+                    r.setElement(sub);
+                    r.setArraySize(t.arraySize_);
+                    for (int i = 0; i < t.typeArgs().size(); i = i + 1) r.typeArgs().add(t.typeArgs().get(i));
+                    return r;
+                }
+            }
+            if (t.typeArgs().size() > 0) {
+                int changed = 0;
+                AstType r = new AstType();
+                r.setClassName(t.className_);
+                r.setBasicName(t.basicName_);
+                for (int i = 0; i < t.typeArgs().size(); i = i + 1) {
+                    AstType sub = resolveType(t.typeArgs().get(i));
+                    r.typeArgs().add(sub);
+                    if (sub != t.typeArgs().get(i)) changed = 1;
+                }
+                if (changed != 0) return r;
+            }
+            return t;
+        }
+
+        // AstType → LLVM 类型（先替换泛型类型参数）。
+        string llvmType(AstType t) {
+            return IrEmit.llvmType(resolveType(t));
+        }
+
+        // slice<T> 元素 LLVM 类型（先替换泛型类型参数）。
+        string sliceElemType(AstType t) {
+            return IrEmit.sliceElemType(resolveType(t));
+        }
+
+        // t 是否为 slice（先替换泛型类型参数）。
+        int isSliceType(AstType t) {
+            return IrEmit.isSlice(resolveType(t));
+        }
+
+        // LLVM 类型是否为定长数组 "[N x T]"。
+        int isFixedArrayLt(string lt) {
+            if (Str.startsWith(lt, "[") != 0) return 1;
+            return 0;
+        }
+
+        // ---- ARC（计数引用）----
+        // string/类实例/接口/动态数组 → LLVM ptr，均走 myp_retain/myp_release。
+        // 定长数组是栈数组（非计数）；struct/slice/函数值是结构体值类型。
+        int isArcType(AstType t) {
+            AstType rt = resolveType(t);
+            if (rt == null) return 0;
+            if (rt.str() == "string") return 1;
+            if (rt.element_ != null) {
+                if (rt.arraySize_ == 0) return 1;   // T[] 动态数组（计数 backing）
+                return 0;                           // T[N] 定长数组（栈）
+            }
+            if (rt.className_ == "slice") return 0;
+            if (Str.len(rt.className_) != 0) return 1;   // 类实例/接口引用
+            return 0;
+        }
+
+        void addFreshTemp(string v) {
+            pendingTemps_.add(v);
+        }
+
+        // v 是刚产生的 fresh 值（pending 末尾）→ 弹出（所有权转移，语句末不释放）。
+        void consumeTemp(string v) {
+            if (pendingTemps_.size() > 0 && pendingTemps_.get(pendingTemps_.size() - 1) == v) {
+                pendingTemps_.remove(pendingTemps_.size() - 1);
+            }
+        }
+
+        // v 是否为 fresh（pending 末尾匹配）。
+        int isFreshTemp(string v) {
+            if (pendingTemps_.size() > 0 && pendingTemps_.get(pendingTemps_.size() - 1) == v) return 1;
+            return 0;
+        }
+
+        // 语句末释放所有未消费的 fresh temp。
+        void flushTemps() {
+            flushTempsFrom(0);
+        }
+
+        // 释放 index ≥ before 的 fresh temp（条件/分支内产生的临时值；外层
+        // 表达式的 pending temp（如 new 对象）不在其列，避免误释放）。
+        void flushTempsFrom(int before) {
+            if (pendingTemps_.size() <= before) return;
+            if (terminated_ != 0) {
+                while (pendingTemps_.size() > before) pendingTemps_.remove(pendingTemps_.size() - 1);
+                return;
+            }
+            for (int i = before; i < pendingTemps_.size(); i = i + 1) {
+                sb_.append("  call i32 @myp_release(ptr " + pendingTemps_.get(i) + ")\n");
+            }
+            while (pendingTemps_.size() > before) pendingTemps_.remove(pendingTemps_.size() - 1);
+        }
+
+        // 向引用槽 store：释放旧值（myp_release(null) 安全）；fresh 转移 +1，
+        // 否则 myp_retain。
+        void storeRef(string dst, string value, int fresh) {
+            string old = newTmp();
+            sb_.append("  " + old + " = load ptr, ptr " + dst + "\n");
+            sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+            if (fresh != 0) {
+                sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
+                consumeTemp(value);
+            } else {
+                sb_.append("  call void @myp_retain(ptr " + value + ")\n");
+                sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
+            }
+        }
+
+        // 释放当前函数全部 ARC 局部槽（返回前/函数末尾）。
+        void releaseArcSlots() {
+            for (int i = 0; i < arcSlotNames_.size(); i = i + 1) {
+                string old = newTmp();
+                sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
+                sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+            }
         }
 
         // 类型转换（整数扩展/截断 + int↔fp）。返回转换后的值名。
@@ -99,6 +246,70 @@ class CodeGen {
             return v;
         }
 
+        // 字符串拼接的标量 → 字符串转换（对齐 C++ stringifyForConcat）：
+        // ptr 直通；bool→myp_to_string_bool；char→myp_chr；整数按有符号/无符号
+        // 选择 i32/i64/u32/u64；float/double 各自转换。
+        string stringifyConcat(string v, string vt, AstExpr src) {
+            if (vt == "ptr") return v;
+            if (vt == "i1") {
+                string e1 = newTmp();
+                sb_.append("  " + e1 + " = zext i1 " + v + " to i32\n");
+                string r = newTmp();
+                sb_.append("  " + r + " = call ptr @myp_to_string_bool(i32 " + e1 + ")\n");
+                addFreshTemp(r);
+                return r;
+            }
+            int isUnsigned = 0;
+            int isChar = 0;
+            if (src != null) {
+                string rk = src.resolvedKind_;
+                if (rk == "ubyte" || rk == "ushort" || rk == "uint" || rk == "ulong") isUnsigned = 1;
+                if (rk == "char") isChar = 1;
+            }
+            if (isChar != 0 && vt == "i8") {
+                string e2 = newTmp();
+                sb_.append("  " + e2 + " = zext i8 " + v + " to i32\n");
+                string r = newTmp();
+                sb_.append("  " + r + " = call ptr @myp_chr(i32 " + e2 + ")\n");
+                addFreshTemp(r);
+                return r;
+            }
+            if (IrEmit.isIntType(vt) != 0) {
+                string cvt = vt;
+                string cv2 = v;
+                if (isUnsigned != 0) {
+                    if (vt == "i8" || vt == "i16") {
+                        string e3 = newTmp();
+                        sb_.append("  " + e3 + " = zext " + vt + " " + v + " to i32\n");
+                        cv2 = e3;
+                        cvt = "i32";
+                    }
+                    string fn = (cvt == "i32") ? "myp_to_string_u32" : "myp_to_string_u64";
+                    string r = newTmp();
+                    sb_.append("  " + r + " = call ptr @" + fn + "(" + cvt + " " + cv2 + ")\n");
+                    addFreshTemp(r);
+                    return r;
+                }
+                if (vt == "i8" || vt == "i16") {
+                    string e4 = newTmp();
+                    sb_.append("  " + e4 + " = sext " + vt + " " + v + " to i32\n");
+                    cv2 = e4;
+                    cvt = "i32";
+                }
+                string fn2 = (cvt == "i32") ? "myp_to_string_i32" : "myp_to_string_i64";
+                string r2 = newTmp();
+                sb_.append("  " + r2 + " = call ptr @" + fn2 + "(" + cvt + " " + cv2 + ")\n");
+                addFreshTemp(r2);
+                return r2;
+            }
+            string fn3 = "myp_to_string_double";
+            if (vt == "float") fn3 = "myp_to_string_float";
+            string r3 = newTmp();
+            sb_.append("  " + r3 + " = call ptr @" + fn3 + "(" + vt + " " + v + ")\n");
+            addFreshTemp(r3);
+            return r3;
+        }
+
         // 顶层入口：生成完整 IR 文本。
         string generate(AstTU tu) {
             // 函数体写 sb_；字符串全局写 stringGlobals_（module 级，跨函数共享）。
@@ -106,9 +317,20 @@ class CodeGen {
             sb_ = new StringBuilder();
             stringGlobals_ = new StringBuilder();
             strCounter_ = 0;
+            // preamble 先构建一次：FFI 声明与之去重（避免 llc "invalid redefinition"，
+            // 如 stdlib/text.myp 的 `ffi int myp_strlen` 与 preamble 内建重复）。
+            string pre = IrEmit.preamble();
+            ArrayList<string> ffiNames = new ArrayList<string>();
             // FFI 声明 → declare <ret> @name(<params>)
             for (int i = 0; i < tu.ffis().size(); i = i + 1) {
                 AstFFI ff = tu.ffis().get(i);
+                int dup = 0;
+                for (int di = 0; di < ffiNames.size(); di = di + 1) {
+                    if (ffiNames.get(di) == ff.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                if (Str.contains(pre, "@" + ff.name_ + "(") != 0) continue;
+                ffiNames.add(ff.name_);
                 string fret = IrEmit.llvmType(ff.ret_);
                 StringBuilder fps = new StringBuilder();
                 for (int pi = 0; pi < ff.params().size(); pi = pi + 1) {
@@ -120,16 +342,50 @@ class CodeGen {
             }
             // 类结构体类型定义（属性布局）
             emitClassTypes();
+            // 顶层函数（按名去重：泛型实例函数可能被 sema 重复追加）
+            ArrayList<string> doneFns = new ArrayList<string>();
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < doneFns.size(); di = di + 1) {
+                    if (doneFns.get(di) == f.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                doneFns.add(f.name_);
                 genFunction(f);
             }
-            // 类方法（@static 类静态方法 + 实例方法 + function 段；泛型类模板跳过）
+            // 预发射 lambda tramp：lambda 表达式在函数体内构建 fat pointer 时
+            // 引用 @cls_tramp，须在函数体之前定义（同 C++ generateTranslationUnit）。
+            ArrayList<string> doneTramp = new ArrayList<string>();
             for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
                 AstClass c = tu.classes().get(ci);
                 if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < doneTramp.size(); di = di + 1) {
+                    if (doneTramp.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                doneTramp.add(c.name_);
+                if (Str.startsWith(c.name_, "__lambda_") != 0) genLambdaTramp(c);
+            }
+            // 类方法（@static 类静态方法 + 实例方法 + function 段；泛型类模板跳过；
+            // 按类名去重，避免 sema 重复追加的 _inst 克隆触发 define 重定义）
+            ArrayList<string> doneCls = new ArrayList<string>();
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < doneCls.size(); di = di + 1) {
+                    if (doneCls.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                doneCls.add(c.name_);
+                // function 段方法（实例方法，this 指针；先于 action 生成，同 C++）
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    genClassFunction(c.name_, c.funcs().get(fi));
+                }
                 // 静态方法
                 for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
                     genStaticAction(c.name_, c.staticActions().get(ai));
@@ -143,7 +399,7 @@ class CodeGen {
             }
             // 顺序：preamble → 类类型 + FFI + 字符串全局 → 函数 → attributes
             StringBuilder out = new StringBuilder();
-            out.append(IrEmit.preamble());
+            out.append(pre);
             out.append(stringGlobals_.toString());
             out.append(sb_.toString());
             out.append("attributes #0 = { returns_twice }\n");
@@ -152,15 +408,24 @@ class CodeGen {
         }
 
         // 类结构体类型：%ClassName = type { <prop types> }（空类用 i8 占位）。
+        // 按名去重：sema 的泛型实例"dump 事件"会追加字节相同的克隆类（D9），
+        // 重复发射 `%X = type` 会触发 llc "redefinition of type"。
         void emitClassTypes() {
             if (tu_ == null) return;
+            ArrayList<string> emitted = new ArrayList<string>();
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 AstClass c = tu_.classes().get(ci);
                 if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                int dup = 0;
+                for (int di = 0; di < emitted.size(); di = di + 1) {
+                    if (emitted.get(di) == c.name_) { dup = 1; break; }
+                }
+                if (dup != 0) continue;
+                emitted.add(c.name_);
                 StringBuilder ms = new StringBuilder();
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
                     if (pi != 0) ms.append(", ");
-                    ms.append(IrEmit.llvmType(c.props().get(pi).type_));
+                    ms.append(llvmType(c.props().get(pi).type_));
                 }
                 if (c.props().size() == 0) ms.append("i8");
                 stringGlobals_.append("%" + c.name_ + " = type { " + ms.toString() + " }\n");
@@ -189,7 +454,7 @@ class CodeGen {
                 if (c.name_ != cls) continue;
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
                     if (c.props().get(pi).name_ == prop) {
-                        return IrEmit.llvmType(c.props().get(pi).type_);
+                        return llvmType(c.props().get(pi).type_);
                     }
                 }
                 return "i32";
@@ -197,18 +462,28 @@ class CodeGen {
             return "i32";
         }
 
-        // 类实例大小（属性类型大小之和，new Class 用）。
+        // 类实例大小：按 LLVM 结构体布局（字段对齐 + padding）计算。
+        // 与 myp_alloc_object(size) 对齐（C++ getTypeAllocSize）。
         int classSize(string cls) {
             if (tu_ == null) return 1;
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 AstClass c = tu_.classes().get(ci);
                 if (c.name_ != cls) continue;
-                int sz = 0;
+                int offset = 0;
+                int maxAlign = 1;
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
-                    sz = sz + IrEmit.typeSize(IrEmit.llvmType(c.props().get(pi).type_));
+                    string lt = llvmType(c.props().get(pi).type_);
+                    int al = IrEmit.alignOf(lt);
+                    int sz = IrEmit.typeSize(lt);
+                    if (al > maxAlign) maxAlign = al;
+                    int rem = offset % al;
+                    if (rem != 0) offset = offset + (al - rem);
+                    offset = offset + sz;
                 }
-                if (sz == 0) sz = 1;
-                return sz;
+                int rem2 = offset % maxAlign;
+                if (rem2 != 0) offset = offset + (maxAlign - rem2);
+                if (offset == 0) offset = 1;
+                return offset;
             }
             return 1;
         }
@@ -233,13 +508,102 @@ class CodeGen {
             return propType(cls, m.memberName_);
         }
 
+        // 类 cls 属性 name 的数组/slice 元素 LLVM 类型（非数组返回 ""）。
+        string propElemLt(string cls, string name) {
+            if (tu_ == null) return "";
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    AstProp p = c.props().get(pi);
+                    if (p.name_ != name) continue;
+                    AstType pt = p.type_;
+                    if (pt == null) return "";
+                    if (pt.element_ != null) return llvmType(pt.element_);
+                    if (pt.className_ == "slice") return sliceElemType(pt);
+                    return "";
+                }
+                return "";
+            }
+            return "";
+        }
+
+        // 类 cls 属性 name 是否为 slice 类型。
+        int propIsSlice(string cls, string name) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    AstProp p = c.props().get(pi);
+                    if (p.name_ != name) continue;
+                    AstType pt = p.type_;
+                    if (pt != null && pt.className_ == "slice") return 1;
+                    return 0;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // Subscript 数组表达式 → 元素 LLVM 类型（Identifier 局部/属性；默认 i32）。
+        string subscriptElemLt(AstExpr arr) {
+            if (arr == null) return "i32";
+            if (arr.kind_ == "Identifier") {
+                if (hasVar(arr.name_) != 0) return varElemType(arr.name_);
+                if (hasMember(arr.name_) != 0) {
+                    string et = propElemLt(curClass_, arr.name_);
+                    if (Str.len(et) != 0) return et;
+                }
+            } else if (arr.kind_ == "Member") {
+                string cls = arr.resolvedClass_;
+                if (Str.len(cls) == 0) cls = "Object";
+                string et = propElemLt(cls, arr.memberName_);
+                if (Str.len(et) != 0) return et;
+            }
+            return "i32";
+        }
+
+        // Subscript 数组表达式 → 是否为 slice。
+        int subscriptIsSlice(AstExpr arr) {
+            if (arr == null) return 0;
+            if (arr.kind_ == "Identifier") {
+                if (hasVar(arr.name_) != 0) return isSliceVar(arr.name_);
+                if (hasMember(arr.name_) != 0) return propIsSlice(curClass_, arr.name_);
+            } else if (arr.kind_ == "Member") {
+                string cls = arr.resolvedClass_;
+                if (Str.len(cls) == 0) cls = "Object";
+                return propIsSlice(cls, arr.memberName_);
+            }
+            return 0;
+        }
+
         void genFunction(AstFunction f) {
+            curTypeParams_ = f.typeParams();
+            curTypeArgs_ = f.instTypeArgs();
             genFuncBody(f.name_, f.params(), f.ret_, f.body_);
         }
 
         // @static 类方法：Class_method(params)，无 this。
         void genStaticAction(string cls, AstAction a) {
+            setupTypeParams(cls);
             genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
+        }
+
+        // 泛型实例体内类型参数映射（typeParams → instTypeArgs）。
+        void setupTypeParams(string cls) {
+            curTypeParams_ = new ArrayList<string>();
+            curTypeArgs_ = new ArrayList<AstType>();
+            if (tu_ == null) return;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int i = 0; i < c.typeParams().size() && i < c.instTypeArgs().size(); i = i + 1) {
+                    curTypeParams_.add(c.typeParams().get(i));
+                    curTypeArgs_.add(c.instTypeArgs().get(i));
+                }
+                return;
+            }
         }
 
         // 实例方法：Class_method(ptr this, params...)。
@@ -252,7 +616,25 @@ class CodeGen {
             genInstanceActionNamed(cls + "_" + a.name_ + mangleParams(a.params()), cls, a);
         }
 
+        // function 段方法：Class_name(ptr this, params...)（实例方法，同 C++）。
+        void genClassFunction(string cls, AstFunction f) {
+            setupTypeParams(cls);
+            ArrayList<AstParam> ps = new ArrayList<AstParam>();
+            AstParam tp = new AstParam();
+            tp.setName("this");
+            AstType ptrT = new AstType();
+            ptrT.setClassName(cls);
+            tp.setType(ptrT);
+            ps.add(tp);
+            for (int i = 0; i < f.params().size(); i = i + 1) ps.add(f.params().get(i));
+            string saveCls = curClass_;
+            curClass_ = cls;
+            genFuncBody(cls + "_" + f.name_, ps, f.ret_, f.body_);
+            curClass_ = saveCls;
+        }
+
         void genInstanceActionNamed(string fn, string cls, AstAction a) {
+            setupTypeParams(cls);
             ArrayList<AstParam> ps = new ArrayList<AstParam>();
             AstParam tp = new AstParam();
             tp.setName("this");
@@ -265,6 +647,123 @@ class CodeGen {
             curClass_ = cls;
             genFuncBody(fn, ps, a.ret_, a.body_);
             curClass_ = saveCls;
+        }
+
+        // __lambda_N_tramp(ptr self, params...) -> ret：调用 __lambda_N___call(self, params...)。
+        // 供 lambda 表达式的 fat pointer {closure, call_fn} 引用（call_fn = tramp）。
+        void genLambdaTramp(AstClass c) {
+            AstAction call = null;
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                AstAction a = c.actions().get(ai);
+                if (a.name_ == "__call") { call = a; break; }
+            }
+            if (call == null) return;
+            string retLt = llvmType(call.ret_);
+            string fn = c.name_ + "_tramp";
+            StringBuilder ps = new StringBuilder();
+            ps.append("ptr %self");
+            for (int i = 0; i < call.params().size(); i = i + 1) {
+                ps.append(", " + llvmType(call.params().get(i).type_) + " %" + call.params().get(i).name_);
+            }
+            sb_.append("define internal " + retLt + " @" + fn + "(" + ps.toString() + ") {\n");
+            sb_.append("entry:\n");
+            StringBuilder as = new StringBuilder();
+            as.append("ptr %self");
+            for (int i = 0; i < call.params().size(); i = i + 1) {
+                as.append(", " + llvmType(call.params().get(i).type_) + " %" + call.params().get(i).name_);
+            }
+            string callFn = c.name_ + "___call";
+            if (retLt == "void") {
+                sb_.append("  call void @" + callFn + "(" + as.toString() + ")\n");
+                sb_.append("  ret void\n");
+            } else {
+                string t = newTmp();
+                sb_.append("  " + t + " = call " + retLt + " @" + callFn + "(" + as.toString() + ")\n");
+                sb_.append("  ret " + retLt + " " + t + "\n");
+            }
+            sb_.append("}\n\n");
+        }
+
+        // lambda 表达式：new __lambda_N() + 填充捕获槽 + 构建 fat pointer {closure, tramp}。
+        string genLambda(AstExpr e) {
+            string cls = e.hiddenClass_;
+            int sz = classSize(cls);
+            string obj = newTmp();
+            sb_.append("  " + obj + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+            // 填充捕获槽：cap_i = 外层变量当前值（按值）。nonlocal 槽存 cell 对象引用。
+            for (int i = 0; i < e.captureNames().size(); i = i + 1) {
+                string capName = e.captureNames().get(i);
+                string slot = e.captureSlots().get(i);
+                int nl = 0;
+                if (i < e.nonlocalCells().size() && Str.len(e.nonlocalCells().get(i)) != 0) nl = 1;
+                int pi = propIndex(cls, slot);
+                string ft = propType(cls, slot);
+                string val = "";
+                if (nl != 0) {
+                    // nonlocal：槽存共享 cell 对象（promoteNonlocalToCell 建立 cellOwner）
+                    val = cellOwner(capName);
+                    if (Str.len(val) == 0) val = "null";
+                } else if (hasVar(capName) != 0) {
+                    string lt = varType(capName);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(capName) + "\n");
+                    val = t;
+                } else if (hasMember(capName) != 0) {
+                    string gep2 = thisMemberAddr(capName);
+                    string ft2 = propType(curClass_, capName);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load " + ft2 + ", ptr " + gep2 + "\n");
+                    val = t;
+                }
+                if (Str.len(val) == 0) val = "null";
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + obj + ", i32 0, i32 " + pi + "\n");
+                sb_.append("  store " + ft + " " + val + ", ptr " + gep + "\n");
+            }
+            // fat pointer {closure, call_fn}
+            string p0 = newTmp();
+            sb_.append("  " + p0 + " = insertvalue { ptr, ptr } poison, ptr " + obj + ", 0\n");
+            string p1 = newTmp();
+            sb_.append("  " + p1 + " = insertvalue { ptr, ptr } " + p0 + ", ptr @" + cls + "_tramp, 1\n");
+            return p1;
+        }
+
+        // 间接调用函数值：fn 为 (A,B)->R 类型变量/参数 → load {closure, call_fn}
+        // → call_fn(closure, args...)。
+        string genFuncValueCall(AstExpr e, string name, AstType at) {
+            string fv = newTmp();
+            sb_.append("  " + fv + " = load { ptr, ptr }, ptr " + varAlloca(name) + "\n");
+            string cl = newTmp();
+            sb_.append("  " + cl + " = extractvalue { ptr, ptr } " + fv + ", 0\n");
+            string cf = newTmp();
+            sb_.append("  " + cf + " = extractvalue { ptr, ptr } " + fv + ", 1\n");
+            StringBuilder as = new StringBuilder();
+            as.append("ptr " + cl);
+            for (int i = 0; i < e.args().size(); i = i + 1) {
+                AstExpr a = e.args().get(i);
+                string av = genExpr(a);
+                string aT = exprLlvmType(a);
+                string pt = "i32";
+                if (i < at.funcParamTypes().size()) pt = llvmType(at.funcParamTypes().get(i));
+                av = convertValue(av, aT, pt);
+                as.append(", " + pt + " " + av);
+            }
+            string retLt = llvmType(at.funcReturn_);
+            if (retLt == "void") {
+                sb_.append("  call void " + cf + "(" + as.toString() + ")\n");
+                return "";
+            }
+            string t = newTmp();
+            sb_.append("  " + t + " = call " + retLt + " " + cf + "(" + as.toString() + ")\n");
+            return t;
+        }
+
+        // nonlocal 捕获变量 → 其共享 cell 对象 SSA 值（尚未提升则返回空）。
+        string cellOwner(string name) {
+            for (int i = 0; i < cellOwnerNames_.size(); i = i + 1) {
+                if (cellOwnerNames_.get(i) == name) return cellOwnerVals_.get(i);
+            }
+            return "";
         }
 
         // 构造器 mangle（与 sema mangleType/mangleParams 一致）。
@@ -290,10 +789,16 @@ class CodeGen {
         void genFuncBody(string fn, ArrayList<AstParam> params, AstType retT, AstStmt body) {
             paramNames_ = new ArrayList<string>();
             paramTypes_ = new ArrayList<string>();
+            paramAstTypes_ = new ArrayList<AstType>();
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
+            localAstTypes_ = new ArrayList<AstType>();
+            localAllocas_ = new ArrayList<string>();
             localElemTypes_ = new ArrayList<string>();
             localIsSlice_ = new ArrayList<int>();
+            localIsArc_ = new ArrayList<int>();
+            pendingTemps_ = new ArrayList<string>();
+            arcSlotNames_ = new ArrayList<string>();
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -301,13 +806,15 @@ class CodeGen {
             loopContinue_ = new ArrayList<string>();
             isMainFunc_ = 0;
             if (fn == "main") isMainFunc_ = 1;
-            string retLt = IrEmit.llvmType(retT);
+            string retLt = llvmType(retT);
+            curRetLt_ = retLt;
             string linkage = "define";
             if (isMainFunc_ == 0) linkage = "define internal";
             for (int i = 0; i < params.size(); i = i + 1) {
                 AstParam p = params.get(i);
                 paramNames_.add(p.name_);
-                paramTypes_.add(IrEmit.llvmType(p.type_));
+                paramTypes_.add(llvmType(p.type_));
+                paramAstTypes_.add(resolveType(p.type_));
             }
             StringBuilder ps = new StringBuilder();
             for (int i = 0; i < paramNames_.size(); i = i + 1) {
@@ -354,31 +861,73 @@ class CodeGen {
             } else if (k == "VarDecl") {
                 for (int i = 0; i < st.decls().size(); i = i + 1) {
                     AstVar v = st.decls().get(i);
-                    string lt = IrEmit.llvmType(v.type_);
+                    AstType rvt = resolveType(v.type_);
+                    // 定长数组 T[N]：alloca [N x T]，decay 为首元素地址存入 ptr 槽
+                    //（下标/传参/返回均按数据指针，同 C++ createEntryBlockAlloca + GEP）。
+                    if (rvt != null && rvt.element_ != null && rvt.arraySize_ > 0) {
+                        string eLt = llvmType(rvt.element_);
+                        string arrLt = "[" + rvt.arraySize_ + " x " + eLt + "]";
+                        string arrA = newTmp() + ".arr";
+                        int aal = IrEmit.alignOf(arrLt);
+                        sb_.append("  " + arrA + " = alloca " + arrLt + ", align " + aal + "\n");
+                        sb_.append("  store " + arrLt + " zeroinitializer, ptr " + arrA + "\n");
+                        string elemPtr = newTmp();
+                        sb_.append("  " + elemPtr + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 0\n");
+                        string va = newTmp();
+                        sb_.append("  " + va + " = alloca ptr, align 8\n");
+                        sb_.append("  store ptr " + elemPtr + ", ptr " + va + "\n");
+                        localNames_.add(v.name_);
+                        localTypes_.add("ptr");
+                        localAstTypes_.add(rvt);
+                        localAllocas_.add(va);
+                        localElemTypes_.add(eLt);
+                        localIsSlice_.add(0);
+                        localIsArc_.add(0);
+                        continue;
+                    }
+                    string lt = llvmType(rvt);
                     int al = IrEmit.alignOf(lt);
-                    sb_.append("  %" + v.name_ + " = alloca " + lt + ", align " + al + "\n");
+                    // 局部变量用唯一 SSA 名（同函数内同名变量/循环变量不冲突，
+                    // 遮蔽由 varAlloca 的 last-match 解析）
+                    string va = newTmp();
+                    sb_.append("  " + va + " = alloca " + lt + ", align " + al + "\n");
                     localNames_.add(v.name_);
                     localTypes_.add(lt);
+                    localAstTypes_.add(rvt);
+                    localAllocas_.add(va);
+                    int isArc = isArcType(rvt);
+                    localIsArc_.add(isArc);
                     // 记录数组/slice 元素类型（下标 GEP / extractvalue 用）
                     string elemLt = "";
                     int isSlice = 0;
-                    AstType vt2 = v.type_;
-                    if (vt2 != null) {
-                        AstType elt = vt2.element_;
-                        if (elt != null) elemLt = IrEmit.llvmType(elt);
-                        else if (vt2.className_ == "slice") {
-                            elemLt = IrEmit.sliceElemType(vt2);
+                    if (rvt != null) {
+                        AstType elt = rvt.element_;
+                        if (elt != null) elemLt = llvmType(elt);
+                        else if (rvt.className_ == "slice") {
+                            elemLt = sliceElemType(rvt);
                             isSlice = 1;
                         }
                     }
                     localElemTypes_.add(elemLt);
                     localIsSlice_.add(isSlice);
-                    sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr %" + v.name_ + ", align " + al + "\n");
-                    if (v.init_ != null) {
-                        string iv = genExpr(v.init_);
-                        string it = exprLlvmType(v.init_);
-                        iv = convertValue(iv, it, lt);
-                        sb_.append("  store " + lt + " " + iv + ", ptr %" + v.name_ + ", align " + al + "\n");
+                    if (isArc != 0) {
+                        // 引用局部（string/类/动态数组）：拥有槽，函数末释放
+                        arcSlotNames_.add(va);
+                        sb_.append("  store ptr null, ptr " + va + "\n");
+                        if (v.init_ != null) {
+                            string iv = genExpr(v.init_);
+                            string it = exprLlvmType(v.init_);
+                            iv = convertValue(iv, it, "ptr");
+                            storeRef(va, iv, isFreshTemp(iv));
+                        }
+                    } else {
+                        sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr " + va + ", align " + al + "\n");
+                        if (v.init_ != null) {
+                            string iv = genExpr(v.init_);
+                            string it = exprLlvmType(v.init_);
+                            iv = convertValue(iv, it, lt);
+                            sb_.append("  store " + lt + " " + iv + ", ptr " + va + ", align " + al + "\n");
+                        }
                     }
                 }
             } else if (k == "ExprStmt") {
@@ -391,14 +940,24 @@ class CodeGen {
                 if (st.value_ != null) {
                     string v = genExpr(st.value_);
                     string vt = exprLlvmType(st.value_);
-                    sb_.append("  ret " + vt + " " + v + "\n");
+                    v = convertValue(v, vt, curRetLt_);
+                    // ARC：返回引用值——fresh 转移 +1，否则 retain（调用方取得引用）
+                    if (curRetLt_ == "ptr") {
+                        if (isFreshTemp(v) != 0) consumeTemp(v);
+                        else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+                    }
+                    flushTemps();
+                    sb_.append("  ret " + curRetLt_ + " " + v + "\n");
                 } else {
+                    flushTemps();
                     sb_.append("  ret void\n");
                 }
                 terminated_ = 1;
             } else if (k == "If") {
                 if (st.condition_ != null) {
+                    int cbefore = pendingTemps_.size();
                     string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    flushTempsFrom(cbefore);
                     string thenB = newBlock("then");
                     string elseB = newBlock("else");
                     string endB = newBlock("ifcont");
@@ -425,7 +984,9 @@ class CodeGen {
                 loopBreak_.add(endB);
                 loopContinue_.add(condB);
                 if (st.condition_ != null) {
+                    int cbefore = pendingTemps_.size();
                     string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    flushTempsFrom(cbefore);
                     sb_.append("  br i1 " + cond + ", label %" + bodyB + ", label %" + endB + "\n");
                     terminated_ = 1;
                 } else {
@@ -446,7 +1007,9 @@ class CodeGen {
                 emitBr(condB);
                 openBlock(condB);
                 if (st.condition_ != null) {
+                    int cbefore = pendingTemps_.size();
                     string cond = toI1(genExpr(st.condition_), exprLlvmType(st.condition_));
+                    flushTempsFrom(cbefore);
                     sb_.append("  br i1 " + cond + ", label %" + bodyB + ", label %" + endB + "\n");
                     terminated_ = 1;
                 } else {
@@ -471,6 +1034,8 @@ class CodeGen {
                 genForIn(st);
             }
             // 其余（GpuTile 等）留 G3。
+            // ARC：语句末释放未消费的 fresh temp（new/调用/拼接）。
+            flushTemps();
         }
 
         // ForIn：定长数组（iterKind=1）与 range（iterKind=3）；class/slice 留 G3。
@@ -478,7 +1043,7 @@ class CodeGen {
             int ik = st.iterKind_;
             string varName = st.varName_;
             AstType varT = st.varType_;
-            string elemLt = IrEmit.llvmType(varT);
+            string elemLt = llvmType(varT);
             AstExpr coll = st.iterable_;
             string collV = genExpr(coll);
             string collT = exprLlvmType(coll);
@@ -515,13 +1080,17 @@ class CodeGen {
             string idxA = newTmp() + ".i";
             sb_.append("  " + idxA + " = alloca i32\n");
             sb_.append("  store i32 0, ptr " + idxA + "\n");
-            string varA = "%" + varName;
+            // 循环变量用唯一 SSA 名（同函数内多个 for-in 同名变量不冲突）
+            string varA = newTmp();
             int al = IrEmit.alignOf(elemLt);
             sb_.append("  " + varA + " = alloca " + elemLt + ", align " + al + "\n");
             localNames_.add(varName);
             localTypes_.add(elemLt);
+            localAstTypes_.add(varT);
+            localAllocas_.add(varA);
             localElemTypes_.add("");
             localIsSlice_.add(0);
+            localIsArc_.add(0);
             string condB = newBlock("for_cond");
             string bodyB = newBlock("for_body");
             string stepB = newBlock("for_step");
@@ -607,6 +1176,15 @@ class CodeGen {
             if (k == "String") {
                 return stringLiteral(e.stringValue_);
             }
+            if (k == "Null") {
+                return "null";
+            }
+            if (k == "This") {
+                return loadThis();
+            }
+            if (k == "Lambda") {
+                return genLambda(e);
+            }
             if (k == "Identifier") {
                 string nm = e.name_;
                 if (hasVar(nm) != 0) {
@@ -620,6 +1198,7 @@ class CodeGen {
                     // this.field（实例方法内裸属性名）
                     string gep = thisMemberAddr(nm);
                     string ft = propType(curClass_, nm);
+                    if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
                     string t = newTmp();
                     sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
                     return t;
@@ -630,13 +1209,43 @@ class CodeGen {
                 sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
                 return t;
             }
+            if (k == "Unary") {
+                string op = e.op_;
+                string ov = genExpr(e.operand_);
+                string ot = exprLlvmType(e.operand_);
+                if (op == "-") {
+                    string t = newTmp();
+                    if (ot == "double" || ot == "float") {
+                        sb_.append("  " + t + " = fneg " + ot + " " + ov + "\n");
+                    } else {
+                        sb_.append("  " + t + " = sub " + ot + " 0, " + ov + "\n");
+                    }
+                    return t;
+                }
+                if (op == "!") {
+                    string t = newTmp();
+                    if (ot == "i1") {
+                        sb_.append("  " + t + " = xor i1 " + ov + ", true\n");
+                    } else {
+                        sb_.append("  " + t + " = icmp eq " + ot + " " + ov + ", 0\n");
+                    }
+                    return t;
+                }
+                if (op == "~") {
+                    string t = newTmp();
+                    sb_.append("  " + t + " = xor " + ot + " " + ov + ", -1\n");
+                    return t;
+                }
+                return ov;
+            }
             if (k == "Binary") {
                 string op = e.op_;
-                // 短路 && / ||：alloca 存结果避免 phi（语义与 C++ 一致）。
                 if (op == "&&" || op == "||") {
                     int isAnd = 0;
                     if (op == "&&") isAnd = 1;
+                    int scbefore = pendingTemps_.size();
                     string c = toI1(genExpr(e.lhs_), exprLlvmType(e.lhs_));
+                    flushTempsFrom(scbefore);
                     string resAlloca = newTmp() + ".res";
                     sb_.append("  " + resAlloca + " = alloca i1\n");
                     if (isAnd != 0) sb_.append("  store i1 false, ptr " + resAlloca + "\n");
@@ -650,7 +1259,9 @@ class CodeGen {
                     }
                     terminated_ = 1;
                     openBlock(rhsB);
+                    int scb2 = pendingTemps_.size();
                     string d = toI1(genExpr(e.rhs_), exprLlvmType(e.rhs_));
+                    flushTempsFrom(scb2);
                     sb_.append("  store i1 " + d + ", ptr " + resAlloca + "\n");
                     emitBr(endB);
                     openBlock(endB);
@@ -662,11 +1273,43 @@ class CodeGen {
                 string rv = genExpr(e.rhs_);
                 string lt = exprLlvmType(e.lhs_);
                 string rt = exprLlvmType(e.rhs_);
-                // 字符串拼接（+ 且操作数为 ptr）：myp_strcat(l, r)
+                // 字符串拼接（+ 且操作数为 ptr）：标量操作数 → myp_to_string_*，
+                // 指针直通借用；myp_strcat(l, r)（与 C++ stringifyForConcat 一致）。
                 if (op == "+" && (lt == "ptr" || rt == "ptr")) {
+                    string lv2 = stringifyConcat(lv, lt, e.lhs_);
+                    string rv2 = stringifyConcat(rv, rt, e.rhs_);
                     string t = newTmp();
-                    sb_.append("  " + t + " = call ptr @myp_strcat(ptr " + lv + ", ptr " + rv + ")\n");
+                    sb_.append("  " + t + " = call ptr @myp_strcat(ptr " + lv2 + ", ptr " + rv2 + ")\n");
+                    addFreshTemp(t);
                     return t;
+                }
+                // 字符串比较（==/!=/</<=/>/>=）：myp_str_eq / myp_str_cmp 内容比较
+                AstExpr lhsE = e.lhs_;
+                AstExpr rhsE = e.rhs_;
+                int lhsStr = 0;
+                int rhsStr = 0;
+                if (lhsE != null && lhsE.resolvedKind_ == "string") lhsStr = 1;
+                if (rhsE != null && rhsE.resolvedKind_ == "string") rhsStr = 1;
+                if (lt == "ptr" && rt == "ptr" && lhsStr != 0 && rhsStr != 0) {
+                    if (op == "==" || op == "!=") {
+                        string eq = newTmp();
+                        sb_.append("  " + eq + " = call i32 @myp_str_eq(ptr " + lv + ", ptr " + rv + ")\n");
+                        string t = newTmp();
+                        if (op == "==") sb_.append("  " + t + " = icmp ne i32 " + eq + ", 0\n");
+                        else sb_.append("  " + t + " = icmp eq i32 " + eq + ", 0\n");
+                        return t;
+                    }
+                    if (op == "<" || op == "<=" || op == ">" || op == ">=") {
+                        string cmp = newTmp();
+                        sb_.append("  " + cmp + " = call i32 @myp_str_cmp(ptr " + lv + ", ptr " + rv + ")\n");
+                        string t = newTmp();
+                        string pred = "slt";
+                        if (op == "<=") pred = "sle";
+                        else if (op == ">") pred = "sgt";
+                        else if (op == ">=") pred = "sge";
+                        sb_.append("  " + t + " = icmp " + pred + " i32 " + cmp + ", 0\n");
+                        return t;
+                    }
                 }
                 int isCmp = 0;
                 if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") isCmp = 1;
@@ -700,6 +1343,45 @@ class CodeGen {
                 sb_.append("  " + t + " = " + insn + " " + opLt + " " + lv + ", " + rv + "\n");
                 return t;
             }
+            if (k == "Ternary") {
+                // cond ? a : b —— alloca 存结果（避免 phi，同短路 &&/|| 处理）。
+                int tbefore = pendingTemps_.size();
+                string cond = toI1(genExpr(e.condition_), exprLlvmType(e.condition_));
+                flushTempsFrom(tbefore);
+                string resLt = IrEmit.kindType(e.resolvedKind_);
+                if (Str.len(e.resolvedKind_) == 0) resLt = exprLlvmType(e.trueExpr_);
+                string resA = newTmp() + ".res";
+                sb_.append("  " + resA + " = alloca " + resLt + "\n");
+                if (resLt == "ptr") sb_.append("  store ptr null, ptr " + resA + "\n");
+                else sb_.append("  store " + resLt + " " + IrEmit.zeroValue(resLt) + ", ptr " + resA + "\n");
+                string thenB = newBlock("tern.then");
+                string elseB = newBlock("tern.else");
+                string endB = newBlock("tern.end");
+                sb_.append("  br i1 " + cond + ", label %" + thenB + ", label %" + elseB + "\n");
+                terminated_ = 1;
+                openBlock(thenB);
+                int tb2 = pendingTemps_.size();
+                string tv = genExpr(e.trueExpr_);
+                string tt = exprLlvmType(e.trueExpr_);
+                tv = convertValue(tv, tt, resLt);
+                if (resLt == "ptr") storeRef(resA, tv, isFreshTemp(tv));
+                else sb_.append("  store " + resLt + " " + tv + ", ptr " + resA + "\n");
+                flushTempsFrom(tb2);
+                emitBr(endB);
+                openBlock(elseB);
+                int tb3 = pendingTemps_.size();
+                string fv = genExpr(e.falseExpr_);
+                string ft2 = exprLlvmType(e.falseExpr_);
+                fv = convertValue(fv, ft2, resLt);
+                if (resLt == "ptr") storeRef(resA, fv, isFreshTemp(fv));
+                else sb_.append("  store " + resLt + " " + fv + ", ptr " + resA + "\n");
+                flushTempsFrom(tb3);
+                emitBr(endB);
+                openBlock(endB);
+                string t = newTmp();
+                sb_.append("  " + t + " = load " + resLt + ", ptr " + resA + "\n");
+                return t;
+            }
             if (k == "Assign") {
                 string rv = genExpr(e.rhs_);
                 string rt = exprLlvmType(e.rhs_);
@@ -709,13 +1391,21 @@ class CodeGen {
                     if (hasVar(nm) != 0) {
                         string lt = varType(nm);
                         rv = convertValue(rv, rt, lt);
-                        int al = IrEmit.alignOf(lt);
-                        sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                        if (varIsArc(nm) != 0) {
+                            storeRef(varAlloca(nm), rv, isFreshTemp(rv));
+                        } else {
+                            int al = IrEmit.alignOf(lt);
+                            sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                        }
                     } else if (hasMember(nm) != 0) {
                         string gep = thisMemberAddr(nm);
                         string ft = propType(curClass_, nm);
                         rv = convertValue(rv, rt, ft);
-                        sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
+                        if (ft == "ptr") {
+                            storeRef(gep, rv, isFreshTemp(rv));
+                        } else {
+                            sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
+                        }
                     }
                 } else if (lhs != null && lhs.kind_ == "Subscript") {
                     // arr[i] = v / sl[i] = v
@@ -724,12 +1414,10 @@ class CodeGen {
                     string arrV = genExpr(arr);
                     string idxV = genExpr(idx);
                     string idxT = exprLlvmType(idx);
-                    string elemLt = "i32";
-                    if (arr != null && arr.kind_ == "Identifier") {
-                        elemLt = varElemType(arr.name_);
-                    }
+                    string elemLt = subscriptElemLt(arr);
+                    int isSl = subscriptIsSlice(arr);
                     string gep;
-                    if (arr != null && arr.kind_ == "Identifier" && isSliceVar(arr.name_) != 0) {
+                    if (isSl != 0) {
                         string data = newTmp();
                         sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
                         gep = newTmp();
@@ -739,20 +1427,31 @@ class CodeGen {
                         sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                     }
                     rv = convertValue(rv, rt, elemLt);
-                    sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
+                    if (elemLt == "ptr") {
+                        storeRef(gep, rv, isFreshTemp(rv));
+                    } else {
+                        sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
+                    }
                 } else if (lhs != null && lhs.kind_ == "Member") {
                     // obj.field = v / this.field = v
                     string gep = memberAddr(lhs);
                     string ft = memberFieldType(lhs);
                     rv = convertValue(rv, rt, ft);
-                    sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
+                    if (ft == "ptr") {
+                        storeRef(gep, rv, isFreshTemp(rv));
+                    } else {
+                        sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
+                    }
                 }
                 return rv;
             }
             if (k == "NewArray") {
-                // 标量动态数组：myp_alloc_slice_backing(total, elem_size, elem_kind=1)
-                string elemLt = IrEmit.llvmType(e.elemType_);
+                // 标量动态数组：myp_alloc_slice_backing(total, elem_size, elem_kind)
+                string elemLt = llvmType(e.elemType_);
                 int elemSize = IrEmit.typeSize(elemLt);
+                int elemKind = 1;
+                if (elemLt == "ptr") elemKind = 0;
+                else if (elemLt == "{ ptr, i64 }") elemKind = 2;
                 string totalV = "1";
                 for (int i = 0; i < e.dimensions().size(); i = i + 1) {
                     AstExpr dim = e.dimensions().get(i);
@@ -768,7 +1467,12 @@ class CodeGen {
                     }
                 }
                 string t = newTmp();
-                sb_.append("  " + t + " = call ptr @myp_alloc_slice_backing(i64 " + totalV + ", i32 " + elemSize + ", i32 1)\n");
+                sb_.append("  " + t + " = call ptr @myp_alloc_slice_backing(i64 " + totalV + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
+                addFreshTemp(t);
+                // 零初始化（类元素数组的未填槽须为 null）
+                string bs = newTmp();
+                sb_.append("  " + bs + " = mul i64 " + totalV + ", " + elemSize + "\n");
+                sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + bs + ", i1 false)\n");
                 return t;
             }
             if (k == "Subscript") {
@@ -777,11 +1481,9 @@ class CodeGen {
                 string arrV = genExpr(arr);
                 string idxV = genExpr(idx);
                 string idxT = exprLlvmType(idx);
-                string elemLt = "i32";
-                if (arr != null && arr.kind_ == "Identifier") {
-                    elemLt = varElemType(arr.name_);
-                }
-                if (arr != null && arr.kind_ == "Identifier" && isSliceVar(arr.name_) != 0) {
+                string elemLt = subscriptElemLt(arr);
+                int isSl = subscriptIsSlice(arr);
+                if (isSl != 0) {
                     // slice：extractvalue data + GEP
                     string data = newTmp();
                     sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
@@ -809,6 +1511,10 @@ class CodeGen {
                 int sz = classSize(cls);
                 string t = newTmp();
                 sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+                addFreshTemp(t);
+                // 零初始化对象（同 C++ generateNewExpr 的 CreateMemSet——未显式
+                // 初始化的属性必须为 0，否则 malloc 垃圾值）
+                sb_.append("  call void @llvm.memset.p0.i64(ptr " + t + ", i8 0, i64 " + sz + ", i1 false)\n");
                 // 属性默认值（new 时 store；构造器可覆写）
                 if (tu_ != null) {
                     for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
@@ -845,6 +1551,7 @@ class CodeGen {
             if (k == "Member") {
                 string gep = memberAddr(e);
                 string ft = memberFieldType(e);
+                if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
                 string t = newTmp();
                 sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
                 return t;
@@ -853,11 +1560,22 @@ class CodeGen {
                 AstExpr callee = e.callee_;
                 string fn = "";
                 string thisV = "";
+                // 函数值间接调用：callee 是函数类型变量/参数 → call_fn(closure, args)
+                if (callee != null && callee.kind_ == "Identifier") {
+                    AstType at = varAstType(callee.name_);
+                    if (at != null && IrEmit.isFunction(at) != 0) {
+                        return genFuncValueCall(e, callee.name_, at);
+                    }
+                }
                 if (callee != null && callee.kind_ == "Identifier") {
                     fn = callee.name_;
                     // 内建 intrinsic __myp_X → runtime myp_X（去掉两个下划线）
                     if (Str.startsWith(fn, "__myp_") != 0) {
                         fn = Str.substring(fn, 2, Str.len(fn));
+                    } else if (isTopLevelFunc(fn) == 0 && hasMethodInClass(curClass_, fn) != 0) {
+                        // 类内裸方法调用 → this.method()（Class_method(ptr this, ...)）
+                        fn = curClass_ + "_" + fn;
+                        thisV = loadThis();
                     }
                 } else if (callee != null && callee.kind_ == "Member") {
                     AstExpr obj = callee.array_;
@@ -907,6 +1625,7 @@ class CodeGen {
                 }
                 string t = newTmp();
                 sb_.append("  " + t + " = call " + retLt + " @" + fn + "(" + as.toString() + ")\n");
+                if (retLt == "ptr") addFreshTemp(t);
                 return t;
             }
             // Member/Subscript 等留 G2。
@@ -937,49 +1656,71 @@ class CodeGen {
             }
             if (k == "Bool") return "i1";
             if (k == "String") return "ptr";
+            if (k == "Null") return "ptr";
+            if (k == "This") return "ptr";
+            if (k == "Lambda") return "{ ptr, ptr }";
+            if (k == "Unary") {
+                if (e.op_ == "!") return "i1";
+                return exprLlvmType(e.operand_);
+            }
             if (k == "Identifier") {
                 string nm = e.name_;
                 if (hasVar(nm) != 0) return varType(nm);
-                if (hasMember(nm) != 0) return propType(curClass_, nm);
+                if (hasMember(nm) != 0) {
+                    string ft = propType(curClass_, nm);
+                    if (isFixedArrayLt(ft) != 0) return "ptr";
+                    return ft;
+                }
                 return varType(nm);
             }
-            if (k == "Member") return memberFieldType(e);
+            if (k == "Member") {
+                string ft = memberFieldType(e);
+                if (isFixedArrayLt(ft) != 0) return "ptr";
+                return ft;
+            }
             if (k == "Subscript") {
-                AstExpr arr = e.array_;
-                if (arr != null && arr.kind_ == "Identifier") {
-                    return varElemType(arr.name_);
-                }
-                return IrEmit.kindType(e.resolvedKind_);
+                return subscriptElemLt(e.array_);
             }
             if (k == "New") return "ptr";
             return IrEmit.kindType(e.resolvedKind_);
         }
 
-        // 变量（参数/局部）对应的 alloca 名。
+        // 变量（参数/局部）对应的 alloca 名。局部后声明遮蔽先声明（last match）。
         string varAlloca(string name) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
+                if (localNames_.get(i) == name) return localAllocas_.get(i);
+            }
             for (int i = 0; i < paramNames_.size(); i = i + 1) {
                 if (paramNames_.get(i) == name) return "%" + name + ".addr";
-            }
-            for (int i = 0; i < localNames_.size(); i = i + 1) {
-                if (localNames_.get(i) == name) return "%" + name;
             }
             return "%" + name;
         }
 
         // 变量（参数/局部）的 LLVM 类型。
         string varType(string name) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
+                if (localNames_.get(i) == name) return localTypes_.get(i);
+            }
             for (int i = 0; i < paramNames_.size(); i = i + 1) {
                 if (paramNames_.get(i) == name) return paramTypes_.get(i);
-            }
-            for (int i = 0; i < localNames_.size(); i = i + 1) {
-                if (localNames_.get(i) == name) return localTypes_.get(i);
             }
             return "i32";
         }
 
+        // 变量（参数/局部）的完整 AstType（函数类型调用/元素类型等）。
+        AstType varAstType(string name) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
+                if (localNames_.get(i) == name) return localAstTypes_.get(i);
+            }
+            for (int i = 0; i < paramNames_.size(); i = i + 1) {
+                if (paramNames_.get(i) == name) return paramAstTypes_.get(i);
+            }
+            return null;
+        }
+
         // 局部数组变量的元素 LLVM 类型（非数组返回 i32）。
         string varElemType(string name) {
-            for (int i = 0; i < localNames_.size(); i = i + 1) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
                 if (localNames_.get(i) == name) {
                     string et = localElemTypes_.get(i);
                     if (Str.len(et) != 0) return et;
@@ -991,8 +1732,16 @@ class CodeGen {
 
         // name 是否为 slice 局部变量。
         int isSliceVar(string name) {
-            for (int i = 0; i < localNames_.size(); i = i + 1) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
                 if (localNames_.get(i) == name) return localIsSlice_.get(i);
+            }
+            return 0;
+        }
+
+        // name 是否为 ARC 计数引用局部（string/类/动态数组）。
+        int varIsArc(string name) {
+            for (int i = localNames_.size() - 1; i >= 0; i = i - 1) {
+                if (localNames_.get(i) == name) return localIsArc_.get(i);
             }
             return 0;
         }
@@ -1000,15 +1749,20 @@ class CodeGen {
         // new slice<T>(n)：myp_alloc_slice_backing + 构造 {data, len} fat pointer。
         string genSliceNew(AstExpr e) {
             AstType et = e.typeArgs().size() > 0 ? e.typeArgs().get(0) : null;
-            string elemLt = IrEmit.llvmType(et);
+            string elemLt = llvmType(et);
             int elemSize = IrEmit.typeSize(elemLt);
             string nv = genExpr(e.args().get(0));
             string nt = exprLlvmType(e.args().get(0));
             string n64 = convertValue(nv, nt, "i64");
             int elemKind = 1;
             if (elemLt == "ptr") elemKind = 0;
+            else if (elemLt == "{ ptr, i64 }") elemKind = 2;
             string data = newTmp();
             sb_.append("  " + data + " = call ptr @myp_alloc_slice_backing(i64 " + n64 + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
+            // 零初始化（类/字符串元素未填槽须为 null）
+            string bs = newTmp();
+            sb_.append("  " + bs + " = mul i64 " + n64 + ", " + elemSize + "\n");
+            sb_.append("  call void @llvm.memset.p0.i64(ptr " + data + ", i8 0, i64 " + bs + ", i1 false)\n");
             string p0 = newTmp();
             sb_.append("  " + p0 + " = insertvalue { ptr, i64 } poison, ptr " + data + ", 0\n");
             string p1 = newTmp();
@@ -1021,6 +1775,35 @@ class CodeGen {
             if (tu_ == null) return 0;
             for (int i = 0; i < tu_.classes().size(); i = i + 1) {
                 if (tu_.classes().get(i).name_ == name) return 1;
+            }
+            return 0;
+        }
+
+        // cls 类是否存在名为 name 的方法（action 或 function 段）。
+        int hasMethodInClass(string cls, string name) {
+            if (tu_ == null || Str.len(cls) == 0) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name_ != cls) continue;
+                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                    if (c.actions().get(ai).name_ == name) return 1;
+                }
+                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                    if (c.funcs().get(fi).name_ == name) return 1;
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // name 是否为顶层函数或 FFI。
+        int isTopLevelFunc(string name) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                if (tu_.functions().get(i).name_ == name) return 1;
+            }
+            for (int i = 0; i < tu_.ffis().size(); i = i + 1) {
+                if (tu_.ffis().get(i).name_ == name) return 1;
             }
             return 0;
         }
@@ -1111,18 +1894,29 @@ class CodeGen {
         int tmp_;
         ArrayList<string> paramNames_;
         ArrayList<string> paramTypes_;
+        ArrayList<AstType> paramAstTypes_;
         ArrayList<string> localNames_;
         ArrayList<string> localTypes_;
+        ArrayList<AstType> localAstTypes_;
+        ArrayList<string> localAllocas_;
         ArrayList<string> localElemTypes_;
         ArrayList<int> localIsSlice_;
         int isMainFunc_;
         string curBlock_;
         int blockCounter_;
         int terminated_;
+        string curRetLt_;
         ArrayList<string> loopBreak_;
         ArrayList<string> loopContinue_;
         StringBuilder stringGlobals_;
         int strCounter_;
         AstTU tu_;
         string curClass_;
+        ArrayList<string> cellOwnerNames_;
+        ArrayList<string> cellOwnerVals_;
+        ArrayList<string> curTypeParams_;
+        ArrayList<AstType> curTypeArgs_;
+        ArrayList<string> pendingTemps_;
+        ArrayList<string> arcSlotNames_;
+        ArrayList<int> localIsArc_;
 }

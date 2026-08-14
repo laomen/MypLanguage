@@ -1,6 +1,6 @@
 # MYP 全自举编译器——详细设计（tools/selfhost）
 
-> 状态：**G2 推进中（2026-08-14）**｜版本：0.4（范围：只做全自举，非 GPU）
+> 状态：**G2 推进中（2026-08-14）**｜版本：0.5（范围：只做全自举，非 GPU）
 > 目标：用 MYP 完整重写 `mypc`（前端 + 非 GPU codegen + 驱动），交付 `myp_self`，
 > 完成两级自举验证。**不做**混合编译（C++ 代做 codegen）、**不做** GPU。
 > 前置阅读：`docs/self_hosting.md`、`docs/grammar.md`（规格 v1.0）、`src/lexer/`、`src/parser/`、
@@ -225,7 +225,7 @@ Declared -> Materializing -> Ready
 | tokens | **448/448 字节一致** | F1 完成 |
 | AST | **448/448 字节一致** | F2/F3 完成 |
 | sema | **548/565 字节一致** | F4 完成（正语料全绿；剩余负例/GPU/遗留/自引用泛型顺序） |
-| codegen | G1 完成（hello 级运行对拍）；G2 核心完成（控制流/数组/字符串/短路/intrinsic） | G2 推进中 |
+| codegen | G1 完成（hello 级运行对拍）；G2 核心完成（控制流/数组/字符串/短路/intrinsic/slice）；G3-1/G3-6a 完成（类/实例方法/构造器/属性默认值/成员访问/泛型单态化） | G2-5 lambda 闭包进行中 |
 
 > 更新（F4-G1 后，2026-08-13）：**泛型静态方法已落地**——sema 266→303（+37 文件），
 > GS 簇 67→6。`__gs_` 实例函数（含函数类型参数替换 `(T)->R`→`(int)->string`）与调用点

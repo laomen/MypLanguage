@@ -19,7 +19,22 @@ import "./ast.myp";
             if (s == "double") return "double";
             if (s == "void") return "void";
             if (t.className_ == "slice") return "{ ptr, i64 }";
+            if (t.funcReturn_ != null) return "{ ptr, ptr }";
+            if (t.element_ != null) {
+                // 定长数组 T[N] → [N x T]（结构体字段/栈变量）；不定长 T[] → ptr
+                if (t.arraySize_ > 0) {
+                    return "[" + t.arraySize_ + " x " + IrEmit.llvmType(t.element_) + "]";
+                }
+                return "ptr";
+            }
             return "ptr";
+        }
+
+        // t 是否为函数类型 (A,B)->R（fat pointer {closure, call_fn}）。
+        int isFunction(AstType t) {
+            if (t == null) return 0;
+            if (t.funcReturn_ != null) return 1;
+            return 0;
         }
 
         // slice<T> 的元素 LLVM 类型（t 为 slice 类型时）。
@@ -47,9 +62,10 @@ import "./ast.myp";
             if (kind == "float") return "float";
             if (kind == "double") return "double";
             if (kind == "void") return "void";
-            if (kind == "string" || kind == "class" || kind == "function"
-                || kind == "array" || kind == "slice" || kind == "interface"
-                || kind == "struct" || kind == "enum" || kind == "tuple") return "ptr";
+            if (kind == "string" || kind == "class" || kind == "interface"
+                || kind == "array" || kind == "slice" || kind == "struct"
+                || kind == "enum" || kind == "tuple") return "ptr";
+            if (kind == "function") return "{ ptr, ptr }";
             return "i32";
         }
 
@@ -59,11 +75,16 @@ import "./ast.myp";
             if (lt == "double" || lt == "float") return "0.000000e+00";
             if (lt == "ptr") return "null";
             if (Str.startsWith(lt, "{") != 0) return "zeroinitializer";
+            if (Str.startsWith(lt, "[") != 0) return "zeroinitializer";
             return "0";
         }
 
         // LLVM 类型 → 对齐字节数。
         int alignOf(string lt) {
+            if (Str.startsWith(lt, "[") != 0) {
+                int sp = Str.indexOf(lt, " x ");
+                if (sp > 0) return IrEmit.alignOf(Str.substring(lt, sp + 3, Str.len(lt)));
+            }
             if (lt == "i8" || lt == "i1") return 1;
             if (lt == "i16") return 2;
             if (lt == "i32" || lt == "float") return 4;
@@ -86,8 +107,27 @@ import "./ast.myp";
             return 32;
         }
 
-        // LLVM 类型 → 字节大小（数组元素大小用）。
+        // "123" → int（无 FFI 依赖的十进制解析）。
+        int parseNum(string s) {
+            int v = 0;
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c >= 48 && c <= 57) v = v * 10 + (c - 48);
+            }
+            return v;
+        }
+
+        // LLVM 类型 → 字节大小（数组元素大小用；[N x T] 递归）。
         int typeSize(string lt) {
+            if (Str.startsWith(lt, "[") != 0) {
+                int sp = Str.indexOf(lt, " x ");
+                if (sp > 0) {
+                    int n = IrEmit.parseNum(Str.substring(lt, 1, sp));
+                    return n * IrEmit.typeSize(Str.substring(lt, sp + 3, Str.len(lt)));
+                }
+            }
+            if (lt == "{ ptr, i64 }") return 16;
+            if (lt == "{ ptr, ptr }") return 16;
             if (lt == "i1" || lt == "i8") return 1;
             if (lt == "i16") return 2;
             if (lt == "i32" || lt == "float") return 4;
@@ -195,6 +235,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare i32 @myp_str_eq(ptr, ptr)\n");
             sb.append("\n");
+            sb.append("declare i32 @myp_str_cmp(ptr, ptr)\n");
+            sb.append("\n");
             sb.append("declare i32 @myp_kbhit()\n");
             sb.append("\n");
             sb.append("declare i32 @myp_getch()\n");
@@ -212,6 +254,20 @@ import "./ast.myp";
             sb.append("declare ptr @myp_alloc_slice_backing(i64, i32, i32)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_chr(i32)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_i32(i32)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_i64(i64)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_u32(i32)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_u64(i64)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_double(double)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_float(float)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_to_string_bool(i32)\n");
             sb.append("\n");
             sb.append("declare i32 @myp_ord(ptr)\n");
             sb.append("\n");
@@ -306,6 +362,8 @@ import "./ast.myp";
             sb.append("declare i32 @myp_test_capture_eq(ptr)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_alloc(i64)\n");
+            sb.append("\n");
+            sb.append("declare void @llvm.memset.p0.i64(ptr, i8, i64, i1)\n");
             sb.append("\n");
             sb.append("declare void @myp_free(ptr)\n");
             sb.append("\n");
