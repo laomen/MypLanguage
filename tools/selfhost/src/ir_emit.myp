@@ -69,6 +69,14 @@ import "./ast.myp";
             return 32;
         }
 
+        // LLVM 类型 → 字节大小（数组元素大小用）。
+        int typeSize(string lt) {
+            if (lt == "i1" || lt == "i8") return 1;
+            if (lt == "i16") return 2;
+            if (lt == "i32" || lt == "float") return 4;
+            return 8;
+        }
+
         // 固定 preamble：module 头 + 全局 + 全部 runtime/内建 declare。
         // 无类程序（G1）时 __myp_release_table / type_name_table 均为 [1 x ptr]，
         // max_type_id = 0；G3 引入类后改为动态发射。
@@ -183,6 +191,8 @@ import "./ast.myp";
             sb.append("declare i32 @myp_strlen(ptr)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_strcat(ptr, ptr)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_alloc_slice_backing(i64, i32, i32)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_chr(i32)\n");
             sb.append("\n");

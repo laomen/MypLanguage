@@ -14,6 +14,7 @@ class CodeGen {
             paramTypes_ = new ArrayList<string>();
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
+            localElemTypes_ = new ArrayList<string>();
             isMainFunc_ = 0;
             curBlock_ = "entry";
             blockCounter_ = 0;
@@ -121,6 +122,7 @@ class CodeGen {
             paramTypes_ = new ArrayList<string>();
             localNames_ = new ArrayList<string>();
             localTypes_ = new ArrayList<string>();
+            localElemTypes_ = new ArrayList<string>();
             blockCounter_ = 0;
             curBlock_ = "entry";
             terminated_ = 0;
@@ -187,6 +189,14 @@ class CodeGen {
                     sb_.append("  %" + v.name_ + " = alloca " + lt + ", align " + al + "\n");
                     localNames_.add(v.name_);
                     localTypes_.add(lt);
+                    // 记录数组元素类型（数组变量下标 GEP 用）
+                    string elemLt = "";
+                    AstType vt2 = v.type_;
+                    if (vt2 != null) {
+                        AstType elt = vt2.element_;
+                        if (elt != null) elemLt = IrEmit.llvmType(elt);
+                    }
+                    localElemTypes_.add(elemLt);
                     sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr %" + v.name_ + ", align " + al + "\n");
                     if (v.init_ != null) {
                         string iv = genExpr(v.init_);
@@ -281,8 +291,102 @@ class CodeGen {
                 if (loopBreak_.size() > 0) emitBr(loopBreak_.get(loopBreak_.size() - 1));
             } else if (k == "Continue") {
                 if (loopContinue_.size() > 0) emitBr(loopContinue_.get(loopContinue_.size() - 1));
+            } else if (k == "ForIn") {
+                genForIn(st);
             }
-            // ForIn 等留 G2。
+            // 其余（GpuTile 等）留 G3。
+        }
+
+        // ForIn：定长数组（iterKind=1）与 range（iterKind=3）；class/slice 留 G3。
+        void genForIn(AstStmt st) {
+            int ik = st.iterKind_;
+            string varName = st.varName_;
+            AstType varT = st.varType_;
+            string elemLt = IrEmit.llvmType(varT);
+            AstExpr coll = st.iterable_;
+            string collV = genExpr(coll);
+            string collT = exprLlvmType(coll);
+            string collA = newTmp() + ".coll";
+            sb_.append("  " + collA + " = alloca " + collT + "\n");
+            sb_.append("  store " + collT + " " + collV + ", ptr " + collA + "\n");
+            // 上界
+            string sizeV = "0";
+            if (ik == 1) {
+                sizeV = "" + st.arrSize_;
+            } else if (ik == 3) {
+                AstExpr re = coll;
+                AstExpr rEnd = re.end_;
+                AstExpr rStart = re.start_;
+                string ev = genExpr(rEnd);
+                string et = exprLlvmType(rEnd);
+                string sv = genExpr(rStart);
+                string stt = exprLlvmType(rStart);
+                ev = convertValue(ev, et, "i32");
+                sv = convertValue(sv, stt, "i32");
+                string ts = newTmp();
+                sb_.append("  " + ts + " = sub i32 " + ev + ", " + sv + "\n");
+                sizeV = ts;
+            }
+            string idxA = newTmp() + ".i";
+            sb_.append("  " + idxA + " = alloca i32\n");
+            sb_.append("  store i32 0, ptr " + idxA + "\n");
+            string varA = "%" + varName;
+            int al = IrEmit.alignOf(elemLt);
+            sb_.append("  " + varA + " = alloca " + elemLt + ", align " + al + "\n");
+            localNames_.add(varName);
+            localTypes_.add(elemLt);
+            localElemTypes_.add("");
+            string condB = newBlock("for_cond");
+            string bodyB = newBlock("for_body");
+            string stepB = newBlock("for_step");
+            string endB = newBlock("for_end");
+            emitBr(condB);
+            openBlock(condB);
+            string idx0 = newTmp();
+            sb_.append("  " + idx0 + " = load i32, ptr " + idxA + "\n");
+            string cmp = newTmp();
+            sb_.append("  " + cmp + " = icmp slt i32 " + idx0 + ", " + sizeV + "\n");
+            sb_.append("  br i1 " + cmp + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            string idx1 = newTmp();
+            sb_.append("  " + idx1 + " = load i32, ptr " + idxA + "\n");
+            string elem = "";
+            if (ik == 1) {
+                string collL = newTmp();
+                sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + collL + ", i32 " + idx1 + "\n");
+                string el = newTmp();
+                sb_.append("  " + el + " = load " + elemLt + ", ptr " + gep + "\n");
+                elem = el;
+            } else if (ik == 3) {
+                AstExpr re = coll;
+                AstExpr rStart = re.start_;
+                string sv = genExpr(rStart);
+                string stt = exprLlvmType(rStart);
+                sv = convertValue(sv, stt, "i32");
+                string el = newTmp();
+                sb_.append("  " + el + " = add i32 " + sv + ", " + idx1 + "\n");
+                elem = el;
+            }
+            if (Str.len(elem) != 0) {
+                sb_.append("  store " + elemLt + " " + elem + ", ptr " + varA + "\n");
+            }
+            loopBreak_.add(endB);
+            loopContinue_.add(stepB);
+            genStmt(st.body_);
+            if (terminated_ == 0) emitBr(stepB);
+            loopBreak_.remove(loopBreak_.size() - 1);
+            loopContinue_.remove(loopContinue_.size() - 1);
+            openBlock(stepB);
+            string idx2 = newTmp();
+            sb_.append("  " + idx2 + " = load i32, ptr " + idxA + "\n");
+            string nidx = newTmp();
+            sb_.append("  " + nidx + " = add i32 " + idx2 + ", 1\n");
+            sb_.append("  store i32 " + nidx + ", ptr " + idxA + "\n");
+            emitBr(condB);
+            openBlock(endB);
         }
 
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
@@ -393,8 +497,61 @@ class CodeGen {
                     rv = convertValue(rv, rt, lt);
                     int al = IrEmit.alignOf(lt);
                     sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                } else if (lhs != null && lhs.kind_ == "Subscript") {
+                    // arr[i] = v
+                    AstExpr arr = lhs.array_;
+                    AstExpr idx = lhs.index_;
+                    string arrV = genExpr(arr);
+                    string idxV = genExpr(idx);
+                    string idxT = exprLlvmType(idx);
+                    string elemLt = "i32";
+                    if (arr != null && arr.kind_ == "Identifier") {
+                        elemLt = varElemType(arr.name_);
+                    }
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                    rv = convertValue(rv, rt, elemLt);
+                    sb_.append("  store " + elemLt + " " + rv + ", ptr " + gep + "\n");
                 }
                 return rv;
+            }
+            if (k == "NewArray") {
+                // 标量动态数组：myp_alloc_slice_backing(total, elem_size, elem_kind=1)
+                string elemLt = IrEmit.llvmType(e.elemType_);
+                int elemSize = IrEmit.typeSize(elemLt);
+                string totalV = "1";
+                for (int i = 0; i < e.dimensions().size(); i = i + 1) {
+                    AstExpr dim = e.dimensions().get(i);
+                    string dv = genExpr(dim);
+                    string dt = exprLlvmType(dim);
+                    string d64 = convertValue(dv, dt, "i64");
+                    if (totalV == "1") {
+                        totalV = d64;
+                    } else {
+                        string tm = newTmp();
+                        sb_.append("  " + tm + " = mul i64 " + totalV + ", " + d64 + "\n");
+                        totalV = tm;
+                    }
+                }
+                string t = newTmp();
+                sb_.append("  " + t + " = call ptr @myp_alloc_slice_backing(i64 " + totalV + ", i32 " + elemSize + ", i32 1)\n");
+                return t;
+            }
+            if (k == "Subscript") {
+                AstExpr arr = e.array_;
+                AstExpr idx = e.index_;
+                string arrV = genExpr(arr);
+                string idxV = genExpr(idx);
+                string idxT = exprLlvmType(idx);
+                string elemLt = "i32";
+                if (arr != null && arr.kind_ == "Identifier") {
+                    elemLt = varElemType(arr.name_);
+                }
+                string gep = newTmp();
+                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                string t = newTmp();
+                sb_.append("  " + t + " = load " + elemLt + ", ptr " + gep + "\n");
+                return t;
             }
             if (k == "Call") {
                 AstExpr callee = e.callee_;
@@ -477,6 +634,18 @@ class CodeGen {
             return "i32";
         }
 
+        // 局部数组变量的元素 LLVM 类型（非数组返回 i32）。
+        string varElemType(string name) {
+            for (int i = 0; i < localNames_.size(); i = i + 1) {
+                if (localNames_.get(i) == name) {
+                    string et = localElemTypes_.get(i);
+                    if (Str.len(et) != 0) return et;
+                    return "i32";
+                }
+            }
+            return "i32";
+        }
+
         // double 常量 → LLVM 浮点文本（%e 格式，llc 接受）。
         string floatLiteral(double v) {
             string s = "" + v;
@@ -525,6 +694,7 @@ class CodeGen {
         ArrayList<string> paramTypes_;
         ArrayList<string> localNames_;
         ArrayList<string> localTypes_;
+        ArrayList<string> localElemTypes_;
         int isMainFunc_;
         string curBlock_;
         int blockCounter_;
