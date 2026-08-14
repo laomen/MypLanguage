@@ -20,6 +20,17 @@ import "./ast.myp";
             if (s == "void") return "void";
             if (t.className_ == "slice") return "{ ptr, i64 }";
             if (t.funcReturn_ != null) return "{ ptr, ptr }";
+            if (t.isTuple_ != 0) {
+                // 元组 (A, B) → 匿名结构体 { A, B }
+                StringBuilder sb = new StringBuilder();
+                sb.append("{ ");
+                for (int i = 0; i < t.funcParamTypes().size(); i = i + 1) {
+                    if (i != 0) sb.append(", ");
+                    sb.append(IrEmit.llvmType(t.funcParamTypes().get(i)));
+                }
+                sb.append(" }");
+                return sb.toString();
+            }
             if (t.element_ != null) {
                 // 定长数组 T[N] → [N x T]（结构体字段/栈变量）；不定长 T[] → ptr
                 if (t.arraySize_ > 0) {

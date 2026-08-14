@@ -134,6 +134,56 @@ class CodeGen {
             return 0;
         }
 
+        // ---- 元组辅助 ----
+        // 全数字字符串（元组字段名 "0"/"1"/...）。
+        int isDigits(string s) {
+            if (Str.len(s) == 0) return 0;
+            for (int i = 0; i < Str.len(s); i = i + 1) {
+                int c = __myp_ord(Str.substring(s, i, i + 1));
+                if (c < 48 || c > 57) return 0;
+            }
+            return 1;
+        }
+
+        // 去掉首尾空格。
+        string trimSpaces(string s) {
+            int a = 0;
+            int b = Str.len(s);
+            while (a < b && Str.substring(s, a, a + 1) == " ") a = a + 1;
+            while (b > a && Str.substring(s, b - 1, b) == " ") b = b - 1;
+            return Str.substring(s, a, b);
+        }
+
+        // "{T0, T1, ...}" → 第 idx 个顶层元素类型字符串（支持嵌套 {} 与 [N x T]）。
+        string structElemType(string lt, int idx) {
+            string inner = Str.substring(lt, 2, Str.len(lt) - 2);
+            int start = 0;
+            int depth = 0;
+            int cur = 0;
+            for (int i = 0; i < Str.len(inner); i = i + 1) {
+                string ch = Str.substring(inner, i, i + 1);
+                if (ch == "{") depth = depth + 1;
+                else if (ch == "}") depth = depth - 1;
+                else if (ch == "," && depth == 0) {
+                    if (cur == idx) return trimSpaces(Str.substring(inner, start, i));
+                    start = i + 1;
+                    cur = cur + 1;
+                }
+            }
+            if (cur == idx) return trimSpaces(Str.substring(inner, start, Str.len(inner)));
+            return "i32";
+        }
+
+        // 顶层函数返回 AstType（元组返回类型用）。
+        AstType findFuncRetAstType(string name, int nparams) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                AstFunction f = tu_.functions().get(i);
+                if (f.name_ == name && f.params().size() == nparams) return f.ret_;
+            }
+            return null;
+        }
+
         // ---- ARC（计数引用）----
         // string/类实例/接口/动态数组 → LLVM ptr，均走 myp_retain/myp_release。
         // 定长数组是栈数组（非计数）；struct/slice/函数值是结构体值类型。
@@ -1032,6 +1082,8 @@ class CodeGen {
                 if (loopContinue_.size() > 0) emitBr(loopContinue_.get(loopContinue_.size() - 1));
             } else if (k == "ForIn") {
                 genForIn(st);
+            } else if (k == "Destructure") {
+                genDestructure(st);
             }
             // 其余（GpuTile 等）留 G3。
             // ARC：语句末释放未消费的 fresh temp（new/调用/拼接）。
@@ -1156,6 +1208,62 @@ class CodeGen {
             openBlock(endB);
         }
 
+        // Destructure：(A a, B b) = tuple；（a, b) = tuple —— extractvalue 解包。
+        void genDestructure(AstStmt st) {
+            AstExpr dv = st.value_;
+            if (dv == null) return;
+            string tv = genExpr(dv);
+            string tt = exprLlvmType(dv);
+            AstDestructureTarget tgt = st.target_;
+            if (tgt == null) return;
+            destructureWalk(tgt, tv, tt, st.isDecl_);
+        }
+
+        // 递归解包元组结构体。
+        void destructureWalk(AstDestructureTarget tgt, string aggV, string aggT, int isDecl) {
+            ArrayList<AstDestructureTarget> els = tgt.elements();
+            for (int i = 0; i < els.size(); i = i + 1) {
+                AstDestructureTarget c = els.get(i);
+                if (c.name_ == "_") continue;   // 忽略符
+                string ev = newTmp();
+                sb_.append("  " + ev + " = extractvalue " + aggT + " " + aggV + ", " + i + "\n");
+                string et = structElemType(aggT, i);
+                if (c.elements().size() != 0) {
+                    // 嵌套元组
+                    destructureWalk(c, ev, et, isDecl);
+                    continue;
+                }
+                string lt = et;
+                if (c.hasType_ != 0 && c.type_ != null) lt = llvmType(c.type_);
+                string conv = convertValue(ev, et, lt);
+                if (isDecl != 0) {
+                    string va = newTmp();
+                    int al = IrEmit.alignOf(lt);
+                    sb_.append("  " + va + " = alloca " + lt + ", align " + al + "\n");
+                    localNames_.add(c.name_);
+                    localTypes_.add(lt);
+                    localAstTypes_.add(c.type_);
+                    localAllocas_.add(va);
+                    localElemTypes_.add("");
+                    localIsSlice_.add(0);
+                    localIsArc_.add(isArcType(c.type_));
+                    if (lt == "ptr" && isArcType(c.type_) != 0) {
+                        sb_.append("  store ptr null, ptr " + va + "\n");
+                        storeRef(va, conv, isFreshTemp(conv));
+                    } else {
+                        sb_.append("  store " + lt + " " + conv + ", ptr " + va + "\n");
+                    }
+                } else {
+                    // 赋值到已有变量
+                    string dst = varAlloca(c.name_);
+                    string oldT = varType(c.name_);
+                    string conv2 = convertValue(ev, et, oldT);
+                    if (varIsArc(c.name_) != 0) storeRef(dst, conv2, isFreshTemp(conv2));
+                    else sb_.append("  store " + oldT + " " + conv2 + ", ptr " + dst + "\n");
+                }
+            }
+        }
+
         // 表达式 → IR，返回 SSA 值名（常量返回其字面量字符串）。
         string genExpr(AstExpr e) {
             if (e == null) return "0";
@@ -1184,6 +1292,34 @@ class CodeGen {
             }
             if (k == "Lambda") {
                 return genLambda(e);
+            }
+            if (k == "Tuple") {
+                // 元组字面量 (a, b, ...) → 匿名结构体 {T0, T1, ...} insertvalue 构造
+                ArrayList<AstExpr> els = e.elements();
+                ArrayList<string> vals = new ArrayList<string>();
+                ArrayList<string> tys = new ArrayList<string>();
+                for (int i = 0; i < els.size(); i = i + 1) {
+                    AstExpr el = els.get(i);
+                    string v = genExpr(el);
+                    string vt = exprLlvmType(el);
+                    vals.add(v);
+                    tys.add(vt);
+                }
+                StringBuilder ty = new StringBuilder();
+                ty.append("{ ");
+                for (int i = 0; i < tys.size(); i = i + 1) {
+                    if (i != 0) ty.append(", ");
+                    ty.append(tys.get(i));
+                }
+                ty.append(" }");
+                string st = ty.toString();
+                string agg = "poison";
+                for (int i = 0; i < vals.size(); i = i + 1) {
+                    string t = newTmp();
+                    sb_.append("  " + t + " = insertvalue " + st + " " + agg + ", " + tys.get(i) + " " + vals.get(i) + ", " + i + "\n");
+                    agg = t;
+                }
+                return agg;
             }
             if (k == "Identifier") {
                 string nm = e.name_;
@@ -1566,6 +1702,16 @@ class CodeGen {
                 return t;
             }
             if (k == "Member") {
+                string mname = e.memberName_;
+                // 元组字段访问 t.0 / t.1 → extractvalue
+                if (isDigits(mname) != 0) {
+                    AstExpr obj = e.array_;
+                    string objV = genExpr(obj);
+                    string objT = exprLlvmType(obj);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = extractvalue " + objT + " " + objV + ", " + mname + "\n");
+                    return t;
+                }
                 string gep = memberAddr(e);
                 string ft = memberFieldType(e);
                 if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
@@ -1624,7 +1770,8 @@ class CodeGen {
                         thisV = genExpr(obj);
                     }
                 }
-                string retLt = IrEmit.kindType(e.resolvedKind_);
+                // 返回类型：用 exprLlvmType（tuple 返回 → {T0,T1,...}；否则 kindType）
+                string retLt = exprLlvmType(e);
                 StringBuilder as = new StringBuilder();
                 if (Str.len(thisV) != 0) {
                     as.append("ptr " + thisV);
@@ -1676,6 +1823,16 @@ class CodeGen {
             if (k == "Null") return "ptr";
             if (k == "This") return "ptr";
             if (k == "Lambda") return "{ ptr, ptr }";
+            if (k == "Tuple") {
+                StringBuilder ty = new StringBuilder();
+                ty.append("{ ");
+                for (int i = 0; i < e.elements().size(); i = i + 1) {
+                    if (i != 0) ty.append(", ");
+                    ty.append(exprLlvmType(e.elements().get(i)));
+                }
+                ty.append(" }");
+                return ty.toString();
+            }
             if (k == "Unary") {
                 if (e.op_ == "!") return "i1";
                 return exprLlvmType(e.operand_);
@@ -1696,9 +1853,25 @@ class CodeGen {
                 return varType(nm);
             }
             if (k == "Member") {
+                if (isDigits(e.memberName_) != 0) {
+                    return IrEmit.kindType(e.resolvedKind_);
+                }
                 string ft = memberFieldType(e);
                 if (isFixedArrayLt(ft) != 0) return "ptr";
                 return ft;
+            }
+            if (k == "Call") {
+                // 元组返回调用 → 匿名结构体类型（否则 kindType("tuple")=ptr 错）
+                if (e.resolvedKind_ == "tuple") {
+                    AstExpr callee = e.callee_;
+                    if (callee != null && callee.kind_ == "Identifier") {
+                        AstType rt = findFuncRetAstType(callee.name_, e.args().size());
+                        if (rt != null && rt.isTuple_ != 0) {
+                            return llvmType(rt);
+                        }
+                    }
+                }
+                return IrEmit.kindType(e.resolvedKind_);
             }
             if (k == "Subscript") {
                 return subscriptElemLt(e.array_);
