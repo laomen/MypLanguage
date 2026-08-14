@@ -750,11 +750,30 @@ class CodeGen {
                 return t;
             }
             if (k == "New") {
-                // 类实例：myp_alloc_object(size, type_id) + 构造器调用。
+                // 类实例：myp_alloc_object(size, type_id) + 属性默认值 + 构造器调用。
                 string cls = e.className_;
                 int sz = classSize(cls);
                 string t = newTmp();
                 sb_.append("  " + t + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+                // 属性默认值（new 时 store；构造器可覆写）
+                if (tu_ != null) {
+                    for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                        AstClass cc = tu_.classes().get(ci);
+                        if (cc.name_ != cls) continue;
+                        for (int pi = 0; pi < cc.props().size(); pi = pi + 1) {
+                            AstProp prop = cc.props().get(pi);
+                            if (prop.init_ == null) continue;
+                            string pv = genExpr(prop.init_);
+                            string pt = exprLlvmType(prop.init_);
+                            string ft = propType(cls, prop.name_);
+                            string gep = newTmp();
+                            sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + t + ", i32 0, i32 " + pi + "\n");
+                            pv = convertValue(pv, pt, ft);
+                            sb_.append("  store " + ft + " " + pv + ", ptr " + gep + "\n");
+                        }
+                        break;
+                    }
+                }
                 string ctor = e.ctor_;
                 if (Str.len(ctor) != 0) {
                     StringBuilder as = new StringBuilder();
