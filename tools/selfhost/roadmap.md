@@ -11,11 +11,11 @@
 |------|------|------|-----------|------|
 | F0 | Oracle 与骨架 | C++ dump 契约 + 项目脚手架 | ~1 天 | ✅ **已完成**（2026-08-13，67/67） |
 | F1 | 完整词法器 | lexer / token | ~1-2 天 | ✅ **已完成**（2026-08-13，448/448 + 78/78） |
-| F2 | AST + 声明/语句 parser | ast / parser | ~3-5 天 | 🔜 |
-| F3 | 表达式 parser | parser_expr | ~3-5 天 | 🔜 |
-| F4 | 语义分析 | type / diag / sema | ~5-8 天 | 🔜 |
-| G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | 🔜 |
-| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | 🔜 |
+| F2 | AST + 声明/语句 parser | ast / parser | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
+| F3 | 表达式 parser | parser_expr | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
+| F4 | 语义分析 | type / diag / sema | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
+| G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
+| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | 🔄 **进行中**（控制流/数组/字符串/短路/intrinsic 已对拍；slice/lambda/默认参数待补） |
 | G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔜 |
 | G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
 | H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
@@ -176,13 +176,13 @@
 
 ### 任务
 
-- [ ] **G1-1** `ir_emit.myp`：LLVM IR 类型表（i8..i64/f32/f64/ptr/struct/array/function）打印。
-- [ ] **G1-2** 模块/全局/函数签名发射（对齐 `mypc --emit-llvm` 形态）。
-- [ ] **G1-3** 最小 codegen：`main()` 返回 + 字面量 + 简单 `Console.writeString/writeLine`
+- [x] **G1-1** `ir_emit.myp`：LLVM IR 类型表（i8..i64/f32/f64/ptr/struct/array/function）打印。
+- [x] **G1-2** 模块/全局/函数签名发射（对齐 `mypc --emit-llvm` 形态）。
+- [x] **G1-3** 最小 codegen：`main()` 返回 + 字面量 + 简单 `Console.writeString/writeLine`
       调用（FFI 到 runtime `__myp_*`）。
-- [ ] **G1-4** `link.myp` 雏形：`llc file.ll -filetype=obj` + `gcc` 链接缓存编译的
+- [x] **G1-4** `link.myp` 雏形：`llc file.ll -filetype=obj` + `gcc` 链接缓存编译的
       `runtime.o` + `coro_ctx.S` + `-lpthread -lm -ldl` + `--gc-sections`。
-- [ ] **G1-5** `main.myp` 编译管线编排：lexer→parser→sema→codegen→link（先 `-O0`）。
+- [x] **G1-5** `main.myp` 编译管线编排：lexer→parser→sema→codegen→link（先 `-O0`）。
 
 ### 验收
 
@@ -198,13 +198,13 @@
 
 ### 任务
 
-- [ ] **G2-1** 变量声明/赋值/作用域 + 基本类型运算（含数字提升、比较、短路 `&&`/`||`）。
-- [ ] **G2-2** 控制流：if/while/for/for-in/range/break/continue/return。
-- [ ] **G2-3** 数组/切片/字符串：`new T[n]`、下标、`slice`、字符串拼接（`myp_strcat` 契约）。
-- [ ] **G2-4** 函数调用：顶层函数、默认/命名参数、多值返回、元组。
-- [ ] **G2-5** lambda/闭包：fat pointer + 捕获 + `nonlocal` cell。
-- [ ] **G2-6** 内建/FFI：`__myp_*` 签名表对齐 sema `registerIntrinsics`。
-- [ ] **G2-7** 复合赋值 desugar 的 IR 对齐。
+- [x] **G2-1** 变量声明/赋值/作用域 + 基本类型运算（含数字提升、比较、短路 `&&`/`||`）。
+- [x] **G2-2** 控制流：if/while/for/for-in/range/break/continue/return。
+- [x] **G2-3** 数组/切片/字符串：`new T[n]`、下标、字符串拼接 ✅；`slice` 留 G3 泛型后。
+- [ ] **G2-4** 函数调用：顶层函数 ✅；默认/命名参数、多值返回、元组待补。
+- [ ] **G2-5** lambda/闭包：fat pointer + 捕获 + `nonlocal` cell（依赖 G3 类方法）。
+- [x] **G2-6** 内建/FFI：`__myp_*` → `myp_*`（去两个下划线）。
+- [x] **G2-7** 复合赋值 desugar 的 IR 对齐（parser 已 desugar 为 Assign）。
 
 ### 验收
 

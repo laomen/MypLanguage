@@ -1,6 +1,6 @@
 # MYP 全自举编译器——详细设计（tools/selfhost）
 
-> 状态：**F4 收口中（2026-08-13）**｜版本：0.3（范围：只做全自举，非 GPU）
+> 状态：**G2 推进中（2026-08-14）**｜版本：0.4（范围：只做全自举，非 GPU）
 > 目标：用 MYP 完整重写 `mypc`（前端 + 非 GPU codegen + 驱动），交付 `myp_self`，
 > 完成两级自举验证。**不做**混合编译（C++ 代做 codegen）、**不做** GPU。
 > 前置阅读：`docs/self_hosting.md`、`docs/grammar.md`（规格 v1.0）、`src/lexer/`、`src/parser/`、
@@ -224,8 +224,8 @@ Declared -> Materializing -> Ready
 |------|----------|------|
 | tokens | **448/448 字节一致** | F1 完成 |
 | AST | **448/448 字节一致** | F2/F3 完成 |
-| sema | **304/448 字节一致** | F4 收口中，剩余 144 |
-| codegen | `codegen*.myp` / `ir_emit.myp` 仍为骨架 | G1 尚未开始 |
+| sema | **548/565 字节一致** | F4 完成（正语料全绿；剩余负例/GPU/遗留/自引用泛型顺序） |
+| codegen | G1 完成（hello 级运行对拍）；G2 核心完成（控制流/数组/字符串/短路/intrinsic） | G2 推进中 |
 
 > 更新（F4-G1 后，2026-08-13）：**泛型静态方法已落地**——sema 266→303（+37 文件），
 > GS 簇 67→6。`__gs_` 实例函数（含函数类型参数替换 `(T)->R`→`(int)->string`）与调用点
@@ -451,9 +451,9 @@ main.myp ─┬─> 前端: lexer → parser → sema（对拍/编译两用）
 | **F1** | 完整词法器 | ✅ tokens 448/448 |
 | **F2** | AST + 声明/语句 parser | ✅ AST 448/448 |
 | **F3** | 表达式 parser | ✅ AST 448/448 |
-| **F4** | sema | 进行中：266/448；先泛型，再 lambda/其他差异 |
-| **G1** | IR 文本发射框架 + 最小程序 codegen | hello 级产物运行对拍 + .ll 可编译 |
-| **G2** | 语句 + 表达式 codegen | 控制流/表达式用例产物运行对拍 |
+| **F4** | sema | ✅ 完成：548/565（正语料全绿） |
+| **G1** | IR 文本发射框架 + 最小程序 codegen | ✅ 完成：hello 级产物运行对拍 + .ll 可编译 |
+| **G2** | 语句 + 表达式 codegen | 🔄 进行中：控制流/数组/字符串/短路/intrinsic 已对拍 |
 | **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | 完整语料（含 BNCT 子集）产物运行对拍 |
 | **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | myp_self 全流程可用 |
 | **H1** | 两级自举验证 + 全量回归 + 文档 | stage1/2/3 行为一致 |

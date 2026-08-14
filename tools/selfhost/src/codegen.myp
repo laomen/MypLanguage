@@ -98,14 +98,36 @@ class CodeGen {
         // 顶层入口：生成完整 IR 文本。
         string generate(AstTU tu) {
             // 函数体写 sb_；字符串全局写 stringGlobals_（module 级，跨函数共享）。
+            tu_ = tu;
             sb_ = new StringBuilder();
             stringGlobals_ = new StringBuilder();
             strCounter_ = 0;
+            // FFI 声明 → declare <ret> @name(<params>)
+            for (int i = 0; i < tu.ffis().size(); i = i + 1) {
+                AstFFI ff = tu.ffis().get(i);
+                string fret = IrEmit.llvmType(ff.ret_);
+                StringBuilder fps = new StringBuilder();
+                for (int pi = 0; pi < ff.params().size(); pi = pi + 1) {
+                    AstParam fp = ff.params().get(pi);
+                    if (pi != 0) fps.append(", ");
+                    fps.append(IrEmit.llvmType(fp.type_));
+                }
+                stringGlobals_.append("declare " + fret + " @" + ff.name_ + "(" + fps.toString() + ")\n");
+            }
             for (int i = 0; i < tu.functions().size(); i = i + 1) {
                 AstFunction f = tu.functions().get(i);
                 // 泛型函数模板跳过（只发射单态化实例，同 C++）
                 if (f.typeParams().size() != 0 && f.genericInst_ == 0) continue;
                 genFunction(f);
+            }
+            // 类方法（@static 类静态方法 + 实例方法；泛型类模板跳过）
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                if (c.typeParams().size() != 0 && c.isGenericInst_ == 0) continue;
+                // 静态方法
+                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                    genStaticAction(c.name_, c.staticActions().get(ai));
+                }
             }
             // 顺序：preamble → 字符串全局 → 函数 → attributes
             StringBuilder out = new StringBuilder();
@@ -118,6 +140,16 @@ class CodeGen {
         }
 
         void genFunction(AstFunction f) {
+            genFuncBody(f.name_, f.params(), f.ret_, f.body_);
+        }
+
+        // @static 类方法：Class_method(params)，无 this。
+        void genStaticAction(string cls, AstAction a) {
+            genFuncBody(cls + "_" + a.name_, a.params(), a.ret_, a.body_);
+        }
+
+        // 通用方法体：参数 alloca + store + body + 隐式 return。
+        void genFuncBody(string fn, ArrayList<AstParam> params, AstType retT, AstStmt body) {
             paramNames_ = new ArrayList<string>();
             paramTypes_ = new ArrayList<string>();
             localNames_ = new ArrayList<string>();
@@ -128,14 +160,13 @@ class CodeGen {
             terminated_ = 0;
             loopBreak_ = new ArrayList<string>();
             loopContinue_ = new ArrayList<string>();
-            string fn = f.name_;
             isMainFunc_ = 0;
             if (fn == "main") isMainFunc_ = 1;
-            string retLt = IrEmit.llvmType(f.ret_);
+            string retLt = IrEmit.llvmType(retT);
             string linkage = "define";
             if (isMainFunc_ == 0) linkage = "define internal";
-            for (int i = 0; i < f.params().size(); i = i + 1) {
-                AstParam p = f.params().get(i);
+            for (int i = 0; i < params.size(); i = i + 1) {
+                AstParam p = params.get(i);
                 paramNames_.add(p.name_);
                 paramTypes_.add(IrEmit.llvmType(p.type_));
             }
@@ -159,7 +190,7 @@ class CodeGen {
                 int al = IrEmit.alignOf(lt);
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
-            if (f.body_ != null) genStmt(f.body_);
+            if (body != null) genStmt(body);
             // 隐式 return（body 未 terminated 时；sema 保证非 void 函数必有 return，
             // 此处兜底避免 llc 报 "missing terminator"）。
             if (terminated_ == 0) {
@@ -562,6 +593,13 @@ class CodeGen {
                     if (Str.startsWith(fn, "__myp_") != 0) {
                         fn = Str.substring(fn, 2, Str.len(fn));
                     }
+                } else if (callee != null && callee.kind_ == "Member") {
+                    // 静态方法 Class.method(args)（对象是类名）；实例方法留 G3 后续
+                    AstExpr obj = callee.array_;
+                    string mname = callee.memberName_;
+                    if (obj != null && obj.kind_ == "Identifier" && isClassName(obj.name_) != 0) {
+                        fn = obj.name_ + "_" + mname;
+                    }
                 }
                 string retLt = IrEmit.kindType(e.resolvedKind_);
                 StringBuilder as = new StringBuilder();
@@ -646,6 +684,15 @@ class CodeGen {
             return "i32";
         }
 
+        // name 是否为类名（@static 类方法调用判断）。
+        int isClassName(string name) {
+            if (tu_ == null) return 0;
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                if (tu_.classes().get(i).name_ == name) return 1;
+            }
+            return 0;
+        }
+
         // double 常量 → LLVM 浮点文本（%e 格式，llc 接受）。
         string floatLiteral(double v) {
             string s = "" + v;
@@ -703,4 +750,5 @@ class CodeGen {
         ArrayList<string> loopContinue_;
         StringBuilder stringGlobals_;
         int strCounter_;
+        AstTU tu_;
 }
