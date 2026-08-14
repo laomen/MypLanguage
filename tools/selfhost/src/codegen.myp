@@ -330,6 +330,19 @@ class CodeGen {
             }
         }
 
+        // 声明式 store（VarDecl 初始化）：不释放旧值——旧值要么是 entry 零初始化
+        // 的 null，要么已在上一轮循环块出口释放（循环内重复声明）。若释放会
+        // 双重释放（C++ 对声明用 plain store + retain 别名，释放统一由 popScope）。
+        void storeNew(string dst, string value, int fresh) {
+            if (fresh != 0) {
+                sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
+                consumeTemp(value);
+            } else {
+                sb_.append("  call void @myp_retain(ptr " + value + ")\n");
+                sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
+            }
+        }
+
         // 具体类实例 ptr → 接口 fat pointer { data, vtable }（C++ buildInterfaceFat）。
         string buildIfaceFat(string instV, string ifaceName, string clsName) {
             string fat = newTmp() + ".fat";
@@ -1121,10 +1134,15 @@ class CodeGen {
                     genStmt(st.bodyStmts().get(i));
                 }
                 // 块末释放本块新增的 ARC 局部（C++ popScope：作用域局部出作用域即释放）。
-                // 被终止（throw/return/break）时：不在此释放，也不从 arcSlotNames_
-                // 移除——throw 交给 try 的 dispatch/propagate 释放，return 交给
-                // 函数末 releaseArcSlots（若移除，try 传播路径会漏放这些槽）。
-                if (terminated_ == 0) releaseArcSlotsFrom(arcBase);
+                // 被终止（throw/return/break/continue）时：不在此释放——但必须把
+                // 这些槽从 arcSlotNames_ 弹出（C++ popScope 总是弹出作用域，dead
+                // 路径 releaseArcSlot 跳过实际释放）。否则外层块的 releaseArcSlotsFrom
+                // 会再次释放这些槽 → 双重释放（myp_viz scanString 段错误根因）。
+                if (terminated_ == 0) {
+                    releaseArcSlotsFrom(arcBase);
+                } else {
+                    while (arcSlotNames_.size() > arcBase) arcSlotNames_.remove(arcSlotNames_.size() - 1);
+                }
                 // 弹出本块局部变量表（遮蔽恢复）
                 while (localNames_.size() > locBase) localNames_.remove(localNames_.size() - 1);
                 while (localTypes_.size() > locBase) localTypes_.remove(localTypes_.size() - 1);
@@ -1252,7 +1270,7 @@ class CodeGen {
                             string iv = genExpr(v.init_);
                             string it = exprLlvmType(v.init_);
                             iv = convertValue(iv, it, "ptr");
-                            storeRef(va, iv, isFreshTemp(iv));
+                            storeNew(va, iv, isFreshTemp(iv));
                         }
                     } else {
                         sb_.append("  store " + lt + " " + IrEmit.zeroValue(lt) + ", ptr " + va + ", align " + al + "\n");
