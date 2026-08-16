@@ -129,8 +129,47 @@ class CodeGen {
         // ---- 泛型实例体内的类型参数替换（C++ current_type_params_）----
         // 泛型类模板的 body 由所有实例共享，其局部变量类型仍是 T 占位 →
         // 发射前把 T 解析为具体类型（typeParams/instTypeArgs 平行）。
+        // 类型字符串 → AstType（关联类型绑定的 typeStr："int"/"string"/类名）。
+        AstType typeStrToAst(string s) {
+            AstType t = new AstType();
+            if (s == "int" || s == "uint" || s == "long" || s == "ulong"
+                || s == "short" || s == "ushort" || s == "byte" || s == "ubyte"
+                || s == "char" || s == "bool" || s == "double" || s == "float"
+                || s == "string" || s == "void" || s == "bit") {
+                t.setBasicName(s);
+            } else {
+                t.setClassName(s);
+            }
+            return t;
+        }
+
+        // 关联类型 X::Item → 实现类绑定的类型字符串（C++ resolveAssocType）。
+        string resolveAssocTypeStr(string name) {
+            if (tu_ == null) return "";
+            int sp = Str.indexOf(name, "::");
+            if (sp <= 0 || sp + 2 >= Str.len(name)) return "";
+            string owner = Str.substring(name, 0, sp);
+            string member = Str.substring(name, sp + 2, Str.len(name));
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != owner) continue;
+                for (int ai = 0; ai < c.assocTypes().size(); ai = ai + 1) {
+                    AstPair b = c.assocTypes().get(ai);
+                    if (b.k() == member) return b.typeStr();
+                }
+                break;
+            }
+            return "";
+        }
+
         AstType resolveType(AstType t) {
             if (t == null) return null;
+            // 关联类型 X::Item → 绑定类型（C++ resolveAssocType）。
+            string atn = Str.len(t.className()) != 0 ? t.className() : t.basicName();
+            if (Str.len(atn) != 0 && Str.indexOf(atn, "::") > 0) {
+                string bound = resolveAssocTypeStr(atn);
+                if (Str.len(bound) != 0) return typeStrToAst(bound);
+            }
             for (int i = 0; i < curTypeParams_.size(); i = i + 1) {
                 if (i >= curTypeArgs_.size()) break;
                 string tp = curTypeParams_.get(i);
@@ -1377,7 +1416,11 @@ class CodeGen {
             curClass_ = key;
             curFnCoro_ = f.coro();
             curFnRegion_ = f.region();
-            genFuncBody("struct_" + key + "_" + f.name(), ps, f.ret(), f.body());
+            // 构造器用重载 mangling（同 C++ generateStructMethods：ctor 才
+            // 追加参数类型后缀；普通方法保持 struct_<key>_<name>）。
+            string fnName = "struct_" + key + "_" + f.name();
+            if (f.ctor() != 0) fnName = fnName + mangleParams(f.params());
+            genFuncBody(fnName, ps, f.ret(), f.body());
             curClass_ = saveCls;
         }
 
@@ -1644,12 +1687,20 @@ class CodeGen {
 
         // struct 返回调用 → struct 名（"" = 非 struct 返回）。
         string callRetStructName(AstExpr e) {
-            if (e == null || e.resolvedKind() != "struct") return "";
+            if (e == null) return "";
+            // struct 函数式构造 StructName(args) → 返回值类型即 StructName
+            // （无顶层函数/方法可查，靠 sema 的 structType 兜底）。
+            if (Str.len(e.structType()) != 0 && e.resolvedKind() == "struct") return e.structType();
+            if (e.resolvedKind() != "struct") return "";
             AstExpr callee = e.callee();
             if (callee == null) return "";
             AstType rt = null;
             if (callee.kind() == "Identifier") {
-                rt = findFuncRetAstType(callee.name(), e.args().size());
+                // 泛型实例调用 resolved 已存实例函数名（如 id_Point_inst），
+                // 否则退回源名（普通函数 resolved 为空）。
+                string fname = e.resolved();
+                if (Str.len(fname) == 0) fname = callee.name();
+                rt = findFuncRetAstType(fname, e.args().size());
                 if (rt == null) rt = methodRetAstType(curClass_, callee.name());
             } else if (callee.kind() == "Member") {
                 // struct 方法调用：obj 是 struct 变量 → struct.funcs 返回类型
@@ -1682,6 +1733,49 @@ class CodeGen {
                 }
             }
             return "";
+        }
+
+        // 接口默认方法函数名：类未实现 method，但类实现的接口带默认体 →
+        // __ifdef_<iface>_<method>_<cls>（同 C++ findInterfaceDefault）。
+        string findIfaceDefault(string clsName, string method) {
+            if (tu_ == null || Str.len(clsName) == 0) return "";
+            AstClass cls = null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                if (tu_.classes().get(ci).name() == clsName) { cls = tu_.classes().get(ci); break; }
+            }
+            if (cls == null || Str.len(cls.iface()) == 0) return "";
+            for (int ii = 0; ii < tu_.interfaces().size(); ii = ii + 1) {
+                AstInterface ifc = tu_.interfaces().get(ii);
+                if (ifc.name() != cls.iface()) continue;
+                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                    AstAction ia = ifc.actions().get(ai);
+                    if (ia.name() == method && ia.body() != null) {
+                        return "__ifdef_" + ifc.name() + "_" + method + "_" + clsName;
+                    }
+                }
+                break;
+            }
+            return "";
+        }
+
+        // 接口默认方法返回 AstType（类未实现 method，接口带默认体时）。
+        AstType ifaceDefaultRetAstType(string clsName, string method) {
+            if (tu_ == null || Str.len(clsName) == 0) return null;
+            AstClass cls = null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                if (tu_.classes().get(ci).name() == clsName) { cls = tu_.classes().get(ci); break; }
+            }
+            if (cls == null || Str.len(cls.iface()) == 0) return null;
+            for (int ii = 0; ii < tu_.interfaces().size(); ii = ii + 1) {
+                AstInterface ifc = tu_.interfaces().get(ii);
+                if (ifc.name() != cls.iface()) continue;
+                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                    AstAction ia = ifc.actions().get(ai);
+                    if (ia.name() == method && ia.body() != null) return ia.ret();
+                }
+                break;
+            }
+            return null;
         }
 
         // 顶层函数形参 LLVM 类型列表。
@@ -2502,6 +2596,16 @@ class CodeGen {
             int sz = classSize(cls);
             string obj = newTmp();
             sb_.append("  " + obj + " = call ptr @myp_alloc_object(i64 " + sz + ", i32 0)\n");
+            // M-FN-2 nonlocal：先把按引用捕获的外层变量提升为共享堆 cell
+            // （同 C++ promoteNonlocalToCell；cellOwner 供槽填充取引用）。
+            for (int i = 0; i < e.captureNames().size(); i = i + 1) {
+                if (i >= e.nonlocalCells().size()) break;
+                string ccell = e.nonlocalCells().get(i);
+                if (Str.len(ccell) == 0) continue;
+                string capName = e.captureNames().get(i);
+                if (Str.len(cellOwner(capName)) != 0) continue;   // 已提升
+                promoteNonlocalCell(capName, ccell);
+            }
             // 填充捕获槽：cap_i = 外层变量当前值（按值）。nonlocal 槽存 cell 对象引用。
             for (int i = 0; i < e.captureNames().size(); i = i + 1) {
                 string capName = e.captureNames().get(i);
@@ -2515,11 +2619,27 @@ class CodeGen {
                     // nonlocal：槽存共享 cell 对象（promoteNonlocalToCell 建立 cellOwner）
                     val = cellOwner(capName);
                     if (Str.len(val) == 0) val = "null";
+                    else {
+                        // 闭包 cap_i 持有 cell 引用 → retain（同 C++ cap_is_ref；
+                        // 闭包析构会 release cap_i，故须自留一份引用）。
+                        sb_.append("  call void @myp_retain(ptr " + val + ")\n");
+                    }
                 } else if (hasVar(capName) != 0) {
                     string lt = varType(capName);
-                    string t = newTmp();
-                    sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(capName) + "\n");
-                    val = t;
+                    if (isFixedArrayLt(ft) != 0) {
+                        // 定长数组捕获：外层局部是数据指针槽（int[N] a 存
+                        // a_arr[0] 指针）→ load 数组值深拷贝进闭包
+                        //（同 C++ pt->isArrayTy 分支）。
+                        string dp = newTmp();
+                        sb_.append("  " + dp + " = load ptr, ptr " + varAlloca(capName) + "\n");
+                        string av = newTmp();
+                        sb_.append("  " + av + " = load " + ft + ", ptr " + dp + "\n");
+                        val = av;
+                    } else {
+                        string t = newTmp();
+                        sb_.append("  " + t + " = load " + lt + ", ptr " + varAlloca(capName) + "\n");
+                        val = t;
+                    }
                 } else if (hasMember(capName) != 0) {
                     string gep2 = thisMemberAddr(capName);
                     string ft2 = propType(curClass_, capName);
@@ -2576,6 +2696,53 @@ class CodeGen {
                 if (cellOwnerNames_.get(i) == name) return cellOwnerVals_.get(i);
             }
             return "";
+        }
+
+        // M-FN-2 nonlocal：把外层变量 name 提升为共享堆 cell（同 C++
+        // promoteNonlocalToCell）：分配 __cell_N 实例、把当前值存入 cell->v、
+        // 后续读写重定向到 cell->v GEP、记录 cellOwner。
+        void promoteNonlocalCell(string name, string ccell) {
+            int csz = classSize(ccell);
+            int ctid = classTypeId(ccell);
+            string cellP = newTmp();
+            sb_.append("  " + cellP + " = call ptr @myp_alloc_object(i64 " + csz + ", i32 " + ctid + ")\n");
+            // cell 归 entry alloca 所有，作用域末由 releaseArcSlots 释放
+            // （同 C++ promoteNonlocalToCell 的 registerArcSlot）。
+            string cellA = entryAlloca("ptr");
+            sb_.append("  store ptr " + cellP + ", ptr " + cellA + "\n");
+            arcSlotNames_.add(cellA);
+            string vgep = newTmp();
+            sb_.append("  " + vgep + " = getelementptr %" + ccell + ", ptr " + cellP + ", i32 0, i32 0\n");
+            string curT = "i32";
+            if (hasVar(name) != 0) curT = varType(name);
+            string curV = "";
+            if (hasVar(name) != 0 && Str.startsWith(varAlloca(name), "%") != 0) {
+                curV = newTmp();
+                sb_.append("  " + curV + " = load " + curT + ", ptr " + varAlloca(name) + "\n");
+            }
+            if (Str.len(curV) == 0) curV = IrEmit.zeroValue(curT);
+            sb_.append("  store " + curT + " " + curV + ", ptr " + vgep + "\n");
+            // 重定向外层变量：已有局部条目则更新其 alloca，否则新增（遮蔽参数）。
+            int updated = 0;
+            for (int li = localNames_.size() - 1; li >= 0; li = li - 1) {
+                if (localNames_.get(li) == name) {
+                    localAllocas_.set(li, vgep);
+                    localTypes_.set(li, curT);
+                    updated = 1;
+                    break;
+                }
+            }
+            if (updated == 0) {
+                localNames_.add(name);
+                localTypes_.add(curT);
+                localAstTypes_.add(null);
+                localAllocas_.add(vgep);
+                localElemTypes_.add("");
+                localIsSlice_.add(0);
+                localIsArc_.add(0);
+            }
+            cellOwnerNames_.add(name);
+            cellOwnerVals_.add(cellP);
         }
 
         // 构造器 mangle（与 sema mangleType/mangleParams 一致）。
@@ -2667,6 +2834,69 @@ class CodeGen {
             if (retLt != "void") {
                 finallyRetSlot_ = newTmp();
                 sb_.append("  " + finallyRetSlot_ + " = alloca " + retLt + ", align 8\n");
+            }
+            // struct 方法体：把 struct 字段注册为 GEP 局部名，使裸字段名 x
+            // 解析为 this.x（同 C++ generateStructMethods 的 setNamedTypedValue；
+            // 形参同名时形参优先 → 跳过）。GEP 直接用入口参数 %this（结构体指针）。
+            if (Str.len(curClass_) != 0 && isStructName(curClass_) != 0) {
+                AstStruct stReg = findStructByName(curClass_);
+                if (stReg != null) {
+                    for (int fp = 0; fp < stReg.props().size(); fp = fp + 1) {
+                        AstProp fld = stReg.props().get(fp);
+                        int shadowed = 0;
+                        for (int pi2 = 0; pi2 < paramNames_.size(); pi2 = pi2 + 1) {
+                            if (paramNames_.get(pi2) == fld.name()) { shadowed = 1; break; }
+                        }
+                        if (shadowed != 0) continue;
+                        string fg = newTmp();
+                        sb_.append("  " + fg + " = getelementptr %" + curClass_ + ", ptr %this, i32 0, i32 " + fp + "\n");
+                        localNames_.add(fld.name());
+                        localTypes_.add(llvmType(fld.type()));
+                        localAstTypes_.add(fld.type());
+                        localAllocas_.add(fg);
+                        localElemTypes_.add("");
+                        localIsSlice_.add(0);
+                        // struct 字段若是 ARC 引用（动态数组/string/类），
+                        // 赋值须走 storeRef/storeNew（否则 fresh temp 被语句末
+                        // 释放 → this.data 悬空）。
+                        localIsArc_.add(isArcType(fld.type()));
+                    }
+                }
+            }
+            // lambda __call 开头注入 nonlocal 别名（同 C++ setupNonlocalAliases）：
+            // this.cap_i 存共享 cell 对象 → GEP cell->v → 注册为外层变量名，
+            // body 对 `name` 的读写直达共享 cell。
+            if (Str.startsWith(curClass_, "__lambda_") != 0 && tu_ != null) {
+                AstClass lc2 = null;
+                for (int ci2 = 0; ci2 < tu_.classes().size(); ci2 = ci2 + 1) {
+                    if (tu_.classes().get(ci2).name() == curClass_) { lc2 = tu_.classes().get(ci2); break; }
+                }
+                if (lc2 != null && lc2.nonlocalSlots().size() != 0) {
+                    for (int nsi = 0; nsi < lc2.nonlocalSlots().size(); nsi = nsi + 1) {
+                        AstNonlocalSlot ns = lc2.nonlocalSlots().get(nsi);
+                        int cpi = propIndex(curClass_, ns.slot());
+                        string capG = newTmp();
+                        sb_.append("  " + capG + " = getelementptr %" + curClass_ + ", ptr %this, i32 0, i32 " + cpi + "\n");
+                        string cellP = newTmp();
+                        sb_.append("  " + cellP + " = load ptr, ptr " + capG + "\n");
+                        string vgep = newTmp();
+                        sb_.append("  " + vgep + " = getelementptr %" + ns.cell() + ", ptr " + cellP + ", i32 0, i32 0\n");
+                        string vt = "i32";
+                        for (int cj2 = 0; cj2 < tu_.classes().size(); cj2 = cj2 + 1) {
+                            AstClass cc2 = tu_.classes().get(cj2);
+                            if (cc2.name() != ns.cell()) continue;
+                            if (cc2.props().size() != 0) vt = llvmType(cc2.props().get(0).type());
+                            break;
+                        }
+                        localNames_.add(ns.varName());
+                        localTypes_.add(vt);
+                        localAstTypes_.add(null);
+                        localAllocas_.add(vgep);
+                        localElemTypes_.add("");
+                        localIsSlice_.add(0);
+                        localIsArc_.add(0);
+                    }
+                }
             }
             // 参数 alloca（倒序，模拟 C++ createEntryBlockAlloca 在 entry 头插入）
             for (int i = paramNames_.size() - 1; i >= 0; i = i - 1) {
@@ -3022,6 +3252,37 @@ class CodeGen {
                 for (int i = 0; i < st.decls().size(); i = i + 1) {
                     AstVar v = st.decls().get(i);
                     AstType rvt = resolveType(v.type());
+                    // var 类型推断：局部 LLVM 类型 = 初始值类型（同 C++
+                    // generateVarDecl is_inferred 分支 init_val->getType()；
+                    // AST type 字段仍是 int 占位，不能据此物化）。
+                    if (v.isInferred() != 0 && v.init() != null) {
+                        string iv = genExpr(v.init());
+                        string it = exprLlvmType(v.init());
+                        string va = entryAlloca(it);
+                        localNames_.add(v.name());
+                        localTypes_.add(it);
+                        localAstTypes_.add(rvt);
+                        localAllocas_.add(va);
+                        localElemTypes_.add("");
+                        localIsSlice_.add(0);
+                        if (it == "ptr") {
+                            localIsArc_.add(1);
+                            arcSlotNames_.add(va);
+                            storeNew(va, iv, isFreshTemp(iv));
+                        } else if (it == "{ ptr, i64 }") {
+                            localIsArc_.add(0);
+                            sb_.append("  store { ptr, i64 } zeroinitializer, ptr " + va + "\n");
+                            sb_.append("  store { ptr, i64 } " + iv + ", ptr " + va + "\n");
+                        } else if (it == "{ ptr, ptr }") {
+                            localIsArc_.add(0);
+                            sb_.append("  store { ptr, ptr } zeroinitializer, ptr " + va + "\n");
+                            sb_.append("  store { ptr, ptr } " + iv + ", ptr " + va + "\n");
+                        } else {
+                            localIsArc_.add(0);
+                            sb_.append("  store " + it + " " + iv + ", ptr " + va + "\n");
+                        }
+                        continue;
+                    }
                     // @thread：new Cls() @thread —— 专用线程启动路径
                     if (v.thread() != 0) {
                         genThreadVar(v, rvt);
@@ -3041,6 +3302,20 @@ class CodeGen {
                         int aal = IrEmit.alignOf(arrLt);
                         sb_.append("  " + arrA + " = alloca " + arrLt + ", align " + aal + "\n");
                         sb_.append("  store " + arrLt + " zeroinitializer, ptr " + arrA + "\n");
+                        // 定长数组初始化：捕获拷贝 int[N] a = this.cap_i 等。
+                        // 数组值 → 整体 store；数据指针（Member decay）→ load
+                        // [N x T] 值再 store（深拷贝）。
+                        if (v.init() != null) {
+                            string iv2 = genExpr(v.init());
+                            string it2 = exprLlvmType(v.init());
+                            if (isFixedArrayLt(it2) != 0) {
+                                sb_.append("  store " + it2 + " " + iv2 + ", ptr " + arrA + "\n");
+                            } else if (it2 == "ptr") {
+                                string arrVal = newTmp();
+                                sb_.append("  " + arrVal + " = load " + arrLt + ", ptr " + iv2 + "\n");
+                                sb_.append("  store " + arrLt + " " + arrVal + ", ptr " + arrA + "\n");
+                            }
+                        }
                         string elemPtr = newTmp();
                         sb_.append("  " + elemPtr + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 0\n");
                         string va = newTmp();
@@ -3097,6 +3372,10 @@ class CodeGen {
                             } else if (Str.len(clsName) != 0) {
                                 string fat = buildIfaceFat(iv, ifaceName, clsName);
                                 sb_.append("  store { ptr, ptr } " + fat + ", ptr " + va + "\n");
+                                // 接口槽接管具体类实例所有权（data 槽在作用域末
+                                // 由 releaseArcSlots 释放）；消费 new 产生的 fresh
+                                // temp 避免双重释放（同 C++ arcConsumeTemp）。
+                                if (isFreshTemp(iv) != 0) consumeTemp(iv);
                             } else {
                                 string d0 = newTmp();
                                 sb_.append("  " + d0 + " = getelementptr { ptr, ptr }, ptr " + va + ", i32 0, i32 0\n");
@@ -3387,6 +3666,23 @@ class CodeGen {
             AstType varT = st.varType();
             string elemLt = llvmType(varT);
             AstExpr coll = st.iterable();
+            // 推断循环变量（for (x in arr)，无显式类型）：元素类型取可迭代对象
+            // （sema 的 ForIn.varType 仍是 int 占位）。
+            if (st.hasType() == 0 && coll != null) {
+                if (ik == 1) {
+                    if (coll.kind() == "Identifier") elemLt = varElemType(coll.name());
+                } else if (ik == 2) {
+                    if (coll.kind() == "Identifier") {
+                        AstType ct = varAstType(coll.name());
+                        if (ct != null) elemLt = sliceElemType(ct);
+                    }
+                } else if (ik == 3) {
+                    elemLt = "i32";
+                } else if (ik == 0 && Str.len(st.className()) != 0) {
+                    AstType grt = methodRetAstType(st.className(), "get");
+                    if (grt != null) elemLt = llvmType(grt);
+                }
+            }
             string collV = genExpr(coll);
             string collT = exprLlvmType(coll);
             string collA = newTmp() + ".coll";
@@ -3394,7 +3690,14 @@ class CodeGen {
             sb_.append("  store " + collT + " " + collV + ", ptr " + collA + "\n");
             // 上界
             string sizeV = "0";
-            if (ik == 1) {
+            if (ik == 0) {
+                // class 集合：sizeFn(coll)
+                string collL = newTmp();
+                sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
+                string sv = newTmp();
+                sb_.append("  " + sv + " = call i32 @" + st.sizeFn() + "(ptr " + collL + ")\n");
+                sizeV = sv;
+            } else if (ik == 1) {
                 sizeV = "" + st.arrSize();
             } else if (ik == 2) {
                 // slice：extractvalue len
@@ -3449,7 +3752,14 @@ class CodeGen {
             string idx1 = newTmp();
             sb_.append("  " + idx1 + " = load i32, ptr " + idxA + "\n");
             string elem = "";
-            if (ik == 1) {
+            if (ik == 0) {
+                // class 集合：getFn(coll, idx)
+                string collL = newTmp();
+                sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
+                string el = newTmp();
+                sb_.append("  " + el + " = call " + elemLt + " @" + st.getFn() + "(ptr " + collL + ", i32 " + idx1 + ")\n");
+                elem = el;
+            } else if (ik == 1) {
                 string collL = newTmp();
                 sb_.append("  " + collL + " = load " + collT + ", ptr " + collA + "\n");
                 string gep = newTmp();
@@ -4030,6 +4340,10 @@ class CodeGen {
             string fnv = newTmp();
             sb_.append("  " + fnv + " = load ptr, ptr " + fp + "\n");
             string retLt = exprLlvmType(call);
+            // 泛型体内 sema resolvedKind 可能是 int 占位 → 以接口声明返回类型
+            // 为准（Error.message() -> string → ptr）。
+            AstType irt = interfaceMethodRetAstType(ifaceName, mname);
+            if (irt != null) retLt = llvmType(irt);
             StringBuilder as = new StringBuilder();
             as.append("ptr " + data);
             for (int i = 0; i < call.args().size(); i = i + 1) {
@@ -4234,6 +4548,24 @@ class CodeGen {
             }
             if (k == "Identifier") {
                 string nm = e.name();
+                // M-FN-2 named lambda 自名作为值使用（thunk 实参/赋值）→
+                // 当前闭包 fat pointer {this, @<cls>_tramp}（同 C++
+                // generateIdentifier 的 __lambda 分支；调用形式已由 sema 标
+                // __self 走 tramp）。
+                if (Str.startsWith(curClass_, "__lambda_") != 0 && tu_ != null) {
+                    AstClass lc3 = null;
+                    for (int ci3 = 0; ci3 < tu_.classes().size(); ci3 = ci3 + 1) {
+                        if (tu_.classes().get(ci3).name() == curClass_) { lc3 = tu_.classes().get(ci3); break; }
+                    }
+                    if (lc3 != null && Str.len(lc3.lambda()) != 0 && lc3.lambda() == nm) {
+                        string thisV3 = loadThis();
+                        string p0s = newTmp();
+                        sb_.append("  " + p0s + " = insertvalue { ptr, ptr } poison, ptr " + thisV3 + ", 0\n");
+                        string p1s = newTmp();
+                        sb_.append("  " + p1s + " = insertvalue { ptr, ptr } " + p0s + ", ptr @" + curClass_ + "_tramp, 1\n");
+                        return p1s;
+                    }
+                }
                 if (hasVar(nm) != 0) {
                     string lt = varType(nm);
                     int al = IrEmit.alignOf(lt);
@@ -4342,7 +4674,9 @@ class CodeGen {
                 string rt = exprLlvmType(e.rhs());
                 // 字符串拼接（+ 且操作数为 ptr）：标量操作数 → myp_to_string_*，
                 // 指针直通借用；myp_strcat(l, r)（与 C++ stringifyForConcat 一致）。
-                if (op == "+" && (lt == "ptr" || rt == "ptr")) {
+                // 仅当未解析到 @op（double[]+double[] 走 @op vecAdd，不是字符串
+                // 拼接；否则 ptr+ptr 会被误判成 myp_strcat）。
+                if (op == "+" && e.opCall() == 0 && (lt == "ptr" || rt == "ptr")) {
                     string lv2 = stringifyConcat(lv, lt, e.lhs());
                     string rv2 = stringifyConcat(rv, rt, e.rhs());
                     string t = newTmp();
@@ -4382,9 +4716,46 @@ class CodeGen {
                 if (op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=") isCmp = 1;
                 // @op 运算符重载（slice+slice、slice*k 等）→ 调用 @op 函数
                 if (e.opCall() != 0) {
+                    // struct @op 方法：sema 已解析为 struct_<key>_<method>
+                    // → struct_<key>_<method>(ptr this, rhs)（同 C++
+                    // op_call->struct_method；this = 左操作数的 alloca 指针）。
+                    if (Str.startsWith(e.resolved(), "struct_") != 0) {
+                        string thisP = "";
+                        string oret = "";
+                        if (lhsE != null && lhsE.kind() == "Identifier") {
+                            thisP = varAlloca(lhsE.name());
+                            oret = exprLlvmType(lhsE);
+                        }
+                        if (Str.len(thisP) == 0) {
+                            // 复杂左操作数（结构体值）→ 存临时 alloca 取指针
+                            string rest = Str.substring(e.resolved(), 7, Str.len(e.resolved()));
+                            string stT2 = "%" + Str.substring(rest, 0, Str.indexOf(rest, "_"));
+                            string tmp2 = newTmp();
+                            sb_.append("  " + tmp2 + " = alloca " + stT2 + ", align 8\n");
+                            sb_.append("  store " + stT2 + " " + lv + ", ptr " + tmp2 + "\n");
+                            thisP = tmp2;
+                            oret = stT2;
+                        }
+                        string t = newTmp();
+                        sb_.append("  " + t + " = call " + oret + " @" + e.resolved() + "(ptr " + thisP + ", " + rt + " " + rv + ")\n");
+                        if (oret == "ptr") addFreshTemp(t);
+                        return t;
+                    }
                     string ofn = findOpFuncName(op, lt, rt);
                     if (Str.len(ofn) != 0) {
                         string oret = exprLlvmType(e);
+                        // @op 函数返回 struct → 用函数返回值类型（llvmType 给出
+                        // %Name）；否则 kindType("struct") = ptr 错（如
+                        // vecMul(double, Vector3) -> %Vector3）。
+                        if (tu_ != null) {
+                            for (int oi = 0; oi < tu_.functions().size(); oi = oi + 1) {
+                                AstFunction of = tu_.functions().get(oi);
+                                if (of.name() == ofn) {
+                                    oret = llvmType(of.ret());
+                                    break;
+                                }
+                            }
+                        }
                         string t = newTmp();
                         sb_.append("  " + t + " = call " + oret + " @" + ofn + "(" + lt + " " + lv + ", " + rt + " " + rv + ")\n");
                         if (oret == "ptr") addFreshTemp(t);
@@ -4463,6 +4834,12 @@ class CodeGen {
                 flushTempsFrom(tbefore);
                 string resLt = IrEmit.kindType(e.resolvedKind());
                 if (Str.len(e.resolvedKind()) == 0) resLt = exprLlvmType(e.trueExpr());
+                // struct 结果：三元按值类型物化（resolvedKind=struct →
+                // kindType=ptr 错；取 true 分支的 %Name 类型，如 Point(1,1)）。
+                if (e.resolvedKind() == "struct") {
+                    string stt = exprLlvmType(e.trueExpr());
+                    if (Str.startsWith(stt, "%") != 0) resLt = stt;
+                }
                 string resA = newTmp() + ".res";
                 sb_.append("  " + resA + " = alloca " + resLt + "\n");
                 if (resLt == "ptr") sb_.append("  store ptr null, ptr " + resA + "\n");
@@ -4801,12 +5178,35 @@ class CodeGen {
                     }
                 }
                 if (Str.len(ctor) != 0) {
+                    // 构造器形参 LLVM 类型（按实参个数匹配重载；int→double 等
+                    // 数字提升，同 C++ generateNewExpr 的实参转换）。
+                    ArrayList<string> apt = new ArrayList<string>();
+                    if (tu_ != null) {
+                        for (int ci2 = 0; ci2 < tu_.classes().size(); ci2 = ci2 + 1) {
+                            AstClass cc2 = tu_.classes().get(ci2);
+                            if (cc2.name() != cls) continue;
+                            for (int ai2 = 0; ai2 < cc2.actions().size(); ai2 = ai2 + 1) {
+                                AstAction a2 = cc2.actions().get(ai2);
+                                if (a2.ctor() == 0) continue;
+                                if (a2.params().size() != e.args().size()) continue;
+                                for (int pi2 = 0; pi2 < a2.params().size(); pi2 = pi2 + 1) {
+                                    apt.add(llvmType(resolveType(a2.params().get(pi2).type())));
+                                }
+                                break;
+                            }
+                            break;
+                        }
+                    }
                     StringBuilder as = new StringBuilder();
                     as.append("ptr " + t);
                     for (int i = 0; i < e.args().size(); i = i + 1) {
                         AstExpr a = e.args().get(i);
                         string av = genExpr(a);
                         string at = exprLlvmType(a);
+                        if (i < apt.size()) {
+                            av = convertValueU(av, at, apt.get(i), isUnsignedKind(a.resolvedKind()));
+                            at = apt.get(i);
+                        }
                         as.append(", " + at + " " + av);
                     }
                     sb_.append("  call void @" + ctor + "(" + as.toString() + ")\n");
@@ -5057,6 +5457,50 @@ class CodeGen {
                     addFreshTemp(t);
                     return t;
                 }
+                // 结构体函数式构造：StructName(args) → 栈临时 alloca + 构造器
+                // + load 出 struct 值（同 C++ resolveStructConstruction /
+                // resolved_struct_ctor；此前未处理导致 Vec2(...) 被当作类 new
+                // 发射成 `call ptr @Vec2`，ret %Vec2 喂 ptr → llc 失败）。
+                if (Str.len(e.structCtor()) != 0) {
+                    string stT = "%" + e.structType();
+                    // 构造器形参 LLVM 类型（按实参个数匹配重载，同
+                    // genStructMethodCall 的 structMethodParamLts，但这里按
+                    // 参数个数选择 ctor 重载）。
+                    ArrayList<string> cpt = new ArrayList<string>();
+                    AstStruct cst = findStructByName(e.structType());
+                    if (cst != null) {
+                        for (int cf = 0; cf < cst.funcs().size(); cf = cf + 1) {
+                            AstFunction cf2 = cst.funcs().get(cf);
+                            if (cf2.ctor() == 0) continue;
+                            if (cf2.params().size() != e.args().size()) continue;
+                            for (int cp = 0; cp < cf2.params().size(); cp = cp + 1) {
+                                cpt.add(llvmType(cf2.params().get(cp).type()));
+                            }
+                            break;
+                        }
+                    }
+                    string tmp = newTmp();
+                    sb_.append("  " + tmp + " = alloca " + stT + ", align 8\n");
+                    // 零初始化：构造器内字段赋值（尤其 ARC 字段 data=...）会先
+                    // 释放旧值；必须为 null 而非栈垃圾（否则 myp_release 段错误）。
+                    sb_.append("  store " + stT + " zeroinitializer, ptr " + tmp + "\n");
+                    StringBuilder as = new StringBuilder();
+                    as.append("ptr " + tmp);
+                    for (int i = 0; i < e.args().size(); i = i + 1) {
+                        AstExpr a = e.args().get(i);
+                        string av = genExpr(a);
+                        string at = exprLlvmType(a);
+                        if (i < cpt.size()) {
+                            av = convertValueU(av, at, cpt.get(i), isUnsignedKind(a.resolvedKind()));
+                            at = cpt.get(i);
+                        }
+                        as.append(", " + at + " " + av);
+                    }
+                    sb_.append("  call void @" + e.structCtor() + "(" + as.toString() + ")\n");
+                    string v = newTmp();
+                    sb_.append("  " + v + " = load " + stT + ", ptr " + tmp + "\n");
+                    return v;
+                }
                 string fn = "";
                 string thisV = "";
                 string mCls = "";      // 方法所属类（形参类型查找用）
@@ -5066,6 +5510,30 @@ class CodeGen {
                 // 直接调用实例函数（同 C++ generateCall 的 resolved_call_name 分支）。
                 if (Str.len(e.resolved()) != 0) {
                     string rfn = e.resolved();
+                    // M-FN-2 named lambda 自递归：sema 标记 <cls>__self →
+                    // 调 <cls>_tramp(this, args...)（同 C++ generateCall 的
+                    // __self 分支；tramp 由 genLambdaTramp 发射）。
+                    if (Str.endsWith(rfn, "__self") != 0) {
+                        string base = Str.substring(rfn, 0, Str.len(rfn) - 6);
+                        string thisV2 = loadThis();
+                        string rret = exprLlvmType(e);
+                        StringBuilder ras = new StringBuilder();
+                        ras.append("ptr " + thisV2);
+                        for (int i = 0; i < e.args().size(); i = i + 1) {
+                            AstExpr a = e.args().get(i);
+                            string av = genExpr(a);
+                            string aT = exprLlvmType(a);
+                            ras.append(", " + aT + " " + av);
+                        }
+                        if (rret == "void") {
+                            sb_.append("  call void @" + base + "_tramp(" + ras.toString() + ")\n");
+                            return "";
+                        }
+                        string rt = newTmp();
+                        sb_.append("  " + rt + " = call " + rret + " @" + base + "_tramp(" + ras.toString() + ")\n");
+                        if (rret == "ptr") addFreshTemp(rt);
+                        return rt;
+                    }
                     string rret = exprLlvmType(e);
                     StringBuilder ras = new StringBuilder();
                     for (int i = 0; i < e.args().size(); i = i + 1) {
@@ -5109,6 +5577,16 @@ class CodeGen {
                         isEvCall = 1;
                         fn = "fire_" + curClass_ + "_" + fn;
                         thisV = loadThis();
+                    } else if (isTopLevelFunc(fn) == 0) {
+                        // 接口默认方法（类未实现但接口带默认体）→
+                        // __ifdef_<iface>_<m>_<cls>（同 C++ findInterfaceDefault）
+                        string idef = findIfaceDefault(curClass_, fn);
+                        if (Str.len(idef) != 0) {
+                            mCls = curClass_;
+                            mName = fn;
+                            fn = idef;
+                            thisV = loadThis();
+                        }
                     } else if (isTopLevelFunc(fn) != 0) {
                         mName = fn;
                     }
@@ -5269,6 +5747,29 @@ class CodeGen {
             if (k == "Await") {
                 return genAwaitCore(e.operand(), e.timeout());
             }
+            if (k == "Pipe") {
+                // A |> op：op 为实例变量（targetKind=instance）复用；为类名
+                // （targetKind=class）则 new 一个新组件。随后调用
+                // <Class>_<method>(instance, lhs)（同 C++ generatePipe）。
+                string lhsV = genExpr(e.lhs());
+                string instV = "";
+                string pcls = e.classType();
+                if (e.targetKind() == "instance") {
+                    instV = genExpr(e.rhs());
+                } else if (Str.len(pcls) != 0) {
+                    AstExpr ne = new AstExpr();
+                    ne.setKind("New");
+                    ne.setClassName(pcls);
+                    instV = genExpr(ne);
+                }
+                if (Str.len(instV) == 0 || Str.len(pcls) == 0) return lhsV;
+                string pfn = pcls + "_" + e.method();
+                string pret = exprLlvmType(e);
+                string pr = newTmp();
+                sb_.append("  " + pr + " = call " + pret + " @" + pfn + "(ptr " + instV + ", " + exprLlvmType(e.lhs()) + " " + lhsV + ")\n");
+                if (pret == "ptr") addFreshTemp(pr);
+                return pr;
+            }
             // Member/Subscript 等留 G2。
             return "0";
         }
@@ -5366,6 +5867,12 @@ class CodeGen {
                     int ls = (lhs != null && lhs.resolvedKind() == "string") ? 1 : 0;
                     int rs = (rhs != null && rhs.resolvedKind() == "string") ? 1 : 0;
                     if (ls != 0 || rs != 0) return "ptr";
+                    // 接口默认体等 sema 未解析场景：字符串字面量 resolvedKind
+                    // 标 int，但 LLVM 类型为 ptr → 拼接结果仍为 ptr
+                    //（非 @op 时；double[]+double[] 走 @op，opCall!=0）。
+                    if (e.opCall() == 0 && lhs != null && rhs != null) {
+                        if (exprLlvmType(lhs) == "ptr" || exprLlvmType(rhs) == "ptr") return "ptr";
+                    }
                 }
                 // bitvector 位运算/移位 → 与左操作数同宽（iN）
                 if (e.resolvedKind() == "bitvector" && lhs != null) {
@@ -5403,6 +5910,11 @@ class CodeGen {
                 return varType(nm);
             }
             if (k == "Member") {
+                // 枚举变体 Color.RED → { i32 } / { i32, [N x i8] }（kindType
+                // 返回 i32，会破坏 enum == 比较与 store 类型）
+                if (Str.len(e.resolvedClass()) != 0 && isEnumName(e.resolvedClass()) != 0) {
+                    return enumLlvmType(e.resolvedClass());
+                }
                 // bitfield 字段：bit → i1；bit[N] → uint/i32
                 if (Str.len(e.resolvedClass()) != 0 && isBitfieldName(e.resolvedClass()) != 0) {
                     if (e.resolvedKind() == "bit") return "i1";
@@ -5479,6 +5991,53 @@ class CodeGen {
                 if (Str.len(sname) != 0) return "%" + sname;
                 // slice 返回调用 → { ptr, i64 } fat pointer（kindType("slice")=ptr 错）
                 if (e.resolvedKind() == "slice") return "{ ptr, i64 }";
+                // 接口默认体/泛型模板体：sema 未解析（resolvedKind 标 int）→
+                // 从声明推导返回 LLVM 类型（方法/顶层函数/泛型实例；C++
+                // codegen 从声明推导返回类型）。
+                AstExpr callee3 = e.callee();
+                if (callee3 != null && callee3.kind() == "Identifier") {
+                    string fname3 = e.resolved();
+                    if (Str.len(fname3) == 0) fname3 = callee3.name();
+                    AstType rt3 = findFuncRetAstType(fname3, e.args().size());
+                    if (rt3 == null && Str.len(curClass_) != 0) {
+                        rt3 = methodRetAstType(curClass_, callee3.name());
+                        if (rt3 == null) rt3 = ifaceDefaultRetAstType(curClass_, callee3.name());
+                    }
+                    if (rt3 != null) {
+                        AstType rrt3 = resolveType(rt3);
+                        if (rrt3 != null) {
+                            string lt3 = llvmType(rrt3);
+                            if (Str.len(lt3) != 0) return lt3;
+                        }
+                    }
+                } else if (callee3 != null && callee3.kind() == "Member") {
+                    // 方法调用 c.getVal()：resolvedClass 常为接口（Container），
+                    // 但 assoc 返回类型须按对象的具体类解析（StrBox.getVal →
+                    // string）。对象是具体类实例变量时用其类型。
+                    string mcls3 = callee3.resolvedClass();
+                    AstExpr obj3 = callee3.array();
+                    if (obj3 != null && obj3.kind() == "Identifier") {
+                        AstType oat3 = varAstType(obj3.name());
+                        if (oat3 != null) {
+                            AstType ort3 = resolveType(oat3);
+                            if (ort3 != null && Str.len(ort3.className()) != 0
+                                && isInterfaceName(ort3.className()) == 0
+                                && isStructName(ort3.className()) == 0
+                                && isEnumName(ort3.className()) == 0) {
+                                mcls3 = classInstName(ort3);
+                            }
+                        }
+                    }
+                    if (Str.len(mcls3) == 0) mcls3 = "Object";
+                    AstType rt3 = methodRetAstType(mcls3, callee3.memberName());
+                    if (rt3 != null) {
+                        AstType rrt3 = resolveType(rt3);
+                        if (rrt3 != null) {
+                            string lt3 = llvmType(rrt3);
+                            if (Str.len(lt3) != 0) return lt3;
+                        }
+                    }
+                }
                 return IrEmit.kindType(e.resolvedKind());
             }
             if (k == "Subscript") {
@@ -5542,6 +6101,9 @@ class CodeGen {
                 if (paramNames_.get(i) == name) {
                     AstType pt = paramAstTypes_.get(i);
                     if (pt != null && isSliceType(pt) != 0) return sliceElemType(pt);
+                    // 动态数组参数 double[] A → 元素类型 double（否则 A[i] 会
+                    // 按 i32 物化，vecAdd 等数组 @op 函数算错）
+                    if (pt != null && pt.element() != null) return llvmType(pt.element());
                     return "i32";
                 }
             }
@@ -5642,6 +6204,21 @@ class CodeGen {
                 }
             }
             return -1;
+        }
+
+        // 接口方法返回 AstType（泛型体内 sema resolvedKind 可能是 int 占位，
+        // 须以接口声明为准，同 C++ interface 方法返回类型）。
+        AstType interfaceMethodRetAstType(string ifaceName, string methodName) {
+            if (tu_ == null) return null;
+            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
+                AstInterface ifc = tu_.interfaces().get(i);
+                if (ifc.name() != ifaceName) continue;
+                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                    if (ifc.actions().get(ai).name() == methodName) return ifc.actions().get(ai).ret();
+                }
+                break;
+            }
+            return null;
         }
 
         // cls 类是否实现了 iface 接口（AstClass.iface_）。

@@ -2100,7 +2100,7 @@ class Sema {
             return findStructProp(si, name);
         }
         // @op 运算符重载匹配：返回返回类型 kind（空 = 未命中）
-        string resolveOp(string sym, AstExpr lhs, string lt, string rt) {
+        string resolveOp(AstExpr e, string sym, AstExpr lhs, string lt, string rt) {
             string structName = "";
             if (lt == "struct" && lhs != null && lhs.kind() == "Identifier") structName = sym_.lookupClass(lhs.name());
             else if (lt == "struct" && lhs != null) {
@@ -2115,7 +2115,13 @@ class Sema {
                     if (f.op() != sym || f.params().size() != 1) continue;
                     AstType pt = f.params().get(0).type();
                     string pk = pt != null ? typeToKind(pt) : "void";
-                    if (typesCompatKind(pk, rt) != 0) return f.ret() != null ? typeToKind(f.ret()) : "void";
+                    if (typesCompatKind(pk, rt) != 0) {
+                        // struct @op 方法：记录 mangled 方法名，codegen 按
+                        // struct_<key>_<method>(ptr this, rhs) 发射（同 C++
+                        // op_call->struct_method）。
+                        e.setResolved("struct_" + structName + "_" + f.name());
+                        return f.ret() != null ? typeToKind(f.ret()) : "void";
+                    }
                 }
             }
             for (int i = 0; i < opSyms_.size(); i = i + 1) {
@@ -3399,7 +3405,7 @@ class Sema {
                 string op = e.op();
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
                     || op == "&&" || op == "||") {
-                    string opr = resolveOp(op, e.lhs(), l, r);
+                    string opr = resolveOp(e, op, e.lhs(), l, r);
                     if (Str.len(opr) != 0) {
                         e.setOpCall(1);
                         e.setResolvedKind(opr);
@@ -3424,7 +3430,7 @@ class Sema {
                     return "string";
                 }
                 // @op 运算符重载（slice+slice 等），C++ resolveOperator 先于数字检查
-                string opr = resolveOp(op, e.lhs(), l, r);
+                string opr = resolveOp(e, op, e.lhs(), l, r);
                 if (Str.len(opr) != 0) {
                     e.setOpCall(1);
                     e.setResolvedKind(opr);

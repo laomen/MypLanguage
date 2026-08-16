@@ -225,7 +225,7 @@ Declared -> Materializing -> Ready
 | tokens | **448/448 字节一致** | F1 完成 |
 | AST | **448/448 字节一致** | F2/F3 完成 |
 | sema | **548/565 字节一致** | F4 完成（正语料全绿；剩余负例/GPU/遗留/自引用泛型顺序） |
-| codegen | G1 完成（hello 级运行对拍）；G2 核心完成（控制流/数组/字符串/短路/intrinsic/slice）；G3-1/G3-6a 完成（类/实例方法/构造器/属性默认值/成员访问/泛型单态化） | G2-5 lambda 闭包进行中 |
+| codegen | G1/G2 完成；G3 部分（类/构造器/泛型/mapping 已支撑自编译）；G4 完成（bootstrap 15/15） | 全量回归 229/275（83%），剩 ARC 环/异常隔离/region/weak/关联类型 |
 
 > 更新（F4-G1 后，2026-08-13）：**泛型静态方法已落地**——sema 266→303（+37 文件），
 > GS 簇 67→6。`__gs_` 实例函数（含函数类型参数替换 `(T)->R`→`(int)->string`）与调用点
@@ -453,10 +453,10 @@ main.myp ─┬─> 前端: lexer → parser → sema（对拍/编译两用）
 | **F3** | 表达式 parser | ✅ AST 448/448 |
 | **F4** | sema | ✅ 完成：548/565（正语料全绿） |
 | **G1** | IR 文本发射框架 + 最小程序 codegen | ✅ 完成：hello 级产物运行对拍 + .ll 可编译 |
-| **G2** | 语句 + 表达式 codegen | 🔄 进行中：控制流/数组/字符串/短路/intrinsic 已对拍 |
-| **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | 完整语料（含 BNCT 子集）产物运行对拍 |
-| **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | myp_self 全流程可用 |
-| **H1** | 两级自举验证 + 全量回归 + 文档 | stage1/2/3 行为一致 |
+| **G2** | 语句 + 表达式 codegen | ✅ 基本完成：101/109 回归通过（剩 slice_class_chain / subscript_narrow 等边界） |
+| **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | 🔄 部分完成：类/构造器/泛型/mapping 已支撑自编译；ARC 环/异常隔离/region/weak/关联类型未做完 |
+| **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | ✅ 完成：CLI/compile/link/--stdlib 全流程可用（bootstrap 15/15） |
+| **H1** | 两级自举验证 + 全量回归 + 文档 | 🔄 部分完成：两级自举 15/15 ✅；全量回归 229/275（83%） |
 
 ---
 
