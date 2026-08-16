@@ -1,0 +1,68 @@
+// BUG-002: @coro 主流程增量 spawn 导致已 park 协程卡死 / 帧损坏
+// 复现自 go/test/sieve.go 的并发素数筛移植。主流程（非协程）边读边逐个 spawn
+// @coro 过滤器（其余过滤器保持 park）：已 park 协程间歇性不再 resume / 帧损坏
+// （类引用局部变量被改写成别的实例句柄）→ 复合数漏过筛网。
+// 对照：全部预 spawn（gen + 固定过滤器）无此问题。
+// 当前状态: 🟥 未修复 —— got = 2,3,5,7,11,13,15,17（15 漏过，v6/v7 断言失败）。
+// 修复后: 本文件所有断言转绿，exit 0。
+import test;
+import channel;
+import coro;
+
+class Generator {
+    action:
+        @coro void run(Channel out, int limit) {
+            for (int i = 2; i <= limit; i = i + 1) out.send(long(i));
+            out.send(0L);   // 哨兵：链条结束
+        }
+}
+
+class Filter {
+    action:
+        @coro void run(Channel in, Channel out, int prime) {
+            while (true) {
+                long v = in.recv();
+                if (v == 0L) { out.send(0L); break; }   // 哨兵透传并退出
+                if (v % prime != 0) out.send(v);
+            }
+        }
+}
+
+@test void test_coro_incremental_spawn() {
+    int N = 60;
+    int[] ps = new int[8];
+    ps[0] = 2; ps[1] = 3; ps[2] = 5; ps[3] = 7;
+    ps[4] = 11; ps[5] = 13; ps[6] = 17; ps[7] = 19;
+    Channel c1 = new Channel();
+    c1.init(8);                        // 小缓冲 → 协程更频繁 park
+    Generator g = new Generator();
+    g.run(c1, N);                      // 启动 Generate
+
+    Channel ch = c1;
+    int[] got = new int[8];
+    int i = 0;
+    while (i < 8) {
+        // 主流程泵送调度器后读一个值，再增量 spawn 过滤器（bug 触发点）
+        while (Coro.count() > 0 && ch.size() == 0) Coro.scheduler();
+        long p = ch.recv();
+        if (p <= 0L) break;
+        got[i] = int(p);
+        Channel nx = new Channel();
+        nx.init(8);
+        Filter f = new Filter();
+        f.run(ch, nx, int(p));         // 增量 spawn：已 park 协程的帧可能被损坏
+        ch = nx;
+        i = i + 1;
+    }
+
+    // 期望：前 8 个素数 2,3,5,7,11,13,17,19；bug 时 15 漏过 → got 尾部错位
+    Test.assertEq(got[0], 2, "v0");
+    Test.assertEq(got[1], 3, "v1");
+    Test.assertEq(got[2], 5, "v2");
+    Test.assertEq(got[3], 7, "v3");
+    Test.assertEq(got[4], 11, "v4");
+    Test.assertEq(got[5], 13, "v5");
+    Test.assertEq(got[6], 17, "v6");
+    Test.assertEq(got[7], 19, "v7");
+    Test.report("test_coro_incremental_spawn", true);
+}

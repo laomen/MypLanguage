@@ -34,6 +34,8 @@ class RegHolder {
             this.f.read = true;
             this.f.reserved = uint(r);
         }
+        bit readBit() { return this.f.read; }
+        uint reservedBits() { return this.f.reserved; }
         int getPacked() { return int(this.f.read) | (int(this.f.reserved) << 1); }
 }
 
@@ -115,9 +117,9 @@ class Main {
             // ---- §5.1 补全：bitfield 类属性（this.f 读改写）----
             RegHolder rh = new RegHolder();
             rh.set(21);
-            Console.writeBool(rh.f.read);            // true（set 内 this.f.read=true）
+            Console.writeBool(rh.readBit());            // true（set 内 this.f.read=true）
             Console.writeString("\n");
-            Console.writeLong(rh.f.reserved);        // 21
+            Console.writeLong(rh.reservedBits());        // 21
             Console.writeString("\n");
             Console.writeLong(rh.getPacked());       // 1 | 42 = 43
             Console.writeString("\n");

@@ -35,6 +35,7 @@ class LoadedSet {
             }
             return 0;
         }
+        ArrayList<string> set() { return set_; }
     property:
         ArrayList<string> set_;
 }
@@ -190,14 +191,14 @@ class LoadedSet {
         // 递归加载 import 并合并（对齐 C++ loadModule：合并 7 类声明；imports/macros/typeAliases 不合并）。
         int loadModule(AstTU tu, AstImport imp, string sourceDir, LoadedSet loaded, DiagEngine diag) {
             string path = "";
-            if (imp.isPath_ != 0) {
-                if (Str.len(imp.path_) != 0 && __myp_ord(Str.substring(imp.path_, 0, 1)) == 47) {
-                    path = imp.path_;
+            if (imp.isPath() != 0) {
+                if (Str.len(imp.path()) != 0 && __myp_ord(Str.substring(imp.path(), 0, 1)) == 47) {
+                    path = imp.path();
                 } else {
-                    path = sourceDir + "/" + imp.path_;
+                    path = sourceDir + "/" + imp.path();
                 }
             } else {
-                string slash = Frontend.dotToSlash(imp.name_);
+                string slash = Frontend.dotToSlash(imp.name());
                 string stdlib = Frontend.stdlibResolve();
                 string p1 = stdlib + "/" + slash + ".myp";
                 string p2 = sourceDir + "/../stdlib/" + slash + ".myp";
@@ -209,14 +210,14 @@ class LoadedSet {
             }
             path = Frontend.normalizePath(path);
             string key = path;
-            if (imp.isPath_ == 0) key = imp.name_;
+            if (imp.isPath() == 0) key = imp.name();
             if (loaded.has(key) != 0) return 1;
             loaded.add(key);
             if (Fs.exists(path) == 0) {
                 // 镜像 C++：路径 import 失败只打 stderr（stdout 不输出，也不加诊断）；
                 // 名字 import 失败才加诊断。
-                if (imp.isPath_ == 0) {
-                    diag.error(0, 0, "cannot find import '" + imp.name_ + "'");
+                if (imp.isPath() == 0) {
+                    diag.error(0, 0, "cannot find import '" + imp.name() + "'");
                 }
                 return 0;
             }

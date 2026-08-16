@@ -5,6 +5,7 @@ import memory;
 class Node {
     action:
         @constructor Node(int value) { number = value; }
+        int getNumber() { return number; }
     property:
         int number;
 }
@@ -16,7 +17,7 @@ class Node {
         nodes[index] = new Node(index);
         index = index + 1;
     }
-    return nodes[127].number;
+    return nodes[127].getNumber();
 }
 
 int pmRun() {

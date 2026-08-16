@@ -126,6 +126,14 @@ class AstType {
             }
             return basicName_;
         }
+        string basicName() { return basicName_; }
+        string className() { return className_; }
+        AstType element() { return element_; }
+        int arraySize() { return arraySize_; }
+        int genericParam() { return genericParam_; }
+        AstType funcReturn() { return funcReturn_; }
+        int isTuple() { return isTuple_; }
+        int bitvectorWidth() { return bitvectorWidth_; }
     property:
         string basicName_;
         string className_;
@@ -171,6 +179,11 @@ class AstParam {
             sb.append(s.toString());
             if (defaultExpr_ != null) defaultExpr_.dump(sb, ind);
         }
+        string name() { return name_; }
+        AstType type() { return type_; }
+        int isRef() { return ref_; }
+        int hasDefault() { return hasDefault_; }
+        AstExpr defaultExpr() { return defaultExpr_; }
     property:
         string name_;
         AstType type_;
@@ -215,6 +228,15 @@ class AstVar {
             sb.append(s.toString());
             if (init_ != null) init_.dump(sb, ind);
         }
+        string name() { return name_; }
+        int nameLine() { return nameLine_; }
+        int nameCol() { return nameCol_; }
+        AstType type() { return type_; }
+        int isConst() { return const_; }
+        int thread() { return thread_; }
+        int threadpool() { return threadpool_; }
+        int isInferred() { return isInferred_; }
+        AstExpr init() { return init_; }
     property:
         string name_;
         int nameLine_;
@@ -257,6 +279,13 @@ class AstProp {
             sb.append(s.toString());
             if (init_ != null) init_.dump(sb, ind);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        AstType type() { return type_; }
+        int isConst() { return const_; }
+        int weak() { return weak_; }
+        AstExpr init() { return init_; }
     property:
         string name_;
         int line_;
@@ -328,6 +357,18 @@ class AstAction {
             for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
             if (body_ != null) body_.dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        AstType ret() { return ret_; }
+        int startup() { return startup_; }
+        int ctor() { return ctor_; }
+        int test() { return test_; }
+        int coro() { return coro_; }
+        int async() { return async_; }
+        int region() { return region_; }
+        int stack() { return stack_; }
+        AstStmt body() { return body_; }
     property:
         string name_;
         int line_;
@@ -358,6 +399,7 @@ class AstEvent {
             Dump.line(sb, ind, "(Event name=\"" + Dump.esc(name_) + "\")");
             for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
     property:
         string name_;
         ArrayList<AstParam> params_;
@@ -381,6 +423,10 @@ class AstStruct {
             for (int i = 0; i < props_.size(); i = i + 1) props_.get(i).dump(sb, ind + 2);
             for (int i = 0; i < funcs_.size(); i = i + 1) funcs_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        string parent() { return parent_; }
     property:
         string name_;
         int line_;
@@ -396,6 +442,9 @@ class AstBitfieldField {
         void setName(string v) { name_ = v; }
         void setWidth(int v) { width_ = v; }
         void setOffset(int v) { offset_ = v; }
+        string name() { return name_; }
+        int width() { return width_; }
+        int offset() { return offset_; }
     property:
         string name_;
         int width_;
@@ -416,9 +465,11 @@ class AstBitfield {
             Dump.line(sb, ind, "(Bitfield name=\"" + Dump.esc(name_) + "\" totalBits=" + totalBits_ + ")");
             for (int i = 0; i < fields_.size(); i = i + 1) {
                 AstBitfieldField f = fields_.get(i);
-                Dump.line(sb, ind + 2, "(Field name=\"" + Dump.esc(f.name_) + "\" width=" + f.width_ + " offset=" + f.offset_ + ")");
+                Dump.line(sb, ind + 2, "(Field name=\"" + Dump.esc(f.name()) + "\" width=" + f.width() + " offset=" + f.offset() + ")");
             }
         }
+        string name() { return name_; }
+        int totalBits() { return totalBits_; }
     property:
         string name_;
         int totalBits_;
@@ -472,11 +523,11 @@ class AstClass {
             ArrayList<AstPair> assoc = AstNode.sortedPairs(assocTypes_);
             for (int i = 0; i < assoc.size(); i = i + 1) {
                 AstPair p = assoc.get(i);
-                Dump.line(sb, ind + 2, "(AssocType name=\"" + Dump.esc(p.k) + "\" type=" + p.typeStr + ")");
+                Dump.line(sb, ind + 2, "(AssocType name=\"" + Dump.esc(p.k()) + "\" type=" + p.typeStr() + ")");
             }
             for (int i = 0; i < nonlocalSlots_.size(); i = i + 1) {
                 AstNonlocalSlot ns = nonlocalSlots_.get(i);
-                Dump.line(sb, ind + 2, "(NonlocalSlot slot=\"" + Dump.esc(ns.slot) + "\" var=\"" + Dump.esc(ns.varName_) + "\" cell=\"" + Dump.esc(ns.cell) + "\")");
+                Dump.line(sb, ind + 2, "(NonlocalSlot slot=\"" + Dump.esc(ns.slot()) + "\" var=\"" + Dump.esc(ns.varName()) + "\" cell=\"" + Dump.esc(ns.cell()) + "\")");
             }
             for (int i = 0; i < actions_.size(); i = i + 1) actions_.get(i).dump(sb, ind + 2);
             for (int i = 0; i < staticActions_.size(); i = i + 1) {
@@ -488,6 +539,12 @@ class AstClass {
             for (int i = 0; i < funcs_.size(); i = i + 1) funcs_.get(i).dump(sb, ind + 2);
             for (int i = 0; i < structs_.size(); i = i + 1) structs_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        int isGenericInst() { return isGenericInst_; }
+        string lambda() { return lambda_; }
+        string iface() { return iface_; }
     property:
         string name_;
         int line_;
@@ -528,6 +585,7 @@ class AstInterface {
             for (int i = 0; i < actions_.size(); i = i + 1) actions_.get(i).dump(sb, ind + 2);
             for (int i = 0; i < events_.size(); i = i + 1) events_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
     property:
         string name_;
         ArrayList<string> assocTypeDecls_;
@@ -587,6 +645,23 @@ class AstFunction {
             for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
             if (body_ != null) body_.dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        AstType ret() { return ret_; }
+        int genericInst() { return genericInst_; }
+        int test() { return test_; }
+        int autoMain() { return autoMain_; }
+        int region() { return region_; }
+        int coro() { return coro_; }
+        int async() { return async_; }
+        int stack() { return stack_; }
+        string op() { return op_; }
+        int eval() { return eval_; }
+        int isMacro() { return macro_; }
+        int ctor() { return ctor_; }
+        int constDecl() { return constDecl_; }
+        AstStmt body() { return body_; }
     property:
         string name_;
         int line_;
@@ -624,6 +699,9 @@ class AstEnum {
             Dump.line(sb, ind, "(Enum name=\"" + Dump.esc(name_) + "\")");
             for (int i = 0; i < variants_.size(); i = i + 1) variants_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
     property:
         string name_;
         int line_;
@@ -643,6 +721,7 @@ class AstEnumVariant {
             Dump.line(sb, ind, "(Variant name=\"" + Dump.esc(name_) + "\")");
             for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
     property:
         string name_;
         ArrayList<AstParam> params_;
@@ -662,6 +741,8 @@ class AstFFI {
             Dump.line(sb, ind, "(FFI name=\"" + Dump.esc(name_) + "\" ret=" + (ret_ != null ? ret_.str() : "?") + ")");
             for (int i = 0; i < params_.size(); i = i + 1) params_.get(i).dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        AstType ret() { return ret_; }
     property:
         string name_;
         AstType ret_;
@@ -688,6 +769,14 @@ class AstMappingNode {
         void setTrKind(int v) { trKind_ = v; }
         void setTrParam(int v) { trParam_ = v; }
         void setLambda(AstExpr v) { lambda_ = v; }
+        string src() { return src_; }
+        string member() { return member_; }
+        int isFunction() { return isFunction_; }
+        int isLambda() { return isLambda_; }
+        int isTransformer() { return isTransformer_; }
+        int trKind() { return trKind_; }
+        int trParam() { return trParam_; }
+        AstExpr lambda() { return lambda_; }
     property:
         string src_;
         string member_;
@@ -707,6 +796,7 @@ class AstMappingChain {
         }
         ArrayList<AstMappingNode> nodes() { return nodes_; }
         void setWhere(AstExpr v) { where_ = v; }
+        AstExpr whereClause() { return where_; }
     property:
         ArrayList<AstMappingNode> nodes_;
         AstExpr where_;
@@ -727,15 +817,16 @@ class AstMapping {
                 Dump.line(sb, ind + 2, "(Chain)");
                 for (int j = 0; j < ch.nodes().size(); j = j + 1) {
                     AstMappingNode n = ch.nodes().get(j);
-                    Dump.line(sb, ind + 4, "(Node src=\"" + Dump.esc(n.src_) + "\" member=\"" + Dump.esc(n.member_) + "\" isFunction=" + n.isFunction_ + " isLambda=" + n.isLambda_ + " isTransformer=" + n.isTransformer_ + " trKind=" + n.trKind_ + " trParam=" + n.trParam_ + ")");
-                    if (n.lambda_ != null) n.lambda_.dump(sb, ind + 4);
+                    Dump.line(sb, ind + 4, "(Node src=\"" + Dump.esc(n.src()) + "\" member=\"" + Dump.esc(n.member()) + "\" isFunction=" + n.isFunction() + " isLambda=" + n.isLambda() + " isTransformer=" + n.isTransformer() + " trKind=" + n.trKind() + " trParam=" + n.trParam() + ")");
+                    if (n.lambda() != null) n.lambda().dump(sb, ind + 4);
                 }
-                if (ch.where_ != null) {
+                if (ch.whereClause() != null) {
                     Dump.line(sb, ind + 4, "(Where)");
-                    ch.where_.dump(sb, ind + 6);
+                    ch.whereClause().dump(sb, ind + 6);
                 }
             }
         }
+        int scope() { return scope_; }
     property:
         int scope_;
         ArrayList<AstMappingChain> chains_;
@@ -757,6 +848,8 @@ class AstMacro {
                 Dump.line(sb, ind + 2, "(Param name=\"" + Dump.esc(params_.get(i)) + "\")");
             if (body_ != null) body_.dump(sb, ind + 2);
         }
+        string name() { return name_; }
+        AstStmt body() { return body_; }
     property:
         string name_;
         ArrayList<string> params_;
@@ -772,6 +865,9 @@ class AstImport {
         void dump(StringBuilder sb, int ind) {
             Dump.line(sb, ind, "(Import name=\"" + Dump.esc(name_) + "\" path=\"" + Dump.esc(path_) + "\" isPath=" + isPath_ + ")");
         }
+        string name() { return name_; }
+        string path() { return path_; }
+        int isPath() { return isPath_; }
     property:
         string name_;
         string path_;
@@ -786,6 +882,8 @@ class AstTypeAlias {
         void dump(StringBuilder sb, int ind) {
             Dump.line(sb, ind, "(TypeAlias name=\"" + Dump.esc(name_) + "\" type=" + (type_ != null ? type_.str() : "?") + ")");
         }
+        string name() { return name_; }
+        AstType type() { return type_; }
     property:
         string name_;
         AstType type_;
@@ -950,7 +1048,7 @@ class AstStmt {
                 Dump.line(sb, ind, "(For parallel=" + parallel_ + " gpu=" + gpu_ + " stride=" + stride_ + " block=" + block_ + ")");
                 for (int i = 0; i < resident_.size(); i = i + 1) {
                     AstPair p = resident_.get(i);
-                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k) + "\" dev=\"" + Dump.esc(p.v) + "\")");
+                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k()) + "\" dev=\"" + Dump.esc(p.v()) + "\")");
                 }
                 if (init_ != null) init_.dump(sb, ind + 2);
                 if (condition_ != null) condition_.dump(sb, ind + 2);
@@ -981,16 +1079,16 @@ class AstStmt {
                 if (subject_ != null) subject_.dump(sb, ind + 2);
                 for (int i = 0; i < arms_.size(); i = i + 1) {
                     AstMatchArm a = arms_.get(i);
-                    Dump.line(sb, ind + 2, "(Arm enum=\"" + Dump.esc(a.enum_) + "\" variant=\"" + Dump.esc(a.variant_) + "\" index=" + a.index_ + " bindings=[" + Dump.joinList(a.bindings_) + "])");
-                    if (a.body_ != null) a.body_.dump(sb, ind + 4);
+                    Dump.line(sb, ind + 2, "(Arm enum=\"" + Dump.esc(a.enumName()) + "\" variant=\"" + Dump.esc(a.variant()) + "\" index=" + a.index() + " bindings=[" + Dump.joinList(a.bindings()) + "])");
+                    if (a.body() != null) a.body().dump(sb, ind + 4);
                 }
             } else if (kind_ == "Try") {
                 Dump.line(sb, ind, "(Try)");
                 if (tryBlock_ != null) tryBlock_.dump(sb, ind + 2);
                 for (int i = 0; i < catches_.size(); i = i + 1) {
                     AstCatch c = catches_.get(i);
-                    Dump.line(sb, ind + 2, "(Catch var=\"" + Dump.esc(c.var_) + "\" type=\"" + Dump.esc(c.type_) + "\")");
-                    if (c.block_ != null) c.block_.dump(sb, ind + 4);
+                    Dump.line(sb, ind + 2, "(Catch var=\"" + Dump.esc(c.varName()) + "\" type=\"" + Dump.esc(c.type()) + "\")");
+                    if (c.block() != null) c.block().dump(sb, ind + 4);
                 }
                 if (finallyBlock_ != null) finallyBlock_.dump(sb, ind + 2);
             } else if (kind_ == "Throw") {
@@ -1004,7 +1102,7 @@ class AstStmt {
                 if (gridExpr_ != null) gridExpr_.dump(sb, ind + 2);
                 for (int i = 0; i < resident_.size(); i = i + 1) {
                     AstPair p = resident_.get(i);
-                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k) + "\" dev=\"" + Dump.esc(p.v) + "\")");
+                    Dump.line(sb, ind + 2, "(Resident arr=\"" + Dump.esc(p.k()) + "\" dev=\"" + Dump.esc(p.v()) + "\")");
                 }
                 if (stream_ != null) stream_.dump(sb, ind + 2);
                 if (body_ != null) body_.dump(sb, ind + 2);
@@ -1032,6 +1130,62 @@ class AstStmt {
                 Dump.line(sb, ind, "(Stmt)");
             }
         }
+        string kind() { return kind_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        int endLine() { return endLine_; }
+        int endCol() { return endCol_; }
+        AstExpr condition() { return condition_; }
+        AstStmt then() { return then_; }
+        AstStmt elseBranch() { return else_; }
+        AstStmt body() { return body_; }
+        AstStmt init() { return init_; }
+        AstExpr step() { return step_; }
+        AstExpr value() { return value_; }
+        AstExpr expr() { return expr_; }
+        AstDestructureTarget target() { return target_; }
+        int isDecl() { return isDecl_; }
+        string varName() { return varName_; }
+        AstType varType() { return varType_; }
+        int hasType() { return hasType_; }
+        int iterKind() { return iterKind_; }
+        string className() { return className_; }
+        string sizeFn() { return sizeFn_; }
+        string getFn() { return getFn_; }
+        int arrSize() { return arrSize_; }
+        int parallel() { return parallel_; }
+        int gpu() { return gpu_; }
+        int stride() { return stride_; }
+        int block() { return block_; }
+        AstExpr stream() { return stream_; }
+        AstExpr subject() { return subject_; }
+        AstStmt tryBlock() { return tryBlock_; }
+        AstStmt finallyBlock() { return finallyBlock_; }
+        AstMapping mappingDecl() { return mapping_; }
+        string acc() { return acc_; }
+        string x() { return x_; }
+        string arr() { return arr_; }
+        string out() { return out_; }
+        int exclusive() { return exclusive_; }
+        string inName() { return inName_; }
+        string idxName() { return idxName_; }
+        int mode() { return mode_; }
+        AstExpr aBegin() { return aBegin_; }
+        AstExpr aEnd() { return aEnd_; }
+        AstExpr idxBegin() { return idxBegin_; }
+        AstExpr idxEnd() { return idxEnd_; }
+        AstType sharedType() { return sharedType_; }
+        string name() { return name_; }
+        int hasGrid() { return hasGrid_; }
+        int gridVal() { return gridVal_; }
+        AstExpr gridExpr() { return gridExpr_; }
+        AstStmt opBody() { return opBody_; }
+        AstExpr opExpr() { return opExpr_; }
+        AstExpr initExpr() { return initExpr_; }
+        AstExpr beginExpr() { return beginExpr_; }
+        AstExpr endExpr() { return endExpr_; }
+        AstExpr timeout() { return timeout_; }
+        string throwType() { return throwType_; }
     property:
         string kind_;
         int line_;
@@ -1112,6 +1266,10 @@ class AstMatchArm {
         void setVariant(string v) { variant_ = v; }
         void setIndex(int v) { index_ = v; }
         void setBody(AstStmt v) { body_ = v; }
+        string enumName() { return enum_; }
+        string variant() { return variant_; }
+        int index() { return index_; }
+        AstStmt body() { return body_; }
     property:
         string enum_;
         string variant_;
@@ -1126,6 +1284,9 @@ class AstCatch {
         void setVar(string v) { var_ = v; }
         void setType(string v) { type_ = v; }
         void setBlock(AstStmt v) { block_ = v; }
+        string varName() { return var_; }
+        string type() { return type_; }
+        AstStmt block() { return block_; }
     property:
         string var_;
         string type_;
@@ -1154,6 +1315,11 @@ class AstDestructureTarget {
                 Dump.line(sb, ind, "(DestructureLeaf name=\"" + Dump.esc(name_) + "\" type=" + (type_ != null ? type_.str() : "int") + " hasType=" + hasType_ + ")");
             }
         }
+        string name() { return name_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        AstType type() { return type_; }
+        int hasType() { return hasType_; }
     property:
         string name_;
         int line_;
@@ -1484,6 +1650,65 @@ class AstExpr {
                 Dump.line(sb, ind, "(Expr)" + tsfx());
             }
         }
+        string kind() { return kind_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        int endLine() { return endLine_; }
+        int endCol() { return endCol_; }
+        long value() { return value_; }
+        int isLong() { return isLong_; }
+        int isUnsigned() { return isUnsigned_; }
+        int isChar() { return isChar_; }
+        int f32() { return f32_; }
+        double fval() { return fval_; }
+        string name() { return name_; }
+        string op() { return op_; }
+        AstExpr lhs() { return lhs_; }
+        AstExpr rhs() { return rhs_; }
+        AstExpr operand() { return operand_; }
+        string toKind() { return toKind_; }
+        int bw() { return bw_; }
+        AstExpr callee() { return callee_; }
+        string resolved() { return resolved_; }
+        string structType() { return structType_; }
+        string structCtor() { return structCtor_; }
+        string memberName() { return memberName_; }
+        string resolvedClass() { return resolvedClass_; }
+        string valueClass() { return valueClass_; }
+        string sliceElem() { return sliceElem_; }
+        AstExpr array() { return array_; }
+        AstExpr index() { return index_; }
+        string className() { return className_; }
+        string ctor() { return ctor_; }
+        AstType elemType() { return elemType_; }
+        AstExpr condition() { return condition_; }
+        AstExpr trueExpr() { return trueExpr_; }
+        AstExpr falseExpr() { return falseExpr_; }
+        AstExpr start() { return start_; }
+        AstExpr end() { return end_; }
+        string enumName() { return enumName_; }
+        int variantIndex() { return variantIndex_; }
+        string hiddenClass() { return hiddenClass_; }
+        string targetKind() { return targetKind_; }
+        string classType() { return classType_; }
+        string method() { return method_; }
+        string catchVarName() { return catchVarName_; }
+        AstExpr tryExpr() { return tryExpr_; }
+        AstExpr catchExpr() { return catchExpr_; }
+        AstExpr timeout() { return timeout_; }
+        string namedName() { return namedName_; }
+        AstExpr namedValue() { return namedValue_; }
+        AstStmt stmt() { return stmt_; }
+        string resultKind() { return resultKind_; }
+        string stringValue() { return stringValue_; }
+        AstStmt bodyStmt() { return bodyStmt_; }
+        int lhsUnsigned() { return lhsUnsigned_; }
+        int rhsUnsigned() { return rhsUnsigned_; }
+        int resultUnsigned() { return resultUnsigned_; }
+        int opCall() { return opCall_; }
+        AstType type() { return type_; }
+        int argsVisited() { return argsVisited_; }
+        string resolvedKind() { return resolvedKind_; }
     property:
         string kind_;
         int line_;
@@ -1559,26 +1784,32 @@ class AstExpr {
 // ---- 通用 ----
 class AstPair {
     action:
-        @constructor AstPair() { k = ""; v = ""; typeStr = ""; }
-        void setK(string v) { k = v; }
-        void setV(string val) { v = val; }
-        void setTypeStr(string v) { typeStr = v; }
+        @constructor AstPair() { k_ = ""; v_ = ""; typeStr_ = ""; }
+        void setK(string v) { k_ = v; }
+        void setV(string val) { v_ = val; }
+        void setTypeStr(string v) { typeStr_ = v; }
+        string k() { return k_; }
+        string v() { return v_; }
+        string typeStr() { return typeStr_; }
     property:
-        string k;
-        string v;
-        string typeStr;
+        string k_;
+        string v_;
+        string typeStr_;
 }
 
 class AstNonlocalSlot {
     action:
-        @constructor AstNonlocalSlot() { slot = ""; varName_ = ""; cell = ""; }
-        void setSlot(string v) { slot = v; }
+        @constructor AstNonlocalSlot() { slot_ = ""; varName_ = ""; cell_ = ""; }
+        void setSlot(string v) { slot_ = v; }
         void setVarName(string v) { varName_ = v; }
-        void setCell(string v) { cell = v; }
+        void setCell(string v) { cell_ = v; }
+        string varName() { return varName_; }
+        string slot() { return slot_; }
+        string cell() { return cell_; }
     property:
-        string slot;
+        string slot_;
         string varName_;
-        string cell;
+        string cell_;
 }
 
 // 平移单元。
@@ -1648,7 +1879,7 @@ class AstTU {
             ArrayList<AstPair> sorted = AstNode.sortedPairs(cs);
             for (int i = 0; i < sorted.size(); i = i + 1) {
                 AstPair p = sorted.get(i);
-                Dump.line(sb, ind, "(Constraint name=\"" + Dump.esc(p.k) + "\" iface=\"" + Dump.esc(p.v) + "\")");
+                Dump.line(sb, ind, "(Constraint name=\"" + Dump.esc(p.k()) + "\" iface=\"" + Dump.esc(p.v()) + "\")");
             }
         }
         string joinTypes(ArrayList<AstType> ts) {
@@ -1666,7 +1897,7 @@ class AstTU {
             for (int i = 1; i < n; i = i + 1) {
                 AstPair key = w.get(i);
                 int j = i - 1;
-                while (j >= 0 && Str.cmp(w.get(j).k, key.k) > 0) {
+                while (j >= 0 && Str.cmp(w.get(j).k(), key.k()) > 0) {
                     w.set(j + 1, w.get(j));
                     j = j - 1;
                 }

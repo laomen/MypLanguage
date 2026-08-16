@@ -2093,9 +2093,34 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
 
     if (auto* class_decl = findClassDecl(obj_type.class_name)) {
         auto& cls = *class_decl;
-        // Properties — accessible from anywhere
+        // Properties — private. Only accessible via `this.prop` (inside the
+        // class) or `StaticClass.prop` (static-class global state). External
+        // instance access (`c.prop`, `c.method().prop`) is rejected — use a
+        // getter action, or make the type a struct for public fields.
+        bool allow_property = false;
+        if (expr.object->kind == ExprKind::ThisExpr) {
+            allow_property = true;
+        } else if (obj_type.class_name == current_class_name_) {
+            // Same-class instance access (`src.host_` inside GpuBuffer): C++
+            // private-member semantics — accessible within the class, even on
+            // another instance of the same class.
+            allow_property = true;
+        } else if (expr.object->kind == ExprKind::Identifier) {
+            auto& pid = static_cast<const IdentifierExpr&>(*expr.object);
+            if (current_tu_) {
+                for (auto& sc : current_tu_->classes) {
+                    if (sc.is_static && sc.name == pid.name) { allow_property = true; break; }
+                }
+            }
+        }
         for (auto& prop : cls.properties) {
             if (prop.name == expr.member_name) {
+                if (!allow_property) {
+                    error(expr.range, "cannot access property '" + expr.member_name +
+                        "' of '" + obj_type.class_name + "' from outside the class "
+                        "(properties are private; use a getter action or a struct)");
+                    return TypeInfo(TypeKind::Void);
+                }
                 return typeNodeToTypeInfo(prop.type);
             }
         }

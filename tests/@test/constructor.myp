@@ -12,6 +12,10 @@ class Window {
         void Window(int px, int py, int pw, int ph) {
             x = px; y = py; w = pw; h = ph;
         }
+        int getX() { return x; }
+        int getY() { return y; }
+        int getW() { return w; }
+        int getH() { return h; }
     property:
         int x;
         int y;
@@ -67,12 +71,12 @@ Vec2 makeVec(double a, double b) {
 
 @test void test_constructor() {
     Window a = new Window();
-    Test.assertEq(a.x, 0, "a.x"); Test.assertEq(a.y, 0, "a.y");
-    Test.assertEq(a.w, 80, "a.w"); Test.assertEq(a.h, 24, "a.h");
+    Test.assertEq(a.getX(), 0, "a.getX()"); Test.assertEq(a.getY(), 0, "a.getY()");
+    Test.assertEq(a.getW(), 80, "a.getW()"); Test.assertEq(a.getH(), 24, "a.getH()");
 
     Window b = new Window(10, 5, 100, 50);
-    Test.assertEq(b.x, 10, "b.x"); Test.assertEq(b.y, 5, "b.y");
-    Test.assertEq(b.w, 100, "b.w"); Test.assertEq(b.h, 50, "b.h");
+    Test.assertEq(b.getX(), 10, "b.getX()"); Test.assertEq(b.getY(), 5, "b.getY()");
+    Test.assertEq(b.getW(), 100, "b.getW()"); Test.assertEq(b.getH(), 50, "b.getH()");
 
     Scale s1 = new Scale();
     Test.assertFloatEq(s1.get(), 1.0, 1e-9, "s1");

@@ -1,0 +1,17 @@
+// EXPECT ERROR: cannot access property 'inner' of 'Mid' from outside the class
+// 链式外部读 class property（o.mid.inner.val）→ 编译拒绝（第一级即报错）
+class Inner {
+    action: @constructor Inner(int v) { val = v; }
+    property: int val;
+}
+class Mid {
+    action: @constructor Mid(int v) { inner = new Inner(v); }
+    property: Inner inner;
+}
+class App {
+    action: @startup void run() {
+        Mid m = new Mid(1);
+        int x = m.inner.val;
+    }
+}
+int main(){ App a = new App(); return 0; }

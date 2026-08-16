@@ -3,9 +3,10 @@
 // && / || / ternary 分支内创建类临时对象
 import test;
 
-class Point {
-    property: int x; int y;
+struct Point {
     action: @constructor Point(int a, int b) { x = a; y = b; }
+    int x;
+    int y;
 }
 
 class W {
@@ -26,12 +27,12 @@ class Wrap<T> {
 
 @test void test_member_chain() {
     // 链式字段访问（非泛型 + 泛型）
-    W w = new W(); w.set(new Point(3, 4));
-    W w2 = new W(); w2.set(new Point(5, 6));
+    W w = new W(); w.set(Point(3, 4));
+    W w2 = new W(); w2.set(Point(5, 6));
     int a = w.get().x;
     int b = w.get().y;
 
-    Wrap<Point> wp = new Wrap<Point>(); wp.set(new Point(7, 8));
+    Wrap<Point> wp = new Wrap<Point>(); wp.set(Point(7, 8));
     int c = wp.get().x;               // 泛型实例方法返回类的字段
     int d = wp.get().y;
 
@@ -42,7 +43,7 @@ class Wrap<T> {
     bool g = w.get().x == 99 || w2.get().x == 5;
     // ternary 分支内字段访问 + 类结果
     int h = true ? w.get().x : w2.get().x;
-    Point i = true ? new Point(1, 1) : new Point(2, 2);
+    Point i = true ? Point(1, 1) : Point(2, 2);
 
     bool ok = a == 3 && b == 4 && c == 7 && d == 8 &&
               e && !f && g && h == 3 && i.x == 1;

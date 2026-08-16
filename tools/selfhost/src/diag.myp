@@ -45,6 +45,8 @@ class DiagEngine {
         }
         int errorCount() { return errors_; }
         ArrayList<Diag> get() { return list_; }
+        ArrayList<Diag> list() { return list_; }
+        int errors() { return errors_; }
     property:
         ArrayList<Diag> list_;
         int errors_;

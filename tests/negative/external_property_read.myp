@@ -1,0 +1,13 @@
+// EXPECT ERROR: cannot access property 'val' of 'Inner' from outside the class
+// 外部实例读 class property → 编译拒绝（property 私有，仅 this./同类实例/静态类可访问）
+class Inner {
+    action: @constructor Inner(int v) { val = v; }
+    property: int val;
+}
+class App {
+    action: @startup void run() {
+        Inner i = new Inner(1);
+        int x = i.val;
+    }
+}
+int main(){ App a = new App(); return 0; }

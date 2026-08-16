@@ -379,6 +379,12 @@ class Lexer {
             return sb.toString();
         }
 
+        string source() { return source_; }
+        int pos() { return pos_; }
+        int line() { return line_; }
+        int col() { return col_; }
+        int valueLastC() { return valueLastC_; }
+        DiagEngine diag() { return diag_; }
     property:
         string source_;
         int pos_;

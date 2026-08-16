@@ -1,0 +1,21 @@
+// BUG-004: Option<struct> 泛型实例化失败（递归纯数据迁 struct 的前置阻塞）
+// 复现：递归引用用 Option<T> 包装时，Option<Node> 单态化类型名失配（Option_Node_inst
+// vs Option）、set(b) 参数解析错、get().val 判成 int。
+// 当前状态: 🟥 未修复 —— 本文件编译失败（sema 类型错）。
+// 修复后: 本文件编译通过、断言转绿，exit 0。
+import test;
+import option;
+
+struct Node {
+    int val;
+    Option<Node> next;   // 递归引用用 Option 包装（struct 值类型不能直接递归）
+}
+
+@test void test_option_struct() {
+    Node a; a.val = 1; a.next = new Option<Node>();
+    Node b; b.val = 2; b.next = new Option<Node>();
+    a.next.set(b);
+    Test.assertEq(a.next.get().val, 2, "recursive struct via Option");
+    Test.assert(a.next.get().next.isNone(), "none");
+    Test.report("test_option_struct", true);
+}

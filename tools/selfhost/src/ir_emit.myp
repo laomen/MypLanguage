@@ -19,12 +19,12 @@ import "./ast.myp";
             if (s == "double") return "double";
             if (s == "void") return "void";
             // bitvector<N> → iN（底层 LLVM 整数）
-            if (Str.startsWith(s, "bitvector") != 0 && t.bitvectorWidth_ != 0) {
-                return "i" + t.bitvectorWidth_;
+            if (Str.startsWith(s, "bitvector") != 0 && t.bitvectorWidth() != 0) {
+                return "i" + t.bitvectorWidth();
             }
-            if (t.className_ == "slice") return "{ ptr, i64 }";
-            if (t.funcReturn_ != null) return "{ ptr, ptr }";
-            if (t.isTuple_ != 0) {
+            if (t.className() == "slice") return "{ ptr, i64 }";
+            if (t.funcReturn() != null) return "{ ptr, ptr }";
+            if (t.isTuple() != 0) {
                 // 元组 (A, B) → 匿名结构体 { A, B }
                 StringBuilder sb = new StringBuilder();
                 sb.append("{ ");
@@ -35,10 +35,10 @@ import "./ast.myp";
                 sb.append(" }");
                 return sb.toString();
             }
-            if (t.element_ != null) {
+            if (t.element() != null) {
                 // 定长数组 T[N] → [N x T]（结构体字段/栈变量）；不定长 T[] → ptr
-                if (t.arraySize_ > 0) {
-                    return "[" + t.arraySize_ + " x " + IrEmit.llvmType(t.element_) + "]";
+                if (t.arraySize() > 0) {
+                    return "[" + t.arraySize() + " x " + IrEmit.llvmType(t.element()) + "]";
                 }
                 return "ptr";
             }
@@ -48,7 +48,7 @@ import "./ast.myp";
         // t 是否为函数类型 (A,B)->R（fat pointer {closure, call_fn}）。
         int isFunction(AstType t) {
             if (t == null) return 0;
-            if (t.funcReturn_ != null) return 1;
+            if (t.funcReturn() != null) return 1;
             return 0;
         }
 
@@ -63,7 +63,7 @@ import "./ast.myp";
         // t 是否为 slice 类型。
         int isSlice(AstType t) {
             if (t == null) return 0;
-            if (t.className_ == "slice") return 1;
+            if (t.className() == "slice") return 1;
             return 0;
         }
 
