@@ -3,6 +3,7 @@
 // no behavior change. See codegen.cpp for the class declaration.
 
 #include "mylang/CodeGen.h"
+#include <functional>
 #include "mylang/MypPasses.h"
 
 #include <llvm/BinaryFormat/Dwarf.h>
@@ -447,6 +448,75 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
                         case BinaryOpKind::Gt: return builder_.CreateICmpSGT(ld, rd);
                         case BinaryOpKind::Le: return builder_.CreateICmpSLE(ld, rd);
                         case BinaryOpKind::Ge: return builder_.CreateICmpSGE(ld, rd);
+                        default: break;
+                    }
+                }
+            }
+            // Non-enum struct operands: field-by-field value comparison
+            // (Eq/Ne). Struct values cannot be fed to ICmp directly (LLVM
+            // assertion "Invalid operand types for ICmp"). Ordering ops fall
+            // back to memcmp (lexicographic by byte layout).
+            if (l->getType()->isStructTy() && r->getType()->isStructTy() &&
+                l->getType() == r->getType()) {
+                auto* st = llvm::cast<llvm::StructType>(l->getType());
+                if (!enum_struct_set_.count(st)) {
+                    if (e.op == BinaryOpKind::Eq || e.op == BinaryOpKind::Ne) {
+                        std::function<llvm::Value*(llvm::Value*, llvm::Value*, llvm::Type*)> eqRec;
+                        eqRec = [&](llvm::Value* a, llvm::Value* b, llvm::Type* ty) -> llvm::Value* {
+                            if (ty->isIntegerTy() || ty->isPointerTy())
+                                return builder_.CreateICmpEQ(a, b);
+                            if (ty->isFloatingPointTy())
+                                return builder_.CreateFCmpOEQ(a, b);
+                            if (auto* sty = llvm::dyn_cast<llvm::StructType>(ty)) {
+                                llvm::Value* acc = nullptr;
+                                for (unsigned i = 0; i < sty->getNumElements(); i++) {
+                                    auto* fa = builder_.CreateExtractValue(a, i);
+                                    auto* fb = builder_.CreateExtractValue(b, i);
+                                    llvm::Value* fe = eqRec(fa, fb, sty->getElementType(i));
+                                    acc = acc ? builder_.CreateAnd(acc, fe) : fe;
+                                }
+                                return acc ? acc : llvm::ConstantInt::get(
+                                    llvm::Type::getInt1Ty(ctx_), 1);
+                            }
+                            if (auto* aty = llvm::dyn_cast<llvm::ArrayType>(ty)) {
+                                llvm::Value* acc = nullptr;
+                                for (unsigned i = 0; i < aty->getNumElements(); i++) {
+                                    auto* fa = builder_.CreateExtractValue(a, i);
+                                    auto* fb = builder_.CreateExtractValue(b, i);
+                                    llvm::Value* fe = eqRec(fa, fb, aty->getElementType());
+                                    acc = acc ? builder_.CreateAnd(acc, fe) : fe;
+                                }
+                                return acc ? acc : llvm::ConstantInt::get(
+                                    llvm::Type::getInt1Ty(ctx_), 1);
+                            }
+                            return builder_.CreateICmpEQ(a, b);
+                        };
+                        llvm::Value* eq = eqRec(l, r, st);
+                        return e.op == BinaryOpKind::Eq ? eq : builder_.CreateNot(eq);
+                    }
+                    // Ordering on struct values: byte-wise memcmp.
+                    auto* memcmp_ft = llvm::FunctionType::get(
+                        llvm::Type::getInt32Ty(ctx_),
+                        {llvm::PointerType::get(ctx_, 0),
+                         llvm::PointerType::get(ctx_, 0),
+                         llvm::Type::getInt64Ty(ctx_)},
+                        false);
+                    auto memcmp = module_->getOrInsertFunction("memcmp", memcmp_ft);
+                    auto* la = builder_.CreateAlloca(st);
+                    auto* ra = builder_.CreateAlloca(st);
+                    builder_.CreateStore(l, la);
+                    builder_.CreateStore(r, ra);
+                    auto* lap = builder_.CreateBitCast(la, llvm::PointerType::get(ctx_, 0));
+                    auto* rap = builder_.CreateBitCast(ra, llvm::PointerType::get(ctx_, 0));
+                    auto* sz = llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx_),
+                        module_->getDataLayout().getTypeAllocSize(st));
+                    auto* c = builder_.CreateCall(memcmp, {lap, rap, sz});
+                    auto* zero = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
+                    switch (e.op) {
+                        case BinaryOpKind::Lt: return builder_.CreateICmpSLT(c, zero);
+                        case BinaryOpKind::Gt: return builder_.CreateICmpSGT(c, zero);
+                        case BinaryOpKind::Le: return builder_.CreateICmpSLE(c, zero);
+                        case BinaryOpKind::Ge: return builder_.CreateICmpSGE(c, zero);
                         default: break;
                     }
                 }
@@ -1130,7 +1200,10 @@ std::string CodeGen::callReturnClassName(const CallExpr& e) {
 const TypeNode* CodeGen::callReturnTypeNode(const CallExpr& e) {
     if (e.callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
-        std::string cls = memberObjectClassName(*ma.object);
+        // Prefer sema's resolved object class (reliable) over the codegen
+        // var maps (flat, can be stale across scopes).
+        std::string cls = !ma.resolved_object_class.empty()
+            ? ma.resolved_object_class : memberObjectClassName(*ma.object);
         if (cls.empty() || !current_tu_) return nullptr;
         for (auto& c : current_tu_->classes) {
             if (c.name != cls) continue;
@@ -2220,9 +2293,14 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             // Resolve the struct type of the object expression
             if (!callee && current_tu_) {
                 std::string obj_struct_type;
+                // Struct method call on a call result (`element_.get().str()`):
+                // sema recorded the object's resolved struct name (no variable
+                // exists for the chain walk below).
+                if (!ma.resolved_object_class.empty())
+                    obj_struct_type = ma.resolved_object_class;
                 // For chained access a.b.c.method(), evaluate the object
                 // expression to determine its struct type by walking the chain
-                if (ma.object->kind == ExprKind::MemberAccess) {
+                if (obj_struct_type.empty() && ma.object->kind == ExprKind::MemberAccess) {
                     auto& inner_ma = static_cast<const MemberAccessExpr&>(*ma.object);
                     // Check if inner is a known struct field of a known struct type
                     for (auto& [key, st] : struct_types_) {
@@ -3706,7 +3784,12 @@ llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
     // binary-op SExt promotion).
     llvm::Type* common_ty = true_val->getType();
     if (false_val->getType() != common_ty) {
-        if (common_ty->isIntegerTy() && false_val->getType()->isIntegerTy()) {
+        // Struct value vs pointer-to-struct (ArrayList<Struct>.get() boxes
+        // elements, a struct constructor returns the value): sema types the
+        // ternary as the struct value — load the pointer side.
+        if (common_ty->isPointerTy() && false_val->getType()->isStructTy())
+            common_ty = false_val->getType();
+        else if (common_ty->isIntegerTy() && false_val->getType()->isIntegerTy()) {
             unsigned w = std::max(common_ty->getIntegerBitWidth(),
                                   false_val->getType()->getIntegerBitWidth());
             common_ty = llvm::Type::getIntNTy(ctx_, w);
@@ -3723,6 +3806,11 @@ llvm::Value* CodeGen::generateTernary(const TernaryExpr& e) {
         if (!v || v->getType() == common_ty) return v;
         if (bb->getTerminator()) return v;   // dead path — no cast needed
         llvm::IRBuilder<> tb(bb);            // inserts at end of bb
+        if (common_ty->isStructTy() && v->getType()->isPointerTy()) {
+            auto* sp = llvm::PointerType::get(common_ty, 0);
+            if (v->getType() != sp) v = tb.CreateBitCast(v, sp);
+            return tb.CreateLoad(common_ty, v);
+        }
         if (common_ty->isIntegerTy() && v->getType()->isIntegerTy())
             return tb.CreateSExt(v, common_ty);
         if (common_ty->isFloatingPointTy() && v->getType()->isFloatingPointTy())

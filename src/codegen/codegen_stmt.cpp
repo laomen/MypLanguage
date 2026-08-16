@@ -1112,6 +1112,15 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val, const Expr* src) {
                         agg = builder_.CreateInsertValue(agg, el, i);
                     }
                     ret_val = agg;
+                } else if (rt->isStructTy() && ret_val->getType()->isPointerTy()) {
+                    // `return list.get(i);` in a struct-returning method: the
+                    // generic collection boxes struct elements and get() hands
+                    // back a pointer — load the value to match the declared
+                    // struct return type.
+                    auto* sp = llvm::PointerType::get(rt, 0);
+                    if (ret_val->getType() != sp)
+                        ret_val = builder_.CreateBitCast(ret_val, sp);
+                    ret_val = builder_.CreateLoad(rt, ret_val);
                 } else {
                     ret_val = convertIntegerValue(builder_, ret_val, rt, src);
                 }
