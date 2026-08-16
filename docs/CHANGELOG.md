@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.12.3 — class property 私有化（破坏性语义变更）+ 自举编译器两级自举成立 + Bug 跟踪框架
+- **⚠️ 破坏性变更：class `property:` 现为私有**——外部实例访问（读+写）→ 编译错误
+  `cannot access property 'X' of 'Y' from outside the class`。此前 sema 允许外部读
+  （"Properties — accessible from anywhere"），但 codegen 只正确支持 `this.prop` 与
+  单级读，链式 `o.mid.inner.val` 产出垃圾值/段错误、链式写崩溃（BUG-001）。
+  - 仍允许：`this.prop`、**同类另一实例**（C++ 私有成员语义，如 `GpuBuffer` 内
+    `src.host_`）、`@static class` 的 `Class.prop`。
+  - `struct` 字段不受影响（公开可读写）。
+  - 修复位置：C++ oracle `sema_expr.cpp` + 自举 `tools/selfhost/src/sema.myp` 双侧同步。
+  - 负测试：`tests/negative/external_property_{read,write,chain}.myp`。
+- **自举编译器（tools/selfhost）两级自举成立**：
+  - F0–F4（前端 oracle/词法/AST/表达式 parser/语义分析）、G1–G4（IR 发射/语句表达式
+    codegen/类 ARC 异常泛型/驱动链接）、H1（两级自举验证）全部 ✅。
+  - 自举 AST 纯数据 class 迁 getter 访问：跨实例直接读 `e.lhs_` → `e.lhs()`，
+    新增 ~360 getter、改写 ~2900 处访问（关键字冲突字段 `ref_→isRef()` 等 8 特例 +
+    无下划线字段 `AstPair.k/v`、`AstNonlocalSlot.slot/cell` 改名）。
+  - 验证：`test_myp_self.sh` 94/94、`test_myp_bootstrap.sh` 15/15；
+    全量回归 270 通过、仅剩 BUG-003 导致的 `generic_traits` 一处不一致。
+- **Bug 跟踪框架**：`tests/BUGLIST.md` + `tests/bugs/`（@test 复现 + `run_bugs.sh`）。
+  已登记 BUG-002（@coro 增量 spawn）、BUG-003（泛型 string 比较）、BUG-004（`Option<struct>`）。
+
 ### v3.12.2（当前）— 类型系统增强（P0/P1/P2）+ 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
 - **类型系统增强（type_system_design §3-§7/§9，P0/P1/P2 全部落地）**：
   - **单一转换权威（§7.1）**：`convertIntegerValue` 收敛 5+ 处内联转换（赋值/属性/数组元素/return/调用实参/变量初始化），无符号源统一 ZExt（修 D1：`long z; z = 0xFFFFFFFFu;` 不再 `-1`）。
