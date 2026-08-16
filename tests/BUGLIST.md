@@ -13,7 +13,7 @@
 | ID | 状态 | 标题 | 复现测试 |
 |----|------|------|----------|
 | BUG-001 | 🟩 | 链式类字段访问产生垃圾值/崩溃 | `tests/negative/external_property_{read,write,chain}.myp`（编译拒绝） |
-| BUG-002 | 🟥 | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
+| BUG-002 | � | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
 | BUG-003 | � | 泛型 T=string 的 `<`/`>` 按指针比较 | `tests/bugs/generic_string_cmp.myp` |
 | BUG-004 | 🟥 | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
 
@@ -42,14 +42,22 @@
 
 ---
 
-## BUG-002（未修复）：@coro 主流程增量 spawn 卡死 / 帧损坏
+## BUG-002（已修复）：@coro 主流程增量 spawn 卡死 / 帧损坏
 
-- **状态**：🟥 未修复
-- **复现**：`tests/bugs/coro_incremental_spawn.myp`（移植自 go/test/sieve.go 并发素数筛）
-- **现象**：主流程（非协程）边读边逐个 spawn @coro 过滤器，已 park 协程间歇性
-  不再 resume / 帧损坏（类引用局部被改写）→ 复合数漏过筛网（got 15 漏过）。
-  对照：全部预 spawn 无此问题。
-- **验证**：修复后 `tests/bugs/coro_incremental_spawn.myp` 断言转绿。
+- **状态**：🟩 已修复（2026-08-16）
+- **根因**：@coro 方法/函数的**类引用参数（及 `this`）被借用、不 retain**，但协程
+  比调用方作用域长寿。主流程每轮 `new Channel()` → spawn 过滤器 → `ch = nx` 释放
+  旧 channel 后，旧 Channel 对象的唯一强引用就是已 park 协程的借用参数 → 对象被
+  释放并被下一轮 `new Channel()` 复用 → 协程唤醒时 `in.handle_` 读到新对象的句柄
+  （如 0 变 6）→ 过滤链错位、复合数漏过。全预 spawn 无此问题是因为所有 channel
+  仍被主流程局部变量持有。
+- **修复**（`src/codegen/codegen_class.cpp`）：新增 `registerCoroParam`——@coro 方法/
+  函数入口对 `this` 与每个 ARC 参数（class/interface/function/slice/dyn-array/string/
+  含 ARC 字段的 struct）**retain** + 注册为 ARC 作用域槽（协程正常完成时释放）+ 镜像
+  进协程帧注册表（Coro.destroy/异常时释放）。普通函数参数保持借用不变。
+- **验证**：`tests/bugs/coro_incremental_spawn.myp` 转绿（8/8 断言）；全量回归 273
+  通过（`threadpool`/`coro_thread`/`coro_stack` 为既有 @thread/深递归时序 flaky，
+  与本修复无关）；自举 94/94、两级自举 15/15。
 
 ---
 

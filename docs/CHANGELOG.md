@@ -52,6 +52,13 @@
   类型兜底），并让 `exprIsString` 排除动态数组（`T[]` 误判）。`tests/bugs/generic_string_cmp.myp`
   6/6 转绿、`tests/generic_traits` 回归转绿；全量回归 273 通过（`coro_stack` 为既有
   flaky：深递归 3000 层恰在 2048KB 栈边界，非本 bug 引入）。
+- **BUG-002 修复：@coro 参数/`this` 悬垂（增量 spawn 帧损坏）**——@coro 方法/函数的
+  类引用参数（及 `this`）此前被借用不 retain，协程比调用方作用域长寿 → 主流程释放并
+  复用 Channel 对象后，park 中的过滤器读 `in.handle_` 得新对象句柄 → 过滤链错位、
+  复合数漏过。codegen 新增 `registerCoroParam`：@coro 入口 retain `this` 与所有 ARC
+  参数（class/interface/function/slice/dyn-array/string/含 ARC 字段的 struct），注册为
+  作用域槽（正常完成释放）+ 镜像进协程帧注册表（destroy/异常释放）。`tests/bugs/
+  coro_incremental_spawn.myp`（go 素数筛）8/8 转绿；全量回归 273 通过。
 
 ### v3.12.2（当前）— 类型系统增强（P0/P1/P2）+ 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
 - **类型系统增强（type_system_design §3-§7/§9，P0/P1/P2 全部落地）**：

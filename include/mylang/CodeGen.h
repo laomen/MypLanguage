@@ -182,6 +182,15 @@ private:
     llvm::Function* runtime_coro_frame_clear_ = nullptr;
     void emitCoroFrameSet(llvm::Value* alloca, llvm::Value* obj);
     void emitCoroFrameClear(llvm::Value* alloca);
+    // For @coro bodies: params and `this` are borrowed from the caller, but the
+    // coroutine outlives the caller's scope. Retain each ARC param and register
+    // it as a scope slot (released at normal completion) + mirror it into the
+    // coroutine frame registry (released on Coro.destroy / uncaught exception).
+    // Without the retain, an object held only by a coroutine param (e.g. a
+    // Channel) is freed when the caller rebinds its variable, and the parked
+    // coroutine later reads a reused object (BUG-002).
+    void registerCoroParam(const TypeNode& tn, const TypeInfo& ti,
+                           llvm::Value* alloca, llvm::Value* val);
     llvm::Value* emitRetain(llvm::Value* data);
     // M8: retain the counted backing of a slice value ({data, len} fat pointer).
     llvm::Value* emitRetainSlice(llvm::Value* slice_val);

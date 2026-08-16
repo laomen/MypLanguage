@@ -203,6 +203,50 @@ bool CodeGen::isCountedArrayType(const TypeNode& tn) {
     return tn.isArray() && tn.array_size == 0;
 }
 
+// See header comment. Retain an @coro param / `this` so the object the
+// coroutine holds stays alive across yields (the caller may release it while
+// the coroutine is parked), and release it at normal completion (scope exit)
+// or on destroy / uncaught exception (frame registry).
+void CodeGen::registerCoroParam(const TypeNode& tn, const TypeInfo& ti,
+                                llvm::Value* alloca, llvm::Value* val) {
+    if (!current_is_coro_ || !alloca || !val) return;
+    int kind = -1;
+    if (ti.kind == TypeKind::String) {
+        kind = 0;
+        emitRetain(val);
+    } else if (ti.kind == TypeKind::Interface) {
+        kind = 1;
+        emitRetain(builder_.CreateExtractValue(val, 0));
+    } else if (ti.kind == TypeKind::Function) {
+        kind = 2;
+        emitRetain(builder_.CreateExtractValue(val, 0));
+    } else if (ti.kind == TypeKind::Slice) {
+        kind = 4;
+        emitRetainSlice(val);
+    } else if (ti.kind == TypeKind::Array && ti.array_size == 0) {
+        // Dynamic T[]: counted backing, local owns a counted reference.
+        kind = 0;
+        emitRetain(val);
+    } else if (ti.kind == TypeKind::Class) {
+        kind = 0;
+        emitRetain(val);
+    } else if (ti.kind == TypeKind::Struct && isArcFieldType(tn)) {
+        const StructDecl* sd = findStruct(tn.class_name);
+        if (!sd) return;
+        kind = 5;
+        emitStructFieldsValue(builder_, val, *sd, true);
+        arc_struct_slot_types_[alloca] = tn.class_name;
+    } else {
+        return;
+    }
+    registerArcSlot(alloca, kind);
+    // Mirror into the frame registry for destroy/exception teardown (class /
+    // interface / function-value — same set as var-decl; slices and structs are
+    // only released at normal completion).
+    if (kind == 0 || kind == 1 || kind == 2)
+        emitCoroFrameSet(alloca, val);
+}
+
 bool CodeGen::isStringType(const TypeNode& tn) {
     return tn.class_name.empty() && !tn.isArray() && !tn.isTuple() &&
            tn.basic_type == BuiltinType::String;
@@ -910,6 +954,15 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
     setNamedValue("this", this_a);
+    // BUG-002: @coro 协程比调用方作用域长寿——`this`（类引用）被借用，调用方
+    // 释放后协程仍持有悬垂指针。retain 并注册为 ARC 槽（协程完成时释放）。
+    if (current_is_coro_) {
+        TypeNode this_tn;
+        this_tn.class_name = cls.name;
+        TypeInfo this_ti(TypeKind::Class);
+        this_ti.class_name = cls.name;
+        registerCoroParam(this_tn, this_ti, this_a, func->getArg(0));
+    }
     if (debug_mode_)
         emitParamDebug(this_a, "this", llvm::PointerType::get(ctx_, 0),
                        action.range.begin.line ? action.range.begin.line : 1, 0);
@@ -949,6 +1002,8 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         // the {ptr,len} value → LLVM verify failure).
         if (pt.kind == TypeKind::Slice)
             var_slice_types_[action.params[i].name] = pt;
+        // BUG-002: retain ARC 参数——协程挂起期间调用方可能释放实参对象。
+        registerCoroParam(action.params[i].type, pt, a, func->getArg(i + 1));
     }
 
     // @region: enter arena (skipped if return type is a reference — it escapes)
@@ -1580,6 +1635,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
             if (decl.params[i].type.isArray() && decl.params[i].type.element_type) {
                 array_elem_types_[decl.params[i].name] = getLLVMType(typeNodeToCodegenType(*decl.params[i].type.element_type));
             }
+            // BUG-002: retain ARC 参数——协程挂起期间调用方可能释放实参对象。
+            registerCoroParam(decl.params[i].type, pt, a, &arg);
         }
         ++i;
     }
