@@ -53,18 +53,33 @@ import process;
             string inc = Link.findIncDir(stdlib);
             string rtObj = "/tmp/myp_self_rt.o";
             string runtimeC = Link.findRuntimeC(stdlib);
-            cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + runtimeC + " -o " + rtObj + " 2>&1";
-            if (Process.run(cmd) != 0) {
-                Console.writeLine("runtime compile failed");
-                return 1;
+            // runtime.c 约 6000 行，gcc -O2 每次编译 ~0.9s，占单文件编译总耗时
+            // 90%+。按 mtime 缓存：runtime.c 未变则复用 rtObj，跳过重编译。
+            int needRt = 1;
+            if (Fs.isFile(rtObj) != 0 && Fs.isFile(runtimeC) != 0) {
+                if (Fs.modifiedTime(rtObj) >= Fs.modifiedTime(runtimeC)) needRt = 0;
+            }
+            if (needRt != 0) {
+                cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + runtimeC + " -o " + rtObj + " 2>&1";
+                if (Process.run(cmd) != 0) {
+                    Console.writeLine("runtime compile failed");
+                    return 1;
+                }
             }
             string ctxObj = "/tmp/myp_self_ctx.o";
             string ctxAsm = Link.findCoroCtx(stdlib);
             if (Str.len(ctxAsm) != 0) {
-                cmd = "gcc -c " + ctxAsm + " -o " + ctxObj + " 2>&1";
-                if (Process.run(cmd) != 0) {
-                    Console.writeLine("coro_ctx compile failed");
-                    return 1;
+                // coro_ctx.S 小文件，同样按 mtime 缓存复用。
+                int needCtx = 1;
+                if (Fs.isFile(ctxObj) != 0 && Fs.isFile(ctxAsm) != 0) {
+                    if (Fs.modifiedTime(ctxObj) >= Fs.modifiedTime(ctxAsm)) needCtx = 0;
+                }
+                if (needCtx != 0) {
+                    cmd = "gcc -c " + ctxAsm + " -o " + ctxObj + " 2>&1";
+                    if (Process.run(cmd) != 0) {
+                        Console.writeLine("coro_ctx compile failed");
+                        return 1;
+                    }
                 }
             }
             cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj
