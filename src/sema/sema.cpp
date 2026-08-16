@@ -461,7 +461,30 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
             declareStructName(st);
         }
     }
-    // Phase B: validate fields + register methods (order-independent now)
+    // Register generic class templates BEFORE struct field validation (BUG-004):
+    // a struct field typed as a generic instantiation (`Option<Node> next`) must
+    // monomorphize while the field type is resolved; otherwise it resolves to the
+    // un-instantiated template name and later assignments/member access fail
+    // type checks ("Option_Node_inst vs Option").
+    for (size_t i = 0; i < tu.classes.size(); i++) {
+        if (!tu.classes[i].type_params.empty()) {
+            GenericInfo info;
+            info.tu_index = i;
+            generic_classes_[tu.classes[i].name] = info;
+        }
+    }
+    // Register generic function templates (same reason: struct fields may carry
+    // generic function types).
+    for (size_t i = 0; i < tu.functions.size(); i++) {
+        if (!tu.functions[i].type_params.empty()) {
+            GenericFuncInfo info;
+            info.tu_index = i;
+            generic_functions_[tu.functions[i].name] = info;
+        }
+    }
+    // Phase B: validate fields + register methods (order-independent now).
+    // ⚠ 解析字段类型可能触发 monomorphization（tu.classes push_back 重分配）——
+    // 此处 range-for 遍历的是 tu.structs（不受影响），实例追加只动 tu.classes。
     for (auto& st : tu.structs) {
         visitStructDecl(st);
     }
@@ -471,22 +494,6 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     }
     for (auto& bf : tu.bitfields) {
         visitBitfieldDecl(bf);
-    }
-    // Register generic class templates
-    for (size_t i = 0; i < tu.classes.size(); i++) {
-        if (!tu.classes[i].type_params.empty()) {
-            GenericInfo info;
-            info.tu_index = i;
-            generic_classes_[tu.classes[i].name] = info;
-        }
-    }
-    // Register generic function templates
-    for (size_t i = 0; i < tu.functions.size(); i++) {
-        if (!tu.functions[i].type_params.empty()) {
-            GenericFuncInfo info;
-            info.tu_index = i;
-            generic_functions_[tu.functions[i].name] = info;
-        }
     }
     // Also register nested structs inside classes
     // ⚠ visitStructDecl 解析字段类型可能触发 monomorphization（tu.classes 重分配），
@@ -510,8 +517,11 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     // push_back → 重分配），range-for 缓存迭代器悬垂 → 读已释放内存（UAF，
     // 表现为误报 duplicate class name ''）。按下标循环每轮重取 tu.classes[i]，
     // 且只访问循环开始时的类（新增泛型实例由 analyze 的索引循环另行处理）。
+    // 泛型实例在单态化时已 visitClassDecl（声明名字+注册成员），此处跳过——
+    // 否则 struct 字段触发的实例会在此被二次 visitClassDecl → duplicate class。
     size_t nc = tu.classes.size();
     for (size_t i = 0; i < nc; i++) {
+        if (tu.classes[i].is_generic_inst) continue;
         visitClassDecl(tu, i);
     }
     // Check interface implementations

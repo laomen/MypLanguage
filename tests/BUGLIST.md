@@ -15,7 +15,7 @@
 | BUG-001 | 🟩 | 链式类字段访问产生垃圾值/崩溃 | `tests/negative/external_property_{read,write,chain}.myp`（编译拒绝） |
 | BUG-002 | � | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
 | BUG-003 | � | 泛型 T=string 的 `<`/`>` 按指针比较 | `tests/bugs/generic_string_cmp.myp` |
-| BUG-004 | 🟥 | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
+| BUG-004 | � | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
 
 ---
 
@@ -77,23 +77,19 @@
 
 ---
 
-## BUG-004（未修复）：`Option<struct>` 泛型实例化失败
+## BUG-004（已修复）：`Option<struct>` 泛型实例化失败
 
-- **状态**：🟥 未修复
-- **严重度**：中（递归数据结构无法用纯 struct 表达时，`Option<struct>` 是唯一出路）
-- **复现**：`tests/bugs/option_struct.myp`（编译失败）
-
-```myp
-struct Node {
-    int val;
-    Option<Node> next;   // 递归引用用 Option 包装
-}
-```
-
-  错误：`cannot assign value of type 'Option_Node_inst' to variable of type
-  'Option'`、`argument 1: expected 'int', got 'Node'`（`set(b)` 解析错）、
-  `cannot access member of non-class type 'int'`（`get().val`）。
-
-- **影响**：递归 AST/图结构不能用 `struct`（值类型无限递归），`Option<struct>`
-  修好后才能把递归纯数据也迁到 struct。当前自举 AST 保留 class + getter 的
-  折中方案即因本 bug 未修。
+- **状态**：🟩 已修复（2026-08-16）
+- **根因**：`visitTranslationUnit` 中 `generic_classes_` 在 struct 字段校验
+  （`visitStructDecl`）**之后**才注册。struct 字段类型 `Option<Node>` 解析时
+  `generic_classes_.count("Option")` 为假 → 落回“未实例化模板名 `Option`”，
+  后续 `a.next = new Option<Node>()` 类型比对 `Option_Node_inst` vs `Option` 失败，
+  `set`/`get` 也按模板占位 T=int 解析。
+- **修复**：
+  1. `src/sema/sema.cpp`：把 generic class/function 模板注册**提前**到 struct
+     字段校验之前；同时类声明循环跳过 `is_generic_inst`（实例在单态化时已
+     `visitClassDecl`，二次访问报 duplicate class）。
+  2. `src/codegen/codegen_expr.cpp`：`memberObjectClassName` 的 MemberAccess 分支
+     兜底用 sema 记的 `resolved_object_class`（struct 名）+ struct 字段类型查找，
+     `a.next.get()` 才能分发到 `Option_Node_inst_get` 而非模板 `Option_get`。
+- **验证**：`tests/bugs/option_struct.myp` 编译通过、2/2 断言转绿；全量回归 274 通过。

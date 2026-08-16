@@ -59,6 +59,12 @@
   参数（class/interface/function/slice/dyn-array/string/含 ARC 字段的 struct），注册为
   作用域槽（正常完成释放）+ 镜像进协程帧注册表（destroy/异常释放）。`tests/bugs/
   coro_incremental_spawn.myp`（go 素数筛）8/8 转绿；全量回归 273 通过。
+- **BUG-004 修复：`Option<struct>` 泛型实例化**——struct 字段 `Option<Node>` 此前在
+  `generic_classes_` 注册前解析，落到未实例化模板名 `Option` → 赋值/成员访问类型错。
+  sema 将 generic 模板注册提前到 struct 字段校验前 + 类声明循环跳过 `is_generic_inst`；
+  codegen `memberObjectClassName` 用 `resolved_object_class` + struct 字段类型兜底分发
+  到 `Option_Node_inst_*`。`tests/bugs/option_struct.myp` 2/2 转绿；全量回归 274 通过。
+  为后续“递归纯数据迁 struct、去掉 class+getter 折中”铺平道路。
 
 ### v3.12.2（当前）— 类型系统增强（P0/P1/P2）+ 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
 - **类型系统增强（type_system_design §3-§7/§9，P0/P1/P2 全部落地）**：

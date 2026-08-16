@@ -1080,6 +1080,13 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
                 for (auto& c : current_tu_->classes)
                     if (c.name == oid.name) { owner = c.name; break; }  // static
         }
+        // Struct field holding a class ref: `node.next.method()`. The object is
+        // a struct local (no var_class_map_ entry), but sema recorded its type
+        // in resolved_object_class (e.g. "Node") — resolve the field's type so
+        // `a.next.get()` dispatches to Option_Node_inst, not the Option
+        // template (BUG-004).
+        if (owner.empty())
+            owner = ma.resolved_object_class;
         if (!owner.empty() && current_tu_) {
             for (auto& c : current_tu_->classes) {
                 if (c.name != owner) continue;
@@ -1090,6 +1097,15 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
                     }
                 }
                 break;
+            }
+            // Struct field (public): `s.field` where field is a class ref.
+            if (const StructDecl* sd = findStruct(owner)) {
+                for (auto& p : sd->properties) {
+                    if (p.name == ma.member_name) {
+                        if (p.type.class_name.empty()) return "";
+                        return mangleConcreteTypeNode(p.type);
+                    }
+                }
             }
         }
         return "";
