@@ -1,0 +1,51 @@
+// divide: 整数除法/取模边界 → 移植自 go/test/divide.go
+// 覆盖：正负操作数的整除/取模（向零截断、余数符号同被除数）、大数、MIN 安全情形
+// 说明：Go 的 divide.go 还测 `-1<<31 / -1`（MIN/-1 特判为取反）；MYP 的 /
+//       直接映射 sdiv，MIN/-1 会在硬件上触发 SIGFPE，故此处跳过该情形。
+import test;
+
+void check(int x, int y, int q, int r, string tag) {
+    Test.assertEq(x / y, q, tag + " div");
+    Test.assertEq(x % y, r, tag + " mod");
+}
+
+void checkLong(long x, long y, long q, long r, string tag) {
+    Test.assertLongEq(x / y, q, tag + " div");
+    Test.assertLongEq(x % y, r, tag + " mod");
+}
+
+@test void test_divide() {
+    // 正 / 正
+    check(7, 2, 3, 1, "7/2");
+    check(100, 7, 14, 2, "100/7");
+
+    // 负 / 正（向零截断）
+    check(-7, 2, -3, -1, "-7/2");
+    check(-100, 7, -14, -2, "-100/7");
+
+    // 正 / 负
+    check(7, -2, -3, 1, "7/-2");
+
+    // 负 / 负
+    check(-7, -2, 3, -1, "-7/-2");
+
+    // 大数（1<<30 = 1073741824 = 3*357913941 + 1）
+    check(1 << 30, 3, 357913941, 1, "big/3");
+    check(2147483647, 2, 1073741823, 1, "MAX/2");
+
+    // MIN 的安全情形（除 ±1 之外的除数；MIN/-1 会硬件陷阱，见文件头说明）
+    int min32 = -2147483647 - 1;
+    check(min32, 1, min32, 0, "MIN/1");
+    check(min32, -2, 1073741824, 0, "MIN/-2");
+    check(0, 5, 0, 0, "0/5");
+
+    // long 变体
+    checkLong(7L, 2L, 3L, 1L, "L7/2");
+    checkLong(-7L, 2L, -3L, -1L, "L-7/2");
+    checkLong(-7L, -2L, 3L, -1L, "L-7/-2");
+    long min64 = -9223372036854775807L - 1L;
+    checkLong(min64, 1L, min64, 0L, "LMIN/1");
+    checkLong(0L, 5L, 0L, 0L, "L0/5");
+
+    Test.report("test_divide", true);
+}

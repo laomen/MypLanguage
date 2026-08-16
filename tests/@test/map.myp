@@ -1,0 +1,59 @@
+// map: 哈希表基础操作 → 移植自 go/test/map.go（testbasic 之标量键部分）
+// Go 用内建 map；MYP 用 collections 的 HashMap<int,int>（线性探测，`%` 哈希）
+// 与 StrHashMap<string,V>（DJB2）。覆盖 put/get/contains/remove/覆盖写/
+// 缺失键默认值/计数；100 项填充 + 逐项校验 + 删除后一致性。
+import test;
+import collections;
+
+@test void test_map() {
+    // ---- 字符串键（对应 Go 的 mlit: map[string]int{"0":0,...,"4":4}）----
+    StrHashMap<int> mlit = new StrHashMap<int>();
+    mlit.put("0", 0); mlit.put("1", 1); mlit.put("2", 2);
+    mlit.put("3", 3); mlit.put("4", 4);
+    Test.assertEq(mlit.size(), 5, "mlit size");
+    Test.assertEq(mlit.get("0", -1), 0, "mlit 0");
+    Test.assertEq(mlit.get("4", -1), 4, "mlit 4");
+    Test.assertEq(mlit.get("5", -1), -1, "mlit missing -> default");
+    Test.assert(mlit.contains("3") != 0, "mlit contains 3");
+    Test.assert(mlit.contains("9") == 0, "mlit not contains 9");
+
+    // ---- int 键（对应 Go 的 mii: map[int]int），100 项填充 ----
+    HashMap<int, int> mii = new HashMap<int, int>();
+    for (int i = 0; i < 100; i = i + 1) mii.put(i, i * 10);
+    Test.assertEq(mii.size(), 100, "mii size");
+
+    int bad = 0;
+    for (int i = 0; i < 100; i = i + 1) {
+        int v = mii.get(i, -1);
+        if (v != i * 10) bad = bad + 1;
+    }
+    Test.assertEq(bad, 0, "mii all correct");
+    Test.assertEq(mii.get(1000, -1), -1, "mii missing -> default");
+    Test.assert(mii.contains(7), "mii contains 7");
+    Test.assert(!mii.contains(1000), "mii not contains 1000");
+
+    // 覆盖写 + 计数不变
+    mii.put(7, 999);
+    Test.assertEq(mii.get(7, -1), 999, "mii overwrite");
+    Test.assertEq(mii.size(), 100, "mii size after overwrite");
+
+    // 删除 + 一致性
+    mii.remove(7);
+    Test.assert(!mii.contains(7), "mii removed");
+    Test.assertEq(mii.get(7, -1), -1, "mii get removed -> default");
+    Test.assertEq(mii.size(), 99, "mii size after remove");
+
+    // ---- 字符串键 → 字符串值（对应 Go 的 mss/mis）----
+    StrHashMap<string> mss = new StrHashMap<string>();
+    mss.put("k1", "v1"); mss.put("k2", "v2");
+    Test.assertStrEq(mss.get("k1", ""), "v1", "mss k1");
+    Test.assertStrEq(mss.get("k2", ""), "v2", "mss k2");
+    Test.assertStrEq(mss.get("k3", ""), "", "mss missing -> default");
+
+    HashMap<int, string> mis = new HashMap<int, string>();
+    for (int i = 0; i < 10; i = i + 1) mis.put(i, "s" + i);
+    Test.assertStrEq(mis.get(5, ""), "s5", "mis 5");
+    Test.assertStrEq(mis.get(99, ""), "", "mis missing");
+
+    Test.report("test_map", true);
+}

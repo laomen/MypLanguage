@@ -1,0 +1,59 @@
+// turing: 脑补式图灵机（brainfuck 解释器）→ 移植自 go/test/turing.go
+// 覆盖：数组下标读写（int[30000] 数据带）、string 逐字符读取、char 与字符字面量比较、
+//       if/else 链（MYP 无 switch）、char(int) 转换 + 字符串拼接、class 属性承载可变状态
+// 期望：解释器跑完整段 brainfuck 程序后，拼出 "Hello World!\n"
+import test;
+
+class Brainfuck {
+    action:
+        @constructor Brainfuck() { a = new int[30000]; }
+
+        // 跳转：dir=1 从 '[' 前跳到配对 ']'；dir=-1 从 ']' 回跳到配对 '['。
+        // 与 Go 一致：先读 prog[pc+dir]，再 pc += dir。
+        void scan(int dir) {
+            int nest = dir;
+            while (dir * nest > 0) {
+                char c = prog[pc + dir];
+                if (c == ']') nest = nest - 1;
+                else if (c == '[') nest = nest + 1;
+                pc = pc + dir;
+            }
+        }
+
+        string run() {
+            p = 0;
+            pc = 0;
+            for (int i = 0; i < 30000; i = i + 1) a[i] = 0;
+            string r = "";
+            while (true) {
+                char c = prog[pc];
+                if (c == '>') p = p + 1;
+                else if (c == '<') p = p - 1;
+                else if (c == '+') a[p] = a[p] + 1;
+                else if (c == '-') a[p] = a[p] - 1;
+                else if (c == '.') r = r + char(a[p]);
+                else if (c == '[') { if (a[p] == 0) scan(1); }
+                else if (c == ']') { if (a[p] != 0) scan(-1); }
+                else { break; }   // 默认分支：读到程序尾 '!' → 结束
+                pc = pc + 1;
+            }
+            return r;
+        }
+
+    property:
+        int p;          // 数据指针
+        int pc;         // 程序计数器
+        int[] a;        // 数据带（Go 用 byte，MYP 用 int 免去窄类型提升问题）
+        string prog = "++++++++++[>+++++++>++++++++++>+++>+<<<<-]>++.>+.+++++++..+++.>++.<<+++++++++++++++.>.+++.------.--------.>+.>.!";
+}
+
+@test void test_turing() {
+    Brainfuck bf = new Brainfuck();
+    string out = bf.run();
+    Test.assertStrEq(out, "Hello World!\n", "brainfuck 输出");
+
+    // 顺带校验字符字面量 + char→int
+    Test.assertEq(int('H'), 72, "'H'");
+    Test.assertEq(int('!'), 33, "'!'");
+    Test.report("test_turing", true);
+}

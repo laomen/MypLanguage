@@ -1,0 +1,80 @@
+// torture: 高复杂度表达式 → 移植自 go/test/torture.go
+// 覆盖：16 个 4 位整数逐位拼进 64 位 long（嵌套移位/或，concat）、
+//       4x4 行列式（24 个置换求和，det4）、long/double 算术、一维化二维矩阵索引。
+import test;
+
+// 把 16 个 4 位整数（0..15）拼成一个 64 位 long（s[0] 为最高 4 位）。
+// 与 Go 的 uint64 concat(s *[16]byte) 结构一致。
+long concat(int[] s) {
+    return (((((((((((((((long(s[0]) << 4 |
+        long(s[1])) << 4 |
+        long(s[2])) << 4 |
+        long(s[3])) << 4 |
+        long(s[4])) << 4 |
+        long(s[5])) << 4 |
+        long(s[6])) << 4 |
+        long(s[7])) << 4 |
+        long(s[8])) << 4 |
+        long(s[9])) << 4 |
+        long(s[10])) << 4 |
+        long(s[11])) << 4 |
+        long(s[12])) << 4 |
+        long(s[13])) << 4 |
+        long(s[14])) << 4 |
+        long(s[15]));
+}
+
+// 4x4 行列式：对 24 个下标置换求和。矩阵以一行 16 个 double 存储，m[r*4+c]。
+double det4(double[] m) {
+    return m[0]*m[5]*m[10]*m[15] - m[0]*m[5]*m[11]*m[14] -
+        m[0]*m[6]*m[9]*m[15] + m[0]*m[6]*m[11]*m[13] +
+        m[0]*m[7]*m[9]*m[14] - m[0]*m[7]*m[10]*m[13] -
+        m[1]*m[4]*m[10]*m[15] + m[1]*m[4]*m[11]*m[14] +
+        m[1]*m[6]*m[8]*m[15] - m[1]*m[6]*m[11]*m[12] -
+        m[1]*m[7]*m[8]*m[14] + m[1]*m[7]*m[10]*m[12] +
+        m[2]*m[4]*m[9]*m[15] - m[2]*m[4]*m[11]*m[13] -
+        m[2]*m[5]*m[8]*m[15] + m[2]*m[5]*m[11]*m[12] +
+        m[2]*m[7]*m[8]*m[13] - m[2]*m[7]*m[9]*m[12] -
+        m[3]*m[4]*m[9]*m[14] + m[3]*m[4]*m[10]*m[13] +
+        m[3]*m[5]*m[8]*m[14] - m[3]*m[5]*m[10]*m[12] -
+        m[3]*m[6]*m[8]*m[13] + m[3]*m[6]*m[9]*m[12];
+}
+
+@test void test_torture() {
+    // ---- concat：逐 4 位拼接 ----
+    int[] a0 = new int[16];
+    for (int i = 0; i < 16; i = i + 1) a0[i] = 0;
+    Test.assertLongEq(concat(a0), 0L, "concat zeros");
+
+    int[] a1 = new int[16];
+    a1[0] = 1;   // 最高 4 位 = 1 → bit 60
+    Test.assertLongEq(concat(a1), 0x1000000000000000L, "concat s0=1");
+
+    int[] a2 = new int[16];
+    a2[1] = 1;   // 次高 4 位 = 1 → bit 56
+    Test.assertLongEq(concat(a2), 0x0100000000000000L, "concat s1=1");
+
+    int[] aF = new int[16];
+    for (int i = 0; i < 16; i = i + 1) aF[i] = 15;   // 全 F → 0xFFFF...F = -1
+    Test.assertLongEq(concat(aF), -1L, "concat all 0xF");
+
+    int[] aS = new int[16];
+    for (int i = 0; i < 16; i = i + 1) aS[i] = i;    // 0,1,2,...,F → 0x0123456789ABCDEF
+    Test.assertLongEq(concat(aS), 0x0123456789ABCDEFL, "concat 0..15");
+
+    // ---- det4 ----
+    double[16] ident;
+    ident[0] = 1.0; ident[5] = 1.0; ident[10] = 1.0; ident[15] = 1.0;
+    Test.assertFloatEq(det4(ident), 1.0, 1e-9, "det I");
+
+    double[16] diag;
+    diag[0] = 2.0; diag[5] = 3.0; diag[10] = 5.0; diag[15] = 7.0;
+    Test.assertFloatEq(det4(diag), 210.0, 1e-9, "det diag(2,3,5,7)");
+
+    // 1..16 行主序矩阵：行线性相关 → 行列式 0（浮点误差放宽）
+    double[16] sing;
+    for (int i = 0; i < 16; i = i + 1) sing[i] = double(i + 1);
+    Test.assertFloatEq(det4(sing), 0.0, 1e-6, "det 1..16 singular");
+
+    Test.report("test_torture", true);
+}
