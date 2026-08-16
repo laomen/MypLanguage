@@ -225,7 +225,7 @@ Declared -> Materializing -> Ready
 | tokens | **448/448 字节一致** | F1 完成 |
 | AST | **448/448 字节一致** | F2/F3 完成 |
 | sema | **548/565 字节一致** | F4 完成（正语料全绿；剩余负例/GPU/遗留/自引用泛型顺序） |
-| codegen | G1/G2 完成；G3 部分（类/构造器/泛型/mapping 已支撑自编译）；G4 完成（bootstrap 15/15） | 全量回归 229/275（83%），剩 ARC 环/异常隔离/region/weak/关联类型 |
+| codegen | G1/G2/G3/G4 完成（类/ARC/异常/泛型/mapping/协程/weak/region/@eval 全部落地） | 全量回归 275/275（100%），@test 88/88 |
 
 > 更新（F4-G1 后，2026-08-13）：**泛型静态方法已落地**——sema 266→303（+37 文件），
 > GS 簇 67→6。`__gs_` 实例函数（含函数类型参数替换 `(T)->R`→`(int)->string`）与调用点
@@ -453,10 +453,10 @@ main.myp ─┬─> 前端: lexer → parser → sema（对拍/编译两用）
 | **F3** | 表达式 parser | ✅ AST 448/448 |
 | **F4** | sema | ✅ 完成：548/565（正语料全绿） |
 | **G1** | IR 文本发射框架 + 最小程序 codegen | ✅ 完成：hello 级产物运行对拍 + .ll 可编译 |
-| **G2** | 语句 + 表达式 codegen | ✅ 基本完成：101/109 回归通过（剩 slice_class_chain / subscript_narrow 等边界） |
-| **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | 🔄 部分完成：类/构造器/泛型/mapping 已支撑自编译；ARC 环/异常隔离/region/weak/关联类型未做完 |
+| **G2** | 语句 + 表达式 codegen | ✅ 完成：109/109 回归通过 |
+| **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | ✅ 完成：类/构造器/ARC（含 @weak/region）/异常/泛型/mapping/@eval 全部落地 |
 | **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | ✅ 完成：CLI/compile/link/--stdlib 全流程可用（bootstrap 15/15） |
-| **H1** | 两级自举验证 + 全量回归 + 文档 | 🔄 部分完成：两级自举 15/15 ✅；全量回归 229/275（83%） |
+| **H1** | 两级自举验证 + 全量回归 + 文档 | ✅ 完成：两级自举 15/15；全量回归 275/275（100%）；test_myp_self 94/94 |
 
 ---
 
