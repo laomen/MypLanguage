@@ -868,6 +868,9 @@ private:
     const TypeNode* callReturnTypeNode(const CallExpr& e);
     // M8: does this expression yield a string value?
     bool exprIsString(const Expr& e);
+    // M8: string-ness for ==/!=/</>/<: sema-resolved String OR generic
+    // type-param placeholder fallback (see exprIsString).
+    bool exprResolvedString(const Expr& e);
     // M8: is this `a + b` a string concatenation (fresh counted string)?
     bool isStringConcatExpr(const Expr& e);
     // M4: convert a scalar operand to a string for concatenation (bool/byte/

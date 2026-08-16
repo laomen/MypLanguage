@@ -385,7 +385,7 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     // "equal"; null comparisons called strcmp(NULL) and crashed).
     if (runtime_str_eq_ && (e.op == BinaryOpKind::Eq || e.op == BinaryOpKind::Ne) &&
         l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp &&
-        e.lhs->resolved_kind == TypeKind::String && e.rhs->resolved_kind == TypeKind::String) {
+        exprResolvedString(*e.lhs) && exprResolvedString(*e.rhs)) {
         auto* result = builder_.CreateCall(runtime_str_eq_, {l, r}, "streq");
         if (e.op == BinaryOpKind::Ne) {
             return builder_.CreateICmpEQ(result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
@@ -399,7 +399,7 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
     if ((e.op == BinaryOpKind::Lt || e.op == BinaryOpKind::Gt ||
          e.op == BinaryOpKind::Le || e.op == BinaryOpKind::Ge) &&
         l->getType()->isPointerTy() && r->getType()->isPointerTy() && !fp &&
-        e.lhs->resolved_kind == TypeKind::String && e.rhs->resolved_kind == TypeKind::String) {
+        exprResolvedString(*e.lhs) && exprResolvedString(*e.rhs)) {
         auto* cmp = module_->getFunction("myp_str_cmp");
         if (!cmp) {
             auto* ft = llvm::FunctionType::get(llvm::Type::getInt32Ty(ctx_),
@@ -1203,6 +1203,9 @@ bool CodeGen::exprIsString(const Expr& e) {
             // String vars are pointer-typed slots NOT in var_class_map_ (a
             // class ref is also a pointer, but its name IS in var_class_map_).
             if (var_class_map_.find(id.name) != var_class_map_.end()) return false;
+            // Dynamic arrays (T[]) are also pointer-typed slots — exclude them
+            // (their < > / == compares addresses, not string content).
+            if (array_elem_types_.find(id.name) != array_elem_types_.end()) return false;
             auto* v = getNamedValue(id.name);
             if (auto* ai = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
                 // A pointer-typed non-class local is a string. Slice/interface/
@@ -1224,6 +1227,18 @@ bool CodeGen::exprIsString(const Expr& e) {
         }
         default: return false;
     }
+}
+
+// M8: does this expression resolve to a string, accounting for generic
+// type-param placeholders? Sema annotates resolved_kind==String on the shared
+// template body for everything EXCEPT plain generic params (their resolved_kind
+// is the placeholder default, e.g. Int). For those, fall back to exprIsString
+// (alloca-type based). This is what string ==/</>/< must use: the bare
+// exprIsString misses member access, subscripts and builtin calls (str(), …),
+// which sema DID resolve to String.
+bool CodeGen::exprResolvedString(const Expr& e) {
+    if (e.resolved_kind == TypeKind::String) return true;
+    return exprIsString(e);
 }
 
 bool CodeGen::isStringConcatExpr(const Expr& e) {

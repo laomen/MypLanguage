@@ -47,6 +47,11 @@
     全量回归 270 通过、仅剩 BUG-003 导致的 `generic_traits` 一处不一致。
 - **Bug 跟踪框架**：`tests/BUGLIST.md` + `tests/bugs/`（@test 复现 + `run_bugs.sh`）。
   已登记 BUG-002（@coro 增量 spawn）、BUG-003（泛型 string 比较）、BUG-004（`Option<struct>`）。
+- **BUG-003 修复：泛型 `T=string` 的 `<`/`>` 按指针比较**——codegen string 比较判定
+  新增 `exprResolvedString(e)`（`resolved_kind==String` 优先，泛型类型参数按 alloca 指针
+  类型兜底），并让 `exprIsString` 排除动态数组（`T[]` 误判）。`tests/bugs/generic_string_cmp.myp`
+  6/6 转绿、`tests/generic_traits` 回归转绿；全量回归 273 通过（`coro_stack` 为既有
+  flaky：深递归 3000 层恰在 2048KB 栈边界，非本 bug 引入）。
 
 ### v3.12.2（当前）— 类型系统增强（P0/P1/P2）+ 多态数学 intrinsic（§9.5）+ GPU `__nv_xf` 选型 + 共享 emitConversion
 - **类型系统增强（type_system_design §3-§7/§9，P0/P1/P2 全部落地）**：
