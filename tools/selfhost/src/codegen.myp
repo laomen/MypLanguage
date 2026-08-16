@@ -666,6 +666,38 @@ class CodeGen {
             return (kind == "uint" || kind == "ulong" || kind == "ubyte" || kind == "ushort" || kind == "char") ? 1 : 0;
         }
 
+        // 表达式是否为字符串（resolvedKind 优先；泛型实例体 resolvedKind 被标
+        // int 占位 → 按变量 AST 类型/字面量/拼接兜底，同 C++ exprResolvedString）。
+        int exprIsString(AstExpr e) {
+            if (e == null) return 0;
+            if (e.resolvedKind() == "string") return 1;
+            string k = e.kind();
+            if (k == "String") return 1;
+            if (k == "Identifier") {
+                AstType t = varAstType(e.name());
+                if (t != null) {
+                    AstType rt = resolveType(t);
+                    if (rt != null && rt.str() == "string") return 1;
+                }
+                return 0;
+            }
+            if (k == "Binary" && e.op() == "+") {
+                if (exprIsString(e.lhs()) != 0 || exprIsString(e.rhs()) != 0) return 1;
+            }
+            if (k == "Call") {
+                // 字符串返回的调用（如 Str.substring / makeStr）——按声明返回类型
+                AstExpr callee = e.callee();
+                if (callee != null && callee.kind() == "Identifier") {
+                    AstType rt2 = findFuncRetAstType(callee.name(), e.args().size());
+                    if (rt2 != null) {
+                        AstType rrt = resolveType(rt2);
+                        if (rrt != null && rrt.str() == "string") return 1;
+                    }
+                }
+            }
+            return 0;
+        }
+
         // 类型转换（带无符号源）：un != 0 时整数扩宽用 zext，否则 sext。
         string convertValueU(string v, string from, string to, int un) {
             if (from == to) return v;
@@ -694,6 +726,16 @@ class CodeGen {
                 return convertValueU(v, from, to, isUnsignedKind(src.resolvedKind()));
             }
             return convertValue(v, from, to);
+        }
+
+        // 数组/slice GEP 索引：窄整数 → zext i64。LLVM GEP 对窄索引默认符号
+        // 扩展——uint8 元素值 ≥128（i8=-66）被当负下标 → 越界写/计数丢失
+        //（同 C++ zextIndexValue，与 slice 的 zext 约定一致）。i64 原样。
+        string zextIndex(string idxV, string idxT) {
+            if (idxT == "i64") return idxV;
+            string t = newTmp();
+            sb_.append("  " + t + " = zext " + idxT + " " + idxV + " to i64\n");
+            return t;
         }
 
         // 表达式是否为定长数组 T[N]（返回其 AstType；null = 否）。仅覆盖
@@ -1146,6 +1188,28 @@ class CodeGen {
             return "i32";
         }
 
+        // 类属性是否为 @weak 弱引用（存储不计数、读取弱→强升级）。
+        int propIsWeak(string cls, string prop) {
+            if (tu_ == null) return 0;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (c.props().get(pi).name() == prop) return c.props().get(pi).weak();
+                }
+                return 0;
+            }
+            return 0;
+        }
+
+        // Member 表达式 obj.field 的字段是否为 @weak（按 resolvedClass 查）。
+        int memberIsWeak(AstExpr m) {
+            if (m == null) return 0;
+            string cls = m.resolvedClass();
+            if (Str.len(cls) == 0) cls = "Object";
+            return propIsWeak(cls, m.memberName());
+        }
+
         // 类实例大小：按 LLVM 结构体布局（字段对齐 + padding）计算。
         // 与 myp_alloc_object(size) 对齐（C++ getTypeAllocSize）。
         int classSize(string cls) {
@@ -1407,6 +1471,8 @@ class CodeGen {
             string arrV = genExpr(arr);
             string idxV = genExpr(idx);
             string idxT = exprLlvmType(idx);
+            idxV = zextIndex(idxV, idxT);
+            idxT = "i64";
             string elemLt = subscriptElemLt(arr);
             int isSl = subscriptIsSlice(arr);
             if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
@@ -3445,7 +3511,11 @@ class CodeGen {
                         string arrA = newTmp() + ".arr";
                         int aal = IrEmit.alignOf(arrLt);
                         sb_.append("  " + arrA + " = alloca " + arrLt + ", align " + aal + "\n");
-                        sb_.append("  store " + arrLt + " zeroinitializer, ptr " + arrA + "\n");
+                        // 零初始化用 llvm.memset（同 C++）：`store [N x T]
+                        // zeroinitializer` 对 1MB 大数组会物化巨型常量 store，
+                        // llc 在 SelectionDAG Combine 段错误。
+                        string eSize = "" + (rvt.arraySize() * IrEmit.typeSize(eLt));
+                        sb_.append("  call void @llvm.memset.p0.i64(ptr " + arrA + ", i8 0, i64 " + eSize + ", i1 false)\n");
                         // 定长数组初始化：捕获拷贝 int[N] a = this.cap_i 等。
                         // 数组值 → 整体 store；数据指针（Member decay）→ load
                         // [N x T] 值再 store（深拷贝）。
@@ -4752,6 +4822,13 @@ class CodeGen {
                     string gep = thisMemberAddr(nm);
                     string ft = propType(curClass_, nm);
                     if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
+                    if (propIsWeak(curClass_, nm) != 0) {
+                        // @weak 读：弱→强升级（返回 fresh 强引用）
+                        string t = newTmp();
+                        sb_.append("  " + t + " = call ptr @myp_weak_load(ptr " + gep + ")\n");
+                        addFreshTemp(t);
+                        return t;
+                    }
                     string t = newTmp();
                     sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
                     return t;
@@ -4867,10 +4944,8 @@ class CodeGen {
                 // 字符串比较（==/!=/</<=/>/>=）：myp_str_eq / myp_str_cmp 内容比较
                 AstExpr lhsE = e.lhs();
                 AstExpr rhsE = e.rhs();
-                int lhsStr = 0;
-                int rhsStr = 0;
-                if (lhsE != null && lhsE.resolvedKind() == "string") lhsStr = 1;
-                if (rhsE != null && rhsE.resolvedKind() == "string") rhsStr = 1;
+                int lhsStr = exprIsString(lhsE);
+                int rhsStr = exprIsString(rhsE);
                 if (lt == "ptr" && rt == "ptr" && lhsStr != 0 && rhsStr != 0) {
                     if (op == "==" || op == "!=") {
                         string eq = newTmp();
@@ -4966,6 +5041,15 @@ class CodeGen {
                         opLt = exprLlvmType(lhsE);
                     } else {
                         opLt = IrEmit.kindType(e.resolvedKind());
+                        // 泛型实例体：resolvedKind 是模板占位（int），但实参已按
+                        // 类型参数解析为 double/float/更宽整数 → 用操作数实际类型
+                        //（否则 T=double 的 a+b 被按 i32 截断、lerp 得 0）。
+                        if (lt == "double" || rt == "double") opLt = "double";
+                        else if (lt == "float" || rt == "float") opLt = "float";
+                        else if (IrEmit.isIntType(opLt) != 0 && IrEmit.isIntType(lt) != 0 && IrEmit.isIntType(rt) != 0) {
+                            if (IrEmit.intWidth(lt) > IrEmit.intWidth(opLt)) opLt = lt;
+                            if (IrEmit.intWidth(rt) > IrEmit.intWidth(opLt)) opLt = rt;
+                        }
                     }
                 } else {
                     if (IrEmit.isIntType(lt) != 0 && IrEmit.isIntType(rt) != 0) {
@@ -5079,8 +5163,13 @@ class CodeGen {
                         string gep = thisMemberAddr(nm);
                         string ft = propType(curClass_, nm);
                         rv = convertExpr(rv, rt, ft, e.rhs());
-                        if (ft == "ptr") {
+                        if (propIsWeak(curClass_, nm) != 0) {
+                            // @weak 写：不计数（myp_weak_store）
+                            sb_.append("  call void @myp_weak_store(ptr " + gep + ", ptr " + rv + ")\n");
+                        } else if (ft == "ptr") {
                             storeRef(gep, rv, isFreshTemp(rv));
+                        } else if (ft == "{ ptr, i64 }") {
+                            storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs()));
                         } else {
                             sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                         }
@@ -5122,6 +5211,8 @@ class CodeGen {
                     string arrV = genExpr(arr);
                     string idxV = genExpr(idx);
                     string idxT = exprLlvmType(idx);
+                    idxV = zextIndex(idxV, idxT);
+                    idxT = "i64";
                     string elemLt = subscriptElemLt(arr);
                     int isSl = subscriptIsSlice(arr);
                     // 嵌套 slice：rows[i]（slice 值）再下标 → 须 extractvalue data
@@ -5193,8 +5284,13 @@ class CodeGen {
                     } else {
                         rv = convertExpr(rv, rt, ft, e.rhs());
                     }
-                    if (ft == "ptr") {
+                    if (memberIsWeak(lhs) != 0) {
+                        // @weak 写：obj.field = v → myp_weak_store（不计数）
+                        sb_.append("  call void @myp_weak_store(ptr " + gep + ", ptr " + rv + ")\n");
+                    } else if (ft == "ptr") {
                         storeRef(gep, rv, isFreshTemp(rv));
+                    } else if (ft == "{ ptr, i64 }") {
+                        storeSliceSlot(gep, rv, isFreshSliceExpr(e.rhs()));
                     } else {
                         sb_.append("  store " + ft + " " + rv + ", ptr " + gep + "\n");
                     }
@@ -5271,6 +5367,8 @@ class CodeGen {
                 string arrV = genExpr(arr);
                 string idxV = genExpr(idx);
                 string idxT = exprLlvmType(idx);
+                idxV = zextIndex(idxV, idxT);
+                idxT = "i64";
                 string elemLt = subscriptElemLt(arr);
                 int isSl = subscriptIsSlice(arr);
                 // 数组表达式本身为 slice 值（slice<slice<T>> 的 rows[i] 再下标）：
@@ -5463,6 +5561,13 @@ class CodeGen {
                 string gep = memberAddr(e);
                 string ft = memberFieldType(e);
                 if (isFixedArrayLt(ft) != 0) return gep;   // 定长数组 decay 为首元素地址
+                if (ft == "ptr" && memberIsWeak(e) != 0) {
+                    // @weak 读：obj.field → myp_weak_load（fresh 强引用）
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @myp_weak_load(ptr " + gep + ")\n");
+                    addFreshTemp(t);
+                    return t;
+                }
                 string t = newTmp();
                 sb_.append("  " + t + " = load " + ft + ", ptr " + gep + "\n");
                 return t;
@@ -5496,6 +5601,8 @@ class CodeGen {
                         string arrV = genExpr(e.args().get(0));
                         string idxV = genExpr(e.args().get(1));
                         string idxT = exprLlvmType(e.args().get(1));
+                        idxV = zextIndex(idxV, idxT);
+                        idxT = "i64";
                         string ap = newTmp();
                         sb_.append("  " + ap + " = getelementptr " + elemT + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                         if (an == "__myp_atomic_load_i32") {
@@ -6063,7 +6170,22 @@ class CodeGen {
                 if (e.resolvedKind() == "bitvector" && lhs != null) {
                     return exprLlvmType(lhs);
                 }
-                return IrEmit.kindType(e.resolvedKind());
+                string baseLt = IrEmit.kindType(e.resolvedKind());
+                // 泛型实例体：resolvedKind 为 int 占位，但实参已解析为
+                // double/float/更宽整数 → 结果类型 = 操作数实际类型（与
+                // genExpr Binary 的 opLt 选择保持一致，否则 return 再转换
+                // 时 double 值被当 i32 sitofp → llc 类型错误）。
+                if (lhs != null && rhs != null) {
+                    string llt = exprLlvmType(lhs);
+                    string rlt = exprLlvmType(rhs);
+                    if (llt == "double" || rlt == "double") return "double";
+                    if (llt == "float" || rlt == "float") return "float";
+                    if (IrEmit.isIntType(baseLt) != 0 && IrEmit.isIntType(llt) != 0 && IrEmit.isIntType(rlt) != 0) {
+                        if (IrEmit.intWidth(llt) > IrEmit.intWidth(baseLt)) return llt;
+                        if (IrEmit.intWidth(rlt) > IrEmit.intWidth(baseLt)) return rlt;
+                    }
+                }
+                return baseLt;
             }
             if (k == "Tuple") {
                 StringBuilder ty = new StringBuilder();
@@ -6170,6 +6292,26 @@ class CodeGen {
                 // P4 §6.2 parseIntOpt → { i32, i1 }
                 if (callee2 != null && callee2.kind() == "Identifier" && callee2.name() == "parseIntOpt") {
                     return "{ i32, i1 }";
+                }
+                // @coro 方法/函数调用 → spawn 返回 handle（i64），与声明返回类型无关
+                if (callee2 != null) {
+                    if (callee2.kind() == "Identifier" && findFuncCoro(callee2.name()) != null) return "i64";
+                    if (callee2.kind() == "Member") {
+                        string ccls = callee2.resolvedClass();
+                        string cmn = callee2.memberName();
+                        AstExpr cobj = callee2.array();
+                        if (cobj != null && cobj.kind() == "Identifier" && Str.len(ccls) == 0) {
+                            AstType cobjt = varAstType(cobj.name());
+                            if (cobjt != null) {
+                                AstType crt = resolveType(cobjt);
+                                if (crt != null && Str.len(crt.className()) != 0
+                                    && isInterfaceName(crt.className()) == 0
+                                    && isStructName(crt.className()) == 0
+                                    && isEnumName(crt.className()) == 0) ccls = crt.className();
+                            }
+                        }
+                        if (Str.len(ccls) != 0 && isCoroMethod(ccls, cmn) != 0) return "i64";
+                    }
                 }
                 // struct 返回调用 → %Name（值类型，非 ptr）
                 string sname = callRetStructName(e);

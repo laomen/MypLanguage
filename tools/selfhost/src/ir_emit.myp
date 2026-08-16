@@ -100,7 +100,10 @@ import "./ast.myp";
         int alignOf(string lt) {
             if (Str.startsWith(lt, "[") != 0) {
                 int sp = Str.indexOf(lt, " x ");
-                if (sp > 0) return IrEmit.alignOf(Str.substring(lt, sp + 3, Str.len(lt)));
+                // 去掉尾部 ']'（"[262144 x i32]" → "i32"；否则 "i32]" 不匹配
+                // → 落默认 8，把 1MB i32 栈数组 alloca 成 align 8，llc 在
+                // SelectionDAG Combine 段错误）。
+                if (sp > 0) return IrEmit.alignOf(Str.substring(lt, sp + 3, Str.len(lt) - 1));
             }
             if (lt == "i8" || lt == "i1") return 1;
             if (lt == "i16") return 2;
@@ -470,6 +473,10 @@ import "./ast.myp";
             sb.append("declare void @myp_free_object(ptr)\n");
             sb.append("\n");
             sb.append("declare void @myp_weak_clear(ptr)\n");
+            sb.append("\n");
+            sb.append("declare void @myp_weak_store(ptr, ptr)\n");
+            sb.append("\n");
+            sb.append("declare ptr @myp_weak_load(ptr)\n");
             sb.append("\n");
             sb.append("declare ptr @myp_pool_ensure_global()\n");
             sb.append("\n");

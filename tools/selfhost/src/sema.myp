@@ -334,6 +334,9 @@ class Sema {
             pmBreak_ = 0;
             pmContinue_ = 0;
             pmDepth_ = 0;
+            evalDepth_ = 0;
+            constValNames_ = new ArrayList<string>();
+            constValVals_ = new ArrayList<EvalVal>();
             startupMethods_ = new ArrayList<string>();
             lambdaCounter_ = 0;
             cellCounter_ = 0;
@@ -892,6 +895,96 @@ class Sema {
             return (a.ival() == b.ival()) ? 1L : 0L;
         }
 
+        // @eval 函数调用求值（编译期解释器）：查函数 → 限深 → 求实参 → 绑定
+        // 形参 → 执行函数体 → 恢复调用者局部。与 C++ EvalInterpreter::evalCall
+        // 对齐；深度超限报 "recursion depth exceeded"（eval_recursion 负例）。
+        EvalVal evalCallI(AstExpr e) {
+            AstExpr callee = e.callee();
+            if (callee == null || callee.kind() != "Identifier") {
+                diag_.error(e.line(), e.col(), "compile-time evaluation: can only call @eval functions");
+                return null;
+            }
+            string fnName = callee.name();
+            // 零参 const 调用：const K() → 返回已折叠的常量值（C++ const_values_）
+            for (int ci = 0; ci < constValNames_.size(); ci = ci + 1) {
+                if (constValNames_.get(ci) == fnName && e.args().size() == 0) {
+                    return constValVals_.get(ci);
+                }
+            }
+            AstFunction fn = null;
+            if (tu_ != null) {
+                for (int i = 0; i < tu_.functions().size(); i = i + 1) {
+                    AstFunction f = tu_.functions().get(i);
+                    if (f.eval() != 0 && f.name() == fnName) { fn = f; break; }
+                }
+            }
+            if (fn == null) {
+                diag_.error(e.line(), e.col(), "compile-time evaluation: '" + fnName + "' is not an @eval function");
+                return null;
+            }
+            if (e.args().size() != fn.params().size()) {
+                diag_.error(e.line(), e.col(), "compile-time evaluation: wrong argument count for '" + fnName + "'");
+                return null;
+            }
+            evalDepth_ = evalDepth_ + 1;
+            if (evalDepth_ > 500) {
+                evalDepth_ = evalDepth_ - 1;
+                diag_.error(e.line(), e.col(), "compile-time evaluation: recursion depth exceeded in '" + fnName + "'");
+                return null;
+            }
+            // 在调用者环境求实参（递归调用时调用者的局部仍可见）
+            ArrayList<EvalVal> argVals = new ArrayList<EvalVal>();
+            for (int i = 0; i < e.args().size(); i = i + 1) {
+                EvalVal av = evalExprI(e.args().get(i));
+                if (av == null) { evalDepth_ = evalDepth_ - 1; return null; }
+                argVals.add(av);
+            }
+            // 保存调用者局部，绑定形参
+            ArrayList<string> savedNames = pmLocalNames_;
+            ArrayList<EvalVal> savedVals = pmLocalVals_;
+            pmLocalNames_ = new ArrayList<string>();
+            pmLocalVals_ = new ArrayList<EvalVal>();
+            for (int i = 0; i < fn.params().size(); i = i + 1) {
+                pmSetLocal(fn.params().get(i).name(), argVals.get(i));
+            }
+            int savedBreak = pmBreak_;
+            int savedContinue = pmContinue_;
+            pmBreak_ = 0;
+            pmContinue_ = 0;
+            EvalVal result = evalStmtI(fn.body());
+            pmLocalNames_ = savedNames;
+            pmLocalVals_ = savedVals;
+            pmBreak_ = savedBreak;
+            pmContinue_ = savedContinue;
+            evalDepth_ = evalDepth_ - 1;
+            return result;
+        }
+
+        // 编译期常量求值（C++ evaluateCompileTimeConstants 的 run()）：
+        // 遍历 const 声明，求值初始表达式；成功则记录（供后续 @eval/const 用），
+        // 失败（如 @eval 深度超限）已由 evalCallI 写入诊断。
+        void runConstEval(AstTU tu) {
+            if (tu == null) return;
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                AstFunction fn = tu.functions().get(i);
+                if (fn.constDecl() == 0) continue;
+                if (fn.body() == null || fn.body().bodyStmts().size() == 0) continue;
+                AstStmt first = fn.body().bodyStmts().get(0);
+                if (first == null || first.kind() != "Return") continue;
+                if (first.value() == null) continue;
+                pmLocalNames_ = new ArrayList<string>();
+                pmLocalVals_ = new ArrayList<EvalVal>();
+                EvalVal v = evalExprI(first.value());
+                // 记录常量值（零参 const 调用 FIB10() 会命中；不可折叠的
+                // 初始器保持运行时行为，跳过记录但保留已报诊断）。
+                if (v != null) {
+                    constValNames_.add(fn.name());
+                    constValVals_.add(v);
+                }
+                if (diag_.errorCount() != 0) return;
+            }
+        }
+
         // 过程宏入口：编译期求值 @macro 函数体，返回生成的语句列表。
         ArrayList<AstStmt> evalProcMacro(AstFunction fn, ArrayList<AstExpr> args) {
             if (fn == null || fn.body() == null) return null;
@@ -945,6 +1038,7 @@ class Sema {
                 EvalVal v = new EvalVal();
                 return v;
             }
+            if (k == "Call") return evalCallI(e);
             if (k == "Quote") return evalQuoteI(e);
             if (k == "Binary") return evalBinaryI(e);
             if (k == "Assign") {
@@ -1271,6 +1365,48 @@ class Sema {
         void analyze(AstTU tu) {
             tu_ = tu;
             registerIntrinsics();
+            // Pass 0：递归 type alias 检测（type A = A / type A = B, B = A）。
+            // 沿别名链走，重复命中即递归（内建/类名/数组元素/类型参数终止）。
+            for (int ti = 0; ti < tu.typeAliases().size(); ti = ti + 1) {
+                AstTypeAlias ta = tu.typeAliases().get(ti);
+                string nm = ta.name();
+                ArrayList<string> seen = new ArrayList<string>();
+                seen.add(nm);
+                AstType cur = ta.type();
+                int guard = 0;
+                while (cur != null && guard < 128) {
+                    guard = guard + 1;
+                    string cn = "";
+                    if (cur.element() != null) {
+                        cur = cur.element();
+                        continue;
+                    }
+                    cn = cur.className();
+                    if (Str.len(cn) == 0) break;
+                    int isAlias = 0;
+                    for (int aj = 0; aj < tu.typeAliases().size(); aj = aj + 1) {
+                        if (tu.typeAliases().get(aj).name() == cn) { isAlias = 1; break; }
+                    }
+                    if (isAlias == 0) break;
+                    int hit = 0;
+                    for (int sj = 0; sj < seen.size(); sj = sj + 1) {
+                        if (seen.get(sj) == cn) { hit = 1; break; }
+                    }
+                    if (hit != 0) {
+                        diag_.error(0, 0, "recursive type alias '" + nm + "'");
+                        break;
+                    }
+                    seen.add(cn);
+                    AstType next = null;
+                    for (int aj = 0; aj < tu.typeAliases().size(); aj = aj + 1) {
+                        if (tu.typeAliases().get(aj).name() == cn) { next = tu.typeAliases().get(aj).type(); break; }
+                    }
+                    cur = next;
+                }
+            }
+            // Pass 0.5：编译期常量求值（@eval / const folding）。深度超限等错误
+            // 由 evalCallI 写入诊断（eval_recursion 负例）。
+            runConstEval(tu);
             for (int bi = 0; bi < tu.bitfields().size(); bi = bi + 1) {
                 AstBitfield bf = tu.bitfields().get(bi);
                 bitfieldNames_.add(bf.name());
@@ -3026,7 +3162,7 @@ class Sema {
                     }
                 }
                 int savedForGpu = inGpuFor_;
-                if (s.gpu() != 0) {
+                if (s.gpu() != 0 || s.parallel() != 0) {
                     if (s.stream() != null) visitExpr(s.stream());
                     inGpuFor_ = 1;
                 }
@@ -3371,7 +3507,12 @@ class Sema {
                 return t;
             }
             if (k == "Bool") { e.setResolvedKind("bool"); return "bool"; }
-            if (k == "String") { e.setResolvedKind("string"); return "string"; }
+            if (k == "String") {
+                if (inGpuFor_ != 0) {
+                    diag_.error(e.line(), e.col(), "string literals are not supported inside '@parallel for' / '@gpu for' bodies");
+                }
+                e.setResolvedKind("string"); return "string";
+            }
             if (k == "Null") { e.setResolvedKind("null"); return "null"; }
             if (k == "This") { e.setResolvedKind("class"); return "class"; }
             if (k == "Identifier") {
@@ -3419,6 +3560,9 @@ class Sema {
             if (k == "Binary") {
                 string l = visitExpr(e.lhs());
                 string r = visitExpr(e.rhs());
+                if (inGpuFor_ != 0 && (l == "string" || r == "string")) {
+                    diag_.error(e.line(), e.col(), "string operations are not supported inside '@parallel for' / '@gpu for' bodies");
+                }
                 string op = e.op();
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
                     || op == "&&" || op == "||") {
@@ -5512,6 +5656,9 @@ class Sema {
         int pmBreak_;
         int pmContinue_;
         int pmDepth_;
+        int evalDepth_;
+        ArrayList<string> constValNames_;
+        ArrayList<EvalVal> constValVals_;
         ArrayList<string> startupMethods_;
         int lambdaCounter_;
         int cellCounter_;

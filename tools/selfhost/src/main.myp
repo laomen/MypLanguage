@@ -157,10 +157,18 @@ class LoadedSet {
             return sb.toString();
         }
 
-        // stdlib 路径探测：./stdlib 或 <exe>/../stdlib。
+        // stdlib 路径探测：MYP_STDLIB env → ./stdlib → ../stdlib →
+        // <compiler>/../stdlib（pm 工具从包目录调用 myp_self 时 cwd 不在地根）。
         string stdlibResolve() {
+            string env = Console.getEnv("MYP_STDLIB");
+            if (Str.len(env) != 0 && Fs.isDir(env) != 0) return env;
             if (Fs.exists("./stdlib/env.myp") != 0) return "./stdlib";
             if (Fs.exists("../stdlib/env.myp") != 0) return "../stdlib";
+            string compiler = Cli.findCompiler();
+            if (Str.len(compiler) != 0) {
+                string sd = Cli.findStdlib(compiler);
+                if (Str.len(sd) != 0) return sd;
+            }
             return "./stdlib";
         }
 
@@ -189,7 +197,8 @@ class LoadedSet {
         }
 
         // 递归加载 import 并合并（对齐 C++ loadModule：合并 7 类声明；imports/macros/typeAliases 不合并）。
-        int loadModule(AstTU tu, AstImport imp, string sourceDir, LoadedSet loaded, DiagEngine diag) {
+        // packagePath：--package-path 冒号分隔的包搜索路径（myp_packages）。
+        int loadModule(AstTU tu, AstImport imp, string sourceDir, string packagePath, LoadedSet loaded, DiagEngine diag) {
             string path = "";
             if (imp.isPath() != 0) {
                 if (Str.len(imp.path()) != 0 && __myp_ord(Str.substring(imp.path(), 0, 1)) == 47) {
@@ -206,7 +215,20 @@ class LoadedSet {
                 if (Fs.exists(p1) != 0) path = p1;
                 else if (Fs.exists(p2) != 0) path = p2;
                 else if (Fs.exists(p3) != 0) path = p3;
-                else path = p1;
+                else {
+                    // 包搜索路径：<pkg>/<module>/src/<module>.myp 或
+                    // <pkg>/<module>/<module>.myp（冒号分隔多路径）
+                    int np = Str.splitCount(packagePath, ":");
+                    for (int pi = 0; pi < np && Str.len(path) == 0; pi = pi + 1) {
+                        string pp = Str.trim(Str.splitGet(packagePath, ":", pi));
+                        if (Str.len(pp) == 0) continue;
+                        string pkgSrc = pp + "/" + slash + "/src/" + imp.name() + ".myp";
+                        string pkgRoot = pp + "/" + slash + "/" + imp.name() + ".myp";
+                        if (Fs.exists(pkgSrc) != 0) path = pkgSrc;
+                        else if (Fs.exists(pkgRoot) != 0) path = pkgRoot;
+                    }
+                    if (Str.len(path) == 0) path = p1;
+                }
             }
             path = Frontend.normalizePath(path);
             string key = path;
@@ -238,7 +260,7 @@ class LoadedSet {
             string subDir = Fs.dirname(path);
             for (int i = 0; i < sub.imports().size(); i = i + 1) {
                 AstImport si = sub.imports().get(i);
-                if (Frontend.loadModule(tu, si, subDir, loaded, diag) == 0) return 0;
+                if (Frontend.loadModule(tu, si, subDir, packagePath, loaded, diag) == 0) return 0;
             }
             return 1;
         }
@@ -260,7 +282,7 @@ class LoadedSet {
                 string sourceDir = Fs.dirname(file);
                 for (int i = 0; i < tu.imports().size(); i = i + 1) {
                     AstImport imp = tu.imports().get(i);
-                    if (Frontend.loadModule(tu, imp, sourceDir, loaded, diag) == 0) break;
+                    if (Frontend.loadModule(tu, imp, sourceDir, "", loaded, diag) == 0) break;
                 }
             }
             StringBuilder sb = new StringBuilder();
@@ -293,7 +315,7 @@ class LoadedSet {
                 string sourceDir = Fs.dirname(file);
                 for (int i = 0; i < tu.imports().size(); i = i + 1) {
                     AstImport imp = tu.imports().get(i);
-                    if (Frontend.loadModule(tu, imp, sourceDir, loaded, diag) == 0) break;
+                    if (Frontend.loadModule(tu, imp, sourceDir, "", loaded, diag) == 0) break;
                 }
             }
             // C++ Sema 构造 diag_.reset() 清除 parser/loadModule 的 diag
@@ -315,7 +337,7 @@ class LoadedSet {
 
         // G1：compile 模式——lexer→parser→import 合并→sema→codegen(.ll)→link。
         // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。
-        int compile(string file, string outPath, string stdlib, int emitLlvmOnly, int testMode) {
+        int compile(string file, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode) {
             if (Fs.exists(file) == 0) {
                 Console.writeLine("Error: cannot open file '" + file + "'");
                 return 1;
@@ -331,10 +353,15 @@ class LoadedSet {
                 string sourceDir = Fs.dirname(file);
                 for (int i = 0; i < tu.imports().size(); i = i + 1) {
                     AstImport imp = tu.imports().get(i);
-                    if (Frontend.loadModule(tu, imp, sourceDir, loaded, diag) == 0) break;
+                    if (Frontend.loadModule(tu, imp, sourceDir, packagePath, loaded, diag) == 0) break;
                 }
             }
-            diag.reset();
+            // 语法/import 错误必须短路——之前 diag.reset() 把 parser 诊断清掉，
+            // missing_semicolon 等负例被静默放行。
+            if (diag.errorCount() != 0) {
+                Frontend.printDiagnostics(diag);
+                return 1;
+            }
             Sema se = new Sema(diag);
             se.expandMacros(tu);
             se.analyze(tu);
@@ -446,10 +473,11 @@ class LoadedSet {
                 Console.writeLine("myp_self: unknown mode '" + mode + "'");
                 return 1;
             }
-            // 默认：compile 模式（G1）——myp_self [--test] <file.myp> [-o out] [--emit-llvm] [--stdlib path]
+            // 默认：compile 模式（G1）——myp_self [--test] <file.myp> [-o out] [--emit-llvm] [--stdlib path] [--package-path path]
             string file = arg;
             string outPath = "";
             string stdlib = "";
+            string packagePath = "";
             int emitLlvm = 0;
             int testMode = 0;
             int i = 2;
@@ -471,13 +499,16 @@ class LoadedSet {
                 } else if (a == "--stdlib") {
                     i = i + 1;
                     if (i < argc) stdlib = Args.get(i);
+                } else if (a == "--package-path") {
+                    i = i + 1;
+                    if (i < argc) packagePath = Args.get(i);
                 }
                 i = i + 1;
             }
             if (Str.len(outPath) == 0) {
                 outPath = Cli.stripExt(file) + ".out";
             }
-            return Frontend.compile(file, outPath, stdlib, emitLlvm, testMode);
+            return Frontend.compile(file, outPath, stdlib, packagePath, emitLlvm, testMode);
         }
 
         // 去最后一个 . 后缀（examples/hello.myp → examples/hello）。
