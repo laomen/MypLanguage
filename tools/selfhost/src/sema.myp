@@ -74,6 +74,7 @@ class MethodSig {
         string cls() { return cls_; }
         string meth() { return meth_; }
         string ret() { return ret_; }
+        void setRet(string r) { ret_ = r; }
         int nparams() { return nparams_; }
         ArrayList<AstParam> params() { return params_; }
         int coro() { return coro_; }
@@ -1404,6 +1405,22 @@ class Sema {
                 classProps_.add(c.props());
                 classActions_.add(c.actions());
                 classFuncs_.add(c.funcs());
+            }
+            // struct 方法收集在类收集之前（typeToKind 识别 struct 返回需要），
+            // 但此时 classNames_ 为空 → ArrayList<int> 等泛型类返回类型被误判
+            // void。类名收集完后重刷 struct 方法签名（仅覆盖 ret kind，形参不变）。
+            for (int si = 0; si < tu.structs().size(); si = si + 1) {
+                AstStruct st = tu.structs().get(si);
+                for (int sfj = 0; sfj < st.funcs().size(); sfj = sfj + 1) {
+                    AstFunction f = st.funcs().get(sfj);
+                    for (int mi = 0; mi < methods_.size(); mi = mi + 1) {
+                        MethodSig ms = methods_.get(mi);
+                        if (ms.cls() == st.name() && ms.meth() == f.name()) {
+                            ms.setRet(f.ret() != null ? typeToKind(f.ret()) : "void");
+                            break;
+                        }
+                    }
+                }
             }
             for (int i = 0; i < tu.classes().size(); i = i + 1) {
                 AstClass c = tu.classes().get(i);
@@ -4276,7 +4293,12 @@ class Sema {
                                             if (Str.len(spt) != 0) {
                                                 t = spt;
                                                 AstType spta = findStructPropAst(si, e.memberName());
-                                                if (spta != null && Str.len(spta.className()) != 0) e.setValueClass(spta.className());
+                                                if (spta != null && Str.len(spta.className()) != 0) {
+                                                    // 泛型类字段 ArrayList<int> → 记录实例类名
+                                                    //（否则成员方法解析到模板名 ArrayList，形参 T 无法替换）
+                                                    if (spta.typeArgs().size() > 0) e.setValueClass(instClassName(spta));
+                                                    else e.setValueClass(spta.className());
+                                                }
                                             } else {
                                                 // C++：struct 'S' has no member 'y'
                                                 diag_.error(e.line(), e.col(), "struct '" + cn + "' has no member '" + e.memberName() + "'");

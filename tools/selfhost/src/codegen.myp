@@ -7,6 +7,10 @@ import "./ir_emit.myp";
 
 // double → LLVM %e 文本（与 mypc --emit-llvm 的 double 常量格式一致）。
 ffi string myp_fmt_double_e(double v, int precision);
+// double/float → LLVM 十六进制位型常量（0x + 16 hex，f32/f64 均同 LLVM
+// ConstantFP 打印；十进制 1e30f 在 float 上下文不精确会被 llc 拒绝）。
+ffi string myp_f64_bits_hex(double v);
+ffi string myp_f32_bits_hex(float v);
 
 // try-with-finally 的控制流上下文（C++ FinallyCtx）。
 class FinallyCtx {
@@ -72,6 +76,7 @@ class CodeGen {
             strCounter_ = 0;
             cellOwnerNames_ = new ArrayList<string>();
             cellOwnerVals_ = new ArrayList<string>();
+            emittedFns_ = new ArrayList<string>();
             curTypeParams_ = new ArrayList<string>();
             curTypeArgs_ = new ArrayList<AstType>();
             pendingTemps_ = new ArrayList<string>();
@@ -332,6 +337,8 @@ class CodeGen {
             AstType rt = resolveType(t);
             if (rt == null) return 0;
             if (rt.str() == "string") return 1;
+            // 函数值 (A)->R：fat pointer {closure, call_fn} —— 闭包对象计数引用
+            if (rt.funcReturn() != null) return 1;
             if (rt.element() != null) {
                 if (rt.arraySize() == 0) return 1;   // T[] 动态数组（计数 backing）
                 return 0;                           // T[N] 定长数组（栈）
@@ -393,12 +400,11 @@ class CodeGen {
             while (pendingTemps_.size() > before) pendingTemps_.remove(pendingTemps_.size() - 1);
         }
 
-        // 向引用槽 store：释放旧值（myp_release(null) 安全）；fresh 转移 +1，
-        // 否则 myp_retain。
+        // 向引用槽 store：fresh 转移 +1，否则先 retain 新值再释放旧值
+        //（retain-before-release：x = x 自赋值时旧值不会被提前释放成悬垂指针）。
         void storeRef(string dst, string value, int fresh) {
             string old = newTmp();
             sb_.append("  " + old + " = load ptr, ptr " + dst + "\n");
-            sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             if (fresh != 0) {
                 sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
                 consumeTemp(value);
@@ -406,6 +412,7 @@ class CodeGen {
                 sb_.append("  call void @myp_retain(ptr " + value + ")\n");
                 sb_.append("  store ptr " + value + ", ptr " + dst + "\n");
             }
+            sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
         }
 
         // 声明式 store（VarDecl 初始化）：不释放旧值——旧值要么是 entry 零初始化
@@ -435,6 +442,31 @@ class CodeGen {
             }
             sb_.append("  call i32 @myp_release(ptr " + oldData + ")\n");
             sb_.append("  store { ptr, i64 } " + value + ", ptr " + dst + "\n");
+        }
+
+        // 函数值 fat pointer {closure, call_fn} 是否 fresh（lambda/调用结果
+        // → 闭包 rc=1 转移；局部/参数别名 → 须 retain 闭包）。
+        int isFreshFuncExpr(AstExpr e) {
+            if (e == null) return 0;
+            string k = e.kind();
+            if (k == "Lambda" || k == "Call" || k == "New") return 1;
+            return 0;
+        }
+
+        // 向函数值槽（alloca {ptr,ptr}）store：fresh 转移 rc=1；否则 retain 新
+        // 闭包；释放旧闭包（retain-before-release，自赋值安全）。
+        void storeFuncSlot(string dst, string value, int fresh) {
+            string old = newTmp();
+            sb_.append("  " + old + " = load { ptr, ptr }, ptr " + dst + "\n");
+            string oldC = newTmp();
+            sb_.append("  " + oldC + " = extractvalue { ptr, ptr } " + old + ", 0\n");
+            if (fresh == 0) {
+                string newC = newTmp();
+                sb_.append("  " + newC + " = extractvalue { ptr, ptr } " + value + ", 0\n");
+                sb_.append("  call void @myp_retain(ptr " + newC + ")\n");
+            }
+            sb_.append("  store { ptr, ptr } " + value + ", ptr " + dst + "\n");
+            sb_.append("  call i32 @myp_release(ptr " + oldC + ")\n");
         }
 
         // 具体类实例 ptr → 接口 fat pointer { data, vtable }（C++ buildInterfaceFat）。
@@ -664,6 +696,71 @@ class CodeGen {
             return convertValue(v, from, to);
         }
 
+        // 表达式是否为定长数组 T[N]（返回其 AstType；null = 否）。仅覆盖
+        // 可可靠取到 AST 类型的形态（局部变量 / struct 字段）。
+        AstType exprFixedArrayType(AstExpr e) {
+            if (e == null) return null;
+            AstType t = null;
+            if (e.kind() == "Identifier") t = varAstType(e.name());
+            else if (e.kind() == "Member") t = memberFieldAstType(e);
+            if (t == null) return null;
+            AstType rt = resolveType(t);
+            if (rt != null && rt.element() != null && rt.arraySize() > 0) return rt;
+            return null;
+        }
+
+        // 定长数组（栈 [N x T] 数据指针）→ 堆动态数组 backing（逐元素拷贝，
+        // ARC 元素 retain，返回 fresh data 指针）。用于 return T[N] as T[]
+        //（#4a：直接返回栈帧数据指针会悬垂/被嵌套调用覆写）。
+        string fixedArrayToDynamic(string arrData, AstType fa) {
+            int n = fa.arraySize();
+            string eLt = llvmType(fa.element());
+            int elemSize = IrEmit.typeSize(eLt);
+            int elemKind = arrayElemKind(fa.element());
+            string heap = newTmp();
+            sb_.append("  " + heap + " = call ptr @myp_alloc_slice_backing(i64 " + n + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
+            addFreshTemp(heap);
+            for (int i = 0; i < n; i = i + 1) {
+                string src = newTmp();
+                sb_.append("  " + src + " = getelementptr " + eLt + ", ptr " + arrData + ", i32 " + i + "\n");
+                string dst = newTmp();
+                sb_.append("  " + dst + " = getelementptr " + eLt + ", ptr " + heap + ", i32 " + i + "\n");
+                if (elemKind == 0) {
+                    // 类/字符串元素：load ptr → retain → store（栈数组出口释放后 heap 仍持有）
+                    string ev = newTmp();
+                    sb_.append("  " + ev + " = load ptr, ptr " + src + "\n");
+                    sb_.append("  call void @myp_retain(ptr " + ev + ")\n");
+                    sb_.append("  store ptr " + ev + ", ptr " + dst + "\n");
+                } else if (eLt == "{ ptr, i64 }") {
+                    // 嵌套 slice 元素：retain backing 再拷贝 fat pointer
+                    string fat = newTmp();
+                    sb_.append("  " + fat + " = load { ptr, i64 }, ptr " + src + "\n");
+                    string data = newTmp();
+                    sb_.append("  " + data + " = extractvalue { ptr, i64 } " + fat + ", 0\n");
+                    sb_.append("  call void @myp_retain(ptr " + data + ")\n");
+                    sb_.append("  store { ptr, i64 } " + fat + ", ptr " + dst + "\n");
+                } else {
+                    string ev = newTmp();
+                    sb_.append("  " + ev + " = load " + eLt + ", ptr " + src + "\n");
+                    sb_.append("  store " + eLt + " " + ev + ", ptr " + dst + "\n");
+                }
+            }
+            return heap;
+        }
+
+        // 计算 return 表达式的值（定长数组 → 堆拷贝为动态数组 backing；
+        // 其余按声明类型转换）。
+        string genReturnValue(AstExpr e) {
+            AstType fa = exprFixedArrayType(e);
+            if (fa != null && curRetLt_ == "ptr") {
+                string arrData = genExpr(e);
+                return fixedArrayToDynamic(arrData, fa);
+            }
+            string v = genExpr(e);
+            string vt = exprLlvmType(e);
+            return convertExpr(v, vt, curRetLt_, e);
+        }
+
         // @op 运算符重载函数查找：按符号 + 两实参 LLVM 类型匹配（返回函数名）。
         string findOpFuncName(string sym, string lt, string rt) {
             if (tu_ == null) return "";
@@ -891,9 +988,14 @@ class CodeGen {
                     genClassFunction(c.name(), c.funcs().get(fi));
                 }
                 // 静态方法（泛型模板跳过：其实例在 tu.functions 的 __gs_ 中，同 C++）
+                // 同名同签名重复定义（如 Vectors.max 出现两次）→ 首个定义胜出，
+                // 后续跳过（同 C++ createStaticActionDecl 的 getFunction 去重）。
                 for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
                     AstAction a = c.staticActions().get(ai);
                     if (a.typeParams().size() != 0) continue;
+                    string sfn = c.name() + "_" + a.name();
+                    if (isEmittedFn(sfn) != 0) continue;
+                    markEmittedFn(sfn);
                     genStaticAction(c.name(), a);
                 }
                 // trait 默认实现：类省略了带默认体的接口方法时，生成按类特化的默认函数
@@ -2698,6 +2800,48 @@ class CodeGen {
             return "";
         }
 
+        // 已发射函数名去重（同名同签名重复定义 → 首个胜出，同 C++ 去重）。
+        int isEmittedFn(string fn) {
+            for (int i = 0; i < emittedFns_.size(); i = i + 1) {
+                if (emittedFns_.get(i) == fn) return 1;
+            }
+            return 0;
+        }
+        void markEmittedFn(string fn) {
+            emittedFns_.add(fn);
+        }
+
+        // CUDA/GPU 内建 intrinsic → 厂商中立 runtime 名（同 C++
+        // intrinsic_map_，myp_gpu_* 前缀 + 类型后缀；否则 __myp_ 去前缀会
+        // 错成不存在的 myp_cuda_* / 缺 _d/_h 后缀）。返回 "" 表示非 GPU 内建。
+        string mapGpuIntrinsic(string fn) {
+            if (fn == "__myp_cuda_available") return "myp_gpu_init";
+            if (fn == "__myp_cuda_count") return "myp_gpu_device_count";
+            if (fn == "__myp_cuda_name") return "myp_gpu_device_name";
+            if (fn == "__myp_cuda_memory") return "myp_gpu_device_memory";
+            if (fn == "__myp_cuda_capability") return "myp_gpu_compute_capability";
+            if (fn == "__myp_cuda_multiprocessors") return "myp_gpu_multi_processors";
+            if (fn == "__myp_cuda_max_threads") return "myp_gpu_max_threads_per_block";
+            if (fn == "__myp_cuda_warp") return "myp_gpu_warp_size";
+            if (fn == "__myp_gpu_alloc") return "myp_gpu_alloc_handle";
+            if (fn == "__myp_gpu_free") return "myp_gpu_free_handle";
+            if (fn == "__myp_gpu_sync") return "myp_gpu_sync_all";
+            if (fn == "__myp_gpu_stream_create") return "myp_gpu_stream_create_h";
+            if (fn == "__myp_gpu_stream_sync") return "myp_gpu_stream_sync_h";
+            if (fn == "__myp_gpu_stream_destroy") return "myp_gpu_stream_destroy_h";
+            if (fn == "__myp_gpu_copy_h2d") return "myp_gpu_copy_h2d_d";
+            if (fn == "__myp_gpu_copy_d2h") return "myp_gpu_copy_d2h_d";
+            if (fn == "__myp_gpu_copy_h2d_async") return "myp_gpu_copy_h2d_async_d";
+            if (fn == "__myp_gpu_copy_d2h_async") return "myp_gpu_copy_d2h_async_d";
+            if (fn == "__myp_gpu_event_create") return "myp_gpu_event_create_h";
+            if (fn == "__myp_gpu_event_record") return "myp_gpu_event_record_h";
+            if (fn == "__myp_gpu_event_wait") return "myp_gpu_event_wait_h";
+            if (fn == "__myp_gpu_event_sync") return "myp_gpu_event_sync_h";
+            if (fn == "__myp_gpu_event_elapsed") return "myp_gpu_event_elapsed_ms";
+            if (fn == "__myp_gpu_event_destroy") return "myp_gpu_event_destroy_h";
+            return "";
+        }
+
         // M-FN-2 nonlocal：把外层变量 name 提升为共享堆 cell（同 C++
         // promoteNonlocalToCell）：分配 __cell_N 实例、把当前值存入 cell->v、
         // 后续读写重定向到 cell->v GEP、记录 cellOwner。
@@ -3431,31 +3575,43 @@ class CodeGen {
                         continue;
                     }
                     if (isArc != 0) {
-                        // 引用局部（string/类/动态数组）：拥有槽，函数末释放
                         arcSlotNames_.add(va);
-                        sb_.append("  store ptr null, ptr " + va + "\n");
-                        if (v.init() != null) {
-                            string iv = genExpr(v.init());
-                            string it = exprLlvmType(v.init());
-                            iv = convertValue(iv, it, "ptr");
-                            storeNew(va, iv, isFreshTemp(iv));
-                            // §五-1 收尾: class/string 局部镜像进协程帧（destroy/异常释放）
-                            if (isCoroFrameTrackedDecl(rvt) != 0) {
-                                string cv = newTmp();
-                                sb_.append("  " + cv + " = load ptr, ptr " + va + "\n");
-                                emitCoroFrameSet(va, cv);
+                        if (lt == "{ ptr, ptr }") {
+                            // 函数值局部：fat pointer {closure, call_fn}，闭包
+                            // 对象计数引用；作用域末 release index 0。
+                            sb_.append("  store { ptr, ptr } zeroinitializer, ptr " + va + "\n");
+                            if (v.init() != null) {
+                                string iv = genExpr(v.init());
+                                string it = exprLlvmType(v.init());
+                                iv = convertValue(iv, it, "{ ptr, ptr }");
+                                storeFuncSlot(va, iv, isFreshFuncExpr(v.init()));
                             }
-                            // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
-                            if (v.init().kind() == "New") {
-                                string cn = v.init().className();
-                                if (Str.len(v.init().resolvedClass()) != 0) cn = v.init().resolvedClass();
-                                string gname = "";
-                                if (hasInstanceGlobal(cn) != 0) gname = cn;
-                                else if (hasInstanceGlobal(v.name()) != 0) gname = v.name();
-                                if (Str.len(gname) != 0) {
-                                    string loaded = newTmp();
-                                    sb_.append("  " + loaded + " = load ptr, ptr " + va + "\n");
-                                    sb_.append("  store ptr " + loaded + ", ptr @__myp_inst_" + gname + "\n");
+                        } else {
+                            // 引用局部（string/类/动态数组）：拥有槽，函数末释放
+                            sb_.append("  store ptr null, ptr " + va + "\n");
+                            if (v.init() != null) {
+                                string iv = genExpr(v.init());
+                                string it = exprLlvmType(v.init());
+                                iv = convertValue(iv, it, "ptr");
+                                storeNew(va, iv, isFreshTemp(iv));
+                                // §五-1 收尾: class/string 局部镜像进协程帧（destroy/异常释放）
+                                if (isCoroFrameTrackedDecl(rvt) != 0) {
+                                    string cv = newTmp();
+                                    sb_.append("  " + cv + " = load ptr, ptr " + va + "\n");
+                                    emitCoroFrameSet(va, cv);
+                                }
+                                // mapping 实例全局：new Cls() 存进 __myp_inst_Cls / __myp_inst_<var>
+                                if (v.init().kind() == "New") {
+                                    string cn = v.init().className();
+                                    if (Str.len(v.init().resolvedClass()) != 0) cn = v.init().resolvedClass();
+                                    string gname = "";
+                                    if (hasInstanceGlobal(cn) != 0) gname = cn;
+                                    else if (hasInstanceGlobal(v.name()) != 0) gname = v.name();
+                                    if (Str.len(gname) != 0) {
+                                        string loaded = newTmp();
+                                        sb_.append("  " + loaded + " = load ptr, ptr " + va + "\n");
+                                        sb_.append("  store ptr " + loaded + ", ptr @__myp_inst_" + gname + "\n");
+                                    }
                                 }
                             }
                         }
@@ -3482,12 +3638,22 @@ class CodeGen {
                 // try-with-finally 内 return → 存值、flag=2、先跑 finally
                 if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
                     if (st.value() != null) {
-                        string v = genExpr(st.value());
-                        string vt = exprLlvmType(st.value());
-                        v = convertExpr(v, vt, curRetLt_, st.value());
+                        string v = genReturnValue(st.value());
                         if (curRetLt_ == "ptr") {
                             if (isFreshTemp(v) != 0) consumeTemp(v);
                             else sb_.append("  call void @myp_retain(ptr " + v + ")\n");
+                        } else if (curRetLt_ == "{ ptr, i64 }") {
+                            if (isFreshSliceExpr(st.value()) == 0) {
+                                string sd = newTmp();
+                                sb_.append("  " + sd + " = extractvalue { ptr, i64 } " + v + ", 0\n");
+                                sb_.append("  call void @myp_retain(ptr " + sd + ")\n");
+                            }
+                        } else if (curRetLt_ == "{ ptr, ptr }") {
+                            if (isFreshFuncExpr(st.value()) == 0) {
+                                string cl = newTmp();
+                                sb_.append("  " + cl + " = extractvalue { ptr, ptr } " + v + ", 0\n");
+                                sb_.append("  call void @myp_retain(ptr " + cl + ")\n");
+                            }
                         }
                         if (Str.len(finallyRetSlot_) == 0) {
                             finallyRetSlot_ = newTmp();
@@ -3517,9 +3683,7 @@ class CodeGen {
                     sb_.append("  call void @myp_free_all()\n");
                 }
                 if (st.value() != null) {
-                    string v = genExpr(st.value());
-                    string vt = exprLlvmType(st.value());
-                    v = convertExpr(v, vt, curRetLt_, st.value());
+                    string v = genReturnValue(st.value());
                     // ARC：返回引用值——fresh 转移 +1，否则 retain（调用方取得引用）
                     if (curRetLt_ == "ptr") {
                         if (isFreshTemp(v) != 0) consumeTemp(v);
@@ -3531,6 +3695,14 @@ class CodeGen {
                             sb_.append("  " + sd + " = extractvalue { ptr, i64 } " + v + ", 0\n");
                             sb_.append("  call void @myp_retain(ptr " + sd + ")\n");
                         }
+                    } else if (curRetLt_ == "{ ptr, ptr }") {
+                        // 函数值返回：fresh（lambda/调用）转移 rc=1，否则 retain
+                        // 闭包（调用方取得引用；随后 releaseArcSlots 释放本帧局部）
+                        if (isFreshFuncExpr(st.value()) == 0) {
+                            string cl = newTmp();
+                            sb_.append("  " + cl + " = extractvalue { ptr, ptr } " + v + ", 0\n");
+                            sb_.append("  call void @myp_retain(ptr " + cl + ")\n");
+                        }
                     }
                     // @coro 方法：return 值存入协程结果槽（Coro.result 可取）
                     if (curFnCoro_ != 0 && curRetLt_ != "void") {
@@ -3539,10 +3711,12 @@ class CodeGen {
                     }
                     emitRegionExit();
                     flushTemps();
+                    releaseArcSlots();
                     sb_.append("  ret " + curRetLt_ + " " + v + "\n");
                 } else {
                     emitRegionExit();
                     flushTemps();
+                    releaseArcSlots();
                     sb_.append("  ret void\n");
                 }
                 terminated_ = 1;
@@ -4496,7 +4670,7 @@ class CodeGen {
                 return "" + v;
             }
             if (k == "Float") {
-                return floatLiteral(e.fval());
+                return floatLiteral(e.fval(), e.f32());
             }
             if (k == "Bool") {
                 if (e.value() != 0L) return "true";
@@ -4634,8 +4808,14 @@ class CodeGen {
                 if (Str.len(toLt) == 0 || toLt == "i32") {
                     if (Str.len(toK) == 0) toLt = "i32";
                 }
-                // uint/ulong/ubyte/ushort 目标 → 零扩展（位保持）；int(x) 有符号。
-                return convertValueU(ov, ot, toLt, isUnsignedKind(toK));
+                // 整数扩宽方向：目标无符号 → zext；否则按源操作数的有符号性
+                //（int(uint8[0]) 的源是 ubyte → zext，int(byte) → sext）。
+                int un = isUnsignedKind(toK);
+                if (un == 0) {
+                    AstExpr opE = e.operand();
+                    if (opE != null) un = isUnsignedKind(opE.resolvedKind());
+                }
+                return convertValueU(ov, ot, toLt, un);
             }
             if (k == "Binary") {
                 string op = e.op();
@@ -5561,8 +5741,13 @@ class CodeGen {
                 }
                 if (callee != null && callee.kind() == "Identifier") {
                     fn = callee.name();
-                    // 内建 intrinsic __myp_X → runtime myp_X（去掉两个下划线）
-                    if (Str.startsWith(fn, "__myp_") != 0) {
+                    // CUDA device info intrinsic → 厂商中立 runtime 名
+                    //（同 C++ intrinsic_map_，myp_gpu_* 前缀；否则 __myp_ 去
+                    // 前缀会错成不存在的 myp_cuda_*）。
+                    string cudaFn = mapGpuIntrinsic(fn);
+                    if (Str.len(cudaFn) != 0) {
+                        fn = cudaFn;
+                    } else if (Str.startsWith(fn, "__myp_") != 0) {
                         fn = Str.substring(fn, 2, Str.len(fn));
                     } else if (isTopLevelFunc(fn) == 0 && hasMethodInClass(curClass_, fn) != 0) {
                         // 类内裸方法调用 → this.method()（Class_method(ptr this, ...)）
@@ -6843,9 +7028,12 @@ class CodeGen {
             return gep;
         }
 
-        // double 常量 → LLVM 浮点文本（%e 格式，与 mypc --emit-llvm 一致）。
-        string floatLiteral(double v) {
-            return myp_fmt_double_e(v, 6);
+        // double/float 常量 → LLVM 十六进制位型文本（0x + 16 hex，与 LLVM
+        // ConstantFP 打印一致）。十进制 %e 在 float 上下文对非精确值（如
+        // 1e30f）会被 llc 拒绝（floating point constant invalid for type）。
+        string floatLiteral(double v, int isF32) {
+            if (isF32 != 0) return myp_f32_bits_hex(float(v));
+            return myp_f64_bits_hex(v);
         }
 
         // 字符串字面量 → 全局常量 + GEP 到 data ptr。
@@ -6952,6 +7140,7 @@ class CodeGen {
         string curClass_;
         ArrayList<string> cellOwnerNames_;
         ArrayList<string> cellOwnerVals_;
+        ArrayList<string> emittedFns_;
         ArrayList<string> curTypeParams_;
         ArrayList<AstType> curTypeArgs_;
         ArrayList<string> pendingTemps_;

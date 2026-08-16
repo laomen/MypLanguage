@@ -2693,6 +2693,18 @@ char* myp_fmt_double_e(double v, int32_t prec) {
     snprintf(buf, sizeof(buf), "%.*e", prec, v);
     return myp_strcat(buf, "");
 }
+// IEEE 754 位型十六进制（LLVM 文本 IR 浮点常量格式 0x + 16 hex，与
+// LLVM ConstantFP 打印一致）。float 先精确拓宽为 double，再取 64 位位型。
+char* myp_f64_bits_hex(double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    char buf[24];
+    snprintf(buf, sizeof(buf), "0x%016llX", (unsigned long long)bits);
+    return myp_strcat(buf, "");
+}
+char* myp_f32_bits_hex(float v) {
+    return myp_f64_bits_hex((double)v);
+}
 char* myp_fmt_double_g(double v, int32_t prec) {
     char buf[160];
     if (prec < 0) prec = 0;

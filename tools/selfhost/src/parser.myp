@@ -2231,7 +2231,10 @@ class Parser {
                 e.setKind("NewArray");
                 if (Str.len(e.className()) != 0) {
                     AstType et = new AstType();
-                    et.setBasicName(canonTypeName(e.className()));
+                    // 元素是类名（标识符，非内建类型）→ className（否则
+                    // arrayElemKind 把 new Node[2] 误判为标量数组，元素不释放）
+                    et.setClassName(e.className());
+                    for (int i = 0; i < e.typeArgs().size(); i = i + 1) et.typeArgs().add(e.typeArgs().get(i));
                     e.setElemType(et);
                     e.setClassName("");
                     e.typeArgs().clear();

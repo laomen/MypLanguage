@@ -33,6 +33,25 @@ import process;
             return "";
         }
 
+        // 定位 runtime_gpu.c（GPU/CUDA dlopen 胶水；任何 Linux 可编译，同 mypc
+        // 始终链接以提供设备信息符号）。
+        string findRuntimeGpu(string stdlib) {
+            if (Fs.isFile("src/runtime/runtime_gpu.c") != 0) return "src/runtime/runtime_gpu.c";
+            string rtDir = Fs.dirname(stdlib);
+            string cand = rtDir + "/src/runtime/runtime_gpu.c";
+            if (Fs.isFile(cand) != 0) return cand;
+            return "";
+        }
+
+        // 定位 runtime_lib.c（cuBLAS 等厂商库 dlopen 钩子；任何 Linux 可编译）。
+        string findRuntimeLib(string stdlib) {
+            if (Fs.isFile("src/runtime/runtime_lib.c") != 0) return "src/runtime/runtime_lib.c";
+            string rtDir = Fs.dirname(stdlib);
+            string cand = rtDir + "/src/runtime/runtime_lib.c";
+            if (Fs.isFile(cand) != 0) return cand;
+            return "";
+        }
+
         // 定位 include 目录（runtime.h）。
         string findIncDir(string stdlib) {
             if (Fs.isFile("include/mylang/runtime.h") != 0) return "include";
@@ -82,7 +101,44 @@ import process;
                     }
                 }
             }
-            cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj
+            // runtime_gpu.c（dlopen 胶水）：始终链接（同 mypc），否则 gpu/cuda
+            // 内建（myp_gpu_init/myp_cuda_*）链接时报 undefined reference。
+            string gpuObj = "/tmp/myp_self_gpu.o";
+            string gpuC = Link.findRuntimeGpu(stdlib);
+            string gpuLinkObj = "";
+            if (Str.len(gpuC) != 0) {
+                int needGpu = 1;
+                if (Fs.isFile(gpuObj) != 0 && Fs.isFile(gpuC) != 0) {
+                    if (Fs.modifiedTime(gpuObj) >= Fs.modifiedTime(gpuC)) needGpu = 0;
+                }
+                if (needGpu != 0) {
+                    cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + gpuC + " -o " + gpuObj + " 2>&1";
+                    if (Process.run(cmd) != 0) {
+                        Console.writeLine("gpu runtime compile failed");
+                        return 1;
+                    }
+                }
+                gpuLinkObj = " " + gpuObj;
+            }
+            // runtime_lib.c（cuBLAS 等厂商库钩子）：始终链接（同 mypc）。
+            string libObj = "/tmp/myp_self_lib.o";
+            string libC = Link.findRuntimeLib(stdlib);
+            string libLinkObj = "";
+            if (Str.len(libC) != 0) {
+                int needLib = 1;
+                if (Fs.isFile(libObj) != 0 && Fs.isFile(libC) != 0) {
+                    if (Fs.modifiedTime(libObj) >= Fs.modifiedTime(libC)) needLib = 0;
+                }
+                if (needLib != 0) {
+                    cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + libC + " -o " + libObj + " 2>&1";
+                    if (Process.run(cmd) != 0) {
+                        Console.writeLine("vendor-lib runtime compile failed");
+                        return 1;
+                    }
+                }
+                libLinkObj = " " + libObj;
+            }
+            cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
                 + " -o " + outPath + " -lpthread -lm -ldl -Wl,--gc-sections 2>&1";
             if (Process.run(cmd) != 0) {
                 Console.writeLine("link failed");
