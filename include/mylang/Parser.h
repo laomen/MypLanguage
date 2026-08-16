@@ -142,6 +142,10 @@ private:
     SourceRange tokenRange(const Token& tok) const;
     bool checkType() const;
     bool isTypeToken(TokenKind k) const;
+    // 前瞻：当前是 struct 方法（type [<...>] name '('）还是属性（type name ';'）。
+    // 泛型返回类型（ArrayList<AstType> name）需跳过 <...> 才能定位方法名——旧前瞻
+    // 只跳一个类型 token，泛型返回类型的方法被误判为属性（struct 解析失败）。
+    bool aheadIsStructMethod() const;
     bool scanGenericTypeArgs();
     bool scanFunctionType();
     bool scanTupleType();

@@ -514,6 +514,39 @@ std::unique_ptr<InterfaceDecl> Parser::parseInterface() {
 // or "struct" ClassName "::" StructName "{" { property | function } "}"
 // ==============================
 
+// 前瞻：当前 token 是 struct 方法声明（type [<...>] name '('）还是属性
+// （type name ';'）。泛型返回类型（ArrayList<AstType> name）须跳过 <...> 才能
+// 定位方法名——旧前瞻只跳一个类型 token，泛型返回方法被误判为属性。
+bool Parser::aheadIsStructMethod() const {
+    size_t ahead = current_;
+    if (ahead >= tokens_.size()) return false;
+    TokenKind k = tokens_[ahead].kind;
+    if (!((k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) ||
+          k == TokenKind::Keyword_void || k == TokenKind::Identifier))
+        return false;
+    ahead++;
+    // 跳过泛型实参 <...>（平衡，>> 作两个 '>' 计）。
+    if (ahead < tokens_.size() && tokens_[ahead].kind == TokenKind::Less) {
+        int depth = 0;
+        while (ahead < tokens_.size()) {
+            TokenKind g = tokens_[ahead].kind;
+            if (g == TokenKind::Less) { depth++; }
+            else if (g == TokenKind::Greater) {
+                depth--;
+                if (depth == 0) { ahead++; break; }
+            } else if (g == TokenKind::GreaterGreater) {
+                depth -= 2;
+                if (depth <= 0) { ahead++; break; }
+            }
+            ahead++;
+        }
+    }
+    // 方法名 identifier
+    if (ahead < tokens_.size() && tokens_[ahead].kind == TokenKind::Identifier)
+        ahead++;
+    return ahead < tokens_.size() && tokens_[ahead].kind == TokenKind::LeftParen;
+}
+
 std::unique_ptr<StructDecl> Parser::parseStruct() {
     auto decl = std::make_unique<StructDecl>();
     decl->range = previous().range;
@@ -544,20 +577,8 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
                     }
                     continue;
                 }
-                // 前瞻：方法（type name ( ... )）vs 属性（type name ;）
-                int ahead = current_;
-                auto isTypeKind = [](TokenKind k) {
-                    return (k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) ||
-                           k == TokenKind::Keyword_void || k == TokenKind::Identifier;
-                };
-                if (ahead < (int)tokens_.size() && isTypeKind(tokens_[ahead].kind)) {
-                    ahead++;
-                    if (ahead < (int)tokens_.size() && tokens_[ahead].kind == TokenKind::Identifier)
-                        ahead++;
-                }
-                bool is_method = (ahead < (int)tokens_.size() &&
-                                 tokens_[ahead].kind == TokenKind::LeftParen);
-                if (!is_method) break;  // 属性 → 退出 action: 段，交主循环
+                // 前瞻：方法（type [<...>] name ( ... )）vs 属性（type name ;）
+                if (!aheadIsStructMethod()) break;  // 属性 → 退出 action: 段，交主循环
                 auto func = parseFunction();
                 if (func) {
                     if (func->name == decl->name) func->has_constructor = true;
@@ -578,25 +599,10 @@ std::unique_ptr<StructDecl> Parser::parseStruct() {
         }
         if (checkType() || check(TokenKind::Keyword_void) ||
             (check(TokenKind::At) && peekNext().value == "weak")) {
-            // Look ahead up to 3 tokens to distinguish property vs method:
+            // Look ahead to distinguish property vs method:
             //   property: type name ; or type name = expr ;
-            //   method:   type name ( params ) { body }
-            // Skip ahead to peek after the type and identifier tokens
-            int ahead = current_;
-            // Skip type tokens (may be void too)
-            auto isTypeKind = [](TokenKind k) {
-                return (k >= TokenKind::Type_byte && k <= TokenKind::Type_bitvector) ||
-                       k == TokenKind::Keyword_void ||
-                       k == TokenKind::Identifier;
-            };
-            if (ahead < (int)tokens_.size() && isTypeKind(tokens_[ahead].kind)) {
-                ahead++;
-                // Skip identifier (the name)
-                if (ahead < (int)tokens_.size() && tokens_[ahead].kind == TokenKind::Identifier)
-                    ahead++;
-            }
-            bool is_method = (ahead < (int)tokens_.size() &&
-                             tokens_[ahead].kind == TokenKind::LeftParen);
+            //   method:   type [<...>] name ( params ) { body }
+            bool is_method = aheadIsStructMethod();
 
             if (is_method) {
                 auto func = parseFunction();

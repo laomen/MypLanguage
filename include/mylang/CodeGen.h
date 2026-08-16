@@ -120,6 +120,13 @@ private:
     std::unordered_map<std::string, llvm::StructType*> struct_types_;
     // Maps struct name → field name → index
     std::unordered_map<std::string, std::unordered_map<std::string, unsigned>> struct_field_indices_;
+    // Local variable/param name → struct type name (for struct method dispatch:
+    // `h.method()` needs to know `h` is a `Holder` struct, not a class).
+    std::unordered_map<std::string, std::string> var_struct_map_;
+    // Struct field name → its TypeNode (bare field names inside struct methods
+    // are registered as named GEPs; this lets assignments retain/consume ARC
+    // refs stored into `this.field` instead of plain-storing a fresh temp).
+    std::unordered_map<std::string, TypeNode> struct_field_types_;
 
     // ---- @thread handle tracking (for cleanup at main exit) ----
     std::vector<std::string> thread_handle_names_;

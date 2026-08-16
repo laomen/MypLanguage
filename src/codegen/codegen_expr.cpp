@@ -1021,6 +1021,8 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
         auto& oi = static_cast<const IdentifierExpr&>(obj);
         auto v = var_class_map_.find(oi.name);
         if (v != var_class_map_.end()) return v->second;
+        auto s = var_struct_map_.find(oi.name);
+        if (s != var_struct_map_.end()) return s->second;
         if (current_tu_) {
             for (auto& c : current_tu_->classes)
                 if (c.name == oi.name) return c.name;   // static call
@@ -1116,25 +1118,10 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
 }
 
 std::string CodeGen::callReturnClassName(const CallExpr& e) {
-    const TypeNode* rt = nullptr;
-    if (e.callee->kind == ExprKind::MemberAccess) {
-        auto& ma = static_cast<const MemberAccessExpr&>(*e.callee);
-        std::string cls = memberObjectClassName(*ma.object);
-        if (cls.empty() || !current_tu_) return "";
-        for (auto& c : current_tu_->classes) {
-            if (c.name != cls) continue;
-            for (auto& a : c.actions)
-                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
-            for (auto& a : c.static_actions)
-                if (a.name == ma.member_name) { rt = &a.return_type; goto found; }
-            for (auto& f : c.functions)
-                if (f.name == ma.member_name) { rt = &f.return_type; goto found; }
-        }
-    } else if (e.callee->kind == ExprKind::Identifier && !e.resolved_call_name.empty()) {
-        for (auto& f : current_tu_->functions)
-            if (f.name == e.resolved_call_name) { rt = &f.return_type; goto found; }
-    }
-found:
+    // Delegate to callReturnTypeNode (which resolves class AND struct methods,
+    // and TU/FFI calls). Return the mangled concrete class name for the return
+    // type (e.g. Option<int> → Option_int_inst), or "" if not a class type.
+    const TypeNode* rt = callReturnTypeNode(e);
     if (!rt || rt->class_name.empty()) return "";
     if (!rt->type_args.empty()) return mangleConcreteTypeNode(*rt);
     return rt->class_name;
@@ -1152,6 +1139,13 @@ const TypeNode* CodeGen::callReturnTypeNode(const CallExpr& e) {
             for (auto& a : c.static_actions)
                 if (a.name == ma.member_name) return &a.return_type;
             for (auto& f : c.functions)
+                if (f.name == ma.member_name) return &f.return_type;
+        }
+        // Struct method call: `h.getItems().size()` — resolve the struct
+        // method's return type so `.size()` dispatches to the concrete generic
+        // instance (ArrayList_int_inst), not the template (ArrayList).
+        if (const StructDecl* sd = findStruct(cls)) {
+            for (auto& f : sd->functions)
                 if (f.name == ma.member_name) return &f.return_type;
         }
         return nullptr;

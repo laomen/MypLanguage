@@ -701,6 +701,12 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
 
     auto* a = createEntryBlockAlloca(current_function_, lt, d.name);
     setNamedValue(d.name, a);
+    // Struct local: record the struct type name so `h.method()` member-access
+    // resolution knows `h` is a struct (not a class) and can dispatch to the
+    // struct method / its generic return type (BUG: generic-returning struct
+    // methods fell back to the template method).
+    if (is_struct)
+        var_struct_map_[d.name] = dt.class_name;
     // ARC: a local class reference is released when its scope exits.
     if (arc_decl_class) registerArcSlot(a, 0);
     // M8: a local string reference is released when its scope exits (kind 0
@@ -1561,6 +1567,18 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                     arcConsumeTemp(v);
                 }
             }
+        } else {
+            // Struct field (bare name inside a struct method = named GEP into
+            // `this`): an ARC-ref field is a strong slot — retain a non-fresh
+            // alias and CONSUME a fresh temp. Without the consume, a fresh
+            // `items = new ArrayList<int>()` is flushed at statement end (the
+            // field owns rc=1 but the temp still releases it) → dangling.
+            auto sft = struct_field_types_.find(id.name);
+            if (sft != struct_field_types_.end() && isArcFieldType(sft->second)) {
+                if (!isFreshArcExpr(*e.value))
+                    emitArcFieldOp(builder_, v, sft->second, true);
+                arcConsumeTemp(v);
+            }
         }
         builder_.CreateStore(v, a);
         // §五-1 收尾: mirror the slot's live object into the coroutine frame.
@@ -2166,6 +2184,19 @@ assign_gep:
                     auto* ft = st->getElementType(fi);
                     if (v->getType() != ft)
                         v = convertIntegerValue(builder_, v, ft, e.value.get());
+                    // M8: struct field holding an ARC ref (class/interface/
+                    // slice/string/dyn-array) is a strong slot — retain a
+                    // non-fresh alias and CONSUME a fresh temp. Without the
+                    // consume, a fresh `items = new ArrayList<int>()` is
+                    // flushed at statement end (the field now owns rc=1 but the
+                    // temp still releases it) → dangling field / segfault.
+                    const StructDecl* sd = findStruct(current_class_name_);
+                    if (sd && fi < sd->properties.size() &&
+                        isArcFieldType(sd->properties[fi].type)) {
+                        if (!isFreshArcExpr(*e.value))
+                            emitArcFieldOp(builder_, v, sd->properties[fi].type, true);
+                        arcConsumeTemp(v);
+                    }
                     builder_.CreateStore(v, gep);
                     return v;
                 }

@@ -418,14 +418,26 @@ class Parser {
             return d;
         }
 
-        // struct 方法前瞻：type [name] '(' → 方法；否则属性。
-        // 镜像 C++ isTypeKind：内置类型 || void || identifier。
+        // struct 方法前瞻：type [<...>] name '(' → 方法；否则属性。
+        // 镜像 C++ isTypeKind：内置类型 || void || identifier。泛型返回类型
+        // （ArrayList<AstType> name）须跳过 <...> 才能定位方法名。
         int structMethodAhead() {
             int a = current_;
             if (a < size()) {
                 string k = kindAt(a);
                 if (isTypeTokenStr(k) != 0 || k == "void" || k == "identifier") {
                     a = a + 1;
+                    // 跳过泛型实参 <...>（平衡，>> 作两个 '>' 计）
+                    if (a < size() && kindAt(a) == "<") {
+                        int depth = 0;
+                        while (a < size()) {
+                            string g = kindAt(a);
+                            if (g == "<") { depth = depth + 1; }
+                            else if (g == ">") { depth = depth - 1; if (depth == 0) { a = a + 1; break; } }
+                            else if (g == ">>") { depth = depth - 2; if (depth <= 0) { a = a + 1; break; } }
+                            a = a + 1;
+                        }
+                    }
                     if (a < size() && kindAt(a) == "identifier") a = a + 1;
                 }
             }

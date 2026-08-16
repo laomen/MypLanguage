@@ -1002,6 +1002,9 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
         // the {ptr,len} value → LLVM verify failure).
         if (pt.kind == TypeKind::Slice)
             var_slice_types_[action.params[i].name] = pt;
+        // Struct param: record type name for struct-method dispatch.
+        if (pt.kind == TypeKind::Struct)
+            var_struct_map_[action.params[i].name] = pt.class_name;
         // BUG-002: retain ARC 参数——协程挂起期间调用方可能释放实参对象。
         registerCoroParam(action.params[i].type, pt, a, func->getArg(i + 1));
     }
@@ -1416,6 +1419,7 @@ void CodeGen::generateStructMethods(const StructDecl& st) {
                 auto* gep = builder_.CreateStructGEP(st_type, func->getArg(0), fi);
                 auto* ft5 = st_type->getElementType(fi);
                 setNamedTypedValue(prop.name, gep, ft5);
+                struct_field_types_[prop.name] = prop.type;
                 // For array fields, record the element type for subscript access
                 if (prop.type.isArray() && prop.type.element_type) {
                     array_elem_types_[prop.name] = typeNodeToLLVMType(*prop.type.element_type);
@@ -1615,6 +1619,8 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
                 var_slice_types_[decl.params[i].name] = pt;
             if (pt.kind == TypeKind::Function)
                 func_val_types_[decl.params[i].name] = pt;
+            if (pt.kind == TypeKind::Struct)
+                var_struct_map_[decl.params[i].name] = pt.class_name;
             setNamedValue(decl.params[i].name, a);
             // 类参数：注册 var_class_map_（含类型参数 T→具体类型）→ 泛型函数实例内
             // `opt.method()` 精确解析到具体实例类，而非 best-class 误选模板名。

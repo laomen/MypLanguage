@@ -1,0 +1,26 @@
+import test;
+import collections;
+import option;
+
+// struct 方法返回泛型类型（ArrayList<T> / Option<T>）——解析器曾把
+// `ArrayList<int> getItems()` 误判为属性（只前瞻一个类型 token），
+// 导致 struct 方法解析失败（struct AST 迁移暴露）。
+struct Holder {
+    ArrayList<int> items;
+    action:
+        @constructor Holder() { items = new ArrayList<int>(); }
+        ArrayList<int> getItems() { return items; }
+        Option<int> maybe() { return new Option<int>(7); }
+        Option<int> none() { return new Option<int>(); }
+}
+
+@test void test_struct_method_generic() {
+    Holder h = Holder();
+    h.items.add(1);
+    h.items.add(2);
+    Test.assertEq(h.getItems().size(), 2, "size");
+    Test.assert(h.maybe().isSome(), "some");
+    Test.assertEq(h.maybe().get(), 7, "get");
+    Test.assert(h.none().isNone(), "none");
+    Test.report("test_struct_method_generic", true);
+}
