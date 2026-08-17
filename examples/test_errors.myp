@@ -1,7 +1,0 @@
-int main() {
-    int x = 42;
-    bool flag = true;
-    int y = flag;
-    return 0;
-}
-
