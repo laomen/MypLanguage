@@ -43,7 +43,7 @@ normalize() {
     sed -E \
         -e 's/ms [0-9]+/ms N/g' \
         -e 's/[0-9]+ms/Nms/g' \
-        -e 's/ms \([0-9.]+/ms (~N/g' \
+        -e 's/ms \(~[0-9.]+/ms (~N/g' \
         -e 's/best [0-9]+/best N/g' \
         -e 's/x[0-9.]+/xN/g' \
         -e 's/[0-9]+ ns\//N ns\//g' \
