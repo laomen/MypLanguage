@@ -1,8 +1,9 @@
 # MYP 全自举编译器——详细设计（tools/selfhost）
 
-> 状态：**H1 自举编译链跑通（2026-08-14）**｜版本：0.6（范围：只做全自举，非 GPU）
+> 状态：**H1 自举编译链跑通（2026-08-14）｜GPU CPU 回退完成（2026-08-17）**｜版本：0.6（范围：只做全自举，GPU 走 CPU 回退）
 > 目标：用 MYP 完整重写 `mypc`（前端 + 非 GPU codegen + 驱动），交付 `myp_self`，
-> 完成两级自举验证。**不做**混合编译（C++ 代做 codegen）、**不做** GPU。
+> 完成两级自举验证。**不做**混合编译（C++ 代做 codegen）、**不做** GPU kernel 发射；
+> `@gpu` 语句走 CPU 回退（2026-08-17 起与 oracle fallback 对齐）。
 > 前置阅读：`docs/self_hosting.md`、`docs/grammar.md`（规格 v1.0）、`src/lexer/`、`src/parser/`、
 > `src/sema/`、`src/codegen/`、`tools/fmt/lexer.myp`。
 
@@ -457,6 +458,7 @@ main.myp ─┬─> 前端: lexer → parser → sema（对拍/编译两用）
 | **G3** | 类/ARC/异常/泛型/mapping codegen + 运行时对接 | ✅ 完成：类/构造器/ARC（含 @weak/region）/异常/泛型/mapping/@eval 全部落地 |
 | **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | ✅ 完成：CLI/compile/link/--stdlib 全流程可用（bootstrap 15/15） |
 | **H1** | 两级自举验证 + 全量回归 + 文档 | ✅ 完成：两级自举 15/15；全量回归 275/275（100%）；test_myp_self 94/94 |
+| **GPU-CPU** | `@gpu for/tile/reduce/scan/scatter` CPU 回退 + `kernel.*` 上下文 + `@gpu stride for` step=1 + `float4`/`load4`/`store4` + `kernel.printk/assert` | ✅ 完成：GPU 测试 60/60（`RUN_GPU_TESTS=1` 接入 run_tests.sh）；全部 `tests/test_gpu_*.myp` 与 oracle CPU 回退输出对齐（reduce/scan/scatter/tile/kernel_ctx/vec4 数值逐项一致） |
 
 ---
 

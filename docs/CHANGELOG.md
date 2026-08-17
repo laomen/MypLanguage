@@ -27,6 +27,34 @@
 
 ## 编译器版本历史
 
+### v3.12.4 — 自举编译器 GPU CPU 回退（`@gpu` 语句全量串行对齐 oracle）+ `float4` 向量类型
+- **自举编译器（tools/selfhost）GPU CPU 回退落地**——`@gpu for/tile/reduce/scan/scatter`
+  不再静默跳过，全部按与 C++ oracle 一致的 CPU 回退语义执行：
+  - `@gpu for` / `@gpu stride for`：串行执行 + **模拟 `kernel.*` 上下文**
+    （`gid`=循环变量、`bx`=p/block、`tx`=p%block、`bd`=block、`gx`=ceil(bound/bd)）；
+    `@gpu stride for` CPU 回退 step 改 +1 顺序遍历（§3.5，同 oracle）。
+  - `@gpu reduce`：顺序 fold `out = fold(init, a[lo..hi))`（§8.2）。
+  - `@gpu scan`：顺序前缀扫描，inclusive/exclusive + 非零 init（§8.3）。
+  - `@gpu scatter`：顺序散点 `b[idx[lo_i+i]] = a[lo_a+i]`，any/unique/atomic_add
+    （float fadd / int add 累加）（§8.4）。
+  - `@gpu tile`：单线程降级——smem → 宿主栈数组、遍历展平线程网格
+    `p ∈ [0, grid*block)`、`kernel.sync()` 空操作（§8.5）。
+  - `kernel.sync()` 空操作；`kernel.shfl_down(v,d)`/`kernel.block_reduce_{sum,max}(v)`
+    恒等返回 v；`kernel.printk` 空操作；`kernel.assert` 失败 `myp_assert_abort` → exit(1)。
+  - 实现：`tools/selfhost/src/codegen.myp` 新增 `genGpuReduce/Scan/Scatter/Tile`、
+    `genKernelMember`、`bindGpuOpLocals`、`gpuArrayLoad/Store` 等 + `gpuCpuFallback_` 状态。
+- **`float4` 向量类型落地**（§3.6）：`IrEmit.llvmType`/`kindType` 映射
+  `float4`→`<4 x float>`、`double2`→`<2 x double>`、`int4`→`<4 x i32>`；`load4`/`store4`
+  打包读写（元素偏移 i*4，align 4）；`v.x/y/z/w` 读 `extractelement`、写 `insertelement`；
+  `zeroValue`/`alignOf`/`typeSize` 向量分支。
+- **回归接入**：新增 `tests/test_myp_gpu.sh`（CPU 回退模式，60 项检查），
+  `run_tests.sh` 新增第 10 部分 `RUN_GPU_TESTS=1` 可选启用。全部
+  `tests/test_gpu_*.myp` 与 oracle CPU 回退输出对齐（reduce/scan/scatter/tile/kernel_ctx/
+  vec4 数值逐项一致）；全量回归 275/275（`RUN_GPU_TESTS=1` 下 276/276）。
+- **已知遗留（非本次引入）**：`stdlib/gpu/algo.myp` 的 `GpuAlgo.sort`（嵌套 while +
+  `@gpu for`）在自举编译器产物中段错误（旧编译器同样 139，与 GPU 回退无关）；
+  已记录待查。
+
 ### v3.12.3 — class property 私有化（破坏性语义变更）+ 自举编译器两级自举成立 + Bug 跟踪框架
 - **⚠️ 破坏性变更：class `property:` 现为私有**——外部实例访问（读+写）→ 编译错误
   `cannot access property 'X' of 'Y' from outside the class`。此前 sema 允许外部读

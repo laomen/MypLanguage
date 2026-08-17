@@ -89,6 +89,11 @@ class CodeGen {
             threadHandles_ = new ArrayList<string>();
             testMode_ = 0;
             curFnCoro_ = 0;
+            gpuCpuFallback_ = 0;
+            gpuCpuLoopVarA_ = "";
+            gpuCpuLoopVarLt_ = "";
+            gpuCpuBoundV_ = "";
+            gpuCpuBlock_ = 0;
         }
 
         void setTestMode(int v) { testMode_ = v; }
@@ -3424,6 +3429,346 @@ class CodeGen {
             parallelBodies_.append("}\n\n");
         }
 
+        // kernel.gid/bx/tx/bd/gx（GPU CPU 回退）：从 gpuCpu* 状态计算 i64 值。
+        // gid=循环变量 / bx=p/block / tx=p%block / bd=block / gx=ceil(bound/bd)。
+        string genKernelMember(string mname) {
+            string p = newTmp();
+            sb_.append("  " + p + " = load " + gpuCpuLoopVarLt_ + ", ptr " + gpuCpuLoopVarA_ + "\n");
+            string p64 = p;
+            if (gpuCpuLoopVarLt_ == "i32") {
+                p64 = newTmp();
+                sb_.append("  " + p64 + " = sext i32 " + p + " to i64\n");
+            }
+            if (mname == "gid") return p64;
+            if (mname == "tx") {
+                string t = newTmp();
+                sb_.append("  " + t + " = srem i64 " + p64 + ", " + gpuCpuBlock_ + "\n");
+                return t;
+            }
+            if (mname == "bx") {
+                string t = newTmp();
+                sb_.append("  " + t + " = sdiv i64 " + p64 + ", " + gpuCpuBlock_ + "\n");
+                return t;
+            }
+            if (mname == "bd") return "" + gpuCpuBlock_;
+            if (mname == "gx") {
+                string r = newTmp();
+                sb_.append("  " + r + " = add i64 " + gpuCpuBoundV_ + ", " + (gpuCpuBlock_ - 1) + "\n");
+                string g = newTmp();
+                sb_.append("  " + g + " = sdiv i64 " + r + ", " + gpuCpuBlock_ + "\n");
+                return g;
+            }
+            return p64;
+        }
+
+        // §8.2 @gpu reduce CPU 回退：out = fold(init, a[lo..hi)) 顺序归约。
+        // op 是 (acc, x) => { return <expr>; }，sema 已把 return 提取到 opExpr。
+        void genGpuReduce(AstStmt st) {
+            string arr = st.arr();
+            string elemLt = varElemType(arr);
+            string lo = convertValue(genExpr(st.beginExpr()), exprLlvmType(st.beginExpr()), "i64");
+            string hi = convertValue(genExpr(st.endExpr()), exprLlvmType(st.endExpr()), "i64");
+            string n = newTmp();
+            sb_.append("  " + n + " = sub i64 " + hi + ", " + lo + "\n");
+            string accA = entryAlloca(elemLt);
+            string xA = entryAlloca(elemLt);
+            string initV = convertValue(genExpr(st.initExpr()), exprLlvmType(st.initExpr()), elemLt);
+            sb_.append("  store " + elemLt + " " + initV + ", ptr " + accA + "\n");
+            bindGpuOpLocals(st.acc(), accA, elemLt);
+            bindGpuOpLocals(st.x(), xA, elemLt);
+            string iA = entryAlloca("i64");
+            string condB = newBlock("rd_cond");
+            string bodyB = newBlock("rd_body");
+            string stepB = newBlock("rd_step");
+            string endB = newBlock("rd_end");
+            emitBr(condB);
+            openBlock(condB);
+            string iCur = newTmp();
+            sb_.append("  " + iCur + " = load i64, ptr " + iA + "\n");
+            string ok = newTmp();
+            sb_.append("  " + ok + " = icmp slt i64 " + iCur + ", " + n + "\n");
+            sb_.append("  br i1 " + ok + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            // x = a[lo+i]
+            string idx = newTmp();
+            sb_.append("  " + idx + " = add i64 " + lo + ", " + iCur + "\n");
+            string xv = gpuArrayLoad(arr, elemLt, idx);
+            sb_.append("  store " + elemLt + " " + xv + ", ptr " + xA + "\n");
+            // acc = op(acc, x)
+            if (st.opExpr() != null) {
+                string opv = convertValue(genExpr(st.opExpr()), exprLlvmType(st.opExpr()), elemLt);
+                sb_.append("  store " + elemLt + " " + opv + ", ptr " + accA + "\n");
+            }
+            emitBr(stepB);
+            openBlock(stepB);
+            string iNext = newTmp();
+            sb_.append("  " + iNext + " = add i64 " + iCur + ", 1\n");
+            sb_.append("  store i64 " + iNext + ", ptr " + iA + "\n");
+            emitBr(condB);
+            openBlock(endB);
+            // out = acc
+            string accV = newTmp();
+            sb_.append("  " + accV + " = load " + elemLt + ", ptr " + accA + "\n");
+            sb_.append("  store " + elemLt + " " + accV + ", ptr " + varAlloca(st.out()) + "\n");
+            popGpuOpLocals(2);
+        }
+
+        // §8.3 @gpu scan CPU 回退：顺序前缀扫描。
+        // inclusive：b[lo+i] = init∘a[lo]∘…∘a[lo+i]；exclusive：b[lo+i] = 前缀至
+        // i-1（b[lo]=init）。GPU 两遍 / CPU 顺序，容差内一致。
+        void genGpuScan(AstStmt st) {
+            string inN = st.inName();
+            string elemLt = varElemType(inN);
+            string lo = convertValue(genExpr(st.beginExpr()), exprLlvmType(st.beginExpr()), "i64");
+            string hi = convertValue(genExpr(st.endExpr()), exprLlvmType(st.endExpr()), "i64");
+            string n = newTmp();
+            sb_.append("  " + n + " = sub i64 " + hi + ", " + lo + "\n");
+            string accA = entryAlloca(elemLt);
+            string xA = entryAlloca(elemLt);
+            string initV = convertValue(genExpr(st.initExpr()), exprLlvmType(st.initExpr()), elemLt);
+            sb_.append("  store " + elemLt + " " + initV + ", ptr " + accA + "\n");
+            bindGpuOpLocals(st.acc(), accA, elemLt);
+            bindGpuOpLocals(st.x(), xA, elemLt);
+            string iA = entryAlloca("i64");
+            string condB = newBlock("sc_cond");
+            string bodyB = newBlock("sc_body");
+            string stepB = newBlock("sc_step");
+            string endB = newBlock("sc_end");
+            emitBr(condB);
+            openBlock(condB);
+            string iCur = newTmp();
+            sb_.append("  " + iCur + " = load i64, ptr " + iA + "\n");
+            string ok = newTmp();
+            sb_.append("  " + ok + " = icmp slt i64 " + iCur + ", " + n + "\n");
+            sb_.append("  br i1 " + ok + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            string idx = newTmp();
+            sb_.append("  " + idx + " = add i64 " + lo + ", " + iCur + "\n");
+            // exclusive：先写 out[lo+i] = acc（更新前）
+            if (st.exclusive() != 0) {
+                string accPre = newTmp();
+                sb_.append("  " + accPre + " = load " + elemLt + ", ptr " + accA + "\n");
+                gpuArrayStore(st.out(), elemLt, idx, accPre);
+            }
+            // x = in[lo+i]；acc = op(acc, x)
+            string xv = gpuArrayLoad(inN, elemLt, idx);
+            sb_.append("  store " + elemLt + " " + xv + ", ptr " + xA + "\n");
+            if (st.opExpr() != null) {
+                string opv = convertValue(genExpr(st.opExpr()), exprLlvmType(st.opExpr()), elemLt);
+                sb_.append("  store " + elemLt + " " + opv + ", ptr " + accA + "\n");
+            }
+            // inclusive：写 out[lo+i] = acc（更新后）
+            if (st.exclusive() == 0) {
+                string accNew = newTmp();
+                sb_.append("  " + accNew + " = load " + elemLt + ", ptr " + accA + "\n");
+                gpuArrayStore(st.out(), elemLt, idx, accNew);
+            }
+            emitBr(stepB);
+            openBlock(stepB);
+            string iNext = newTmp();
+            sb_.append("  " + iNext + " = add i64 " + iCur + ", 1\n");
+            sb_.append("  store i64 " + iNext + ", ptr " + iA + "\n");
+            emitBr(condB);
+            openBlock(endB);
+            popGpuOpLocals(2);
+        }
+
+        // §8.4 @gpu scatter CPU 回退：b[idx[lo_i+i]] = a[lo_a+i]（p∈[0,n)）。
+        // 模式：0=any（覆盖）、1=unique（覆盖，等价 any）、2=atomic_add（累加）。
+        void genGpuScatter(AstStmt st) {
+            string aN = st.arr();
+            string bN = st.out();
+            string idxN = st.idxName();
+            string elemLt = varElemType(aN);
+            string loA = convertValue(genExpr(st.aBegin()), exprLlvmType(st.aBegin()), "i64");
+            string hiA = convertValue(genExpr(st.aEnd()), exprLlvmType(st.aEnd()), "i64");
+            string loI = convertValue(genExpr(st.idxBegin()), exprLlvmType(st.idxBegin()), "i64");
+            string n = newTmp();
+            sb_.append("  " + n + " = sub i64 " + hiA + ", " + loA + "\n");
+            string iA = entryAlloca("i64");
+            string condB = newBlock("st_cond");
+            string bodyB = newBlock("st_body");
+            string stepB = newBlock("st_step");
+            string endB = newBlock("st_end");
+            emitBr(condB);
+            openBlock(condB);
+            string iCur = newTmp();
+            sb_.append("  " + iCur + " = load i64, ptr " + iA + "\n");
+            string ok = newTmp();
+            sb_.append("  " + ok + " = icmp slt i64 " + iCur + ", " + n + "\n");
+            sb_.append("  br i1 " + ok + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            string iAoff = newTmp();
+            sb_.append("  " + iAoff + " = add i64 " + loA + ", " + iCur + "\n");
+            string iIoff = newTmp();
+            sb_.append("  " + iIoff + " = add i64 " + loI + ", " + iCur + "\n");
+            string av = gpuArrayLoad(aN, elemLt, iAoff);
+            // j = (i64) idx[lo_i+i]
+            string j32 = gpuArrayLoad(idxN, "i32", iIoff);
+            string j = newTmp();
+            sb_.append("  " + j + " = sext i32 " + j32 + " to i64\n");
+            if (st.mode() == 2) {
+                // atomic_add：b[j] = b[j] + av
+                string oldV = gpuArrayLoad(bN, elemLt, j);
+                string sum = newTmp();
+                if (elemLt == "float" || elemLt == "double") {
+                    sb_.append("  " + sum + " = fadd " + elemLt + " " + oldV + ", " + av + "\n");
+                } else {
+                    sb_.append("  " + sum + " = add " + elemLt + " " + oldV + ", " + av + "\n");
+                }
+                gpuArrayStore(bN, elemLt, j, sum);
+            } else {
+                gpuArrayStore(bN, elemLt, j, av);
+            }
+            emitBr(stepB);
+            openBlock(stepB);
+            string iNext = newTmp();
+            sb_.append("  " + iNext + " = add i64 " + iCur + ", 1\n");
+            sb_.append("  store i64 " + iNext + ", ptr " + iA + "\n");
+            emitBr(condB);
+            openBlock(endB);
+        }
+
+        // §3.2 @gpu tile CPU 回退（单线程降级）：smem → 宿主栈数组；
+        // 遍历展平线程网格 p ∈ [0, grid*block)（每线程执行一次 body）；
+        // kernel.sync() 空操作；kernel.gid/bx/tx/bd/gx 由 gpuCpu* 状态模拟。
+        void genGpuTile(AstStmt st) {
+            int blk = st.block() != 0 ? st.block() : 256;
+            // grid：编译期常量（默认 1）或运行时表达式
+            string gridV = "" + (st.gridVal() > 0 ? st.gridVal() : 1);
+            if (st.hasGrid() != 0 && st.gridExpr() != null) {
+                gridV = convertValue(genExpr(st.gridExpr()), exprLlvmType(st.gridExpr()), "i64");
+            } else if (st.gridVal() > 0) {
+                gridV = "" + st.gridVal();
+            }
+            string total = newTmp();
+            sb_.append("  " + total + " = mul i64 " + gridV + ", " + blk + "\n");
+            // smem：宿主栈数组 [N x elemLt]（decay 指针存入 ptr 槽）
+            AstType stt = st.sharedType();
+            string smemElem = "i32";
+            int smemSize = 0;
+            if (stt != null) {
+                if (stt.element() != null) smemElem = llvmType(stt.element());
+                if (stt.arraySize() > 0) smemSize = stt.arraySize();
+            }
+            if (smemSize <= 0) smemSize = blk;
+            string arrLt = "[" + smemSize + " x " + smemElem + "]";
+            string arrA = newTmp() + ".smem";
+            int aal = IrEmit.alignOf(arrLt);
+            sb_.append("  " + arrA + " = alloca " + arrLt + ", align " + aal + "\n");
+            string msize = "" + (smemSize * IrEmit.typeSize(smemElem));
+            sb_.append("  call void @llvm.memset.p0.i64(ptr " + arrA + ", i8 0, i64 " + msize + ", i1 false)\n");
+            string elemPtr = newTmp();
+            sb_.append("  " + elemPtr + " = getelementptr " + arrLt + ", ptr " + arrA + ", i32 0, i32 0\n");
+            string va = newTmp();
+            sb_.append("  " + va + " = alloca ptr, align 8\n");
+            sb_.append("  store ptr " + elemPtr + ", ptr " + va + "\n");
+            localNames_.add(st.name());
+            localTypes_.add("ptr");
+            localAstTypes_.add(stt);
+            localAllocas_.add(va);
+            localElemTypes_.add(smemElem);
+            localIsSlice_.add(0);
+            localIsArc_.add(0);
+            // kernel.* 上下文：p ∈ [0, total)，block=blk，bound=total
+            string pA = entryAlloca("i64");
+            gpuCpuLoopVarA_ = pA;
+            gpuCpuLoopVarLt_ = "i64";
+            gpuCpuBoundV_ = total;
+            gpuCpuBlock_ = blk;
+            gpuCpuFallback_ = 1;
+            string condB = newBlock("tl_cond");
+            string bodyB = newBlock("tl_body");
+            string stepB = newBlock("tl_step");
+            string endB = newBlock("tl_end");
+            emitBr(condB);
+            openBlock(condB);
+            string iCur = newTmp();
+            sb_.append("  " + iCur + " = load i64, ptr " + pA + "\n");
+            string ok = newTmp();
+            sb_.append("  " + ok + " = icmp slt i64 " + iCur + ", " + total + "\n");
+            sb_.append("  br i1 " + ok + ", label %" + bodyB + ", label %" + endB + "\n");
+            terminated_ = 1;
+            openBlock(bodyB);
+            loopBreak_.add(endB);
+            loopContinue_.add(stepB);
+            genStmt(st.body());
+            if (terminated_ == 0) emitBr(stepB);
+            loopBreak_.remove(loopBreak_.size() - 1);
+            loopContinue_.remove(loopContinue_.size() - 1);
+            openBlock(stepB);
+            string iNext = newTmp();
+            sb_.append("  " + iNext + " = add i64 " + iCur + ", 1\n");
+            sb_.append("  store i64 " + iNext + ", ptr " + pA + "\n");
+            emitBr(condB);
+            openBlock(endB);
+            gpuCpuFallback_ = 0;
+            // 弹出 smem 局部
+            localNames_.remove(localNames_.size() - 1);
+            localTypes_.remove(localTypes_.size() - 1);
+            localAstTypes_.remove(localAstTypes_.size() - 1);
+            localAllocas_.remove(localAllocas_.size() - 1);
+            localElemTypes_.remove(localElemTypes_.size() - 1);
+            localIsSlice_.remove(localIsSlice_.size() - 1);
+            localIsArc_.remove(localIsArc_.size() - 1);
+        }
+
+        // 绑定 GPU op（acc/x）为当前函数局部（genExpr(Identifier) 读 alloca）。
+        void bindGpuOpLocals(string name, string a, string lt) {
+            localNames_.add(name);
+            localTypes_.add(lt);
+            localAstTypes_.add(null);
+            localAllocas_.add(a);
+            localElemTypes_.add("");
+            localIsSlice_.add(0);
+            localIsArc_.add(0);
+        }
+
+        // 弹出 GPU op 局部（count 个）。
+        void popGpuOpLocals(int count) {
+            for (int i = 0; i < count; i = i + 1) {
+                localNames_.remove(localNames_.size() - 1);
+                localTypes_.remove(localTypes_.size() - 1);
+                localAstTypes_.remove(localAstTypes_.size() - 1);
+                localAllocas_.remove(localAllocas_.size() - 1);
+                localElemTypes_.remove(localElemTypes_.size() - 1);
+                localIsSlice_.remove(localIsSlice_.size() - 1);
+                localIsArc_.remove(localIsArc_.size() - 1);
+            }
+        }
+
+        // GPU 回退数组读：load elemLt from varAlloca(name)[idx]（idx 为 i64）。
+        string gpuArrayLoad(string name, string elemLt, string idx) {
+            string arrP = newTmp();
+            sb_.append("  " + arrP + " = load ptr, ptr " + varAlloca(name) + "\n");
+            string elemAddr = newTmp();
+            sb_.append("  " + elemAddr + " = getelementptr " + elemLt + ", ptr " + arrP + ", i64 " + idx + "\n");
+            string v = newTmp();
+            sb_.append("  " + v + " = load " + elemLt + ", ptr " + elemAddr + "\n");
+            return v;
+        }
+
+        // GPU 回退数组写：store elemLt v to varAlloca(name)[idx]（idx 为 i64）。
+        void gpuArrayStore(string name, string elemLt, string idx, string v) {
+            string arrP = newTmp();
+            sb_.append("  " + arrP + " = load ptr, ptr " + varAlloca(name) + "\n");
+            string elemAddr = newTmp();
+            sb_.append("  " + elemAddr + " = getelementptr " + elemLt + ", ptr " + arrP + ", i64 " + idx + "\n");
+            sb_.append("  store " + elemLt + " " + v + ", ptr " + elemAddr + "\n");
+        }
+
+        // §3.6 向量类型的元素类型："<4 x float>" → "float"、"<2 x double>" → "double"。
+        string vectorElemType(string lt) {
+            if (Str.startsWith(lt, "<") != 0) {
+                int sp = Str.indexOf(lt, " x ");
+                if (sp > 0) return Str.substring(lt, sp + 3, Str.len(lt) - 1);
+            }
+            return lt;
+        }
+
         // 语句 → IR。
         void genStmt(AstStmt st) {
             if (st == null) return;
@@ -3843,6 +4188,30 @@ class CodeGen {
                     return;
                 }
                 if (st.init() != null) genStmt(st.init());
+                // @gpu for / @gpu stride for CPU 回退：串行执行 + 模拟 kernel.*
+                // 上下文（gid=循环变量/bx=p%bd 由 kernel 拦截读取本状态）。
+                int gpuLoop = st.gpu() != 0 ? 1 : 0;
+                if (gpuLoop != 0) {
+                    gpuCpuBlock_ = st.block() != 0 ? st.block() : 256;
+                    // 上界（gx = ceil(bound/bd)）：条件 rhs
+                    AstExpr gcond = st.condition();
+                    if (gcond != null) {
+                        AstExpr gbound = gcond.rhs();
+                        if (gbound != null) {
+                            gpuCpuBoundV_ = convertValue(genExpr(gbound), exprLlvmType(gbound), "i64");
+                        }
+                    }
+                    if (Str.len(gpuCpuBoundV_) == 0) gpuCpuBoundV_ = "0";
+                    // 循环变量 alloca：init 第一个 decl
+                    if (st.init() != null && st.init().decls().size() > 0) {
+                        string glv = st.init().decls().get(0).name();
+                        gpuCpuLoopVarA_ = varAlloca(glv);
+                        gpuCpuLoopVarLt_ = varType(glv);
+                    }
+                    if (Str.len(gpuCpuLoopVarA_) == 0) gpuCpuLoopVarA_ = "null";
+                    if (Str.len(gpuCpuLoopVarLt_) == 0) gpuCpuLoopVarLt_ = "i32";
+                    gpuCpuFallback_ = 1;
+                }
                 string condB = newBlock("for_cond");
                 string bodyB = newBlock("for_body");
                 string stepB = newBlock("for_step");
@@ -3866,9 +4235,23 @@ class CodeGen {
                 loopBreak_.remove(loopBreak_.size() - 1);
                 loopContinue_.remove(loopContinue_.size() - 1);
                 openBlock(stepB);
-                if (st.step() != null) genExpr(st.step());
+                if (gpuLoop != 0 && st.stride() != 0) {
+                    // §3.5 @gpu stride for CPU 回退：step 改 +1 顺序遍历全部元素
+                    string slv = st.init() != null && st.init().decls().size() > 0
+                        ? st.init().decls().get(0).name() : "";
+                    string sla = varAlloca(slv);
+                    string slt = varType(slv);
+                    string scur = newTmp();
+                    sb_.append("  " + scur + " = load " + slt + ", ptr " + sla + "\n");
+                    string snxt = newTmp();
+                    sb_.append("  " + snxt + " = add " + slt + " " + scur + ", 1\n");
+                    sb_.append("  store " + slt + " " + snxt + ", ptr " + sla + "\n");
+                } else if (st.step() != null) {
+                    genExpr(st.step());
+                }
                 emitBr(condB);
                 openBlock(endB);
+                if (gpuLoop != 0) gpuCpuFallback_ = 0;
             } else if (k == "Break") {
                 // try-with-finally 内 break → flag=3、先跑 finally
                 if (finallyStack_.size() > 0 && finallyStack_.get(finallyStack_.size() - 1).inFinally() == 0) {
@@ -3897,8 +4280,15 @@ class CodeGen {
                 genTryStmt(st);
             } else if (k == "Throw") {
                 genThrowStmt(st);
+            } else if (k == "GpuReduce") {
+                genGpuReduce(st);
+            } else if (k == "GpuScan") {
+                genGpuScan(st);
+            } else if (k == "GpuScatter") {
+                genGpuScatter(st);
+            } else if (k == "GpuTile") {
+                genGpuTile(st);
             }
-            // 其余（GpuTile 等）留 G3。
             // ARC：语句末释放未消费的 fresh temp（new/调用/拼接）。
             flushTemps();
         }
@@ -5269,6 +5659,25 @@ class CodeGen {
                     sb_.append("  store " + bft + " " + nv + ", ptr " + slot + "\n");
                     return rv;
                 } else if (lhs != null && lhs.kind() == "Member") {
+                    // §3.6 向量成员写：v.x = value → load + insertelement + store
+                    AstExpr vmObj = lhs.array();
+                    string vmT = exprLlvmType(vmObj);
+                    if (Str.startsWith(vmT, "<") != 0) {
+                        string vmName = lhs.memberName();
+                        int vcomp = (vmName == "x") ? 0 : (vmName == "y") ? 1 : (vmName == "z") ? 2 : 3;
+                        string velem = vectorElemType(vmT);
+                        string vslot = "";
+                        if (vmObj != null && vmObj.kind() == "Identifier") vslot = varAlloca(vmObj.name());
+                        if (Str.len(vslot) != 0) {
+                            string vcur = newTmp();
+                            sb_.append("  " + vcur + " = load " + vmT + ", ptr " + vslot + "\n");
+                            rv = convertValue(rv, rt, velem);
+                            string vnv = newTmp();
+                            sb_.append("  " + vnv + " = insertelement " + vmT + " " + vcur + ", " + velem + " " + rv + ", i32 " + vcomp + "\n");
+                            sb_.append("  store " + vmT + " " + vnv + ", ptr " + vslot + "\n");
+                        }
+                        return rv;
+                    }
                     // obj.field = v / this.field = v
                     string gep = memberAddr(lhs);
                     string ft = memberFieldType(lhs);
@@ -5493,6 +5902,23 @@ class CodeGen {
             }
             if (k == "Member") {
                 string mname = e.memberName();
+                // GPU CPU 回退：kernel.gid/bx/tx/bd/gx（@gpu for/tile 体内）
+                AstExpr kObj = e.array();
+                if (gpuCpuFallback_ != 0 && kObj != null && kObj.kind() == "Identifier"
+                    && kObj.name() == "kernel") {
+                    return genKernelMember(mname);
+                }
+                // §3.6 向量成员读：v.x/y/z/w → extractelement（float4/double2/int4）
+                AstExpr vecObj = e.array();
+                string vecObjT = exprLlvmType(vecObj);
+                if (Str.startsWith(vecObjT, "<") != 0) {
+                    int comp = (mname == "x") ? 0 : (mname == "y") ? 1 : (mname == "z") ? 2 : 3;
+                    string elemT = vectorElemType(vecObjT);
+                    string objv = genExpr(vecObj);
+                    string t = newTmp();
+                    sb_.append("  " + t + " = extractelement " + vecObjT + " " + objv + ", i32 " + comp + "\n");
+                    return t;
+                }
                 // 枚举变体（无参）：Color.Red / Shape.Point
                 AstExpr mObj = e.array();
                 if (mObj != null && mObj.kind() == "Identifier" && isEnumName(mObj.name()) != 0) {
@@ -5574,6 +6000,61 @@ class CodeGen {
             }
             if (k == "Call") {
                 AstExpr callee = e.callee();
+                // GPU CPU 回退：kernel.* 方法（sync 空操作；shfl_down/block_reduce
+                // 恒等返回首参；printk 空操作；assert 条件失败 myp_assert_abort）。
+                if (gpuCpuFallback_ != 0 && callee != null && callee.kind() == "Member") {
+                    AstExpr kc = callee.array();
+                    if (kc != null && kc.kind() == "Identifier" && kc.name() == "kernel") {
+                        string km = callee.memberName();
+                        if (km == "sync") return "0";
+                        if (km == "shfl_down" || km == "block_reduce_sum" || km == "block_reduce_max") {
+                            if (e.args().size() > 0) return genExpr(e.args().get(0));
+                            return "0";
+                        }
+                        if (km == "printk") return "0";
+                        if (km == "assert") {
+                            // assert(cond, ...) → if (!cond) myp_assert_abort(null)
+                            if (e.args().size() > 0) {
+                                string av = genExpr(e.args().get(0));
+                                string at = exprLlvmType(e.args().get(0));
+                                string cv = toI1(av, at);
+                                string abortB = newBlock("kassert.abort");
+                                string contB = newBlock("kassert.cont");
+                                string nb = newTmp();
+                                sb_.append("  " + nb + " = icmp eq i1 " + cv + ", false\n");
+                                sb_.append("  br i1 " + nb + ", label %" + abortB + ", label %" + contB + "\n");
+                                terminated_ = 1;
+                                openBlock(abortB);
+                                sb_.append("  call void @myp_assert_abort(ptr null)\n");
+                                emitBr(contB);
+                                openBlock(contB);
+                            }
+                            return "0";
+                        }
+                    }
+                }
+                // §3.6 向量打包访问：load4(a, i) → <4 x float>（i 为 4 元素组索引，
+                // 元素偏移 i*4）；store4(a, i, v) → 打包写（CPU 回退 + host 侧）。
+                if (callee != null && callee.kind() == "Identifier"
+                    && (callee.name() == "load4" || callee.name() == "store4")) {
+                    string fn = callee.name();
+                    string ap = genExpr(e.args().get(0));
+                    string idx = genExpr(e.args().get(1));
+                    string it = exprLlvmType(e.args().get(1));
+                    idx = convertValue(idx, it, "i64");
+                    string off = newTmp();
+                    sb_.append("  " + off + " = mul i64 " + idx + ", 4\n");
+                    string p = newTmp();
+                    sb_.append("  " + p + " = getelementptr float, ptr " + ap + ", i64 " + off + "\n");
+                    if (fn == "store4") {
+                        string v = genExpr(e.args().get(2));
+                        sb_.append("  store <4 x float> " + v + ", ptr " + p + ", align 4\n");
+                        return "0";
+                    }
+                    string t = newTmp();
+                    sb_.append("  " + t + " = load <4 x float>, ptr " + p + ", align 4\n");
+                    return t;
+                }
                 // __myp_throw(msg)：记录错误 + longjmp 到最内层 handler
                 //（C++ generateCall 内联特判，与 throw 语句一致）。
                 if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_throw") {
@@ -6217,6 +6698,18 @@ class CodeGen {
                 return varType(nm);
             }
             if (k == "Member") {
+                // GPU CPU 回退：kernel.gid/bx/tx/bd/gx → i64
+                AstExpr kmObj = e.array();
+                if (gpuCpuFallback_ != 0 && kmObj != null && kmObj.kind() == "Identifier"
+                    && kmObj.name() == "kernel") {
+                    return "i64";
+                }
+                // §3.6 向量成员读：v.x → 元素类型（float/double/i32）
+                AstExpr vecObj2 = e.array();
+                string vecObjT2 = exprLlvmType(vecObj2);
+                if (Str.startsWith(vecObjT2, "<") != 0) {
+                    return vectorElemType(vecObjT2);
+                }
                 // 枚举变体 Color.RED → { i32 } / { i32, [N x i8] }（kindType
                 // 返回 i32，会破坏 enum == 比较与 store 类型）
                 if (Str.len(e.resolvedClass()) != 0 && isEnumName(e.resolvedClass()) != 0) {
@@ -6235,6 +6728,19 @@ class CodeGen {
                 return ft;
             }
             if (k == "Call") {
+                // GPU CPU 回退：kernel.* 方法 → i32（sync/printk/assert 返回 0）或
+                // 首参类型（shfl_down/block_reduce 恒等）
+                AstExpr kc2 = e.callee();
+                if (gpuCpuFallback_ != 0 && kc2 != null && kc2.kind() == "Member") {
+                    AstExpr kobj2 = kc2.array();
+                    if (kobj2 != null && kobj2.kind() == "Identifier" && kobj2.name() == "kernel") {
+                        string km2 = kc2.memberName();
+                        if (km2 == "shfl_down" || km2 == "block_reduce_sum" || km2 == "block_reduce_max") {
+                            if (e.args().size() > 0) return exprLlvmType(e.args().get(0));
+                        }
+                        return "i32";
+                    }
+                }
                 // 元组返回调用 → 匿名结构体类型（否则 kindType("tuple")=ptr 错）
                 if (e.resolvedKind() == "tuple") {
                     AstExpr callee = e.callee();
@@ -7304,4 +7810,11 @@ class CodeGen {
         string curRegionMark_;
         int parallelCounter_;
         StringBuilder parallelBodies_;
+        // GPU CPU 回退上下文：@gpu for / @gpu tile 串行执行时模拟 kernel.* 语义
+        //（gid=循环变量 / bx=p/block / tx=p%block / bd=block / gx=ceil(bound/bd)）。
+        int gpuCpuFallback_;
+        string gpuCpuLoopVarA_;
+        string gpuCpuLoopVarLt_;
+        string gpuCpuBoundV_;
+        int gpuCpuBlock_;
 }

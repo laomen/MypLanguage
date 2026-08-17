@@ -414,14 +414,37 @@ else
 fi
 
 # =============================================
-# 第10部分: 总结
+# 第10部分: GPU CPU 回退测试（可选：RUN_GPU_TESTS=1）
+# =============================================
+echo ""
+echo "--- [10/11] GPU CPU 回退测试 (opt-in: RUN_GPU_TESTS=1) ---"
+echo ""
+GPU_PASS=0
+GPU_FAIL=0
+if [ "${RUN_GPU_TESTS:-0}" = "1" ]; then
+    gpu_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_myp_gpu.sh" 2>&1)
+    if echo "$gpu_out" | grep -qE "myp-gpu PASS=[0-9]+ FAIL=0"; then
+        echo -e "${GREEN}PASS${NC} (@gpu for/tile/reduce/scan/scatter CPU 回退)"
+        GPU_PASS=1
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$gpu_out" | tail -20
+        GPU_FAIL=1
+        FAILED_TESTS="$FAILED_TESTS gpu_cpu_fallback"
+    fi
+else
+    echo "  (跳过：设置 RUN_GPU_TESTS=1 启用 GPU CPU 回退测试)"
+fi
+
+# =============================================
+# 第11部分: 总结
 # =============================================
 echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS + VIZ_PASS + RUN_PASS + LSP_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL + VIZ_FAIL + RUN_FAIL + LSP_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS + VIZ_PASS + RUN_PASS + LSP_PASS + GPU_PASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL + VIZ_FAIL + RUN_FAIL + LSP_FAIL + GPU_FAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
 echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
@@ -431,6 +454,9 @@ echo "  自举格式化: ${FMT_PASS} 通过, ${FMT_FAIL} 失败"
 echo "  自举可视化: ${VIZ_PASS} 通过, ${VIZ_FAIL} 失败"
 echo "  mypc run: ${RUN_PASS} 通过, ${RUN_FAIL} 失败"
 echo "  LSP:       ${LSP_PASS} 通过, ${LSP_FAIL} 失败"
+if [ "${RUN_GPU_TESTS:-0}" = "1" ]; then
+    echo "  GPU 回退: ${GPU_PASS} 通过, ${GPU_FAIL} 失败"
+fi
 echo "  总计:     ${TOTAL_PASS} 通过, ${TOTAL_FAIL} 失败"
 
 if [ $TOTAL_FAIL -gt 0 ]; then

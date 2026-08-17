@@ -18,6 +18,10 @@ import "./ast.myp";
             if (s == "float") return "float";
             if (s == "double") return "double";
             if (s == "void") return "void";
+            // §3.6 向量类型：float4 → <4 x float>、double2 → <2 x double>、int4 → <4 x i32>
+            if (s == "float4") return "<4 x float>";
+            if (s == "double2") return "<2 x double>";
+            if (s == "int4") return "<4 x i32>";
             // bitvector<N> → iN（底层 LLVM 整数）
             if (Str.startsWith(s, "bitvector") != 0 && t.bitvectorWidth() != 0) {
                 return "i" + t.bitvectorWidth();
@@ -77,6 +81,9 @@ import "./ast.myp";
             if (kind == "float") return "float";
             if (kind == "double") return "double";
             if (kind == "void") return "void";
+            if (kind == "float4") return "<4 x float>";
+            if (kind == "double2") return "<2 x double>";
+            if (kind == "int4") return "<4 x i32>";
             if (kind == "string" || kind == "class" || kind == "interface"
                 || kind == "array" || kind == "struct"
                 || kind == "enum" || kind == "tuple") return "ptr";
@@ -93,6 +100,7 @@ import "./ast.myp";
             if (Str.startsWith(lt, "{") != 0) return "zeroinitializer";
             if (Str.startsWith(lt, "[") != 0) return "zeroinitializer";
             if (Str.startsWith(lt, "%") != 0) return "zeroinitializer";   // 命名 struct
+            if (Str.startsWith(lt, "<") != 0) return "zeroinitializer";   // §3.6 向量
             return "0";
         }
 
@@ -103,6 +111,11 @@ import "./ast.myp";
                 // 去掉尾部 ']'（"[262144 x i32]" → "i32"；否则 "i32]" 不匹配
                 // → 落默认 8，把 1MB i32 栈数组 alloca 成 align 8，llc 在
                 // SelectionDAG Combine 段错误）。
+                if (sp > 0) return IrEmit.alignOf(Str.substring(lt, sp + 3, Str.len(lt) - 1));
+            }
+            if (Str.startsWith(lt, "<") != 0) {
+                // §3.6 向量：<4 x float> → 4、<2 x double> → 8、<4 x i32> → 4
+                int sp = Str.indexOf(lt, " x ");
                 if (sp > 0) return IrEmit.alignOf(Str.substring(lt, sp + 3, Str.len(lt) - 1));
             }
             if (lt == "i8" || lt == "i1") return 1;
@@ -144,6 +157,14 @@ import "./ast.myp";
                 if (sp > 0) {
                     int n = IrEmit.parseNum(Str.substring(lt, 1, sp));
                     return n * IrEmit.typeSize(Str.substring(lt, sp + 3, Str.len(lt)));
+                }
+            }
+            if (Str.startsWith(lt, "<") != 0) {
+                // §3.6 向量：<4 x float> → 4 * sizeof(float)
+                int sp = Str.indexOf(lt, " x ");
+                if (sp > 0) {
+                    int n = IrEmit.parseNum(Str.substring(lt, 1, sp));
+                    return n * IrEmit.typeSize(Str.substring(lt, sp + 3, Str.len(lt) - 1));
                 }
             }
             if (lt == "{ ptr, i64 }") return 16;
