@@ -19,6 +19,17 @@ import env;
             return "llc";
         }
 
+        // 探测 opt（LLVM 中端优化器）：路径规则同 llc。MYP_OPT 环境变量优先。
+        string findOpt() {
+            string e = Console.getEnv("MYP_OPT");
+            if (Str.len(e) != 0) return e;
+            if (Fs.isFile("/usr/bin/opt-21") != 0) return "/usr/bin/opt-21";
+            if (Fs.isFile("/usr/lib/llvm-21/bin/opt") != 0) return "/usr/lib/llvm-21/bin/opt";
+            if (Fs.isFile("/usr/bin/opt-20") != 0) return "/usr/bin/opt-20";
+            if (Fs.isFile("/usr/lib/llvm-20/bin/opt") != 0) return "/usr/lib/llvm-20/bin/opt";
+            return "opt";
+        }
+
         // 定位 runtime.c：优先 cwd 的 src/runtime/runtime.c，否则 stdlib 父目录。
         string findRuntimeC(string stdlib) {
             if (Fs.isFile("src/runtime/runtime.c") != 0) return "src/runtime/runtime.c";
@@ -64,11 +75,26 @@ import env;
             return "include";
         }
 
-        // llPath(.ll) → llc → obj → gcc 链接 runtime → outPath 可执行。
+        // llPath(.ll) → [opt -O2] → llc → obj → gcc 链接 runtime → outPath 可执行。
         int link(string llPath, string outPath, string stdlib) {
+            // LLVM 中端优化（mem2reg/SROA/GVN/instcombine/内联）：默认开启，
+            // MYP_SELF_OPT=0 关闭（调试/对比）。codegen 发的是 alloca 形态 IR，
+            // 不经 opt 则每个局部变量都走栈内存——生成程序性能差一大截。
+            string srcLl = llPath;
+            string optEnv = Console.getEnv("MYP_SELF_OPT");
+            if (Str.len(optEnv) == 0 || optEnv != "0") {
+                string opt = Link.findOpt();
+                string optPath = outPath + ".opt.ll";
+                string optCmd = opt + " " + llPath + " -O2 -o " + optPath + " 2>&1";
+                if (Process.run(optCmd) != 0) {
+                    Console.writeLine("opt failed");
+                    return 1;
+                }
+                srcLl = optPath;
+            }
             string llc = Link.findLlc();
             string objPath = outPath + ".o";
-            string cmd = llc + " " + llPath + " -filetype=obj -relocation-model=pic -o " + objPath + " 2>&1";
+            string cmd = llc + " " + srcLl + " -filetype=obj -relocation-model=pic -o " + objPath + " 2>&1";
             if (Process.run(cmd) != 0) {
                 Console.writeLine("llc failed");
                 return 1;

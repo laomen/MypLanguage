@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.12.10 — 自举编译器接入 LLVM 中端优化（`opt -O2`）
+- 自举编译器此前**无任何 IR 优化**：codegen 只发 alloca 形态文本 IR（0 phi，局部
+  变量全走栈内存），`llc` 无 `-O`（仅后端 codegen）→ 生成程序性能差。
+- **`link.myp` 在 llc 前插入 `opt -O2` 步骤**（mem2reg/SROA/GVN/instcombine/内联）：
+  新增 `findOpt()`（opt-21/opt-20 探测，`MYP_OPT` env 覆盖）；**默认开启**，
+  `MYP_SELF_OPT=0` 关闭（调试/对比）。实测 opt 后 IR alloca 6→0（全部提成 SSA）。
+- **效果对比**（生成程序执行，3 次取最小）：
+  - 计算密集循环：46ms → **2ms（23x）**
+  - raytracer：1023ms → **326ms（3.1x）**
+  - 编译整个自举链：6441 → 7998ms（opt 步骤开销 **+24%**，换取生成的程序 3-23x）
+- 正确性：hello/fib/raytracer/showcase/GPU scatter 输出（含 verify 值与 GPU kernel
+  launch）与 opt 关**完全一致**；test_myp_self 94/94。
+- 权衡：编译 +24% ↔ 运行 3-23x；生产用默认开，快速编译用 `MYP_SELF_OPT=0`。
+
 ### v3.12.9 — 自举编译器词法 O(n²) → O(n)（`__myp_charcode` + 缓存长度 + fillLineCol 双指针）
 - **根因**：词法器 `peek()/advance()/match()/ordAt()` 对每个字符调用
   `__myp_ord(Str.substring(source_, pos_, pos_+1))`，而运行时 `myp_str_substring`
