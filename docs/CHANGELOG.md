@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.12.13 — 自举编译器 P3-2 去委托：`myp_self run`/`fmt` 原生化（不再 shell 到 mypc）
+- 此前 `myp_self run`/`fmt` 经 `delegateToMypc` shell 到 C++ mypc。现改为自托管：
+  - **`myp_self run <file.myp> [args...]`**（仿 go run）：原生编译+运行+清理，退出码透传。
+    无 main 时注入合成 main（单类 @startup）——移植 C++ `Sema::injectAutoMainIfNeeded`
+    到自举 sema（新增 `autoMain_` 标志，合成 main 豁免 main() 直接调用限制）；无 @startup /
+    多 @startup 报错与 mypc 一致；临时产物（二进制/.o/.ll/.opt.ll）运行后清理。
+  - **`myp_self fmt [--check] <file.myp> ...`**：改调自举格式化器 `myp_fmt2`
+    （MYP_FMT env 覆盖，缺失时现场用自身编译 tools/fmt/main.myp）。
+  - 删除 `delegateToMypc`/`findCompiler`；stdlib 解析统一走 `Cli.selfStdlib()`
+    （MYP_STDLIB env → 相对 myp_self 二进制 → cwd 兜底）。
+- 验证：test_myp_run.sh 8/8（self2 与 mypc 双跑）、test_myp_self.sh 94/94、
+  bootstrap 16/16（不动点保持）、run_tests.sh 274/275（仅已知 arc_throw -O2 缺陷）、
+  run-compare PASS=148 FAIL=0 GAP=1(sdl_demo) SKIP=17（无回归）。
+
 ### v3.12.10 — 自举编译器接入 LLVM 中端优化（`opt -O2`）
 - 自举编译器此前**无任何 IR 优化**：codegen 只发 alloca 形态文本 IR（0 phi，局部
   变量全走栈内存），`llc` 无 `-O`（仅后端 codegen）→ 生成程序性能差。

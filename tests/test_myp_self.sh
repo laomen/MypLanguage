@@ -71,15 +71,14 @@ else
 fi
 
 out_run="$TMP/myp_self_run.txt"
-if "$TMP/myp_self" run examples/hello.myp >"$out_run" 2>&1; then
-    grep -q "hello" "$out_run" && ok "myp_self run" || bad "myp_self run 输出不符"
+"$TMP/myp_self" run examples/hello.myp >"$out_run" 2>&1
+status=$?
+# hello.myp 不打印任何内容（main 返回 10+32=42）——真实契约是退出码透传。
+# 注：旧实现委托 mypc run，其编译 trace 路径含 "hello" 使 grep 偶然通过；原生实现无 trace。
+if [ "$status" -eq 42 ]; then
+    ok "myp_self run（hello.myp 退出码 42 透传）"
 else
-    status=$?
-    if [ "$status" -eq 42 ]; then
-        grep -q "hello" "$out_run" && ok "myp_self run" || bad "myp_self run 输出不符"
-    else
-        bad "myp_self run 退出码应透传为 42，实际 $status"
-    fi
+    bad "myp_self run 退出码应透传为 42，实际 $status"
 fi
 
 # ---- 2) C++ oracle：三模式 × 采样语料 ----

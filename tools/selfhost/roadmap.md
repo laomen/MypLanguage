@@ -345,6 +345,12 @@ G3 ──> G4 ──> H1
    274/275 是在"它能编译的子集"上跑的）。
 2. **去委托**：`myp_self run`/`fmt` 目前 `delegateToMypc`（shell 到 mypc）→ 改为自托管
    实现（`run` 复用 G4 链路；`fmt` 见 design.md R2 调 `myp_fmt2`）。
+   - ✅ **2026-08-17 完成**：`myp_self run <file.myp> [args...]` 改为**原生实现**（编译
+     autoMain + 运行 + 清理，不再调 mypc）；`myp_self fmt` 改调自举格式化器
+     `myp_fmt2`（MYP_FMT env 可覆盖，缺失时现场编译 tools/fmt/main.myp）。
+   - 关键点：原生 run 需 auto-main（无 main 时注入合成 main 调单类 @startup），
+     移植自 C++ `Sema::injectAutoMainIfNeeded`（sema 新增 autoMain_ 标志 +
+     合成 main 豁免 main() 直接调用限制）。`delegateToMypc` 已删除。
 3. **甩掉 C++ 种子（终极验收）**：只用 myp_self（+ 一份已编译 myp_self 二进制）从源码
    重建整个工具链，全程不调用 mypc。
    - ✅ **2026-08-17 演练通过**：仅用 `build/myp_self2` 重建编译器与全部 MYP 工具，

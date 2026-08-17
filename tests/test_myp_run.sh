@@ -36,7 +36,8 @@ class Hello {
 EOF
 out1=$($MYPCC run "$TMPDIR/hello.myp" 2>&1)
 ec1=$?
-check "单类@startup run 输出" "echo \"$out1\" | grep -q 'hello-run sum=5'"
+echo "$out1" > "$TMPDIR/run1.out"
+check "单类@startup run 输出" "grep -q 'hello-run sum=5' \"$TMPDIR/run1.out\""
 check "单类@startup run 退出码0" "test $ec1 -eq 0"
 
 # 2) 无 main 且无 @startup → 报错
@@ -46,7 +47,8 @@ class A { action: void f() {} }
 EOF
 out2=$($MYPCC run "$TMPDIR/noentry.myp" 2>&1)
 ec2=$?
-check "无@startup 报错提示" "echo \"$out2\" | grep -q '@startup'"
+echo "$out2" > "$TMPDIR/run2.out"
+check "无@startup 报错提示" "grep -q '@startup' \"$TMPDIR/run2.out\""
 check "无@startup 非零退出" "test $ec2 -ne 0"
 
 # 3) args 透传（经构造器，避开 main() 直接调用限制）
@@ -66,7 +68,8 @@ int main(int argc, string[] argv) {
 EOF
 out3=$($MYPCC run "$TMPDIR/args.myp" alpha beta 2>&1)
 ec3=$?
-check "args 透传输出" "echo \"$out3\" | grep -q 'argc=3 a1=alpha a2=beta'"
+echo "$out3" > "$TMPDIR/run3.out"
+check "args 透传输出" "grep -q 'argc=3 a1=alpha a2=beta' \"$TMPDIR/run3.out\""
 check "args 透传退出码0" "test $ec3 -eq 0"
 
 # 4) 正常编译（非 run）无 main → 仍链接失败（行为不变）

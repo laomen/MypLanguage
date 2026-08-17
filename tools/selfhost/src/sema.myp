@@ -1363,9 +1363,98 @@ class Sema {
             return null;
         }
 
+        void setAutoMain(int v) { autoMain_ = v; }
+
+        // `myp_self run`：无 main 时注入合成 main（ClassName c = new ClassName(); c.startup(); return 0;）。
+        // 移植自 C++ Sema::injectAutoMainIfNeeded。合成 main 带 autoMain 标志（豁免 main() 直接调用限制）。
+        void injectAutoMainIfNeeded(AstTU tu) {
+            // 用户已定义 main → 直接用，不注入
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                if (tu.functions().get(i).name() == "main") return;
+            }
+            // 收集带 @startup 的类（跳过泛型实例类）
+            string clsName = "";
+            string startupName = "";
+            int count = 0;
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass cls = tu.classes().get(ci);
+                if (cls.isGenericInst() != 0) continue;
+                for (int ai = 0; ai < cls.actions().size(); ai = ai + 1) {
+                    AstAction a = cls.actions().get(ai);
+                    if (a.startup() != 0) {
+                        clsName = cls.name();
+                        startupName = a.name();
+                        count = count + 1;
+                        break;
+                    }
+                }
+            }
+            if (count == 0) {
+                diag_.error(0, 0, "run: 无 'main' 函数且无带 '@startup' 注解的类——请定义 main() 或给类 action 加 '@startup' 注解");
+                return;
+            }
+            if (count > 1) {
+                diag_.error(0, 0, "run: 无 'main' 函数但有多个类带 '@startup'——请显式定义 main()");
+                return;
+            }
+
+            // ClassName c = new ClassName();
+            AstType clsType = new AstType();
+            clsType.setClassName(clsName);
+            AstExpr newExpr = new AstExpr();
+            newExpr.setKind("New");
+            newExpr.setClassName(clsName);
+            AstVar vd = new AstVar();
+            vd.setName("c");
+            vd.setType(clsType);
+            vd.setInit(newExpr);
+            AstStmt vds = new AstStmt();
+            vds.setKind("VarDecl");
+            vds.decls().add(vd);
+
+            // c.startupAction();
+            AstExpr id = new AstExpr();
+            id.setKind("Identifier");
+            id.setName("c");
+            AstExpr ma = new AstExpr();
+            ma.setKind("Member");
+            ma.setArray(id);
+            ma.setMemberName(startupName);
+            AstExpr call = new AstExpr();
+            call.setKind("Call");
+            call.setCallee(ma);
+            AstStmt es = new AstStmt();
+            es.setKind("ExprStmt");
+            es.setExpr(call);
+
+            // return 0;
+            AstExpr zero = new AstExpr();
+            zero.setKind("Integer");
+            zero.setValue(0L);
+            AstStmt ret = new AstStmt();
+            ret.setKind("Return");
+            ret.setValue(zero);
+
+            AstStmt blk = new AstStmt();
+            blk.setKind("Block");
+            blk.bodyStmts().add(vds);
+            blk.bodyStmts().add(es);
+            blk.bodyStmts().add(ret);
+
+            AstFunction mainDecl = new AstFunction();
+            mainDecl.setName("main");
+            AstType retT = new AstType();
+            retT.setBasicName("int");
+            mainDecl.setRet(retT);
+            mainDecl.setAutoMain(1);
+            mainDecl.setBody(blk);
+            tu.functions().add(mainDecl);
+        }
+
         void analyze(AstTU tu) {
             tu_ = tu;
             registerIntrinsics();
+            if (autoMain_ != 0) injectAutoMainIfNeeded(tu);
             // Pass 0：递归 type alias 检测（type A = A / type A = B, B = A）。
             // 沿别名链走，重复命中即递归（内建/类名/数组元素/类型参数终止）。
             for (int ti = 0; ti < tu.typeAliases().size(); ti = ti + 1) {
@@ -1690,7 +1779,7 @@ class Sema {
                 if (Str.len(f.name()) == 0) continue;
                 currentClass_ = "";
                 inClass_ = 0;
-                inMain_ = f.name() == "main" ? 1 : 0;
+                inMain_ = (f.name() == "main" && f.autoMain() == 0) ? 1 : 0;
                 // F4-G2：泛型函数的类型参数占位符（T/R/E）也进 curGeneric_，
                 // 使 declareParam 的 tryInstantiate 能识别占位符并延迟实例化
                 // （否则 resultMap<T,R,E> 的 Result<T,E> 参数会生成 Result_T_E_inst）。
@@ -5616,6 +5705,7 @@ class Sema {
         int inGpuFor_;
         int inGpuDivergent_;
         int inMain_;
+        int autoMain_;
         string currentRet_;
         int loopDepth_;
         int inCoro_;

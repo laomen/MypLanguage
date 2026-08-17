@@ -158,18 +158,13 @@ class LoadedSet {
         }
 
         // stdlib 路径探测：MYP_STDLIB env → ./stdlib → ../stdlib →
-        // <compiler>/../stdlib（pm 工具从包目录调用 myp_self 时 cwd 不在地根）。
+        // 相对 myp_self 二进制位置（pm 工具从包目录调用 myp_self 时 cwd 不在地根）。
         string stdlibResolve() {
             string env = Console.getEnv("MYP_STDLIB");
             if (Str.len(env) != 0 && Fs.isDir(env) != 0) return env;
             if (Fs.exists("./stdlib/env.myp") != 0) return "./stdlib";
             if (Fs.exists("../stdlib/env.myp") != 0) return "../stdlib";
-            string compiler = Cli.findCompiler();
-            if (Str.len(compiler) != 0) {
-                string sd = Cli.findStdlib(compiler);
-                if (Str.len(sd) != 0) return sd;
-            }
-            return "./stdlib";
+            return Cli.selfStdlib();
         }
 
         // 路径规范化：去掉 "./" 片段与空段，作为 dedup key（对齐 C++ normalizePath）。
@@ -337,7 +332,7 @@ class LoadedSet {
 
         // G1：compile 模式——lexer→parser→import 合并→sema→codegen(.ll)→link。
         // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。
-        int compile(string file, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode) {
+        int compile(string file, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode, int autoMain) {
             if (Fs.exists(file) == 0) {
                 Console.writeLine("Error: cannot open file '" + file + "'");
                 return 1;
@@ -363,6 +358,7 @@ class LoadedSet {
                 return 1;
             }
             Sema se = new Sema(diag);
+            se.setAutoMain(autoMain);
             se.expandMacros(tu);
             se.analyze(tu);
             if (diag.errorCount() != 0) {
@@ -387,21 +383,18 @@ class LoadedSet {
 
 @static class Cli {
     static:
-        string findCompiler() {
-            string cc = Console.getEnv("MYP_CC");
-            if (Str.len(cc) > 0 && Fs.isFile(cc) != 0) return cc;
-            if (Fs.isFile("./build/mypc") != 0) return "./build/mypc";
-            if (Fs.isFile("build/mypc") != 0) return "build/mypc";
-            return "mypc";
-        }
-
-        string findStdlib(string compiler) {
+        string selfStdlib() {
             string s = Console.getEnv("MYP_STDLIB");
             if (Str.len(s) > 0 && Fs.isDir(s) != 0) return s;
-            string dir = Fs.dirname(compiler);
-            string root = Fs.dirname(dir);
-            string cand = Fs.join(root, "stdlib");
-            if (Fs.isDir(cand) != 0) return cand;
+            // 相对 myp_self 二进制位置推断仓库 stdlib（Args.get(0) = 程序路径）
+            if (Args.count() > 0) {
+                string self = Args.get(0);
+                string root = Fs.dirname(Fs.dirname(self));
+                string cand = Fs.join(root, "stdlib");
+                if (Fs.exists(Fs.join(cand, "env.myp")) != 0) return cand;
+            }
+            if (Fs.exists("./stdlib/env.myp") != 0) return "./stdlib";
+            if (Fs.exists("../stdlib/env.myp") != 0) return "../stdlib";
             return "";
         }
 
@@ -418,15 +411,45 @@ class LoadedSet {
             return sb.toString();
         }
 
-        int delegateToMypc(string subcmd) {
-            string compiler = Cli.findCompiler();
+        // myp_self run <file.myp> [args...] —— 仿 go run：编译(autoMain) + 运行 + 清理（原生实现，不再委托 mypc）。
+        int runFile() {
+            string file = Args.get(2);
+            string stdlib = Cli.selfStdlib();
+            string base = "/tmp/myp_self_run_" + Process.getPid();
+            int rc = Frontend.compile(file, base, stdlib, "", 0, 0, 1);
+            if (rc != 0) return rc;
             StringBuilder cmd = new StringBuilder();
-            cmd.append(compiler);
-            if (subcmd == "run") {
-                string stdlib = Cli.findStdlib(compiler);
-                if (Str.len(stdlib) > 0) cmd.append(" --stdlib " + stdlib);
+            cmd.append(Cli.quoteShell(base));
+            int i = 3;
+            while (i < Args.count()) {
+                cmd.append(" " + Cli.quoteShell(Args.get(i)));
+                i = i + 1;
             }
-            cmd.append(" " + subcmd);
+            int erc = Process.run(cmd.toString());
+            Fs.removeRecursive(base);
+            Fs.removeRecursive(base + ".o");
+            Fs.removeRecursive(base + ".ll");
+            Fs.removeRecursive(base + ".opt.ll");
+            return erc;
+        }
+
+        // myp_self fmt [--check] <file.myp> ... —— 调自举格式化器 myp_fmt2（tools/fmt/main.myp），不再委托 mypc。
+        int fmt() {
+            string fmtBin = Console.getEnv("MYP_FMT");
+            if (Str.len(fmtBin) == 0) fmtBin = "./build/myp_fmt2";
+            if (Fs.isFile(fmtBin) == 0) {
+                fmtBin = "/tmp/myp_fmt2_self";
+                if (Fs.isFile(fmtBin) == 0) {
+                    string stdlib = Cli.selfStdlib();
+                    int rc = Frontend.compile("tools/fmt/main.myp", fmtBin, stdlib, "", 0, 0, 0);
+                    if (rc != 0) {
+                        Console.writeLine("myp_self fmt: 无法定位/编译自举格式化器（设 MYP_FMT 或提供 tools/fmt/main.myp）");
+                        return rc;
+                    }
+                }
+            }
+            StringBuilder cmd = new StringBuilder();
+            cmd.append(Cli.quoteShell(fmtBin));
             int i = 2;
             while (i < Args.count()) {
                 cmd.append(" " + Cli.quoteShell(Args.get(i)));
@@ -455,10 +478,10 @@ class LoadedSet {
                     Console.writeLine("Usage: myp_self run <file.myp> [args...]");
                     return 1;
                 }
-                return Cli.delegateToMypc("run");
+                return Cli.runFile();
             }
             if (arg == "fmt") {
-                return Cli.delegateToMypc("fmt");
+                return Cli.fmt();
             }
             if (arg == "--frontend-dump") {
                 if (argc < 4) {
@@ -508,7 +531,7 @@ class LoadedSet {
             if (Str.len(outPath) == 0) {
                 outPath = Cli.stripExt(file) + ".out";
             }
-            return Frontend.compile(file, outPath, stdlib, packagePath, emitLlvm, testMode);
+            return Frontend.compile(file, outPath, stdlib, packagePath, emitLlvm, testMode, 0);
         }
 
         // 去最后一个 . 后缀（examples/hello.myp → examples/hello）。
