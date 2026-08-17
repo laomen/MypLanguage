@@ -309,3 +309,55 @@ G3 ──> G4 ──> H1
 见 `design.md` §7。重点：**sema 与 codegen 各占约一半工作量**，务必按 F/G 子域切碎、
 每段独立对拍；**IR 文本发射与 LLVM API 的语义差异**由"产物运行输出"主验收兜底；
 **自举验证的自依赖环**通过独立脚本规避。
+
+---
+
+## 后续计划（H1 之后，2026-08-17 基于 soft2 全量测试 + C++/Go 基准结论立项）
+
+> 背景：用 soft2（stage1 自编译 myp_self）跑全量测试（274/275）与 40 项 C++/Go 基准
+> （verify 全一致）后，验证出以下后续项。**优先级按 ROI 排序；任何 codegen/link 改动
+> 必须过 `tests/test_myp_bootstrap.sh`（不动点）+ 全量回归把关。**
+
+### P1 运行时/字符串：字符串头加长度字段（先做，收益最广）
+- **现状**：字符串无长度字段 → `myp_str_append`/`myp_strcat` 每次 `strlen(已累加串)`
+  O(len)；`Str.len`/`myp_str_eq`/`myp_str_cmp` 同理。此前 LD_PRELOAD 实测 strlen 曾占
+  运行 29%（`__strlen_evex` 最大单项）；`s = s + x` 裸累加仍 O(n²)（N 翻倍时间×4）。
+- **方案**：字符串头 `{len, rc, type_id}`（len@data-16，rc@data-8，type_id@data-4 不变
+  → 既有 retain/release 读取位置不动）。需同步：`runtime.c myp_alloc_str` 16 字节头、
+  **C++ 与自举两个 codegen 的字面量发射**（`{i64, i32, i32, [N x i8]}` GEP 0,3）、
+  `myp_str_len` 读头。风险中（改动 ABI 相关布局，务必 ASAN + 全量回归）。
+- **收益**：全局（所有生成程序 + 编译自身）；消除字符串累加 O(n²) 与 ~29% strlen。
+
+### P2 生成代码性能对齐：soft2 数值循环向量化缺口（专项跟进）
+- **现状**：soft2 编译产物平均慢 mypc ~14%（几何平均 1.138），最坏**数值向量化循环**
+  matmul 2.43x / matrix_int_mul 2.50x / fib_matrix 2.20x / floyd 1.62x / sha256 1.41x；
+  内存/字符串/混合负载持平或更好（kmeans 0.83x、coro_switch 0.95x）。
+- **根因（反汇编实证）**：mypc -O2 二进制 matmul 用 **SSE2 向量化（`mulpd`/`addpd`）**，
+  soft2 二进制**纯标量（`mulsd`/`addsd`）**。两者原始 IR 经**同一外部 `opt-21 -O2` 都
+  不向量化** → 差距在 **mypc 进程内 LLVM pass pipeline 比 soft2 的外部 `opt -O2` 更强**
+  （mypc `--emit-llvm` dump 有 `i0` 类型瑕疵，与真实编译路径不一致，佐证 dump 不忠实）。
+- **下一步侦察**：在 `mypc codegen.generate(ast, output, opt_level)` 的进程内 pipeline
+  打点，确认多跑了哪些 pass（-O3？额外 vectorize？pass 顺序？），再决定"对齐 pipeline"
+  还是"调整 soft2 IR 形状"。
+
+### P3 完整自举三步（从"子集自举"到"完全自举"）
+1. **功能补齐**：GPU/剩余语言特性在 myp_self 落地（当前非 GPU、部分特性子集；
+   274/275 是在"它能编译的子集"上跑的）。
+2. **去委托**：`myp_self run`/`fmt` 目前 `delegateToMypc`（shell 到 mypc）→ 改为自托管
+   实现（`run` 复用 G4 链路；`fmt` 见 design.md R2 调 `myp_fmt2`）。
+3. **甩掉 C++ 种子（终极验收）**：只用 myp_self（+ 一份已编译 myp_self 二进制）从源码
+   重建整个工具链，全程不调用 mypc。
+4. **性能对齐**：P2 落地后 soft2 产物性能与 mypc 持平。
+
+### P4 已知遗留问题（登记，按需处理）
+| 项 | 现象 | 处置 |
+|----|------|------|
+| mypc `--emit-llvm` dump `i0` 类型瑕疵 | `store i0 0` 使独立 `opt` 拒绝整文件 | 修 C++ dump（oracle 对齐，F4-O 流程） |
+| `-O2` × 异常展开 | `@test/arc_throw` runtime 失败（mypc -O2 与 soft2 同样失败，既有） | 排查 opt 下异常 unwind 语义，另立任务 |
+| 基准源 `nqueens`/`alphabeta` | 违反属性私有规则，mypc 与 soft2 **都**编译失败（非自举缺口） | 修两个基准源文件（bench/myp/） |
+
+### 未完成项（roadmap 原清单遗留）
+- **H1-5 性能基准**：`myp_self` vs `mypc` 编译耗时基线（≤10x，目标 ≤3x）。本轮已实测
+  整链编译：soft2 编译 10 文件链 ~20s、单文件 ~0.7-3s（opt +24% 开销）；正式基线待补录。
+- **H1-6 文档收口**：`docs/self_hosting.md`（T5 完成状态）、README 工具清单、
+  `-O0`/`-O2`/ASAN 三套回归接入（`run_tests_O2.sh` 的 `arc_throw` 失败即 P4-2）。
