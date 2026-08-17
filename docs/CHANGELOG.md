@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.12.9 — 自举编译器词法 O(n²) → O(n)（`__myp_charcode` + 缓存长度 + fillLineCol 双指针）
+- **根因**：词法器 `peek()/advance()/match()/ordAt()` 对每个字符调用
+  `__myp_ord(Str.substring(source_, pos_, pos_+1))`，而运行时 `myp_str_substring`
+  每次 `strlen(source_)`（O(n)）→ 每字符 O(n)，整文件 **O(n²)**；`Str.len` 也是
+  strlen，守卫里同样 O(n)。
+- **修复**：
+  1. 新增 **`__myp_charcode(str, i)`** FFI → 运行时 `myp_charcode`（`(unsigned char)s[i]`
+     直接下标，O(1) 无 strlen；负数/空返回 0，上界由调用方保证）。C++ oracle
+     （sema.cpp/codegen.cpp/CodeGen.h）与自举（sema.myp/ir_emit.myp）同步注册。
+  2. 词法器构造时**缓存 `len_`**（一次性 strlen），光标函数改 `__myp_charcode` +
+     `len_`，消除逐字符 strlen。
+  3. **`fillLineCol` 双指针**：token 按 begin 单调递增 → 行起始指针只前进，
+     O(tokens×lines) → O(tokens+lines)。
+- **实测（自举编译自身源码，3 次取最小）**：
+  - codegen.myp(9995 行) tokens：11086→**672ms（16.5x）**；编译 13304→**2570ms（5.2x）**
+  - main.myp（合并全链 ~2.3 万行）编译：19747→**4387ms（4.5x）**
+  - tokens 规模扫描由 O(n²)（行数×2 → 时间×4）转为近线性（×2 → ×2.7-3.3）。
+- 残余：`--frontend-dump ast/sema` 仍偏慢（dumps 的 `StringBuilder.toString` 是
+  O(总输出²)，验证模式）；小文件 myp_self 本就比 mypc 快（启动开销低）。
+- 回归：test_myp_self 94/94（字节级对拍保持）、test_myp_gpu 60/60、run_tests 275/275。
+
 ### v3.12.8 — 自举编译器 `MYP_LLC` 环境变量覆盖 llc 路径
 - `link.myp` `Link.findLlc()` 先读 `MYP_LLC`（非空即用），再回退既有 llc-21/llc-20
   探测 → `llc`（PATH）。跨机器/任意 LLVM 版本无需改源码。

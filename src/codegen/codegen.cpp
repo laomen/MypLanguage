@@ -2272,6 +2272,8 @@ void CodeGen::declareRuntimeFunctions() {
     // Integer to single-char string
     runtime_chr_ = llvm::Function::Create(llvm::FunctionType::get(p, {i32}, false), llvm::Function::ExternalLinkage, "myp_chr", module_.get());
     runtime_ord_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_ord", module_.get());
+    // O(1) char-at-index (no strlen): runtime_ord_(substring) was O(n) per char
+    runtime_charcode_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p, i32}, false), llvm::Function::ExternalLinkage, "myp_charcode", module_.get());
 
     // §五-4 RTTI: type info from the object header (type_id → __myp_type_name_table)
     runtime_type_id_ = llvm::Function::Create(llvm::FunctionType::get(i32, {p}, false), llvm::Function::ExternalLinkage, "myp_obj_type_id", module_.get());
@@ -2472,6 +2474,7 @@ void CodeGen::declareRuntimeFunctions() {
     intrinsic_map_["__myp_strlen"] = runtime_strlen_;
     intrinsic_map_["__myp_chr"] = runtime_chr_;
     intrinsic_map_["__myp_ord"] = runtime_ord_;
+    intrinsic_map_["__myp_charcode"] = runtime_charcode_;
     intrinsic_map_["__myp_atof"] = runtime_atof_;
     // §五-4 RTTI intrinsics
     intrinsic_map_["__myp_type_id"] = runtime_type_id_;

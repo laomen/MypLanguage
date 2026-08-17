@@ -329,6 +329,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare i32 @myp_ord(ptr)\n");
             sb.append("\n");
+            sb.append("declare i32 @myp_charcode(ptr, i32)\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_str_substring(ptr, i32, i32)\n");
             sb.append("\n");
             sb.append("declare i32 @myp_obj_type_id(ptr)\n");

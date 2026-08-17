@@ -40,6 +40,7 @@ class Lexer {
     action:
         @constructor Lexer(string src) {
             source_ = src;
+            len_ = Str.len(src);   // 缓存长度（Str.len 是 strlen，O(n)，每字符调用即 O(n^2)）
             pos_ = 0;
             line_ = 1;
             col_ = 1;
@@ -67,20 +68,22 @@ class Lexer {
         void fillLineCol(ArrayList<Tok> toks) {
             ArrayList<int> starts = new ArrayList<int>();
             starts.add(0);
-            for (int p = 0; p < Str.len(source_); p = p + 1) {
-                if (__myp_ord(Str.substring(source_, p, p + 1)) == 10) starts.add(p + 1);
+            int n = len_;
+            for (int p = 0; p < n; p = p + 1) {
+                if (__myp_charcode(source_, p) == 10) starts.add(p + 1);
             }
+            // 双指针：token 按 begin 单调递增，行起始指针 si 只前进 → O(tokens+lines)。
+            // 此前每 token 线性扫全部 starts → O(tokens×lines) = O(n^2)。
+            int si = 0;
             for (int ti = 0; ti < toks.size(); ti = ti + 1) {
                 Tok t = toks.get(ti);
                 if (t.kind() == "eof") continue;
                 int off = t.begin();
                 if (Str.len(t.value()) == 0) off = off - 1;
                 if (off < 0) off = 0;
-                int line = 1;
-                int ls = 0;
-                for (int i = 0; i < starts.size(); i = i + 1) {
-                    if (starts.get(i) <= off) { line = i + 1; ls = starts.get(i); }
-                }
+                while (si + 1 < starts.size() && starts.get(si + 1) <= off) si = si + 1;
+                int line = si + 1;
+                int ls = starts.get(si);
                 int col = off - ls + 1;
                 if (col < 1) col = 1;
                 t.setLineCol(line, col);
@@ -334,13 +337,16 @@ class Lexer {
         }
 
         // ---- 字符/位置工具（与 C++ advance/match/peek 一致）----
+        // 字符访问用 __myp_charcode（O(1)，无 strlen）；长度用缓存的 len_。
+        // 此前 __myp_ord(Str.substring(source_, pos_, pos_+1)) 每次触发
+        // myp_str_substring 的 strlen(source_)（O(n)）→ 整文件 O(n^2)。
         int ordAt(int i) {
-            if (i >= Str.len(source_)) return -1;
-            return __myp_ord(Str.substring(source_, i, i + 1));
+            if (i >= len_) return -1;
+            return __myp_charcode(source_, i);
         }
         int peek() {
-            if (pos_ >= Str.len(source_)) return 0;
-            return __myp_ord(Str.substring(source_, pos_, pos_ + 1));
+            if (pos_ >= len_) return 0;
+            return __myp_charcode(source_, pos_);
         }
         int advance() {
             int c = ordAt(pos_);
@@ -350,16 +356,16 @@ class Lexer {
             return c;
         }
         int matchCh(int expected) {
-            if (pos_ >= Str.len(source_)) return 0;
-            if (__myp_ord(Str.substring(source_, pos_, pos_ + 1)) != expected) return 0;
+            if (pos_ >= len_) return 0;
+            if (__myp_charcode(source_, pos_) != expected) return 0;
             advance();
             return 1;
         }
         int isAtEnd() {
-            if (pos_ >= Str.len(source_)) return 1;
+            if (pos_ >= len_) return 1;
             return 0;
         }
-        int len() { return Str.len(source_); }
+        int len() { return len_; }
 
         // 按当前进制判定数字字符。
         int isDigitFor(int c, int hex, int binary, int octal) {
@@ -387,6 +393,7 @@ class Lexer {
         DiagEngine diag() { return diag_; }
     property:
         string source_;
+        int len_;
         int pos_;
         int line_;
         int col_;

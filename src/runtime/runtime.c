@@ -469,6 +469,14 @@ int32_t myp_ord(const char* s) {
     return (int32_t)(unsigned char)s[0];
 }
 
+// ASCII code at index i, O(1) (no strlen). Caller guarantees 0 <= i < len.
+// Negative or null → 0 (upper bound unchecked for O(1); lexer guards with its
+// cached source length).
+int32_t myp_charcode(const char* s, int32_t i) {
+    if (!s || i < 0) return 0;
+    return (int32_t)(unsigned char)s[i];
+}
+
 // String equality comparison (content, not pointer)
 int32_t myp_str_eq(const char* a, const char* b) {
     if (!a || !b) return a == b ? 1 : 0;

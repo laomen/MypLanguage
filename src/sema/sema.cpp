@@ -2512,6 +2512,7 @@ void Sema::registerIntrinsics() {
     add_intrinsic("__myp_strlen", TypeKind::Int, {TypeKind::String});
     add_intrinsic("__myp_chr", TypeKind::String, {TypeKind::Int});
     add_intrinsic("__myp_ord", TypeKind::Int, {TypeKind::String});
+    add_intrinsic("__myp_charcode", TypeKind::Int, {TypeKind::String, TypeKind::Int});
 
     // §五-4 RTTI intrinsics (stdlib Rtti wraps them; param = any class object)
     add_intrinsic("__myp_type_id", TypeKind::Int, {TypeKind::Class});

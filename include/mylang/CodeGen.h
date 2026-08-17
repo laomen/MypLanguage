@@ -324,6 +324,7 @@ private:
     llvm::Function* runtime_strlen_ = nullptr;
     llvm::Function* runtime_chr_ = nullptr;
     llvm::Function* runtime_ord_ = nullptr;
+    llvm::Function* runtime_charcode_ = nullptr;
     // In-place string append (`s = s + x` fast path, M4): runtime myp_str_append
     llvm::Function* runtime_str_append_ = nullptr;
     // M7 weak references: runtime myp_weak_store / myp_weak_load / myp_weak_clear

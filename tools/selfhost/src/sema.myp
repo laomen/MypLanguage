@@ -506,6 +506,7 @@ class Sema {
             addIntr("__myp_strlen", "int");
             addIntr("__myp_chr", "string");
             addIntr("__myp_ord", "int");
+            addIntr("__myp_charcode", "int");
             addIntr("__myp_type_id", "int");
             addIntr("__myp_type_name", "string");
             addIntr("__myp_timer_create", "int");
