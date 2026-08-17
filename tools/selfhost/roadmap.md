@@ -347,6 +347,12 @@ G3 ──> G4 ──> H1
    实现（`run` 复用 G4 链路；`fmt` 见 design.md R2 调 `myp_fmt2`）。
 3. **甩掉 C++ 种子（终极验收）**：只用 myp_self（+ 一份已编译 myp_self 二进制）从源码
    重建整个工具链，全程不调用 mypc。
+   - ✅ **2026-08-17 演练通过**：仅用 `build/myp_self2` 重建编译器与全部 MYP 工具，
+     未调用 mypc。结果：①编译器不动点 self2→self3→self4 字节全同（md5 52c81186…）；
+     ②fmt/viz/pm 由 self2 重建，输出与 mypc 重建版字节级一致（fmt 5/5、viz 3/3、
+     pm list/version 一致）；③self3 端到端编译 hello 返回 42。链接仍经 opt/llc/gcc
+     （LLVM 后端，非 mypc）。
+   - 剩余收口：`myp_self run`/`fmt` 子命令的 `delegateToMypc` 去委托（见 P3-2）。
 4. **性能对齐**：P2 落地后 soft2 产物性能与 mypc 持平。
 
 ### P4 已知遗留问题（登记，按需处理）
