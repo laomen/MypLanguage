@@ -4962,7 +4962,7 @@ class Sema {
         int isIntegerStr(string s) {
             if (Str.len(s) == 0) return 0;
             for (int i = 0; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 if (c < 48 || c > 57) return 0;
             }
             return 1;

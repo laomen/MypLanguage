@@ -57,7 +57,7 @@ class LoadedSet {
         string escape(string s) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 if (c == 10) sb.append("\\n");
                 else if (c == 9) sb.append("\\t");
                 else if (c == 13) sb.append("\\r");
@@ -150,7 +150,7 @@ class LoadedSet {
         string dotToSlash(string name) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < Str.len(name); i = i + 1) {
-                int c = __myp_ord(Str.substring(name, i, i + 1));
+                int c = __myp_charcode(name, i);
                 if (c == 46) sb.append("/");
                 else sb.append(__myp_chr(c));
             }
@@ -177,11 +177,11 @@ class LoadedSet {
         // Fs.exists 找不到文件、loadModule 中断整个 import 链（绝对路径根文件必挂）。
         string normalizePath(string p) {
             int hasRoot = 0;
-            if (Str.len(p) != 0 && __myp_ord(Str.substring(p, 0, 1)) == 47) hasRoot = 1;
+            if (Str.len(p) != 0 && __myp_charcode(p, 0) == 47) hasRoot = 1;
             ArrayList<string> parts = new ArrayList<string>();
             int start = 0;
             for (int i = 0; i <= Str.len(p); i = i + 1) {
-                if (i == Str.len(p) || __myp_ord(Str.substring(p, i, i + 1)) == 47) {
+                if (i == Str.len(p) || __myp_charcode(p, i) == 47) {
                     string seg = Str.substring(p, start, i);
                     if (Str.len(seg) != 0 && seg != ".") parts.add(seg);
                     start = i + 1;
@@ -201,7 +201,7 @@ class LoadedSet {
         int loadModule(AstTU tu, AstImport imp, string sourceDir, string packagePath, LoadedSet loaded, DiagEngine diag) {
             string path = "";
             if (imp.isPath() != 0) {
-                if (Str.len(imp.path()) != 0 && __myp_ord(Str.substring(imp.path(), 0, 1)) == 47) {
+                if (Str.len(imp.path()) != 0 && __myp_charcode(imp.path(), 0) == 47) {
                     path = imp.path();
                 } else {
                     path = sourceDir + "/" + imp.path();
@@ -515,7 +515,7 @@ class LoadedSet {
         string stripExt(string path) {
             int dot = -1;
             for (int i = Str.len(path) - 1; i >= 0; i = i - 1) {
-                if (__myp_ord(Str.substring(path, i, i + 1)) == 46) { dot = i; break; }
+                if (__myp_charcode(path, i) == 46) { dot = i; break; }
             }
             if (dot >= 0) return Str.substring(path, 0, dot);
             return path;

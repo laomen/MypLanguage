@@ -15,7 +15,7 @@ import fmt;
         string esc(string s) {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 if (c == 10) sb.append("\\n");
                 else if (c == 9) sb.append("\\t");
                 else if (c == 13) sb.append("\\r");

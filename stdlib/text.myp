@@ -33,6 +33,7 @@ ffi string myp_str_pad_right(string s, int total_len, int pad_char);
 ffi int myp_str_to_int(string s);
 ffi string myp_str_reverse(string s);
 ffi string myp_str_replace_all(string s, string old_str, string new_str);
+ffi string myp_str_join(string[] data, int n);
 
 // ============================================================
 // Str — 字符串工具函数（静态类）
@@ -162,13 +163,12 @@ class StringBuilder {
             cnt_ = 0;
         }
 
-        // 构建最终字符串（拼接所有片段）
+        // 构建最终字符串：一次分配 + 两趟（长度求和→拷贝），O(n)。
+        // 避免逐片段 `result = result + x` 的 O(n²)（无长度字段时每次
+        // strlen 重扫已累加串；M4 快速路径只省拷贝不省 strlen）。
         string toString() {
-            string result = "";
-            for (int i = 0; i < cnt_; i = i + 1) {
-                result = result + data_[i];
-            }
-            return result;
+            if (cnt_ == 0) return "";
+            return myp_str_join(data_, cnt_);
         }
 
         int count() {

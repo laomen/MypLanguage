@@ -296,7 +296,7 @@ class CodeGen {
         int isDigits(string s) {
             if (Str.len(s) == 0) return 0;
             for (int i = 0; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 if (c < 48 || c > 57) return 0;
             }
             return 1;
@@ -7691,6 +7691,34 @@ class CodeGen {
                 return t;
             }
             if (k == "Assign") {
+                // M4: 原地字符串追加 —— `s = s + x`（左侧同变量字符串局部）发射
+                // myp_str_append（rc==1 时原地 realloc 扩展，O(1) 均摊），对齐 C++
+                // codegen_stmt.cpp M4；避免 O(n²) 字符串累加（如 StringBuilder
+                // toString 的 result = result + 片段）。myp_str_append 消费旧值。
+                AstExpr lhs0 = e.lhs();
+                AstExpr rhs0 = e.rhs();
+                if (lhs0 != null && rhs0 != null && lhs0.kind() == "Identifier"
+                    && rhs0.kind() == "Binary" && rhs0.op() == "+" && rhs0.opCall() == 0
+                    && rhs0.lhs() != null && rhs0.lhs().kind() == "Identifier"
+                    && rhs0.lhs().name() == lhs0.name()
+                    && hasVar(lhs0.name()) != 0
+                    && exprIsString(lhs0) != 0 && exprIsString(rhs0.lhs()) != 0) {
+                    string nm = lhs0.name();
+                    string cur = newTmp();
+                    sb_.append("  " + cur + " = load ptr, ptr " + varAlloca(nm) + "\n");
+                    string rv2 = genExpr(rhs0.rhs());
+                    string rt2 = exprLlvmType(rhs0.rhs());
+                    string sv = stringifyConcat(rv2, rt2, rhs0.rhs());
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call ptr @myp_str_append(ptr " + cur + ", ptr " + sv + ")\n");
+                    // myp_str_append 已消费旧值（原地 realloc 或释放）→ 普通 store
+                    sb_.append("  store ptr " + t + ", ptr " + varAlloca(nm) + "\n");
+                    // §五-1 收尾：镜像进协程帧（与普通 string 赋值路径一致）
+                    if (isCoroClassLocal(varAstType(nm)) != 0) {
+                        emitCoroFrameSet(varAlloca(nm), t);
+                    }
+                    return t;
+                }
                 string rv = genExpr(e.rhs());
                 string rt = exprLlvmType(e.rhs());
                 AstExpr lhs = e.lhs();
@@ -9872,7 +9900,7 @@ class CodeGen {
             StringBuilder sb = new StringBuilder();
             string hex = "0123456789ABCDEF";
             for (int i = 0; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 if (c == 10) sb.append("\\0A");
                 else if (c == 9) sb.append("\\09");
                 else if (c == 13) sb.append("\\0D");

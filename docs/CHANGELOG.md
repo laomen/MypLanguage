@@ -41,6 +41,39 @@
   launch）与 opt 关**完全一致**；test_myp_self 94/94。
 - 权衡：编译 +24% ↔ 运行 3-23x；生产用默认开，快速编译用 `MYP_SELF_OPT=0`。
 
+### v3.12.11 — 自举编译提速：M4 原地拼接 + 残留 O(n²) 清扫 + 单趟 `myp_str_join`
+- **问题**：自举编译器编译自身很慢（`--frontend-dump sema main.myp` 合并全链约
+  96s+）。三个叠加的 O(n²)：
+  1. **`StringBuilder.toString` 逐片段 `result = result + x`**：C++ oracle 有 M4
+     优化（`s = s + x` 同变量累加发射 `myp_str_append` 原地 realloc），自举
+     codegen **没有** → 一律 `myp_strcat` 全量拷贝 → toString O(n²)。
+  2. **字符串无长度字段**：`myp_str_append` 每次 `strlen(已累加串)`（O(len)）→
+     即使拷贝被省，累加仍 O(n²)。
+  3. **per-char `__myp_ord(Str.substring(s,i,i+1))`**：dump/parse/codegen 转义与
+     解析路径残留（每个字符 O(n) strlen）。
+- **修复**：
+  1. **M4 移植到自举 codegen**（对齐 C++ codegen_stmt.cpp M4）：`Assign` 分支识别
+     `s = s + x`（左侧同变量字符串局部）→ 发射 `myp_str_append`（rc==1 原地
+     realloc，O(1) 均摊）+ `ir_emit.myp` 补 `declare ptr @myp_str_append`。
+     **消除 stage0/自举 codegen 行为差异**（性能保真）。
+  2. **`myp_str_join(char** arr, int32 n)` 单趟拼接**（runtime.c）：`StringBuilder.
+     toString` 改为一次分配 + 两趟（长度求和→拷贝）O(n)，消灭 1.57TB strlen。
+  3. **per-char substring → `__myp_charcode`**：15 处（ast Dump.esc、main escape/
+     dotToSlash/normalizePath/stripExt、codegen isDigits/escapeLlvmString、
+     parser parseInt/插值、sema isIntegerStr、ir_emit parseNum）。
+- **实测（编译合并全链 main.myp，3 次取最小）**：
+  - sema dump：~96s → **1.7s（56x）**；ast dump：11.9s → **0.47s（25x）**
+  - 编译 main.myp：4.4s → **3.1s**；ast dump 内 strlen 扫描 **1.57TB → 54MB（29,000x）**
+  - bootstrap 全 3-stage 测试：含 sema dump 阶段从几分钟 → **20s**。
+- 修复 `test_myp_pass.sh` 既有 sed 模式 bug（`define internal i32 @compute(...)`
+  匹配不上 → 基线误报 0 store）→ PASS 6/6。
+- 回归：bootstrap 16/16（不动点 myp_self2==myp_self3 md5 991cec87）、test_myp_self
+  94/94、run_tests 275/275、test_myp_gpu 60/60、test_myp_pass 6/6。O2 套件 `arc_throw`
+  失败为**既有** -O2×异常展开问题（不经过本次改动的代码路径，见下）。
+- 残余（已知）：用户代码里裸 `s = s + x` 累加仍 O(n²)（`myp_str_append` 无长度
+  字段每次 strlen）；根治需给字符串头加长度字段（影响 runtime 布局 + 两个 codegen
+  字面量，另立任务）。
+
 ### v3.12.9 — 自举编译器词法 O(n²) → O(n)（`__myp_charcode` + 缓存长度 + fillLineCol 双指针）
 - **根因**：词法器 `peek()/advance()/match()/ordAt()` 对每个字符调用
   `__myp_ord(Str.substring(source_, pos_, pos_+1))`，而运行时 `myp_str_substring`

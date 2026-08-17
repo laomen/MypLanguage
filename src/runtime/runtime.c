@@ -2551,6 +2551,32 @@ char* myp_strcat(const char* a, const char* b) {
     return result;
 }
 
+// Single-pass string join: builds a counted string from an array of string
+// pointers in ONE allocation + two passes (sum lengths, then copy). Kills the
+// O(n²) strlen/copy of repeated `s = s + frag` accumulation (no length field
+// means every append re-scans the accumulated string). Returns fresh rc=1.
+char* myp_str_join(char** arr, int32_t n) {
+    if (n <= 0 || !arr) {
+        char* e = (char*)myp_alloc(1);
+        if (e) e[0] = '\0';
+        return e;
+    }
+    size_t total = 0;
+    for (int32_t i = 0; i < n; i++)
+        if (arr[i]) total += strlen(arr[i]);
+    char* out = (char*)myp_alloc(total + 1);
+    if (!out) return NULL;
+    size_t o = 0;
+    for (int32_t i = 0; i < n; i++) {
+        if (!arr[i]) continue;
+        size_t l = strlen(arr[i]);
+        memcpy(out + o, arr[i], l);
+        o += l;
+    }
+    out[total] = '\0';
+    return out;
+}
+
 // In-place string append (`s = s + x` fast path, M4 post-M8). CONSUMES `s`:
 // if `s` is a unique counted string (rc==1, not an immortal literal and not
 // shared) its {node,header,bytes} block is realloc'd in place and extended —

@@ -1905,12 +1905,12 @@ class Parser {
 
         // 整数字面量值（镜像 C++ parseIntegerLiteralValue）：0b/0B 二进制、0o/0O 八进制，其余 base0。
         long parseIntValue(string s) {
-            if (Str.len(s) > 2 && __myp_ord(Str.substring(s, 0, 1)) == 48
-                && (__myp_ord(Str.substring(s, 1, 2)) == 98 || __myp_ord(Str.substring(s, 1, 2)) == 66)) {
+            if (Str.len(s) > 2 && __myp_charcode(s, 0) == 48
+                && (__myp_charcode(s, 1) == 98 || __myp_charcode(s, 1) == 66)) {
                 return parseIntBase(s, 2);
             }
-            if (Str.len(s) > 2 && __myp_ord(Str.substring(s, 0, 1)) == 48
-                && (__myp_ord(Str.substring(s, 1, 2)) == 111 || __myp_ord(Str.substring(s, 1, 2)) == 79)) {
+            if (Str.len(s) > 2 && __myp_charcode(s, 0) == 48
+                && (__myp_charcode(s, 1) == 111 || __myp_charcode(s, 1) == 79)) {
                 return parseIntBase(s, 8);
             }
             return myp_str_to_long(s);
@@ -1918,7 +1918,7 @@ class Parser {
         long parseIntBase(string s, int base) {
             long val = 0;
             for (int i = 2; i < Str.len(s); i = i + 1) {
-                int c = __myp_ord(Str.substring(s, i, i + 1));
+                int c = __myp_charcode(s, i);
                 int d = -1;
                 if (c >= 48 && c <= 57) d = c - 48;
                 else if (c >= 97 && c <= 102) d = c - 87;
@@ -2003,7 +2003,7 @@ class Parser {
                 while (pos < Str.len(sval)) {
                     int dpos = -1;
                     for (int i = pos; i < Str.len(sval); i = i + 1) {
-                        if (__myp_ord(Str.substring(sval, i, i + 1)) == 36) { dpos = i; break; }
+                        if (__myp_charcode(sval, i) == 36) { dpos = i; break; }
                     }
                     if (dpos < 0) {
                         string part = Str.substring(sval, pos, Str.len(sval));
@@ -2035,7 +2035,7 @@ class Parser {
                     pos = dpos + 1;
                     int e2 = pos;
                     while (e2 < Str.len(sval)) {
-                        int c = __myp_ord(Str.substring(sval, e2, e2 + 1));
+                        int c = __myp_charcode(sval, e2);
                         if (Lex.isAlnum(c) != 0 || c == 95) e2 = e2 + 1; else break;
                     }
                     if (e2 > pos) {
