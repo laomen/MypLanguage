@@ -30,6 +30,29 @@ import env;
             return "opt";
         }
 
+        // 探测 host triple：opt 需要 `-mtriple` 才创建 TargetMachine 并注册
+        // TargetIRAnalysis(TTI)——没有它 LoopVectorizer 无 cost model，所有循环
+        // 保持标量（如 matmul ~2.5x 差距）。mypc 进程内管线正是给 PassBuilder
+        // 传 TargetMachine 才向量化。优先 llvm-config --host-target，回退 uname。
+        // MYP_LLVM_CONFIG 环境变量可显式指定 llvm-config。
+        string findHostTriple() {
+            string cfg = Console.getEnv("MYP_LLVM_CONFIG");
+            if (Str.len(cfg) != 0) {
+                string t0 = Str.trim(Process.output(cfg + " --host-target"));
+                if (Str.len(t0) != 0) return t0;
+            }
+            string t21 = Str.trim(Process.output("llvm-config-21 --host-target"));
+            if (Str.len(t21) != 0) return t21;
+            string t20 = Str.trim(Process.output("llvm-config-20 --host-target"));
+            if (Str.len(t20) != 0) return t20;
+            string tg = Str.trim(Process.output("llvm-config --host-target"));
+            if (Str.len(tg) != 0) return tg;
+            string m = Str.trim(Process.output("uname -m"));
+            if (m == "x86_64") return "x86_64-pc-linux-gnu";
+            if (m == "aarch64" || m == "arm64") return "aarch64-unknown-linux-gnu";
+            return "";
+        }
+
         // 定位 runtime.c：优先 cwd 的 src/runtime/runtime.c，否则 stdlib 父目录。
         string findRuntimeC(string stdlib) {
             if (Fs.isFile("src/runtime/runtime.c") != 0) return "src/runtime/runtime.c";
@@ -85,7 +108,10 @@ import env;
             if (Str.len(optEnv) == 0 || optEnv != "0") {
                 string opt = Link.findOpt();
                 string optPath = outPath + ".opt.ll";
-                string optCmd = opt + " " + llPath + " -O2 -o " + optPath + " 2>&1";
+                string mt = Link.findHostTriple();
+                string optCmd = opt + " " + llPath + " -O2";
+                if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
+                optCmd = optCmd + " -o " + optPath + " 2>&1";
                 if (Process.run(optCmd) != 0) {
                     Console.writeLine("opt failed");
                     return 1;

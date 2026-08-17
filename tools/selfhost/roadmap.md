@@ -328,17 +328,22 @@ G3 ──> G4 ──> H1
   `myp_str_len` 读头。风险中（改动 ABI 相关布局，务必 ASAN + 全量回归）。
 - **收益**：全局（所有生成程序 + 编译自身）；消除字符串累加 O(n²) 与 ~29% strlen。
 
-### P2 生成代码性能对齐：soft2 数值循环向量化缺口（专项跟进）
-- **现状**：soft2 编译产物平均慢 mypc ~14%（几何平均 1.138），最坏**数值向量化循环**
-  matmul 2.43x / matrix_int_mul 2.50x / fib_matrix 2.20x / floyd 1.62x / sha256 1.41x；
-  内存/字符串/混合负载持平或更好（kmeans 0.83x、coro_switch 0.95x）。
-- **根因（反汇编实证）**：mypc -O2 二进制 matmul 用 **SSE2 向量化（`mulpd`/`addpd`）**，
-  soft2 二进制**纯标量（`mulsd`/`addsd`）**。两者原始 IR 经**同一外部 `opt-21 -O2` 都
-  不向量化** → 差距在 **mypc 进程内 LLVM pass pipeline 比 soft2 的外部 `opt -O2` 更强**
-  （mypc `--emit-llvm` dump 有 `i0` 类型瑕疵，与真实编译路径不一致，佐证 dump 不忠实）。
-- **下一步侦察**：在 `mypc codegen.generate(ast, output, opt_level)` 的进程内 pipeline
-  打点，确认多跑了哪些 pass（-O3？额外 vectorize？pass 顺序？），再决定"对齐 pipeline"
-  还是"调整 soft2 IR 形状"。
+### P2 生成代码性能对齐：soft2 数值循环向量化缺口（✅ 已闭合，2026-08-17）
+- **现状（已解决）**：soft2 编译产物平均慢 mypc ~14%（几何平均 1.138），最坏数值向量化
+  循环 matmul 2.43x / matrix_int_mul 2.50x；内存/字符串/混合负载持平或更好。
+- **根因（已定位）**：`opt` 无 target machine → 未注册 TargetIRAnalysis(TTI) →
+  LoopVectorizer **没有 cost model**，向量化器判定所有循环
+  “vectorization is not beneficial” → 全部保持标量（`mulsd`/`addsd`）。
+  mypc 进程内管线给 `PassBuilder` 传了 TargetMachine（`codegen.cpp` 注释明说），
+  故能向量化（`mulpd`/`addpd`）。外部 `opt -O2`/`-O3` 不传 target 都不向量化。
+  （mypc `--emit-llvm` dump 有 `i0` 类型瑕疵、被外部 opt 拒绝，无法直接对拍。）
+- **修复**：`link.myp` 的 opt 调用加 `-mtriple=<host triple>`（`findHostTriple()`
+  用 `llvm-config --host-target` 探测，回退 uname；MYP_LLVM_CONFIG 可覆盖）。
+  opt 带 -mtriple 即创建 TargetMachine → TTI 注册 → cost model 生效 → 向量化。
+- **验证**：matmul 50ms→20ms（**2.43x→1.00 持平 mypc**）；多数基准 0.96–1.14
+  （dot_f64 0.80、convolution 0.96、nqueens 0.99 反超或持平）；verify 全一致；
+  run-compare PASS=148 FAIL=0（无输出变化）、run_tests 274/275（仅已知 arc_throw）、
+  bootstrap 不动点保持。
 
 ### P3 完整自举三步（从"子集自举"到"完全自举"）
 1. **功能补齐**：GPU/剩余语言特性在 myp_self 落地（当前非 GPU、部分特性子集；
@@ -360,6 +365,8 @@ G3 ──> G4 ──> H1
      （LLVM 后端，非 mypc）。
    - 剩余收口：`myp_self run`/`fmt` 子命令的 `delegateToMypc` 去委托（见 P3-2）。
 4. **性能对齐**：P2 落地后 soft2 产物性能与 mypc 持平。
+   - ✅ **2026-08-17 完成**：P2 已闭合（opt 加 `-mtriple` 启用 TTI 向量化，
+     matmul 2.43x→1.00，多数基准持平）。
 
 ### P4 已知遗留问题（登记，按需处理）
 | 项 | 现象 | 处置 |

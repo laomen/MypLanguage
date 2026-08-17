@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.12.14 — 自举编译器 P3-4/P2 向量化缺口闭合：opt 加 `-mtriple` 启用 TTI
+- **症状**：myp_self2 编译产物平均慢 mypc ~14%，最坏数值循环 matmul **2.43x**（SSE2
+  `mulpd`/`addpd` vs 纯标量 `mulsd`/`addsd`）。
+- **根因（反汇编 + pass-remarks 定位）**：外部 `opt` 无 target machine → 未注册
+  TargetIRAnalysis(TTI) → **LoopVectorizer 没有 cost model**，所有循环被判
+  “vectorization is not beneficial” 保持标量。mypc 进程内管线给 `PassBuilder` 传
+  TargetMachine 故能向量化。`--enable-unsafe-fp-math` 是遗留 flag 不生效；`-O3` 也只
+  部分改善（matmul 50→29ms）不向量化。
+- **修复**：`link.myp` 的 `opt` 调用加 `-mtriple=<host>`（新增 `findHostTriple()`：
+  `llvm-config --host-target` 探测、回退 uname、`MYP_LLVM_CONFIG` 可覆盖）。
+- **效果**：matmul **50ms→20ms（2.43x→1.00 持平 mypc）**；多数基准 0.96–1.14
+  （dot_f64 0.80、convolution 0.96、nqueens 0.99，部分反超）。
+- **正确性**：verify 全一致；run-compare PASS=148 FAIL=0（无输出变化）；
+  run_tests 274/275（仅已知 arc_throw -O2 缺陷）；bootstrap 不动点保持。
+
 ### v3.12.13 — 自举编译器 P3-2 去委托：`myp_self run`/`fmt` 原生化（不再 shell 到 mypc）
 - 此前 `myp_self run`/`fmt` 经 `delegateToMypc` shell 到 C++ mypc。现改为自托管：
   - **`myp_self run <file.myp> [args...]`**（仿 go run）：原生编译+运行+清理，退出码透传。
