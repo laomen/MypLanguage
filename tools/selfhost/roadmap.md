@@ -12,11 +12,11 @@
 | F0 | Oracle 与骨架 | C++ dump 契约 + 项目脚手架 | ~1 天 | ✅ **已完成**（2026-08-13，67/67） |
 | F1 | 完整词法器 | lexer / token | ~1-2 天 | ✅ **已完成**（2026-08-13，448/448 + 78/78） |
 | F2 | AST + 声明/语句 parser | ast / parser | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
-| F3 | 表达式 parser | parser_expr | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
-| F4 | 语义分析 | type / diag / sema | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
+| F3 | 表达式 parser | parser.myp（含表达式） | ~3-5 天 | ✅ **已完成**（2026-08-13，AST 448/448） |
+| F4 | 语义分析 | sema.myp（含类型） | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
 | G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
-| G2 | 语句 + 表达式 codegen | codegen_stmt / codegen_expr | ~5-8 天 | ✅ **基本完成**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获)/元组/默认命名参数 已对拍） |
-| G3 | 类/ARC/异常/泛型 codegen | codegen_class | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段/**异常全链路（string/typed/接口/finally/TryExpr）** 已对拍；mapping/@startup/协程待补） |
+| G2 | 语句 + 表达式 codegen | codegen.myp | ~5-8 天 | ✅ **基本完成**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获)/元组/默认命名参数 已对拍） |
+| G3 | 类/ARC/异常/泛型 codegen | codegen.myp | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段/**异常全链路（string/typed/接口/finally/TryExpr）** 已对拍；mapping/@startup/协程待补） |
 | G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
 | H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
 
@@ -110,9 +110,10 @@
 
 ---
 
-## F3：表达式 parser
+## F3：表达式 parser（已并入 parser.myp）
 
-> 目标：`parser_expr.myp` 复刻 `src/parser/parser_expr.cpp`（1439），按 `docs/grammar.md` §6。
+> 目标：`parser.myp` 内实现表达式解析（复刻 `src/parser/parser_expr.cpp`，1439），按
+> `docs/grammar.md` §6。（原 `parser_expr.myp` 空壳占位已删除，实现合并进 parser.myp。）
 
 ### 任务
 
@@ -133,13 +134,14 @@
 
 ## F4：语义分析
 
-> 目标：`type.myp` + `diag.myp` + `sema.myp` 复刻 sema 全套（sema 2842 + sema_expr 3718 +
+> 目标：`sema.myp` + `diag.myp` 复刻 sema 全套（sema 2842 + sema_expr 3718 +
 > symbol_table 41 + type 38）。**体量最大，按子域切分，每子域独立对拍。**
+> （原 `type.myp` 空壳占位已删除，类型表示/提升并入 sema.myp。）
 
 ### F4a 基础设施
 
 - [ ] **F4a-1** `diag.myp`：消息文本、`file:line:col`、`errorCount()`、排序输出。
-- [ ] **F4a-2** `type.myp`：类型表示 + 比较/提升（数字提升链）。
+- [ ] **F4a-2** 类型表示 + 比较/提升（数字提升链，并入 sema.myp）。
 - [ ] **F4a-3** 作用域链（复刻 `symbol_table.cpp`）。
 
 ### F4b 声明语义
@@ -191,10 +193,11 @@
 
 ---
 
-## G2：语句 + 表达式 codegen
+## G2：语句 + 表达式 codegen（并入 codegen.myp）
 
-> 目标：`codegen_stmt.myp` + `codegen_expr.myp` 复刻 `codegen.cpp`（2860）+
-> `codegen_stmt.cpp`（2772）+ `codegen_expr.cpp`（3689）的非 GPU 核心。
+> 目标：`codegen.myp` 复刻 `codegen.cpp`（2860）+ `codegen_stmt.cpp`（2772）+
+> `codegen_expr.cpp`（3689）的非 GPU 核心。（原 `codegen_stmt.myp`/`codegen_expr.myp`
+> 空壳占位已删除，实现并入 codegen.myp。）
 
 ### 任务
 
@@ -213,10 +216,11 @@
 
 ---
 
-## G3：类/ARC/异常/泛型 codegen + 运行时对接
+## G3：类/ARC/异常/泛型 codegen + 运行时对接（并入 codegen.myp）
 
-> 目标：`codegen_class.myp` 复刻 `codegen_class.cpp`（1960）+ `codegen_test.cpp`（295），
+> 目标：`codegen.myp` 复刻 `codegen_class.cpp`（1960）+ `codegen_test.cpp`（295），
 > 并对接 C runtime（ARC/事件/线程/协程/异常 FFI 契约不变）。
+> （原 `codegen_class.myp` 空壳占位已删除，实现并入 codegen.myp。）
 
 ### 任务
 

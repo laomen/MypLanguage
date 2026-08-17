@@ -318,9 +318,9 @@ Declared -> Materializing -> Ready
 
 1. `ir_emit.myp` 先提供 SSA 名、基本块、声明、函数、全局和核心指令的确定化发射。
 2. `codegen.myp` 打通基本类型、函数调用和返回，形成第一个可链接程序。
-3. `codegen_expr.myp` / `codegen_stmt.myp` 扩展表达式与控制流，每增加一簇立即运行对拍。
-4. `codegen_class.myp` 最后消费 F4 产出的规范实例，接入布局、ARC、异常、协程和 mapping。
-5. `link.myp` 完成 `llc`、`gcc`、runtime 和 CLI 后进入 stage2/stage3。
+3. `codegen.myp` 随后扩展表达式、控制流、类、ARC、异常、泛型、协程与 mapping（实现合并单一
+   codegen.myp，不复用 C++ 的分文件布局），每增加一簇立即运行对拍。
+4. `link.myp` 完成 `llc`、`gcc`、runtime 和 CLI 后进入 stage2/stage3。
 
 > **自举源码特性面（实测 2026-08-13，H1 关键输入）**：`tools/selfhost/src/*.myp`（7,568
 > 行）真实使用的语言特性仅为：类（`@static`/`@constructor` 共 46 处）、接口（数据载体）、
@@ -366,21 +366,16 @@ build/myp_self3   # stage3，由 myp_self2 编译
 | `token.myp` | TokenKind + keywordString + Tok | — |
 | `lexer.myp` | 完整词法器 | token, text |
 | `ast.myp` | AST 节点 + 无损 dump | text |
-| `parser.myp` | 顶层/类/语句 | token, lexer, ast |
-| `parser_expr.myp` | 表达式 | 同上 |
-| `type.myp` | 类型表示 + 比较/提升 | token |
+| `parser.myp` | 顶层/类/语句/表达式（grammar §6） | token, lexer, ast |
 | `diag.myp` | 诊断引擎 | — |
-| `sema.myp` | 符号表/类型检查/成员解析/导入 | ast, type, diag, fs, io |
+| `sema.myp` | 符号表/类型检查/成员解析/导入 + 类型表示/提升 | ast, diag, text, fmt |
 
 ### 后端（G 系）
 
 | 模块 | 职责 | 对应 C++ |
 |------|------|----------|
 | `ir_emit.myp` | LLVM IR 文本发射器（类型/模块/全局/函数骨架/指令打印） | LLVM C++ API 封装 |
-| `codegen.myp` | 顶层/全局/函数 codegen 入口（对齐 `codegen.cpp`） | codegen.cpp（2860） |
-| `codegen_expr.myp` | 表达式 → IR（含短路、泛型调用、lambda/闭包、元组） | codegen_expr.cpp（3689） |
-| `codegen_stmt.myp` | 语句 → IR（控制流/声明/for-in/parallel/try/coro） | codegen_stmt.cpp（2772） |
-| `codegen_class.myp` | 类/构造器/ARC/异常/泛型单态化/mapping/@thread/@startup/FFI → IR | codegen_class.cpp（1960）+ codegen_test.cpp |
+| `codegen.myp` | 表达式/语句/类/ARC/异常/泛型/mapping/@thread/@startup/FFI → IR（含 @gpu kernel 发射） | codegen.cpp + codegen_expr/stmt/class.cpp（非 GPU 核心） |
 | `link.myp` | llc + gcc 链接 runtime / run / fmt 子命令 | main.cpp linkObjects + runFile |
 
 ### 驱动

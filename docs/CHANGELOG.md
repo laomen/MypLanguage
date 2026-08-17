@@ -27,6 +27,18 @@
 
 ## 编译器版本历史
 
+### v3.12.7 — 自举编译器清理：删除 5 个空壳占位源文件
+- **删除 `tools/selfhost/src/` 下 5 个 F0 时代空壳占位 `.myp`**（各仅 3 行注释
+  "当前为空壳（F0 占位）"、不被任何源码 import、无实际代码）：
+  `parser_expr.myp` / `type.myp` / `codegen_expr.myp` / `codegen_stmt.myp` /
+  `codegen_class.myp`。其职责已分别并入 `parser.myp`（含表达式）/ `sema.myp`
+  （含类型表示/提升）/ `codegen.myp`（表达式/语句/类/ARC/异常/泛型/mapping）。
+- **同步更新**：`CMakeLists.txt` `MYP_SELF_MODULES` 移除 5 项（原仅作 DEPENDS）；
+  `tools/selfhost/README.md` 目录树、`design.md` §4.3/§5 模块表、`roadmap.md`
+  总览表与 F3/F4a/G2/G3 小节（标注"实现并入"）。`docs/CHANGELOG.md` 自包含。
+- 清理源码树陈旧构建产物（`*.myp.o`、`codegen.out.ll/o`，gitignored）。
+- 验证：`myp_self` 重建成功；`test_myp_self.sh` 94/94 全绿（import 链不受影响）。
+
 ### v3.12.6 — 自举编译器 `@gpu scatter/reduce/scan` GPU kernel 真机发射（补齐全部 GPU 构造）
 - **自举编译器（tools/selfhost）`@gpu scatter` 真正的 GPU kernel**（§8.4）：
   - 固定 **grid-stride 散点 kernel**（无用户 body，直接生成 .ll）：`p ∈ [0, n)`

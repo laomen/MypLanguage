@@ -1,3 +1,0 @@
-// type.myp — 类型表示 + 比较/提升（F4a 实现）。
-// 对拍基准: src/sema/type.cpp + typeNodeToString（format.md §6）。
-// 当前为空壳（F0 占位）。

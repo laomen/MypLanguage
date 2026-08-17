@@ -49,15 +49,10 @@ tools/selfhost/
     ├── token.myp        # TokenKind 表示 + keywordString + Token
     ├── lexer.myp        # 完整词法器（由 tools/fmt/lexer.myp 扩展）
     ├── ast.myp          # AST 节点类 + 确定化 dump
-    ├── parser.myp       # 顶层声明 / 类 / 语句
-    ├── parser_expr.myp  # 表达式（grammar §6）
-    ├── type.myp         # 类型表示
+    ├── parser.myp       # 顶层声明 / 类 / 语句 / 表达式（grammar §6）
     ├── diag.myp         # 诊断引擎（消息 + 位置）
-    ├── sema.myp         # 符号表 + 类型检查 + 成员解析 + 导入
+    ├── sema.myp         # 符号表 + 类型检查 + 成员解析 + 导入 + 类型表示/提升
     ├── ir_emit.myp      # LLVM IR 文本发射器（类型/模块/函数骨架）
-    ├── codegen.myp      # 顶层/全局/函数 codegen 入口
-    ├── codegen_expr.myp # 表达式 → IR
-    ├── codegen_stmt.myp # 语句 → IR
-    ├── codegen_class.myp# 类/构造器/ARC/异常/泛型/mapping → IR
+    ├── codegen.myp      # 表达式 / 语句 / 类 / ARC / 异常 / 泛型 / mapping → IR（含 @gpu kernel 发射）
     └── link.myp         # 调 llc + gcc 链接 C runtime（同 C++ linkObjects 逻辑）
 ```

@@ -1,3 +1,0 @@
-// codegen_stmt.myp — 语句 → IR（G2 实现）。
-// 对拍基准: src/codegen/codegen_stmt.cpp。
-// 当前为空壳（F0 占位）。

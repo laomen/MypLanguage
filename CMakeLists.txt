@@ -268,15 +268,10 @@ set(MYP_SELF_MODULES
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/lexer.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/ast.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/parser.myp
-    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/parser_expr.myp
-    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/type.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/diag.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/sema.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/ir_emit.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen.myp
-    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_expr.myp
-    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_stmt.myp
-    ${CMAKE_SOURCE_DIR}/tools/selfhost/src/codegen_class.myp
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/link.myp
 )
 set(MYP_SELF_OUT ${CMAKE_BINARY_DIR}/myp_self)

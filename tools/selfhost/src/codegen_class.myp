@@ -1,3 +1,0 @@
-// codegen_class.myp — 类/构造器/ARC/异常/泛型/mapping → IR（G3 实现）。
-// 对拍基准: src/codegen/codegen_class.cpp + codegen_test.cpp。
-// 当前为空壳（F0 占位）。
