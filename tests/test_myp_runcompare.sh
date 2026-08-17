@@ -1,26 +1,34 @@
 #!/usr/bin/env bash
-# test_myp_runcompare.sh — 语料级 run-compare 差异测试（myp_self vs mypc）
+# test_myp_runcompare.sh — 语料级 run-compare 差异测试（myp_self2/myp_self vs mypc）
 #
-# 目的：定位 runtime 正确性 bug——代码能编译、但 myp_self 产物运行输出/退出码
-# 与 mypc 不一致（如 struct 数组元素大小导致的越界写段错误，编译覆盖率测不出）。
-# 把可运行语料用两个编译器各编译一次、各跑一遍，diff stdout+stderr+退出码。
+# 目的：定位 runtime 正确性 bug——代码能编译、但自举编译器（myp_self2/myp_self）
+# 产物运行输出/退出码与 mypc 不一致（如 struct 数组元素大小导致的越界写段错误，
+# 编译覆盖率测不出）。把可运行语料用两个编译器各编译一次、各跑一遍，
+# diff stdout+stderr+退出码。
 #
 # 用法：
 #   bash tests/test_myp_runcompare.sh
 #   MYPCC=/path/to/mypc MYP_SELF=/path/to/myp_self bash tests/test_myp_runcompare.sh
 #   RUN_TIMEOUT=30 bash tests/test_myp_runcompare.sh   # 单程序超时秒（默认 20）
+# 默认用 build/myp_self2（stage-2 自编译编译器）；不存在时回退 build/myp_self。
 #
 # 输出分类：
-#   PASS  —— mypc 与 myp_self 产物运行输出+退出码一致
-#   FAIL  —— 不一致（myp_self runtime 正确性 bug，需修）
-#   GAP   —— mypc 能编译但 myp_self 编译失败（缺特性或编译期 bug）
+#   PASS  —— mypc 与 自举编译器 产物运行输出+退出码一致
+#   FAIL  —— 不一致（自举编译器 runtime 正确性 bug，需修）
+#   GAP   —— mypc 能编译但自举编译器编译失败（缺特性或编译期 bug）
 #   SKIP  —— mypc 也编译失败（坏语料/遗留样例）或库文件（无 main/@startup）
 #
 # 关联：design.md §7 验收 2、roadmap.md「后续计划 Phase 1」。
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MYPCC="${MYPCC:-$ROOT/build/mypc}"
-SELF="${MYP_SELF:-$ROOT/build/myp_self}"
+if [ -n "${MYP_SELF:-}" ]; then
+    SELF="$MYP_SELF"
+elif [ -x "$ROOT/build/myp_self2" ]; then
+    SELF="$ROOT/build/myp_self2"
+else
+    SELF="$ROOT/build/myp_self"
+fi
 STDLIB="${MYP_STDLIB:-$ROOT/stdlib}"
 TIMEOUT="${RUN_TIMEOUT:-20}"
 
