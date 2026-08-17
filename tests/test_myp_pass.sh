@@ -60,7 +60,7 @@ fi
 #    BEFORE (no pass): 3 adjacent double-stores (sum/dup/i) -> 10 stores.
 #    AFTER  (myp-pass): 3 stores removed -> 7 stores in the body.
 BEFORE=$("$MYPCC" --emit-llvm "$SRC" -o "$TMP/before" >/dev/null 2>&1 && \
-    sed -n '/define i32 @compute/,/^}/p' "$SRC.ll" | grep -c "store")
+    sed -n '/define.*@compute/,/^}/p' "$SRC.ll" | grep -c "store")
 if [ "$BEFORE" -ge 9 ]; then
     ok "baseline has >=9 stores in @compute (got $BEFORE)"
 else
@@ -68,7 +68,7 @@ else
 fi
 
 MYPC_DUMP_OPT_IR=1 "$MYPCC" --passes myp-pass "$SRC" -o "$TMP/out2" >/dev/null 2>"$TMP/after.txt"
-AFTER=$(sed -n '/define i32 @compute/,/^}/p' "$TMP/after.txt" | grep -c "store")
+AFTER=$(sed -n '/define.*@compute/,/^}/p' "$TMP/after.txt" | grep -c "store")
 if [ "$AFTER" -lt "$BEFORE" ]; then
     ok "myp-pass removed dead stores ($BEFORE -> $AFTER)"
 else

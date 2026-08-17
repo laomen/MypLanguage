@@ -71,45 +71,60 @@ if ! "$TMP/myp_self2" "$SRC" -o "$TMP/myp_self3" --stdlib "$STDLIB" >/dev/null 2
 fi
 ok "stage2：myp_self2 → myp_self3"
 
-# ---- 判定：myp_self2 与 myp_self3 前端 dump 字节一致 ----
+# ---- 判定：stage0/1/2 前端 dump 三方字节一致 ----
 for mode in tokens ast sema; do
     for f in "${DUMP_CORPUS[@]}"; do
         if [ ! -f "$f" ]; then bad "[$mode] 语料缺失: $f"; continue; fi
+        o0="$TMP/d0_${mode}_$(basename "$f")"
+        o1="$TMP/d1_${mode}_$(basename "$f")"
         o2="$TMP/d2_${mode}_$(basename "$f")"
-        o3="$TMP/d3_${mode}_$(basename "$f")"
-        if ! "$TMP/myp_self2" --frontend-dump "$mode" "$f" >"$o2" 2>/dev/null; then
+        if ! "$TMP/myp_self"  --frontend-dump "$mode" "$f" >"$o0" 2>/dev/null; then
+            bad "[$mode] myp_self  dump 失败: $f"; continue
+        fi
+        if ! "$TMP/myp_self2" --frontend-dump "$mode" "$f" >"$o1" 2>/dev/null; then
             bad "[$mode] myp_self2 dump 失败: $f"; continue
         fi
-        if ! "$TMP/myp_self3" --frontend-dump "$mode" "$f" >"$o3" 2>/dev/null; then
+        if ! "$TMP/myp_self3" --frontend-dump "$mode" "$f" >"$o2" 2>/dev/null; then
             bad "[$mode] myp_self3 dump 失败: $f"; continue
         fi
-        if cmp -s "$o2" "$o3"; then
-            ok "[$mode] self2/self3 字节一致: $f"
+        if cmp -s "$o0" "$o1" && cmp -s "$o1" "$o2"; then
+            ok "[$mode] stage0/1/2 三方字节一致: $f"
         else
-            bad "[$mode] self2/self3 不一致: $f"
+            bad "[$mode] stage 间不一致: $f"
+            cmp -s "$o0" "$o1" || diff "$o0" "$o1" | head -3
         fi
     done
 done
 
-# ---- 判定：myp_self2 与 myp_self3 产物运行输出/退出码一致 ----
+# ---- 判定：stage0/1/2 产物运行输出/退出码一致 ----
+STAGES=("$TMP/myp_self" "$TMP/myp_self2" "$TMP/myp_self3")
 for item in "${RUN_CORPUS[@]}"; do
     f="${item%%:*}"
     exp="${item##*:}"
     [ ! -f "$f" ] && { bad "运行语料缺失: $f"; continue; }
-    if ! "$TMP/myp_self2" "$f" -o "$TMP/r2" --stdlib "$STDLIB" >/dev/null 2>&1; then
-        bad "run: myp_self2 编译失败: $f"; continue
-    fi
-    if ! "$TMP/myp_self3" "$f" -o "$TMP/r3" --stdlib "$STDLIB" >/dev/null 2>&1; then
-        bad "run: myp_self3 编译失败: $f"; continue
-    fi
+    okall=1
+    for i in 0 1 2; do
+        if ! "${STAGES[$i]}" "$f" -o "$TMP/r$i" --stdlib "$STDLIB" >/dev/null 2>&1; then
+            bad "run: stage$i 编译失败: $f"; okall=0; break
+        fi
+    done
+    [ "$okall" = 0 ] && continue
+    "$TMP/r0"; s0=$?
+    "$TMP/r1"; s1=$?
     "$TMP/r2"; s2=$?
-    "$TMP/r3"; s3=$?
-    if [ "$s2" = "$s3" ] && [ "$s2" = "$exp" ]; then
-        ok "run: self2/self3 退出码=$exp 一致: $f"
+    if [ "$s0" = "$s1" ] && [ "$s1" = "$s2" ] && [ "$s0" = "$exp" ]; then
+        ok "run: stage0/1/2 退出码=$exp 一致: $f"
     else
-        bad "run: self2=$s2 self3=$s3 期望=$exp: $f"
+        bad "run: stage0=$s0 stage1=$s1 stage2=$s2 期望=$exp: $f"
     fi
 done
+
+# ---- 不动点信息（H1 判据是行为一致，非二进制相等；仅供观测）----
+if cmp -s "$TMP/myp_self2" "$TMP/myp_self3"; then
+    ok "不动点：myp_self2 == myp_self3 字节相同（md5 $(md5sum "$TMP/myp_self2" | cut -d' ' -f1)）"
+else
+    say "  note: myp_self2 与 myp_self3 非字节相同（H1 不要求二进制相等）"
+fi
 
 say "myp-bootstrap PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]
