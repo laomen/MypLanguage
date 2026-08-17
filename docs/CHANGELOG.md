@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.12.5 — 自举编译器 `@gpu for` GPU kernel 真机发射（NVPTX 内核 + PTX 嵌入 + 运行时 GPU/CPU 双路径）
+- **自举编译器（tools/selfhost）`@gpu for` 真正的 GPU kernel 发射**（此前只有 CPU 回退）：
+  - codegen 阶段为规范 `@gpu for`（无 resident/stream/stride、`i < B`/`i <= B`、捕获动态数组）
+    生成 **NVPTX kernel**（独立模块，`gid = blockIdx*blockDim+threadIdx`），用外部
+    `llc -mtriple=nvptx64-nvidia-cuda` 编译出 PTX，经 `!nvvm.annotations` 标记
+    `.visible .entry` kernel，把 PTX 作为字符串全局嵌入主模块。
+  - host 发射运行时 **GPU/CPU 双路径**：`myp_gpu_init()` → GPU 可用则
+    `myp_gpu_load_kernel` + `myp_gpu_alloc`/`myp_gpu_to_device` + `myp_gpu_launch`
+    （grid=ceil(n/block)，block 默认 256 或 `block(n)`）+ `myp_gpu_to_host`/free +
+    destroy；否则跳 `gpu_cpu_fallback` 块跑串行回退。数组字节数从 ARC 头
+    （obj-24=count、obj-16=elem_size）读取。
+  - kernel body 内 `kernel.gid/tx/bx/bd/gx` 复用 CPU 回退的 `genKernelMember` 映射
+    （gid=gid、tx=gid%bd、bx=gid/bd、bd=block、gx=ceil(n/bd)）；`kernel.sync()` 空操作。
+  - 失败（llc 拒/复杂 body 引用宿主局部）→ 自动 CPU 回退，临时 .ll/.ptx 无论成败清理。
+  - 实现：`tools/selfhost/src/codegen.myp` 新增 `genGpuKernel`/`emitGpuKernelModule`/
+    `collectGpu{Expr,Stmt}Arrays`/`isDynamicArrayVar`/`findGpuLlc` 等；For 分支抽取
+    `genSerialFor`。
+  - **真机验证**（本机 NVIDIA GPU + CUDA 13.2，`MYP_GPU=1`）：`kernel_ctx`/`vec4`/
+    `math_float`/`static` 均真实 launch kernel 且结果 PASS（`CUDA initialized` →
+    `launching kernel` → `kernel done`）；无 `MYP_GPU` 时 CPU 回退结果一致。
+  - 范围：`@gpu stride`/`tile`/`reduce`/`scan`/`scatter` 的 GPU kernel 留后续
+    （继续 CPU 回退）；`test_gpu_block` 的 tile 段在 GPU 模式因自举 tile 仍为 CPU
+    单线程降级（读未写 smem）而 FAIL（测试注释已知，仅 GPU 后端路径）。
+- 全量回归 275/275，test_myp_gpu 60/60，test_myp_self 94/94。
+
 ### v3.12.4 — 自举编译器 GPU CPU 回退（`@gpu` 语句全量串行对齐 oracle）+ `float4` 向量类型
 - **自举编译器（tools/selfhost）GPU CPU 回退落地**——`@gpu for/tile/reduce/scan/scatter`
   不再静默跳过，全部按与 C++ oracle 一致的 CPU 回退语义执行：

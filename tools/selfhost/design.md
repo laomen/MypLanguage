@@ -459,6 +459,7 @@ main.myp ─┬─> 前端: lexer → parser → sema（对拍/编译两用）
 | **G4** | 驱动 + 链接（run/fmt/--stdlib/llc/gcc） | ✅ 完成：CLI/compile/link/--stdlib 全流程可用（bootstrap 15/15） |
 | **H1** | 两级自举验证 + 全量回归 + 文档 | ✅ 完成：两级自举 15/15；全量回归 275/275（100%）；test_myp_self 94/94 |
 | **GPU-CPU** | `@gpu for/tile/reduce/scan/scatter` CPU 回退 + `kernel.*` 上下文 + `@gpu stride for` step=1 + `float4`/`load4`/`store4` + `kernel.printk/assert` | ✅ 完成：GPU 测试 60/60（`RUN_GPU_TESTS=1` 接入 run_tests.sh）；全部 `tests/test_gpu_*.myp` 与 oracle CPU 回退输出对齐（reduce/scan/scatter/tile/kernel_ctx/vec4 数值逐项一致） |
+| **GPU-KERNEL** | `@gpu for` 真正的 NVPTX kernel 发射：外部 `llc -mtriple=nvptx64-nvidia-cuda` → PTX 嵌入 → 运行时 GPU/CPU 双路径（`myp_gpu_init`/load/alloc/H2D/launch/D2H/free） | ✅ 完成：真机（NVIDIA + CUDA 13.2）`MYP_GPU=1` 下 `kernel_ctx`/`vec4`/`math_float`/`static` 真实 launch kernel 且结果 PASS；无 GPU 自动 CPU 回退；失败自动降级。stride/tile/reduce/scan/scatter 的 GPU kernel 留后续（继续 CPU 回退） |
 
 ---
 
