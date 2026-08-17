@@ -16,6 +16,7 @@
 | BUG-002 | � | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
 | BUG-003 | � | 泛型 T=string 的 `<`/`>` 按指针比较 | `tests/bugs/generic_string_cmp.myp` |
 | BUG-004 | � | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
+| BUG-005 | 🟥 | mapping 事件 action 在事件源线程执行（非 action 实例线程） | （待建 `tests/bugs/mapping_thread.myp`） |
 
 ---
 
@@ -93,3 +94,28 @@
      兜底用 sema 记的 `resolved_object_class`（struct 名）+ struct 字段类型查找，
      `a.next.get()` 才能分发到 `Option_Node_inst_get` 而非模板 `Option_get`。
 - **验证**：`tests/bugs/option_struct.myp` 编译通过、2/2 断言转绿；全量回归 274 通过。
+
+---
+
+## BUG-005（未修复）：mapping 事件 action 在事件源线程执行（非 action 实例线程）
+
+- **状态**：🟥 未修复（2026-08-17 记录）
+- **复现测试**：待建 `tests/bugs/mapping_thread.myp`（需能打印/比较当前线程 id 的
+  手段；当前无线程 id 内建，需先加诊断或按行为断言）
+- **现象**：`@thread` 实例 A（event）在线程 1、实例 B（action）在线程 2，
+  `mapping() { a.event -> b.action; }` 触发后，`b.action` 在**线程 1** 上执行，
+  而非 B 自己的线程 2。
+- **根因**（`src/runtime/runtime.c`）：
+  - `myp_event_fire`（~3301）用 `myp_thread_for_instance(sender)` 取**事件源
+    （sender）的线程**，把事件投到 sender 的线程队列；
+  - `myp_event_dispatch`（~3330）在当前队列处理线程上**直接调用 handler**
+    （`myp_handlers[i].handler(instance, data)`），不切换/不重投到 handler 实例
+    的线程。
+  - 结论：action 跑在**事件源线程**，action 实例自己的 `@thread` 归属被忽略。
+- **影响**：违反 manual.md「@thread 组件独立运行、无共享内存竞争」的隔离假设；
+  B 的状态被 A 的线程（线程 1）读写，存在无锁并发/竞争风险。
+- **期望语义**：`myp_event_fire`/dispatch 应按 **handler 实例**
+  （`myp_handlers[i].instance`）的线程归属投递，把事件投到 B 所在线程 2 的队列，
+  由 B 的线程执行 action。
+- **备注**：与 `docs/next_improvements.md` §九-9 同一 bug（跨文件登记，修复时同步
+  两处）。
