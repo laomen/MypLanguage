@@ -41,6 +41,7 @@ class AB {
             seed = s;
             nodes = 0;
         }
+        long getNodes() { return nodes; }
 }
 
 class Bench {
@@ -49,7 +50,7 @@ class Bench {
             long t0 = Time.nowMs();
             AB t = new AB(12345);
             long root = t.ab(0, -1000000000, 1000000000, 1, 0);
-            long v = root * 1000000L + t.nodes;
+            long v = root * 1000000L + t.getNodes();
             long t1 = Time.nowMs();
             Console.writeString("verify ");
             Console.writeLong(v);

@@ -39,6 +39,7 @@ class Nq {
             d2 = new int[2 * n - 1];
             place(0);
         }
+        int getCount() { return count; }
 }
 
 class Bench {
@@ -48,7 +49,7 @@ class Bench {
             Nq q = new Nq(14);
             long t1 = Time.nowMs();
             Console.writeString("verify ");
-            Console.write(q.count);
+            Console.write(q.getCount());
             Console.writeString("\nms ");
             Console.writeLong(t1 - t0);
             Console.writeString("\n");
