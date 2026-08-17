@@ -27,6 +27,15 @@
 
 ## 编译器版本历史
 
+### v3.12.8 — 自举编译器 `MYP_LLC` 环境变量覆盖 llc 路径
+- `link.myp` `Link.findLlc()` 先读 `MYP_LLC`（非空即用），再回退既有 llc-21/llc-20
+  探测 → `llc`（PATH）。跨机器/任意 LLVM 版本无需改源码。
+- `codegen.myp` 重复的 `findGpuLlc()` 收敛为委托 `Link.findLlc()`（单一来源），
+  GPU/NVPTX 阶段同样支持 `MYP_LLC` 覆盖。
+- 验证：默认探测与 `MYP_LLC=/usr/lib/llvm-21/bin/llc` 产物一致；`MYP_LLC` 指向
+  不存在路径 → `llc failed`（证明覆盖生效）；GPU scatter 仍真机 launch + PASS；
+  test_myp_self 94/94。
+
 ### v3.12.7 — 自举编译器清理：删除 5 个空壳占位源文件
 - **删除 `tools/selfhost/src/` 下 5 个 F0 时代空壳占位 `.myp`**（各仅 3 行注释
   "当前为空壳（F0 占位）"、不被任何源码 import、无实际代码）：

@@ -4,6 +4,7 @@
 
 import "./ast.myp";
 import "./ir_emit.myp";
+import "./link.myp";
 import io;
 import process;
 import fs;
@@ -3873,13 +3874,10 @@ class CodeGen {
             return e;
         }
 
-        // 探测 llc（同 Link.findLlc；codegen 阶段跑 nvptx 需要）。
+        // 探测 llc（codegen 阶段跑 nvptx 需要）。收敛到 Link.findLlc 单一来源，
+        // 支持 MYP_LLC 环境变量覆盖。
         string findGpuLlc() {
-            if (Fs.isFile("/usr/bin/llc-21") != 0) return "/usr/bin/llc-21";
-            if (Fs.isFile("/usr/lib/llvm-21/bin/llc") != 0) return "/usr/lib/llvm-21/bin/llc";
-            if (Fs.isFile("/usr/bin/llc-20") != 0) return "/usr/bin/llc-20";
-            if (Fs.isFile("/usr/lib/llvm-20/bin/llc") != 0) return "/usr/lib/llvm-20/bin/llc";
-            return "llc";
+            return Link.findLlc();
         }
 
         // 写临时文件（kernel .ll / PTX）。

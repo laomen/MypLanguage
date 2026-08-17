@@ -3,11 +3,15 @@
 
 import fs;
 import process;
+import env;
 
 @static class Link {
     static:
         // 探测 llc：本机 llc 不在 PATH（llc-21 / /usr/lib/llvm-21/bin/llc）。
+        // MYP_LLC 环境变量显式指定路径/命令 → 优先（跨机器 / 任意 LLVM 版本）。
         string findLlc() {
+            string e = Console.getEnv("MYP_LLC");
+            if (Str.len(e) != 0) return e;
             if (Fs.isFile("/usr/bin/llc-21") != 0) return "/usr/bin/llc-21";
             if (Fs.isFile("/usr/lib/llvm-21/bin/llc") != 0) return "/usr/lib/llvm-21/bin/llc";
             if (Fs.isFile("/usr/bin/llc-20") != 0) return "/usr/bin/llc-20";
