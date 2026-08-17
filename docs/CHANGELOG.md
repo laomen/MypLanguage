@@ -27,6 +27,41 @@
 
 ## 编译器版本历史
 
+### v3.12.6 — 自举编译器 `@gpu scatter/reduce/scan` GPU kernel 真机发射（补齐全部 GPU 构造）
+- **自举编译器（tools/selfhost）`@gpu scatter` 真正的 GPU kernel**（§8.4）：
+  - 固定 **grid-stride 散点 kernel**（无用户 body，直接生成 .ll）：`p ∈ [0, n)`
+    grid-stride，`j = idx[loi+p]`（i32→i64 sext），`b[j] = a[loa+p]`；冲突模式
+    `atomic_add` 用 **`atomicrmw`**（float `fadd`、i32/i64 `add`，真原子，修掉此前
+    load+add+store 的竞态）；`double` 无原生 f64 原子 → 自动 CPU 回退。
+  - host 发射双路径（6 参 `(n, loa, loi, a_dev, idx_dev, b_dev)`，grid=ceil(n/block)）；
+    标量/数组 arg 全部经 alloca 槽传给 `myp_gpu_launch`；b 的 D2H+free 在 launch 后。
+  - 真机验证：6 次 launch，unique/any/atomic_add/slice/int_atomic 全 PASS。
+- **`@gpu reduce` 真正的 GPU kernel**（§8.2/§8.6）：
+  - **K1 kernel = per-block 串行归约**（`bid=ctaid.x`，块 `[lo+bid*bs, min(..+bs, lo+n))`
+    顺序 fold，opExpr 在 kernel 内求值，acc/x 绑定 kernel 局部 alloca）→ `partials[bid]`；
+    host 再以 init 顺序折叠 partials（同 opExpr，host 上下文 bindGpuOpLocals）。
+  - **CPU 回退改为同构规范分块归约**（§8.6 位级一致）：L1 每 blockSize 顺序部分和 +
+    L2/L3 顺序合并——GPU 与 CPU 双跑 **bit 级一致**（`test_gpu_reduce_bit` diff 通过：
+    `reduce_bits=1177075684` 等逐字节相等）。
+  - 真机验证：sum/slice/max（block(128)）3 次 launch（grid 4/1/8 正确分块）全 PASS。
+- **`@gpu scan` 真正的 GPU kernel**（§8.3）：
+  - **GPU 两遍**：K1（复用 reduce 同款 per-block 和 kernel，写 blockSum[bid]）→ host
+    顺序折叠 `blockPrefix[bid] = init∘blockSum[0..bid-1]` → K2 块内 scan kernel
+    （线程 0 串行块内前缀，加 `bp[bid]` 块前缀偏移；inclusive/exclusive 两种写序）。
+  - host 折叠需 **ngrid+1 项** bpHost 缓冲（折叠写 bpHost[0..ngrid]，修掉此前越界 1 项
+    导致的 glibc `double free or corruption`）。
+  - 真机验证：5 个 scan（full/slice/exclusive-full/exclusive-slice/exclusive-init5）
+    各 2 次 launch，GPU/CPU 结果完全一致，全 PASS。
+- **实现**：`tools/selfhost/src/codegen.myp` 新增 `genGpuScatterKernel`/
+  `emitGpuScatterModule`、`genGpuReduceKernel`/`emitGpuReduceModule`、
+  `genGpuScanKernel`/`emitGpuScanModule`；`genStmt` 的 GpuScatter/GpuReduce/GpuScan
+  分支改为先试 kernel 再回退；`genGpuReduce` 重写为规范分块归约。
+- **真机验证汇总**（本机 NVIDIA GPU + CUDA 13.2，`MYP_GPU=1`）：kernel_ctx/stride/vec4/
+  tile/tile_degrade/scatter/reduce/reduce_bit/scan 全部真实 launch + PASS（launch 计数
+  scatter=6、reduce=3、scan=10）；`test_gpu_block` 的 tile+`Math.abs` 段仍 CPU 回退
+  （已知限制：自举 tile 内 Math.abs 解析到宿主静态函数，kernel 无定义）。
+- 全量回归 275/275，test_myp_gpu 60/60，test_myp_self 94/94（CPU 模式）。
+
 ### v3.12.5 — 自举编译器 `@gpu for` GPU kernel 真机发射（NVPTX 内核 + PTX 嵌入 + 运行时 GPU/CPU 双路径）
 - **自举编译器（tools/selfhost）`@gpu for` 真正的 GPU kernel 发射**（此前只有 CPU 回退）：
   - codegen 阶段为规范 `@gpu for`（无 resident/stream/stride、`i < B`/`i <= B`、捕获动态数组）
