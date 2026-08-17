@@ -2058,6 +2058,35 @@ class CodeGen {
             return out;
         }
 
+        // struct @op 方法返回 LLVM 类型：匹配 "struct_<key>_<method>"（key 含
+        // Parent::Child 前缀时两种拼法都试），返回方法声明返回类型。
+        // 修复：Vector3==Vector3 的 @op("==") 返回 bool → i1，而非左操作数类型
+        // %Vector3（否则 store i1 %Vector3 非法 IR，opt 拒绝）。
+        string structOpRetLt(string resolved) {
+            if (tu_ == null) return "";
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                    AstFunction f = st.funcs().get(fi);
+                    if ("struct_" + st.name() + "_" + f.name() == resolved)
+                        return llvmType(f.ret());
+                }
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                for (int si = 0; si < c.structs().size(); si = si + 1) {
+                    AstStruct st = c.structs().get(si);
+                    for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                        AstFunction f = st.funcs().get(fi);
+                        if ("struct_" + st.name() + "_" + f.name() == resolved ||
+                            "struct_" + c.name() + "::" + st.name() + "_" + f.name() == resolved)
+                            return llvmType(f.ret());
+                    }
+                }
+            }
+            return "";
+        }
+
         // 内建 runtime 函数形参 LLVM 类型（fn 已去 __ 前缀；供实参提升，
         // 尤其 bool→i32 的断言类内建，同 C++ intrinsic_map_ + 签名）。
         ArrayList<string> intrParamLts(string fn) {
@@ -7590,10 +7619,13 @@ class CodeGen {
                     // op_call->struct_method；this = 左操作数的 alloca 指针）。
                     if (Str.startsWith(e.resolved(), "struct_") != 0) {
                         string thisP = "";
-                        string oret = "";
+                        // 返回类型 = @op 方法声明返回类型（eq→bool/i1、add→%Vector3），
+                        // 而非左操作数类型（否则 Vector3==Vector3 的 eq 被标成 %Vector3
+                        // → store i1 %Vector3 非法 IR，opt 拒绝）。
+                        string oret = structOpRetLt(e.resolved());
                         if (lhsE != null && lhsE.kind() == "Identifier") {
                             thisP = varAlloca(lhsE.name());
-                            oret = exprLlvmType(lhsE);
+                            if (Str.len(oret) == 0) oret = exprLlvmType(lhsE);
                         }
                         if (Str.len(thisP) == 0) {
                             // 复杂左操作数（结构体值）→ 存临时 alloca 取指针
@@ -7603,7 +7635,7 @@ class CodeGen {
                             sb_.append("  " + tmp2 + " = alloca " + stT2 + ", align 8\n");
                             sb_.append("  store " + stT2 + " " + lv + ", ptr " + tmp2 + "\n");
                             thisP = tmp2;
-                            oret = stT2;
+                            if (Str.len(oret) == 0) oret = stT2;
                         }
                         string t = newTmp();
                         sb_.append("  " + t + " = call " + oret + " @" + e.resolved() + "(ptr " + thisP + ", " + rt + " " + rv + ")\n");
