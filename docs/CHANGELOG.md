@@ -41,6 +41,21 @@
   launch）与 opt 关**完全一致**；test_myp_self 94/94。
 - 权衡：编译 +24% ↔ 运行 3-23x；生产用默认开，快速编译用 `MYP_SELF_OPT=0`。
 
+### v3.12.12 — 自举 codegen：struct 数组元素大小 bug（`new Vec[n]` 分配 8 字节/元素）
+- **症状**：soft2 编译 `dotprod`/`slicevec`（`Vec{x,y,z}` struct 数组/切片点积）
+  段错误；mypc 正常。
+- **根因**：codegen 的 `llvmType(struct)` 返回 `%Vec`，但 `IrEmit.typeSize("%Vec")`
+  落**默认分支 8**（ptr 大小）→ `new Vec[n]` 分配 n×8 字节，GEP 却按 `%Vec`（12
+  字节/元素，3×i32）索引 → 越界写。类数组（元素是指针）碰巧 8 正确，struct 数组
+  （元素内联）错。
+- **修复**：新增 `typeByteSize`/`typeAlign`/`structByteSize`/`structAlign`（struct
+  按 LLVM 自然对齐递归布局：字段对齐放置、总大小对齐到最大字段对齐），替换 3 处
+  `myp_alloc_slice_backing` 的 `IrEmit.typeSize`（`new T[]`、`new slice<T>`、
+  `fixedArrayToDynamic`）。
+- **验证**：dotprod/slicevec verify 4992059535 与 mypc 一致（ms 8/8 vs C++ 15/16）；
+  不动点 stage1==stage2 保持（md5 13a4065b）、test_myp_self 94/94、bootstrap 16/16。
+- **附带**：本次用 soft2（stage1 自编译 myp_self）跑全量测试 + C++/Go 基准，见下。
+
 ### v3.12.11 — 自举编译提速：M4 原地拼接 + 残留 O(n²) 清扫 + 单趟 `myp_str_join`
 - **问题**：自举编译器编译自身很慢（`--frontend-dump sema main.myp` 合并全链约
   96s+）。三个叠加的 O(n²)：

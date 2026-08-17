@@ -768,7 +768,7 @@ class CodeGen {
         string fixedArrayToDynamic(string arrData, AstType fa) {
             int n = fa.arraySize();
             string eLt = llvmType(fa.element());
-            int elemSize = IrEmit.typeSize(eLt);
+            int elemSize = typeByteSize(fa.element());
             int elemKind = arrayElemKind(fa.element());
             string heap = newTmp();
             sb_.append("  " + heap + " = call ptr @myp_alloc_slice_backing(i64 " + n + ", i32 " + elemSize + ", i32 " + elemKind + ")\n");
@@ -1981,6 +1981,66 @@ class CodeGen {
                 }
             }
             return null;
+        }
+
+        // 元素/字段字节大小（对齐 LLVM 自然对齐布局；mypc 用 DataLayout 计算）。
+        // struct → 递归字段布局；定长数组 [N x T] → N×T；其余 → IrEmit.typeSize。
+        // 修复：`new Vec[n]`/`slice<Vec>` 之前用 IrEmit.typeSize(llvmType=%Vec)
+        // → 落默认 8（ptr 大小），struct 元素被分配成 n×8 却按 n×12 索引 → 越界写。
+        int typeByteSize(AstType t) {
+            AstType rt = resolveType(t);
+            string tn = typeName(rt);
+            if (rt != null && Str.len(tn) != 0 && isStructName(tn) != 0) {
+                return structByteSize(tn);
+            }
+            if (rt != null && rt.element() != null && rt.arraySize() > 0) {
+                return rt.arraySize() * typeByteSize(rt.element());
+            }
+            return IrEmit.typeSize(llvmType(rt));
+        }
+
+        // LLVM 自然对齐值（struct → 最大字段对齐；数组 → 元素对齐）。
+        int typeAlign(AstType t) {
+            AstType rt = resolveType(t);
+            string tn = typeName(rt);
+            if (rt != null && Str.len(tn) != 0 && isStructName(tn) != 0) {
+                return structAlign(tn);
+            }
+            if (rt != null && rt.element() != null && rt.arraySize() > 0) {
+                return typeAlign(rt.element());
+            }
+            return IrEmit.alignOf(llvmType(rt));
+        }
+
+        // struct 自然对齐字节大小（LLVM getTypeAllocSize 语义：字段按对齐放置，
+        // 总大小向上对齐到最大字段对齐；空 struct = i8 占位 1）。
+        int structByteSize(string name) {
+            AstStruct st = findStructByName(name);
+            if (st == null) return 8;
+            int size = 0;
+            int maxAlign = 1;
+            for (int i = 0; i < st.props().size(); i = i + 1) {
+                int fs = typeByteSize(st.props().get(i).type());
+                int fa = typeAlign(st.props().get(i).type());
+                size = ((size + fa - 1) / fa) * fa;
+                size = size + fs;
+                if (fa > maxAlign) maxAlign = fa;
+            }
+            if (st.props().size() == 0) return 1;
+            size = ((size + maxAlign - 1) / maxAlign) * maxAlign;
+            return size;
+        }
+
+        // struct 对齐 = 最大字段对齐。
+        int structAlign(string name) {
+            AstStruct st = findStructByName(name);
+            if (st == null) return 8;
+            int maxAlign = 1;
+            for (int i = 0; i < st.props().size(); i = i + 1) {
+                int fa = typeAlign(st.props().get(i).type());
+                if (fa > maxAlign) maxAlign = fa;
+            }
+            return maxAlign;
         }
 
         // struct 方法形参 LLVM 类型列表（key 为 struct 名/带 parent 前缀）。
@@ -7901,7 +7961,7 @@ class CodeGen {
             if (k == "NewArray") {
                 // 标量动态数组：myp_alloc_slice_backing(total, elem_size, elem_kind)
                 string elemLt = llvmType(e.elemType());
-                int elemSize = IrEmit.typeSize(elemLt);
+                int elemSize = typeByteSize(e.elemType());
                 int elemKind = arrayElemKind(e.elemType());
                 string totalV = "1";
                 for (int i = 0; i < e.dimensions().size(); i = i + 1) {
@@ -9169,7 +9229,7 @@ class CodeGen {
         string genSliceNew(AstExpr e) {
             AstType et = e.typeArgs().size() > 0 ? e.typeArgs().get(0) : null;
             string elemLt = llvmType(et);
-            int elemSize = IrEmit.typeSize(elemLt);
+            int elemSize = typeByteSize(et);
             string nv = genExpr(e.args().get(0));
             string nt = exprLlvmType(e.args().get(0));
             string n64 = convertValue(nv, nt, "i64");
