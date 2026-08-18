@@ -2812,41 +2812,130 @@ win.render();                            // 渲染一帧
 
 ## 12. 元编程
 
-MYP 提供三层元编程（设计见 `docs/metaprogramming.md`）：
+MYP 提供**编译期代码生成与求值**能力，覆盖四个层次（均 additive，语言规格
+v1.0 不变）：
 
-**1. `@eval` 编译期求值（纯函数）**
+| 层次 | 能力 | 作用域 | 引入 |
+|---|---|---|---|
+| 泛型 monomorphization | 一份逻辑多种类型（`Box<int>` 独立生成代码） | 类型级 | 基础 |
+| `@eval` 编译期求值 | 编译期算常量 / 配置推导 | 值级 | v3.4 |
+| `macro` 声明式宏 | AST 片段替换（代码模板） | 语法级 | v3.5 |
+| `@macro` 过程宏 | 编译期执行宏函数、算法生成 AST | 全功能 | v3.6 |
+
+分工：**泛型** = 类型参数化；**`@eval`** = 编译期算值；**`macro` / `@macro`** =
+消除重复代码模式（模板替换 vs 可编程生成）。完整设计见
+`docs/metaprogramming.md` 与 `docs/design.md` §11。
+
+### @eval — 编译期求值（v3.4）
+
+`@eval` 修饰的函数在**编译期**执行（纯函数子集），结果作为编译期常量：
 
 ```myp
 @eval int fib(int n) {
-    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
 }
-const int FIB10 = fib(10);   // 编译期算得 55（ret i32 55）
+
+const int FIB10 = fib(10);          // 编译期算得 55
+const int FIB20 = fib(20);          // 6765
+const double HALF = 10.0 / 4;       // 2.5（const 右值也参与编译期求值）
+const bool BIG = FIB10() > 50;      // @eval/const 可互调
+const int T5 = triple(FIB10());     // 165
+const long BIGL = 100000L * 10L;    // 1000000
 ```
 
-**2. `macro` 声明式宏（AST 模板）**
+- **普通函数可调用 `@eval` 函数**（编译期常量折叠）：
+  `int doubleFIB10() { return 2 * fib(10); }` → 运行时恒为 110。
+- **求值时机**：sema 之后、codegen 之前（`evaluateCompileTimeConstants`），
+  结果作为 LLVM 编译期常量（如 `ret i32 55`）。
+- **纯函数约束**（编译期执行必须无副作用，保证确定性）：
+
+| 允许 | 禁止 |
+|---|---|
+| 标量/数组运算、递归、条件/循环、`@eval`/`const` 互调 | `new` 实例创建、I/O、外部状态、`@thread`、映射/事件 |
+| 编译期常量参数 | 运行时依赖参数 |
+
+- **诊断（编译期报错、编译器不崩溃）**：非纯构造 →
+  `compile-time evaluation: construct not supported in @eval context`；
+  递归过深 → `compile-time evaluation: recursion depth exceeded in 'fib'`。
+
+### macro — 声明式宏（v3.5）
+
+`macro` 是**顶层声明**（与 class/struct/enum 平行），把一段带元变量 `$ident`
+的 MYP 代码作为模板；调用时用实参 **AST 片段**替换元变量，展开为语法树：
 
 ```myp
 macro repeat($n, $body) {
     for (int _i = 0; _i < $n; _i++) { $body }
 }
-repeat(3, total = total + 10);   // 展开为 for 循环 ×3
+macro addN($x, $n) {
+    $x = $x + $n;
+}
+macro twice($body) {
+    $body
+    $body
+}
+
+int v = 0;
+repeat(3, v = v + 10);   // 展开为 for 循环 ×3 → v = 30
+addN(v, 5);              // v = 35
+twice(v = v + 1);        // 嵌套/重复展开 → v = 37
 ```
 
-**3. `@macro` 过程宏（`quote` 代码模板，可编程生成）**
+- 参数可捕获**表达式 / 语句 / 赋值**等 AST 片段（按调用上下文替换）。
+- 宏可调用宏、可**迭代展开**（直到稳定或达深度上限）。
+- **展开时机**：parse 之后、sema 之前（`expandMacros`），纯编译期 AST 变换、
+  无需执行。
+- 调试：`--macro-expand` 输出展开后的 AST dump（`[function main]` / `[action ...]`
+  / `for` / `assign` …），便于核对。
+
+### @macro — 过程宏（v3.6）
+
+`@macro` 修饰的函数在编译期**执行**（可循环/条件/算法驱动），返回 AST 值
+（`Expr` / `Stmt` / `StmtList`），配合 `quote { ... }` 代码模板生成代码——
+能实现 `macro` 模板做不到的"按 n 生成 n 条语句"：
 
 ```myp
+@macro StmtList genAssign(string name, int value) {
+    return quote { int $name = $value; };   // $name/$value 编译期插值
+}
+
 @macro StmtList makeCalls(int n) {
-    StmtList out = quote {};
+    StmtList out = quote {};                // 空语句列表
     for (int i = 0; i < n; i++) {
-        out = out + quote { Console.write($i); };
+        out = out + quote { Console.write($i); };   // StmtList 拼接
     }
     return out;
 }
-makeCalls(3);                    // 生成 3 条 Console.write(...)
+
+genAssign("x", 42);      // 语句位置调用 → 展开为 int x = 42;
+makeCalls(3);            // 生成 Console.write(0); Console.write(1); Console.write(2);
 ```
 
-- 调试：`--macro-expand` 输出展开后的 AST dump。
-- 设计与实现详见 `docs/metaprogramming.md` 与 `docs/design.md` §11。
+- **`quote { ... }`**：编译期表达式，把块解析为 AST（语句集合）；`$x` 插值按
+  编译期值类型嵌入：
+
+  | `$x` 编译期值类型 | 嵌入为 |
+  |---|---|
+  | `int`/`long`/`double`/`float`/`bool`/`string` | 对应字面量 AST 节点 |
+  | `Expr` | 内联该表达式 AST |
+  | `StmtList` / `Stmt` | 内联该语句（组）AST |
+
+- **AST 值类型**：`Expr` / `Stmt` / `StmtList` 是**编译期专属类型**（不可作普通
+  运行时变量/参数类型，sema 校验）；`StmtList + StmtList` 拼接。
+- **不生成运行时代码**：`@macro` 函数只被编译期执行，sema 只注册、不 emit。
+- **展开时机**：同 `macro`（parse 之后、sema 之前）；展开深度 / 指令数有上限
+  （防失控循环生成）。
+- **诊断**：插值类型不匹配（`$x` 是 `int` 但需语句）、返回类型不匹配
+  （声明 `StmtList` 但 `quote` 产 `Expr`）→ 编译期报错，不崩溃。
+
+### 设计原则
+
+- **additive**：以注解/关键字引入，不破坏现有语法，语言规格 1.0 不变。
+- **编译期确定性**：编译期执行的代码必须是纯函数——同样的输入永远得到同样输出。
+- **可观测**：`--macro-expand` 调试开关输出展开结果（AST dump）。
+- **基于现有泛型**：泛型 monomorphization 是最基础的"类型级元编程"，宏与编译期
+  求值建立在它之上，互为补充。
 
 ---
 

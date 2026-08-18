@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.12.23 — 手册 §12 元编程展开：四层能力总览 + @eval/macro/@macro 详述
+- **§12 元编程章节大幅展开**（从"三层简例"扩为完整小节）：四层能力总览表
+  （泛型 monomorphization 类型级 / `@eval` 值级 v3.4 / `macro` 语法级 v3.5 /
+  `@macro` 全功能 v3.6）。
+- **@eval**：编译期常量示例（FIB10=55/FIB20=6765/HALF=2.5/T5=165/BIGL=1000000，
+  实测）、普通函数调用 @eval 常量折叠（`2*fib(10)`=110，实测）、求值时机
+  （sema 后 codegen 前）、纯函数约束表（允许/禁止）、诊断错误原文
+  （`construct not supported in @eval context`、`recursion depth exceeded`，实测）。
+- **macro**：声明式宏语法（`$ident` 元变量 + AST 片段替换）、嵌套/重复展开
+  （v=37，实测）、展开时机（parse 后 sema 前 `expandMacros`）、`--macro-expand`
+  AST dump 输出形态（实测）。
+- **@macro**：`quote {}` 代码模板 + `$` 插值表（标量→字面量/Expr→内联/
+  StmtList·Stmt→内联语句）、AST 值类型（Expr/Stmt/StmtList 编译期专属）、
+  `StmtList + StmtList` 拼接、makeCalls(3) 生成 3 条 write（实测输出
+  x=42 + 0/1/2）、不生成运行时代码、深度/指令上限。
+- **注**：`@eval int[8] t = {...}` 表生成（docs/metaprogramming.md §3.1 声称）
+  **编译器实际拒绝**（`expected '(' after function name`）——手册不写入未实现
+  特性；本地设计文档该行待修正。
+- 纯文档展开，无代码变更；全量回归维持 288 通过。
+
+
 ### v3.12.22 — 手册章节重排：元编程从 §12 摘出为独立章节（新 §12），编译与工具 → §13、完整示例 → §14
 - **结构**：原 §12「编译与工具」内的 `#### 元编程（@eval/macro/@macro）` 摘出，升级为
   独立 `## 12. 元编程`（置于编译与工具之前）；原 `## 12. 编译与工具` → `## 13.`，
