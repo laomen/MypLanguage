@@ -42,7 +42,7 @@ BNCTDoseEngine/build/
 **/onnxvenv/
 **/venv/
 **/.venv/
-# MOS
+# MOS（独立 git 仓库，见 MOS/.git；本仓库不追踪，避免嵌套仓库冲突）
 /MOS/
 # 中间设计文档（不再追踪；仅保留设计文档/用户手册/readme/语法规格/变更日志）
 docs/*.md
