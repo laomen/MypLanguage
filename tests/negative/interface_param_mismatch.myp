@@ -1,0 +1,16 @@
+// EXPECT ERROR: does not implement action
+//
+// BUG-008 回归（负测试）：接口 action 参数类型/个数不校验——此前 checkInterfaceImpl
+// 只按名称 + 返回类型 basic_type 粗粒度匹配，`double area(int,int)` 对实现
+// `double area(int)` 也编译通过。应精确签名匹配（名称 + 参数 + 返回类型）。
+
+import env;
+interface Shape {
+    double area(int w, int h);
+}
+class Rect {
+    interface class Shape;
+    action:
+        double area(int w) { return 1.0; }   // 参数个数不匹配 → 应拒绝
+}
+int main() { return 0; }

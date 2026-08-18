@@ -166,10 +166,27 @@ static bool loadModule(const std::string& module_name,
             if (fileExists(parent_path))   { path = parent_path; break; }
             if (fileExists(sibling_path))  { path = sibling_path; break; }
             if (!package_path.empty()) {
-                std::string pkg_src = package_path + "/" + slash_name + "/src/" + module_name + ".myp";
-                std::string pkg_root = package_path + "/" + slash_name + "/" + module_name + ".myp";
-                if (fileExists(pkg_src))      { path = pkg_src; break; }
-                if (fileExists(pkg_root))     { path = pkg_root; break; }
+                // BUG-015: --package-path 支持冒号分隔多路径（自举 Str.splitCount(":")
+                // 同设计）。逐段尝试 <seg>/<module>/src/<module>.myp 或
+                // <seg>/<module>/<module>.myp，任一命中即用。
+                bool pkg_found = false;
+                std::string pkg_rest = package_path;
+                while (!pkg_rest.empty() && !pkg_found) {
+                    std::string seg = pkg_rest;
+                    auto colon = pkg_rest.find(':');
+                    if (colon != std::string::npos) {
+                        seg = pkg_rest.substr(0, colon);
+                        pkg_rest = pkg_rest.substr(colon + 1);
+                    } else {
+                        pkg_rest.clear();
+                    }
+                    if (seg.empty()) continue;
+                    std::string pkg_src = seg + "/" + slash_name + "/src/" + module_name + ".myp";
+                    std::string pkg_root = seg + "/" + slash_name + "/" + module_name + ".myp";
+                    if (fileExists(pkg_src))        { path = pkg_src; pkg_found = true; }
+                    else if (fileExists(pkg_root))  { path = pkg_root; pkg_found = true; }
+                }
+                if (pkg_found) break;
             }
         }
         if (path.empty())

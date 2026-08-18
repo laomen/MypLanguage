@@ -4,5 +4,9 @@ small start
 small end
 def1
 def2
+zero start
+zero end
+min16 start
+min16 end
 deep bottom
 done

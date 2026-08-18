@@ -1,0 +1,35 @@
+// BUG-014 回归测试：Atomic.loadInt / Atomic.storeInt 真原子（非普通 load/store）
+// 修复前：__myp_atomic_load_i32/store_i32 编译成普通 load/store（无 AtomicOrdering）
+// → 无原子性/内存序保证。修复后生成 `load atomic`/`store atomic`（seq_cst）。
+// 功能验证：单线程 load/store 往返 + @parallel 多线程下 store/load 与 atomicrmw
+// 混合（xchg 累加），值正确且无竞争损坏。
+import test;
+import atomic;
+
+@test void test_atomic_load_store_basic() {
+    int[] buf = new int[64];
+    Atomic.storeInt(buf, 7, 42);
+    int v = Atomic.loadInt(buf, 7);
+    Test.assert(v == 42, "b14 store/load roundtrip");
+
+    Atomic.storeInt(buf, 7, 99);
+    Test.assert(Atomic.loadInt(buf, 7) == 99, "b14 overwrite");
+
+    // 与 atomicrmw 混合：xchg 交换 + loadInt 读回
+    int old = Atomic.xchgInt(buf, 8, 5);
+    Test.assert(old == 0, "b14 xchg initial");
+    Test.assert(Atomic.loadInt(buf, 8) == 5, "b14 xchg visible");
+    Test.report("test_atomic_load_store_basic", true);
+}
+
+@test void test_atomic_load_store_parallel() {
+    int[] tally = new int[1000];
+    Atomic.storeInt(tally, 0, 0);
+    @parallel for (int i = 0; i < 1000; i = i + 1) {
+        Atomic.addInt(tally, 0, 1);
+    }
+    // 1000 个线程各 +1 → 最终 1000（原子性保证无丢失更新）
+    int s = Atomic.loadInt(tally, 0);
+    Test.assert(s == 1000, "b14 parallel addInt total");
+    Test.report("test_atomic_load_store_parallel", true);
+}

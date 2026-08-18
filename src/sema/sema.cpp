@@ -394,10 +394,26 @@ void Sema::checkInterfaceImpl(const ClassDecl& cls) {
         if (!iface_uses_assoc)
             for (auto& p : ia.params)
                 if (typeNodeToTypeInfo(p.type).kind == TypeKind::Assoc) { iface_uses_assoc = true; break; }
+        // BUG-008: 参数列表精确匹配（个数 + 类型）。此前只按名称 + 返回类型 basic_type
+        // 核对，`double area(int)` 实现 `double area(int,int)` 也编译通过。关联类型
+        // 场景仍只按名称（绑定类型在实现类）。
+        auto paramsMatch = [&](const ActionDecl& ca, const ActionDecl& ia) {
+            if (ca.params.size() != ia.params.size()) return false;
+            for (size_t pi = 0; pi < ca.params.size(); pi++) {
+                const TypeNode& cpt = ca.params[pi].type;
+                const TypeNode& ipt = ia.params[pi].type;
+                if (cpt.basic_type != ipt.basic_type) return false;
+                if (cpt.isArray() != ipt.isArray()) return false;
+                if (!cpt.class_name.empty() || !ipt.class_name.empty())
+                    if (cpt.class_name != ipt.class_name) return false;
+            }
+            return true;
+        };
         auto matches = [&](const ActionDecl& ca) {
             if (ca.name != ia.name) return false;
             if (iface_uses_assoc) return true;
-            return ca.return_type.basic_type == ia.return_type.basic_type;
+            if (ca.return_type.basic_type != ia.return_type.basic_type) return false;
+            return paramsMatch(ca, ia);
         };
         bool found = false;
         for (auto& ca : cls.actions)
@@ -880,6 +896,23 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
         }
     }
 
+    // BUG-009: 一个类最多一个 @startup——@thread 线程入口取**最后一个**、`mypc run`
+    // 合成 main 取**第一个**，多个 @startup 行为不一致（手写 main+@thread 输出 SECOND、
+    // mypc run 输出 FIRST）。诊断「一类一个 @startup」（design §6.5 建议）。
+    {
+        std::string first_startup;
+        for (auto& action : actions) {
+            if (!action.has_startup) continue;
+            if (first_startup.empty()) {
+                first_startup = action.name;
+            } else {
+                error(action.range, "class '" + cls_name + "' declares multiple '@startup' "
+                      "actions ('" + first_startup + "' and '" + action.name +
+                      "') — at most one @startup per class");
+            }
+        }
+    }
+
     for (auto& action : actions) {
         // 构造器：不注册为可调用 action（构造器不能直接调用，同名重载合法）；
         // M2 负责 new 绑定。body 仍在独立 pass 中带类作用域检查。
@@ -1279,6 +1312,32 @@ Sema::StmtResult Sema::visitStmt(Stmt& stmt) {
         }
         case StmtKind::MappingStmt: {
             auto& ms = static_cast<MappingStmt&>(stmt);
+            // BUG-011: 函数内 mapping 若用函数局部实例变量名作节点（`s.e -> t.a`），
+            // codegen 会在 handler 函数里 load 外层函数的局部 alloca → 跨函数指令
+            // 引用 → LLVM verify "Referring to an instruction in another function!"。
+            // 实例级映射暂不支持（注册是全局的，handler 无法捕获函数局部实例）——
+            // 编译期诊断，指引改用类名节点（`S.e -> T.a`）。
+            for (auto& chain : ms.decl.chains) {
+                for (auto& node : chain.nodes) {
+                    if (node.is_function || node.is_lambda || node.is_transformer)
+                        continue;
+                    bool is_class_node = false;
+                    if (current_tu_) {
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name == node.source_name) { is_class_node = true; break; }
+                        }
+                    }
+                    // 不是类名但符号表里有该名（函数局部变量/参数）→ 实例级节点
+                    if (!is_class_node && symbol_table_.lookup(node.source_name)) {
+                        std::string cn = node.source_name;
+                        if (auto* st = symbol_table_.lookup(node.source_name))
+                            if (!st->class_name.empty()) cn = st->class_name;
+                        error(node.range, "mapping 节点 '" + node.source_name +
+                            "' 是函数内局部变量名；实例级映射暂不支持，请改用类名节点"
+                            "（如 '" + cn + "." + node.member_name + "'）");
+                    }
+                }
+            }
             // Process lambda expressions and where clauses inside mapping chains
             for (auto& chain : ms.decl.chains) {
                 for (auto& node : chain.nodes) {
@@ -1385,6 +1444,14 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
                   "' of type '" + typeName(decl_type) +
                   "' with value of type '" + typeName(init_type) + "'");
         }
+    }
+
+    // BUG-022: `@thread` 只能用于 class 实例变量——struct 是值类型，@thread 会
+    // 启动工作线程托管实例，对 struct 静默无效果（此前接受、编译运行通过但无意义）。
+    // 放在 decl_type 完整解析之后（var 推断路径须先解析 init）。
+    if (decl.has_thread_annotation && decl_type.kind != TypeKind::Class) {
+        error(decl.range, "'@thread' can only be applied to a class instance variable");
+        return {};
     }
 
     if (symbol_table_.lookup(decl.name)) {

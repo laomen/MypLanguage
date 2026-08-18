@@ -304,6 +304,12 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
                 expr.op_call = std::make_shared<OperatorCall>();
                 expr.op_call->kind = "function";
                 expr.op_call->func_name = f.name;
+                // BUG-006: main() 只做接线（mapping）——解析到外部 @op 函数的运算符
+                // 是直调旁路，应拒绝（struct 内部算子 kind=="struct_method" 放行）。
+                if (in_main_function_ && !in_struct_method_) {
+                    error(expr.range, "direct function call not allowed in main() — "
+                          "use mapping() instead (operator '@op(" + sym + ")')");
+                }
                 return typeNodeToTypeInfo(f.return_type);
             }
         }
@@ -2126,18 +2132,24 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
         }
         for (auto& action : cls.actions) {
             if (action.name == expr.member_name) {
-                // @startup methods on @thread instances are auto-invoked
-                // in the worker thread; a manual call re-runs the entry
-                // logic and double-executes (SIGSEGV at runtime). Reject
-                // the pattern at compile time. NOTE: @startup on plain
-                // instances is still callable (mypc run relies on it).
-                if (action.has_startup &&
-                    expr.object->kind == ExprKind::Identifier) {
+                // BUG-012: 跨线程直接调用——@thread 实例的 action 运行在其工作线程上，
+                // 从外部（main/其他线程）直接调用没有线程归属保证（design §8.2 不允许，
+                // 须经 mapping()）。@startup 由工作线程自动调用，手动调用会双执行
+                // （原有规则）；普通 action 直接调用在调用线程执行（跨线程）。
+                if (expr.object->kind == ExprKind::Identifier) {
                     auto& oid = static_cast<IdentifierExpr&>(*expr.object);
-                    if (thread_annotated_vars_.count(oid.name))
-                        error(expr.range, "cannot manually call '@startup' method '" +
-                              action.name + "' on a @thread instance "
-                              "(auto-invoked in the worker thread)");
+                    if (thread_annotated_vars_.count(oid.name)) {
+                        if (action.has_startup) {
+                            error(expr.range, "cannot manually call '@startup' method '" +
+                                  action.name + "' on a @thread instance "
+                                  "(auto-invoked in the worker thread)");
+                        } else {
+                            error(expr.range, "cannot directly call action '" +
+                                  action.name + "' on a @thread instance — "
+                                  "cross-thread calls must go through mapping()");
+                            return TypeInfo(TypeKind::Void);
+                        }
+                    }
                 }
                 TypeInfo func_type(TypeKind::Function);
                 if (action.has_coro) {
@@ -2853,6 +2865,15 @@ TypeInfo Sema::typeNodeToTypeInfo(const TypeNode& node, int alias_depth) {
         case BuiltinType::String: return TypeInfo(TypeKind::String);
         case BuiltinType::Bit:    return TypeInfo(TypeKind::Bit);
         case BuiltinType::BitVector: {
+            // BUG-007: bitvector<N> 宽度必须 ∈ {8,16,32,64}——此前不校验，
+            // bitvector<3>/<7> 静默映射为 i32（codegen getLLVMType default→i32）。
+            // 宽度 0 为合成默认（非解析所得），跳过避免误报。
+            if (node.bitvector_width != 0 &&
+                node.bitvector_width != 8 && node.bitvector_width != 16 &&
+                node.bitvector_width != 32 && node.bitvector_width != 64) {
+                error(node.range, "bitvector<N> width must be one of 8, 16, 32, 64 "
+                      "(got " + std::to_string(node.bitvector_width) + ")");
+            }
             TypeInfo bv(TypeKind::BitVector);
             bv.bitvector_width = node.bitvector_width;
             return bv;
@@ -3706,6 +3727,11 @@ TypeInfo Sema::visitPipe(PipeExpr& expr) {
                         error(expr.range, "pipe: cannot apply '" + id.name +
                               ".transform' to operand of type '" + typeName(lhs_type) + "'");
                         return TypeInfo(TypeKind::Void);
+                    }
+                    // BUG-006: main() 内管道解析到 class transform 是直调旁路。
+                    if (in_main_function_ && !in_struct_method_) {
+                        error(expr.range, "direct function call not allowed in main() — "
+                              "use mapping() instead (pipe to '" + id.name + ".transform')");
                     }
                     expr.target_kind = "class";
                     expr.class_name = cls.name;

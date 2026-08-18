@@ -1,0 +1,14 @@
+// EXPECT ERROR: 外部实例不能调用 function: 段内部方法
+// function: 段仅供类内调用（this.f()/同类 action 内复用）；
+// 外部 obj.f() → "cannot access function 'priv' from outside class 'C'"
+class C {
+    action: void pub() {}
+    function: void priv() {}
+}
+void top() {
+    C c;
+    c.priv();   // ← 唯一错误点：外部访问 function 段方法
+}
+int main() {
+    return 0;
+}

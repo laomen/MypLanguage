@@ -2287,7 +2287,7 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::FunctionType::get(v, {i32, p, p}, false),
         llvm::Function::ExternalLinkage, "myp_event_register", module_.get());
     runtime_event_fire_ = llvm::Function::Create(
-        llvm::FunctionType::get(v, {i32, p, p}, false),
+        llvm::FunctionType::get(v, {i32, p, p, i32}, false),
         llvm::Function::ExternalLinkage, "myp_event_fire", module_.get());
     runtime_event_process_all_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
@@ -2298,6 +2298,13 @@ void CodeGen::declareRuntimeFunctions() {
     runtime_event_pop_scope_ = llvm::Function::Create(
         llvm::FunctionType::get(v, {}, false),
         llvm::Function::ExternalLinkage, "myp_event_pop_scope", module_.get());
+    // BUG-005: mapping handler 跨线程路由
+    runtime_thread_is_current_ = llvm::Function::Create(
+        llvm::FunctionType::get(i32, {p}, false),
+        llvm::Function::ExternalLinkage, "myp_thread_is_current", module_.get());
+    runtime_event_route_inst_ = llvm::Function::Create(
+        llvm::FunctionType::get(v, {p, i32, p, i32}, false),
+        llvm::Function::ExternalLinkage, "myp_event_route_to_instance", module_.get());
 
     // Thread system: myp_thread_create(startup_fn, startup_arg) -> thread*
     runtime_thread_create_ = llvm::Function::Create(

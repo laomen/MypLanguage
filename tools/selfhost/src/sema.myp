@@ -1571,15 +1571,66 @@ class Sema {
                 for (int ji = 0; ji < iacts2.size(); ji = ji + 1) {
                     AstAction ia2 = iacts2.get(ji);
                     if (ia2.body() != null) continue;  // 默认实现 → 可省略
+                    // BUG-008 镜像 C++：接口签名含关联类型 → 只按名称匹配；
+                    // 否则按名称 + 返回类型 + 参数列表精确匹配。
+                    int usesAssoc = 0;
+                    AstType iaRet2 = ia2.ret();
+                    if (iaRet2 != null && typeToKind(iaRet2) == "assoc") usesAssoc = 1;
+                    if (usesAssoc == 0) {
+                        ArrayList<AstParam> iap2 = ia2.params();
+                        for (int q = 0; q < iap2.size(); q = q + 1) {
+                            AstType qp = iap2.get(q).type();
+                            if (qp != null && typeToKind(qp) == "assoc") { usesAssoc = 1; break; }
+                        }
+                    }
                     int foundImpl = 0;
+                    // 类 action 匹配
                     ArrayList<AstAction> clActs = cl.actions();
                     for (int ka = 0; ka < clActs.size(); ka = ka + 1) {
-                        if (clActs.get(ka).name() == ia2.name()) { foundImpl = 1; break; }
+                        AstAction ca2 = clActs.get(ka);
+                        if (ca2.name() != ia2.name()) continue;
+                        if (usesAssoc == 0) {
+                            string cr2 = ca2.ret() != null ? typeToKind(ca2.ret()) : "";
+                            string ir2 = iaRet2 != null ? typeToKind(iaRet2) : "";
+                            if (cr2 != ir2) continue;
+                            ArrayList<AstParam> cp2 = ca2.params();
+                            if (cp2.size() != ia2.params().size()) continue;
+                            int pm = 1;
+                            for (int q = 0; q < cp2.size(); q = q + 1) {
+                                AstType cqt = cp2.get(q).type();
+                                AstType iqt = ia2.params().get(q).type();
+                                string cqk = cqt != null ? typeToKind(cqt) : "";
+                                string iqk = iqt != null ? typeToKind(iqt) : "";
+                                if (cqk != iqk) { pm = 0; break; }
+                            }
+                            if (pm == 0) continue;
+                        }
+                        foundImpl = 1;
+                        break;
                     }
                     if (foundImpl == 0) {
                         ArrayList<AstAction> clStatics = cl.staticActions();
                         for (int kb = 0; kb < clStatics.size(); kb = kb + 1) {
-                            if (clStatics.get(kb).name() == ia2.name()) { foundImpl = 1; break; }
+                            AstAction cs2 = clStatics.get(kb);
+                            if (cs2.name() != ia2.name()) continue;
+                            if (usesAssoc == 0) {
+                                string csr2 = cs2.ret() != null ? typeToKind(cs2.ret()) : "";
+                                string ir2b = iaRet2 != null ? typeToKind(iaRet2) : "";
+                                if (csr2 != ir2b) continue;
+                                ArrayList<AstParam> csp2 = cs2.params();
+                                if (csp2.size() != ia2.params().size()) continue;
+                                int pm2 = 1;
+                                for (int q = 0; q < csp2.size(); q = q + 1) {
+                                    AstType cqt = csp2.get(q).type();
+                                    AstType iqt = ia2.params().get(q).type();
+                                    string cqk = cqt != null ? typeToKind(cqt) : "";
+                                    string iqk = iqt != null ? typeToKind(iqt) : "";
+                                    if (cqk != iqk) { pm2 = 0; break; }
+                                }
+                                if (pm2 == 0) continue;
+                            }
+                            foundImpl = 1;
+                            break;
                         }
                     }
                     if (foundImpl == 0) {
@@ -1671,6 +1722,9 @@ class Sema {
                 ArrayList<string> ctp = c.typeParams();
                 for (int gi = 0; gi < ctp.size(); gi = gi + 1) curGeneric_.add(ctp.get(gi));
                 // 收集方法签名（静态方法优先，含泛型）
+                // BUG-009 镜像 C++：一个类最多一个 @startup（@thread 取最后一个、
+                // myp_self run 取第一个，多个行为不一致 → 诊断）。
+                string firstStartup = "";
                 for (int j = 0; j < c.actions().size(); j = j + 1) {
                     AstAction a = c.actions().get(j);
                     if (a.ctor() != 0) {
@@ -1686,7 +1740,13 @@ class Sema {
                         AstExpr defaultExpr = a.params().get(pi).defaultExpression();
                         if (defaultExpr != null) markAllExpr(defaultExpr);
                     }
-                    if (a.startup() != 0) startupMethods_.add(c.name() + "." + a.name());
+                    if (a.startup() != 0) {
+                        if (Str.len(firstStartup) == 0) firstStartup = a.name();
+                        else {
+                            diag_.error(a.line(), a.col(), "class '" + c.name() + "' declares multiple '@startup' actions ('" + firstStartup + "' and '" + a.name() + "') — at most one @startup per class");
+                        }
+                        startupMethods_.add(c.name() + "." + a.name());
+                    }
                 }
                 for (int j = 0; j < c.staticActions().size(); j = j + 1) {
                     AstAction a = c.staticActions().get(j);
@@ -3104,6 +3164,19 @@ class Sema {
                         }
                     }
                     string vt = typeToKind(vt3);
+                    // BUG-007 镜像 C++：bitvector<N> 宽度必须 ∈ {8,16,32,64}——
+                    // 此前不校验，bitvector<3> 静默映射为 i32。宽度 0 为合成默认跳过。
+                    if (vt3 != null && vt3.basicName() == "bitvector" && vt3.bitvectorWidth() != 0) {
+                        int bw = vt3.bitvectorWidth();
+                        if (bw != 8 && bw != 16 && bw != 32 && bw != 64) {
+                            int dl = vt3.line();
+                            int dc = vt3.col();
+                            if (dl == 0) { dl = v.nameLine(); dc = v.nameCol(); }
+                            if (dl == 0) { dl = s.line(); dc = s.col(); }
+                            diag_.error(dl, dc, "bitvector<N> width must be one of 8, 16, 32, 64 (got " + bw + ")");
+                            continue;
+                        }
+                    }
                     // void 变量检查（C++：cannot declare variable of type 'void' / unknown type）
                     if (vt3 != null && vt == "void") {
                         // 位置 = 类型 token（C++ decl.range 指向类型，非变量名）
@@ -3155,6 +3228,19 @@ class Sema {
                         if (dl == 0) { dl = s.line(); dc = s.col(); }
                         diag_.error(dl, dc, "cannot infer type of 'var' from a void expression");
                         continue;
+                    }
+                    // BUG-022 镜像 C++：`@thread` 只能用于 class 实例变量——struct 是
+                    // 值类型，@thread 启动工作线程托管实例对 struct 静默无效果（此前
+                    // 接受）。var 推断用 it（init 解析类型），显式类型用 vt。
+                    if (v.thread() != 0) {
+                        string eff = v.isInferred() != 0 ? it : vt;
+                        if (eff != "class") {
+                            int dl = v.nameLine();
+                            int dc = v.nameCol();
+                            if (dl == 0) { dl = s.line(); dc = s.col(); }
+                            diag_.error(dl, dc, "'@thread' can only be applied to a class instance variable");
+                            continue;
+                        }
                     }
                     // 类型检查（C++：cannot initialize variable ...）
                     // BUG-016：已知 void 值赋给非 void 变量（int x = voidCall();）——C++ 同补报；
@@ -3679,6 +3765,11 @@ class Sema {
                     || op == "&&" || op == "||") {
                     string opr = resolveOp(e, op, e.lhs(), l, r);
                     if (Str.len(opr) != 0) {
+                        // BUG-006 镜像 C++：main 内解析到外部 @op 函数的比较运算符拒绝
+                        //（struct 算子 setResolved("struct_...") 放行）。
+                        if (inMain_ != 0 && inStruct_ == 0 && Str.startsWith(e.resolved(), "struct_") == 0) {
+                            diag_.error(e.line(), e.col(), "direct function call not allowed in main() — use mapping() instead (operator '@op(" + op + ")')");
+                        }
                         e.setOpCall(1);
                         e.setResolvedKind(opr);
                         return opr;
@@ -3704,6 +3795,11 @@ class Sema {
                 // @op 运算符重载（slice+slice 等），C++ resolveOperator 先于数字检查
                 string opr = resolveOp(e, op, e.lhs(), l, r);
                 if (Str.len(opr) != 0) {
+                    // BUG-006 镜像 C++：main 内解析到外部 @op 函数的运算符拒绝
+                    //（struct 算子 setResolved("struct_...") 放行）。
+                    if (inMain_ != 0 && inStruct_ == 0 && Str.startsWith(e.resolved(), "struct_") == 0) {
+                        diag_.error(e.line(), e.col(), "direct function call not allowed in main() — use mapping() instead (operator '@op(" + op + ")')");
+                    }
                     e.setOpCall(1);
                     e.setResolvedKind(opr);
                     return opr;
@@ -4285,10 +4381,16 @@ class Sema {
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName());
                             if (normFailed == 0 && Str.len(fr) != 0) {
-                                // @thread 实例的 @startup 方法禁止手动调用（C++）
-                                if (mo != null && mo.kind() == "Identifier" && isThreadVar(mo.name()) != 0
-                                    && isStartupMethod(base3, callee.memberName()) != 0) {
-                                    diag_.error(callee.line(), callee.col(), "cannot manually call '@startup' method '" + callee.memberName() + "' on a @thread instance (auto-invoked in the worker thread)");
+                                // BUG-012/现有规则镜像 C++：@thread 实例的 action 禁止
+                                // 跨线程直接调用（须经 mapping() 投递到其工作线程）；
+                                // @startup 由工作线程自动调用，手动调用双执行。
+                                if (mo != null && mo.kind() == "Identifier" && isThreadVar(mo.name()) != 0) {
+                                    if (isStartupMethod(base3, callee.memberName()) != 0) {
+                                        diag_.error(callee.line(), callee.col(), "cannot manually call '@startup' method '" + callee.memberName() + "' on a @thread instance (auto-invoked in the worker thread)");
+                                    } else {
+                                        diag_.error(callee.line(), callee.col(), "cannot directly call action '" + callee.memberName() + "' on a @thread instance — cross-thread calls must go through mapping()");
+                                        ret = "void";
+                                    }
                                 }
                                 // @coro 方法调用返回协程句柄（long）
                                 if (isMethodCoro(base3, callee.memberName()) != 0) ret = "long";
@@ -4873,7 +4975,13 @@ class Sema {
                 if (Str.len(cls) != 0) {
                     e.setClassType(cls);
                     string ret = findMethodRet(resolveBase(cls), e.method(), 1);
-                    if (Str.len(ret) != 0) leftKind = ret;
+                    if (Str.len(ret) != 0) {
+                        // BUG-006 镜像 C++：main 内管道解析到 class transform → 拒绝。
+                        if (inMain_ != 0 && inStruct_ == 0) {
+                            diag_.error(e.line(), e.col(), "direct function call not allowed in main() — use mapping() instead (pipe to '" + target.name() + ".transform')");
+                        }
+                        leftKind = ret;
+                    }
                 }
                 e.setResolvedKind(leftKind);
                 return leftKind;
@@ -5091,6 +5199,31 @@ class Sema {
         // 顶层 mapping 与语句内 mapping：处理 where 子句（声明源事件参数）与 lambda 节点。
         void analyzeMapping(AstMapping mp) {
             ArrayList<AstMappingChain> mcs = mp.chains();
+            // BUG-011 镜像 C++：mapping 节点用函数内局部实例变量名（`s.e -> t.a`）
+            // → C++ handler 函数跨函数引用 LLVM verify 失败；自举侧虽以 %inst 兜
+            // 底但不产生跨函数引用（语义仍错：注册全局，无法捕获函数局部实例）。
+            // 统一编译期诊断：mapping 节点须用类名（实例级映射暂不支持）。
+            for (int ni = 0; ni < mcs.size(); ni = ni + 1) {
+                ArrayList<AstMappingNode> ndn = mcs.get(ni).nodes();
+                for (int nj = 0; nj < ndn.size(); nj = nj + 1) {
+                    AstMappingNode nn2 = ndn.get(nj);
+                    if (nn2.isFunction() != 0 || nn2.isLambda() != 0 || nn2.isTransformer() != 0) continue;
+                    string s2 = nn2.src();
+                    int isCls2 = 0;
+                    if (tu_ != null) {
+                        for (int x2 = 0; x2 < tu_.classes().size(); x2 = x2 + 1) {
+                            if (tu_.classes().get(x2).name() == s2) { isCls2 = 1; break; }
+                        }
+                    }
+                    SymbolEntry se2 = sym_.lookupEntry(s2);
+                    if (isCls2 == 0 && se2 != null) {
+                        string cn2 = sym_.lookupClass(s2);
+                        if (Str.len(cn2) == 0) cn2 = s2;
+                        diag_.error(0, 0, "mapping 节点 '" + s2 + "' 是函数内局部变量名；"
+                            + "实例级映射暂不支持，请改用类名节点（如 '" + cn2 + "." + nn2.member() + "'）");
+                    }
+                }
+            }
             for (int cix = 0; cix < mcs.size(); cix = cix + 1) {
                 AstMappingChain ch = mcs.get(cix);
                 AstExpr wh = ch.whereClause();

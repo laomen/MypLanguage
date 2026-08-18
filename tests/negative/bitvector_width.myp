@@ -1,0 +1,10 @@
+// EXPECT ERROR: bitvector<N> width must be one of 8, 16, 32, 64
+//
+// BUG-007 回归（负测试）：`bitvector<3>` 宽度非 8/16/32/64 曾被静默接受并映射为
+// i32（codegen getLLVMType default→i32）——应编译期拒绝。C++ 与自举均已修复。
+
+import env;
+void f() {
+    bitvector<3> x;
+}
+int main() { return 0; }

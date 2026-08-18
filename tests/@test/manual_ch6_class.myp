@@ -1,0 +1,175 @@
+// manual_ch6_class.myp — 手册 §6 Class 组件系统核对回归（2026-08-18 审计固化）
+//   四段式结构 / Interface 接口多态 / 默认实现（trait 默认方法）/
+//   关联类型（IntBox 直接 + Processor 泛型，含 StrBox string 单态化路径）/
+//   访问控制 / function 内部方法 / static 静态方法 / 泛型静态方法。
+// 注意：不走「接口变量直接分派 string 关联类型」路径（BUG-017，见 tests/bugs/）；
+// 不与 import collections 同文件（BUG-018，见 tests/bugs/）。泛型静态方法见
+// manual_ch6_gstatic.myp。
+import test;
+
+// --- 四段式结构（action/event/function/property）---
+class Sensor {
+    action:
+        void init(int id) { sensorId = id; }
+        float readValue() { return lastValue; }
+        void reset() { calibrate(); }        // action 内调用 function ✓
+        int getId() { return sensorId; }
+    event:
+        valueRead(float temp);
+        thresholdExceeded(float value);
+    function:
+        void calibrate() { lastValue = 0.0f; }   // 仅类内可调
+    property:
+        int sensorId;
+        float threshold;
+        float lastValue;
+}
+
+// --- Interface 接口多态 (v2.3) ---
+interface IShape {
+    double area();
+    double perimeter();
+}
+class Circle {
+    interface class IShape;
+    action:
+        double area() { return 3.14 * r * r; }
+        double perimeter() { return 2 * 3.14 * r; }
+    property: double r = 1.0;
+}
+
+// --- 默认实现（trait 默认方法 v3.9.0）---
+interface IDef {
+    double area();
+    string describe() { return "area=" + area(); }   // 默认实现 → 实现类可省略
+}
+class CirDef {
+    interface class IDef;
+    action:
+        double area() { return 3.14 * r * r; }        // 未写 describe → 用默认
+    property: double r = 1.0;
+}
+class SqDef {
+    interface class IDef;
+    action:
+        double area() { return side * side; }
+        string describe() { return "SQUARE(" + area() + ")"; }  // 覆盖默认
+    property: double side = 3.0;
+}
+// 默认方法调用另一个默认方法
+interface IDef2 {
+    double base();
+    string label() { return "L" + base(); }
+    string describe() { return "D(" + label() + ")"; }
+}
+class BaseImpl {
+    interface class IDef2;
+    action:
+        double base() { return 7.0; }
+    property: double r = 1.0;
+}
+
+// --- 关联类型（associated types v3.9.0）---
+interface Container {
+    type Item;
+    bool contains(Item v);
+    Item getVal();
+}
+class IntBox {
+    interface class Container;
+    type Item = int;
+    action:
+        bool contains(int v) { return v == val; }
+        int getVal() { return val; }
+    property: int val = 42;
+}
+class StrBox {
+    interface class Container;
+    type Item = string;
+    action:
+        bool contains(string v) { return v == val; }
+        string getVal() { return val; }
+    property: string val = "hi";
+}
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }     // 返回关联类型
+        bool check(T c, T::Item v) { return c.contains(v); }
+}
+
+// --- 访问控制 ---
+class Counter {
+    action:
+        void increment() { count = count + 1; }      // this.count 可读写
+        int getCount() { return count; }
+    property:
+        int count;
+}
+
+// --- function 内部方法 ---
+class Calculator {
+    action:
+        int compute(int n) { return helper(n); }     // 内部调用 function
+    function:
+        int helper(int n) { return n * n; }
+}
+
+// --- static 静态方法 ---
+class MathX {
+    static:
+        double sqrt(double v) { return __myp_math_sqrt(v); }
+}
+
+@test void t_fourseg() {
+    Sensor s = new Sensor();
+    s.init(7);
+    Test.assertEq(s.getId(), 7);
+    s.reset();
+    Test.assertFloatEq(s.readValue(), 0.0, 1e-9);
+}
+
+@test void t_interface() {
+    IShape s = new Circle();
+    Test.assertFloatEq(s.area(), 3.14, 1e-9);        // 虚表分派 → Circle_area
+    Test.assertFloatEq(s.perimeter(), 6.28, 1e-9);
+}
+
+@test void t_default() {
+    IDef c = new CirDef();
+    Test.assertStrEq(c.describe(), "area=3.14");     // 默认实现
+    IDef s = new SqDef();
+    Test.assertStrEq(s.describe(), "SQUARE(9)");     // 覆盖
+    IDef2 d = new BaseImpl();
+    Test.assertStrEq(d.label(), "L7");               // 默认方法 A
+    Test.assertStrEq(d.describe(), "D(L7)");         // 默认方法 B 调默认方法 A
+}
+
+@test void t_assoc() {
+    IntBox::Item x = 5;                              // ≡ int x = 5
+    Container c = new IntBox();
+    Test.assert(!c.contains(x));                     // 接口变量虚表分派（int）
+    Test.assertEq(c.getVal(), 42);
+    IntBox ib = new IntBox();
+    Processor<IntBox> pi = new Processor<IntBox>();
+    Test.assertEq(pi.peek(ib), 42);                  // T::Item = int
+    Test.assert(pi.check(ib, 42));
+    StrBox sb = new StrBox();
+    Processor<StrBox> ps = new Processor<StrBox>();
+    Test.assertStrEq(ps.peek(sb), "hi");             // T::Item = string（单态化）
+}
+
+@test void t_access() {
+    Counter c = new Counter();
+    c.increment();
+    c.increment();
+    Test.assertEq(c.getCount(), 2);                  // action 可调用
+}
+
+@test void t_function() {
+    Calculator cal = new Calculator();
+    Test.assertEq(cal.compute(4), 16);               // function 内部 helper
+}
+
+@test void t_static() {
+    Test.assertFloatEq(MathX.sqrt(64.0), 8.0, 1e-9); // 无需 new
+}

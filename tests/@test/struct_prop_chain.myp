@@ -1,0 +1,64 @@
+// BUG-010 回归测试：struct 属性字段读写（`property: Point p;`）
+//   · 裸属性 `p.x` 读 / `p.x = v` 写（即 this.p.x）
+//   · 显式 `this.p.x` 读 / `this.p.x = v` 写
+// 修复前：读 → LLVM verify "Function return type does not match operand type
+// of return inst!"（genExpr(p) 加载 struct 值当指针 GEP）；写 → "cannot assign
+// to property 'x' of 'q' from outside the class"（属性非首属性时 break 提前
+// 退出）/"unknown property"。C++ mypc 与自举编译器同修。
+import test;
+
+struct Point {
+    action: @constructor Point(int a, int b) { x = a; y = b; }
+    int x;
+    int y;
+}
+
+class Holder {
+    action:
+        void set(int x, int y) { p.x = x; p.y = y; }
+        void setThis(int x, int y) { this.p.x = x; this.p.y = y; }
+        void swap() {
+            // 裸属性字段读 → 写（p、q 分别是首/非首属性，两者都须可用）
+            int t = p.x;
+            p.x = q.x;
+            q.x = t;
+            q.y = p.y;
+        }
+        void addThis(int dx, int dy) {
+            this.q.x = this.p.x + dx;
+            this.q.y = this.p.y + dy;
+        }
+        int sum() { return p.x + p.y + q.x + q.y; }
+        int px() { return p.x; }
+        int py() { return p.y; }
+        int qx() { return q.x; }
+        int qy() { return q.y; }
+    property:
+        Point p;
+        Point q;
+}
+
+@test void test_bare_struct_prop_read_write() {
+    Holder h = new Holder();
+    h.set(3, 5);
+    Test.assert(h.sum() == 8, "b10 set");
+    Test.assert(h.px() == 3 && h.py() == 5, "b10 p read");
+
+    // 显式 this. 写
+    h.setThis(1, 2);
+    Test.assert(h.px() == 1 && h.py() == 2, "b10 this set");
+
+    h.swap();
+    // p={1,2}, q={0,0} → swap: t=1, p.x=0, q.x=1, q.y=2, p.y 不变=2
+    // sum = 0+2+1+2 = 5
+    Test.assert(h.sum() == 5, "b10 swap");
+    Test.assert(h.px() == 0, "b10 p.x");
+    Test.assert(h.qx() == 1, "b10 q.x");
+    Test.assert(h.qy() == 2, "b10 q.y");
+
+    // 显式 this. 读 + 写
+    h.addThis(10, 20);
+    Test.assert(h.qx() == 10, "b10 this qx");
+    Test.assert(h.qy() == 22, "b10 this qy");
+    Test.report("test_bare_struct_prop_read_write", true);
+}

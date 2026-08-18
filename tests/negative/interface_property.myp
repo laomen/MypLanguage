@@ -1,0 +1,9 @@
+// EXPECT ERROR: interface 只允许 action/event（+ 关联类型 type Item;），不允许 property 段
+// 接口是纯协议：声明可调用的方法（action）与可触发的事件（event），不携带状态。
+// property:/字段声明 → parser 报 "expected action or event declaration"。
+interface IShape {
+    double area();
+    double perimeter();
+    property:
+        double radius;
+}

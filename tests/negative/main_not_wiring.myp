@@ -1,0 +1,15 @@
+// EXPECT ERROR: direct function call not allowed in main()
+//
+// BUG-006 回归（负测试）：main() 直调检查被运算符/管道语法绕过——`A + B`（外部
+// @op 函数）、`A |> Op`（管道）解析为函数/class 方法调用却不在直调检查内。main 只
+// 做接线（mapping），运算符/管道解析到外部 @op/class transform 应同样拒绝。
+// struct 内部算子放行（与 struct 方法调用一致）。
+
+import env;
+
+@op("+") double add(double a, double b) { return a + b; }
+
+int main() {
+    double r = 1.0 + 2.0;   // 外部 @op 调用 → 应拒绝
+    return 0;
+}

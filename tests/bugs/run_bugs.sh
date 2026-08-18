@@ -29,19 +29,18 @@ for src in "$DIR"/*.myp; do
         continue
     fi
 
-    # 运行
-    if ! rout=$(timeout 10 "$bin" 2>&1); then
+    # 运行（@test 断言失败时进程退出码非 0，故先捕获输出再按内容分类）
+    rout=$(timeout 10 "$bin" 2>&1); rc=$?
+
+    # 断言失败判定（含 @test 汇总行 "tests: N, assertions: X passed, Y failed"）
+    if echo "$rout" | grep -qE "FAIL:|ASSERTION FAILED|passed, [1-9][0-9]* failed"; then
+        echo -e "\033[0;31mRED (assertion)\033[0m"
+        echo "$rout" | grep -E "ASSERTION FAILED|FAIL:|passed, [1-9][0-9]* failed" | head -3 | sed 's/^/      /'
+        RED=$((RED + 1)); REDLIST+=("$name(assert)")
+    elif [ $rc -ne 0 ]; then
         echo -e "\033[0;31mRUNTIME CRASH\033[0m"
         echo "$rout" | tail -2 | sed 's/^/      /'
         RED=$((RED + 1)); REDLIST+=("$name(runtime)")
-        continue
-    fi
-
-    # 断言失败判定
-    if echo "$rout" | grep -qE "FAIL:|ASSERTION FAILED"; then
-        echo -e "\033[0;31mRED (assertion)\033[0m"
-        echo "$rout" | grep -E "ASSERTION FAILED|FAIL:" | head -3 | sed 's/^/      /'
-        RED=$((RED + 1)); REDLIST+=("$name(assert)")
     else
         echo -e "\033[0;32mGREEN\033[0m"
         GREEN=$((GREEN + 1))

@@ -3058,7 +3058,7 @@ int myp_timer_check(void) {
 
             // Fire the event (this may re-enter timer code, so unlock first)
             // Since param data (pval) is stack-local, process it now
-            myp_event_fire(eid, inst, &pval);
+            myp_event_fire(eid, inst, &pval, (int)sizeof(int64_t));
             // Process this event immediately so pval is still valid
             myp_event_process_one();
 
@@ -3081,6 +3081,9 @@ typedef struct {
     void* sender;
     void* data;
     int has_data;
+    int data_size;    // BUG-005: 跨线程路由时按此大小深拷贝载荷（0=无参/未拷贝）
+    int data_owned;   // 1 = data 是跨线程堆拷贝，dispatch 后须 free
+    int routed;       // 1 = 跨线程路由副本（dispatch 不再重复路由）
 } myp_event_t;
 
 // Event queue (dynamic ring buffer — grows on demand, no fixed 1024 cap)
@@ -3103,6 +3106,10 @@ typedef struct {
 
 static myp_handler_entry_t myp_handlers[MYP_MAX_HANDLERS];
 static int myp_handler_count = 0;
+
+// BUG-005: dispatch 时跨线程路由去重（同事件多个 handler 归属同一线程只投一份）
+static myp_thread_t* myp_cross_thread_routes[MYP_MAX_HANDLERS];
+static int myp_cross_thread_route_count = 0;
 
 // Thread-local queue key (pthread_getspecific / pthread_setspecific)
 static pthread_key_t myp_queue_key;
@@ -3155,7 +3162,7 @@ static myp_event_queue_t* myp_queue_current(void) {
 }
 
 // Push an event to a specific queue (thread-safe); grows the buffer when full.
-static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, void* data) {
+static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, void* data, int data_size) {
     pthread_mutex_lock(&q->mutex);
     int next = (q->head + 1) % q->capacity;
     if (next == q->tail) {
@@ -3181,6 +3188,9 @@ static void myp_queue_push(myp_event_queue_t* q, int event_id, void* sender, voi
     q->events[q->head].sender = sender;
     q->events[q->head].data = data;
     q->events[q->head].has_data = (data != NULL);
+    q->events[q->head].data_size = data_size;
+    q->events[q->head].data_owned = 0;
+    q->events[q->head].routed = 0;
     q->head = next;
     pthread_cond_signal(&q->cond);
     pthread_mutex_unlock(&q->mutex);
@@ -3233,7 +3243,11 @@ struct myp_thread {
     myp_event_queue_t* queue;
     void (*startup_fn)(void*, void*);
     void* startup_arg;
+    int id;                // 稳定线程 id（1 起；主线程=0），myp_thread_self 返回
 };
+
+// 线程 id 分配（myp_thread_self 诊断用；非原子——@thread 创建都在主线程初始化期）
+static int myp_next_thread_id = 1;
 
 // ---- Instance→Thread mapping (for async cross-thread event delivery) ----
 static pthread_mutex_t myp_inst_map_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -3298,7 +3312,7 @@ void myp_event_pop_scope(void) {
     myp_handler_count = saved;
 }
 
-void myp_event_fire(int event_id, void* sender, void* event_data) {
+void myp_event_fire(int event_id, void* sender, void* event_data, int data_size) {
 #ifdef TRACE_ENABLED
     fprintf(stderr, "[TRACE] event_fire(id=%d, sender=%p)\n", event_id, sender);
 #endif
@@ -3306,29 +3320,103 @@ void myp_event_fire(int event_id, void* sender, void* event_data) {
     myp_thread_t* target_thr = sender ? myp_thread_for_instance(sender) : NULL;
     if (target_thr) {
         // Post to the target thread's queue (async — no process_all here)
-        myp_queue_push(target_thr->queue, event_id, sender, event_data);
+        myp_queue_push(target_thr->queue, event_id, sender, event_data, data_size);
         return;
     }
     // Same-thread (or no thread): post to current thread's queue
     myp_event_queue_t* q = myp_queue_current();
-    myp_queue_push(q, event_id, sender, event_data);
+    myp_queue_push(q, event_id, sender, event_data, data_size);
 }
 
 // Coroutine event-wait notification (defined in the coroutine section).
 static void __myp_coro_event_notify(int event_id);
 
+// Current thread's myp_thread_t (NULL = main thread / no @thread association).
+static myp_thread_t* myp_thread_current(void) {
+    myp_event_queue_t* q = (myp_event_queue_t*)pthread_getspecific(myp_queue_key);
+    if (!q) return NULL;
+    for (int i = 0; i < myp_inst_map_count; i++) {
+        if (myp_inst_map[i].thread && myp_inst_map[i].thread->queue == q)
+            return myp_inst_map[i].thread;
+    }
+    return NULL;
+}
+
+// 把 ev 复制一份投到 thr 的队列（载荷按 ev->data_size 深拷贝，data_owned=1；
+// 原事件不变，dispatch 后由接收线程 free 拷贝）。
+static void myp_event_route_to_thread(myp_thread_t* thr, myp_event_t* ev) {
+    void* data_copy = NULL;
+    int owned = 0;
+    if (ev->data_size > 0 && ev->data) {
+        data_copy = malloc((size_t)ev->data_size);
+        if (data_copy) {
+            memcpy(data_copy, ev->data, (size_t)ev->data_size);
+            owned = 1;
+        }
+    }
+    pthread_mutex_lock(&thr->queue->mutex);
+    int next = (thr->queue->head + 1) % thr->queue->capacity;
+    if (next == thr->queue->tail) {
+        // 满则丢弃（队列仅存事件副本，无跨线程反馈；避免持锁扩容）
+        pthread_mutex_unlock(&thr->queue->mutex);
+        if (owned) free(data_copy);
+        return;
+    }
+    thr->queue->events[thr->queue->head].event_id = ev->event_id;
+    thr->queue->events[thr->queue->head].sender = ev->sender;
+    thr->queue->events[thr->queue->head].data = data_copy;
+    thr->queue->events[thr->queue->head].has_data = (data_copy != NULL);
+    thr->queue->events[thr->queue->head].data_size = ev->data_size;
+    thr->queue->events[thr->queue->head].data_owned = owned;
+    thr->queue->events[thr->queue->head].routed = 1;   // 路由副本不再重复路由
+    thr->queue->head = next;
+    pthread_cond_signal(&thr->queue->cond);
+    pthread_mutex_unlock(&thr->queue->mutex);
+}
+
 static void myp_event_dispatch(myp_event_t* ev) {
 #ifdef TRACE_ENABLED
     fprintf(stderr, "[TRACE] dispatch(event_id=%d, sender=%p)\n", ev->event_id, ev->sender);
 #endif
-    for (int i = 0; i < myp_handler_count; i++) {
-        if (myp_handlers[i].registered &&
-            myp_handlers[i].event_id == ev->event_id) {
-            myp_handlers[i].handler(myp_handlers[i].instance, ev->data);
+    // BUG-005：事件须投递到 handler 实例自己的线程执行（不能总在事件源线程跑）。
+    // 当前线程只运行归属本线程（或无 @thread）的 handler；归属其他线程的 handler
+    // 将事件副本（深拷贝载荷）投到其线程队列，由该线程的 event loop 处理。
+    myp_thread_t* cur = myp_thread_current();
+    // 第一遍：路由到其他线程（同一目标线程只投一份）。路由副本（routed=1）不再
+    // 重复路由（其目标线程归属已定，handler 内部 myp_thread_is_current 判定执行）。
+    myp_cross_thread_route_count = 0;
+    if (!ev->routed) {
+        for (int i = 0; i < myp_handler_count; i++) {
+            if (!myp_handlers[i].registered ||
+                myp_handlers[i].event_id != ev->event_id) continue;
+            myp_thread_t* hthr = myp_thread_for_instance(myp_handlers[i].instance);
+            if (!hthr || hthr == cur) continue;   // 本线程 handler，第二遍直接跑
+            int dup = 0;
+            for (int t = 0; t < myp_cross_thread_route_count; t++) {
+                if (myp_cross_thread_routes[t] == hthr) { dup = 1; break; }
+            }
+            if (dup) continue;
+            if (myp_cross_thread_route_count < MYP_MAX_HANDLERS)
+                myp_cross_thread_routes[myp_cross_thread_route_count++] = hthr;
+            myp_event_route_to_thread(hthr, ev);
         }
+    }
+    // 第二遍：运行归属本线程（或无 @thread）的 handler
+    for (int i = 0; i < myp_handler_count; i++) {
+        if (!myp_handlers[i].registered ||
+            myp_handlers[i].event_id != ev->event_id) continue;
+        myp_thread_t* hthr = myp_thread_for_instance(myp_handlers[i].instance);
+        if (hthr && hthr != cur) continue;   // 已路由，勿在本线程跑
+        myp_handlers[i].handler(myp_handlers[i].instance, ev->data);
     }
     // Re-ready coroutines blocked on this event (C4)
     __myp_coro_event_notify(ev->event_id);
+    // 跨线程路由副本的载荷由本线程 free（接收线程处理的是自己的深拷贝）
+    if (ev->data_owned && ev->data) {
+        free(ev->data);
+        ev->data = NULL;
+        ev->data_owned = 0;
+    }
 }
 
 void myp_event_process_all(void) {
@@ -3349,6 +3437,30 @@ int myp_event_process_one(void) {
     return 1;
 }
 
+// BUG-005：instance 归属线程是否等于当前线程（instance 无线程/主线程 → 1）。
+// mapping handler 据此决定直接调用还是把事件路由到目标实例自己的线程。
+int myp_thread_is_current(void* instance) {
+    myp_thread_t* thr = myp_thread_for_instance(instance);
+    if (!thr) return 1;
+    return (thr == myp_thread_current()) ? 1 : 0;
+}
+
+// BUG-005：把事件路由到 instance 归属线程（载荷按 data_size 深拷贝，routed=1）。
+// 由 mapping handler 在检测到目标实例位于其他线程时调用。
+void myp_event_route_to_instance(void* instance, int event_id, void* data, int data_size) {
+    myp_thread_t* thr = myp_thread_for_instance(instance);
+    if (!thr) return;
+    myp_event_t ev;
+    ev.event_id = event_id;
+    ev.sender = instance;
+    ev.data = data;
+    ev.has_data = (data != NULL);
+    ev.data_size = data_size;
+    ev.data_owned = 0;
+    ev.routed = 0;
+    myp_event_route_to_thread(thr, &ev);
+}
+
 // ---- Thread Support (@thread) ----
 
 myp_thread_t* myp_thread_create(void (*startup)(void*, void*), void* startup_arg) {
@@ -3357,12 +3469,20 @@ myp_thread_t* myp_thread_create(void (*startup)(void*, void*), void* startup_arg
     thr->queue = myp_queue_create();
     thr->startup_fn = startup;
     thr->startup_arg = startup_arg;
+    thr->id = myp_next_thread_id++;
     return thr;
+}
+
+// 当前线程稳定 id（主线程/无 @thread = 0）。BUG-005 诊断用：验证 mapping handler
+// 在 handler 实例自己的线程执行。
+int myp_thread_self(void) {
+    myp_thread_t* cur = myp_thread_current();
+    return cur ? cur->id : 0;
 }
 
 // Post an event to a specific thread's queue (thread-safe)
 void myp_thread_post_event(myp_thread_t* thr, int event_id, void* sender, void* data) {
-    myp_queue_push(thr->queue, event_id, sender, data);
+    myp_queue_push(thr->queue, event_id, sender, data, 0);
 }
 
 // Coroutine TLS cleanup for the current thread (defined in the coroutine section).

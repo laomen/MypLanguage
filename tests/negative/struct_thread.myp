@@ -1,0 +1,11 @@
+// EXPECT ERROR: '@thread' can only be applied to a class instance variable
+//
+// BUG-022 回归（负测试）：`@thread` 用于 struct 实例被静默接受（编译+运行通过但
+// 无效果）——struct 是值类型，@thread 启动工作线程托管实例仅对 class 有意义。
+// 应编译期拒绝。
+
+struct S { int x; }
+int main() {
+    S s @thread;
+    return 0;
+}

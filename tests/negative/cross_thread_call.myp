@@ -1,0 +1,20 @@
+// EXPECT ERROR: cannot directly call action
+//
+// BUG-012 回归（负测试）：直接调用 @thread 实例的普通 action（跨线程）——design §8.2
+// 声称「不允许，必须通过 mapping()」，此前编译器不检查（§8.4 程序员自律），action 在
+// 调用线程执行。应编译期拒绝：@thread 实例的 action 须经 mapping() 投递到其工作线程。
+
+import env;
+
+class Worker {
+    action:
+        void work() { Console.writeString("WORK"); }
+}
+
+void caller() {
+    Worker w = new Worker() @thread;
+    w.work();   // BUG-012: 跨线程直接调用 → 应拒绝
+}
+
+int main() { return 0; }
+

@@ -23,6 +23,18 @@ class Worker {
             await;
             Console.writeString("def2\n");
         }
+        // 显式 stack=0 → 走默认 128KB（等价省略，无警告）
+        @coro(stack=0) void zero() {
+            Console.writeString("zero start\n");
+            await;
+            Console.writeString("zero end\n");
+        }
+        // 推荐下限 16KB（无警告）
+        @coro(stack=16) void min16() {
+            Console.writeString("min16 start\n");
+            await;
+            Console.writeString("min16 end\n");
+        }
         // 深递归：3000 层 > 默认 128KB，仅当 stack=2048 生效时能跑完
         @coro(stack=2048) void deep(long d) {
             if (d > 0L) {
@@ -43,6 +55,10 @@ class Main {
             Coro.resume(h2, 0);
             long h3 = w.def();
             Coro.resume(h3, 0);
+            long h5 = w.zero();
+            Coro.resume(h5, 0);
+            long h6 = w.min16();
+            Coro.resume(h6, 0);
             long h4 = w.deep(3000L);
             Coro.resume(h4, 0);
             Console.writeString("done\n");

@@ -297,7 +297,10 @@ void myp_event_push_scope(void);
 void myp_event_pop_scope(void);
 
 // Fire an event: pushes to queue and dispatches
-void myp_event_fire(int event_id, void* sender, void* event_data);
+// Fire an event. data_size is the byte size of *event_data (0 = no payload);
+// cross-thread routing deep-copies this many bytes onto the target thread's
+// queue (BUG-005).
+void myp_event_fire(int event_id, void* sender, void* event_data, int data_size);
 
 // Process all pending events (blocking)
 void myp_event_process_all(void);
@@ -318,6 +321,20 @@ void myp_thread_post_event(myp_thread_t* thr, int event_id, void* sender, void* 
 
 // Associate an instance pointer with a thread (for async cross-thread event delivery)
 void myp_thread_associate_instance(void* instance, myp_thread_t* thr);
+
+// Current thread's stable id (0 = main thread / no @thread association).
+// Diagnostic FFI: assert a mapping handler runs on the handler instance's thread.
+int myp_thread_self(void);
+
+// 1 if `instance` belongs to the current thread (or has no thread). Mapping
+// handlers use this to decide whether to run the target action directly or
+// route the event to the target instance's own thread (BUG-005).
+int myp_thread_is_current(void* instance);
+
+// Route an event to `instance`'s own thread (deep-copies data_size payload
+// bytes). Called by mapping handlers when the target instance lives on another
+// thread (BUG-005).
+void myp_event_route_to_instance(void* instance, int event_id, void* data, int data_size);
 
 // Start the thread's event loop (non-blocking, creates pthread)
 void myp_thread_run_loop(myp_thread_t* thr);

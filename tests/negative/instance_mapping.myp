@@ -1,0 +1,29 @@
+// EXPECT ERROR: 实例级映射暂不支持
+//
+// BUG-011 回归（负测试）：函数内 mapping 用实例变量名节点（`s.e -> t.show`）→
+// 此前 codegen 在 handler 函数里 load 外层函数的局部 alloca → 跨函数指令引用
+// → LLVM verify "Referring to an instruction in another function!"（编译崩
+// 溃）。应编译期诊断：mapping 节点须用类名（实例级映射暂不支持）。
+import env;
+
+class Source {
+    event:
+        e(int v);
+    action:
+        void go() { e(42); }
+}
+
+class Target {
+    action:
+        void show(int v) { Console.writeString("SHOW"); }
+}
+
+void setup() {
+    Source s = new Source();
+    Target t = new Target();
+    mapping() {
+        s.e -> t.show;   // BUG-011: 局部实例名节点 → 应拒绝
+    }
+}
+
+int main() { return 0; }

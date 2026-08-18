@@ -905,16 +905,21 @@ void CodeGen::generateEventFire(const ClassDecl& cls, const EventDecl& ev, int e
             auto* gep = builder_.CreateStructGEP(data_struct, data_alloca, i);
             builder_.CreateStore(func->getArg(i + 1), gep);
         }
+        // data_size 第 4 参：跨线程路由时按字节数深拷贝载荷（BUG-005）
+        auto* dsize = llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_),
+            (uint64_t)module_->getDataLayout().getTypeAllocSize(data_struct));
         builder_.CreateCall(runtime_event_fire_, {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_id),
             func->getArg(0),
-            builder_.CreateBitCast(data_alloca, llvm::PointerType::get(ctx_, 0))
+            builder_.CreateBitCast(data_alloca, llvm::PointerType::get(ctx_, 0)),
+            dsize
         });
     } else {
         builder_.CreateCall(runtime_event_fire_, {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_id),
             func->getArg(0),
-            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0))
+            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0)
         });
     }
     // Process same-thread events immediately (data is stack-allocated in this function)
@@ -1808,6 +1813,7 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
         for (size_t i = 1; i < chain.nodes.size(); ++i) {
             auto& tgt = chain.nodes[i];
             llvm::Function* callee = nullptr;
+            bool routed_checked = false;   // BUG-005: 首个非静态目标已做线程路由检查
 
             // --- Lambda node: call the hidden class __call method ---
             if (tgt.is_lambda && tgt.lambda) {
@@ -1964,6 +1970,39 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
                             } else {
                                 call_args.push_back(handler->getArg(0));
                             }
+                        }
+                        // BUG-005：若首个非静态目标实例位于其他线程 → 把事件路由到
+                        // 该线程执行（否则 action 在事件源线程跑，B 的 @thread 归属被
+                        // 忽略）。handler 自身检查：myp_thread_is_current(inst)==0 →
+                        // myp_event_route_to_instance(inst, eid, data, size) 后返回。
+                        if (!routed_checked && !call_args.empty() &&
+                            call_args[0]->getType()->isPointerTy()) {
+                            routed_checked = true;
+                            auto* tgt_inst = call_args[0];
+                            auto* cur_ok = builder_.CreateCall(runtime_thread_is_current_, {tgt_inst});
+                            auto* cur_i1 = builder_.CreateICmpNE(cur_ok,
+                                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0));
+                            auto* run_bb = llvm::BasicBlock::Create(ctx_, "tgt_run", handler);
+                            auto* route_bb = llvm::BasicBlock::Create(ctx_, "tgt_route", handler);
+                            builder_.CreateCondBr(cur_i1, run_bb, route_bb);
+                            builder_.SetInsertPoint(route_bb);
+                            // 事件载荷字节数（0 = 无参）
+                            uint64_t dsz = 0;
+                            if (src_ev && !src_ev->params.empty()) {
+                                std::vector<llvm::Type*> dts;
+                                for (auto& p : src_ev->params)
+                                    dts.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+                                auto* dst = llvm::StructType::get(ctx_, dts);
+                                dsz = module_->getDataLayout().getTypeAllocSize(dst);
+                            }
+                            builder_.CreateCall(runtime_event_route_inst_, {
+                                tgt_inst,
+                                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_id),
+                                handler->getArg(1),
+                                llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), dsz)
+                            });
+                            builder_.CreateRetVoid();
+                            builder_.SetInsertPoint(run_bb);
                         }
                     }
                 }

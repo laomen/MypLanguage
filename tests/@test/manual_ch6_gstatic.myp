@@ -1,0 +1,34 @@
+// manual_ch6_gstatic.myp — 手册 §6 泛型静态方法核对回归（2026-08-18 审计固化）
+//   `@static class` 的泛型静态方法（跨模块调用，显式类型实参 + 一等函数实参）。
+//   独立文件：需 import collections（ArrayList），与带关联类型约束的泛型类
+//   不同文件（BUG-018，见 tests/bugs/ 与 manual_ch6_class.myp 注释）。
+import test;
+import option;
+import collections;
+
+@static class List {
+    static:
+        Option<R> map<T, R>(Option<T> o, (T) -> R f) {
+            Option<R> r = new Option<R>();
+            if (o.isSome()) r.set(f(o.get()));
+            return r;
+        }
+        int foldInt<T>(ArrayList<T> arr, int init, (int, T) -> int f) {
+            int acc = init;
+            for (int i = 0; i < arr.size(); i = i + 1) {
+                acc = f(acc, arr.get(i));
+            }
+            return acc;
+        }
+}
+
+@test void t_gstatic() {
+    Option<int> some = new Option<int>(5);
+    Option<string> m = List.map<int, string>(some, (int x) => { return "v" + x; });
+    Test.assert(m.isSome());
+    Test.assertStrEq(m.get(), "v5");
+    ArrayList<int> arr = new ArrayList<int>();
+    arr.add(10); arr.add(20); arr.add(30);
+    int s = List.foldInt<int>(arr, 0, (int acc, int x) => { return acc + x; });
+    Test.assertEq(s, 60);
+}

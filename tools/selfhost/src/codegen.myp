@@ -1199,6 +1199,35 @@ class CodeGen {
             return "i32";
         }
 
+        // 类属性 name 的 AstType（null = 无）。
+        AstType propAstType(string cls, string prop) {
+            if (tu_ == null) return null;
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                if (c.name() != cls) continue;
+                for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
+                    if (c.props().get(pi).name() == prop) return c.props().get(pi).type();
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // 裸 struct 属性名：`s` 为当前类 `property: S s;`（即 this.s）且 S 是
+        // struct → 返回 struct 名（否则空串）。BUG-010 镜像 C++：此前
+        // memberAddr 的 fallback 走 genExpr(s) 加载 struct 值当指针 →
+        // getelementptr on value → opt 失败；应 GEP this→s 属性槽再 GEP 字段。
+        string bareStructPropName(string nm) {
+            if (Str.len(curClass_) == 0 || tu_ == null) return "";
+            if (hasVar(nm) != 0) return "";           // 局部变量不是属性
+            if (hasMember(nm) == 0) return "";
+            string ft = propType(curClass_, nm);
+            if (Str.startsWith(ft, "%") == 0) return "";
+            string sn = Str.substring(ft, 1, Str.len(ft));
+            if (isStructName(sn) == 0) return "";
+            return sn;
+        }
+
         // 类属性是否为 @weak 弱引用（存储不计数、读取弱→强升级）。
         int propIsWeak(string cls, string prop) {
             if (tu_ == null) return 0;
@@ -1259,6 +1288,18 @@ class CodeGen {
                     int idx = structFieldIndex(stName, m.memberName());
                     string gep = newTmp();
                     sb_.append("  " + gep + " = getelementptr %" + stName + ", ptr " + base + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
+            // 裸 struct 属性：`s.x`（s 为 `property: S s;`，即 this.s）→
+            // this.s 属性槽 GEP 再 GEP 字段（BUG-010 镜像 C++）。
+            if (obj != null && obj.kind() == "Identifier") {
+                string stName = bareStructPropName(obj.name());
+                if (Str.len(stName) != 0) {
+                    string saddr = thisMemberAddr(obj.name());
+                    int idx = structFieldIndex(stName, m.memberName());
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr %" + stName + ", ptr " + saddr + ", i32 0, i32 " + idx + "\n");
                     return gep;
                 }
             }
@@ -1328,6 +1369,11 @@ class CodeGen {
                     return structFieldType(oat.className(), m.memberName());
                 }
             }
+            // 裸 struct 属性：`s.x`（s 为 this.s 属性）→ struct 字段类型
+            if (obj != null && obj.kind() == "Identifier") {
+                string stName = bareStructPropName(obj.name());
+                if (Str.len(stName) != 0) return structFieldType(stName, m.memberName());
+            }
             // @static class：ClassName.prop → 类属性类型
             if (obj != null && obj.kind() == "Identifier" && isStaticClassName(obj.name()) != 0) {
                 return propType(obj.name(), m.memberName());
@@ -1374,6 +1420,9 @@ class CodeGen {
                         return structFieldAstType(rt.className(), mname);
                     }
                 }
+                // 裸 struct 属性：`s.x`（s 为 this.s 属性）→ struct 字段 AstType
+                string stName = bareStructPropName(obj.name());
+                if (Str.len(stName) != 0) return structFieldAstType(stName, mname);
             } else if (obj.kind() == "Member") {
                 AstType inner = memberFieldAstType(obj);
                 if (inner != null) {
@@ -1683,9 +1732,12 @@ class CodeGen {
                     sb_.append("  " + gep + " = getelementptr " + structT + ", ptr " + data + ", i32 0, i32 " + i + "\n");
                     sb_.append("  store " + lt.get(i) + " %evp" + i + ", ptr " + gep + "\n");
                 }
-                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr " + data + ")\n");
+                // data_size 第 4 参：跨线程路由时按字节数深拷贝载荷（BUG-005）
+                int dsz = 0;
+                for (int i = 0; i < lt.size(); i = i + 1) dsz = dsz + IrEmit.typeSize(lt.get(i));
+                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr " + data + ", i32 " + dsz + ")\n");
             } else {
-                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr null)\n");
+                sb_.append("  call void @myp_event_fire(i32 " + eid + ", ptr %self, ptr null, i32 0)\n");
             }
             sb_.append("  call void @myp_event_process_all()\n");
             sb_.append("  ret void\n");
@@ -2230,6 +2282,7 @@ class CodeGen {
             string prevT = "";
             string prevV = "";
             int havePrev = 0;
+            int routedChecked = 0;   // BUG-005: 首个非静态目标已做线程路由检查
             for (int i = 1; i < nds.size(); i++) {
                 AstMappingNode tgt = nds.get(i);
                 if (tgt.isLambda() != 0 && tgt.lambda() != null) {
@@ -2290,6 +2343,25 @@ class CodeGen {
                     } else if (isStaticAction(tcls, tgt.member()) == 0) {
                         instV = "%inst";
                     }
+                }
+                // BUG-005 镜像 C++：首个非静态目标（有实例指针、非 %inst 兜底）若
+                // 位于其他线程 → 把事件路由到目标实例自己的线程执行（否则 action 在
+                // 事件源线程跑）。handler 内 myp_thread_is_current 判定 + 路由。
+                if (routedChecked == 0 && Str.len(instV) != 0 && instV != "%inst") {
+                    routedChecked = 1;
+                    int dsz = 0;
+                    for (int pi = 0; pi < evT.size(); pi = pi + 1) dsz = dsz + IrEmit.typeSize(evT.get(pi));
+                    string okT = newTmp();
+                    sb_.append("  " + okT + " = call i32 @myp_thread_is_current(ptr " + instV + ")\n");
+                    string okC = newTmp();
+                    sb_.append("  " + okC + " = icmp ne i32 " + okT + ", 0\n");
+                    string runB = newBlock("tgt_run");
+                    string routeB = newBlock("tgt_route");
+                    sb_.append("  br i1 " + okC + ", label %" + runB + ", label %" + routeB + "\n");
+                    sb_.append(routeB + ":\n");
+                    sb_.append("  call void @myp_event_route_to_instance(ptr " + instV + ", i32 " + eid + ", ptr %data, i32 " + dsz + ")\n");
+                    sb_.append("  ret void\n");
+                    sb_.append(runB + ":\n");
                 }
                 StringBuilder as = new StringBuilder();
                 int hasArg = 0;
@@ -6740,6 +6812,16 @@ class CodeGen {
             localElemTypes_.add("");
             localIsSlice_.add(0);
             localIsArc_.add(0);
+            // mapping 实例全局：@thread 实例也要存 __myp_inst_<Cls>/<var>
+            //（handler 运行时取目标实例；缺则 null → 路由失效，action 在事件源
+            // 线程执行，BUG-005 自举镜像）。
+            string cn3 = rvt.className();
+            string gname3 = "";
+            if (hasInstanceGlobal(cn3) != 0) gname3 = cn3;
+            else if (hasInstanceGlobal(v.name()) != 0) gname3 = v.name();
+            if (Str.len(gname3) != 0) {
+                sb_.append("  store ptr " + inst + ", ptr @__myp_inst_" + gname3 + "\n");
+            }
             // 启动函数（@startup action）
             string startupFn = findStartupFn(rvt.className());
             // 创建线程 + 运行
@@ -8386,15 +8468,17 @@ class CodeGen {
                         string ap = newTmp();
                         sb_.append("  " + ap + " = getelementptr " + elemT + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
                         if (an == "__myp_atomic_load_i32") {
+                            // BUG-014 镜像 C++：loadInt 用 seq_cst 原子 load（此前普通 load）。
                             string t = newTmp();
-                            sb_.append("  " + t + " = load i32, ptr " + ap + "\n");
+                            sb_.append("  " + t + " = load atomic i32, ptr " + ap + " seq_cst, align 4\n");
                             return t;
                         }
                         string vv = genExpr(e.args().get(2));
                         string vt = exprLlvmType(e.args().get(2));
                         vv = convertValue(vv, vt, elemT);
                         if (an == "__myp_atomic_store_i32") {
-                            sb_.append("  store i32 " + vv + ", ptr " + ap + "\n");
+                            // BUG-014 镜像 C++：storeInt 用 seq_cst 原子 store（此前普通 store）。
+                            sb_.append("  store atomic i32 " + vv + ", ptr " + ap + " seq_cst, align 4\n");
                             return "0";
                         }
                         string op = "add";

@@ -256,6 +256,9 @@ private:
     llvm::Function* runtime_event_process_all_ = nullptr;
     llvm::Function* runtime_event_push_scope_ = nullptr;
     llvm::Function* runtime_event_pop_scope_ = nullptr;
+    // BUG-005: mapping handler 跨线程路由（目标实例线程检查 + 路由投递）
+    llvm::Function* runtime_thread_is_current_ = nullptr;
+    llvm::Function* runtime_event_route_inst_ = nullptr;
     // Thread system
     llvm::Function* runtime_thread_create_ = nullptr;
     llvm::Function* runtime_thread_run_loop_ = nullptr;

@@ -1,0 +1,14 @@
+// 负测试：for-in 迭代动态数组 T[] 不可行（无运行时长度）
+// 期望：编译报错 "cannot iterate a dynamic array 'double[]' (no runtime length); use slice<T> or a collection class"
+// 对应 design.md §4.5「动态数组 T[] 不可迭代」与 sema.cpp visitForInStmt
+// 注意：for-in 放顶层函数而非 main()——main() 只做接线（§4.4），
+//       且 BUG-006「main 直调检查被绕过」未强制该规则，不依赖此缺陷。
+double sumArr(double[] arr) {
+    double sum = 0.0;
+    for (double x in arr) { sum = sum + x; }   // ← 应被拒绝
+    return sum;
+}
+
+int main() {
+    return 0;
+}

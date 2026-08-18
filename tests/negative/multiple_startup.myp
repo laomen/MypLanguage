@@ -1,0 +1,13 @@
+// EXPECT ERROR: declares multiple '@startup' actions
+//
+// BUG-009 回归（负测试）：一个类内多个 @startup 行为不一致——@thread 线程入口取
+// 最后一个、mypc run 合成 main 取第一个（手写 main+@thread 输出 SECOND、mypc run
+// 输出 FIRST）。应诊断「一类一个 @startup」。
+
+import env;
+class App {
+    action:
+        @startup void first() { Console.writeString("FIRST\n"); }
+        @startup void second() { Console.writeString("SECOND\n"); }
+}
+int main() { return 0; }

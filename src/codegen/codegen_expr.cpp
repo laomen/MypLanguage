@@ -2195,7 +2195,14 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     elem_ty, arr_ptr, {index_val}, "atomic_ptr");
 
                 if (id.name == "__myp_atomic_load_i32") {
-                    auto* loaded = builder_.CreateLoad(elem_ty, elem_ptr);
+                    // BUG-014: loadInt 此前编译成普通非原子 load（无内存序）——跨线程
+                    // 共享数组读不具原子性/可见性保证。改用 seq_cst 原子 load。
+                    // LLVM 21 IRBuilder 无 CreateAtomicLoad → 用 LoadInst 构造器。
+                    auto* loaded = new llvm::LoadInst(elem_ty, elem_ptr,
+                        "atomic_load", false,
+                        module_->getDataLayout().getABITypeAlign(elem_ty),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    builder_.Insert(loaded);
                     return loaded;
                 }
 
@@ -2206,7 +2213,11 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 auto* val = generateExpr(*e.args[2]);
 
                 if (id.name == "__myp_atomic_store_i32") {
-                    builder_.CreateStore(val, elem_ptr);
+                    // BUG-014: storeInt 此前编译成普通非原子 store——改用 seq_cst 原子 store。
+                    auto* st = new llvm::StoreInst(val, elem_ptr, false,
+                        module_->getDataLayout().getABITypeAlign(elem_ty),
+                        llvm::AtomicOrdering::SequentiallyConsistent);
+                    builder_.Insert(st);
                     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
                 }
 
@@ -2682,10 +2693,34 @@ llvm::Value* CodeGen::generateStructMemberAddress(const MemberAccessExpr& e) {
         // this.field.subfield inside a struct method: 'this' is the struct ptr
         auto* ta = getNamedValue("this");
         if (!ta) return nullptr;
-        if (!struct_types_.count(current_class_name_)) return nullptr;
-        st = getStructType(current_class_name_);
-        if (!st) return nullptr;
-        base = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+        auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+        if (struct_types_.count(current_class_name_)) {
+            st = getStructType(current_class_name_);
+            if (!st) return nullptr;
+            base = tp;
+        } else if (current_tu_) {
+            // BUG-010: class method — `this.prop.subfield` where `prop` is a
+            // struct-typed property (`property: S s;`). Return the property
+            // slot address directly (the chained MemberAccess case then GEPs
+            // the subfield into the struct). Previously returned nullptr here,
+            // so `this.s.x = v` fell through and failed.
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name != e.member_name) continue;   // 属性不一定是第一个
+                    const StructDecl* sd = findStruct(p.type.class_name);
+                    if (!sd) break;
+                    unsigned pi = 0;
+                    auto* cst = getClassStruct(cls.name);
+                    if (!cst || !getPropertyIndex(cls.name, p.name, pi)) break;
+                    return builder_.CreateStructGEP(cst, tp, pi);
+                }
+                break;
+            }
+            return nullptr;
+        } else {
+            return nullptr;
+        }
     } else if (e.object->kind == ExprKind::MemberAccess) {
         // Chained: a.b.c — recurse to get the address of a.b, then GEP c
         base = generateStructMemberAddress(static_cast<const MemberAccessExpr&>(*e.object));
@@ -3067,6 +3102,41 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                         return loadPropertyField(gep, cls, e.member_name);
                     }
                 }
+            }
+        }
+    }
+    // Bare struct-typed property field read: `s.field` where `s` is
+    // `property: S s;` in the current class (i.e. `this.s.field`). The
+    // struct-local path above only resolves identifier LOCALS; bare properties
+    // fell through and returned the whole struct value, dropping the field
+    // (BUG-010: LLVM verify "Function return type does not match operand type
+    // of return inst!" — `ret ptr`/struct where a scalar was expected).
+    if (e.object->kind == ExprKind::Identifier &&
+        !current_class_name_.empty() && current_tu_) {
+        auto& bi = static_cast<const IdentifierExpr&>(*e.object);
+        if (!getNamedValue(bi.name)) {   // not a local — bare property name
+            for (auto& cls : current_tu_->classes) {
+                if (cls.name != current_class_name_) continue;
+                for (auto& p : cls.properties) {
+                    if (p.name != bi.name) continue;   // 属性不一定是第一个
+                    const StructDecl* sd = findStruct(p.type.class_name);
+                    if (!sd) break;
+                    auto* ta = getNamedValue("this");
+                    if (!ta) break;
+                    unsigned pi = 0, fi = 0;
+                    auto* st = getClassStruct(cls.name);
+                    auto* stt = getStructType(sd->name);
+                    if (!st || !stt) break;
+                    if (!getPropertyIndex(cls.name, p.name, pi) ||
+                        !getStructFieldIndex(sd->name, e.member_name, fi)) break;
+                    auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                    auto* sgep = builder_.CreateStructGEP(st, tp, pi);
+                    auto* fgep = builder_.CreateStructGEP(stt, sgep, fi);
+                    auto* ft = stt->getElementType(fi);
+                    if (ft->isArrayTy()) return fgep;
+                    return builder_.CreateLoad(ft, fgep);
+                }
+                break;
             }
         }
     }

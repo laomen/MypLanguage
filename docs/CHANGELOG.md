@@ -27,6 +27,83 @@
 
 ## 编译器版本历史
 
+### v3.12.42 — 修复 BUG-005：mapping 事件 action 在事件源线程执行（跨线程路由）
+- **BUG-005 已修复**：mapping handler 的目标 action 此前在**事件源线程**执行，
+  `@thread` 实例 B（action）的线程归属被忽略。改为按 **handler 实例**线程归属投递。
+- **修复**（C++ + 自举同修）：
+  - `src/runtime/runtime.c`：`myp_event_fire` 增加 `data_size` 参数（载荷深拷贝按
+    字节数）；新增 `myp_thread_is_current(instance)` / `myp_event_route_to_instance(...)`
+    运行时；`myp_event_t` 增 `data_size`/`data_owned`/`routed` 字段；dispatch 对归属
+    其他线程的 handler 将事件深拷贝投到其线程队列，路由副本 `routed=1` 不再重复
+    路由，处理后 free 拷贝；新增 `myp_thread_self()` 诊断 FFI（线程稳定 id）。
+  - `src/codegen/codegen_class.cpp` `generateMappingDecl`：handler 内对首个非静态
+    目标实例做 `myp_thread_is_current` 检查——目标在其他线程 → 调
+    `myp_event_route_to_instance` 后返回；否则直接调用。
+  - `src/codegen/codegen.cpp` / `include/mylang/CodeGen.h` / `runtime.h`：FFI 声明
+    更新（fire 4 参 + 两个新运行时）。
+  - 自举镜像：`tools/selfhost/src/codegen.myp` genMappingChain 同检查；
+    `genThreadVar` 补存 `@__myp_inst_<Cls>` 全局（原缺失 → handler 取 null）；
+    `ir_emit.myp` 更新 `myp_event_fire` 4 参声明 + 新增运行时 declare。
+- **回归**：`tests/bugs/mapping_thread.myp`（`myp_thread_self()` 断言 handler 在
+  handler 实例自己的线程执行，3 断言）。全量回归 **308 通过 / 0 失败**；bugs 4 绿；
+  自举 `test_myp_self.sh` 94/94。
+
+
+### v3.12.41 — 修复 BUG-011：函数内 mapping 用实例变量名节点 → 编译期诊断
+- **BUG-011 已修复**：函数内 `mapping(){ s.e -> t.a; }`（s/t 为局部实例变量）此前
+  在 handler 函数里 load 外层函数的局部 alloca → 跨函数指令引用 → LLVM verify
+  `Referring to an instruction in another function!`。改为编译期诊断：mapping 节点
+  须用类名（实例级映射暂不支持），消息带真实类名提示（`Source.e`）。
+- **修复**：`src/sema/sema.cpp` MappingStmt 访问器 + 自举 `tools/selfhost/src/
+  sema.myp` `analyzeMapping` 同镜像。
+- **回归**：`tests/negative/instance_mapping.myp`（编译拒绝）。文件级/类名节点
+  mapping（`tests/@test/instance_mapping.myp` 等）不受影响。
+
+
+### v3.12.40 — 修复 BUG-014 + BUG-010：原子 load/store + 裸 struct 属性字段链
+- **BUG-014 已修复**：`Atomic.loadInt`/`storeInt` 此前编译成**普通非原子** load/store
+  （仅命名带 Atomic）。改用原子 `LoadInst`/`StoreInst` 构造器（seq_cst；LLVM 21
+  IRBuilder 无 CreateAtomicLoad/Store），与 add/sub/xchg/addDouble 的 atomicrmw
+  一致。自举 `tools/selfhost/src/codegen.myp` 同镜像（`load atomic`/`store atomic`）。
+  回归：`tests/@test/atomic_load_store.myp`。
+- **BUG-010 已修复**：裸 struct 属性字段读写 `p.x`（`property: Point p;`，即
+  this.p.x）——读此前 `genExpr(p)` 加载 struct 值当指针 GEP → LLVM verify 失败；
+  写落到 "external obj.prop" 错误/属性非首属性时 break 提前退出。
+  - 读：`generateMemberAccess` 加裸 struct 属性分支；属性遍历 `continue`。
+  - 写：`generateAssignment` 在 `if(!op)` 内、错误兜底之前加裸属性分支（原 2222
+    块位于错误之后**不可达**——死代码，已移除）；`generateStructMemberAddress`
+    ThisExpr 分支支持类 struct 属性（`this.s.x`）。
+  - 自举镜像：memberAddr/memberFieldType/memberFieldAstType 加 `bareStructPropName`
+    分支。
+  - 回归：`tests/@test/struct_prop_chain.myp`（裸/显式 this 读写，9 断言；C++ 与
+    自举均绿）。
+
+
+### v3.12.39 — 修复 BUG-015 + BUG-008 + BUG-012 + BUG-009 + BUG-006：sema 校验类
+- **BUG-015 已修复**：`mypc --package-path` 按 `:` 切分多路径（`src/main.cpp
+  loadModule`），与自举 `myp_self` 一致。回归：`tests/test_package_path.sh`。
+- **BUG-008 已修复**：接口 action 签名匹配升级为**精确签名**（名称 + 参数类型 +
+  返回类型；`paramsMatch`），事件按名称 + 参数类型；关联类型保留仅名称匹配。
+  自举 sema.myp 同镜像。回归：`tests/negative/interface_param_mismatch.myp`。
+- **BUG-012 已修复**：对 `@thread` 实例直接调用普通 action → 编译拒绝
+  （`cross-thread calls must go through mapping()`）；`@startup` 手动调用规则保留。
+  自举 sema.myp 同镜像。回归：`tests/negative/cross_thread_call.myp`。
+- **BUG-009 已修复**：一个类多个 `@startup` → 编译诊断 `at most one @startup per
+  class`。自举 sema.myp 同镜像。回归：`tests/negative/multiple_startup.myp`。
+- **BUG-006 已修复**：`main()` 直调检查被运算符/管道绕过——`visitBinaryOp`（外部
+  `@op`）与 `visitPipe`（class transform）在 main() 内拒绝；struct 方法调用保留
+  放行。自举 sema.myp 同镜像。回归：`tests/negative/main_not_wiring.myp`。
+
+
+### v3.12.38 — 修复 BUG-022 + BUG-007：sema 校验类（@thread / bitvector）
+- **BUG-022 已修复**：`@thread` 仅可用于 class 实例——struct 加 `@thread` 编译
+  拒绝（`'@thread' can only be applied to a class instance variable`）。自举
+  sema.myp 同镜像。回归：`tests/negative/struct_thread.myp`。
+- **BUG-007 已修复**：`bitvector<N>` 宽度校验 ∈ {8,16,32,64}，否则编译拒绝
+  （`bitvector width must be 8/16/32/64`）；codegen default 分支不再静默用 i32。
+  自举 sema.myp 同镜像。回归：`tests/negative/bitvector_width.myp`。
+
+
 ### v3.12.37 — 修复 BUG-013：Coro.resume 返回值串值（yield/resume 值改每协程存储）
 - **BUG-013 已修复**：`src/runtime/runtime.c` 用 `__thread` 线程本地共享槽
   `myp_coro_yield_val`/`myp_coro_resume_val` 存「上次挂起传出的值」与「上次 resume

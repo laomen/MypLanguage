@@ -2046,6 +2046,42 @@ assign_gep:
                     }
                 }
             }
+            // BUG-010: bare struct property field write `s.field = value`
+            // (`property: S s;`, i.e. `this.s.field`). `s` is a class property
+            // (not a local, not static) — must be handled here, BEFORE the
+            // "external obj.prop" fallback error below. (A previous copy placed
+            // after the error was unreachable → "cannot assign to property 'x'
+            // of 'q' from outside the class".)
+            if (ma.object->kind == ExprKind::Identifier) {
+                auto& bi = static_cast<const IdentifierExpr&>(*ma.object);
+                if (!getNamedValue(bi.name) && !current_class_name_.empty() && current_tu_) {
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name != current_class_name_) continue;
+                        for (auto& p : cls.properties) {
+                            if (p.name != bi.name) continue;   // 属性不一定是第一个
+                            const StructDecl* sd = findStruct(p.type.class_name);
+                            if (!sd) break;
+                            unsigned pi = 0, fi = 0;
+                            auto* st = getClassStruct(cls.name);
+                            auto* stt = getStructType(sd->name);
+                            auto* ta = getNamedValue("this");
+                            if (!st || !stt || !ta) break;
+                            if (!getPropertyIndex(cls.name, p.name, pi) ||
+                                !getStructFieldIndex(sd->name, ma.member_name, fi)) break;
+                            auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
+                            auto* sgep = builder_.CreateStructGEP(st, tp, pi);
+                            auto* fgep = builder_.CreateStructGEP(stt, sgep, fi);
+                            auto* ft = stt->getElementType(fi);
+                            auto* v = generateExpr(*e.value);
+                            if (v->getType() != ft)
+                                v = convertIntegerValue(builder_, v, ft, e.value.get());
+                            builder_.CreateStore(v, fgep);
+                            return v;
+                        }
+                        break;
+                    }
+                }
+            }
             // Static class property assignment: ClassName.property = value
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
@@ -2219,6 +2255,11 @@ assign_gep:
                         "' has no field '" + ma.member_name + "'");
             return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
         }
+        // BUG-010: `this.s.field = value`（s 为 `property: S s;`）已由上方
+        // `if (!op)` 内 generateStructMemberAddress 的 ThisExpr 分支处理
+        // （类 struct 属性 → GEP this→s 槽 → GEP 字段）；裸 `s.field` 由
+        // `if (!op)` 内的裸属性分支处理。此处的旧实现（放在 `if (!op)` 外、
+        // 需 op 非空即 ThisExpr 对象）永远不可达，已移除。
         for (auto& cls : current_tu_->classes) {
             unsigned pi;
             if (getPropertyIndex(cls.name, ma.member_name, pi)) {

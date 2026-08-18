@@ -272,6 +272,21 @@ if [ -f "$PROJ_ROOT/tests/test_multifile.sh" ]; then
     fi
 fi
 
+# package-path 冒号分隔（BUG-015）：mypc --package-path "a:b" 按 ':' 切分逐路径
+# 查找——包在 dirB 时编译成功（修复前把整串当单一目录 → cannot find import）。
+if [ -f "$PROJ_ROOT/tests/test_package_path.sh" ]; then
+    pp_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_package_path.sh" 2>&1)
+    if echo "$pp_out" | grep -qE "package-path: [0-9]+ pass, 0 fail"; then
+        echo -e "${GREEN}PASS${NC} (package-path 冒号分隔：BUG-015)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$pp_out" | grep -E "FAIL:|package-path:" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS package-path(BUG-015)"
+    fi
+fi
+
 # 代码生成工具（tools/codegen，manual §13）：schema 驱动生成器 serde/ffi/
 # autodiff/idl/orm/embed/dsl/infer_ops —— 生成 → 编译 → round-trip 验证（BUG-027）。
 if [ -f "$PROJ_ROOT/tools/codegen/run_tests.sh" ]; then

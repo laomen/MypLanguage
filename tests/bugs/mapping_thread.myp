@@ -1,0 +1,63 @@
+// BUG-005: mapping 事件 action 须在 handler 实例自己的线程执行（非事件源线程）。
+//   · A（@thread，事件 e）在线程 1、B（@thread，action show）在线程 2；
+//     mapping() { A.e -> B.show } 触发后，B.show 应在线程 2（B 自己的线程）运行。
+//   · 修复前：myp_event_fire 按 sender 线程投递、dispatch 直接调 handler →
+//     B.show 在事件源（A）线程 1 执行，B 的 @thread 归属被忽略。
+//   · 修复后：dispatch 按 handler 实例（B）线程归属路由，B.show 在线程 2 运行。
+// 用 myp_thread_self() 诊断：B 的 @startup 与 show 记录线程 id，断言相等。
+import test;
+import env;
+import time;
+
+ffi int myp_thread_self();
+
+@static class Log {
+    property:
+        int myId;
+        int lastId;
+        int count;
+    static:
+        void init() { Log.myId = 0; Log.lastId = 0; Log.count = 0; }
+        void recordStartup() { Log.myId = myp_thread_self(); }
+        void recordShow() { Log.lastId = myp_thread_self(); Log.count = Log.count + 1; }
+        int getMyId() { return Log.myId; }
+        int getLastId() { return Log.lastId; }
+        int getCount() { return Log.count; }
+}
+
+class Source {
+    action:
+        @startup void run() {
+            e(1);
+            e(2);
+        }
+    event:
+        e(int v);
+}
+
+class Sink {
+    action:
+        @startup void init() { Log.recordStartup(); }
+        void show(int v) { Log.recordShow(); }
+}
+
+mapping() {
+    Source.e -> Sink.show;
+}
+
+@test void test_mapping_thread_ownership() {
+    Log.init();
+    // 先建 Sink（全局实例指针 + 线程关联就绪），再建 Source（@startup 触发事件）
+    Sink k = new Sink() @thread;
+    Source s = new Source() @thread;
+    int wait = 0;
+    while (wait < 300 && Log.getCount() < 2) {
+        Time.sleep(10);
+        wait = wait + 1;
+    }
+    Test.assert(Log.getCount() == 2, "b05 count");
+    Test.assert(Log.getMyId() != 0, "b05 sink thread id nonzero");
+    Test.assert(Log.getLastId() == Log.getMyId(),
+        "b05 handler runs on sink's own thread");
+    Test.report("test_mapping_thread_ownership", true);
+}

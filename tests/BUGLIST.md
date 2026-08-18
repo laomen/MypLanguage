@@ -13,33 +13,33 @@
 | ID | 状态 | 标题 | 复现测试 |
 |----|------|------|----------|
 | BUG-001 | 🟩 | 链式类字段访问产生垃圾值/崩溃 | `tests/negative/external_property_{read,write,chain}.myp`（编译拒绝） |
-| BUG-002 | � | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
-| BUG-003 | � | 泛型 T=string 的 `<`/`>` 按指针比较 | `tests/bugs/generic_string_cmp.myp` |
-| BUG-004 | � | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
-| BUG-005 | 🟥 | mapping 事件 action 在事件源线程执行（非 action 实例线程） | （待建 `tests/bugs/mapping_thread.myp`） |
-| BUG-006 | 🟥 | `main()` 直调检查被运算符/管道语法绕过（`A + B`、`A |> Op` 不报错） | （待建，修复后转负测试 `tests/negative/main_not_wiring.myp`） |
-| BUG-007 | 🟥 | `bitvector<N>` 宽度未校验——`bitvector<3>` 静默映射为 i32（应报错） | （待建，修复后转负测试 `tests/negative/bitvector_width.myp`） |
-| BUG-008 | 🟥 | 接口 action 参数类型/个数不校验——粗粒度签名匹配（名称+返回类型 basic_type） | （待建，修复后转负测试 `tests/negative/interface_param_mismatch.myp`） |
-| BUG-009 | 🟥 | 一个类内多个 `@startup` 行为不一致——`@thread` 入口取最后一个、`mypc run` 合成 main 取第一个 | （待建：运行时行为差异，手动双命令复现） |
-| BUG-010 | 🟥 | 类引用字段的链式属性访问 `ref_.a` codegen 类型错误——生成 ptr 而非属性类型，LLVM verify 失败 | （`tests/bugs/ref_field_chain.myp`，修复后转正测试） |
-| BUG-011 | 🟥 | 函数内 mapping 用实例变量名节点（`s.e -> t.a`）→ LLVM verify 失败；须用类名节点（`S.e -> T.a`） | （`tests/bugs/instance_mapping_verify.myp`，修复后转正测试） |
-| BUG-012 | 🟥 | 直接跨线程调用（`@thread` 实例普通 action）编译器不检查——design.md §8.2 声称「不允许，必须通过 mapping()」，实测编译通过 | 行为测试 `tests/@test/cross_thread_call.myp`（修复后转负测试 `tests/negative/cross_thread_call.myp`） |
-| BUG-013 | � | `Coro.resume` 返回值串值——runtime.c 用线程本地共享槽存 yield/resume 值，多协程混用时后挂起者覆盖前者 → resume 返回错误值 | 回归 `tests/@test/coro_resume_value_mix.myp`（await 值挂起 + Coro.yield + Async.sleep 定时器三协程，3 断言） |
-| BUG-014 | 🟥 | `Atomic.loadInt`/`storeInt` 编译成**普通非原子** `load`/`store`——仅命名带 Atomic，实际无原子性/内存序保证（只有 add/sub/xchg/addDouble 走 atomicrmw） | （待建：编译+`--emit-llvm` 断言 IR 为 `load`/`store` 而非 `atomicrmw`） |
-| BUG-015 | 🟥 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
-| BUG-016 | � | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
-| BUG-017 | � | 关联类型接口方法返回 **string** 经接口分派 → 分派 stub 用 i32（关联类型占位符回落默认 int）→ `call i32 %iface_fn` 把 string 当 i32 → LLVM verify 失败/段错误 | 回归 `tests/@test/assoc_string_dispatch.myp`（string+int 双关联类型动态分派，4 断言） |
-| BUG-018 | � | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（类通用类型参数在全局作用域声明泄漏，同名 T 被覆盖） | 回归 `tests/@test/assoc_constraint_import.myp`（collections + where 约束泛型类，1 断言） |
+| BUG-002 | 🟩 | @coro 主流程增量 spawn 卡死/帧损坏 | `tests/bugs/coro_incremental_spawn.myp` |
+| BUG-003 | 🟩 | 泛型 T=string 的 `<`/`>` 按指针比较 | `tests/bugs/generic_string_cmp.myp` |
+| BUG-004 | 🟩 | `Option<struct>` 泛型实例化失败 | `tests/bugs/option_struct.myp` |
+| BUG-005 | 🟩 | mapping 事件 action 在事件源线程执行（非 action 实例线程） | （待建 `tests/bugs/mapping_thread.myp`） |
+| BUG-006 | 🟩 | `main()` 直调检查被运算符/管道语法绕过（`A + B`、`A |> Op` 不报错） | （待建，修复后转负测试 `tests/negative/main_not_wiring.myp`） |
+| BUG-007 | 🟩 | `bitvector<N>` 宽度未校验——`bitvector<3>` 静默映射为 i32（应报错） | （待建，修复后转负测试 `tests/negative/bitvector_width.myp`） |
+| BUG-008 | 🟩 | 接口 action 参数类型/个数不校验——粗粒度签名匹配（名称+返回类型 basic_type） | （待建，修复后转负测试 `tests/negative/interface_param_mismatch.myp`） |
+| BUG-009 | 🟩 | 一个类内多个 `@startup` 行为不一致——`@thread` 入口取最后一个、`mypc run` 合成 main 取第一个 | （待建：运行时行为差异，手动双命令复现） |
+| BUG-010 | 🟩 | 类引用字段的链式属性访问 `ref_.a` codegen 类型错误——生成 ptr 而非属性类型，LLVM verify 失败 | （`tests/bugs/ref_field_chain.myp`，修复后转正测试） |
+| BUG-011 | 🟩 | 函数内 mapping 用实例变量名节点（`s.e -> t.a`）→ LLVM verify 失败；须用类名节点（`S.e -> T.a`） | （`tests/bugs/instance_mapping_verify.myp`，修复后转正测试） |
+| BUG-012 | 🟩 | 直接跨线程调用（`@thread` 实例普通 action）编译器不检查——design.md §8.2 声称「不允许，必须通过 mapping()」，实测编译通过 | 行为测试 `tests/@test/cross_thread_call.myp`（修复后转负测试 `tests/negative/cross_thread_call.myp`） |
+| BUG-013 | 🟩 | `Coro.resume` 返回值串值——runtime.c 用线程本地共享槽存 yield/resume 值，多协程混用时后挂起者覆盖前者 → resume 返回错误值 | 回归 `tests/@test/coro_resume_value_mix.myp`（await 值挂起 + Coro.yield + Async.sleep 定时器三协程，3 断言） |
+| BUG-014 | 🟩 | `Atomic.loadInt`/`storeInt` 编译成**普通非原子** `load`/`store`——仅命名带 Atomic，实际无原子性/内存序保证（只有 add/sub/xchg/addDouble 走 atomicrmw） | （待建：编译+`--emit-llvm` 断言 IR 为 `load`/`store` 而非 `atomicrmw`） |
+| BUG-015 | 🟩 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
+| BUG-016 | 🟩 | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
+| BUG-017 | 🟩 | 关联类型接口方法返回 **string** 经接口分派 → 分派 stub 用 i32（关联类型占位符回落默认 int）→ `call i32 %iface_fn` 把 string 当 i32 → LLVM verify 失败/段错误 | 回归 `tests/@test/assoc_string_dispatch.myp`（string+int 双关联类型动态分派，4 断言） |
+| BUG-018 | 🟩 | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（类通用类型参数在全局作用域声明泄漏，同名 T 被覆盖） | 回归 `tests/@test/assoc_constraint_import.myp`（collections + where 约束泛型类，1 断言） |
 | BUG-019 | 🟩 | `this.field = value` 写被拒——struct/class 的 `this.field` 分支误嵌套在 `if (!op)` 内，`this.x = v`（op 非空）整块跳过 → `not a valid assignment target` | 回归 `tests/@test/manual_ch7_struct.myp` t_this |
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
-| BUG-021 | � | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
+| BUG-021 | 🟩 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
 | BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
-| BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
-| BUG-023 | � | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
-| BUG-024 | � | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
+| BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
+| BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
+| BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
 | BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
-| BUG-027 | � | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
+| BUG-027 | 🟩 | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
 
 ---
 
@@ -120,11 +120,24 @@
 
 ---
 
-## BUG-005（未修复）：mapping 事件 action 在事件源线程执行（非 action 实例线程）
+## BUG-005（已修复）：mapping 事件 action 在事件源线程执行（非 action 实例线程）
 
-- **状态**：🟥 未修复（2026-08-17 记录）
-- **复现测试**：待建 `tests/bugs/mapping_thread.myp`（需能打印/比较当前线程 id 的
-  手段；当前无线程 id 内建，需先加诊断或按行为断言）
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/bugs/mapping_thread.myp`（新增 `myp_thread_self()` 诊断 FFI：
+  断言 mapping handler 在 handler 实例自己的线程执行；修复前红线）
+- **修复**（C++ 与自举编译器同修）：
+  - `src/runtime/runtime.c`：`myp_event_fire` 增加 `data_size` 参数；新增
+    `myp_thread_is_current(instance)` / `myp_event_route_to_instance(...)`；
+    `myp_event_t` 增 `data_size`/`data_owned`/`routed` 字段；`myp_event_dispatch`
+    对归属其他线程的 handler 将事件深拷贝投到其线程队列，路由副本 `routed=1`
+    不再重复路由，处理后 free 拷贝载荷。
+  - `src/codegen/codegen_class.cpp generateMappingDecl`：handler 内对首个非静态
+    目标实例做 `myp_thread_is_current` 检查——目标在其他线程 → 调用
+    `myp_event_route_to_instance` 后返回，否则直接调用 action。
+  - 自举镜像：`tools/selfhost/src/codegen.myp` genMappingChain 同检查；
+    `genThreadVar` 补存 `@__myp_inst_<Cls>` 全局（原缺失 → handler 取到 null，
+    路由失效）；`ir_emit.myp` 更新 `myp_event_fire` 4 参声明 + 新增两个运行时
+    declare。
 - **现象**：`@thread` 实例 A（event）在线程 1、实例 B（action）在线程 2，
   `mapping() { a.event -> b.action; }` 触发后，`b.action` 在**线程 1** 上执行，
   而非 B 自己的线程 2。
@@ -145,12 +158,15 @@
 
 ---
 
-## BUG-006（未修复）：`main()` 直调检查可被运算符/管道语法绕过
+## BUG-006（已修复）：`main()` 直调检查可被运算符/管道语法绕过
 
-- **状态**：🟥 未修复（2026-08-18 记录；同日实测校正）
-- **复现测试**：待建（修复后转负测试 `tests/negative/main_not_wiring.myp`）——
-  当前无合适自动复现：`tests/bugs/` 框架对"应拒绝却接受"的诊断缺失类 bug 无法表达
-  为红（修复前该文件编译绿，修复后应报错）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/main_not_wiring.myp`（外部 `@op` + 管道 + 运算符
+  绕过，编译拒绝）
+- **修复**：`src/sema/sema_expr.cpp` visitBinaryOp（解析为外部 `@op` 的 `+`/`-`
+  等）与 visitPipe（class transform）在 main() 内拒绝；自举 `tools/selfhost/src/
+  sema.myp` 同镜像（visitBinaryOp ~3771、visitPipe ~4981）。struct 方法调用保留
+  放行。
 - **已有校验**（`src/sema/sema.cpp` visitExprStmt ~1195）：main 内**顶层 ExprStmt 的
   CallExpr** 会被拒绝——直接方法调用 `sensor.readValue()` 报
   `direct function call not allowed in main() — use mapping() instead`；事件式调用
@@ -175,10 +191,13 @@
 
 ---
 
-## BUG-007（未修复）：`bitvector<N>` 宽度未校验，非 8/16/32/64 静默映射为 i32
+## BUG-007（已修复）：`bitvector<N>` 宽度未校验，非 8/16/32/64 静默映射为 i32
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（修复后转负测试 `tests/negative/bitvector_width.myp`）
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/bitvector_width.myp`（`bitvector<3>` 编译拒绝）
+- **修复**：`src/sema/sema.cpp builtinTypeToTypeInfo` 校验 `bitvector<N>` 宽度
+  ∈ {8,16,32,64} 否则报 `bitvector width must be 8/16/32/64`；自举
+  `tools/selfhost/src/sema.myp` 同镜像。
 - **现象**（实测）：`bitvector<3> bv;` 编译通过（exit 0），生成 `alloca i32, align 4`——
   codegen `getLLVMType(BitVector)` 只 switch 8/16/32/64，其余宽度落 `default: i32`；
   文档/注释声明 `bitvector<N>` 仅 8/16/32/64（AST.h/Type.h），但 sema 未校验宽度。
@@ -193,18 +212,15 @@
 
 ---
 
-## BUG-008（未修复）：接口 action 参数类型/个数不校验（粗粒度签名匹配）
+## BUG-008（已修复）：接口 action 参数类型/个数不校验（粗粒度签名匹配）
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（修复后转负测试 `tests/negative/interface_param_mismatch.myp`）——
-  与 BUG-006/007 同型：「应拒绝却接受」类 bug，现有 `tests/bugs/` @test 框架无法
-  表达为红（修复前该文件编译绿，修复后应报错）。手动复现：
-  ```myp
-  interface I { double area(int a, int b); }
-  class C { interface class I; action: double area(int a){ return 1.0; } }
-  int main(){ return 0; }
-  ```
-  `mypc` 编译通过（exit 0），参数个数不一致未被拒绝。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/interface_param_mismatch.myp`（接口 `double area(int
+  a, int b)` 对实现 `double area(int a)`，编译拒绝）
+- **修复**：`src/sema/sema.cpp checkInterfaceImpl` 的 `matches` lambda 升级为
+  **精确签名**——名称 + 参数类型 + 返回类型全部一致（`paramsMatch`）；事件按名称 +
+  参数类型匹配；关联类型参与时保留仅名称匹配。自举 `tools/selfhost/src/sema.myp`
+  同镜像。
 - **现象**（实测 2026-08-18）：接口 action 签名匹配只按 **名称 + 返回类型 basic_type**
   核对（`sema checkInterfaceImpl` 的 `matches` lambda：`ca.return_type.basic_type ==
   ia.return_type.basic_type`），**不校验参数类型/个数**——接口 `double area(int a,
@@ -226,11 +242,13 @@
 
 ---
 
-## BUG-009（未修复）：一个类内多个 `@startup` 行为不一致
+## BUG-009（已修复）：一个类内多个 `@startup` 行为不一致
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（运行时行为差异，非编译错误——`tests/bugs/` @test 框架难以断言
-  @thread 时序输出，先用手动双命令复现）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/multiple_startup.myp`（一个类多个 `@startup` 编译
+  拒绝）
+- **修复**：`src/sema/sema.cpp visitClassDecl` 报
+  `at most one @startup per class`；自举 `tools/selfhost/src/sema.myp` 同镜像。
 - **现象**（实测 2026-08-18）：同一类声明两个 `@startup` 方法时，两种运行入口行为
   **不一致**：
   - 手写 `main()` + `@thread` 实例：启动后输出 **SECOND**（`@thread` 线程入口取
@@ -252,11 +270,21 @@
 
 ---
 
-## BUG-010（未修复）：类引用字段的链式属性访问 `ref_.a` codegen 类型错误
+## BUG-010（已修复）：类引用字段的链式属性访问 `ref_.a` codegen 类型错误
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建 `tests/bugs/ref_field_chain.myp`（编译应通过 + `getRefA()==7` 断言；
-  修复前 LLVM verify 失败编译都过不了，修复后转正测试）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/@test/struct_prop_chain.myp`（裸/显式 this 的 struct 属性字段
+  读写，9 断言；C++ 与自举编译器均绿）——本 bug 记录的是类引用字段链，实测同类修复
+  覆盖 struct 属性字段链（`s.x` / `this.s.x`）
+- **修复**：
+  - 读：`src/codegen/codegen_expr.cpp generateMemberAccess` 加裸 struct 属性分支
+    （GEP this→s 槽 → GEP 字段）；属性遍历 `continue`（非首属性不再 break）。
+  - 写：`src/codegen/codegen_stmt.cpp generateAssignment` 在 `if(!op)` 内、错误
+    兜底之前加裸属性分支（原 2222 块位于错误之后不可达——死代码，已移除）；
+    `generateStructMemberAddress` ThisExpr 分支支持类 struct 属性（`this.s.x`）。
+  - 自举镜像：`tools/selfhost/src/codegen.myp` memberAddr / memberFieldType /
+    memberFieldAstType 加 `bareStructPropName` 分支；写路径复用 memberAddr 自动
+    生效。
 - **现象**（实测 2026-08-18）：同类 action 内对**类引用字段**做链式属性访问 `ref_.a`
   （`property: V ref_;` + `int getRefA(){ return ref_.a; }`）→
   `LLVM verify failed: Function return type does not match operand type of return inst!`
@@ -277,11 +305,15 @@
 
 ---
 
-## BUG-011（未修复）：函数内 mapping 用实例变量名节点 → LLVM verify 失败
+## BUG-011（已修复）：函数内 mapping 用实例变量名节点 → LLVM verify 失败
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建 `tests/bugs/instance_mapping_verify.myp`（编译应通过 + 运行断言；
-  修复前 verify 失败编译都过不了）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/instance_mapping.myp`（函数内 `mapping(){ s.e ->
+  t.show; }` 编译拒绝，报 `mapping 节点 ... 是函数内局部变量名；实例级映射暂不支持
+  ，请改用类名节点`）
+- **修复**：`src/sema/sema.cpp` MappingStmt 访问器对非函数/非 lambda/非 transformer
+  节点检查——非类名但符号表有（函数局部变量）→ 诊断；消息带真实类名提示
+  （`Source.e`）。自举 `tools/selfhost/src/sema.myp analyzeMapping` 同镜像。
 - **现象**（实测 2026-08-18）：`main()`/`@constructor` 内实例级 mapping 若用**实例变量名**
   作节点——`mapping(){ s.e -> t.a; }`（`S s; T t;`）→
   `LLVM verify failed: Referring to an instruction in another function!`；
@@ -299,12 +331,14 @@
 
 ---
 
-## BUG-012（未修复）：直接跨线程调用（`@thread` 实例普通 action）编译器不检查
+## BUG-012（已修复）：直接跨线程调用（`@thread` 实例普通 action）编译器不检查
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：行为测试 `tests/@test/cross_thread_call.myp`（`W w = new W() @thread; w.work();`
-  当前编译+运行通过，`@test` 1/1 断言；修复后本测试转红，改转负测试
-  `tests/negative/cross_thread_call.myp`——「应拒绝却接受」型，与 BUG-006/007/008 同类）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/cross_thread_call.myp`（`W w = new W() @thread;
+  w.work();` 编译拒绝，报 `cross-thread calls must go through mapping()`；原行为
+  测试 `tests/@test/cross_thread_call.myp` 移除）
+- **修复**：sema 对 `@thread` 实例的直接 action 调用一律拒绝（`@startup` 手动调用
+  原有规则保留）；自举 `tools/selfhost/src/sema.myp` 同镜像（~4385）。
 - **现象**（实测 2026-08-18）：对 `@thread` 实例直接调用**普通 action**（非 @startup）→
   编译通过（exit 0），action 在**调用线程**执行（不经 mapping、不切到 @thread 目标线程）；
   仅 `@startup` 手动调用被拒（sema_expr ~2129，专门规则）。
@@ -342,13 +376,15 @@
 
 ---
 
-## BUG-014（未修复）：`Atomic.loadInt`/`storeInt` 编译成普通非原子 `load`/`store`
+## BUG-014（已修复）：`Atomic.loadInt`/`storeInt` 编译成普通非原子 `load`/`store`
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（建议：编译含 `Atomic.loadInt(arr,i)`/`Atomic.storeInt(arr,i,v)`
-  的代码 → `mypc --emit-llvm`，断言 IR 是普通 `load`/`store` 而非 `atomicrmw`/原子
-  load——与 addInt/subInt/xchgInt/addDouble 的 `atomicrmw` 对照；修复后本断言应变为
-  「IR 是原子 load/store」）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/@test/atomic_load_store.myp`（loadInt/storeInt 功能正确 +
+  @parallel 累加，4 断言；C++ 与自举编译器均绿）
+- **修复**：`src/codegen/codegen_expr.cpp` atomic intrinsic 分支——`__myp_atomic_
+  load_i32`/`store_i32` 改用原子 `LoadInst`/`StoreInst` 构造器（seq_cst；LLVM 21
+  IRBuilder 无 CreateAtomicLoad/Store）；自举 `tools/selfhost/src/codegen.myp`
+  同镜像（`load atomic`/`store atomic` 文本）。
 - **现象**（实测 2026-08-18，`src/codegen/codegen_expr.cpp` atomic intrinsic 分支）：
   - `__myp_atomic_add_i32`/`sub_i32`/`xchg_i32`/`add_f64` → `CreateAtomicRMW`
     （`atomicrmw` add/sub/xchg/fadd，SequentiallyConsistent）✓ 真原子。
@@ -369,12 +405,13 @@
 - **备注**：design.md §8.9 已如实标注（普通 load/store、非 atomicrmw）；design.md 不标
   bug（用户要求文档不标记 bug）。
 
-## BUG-015（未修复）：`mypc --package-path` 不支持冒号分隔多路径
+## BUG-015（已修复）：`mypc --package-path` 不支持冒号分隔多路径
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（建议 shell：包放 `dirB/foo/src/foo.myp`，`mypc main.myp
-  --package-path "dirA:dirB"` 按设计意图应**编译成功**，实测报 `cannot find import
-  'foo'`；修复后断言成功）。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/test_package_path.sh`（`--package-path "dirA:dirB"` 包在
+  dirB 编译成功）
+- **修复**：`src/main.cpp loadModule` 按 `:` 切分 `--package-path` 逐路径查找
+  （与自举 `myp_self` 一致）；自举已支持，无需镜像。
 - **现象**（实测 2026-08-18，`src/main.cpp` `loadModule`）：
   - `mypc --package-path "dirA:dirB"`（包在 dirB）→ `cannot find import 'foo'`
     ——**不按冒号切分**，把整串当单一目录。
@@ -574,11 +611,13 @@
 
 ---
 
-## BUG-022（未修复）：`@thread` 用于 struct 实例被静默接受（应拒绝却接受）
+## BUG-022（已修复）：`@thread` 用于 struct 实例被静默接受（应拒绝却接受）
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：待建（修复后转负测试 `tests/negative/struct_thread.myp`）——
-  「应拒绝却接受」型（修复前编译绿，修复后应报错），与 BUG-006/007/008/012 同类。
+- **状态**：� 已修复（2026-08-18）
+- **复现测试**：`tests/negative/struct_thread.myp`（`S s @thread;` 编译拒绝）
+- **修复**：`src/sema/sema.cpp visitVarDecl` 在类型完整解析后校验——`@thread` 仅可
+  用于 class 实例，struct 报 `'@thread' can only be applied to a class instance
+  variable`；自举 `tools/selfhost/src/sema.myp` 同镜像。
 - **现象**（实测 2026-08-18）：`struct S { int v; }` + `@test void t(){ S s @thread; }`
   → 编译通过（exit 0）+ 运行通过（0 断言，无效果）——`@thread` 注解被**静默忽略**，
   不建线程、不报错。manual.md §7 struct vs class 表标 `@thread` ❌（struct 不支持），

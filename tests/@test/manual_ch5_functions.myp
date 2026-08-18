@@ -1,0 +1,122 @@
+// manual_ch5_functions.myp — 手册 §5 函数章核对回归（2026-08-18 审计固化）
+//   顶层函数 / 泛型函数 / 默认参数·命名实参 / 一等函数·闭包 / nonlocal /
+//   泛型高阶 / 字符串深拷贝捕获。全部为正向验证（与手册示例结果一致）。
+import test;
+import option;
+
+// --- 顶层函数 ---
+int add2(int a, int b) { return a + b; }
+
+// --- 泛型函数 ---
+T id<T>(T x) { return x; }
+T max2<T>(T a, T b) { if (a > b) return a; return b; }
+
+// --- 默认参数 / 命名实参 ---
+int add(int a, int b = 100, int c = 200) { return a + b + c; }
+int mul(int a, int b) { return a * b; }
+
+class Rect {
+    action:
+        void Rect(int w = 1, int h = 1) { w_ = w; h_ = h; }
+        int getW() { return w_; }
+        int getH() { return h_; }
+    property:
+        int w_;
+        int h_;
+}
+
+struct Vec2 {
+    double px;
+    double py;
+    action:
+        @constructor Vec2(double x, double y) { px = x; py = y; }
+}
+
+class Greeter {
+    action:
+        string greet(string name = "world", string suffix = "!") { return name + suffix; }
+}
+
+@static class Scale {
+    static:
+        int scale(int v, int f = 2) { return v * f; }
+}
+
+// --- 一等函数与闭包 ---
+int apply2(int v, (int) -> int f) { return f(v); }
+(int) -> int makeAdder(int n) { return (int x) => { return x + n; }; }
+
+// nonlocal 按引用捕获（返回闭包，k 在共享 cell 存活）
+(int) -> int counter() {
+    int k = 0;
+    (int) -> int inc = (int d) => {
+        nonlocal k;
+        k = k + 1;
+        return k;
+    };
+    return inc;
+}
+
+// 泛型高阶：Option.map 式组合
+Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) {
+    Option<R> r = new Option<R>();
+    if (o.isSome()) r.set(f(o.get()));
+    return r;
+}
+
+// 字符串深拷贝捕获
+(int) -> string makeGreeter(string prefix) {
+    return (int x) => { return prefix + ": " + x; };
+}
+
+@test void t_topfn() {
+    Test.assertEq(add2(10, 20), 30);       // 顶层函数
+}
+
+@test void t_generic() {
+    Test.assertEq(id<int>(5), 5);          // 显式
+    Test.assertEq(id(7), 7);               // 推断 → T=int
+    Test.assertStrEq(id("hi"), "hi");      // T=string
+    Test.assertEq(max2<int>(3, 9), 9);
+}
+
+@test void t_default_named() {
+    Test.assertEq(add(1), 301);            // 省略 b,c → 默认
+    Test.assertEq(add(1, 2), 203);         // 省略 c
+    Test.assertEq(add(1, 2, 3), 6);        // 全给
+    Test.assertEq(add(1, c = 5), 106);     // 命名 c
+    Test.assertEq(add(1, b = 5, c = 6), 12);// 命名 b,c
+    Test.assertEq(mul(b = 7, a = 6), 42);  // 命名乱序
+    Rect r = new Rect(h = 5);              // 构造器命名实参（w 用默认 1）
+    Test.assertEq(r.getW(), 1);
+    Test.assertEq(r.getH(), 5);
+    Vec2 v = Vec2(3.0, 4.0);               // struct 函数式构造（位置实参）
+    Test.assertFloatEq(v.px, 3.0, 1e-9);
+    Test.assertFloatEq(v.py, 4.0, 1e-9);
+    Greeter g = new Greeter();
+    Test.assertStrEq(g.greet(name = "Al", suffix = "?"), "Al?");  // 方法命名实参
+    Test.assertEq(Scale.scale(5), 10);     // 静态方法省略默认参数 f=2
+}
+
+@test void t_firstclass() {
+    (int) -> int add1 = (int x) => { return x + 1; };
+    Test.assertEq(add1(41), 42);           // 函数类型变量 + lambda
+    Test.assertEq(apply2(10, (int x) => { return x * 2; }), 20);  // 高阶函数
+    (int) -> int add5 = makeAdder(5);
+    Test.assertEq(add5(3), 8);             // 闭包
+}
+
+@test void t_nonlocal() {
+    (int) -> int c = counter();
+    Test.assertEq(c(0), 1);
+    Test.assertEq(c(0), 2);
+}
+
+@test void t_generic_hof() {
+    Option<int> some = new Option<int>(5);
+    Option<string> m = mapOpt<int, string>(some, (int x) => { return "v" + x; });
+    Test.assert(m.isSome());
+    Test.assertStrEq(m.get(), "v5");
+    (int) -> string g = makeGreeter("hello");
+    Test.assertStrEq(g(42), "hello: 42");  // 字符串深拷贝捕获
+}
