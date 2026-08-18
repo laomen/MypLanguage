@@ -40,21 +40,83 @@ make -j$(nproc)
 
 ### Hello World
 
+In MYP's event-driven model, output logic lives in a component's `action:` (and `main`
+only does "wiring" — see below). Three equivalent forms:
+
+**① `@startup` + `mypc run` (simplest, no `main` needed)**
+
 ```myp
 // hello.myp
 import env;
 
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello, MYP!");
+        }
+}
+```
+
+```bash
+./build/mypc run hello.myp
+# Output: Hello, MYP!
+```
+
+**② Constructor output (`@constructor`, runs synchronously on `new`)**
+
+```myp
+// hello2.myp
+import env;
+
+class Hello {
+    action:
+        @constructor Hello() {
+            Console.writeLine("Hello, MYP!");
+        }
+}
+
 int main() {
-    Console.writeLine("Hello, MYP!");
+    Hello h = new Hello();   // constructor body runs on `new` → prints
     return 0;
 }
 ```
 
 ```bash
-./build/mypc hello.myp
-./hello.out
+./build/mypc hello2.myp && ./hello2.out
 # Output: Hello, MYP!
 ```
+
+**③ Multithreaded output (`@thread` instance, `@startup` runs when the thread starts)**
+
+```myp
+// hello3.myp
+import env;
+
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello from worker thread!");
+        }
+}
+
+int main() {
+    Hello h = new Hello() @thread;   // dedicated thread; @startup fires on start
+    return 0;
+}
+```
+
+```bash
+./build/mypc hello3.myp && ./hello3.out
+# Output: Hello from worker thread!
+```
+
+> **`main` wiring rule**: `main()` only does "wiring" — create instances + declare
+> `mapping`; **direct method calls are forbidden** (writing `Console.writeLine(...)` in
+> `main` is a compile error: `direct function call not allowed in main() — use
+> mapping() instead`). Logic goes in component actions: `@startup` runs when the instance
+> starts operating (`mypc run` auto-generates `main` and triggers it for single-class files,
+> see §13; with an explicit `main`, use a `@thread` instance), `@constructor` runs
+> synchronously on `new`.
 
 ### Compiler Options
 
@@ -108,11 +170,27 @@ int a;              // Default-initialized to 0
 3.14        // Float (double)
 1.0e-5      // Scientific notation
 0xFF        // Hexadecimal
+0b1010      // Binary (= 10)
+0o17        // Octal (= 15)
+0755        // Leading-zero C-style octal (= 493)
+1_000_000   // Underscore separator (= 1000000)
+0xFF_FF     // Hexadecimal + underscore (= 65535)
+1_000.5     // Float + underscore
+1e1_0       // Exponent + underscore (= 1e10)
 true false  // Boolean
 'A' '\n'    // Character (supports \n \t \\ \' \" \0)
 "hello"     // String (supports \n \t \\ \" \0)
 null        // Null value
 ```
+
+> Literal suffixes: `42L` (long), `0xFFu` (unsigned, width by value), `1.5f` (float32),
+> `1_000_000L` (underscores can combine with suffixes). Underscores are readability
+> separators only (between digits), stripped at compile time.
+
+> **`null` semantics**: `null` can be assigned to reference types (class/interface/struct
+> pointer) and tested with `x == null`. **`string` is value-semantic** (char buffer) and
+> **cannot** be `null` (compile error). Dereferencing a `null` class reference is a runtime
+> error (no guarantee of protection) — check for null before calling.
 
 ### String Interpolation (v2+)
 
@@ -125,19 +203,28 @@ var s = "x = $x";            // → "x = 42"
 
 ### Operators
 
-| Precedence | Category | Operators |
-|------------|----------|-----------|
-| 10 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` |
-| 9 | Pipe | `\|>` |
-| 8 | Ternary | `? :` |
-| 7 | Logical OR | `||` |
-| 6 | Logical AND | `&&` |
-| 5 | Equality | `==` `!=` |
-| 4 | Relational | `<` `>` `<=` `>=` |
-| 3 | Addition | `+` `-` |
-| 2 | Multiplication | `*` `/` `%` |
-| 1 | Unary | `!` `-` `++` `--` |
-| 0 | Postfix | `.` `[]` `()` `++` `--` |
+| Precedence | Category | Operators | Assoc |
+|------------|----------|-----------|-------|
+| 15 | Assignment | `=` `+=` `-=` `*=` `/=` `%=` | right |
+| 14 | Pipe | `\|>` | left |
+| 13 | Ternary | `? :` | right |
+| 12 | Logical OR | `\|\|` | left |
+| 11 | Logical AND | `&&` | left |
+| 10 | Bitwise OR | `\|` | left |
+| 9 | Bitwise XOR | `^` | left |
+| 8 | Bitwise AND | `&` | left |
+| 7 | Equality | `==` `!=` | left |
+| 6 | Relational | `<` `>` `<=` `>=` | left |
+| 5 | Shift | `<<` `>>` | left |
+| 4 | Addition | `+` `-` | left |
+| 3 | Range | `..` | left |
+| 2 | Multiplication | `*` `/` `%` | left |
+| 1 | Unary | `!` `~` `-` `++` `--` | right |
+| 0 | Postfix | `.` `[]` `()` `++` `--` | left |
+
+> Precedence matches C family (**higher = looser**): `..` (range) sits between addition and
+> multiplication; `~` is bitwise NOT (integer/bitvector/bit); unary `++`/`--` also appear in
+> the postfix column (`a++`/`a--`).
 
 ```myp
 // Compound assignment
@@ -171,34 +258,206 @@ var v = A |> ScaleOp;
 
 | Type | Description | Size |
 |------|-------------|------|
-| `byte` | Signed 8-bit | 8 |
-| `short` | Signed 16-bit | 16 |
-| `int` | Signed 32-bit | 32 |
-| `long` | Signed 64-bit | 64 |
-| `ubyte` | Unsigned 8-bit | 8 |
-| `ushort` | Unsigned 16-bit | 16 |
-| `uint` | Unsigned 32-bit | 32 |
-| `ulong` | Unsigned 64-bit | 64 |
+| `byte` | Signed 8-bit (`int8` alias) | 8 |
+| `short` | Signed 16-bit (`int16` alias) | 16 |
+| `int` | Signed 32-bit (`int32` alias) | 32 |
+| `long` | Signed 64-bit (`int64` alias) | 64 |
+| `ubyte` | Unsigned 8-bit (`uint8` alias) | 8 |
+| `ushort` | Unsigned 16-bit (`uint16` alias) | 16 |
+| `uint` | Unsigned 32-bit (`uint32` alias) | 32 |
+| `ulong` | Unsigned 64-bit (`uint64` alias) | 64 |
 | `char` | Character (8-bit) | 8 |
 | `float` | Single-precision float | 32 |
 | `double` | Double-precision float | 64 |
 | `bool` | Boolean | 1 |
+| `bit` | Single bit (v3.12, LLVM i1) | 1 |
+| `bitvector<N>` | Fixed-width bit vector (N = 8/16/32/64, v3.12, LLVM iN) | N |
 | `string` | String pointer | pointer |
 | `void` | No type | — |
 
+> `bit`/`bitvector<N>`/`bitfield` semantics: see the "Bit types" subsection below (§3);
+> `float4`/`double2`/`int4` vector types (with `load4`/`store4` packed access) see
+> `design.md` §3.6.
+
 ### Numeric Promotion
 
-Automatic implicit conversion between numeric types:
+**Implicit conversion is lossless-only** (widening / precision-preserving); anything that
+may lose data / wrap / truncate requires an explicit cast.
 
 ```
-byte/char → short → int → long → float → double
+Signed integer widening (same sign): i8 → i16 → i32 → i64        （SExt）
+Unsigned integer widening (same sign): u8 → u16 → u32 → u64      （ZExt）
+Integer → float: i8/i16/i32, u8/u16/u32 → f64 (exact within 32 bits)
+Float widening:                f32 → f64                          （FPExt）
+Character:                    char → i32/u32/i64                   （ZExt, char = u8）
 ```
 
 ```myp
 int a = 42;
-long b = a;       // ✅ int → long auto-promotion
-double c = a;     // ✅ int → double auto-promotion
+long b = a;       // ✅ int → long auto-promote (SExt)
+double c = a;     // ✅ int → double auto-promote (exact within 32 bits)
 int d = b;        // ❌ long → int does NOT auto-demote
+double e = 3.0f;  // ✅ float → double auto-promote
+int f = 0xFF;     // ✅ int → int
+```
+
+**Explicit cast required (lossy)**:
+- Cross-sign: `int→uint`, `uint→int`, `char↔byte` (char is a u8-semantics alias, not
+  interchangeable with signed byte);
+- Integer→float beyond precision: **`i64/u64 → f64`**, `int/long → float` must be explicit
+  (silent precision loss costs more than writing `double(x)`);
+- All narrowing: `long→int`, `double→float`, `int→byte`;
+- `ulong` involved: small-unsigned→large-unsigned implicit (ZExt), cross-sign/float explicit
+  (symmetric with the `uint` family).
+
+```myp
+long big = 9007199254740993L;
+double dd = double(big);   // explicit (|x|≥2^53 loses precision, never silent)
+int g = int(big);          // explicit narrowing
+```
+
+> **Overflow semantics**: signed/unsigned overflow = **wrap** (deterministic, no UB); when
+> detection is needed use `checkedAdd(a,b)`/`checkedMul(a,b)` (return `(value, overflow:bool)`
+> tuple, see below).
+
+### Unsigned Types (uint family)
+
+Unsigned types `ubyte`/`ushort`/`uint`/`ulong` (fixed-width aliases `uint8`/`uint16`/
+`uint32`/`uint64`) have **unsigned semantics**, matching C:
+
+- **`u` literal suffix**: `0xFFFFFFFFu` is an unsigned integer literal (width by value:
+  ≤0xFF→`ubyte`, ≤0xFFFF→`ushort`, ≤0xFFFFFFFF→`uint`, larger→`ulong`).
+- **Logical right shift**: `uint`'s `>>` is logical (`lshr`), not arithmetic.
+- **Unsigned division/modulo**: `/`→`udiv`, `%`→`urem`.
+- **Unsigned comparison**: `<`/`>`/`<=`/`>=` use unsigned predicates.
+- **Wrap**: add/sub wrap at 32 bits automatically, no `& 0xFFFFFFFF` needed.
+- **uint→long widening** uses ZExt (`0xFFFFFFFFu` → `4294967295L`, not -1).
+- **Native rotate**: `(x >> n) | (x << (32 - n))` is recognized by LLVM as a single
+  `rorl`/`rol`.
+
+```myp
+uint a = 0xFFFFFFFFu;
+uint b = a >> 4;          // logical shift → 0x0FFFFFFF
+uint c = a / 3u;          // unsigned division → 1431655765
+bool big = a > 100u;      // unsigned comparison → true
+long v = a * 4294967296L; // uint→long ZExt → 4294967295 << 32
+```
+
+> Note: to print an unsigned value as `long`, widen explicitly via a binary op (e.g.
+> `x * 1L`); `ulong` does not implicitly convert to `long` (may overflow signed range).
+
+### Explicit Conversion `uint8(x)`
+
+Built-in type names used as function calls perform explicit conversion:
+`uint8(x)`/`byte(x)`/`int(x)`/`long(x)`/`double(x)`/`bool(x)` etc. Rules:
+
+- **Wide→narrow truncation**: `byte(200L)` → -56 (0xC8 truncated to i8); `long(3.99)` → 3.
+- **Narrow→wide by source sign**: unsigned source ZExt (`uint8`→`long` is 0..255), signed SExt.
+- **double↔int**: `int(3.99)` → 3 (truncate); `double(42)` → 42.0.
+- **int↔uint bit-preserving**: `uint(-1)` → 4294967295.
+- **bool in conversion chains**: `int(b)` → b?1:0; `bool(n)`/`bool(f)` → value≠0;
+  `double(b)` → 0.0/1.0.
+- **char = u8 semantics**: `char(0xFF)` is a u8 value; `char`→`int` ZExt (0xFF → 255, not -1).
+- **bit(x)** = x≠0; `bitvector<N>(uint)` bit-preserving; `uintN(bv)` passthrough (see below).
+
+Typical use: filling a byte array from `long` computed values (previously impossible
+without a cast):
+
+```myp
+uint8[] in = new uint8[n];
+long rng = seed;
+while (i < n) {
+    rng = (rng * 1103515245L + 12345L) % 2147483648L;
+    in[i] = uint8((rng >> 16) & 0xFFL);   // explicit truncation to a byte
+}
+```
+
+### Bit Types: `bit` / `bitvector<N>` / `bitfield` (v3.12, additive)
+
+- **`bit`**: single bit (LLVM i1). `bit(x)` = x≠0; `bool(bit)` passthrough; usable as a
+  boolean context.
+- **`bitvector<N>`**: fixed-width bit vector (N = 8/16/32/64, underlying LLVM `iN`).
+  `bitvector<8>` ≡ u8 bit view. Supports indexing `v[i] : bit`, bit ops `& | ^ ~ << >>`,
+  index write `v[i] = x`, `bitvector<N>(uintN)` bit-preserving interop, `bytesOf(bv)` → `ubyte[]`.
+- **`bitfield`**: struct bit-field packing (backing integer ≤8→i8/≤16→i16/≤32→i32/else i64);
+  field access is bit extraction / read-modify-write. For file headers/protocols/GPU control words.
+
+```myp
+bitvector<8> bv = bitvector<8>(0x5A);
+bit bit0 = bv[0];               // bit 0
+bv[1] = bit(1);                 // index write
+uint u = uint(bv);              // passthrough 0x5A
+ubyte[] bytes = bytesOf(bv);    // serialize (built-in, no import)
+
+bitfield Flags { bit read; bit write; bit[6] reserved; }
+Flags f;                        // zero-init, packed into 1 byte
+f.write = bit(1);               // or f.write = true (bool→bit implicit)
+Console.writeLong(int(f.write) << 1);
+```
+
+### `bitcast<T,U>(x)` (v3.12)
+
+`bitcast` preserves bits, does not interpret values (numeric `T(x)` changes the value).
+Requires equal width (8/16/32/64); cross-width is an explicit error.
+
+```myp
+uint bits = bitcast<uint>(1.0f);   // 0x3F800000 (bit pattern of float)
+float back = bitcast<float>(bits); // 1.0
+```
+
+### Bit Operations (v3.12)
+
+Integer-family bit ops map directly to LLVM intrinsics (return type = argument integer
+type): `popcount(x)`, `clz(x)`/`ctz(x)` (0 → bit width), `bitreverse(x)`, `rotl(x,n)`/`rotr(x,n)`.
+
+```myp
+Console.writeLong(popcount(0b1011));     // 3
+Console.writeLong(rotr(0b1000, 1));      // 4
+```
+
+### Overflow Detection: `checkedAdd` / `checkedMul` (v3.12)
+
+Return `(value, overflow:bool)` tuples (signed integers, common-type promotion).
+
+```myp
+(int v, bool ov) = checkedAdd(2147483647, 1);  // v=-2147483648, ov=true
+(int ok2, bool no) = checkedAdd(1, 2);         // ok2=3, no=false
+(int, bool) t = checkedMul(46341, 46341);      // t.0 overflow value, t.1=true
+```
+
+### Parsing: `parse*` and `parseIntOpt` (v3.12)
+
+Unified `strtol/strtoull/strtod` semantics (**signed with base**, `0x` prefix, leading-zero
+octal); return 0 on failure.
+
+```myp
+int a = parseInt("42");        // 42
+long b = parseLong("0xFF");    // 255 (hex)
+double c = parseDouble("3.14");// 3.14
+float f = parseFloat("1.5");
+uint u = parseUint("4294967295");
+
+// parseIntOpt distinguishes legal "0" from failure (parseInt returns 0 on failure):
+(int v, bool ok) = parseIntOpt("42");   // v=42, ok=true
+(int v2, bool ok2) = parseIntOpt("abc");// v2=0, ok2=false
+(int v3, bool ok3) = parseIntOpt("0");  // v3=0, ok3=true (legal 0)
+```
+
+### Numeric Traits & `Math` Polymorphism (v3.12)
+
+Built-in numeric traits: `Numeric` (`+ - * / %`), `Integer`, `Float`, `Ordered`
+(`< <= > >=`, incl. string). Generic functions/static methods can constrain
+`where T : Trait`, verified at instantiation, zero runtime cost.
+
+```myp
+T twice<T where T : Numeric>(T v) { return v + v; }
+Console.writeLong(twice(21));          // 42
+Console.writeString("" + twice(1.5)); // 3
+
+// Math library polymorphism: float arg returns float (inside GPU kernels → __nv_xf)
+float s = Math.sqrt(4.0f);     // 2.0f (no float(...) wrap needed)
+double d = Math.sqrt(2.0);     // double
+double p = Math.pow(2.0, 10.0);// double
 ```
 
 ### Composite Types
@@ -379,6 +638,42 @@ void log(string msg) {
     return;  // Optional
 }
 ```
+
+### Enum & Match (v2.1, additive)
+
+`enum` declares an enumeration type (sealed — the variant set is fixed); `match` matches
+against enum variants (enum + pattern matching).
+
+```myp
+// Simple enum
+enum Color { Red; Green; Blue; }
+
+// Enum with data (variants can carry data)
+enum Shape {
+    Circle(double radius);
+    Rect(double width, double height);
+}
+
+Color c = Color.Red;
+string label = "";
+match (c) {
+    Color.Red   => { label = "Red"; }
+    Color.Green => { label = "Green"; }
+    Color.Blue  => { label = "Blue"; }
+}
+
+Shape s = Shape.Circle(5.0);
+double r = 0.0;
+match (s) {
+    Shape.Circle(radius) => { r = radius; }   // bind single data
+    Shape.Rect(w, h)     => { r = -1.0; }     // bind multiple data
+}
+```
+
+- `enum` variants are `;`-separated; a variant can carry 0..n data items (e.g. `Circle(double radius)`).
+- `match` is a **statement**: `match (expr) { EnumName.Variant => { ... } ... }` matches each
+  branch; data-bearing variants bind data with `Variant(v1, v2, …)`.
+- Enums are sealed (no else fallback), so `match` must cover the variants used.
 
 ### Exception Handling (try / catch / finally / throw)
 
@@ -593,9 +888,9 @@ int main() {
     Sensor sensor = new Sensor();
     Display display = new Display();
 
-    // ✅ Allowed: declare mappings
+    // ✅ Allowed: declare mappings (nodes use CLASS names)
     mapping() {
-        sensor.valueRead -> display.show;
+        Sensor.valueRead -> Display.show;
     }
 
     // ❌ Forbidden: direct method calls
@@ -649,10 +944,14 @@ mul(b = 7, a = 6);     // 42 (named args may be reordered)
 
 // Constructors / methods / static methods / struct construction all support them
 Rect r = new Rect(h = 5);            // w defaults to 1
-Vec2 v = Vec2(px = 3.0, py = 4.0);   // struct functional construction, named
+Vec2 v = Vec2(3.0, 4.0);             // struct functional construction (positional; named NOT supported)
 g.greet(name = "Al", suffix = "?");  // method named arguments
 Greeter.scale(5);                    // static method, default f=2
 ```
+
+- **Struct functional construction** (`Vec2(3.0, 4.0)`) requires a declared `@constructor`
+  (see §9), and **does NOT support named arguments** (named-arg reinterpretation applies
+  only to functions/methods/constructors).
 
 - Applies to: top-level functions, class methods (`action:`/`function:`), static
   methods, constructors (`new`), and struct construction.
@@ -695,6 +994,32 @@ Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f) { ... }
 - Runtime representation: fat pointer `{closure, call_fn}` + uniform tramp.
 - Capture: scalars/strings are **deep-copied**, class references **shallow-copied**
   (shared instance); nested lambdas supported.
+- **`nonlocal` by-reference capture** (shared mutable): declaring `nonlocal 变量名;`
+  inside a lambda routes reads/writes of that variable to the same storage as the outer
+  function (heap cell, ARC-managed) — the closure and the outer function see each other's
+  changes. The standard way to write stateful closures (v1: scalar types only; nested
+  lambdas / struct methods not yet supported).
+
+```myp
+// Nonlocal capture: lambda mutates an outer counter
+int counter() {
+    int k = 0;
+    (int) -> int inc = (int d) => {
+        nonlocal k;
+        k = k + 1;
+        return k;
+    };
+    return inc;              // returns the closure; k lives in a shared cell
+}
+(int) -> int c = counter();
+c(0);                        // 1
+c(0);                        // 2
+```
+
+- The classic **Man or Boy** test (Knuth; recursive closure + first-class thunk +
+  `nonlocal`) validated against the Go reference: `A(10, 1, -1, -1, 1, 0) = -67`
+  (see `tests/@test/man_or_boy.myp`), verifying by-reference capture + recursive
+  thunk passing.
 
 ### main(argc, argv) (v2+)
 
@@ -710,9 +1035,10 @@ int main(int argc, string[] argv) {
 
 ## 6. Class Component System
 
-### Three-Section Structure
+### Four-Section Structure
 
-MYP classes are event-driven components with three sections:
+MYP classes are event-driven components with four main sections `action:` / `event:` /
+`property:` / `function:` (plus `static:` and `struct:` sections — see "Section Rules"):
 
 ```myp
 class Sensor {
@@ -723,6 +1049,9 @@ class Sensor {
     event:           // Firable events (send messages)
         valueRead(float temp);
         thresholdExceeded(float value);
+
+    function:        // Internal methods (not part of mapping, class-internal only)
+        void calibrate() { }
 
     property:        // Internal state (private)
         int sensorId;
@@ -740,6 +1069,7 @@ class Sensor {
 | `property:` | Member variables | Variable declarations only |
 | `function:` | Internal methods | Only callable within the class |
 | `static:` | Static methods | No instance needed, `ClassName.method()` call |
+| `struct:` | Nested structs | Field/method definitions (see §7) |
 
 ### Access Control
 
@@ -1059,7 +1389,9 @@ class Sensor {
 
 ### Mapping Declaration
 
-Mapping connects events to actions:
+Mapping connects events to actions. **Mapping nodes always use CLASS names**
+(`Class.event` / `Class.action`), even for instance-level mappings declared inside a
+function — nodes must be class names, never instance variable names:
 
 ```myp
 // Type-level mapping (file-level, global)
@@ -1067,13 +1399,13 @@ mapping() {
     Sensor.valueRead -> Display.showTemperature;
 }
 
-// Instance-level mapping (local, inside a function)
+// Instance-level mapping (local, inside a function): nodes still use class names
 int main() {
     Sensor sensor;
     Display display;
 
     mapping() {
-        sensor.valueRead -> display.showTemperature;
+        Sensor.valueRead -> Display.showTemperature;
     }
 }
 ```
@@ -1091,12 +1423,12 @@ mapping() {
 
 ```myp
 mapping() {
-    // One event triggers multiple actions
-    sensor.valueRead -> display.show, logger.log;
+    // One event triggers multiple actions (nodes use class names)
+    Sensor.valueRead -> Display.show, Logger.log;
 
     // Equivalent to:
-    sensor.valueRead -> display.show;
-    sensor.valueRead -> logger.log;
+    Sensor.valueRead -> Display.show;
+    Sensor.valueRead -> Logger.log;
 }
 ```
 
@@ -1169,7 +1501,7 @@ int main() {
     Worker worker @thread;
 
     mapping() {
-        sensor.valueRead -> worker.process;
+        Sensor.valueRead -> Worker.process;   // nodes use class names
     }
     return 0;
 }
@@ -1182,7 +1514,7 @@ int main() {
 Worker[4] pool @threadpool;
 
 mapping() {
-    sensor.valueRead -> pool[0].process;
+    Sensor.valueRead -> Worker.process;   // class names (not pool[0].process)
 }
 ```
 
@@ -1241,10 +1573,14 @@ Protect shared writes with `Atomic`:
 
 #### Limits
 
-- loop variable `int` (`long` auto-truncated to int32)
+- loop variable can be `int` or `long` (`long` indices auto-convert)
 - each iteration must be **independent** (no data dependency)
 - no `break` / `continue`
 - loop bounds fixed at entry
+- **the parallel body only captures outer LOCAL variables**: it cannot directly access
+  class/static properties (arrays etc.) — such accesses are parsed as outer locals and
+  cause LLVM verify failure or a runtime crash. Copy them to a local first (see the BNCT
+  example below: `double[] depthDose = TallyData.depthDose;`).
 
 #### BNCT example
 
@@ -1548,15 +1884,21 @@ class Worker {
 ```myp
 import env;              // Standard library module
 import timeline;          // Standard library module
-import "./helper.myp";    // User file (relative path)
+import gpu.hal;          // Standard library submodule (dotted name → stdlib/gpu/hal.myp)
+import "./helper.myp";    // User file (relative path, resolved against the importing file's dir)
 import "/abs/lib.myp";    // User file (absolute path)
 ```
 
 ### Import Rules
 
-- Standard library is looked up in the `stdlib/` directory
-- User files support relative/absolute paths
-- Automatic deduplication (same file is not imported twice)
+- Standard library is looked up in the `stdlib/` directory; **dotted module names**
+  (`import gpu.hal;` → `stdlib/gpu/hal.myp`)
+- User files support relative/absolute paths; relative paths resolve against the
+  **importing file's directory**
+- Automatic deduplication (same file is not imported twice; note: dedup is by path
+  STRING — `..` is not normalized, so the same file via different relative paths
+  (e.g. direct `./helper.myp` + `../helper.myp` from a submodule) can double-load and
+  report duplicate — see tests/bugs/)
 - Recursive loading (imports within imported files are also loaded)
 - Search paths: `--stdlib` → executable's `../stdlib/` → source file's `./stdlib/` → `--package-path` directory
 - Package import: `import mylib;` searches `<package_path>/mylib/src/mylib.myp` or `<package_path>/mylib/mylib.myp`
@@ -1618,6 +1960,28 @@ some.clear();                          // back to none
 
 > Combines with tuples/first-class functions: `Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f)`.
 
+### `import result` — Value-Based Errors (v3.9.0)
+
+`Result<T, E>` is an Ok(value)/Err(error) two-state container — errors are passed
+ explicitly as return values (detailed design/combinators: §4).
+
+```myp
+import result;
+
+Result<int, string> ok  = new Result<int, string>(42);   // ok
+Result<int, string> bad = new Result<int, string>();     // err
+bad.setErr("oops");
+
+if (ok.isOk())   Console.write(ok.get());        // 42
+if (bad.isErr()) Console.writeString(bad.getErr());  // "oops"
+int v = bad.getOr(-1);                          // safe access → -1
+```
+
+Factories (top-level generic functions): `resultOk<T,E>(v)` / `resultErr<T,E>(e)`;
+combinators `resultMap` / `resultAndThen` / `resultMapErr`; exception bridge
+`resultTry<T>(() => { ... })` turns a possibly-throwing call into `Result<T, string>`
+(`throw "msg"` → `err(msg)`).
+
 ### `import collections` — Collection Types
 
 ```myp
@@ -1648,6 +2012,36 @@ s.remove(17);
 int sz = s.size();
 ```
 
+### `import setops` — Unified Set-Operator Contract
+
+Abstracts "transform" as one interface: any operator (scale/activation/filter/reduce…)
+that implements `transform` can be reused as a stage of a collection pipeline
+(elementwise / size-changing / filtering is free inside the operator).
+
+```myp
+import setops;
+
+// The SetOp contract is provided by the module: double[] transform(double[] A)
+// An implementation only needs `interface class SetOp;` + transform to join pipelines
+class ScaleOp {
+    interface class SetOp;
+    action:
+        double[] transform(double[] A) {
+            // any internal transform (example: identity; real ops do scaling etc.)
+            return A;
+        }
+    property:
+        double k = 2.0;
+}
+
+// Single operator:      double[] B = op.transform(A);
+// Pipeline composition: double[] B = op2.transform(op1.transform(A));  // A ->op1-> op2-> B
+```
+
+> Unified operator model (operator = set operator): `docs/operators.md`; complements
+> mapping's event operators (event-stream operators handle scalar events, set
+> operators handle collection transforms).
+
 ### `import math` — Math Functions
 
 ```myp
@@ -1660,7 +2054,7 @@ Math.cos(3.14159);      // ~-1
 Math.pow(2.0, 10.0);    // 1024.0
 Math.max(10, 20);       // 20
 Math.min(10, 20);       // 10
-Math.absInt(-42);       // 42
+Math.abs(-42);          // 42 (generic abs — absInt removed, int arg returns int)
 ```
 
 ### `import time` — Time & Timers
@@ -1855,13 +2249,19 @@ f.open("out.txt", "w");             // open for write
 f.write("hello");                   // write string (no newline)
 f.writeLine("world");               // write string + newline
 
-// Binary I/O (via __myp_io_* intrinsics)
-int byte = __myp_io_read_byte();
-int i32  = __myp_io_read_i32be();
-__myp_io_write_byte(0xFF);
-__myp_io_write_i32be(42);
-__myp_io_write_double(3.14);
-double d = __myp_io_read_double();
+// Binary I/O (File methods; `__myp_io_*` are stdlib-internal intrinsics and
+// CANNOT be called directly from user code — that's a compile error)
+File fb = new File();
+fb.open("data.bin", "rb");
+int b8 = fb.readByte();           // read 1 byte
+int i32  = fb.readI32BE();        // read 4-byte big-endian int
+fb.close();
+
+fb.open("out.bin", "wb");
+fb.writeByte(0xFF);               // write 1 byte
+fb.writeI32BE(42);                // write big-endian 4-byte int
+fb.writeDouble(3.14);             // write 8-byte double
+fb.close();
 ```
 
 ### `import stream` — Streaming Data Sources
@@ -1869,15 +2269,21 @@ double d = __myp_io_read_double();
 ```myp
 import stream;
 
-// RangeStream: integer range iteration
-RangeStream rs = new RangeStream(0, 10, 1);
-while (rs.hasNext()) {
-    int v = rs.next();
+// Event-driven data sources: run() iterates the source and fires the
+// valueEmitted event, consumed via mapping()
+RangeStream rs = new RangeStream();      // integer range [start, end) — one value per fire
+IntStream is = new IntStream();          // int[] — one element per fire
+DoubleStream ds = new DoubleStream();    // double[] — one element per fire
+
+mapping() {
+    rs.valueEmitted -> Console.write;        // int
+    is.valueEmitted -> Console.write;        // int
+    ds.valueEmitted -> Console.writeFloat;   // double
 }
 
-// IntStream / DoubleStream: array streaming wrappers
-int[] data = new int[5];
-IntStream is = new IntStream(data, 5);
+rs.run(0, 10);        // fires 0,1,...,9
+is.run(data, n);      // fires data[0..n-1]
+ds.run(data, n);      // fires data[0..n-1]
 ```
 
 ### `import barrier` — Barrier Synchronization
@@ -2418,15 +2824,59 @@ Test.report("test_name", true);      // report a test result
 import sdl;
 
 // SDL2-based window and input management
-SDL.init("Title", 800, 600);            // create window
-while (!SDL.shouldClose()) {
+SDL.open("Title", 800, 600);            // create window
+while (SDL.running()) {
     SDL.clear(0, 0, 0, 255);            // clear screen
-    // ... draw ...
+    SDL.drawRect(10, 10, 100, 50, 255, 0, 0, 255);  // filled rect
+    SDL.drawLine(0, 0, 800, 600, 0, 255, 0, 255);   // line
     SDL.present();                       // present
 }
-SDL.quit();
+SDL.close();                            // close window
 
 int key = SDL.getKey();                  // get a key press
+int w = SDL.width();  int h = SDL.height();  // window size
+```
+
+### `import gpu` — GPU High-Level API (L1 array primitives + L3 submodules)
+
+`import gpu` provides the `Gpu` static class: host array primitives, auto-GPU-accelerated;
+falls back to **CPU** without a GPU / when `MYP_GPU=1` is unset, with identical results.
+
+```myp
+import gpu;
+
+Gpu.add(a, b, out, n);          // out = a + b
+Gpu.sub(a, b, out, n);          // out = a - b
+Gpu.mul(a, b, out, n);          // out = a .* b (elementwise)
+Gpu.scale(data, s, n);          // data[i] *= s
+Gpu.addScalar(data, s, n);      // data[i] += s
+Gpu.saxpy(3.0, x, y, out, n);   // out[i] = 3.0*x[i] + y[i]
+Gpu.copy(dst, src, n);          // dst = src
+Gpu.negate(data, n);            // data = -data
+Gpu.clamp(data, lo, hi, n);     // data = clamp(data, lo, hi)
+Gpu.sum(a, n);                  // Σ a[i]
+Gpu.dot(a, b, n);               // dot product
+Gpu.mean(a, n);  Gpu.variance(a, n);  Gpu.stddev(a, n);
+Gpu.norm(a, n);  Gpu.normSquared(a, n);  Gpu.normalize(data, n);
+Gpu.gemm(A, B, C, m, n, k);     // matrix multiply (row-major double[])
+Gpu.sqrt(data, n);  Gpu.exp(data, n);  Gpu.log(data, n);  Gpu.abs(data, n);  Gpu.pow(data, p, n);
+```
+
+> **L3 — `gpu/` submodules (dotted imports, explicit device memory)**:
+> - `import gpu.memory;` — `GpuBuffer`/`GpuBufferF` (device buffers), `GpuPool` (pool)
+> - `import gpu.ops;` — `GpuOps` device-side operators (`*D` consume devicePtr directly)
+> - `import gpu.stream;` — `GpuStream`/`GpuEvent` (async streams/events)
+> - `import gpu.algo;` — `GpuAlgo` data-parallel algorithms (histogram/compact/unique)
+> - `import gpu.graph;` — `GpuGraph`/`GpuGraphExec` (CUDA Graph capture/replay)
+> - `import gpu.byoc;` — `GpuByoc`/`GpuLib` (BYOC self-compiled kernels + cuBLAS)
+> - `import gpu.device;` — `GpuDevice` (device attribute queries)
+
+```myp
+import gpu.memory;
+
+double[] host = new double[1024];
+GpuBuffer buf = new GpuBuffer(host, 1024);   // wrap host array → device memory
+buf.copyToHost(host, 0, 0, 1024);            // device → host
 ```
 
 ### `import ui` — Terminal TUI Framework
@@ -2653,6 +3103,7 @@ class Hello {
 | `--trace` | Enable runtime event tracing |
 | `--package-path <dir>` | Local package directory |
 | `--macro-expand` | Dump the AST after macro expansion |
+| `--frontend-dump <tokens|ast|sema>` | Deterministic frontend dump (self-hosted compiler Oracle contract) |
 | `--stdlib <path>` | stdlib directory |
 | `--version` / `--help` | Version / help |
 
@@ -2902,6 +3353,31 @@ ASAN=1 bash tests/stress/run_stress.sh         # AddressSanitizer for memory err
 > 0 = all pass, 1 = failures. This suite reproduced and fixed the intermittent
 > `@parallel for` hang (counter-reset race, see CHANGELOG).
 
+### How to Add Tests (@test suite)
+
+Write new test cases with the **language-built-in `@test` suite** and drop them in
+`tests/@test/`; `run_tests.sh` auto-discovers them (each compiled+run with `--test`,
+requiring exit 0 and no `FAIL:`):
+
+```myp
+// tests/@test/my_feature.myp
+import test;
+
+@test void test_feature() {
+    Test.assertEq(compute(), 42, "compute result");
+    Test.assertNotNull<Node>(node);
+    Test.report("test_feature", true);   // optional: PASS/FAIL marker
+}
+```
+
+```bash
+./tests/run_tests.sh        # auto-compiles+runs tests/@test/*.myp
+```
+
+Convention: one `.myp` file per group of related tests; mark functions with `@test`;
+a failed assertion automatically makes the exit code non-zero (no manual handling).
+Use `Test.assert(cond, msg)` with a message for deterministic-input checks.
+
 ### Code Formatter
 
 ```bash
@@ -3075,13 +3551,16 @@ import math;
 // === Sensor Component ===
 class TempSensor {
     action:
+        @constructor TempSensor() {
+            t = new Timeline();
+        }
         @startup void run() {
             // Read temperature every 2 seconds
             t.startInterval(2000);
         }
         double readValue() {
             // Simulate temperature reading
-            return 20.0 + Math.sin(Timeline.now() / 1000.0) * 5.0;
+            return 20.0 + Math.sin(t.now() / 1000.0) * 5.0;
         }
     event:
         temperatureRead(double value);
@@ -3141,17 +3620,15 @@ int main() {
     Logger logger = new Logger();
     Display display = new Display();
 
-    sensor.t = new Timeline();
-
     mapping() {
-        // Temperature reading → display and log
-        sensor.temperatureRead -> display.show, logger.log;
+        // Temperature reading → display and log (nodes use class names)
+        TempSensor.temperatureRead -> Display.show, Logger.log;
 
         // Temperature reading → alarm check
-        sensor.temperatureRead -> alarm.check;
+        TempSensor.temperatureRead -> Alarm.check;
 
         // Alarm triggered → sound + prominent display
-        alarm.alarmTriggered -> alarm.sound, display.showAlert;
+        Alarm.alarmTriggered -> Alarm.sound, Display.showAlert;
     }
 
     return 0;

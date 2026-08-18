@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.12.28 — manual_en.md 内容全面对齐中文版（逐章修正过时/错误表述）
+- **§1 Hello World**：旧的 `int main(){ Console.writeLine(...) }`（现已编译报错）→
+  三种等价写法（@startup+mypc run / @constructor / @thread）+ main 接线规则注记。
+- **§2 字面量**：补二进制/八进制/前导零八进制/下划线/后缀/null 语义；**运算符表**：
+  旧 10..0 缺按位/移位/Range/结合性 → 重写为 15..0 + 结合性 + 位运算 + Range。
+- **§3 类型系统**：基础表补 bit/bitvector；数字提升改为"仅无损隐式+有损显式"；
+  补无符号类型/显式转换/位类型/bitcast/位操作/checkedAdd/parse/Math 多态各节。
+- **§4 控制流**：补「枚举与 match」小节（v2.1）。
+- **§5 函数**：main 接线 mapping 改类名节点；struct 函数式构造改为"仅位置实参、
+  不支持命名实参"；补 nonlocal 按引用捕获 + Man or Boy 测试。
+- **§6 Class**：三段式 → 四段式（+ function: 段）；段规则补 struct 行。
+- **§8/§9**：mapping 节点统一类名（@thread/@threadpool 实例名/`pool[0]` 改类名）；
+  @parallel 限制改"int 或 long 均可" + 补"并行体只捕获局部变量、属性先拷局部"。
+- **§10**：补点分模块名（import gpu.hal）+ 相对路径去重按字符串、`..` 未规范化注记。
+- **§11 标准库**：修正 4 处过时 API（Math.absInt→Math.abs、__myp_io_*→File 方法、
+  stream 迭代器→事件驱动、SDL.init/shouldClose/quit→open/running/close）；补
+  import result / setops / gpu（L1+L3）三个模块节。
+- **§13**：CLI 表补 --frontend-dump；补「How to Add Tests」节。
+- **§14 完整示例**：IoT 示例修正（Timeline 构造器初始化、t.now()、mapping 类名）。
+- 纯文档对齐，无代码变更。
+
+
 ### v3.12.27 — manual_en.md 对齐中文版（章节重排 + 新增 codegen/自举/代码生成工具）
 - **manual_en.md 全面对齐 manual.md**（英文版此前停留 v3.0 旧结构）：
   - 版本头 3.0 → 3.12；目录加 12. Metaprogramming，Compilation & Tools → §13、
