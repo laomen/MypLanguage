@@ -15,15 +15,20 @@
 
 #include <llvm/Support/ErrorHandling.h>
 
+#include <algorithm>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <unordered_set>
 
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -32,6 +37,61 @@
 static bool fileExists(const std::string& path) {
     struct stat st;
     return stat(path.c_str(), &st) == 0;
+}
+
+// 运行 nm 并返回符号名集合（defined=true → --defined-only；false → -u 未定义）。
+// 解析：每行末列即符号名（地址/类型列用空白分隔）。
+[[nodiscard]] static std::set<std::string> nmSymbols(const std::string& files, bool defined) {
+    std::set<std::string> out;
+    std::string cmd = "nm " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return out;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        std::string s(line);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        std::string::size_type sp = s.find_last_of(" \t");
+        if (sp == std::string::npos) continue;
+        std::string name = s.substr(sp + 1);
+        if (name.empty() || name == "C" || name[0] == '*') continue;  // nm 伪条目
+        out.insert(name);
+    }
+    pclose(fp);
+    return out;
+}
+
+// 读取侧车文件内容（去尾部空白）；不存在返回空串
+[[nodiscard]] static std::string readSidecar(const std::string& path) {
+    std::ifstream ifs(path);
+    if (!ifs) return "";
+    std::stringstream ss;
+    ss << ifs.rdbuf();
+    std::string s = ss.str();
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r' || s.back() == ' ' || s.back() == '\t'))
+        s.pop_back();
+    return s;
+}
+
+// 列出目录下所有 .c 文件
+[[nodiscard]] static std::vector<std::string> listCFiles(const std::string& dir) {
+    std::vector<std::string> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        std::string n = e->d_name;
+        if (n.size() > 2 && n.compare(n.size() - 2, 2, ".c") == 0)
+            out.push_back(dir + "/" + n);
+    }
+    closedir(d);
+    return out;
+}
+
+// b 中是否有任一符号出现在 a 中
+static bool symbolsIntersect(const std::set<std::string>& a, const std::set<std::string>& b) {
+    for (auto& s : b)
+        if (a.count(s)) return true;
+    return false;
 }
 
 // ---- Phase timing (MYP_TIMING=1 prints per-phase durations to stderr) ----
@@ -601,46 +661,68 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     }
 #endif
 
-    // Build SDL bridge object — ONLY when the program actually references
-    // myp_sdl_* symbols (i.e. it imports stdlib/sdl.myp and calls into it).
-    // sdl_bridge.o calls SDL2 functions, so linking it unconditionally forced
-    // -lSDL2 into DT_NEEDED (plus transitive libpulse/libasound/libsamplerate)
-    // on EVERY program, even console-only binaries like the bench suite. We
-    // detect the need by scanning undefined symbols in the object files.
-    std::string sdl_obj;
-    std::string sdl_libs;
-    std::string sdl_c;
-    bool need_sdl = false;
-    {
-        std::string nm_cmd = "nm -u";
-        for (const auto& o : obj_files) nm_cmd += " " + o;
-        nm_cmd += " 2>/dev/null | grep -q 'myp_sdl_'";
-        need_sdl = (std::system(nm_cmd.c_str()) == 0);
+    // ---- 通用桥接发现（symbol 驱动）：新增 bridge 无需改编译器 ----
+    // bridges 目录（MYP_BRIDGES 环境，冒号分隔多个；默认 <stdlib>/bridges）下的每个
+    // *.c 即一个候选桥接。当程序（或已选桥接）引用了它定义的符号时，自动编译（缓存）
+    // + 链接；侧车文件（可选）：<名>.c.cflags 附加编译标志、<名>.c.libs 链接库。
+    // 固定点迭代处理依赖链：如 sdl_ttf_bridge.c 依赖 sdl_bridge.c 的渲染器符号，
+    // 会自动把 sdl_bridge.c 一并拉入（连同 -lSDL2）。core runtime（runtime.c/ctx/
+    // gpu/lib）始终链接，不在此发现范围。
+    std::vector<std::string> bridge_dirs;
+    if (const char* env = getenv("MYP_BRIDGES"); env && env[0]) {
+        std::string rest(env);
+        for (;;) {
+            std::string::size_type pos = rest.find(':');
+            std::string d = (pos == std::string::npos) ? rest : rest.substr(0, pos);
+            if (!d.empty()) bridge_dirs.push_back(d);
+            if (pos == std::string::npos) break;
+            rest = rest.substr(pos + 1);
+        }
     }
-    if (need_sdl && fileExists("src/runtime/sdl_bridge.c"))
-        sdl_c = "src/runtime/sdl_bridge.c";
-    else if (need_sdl && fileExists(runtime_dir + "/src/runtime/sdl_bridge.c"))
-        sdl_c = runtime_dir + "/src/runtime/sdl_bridge.c";
-    if (!sdl_c.empty()) {
-        sdl_obj = "";
-        std::string sdl_cflags = "-O2 -I/usr/include/SDL2 -D_REENTRANT" + gc_compile;
-        sdl_libs = "-lSDL2";
-        std::string cached = cacheObj(sdl_c, sdl_cflags);
-        if (!cached.empty() && fileExists(cached)) {
-            sdl_obj = cached;
-        } else {
-            sdl_obj = tmpObj("sdl");
-            std::string compile_sdl = "gcc -I" + inc_path + " -fPIC " + sdl_cflags + san_flags + gc_compile + " -c " + sdl_c + " -o " + sdl_obj + " 2>&1";
-            if (std::system(compile_sdl.c_str()) != 0) {
-                std::cerr << "Failed to compile SDL bridge\n";
-                return false;
+    bridge_dirs.push_back(stdlib_path + "/bridges");
+    std::vector<std::string> all_bridges;
+    for (auto& d : bridge_dirs)
+        for (auto& c : listCFiles(d)) all_bridges.push_back(c);
+    std::sort(all_bridges.begin(), all_bridges.end());
+    std::vector<std::string> bridge_objs;
+    std::string bridge_libs;
+    std::string bridge_obj_list;
+    std::set<std::string> bridge_undef = nmSymbols(obj_list, false);
+    std::set<std::string> selected_bridges;
+    bool changed = true;
+    int guard = 0;
+    while (changed && guard++ < 128) {
+        changed = false;
+        for (auto& c : all_bridges) {
+            if (selected_bridges.count(c)) continue;
+            std::string bflags = readSidecar(c + ".cflags");
+            std::string blibs  = readSidecar(c + ".libs");
+            std::string cached = cacheObj(c, "-O2" + gc_compile + " " + bflags);
+            std::string obj;
+            if (!cached.empty() && fileExists(cached)) {
+                obj = cached;  // 缓存命中，免编译直接查符号
+            } else {
+                obj = tmpObj("bridge");
+                std::string compile_b = "gcc -I" + inc_path + " -fPIC -O2" + gc_compile + san_flags + " " + bflags + " -c " + c + " -o " + obj + " 2>&1";
+                if (std::system(compile_b.c_str()) != 0) {
+                    std::cerr << "Failed to compile bridge: " << c << "\n";
+                    return false;
+                }
+                if (!cached.empty() && ::rename(obj.c_str(), cached.c_str()) == 0)
+                    obj = cached;
             }
-            if (!cached.empty()) {
-                if (::rename(sdl_obj.c_str(), cached.c_str()) == 0)
-                    sdl_obj = cached;
+            if (symbolsIntersect(bridge_undef, nmSymbols(obj, true))) {
+                selected_bridges.insert(c);
+                bridge_objs.push_back(obj);
+                bridge_obj_list += " " + obj;
+                if (!blibs.empty()) bridge_libs += " " + blibs;
+                // 桥接自身的未定义符号并入集合（依赖链：sdl_ttf → sdl）
+                for (auto& s : nmSymbols(obj, false)) bridge_undef.insert(s);
+                changed = true;
             }
         }
     }
+    phaseMark("bridges");
 
     // Build GPU runtime object（runtime_gpu.c 是 dlopen 胶水，任何 Linux 可编译；
     // 保留以提供 stdlib cuda/gpu 的设备信息符号。GPU offload 的剔除在编译器 NVPTX 层）
@@ -698,10 +780,10 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
 
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj
-                 + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + gc_link + " 2>&1";
+        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + " -o " + output_name + " -lpthread -lm -ldl " + bridge_libs + gc_link + " 2>&1";
     } else if (static_lib) {
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -710,8 +792,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + sdl_obj + " " + gpu_obj + " " + lib_obj
-                 + " -o " + output_name + " -lpthread -lm -ldl " + sdl_libs + gc_link + " 2>&1";
+        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + " -o " + output_name + " -lpthread -lm -ldl " + bridge_libs + gc_link + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());
     if (link_result != 0) {

@@ -7,9 +7,10 @@
 // 每个函数使用全局或静态变量存储 SDL 内部对象（窗口、渲染器等），
 // MYP 侧无需关心指针，只需要传 int/string 等基本类型。
 //
-// 编译链接:
-//   gcc -c sdl_bridge.c -o sdl_bridge.o `sdl2-config --cflags`
-//   gcc myp_output.o sdl_bridge.o -o program `sdl2-config --libs`
+// 链接由 mypc 的通用桥接发现自动完成（无需改编译器）：程序引用 myp_sdl_* 未定义
+// 符号时自动编译+链接本文件（-lSDL2 来自同目录侧车 sdl_bridge.c.libs，编译标志
+// 来自 sdl_bridge.c.cflags）。本文件放在 <stdlib>/bridges/ 下，或经 MYP_BRIDGES
+// 环境指定目录。
 
 #include <SDL2/SDL.h>
 #include <string.h>
@@ -73,6 +74,10 @@ int myp_sdl_should_close(void) {
     }
     return 0;
 }
+
+// ---- Accessors（供 sdl_ttf_bridge.c 复用窗口/渲染器）----
+SDL_Renderer* myp_sdl_get_renderer(void) { return g_renderer; }
+SDL_Window*   myp_sdl_get_window(void)   { return g_window; }
 
 // ═══════════════════════════════════════════
 // 渲染

@@ -1,0 +1,28 @@
+// ttf.myp — MYP 标准库：SDL_ttf 中文/Unicode 文本渲染
+// ---------------------------------------------------------------------------
+// 依赖 sdl_bridge.c 创建的 SDL 窗口/渲染器（myp_sdl_get_renderer），用 Noto CJK
+// 等系统字体渲染 UTF-8 文本（含中文），替代 sdl_bridge.c 的 5×7 位图（仅 ASCII）。
+//
+// 链接由 mypc 的通用桥接发现自动完成（无需改编译器）：程序引用 myp_ttf_* 未定义
+// 符号 → stdlib/bridges/sdl_ttf_bridge.c 被选中（-lSDL2_ttf）→ 其依赖
+// myp_sdl_get_renderer → 固定点迭代自动拉入 sdl_bridge.c（-lSDL2）。
+
+ffi int  myp_ttf_init(int px);
+ffi int  myp_ttf_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
+ffi void myp_ttf_quit();
+
+class Ttf {
+    static:
+        // 初始化 SDL_ttf 并加载 CJK 字体（Noto CJK / wqy 等）。px 为字号，返回
+        // 0=成功, -1=失败（TTF_Init 或字体加载失败）。
+        int init(int px) {
+            return myp_ttf_init(px);
+        }
+        // 在 (x, y) 绘制 UTF-8 文本（含中文）。scale 放大倍数（1=原始字号）。
+        // 返回 0=成功, -1=失败（字体未就绪/渲染失败）。
+        int drawText(int x, int y, string text, int scale, int r, int g, int b, int a) {
+            return myp_ttf_draw_text(x, y, text, scale, r, g, b, a);
+        }
+        // 释放字体并退出 SDL_ttf。
+        void close() { myp_ttf_quit(); }
+}

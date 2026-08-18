@@ -291,8 +291,8 @@ add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
 # SDL2 可选：mypc 本体不依赖 SDL（不链接 myp_runtime，只链 LLVM+pthread）；
-# 生成程序只在 `import sdl` 且引用 myp_sdl_* 符号时按需编译链接 sdl_bridge.c
-# （src/main.cpp linkObjects 运行时 nm 检测）。此处只影响 myp_runtime 静态库
+# 生成程序通过通用桥接发现自动链接（src/main.cpp linkObjects：bridges 目录 +
+# nm 符号检测，新增 bridge 无需改编译器）。此处只影响 myp_runtime 静态库
 # （供测试/工具）是否编译 sdl_bridge.c —— 没装 SDL2 的环境也能构建 mypc 全工具链。
 pkg_check_modules(SDL2 QUIET sdl2)
 if(SDL2_FOUND)
@@ -313,7 +313,7 @@ set(MYP_RUNTIME_SRCS
     src/runtime/runtime_lib.c
 )
 if(SDL2_FOUND)
-    list(APPEND MYP_RUNTIME_SRCS src/runtime/sdl_bridge.c)
+    list(APPEND MYP_RUNTIME_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/bridges/sdl_bridge.c)
 endif()
 if(MYP_ENABLE_ROCM)
     list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)

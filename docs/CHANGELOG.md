@@ -27,6 +27,39 @@
 
 ## 编译器版本历史
 
+### v3.12.46 — 通用桥接发现（新增桥无需改编译器）+ SDL_ttf 中文渲染 + BUG-029/030
+
+**通用桥接发现（核心重构，`src/main.cpp` linkObjects）**：删除 per-bridge 硬编码
+（SDL / SDL_ttf 各一段），改为 **symbol 驱动的通用发现——新增 bridge 无需再改编译器**：
+
+- 候选桥接 = `bridges` 目录下的 `*.c`：默认 `<stdlib>/bridges`；可用 `MYP_BRIDGES`
+  环境变量追加目录（冒号分隔多个，如 `MYP_BRIDGES=/path/to/mos/bridges`）。
+- 程序 `.o` 的 `nm -u` 未定义符号与桥接 `nm --defined-only` 取交集，命中即自动
+  编译（`/tmp/myp_rt_cache` 缓存，按源码+标志哈希）+ 链接。
+- **固定点迭代处理依赖链**：桥接自身的未定义符号并入待解集合（如
+  `sdl_ttf_bridge.c` 依赖 `myp_sdl_get_renderer` → 自动拉入 `sdl_bridge.c`）。
+- 侧车文件（可选）：`<名>.c.cflags` 附加编译标志、`<名>.c.libs` 链接库
+  （如 `sdl_bridge.c.libs` = `-lSDL2`）。
+- 桥接文件自 `src/runtime/` 迁至 `stdlib/bridges/`（`sdl_bridge.c` /
+  `sdl_ttf_bridge.c` + 两个侧车）；父 `CMakeLists.txt` `myp_runtime` 路径同步。
+- 验证：纯控制台程序不链 SDL；`import sdl` 链 `-lSDL2`；`import ttf` 自动拉
+  `-lSDL2_ttf`+`-lSDL2`；`MYP_BRIDGES` 下新增测试桥（含 `-lm` 侧车）不改编译器
+  即自动编译链接运行。
+
+**SDL_ttf 中文渲染（M1 里程碑）**：新增 `stdlib/ttf.myp`（`Ttf` 静态类：
+`init(px)` / `drawText(x,y,text,scale,r,g,b,a)` / `close()`），经通用桥接自动链接
+`stdlib/bridges/sdl_ttf_bridge.c`（TTF_RenderUTF8_Blended + Noto CJK 等系统字体，
+抗锯齿中文，替代 5×7 位图仅 ASCII）。`sdl_bridge.c` 增加 `myp_sdl_get_renderer` /
+`myp_sdl_get_window` 访问器供复用。MOS 新增 `TtfLabel` 控件 + `apps/ttf_demo.myp`
+（headless 冒烟：init / drawText 返回 0）。
+
+**修复 BUG-029（类字段 → interface vtable 空指针崩溃）**：sema/codegen 按当前类
+属性表 + 表达式类型解析具体类名（含 `this` / 字段访问），自举 myp_self 镜像
+`upcastClsName`。**修复 BUG-030（constructor 内发 mapping 事件崩溃）**：构造函数
+入口先写 `class_instance_globals_` 实例指针，自举 `curFnIsCtor_` 标记。`SDL2` 在
+`CMakeLists.txt` 改为 `pkg_check_modules(... QUIET)` 可选（无 SDL2 环境仍可构建
+mypc 全工具链）。
+
 ### v3.12.45 — 接口分派去虚拟化（devirt）+ 自举 slice 边界检查补齐 + 新基准
 
 **去虚拟化（C++ mypc 与自举 myp_self 双端镜像）**：接口方法调用
