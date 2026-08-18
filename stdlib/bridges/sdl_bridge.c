@@ -333,18 +333,20 @@ void myp_sdl_draw_text(int x, int y, const char* text, int scale, int r, int g, 
 // 保存当前帧为 BMP（调试 / 冒烟测试可视化）
 // 返回 0=成功, -1=失败
 int myp_sdl_save_bmp(const char* path) {
-    if (!g_renderer || !g_window) return -1;
+    if (!g_renderer || !g_window) { fprintf(stderr, "save_bmp: no renderer/window\n"); return -1; }
     int w, h;
     SDL_GetWindowSize(g_window, &w, &h);
     SDL_Surface* s = SDL_CreateRGBSurface(
         0, w, h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
-    if (!s) return -1;
+    if (!s) { fprintf(stderr, "save_bmp: CreateRGBSurface: %s\n", SDL_GetError()); return -1; }
     if (SDL_RenderReadPixels(g_renderer, NULL, SDL_PIXELFORMAT_ARGB8888,
                              s->pixels, s->pitch) != 0) {
+        fprintf(stderr, "save_bmp: RenderReadPixels: %s\n", SDL_GetError());
         SDL_FreeSurface(s);
         return -1;
     }
     int ok = SDL_SaveBMP(s, path);
+    if (ok != 0) fprintf(stderr, "save_bmp: SaveBMP: %s\n", SDL_GetError());
     SDL_FreeSurface(s);
     return ok == 0 ? 0 : -1;
 }
