@@ -506,6 +506,51 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                         }
                     }
                 }
+                // (a2) 数组元素：`IFoo f = arr[i]`——元素具体类经
+                // array_elem_class_map_ 记录（局部变量数组声明时，含泛型
+                // mangling）；类属性数组（裸名 / this.field，如 `Button[] btns`
+                // 的 `btns[i]`）则从属性类型解析元素类。与 subscript 分派
+                // （codegen_expr.cpp）一致。
+                if (cls_name.empty() && d.init_expr->kind == ExprKind::Subscript) {
+                    auto& sub = static_cast<const SubscriptExpr&>(*d.init_expr);
+                    std::string arr_name;
+                    if (sub.array && sub.array->kind == ExprKind::Identifier) {
+                        arr_name = static_cast<const IdentifierExpr&>(*sub.array).name;
+                    } else if (sub.array && sub.array->kind == ExprKind::MemberAccess) {
+                        auto& ma = static_cast<const MemberAccessExpr&>(*sub.array);
+                        if (ma.object && ma.object->kind == ExprKind::ThisExpr)
+                            arr_name = ma.member_name;
+                    }
+                    if (!arr_name.empty()) {
+                        // 局部变量数组：array_elem_class_map_（含泛型 mangling）
+                        auto eit = array_elem_class_map_.find(arr_name);
+                        if (eit != array_elem_class_map_.end()) {
+                            std::string cn = eit->second;
+                            if (getClassStruct(cn)) cls_name = cn;
+                        }
+                        // 类属性数组：从属性类型解析元素类
+                        if (cls_name.empty() && !current_class_name_.empty() &&
+                            current_tu_) {
+                            for (auto& cls : current_tu_->classes) {
+                                if (cls.name != current_class_name_) continue;
+                                for (auto& p : cls.properties) {
+                                    if (p.name != arr_name || !p.type.isArray() ||
+                                        !p.type.element_type ||
+                                        p.type.element_type->class_name.empty())
+                                        continue;
+                                    std::string cn = p.type.element_type->class_name;
+                                    if (!p.type.element_type->type_args.empty()) {
+                                        for (auto& ta : p.type.element_type->type_args)
+                                            cn += "_" + mangleConcreteTypeNode(ta);
+                                        cn += "_inst";
+                                    }
+                                    if (getClassStruct(cn)) { cls_name = cn; break; }
+                                }
+                                if (!cls_name.empty()) break;
+                            }
+                        }
+                    }
+                }
                 // (b) 表达式类型兜底（其他实例字段等）
                 if (cls_name.empty() && d.init_expr->type &&
                     !d.init_expr->type->class_name.empty()) {

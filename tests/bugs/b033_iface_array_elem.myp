@@ -1,0 +1,67 @@
+// BUG-033 复现：接口数组元素/类属性数组元素 → interface → 坏胖指针（vtable 丢失）
+// ---------------------------------------------------------------------------
+// 修复前：`View v = arr[i]`（arr 为类属性数组，如 `Button[] btns`）编译通过，但
+//         接口分派读 null vtable → 段错误 139（RootView.onTouch 遍历 children 时
+//         `call *0x8(vtable)` 崩）。BUG-029 只覆盖了字段（Identifier/this.field）
+//         与局部变量数组（array_elem_class_map_）；类属性数组元素（`btns[i]`，
+//         SubscriptExpr）走 else 分支只存 data、vtable 槽零初始化。
+// 修复后：接口变量分支 (a2) 加 SubscriptExpr——局部变量数组查 array_elem_class_map_，
+//         类属性数组从属性类型解析元素类（含泛型 mangling）→ 构建 vtable 分派正常。
+// 根因/修复见 tests/BUGLIST.md BUG-033。本文件同时是修复后的回归（tests/bugs/ 预期全绿）。
+import test;
+import env;
+import fmt;
+
+interface Shape {
+    int area();
+}
+
+class Circle {
+    interface class Shape;
+    action:
+        @constructor Circle() {}
+        int area() { return 7; }
+}
+
+class Holder {
+    property:
+        Circle[] circles;   // 类属性数组
+        int n_;
+    action:
+        @constructor Holder() {
+            circles = new Circle[4];
+            n_ = 0;
+            Circle c0 = new Circle();
+            Circle c1 = new Circle();
+            circles[n_] = c0; n_ = n_ + 1;
+            circles[n_] = c1; n_ = n_ + 1;
+        }
+        // 类属性数组元素 → interface（BUG-033 原始触发）
+        int drive(int i) {
+            Shape s = circles[i];
+            return s.area();
+        }
+}
+
+// 局部变量数组元素 → interface（对照：BUG-029 后局部数组本就该正常）
+class LocalArr {
+    action:
+        int drive() {
+            Circle[] arr = new Circle[2];
+            Circle a = new Circle();
+            Circle b = new Circle();
+            arr[0] = a;
+            arr[1] = b;
+            Shape s = arr[1];
+            return s.area();
+        }
+}
+
+@test void t_prop_arr_elem_to_iface() {
+    Holder h = new Holder();
+    Test.assertEq(h.drive(0), 7, "class-property array elem → interface");
+    Test.assertEq(h.drive(1), 7, "class-property array elem[1] → interface");
+    LocalArr la = new LocalArr();
+    Test.assertEq(la.drive(), 7, "local array elem → interface");
+    Test.report("t_prop_arr_elem_to_iface", true);
+}

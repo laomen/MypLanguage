@@ -37,8 +37,7 @@
 | BUG-029 | � | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
 | BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
 | BUG-031 | 🟩 | 跨线程多 @thread 目标事件无限重投（mapping handler 注册 instance=NULL → routed 副本在目标线程跑**所有**同 event 的 NULL-instance handler → 互相 route 乒乓） | 回归 `tests/bugs/cross_thread_multi_target.myp`（A/B 各收 1 次，2 断言） |
-| BUG-032 | � | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） |
-| BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
+| BUG-032 | � | `this` 作为值（实参/赋值/返回，如 `Holder.set(this)`）被传 alloca **地址**而非实例值——`set` 把 &栈槽 存进属性，`get()` 当实例读 → 字段错位（49152 / this=0x100000000 → strcmp 段错误）；无 event 类时栈布局碰巧 0 未暴露，含 event 类必现 | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0，已绿）；C++ `generateThisExpr` 修复（load this 值）+ selfhost 本就正确（loadThis 已 load） || BUG-033 | 🟩 | **数组元素 → interface**（`View v = arr[i]`，arr 为**类属性数组**）→ 坏胖指针（vtable 丢失）→ RootView.onTouch 遍历 `call *0x8(vtable)` 段错误 139（BUG-029 只覆盖字段+局部变量数组，类属性数组元素 SubscriptExpr 走 else 分支只存 data） | 回归 `tests/bugs/b033_iface_array_elem.myp`（类属性数组元素 + 局部数组元素，3 断言，双编译器） || BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
@@ -879,3 +878,40 @@
   用途（实参/赋值/返回），generateThisExpr 必须返回**值**；地址用途由
   generateMemberAccess 等经 getNamedValue 直取。
 
+---
+
+## BUG-033（已修复 ✅）：数组元素 → interface → 坏胖指针（vtable 丢失）
+
+- **状态**：🟩 已修复（2026-08-18 发现+修复；MOS 桌面壳 launcher_demo 暴露）
+- **复现**：`tests/bugs/b033_iface_array_elem.myp`（@test 断言，3 断言：类属性
+  数组元素 0/1 + 局部数组元素；双编译器 mypc + myp_self）。修复前 RED
+  （Segmentation fault 139），修复后 GREEN。
+- **现象**：`View v = arr[i]`（`arr` 为**类属性数组**，如 `Button[] appBtns`
+  的 `appBtns[i]`）编译通过，但运行时接口分派读 null vtable → 段错误 139。
+  MOS 桌面壳 `launcher_demo` 里 `View vb = appBtns[i]; root.add(vb)` 后
+  `root.onTouch` 遍历 children 调 `child.hit()` → `call *0x8(vtable)` 崩
+  （gdb：`rbp=0x0`，第 9 个 child 的 vtable 槽零）。局部变量数组
+  `Circle[] arr` 的 `arr[i]` 正常。
+- **根因**：BUG-029 只修了接口变量分支的类名解析——(a) `Identifier`（局部
+  var_class_map_）+ (a) `MemberAccess`（this.field）+ 局部变量数组
+  （array_elem_class_map_）。**类属性数组元素**（`appBtns[i]`，SubscriptExpr
+  的 array 是类属性名）不在覆盖内 → `cls_name` 空 → else 分支只
+  `CreateStore(inst, data)`、vtable 槽零初始化 → 坏胖指针。
+- **修复**：
+  - C++ `src/codegen/codegen_stmt.cpp` 接口变量分支兜底加 (a2) `SubscriptExpr`：
+    数组名 → ①局部变量数组查 `array_elem_class_map_`（含泛型 mangling），
+    ②**类属性数组**从当前类属性表解析 `p.type.element_type` 类名（含泛型
+    mangling，`Box<int>[]` → `Box_int_inst`）。解析成功即构建 vtable
+    （IR 复核：`store ptr @__myp_vtable_View_Button`）。
+  - selfhost `tools/selfhost/src/codegen.myp` 镜像：`upcastClsName` 加
+    `Subscript` 分支——数组名（Identifier / this.Member）→ 局部变量
+    `varAstType` element / 类属性 `propAstType` element → `classInstName`
+    （含泛型 mangling）。
+- **验证**：b033 GREEN（mypc + myp_self）；单文件/多文件最小复现 O0+O2 均
+  `onApp hit=1`；父仓库 311/311；run_bugs.sh 8/8（+b033 后 9 项预期）；
+  test_myp_self 94/94；MOS launcher_demo 重建后逻辑全通（`launch app=Notes
+  idx=0` / `settings theme=1`）。
+- **教训**：接口 fat pointer 的类名解析覆盖了 new / 局部变量 / 字段 / 局部数组
+  / 关联类型，但**类属性数组元素**（SubscriptExpr + 属性名）是 BUG-029 家族
+  的又一条路径——凡是 `View v = <表达式>` 需具体类名的，都要按表达式形态完整
+  解析（new / Identifier / MemberAccess / Subscript 的局部与属性两种数组）。

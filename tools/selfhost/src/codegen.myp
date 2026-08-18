@@ -549,6 +549,51 @@ class CodeGen {
                     }
                 }
             }
+            // BUG-033：数组元素 → interface（`View v = arr[i]`）。元素类从局部
+            // 变量数组类型（localAstTypes_）或类属性数组类型（propAstType）解析，
+            // 含泛型 mangling。与 C++ 接口变量分支 (a2) 一致。
+            if (e.kind() == "Subscript") {
+                AstExpr arr = e.array();
+                string arrName = "";
+                if (arr != null && arr.kind() == "Identifier") {
+                    arrName = arr.name();
+                } else if (arr != null && arr.kind() == "Member") {
+                    AstExpr sobj = arr.array();
+                    if (sobj != null && sobj.kind() == "This") arrName = arr.memberName();
+                }
+                if (Str.len(arrName) != 0) {
+                    // 局部变量数组：varAstType → element 类
+                    AstType lat = varAstType(arrName);
+                    if (lat != null) {
+                        AstType lrt = resolveType(lat);
+                        if (lrt != null && lrt.element() != null) {
+                            AstType let = resolveType(lrt.element());
+                            if (let != null && Str.len(let.className()) != 0
+                                && isInterfaceName(let.className()) == 0
+                                && isStructName(let.className()) == 0
+                                && isEnumName(let.className()) == 0) {
+                                return classInstName(let);
+                            }
+                        }
+                    }
+                    // 类属性数组：propAstType → element 类
+                    if (Str.len(curClass_) != 0 && tu_ != null) {
+                        AstType pvt = propAstType(curClass_, arrName);
+                        if (pvt != null) {
+                            AstType prt = resolveType(pvt);
+                            if (prt != null && prt.element() != null) {
+                                AstType pet = resolveType(prt.element());
+                                if (pet != null && Str.len(pet.className()) != 0
+                                    && isInterfaceName(pet.className()) == 0
+                                    && isStructName(pet.className()) == 0
+                                    && isEnumName(pet.className()) == 0) {
+                                    return classInstName(pet);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             return "";
         }
 
