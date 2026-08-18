@@ -24,7 +24,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Automatic Memory Mgmt** | ARC for class instances (automatic reference counting, additive, no new syntax) |
 | **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
-| **Zero-Dependency Stdlib** | 39 modules, pure MYP implementations |
+| **Zero-Dependency Stdlib** | 40 modules, pure MYP implementations |
 | **LSP Integration** | Completion, hover, go-to-definition, document symbols |
 
 ## 🚀 Quick Start
@@ -40,19 +40,23 @@ make -j$(nproc)
 
 ### Hello World
 
+In MYP's event-driven model, output logic lives in a component's `action:` (and `main`
+only does wiring) — the simplest form is `@startup` + `mypc run` (no hand-written `main`):
+
 ```myp
 // hello.myp
 import env;
 
-int main() {
-    Console.writeLine("Hello, MYP!");
-    return 0;
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello, MYP!");
+        }
 }
 ```
 
 ```bash
-./build/mypc hello.myp
-./hello.out
+./build/mypc run hello.myp
 # Output: Hello, MYP!
 ```
 
@@ -80,7 +84,7 @@ int main() {
     Display display = new Display();
 
     mapping() {
-        sensor.valueRead -> display.show;  // declarative wiring
+        Sensor.valueRead -> Display.show;  // declarative wiring (nodes use class names)
     }
     return 0;
 }
@@ -134,7 +138,7 @@ int main() { Main m = new Main() @thread; return 0; }
 
 See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/design.md) for full details.
 
-## 📦 Standard Library (39 Modules)
+## 📦 Standard Library (40 Modules)
 
 | Category | Modules |
 |----------|---------|
@@ -162,6 +166,9 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 | `myp_lsp` | Language server (LSP) |
 | `myp_fmt` | Code formatter |
 | `myp_fmt2` / `myp_viz2` | Self-hosted formatter / visualizer (in MYP, byte-identical to C++ versions) |
+| `myp_debug` | Debug adapter (DAP ↔ gdb bridge, VS Code breakpoints/stepping) |
+| `myp_self` / `myp_self2` | Self-hosted compiler (mypc written in MYP, incl. GPU NVPTX emission, two-stage bootstrap) |
+| `tools/codegen` | Schema-driven code generation framework (serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops) |
 
 ### VS Code Extension
 
@@ -170,10 +177,10 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 ## 🧪 Testing
 
 ```bash
-bash tests/run_tests.sh          # full regression (compile+run compare + negative + self-hosted)
-# Regression tests: 127 passed, 0 failed
-# Negative tests:   47 passed, 0 failed
-# Total:            181 passed, 0 failed
+bash tests/run_tests.sh          # full regression (compile+run compare + negative + test-framework + self-hosted + LSP)
+# Regression tests: 110 passed, 0 failed
+# Negative tests:   74 passed, 0 failed
+# Total:            292 passed, 0 failed
 bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
 ```
 
@@ -191,7 +198,7 @@ MYPLanguage/
 │   └── fmt/          # Formatter
 ├── include/mylang/   # Headers
 ├── stdlib/           # Standard library (.myp)
-├── tools/            # Self-hosted toolchain (pm / fmt / viz, in MYP)
+├── tools/            # Self-hosted toolchain (pm / fmt / viz / selfhost self-hosted compiler / codegen, in MYP)
 ├── logo/             # Language logo
 ├── BNCTDoseEngine/   # BNCT dose simulation engine (example)
 ├── vscode-myp/       # VS Code extension

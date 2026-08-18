@@ -27,6 +27,19 @@
 
 ## 编译器版本历史
 
+### v3.12.29 — README.md / README_EN.md 更新对齐当前状态
+- **Hello World**：旧的 `int main(){ Console.writeLine(...) }`（现已编译报错）→
+  `@startup` + `mypc run` 写法（无需手写 main）。
+- **组件与映射**：mapping 节点实例名 → 类名（`Sensor.valueRead -> Display.show`）。
+- **标准库**：39 → 40 模块（实测顶层可导入 40 个）。
+- **工具链表**：补 `myp_debug`（DAP 调试适配器）、`myp_self`/`myp_self2`（自举编译器，
+  含 GPU NVPTX 发射、两级自举成立）、`tools/codegen`（schema 驱动代码生成框架）。
+- **测试**：181 → 292 通过 / 0 失败（回归 110 / 负 74 / 测试框架 100 / 自举/LSP 等，
+  实测当前汇总）。
+- **项目结构**：tools/ 行补 selfhost（自举编译器）与 codegen。
+- 中英文两份同步；纯文档，无代码变更。
+
+
 ### v3.12.28 — manual_en.md 内容全面对齐中文版（逐章修正过时/错误表述）
 - **§1 Hello World**：旧的 `int main(){ Console.writeLine(...) }`（现已编译报错）→
   三种等价写法（@startup+mypc run / @constructor / @thread）+ main 接线规则注记。

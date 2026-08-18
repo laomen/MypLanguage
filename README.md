@@ -24,7 +24,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **自动内存管理** | class 实例 ARC（自动引用计数，additive 无新语法） |
 | **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道 |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
-| **零依赖标准库** | 39 个模块，纯 MYP 实现 |
+| **零依赖标准库** | 40 个模块，纯 MYP 实现 |
 | **LSP 集成** | 补全、悬停、跳转定义、文档符号 |
 
 ## 🚀 快速开始
@@ -40,19 +40,23 @@ make -j$(nproc)
 
 ### Hello World
 
+MYP 事件驱动模型里，输出逻辑放在组件的 `action` 中（`main` 只做接线）——最简单的写法
+是 `@startup` + `mypc run`（无需手写 `main`）：
+
 ```myp
 // hello.myp
 import env;
 
-int main() {
-    Console.writeLine("Hello, MYP!");
-    return 0;
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello, MYP!");
+        }
 }
 ```
 
 ```bash
-./build/mypc hello.myp
-./hello.out
+./build/mypc run hello.myp
 # 输出: Hello, MYP!
 ```
 
@@ -80,7 +84,7 @@ int main() {
     Display display = new Display();
 
     mapping() {
-        sensor.valueRead -> display.show;  // 声明式接线
+        Sensor.valueRead -> Display.show;  // 声明式接线（节点用类名）
     }
     return 0;
 }
@@ -134,7 +138,7 @@ int main() { Main m = new Main() @thread; return 0; }
 
 详细语法见 [编程手册](docs/manual.md) 和 [设计文档](docs/design.md)。
 
-## 📦 标准库（39 模块）
+## 📦 标准库（40 模块）
 
 | 类别 | 模块 |
 |------|------|
@@ -162,6 +166,9 @@ int main() { Main m = new Main() @thread; return 0; }
 | `myp_lsp` | 语言服务器（LSP） |
 | `myp_fmt` | 代码格式化 |
 | `myp_fmt2` / `myp_viz2` | 自举版格式化器 / 可视化器（MYP 实现，与 C++ 版字节级对拍） |
+| `myp_debug` | 调试适配器（DAP ↔ gdb 桥，VS Code 断点/单步） |
+| `myp_self` / `myp_self2` | 自举编译器（MYP 写的 mypc，含 GPU NVPTX 发射，两级自举成立） |
+| `tools/codegen` | schema 驱动代码生成框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops） |
 
 ### VS Code 扩展
 
@@ -170,10 +177,10 @@ int main() { Main m = new Main() @thread; return 0; }
 ## 🧪 测试
 
 ```bash
-bash tests/run_tests.sh          # 全量回归（编译+运行比对 + 负测试 + 自举）
-# 回归测试: 127 通过, 0 失败
-# 负测试:   47 通过, 0 失败
-# 总计:     181 通过, 0 失败
+bash tests/run_tests.sh          # 全量回归（编译+运行比对 + 负测试 + 测试框架 + 自举 + LSP）
+# 回归测试: 110 通过, 0 失败
+# 负测试:   74 通过, 0 失败
+# 总计:     292 通过, 0 失败
 bash tests/run_tests_asan.sh     # ASAN（AddressSanitizer）回归
 ```
 
@@ -191,7 +198,7 @@ MYPLanguage/
 │   └── fmt/          # 格式化
 ├── include/mylang/   # 头文件
 ├── stdlib/           # 标准库 (.myp)
-├── tools/            # 自举工具链 (pm / fmt / viz，MYP 实现)
+├── tools/            # 自举工具链 (pm / fmt / viz / selfhost 自举编译器 / codegen 代码生成，MYP 实现)
 ├── logo/             # 语言 Logo
 ├── BNCTDoseEngine/   # BNCT 剂量模拟引擎 (示例)
 ├── vscode-myp/       # VS Code 扩展
