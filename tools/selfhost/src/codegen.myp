@@ -2567,7 +2567,22 @@ class CodeGen {
                 regCalls.append("  store ptr " + lin + ", ptr @" + gname + "\n");
             }
 
-            regCalls.append("  call void @myp_event_register(i32 " + eid + ", ptr null, ptr @" + hname + ")\n");
+            // BUG-031 镜像 C++：单目标普通目标注册 instance=目标实例全局地址
+            // &__myp_inst_X（非 NULL）——注册发生在 __myp_init（早于实例 new），
+            // runtime 在 dispatch 时解引用得实例按线程归属路由，跨线程多目标
+            // （多 @thread 目标）不再互相 route 乒乓。lambda/transformer/函数目标
+            // 或无实例全局时回落 null（原行为）。
+            string regInst = "ptr null";
+            if (nds.size() == 2) {
+                AstMappingNode t0 = nds.get(1);
+                if (t0.isLambda() == 0 && t0.isTransformer() == 0 && t0.isFunction() == 0) {
+                    string tcls = t0.src();
+                    if (hasInstanceGlobal(tcls) != 0) {
+                        regInst = "ptr @__myp_inst_" + tcls;
+                    }
+                }
+            }
+            regCalls.append("  call void @myp_event_register(i32 " + eid + ", " + regInst + ", ptr @" + hname + ")\n");
         }
 
         // 顶层 mapping：handler 写 mappingHandlers_，注册写 mappingInitCalls_。

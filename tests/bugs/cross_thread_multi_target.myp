@@ -1,0 +1,75 @@
+// BUG-031: 跨线程多 @thread 目标事件无限重投
+// ---------------------------------------------------------------------------
+// mapping 把同一事件路由到多个 @thread 目标（AppA/AppB 各在独立线程）时，
+// 事件被无限重复投递（各目标收到 5 万+ 次），正常应各收到 1 次。
+//
+// 根因：handler 注册 instance=NULL，dispatch 无法区分事件副本归属——routed
+// 副本在目标线程 dispatch 时所有同 event 的 NULL-instance handler 都跑，每个
+// 又把其他目标 route 回去 → 无限乒乓（A 线程跑 B handler → route 回 B；B 线程
+// 跑 A handler → route 回 A）。
+//
+// 修复：mapping handler 注册 instance=目标实例全局地址 &__myp_inst_X（注册在
+// __myp_init，早于实例 new，故传地址而非值），runtime dispatch 解引用得实例
+// 按线程归属路由——routed 副本只跑归属本线程的 handler，各目标只收一次。
+//
+// 断言：A/B 各收 1 次（修复前各 5 万+ 次 → 断言失败）。
+import test;
+import env;
+import time;
+
+@static class Log {
+    property:
+        int aCount;
+        int bCount;
+        int aDone;
+        int bDone;
+    static:
+        void init() { Log.aCount = 0; Log.bCount = 0; Log.aDone = 0; Log.bDone = 0; }
+        void incA() { Log.aCount = Log.aCount + 1; Log.aDone = 1; }
+        void incB() { Log.bCount = Log.bCount + 1; Log.bDone = 1; }
+        int getA() { return Log.aCount; }
+        int getB() { return Log.bCount; }
+        int aFinished() { return Log.aDone; }
+        int bFinished() { return Log.bDone; }
+}
+
+// 事件源：@thread，startup 触发 Life(7)
+class Svc {
+    action:
+        @startup void run() { Life(7); }
+    event:
+        Life(int v);
+}
+
+// 两个 @thread 目标：各在独立线程
+class AppA {
+    action: void onLife(int v) { Log.incA(); }
+}
+
+class AppB {
+    action: void onLife(int v) { Log.incB(); }
+}
+
+mapping() {
+    Svc.Life -> AppA.onLife;
+    Svc.Life -> AppB.onLife;
+}
+
+@test void test_b31_cross_thread_multi_target() {
+    Log.init();
+    // 先建目标（线程关联就绪），再建 Svc（@startup 触发事件）
+    AppA a = new AppA() @thread;
+    AppB b = new AppB() @thread;
+    Svc s = new Svc() @thread;
+
+    int wait = 0;
+    while (wait < 300 && (Log.aFinished() == 0 || Log.bFinished() == 0)) {
+        Time.sleep(10);
+        wait = wait + 1;
+    }
+    // 给潜在的乒乓重投留时间——修复后各 1 次；修复前 5 万+ 次
+    Time.sleep(100);
+
+    Test.assert(Log.getA() == 1, "b31 A receives exactly once");
+    Test.assert(Log.getB() == 1, "b31 B receives exactly once");
+}

@@ -3296,6 +3296,14 @@ void myp_event_register(int event_id, void* instance, myp_handler_fn handler) {
     myp_handler_count++;
 }
 
+// BUG-031：handler 注册的 instance 若为「目标实例全局地址」(&__myp_inst_X，由
+// codegen 在注册时传入，而非实例值——注册发生在 __myp_init，早于实例 new)，
+// 则运行时解引用得真实实例再查线程归属。NULL 表示无实例归属（lambda/复杂链）。
+static void* myp_handler_target(myp_handler_entry_t* h) {
+    if (!h->instance) return NULL;
+    return *(void**)h->instance;
+}
+
 // Scope-based handler management for mapping() @scope
 #define MYP_SCOPE_STACK_DEPTH 64
 static int myp_scope_stack[MYP_SCOPE_STACK_DEPTH];
@@ -3389,7 +3397,7 @@ static void myp_event_dispatch(myp_event_t* ev) {
         for (int i = 0; i < myp_handler_count; i++) {
             if (!myp_handlers[i].registered ||
                 myp_handlers[i].event_id != ev->event_id) continue;
-            myp_thread_t* hthr = myp_thread_for_instance(myp_handlers[i].instance);
+            myp_thread_t* hthr = myp_thread_for_instance(myp_handler_target(&myp_handlers[i]));
             if (!hthr || hthr == cur) continue;   // 本线程 handler，第二遍直接跑
             int dup = 0;
             for (int t = 0; t < myp_cross_thread_route_count; t++) {
@@ -3405,7 +3413,7 @@ static void myp_event_dispatch(myp_event_t* ev) {
     for (int i = 0; i < myp_handler_count; i++) {
         if (!myp_handlers[i].registered ||
             myp_handlers[i].event_id != ev->event_id) continue;
-        myp_thread_t* hthr = myp_thread_for_instance(myp_handlers[i].instance);
+        myp_thread_t* hthr = myp_thread_for_instance(myp_handler_target(&myp_handlers[i]));
         if (hthr && hthr != cur) continue;   // 已路由，勿在本线程跑
         myp_handlers[i].handler(myp_handlers[i].instance, ev->data);
     }

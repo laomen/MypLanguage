@@ -2059,9 +2059,31 @@ void CodeGen::generateMappingDecl(const MappingDecl& decl, llvm::BasicBlock* ins
         if (insert_bb) builder_.SetInsertPoint(insert_bb);
         else if (saved_bb) builder_.SetInsertPoint(saved_bb);
 
+        // BUG-031：handler 注册 instance=目标实例全局地址 &__myp_inst_X（非 NULL、
+        // 非值）——注册发生在 __myp_init（早于实例 new），值不可行；传地址后 runtime
+        // 在 dispatch 时解引用得实例，按线程归属路由副本，routed 副本只跑归属本线程
+        // 的 handler，跨线程多目标不再互相 route 乒乓。lambda/transformer 复杂链或无
+        // 类级全局实例时回落 NULL（保持原行为）。
+        llvm::Value* reg_inst = llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0));
+        if (chain.nodes.size() == 2 && !chain.nodes[1].is_lambda && !chain.nodes[1].is_transformer) {
+            auto& tgt = chain.nodes[1];
+            std::string tgt_class = tgt.source_name;
+            if (!tgt.is_function) {
+                auto vcit = var_class_map_.find(tgt.source_name);
+                if (vcit != var_class_map_.end()) tgt_class = vcit->second;
+            }
+            // 与 handler 内实例解析同一来源：class_instance_globals_（变量名→类级
+            // 实例全局）。getGlobalVariable 按名查在 codegen 顺序上不可靠（@thread
+            // 实例全局可能晚于 mapping 注册生成）。
+            auto git = class_instance_globals_.find(tgt.source_name);
+            if (git == class_instance_globals_.end())
+                git = class_instance_globals_.find(tgt_class);
+            if (git != class_instance_globals_.end())
+                reg_inst = git->second;
+        }
         builder_.CreateCall(runtime_event_register_, {
             llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), event_id),
-            llvm::ConstantPointerNull::get(llvm::PointerType::get(ctx_, 0)),
+            reg_inst,
             builder_.CreateBitCast(handler, llvm::PointerType::get(ctx_, 0))
         });
 

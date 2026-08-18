@@ -36,6 +36,7 @@
 | BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
 | BUG-029 | � | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
 | BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
+| BUG-031 | 🟩 | 跨线程多 @thread 目标事件无限重投（mapping handler 注册 instance=NULL → routed 副本在目标线程跑**所有**同 event 的 NULL-instance handler → 互相 route 乒乓） | 回归 `tests/bugs/cross_thread_multi_target.myp`（A/B 各收 1 次，2 断言） |
 | BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
@@ -809,27 +810,34 @@
 
 ---
 
-## BUG-031（未修复 ⚠️）：跨线程多 @thread 目标事件无限重投
+## BUG-031（已修复 ✅）：跨线程多 @thread 目标事件无限重投
 
-- **状态**：🔴 未修复（2026-08-18 发现，应用壳阶段 3 触发）
-- **复现**：`tests/known_bugs/cross_thread_multi_target.myp`（不接 run_bugs.sh，
-  因未修复会 RED 破坏门禁）。运行：`mypc ... -o /tmp/x && timeout 3 /tmp/x` →
-  `A recv 7` / `B recv 7` 各 5 万+ 次（正常应各 1 次）。
+- **状态**：🟩 已修复（2026-08-18 发现，应用壳阶段 3 触发；同日修复）
+- **复现**：`tests/bugs/cross_thread_multi_target.myp`（@test 断言：A/B 各收 1 次，
+  修复前各 5 万+ 次 → 断言失败；已接入 `tests/bugs/run_bugs.sh` 门禁）。
 - **现象**：mapping 把同一事件路由到**多个 @thread 目标**（`Svc.Life ->
-  AppA.onLife, AppB.onLife`，AppA/AppB 各 @thread）时，事件被无限重复投递。
-  对照组：
+  AppA.onLife; Svc.Life -> AppB.onLife`，AppA/AppB 各 @thread）时，事件被无限
+  重复投递。对照组：
   - 非 @thread 多目标（同线程）：各收 1 次 ✅
   - 单 @thread 目标：正常 ✅（chain_demo logd→notify）
   - 同类多 @thread 实例 + 单 mapping：只派发到其中一个实例（非广播，但不重复）
-- **根因线索**（TRACE_ENABLED 诊断）：
-  - fire 各 1 次（`[TRACE] event_fire(id=0/1)` 各 1），但 `dispatch(id=0)`（Cmd）
-    被反复执行（thr=2/3 各 1.8 万次），`onC` handler 只执行 1 次——dispatch 空转。
-  - 全部 route 是 `route(instance)`（8.7 万次）→ `myp_event_route_to_instance`
-    被反复调用（mapping handler 生成代码 BUG-005 的跨线程路由检查触发）。
-  - Cmd（id=0）被 route 到 thr=2 和 thr=3 两个线程——疑似多目标 @thread 时
-    handler 注册/事件 id 归属错乱（`src/codegen/codegen_class.cpp` 多目标 handler
-    注册 + `myp_event_dispatch` 的 hthr 归属判断）。
-- **影响**：MYP 跨线程事件广播（1 事件 → 多 @thread 目标）不可用；影响
-  AppManager 向多个 @thread 应用广播 Lifecycle 等。
-- **规避**：广播目标用非 @thread 实例（同线程同步派发，多目标正常）；或单
-  @thread 目标。MOS 应用壳据此用非 @thread 应用接收广播。
+- **根因**（TRACE_ENABLED 诊断确认）：handler 注册 `instance=NULL` →
+  `myp_event_dispatch` 第一遍按 handler 归属 route 副本（routed=1）后，第二遍
+  跑**所有**同 event 的 NULL-instance handler（无归属 → 当前线程跑）——副本在
+  目标线程 dispatch 时把**其他目标**的 handler 也跑了，每个 handler 内部
+  BUG-005 的 `myp_thread_is_current(inst)==0 → myp_event_route_to_instance`
+  检查又把事件 route 回其他目标线程 → 无限乒乓（route(instance) 8.7 万+ 次）。
+- **修复**：
+  1. `src/codegen/codegen_class.cpp`：mapping handler 注册 `instance` 从 NULL 改
+     为**目标实例全局地址** `&__myp_inst_X`（传地址非值——注册发生在
+     `__myp_init`，早于实例 new）。仅单目标普通目标链生效，lambda/transformer/
+     函数目标或无类级实例全局回落 NULL（原行为）。
+  2. `src/runtime/runtime.c`：`myp_event_dispatch` 用 `myp_handler_target()`
+     （若注册 instance 为全局地址则解引用得实例）按线程归属路由——routed
+     副本只跑归属本线程的 handler，跨线程多目标各收 1 次。
+  3. `tools/selfhost/src/codegen.myp`：镜像注册 instance 逻辑（`regInst`）。
+- **验证**：`tests/bugs/run_bugs.sh` 7/7 全绿（含新 `cross_thread_multi_target`）；
+  全量回归 311 通过 / 0 失败；selfhost `test_myp_self.sh` 94/94 + bootstrap 16/16
+  （不动点 myp_self2 == myp_self3 字节相同）。
+- **影响解除**：MYP 跨线程事件广播（1 事件 → 多 @thread 目标）可用；MOS 应用壳
+  （`app_lifecycle_demo`）不再需要非 @thread 广播规避（可改用 @thread 应用）。
