@@ -40,12 +40,12 @@ class InferOpsGen {
         void emitCpuKernel(Emitter e, OpsOp o) {
             string pd = "";
             if (o.paramCount() > 0) pd = ", " + paramsDecl(o, ", ");
-            e.block("void " + o.name + "(float[] arena, int inOff, int outOff, int n" + pd + ")");
+            e.block("void " + o.getName() + "(float[] arena, int inOff, int outOff, int n" + pd + ")");
             e.line("int i = 0;");
             e.line("while (i < n) {");
             e.push();
             e.line("int ix = i;");
-            e.line(o.body);
+            e.line(o.getBody());
             e.line("i = i + 1;");
             e.pop();
             e.line("}");
@@ -55,10 +55,10 @@ class InferOpsGen {
 
         // GPU 内核：@gpu for 每线程一个元素（缓冲区名 a，resident）
         void emitGpuKernel(Emitter e, OpsOp o) {
-            string gbody = Str.replaceAll(o.body, "arena", "a");
+            string gbody = Str.replaceAll(o.getBody(), "arena", "a");
             string pd = "";
             if (o.paramCount() > 0) pd = ", " + paramsDecl(o, ", ");
-            e.block("void " + o.name + "(float[] a, int work, int inOff, int outOff" + pd + ", long dev)");
+            e.block("void " + o.getName() + "(float[] a, int work, int inOff, int outOff" + pd + ", long dev)");
             e.line("@gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {");
             e.push();
             e.line("if (p < work) {");

@@ -3132,6 +3132,55 @@ MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`too
   重建全部工具链、不调 mypc）。
 - 详见 `docs/self_hosting.md` 与 `tools/selfhost/{README,design,roadmap,format}.md`。
 
+### 代码生成工具（tools/codegen）
+
+`schema` 驱动的**代码生成框架**（纯 MYP，对标 PyTorch torchgen / gRPC IDL）：声明式
+schema（JSON）→ 自动生成 MYP/C 源码，替代手写序列化/桥接/样板代码（MYP 无运行时
+反射，代码生成是系统性的"反射替代"）。设计见 `tools/codegen/design.md`。
+
+```bash
+# CLI：mypc run tools/codegen/main.myp <生成器> <schema.json> [-o outdir] [--verify]
+./build/mypc run tools/codegen/main.myp serde player.schema.json -o gen/
+./build/mypc run tools/codegen/main.myp ffi c_api.schema.json -o gen/ --verify
+```
+
+**内置生成器**（schema 文件 + 产物均 round-trip 验证）：
+
+| 生成器 | schema | 产出 |
+|---|---|---|
+| `serde` | types | 每类的 `toJson()/fromJson()`（MYP）|
+| `ffi` | ffi 函数签名 / resources | `ffi` 声明 + C 桥 + 资源 RAII 包装类 |
+| `autodiff` | exprs 表达式 | 前向 + 梯度函数（数值梯度与有限差分一致）|
+| `idl` | 服务/方法 | client/server stub + JSON-RPC 编解码（配 net/json）|
+| `orm` | tables | 实体 struct + CRUD SQL |
+| `embed` | 文件路径 | 文件 → 字符串常量（字节级 round-trip）|
+| `dsl` | 运算符表 | 词法 + 优先级爬升解析 + 求值引擎 |
+| `infer_ops` | ops | CPU/GPU 双份逐元素内核 |
+
+**流程**：JSON schema → `schema.myp` 解析 → `model.myp` 模型（类型化）→ `emit.myp`
+发射器（缩进/转义/多目标语言）→ 写源文件；`--verify` 生成后调 `mypc --emit-llvm`
+校验产物可编译且 IR 合法。
+
+```json
+// player.schema.json（schema 片段）
+{
+  "types": [
+    { "name": "Vec2", "kind": "struct",
+      "fields": [ {"name": "x", "type": "double"}, {"name": "y", "type": "double"} ] },
+    { "name": "Player", "kind": "class",
+      "fields": [
+        { "name": "name", "type": "string" },
+        { "name": "pos",  "type": "Vec2", "ref": "type" },
+        { "name": "items","type": "int", "array": true }
+      ] }
+  ]
+}
+```
+
+- `kind`: `struct`/`class`/`enum`/`op`/`ffi`；`ref: type` 引用另一 schema 类型；
+  `array: true` 动态数组。
+- 自测：`bash tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`）。
+
 ### 测试框架
 
 ```bash
@@ -3291,7 +3340,7 @@ mypackage/              # 包根目录
 
 ```
 MYPLanguage/
-├── tools/               # 自举 MYP 工具：tools/pm（包管理器→build/myp）、tools/fmt、tools/viz、tools/selfhost（自举编译器→build/myp_self）
+├── tools/               # 自举 MYP 工具：tools/pm（包管理器→build/myp）、tools/fmt、tools/viz、tools/selfhost（自举编译器→build/myp_self）、tools/codegen（schema 驱动代码生成）
 ├── CMakeLists.txt
 ├── include/mylang/      # 编译器头文件：AST/CodeGen/Sema/Parser/Lexer/Eval/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...

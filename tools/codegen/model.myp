@@ -17,6 +17,10 @@ class Field {
             array = a;
         }
         void setKey(int v) { key = v; }
+        string getName() { return name; }
+        string getType() { return type; }
+        int getArray() { return array; }
+        int getKey() { return key; }
     property:
         string name;      // 字段名
         string type;      // 类型名（int/double/string/自定义类型…）
@@ -36,6 +40,8 @@ class TypeDecl {
         void addField(Field f) { fields.add(f); }
         int fieldCount() { return fields.size(); }
         Field field(int i) { return fields.get(i); }
+        string getName() { return name; }
+        string getKind() { return kind; }
     property:
         string name;
         string kind;
@@ -46,6 +52,8 @@ class FfiParam {
     action:
         @constructor FfiParam() { type = ""; name = ""; }
         void set(string t, string n) { type = t; name = n; }
+        string getType() { return type; }
+        string getName() { return name; }
     property:
         string type;      // int/long/double/string/void…
         string name;
@@ -63,6 +71,8 @@ class FfiFunc {
         void addParam(FfiParam p) { params.add(p); }
         int paramCount() { return params.size(); }
         FfiParam paramAt(int i) { return params.get(i); }
+        string getName() { return name; }
+        string getRet() { return ret; }
     property:
         string name;      // C 函数名
         string ret;       // 返回类型
@@ -88,6 +98,16 @@ class Resource {
         void setClose(string c, string ret, string args) {
             closeC = c; closeRet = ret; closeArgs = args;
         }
+        string getName() { return name; }
+        string getHandleType() { return handleType; }
+        string getInvalid() { return invalid; }
+        string getOpenC() { return openC; }
+        string getOpenRet() { return openRet; }
+        string getOpenParams() { return openParams; }
+        string getOpenArgs() { return openArgs; }
+        string getCloseC() { return closeC; }
+        string getCloseRet() { return closeRet; }
+        string getCloseArgs() { return closeArgs; }
     property:
         string name;          // 包装类名
         string handleType;    // long / int
@@ -113,6 +133,8 @@ class ExprDecl {
         void addVar(string v) { vars.add(v); }
         int varCount() { return vars.size(); }
         string varAt(int i) { return vars.get(i); }
+        string getName() { return name; }
+        string getExpr() { return expr; }
     property:
         string name;       // 函数名
         string expr;       // 表达式源码串
@@ -131,6 +153,8 @@ class MethodDecl {
         void addParam(FfiParam p) { params.add(p); }
         int paramCount() { return params.size(); }
         FfiParam paramAt(int i) { return params.get(i); }
+        string getName() { return name; }
+        string getRet() { return ret; }
     property:
         string name;      // 方法名
         string ret;       // 返回类型
@@ -147,6 +171,7 @@ class ServiceDecl {
         void addMethod(MethodDecl m) { methods.add(m); }
         int methodCount() { return methods.size(); }
         MethodDecl methodAt(int i) { return methods.get(i); }
+        string getName() { return name; }
     property:
         string name;
         ArrayList<MethodDecl> methods;
@@ -164,11 +189,13 @@ class TableDecl {
         void addField(Field f) { fields.add(f); }
         int fieldCount() { return fields.size(); }
         Field fieldAt(int i) { return fields.get(i); }
+        string getName() { return name; }
+        string getTable() { return table; }
         // 主键下标（无标记 → 默认第一个字段）
         int keyIndex() {
             int i = 0;
             while (i < fields.size()) {
-                if (fields.get(i).key == 1) return i;
+                if (fields.get(i).getKey() == 1) return i;
                 i = i + 1;
             }
             return 0;
@@ -186,6 +213,8 @@ class EmbedDecl {
             path = "";
         }
         void set(string n, string p) { name = n; path = p; }
+        string getName() { return name; }
+        string getPath() { return path; }
     property:
         string name;      // 生成函数名
         string path;      // 源文件路径（相对 CWD）
@@ -203,6 +232,11 @@ class DslOp {
         void set(string s, string t, int p, string a, int u) {
             sym = s; text = t; prec = p; assoc = a; unary = u;
         }
+        string getSym() { return sym; }
+        string getText() { return text; }
+        int getPrec() { return prec; }
+        string getAssoc() { return assoc; }
+        int getUnary() { return unary; }
     property:
         string sym;
         string text;
@@ -224,6 +258,9 @@ class DslDecl {
         void addOp(DslOp o) { ops.add(o); }
         int opCount() { return ops.size(); }
         DslOp opAt(int i) { return ops.get(i); }
+        string getName() { return name; }
+        string getLparen() { return lparen; }
+        string getRparen() { return rparen; }
     property:
         string name;       // 生成前缀（Calc_xxx）
         string lparen;
@@ -243,6 +280,8 @@ class OpsOp {
         void addParam(string p) { params.add(p); }
         int paramCount() { return params.size(); }
         string paramAt(int i) { return params.get(i); }
+        string getName() { return name; }
+        string getBody() { return body; }
     property:
         string name;      // 算子名（生成函数名）
         string body;      // 逐元素语句（用 arena/ix/inOff/outOff + 参数名）
@@ -301,6 +340,10 @@ class Schema {
         void setOps(OpsDecl d) { ops = d; hasOps = 1; }
         int hasOpsDecl() { return hasOps; }
         OpsDecl opsDecl() { return ops; }
+        ServiceDecl getService() { return service; }
+        int getHasService() { return hasService; }
+        int getHasDsl() { return hasDsl; }
+        int getHasOps() { return hasOps; }
     property:
         ArrayList<TypeDecl> types;
         ArrayList<FfiFunc> ffiFuncs;

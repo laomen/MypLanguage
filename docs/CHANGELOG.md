@@ -27,6 +27,23 @@
 
 ## 编译器版本历史
 
+### v3.12.25 — 修复 BUG-027：tools/codegen 迁移到 BUG-001 属性私有规则，全量回归首次全绿
+- **BUG-027 已修复**：`tools/codegen` 代码生成框架（serde/ffi/autodiff/idl/orm/embed/
+  dsl/infer_ops）此前未迁移到 BUG-001 属性私有规则（301 个编译错误）。
+  - 模型类加 getter（`get<Prop>()`，model.myp 15 类 + gen_autodiff 的 Expr）；统一命名
+    使 `x.prop → x.getProp()` 与变量类型无关。
+  - Python 脚本迁移跨类读（含 `).prop`/`].prop` 链式形态，跳过字符串/注释），224+6 处。
+  - **gen_dsl 生成模板也犯 BUG-001**：生成的 `CalcExpr` 私有属性 + 生成的 `_eval`
+    跨类读 → 生成类加 getter + 模板发 getter 调用。
+  - **判断：全部加 getter，无 struct 转换**——`Expr` 是递归树（struct 无限大小）；其余
+    类都是 `new`+`ArrayList` 堆对象（值语义破坏共享引用）；selfhost AST 先例即 getter。
+  - 修复 run_tests.sh 相对 MYPCC 路径解析 + 接入 `tests/run_tests.sh`。
+- **§13 补文档**：新增「代码生成工具（tools/codegen）」节（CLI/生成器表/schema 格式/
+  --verify/自测），项目结构 tools/ 加 codegen。
+- **全量回归 292 通过 / 0 失败（首次全绿）**；`tools/codegen/run_tests.sh` 11 个生成器
+  round-trip 全过。
+
+
 ### v3.12.24 — §13 审计发现 tools/codegen 未迁移到 BUG-001 规则（BUG-027）
 - **§13 编译与工具完整核对**：确认各工具节（编译器/自举编译器/测试框架/格式化/
   包管理/可视化/LSP/DAP）均有对应二进制；**发现 `tools/codegen` 代码生成框架缺失

@@ -38,7 +38,7 @@
 | BUG-024 | 🟥 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | `tests/bugs/relimport_dedup.myp`（编译失败红） |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
 | BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
-| BUG-027 | 🟥 | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | （待建：修复后 `bash tools/codegen/run_tests.sh` 全绿；复现 `mypc tools/codegen/main.myp` 编译失败） |
+| BUG-027 | � | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
 
 ---
 
@@ -723,35 +723,28 @@
 
 ---
 
-## BUG-027（未修复）：`tools/codegen` 代码生成工具未迁移到 BUG-001 属性私有规则
+## BUG-027（已修复）：`tools/codegen` 未迁移到 BUG-001 属性私有规则
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`mypc tools/codegen/main.myp`（编译失败，301 errors）。修复后
-  `bash tools/codegen/run_tests.sh` 应全绿（serde/ffi/autodiff/idl/orm/embed/dsl/
-  infer_ops 生成 → 编译 → round-trip 验证）。
-- **背景**：`tools/codegen/` 是 **schema 驱动的代码生成框架**（torchgen 式，纯 MYP，
-  P0–P8 已实施，2026-08-12）：`main.myp` CLI（`mypc run main.myp <gen> <schema.json>
-  [-o outdir] [--verify]`）+ `schema.myp`（JSON schema 解析）+ `model.myp`（模型类）
-  + `emit.myp`（发射器）+ 各 `gen_*.myp`（serde/ffi/autodiff/idl/orm/embed/dsl/
-  infer_ops）。§13 编译与工具**未文档化**该工具。
-- **现象**（实测 2026-08-18）：`mypc tools/codegen/main.myp` 报 **301 个编译错误**，
-  全为 `cannot access property '<p>' of '<Class>' from outside the class (properties
-  are private; use a getter action or a struct)`。约 40 组（类,属性）对、涉及 15 个
-  模型类：`Expr`（left/right/kind/name/num/op）、`Field`（name/type/array/key）、
-  `TypeDecl`（name）、`ServiceDecl`（name）、`DslOp`（text/unary/sym/prec/assoc）、
-  `DslDecl`（name/rparen/lparen）、`TableDecl`（name/table）、`MethodDecl`
-  （name/ret）、`FfiParam`（name/type）、`Resource`（handleType/openParams/openC/
-  closeC/closeParams/openRet/openArgs/closeRet/closeArgs/invalid/name）、`ExprDecl`
-  （name/expr）、`EmbedDecl`（name/path）、`OpsOp`（name/body）、`FfiFunc`
-  （name/ret）、`Schema`（service）。`--verify`/serde 等各生成器路径均不可达。
-- **根因**：BUG-001 修复（2026-08-16，`414c5dd`：class property 私有，外部读+写编译
-  拒绝）后，`tools/codegen` 未迁移——模型类是 `class` + `property:`，生成器文件跨类
-  读取这些字段。自举编译器（tools/selfhost）当时已迁到 getter，`tools/codegen` 遗漏。
-- **影响**：`tools/codegen` 整体不可用（无法编译）；其独立 `run_tests.sh` 跑不起来；
-  未接入主 `tests/run_tests.sh`（故全量回归 288 通过不受影响，工具坏是"隐藏"的）。
-  §13 因工具不可用而未文档化（manual 只记录验证可用内容）。
-- **期望语义**：模型类迁到 BUG-001 规则——加 getter action（跨类读走 `obj.getP()`；
-  关键字冲突字段用 `ref_→isRef()` 式改名），或把纯数据模型类改 `struct`（字段公开）；
-  修复后 `tools/codegen/run_tests.sh` 全绿，再补 §13 文档。
-- **备注**：这不是新编译器 bug，而是 BUG-001 规则变更后工具的迁移缺口；登记以便跟踪。
-  manual §13 不写入不可用工具（符合约定）；修复后补文档。
+- **状态**：🟩 已修复（2026-08-18 修复，迁移到 getter）
+- **复现测试**：回归 `tools/codegen/run_tests.sh`（serde/ffi/resources/autodiff/idl/idl_socket/
+  orm/embed/--verify/dsl/infer_ops 生成 → 编译 → round-trip 全绿）；已接入 `tests/run_tests.sh`。
+- **背景**：`tools/codegen/` 是 schema 驱动的代码生成框架（torchgen 式，纯 MYP，
+  P0–P8 已实施，2026-08-12）：`main.myp` CLI + `schema.myp`（JSON schema 解析）+
+  `model.myp`（模型类）+ `emit.myp`（发射器）+ 各 `gen_*.myp`。§13 编译与工具曾未文档化。
+- **现象**（实测 2026-08-18）：`mypc tools/codegen/main.myp` 301 个编译错误，全为
+  `cannot access property '<p>' of '<Class>' from outside the class (properties are
+  private; use a getter action or a struct)`。约 40 组（类,属性）对、涉及 15 个模型类
+  （Expr/Field/TypeDecl/ServiceDecl/DslOp/DslDecl/TableDecl/MethodDecl/FfiParam/
+  Resource/ExprDecl/EmbedDecl/OpsOp/FfiFunc/Schema）。跨类访问**全部是读、无写**。
+- **根因**：BUG-001 修复（2026-08-16，`414c5dd`）后 `tools/codegen` 未迁移；自举编译器
+  （tools/selfhost）当时已迁 getter，本工具遗漏。
+- **修复**：①模型类加 getter（`get<Prop>()`，model.myp 各 class + gen_autodiff 的 Expr，
+  统一命名使 `x.prop → x.getProp()` 与变量类型无关）；②Python 脚本迁移跨类读
+  （含 `).prop`/`].prop` 链式形态，跳过字符串/注释，224+6 处替换）；③gen_dsl 生成模板
+  也犯 BUG-001——生成的 `CalcExpr` 私有属性 + 生成的 `_eval` 跨类读，已给生成类加
+  getter 并让模板发出 getter 调用；④修复 run_tests.sh 相对 MYPCC 路径解析 + 接入主套件。
+  **判断：全部加 getter，无 struct 转换**——Expr 是递归树（struct 无限大小）；其余类都
+  是 `new`+`ArrayList` 堆对象（值语义会破坏共享/引用）；selfhost AST 先例即 getter。
+- **验证**：`tools/codegen/run_tests.sh` 全绿（11 个生成器 round-trip）；全量回归
+  292 通过 / 0 失败。
+- **备注**：修复后 §13 已补 `代码生成工具（tools/codegen）` 文档节。

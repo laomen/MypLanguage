@@ -52,11 +52,11 @@ class SerdeGen {
         }
 
         void genTypeDef(Emitter e, TypeDecl t) {
-            string s = "struct " + t.name + " {";
+            string s = "struct " + t.getName() + " {";
             int k = 0;
             while (k < t.fieldCount()) {
                 Field f = t.field(k);
-                s = s + " " + f.type + " " + f.name + ";";
+                s = s + " " + f.getType() + " " + f.getName() + ";";
                 k = k + 1;
             }
             s = s + " }";
@@ -64,25 +64,25 @@ class SerdeGen {
         }
 
         void genToJson(Emitter e, TypeDecl t) {
-            e.block("string " + t.name + "_toJson(" + t.name + " v)");
+            e.block("string " + t.getName() + "_toJson(" + t.getName() + " v)");
             e.line("string s = " + lit("{") + ";");
             int k = 0;
             int n = t.fieldCount();
             while (k < n) {
                 Field f = t.field(k);
-                if (f.array == 1) {
-                    Console.writeLine("warn: array field '" + f.name + "' skipped (P0b 暂不支持数组)");
+                if (f.getArray() == 1) {
+                    Console.writeLine("warn: array field '" + f.getName() + "' skipped (P0b 暂不支持数组)");
                     k = k + 1;
                     continue;
                 }
                 string sep = (k == n - 1) ? "" : " + " + lit(",");
                 string conv;
-                if (isScalarOrString(f.type) == 1) {
-                    conv = scalarConv(f.type, "v." + f.name);
+                if (isScalarOrString(f.getType()) == 1) {
+                    conv = scalarConv(f.getType(), "v." + f.getName());
                 } else {
-                    conv = f.type + "_toJson(v." + f.name + ")";   // 嵌套 struct
+                    conv = f.getType() + "_toJson(v." + f.getName() + ")";   // 嵌套 struct
                 }
-                e.line("s = s + cg_kv(" + lit(f.name) + ", " + conv + ")" + sep + ";");
+                e.line("s = s + cg_kv(" + lit(f.getName()) + ", " + conv + ")" + sep + ";");
                 k = k + 1;
             }
             e.line("s = s + " + lit("}") + ";");
@@ -91,20 +91,20 @@ class SerdeGen {
         }
 
         void genFromJsonPath(Emitter e, TypeDecl t) {
-            e.block(t.name + " " + t.name + "_fromJsonPath(Json p, string path)");
-            e.line(t.name + " v;");
+            e.block(t.getName() + " " + t.getName() + "_fromJsonPath(Json p, string path)");
+            e.line(t.getName() + " v;");
             int k = 0;
             while (k < t.fieldCount()) {
                 Field f = t.field(k);
-                if (f.array == 1) {
+                if (f.getArray() == 1) {
                     k = k + 1;
                     continue;
                 }
-                string pathExpr = "cg_p(path, " + lit(f.name) + ")";
-                if (isScalarOrString(f.type) == 1) {
-                    e.line("v." + f.name + " = " + fromJsonRead(f.type, pathExpr) + ";");
+                string pathExpr = "cg_p(path, " + lit(f.getName()) + ")";
+                if (isScalarOrString(f.getType()) == 1) {
+                    e.line("v." + f.getName() + " = " + fromJsonRead(f.getType(), pathExpr) + ";");
                 } else {
-                    e.line("v." + f.name + " = " + f.type + "_fromJsonPath(p, " + pathExpr + ");");
+                    e.line("v." + f.getName() + " = " + f.getType() + "_fromJsonPath(p, " + pathExpr + ");");
                 }
                 k = k + 1;
             }
@@ -113,9 +113,9 @@ class SerdeGen {
         }
 
         void genFromJson(Emitter e, TypeDecl t) {
-            e.block(t.name + " " + t.name + "_fromJson(string j)");
+            e.block(t.getName() + " " + t.getName() + "_fromJson(string j)");
             e.line("Json p = new Json(j);");
-            e.line(t.name + " v = " + t.name + "_fromJsonPath(p, " + lit("") + ");");
+            e.line(t.getName() + " v = " + t.getName() + "_fromJsonPath(p, " + lit("") + ");");
             e.line("p.free();");
             e.line("return v;");
             e.endBlock();

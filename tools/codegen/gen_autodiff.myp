@@ -24,6 +24,12 @@ class Expr {
         void setVar(string n) { kind = 1; name = n; }
         void setBin(string o, Expr l, Expr r) { kind = 2; op = o; left = l; right = r; }
         void setCall(string fn, Expr a) { kind = 3; name = fn; left = a; }
+        int getKind() { return kind; }
+        double getNum() { return num; }
+        string getName() { return name; }
+        string getOp() { return op; }
+        Expr getLeft() { return left; }
+        Expr getRight() { return right; }
     property:
         int kind;
         double num;
@@ -167,62 +173,62 @@ class ExprParser {
 
 // ---- 求导 ----
 Expr diff(Expr e, string v) {
-    if (e.kind == 0) return mkNum(0.0);
-    if (e.kind == 1) {
-        if (e.name == v) return mkNum(1.0);
+    if (e.getKind() == 0) return mkNum(0.0);
+    if (e.getKind() == 1) {
+        if (e.getName() == v) return mkNum(1.0);
         return mkNum(0.0);
     }
-    if (e.kind == 3) {
-        if (e.name == "sin") return simp(mkBin("*", mkCall("cos", e.left), diff(e.left, v)));
-        if (e.name == "cos") return simp(mkBin("*", mkBin("neg", mkCall("sin", e.left), null), diff(e.left, v)));
-        if (e.name == "exp") return simp(mkBin("*", mkCall("exp", e.left), diff(e.left, v)));
-        if (e.name == "log") return simp(mkBin("/", diff(e.left, v), e.left));
-        if (e.name == "sqrt") return simp(mkBin("/", diff(e.left, v), mkBin("*", mkNum(2.0), mkCall("sqrt", e.left))));
+    if (e.getKind() == 3) {
+        if (e.getName() == "sin") return simp(mkBin("*", mkCall("cos", e.getLeft()), diff(e.getLeft(), v)));
+        if (e.getName() == "cos") return simp(mkBin("*", mkBin("neg", mkCall("sin", e.getLeft()), null), diff(e.getLeft(), v)));
+        if (e.getName() == "exp") return simp(mkBin("*", mkCall("exp", e.getLeft()), diff(e.getLeft(), v)));
+        if (e.getName() == "log") return simp(mkBin("/", diff(e.getLeft(), v), e.getLeft()));
+        if (e.getName() == "sqrt") return simp(mkBin("/", diff(e.getLeft(), v), mkBin("*", mkNum(2.0), mkCall("sqrt", e.getLeft()))));
         return mkNum(0.0);
     }
-    if (e.op == "neg") return mkBin("neg", diff(e.left, v), null);
-    if (e.op == "+") return simp(mkBin("+", diff(e.left, v), diff(e.right, v)));
-    if (e.op == "-") return simp(mkBin("-", diff(e.left, v), diff(e.right, v)));
-    if (e.op == "*") return simp(mkBin("+", mkBin("*", diff(e.left, v), e.right),
-                                          mkBin("*", e.left, diff(e.right, v))));
-    if (e.op == "/") return simp(mkBin("/", mkBin("-", mkBin("*", diff(e.left, v), e.right),
-                                          mkBin("*", e.left, diff(e.right, v))),
-                                      mkBin("*", e.right, e.right)));
+    if (e.getOp() == "neg") return mkBin("neg", diff(e.getLeft(), v), null);
+    if (e.getOp() == "+") return simp(mkBin("+", diff(e.getLeft(), v), diff(e.getRight(), v)));
+    if (e.getOp() == "-") return simp(mkBin("-", diff(e.getLeft(), v), diff(e.getRight(), v)));
+    if (e.getOp() == "*") return simp(mkBin("+", mkBin("*", diff(e.getLeft(), v), e.getRight()),
+                                          mkBin("*", e.getLeft(), diff(e.getRight(), v))));
+    if (e.getOp() == "/") return simp(mkBin("/", mkBin("-", mkBin("*", diff(e.getLeft(), v), e.getRight()),
+                                          mkBin("*", e.getLeft(), diff(e.getRight(), v))),
+                                      mkBin("*", e.getRight(), e.getRight())));
     return mkNum(0.0);
 }
 
 // ---- 简化（浅层 + 常量折叠，不可变重建） ----
 Expr simp(Expr e) {
-    if (e.kind == 0 || e.kind == 1) return e;
-    if (e.kind == 3) {
-        return mkCall(e.name, simp(e.left));
+    if (e.getKind() == 0 || e.getKind() == 1) return e;
+    if (e.getKind() == 3) {
+        return mkCall(e.getName(), simp(e.getLeft()));
     }
-    if (e.op == "neg") {
-        return mkBin("neg", simp(e.left), null);
+    if (e.getOp() == "neg") {
+        return mkBin("neg", simp(e.getLeft()), null);
     }
-    Expr l = simp(e.left);
-    Expr r = simp(e.right);
-    int ln = (l.kind == 0) ? 1 : 0;
-    int rn = (r.kind == 0) ? 1 : 0;
-    if (e.op == "+") {
-        if (ln == 1 && l.num == 0.0) return r;
-        if (rn == 1 && r.num == 0.0) return l;
-        if (ln == 1 && rn == 1) return mkNum(l.num + r.num);
-    } else if (e.op == "-") {
-        if (rn == 1 && r.num == 0.0) return l;
-        if (ln == 1 && rn == 1) return mkNum(l.num - r.num);
-    } else if (e.op == "*") {
-        if (ln == 1 && l.num == 0.0) return mkNum(0.0);
-        if (rn == 1 && r.num == 0.0) return mkNum(0.0);
-        if (ln == 1 && l.num == 1.0) return r;
-        if (rn == 1 && r.num == 1.0) return l;
-        if (ln == 1 && rn == 1) return mkNum(l.num * r.num);
-    } else if (e.op == "/") {
-        if (rn == 1 && r.num == 1.0) return l;
-        if (ln == 1 && l.num == 0.0) return mkNum(0.0);
-        if (ln == 1 && rn == 1) return mkNum(l.num / r.num);
+    Expr l = simp(e.getLeft());
+    Expr r = simp(e.getRight());
+    int ln = (l.getKind() == 0) ? 1 : 0;
+    int rn = (r.getKind() == 0) ? 1 : 0;
+    if (e.getOp() == "+") {
+        if (ln == 1 && l.getNum() == 0.0) return r;
+        if (rn == 1 && r.getNum() == 0.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.getNum() + r.getNum());
+    } else if (e.getOp() == "-") {
+        if (rn == 1 && r.getNum() == 0.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.getNum() - r.getNum());
+    } else if (e.getOp() == "*") {
+        if (ln == 1 && l.getNum() == 0.0) return mkNum(0.0);
+        if (rn == 1 && r.getNum() == 0.0) return mkNum(0.0);
+        if (ln == 1 && l.getNum() == 1.0) return r;
+        if (rn == 1 && r.getNum() == 1.0) return l;
+        if (ln == 1 && rn == 1) return mkNum(l.getNum() * r.getNum());
+    } else if (e.getOp() == "/") {
+        if (rn == 1 && r.getNum() == 1.0) return l;
+        if (ln == 1 && l.getNum() == 0.0) return mkNum(0.0);
+        if (ln == 1 && rn == 1) return mkNum(l.getNum() / r.getNum());
     }
-    return mkBin(e.op, l, r);
+    return mkBin(e.getOp(), l, r);
 }
 
 // ---- 源码发射 ----
@@ -282,11 +288,11 @@ double strToDouble(string s) {
 }
 
 string toSrc(Expr e) {
-    if (e.kind == 0) return numSrc(e.num);
-    if (e.kind == 1) return e.name;
-    if (e.kind == 3) return "Math." + e.name + "(" + toSrc(e.left) + ")";
-    if (e.op == "neg") return "(-" + toSrc(e.left) + ")";
-    return "(" + toSrc(e.left) + " " + e.op + " " + toSrc(e.right) + ")";
+    if (e.getKind() == 0) return numSrc(e.getNum());
+    if (e.getKind() == 1) return e.getName();
+    if (e.getKind() == 3) return "Math." + e.getName() + "(" + toSrc(e.getLeft()) + ")";
+    if (e.getOp() == "neg") return "(-" + toSrc(e.getLeft()) + ")";
+    return "(" + toSrc(e.getLeft()) + " " + e.getOp() + " " + toSrc(e.getRight()) + ")";
 }
 
 // ---- 生成器 ----
@@ -303,7 +309,7 @@ class AutodiffGen {
             int i = 0;
             while (i < s.exprCount()) {
                 ExprDecl d = s.exprAt(i);
-                ExprParser p = new ExprParser(d.expr);
+                ExprParser p = new ExprParser(d.getExpr());
                 Expr tree = p.parse();
                 // 参数列表 "double x, double y"
                 string params = "";
@@ -314,12 +320,12 @@ class AutodiffGen {
                     k = k + 1;
                 }
                 // 前向函数
-                e.block("double " + d.name + "(" + params + ")");
+                e.block("double " + d.getName() + "(" + params + ")");
                 e.line("return " + toSrc(tree) + ";");
                 e.endBlock();
                 e.line("");
                 // 梯度 struct
-                string gname = "Grad_" + d.name;
+                string gname = "Grad_" + d.getName();
                 e.block("struct " + gname);
                 k = 0;
                 while (k < d.varCount()) {
@@ -329,7 +335,7 @@ class AutodiffGen {
                 e.endBlock();
                 e.line("");
                 // 梯度函数
-                e.block(gname + " " + d.name + "_grad(" + params + ")");
+                e.block(gname + " " + d.getName() + "_grad(" + params + ")");
                 e.line(gname + " g;");
                 k = 0;
                 while (k < d.varCount()) {

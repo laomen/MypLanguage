@@ -13,12 +13,12 @@ class FfiGen {
 
         // ffi 函数 → 声明行
         string ffiLine(FfiFunc f) {
-            string line = "ffi " + f.ret + " " + f.name + "(";
+            string line = "ffi " + f.getRet() + " " + f.getName() + "(";
             int k = 0;
             while (k < f.paramCount()) {
                 FfiParam p = f.paramAt(k);
                 if (k > 0) line = line + ", ";
-                line = line + p.type + " " + p.name;
+                line = line + p.getType() + " " + p.getName();
                 k = k + 1;
             }
             return line + ");";
@@ -27,36 +27,36 @@ class FfiGen {
         // 资源包装类：显式 open/close（MYP 无用户析构器 → RAII 用显式生命周期）
         void genResource(Emitter e, Resource r) {
             // open/close 的 ffi 声明（扁平字符串）
-            e.line("ffi " + r.openRet + " " + r.openC + "(" + r.openParams + ");");
-            e.line("ffi " + r.closeRet + " " + r.closeC + "(" + r.handleType + " handle);");
+            e.line("ffi " + r.getOpenRet() + " " + r.getOpenC() + "(" + r.getOpenParams() + ");");
+            e.line("ffi " + r.getCloseRet() + " " + r.getCloseC() + "(" + r.getHandleType() + " handle);");
             e.line("");
-            string zero = r.invalid;
-            e.block("class " + r.name);
+            string zero = r.getInvalid();
+            e.block("class " + r.getName());
             e.line("action:");
             // 构造：handle 置 0
-            e.block("@constructor " + r.name + "()");
+            e.block("@constructor " + r.getName() + "()");
             e.line("handle_ = " + zero + ";");
             e.endBlock();
             // open：调用 openC，存 handle，返回
-            e.block(r.handleType + " open(" + r.openParams + ")");
-            e.line("handle_ = " + r.openC + "(" + r.openArgs + ");");
+            e.block(r.getHandleType() + " open(" + r.getOpenParams() + ")");
+            e.line("handle_ = " + r.getOpenC() + "(" + r.getOpenArgs() + ");");
             e.line("return handle_;");
             e.endBlock();
             // close：handle 非 0 才调用 closeC，随后清零
             e.block("void close()");
             e.line("if (handle_ != " + zero + ") {");
             e.push();
-            e.line(r.closeC + "(" + r.closeArgs + ");");
+            e.line(r.getCloseC() + "(" + r.getCloseArgs() + ");");
             e.line("handle_ = " + zero + ";");
             e.pop();
             e.line("}");
             e.endBlock();
             // 访问器
-            e.block(r.handleType + " getHandle()");
+            e.block(r.getHandleType() + " getHandle()");
             e.line("return handle_;");
             e.endBlock();
             e.line("property:");
-            e.line(r.handleType + " handle_;");
+            e.line(r.getHandleType() + " handle_;");
             e.endBlock();
             e.line("");
         }

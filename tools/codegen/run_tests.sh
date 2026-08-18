@@ -4,13 +4,16 @@
 # 关联: design.md §9
 
 set -u
-cd "$(dirname "$0")"
 
 MYPCC=${MYPCC:-../../build/mypc}
+# 先解析 MYPCC 为绝对路径（相对路径以调用方 cwd 为基准），再 cd 进脚本目录——
+# 否则相对 MYPCC（如 ./build/mypc）在 cd 后解析失败。
 case "$MYPCC" in
     /*) : ;;
     *) MYPCC="$(cd "$(dirname "$MYPCC")" && pwd)/$(basename "$MYPCC")" ;;
 esac
+cd "$(dirname "$0")"
+
 if [ ! -x "$MYPCC" ]; then echo "error: mypc 不存在 ($MYPCC)"; exit 1; fi
 export MYP_CC="$MYPCC"   # 让 main.myp --verify 的子进程定位到同一编译器
 

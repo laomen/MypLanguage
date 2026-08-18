@@ -37,7 +37,7 @@ class OrmGen {
             int i = 0;
             while (i < td.fieldCount()) {
                 if (i > 0) s = s + ",";
-                s = s + td.fieldAt(i).name;
+                s = s + td.fieldAt(i).getName();
                 i = i + 1;
             }
             return s;
@@ -48,7 +48,7 @@ class OrmGen {
             int i = 0;
             while (i < td.fieldCount()) {
                 if (i > 0) s = s + " + " + lit(",") + " + ";
-                s = s + sqlVal(td.fieldAt(i).type, obj + "." + td.fieldAt(i).name);
+                s = s + sqlVal(td.fieldAt(i).getType(), obj + "." + td.fieldAt(i).getName());
                 i = i + 1;
             }
             return s;
@@ -62,7 +62,7 @@ class OrmGen {
                 if (i != skipIdx) {
                     Field f = td.fieldAt(i);
                     if (first > 0) s = s + " + " + lit(",") + " + ";
-                    s = s + lit(f.name + "=") + " + " + sqlVal(f.type, obj + "." + f.name);
+                    s = s + lit(f.getName() + "=") + " + " + sqlVal(f.getType(), obj + "." + f.getName());
                     first = first + 1;
                 }
                 i = i + 1;
@@ -72,11 +72,11 @@ class OrmGen {
 
         // 实体 struct 定义
         void genStruct(Emitter e, TableDecl td) {
-            string s = "struct " + td.name + " {";
+            string s = "struct " + td.getName() + " {";
             int k = 0;
             while (k < td.fieldCount()) {
                 Field f = td.fieldAt(k);
-                s = s + " " + f.type + " " + f.name + ";";
+                s = s + " " + f.getType() + " " + f.getName() + ";";
                 k = k + 1;
             }
             s = s + " }";
@@ -87,7 +87,7 @@ class OrmGen {
         void genCrud(Emitter e, TableDecl td) {
             int ki = td.keyIndex();
             Field kf = td.fieldAt(ki);
-            string P = td.name;
+            string P = td.getName();
 
             // CREATE TABLE
             e.block("string " + P + "_create_table()");
@@ -96,41 +96,41 @@ class OrmGen {
             while (i < td.fieldCount()) {
                 Field f = td.fieldAt(i);
                 if (i > 0) colSql = colSql + ", ";
-                colSql = colSql + f.name + " " + sqlType(f.type);
+                colSql = colSql + f.getName() + " " + sqlType(f.getType());
                 if (i == ki) colSql = colSql + " PRIMARY KEY";
                 i = i + 1;
             }
-            e.line("return " + lit("CREATE TABLE IF NOT EXISTS " + td.table + " (" + colSql + ")") + ";");
+            e.line("return " + lit("CREATE TABLE IF NOT EXISTS " + td.getTable() + " (" + colSql + ")") + ";");
             e.endBlock();
             e.line("");
 
             // INSERT
             e.block("string " + P + "_insert(" + P + " p)");
-            e.line("return " + lit("INSERT INTO " + td.table + " (" + colList(td) + ") VALUES (") + " + " + valList(td, "p") + " + " + lit(")") + ";");
+            e.line("return " + lit("INSERT INTO " + td.getTable() + " (" + colList(td) + ") VALUES (") + " + " + valList(td, "p") + " + " + lit(")") + ";");
             e.endBlock();
             e.line("");
 
             // SELECT all
             e.block("string " + P + "_select_all()");
-            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.table) + ";");
+            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.getTable()) + ";");
             e.endBlock();
             e.line("");
 
             // SELECT by key
-            e.block("string " + P + "_select_by_" + kf.name + "(" + kf.type + " k)");
-            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.table + " WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "k") + ";");
+            e.block("string " + P + "_select_by_" + kf.getName() + "(" + kf.getType() + " k)");
+            e.line("return " + lit("SELECT " + colList(td) + " FROM " + td.getTable() + " WHERE " + kf.getName() + " = ") + " + " + sqlVal(kf.getType(), "k") + ";");
             e.endBlock();
             e.line("");
 
             // UPDATE
             e.block("string " + P + "_update(" + P + " p)");
-            e.line("return " + lit("UPDATE " + td.table + " SET ") + " + " + setList(td, "p", ki) + " + " + lit(" WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "p." + kf.name) + ";");
+            e.line("return " + lit("UPDATE " + td.getTable() + " SET ") + " + " + setList(td, "p", ki) + " + " + lit(" WHERE " + kf.getName() + " = ") + " + " + sqlVal(kf.getType(), "p." + kf.getName()) + ";");
             e.endBlock();
             e.line("");
 
             // DELETE by key
-            e.block("string " + P + "_delete_by_" + kf.name + "(" + kf.type + " k)");
-            e.line("return " + lit("DELETE FROM " + td.table + " WHERE " + kf.name + " = ") + " + " + sqlVal(kf.type, "k") + ";");
+            e.block("string " + P + "_delete_by_" + kf.getName() + "(" + kf.getType() + " k)");
+            e.line("return " + lit("DELETE FROM " + td.getTable() + " WHERE " + kf.getName() + " = ") + " + " + sqlVal(kf.getType(), "k") + ";");
             e.endBlock();
             e.line("");
         }
@@ -148,7 +148,7 @@ class OrmGen {
             int t = 0;
             while (t < s.tableCount()) {
                 TableDecl td = s.tableAt(t);
-                e.line("// ── 表: " + td.table + " ──");
+                e.line("// ── 表: " + td.getTable() + " ──");
                 genStruct(e, td);
                 e.line("");
                 genCrud(e, td);

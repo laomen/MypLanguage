@@ -272,6 +272,21 @@ if [ -f "$PROJ_ROOT/tests/test_multifile.sh" ]; then
     fi
 fi
 
+# 代码生成工具（tools/codegen，manual §13）：schema 驱动生成器 serde/ffi/
+# autodiff/idl/orm/embed/dsl/infer_ops —— 生成 → 编译 → round-trip 验证（BUG-027）。
+if [ -f "$PROJ_ROOT/tools/codegen/run_tests.sh" ]; then
+    cg_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tools/codegen/run_tests.sh" 2>&1)
+    if echo "$cg_out" | grep -qE "codegen 自测通过"; then
+        echo -e "${GREEN}PASS${NC} (代码生成工具：serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$cg_out" | grep -E "FAIL:|自测" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS codegen(tools)"
+    fi
+fi
+
 # =============================================
 # 协程栈警告测试：@coro(stack=N) N<16 编译期警告（design.md §8.6.2 栈行）
 # =============================================

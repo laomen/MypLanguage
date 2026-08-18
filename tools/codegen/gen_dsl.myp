@@ -80,14 +80,14 @@ class DslGen {
 
         // 运算符查找表（schema 生成）
         void emitTables(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             // 二元优先级
             e.block("int " + P + "_binPrec(string sym)");
             int i = 0;
             while (i < d.opCount()) {
                 DslOp o = d.opAt(i);
-                if (o.unary == 0) {
-                    e.line("if (sym == " + lit(o.text) + ") return " + o.prec + ";");
+                if (o.getUnary() == 0) {
+                    e.line("if (sym == " + lit(o.getText()) + ") return " + o.getPrec() + ";");
                 }
                 i = i + 1;
             }
@@ -99,8 +99,8 @@ class DslGen {
             i = 0;
             while (i < d.opCount()) {
                 DslOp o = d.opAt(i);
-                if (o.unary == 1) {
-                    e.line("if (sym == " + lit(o.text) + ") return " + o.prec + ";");
+                if (o.getUnary() == 1) {
+                    e.line("if (sym == " + lit(o.getText()) + ") return " + o.getPrec() + ";");
                 }
                 i = i + 1;
             }
@@ -112,9 +112,9 @@ class DslGen {
             i = 0;
             while (i < d.opCount()) {
                 DslOp o = d.opAt(i);
-                if (o.unary == 0) {
-                    string v = (o.assoc == "right") ? "1" : "0";
-                    e.line("if (sym == " + lit(o.text) + ") return " + v + ";");
+                if (o.getUnary() == 0) {
+                    string v = (o.getAssoc() == "right") ? "1" : "0";
+                    e.line("if (sym == " + lit(o.getText()) + ") return " + v + ";");
                 }
                 i = i + 1;
             }
@@ -126,8 +126,8 @@ class DslGen {
             i = 0;
             while (i < d.opCount()) {
                 DslOp o = d.opAt(i);
-                if (o.unary == 1) {
-                    e.line("if (sym == " + lit(o.text) + ") return 1;");
+                if (o.getUnary() == 1) {
+                    e.line("if (sym == " + lit(o.getText()) + ") return 1;");
                 }
                 i = i + 1;
             }
@@ -138,7 +138,7 @@ class DslGen {
 
         // Token 类 + 工厂
         void emitToken(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             e.block("class " + P + "Token");
             e.line("action:");
             e.push();
@@ -168,7 +168,7 @@ class DslGen {
 
         // 词法
         void emitLexer(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             e.block("ArrayList<" + P + "Token> " + P + "_lex(string src)");
             e.line("ArrayList<" + P + "Token> toks = new ArrayList<" + P + "Token>();");
             e.line("int pos = 0;");
@@ -202,18 +202,18 @@ class DslGen {
                 int dup = 0;
                 int s = 0;
                 while (s < seen.size()) {
-                    if (seen.get(s) == o.text) { dup = 1; break; }
+                    if (seen.get(s) == o.getText()) { dup = 1; break; }
                     s = s + 1;
                 }
                 if (dup == 0) {
-                    seen.add(o.text);
+                    seen.add(o.getText());
                     string guard = (i == 0) ? "" : "got == 0 && ";
-                    e.line("if (" + guard + "ch == " + lit(o.text) + ") { toks.add(" + P + "_mkTok(" + lit("op") + ", " + lit(o.text) + ")); pos = pos + 1; got = 1; }");
+                    e.line("if (" + guard + "ch == " + lit(o.getText()) + ") { toks.add(" + P + "_mkTok(" + lit("op") + ", " + lit(o.getText()) + ")); pos = pos + 1; got = 1; }");
                 }
                 i = i + 1;
             }
-            e.line("if (got == 0 && ch == " + lit(d.lparen) + ") { toks.add(" + P + "_mkTok(" + lit("lparen") + ", " + lit(d.lparen) + ")); pos = pos + 1; got = 1; }");
-            e.line("if (got == 0 && ch == " + lit(d.rparen) + ") { toks.add(" + P + "_mkTok(" + lit("rparen") + ", " + lit(d.rparen) + ")); pos = pos + 1; got = 1; }");
+            e.line("if (got == 0 && ch == " + lit(d.getLparen()) + ") { toks.add(" + P + "_mkTok(" + lit("lparen") + ", " + lit(d.getLparen()) + ")); pos = pos + 1; got = 1; }");
+            e.line("if (got == 0 && ch == " + lit(d.getRparen()) + ") { toks.add(" + P + "_mkTok(" + lit("rparen") + ", " + lit(d.getRparen()) + ")); pos = pos + 1; got = 1; }");
             e.line("if (got == 0) { toks.add(" + P + "_mkTok(" + lit("err") + ", ch)); pos = pos + 1; }");
             e.pop();
             e.line("}");
@@ -225,7 +225,7 @@ class DslGen {
 
         // AST + 工厂
         void emitAst(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             e.block("class " + P + "Expr");
             e.line("action:");
             e.push();
@@ -240,6 +240,11 @@ class DslGen {
             e.line("void setNum(double v) { kind = 0; num = v; }");
             e.line("void setBin(string o, " + P + "Expr l, " + P + "Expr r) { kind = 1; op = o; left = l; right = r; }");
             e.line("void setNeg(" + P + "Expr a) { kind = 2; left = a; }");
+            e.line("int getKind() { return kind; }");
+            e.line("double getNum() { return num; }");
+            e.line("string getOp() { return op; }");
+            e.line(P + "Expr getLeft() { return left; }");
+            e.line(P + "Expr getRight() { return right; }");
             e.pop();
             e.line("property:");
             e.push();
@@ -273,7 +278,7 @@ class DslGen {
 
         // 解析器（优先级爬升）
         void emitParser(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             e.block("class " + P + "Parser");
             e.line("action:");
             e.push();
@@ -325,7 +330,7 @@ class DslGen {
             e.line("if (t.getKind() == " + lit("lparen") + ") {");
             e.push();
             e.line(P + "Expr e = parsePrec(0);");
-            e.line("next();   // " + d.rparen);
+            e.line("next();   // " + d.getRparen());
             e.line("return e;");
             e.pop();
             e.line("}");
@@ -343,17 +348,17 @@ class DslGen {
 
         // 求值
         void emitEval(Emitter e, DslDecl d) {
-            string P = d.name;
+            string P = d.getName();
             e.block("double " + P + "_eval(" + P + "Expr e)");
-            e.line("if (e.kind == 0) return e.num;");
-            e.line("if (e.kind == 2) return -(" + P + "_eval(e.left));");
-            e.line("double l = " + P + "_eval(e.left);");
-            e.line("double r = " + P + "_eval(e.right);");
+            e.line("if (e.getKind() == 0) return e.getNum();");
+            e.line("if (e.getKind() == 2) return -(" + P + "_eval(e.getLeft()));");
+            e.line("double l = " + P + "_eval(e.getLeft());");
+            e.line("double r = " + P + "_eval(e.getRight());");
             int i = 0;
             while (i < d.opCount()) {
                 DslOp o = d.opAt(i);
-                if (o.unary == 0) {
-                    e.line("if (e.op == " + lit(o.sym) + ") return l " + o.sym + " r;");
+                if (o.getUnary() == 0) {
+                    e.line("if (e.getOp() == " + lit(o.getSym()) + ") return l " + o.getSym() + " r;");
                 }
                 i = i + 1;
             }
@@ -370,7 +375,7 @@ class DslGen {
         string gen(Schema s) {
             if (s.hasDslDecl() == 0) return "";
             DslDecl d = s.dslDecl();
-            string P = d.name;
+            string P = d.getName();
             Emitter e = new Emitter();
             e.line("// ── 由 tools/codegen 生成，勿手改 ──");
             e.line("// DSL: " + P + " —— 词法 + 优先级爬升解析 + 求值");

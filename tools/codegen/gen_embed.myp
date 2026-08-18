@@ -51,9 +51,9 @@ class EmbedGen {
             int i = 0;
             while (i < s.embedCount()) {
                 EmbedDecl ed = s.embedAt(i);
-                string content = readRaw(ed.path);
-                e.line("// 嵌入: " + ed.path);
-                e.block("string " + ed.name + "_content()");
+                string content = readRaw(ed.getPath());
+                e.line("// 嵌入: " + ed.getPath());
+                e.block("string " + ed.getName() + "_content()");
                 e.line("return \"" + esc(content) + "\";");
                 e.endBlock();
                 e.line("");
