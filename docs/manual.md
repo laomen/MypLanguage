@@ -18,8 +18,9 @@
 9. [并发编程](#9-并发编程)
 10. [模块与导入](#10-模块与导入)
 11. [标准库](#11-标准库)
-12. [编译与工具](#12-编译与工具)
-13. [完整示例](#13-完整示例)
+12. [元编程](#12-元编程)
+13. [编译与工具](#13-编译与工具)
+14. [完整示例](#14-完整示例)
 
 ---
 
@@ -113,7 +114,7 @@ int main() {
 > （在 `main` 里写 `Console.writeLine(...)` 会编译报错
 > `direct function call not allowed in main() — use mapping() instead`）。
 > 逻辑放在组件的 action 里：`@startup` 在实例启动时执行（`mypc run` 对单类文件自动生成
-> `main` 并触发，见 §12；显式写 `main` 时用 `@thread` 实例触发），`@constructor` 在 `new`
+> `main` 并触发，见 §13；显式写 `main` 时用 `@thread` 实例触发），`@constructor` 在 `new`
 > 时同步执行。
 
 ### 编译选项
@@ -2809,7 +2810,47 @@ win.render();                            // 渲染一帧
 
 ---
 
-## 12. 编译与工具
+## 12. 元编程
+
+MYP 提供三层元编程（设计见 `docs/metaprogramming.md`）：
+
+**1. `@eval` 编译期求值（纯函数）**
+
+```myp
+@eval int fib(int n) {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+const int FIB10 = fib(10);   // 编译期算得 55（ret i32 55）
+```
+
+**2. `macro` 声明式宏（AST 模板）**
+
+```myp
+macro repeat($n, $body) {
+    for (int _i = 0; _i < $n; _i++) { $body }
+}
+repeat(3, total = total + 10);   // 展开为 for 循环 ×3
+```
+
+**3. `@macro` 过程宏（`quote` 代码模板，可编程生成）**
+
+```myp
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };
+    }
+    return out;
+}
+makeCalls(3);                    // 生成 3 条 Console.write(...)
+```
+
+- 调试：`--macro-expand` 输出展开后的 AST dump。
+- 设计与实现详见 `docs/metaprogramming.md` 与 `docs/design.md` §11。
+
+---
+
+## 13. 编译与工具
 
 ### 编译器
 
@@ -2964,43 +3005,6 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 - 设置 `myp.debuggerPath` 可指定 `myp_debug` 路径（默认自动探测）。
 - 支持：断点（源码行号）、单步（next/stepIn/stepOut）、调用栈、局部变量、
   鼠标悬停求值（evaluate）。
-
-#### 元编程（`@eval` / `macro` / `@macro`）
-
-MYP 提供三层元编程（设计见 `docs/metaprogramming.md`）：
-
-**1. `@eval` 编译期求值（纯函数）**
-
-```myp
-@eval int fib(int n) {
-    return n < 2 ? n : fib(n - 1) + fib(n - 2);
-}
-const int FIB10 = fib(10);   // 编译期算得 55（ret i32 55）
-```
-
-**2. `macro` 声明式宏（AST 模板）**
-
-```myp
-macro repeat($n, $body) {
-    for (int _i = 0; _i < $n; _i++) { $body }
-}
-repeat(3, total = total + 10);   // 展开为 for 循环 ×3
-```
-
-**3. `@macro` 过程宏（`quote` 代码模板，可编程生成）**
-
-```myp
-@macro StmtList makeCalls(int n) {
-    StmtList out = quote {};
-    for (int i = 0; i < n; i++) {
-        out = out + quote { Console.write($i); };
-    }
-    return out;
-}
-makeCalls(3);                    // 生成 3 条 Console.write(...)
-```
-
-- 调试：`--macro-expand` 输出展开后的 AST dump。
 
 ### 自举编译器（myp_self）
 
@@ -3299,7 +3303,7 @@ code --install-extension vscode-myp-*.vsix
 | `myp.stdlibPath` | 标准库路径（默认自动查找） |
 | `myp.trace.server` | LSP 通信日志级别 |
 
-## 13. 完整示例
+## 14. 完整示例
 
 ### IoT 温度监控系统
 
