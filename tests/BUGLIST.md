@@ -35,7 +35,7 @@
 | BUG-021 | � | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
 | BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
 | BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
-| BUG-023 | 🟥 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139；须先拷到局部（manual BNCT 模式正确） | `tests/bugs/parallel_prop_access.myp`（编译失败红） |
+| BUG-023 | � | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | � | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
 | BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
@@ -616,34 +616,22 @@
 
 ---
 
-## BUG-023（未修复）：`@parallel for` / `@gpu for` 并行体直接访问 class/static 属性数组
+## BUG-023（已修复）：`@parallel for` / `@gpu for` 并行体直接访问 class/static 属性数组
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/parallel_prop_access.myp`（`@static class X { property:
-  int[] arr; }` + `@parallel for (int i...) { X.arr[i] = i; }` → 编译失败红）
-- **现象**（实测 2026-08-18）：
-  - `@parallel for` 体内**直接写** class/static 属性数组（`X.arr[i] = i` /
-    `this.arr[i] = i`）→ `LLVM verify failed: GEP base pointer is not a vector or
-    a vector of pointers`（IR `getelementptr i32, i64 0, %0`——GEP 基址是整数 0
-    而非指针，属性访问未解析为数组指针）。
-  - 经 `Atomic.addInt(X.arr, i, i)`（把静态数组当实参）→ 编译通过但**运行段错误
-    139**（3/3 复现，只打印 start 后崩）。
-  - `@gpu for` 体内同样：class 属性数组（`this.data[i]`）→ LLVM verify 失败。
-  - **对照**：并行体用**外层局部数组**（`int[] tally = ...` / manual 示例
-    `double[] data = new double[n]`）→ 正常（含 Atomic 累加、@gpu CPU 回退）；
-    manual BNCT 模式（静态数组先拷局部 `double[] depthDose = TallyData.depthDose`）
-    → 正常。
-- **根因（推测）**：`@parallel for`/`@gpu for` 的变量捕获机制只收集**外层局部变量**
-  （`generateParallelFor` 遍历作用域栈收集 named values 构建捕获 struct）；class/
-  static 属性访问是全局路径，未被捕获进捕获结构体，codegen 生成 GEP 时基址解析
-  失败（落到 i64 0）。应：捕获时也处理属性访问（或报清晰编译错误「并行体不能
-  访问属性，请先拷到局部」）。
-- **影响**：想直接在并行循环里读写 class/static 数组属性的代码无法编译/运行崩溃；
-  常见规避是拷到局部（manual §9 BNCT 示例已用该模式）。
-- **期望语义**：并行体支持属性访问（捕获 this/static 指针），或编译期清晰报错
-  提示「先拷到局部」。
-- **备注**：manual §9 @parallel for 限制与 @gpu for 限制已加说明（并行体只捕获
-  局部变量，属性访问先拷局部）；bug 仅记录于本清单。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因**：`src/codegen/codegen_gpu.cpp` `emitKernelExpr` 的 MemberAccess 静态属性
+  分支要求类名在 `kernel_vars`（并行体只捕获外层局部变量）→ `@static class X` 的
+  `X` 不在其中 → 落到 `i64 0` 占位 → 下标 `X.arr[i]` GEP 基址为整数 0
+  （`getelementptr i32, i64 0, %0`）→ LLVM verify 失败；`Atomic.addInt(X.sum,...)`
+  传 0 占位当数组指针 → 运行段错误 139。
+- **修复**：MemberAccess 静态属性分支直接以模块全局 `__myp_static_<Class>` 为基址
+  GEP 进属性槽（CPU `@parallel` 同模块可直取全局）；`@gpu` 核函数（独立 PTX 模块）
+  仍走捕获的 kernel arg（`kernel_vars` 命中时优先用 arg）。
+- **验证**：回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写 + 读 +
+  `Atomic.addInt` 原子累加，4 断言，3 次运行稳定）；`tests/bugs/parallel_prop_access.myp`
+  移除。全量回归 298 通过 / 0 失败。
+- **备注**：manual §9 @parallel/@gpu 限制说明保持（并行体捕获局部变量 + 属性访问
+  先拷局部的模式仍是最佳实践）；此修复让直接访问静态属性数组成为可能。
 
 ---
 

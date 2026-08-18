@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.12.35 — 修复 BUG-023：@parallel/@gpu 并行体直接访问 static 属性数组
+- **BUG-023 已修复**：`@parallel for` / `@gpu for` 并行体直接读写 `@static class`
+  属性数组（`X.arr[i] = i`）→ `emitKernelExpr` 静态属性分支要求类名在 `kernel_vars`
+  （并行体只捕获外层局部变量）→ 落到 `i64 0` 占位 → 下标 GEP 基址为整数 0 → LLVM
+  verify 失败（`getelementptr i32, i64 0, %0`）；`Atomic.addInt(X.sum,...)` 传 0 占位
+  当数组指针 → 运行段错误 139。
+- **修复**（`src/codegen/codegen_gpu.cpp`）：MemberAccess 静态属性分支直接以模块全局
+  `__myp_static_<Class>` 为基址 GEP 进属性槽（CPU `@parallel` 同模块直取）；`@gpu`
+  核函数（独立 PTX 模块）仍走捕获的 kernel arg（`kernel_vars` 命中时优先）。
+- **回归**：`tests/@test/parallel_prop_access.myp`（静态属性数组写 + 读 +
+  `Atomic.addInt` 原子累加，4 断言，3 次运行稳定）；`tests/bugs/parallel_prop_access.myp`
+  移除。
+- 全量回归 **298 通过 / 0 失败**；自举 94/94。
+
+
 ### v3.12.34 — 修复 BUG-028：类属性带 ARC 初始化器 → 悬垂/双释放
 - **BUG-028 已修复**：`property: Foo f = new Foo();`（class/interface/string/slice/
   数组属性带初始化器）——属性默认值发射（`src/codegen/codegen_expr.cpp`）对 fresh

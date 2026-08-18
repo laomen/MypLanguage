@@ -1401,22 +1401,27 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 auto& oi = static_cast<const IdentifierExpr&>(*e.object);
                 auto sit = static_property_globals_.find(oi.name);
                 if (sit != static_property_globals_.end()) {
-                    // Static class property: access via global struct pointer
+                    // BUG-023: 静态类属性数组在 @parallel for / @gpu for 体内访问。
+                    // 此前要求 X 在 kernel_vars（只捕获外层局部变量）→ 静态类名不在
+                    // → 落到 i64 0 占位 → 下标 GEP 基址为整数 0（LLVM verify 失败：
+                    // "GEP base pointer is not a vector..."）。修复：直接以模块全局
+                    // __myp_static_<Class> 为基址 GEP 进属性槽（CPU @parallel 同模块
+                    // 可直取）；@gpu 核函数（独立 PTX 模块）仍走捕获的 kernel arg。
+                    llvm::Value* st_ptr = sit->second;
                     auto cvit = kernel_vars.find(oi.name);
-                    if (cvit != kernel_vars.end()) {
-                        auto* st_ptr = cvit->second;
-                        // Find the class and property index
-                        for (auto& cls : current_tu_->classes) {
-                            if (cls.name == oi.name) {
-                                unsigned pi = 0;
-                                if (getPropertyIndex(cls.name, e.member_name, pi)) {
-                                    auto* st = getClassStruct(cls.name);
-                                    if (st) {
-                                        auto* gep = kb.CreateStructGEP(st, st_ptr, pi);
-                                        auto* pt = getPropertyType(cls, e.member_name);
-                                        if (pt->isArrayTy()) return gep;
-                                        return kb.CreateLoad(pt, gep);
-                                    }
+                    if (cvit != kernel_vars.end())
+                        st_ptr = cvit->second;
+                    // Find the class and property index
+                    for (auto& cls : current_tu_->classes) {
+                        if (cls.name == oi.name) {
+                            unsigned pi = 0;
+                            if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                                auto* st = getClassStruct(cls.name);
+                                if (st) {
+                                    auto* gep = kb.CreateStructGEP(st, st_ptr, pi);
+                                    auto* pt = getPropertyType(cls, e.member_name);
+                                    if (pt->isArrayTy()) return gep;
+                                    return kb.CreateLoad(pt, gep);
                                 }
                             }
                         }

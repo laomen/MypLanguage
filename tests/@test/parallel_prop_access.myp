@@ -1,0 +1,44 @@
+// BUG-023 回归（正测试）：@parallel for 体内直接访问 class/static 属性数组
+//
+// 旧行为：并行体只捕获外层局部变量（generateParallelFor 收集 named_values 建捕获
+// struct）；`X.arr[i] = i`（@static class 属性数组）未解析为指针 → 落到 i64 0 占位
+// → 下标 GEP 基址为整数 0 → LLVM verify 失败（"GEP base pointer is not a vector..."）；
+// Atomic.addInt(X.sum, 0, 1) 时运行段错误 139。规避曾是先拷到局部（manual BNCT 模式）。
+// 修复：emitKernelExpr MemberAccess 静态属性直接以模块全局 __myp_static_<Class> 为
+// 基址 GEP 进属性槽（CPU @parallel 同模块直取）；@gpu 核函数仍走捕获的 kernel arg。
+
+import test;
+import atomic;
+
+@static class X {
+    property:
+        int[] arr;
+        int[] read;
+        int[] sum;
+    static:
+        void init() {
+            X.arr = new int[100];
+            X.read = new int[100];
+            X.sum = new int[1];
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            X.init();
+            @parallel for (int i = 0; i < 100; i = i + 1) {
+                X.arr[i] = i;              // 静态属性数组写
+                X.read[X.arr[i]] = i;      // 读 + 写
+                Atomic.addInt(X.sum, 0, 1);// 静态属性数组 + 原子累加
+            }
+        }
+}
+
+@test void t() {
+    Main m = new Main();
+    Test.assertEq(X.arr[5], 5);
+    Test.assertEq(X.read[7], 7);
+    Test.assertEq(X.arr[99], 99);
+    Test.assertEq(X.sum[0], 100);
+}
