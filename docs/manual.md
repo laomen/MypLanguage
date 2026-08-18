@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 3.0 | 事件驱动组件语言
+> 版本 3.12 | 事件驱动组件语言
 > 语言规格 v1.0（语法冻结）：正式 EBNF 见 [grammar.md](grammar.md)，版本策略见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
@@ -39,21 +39,82 @@ make -j$(nproc)
 
 ### Hello World
 
+MYP 的事件驱动模型里，输出逻辑放在组件的 action 中（`main` 只做接线，见下）。
+三种等价写法：
+
+**① `@startup` + `mypc run`（最简单，无需 main）**
+
 ```myp
 // hello.myp
 import env;
 
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello, MYP!");
+        }
+}
+```
+
+```bash
+./build/mypc run hello.myp
+# 输出: Hello, MYP!
+```
+
+**② 构造器输出（`@constructor`，`new` 时同步执行）**
+
+```myp
+// hello2.myp
+import env;
+
+class Hello {
+    action:
+        @constructor Hello() {
+            Console.writeLine("Hello, MYP!");
+        }
+}
+
 int main() {
-    Console.writeLine("Hello, MYP!");
+    Hello h = new Hello();   // new 时构造器体执行 → 输出
     return 0;
 }
 ```
 
 ```bash
-./build/mypc hello.myp
-./hello.out
+./build/mypc hello2.myp && ./hello2.out
 # 输出: Hello, MYP!
 ```
+
+**③ 多线程输出（`@thread` 实例，`@startup` 在独立线程启动时执行）**
+
+```myp
+// hello3.myp
+import env;
+
+class Hello {
+    action:
+        @startup void go() {
+            Console.writeLine("Hello from worker thread!");
+        }
+}
+
+int main() {
+    Hello h = new Hello() @thread;   // 独立线程，启动时触发 @startup
+    return 0;
+}
+```
+
+```bash
+./build/mypc hello3.myp && ./hello3.out
+# 输出: Hello from worker thread!
+```
+
+> **main 接线规则**：`main()` 只做"接线"——创建实例 + 声明 `mapping`，**禁止直接调用方法**
+> （在 `main` 里写 `Console.writeLine(...)` 会编译报错
+> `direct function call not allowed in main() — use mapping() instead`）。
+> 逻辑放在组件的 action 里：`@startup` 在实例启动时执行（`mypc run` 对单类文件自动生成
+> `main` 并触发，见 §12；显式写 `main` 时用 `@thread` 实例触发），`@constructor` 在 `new`
+> 时同步执行。
 
 ### 编译选项
 
@@ -142,19 +203,27 @@ var s = "x = $x";            // → "x = 42"
 
 ### 运算符
 
-| 优先级 | 类别 | 运算符 |
-|--------|------|--------|
-| 10 | 赋值 | `=` `+=` `-=` `*=` `/=` `%=` |
-| 9 | 管道 | `\|>` |
-| 8 | 三元 | `? :` |
-| 7 | 逻辑或 | `||` |
-| 6 | 逻辑与 | `&&` |
-| 5 | 等值 | `==` `!=` |
-| 4 | 关系 | `<` `>` `<=` `>=` |
-| 3 | 加法 | `+` `-` |
-| 2 | 乘法 | `*` `/` `%` |
-| 1 | 一元 | `!` `-` `++` `--` |
-| 0 | 后缀 | `.` `[]` `()` `++` `--` |
+| 优先级 | 类别 | 运算符 | 结合性 |
+|--------|------|--------|--------|
+| 15 | 赋值 | `=` `+=` `-=` `*=` `/=` `%=` | 右 |
+| 14 | 管道 | `\|>` | 左 |
+| 13 | 三元 | `? :` | 右 |
+| 12 | 逻辑或 | `\|\|` | 左 |
+| 11 | 逻辑与 | `&&` | 左 |
+| 10 | 按位或 | `\|` | 左 |
+| 9 | 按位异或 | `^` | 左 |
+| 8 | 按位与 | `&` | 左 |
+| 7 | 等值 | `==` `!=` | 左 |
+| 6 | 关系 | `<` `>` `<=` `>=` | 左 |
+| 5 | 移位 | `<<` `>>` | 左 |
+| 4 | 加法 | `+` `-` | 左 |
+| 3 | Range | `..` | 左 |
+| 2 | 乘法 | `*` `/` `%` | 左 |
+| 1 | 一元 | `!` `~` `-` `++` `--` | 右 |
+| 0 | 后缀 | `.` `[]` `()` `++` `--` | 左 |
+
+> 优先级与 C 家族一致（**数值越大越宽松**）：`..`（range）位于加减与乘除之间；`~`
+> 为按位取反（整型/bitvector/bit）；一元 `++`/`--` 亦出现在后缀列（`a++`/`a--`）。
 
 ```myp
 // 复合赋值
@@ -200,8 +269,13 @@ var v = A |> ScaleOp;
 | `float` | 单精度浮点 | 32 |
 | `double` | 双精度浮点 | 64 |
 | `bool` | 布尔值 | 1 |
+| `bit` | 单比特（v3.12，LLVM i1） | 1 |
+| `bitvector<N>` | 定长位向量（N = 8/16/32/64，v3.12，LLVM iN） | N |
 | `string` | 字符串指针 | 指针 |
 | `void` | 无类型 | — |
+
+> `bit`/`bitvector<N>`/`bitfield` 的详细语义见下文「位类型」小节（§三）；`float4`/
+> `double2`/`int4` 向量类型（配 `load4`/`store4` 打包访问）见 `design.md` §3.6。
 
 ### 数字提升（无损隐式 / 有损显式）
 
@@ -540,6 +614,41 @@ void log(string msg) {
 }
 ```
 
+### 枚举与 match（v2.1，additive）
+
+`enum` 声明枚举类型（sealed，变体集合固定）；`match` 按枚举变体匹配（枚举 + 模式匹配）。
+
+```myp
+// 简单枚举
+enum Color { Red; Green; Blue; }
+
+// 带数据的枚举（变体可绑定数据）
+enum Shape {
+    Circle(double radius);
+    Rect(double width, double height);
+}
+
+Color c = Color.Red;
+string label = "";
+match (c) {
+    Color.Red   => { label = "Red"; }
+    Color.Green => { label = "Green"; }
+    Color.Blue  => { label = "Blue"; }
+}
+
+Shape s = Shape.Circle(5.0);
+double r = 0.0;
+match (s) {
+    Shape.Circle(radius) => { r = radius; }   // 绑定单数据
+    Shape.Rect(w, h)     => { r = -1.0; }     // 绑定多属性
+}
+```
+
+- `enum` 变体用 `;` 分隔；变体可携带 0~n 个数据（如 `Circle(double radius)`）。
+- `match` 是**语句**：`match (expr) { EnumName.Variant => { ... } ... }` 逐分支匹配，
+  带数据变体用 `Variant(v1, v2, …)` 绑定数据后使用。
+- 枚举是 sealed（无 else 兜底分支），`match` 需覆盖用到的变体。
+
 ### 异常处理（try / catch / finally / throw）
 
 MYP 用 `try` / `catch` / `finally` / `throw` 做结构化异常处理，机制基于 C `setjmp`/`longjmp`（每 try 独立 handler，线程本地）。
@@ -726,20 +835,6 @@ if (r.isErr()) Console.writeString(r.getErr());
 ---
 
 ## 5. 函数
-
-### 顶层函数
-
-```myp
-int add(int a, int b) {
-    return a + b;
-}
-
-int main() {
-    var result = add(10, 20);  // 30
-    return 0;
-}
-```
-
 ### main 函数规则
 
 `main()` 是程序入口，**有严格的限制**——这是 MYP 事件驱动模型的核心：
@@ -779,6 +874,19 @@ int main(int argc, string[] argv) {
 }
 ```
 
+### 顶层函数
+
+```myp
+int add(int a, int b) {
+    return a + b;
+}
+
+int main() {
+    var result = add(10, 20);  // 30
+    return 0;
+}
+```
+
 ### 泛型函数 (v3.x，additive)
 
 函数名后可带类型参数 `T foo<T>(T x)`；调用时**显式类型实参**或**实参推断**。
@@ -813,13 +921,14 @@ add(1, b = 5, c = 6); // 12
 mul(b = 7, a = 6); // 42（命名实参可乱序）
 
 // 构造器 / 方法 / 静态方法 / struct 构造同样支持
-Rect r = new Rect(h = 5);            // w 用默认 1
-Vec2 v = Vec2(px = 3.0, py = 4.0);   // struct 函数式构造命名实参
+Rect r = new Rect(h = 5);            // 构造器命名实参（w 用默认 1）
+Vec2 v = Vec2(3.0, 4.0);             // struct 函数式构造（位置实参；命名实参不支持）
 g.greet(name = "Al", suffix = "?");  // 方法命名实参
 Greeter.scale(5);                    // 静态方法省略默认参数 f=2
 ```
 
-- 适用：顶层函数、类方法（`action:`/`function:`）、静态方法、构造器（`new`）、struct 构造。
+- 适用：顶层函数、类方法（`action:`/`function:`）、静态方法、构造器（`new`）、struct 构造（仅位置实参）。
+- **struct 函数式构造**（`Vec2(3.0, 4.0)`）需先声明 `@constructor`（见 §9），且**不支持命名实参**（命名实参重解释仅对函数/方法/构造器生效）。
 - **位置实参按序填前 N 个形参，命名实参按名填入**；同一形参不能同时被位置与命名提供。
 - 默认表达式在**调用点**求值（通常为常量）；声明期校验默认值类型与形参兼容。
 - `name = value` 在实参位置按赋值表达式解析，语义阶段按「目标标识符匹配形参名」重解释
@@ -879,9 +988,10 @@ c(0);                        // 2
 
 ## 6. Class 组件系统
 
-### 三段式结构
+### 四段式结构
 
-MYP 的 class 是事件驱动组件，包含三个段：
+MYP 的 class 是组件单元，包含四个主要段 `action:` / `event:` / `property:` /
+`function:`（另有 `static:` 与 `struct:` 段，见下「段规则」）：
 
 ```myp
 class Sensor {
@@ -892,6 +1002,9 @@ class Sensor {
     event:           // 可触发的事件（发送消息）
         valueRead(float temp);
         thresholdExceeded(float value);
+
+    function:        // 内部方法（不参与 mapping，仅供类内调用）
+        void calibrate() { }
 
     property:        // 内部状态（私有）
         int sensorId;
@@ -909,6 +1022,7 @@ class Sensor {
 | `property:` | 成员变量 | 仅变量声明 |
 | `function:` | 内部方法 | 仅类内部可调用 |
 | `static:` | 静态方法 | 无需实例，`ClassName.method()` 调用 |
+| `struct:` | 嵌套结构体 | 字段/方法定义（见 §7） |
 
 ### Interface 接口多态 (v2.3)
 
@@ -1190,6 +1304,10 @@ struct Sensor::Config {
 }
 ```
 
+> **两种写法是替代关系**：要么在类内 `struct Config { ... }` 声明（外部用
+> `Sensor::Config` 引用），要么在文件级用 `struct Sensor::Config { ... }` 限定定义
+> （类内不再声明）。**不要同时写两处**（属重复定义）。
+
 ### struct vs class
 
 | 维度 | `struct` | `class` |
@@ -1399,7 +1517,7 @@ int[1000] tally;
 
 #### 限制
 
-- 循环变量用 `int`（`long` 自动截断为 int32）
+- 循环变量可用 `int` 或 `long`（`long` 索引自动转换）
 - 每个迭代必须**无数据依赖**
 - 不支持 `break` / `continue`
 - 循环边界在进入时确定
@@ -1655,11 +1773,12 @@ int main() {
 - **执行顺序**：`new` 时 分配实例 → 应用 property 默认值 → 调用构造器体（可覆写默认值）。
 - **泛型**：`new Box<double>(1.5)` 绑定单态化实例类的构造器，`T` 正确解析为 double。
 - **struct**：函数式构造 `Vec2(1.0, 2.0)`——像调用函数一样创建栈上 struct 值。
-- **深拷贝**：显式 `copy()` 约定方法（引用别名 `A b = a;` 不拷贝，见 `docs/constructor.md`）。
+- **深拷贝**：显式 `copy()` 约定方法（引用别名 `A b = a;` 不拷贝，见 design.md §6.5
+  拷贝构造器）。
 
 **构造器 ≠ `@startup`**：构造器管**初始化**（`new` 时同步执行）；`@startup` 管**开始操作**
 （并行/事件驱动代码中实例的线程/事件循环启动时执行，见下节）。两者正交、互不取代。
-设计详见 `docs/constructor.md`。
+设计详见 design.md §6.5。
 
 ### @startup 注解
 
@@ -1679,7 +1798,7 @@ class Worker {
 > **`@startup` 是启动信号，不是初始化器**：它在实例的线程/事件循环**开始操作**时执行
 > （如 `@thread` 启动、启动定时器、触发首事件）。对象**初始化**（设字段/分配资源/校验）
 > 走构造器（`@constructor` 注解或函数名==类名）——`new ClassName(args)` 时自动调用。
-> 两者正交、互不取代；设计见 `docs/constructor.md`。
+> 两者正交、互不取代；设计见 design.md §6.5。
 
 ### 线程模型
 
@@ -1751,6 +1870,10 @@ Console.writeBool(true);        // 输出布尔值
 Console.readString();           // 从 stdin 读一行
 Console.kbhit();                // 非阻塞键盘检测
 Console.getch();                // 非阻塞读一个字符
+Console.flush();                // 刷新输出缓冲
+Console.getEnv("HOME");         // 读环境变量（无则空串）
+Console.setEnv("KEY", "val");   // 设置环境变量（0=成功）
+Console.unsetEnv("KEY");        // 删除环境变量
 ```
 
 ### `import option` — 可空容器（v3.9.0）
@@ -1771,6 +1894,26 @@ some.clear();                          // 变回 none
 ```
 
 > 与元组/一等函数组合：`Option<R> mapOpt<T, R>(Option<T> o, (T) -> R f)`（见 §5 一等函数）。
+
+### `import result` — 值式错误（v3.9.0）
+
+`Result<T, E>` 是 Ok(值)/Err(错误) 二态容器，错误作为返回值显式传递（详细设计/组合子见 §4）。
+
+```myp
+import result;
+
+Result<int, string> ok  = new Result<int, string>(42);   // ok
+Result<int, string> bad = new Result<int, string>();     // err
+bad.setErr("oops");
+
+if (ok.isOk())   Console.write(ok.get());        // 42
+if (bad.isErr()) Console.writeString(bad.getErr());  // "oops"
+int v = bad.getOr(-1);                          // 安全取用 → -1
+```
+
+工厂（顶层泛型函数）：`resultOk<T,E>(v)` / `resultErr<T,E>(e)`；组合子
+`resultMap` / `resultAndThen` / `resultMapErr`；异常桥 `resultTry<T>(() => { ... })`
+把可能抛异常的调用转成 `Result<T, string>`（`throw "msg"` → `err(msg)`）。
 
 ### `import collections` — 集合类型
 
@@ -1802,6 +1945,34 @@ s.remove(17);
 int sz = s.size();
 ```
 
+### `import setops` — 集合算子统一契约
+
+把“变换”抽象为统一接口：任何算子（缩放/激活/过滤/归约…）只要实现 `transform`，
+即可作为集合流水线的一环复用（算子内部逐元素/尺寸变化/过滤自由实现）。
+
+```myp
+import setops;
+
+// SetOp 契约已由模块提供：double[] transform(double[] A)
+// 实现类只需 interface class SetOp + transform 即可接入集合流水线
+class ScaleOp {
+    interface class SetOp;
+    action:
+        double[] transform(double[] A) {
+            // 内部任意变换（示例：原样返回；真实实现做缩放等）
+            return A;
+        }
+    property:
+        double k = 2.0;
+}
+
+// 单算子:        double[] B = op.transform(A);
+// 流水线组合:    double[] B = op2.transform(op1.transform(A));  // A ->op1-> op2-> B
+```
+
+> 统一算子模型（运算符 = 算子）见 `docs/operators.md`；与 mapping 的事件算子呼应：
+> 事件流算子处理标量事件，集合算子处理集合变换。
+
 ### `import math` — 数学函数
 
 ```myp
@@ -1814,7 +1985,7 @@ Math.cos(3.14159);      // ~-1
 Math.pow(2.0, 10.0);    // 1024.0
 Math.max(10, 20);       // 20
 Math.min(10, 20);       // 10
-Math.absInt(-42);       // 42
+Math.abs(-42);          // 42（absInt 已由泛型 abs 取代，int 实参返回 int）
 ```
 
 ### `import time` — 时间与定时器
@@ -2002,13 +2173,18 @@ f.open("out.txt", "w");             // 打开文件写
 f.write("hello");                   // 写字符串（无换行）
 f.writeLine("world");               // 写字符串 + 换行
 
-// 二进制 I/O（通过 __myp_io_* intrinsics）
-int byte = __myp_io_read_byte();
-int i32  = __myp_io_read_i32be();
-__myp_io_write_byte(0xFF);
-__myp_io_write_i32be(42);
-__myp_io_write_double(3.14);
-double d = __myp_io_read_double();
+// 二进制 I/O（File 方法；`__myp_io_*` 为 stdlib 内部 intrinsic，用户代码不可直接调用）
+File fb = new File();
+fb.open("data.bin", "rb");
+int b8 = fb.readByte();           // 读 1 字节
+int i32  = fb.readI32BE();        // 读 4 字节大端整数
+fb.close();
+
+fb.open("out.bin", "wb");
+fb.writeByte(0xFF);               // 写 1 字节
+fb.writeI32BE(42);                // 写大端 4 字节整数
+fb.writeDouble(3.14);             // 写 8 字节 double
+fb.close();
 ```
 
 ### `import stream` — 流式数据源
@@ -2016,15 +2192,20 @@ double d = __myp_io_read_double();
 ```myp
 import stream;
 
-// RangeStream: 整数范围迭代
-RangeStream rs = new RangeStream(0, 10, 1);
-while (rs.hasNext()) {
-    int v = rs.next();
+// 流式数据源：run() 遍历数据源并触发 valueEmitted 事件，经 mapping() 对接消费方
+RangeStream rs = new RangeStream();      // 整数范围 [start, end) 逐值发射
+IntStream is = new IntStream();          // int[] 逐元素发射
+DoubleStream ds = new DoubleStream();    // double[] 逐元素发射
+
+mapping() {
+    rs.valueEmitted -> Console.write;        // int
+    is.valueEmitted -> Console.write;        // int
+    ds.valueEmitted -> Console.writeFloat;   // double
 }
 
-// IntStream / DoubleStream: 数组流式封装
-int[] data = new int[5];
-IntStream is = new IntStream(data, 5);
+rs.run(0, 10);        // 发射 0,1,...,9
+is.run(data, n);      // 发射 data[0..n-1]
+ds.run(data, n);      // 发射 data[0..n-1]
 ```
 
 ### `import barrier` — 屏障同步
@@ -2547,15 +2728,59 @@ Stopwatch sw = new Stopwatch();  sw.start();  ...  sw.elapsed();
 import sdl;
 
 // 基于 SDL2 的窗口和输入管理
-SDL.init("Title", 800, 600);            // 创建窗口
-while (!SDL.shouldClose()) {
+SDL.open("Title", 800, 600);            // 创建窗口
+while (SDL.running()) {
     SDL.clear(0, 0, 0, 255);            // 清屏
-    // ... 绘制 ...
+    SDL.drawRect(10, 10, 100, 50, 255, 0, 0, 255);  // 实心矩形
+    SDL.drawLine(0, 0, 800, 600, 0, 255, 0, 255);   // 线段
     SDL.present();                       // 刷新
 }
-SDL.quit();
+SDL.close();                            // 关闭窗口
 
 int key = SDL.getKey();                  // 获取按键
+int w = SDL.width();  int h = SDL.height();  // 窗口尺寸
+```
+
+### `import gpu` — GPU 高层 API（L1 数组原语 + L3 子模块）
+
+`import gpu` 提供 `Gpu` 静态类：host 数组原语，自动 GPU 加速；无 GPU / 未设
+`MYP_GPU=1` 时**回退 CPU**，结果一致。
+
+```myp
+import gpu;
+
+Gpu.add(a, b, out, n);          // out = a + b
+Gpu.sub(a, b, out, n);          // out = a - b
+Gpu.mul(a, b, out, n);          // out = a .* b（逐元素）
+Gpu.scale(data, s, n);          // data[i] *= s
+Gpu.addScalar(data, s, n);      // data[i] += s
+Gpu.saxpy(3.0, x, y, out, n);   // out[i] = 3.0*x[i] + y[i]
+Gpu.copy(dst, src, n);          // dst = src
+Gpu.negate(data, n);            // data = -data
+Gpu.clamp(data, lo, hi, n);     // data = clamp(data, lo, hi)
+Gpu.sum(a, n);                  // Σ a[i]
+Gpu.dot(a, b, n);               // 内积
+Gpu.mean(a, n);  Gpu.variance(a, n);  Gpu.stddev(a, n);
+Gpu.norm(a, n);  Gpu.normSquared(a, n);  Gpu.normalize(data, n);
+Gpu.gemm(A, B, C, m, n, k);     // 矩阵乘（扁平行主序 double[]）
+Gpu.sqrt(data, n);  Gpu.exp(data, n);  Gpu.log(data, n);  Gpu.abs(data, n);  Gpu.pow(data, p, n);
+```
+
+> **L3 — `gpu/` 子模块（点分导入，显式显存管理）**：
+> - `import gpu.memory;` — `GpuBuffer`/`GpuBufferF`（显存缓冲）、`GpuPool`（缓冲池）
+> - `import gpu.ops;` — `GpuOps` 设备端算子（`*D` 直接吃 devicePtr）
+> - `import gpu.stream;` — `GpuStream`/`GpuEvent`（异步流/事件）
+> - `import gpu.algo;` — `GpuAlgo` 数据并行算法（histogram/compact/unique）
+> - `import gpu.graph;` — `GpuGraph`/`GpuGraphExec`（CUDA Graph 捕获/回放）
+> - `import gpu.byoc;` — `GpuByoc`/`GpuLib`（BYOC 自编译 kernel + cuBLAS）
+> - `import gpu.device;` — `GpuDevice`（设备属性查询）
+
+```myp
+import gpu.memory;
+
+double[] host = new double[1024];
+GpuBuffer buf = new GpuBuffer(host, 1024);   // 包装 host 数组 → 显存
+buf.copyToHost(host, 0, 0, 1024);            // 显存 → host
 ```
 
 ### `import ui` — 终端 TUI 框架
@@ -2636,6 +2861,7 @@ class Hello {
 | `--trace` | 启用运行时事件追踪 |
 | `--package-path <dir>` | 本地包目录 |
 | `--macro-expand` | 宏展开后输出 AST dump |
+| `--frontend-dump <tokens|ast|sema>` | 确定性前端转储（自举编译器 Oracle 契约）|
 | `--stdlib <path>` | stdlib 目录 |
 | `--version` / `--help` | 版本 / 帮助 |
 
@@ -3009,13 +3235,16 @@ import math;
 // === 传感器组件 ===
 class TempSensor {
     action:
+        @constructor TempSensor() {
+            t = new Timeline();
+        }
         @startup void run() {
             // 每 2 秒读取一次温度
             t.startInterval(2000);
         }
         double readValue() {
             // 模拟温度读数
-            return 20.0 + Math.sin(Timeline.now() / 1000.0) * 5.0;
+            return 20.0 + Math.sin(t.now() / 1000.0) * 5.0;
         }
     event:
         temperatureRead(double value);
@@ -3074,8 +3303,6 @@ int main() {
     Alarm alarm = new Alarm();
     Logger logger = new Logger();
     Display display = new Display();
-
-    sensor.t = new Timeline();
 
     mapping() {
         // 温度读取 → 显示和日志

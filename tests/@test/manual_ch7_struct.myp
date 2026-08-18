@@ -1,0 +1,130 @@
+// manual_ch7_struct.myp — 手册 §7 Struct 数据结构 核对回归（2026-08-18 审计固化）
+//   覆盖：文件级 struct/方法/this 读+写（BUG-019 修复）/返回 struct/兄弟方法/
+//   嵌套 struct（类内 + Sensor::Config 引用 + 文件级限定定义）/struct vs class 表。
+//   注：不与 import collections/option 同文件（class 含泛型属性时 this 解析污染，
+//   见 tests/bugs/ 与 BUGLIST BUG-020）。
+import test;
+import math;
+
+// --- 1) 文件级 struct：字段 + 方法（无 section 标记，字段与方法直接并列）---
+struct Vec2 {
+    double x;
+    double y;
+    double length() {
+        return Math.sqrt(x * x + y * y);
+    }
+}
+
+@test void t_filestruct() {
+    Vec2 v;
+    v.x = 3.0;
+    v.y = 4.0;
+    var len = v.length();   // var 类型推断
+    Test.assertFloatEq(len, 5.0, 1e-9, "filestruct+var");
+}
+
+// --- 2) this 关键字：读 + 写 ---
+struct MyStruct {
+    double x;
+    void setX(double v) { this.x = v; }
+    double getX() { return this.x; }
+}
+
+@test void t_this() {
+    MyStruct m;
+    m.setX(7.0);
+    Test.assertFloatEq(m.x, 7.0, 1e-9, "this 写字段生效");
+    Test.assertFloatEq(m.getX(), 7.0, 1e-9, "this 读");
+}
+
+// --- 3) 返回 struct 类型 ---
+struct Inner { double val; }
+struct Outer {
+    Inner inner;
+    Inner getInner() {
+        return inner;
+    }
+}
+
+@test void t_retstruct() {
+    Outer o;
+    o.inner.val = 3.14;
+    Inner i = o.getInner();
+    Test.assertFloatEq(i.val, 3.14, 1e-9, "return-struct");
+}
+
+// --- 4) 兄弟方法互相调用 ---
+struct Helper {
+    double calc(double x) { return x * 2.0; }
+    double process(double v) {
+        return calc(v) + 1.0;
+    }
+}
+
+@test void t_sibling() {
+    Helper h;
+    Test.assertFloatEq(h.process(5.0), 11.0, 1e-9, "sibling-method");
+}
+
+// --- 5a) 嵌套 struct：类内裸 struct + 外部 Sensor::Config 引用 ---
+class Sensor {
+    struct Config {
+        int rate;
+        bool enabled;
+    }
+}
+
+@test void t_nested_class() {
+    Sensor::Config c;
+    c.rate = 60;
+    c.enabled = true;
+    Test.assertEq(c.rate, 60, "nested rate");
+    Test.assert(c.enabled, "nested enabled");
+}
+
+// --- 5b) 文件级限定定义（类外部展开）：struct Sensor::Config { ... } ---
+//   （C++ parser 曾因 current_-- 回退使 parseStruct 限定分支不可达 →
+//     "expected struct name"；自举支持，现已修复）
+class Device {
+}
+
+struct Device::Mode {
+    int code;
+}
+
+@test void t_nested_qualified() {
+    Device::Mode m;
+    m.code = 9;
+    Test.assertEq(m.code, 9, "qualified-only");
+}
+
+// --- 6) struct vs class 表：值拷贝 vs 引用 ---
+struct Point { int x; int y; }
+void mutateStruct(Point p) { p.x = 99; }   // 值拷贝
+
+class CRef {
+    action:
+        void setV(int v) { val = v; }
+        int getV() { return val; }
+    property:
+        int val;
+}
+void mutateClass(CRef c) { c.setV(99); }   // 引用
+
+@test void t_value_copy() {
+    Point p;
+    p.x = 1; p.y = 2;
+    Point q = p;
+    q.x = 5;
+    Test.assertEq(p.x, 1, "struct copy 原值不变");
+    mutateStruct(p);
+    Test.assertEq(p.x, 1, "struct 传值形参修改不影响实参");
+
+    CRef c = new CRef();
+    c.setV(7);
+    CRef d = c;
+    d.setV(8);
+    Test.assertEq(c.getV(), 8, "class 引用 d 修改 c 可见");
+    mutateClass(c);
+    Test.assertEq(c.getV(), 99, "class 传引用形参修改影响实参");
+}

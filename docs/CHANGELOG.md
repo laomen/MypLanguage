@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.12.15 — 手册 §7 审计修复：`this.field = value` 写 + 文件级限定 struct 定义
+- **BUG-019（C++ codegen）**：`this.field = value`（struct 方法与 class 方法）此前
+  编译报 `not a valid assignment target`。根因：`generateAssignment` 的 `if (!op)` 块
+  闭合花括号错位，把「struct 方法 this.field」与「class this.prop」两个分支（都需
+  **非空** `op` = this 指针）误嵌套进 `if (!op)`（~1988–2271）；`this.x = v` 时 op
+  非空 → 整块跳过 → 落到错误。修复：`if (!op)` 在链式/数组元素分支后闭合，struct/
+  class 分支移到块外。自举 `myp_self` 本就支持 → C++ 专属。验证：
+  `tests/@test/manual_ch7_struct.myp` t_this；`tests/test_smart_building.myp`（大量
+  `this.count = s`）转绿；全量回归 281 通过（3 个自举工具因 build/ 缺二进制 exit 127
+  的既有环境失败，无关）。
+- **BUG-020（C++ parser）**：文件级限定 struct 定义 `struct A::B { }` 此前报
+  `expected struct name`（EBNF 与自举 parser 均支持 → C++ 专属）。根因：顶层 struct
+  分发 `current_--` 回退到 `struct` 关键字后调 `parseStruct()`，其内部限定检查
+  `check(Identifier)` 看到的是关键字而非名称 → 限定分支永不命中。修复：删除回退，
+  直接 `parseStruct()`。验证：`tests/@test/manual_ch7_struct.myp` t_nested_qualified。
+- **新发现未修复**：BUG-021 class 含泛型类属性（`Option<int>` 等）时 `this.prop`
+  sema 解析污染（`class 'X_inst' has no member`，复现 `tests/bugs/this_generic_prop.myp`）；
+  BUG-022 `@thread` 用于 struct 实例被静默接受（应拒绝却接受）。均登记
+  `tests/BUGLIST.md`。
+- **§7 审计回归**：`tests/@test/manual_ch7_struct.myp`（7 tests / 12 断言）覆盖
+  文件级 struct/方法/var 推断/this 读+写/返回 struct/兄弟方法/嵌套 struct
+  （类内 + `Sensor::Config` 引用 + 文件级限定定义）/struct vs class 值拷贝与引用。
+
 ### v3.12.14 — 自举编译器 P3-4/P2 向量化缺口闭合：opt 加 `-mtriple` 启用 TTI
 - **症状**：myp_self2 编译产物平均慢 mypc ~14%，最坏数值循环 matmul **2.43x**（SSE2
   `mulpd`/`addpd` vs 纯标量 `mulsd`/`addsd`）。
@@ -1348,7 +1371,7 @@
   - 修复既有 bug：`generateMemberAccess` 对类实例局部变量的 `.property` 访问错误返回
     实例指针（`c.data_[i]` 写入实例内存）；`checkStructMethods` 排除构造器为兄弟方法
     （其名==struct 名遮蔽 struct 类型名）。
-  - 设计见 `docs/constructor.md`；测试 `tests/constructor/` + `tests/copy/`。
+  - 设计内联见 design.md §6.5；测试 `tests/constructor/` + `tests/copy/`。
 - **@startup → 构造器迁移（不留 legacy）**：
   - stdlib 8 文件（`json`/`fs.Path`/`logger`/`net.TcpServer`/`net.TcpClient`/`regex`/
     `text.StringBuilder`/`time.Timer`）+ `stream`×3 与 `layers`×2 空占位删除。

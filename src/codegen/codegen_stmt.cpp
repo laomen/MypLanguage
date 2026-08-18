@@ -2182,6 +2182,11 @@ assign_gep:
                 }
             }
         }
+        }   // end of `if (!op)`: the struct/class `this.field = value` handling
+            // below needs the (non-null) `this` pointer, so it must live OUTSIDE
+            // `if (!op)`. Nesting it inside made `this.x = value` (op non-null)
+            // skip the whole block and fall through to "not a valid assignment
+            // target".
         // Struct method: this.field = value
         if (struct_types_.count(current_class_name_)) {
             auto* st = getStructType(current_class_name_);
@@ -2264,7 +2269,6 @@ assign_gep:
         }
         diag_.error(e.range, "unknown property '" + ma.member_name + "'");
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
-    }
     diag_.error(e.range, "not a valid assignment target");
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), 0);
 }

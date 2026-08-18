@@ -29,18 +29,15 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
             auto cls = parseClass();
             if (cls) tu->classes.push_back(std::move(*cls));
         } else if (match(TokenKind::Keyword_struct)) {
-            // Check if it's ClassName::StructName form
-            if (check(TokenKind::Identifier) && tokens_[current_ + 1].kind == TokenKind::DoubleColon) {
-                // External struct definition: ClassName::StructName { fields }
-                // Push back struct token and let parseStruct handle qualified names
-                current_--; // go back to 'struct'
-                auto st = parseStruct();
-                if (st) tu->structs.push_back(std::move(*st));
-            } else {
-                // File-level struct
-                auto st = parseStruct();
-                if (st) tu->structs.push_back(std::move(*st));
-            }
+            // parseStruct handles both file-level (`struct Name { }`) and
+            // qualified (`struct ClassName::StructName { }`) definitions —
+            // current_ is already past `struct` and points at the struct name.
+            // (No cursor rewind here: rewinding to `struct` made parseStruct's
+            // internal qualified check see the `struct` keyword instead of the
+            // name, so `struct A::B { }` always failed with "expected struct
+            // name".)
+            auto st = parseStruct();
+            if (st) tu->structs.push_back(std::move(*st));
         } else if (match(TokenKind::Keyword_bitfield)) {
             // bitfield Flags { bit a; bit[6] r; } —— 结构体位域（§5.1）
             auto bf = parseBitfieldDecl();
