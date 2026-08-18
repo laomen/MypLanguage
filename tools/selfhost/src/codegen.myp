@@ -95,6 +95,7 @@ class CodeGen {
             warnings_ = new ArrayList<string>();
             testMode_ = 0;
             curFnCoro_ = 0;
+            curFnIsCtor_ = 0;
             gpuCpuFallback_ = 0;
             gpuCpuLoopVarA_ = "";
             gpuCpuLoopVarLt_ = "";
@@ -497,24 +498,63 @@ class CodeGen {
             return fv;
         }
 
-        // 具体类实例 ptr → 接口 fat pointer（无法识别具体类则直通原值）。
-        string upcastIface(AstExpr argE, string ifaceName, string argV) {
-            string clsName = "";
-            if (argE != null && argE.kind() == "New") {
-                clsName = argE.className();
-                if (Str.len(argE.resolvedClass()) != 0) clsName = argE.resolvedClass();
-            } else if (argE != null && argE.kind() == "Identifier") {
-                AstType ivt = varAstType(argE.name());
+        // BUG-029 镜像：接口 fat pointer 的具体类名解析（New / Identifier，含
+        // 当前类属性字段兜底——此前只查局部/参数，类字段转接口 → null vtable）。
+        string upcastClsName(AstExpr e) {
+            if (e == null) return "";
+            if (e.kind() == "New") {
+                string cn = e.className();
+                if (Str.len(e.resolvedClass()) != 0) cn = e.resolvedClass();
+                return cn;
+            }
+            if (e.kind() == "Identifier") {
+                string nm = e.name();
+                AstType ivt = varAstType(nm);
                 if (ivt != null) {
                     AstType irt = resolveType(ivt);
                     if (irt != null && Str.len(irt.className()) != 0
                         && isInterfaceName(irt.className()) == 0
                         && isStructName(irt.className()) == 0
                         && isEnumName(irt.className()) == 0) {
-                        clsName = classInstName(irt);
+                        return classInstName(irt);
+                    }
+                }
+                // BUG-029：当前类属性字段（裸名）→ 按属性声明类型解析
+                if (Str.len(curClass_) != 0 && tu_ != null) {
+                    AstType pvt = propAstType(curClass_, nm);
+                    if (pvt != null) {
+                        AstType prt = resolveType(pvt);
+                        if (prt != null && Str.len(prt.className()) != 0
+                            && isInterfaceName(prt.className()) == 0
+                            && isStructName(prt.className()) == 0
+                            && isEnumName(prt.className()) == 0) {
+                            return classInstName(prt);
+                        }
                     }
                 }
             }
+            // BUG-029：this.字段（Member + This 对象）→ 按属性声明类型解析
+            if (e.kind() == "Member" && Str.len(curClass_) != 0 && tu_ != null) {
+                AstExpr obj = e.array();
+                if (obj != null && obj.kind() == "This") {
+                    AstType pvt = propAstType(curClass_, e.memberName());
+                    if (pvt != null) {
+                        AstType prt = resolveType(pvt);
+                        if (prt != null && Str.len(prt.className()) != 0
+                            && isInterfaceName(prt.className()) == 0
+                            && isStructName(prt.className()) == 0
+                            && isEnumName(prt.className()) == 0) {
+                            return classInstName(prt);
+                        }
+                    }
+                }
+            }
+            return "";
+        }
+
+        // 具体类实例 ptr → 接口 fat pointer（无法识别具体类则直通原值）。
+        string upcastIface(AstExpr argE, string ifaceName, string argV) {
+            string clsName = upcastClsName(argE);
             if (Str.len(clsName) != 0) return buildIfaceFat(argV, ifaceName, clsName);
             return argV;
         }
@@ -1635,7 +1675,10 @@ class CodeGen {
 
         // 构造器：Class_Class_<paramTypes>(ptr this, params...)。
         void genConstructor(string cls, AstAction a) {
+            // BUG-030 镜像：构造器入口注册 this（genFuncBody 序言发射）
+            curFnIsCtor_ = 1;
             genInstanceActionNamed(cls + "_" + a.name() + mangleParams(a.params()), cls, a);
+            curFnIsCtor_ = 0;
         }
 
         // function 段方法：Class_name(ptr this, params...)（实例方法，同 C++）。
@@ -3387,6 +3430,14 @@ class CodeGen {
                 int al = IrEmit.alignOf(lt);
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
+            // BUG-030 镜像：构造器入口把 this 注册进 __myp_inst_<Class>（mapping
+            // 目标存在时），使构造器内触发的 mapping 事件派发到当前实例；随后
+            // 复位标志，避免嵌套 lambda 体继承（普通 action 恒 0）。
+            if (curFnIsCtor_ != 0 && Str.len(curClass_) != 0
+                && hasInstanceGlobal(curClass_) != 0) {
+                sb_.append("  store ptr %this, ptr @__myp_inst_" + curClass_ + "\n");
+            }
+            curFnIsCtor_ = 0;
             // @region：入口 materialize 一个 region chunk（myp_arena_mark），
             // 出口 myp_arena_release 释放回基线（同 C++ emitRegionEnter/Exit）。
             if (isRegion != 0) {
@@ -6308,22 +6359,8 @@ class CodeGen {
                             AstExpr initE = v.init();
                             string iv = genExpr(initE);
                             string it = exprLlvmType(initE);
-                            string clsName = "";
-                            if (initE.kind() == "New") {
-                                clsName = initE.className();
-                                if (Str.len(initE.resolvedClass()) != 0) clsName = initE.resolvedClass();
-                            } else if (initE.kind() == "Identifier") {
-                                AstType ivt = varAstType(initE.name());
-                                if (ivt != null) {
-                                    AstType irt = resolveType(ivt);
-                                    if (irt != null && Str.len(irt.className()) != 0
-                                        && isInterfaceName(irt.className()) == 0
-                                        && isStructName(irt.className()) == 0
-                                        && isEnumName(irt.className()) == 0) {
-                                        clsName = classInstName(irt);
-                                    }
-                                }
-                            }
+                            // BUG-029 镜像：含当前类属性字段兜底的类名解析
+                            string clsName = upcastClsName(initE);
                             if (it == "{ ptr, ptr }") {
                                 // 已是接口值（函数返回接口/另一接口变量）→ 整体拷贝
                                 sb_.append("  store { ptr, ptr } " + iv + ", ptr " + va + "\n");
@@ -10427,6 +10464,9 @@ class CodeGen {
         ArrayList<string> warnings_;
         int testMode_;
         int curFnCoro_;
+        // BUG-030 镜像：当前函数是否为构造器（构造器入口把 this 注册进
+        // __myp_inst_<Class>，使构造器内 mapping 事件派发到当前实例）。
+        int curFnIsCtor_;
         int curFnRegion_;
         string curRegionMark_;
         int parallelCounter_;

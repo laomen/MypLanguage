@@ -474,11 +474,49 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
                 auto vit = var_class_map_.find(id.name);
                 if (vit != var_class_map_.end()) cls_name = vit->second;
             }
-            // Look up or find class name from the expression type
-            if (cls_name.empty() && d.init_expr->kind == ExprKind::Identifier) {
-                auto& id = static_cast<const IdentifierExpr&>(*d.init_expr);
-                auto vit = var_class_map_.find(id.name);
-                if (vit != var_class_map_.end()) cls_name = vit->second;
+            // BUG-029: init 是类属性字段（裸名 `c` / `this.c` / 其他实例字段）时，
+            // var_class_map_ 只记录局部变量 → 查不到 → 曾落入 else 分支存
+            // {inst, null vtable} → 派发段错误。此处按（a）当前类属性表 /（b）
+            // sema 解析的表达式类型 取具体类名（含泛型 mangling，与局部变量一致）。
+            if (cls_name.empty()) {
+                // (a) 当前类属性：裸名 / this.field（确定性，不依赖 expr->type）
+                if (current_tu_ && !current_class_name_.empty()) {
+                    std::string field;
+                    if (d.init_expr->kind == ExprKind::Identifier) {
+                        field = static_cast<const IdentifierExpr&>(*d.init_expr).name;
+                    } else if (d.init_expr->kind == ExprKind::MemberAccess) {
+                        auto& ma = static_cast<const MemberAccessExpr&>(*d.init_expr);
+                        if (ma.object && ma.object->kind == ExprKind::ThisExpr)
+                            field = ma.member_name;
+                    }
+                    if (!field.empty()) {
+                        for (auto& cls : current_tu_->classes) {
+                            if (cls.name != current_class_name_) continue;
+                            for (auto& p : cls.properties) {
+                                if (p.name != field || p.type.class_name.empty()) continue;
+                                std::string cn = p.type.class_name;
+                                if (!p.type.type_args.empty()) {
+                                    for (auto& ta : p.type.type_args)
+                                        cn += "_" + mangleConcreteTypeNode(ta);
+                                    cn += "_inst";
+                                }
+                                if (getClassStruct(cn)) { cls_name = cn; break; }
+                            }
+                            if (!cls_name.empty()) break;
+                        }
+                    }
+                }
+                // (b) 表达式类型兜底（其他实例字段等）
+                if (cls_name.empty() && d.init_expr->type &&
+                    !d.init_expr->type->class_name.empty()) {
+                    std::string cn = d.init_expr->type->class_name;
+                    if (!d.init_expr->type->type_args.empty()) {
+                        for (auto& ta : d.init_expr->type->type_args)
+                            cn += "_" + mangleConcreteTypeNode(ta);
+                        cn += "_inst";
+                    }
+                    if (getClassStruct(cn)) cls_name = cn;
+                }
             }
             if (!cls_name.empty()) {
                 var_class_map_[d.name] = cls_name;

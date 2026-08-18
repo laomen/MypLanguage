@@ -959,6 +959,14 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     auto* this_a = createEntryBlockAlloca(func, llvm::PointerType::get(ctx_, 0), "this");
     builder_.CreateStore(func->getArg(0), this_a);
     setNamedValue("this", this_a);
+    // BUG-030: 构造器入口把 this 注册进类的 mapping 全局（__myp_inst_<Class>），
+    // 使构造器内触发的 mapping 事件能派发到当前实例。此前该全局在构造完成后才由
+    // 调用方 generateVarDecl 写入 → 构造器内派发读空/旧指针 → 段错误。
+    if (action.has_constructor) {
+        auto git = class_instance_globals_.find(cls.name);
+        if (git != class_instance_globals_.end())
+            builder_.CreateStore(func->getArg(0), git->second);
+    }
     // BUG-002: @coro 协程比调用方作用域长寿——`this`（类引用）被借用，调用方
     // 释放后协程仍持有悬垂指针。retain 并注册为 ARC 槽（协程完成时释放）。
     if (current_is_coro_) {

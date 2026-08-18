@@ -1,0 +1,46 @@
+// BUG-029 复现：类字段直接转 interface → 坏胖指针（vtable 丢失）→ 派发段错误 / 内存损坏
+// ---------------------------------------------------------------------------
+// 修复前：`Shape s = c;`（c 为类属性）编译通过，但运行时接口分派/ARC 释放崩溃
+//         （`free(): invalid pointer` / 段错误 139）。
+// 修复后：按当前类属性表解析字段的具体类名并构建 vtable → 分派正常返回 7。
+// 根因/修复见 tests/BUGLIST.md BUG-029。本文件同时是修复后的回归（tests/bugs/
+// 预期全绿）。
+import test;
+import env;
+import fmt;
+
+interface Shape {
+    int area();
+}
+
+class Circle {
+    interface class Shape;
+    action:
+        @constructor Circle() {}
+        int area() { return 7; }
+}
+
+class Holder {
+    property:
+        Circle c;
+    action:
+        @constructor Holder() { c = new Circle(); }
+        // 裸字段名 → interface（BUG-029 原始触发）
+        int drive() {
+            Shape s = c;
+            return s.area();
+        }
+        // this.字段 → interface（BUG-029 的 this 形态）
+        int driveThis() {
+            Shape s = this.c;
+            return s.area();
+        }
+}
+
+@test void t_field_to_iface() {
+    Holder h = new Holder();
+    Test.assertEq(h.drive(), 7, "bare-field → interface 分派");
+    Test.assertEq(h.driveThis(), 7, "this.field → interface 分派");
+    Test.report("t_field_to_iface", true);
+}
+

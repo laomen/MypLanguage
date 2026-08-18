@@ -1,0 +1,43 @@
+// BUG-030 复现：mapping 事件在目标类构造器内触发 → 段错误
+// ---------------------------------------------------------------------------
+// 修复前：App 构造器内 b.press() 触发 Clicked → 派发到未注册的自身实例
+//         （__myp_inst_App 构造完成后才写入）→ 段错误 139。
+// 修复后：构造器入口把 this 注册进 __myp_inst_<Class> → 构造器内派发到当前
+//         实例，onOk 正常累加 count_。
+// 根因/修复见 tests/BUGLIST.md BUG-030。本文件同时是修复后的回归（tests/bugs/
+// 预期全绿）。
+import test;
+import env;
+import fmt;
+
+mapping() {
+    Button.Clicked -> App.onOk;
+}
+
+class Button {
+    event:
+        Clicked(int x, int y);
+    action:
+        @constructor Button() {}
+        void press(int x, int y) { Clicked(x, y); }
+}
+
+class App {
+    property:
+        int count_;
+    action:
+        @constructor App() {
+            count_ = 0;
+            Button b = new Button();
+            b.press(1, 1);      // 构造器内触发 → 应派发到当前实例
+            b.press(2, 2);
+        }
+        void onOk(int x, int y) { count_ = count_ + 1; }
+        int getCount() { return count_; }
+}
+
+@test void t_mapping_ctor_self() {
+    App a = new App();
+    Test.assertEq(a.getCount(), 2, "ctor 内 mapping 派发到当前实例");
+    Test.report("t_mapping_ctor_self", true);
+}

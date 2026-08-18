@@ -34,6 +34,8 @@
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
 | BUG-021 | 🟩 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
 | BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
+| BUG-029 | � | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
+| BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
 | BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
@@ -757,3 +759,50 @@
 - **验证**：`tools/codegen/run_tests.sh` 全绿（11 个生成器 round-trip）；全量回归
   292 通过 / 0 失败。
 - **备注**：修复后 §13 已补 `代码生成工具（tools/codegen）` 文档节。
+
+---
+
+## BUG-029（已修复）：类字段直接转 interface → 坏胖指针（vtable 丢失）→ 段错误
+
+- **状态**：🟩 已修复（2026-08-18）
+- **复现/回归**：`tests/bugs/iface_field_conversion.myp`（裸名 `c` + `this.c` 两形态，
+  2 断言）。修复前 RED（`free(): invalid pointer` / 段错误 139），修复后 GREEN。
+- **现象**：`View v = <类字段>`（如 `Shape s = c;`，`c` 是 `Circle` 属性）编译通过，
+  但运行时接口分派/ARC 释放崩溃。对比：`View v = <局部类变量>`、`View v = new Circle()`
+  均正常。
+- **根因**：`src/codegen/codegen_stmt.cpp` 接口变量分支（`View v = init`）中
+  "从既有具体变量赋值（`IFoo f = impl;`）"路径的 `cls_name` 解析只处理
+  `d.init_expr->kind == ExprKind::Identifier` 且仅查 `var_class_map_`（codegen 只登记
+  **局部变量**）→ 类字段（`this.c` / 裸 `c`）查不到 → `cls_name` 空 → 走 else 分支只
+  `CreateStore(inst, data)`（vtable 槽零初始化）→ 坏胖指针 → 派发段错误。
+- **修复**：else 分支后新增 cls_name 兜底解析——（a）按当前类属性表（`curClass` 的
+  properties）解析字段具体类名（覆盖裸名 / `this.field`），（b）兜底用 sema 解析的
+  `expr->type` 类名；均含泛型 mangling（`Box<int>` → `Box_int_inst`，与局部变量分支
+  一致）。解析成功即构建 vtable（IR 复核：`store ptr @__myp_vtable_Shape_Circle`）。
+- **自举镜像**：`tools/selfhost/src/codegen.myp` 的 `upcastIface` + 接口变量分支同样
+  只从 `varAstType`（局部/参数）解析——已补 `propAstType(curClass_, name)` 字段兜底
+  （见下）。
+- **验证**：`tests/bugs/run_bugs.sh` 6/6 全绿；全量回归 311 通过 / 0 失败；MOS uikit
+  原绕法（`Label local = <字段>; View v = local;`）现可逐步简化为直接字段→接口。
+- **备注**：uikit 的"接口数组元素 + 接口形参"崩溃经验证**非独立 bug**（最小复现
+  exit 0），实为 BUG-029 污染的坏胖指针所致。
+
+---
+
+## BUG-030（已修复）：mapping 事件在目标类构造器内触发 → 段错误
+
+- **状态**：🟩 已修复（2026-08-18）
+- **复现/回归**：`tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次触发，1 断言）。
+  修复前 RED（Segmentation fault 139），修复后 GREEN。
+- **现象**：`mapping() { Button.Clicked -> App.onOk; }`，`App` 构造器内 `b.press()`
+  触发 `Clicked` → 运行段错误 139。构造完成后触发正常。
+- **根因**：mapping 分发依赖 `__myp_inst_<类名>` 全局找目标实例；该全局由调用侧
+  `generateVarDecl` 在 `new App()` 返回后写入，**目标类构造器执行期间尚未注册** →
+  分发读空/旧指针 → 段错误。
+- **修复**：`src/codegen/codegen_class.cpp generateClassAction` 构造器入口
+  （`action.has_constructor`）把 `this`（`func->getArg(0)`）写入
+  `class_instance_globals_[cls.name]`（`__myp_inst_<Class>`，mapping 预填保证存在）→
+  构造器内触发的 mapping 事件派发到当前实例。
+- **自举镜像**：`tools/selfhost/src/codegen.myp` 构造器生成入口同样注册 `this`
+  （见下）。
+- **验证**：`tests/bugs/run_bugs.sh` 6/6 全绿；全量回归 311 通过 / 0 失败。
