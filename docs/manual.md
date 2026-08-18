@@ -845,9 +845,9 @@ int main() {
     Sensor sensor = new Sensor();
     Display display = new Display();
 
-    // ✅ 允许：声明 mapping
+    // ✅ 允许：声明 mapping（节点用类名）
     mapping() {
-        sensor.valueRead -> display.show;
+        Sensor.valueRead -> Display.show;
     }
 
     // ❌ 禁止：直接调用方法
@@ -1336,7 +1336,9 @@ class Sensor {
 
 ### Mapping 声明
 
-Mapping 将事件连接到动作：
+Mapping 将事件连接到动作。**mapping 节点一律用类名**（`Class.event` /
+`Class.action`），即使 mapping 声明在函数内（实例级，仅指声明位置在函数作用域），
+节点也必须是类名而非实例变量名：
 
 ```myp
 // 类型级映射（文件级全局）
@@ -1344,13 +1346,13 @@ mapping() {
     Sensor.valueRead -> Display.showTemperature;
 }
 
-// 实例级映射（函数内局部）
+// 实例级映射（函数内局部）：节点仍用类名
 int main() {
     Sensor sensor;
     Display display;
 
     mapping() {
-        sensor.valueRead -> display.showTemperature;
+        Sensor.valueRead -> Display.showTemperature;
     }
 }
 ```
@@ -1369,11 +1371,11 @@ mapping() {
 ```myp
 mapping() {
     // 一个事件触发多个动作
-    sensor.valueRead -> display.show, logger.log;
+    Sensor.valueRead -> Display.show, Logger.log;
 
     // 等价于：
-    sensor.valueRead -> display.show;
-    sensor.valueRead -> logger.log;
+    Sensor.valueRead -> Display.show;
+    Sensor.valueRead -> Logger.log;
 }
 ```
 
@@ -1392,7 +1394,7 @@ mapping() {
 void run() {
     Sensor s;
     mapping() @scope {
-        s.ready -> log.write;
+        Sensor.ready -> Log.write;
     }
 }  // 函数退出时 handler 自动解注册
 ```
@@ -1403,7 +1405,7 @@ void run() {
 
 ```myp
 mapping() {
-    rs.valueEmitted where value >= 3 -> Console.write;
+    Rs.valueEmitted where value >= 3 -> Console.write;
 }
 ```
 
@@ -1415,7 +1417,7 @@ mapping() {
 
 ```myp
 mapping() {
-    rs.valueEmitted -> (int v) => { return v * 2; } -> display.show;
+    Rs.valueEmitted -> (int v) => { return v * 2; } -> Display.show;
 }
 ```
 
@@ -1426,8 +1428,8 @@ mapping() {
 
 ```myp
 mapping() {
-    sensor.data -> delay(100) -> display.update;
-    sensor.data -> throttle(50) -> logger.write;
+    Sensor.data -> delay(100) -> Display.update;
+    Sensor.data -> throttle(50) -> Logger.write;
 }
 ```
 
@@ -3306,13 +3308,13 @@ int main() {
 
     mapping() {
         // 温度读取 → 显示和日志
-        sensor.temperatureRead -> display.show, logger.log;
+        TempSensor.temperatureRead -> Display.show, Logger.log;
 
         // 温度读取 → 告警检测
-        sensor.temperatureRead -> alarm.check;
+        TempSensor.temperatureRead -> Alarm.check;
 
         // 告警触发 → 声音 + 醒目显示
-        alarm.alarmTriggered -> alarm.sound, display.showAlert;
+        Alarm.alarmTriggered -> Alarm.sound, Display.showAlert;
     }
 
     return 0;

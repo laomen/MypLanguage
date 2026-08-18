@@ -1,15 +1,32 @@
-// delay/throttle 测试
+// delay/throttle 测试（2026-08-18 §8 审计升级：真正用 delay/throttle 变换器）
+// 输出（确定性）：
+//   firing
+//   delay=1     (delay(100) 延迟转发)
+//   throttle=1  (throttle(50) 限频，第一个事件通过)
+//   delay=2
+//   throttle=2  (事件同步派发：emit(1) 的 delay 路径 sleep 100ms 使 emit(2)
+//                的 throttle 处理间隔 >50ms，故第二个也通过)
+//   done
+// throttle 丢弃语义由 tests/bugs 级探针验证（3 连发 throttle(100) 只留第一个）。
 import env;
 import time;
 
 mapping() {
-    Main.fire -> Handler.handle;
+    Main.emit -> delay(100) -> Handler.delayed;
+    Main.emit -> throttle(50) -> Handler.throttled;
 }
 
 class Handler {
     action:
-        void handle() {
-            Console.writeString("handled\n");
+        void delayed(int v) {
+            Console.writeString("delay=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+        void throttled(int v) {
+            Console.writeString("throttle=");
+            Console.write(v);
+            Console.writeString("\n");
         }
 }
 
@@ -17,11 +34,13 @@ class Main {
     action:
         @constructor Main() {
             Console.writeString("firing\n");
-            fire();
-            Time.sleep(50);
+            emit(1);
+            emit(2);
+            Time.sleep(300);
+            Console.writeString("done\n");
         }
     event:
-        fire();
+        emit(int v);
 }
 
 int main() {

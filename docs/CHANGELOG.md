@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.12.16 — 手册 §8 事件与 Mapping 审计：mapping 节点统一类名
+- **文档错误修复**：manual §8（及 §5 main 规则、§13 完整示例）的 mapping 示例
+  全部用**实例变量名**节点（`sensor.valueRead -> display.show`）——实测函数内
+  mapping 用实例名节点 → LLVM verify 失败（BUG-011，`%tgt = load ptr, ptr
+  %display`）。已统一改为**类名**节点（`Sensor.valueRead -> Display.show`），
+  与 design.md §7.2 及现有全部测试一致；§8 加注「mapping 节点一律用类名，即使
+  声明在函数内（实例级）也如此」。
+- **§8 逐条实测通过**（类名节点）：事件声明/类型级映射/实例级映射（函数内类名
+  节点）/事件链返回值（`A.event -> B.process -> C.onResult`，result=10）/
+  多目标映射（`-> a, b`）/`@scope` 解注册（run 返回后 handler 自动注销，实测
+  AFTER 不再触发）/`where` 条件过滤（`where v >= 3`，2 被滤）/`lambda` 变换
+  节点/`delay(ms)` 延迟转发/`throttle(ms)` 限频（3 连发只留第一个）。
+- **§13 完整示例（iot_monitor.myp）**：类名节点修复后**编译通过**（此前实例名
+  节点无法编译）。
+- **回归**：`tests/@test/manual_ch8_mapping.myp`（3 tests / 6 断言：类型级/
+  事件链/多目标/lambda + where 精确过滤 + 实例级）；升级 `tests/delay_throttle/
+  test.myp` 真正用 delay/throttle（原测试未用）+ 更新 expected + 新增
+  `throttle_drop.myp`（丢弃语义锁定）；全量 283 通过（仅 3 个自举工具因 build/
+  缺二进制 exit 127 的既有环境失败）。
+
 ### v3.12.15 — 手册 §7 审计修复：`this.field = value` 写 + 文件级限定 struct 定义
 - **BUG-019（C++ codegen）**：`this.field = value`（struct 方法与 class 方法）此前
   编译报 `not a valid assignment target`。根因：`generateAssignment` 的 `if (!op)` 块

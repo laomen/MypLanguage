@@ -1,2 +1,10 @@
 firing
-handled
+delay=1
+
+throttle=1
+
+delay=2
+
+throttle=2
+
+done

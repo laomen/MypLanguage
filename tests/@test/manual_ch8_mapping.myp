@@ -1,0 +1,146 @@
+// manual_ch8_mapping.myp — 手册 §8 事件与 Mapping 核对回归（2026-08-18 审计固化）
+//   覆盖：事件声明/类型级映射/实例级映射（类名节点）/事件链返回值/多目标映射/
+//   多事件→同一动作/where 过滤/lambda 变换。delay/throttle/@scope 时序性用例在
+//   tests/delay_throttle 与 tests/scope_mapping（独立目录测试）。
+//   注：mapping 节点一律用类名（Class.event / Class.action）——实例变量名节点
+//   在函数内 mapping 会 LLVM verify 失败（BUG-011，见 tests/bugs/）。
+import test;
+import env;
+import text;
+
+// --- 事件声明 + 处理器 ---
+class Sensor {
+    action:
+        void emitValue(int v) { valueRead(v); }
+    event:
+        valueRead(int temp);
+}
+
+class Display {
+    action:
+        void showTemperature(int temp) {
+            Console.writeString("show=");
+            Console.write(temp);
+            Console.writeString("\n");
+        }
+        void show(int v) {
+            Console.writeString("show=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+        void log(int v) {
+            Console.writeString("log=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Processor {
+    action:
+        int process(int val) {
+            return val * 2;
+        }
+}
+
+class Output {
+    action:
+        void onResult(int v) {
+            Console.writeString("result=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+// --- 类型级映射（文件级全局）：事件链 + 多目标 + lambda ---
+mapping() {
+    // 事件链：event -> B.process(返回 int) -> C.onResult
+    Main.chain -> Processor.process -> Output.onResult;
+    // 多目标：一个事件触发两个动作
+    Main.emit -> Display.show, Display.log;
+    // lambda 变换节点：(int v) => v * 2
+    Main.lem -> (int v) => { return v * 2; } -> Display.show;
+}
+
+// where 过滤单独映射（独立类便于精确断言）
+mapping() {
+    MainW.wemit where v >= 3 -> Display.show;
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            emit(7);
+            chain(5);
+            lem(3);
+        }
+    event:
+        emit(int v);
+        chain(int v);
+        lem(int v);
+}
+
+class MainW {
+    action:
+        @constructor MainW() {
+            wemit(5);
+            wemit(2);   // 应被 where 过滤
+        }
+    event:
+        wemit(int v);
+}
+
+@test void t_filesevel() {
+    Test.captureStart();
+    Main m = new Main();
+    Test.captureEnd();
+    Test.assertOutputContains("show=7", "多目标 show");
+    Test.assertOutputContains("log=7", "多目标 log");
+    Test.assertOutputContains("result=10", "事件链返回值 5*2");
+    Test.assertOutputContains("show=6", "lambda 3*2");
+    Test.report("t_filesevel", true);
+}
+
+@test void t_where() {
+    Test.captureStart();
+    MainW m = new MainW();
+    string out = Test.captureEnd();
+    Test.assertOutputContains("show=5", "where 转发 5");
+    int has2 = Str.contains(out, "show=2");
+    if (has2 != 0) {
+        Test.fail("where 未过滤 show=2");
+        Test.report("t_where", false);
+    } else {
+        Test.report("t_where", true);
+    }
+}
+
+// --- 实例级映射（函数内局部）：节点用类名 ---
+class Printer {
+    action:
+        void print(int v) {
+            Console.writeString("print=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Main2 {
+    action:
+        @constructor Main2() {
+            Printer p;
+            mapping() {
+                Main2.fire -> Printer.print;   // 类名节点
+            }
+            fire(42);
+        }
+    event:
+        fire(int v);
+}
+
+@test void t_instance() {
+    Test.captureStart();
+    Main2 m = new Main2();
+    Test.captureEnd();
+    Test.assertOutputContains("print=42", "实例级(函数内,类名节点)映射");
+    Test.report("t_instance", true);
+}

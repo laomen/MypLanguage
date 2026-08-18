@@ -1,0 +1,37 @@
+// throttle 丢弃语义：3 连发 + throttle(100)，只转发第一个
+// 输出：firing / throttle=1 / done（2、3 被 50ms 内限频丢弃）
+import env;
+import time;
+
+mapping() {
+    Main.emit -> throttle(100) -> Handler.log;
+}
+
+class Handler {
+    action:
+        void log(int v) {
+            Console.writeString("throttle=");
+            Console.write(v);
+            Console.writeString("\n");
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            Console.writeString("firing\n");
+            emit(1);
+            emit(2);
+            emit(3);
+            Time.sleep(200);
+            Console.writeString("done\n");
+        }
+    event:
+        emit(int v);
+}
+
+int main() {
+    Main m = new Main();
+    Handler h = new Handler();
+    return 0;
+}
