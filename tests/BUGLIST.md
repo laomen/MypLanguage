@@ -37,6 +37,7 @@
 | BUG-029 | � | 类字段直接转 interface（`View v = <类字段>`）→ 坏胖指针（vtable 丢失）→ 段错误/内存损坏（codegen 只从 var_class_map_ 解析类名，字段查不到 → null vtable） | 回归 `tests/bugs/iface_field_conversion.myp`（裸名+this 形态，2 断言） |
 | BUG-030 | 🟩 | mapping 事件在目标类构造器内触发 → 派发到未注册的自身实例（`__myp_inst_X` 构造后写入）→ 段错误 139 | 回归 `tests/bugs/mapping_ctor_self.myp`（ctor 内 2 次派发，1 断言） |
 | BUG-031 | 🟩 | 跨线程多 @thread 目标事件无限重投（mapping handler 注册 instance=NULL → routed 副本在目标线程跑**所有**同 event 的 NULL-instance handler → 互相 route 乒乓） | 回归 `tests/bugs/cross_thread_multi_target.myp`（A/B 各收 1 次，2 断言） |
+| BUG-032 | 🟥 | 含 event 类影响同编译单元其他类实例存储——无 event 类实例经 @static/属性存 this 后 get() 字段错位（49152 / this=0x100000000 → strcmp 段错误） | 复现 `tests/bugs/b032_event_class_inst_store.myp`（@test 断言 get count==0） |
 | BUG-022 | 🟩 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟩 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139 | 回归 `tests/@test/parallel_prop_access.myp`（静态属性数组写+读+Atomic 累加，4 断言） |
 | BUG-024 | 🟩 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
@@ -841,3 +842,30 @@
   （不动点 myp_self2 == myp_self3 字节相同）。
 - **影响解除**：MYP 跨线程事件广播（1 事件 → 多 @thread 目标）可用；MOS 应用壳
   （`app_lifecycle_demo`）不再需要非 @thread 广播规避（可改用 @thread 应用）。
+
+---
+
+## BUG-032（未修复 ⚠️）：含 event 类影响同编译单元其他类实例存储
+
+- **状态**：🔴 未修复（2026-08-18 发现，MOS 跨进程应用壳暴露）
+- **复现**：`tests/bugs/b032_event_class_inst_store.myp`（@test 断言
+  `Holder.get().getCount()==0`；修复前断言失败读到垃圾 49152 或运行崩溃，
+  run_bugs.sh RED）
+- **现象**：同编译单元含 `event:` 声明的类（如 `AppManager`）时，**无 event 类
+  实例经 `@static` 类属性 / 类实例属性存储 this** 后，`get()`/属性读取**字段
+  错位**——`AppManagerBus.set(this)` 后 `Holder.get()` 返回实例的 `count_`
+  读到 `0xC000`(49152)（正常 0）；事件循环中回调 `onControl` 的 `this` 变
+  `0x100000000` → `find()` 里 strcmp 野指针段错误。
+- **根因**：MYP codegen 对**含 event 的类**的布局/类型表处理污染同编译单元
+  **其他类实例**的存储 offset（event 类引入的实例布局/静态存储偏移错位）。
+  排除法验证：单/多文件、4 字段、this 传参、@static 属性、方法内 `set(this)`
+  等最小测试均正常——**只要同编译单元加入一个含 event 的类即复现**
+  （`/tmp/me.myp` 最小复现：AppMgrE 含 event + AppMgrBus + @static Holder →
+  段错误）。
+- **影响**：类实例经 @static/实例属性存储 this 时，同编译单元不能有含 event
+  的类——否则字段错位/崩溃。影响跨进程应用壳 AppManagerBus 的事件循环回调。
+- **规避（MOS 已用）**：AppManagerBus 改 **self-contained**——事件循环 +
+  广播直接内联在类内，`this` 全程直用，**不把 this 存进 @static/实例属性**。
+- **修复方向**：codegen 对含 event 类的类布局/实例存储偏移计算（C++ mypc +
+  selfhost codegen.myp 镜像）。
+

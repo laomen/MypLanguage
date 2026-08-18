@@ -1,0 +1,60 @@
+// BUG-032 复现：含 event 类影响同编译单元其他类实例存储
+// ---------------------------------------------------------------------------
+// 同编译单元含 `event:` 声明的类（AppMgrE）时，无 event 类（AppMgrBus）实例
+// 经 @static 类属性存储 this（Holder.set(this)）后，Holder.get() 返回的实例
+// 字段错位——getCount() 读到垃圾（0xC000=49152，正常 0）；更严重时事件循环
+// 回调的 this 变 0x100000000 → strcmp 段错误。
+// 修复前：断言失败或运行崩溃（run_bugs.sh RED）。
+import test;
+import env;
+import fmt;
+
+// 含 event 的类（触发 bug 的关键：与 AppManagerBus 同编译单元）
+class AppMgrE {
+    event: Life(string name, int state);
+    property:
+        string[] ns_;
+        int[] ss_;
+        int count_;
+    action:
+        @constructor AppMgrE() { ns_ = new string[8]; ss_ = new int[8]; count_ = 0; }
+        int getCount() { return count_; }
+}
+
+// 无 event 类：实例经 @static Holder 存储 this（bug 触发路径）
+class AppMgrBus {
+    property:
+        string[] names_;
+        int[] states_;
+        int count_;
+        int busMode_;
+    action:
+        @constructor AppMgrBus() {
+            names_ = new string[8];
+            states_ = new int[8];
+            count_ = 0;
+            busMode_ = 0;
+        }
+        int getCount() { return count_; }
+        void run() {
+            Holder.set(this);
+        }
+}
+
+@static class Holder {
+    property:
+        AppMgrBus m;
+    static:
+        void set(AppMgrBus mm) { Holder.m = mm; }
+        AppMgrBus get() { return Holder.m; }
+}
+
+@test void test_b032_event_class_inst_store() {
+    // 创建 event 类实例（触发布局/存储污染）
+    AppMgrE e = new AppMgrE();
+    AppMgrBus a = new AppMgrBus();
+    a.run();                        // Holder.set(this)
+    AppMgrBus g = Holder.get();
+    // 修复前：g 的 count_ 读到垃圾（49152/段错误）；修复后应 == 0
+    Test.assert(g.getCount() == 0, "b032 holder get count");
+}
