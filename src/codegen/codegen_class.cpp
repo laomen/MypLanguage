@@ -1653,12 +1653,20 @@ void CodeGen::generateFuncDecl(const FuncDecl& decl) {
 
     // For main: call init mappings and track for cleanup
     if (decl.name == "main") {
-        // In test mode, skip user's main - test runner main will be generated
+        // In test mode, skip user's main - test runner main will be generated.
+        // BUG-026: the user's `int main()` placeholder was left in the module
+        // with an empty (terminator-less) entry block — LLVM verify failed with
+        // "Basic Block in function 'main' does not have terminator", and had it
+        // survived, generateTestRunner's `main` would be auto-renamed to
+        // "main.1" and the runner would silently never run. Erase the empty
+        // placeholder so the test-runner `main` keeps its name and is the real
+        // entry point.
         if (test_mode_) {
             popScope();
             current_function_ = nullptr;
             current_fn_nonlocal_vars_.clear();
             current_fn_nonlocal_cell_class_.clear();
+            if (func) func->eraseFromParent();
             return;
         }
         in_main_ = true;

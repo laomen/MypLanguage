@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.12.20 — 手册 §12 编译与工具审计：多文件编译 import/struct 合并（BUG-025）+ `--test` 用户 main（BUG-026）
+- **新 bug BUG-025（已修复）**：多文件编译 `mypc a.myp b.myp` 合并循环只搬
+  classes/interfaces/mappings/functions，**漏了 imports/structs/bitfields/enums/ffis/
+  macros/type_aliases**——第二文件的 `import env`/`import test` 静默丢弃
+  （`Console`/`Test` 未定义，且错误行号错位到首文件合并区），第二文件的文件级
+  struct/enum 变体同样不可见。修复 `src/main.cpp` 多文件分支：合并全部 11 个字段
+  （`loadModule` 按模块名/规范化路径去重，跨文件重复 import 只加载一次）。
+- **新 bug BUG-026（已修复）**：`mypc --test` + 源码含用户 `int main()` →
+  `LLVM verify failed: Basic Block in function 'main' does not have terminator!`；
+  且残留空占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0
+  假过）。修复 `src/codegen/codegen_class.cpp`：test 模式跳过用户 main 时
+  `func->eraseFromParent()` 擦除占位，运行器 main 保持名字并成为真正入口。
+- **§12 工具链逐条实测**：`mypc --help` 全选项存在（-o/-O[0123]/--stdlib/
+  --package-path/--trace/--shared/--static/--emit-llvm/--test/-g,--debug/--passes/
+  --macro-expand/--frontend-dump/--version/--help）✓ / `mypc run` 自动 main
+  （单 @startup 类输出 "Hello from @startup!"）✓ / `mypc run file args` 传参
+  （argc=3）✓ / `mypc fmt --check` ✓ / `mypc --emit-llvm` 产出 .ll ✓ / 测试框架
+  退出码 1 + 异常隔离 + 汇总 ✓ / 项目结构 ✓ / `MYP_PACKAGE_PATH`（包管理器读取）✓。
+- **回归**：新增 `tests/test_multifile.sh`（4 用例：跨文件函数 / 第二文件 import env /
+  第二文件 struct+enum+@test / 多文件 @test+用户 main），已接入 `tests/run_tests.sh`
+  （`测试框架` 小节）；全量 288 通过（3 个自举工具 build/ 缺二进制的既有环境失败）。
+
+
 ### v3.12.19 — 手册 §10 模块与导入审计：去重 `..` 不规范化（BUG-024）+ 点分模块名补文档
 - **新 bug BUG-024**：相对路径导入去重**不解析 `..`**——同一文件经不同相对路径
   （直导 `./helper.myp` + 子模块内 `../helper.myp`）`normalizePath` 后仍不同

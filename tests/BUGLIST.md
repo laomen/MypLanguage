@@ -36,6 +36,8 @@
 | BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟥 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139；须先拷到局部（manual BNCT 模式正确） | `tests/bugs/parallel_prop_access.myp`（编译失败红） |
 | BUG-024 | 🟥 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | `tests/bugs/relimport_dedup.myp`（编译失败红） |
+| BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
+| BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
 
 ---
 
@@ -421,8 +423,11 @@
     ——`string[] argv` 传参时 LLVM 类型布局计算**无限递归**。
   - 简单用法不崩：`int main(int argc, string[] argv) { return argc; }`、空体、
     或 main 不把参数传下去。`mypc run file.myp args...` 同崩（编译阶段即段错误）。
-  - `--test` 模式表现不同（不段错误）：`LLVM verify failed: Basic Block in function
-    'main' does not have terminator!`——同样编译失败（`run_bugs.sh` 显示 COMPILE CRASH）。
+  - `--test` 模式：**BUG-026 修复后（2026-08-18）已不再报错**——test 模式跳过并擦除
+    用户 main，argv 传参 codegen 路径不执行 → 编译+运行通过；但**普通编译路径仍段
+    错误（exit 139 确定性复现，2026-08-18 复核）**。⚠️ `run_bugs.sh` 用 `--test`
+    编译 → `main_argc_argv_crash.myp` 现显示 GREEN，**非 test 编译仍崩**，该复现
+    不再能检出 BUG-016（如需检出须改非 --test 编译断言）。
 - **根因**：codegen 对 `string[]`（动态数组）作为参数从 `main` 传入函数时的类型
   布局/对齐计算触发 LLVM `DataLayout::getAlignment` 无限递归。
 - **影响**：`docs/manual.md` §5 `main(argc, argv)`（配合 `import args`）文档化的实际
@@ -657,3 +662,60 @@
   哪条相对路径都去重到同一规范键。
 - **备注**：manual §10 导入规则已加注（去重按路径字符串，`..` 未规范化；见 tests/bugs/）；
   bug 仅记录于本清单。
+
+---
+
+## BUG-025（已修复）：多文件编译只合并第一个文件的 imports / structs / enums / ffis 等
+
+- **状态**：🟩 已修复（2026-08-18 审计 §12 发现并修复）
+- **复现测试**：回归 `tests/test_multifile.sh`（已接入 `tests/run_tests.sh`；
+  BUG-025 第二文件 import 合并 + struct/enum 第二文件可见两用例）
+- **现象**（实测 2026-08-18）：
+  - `mypc a.myp b.myp`，`b.myp` 含 `import env;` + 类内 `Console.writeString(...)` →
+    `undefined symbol 'Console'`（错误行号错位到 a.myp 合并区）；`import test` 同理
+    `undefined symbol 'Test'`。
+  - **文件顺序相关**：import 在**第一个**文件 → 正常；在第二个 → 丢弃。
+  - **无 import** 的多文件（纯函数跨文件调用）→ 正常。
+  - 第二个文件里的文件级 `struct` / `enum` 变体同样不可见（`unknown class 'VecE'` /
+    `undefined symbol 'GREEN'`）——合并循环只搬了 classes/interfaces/mappings/
+    functions。
+- **根因**（`src/main.cpp` 多文件分支 ~1068-1076）：合并循环
+  `auto merged = std::move(units[0]);` 后只对 `units[1..]` 搬运 classes/interfaces/
+  mappings/functions 四个字段，**漏了 imports/structs/bitfields/enums/ffis/macros/
+  type_aliases**。`merged->imports` 只含第一个文件的 import，故 `loadModule`
+  （对 imports 递归加载）只处理第一个文件的导入。
+- **修复**：合并循环补齐全部 11 个字段（imports/structs/bitfields/classes/
+  interfaces/mappings/functions/enums/ffis/macros/type_aliases）。`loadModule` 按
+  模块名/规范化路径去重，跨文件重复 import 只加载一次，无重复定义风险。
+- **验证**：`tests/test_multifile.sh` 4 用例全过（跨文件函数 / 第二文件 import env /
+  第二文件 struct+enum+@test / 多文件 @test + 用户 main）；全量回归 288 通过。
+- **备注**：manual §12 多文件编译「合并为单模块」按设计意图描述（修复后成立）；
+  bug 仅记录于本清单。
+
+---
+
+## BUG-026（已修复）：`--test` + 用户 `int main()` → 空块无 terminator + 运行器静默不跑
+
+- **状态**：🟩 已修复（2026-08-18 审计 §12 发现并修复）
+- **复现测试**：回归 `tests/test_multifile.sh`（BUG-026 --test + 用户 main 运行器
+  执行用例）
+- **现象**（实测 2026-08-18，BUG-025 修复后暴露）：
+  - `mypc --test x.myp`，源码含 `int main() { return 0; }` + `@test` 函数 →
+    `LLVM verify failed: Basic Block in function 'main' does not have terminator!`
+    （编译失败）。
+  - 修复空块 terminator 后若**保留**用户 main 占位，则 `generateTestRunner()` 新建的
+    `main` 因名字冲突被 LLVM 自动改名 `main.1`，链接入口仍是用户空 `main` →
+    **测试静默不跑**（exit 0、tests: 0 假过）——比崩溃更危险。
+  - 现有 `tests/@test/*.myp` 均无用户 main（依赖 `--test` 生成运行器 main），故该
+    路径此前从未被覆盖。
+- **根因**（`src/codegen/codegen_class.cpp` generateFunctionDecl ~1655）：
+  `decl.name == "main"` + `test_mode_` 分支**提前 return** 跳过用户 main 主体，
+  但函数/入口块已创建且空、无 terminator → LLVM verify 失败；占位函数残留在模块
+  内使运行器 main 改名。
+- **修复**：test 模式跳过用户 main 时 `func->eraseFromParent()` 擦除空占位函数，
+  使 `generateTestRunner()` 的 `main` 保持名字并成为真正入口（空块随之消失，
+  无 terminator 问题）。
+- **验证**：`mypc --test` + 用户 `int main()` + `@test` → 运行器执行
+  （`RUN: t_cross_file`、`tests: 1, assertions: 1 passed, 0 failed`、exit 0）；
+  全量回归 288 通过。
+- **备注**：manual §12 测试框架按设计意图描述；bug 仅记录于本清单。

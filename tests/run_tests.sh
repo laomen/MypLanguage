@@ -257,6 +257,44 @@ if [ -f "$PROJ_ROOT/tests/test_myp_test.sh" ]; then
     fi
 fi
 
+# 多文件编译专项（manual.md §12 编译器章节）：多文件合并为单模块、第二文件的
+# import/struct/enum 可见（BUG-025）、多文件 + --test + 用户 main（BUG-026）。
+if [ -f "$PROJ_ROOT/tests/test_multifile.sh" ]; then
+    mf_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_multifile.sh" 2>&1)
+    if echo "$mf_out" | grep -qE "multifile: [0-9]+ passed, 0 failed"; then
+        echo -e "${GREEN}PASS${NC} (多文件编译：import/struct/enum 合并 + --test)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$mf_out" | grep -E "FAIL:|multifile:" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS multifile(compile)"
+    fi
+fi
+
+# =============================================
+# 协程栈警告测试：@coro(stack=N) N<16 编译期警告（design.md §8.6.2 栈行）
+# =============================================
+echo ""
+echo "--- [3.5] 协程栈警告 (@coro(stack=N) N<16 编译期警告) ---"
+echo ""
+CORO_PASS=0
+CORO_FAIL=0
+if [ -f "$PROJ_ROOT/tests/test_coro_stack_warn.sh" ]; then
+    coro_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_coro_stack_warn.sh" 2>&1)
+    if echo "$coro_out" | grep -qE "coro stack warn: [0-9]+ passed, 0 failed"; then
+        echo -e "${GREEN}PASS${NC} (@coro(stack) 8/15 警告, 16/0/省略 无警告)"
+        CORO_PASS=1
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$coro_out" | tail -10
+        CORO_FAIL=1
+        FAILED_TESTS="$FAILED_TESTS coro_stack_warn(compile-warning)"
+    fi
+else
+    echo "  (no test_coro_stack_warn.sh found)"
+fi
+
 # =============================================
 # 第4部分: 无崩溃回归 (compiler must never crash)
 # =============================================
@@ -443,11 +481,12 @@ echo ""
 echo "=========================================="
 echo "  测试结果汇总"
 echo "=========================================="
-TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS + VIZ_PASS + RUN_PASS + LSP_PASS + GPU_PASS))
-TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL + VIZ_FAIL + RUN_FAIL + LSP_FAIL + GPU_FAIL))
+TOTAL_PASS=$((PASS + NEG_PASS + TFPASS + NCRASH_PASS + PM_PASS + FMT_PASS + VIZ_PASS + RUN_PASS + LSP_PASS + GPU_PASS + CORO_PASS))
+TOTAL_FAIL=$((FAIL + NEG_FAIL + TFFAIL + NCRASH_FAIL + PM_FAIL + FMT_FAIL + VIZ_FAIL + RUN_FAIL + LSP_FAIL + GPU_FAIL + CORO_FAIL))
 echo "  回归测试: ${PASS} 通过, ${FAIL} 失败"
 echo "  负测试:   ${NEG_PASS} 通过, ${NEG_FAIL} 失败"
 echo "  测试框架: ${TFPASS} 通过, ${TFFAIL} 失败"
+echo "  协程栈警告: ${CORO_PASS} 通过, ${CORO_FAIL} 失败"
 echo "  无崩溃:   ${NCRASH_PASS} 通过, ${NCRASH_FAIL} 失败"
 echo "  自举包管理: ${PM_PASS} 通过, ${PM_FAIL} 失败"
 echo "  自举格式化: ${FMT_PASS} 通过, ${FMT_FAIL} 失败"

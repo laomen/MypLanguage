@@ -1070,13 +1070,25 @@ static int realMain(int argc, char* argv[]) {
         units.push_back(std::move(unit));
     }
 
-    // Merge all parsed units into one
+    // Merge all parsed units into one. BUG-025 fix: previously only classes /
+    // interfaces / mappings / functions were merged — imports, structs, enums,
+    // ffis, etc. from files 2..N were silently dropped, so e.g. `import env` in
+    // the second file left `Console` undefined. Merge the full TU now, and load
+    // imports from every file (loadModule dedups by module name / normalized
+    // path, so overlapping imports are loaded once).
     auto merged = std::move(units[0]);
     for (size_t i = 1; i < units.size(); i++) {
-        for (auto& c : units[i]->classes)   merged->classes.push_back(std::move(c));
-        for (auto& i2 : units[i]->interfaces) merged->interfaces.push_back(std::move(i2));
-        for (auto& m : units[i]->mappings)   merged->mappings.push_back(std::move(m));
-        for (auto& f : units[i]->functions)  merged->functions.push_back(std::move(f));
+        for (auto& imp : units[i]->imports)      merged->imports.push_back(std::move(imp));
+        for (auto& s : units[i]->structs)        merged->structs.push_back(std::move(s));
+        for (auto& b : units[i]->bitfields)      merged->bitfields.push_back(std::move(b));
+        for (auto& c : units[i]->classes)        merged->classes.push_back(std::move(c));
+        for (auto& i2 : units[i]->interfaces)    merged->interfaces.push_back(std::move(i2));
+        for (auto& m : units[i]->mappings)       merged->mappings.push_back(std::move(m));
+        for (auto& f : units[i]->functions)      merged->functions.push_back(std::move(f));
+        for (auto& e : units[i]->enums)          merged->enums.push_back(std::move(e));
+        for (auto& ffi : units[i]->ffis)         merged->ffis.push_back(std::move(ffi));
+        for (auto& mac : units[i]->macros)       merged->macros.push_back(std::move(mac));
+        for (auto& ta : units[i]->type_aliases)  merged->type_aliases.push_back(std::move(ta));
     }
 
     // Pre-populate loaded_modules with command-line files so imports skip them
