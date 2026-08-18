@@ -1,0 +1,9 @@
+// sub.myp — BUG-024 回归辅助：经 ../helpers/b24_helper.myp 导入同一 helper
+import "../helpers/b24_helper.myp";
+class Sub {
+    action:
+        int useHelper(int x) {
+            Helper h;
+            return h.twice(x);
+        }
+}

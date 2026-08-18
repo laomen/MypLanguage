@@ -27,6 +27,17 @@
 
 ## 编译器版本历史
 
+### v3.12.30 — 修复 BUG-024：相对路径导入去重解析 `..`
+- **BUG-024 已修复**：`src/main.cpp` `normalizePath` 此前只移除 `./`/`/./`/`//`，不解析
+  `..` —— 同一文件经不同相对路径（直导 `./helper.myp` + 子模块 `../helper.myp`）规范化后
+  仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`。
+- **修复**：重写 `normalizePath` 为词法组件解析——按 `/` 分段，`.`/空段跳过，`..` 弹栈折叠
+  （相对路径保留前导 `..`；绝对路径根 `..` 丢弃），`//` 自然合并；同一文件归一到同一规范键。
+- **回归**：复现移入正测试 `tests/@test/relimport_dedup.myp`（+ helpers/b24_helper.myp +
+  relimport_sub/sub.myp），直导 + `..` 递归同文件去重、2 断言通过；`tests/bugs/` 原复现移除。
+- 全量回归 **293 通过 / 0 失败**。
+
+
 ### v3.12.29 — README.md / README_EN.md 更新对齐当前状态
 - **Hello World**：旧的 `int main(){ Console.writeLine(...) }`（现已编译报错）→
   `@startup` + `mypc run` 写法（无需手写 main）。

@@ -1,0 +1,5 @@
+// b24_helper.myp — BUG-024 回归辅助：被 relimport_dedup.myp 直导 + relimport_sub 经 .. 导入
+class Helper {
+    action:
+        int twice(int x) { return x * 2; }
+}

@@ -55,29 +55,44 @@ static void phaseMark(const char* name) {
     g_timing_last = t;
 }
 
-// Normalize path: remove "./" prefixes and "//" sequences
+// Normalize path for consistent dedup keys: lexically resolve ".", "..", and
+// "//" so the same file reached via different relative paths (e.g.
+// "helper.myp" vs "sub/../helper.myp") maps to one canonical key.
+// BUG-024: previously only "./" and "//" were stripped; ".." was NOT resolved,
+// so /mod/helper.myp vs /mod/sub/../helper.myp produced different keys and the
+// same file was double-loaded (duplicate class/function). Relative leading
+// ".." components are preserved (relative to cwd); for absolute paths ".." at
+// the root is dropped (stays at root).
 static std::string normalizePath(const std::string& path) {
+    bool absolute = !path.empty() && path[0] == '/';
+    std::vector<std::string> parts;
+    std::string cur;
+    for (size_t i = 0; i <= path.size(); ++i) {
+        char c = (i < path.size()) ? path[i] : '/';
+        if (c == '/') {
+            if (cur == "." || cur.empty()) {
+                // "." and "" (also collapses "//") contribute nothing
+            } else if (cur == "..") {
+                if (!parts.empty() && parts.back() != "..")
+                    parts.pop_back();
+                else if (!absolute)
+                    parts.push_back("..");
+                // absolute "/.." at root: dropped (stays at root)
+            } else {
+                parts.push_back(cur);
+            }
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
     std::string result;
-    // Remove "./" at the start
-    if (path.size() >= 2 && path[0] == '.' && path[1] == '/')
-        result = path.substr(2);
-    else
-        result = path;
-    // Remove "/./" sequences
-    for (;;) {
-        auto p = result.find("/./");
-        if (p == std::string::npos) break;
-        result = result.substr(0, p) + result.substr(p + 2);
+    if (absolute) result = "/";
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i > 0) result += "/";
+        result += parts[i];
     }
-    // Remove "//" sequences
-    for (;;) {
-        auto p = result.find("//");
-        if (p == std::string::npos) break;
-        result = result.substr(0, p) + result.substr(p + 1);
-    }
-    // Remove trailing "."
-    if (result.size() == 1 && result[0] == '.')
-        result.clear();
+    if (!absolute && parts.empty()) result = ".";
     return result;
 }
 

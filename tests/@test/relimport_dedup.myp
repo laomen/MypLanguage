@@ -1,0 +1,16 @@
+// relimport_dedup.myp — BUG-024 回归：同一文件经不同相对路径（含 `..`）导入去重
+//   main 直接 import "./helpers/b24_helper.myp" + "./relimport_sub/sub.myp"
+//   （sub 内部 import "../helpers/b24_helper.myp" 指向同一文件）→ normalizePath
+//   折叠 `..` 后两路径同键 → 只加载一次，无 duplicate class/function。
+//   修复前：/…/helpers/b24_helper.myp vs /…/relimport_sub/../helpers/b24_helper.myp
+//   规范化后仍不同 → 双重载入 → duplicate。
+import test;
+import "./helpers/b24_helper.myp";
+import "./relimport_sub/sub.myp";
+
+@test void t_relimport_dedup() {
+    Helper h;
+    Test.assertEq(h.twice(5), 10, "helper direct");
+    Sub s;
+    Test.assertEq(s.useHelper(3), 6, "sub 内递归 helper（经 .. 同文件）");
+}
