@@ -3678,7 +3678,15 @@ bool CodeGen::typeIsReference(const TypeInfo& t) {
 }
 
 llvm::Value* CodeGen::generateThisExpr(const ThisExpr&) {
-    return getNamedValue("this");
+    // BUG-032: `this` 作为值（实参/赋值/返回，如 Holder.set(this)）须返回实例值，
+    // 不能返回 alloca 地址——否则 set 把 &栈槽 存进属性，get 当实例读 → 字段错位
+    // /段错误（含 event 类共存时栈布局不同必现；无 event 版碰巧栈位为 0 未暴露）。
+    // this.field / this.method() 的 this 由 generateMemberAccess 经 getNamedValue
+    // 直取（地址用途），不经本函数，不受影响。
+    auto* ta = getNamedValue("this");
+    if (ta && llvm::isa<llvm::AllocaInst>(ta))
+        return builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta, "this");
+    return ta;
 }
 
 llvm::Value* CodeGen::castToI64(llvm::Value* v) {
