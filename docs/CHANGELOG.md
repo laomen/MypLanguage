@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.12.36 — 修复 BUG-018：类型参数全局作用域泄漏（collections + where 约束伪错误）
+- **BUG-018 已修复**：`src/sema/sema.cpp` `visitClassDecl` 把类**通用类型参数**在
+  `enterScope()` **之前**（全局作用域）声明——类作用域弹出后 T 残留全局符号表；后续
+  同名类型参数泛型类覆盖全局 T。`import collections`（`Set<T>` 无约束 T→Int）+ 用户
+  `Processor<T where T:Container>`（T→Container 接口）→ 检查 Set<T> 模板体
+  （`val % cap_`、`data_[i] < x`）时 T 解析为 Container → 8 个伪错误
+  `expected numeric type, got 'Container'`（行号落 stdlib）。
+- **修复**：类型参数注册移到 `enterScope()` 之后（类作用域内），弹出即清除——同名
+  类型参数不再跨类泄漏/覆盖。与 BUG-021（current_class_name_ 污染）同类。
+- **回归**：`tests/@test/assoc_constraint_import.myp`（collections + `where
+  T:Container` + `T::Item` + `Processor<IntBox>` 实例化，1 断言）；`tests/bugs/
+  assoc_constraint_import.myp` 移除。自举编译器天然无此 bug（Pass A/B 隔离）。
+- 全量回归 **299 通过 / 0 失败**。
+
+
 ### v3.12.35 — 修复 BUG-023：@parallel/@gpu 并行体直接访问 static 属性数组
 - **BUG-023 已修复**：`@parallel for` / `@gpu for` 并行体直接读写 `@static class`
   属性数组（`X.arr[i] = i`）→ `emitKernelExpr` 静态属性分支要求类名在 `kernel_vars`

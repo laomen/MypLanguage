@@ -837,7 +837,18 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
     class_type.class_name = cls_name;
     symbol_table_.declare(cls_name, class_type);
 
-    // Register generic type parameters as valid types within the class scope
+    // Set current class name for member type resolution
+    current_class_name_ = cls_name;
+
+    // Enter class scope to register members
+    symbol_table_.enterScope();
+
+    // Register generic type parameters as valid types within the CLASS scope.
+    // ⚠ BUG-018: 必须在 enterScope 之后声明——此前在类作用域之外（全局）声明，类
+    // 作用域弹出后 T 仍留在全局符号表；后续另一个用同名类型参数（如 Set<T> 后
+    // Processor<T>）的泛型类会把全局 T 覆盖成自己的绑定（如 Container 接口）。随后
+    // 检查 Set<T> 模板体时 T 解析为 Container → `val % cap_`/`data_[i] < x` 报
+    // `expected numeric type, got 'Container'`（8 个伪错误，行号落在 stdlib）。
     for (auto& tp : tu.classes[ci].type_params) {
         TypeInfo tp_type(TypeKind::Int);
         // 约束类型参数（where T : I，§三-5）→ 注册为接口类型，使模板体内
@@ -849,12 +860,6 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
         }
         symbol_table_.declare(tp, tp_type);
     }
-
-    // Set current class name for member type resolution
-    current_class_name_ = cls_name;
-
-    // Enter class scope to register members
-    symbol_table_.enterScope();
 
     for (auto& prop : props) {
         // M7: @weak only on class/interface reference fields (not string/

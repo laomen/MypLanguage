@@ -1,0 +1,36 @@
+// BUG-018 回归（正测试）：`import collections` + `where T : <接口>` 约束泛型类
+//
+// 旧行为：类通用类型参数在 visitClassDecl 里于 enterScope() 之前（全局作用域）声明，
+// 类作用域弹出后仍残留；后续另一个用同名类型参数的泛型类（如 collections 的 Set<T>
+// 后用户 Processor<T where T:Container>）把全局 T 覆盖成自己的绑定（Container 接口）。
+// 随后检查 Set<T> 模板体时 T 解析为 Container → `val % cap_`/`data_[i] < x` 报
+// `expected numeric type, got 'Container'`（8 个伪错误，行号落在 stdlib 区域）。
+// 修复：类型参数注册移到 enterScope() 之后（类作用域内），弹出即清除，不再泄漏。
+// 注：自举编译器天然无此 bug（Pass A/B 作用域隔离），无需镜像。
+
+import test;
+import collections;
+
+interface Container {
+    type Item;
+    Item getVal();
+}
+
+class IntBox {
+    interface class Container;
+    type Item = int;
+    action:
+        int getVal() { return val; }
+    property: int val = 42;
+}
+
+class Processor<T where T : Container> {
+    action:
+        T::Item peek(T c) { return c.getVal(); }
+}
+
+@test void t() {
+    IntBox ib = new IntBox();
+    Processor<IntBox> pi = new Processor<IntBox>();
+    Test.assertEq(pi.peek(ib), 42);
+}

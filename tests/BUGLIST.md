@@ -29,7 +29,7 @@
 | BUG-015 | 🟥 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
 | BUG-016 | � | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
 | BUG-017 | � | 关联类型接口方法返回 **string** 经接口分派 → 分派 stub 用 i32（关联类型占位符回落默认 int）→ `call i32 %iface_fn` 把 string 当 i32 → LLVM verify 失败/段错误 | 回归 `tests/@test/assoc_string_dispatch.myp`（string+int 双关联类型动态分派，4 断言） |
-| BUG-018 | 🟥 | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（去 collections 即过；`import option` 不触发） | `tests/bugs/assoc_constraint_import.myp`（编译失败红） |
+| BUG-018 | � | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（类通用类型参数在全局作用域声明泄漏，同名 T 被覆盖） | 回归 `tests/@test/assoc_constraint_import.myp`（collections + where 约束泛型类，1 断言） |
 | BUG-019 | 🟩 | `this.field = value` 写被拒——struct/class 的 `this.field` 分支误嵌套在 `if (!op)` 内，`this.x = v`（op 非空）整块跳过 → `not a valid assignment target` | 回归 `tests/@test/manual_ch7_struct.myp` t_this |
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
 | BUG-021 | � | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
@@ -460,34 +460,25 @@
 
 ---
 
-## BUG-018（未修复）：`import collections` + 带关联类型约束的泛型类 → 伪错误
+## BUG-018（已修复）：`import collections` + 带关联类型约束的泛型类 → 伪错误
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/assoc_constraint_import.myp`（`import collections` +
-  `class Processor<T where T : Container>` + `T::Item peek(T c){ return c.getVal(); }`
-  + `Processor<IntBox>` 实例化 —— 编译失败红）
-- **现象**（实测 2026-08-18）：
-  - 文件含 `import collections` 时，任何「带关联类型约束的泛型类」
-    （`where T : <接口>` + 方法内引用 `T::Item`）→ sema 报 **8 个**
-    `expected numeric type, got '<接口名>'`（如 'Container'/'Bag'）。错误行号落在
-    合并模块内 collections.myp 区域（固定 205/223/235/246/285/482/498/499），
-    与用户文件内容无关。
-  - **对照**：去掉 `import collections` → 编译通过（exit 0）；`import option` 不触发；
-    仅接口声明 / 仅实现类 / 仅 `T::Item` 单独用都不触发——必须「collections +
-    where 关联类型约束泛型类」组合。
-- **根因（推测）**：sema 在 collections.myp 大量泛型类（Set/Deque/Queue 等，均用
-  `T` 作类型参数）与用户「带关联类型约束的泛型类」共存时，`T::Item` 的关联类型
-  解析状态被污染——`T::Item` 回落到接口类型本身（而非绑定类型），导致
-  collections 泛型类语义分析时把接口类型当数值用报错。
-- **影响**：manual.md §6 关联类型「泛型约束」示例
-  `class Processor<T where T : Container> { T::Item peek(T c){...} }` 一旦与常见
-  `import collections` 并存（如同时用 ArrayList）即无法编译——**文档化模式实际
-  受限于 import 顺序**。
-- **期望语义**：`where T : <关联类型接口>` 的泛型类可与任意 stdlib 导入共存；
-  `T::Item` 始终单态化为绑定类型。
-- **备注**：manual.md §6 关联类型按设计意图描述（不标 bug，符合约定）；bug 仅记录于
-  本清单。回归测试 `tests/@test/manual_ch6_class.myp` 因此拆分：关联类型 Processor
-  用例与 collections 分开放。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因**：`src/sema/sema.cpp` `visitClassDecl` 把类**通用类型参数**在
+  `symbol_table_.enterScope()` **之前**（全局作用域）声明——类作用域弹出后 T 仍残留
+  全局符号表。随后另一个用同名类型参数的泛型类把全局 T 覆盖成自己的绑定：collections
+  的 `Set<T>`（无约束，T→Int）先注册，用户 `Processor<T where T:Container>` 把全局 T
+  覆盖成 `Container`（接口）→ 之后检查 Set<T> 模板体（`val % cap_`、`data_[i] < x`）
+  时 T 解析为 Container → `expected numeric type, got 'Container'`（8 个伪错误，行号
+  落在 stdlib）。去掉 collections（无 Set<T>）或去掉约束（不覆盖 T）都不触发。
+- **修复**：类型参数注册移到 `enterScope()` 之后（类作用域内），弹出即清除——同名
+  类型参数不再跨类泄漏/覆盖。与 BUG-021（current_class_name_ 污染）同类——都是
+  visitClassDecl 类上下文不隔离。
+- **验证**：回归 `tests/@test/assoc_constraint_import.myp`（collections + `where
+  T:Container` + `T::Item` + `Processor<IntBox>` 实例化，1 断言）；`tests/bugs/
+  assoc_constraint_import.myp` 移除。全量回归 299 通过 / 0 失败。自举编译器天然无此
+  bug（Pass A/B 作用域隔离），无需镜像。
+- **备注**：manual.md §6 关联类型按设计意图描述（不标 bug）；`tests/@test/
+  manual_ch6_class.myp` 与 collections 分开放的历史拆分可保留（无害）。
 
 ---
 
