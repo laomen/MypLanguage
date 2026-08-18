@@ -35,7 +35,7 @@ class Main {
 int main() { Main m = new Main(); return 0; }
 EOF
     local out
-    out=$("$MYPCC" "$src" -o "$bin" 2>&1)
+    out=$($MYPCC "$src" -o "$bin" 2>&1)
     local rc=$?
     rm -f "$src" "$bin"
     if [ $rc -ne 0 ]; then
@@ -79,7 +79,7 @@ class Main {
 }
 int main() { Main m = new Main(); return 0; }
 EOF
-out=$("$MYPCC" "$src" -o /tmp/coro_stack_warn_$$.out 2>&1)
+out=$($MYPCC "$src" -o /tmp/coro_stack_warn_$$.out 2>&1)
 rc=$?
 rm -f "$src" /tmp/coro_stack_warn_$$.out
 if [ $rc -eq 0 ] && ! echo "$out" | grep -qE "$WARN_RE"; then

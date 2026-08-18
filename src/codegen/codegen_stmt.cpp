@@ -2449,6 +2449,23 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     // longjmp back to the setjmp (fixes nested tries / cross-function throws).
     auto* jb = createEntryBlockAlloca(func, jmp_buf_type_, "try_jmpbuf");
     auto* jb_ptr = builder_.CreateBitCast(jb, ptr_ty);
+    // 1 = an exception is propagating through finally (then rethrow after).
+    llvm::Value* finally_flag = s.finally_block
+        ? createEntryBlockAlloca(func, i8_ty, "finally_flag") : nullptr;
+
+    // Exception × -O root fix: LLVM's CFG does not model the longjmp edge — the
+    // try block ends in a noreturn longjmp, so stores to in-scope locals from
+    // inside the try are seen as dead (DCE) and loads on the longjmp path
+    // (finally/catch) fold to the entry value → fin_run read as 0 at -O2
+    // (arc_throw). Escape every in-scope local (all named_values_ scopes) plus
+    // the finally flag so mem2reg/SROA keep them in memory and DSE keeps the
+    // stores; the runtime then reads the true physical value after longjmp.
+    // (jmp_buf already escapes via exception_push/setjmp.)
+    for (auto& scope : named_values_)
+        for (auto& kv : scope)
+            if (kv.second && kv.second->getType()->isPointerTy())
+                escapeSlot(kv.second);
+    if (finally_flag) escapeSlot(finally_flag);
 
     // Register this try's handler before setjmp (innermost-active handler stack).
     builder_.CreateCall(runtime_exception_push_->getFunctionType(),
@@ -2468,9 +2485,6 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
     auto* finally_bb = s.finally_block
         ? llvm::BasicBlock::Create(ctx_, "finally_block", func) : nullptr;
     auto* merge_bb = llvm::BasicBlock::Create(ctx_, "try_end", func);
-    // 1 = an exception is propagating through finally (then rethrow after).
-    llvm::Value* finally_flag = finally_bb
-        ? createEntryBlockAlloca(func, i8_ty, "finally_flag") : nullptr;
     llvm::BasicBlock* propagate_bb = nullptr;  // exception path: set flag=1, br finally
     llvm::BasicBlock* rethrow_bb = nullptr;    // pop handler + longjmp to outer
 

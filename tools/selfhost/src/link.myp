@@ -99,10 +99,11 @@ import env;
         }
 
         // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
-        // B2（对齐 C++ mypc）：默认 **不跑 opt**（-O0）。opt -O2 的 mem2reg 会把
-        // 跨 setjmp/longjmp 的局部提升为 SSA → longjmp 后读旧值 → try/finally 异常
-        // 语义破坏（arc_throw fin_run 失败；C++ mypc -O2 同样失败，mypc 靠默认 -O0
-        // 规避）。optLevel > 0（-O1/-O2/-O3）或 MYP_SELF_OPT=1 时显式开启。
+        // 默认 **-O2**（CLI 默认 optLevel=2；v3.12.44 修复 opt -O2 跨 setjmp/longjmp
+        // 的 finally 语义破坏根因——codegen 在 try 入口把全部在作用域局部 + finally
+        // flag 的地址传给 myp_try_escape 无操作，使其成为逃逸内存，mem2reg/SROA 不
+        // 提升、DSE 不删 store，-O2 下 arc_throw 15/15、全量 310/0）。optLevel>0 时
+        // 跑 opt -O<level>；MYP_SELF_OPT=1 强制开启、=0 强制关闭（调试/对比）。
         int link(string llPath, string outPath, string stdlib, int optLevel) {
             string srcLl = llPath;
             string optEnv = Console.getEnv("MYP_SELF_OPT");

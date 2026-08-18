@@ -7068,6 +7068,23 @@ class CodeGen {
                 flagA = newTmp();
                 sb_.append("  " + flagA + " = alloca i8, align 1\n");
             }
+            // 跨 setjmp/longjmp 存活的局部：把地址传给 myp_try_escape 无操作，
+            // 使 LLVM 视为逃逸内存（C++ registerArcSlot 同款机制，扩展到全部
+            // 在作用域局部）。LLVM 的 CFG 不建模 longjmp 这条边——try 块以
+            // noreturn __myp_longjmp 结尾 → try 内对局部的 store 被判死代码 DCE、
+            // longjmp 路径（finally/catch）的 load 折叠成入口值（B2：arc_throw
+            // 的 fin_run 在 -O2 下被折叠为 0）。逃逸后 mem2reg/SROA 不再提升、
+            // DSE 不删 store，finally/catch 读到物理内存真值。jmp_buf 经
+            // myp_exception_push/setjmp 传地址已天然逃逸。
+            for (int li = 0; li < localAllocas_.size(); li = li + 1) {
+                string slot = localAllocas_.get(li);
+                if (Str.startsWith(slot, "%") != 0) {
+                    sb_.append("  call void @myp_try_escape(ptr " + slot + ")\n");
+                }
+            }
+            if (hasFinally != 0) {
+                sb_.append("  call void @myp_try_escape(ptr " + flagA + ")\n");
+            }
             sb_.append("  call void @myp_exception_push(ptr " + jb + ")\n");
             string r = newTmp();
             sb_.append("  " + r + " = call i32 @setjmp(ptr " + jb + ")\n");

@@ -402,7 +402,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
 [[nodiscard]] static std::string compileSingle(const std::string& filename,
                                   const std::string& stdlib_path = "stdlib",
                                   const std::string& package_path = "",
-                                  int opt_level = 0,
+                                  int opt_level = 2,
                                   bool trace_enabled = false,
                                   bool emit_llvm = false,
                                   bool library_mode = false,
@@ -897,7 +897,7 @@ static int realMain(int argc, char* argv[]) {
         std::cerr << "       " << argv[0] << " run <file.myp> [args...]  (仿 go run: 编译+运行+清理; 单类文件无 main 自动补, 须类带 @startup)\n";
         std::cerr << "Options:\n";
         std::cerr << "  -o <file>       Set output filename\n";
-        std::cerr << "  -O[0123]        Set optimization level (default: -O0)\n";
+        std::cerr << "  -O[0123]        Set optimization level (default: -O2)\n";
         std::cerr << "  --stdlib <path> Set stdlib directory\n";
         std::cerr << "  --trace         Enable runtime event tracing\n";
         std::cerr << "  --emit-llvm     Save LLVM IR to .ll file (skip linking)\n";
@@ -920,7 +920,7 @@ static int realMain(int argc, char* argv[]) {
     {
         int sub_idx = findSubcommand(argc, argv);
         if (sub_idx > 0 && strcmp(argv[sub_idx], "run") == 0) {
-            int ropt = 0;
+            int ropt = 2;
             for (int j = 1; j < sub_idx; j++) {
                 std::string a = argv[j];
                 if (a.size() >= 2 && a[0] == '-' && a[1] == 'O') {
@@ -936,7 +936,9 @@ static int realMain(int argc, char* argv[]) {
     std::string package_path = "";
     std::string output_name_v;
     std::string frontend_dump_mode;
-    int opt_level = 0;
+    // 默认 -O2（v3.12.44 修复 setjmp/longjmp 根因后 -O2 安全；对齐自举默认）。
+    // -O0/-O1/-O3 显式覆盖；--emit-llvm/--frontend-dump 不受影响。
+    int opt_level = 2;
     bool trace_enabled = false;
     bool emit_llvm = false;
     bool shared_lib = false;
@@ -959,7 +961,7 @@ static int realMain(int argc, char* argv[]) {
             std::cout << "       " << argv[0] << " run <file.myp> [args...]  (仿 go run)\n";
             std::cout << "Options:\n";
             std::cout << "  -o <file>       Set output filename\n";
-            std::cout << "  -O[0123]        Set optimization level (default: -O0)\n";
+            std::cout << "  -O[0123]        Set optimization level (default: -O2)\n";
             std::cout << "  --stdlib <path> Set stdlib directory\n";
             std::cout << "  --package-path <path> Set local package directory\n";
             std::cout << "  --trace         Enable runtime event tracing\n";

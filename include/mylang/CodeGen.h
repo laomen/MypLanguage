@@ -177,6 +177,12 @@ private:
     TypeInfo current_ret_ti_;
     void registerArcSlot(llvm::Value* alloca, int kind);
     void releaseArcSlot(llvm::Value* alloca, int kind);
+    // Mark `slot` as escaped memory via the myp_try_escape no-op: prevents
+    // mem2reg/SROA from promoting it to SSA and DSE from deleting stores to it.
+    // Used for every local live across a setjmp/longjmp try (see
+    // generateTryStmt), so the finally/catch paths read the true physical value
+    // after a longjmp (LLVM's CFG does not model the longjmp edge).
+    void escapeSlot(llvm::Value* slot);
     // ARC coroutine-frame registry (§五-1 收尾): every local ARC slot inside a
     // @coro body mirrors the object it currently holds into the coroutine's
     // runtime frame list (set at each store, clear at every release — all

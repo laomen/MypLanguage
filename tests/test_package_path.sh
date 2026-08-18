@@ -33,7 +33,7 @@ int main() { return fooValue() == 7 ? 0 : 1; }
 MAINEOF
 
 # 1) 冒号分隔多路径：包在 dirB → 应成功
-if "$MYPCC" "$TMPDIR/main.myp" --package-path "$TMPDIR/dirA:$TMPDIR/dirB" -o "$TMPDIR/a.out" >/dev/null 2>&1; then
+if $MYPCC "$TMPDIR/main.myp" --package-path "$TMPDIR/dirA:$TMPDIR/dirB" -o "$TMPDIR/a.out" >/dev/null 2>&1; then
     if "$TMPDIR/a.out"; then ok "colon multi-path resolves pkg in dirB (run ok)"
     else bad "colon multi-path compiles but wrong result"; fi
 else
@@ -41,7 +41,7 @@ else
 fi
 
 # 2) 单路径（无冒号）仍正常
-if "$MYPCC" "$TMPDIR/main.myp" --package-path "$TMPDIR/dirB" -o "$TMPDIR/b.out" >/dev/null 2>&1 \
+if $MYPCC "$TMPDIR/main.myp" --package-path "$TMPDIR/dirB" -o "$TMPDIR/b.out" >/dev/null 2>&1 \
    && "$TMPDIR/b.out"; then
     ok "single path still works"
 else

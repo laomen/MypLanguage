@@ -934,14 +934,26 @@ void CodeGen::registerArcSlot(llvm::Value* alloca, int kind) {
         if (!builder_.GetInsertBlock() ||
             builder_.GetInsertBlock()->getTerminator())
             return;   // dead path — nothing further to do
-        if (!runtime_try_escape_)
-            runtime_try_escape_ = llvm::Function::Create(
-                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
-                                        {llvm::PointerType::get(ctx_, 0)}, false),
-                llvm::Function::ExternalLinkage, "myp_try_escape", module_.get());
-        builder_.CreateCall(runtime_try_escape_->getFunctionType(),
-                            runtime_try_escape_, {alloca});
+        escapeSlot(alloca);
     }
+}
+
+// Mark `slot` as escaped memory via the myp_try_escape no-op (§五-3 exception ×
+// -O): passing the slot address to an opaque C function makes LLVM treat it as
+// memory that unknown calls may read/write. The -O pipeline then keeps the
+// try-block stores alive and reads the true physical value on the longjmp path
+// instead of folding to undef / the entry value.
+void CodeGen::escapeSlot(llvm::Value* slot) {
+    if (!slot || !builder_.GetInsertBlock() ||
+        builder_.GetInsertBlock()->getTerminator())
+        return;
+    if (!runtime_try_escape_)
+        runtime_try_escape_ = llvm::Function::Create(
+            llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_),
+                                    {llvm::PointerType::get(ctx_, 0)}, false),
+            llvm::Function::ExternalLinkage, "myp_try_escape", module_.get());
+    builder_.CreateCall(runtime_try_escape_->getFunctionType(),
+                        runtime_try_escape_, {slot});
 }
 
 // Emit myp_release for every slot collected in the innermost try's unwind list.

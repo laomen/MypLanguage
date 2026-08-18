@@ -27,6 +27,58 @@
 
 ## 编译器版本历史
 
+### v3.12.44 — 修复 `-O2 × setjmp/longjmp` 根因：try 入口逃逸全部在作用域局部 + finally flag
+
+根治 B2 遗留的「opt -O2 破坏 setjmp/longjmp 的 finally 语义」根因（C++ 与自举同修），
+`-O2` 现在可以安全使用。
+
+- **根因**：LLVM 的 CFG **不建模 longjmp 这条边**——try 块以 noreturn
+  `__myp_longjmp` + `unreachable` 结尾，于是：
+  1. try 块内对跨 setjmp 存活局部的 store 被死代码消除（DCE 认为 try 块后面不可达）；
+  2. longjmp 路径（finally/catch）对这些局部的 load 被折叠成入口值——mem2reg/SROA
+     把跨 setjmp 的局部提升为 SSA 寄存器，longjmp 恢复后读到的不是 try 内写的值。
+  实测 `arc_throw` 的 `fin_run`：try 内 `fin_run=1` 被 DCE、finally 里 `fin_run+1`
+  被整块消除，断言 `myp_assert_eq(i32 0, i32 2)`（应 2）。C++ `mypc -O2` 同样失败
+  （v3.9.0 只对 ARC 槽逃逸，标量局部未覆盖）。
+- **修复**：try 入口（setjmp 前）把**全部在作用域局部 + finally flag 的地址**传给
+  `myp_try_escape` 无操作（运行时空函数），使它们成为 LLVM 眼中的逃逸内存——
+  mem2reg/SROA 不再提升、DSE 不删 store，finally/catch 从物理内存读到真值。
+  jmp_buf 经 `myp_exception_push`/`setjmp` 传地址本就逃逸，无需额外处理。
+  - 自举 `tools/selfhost/src/codegen.myp` `genTryStmt`：遍历 `localAllocas_` 发射
+    `myp_try_escape`；`ir_emit.myp` 补 `declare void @myp_try_escape(ptr)`。
+  - C++ 镜像：`CodeGen::escapeSlot` 助手（抽出原 registerArcSlot 内联逻辑），
+    `generateTryStmt` 遍历 `named_values_` 全作用域指针值 + finally flag。
+  - 自举源码自身不用 try → 逃逸不会进入自举编译器自身 IR，bootstrap 不动点不受影响。
+- **附带修复测试脚本引号 bug（MYPCC 带参数时失效，v3.9.0 同类遗留）**：`run_tests_O2.sh`
+  设 `MYPCC="./build/mypc -O2"`（含空格）时，`test_coro_stack_warn.sh` /
+  `test_package_path.sh` 的 `"$MYPCC"` 把整串当单个文件名、`tools/codegen/run_tests.sh`
+  的绝对化 `basename` 带进 `-O2` → 均退出 127/找不到编译器。修复：调用处去引号
+  （`$MYPCC`），`tools/codegen/run_tests.sh` 二进制取首词绝对化（`MYP_ABS`）+ 保留
+  flags，`MYP_CC` 导出二进制绝对路径。
+- **附带修复 compile 模式 stdlib 回退**：自举 CLI 直接 compile（非 `run` 子命令）未显式
+  给 `--stdlib` 时 stdlib 为空 → 从子目录（如 `bench/`）编译时 `Link.link` 的 runtime
+  路径回落 CWD 相对（`src/runtime/runtime.c` 找不到 → 链接失败）。修复：compile 模式
+  stdlib 为空时回退 `Cli.selfStdlib()`（与 `run` 子命令一致）。`bench/run_compare.sh`
+  用 `myp_self2` 跑全部 44 项基准不再失败。
+- **验证**：
+  - `arc_throw`：**C++ 与自举 -O0/-O2 均 15/15**；IR 复核：-O2 后 finally 里
+    `add i32`（fin_run 自增）存活、断言不再折叠为 0。
+  - 全量回归 **-O0 310/0**、**-O2 310/0**（此前 -O2 arc_throw 必挂）。
+  - 自举 `@test` 全套 **-O0 104/0、-O2 104/0**；`test_myp_self.sh` 94/94；
+    `test_myp_bootstrap.sh` 16/16 不动点（self2==self3 字节相同，md5 dd7fc3c7…）。
+  - 异常专项（exception/exception_lib/exception_thread/exception_throwin +
+    @test arc_throw/result）自举 -O2 全过。
+- **默认优化级别调整为 -O2**：根因修复后 **C++ `mypc` 与自举统一默认 -O2**——
+  mypc `src/main.cpp`（`compileSingle`/主流程/`run` 子命令默认 `opt_level` 0→2，
+  `--help` 文本同步）、自举 `main.myp`/`link.myp`（CLI/`run`/`fmt` 统一默认
+  `optLevel=2`；v3.12.10 曾默认 -O2、B2 回退 -O0、本版本恢复）。`-O0/-O1/-O3` 显式
+  覆盖、`MYP_SELF_OPT=0` 强制关闭。opt 步骤编译开销 +24%，换取生成程序 3-23x 运行
+  提升。自举链全程 -O2 编译，bootstrap 不动点保持（self2==self3 字节相同，
+  md5 d62f9f45…）。
+- **性能权衡**：逃逸只作用于含 try 的函数（try 入口每在作用域局部一次无操作调用，
+  该函数局部不再提升寄存器）；自举编译器自身无 try → 编译/运行性能不受影响。
+  默认 **-O2**（生产性能），`-O0`/`MYP_SELF_OPT=0` 快速编译/调试。
+
 ### v3.12.43 — 自举编译器 B 类缺口：assoc 关联类型 / 嵌套 struct / 多文件合并全绿
 
 自举（selfhost）编译器追赶 C++ 编译器的 B 类功能缺口，**全量回归 310 通过 / 0 失败**。

@@ -348,8 +348,10 @@ class LoadedSet {
         // 多文件（B5）：files[0] 为主文件，其余解析后全量合并进 TU（镜像 C++
         // multi-file：imports/structs/bitfields/classes/interfaces/mappings/
         // functions/enums/ffis/macros/typeAliases），再统一加载所有 imports。
-        // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。optLevel：0=-O0 默认（不跑
-        // opt；B2：opt -O2 破坏 setjmp/longjmp 的 finally 语义）；1/2/3=-O1/2/3。
+        // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。optLevel：默认 2=-O2（CLI
+        // 未显式给 -O 时；opt 跨 setjmp/longjmp 的 finally 语义破坏根因已修——
+        // codegen try 入口 myp_try_escape 逃逸，v3.12.44）；-O0/-O1/-O3 显式覆盖，
+        // MYP_SELF_OPT=0 强制关闭（调试/对比）。
         int compile(ArrayList<string> files, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode, int autoMain, int optLevel) {
             string file = files.get(0);
             if (Fs.exists(file) == 0) {
@@ -484,7 +486,7 @@ class LoadedSet {
             string base = "/tmp/myp_self_run_" + Process.getPid();
             ArrayList<string> files0 = new ArrayList<string>();
             files0.add(file);
-            int rc = Frontend.compile(files0, base, stdlib, "", 0, 0, 1, 0);
+            int rc = Frontend.compile(files0, base, stdlib, "", 0, 0, 1, 2);
             if (rc != 0) return rc;
             StringBuilder cmd = new StringBuilder();
             cmd.append(Cli.quoteShell(base));
@@ -511,7 +513,7 @@ class LoadedSet {
                     string stdlib = Cli.selfStdlib();
                     ArrayList<string> files0b = new ArrayList<string>();
                     files0b.add("tools/fmt/main.myp");
-                    int rc = Frontend.compile(files0b, fmtBin, stdlib, "", 0, 0, 0, 0);
+                    int rc = Frontend.compile(files0b, fmtBin, stdlib, "", 0, 0, 0, 2);
                     if (rc != 0) {
                         Console.writeLine("myp_self fmt: 无法定位/编译自举格式化器（设 MYP_FMT 或提供 tools/fmt/main.myp）");
                         return rc;
@@ -574,7 +576,10 @@ class LoadedSet {
             string packagePath = "";
             int emitLlvm = 0;
             int testMode = 0;
-            int optLevel = 0;
+            // 默认 -O2（v3.12.44 修复 setjmp/longjmp 根因后 -O2 安全；opt 步骤编译
+            // 开销 +24%，换取生成程序 3-23x 运行提升）。-O0/-O1/-O3 显式覆盖；
+            // MYP_SELF_OPT=0 强制关闭（调试/对比）。
+            int optLevel = 2;
             int i = 1;
             if (arg == "--test") {
                 testMode = 1;
@@ -614,6 +619,9 @@ class LoadedSet {
                 if (files.size() == 1) outPath = Cli.stripExt(files.get(0)) + ".out";
                 else outPath = "a.out";
             }
+            // stdlib 未显式给 --stdlib 时回退 Cli.selfStdlib()（run 子命令同款），
+            // 使 compile 从任意子目录（如 bench/）也能定位 stdlib/runtime。
+            if (Str.len(stdlib) == 0) stdlib = Cli.selfStdlib();
             return Frontend.compile(files, outPath, stdlib, packagePath, emitLlvm, testMode, 0, optLevel);
         }
 

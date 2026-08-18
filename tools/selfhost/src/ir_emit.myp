@@ -384,6 +384,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare void @myp_exception_pop()\n");
             sb.append("\n");
+            sb.append("declare void @myp_try_escape(ptr)\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_exception_get_jmpbuf()\n");
             sb.append("\n");
             sb.append("declare void @myp_throw_object(ptr, i32)\n");
