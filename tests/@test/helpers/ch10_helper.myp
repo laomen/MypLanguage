@@ -1,0 +1,5 @@
+// §10 回归 helper（tests/@test/helpers/ 子目录，不被 run_tests.sh 顶层 *.myp 发现）
+class Ch10Helper {
+    action:
+        int twice(int x) { return x * 2; }
+}

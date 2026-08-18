@@ -1826,17 +1826,20 @@ Worker 线程: @startup → 事件循环 → 处理事件 → 触发新事件
 ### 导入语法
 
 ```myp
-import env;              // 标准库模块
+import env;              // 标准库模块（无引号、无扩展名）
 import timeline;          // 标准库模块
-import "./helper.myp";    // 用户文件（相对路径）
+import gpu.hal;          // 标准库子模块（点分模块名 → stdlib/gpu/hal.myp）
+import "./helper.myp";    // 用户文件（相对路径，以被导入文件所在目录为基准）
 import "/abs/lib.myp";    // 用户文件（绝对路径）
 ```
 
 ### 导入规则
 
-- 标准库在 `stdlib/` 目录查找
-- 用户文件支持相对/绝对路径
-- 自动去重（同一文件不会重复导入）
+- 标准库在 `stdlib/` 目录查找；**点分模块名** `import gpu.hal;` → `stdlib/gpu/hal.myp`
+- 用户文件支持相对/绝对路径；相对路径以**被导入文件所在目录**为基准
+- 自动去重（同一文件不会重复导入；注：按路径字符串去重，`..` 未规范化——同一文件
+  经不同相对路径（如直导 `./helper.myp` + 子模块内 `../helper.myp`）会重复载入报
+  duplicate，见 tests/bugs/）
 - 递归加载（导入的文件中的 `import` 也被加载）
 - 搜索路径：`--stdlib` → 可执行文件 `../stdlib/` → 源文件 `./stdlib/` → `--package-path` 指定目录
 - 包导入：`import mylib;` 会在包路径下查找 `mylib/src/mylib.myp` 或 `mylib/mylib.myp`

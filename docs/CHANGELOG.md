@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.12.19 — 手册 §10 模块与导入审计：去重 `..` 不规范化（BUG-024）+ 点分模块名补文档
+- **新 bug BUG-024**：相对路径导入去重**不解析 `..`**——同一文件经不同相对路径
+  （直导 `./helper.myp` + 子模块内 `../helper.myp`）`normalizePath` 后仍不同
+  （`/mod/helper.myp` vs `/mod/sub/../helper.myp`）→ 双重载入 →
+  `duplicate class name`/`duplicate function name`。design §9 声称「规范化路径去重」
+  未真正实现（`normalizePath` 只清 `.`/`//`）。复现 `tests/bugs/relimport_dedup.myp`。
+- **文档补齐**：manual §10 导入语法加点分模块名（`import gpu.hal;` → `stdlib/gpu/hal.myp`，
+  实测可用但原文档未提）；导入规则加去重注记（按路径字符串、`..` 未规范化）。
+- **§10 逐条实测通过**：标准库导入 env/timeline ✓ / 点分模块名 gpu.hal ✓ / 相对路径
+  `import "./helper.myp"` ✓ / 绝对路径 ✓ / 同串去重 ✓ / 递归加载 ✓ / 搜索路径
+  （--stdlib → ../stdlib/ → ./stdlib/ → --package-path）✓ / 包导入
+  （`import foo;` + `--package-path`）✓。
+- **回归**：`tests/@test/manual_ch10_myp.myp`（1 test / 2 断言：相对+同串去重+递归+
+  点分模块名）+ helpers/ch10_sub.myp；全量 285 通过（3 个自举工具 build/ 缺二进制的
+  既有环境失败）。
+
 ### v3.12.18 — 手册 §11 标准库抽查：API 全部准确，固化综合回归
 - **§11 逐条抽查（编译+运行）**：option（Option()/Option(v)/isSome/get/getOr/set/clear）/
   collections（ArrayList/HashMap/Set）atomic（addInt/subInt/addDouble/xchgInt/loadInt/

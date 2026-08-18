@@ -1,0 +1,9 @@
+// §10 回归：递归导入（导入同目录 helper，避免 BUG-024 的 `..` 场景）
+import "./helpers/ch10_helper.myp";
+class Ch10Sub {
+    action:
+        int useHelper(int x) {
+            Ch10Helper h;
+            return h.twice(x);
+        }
+}

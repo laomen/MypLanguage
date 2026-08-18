@@ -35,6 +35,7 @@
 | BUG-021 | 🟥 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（读+写都中；struct 泛型字段正常） | `tests/bugs/this_generic_prop.myp`（编译失败红） |
 | BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟥 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139；须先拷到局部（manual BNCT 模式正确） | `tests/bugs/parallel_prop_access.myp`（编译失败红） |
+| BUG-024 | 🟥 | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | `tests/bugs/relimport_dedup.myp`（编译失败红） |
 
 ---
 
@@ -629,3 +630,30 @@
   提示「先拷到局部」。
 - **备注**：manual §9 @parallel for 限制与 @gpu for 限制已加说明（并行体只捕获
   局部变量，属性访问先拷局部）；bug 仅记录于本清单。
+
+---
+
+## BUG-024（未修复）：相对路径导入去重不解析 `..` → 同文件不同相对路径重复载入
+
+- **状态**：🟥 未修复（2026-08-18 记录）
+- **复现测试**：`tests/bugs/relimport_dedup.myp`（`import "./helper.myp";` +
+  `import "./sub/sub.myp";`，sub 内部 `import "../helper.myp";` 同一文件 → 编译失败红）
+- **现象**（实测 2026-08-18）：同一文件经**不同相对路径**导入不去重：
+  - main 直导 `./helper.myp`（→ `/tmp/mod/helper.myp`）+ 递归导入
+    `./sub/sub.myp`（内部 `../helper.myp` → `/tmp/mod/sub/../helper.myp`）
+    → `duplicate class name 'Helper'` / `duplicate function name 'helperTop'`
+    （Semantic analysis failed）。
+  - **同串** `import "./helper.myp";` 两次 → 正常去重（仅 1 次载入）。
+  - manual/design 声称「自动去重（基于规范化路径/模块名）」——实际只按**路径字符串**
+    去重，`..` 未规范化 → 两个指向同一文件的路径串被视为不同。
+- **根因**（`src/main.cpp` loadModule ~164-169）：去重键 `dedup_key = is_path ?
+  normalizePath(path) : module_name`；`normalizePath`（~59）只移除开头 `./`、`/./`、
+  `//`，**不解析 `..` 父目录组件**——`/tmp/mod/helper.myp` 与
+  `/tmp/mod/sub/../helper.myp` 规范化后仍不同 → 双双载入 → duplicate。
+- **影响**：分层模块项目里共享 helper 被「直导 + 递归（经 `..`）」同时引用即编译失败
+  （manual §10 项目组织建议的分层模式受限于此）；标准库子模块内部相对导入
+  （`import "./gpu/backend.myp"`）与用户直导同名文件也可能撞车。
+- **期望语义**：`normalizePath` 解析 `..`（折叠 `/a/../b` → `/b`），使同一文件无论经
+  哪条相对路径都去重到同一规范键。
+- **备注**：manual §10 导入规则已加注（去重按路径字符串，`..` 未规范化；见 tests/bugs/）；
+  bug 仅记录于本清单。

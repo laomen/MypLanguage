@@ -1,0 +1,8 @@
+import "../helper.myp";
+class Sub {
+    action:
+        int useHelper(int x) {
+            Helper h;
+            return h.twice(x);
+        }
+}

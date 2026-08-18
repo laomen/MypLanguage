@@ -1,0 +1,18 @@
+// manual_ch10_myp.myp — 手册 §10 模块与导入 核对回归（2026-08-18 审计固化）
+//   覆盖：标准库导入 / 点分模块名（import gpu.hal）/ 相对路径用户文件 /
+//   同串自动去重 / 递归导入（同一文件经 `..` 不同路径不去重 → BUG-024，
+//   故此处递归用同级路径规避）。
+//   注：包导入（import foo; + --package-path）由 tests/bugs 级 shell 验证。
+import test;
+import env;                 // 标准库导入
+import gpu.hal;             // 点分模块名 → stdlib/gpu/hal.myp
+import "./helpers/ch10_helper.myp";   // 相对路径用户文件
+import "./helpers/ch10_helper.myp";   // 同串重复 → 去重（不报 duplicate）
+import "./ch10_sub.myp";              // 递归导入（ch10_sub 再导入同级 helper）
+
+@test void t_import() {
+    Ch10Helper h;
+    Test.assertEq(h.twice(5), 10, "相对导入+同串去重");
+    Ch10Sub s;
+    Test.assertEq(s.useHelper(3), 6, "递归导入（同级路径）");
+}
