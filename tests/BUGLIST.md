@@ -585,9 +585,13 @@
   `arcStoreRef(gep, v, iface, fresh)`、string `arcStoreRef(...,false,fresh)`、slice
   `arcStoreSlice`、counted-array `arcStoreRef`，均 + `arcConsumeTemp(v)`；alias 值
   retain、fresh 值 consume（`isFreshArcExpr`）。
+- **自举镜像**：`tools/selfhost/src/codegen.myp` 属性默认值发射同样直接 store、未
+  consumeTemp（IR 复核：fresh new 的 rc=1 在语句末 `myp_release` → 属性槽悬垂）→
+  同样修复：`ft=="ptr" && isArcType` 时走 `storeRef(gep, pv, isFreshTemp(pv))`
+  （内部 retain/consume），否则保持 plain store。IR 复核：属性对象不再语句末释放。
 - **验证**：回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值
   读取，3 断言）；`tests/@test/this_generic_prop.myp` 泛型属性带初始化器场景同覆盖。
-  全量回归 296 通过 / 0 失败。
+  自举 `test_myp_self.sh` 94/94 全绿。全量回归 296 通过 / 0 失败。
 - **备注**：BUG-021 修复验证时暴露（属性初始化器此前未在编译通过的用例中出现）。
 
 ---

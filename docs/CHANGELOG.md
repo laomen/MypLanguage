@@ -36,6 +36,9 @@
 - **修复**：属性初始化器与 `this.prop = value` 赋值路径同语义——ARC 引用属性
   （class/interface/string/slice/counted-array）`arcStoreRef`/`arcStoreSlice` +
   `arcConsumeTemp`；alias retain、fresh consume（`isFreshArcExpr`）。
+- **自举镜像**：`tools/selfhost/src/codegen.myp` 属性默认值发射同样未 consumeTemp（IR
+  复核：fresh 对象语句末 `myp_release` 悬垂）→ 同修复：`ft=="ptr" && isArcType` 走
+  `storeRef(gep, pv, isFreshTemp(pv))`。IR 复核不再语句末释放；`test_myp_self.sh` 94/94。
 - **回归**：`tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，
   3 断言）。BUG-021 修复验证时暴露（属性初始化器此前无编译通过的用例）。
 - 全量回归 **296 通过 / 0 失败**。

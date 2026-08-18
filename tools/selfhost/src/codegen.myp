@@ -8123,7 +8123,16 @@ class CodeGen {
                             string gep = newTmp();
                             sb_.append("  " + gep + " = getelementptr %" + cls + ", ptr " + t + ", i32 0, i32 " + pi + "\n");
                             pv = convertValue(pv, pt, ft);
-                            sb_.append("  store " + ft + " " + pv + ", ptr " + gep + "\n");
+                            // BUG-028 镜像 C++：ARC 引用（class/string/动态数组 = ptr）
+                            // 属性初始化器——fresh 转移所有权（storeRef 内部 consumeTemp，
+                            // 语句末 flushTemps 不再释放），alias retain。此前直接 store →
+                            // fresh new 的 rc=1 留在 pendingTemps_，语句末被释放 → 属性槽
+                            // 悬垂（读取 use-after-free；setter 重赋值 → 双释放段错误 139）。
+                            if (ft == "ptr" && isArcType(prop.type()) != 0) {
+                                storeRef(gep, pv, isFreshTemp(pv));
+                            } else {
+                                sb_.append("  store " + ft + " " + pv + ", ptr " + gep + "\n");
+                            }
                         }
                         break;
                     }
