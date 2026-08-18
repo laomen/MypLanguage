@@ -1,0 +1,38 @@
+// BUG-028 回归（正测试）：类属性 ARC 初始化器 + setter 重赋值 + 读取
+//
+// 旧行为：`property: Foo f = new Foo();` 属性初始化器在 new 语句里直接 store 到属性
+// 槽、不 consume fresh 临时 —— fresh new 的 rc=1 留在语句末临时释放列表 → 语句末被
+// release → 属性槽悬垂。任何后续读取都是 use-after-free（碰巧可用是内存未重用）；
+// setter 重赋值 `this.f = x` 释放悬垂旧值 → 双释放 → 运行段错误 139（确定性）。
+// 修复：属性初始化器与 `this.prop = value` 赋值路径同语义——ARC 引用属性 fresh
+// consume、alias retain（arcStoreRef/arcStoreSlice + arcConsumeTemp）。
+
+import test;
+
+class Foo {
+    action:
+        int v() { return val; }
+        void setVal(int x) { val = x; }
+    property: int val = 1;
+}
+
+class H {
+    action:
+        void setF(Foo f) { this.f = f; }
+        Foo getF() { return this.f; }
+        int read() { return this.f.v(); }
+    property: Foo f = new Foo();
+}
+
+@test void t() {
+    H h = new H();
+    // 初始化器对象仍存活（属性槽 owned，非悬垂）
+    Test.assertEq(h.read(), 1);
+    // 多次重赋值 + 读取：不双释放、不 use-after-free
+    h.setF(new Foo());
+    h.getF().setVal(2);
+    Test.assertEq(h.getF().v(), 2);
+    h.setF(new Foo());
+    h.setF(new Foo());
+    Test.assertEq(h.getF().v(), 1);
+}

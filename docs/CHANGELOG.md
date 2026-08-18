@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.12.34 — 修复 BUG-028：类属性带 ARC 初始化器 → 悬垂/双释放
+- **BUG-028 已修复**：`property: Foo f = new Foo();`（class/interface/string/slice/
+  数组属性带初始化器）——属性默认值发射（`src/codegen/codegen_expr.cpp`）对 fresh
+  `new Foo()` 直接 store 到属性槽，**未 `arcConsumeTemp`** → rc=1 留在语句末临时释放
+  列表 → 语句末 release → 属性槽悬垂。读取 use-after-free；setter 重赋值释放悬垂旧值
+  → 双释放 → 运行段错误 139。
+- **修复**：属性初始化器与 `this.prop = value` 赋值路径同语义——ARC 引用属性
+  （class/interface/string/slice/counted-array）`arcStoreRef`/`arcStoreSlice` +
+  `arcConsumeTemp`；alias retain、fresh consume（`isFreshArcExpr`）。
+- **回归**：`tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，
+  3 断言）。BUG-021 修复验证时暴露（属性初始化器此前无编译通过的用例）。
+- 全量回归 **296 通过 / 0 失败**。
+
+
+### v3.12.33 — 修复 BUG-021：class 含泛型类属性时 `this.prop` sema 解析污染
+- **BUG-021 已修复**：`src/sema/sema.cpp` `visitClassDecl`（泛型实例化入口）设置
+  `current_class_name_` 后**不恢复** → class H 含 `Option<int> o` 属性时，Pass 2
+  `buildCurrentClassMemberTypes` 解析属性类型触发 `Option<int>` 实例化 → 退出后
+  `current_class_name_` 残留 `Option_int_inst` → 方法内 `this.v` 解析到实例类 →
+  `class 'Option_int_inst' has no member 'v'`（读+写都中）。
+- **修复**：`visitClassDecl` 开头保存、末尾恢复 `current_class_name_`（类上下文不污染）。
+- **回归**：`tests/@test/this_generic_prop.myp`（`Option<int>` + `ArrayList<int>` 泛型
+  属性 + `this.v` 读写 + 泛型属性方法调用，4 断言）；`tests/bugs/this_generic_prop.myp`
+  移除。验证时顺带暴露 BUG-028（属性初始化器 ARC）。
+- 全量回归 **296 通过 / 0 失败**。
+
+
 ### v3.12.32 — 修复 BUG-017：关联类型接口方法返回 string 经接口分派类型错误
 - **BUG-017 已修复**：接口虚表动态分派处（`src/codegen/codegen_expr.cpp` 三处）返回
   类型一律取接口声明的关联类型占位符 → `typeNodeToCodegenType` 回落默认 **i32**，而

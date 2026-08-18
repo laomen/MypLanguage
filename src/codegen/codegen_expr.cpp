@@ -3421,6 +3421,29 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 if (!prop.init_expr) continue;
                 llvm::Value* v = generateExpr(*prop.init_expr);
                 auto* gep = builder_.CreateStructGEP(st2, obj, pi);
+                // BUG-028: 属性初始化器持有 ARC 引用（class/interface/string/
+                // slice/counted-array）时，此前直接 store——fresh new 的 rc=1 留在
+                // 语句末临时释放列表 → 语句末被 release → 属性槽悬垂（任何后续读取
+                // 都是 use-after-free；setter 重赋值释放悬垂值 → 双释放段错误）。
+                // 与 `this.prop = value` 赋值路径同语义：alias retain、fresh consume。
+                bool fresh = isFreshArcExpr(*prop.init_expr);
+                if (isArcRefType(prop.type)) {
+                    bool iface_prop = false;
+                    if (current_tu_)
+                        for (auto& ifd : current_tu_->interfaces)
+                            if (ifd.name == prop.type.class_name) { iface_prop = true; break; }
+                    arcStoreRef(gep, v, iface_prop, fresh);
+                    arcConsumeTemp(v);
+                } else if (isStringType(prop.type)) {
+                    arcStoreRef(gep, v, false, fresh);
+                    arcConsumeTemp(v);
+                } else if (prop.type.class_name == "slice") {
+                    arcStoreSlice(gep, v, fresh);
+                    arcConsumeTemp(v);
+                } else if (isCountedArrayType(prop.type)) {
+                    arcStoreRef(gep, v, false, fresh);
+                    arcConsumeTemp(v);
+                }
                 builder_.CreateStore(v, gep);
             }
             break;

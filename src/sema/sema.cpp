@@ -820,6 +820,14 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
     std::vector<FuncDecl> functions = tu.classes[ci].functions;
     std::vector<EventDecl> events = tu.classes[ci].events;
 
+    // BUG-021: 本函数（含泛型实例化触发的 visitClassDecl）会在下方把
+    // current_class_name_ 设为 cls_name。若调用方正处于外层类的方法体检查中
+    // （如 H 的 action 内访问 this.v，而 H 含 `Option<int> o` 泛型属性 → 成员类型
+    // 解析触发 Option<int> 实例化 → 进入本函数），退出后 current_class_name_ 残留为
+    // 实例类名 → 外层 this 解析到 Option_int_inst → `class 'Option_int_inst' has no
+    // member 'v'`。保存并恢复，杜绝类上下文污染。
+    const std::string saved_current_class = current_class_name_;
+
     if (symbol_table_.lookup(cls_name)) {
         error(cls_range, "duplicate class name '" + cls_name + "'");
         return;
@@ -1003,6 +1011,9 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
             symbol_table_.declare(ff.name, ff.type);
         }
     }
+
+    // BUG-021: 恢复外层类上下文（见函数头注释）。
+    current_class_name_ = saved_current_class;
 }
 
 void Sema::visitInterfaceDecl(InterfaceDecl& decl) {

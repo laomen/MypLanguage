@@ -1,0 +1,38 @@
+// BUG-021 回归（正测试）：class 含泛型类属性时 `this.prop` 与方法调用正常
+//
+// 旧行为：sema 泛型属性（Option<int>/ArrayList<int>）实例化触发 visitClassDecl 时
+// 把 current_class_name_ 设为实例类名且不恢复 → 外层方法内 `this.v` 解析到
+// `Option_int_inst` → `class 'Option_int_inst' has no member 'v'`（读+写都中）。
+// 修复：visitClassDecl 保存/恢复 current_class_name_（类上下文不污染）。
+// 注：本用例同时覆盖 BUG-028（属性初始化器 ARC）——泛型属性带 `= new ...` 初始化器
+// 后方法调用/重赋值不再 use-after-free/双释放。
+
+import test;
+import option;
+import collections;
+
+class H {
+    action:
+        void setV(int s) { this.v = s; }
+        int getV() { return this.v; }
+        void setO(Option<int> o) { this.o = o; }
+        Option<int> getO() { return this.o; }
+        bool isSome() { return this.o.isSome(); }
+        void push(int x) { this.list.add(x); }
+        int size() { return this.list.size(); }
+    property:
+        int v;
+        Option<int> o = new Option<int>(0);
+        ArrayList<int> list = new ArrayList<int>();
+}
+
+@test void t() {
+    H h = new H();
+    h.setV(5);
+    Test.assertEq(h.getV(), 5);
+    h.setO(new Option<int>(7));
+    Test.assertEq(h.getO().get(), 7);
+    Test.assert(h.isSome());
+    h.push(1); h.push(2); h.push(3);
+    Test.assertEq(h.size(), 3);
+}

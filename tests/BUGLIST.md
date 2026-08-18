@@ -32,7 +32,8 @@
 | BUG-018 | 🟥 | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（去 collections 即过；`import option` 不触发） | `tests/bugs/assoc_constraint_import.myp`（编译失败红） |
 | BUG-019 | 🟩 | `this.field = value` 写被拒——struct/class 的 `this.field` 分支误嵌套在 `if (!op)` 内，`this.x = v`（op 非空）整块跳过 → `not a valid assignment target` | 回归 `tests/@test/manual_ch7_struct.myp` t_this |
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
-| BUG-021 | 🟥 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（读+写都中；struct 泛型字段正常） | `tests/bugs/this_generic_prop.myp`（编译失败红） |
+| BUG-021 | � | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（sema 泛型实例化污染 current_class_name_ 不恢复） | 回归 `tests/@test/this_generic_prop.myp`（泛型属性 + this 读写 + 方法调用，4 断言） |
+| BUG-028 | 🟩 | 类属性带 **ARC 初始化器**（`property: Foo f = new Foo();`）→ fresh new 的 rc=1 在语句末被释放 → 属性槽悬垂（use-after-free；setter 重赋值 → 双释放段错误 139） | 回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值读取，3 断言） |
 | BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
 | BUG-023 | 🟥 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139；须先拷到局部（manual BNCT 模式正确） | `tests/bugs/parallel_prop_access.myp`（编译失败红） |
 | BUG-024 | � | 相对路径导入去重**不解析 `..`**——同一文件经不同相对路径（直导 `./helper.myp` + 子模块内 `../helper.myp`）规范化后仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`（design §9 声称"规范化路径去重"未实现） | 回归 `tests/@test/relimport_dedup.myp` |
@@ -549,29 +550,45 @@
 
 ---
 
-## BUG-021（未修复）：class 含泛型类属性时方法内 `this.prop` sema 解析污染
+## BUG-021（已修复）：class 含泛型类属性时方法内 `this.prop` sema 解析污染
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/this_generic_prop.myp`（`import option` + `class H {
-  int v; Option<int> o; void setV(int s){ this.v = s; } }` → 编译失败红）
-- **现象**（实测 2026-08-18）：class 的 `property:` 含**泛型类实例**字段
-  （`Option<int>` / `ArrayList<int>` 等，`import option` / `import collections`）
-  时，方法内 `this.prop`（读**和**写）被 sema 解析到**泛型实例类**本身：
-  `class 'Option_int_inst' has no member 'v'`——`this` 的类型被绑成 `Option_int_inst`
-  而非当前 class。**struct** 含泛型字段（`Option<int> o`）+ `this.v = s` **正常**。
-  无泛型字段的 class `this.v = s` 正常（BUG-019 修复后）。
-- **根因（推测）**：sema 在解析 class 方法内 `this` 成员访问时，遍历/定位属性列表
-  的上下文被「泛型类属性」污染（疑似与关联类型/泛型实例的 `var_class_map_` 或
-  `resolved_object_class` 记录冲突），把 `this` 的类解析成最后一个泛型实例类。
-  需查 `src/sema/sema_expr.cpp` visitMemberAccess 对 ThisExpr + 泛型属性共存路径。
-- **影响**：任何「class 带 `Option<T>`/`ArrayList<T>` 等泛型属性 + 方法内用
-  `this.prop`」的代码无法编译（如本会话 ARC 测试 `Holder { string msg;
-  ArrayList<int> items; setMsg(){ this.msg = s; } }`）。含泛型属性的 class 是常见
-  模式（缓冲/可选字段），影响面较大。
-- **期望语义**：`this.prop` 始终解析为**当前 class** 的属性，与类内泛型属性共存
-  无关。
-- **备注**：BUG-019 修复验证中发现（ARC 字段 this 写测试触出）；manual.md §7
-  `this` 关键字按设计意图描述，不标 bug。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因**：`src/sema/sema.cpp` `visitClassDecl`（泛型实例化入口）在函数内把
+  `current_class_name_` 设为实例类名（如 `Option_int_inst`）**且退出时不恢复**。
+  class H 含 `Option<int> o` 属性 → Pass 2 `buildCurrentClassMemberTypes(H)` 解析
+  属性类型触发 `Option<int>` 实例化 → 进入 `visitClassDecl` → 退出后
+  `current_class_name_` 残留 `Option_int_inst` → 之后 H 方法体 `this.v` 经
+  `visitThisExpr` 返回 `Option_int_inst` → `class 'Option_int_inst' has no member 'v'`。
+- **修复**：`visitClassDecl` 开头保存 `saved_current_class`、末尾恢复
+  `current_class_name_`（类上下文不污染）。早期 return（duplicate class）在赋值
+  之前，无需处理。
+- **验证**：回归 `tests/@test/this_generic_prop.myp`（`Option<int>` + `ArrayList<int>`
+  泛型属性 + `this.v` 读写 + 泛型属性方法调用，4 断言）；`tests/bugs/this_generic_prop.myp`
+  移除。验证时顺带暴露 BUG-028（属性初始化器 ARC，见下）。
+- **备注**：BUG-019 修复验证中发现；manual.md §7 `this` 按设计意图描述，不标 bug。
+
+---
+
+## BUG-028（已修复）：类属性带 ARC 初始化器 → 悬垂/双释放
+
+- **状态**：🟩 已修复（2026-08-18）
+- **复现**：`property: Foo f = new Foo();`（class/interface/string/slice/数组类型属性
+  带初始化器）+ 构造后读取 `this.f.v()` 或 setter 重赋值 `setF(new Foo())` →
+  读取 use-after-free（内存未重用时碰巧通过）、setter 重赋值双释放 → 运行段错误 139
+  （确定性）。
+- **根因**：`src/codegen/codegen_expr.cpp` 属性默认值发射（`new` 语句内对每个带
+  `init_expr` 的属性 `generateExpr` + 直接 `CreateStore(gep)`）。fresh `new Foo()`
+  的 rc=1 经 `arcPushTemp` 进语句末临时释放列表，但 store 后**未 `arcConsumeTemp`**
+  → 语句末 `myp_release` 把对象释放（rc 1→0）→ 属性槽悬垂。对比：`this.prop =
+  value` 赋值路径正确做 `arcStoreRef + arcConsumeTemp`。
+- **修复**：属性初始化器发射与赋值路径同语义——ARC 引用属性（class/interface）
+  `arcStoreRef(gep, v, iface, fresh)`、string `arcStoreRef(...,false,fresh)`、slice
+  `arcStoreSlice`、counted-array `arcStoreRef`，均 + `arcConsumeTemp(v)`；alias 值
+  retain、fresh 值 consume（`isFreshArcExpr`）。
+- **验证**：回归 `tests/@test/property_init_arc.myp`（初始化器对象存活 + 多次重赋值
+  读取，3 断言）；`tests/@test/this_generic_prop.myp` 泛型属性带初始化器场景同覆盖。
+  全量回归 296 通过 / 0 失败。
+- **备注**：BUG-021 修复验证时暴露（属性初始化器此前未在编译通过的用例中出现）。
 
 ---
 
