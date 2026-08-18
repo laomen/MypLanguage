@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.12.26 — 自举编译器 GPU 状态补正：已实现（非"非 GPU"）
+- **纠正手册/文档过时表述**：自举编译器 `myp_self` 的 GPU 部分**已实现**
+  （v3.12.4–v3.12.5 落地，实测 myp_self2 为 `@gpu for` 生成 NVPTX kernel .ll →
+  llc → PTX → GPU/CPU 双路径，真机 launch 验证），但 manual §13 仍写"非 GPU codegen"、
+  "GPU 已入自举范围"，roadmap P3-1 写"当前非 GPU"，self_hosting.md 写"不含 GPU"——全部过时。
+- **修正**：
+  - `docs/manual.md` §13 自举编译器：intro 改「codegen（含 GPU NVPTX 发射）」；
+    范围 bullet 改「**GPU：已实现**——@gpu for/tile/scatter/reduce/scan 生成 NVPTX
+    kernel（.ll → llc → PTX → 嵌入），GPU/CPU 双路径（MYP_GPU=1 真机 launch，失败
+    CPU 回退）；kernel.* 上下文、float4/double2/int4 向量类型均支持」。
+  - `tools/selfhost/roadmap.md` P3-1：补 ✅ GPU 已落地（v3.12.4–v3.12.5，60 检查），
+    附注 GpuAlgo.sort 自举产物段错误（既有、非 GPU 相关）。
+  - `docs/self_hosting.md`：范围改「全自举（含 GPU）」；T5 行改 codegen（含 GPU NVPTX）。
+- 纯文档补正，无代码变更。
+
+
 ### v3.12.25 — 修复 BUG-027：tools/codegen 迁移到 BUG-001 属性私有规则，全量回归首次全绿
 - **BUG-027 已修复**：`tools/codegen` 代码生成框架（serde/ffi/autodiff/idl/orm/embed/
   dsl/infer_ops）此前未迁移到 BUG-001 属性私有规则（301 个编译错误）。

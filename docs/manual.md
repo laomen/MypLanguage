@@ -3098,8 +3098,8 @@ MYP 提供 `myp_debug`（DAP ↔ gdb 桥），可在 VS Code 内断点/单步/�
 ### 自举编译器（myp_self）
 
 MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`tools/selfhost/`）：
-前端（lexer/parser/sema）+ 非 GPU codegen + CLI 驱动全部用 MYP 实现，交付自举
-编译器 `myp_self`，并完成经典两级自举验证。
+前端（lexer/parser/sema）+ codegen（含 GPU NVPTX 发射）+ CLI 驱动全部用 MYP 实现，
+交付自举编译器 `myp_self`，并完成经典两级自举验证。
 
 - **构建**：stage0 由 C++ `mypc` 编译 `tools/selfhost/src/*.myp` →
   `build/myp_self`；`myp_self` 再编译自身 → `build/myp_self2`（当前 build/ 里的
@@ -3124,8 +3124,11 @@ MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`too
 - **自举验证（两级不动点）**：stage1 C++ 编 `myp_self` → stage2 `myp_self` 自编
   → stage3 再自编，两代产物行为一致即自举成立。已实测
   `self2 → self3 → self4` 字节全同（md5 `52c81186…`）。
-- **范围**：GPU 已入自举范围（`@gpu for/tile/scatter/reduce/scan` 发射 NVPTX，
-  GPU/CPU 双路径）；仅 C 运行时 `runtime.c` 视作生成程序的 "libc" 保留 C。
+- **GPU**：已实现——`@gpu for`（及 `@gpu tile/scatter/reduce/scan`）生成 NVPTX
+  kernel（独立 .ll 模块 → `llc -mtriple=nvptx64-nvidia-cuda` → PTX → 嵌入字符串
+  全局），host 端 GPU/CPU 双路径发射（`MYP_GPU=1` 真机 launch，失败自动回退 CPU
+  串行、结果一致）；`kernel.*` 上下文、向量类型（float4/double2/int4）均支持。
+  仅 C 运行时 `runtime.c` 视作生成程序的 "libc" 保留 C。
 - **进度**（`tools/selfhost/roadmap.md`）：前端 F0–F4、后端 G1–G4、自举验证 H1
   全部完成；P 阶段已闭合（P2 生成代码性能与 mypc 持平——opt 加 `-mtriple` 启用
   TTI 向量化，matmul 2.43x→1.00；P3 甩掉 C++ 种子演练通过——仅用 `myp_self2`

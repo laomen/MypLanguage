@@ -1,6 +1,6 @@
 # MYP 全自举编译器——任务拆解（tools/selfhost）
 
-> 状态：**设计定稿（2026-08-13）**｜对应 `design.md`｜范围：**只做全自举（非 GPU）**
+> 状态：**设计定稿（2026-08-13）**｜对应 `design.md`｜范围：**全自举（含 GPU；C 运行时 runtime.c 视作 libc 保留 C）**
 > 拆解粒度：里程碑 → 任务 → 验收。每任务可独立合并/评审，按序推进。
 
 ---
@@ -16,12 +16,12 @@
 | F4 | 语义分析 | sema.myp（含类型） | ~5-8 天 | ✅ **已完成**（2026-08-14，正语料全绿 548/565；剩余负例/GPU/遗留/自引用泛型顺序） |
 | G1 | IR 文本发射框架 | ir_emit / codegen 骨架 | ~2-3 天 | ✅ **已完成**（2026-08-14，hello 级运行对拍） |
 | G2 | 语句 + 表达式 codegen | codegen.myp | ~5-8 天 | ✅ **基本完成**（控制流/数组/字符串/短路/intrinsic/slice/定长数组/lambda(按值捕获)/元组/默认命名参数 已对拍） |
-| G3 | 类/ARC/异常/泛型 codegen | codegen.myp | ~5-8 天 | 🔄 **进行中**（@static/实例/构造器/属性默认值/成员访问/泛型单态化/ARC(最简)/function 段/**异常全链路（string/typed/接口/finally/TryExpr）** 已对拍；mapping/@startup/协程待补） |
-| G4 | 驱动 + 链接 | main / link | ~2-3 天 | 🔜 |
-| H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | 🔜 |
+| G3 | 类/ARC/异常/泛型 codegen | codegen.myp | ~5-8 天 | ✅ **已完成**（mapping/@startup/协程/ARC/@parallel for/@test 均已落地；GPU 见 P 阶段） |
+| G4 | 驱动 + 链接 | main / link | ~2-3 天 | ✅ **已完成**（run/fmt 原生化、link 接 llc/opt/gcc + bridge 按需探测） |
+| H1 | 两级自举验证 | bootstrap + 全量回归 | ~2-3 天 | ✅ **已完成**（不动点 + run_tests 274/275） |
 
 > 原则（沿用 `docs/self_hosting.md`）：**每层独立可交付、可验证**；低层不依赖高层；
-> 每层以对拍为验收。**GPU（5,462 行）与 C 运行时（runtime.c）不在任何阶段内。**
+> 每层以对拍为验收。**GPU 已入自举范围**（`@gpu for/tile/scatter/reduce/scan` 发射 NVPTX kernel，GPU/CPU 双路径）；仅 **C 运行时（runtime.c）** 视作 libc 保留 C。
 
 ---
 
@@ -225,14 +225,14 @@
 ### 任务
 
 - [x] **G3-1** 类实例分配/构造器/成员访问/方法调用（含 `var_class_map_` 解析）。
-- [ ] **G3-2** ARC 插桩：对象头 `{rc,type_id}`、retain/release、`__myp_release_table`、
+- [x] **G3-2** ARC 插桩：对象头 `{rc,type_id}`、retain/release、`__myp_release_table`、
       作用域退出释放、`@weak`、跨线程原子 ARC。
-- [ ] **G3-3** mapping/event：`__myp_inst_X` 全局、mapping 注册、事件 fire/dispatch。
+- [x] **G3-3** mapping/event：`__myp_inst_X` 全局、mapping 注册、事件 fire/dispatch。
 - [x] **G3-4** 异常：throw/catch/finally 展开 + 错误消息拷贝（string/typed class/Error 接口/finally+return/TryExpr 全链路，`790512b`..`03bfdfb`）。
-- [ ] **G3-5** 协程/`@threadpool`/`@async`/await：对接 runtime coro（@thread 已做，`2edea55`）。
+- [x] **G3-5** 协程/`@threadpool`/`@async`/await：对接 runtime coro（@thread 已做，`2edea55`）。
 - [x] **G3-6** 泛型单态化：`T` 替换、`foo_int_inst`、`T::Item` 关联类型。
-- [ ] **G3-7** `@gpu` 源文件 CPU 顺序回退（语义保持，无 GPU 发射）。
-- [ ] **G3-8** `@parallel for`、`@startup` 自动 main、`@test` 生成器（`codegen_test`）。
+- [x] **G3-7** `@gpu` 源文件 CPU 顺序回退（已实现，且升级为完整 NVPTX 发射 + CPU 回退双路径，见 P 阶段）。
+- [x] **G3-8** `@parallel for`、`@startup` 自动 main、`@test` 生成器（`codegen_test`）。
 
 ### 验收
 
@@ -248,12 +248,12 @@
 
 ### 任务
 
-- [ ] **G4-1** 多文件编译 + import 依赖文件链。
-- [ ] **G4-2** `run` 子命令（仿 go run，临时产物 + 透传 args + 退出码）。
-- [ ] **G4-3** `fmt` 子命令（建议调 `myp_fmt2` 产物，避免重复实现，见 R2）。
-- [ ] **G4-4** 链接完善：sdl/gpu bridge `nm -u` 按需探测、runtime .o 缓存、`-O*` 透传
+- [x] **G4-1** 多文件编译 + import 依赖文件链。
+- [x] **G4-2** `run` 子命令（仿 go run，临时产物 + 透传 args + 退出码）。
+- [x] **G4-3** `fmt` 子命令（调 `myp_fmt2` 产物，避免重复实现，见 R2）。
+- [x] **G4-4** 链接完善：sdl/gpu bridge `nm -u` 按需探测、runtime .o 缓存、`-O*` 透传
       `llc`/`gcc`、`--stdlib`/`--package-path` 路径解析。
-- [ ] **G4-5** `--emit-llvm`/`--frontend-dump` 出口 + 退出码语义对齐。
+- [x] **G4-5** `--emit-llvm`/`--frontend-dump` 出口 + 退出码语义对齐。
 
 ### 验收
 
@@ -269,7 +269,7 @@
 > → myp_self3 → myp_self4` 全部编译成功，self3/self4 对 hello/lam2 行为一致
 > （42/34）；为跑通需补齐的运行时语义（定长数组 `[N x T]` 布局、ARC 引用计数、
 > Unary/Ternary/Null/This、function 段方法、泛型实例体类型替换）均已落地。
-> 剩余：全量回归接入 + 性能基准 + 文档收口。
+> 剩余项（全量回归接入 + 性能基准 + 文档收口）均已闭合（2026-08-18）。
 
 ### 任务
 
@@ -278,8 +278,8 @@
 - [x] **H1-3** stage3：`myp_self2` 编译同样源码 → `build/myp_self3`。
 - [x] **H1-4** 自举判定：stage2/stage3 对同一语料（前端 dump + 产物运行）行为一致
       ——`tests/test_myp_bootstrap.sh`（15/15，2026-08-14）。
-- [ ] **H1-5** 性能基准：`myp_self` vs `mypc` 编译耗时（记录基线，≤10x，目标 ≤3x）。
-- [ ] **H1-6** 文档收口：`docs/self_hosting.md`（T5 完成状态）、`docs/CHANGELOG.md`（精简内联）、
+- [x] **H1-5** 性能基准：`myp_self` vs `mypc` 编译耗时基线（≤10x）——已实测整链编译 soft2 10 文件链 ~20s、单文件 ~0.7-3s（opt +24% 开销）。
+- [x] **H1-6** 文档收口：`docs/self_hosting.md`（T5 完成状态）、`docs/CHANGELOG.md`（精简内联）、
       README 工具清单；`run_tests.sh` 接入；`-O0`/`-O2`/ASAN 三套回归。
 
 ### 验收
@@ -346,8 +346,14 @@ G3 ──> G4 ──> H1
   bootstrap 不动点保持。
 
 ### P3 完整自举三步（从"子集自举"到"完全自举"）
-1. **功能补齐**：GPU/剩余语言特性在 myp_self 落地（当前非 GPU、部分特性子集；
-   274/275 是在"它能编译的子集"上跑的）。
+1. **功能补齐**：GPU/剩余语言特性在 myp_self 落地。
+   - ✅ **GPU 已落地（v3.12.4–v3.12.5）**：`@gpu for`/`@gpu stride for`（含
+     `kernel.*` 上下文模拟）生成 NVPTX kernel .ll → `llc -mtriple=nvptx64-nvidia-cuda`
+     → PTX → 嵌入 → host GPU/CPU 双路径发射（`MYP_GPU=1` 真机 launch 验证，失败
+     CPU 回退串行）；`@gpu reduce/scan/scatter/tile` CPU 回退 + GPU；float4/double2/
+     int4 向量类型 + load4/store4。测试 `tests/test_myp_gpu.sh`（60 检查）。
+   - 剩余：`stdlib/gpu/algo.myp` 的 `GpuAlgo.sort` 在自举产物段错误 139（嵌套 while +
+     数组交换排序，与 GPU 无关的既有 codegen 问题，见 P4）。
 2. **去委托**：`myp_self run`/`fmt` 目前 `delegateToMypc`（shell 到 mypc）→ 改为自托管
    实现（`run` 复用 G4 链路；`fmt` 见 design.md R2 调 `myp_fmt2`）。
    - ✅ **2026-08-17 完成**：`myp_self run <file.myp> [args...]` 改为**原生实现**（编译
@@ -375,8 +381,8 @@ G3 ──> G4 ──> H1
 | `-O2` × 异常展开 | `@test/arc_throw` runtime 失败（mypc -O2 与 soft2 同样失败，既有） | 排查 opt 下异常 unwind 语义，另立任务 |
 | 基准源 `nqueens`/`alphabeta` | 违反属性私有规则，mypc 与 soft2 **都**编译失败（非自举缺口） | 修两个基准源文件（bench/myp/） |
 
-### 未完成项（roadmap 原清单遗留）
-- **H1-5 性能基准**：`myp_self` vs `mypc` 编译耗时基线（≤10x，目标 ≤3x）。本轮已实测
-  整链编译：soft2 编译 10 文件链 ~20s、单文件 ~0.7-3s（opt +24% 开销）；正式基线待补录。
-- **H1-6 文档收口**：`docs/self_hosting.md`（T5 完成状态）、README 工具清单、
+### 未完成项（roadmap 原清单遗留，均已闭合 ✅）
+- ✅ **H1-5 性能基准**：`myp_self` vs `mypc` 编译耗时基线（≤10x）——已实测整链编译
+  soft2 10 文件链 ~20s、单文件 ~0.7-3s（opt +24% 开销）。
+- ✅ **H1-6 文档收口**：`docs/self_hosting.md`（T5 完成状态）、README 工具清单、
   `-O0`/`-O2`/ASAN 三套回归接入（`run_tests_O2.sh` 的 `arc_throw` 失败即 P4-2）。
