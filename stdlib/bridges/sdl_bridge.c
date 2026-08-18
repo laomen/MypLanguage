@@ -74,6 +74,16 @@ int myp_sdl_set_window_size(int w, int h) {
     return 0;
 }
 
+// 设置逻辑尺寸（SDL_RenderSetLogicalSize）：MYP 侧所有绘制坐标按逻辑尺寸，
+// 窗口实际可缩放显示（如显示器不够大时按 0.5 倍）。逻辑尺寸独立于窗口物理
+// 尺寸，SDL 自动把逻辑渲染缩放到窗口。返回 0=成功, -1=失败。
+int myp_sdl_set_logical_size(int w, int h) {
+    if (!g_renderer) return -1;
+    if (w <= 0 || h <= 0) return -1;
+    if (SDL_RenderSetLogicalSize(g_renderer, w, h) != 0) return -1;
+    return 0;
+}
+
 // 关闭窗口并清理 SDL
 void myp_sdl_quit(void) {
     myp_sdl_free_images();
