@@ -1,0 +1,146 @@
+// §11 综合抽查: manual 文档化 API 签名核对
+import test;
+import option;
+import collections;
+import atomic;
+import barrier;
+import future;
+import rtti;
+import fmt;
+import crypto;
+import json;
+import base64;
+import date;
+import text;
+import regex;
+import args;
+import process;
+import memory;
+
+class Person {
+    action:
+        void setName(string s) { name_ = s; }
+        string getName() { return name_; }
+    property:
+        string name_;
+}
+
+@test void t_option_collections() {
+    Option<int> none = new Option<int>();
+    Option<int> some = new Option<int>(42);
+    Test.assert(!none.isSome(), "Option none");
+    Test.assert(some.isSome(), "Option some");
+    Test.assertEq(some.get(), 42, "Option get");
+    Test.assertEq(none.getOr(0), 0, "Option getOr");
+    some.set(9);
+    Test.assertEq(some.get(), 9, "Option set");
+    some.clear();
+    Test.assert(!some.isSome(), "Option clear");
+
+    ArrayList<int> list = new ArrayList<int>();
+    list.add(10); list.add(20);
+    Test.assertEq(list.get(0), 10, "ArrayList get");
+    list.set(1, 30);
+    Test.assertEq(list.get(1), 30, "ArrayList set");
+    Test.assertEq(list.size(), 2, "ArrayList size");
+
+    HashMap<int, string> map = new HashMap<int, string>();
+    map.put(1, "one");
+    Test.assertStrEq(map.get(1, "?"), "one", "HashMap get");
+    Test.assert(map.contains(2) == 0, "HashMap contains");
+    map.remove(1);
+
+    Set<int> s = new Set<int>();
+    s.add(42); s.add(17);
+    Test.assert(s.contains(42) != 0, "Set contains");
+    s.remove(17);
+    Test.assertEq(s.size(), 1, "Set size");
+}
+
+@test void t_atomic() {
+    int[4] counters;
+    double[2] values;
+    Atomic.addInt(counters, 0, 5);
+    Test.assertEq(Atomic.loadInt(counters, 0), 5, "addInt+loadInt");
+    Atomic.storeInt(counters, 0, 9);
+    Test.assertEq(Atomic.loadInt(counters, 0), 9, "storeInt");
+    int old = Atomic.xchgInt(counters, 0, 3);
+    Test.assertEq(old, 9, "xchgInt 返回旧值");
+    Atomic.addDouble(values, 0, 1.5);
+    Atomic.addDouble(values, 0, 1.5);  // addDouble 存在(无 loadDouble, manual 一致)
+}
+
+@test void t_barrier_future() {
+    int b = Barrier.create(2);
+    Barrier.destroy(b);
+    int f = Future.create();
+    Future.set(f, 42);
+    int r = Future.get(f);
+    Test.assertEq(r, 42, "Future get");
+    Future.destroy(f);
+}
+
+@test void t_rtti() {
+    Person p = new Person();
+    string n = Rtti.typeOf<Person>(p);
+    Test.assertStrEq(n, "Person", "Rtti.typeOf");
+    int id = Rtti.typeId<Person>(p);
+    Test.assert(id != 0, "Rtti.typeId 非 0");
+    Person p2 = new Person();
+    int same = Rtti.sameType<Person, Person>(p, p2);
+    Test.assertEq(same, 1, "Rtti.sameType");
+}
+
+@test void t_fmt() {
+    Test.assertStrEq(Fmt.i(42), "42", "Fmt.i");
+    Test.assertStrEq(Fmt.i(42, 6), "    42", "Fmt.i width");
+    Test.assertStrEq(Fmt.i(42, 6, 48), "000042", "Fmt.i pad0");
+    Test.assertStrEq(Fmt.u(-1), "4294967295", "Fmt.u");
+    Test.assertStrEq(Fmt.x(255, 4), "00ff", "Fmt.x");
+    Test.assertStrEq(Fmt.X(255, 4), "00FF", "Fmt.X");
+    Test.assertStrEq(Fmt.o(8), "10", "Fmt.o");
+    Test.assertStrEq(Fmt.b(5), "101", "Fmt.b");
+    Test.assertStrEq(Fmt.f(3.14159, 2), "3.14", "Fmt.f");
+    Test.assertStrEq(Fmt.s("hi", 5), "   hi", "Fmt.s");
+    Test.assertStrEq(Fmt.sR("hi", 5), "hi   ", "Fmt.sR");
+}
+
+@test void t_crypto() {
+    Test.assertStrEq(Crc32.crc32Hex("hello"), "3610a686", "crc32Hex hello");
+    Test.assertStrEq(Hash.md5("abc"), "900150983cd24fb0d6963f7d28e17f72", "md5 abc");
+    Test.assertStrEq(Hash.sha1("abc"), "a9993e364706816aba3e25717850c26c9cd0d89d", "sha1 abc");
+    Test.assertStrEq(Hash.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "sha256 abc");
+}
+
+@test void t_json_base64() {
+    Json doc = new Json("{\"name\":\"myp\",\"v\":1}");
+    Test.assertStrEq(doc.getString("name"), "myp", "Json getString");
+    Test.assertEq(doc.getInt("v"), 1, "Json getInt");
+    doc.free();
+    string enc = Base64.encode("hello");
+    Test.assertStrEq(Base64.decode(enc), "hello", "Base64 roundtrip");
+}
+
+@test void t_date_regex_args_process() {
+    long ms = Date.nowMs();
+    Test.assert(ms > 0, "Date.nowMs");
+    string now = Date.now();
+    string dt = Date.formatNow("%Y-%m-%d");
+    Test.assert(Str.contains(dt, "-") != 0, "Date.formatNow");
+    Regex re = new Regex("^[A-Z][a-z]+$");
+    Test.assertEq(re.test("Hello"), 1, "Regex test 1");
+    Test.assertEq(re.test("hello"), 0, "Regex test 0");
+    re.free();
+    Test.assert(Args.count() >= 1, "Args.count");
+    int pid = Process.getPid();
+    Test.assert(pid > 0, "Process.getPid");
+}
+
+@test void t_memory() {
+    long p = Memory.alloc(1024);
+    Test.assert(p != 0, "Memory.alloc");
+    p = Memory.realloc(p, 2048);
+    Memory.free(p);
+    long live = Memory.liveObjectCount();
+    Test.assert(live >= 0, "Memory.liveObjectCount");
+}

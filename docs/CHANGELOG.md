@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.12.18 — 手册 §11 标准库抽查：API 全部准确，固化综合回归
+- **§11 逐条抽查（编译+运行）**：option（Option()/Option(v)/isSome/get/getOr/set/clear）/
+  collections（ArrayList/HashMap/Set）atomic（addInt/subInt/addDouble/xchgInt/loadInt/
+  storeInt——确认无 loadDouble，与文档一致）/barrier/future/rtti（typeOf/typeId/
+  sameType）/fmt（i/u/x/X/o/b/f/e/g/s/sR 精确输出）/crypto（crc32/md5/sha1/sha256 已知
+  向量）/json（getString/getInt/path）/base64/date/regex/args/process/memory（alloc/
+  realloc/free/liveObjectCount）——**全部与 manual 文档化签名一致，无文档错误**。
+- 先前会话已核对的 §11 部分（env/time/timeline/random/rtti/fmt/crypto/http/net/text/
+  atomic/collections/option/result/sync/barrier/future/coro/async/pool/memory/channel/
+  fs/process/args/json/regex/base64/date/logger/ui/gpu + math/io/stream/sdl 修正）维持
+  不变。
+- **回归**：`tests/@test/manual_ch11_myp.myp`（9 tests / 46 断言）；全量 285 通过
+  （3 个自举工具 build/ 缺二进制的既有环境失败）。
+
 ### v3.12.17 — 手册 §9 并发编程审计：@parallel/@gpu 属性访问 bug + @threadpool 示例修正
 - **文档错误修复**：manual §9 `@thread` / `@threadpool` 示例的 mapping 用实例变量名
   节点（`sensor.valueRead -> worker.process`、`sensor.valueRead -> pool[0].process`）
