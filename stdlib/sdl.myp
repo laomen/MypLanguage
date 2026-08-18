@@ -10,6 +10,7 @@ ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, 
 ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_get_mouse_click();
+ffi int  myp_sdl_set_window_size(int w, int h);
 ffi int  myp_sdl_width();
 ffi int  myp_sdl_height();
 ffi void myp_sdl_delay(int ms);
@@ -40,6 +41,8 @@ class SDL {
         int getKey() { return myp_sdl_get_key(); }
         // 取一次鼠标左键点击（窗口坐标打包 (y<<16)|x），无新点击 -1
         int getMouseClick() { return myp_sdl_get_mouse_click(); }
+        // 运行时调整窗口大小（resizable 窗口）。返回 0=成功
+        int setWindowSize(int w, int h) { return myp_sdl_set_window_size(w, h); }
         int width()  { return myp_sdl_width(); }
         int height() { return myp_sdl_height(); }
         void delay(int ms) { myp_sdl_delay(ms); }

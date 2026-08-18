@@ -37,7 +37,7 @@ int myp_sdl_init(const char* title, int w, int h) {
     g_window = SDL_CreateWindow(
         title ? title : "MYP SDL",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        w, h, SDL_WINDOW_SHOWN);
+        w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
 
     if (!g_window)
         return -1;
@@ -52,6 +52,17 @@ int myp_sdl_init(const char* title, int w, int h) {
     if (!g_renderer)
         return -1;
 
+    return 0;
+}
+
+// 运行时调整窗口大小（resizable 窗口经拖拽改变后由 MYP 侧同步全局宽高；
+// 也可主动 set 固定尺寸）。返回 0=成功, -1=失败。
+int myp_sdl_set_window_size(int w, int h) {
+    if (!g_window) return -1;
+    if (w <= 0 || h <= 0) return -1;
+    SDL_SetWindowSize(g_window, w, h);
+    g_width = w;
+    g_height = h;
     return 0;
 }
 
@@ -191,6 +202,12 @@ int myp_sdl_has_quit_event(void) {
         if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
             g_mouse_x = e.button.x;
             g_mouse_y = e.button.y;
+        }
+        // 拖拽调整窗口大小 → 同步全局宽高（MYP 侧 get_window_size 可查）
+        if (e.type == SDL_WINDOWEVENT &&
+            e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+            g_width = e.window.data1;
+            g_height = e.window.data2;
         }
     }
     return 0;
