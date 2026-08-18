@@ -1,0 +1,49 @@
+// bench/myp/slicedot.myp — slice<double> 点积（边界检查开销度量）
+// N=10^6 两个 slice<double>；verify = 内积和（浮点容差 1e-3）。
+// slice 下标带运行时边界检查（C++ mypc 侧），测其对浮点归约向量化的影响：
+//   mypc  ：slice 有检查 → 循环含非 nounwind 调用 → LoopVectorizer 拒绝向量化（标量）
+//   self2 ：裸 GEP 无检查（既有缺口）→ 可向量化
+// 对照 dot_f64（double[] 无检查）与 C++ std::vector（无检查，可向量化）。
+import env;
+import time;
+
+double slicedot(int n, int seed) {
+    slice<double> a = new slice<double>(n);
+    slice<double> b = new slice<double>(n);
+    long rng = seed;
+    int i = 0;
+    while (i < n) {
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        a[i] = double(int((rng >> 16) % 1000)) / 100.0;
+        rng = (rng * 1103515245L + 12345L) % 2147483648L;
+        b[i] = double(int((rng >> 16) % 1000)) / 100.0;
+        i = i + 1;
+    }
+    double sum = 0.0;
+    i = 0;
+    while (i < n) {
+        sum = sum + a[i] * b[i];
+        i = i + 1;
+    }
+    return sum;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            int n = 1000000;
+            long t0 = Time.nowMs();
+            double s = slicedot(n, 24680);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(s);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

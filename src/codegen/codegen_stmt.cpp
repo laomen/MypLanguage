@@ -1441,6 +1441,11 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
     // var = value
     if (e.target->kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(*e.target);
+        // devirt 安全：接口变量被重赋值 → 具体类不再静态已知，标记 reassigned，
+        // 后续接口分派点回退 vtable（不 devirt）。var_class_map_ 同时含接口变量
+        //（声明时记具体类）与普通类变量；标记普通类变量无害（分派点只查接口）。
+        if (var_class_map_.count(id.name))
+            iface_reassigned_.insert(id.name);
         auto* a = getNamedValue(id.name);
         if (!a) {
             // Try bare property assignment on 'this' (class field without this. prefix)
@@ -2622,6 +2627,11 @@ void CodeGen::generateTryStmt(const TryStmt& s) {
                 builder_.CreateStore(obj, builder_.CreateStructGEP(fat_ty, ev, 0));
                 builder_.CreateStore(vt, builder_.CreateStructGEP(fat_ty, ev, 1));
                 setNamedValue(cc.var_name, ev);
+                // devirt 安全：catch (Error e) 的 e 具体类是运行时决定的（任何
+                // Error 实现类都可能），绝不可 devirt。同名变量（其他 catch 或
+                // 类声明）在 var_class_map_ 里可能残留具体类（如 "e"→FileError）
+                // → 显式清除，避免 devirt 误用污染条目直接调用错误的方法。
+                var_class_map_.erase(cc.var_name);
                 caught_slot = ev;
             } else {
                 llvm::Value* bound = nullptr;

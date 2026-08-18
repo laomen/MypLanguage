@@ -27,6 +27,58 @@
 
 ## 编译器版本历史
 
+### v3.12.45 — 接口分派去虚拟化（devirt）+ 自举 slice 边界检查补齐 + 新基准
+
+**去虚拟化（C++ mypc 与自举 myp_self 双端镜像）**：接口方法调用
+`Shape s = new Circle(...); s.area()` 此前一律 vtable 间接调用
+（extract {data,vtable} → GEP vtable[midx] → load fn ptr → 间接 call）。当对象
+具体类在调用点静态已知且从未被重赋值时，改为**直接调用具体类方法**，让 LLVM
+内联 → 常量折叠/向量化复利。
+
+- **安全边界（关键设计）**：devirt 仅在**接口变量从未被重赋值**时触发。sema 在
+  变量声明时记录具体类快照（concreteClass），任何赋值（含复合赋值/条件分支内）
+  标记 reassigned → 后续调用回退 vtable。流不敏感保守：条件分支内重赋值也放弃
+  devirt。`new` 表达式接收者本就直接调构造，不涉 vtable。
+- **selfhost**：
+  - `sema.myp`：`SymbolEntry` 新增 `reassigned_` 字段；`Assign` 分支对接口变量
+    重赋值标记；B3 块扩展——从仅 assoc 关联类型方法扩展为**所有接口方法调用**
+    （对象是接口变量 + concreteClass 已知 + 未重赋值 → `CallExpr.resolvedClass`
+    记具体类）。
+  - `codegen.myp` `genIfaceCall`：`resolvedClass` 非空 → 直接调
+    `<cls>_<method>`（类覆盖）或 `__ifdef_<iface>_<method>_<cls>`（trait 默认
+    实现，复用 findIfaceDefault），跳过 vtable。发射的 extract/GEP/load 在 -O2
+    被 DCE（无副作用）。
+- **C++ 镜像**：
+  - codegen 接口分派点（泛化分派）：接口变量（Identifier 对象）`var_class_map_`
+    命中且未重赋值 → 直接调具体类方法（返回类型从具体函数取，含 assoc 真实
+    类型）。
+  - `generateAssignment` 对 `var_class_map_` 中的变量赋值 → 标记 `iface_reassigned_`。
+  - **修复 catch(Error) 污染**：`catch (FileError e)` 曾设 `var_class_map_["e"]`
+    残留具体类 → 后续 `catch (Error e)` 的 `e.message()` 被 devirt 误用 FileError
+    （exception/exception_lib 回归暴露，`iface_parse` 输出 file error 而非 parse
+    error）。修复：iface_catch 绑定处 `var_class_map_.erase(cc.var_name)`——
+    catch 接口变量的具体类运行时决定，永不可 devirt。
+- **边界检查补齐（自举对齐 C++，正确性）**：selfhost slice 下标此前是裸 GEP
+  **无边界检查**（越界静默读穿），C++ `generateSliceElementAddress` 有完整
+  `0<=idx<len` + `myp_bounds_error`。新增 `sliceElemAddrChecked` helper（读/写/
+  `subscriptElemAddr` 三处统一），文本 IR 发射 `icmp sge/ult` + `and` + 分支到
+  error block（`myp_bounds_error`）+ ok block GEP；`ir_emit.myp` 补
+  `declare void @myp_bounds_error(i64,i64)`。越界双端一致报
+  `slice index 5 out of bounds (length 4)` + abort。实测 LLVM -O2 对
+  `for(i=0;i<n)` + `len==n` 形态完全消除检查 → **无性能损失**。
+- **新基准**：
+  - `bench/myp/iface_dispatch.myp`：接口热循环分派（Shape 接口 3 实现，**有状态
+    方法 grow 改内部字段**防常量折叠，devirt 后内联仍须计算，测真实分派开销）。
+  - `bench/myp/slicedot.myp`：`slice<double>` 点积（边界检查开销度量）。
+  - 已加入 `run_compare.sh`（44 → 46 项）。
+- **基准结果（devirt 后，3 轮取最小）**：iface_dispatch **MYP 30ms vs C++ 46ms
+  （C++/MYP 1.53，devirt 后内联反超 g++ 保守 devirt）**；slicedot MYP 4ms vs
+  C++ 6ms（1.50，边界检查被 LLVM 消除）；其余 44 项与基线一致无回归。
+- **验证**：新增回归 `tests/@test/devirt_reassign.myp`（未重赋值 devirt / 重赋值
+  回退 vtable / 条件分支重赋值保守 / 独立变量 devirt，双端 5/5）。全量 **311/0**
+  （-O0 与 -O2）；selfhost `@test` 94/94；bootstrap 16/16 不动点（self2==self3
+  字节相同，md5 6b67c55e…）。
+
 ### v3.12.44 — 修复 `-O2 × setjmp/longjmp` 根因：try 入口逃逸全部在作用域局部 + finally flag
 
 根治 B2 遗留的「opt -O2 破坏 setjmp/longjmp 的 finally 语义」根因（C++ 与自举同修），

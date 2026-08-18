@@ -1545,8 +1545,36 @@ class CodeGen {
             return 0;
         }
 
-        // Subscript 元素地址（不 load）：arr[i] → GEP 指针（slice 先 extract data）。
-        // 用于 v[i].field 成员访问（元素是 struct 值时须取地址再 GEP 字段）。
+        // slice 元素地址 + 运行时边界检查（镜像 C++ generateSliceElementAddress）：
+        //   len = extractvalue(arrV, 1)；ok = (idx64 >= 0) && (idx64 < len)
+        //   oob → myp_bounds_error(idx64, len)（runtime abort）+ br ok
+        //   ok → GEP(data, idx64)；返回 gep（当前基本块 = ok 块，调用方继续）。
+        string sliceElemAddrChecked(AstExpr arr, string arrV, string idxV) {
+            string len = newTmp();
+            sb_.append("  " + len + " = extractvalue { ptr, i64 } " + arrV + ", 1\n");
+            string data = newTmp();
+            sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
+            string nonneg = newTmp();
+            sb_.append("  " + nonneg + " = icmp sge i64 " + idxV + ", 0\n");
+            string inb = newTmp();
+            sb_.append("  " + inb + " = icmp ult i64 " + idxV + ", " + len + "\n");
+            string okc = newTmp();
+            sb_.append("  " + okc + " = and i1 " + nonneg + ", " + inb + "\n");
+            string okB = newBlock("slice_ok");
+            string oobB = newBlock("slice_oob");
+            sb_.append("  br i1 " + okc + ", label %" + okB + ", label %" + oobB + "\n");
+            openBlock(oobB);
+            sb_.append("  call void @myp_bounds_error(i64 " + idxV + ", i64 " + len + ")\n");
+            emitBr(okB);
+            openBlock(okB);
+            string elemLt = subscriptElemLt(arr);
+            string gep = newTmp();
+            sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", i64 " + idxV + "\n");
+            return gep;
+        }
+
+        // Subscript 元素地址（不 load）：arr[i] → GEP 指针（slice 先 extract data +
+        // 边界检查）。用于 v[i].field 成员访问（元素是 struct 值时须取地址再 GEP 字段）。
         string subscriptElemAddr(AstExpr arr, AstExpr idx) {
             string arrV = genExpr(arr);
             string idxV = genExpr(idx);
@@ -1558,10 +1586,7 @@ class CodeGen {
             if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
             string gep;
             if (isSl != 0) {
-                string data = newTmp();
-                sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
-                gep = newTmp();
-                sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+                gep = sliceElemAddrChecked(arr, arrV, idxV);
             } else {
                 gep = newTmp();
                 sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
@@ -7418,6 +7443,27 @@ class CodeGen {
                 string at = exprLlvmType(a);
                 as.append(", " + at + " " + av);
             }
+            // devirt：sema 已在接口变量从未被重赋值时把具体类记到
+            // CallExpr.resolvedClass（cclsB3）→ 直接调用具体类方法（或 trait 默认
+            // 实现），跳过 vtable 间接调用，让 LLVM 内联 → 常量折叠/向量化复利。
+            // 上方发射的 extract/GEP/load 在 -O2 下被 DCE（无副作用）。
+            if (Str.len(cclsB3) != 0 && classImplements(cclsB3, ifaceName) != 0) {
+                string direct = cclsB3 + "_" + mname;
+                if (hasMethodInClass(cclsB3, mname) == 0) {
+                    string idef = findIfaceDefault(cclsB3, mname);
+                    if (Str.len(idef) != 0) direct = idef;
+                }
+                if (Str.len(direct) != 0) {
+                    if (retLt == "void") {
+                        sb_.append("  call void @" + direct + "(" + as.toString() + ")\n");
+                        return "";
+                    }
+                    string t2 = newTmp();
+                    sb_.append("  " + t2 + " = call " + retLt + " @" + direct + "(" + as.toString() + ")\n");
+                    if (retLt == "ptr") addFreshTemp(t2);
+                    return t2;
+                }
+            }
             if (retLt == "void") {
                 sb_.append("  call void " + fnv + "(" + as.toString() + ")\n");
                 return "";
@@ -8072,10 +8118,7 @@ class CodeGen {
                     if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
                     string gep;
                     if (isSl != 0) {
-                        string data = newTmp();
-                        sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
-                        gep = newTmp();
-                        sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+                        gep = sliceElemAddrChecked(arr, arrV, idxV);
                     } else {
                         gep = newTmp();
                         sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
@@ -8247,11 +8290,8 @@ class CodeGen {
                 // 其结果 LLVM 类型是 { ptr, i64 } → 须 extractvalue data 再 GEP。
                 if (isSl == 0 && exprLlvmType(arr) == "{ ptr, i64 }") isSl = 1;
                 if (isSl != 0) {
-                    // slice：extractvalue data + GEP
-                    string data = newTmp();
-                    sb_.append("  " + data + " = extractvalue { ptr, i64 } " + arrV + ", 0\n");
-                    string gep = newTmp();
-                    sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + data + ", " + idxT + " " + idxV + "\n");
+                    // slice：extractvalue data + 运行时边界检查 + GEP（镜像 C++）
+                    string gep = sliceElemAddrChecked(arr, arrV, idxV);
                     string t = newTmp();
                     sb_.append("  " + t + " = load " + elemLt + ", ptr " + gep + "\n");
                     return t;

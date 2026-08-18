@@ -1,0 +1,87 @@
+// bench/myp/iface_dispatch.myp — 接口热循环分派基准（devirt 度量）
+// Shape 接口 3 实现（Circle/Rect/Tri）。热循环反复经接口引用调用 area()/perim()。
+// 两种形态：
+//   (a) 单形态接口变量 `Shape s = new Circle(...)` —— devirt 候选（具体类在调用点恒定）
+//   (b) 混合多态（三个接口变量轮流）—— 每个调用点同样可 devirt 到各自具体类
+// verify = 两种形态的 double 累加和（C++ 端容差 1e-3）。
+// 对照 bench/cpp/iface_dispatch.cpp（虚函数分派，clang -O3 可 devirt → 代表理想性能）。
+import env;
+import time;
+
+interface Shape {
+    double area();
+    void grow(double f);
+}
+
+class Circle {
+    interface class Shape;
+    property: double r = 0.0;
+    action:
+        @constructor Circle(double r0) { this.r = r0; }
+        double area() { return 3.14159265358979 * this.r * this.r; }
+        void grow(double f) { this.r = this.r * f; }
+}
+
+class Rect {
+    interface class Shape;
+    property: double w = 0.0;
+    property: double h = 0.0;
+    action:
+        @constructor Rect(double w0, double h0) { this.w = w0; this.h = h0; }
+        double area() { return this.w * this.h; }
+        void grow(double f) { this.w = this.w * f; this.h = this.h * f; }
+}
+
+class Tri {
+    interface class Shape;
+    property: double b = 0.0;
+    property: double h = 0.0;
+    action:
+        @constructor Tri(double b0, double h0) { this.b = b0; this.h = h0; }
+        double area() { return 0.5 * this.b * this.h; }
+        void grow(double f) { this.b = this.b * f; this.h = this.h * f; }
+}
+
+double iface_dispatch(int iters) {
+    // 形态 (a)：单形态接口变量
+    Shape s = new Circle(1.0);
+    double acc = 0.0;
+    int i = 0;
+    while (i < iters) {
+        s.grow(1.000001);
+        acc = acc + s.area();
+        i = i + 1;
+    }
+    // 形态 (b)：混合多态（三个接口变量轮流）
+    Shape s1 = new Circle(1.5);
+    Shape s2 = new Rect(2.0, 3.0);
+    Shape s3 = new Tri(4.0, 5.0);
+    i = 0;
+    while (i < iters) {
+        s1.grow(1.000001);
+        s2.grow(1.000001);
+        s3.grow(1.000001);
+        acc = acc + s1.area() + s2.area() + s3.area();
+        i = i + 1;
+    }
+    return acc;
+}
+
+class Bench {
+    action:
+        @constructor Bench() {
+            long t0 = Time.nowMs();
+            double v = iface_dispatch(10000000);
+            long t1 = Time.nowMs();
+            Console.writeString("verify ");
+            Console.writeFloat(v);
+            Console.writeString("ms ");
+            Console.writeLong(t1 - t0);
+            Console.writeString("\n");
+        }
+}
+
+int main() {
+    Bench b = new Bench();
+    return 0;
+}

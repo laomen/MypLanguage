@@ -25,6 +25,7 @@ class SymbolEntry {
             concreteClass_ = "";
             funcRet_ = "";
                 arraySize_ = -1;
+            reassigned_ = 0;
             tupleTypes_ = new ArrayList<string>();
             funcParamTypes_ = new ArrayList<string>();
             instArgs_ = new ArrayList<string>();
@@ -35,6 +36,7 @@ class SymbolEntry {
         void setElementElem(string v) { elementElem_ = v; }
         void setClassName(string v) { className_ = v; }
         void setConcreteClass(string v) { concreteClass_ = v; }
+        void setReassigned(int v) { reassigned_ = v; }
         void setFuncRet(string v) { funcRet_ = v; }
         void addFuncParamType(string v) { funcParamTypes_.add(v); }
         ArrayList<string> functionParamTypes() { return funcParamTypes_; }
@@ -44,6 +46,7 @@ class SymbolEntry {
         string elementClass() { return elementClass_; }
         string className() { return className_; }
         string concreteClass() { return concreteClass_; }
+        int reassigned() { return reassigned_; }
         int arraySize() { return arraySize_; }
         void addInstArg(string v) { instArgs_.add(v); }
         string name() { return name_; }
@@ -64,6 +67,7 @@ class SymbolEntry {
         string concreteClass_;
         string funcRet_;
             int arraySize_;
+            int reassigned_;
         ArrayList<string> tupleTypes_;
         ArrayList<string> funcParamTypes_;
         ArrayList<string> instArgs_;
@@ -3948,6 +3952,12 @@ class Sema {
                 return o;
             }
             if (k == "Assign") {
+                // devirt 安全：接口变量被重赋值 → concreteClass 快照失效，标记
+                // reassigned，后续方法调用回退 vtable 分派（不 devirt）。
+                if (e.lhs() != null && e.lhs().kind() == "Identifier") {
+                    SymbolEntry bent = sym_.lookupEntry(e.lhs().name());
+                    if (bent != null && Str.len(bent.concreteClass()) != 0) bent.setReassigned(1);
+                }
                 // 左值检查（C++：target must be variable/field/array element，
                 // 位置 = Assign 节点 range = RHS 末 token）
                 AstExpr lt = e.lhs();
@@ -4471,15 +4481,25 @@ class Sema {
                             // 具体类记到 CallExpr.resolvedClass 供 codegen 分派用。
                             // 具体类从作用域感知的符号条目取（泛型实例化方法参数不受
                             // 测试级同名变量污染）。
-                            if (fr == "assoc" && mo != null && mo.kind() == "Identifier") {
-                                string ccls = "";
+                            // B3 扩展（devirt）：接口方法调用（对象是接口变量）且具体类
+                            // 已知（声明时 concreteClass 快照）且从未被重赋值 →
+                            // resolvedClass 记具体类，codegen 据此发直接调用（devirt，
+                            // 让 LLVM 内联）。assoc 关联类型方法另用具体类返回类型
+                            // 覆盖（原 BUG-017）。
+                            if (mo != null && mo.kind() == "Identifier") {
                                 SymbolEntry bent = sym_.lookupEntry(mo.name());
-                                if (bent != null) ccls = bent.concreteClass();
-                                if (Str.len(ccls) != 0) {
+                                string ccls = "";
+                                int reassigned = 1;
+                                if (bent != null) {
+                                    ccls = bent.concreteClass();
+                                    reassigned = bent.reassigned();
+                                }
+                                if (Str.len(ccls) != 0 && reassigned == 0
+                                    && inInterface(resolveBase(cn)) != 0) {
                                     string cret = findMethodRet(resolveBase(ccls), callee.memberName(), e.args().size());
                                     if (Str.len(cret) != 0) {
-                                        fr = cret;
                                         e.setResolvedClass(ccls);
+                                        if (fr == "assoc") fr = cret;
                                     }
                                 }
                             }

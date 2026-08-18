@@ -1646,6 +1646,32 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 auto* method = findInterfaceMethod(
                     ma.resolved_object_class, ma.member_name);
                 if (method) {
+                    // devirt：接口变量（Identifier 对象）具体类静态已知
+                    // （var_class_map_ 声明时记）且从未被重赋值 → 直接调用具体类
+                    // 方法（或 trait 默认实现），跳过 vtable 间接调用，让 LLVM
+                    // 内联（常量折叠/向量化复利）。返回类型从具体函数取（含
+                    // assoc 关联类型的真实类型）。
+                    std::string devirt_cls;
+                    if (ma.object->kind == ExprKind::Identifier) {
+                        auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+                        auto vit = var_class_map_.find(oid.name);
+                        if (vit != var_class_map_.end() &&
+                            !iface_reassigned_.count(oid.name))
+                            devirt_cls = vit->second;
+                    }
+                    if (!devirt_cls.empty()) {
+                        std::string dfn = devirt_cls + "_" + ma.member_name;
+                        llvm::Function* direct = module_->getFunction(dfn);
+                        if (!direct)
+                            direct = findInterfaceDefault(devirt_cls, ma.member_name);
+                        if (direct) {
+                            std::vector<llvm::Value*> call_args;
+                            call_args.push_back(data);
+                            for (auto& arg : e.args)
+                                call_args.push_back(generateExpr(*arg));
+                            return builder_.CreateCall(direct, call_args);
+                        }
+                    }
                     auto* ptr_ty = llvm::PointerType::get(ctx_, 0);
                     auto* func_gep = builder_.CreateGEP(ptr_ty, vt,
                         {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},

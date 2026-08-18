@@ -461,6 +461,10 @@ private:
 
     // ---- Variable name → class name map (for method resolution) ----
     std::unordered_map<std::string, std::string> var_class_map_;
+    /// Interface variables that have been reassigned (devirt safety: a
+    /// reassigned interface variable's concrete class is no longer statically
+    /// known → keep vtable dispatch instead of devirtualizing).
+    std::set<std::string> iface_reassigned_;
     /// Track slice element types for local slice variables ("name" -> TypeInfo).
     std::unordered_map<std::string, TypeInfo> var_slice_types_;
     /// Track function-typed variables ("name" -> Function TypeInfo) for call dispatch.

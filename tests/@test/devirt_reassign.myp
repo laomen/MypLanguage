@@ -1,0 +1,43 @@
+// devirt 正确性回归：接口变量重赋值后必须回退 vtable 分派（不能 devirt 到旧类）
+import test;
+
+interface Shape {
+    double area();
+}
+
+class Circle {
+    interface class Shape;
+    property: double r = 0.0;
+    action:
+        @constructor Circle(double r0) { this.r = r0; }
+        double area() { return this.r; }
+}
+
+class Rect {
+    interface class Shape;
+    property: double w = 0.0;
+    action:
+        @constructor Rect(double w0) { this.w = w0; }
+        double area() { return this.w; }
+}
+
+@test void t() {
+    // 未重赋值：devirt 到 Circle.area
+    Shape s = new Circle(10.0);
+    Test.assertFloatEq(s.area(), 10.0, 0.001);
+    // 重赋值 → 具体类变 Rect，必须回退 vtable（否则仍调 Circle.area 返回 10）
+    s = new Rect(20.0);
+    Test.assertFloatEq(s.area(), 20.0, 0.001);
+    // 再次重赋值回 Circle
+    s = new Circle(30.0);
+    Test.assertFloatEq(s.area(), 30.0, 0.001);
+    // 条件分支重赋值（流不敏感 → 保守回退 vtable）
+    Shape s2 = new Circle(1.0);
+    if (s2.area() > 100.0) {
+        s2 = new Rect(2.0);
+    }
+    Test.assertFloatEq(s2.area(), 1.0, 0.001);
+    // 独立未重赋值变量仍 devirt
+    Shape s3 = new Rect(7.0);
+    Test.assertFloatEq(s3.area(), 7.0, 0.001);
+}
