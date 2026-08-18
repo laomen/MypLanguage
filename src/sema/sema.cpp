@@ -1329,9 +1329,19 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
             error(decl.range, "'var' declaration requires an initializer");
             return {};
         }
+        uint32_t err_before = diag_.errorCount();
         decl_type = visitExpr(*decl.init_expr);
+        // BUG-016: `var r = voidCall();` 推断为 void 此前放行 → codegen 用 Int(i32)
+        // alloca 存 void 值 → LLVM getPrefTypeAlign(void) 无限递归 → 段错误。void 值
+        // 不能赋给变量，应报错。仅当 visitExpr 未级联报错（init 确为已知 void 调用，
+        // 而非未解析表达式）时才补报。
+        if (diag_.errorCount() == err_before && decl_type.kind == TypeKind::Void) {
+            error(decl.range, "cannot infer type of 'var' from a void expression");
+            return {};
+        }
     } else if (decl.init_expr) {
         TypeInfo init_type;
+        uint32_t err_before = diag_.errorCount();
         if (decl.init_expr->kind == ExprKind::Lambda && decl_type.kind == TypeKind::Function) {
             // Contextual typing: lambda assigned to a function-typed var uses
             // the declared function type (return + param types) as its own.
@@ -1345,8 +1355,16 @@ Sema::StmtResult Sema::visitVarDecl(VarDecl& decl) {
         } else {
             init_type = visitExpr(*decl.init_expr);
         }
-        // Skip cascading error when init type is unknown (already reported)
-        if (init_type.kind != TypeKind::Void && !typesCompatible(decl_type, init_type)) {
+        bool init_reported = diag_.errorCount() > err_before;
+        // BUG-016: `int x = voidCall();` 已知 void 值赋给非 void 变量——此前被
+        // `init_type.kind != Void` 守卫误跳过（该守卫只该在 visitExpr 已级联报错、
+        // init 类型未解析时跳过），导致 codegen 崩溃。补报类型不匹配。
+        if (!init_reported && init_type.kind == TypeKind::Void) {
+            error(decl.range, "cannot initialize variable '" + decl.name +
+                  "' of type '" + typeName(decl_type) +
+                  "' with value of type 'void'");
+        } else if (init_type.kind != TypeKind::Void && !typesCompatible(decl_type, init_type)) {
+            // Skip cascading error when init type is unknown (already reported)
             error(decl.range, "cannot initialize variable '" + decl.name +
                   "' of type '" + typeName(decl_type) +
                   "' with value of type '" + typeName(init_type) + "'");

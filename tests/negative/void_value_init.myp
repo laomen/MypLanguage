@@ -1,0 +1,8 @@
+// EXPECT ERROR: cannot initialize variable 'x' of type 'int' with value of type 'void'
+//
+// BUG-016 回归（负测试）：`int x = voidCall();` 显式类型 + 已知 void 值初始化——
+// 此前被 `init_type.kind != Void` 级联守卫误跳过 → codegen 崩溃。应报类型不匹配。
+
+void report() {}
+void caller() { int x = report(); }
+int main() { return 0; }

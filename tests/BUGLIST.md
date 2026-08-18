@@ -27,7 +27,7 @@
 | BUG-013 | 🟥 | `Coro.resume` 返回值串值——同程序混用 `await expr`（值挂起）与顶层 `@coro` 内 `Coro.yield` 时，resume 返回错误值 | `tests/bugs/coro_resume_value_mix.myp`（@test，断言失败红） |
 | BUG-014 | 🟥 | `Atomic.loadInt`/`storeInt` 编译成**普通非原子** `load`/`store`——仅命名带 Atomic，实际无原子性/内存序保证（只有 add/sub/xchg/addDouble 走 atomicrmw） | （待建：编译+`--emit-llvm` 断言 IR 为 `load`/`store` 而非 `atomicrmw`） |
 | BUG-015 | 🟥 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
-| BUG-016 | 🟥 | `main(int argc, string[] argv)` 参数传给函数并在体内使用 → **编译器段错误**（ASAN: stack-overflow in `llvm::DataLayout::getAlignment`） | `tests/bugs/main_argc_argv_crash.myp`（编译崩溃红） |
+| BUG-016 | � | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
 | BUG-017 | 🟥 | 关联类型接口方法返回 **string** 经接口分派 → codegen 生成 `i32` 非 `ptr`，LLVM verify 失败（`Item=int` 正常，`Item=string` 崩） | `tests/bugs/assoc_string_dispatch.myp`（编译失败红） |
 | BUG-018 | 🟥 | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（去 collections 即过；`import option` 不触发） | `tests/bugs/assoc_constraint_import.myp`（编译失败红） |
 | BUG-019 | 🟩 | `this.field = value` 写被拒——struct/class 的 `this.field` 分支误嵌套在 `if (!op)` 内，`this.x = v`（op 非空）整块跳过 → `not a valid assignment target` | 回归 `tests/@test/manual_ch7_struct.myp` t_this |
@@ -411,32 +411,29 @@
 
 ---
 
-## BUG-016（未修复）：`main(int argc, string[] argv)` 参数传给函数并使用 → 编译器段错误
+## BUG-016（已修复）：void 值赋给变量（`var r = voidCall();` / `int x = voidCall();`）→ 编译器段错误
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/main_argc_argv_crash.myp`（编译即崩；`run_bugs.sh` 显示
-  COMPILE CRASH）
-- **现象**（实测 2026-08-18）：
-  - `int main(int argc, string[] argv)` 将 `argc`/`argv` 传给顶层函数并在函数体内
-    使用（如 `Console.write(argc)`、`argv[1]`）→ mypc 在 **codegen 阶段段错误**
-    （exit 139）。
-  - ASAN 构建：`AddressSanitizer: stack-overflow ... in llvm::DataLayout::getAlignment`
-    ——`string[] argv` 传参时 LLVM 类型布局计算**无限递归**。
-  - 简单用法不崩：`int main(int argc, string[] argv) { return argc; }`、空体、
-    或 main 不把参数传下去。`mypc run file.myp args...` 同崩（编译阶段即段错误）。
-  - `--test` 模式：**BUG-026 修复后（2026-08-18）已不再报错**——test 模式跳过并擦除
-    用户 main，argv 传参 codegen 路径不执行 → 编译+运行通过；但**普通编译路径仍段
-    错误（exit 139 确定性复现，2026-08-18 复核）**。⚠️ `run_bugs.sh` 用 `--test`
-    编译 → `main_argc_argv_crash.myp` 现显示 GREEN，**非 test 编译仍崩**，该复现
-    不再能检出 BUG-016（如需检出须改非 --test 编译断言）。
-- **根因**：codegen 对 `string[]`（动态数组）作为参数从 `main` 传入函数时的类型
-  布局/对齐计算触发 LLVM `DataLayout::getAlignment` 无限递归。
-- **影响**：`docs/manual.md` §5 `main(argc, argv)`（配合 `import args`）文档化的实际
-  用法（把 argc/argv 传给顶层函数）会崩编译器；目前只能改用 `import args` 的
-  `Args.*`（内部读全局 argv）规避。
-- **期望语义**：`main(argc, argv)` 参数可正常传给任意函数使用；修复后
-  `tests/bugs/main_argc_argv_crash.myp` 编译通过并打印 argc 与 argv[1]。
-- **备注**：manual.md §5 按设计意图描述（不标 bug，符合约定）；bug 仅记录于本清单。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因（纠错）**：2026-08-18 复核发现原「`main(int argc, string[] argv)` 传参导致
+  `DataLayout::getAlignment` 无限递归」的诊断**不成立**——`int main(int argc,
+  string[] argv) { return argc; }` 编译运行完全正常（argv 作为 `string[]` 参数传递无
+  问题）。真正触发是复现里那行 `var r = report(argc, argv);`：`report` 返回 **void**，
+  sema 对 `var r = <void调用>()` 的推断类型为 void 却未拒绝（显式 `int x =
+  <void调用>()` 也被 `init_type.kind != Void` 级联守卫误跳过）→ codegen 用
+  Int(i32) alloca 存 void 值 → `CreateStore(void, i32*)` → LLVM
+  `getPrefTypeAlign(void)` 无限递归 → 编译器段错误（exit 139）。与 argc/argv 无关。
+- **修复**（C++ `src/sema/sema.cpp` visitVarDecl + 自举 `tools/selfhost/src/sema.myp`）：
+  1. 推断路径：`var r = <void调用>();` → `cannot infer type of 'var' from a void
+     expression`；
+  2. 显式路径：`int x = <void调用>();` → `cannot initialize variable 'x' of type
+     'int' with value of type 'void'`。
+  两级均用 `diag_.errorCount()` 快照区分「已知 void 调用」（补报）与「未解析表达式
+  （已级联报错）」（跳过），避免级联误报。
+- **验证**：负测试 `tests/negative/var_void_init.myp` + `tests/negative/void_value_init.myp`
+  （编译拒绝）；原复现 `tests/bugs/main_argc_argv_crash.myp` 移除（标题误导）。
+  全量回归 295 通过 / 0 失败；自举 sema 对拍 94/94 全绿（C++ 与自举消息逐字一致）。
+- **备注**：manual.md §5 按设计意图描述（不标 bug，符合约定）；`import args` 的
+  `Args.*` 读全局 argv 的用法仍是最佳实践。
 
 ---
 

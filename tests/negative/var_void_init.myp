@@ -1,0 +1,9 @@
+// EXPECT ERROR: cannot infer type of 'var' from a void expression
+//
+// BUG-016 回归（负测试）：`var r = voidCall();` 把 void 返回值赋给 var 此前被
+// sema 放行 → codegen 用 Int(i32) alloca 存 void 值 → LLVM getPrefTypeAlign(void)
+// 无限递归 → 编译器段错误。应报错拒绝。
+
+void report() {}
+void caller() { var r = report(); }
+int main() { return 0; }

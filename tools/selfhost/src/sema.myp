@@ -3124,6 +3124,7 @@ class Sema {
                         continue;
                     }
                     string it = "void";
+                    int errBefore = diag_.errorCount();
                     if (v.init() != null) {
                         // MYP 注意：链式字段访问（v.init_.kind_）产生垃圾 → 先用局部变量。
                         AstExpr initLocal = v.init();
@@ -3143,14 +3144,34 @@ class Sema {
                         lambdaExpectedRet_ = null;
                         if (initLocal.kind() == "Lambda") initLocal.setResolvedKind("int");
                     }
-                    // 类型检查（C++：cannot initialize variable ...）
-                    if (v.type() != null && Str.len(it) != 0 && it != "void"
-                        && v.isInferred() == 0 && typesCompat(vt, it) == 0) {
+                    // BUG-016：`var r = voidCall();` 推断为 void 此前放行 → codegen 用
+                    // Int(i32) alloca 存 void 值 → LLVM getPrefTypeAlign(void) 无限递归段错误。
+                    // void 值不能赋给变量，应报错（仅当有初始化器、且 visitExpr 未级联报错时补报；
+                    // `var x;` 无 init 由 C++ "'var' declaration requires an initializer' 拒绝）。
+                    if (v.init() != null && v.isInferred() != 0
+                        && diag_.errorCount() == errBefore && it == "void") {
                         int dl = v.nameLine();
                         int dc = v.nameCol();
                         if (dl == 0) { dl = s.line(); dc = s.col(); }
-                        diag_.error(dl, dc, "cannot initialize variable '" + v.name()
-                            + "' of type '" + typeNameOf(vt, v.type()) + "' with value of type '" + typeNameOf(it, null) + "'");
+                        diag_.error(dl, dc, "cannot infer type of 'var' from a void expression");
+                        continue;
+                    }
+                    // 类型检查（C++：cannot initialize variable ...）
+                    // BUG-016：已知 void 值赋给非 void 变量（int x = voidCall();）——C++ 同补报；
+                    // 仅当有初始化器、且 visitExpr 未级联报错（it=="void" 确为 void 调用，
+                    // 非无 init 声明 / 未解析表达式）时。
+                    if (v.init() != null && v.type() != null && Str.len(it) != 0 && v.isInferred() == 0) {
+                        int reported = diag_.errorCount() > errBefore ? 1 : 0;
+                        int bad = 0;
+                        if (reported == 0 && it == "void") bad = 1;
+                        else if (it != "void" && typesCompat(vt, it) == 0) bad = 1;
+                        if (bad != 0) {
+                            int dl = v.nameLine();
+                            int dc = v.nameCol();
+                            if (dl == 0) { dl = s.line(); dc = s.col(); }
+                            diag_.error(dl, dc, "cannot initialize variable '" + v.name()
+                                + "' of type '" + typeNameOf(vt, v.type()) + "' with value of type '" + typeNameOf(it, null) + "'");
+                        }
                     }
                     // tuple arity/元素检查（C++ typesCompatible 对 tuple 比较）
                     if (v.type() != null && v.type().isTuple() != 0 && v.init() != null && v.isInferred() == 0) {

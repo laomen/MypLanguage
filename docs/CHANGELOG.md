@@ -38,6 +38,24 @@
 - 全量回归 **293 通过 / 0 失败**。
 
 
+### v3.12.31 — 修复 BUG-016：void 值赋给变量导致编译器段错误
+- **BUG-016 已修复**：`var r = <void调用>();` / `int x = <void调用>();` 此前被 sema
+  放行 → codegen 用 Int(i32) alloca 存 void 值 → LLVM `getPrefTypeAlign(void)` 无限递归
+  → **编译器段错误**（exit 139）。
+- **根因纠错**：原诊断「`main(int argc, string[] argv)` 传参导致类型布局无限递归」不成立
+  ——`int main(int argc, string[] argv) { return argc; }` 编译运行正常；真正触发是复现中
+  `var r = report(argc, argv);`（report 返回 void）。与 argc/argv 无关。
+- **修复**（`src/sema/sema.cpp` visitVarDecl + 自举 `tools/selfhost/src/sema.myp` 镜像）：
+  1. 推断路径 `var r = voidCall();` → `cannot infer type of 'var' from a void expression`；
+  2. 显式路径 `int x = voidCall();` → `cannot initialize variable 'x' of type 'int' with
+     value of type 'void'`。
+  两级均用 `diag_.errorCount()` 快照区分「已知 void 调用」（补报）与「未解析表达式
+  （已级联报错）」（跳过），避免级联误报。
+- **回归**：新增负测试 `tests/negative/var_void_init.myp` + `tests/negative/void_value_init.myp`
+  （编译拒绝）；原复现 `tests/bugs/main_argc_argv_crash.myp` 移除。
+- 全量回归 **295 通过 / 0 失败**（+2 新负测试）；自举 sema 对拍 **94/94** 全绿。
+
+
 ### v3.12.29 — README.md / README_EN.md 更新对齐当前状态
 - **Hello World**：旧的 `int main(){ Console.writeLine(...) }`（现已编译报错）→
   `@startup` + `mypc run` 写法（无需手写 main）。
