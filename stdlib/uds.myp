@@ -10,6 +10,7 @@ ffi int myp_uds_connect(string path);
 ffi int myp_uds_send(int fd, string data);
 ffi string myp_uds_recv(int fd, int max_len);
 ffi string myp_uds_recv_line(int fd);
+ffi int myp_uds_poll(int[] fds, int count, int timeout_ms);
 ffi void myp_uds_close(int fd);
 ffi void myp_uds_unlink(string path);
 
@@ -27,6 +28,9 @@ class Uds {
         string recv(int fd, int maxLen) { return myp_uds_recv(fd, maxLen); }
         // 接收一行（直到 \n，不含换行）
         string recvLine(int fd) { return myp_uds_recv_line(fd); }
+        // 多路复用：poll fd 列表是否就绪。返回首个就绪 fd 的索引（-1 无/超时）。
+        // 服务端长连接事件循环用：监听 fd + 客户端 fd 一起 poll，逐个处理。
+        int poll(int[] fds, int count, int timeoutMs) { return myp_uds_poll(fds, count, timeoutMs); }
         void close(int fd) { myp_uds_close(fd); }
         // 删除 socket 文件（bind 前清理残留）
         void unlink(string path) { myp_uds_unlink(path); }

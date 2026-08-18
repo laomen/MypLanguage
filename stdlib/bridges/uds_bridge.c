@@ -6,6 +6,7 @@
 // 符号时自动编译+链接本文件；socket 为 libc，无需侧车 .libs。
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <poll.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
@@ -83,6 +84,29 @@ char* myp_uds_recv_line(int32_t fd) {
 
 void myp_uds_close(int32_t fd) {
     if (fd >= 0) close(fd);
+}
+
+// 多路复用：poll 一组 fd（MYP int[] → fd 列表）是否有可读/可写/异常就绪。
+// 返回**首个就绪 fd 的索引**（0 起，与传入数组下标一致）；超时/无就绪返回 -1；
+// count<=0 或 fds 为空返回 -1。MYP 侧反复调用（timeout=0）可逐个处理全部就绪。
+int32_t myp_uds_poll(int32_t* fds, int32_t count, int32_t timeout_ms) {
+    if (!fds || count <= 0) return -1;
+    if (timeout_ms < 0) timeout_ms = 0;
+    struct pollfd* pfds = (struct pollfd*)malloc(sizeof(struct pollfd) * (size_t)count);
+    if (!pfds) return -1;
+    for (int32_t i = 0; i < count; i++) {
+        pfds[i].fd = fds[i];
+        pfds[i].events = POLLIN;
+        pfds[i].revents = 0;
+    }
+    int r = poll(pfds, (nfds_t)count, (int)timeout_ms);
+    if (r <= 0) { free(pfds); return -1; }
+    int32_t hit = -1;
+    for (int32_t i = 0; i < count; i++) {
+        if (pfds[i].revents != 0) { hit = i; break; }
+    }
+    free(pfds);
+    return hit;
 }
 
 // 删除 socket 文件（bind 前清理残留）
