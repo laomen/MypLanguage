@@ -4526,6 +4526,11 @@ typedef struct {
     int result_pending;  // 1 = 已完成且结果未读；result() 读取后清 0 → 槽可复用
     int on_free_list;    // 1 = 该槽已在空闲复用列表
     int discard_result;  // 1 = 协程被 destroy（无结果可读），完成后直接回收槽
+    // BUG-013: 上次挂起（await/yield）传出的值 + 上次被 resume 传入的值——每协程
+    // 独立。此前用 __thread 线程本地共享槽，同线程多个协程混用时后挂起的协程覆盖
+    // 前者 → resume 返回值串（echo 挂起 10 被 topLevel yield 42 覆盖）。
+    int64_t yield_val;
+    int64_t resume_val;
 } myp_coro_t;
 
 // Dynamic slot array (no hard cap — grows on demand, limited only by memory).
@@ -4590,10 +4595,8 @@ static void myp_coro_try_recycle(int slot) {
 }
 // Value passing between coroutine and scheduler (thread-local; only one
 // coroutine of a thread runs at a time):
-//   myp_coro_yield_val  — coroutine → scheduler (value passed out by await)
-//   myp_coro_resume_val — scheduler → coroutine (value passed in by resume)
-static __thread int64_t myp_coro_yield_val = 0;
-static __thread int64_t myp_coro_resume_val = 0;
+// BUG-013: yield/resume 值现按协程存储（myp_coro_t.yield_val/resume_val），
+// 不再用线程本地共享槽（多协程混用会被后挂起者覆盖 → resume 返回值串值）。
 
 // Each coroutine keeps its OWN return context (ret_ctx): whoever resumes/creates
 // it saves their context there before switching in, and the coroutine switches
@@ -4864,6 +4867,8 @@ int64_t __myp_coro_create(int64_t stack_bytes) {
     c->result_pending = 0;
     c->on_free_list = 0;
     c->discard_result = 0;
+    c->yield_val = 0;     // BUG-013: 每协程值槽——复用槽必须清零
+    c->resume_val = 0;
     return myp_coro_make_handle(idx);
 }
 
@@ -4880,15 +4885,16 @@ void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr) {
 // passed in by __myp_coro_resume.
 int64_t __myp_coro_yield(int64_t val) {
     if (myp_coro_current < 0) return 0;
-    myp_coro_yield_val = val;
     int saved = myp_coro_current;
+    // BUG-013: 值存本协程槽（每协程独立），不再用线程本地共享槽。
+    myp_coros[saved]->yield_val = val;
     myp_coro_current = -1;
     // Save our suspend point into our own ctx, then switch back to the caller.
     myp_asan_start_switch(NULL, 0);   // 切到非纤程（调用者）
     myp_ctx_switch(&myp_coros[saved]->ctx, &myp_coros[saved]->ret_ctx);
     myp_asan_finish_switch();         // 回到本协程栈
     myp_coro_current = saved;
-    return myp_coro_resume_val;
+    return myp_coros[saved]->resume_val;
 }
 
 // Resume a coroutine, passing `val` in. Returns the value the coroutine
@@ -4900,7 +4906,8 @@ int64_t __myp_coro_resume(int64_t handle, int64_t val) {
     int idx = myp_coro_handle_slot(handle);
     if (idx < 0 || idx >= myp_coro_count || !myp_coros[idx]) return -1;
     if (!myp_coros[idx]->active) return -1;
-    myp_coro_resume_val = val;
+    // BUG-013: 值存被恢复协程的槽（每协程独立）。
+    myp_coros[idx]->resume_val = val;
     int saved = myp_coro_current;
     myp_coro_current = idx;
     myp_coro_t* c = myp_coros[idx];
@@ -4908,7 +4915,7 @@ int64_t __myp_coro_resume(int64_t handle, int64_t val) {
     myp_ctx_switch(&c->ret_ctx, &c->ctx);
     myp_asan_finish_switch();                         // 回到调用者栈
     myp_coro_current = saved;
-    return myp_coro_yield_val;
+    return myp_coros[idx]->yield_val;
 }
 
 // Store the coroutine's return value into its result slot (called by the

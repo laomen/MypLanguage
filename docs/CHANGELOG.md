@@ -27,6 +27,22 @@
 
 ## 编译器版本历史
 
+### v3.12.37 — 修复 BUG-013：Coro.resume 返回值串值（yield/resume 值改每协程存储）
+- **BUG-013 已修复**：`src/runtime/runtime.c` 用 `__thread` 线程本地共享槽
+  `myp_coro_yield_val`/`myp_coro_resume_val` 存「上次挂起传出的值」与「上次 resume
+  传入的值」。同线程多协程混用时后挂起者覆盖前者：echo 挂起 10 被 topLevel
+  `Coro.yield(42)` 覆盖 → `Coro.resume(echo_h, 100)` 返回 42（应 10）；加
+  `Async.sleep` 定时器挂起覆盖为 0。协程内部值传递始终正确，只有 resume 返回值串。
+- **修复**：yield/resume 值改**每协程存储**——`myp_coro_t` 新增 `yield_val`/`resume_val`
+  字段；`__myp_coro_yield`/`__myp_coro_resume` 按目标协程槽读写；`__myp_coro_create`
+  槽复用/新建时清零。多协程、嵌套 resume 均按各自槽取回。
+- **回归**：`tests/@test/coro_resume_value_mix.myp`（echo await 值挂起 10 + topLevel
+  Coro.yield 42 + timerCoro Async.sleep 挂起 0 三协程混用，3 断言，3 次运行稳定）；
+  `tests/bugs/coro_resume_value_mix.myp` 移除。
+- 全量回归 **300 通过 / 0 失败**（含 tests/coro、tests/coro_top 既有协程用例）。
+  design.md §8.6.1 的规避写法（不打印 resume 返回值）现可放开。
+
+
 ### v3.12.36 — 修复 BUG-018：类型参数全局作用域泄漏（collections + where 约束伪错误）
 - **BUG-018 已修复**：`src/sema/sema.cpp` `visitClassDecl` 把类**通用类型参数**在
   `enterScope()` **之前**（全局作用域）声明——类作用域弹出后 T 残留全局符号表；后续

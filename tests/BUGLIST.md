@@ -24,7 +24,7 @@
 | BUG-010 | 🟥 | 类引用字段的链式属性访问 `ref_.a` codegen 类型错误——生成 ptr 而非属性类型，LLVM verify 失败 | （`tests/bugs/ref_field_chain.myp`，修复后转正测试） |
 | BUG-011 | 🟥 | 函数内 mapping 用实例变量名节点（`s.e -> t.a`）→ LLVM verify 失败；须用类名节点（`S.e -> T.a`） | （`tests/bugs/instance_mapping_verify.myp`，修复后转正测试） |
 | BUG-012 | 🟥 | 直接跨线程调用（`@thread` 实例普通 action）编译器不检查——design.md §8.2 声称「不允许，必须通过 mapping()」，实测编译通过 | 行为测试 `tests/@test/cross_thread_call.myp`（修复后转负测试 `tests/negative/cross_thread_call.myp`） |
-| BUG-013 | 🟥 | `Coro.resume` 返回值串值——同程序混用 `await expr`（值挂起）与顶层 `@coro` 内 `Coro.yield` 时，resume 返回错误值 | `tests/bugs/coro_resume_value_mix.myp`（@test，断言失败红） |
+| BUG-013 | � | `Coro.resume` 返回值串值——runtime.c 用线程本地共享槽存 yield/resume 值，多协程混用时后挂起者覆盖前者 → resume 返回错误值 | 回归 `tests/@test/coro_resume_value_mix.myp`（await 值挂起 + Coro.yield + Async.sleep 定时器三协程，3 断言） |
 | BUG-014 | 🟥 | `Atomic.loadInt`/`storeInt` 编译成**普通非原子** `load`/`store`——仅命名带 Atomic，实际无原子性/内存序保证（只有 add/sub/xchg/addDouble 走 atomicrmw） | （待建：编译+`--emit-llvm` 断言 IR 为 `load`/`store` 而非 `atomicrmw`） |
 | BUG-015 | 🟥 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
 | BUG-016 | � | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
@@ -321,37 +321,24 @@
 
 ---
 
-## BUG-013（未修复）：`Coro.resume` 返回值串值（混用 `await expr` + `Coro.yield`）
+## BUG-013（已修复）：`Coro.resume` 返回值串值（混用 `await expr` + `Coro.yield`）
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/coro_resume_value_mix.myp`（@test：`echo` 协程 `int v = await n*2;`
-  + 顶层 `@coro long topLevel(long n) { long x = Coro.yield(n*2); return x+100; }`；断言
-  `Coro.resume(echo_h, 100) == 10`。`run_bugs.sh` 实测：0 passed / 1 failed，
-  `ASSERTION FAILED: echo resume 返回值应 = n*2 = 10`）。
-- **现象**（实测 2026-08-18，/tmp 探针）：
-  - **正确基线**：`tests/coro`（仅 `await expr`）→ `resume(echo_h, 100)` 返回 10 ✓；
-    `tests/coro_top`（仅顶层 `Coro.yield`）→ `resume(top_h, 7)` 返回 42 ✓。
-  - **混用 A**（echo + topLevel + run 仅 `await;`）：`resume(echo_h, 100)` 应返回
-    echo 挂起时传出的 10，实测返回 **42**（= topLevel 的 `Coro.yield(42)` 值）；
-    `resume(top_h, 7)` 返回 42（正确）。
-  - **混用 B**（再加 run() 内 `await Async.sleep(20)` 定时器挂起）：
-    `resume(echo_h, 100)` 返回 **0**（应 10）；`Coro.result(top_h)`=107 仍正确。
-  - **不变量**：协程**内部**值传递正确（`v=100`、`r=0`、`result=107` 均对）——只有
-    `Coro.resume` 的**返回值**（上次挂起 yield 的值）串；不同混用组合返回值
-    不同（42 vs 0），说明存在被覆盖的共享值槽。
-- **根因（推测）**：协程的「上次 yield 值」槽未按协程隔离——后续 spawn（顶层
-  `Coro.yield`）或定时器挂起（`Async.sleep`）写入覆盖了该共享槽，`resume` 读的是
-  全局/最后写入值而非目标协程自己的值。需查 runtime.c 协程 yield/返回值存取路径
-  （`__myp_coro_*` 的 yield 值存哪里、resume 返回值从哪里取）。
-- **影响**：`await expr`（值挂起）与 `Coro.yield` 混用、或与定时器混用时，
-  `Coro.resume(h, val)` 的返回值不可靠；协程内部 `int v = await expr;` 不受影响。
-  design.md §8.6.1 示例已规避（不打印 resume 返回值，只打印协程内 `v=100`/`result=42`）。
-- **期望语义**：`Coro.resume(h, val)` 返回**该协程**上次挂起时传出的值，与其他协程
-  的 spawn/yield、定时器挂起互不影响。
-- **备注**：design.md 不标本 bug（用户要求文档不标记 bug）；文档示例已用规避写法。
-  顺带修复 `tests/bugs/run_bugs.sh` 分类：@test 断言失败进程退出码非 0，原逻辑误判为
-  RUNTIME CRASH——现改为先捕获输出+退出码，再按输出（`ASSERTION FAILED`/汇总行
-  `passed, N failed`）分类为 RED (assertion)。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因**：`src/runtime/runtime.c` 用 `__thread` **线程本地共享槽** `myp_coro_yield_val`
+  / `myp_coro_resume_val` 存「上次挂起传出的值」与「上次 resume 传入的值」。同线程
+  多协程混用时，后 spawn/挂起的协程覆盖前者：echo 挂起传出 10 → topLevel `Coro.yield(42)`
+  覆盖 → `Coro.resume(echo_h, 100)` 返回 42；加 `Async.sleep` 定时器挂起覆盖为 0。
+  协程内部值传递正确（每协程栈局部），只有 resume 返回值读共享槽串值。
+- **修复**：yield/resume 值改为**每协程存储**——`myp_coro_t` 新增 `yield_val`/`resume_val`
+  字段，`__myp_coro_yield` 存 `myp_coros[saved]->yield_val`、`__myp_coro_resume` 存
+  `myp_coros[idx]->resume_val` 并返回 `myp_coros[idx]->yield_val`；`__myp_coro_create`
+  槽复用/新建时清零。多协程、嵌套 resume 均按各自槽取回。
+- **验证**：回归 `tests/@test/coro_resume_value_mix.myp`（echo await 值挂起 10 +
+  topLevel Coro.yield 42 + timerCoro Async.sleep 挂起 0 三协程混用，3 断言，3 次运行
+  稳定）；`tests/bugs/coro_resume_value_mix.myp` 移除。全量回归 300 通过 / 0 失败
+  （含 tests/coro、tests/coro_top 等既有协程用例）。
+- **备注**：design.md §8.6.1 示例的规避写法（不打印 resume 返回值）现可放开；
+  顺带修的 `run_bugs.sh` 分类逻辑保留。
 
 ---
 

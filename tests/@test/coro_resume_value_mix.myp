@@ -1,0 +1,43 @@
+// BUG-013 回归（正测试）：Coro.resume 返回值不串值——多协程各自独立
+//
+// 旧行为：runtime.c 用 __thread 线程本地共享槽存「上次挂起传出的值」与「上次 resume
+// 传入的值」。同线程多协程混用（await expr 值挂起 + 顶层 @coro Coro.yield + await
+// Async.sleep 定时器）时，后挂起的协程覆盖前者 → resume 返回值串：echo 挂起传出 10
+// 被 topLevel 的 Coro.yield(42) 覆盖 → `Coro.resume(echo_h, 100)` 返回 42 而非 10。
+// 修复：yield/resume 值改为每协程存储（myp_coro_t.yield_val / resume_val），
+// create 时清零；多协程、嵌套 resume 均按各自槽取回。
+
+import test;
+import coro;
+import async;
+
+class Worker {
+    action:
+        @coro void echo(int n) {
+            int v = await n * 2;   // 挂起传出 n*2
+        }
+}
+
+@coro long topLevel(long n) {
+    long x = Coro.yield(n * 2);
+    return x + 100;
+}
+
+@coro long timerCoro(long n) {
+    await Async.sleep(1);          // 定时器挂起（传出 0）
+    return n;
+}
+
+@test void test_coro_resume_value_mix() {
+    Worker w = new Worker();
+    long h1 = w.echo(5);           // 挂起传出 10
+    long h2 = topLevel(21);        // Coro.yield(42)
+    long h3 = timerCoro(7);        // Async.sleep 挂起
+    long got = Coro.resume(h1, 100);   // 应返回 echo 自己挂起值 10（旧行为 42）
+    Test.assertEq(int(got), 10, "echo resume 返回值应 = n*2 = 10");
+    long got3 = Coro.resume(h3, 0);    // 应返回 timer 挂起值 0
+    Test.assertEq(int(got3), 0, "timer resume 返回值应 = 0");
+    long got2 = Coro.resume(h2, 5);    // 应返回 topLevel yield 值 42
+    Test.assertEq(int(got2), 42, "topLevel resume 返回值应 = n*2 = 42");
+    Test.report("test_coro_resume_value_mix", true);
+}
