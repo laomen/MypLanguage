@@ -27,6 +27,27 @@
 
 ## 编译器版本历史
 
+### v3.12.17 — 手册 §9 并发编程审计：@parallel/@gpu 属性访问 bug + @threadpool 示例修正
+- **文档错误修复**：manual §9 `@thread` / `@threadpool` 示例的 mapping 用实例变量名
+  节点（`sensor.valueRead -> worker.process`、`sensor.valueRead -> pool[0].process`）
+  ——实例名节点函数内 mapping 无法编译（BUG-011），`pool[0].process` 数组下标节点
+  parser 直接报错（`expected instance/class name in mapping`）。已统一改为**类名**
+  节点（`Sensor.valueRead -> Worker.process`），与 §8 一致。
+- **新 bug BUG-023**：`@parallel for` / `@gpu for` 并行体**直接访问 class/static
+  属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为整数 0）/
+  `Atomic.addInt` 时运行段错误 139。并行体只捕获外层局部变量；属性访问需先拷到
+  局部（manual §9 BNCT 示例 `double[] depthDose = TallyData.depthDose` 已用该模式）。
+  manual §9 @parallel for 限制与 @gpu for 限制均加说明。复现
+  `tests/bugs/parallel_prop_access.myp`。
+- **§9 逐条实测通过**：@thread（独立线程 @startup）/@threadpool（4 worker 启动）/
+  @parallel for（int+long 循环变量 + Atomic.addInt，sum=499500；manual 精确示例）/
+  sync 同步原语（Mutex/RWLock/CondVar/Semaphore/Once，tests/sync 覆盖）/@gpu for
+  CPU 回退（sqrt(4)+sin(1)=2.84147）/import cuda Vectors（add/scale/sum，CPU 回退）/
+  构造器/@startup。
+- **回归**：`tests/@test/manual_ch9_myp.myp`（3 tests / 11 断言：@parallel for 三种/
+  sync API/@gpu+vectors CPU 回退）；全量 283 通过（3 个自举工具 build/ 缺二进制
+  的既有环境失败）。
+
 ### v3.12.16 — 手册 §8 事件与 Mapping 审计：mapping 节点统一类名
 - **文档错误修复**：manual §8（及 §5 main 规则、§13 完整示例）的 mapping 示例
   全部用**实例变量名**节点（`sensor.valueRead -> display.show`）——实测函数内

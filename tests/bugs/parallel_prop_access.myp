@@ -1,0 +1,28 @@
+// BUG-023 复现：@parallel for 并行体直接访问 class/static 属性数组
+//   → LLVM verify 失败（GEP 基址为整数 0 非指针）；经 Atomic.addInt 时运行段错误 139。
+//   规避：先拷到局部数组（manual §9 BNCT 模式）。
+import env;
+import atomic;
+
+@static class X {
+    property:
+        int[] arr;
+    static:
+        void init() { X.arr = new int[100]; }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            X.init();
+            @parallel for (int i = 0; i < 100; i = i + 1) {
+                X.arr[i] = i;   // 直接静态属性数组写 → verify 失败
+            }
+            Console.writeString("done " + X.arr[5] + "\n");
+        }
+}
+
+int main() {
+    Main m = new Main();
+    return 0;
+}

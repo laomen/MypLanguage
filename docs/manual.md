@@ -1448,7 +1448,7 @@ int main() {
     Worker worker @thread;
 
     mapping() {
-        sensor.valueRead -> worker.process;
+        Sensor.valueRead -> Worker.process;   // 节点用类名
     }
     return 0;
 }
@@ -1461,7 +1461,7 @@ int main() {
 Worker[4] pool @threadpool;
 
 mapping() {
-    sensor.valueRead -> pool[0].process;
+    Sensor.valueRead -> Worker.process;   // 节点用类名（不能写 pool[0].process）
 }
 ```
 
@@ -1523,6 +1523,9 @@ int[1000] tally;
 - 每个迭代必须**无数据依赖**
 - 不支持 `break` / `continue`
 - 循环边界在进入时确定
+- **并行体只捕获外层局部变量**：不能直接访问 class/static 属性（数组等）——
+  会把属性访问当外层局部解析导致 LLVM verify 失败或运行时段错误。需先拷到局部
+  再用（见下方 BNCT 示例 `double[] depthDose = TallyData.depthDose;`）。
 
 #### BNCT 示例
 
@@ -1739,6 +1742,8 @@ Matrix.transpose(a, t, rows, cols);  // t = a^T（CPU）
 - 不支持 `break` / `continue`
 - GPU 路径的数学函数需要 `libdevice.10.bc`
 - `min`/`max`/`dot`/`transpose` 当前用 CPU 实现（正确但非 GPU 加速）
+- **内核只捕获局部变量**：与 `@parallel for` 相同，不能直接访问 class/static
+  属性数组（LLVM verify 失败），须用局部数组（见上方示例 `double[] data = ...`）
 
 ### 构造器（@constructor / 函数名==类名）
 

@@ -34,6 +34,7 @@
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
 | BUG-021 | 🟥 | class 含**泛型类属性**（`Option<int>`/`ArrayList<int>` 等）时，方法内 `this.prop` 在 sema 被解析为泛型实例类 → `class 'X_inst' has no member 'v'`（读+写都中；struct 泛型字段正常） | `tests/bugs/this_generic_prop.myp`（编译失败红） |
 | BUG-022 | 🟥 | `@thread` 用于 **struct 实例**被静默接受（`S s @thread;` 编译+运行通过但无效果）——应拒绝却接受（与 BUG-006/007/008/012 同类） | （待建：修复后转负测试 `tests/negative/struct_thread.myp`） |
+| BUG-023 | 🟥 | `@parallel for` / `@gpu for` 并行体**直接访问 class/static 属性数组** → LLVM verify 失败（`getelementptr i32, i64 0` GEP 基址为 0 非指针）/ `Atomic.addInt` 时运行段错误 139；须先拷到局部（manual BNCT 模式正确） | `tests/bugs/parallel_prop_access.myp`（编译失败红） |
 
 ---
 
@@ -597,3 +598,34 @@
   编译错误。
 - **备注**：manual.md §7 表格按设计意图描述（不标 bug）；同族「应拒绝却接受」bug
   见 BUG-006/007/008/012。
+
+---
+
+## BUG-023（未修复）：`@parallel for` / `@gpu for` 并行体直接访问 class/static 属性数组
+
+- **状态**：🟥 未修复（2026-08-18 记录）
+- **复现测试**：`tests/bugs/parallel_prop_access.myp`（`@static class X { property:
+  int[] arr; }` + `@parallel for (int i...) { X.arr[i] = i; }` → 编译失败红）
+- **现象**（实测 2026-08-18）：
+  - `@parallel for` 体内**直接写** class/static 属性数组（`X.arr[i] = i` /
+    `this.arr[i] = i`）→ `LLVM verify failed: GEP base pointer is not a vector or
+    a vector of pointers`（IR `getelementptr i32, i64 0, %0`——GEP 基址是整数 0
+    而非指针，属性访问未解析为数组指针）。
+  - 经 `Atomic.addInt(X.arr, i, i)`（把静态数组当实参）→ 编译通过但**运行段错误
+    139**（3/3 复现，只打印 start 后崩）。
+  - `@gpu for` 体内同样：class 属性数组（`this.data[i]`）→ LLVM verify 失败。
+  - **对照**：并行体用**外层局部数组**（`int[] tally = ...` / manual 示例
+    `double[] data = new double[n]`）→ 正常（含 Atomic 累加、@gpu CPU 回退）；
+    manual BNCT 模式（静态数组先拷局部 `double[] depthDose = TallyData.depthDose`）
+    → 正常。
+- **根因（推测）**：`@parallel for`/`@gpu for` 的变量捕获机制只收集**外层局部变量**
+  （`generateParallelFor` 遍历作用域栈收集 named values 构建捕获 struct）；class/
+  static 属性访问是全局路径，未被捕获进捕获结构体，codegen 生成 GEP 时基址解析
+  失败（落到 i64 0）。应：捕获时也处理属性访问（或报清晰编译错误「并行体不能
+  访问属性，请先拷到局部」）。
+- **影响**：想直接在并行循环里读写 class/static 数组属性的代码无法编译/运行崩溃；
+  常见规避是拷到局部（manual §9 BNCT 示例已用该模式）。
+- **期望语义**：并行体支持属性访问（捕获 this/static 指针），或编译期清晰报错
+  提示「先拷到局部」。
+- **备注**：manual §9 @parallel for 限制与 @gpu for 限制已加说明（并行体只捕获
+  局部变量，属性访问先拷局部）；bug 仅记录于本清单。

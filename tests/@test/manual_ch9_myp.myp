@@ -1,0 +1,163 @@
+// manual_ch9_myp.myp — 手册 §9 并发编程 核对回归（2026-08-18 审计固化）
+//   覆盖（@test 可测的确定性部分）：
+//     @parallel for（int/long 循环变量 + Atomic.addInt；BNCT 静态数组→局部拷贝）
+//     sync 同步原语单线程 API（Mutex tryLock / Semaphore / Once）
+//     @gpu for CPU 回退 + import cuda Vectors
+//   注：
+//     - @parallel for / @gpu for 并行体只捕获外层**局部**变量；class/static
+//       属性（数组）直接访问 → LLVM verify 失败/段错误（BUG-023），须先拷到
+//       局部（manual 示例均为局部数组 / BNCT 拷局部模式）。
+//     - @thread/@threadpool/@startup 时序性由目录测试覆盖
+//       （tests/threadpool、tests/parallel_for、tests/sync、tests/thread_atomic）。
+import test;
+import env;
+import atomic;
+import sync;
+import math;
+import cuda;
+
+// --- @parallel for: int 循环变量 + Atomic.addInt ---
+class ParMain {
+    action:
+        @constructor ParMain() {
+            int[] tally = new int[1000];
+            @parallel for (int i = 0; i < 1000; i = i + 1) {
+                Atomic.addInt(tally, i, i);
+            }
+            int s = 0;
+            for (int j = 0; j < 1000; j = j + 1) s = s + tally[j];
+            sum = s;
+        }
+        int getSum() { return sum; }
+    property:
+        int sum;
+}
+
+// --- @parallel for: long 循环变量 ---
+class ParLong {
+    action:
+        @constructor ParLong() {
+            int[] tally = new int[1000];
+            @parallel for (long i = 0L; i < 1000L; i = i + 1L) {
+                Atomic.addInt(tally, int(i), int(i));
+            }
+            int s = 0;
+            for (int j = 0; j < 1000; j = j + 1) s = s + tally[j];
+            sum = s;
+        }
+        int getSum() { return sum; }
+    property:
+        int sum;
+}
+
+// --- BNCT 模式: 静态数组先拷局部再 @parallel for（BUG-023 规避） ---
+@static class TallyData {
+    property:
+        int[] depthDose;
+    static:
+        void init() { TallyData.depthDose = new int[100]; }
+}
+
+class ParBnct {
+    action:
+        @constructor ParBnct() {
+            TallyData.init();
+            int[] depthDose = TallyData.depthDose;   // 拷到局部
+            @parallel for (int i = 0; i < 100; i = i + 1) {
+                Atomic.addInt(depthDose, i, i);
+            }
+            int s = 0;
+            for (int j = 0; j < 100; j = j + 1) s = s + depthDose[j];
+            sum = s;
+        }
+        int getSum() { return sum; }
+    property:
+        int sum;
+}
+
+// --- sync 单线程 API: Mutex tryLock / Semaphore / Once ---
+class SyncApi {
+    action:
+        @constructor SyncApi() {
+            int m = Mutex.create();
+            Mutex.lock(m);
+            held = Mutex.tryLock(m);   // 0
+            Mutex.unlock(m);
+            free = Mutex.tryLock(m);   // 1
+            Mutex.unlock(m);
+            Mutex.destroy(m);
+
+            int s = Semaphore.create(2);
+            Semaphore.wait(s); Semaphore.wait(s);
+            semEmpty = Semaphore.tryWait(s);   // 0
+            Semaphore.post(s);
+            semOk = Semaphore.tryWait(s);      // 1
+            Semaphore.destroy(s);
+
+            int o = Once.create();
+            int cnt = 0;
+            for (int i = 0; i < 1000; i = i + 1) {
+                if (Once.enter(o) == 1) { cnt = cnt + 1; Once.done(o); }
+            }
+            Once.destroy(o);
+            once = cnt;
+        }
+        int getHeld() { return held; }
+        int getFree() { return free; }
+        int getSemEmpty() { return semEmpty; }
+        int getSemOk() { return semOk; }
+        int getOnce() { return once; }
+    property:
+        int held; int free; int semEmpty; int semOk; int once;
+}
+
+// --- @gpu for CPU 回退 + import cuda Vectors（局部数组，manual 示例形式） ---
+class GpuMain {
+    action:
+        @constructor GpuMain() {
+            long n = 100L;
+            double[] data = new double[n];
+            for (long i = 0L; i < n; i = i + 1L) data[i] = 4.0;
+            @gpu for (long i = 0L; i < n; i = i + 1L) {
+                data[i] = Math.sqrt(data[i]) + Math.sin(1.0);
+            }
+            g0 = data[0];
+            double[] va = new double[n];
+            double[] vb = new double[n];
+            double[] vo = new double[n];
+            for (long i = 0L; i < n; i = i + 1L) { va[i] = 1.0; vb[i] = 2.0; }
+            Vectors.add(va, vb, vo, n);
+            add0 = vo[0];
+            s = Vectors.sum(va, n);
+        }
+        double getG0() { return g0; }
+        double getAdd0() { return add0; }
+        double getSum() { return s; }
+    property:
+        double g0; double add0; double s;
+}
+
+@test void t_parallel() {
+    ParMain pm = new ParMain();
+    Test.assertEq(pm.getSum(), 499500, "@parallel for int sum");
+    ParLong pl = new ParLong();
+    Test.assertEq(pl.getSum(), 499500, "@parallel for long sum");
+    ParBnct pb = new ParBnct();
+    Test.assertEq(pb.getSum(), 4950, "@parallel BNCT 静态数组→局部");
+}
+
+@test void t_sync_api() {
+    SyncApi s = new SyncApi();
+    Test.assertEq(s.getHeld(), 0, "tryLock 已持有=0");
+    Test.assertEq(s.getFree(), 1, "tryLock 空闲=1");
+    Test.assertEq(s.getSemEmpty(), 0, "Semaphore 空 tryWait=0");
+    Test.assertEq(s.getSemOk(), 1, "Semaphore post 后 tryWait=1");
+    Test.assertEq(s.getOnce(), 1, "Once 1000 次 enter 仅首执行");
+}
+
+@test void t_gpu_fallback() {
+    GpuMain g = new GpuMain();
+    Test.assertFloatEq(g.getG0(), 2.8414709848078967, 1e-9, "@gpu for CPU 回退");
+    Test.assertFloatEq(g.getAdd0(), 3.0, 1e-9, "Vectors.add CPU 回退");
+    Test.assertFloatEq(g.getSum(), 100.0, 1e-9, "Vectors.sum CPU 回退");
+}

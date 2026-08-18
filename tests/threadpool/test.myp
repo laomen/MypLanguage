@@ -1,5 +1,8 @@
 // @threadpool — 线程池注解测试（4 个线程各打印一次）
+// 注：pool 建在 Main @startup 里并等待，避免 main 返回时 worker 未跑完
+//   （既有时序 flaky：期望 "wwww"，偶发 "www"）。
 import env;
+import time;
 
 class Worker {
     action:
@@ -8,7 +11,16 @@ class Worker {
         }
 }
 
+class Main {
+    action:
+        @startup void run() {
+            Worker[4] pool @threadpool;
+            Time.sleep(100);   // 等 4 个 worker 打印完
+            Console.writeString("\n");
+        }
+}
+
 int main() {
-    Worker[4] pool @threadpool;
+    Main m = new Main() @thread;
     return 0;
 }
