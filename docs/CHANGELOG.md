@@ -27,28 +27,6 @@
 
 ## 编译器版本历史
 
-### v3.12.42 — 修复 BUG-005：mapping 事件 action 在事件源线程执行（跨线程路由）
-- **BUG-005 已修复**：mapping handler 的目标 action 此前在**事件源线程**执行，
-  `@thread` 实例 B（action）的线程归属被忽略。改为按 **handler 实例**线程归属投递。
-- **修复**（C++ + 自举同修）：
-  - `src/runtime/runtime.c`：`myp_event_fire` 增加 `data_size` 参数（载荷深拷贝按
-    字节数）；新增 `myp_thread_is_current(instance)` / `myp_event_route_to_instance(...)`
-    运行时；`myp_event_t` 增 `data_size`/`data_owned`/`routed` 字段；dispatch 对归属
-    其他线程的 handler 将事件深拷贝投到其线程队列，路由副本 `routed=1` 不再重复
-    路由，处理后 free 拷贝；新增 `myp_thread_self()` 诊断 FFI（线程稳定 id）。
-  - `src/codegen/codegen_class.cpp` `generateMappingDecl`：handler 内对首个非静态
-    目标实例做 `myp_thread_is_current` 检查——目标在其他线程 → 调
-    `myp_event_route_to_instance` 后返回；否则直接调用。
-  - `src/codegen/codegen.cpp` / `include/mylang/CodeGen.h` / `runtime.h`：FFI 声明
-    更新（fire 4 参 + 两个新运行时）。
-  - 自举镜像：`tools/selfhost/src/codegen.myp` genMappingChain 同检查；
-    `genThreadVar` 补存 `@__myp_inst_<Cls>` 全局（原缺失 → handler 取 null）；
-    `ir_emit.myp` 更新 `myp_event_fire` 4 参声明 + 新增运行时 declare。
-- **回归**：`tests/bugs/mapping_thread.myp`（`myp_thread_self()` 断言 handler 在
-  handler 实例自己的线程执行，3 断言）。全量回归 **308 通过 / 0 失败**；bugs 4 绿；
-  自举 `test_myp_self.sh` 94/94。
-
-
 ### v3.12.43 — 自举编译器 B 类缺口：assoc 关联类型 / 嵌套 struct / 多文件合并全绿
 
 自举（selfhost）编译器追赶 C++ 编译器的 B 类功能缺口，**全量回归 310 通过 / 0 失败**。
@@ -84,6 +62,28 @@
 - **回归**：全量 **310 通过 / 0 失败**；自举 `test_myp_self.sh` 94/94；自举
   `test_myp_bootstrap.sh` 16/16 不动点（self2 == self3 字节一致）。自编译
   `build/myp_self2` 与仓库布局对齐后 pm/gitee/LSP 位置推断回归全绿。
+
+
+### v3.12.42 — 修复 BUG-005：mapping 事件 action 在事件源线程执行（跨线程路由）
+- **BUG-005 已修复**：mapping handler 的目标 action 此前在**事件源线程**执行，
+  `@thread` 实例 B（action）的线程归属被忽略。改为按 **handler 实例**线程归属投递。
+- **修复**（C++ + 自举同修）：
+  - `src/runtime/runtime.c`：`myp_event_fire` 增加 `data_size` 参数（载荷深拷贝按
+    字节数）；新增 `myp_thread_is_current(instance)` / `myp_event_route_to_instance(...)`
+    运行时；`myp_event_t` 增 `data_size`/`data_owned`/`routed` 字段；dispatch 对归属
+    其他线程的 handler 将事件深拷贝投到其线程队列，路由副本 `routed=1` 不再重复
+    路由，处理后 free 拷贝；新增 `myp_thread_self()` 诊断 FFI（线程稳定 id）。
+  - `src/codegen/codegen_class.cpp` `generateMappingDecl`：handler 内对首个非静态
+    目标实例做 `myp_thread_is_current` 检查——目标在其他线程 → 调
+    `myp_event_route_to_instance` 后返回；否则直接调用。
+  - `src/codegen/codegen.cpp` / `include/mylang/CodeGen.h` / `runtime.h`：FFI 声明
+    更新（fire 4 参 + 两个新运行时）。
+  - 自举镜像：`tools/selfhost/src/codegen.myp` genMappingChain 同检查；
+    `genThreadVar` 补存 `@__myp_inst_<Cls>` 全局（原缺失 → handler 取 null）；
+    `ir_emit.myp` 更新 `myp_event_fire` 4 参声明 + 新增运行时 declare。
+- **回归**：`tests/bugs/mapping_thread.myp`（`myp_thread_self()` 断言 handler 在
+  handler 实例自己的线程执行，3 断言）。全量回归 **308 通过 / 0 失败**；bugs 4 绿；
+  自举 `test_myp_self.sh` 94/94。
 
 
 ### v3.12.41 — 修复 BUG-011：函数内 mapping 用实例变量名节点 → 编译期诊断
