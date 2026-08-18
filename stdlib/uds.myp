@@ -1,0 +1,33 @@
+// uds.myp — MYP 标准库：Unix domain socket（AF_UNIX 本机进程间通信）
+// ---------------------------------------------------------------------------
+// 与 net.myp（TCP）同接口模式，供事件总线承载升级（TCP → Unix domain socket）。
+// 链接由 mypc 通用桥接发现自动完成（无需改编译器）：引用 myp_uds_* 未定义符号
+// → stdlib/bridges/uds_bridge.c 自动编译+链接（socket 为 libc，无侧车 .libs）。
+
+ffi int myp_uds_server(string path);
+ffi int myp_uds_accept(int server_fd);
+ffi int myp_uds_connect(string path);
+ffi int myp_uds_send(int fd, string data);
+ffi string myp_uds_recv(int fd, int max_len);
+ffi string myp_uds_recv_line(int fd);
+ffi void myp_uds_close(int fd);
+ffi void myp_uds_unlink(string path);
+
+class Uds {
+    static:
+        // 创建 AF_UNIX 监听 socket（bind+listen）。返回 fd；<0 失败
+        int server(string path) { return myp_uds_server(path); }
+        // 接受客户端连接（阻塞）。返回 client fd
+        int accept(int fd) { return myp_uds_accept(fd); }
+        // 连接 Unix socket 服务器。返回 fd；<0 失败
+        int connect(string path) { return myp_uds_connect(path); }
+        // 发送字符串（自行带 \n）。返回字节数
+        int send(int fd, string data) { return myp_uds_send(fd, data); }
+        // 接收最多 maxLen 字节
+        string recv(int fd, int maxLen) { return myp_uds_recv(fd, maxLen); }
+        // 接收一行（直到 \n，不含换行）
+        string recvLine(int fd) { return myp_uds_recv_line(fd); }
+        void close(int fd) { myp_uds_close(fd); }
+        // 删除 socket 文件（bind 前清理残留）
+        void unlink(string path) { myp_uds_unlink(path); }
+}
