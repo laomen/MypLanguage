@@ -290,7 +290,16 @@ add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(SDL2 REQUIRED sdl2)
+# SDL2 可选：mypc 本体不依赖 SDL（不链接 myp_runtime，只链 LLVM+pthread）；
+# 生成程序只在 `import sdl` 且引用 myp_sdl_* 符号时按需编译链接 sdl_bridge.c
+# （src/main.cpp linkObjects 运行时 nm 检测）。此处只影响 myp_runtime 静态库
+# （供测试/工具）是否编译 sdl_bridge.c —— 没装 SDL2 的环境也能构建 mypc 全工具链。
+pkg_check_modules(SDL2 QUIET sdl2)
+if(SDL2_FOUND)
+    message(STATUS "SDL2 found (${SDL2_VERSION}) — myp_runtime 含 sdl_bridge.c")
+else()
+    message(STATUS "SDL2 NOT found — myp_runtime 不含 sdl_bridge.c；生成程序按需链接 SDL 仍可用")
+endif()
 
 find_package(PkgConfig)
 if(PkgConfig_FOUND)
@@ -300,10 +309,12 @@ set(MYP_RUNTIME_SRCS
     src/runtime/runtime.c
     src/runtime/coro_ctx.S
     src/runtime/myp_stdlib.c
-    src/runtime/sdl_bridge.c
     src/runtime/runtime_gpu.c
     src/runtime/runtime_lib.c
 )
+if(SDL2_FOUND)
+    list(APPEND MYP_RUNTIME_SRCS src/runtime/sdl_bridge.c)
+endif()
 if(MYP_ENABLE_ROCM)
     list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)
 endif()
@@ -312,10 +323,12 @@ add_library(myp_runtime STATIC ${MYP_RUNTIME_SRCS})
 target_include_directories(myp_runtime
     PUBLIC
     ${CMAKE_SOURCE_DIR}/include
-    ${SDL2_INCLUDE_DIRS}
 )
-
-target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES} ${CMAKE_DL_LIBS})
+if(SDL2_FOUND)
+    target_include_directories(myp_runtime PUBLIC ${SDL2_INCLUDE_DIRS})
+    target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES})
+endif()
+target_link_libraries(myp_runtime PUBLIC ${CMAKE_DL_LIBS})
 
 # ---- Tests (optional, requires GoogleTest) ----
 option(MYP_BUILD_TESTS "Build unit tests" OFF)
