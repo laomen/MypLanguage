@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.12.21 — 手册 §12 补充：codegen（LLVM 后端）与自举编译器（myp_self）两节
+- **新增 §12「codegen（LLVM 后端）」**：编译管线（lexer→parser→sema→codegen→
+  opt→目标文件→链接）；`src/codegen/` 源码分工（codegen/class/stmt/expr/gpu/test +
+  myp_passes）；非库构建 internalize（仅保留 main 对外）让 LLVM IPO 常量特化+内联；
+  `-O0/-O1/-O2/-O3` 优化管线内容（mem2reg/instcombine/GVN/DCE/内联/循环/SROA/向量化）；
+  自定义 pass `--passes myp-pass`（`MypRedundantStorePass` 删 codegen 死 store，保守
+  规则）；`--emit-llvm` 检查优化与对拍；`MYP_FAST_MATH=1` FP fast-math；优化 pass 与
+  异常/协程/arena 的语义交互回归（-O0/-O2 双级别）。
+- **新增 §12「自举编译器（myp_self）」**：T5 自举项目（`tools/selfhost/`）用 MYP 完全
+  重写编译器本体；stage0 mypc 编 `myp_self`、自编 `myp_self2`；模块清单（token/lexer/
+  ast/parser/diag/sema/ir_emit/codegen/link/main）；用法（编译/run/--frontend-dump/
+  --emit-llvm/fmt，均已实测：`myp_self2 run` 输出 "self: hello"、`--frontend-dump
+  sema` 输出契约头）；codegen 策略（发射 LLVM IR 文本 + llc + gcc）；oracle 对拍
+  （frontend-dump 字节对拍 + 运行输出对拍）；两级不动点自举验证（self2→self3→self4
+  字节全同 md5 52c81186…）；进度（F0–H1 完成，P2/P3 闭合）。
+- **项目结构/环境变量同步**：tools/ 加 `tools/selfhost`、build/ 加 `myp_self,
+  myp_self2`；环境变量补 `MYP_FAST_MATH=1`、`MYP_FMT`（myp_self fmt 的格式化器路径）。
+- 纯文档补充（无代码变更）；全量回归维持 288 通过（3 个既有环境失败）。
+
+
 ### v3.12.20 — 手册 §12 编译与工具审计：多文件编译 import/struct 合并（BUG-025）+ `--test` 用户 main（BUG-026）
 - **新 bug BUG-025（已修复）**：多文件编译 `mypc a.myp b.myp` 合并循环只搬
   classes/interfaces/mappings/functions，**漏了 imports/structs/bitfields/enums/ffis/

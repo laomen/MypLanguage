@@ -2889,6 +2889,34 @@ class Hello {
 - `--passes myp-pass` 运行 MYP 专用 pass（消除编译器生成的死 store）。
 - 设计与实现见 `docs/optimization_debugging.md`。
 
+#### codegen（LLVM 后端）
+
+MYP 编译管线：`lexer → parser → sema → codegen（内存中构建 LLVM IR）→ opt（-O1+ 优化管线）→ 目标文件 → 链接`。
+
+- **IR 生成**：codegen 把每个函数/类方法/映射/协程编译为 LLVM IR（`src/codegen/`），
+  变量存 alloca、对象走 ARC（`retain`/`release`）、事件走运行时注册表。源码分工：
+  `codegen.cpp`（翻译单元/全局）/ `codegen_class.cpp`（类方法/构造器）/ `codegen_stmt.cpp`
+  （语句）/ `codegen_expr.cpp`（表达式）/ `codegen_gpu.cpp`（`@gpu for` NVPTX 内核）/ 
+  `codegen_test.cpp`（`--test` 运行器）。
+- **内部化（IPO）**：非库构建把所有函数定义 internalize（仅保留 `main` 对外），
+  LLVM 跨函数 IPO 可对热核做常量特化 + 内联。
+- **`-O` 优化管线**：`-O0`（默认）不跑优化，变量全为 alloca、调试友好；
+  `-O1/-O2/-O3` 经 `PassBuilder`（New Pass Manager）跑 LLVM 标准管线——
+  `-O1` mem2reg/instcombine/GVN/DCE/基础内联/简单循环；`-O2` 再加 SROA/更积极内联/
+  循环展开与向量化；`-O3` 更激进（可能增加代码体积）。
+- **自定义 pass（`--passes myp-pass`）**：`MypRedundantStorePass` 编码 MYP 特有
+  语义——删除 codegen 产生的**死 store**（如局部变量双重初始化
+  `store i32 0, %x` 紧随其后立即被覆盖、中间无任何读）。规则保守：同一基本块内、
+  两个对同一地址的 store 之间无 load/store/call/atomic/fence 才删除前一个。
+- **`--emit-llvm`**：把 IR 文本存 `.ll` 跳过链接——用于检查优化是否生效
+  （如确认 mem2reg 已 promote 循环变量）与对拍。
+- **`MYP_FAST_MATH=1`**：给全部 FP 运算打 fast-math 标记（reassoc/contract/nnan…），
+  允许 LLVM 向量化 FP 归约、收缩 FMA；默认关（严格 IEEE，与 -O0/-O2 基线一致）。
+- **语义交互**：优化 pass 与运行时机制需逐项回归——setjmp/longjmp 异常、
+  ucontext 协程、arena 分配（`myp_region_alloc`）等；全套测试在 **-O0 与 -O2
+  双级别**跑通，语义破坏的 pass 定向禁用或调整顺序。
+- 设计与调试详见 `docs/optimization_debugging.md`。
+
 #### 调试（`-g` DWARF + gdb）
 
 ```bash
@@ -2973,6 +3001,43 @@ makeCalls(3);                    // 生成 3 条 Console.write(...)
 ```
 
 - 调试：`--macro-expand` 输出展开后的 AST dump。
+
+### 自举编译器（myp_self）
+
+MYP 的编译器本体正用 MYP 语言**完全重写**（T5 自举项目，`tools/selfhost/`）：
+前端（lexer/parser/sema）+ 非 GPU codegen + CLI 驱动全部用 MYP 实现，交付自举
+编译器 `myp_self`，并完成经典两级自举验证。
+
+- **构建**：stage0 由 C++ `mypc` 编译 `tools/selfhost/src/*.myp` →
+  `build/myp_self`；`myp_self` 再编译自身 → `build/myp_self2`（当前 build/ 里的
+  完整自举二进制）。
+- **模块**（`tools/selfhost/src/`）：`token` / `lexer` / `ast` / `parser` /
+  `diag` / `sema` / `ir_emit` / `codegen` / `link` / `main`（CLI 驱动）。
+- **用法**（与 mypc 同构）：
+
+```bash
+./build/myp_self myapp.myp -o myapp                 # 编译
+./build/myp_self run myapp.myp args...              # 编译+运行（原生，不调 mypc）
+./build/myp_self --frontend-dump ast myapp.myp      # 前端 dump（tokens|ast|sema）
+./build/myp_self --emit-llvm myapp.myp              # 输出 .ll
+./build/myp_self fmt [--check] myapp.myp            # 格式化（调自举 myp_fmt2）
+```
+
+- **codegen 策略**：MYP 无法在进程内复用 LLVM C++ API → **发射 LLVM IR 文本
+  （.ll）**，再调外部 `llc`（LLVM 后端）+ `gcc` 链接 C 运行时；天然与
+  `mypc --emit-llvm` 对拍。
+- **Oracle 对拍**：前端以 `mypc --frontend-dump {tokens,ast,sema}` 的确定化输出
+  为契约，MYP 版字节对拍；后端以 IR 文本对拍 + **产物运行输出对拍**（主验收）。
+- **自举验证（两级不动点）**：stage1 C++ 编 `myp_self` → stage2 `myp_self` 自编
+  → stage3 再自编，两代产物行为一致即自举成立。已实测
+  `self2 → self3 → self4` 字节全同（md5 `52c81186…`）。
+- **范围**：GPU 已入自举范围（`@gpu for/tile/scatter/reduce/scan` 发射 NVPTX，
+  GPU/CPU 双路径）；仅 C 运行时 `runtime.c` 视作生成程序的 "libc" 保留 C。
+- **进度**（`tools/selfhost/roadmap.md`）：前端 F0–F4、后端 G1–G4、自举验证 H1
+  全部完成；P 阶段已闭合（P2 生成代码性能与 mypc 持平——opt 加 `-mtriple` 启用
+  TTI 向量化，matmul 2.43x→1.00；P3 甩掉 C++ 种子演练通过——仅用 `myp_self2`
+  重建全部工具链、不调 mypc）。
+- 详见 `docs/self_hosting.md` 与 `tools/selfhost/{README,design,roadmap,format}.md`。
 
 ### 测试框架
 
@@ -3133,7 +3198,7 @@ mypackage/              # 包根目录
 
 ```
 MYPLanguage/
-├── tools/               # 自举 MYP 工具：tools/pm（包管理器→build/myp）、tools/fmt、tools/viz
+├── tools/               # 自举 MYP 工具：tools/pm（包管理器→build/myp）、tools/fmt、tools/viz、tools/selfhost（自举编译器→build/myp_self）
 ├── CMakeLists.txt
 ├── include/mylang/      # 编译器头文件：AST/CodeGen/Sema/Parser/Lexer/Eval/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
@@ -3163,14 +3228,16 @@ MYPLanguage/
 ├── deeplearning/        # MLP + MNIST 训练/推理
 ├── vscode-myp/          # VS Code 扩展（语法高亮 + LSP + DAP）
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/...
-├── build/               # 构建产物：mypc, myp, myp_fmt2, myp_viz2, myp_debug, myp_lsp, myp_viz, myp_fmt
+├── build/               # 构建产物：mypc, myp, myp_fmt2, myp_viz2, myp_self, myp_self2, myp_debug, myp_lsp, myp_viz, myp_fmt
 └── build-asan/          # ASAN/UBSAN 构建
 ```
 
 ### 环境变量
 
 ```bash
-export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more
+export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more   # 包管理器 myp build 的附加搜索路径（冒号分隔）
+export MYP_FAST_MATH=1                                     # codegen：FP 运算开 fast-math（向量化归约/FMA，默认严格 IEEE）
+export MYP_FMT=./build/myp_fmt2                            # 自举编译器 fmt 子命令的格式化器路径（可选）
 ```
 
 ### myp_viz — 可视化工具
