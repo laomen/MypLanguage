@@ -108,6 +108,31 @@ int myp_sdl_set_logical_size(int w, int h) {
     return 0;
 }
 
+// ═══════════════════════════════════════════
+// 窗口管理（多任务：前台/后台切换）
+// ═══════════════════════════════════════════
+
+// 隐藏窗口（应用退后台，手机式 home 键效果）。返回 0=成功。
+int myp_sdl_hide_window(void) {
+    if (!g_window) return -1;
+    SDL_HideWindow(g_window);
+    return 0;
+}
+
+// 显示窗口并置顶（应用回前台，从多任务恢复）。返回 0=成功。
+int myp_sdl_show_window(void) {
+    if (!g_window) return -1;
+    SDL_ShowWindow(g_window);
+    SDL_RaiseWindow(g_window);
+    return 0;
+}
+
+// 查询窗口是否可见（1=可见/前台，0=隐藏/后台）。返回 -1=无效。
+int myp_sdl_window_visible(void) {
+    if (!g_window) return -1;
+    return (SDL_GetWindowFlags(g_window) & SDL_WINDOW_SHOWN) != 0 ? 1 : 0;
+}
+
 // 关闭窗口并清理 SDL
 void myp_sdl_quit(void) {
     myp_sdl_free_images();
