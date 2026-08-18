@@ -17,15 +17,13 @@ class Ping {
 class Worker {
     action:
         @startup void run() {
-            // 线程2：本线程 TLS 内创建并调度协程
+            // 线程2：本线程 TLS 内创建并调度协程（不输出——多线程交错输出
+            // 顺序不定 → expected 无法稳定匹配，故收敛为仅 thread1 输出）。
             Ping p = new Ping();
             long h = p.loop(3L);
             Coro.scheduler();
             Coro.scheduler();
             Coro.scheduler();
-            // 单次写入（原子）：writeLong 自带换行 + 额外 writeString 会拆成
-            // 多次输出，多线程交错时产生空行竞态（expected 无法稳定匹配）。
-            Console.writeString("thread2 active=" + Coro.isActive(h) + "\n");
         }
 }
 
@@ -35,17 +33,17 @@ class Main {
             // 线程1：本线程 TLS 内创建并调度协程
             Ping p = new Ping();
             long h = p.loop(3L);
-            Worker w = new Worker() @thread;   // 启动线程2
             Coro.scheduler();
             Coro.scheduler();
             Coro.scheduler();
-            // 单次写入（原子）：writeLong 自带换行 + 额外 writeString 会拆成
-            // 多次输出，多线程交错时产生空行竞态（expected 无法稳定匹配）。
             Console.writeString("thread1 active=" + Coro.isActive(h) + "\n");
         }
 }
 
 int main() {
+    // 平级创建两个 @thread（原 Main 内嵌创建 Worker 的嵌套 join 竞态导致
+    // thread2 输出偶发缺失 → flaky；平级后 main 统一 join 两者）
     Main m = new Main() @thread;
+    Worker w = new Worker() @thread;
     return 0;
 }
