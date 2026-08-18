@@ -1,0 +1,42 @@
+// BUG-017 回归（正测试）：关联类型接口方法经接口分派返回类型正确
+//
+// 旧行为：`Container sb = new StrBox(); sb.getVal()` 分派 stub 对返回 string 的
+// 关联类型方法生成 i32（关联类型占位符回落默认 int）→ `call i32 %iface_fn` 把
+// string 当 i32 传 → LLVM verify 失败（单方法接口）/ 运行段错误 139（含其他方法时）。
+// `Item=int` 因默认类型恰好是 i32 而侥幸通过。
+// 修复：分派处从对象已知具体类（var_class_map_）解析同名方法返回类型。
+
+import test;
+
+interface Container {
+    type Item;
+    Item getVal();
+    string label();
+}
+
+class StrBox {
+    interface class Container;
+    type Item = string;
+    action:
+        string getVal() { return val; }
+        string label() { return "SB"; }
+    property: string val = "hi";
+}
+
+class IntBox {
+    interface class Container;
+    type Item = int;
+    action:
+        int getVal() { return val; }
+        string label() { return "IB"; }
+    property: int val = 42;
+}
+
+@test void t() {
+    Container sb = new StrBox();
+    Test.assertStrEq(sb.getVal(), "hi");   // string 关联类型动态分派
+    Test.assertStrEq(sb.label(), "SB");
+    Container ib = new IntBox();
+    Test.assertEq(ib.getVal(), 42);        // int 关联类型仍正常
+    Test.assertStrEq(ib.label(), "IB");
+}

@@ -28,7 +28,7 @@
 | BUG-014 | 🟥 | `Atomic.loadInt`/`storeInt` 编译成**普通非原子** `load`/`store`——仅命名带 Atomic，实际无原子性/内存序保证（只有 add/sub/xchg/addDouble 走 atomicrmw） | （待建：编译+`--emit-llvm` 断言 IR 为 `load`/`store` 而非 `atomicrmw`） |
 | BUG-015 | 🟥 | `mypc --package-path` **不支持冒号分隔多路径**——`myp build` 把本地 `myp_packages/` 与 `MYP_PACKAGE_PATH` 合并为冒号串传入，mypc 不切分 → `cannot find import`（自举 `myp_self` 支持切分） | （待建：shell 断言 `mypc --package-path "a:b"` 包在 b 时编译成功） |
 | BUG-016 | � | `var r = voidCall();` / `int x = voidCall();` **void 值赋给变量**被 sema 放行 → codegen 段错误（`llvm::DataLayout::getAlignment` 无限递归）；main(argc,argv) 传参本身无 bug | 负测试 `tests/negative/var_void_init.myp`、`tests/negative/void_value_init.myp`（编译拒绝） |
-| BUG-017 | 🟥 | 关联类型接口方法返回 **string** 经接口分派 → codegen 生成 `i32` 非 `ptr`，LLVM verify 失败（`Item=int` 正常，`Item=string` 崩） | `tests/bugs/assoc_string_dispatch.myp`（编译失败红） |
+| BUG-017 | � | 关联类型接口方法返回 **string** 经接口分派 → 分派 stub 用 i32（关联类型占位符回落默认 int）→ `call i32 %iface_fn` 把 string 当 i32 → LLVM verify 失败/段错误 | 回归 `tests/@test/assoc_string_dispatch.myp`（string+int 双关联类型动态分派，4 断言） |
 | BUG-018 | 🟥 | `import collections` + 带关联类型约束的泛型类（`where T : I` + `T::Item`）→ 8 个伪错误 `expected numeric type, got 'I'`（去 collections 即过；`import option` 不触发） | `tests/bugs/assoc_constraint_import.myp`（编译失败红） |
 | BUG-019 | 🟩 | `this.field = value` 写被拒——struct/class 的 `this.field` 分支误嵌套在 `if (!op)` 内，`this.x = v`（op 非空）整块跳过 → `not a valid assignment target` | 回归 `tests/@test/manual_ch7_struct.myp` t_this |
 | BUG-020 | 🟩 | 文件级限定 struct 定义 `struct A::B { }` 被拒——顶层 dispatch `current_--` 回退使 parseStruct 限定分支看 `struct` 关键字而非名称 → `expected struct name`（自举支持） | 回归 `tests/@test/manual_ch7_struct.myp` t_nested_qualified |
@@ -437,35 +437,25 @@
 
 ---
 
-## BUG-017（未修复）：关联类型接口方法返回 string 经接口分派 → codegen 类型错误
+## BUG-017（已修复）：关联类型接口方法返回 string 经接口分派 → 分派返回类型错为 i32
 
-- **状态**：🟥 未修复（2026-08-18 记录）
-- **复现测试**：`tests/bugs/assoc_string_dispatch.myp`（`Container sb = new StrBox();
-  Test.assertStrEq(sb.getVal(), "hi");` —— 编译阶段 LLVM verify 失败红）
-- **现象**（实测 2026-08-18）：
-  - `interface Container { type Item; Item getVal(); }` + `class StrBox { interface
-    class Container; type Item = string; string getVal() {...} }`，经接口变量
-    `Container sb = new StrBox(); sb.getVal()` → codegen 报
-    `LLVM verify failed: Call parameter type does not match function signature!`
-    `%6 = call i32 %iface_fn(ptr %4)`——**分派 stub 返回类型生成为 `i32` 而非
-    string `ptr`**（interface fat-pointer 虚表调用返回类型错）。
-  - **对照**：`Item = int`（IntBox）经接口分派 `c.getVal()` **正常**（int i32 匹配）；
-    仅 `Item = string` 触发。
-  - **范围（2026-08-18 复核）**：仅「接口变量（胖指针）直接分派返回 string 的关联
-    类型方法」受影响——单方法接口 `Container{ Item getVal(); }` → 编译 LLVM verify
-    失败；接口含其他方法（如 `bool contains(Item)`）时编译过但**运行时段错误**
-    （exit 139）。**`Processor<T where T:Container>` 泛型单态化路径正常**
-    （`T::Item` 静态解析到具体类直接调用，不走 vtable）——`Processor<StrBox> ps;
-    string sv = ps.peek(sb);` 实测返回 "hi" ✓。
-- **根因**：codegen 生成接口虚表分派 stub 时，对**关联类型绑定为 string** 的方法
-  返回类型未按绑定类型解析为 string（ptr），沿用默认标量类型（i32）。
-- **影响**：manual.md §6 关联类型示例中 `StrBox`（`Item = string`）经接口变量
-  `sb.getVal()` **无法编译**；int/数值关联类型正常。关联类型 string 成员的实际
-  用法（接口变量上取 string 值）不可用。
-- **期望语义**：`Item = string` 的接口方法经虚表分派返回 string（ptr）；修复后
-  `tests/bugs/assoc_string_dispatch.myp` 编译通过、getVal() 返回 "hi"。
-- **备注**：manual.md §6 关联类型按设计意图描述（不标 bug，符合约定）；bug 仅记录于
-  本清单。
+- **状态**：🟩 已修复（2026-08-18）
+- **根因**：接口虚表动态分派处（`src/codegen/codegen_expr.cpp` 三处：广义分派 /
+  标识符接口变量 / 接口数组元素），`ret_ty` 一律用
+  `typeNodeToCodegenType(method->action->return_type)` 取**接口声明**的返回类型。
+  关联类型方法（`Item getVal()`）的声明返回类型是关联类型占位符 `Item` →
+  `typeNodeToCodegenType` 回落默认 **i32**；而具体类方法（`string getVal()`）返回
+  **ptr** → `call i32 %iface_fn(ptr %4)` 把 string 当 i32 → 调用方（期望 ptr 的
+  `Test.assertStrEq`）verify 失败（单方法接口）；含其他方法时运行段错误 139。
+  `Item=int` 因默认类型恰为 i32 侥幸通过。
+- **修复**：新增 `CodeGen::ifaceDispatchReturnType(ma, method)`——接口分派返回类型
+  优先从对象已知具体类（`var_class_map_` 标识符 / `array_elem_class_map_` 数组元素）
+  解析其**同名方法**的返回类型（与 vtable 指向的具体方法一致）；未知则回落接口声明
+  类型。三处分派点统一改用。
+- **验证**：`tests/@test/assoc_string_dispatch.myp`（回归，string+int 双关联类型 +
+  多方法接口动态分派，4 断言）；原 `tests/bugs/assoc_string_dispatch.myp` 移除。
+  `Processor<T where T:Container>` 泛型单态化路径（静态直接调用）本就不受影响。
+- **备注**：manual.md §6 关联类型按设计意图描述（不标 bug，符合约定）。
 
 ---
 

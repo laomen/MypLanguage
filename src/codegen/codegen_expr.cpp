@@ -41,6 +41,40 @@ extern "C" void LLVMInitializeNVPTXAsmPrinter(void);
 
 namespace mylang {
 
+// BUG-017: 接口动态分派的返回类型。关联类型方法（`Item getVal()`）的接口声明返回
+// 类型是关联类型占位符 → typeNodeToCodegenType 回落 i32，而具体方法（如 StrBox 的
+// `string getVal()`）返回 ptr → 分派调用 `call i32 %iface_fn` 把 string 当 i32 传，
+// 调用方（如 Test.assertStrEq 期望 ptr）verify 失败。修复：对象已知具体类时解析其
+// 同名方法的返回类型（与 vtable 指向的具体方法一致）；未知则回落接口声明类型。
+llvm::Type* CodeGen::ifaceDispatchReturnType(const MemberAccessExpr& ma,
+                                             const InterfaceMethodInfo* method) {
+    std::string concrete;
+    if (ma.object->kind == ExprKind::Identifier) {
+        auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
+        auto vit = var_class_map_.find(oid.name);
+        if (vit != var_class_map_.end()) concrete = vit->second;
+    } else if (ma.object->kind == ExprKind::Subscript) {
+        // 接口数组元素 children[i].method()：元素具体类经 array_elem_class_map_ 记录。
+        auto& sub = static_cast<const SubscriptExpr&>(*ma.object);
+        if (sub.array && sub.array->kind == ExprKind::Identifier) {
+            auto& aid = static_cast<const IdentifierExpr&>(*sub.array);
+            auto eit = array_elem_class_map_.find(aid.name);
+            if (eit != array_elem_class_map_.end()) concrete = eit->second;
+        }
+    }
+    if (!concrete.empty() && current_tu_) {
+        for (auto& cls : current_tu_->classes) {
+            if (cls.name != concrete) continue;
+            for (auto& a : cls.actions) {
+                if (a.name == ma.member_name)
+                    return getLLVMType(typeNodeToCodegenType(a.return_type));
+            }
+            break;
+        }
+    }
+    return getLLVMType(typeNodeToCodegenType(method->action->return_type));
+}
+
 llvm::Value* CodeGen::generateExpr(const Expr& e) {
     switch (e.kind) {
         case ExprKind::IntegerLiteral: return generateIntegerLiteral(static_cast<const IntegerLiteralExpr&>(e));
@@ -1617,8 +1651,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                         {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},
                         "iface_method");
                     auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
-                    auto* ret_ty = getLLVMType(typeNodeToCodegenType(
-                        method->action->return_type));
+                    auto* ret_ty = ifaceDispatchReturnType(ma, method);
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
@@ -1670,9 +1703,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                                 "iface_method");
                             auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
 
-                            // Determine return type from interface method declaration
-                            auto* ret_ty = getLLVMType(typeNodeToCodegenType(
-                                method->action->return_type));
+                            // Determine return type: resolve assoc-type methods from
+                            // the known concrete class (BUG-017), else interface decl.
+                            auto* ret_ty = ifaceDispatchReturnType(ma, method);
 
                             // Build call args: instance + explicit args
                             std::vector<llvm::Value*> call_args;
@@ -1753,8 +1786,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                         {llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx_), method->index)},
                         "iface_method");
                     auto* func_ptr = builder_.CreateLoad(ptr_ty, func_gep, "iface_fn");
-                    auto* ret_ty = getLLVMType(typeNodeToCodegenType(
-                        method->action->return_type));
+                    auto* ret_ty = ifaceDispatchReturnType(ma, method);
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));

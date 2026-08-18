@@ -768,6 +768,12 @@ private:
                                    const std::string& cls_name);
     const InterfaceMethodInfo* findInterfaceMethod(const std::string& iface_name,
                                                    const std::string& method) const;
+    // BUG-017: 接口动态分派的返回类型。关联类型方法（`Item getVal()`）的接口声明返回
+    // 类型是关联类型占位符 → typeNodeToCodegenType 回落 i32；动态分派须用具体类的返回
+    // 类型（vtable 指向具体类方法）。已知具体类（var_class_map_ 等）时解析其同名方法，
+    // 否则回落接口声明类型。
+    llvm::Type* ifaceDispatchReturnType(const MemberAccessExpr& ma,
+                                        const InterfaceMethodInfo* method);
     // 解析实参表达式的具体类名：new X / 局部变量 / 本类属性（无 → ""）
     std::string resolveArgClassName(const Expr& arg);
     // 解析被调函数第 rel 个参数声明的接口名（形参为接口类型时；无 → ""）

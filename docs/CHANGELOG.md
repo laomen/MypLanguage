@@ -27,15 +27,19 @@
 
 ## 编译器版本历史
 
-### v3.12.30 — 修复 BUG-024：相对路径导入去重解析 `..`
-- **BUG-024 已修复**：`src/main.cpp` `normalizePath` 此前只移除 `./`/`/./`/`//`，不解析
-  `..` —— 同一文件经不同相对路径（直导 `./helper.myp` + 子模块 `../helper.myp`）规范化后
-  仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`。
-- **修复**：重写 `normalizePath` 为词法组件解析——按 `/` 分段，`.`/空段跳过，`..` 弹栈折叠
-  （相对路径保留前导 `..`；绝对路径根 `..` 丢弃），`//` 自然合并；同一文件归一到同一规范键。
-- **回归**：复现移入正测试 `tests/@test/relimport_dedup.myp`（+ helpers/b24_helper.myp +
-  relimport_sub/sub.myp），直导 + `..` 递归同文件去重、2 断言通过；`tests/bugs/` 原复现移除。
-- 全量回归 **293 通过 / 0 失败**。
+### v3.12.32 — 修复 BUG-017：关联类型接口方法返回 string 经接口分派类型错误
+- **BUG-017 已修复**：接口虚表动态分派处（`src/codegen/codegen_expr.cpp` 三处）返回
+  类型一律取接口声明的关联类型占位符 → `typeNodeToCodegenType` 回落默认 **i32**，而
+  具体类方法返回 string（ptr）→ `call i32 %iface_fn(ptr %4)` 把 string 当 i32 → 调用方
+  （期望 ptr）LLVM verify 失败（单方法接口）/ 运行段错误 139（含其他方法时）。`Item=int`
+  因默认类型恰为 i32 侥幸通过。
+- **修复**：新增 `CodeGen::ifaceDispatchReturnType`——优先从对象已知具体类
+  （`var_class_map_` / `array_elem_class_map_`）解析其同名方法返回类型（与 vtable 指向的
+  具体方法一致），未知回落接口声明类型；三处分派点统一改用。
+- **回归**：`tests/@test/assoc_string_dispatch.myp`（string+int 双关联类型 + 多方法接口
+  动态分派，4 断言）；`tests/bugs/assoc_string_dispatch.myp` 移除。泛型单态化路径
+  （`Processor<T where T:Container>` 静态直接调用）本就不受影响。
+- 全量回归 **295 通过 / 0 失败**。
 
 
 ### v3.12.31 — 修复 BUG-016：void 值赋给变量导致编译器段错误
@@ -54,6 +58,17 @@
 - **回归**：新增负测试 `tests/negative/var_void_init.myp` + `tests/negative/void_value_init.myp`
   （编译拒绝）；原复现 `tests/bugs/main_argc_argv_crash.myp` 移除。
 - 全量回归 **295 通过 / 0 失败**（+2 新负测试）；自举 sema 对拍 **94/94** 全绿。
+
+
+### v3.12.30 — 修复 BUG-024：相对路径导入去重解析 `..`
+- **BUG-024 已修复**：`src/main.cpp` `normalizePath` 此前只移除 `./`/`/./`/`//`，不解析
+  `..` —— 同一文件经不同相对路径（直导 `./helper.myp` + 子模块 `../helper.myp`）规范化后
+  仍不同 → 双重载入 → `duplicate class name`/`duplicate function name`。
+- **修复**：重写 `normalizePath` 为词法组件解析——按 `/` 分段，`.`/空段跳过，`..` 弹栈折叠
+  （相对路径保留前导 `..`；绝对路径根 `..` 丢弃），`//` 自然合并；同一文件归一到同一规范键。
+- **回归**：复现移入正测试 `tests/@test/relimport_dedup.myp`（+ helpers/b24_helper.myp +
+  relimport_sub/sub.myp），直导 + `..` 递归同文件去重、2 断言通过；`tests/bugs/` 原复现移除。
+- 全量回归 **293 通过 / 0 失败**。
 
 
 ### v3.12.29 — README.md / README_EN.md 更新对齐当前状态
