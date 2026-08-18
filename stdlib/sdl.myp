@@ -19,6 +19,7 @@ ffi void myp_sdl_delay(int ms);
 ffi void myp_sdl_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
 ffi int  myp_sdl_save_bmp(string path);
 ffi int  myp_sdl_load_bmp(string path);
+ffi int  myp_sdl_load_png(string path);
 ffi int  myp_sdl_draw_image(int handle, int x, int y, int w, int h);
 ffi void myp_sdl_free_images();
 
@@ -62,6 +63,8 @@ class SDL {
         }
         // 加载 BMP 图片为纹理，返回句柄（-1 失败；缓存复用）
         int loadBmp(string path) { return myp_sdl_load_bmp(path); }
+        // 加载 PNG 图片为纹理（libpng 解码，保留 alpha），返回句柄（-1 失败）
+        int loadPng(string path) { return myp_sdl_load_png(path); }
         // 绘制图片纹理到 (x,y,w,h)。返回 0=成功
         int drawImage(int handle, int x, int y, int w, int h) {
             return myp_sdl_draw_image(handle, x, y, w, h);

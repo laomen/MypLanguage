@@ -13,6 +13,9 @@
 // 环境指定目录。
 
 #include <SDL2/SDL.h>
+#include <png.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---- 内部状态 ----
@@ -202,6 +205,79 @@ int myp_sdl_draw_image(int handle, int x, int y, int w, int h) {
     SDL_Rect dst = {x, y, w, h};
     if (SDL_RenderCopy(g_renderer, g_textures[handle], NULL, &dst) != 0) return -1;
     return 0;
+}
+
+// ═══════════════════════════════════════════
+// 图片（PNG，libpng 解码 → 纹理；复用 BMP 纹理缓存）
+// ═══════════════════════════════════════════
+
+// 从已读入内存的 PNG 数据解码为 RGBA 像素（libpng 标准流程）。
+// 成功返回 0 并写 *out_w/*out_h/*out_px（px 需 free）；失败返回 -1。
+static int decode_png_rgba(const unsigned char* data, size_t len,
+                           int* out_w, int* out_h, unsigned char** out_px) {
+    png_image image;   // libpng 简化 API（png_image）
+    memset(&image, 0, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+    if (!png_image_begin_read_from_memory(&image, data, len))
+        return -1;
+    // 转 RGBA（8 位每通道）
+    image.format = PNG_FORMAT_RGBA;
+    size_t pxsize = PNG_IMAGE_SIZE(image);
+    unsigned char* px = (unsigned char*)malloc(pxsize);
+    if (!px) {
+        png_image_free(&image);
+        return -1;
+    }
+    if (!png_image_finish_read(&image, NULL, px, 0, NULL)) {
+        free(px);
+        png_image_free(&image);
+        return -1;
+    }
+    *out_w = (int)image.width;
+    *out_h = (int)image.height;
+    *out_px = px;
+    return 0;
+}
+
+// 加载 PNG 文件为纹理，返回句柄（0..31）；失败 -1。复用 BMP 纹理缓存。
+int myp_sdl_load_png(const char* path) {
+    if (!g_renderer || !path) return -1;
+    if (g_tex_count >= MAX_TEXTURES) return -1;
+    // 读整个文件
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return -1;
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (sz <= 0) { fclose(fp); return -1; }
+    unsigned char* buf = (unsigned char*)malloc((size_t)sz);
+    if (!buf) { fclose(fp); return -1; }
+    size_t rd = fread(buf, 1, (size_t)sz, fp);
+    fclose(fp);
+    if (rd != (size_t)sz) { free(buf); return -1; }
+
+    int w = 0, h = 0;
+    unsigned char* px = NULL;
+    if (decode_png_rgba(buf, (size_t)sz, &w, &h, &px) != 0 || !px || w <= 0 || h <= 0) {
+        free(buf);
+        if (px) free(px);
+        return -1;
+    }
+    free(buf);
+
+    // RGBA → SDL_Texture（保留 alpha 通道）
+    SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(
+        px, w, h, 32, w * 4, SDL_PIXELFORMAT_RGBA32);
+    if (!s) { free(px); return -1; }
+    SDL_Texture* t = SDL_CreateTextureFromSurface(g_renderer, s);
+    SDL_FreeSurface(s);
+    free(px);
+    if (!t) return -1;
+
+    int hh = g_tex_count;
+    g_textures[hh] = t;
+    g_tex_count++;
+    return hh;
 }
 
 // 释放全部纹理（SDL_quit 前）
