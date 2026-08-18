@@ -12,6 +12,8 @@ ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_get_mouse_click();
 ffi int  myp_sdl_set_window_size(int w, int h);
+ffi int  myp_sdl_set_borderless_fullscreen(int on);
+ffi int  myp_sdl_display_size();
 ffi int  myp_sdl_set_logical_size(int w, int h);
 ffi int  myp_sdl_width();
 ffi int  myp_sdl_height();
@@ -52,6 +54,10 @@ class SDL {
         int getMouseClick() { return myp_sdl_get_mouse_click(); }
         // 运行时调整窗口大小（resizable 窗口）。返回 0=成功
         int setWindowSize(int w, int h) { return myp_sdl_set_window_size(w, h); }
+        // 无边框全屏（手机式应用全屏切换）。on=1 全屏，on=0 恢复。返回 0=成功
+        int setFullscreen(int on) { return myp_sdl_set_borderless_fullscreen(on); }
+        // 当前显示器尺寸（返回 (h<<16)|w；-1 失败）
+        int displaySize() { return myp_sdl_display_size(); }
         // 设置逻辑尺寸：MYP 绘制坐标按逻辑尺寸，窗口可缩放显示。返回 0=成功
         int setLogicalSize(int w, int h) { return myp_sdl_set_logical_size(w, h); }
         int width()  { return myp_sdl_width(); }

@@ -77,6 +77,27 @@ int myp_sdl_set_window_size(int w, int h) {
     return 0;
 }
 
+// 无边框模式（手机式应用：去掉标题栏/边框，保持应用自身窗口尺寸，不铺满
+// 显示器）。on=1 去边框，on=0 恢复。返回 0=成功。
+int myp_sdl_set_borderless_fullscreen(int on) {
+    if (!g_window) return -1;
+    if (on != 0) {
+        SDL_SetWindowBordered(g_window, SDL_FALSE);
+    } else {
+        SDL_SetWindowBordered(g_window, SDL_TRUE);
+    }
+    return 0;
+}
+
+// 查询当前显示器尺寸（供应用按屏幕全屏布局）。返回 (h<<16)|w；失败 -1。
+int myp_sdl_display_size(void) {
+    SDL_DisplayMode dm;
+    if (SDL_GetCurrentDisplayMode(0, &dm) != 0) return -1;
+    int w = dm.w;
+    int h = dm.h;
+    return (h << 16) | (w & 0xFFFF);
+}
+
 // 设置逻辑尺寸（SDL_RenderSetLogicalSize）：MYP 侧所有绘制坐标按逻辑尺寸，
 // 窗口实际可缩放显示（如显示器不够大时按 0.5 倍）。逻辑尺寸独立于窗口物理
 // 尺寸，SDL 自动把逻辑渲染缩放到窗口。返回 0=成功, -1=失败。
