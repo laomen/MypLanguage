@@ -9,6 +9,7 @@ ffi void myp_sdl_draw_circle(int cx, int cy, int radius, int r, int g, int b, in
 ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int a);
 ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
+ffi int  myp_sdl_get_mouse_click();
 ffi int  myp_sdl_width();
 ffi int  myp_sdl_height();
 ffi void myp_sdl_delay(int ms);
@@ -37,6 +38,8 @@ class SDL {
             myp_sdl_draw_line(x1, y1, x2, y2, r, g, b, a);
         }
         int getKey() { return myp_sdl_get_key(); }
+        // 取一次鼠标左键点击（窗口坐标打包 (y<<16)|x），无新点击 -1
+        int getMouseClick() { return myp_sdl_get_mouse_click(); }
         int width()  { return myp_sdl_width(); }
         int height() { return myp_sdl_height(); }
         void delay(int ms) { myp_sdl_delay(ms); }

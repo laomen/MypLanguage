@@ -153,6 +153,10 @@ void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int 
 // 输入
 // ═══════════════════════════════════════════
 
+// 最近一次鼠标左键点击坐标（每次 poll 消耗后清零；-1=无新点击）
+static int g_mouse_x = -1;
+static int g_mouse_y = -1;
+
 // 返回当前按下的键的 SDL scancode，无按键时返回 0
 int myp_sdl_get_key(void) {
     SDL_PumpEvents();
@@ -183,8 +187,23 @@ int myp_sdl_has_quit_event(void) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 1;
+        // 鼠标左键按下 → 记录点击坐标（下一帧 MYP 侧 poll 消费）
+        if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+            g_mouse_x = e.button.x;
+            g_mouse_y = e.button.y;
+        }
     }
     return 0;
+}
+
+// 取一次鼠标左键点击：返回 (y<<16)|x（x,y 为窗口坐标），无新点击返回 -1。
+// 消费即清零，避免帧循环重复触发同一点击。
+int myp_sdl_get_mouse_click(void) {
+    if (g_mouse_x < 0) return -1;
+    int packed = (g_mouse_y << 16) | (g_mouse_x & 0xFFFF);
+    g_mouse_x = -1;
+    g_mouse_y = -1;
+    return packed;
 }
 
 // ═══════════════════════════════════════════
