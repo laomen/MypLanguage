@@ -167,7 +167,9 @@ class LoadedSet {
             return Cli.selfStdlib();
         }
 
-        // 路径规范化：去掉 "./" 片段与空段，作为 dedup key（对齐 C++ normalizePath）。
+        // 路径规范化：去掉 "./" 片段与空段，并折叠 ".."（对齐 C++ normalizePath，
+        // BUG-024）。dedup key 用——否则同一文件经不同相对路径（直导 ./helper.myp +
+        // 子模块内 ../helper.myp）会重复载入报 duplicate class name。
         // 注意：必须保留前导 '/'（绝对路径）——否则 /home/x 会退化成 home/x，
         // Fs.exists 找不到文件、loadModule 中断整个 import 链（绝对路径根文件必挂）。
         string normalizePath(string p) {
@@ -178,7 +180,19 @@ class LoadedSet {
             for (int i = 0; i <= Str.len(p); i = i + 1) {
                 if (i == Str.len(p) || __myp_charcode(p, i) == 47) {
                     string seg = Str.substring(p, start, i);
-                    if (Str.len(seg) != 0 && seg != ".") parts.add(seg);
+                    if (Str.len(seg) != 0 && seg != ".") {
+                        if (seg == "..") {
+                            // .. 弹栈折叠：栈非空且末段非 .. → 弹；绝对根处 .. 丢弃；
+                            // 相对路径前导 ..（栈空）保留。
+                            if (parts.size() > 0 && parts.get(parts.size() - 1) != "..") {
+                                parts.remove(parts.size() - 1);
+                            } else if (hasRoot == 0) {
+                                parts.add(seg);
+                            }
+                        } else {
+                            parts.add(seg);
+                        }
+                    }
                     start = i + 1;
                 }
             }
@@ -331,8 +345,13 @@ class LoadedSet {
         }
 
         // G1：compile 模式——lexer→parser→import 合并→sema→codegen(.ll)→link。
-        // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。
-        int compile(string file, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode, int autoMain) {
+        // 多文件（B5）：files[0] 为主文件，其余解析后全量合并进 TU（镜像 C++
+        // multi-file：imports/structs/bitfields/classes/interfaces/mappings/
+        // functions/enums/ffis/macros/typeAliases），再统一加载所有 imports。
+        // emitLlvmOnly != 0 时只发射 .ll（跳过 link）。optLevel：0=-O0 默认（不跑
+        // opt；B2：opt -O2 破坏 setjmp/longjmp 的 finally 语义）；1/2/3=-O1/2/3。
+        int compile(ArrayList<string> files, string outPath, string stdlib, string packagePath, int emitLlvmOnly, int testMode, int autoMain, int optLevel) {
+            string file = files.get(0);
             if (Fs.exists(file) == 0) {
                 Console.writeLine("Error: cannot open file '" + file + "'");
                 return 1;
@@ -346,6 +365,43 @@ class LoadedSet {
             if (diag.errorCount() == 0) {
                 LoadedSet loaded = new LoadedSet();
                 string sourceDir = Fs.dirname(file);
+                // 命令行输入文件预置进 loaded（import 跳过，防重复加载/重复类名）。
+                for (int fi = 0; fi < files.size(); fi = fi + 1) {
+                    string fx = files.get(fi);
+                    loaded.add(Frontend.normalizePath(fx));
+                    loaded.add(fx);
+                }
+                // 附加输入文件：解析 + 全量合并（BUG-025 镜像 C++）。
+                for (int fi = 1; fi < files.size(); fi = fi + 1) {
+                    string extra = files.get(fi);
+                    if (Fs.exists(extra) == 0) {
+                        diag.error(0, 0, "cannot open file '" + extra + "'");
+                        break;
+                    }
+                    string esrc = Frontend.readFile(extra);
+                    Lexer elx = new Lexer(esrc);
+                    ArrayList<Tok> etoks = elx.tokenize();
+                    DiagEngine ediag = elx.diags();
+                    Parser epr = new Parser(etoks, ediag);
+                    AstTU esub = epr.parse();
+                    if (ediag.errorCount() != 0) {
+                        diag.error(0, 0, "errors in input file '" + extra + "'");
+                        break;
+                    }
+                    for (int i = 0; i < esub.imports().size(); i = i + 1) tu.imports().add(esub.imports().get(i));
+                    for (int i = 0; i < esub.structs().size(); i = i + 1) tu.structs().add(esub.structs().get(i));
+                    for (int i = 0; i < esub.bitfields().size(); i = i + 1) tu.bitfields().add(esub.bitfields().get(i));
+                    for (int i = 0; i < esub.classes().size(); i = i + 1) tu.classes().add(esub.classes().get(i));
+                    for (int i = 0; i < esub.interfaces().size(); i = i + 1) tu.interfaces().add(esub.interfaces().get(i));
+                    for (int i = 0; i < esub.mappings().size(); i = i + 1) tu.mappings().add(esub.mappings().get(i));
+                    for (int i = 0; i < esub.functions().size(); i = i + 1) tu.functions().add(esub.functions().get(i));
+                    for (int i = 0; i < esub.enums().size(); i = i + 1) tu.enums().add(esub.enums().get(i));
+                    for (int i = 0; i < esub.ffis().size(); i = i + 1) tu.ffis().add(esub.ffis().get(i));
+                    for (int i = 0; i < esub.macros().size(); i = i + 1) tu.macros().add(esub.macros().get(i));
+                    for (int i = 0; i < esub.typeAliases().size(); i = i + 1) tu.typeAliases().add(esub.typeAliases().get(i));
+                }
+                // 合并后统一加载所有 imports（主文件 + 附加文件，loaded 去重）。
+                // 相对路径 import 以主文件目录解析（stdlib 名 import 与目录无关）。
                 for (int i = 0; i < tu.imports().size(); i = i + 1) {
                     AstImport imp = tu.imports().get(i);
                     if (Frontend.loadModule(tu, imp, sourceDir, packagePath, loaded, diag) == 0) break;
@@ -368,6 +424,11 @@ class LoadedSet {
             CodeGen cg = new CodeGen();
             cg.setTestMode(testMode);
             string ir = cg.generate(tu);
+            // A4：打印编译期警告（C++ 镜像：@coro 过小栈等）
+            ArrayList<string> warns = cg.warnings();
+            for (int wi = 0; wi < warns.size(); wi = wi + 1) {
+                Console.writeLine("warning: " + warns.get(wi));
+            }
             string llPath = outPath + ".ll";
             File of = new File();
             of.open(llPath, "w");
@@ -377,7 +438,7 @@ class LoadedSet {
                 Console.writeLine("LLVM IR saved: " + llPath);
                 return 0;
             }
-            return Link.link(llPath, outPath, stdlib);
+            return Link.link(llPath, outPath, stdlib, optLevel);
         }
 }
 
@@ -393,6 +454,11 @@ class LoadedSet {
                 string cand = Fs.join(root, "stdlib");
                 if (Fs.exists(Fs.join(cand, "env.myp")) != 0) return cand;
             }
+            // 相对当前工作目录向上搜索（tools/codegen 等子目录里跑 run 子命令
+            // 时二进制在 /tmp、仓库 stdlib 在 cwd 上方数层）。
+            if (Fs.exists("../../stdlib/env.myp") != 0) return "../../stdlib";
+            if (Fs.exists("../../../stdlib/env.myp") != 0) return "../../../stdlib";
+            if (Fs.exists("../../../../stdlib/env.myp") != 0) return "../../../../stdlib";
             if (Fs.exists("./stdlib/env.myp") != 0) return "./stdlib";
             if (Fs.exists("../stdlib/env.myp") != 0) return "../stdlib";
             return "";
@@ -416,7 +482,9 @@ class LoadedSet {
             string file = Args.get(2);
             string stdlib = Cli.selfStdlib();
             string base = "/tmp/myp_self_run_" + Process.getPid();
-            int rc = Frontend.compile(file, base, stdlib, "", 0, 0, 1);
+            ArrayList<string> files0 = new ArrayList<string>();
+            files0.add(file);
+            int rc = Frontend.compile(files0, base, stdlib, "", 0, 0, 1, 0);
             if (rc != 0) return rc;
             StringBuilder cmd = new StringBuilder();
             cmd.append(Cli.quoteShell(base));
@@ -441,7 +509,9 @@ class LoadedSet {
                 fmtBin = "/tmp/myp_fmt2_self";
                 if (Fs.isFile(fmtBin) == 0) {
                     string stdlib = Cli.selfStdlib();
-                    int rc = Frontend.compile("tools/fmt/main.myp", fmtBin, stdlib, "", 0, 0, 0);
+                    ArrayList<string> files0b = new ArrayList<string>();
+                    files0b.add("tools/fmt/main.myp");
+                    int rc = Frontend.compile(files0b, fmtBin, stdlib, "", 0, 0, 0, 0);
                     if (rc != 0) {
                         Console.writeLine("myp_self fmt: 无法定位/编译自举格式化器（设 MYP_FMT 或提供 tools/fmt/main.myp）");
                         return rc;
@@ -496,19 +566,19 @@ class LoadedSet {
                 Console.writeLine("myp_self: unknown mode '" + mode + "'");
                 return 1;
             }
-            // 默认：compile 模式（G1）——myp_self [--test] <file.myp> [-o out] [--emit-llvm] [--stdlib path] [--package-path path]
-            string file = arg;
+            // 默认：compile 模式（G1）——myp_self [--test] <file1.myp> [file2.myp ...]
+            // [-o out] [--emit-llvm] [--stdlib path] [--package-path path]
+            ArrayList<string> files = new ArrayList<string>();
             string outPath = "";
             string stdlib = "";
             string packagePath = "";
             int emitLlvm = 0;
             int testMode = 0;
-            int i = 2;
+            int optLevel = 0;
+            int i = 1;
             if (arg == "--test") {
                 testMode = 1;
-                if (i >= argc) { Cli.printHelp(); return 1; }
-                file = Args.get(i);
-                i = i + 1;
+                i = 2;
             }
             while (i < argc) {
                 string a = Args.get(i);
@@ -525,13 +595,26 @@ class LoadedSet {
                 } else if (a == "--package-path") {
                     i = i + 1;
                     if (i < argc) packagePath = Args.get(i);
+                } else if (a == "-O0") {
+                    optLevel = 0;
+                } else if (a == "-O1") {
+                    optLevel = 1;
+                } else if (a == "-O2") {
+                    optLevel = 2;
+                } else if (a == "-O3") {
+                    optLevel = 3;
+                } else {
+                    // 位置参数 → 输入文件（B5：多文件合并，镜像 C++ multi-file）
+                    files.add(a);
                 }
                 i = i + 1;
             }
+            if (files.size() == 0) { Cli.printHelp(); return 1; }
             if (Str.len(outPath) == 0) {
-                outPath = Cli.stripExt(file) + ".out";
+                if (files.size() == 1) outPath = Cli.stripExt(files.get(0)) + ".out";
+                else outPath = "a.out";
             }
-            return Frontend.compile(file, outPath, stdlib, packagePath, emitLlvm, testMode, 0);
+            return Frontend.compile(files, outPath, stdlib, packagePath, emitLlvm, testMode, 0, optLevel);
         }
 
         // 去最后一个 . 后缀（examples/hello.myp → examples/hello）。

@@ -22,6 +22,7 @@ class SymbolEntry {
             elementClass_ = "";
             elementElem_ = "";
             className_ = "";
+            concreteClass_ = "";
             funcRet_ = "";
                 arraySize_ = -1;
             tupleTypes_ = new ArrayList<string>();
@@ -33,6 +34,7 @@ class SymbolEntry {
         void setElementClass(string v) { elementClass_ = v; }
         void setElementElem(string v) { elementElem_ = v; }
         void setClassName(string v) { className_ = v; }
+        void setConcreteClass(string v) { concreteClass_ = v; }
         void setFuncRet(string v) { funcRet_ = v; }
         void addFuncParamType(string v) { funcParamTypes_.add(v); }
         ArrayList<string> functionParamTypes() { return funcParamTypes_; }
@@ -41,6 +43,7 @@ class SymbolEntry {
         string elementKind() { return elementType_; }
         string elementClass() { return elementClass_; }
         string className() { return className_; }
+        string concreteClass() { return concreteClass_; }
         int arraySize() { return arraySize_; }
         void addInstArg(string v) { instArgs_.add(v); }
         string name() { return name_; }
@@ -58,6 +61,7 @@ class SymbolEntry {
         string elementClass_;
         string elementElem_;
         string className_;
+        string concreteClass_;
         string funcRet_;
             int arraySize_;
         ArrayList<string> tupleTypes_;
@@ -141,6 +145,14 @@ class SymbolTable {
         void declareClass(string name, string type, string cls) {
             SymbolEntry e = new SymbolEntry(name, type);
             e.setClassName(cls);
+            entries_.add(e);
+        }
+        // 接口变量：声明类型为接口，另记录具体实现类（B3，C++ var_class_map_ 镜像，
+        // 作用域感知——符号表随 enterScope/leaveScope 弹出）。
+        void declareClassConcrete(string name, string type, string cls, string concrete) {
+            SymbolEntry e = new SymbolEntry(name, type);
+            e.setClassName(cls);
+            e.setConcreteClass(concrete);
             entries_.add(e);
         }
         void declareElemClass2(string name, string type, string elem, string elemCls, string elemElem) {
@@ -358,6 +370,20 @@ class Sema {
         }
         void addMethod(string c, string m, AstType r, int np, ArrayList<AstParam> ps, int cor) {
             methods_.add(new MethodSig(c, m, r != null ? typeToKind(r) : "void", np, ps, cor, r));
+        }
+        // cls 的 function: 段是否含方法 meth（A2：外部 obj.f() 访问 function: 段
+        // 方法应拒绝——function: 仅类内 this.f() 可调，镜像 C++ BUG-001 规则）。
+        int isFuncSectionMethod(string cls, string meth) {
+            if (tu_ == null || Str.len(cls) == 0) return 0;
+            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
+                AstClass c = tu_.classes().get(i);
+                if (c.name() != cls) continue;
+                for (int j = 0; j < c.funcs().size(); j = j + 1) {
+                    if (c.funcs().get(j).name() == meth) return 1;
+                }
+                return 0;
+            }
+            return 0;
         }
         // 方法返回类型的具体类名（非类返回空）
         string findMethodRetClass(string cls, string meth) {
@@ -1543,6 +1569,23 @@ class Sema {
                     methods_.add(new MethodSig(st.name(), f.name(), f.ret() != null ? typeToKind(f.ret()) : "void", f.params().size(), f.params(), f.coro() != 0 ? 1 : 0, f.ret()));
                 }
             }
+            // 收集类内嵌套 struct（B4：Sensor::Config 以裸名 Config 注册）。须在
+            // 顶层函数/测试体访问前完成——否则测试里 Sensor::Config c; 解析为 void。
+            for (int nci = 0; nci < tu.classes().size(); nci = nci + 1) {
+                AstClass ncl = tu.classes().get(nci);
+                if (ncl.isGenericInst() != 0) continue;
+                for (int nsi = 0; nsi < ncl.structs().size(); nsi = nsi + 1) {
+                    AstStruct nst = ncl.structs().get(nsi);
+                    int known2 = 0;
+                    for (int k = 0; k < structNames_.size(); k = k + 1) {
+                        if (structNames_.get(k) == nst.name()) { known2 = 1; break; }
+                    }
+                    if (known2 == 0) {
+                        structNames_.add(nst.name());
+                        structProps_.add(nst.props());
+                    }
+                }
+            }
             // 收集接口（方法签名）
             for (int ii = 0; ii < tu.interfaces().size(); ii = ii + 1) {
                 AstInterface ifc = tu.interfaces().get(ii);
@@ -2277,12 +2320,15 @@ class Sema {
         }
         string typeToKind(AstType t) {
             if (t != null && (inGeneric(t.basicName()) != 0 || inGeneric(t.className()) != 0)) return "int";
+            // 限定 struct 名（Sensor::Config）优先于关联类型判定：owner 是类但
+            // 无 assoc 绑定（Config 是嵌套 struct 非 type Item=...）时
+            // associatedTypeKind 会误返 "assoc"，导致嵌套 struct 变量类型错。
+            if (t != null && Str.len(t.className()) != 0 && inStructName(t.className()) != 0) return "struct";
             if (t != null) {
                 string assocKind = associatedTypeKind(Str.len(t.className()) != 0 ? t.className() : t.basicName());
                 if (Str.len(assocKind) != 0) return assocKind;
             }
             if (t != null && Str.len(t.className()) != 0 && inInterface(t.className()) != 0) return "interface";
-            if (t != null && Str.len(t.className()) != 0 && inStructName(t.className()) != 0) return "struct";
             if (t != null && Str.len(t.className()) != 0 && findBitfield(t.className()) >= 0) return "bitfield";
             if (t != null && Str.len(t.className()) != 0 && t.className() != "slice") {
                 // 已知类 → class；enum → enum；未知类型 → void（C++ unknown type 诊断）
@@ -2315,10 +2361,17 @@ class Sema {
             return 0;
         }
         int inStructName(string n) {
-            for (int i = 0; i < structNames_.size(); i = i + 1) {
-                if (structNames_.get(i) == n) return 1;
+            return findStruct(n) >= 0 ? 1 : 0;
+        }
+        // 限定 struct 名 → 裸名（Sensor::Config → Config；Device::Mode → Mode）。
+        // 空 = 无 "::"。
+        string structBareName(string n) {
+            int idx = -1;
+            for (int i = 0; i + 1 < Str.len(n); i = i + 1) {
+                if (Str.substring(n, i, i + 2) == "::") idx = i;
             }
-            return 0;
+            if (idx < 0) return "";
+            return Str.substring(n, idx + 2, Str.len(n));
         }
         // 泛型类实例名：ArrayList<string> → ArrayList_string_inst（C++ 递归实例名）
         string instClassName(AstType t) {
@@ -2393,6 +2446,14 @@ class Sema {
         int findStruct(string name) {
             for (int i = 0; i < structNames_.size(); i = i + 1) {
                 if (structNames_.get(i) == name) return i;
+            }
+            // 限定名 Sensor::Config / Device::Mode → 裸名回退（嵌套/文件级限定
+            // struct 以裸名注册，引用用限定名）。
+            string bare = structBareName(name);
+            if (Str.len(bare) != 0) {
+                for (int i = 0; i < structNames_.size(); i = i + 1) {
+                    if (structNames_.get(i) == bare) return i;
+                }
             }
             return -1;
         }
@@ -3322,7 +3383,20 @@ class Sema {
                     } else if (vt2 != null && Str.len(vt2.className()) != 0) {
                         if (inGeneric(vt2.className()) != 0) sym_.declare(v.name(), "int");
                         else if (vt2.typeArgs().size() > 0) sym_.declareClassInst(v.name(), typeToKind(vt2), instClassName(vt2), vt2.typeArgs());
-                        else sym_.declareClass(v.name(), typeToKind(vt2), instClassName(vt2));
+                        else {
+                            // B3：接口变量 + new 具体类初始化 → 把具体实现类记到
+                            // 符号条目（作用域感知，C++ var_class_map_ 镜像），供
+                            // 关联类型方法调用解析返回类型。
+                            string vconc = "";
+                            if (inInterface(vt2.className()) != 0 && v.init() != null && v.init().kind() == "New") {
+                                AstExpr nic = v.init();
+                                string icls = nic.resolvedClass();
+                                if (Str.len(icls) == 0) icls = nic.className();
+                                if (Str.len(icls) != 0) vconc = icls;
+                            }
+                            if (Str.len(vconc) != 0) sym_.declareClassConcrete(v.name(), typeToKind(vt2), instClassName(vt2), vconc);
+                            else sym_.declareClass(v.name(), typeToKind(vt2), instClassName(vt2));
+                        }
                     } else if (vt2 != null && vt2.funcReturn() != null) {
                         // F4-L：函数类型变量 (A)->R f → 记录返回类型供调用 f(...) 解析
                         string fret = typeToKind(vt2.funcReturn());
@@ -4366,12 +4440,23 @@ class Sema {
                                 if (Str.len(cn) == 0 && inStruct_ != 0) cn = currentStructMemberClassName(mo.name());
                             }
                             if (Str.len(cn) == 0) cn = mo.name();
-                        } else if (mo != null && (mo.kind() == "Call" || mo.kind() == "Subscript" || mo.kind() == "Member")) {
+                        } else if (mo != null && (mo.kind() == "Call" || mo.kind() == "Subscript" || mo.kind() == "Member" || mo.kind() == "New")) {
+                            // B1：new Foo().method() 链——New 的 resolvedClass 即类名
                             cn = mo.valueClass();
                             if (Str.len(cn) == 0) cn = mo.resolvedClass();
                         }
                         if (Str.len(cn) != 0) {
                             string base3 = resolveBase(cn);
+                            // A2（BUG-001 镜像）：function: 段方法仅类内 this.f()
+                            // 可调用；外部 obj.f() 拒绝（含同类另一实例/链式对象）。
+                            if (isFuncSectionMethod(base3, callee.memberName()) != 0) {
+                                int isThis = 0;
+                                if (mo != null && mo.kind() == "Identifier" && mo.name() == "this") isThis = 1;
+                                if (isThis == 0) {
+                                    diag_.error(callee.line(), callee.col(), "cannot access function '" + callee.memberName() + "' from outside class '" + base3 + "'");
+                                    ret = "void";
+                                }
+                            }
                             ArrayList<AstParam> anyMps = findMethodParams(base3, callee.memberName());
                             int normFailed = 0;
                             if (anyMps != null) {
@@ -4380,6 +4465,24 @@ class Sema {
                             }
                             string fr = findMethodRet(base3, callee.memberName(), e.args().size());
                             if (Str.len(fr) == 0) fr = findIfaceMethodRet(base3, callee.memberName());
+                            // B3（C++ BUG-017 镜像）：接口变量关联类型方法——sb.getVal()
+                            // 返回接口占位 assoc，但 sb 的具体类已知（sb = new StrBox()）
+                            // → 从具体类同名方法解析真实返回类型（string/int），并把
+                            // 具体类记到 CallExpr.resolvedClass 供 codegen 分派用。
+                            // 具体类从作用域感知的符号条目取（泛型实例化方法参数不受
+                            // 测试级同名变量污染）。
+                            if (fr == "assoc" && mo != null && mo.kind() == "Identifier") {
+                                string ccls = "";
+                                SymbolEntry bent = sym_.lookupEntry(mo.name());
+                                if (bent != null) ccls = bent.concreteClass();
+                                if (Str.len(ccls) != 0) {
+                                    string cret = findMethodRet(resolveBase(ccls), callee.memberName(), e.args().size());
+                                    if (Str.len(cret) != 0) {
+                                        fr = cret;
+                                        e.setResolvedClass(ccls);
+                                    }
+                                }
+                            }
                             if (normFailed == 0 && Str.len(fr) != 0) {
                                 // BUG-012/现有规则镜像 C++：@thread 实例的 action 禁止
                                 // 跨线程直接调用（须经 mapping() 投递到其工作线程）；

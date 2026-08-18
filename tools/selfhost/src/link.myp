@@ -98,18 +98,22 @@ import env;
             return "include";
         }
 
-        // llPath(.ll) → [opt -O2] → llc → obj → gcc 链接 runtime → outPath 可执行。
-        int link(string llPath, string outPath, string stdlib) {
-            // LLVM 中端优化（mem2reg/SROA/GVN/instcombine/内联）：默认开启，
-            // MYP_SELF_OPT=0 关闭（调试/对比）。codegen 发的是 alloca 形态 IR，
-            // 不经 opt 则每个局部变量都走栈内存——生成程序性能差一大截。
+        // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
+        // B2（对齐 C++ mypc）：默认 **不跑 opt**（-O0）。opt -O2 的 mem2reg 会把
+        // 跨 setjmp/longjmp 的局部提升为 SSA → longjmp 后读旧值 → try/finally 异常
+        // 语义破坏（arc_throw fin_run 失败；C++ mypc -O2 同样失败，mypc 靠默认 -O0
+        // 规避）。optLevel > 0（-O1/-O2/-O3）或 MYP_SELF_OPT=1 时显式开启。
+        int link(string llPath, string outPath, string stdlib, int optLevel) {
             string srcLl = llPath;
             string optEnv = Console.getEnv("MYP_SELF_OPT");
-            if (Str.len(optEnv) == 0 || optEnv != "0") {
+            int doOpt = (optLevel > 0) ? 1 : 0;
+            if (optEnv == "1") doOpt = 1;
+            else if (optEnv == "0") doOpt = 0;
+            if (doOpt != 0) {
                 string opt = Link.findOpt();
                 string optPath = outPath + ".opt.ll";
                 string mt = Link.findHostTriple();
-                string optCmd = opt + " " + llPath + " -O2";
+                string optCmd = opt + " " + llPath + " -O" + optLevel;
                 if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
                 optCmd = optCmd + " -o " + optPath + " 2>&1";
                 if (Process.run(optCmd) != 0) {

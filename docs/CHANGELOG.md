@@ -49,6 +49,43 @@
   自举 `test_myp_self.sh` 94/94。
 
 
+### v3.12.43 — 自举编译器 B 类缺口：assoc 关联类型 / 嵌套 struct / 多文件合并全绿
+
+自举（selfhost）编译器追赶 C++ 编译器的 B 类功能缺口，**全量回归 310 通过 / 0 失败**。
+
+- **B1 slice_class_chain**：`new Node(7).getVal()` 链式调用——CallExpr Member 分支
+  cn 解析漏了 `New` 对象（`mo.kind()=="New"` 时取 `resolvedClass`）。自举
+  `tools/selfhost/src/sema.myp` 补 `|| mo.kind() == "New"`（镜像 C++）。
+- **B2 arc_throw finally**：自举 link 默认 `opt -O2` 把 setjmp/longjmp 跨 finally 的
+  alloca mem2reg 提升 → longjmp 后 finally 局部值被清零。改为**默认 -O0**（仅
+  `-O` 标志或 `MYP_SELF_OPT=1` 才跑 opt），对齐 C++ 默认。`arc_throw` 15/15。
+- **B3 assoc 关联类型 `T::Item`**：接口变量 `Container sb = new StrBox(); sb.getVal()`
+  此前返回接口占位 `assoc` → 与真实 `string/int` 类型不匹配。自举 sema 用
+  **作用域感知的符号条目具体类字段**（`SymbolEntry.concreteClass_`，镜像 C++
+  `var_class_map_`）解析接口变量具体实现类的同名方法返回类型，并把具体类记到
+  `CallExpr.resolvedClass` 供 codegen 分派用；codegen `genIfaceCall` 关联类型返回
+  类型改从具体类取。`assoc_string_dispatch` 4/4、`manual_ch6_class` 16/16。
+- **B4 manual_ch7_struct**：嵌套/文件级限定 struct（`Sensor::Config`、`Device::Mode`）：
+  - sema：`typeToKind` 限定 struct 名**优先于关联类型判定**（否则误判 assoc）；
+    `findStruct`/`inStructName` 支持限定名→裸名回退；嵌套 struct 注册提前到顶层
+    函数/测试体访问前。
+  - codegen：`emitStructTypes` 补发嵌套 struct 类型并给全限定 key；LLVM 标识符
+    mangling（`::` → `$`，`llvmSafeName`）用于 struct 类型名/方法函数名；struct
+    方法内 `this.field` 分支（镜像 C++ `generateStructMemberAddress` ThisExpr）；
+    struct 兄弟方法裸调用 → `struct_<key>_<fn>`。`manual_ch7_struct` 12/12。
+- **B5 multifile 多文件合并**：compile 模式此前只编译首个输入文件。改为收集全部
+  位置参数为输入文件，`Frontend.compile` 逐文件解析 + **全量合并**
+  （imports/structs/bitfields/classes/interfaces/mappings/functions/enums/ffis/
+  macros/typeAliases，镜像 C++ multi-file），命令行文件预置 loaded 防重复，再统一
+  加载所有 imports。`test_multifile.sh` 4/4（含 BUG-025/026）。
+- **run 子命令 stdlib 定位**：`Cli.selfStdlib()` 增 cwd 向上搜索
+  （`../../stdlib`…），修复从子目录（tools/codegen）跑 `run` 时
+  `cannot find import 'env'` → codegen 工具自测通过。
+- **回归**：全量 **310 通过 / 0 失败**；自举 `test_myp_self.sh` 94/94；自举
+  `test_myp_bootstrap.sh` 16/16 不动点（self2 == self3 字节一致）。自编译
+  `build/myp_self2` 与仓库布局对齐后 pm/gitee/LSP 位置推断回归全绿。
+
+
 ### v3.12.41 — 修复 BUG-011：函数内 mapping 用实例变量名节点 → 编译期诊断
 - **BUG-011 已修复**：函数内 `mapping(){ s.e -> t.a; }`（s/t 为局部实例变量）此前
   在 handler 函数里 load 外层函数的局部 alloca → 跨函数指令引用 → LLVM verify

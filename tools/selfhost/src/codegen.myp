@@ -91,6 +91,8 @@ class CodeGen {
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
             threadHandles_ = new ArrayList<string>();
+            mappingHandlerSeq_ = 0;
+            warnings_ = new ArrayList<string>();
             testMode_ = 0;
             curFnCoro_ = 0;
             gpuCpuFallback_ = 0;
@@ -251,9 +253,9 @@ class CodeGen {
             if (rt != null && Str.len(tn) != 0 && isEnumName(tn) != 0) {
                 return enumLlvmType(tn);
             }
-            // struct 类型 → 命名结构体 %Point
+            // struct 类型 → 命名结构体 %Point（限定名 mangling：Sensor::Config → %Sensor$Config）
             if (rt != null && Str.len(tn) != 0 && isStructName(tn) != 0) {
-                return "%" + tn;
+                return "%" + llvmSafeName(tn);
             }
             // bitfield 类型 → 打包背衬整数（i8/i16/i32/i64）
             if (rt != null && Str.len(tn) != 0 && isBitfieldName(tn) != 0) {
@@ -1279,6 +1281,18 @@ class CodeGen {
         // Member 表达式的字段地址（obj.field / this.field → GEP）。
         string memberAddr(AstExpr m) {
             AstExpr obj = m.array();
+            // struct 方法内 this.field：this 是结构体指针（入口 %this），
+            // GEP 字段（镜像 C++ generateStructMemberAddress 的 ThisExpr 分支）。
+            if (obj != null && obj.kind() == "This") {
+                if (Str.len(curClass_) != 0 && isStructName(curClass_) != 0) {
+                    string stName = curClass_;
+                    int idx = structFieldIndex(stName, m.memberName());
+                    string thisV = genExpr(obj);
+                    string gep = newTmp();
+                    sb_.append("  " + gep + " = getelementptr %" + llvmSafeName(stName) + ", ptr " + thisV + ", i32 0, i32 " + idx + "\n");
+                    return gep;
+                }
+            }
             // struct 成员：obj 是 struct 局部（alloca 指针）→ 直接 GEP alloca
             if (obj != null && obj.kind() == "Identifier") {
                 AstType oat = varAstType(obj.name());
@@ -1287,7 +1301,7 @@ class CodeGen {
                     string base = varAlloca(obj.name());
                     int idx = structFieldIndex(stName, m.memberName());
                     string gep = newTmp();
-                    sb_.append("  " + gep + " = getelementptr %" + stName + ", ptr " + base + ", i32 0, i32 " + idx + "\n");
+                    sb_.append("  " + gep + " = getelementptr %" + llvmSafeName(stName) + ", ptr " + base + ", i32 0, i32 " + idx + "\n");
                     return gep;
                 }
             }
@@ -1299,7 +1313,7 @@ class CodeGen {
                     string saddr = thisMemberAddr(obj.name());
                     int idx = structFieldIndex(stName, m.memberName());
                     string gep = newTmp();
-                    sb_.append("  " + gep + " = getelementptr %" + stName + ", ptr " + saddr + ", i32 0, i32 " + idx + "\n");
+                    sb_.append("  " + gep + " = getelementptr %" + llvmSafeName(stName) + ", ptr " + saddr + ", i32 0, i32 " + idx + "\n");
                     return gep;
                 }
             }
@@ -1363,6 +1377,12 @@ class CodeGen {
         // Member 表达式的字段 LLVM 类型。
         string memberFieldType(AstExpr m) {
             AstExpr obj = m.array();
+            // struct 方法内 this.field：字段类型从当前 struct 取。
+            if (obj != null && obj.kind() == "This") {
+                if (Str.len(curClass_) != 0 && isStructName(curClass_) != 0) {
+                    return structFieldType(curClass_, m.memberName());
+                }
+            }
             if (obj != null && obj.kind() == "Identifier") {
                 AstType oat = varAstType(obj.name());
                 if (oat != null && Str.len(oat.className()) != 0 && isStructName(oat.className()) != 0) {
@@ -1646,7 +1666,8 @@ class CodeGen {
             curFnRegion_ = f.region();
             // 构造器用重载 mangling（同 C++ generateStructMethods：ctor 才
             // 追加参数类型后缀；普通方法保持 struct_<key>_<name>）。
-            string fnName = "struct_" + key + "_" + f.name();
+            // key 含限定名（Sensor::Config）→ llvmSafeName（:: → $）。
+            string fnName = "struct_" + llvmSafeName(key) + "_" + f.name();
             if (f.ctor() != 0) fnName = fnName + mangleParams(f.params());
             genFuncBody(fnName, ps, f.ret(), f.body());
             curClass_ = saveCls;
@@ -1669,11 +1690,11 @@ class CodeGen {
             }
             string retLt = exprLlvmType(e);
             if (retLt == "void") {
-                sb_.append("  call void @struct_" + key + "_" + mname + "(" + as.toString() + ")\n");
+                sb_.append("  call void @struct_" + llvmSafeName(key) + "_" + mname + "(" + as.toString() + ")\n");
                 return "";
             }
             string t = newTmp();
-            sb_.append("  " + t + " = call " + retLt + " @struct_" + key + "_" + mname + "(" + as.toString() + ")\n");
+            sb_.append("  " + t + " = call " + retLt + " @struct_" + llvmSafeName(key) + "_" + mname + "(" + as.toString() + ")\n");
             if (retLt == "ptr") addFreshTemp(t);
             return t;
         }
@@ -1683,8 +1704,12 @@ class CodeGen {
             if (tu_ == null) return;
             for (int si = 0; si < tu_.structs().size(); si = si + 1) {
                 AstStruct st = tu_.structs().get(si);
+                // 文件级限定 struct（Device::Mode）key 用 parent::name（与引用侧
+                // 及 C++ generateStructMethods 一致）。
+                string skey = st.name();
+                if (Str.len(st.parent()) != 0) skey = st.parent() + "::" + st.name();
                 for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
-                    genStructMethod(st.name(), st.funcs().get(fi));
+                    genStructMethod(skey, st.funcs().get(fi));
                 }
             }
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
@@ -2131,7 +2156,8 @@ class CodeGen {
                     for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
                         AstFunction f = st.funcs().get(fi);
                         if ("struct_" + st.name() + "_" + f.name() == resolved ||
-                            "struct_" + c.name() + "::" + st.name() + "_" + f.name() == resolved)
+                            "struct_" + c.name() + "::" + st.name() + "_" + f.name() == resolved ||
+                            "struct_" + llvmSafeName(c.name() + "::" + st.name()) + "_" + f.name() == resolved)
                             return llvmType(f.ret());
                     }
                 }
@@ -2206,6 +2232,9 @@ class CodeGen {
             AstEvent ev = findEvent(srcCls, src.member());
             int eid = eventId(srcCls, src.member());
             string hname = "handler_" + src.src() + "_" + src.member();
+            // A1: 同源事件多链去重（handler_<Src>_<ev>_<seq>）
+            if (mappingHandlerSeq_ > 0) hname = hname + "_" + mappingHandlerSeq_;
+            mappingHandlerSeq_ = mappingHandlerSeq_ + 1;
 
             // handler 是独立函数：保存外部上下文，切到 mappingHandlers_ 缓冲。
             StringBuilder saveSb = sb_;
@@ -2323,7 +2352,45 @@ class CodeGen {
                     }
                     continue;
                 }
-                if (tgt.isTransformer() != 0) continue;
+                if (tgt.isTransformer() != 0) {
+                    // A5（C++ 镜像）：delay(ms) → myp_sleep_ms；throttle(ms) →
+                    // 上次触发时间全局 + myp_now_ms 限频（间隔未到丢弃本事件）。
+                    if (tgt.trKind() == 0) {
+                        sb_.append("  call void @myp_sleep_ms(i64 " + tgt.trParam() + ")\n");
+                    } else if (tgt.trKind() == 1) {
+                        string gname = "__myp_throttle_" + hname;
+                        if (Str.contains(stringGlobals_.toString(), "@" + gname) == 0) {
+                            stringGlobals_.append("@" + gname + " = internal global i64 0\n");
+                        }
+                        string now = newTmp();
+                        sb_.append("  " + now + " = call i64 @myp_now_ms()\n");
+                        string last = newTmp();
+                        sb_.append("  " + last + " = load i64, ptr @" + gname + "\n");
+                        string diff = newTmp();
+                        sb_.append("  " + diff + " = sub i64 " + now + ", " + last + "\n");
+                        string enough = newTmp();
+                        sb_.append("  " + enough + " = icmp sge i64 " + diff + ", " + tgt.trParam() + "\n");
+                        string fireB = newBlock("thr_fire");
+                        string dropB = newBlock("thr_drop");
+                        sb_.append("  br i1 " + enough + ", label %" + fireB + ", label %" + dropB + "\n");
+                        sb_.append(dropB + ":\n");
+                        sb_.append("  ret void\n");
+                        sb_.append(fireB + ":\n");
+                        sb_.append("  store i64 " + now + ", ptr @" + gname + "\n");
+                    }
+                    // 变换器是首个目标：解包事件数据为 prev_result，供下一节点接收
+                    if (i == 1 && ps.size() > 0) {
+                        string structT = structTypeList(evT);
+                        for (int pi = 0; pi < ps.size(); pi = pi + 1) {
+                            string gep = newTmp();
+                            sb_.append("  " + gep + " = getelementptr " + structT + ", ptr %data, i32 0, i32 " + pi + "\n");
+                            string lv = newTmp();
+                            sb_.append("  " + lv + " = load " + evT.get(pi) + ", ptr " + gep + "\n");
+                            if (pi == 0) { prevT = evT.get(pi); prevV = lv; havePrev = 1; }
+                        }
+                    }
+                    continue;
+                }
                 string callee = "";
                 string instV = "";
                 ArrayList<AstParam> tparams = null;
@@ -2568,6 +2635,10 @@ class CodeGen {
         string genCoroSpawn(string target, AstExpr e, string thisV, int isMethod, int stackKb) {
             int stackBytes = 128 * 1024;
             if (stackKb > 0) stackBytes = stackKb * 1024;
+            // A4（C++ 镜像）：@coro(stack=N) 过小栈编译警告（N<16，含 0=默认不警告）
+            if (stackKb > 0 && stackKb < 16) {
+                warnings_.add("@coro(stack=" + stackKb + "): very small coroutine stack — risk of stack overflow (recommend >= 16KB, or raise with @coro(stack=N))");
+            }
             string h = newTmp();
             sb_.append("  " + h + " = call i64 @__myp_coro_create(i64 " + stackBytes + ")\n");
             string slot0 = "0";
@@ -7312,6 +7383,15 @@ class CodeGen {
             // 泛型体内 sema resolvedKind 可能是 int 占位 → 以接口声明返回类型
             // 为准（Error.message() -> string → ptr）。
             AstType irt = interfaceMethodRetAstType(ifaceName, mname);
+            // B3（C++ BUG-017 镜像）：关联类型方法（Container.Item getVal()）的
+            // 返回类型以对象具体实现类同名方法为准——sema 已在 CallExpr.
+            // resolvedClass 记录具体类（sb→StrBox/IntBox），否则接口占位
+            // assoc 的 llvmType 为 ptr，与真实 int/string 返回类型不匹配。
+            string cclsB3 = call.resolvedClass();
+            if (irt != null && Str.len(cclsB3) != 0 && classImplements(cclsB3, ifaceName) != 0) {
+                AstType crt = methodRetAstType(cclsB3, mname);
+                if (crt != null) irt = crt;
+            }
             if (irt != null) retLt = llvmType(irt);
             StringBuilder as = new StringBuilder();
             as.append("ptr " + data);
@@ -8613,7 +8693,7 @@ class CodeGen {
                 // resolved_struct_ctor；此前未处理导致 Vec2(...) 被当作类 new
                 // 发射成 `call ptr @Vec2`，ret %Vec2 喂 ptr → llc 失败）。
                 if (Str.len(e.structCtor()) != 0) {
-                    string stT = "%" + e.structType();
+                    string stT = "%" + llvmSafeName(e.structType());
                     // 构造器形参 LLVM 类型（按实参个数匹配重载，同
                     // genStructMethodCall 的 structMethodParamLts，但这里按
                     // 参数个数选择 ctor 重载）。
@@ -8725,6 +8805,13 @@ class CodeGen {
                         mCls = curClass_;
                         mName = fn;
                         fn = curClass_ + "_" + fn;
+                        thisV = loadThis();
+                    } else if (isTopLevelFunc(fn) == 0 && Str.len(curClass_) != 0
+                               && isStructName(curClass_) != 0 && hasStructMethod(curClass_, fn) != 0) {
+                        // struct 方法内裸方法调用（兄弟方法）→ struct_<key>_<fn>(ptr this, ...)
+                        mCls = curClass_;
+                        mName = fn;
+                        fn = "struct_" + llvmSafeName(curClass_) + "_" + fn;
                         thisV = loadThis();
                     } else if (isTopLevelFunc(fn) == 0 && hasEventInClass(curClass_, fn) != 0) {
                         // 类内裸事件 fire → fire_Class_Event(this, ...)
@@ -9474,7 +9561,42 @@ class CodeGen {
                     if (tu_.classes().get(ci).structs().get(si).name() == name) return 1;
                 }
             }
+            // 限定名 Sensor::Config / Device::Mode → 裸名回退（嵌套/文件级限定
+            // struct 以裸名注册，引用用限定名）。
+            string bare = structBareName(name);
+            if (Str.len(bare) != 0) {
+                for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                    if (tu_.structs().get(i).name() == bare) return 1;
+                }
+                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                    for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                        if (tu_.classes().get(ci).structs().get(si).name() == bare) return 1;
+                    }
+                }
+            }
             return 0;
+        }
+
+        // 限定 struct 名 → 裸名（Sensor::Config → Config；Device::Mode → Mode）。
+        // 空 = 无 "::"。
+        string structBareName(string n) {
+            int idx = -1;
+            for (int i = 0; i + 1 < Str.len(n); i = i + 1) {
+                if (Str.substring(n, i, i + 2) == "::") idx = i;
+            }
+            if (idx < 0) return "";
+            return Str.substring(n, idx + 2, Str.len(n));
+        }
+
+        // LLVM 标识符安全名：:: → $（LLVM 非引号标识符不允许 "::"，但允许 $）。
+        // 用于 struct 类型名 / struct 方法函数名。
+        string llvmSafeName(string n) {
+            string r = "";
+            for (int i = 0; i < Str.len(n); i = i + 1) {
+                if (i + 1 < Str.len(n) && Str.substring(n, i, i + 2) == "::") { r = r + "$"; i = i + 1; }
+                else r = r + Str.substring(n, i, i + 1);
+            }
+            return r;
         }
 
         // name 是否为 bitfield 名。
@@ -9557,9 +9679,10 @@ class CodeGen {
         // struct 字段索引（按声明顺序）。
         int structFieldIndex(string name, string field) {
             if (tu_ == null) return 0;
+            string bare = structBareName(name);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != name) continue;
+                if (st.name() != name && st.name() != bare) continue;
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (st.props().get(pi).name() == field) return pi;
                 }
@@ -9568,7 +9691,7 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
                     AstStruct st = tu_.classes().get(ci).structs().get(si);
-                    if (st.name() != name) continue;
+                    if (st.name() != name && st.name() != bare) continue;
                     for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                         if (st.props().get(pi).name() == field) return pi;
                     }
@@ -9580,9 +9703,10 @@ class CodeGen {
         // struct 字段 LLVM 类型。
         string structFieldType(string name, string field) {
             if (tu_ == null) return "i32";
+            string bare = structBareName(name);
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
-                if (st.name() != name) continue;
+                if (st.name() != name && st.name() != bare) continue;
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (st.props().get(pi).name() == field) return llvmType(st.props().get(pi).type());
                 }
@@ -9591,7 +9715,7 @@ class CodeGen {
             for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
                 for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
                     AstStruct st = tu_.classes().get(ci).structs().get(si);
-                    if (st.name() != name) continue;
+                    if (st.name() != name && st.name() != bare) continue;
                     for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                         if (st.props().get(pi).name() == field) return llvmType(st.props().get(pi).type());
                     }
@@ -9618,16 +9742,20 @@ class CodeGen {
         void emitStructTypes() {
             if (tu_ == null) return;
             ArrayList<string> done = new ArrayList<string>();
+            // 顶层 struct（含文件级限定 struct Device::Mode → key = parent::name）。
+            // key 必须与引用侧一致（llvmType 用 className 限定名）。
             for (int i = 0; i < tu_.structs().size(); i = i + 1) {
                 AstStruct st = tu_.structs().get(i);
+                string key = st.name();
+                if (Str.len(st.parent()) != 0) key = st.parent() + "::" + st.name();
                 int dup = 0;
                 for (int di = 0; di < done.size(); di = di + 1) {
-                    if (done.get(di) == st.name()) { dup = 1; break; }
+                    if (done.get(di) == key) { dup = 1; break; }
                 }
                 if (dup != 0) continue;
-                done.add(st.name());
+                done.add(key);
                 StringBuilder m = new StringBuilder();
-                m.append("%" + st.name() + " = type {");
+                m.append("%" + llvmSafeName(key) + " = type {");
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     if (pi != 0) m.append(", ");
                     m.append(llvmType(st.props().get(pi).type()));
@@ -9635,6 +9763,29 @@ class CodeGen {
                 if (st.props().size() == 0) m.append(" i8");
                 m.append(" }\n");
                 sb_.append(m.toString());
+            }
+            // 类内嵌套 struct（Sensor::Config → key = Sensor::Config，与引用侧一致）。
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                AstClass c = tu_.classes().get(ci);
+                for (int si = 0; si < c.structs().size(); si = si + 1) {
+                    AstStruct st = c.structs().get(si);
+                    string key = c.name() + "::" + st.name();
+                    int dup2 = 0;
+                    for (int di = 0; di < done.size(); di = di + 1) {
+                        if (done.get(di) == key) { dup2 = 1; break; }
+                    }
+                    if (dup2 != 0) continue;
+                    done.add(key);
+                    StringBuilder m2 = new StringBuilder();
+                    m2.append("%" + llvmSafeName(key) + " = type {");
+                    for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
+                        if (pi != 0) m2.append(", ");
+                        m2.append(llvmType(st.props().get(pi).type()));
+                    }
+                    if (st.props().size() == 0) m2.append(" i8");
+                    m2.append(" }\n");
+                    sb_.append(m2.toString());
+                }
             }
         }
 
@@ -9919,6 +10070,30 @@ class CodeGen {
             return 0;
         }
 
+        // cls 是否为 struct（顶层裸名或限定名）且含方法 name（struct 方法裸调）。
+        int hasStructMethod(string cls, string name) {
+            if (tu_ == null || Str.len(cls) == 0) return 0;
+            string bare = structBareName(cls);
+            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
+                AstStruct st = tu_.structs().get(i);
+                if (st.name() != cls && st.name() != bare) continue;
+                for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                    if (st.funcs().get(fi).name() == name) return 1;
+                }
+                return 0;
+            }
+            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
+                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
+                    AstStruct st = tu_.classes().get(ci).structs().get(si);
+                    if (st.name() != cls && st.name() != bare) continue;
+                    for (int fi = 0; fi < st.funcs().size(); fi = fi + 1) {
+                        if (st.funcs().get(fi).name() == name) return 1;
+                    }
+                }
+            }
+            return 0;
+        }
+
         // cls 是否有名为 name 的事件。
         int hasEventInClass(string cls, string name) {
             if (tu_ == null || Str.len(cls) == 0) return 0;
@@ -10139,6 +10314,7 @@ class CodeGen {
         StringBuilder mappingInitCalls() { return mappingInitCalls_; }
         StringBuilder mappingHandlers() { return mappingHandlers_; }
         ArrayList<string> instanceGlobals() { return instanceGlobals_; }
+        ArrayList<string> warnings() { return warnings_; }
         int curFnScope() { return curFnScope_; }
         int testMode() { return testMode_; }
         int curFnCoro() { return curFnCoro_; }
@@ -10187,6 +10363,11 @@ class CodeGen {
         StringBuilder mappingHandlers_;
         ArrayList<string> instanceGlobals_;
         int curFnScope_;
+        // A1: 同一源事件多条 mapping 链 → handler 名须唯一（C++ 靠 LLVM 自动改名
+        // handler_Main_emit.1；自举直接写 IR 文本会 invalid redefinition）。
+        int mappingHandlerSeq_;
+        // A4: 编译期警告收集（main 在 generate 后打印）
+        ArrayList<string> warnings_;
         int testMode_;
         int curFnCoro_;
         int curFnRegion_;
