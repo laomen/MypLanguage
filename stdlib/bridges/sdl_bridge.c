@@ -21,6 +21,14 @@ static SDL_Renderer* g_renderer = NULL;
 static int g_width  = 800;
 static int g_height = 600;
 
+// BMP 纹理缓存（myp_sdl_load_bmp → 句柄；MYP 侧传句柄绘制，最多 32 个）
+#define MAX_TEXTURES 32
+static SDL_Texture* g_textures[MAX_TEXTURES];
+static int g_tex_count = 0;
+
+// 释放全部纹理（myp_sdl_quit 前调用；定义在下方）
+void myp_sdl_free_images(void);
+
 // ═══════════════════════════════════════════
 // 窗口管理
 // ═══════════════════════════════════════════
@@ -68,6 +76,7 @@ int myp_sdl_set_window_size(int w, int h) {
 
 // 关闭窗口并清理 SDL
 void myp_sdl_quit(void) {
+    myp_sdl_free_images();
     if (g_renderer) SDL_DestroyRenderer(g_renderer);
     if (g_window)   SDL_DestroyWindow(g_window);
     SDL_Quit();
@@ -153,6 +162,45 @@ void myp_sdl_draw_rect_outline(int x, int y, int w, int h, int r, int g, int b, 
     SDL_Rect rect = {x, y, w, h};
     SDL_SetRenderDrawColor(g_renderer, r, g, b, a);
     SDL_RenderDrawRect(g_renderer, &rect);
+}
+
+// ═══════════════════════════════════════════
+// 图片（BMP，SDL2 原生无额外依赖）
+// ═══════════════════════════════════════════
+
+// 加载 BMP 为纹理，返回句柄（0..31）；失败 -1。缓存避免重复加载。
+int myp_sdl_load_bmp(const char* path) {
+    if (!g_renderer || !path) return -1;
+    if (g_tex_count >= MAX_TEXTURES) return -1;
+    SDL_Surface* s = SDL_LoadBMP(path);
+    if (!s) return -1;
+    // 支持透明色键：左上角像素作为透明色（iOS 图标常带背景色）
+    // （可选：默认不启用，避免误判。由调用侧决定是否传色键）
+    SDL_Texture* t = SDL_CreateTextureFromSurface(g_renderer, s);
+    SDL_FreeSurface(s);
+    if (!t) return -1;
+    int h = g_tex_count;
+    g_textures[h] = t;
+    g_tex_count++;
+    return h;
+}
+
+// 绘制已加载的 BMP 纹理到 (x,y,w,h)。返回 0=成功, -1=无效句柄。
+int myp_sdl_draw_image(int handle, int x, int y, int w, int h) {
+    if (handle < 0 || handle >= g_tex_count || !g_textures[handle]) return -1;
+    if (!g_renderer) return -1;
+    SDL_Rect dst = {x, y, w, h};
+    if (SDL_RenderCopy(g_renderer, g_textures[handle], NULL, &dst) != 0) return -1;
+    return 0;
+}
+
+// 释放全部纹理（SDL_quit 前）
+void myp_sdl_free_images(void) {
+    for (int i = 0; i < g_tex_count; i++) {
+        if (g_textures[i]) SDL_DestroyTexture(g_textures[i]);
+        g_textures[i] = NULL;
+    }
+    g_tex_count = 0;
 }
 
 // 绘制圆形

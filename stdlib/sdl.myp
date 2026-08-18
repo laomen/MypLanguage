@@ -17,6 +17,9 @@ ffi int  myp_sdl_height();
 ffi void myp_sdl_delay(int ms);
 ffi void myp_sdl_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
 ffi int  myp_sdl_save_bmp(string path);
+ffi int  myp_sdl_load_bmp(string path);
+ffi int  myp_sdl_draw_image(int handle, int x, int y, int w, int h);
+ffi void myp_sdl_free_images();
 
 class SDL {
     static:
@@ -53,6 +56,12 @@ class SDL {
         // 绘制文本（5×7 位图字体，scale 放大倍数，纯 SDL2 无 SDL_ttf）
         void drawText(int x, int y, string text, int scale, int r, int g, int b, int a) {
             myp_sdl_draw_text(x, y, text, scale, r, g, b, a);
+        }
+        // 加载 BMP 图片为纹理，返回句柄（-1 失败；缓存复用）
+        int loadBmp(string path) { return myp_sdl_load_bmp(path); }
+        // 绘制图片纹理到 (x,y,w,h)。返回 0=成功
+        int drawImage(int handle, int x, int y, int w, int h) {
+            return myp_sdl_draw_image(handle, x, y, w, h);
         }
         // 保存当前帧为 BMP（调试 / 冒烟测试）
         int saveBmp(string path) {
