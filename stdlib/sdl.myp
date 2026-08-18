@@ -4,6 +4,7 @@ ffi int  myp_sdl_should_close();
 ffi void myp_sdl_clear(int r, int g, int b, int a);
 ffi void myp_sdl_present();
 ffi void myp_sdl_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a);
+ffi void myp_sdl_fill_rounded_rect(int x, int y, int w, int h, int radius, int r, int g, int b, int a);
 ffi void myp_sdl_draw_rect_outline(int x, int y, int w, int h, int r, int g, int b, int a);
 ffi void myp_sdl_draw_circle(int cx, int cy, int radius, int r, int g, int b, int a);
 ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int a);
@@ -28,6 +29,9 @@ class SDL {
         void present() { myp_sdl_present(); }
         void drawRect(int x, int y, int w, int h, int r, int g, int b, int a) {
             myp_sdl_draw_rect(x, y, w, h, r, g, b, a);
+        }
+        void drawRoundedRect(int x, int y, int w, int h, int radius, int r, int g, int b, int a) {
+            myp_sdl_fill_rounded_rect(x, y, w, h, radius, r, g, b, a);
         }
         void drawOutline(int x, int y, int w, int h, int r, int g, int b, int a) {
             myp_sdl_draw_rect_outline(x, y, w, h, r, g, b, a);

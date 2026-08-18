@@ -116,6 +116,38 @@ void myp_sdl_draw_rect(int x, int y, int w, int h, int r, int g, int b, int a) {
     SDL_RenderFillRect(g_renderer, &rect);
 }
 
+// 绘制圆角矩形（iOS 风格应用图标背景）：主体矩形 + 四角填充为圆角。
+// 用逐行扫描：每行两端在圆角区域向内收缩 radius 像素。
+// 颜色用 r/g/b/a 分量。
+void myp_sdl_fill_rounded_rect(int x, int y, int w, int h, int radius,
+                               int r, int g, int b, int a) {
+    if (w <= 0 || h <= 0) return;
+    if (radius < 0) radius = 0;
+    if (radius > w / 2) radius = w / 2;
+    if (radius > h / 2) radius = h / 2;
+    SDL_SetRenderDrawColor(g_renderer, r, g, b, a);
+    for (int row = 0; row < h; row++) {
+        // 顶部/底部圆角区：左右各缩进 dx；中部全宽
+        int inset = 0;
+        int top = radius - row;            // 距顶圆角中心
+        int bot = row - (h - radius);      // 距底圆角中心
+        if (top > 0) {
+            // 顶部圆角：dx = radius - sqrt(radius^2 - top^2)
+            int d2 = radius * radius - top * top;
+            int dd = 0;
+            while ((dd + 1) * (dd + 1) <= d2) dd++;
+            inset = radius - dd;
+        } else if (bot >= 0) {
+            int d2 = radius * radius - bot * bot;
+            int dd = 0;
+            while ((dd + 1) * (dd + 1) <= d2) dd++;
+            inset = radius - dd;
+        }
+        SDL_RenderDrawLine(g_renderer, x + inset, y + row,
+                           x + w - 1 - inset, y + row);
+    }
+}
+
 // 绘制矩形边框
 void myp_sdl_draw_rect_outline(int x, int y, int w, int h, int r, int g, int b, int a) {
     SDL_Rect rect = {x, y, w, h};
