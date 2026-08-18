@@ -45,6 +45,12 @@
 - 验证：纯控制台程序不链 SDL；`import sdl` 链 `-lSDL2`；`import ttf` 自动拉
   `-lSDL2_ttf`+`-lSDL2`；`MYP_BRIDGES` 下新增测试桥（含 `-lm` 侧车）不改编译器
   即自动编译链接运行。
+- **自举编译器镜像（`tools/selfhost/src/link.myp`）**：同样实现通用桥接发现——
+  `bridgeDirs`（MYP_BRIDGES + `<stdlib>/bridges`）/ `listBridges` / `nmSymbols` /
+  `readSidecar` / `compileBridge`（mtime 缓存）/ `symIntersect`，link() 内固定点
+  迭代依赖链 + 链接命令追加桥 obj/libs。用 `myp_self` 编译 `import sdl` 链
+  `-lSDL2`、`import ttf` 拉 `-lSDL2_ttf`+`-lSDL2`、`MYP_BRIDGES` 新桥自动链接
+  运行（5/120/5）均验证通过。
 
 **SDL_ttf 中文渲染（M1 里程碑）**：新增 `stdlib/ttf.myp`（`Ttf` 静态类：
 `init(px)` / `drawText(x,y,text,scale,r,g,b,a)` / `close()`），经通用桥接自动链接

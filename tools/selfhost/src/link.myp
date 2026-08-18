@@ -4,6 +4,8 @@
 import fs;
 import process;
 import env;
+import io;          // File（读侧车文件）
+import collections; // ArrayList
 
 @static class Link {
     static:
@@ -96,6 +98,104 @@ import env;
             string rtDir = Fs.dirname(stdlib);
             if (Fs.isFile(rtDir + "/include/mylang/runtime.h") != 0) return rtDir + "/include";
             return "include";
+        }
+
+        // ---- 通用桥接发现（对拍 src/main.cpp linkObjects；新增桥无需改编译器）----
+        // bridges 目录（MYP_BRIDGES 冒号分隔追加；默认 <stdlib>/bridges）下 *.c 即
+        // 候选桥接。程序 obj 的 nm -u 未定义符号 × 桥 nm --defined-only 取交集命中
+        // 即自动编译（mtime 缓存）+ 链接；固定点迭代处理依赖链（sdl_ttf → sdl）。
+        // 侧车文件（可选）：<名>.c.cflags 编译标志、<名>.c.libs 链接库。
+        ArrayList<string> bridgeDirs(string stdlib) {
+            ArrayList<string> out = new ArrayList<string>();
+            string e = Console.getEnv("MYP_BRIDGES");
+            if (Str.len(e) > 0) {
+                int c = Str.splitCount(e, ":");
+                for (int i = 0; i < c; i = i + 1) {
+                    string d = Str.trim(Str.splitGet(e, ":", i));
+                    if (Str.len(d) > 0) out.add(d);
+                }
+            }
+            out.add(stdlib + "/bridges");
+            return out;
+        }
+
+        // 目录下所有 *.c 桥接文件（完整路径）
+        ArrayList<string> listBridges(string dir) {
+            ArrayList<string> out = new ArrayList<string>();
+            if (Fs.isDir(dir) == 0) return out;
+            int n = Fs.listCount(dir);
+            string[] files = Fs.listDir(dir);
+            for (int i = 0; i < n; i = i + 1) {
+                string f = files[i];
+                int fl = Str.len(f);
+                if (fl > 2 && Str.substring(f, fl - 2, fl) == ".c")
+                    out.add(Fs.join(dir, f));
+            }
+            return out;
+        }
+
+        // nm 输出 → 符号集合（defined=1 → --defined-only；0 → -u 未定义）。
+        // 每行末列 = 符号名（地址/类型列用空白分隔）。
+        ArrayList<string> nmSymbols(string files, int defined) {
+            ArrayList<string> out = new ArrayList<string>();
+            string cmd = "nm " + ((defined != 0) ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+            string outp = Process.output(cmd);
+            int c = Str.splitCount(outp, "\n");
+            for (int i = 0; i < c; i = i + 1) {
+                string line = Str.trim(Str.splitGet(outp, "\n", i));
+                if (Str.len(line) == 0) continue;
+                int nw = Str.splitCount(line, " ");
+                string name = Str.trim(Str.splitGet(line, " ", nw - 1));
+                if (Str.len(name) == 0 || name == "C") continue;
+                if (Str.substring(name, 0, 1) == "*") continue;
+                out.add(name);
+            }
+            return out;
+        }
+
+        // 读取侧车文件（去尾部空白）；不存在返回空串
+        string readSidecar(string path) {
+            if (Fs.isFile(path) == 0) return "";
+            File f = new File();
+            f.open(path, "r");
+            string s = f.readAll();
+            f.close();
+            return Str.trim(s);
+        }
+
+        // 桥接缓存对象路径（按 basename，mtime 缓存复用）
+        string bridgeObjPath(string c) {
+            string base = Fs.basename(c);
+            int bl = Str.len(base);
+            if (bl > 2 && Str.substring(base, bl - 2, bl) == ".c")
+                base = Str.substring(base, 0, bl - 2);
+            return "/tmp/myp_self_bridge_" + base + ".o";
+        }
+
+        // 编译桥接（mtime 缓存：源码未变则复用）；失败返回空串
+        string compileBridge(string c, string inc, string bflags) {
+            string bObj = Link.bridgeObjPath(c);
+            int need = 1;
+            if (Fs.isFile(bObj) != 0 && Fs.isFile(c) != 0) {
+                if (Fs.modifiedTime(bObj) >= Fs.modifiedTime(c)) need = 0;
+            }
+            if (need != 0) {
+                string cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections " + bflags + " -c " + c + " -o " + bObj + " 2>&1";
+                if (Process.run(cmd) != 0) return "";
+            }
+            return bObj;
+        }
+
+        // b 是否有任一符号在 a 中
+        int symContains(ArrayList<string> a, string s) {
+            for (int i = 0; i < a.size(); i = i + 1)
+                if (a.get(i) == s) return 1;
+            return 0;
+        }
+        int symIntersect(ArrayList<string> a, ArrayList<string> b) {
+            for (int i = 0; i < b.size(); i = i + 1)
+                if (Link.symContains(a, b.get(i)) != 0) return 1;
+            return 0;
         }
 
         // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
@@ -199,8 +299,42 @@ import env;
                 }
                 libLinkObj = " " + libObj;
             }
+            // ---- 通用桥接发现（对拍 mypc；新增桥无需改自举编译器）----
+            ArrayList<string> bdirs = Link.bridgeDirs(stdlib);
+            ArrayList<string> allB = new ArrayList<string>();
+            for (int bi = 0; bi < bdirs.size(); bi = bi + 1) {
+                ArrayList<string> cs = Link.listBridges(bdirs.get(bi));
+                for (int ci = 0; ci < cs.size(); ci = ci + 1) allB.add(cs.get(ci));
+            }
+            string bridgeObjList = "";
+            string bridgeLibs = "";
+            ArrayList<string> undef = Link.nmSymbols(objPath, 0);
+            ArrayList<string> sel = new ArrayList<string>();
+            int changed = 1;
+            int guard = 0;
+            while (changed != 0 && guard < 128) {
+                changed = 0;
+                guard = guard + 1;
+                for (int i = 0; i < allB.size(); i = i + 1) {
+                    string c = allB.get(i);
+                    if (Link.symContains(sel, c) != 0) continue;
+                    string bflags = Link.readSidecar(c + ".cflags");
+                    string blibs = Link.readSidecar(c + ".libs");
+                    string bObj = Link.compileBridge(c, inc, bflags);
+                    if (Str.len(bObj) == 0) continue;
+                    if (Link.symIntersect(undef, Link.nmSymbols(bObj, 1)) != 0) {
+                        sel.add(c);
+                        bridgeObjList = bridgeObjList + " " + bObj;
+                        if (Str.len(blibs) > 0) bridgeLibs = bridgeLibs + " " + blibs;
+                        ArrayList<string> u = Link.nmSymbols(bObj, 0);
+                        for (int ui = 0; ui < u.size(); ui = ui + 1) undef.add(u.get(ui));
+                        changed = 1;
+                    }
+                }
+            }
             cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
-                + " -o " + outPath + " -lpthread -lm -ldl -Wl,--gc-sections 2>&1";
+                + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
+                + " -Wl,--gc-sections 2>&1";
             if (Process.run(cmd) != 0) {
                 Console.writeLine("link failed");
                 return 1;
