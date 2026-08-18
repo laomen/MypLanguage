@@ -32,15 +32,18 @@ Identifier    ::= [A-Za-z_][A-Za-z0-9_]*
 ### 1.2 字面量
 
 ```
-IntegerLiteral ::= [0-9]+ | '0x'[0-9a-fA-F]+        // 十进制 / 十六进制
-FloatLiteral   ::= [0-9]+'.'[0-9]* (E[+-]?[0-9]+)?  // 浮点（含科学计数法）
+IntegerLiteral ::= [0-9]+ | '0x'[0-9a-fA-F]+ | '0b'[01]+ | '0o'[0-7]+  // 十进制 / 十六进制 / 二进制 / 八进制
+FloatLiteral   ::= [0-9]+'.'[0-9]* (E[+-]?[0-9]+)?  // 浮点（含科学计数法，仅十进制）
 BoolLiteral    ::= 'true' | 'false'
 StringLiteral  ::= '"' (字符)* '"'                    // 双引号字符串，支持转义
 NullLiteral    ::= 'null'
 CharLiteral    ::= "'" 字符 "'"                       // 字符
 ```
 
-> 整型字面量：十进制 `[0-9]+`、十六进制 `0x…`；后缀 `L` 为 long（独立 token `LongLiteral`）。
+> 整型字面量：十进制 `[0-9]+`、十六进制 `0x…`、二进制 `0b…`、八进制 `0o…`；
+> 后缀 `L` 为 long、`u` 为无符号（独立 token `LongLiteral` / `UIntLiteral`）；浮点后缀
+> `f`/`F` 为 float32（独立 token `FloatLiteral32`，仅浮点字面量）。
+> 下划线可作数字分隔符（`1_000_000`、`0xFF_FF`、`1_000.5`、`1e1_0`），编译期剥离。
 > 浮点字面量支持科学计数法 `1e3`、`1.5E-2`。
 
 ### 1.3 注释与空白
@@ -55,13 +58,19 @@ Comment   ::= '//' 到行尾 | '/*' 任意字符 '*''/'
 ```
 class action event property interface import mapping struct function static
 if else while for return break continue true false null this new void var
-enum match ffi try catch finally throw where await const ref
+enum match ffi try catch finally throw where await const ref operator macro
+nonlocal bitfield
+// 注：`type` 为上下文关键字（仅顶层 `type <Id> = <Type> ;` 形态，见 §2.1）
 ```
 
 ### 1.5 类型关键字
 
 ```
 byte short int long ubyte ushort uint ulong char float double bool string
+uint8 uint16 uint32 uint64 int8 int16 int32 int64   // 定宽整型别名（v3.11）
+float4 double2 int4                                 // 向量类型
+bit bitvector                                       // 位类型（v3.12）
+// 注：`slice<T>` 经 ClassType TypeArgList? 解析（见 §2）；`type` 为上下文关键字（见 §2.1）
 ```
 
 ### 1.6 运算符与标点
@@ -72,6 +81,7 @@ byte short int long ubyte ushort uint ulong char float double bool string
 位运算   << >> & ^ |
 逻辑     && || !
 赋值     = += -= *= /= %=
+管道     |>
 标点     ( ) { } [ ] ; : :: ? , . .. -> => @
 ```
 

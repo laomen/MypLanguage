@@ -1,6 +1,6 @@
 # MYP Programming Manual
 
-> Version 3.0 | Event-Driven Component Language
+> Version 3.12 | Event-Driven Component Language
 > Language spec v1.0 (frozen): official EBNF in [grammar.md](grammar.md), versioning policy in [CHANGELOG.md](CHANGELOG.md).
 
 ---
@@ -18,8 +18,9 @@
 9. [Concurrent Programming](#9-concurrent-programming)
 10. [Modules & Imports](#10-modules--imports)
 11. [Standard Library](#11-standard-library)
-12. [Compilation & Tools](#12-compilation--tools)
-13. [Complete Example](#13-complete-example)
+12. [Metaprogramming](#12-metaprogramming)
+13. [Compilation & Tools](#13-compilation--tools)
+14. [Complete Example](#14-complete-example)
 
 ---
 
@@ -1433,12 +1434,12 @@ int main() {
 - **struct**: functional construction `Vec2(1.0, 2.0)` — create a stack struct value
   like a function call.
 - **Deep copy**: explicit `copy()` convention method (`A b = a;` is a reference alias,
-  not a copy; see `docs/constructor.md`).
+  not a copy; see design.md §6.5 copy constructor).
 
 **Constructor ≠ `@startup`**: the constructor does **initialization** (synchronously on
 `new`); `@startup` does **beginning operations** (runs when the instance's thread/event
 loop starts, next section). They are orthogonal and do not replace each other.
-Design: `docs/constructor.md`.
+Design: design.md §6.5.
 
 ### @startup Annotation
 
@@ -1460,7 +1461,7 @@ class Worker {
 > firing the first event). Object **initialization** (setting fields / allocating
 > resources / validation) goes through the constructor (`@constructor` annotation or
 > a method named after the class) — `new ClassName(args)` calls it automatically.
-> They are orthogonal and do not replace each other; design: `docs/constructor.md`.
+> They are orthogonal and do not replace each other; design: design.md §6.5.
 
 ### Thread Model
 
@@ -2442,7 +2443,144 @@ win.render();                            // render one frame
 // Components: Window, Label, Button, TextBox, ProgressBar
 ```
 
-## 12. Compilation & Tools
+---
+
+## 12. Metaprogramming
+
+MYP provides **compile-time code generation and evaluation**, covering four layers
+(all additive; language spec v1.0 unchanged):
+
+| Layer | Capability | Scope | Since |
+|---|---|---|---|
+| Generic monomorphization | one logic, many types (`Box<int>` generates code independently) | type-level | base |
+| `@eval` compile-time evaluation | compute constants / derive config at compile time | value-level | v3.4 |
+| `macro` declarative macros | AST fragment substitution (code templates) | syntax-level | v3.5 |
+| `@macro` procedural macros | execute a macro function at compile time, generate AST algorithmically | full | v3.6 |
+
+Division of labor: **generics** = type parameterization; **`@eval`** = compute values at
+compile time; **`macro`/`@macro`** = eliminate repetitive code (template substitution vs.
+programmable generation). Full design: `docs/metaprogramming.md` and `docs/design.md` §11.
+
+### `@eval` — compile-time evaluation (v3.4)
+
+`@eval`-annotated functions execute **at compile time** (pure-function subset); results
+become compile-time constants:
+
+```myp
+@eval int fib(int n) {
+    if (n < 2) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+const int FIB10 = fib(10);          // 55, computed at compile time
+const int FIB20 = fib(20);          // 6765
+const double HALF = 10.0 / 4;       // 2.5 (const RHS also compile-time evaluated)
+const bool BIG = FIB10() > 50;      // @eval/const can call each other
+const int T5 = triple(FIB10());     // 165
+const long BIGL = 100000L * 10L;    // 1000000
+```
+
+- **Ordinary functions can call `@eval` functions** (compile-time constant folding):
+  `int doubleFIB10() { return 2 * fib(10); }` → always 110 at runtime.
+- **Timing**: after sema, before codegen (`evaluateCompileTimeConstants`); the result is
+  embedded as an LLVM compile-time constant (e.g. `ret i32 55`).
+- **Pure-function constraint** (compile-time execution must be side-effect-free):
+
+| Allowed | Forbidden |
+|---|---|
+| scalar/array ops, recursion, conditionals/loops, `@eval`/`const` calls | `new` instance creation, I/O, external state, `@thread`, mapping/events |
+| compile-time constant args | runtime-dependent args |
+
+- **Diagnostics (compile-time error, compiler never crashes)**: non-pure construct →
+  `compile-time evaluation: construct not supported in @eval context`; deep recursion →
+  `compile-time evaluation: recursion depth exceeded in 'fib'`.
+
+### `macro` — declarative macros (v3.5)
+
+`macro` is a **top-level declaration** (parallel to class/struct/enum): a template of MYP
+code with metavariables `$ident`; calls substitute actual **AST fragments** for the
+metavariables and expand into a syntax tree:
+
+```myp
+macro repeat($n, $body) {
+    for (int _i = 0; _i < $n; _i++) { $body }
+}
+macro addN($x, $n) {
+    $x = $x + $n;
+}
+macro twice($body) {
+    $body
+    $body
+}
+
+int v = 0;
+repeat(3, v = v + 10);   // expands to a for loop ×3 → v = 30
+addN(v, 5);              // v = 35
+twice(v = v + 1);        // nested/repeated expansion → v = 37
+```
+
+- Args can capture **expression / statement / assignment** AST fragments (substituted by
+  call context).
+- Macros can call macros and expand **iteratively** (until stable or a depth cap).
+- **Timing**: after parse, before sema (`expandMacros`); pure compile-time AST transform,
+  no execution.
+- Debug: `--macro-expand` dumps the expanded AST (`[function main]` / `[action ...]` /
+  `for` / `assign` …).
+
+### `@macro` — procedural macros (v3.6)
+
+`@macro`-annotated functions execute **at compile time** (loops/conditionals/algorithm-driven),
+returning AST values (`Expr` / `Stmt` / `StmtList`), and use `quote { ... }` code templates to
+generate code — enabling what `macro` templates can't ("generate n statements from n"):
+
+```myp
+@macro StmtList genAssign(string name, int value) {
+    return quote { int $name = $value; };   // $name/$value compile-time interpolation
+}
+
+@macro StmtList makeCalls(int n) {
+    StmtList out = quote {};                // empty statement list
+    for (int i = 0; i < n; i++) {
+        out = out + quote { Console.write($i); };   // StmtList concatenation
+    }
+    return out;
+}
+
+genAssign("x", 42);      // statement-position call → expands to `int x = 42;`
+makeCalls(3);            // generates Console.write(0); Console.write(1); Console.write(2);
+```
+
+- **`quote { ... }`**: compile-time expression that parses the block into an AST (statement
+  collection); `$x` interpolation embeds by compile-time value type:
+
+  | `$x` compile-time value type | embedded as |
+  |---|---|
+  | `int`/`long`/`double`/`float`/`bool`/`string` | corresponding literal AST node |
+  | `Expr` | inline that expression AST |
+  | `StmtList` / `Stmt` | inline that statement (group) AST |
+
+- **AST value types**: `Expr` / `Stmt` / `StmtList` are **compile-time-only types** (cannot
+  be ordinary runtime variable/parameter types; sema-checked); `StmtList + StmtList` concatenates.
+- **No runtime code emitted**: `@macro` functions are only executed at compile time; sema
+  registers but never emits them.
+- **Timing**: same as `macro` (after parse, before sema); expansion depth / instruction
+  count have caps (guard against runaway loops).
+- **Diagnostics**: interpolation type mismatch (`$x` is `int` but a statement is needed),
+  return-type mismatch (declared `StmtList` but `quote` yields `Expr`) → compile-time error.
+
+### Design principles
+
+- **Additive**: introduced via annotations/keywords, breaks no existing syntax (language
+  spec 1.0 unchanged).
+- **Compile-time determinism**: compile-time-executed code must be pure — same input,
+  same output.
+- **Observable**: `--macro-expand` debug switch outputs the expansion result (AST dump).
+- **Built on existing generics**: generic monomorphization is the most basic "type-level
+  metaprogramming"; macros/compile-time evaluation build on top of it.
+
+---
+
+## 13. Compilation & Tools
 
 ### Compiler
 
@@ -2533,6 +2671,41 @@ enjoys cross-file optimization (no LTO needed).
 - `--passes myp-pass` runs the MYP-specific pass (removes compiler-generated dead stores).
 - Design & implementation: `docs/optimization_debugging.md`.
 
+#### Codegen (LLVM Backend)
+
+MYP compilation pipeline: `lexer → parser → sema → codegen (build LLVM IR in memory) → opt (-O1+ optimization pipeline) → object file → link`.
+
+- **IR generation**: codegen compiles every function / class method / mapping / coroutine
+  into LLVM IR (`src/codegen/`): variables live in allocas, objects go through ARC
+  (`retain`/`release`), events through the runtime registry. Source split:
+  `codegen.cpp` (translation unit / globals) / `codegen_class.cpp` (class methods /
+  constructors) / `codegen_stmt.cpp` (statements) / `codegen_expr.cpp` (expressions) /
+  `codegen_gpu.cpp` (`@gpu for` NVPTX kernels) / `codegen_test.cpp` (`--test` runner).
+- **Internalization (IPO)**: non-library builds internalize all function definitions
+  (only `main` stays external), so LLVM cross-function IPO can constant-specialize and
+  inline hot kernels.
+- **`-O` optimization pipeline**: `-O0` (default) runs no optimization (all allocas,
+  debug-friendly); `-O1/-O2/-O3` run the LLVM standard pipeline via `PassBuilder`
+  (New Pass Manager) — `-O1` mem2reg/instcombine/GVN/DCE/basic inline/simple loops;
+  `-O2` adds SROA/more aggressive inline/loop unroll & vectorization; `-O3` even more
+  aggressive (may grow code size).
+- **Custom pass (`--passes myp-pass`)**: `MypRedundantStorePass` encodes MYP-specific
+  semantics — removes **dead stores** produced by codegen (e.g. local double-init
+  `store i32 0, %x` immediately overwritten with no reads in between). Conservative
+  rule: within one basic block, two stores to the same address with no
+  load/store/call/atomic/fence between them → the earlier store is deleted.
+- **`--emit-llvm`**: saves the IR text to `.ll` and skips linking — for checking
+  whether optimization took effect (e.g. that mem2reg promoted loop variables) and
+  for oracle comparison.
+- **`MYP_FAST_MATH=1`**: marks all FP ops with fast-math flags (reassoc/contract/nnan…),
+  letting LLVM vectorize FP reductions and contract FMAs; off by default (strict IEEE,
+  matching the -O0/-O2 baseline).
+- **Semantics interaction**: optimization passes must be regression-checked against
+  runtime mechanisms — setjmp/longjmp exceptions, ucontext coroutines, arena
+  allocation (`myp_region_alloc`), etc.; the full suite runs at both **-O0 and -O2**,
+  and any semantics-breaking pass is disabled or reordered.
+- Design & debugging: `docs/optimization_debugging.md`.
+
 #### Debug (`-g` DWARF + gdb)
 
 ```bash
@@ -2581,42 +2754,99 @@ MYP ships `myp_debug` (a DAP ↔ gdb bridge) for breakpoints/stepping/variables 
 - Supports: breakpoints (source lines), stepping (next/stepIn/stepOut), call stack, locals,
   hover evaluation.
 
-#### Metaprogramming (`@eval` / `macro` / `@macro`)
+### Self-Hosted Compiler (myp_self)
 
-MYP offers three layers of metaprogramming (design: `docs/metaprogramming.md`):
+MYP's compiler itself is being **fully rewritten in MYP** (T5 self-hosting project,
+`tools/selfhost/`): frontend (lexer/parser/sema) + codegen (incl. GPU NVPTX emission) +
+CLI driver are all implemented in MYP, delivering the self-hosted compiler `myp_self`,
+with the classic two-stage bootstrap verification.
 
-**1. `@eval` compile-time evaluation (pure functions)**
+- **Build**: stage0 C++ `mypc` compiles `tools/selfhost/src/*.myp` → `build/myp_self`;
+  `myp_self` then compiles itself → `build/myp_self2` (the full self-hosted binary in
+  build/ today).
+- **Modules** (`tools/selfhost/src/`): `token` / `lexer` / `ast` / `parser` / `diag` /
+  `sema` / `ir_emit` / `codegen` / `link` / `main` (CLI driver).
+- **Usage** (same shape as mypc):
 
-```myp
-@eval int fib(int n) {
-    return n < 2 ? n : fib(n - 1) + fib(n - 2);
-}
-const int FIB10 = fib(10);   // computed at compile time: 55 (ret i32 55)
+```bash
+./build/myp_self myapp.myp -o myapp                 # compile
+./build/myp_self run myapp.myp args...              # compile+run (native, no mypc)
+./build/myp_self --frontend-dump ast myapp.myp      # frontend dump (tokens|ast|sema)
+./build/myp_self --emit-llvm myapp.myp              # output .ll
+./build/myp_self fmt [--check] myapp.myp            # format (delegates to self-hosted myp_fmt2)
 ```
 
-**2. `macro` declarative macros (AST templates)**
+- **codegen strategy**: MYP cannot reuse the LLVM C++ API in-process → **emits LLVM IR
+  text (.ll)**, then calls external `llc` (LLVM backend) + `gcc` to link the C runtime;
+  naturally comparable with `mypc --emit-llvm`.
+- **Oracle comparison**: the frontend uses `mypc --frontend-dump {tokens,ast,sema}`'s
+  deterministic output as the contract, byte-compared; the backend compares IR text plus
+  **generated-program run output** (primary acceptance).
+- **Bootstrap (two-stage fixpoint)**: stage1 C++ compiles `myp_self` → stage2 `myp_self`
+  compiles itself → stage3 re-compiles itself; two generations behaving identically
+  establishes self-hosting. Measured: `self2 → self3 → self4` byte-identical
+  (md5 `52c81186…`).
+- **GPU**: implemented — `@gpu for` (and `@gpu tile/scatter/reduce/scan`) generates an
+  NVPTX kernel (standalone .ll module → `llc -mtriple=nvptx64-nvidia-cuda` → PTX →
+  embedded string global), with host-side GPU/CPU dual-path launch (`MYP_GPU=1` real-device
+  launch, auto-falls-back to serial CPU with identical results); `kernel.*` context and
+  vector types (float4/double2/int4) are supported. Only the C runtime `runtime.c` stays C
+  as the generated program's "libc".
+- **Progress** (`tools/selfhost/roadmap.md`): frontend F0–F4, backend G1–G4, bootstrap
+  verification H1 all done; P phase closed (P2 generated-code performance on par with mypc —
+  `-mtriple` enables TTI vectorization, matmul 2.43x→1.00; P3 dropping the C++ seed drill —
+  rebuilt the whole toolchain with only `myp_self2`, no mypc).
+- See `docs/self_hosting.md` and `tools/selfhost/{README,design,roadmap,format}.md`.
 
-```myp
-macro repeat($n, $body) {
-    for (int _i = 0; _i < $n; _i++) { $body }
-}
-repeat(3, total = total + 10);   // expands to a for loop ×3
+### Code Generation Tool (tools/codegen)
+
+Schema-driven **code generation framework** (pure MYP, modeled on PyTorch torchgen / gRPC
+IDL): declarative schema (JSON) → auto-generated MYP/C source, replacing hand-written
+serialization/bridge/boilerplate (MYP has no runtime reflection; code generation is the
+systematic "reflection substitute"). Design: `tools/codegen/design.md`.
+
+```bash
+# CLI: mypc run tools/codegen/main.myp <generator> <schema.json> [-o outdir] [--verify]
+./build/mypc run tools/codegen/main.myp serde player.schema.json -o gen/
+./build/mypc run tools/codegen/main.myp ffi c_api.schema.json -o gen/ --verify
 ```
 
-**3. `@macro` procedural macros (`quote` code templates)**
+**Built-in generators** (all round-trip verified):
 
-```myp
-@macro StmtList makeCalls(int n) {
-    StmtList out = quote {};
-    for (int i = 0; i < n; i++) {
-        out = out + quote { Console.write($i); };
-    }
-    return out;
+| Generator | schema | output |
+|---|---|---|
+| `serde` | types | per-class `toJson()/fromJson()` (MYP) |
+| `ffi` | ffi signatures / resources | `ffi` declarations + C bridge + resource RAII wrappers |
+| `autodiff` | exprs | forward + gradient functions (numeric gradient vs finite difference) |
+| `idl` | services/methods | client/server stubs + JSON-RPC codec (with net/json) |
+| `orm` | tables | entity structs + CRUD SQL |
+| `embed` | file paths | file → string constant (byte-level round-trip) |
+| `dsl` | operator table | lexer + precedence-climbing parser + evaluator |
+| `infer_ops` | ops | CPU/GPU dual per-element kernels |
+
+**Flow**: JSON schema → `schema.myp` parses → `model.myp` model (typed) → `emit.myp`
+emitter (indent/escape/multi-language) → writes source file; `--verify` then compiles the
+output via `mypc --emit-llvm` to check it is valid compilable code with legal IR.
+
+```json
+// player.schema.json (schema fragment)
+{
+  "types": [
+    { "name": "Vec2", "kind": "struct",
+      "fields": [ {"name": "x", "type": "double"}, {"name": "y", "type": "double"} ] },
+    { "name": "Player", "kind": "class",
+      "fields": [
+        { "name": "name", "type": "string" },
+        { "name": "pos",  "type": "Vec2", "ref": "type" },
+        { "name": "items","type": "int", "array": true }
+      ] }
+  ]
 }
-makeCalls(3);                    // generates 3 Console.write(...) statements
 ```
 
-- Debugging: `--macro-expand` dumps the expanded AST.
+- `kind`: `struct`/`class`/`enum`/`op`/`ffi`; `ref: type` references another schema type;
+  `array: true` dynamic array.
+- Self-test: `bash tools/codegen/run_tests.sh` (wired into `tests/run_tests.sh`).
 
 ### Test Framework
 
@@ -2728,7 +2958,9 @@ mypackage/              # Package root
 ### Environment Variable
 
 ```bash
-export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more
+export MYP_PACKAGE_PATH=/path/to/packages:/path/to/more   # package manager myp build extra search paths (colon-separated)
+export MYP_FAST_MATH=1                                     # codegen: FP fast-math (vectorized reductions/FMA; default strict IEEE)
+export MYP_FMT=./build/myp_fmt2                            # self-hosted compiler fmt subcommand formatter path (optional)
 ```
 
 ### myp_viz — Visualization Tool
@@ -2795,7 +3027,7 @@ Extension settings (search `myp` in VS Code settings):
 
 ```
 MYPLanguage/
-├── tools/               # self-hosted MYP tools: tools/pm (package manager → build/myp), tools/fmt, tools/viz
+├── tools/               # self-hosted MYP tools: tools/pm (package manager → build/myp), tools/fmt, tools/viz, tools/selfhost (self-hosted compiler → build/myp_self), tools/codegen (schema-driven codegen)
 ├── CMakeLists.txt
 ├── include/mylang/      # compiler headers: AST/CodeGen/Sema/Parser/Lexer/Eval/
 │   └── ...              #   Macro/MypPasses/Fmt/LSP/Token/Type/...
@@ -2826,11 +3058,11 @@ MYPLanguage/
 ├── vscode-myp/          # VS Code extension (syntax highlight + LSP + DAP)
 ├── docs/                # design/grammar/manual/manual_en/coro/exceptions/
 │   └── ...              #   operators/metaprogramming/constructor/...
-├── build/               # build outputs: mypc, myp, myp_fmt2, myp_viz2, myp_debug, myp_lsp, myp_viz, myp_fmt
+├── build/               # build outputs: mypc, myp, myp_fmt2, myp_viz2, myp_self, myp_self2, myp_debug, myp_lsp, myp_viz, myp_fmt
 └── build-asan/          # ASAN/UBSAN build
 ```
 
-## 13. Complete Example
+## 14. Complete Example
 
 ### IoT Temperature Monitoring System
 

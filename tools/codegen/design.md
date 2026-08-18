@@ -179,6 +179,12 @@ class H5File {            // 资源 RAII：构造 open、析构 close（ARC 销�
 }
 ```
 
+> **注**：`~H5File()` 为**规划中的概念形态**——当前语言**无 `~Class()` 析构语法**
+> （ARC 销毁桩由编译器自动插入，无用户析构器，见 `gen_ffi.myp` 头注释）。当前
+> `gen_ffi.myp` 产出与 stdlib 惯例一致：资源类用**显式 `open/close` 包装**
+> （`@constructor H5File(...) { handle_ = hdf5_open(...); }` + `close()` action），
+> 不生成析构器。
+
 ## 8. 与 `@macro` / 编译器的边界
 
 - `tools/codegen` 是**层级 1 外部工具**：不改编译器，产出源码再交给 `mypc`。

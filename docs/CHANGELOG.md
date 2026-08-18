@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.12.27 — manual_en.md 对齐中文版（章节重排 + 新增 codegen/自举/代码生成工具）
+- **manual_en.md 全面对齐 manual.md**（英文版此前停留 v3.0 旧结构）：
+  - 版本头 3.0 → 3.12；目录加 12. Metaprogramming，Compilation & Tools → §13、
+    Complete Example → §14。
+  - 元编程从 §13 的 `#### Metaprogramming` 摘出为独立 `## 12. Metaprogramming`，
+    并展开为中文版同构的四层总览 + @eval/macro/@macro 详述 + 设计原则。
+  - §13 Compilation & Tools 新增：`#### Codegen (LLVM Backend)`（管线/源码分工/
+    internalize/-O 管线/myp-pass/--emit-llvm/MYP_FAST_MATH/语义交互）、
+    `### Self-Hosted Compiler (myp_self)`（含 GPU 已实现）、
+    `### Code Generation Tool (tools/codegen)`（生成器表/schema/--verify）。
+  - 环境变量补 MYP_FAST_MATH、MYP_FMT；项目结构 tools/ 加 selfhost/codegen、
+    build/ 加 myp_self/myp_self2。
+- 纯文档对齐，无代码变更。
+
+
 ### v3.12.26 — 自举编译器 GPU 状态补正：已实现（非"非 GPU"）
 - **纠正手册/文档过时表述**：自举编译器 `myp_self` 的 GPU 部分**已实现**
   （v3.12.4–v3.12.5 落地，实测 myp_self2 为 `@gpu for` 生成 NVPTX kernel .ll →
