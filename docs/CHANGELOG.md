@@ -27,6 +27,34 @@
 
 ## 编译器版本历史
 
+### v3.12.47 — 修复 BUG-031：跨线程多 @thread 目标事件无限重投（广播可用）
+
+**BUG-031 根因**：mapping handler 注册 `instance=NULL` → `myp_event_dispatch` 第一遍
+按 handler 归属 route 副本（`routed=1`）后，第二遍跑**所有**同 event 的 NULL-instance
+handler（无归属 → 当前线程跑）——副本在目标线程把**其他目标**的 handler 也跑了，每个
+handler 内 BUG-005 的 `myp_thread_is_current(inst)==0 → myp_event_route_to_instance`
+检查又把事件 route 回其他目标线程 → **无限乒乓**（route 8.7 万+ 次，各 @thread 目标
+收到 5 万+ 次，正常应各 1 次）。
+
+**修复（C++ mypc + runtime + 自举 myp_self 三端一致）**：
+
+1. `src/codegen/codegen_class.cpp` `generateMappingDecl`：handler 注册 `instance`
+   从 NULL 改为**目标实例全局地址 `&__myp_inst_X`**（传地址非值——注册发生在
+   `__myp_init`，早于实例 new；仅单目标普通目标链生效，lambda/transformer/函数目标
+   或无类级实例全局回落 NULL，保留原行为）。
+2. `src/runtime/runtime.c`：`myp_event_dispatch` 用 `myp_handler_target()`——注册
+   instance 为全局地址时**运行时解引用**得真实实例，按线程归属路由——routed 副本
+   只跑归属本线程的 handler，跨线程多目标各收 1 次。
+3. `tools/selfhost/src/codegen.myp`：镜像注册 instance 逻辑（`regInst`）。
+
+**验证**：新回归 `tests/bugs/cross_thread_multi_target.myp`（@test 断言 A/B 各收 1 次，
+2 断言，已接入 `tests/bugs/run_bugs.sh` 门禁）；`run_bugs.sh` 7/7 全绿；全量回归
+311 通过 / 0 失败；selfhost `test_myp_self.sh` 94/94 + bootstrap 16/16（不动点
+myp_self2 == myp_self3 字节相同）。MOS `app_lifecycle_demo` 应用从非 @thread 改为
+@thread（解除原规避），验证真实跨线程广播：AppManager（@thread）广播 Lifecycle 到
+两个 @thread 应用各收 1 次（Notes lifecycle=1/2/3 各 1 次，无乒乓）；MOS ctest 11/11。
+跨线程事件广播（1 事件 → 多 @thread 目标）自本版起可用。
+
 ### v3.12.46 — 通用桥接发现（新增桥无需改编译器）+ SDL_ttf 中文渲染 + BUG-029/030
 
 **通用桥接发现（核心重构，`src/main.cpp` linkObjects）**：删除 per-bridge 硬编码
