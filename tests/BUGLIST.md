@@ -806,3 +806,30 @@
 - **自举镜像**：`tools/selfhost/src/codegen.myp` 构造器生成入口同样注册 `this`
   （见下）。
 - **验证**：`tests/bugs/run_bugs.sh` 6/6 全绿；全量回归 311 通过 / 0 失败。
+
+---
+
+## BUG-031（未修复 ⚠️）：跨线程多 @thread 目标事件无限重投
+
+- **状态**：🔴 未修复（2026-08-18 发现，应用壳阶段 3 触发）
+- **复现**：`tests/known_bugs/cross_thread_multi_target.myp`（不接 run_bugs.sh，
+  因未修复会 RED 破坏门禁）。运行：`mypc ... -o /tmp/x && timeout 3 /tmp/x` →
+  `A recv 7` / `B recv 7` 各 5 万+ 次（正常应各 1 次）。
+- **现象**：mapping 把同一事件路由到**多个 @thread 目标**（`Svc.Life ->
+  AppA.onLife, AppB.onLife`，AppA/AppB 各 @thread）时，事件被无限重复投递。
+  对照组：
+  - 非 @thread 多目标（同线程）：各收 1 次 ✅
+  - 单 @thread 目标：正常 ✅（chain_demo logd→notify）
+  - 同类多 @thread 实例 + 单 mapping：只派发到其中一个实例（非广播，但不重复）
+- **根因线索**（TRACE_ENABLED 诊断）：
+  - fire 各 1 次（`[TRACE] event_fire(id=0/1)` 各 1），但 `dispatch(id=0)`（Cmd）
+    被反复执行（thr=2/3 各 1.8 万次），`onC` handler 只执行 1 次——dispatch 空转。
+  - 全部 route 是 `route(instance)`（8.7 万次）→ `myp_event_route_to_instance`
+    被反复调用（mapping handler 生成代码 BUG-005 的跨线程路由检查触发）。
+  - Cmd（id=0）被 route 到 thr=2 和 thr=3 两个线程——疑似多目标 @thread 时
+    handler 注册/事件 id 归属错乱（`src/codegen/codegen_class.cpp` 多目标 handler
+    注册 + `myp_event_dispatch` 的 hthr 归属判断）。
+- **影响**：MYP 跨线程事件广播（1 事件 → 多 @thread 目标）不可用；影响
+  AppManager 向多个 @thread 应用广播 Lifecycle 等。
+- **规避**：广播目标用非 @thread 实例（同线程同步派发，多目标正常）；或单
+  @thread 目标。MOS 应用壳据此用非 @thread 应用接收广播。
