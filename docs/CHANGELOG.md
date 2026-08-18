@@ -27,6 +27,20 @@
 
 ## 编译器版本历史
 
+### v3.12.24 — §13 审计发现 tools/codegen 未迁移到 BUG-001 规则（BUG-027）
+- **§13 编译与工具完整核对**：确认各工具节（编译器/自举编译器/测试框架/格式化/
+  包管理/可视化/LSP/DAP）均有对应二进制；**发现 `tools/codegen` 代码生成框架缺失
+  文档**（schema 驱动生成器：serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）。
+- **新 bug BUG-027**：`tools/codegen` **未迁移到 BUG-001 属性私有规则**——模型类
+  （`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）`property:`
+  被生成器跨类读取 → `mypc tools/codegen/main.myp` 编译失败（**301 errors**，约 40 组
+  类·属性对）；工具（含独立 `run_tests.sh`）整体不可用。根因：BUG-001 修复（08-16）
+  后 `tools/codegen`（08-12 停更）未迁移 getter/struct（自举编译器当时已迁）。
+- **决策**：按"手册只记录验证可用内容"约定，§13 **暂不**写入不可用工具；问题登记
+  BUGLIST（修复后 `tools/codegen/run_tests.sh` 全绿再补文档）。未接入主套件故全量
+  回归维持 288 通过。无代码变更。
+
+
 ### v3.12.23 — 手册 §12 元编程展开：四层能力总览 + @eval/macro/@macro 详述
 - **§12 元编程章节大幅展开**（从"三层简例"扩为完整小节）：四层能力总览表
   （泛型 monomorphization 类型级 / `@eval` 值级 v3.4 / `macro` 语法级 v3.5 /
