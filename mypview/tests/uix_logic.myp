@@ -94,6 +94,37 @@ class Main {
                                         ok.getY() + ok.height() / 2);
             Console.writeLine("uix hitId=" + hitId);
 
+            // ---- 样式伪状态：:hover / :checked 运行时应用与清除 ----
+            string pUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":240,\"height\":80,"
+                + "\"padding\":12,\"spacing\":10,\"children\":["
+                + "{\"type\":\"Button\",\"id\":\"b1\",\"text\":\"Hover\",\"class\":\"act\"},"
+                + "{\"type\":\"Checkbox\",\"id\":\"c1\",\"text\":\"Agree\",\"class\":\"opt\"}"
+                + "]}";
+            string pUsp =
+                "[{\"sel\":\"Button.act\",\"props\":[{\"k\":\"bg\",\"v\":\"#007AFF\"}]},"
+                + "{\"sel\":\"Button.act:hover\",\"props\":[{\"k\":\"bg\",\"v\":\"#0A84FF\"}]},"
+                + "{\"sel\":\"Checkbox.opt\",\"props\":[{\"k\":\"color\",\"v\":\"#888888\"}]},"
+                + "{\"sel\":\"Checkbox.opt:checked\",\"props\":[{\"k\":\"color\",\"v\":\"#34C759\"}]}]";
+            UixLoader pl = new UixLoader(pUix, pUsp);
+            RootView prv = new RootView(12, 240, 80);
+            pl.buildInto(prv);
+            int pb = pl.buttonIdxOf("b1");
+            int pc = pl.checkboxIdxOf("c1");
+            // 构建后：无伪状态样式已应用，伪状态未生效
+            Console.writeLine("uix pseudo base=" + Fmt.x(pl.buttonAt(pb).getColor()));
+            // 运行时应用 :hover → bg 覆盖
+            pl.applyPseudo("hover");
+            Console.writeLine("uix pseudo hover=" + Fmt.x(pl.buttonAt(pb).getColor()));
+            // 清除 :hover → 恢复无伪状态样式
+            pl.clearPseudo("hover");
+            Console.writeLine("uix pseudo clear=" + Fmt.x(pl.buttonAt(pb).getColor()));
+            // :checked → Checkbox 变色；清除恢复默认
+            pl.applyPseudo("checked");
+            Console.writeLine("uix pseudo checked=" + Fmt.x(pl.checkboxAt(pc).getColor()));
+            pl.clearPseudo("checked");
+            Console.writeLine("uix pseudo uncheck=" + Fmt.x(pl.checkboxAt(pc).getColor()));
+
             // ---- 扩展点：自定义控件（ViewBuilder 注册）----
             string extUix =
                 "{\"type\":\"Column\",\"id\":\"root\",\"width\":300,\"height\":120,"

@@ -14,6 +14,7 @@ class IconButton {
         int size_;
         int color_;
         int enabled_;
+        int hovered_;   // 1=鼠标悬停（提亮反馈）
 
     event:
         Clicked(int x, int y);
@@ -26,6 +27,7 @@ class IconButton {
             size_ = size;
             color_ = Color.blue();
             enabled_ = 1;
+            hovered_ = 0;
         }
 
         void setIcon(string t) { icon_ = t; }
@@ -35,6 +37,9 @@ class IconButton {
         int getX() { return x_; }
         int getY() { return y_; }
         void setEnabled(int on) { enabled_ = on; }
+        // 悬停状态（1=鼠标悬停；draw 提亮）
+        void setHovered(int on) { hovered_ = on; }
+        int getHovered() { return hovered_; }
 
         // 声明式属性入口
         void setAttr(string name, string value) {
@@ -55,7 +60,11 @@ class IconButton {
         int enabled() { return enabled_; }
 
         void draw(Renderer r) {
-            int c = enabled_ != 0 ? color_ : Color.gray();
+            // 填充色：禁用置灰 → 悬停提亮 → 正常
+            int c;
+            if (enabled_ == 0) c = Color.gray();
+            else if (hovered_ != 0) c = Color.lighten(color_, 30);
+            else c = color_;
             r.fillRoundedRect(x_, y_, size_, size_, size_ / 2, c);
             r.drawText(x_ + (size_ - r.textWidth(icon_, 1)) / 2,
                        y_ + size_ / 2 - r.textH(1) / 2,

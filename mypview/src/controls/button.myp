@@ -12,6 +12,7 @@ class Button {
         int color_;
         int enabled_;
         int focused_;
+        int hovered_;   // 1=鼠标悬停（视觉反馈；由应用层 setHovered 驱动）
 
     event:
         Clicked(int x, int y);
@@ -26,6 +27,7 @@ class Button {
             color_ = Color.blue();
             enabled_ = 1;
             focused_ = 0;
+            hovered_ = 0;
         }
 
         void setColor(int c) { color_ = c; }
@@ -37,6 +39,9 @@ class Button {
         // 启用/禁用（禁用置灰 + 不响应点击）
         void setEnabled(int on) { enabled_ = on; }
         int getEnabled() { return enabled_; }
+        // 悬停状态（1=鼠标悬停；draw 提亮，提示可交互）
+        void setHovered(int on) { hovered_ = on; }
+        int getHovered() { return hovered_; }
 
         // 声明式属性入口（UixLoader 调用）
         void setAttr(string name, string value) {
@@ -63,7 +68,11 @@ class Button {
         void setFocus(int on) { focused_ = on; }
 
         void draw(Renderer r) {
-            int c = enabled_ != 0 ? color_ : Color.gray();
+            // 填充色：禁用置灰 → 悬停提亮 → 正常；焦点画外框
+            int c;
+            if (enabled_ == 0) c = Color.gray();
+            else if (hovered_ != 0) c = Color.lighten(color_, 30);
+            else c = color_;
             r.fillRect(x_, y_, w_, h_, c);
             r.outlineRect(x_, y_, w_, h_, Color.white());
             if (focused_ != 0)

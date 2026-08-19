@@ -11,6 +11,7 @@ ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, 
 ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_get_mouse_click();
+ffi int  myp_sdl_get_mouse_pos();
 ffi int  myp_sdl_get_char();
 ffi void myp_sdl_start_text_input();
 ffi void myp_sdl_stop_text_input();
@@ -60,6 +61,9 @@ class SDL {
         int getKey() { return myp_sdl_get_key(); }
         // 取一次鼠标左键点击（窗口坐标打包 (y<<16)|x），无新点击 -1
         int getMouseClick() { return myp_sdl_get_mouse_click(); }
+        // 取当前鼠标位置（窗口逻辑坐标打包 (y<<16)|x），从未移动 -1。
+        // 不消费，帧循环可反复查询做 hover 检测（配合控件 hit()）。
+        int getMousePos() { return myp_sdl_get_mouse_pos(); }
         // 取一个输入字符码点（UTF-8 解码；8=退格 13=回车；无输入 -1）。
         // 用 Str.chr(cp) 转字符串喂给输入框。
         int getChar() { return myp_sdl_get_char(); }

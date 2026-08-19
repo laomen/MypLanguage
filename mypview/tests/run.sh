@@ -71,6 +71,11 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix bind status=ready (init)" \
    && printf '%s' "$OUT" | grep -q "uix runCmd status=ok-login" \
    && printf '%s' "$OUT" | grep -q "uix sync status=ok-login" \
+   && printf '%s' "$OUT" | grep -q "uix pseudo base=7aff" \
+   && printf '%s' "$OUT" | grep -q "uix pseudo hover=a84ff" \
+   && printf '%s' "$OUT" | grep -q "uix pseudo clear=7aff" \
+   && printf '%s' "$OUT" | grep -q "uix pseudo checked=34c759" \
+   && printf '%s' "$OUT" | grep -q "uix pseudo uncheck=888888" \
    && printf '%s' "$OUT" | grep -q "uix ext text=NEW nodes=3 hit=badge" \
    && printf '%s' "$OUT" | grep -q "uix ctrl nodes=5 sw=1 swc=34c759 cb=1/Agree sl=42 pb=70" \
    && printf '%s' "$OUT" | grep -q "uix flow b1=8/8 b2=42/8 b3=8/24" \

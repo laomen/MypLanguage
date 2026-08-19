@@ -402,6 +402,10 @@ void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int 
 // 最近一次鼠标左键点击坐标（每次 poll 消耗后清零；-1=无新点击）
 static int g_mouse_x = -1;
 static int g_mouse_y = -1;
+// 最近一次鼠标位置（SDL_MOUSEMOTION 常驻更新；-1=从未移动）。
+// 与点击坐标分离：点击是一次性消费，位置持续可查（hover 检测用）。
+static int g_hover_x = -1;
+static int g_hover_y = -1;
 
 // ---- 文本输入队列（SDL_TEXTINPUT 的 UTF-8 字符 + 控制键码点）----
 // getChar 返回 Unicode 码点：普通字符=字符码点；退格=8；回车=13。无输入 -1。
@@ -514,6 +518,11 @@ int myp_sdl_has_quit_event(void) {
             g_mouse_x = e.button.x;
             g_mouse_y = e.button.y;
         }
+        // 鼠标移动 → 常驻记录位置（hover 检测；坐标随窗口缩放自动映射）
+        if (e.type == SDL_MOUSEMOTION) {
+            g_hover_x = e.motion.x;
+            g_hover_y = e.motion.y;
+        }
         // 拖拽调整窗口大小 → 同步全局宽高（MYP 侧 get_window_size 可查）
         if (e.type == SDL_WINDOWEVENT &&
             e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
@@ -547,6 +556,13 @@ int myp_sdl_get_mouse_click(void) {
     g_mouse_x = -1;
     g_mouse_y = -1;
     return packed;
+}
+
+// 取当前鼠标位置：返回 (y<<16)|x（窗口逻辑坐标，随缩放自动映射），
+// 从未移动过返回 -1。不消费（帧循环可反复查询做 hover 检测）。
+int myp_sdl_get_mouse_pos(void) {
+    if (g_hover_x < 0) return -1;
+    return (g_hover_y << 16) | (g_hover_x & 0xFFFF);
 }
 
 // ═══════════════════════════════════════════

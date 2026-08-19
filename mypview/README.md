@@ -52,6 +52,37 @@ loader.sync(vm);                               // 绑定：VM 状态 → 控件
 // 交互：Button.Clicked → mapping → cmdFor → vm.runCmd → loader.sync(vm)
 ```
 
+### 样式伪状态（:hover / :checked / :focus / :disabled）
+
+`.usp` 选择器支持伪状态后缀，运行时按控件状态切换样式：
+
+```
+[{"sel":"Button.primary",      "props":[{"k":"bg","v":"#007AFF"}]},
+ {"sel":"Button.primary:hover","props":[{"k":"bg","v":"#0A84FF"}]},
+ {"sel":"Checkbox.opt:checked","props":[{"k":"color","v":"#34C759"}]}]
+```
+
+- 构建时只应用**无伪状态**选择器（基线样式）；伪状态由运行时 API 驱动：
+  - `loader.applyPseudo("hover")` — 应用匹配该伪状态的选择器（覆盖属性）
+  - `loader.clearPseudo("hover")` — 重新应用全部无伪状态样式（恢复基线）
+- 应用层在状态变化时调用（鼠标 hover 到控件 / 勾选 / 聚焦 / 禁用）。
+  可复用：`applyPseudo("checked")` / `applyPseudo("focus")` / `applyPseudo("disabled")`。
+- 伪状态只是"额外属性覆盖"，控件自身仍需支持对应 setAttr 属性（如 Button.bg）。
+
+### 交互状态（hover / focus 视觉反馈）
+
+- **hover**：`Button` / `IconButton` 带 `setHovered(int)` + 悬停提亮（`Color.lighten`）。
+  桌面端用 `SDL.getMousePos()`（常驻鼠标位置，不消费）逐帧查询 + `hit()` 判定：
+  ```myp
+  int mpos = SDL.getMousePos();            // (y<<16)|x，从未移动 -1
+  if (mpos >= 0) {
+      int mx = mpos & 0xFFFF, my = (mpos >> 16) & 0xFFFF;
+      play.setHovered(play.hit(mx, my));   // hit 返回 int 直接传（勿用 !=0）
+  }
+  ```
+- **focus**：`FocusManager` 键盘导航（Tab/回车）时 `setFocus(1)` → 控件绘制高亮
+  外框（Button=amber，TextField=green）。控件实现 `focusable()` 即可入导航。
+
 ## MVVM 分层
 
 - **View** = `.uix` 声明式描述（组件树 + 绑定 + 命令），无逻辑

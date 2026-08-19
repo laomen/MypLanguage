@@ -56,6 +56,7 @@ class UixLoader {
         string selType_;
         string selId_;
         string selClass_;
+        string selPseudo_;   // 伪状态（:hover/:checked/:focus/:disabled），无则空
         // 类型化引用（具体数组——ARC 可靠 retain，控件存活于此）
         Label[] labels_;
         string[] labelIds_;
@@ -1140,8 +1141,15 @@ class UixLoader {
         }
 
 
-        // 应用样式：遍历 .usp 选择器，匹配则把 props 写入控件
+        // 应用样式：遍历 .usp 选择器，匹配则把 props 写入控件。
+        // 构建时调用：只应用无伪状态选择器（伪状态由运行时 applyPseudo 驱动）。
         void applyStyles(View v, string id, string cls) {
+            applyStylesSel(v, id, cls, "");
+        }
+
+        // 核心匹配+应用：选择器带伪状态仅当与 pseudo 一致时应用。
+        // pseudo="" 时只应用无伪状态选择器（构建期与清除伪状态共用）。
+        void applyStylesSel(View v, string id, string cls, string pseudo) {
             if (usp_ == null) return;
             int n = usp_.arrayLen("");
             for (int i = 0; i < n; i = i + 1) {
@@ -1150,6 +1158,7 @@ class UixLoader {
                 if (selType_ != "" && selType_ != typeOf(id)) continue;
                 if (selId_ != "" && selId_ != id) continue;
                 if (selClass_ != "" && selClass_ != cls) continue;
+                if (selPseudo_ != pseudo) continue;   // 伪状态不匹配则跳过
                 // 应用该选择器的属性集
                 int pn = usp_.arrayLen(Fmt.i(i) + ".props");
                 for (int j = 0; j < pn; j = j + 1) {
@@ -1162,17 +1171,42 @@ class UixLoader {
             }
         }
 
-        // 解析选择器字符串 → selType_/selId_/selClass_
+        // 运行时：应用某伪状态的样式属性（hover/checked/focus/disabled）。
+        // 遍历全部节点：匹配该伪状态的选择器覆盖属性（无伪状态样式先重刷，幂等）。
+        // 应用层在状态变化时调用（如鼠标 hover 到按钮 / 勾选框选中 / 控件聚焦）。
+        void applyPseudo(string pseudo) {
+            if (usp_ == null) return;
+            for (int i = 0; i < nodeCount_; i = i + 1)
+                applyStylesSel(nodes_[i], ids_[i], classes_[i], pseudo);
+        }
+
+        // 运行时：清除某伪状态样式 → 重新应用全部无伪状态样式覆盖回去。
+        // 典型用途：hover 移出 / 取消勾选 / 失焦。
+        void clearPseudo(string pseudo) {
+            if (usp_ == null) return;
+            for (int i = 0; i < nodeCount_; i = i + 1)
+                applyStylesSel(nodes_[i], ids_[i], classes_[i], "");
+        }
+
+        // 解析选择器字符串 → selType_/selId_/selClass_/selPseudo_
         // 支持：Type / Type#id / Type.class / .class / #id
+        // 伪状态：末尾 ":pseudo"（如 Button:hover / Button.primary:checked）
         void parseSel(string sel) {
             selType_ = "";
             selId_ = "";
             selClass_ = "";
-            int hashAt = Str.indexOf(sel, "#");
-            int dotAt = Str.indexOf(sel, ".");
+            selPseudo_ = "";
+            string base = sel;
+            int colonAt = Str.indexOf(sel, ":");
+            if (colonAt >= 0) {
+                selPseudo_ = Str.substring(sel, colonAt + 1, Str.len(sel));
+                base = Str.substring(sel, 0, colonAt);
+            }
+            int hashAt = Str.indexOf(base, "#");
+            int dotAt = Str.indexOf(base, ".");
             if (hashAt >= 0) {
-                selId_ = Str.substring(sel, hashAt + 1, Str.len(sel));
-                string before = Str.substring(sel, 0, hashAt);
+                selId_ = Str.substring(base, hashAt + 1, Str.len(base));
+                string before = Str.substring(base, 0, hashAt);
                 int dot2 = Str.indexOf(before, ".");
                 if (dot2 >= 0) {
                     selType_ = Str.substring(before, 0, dot2);
@@ -1181,10 +1215,10 @@ class UixLoader {
                     selType_ = before;
                 }
             } else if (dotAt >= 0) {
-                selType_ = Str.substring(sel, 0, dotAt);
-                selClass_ = Str.substring(sel, dotAt + 1, Str.len(sel));
+                selType_ = Str.substring(base, 0, dotAt);
+                selClass_ = Str.substring(base, dotAt + 1, Str.len(base));
             } else {
-                selType_ = sel;
+                selType_ = base;
             }
         }
 

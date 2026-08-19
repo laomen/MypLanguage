@@ -279,6 +279,23 @@ class Player {
                 if (key == 40) fm.activate();           // 回车 → 激活当前焦点
                 if (maxFrame > 0 && frame >= maxFrame) break;
 
+                // ---- hover：鼠标位置 → 按钮悬停提亮（每帧刷新，成本低）----
+                int mpos = SDL.getMousePos();
+                if (mpos >= 0) {
+                    int hx = mpos & 0xFFFF;
+                    int hy = (mpos >> 16) & 0xFFFF;
+                    play.setHovered(play.hit(hx, hy));
+                    stop.setHovered(stop.hit(hx, hy));
+                    t1.setHovered(t1.hit(hx, hy));
+                    t2.setHovered(t2.hit(hx, hy));
+                    t3.setHovered(t3.hit(hx, hy));
+                    btnMenu.setHovered(btnMenu.hit(hx, hy));
+                    btnDrawer.setHovered(btnDrawer.hit(hx, hy));
+                    btnTip.setHovered(btnTip.hit(hx, hy));
+                    ibPrev.setHovered(ibPrev.hit(hx, hy));
+                    ibNext.setHovered(ibNext.hit(hx, hy));
+                }
+
                 // ---- 窗口自适应：检测尺寸变化 → 同步逻辑尺寸 + 重排布局 ----
                 int curW = SDL.width();
                 int curH = SDL.height();
