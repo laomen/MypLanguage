@@ -2,6 +2,8 @@
 // ---------------------------------------------------------------------------
 // 点击切换开/关，触发 Toggled(value)。纯逻辑不依赖 SDL（用 Renderer 抽象，
 // 可 headless 测试）。on 状态 = 填充主题色；off = 灰色圆角矩形 + 圆形滑块。
+import text;
+
 class Switch {
     interface class View;
 
@@ -9,8 +11,7 @@ class Switch {
         int x_;
         int y_;
         int w_;
-        int h_;
-        int on_;
+        int h_;        int on_;
         int color_;
 
     event:
@@ -30,6 +31,12 @@ class Switch {
         int getOn() { return on_; }
         void toggle() { setOn(on_ == 0 ? 1 : 0); }
         void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "on") setOn(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
         int getX() { return x_; }
         int getY() { return y_; }
 

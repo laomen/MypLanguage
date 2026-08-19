@@ -1,0 +1,110 @@
+// dashboard.myp — mypview 组合示例：控制面板仪表盘
+// ---------------------------------------------------------------------------
+// 演示「完善后的 UI 框架」：UIX 声明式构建（Linear/Flow/Stack 容器 +
+// Switch/Checkbox/Slider/ProgressBar 状态控件 + 绑定/命令）+ 代码布局
+// （GridLayout 快捷入口网格）。headless 可运行，输出状态供回归校验。
+//
+// 运行：bash examples/build.sh dashboard → ./dashboard
+import env;
+import fmt;
+
+// 设置页 ViewModel（组合 PropBag）
+class SettingsVM {
+    interface class ViewModel;
+    property:
+        PropBag bag_;
+    action:
+        @constructor SettingsVM() {
+            bag_ = new PropBag();
+            bag_.set("title", "Settings");
+        }
+        string getProp(string name) { return bag_.get(name); }
+        void runCmd(string name) {
+            if (name == "save") bag_.set("title", "Saved");
+        }
+}
+
+class Dashboard {
+    action:
+        @constructor Dashboard() {
+            // ===== 1. UIX 声明式设置面板 =====
+            string uix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":420,\"height\":360,"
+                + "\"padding\":12,\"spacing\":10,\"children\":["
+                + "{\"type\":\"Label\",\"id\":\"title\",\"text\":\"Settings\",\"scale\":3,"
+                + "\"bind\":\"title\"},"
+                + "{\"type\":\"Row\",\"id\":\"row1\",\"width\":396,\"height\":40,\"spacing\":8,"
+                + "\"children\":["
+                + "{\"type\":\"Switch\",\"id\":\"notif\",\"on\":1,\"color\":\"#34C759\"},"
+                + "{\"type\":\"Checkbox\",\"id\":\"agree\",\"text\":\"I agree\",\"checked\":1}"
+                + "]},"
+                + "{\"type\":\"Slider\",\"id\":\"vol\",\"value\":60,\"min\":0,\"max\":100},"
+                + "{\"type\":\"ProgressBar\",\"id\":\"batt\",\"value\":75,\"min\":0,\"max\":100},"
+                + "{\"type\":\"Flow\",\"id\":\"tags\",\"width\":396,\"height\":80,"
+                + "\"spacing\":6,\"rowGap\":6,\"children\":["
+                + "{\"type\":\"Button\",\"id\":\"t1\",\"text\":\"fast\",\"width\":80,\"height\":26},"
+                + "{\"type\":\"Button\",\"id\":\"t2\",\"text\":\"safe\",\"width\":80,\"height\":26},"
+                + "{\"type\":\"Button\",\"id\":\"t3\",\"text\":\"auto\",\"width\":80,\"height\":26},"
+                + "{\"type\":\"Button\",\"id\":\"t4\",\"text\":\"night\",\"width\":90,\"height\":26}"
+                + "]},"
+                + "{\"type\":\"Stack\",\"id\":\"badge\",\"width\":396,\"height\":40,\"padding\":0,"
+                + "\"children\":["
+                + "{\"type\":\"Panel\",\"id\":\"bgb\",\"width\":396,\"height\":40,\"color\":\"#F1F1F3\"},"
+                + "{\"type\":\"Label\",\"id\":\"bgl\",\"text\":\"All systems OK\"}"
+                + "]},"
+                + "{\"type\":\"Button\",\"id\":\"save\",\"text\":\"Save\",\"width\":120,"
+                + "\"height\":40,\"onCmd\":\"save\"}"
+                + "]}";
+            UixLoader loader = new UixLoader(uix, "");
+            RootView rv = new RootView(16, 480, 420);
+            loader.buildInto(rv);
+
+            // 类型化访问器读回控件状态（MYP 无下转，用构建时保留的引用）
+            int ni = loader.switchIdxOf("notif");
+            int ci = loader.checkboxIdxOf("agree");
+            int vi = loader.sliderIdxOf("vol");
+            int bi = loader.progressbarIdxOf("batt");
+            int ti = loader.flowIdxOf("tags");
+            int si = loader.stackIdxOf("badge");
+            Console.writeLine("dash nodes=" + Fmt.i(loader.nodeCount())
+                              + " sw=" + Fmt.i(loader.switchAt(ni).getOn())
+                              + " cb=" + Fmt.i(loader.checkboxAt(ci).getChecked())
+                              + "/" + loader.checkboxAt(ci).getLabel()
+                              + " sl=" + Fmt.i(loader.sliderAt(vi).getValue())
+                              + " pb=" + Fmt.i(loader.progressbarAt(bi).getValue())
+                              + " tags=" + Fmt.i(loader.flowAt(ti).childCount())
+                              + " badge=" + Fmt.i(loader.stackAt(si).childCount()));
+
+            // 绑定/命令：VM 刷新 title + 命令分发
+            SettingsVM vm = new SettingsVM();
+            loader.sync(vm);
+            int ti2 = loader.labelIdxOf("title");
+            Console.writeLine("dash bind title=" + loader.labelAt(ti2).getText());
+            string cmd = loader.cmdFor("save");
+            vm.runCmd(cmd);
+            loader.sync(vm);
+            Console.writeLine("dash runCmd title=" + loader.labelAt(ti2).getText());
+
+            // ===== 2. GridLayout 快捷入口网格（代码布局）=====
+            GridLayout grid = new GridLayout(4, 320, 200);
+            grid.setPadding(8);
+            grid.setSpacing(8);
+            Button g1 = new Button("Call", 0, 0, 60, 40);
+            Button g2 = new Button("Mail", 0, 0, 60, 40);
+            Button g3 = new Button("Chat", 0, 0, 60, 40);
+            Button g4 = new Button("Files", 0, 0, 60, 40);
+            grid.add(g1);
+            grid.add(g2);
+            grid.add(g3);
+            grid.add(g4);
+            grid.setFrame(0, 0, 320, 200);
+            grid.layout();
+            Console.writeLine("dash grid kids=" + Fmt.i(grid.childCount())
+                              + " cell=" + Fmt.i(grid.cellWidth())
+                              + "x" + Fmt.i(grid.cellHeight())
+                              + " g4=" + Fmt.i(g4.getX()) + "/" + Fmt.i(g4.getY())
+                              + " hit=" + grid.hit(250, 8));
+        }
+}
+
+int main() { Dashboard d = new Dashboard(); return 0; }

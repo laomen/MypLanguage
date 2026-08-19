@@ -67,6 +67,24 @@ class UixLoader {
         Panel[] panels_;
         string[] panelIds_;
         int panelCount_;
+        Switch[] switches_;
+        string[] switchIds_;
+        int switchCount_;
+        Checkbox[] checkboxes_;
+        string[] checkboxIds_;
+        int checkboxCount_;
+        Slider[] sliders_;
+        string[] sliderIds_;
+        int sliderCount_;
+        ProgressBar[] progressbars_;
+        string[] progressbarIds_;
+        int progressbarCount_;
+        FlowLayout[] flows_;
+        string[] flowIds_;
+        int flowCount_;
+        StackLayout[] stacks_;
+        string[] stackIds_;
+        int stackCount_;
         // 控件注册表（UIX 扩展点：自定义控件类型 → ViewBuilder）
         string[] regTypes_;
         ViewBuilder[] regBuilders_;
@@ -112,6 +130,24 @@ class UixLoader {
             panels_ = new Panel[64];
             panelIds_ = new string[64];
             panelCount_ = 0;
+            switches_ = new Switch[64];
+            switchIds_ = new string[64];
+            switchCount_ = 0;
+            checkboxes_ = new Checkbox[64];
+            checkboxIds_ = new string[64];
+            checkboxCount_ = 0;
+            sliders_ = new Slider[64];
+            sliderIds_ = new string[64];
+            sliderCount_ = 0;
+            progressbars_ = new ProgressBar[64];
+            progressbarIds_ = new string[64];
+            progressbarCount_ = 0;
+            flows_ = new FlowLayout[16];
+            flowIds_ = new string[16];
+            flowCount_ = 0;
+            stacks_ = new StackLayout[16];
+            stackIds_ = new string[16];
+            stackCount_ = 0;
             regTypes_ = new string[16];
             regBuilders_ = new ViewBuilder[16];
             regCount_ = 0;
@@ -177,6 +213,49 @@ class UixLoader {
                 registerField(t, id, cls);
                 applyNode(uix_, "", t, id, cls);
                 rootView.add(t);
+            } else if (rootType == "Switch") {
+                Switch sw = new Switch(getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                       dim(uix_, "", "width", 60), dim(uix_, "", "height", 32));
+                registerSwitch(sw, id, cls);
+                applyNode(uix_, "", sw, id, cls);
+                rootView.add(sw);
+            } else if (rootType == "Checkbox") {
+                Checkbox cb = new Checkbox(getStr(uix_, "", "text"),
+                                           getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                           dim(uix_, "", "width", 80), dim(uix_, "", "height", 24));
+                registerCheckbox(cb, id, cls);
+                applyNode(uix_, "", cb, id, cls);
+                rootView.add(cb);
+            } else if (rootType == "Slider") {
+                Slider sl = new Slider(getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                       dim(uix_, "", "width", 160), dim(uix_, "", "height", 24),
+                                       dim(uix_, "", "min", 0), dim(uix_, "", "max", 100));
+                registerSlider(sl, id, cls);
+                applyNode(uix_, "", sl, id, cls);
+                rootView.add(sl);
+            } else if (rootType == "ProgressBar") {
+                ProgressBar pb = new ProgressBar(getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                                 dim(uix_, "", "width", 160), dim(uix_, "", "height", 16),
+                                                 dim(uix_, "", "min", 0), dim(uix_, "", "max", 100));
+                registerProgressBar(pb, id, cls);
+                applyNode(uix_, "", pb, id, cls);
+                rootView.add(pb);
+            } else if (rootType == "Flow") {
+                FlowLayout f = new FlowLayout(
+                    dim(uix_, "", "width", 200), dim(uix_, "", "height", 200));
+                registerFlow(f, id, rootType, cls);
+                applyNode(uix_, "", f, id, cls);
+                rootView.add(f);
+                buildIntoFlow(uix_, "", f);
+                f.layout();
+            } else if (rootType == "Stack") {
+                StackLayout s = new StackLayout(
+                    dim(uix_, "", "width", 200), dim(uix_, "", "height", 200));
+                registerStack(s, id, rootType, cls);
+                applyNode(uix_, "", s, id, cls);
+                rootView.add(s);
+                buildIntoStack(uix_, "", s);
+                s.layout();
             }
         }
 
@@ -209,6 +288,33 @@ class UixLoader {
                     registerField(t, cid, ccls);
                     applyNode(doc, cp, t, cid, ccls);
                     col.add(t);
+                } else if (ct == "Switch") {
+                    Switch sw = new Switch(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 60), dim(doc, cp, "height", 32));
+                    registerSwitch(sw, cid, ccls);
+                    applyNode(doc, cp, sw, cid, ccls);
+                    col.add(sw);
+                } else if (ct == "Checkbox") {
+                    Checkbox cb = new Checkbox(getStr(doc, cp, "text"),
+                                               getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                               dim(doc, cp, "width", 80), dim(doc, cp, "height", 24));
+                    registerCheckbox(cb, cid, ccls);
+                    applyNode(doc, cp, cb, cid, ccls);
+                    col.add(cb);
+                } else if (ct == "Slider") {
+                    Slider sl = new Slider(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 160), dim(doc, cp, "height", 24),
+                                           dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerSlider(sl, cid, ccls);
+                    applyNode(doc, cp, sl, cid, ccls);
+                    col.add(sl);
+                } else if (ct == "ProgressBar") {
+                    ProgressBar pb = new ProgressBar(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                     dim(doc, cp, "width", 160), dim(doc, cp, "height", 16),
+                                                     dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerProgressBar(pb, cid, ccls);
+                    applyNode(doc, cp, pb, cid, ccls);
+                    col.add(pb);
                 } else if (ct == "Column" || ct == "Row") {
                     int ori = ct == "Row" ? 1 : 0;
                     LinearLayout c2 = new LinearLayout(
@@ -225,6 +331,22 @@ class UixLoader {
                     applyNode(doc, cp, p, cid, ccls);
                     col.add(p);
                     buildIntoPanel(doc, cp, p);
+                } else if (ct == "Flow") {
+                    FlowLayout f2 = new FlowLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerFlow(f2, cid, ct, ccls);
+                    applyNode(doc, cp, f2, cid, ccls);
+                    col.add(f2);
+                    buildIntoFlow(doc, cp, f2);
+                    f2.layout();
+                } else if (ct == "Stack") {
+                    StackLayout s2 = new StackLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerStack(s2, cid, ct, ccls);
+                    applyNode(doc, cp, s2, cid, ccls);
+                    col.add(s2);
+                    buildIntoStack(doc, cp, s2);
+                    s2.layout();
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -273,6 +395,33 @@ class UixLoader {
                     registerField(t, cid, ccls);
                     applyNode(doc, cp, t, cid, ccls);
                     p.add(t);
+                } else if (ct == "Switch") {
+                    Switch sw = new Switch(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 60), dim(doc, cp, "height", 32));
+                    registerSwitch(sw, cid, ccls);
+                    applyNode(doc, cp, sw, cid, ccls);
+                    p.add(sw);
+                } else if (ct == "Checkbox") {
+                    Checkbox cb = new Checkbox(getStr(doc, cp, "text"),
+                                               getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                               dim(doc, cp, "width", 80), dim(doc, cp, "height", 24));
+                    registerCheckbox(cb, cid, ccls);
+                    applyNode(doc, cp, cb, cid, ccls);
+                    p.add(cb);
+                } else if (ct == "Slider") {
+                    Slider sl = new Slider(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 160), dim(doc, cp, "height", 24),
+                                           dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerSlider(sl, cid, ccls);
+                    applyNode(doc, cp, sl, cid, ccls);
+                    p.add(sl);
+                } else if (ct == "ProgressBar") {
+                    ProgressBar pb = new ProgressBar(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                     dim(doc, cp, "width", 160), dim(doc, cp, "height", 16),
+                                                     dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerProgressBar(pb, cid, ccls);
+                    applyNode(doc, cp, pb, cid, ccls);
+                    p.add(pb);
                 } else if (ct == "Column" || ct == "Row") {
                     int ori = ct == "Row" ? 1 : 0;
                     LinearLayout c2 = new LinearLayout(
@@ -289,6 +438,22 @@ class UixLoader {
                     applyNode(doc, cp, p2, cid, ccls);
                     p.add(p2);
                     buildIntoPanel(doc, cp, p2);
+                } else if (ct == "Flow") {
+                    FlowLayout f2 = new FlowLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerFlow(f2, cid, ct, ccls);
+                    applyNode(doc, cp, f2, cid, ccls);
+                    p.add(f2);
+                    buildIntoFlow(doc, cp, f2);
+                    f2.layout();
+                } else if (ct == "Stack") {
+                    StackLayout s2 = new StackLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerStack(s2, cid, ct, ccls);
+                    applyNode(doc, cp, s2, cid, ccls);
+                    p.add(s2);
+                    buildIntoStack(doc, cp, s2);
+                    s2.layout();
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -302,6 +467,220 @@ class UixLoader {
                                 heldCount_ = heldCount_ + 1;
                             }
                             p.add(v);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 构建 flow 的所有子节点（同 buildIntoCol，add 目标为 FlowLayout）
+        void buildIntoFlow(Json doc, string prefix, FlowLayout flow) {
+            int n = doc.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1) {
+                string cp = prefix + "children." + Fmt.i(i) + ".";
+                string ct = doc.getString(cp + "type");
+                string cid = getStr(doc, cp, "id");
+                string ccls = getStr(doc, cp, "class");
+                if (ct == "Label") {
+                    Label l = new Label(getStr(doc, cp, "text"),
+                                        getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                        dim(doc, cp, "scale", 2));
+                    registerLabel(l, cid, ccls);
+                    applyNode(doc, cp, l, cid, ccls);
+                    flow.add(l);
+                } else if (ct == "Button") {
+                    Button b = new Button(getStr(doc, cp, "text"),
+                                          getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                          dim(doc, cp, "width", 120), dim(doc, cp, "height", 40));
+                    registerButton(b, cid, ccls);
+                    applyNode(doc, cp, b, cid, ccls);
+                    flow.add(b);
+                } else if (ct == "TextField") {
+                    TextField t = new TextField(getStr(doc, cp, "text"),
+                                                getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                dim(doc, cp, "width", 240), dim(doc, cp, "height", 36));
+                    registerField(t, cid, ccls);
+                    applyNode(doc, cp, t, cid, ccls);
+                    flow.add(t);
+                } else if (ct == "Switch") {
+                    Switch sw = new Switch(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 60), dim(doc, cp, "height", 32));
+                    registerSwitch(sw, cid, ccls);
+                    applyNode(doc, cp, sw, cid, ccls);
+                    flow.add(sw);
+                } else if (ct == "Checkbox") {
+                    Checkbox cb = new Checkbox(getStr(doc, cp, "text"),
+                                               getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                               dim(doc, cp, "width", 80), dim(doc, cp, "height", 24));
+                    registerCheckbox(cb, cid, ccls);
+                    applyNode(doc, cp, cb, cid, ccls);
+                    flow.add(cb);
+                } else if (ct == "Slider") {
+                    Slider sl = new Slider(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 160), dim(doc, cp, "height", 24),
+                                           dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerSlider(sl, cid, ccls);
+                    applyNode(doc, cp, sl, cid, ccls);
+                    flow.add(sl);
+                } else if (ct == "ProgressBar") {
+                    ProgressBar pb = new ProgressBar(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                     dim(doc, cp, "width", 160), dim(doc, cp, "height", 16),
+                                                     dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerProgressBar(pb, cid, ccls);
+                    applyNode(doc, cp, pb, cid, ccls);
+                    flow.add(pb);
+                } else if (ct == "Column" || ct == "Row") {
+                    int ori = ct == "Row" ? 1 : 0;
+                    LinearLayout c2 = new LinearLayout(
+                        ori, dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerCol(c2, cid, ct, ccls);
+                    applyNode(doc, cp, c2, cid, ccls);
+                    flow.add(c2);
+                    buildIntoCol(doc, cp, c2);
+                    c2.layout();
+                } else if (ct == "Panel") {
+                    Panel p2 = new Panel(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                         dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerPanel(p2, cid, ct, ccls);
+                    applyNode(doc, cp, p2, cid, ccls);
+                    flow.add(p2);
+                    buildIntoPanel(doc, cp, p2);
+                } else if (ct == "Flow") {
+                    FlowLayout f2 = new FlowLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerFlow(f2, cid, ct, ccls);
+                    applyNode(doc, cp, f2, cid, ccls);
+                    flow.add(f2);
+                    buildIntoFlow(doc, cp, f2);
+                    f2.layout();
+                } else if (ct == "Stack") {
+                    StackLayout s2 = new StackLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerStack(s2, cid, ct, ccls);
+                    applyNode(doc, cp, s2, cid, ccls);
+                    flow.add(s2);
+                    buildIntoStack(doc, cp, s2);
+                    s2.layout();
+                } else {
+                    // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
+                    int ri = regIdxOf(ct);
+                    if (ri >= 0) {
+                        View v = regBuilders_[ri].create(getStr(doc, cp, "text"), cid);
+                        if (v != null) {
+                            registerNode(v, cid, ct, ccls);
+                            applyNode(doc, cp, v, cid, ccls);
+                            if (heldCount_ < 64) {
+                                held_[heldCount_] = v;
+                                heldCount_ = heldCount_ + 1;
+                            }
+                            flow.add(v);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 构建 stack 的所有子节点（同 buildIntoCol，add 目标为 StackLayout）
+        void buildIntoStack(Json doc, string prefix, StackLayout stack) {
+            int n = doc.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1) {
+                string cp = prefix + "children." + Fmt.i(i) + ".";
+                string ct = doc.getString(cp + "type");
+                string cid = getStr(doc, cp, "id");
+                string ccls = getStr(doc, cp, "class");
+                if (ct == "Label") {
+                    Label l = new Label(getStr(doc, cp, "text"),
+                                        getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                        dim(doc, cp, "scale", 2));
+                    registerLabel(l, cid, ccls);
+                    applyNode(doc, cp, l, cid, ccls);
+                    stack.add(l);
+                } else if (ct == "Button") {
+                    Button b = new Button(getStr(doc, cp, "text"),
+                                          getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                          dim(doc, cp, "width", 120), dim(doc, cp, "height", 40));
+                    registerButton(b, cid, ccls);
+                    applyNode(doc, cp, b, cid, ccls);
+                    stack.add(b);
+                } else if (ct == "TextField") {
+                    TextField t = new TextField(getStr(doc, cp, "text"),
+                                                getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                dim(doc, cp, "width", 240), dim(doc, cp, "height", 36));
+                    registerField(t, cid, ccls);
+                    applyNode(doc, cp, t, cid, ccls);
+                    stack.add(t);
+                } else if (ct == "Switch") {
+                    Switch sw = new Switch(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 60), dim(doc, cp, "height", 32));
+                    registerSwitch(sw, cid, ccls);
+                    applyNode(doc, cp, sw, cid, ccls);
+                    stack.add(sw);
+                } else if (ct == "Checkbox") {
+                    Checkbox cb = new Checkbox(getStr(doc, cp, "text"),
+                                               getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                               dim(doc, cp, "width", 80), dim(doc, cp, "height", 24));
+                    registerCheckbox(cb, cid, ccls);
+                    applyNode(doc, cp, cb, cid, ccls);
+                    stack.add(cb);
+                } else if (ct == "Slider") {
+                    Slider sl = new Slider(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                           dim(doc, cp, "width", 160), dim(doc, cp, "height", 24),
+                                           dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerSlider(sl, cid, ccls);
+                    applyNode(doc, cp, sl, cid, ccls);
+                    stack.add(sl);
+                } else if (ct == "ProgressBar") {
+                    ProgressBar pb = new ProgressBar(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                     dim(doc, cp, "width", 160), dim(doc, cp, "height", 16),
+                                                     dim(doc, cp, "min", 0), dim(doc, cp, "max", 100));
+                    registerProgressBar(pb, cid, ccls);
+                    applyNode(doc, cp, pb, cid, ccls);
+                    stack.add(pb);
+                } else if (ct == "Column" || ct == "Row") {
+                    int ori = ct == "Row" ? 1 : 0;
+                    LinearLayout c2 = new LinearLayout(
+                        ori, dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerCol(c2, cid, ct, ccls);
+                    applyNode(doc, cp, c2, cid, ccls);
+                    stack.add(c2);
+                    buildIntoCol(doc, cp, c2);
+                    c2.layout();
+                } else if (ct == "Panel") {
+                    Panel p2 = new Panel(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                         dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerPanel(p2, cid, ct, ccls);
+                    applyNode(doc, cp, p2, cid, ccls);
+                    stack.add(p2);
+                    buildIntoPanel(doc, cp, p2);
+                } else if (ct == "Flow") {
+                    FlowLayout f2 = new FlowLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerFlow(f2, cid, ct, ccls);
+                    applyNode(doc, cp, f2, cid, ccls);
+                    stack.add(f2);
+                    buildIntoFlow(doc, cp, f2);
+                    f2.layout();
+                } else if (ct == "Stack") {
+                    StackLayout s2 = new StackLayout(
+                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerStack(s2, cid, ct, ccls);
+                    applyNode(doc, cp, s2, cid, ccls);
+                    stack.add(s2);
+                    buildIntoStack(doc, cp, s2);
+                    s2.layout();
+                } else {
+                    // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
+                    int ri = regIdxOf(ct);
+                    if (ri >= 0) {
+                        View v = regBuilders_[ri].create(getStr(doc, cp, "text"), cid);
+                        if (v != null) {
+                            registerNode(v, cid, ct, ccls);
+                            applyNode(doc, cp, v, cid, ccls);
+                            if (heldCount_ < 64) {
+                                held_[heldCount_] = v;
+                                heldCount_ = heldCount_ + 1;
+                            }
+                            stack.add(v);
                         }
                     }
                 }
@@ -344,6 +723,48 @@ class UixLoader {
             return -1;
         }
         TextField fieldAt(int i) { return fields_[i]; }
+        int switchIdxOf(string id) {
+            for (int i = 0; i < switchCount_; i = i + 1) {
+                if (switchIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Switch switchAt(int i) { return switches_[i]; }
+        int checkboxIdxOf(string id) {
+            for (int i = 0; i < checkboxCount_; i = i + 1) {
+                if (checkboxIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Checkbox checkboxAt(int i) { return checkboxes_[i]; }
+        int sliderIdxOf(string id) {
+            for (int i = 0; i < sliderCount_; i = i + 1) {
+                if (sliderIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Slider sliderAt(int i) { return sliders_[i]; }
+        int progressbarIdxOf(string id) {
+            for (int i = 0; i < progressbarCount_; i = i + 1) {
+                if (progressbarIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        ProgressBar progressbarAt(int i) { return progressbars_[i]; }
+        int flowIdxOf(string id) {
+            for (int i = 0; i < flowCount_; i = i + 1) {
+                if (flowIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        FlowLayout flowAt(int i) { return flows_[i]; }
+        int stackIdxOf(string id) {
+            for (int i = 0; i < stackCount_; i = i + 1) {
+                if (stackIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        StackLayout stackAt(int i) { return stacks_[i]; }
 
         // 按 id 查命令名（未注册返回空串）
         string cmdFor(string id) {
@@ -389,6 +810,21 @@ class UixLoader {
                 v.setAttr("padding", Fmt.i(doc.getInt(prefix + "padding")));
             if (doc.type(prefix + "spacing") >= 0)
                 v.setAttr("spacing", Fmt.i(doc.getInt(prefix + "spacing")));
+            // 专属/状态属性（各控件 setAttr 处理；控件不支持则静默忽略）
+            if (doc.type(prefix + "text") >= 0)
+                v.setAttr("text", doc.getString(prefix + "text"));
+            if (doc.type(prefix + "scale") >= 0)
+                v.setAttr("scale", Fmt.i(doc.getInt(prefix + "scale")));
+            if (doc.type(prefix + "on") >= 0)
+                v.setAttr("on", Fmt.i(doc.getInt(prefix + "on")));
+            if (doc.type(prefix + "checked") >= 0)
+                v.setAttr("checked", Fmt.i(doc.getInt(prefix + "checked")));
+            if (doc.type(prefix + "value") >= 0)
+                v.setAttr("value", Fmt.i(doc.getInt(prefix + "value")));
+            if (doc.type(prefix + "min") >= 0)
+                v.setAttr("min", Fmt.i(doc.getInt(prefix + "min")));
+            if (doc.type(prefix + "max") >= 0)
+                v.setAttr("max", Fmt.i(doc.getInt(prefix + "max")));
             // 样式表
             applyStyles(v, id, cls);
             // 绑定：bind = VM 属性路径；bindProp = 控件属性（缺省 text）
@@ -506,6 +942,48 @@ class UixLoader {
             panels_[panelCount_] = p;
             panelIds_[panelCount_] = id;
             panelCount_ = panelCount_ + 1;
+        }
+        void registerSwitch(Switch s, string id, string cls) {
+            registerNode(s, id, "Switch", cls);
+            if (switchCount_ >= 64) return;
+            switches_[switchCount_] = s;
+            switchIds_[switchCount_] = id;
+            switchCount_ = switchCount_ + 1;
+        }
+        void registerCheckbox(Checkbox c, string id, string cls) {
+            registerNode(c, id, "Checkbox", cls);
+            if (checkboxCount_ >= 64) return;
+            checkboxes_[checkboxCount_] = c;
+            checkboxIds_[checkboxCount_] = id;
+            checkboxCount_ = checkboxCount_ + 1;
+        }
+        void registerSlider(Slider s, string id, string cls) {
+            registerNode(s, id, "Slider", cls);
+            if (sliderCount_ >= 64) return;
+            sliders_[sliderCount_] = s;
+            sliderIds_[sliderCount_] = id;
+            sliderCount_ = sliderCount_ + 1;
+        }
+        void registerProgressBar(ProgressBar p, string id, string cls) {
+            registerNode(p, id, "ProgressBar", cls);
+            if (progressbarCount_ >= 64) return;
+            progressbars_[progressbarCount_] = p;
+            progressbarIds_[progressbarCount_] = id;
+            progressbarCount_ = progressbarCount_ + 1;
+        }
+        void registerFlow(FlowLayout f, string id, string type, string cls) {
+            registerNode(f, id, type, cls);
+            if (flowCount_ >= 16) return;
+            flows_[flowCount_] = f;
+            flowIds_[flowCount_] = id;
+            flowCount_ = flowCount_ + 1;
+        }
+        void registerStack(StackLayout s, string id, string type, string cls) {
+            registerNode(s, id, type, cls);
+            if (stackCount_ >= 16) return;
+            stacks_[stackCount_] = s;
+            stackIds_[stackCount_] = id;
+            stackCount_ = stackCount_ + 1;
         }
 
         // 读属性（不存在返回空串）

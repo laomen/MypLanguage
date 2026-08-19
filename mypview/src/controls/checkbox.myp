@@ -1,6 +1,8 @@
 // checkbox.myp — uikit 控件：Checkbox（复选框）
 // ---------------------------------------------------------------------------
 // 点击勾选/取消，触发 Changed(value)。纯逻辑 headless 可测。
+import text;
+
 class Checkbox {
     interface class View;
 
@@ -30,7 +32,15 @@ class Checkbox {
         void setChecked(int v) { checked_ = v; }
         int getChecked() { return checked_; }
         void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setLabel(string s) { label_ = s; }
         string getLabel() { return label_; }
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "text") setLabel(value);
+            else if (name == "checked") setChecked(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
         int getX() { return x_; }
         int getY() { return y_; }
 

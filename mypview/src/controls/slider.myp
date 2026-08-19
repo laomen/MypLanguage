@@ -2,6 +2,8 @@
 // ---------------------------------------------------------------------------
 // value 范围 [min,max]；onTouch(x,y) 按点击位置线性映射设定值，触发
 // ValueChanged(value)。纯逻辑 headless 可测。
+import text;
+
 class Slider {
     interface class View;
 
@@ -37,6 +39,14 @@ class Slider {
         }
         int getValue() { return value_; }
         void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "value") setValue(Str.toInt(value));
+            else if (name == "min") { min_ = Str.toInt(value); if (value_ < min_) value_ = min_; }
+            else if (name == "max") { max_ = Str.toInt(value); if (value_ > max_) value_ = max_; }
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
         int getX() { return x_; }
         int getY() { return y_; }
 

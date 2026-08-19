@@ -2,6 +2,8 @@
 // ---------------------------------------------------------------------------
 // value 范围 [min,max]；setProgress 设值（clamp），draw 按比例填充。
 // 纯逻辑 headless 可测（不交互，无事件）。
+import text;
+
 class ProgressBar {
     interface class View;
 
@@ -39,6 +41,14 @@ class ProgressBar {
             return double(value_ - min_) / double(max_ - min_);
         }
         void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "value") setProgress(Str.toInt(value));
+            else if (name == "min") { min_ = Str.toInt(value); if (value_ < min_) value_ = min_; }
+            else if (name == "max") { max_ = Str.toInt(value); if (value_ > max_) value_ = max_; }
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
         int getX() { return x_; }
         int getY() { return y_; }
 

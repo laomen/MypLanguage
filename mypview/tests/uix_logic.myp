@@ -109,6 +109,86 @@ class Main {
             Console.writeLine("uix ext text=" + bb.getText()
                               + " nodes=" + Fmt.i(ext.nodeCount())
                               + " hit=" + ext.hitId(80, 30));
+
+            // ---- 全控件声明式构建：Switch/Checkbox/Slider/ProgressBar ----
+            string ctrlUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":360,\"height\":220,"
+                + "\"padding\":12,\"spacing\":10,\"children\":["
+                + "{\"type\":\"Switch\",\"id\":\"sw\",\"on\":1,\"color\":\"#34C759\"},"
+                + "{\"type\":\"Checkbox\",\"id\":\"cb\",\"text\":\"Agree\",\"checked\":1},"
+                + "{\"type\":\"Slider\",\"id\":\"sl\",\"value\":42,\"min\":0,\"max\":100},"
+                + "{\"type\":\"ProgressBar\",\"id\":\"pb\",\"value\":70,\"min\":0,\"max\":100}"
+                + "]}";
+            UixLoader cl = new UixLoader(ctrlUix, "");
+            RootView cr = new RootView(16, 400, 300);
+            cl.buildInto(cr);
+            int swi = cl.switchIdxOf("sw");
+            int cbi = cl.checkboxIdxOf("cb");
+            int sli = cl.sliderIdxOf("sl");
+            int pbi = cl.progressbarIdxOf("pb");
+            Console.writeLine("uix ctrl nodes=" + Fmt.i(cl.nodeCount())
+                              + " sw=" + Fmt.i(cl.switchAt(swi).getOn())
+                              + " swc=" + Fmt.x(cl.switchAt(swi).getColor())
+                              + " cb=" + Fmt.i(cl.checkboxAt(cbi).getChecked())
+                              + "/" + cl.checkboxAt(cbi).getLabel()
+                              + " sl=" + Fmt.i(cl.sliderAt(sli).getValue())
+                              + " pb=" + Fmt.i(cl.progressbarAt(pbi).getValue()));
+
+            // ---- FlowLayout：流式换行布局数学 ----
+            FlowLayout fl = new FlowLayout(100, 60);
+            fl.setPadding(8);
+            fl.setSpacing(4);
+            fl.setRowGap(6);
+            Button b1 = new Button("b1", 0, 0, 30, 10);
+            Button b2 = new Button("b2", 0, 0, 30, 10);
+            Button b3 = new Button("b3", 0, 0, 30, 10);
+            fl.add(b1);
+            fl.add(b2);
+            fl.add(b3);
+            fl.setFrame(0, 0, 100, 60);
+            fl.layout();
+            // 内容区 [8,92]：b1@8 b2@42；b3 换行到 y=24
+            Console.writeLine("uix flow b1=" + Fmt.i(b1.getX()) + "/" + Fmt.i(b1.getY())
+                              + " b2=" + Fmt.i(b2.getX()) + "/" + Fmt.i(b2.getY())
+                              + " b3=" + Fmt.i(b3.getX()) + "/" + Fmt.i(b3.getY()));
+
+            // ---- StackLayout：层叠填满容器 ----
+            StackLayout st = new StackLayout(200, 100);
+            st.setPadding(0);
+            Button s1 = new Button("s1", 0, 0, 10, 10);
+            Button s2 = new Button("s2", 0, 0, 10, 10);
+            st.add(s1);
+            st.add(s2);
+            st.setFrame(10, 20, 200, 100);
+            st.layout();
+            Console.writeLine("uix stack s1=" + Fmt.i(s1.getX()) + "/" + Fmt.i(s1.getY())
+                              + " w=" + Fmt.i(s1.width()) + "/" + Fmt.i(s1.height())
+                              + " s2=" + Fmt.i(s2.getX()) + "/" + Fmt.i(s2.getY()));
+
+            // ---- UIX 容器：Flow/Stack 声明式构建 ----
+            string layoutUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":300,\"height\":260,"
+                + "\"padding\":8,\"spacing\":8,\"children\":["
+                + "{\"type\":\"Flow\",\"id\":\"flowBox\",\"width\":200,\"height\":80,"
+                + "\"padding\":8,\"spacing\":4,\"rowGap\":6,\"children\":["
+                + "{\"type\":\"Button\",\"id\":\"fa\",\"text\":\"A\"},"
+                + "{\"type\":\"Button\",\"id\":\"fb\",\"text\":\"B\"}"
+                + "]},"
+                + "{\"type\":\"Stack\",\"id\":\"stackBox\",\"width\":200,\"height\":100,"
+                + "\"padding\":4,\"children\":["
+                + "{\"type\":\"Panel\",\"id\":\"sb1\",\"width\":50,\"height\":50},"
+                + "{\"type\":\"Label\",\"id\":\"sb2\",\"text\":\"top\"}"
+                + "]}"
+                + "]}";
+            UixLoader ll = new UixLoader(layoutUix, "");
+            RootView lr = new RootView(16, 400, 320);
+            ll.buildInto(lr);
+            int fidx = ll.flowIdxOf("flowBox");
+            int sidx = ll.stackIdxOf("stackBox");
+            Console.writeLine("uix layout flowKids=" + Fmt.i(ll.flowAt(fidx).childCount())
+                              + " stackKids=" + Fmt.i(ll.stackAt(sidx).childCount())
+                              + " nodes=" + Fmt.i(ll.nodeCount())
+                              + " ftype=" + ll.typeOf("flowBox"));
         }
 }
 

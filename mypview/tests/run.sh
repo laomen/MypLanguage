@@ -16,7 +16,13 @@ SRCS=(
     "$SRC/controls/button.myp"
     "$SRC/controls/text_field.myp"
     "$SRC/controls/panel.myp"
+    "$SRC/controls/switch.myp"
+    "$SRC/controls/checkbox.myp"
+    "$SRC/controls/slider.myp"
+    "$SRC/controls/progress_bar.myp"
     "$SRC/layout/linear_layout.myp"
+    "$SRC/layout/flow_layout.myp"
+    "$SRC/layout/stack_layout.myp"
     "$SRC/uix/prop_bag.myp"
     "$SRC/uix/uix_loader.myp"
     "uix_logic.myp"
@@ -31,7 +37,11 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix bind status=ready (init)" \
    && printf '%s' "$OUT" | grep -q "uix runCmd status=ok-login" \
    && printf '%s' "$OUT" | grep -q "uix sync status=ok-login" \
-   && printf '%s' "$OUT" | grep -q "uix ext text=NEW nodes=3 hit=badge"; then
+   && printf '%s' "$OUT" | grep -q "uix ext text=NEW nodes=3 hit=badge" \
+   && printf '%s' "$OUT" | grep -q "uix ctrl nodes=5 sw=1 swc=34c759 cb=1/Agree sl=42 pb=70" \
+   && printf '%s' "$OUT" | grep -q "uix flow b1=8/8 b2=42/8 b3=8/24" \
+   && printf '%s' "$OUT" | grep -q "uix stack s1=10/20 w=200/100 s2=10/20" \
+   && printf '%s' "$OUT" | grep -q "uix layout flowKids=2 stackKids=2 nodes=7 ftype=Flow"; then
     echo "MYPVIEW-UIX PASS"
     exit 0
 else

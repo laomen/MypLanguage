@@ -1,0 +1,98 @@
+// stack_layout.myp — uikit 布局：StackLayout（层叠布局）
+// ---------------------------------------------------------------------------
+// 子控件按添加顺序重叠（后添加者在上层，z 序 = 添加序）。每个子控件默认
+// 填满容器内容区（扣除 padding）——常用于背景图/渐变层 + 前景内容叠加。
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+import text;
+
+class StackLayout {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int padding_;
+        View[] kids_;
+        int kidCount_;
+
+    action:
+        @constructor StackLayout(int w, int h) {
+            w_ = w;
+            h_ = h;
+            padding_ = 0;
+            kids_ = new View[64];
+            kidCount_ = 0;
+        }
+
+        void setPadding(int p) { padding_ = p; }
+        int getPadding() { return padding_; }
+
+        void add(View v) {
+            if (kidCount_ >= 64) return;
+            kids_[kidCount_] = v;
+            kidCount_ = kidCount_ + 1;
+        }
+
+        int childCount() { return kidCount_; }
+
+        // 布局：每个子控件填满内容区（叠放）。
+        // 注意：interface 数组元素经局部变量再调（安全模式）。
+        void layout() {
+            int cw = w_ - 2 * padding_;
+            int ch = h_ - 2 * padding_;
+            if (cw < 0) cw = 0;
+            if (ch < 0) ch = 0;
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                View kid = kids_[i];
+                kid.setFrame(x_ + padding_, y_ + padding_, cw, ch);
+            }
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                kid.draw(r);
+            }
+        }
+
+        int hit(int x, int y) {
+            // 命中判定交给最上层子控件（后添加者优先）
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                if (kid.hit(x, y) != 0) return 1;
+            }
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                if (kid.hit(x, y) != 0) {
+                    kid.onTouch(x, y);
+                    return;
+                }
+            }
+        }
+
+        // 声明式引擎入口：容器加子 + 布局 + 属性（UixLoader 统一调用）
+        void addChild(View v) { add(v); }
+        void relayout() { layout(); }
+        void setAttr(string name, string value) {
+            if (name == "padding") setPadding(Str.toInt(value));
+        }
+}
