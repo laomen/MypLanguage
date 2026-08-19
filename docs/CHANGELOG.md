@@ -35,17 +35,23 @@
 - 自举 myp_self 二进制比 mypc 多导出 ~90 个全局函数（`__myp_destroy_*`/
   `__myp_coro_*` 应为 internal）。
 
-**BUG-041 — 多文件编译对文件顺序敏感（mypc + myp_self 各一面）**
-- mypc：多文件合并 AST 后单次 Sema，但 CodeGen 对类遍历顺序敏感——字母序下
-  ConstraintLayout 等对象 ARC 错乱（运行时 this 悬垂、字段被字符串覆盖）。
-  依赖顺序（基础类型 renderer/view 先编译）正常。
-- myp_self：对「绝对路径源码 + 相对 target」混合路径会丢 main（undefined
-  main）；全相对路径正常。myp_self 对文件顺序本身不敏感（通配符字母序 OK）。
-- 修复（mypview/examples/build.sh 双管齐下）：mypc 分支用依赖顺序固定列表；
-  myp_self 分支用目录通配 + 源码/标准库全相对路径。两编译器编译 player/
-  counter 均全绿。
-- 遗留：mypc CodeGen 深层的顺序依赖机制未根除（靠 build 顺序规避），如需根治
-  须查 codegen 按类序遍历的全局状态。
+**BUG-041 — 方法调用 callee 选择 fallback 按类序 → 同名方法错调（已根治）**
+- 根本原因（src/codegen/codegen_expr.cpp）：`cols_[i].layout()`（UixLoader
+  `layoutAll()` 遍历 `LinearLayout[]` **类属性数组**元素）的方法解析用
+  `memberObjectClassName`（查 `array_elem_class_map_`，该 map **只记录局部变量
+  数组**）→ 类属性数组缺失 → **fallback 按类注册顺序找第一个同名 `layout`
+  方法** → 字母序下 ConstraintLayout 先注册 → 错调 `ConstraintLayout_layout`
+  → 对象 ARC/字段错乱崩溃。run.sh 顺序（linear 在 constraint 前）碰巧正确。
+- 修复：callee 选择两处（主选 + fallback）优先用 sema 的
+  `ma.resolved_object_class`（静态元素类型，**与文件顺序无关**），为空才回退
+  `memberObjectClassName`。字母序 mypc 编译运行 uix_logic 69 行（原崩溃）。
+- 验证：字母序全量 69 行；父级 312/312、bugs 11/11、bootstrap 16/16、
+  mypview UIX/PIPE PASS。
+
+**BUG-041b — myp_self 对「绝对路径源码 + 相对 target」混合路径丢 main**
+- 根因：myp_self 对绝对/相对混合路径的 target 处理错，未生成/链接 main。
+- 修复（mypview/examples/build.sh）：源码/标准库一律用相对路径。
+- 验证：myp_self 编译 player/counter 全绿。
 
 **BUG-042 — selfhost 内部析构/协程入口生成为 global 符号**
 - 修复（tools/selfhost/src/codegen.myp）：`__myp_destroy_*`（10462）、

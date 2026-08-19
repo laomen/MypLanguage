@@ -1925,7 +1925,14 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                      ma.object->kind == ExprKind::NewExpr ||
                      ma.object->kind == ExprKind::Call ||
                      ma.object->kind == ExprKind::MemberAccess) {
-                obj_cls = memberObjectClassName(*ma.object);
+                // BUG-041 根本修复：优先用 sema 的 resolved_object_class（静态
+                // 类型，与文件顺序无关）——类属性数组（如 cols_ 为 LinearLayout[]）
+                // 不在 array_elem_class_map_（只记录局部变量数组），此前 fallback
+                // 按类注册顺序选第一个同名方法（字母序下 ConstraintLayout 在
+                // LinearLayout 前 → cols_[i].layout() 错调 ConstraintLayout_layout
+                // → 运行崩溃）。resolved_object_class 由 sema 从元素类型解析。
+                obj_cls = !ma.resolved_object_class.empty()
+                    ? ma.resolved_object_class : memberObjectClassName(*ma.object);
             }
             for (auto& cls : current_tu_->classes) {
                 if (!obj_cls.empty() && cls.name != obj_cls) continue;
@@ -1975,7 +1982,10 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                        ma.object->kind == ExprKind::NewExpr ||
                        ma.object->kind == ExprKind::Call ||
                        ma.object->kind == ExprKind::MemberAccess) {
-                fb_obj_cls = memberObjectClassName(*ma.object);
+                // BUG-041：同 callee 选择——优先 sema resolved_object_class
+                //（类属性数组元素方法调用不依赖文件顺序）。
+                fb_obj_cls = !ma.resolved_object_class.empty()
+                    ? ma.resolved_object_class : memberObjectClassName(*ma.object);
             }
             // First, if the object is a KNOWN class name (static method call like
             // Vectors.min()), only search that class. Otherwise a method name that

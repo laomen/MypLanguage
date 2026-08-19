@@ -1123,22 +1123,29 @@
     偶报 `renderer.myp: Call parameter type does not match function signature`。
   - 通配符 `src/core/*.myp ...` 按字母序展开，故 mypc 用通配符编译 mypview 全集
     会崩溃；myp_self 用同样字母序通配符**运行正常**（顺序无关，更健壮）。
-- **根因（待定位）**：mypc 跨文件类型/方法解析依赖编译文件顺序——字母序下
-  （focus_manager/gesture 先于 renderer/view 等）某些类型/方法表解析错乱，
-  ConstraintLayout_layout 生成错误代码。已排除「单个额外文件导致」（去掉
-  grid_layout 仍崩）。
-- **影响**：build.sh 通配符（字母序）用 mypc 编译有潜在风险；player 目前正常
-  是因为不触发 ConstraintLayout_layout 崩溃路径。
-- **修复**（mypview/examples/build.sh，双管齐下）：
-  - **mypc 顺序敏感**：SRCS 用依赖顺序固定列表（基础类型 renderer/view 等在前，
-    被引用类型先编译；字母序会让 ConstraintLayout 等对象 ARC 错乱崩溃）。
-  - **myp_self 混合路径 main 丢失**：myp_self 对「绝对路径源码 + 相对 target」
-    会 undefined main（全相对路径正常）→ build.sh 源码/标准库改相对路径；
-    且 myp_self 分支用目录通配（myp_self 顺序无关）。
-  - 两编译器均验证：mypc + myp_self 编译运行 player（8 帧）/counter 全绿。
-- **遗留**：mypc codegen 深层的顺序依赖机制（ConstraintLayout 对象 ARC 错乱）
-  未根除，靠 build 顺序规避；如需根治须查 codegen 按类序遍历的全局状态。
-- **验证**：mypc/myp_self 编译 player + counter 全绿；mypview UIX/PIPE PASS。
+- **根本原因**（src/codegen/codegen_expr.cpp callee 选择）：`cols_[i].layout()`
+  的对象是**类属性数组元素**，codegen 用 `memberObjectClassName`（查
+  `array_elem_class_map_`，但该 map **只记录局部变量数组**，类属性数组缺失）
+  → 返回空 → **fallback 按类注册顺序遍历找第一个同名方法** `layout` → 字母序下
+  ConstraintLayout 先注册 → 错调 `ConstraintLayout_layout`（参数错 → 对象
+  ARC/字段错乱 → 崩溃）。sema 已解析的 `resolved_object_class`（静态元素类型
+  `LinearLayout`，**与文件顺序无关**）未用于 callee 选择。
+- **修复**（codegen_expr.cpp 两处 callee 选择 + fallback）：优先用
+  `ma.resolved_object_class`（sema 静态类型），为空才 fallback 到
+  `memberObjectClassName`。`cols_[i].layout()` 现在稳定解析到 LinearLayout。
+- **验证**：字母序 mypc 编译运行 uix_logic 69 行（原崩溃）；字母序全量 69 行；
+  run.sh UIX/PIPE PASS；父级 312/312、bugs 11/11、bootstrap 16/16。
+- **备注**：build.sh 仍保留双分支（mypc 依赖顺序列表可撤销但无害 / myp_self
+  通配符+相对路径）；myp_self 混合路径丢 main 是独立问题，见 BUG-041b。
+
+## BUG-041b（已修复 🟩）：myp_self 对「绝对路径源码 + 相对 target」混合路径丢 main
+
+- **症状**：build.sh 用 `$DIR/../src`（绝对路径）编译时，myp_self 报
+  `undefined reference to 'main'`；全相对路径正常。
+- **根因**：myp_self 对绝对/相对混合路径的 target（main 所在文件）处理错，
+  未生成/链接 main。
+- **修复**（build.sh）：源码/标准库一律用相对路径（`cd $DIR` 后稳定）。
+- **验证**：myp_self 编译 player/counter 全绿。
 
 ## BUG-042（已修复 🟩）：myp_self 把内部析构/协程入口生成为 global 符号
 
