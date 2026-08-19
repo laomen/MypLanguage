@@ -228,6 +228,25 @@ class Main {
             ql.setState("mode", "on");
             Console.writeLine("uix qml3 mode=" + ql.buttonAt(qm).getLabel()
                               + "/" + Fmt.x(ql.buttonAt(qm).getColor()));
+
+            // ---- QML 风格 Repeater：数据驱动列表 ----
+            string repUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":260,\"height\":200,"
+                + "\"padding\":8,\"spacing\":6,\"children\":["
+                + "{\"type\":\"Repeater\",\"id\":\"chk\",\"delegateType\":\"Checkbox\","
+                + "\"items\":[\"Alpha\",\"Beta\",\"Gamma\"]}"
+                + "]}";
+            UixLoader rl = new UixLoader(repUix, "");
+            RootView rr = new RootView(16, 300, 240);
+            rl.buildInto(rr);
+            int c0 = rl.checkboxIdxOf("chk_0");
+            int c1 = rl.checkboxIdxOf("chk_1");
+            int c2 = rl.checkboxIdxOf("chk_2");
+            Console.writeLine("uix rep n=" + Fmt.i(rl.nodeCount())
+                              + " c0=" + rl.checkboxAt(c0).getLabel()
+                              + " c1=" + rl.checkboxAt(c1).getLabel()
+                              + " c2=" + rl.checkboxAt(c2).getLabel()
+                              + " type=" + rl.typeOf("chk_1"));
         }
 }
 

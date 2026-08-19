@@ -388,6 +388,8 @@ class UixLoader {
                     col.add(s2);
                     buildIntoStack(doc, cp, s2);
                     s2.layout();
+                } else if (ct == "Repeater") {
+                    buildRepeater(doc, cp, cid, 0, col, null, null, null);
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -495,6 +497,8 @@ class UixLoader {
                     p.add(s2);
                     buildIntoStack(doc, cp, s2);
                     s2.layout();
+                } else if (ct == "Repeater") {
+                    buildRepeater(doc, cp, cid, 1, null, p, null, null);
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -602,6 +606,8 @@ class UixLoader {
                     flow.add(s2);
                     buildIntoStack(doc, cp, s2);
                     s2.layout();
+                } else if (ct == "Repeater") {
+                    buildRepeater(doc, cp, cid, 2, null, null, flow, null);
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -709,6 +715,8 @@ class UixLoader {
                     stack.add(s2);
                     buildIntoStack(doc, cp, s2);
                     s2.layout();
+                } else if (ct == "Repeater") {
+                    buildRepeater(doc, cp, cid, 3, null, null, null, stack);
                 } else {
                     // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
                     int ri = regIdxOf(ct);
@@ -726,6 +734,55 @@ class UixLoader {
                     }
                 }
             }
+        }
+
+        // ---- QML 风格 Repeater（数据驱动列表）----
+        // .uix 中 Repeater 节点：items（字符串或 {text} 数组）+ delegateType。
+        // 对每个 item 构建一个 delegateType 控件（text=item），id = 节点id_序号。
+        void buildRepeater(Json doc, string prefix, string id,
+                           int kind, LinearLayout col, Panel p,
+                           FlowLayout flow, StackLayout stack) {
+            string dType = doc.getString(prefix + "delegateType");
+            string dCls = getStr(doc, prefix, "delegateClass");
+            if (doc.type(prefix + "items") < 0) return;
+            int n = doc.arrayLen(prefix + "items");
+            for (int k = 0; k < n; k = k + 1) {
+                string ip = prefix + "items." + Fmt.i(k);
+                string itemText = "";
+                int it = doc.type(ip);
+                if (it == 4) itemText = doc.getString(ip);
+                else if (it == 6) itemText = doc.getString(ip + ".text");
+                string cid = id + "_" + Fmt.i(k);
+                if (dType == "Label") {
+                    Label l = new Label(itemText, 0, 0, 2);
+                    registerLabel(l, cid, dCls);
+                    applyNode(doc, prefix, l, cid, dCls);
+                    addToContainer(kind, col, p, flow, stack, l);
+                } else if (dType == "Button") {
+                    Button b = new Button(itemText, 0, 0, 120, 40);
+                    registerButton(b, cid, dCls);
+                    applyNode(doc, prefix, b, cid, dCls);
+                    addToContainer(kind, col, p, flow, stack, b);
+                } else if (dType == "Checkbox") {
+                    Checkbox cb = new Checkbox(itemText, 0, 0, 80, 24);
+                    registerCheckbox(cb, cid, dCls);
+                    applyNode(doc, prefix, cb, cid, dCls);
+                    addToContainer(kind, col, p, flow, stack, cb);
+                } else if (dType == "Switch") {
+                    Switch sw = new Switch(0, 0, 60, 32);
+                    registerSwitch(sw, cid, dCls);
+                    applyNode(doc, prefix, sw, cid, dCls);
+                    addToContainer(kind, col, p, flow, stack, sw);
+                }
+            }
+        }
+        // add 到 kind 容器（0=col 1=panel 2=flow 3=stack）
+        void addToContainer(int kind, LinearLayout col, Panel p,
+                            FlowLayout flow, StackLayout stack, View v) {
+            if (kind == 0) col.add(v);
+            else if (kind == 1) p.add(v);
+            else if (kind == 2) flow.add(v);
+            else stack.add(v);
         }
 
         // ---- 查找（idxOf + At 模式，避免 return null）----
