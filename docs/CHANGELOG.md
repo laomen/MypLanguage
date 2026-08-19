@@ -27,6 +27,68 @@
 
 ## 编译器版本历史
 
+### v3.12.48 — mypview 全集自举编译运行全绿：接口数组元素 ARC（BUG-037/038）+ UTF-8 双重编码（BUG-039）
+
+用 `myp_self`（自举编译器）编译 mypview 全集（src/core+controls+layout+uix+animation +
+uix_logic 测试，63 文件）——**编译通过 + 运行全绿**（69 行输出与 mypc 参考一致，含中文）。
+连同上文 v3.12.47 之前的修复，自举接口 fat pointer 缺口全部补齐。
+
+**BUG-037 — 接口数组元素 = 具体类 `new` 缺 fat 上转 + fresh 转移**
+- 症状：`nodes_[i] = new Label(...)`（`View[]` 接口数组元素 = 具体类 new）时 LLVM
+  报 `'%t55' defined with type 'ptr' but expected '{ ptr, ptr }'`（编译期）；修类型
+  错误后运行期对象提前释放（缺 fresh 转移）。
+- 根因（`tools/selfhost/src/codegen.myp` Subscript 左值分支）：`elemLt ==
+  "{ ptr, ptr }"`（接口数组元素）走 else 直接 `store {ptr,ptr} rv`，未像 Member
+  分支那样 `upcastIface/buildIfaceFat` 把具体类裸 ptr 上转为 `{data, vtable}`；
+  上转后也未消费 `new` 的 fresh temp → 语句末 `flushTemps` 双重释放。
+- 修复：新增 `subscriptElemIfaceName(arr)`（数组元素接口名解析，镜像
+  `subscriptElemLt` 形态）；Subscript 分支 `elemLt=="{ptr,ptr}" && rt=="ptr"`
+  → `buildIfaceFat` + `isFreshTemp(rawV)!=0 → consumeTemp(rawV)`（对齐局部接口
+  变量初始化的 `arcConsumeTemp`）。
+
+**BUG-038 — 接口数组元素 store 借用 fat 不 retain → 对象悬垂、内存被字符串复用**
+- 症状：myp_self 编译的 mypview 运行段错误 139。gdb 逐层定位：sync 的
+  `setAttr` 接口调用参数全部正确（this/name/val），但 this 对象 `text_` 槽 =
+  `0x65646f6e20786975`（"uix node" 字符串内容）；watchpoint 捕获对象被
+  `myp_strcat`（walkParents 拼接 "children"）写入 → **对象内存被字符串拼接复用**。
+- 根因：build 里 `Label l = new Label(...)`（rc=1 局部），`registerNode` 的
+  `nodes_[nodeCount_] = v`（v 为接口 fat **借用**）→ Subscript 分支对
+  `rt=="{ptr,ptr}"` 直接 store **不 retain**；build 返回时 `l` 作用域末释放 →
+  rc 0 → 对象释放 → nodes_ 数组悬垂 → 内存被 `myp_alloc/myp_strcat` 重新分配。
+- 修复（codegen.myp Subscript 分支新增 else-if）：`elemLt=="{ptr,ptr}" &&
+  rt=="{ptr,ptr}"`（接口 fat 借用）→ `extractvalue 0` + `myp_retain(data)`
+  （数组槽持有借用 fat）。
+- 教训：**接口数组元素 store 的引用语义**——具体类 `new` → fat 上转 + fresh 转移
+  （数组接管 rc=1）；借用 fat（局部/参数）→ 必须 `retain`（数组持有），否则调用方
+  作用域末释放 → 悬垂。与 C++ oracle 的接口数组 store 语义必须一致。
+
+**BUG-039 — 词法器 UTF-8 双重编码（中文乱码）※重要，后续编码处理必读**
+- 症状：`myp_self` 编译含中文字符串字面量的程序，输出乱码（`你好` → `ä½ å¥½`），
+  `Str.len` 返回字节数翻倍（6 → 12）；IR 里常量变 `c"\C3\A4\C2\BD\C2\A0..."`
+  （9 字节，源码是 6 字节 `E4 BD A0 E5 A5 BD`）。`mypc`（C++ oracle）正常。
+- 根因（`tools/selfhost/src/lexer.myp` `scanString`）：非转义字符
+  `val.append(__myp_chr(advance()))` —— `advance()` 返回源码**原始字节**
+  （UTF-8 多字节的一部分，如 `0xE4`），而 `__myp_chr` 按 **Unicode 码点**生成
+  UTF-8（`0xE4` 是 `ä` 的码点 → 编码成 2 字节 `C3 A4`）→ **双重编码**。
+- 修复：`scanString` 对 `>=128` 的源码字节改用 `Str.substring(source_,
+  pos_-1, pos_)` **原样保留字节**；`<128`（ASCII）仍走 `__myp_chr`。
+- **UTF-8 处理铁律（避免以后再犯）**：
+  1. 源码文件是 UTF-8，词法器按**字节**读（`__myp_charcode` O(1)）。多字节字符的
+     每个字节单独出现，`>=128` 的字节**不是**字符码，只是 UTF-8 序列的一部分。
+  2. `__myp_chr(code)` 按**码点**生成 1–4 字节 UTF-8——两者只对 ASCII（`<128`）
+     等价；把源码字节直接喂 `__myp_chr` 会双重编码。
+  3. **字节级 round-trip 一律用 substring/memcpy 原样保留**（同
+     `stdlib/io.myp readAll` 注释：不能用 `__myp_chr(b)` 逐字节拼）。
+  4. 字符串长度：`Str.len` 是字节数（strlen）。源码字面量需逐字节复制；含中文时
+     按字节 len 与 `mypc` 参考一致才正确（如 `你好` = 6 字节 = mypc `n=6`）。
+- 影响面：所有 `myp_self` 编译的含中文/非 ASCII 字符串字面量程序。ASCII 不受影响
+  （bootstrap 固定点不破）。
+
+**验证**：mypview 全集 `myp_self` 编译运行 69 行全绿（`ok=7aff`、`sync
+status=ok-login`、中文 `t=你好 n=6` 与 mypc 一致）；bootstrap **16/16**
+（固定点 `myp_self2==myp_self3`）；父级 **312/312**；bugs **11/11**；mypview
+官方 UIX/PIPE PASS。BUGLIST 已登记 BUG-036（🟩 完结）+ 新增 BUG-037/038/039（🟩）。
+
 ### v3.12.47 — 修复 BUG-031：跨线程多 @thread 目标事件无限重投（广播可用）
 
 **BUG-031 根因**：mapping handler 注册 `instance=NULL` → `myp_event_dispatch` 第一遍
