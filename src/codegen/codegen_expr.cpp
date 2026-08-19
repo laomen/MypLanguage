@@ -410,6 +410,12 @@ llvm::Value* CodeGen::generateBinaryOp(const BinaryOpExpr& e) {
         // once per iteration). String operands (already pointers) stay borrowed.
         if (!l_was_ptr && runtime_release_) builder_.CreateCall(runtime_release_, {l});
         if (!r_was_ptr && runtime_release_) builder_.CreateCall(runtime_release_, {r});
+        // M10: the concat RESULT is a fresh counted string (rc=1). Register it
+        // as a pending temp so a store (arcConsumeTemp) OR the statement-end
+        // flush releases it. Without this, a concat used as a FUNCTION-CALL
+        // ARGUMENT (e.g. `h.set(Fmt.i(i)+"%")` in a loop) was never released
+        // after the call — one leaked counted string per call (BUG-035).
+        arcPushTemp(cat);
         return cat;
     }
 

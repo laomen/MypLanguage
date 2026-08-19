@@ -1309,7 +1309,9 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                   callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
                   callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))) ||
                 (s.value->kind == ExprKind::MemberAccess &&
-                 isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value)))) {
+                 isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value))) ||
+                (s.value->kind == ExprKind::BinaryOp &&
+                 isStringConcatExpr(*s.value))) {
                 arcConsumeTemp(v);
                 arc_skip_retain_return_ = true;
             }
@@ -1333,7 +1335,9 @@ void CodeGen::generateReturnStmt(const ReturnStmt& s) {
                       callReturnsArcStruct(static_cast<const CallExpr&>(*s.value)) ||
                       callReturnsArcSliceOrArray(static_cast<const CallExpr&>(*s.value)))) ||
                     (s.value->kind == ExprKind::MemberAccess &&
-                     isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value))))) {
+                     isWeakMemberAccess(static_cast<const MemberAccessExpr&>(*s.value))) ||
+                    (s.value->kind == ExprKind::BinaryOp &&
+                     isStringConcatExpr(*s.value)))) {
         arcConsumeTemp(v);
         arc_skip_retain_return_ = true;   // fresh `new` rc transfers to caller
     }

@@ -963,3 +963,37 @@
   转换（BUG-029/033 已修）、**函数返回 / 属性字段写 / 接口方法调用实参**（本 bug）。
   C++ 与 selfhost 需同步镜像；selfhost 的接口对象方法调用（局部/属性/数组元素）
   都要能识别「接口值」并走 vtable 分派。
+
+## BUG-035（已修复 ✅）：字符串拼接结果作为函数调用实参 → 每调用泄漏 1 个计数字符串
+
+- **状态**：🟩 已修复（2026-08-19 发现+修复；mypview player 长时间播放 RSS 线性增长暴露）
+- **复现**：`tests/bugs/b035_concat_arg_leak.myp`（@test 断言，3 测试 3 断言：拼接实参→
+  字段赋值 / 拼接→局部 / 返回拼接；双编译器 mypc + myp_self 均通过）。
+  泄漏量级 headless 复现（/usr/bin/time -v，200 万次循环）：
+  `h.set(Fmt.i(i % 100) + "%")` → 修复前 Max RSS ≈ **95,852 KB**，修复后 ≈ **2,036 KB**。
+- **现象**：字符串拼接 `myp_strcat` 返回 rc=1 的新字符串，作为**函数调用实参**传给
+  形参后，调用方从未 release 它（Fmt.i 的中间结果被 release 了，唯独拼接结果漏掉）。
+  每次调用泄漏 1 个计数字符串引用 → 60fps UI 播放循环（每帧 `label.setText(Fmt.i(x)+"%")`）
+  实测约 2.2KB/s 线性增长，长时间运行内存膨胀。局部变量拼接/字段赋值不泄漏
+  （store 路径 arcConsumeTemp 正确）；唯独「拼接 temp 作实参」路径缺失。
+- **根因**：oracle `src/codegen/codegen_expr.cpp` 字符串拼接分支生成 `myp_strcat`
+  调用后返回 `cat`，但**未把 cat 纳入 ARC pending temp**（未 `arcPushTemp(cat)`）。
+  函数调用返回的 fresh 字符串（Fmt.i 等）会进 pending temp、语句末 flush release；
+  拼接是内联调用，结果被漏掉。selfhost（`tools/selfhost/src/codegen.myp`）已有
+  `addFreshTemp(t)` 正确处理——**oracle 落后于 selfhost**。
+- **修复**（oracle，与 selfhost 对齐）：
+  - `codegen_expr.cpp` 拼接分支 `return cat` 前 `arcPushTemp(cat)`——拼接结果进
+    pending temp：被 store 时 arcConsumeTemp（不双释放），作实参/中间值时语句末
+    flush release。
+  - `codegen_stmt.cpp` `generateReturnStmt`（finally 分支 + 普通分支）的
+    `arc_skip_retain_return_` 条件加 `|| isStringConcatExpr(*s.value)`——`return a+b`
+    的拼接结果由调用方直接拥有（rc 转移），不再额外 retain（否则 pending flush 与
+    retain 叠加成新泄漏）。
+  - selfhost 无需改动（已有 addFreshTemp + return 拼接判定）。
+- **验证**：b035 GREEN（mypc + myp_self，3 断言）；run_bugs.sh 11/11；父仓库 311/311；
+  leak_play 复现 200 万次 95,852 KB → 2,036 KB（≈-98%）；selfhost 自举一致。
+- **教训**：MYP 的 fresh 临时（new/call/concat 产生的 rc=1 对象）必须统一纳入
+  ARC pending temp 管理：store 时 consume、语句末 flush。oracle 与 selfhost 任何
+  一侧新增「产生 fresh 值」的路径（本 bug 的 concat）都必须同步注册 temp，否则
+  作函数实参/中间表达式时泄漏。排查方向：内存随时间线性增长的 UI/循环，先二分
+  「局部 vs 字段 vs 函数实参」路径，再对比 oracle 与 selfhost 的 temp 注册差异。

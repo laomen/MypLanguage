@@ -1,0 +1,47 @@
+// BUG-035 复现：字符串拼接临时作为函数调用实参 → 泄漏（oracle 缺 concat fresh temp）
+// ---------------------------------------------------------------------------
+// 修复前（仅 oracle mypc；selfhost 已有 addFreshTemp 正确处理）：
+//   `h.set(Fmt.i(i) + "%")`——myp_strcat 拼接结果（rc=1 新字符串）作为函数实参，
+//   调用后从未 release，每次调用泄漏 1 个计数字符串（Fmt.i 的中间结果被 release
+//   了，唯独拼接结果漏掉）。200 万次 Max RSS ≈ 96MB；修复后 ≈ 2MB。
+//   复现命令（headless，测 Max RSS）：见 tests/BUGLIST.md BUG-035。
+// 修复：codegen_expr 拼接结果 arcPushTemp（与 selfhost addFreshTemp 对齐）+ 
+//   generateReturnStmt 对 return 拼接 skip retain。@test 断言功能正确性
+//   （双编译器 mypc + myp_self 编译运行均通过）。
+import test;
+import fmt;
+import env;
+
+class Holder {
+    property:
+        string s_;
+    action:
+        @constructor Holder() { s_ = ""; }
+        void set(string v) { s_ = v; }          // 字段字符串赋值（BUG-035 泄漏路径）
+        string get() { return s_; }
+}
+
+class App {
+    action:
+        string cat() { return "hi" + "!"; }     // 返回拼接（修复含 return skip）
+}
+
+@test void t_concat_as_arg() {
+    Holder h = new Holder();
+    h.set(Fmt.i(7) + "%");                      // 拼接 temp 作实参 → 字段赋值
+    Test.assertStrEq(h.get(), "7%", "concat arg → field");
+    Test.report("t_concat_as_arg", true);
+}
+
+@test void t_concat_to_local() {
+    string t = Fmt.i(42) + "%";                 // 拼接 → 局部（不泄漏路径回归）
+    Test.assertStrEq(t, "42%", "concat → local");
+    Test.report("t_concat_to_local", true);
+}
+
+@test void t_return_concat() {
+    App a = new App();
+    string r = a.cat();                         // return a+b
+    Test.assertStrEq(r, "hi!", "return concat");
+    Test.report("t_return_concat", true);
+}
