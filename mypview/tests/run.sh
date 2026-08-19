@@ -54,6 +54,8 @@ SRCS=(
     "$SRC/controls/popover.myp"
     "$SRC/controls/banner.myp"
     "$SRC/controls/scroll_view.myp"
+    "$SRC/controls/sortable_list.myp"
+    "$SRC/controls/long_press_button.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"
@@ -129,7 +131,11 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix gest drag=1 dx=30/10" \
    && printf '%s' "$OUT" | grep -q "uix gest drel=3" \
    && printf '%s' "$OUT" | grep -q "uix gest svy=30" \
-   && printf '%s' "$OUT" | grep -q "uix gest sl=75"; then
+   && printf '%s' "$OUT" | grep -q "uix gest sl=75" \
+   && printf '%s' "$OUT" | grep -q "uix sort ADCB from=1 last=3" \
+   && printf '%s' "$OUT" | grep -q "uix lpb click=1" \
+   && printf '%s' "$OUT" | grep -q "uix lpb long=2" \
+   && printf '%s' "$OUT" | grep -q "uix lpb after=2"; then
     echo "MYPVIEW-UIX PASS"
 else
     echo "MYPVIEW-UIX FAIL"
@@ -184,6 +190,8 @@ PIPESRCS=(
     "$SRC/controls/popover.myp"
     "$SRC/controls/banner.myp"
     "$SRC/controls/scroll_view.myp"
+    "$SRC/controls/sortable_list.myp"
+    "$SRC/controls/long_press_button.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"

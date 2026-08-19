@@ -17,6 +17,8 @@ class List {
         int rowH_;        // 行高
         int scrollY_;     // 垂直滚动偏移（像素，0=顶部）
         int color_;
+        int dragging_;    // 1=拖拽滚动中（手势 onPress/onMove/onRelease）
+        int pressY_;      // 拖拽起点 y
 
     event:
         ItemClicked(int index, int x, int y);
@@ -27,11 +29,13 @@ class List {
             y_ = y;
             w_ = w;
             h_ = h;
-            items_ = new string[256];
+            items_ = new string[4096];   // 大容量：可见窗口渲染，项数不受绘制开销限制
             itemCount_ = 0;
             rowH_ = 20;
             scrollY_ = 0;
             color_ = Color.dark();
+            dragging_ = 0;
+            pressY_ = 0;
         }
 
         void setRowHeight(int rh) { rowH_ = rh; }
@@ -39,7 +43,7 @@ class List {
         void setColor(int c) { color_ = c; }
 
         void addItem(string s) {
-            if (itemCount_ >= 256) return;
+            if (itemCount_ >= 4096) return;
             items_[itemCount_] = s;
             itemCount_ = itemCount_ + 1;
         }
@@ -104,5 +108,19 @@ class List {
             if (idx >= 0 && idx < itemCount_) {
                 ItemClicked(idx, x, y);
             }
+        }
+
+        // ---- 拖拽滚动（RootView 手势分发：按下锁定 → 移动滚动 → 抬起结束）----
+        void onPress(int x, int y) {
+            dragging_ = 1;
+            pressY_ = y;
+        }
+        void onMove(int x, int y) {
+            if (dragging_ == 0) return;
+            dragTo(pressY_, y);            // 增量滚动（跟手）
+            pressY_ = y;
+        }
+        void onRelease(int x, int y) {
+            dragging_ = 0;
         }
 }

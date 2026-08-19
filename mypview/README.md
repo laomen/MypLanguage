@@ -47,6 +47,7 @@ CMake 或任何系统服务。**
 | 控件 | 构造 | 声明式属性 | 事件 | 说明 |
 |---|---|---|---|---|
 | Button | `Button(label,x,y,w,h)` | text, color, bg | `Clicked(x,y)` | setEnabled / setHovered / focusable |
+| LongPressButton | `LongPressButton(label,x,y,w,h)` | text, color, bg | `Clicked(x,y)` / `LongPressed(x,y)` | 区分 短按点击 / 长按（lastGesture 查询） |
 | Checkbox | `Checkbox(label,x,y,w,h)` | text, checked, color | `Changed(v)` | setChecked |
 | RadioButton | `RadioButton(label,x,y,w,h)` | text, checked, color | `Changed(v)` | 单选组 |
 | Switch | `Switch(x,y,w,h)` | on, color | `Toggled(v)` | setOn |
@@ -71,7 +72,8 @@ CMake 或任何系统服务。**
 | AppIcon | `AppIcon(label,x,y,w,h)` | — | `Clicked(x,y)` | 图标+文字入口 |
 | Toast | `Toast(w,h)` | text, color | — | show / tick 淡出 |
 | NotificationBanner | `NotificationBanner(w,h)` | — | `BannerClicked(x,y)` | show / tick 倒计时 |
-| List | `List(x,y,w,h)` | — | `ItemClicked(idx,x,y)` | addItem / itemCount |
+| List | `List(x,y,w,h)` | — | `ItemClicked(idx,x,y)` | addItem / itemCount / 可见窗口渲染 / 拖拽滚动 |
+| SortableList | `SortableList(x,y,w,h)` | — | `Reordered(from,to)` | 长按拖拽换位排序 / getItem / lastFrom/dragLast |
 | Panel | `Panel(x,y,w,h)` | color, bg | — | 容器卡片 |
 | TabView | `TabView(x,y,w,h)` | current, color | `TabChanged(idx)` | addTab / 分页容器 |
 | Dialog | `Dialog(title,msg,screenW,screenH)` | — | `Confirm()` / `Cancel()` | show/hide |

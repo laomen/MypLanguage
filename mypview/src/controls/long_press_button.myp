@@ -1,0 +1,104 @@
+// long_press_button.myp — uikit 控件：LongPressButton（区分 点击 / 长按）
+// ---------------------------------------------------------------------------
+// 基于 GestureDetector：短按抬起 → Clicked（一次点击）；按住超过长按帧阈值 →
+// LongPressed（长按菜单/删除/多选等）。onMove 按住每帧被 RootView 分发调用，
+// 内嵌 gd.tick() 计时长按。纯逻辑、headless 可测（查 lastGesture: 1=click 2=long）。
+class LongPressButton {
+    interface class View;
+
+    property:
+        string label_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int color_;
+        int enabled_;
+        GestureDetector gd_;   // 手势识别（拖拽阈值 8px / 长按 30 帧）
+        int longFired_;        // 1=本次按压已触发长按（避免重复）
+        int lastGesture_;      // 最近一次手势：1=Clicked 2=LongPressed（查询）
+
+    event:
+        Clicked(int x, int y);
+        LongPressed(int x, int y);
+
+    action:
+        @constructor LongPressButton(string label, int x, int y, int w, int h) {
+            label_ = label;
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            color_ = Color.blue();
+            enabled_ = 1;
+            gd_ = new GestureDetector();
+            gd_.setThresholds(8, 30);
+            longFired_ = 0;
+            lastGesture_ = 0;
+        }
+
+        void setLabel(string t) { label_ = t; }
+        string getLabel() { return label_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setEnabled(int on) { enabled_ = on; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+        // 最近一次手势类型（1=Clicked 2=LongPressed；headless 断言用）
+        int lastGesture() { return lastGesture_; }
+        // 消费手势（应用层处理一次后调用，防每帧重复触发）
+        void consumeGesture() { lastGesture_ = 0; }
+
+        void setAttr(string name, string value) {
+            if (name == "text") setLabel(value);
+            else if (name == "color" || name == "bg") setColor(Color.fromHex(value));
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+        int enabled() { return enabled_; }
+
+        void draw(Renderer r) {
+            int c = enabled_ != 0 ? color_ : Color.gray();
+            r.fillRect(x_, y_, w_, h_, c);
+            r.outlineRect(x_, y_, w_, h_, Color.white());
+            r.drawText(x_ + 10, y_ + h_ / 2 - r.textH(2) / 2, label_, 2, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (enabled_ == 0) return 0;
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+        void onTouch(int x, int y) {}
+
+        // ---- 手势（RootView 分发：onPress/onMove/onRelease）----
+        void onPress(int x, int y) {
+            gd_.press(x, y);
+            longFired_ = 0;
+            lastGesture_ = 0;
+        }
+        void onMove(int x, int y) {
+            gd_.move(x, y);
+            gd_.tick();                          // 按住每帧计时 → 长按判定
+            if (gd_.longPressed() != 0 && longFired_ == 0) {
+                longFired_ = 1;
+                lastGesture_ = 2;
+                LongPressed(x, y);
+            }
+        }
+        void onRelease(int x, int y) {
+            int t = gd_.release(x, y);
+            if (t == 1 && longFired_ == 0) {     // 短按（无长按）→ 点击
+                lastGesture_ = 1;
+                Clicked(x, y);
+            }
+        }
+}

@@ -1,0 +1,156 @@
+// sortable_list.myp — uikit 控件：SortableList（长按拖拽排序列表）
+// ---------------------------------------------------------------------------
+// 持有字符串项，可见窗口渲染（虚拟化）。基于 GestureDetector 识别拖拽：
+//   按下 → 记录起点；按住移动超位移阈值 → 进入拖拽，实时与经过项换位；
+//   抬起 → 落定，触发 Reordered(from,to) 事件（应用层 mapping 绑定）。
+// 纯逻辑、不依赖 SDL、headless 可测：直接驱动 onPress/onMove/onRelease，
+// 用 getItem 读排序结果 / getDrag 读拖拽状态。
+class SortableList {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] items_;
+        int itemCount_;
+        int rowH_;         // 行高
+        int scrollY_;      // 垂直滚动偏移（复用 List 语义）
+        int color_;
+        GestureDetector gd_;    // 拖拽识别（位移阈值 8px）
+        int dragIdx_;      // 当前拖拽项下标，-1=无
+        int dragFrom_;     // 拖拽原始下标（事件上报）
+        int pressIdx_;     // 按下点所在项（拖拽起始项）
+        int lastFrom_;     // 最近一次拖拽原始下标（查询）
+        int dragLast_;     // 拖拽结束位置（查询）
+        int dragging_;     // 1=拖拽中
+
+    event:
+        Reordered(int from, int to);
+
+    action:
+        @constructor SortableList(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            items_ = new string[4096];
+            itemCount_ = 0;
+            rowH_ = 20;
+            scrollY_ = 0;
+            color_ = Color.dark();
+            gd_ = new GestureDetector();
+            gd_.setThresholds(8, 30);
+            dragIdx_ = -1;
+            dragFrom_ = -1;
+            pressIdx_ = -1;
+            lastFrom_ = -1;
+            dragLast_ = -1;
+            dragging_ = 0;
+        }
+
+        void setRowHeight(int rh) { rowH_ = rh; }
+        void setColor(int c) { color_ = c; }
+
+        void addItem(string s) {
+            if (itemCount_ >= 4096) return;
+            items_[itemCount_] = s;
+            itemCount_ = itemCount_ + 1;
+        }
+        void clear() { itemCount_ = 0; scrollY_ = 0; dragIdx_ = -1; }
+        int itemCount() { return itemCount_; }
+        string getItem(int i) {
+            if (i < 0 || i >= itemCount_) return "";
+            return items_[i];
+        }
+        // 交换两项（拖拽换位）
+        void swapItems(int a, int b) {
+            if (a < 0 || a >= itemCount_ || b < 0 || b >= itemCount_) return;
+            if (a == b) return;
+            string t = items_[a];
+            items_[a] = items_[b];
+            items_[b] = t;
+        }
+
+        // 内容总高（决定最大滚动范围）
+        int contentHeight() { return itemCount_ * rowH_; }
+
+        // ---- 拖拽（RootView 手势分发：onPress/onMove/onRelease）----
+        void onPress(int x, int y) {
+            gd_.press(x, y + scrollY_);   // 内容坐标
+            pressIdx_ = (y + scrollY_) / rowH_;   // 按下点所在项（拖拽起始项）
+            dragIdx_ = -1;
+            dragFrom_ = -1;
+            dragging_ = 0;
+        }
+        void onMove(int x, int y) {
+            int cy = y + scrollY_;        // 内容坐标
+            gd_.move(x, cy);
+            gd_.tick();                   // 按住每帧被调，供长按/拖拽判定
+            if (gd_.dragging() != 0) {
+                int idx = cy / rowH_;
+                if (idx < 0) idx = 0;
+                if (idx >= itemCount_) idx = itemCount_ - 1;
+                if (dragIdx_ < 0) {
+                    dragFrom_ = pressIdx_;   // 拖拽起始 = 按下项
+                    dragIdx_ = idx;          // 当前经过项
+                    dragging_ = 1;
+                    if (idx != dragFrom_) swapItems(dragFrom_, idx);   // 首次换位
+                } else if (idx != dragIdx_) {
+                    swapItems(dragIdx_, idx);   // 实时换位
+                    dragIdx_ = idx;
+                }
+            }
+        }
+        void onRelease(int x, int y) {
+            gd_.release(x, y + scrollY_);
+            lastFrom_ = dragFrom_;
+            dragLast_ = dragIdx_;
+            if (dragFrom_ >= 0 && dragIdx_ >= 0 && dragFrom_ != dragIdx_)
+                Reordered(dragFrom_, dragIdx_);
+            dragIdx_ = -1;
+            dragFrom_ = -1;
+            dragging_ = 0;
+        }
+
+        // ---- 查询（headless 断言 / 应用层读状态）----
+        int dragging() { return dragging_; }
+        int dragIndex() { return dragIdx_; }
+        int dragFrom() { return dragFrom_; }
+        int lastFrom() { return lastFrom_; }
+        int dragLast() { return dragLast_; }
+
+        // View 接口：固定尺寸容器
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            // 可见窗口渲染（虚拟化）
+            int first = scrollY_ / rowH_;
+            int count = h_ / rowH_ + 2;
+            int th = r.textH(1);
+            for (int i = first; i < itemCount_ && i < first + count; i = i + 1) {
+                int iy = y_ + i * rowH_ - scrollY_;
+                // 拖拽中的项提亮（浮起反馈）
+                int c = Color.white();
+                if (i == dragIdx_) c = Color.amber();
+                r.drawText(x_ + 6, iy + (rowH_ - th) / 2, items_[i], 1, c);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+        // 点击（无拖拽）：命中项触发（简单点击回调由应用层经 hit 判定）
+        void onTouch(int x, int y) {}
+}

@@ -689,6 +689,32 @@ class Main {
             sl.onMove(75, 10);                        // 拖到 75 → ~75
             sl.onRelease(75, 10);
             Console.writeLine("uix gest sl=" + Fmt.i(sl.getValue()));
+
+            // ---- SortableList：拖拽换位排序（按下 B 拖到 D）----
+            SortableList sort = new SortableList(0, 0, 120, 80);
+            sort.addItem("A");
+            sort.addItem("B");
+            sort.addItem("C");
+            sort.addItem("D");
+            sort.onPress(10, 25);                     // 按在 B (row 1)
+            sort.onMove(20, 60);                      // 拖到 D (row 3) → 换位
+            sort.onMove(20, 65);                      // 仍在 row 3 → 不换
+            sort.onRelease(20, 65);
+            Console.writeLine("uix sort " + sort.getItem(0) + sort.getItem(1)
+                              + sort.getItem(2) + sort.getItem(3)
+                              + " from=" + Fmt.i(sort.lastFrom())
+                              + " last=" + Fmt.i(sort.dragLast()));
+
+            // ---- LongPressButton：短按=点击 / 长按=LongPressed ----
+            LongPressButton lpb = new LongPressButton("Menu", 0, 0, 80, 30);
+            lpb.onPress(10, 10);
+            lpb.onRelease(12, 11);                    // 短按（位移小）→ Clicked
+            Console.writeLine("uix lpb click=" + Fmt.i(lpb.lastGesture()));
+            lpb.onPress(10, 10);
+            for (int i = 0; i < 35; i = i + 1) lpb.onMove(10, 10);   // 按住 35 帧
+            Console.writeLine("uix lpb long=" + Fmt.i(lpb.lastGesture()));
+            lpb.onRelease(10, 10);
+            Console.writeLine("uix lpb after=" + Fmt.i(lpb.lastGesture()));  // 仍 2
         }
 }
 

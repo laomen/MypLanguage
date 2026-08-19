@@ -170,7 +170,8 @@ class Player {
             LinearLayout mid = new LinearLayout(1, W - 32, 178);
             mid.setPadding(10);
             mid.setSpacing(14);
-            List songs = new List(0, 0, 600, 178);
+            // 歌曲列表：SortableList 支持拖拽排序（长按拖动换位）
+            SortableList songs = new SortableList(0, 0, 600, 178);
             songs.setRowHeight(26);
             songs.addItem("01 Intro");
             songs.addItem("02 The Journey");
@@ -200,9 +201,11 @@ class Player {
             Button btnMenu = new Button("菜单", 0, 0, 120, 32);
             Button btnDrawer = new Button("工具", 0, 0, 120, 32);
             Button btnTip = new Button("提示", 0, 0, 120, 32);
+            LongPressButton lpb = new LongPressButton("长按", 0, 0, 120, 32);
             tools.add(btnMenu);
             tools.add(btnDrawer);
             tools.add(btnTip);
+            tools.add(lpb);
             root.add(tools);
 
             // ---- 底部导航 + 通知横幅 ----
@@ -392,6 +395,13 @@ class Player {
                     rv.onRelease(rx, ry);
                 }
                 prevDown = mdown;
+
+                // ---- 长按手势：LongPressButton 长按 → 弹 ContextMenu（一次性消费）----
+                if (lpb.lastGesture() == 2) {
+                    cm.show(lpb.getX(), lpb.getY() + 40);
+                    logArea.appendLine("> long-press menu");
+                    lpb.consumeGesture();
+                }
 
                 // ---- 键盘文本输入 → 聚焦的 SearchBar（SDL.getChar 消费 UTF-8 队列）----
                 int c = SDL.getChar();
