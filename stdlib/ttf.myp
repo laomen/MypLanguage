@@ -13,6 +13,8 @@ ffi int  myp_ttf_set_size(int px);
 ffi int  myp_ttf_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
 ffi int  myp_ttf_text_width(string text, int scale);
 ffi int  myp_ttf_text_height(int scale);
+ffi int  myp_ttf_cache_hits();
+ffi int  myp_ttf_cache_misses();
 ffi void myp_ttf_quit();
 
 class Ttf {
@@ -44,6 +46,9 @@ class Ttf {
         int textH(int scale) {
             return myp_ttf_text_height(scale);
         }
+        // 文本纹理缓存命中/未命中次数（诊断：同文本重绘复用，避免每帧 TTF 重建）
+        int cacheHits() { return myp_ttf_cache_hits(); }
+        int cacheMisses() { return myp_ttf_cache_misses(); }
         // 释放字体并退出 SDL_ttf。
         void close() { myp_ttf_quit(); }
 }

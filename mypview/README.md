@@ -97,6 +97,18 @@ loader.sync(vm);                               // 绑定：VM 状态 → 控件
 `backend/sdl_renderer.myp` 是 SDL2 实现。UIX 与控件逻辑不依赖具体后端——headless
 测试用 MockRenderer，桌面用 SdlRenderer，未来可加软件帧缓冲 / GPU 后端。
 
+### TTF 文本纹理缓存
+
+`sdl_ttf_bridge.c` 内建 FIFO 纹理缓存：key = 实际字号 + RGB + 文本。同一文本在
+帧间/滚动重绘时直接 `SDL_RenderCopy` 复用，避免每帧 `TTF_RenderUTF8_Blended` +
+建纹理解析（实测 player 60 帧命中率 ~98.5%，hits=3072/misses=48）。
+字体加载/字号变更自动清空缓存（旧纹理失效）。诊断：
+
+```myp
+Ttf.cacheHits()      // 命中次数（复用）
+Ttf.cacheMisses()    // 未命中次数（新渲染）
+```
+
 ## 在自己的项目里用 mypview
 
 1. 拷贝 `src/` 目录到你的项目（或直接引用）

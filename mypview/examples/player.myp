@@ -14,6 +14,7 @@ import fmt;
 import io;
 import text;
 import sdl;
+import ttf;
 
 // ---- ViewModel：播放器状态 + 命令 ----
 class PlayerVM {
@@ -427,6 +428,9 @@ class Player {
                               + " img=" + Fmt.i(imgLogo.getHandle())
                               + " spin=" + Fmt.i(sp.getAngle())
                               + " saved=" + Fmt.i(saved));
+            // TTF 文本纹理缓存命中统计（诊断：同文本重绘复用，避免每帧重建）
+            Console.writeLine("player ttf-cache hits=" + Fmt.i(Ttf.cacheHits())
+                              + " misses=" + Fmt.i(Ttf.cacheMisses()));
         }
 }
 
