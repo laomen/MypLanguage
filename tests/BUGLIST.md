@@ -1157,3 +1157,18 @@
   strip 后无影响。仅理论风险：未来多编译单元/静态库链接时同名符号冲突、以及
   链接器 `--gc-sections` 无法裁剪未用函数。
 - **修复方向**：codegen.myp 生成这两类函数时加 `internal`（与 mypc 对齐）。
+
+## BUG-043（待优化 ⏳）：mypc 接口上转每次生成新 vtable 副本（149 vs 15 个）
+
+- **症状**：对比 mypc 与 myp_self 编译同一 mypview 源码集的二进制，mypc
+  大 ~79KB。段级定位：`.text` 主代码几乎相同（138KB vs 137KB），真正差异在
+  **`.data.rel.ro`（vtable 表）**——mypc 21.6KB vs myp_self 2.6KB（+19KB）。
+- **根因**：mypc 每次做「接口上转」（具体类实例 → 接口 fat，如 `new Button()`
+  传给 `View` 参数 / 存进接口数组）时**生成一个新的 vtable 常量**（带递增后缀
+  `__myp_vtable_View_Button.1010/.1011/.1012...` 去重），共 **149 个**（15 基础
+  + 134 副本，约 17KB）；myp_self 复用每个接口实现类 **1 个** vtable（15 个）。
+  副本内容完全相同、各被一个 upcast 点引用（非死代码）→ 冗余分配。
+- **实际影响**：仅二进制体积（~17KB/示例）；功能完全等价（both 模式输出一致）。
+- **修复方向（未做，暂缓）**：mypc 复用/合并 vtable（按「接口名_类名」去重，
+  对齐 myp_self），可省 ~17KB。需改 src/codegen 的 vtable 生成/引用逻辑。
+- **验证**：`nm -S` 统计 vtable；`objdump -h` 看 .data.rel.ro。
