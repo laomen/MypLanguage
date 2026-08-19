@@ -30,7 +30,8 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix style title=1c1c1e status=e74c3c ok=7aff" \
    && printf '%s' "$OUT" | grep -q "uix bind status=ready (init)" \
    && printf '%s' "$OUT" | grep -q "uix runCmd status=ok-login" \
-   && printf '%s' "$OUT" | grep -q "uix sync status=ok-login"; then
+   && printf '%s' "$OUT" | grep -q "uix sync status=ok-login" \
+   && printf '%s' "$OUT" | grep -q "uix ext text=NEW nodes=3 hit=badge"; then
     echo "MYPVIEW-UIX PASS"
     exit 0
 else

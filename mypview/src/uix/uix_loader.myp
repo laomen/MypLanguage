@@ -67,6 +67,13 @@ class UixLoader {
         Panel[] panels_;
         string[] panelIds_;
         int panelCount_;
+        // 控件注册表（UIX 扩展点：自定义控件类型 → ViewBuilder）
+        string[] regTypes_;
+        ViewBuilder[] regBuilders_;
+        int regCount_;
+        // 自定义控件持有（尽力持有；MYP 接口数组不 retain，构建器实现须持有实例）
+        View[] held_;
+        int heldCount_;
 
     action:
         @constructor UixLoader(string uixJson, string uspJson) {
@@ -105,6 +112,27 @@ class UixLoader {
             panels_ = new Panel[64];
             panelIds_ = new string[64];
             panelCount_ = 0;
+            regTypes_ = new string[16];
+            regBuilders_ = new ViewBuilder[16];
+            regCount_ = 0;
+            held_ = new View[64];
+            heldCount_ = 0;
+        }
+
+        // ---- 控件注册（UIX 扩展点）----
+        // 注册自定义控件类型：.uix 中该 type 的节点由 builder.create 创建。
+        // 实例加入 held_ 尽力持有；构建器实现须把实例存为字段（MYP 接口数组不 retain）。
+        void registerControl(string type, ViewBuilder builder) {
+            if (regCount_ >= 16) return;
+            regTypes_[regCount_] = type;
+            regBuilders_[regCount_] = builder;
+            regCount_ = regCount_ + 1;
+        }
+        int regIdxOf(string type) {
+            for (int i = 0; i < regCount_; i = i + 1) {
+                if (regTypes_[i] == type) return i;
+            }
+            return -1;
         }
 
         // 构建整棵树：解析根节点并加入 rootView
@@ -197,6 +225,21 @@ class UixLoader {
                     applyNode(doc, cp, p, cid, ccls);
                     col.add(p);
                     buildIntoPanel(doc, cp, p);
+                } else {
+                    // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
+                    int ri = regIdxOf(ct);
+                    if (ri >= 0) {
+                        View v = regBuilders_[ri].create(getStr(doc, cp, "text"), cid);
+                        if (v != null) {
+                            registerNode(v, cid, ct, ccls);
+                            applyNode(doc, cp, v, cid, ccls);
+                            if (heldCount_ < 64) {
+                                held_[heldCount_] = v;
+                                heldCount_ = heldCount_ + 1;
+                            }
+                            col.add(v);
+                        }
+                    }
                 }
             }
         }
@@ -246,6 +289,21 @@ class UixLoader {
                     applyNode(doc, cp, p2, cid, ccls);
                     p.add(p2);
                     buildIntoPanel(doc, cp, p2);
+                } else {
+                    // 自定义控件（UIX 扩展点）：注册的 ViewBuilder 创建
+                    int ri = regIdxOf(ct);
+                    if (ri >= 0) {
+                        View v = regBuilders_[ri].create(getStr(doc, cp, "text"), cid);
+                        if (v != null) {
+                            registerNode(v, cid, ct, ccls);
+                            applyNode(doc, cp, v, cid, ccls);
+                            if (heldCount_ < 64) {
+                                held_[heldCount_] = v;
+                                heldCount_ = heldCount_ + 1;
+                            }
+                            p.add(v);
+                        }
+                    }
                 }
             }
         }

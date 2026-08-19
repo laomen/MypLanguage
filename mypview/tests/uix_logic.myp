@@ -93,6 +93,78 @@ class Main {
             string hitId = loader.hitId(ok.getX() + ok.width() / 2,
                                         ok.getY() + ok.height() / 2);
             Console.writeLine("uix hitId=" + hitId);
+
+            // ---- 扩展点：自定义控件（ViewBuilder 注册）----
+            string extUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":300,\"height\":120,"
+                + "\"padding\":16,\"spacing\":12,\"children\":["
+                + "{\"type\":\"Badge\",\"id\":\"badge\",\"text\":\"NEW\"},"
+                + "{\"type\":\"Label\",\"id\":\"lbl\",\"text\":\"custom ok\"}"
+                + "]}";
+            BadgeBuilder bb = new BadgeBuilder();
+            UixLoader ext = new UixLoader(extUix, "");
+            ext.registerControl("Badge", bb);
+            RootView er = new RootView(16, 400, 300);
+            ext.buildInto(er);
+            Console.writeLine("uix ext text=" + bb.getText()
+                              + " nodes=" + Fmt.i(ext.nodeCount())
+                              + " hit=" + ext.hitId(80, 30));
+        }
+}
+
+// ---- 扩展点：自定义 Badge 控件（实现 View 接口）----
+class Badge {
+    interface class View;
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int color_;
+    action:
+        @constructor Badge(string text) {
+            text_ = text;
+            x_ = 0; y_ = 0; w_ = 80; h_ = 28;
+            color_ = Color.red();
+        }
+        void setAttr(string name, string value) {
+            if (name == "text") text_ = value;
+            else if (name == "color") color_ = Color.fromHex(value);
+        }
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.drawText(x_ + 6, y_ + 10, text_, 1, Color.white());
+        }
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+        void onTouch(int x, int y) {}
+        string getText() { return text_; }
+        int getX() { return x_; }
+}
+
+// 构建器：持有创建的实例（MYP 接口数组不 retain，实例须由构建器/应用持有）
+class BadgeBuilder {
+    interface class ViewBuilder;
+    property:
+        Badge badge_;
+    action:
+        @constructor BadgeBuilder() { badge_ = null; }
+        View create(string text, string id) {
+            badge_ = new Badge(text);
+            View v = badge_;
+            return v;      // BUG-034 修复后接口返回可用
+        }
+        string getText() {
+            if (badge_ == null) return "";
+            return badge_.getText();
         }
 }
 

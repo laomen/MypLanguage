@@ -86,6 +86,6 @@ mypc --test tests/uix_logic.myp -o /tmp/uix_logic --stdlib ../stdlib && /tmp/uix
 - [x] 零 MOS 依赖、headless 引擎、Renderer 后端抽象
 - [x] UIX 声明式 DSL + MVVM
 - [x] 独立示例 + headless 回归
-- [ ] UIX 控件注册扩展点（第三方自定义控件接入 `.uix`）
+- [x] UIX 控件注册扩展点（`ViewBuilder` + `registerControl`，见 `tests/uix_logic.myp` 的 Badge 示例）
 - [ ] 软件渲染后端（无 SDL 环境可跑）
 - [ ] 包化分发（MYP package-path 目录结构）

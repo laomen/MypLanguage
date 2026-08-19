@@ -15,6 +15,16 @@ interface ViewModel {
     void runCmd(string name);
 }
 
+// 自定义控件构建器（UIX 扩展点）：把第三方控件接入 .uix。
+// 用 UixLoader.registerControl(type, builder) 注册后，.uix 中该类型的节点
+// 由 builder 创建。实现需：
+//   - create(text, id) 返回实现 View 接口的控件实例（BUG-034 后接口返回可用）
+//   - ★ 实例须由构建器/应用层持有（MYP 接口数组不 retain；UixLoader 的
+//     held_ 尽力持有，但不能保证生命周期——构建器实现应把实例存为字段）
+interface ViewBuilder {
+    View create(string text, string id);
+}
+
 // 属性袋：name → string 值（最多 64 项）。
 // VM 组合一个 PropBag 即获得「可被 UIX 绑定读取」的状态存储。
 class PropBag {
