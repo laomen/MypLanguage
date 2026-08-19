@@ -189,6 +189,45 @@ class Main {
                               + " stackKids=" + Fmt.i(ll.stackAt(sidx).childCount())
                               + " nodes=" + Fmt.i(ll.nodeCount())
                               + " ftype=" + ll.typeOf("flowBox"));
+
+            // ---- QML 风格：计算属性（expr）+ 状态（states）+ parent 引用 ----
+            // 表达式含引号，单独构造避免 JSON 转义混乱
+            string ePct = "\\\"vol: \\\" + vol.value";
+            string eSt = "vol.value > 60 ? \\\"high\\\" : \\\"low\\\"";
+            string qmlUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":200,\"height\":300,"
+                + "\"padding\":8,\"spacing\":8,\"children\":["
+                + "{\"type\":\"Slider\",\"id\":\"vol\",\"value\":50,\"min\":0,\"max\":100,\"width\":160},"
+                + "{\"type\":\"Label\",\"id\":\"pct\",\"bindProp\":\"text\",\"expr\":\"" + ePct + "\"},"
+                + "{\"type\":\"Label\",\"id\":\"half\",\"bindProp\":\"text\",\"expr\":\"parent.width / 2\"},"
+                + "{\"type\":\"Label\",\"id\":\"st\",\"bindProp\":\"text\",\"expr\":\"" + eSt + "\"},"
+                + "{\"type\":\"Button\",\"id\":\"mode\",\"text\":\"OFF\",\"state\":\"normal\","
+                + "\"states\":["
+                + "{\"name\":\"normal\",\"props\":[{\"k\":\"text\",\"v\":\"OFF\"},{\"k\":\"color\",\"v\":\"#888888\"}]},"
+                + "{\"name\":\"on\",\"props\":[{\"k\":\"text\",\"v\":\"ON\"},{\"k\":\"color\",\"v\":\"#34C759\"}]}"
+                + "]}"
+                + "]}";
+            UixLoader ql = new UixLoader(qmlUix, "");
+            RootView qr = new RootView(16, 260, 340);
+            ql.buildInto(qr);
+            int qp = ql.labelIdxOf("pct");
+            int qh = ql.labelIdxOf("half");
+            int qs = ql.labelIdxOf("st");
+            int qm = ql.buttonIdxOf("mode");
+            Console.writeLine("uix qml pct=" + ql.labelAt(qp).getText()
+                              + " half=" + ql.labelAt(qh).getText()
+                              + " st=" + ql.labelAt(qs).getText()
+                              + " mode=" + ql.buttonAt(qm).getLabel()
+                              + "/" + Fmt.x(ql.buttonAt(qm).getColor()));
+            // 改 vol.value → refresh 重算表达式（QML 响应式）
+            ql.storeProp("vol", "value", "75");
+            ql.refresh();
+            Console.writeLine("uix qml2 pct=" + ql.labelAt(qp).getText()
+                              + " st=" + ql.labelAt(qs).getText());
+            // 状态切换：normal → on
+            ql.setState("mode", "on");
+            Console.writeLine("uix qml3 mode=" + ql.buttonAt(qm).getLabel()
+                              + "/" + Fmt.x(ql.buttonAt(qm).getColor()));
         }
 }
 

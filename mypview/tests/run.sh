@@ -24,6 +24,7 @@ SRCS=(
     "$SRC/layout/flow_layout.myp"
     "$SRC/layout/stack_layout.myp"
     "$SRC/uix/prop_bag.myp"
+    "$SRC/uix/expr.myp"
     "$SRC/uix/uix_loader.myp"
     "uix_logic.myp"
 )
@@ -41,7 +42,10 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix ctrl nodes=5 sw=1 swc=34c759 cb=1/Agree sl=42 pb=70" \
    && printf '%s' "$OUT" | grep -q "uix flow b1=8/8 b2=42/8 b3=8/24" \
    && printf '%s' "$OUT" | grep -q "uix stack s1=10/20 w=200/100 s2=10/20" \
-   && printf '%s' "$OUT" | grep -q "uix layout flowKids=2 stackKids=2 nodes=7 ftype=Flow"; then
+   && printf '%s' "$OUT" | grep -q "uix layout flowKids=2 stackKids=2 nodes=7 ftype=Flow" \
+   && printf '%s' "$OUT" | grep -q "uix qml pct=vol: 50 half=100 st=low mode=OFF/888888" \
+   && printf '%s' "$OUT" | grep -q "uix qml2 pct=vol: 75 st=high" \
+   && printf '%s' "$OUT" | grep -q "uix qml3 mode=ON/34c759"; then
     echo "MYPVIEW-UIX PASS"
     exit 0
 else

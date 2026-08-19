@@ -40,6 +40,15 @@ class Dashboard {
                 + "]},"
                 + "{\"type\":\"Slider\",\"id\":\"vol\",\"value\":60,\"min\":0,\"max\":100},"
                 + "{\"type\":\"ProgressBar\",\"id\":\"batt\",\"value\":75,\"min\":0,\"max\":100},"
+                + "{\"type\":\"Label\",\"id\":\"level\",\"bindProp\":\"text\","
+                + "\"expr\":\"batt.value\"},"
+                + "{\"type\":\"Button\",\"id\":\"mode\",\"text\":\"Auto\",\"width\":120,"
+                + "\"height\":40,\"state\":\"normal\",\"states\":["
+                + "{\"name\":\"normal\",\"props\":[{\"k\":\"text\",\"v\":\"Auto\"},"
+                + "{\"k\":\"color\",\"v\":\"#8E8E93\"}]},"
+                + "{\"name\":\"night\",\"props\":[{\"k\":\"text\",\"v\":\"Night\"},"
+                + "{\"k\":\"color\",\"v\":\"#5856D6\"}]}"
+                + "]},"
                 + "{\"type\":\"Flow\",\"id\":\"tags\",\"width\":396,\"height\":80,"
                 + "\"spacing\":6,\"rowGap\":6,\"children\":["
                 + "{\"type\":\"Button\",\"id\":\"t1\",\"text\":\"fast\",\"width\":80,\"height\":26},"
@@ -74,6 +83,19 @@ class Dashboard {
                               + " pb=" + Fmt.i(loader.progressbarAt(bi).getValue())
                               + " tags=" + Fmt.i(loader.flowAt(ti).childCount())
                               + " badge=" + Fmt.i(loader.stackAt(si).childCount()));
+
+            // QML 风格：计算属性（expr）+ 状态（states）+ 响应式刷新
+            int lvi = loader.labelIdxOf("level");
+            int mmi = loader.buttonIdxOf("mode");
+            Console.writeLine("dash qml level=" + loader.labelAt(lvi).getText()
+                              + " mode=" + loader.buttonAt(mmi).getLabel()
+                              + "/" + Fmt.x(loader.buttonAt(mmi).getColor()));
+            loader.storeProp("batt", "value", "95");
+            loader.refresh();
+            loader.setState("mode", "night");
+            Console.writeLine("dash qml2 level=" + loader.labelAt(lvi).getText()
+                              + " mode=" + loader.buttonAt(mmi).getLabel()
+                              + "/" + Fmt.x(loader.buttonAt(mmi).getColor()));
 
             // 绑定/命令：VM 刷新 title + 命令分发
             SettingsVM vm = new SettingsVM();

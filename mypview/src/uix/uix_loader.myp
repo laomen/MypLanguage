@@ -92,6 +92,27 @@ class UixLoader {
         // 自定义控件持有（尽力持有；MYP 接口数组不 retain，构建器实现须持有实例）
         View[] held_;
         int heldCount_;
+        // QML 风格计算属性（expr 表达式表）
+        string[] exprIds_;
+        string[] exprProps_;
+        string[] exprSrcs_;
+        int exprCount_;
+        // 节点属性袋（"id:name" → value；供表达式读其它节点属性）
+        string[] propKeys_;
+        string[] propVals_;
+        int propCount_;
+        // 节点父映射（与 nodes_ 对齐；供 parent.X 表达式）
+        string[] parentIds_;
+        // 状态表（节点 id, 状态名 → 属性 k/v）
+        string[] stIds_;
+        string[] stNames_;
+        string[] stKeys_;
+        string[] stVals_;
+        int stCount_;
+        // 初始状态（构建后应用）
+        string[] initStId_;
+        string[] initStName_;
+        int initStCount_;
 
     action:
         @constructor UixLoader(string uixJson, string uspJson) {
@@ -153,6 +174,22 @@ class UixLoader {
             regCount_ = 0;
             held_ = new View[64];
             heldCount_ = 0;
+            exprIds_ = new string[32];
+            exprProps_ = new string[32];
+            exprSrcs_ = new string[32];
+            exprCount_ = 0;
+            propKeys_ = new string[256];
+            propVals_ = new string[256];
+            propCount_ = 0;
+            parentIds_ = new string[128];
+            stIds_ = new string[64];
+            stNames_ = new string[64];
+            stKeys_ = new string[64];
+            stVals_ = new string[64];
+            stCount_ = 0;
+            initStId_ = new string[16];
+            initStName_ = new string[16];
+            initStCount_ = 0;
         }
 
         // ---- 控件注册（UIX 扩展点）----
@@ -257,6 +294,10 @@ class UixLoader {
                 buildIntoStack(uix_, "", s);
                 s.layout();
             }
+            // 构建后处理：父映射 → 初始状态 → 重算计算属性
+            indexParents();
+            applyInitialStates();
+            refresh();
         }
 
         // 构建 col 的所有子节点（add 一律用具体类型局部变量）
@@ -848,7 +889,179 @@ class UixLoader {
                     cmdCount_ = cmdCount_ + 1;
                 }
             }
+            // 属性袋记录（供表达式读其它节点属性）
+            recordProps(doc, prefix, id);
+            // 计算属性（expr）：QML 风格表达式 → 控件属性（bindProp，缺省 text）
+            if (doc.type(prefix + "expr") >= 0) {
+                if (exprCount_ < 32) {
+                    exprIds_[exprCount_] = id;
+                    exprProps_[exprCount_] = "text";
+                    if (doc.type(prefix + "bindProp") >= 0)
+                        exprProps_[exprCount_] = doc.getString(prefix + "bindProp");
+                    exprSrcs_[exprCount_] = doc.getString(prefix + "expr");
+                    exprCount_ = exprCount_ + 1;
+                }
+            }
+            // 状态（states 声明 + 初始 state）
+            registerStates(doc, prefix, id);
         }
+
+        // 把构造/声明属性写入属性袋（"id:name" → value）
+        void recordProps(Json doc, string prefix, string id) {
+            if (doc.type(prefix + "text") >= 0)
+                storeProp(id, "text", doc.getString(prefix + "text"));
+            if (doc.type(prefix + "color") >= 0)
+                storeProp(id, "color", doc.getString(prefix + "color"));
+            else if (doc.type(prefix + "bg") >= 0)
+                storeProp(id, "color", doc.getString(prefix + "bg"));
+            if (doc.type(prefix + "padding") >= 0)
+                storeProp(id, "padding", Fmt.i(doc.getInt(prefix + "padding")));
+            if (doc.type(prefix + "spacing") >= 0)
+                storeProp(id, "spacing", Fmt.i(doc.getInt(prefix + "spacing")));
+            if (doc.type(prefix + "scale") >= 0)
+                storeProp(id, "scale", Fmt.i(doc.getInt(prefix + "scale")));
+            if (doc.type(prefix + "on") >= 0)
+                storeProp(id, "on", Fmt.i(doc.getInt(prefix + "on")));
+            if (doc.type(prefix + "checked") >= 0)
+                storeProp(id, "checked", Fmt.i(doc.getInt(prefix + "checked")));
+            if (doc.type(prefix + "value") >= 0)
+                storeProp(id, "value", Fmt.i(doc.getInt(prefix + "value")));
+            if (doc.type(prefix + "min") >= 0)
+                storeProp(id, "min", Fmt.i(doc.getInt(prefix + "min")));
+            if (doc.type(prefix + "max") >= 0)
+                storeProp(id, "max", Fmt.i(doc.getInt(prefix + "max")));
+        }
+
+        // ---- QML 风格计算属性（expr）+ 状态（states）----
+        // 重算所有计算属性：表达式求值 → setAttr + 写属性袋。
+        // 应用层在 VM 变化 / 状态切换后调用，实现类 QML 响应式刷新。
+        void refresh() {
+            for (int i = 0; i < exprCount_; i = i + 1) {
+                UixExpr e = new UixExpr(exprSrcs_[i]);
+                UixVal v = e.eval(this, exprIds_[i]);
+                string val = v.toStr();
+                int ni = idxOf(exprIds_[i]);
+                if (ni >= 0) nodes_[ni].setAttr(exprProps_[i], val);
+                storeProp(exprIds_[i], exprProps_[i], val);
+            }
+        }
+
+        // 注册节点的 states 声明与初始 state
+        void registerStates(Json doc, string prefix, string id) {
+            if (doc.type(prefix + "states") >= 0) {
+                int sn = doc.arrayLen(prefix + "states");
+                for (int i = 0; i < sn; i = i + 1) {
+                    string sp = prefix + "states." + Fmt.i(i) + ".";
+                    string nm = doc.getString(sp + "name");
+                    int pn = doc.arrayLen(sp + "props");
+                    for (int j = 0; j < pn; j = j + 1) {
+                        if (stCount_ >= 64) return;
+                        stIds_[stCount_] = id;
+                        stNames_[stCount_] = nm;
+                        stKeys_[stCount_] = doc.getString(sp + "props." + Fmt.i(j) + ".k");
+                        stVals_[stCount_] = doc.getString(sp + "props." + Fmt.i(j) + ".v");
+                        stCount_ = stCount_ + 1;
+                    }
+                }
+            }
+            if (doc.type(prefix + "state") >= 0) {
+                if (initStCount_ < 16) {
+                    initStId_[initStCount_] = id;
+                    initStName_[initStCount_] = doc.getString(prefix + "state");
+                    initStCount_ = initStCount_ + 1;
+                }
+            }
+        }
+
+        // 应用节点状态：写入状态属性（setAttr + 属性袋），随后重算表达式
+        void setState(string id, string name) {
+            int ni = idxOf(id);
+            for (int i = 0; i < stCount_; i = i + 1) {
+                if (stIds_[i] != id) continue;
+                if (stNames_[i] != name) continue;
+                if (ni >= 0) nodes_[ni].setAttr(stKeys_[i], stVals_[i]);
+                storeProp(id, stKeys_[i], stVals_[i]);
+            }
+            refresh();
+        }
+
+        // 应用初始 state（构建后，不触发多次 refresh）
+        void applyInitialStates() {
+            for (int i = 0; i < initStCount_; i = i + 1) {
+                int ni = idxOf(initStId_[i]);
+                string id = initStId_[i];
+                string name = initStName_[i];
+                for (int j = 0; j < stCount_; j = j + 1) {
+                    if (stIds_[j] != id) continue;
+                    if (stNames_[j] != name) continue;
+                    if (ni >= 0) nodes_[ni].setAttr(stKeys_[j], stVals_[j]);
+                    storeProp(id, stKeys_[j], stVals_[j]);
+                }
+            }
+        }
+
+        // 属性袋读写
+        void storeProp(string id, string name, string val) {
+            string key = id + ":" + name;
+            for (int i = 0; i < propCount_; i = i + 1) {
+                if (propKeys_[i] == key) { propVals_[i] = val; return; }
+            }
+            if (propCount_ >= 256) return;
+            propKeys_[propCount_] = key;
+            propVals_[propCount_] = val;
+            propCount_ = propCount_ + 1;
+        }
+        string propOf(string id, string name) {
+            string key = id + ":" + name;
+            for (int i = 0; i < propCount_; i = i + 1) {
+                if (propKeys_[i] == key) return propVals_[i];
+            }
+            return "";
+        }
+
+        // 表达式解析支撑（QML 标识符解析）
+        int hasId(string id) {
+            if (idxOf(id) >= 0) return 1;
+            return 0;
+        }
+        string parentIdOf(string id) {
+            int i = idxOf(id);
+            if (i < 0) return "";
+            return parentIds_[i];
+        }
+        string rootId() {
+            if (nodeCount_ <= 0) return "";
+            return ids_[0];
+        }
+        double nodeWidth(string id) {
+            int i = idxOf(id);
+            if (i < 0) return 0.0;
+            return double(nodes_[i].width());
+        }
+        double nodeHeight(string id) {
+            int i = idxOf(id);
+            if (i < 0) return 0.0;
+            return double(nodes_[i].height());
+        }
+        // 构建后遍历 uix_ 树记录每个节点的父 id（供 parent.X）
+        void indexParents() {
+            string rid = getStr(uix_, "", "id");
+            int ri = idxOf(rid);
+            if (ri >= 0) parentIds_[ri] = "";
+            walkParents("");
+        }
+        void walkParents(string prefix) {
+            string id = getStr(uix_, prefix, "id");
+            int n = uix_.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1) {
+                string cp = prefix + "children." + Fmt.i(i) + ".";
+                string cid = getStr(uix_, cp, "id");
+                int ci = idxOf(cid);
+                if (ci >= 0) parentIds_[ci] = id;
+                walkParents(cp);
+            }
+        }
+
 
         // 应用样式：遍历 .usp 选择器，匹配则把 props 写入控件
         void applyStyles(View v, string id, string cls) {

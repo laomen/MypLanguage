@@ -31,6 +31,7 @@ SRCS=(
     "$SRC/layout/flow_layout.myp"
     "$SRC/layout/stack_layout.myp"
     "$SRC/uix/prop_bag.myp"
+    "$SRC/uix/expr.myp"
     "$SRC/uix/uix_loader.myp"
     "$TARGET.myp"
 )
