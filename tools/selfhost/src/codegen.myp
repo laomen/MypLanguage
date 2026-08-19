@@ -7722,7 +7722,8 @@ class CodeGen {
                     }
                     string t2 = newTmp();
                     sb_.append("  " + t2 + " = call " + retLt + " @" + direct + "(" + as.toString() + ")\n");
-                    if (retLt == "ptr") addFreshTemp(t2);
+                    // BUG-036: 接口方法/直接方法返回 ptr 为借用（字符串属性/成员），
+                    // 调用方不拥有 → 不 addFreshTemp（语句末释放借用 → 悬垂崩）。
                     return t2;
                 }
             }
@@ -7732,7 +7733,8 @@ class CodeGen {
             }
             string t = newTmp();
             sb_.append("  " + t + " = call " + retLt + " " + fnv + "(" + as.toString() + ")\n");
-            if (retLt == "ptr") addFreshTemp(t);
+            // BUG-036: 接口方法返回 ptr 为借用（如 getProp 返回 bag 属性字符串），
+            // 不 addFreshTemp（否则语句末释放借用 → 悬垂）。
             return t;
         }
 
@@ -9347,7 +9349,11 @@ class CodeGen {
                 }
                 string t = newTmp();
                 sb_.append("  " + t + " = call " + retLt + " @" + fn + "(" + as.toString() + ")\n");
-                if (retLt == "ptr") addFreshTemp(t);
+                // BUG-036: 方法/函数调用返回 ptr 是**借用**（成员/数组元素/属性
+                // 字符串），调用方不拥有 → 不能 addFreshTemp（否则语句末 myp_release
+                // 释放数组成员等借用引用 → 悬垂/双释放段错误）。对齐 C++ oracle
+                // isFreshArcExpr（方法调用返回=false，不释放）。new 等 fresh 由
+                // storeNew/属性赋值 consumeTemp 单独处理。
                 return t;
             }
             if (k == "TryExpr") {

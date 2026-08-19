@@ -997,3 +997,39 @@
   一侧新增「产生 fresh 值」的路径（本 bug 的 concat）都必须同步注册 temp，否则
   作函数实参/中间表达式时泄漏。排查方向：内存随时间线性增长的 UI/循环，先二分
   「局部 vs 字段 vs 函数实参」路径，再对比 oracle 与 selfhost 的 temp 注册差异。
+
+## BUG-036（进行中 🟨）：selfhost 接口/字符串借用引用被当 fresh 释放 → mypview 自举运行段错误
+
+- **状态**：🟨 已定位待修（2026-08-19；用 myp_self 编译 mypview 全集暴露）。
+  编译期已全部修复（mypview 可编译通过）；运行期借用释放已修 3 处，仍有
+  sync/接口方法调用字符串 ARC 待续。
+- **背景**：目标「用 self 自举编译器编译 mypview」。编译期暴露 5 处接口 fat
+  pointer 代码生成缺口（全部已修，bootstrap 16/16 + 父级 312/312 不破）：
+  ① 接口 `==/!=` 生成 `icmp eq {ptr,ptr}` 非法 → 逐字段 extractvalue 比较
+  （genStructEq，对齐 C++ oracle eqRec）；② 接口 `== null` 对 null extractvalue
+  非法 → 只比较 data 指针；③ exprLlvmType 函数值调用返回类型缺分支 →
+  varAstType(callee).funcReturn()；④ exprLlvmType 接口方法调用返回类型 →
+  isInterfaceName(resolvedKind)→{ptr,ptr} 兜底 + ifaceAbstractRetAstType
+  （接口抽象方法返回类型，如 ViewBuilder.create→View）；⑤ 发现 mypc 数组
+  substring 缓冲覆盖 bug（`a[i]=Str.substring(...)` 后新字符串覆盖数组元素，
+  mypc 编译的程序实测元素变 newTmp 名；myp_self 编译正常）→ genStructEq 规避
+  （字段类型不存数组，每次 structFieldAt 重解析）。
+- **运行期根因**：selfhost 对**方法/接口方法调用返回 ptr**（字符串属性、成员/
+  数组元素引用 = 借用，调用方不拥有）无条件 `addFreshTemp` → 语句末
+  `myp_release` 释放借用引用 → 悬垂/双释放段错误（myp_release 收到已释放对象
+  或字符串内容 0x65646f6e20786975="uix node"）。C++ oracle 用 isFreshArcExpr
+  （方法调用返回=false，借用不释放）。
+- **已修复**（tools/selfhost/src/codegen.myp，3 处）：
+  - genExpr Call 分支普通函数/方法调用返回 ptr：删 `addFreshTemp(t)`（labelAt
+    返回 labels_[i] 数组成员被释放的根因）。
+  - genIfaceCall direct/vtable 分支返回 ptr：删 `addFreshTemp(t2/t)`（vm.getProp
+    返回 bag 属性字符串被释放）。
+- **待续**：UixLoader_sync 内 `nodes_[ni].setAttr(bindProps_[i], val)` 接口方法
+  调用后 release val（getProp 返回 "ready"）崩——val 槽被接口方法调用污染成
+  "uix node" 内容。疑接口方法调用字符串参数/返回的 ARC（setAttr 内部或参数传递
+  借用释放）。
+- **复现**：`myp_self` 编译 mypview 全集（uix_logic）→ 运行段错误 139；
+  最小复现 /tmp/icmp_test.myp（接口==）、/tmp/arr_test*.myp（mypc substring 污染）。
+- **教训**：MYP 借用引用（方法返回成员/属性/数组元素）调用方不拥有，不得
+  addFreshTemp 释放；fresh 仅限 new/concat 等确实返回新对象的路径。selfhost 与
+  oracle 的「fresh 判定」必须一致（isFreshArcExpr vs addFreshTemp）。
