@@ -1718,6 +1718,64 @@ class CodeGen {
             return "i32";
         }
 
+        // Subscript 数组表达式的元素接口名（元素是接口类型时返回其名，否则空串）。
+        // 用于接口数组元素赋值的 fat 上转（BUG-037，镜像 Member 分支的 upcast）。
+        string subscriptElemIfaceName(AstExpr arr) {
+            if (arr == null) return "";
+            if (arr.kind() == "Identifier") {
+                if (hasVar(arr.name()) != 0) {
+                    AstType at = varAstType(arr.name());
+                    if (at != null) {
+                        AstType rt = resolveType(at);
+                        if (rt != null && rt.element() != null) {
+                            AstType et = resolveType(rt.element());
+                            if (et != null && Str.len(et.className()) != 0
+                                && isInterfaceName(et.className()) != 0) {
+                                return et.className();
+                            }
+                        }
+                    }
+                    return "";
+                }
+                if (hasMember(arr.name()) != 0 && Str.len(curClass_) != 0 && tu_ != null) {
+                    AstType pvt = propAstType(curClass_, arr.name());
+                    if (pvt != null) {
+                        AstType prt = resolveType(pvt);
+                        if (prt != null && prt.element() != null) {
+                            AstType pet = resolveType(prt.element());
+                            if (pet != null && Str.len(pet.className()) != 0
+                                && isInterfaceName(pet.className()) != 0) {
+                                return pet.className();
+                            }
+                        }
+                    }
+                    return "";
+                }
+            } else if (arr.kind() == "Member") {
+                string cls = arr.resolvedClass();
+                // @static class 属性下标：Shared.counter[0] → 类名从对象标识符取
+                AstExpr sobj = arr.array();
+                if (sobj != null && sobj.kind() == "Identifier" && isStaticClassName(sobj.name()) != 0) {
+                    cls = sobj.name();
+                }
+                if (Str.len(cls) == 0) cls = "Object";
+                if (tu_ != null) {
+                    AstType pvt = propAstType(cls, arr.memberName());
+                    if (pvt != null) {
+                        AstType prt = resolveType(pvt);
+                        if (prt != null && prt.element() != null) {
+                            AstType pet = resolveType(prt.element());
+                            if (pet != null && Str.len(pet.className()) != 0
+                                && isInterfaceName(pet.className()) != 0) {
+                                return pet.className();
+                            }
+                        }
+                    }
+                }
+            }
+            return "";
+        }
+
         // Subscript 数组表达式 → 是否为 slice。
         int subscriptIsSlice(AstExpr arr) {
             if (arr == null) return 0;
@@ -8414,6 +8472,31 @@ class CodeGen {
                     } else {
                         gep = newTmp();
                         sb_.append("  " + gep + " = getelementptr " + elemLt + ", ptr " + arrV + ", " + idxT + " " + idxV + "\n");
+                    }
+                    // 接口数组元素：具体类实例 → 接口 fat（BUG-037，镜像 Member 分支；
+                    // 否则 new 的裸 ptr 直接 store 进 {ptr,ptr} 槽 → LLVM 类型错误 + 运行期错位）
+                    if (elemLt == "{ ptr, ptr }" && rt == "ptr") {
+                        string ifaceName = subscriptElemIfaceName(arr);
+                        if (Str.len(ifaceName) != 0) {
+                            string clsName = upcastClsName(e.rhs());
+                            if (Str.len(clsName) != 0) {
+                                string rawV = rv;
+                                rv = buildIfaceFat(rv, ifaceName, clsName);
+                                rt = "{ ptr, ptr }";
+                                // 接口槽接管具体类实例所有权（data 槽随数组持有）；
+                                // 消费 new 产生的 fresh temp，避免语句末 flushTemps
+                                // 双重释放（同局部接口变量 6627 的 arcConsumeTemp）。
+                                if (isFreshTemp(rawV) != 0) consumeTemp(rawV);
+                            }
+                        }
+                    } else if (elemLt == "{ ptr, ptr }" && rt == "{ ptr, ptr }") {
+                        // 接口 fat 直接存数组元素（nodes_[i] = v，v 为接口参数/局部）
+                        // BUG-038：数组槽持有借用 fat → 须 retain data；否则调用方
+                        // 局部（Label l = new ...）作用域末释放 → 数组悬垂 → 内存被
+                        // myp_alloc/myp_strcat 复用（status Label text_ 变字符串内容）。
+                        string dv = newTmp();
+                        sb_.append("  " + dv + " = extractvalue { ptr, ptr } " + rv + ", 0\n");
+                        sb_.append("  call void @myp_retain(ptr " + dv + ")\n");
                     }
                     rv = convertExpr(rv, rt, elemLt, e.rhs());
                     if (elemLt == "{ ptr, i64 }") {

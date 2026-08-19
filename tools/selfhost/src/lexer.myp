@@ -227,7 +227,16 @@ class Lexer {
                     else diag_.error(line_, col_, "unknown escape sequence");
                     if (isAtEnd() == 0) advance();
                 } else {
-                    val.append(__myp_chr(advance()));
+                    // UTF-8 多字节（>=128）：原样保留源码字节。__myp_chr 会把
+                    // 字节当 Unicode 码点再 UTF-8 编码 → 双重编码（"你好" 的
+                    // 0xE4 → \C3\A4，运行时 len=12 乱码）。substring 按字节取
+                    // 原始片段，逐字节复制保 round-trip。
+                    int cc = advance();
+                    if (cc < 128) {
+                        val.append(__myp_chr(cc));
+                    } else {
+                        val.append(Str.substring(source_, pos_ - 1, pos_));
+                    }
                 }
             }
             if (isAtEnd() != 0) diag_.error(line_, col_, "unterminated string literal");

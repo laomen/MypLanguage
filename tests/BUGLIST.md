@@ -998,11 +998,12 @@
   作函数实参/中间表达式时泄漏。排查方向：内存随时间线性增长的 UI/循环，先二分
   「局部 vs 字段 vs 函数实参」路径，再对比 oracle 与 selfhost 的 temp 注册差异。
 
-## BUG-036（进行中 🟨）：selfhost 接口/字符串借用引用被当 fresh 释放 → mypview 自举运行段错误
+## BUG-036（已修复 🟩）：selfhost 接口/字符串借用引用被当 fresh 释放 → mypview 自举运行段错误
 
-- **状态**：🟨 已定位待修（2026-08-19；用 myp_self 编译 mypview 全集暴露）。
-  编译期已全部修复（mypview 可编译通过）；运行期借用释放已修 3 处，仍有
-  sync/接口方法调用字符串 ARC 待续。
+- **状态**：� 已修复（2026-08-19）。编译期 5 处 + 运行期借用释放 3 处 +
+  接口数组元素 ARC 2 处（BUG-037/038）+ UTF-8 双重编码（BUG-039）全部修复。
+  mypview 全集 myp_self 编译运行成功（69 行全绿）；bootstrap 16/16 +
+  父级 312/312 + bugs 11/11 + mypview UIX/PIPE PASS 全绿。
 - **背景**：目标「用 self 自举编译器编译 mypview」。编译期暴露 5 处接口 fat
   pointer 代码生成缺口（全部已修，bootstrap 16/16 + 父级 312/312 不破）：
   ① 接口 `==/!=` 生成 `icmp eq {ptr,ptr}` 非法 → 逐字段 extractvalue 比较
@@ -1024,12 +1025,63 @@
     返回 labels_[i] 数组成员被释放的根因）。
   - genIfaceCall direct/vtable 分支返回 ptr：删 `addFreshTemp(t2/t)`（vm.getProp
     返回 bag 属性字符串被释放）。
-- **待续**：UixLoader_sync 内 `nodes_[ni].setAttr(bindProps_[i], val)` 接口方法
-  调用后 release val（getProp 返回 "ready"）崩——val 槽被接口方法调用污染成
-  "uix node" 内容。疑接口方法调用字符串参数/返回的 ARC（setAttr 内部或参数传递
-  借用释放）。
+- **待续**：（已由 BUG-037/038 解决）UixLoader_sync 内 `nodes_[ni].setAttr
+  (bindProps_[i], val)` 接口方法调用后 release val 崩——根因是接口数组元素
+  store 不 retain 借用 fat（BUG-038）→ 对象提前释放 → 内存被 myp_strcat 复用。
 - **复现**：`myp_self` 编译 mypview 全集（uix_logic）→ 运行段错误 139；
-  最小复现 /tmp/icmp_test.myp（接口==）、/tmp/arr_test*.myp（mypc substring 污染）。
+  最小复现 /tmp/icmp_test.myp（接口==）、/tmp/arr_test*.myp（mypc substring 污染）、
+  /tmp/utf8_min.myp（接口数组元素赋值，复现 BUG-037 编译期类型错误 + BUG-038 悬垂）。
 - **教训**：MYP 借用引用（方法返回成员/属性/数组元素）调用方不拥有，不得
   addFreshTemp 释放；fresh 仅限 new/concat 等确实返回新对象的路径。selfhost 与
   oracle 的「fresh 判定」必须一致（isFreshArcExpr vs addFreshTemp）。
+  接口数组元素 store：具体类 new → fat 上转 + fresh 转移；借用 fat → retain data
+  （数组槽持有，否则调用方局部释放 → 悬垂）。
+
+## BUG-037（已修复 🟩）：selfhost 接口数组元素赋值缺 fat 上转 + fresh 转移
+
+- **症状**：`nodes_[i] = new Label(...)`（接口数组元素 = 具体类 new）时，LLVM
+  报 `'%t55' defined with type 'ptr' but expected '{ ptr, ptr }'`（编译期）；
+  修类型错误后运行期对象提前释放（缺 fresh 转移）。
+- **根因**（tools/selfhost/src/codegen.myp Subscript 左值分支）：`elemLt ==
+  "{ ptr, ptr }"`（接口数组元素）时直接 `store {ptr,ptr} rv`，未像 Member 分支
+  那样调用 upcastIface/buildIfaceFat 把具体类裸 ptr 上转为 {data, vtable}；且
+  上转后未消费 new 的 fresh temp → 语句末 flushTemps 双重释放。
+- **修复**：新增 subscriptElemIfaceName(arr)（数组元素接口名解析，镜像
+  subscriptElemLt 形态）；Subscript 分支 `elemLt=="{ptr,ptr}" && rt=="ptr"`
+  → buildIfaceFat + `isFreshTemp(rawV)!=0 → consumeTemp(rawV)`（对齐局部接口
+  变量 6627 的 arcConsumeTemp）。
+- **验证**：最小复现 /tmp/utf8_min.myp 编译通过 + 运行正常；mypview 全集
+  myp_self 编译通过。
+
+## BUG-038（已修复 🟩）：selfhost 接口数组元素 store 借用 fat 不 retain → 对象悬垂
+
+- **症状**：myp_self 编译的 mypview 运行段错误 139。gdb：sync 的 setAttr 参数
+  全部正确（this/name/val），但 this 对象 text_ 槽 = `0x65646f6e20786975`
+  （"uix node" 字符串内容）；watchpoint 捕获对象被 `myp_strcat`（walkParents
+  拼接 "children"）写入 → **对象内存被字符串拼接复用**。
+- **根因**：build 里 `Label l = new Label(...)`（rc=1 局部），registerNode 的
+  `nodes_[nodeCount_] = v`（v 为接口 fat 借用）→ Subscript 分支对
+  `rt=="{ptr,ptr}"` 直接 store 不 retain；build 返回时 l 释放 → rc 0 → 对象
+  释放 → nodes_ 数组悬垂 → 内存被 myp_alloc/myp_strcat 复用。
+- **修复**（codegen.myp Subscript 分支新增 else-if）：`elemLt=="{ptr,ptr}" &&
+  rt=="{ptr,ptr}"`（接口 fat 借用）→ extractvalue 0 + `myp_retain(data)`
+  （数组槽持有借用 fat，对齐 C++ 接口数组 store 的 retain 语义）。
+- **验证**：mypview 全集运行全绿（uix style ok=7aff、sync status=ok-login
+  等 69 行）；bootstrap 16/16 + 父级 312/312 + bugs 11/11。
+
+## BUG-039（已修复 🟩）：selfhost 词法器 UTF-8 双重编码 → 中文乱码
+
+- **症状**：myp_self 编译含中文字符串字面量的程序，输出乱码
+  （`你好` → `ä½ å¥½`），`Str.len` 返回字节数翻倍（6 → 12）。mypc 正常。
+- **根因**（tools/selfhost/src/lexer.myp scanString）：非转义字符
+  `val.append(__myp_chr(advance()))` —— `advance()` 返回源码**原始字节**
+  （UTF-8 多字节的一部分，如 0xE4），`__myp_chr` 把字节当 **Unicode 码点**
+  再 UTF-8 编码（0xE4 → C3 A4）→ 双重编码。IR 里 `你好` 变
+  `c"\C3\A4\C2\BD\C2\A0..."`（9 字节）。
+- **修复**：scanString 非 ASCII 字节（>=128）改用 `Str.substring(source_,
+  pos_-1, pos_)` 原样保留源码字节；ASCII 仍 `__myp_chr`。
+- **验证**：最小测试 `你好 len=6`；mypview 全集中文正常（`t=你好 n=6`）；
+  bootstrap 16/16 固定点不破（selfhost 源码字符串多为 ASCII）。
+- **教训**：源码按字节读，`__myp_chr` 按码点编码——两者只对 ASCII 等价；
+  字节级 round-trip 须用 substring/memcpy 原样保留（同 stdlib/io.myp readAll
+  注释）。
