@@ -8,7 +8,11 @@
 // myp_sdl_get_renderer → 固定点迭代自动拉入 sdl_bridge.c（-lSDL2）。
 
 ffi int  myp_ttf_init(int px);
+ffi int  myp_ttf_load_font(string path, int px);
+ffi int  myp_ttf_set_size(int px);
 ffi int  myp_ttf_draw_text(int x, int y, string text, int scale, int r, int g, int b, int a);
+ffi int  myp_ttf_text_width(string text, int scale);
+ffi int  myp_ttf_text_height(int scale);
 ffi void myp_ttf_quit();
 
 class Ttf {
@@ -18,10 +22,27 @@ class Ttf {
         int init(int px) {
             return myp_ttf_init(px);
         }
+        // 加载指定字体文件 + 字号（替换当前字体）。0=成功, -1=失败。
+        int loadFont(string path, int px) {
+            return myp_ttf_load_font(path, px);
+        }
+        // 调整当前字体字号（重新打开同一路径；未加载时按自动候选 init）。
+        // 0=成功, -1=失败。
+        int setSize(int px) {
+            return myp_ttf_set_size(px);
+        }
         // 在 (x, y) 绘制 UTF-8 文本（含中文）。scale 放大倍数（1=原始字号）。
         // 返回 0=成功, -1=失败（字体未就绪/渲染失败）。
         int drawText(int x, int y, string text, int scale, int r, int g, int b, int a) {
             return myp_ttf_draw_text(x, y, text, scale, r, g, b, a);
+        }
+        // 文本渲染宽度（像素，scale 放大）；失败返回 -1（字体未就绪）
+        int textWidth(string text, int scale) {
+            return myp_ttf_text_width(text, scale);
+        }
+        // 字体行高（像素，scale 放大）；失败返回 -1
+        int textH(int scale) {
+            return myp_ttf_text_height(scale);
         }
         // 释放字体并退出 SDL_ttf。
         void close() { myp_ttf_quit(); }

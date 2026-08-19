@@ -11,7 +11,12 @@ ffi void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, 
 ffi int  myp_sdl_get_key();
 ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_get_mouse_click();
+ffi int  myp_sdl_get_char();
+ffi void myp_sdl_start_text_input();
+ffi void myp_sdl_stop_text_input();
 ffi int  myp_sdl_set_window_size(int w, int h);
+ffi int  myp_sdl_set_max_window_size(int w, int h);
+ffi int  myp_sdl_lock_window_size(int w, int h);
 ffi int  myp_sdl_set_borderless_fullscreen(int on);
 ffi int  myp_sdl_display_size();
 ffi int  myp_sdl_hide_window();
@@ -55,8 +60,18 @@ class SDL {
         int getKey() { return myp_sdl_get_key(); }
         // 取一次鼠标左键点击（窗口坐标打包 (y<<16)|x），无新点击 -1
         int getMouseClick() { return myp_sdl_get_mouse_click(); }
+        // 取一个输入字符码点（UTF-8 解码；8=退格 13=回车；无输入 -1）。
+        // 用 Str.chr(cp) 转字符串喂给输入框。
+        int getChar() { return myp_sdl_get_char(); }
+        // 显式开关文本输入（open 已默认开启；临时禁用/恢复用）
+        void startTextInput() { myp_sdl_start_text_input(); }
+        void stopTextInput() { myp_sdl_stop_text_input(); }
         // 运行时调整窗口大小（resizable 窗口）。返回 0=成功
         int setWindowSize(int w, int h) { return myp_sdl_set_window_size(w, h); }
+        // 限制窗口最大尺寸（防止拖拽放大导致线性插值模糊）。返回 0=成功
+        int setMaxWindowSize(int w, int h) { return myp_sdl_set_max_window_size(w, h); }
+        // 锁定窗口尺寸（min=max）：禁止拖拽改变大小，渲染恒 1:1 不模糊。
+        int lockWindowSize(int w, int h) { return myp_sdl_lock_window_size(w, h); }
         // 无边框全屏（手机式应用全屏切换）。on=1 全屏，on=0 恢复。返回 0=成功
         int setFullscreen(int on) { return myp_sdl_set_borderless_fullscreen(on); }
         // 当前显示器尺寸（返回 (h<<16)|w；-1 失败）

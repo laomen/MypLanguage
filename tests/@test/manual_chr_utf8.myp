@@ -1,0 +1,38 @@
+// Str.chr Unicode UTF-8 + File.readAll 字节级 round-trip（2026-08-19 修复固化）
+// ---------------------------------------------------------------------------
+// 背景：myp_chr 曾只取低 8 位（>0xFF 乱码），readAll 曾逐字节用 chr 拼（0x80-0xFF
+// 被扩展成多字节 UTF-8，破坏字节级读取）。修复后：
+//   1. Str.chr 按 Unicode 码点生成 1-4 字节 UTF-8（"你"=U+4F60=3 字节 0xE4 0xBD 0xA0）
+//   2. File.readAll 走 C 侧 memcpy 原样读取，非 ASCII 字节不被改写
+import test;
+import env;
+import fmt;
+import io;
+import text;
+
+@test void t_chr_utf8() {
+    string ni = Str.chr(0x4F60);          // 你
+    string hao = Str.chr(0x597D);         // 好
+    Test.assertEq(Str.len(ni), 3);        // UTF-8 3 字节
+    Test.assertEq(Str.len(hao), 3);
+    Test.assertStrEq(ni + hao, "你好");
+    Test.assertStrEq(Str.chr(65), "A");   // ASCII 不变
+    Test.assertEq(__myp_ord(ni), 0xE4);   // 首字节 0xE4
+}
+
+@test void t_readall_bytes() {
+    File f = new File();
+    int ok = f.open("tests/assets/readall_utf8.txt", "r");
+    if (ok == 0) {
+        string content = f.readAll();
+        f.close();
+        // 文件内容：Hello, 世界!（"世界"= e4 b8 96 e7 95 8c 6 字节）
+        // 总字节：Hello,(7) + 世界(6) + !(1) = 14
+        Test.assertEq(Str.len(content), 14);
+        Test.assertEq(__myp_ord(Str.substring(content, 7, 8)), 0xE4);  // 首字节未被改写
+        Test.assertEq(__myp_ord(Str.substring(content, 8, 9)), 0xB8);
+        Test.assertEq(__myp_ord(Str.substring(content, 12, 13)), 0x8C);
+        Test.assertEq(__myp_ord(Str.substring(content, 13, 14)), 0x21); // '!'
+        Test.assertStrEq(Str.substring(content, 0, 7), "Hello, ");
+    }
+}

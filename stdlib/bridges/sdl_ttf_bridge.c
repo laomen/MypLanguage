@@ -17,6 +17,8 @@ extern SDL_Renderer* myp_sdl_get_renderer(void);
 
 static TTF_Font* g_font = NULL;
 static int g_font_loaded = 0;
+static int g_font_px = 16;          // 当前基字号（scale 乘数基准）
+static char g_font_path[512] = "";   // 当前字体文件路径（setSize 重新打开用）
 
 // 初始化 SDL_ttf 并加载 Noto CJK 字体（px 字号）。
 // 返回 0=成功, -1=失败（TTF_Init 或字体加载失败）。
@@ -35,11 +37,51 @@ int myp_ttf_init(int px) {
     };
     for (int i = 0; candidates[i]; i++) {
         g_font = TTF_OpenFont(candidates[i], px);
-        if (g_font) break;
+        if (g_font) { strncpy(g_font_path, candidates[i], sizeof(g_font_path) - 1); break; }
     }
     if (!g_font) { TTF_Quit(); return -1; }
     g_font_loaded = 1;
+    g_font_px = px;
     return 0;
+}
+
+// 加载指定字体文件 + 字号（替换当前字体；0=成功, -1=失败）。
+int myp_ttf_load_font(const char* path, int px) {
+    if (!path || !path[0] || px <= 0) return -1;
+    if (!TTF_WasInit() && TTF_Init() < 0) return -1;
+    TTF_Font* f = TTF_OpenFont(path, px);
+    if (!f) return -1;
+    if (g_font) TTF_CloseFont(g_font);
+    g_font = f;
+    g_font_loaded = 1;
+    g_font_px = px;
+    strncpy(g_font_path, path, sizeof(g_font_path) - 1);
+    g_font_path[sizeof(g_font_path) - 1] = '\0';
+    return 0;
+}
+
+// 调整当前字体字号（重新打开同路径；未加载时按自动候选 init）。
+// 返回 0=成功, -1=失败。
+int myp_ttf_set_size(int px) {
+    if (px <= 0) return -1;
+    if (!g_font_loaded) return myp_ttf_init(px);
+    if (!g_font_path[0]) return -1;
+    TTF_Font* f = TTF_OpenFont(g_font_path, px);
+    if (!f) return -1;
+    if (g_font) TTF_CloseFont(g_font);
+    g_font = f;
+    g_font_px = px;
+    return 0;
+}
+
+// 渲染/测量前把字号临时调到 base*scale（scale>1），避免渲染后像素放大导致模糊。
+// 返回 0=可继续（scale 已应用或 scale<=1）。
+static int font_apply_scale(int scale) {
+    if (scale <= 1) return 0;
+    return TTF_SetFontSize(g_font, g_font_px * scale);
+}
+static void font_restore(void) {
+    TTF_SetFontSize(g_font, g_font_px);
 }
 
 // 渲染 UTF8 文本到 (x,y)，scale 放大倍数（1 = 原始字号），颜色 (r,g,b,a)。
@@ -49,22 +91,43 @@ int myp_ttf_draw_text(int x, int y, const char* text, int scale,
     if (!g_font_loaded || !g_font || !text) return -1;
     SDL_Renderer* ren = myp_sdl_get_renderer();
     if (!ren) return -1;
+    // 按 scale 调字号渲染（清晰），而非渲染后像素放大（模糊）
+    if (font_apply_scale(scale) != 0) return -1;
 
     SDL_Color color = { (Uint8)r, (Uint8)g, (Uint8)b, (Uint8)a };
     SDL_Surface* surf = TTF_RenderUTF8_Blended(g_font, text, color);
+    font_restore();
     if (!surf) return -1;
     SDL_Texture* tex = SDL_CreateTextureFromSurface(ren, surf);
     if (!tex) { SDL_FreeSurface(surf); return -1; }
 
-    int w = surf->w;
-    int h = surf->h;
-    if (scale > 1) { w *= scale; h *= scale; }
-    SDL_Rect dst = { x, y, w, h };
+    // 原始渲染尺寸（字号已含 scale，不再放大）
+    SDL_Rect dst = { x, y, surf->w, surf->h };
     SDL_RenderCopy(ren, tex, NULL, &dst);
 
     SDL_DestroyTexture(tex);
     SDL_FreeSurface(surf);
     return 0;
+}
+
+// 测量 UTF-8 文本渲染宽度（像素，字号按 scale 调整）。失败返回 -1（字体未就绪）。
+int myp_ttf_text_width(const char* text, int scale) {
+    if (!g_font_loaded || !g_font || !text) return -1;
+    if (font_apply_scale(scale) != 0) return -1;
+    int w = 0, h = 0;
+    int rc = TTF_SizeUTF8(g_font, text, &w, &h);
+    font_restore();
+    if (rc != 0) return -1;
+    return w;
+}
+
+// 字体行高（像素，字号按 scale 调整）。失败返回 -1（字体未就绪）。
+int myp_ttf_text_height(int scale) {
+    if (!g_font_loaded || !g_font) return -1;
+    if (font_apply_scale(scale) != 0) return -1;
+    int h = TTF_FontHeight(g_font);
+    font_restore();
+    return h;
 }
 
 // 释放字体并退出 SDL_ttf。

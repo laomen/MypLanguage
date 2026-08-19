@@ -34,15 +34,11 @@ class File {
             return __myp_io_read_line();
         }
         // 读取整个文件（到 EOF；字节级，保留换行/结尾；无 NUL 限制的文本资产）
+        // 注：不能用 __myp_chr(b) 逐字节拼——chr 按码点生成 UTF-8（0x80-0xFF 会
+        // 扩展成多字节），破坏字节级 round-trip。改走 C 侧 memcpy 原样读取
+        // （与 readAllAsync 同一实现；非协程下同步 fallback）。
         string readAll() {
-            __myp_io_select(handle_);
-            StringBuilder sb = new StringBuilder();
-            while (true) {
-                int b = __myp_io_read_byte();
-                if (b == -1) break;
-                sb.append(__myp_chr(b));
-            }
-            return sb.toString();
+            return myp_coro_file_read_all(handle_);
         }
         // ---- §五-5 P3 异步文件读（@coro 内 await；worker 线程执行阻塞 IO）----
         // 异步读一行（不含换行符）；EOF 返回空串

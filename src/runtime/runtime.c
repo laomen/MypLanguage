@@ -456,10 +456,28 @@ int32_t myp_strlen(const char* s) {
 // Convert a character code to a single-character string
 const char* myp_chr(int32_t code) {
     // M8: return a COUNTED string (the old static buffer has no ARC header).
-    char* r = (char*)myp_alloc(2);
+    // 2026-08-19: 支持 Unicode 码点 → 1-4 字节 UTF-8（原只取低 8 位，>0xFF 乱码）。
+    unsigned char tmp[4];
+    int32_t n;
+    if (code < 0 || code > 0x10FFFF) code = 0xFFFD;   // 替换符
+    if (code < 0x80) { tmp[0] = (unsigned char)code; n = 1; }
+    else if (code < 0x800) {
+        tmp[0] = (unsigned char)(0xC0 | (code >> 6));
+        tmp[1] = (unsigned char)(0x80 | (code & 0x3F)); n = 2;
+    } else if (code < 0x10000) {
+        tmp[0] = (unsigned char)(0xE0 | (code >> 12));
+        tmp[1] = (unsigned char)(0x80 | ((code >> 6) & 0x3F));
+        tmp[2] = (unsigned char)(0x80 | (code & 0x3F)); n = 3;
+    } else {
+        tmp[0] = (unsigned char)(0xF0 | (code >> 18));
+        tmp[1] = (unsigned char)(0x80 | ((code >> 12) & 0x3F));
+        tmp[2] = (unsigned char)(0x80 | ((code >> 6) & 0x3F));
+        tmp[3] = (unsigned char)(0x80 | (code & 0x3F)); n = 4;
+    }
+    char* r = (char*)myp_alloc(n + 1);
     if (!r) return NULL;
-    r[0] = (char)(code & 0xFF);
-    r[1] = '\0';
+    memcpy(r, tmp, (size_t)n);
+    r[n] = '\0';
     return r;
 }
 

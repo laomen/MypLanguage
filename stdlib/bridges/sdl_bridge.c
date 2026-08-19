@@ -48,7 +48,7 @@ int myp_sdl_init(const char* title, int w, int h) {
     g_window = SDL_CreateWindow(
         title ? title : "MYP SDL",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        w, h, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
 
     if (!g_window)
         return -1;
@@ -63,6 +63,9 @@ int myp_sdl_init(const char* title, int w, int h) {
     if (!g_renderer)
         return -1;
 
+    // 启用文本输入（SDL_TEXTINPUT 事件；支持任意 Unicode/IME）
+    SDL_StartTextInput();
+
     return 0;
 }
 
@@ -74,6 +77,25 @@ int myp_sdl_set_window_size(int w, int h) {
     SDL_SetWindowSize(g_window, w, h);
     g_width = w;
     g_height = h;
+    return 0;
+}
+
+// 限制窗口最大尺寸（防止拖拽放大导致 SDL 线性插值模糊；
+// 逻辑尺寸 = 初始尺寸时保持 1:1 渲染）。返回 0=成功, -1=失败。
+int myp_sdl_set_max_window_size(int w, int h) {
+    if (!g_window) return -1;
+    if (w <= 0 || h <= 0) return -1;
+    SDL_SetWindowMaximumSize(g_window, w, h);
+    return 0;
+}
+
+// 锁定窗口尺寸（min=max=指定值）：完全禁止拖拽改变窗口大小，
+// 渲染始终 1:1，杜绝 SDL 缩放导致的模糊。返回 0=成功, -1=失败。
+int myp_sdl_lock_window_size(int w, int h) {
+    if (!g_window) return -1;
+    if (w <= 0 || h <= 0) return -1;
+    SDL_SetWindowMinimumSize(g_window, w, h);
+    SDL_SetWindowMaximumSize(g_window, w, h);
     return 0;
 }
 
@@ -136,6 +158,7 @@ int myp_sdl_window_visible(void) {
 // 关闭窗口并清理 SDL
 void myp_sdl_quit(void) {
     myp_sdl_free_images();
+    SDL_StopTextInput();
     if (g_renderer) SDL_DestroyRenderer(g_renderer);
     if (g_window)   SDL_DestroyWindow(g_window);
     SDL_Quit();
@@ -380,6 +403,60 @@ void myp_sdl_draw_line(int x1, int y1, int x2, int y2, int r, int g, int b, int 
 static int g_mouse_x = -1;
 static int g_mouse_y = -1;
 
+// ---- 文本输入队列（SDL_TEXTINPUT 的 UTF-8 字符 + 控制键码点）----
+// getChar 返回 Unicode 码点：普通字符=字符码点；退格=8；回车=13。无输入 -1。
+#define INPUT_QUEUE 128
+static unsigned char g_ichar[INPUT_QUEUE][5];   // 每项一个 UTF-8 字符（≤4 字节+\0）
+static int g_ihead = 0;
+static int g_icount = 0;
+
+// UTF-8 首字符字节数（无效序列按 1 字节处理避免卡死）
+static int utf8_seq_len(const unsigned char* s) {
+    if (!s || !s[0]) return 0;
+    unsigned char c = s[0];
+    if (c < 0x80) return 1;
+    if ((c & 0xE0) == 0xC0) return 2;
+    if ((c & 0xF0) == 0xE0) return 3;
+    if ((c & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+// UTF-8 解码 → 码点；失败返回 -1
+static int utf8_decode_cp(const unsigned char* s, int n) {
+    if (!s || n <= 0) return -1;
+    unsigned char c = s[0];
+    if (c < 0x80) return (int)c;
+    if (n == 2 && (c & 0xE0) == 0xC0)
+        return ((c & 0x1F) << 6) | (s[1] & 0x3F);
+    if (n == 3 && (c & 0xF0) == 0xE0)
+        return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    if (n == 4 && (c & 0xF8) == 0xF0)
+        return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+               ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    return -1;
+}
+
+// 码点 → UTF-8 入队
+static void input_enqueue_cp(int cp) {
+    unsigned char tmp[4];
+    int n;
+    if (cp < 0x80) { tmp[0] = (unsigned char)cp; n = 1; }
+    else if (cp < 0x800) {
+        tmp[0] = 0xC0 | (cp >> 6); tmp[1] = 0x80 | (cp & 0x3F); n = 2;
+    } else if (cp < 0x10000) {
+        tmp[0] = 0xE0 | (cp >> 12); tmp[1] = 0x80 | ((cp >> 6) & 0x3F);
+        tmp[2] = 0x80 | (cp & 0x3F); n = 3;
+    } else {
+        tmp[0] = 0xF0 | (cp >> 18); tmp[1] = 0x80 | ((cp >> 12) & 0x3F);
+        tmp[2] = 0x80 | ((cp >> 6) & 0x3F); tmp[3] = 0x80 | (cp & 0x3F); n = 4;
+    }
+    if (g_icount >= INPUT_QUEUE) return;
+    int slot = (g_ihead + g_icount) % INPUT_QUEUE;
+    memcpy(g_ichar[slot], tmp, (size_t)n);
+    g_ichar[slot][n] = '\0';
+    g_icount++;
+}
+
 // 返回当前按下的键的 SDL scancode，无按键时返回 0
 int myp_sdl_get_key(void) {
     SDL_PumpEvents();
@@ -394,6 +471,7 @@ int myp_sdl_get_key(void) {
         if (keys[sc]) return sc;
     for (int sc = SDL_SCANCODE_0; sc <= SDL_SCANCODE_9; sc++)
         if (keys[sc]) return sc;
+    if (keys[SDL_SCANCODE_TAB])     return SDL_SCANCODE_TAB;
     if (keys[SDL_SCANCODE_RETURN])  return SDL_SCANCODE_RETURN;
     if (keys[SDL_SCANCODE_ESCAPE])  return SDL_SCANCODE_ESCAPE;
     if (keys[SDL_SCANCODE_SPACE])   return SDL_SCANCODE_SPACE;
@@ -410,6 +488,27 @@ int myp_sdl_has_quit_event(void) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return 1;
+        // 文本输入：把 SDL_TEXTINPUT 的 UTF-8 片段逐字符入队（IME/中文/符号）
+        if (e.type == SDL_TEXTINPUT) {
+            const unsigned char* p = (const unsigned char*)e.text.text;
+            while (*p) {
+                int n = utf8_seq_len(p);
+                if (n <= 0) break;
+                if (g_icount < INPUT_QUEUE) {
+                    int slot = (g_ihead + g_icount) % INPUT_QUEUE;
+                    if (n > 4) n = 4;
+                    memcpy(g_ichar[slot], p, (size_t)n);
+                    g_ichar[slot][n] = '\0';
+                    g_icount++;
+                }
+                p += n;
+            }
+        }
+        // 控制键（SDL_TEXTINPUT 不含）：退格/回车以特殊码点入队
+        else if (e.type == SDL_KEYDOWN) {
+            if (e.key.keysym.sym == SDLK_BACKSPACE) input_enqueue_cp(8);
+            else if (e.key.keysym.sym == SDLK_RETURN) input_enqueue_cp(13);
+        }
         // 鼠标左键按下 → 记录点击坐标（下一帧 MYP 侧 poll 消费）
         if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
             g_mouse_x = e.button.x;
@@ -424,6 +523,21 @@ int myp_sdl_has_quit_event(void) {
     }
     return 0;
 }
+
+// 取一个输入字符码点（UTF-8 解码；控制键 8=退格 13=回车）；无输入返回 -1。
+// 消费即出队，避免帧循环重复读到同字符。MYP 侧用 Str.chr(cp) 转字符串。
+int myp_sdl_get_char(void) {
+    if (g_icount <= 0) return -1;
+    int n = utf8_seq_len(g_ichar[g_ihead]);
+    int cp = utf8_decode_cp(g_ichar[g_ihead], n);
+    g_ihead = (g_ihead + 1) % INPUT_QUEUE;
+    g_icount--;
+    return cp;
+}
+
+// 显式开关文本输入（init 已默认开启；需要临时禁用/恢复时用）
+void myp_sdl_start_text_input(void) { SDL_StartTextInput(); }
+void myp_sdl_stop_text_input(void)  { SDL_StopTextInput(); }
 
 // 取一次鼠标左键点击：返回 (y<<16)|x（x,y 为窗口坐标），无新点击返回 -1。
 // 消费即清零，避免帧循环重复触发同一点击。
