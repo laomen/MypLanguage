@@ -1,7 +1,7 @@
 // bench/cpu_conv_timer.myp — 量化 CPU conv3d 在不同 -O 级别下的耗时
 // 单层: x[1,16,64,64,64] w[32,16,3,3,3] s=1 d=1 pads=1 -> y[1,32,64,64,64]
 import env;
-import "../deeplearning/infer/ops.myp";
+import "../examples/deeplearning/infer/ops.myp";
 
 class CpuConvTimer {
     action:

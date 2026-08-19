@@ -38,7 +38,7 @@ ok "tools/viz/main.myp 编译"
 # ---- 2) 全语料对拍（跳过 tests/negative 语法错误文件）----
 CMP_OK=0
 CMP_FAIL=0
-for f in $(find stdlib examples tools tests BNCTDoseEngine -name "*.myp" \
+for f in $(find stdlib examples tools tests -name "*.myp" \
     -not -path "*/build*" -not -path "*/negative/*" 2>/dev/null); do
     a=$("$TMP/myp_viz2" "$f" 2>&1)
     b=$("$MYP_VIZ" "$f" 2>&1)

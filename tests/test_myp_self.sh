@@ -38,7 +38,7 @@ fi
 SAMPLES_OK=(
     "examples/hello.myp"
     "examples/showcase.myp"
-    "BNCTDoseEngine/physics.myp"
+    "examples/BNCTDoseEngine/physics.myp"
     "tools/fmt/fmt.myp"
     "stdlib/env.myp"
 )
@@ -131,7 +131,7 @@ fi
 TOK_SAMPLES=(
     "examples/hello.myp"
     "examples/showcase.myp"
-    "BNCTDoseEngine/physics.myp"
+    "examples/BNCTDoseEngine/physics.myp"
     "tools/fmt/fmt.myp"
     "stdlib/env.myp"
     "tests/bitfield/test.myp"
@@ -170,7 +170,7 @@ fi
 SEMA_SAMPLES=(
     "examples/hello.myp"
     "examples/showcase.myp"
-    "BNCTDoseEngine/physics.myp"
+    "examples/BNCTDoseEngine/physics.myp"
     "tools/fmt/fmt.myp"
     "stdlib/env.myp"
     "tests/mega/test.myp"

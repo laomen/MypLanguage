@@ -2,8 +2,8 @@
 //  tiled GEMM（dense/matmul，M/K/N≥32）+ softmax thread-per-column
 import env;
 import cuda;
-import "../deeplearning/infer/pb.myp";
-import "../deeplearning/infer/runtime.myp";
+import "../examples/deeplearning/infer/pb.myp";
+import "../examples/deeplearning/infer/runtime.myp";
 
 class OpVerifyApp {
     action:

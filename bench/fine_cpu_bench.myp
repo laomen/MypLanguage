@@ -3,9 +3,9 @@
 // 输出：/tmp/seg_liver_cpu.f32（[1,3,96,96,96]）
 // 编译必须加 -O3（mypc 默认 -O0 会慢 ~11x）
 import env;
-import "../deeplearning/infer/pb.myp";
-import "../deeplearning/infer/runtime.myp";
-import "../deeplearning/infer/onnx_loader.myp";
+import "../examples/deeplearning/infer/pb.myp";
+import "../examples/deeplearning/infer/runtime.myp";
+import "../examples/deeplearning/infer/onnx_loader.myp";
 
 class FineCpuBench {
     action:

@@ -5,7 +5,7 @@
 //   C = 4-wide ox 展开 + 无 if（@parallel，SLP 打包 4 个连续输出）
 import env;
 import pool;
-import "../deeplearning/infer/ops.myp";
+import "../examples/deeplearning/infer/ops.myp";
 
 class CpuConvSimd {
     action:

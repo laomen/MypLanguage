@@ -3,7 +3,7 @@
 //   · 纯 CPU（InferOps 直接调用），不依赖 GPU；GPU 路径经 ResNet50 端到端验证
 import test;
 import math;
-import "../../deeplearning/infer/ops.myp";
+import "../../examples/deeplearning/infer/ops.myp";
 
 // NCHW→NHWC 转置 + 卷积等价性（含权重转置）
 @test void test_nhwc_conv() {

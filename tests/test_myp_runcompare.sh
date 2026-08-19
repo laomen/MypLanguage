@@ -107,7 +107,7 @@ check() {
 }
 
 say "=== [1/2] 常规可运行语料（examples/bench/BNCT，含 main/@startup）==="
-for f in "$ROOT"/examples/*.myp "$ROOT"/bench/myp/*.myp "$ROOT"/BNCTDoseEngine/*.myp; do
+for f in "$ROOT"/examples/*.myp "$ROOT"/bench/myp/*.myp "$ROOT"/examples/BNCTDoseEngine/*.myp; do
     [ -f "$f" ] || continue
     grep -qE "main[[:space:]]*\(|@startup" "$f" || { SKIP=$((SKIP+1)); continue; }
     check "$f" normal

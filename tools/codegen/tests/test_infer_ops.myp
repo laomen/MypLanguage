@@ -5,8 +5,8 @@ import env;
 import math;
 import gpu;
 import "./infer_ops_gen.myp";
-import "../../../deeplearning/infer/ops.myp";
-import "../../../deeplearning/infer/gpu_ops.myp";
+import "../../../examples/deeplearning/infer/ops.myp";
+import "../../../examples/deeplearning/infer/gpu_ops.myp";
 
 class InferOpsGenTest {
     action:

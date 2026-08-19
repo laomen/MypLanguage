@@ -3,8 +3,8 @@
 //   B: k=3, stride=1, dilation=2（空洞）
 import env;
 import cuda;
-import "../deeplearning/infer/pb.myp";
-import "../deeplearning/infer/runtime.myp";
+import "../examples/deeplearning/infer/pb.myp";
+import "../examples/deeplearning/infer/runtime.myp";
 
 class Conv3dGenApp {
     action:

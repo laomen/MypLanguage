@@ -4,7 +4,7 @@
 // 无法用 onnxruntime 端到端对比，故在 @test 内验证；GPU 路径经 act_main 端到端验证）
 import test;
 import math;
-import "../../deeplearning/infer/ops.myp";
+import "../../examples/deeplearning/infer/ops.myp";
 
 @test void test_act_relu6() {
     int n = 8;

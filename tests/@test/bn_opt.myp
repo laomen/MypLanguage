@@ -4,7 +4,7 @@
 // 纯 CPU（InferOps 直接调用）；GPU 路径经 bn_main 端到端验证
 import test;
 import math;
-import "../../deeplearning/infer/ops.myp";
+import "../../examples/deeplearning/infer/ops.myp";
 
 @test void test_batchnorm_nchw() {
     int N = 1, C = 3, H = 4, W = 4;
