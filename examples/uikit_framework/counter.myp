@@ -1,0 +1,99 @@
+// counter.myp — uikit 通用框架独立示例：UIX 声明式计数器（headless）
+// ---------------------------------------------------------------------------
+// 展示如何把 uikit/UIX 用到「任何 MYP 项目」（不依赖 MOS）：
+//   - UIX 声明式 UI：内嵌 .uix 描述（组件树 + 绑定 + 命令）
+//   - MVVM：CounterVM（状态 PropBag + 命令 runCmd）
+//   - 交互：Button.Clicked → mapping → onBtn → cmdFor → runCmd → sync
+// 运行：bash build.sh（用 mypc 直接编译 uikit 源码集合，仅依赖 stdlib）
+// 预期输出：
+//   cmd=inc text=count: 1
+//   cmd=inc text=count: 2
+//   cmd=dec text=count: 1
+//   final text=count: 1
+import env;
+import fmt;
+
+mapping() {
+    Button.Clicked -> CounterApp.onBtn;
+}
+
+// ---- ViewModel（MVVM 的 VM）：计数状态 + 命令 ----
+class CounterVM {
+    interface class ViewModel;
+    property:
+        PropBag bag_;
+        int count_;
+    action:
+        @constructor CounterVM() {
+            bag_ = new PropBag();
+            count_ = 0;
+            bag_.set("text", "count: 0");
+        }
+        string getProp(string name) { return bag_.get(name); }
+        void runCmd(string name) {
+            if (name == "inc") count_ = count_ + 1;
+            else if (name == "dec") count_ = count_ - 1;
+            bag_.set("text", "count: " + Fmt.i(count_));
+        }
+}
+
+// ---- 应用：加载 UIX → 构建树 → 绑定 VM → 交互 ----
+class CounterApp {
+    property:
+        UixLoader loader_;
+        CounterVM vm_;
+        RootView rv_;
+    action:
+        @constructor CounterApp() {
+            loader_ = null;
+            vm_ = null;
+            rv_ = null;
+        }
+        void onBtn(int x, int y) {
+            string id = loader_.hitId(x, y);
+            string cmd = loader_.cmdFor(id);
+            if (Str.len(cmd) > 0) {
+                vm_.runCmd(cmd);
+                loader_.sync(vm_);
+                Console.writeLine("cmd=" + cmd + " text=" + vm_.getProp("text"));
+            }
+        }
+        void run() {
+            // 声明式 UI（.uix 描述：Column 容器 + 绑定标签 + 两个命令按钮）
+            string uix = "{\"type\":\"Column\",\"id\":\"root\",\"x\":40,\"y\":40,"
+                + "\"width\":300,\"height\":200,\"padding\":24,\"spacing\":20,\"children\":["
+                + "{\"type\":\"Label\",\"id\":\"label\",\"text\":\"count: 0\",\"scale\":3,"
+                + "\"bind\":\"text\"},"
+                + "{\"type\":\"Button\",\"id\":\"inc\",\"text\":\"+\",\"onCmd\":\"inc\"},"
+                + "{\"type\":\"Button\",\"id\":\"dec\",\"text\":\"-\",\"onCmd\":\"dec\"}"
+                + "]}";
+            loader_ = new UixLoader(uix, "");
+            rv_ = new RootView(16, 400, 300);
+            loader_.buildInto(rv_);
+            vm_ = new CounterVM();
+            loader_.sync(vm_);
+
+            // 模拟交互：inc → inc → dec
+            int i0 = loader_.buttonIdxOf("inc");
+            Button inc = loader_.buttonAt(i0);
+            rv_.onTouch(inc.getX() + inc.width() / 2, inc.getY() + inc.height() / 2);
+            rv_.onTouch(inc.getX() + inc.width() / 2, inc.getY() + inc.height() / 2);
+            int d0 = loader_.buttonIdxOf("dec");
+            Button dec = loader_.buttonAt(d0);
+            rv_.onTouch(dec.getX() + dec.width() / 2, dec.getY() + dec.height() / 2);
+            Console.writeLine("final text=" + vm_.getProp("text"));
+        }
+}
+
+class Boot {
+    action:
+        @constructor Boot() {
+            CounterApp a = new CounterApp();
+            a.run();
+        }
+}
+
+int main() {
+    Boot b = new Boot();
+    return 0;
+}
