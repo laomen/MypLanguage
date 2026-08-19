@@ -22,6 +22,11 @@
 //   - View[] 接口数组存储不可靠 retain。规避：所有控件由具体类型数组
 //     （labels_/buttons_/fields_/cols_/panels_）持有，保证跨方法存活。
 //
+// ★ 定长表容量策略：MYP 数组无运行时长度查询，无法通用动态扩容，故采用
+//   「大容量 + 写满告警」。各注册表容量充足（节点 1024 / 控件表 256 /
+//   属性袋 1024 / 状态 256 / 表达式 128），覆盖 UI 现实规模；万一写满，
+//   warnFull() 打印 "uix warn: table full ..." 而非静默丢弃，便于发现。
+//
 // 纯逻辑不依赖 SDL，可 headless 测试。
 import env;
 import text;
@@ -121,74 +126,74 @@ class UixLoader {
                 usp_ = new Json(uspJson);
             else
                 usp_ = null;
-            nodes_ = new View[128];
-            ids_ = new string[128];
-            types_ = new string[128];
-            classes_ = new string[128];
+            nodes_ = new View[1024];
+            ids_ = new string[1024];
+            types_ = new string[1024];
+            classes_ = new string[1024];
             nodeCount_ = 0;
-            bindIds_ = new string[64];
-            bindProps_ = new string[64];
-            bindPaths_ = new string[64];
+            bindIds_ = new string[256];
+            bindProps_ = new string[256];
+            bindPaths_ = new string[256];
             bindCount_ = 0;
-            cmdIds_ = new string[32];
-            cmdNames_ = new string[32];
+            cmdIds_ = new string[128];
+            cmdNames_ = new string[128];
             cmdCount_ = 0;
             selType_ = "";
             selId_ = "";
             selClass_ = "";
-            labels_ = new Label[64];
-            labelIds_ = new string[64];
+            labels_ = new Label[256];
+            labelIds_ = new string[256];
             labelCount_ = 0;
-            buttons_ = new Button[64];
-            buttonIds_ = new string[64];
+            buttons_ = new Button[256];
+            buttonIds_ = new string[256];
             buttonCount_ = 0;
-            fields_ = new TextField[64];
-            fieldIds_ = new string[64];
+            fields_ = new TextField[256];
+            fieldIds_ = new string[256];
             fieldCount_ = 0;
-            cols_ = new LinearLayout[64];
-            colIds_ = new string[64];
+            cols_ = new LinearLayout[256];
+            colIds_ = new string[256];
             colCount_ = 0;
-            panels_ = new Panel[64];
-            panelIds_ = new string[64];
+            panels_ = new Panel[256];
+            panelIds_ = new string[256];
             panelCount_ = 0;
-            switches_ = new Switch[64];
-            switchIds_ = new string[64];
+            switches_ = new Switch[256];
+            switchIds_ = new string[256];
             switchCount_ = 0;
-            checkboxes_ = new Checkbox[64];
-            checkboxIds_ = new string[64];
+            checkboxes_ = new Checkbox[256];
+            checkboxIds_ = new string[256];
             checkboxCount_ = 0;
-            sliders_ = new Slider[64];
-            sliderIds_ = new string[64];
+            sliders_ = new Slider[256];
+            sliderIds_ = new string[256];
             sliderCount_ = 0;
-            progressbars_ = new ProgressBar[64];
-            progressbarIds_ = new string[64];
+            progressbars_ = new ProgressBar[256];
+            progressbarIds_ = new string[256];
             progressbarCount_ = 0;
-            flows_ = new FlowLayout[16];
-            flowIds_ = new string[16];
+            flows_ = new FlowLayout[64];
+            flowIds_ = new string[64];
             flowCount_ = 0;
-            stacks_ = new StackLayout[16];
-            stackIds_ = new string[16];
+            stacks_ = new StackLayout[64];
+            stackIds_ = new string[64];
             stackCount_ = 0;
-            regTypes_ = new string[16];
-            regBuilders_ = new ViewBuilder[16];
+            regTypes_ = new string[64];
+            regBuilders_ = new ViewBuilder[64];
             regCount_ = 0;
-            held_ = new View[64];
+            held_ = new View[256];
             heldCount_ = 0;
-            exprIds_ = new string[32];
-            exprProps_ = new string[32];
-            exprSrcs_ = new string[32];
+            exprIds_ = new string[128];
+            exprProps_ = new string[128];
+            exprSrcs_ = new string[128];
             exprCount_ = 0;
-            propKeys_ = new string[256];
-            propVals_ = new string[256];
+            propKeys_ = new string[1024];
+            propVals_ = new string[1024];
             propCount_ = 0;
-            parentIds_ = new string[128];
-            stIds_ = new string[64];
-            stNames_ = new string[64];
-            stKeys_ = new string[64];
-            stVals_ = new string[64];
+            parentIds_ = new string[1024];
+            stIds_ = new string[256];
+            stNames_ = new string[256];
+            stKeys_ = new string[256];
+            stVals_ = new string[256];
             stCount_ = 0;
-            initStId_ = new string[16];
-            initStName_ = new string[16];
+            initStId_ = new string[64];
+            initStName_ = new string[64];
             initStCount_ = 0;
         }
 
@@ -196,7 +201,7 @@ class UixLoader {
         // 注册自定义控件类型：.uix 中该 type 的节点由 builder.create 创建。
         // 实例加入 held_ 尽力持有；构建器实现须把实例存为字段（MYP 接口数组不 retain）。
         void registerControl(string type, ViewBuilder builder) {
-            if (regCount_ >= 16) return;
+            if (regCount_ >= 64) { warnFull("reg", type); return; }
             regTypes_[regCount_] = type;
             regBuilders_[regCount_] = builder;
             regCount_ = regCount_ + 1;
@@ -398,7 +403,7 @@ class UixLoader {
                         if (v != null) {
                             registerNode(v, cid, ct, ccls);
                             applyNode(doc, cp, v, cid, ccls);
-                            if (heldCount_ < 64) {
+                            if (heldCount_ < 256) {
                                 held_[heldCount_] = v;
                                 heldCount_ = heldCount_ + 1;
                             }
@@ -507,7 +512,7 @@ class UixLoader {
                         if (v != null) {
                             registerNode(v, cid, ct, ccls);
                             applyNode(doc, cp, v, cid, ccls);
-                            if (heldCount_ < 64) {
+                            if (heldCount_ < 256) {
                                 held_[heldCount_] = v;
                                 heldCount_ = heldCount_ + 1;
                             }
@@ -616,7 +621,7 @@ class UixLoader {
                         if (v != null) {
                             registerNode(v, cid, ct, ccls);
                             applyNode(doc, cp, v, cid, ccls);
-                            if (heldCount_ < 64) {
+                            if (heldCount_ < 256) {
                                 held_[heldCount_] = v;
                                 heldCount_ = heldCount_ + 1;
                             }
@@ -725,7 +730,7 @@ class UixLoader {
                         if (v != null) {
                             registerNode(v, cid, ct, ccls);
                             applyNode(doc, cp, v, cid, ccls);
-                            if (heldCount_ < 64) {
+                            if (heldCount_ < 256) {
                                 held_[heldCount_] = v;
                                 heldCount_ = heldCount_ + 1;
                             }
@@ -931,7 +936,7 @@ class UixLoader {
                 string prop = "text";
                 if (doc.type(prefix + "bindProp") >= 0)
                     prop = doc.getString(prefix + "bindProp");
-                if (bindCount_ < 64) {
+                if (bindCount_ < 256) {
                     bindIds_[bindCount_] = id;
                     bindProps_[bindCount_] = prop;
                     bindPaths_[bindCount_] = path;
@@ -940,7 +945,7 @@ class UixLoader {
             }
             // 命令：onCmd = VM 命令名（事件映射后经 cmdFor 查）
             if (doc.type(prefix + "onCmd") >= 0) {
-                if (cmdCount_ < 32) {
+                if (cmdCount_ < 128) {
                     cmdIds_[cmdCount_] = id;
                     cmdNames_[cmdCount_] = doc.getString(prefix + "onCmd");
                     cmdCount_ = cmdCount_ + 1;
@@ -950,7 +955,7 @@ class UixLoader {
             recordProps(doc, prefix, id);
             // 计算属性（expr）：QML 风格表达式 → 控件属性（bindProp，缺省 text）
             if (doc.type(prefix + "expr") >= 0) {
-                if (exprCount_ < 32) {
+                if (exprCount_ < 128) {
                     exprIds_[exprCount_] = id;
                     exprProps_[exprCount_] = "text";
                     if (doc.type(prefix + "bindProp") >= 0)
@@ -1012,7 +1017,7 @@ class UixLoader {
                     string nm = doc.getString(sp + "name");
                     int pn = doc.arrayLen(sp + "props");
                     for (int j = 0; j < pn; j = j + 1) {
-                        if (stCount_ >= 64) return;
+                        if (stCount_ >= 256) { warnFull("states", id); return; }
                         stIds_[stCount_] = id;
                         stNames_[stCount_] = nm;
                         stKeys_[stCount_] = doc.getString(sp + "props." + Fmt.i(j) + ".k");
@@ -1022,7 +1027,7 @@ class UixLoader {
                 }
             }
             if (doc.type(prefix + "state") >= 0) {
-                if (initStCount_ < 16) {
+                if (initStCount_ < 64) {
                     initStId_[initStCount_] = id;
                     initStName_[initStCount_] = doc.getString(prefix + "state");
                     initStCount_ = initStCount_ + 1;
@@ -1063,7 +1068,7 @@ class UixLoader {
             for (int i = 0; i < propCount_; i = i + 1) {
                 if (propKeys_[i] == key) { propVals_[i] = val; return; }
             }
-            if (propCount_ >= 256) return;
+            if (propCount_ >= 1024) { warnFull("props", id + ":" + name); return; }
             propKeys_[propCount_] = key;
             propVals_[propCount_] = val;
             propCount_ = propCount_ + 1;
@@ -1168,10 +1173,15 @@ class UixLoader {
             }
         }
 
+        // 容量告警：定长表写满时打印（避免静默丢弃；正常 UI 不会触发）
+        void warnFull(string table, string id) {
+            Console.writeLine("uix warn: table full " + table + ", drop " + id);
+        }
+
         // 通用注册：仅进节点注册表（nodes_ 供查找/命中，不依赖其 retain）
         void registerNode(View v, string id, string type, string cls) {
             if (id == "") return;
-            if (nodeCount_ >= 128) return;
+            if (nodeCount_ >= 1024) { warnFull("nodes", id); return; }
             nodes_[nodeCount_] = v;
             ids_[nodeCount_] = id;
             types_[nodeCount_] = type;
@@ -1180,77 +1190,77 @@ class UixLoader {
         }
         void registerLabel(Label l, string id, string cls) {
             registerNode(l, id, "Label", cls);
-            if (labelCount_ >= 64) return;
+            if (labelCount_ >= 256) { warnFull("labels", id); return; }
             labels_[labelCount_] = l;
             labelIds_[labelCount_] = id;
             labelCount_ = labelCount_ + 1;
         }
         void registerButton(Button b, string id, string cls) {
             registerNode(b, id, "Button", cls);
-            if (buttonCount_ >= 64) return;
+            if (buttonCount_ >= 256) { warnFull("buttons", id); return; }
             buttons_[buttonCount_] = b;
             buttonIds_[buttonCount_] = id;
             buttonCount_ = buttonCount_ + 1;
         }
         void registerField(TextField t, string id, string cls) {
             registerNode(t, id, "TextField", cls);
-            if (fieldCount_ >= 64) return;
+            if (fieldCount_ >= 256) { warnFull("fields", id); return; }
             fields_[fieldCount_] = t;
             fieldIds_[fieldCount_] = id;
             fieldCount_ = fieldCount_ + 1;
         }
         void registerCol(LinearLayout c, string id, string type, string cls) {
             registerNode(c, id, type, cls);
-            if (colCount_ >= 64) return;
+            if (colCount_ >= 256) { warnFull("cols", id); return; }
             cols_[colCount_] = c;
             colIds_[colCount_] = id;
             colCount_ = colCount_ + 1;
         }
         void registerPanel(Panel p, string id, string type, string cls) {
             registerNode(p, id, type, cls);
-            if (panelCount_ >= 64) return;
+            if (panelCount_ >= 256) { warnFull("panels", id); return; }
             panels_[panelCount_] = p;
             panelIds_[panelCount_] = id;
             panelCount_ = panelCount_ + 1;
         }
         void registerSwitch(Switch s, string id, string cls) {
             registerNode(s, id, "Switch", cls);
-            if (switchCount_ >= 64) return;
+            if (switchCount_ >= 256) { warnFull("switches", id); return; }
             switches_[switchCount_] = s;
             switchIds_[switchCount_] = id;
             switchCount_ = switchCount_ + 1;
         }
         void registerCheckbox(Checkbox c, string id, string cls) {
             registerNode(c, id, "Checkbox", cls);
-            if (checkboxCount_ >= 64) return;
+            if (checkboxCount_ >= 256) { warnFull("checkboxes", id); return; }
             checkboxes_[checkboxCount_] = c;
             checkboxIds_[checkboxCount_] = id;
             checkboxCount_ = checkboxCount_ + 1;
         }
         void registerSlider(Slider s, string id, string cls) {
             registerNode(s, id, "Slider", cls);
-            if (sliderCount_ >= 64) return;
+            if (sliderCount_ >= 256) { warnFull("sliders", id); return; }
             sliders_[sliderCount_] = s;
             sliderIds_[sliderCount_] = id;
             sliderCount_ = sliderCount_ + 1;
         }
         void registerProgressBar(ProgressBar p, string id, string cls) {
             registerNode(p, id, "ProgressBar", cls);
-            if (progressbarCount_ >= 64) return;
+            if (progressbarCount_ >= 256) { warnFull("progressbars", id); return; }
             progressbars_[progressbarCount_] = p;
             progressbarIds_[progressbarCount_] = id;
             progressbarCount_ = progressbarCount_ + 1;
         }
         void registerFlow(FlowLayout f, string id, string type, string cls) {
             registerNode(f, id, type, cls);
-            if (flowCount_ >= 16) return;
+            if (flowCount_ >= 64) { warnFull("flows", id); return; }
             flows_[flowCount_] = f;
             flowIds_[flowCount_] = id;
             flowCount_ = flowCount_ + 1;
         }
         void registerStack(StackLayout s, string id, string type, string cls) {
             registerNode(s, id, type, cls);
-            if (stackCount_ >= 16) return;
+            if (stackCount_ >= 64) { warnFull("stacks", id); return; }
             stacks_[stackCount_] = s;
             stackIds_[stackCount_] = id;
             stackCount_ = stackCount_ + 1;

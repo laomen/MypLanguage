@@ -247,6 +247,25 @@ class Main {
                               + " c1=" + rl.checkboxAt(c1).getLabel()
                               + " c2=" + rl.checkboxAt(c2).getLabel()
                               + " type=" + rl.typeOf("chk_1"));
+
+            // ---- 大数据量 Repeater（验证容量提升：80 项不丢失）----
+            string bigItems = "";
+            for (int bi = 0; bi < 80; bi = bi + 1) {
+                if (bi > 0) bigItems = bigItems + ",";
+                bigItems = bigItems + "\"item" + Fmt.i(bi) + "\"";
+            }
+            string bigUix =
+                "{\"type\":\"Column\",\"id\":\"root\",\"width\":300,\"height\":300,"
+                + "\"padding\":8,\"spacing\":4,\"children\":["
+                + "{\"type\":\"Repeater\",\"id\":\"big\",\"delegateType\":\"Checkbox\","
+                + "\"items\":[" + bigItems + "]}"
+                + "]}";
+            UixLoader bl = new UixLoader(bigUix, "");
+            RootView br = new RootView(16, 340, 340);
+            bl.buildInto(br);
+            int b79 = bl.checkboxIdxOf("big_79");
+            Console.writeLine("uix big n=" + Fmt.i(bl.nodeCount())
+                              + " last=" + bl.checkboxAt(b79).getLabel());
         }
 }
 

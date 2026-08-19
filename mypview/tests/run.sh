@@ -46,7 +46,8 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix qml pct=vol: 50 half=100 st=low mode=OFF/888888" \
    && printf '%s' "$OUT" | grep -q "uix qml2 pct=vol: 75 st=high" \
    && printf '%s' "$OUT" | grep -q "uix qml3 mode=ON/34c759" \
-   && printf '%s' "$OUT" | grep -q "uix rep n=4 c0=Alpha c1=Beta c2=Gamma type=Checkbox"; then
+   && printf '%s' "$OUT" | grep -q "uix rep n=4 c0=Alpha c1=Beta c2=Gamma type=Checkbox" \
+   && printf '%s' "$OUT" | grep -q "uix big n=81 last=item79"; then
     echo "MYPVIEW-UIX PASS"
     exit 0
 else
