@@ -6616,7 +6616,19 @@ class CodeGen {
                             // BUG-029 镜像：含当前类属性字段兜底的类名解析
                             string clsName = upcastClsName(initE);
                             if (it == "{ ptr, ptr }") {
-                                // 已是接口值（函数返回接口/另一接口变量）→ 整体拷贝
+                                // 已是接口值（函数返回接口/数组元素/另一接口变量）
+                                // → 整体拷贝。借用的 fat（数组元素 kids_[i]、接口
+                                // 调用返回、属性）必须 retain：局部接口变量是
+                                // arcSlot，作用域末 releaseArcSlots 释放 data，
+                                // 不 retain 则释放借用 → 悬垂（LinearLayout_draw
+                                // `View kid = kids_[i]` 崩溃根因，uix_logic 不
+                                // draw 未覆盖）。fresh（新对象 rc=1）不 retain，
+                                // 作用域末释放即转移。
+                                if (isFreshTemp(iv) == 0) {
+                                    string dv = newTmp();
+                                    sb_.append("  " + dv + " = extractvalue { ptr, ptr } " + iv + ", 0\n");
+                                    sb_.append("  call void @myp_retain(ptr " + dv + ")\n");
+                                }
                                 sb_.append("  store { ptr, ptr } " + iv + ", ptr " + va + "\n");
                             } else if (Str.len(clsName) != 0) {
                                 string fat = buildIfaceFat(iv, ifaceName, clsName);
@@ -6625,6 +6637,13 @@ class CodeGen {
                                 // 由 releaseArcSlots 释放）；消费 new 产生的 fresh
                                 // temp 避免双重释放（同 C++ arcConsumeTemp）。
                                 if (isFreshTemp(iv) != 0) consumeTemp(iv);
+                                else {
+                                    // 借用具体类实例（局部对象变量/属性）→ 局部
+                                    // 接口变量持有 → retain data，作用域末释放配对。
+                                    string dv = newTmp();
+                                    sb_.append("  " + dv + " = extractvalue { ptr, ptr } " + fat + ", 0\n");
+                                    sb_.append("  call void @myp_retain(ptr " + dv + ")\n");
+                                }
                             } else {
                                 string d0 = newTmp();
                                 sb_.append("  " + d0 + " = getelementptr { ptr, ptr }, ptr " + va + ", i32 0, i32 0\n");

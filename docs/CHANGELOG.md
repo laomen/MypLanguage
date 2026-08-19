@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.12.49 — 真实 SDL 绘制示例 player 自举运行全绿：接口局部变量借用 retain（BUG-040）
+
+用 `myp_self` 编译 mypview 真实窗口示例 `examples/player.myp`（SDL 大窗口 +
+全控件 + 帧循环）——**编译 + 运行成功**（120 帧全绿：`frame=120 list=8 q=低
+vol=5`、ttf-cache hits=6310）。此前 uix_logic headless 测试 `.draw()` 调用为 0，
+真实绘制路径的接口数组遍历 ARC 缺口在此暴露。
+
+**BUG-040 — 接口局部变量初始化借用 fat 不 retain → draw 崩溃**
+- 症状：`LinearLayout_draw` 里 `View kid = kids_[i]` 后 `kid.draw(r)` 段错误
+  （`call *0x30(%rbx)` 中 rbx=0，或 this 对象 kids_ 字段 = 垃圾）。
+- 根因（codegen.myp 局部接口变量初始化）：`View kid = kids_[i]`（接口数组元素
+  **借用 fat**）走 `it=="{ptr,ptr}"` 分支直接 store **不 retain**；局部接口变量
+  是 arcSlot，作用域末 `releaseArcSlots` 释放 data → **释放借用** → kids_ 悬垂。
+  `buildIfaceFat` 分支（借用具体类实例）同样缺 retain。
+- 修复：局部接口变量初始化两分支对**借用**（`isFreshTemp==0`）store 前
+  `extractvalue 0 + myp_retain(data)`（局部持有，作用域末释放配对）；fresh（new）
+  保持 `consumeTemp` 转移。
+- **附带修复**：`mypview/examples/build.sh` 固定文件列表过时（缺
+  sortable_list/long_press_button/gesture/theme/dialog 等）→ 改用目录通配符，
+  player 编译通过（mypc 与 myp_self 均验证）。
+- **验证**：player 120 帧全绿；bootstrap 16/16、父级 312/312、bugs 11/11、
+  mypview UIX/PIPE PASS。
+- **教训**：接口 fat「借用 vs fresh」判定须贯穿所有路径（局部接口变量/接口数组
+  store/方法参数返回/赋值 RHS）。凡借用 fat 被 ARC 槽持有，作用域末 release 前
+  必须先 retain；只有 new/fresh 才转移。headless 测试不 draw 会漏真实绘制 ARC 缺口。
+
 ### v3.12.48 — mypview 全集自举编译运行全绿：接口数组元素 ARC（BUG-037/038）+ UTF-8 双重编码（BUG-039）
 
 用 `myp_self`（自举编译器）编译 mypview 全集（src/core+controls+layout+uix+animation +

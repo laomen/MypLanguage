@@ -13,68 +13,18 @@ STDLIB="${STDLIB:-$DIR/../../stdlib}"
 SRC="$DIR/../src"
 TARGET="${1:-counter}"
 
-# mypview 通用子集（headless 可用；TARGET=player 额外加 SDL 窗口后端 + 全控件）
+# mypview 源码集合：按目录通配（新增控件/布局自动包含，避免固定列表漏文件）。
+# TARGET=player 额外加 SDL 窗口后端（backend 不在上述目录）。
 EXTRA=()
 if [ "$TARGET" = "player" ]; then
     EXTRA+=("$SRC/backend/sdl_renderer.myp")
-    EXTRA+=("$SRC/controls/list.myp")
-    EXTRA+=("$SRC/controls/notification_banner.myp")
-    EXTRA+=("$SRC/controls/app_icon.myp")
 fi
 SRCS=(
-    "$SRC/core/renderer.myp"
-    "$SRC/core/view.myp"
-    "$SRC/core/root.myp"
-    "$SRC/core/focus_manager.myp"
-    "$SRC/controls/label.myp"
-    "$SRC/controls/button.myp"
-    "$SRC/controls/text_field.myp"
-    "$SRC/controls/panel.myp"
-    "$SRC/controls/switch.myp"
-    "$SRC/controls/checkbox.myp"
-    "$SRC/controls/slider.myp"
-    "$SRC/controls/progress_bar.myp"
-    "$SRC/controls/dropdown.myp"
-    "$SRC/controls/radio_button.myp"
-    "$SRC/controls/tab_view.myp"
-    "$SRC/controls/toast.myp"
-    "$SRC/controls/rating.myp"
-    "$SRC/controls/image.myp"
-    "$SRC/controls/icon_button.myp"
-    "$SRC/controls/divider.myp"
-    "$SRC/controls/progress_spinner.myp"
-    "$SRC/controls/text_area.myp"
-    "$SRC/controls/search_bar.myp"
-    "$SRC/controls/segmented_control.myp"
-    "$SRC/controls/stepper.myp"
-    "$SRC/controls/badge.myp"
-    "$SRC/controls/avatar.myp"
-    "$SRC/controls/chip.myp"
-    "$SRC/controls/tooltip.myp"
-    "$SRC/controls/bottom_nav.myp"
-    "$SRC/controls/drawer.myp"
-    "$SRC/controls/refresh_indicator.myp"
-    "$SRC/controls/context_menu.myp"
-    "$SRC/controls/color_picker.myp"
-    "$SRC/controls/date_picker.myp"
-    "$SRC/controls/data_grid.myp"
-    "$SRC/controls/tree_view.myp"
-    "$SRC/controls/time_picker.myp"
-    "$SRC/controls/action_sheet.myp"
-    "$SRC/controls/pagination.myp"
-    "$SRC/controls/page_view.myp"
-    "$SRC/controls/popover.myp"
-    "$SRC/controls/banner.myp"
-    "$SRC/layout/linear_layout.myp"
-    "$SRC/layout/grid_layout.myp"
-    "$SRC/layout/constraint_layout.myp"
-    "$SRC/layout/flow_layout.myp"
-    "$SRC/layout/stack_layout.myp"
-    "$SRC/animation/tween.myp"
-    "$SRC/animation/coro_anim.myp"
-    "$SRC/uix/prop_bag.myp"
-    "$SRC/uix/expr.myp"
-    "$SRC/uix/uix_loader.myp"
+    "$SRC/core/"*.myp
+    "$SRC/controls/"*.myp
+    "$SRC/layout/"*.myp
+    "$SRC/uix/"*.myp
+    "$SRC/animation/"*.myp
     "${EXTRA[@]}"
     "$TARGET.myp"
 )

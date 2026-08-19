@@ -1085,3 +1085,31 @@
 - **教训**：源码按字节读，`__myp_chr` 按码点编码——两者只对 ASCII 等价；
   字节级 round-trip 须用 substring/memcpy 原样保留（同 stdlib/io.myp readAll
   注释）。
+
+## BUG-040（已修复 🟩）：selfhost 接口局部变量初始化借用 fat 不 retain → draw 崩溃
+
+- **症状**：myp_self 编译的 mypview **真实 SDL 绘制**示例 `examples/player.myp`
+  运行段错误 139——`LinearLayout_draw` 里 `View kid = kids_[i]` 后 `kid.draw(r)`
+  崩溃（`call *0x30(%rbx)` 中 rbx=0，或 this 对象 kids_ 字段 = 垃圾）。
+  此前 uix_logic headless 测试 `.draw(` 调用计数为 **0**，从未覆盖接口数组
+  元素 → 局部接口变量 → 方法调用这条路径。
+- **根因**（tools/selfhost/src/codegen.myp 局部接口变量初始化 6602-6638）：
+  `View kid = kids_[i]`（接口数组元素**借用 fat**）走 `it=="{ptr,ptr}"` 分支
+  直接 `store {ptr,ptr} iv, va` **不 retain**；而局部接口变量是 arcSlot，
+  作用域末 `releaseArcSlots` 对接口槽执行 `load data + myp_release` → **释放
+  借用** → kids_ 悬垂/对象被释放 → draw 崩溃。`buildIfaceFat` 分支（借用具体类
+  实例，如局部对象变量）同样缺 retain。
+- **修复**：局部接口变量初始化两个分支对**借用**（`isFreshTemp(iv)==0`）在
+  store 前 `extractvalue 0 + myp_retain(data)`（局部持有，作用域末释放配对）；
+  fresh（new）保持 `consumeTemp` 转移所有权不变。
+- **附带修复**：`mypview/examples/build.sh` 固定文件列表过时（缺
+  sortable_list/long_press_button/gesture/theme/dialog 等，player 的
+  SortableList/LongPressButton/GestureDetector 报 unknown type）→ 改用目录
+  通配符（`$SRC/core/*.myp` 等），新增文件自动包含；mypc 与 myp_self 均验证。
+- **验证**：player 120 帧全绿（`frame=120 list=8 q=低 vol=5`、ttf-cache
+  hits=6310）；mypc + myp_self 编译运行均 OK；bootstrap 16/16、父级 312/312、
+  bugs 11/11、mypview UIX/PIPE PASS。
+- **教训**：接口 fat 的「借用 vs fresh」判定必须贯穿所有路径——局部接口变量、
+  接口数组元素 store、接口方法调用参数/返回、赋值 RHS。凡「借用 fat 被某个
+  ARC 槽持有」，作用域末 release 就必须先 retain（配对）；只有 new/fresh 才
+  转移。测试应覆盖真实绘制（headless 只测布局不测 draw 会漏这类 ARC 缺口）。
