@@ -27,6 +27,34 @@
 
 ## 编译器版本历史
 
+### v3.12.50 — 文件顺序敏感修复（BUG-041）+ 自举内部符号改 internal（BUG-042）
+
+**背景**：对比 mypc 与自举编译器编译的 mypview 二进制时发现：
+- 同样的 55 个文件，仅**顺序不同**（run.sh 手工顺序 vs 字母序），mypc 编译结果
+  一个 69 行全绿、一个运行段错误（ConstraintLayout 对象悬垂被字符串覆盖）。
+- 自举 myp_self 二进制比 mypc 多导出 ~90 个全局函数（`__myp_destroy_*`/
+  `__myp_coro_*` 应为 internal）。
+
+**BUG-041 — 多文件编译对文件顺序敏感（mypc + myp_self 各一面）**
+- mypc：多文件合并 AST 后单次 Sema，但 CodeGen 对类遍历顺序敏感——字母序下
+  ConstraintLayout 等对象 ARC 错乱（运行时 this 悬垂、字段被字符串覆盖）。
+  依赖顺序（基础类型 renderer/view 先编译）正常。
+- myp_self：对「绝对路径源码 + 相对 target」混合路径会丢 main（undefined
+  main）；全相对路径正常。myp_self 对文件顺序本身不敏感（通配符字母序 OK）。
+- 修复（mypview/examples/build.sh 双管齐下）：mypc 分支用依赖顺序固定列表；
+  myp_self 分支用目录通配 + 源码/标准库全相对路径。两编译器编译 player/
+  counter 均全绿。
+- 遗留：mypc CodeGen 深层的顺序依赖机制未根除（靠 build 顺序规避），如需根治
+  须查 codegen 按类序遍历的全局状态。
+
+**BUG-042 — selfhost 内部析构/协程入口生成为 global 符号**
+- 修复（tools/selfhost/src/codegen.myp）：`__myp_destroy_*`（10462）、
+  `__myp_coro_entry_*` 方法/函数入口（2894/2922）三处改为 `define internal`。
+- 效果：全局函数 T 符号 130 → 40（与 mypc 的 42 几乎对齐）；`.dynsym` 不变
+  （58 个，不影响动态链接）；strip 无影响。
+- 验证：mypview 69 行输出与修复前一致；bootstrap 16/16、父级全过、bugs 11/11、
+  mypview UIX/PIPE PASS。
+
 ### v3.12.49 — 真实 SDL 绘制示例 player 自举运行全绿：接口局部变量借用 retain（BUG-040）
 
 用 `myp_self` 编译 mypview 真实窗口示例 `examples/player.myp`（SDL 大窗口 +

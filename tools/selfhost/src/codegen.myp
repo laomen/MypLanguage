@@ -2891,7 +2891,7 @@ class CodeGen {
         // @coro 方法入口包装：__myp_coro_entry_Cls_m() → 取入口槽 → 调真实方法。
         void genCoroEntry(string cls, AstAction a) {
             string fn = "__myp_coro_entry_" + cls + "_" + a.name();
-            sb_.append("define void @" + fn + "() {\n");
+            sb_.append("define internal void @" + fn + "() {\n");
             sb_.append("entry:\n");
             string s0 = newTmp();
             sb_.append("  " + s0 + " = call i64 @__myp_coro_get_entry_arg(i64 0)\n");
@@ -2919,7 +2919,7 @@ class CodeGen {
         // @coro 顶层函数入口包装：__myp_coro_entry_f() → 取槽 → 调真实函数。
         void genCoroFuncEntry(AstFunction f) {
             string fn = "__myp_coro_entry_" + f.name();
-            sb_.append("define void @" + fn + "() {\n");
+            sb_.append("define internal void @" + fn + "() {\n");
             sb_.append("entry:\n");
             StringBuilder as = new StringBuilder();
             for (int i = 0; i < f.params().size(); i = i + 1) {
@@ -10459,7 +10459,7 @@ class CodeGen {
                 }
                 if (ci < 0) continue;
                 AstClass c = tu_.classes().get(ci);
-                sb.append("define void @__myp_destroy_" + cls + "(ptr %self) {\nentry:\n");
+                sb.append("define internal void @__myp_destroy_" + cls + "(ptr %self) {\nentry:\n");
                 for (int pi = 0; pi < c.props().size(); pi = pi + 1) {
                     AstProp prop = c.props().get(pi);
                     AstType pt = prop.type();

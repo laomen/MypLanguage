@@ -1113,3 +1113,40 @@
   接口数组元素 store、接口方法调用参数/返回、赋值 RHS。凡「借用 fat 被某个
   ARC 槽持有」，作用域末 release 就必须先 retain（配对）；只有 new/fresh 才
   转移。测试应覆盖真实绘制（headless 只测布局不测 draw 会漏这类 ARC 缺口）。
+
+## BUG-041（已修复 🟩）：多文件编译对文件顺序敏感（mypc 依赖顺序 / myp_self 混合路径丢 main）
+
+- **症状**：同一源码集合仅**文件顺序不同**，mypc 编译结果一个正常一个崩溃：
+  - run.sh 手工顺序（55 文件）→ 运行 69 行全绿
+  - 字母序 `sort`（同样 55 文件）→ 运行段错误 139，0 行输出
+  - 崩溃点：`ConstraintLayout_layout`（被 UixLoader_buildInto 调用）；LLVM verify
+    偶报 `renderer.myp: Call parameter type does not match function signature`。
+  - 通配符 `src/core/*.myp ...` 按字母序展开，故 mypc 用通配符编译 mypview 全集
+    会崩溃；myp_self 用同样字母序通配符**运行正常**（顺序无关，更健壮）。
+- **根因（待定位）**：mypc 跨文件类型/方法解析依赖编译文件顺序——字母序下
+  （focus_manager/gesture 先于 renderer/view 等）某些类型/方法表解析错乱，
+  ConstraintLayout_layout 生成错误代码。已排除「单个额外文件导致」（去掉
+  grid_layout 仍崩）。
+- **影响**：build.sh 通配符（字母序）用 mypc 编译有潜在风险；player 目前正常
+  是因为不触发 ConstraintLayout_layout 崩溃路径。
+- **修复**（mypview/examples/build.sh，双管齐下）：
+  - **mypc 顺序敏感**：SRCS 用依赖顺序固定列表（基础类型 renderer/view 等在前，
+    被引用类型先编译；字母序会让 ConstraintLayout 等对象 ARC 错乱崩溃）。
+  - **myp_self 混合路径 main 丢失**：myp_self 对「绝对路径源码 + 相对 target」
+    会 undefined main（全相对路径正常）→ build.sh 源码/标准库改相对路径；
+    且 myp_self 分支用目录通配（myp_self 顺序无关）。
+  - 两编译器均验证：mypc + myp_self 编译运行 player（8 帧）/counter 全绿。
+- **遗留**：mypc codegen 深层的顺序依赖机制（ConstraintLayout 对象 ARC 错乱）
+  未根除，靠 build 顺序规避；如需根治须查 codegen 按类序遍历的全局状态。
+- **验证**：mypc/myp_self 编译 player + counter 全绿；mypview UIX/PIPE PASS。
+
+## BUG-042（已修复 🟩）：myp_self 把内部析构/协程入口生成为 global 符号
+
+- **症状**：nm 对比，myp_self 二进制 130 个全局函数 T（含 85 个 `__myp_destroy_*`
+  + 4 个 `__myp_coro_*`）；mypc 对应为 **local（t）**（74 个 destroy + 2 个 coro）。
+- **根因**：selfhost codegen 生成 `__myp_destroy_<Class>` 析构和 `__myp_coro_*`
+  协程入口时未标 internal（`define internal`）。
+- **实际影响**：小。`.dynsym`/`.dynstr` 与 mypc 相同（58 个动态符号，不导出）；
+  strip 后无影响。仅理论风险：未来多编译单元/静态库链接时同名符号冲突、以及
+  链接器 `--gc-sections` 无法裁剪未用函数。
+- **修复方向**：codegen.myp 生成这两类函数时加 `internal`（与 mypc 对齐）。
