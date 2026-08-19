@@ -1,0 +1,145 @@
+// dropdown.myp — uikit 控件：Dropdown（下拉选择器）
+// ---------------------------------------------------------------------------
+// 点击框体展开选项列表，点选一项后收起。选中项高亮并触发 Selected(index)。
+// items 用 addItem 填充（<=64）。纯逻辑 headless 可测。
+import text;
+
+class Dropdown {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] items_;
+        int itemCount_;
+        int selected_;
+        int open_;
+        int color_;
+        int rowH_;
+        int maxRows_;
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor Dropdown(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            items_ = new string[64];
+            itemCount_ = 0;
+            selected_ = 0;
+            open_ = 0;
+            color_ = Color.blue();
+            rowH_ = 20;
+            maxRows_ = 6;
+        }
+
+        void addItem(string s) {
+            if (itemCount_ >= 64) return;
+            items_[itemCount_] = s;
+            itemCount_ = itemCount_ + 1;
+        }
+        void clear() { itemCount_ = 0; selected_ = 0; open_ = 0; }
+        int itemCount() { return itemCount_; }
+        string getItem(int i) {
+            if (i < 0 || i >= itemCount_) return "";
+            return items_[i];
+        }
+        void setSelected(int i) {
+            if (i < 0 || i >= itemCount_) return;
+            selected_ = i;
+        }
+        int getSelected() { return selected_; }
+        string getSelectedText() { return getItem(selected_); }
+        int isOpen() { return open_; }
+        void setOpen(int o) { open_ = o; }
+        void setRowHeight(int rh) { if (rh > 0) rowH_ = rh; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "selected") setSelected(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        int listHeight() {
+            int lh = itemCount_ * rowH_;
+            if (lh > maxRows_ * rowH_) lh = maxRows_ * rowH_;
+            return lh;
+        }
+
+        void draw(Renderer r) {
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            string t = getSelectedText();
+            if (t != "") r.drawText(x_ + 6, y_ + h_ / 2 - r.textH(1) / 2, t, 1, Color.white());
+            // 下拉箭头
+            int ax = x_ + w_ - 14;
+            int ay = y_ + h_ / 2;
+            if (open_ == 0) {
+                r.drawLine(ax, ay - 3, ax + 5, ay, Color.white());
+                r.drawLine(ax + 5, ay, ax + 10, ay - 3, Color.white());
+            } else {
+                r.drawLine(ax, ay + 3, ax + 5, ay, Color.white());
+                r.drawLine(ax + 5, ay, ax + 10, ay + 3, Color.white());
+            }
+            // 展开列表
+            if (open_ != 0) {
+                int lh = listHeight();
+                int top = y_ + h_;
+                r.fillRect(x_, top, w_, lh, Color.dark());
+                r.outlineRect(x_, top, w_, lh, Color.gray());
+                for (int i = 0; i < itemCount_ && i < maxRows_; i = i + 1) {
+                    if (i == selected_)
+                        r.fillRect(x_ + 1, top + i * rowH_, w_ - 2, rowH_, color_);
+                    r.drawText(x_ + 6, top + i * rowH_ + (rowH_ - r.textH(1)) / 2,
+                               items_[i], 1, Color.white());
+                }
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            if (open_ != 0) {
+                int lh = listHeight();
+                if (x >= x_ && x < x_ + w_ && y >= y_ + h_ && y < y_ + h_ + lh) return 1;
+            }
+            return 0;
+        }
+
+        // 仅展开列表区命中（供浮层优先分发：player 在布局命中前先查展开下拉）
+        int listHit(int x, int y) {
+            if (open_ == 0) return 0;
+            int lh = listHeight();
+            if (x >= x_ && x < x_ + w_ && y >= y_ + h_ && y < y_ + h_ + lh) return 1;
+            return 0;
+        }
+
+        // 点击：收起时展开；展开时点选项选择并收起
+        void onTouch(int x, int y) {
+            if (open_ == 0) {
+                open_ = 1;
+                return;
+            }
+            if (y >= y_ + h_) {
+                int idx = (y - (y_ + h_)) / rowH_;
+                if (idx >= 0 && idx < itemCount_) {
+                    setSelected(idx);
+                    Selected(idx);
+                }
+            }
+            open_ = 0;
+        }
+}

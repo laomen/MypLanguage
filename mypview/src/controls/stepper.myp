@@ -1,0 +1,104 @@
+// stepper.myp — uikit 控件：Stepper（数字步进器）
+// ---------------------------------------------------------------------------
+// − [值] + 三段：左减右加，value 在 [min,max] 内按 step 增减，Changed 事件。
+// 纯逻辑 headless 可测。
+import text;
+import fmt;
+
+class Stepper {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int value_;
+        int min_;
+        int max_;
+        int step_;
+        int color_;
+
+    event:
+        Changed(int value);
+
+    action:
+        @constructor Stepper(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            value_ = 0;
+            min_ = 0;
+            max_ = 10;
+            step_ = 1;
+            color_ = Color.blue();
+        }
+
+        void setValue(int v) {
+            if (v < min_) v = min_;
+            if (v > max_) v = max_;
+            value_ = v;
+        }
+        int getValue() { return value_; }
+        void setRange(int mn, int mx) {
+            min_ = mn; max_ = mx;
+            if (value_ < mn) value_ = mn;
+            if (value_ > mx) value_ = mx;
+        }
+        void setStep(int s) { if (s > 0) step_ = s; }
+        int getStep() { return step_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "value") setValue(Str.toInt(value));
+            else if (name == "min") { min_ = Str.toInt(value); if (value_ < min_) value_ = min_; }
+            else if (name == "max") { max_ = Str.toInt(value); if (value_ > max_) value_ = max_; }
+            else if (name == "step") setStep(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // − 按钮（左）
+            r.fillRect(x_, y_, w_ / 3, h_, color_);
+            r.drawText(x_ + w_ / 6 - r.textWidth("−", 2) / 2,
+                       y_ + h_ / 2 - r.textH(2) / 2, "−", 2, Color.white());
+            // 值（中）
+            string vs = Fmt.i(value_);
+            r.drawText(x_ + w_ / 2 - r.textWidth(vs, 1) / 2,
+                       y_ + h_ / 2 - r.textH(1) / 2, vs, 1, Color.white());
+            // + 按钮（右）
+            r.fillRect(x_ + w_ * 2 / 3, y_, w_ / 3, h_, color_);
+            r.drawText(x_ + w_ * 5 / 6 - r.textWidth("+", 2) / 2,
+                       y_ + h_ / 2 - r.textH(2) / 2, "+", 2, Color.white());
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int third = w_ / 3;
+            if (x < x_ + third) {
+                // 减
+                int v = value_ - step_;
+                if (v < min_) v = min_;
+                if (v != value_) { value_ = v; Changed(value_); }
+            } else if (x >= x_ + w_ * 2 / 3) {
+                // 加
+                int v = value_ + step_;
+                if (v > max_) v = max_;
+                if (v != value_) { value_ = v; Changed(value_); }
+            }
+        }
+}

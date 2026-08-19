@@ -1,0 +1,78 @@
+// image.myp — uikit 控件：Image（通用图片显示）
+// ---------------------------------------------------------------------------
+// 持后端图片句柄（SDL.loadBmp/loadPng 返回，-1=无图显示占位框）。
+// 应用层加载图片后 setHandle() 传入；缩放模式：0=拉伸填满 1=等比裁切(近似)。
+// 纯逻辑不依赖 SDL（drawImage 走 Renderer 抽象，可 headless 测试）。
+import text;
+
+class Image {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int handle_;
+        int mode_;      // 0=拉伸 1=等比（等比时以宽或高为基准居中裁切）
+        int color_;
+
+    action:
+        @constructor Image(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            handle_ = -1;
+            mode_ = 0;
+            color_ = Color.dark();
+        }
+
+        void setHandle(int h) { handle_ = h; }
+        int getHandle() { return handle_; }
+        void setMode(int m) { mode_ = m; }
+        int getMode() { return mode_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+            else if (name == "mode") setMode(Str.toInt(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (handle_ >= 0) {
+                // mode 1（等比）：以 min(w/h 比例) 为基准，近似居中裁切
+                if (mode_ == 1) {
+                    // 简化：按目标尺寸原图等比缩放到能覆盖，居中裁切由后端纹理
+                    // 支持时做；此处 fallback 拉伸
+                    r.drawImage(handle_, x_, y_, w_, h_);
+                } else {
+                    r.drawImage(handle_, x_, y_, w_, h_);
+                }
+            } else {
+                // 占位：暗底 + 边框
+                r.fillRect(x_, y_, w_, h_, color_);
+                r.outlineRect(x_, y_, w_, h_, Color.gray());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            // 图片默认不可交互
+        }
+}

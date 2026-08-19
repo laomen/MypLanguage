@@ -1,0 +1,74 @@
+// icon_button.myp — uikit 控件：IconButton（圆形图标按钮）
+// ---------------------------------------------------------------------------
+// 无文字标签，圆形背景 + 居中图标字符（TTF 支持 ✓ ✕ ⌂ ★ 等），点击触发
+// Clicked 事件。enabled 禁用置灰 + 不响应。
+import text;
+
+class IconButton {
+    interface class View;
+
+    property:
+        string icon_;
+        int x_;
+        int y_;
+        int size_;
+        int color_;
+        int enabled_;
+
+    event:
+        Clicked(int x, int y);
+
+    action:
+        @constructor IconButton(string icon, int x, int y, int size) {
+            icon_ = icon;
+            x_ = x;
+            y_ = y;
+            size_ = size;
+            color_ = Color.blue();
+            enabled_ = 1;
+        }
+
+        void setIcon(string t) { icon_ = t; }
+        string getIcon() { return icon_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+        void setEnabled(int on) { enabled_ = on; }
+
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "icon") setIcon(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return size_; }
+        int height() { return size_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            size_ = w < h ? w : h;   // 取小边为尺寸
+        }
+
+        // 覆盖 View.enabled 默认实现
+        int enabled() { return enabled_; }
+
+        void draw(Renderer r) {
+            int c = enabled_ != 0 ? color_ : Color.gray();
+            r.fillRoundedRect(x_, y_, size_, size_, size_ / 2, c);
+            r.drawText(x_ + (size_ - r.textWidth(icon_, 1)) / 2,
+                       y_ + size_ / 2 - r.textH(1) / 2,
+                       icon_, 1, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (enabled_ == 0) return 0;
+            if (x >= x_ && x < x_ + size_ && y >= y_ && y < y_ + size_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            Clicked(x, y);
+        }
+}

@@ -88,4 +88,9 @@ interface Renderer {
     // 绘制图片（handle 由后端加载；-1 则跳过）
     void drawImage(int handle, int x, int y, int w, int h);
     void drawText(int x, int y, string text, int scale, int color);
+
+    // ---- 文本尺寸（布局/居中辅助）----
+    // 默认按 5×7 位图估算（字符宽 6、高 8 含间距）；TTF 后端覆写为真实渲染尺寸。
+    int textWidth(string text, int scale) { return Str.len(text) * scale * 6; }
+    int textH(int scale) { return scale * 8; }
 }

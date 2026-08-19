@@ -1,0 +1,59 @@
+// badge.myp — uikit 控件：Badge（角标/徽标）
+// ---------------------------------------------------------------------------
+// 独立小徽标：红圆 + 数字/文本（如消息未读数）。setText/setColor 可配置，
+// 尺寸由文本决定（纯逻辑 headless 可测）。
+import text;
+import fmt;
+
+class Badge {
+    interface class View;
+
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int color_;
+
+    action:
+        @constructor Badge(string text, int x, int y) {
+            text_ = text;
+            x_ = x;
+            y_ = y;
+            color_ = Color.red();
+        }
+
+        void setText(string t) { text_ = t; }
+        string getText() { return text_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setValue(int v) { text_ = Fmt.i(v); }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        void setAttr(string name, string value) {
+            if (name == "text") setText(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // 尺寸由文本决定（胶囊）
+        int textW() { return Str.len(text_) * 8 + 16; }
+        int width() { return textW(); }
+        int height() { return 18; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y;
+        }
+
+        void draw(Renderer r) {
+            if (text_ == "") return;
+            int bw = textW();
+            int bh = 18;
+            r.fillRoundedRect(x_, y_, bw, bh, bh / 2, color_);
+            r.drawText(x_ + bw / 2 - r.textWidth(text_, 1) / 2,
+                       y_ + bh / 2 - r.textH(1) / 2,
+                       text_, 1, Color.white());
+        }
+
+        int hit(int x, int y) { return 0; }   // 徽标不交互
+
+        void onTouch(int x, int y) {}
+}

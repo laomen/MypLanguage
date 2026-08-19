@@ -1,0 +1,106 @@
+// action_sheet.myp — uikit 控件：ActionSheet（底部操作表）
+// ---------------------------------------------------------------------------
+// 底部弹出的操作列表（取消 + 选项）。addAction(label)，show() 显示，点选项
+// 触发 Selected(index) 并关闭，点取消（底部）关闭。纯逻辑 headless 可测。
+import text;
+
+class ActionSheet {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] actions_;
+        int actionCount_;
+        int visible_;
+        int color_;
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor ActionSheet(int w) {
+            x_ = 0;
+            y_ = 0;
+            w_ = w;
+            h_ = 0;
+            actions_ = new string[8];
+            actionCount_ = 0;
+            visible_ = 0;
+            color_ = Color.blue();
+        }
+
+        void addAction(string label) {
+            if (actionCount_ >= 8) return;
+            actions_[actionCount_] = label;
+            actionCount_ = actionCount_ + 1;
+        }
+        int actionCount() { return actionCount_; }
+        string actionAt(int i) {
+            if (i < 0 || i >= actionCount_) return "";
+            return actions_[i];
+        }
+        // 显示在底部（宽铺满，含取消项）
+        void show(int y) {
+            y_ = y;
+            h_ = (actionCount_ + 1) * 46 + 8;
+            visible_ = 1;
+        }
+        void hide() { visible_ = 0; }
+        int visible() { return visible_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (visible_ == 0) return;
+            // 遮罩（全屏压暗）+ 底部面板
+            r.fillRect(0, 0, w_, y_ + h_, Color.dark());
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            for (int i = 0; i < actionCount_; i = i + 1) {
+                r.fillRect(x_, y_ + 4 + i * 46, w_, 42, color_);
+                r.drawText(x_ + w_ / 2 - r.textWidth(actions_[i], 1) / 2,
+                           y_ + 4 + i * 46 + (42 - r.textH(1)) / 2,
+                           actions_[i], 1, Color.white());
+            }
+            // 取消项（底部）
+            int cy = y_ + 4 + actionCount_ * 46;
+            r.fillRect(x_, cy, w_, 42, Color.gray());
+            r.drawText(x_ + w_ / 2 - r.textWidth("取消", 1) / 2,
+                       cy + (42 - r.textH(1)) / 2, "取消", 1, Color.white());
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+        }
+
+        int hit(int x, int y) {
+            if (visible_ == 0) return 0;
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (visible_ == 0) return;
+            int rel = y - (y_ + 4);
+            int idx = rel / 46;
+            if (idx < 0) return;
+            if (idx < actionCount_) {
+                Selected(idx);
+                hide();
+            } else {
+                hide();    // 取消
+            }
+        }
+}

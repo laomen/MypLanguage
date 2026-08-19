@@ -1,0 +1,113 @@
+// tab_view.myp — uikit 控件：TabView（标签页容器）
+// ---------------------------------------------------------------------------
+// 顶部标签栏 + 当前页内容区。addTab(title, page) 注册页面；点标签切换当前页
+// 并触发 TabChanged(index)。页面由调用方持有（View 接口数组不 retain，本控件
+// 仅持引用用于绘制/转发）。纯逻辑 headless 可测。
+import text;
+
+class TabView {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] titles_;
+        View[] pages_;
+        int tabCount_;
+        int current_;
+        int tabH_;
+        int color_;
+
+    event:
+        TabChanged(int index);
+
+    action:
+        @constructor TabView(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            titles_ = new string[16];
+            pages_ = new View[16];
+            tabCount_ = 0;
+            current_ = 0;
+            tabH_ = 32;
+            color_ = Color.blue();
+        }
+
+        void addTab(string title, View page) {
+            if (tabCount_ >= 16) return;
+            titles_[tabCount_] = title;
+            pages_[tabCount_] = page;
+            tabCount_ = tabCount_ + 1;
+        }
+        int tabCount() { return tabCount_; }
+        string titleAt(int i) {
+            if (i < 0 || i >= tabCount_) return "";
+            return titles_[i];
+        }
+        void setCurrent(int i) {
+            if (i < 0 || i >= tabCount_) return;
+            current_ = i;
+        }
+        int getCurrent() { return current_; }
+        // At 模式（项目惯例：接口不能 return null）：调用方用 tabCount() 保证 i 有效
+        View pageAt(int i) { return pages_[i]; }
+        void setTabHeight(int th) { if (th > 0) tabH_ = th; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "current") setCurrent(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            int tw = tabCount_ > 0 ? w_ / tabCount_ : w_;
+            for (int i = 0; i < tabCount_; i = i + 1) {
+                int tx = x_ + i * tw;
+                if (i == current_)
+                    r.fillRect(tx, y_, tw, tabH_, color_);
+                else
+                    r.outlineRect(tx, y_, tw, tabH_, Color.gray());
+                r.drawText(tx + 6, y_ + tabH_ / 2 - r.textH(1) / 2, titles_[i], 1, Color.white());
+            }
+            if (tabCount_ > 0 && pages_[current_] != null) {
+                pages_[current_].setFrame(x_, y_ + tabH_, w_, h_ - tabH_);
+                pages_[current_].draw(r);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点标签切换；点内容区转发给当前页
+        void onTouch(int x, int y) {
+            if (tabCount_ == 0) return;
+            if (y < y_ + tabH_) {
+                int idx = (x - x_) / (w_ / tabCount_);
+                if (idx >= 0 && idx < tabCount_ && idx != current_) {
+                    setCurrent(idx);
+                    TabChanged(idx);
+                }
+            } else if (pages_[current_] != null) {
+                pages_[current_].onTouch(x, y);
+            }
+        }
+
+        // View 容器接口（页面经 addTab 注册，addChild 不介入）
+        void addChild(View v) {}
+}

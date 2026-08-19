@@ -1,0 +1,97 @@
+// context_menu.myp — uikit 控件：ContextMenu（右键/长按上下文菜单）
+// ---------------------------------------------------------------------------
+// 浮层菜单：addItem 加项，show(x,y) 显示，点某项触发 Selected(index) 并自动
+// 关闭。纯逻辑 headless 可测。
+import text;
+
+class ContextMenu {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] items_;
+        int itemCount_;
+        int visible_;
+        int color_;
+        int selectedIdx_;   // 最近一次选中的项索引（-1=无）
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor ContextMenu(int w) {
+            x_ = 0;
+            y_ = 0;
+            w_ = w;
+            h_ = 0;
+            items_ = new string[16];
+            itemCount_ = 0;
+            visible_ = 0;
+            color_ = Color.dark();
+            selectedIdx_ = -1;
+        }
+
+        void addItem(string label) {
+            if (itemCount_ >= 16) return;
+            items_[itemCount_] = label;
+            itemCount_ = itemCount_ + 1;
+            h_ = itemCount_ * 30 + 8;
+        }
+        int itemCount() { return itemCount_; }
+        string itemAt(int i) {
+            if (i < 0 || i >= itemCount_) return "";
+            return items_[i];
+        }
+        void show(int x, int y) {
+            x_ = x;
+            y_ = y;
+            visible_ = 1;
+            selectedIdx_ = -1;
+        }
+        void hide() { visible_ = 0; }
+        int visible() { return visible_; }
+        // 最近一次选中项索引（-1=尚未选择）
+        int getSelected() { return selectedIdx_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：尺寸随项数
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (visible_ == 0) return;
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            for (int i = 0; i < itemCount_; i = i + 1) {
+                r.drawText(x_ + 10, y_ + 8 + i * 30 + (30 - r.textH(1)) / 2,
+                           items_[i], 1, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (visible_ == 0) return 0;
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (visible_ == 0) return;
+            int idx = (y - y_ - 4) / 30;
+            if (idx >= 0 && idx < itemCount_) {
+                selectedIdx_ = idx;
+                Selected(idx);
+                hide();
+            }
+        }
+}

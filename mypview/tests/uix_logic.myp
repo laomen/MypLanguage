@@ -101,7 +101,7 @@ class Main {
                 + "{\"type\":\"Badge\",\"id\":\"badge\",\"text\":\"NEW\"},"
                 + "{\"type\":\"Label\",\"id\":\"lbl\",\"text\":\"custom ok\"}"
                 + "]}";
-            BadgeBuilder bb = new BadgeBuilder();
+            CustomBadgeBuilder bb = new CustomBadgeBuilder();
             UixLoader ext = new UixLoader(extUix, "");
             ext.registerControl("Badge", bb);
             RootView er = new RootView(16, 400, 300);
@@ -266,11 +266,355 @@ class Main {
             int b79 = bl.checkboxIdxOf("big_79");
             Console.writeLine("uix big n=" + Fmt.i(bl.nodeCount())
                               + " last=" + bl.checkboxAt(b79).getLabel());
+
+            // ---- 新常用控件：Dropdown / RadioButton / TabView / Toast / Rating ----
+            // Dropdown：点击框展开 → 点列表第 2 行选中 Beta
+            Dropdown dd = new Dropdown(0, 0, 160, 26);
+            dd.addItem("Alpha");
+            dd.addItem("Beta");
+            dd.addItem("Gamma");
+            dd.setFrame(0, 0, 160, 26);
+            dd.onTouch(10, 10);                 // 点击框 → 展开
+            int ddOpen = dd.isOpen();
+            dd.onTouch(10, 26 + 25);            // 点击列表第 2 行 (rowH=20)
+            Console.writeLine("uix dd opened=" + Fmt.i(ddOpen)
+                              + " sel=" + dd.getSelectedText()
+                              + " open=" + Fmt.i(dd.isOpen()));
+
+            // RadioButton：各自勾选（互斥由外部管理）
+            RadioButton ra = new RadioButton("A", 0, 0, 60, 24);
+            RadioButton rb = new RadioButton("B", 0, 0, 60, 24);
+            ra.onTouch(5, 5);
+            rb.onTouch(5, 5);
+            ra.setChecked(0);
+            Console.writeLine("uix radio ra=" + Fmt.i(ra.getChecked())
+                              + " rb=" + Fmt.i(rb.getChecked()));
+
+            // TabView：注册 2 页，点第 2 个标签切换
+            TabView tv = new TabView(0, 0, 300, 200);
+            Label p1 = new Label("Page1", 0, 0, 2);
+            Label p2 = new Label("Page2", 0, 0, 2);
+            tv.addTab("One", p1);
+            tv.addTab("Two", p2);
+            tv.setFrame(0, 0, 300, 200);
+            tv.onTouch(200, 10);                 // 点第 2 个标签 (tabW=150)
+            Console.writeLine("uix tab cur=" + Fmt.i(tv.getCurrent())
+                              + " n=" + Fmt.i(tv.tabCount()));
+
+            // Toast：show(90帧) → tick 后消失
+            Toast ts = new Toast(200, 32);
+            ts.show("saved");
+            ts.tick(50);
+            int tsV = ts.visible();
+            ts.tick(50);
+            Console.writeLine("uix toast v=" + Fmt.i(tsV) + "->" + Fmt.i(ts.visible())
+                              + " text=" + ts.text());
+
+            // Rating：点击第 3 颗星 → 值 3
+            Rating rt = new Rating(0, 0, 160, 24);
+            rt.setMax(5);
+            rt.onTouch(80, 10);                  // step=32, (80-0)/32+1=3
+            Console.writeLine("uix rating v=" + Fmt.i(rt.getValue())
+                              + " max=" + Fmt.i(rt.getMax()));
+
+            // TextField UTF-8 backspace：删中文整字符不截断（"你好"→删"好"→"你"）
+            TextField bf = new TextField("", 0, 0, 120, 32);
+            bf.append("你好");
+            bf.backspace();
+            bf.backspace();                       // 再删"你"→空
+            int bfN = Str.len(bf.getText());
+            bf.append("你好世界");
+            bf.backspace();                       // 删"界"→"你好世"
+            bf.backspace();                       // 删"世"→"你好"
+            Console.writeLine("uix backspace n0=" + Fmt.i(bfN)
+                              + " t=" + bf.getText()
+                              + " n=" + Fmt.i(Str.len(bf.getText())));
+
+            // ---- A 组基础控件：Image / IconButton / Divider / Spinner / TextArea / mask ----
+            // Image：句柄 + 占位（无图时画占位框，getHandle=-1）
+            Image im = new Image(0, 0, 120, 80);
+            im.setMode(1);
+            int imH = im.getHandle();
+            Console.writeLine("uix img handle=" + Fmt.i(imH) + " mode=" + Fmt.i(im.getMode())
+                              + " w=" + Fmt.i(im.width()));
+
+            // IconButton：图标字符 + 命中
+            IconButton ib = new IconButton("✓", 0, 0, 40);
+            int ibHit = ib.hit(5, 5);
+            ib.setEnabled(0);
+            Console.writeLine("uix icon hit=" + Fmt.i(ibHit) + " dis=" + Fmt.i(ib.hit(5, 5))
+                              + " size=" + Fmt.i(ib.width()));
+
+            // Divider：尺寸与颜色
+            Divider dv = new Divider(0, 0, 200, 1);
+            dv.setColor(Color.red());
+            Console.writeLine("uix div w=" + Fmt.i(dv.width()) + " h=" + Fmt.i(dv.height())
+                              + " c=" + Fmt.x(dv.getColor()));
+
+            // ProgressSpinner：tick 旋转 + start/stop
+            ProgressSpinner sp = new ProgressSpinner(0, 0, 20);
+            sp.setAngle(30);
+            int a1 = sp.getAngle();
+            sp.tick(16);
+            int a2 = sp.getAngle();
+            sp.stop();
+            sp.tick(16);
+            int a3 = sp.getAngle();
+            Console.writeLine("uix spin a=" + Fmt.i(a1) + "->" + Fmt.i(a2)
+                              + " stop=" + Fmt.i(a3) + " run=" + Fmt.i(sp.running()));
+
+            // TextArea：多行 + UTF-8 backspace
+            TextArea ta = new TextArea(0, 0, 200, 100);
+            ta.append("你好");
+            ta.append("\n");
+            ta.append("world");
+            ta.backspace();                       // 删 "world" 的 d → "worl"
+            Console.writeLine("uix ta lines=" + Fmt.i(ta.lineCount())
+                              + " n=" + Fmt.i(Str.len(ta.getText()))
+                              + " l0=" + ta.lineAt(0)
+                              + " l1=" + ta.lineAt(1));
+
+            // TextField 密码掩码：真实文本 vs 显示掩码
+            TextField pw = new TextField("", 0, 0, 140, 32);
+            pw.setMask(1);
+            pw.append("你好ab");
+            string pwMask = pw.maskText(pw.getText());
+            Console.writeLine("uix pw real=" + pw.getText()
+                              + " mask=" + pwMask
+                              + " m=" + Fmt.i(pw.getMask()));
+
+            // ---- B 组控件：SearchBar / SegmentedControl / Stepper / Badge / Avatar / Chip / Tooltip ----
+            // SearchBar：append/backspace/聚焦/清除按钮
+            SearchBar sb = new SearchBar(0, 0, 200, 32);
+            sb.append("abc");
+            sb.backspace();
+            sb.append("你好");
+            string sbT = sb.getText();
+            sb.onTouch(5, 5);                     // 聚焦
+            sb.onTouch(185, 16);                  // 命中清除按钮 → 清空
+            Console.writeLine("uix search t=" + sbT
+                              + " clr=" + sb.getText()
+                              + " f=" + Fmt.i(sb.focused()));
+
+            // SegmentedControl：3 段 + 点第 2 段
+            SegmentedControl seg = new SegmentedControl(0, 0, 240, 32);
+            seg.addSegment("低");
+            seg.addSegment("中");
+            seg.addSegment("高");
+            seg.onTouch(120, 16);                 // sw=80 → idx=1
+            Console.writeLine("uix seg n=" + Fmt.i(seg.segmentCount())
+                              + " sel=" + Fmt.i(seg.getSelected()));
+
+            // Stepper：3 → 减→2 → 加→3 → 加→4
+            Stepper stp = new Stepper(0, 0, 150, 32);
+            stp.setRange(0, 5);
+            stp.setValue(3);
+            stp.onTouch(10, 16);
+            stp.onTouch(140, 16);
+            stp.onTouch(140, 16);
+            Console.writeLine("uix step v=" + Fmt.i(stp.getValue()));
+
+            // Badge：值/文本 + 尺寸
+            Badge bd = new Badge("3", 0, 0);
+            bd.setValue(12);
+            Console.writeLine("uix badge t=" + bd.getText()
+                              + " w=" + Fmt.i(bd.width()));
+
+            // Avatar：名字/尺寸/图片
+            Avatar av = new Avatar("Alice", 0, 0, 48);
+            av.setColor(Color.green());
+            Console.writeLine("uix avatar name=" + av.getName()
+                              + " size=" + Fmt.i(av.width())
+                              + " img=" + Fmt.i(av.hasImage()));
+
+            // Chip：点中间切换勾选；点 × 触发 Deleted（不切换）
+            Chip ch = new Chip("tag", 0, 0, 80, 28);
+            ch.setDeletable(1);
+            ch.onTouch(10, 14);                   // 中间 → 勾选
+            int chCk = ch.getChecked();
+            ch.onTouch(65, 14);                   // 命中 × → Deleted，保持勾选
+            Console.writeLine("uix chip ck=" + Fmt.i(chCk)
+                              + " after=" + Fmt.i(ch.getChecked()));
+
+            // Tooltip：show → hide
+            Tooltip tt = new Tooltip(120, 32);
+            tt.show("帮助", 10, 10);
+            int ttV = tt.visible();
+            tt.hide();
+            Console.writeLine("uix tip v=" + Fmt.i(ttV) + "->" + Fmt.i(tt.visible())
+                              + " t=" + tt.text());
+
+            // ---- C 组控件：BottomNav / Drawer / RefreshIndicator / ContextMenu / ColorPicker / DatePicker ----
+            // BottomNav：3 项 + 点第 2 项
+            BottomNav bnav = new BottomNav(0, 0, 360, 48);
+            bnav.addItem("首页");
+            bnav.addItem("音乐");
+            bnav.addItem("我的");
+            bnav.onTouch(180, 24);                // iw=120 → idx=1
+            Console.writeLine("uix nav n=" + Fmt.i(bnav.itemCount())
+                              + " cur=" + Fmt.i(bnav.getCurrent()));
+
+            // Drawer：open/close/toggle
+            Drawer dr = new Drawer(240, 400);
+            dr.open(10, 10);
+            int drV = dr.visible();
+            dr.close();
+            dr.toggle(20, 20);
+            Console.writeLine("uix drawer v=" + Fmt.i(drV) + "->" + Fmt.i(dr.visible())
+                              + " x=" + Fmt.i(dr.getX()));
+
+            // RefreshIndicator：下拉超阈值 → 释放触发刷新
+            RefreshIndicator ri = new RefreshIndicator(0, 0, 120, 40);
+            ri.setThreshold(50);
+            ri.drag(70);
+            int riState = ri.state();
+            ri.release();
+            int riState2 = ri.state();
+            ri.refresh();
+            Console.writeLine("uix refresh st=" + Fmt.i(riState) + "->" + Fmt.i(riState2)
+                              + "->" + Fmt.i(ri.state())
+                              + " off=" + Fmt.i(ri.getOffset()));
+
+            // ContextMenu：addItem + show + 点第 2 项（自动关闭）
+            ContextMenu cm = new ContextMenu(160);
+            cm.addItem("复制");
+            cm.addItem("粘贴");
+            cm.addItem("删除");
+            cm.show(30, 30);
+            int cmV = cm.visible();
+            cm.onTouch(40, 30 + 8 + 30);          // 第 2 项（y=30+8+30）
+            Console.writeLine("uix menu n=" + Fmt.i(cm.itemCount())
+                              + " v=" + Fmt.i(cmV) + "->" + Fmt.i(cm.visible()));
+
+            // ColorPicker：色板 + 点选
+            ColorPicker cp = new ColorPicker(0, 0, 220, 60);
+            int cpN = cp.colorCount();
+            cp.onTouch(10, 10);                   // 第 1 格
+            Console.writeLine("uix color n=" + Fmt.i(cpN)
+                              + " sel=" + Fmt.i(cp.getSelected()));
+
+            // DatePicker：设日期 + 下月 + 点日
+            DatePicker dp = new DatePicker(0, 0, 260, 200);
+            dp.setDate(2026, 1, 15);
+            dp.nextMonth();
+            int dpY = dp.getYear();
+            int dpM = dp.getMonth();
+            dp.onTouch(20, 70);                   // 点 2 月首日附近
+            Console.writeLine("uix date y=" + Fmt.i(dpY) + " m=" + Fmt.i(dpM)
+                              + " d=" + Fmt.i(dp.getDay())
+                              + " dim=" + Fmt.i(dp.daysInMonth(2026, 2)));
+
+            // ---- 补齐组：DataGrid / TreeView / TimePicker / ActionSheet / Pagination / PageView / Popover / Banner ----
+            // DataGrid：列头 + 行 + 单元格
+            DataGrid dg = new DataGrid(0, 0, 300, 120);
+            dg.addColumn("名称");
+            dg.addColumn("数量");
+            string[] r1 = new string[2];
+            r1[0] = "苹果"; r1[1] = "3";
+            dg.addRow(r1, 2);
+            string[] r2 = new string[2];
+            r2[0] = "香蕉"; r2[1] = "5";
+            dg.addRow(r2, 2);
+            string cell = dg.getCell(1, 0);
+            Console.writeLine("uix grid cols=" + Fmt.i(dg.columnCount())
+                              + " rows=" + Fmt.i(dg.rowCount())
+                              + " c=" + cell);
+
+            // TreeView：节点 + 展开/折叠
+            TreeView tv2 = new TreeView(0, 0, 200, 120);
+            tv2.addNode("根", 0, 1);
+            tv2.addNode("子A", 1, 1);
+            tv2.addNode("子B", 1, 0);
+            tv2.toggle(0);                          // 展开根
+            int ex0 = tv2.isExpanded(0);
+            Console.writeLine("uix tree n=" + Fmt.i(tv2.nodeCount())
+                              + " l1=" + Fmt.i(tv2.levelAt(1))
+                              + " ex0=" + Fmt.i(ex0));
+
+            // TimePicker：设时间 + 调分（右列下半 +1）
+            TimePicker tp = new TimePicker(0, 0, 200, 60);
+            tp.setTime(9, 30);
+            tp.onTouch(150, 50);                    // 分列(>100) 下半(+1) → 31
+            Console.writeLine("uix time h=" + Fmt.i(tp.getHour())
+                              + " m=" + Fmt.i(tp.getMinute()));
+
+            // ActionSheet：选项 + 显示 + 点第 2 项关闭
+            ActionSheet as = new ActionSheet(300);
+            as.addAction("分享");
+            as.addAction("收藏");
+            as.show(200);
+            int asV = as.visible();
+            as.onTouch(10, 200 + 4 + 46);           // 第 2 项（收藏）
+            Console.writeLine("uix sheet n=" + Fmt.i(as.actionCount())
+                              + " v=" + Fmt.i(asV) + "->" + Fmt.i(as.visible()));
+
+            // Pagination：5 页 + 下一页 + 页码跳转
+            Pagination pg = new Pagination(0, 0, 260, 36);
+            pg.setTotal(5);
+            pg.onTouch(250, 18);                    // 下一页(>226) → 1
+            pg.onTouch(150, 18);                    // 页码区 idx=3 → 3
+            Console.writeLine("uix page t=" + Fmt.i(pg.getTotal())
+                              + " cur=" + Fmt.i(pg.getCurrent()));
+
+            // PageView：2 页 + 翻页
+            PageView pv = new PageView(0, 0, 300, 120);
+            Label pv1 = new Label("Page One", 0, 0, 2);
+            Label pv2 = new Label("Page Two", 0, 0, 2);
+            pv.addPage(pv1);
+            pv.addPage(pv2);
+            pv.onTouch(250, 20);                    // 右区 → next
+            int pvCur = pv.getCurrent();
+            pv.onTouch(20, 20);                     // 左区 → prev
+            Console.writeLine("uix pv n=" + Fmt.i(pv.pageCount())
+                              + " cur=" + Fmt.i(pvCur) + "->" + Fmt.i(pv.getCurrent()));
+
+            // Popover：show/hide
+            Popover pp = new Popover(160, 40);
+            pp.show("详情", 50, 50);
+            int ppV = pp.visible();
+            pp.hide();
+            Console.writeLine("uix pop v=" + Fmt.i(ppV) + "->" + Fmt.i(pp.visible()));
+
+            // Banner：show(info) + tick 倒计时
+            Banner bn = new Banner(300, 36);
+            bn.show("提示", 0);
+            int bnF = bn.frames();
+            bn.tick(30);
+            Console.writeLine("uix banner f=" + Fmt.i(bnF) + "->" + Fmt.i(bn.frames())
+                              + " v=" + Fmt.i(bn.visible()));
+
+            // ---- 框架能力：FocusManager（键盘导航）+ ConstraintLayout（相对定位）----
+            FocusManager fm = new FocusManager();
+            Button fb1 = new Button("A", 0, 0, 60, 30);
+            Button fb2 = new Button("B", 0, 0, 60, 30);
+            Button fb3 = new Button("C", 0, 0, 60, 30);
+            fm.register(fb1);
+            fm.register(fb2);
+            fm.register(fb3);
+            fm.next();                       // 首次 → 第 0 个 (A)
+            int fC1 = fm.current();
+            int fB1 = fb1.focused();
+            fm.next();                       // → 1 (B)
+            fm.next();                       // → 2 (C)
+            fm.next();                       // → 0（回绕 A）
+            int fWrap = fb1.focused();
+            Console.writeLine("uix focus c1=" + Fmt.i(fC1)
+                              + " b1=" + Fmt.i(fB1)
+                              + " wrapA=" + Fmt.i(fWrap));
+
+            ConstraintLayout cst = new ConstraintLayout(0, 0, 200, 100);
+            Button cb1 = new Button("C", 0, 0, 50, 20);   // 居中 align 4
+            Button cb2 = new Button("R", 0, 0, 40, 20);   // 右下 align 8
+            cst.add(cb1, 4, 0, 0);
+            cst.add(cb2, 8, 5, 5);
+            cst.layout();
+            Console.writeLine("uix const c1=" + Fmt.i(cb1.getX()) + "/" + Fmt.i(cb1.getY())
+                              + " c2=" + Fmt.i(cb2.getX()) + "/" + Fmt.i(cb2.getY()));
         }
 }
 
-// ---- 扩展点：自定义 Badge 控件（实现 View 接口）----
-class Badge {
+// ---- 扩展点：自定义 CustomBadge 控件（实现 View 接口）----
+class CustomBadge {
     interface class View;
     property:
         string text_;
@@ -280,7 +624,7 @@ class Badge {
         int h_;
         int color_;
     action:
-        @constructor Badge(string text) {
+        @constructor CustomBadge(string text) {
             text_ = text;
             x_ = 0; y_ = 0; w_ = 80; h_ = 28;
             color_ = Color.red();
@@ -308,14 +652,14 @@ class Badge {
 }
 
 // 构建器：持有创建的实例（MYP 接口数组不 retain，实例须由构建器/应用持有）
-class BadgeBuilder {
+class CustomBadgeBuilder {
     interface class ViewBuilder;
     property:
-        Badge badge_;
+        CustomBadge badge_;
     action:
-        @constructor BadgeBuilder() { badge_ = null; }
+        @constructor CustomBadgeBuilder() { badge_ = null; }
         View create(string text, string id) {
-            badge_ = new Badge(text);
+            badge_ = new CustomBadge(text);
             View v = badge_;
             return v;      // BUG-034 修复后接口返回可用
         }

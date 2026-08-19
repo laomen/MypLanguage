@@ -1,0 +1,115 @@
+// refresh_indicator.myp — uikit 控件：RefreshIndicator（下拉刷新指示器）
+// ---------------------------------------------------------------------------
+// 下拉刷新：offset 表示下拉距离，超过阈值触发 Refreshing 状态；应用层调
+// refresh() 完成并复位。帧驱动可画转圈。纯逻辑 headless 可测。
+import text;
+
+class RefreshIndicator {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int offset_;        // 下拉距离（0..）
+        int state_;         // 0=idle 1=拖拽 2=刷新中
+        int threshold_;     // 触发阈值
+        int color_;
+        int angle_;         // 刷新中转圈角度
+
+    event:
+        Refresh();
+
+    action:
+        @constructor RefreshIndicator(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            offset_ = 0;
+            state_ = 0;
+            threshold_ = 60;
+            color_ = Color.blue();
+            angle_ = 0;
+        }
+
+        // 下拉拖动：设 offset；超过阈值进入待触发
+        void drag(int offset) {
+            if (state_ == 2) return;
+            offset_ = offset;
+            if (offset_ < 0) offset_ = 0;
+            if (offset_ >= threshold_) state_ = 1;
+        }
+        int getOffset() { return offset_; }
+        // 释放：超过阈值 → 触发刷新（state=2）；否则回弹复位
+        void release() {
+            if (state_ == 2) return;
+            if (offset_ >= threshold_) {
+                state_ = 2;
+                Refresh();
+            } else {
+                offset_ = 0;
+                state_ = 0;
+            }
+        }
+        // 刷新完成：复位
+        void refresh() {
+            offset_ = 0;
+            state_ = 0;
+            angle_ = 0;
+        }
+        int state() { return state_; }
+        void setThreshold(int t) { if (t > 0) threshold_ = t; }
+        int threshold() { return threshold_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 帧驱动（刷新中转圈）
+        void tick(int dt) {
+            if (state_ == 2) angle_ = (angle_ + dt * 25 / 100) % 360;
+        }
+        int angle() { return angle_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 指示器随 offset 下移（y + offset）
+            int iy = y_ + offset_;
+            int cx = x_ + w_ / 2;
+            if (state_ == 2) {
+                // 刷新中：4 点转圈
+                int[] dx = new int[4];
+                int[] dy = new int[4];
+                dx[0] = 0; dy[0] = -1;
+                dx[1] = 1; dy[1] = 0;
+                dx[2] = 0; dy[2] = 1;
+                dx[3] = -1; dy[3] = 0;
+                int active = angle_ / 90;
+                for (int i = 0; i < 4; i = i + 1) {
+                    int c = i == active ? color_ : Color.gray();
+                    r.fillRoundedRect(cx + dx[i] * 10 - 4, iy + dy[i] * 10 - 4,
+                                      8, 8, 4, c);
+                }
+            } else {
+                // 拖拽/空闲：箭头（下拉）
+                int spread = offset_ * 2 / 3;
+                if (spread > 14) spread = 14;
+                r.drawLine(cx - 10 - spread, iy - 4, cx, iy + 2, color_);
+                r.drawLine(cx + 10 + spread, iy - 4, cx, iy + 2, color_);
+                r.drawLine(cx - 6, iy + 8, cx + 6, iy + 8, color_);
+            }
+        }
+
+        int hit(int x, int y) { return 0; }   // 不拦截触摸（由父滚动处理）
+
+        void onTouch(int x, int y) {}
+}

@@ -1,0 +1,104 @@
+// time_picker.myp — uikit 控件：TimePicker（时间选择：时/分）
+// ---------------------------------------------------------------------------
+// 时/分 两列步进选择：点 +/− 调整，Changed(h,m) 事件。纯逻辑 headless 可测。
+import text;
+import fmt;
+
+class TimePicker {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int hour_;
+        int minute_;
+        int color_;
+
+    event:
+        Changed(int hour, int minute);
+
+    action:
+        @constructor TimePicker(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            hour_ = 0;
+            minute_ = 0;
+            color_ = Color.blue();
+        }
+
+        void setTime(int h, int m) {
+            hour_ = h % 24;
+            minute_ = m % 60;
+            if (hour_ < 0) hour_ = hour_ + 24;
+            if (minute_ < 0) minute_ = minute_ + 60;
+        }
+        int getHour() { return hour_; }
+        int getMinute() { return minute_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "hour") { hour_ = Str.toInt(value) % 24; }
+            else if (name == "minute") { minute_ = Str.toInt(value) % 60; }
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 两列：时 / 分，每列 [− 值 +]
+            int colW = w_ / 2;
+            drawCol(r, 0, hour_);
+            drawCol(r, colW, minute_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+        }
+        // 绘制一列：上方 +，中间值，下方 −（或 +/− 各半区）
+        void drawCol(Renderer r, int off, int val) {
+            int cx = x_ + off + colW() / 2;
+            // − 按钮（上半）
+            r.fillRect(x_ + off, y_, colW(), h_ / 2, color_);
+            r.drawText(cx - r.textWidth("−", 2) / 2, y_ + h_ / 4 - r.textH(2) / 2,
+                       "−", 2, Color.white());
+            // + 按钮（下半）
+            r.fillRect(x_ + off, y_ + h_ / 2, colW(), h_ / 2, color_);
+            r.drawText(cx - r.textWidth("+", 2) / 2, y_ + h_ * 3 / 4 - r.textH(2) / 2,
+                       "+", 2, Color.white());
+            // 值（中间）
+            string vs = Fmt.i(val);
+            r.drawText(cx - r.textWidth(vs, 1) / 2, y_ + h_ / 2 - r.textH(1) / 2,
+                       vs, 1, Color.white());
+            r.drawLine(x_ + off + colW(), y_, x_ + off + colW(), y_ + h_, Color.gray());
+        }
+        int colW() { return w_ / 2; }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int colW = w_ / 2;
+            int isMin = 0;
+            if (x >= x_ + colW) isMin = 1;
+            int delta = 0;
+            if (y < y_ + h_ / 2) delta = -1;    // 上半 −
+            else delta = 1;                      // 下半 +
+            if (delta != 0) {
+                if (isMin == 0) {
+                    hour_ = (hour_ + delta + 24) % 24;
+                } else {
+                    minute_ = (minute_ + delta + 60) % 60;
+                }
+                Changed(hour_, minute_);
+            }
+        }
+}

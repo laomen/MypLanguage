@@ -1,0 +1,84 @@
+// rating.myp — uikit 控件：Rating（星级评分）
+// ---------------------------------------------------------------------------
+// max_ 颗星（默认 5），点击第 N 颗 → 值=N，触发 Changed(value)。用圆角色块
+// 近似星形（Renderer 无星形原语）。纯逻辑 headless 可测。
+import text;
+
+class Rating {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int value_;        // 0..max
+        int max_;
+        int color_;
+
+    event:
+        Changed(int value);
+
+    action:
+        @constructor Rating(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            value_ = 0;
+            max_ = 5;
+            color_ = Color.amber();
+        }
+
+        void setValue(int v) {
+            if (v < 0) v = 0;
+            if (v > max_) v = max_;
+            value_ = v;
+        }
+        int getValue() { return value_; }
+        void setMax(int m) {
+            if (m < 1) m = 1;
+            max_ = m;
+            if (value_ > max_) value_ = max_;
+        }
+        int getMax() { return max_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "value") setValue(Str.toInt(value));
+            else if (name == "max") setMax(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            int step = w_ / max_;
+            if (step < 8) step = 8;
+            for (int i = 0; i < max_; i = i + 1) {
+                int sx = x_ + i * step + 2;
+                int c = i < value_ ? color_ : Color.gray();
+                r.fillRoundedRect(sx, y_ + 2, step - 4, h_ - 4, 4, c);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点击第 N 颗星 → value=N（1 起）
+        void onTouch(int x, int y) {
+            int idx = (x - x_) / (w_ / max_) + 1;
+            setValue(idx);
+            Changed(value_);
+        }
+}

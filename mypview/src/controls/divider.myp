@@ -1,0 +1,51 @@
+// divider.myp — uikit 控件：Divider（分隔线）
+// ---------------------------------------------------------------------------
+// 细线分隔：水平 Divider(0,0,W,1) 或垂直 Divider(0,0,1,H)。setColor 可换色。
+import text;
+
+class Divider {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int color_;
+
+    action:
+        @constructor Divider(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            color_ = Color.gray();
+        }
+
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setThickness(int t) { if (t > 0) h_ = t; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+        }
+
+        int hit(int x, int y) {
+            return 0;   // 分隔线不响应
+        }
+
+        void onTouch(int x, int y) {}
+}

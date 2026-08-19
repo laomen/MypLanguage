@@ -1,12 +1,23 @@
 // sdl_renderer.myp — uikit 渲染后端：SDL2 软件渲染（实现 Renderer 接口）
 // 颜色（24 位 RGB int）在此拆解为 (r,g,b,a) 传给 sdl.myp。
+// 文本优先走 SDL_ttf（Ttf.drawText，支持中文/Unicode/抗锯齿）；字体未就绪
+// 或渲染失败时回退到 sdl.myp 的 5×7 位图（仅 ASCII）。
+import ttf;
+import text;
 import sdl;
 
 class SdlRenderer {
     interface class Renderer;
 
     action:
-        @constructor SdlRenderer() {}
+        @constructor SdlRenderer() {
+            Ttf.init(16);   // 默认 CJK 字号 16px；幂等（桥内防重复加载），失败则文本回退 5×7
+        }
+
+        // 设置字体文件 + 字号（0=成功）。px 影响后续所有文字渲染与尺寸测量。
+        int setFont(string path, int px) { return Ttf.loadFont(path, px); }
+        // 只调整字号（保持当前字体文件）。0=成功。
+        int setFontSize(int px) { return Ttf.setSize(px); }
 
         void fillRect(int x, int y, int w, int h, int color) {
             SDL.drawRect(x, y, w, h,
@@ -33,7 +44,24 @@ class SdlRenderer {
         }
 
         void drawText(int x, int y, string text, int scale, int color) {
-            SDL.drawText(x, y, text, scale,
-                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+            int r = (color >> 16) & 0xFF;
+            int g = (color >> 8) & 0xFF;
+            int b = color & 0xFF;
+            // 优先 TTF（中文/Unicode）；失败回退 5×7 位图
+            int ok = Ttf.drawText(x, y, text, scale, r, g, b, 255);
+            if (ok != 0)
+                SDL.drawText(x, y, text, scale, r, g, b, 255);
+        }
+
+        // 覆写文本测量：TTF 真实渲染尺寸（失败回退 5×7 估算）
+        int textWidth(string text, int scale) {
+            int w = Ttf.textWidth(text, scale);
+            if (w >= 0) return w;
+            return Str.len(text) * scale * 6;
+        }
+        int textH(int scale) {
+            int h = Ttf.textH(scale);
+            if (h >= 0) return h;
+            return scale * 8;
         }
 }

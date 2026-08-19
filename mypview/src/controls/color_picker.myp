@@ -1,0 +1,124 @@
+// color_picker.myp — uikit 控件：ColorPicker（颜色选择器）
+// ---------------------------------------------------------------------------
+// 预置色板网格：一组常用色，点色块选中并触发 Selected(color)。setSelected/
+// getSelected 管理当前色。纯逻辑 headless 可测。
+import text;
+
+class ColorPicker {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int[] colors_;
+        int colorCount_;
+        int selected_;
+        int cell_;
+
+    event:
+        Selected(int color);
+
+    action:
+        @constructor ColorPicker(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            colors_ = new int[24];
+            colorCount_ = 0;
+            selected_ = -1;
+            cell_ = 24;
+            // 预置色板
+            addColor(Color.red());
+            addColor(Color.orange());
+            addColor(Color.amber());
+            addColor(Color.green());
+            addColor(Color.teal());
+            addColor(Color.cyan());
+            addColor(Color.blue());
+            addColor(Color.purple());
+            addColor(Color.pink());
+            addColor(Color.brown());
+            addColor(Color.blueGrey());
+            addColor(Color.white());
+        }
+
+        void addColor(int c) {
+            if (colorCount_ >= 24) return;
+            colors_[colorCount_] = c;
+            colorCount_ = colorCount_ + 1;
+        }
+        int colorCount() { return colorCount_; }
+        int colorAt(int i) {
+            if (i < 0 || i >= colorCount_) return 0;
+            return colors_[i];
+        }
+        void setSelected(int i) {
+            if (i < 0 || i >= colorCount_) return;
+            selected_ = i;
+        }
+        int getSelected() { return selected_; }
+        int getSelectedColor() {
+            if (selected_ < 0 || selected_ >= colorCount_) return 0;
+            return colors_[selected_];
+        }
+
+        void setAttr(string name, string value) {
+            // selected 用索引或 #RRGGBB
+            if (name == "selected") {
+                if (Str.indexOf(value, "#") == 0)
+                    setSelectedByColor(Color.fromHex(value));
+                else
+                    setSelected(Str.toInt(value));
+            }
+        }
+        void setSelectedByColor(int c) {
+            for (int i = 0; i < colorCount_; i = i + 1) {
+                if (colors_[i] == c) { selected_ = i; return; }
+            }
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            int cols = w_ / (cell_ + 6);
+            if (cols < 1) cols = 1;
+            for (int i = 0; i < colorCount_; i = i + 1) {
+                int col = i % cols;
+                int row = i / cols;
+                int px = x_ + col * (cell_ + 6);
+                int py = y_ + row * (cell_ + 6);
+                r.fillRoundedRect(px, py, cell_, cell_, 6, colors_[i]);
+                if (i == selected_)
+                    r.outlineRect(px - 2, py - 2, cell_ + 4, cell_ + 4, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int cols = w_ / (cell_ + 6);
+            if (cols < 1) cols = 1;
+            for (int i = 0; i < colorCount_; i = i + 1) {
+                int col = i % cols;
+                int row = i / cols;
+                int px = x_ + col * (cell_ + 6);
+                int py = y_ + row * (cell_ + 6);
+                if (x >= px && x < px + cell_ && y >= py && y < py + cell_) {
+                    setSelected(i);
+                    Selected(colors_[i]);
+                    return;
+                }
+            }
+        }
+}

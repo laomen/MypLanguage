@@ -1,0 +1,96 @@
+// constraint_layout.myp — uikit 布局：ConstraintLayout（相对定位）
+// ---------------------------------------------------------------------------
+// 子控件按「对齐」相对父容器定位（含边距），不依赖顺序流式排布。
+// align 编码：0=左上 1=顶中 2=右上 3=左中 4=居中 5=右中 6=左下 7=底中 8=右下。
+// add(v, align, mx, my)：mx/my 为偏移。纯逻辑 headless 可测。
+import text;
+
+class ConstraintLayout {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        View[] kids_;
+        int[] aligns_;
+        int[] mxs_;
+        int[] mys_;
+        int kidCount_;
+        int color_;
+
+    action:
+        @constructor ConstraintLayout(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            kids_ = new View[32];
+            aligns_ = new int[32];
+            mxs_ = new int[32];
+            mys_ = new int[32];
+            kidCount_ = 0;
+            color_ = 0;
+        }
+
+        void add(View v, int align, int mx, int my) {
+            if (kidCount_ >= 32) return;
+            kids_[kidCount_] = v;
+            aligns_[kidCount_] = align;
+            mxs_[kidCount_] = mx;
+            mys_[kidCount_] = my;
+            kidCount_ = kidCount_ + 1;
+        }
+        int childCount() { return kidCount_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void addChild(View v) { add(v, 0, 0, 0); }
+
+        // 布局：按对齐计算每个子项位置
+        void layout() {
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                int kw = kids_[i].width();
+                int kh = kids_[i].height();
+                int ax = aligns_[i] % 3;    // 0左 1中 2右
+                int ay = aligns_[i] / 3;    // 0顶 1中 2底
+                int px = x_ + mxs_[i];
+                int py = y_ + mys_[i];
+                if (ax == 1) px = x_ + (w_ - kw) / 2 + mxs_[i];
+                else if (ax == 2) px = x_ + w_ - kw - mxs_[i];
+                if (ay == 1) py = y_ + (h_ - kh) / 2 + mys_[i];
+                else if (ay == 2) py = y_ + h_ - kh - mys_[i];
+                kids_[i].setFrame(px, py, kw, kh);
+            }
+        }
+        void relayout() { layout(); }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (color_ != 0) r.fillRect(x_, y_, w_, h_, color_);
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                kids_[i].draw(r);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.hit(x, y) != 0) {
+                    kid.onTouch(x, y);
+                    return;
+                }
+            }
+        }
+}

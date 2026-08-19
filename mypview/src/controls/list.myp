@@ -84,9 +84,11 @@ class List {
             // 只绘制视口内可见行（裁剪）
             int first = scrollY_ / rowH_;
             int count = h_ / rowH_ + 2;
+            // 行内文字垂直居中（scale1 TTF ≈19px，配 rowH_ 不溢出）
+            int th = r.textH(1);
             for (int i = first; i < itemCount_ && i < first + count; i = i + 1) {
                 int iy = y_ + i * rowH_ - scrollY_;
-                r.drawText(x_ + 6, iy + 4, items_[i], 2, Color.white());
+                r.drawText(x_ + 6, iy + (rowH_ - th) / 2, items_[i], 1, Color.white());
             }
         }
 

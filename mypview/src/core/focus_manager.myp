@@ -1,0 +1,70 @@
+// focus_manager.myp — uikit 框架：FocusManager（键盘焦点导航）
+// ---------------------------------------------------------------------------
+// 维护可聚焦控件列表，next()/prev() 循环切换焦点（Tab / Shift-Tab / 方向键
+// 由应用层驱动）。控件通过 setFocus(1/0) 高亮。纯逻辑 headless 可测。
+import text;
+
+class FocusManager {
+    interface class View;   // 声明实现 View 以注册进类型表（跨文件可见）；无 UI
+
+    property:
+        View[] items_;
+        int count_;
+        int current_;
+
+    action:
+        @constructor FocusManager() {
+            items_ = new View[64];
+            count_ = 0;
+            current_ = -1;
+        }
+
+        // View 接口空实现（FocusManager 无 UI，仅注册用）
+        void draw(Renderer r) {}
+        int hit(int x, int y) { return 0; }
+        void onTouch(int x, int y) {}
+        int width() { return 0; }
+        int height() { return 0; }
+        void setFrame(int x, int y, int w, int h) {}
+
+        // 注册可聚焦控件（应用层在构建后注册）
+        void register(View v) {
+            if (count_ >= 64) return;
+            items_[count_] = v;
+            count_ = count_ + 1;
+        }
+        int count() { return count_; }
+        View itemAt(int i) { return items_[i]; }   // At 模式：调用方用 count() 保证 i 有效
+        // 清空（重建 UI 后重新注册）
+        void clear() {
+            if (current_ >= 0 && current_ < count_)
+                items_[current_].setFocus(0);
+            count_ = 0;
+            current_ = -1;
+        }
+        // 下一个焦点（Tab）；无注册项返回 0
+        int next() {
+            if (count_ == 0) return 0;
+            if (current_ >= 0 && current_ < count_)
+                items_[current_].setFocus(0);
+            current_ = (current_ + 1) % count_;
+            items_[current_].setFocus(1);
+            return 1;
+        }
+        // 上一个焦点（Shift-Tab）
+        int prev() {
+            if (count_ == 0) return 0;
+            if (current_ >= 0 && current_ < count_)
+                items_[current_].setFocus(0);
+            current_ = (current_ - 1 + count_) % count_;
+            items_[current_].setFocus(1);
+            return 1;
+        }
+        int current() { return current_; }
+        // 激活当前焦点控件（回车 = 触发点击）
+        void activate() {
+            if (current_ >= 0 && current_ < count_ && items_[current_] != null) {
+                items_[current_].onTouch(0, 0);
+            }
+        }
+}

@@ -14,6 +14,7 @@ class TextField {
         int focused_;
         int color_;
         int enabled_;
+        int masked_;      // 密码掩码：1=显示 *（getText 仍返回真实文本）
 
     event:
         Focused(int x, int y);
@@ -29,6 +30,7 @@ class TextField {
             focused_ = 0;
             color_ = Color.dark();
             enabled_ = 1;
+            masked_ = 0;
         }
 
         void setText(string t) { text_ = t; }
@@ -36,14 +38,45 @@ class TextField {
         void clear() { text_ = ""; }
         // 追加一个字符（键盘输入）
         void append(string ch) { text_ = text_ + ch; }
-        // 删除末尾字符
+        // 删除末尾一个字符（UTF-8 感知：向后跳过 10xxxxxx 续字节，整字符删除，
+        // 避免中文等多字节字符被截断成半个字节 → 显示乱码 "□"）
         void backspace() {
             int n = Str.len(text_);
-            if (n > 0) text_ = Str.substring(text_, 0, n - 1);
+            if (n <= 0) return;
+            int i = n - 1;
+            while (i > 0) {
+                int b = __myp_ord(Str.substring(text_, i, i + 1));
+                if ((b & 0xC0) != 0x80) break;   // 非续字节 = 字符起始字节
+                i = i - 1;
+            }
+            text_ = Str.substring(text_, 0, i);
         }
+        // 焦点（键盘导航；同时用于输入聚焦——focused() 已存在）
+        int focusable() { return 1; }
+        void setFocus(int on) { focused_ = on; }
         int focused() { return focused_; }
         void setColor(int c) { color_ = c; }
         int getColor() { return color_; }
+        // 密码掩码开关：1=绘制时以 * 显示（getText 返回真实文本）
+        void setMask(int on) { masked_ = on; }
+        int getMask() { return masked_; }
+        int masked() { return masked_; }
+        // 逐 UTF-8 字符替换为 *（掩码显示；中文等多字节按字符计）
+        string maskText(string t) {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            int n = Str.len(t);
+            while (i < n) {
+                int b = __myp_ord(Str.substring(t, i, i + 1));
+                int adv = 1;
+                if ((b & 0xE0) == 0xC0) adv = 2;
+                else if ((b & 0xF0) == 0xE0) adv = 3;
+                else if ((b & 0xF8) == 0xF0) adv = 4;
+                sb.append("*");
+                i = i + adv;
+            }
+            return sb.toString();
+        }
         int getX() { return x_; }
         int getY() { return y_; }
         void setEnabled(int on) { enabled_ = on; }
@@ -69,7 +102,8 @@ class TextField {
                 r.outlineRect(x_, y_, w_, h_, Color.green());
             else
                 r.outlineRect(x_, y_, w_, h_, Color.gray());
-            r.drawText(x_ + 6, y_ + h_ / 2 - 16, text_, 2, Color.white());
+            string disp = masked_ != 0 ? maskText(text_) : text_;
+            r.drawText(x_ + 6, y_ + h_ / 2 - r.textH(2) / 2, disp, 2, Color.white());
         }
 
         int hit(int x, int y) {

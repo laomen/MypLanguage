@@ -1,0 +1,94 @@
+// page_view.myp — uikit 控件：PageView（翻页容器）
+// ---------------------------------------------------------------------------
+// 多页容器：addPage(View) 加页，setCurrent/next/prev 切换，左右点击翻页，
+// 底部指示点。页面由应用持有（接口数组不 retain，仅引用绘制/转发）。
+import text;
+
+class PageView {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        View[] pages_;
+        int pageCount_;
+        int current_;
+        int color_;
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor PageView(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            pages_ = new View[16];
+            pageCount_ = 0;
+            current_ = 0;
+            color_ = Color.blue();
+        }
+
+        void addPage(View page) {
+            if (pageCount_ >= 16) return;
+            pages_[pageCount_] = page;
+            pageCount_ = pageCount_ + 1;
+        }
+        int pageCount() { return pageCount_; }
+        void setCurrent(int i) {
+            if (i < 0 || i >= pageCount_) return;
+            current_ = i;
+        }
+        int getCurrent() { return current_; }
+        void next() {
+            if (current_ < pageCount_ - 1) { setCurrent(current_ + 1); Selected(current_); }
+        }
+        void prev() {
+            if (current_ > 0) { setCurrent(current_ - 1); Selected(current_); }
+        }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "current") setCurrent(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 当前页
+            if (pageCount_ > 0 && current_ < pageCount_) {
+                pages_[current_].setFrame(x_, y_, w_, h_ - 12);
+                pages_[current_].draw(r);
+            }
+            // 指示点
+            for (int i = 0; i < pageCount_; i = i + 1) {
+                int c = i == current_ ? color_ : Color.gray();
+                int px = x_ + w_ / 2 + (i - pageCount_ / 2) * 14;
+                r.fillRoundedRect(px - 3, y_ + h_ - 8, 6, 6, 3, c);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            // 左侧翻上一页，右侧翻下一页
+            if (x < x_ + w_ / 3) prev();
+            else if (x >= x_ + w_ * 2 / 3) next();
+            else if (pageCount_ > 0 && current_ < pageCount_) {
+                pages_[current_].onTouch(x, y);   // 中间区转发给当前页
+            }
+        }
+}

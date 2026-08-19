@@ -69,13 +69,15 @@ class AppIcon {
                 // 圆角图标（iOS 风格）+ 首字符
                 r.fillRoundedRect(iconX(), iconY(), iconSize_, iconSize_,
                                   iconRadius_, iconColor_);
+                string first = Str.substring(label_, 0, 1);
                 int cx = iconX() + iconSize_ / 2;
-                r.drawText(cx - 6, iconY() + iconSize_ / 2 - 16,
-                           Str.substring(label_, 0, 1), 2, Color.white());
+                r.drawText(cx - r.textWidth(first, 2) / 2,
+                           iconY() + iconSize_ / 2 - r.textH(2) / 2,
+                           first, 2, Color.white());
             }
             // 底部标签（居中，放大 scale2）
-            int tw = Str.len(label_) * 12;
-            r.drawText(x_ + (w_ - tw) / 2, y_ + h_ - 30, label_, 2, labelColor_);
+            r.drawText(x_ + (w_ - r.textWidth(label_, 2)) / 2,
+                       y_ + h_ - r.textH(2) - 2, label_, 2, labelColor_);
         }
 
         int hit(int x, int y) {

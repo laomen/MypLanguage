@@ -299,10 +299,25 @@ class UixLoader {
                 buildIntoStack(uix_, "", s);
                 s.layout();
             }
-            // 构建后处理：父映射 → 初始状态 → 重算计算属性
+            // 构建后处理：全树重排 → 父映射 → 初始状态 → 重算计算属性
+            layoutAll();
             indexParents();
             applyInitialStates();
             refresh();
+        }
+
+        // 全树布局：按「父先子后」顺序对注册的容器统一 layout。
+        // 修复嵌套容器 bug——构建时内层容器先在 (0,0) 布局，外层后布局会把
+        // 内层容器 setFrame 到最终位置，但其子节点坐标不会级联重算（如
+        // Row 内的按钮 hit/绘制坐标停在构建时位置）。按注册序（父先子后）
+        // 重排：父用最终位置排子，子再排孙，全部归位。
+        void layoutAll() {
+            for (int i = 0; i < colCount_; i = i + 1)
+                cols_[i].layout();
+            for (int i = 0; i < flowCount_; i = i + 1)
+                flows_[i].layout();
+            for (int i = 0; i < stackCount_; i = i + 1)
+                stacks_[i].layout();
         }
 
         // 构建 col 的所有子节点（add 一律用具体类型局部变量）

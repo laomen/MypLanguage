@@ -34,4 +34,10 @@ interface View {
     // 布局接口：容器内容变更后重新排布子控件（LinearLayout 覆写调 layout()）。
     // 默认无操作；UixLoader 构建完树后统一调用。
     void relayout() {}
-}
+    // ---- 焦点（框架级：键盘导航）----
+    // 是否可聚焦（默认否；Button/TextField 等可交互控件覆写返回 1）。
+    int focusable() { return 0; }
+    // 当前是否聚焦（默认否；FocusManager 导航时置位）。
+    int focused() { return 0; }
+    // 设置聚焦状态（控件可据此绘制高亮边框）。
+    void setFocus(int on) {}}

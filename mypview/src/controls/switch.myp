@@ -50,10 +50,12 @@ class Switch {
         void draw(Renderer r) {
             int track = on_ != 0 ? color_ : Color.gray();
             r.fillRoundedRect(x_, y_, w_, h_, h_ / 2, track);
-            // 圆形滑块（左右两半）
-            int knobR = h_ - 8;
+            // 圆形滑块（正方形 + 圆角半径=半边长 → 实心圆）
+            int knobD = h_ - 10;
             int cx = on_ != 0 ? x_ + w_ - h_ / 2 : x_ + h_ / 2;
-            r.fillRect(cx - knobR / 2, y_ + 4, knobR, h_ - 8, Color.white());
+            int cy = y_ + h_ / 2;
+            r.fillRoundedRect(cx - knobD / 2, cy - knobD / 2, knobD, knobD,
+                              knobD / 2, Color.white());
         }
 
         int hit(int x, int y) {

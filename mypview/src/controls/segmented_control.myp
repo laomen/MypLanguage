@@ -1,0 +1,97 @@
+// segmented_control.myp — uikit 控件：SegmentedControl（分段选择）
+// ---------------------------------------------------------------------------
+// 一排分段（按钮），选中段背景高亮。addSegment 追加、setSelected 切换，
+// 点击触发 Selected(index)。纯逻辑 headless 可测。
+import text;
+
+class SegmentedControl {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] segs_;
+        int segCount_;
+        int selected_;
+        int color_;
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor SegmentedControl(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            segs_ = new string[8];
+            segCount_ = 0;
+            selected_ = 0;
+            color_ = Color.blue();
+        }
+
+        void addSegment(string label) {
+            if (segCount_ >= 8) return;
+            segs_[segCount_] = label;
+            segCount_ = segCount_ + 1;
+        }
+        int segmentCount() { return segCount_; }
+        string segmentAt(int i) {
+            if (i < 0 || i >= segCount_) return "";
+            return segs_[i];
+        }
+        void setSelected(int i) {
+            if (i < 0 || i >= segCount_) return;
+            selected_ = i;
+        }
+        int getSelected() { return selected_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "selected") setSelected(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            if (segCount_ == 0) return;
+            int sw = w_ / segCount_;
+            for (int i = 0; i < segCount_; i = i + 1) {
+                int sx = x_ + i * sw;
+                if (i == selected_) {
+                    r.fillRect(sx, y_, sw, h_, color_);
+                }
+                r.drawText(sx + sw / 2 - r.textWidth(segs_[i], 1) / 2,
+                           y_ + h_ / 2 - r.textH(1) / 2,
+                           segs_[i], 1, Color.white());
+                if (i > 0)
+                    r.drawLine(sx, y_, sx, y_ + h_ - 1, Color.gray());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (segCount_ == 0) return;
+            int sw = w_ / segCount_;
+            int idx = (x - x_) / sw;
+            if (idx < 0 || idx >= segCount_) return;
+            if (idx != selected_) {
+                setSelected(idx);
+                Selected(idx);
+            }
+        }
+}

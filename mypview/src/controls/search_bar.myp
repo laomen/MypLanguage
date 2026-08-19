@@ -1,0 +1,105 @@
+// search_bar.myp — uikit 控件：SearchBar（搜索框）
+// ---------------------------------------------------------------------------
+// 圆角输入框 + 左侧放大镜图形 + 清除按钮（聚焦且非空时显示 ×）。
+// 文本逻辑同 TextField（append/backspace/setText），UTF-8 感知。Edited 事件。
+import text;
+
+class SearchBar {
+    interface class View;
+
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int focused_;
+        int color_;
+
+    event:
+        Edited(string text);
+
+    action:
+        @constructor SearchBar(int x, int y, int w, int h) {
+            text_ = "";
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            focused_ = 0;
+            color_ = Color.dark();
+        }
+
+        void setText(string t) { text_ = t; }
+        string getText() { return text_; }
+        void clear() {
+            if (text_ != "") { text_ = ""; Edited(text_); }
+        }
+        int focused() { return focused_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 追加一个字符（键盘输入）
+        void append(string ch) { text_ = text_ + ch; Edited(text_); }
+        // 删除末尾字符（UTF-8 感知）
+        void backspace() {
+            int n = Str.len(text_);
+            if (n <= 0) return;
+            int i = n - 1;
+            while (i > 0) {
+                int b = __myp_ord(Str.substring(text_, i, i + 1));
+                if ((b & 0xC0) != 0x80) break;
+                i = i - 1;
+            }
+            text_ = Str.substring(text_, 0, i);
+            Edited(text_);
+        }
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "text") setText(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRoundedRect(x_, y_, w_, h_, h_ / 2, color_);
+            r.outlineRect(x_, y_, w_, h_, focused_ != 0 ? Color.green() : Color.gray());
+            // 放大镜图形（小圆 + 斜柄）
+            int gx = x_ + 18;
+            int gy = y_ + h_ / 2;
+            r.fillRoundedRect(gx - 4, gy - 4, 9, 9, 4, Color.gray());
+            r.drawLine(gx + 4, gy + 4, gx + 9, gy + 9, Color.gray());
+            // 文本（从放大镜后开始）
+            if (text_ != "")
+                r.drawText(x_ + 34, y_ + h_ / 2 - r.textH(1) / 2, text_, 1, Color.white());
+            // 清除按钮（聚焦且非空）
+            if (focused_ != 0 && text_ != "") {
+                int cxx = x_ + w_ - 18;
+                int cyy = y_ + h_ / 2;
+                r.fillRoundedRect(cxx - 8, cyy - 8, 16, 16, 8, Color.gray());
+                r.drawText(cxx - 5, cyy - r.textH(1) / 2, "×", 1, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            focused_ = 1;
+            // 命中清除按钮 → 清空
+            if (text_ != "") {
+                int cxx = x_ + w_ - 18;
+                int cyy = y_ + h_ / 2;
+                if (x >= cxx - 8 && x < cxx + 8 && y >= cyy - 8 && y < cyy + 8)
+                    clear();
+            }
+        }
+        void unfocus() { focused_ = 0; }
+}

@@ -1,0 +1,126 @@
+// tree_view.myp — uikit 控件：TreeView（树形列表）
+// ---------------------------------------------------------------------------
+// 树形节点：label + 层级（缩进）+ 展开/折叠。addNode(label, level, hasKids)
+// 追加节点，toggle(idx) 展开/折叠，展开时子节点显示。点箭头/标签触发
+// Toggled(idx)/Selected(idx)。纯逻辑 headless 可测。
+import text;
+
+class TreeView {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] labels_;
+        int[] levels_;
+        int[] expanded_;      // 1=展开（含子）
+        int nodeCount_;
+        int rowH_;
+        int color_;
+
+    event:
+        Toggled(int index);
+        Selected(int index);
+
+    action:
+        @constructor TreeView(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            labels_ = new string[128];
+            levels_ = new int[128];
+            expanded_ = new int[128];
+            nodeCount_ = 0;
+            rowH_ = 26;
+            color_ = Color.blue();
+        }
+
+        void addNode(string label, int level, int hasKids) {
+            if (nodeCount_ >= 128) return;
+            labels_[nodeCount_] = label;
+            levels_[nodeCount_] = level;
+            expanded_[nodeCount_] = hasKids != 0 ? 0 : -1;   // -1=叶节点
+            nodeCount_ = nodeCount_ + 1;
+        }
+        int nodeCount() { return nodeCount_; }
+        string labelAt(int i) {
+            if (i < 0 || i >= nodeCount_) return "";
+            return labels_[i];
+        }
+        int levelAt(int i) {
+            if (i < 0 || i >= nodeCount_) return 0;
+            return levels_[i];
+        }
+        int expandedAt(int i) {
+            if (i < 0 || i >= nodeCount_) return -1;
+            return expanded_[i];
+        }
+        // 切换展开/折叠
+        void toggle(int i) {
+            if (i < 0 || i >= nodeCount_) return;
+            if (expanded_[i] < 0) return;   // 叶节点不可展开
+            expanded_[i] = expanded_[i] == 0 ? 1 : 0;
+        }
+        int isExpanded(int i) {
+            if (i < 0 || i >= nodeCount_) return 0;
+            return expanded_[i] == 1 ? 1 : 0;
+        }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            for (int i = 0; i < nodeCount_; i = i + 1) {
+                int iy = y_ + 4 + i * rowH_;
+                if (iy + rowH_ > y_ + h_) break;
+                int indent = levels_[i] * 16;
+                // 箭头
+                if (expanded_[i] >= 0) {
+                    int ax = x_ + 8 + indent;
+                    int ay = iy + rowH_ / 2;
+                    if (expanded_[i] == 1) {
+                        r.drawLine(ax - 4, ay - 2, ax, ay + 2, Color.white());
+                        r.drawLine(ax + 4, ay - 2, ax, ay + 2, Color.white());
+                    } else {
+                        r.drawLine(ax - 2, ay - 4, ax + 2, ay, Color.white());
+                        r.drawLine(ax - 2, ay + 4, ax + 2, ay, Color.white());
+                    }
+                }
+                r.drawText(x_ + 22 + indent, iy + (rowH_ - r.textH(1)) / 2,
+                           labels_[i], 1, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int idx = (y - (y_ + 4)) / rowH_;
+            if (idx < 0 || idx >= nodeCount_) return;
+            int indent = levels_[idx] * 16;
+            // 点箭头（左侧）→ 展开/折叠
+            if (expanded_[idx] >= 0 && x >= x_ + 4 + indent && x < x_ + 22 + indent) {
+                toggle(idx);
+                Toggled(idx);
+            } else {
+                Selected(idx);
+            }
+        }
+}

@@ -1,0 +1,98 @@
+// chip.myp — uikit 控件：Chip（标签胶囊）
+// ---------------------------------------------------------------------------
+// 胶囊标签：文本 + 可选关闭 ×。点击切换勾选（Clicked），点 × 触发 Deleted。
+// 纯逻辑 headless 可测。
+import text;
+
+class Chip {
+    interface class View;
+
+    property:
+        string label_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int checked_;
+        int deletable_;
+        int color_;
+
+    event:
+        Clicked(int x, int y);
+        Deleted(int x, int y);
+
+    action:
+        @constructor Chip(string label, int x, int y, int w, int h) {
+            label_ = label;
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            checked_ = 0;
+            deletable_ = 0;
+            color_ = Color.gray();
+        }
+
+        void setLabel(string t) { label_ = t; }
+        string getLabel() { return label_; }
+        void setChecked(int on) { checked_ = on; }
+        int getChecked() { return checked_; }
+        void toggle() { checked_ = checked_ != 0 ? 0 : 1; }
+        // 显示关闭 ×（1=可删）
+        void setDeletable(int on) { deletable_ = on; }
+        int deletable() { return deletable_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        void setAttr(string name, string value) {
+            if (name == "text") setLabel(value);
+            else if (name == "checked") setChecked(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            int c = checked_ != 0 ? color_ : Color.gray();
+            r.fillRoundedRect(x_, y_, w_, h_, h_ / 2, c);
+            // 文本（可删时给 × 留位）
+            int rightPad = deletable_ != 0 ? h_ + 6 : 8;
+            int tw = r.textWidth(label_, 1);
+            r.drawText(x_ + (w_ - rightPad - tw) / 2 + 4,
+                       y_ + h_ / 2 - r.textH(1) / 2,
+                       label_, 1, Color.white());
+            // 关闭 ×（右端）
+            if (deletable_ != 0) {
+                int dx = x_ + w_ - h_ / 2 - 2;
+                int dy = y_ + h_ / 2;
+                r.fillRoundedRect(dx - 7, dy - 7, 14, 14, 7, Color.white());
+                r.drawText(dx - 4, dy - r.textH(1) / 2, "×", 1, color_);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            // 命中关闭 × → 触发 Deleted（不切换）
+            if (deletable_ != 0) {
+                int dx = x_ + w_ - h_ / 2 - 2;
+                int dy = y_ + h_ / 2;
+                if (x >= dx - 7 && x < dx + 7 && y >= dy - 7 && y < dy + 7) {
+                    Deleted(x, y);
+                    return;
+                }
+            }
+            toggle();
+            Clicked(x, y);
+        }
+}

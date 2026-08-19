@@ -1,9 +1,10 @@
-// checkbox.myp — uikit 控件：Checkbox（复选框）
+// radio_button.myp — uikit 控件：RadioButton（单选按钮）
 // ---------------------------------------------------------------------------
-// 点击勾选/取消，触发 Changed(value)。纯逻辑 headless 可测。
+// label + 选中态（圆点）。点击勾选并触发 Changed(value)。同组互斥由外部管理
+// （容器/测试把组内其它置 0），本控件只维护自身 checked。纯逻辑 headless 可测。
 import text;
 
-class Checkbox {
+class RadioButton {
     interface class View;
 
     property:
@@ -13,29 +14,33 @@ class Checkbox {
         int w_;
         int h_;
         int checked_;
+        int group_;        // 组 id（互斥分组用）
         int color_;
 
     event:
         Changed(int value);
 
     action:
-        @constructor Checkbox(string label, int x, int y, int w, int h) {
+        @constructor RadioButton(string label, int x, int y, int w, int h) {
             label_ = label;
             x_ = x;
             y_ = y;
             w_ = w;
             h_ = h;
             checked_ = 0;
+            group_ = 0;
             color_ = Color.blue();
         }
 
         void setChecked(int v) { checked_ = v; }
         int getChecked() { return checked_; }
-        void setColor(int c) { color_ = c; }
-        int getColor() { return color_; }
+        void setGroup(int g) { group_ = g; }
+        int getGroup() { return group_; }
         void setLabel(string s) { label_ = s; }
         string getLabel() { return label_; }
-        // 声明式属性入口（UixLoader 调用）
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        // 声明式属性入口
         void setAttr(string name, string value) {
             if (name == "text") setLabel(value);
             else if (name == "checked") setChecked(Str.toInt(value));
@@ -52,16 +57,13 @@ class Checkbox {
         }
 
         void draw(Renderer r) {
-            // 方框
-            r.outlineRect(x_, y_, h_, h_, Color.white());
-            if (checked_ != 0) {
-                r.fillRect(x_ + 4, y_ + 4, h_ - 8, h_ - 8, color_);
-                // 勾号（两段线）
-                r.drawLine(x_ + 6, y_ + h_ / 2, x_ + h_ / 2, y_ + h_ - 6, Color.white());
-                r.drawLine(x_ + h_ / 2, y_ + h_ - 6, x_ + h_ - 6, y_ + 6, Color.white());
-            }
-            // 标签
-            r.drawText(x_ + h_ + 10, y_ + h_ / 2 - r.textH(2) / 2, label_, 2, Color.white());
+            int rad = 7;
+            int cx = x_ + 10;
+            int cy = y_ + h_ / 2;
+            r.outlineRect(cx - rad, cy - rad, rad * 2, rad * 2, Color.gray());
+            if (checked_ != 0)
+                r.fillRect(cx - rad + 3, cy - rad + 3, rad * 2 - 6, rad * 2 - 6, color_);
+            r.drawText(x_ + 24, y_ + h_ / 2 - r.textH(1) / 2, label_, 1, Color.white());
         }
 
         int hit(int x, int y) {
@@ -69,9 +71,9 @@ class Checkbox {
             return 0;
         }
 
-        // 点击切换 + 触发 Changed
+        // 点击勾选 + 触发 Changed
         void onTouch(int x, int y) {
-            checked_ = checked_ == 0 ? 1 : 0;
+            setChecked(1);
             Changed(checked_);
         }
 }

@@ -1,0 +1,69 @@
+// avatar.myp — uikit 控件：Avatar（圆形头像）
+// ---------------------------------------------------------------------------
+// 圆形头像：默认色块 + 首字符；setImageHandle 后显示图片（SDL.loadBmp/loadPng
+// 句柄）。纯逻辑不依赖 SDL（drawImage 走 Renderer 抽象）。
+import text;
+
+class Avatar {
+    interface class View;
+
+    property:
+        string name_;
+        int x_;
+        int y_;
+        int size_;
+        int color_;
+        int handle_;
+
+    action:
+        @constructor Avatar(string name, int x, int y, int size) {
+            name_ = name;
+            x_ = x;
+            y_ = y;
+            size_ = size;
+            color_ = Color.purple();
+            handle_ = -1;
+        }
+
+        void setName(string n) { name_ = n; }
+        string getName() { return name_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setImageHandle(int h) { handle_ = h; }
+        int hasImage() { return handle_ >= 0 ? 1 : 0; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        void setAttr(string name, string value) {
+            if (name == "text") setName(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return size_; }
+        int height() { return size_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; size_ = w < h ? w : h;
+        }
+
+        void draw(Renderer r) {
+            if (handle_ >= 0) {
+                // 图片头像：裁成圆形（近似：绘制到圆角遮罩区域，此处直接绘制）
+                r.drawImage(handle_, x_, y_, size_, size_);
+                return;
+            }
+            // 圆形色块 + 首字符
+            r.fillRoundedRect(x_, y_, size_, size_, size_ / 2, color_);
+            string first = Str.substring(name_, 0, 1);
+            r.drawText(x_ + size_ / 2 - r.textWidth(first, 2) / 2,
+                       y_ + size_ / 2 - r.textH(2) / 2,
+                       first, 2, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + size_ && y >= y_ && y < y_ + size_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {}
+}

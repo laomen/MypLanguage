@@ -1,0 +1,134 @@
+// data_grid.myp — uikit 控件：DataGrid（数据表格）
+// ---------------------------------------------------------------------------
+// 二维表格：setColumns(表头) + addRow(行数据)，支持表头/单元格文本、行列数、
+// 单元格读写、点单元格触发 CellTapped(row,col)。纯逻辑 headless 可测。
+import text;
+
+class DataGrid {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] cols_;
+        int colCount_;
+        string[] cells_;      // 平铺 row*colCount+col
+        int rowCount_;
+        int rowH_;
+        int colW_;
+        int color_;
+
+    event:
+        CellTapped(int row, int col);
+
+    action:
+        @constructor DataGrid(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            cols_ = new string[16];
+            colCount_ = 0;
+            cells_ = new string[512];
+            rowCount_ = 0;
+            rowH_ = 26;
+            colW_ = 100;
+            color_ = Color.blue();
+        }
+
+        void setColumns(string[] cols, int n) {
+            int i = 0;
+            while (i < n && i < 16) {
+                cols_[i] = cols[i];
+                i = i + 1;
+            }
+            colCount_ = n;
+            if (colCount_ > 0) colW_ = w_ / colCount_;
+        }
+        void addColumn(string name) {
+            if (colCount_ >= 16) return;
+            cols_[colCount_] = name;
+            colCount_ = colCount_ + 1;
+            if (colCount_ > 0) colW_ = w_ / colCount_;
+        }
+        int columnCount() { return colCount_; }
+        string columnAt(int i) {
+            if (i < 0 || i >= colCount_) return "";
+            return cols_[i];
+        }
+        // 添加一行（cells 为列值数组）
+        void addRow(string[] cells, int n) {
+            if (rowCount_ >= 64) return;
+            int c = 0;
+            while (c < colCount_ && c < n) {
+                cells_[rowCount_ * colCount_ + c] = cells[c];
+                c = c + 1;
+            }
+            rowCount_ = rowCount_ + 1;
+        }
+        int rowCount() { return rowCount_; }
+        string getCell(int r, int c) {
+            if (r < 0 || r >= rowCount_ || c < 0 || c >= colCount_) return "";
+            return cells_[r * colCount_ + c];
+        }
+        void setCell(int r, int c, string v) {
+            if (r < 0 || r >= rowCount_ || c < 0 || c >= colCount_) return;
+            cells_[r * colCount_ + c] = v;
+        }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setRowHeight(int rh) { if (rh > 0) rowH_ = rh; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            if (colCount_ > 0) colW_ = w_ / colCount_;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            if (colCount_ == 0) return;
+            // 表头
+            r.fillRect(x_, y_, w_, rowH_, color_);
+            for (int c = 0; c < colCount_; c = c + 1) {
+                r.drawText(x_ + c * colW_ + 6, y_ + (rowH_ - r.textH(1)) / 2,
+                           cols_[c], 1, Color.white());
+                if (c > 0)
+                    r.drawLine(x_ + c * colW_, y_, x_ + c * colW_, y_ + h_, Color.gray());
+            }
+            // 数据行
+            for (int rw = 0; rw < rowCount_; rw = rw + 1) {
+                int ry = y_ + rowH_ + rw * rowH_;
+                if (ry + rowH_ > y_ + h_) break;
+                for (int c = 0; c < colCount_; c = c + 1) {
+                    r.drawText(x_ + c * colW_ + 6, ry + (rowH_ - r.textH(1)) / 2,
+                               getCell(rw, c), 1, Color.white());
+                }
+                if (rw > 0)
+                    r.drawLine(x_, ry, x_ + w_, ry, Color.gray());
+            }
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (colCount_ == 0) return;
+            int col = (x - x_) / colW_;
+            int row = (y - (y_ + rowH_)) / rowH_;
+            if (col >= 0 && col < colCount_ && row >= 0 && row < rowCount_) {
+                CellTapped(row, col);
+            }
+        }
+}

@@ -1,0 +1,144 @@
+// date_picker.myp — uikit 控件：DatePicker（日期选择）
+// ---------------------------------------------------------------------------
+// 年月导航 + 日历网格：setDate(y,m,d)、prev/next 月、点日选中触发
+// Selected(y,m,d)。纯逻辑 headless 可测。
+import text;
+import fmt;
+
+class DatePicker {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int year_;
+        int month_;       // 1..12
+        int day_;
+        int color_;
+
+    event:
+        Selected(int y, int m, int d);
+
+    action:
+        @constructor DatePicker(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            year_ = 2026;
+            month_ = 1;
+            day_ = 1;
+            color_ = Color.blue();
+        }
+
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setDate(int y, int m, int d) {
+            year_ = y;
+            month_ = m;
+            day_ = d;
+        }
+        int getYear() { return year_; }
+        int getMonth() { return month_; }
+        int getDay() { return day_; }
+        // 上/下月
+        void prevMonth() {
+            month_ = month_ - 1;
+            if (month_ < 1) { month_ = 12; year_ = year_ - 1; }
+        }
+        void nextMonth() {
+            month_ = month_ + 1;
+            if (month_ > 12) { month_ = 1; year_ = year_ + 1; }
+        }
+        void setAttr(string name, string value) {
+            if (name == "year") year_ = Str.toInt(value);
+            else if (name == "month") month_ = Str.toInt(value);
+            else if (name == "day") day_ = Str.toInt(value);
+        }
+
+        // 某月天数（非闰年简化：2 月 28）
+        int daysInMonth(int y, int m) {
+            if (m == 2) return 28;
+            if (m == 4 || m == 6 || m == 9 || m == 11) return 30;
+            return 31;
+        }
+        // 当月首日是星期几（0=周日；蔡勒/简单累加近似）
+        int firstWeekday(int y, int m) {
+            // 简化：以 2026-01-01=周四(4) 为基准累加
+            int total = 0;
+            int yy = 2026;
+            while (yy < y) { total = total + 365; yy = yy + 1; }
+            int mm = 1;
+            while (mm < m) { total = total + daysInMonth(y, mm); mm = mm + 1; }
+            int wd = (4 + total) % 7;
+            return wd;
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            // 标题：年/月
+            r.drawText(x_ + 10, y_ + 6, Fmt.i(year_) + "-" + Fmt.i(month_), 1, Color.white());
+            // 周标题
+            int[] wd = new int[7];
+            wd[0] = 0; wd[1] = 1; wd[2] = 2; wd[3] = 3;
+            wd[4] = 4; wd[5] = 5; wd[6] = 6;
+            int cell = 30;
+            int headY = y_ + 30;
+            r.drawText(x_ + 8, headY, "日一二三四五六", 1, Color.gray());
+            // 日期网格
+            int first = firstWeekday(year_, month_);
+            int dim = daysInMonth(year_, month_);
+            int startX = x_ + 8;
+            int rowY = headY + 24;
+            int d = 1;
+            int i = 0;
+            while (d <= dim) {
+                int col = (first + d - 1) % 7;
+                int row = (first + d - 1) / 7;
+                int px = startX + col * (cell + 2);
+                int py = rowY + row * (cell + 2);
+                string ds = Fmt.i(d);
+                int c = d == day_ ? color_ : Color.white();
+                r.drawText(px + 6, py + (cell - r.textH(1)) / 2, ds, 1, c);
+                d = d + 1;
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int cell = 30;
+            int headY = y_ + 30;
+            int rowY = headY + 24;
+            int first = firstWeekday(year_, month_);
+            int dim = daysInMonth(year_, month_);
+            int startX = x_ + 8;
+            int d = 1;
+            while (d <= dim) {
+                int col = (first + d - 1) % 7;
+                int row = (first + d - 1) / 7;
+                int px = startX + col * (cell + 2);
+                int py = rowY + row * (cell + 2);
+                if (x >= px && x < px + cell && y >= py && y < py + cell) {
+                    day_ = d;
+                    Selected(year_, month_, day_);
+                    return;
+                }
+                d = d + 1;
+            }
+        }
+}

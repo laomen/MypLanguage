@@ -11,6 +11,7 @@ class Button {
         int h_;
         int color_;
         int enabled_;
+        int focused_;
 
     event:
         Clicked(int x, int y);
@@ -24,6 +25,7 @@ class Button {
             h_ = h;
             color_ = Color.blue();
             enabled_ = 1;
+            focused_ = 0;
         }
 
         void setColor(int c) { color_ = c; }
@@ -55,11 +57,18 @@ class Button {
         // 覆盖 View.enabled 默认实现（返回禁用状态）
         int enabled() { return enabled_; }
 
+        // 焦点（键盘导航）
+        int focusable() { return 1; }
+        int focused() { return focused_; }
+        void setFocus(int on) { focused_ = on; }
+
         void draw(Renderer r) {
             int c = enabled_ != 0 ? color_ : Color.gray();
             r.fillRect(x_, y_, w_, h_, c);
             r.outlineRect(x_, y_, w_, h_, Color.white());
-            r.drawText(x_ + 10, y_ + h_ / 2 - 16, label_, 2, Color.white());
+            if (focused_ != 0)
+                r.outlineRect(x_ - 3, y_ - 3, w_ + 6, h_ + 6, Color.amber());
+            r.drawText(x_ + 10, y_ + h_ / 2 - r.textH(2) / 2, label_, 2, Color.white());
         }
 
         int hit(int x, int y) {

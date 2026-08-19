@@ -1,0 +1,107 @@
+// pagination.myp — uikit 控件：Pagination（分页）
+// ---------------------------------------------------------------------------
+// 上一页 / 页码 / 下一页。setTotal/current 管理，点箭头或页码触发
+// Selected(page)。纯逻辑 headless 可测。
+import text;
+import fmt;
+
+class Pagination {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int total_;
+        int current_;       // 0-based
+        int color_;
+
+    event:
+        Selected(int page);
+
+    action:
+        @constructor Pagination(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            total_ = 1;
+            current_ = 0;
+            color_ = Color.blue();
+        }
+
+        void setTotal(int t) {
+            if (t < 1) t = 1;
+            total_ = t;
+            if (current_ >= total_) current_ = total_ - 1;
+        }
+        int getTotal() { return total_; }
+        void setCurrent(int p) {
+            if (p < 0) p = 0;
+            if (p >= total_) p = total_ - 1;
+            current_ = p;
+        }
+        int getCurrent() { return current_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "total") setTotal(Str.toInt(value));
+            else if (name == "current") setCurrent(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            // 上一页（左侧）
+            r.fillRect(x_, y_, 34, h_, color_);
+            r.drawText(x_ + 17 - r.textWidth("<", 1) / 2, y_ + h_ / 2 - r.textH(1) / 2,
+                       "<", 1, Color.white());
+            // 下一页（右侧）
+            r.fillRect(x_ + w_ - 34, y_, 34, h_, color_);
+            r.drawText(x_ + w_ - 17 - r.textWidth(">", 1) / 2, y_ + h_ / 2 - r.textH(1) / 2,
+                       ">", 1, Color.white());
+            // 页码（中间）
+            int area = w_ - 68;
+            int cw = area / total_;
+            if (cw < 26) cw = 26;
+            for (int i = 0; i < total_; i = i + 1) {
+                int px = x_ + 34 + i * cw;
+                int c = i == current_ ? color_ : Color.gray();
+                string ps = Fmt.i(i + 1);
+                r.drawText(px + cw / 2 - r.textWidth(ps, 1) / 2,
+                           y_ + h_ / 2 - r.textH(1) / 2, ps, 1, c);
+            }
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (x < x_ + 34) {
+                if (current_ > 0) { setCurrent(current_ - 1); Selected(current_); }
+            } else if (x >= x_ + w_ - 34) {
+                if (current_ < total_ - 1) { setCurrent(current_ + 1); Selected(current_); }
+            } else {
+                int area = w_ - 68;
+                int cw = area / total_;
+                if (cw < 26) cw = 26;
+                int idx = (x - (x_ + 34)) / cw;
+                if (idx >= 0 && idx < total_ && idx != current_) {
+                    setCurrent(idx);
+                    Selected(idx);
+                }
+            }
+        }
+}

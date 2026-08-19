@@ -1,0 +1,146 @@
+// text_area.myp — uikit 控件：TextArea（多行文本输入区）
+// ---------------------------------------------------------------------------
+// 多行文本（\n 分隔）：append 逐字符输入（含换行）、backspace 删当前行尾字符
+// （UTF-8 感知，不截断多字节）、setText/getText。Edited(text) 事件。
+// 纯逻辑 headless 可测。
+import text;
+
+class TextArea {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] lines_;
+        int lineCount_;
+        int lineH_;
+        int scale_;
+        int color_;
+
+    event:
+        Edited(string text);
+
+    action:
+        @constructor TextArea(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            lines_ = new string[64];
+            lineCount_ = 1;      // 起始 1 行（空）
+            lines_[0] = "";
+            lineH_ = 20;
+            scale_ = 1;
+            color_ = Color.dark();
+        }
+
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setLineHeight(int lh) { if (lh > 0) lineH_ = lh; }
+        int lineCount() { return lineCount_; }
+        string lineAt(int i) {
+            if (i < 0 || i >= lineCount_) return "";
+            return lines_[i];
+        }
+
+        // 追加一个字符；\n 开启新行
+        void append(string ch) {
+            if (ch == "\n") {
+                if (lineCount_ >= 64) return;
+                lines_[lineCount_] = "";
+                lineCount_ = lineCount_ + 1;
+            } else {
+                int last = lineCount_ - 1;
+                lines_[last] = lines_[last] + ch;
+            }
+            Edited(getText());
+        }
+        // 追加一行文本（可能含换行）
+        void appendLine(string line) {
+            int i = 0;
+            int n = Str.len(line);
+            while (i < n) {
+                string ch = Str.substring(line, i, i + 1);
+                if (ch == "\n") {
+                    if (lineCount_ >= 64) return;
+                    lines_[lineCount_] = "";
+                    lineCount_ = lineCount_ + 1;
+                } else {
+                    int last = lineCount_ - 1;
+                    lines_[last] = lines_[last] + ch;
+                }
+                i = i + 1;
+            }
+        }
+        // 删除末尾一个字符（UTF-8 感知）；空行且非首行则合并上一行
+        void backspace() {
+            int last = lineCount_ - 1;
+            string t = lines_[last];
+            int n = Str.len(t);
+            if (n == 0) {
+                if (lineCount_ > 1) {
+                    lineCount_ = lineCount_ - 1;   // 删掉空行
+                }
+            } else {
+                int i = n - 1;
+                while (i > 0) {
+                    int b = __myp_ord(Str.substring(t, i, i + 1));
+                    if ((b & 0xC0) != 0x80) break;
+                    i = i - 1;
+                }
+                lines_[last] = Str.substring(t, 0, i);
+            }
+            Edited(getText());
+        }
+        // 全部文本（行间 \n）
+        string getText() {
+            StringBuilder sb = new StringBuilder();
+            int i = 0;
+            while (i < lineCount_) {
+                if (i > 0) sb.append("\n");
+                sb.append(lines_[i]);
+                i = i + 1;
+            }
+            return sb.toString();
+        }
+        void setText(string t) {
+            lines_[0] = "";
+            lineCount_ = 1;
+            appendLine(t);
+        }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // 声明式属性入口
+        void setAttr(string name, string value) {
+            if (name == "text") setText(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            int i = 0;
+            while (i < lineCount_) {
+                r.drawText(x_ + 6, y_ + 6 + i * lineH_,
+                           lines_[i], scale_, Color.white());
+                i = i + 1;
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {}
+}

@@ -1,0 +1,97 @@
+// bottom_nav.myp — uikit 控件：BottomNav（底部导航栏）
+// ---------------------------------------------------------------------------
+// 底部横排导航项（图标字符 + 文字），当前项高亮，点击触发 Selected(index)。
+// 纯逻辑 headless 可测。
+import text;
+
+class BottomNav {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] labels_;
+        int itemCount_;
+        int current_;
+        int color_;
+
+    event:
+        Selected(int index);
+
+    action:
+        @constructor BottomNav(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            labels_ = new string[8];
+            itemCount_ = 0;
+            current_ = 0;
+            color_ = Color.blue();
+        }
+
+        void addItem(string label) {
+            if (itemCount_ >= 8) return;
+            labels_[itemCount_] = label;
+            itemCount_ = itemCount_ + 1;
+        }
+        int itemCount() { return itemCount_; }
+        string labelAt(int i) {
+            if (i < 0 || i >= itemCount_) return "";
+            return labels_[i];
+        }
+        void setCurrent(int i) {
+            if (i < 0 || i >= itemCount_) return;
+            current_ = i;
+        }
+        int getCurrent() { return current_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "current") setCurrent(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            r.drawLine(x_, y_, x_ + w_, y_, Color.gray());
+            if (itemCount_ == 0) return;
+            int iw = w_ / itemCount_;
+            for (int i = 0; i < itemCount_; i = i + 1) {
+                int ix = x_ + i * iw;
+                int c = i == current_ ? color_ : Color.gray();
+                // 顶部高亮条（当前项）
+                if (i == current_)
+                    r.fillRect(ix + 8, y_, iw - 16, 3, color_);
+                r.drawText(ix + iw / 2 - r.textWidth(labels_[i], 1) / 2,
+                           y_ + h_ / 2 - r.textH(1) / 2,
+                           labels_[i], 1, c);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (itemCount_ == 0) return;
+            int iw = w_ / itemCount_;
+            int idx = (x - x_) / iw;
+            if (idx < 0 || idx >= itemCount_) return;
+            if (idx != current_) {
+                setCurrent(idx);
+                Selected(idx);
+            }
+        }
+}

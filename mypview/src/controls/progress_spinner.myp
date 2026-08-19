@@ -1,0 +1,89 @@
+// progress_spinner.myp — uikit 控件：ProgressSpinner（转圈加载指示器）
+// ---------------------------------------------------------------------------
+// 8 个点绕圆旋转，高亮段表示进度方向。start/stop 控制旋转，tick(dt) 帧驱动
+// 自增角度。纯逻辑 headless 可测（angle 状态 + tick）。
+import text;
+
+class ProgressSpinner {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int radius_;
+        int angle_;       // 0..359
+        int running_;
+        int color_;
+
+    action:
+        @constructor ProgressSpinner(int x, int y, int radius) {
+            x_ = x;
+            y_ = y;
+            radius_ = radius;
+            angle_ = 0;
+            running_ = 1;
+            color_ = Color.blue();
+        }
+
+        void start() { running_ = 1; }
+        void stop() { running_ = 0; }
+        int running() { return running_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setAngle(int a) {
+            int v = a % 360;
+            if (v < 0) v = v + 360;
+            angle_ = v;
+        }
+        int getAngle() { return angle_; }
+        // 帧驱动旋转（dt 毫秒，约 0.25 度/ms）
+        void tick(int dt) {
+            if (running_ == 0) return;
+            angle_ = (angle_ + dt * 25 / 100) % 360;
+        }
+
+        // View 接口：固定尺寸
+        int width() { return radius_ * 2; }
+        int height() { return radius_ * 2; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            radius_ = (w < h ? w : h) / 2;
+        }
+
+        void draw(Renderer r) {
+            // 8 个方向的单位偏移（×半径 0.7 得点位置）
+            int[] dx = new int[8];
+            int[] dy = new int[8];
+            dx[0] = 0;  dy[0] = -1;
+            dx[1] = 1;  dy[1] = -1;
+            dx[2] = 1;  dy[2] = 0;
+            dx[3] = 1;  dy[3] = 1;
+            dx[4] = 0;  dy[4] = 1;
+            dx[5] = -1; dy[5] = 1;
+            dx[6] = -1; dy[6] = 0;
+            dx[7] = -1; dy[7] = -1;
+            int cx = x_ + radius_;
+            int cy = y_ + radius_;
+            int span = radius_ * 7 / 10;
+            int active = angle_ / 45;       // 0..7
+            for (int i = 0; i < 8; i = i + 1) {
+                int px = cx + dx[i] * span;
+                int py = cy + dy[i] * span;
+                int c = Color.gray();
+                if (i == active) c = color_;
+                else if (i == (active + 1) % 8) c = Color.light();
+                else if (i == (active + 7) % 8) c = Color.light();
+                int d = radius_ * 2 / 5;    // 点直径
+                r.fillRoundedRect(px - d / 2, py - d / 2, d, d, d / 2, c);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + radius_ * 2 &&
+                y >= y_ && y < y_ + radius_ * 2) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {}
+}
