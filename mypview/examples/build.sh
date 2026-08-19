@@ -30,6 +30,8 @@ SRCS=(
     "$SRC/layout/grid_layout.myp"
     "$SRC/layout/flow_layout.myp"
     "$SRC/layout/stack_layout.myp"
+    "$SRC/animation/tween.myp"
+    "$SRC/animation/coro_anim.myp"
     "$SRC/uix/prop_bag.myp"
     "$SRC/uix/expr.myp"
     "$SRC/uix/uix_loader.myp"

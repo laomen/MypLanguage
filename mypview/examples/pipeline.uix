@@ -1,0 +1,24 @@
+{
+  "type": "Column",
+  "id": "root",
+  "width": 360,
+  "height": 400,
+  "padding": 14,
+  "spacing": 10,
+  "children": [
+    { "type": "Label", "id": "title", "text": "Player", "scale": 3, "class": "title" },
+    { "type": "Slider", "id": "seek", "value": 0, "min": 0, "max": 100, "width": 332 },
+    { "type": "Label", "id": "pos", "bindProp": "text", "expr": "seek.value + \"%\"", "class": "status" },
+    { "type": "ProgressBar", "id": "bar", "value": 0, "min": 0, "max": 100, "width": 332 },
+    { "type": "Row", "id": "btns", "width": 332, "height": 44, "spacing": 10, "children": [
+      { "type": "Button", "id": "play", "text": "Play", "width": 100, "height": 40, "onCmd": "play", "class": "primary" },
+      { "type": "Button", "id": "stop", "text": "Stop", "width": 100, "height": 40, "onCmd": "stop", "class": "primary" }
+    ]},
+    { "type": "Button", "id": "mode", "text": "Auto", "width": 120, "height": 36, "state": "normal", "states": [
+      { "name": "normal", "props": [ { "k": "text", "v": "Auto" }, { "k": "color", "v": "#8E8E93" } ] },
+      { "name": "pressed", "props": [ { "k": "text", "v": "Pressed" }, { "k": "color", "v": "#007AFF" } ] }
+    ]},
+    { "type": "Switch", "id": "loop", "on": 0, "color": "#34C759" },
+    { "type": "Label", "id": "status", "text": "", "bind": "status", "class": "status" }
+  ]
+}

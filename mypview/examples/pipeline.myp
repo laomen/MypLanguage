@@ -1,0 +1,144 @@
+// pipeline.myp — UIX 完整链路示例：load JSON → 构建 → 渲染 → 交互 → 动画
+// ---------------------------------------------------------------------------
+// 验证整个 UIX 框架从输入到输出的全链路是否正常：
+//   1. load JSON  从磁盘读 pipeline.uix / pipeline.usp（真实文件，非内嵌）
+//   2. 构建       UixLoader.buildInto 递归构建 View 树
+//   3. 渲染       RecRenderer（无头录制渲染器，统计绘制原语）跑一遍 draw()
+//   4. 交互       按钮命令(cmdFor→runCmd→sync) / 滑块表达式联动(storeProp→refresh)
+//                 / 状态切换(setState)
+//   5. 动画       Tween 帧驱动 + CoroAnim 协程驱动（0→100 进度条）
+// 运行：bash build.sh pipeline  （在 mypview/examples/ 下）
+import env;
+import fmt;
+import io;
+import coro;
+
+// ---- 无头录制渲染器：统计各绘制原语调用次数（验证渲染链路，无需 SDL 窗口）----
+class RecRenderer {
+    interface class Renderer;
+    property:
+        int rects_;
+        int texts_;
+        int rounded_;
+        int lines_;
+        int outlines_;
+    action:
+        @constructor RecRenderer() {
+            rects_ = 0; texts_ = 0; rounded_ = 0; lines_ = 0; outlines_ = 0;
+        }
+        void fillRect(int x, int y, int w, int h, int color) { rects_ = rects_ + 1; }
+        void outlineRect(int x, int y, int w, int h, int color) { outlines_ = outlines_ + 1; }
+        void fillRoundedRect(int x, int y, int w, int h, int radius, int color) { rounded_ = rounded_ + 1; }
+        void drawLine(int x1, int y1, int x2, int y2, int color) { lines_ = lines_ + 1; }
+        void drawImage(int handle, int x, int y, int w, int h) {}
+        void drawText(int x, int y, string text, int scale, int color) { texts_ = texts_ + 1; }
+        int rectCount() { return rects_; }
+        int textCount() { return texts_; }
+        int roundedCount() { return rounded_; }
+}
+
+// ---- ViewModel（MVVM）：播放器状态 + 命令 ----
+class PlayerVM {
+    interface class ViewModel;
+    property:
+        PropBag bag_;
+    action:
+        @constructor PlayerVM() {
+            bag_ = new PropBag();
+            bag_.set("status", "idle");
+        }
+        string getProp(string name) { return bag_.get(name); }
+        void runCmd(string name) {
+            if (name == "play") bag_.set("status", "playing");
+            else if (name == "stop") bag_.set("status", "stopped");
+        }
+}
+
+class Pipeline {
+    action:
+        @constructor Pipeline() {
+            // ===== 1. load JSON：从磁盘读 .uix / .usp =====
+            File f = new File();
+            int rc = f.open("pipeline.uix", "r");
+            string uixJson = f.readAll();
+            f.close();
+            File s = new File();
+            int sc = s.open("pipeline.usp", "r");
+            string uspJson = s.readAll();
+            s.close();
+            Console.writeLine("pipe load uix=" + Fmt.i(Str.len(uixJson))
+                              + "b usp=" + Fmt.i(Str.len(uspJson))
+                              + "b rc=" + Fmt.i(rc) + "/" + Fmt.i(sc));
+
+            // ===== 2. 构建 View 树 =====
+            UixLoader loader = new UixLoader(uixJson, uspJson);
+            RootView rv = new RootView(16, 400, 420);
+            loader.buildInto(rv);
+            Console.writeLine("pipe build nodes=" + Fmt.i(loader.nodeCount())
+                              + " kids=" + Fmt.i(rv.childCount()));
+
+            // ===== 3. 渲染：无头录制渲染器跑一遍 draw =====
+            RecRenderer rec = new RecRenderer();
+            rv.draw(rec);
+            Console.writeLine("pipe render rect=" + Fmt.i(rec.rectCount())
+                              + " text=" + Fmt.i(rec.textCount())
+                              + " rounded=" + Fmt.i(rec.roundedCount()));
+
+            // ===== 4a. 交互：按钮命令（cmdFor → runCmd → sync）=====
+            PlayerVM vm = new PlayerVM();
+            loader.sync(vm);
+            int sti = loader.labelIdxOf("status");
+            int pi = loader.buttonIdxOf("play");
+            string cmd = loader.cmdFor("play");
+            vm.runCmd(cmd);
+            loader.sync(vm);
+            Console.writeLine("pipe cmd play status=" + loader.labelAt(sti).getText());
+
+            // ===== 4b. 交互：滑块 → 表达式联动（storeProp → refresh）=====
+            loader.storeProp("seek", "value", "42");
+            loader.refresh();
+            int posi = loader.labelIdxOf("pos");
+            Console.writeLine("pipe expr seek=42 pos=" + loader.labelAt(posi).getText());
+
+            // ===== 4c. 交互：状态切换（setState normal → pressed）=====
+            loader.setState("mode", "pressed");
+            int mdi = loader.buttonIdxOf("mode");
+            Console.writeLine("pipe state mode=" + loader.buttonAt(mdi).getLabel()
+                              + "/" + Fmt.x(loader.buttonAt(mdi).getColor()));
+
+            // ===== 5a. 动画：Tween 帧驱动 0→100（10 帧，单调）=====
+            int bari = loader.progressbarIdxOf("bar");
+            ProgressBar bar = loader.progressbarAt(bari);
+            Tween tw = new Tween(0.0, 100.0, 1000.0);
+            int steps = 0;
+            double prev = -1.0;
+            int mono = 1;
+            while (tw.done() == 0) {
+                double v = tw.tick(100.0);
+                bar.setProgress(int(v));
+                steps = steps + 1;
+                if (v < prev) mono = 0;
+                prev = v;
+            }
+            Console.writeLine("pipe anim tween steps=" + Fmt.i(steps)
+                              + " bar=" + Fmt.i(bar.getValue())
+                              + " mono=" + Fmt.i(mono));
+
+            // ===== 5b. 动画：CoroAnim 协程驱动（手动 resume）=====
+            CoroAnim ca = new CoroAnim(0.0, 100.0, 500.0);
+            long h = ca.run(50.0);
+            int csteps = 0;
+            while (ca.finished() == 0) {
+                Coro.resume(h, 0L);
+                csteps = csteps + 1;
+                bar.setProgress(int(ca.value()));
+            }
+            Console.writeLine("pipe anim coro steps=" + Fmt.i(csteps)
+                              + " bar=" + Fmt.i(bar.getValue())
+                              + " fin=" + Fmt.i(ca.finished()));
+
+            Console.writeLine("pipe OK");
+        }
+}
+
+int main() { Pipeline p = new Pipeline(); return 0; }

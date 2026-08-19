@@ -1,0 +1,5 @@
+[
+  { "sel": "Label.title", "props": [ { "k": "color", "v": "#1C1C1E" } ] },
+  { "sel": "Button.primary", "props": [ { "k": "bg", "v": "#007AFF" } ] },
+  { "sel": "Label.status", "props": [ { "k": "color", "v": "#E74C3C" } ] }
+]

@@ -1,5 +1,6 @@
 # mypview 示例编译产物（mypc 直接编译生成的可执行文件）
 examples/counter
 examples/dashboard
+examples/pipeline
 *.o
 *.ll
