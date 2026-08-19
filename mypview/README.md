@@ -36,6 +36,84 @@ CMake 或任何系统服务。**
 **依赖边界**：`src/` 全部文件只 `import` MYP 标准库（env/text/json/fmt/coro/sdl/ttf），
 **零 MOS 内部依赖**。UIX 引擎（uix/）纯 headless——不依赖 SDL，可在任何环境测逻辑。
 
+## 控件速查表（52 控件）
+
+> 构造参数统一 `(x, y, w, h)` 省略为 `(x,y,w,h)`。**声明式属性** = 控件 `setAttr`
+> 支持的名字（`.uix` 里 `"prop":"值"` 或 `.usp` 里 `props`），值可为字符串 / `#RRGGBB` / 数字。
+> **事件** 经应用层 `mapping` 绑定（如 `Button.Clicked -> App.onOk`）。
+
+### 输入类（13）
+
+| 控件 | 构造 | 声明式属性 | 事件 | 说明 |
+|---|---|---|---|---|
+| Button | `Button(label,x,y,w,h)` | text, color, bg | `Clicked(x,y)` | setEnabled / setHovered / focusable |
+| Checkbox | `Checkbox(label,x,y,w,h)` | text, checked, color | `Changed(v)` | setChecked |
+| RadioButton | `RadioButton(label,x,y,w,h)` | text, checked, color | `Changed(v)` | 单选组 |
+| Switch | `Switch(x,y,w,h)` | on, color | `Toggled(v)` | setOn |
+| Slider | `Slider(x,y,w,h,min,max)` | value,min,max,color | `ValueChanged(v)` | 拖动设值（手势） |
+| TextField | `TextField(text,x,y,w,h)` | text, color | `Focused` / `Edited(text)` | UTF-8 退格 / 密码 mask / focusable |
+| TextArea | `TextArea(x,y,w,h)` | text, color | `Edited(text)` | 多行（\n 分行） |
+| SearchBar | `SearchBar(x,y,w,h)` | text, color | `Edited(text)` | append/backspace/unfocus |
+| Dropdown | `Dropdown(x,y,w,h)` | selected, color | `Selected(idx)` | addItem / 展开列表浮层 |
+| Rating | `Rating(x,y,w,h)` | value, max, color | `Changed(v)` | 星级 |
+| IconButton | `IconButton(icon,x,y,size)` | icon, color | `Clicked(x,y)` | 圆形图标 / hover |
+| SegmentedControl | `SegmentedControl(x,y,w,h)` | selected, color | `Selected(idx)` | addSegment |
+| Stepper | `Stepper(x,y,w,h)` | value,min,max,step,color | `Changed(v)` | +/− 步进 |
+
+### 显示类（19）
+
+| 控件 | 构造 | 声明式属性 | 事件 | 说明 |
+|---|---|---|---|---|
+| Label | `Label(text,x,y,scale)` | text, color | — | 5×7 位图（scale 放大） |
+| TtfLabel | `TtfLabel(text,x,y,px)` | text, color | — | TTF 中文字体（px 字号） |
+| ProgressBar | `ProgressBar(x,y,w,h,min,max)` | value,min,max,color | — | setProgress |
+| ProgressSpinner | `ProgressSpinner(x,y,radius)` | — | — | 8 点转圈（tick） |
+| AppIcon | `AppIcon(label,x,y,w,h)` | — | `Clicked(x,y)` | 图标+文字入口 |
+| Toast | `Toast(w,h)` | text, color | — | show / tick 淡出 |
+| NotificationBanner | `NotificationBanner(w,h)` | — | `BannerClicked(x,y)` | show / tick 倒计时 |
+| List | `List(x,y,w,h)` | — | `ItemClicked(idx,x,y)` | addItem / itemCount |
+| Panel | `Panel(x,y,w,h)` | color, bg | — | 容器卡片 |
+| TabView | `TabView(x,y,w,h)` | current, color | `TabChanged(idx)` | addTab / 分页容器 |
+| Dialog | `Dialog(title,msg,screenW,screenH)` | — | `Confirm()` / `Cancel()` | show/hide |
+| ScrollView | `ScrollView(x,y,w,h)` | — | — | setContent / scrollTo / 拖拽滚动 |
+| Image | `Image(x,y,w,h)` | color, mode | — | setHandle(SDL 纹理) |
+| Divider | `Divider(x,y,w,h)` | color | — | 细分割线 |
+| Badge | `Badge(text,x,y)` | text, color | — | setValue（数字角标） |
+| Avatar | `Avatar(name,x,y,size)` | text, color | — | 圆形首字头像 |
+| Chip | `Chip(label,x,y,w,h)` | text, checked, color | `Clicked` / `Deleted` | 胶囊标签（可删） |
+| Tooltip | `Tooltip(w,h)` | text, color | — | show 气泡 |
+| Banner | `Banner(w,h)` | text, color | — | 顶部横幅 show/tick |
+
+### 容器 / 浮层（20）
+
+| 控件 | 构造 | 声明式属性 | 事件 | 说明 |
+|---|---|---|---|---|
+| BottomNav | `BottomNav(x,y,w,h)` | current, color | `Selected(idx)` | addItem 底部导航 |
+| Drawer | `Drawer(w,h)` | color | — | open/close/toggle/add 侧边抽屉 |
+| RefreshIndicator | `RefreshIndicator(x,y,w,h)` | color | `Refresh()` | 下拉刷新 |
+| ContextMenu | `ContextMenu(w)` | color | `Selected(idx)` | addItem / show 右键菜单 |
+| ColorPicker | `ColorPicker(x,y,w,h)` | selected | `Selected(color)` | addColor 预置色板 |
+| DatePicker | `DatePicker(x,y,w,h)` | year,month,day | `Selected(y,m,d)` | prev/nextMonth |
+| DataGrid | `DataGrid(x,y,w,h)` | color | `CellTapped(r,c)` | addColumn/addRow/setCell |
+| TreeView | `TreeView(x,y,w,h)` | color | `Toggled(idx)` / `Selected(idx)` | addNode 树形 |
+| TimePicker | `TimePicker(x,y,w,h)` | hour,minute,color | `Changed(h,m)` | 时分 |
+| ActionSheet | `ActionSheet(w)` | color | `Selected(idx)` | addAction / show 底部操作表 |
+| Pagination | `Pagination(x,y,w,h)` | total,current,color | `Selected(page)` | 分页 |
+| PageView | `PageView(x,y,w,h)` | current, color | `Selected(idx)` | addPage 翻页容器 |
+| Popover | `Popover(w,h)` | text, color | — | show 气泡弹层 |
+
+### 布局与框架
+
+| 类别 | 名称 | 说明 |
+|---|---|---|
+| 布局 | LinearLayout(dir,w,h) | 0=垂直 1=水平；add/spacing/padding |
+| 布局 | FlowLayout / GridLayout / StackLayout | 流式 / 网格 / 层叠 |
+| 布局 | ConstraintLayout(w,h) | add(v, align 0-8, mx, my) 相对定位 |
+| 框架 | FocusManager | 键盘焦点导航 register/next/prev/activate |
+| 框架 | GestureDetector | Tap/LongPress/Drag 识别 press/tick/move/release |
+| 框架 | Theme | dark/light 配色（bg/surface/text/accent） |
+| 引擎 | UixLoader | `.uix` 构建 + `.usp` 样式 + 绑定/命令 + applyPseudo |
+
 ## UIX 声明式 UI
 
 `.uix` 描述 = JSON 组件树（属性 + 绑定 + 命令）；`.usp` 样式表 = JSON 选择器
