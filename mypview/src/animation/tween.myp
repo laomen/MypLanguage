@@ -1,0 +1,43 @@
+// tween.myp — uikit 动画：Tween 插值（帧驱动 + easing 起步）
+// ---------------------------------------------------------------------------
+// 从 from 到 to 在 duration 毫秒内线性插值；tick(dtMs) 推进并返回当前值（越界
+// clamp）。后续可加 easeIn/out 曲线。纯逻辑，不依赖 SDL，可 headless 测试。
+class Tween {
+    property:
+        double from_;
+        double to_;
+        double duration_;
+        double elapsed_;
+
+    action:
+        @constructor Tween(double from, double to, double duration) {
+            from_ = from;
+            to_ = to;
+            duration_ = duration;
+            elapsed_ = 0.0;
+        }
+
+        double progress() {
+            double p = elapsed_ / duration_;
+            if (p < 0.0) p = 0.0;
+            if (p > 1.0) p = 1.0;
+            return p;
+        }
+
+        // 推进 dtMs，返回当前插值
+        double tick(double dtMs) {
+            elapsed_ = elapsed_ + dtMs;
+            return value();
+        }
+
+        double value() {
+            double p = progress();
+            return from_ + (to_ - from_) * p;
+        }
+
+        int done() {
+            return elapsed_ >= duration_ ? 1 : 0;
+        }
+
+        void reset() { elapsed_ = 0.0; }
+}

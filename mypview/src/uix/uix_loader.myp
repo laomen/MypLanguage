@@ -1,0 +1,468 @@
+// uix_loader.myp — UIX 框架：声明式界面加载器（UixLoader）
+// ---------------------------------------------------------------------------
+// UIX = UI eXtensible：MYP/MOS 自己的声明式 UI DSL（职责对标 Qt 的 QML/QSS，
+// 但命名与实现完全独立，不借用 Qt 名字）。
+//
+//   .uix 文件 — 界面描述（JSON）：组件树 + 属性 + 绑定 + 命令
+//   .usp 文件 — 样式表（JSON）：选择器（类型 / #id / .class）→ 属性集
+//
+// UixLoader 职责：
+//   - 解析 .uix → 递归构建 View 树（工厂 dispatch；控件经统一 View.setAttr
+//     接收声明式属性）
+//   - 解析 .usp → 按选择器匹配并把样式属性应用到节点（构建时应用）
+//   - 注册绑定表（控件 id + 目标属性 + VM 属性路径）→ sync(vm) 刷新
+//   - 注册命令表（控件 id → 命令名）→ cmdFor(id) 供事件映射
+//   - 保留类型化引用（labelAt/buttonAt/fieldAt 等），供应用层读控件状态
+//
+// ★ MYP 编译器 ARC 限制（探针验证，本文件刻意规避，详见底部注释）：
+//   - 类方法返回接口引用（View）→ 崩溃。规避：绝不返回 View。
+//   - 通过 View 接口方法 addChild 传对象 → 崩溃。规避：add 一律用具体类型
+//     局部变量（col.add(l) / p.add(t)），构建逻辑内联在各容器分支。
+//   - View 接口字段暂存对象再 add → 崩溃。规避：不用接口字段暂存，构建即 add。
+//   - View[] 接口数组存储不可靠 retain。规避：所有控件由具体类型数组
+//     （labels_/buttons_/fields_/cols_/panels_）持有，保证跨方法存活。
+//
+// 纯逻辑不依赖 SDL，可 headless 测试。
+import env;
+import text;
+import fmt;
+import json;
+
+class UixLoader {
+    property:
+        Json uix_;        // 界面描述文档
+        Json usp_;        // 样式表文档（可为空）
+        // 节点注册表（id → View/type/class 并行数组；nodes_ 仅用于查找/命中）
+        View[] nodes_;
+        string[] ids_;
+        string[] types_;
+        string[] classes_;
+        int nodeCount_;
+        // 绑定表（控件 id, 目标属性, VM 属性路径）
+        string[] bindIds_;
+        string[] bindProps_;
+        string[] bindPaths_;
+        int bindCount_;
+        // 命令表（控件 id → 命令名）
+        string[] cmdIds_;
+        string[] cmdNames_;
+        int cmdCount_;
+        // 选择器暂存（parseSel 输出）
+        string selType_;
+        string selId_;
+        string selClass_;
+        // 类型化引用（具体数组——ARC 可靠 retain，控件存活于此）
+        Label[] labels_;
+        string[] labelIds_;
+        int labelCount_;
+        Button[] buttons_;
+        string[] buttonIds_;
+        int buttonCount_;
+        TextField[] fields_;
+        string[] fieldIds_;
+        int fieldCount_;
+        LinearLayout[] cols_;
+        string[] colIds_;
+        int colCount_;
+        Panel[] panels_;
+        string[] panelIds_;
+        int panelCount_;
+
+    action:
+        @constructor UixLoader(string uixJson, string uspJson) {
+            uix_ = new Json(uixJson);
+            if (Str.len(uspJson) > 0)
+                usp_ = new Json(uspJson);
+            else
+                usp_ = null;
+            nodes_ = new View[128];
+            ids_ = new string[128];
+            types_ = new string[128];
+            classes_ = new string[128];
+            nodeCount_ = 0;
+            bindIds_ = new string[64];
+            bindProps_ = new string[64];
+            bindPaths_ = new string[64];
+            bindCount_ = 0;
+            cmdIds_ = new string[32];
+            cmdNames_ = new string[32];
+            cmdCount_ = 0;
+            selType_ = "";
+            selId_ = "";
+            selClass_ = "";
+            labels_ = new Label[64];
+            labelIds_ = new string[64];
+            labelCount_ = 0;
+            buttons_ = new Button[64];
+            buttonIds_ = new string[64];
+            buttonCount_ = 0;
+            fields_ = new TextField[64];
+            fieldIds_ = new string[64];
+            fieldCount_ = 0;
+            cols_ = new LinearLayout[64];
+            colIds_ = new string[64];
+            colCount_ = 0;
+            panels_ = new Panel[64];
+            panelIds_ = new string[64];
+            panelCount_ = 0;
+        }
+
+        // 构建整棵树：解析根节点并加入 rootView
+        void buildInto(RootView rootView) {
+            string rootType = uix_.getString("type");
+            string id = getStr(uix_, "", "id");
+            string cls = getStr(uix_, "", "class");
+            if (rootType == "Column" || rootType == "Row") {
+                int ori = rootType == "Row" ? 1 : 0;
+                LinearLayout col = new LinearLayout(
+                    ori, dim(uix_, "", "width", 200), dim(uix_, "", "height", 200));
+                registerCol(col, id, rootType, cls);
+                applyNode(uix_, "", col, id, cls);
+                rootView.add(col);
+                buildIntoCol(uix_, "", col);
+                col.layout();
+            } else if (rootType == "Panel") {
+                Panel p = new Panel(getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                    dim(uix_, "", "width", 200), dim(uix_, "", "height", 200));
+                registerPanel(p, id, rootType, cls);
+                applyNode(uix_, "", p, id, cls);
+                rootView.add(p);
+                buildIntoPanel(uix_, "", p);
+            } else if (rootType == "Label") {
+                Label l = new Label(getStr(uix_, "", "text"),
+                                    getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                    dim(uix_, "", "scale", 2));
+                registerLabel(l, id, cls);
+                applyNode(uix_, "", l, id, cls);
+                rootView.add(l);
+            } else if (rootType == "Button") {
+                Button b = new Button(getStr(uix_, "", "text"),
+                                      getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                      dim(uix_, "", "width", 120), dim(uix_, "", "height", 40));
+                registerButton(b, id, cls);
+                applyNode(uix_, "", b, id, cls);
+                rootView.add(b);
+            } else if (rootType == "TextField") {
+                TextField t = new TextField(getStr(uix_, "", "text"),
+                                            getInt(uix_, "", "x"), getInt(uix_, "", "y"),
+                                            dim(uix_, "", "width", 240), dim(uix_, "", "height", 36));
+                registerField(t, id, cls);
+                applyNode(uix_, "", t, id, cls);
+                rootView.add(t);
+            }
+        }
+
+        // 构建 col 的所有子节点（add 一律用具体类型局部变量）
+        void buildIntoCol(Json doc, string prefix, LinearLayout col) {
+            int n = doc.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1) {
+                string cp = prefix + "children." + Fmt.i(i) + ".";
+                string ct = doc.getString(cp + "type");
+                string cid = getStr(doc, cp, "id");
+                string ccls = getStr(doc, cp, "class");
+                if (ct == "Label") {
+                    Label l = new Label(getStr(doc, cp, "text"),
+                                        getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                        dim(doc, cp, "scale", 2));
+                    registerLabel(l, cid, ccls);
+                    applyNode(doc, cp, l, cid, ccls);
+                    col.add(l);
+                } else if (ct == "Button") {
+                    Button b = new Button(getStr(doc, cp, "text"),
+                                          getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                          dim(doc, cp, "width", 120), dim(doc, cp, "height", 40));
+                    registerButton(b, cid, ccls);
+                    applyNode(doc, cp, b, cid, ccls);
+                    col.add(b);
+                } else if (ct == "TextField") {
+                    TextField t = new TextField(getStr(doc, cp, "text"),
+                                                getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                dim(doc, cp, "width", 240), dim(doc, cp, "height", 36));
+                    registerField(t, cid, ccls);
+                    applyNode(doc, cp, t, cid, ccls);
+                    col.add(t);
+                } else if (ct == "Column" || ct == "Row") {
+                    int ori = ct == "Row" ? 1 : 0;
+                    LinearLayout c2 = new LinearLayout(
+                        ori, dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerCol(c2, cid, ct, ccls);
+                    applyNode(doc, cp, c2, cid, ccls);
+                    col.add(c2);
+                    buildIntoCol(doc, cp, c2);
+                    c2.layout();
+                } else if (ct == "Panel") {
+                    Panel p = new Panel(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                        dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerPanel(p, cid, ct, ccls);
+                    applyNode(doc, cp, p, cid, ccls);
+                    col.add(p);
+                    buildIntoPanel(doc, cp, p);
+                }
+            }
+        }
+
+        // 构建 p 的所有子节点（同 buildIntoCol，add 目标为 Panel）
+        void buildIntoPanel(Json doc, string prefix, Panel p) {
+            int n = doc.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1) {
+                string cp = prefix + "children." + Fmt.i(i) + ".";
+                string ct = doc.getString(cp + "type");
+                string cid = getStr(doc, cp, "id");
+                string ccls = getStr(doc, cp, "class");
+                if (ct == "Label") {
+                    Label l = new Label(getStr(doc, cp, "text"),
+                                        getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                        dim(doc, cp, "scale", 2));
+                    registerLabel(l, cid, ccls);
+                    applyNode(doc, cp, l, cid, ccls);
+                    p.add(l);
+                } else if (ct == "Button") {
+                    Button b = new Button(getStr(doc, cp, "text"),
+                                          getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                          dim(doc, cp, "width", 120), dim(doc, cp, "height", 40));
+                    registerButton(b, cid, ccls);
+                    applyNode(doc, cp, b, cid, ccls);
+                    p.add(b);
+                } else if (ct == "TextField") {
+                    TextField t = new TextField(getStr(doc, cp, "text"),
+                                                getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                                dim(doc, cp, "width", 240), dim(doc, cp, "height", 36));
+                    registerField(t, cid, ccls);
+                    applyNode(doc, cp, t, cid, ccls);
+                    p.add(t);
+                } else if (ct == "Column" || ct == "Row") {
+                    int ori = ct == "Row" ? 1 : 0;
+                    LinearLayout c2 = new LinearLayout(
+                        ori, dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerCol(c2, cid, ct, ccls);
+                    applyNode(doc, cp, c2, cid, ccls);
+                    p.add(c2);
+                    buildIntoCol(doc, cp, c2);
+                    c2.layout();
+                } else if (ct == "Panel") {
+                    Panel p2 = new Panel(getInt(doc, cp, "x"), getInt(doc, cp, "y"),
+                                         dim(doc, cp, "width", 200), dim(doc, cp, "height", 200));
+                    registerPanel(p2, cid, ct, ccls);
+                    applyNode(doc, cp, p2, cid, ccls);
+                    p.add(p2);
+                    buildIntoPanel(doc, cp, p2);
+                }
+            }
+        }
+
+        // ---- 查找（idxOf + At 模式，避免 return null）----
+        int idxOf(string id) {
+            for (int i = 0; i < nodeCount_; i = i + 1) {
+                if (ids_[i] == id) return i;
+            }
+            return -1;
+        }
+        View nodeAt(int i) { return nodes_[i]; }
+        string idAt(int i) { return ids_[i]; }
+        string typeOf(string id) {
+            int i = idxOf(id);
+            if (i < 0) return "";
+            return types_[i];
+        }
+
+        int labelIdxOf(string id) {
+            for (int i = 0; i < labelCount_; i = i + 1) {
+                if (labelIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Label labelAt(int i) { return labels_[i]; }
+        int buttonIdxOf(string id) {
+            for (int i = 0; i < buttonCount_; i = i + 1) {
+                if (buttonIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Button buttonAt(int i) { return buttons_[i]; }
+        int fieldIdxOf(string id) {
+            for (int i = 0; i < fieldCount_; i = i + 1) {
+                if (fieldIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        TextField fieldAt(int i) { return fields_[i]; }
+
+        // 按 id 查命令名（未注册返回空串）
+        string cmdFor(string id) {
+            for (int i = 0; i < cmdCount_; i = i + 1) {
+                if (cmdIds_[i] == id) return cmdNames_[i];
+            }
+            return "";
+        }
+
+        // 命中最上层节点的 id（后注册者优先）；未命中返回空串
+        string hitId(int x, int y) {
+            for (int i = nodeCount_ - 1; i >= 0; i = i - 1) {
+                if (nodes_[i].hit(x, y) != 0) return ids_[i];
+            }
+            return "";
+        }
+
+        // 绑定刷新：把 VM 各绑定属性的当前值写入对应控件
+        void sync(ViewModel vm) {
+            for (int i = 0; i < bindCount_; i = i + 1) {
+                int ni = idxOf(bindIds_[i]);
+                if (ni < 0) continue;
+                string val = vm.getProp(bindPaths_[i]);
+                nodes_[ni].setAttr(bindProps_[i], val);
+            }
+        }
+
+        // 统计（测试用）
+        int nodeCount() { return nodeCount_; }
+        int bindCount() { return bindCount_; }
+        int cmdCount() { return cmdCount_; }
+
+        // 构造后处理：非构造参数属性（setAttr）+ 样式 + 绑定/命令注册
+        void applyNode(Json doc, string prefix, View v,
+                       string id, string cls) {
+            // 通用属性（color/bg）
+            if (doc.type(prefix + "color") >= 0)
+                v.setAttr("color", doc.getString(prefix + "color"));
+            else if (doc.type(prefix + "bg") >= 0)
+                v.setAttr("bg", doc.getString(prefix + "bg"));
+            // 布局属性（padding/spacing）
+            if (doc.type(prefix + "padding") >= 0)
+                v.setAttr("padding", Fmt.i(doc.getInt(prefix + "padding")));
+            if (doc.type(prefix + "spacing") >= 0)
+                v.setAttr("spacing", Fmt.i(doc.getInt(prefix + "spacing")));
+            // 样式表
+            applyStyles(v, id, cls);
+            // 绑定：bind = VM 属性路径；bindProp = 控件属性（缺省 text）
+            if (doc.type(prefix + "bind") >= 0) {
+                string path = doc.getString(prefix + "bind");
+                string prop = "text";
+                if (doc.type(prefix + "bindProp") >= 0)
+                    prop = doc.getString(prefix + "bindProp");
+                if (bindCount_ < 64) {
+                    bindIds_[bindCount_] = id;
+                    bindProps_[bindCount_] = prop;
+                    bindPaths_[bindCount_] = path;
+                    bindCount_ = bindCount_ + 1;
+                }
+            }
+            // 命令：onCmd = VM 命令名（事件映射后经 cmdFor 查）
+            if (doc.type(prefix + "onCmd") >= 0) {
+                if (cmdCount_ < 32) {
+                    cmdIds_[cmdCount_] = id;
+                    cmdNames_[cmdCount_] = doc.getString(prefix + "onCmd");
+                    cmdCount_ = cmdCount_ + 1;
+                }
+            }
+        }
+
+        // 应用样式：遍历 .usp 选择器，匹配则把 props 写入控件
+        void applyStyles(View v, string id, string cls) {
+            if (usp_ == null) return;
+            int n = usp_.arrayLen("");
+            for (int i = 0; i < n; i = i + 1) {
+                string sel = usp_.getString(Fmt.i(i) + ".sel");
+                parseSel(sel);
+                if (selType_ != "" && selType_ != typeOf(id)) continue;
+                if (selId_ != "" && selId_ != id) continue;
+                if (selClass_ != "" && selClass_ != cls) continue;
+                // 应用该选择器的属性集
+                int pn = usp_.arrayLen(Fmt.i(i) + ".props");
+                for (int j = 0; j < pn; j = j + 1) {
+                    string k = usp_.getString(
+                        Fmt.i(i) + ".props." + Fmt.i(j) + ".k");
+                    string val = usp_.getString(
+                        Fmt.i(i) + ".props." + Fmt.i(j) + ".v");
+                    v.setAttr(k, val);
+                }
+            }
+        }
+
+        // 解析选择器字符串 → selType_/selId_/selClass_
+        // 支持：Type / Type#id / Type.class / .class / #id
+        void parseSel(string sel) {
+            selType_ = "";
+            selId_ = "";
+            selClass_ = "";
+            int hashAt = Str.indexOf(sel, "#");
+            int dotAt = Str.indexOf(sel, ".");
+            if (hashAt >= 0) {
+                selId_ = Str.substring(sel, hashAt + 1, Str.len(sel));
+                string before = Str.substring(sel, 0, hashAt);
+                int dot2 = Str.indexOf(before, ".");
+                if (dot2 >= 0) {
+                    selType_ = Str.substring(before, 0, dot2);
+                    selClass_ = Str.substring(before, dot2 + 1, Str.len(before));
+                } else {
+                    selType_ = before;
+                }
+            } else if (dotAt >= 0) {
+                selType_ = Str.substring(sel, 0, dotAt);
+                selClass_ = Str.substring(sel, dotAt + 1, Str.len(sel));
+            } else {
+                selType_ = sel;
+            }
+        }
+
+        // 通用注册：仅进节点注册表（nodes_ 供查找/命中，不依赖其 retain）
+        void registerNode(View v, string id, string type, string cls) {
+            if (id == "") return;
+            if (nodeCount_ >= 128) return;
+            nodes_[nodeCount_] = v;
+            ids_[nodeCount_] = id;
+            types_[nodeCount_] = type;
+            classes_[nodeCount_] = cls;
+            nodeCount_ = nodeCount_ + 1;
+        }
+        void registerLabel(Label l, string id, string cls) {
+            registerNode(l, id, "Label", cls);
+            if (labelCount_ >= 64) return;
+            labels_[labelCount_] = l;
+            labelIds_[labelCount_] = id;
+            labelCount_ = labelCount_ + 1;
+        }
+        void registerButton(Button b, string id, string cls) {
+            registerNode(b, id, "Button", cls);
+            if (buttonCount_ >= 64) return;
+            buttons_[buttonCount_] = b;
+            buttonIds_[buttonCount_] = id;
+            buttonCount_ = buttonCount_ + 1;
+        }
+        void registerField(TextField t, string id, string cls) {
+            registerNode(t, id, "TextField", cls);
+            if (fieldCount_ >= 64) return;
+            fields_[fieldCount_] = t;
+            fieldIds_[fieldCount_] = id;
+            fieldCount_ = fieldCount_ + 1;
+        }
+        void registerCol(LinearLayout c, string id, string type, string cls) {
+            registerNode(c, id, type, cls);
+            if (colCount_ >= 64) return;
+            cols_[colCount_] = c;
+            colIds_[colCount_] = id;
+            colCount_ = colCount_ + 1;
+        }
+        void registerPanel(Panel p, string id, string type, string cls) {
+            registerNode(p, id, type, cls);
+            if (panelCount_ >= 64) return;
+            panels_[panelCount_] = p;
+            panelIds_[panelCount_] = id;
+            panelCount_ = panelCount_ + 1;
+        }
+
+        // 读属性（不存在返回空串）
+        string getStr(Json doc, string prefix, string name) {
+            if (doc.type(prefix + name) < 0) return "";
+            return doc.getString(prefix + name);
+        }
+        // 读整数（不存在返回 0）
+        int getInt(Json doc, string prefix, string name) {
+            if (doc.type(prefix + name) < 0) return 0;
+            return doc.getInt(prefix + name);
+        }
+        // 读尺寸（不存在返回缺省 def）
+        int dim(Json doc, string prefix, string name, int def) {
+            if (doc.type(prefix + name) < 0) return def;
+            return doc.getInt(prefix + name);
+        }
+}

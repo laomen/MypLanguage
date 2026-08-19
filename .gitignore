@@ -33,8 +33,6 @@ raylib-master*
 # IDE code stats (auto-generated)
 .CodeCounter/
 
-# mypview — 暂缓的 UI 项目（2026-08-10 从仓库移除，保留本地文件待后续恢复）
-mypview/
 __pycache__/
 BNCTDoseEngine/build/
 

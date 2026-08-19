@@ -1,0 +1,105 @@
+// linear_layout.myp — uikit 布局：LinearLayout（盒模型流式布局）
+// ---------------------------------------------------------------------------
+// 垂直（orientation=0）/ 水平（orientation=1）排列子控件：按 padding + spacing
+// 累加偏移调用每个子控件的 setFrame 计算位置。布局本身也是 View（可嵌套）。
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+class LinearLayout {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int orientation_;      // 0=垂直 1=水平
+        int padding_;
+        int spacing_;
+        View[] kids_;
+        int kidCount_;
+
+    action:
+        @constructor LinearLayout(int orientation, int w, int h) {
+            orientation_ = orientation;
+            w_ = w;
+            h_ = h;
+            padding_ = 8;
+            spacing_ = 8;
+            kids_ = new View[64];
+            kidCount_ = 0;
+        }
+
+        void setPadding(int p) { padding_ = p; }
+        void setSpacing(int s) { spacing_ = s; }
+        int getPadding() { return padding_; }
+
+        void add(View v) {
+            if (kidCount_ >= 64) return;
+            kids_[kidCount_] = v;
+            kidCount_ = kidCount_ + 1;
+        }
+
+        int childCount() { return kidCount_; }
+
+        // 布局：按 orientation 累加偏移，为每个子控件设置 frame。
+        // 注意：interface 数组元素经局部变量再调（安全模式）。
+        void layout() {
+            int cx = x_ + padding_;
+            int cy = y_ + padding_;
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                View kid = kids_[i];
+                int kw = kid.width();
+                int kh = kid.height();
+                if (orientation_ == 0) {
+                    // 垂直：子控件占满宽度，y 累加
+                    kid.setFrame(x_ + padding_, cy, w_ - 2 * padding_, kh);
+                    cy = cy + kh + spacing_;
+                } else {
+                    // 水平：子控件占满高度，x 累加
+                    kid.setFrame(cx, y_ + padding_, kw, h_ - 2 * padding_);
+                    cx = cx + kw + spacing_;
+                }
+            }
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                kid.draw(r);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                if (kid.hit(x, y) != 0) {
+                    kid.onTouch(x, y);
+                    return;
+                }
+            }
+        }
+
+        // 声明式引擎入口：容器加子 + 布局 + 属性（UixLoader 统一调用）
+        void addChild(View v) { add(v); }
+        void relayout() { layout(); }
+        void setAttr(string name, string value) {
+            if (name == "padding") setPadding(Str.toInt(value));
+            else if (name == "spacing") setSpacing(Str.toInt(value));
+        }
+}

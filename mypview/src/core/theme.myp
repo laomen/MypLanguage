@@ -1,0 +1,67 @@
+// theme.myp — uikit 核心：Theme 主题系统
+// ---------------------------------------------------------------------------
+// 统一管理 UI 配色（背景/表面/文本/强调/弱化），支持 dark/light 主题切换。
+// 应用层可创建 Theme 实例并传给控件配色，或经静态当前主题查询。
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+class Theme {
+    property:
+        int dark_;              // 1=深色主题 0=浅色主题
+        int bgColor_;           // 窗口背景
+        int surfaceColor_;      // 卡片/面板表面
+        int textColor_;         // 主文本
+        int subTextColor_;      // 次要文本
+        int accentColor_;       // 强调色（主按钮）
+        int mutedColor_;        // 弱化（禁用/边框）
+
+    action:
+        // 构造：0=浅色 1=深色（默认深色，与桌面壳一致）
+        @constructor Theme(int dark) {
+            dark_ = dark;
+            if (dark != 0)
+                applyDark();
+            else
+                applyLight();
+        }
+
+        // 应用深色主题
+        void applyDark() {
+            dark_ = 1;
+            bgColor_ = 0x14141C;        // 深蓝黑背景
+            surfaceColor_ = 0x1E1E2E;   // 卡片表面
+            textColor_ = 0xFFFFFF;      // 白文本
+            subTextColor_ = 0x9A9AB0;   // 灰文本
+            accentColor_ = 0x3A78DC;    // 蓝强调
+            mutedColor_ = 0x4A4A5A;     // 弱化边框
+        }
+
+        // 应用浅色主题
+        void applyLight() {
+            dark_ = 0;
+            bgColor_ = 0xF5F5F7;        // 浅灰背景
+            surfaceColor_ = 0xFFFFFF;   // 白卡片
+            textColor_ = 0x1C1C1E;      // 深文本
+            subTextColor_ = 0x8E8E93;   // 灰文本
+            accentColor_ = 0x007AFF;    // 系统蓝
+            mutedColor_ = 0xD1D1D6;     // 浅灰边框
+        }
+
+        // 切换主题（0=浅 1=深），返回当前主题
+        void setDark(int dark) {
+            if (dark != 0) applyDark();
+            else applyLight();
+        }
+        void toggle() { setDark(dark_ == 0 ? 1 : 0); }
+
+        int isDark() { return dark_; }
+        int bgColor() { return bgColor_; }
+        int surfaceColor() { return surfaceColor_; }
+        int textColor() { return textColor_; }
+        int subTextColor() { return subTextColor_; }
+        int accentColor() { return accentColor_; }
+        int mutedColor() { return mutedColor_; }
+
+        // 便捷：卡片背景（surface + 轻微阴影）
+        int cardColor() { return surfaceColor_; }
+        // 主按钮色（accent）
+        int buttonColor() { return accentColor_; }
+}

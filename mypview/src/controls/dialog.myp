@@ -1,0 +1,146 @@
+// dialog.myp — uikit 控件：Dialog（模态对话框）
+// ---------------------------------------------------------------------------
+// 手机式对话框：半透明遮罩 + 居中卡片面板 + 标题 + 内容文本 +
+// 确认/取消按钮。作为 View 加入页面 RootView 顶层即模态覆盖下层。
+// 事件：Confirm()（点确认）/ Cancel()（点取消/遮罩）。
+// 纯逻辑不依赖 SDL（用 Renderer 抽象，可 headless 测试）。
+class Dialog {
+    interface class View;
+
+    property:
+        string title_;
+        string message_;
+        int x_;           // 面板位置（居中计算）
+        int y_;
+        int w_;           // 面板宽
+        int h_;           // 面板高
+        int screenW_;
+        int screenH_;
+        int visible_;
+        int confirmX_;    // 确认按钮
+        int confirmY_;
+        int cancelX_;     // 取消按钮
+        int cancelY_;
+        int btnW_;
+        int btnH_;
+
+    event:
+        Confirm();
+        Cancel();
+
+    action:
+        @constructor Dialog(string title, string message, int screenW, int screenH) {
+            title_ = title;
+            message_ = message;
+            screenW_ = screenW;
+            screenH_ = screenH;
+            w_ = 640;
+            h_ = 380;
+            // 面板居中
+            x_ = (screenW_ - w_) / 2;
+            y_ = (screenH_ - h_) / 2 - 60;
+            // 底部两个按钮：取消（左，灰）确认（右，蓝）
+            btnW_ = 240;
+            btnH_ = 64;
+            confirmX_ = x_ + w_ - btnW_ - 40;
+            confirmY_ = y_ + h_ - btnH_ - 32;
+            cancelX_ = x_ + 40;
+            cancelY_ = y_ + h_ - btnH_ - 32;
+            visible_ = 1;
+        }
+
+        void setTitle(string t) { title_ = t; }
+        string getTitle() { return title_; }
+        void setMessage(string m) { message_ = m; }
+        int isVisible() { return visible_; }
+        void show() { visible_ = 1; }
+        void hide() { visible_ = 0; }
+        // 覆盖 View.visible 默认实现（返回显隐状态）
+        int visible() { return visible_; }
+
+        // 按钮几何（供命中测试/外部布局）
+        int getPanelX() { return x_; }
+        int getPanelY() { return y_; }
+        int getConfirmX() { return confirmX_; }
+        int getConfirmY() { return confirmY_; }
+        int getCancelX() { return cancelX_; }
+        int getCancelY() { return cancelY_; }
+        int getBtnW() { return btnW_; }
+        int getBtnH() { return btnH_; }
+
+        // View 接口（面板尺寸）
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            confirmX_ = x_ + w_ - btnW_ - 40;
+            confirmY_ = y_ + h_ - btnH_ - 32;
+            cancelX_ = x_ + 40;
+            cancelY_ = y_ + h_ - btnH_ - 32;
+        }
+
+        void draw(Renderer r) {
+            if (visible_ == 0) return;
+            // 遮罩（半透明黑：逐行变暗模拟）
+            for (int yy = 0; yy < screenH_; yy = yy + 2)
+                r.fillRect(0, yy, screenW_, 1, 0x0A0A12);
+            // 面板
+            r.fillRoundedRect(x_, y_, w_, h_, 16, 0xFFFFFF);
+            // 标题（深色）
+            r.drawText(x_ + 36, y_ + 32, title_, 3, 0x1C1C1E);
+            // 分隔线
+            r.fillRect(x_ + 36, y_ + 92, w_ - 72, 2, 0xE5E5EA);
+            // 内容文本（换行简化：按宽度折行）
+            drawMessage(r);
+            // 取消按钮（灰）
+            r.fillRoundedRect(cancelX_, cancelY_, btnW_, btnH_, 12, 0xE5E5EA);
+            r.drawText(cancelX_ + (btnW_ - Str.len("Cancel") * 12) / 2,
+                       cancelY_ + btnH_ / 2 - 16, "Cancel", 2, 0x3C3C43);
+            // 确认按钮（蓝）
+            r.fillRoundedRect(confirmX_, confirmY_, btnW_, btnH_, 12, 0x007AFF);
+            r.drawText(confirmX_ + (btnW_ - Str.len("OK") * 12) / 2,
+                       confirmY_ + btnH_ / 2 - 16, "OK", 2, Color.white());
+        }
+
+        // 内容文本折行绘制（每行最多 ~22 字符 @scale2）
+        void drawMessage(Renderer r) {
+            int maxCh = 20;
+            string rest = message_;
+            int lineY = y_ + 124;
+            while (Str.len(rest) > 0) {
+                int take = maxCh;
+                if (Str.len(rest) < take) take = Str.len(rest);
+                string line = Str.substring(rest, 0, take);
+                r.drawText(x_ + 36, lineY, line, 2, 0x4A4A55);
+                rest = Str.substring(rest, take, Str.len(rest));
+                lineY = lineY + 34;
+            }
+        }
+
+        int hit(int x, int y) {
+            if (visible_ == 0) return 0;
+            // 遮罩区域也算命中（拦截下层）
+            if (x >= 0 && x < screenW_ && y >= 0 && y < screenH_) return 1;
+            return 0;
+        }
+
+        // 触摸：确认/取消按钮 → 事件；面板外（遮罩）→ 取消
+        void onTouch(int x, int y) {
+            if (visible_ == 0) return;
+            if (x >= confirmX_ && x < confirmX_ + btnW_
+                && y >= confirmY_ && y < confirmY_ + btnH_) {
+                visible_ = 0;
+                Confirm();
+            } else if (x >= cancelX_ && x < cancelX_ + btnW_
+                       && y >= cancelY_ && y < cancelY_ + btnH_) {
+                visible_ = 0;
+                Cancel();
+            } else if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) {
+                // 面板内空白：不动作
+            } else {
+                // 遮罩点击 → 取消
+                visible_ = 0;
+                Cancel();
+            }
+        }
+}

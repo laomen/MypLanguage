@@ -1,0 +1,89 @@
+// app_icon.myp — uikit 控件：AppIcon（iOS 风格应用图标）
+// ---------------------------------------------------------------------------
+// 类 iOS 桌面图标：圆角方形图标（AppIcon 色块，radius≈22%）+ 下方小号标签。
+// 事件：Clicked(x,y)（应用层 mapping 绑定，如 Button.Clicked 同模式）。
+// 纯逻辑不依赖 SDL（用 Renderer 抽象，可 headless 测试）。
+import text;
+
+class AppIcon {
+    interface class View;
+
+    property:
+        string label_;
+        int x_;
+        int y_;
+        int w_;          // 整格宽（含标签）
+        int h_;          // 整格高（含标签）
+        int iconSize_;   // 图标方形边长
+        int iconColor_;
+        int iconRadius_;
+        int labelColor_;
+        int iconImg_;    // 图片图标句柄（-1=无，用色块+首字符）
+
+    event:
+        Clicked(int x, int y);
+
+    action:
+        @constructor AppIcon(string label, int x, int y, int w, int h) {
+            label_ = label;
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            iconSize_ = w - 8;            // 图标占格宽（留边）
+            if (iconSize_ > h - 40) iconSize_ = h - 40;   // 给标签留 40px（标签 scale2）
+            iconColor_ = Color.blue();
+            iconRadius_ = iconSize_ * 22 / 100;   // iOS 圆角 ≈22%
+            labelColor_ = Color.white();
+            iconImg_ = -1;
+        }
+
+        void setColor(int c) { iconColor_ = c; }
+        void setLabel(string t) { label_ = t; }
+        string getLabel() { return label_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+        // 设置图片图标（句柄由后端 SDL.loadBmp 加载后传入；-1=回落色块）
+        void setImageHandle(int h) { iconImg_ = h; }
+        int hasImage() { return iconImg_ >= 0 ? 1 : 0; }
+
+        // View 接口：固定尺寸
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            iconSize_ = w - 8;
+            if (iconSize_ > h - 40) iconSize_ = h - 40;
+            iconRadius_ = iconSize_ * 22 / 100;
+        }
+
+        // 图标方形中心（水平居中，标签上方）
+        int iconX() { return x_ + (w_ - iconSize_) / 2; }
+        int iconY() { return y_ + 4; }
+
+        void draw(Renderer r) {
+            if (iconImg_ >= 0) {
+                // 图片图标：直接绘制（缩放到图标区）
+                r.drawImage(iconImg_, iconX(), iconY(), iconSize_, iconSize_);
+            } else {
+                // 圆角图标（iOS 风格）+ 首字符
+                r.fillRoundedRect(iconX(), iconY(), iconSize_, iconSize_,
+                                  iconRadius_, iconColor_);
+                int cx = iconX() + iconSize_ / 2;
+                r.drawText(cx - 6, iconY() + iconSize_ / 2 - 16,
+                           Str.substring(label_, 0, 1), 2, Color.white());
+            }
+            // 底部标签（居中，放大 scale2）
+            int tw = Str.len(label_) * 12;
+            r.drawText(x_ + (w_ - tw) / 2, y_ + h_ - 30, label_, 2, labelColor_);
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            Clicked(x, y);
+        }
+}

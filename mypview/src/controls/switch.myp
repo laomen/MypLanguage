@@ -1,0 +1,62 @@
+// switch.myp — uikit 控件：Switch（开/关开关，iOS/安卓风格）
+// ---------------------------------------------------------------------------
+// 点击切换开/关，触发 Toggled(value)。纯逻辑不依赖 SDL（用 Renderer 抽象，
+// 可 headless 测试）。on 状态 = 填充主题色；off = 灰色圆角矩形 + 圆形滑块。
+class Switch {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int on_;
+        int color_;
+
+    event:
+        Toggled(int value);
+
+    action:
+        @constructor Switch(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            on_ = 0;
+            color_ = Color.green();
+        }
+
+        void setOn(int v) { on_ = v; }
+        int getOn() { return on_; }
+        void toggle() { setOn(on_ == 0 ? 1 : 0); }
+        void setColor(int c) { color_ = c; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            int track = on_ != 0 ? color_ : Color.gray();
+            r.fillRoundedRect(x_, y_, w_, h_, h_ / 2, track);
+            // 圆形滑块（左右两半）
+            int knobR = h_ - 8;
+            int cx = on_ != 0 ? x_ + w_ - h_ / 2 : x_ + h_ / 2;
+            r.fillRect(cx - knobR / 2, y_ + 4, knobR, h_ - 8, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点击切换 + 触发 Toggled
+        void onTouch(int x, int y) {
+            toggle();
+            Toggled(on_);
+        }
+}

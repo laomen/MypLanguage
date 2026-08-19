@@ -1,0 +1,53 @@
+// coro_anim.myp — uikit 动画：协程驱动（@coro + await，不阻塞 UI 线程）
+// ---------------------------------------------------------------------------
+// 与 Tween（帧驱动，调用方手动 tick）互补：动画循环写成协程——顺序式
+// 「推进 → await 挂起 → 调度器 resume 下一步」，代码即流程，60fps 不占线程。
+// 用法：
+//   CoroAnim a = new CoroAnim(0.0, 100.0, 1000.0);
+//   long h = a.run(16.0);      // @coro 启动（首步推进后挂起），返回 handle
+//   主循环每帧 Coro.scheduler();   // 自动 resume 所有就绪协程
+//   double v = a.value();      // 当前插值（协程推进 elapsed_ 期间可随时读）
+//   也可手动 Coro.resume(h, 0) 驱动（headless 测试确定性）。
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+import coro;
+
+class CoroAnim {
+    property:
+        double from_;
+        double to_;
+        double duration_;
+        double elapsed_;
+        int finished_;
+
+    action:
+        @constructor CoroAnim(double from, double to, double duration) {
+            from_ = from;
+            to_ = to;
+            duration_ = duration;
+            elapsed_ = 0.0;
+            finished_ = 0;
+        }
+
+        // @coro 动画循环：每步推进 stepMs 后挂起（await），由调度器 resume 下一步。
+        // elapsed_ 达到 duration_ 后置 finished_ 并结束。
+        @coro long run(double stepMs) {
+            while (elapsed_ < duration_) {
+                elapsed_ = elapsed_ + stepMs;
+                if (elapsed_ > duration_) elapsed_ = duration_;
+                await;
+            }
+            finished_ = 1;
+            return 0L;
+        }
+
+        double value() {
+            double p = elapsed_ / duration_;
+            if (p < 0.0) p = 0.0;
+            if (p > 1.0) p = 1.0;
+            return from_ + (to_ - from_) * p;
+        }
+
+        double elapsedMs() { return elapsed_; }
+        int finished() { return finished_; }
+        void reset() { elapsed_ = 0.0; finished_ = 0; }
+}

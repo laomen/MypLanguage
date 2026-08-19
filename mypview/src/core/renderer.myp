@@ -1,0 +1,91 @@
+// renderer.myp — uikit 核心：Renderer 接口 + 颜色工具
+// ---------------------------------------------------------------------------
+// Renderer 是绘制抽象（MYP interface）：软件 / SDL2 / GPU 后端可替换，UI 层不感知。
+// 颜色用 24 位 RGB 打包进 int：((r<<16)|(g<<8)|b)，后端自行拆解。
+// 本文件不依赖 SDL——headless 测试可用 MockRenderer 实现。
+import text;
+
+// ---- 颜色工具 ----
+class Color {
+    static:
+        int rgb(int r, int g, int b) { return (r << 16) | (g << 8) | b; }
+        int white() { return 0xFFFFFF; }
+        int black() { return 0x000000; }
+        int blue()  { return 0x3A78DC; }
+        int green() { return 0x2ECC71; }
+        int red()   { return 0xE74C3C; }
+        int gray()  { return 0x888888; }
+        int dark()  { return 0x14141C; }
+        int light() { return 0xE8E8E8; }
+        // 常用语义色（手机 UI）
+        int orange() { return 0xF39C12; }
+        int purple() { return 0x9B59B6; }
+        int teal()   { return 0x1ABC9C; }
+        int cyan()   { return 0x3498DB; }
+        int pink()   { return 0xE91E63; }
+        int amber()  { return 0xF1C40F; }
+        int brown()  { return 0x795548; }
+        int blueGrey(){ return 0x607D8B; }
+        int indigo() { return 0x3F51B5; }
+        int darkBlue(){ return 0x1A237E; }
+        int softRed() { return 0xEF5350; }
+        int softGreen(){ return 0x66BB6A; }
+        // 半透明叠色（在底色上叠加白色/黑色的比例）
+        // 纯色叠白（提亮）：白色 alpha 比例 a（0..100）
+        int lighten(int c, int a) {
+            int r = (c >> 16) & 0xFF;
+            int g = (c >> 8) & 0xFF;
+            int b = c & 0xFF;
+            r = r + (255 - r) * a / 100;
+            g = g + (255 - g) * a / 100;
+            b = b + (255 - b) * a / 100;
+            return (r << 16) | (g << 8) | b;
+        }
+        // 纯色叠黑（压暗）：黑色比例 a（0..100）
+        int darken(int c, int a) {
+            int r = (c >> 16) & 0xFF;
+            int g = (c >> 8) & 0xFF;
+            int b = c & 0xFF;
+            r = r - r * a / 100;
+            g = g - g * a / 100;
+            b = b - b * a / 100;
+            return (r << 16) | (g << 8) | b;
+        }        // 十六进制字符值（idx 从 1 起，h 形如 "#RRGGBB"）
+        int hexVal(string h, int idx) {
+            string ch = Str.substring(h, idx, idx + 1);
+            if (ch == "0") return 0;
+            if (ch == "1") return 1;
+            if (ch == "2") return 2;
+            if (ch == "3") return 3;
+            if (ch == "4") return 4;
+            if (ch == "5") return 5;
+            if (ch == "6") return 6;
+            if (ch == "7") return 7;
+            if (ch == "8") return 8;
+            if (ch == "9") return 9;
+            if (ch == "a" || ch == "A") return 10;
+            if (ch == "b" || ch == "B") return 11;
+            if (ch == "c" || ch == "C") return 12;
+            if (ch == "d" || ch == "D") return 13;
+            if (ch == "e" || ch == "E") return 14;
+            if (ch == "f" || ch == "F") return 15;
+            return 0;
+        }
+        // 解析 "#RRGGBB" 十六进制颜色字符串 → 24 位 RGB int（声明式样式用）
+        int fromHex(string h) {
+            int r = Color.hexVal(h, 1) * 16 + Color.hexVal(h, 2);
+            int g = Color.hexVal(h, 3) * 16 + Color.hexVal(h, 4);
+            int b = Color.hexVal(h, 5) * 16 + Color.hexVal(h, 6);
+            return (r << 16) | (g << 8) | b;
+        }}
+
+// ---- 绘制抽象 ----
+interface Renderer {
+    void fillRect(int x, int y, int w, int h, int color);
+    void outlineRect(int x, int y, int w, int h, int color);
+    void fillRoundedRect(int x, int y, int w, int h, int radius, int color);
+    void drawLine(int x1, int y1, int x2, int y2, int color);
+    // 绘制图片（handle 由后端加载；-1 则跳过）
+    void drawImage(int handle, int x, int y, int w, int h);
+    void drawText(int x, int y, string text, int scale, int color);
+}

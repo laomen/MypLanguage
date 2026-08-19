@@ -1,0 +1,58 @@
+// prop_bag.myp — UIX 框架：ViewModel 接口 + PropBag 属性袋
+// ---------------------------------------------------------------------------
+// MVVM 架构的 VM 侧支撑：
+//   - ViewModel：VM 需实现的接口（UixLoader 读属性 getProp / 执行命令 runCmd）
+//   - PropBag：name→string 属性袋，VM 用「组合」方式存状态（MYP 无类继承）
+// 纯逻辑不依赖 SDL，可 headless 测试。
+import env;
+import text;
+
+// VM 接口：声明式引擎只依赖这两个方法，不感知具体 VM 类型。
+//   getProp(name) — 读 VM 属性（UixLoader.sync 绑定刷新时调用）
+//   runCmd(name)  — 执行 VM 命令（控件事件经 mapping → 应用层 → runCmd）
+interface ViewModel {
+    string getProp(string name);
+    void runCmd(string name);
+}
+
+// 属性袋：name → string 值（最多 64 项）。
+// VM 组合一个 PropBag 即获得「可被 UIX 绑定读取」的状态存储。
+class PropBag {
+    property:
+        string[] names_;
+        string[] vals_;
+        int count_;
+
+    action:
+        @constructor PropBag() {
+            names_ = new string[64];
+            vals_ = new string[64];
+            count_ = 0;
+        }
+
+        // 设置属性（已存在则覆盖）
+        void set(string name, string v) {
+            for (int i = 0; i < count_; i = i + 1) {
+                if (names_[i] == name) { vals_[i] = v; return; }
+            }
+            if (count_ >= 64) return;
+            names_[count_] = name;
+            vals_[count_] = v;
+            count_ = count_ + 1;
+        }
+
+        // 读属性（不存在返回空串）
+        string get(string name) {
+            for (int i = 0; i < count_; i = i + 1) {
+                if (names_[i] == name) return vals_[i];
+            }
+            return "";
+        }
+
+        int has(string name) {
+            for (int i = 0; i < count_; i = i + 1) {
+                if (names_[i] == name) return 1;
+            }
+            return 0;
+        }
+}

@@ -1,0 +1,75 @@
+// panel.myp — uikit 控件：Panel（容器，持有子控件并向下分发）
+class Panel {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        View[] kids_;
+        int kidCount_;
+        int color_;      // 背景色（0=未设置，不绘制背景）
+        int hasColor_;
+
+    action:
+        @constructor Panel(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            kids_ = new View[64];
+            kidCount_ = 0;
+            color_ = 0;
+            hasColor_ = 0;
+        }
+
+        void setColor(int c) { color_ = c; hasColor_ = 1; }
+        int getColor() { return color_; }
+
+        void add(View v) {
+            if (kidCount_ >= 64) return;
+            kids_[kidCount_] = v;
+            kidCount_ = kidCount_ + 1;
+        }
+
+        int childCount() { return kidCount_; }
+
+        // View 接口：固定尺寸容器
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (hasColor_ != 0) r.fillRect(x_, y_, w_, h_, color_);
+            for (int i = 0; i < kidCount_; i = i + 1) {
+                kids_[i].draw(r);
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.hit(x, y) != 0) {
+                    kid.onTouch(x, y);
+                    return;
+                }
+            }
+        }
+
+        // 声明式引擎入口：容器加子 + 属性
+        void addChild(View v) { add(v); }
+        void setAttr(string name, string value) {
+            if (name == "color" || name == "bg") setColor(Color.fromHex(value));
+        }
+}

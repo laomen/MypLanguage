@@ -1,0 +1,70 @@
+// root.myp — uikit 核心：RootView（组件树根）
+// ---------------------------------------------------------------------------
+// 持有子控件列表（View[]，接口数组），负责：
+//   - draw()：遍历绘制
+//   - onTouch(x,y)：从后往前命中测试（后加入者在上层），命中则回调
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+class RootView {
+    property:
+        View[] children_;
+        int count_;
+        int width_;
+        int height_;
+
+    action:
+        @constructor RootView(int max, int width, int height) {
+            children_ = new View[max];
+            count_ = 0;
+            width_ = width;
+            height_ = height;
+        }
+
+        void add(View v) {
+            if (count_ >= 200) return;
+            children_[count_] = v;
+            count_ = count_ + 1;
+        }
+
+        // 用 newV 替换第一个等于 oldV 的子项（动态重建场景，如安装/卸载后重建网格）
+        void replace(View oldV, View newV) {
+            for (int i = 0; i < count_; i = i + 1) {
+                if (children_[i] == oldV) {
+                    children_[i] = newV;
+                    return;
+                }
+            }
+        }
+
+        int childCount() { return count_; }
+        int width()  { return width_; }
+        int height() { return height_; }
+
+        // View 接口补齐：根全屏命中（分发交给 onTouch）；setFrame 更新尺寸；
+        // addChild 供 UIX 声明式引擎统一构建（根也是容器）。
+        int hit(int x, int y) { return 1; }
+        void setFrame(int x, int y, int w, int h) {
+            width_ = w;
+            height_ = h;
+        }
+        void addChild(View v) { add(v); }
+
+        void draw(Renderer r) {
+            for (int i = 0; i < count_; i = i + 1) {
+                if (children_[i].visible() == 0) continue;   // 跳过隐藏
+                children_[i].draw(r);
+            }
+        }
+
+        // 触摸分发：从后往前命中测试，命中则回调；返回 1=已分发
+        int onTouch(int x, int y) {
+            for (int i = count_ - 1; i >= 0; i = i - 1) {
+                View child = children_[i];
+                if (child.visible() == 0) continue;          // 跳过隐藏
+                if (child.hit(x, y) != 0) {
+                    child.onTouch(x, y);
+                    return 1;
+                }
+            }
+            return 0;
+        }
+}

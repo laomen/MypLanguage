@@ -1,0 +1,39 @@
+// sdl_renderer.myp — uikit 渲染后端：SDL2 软件渲染（实现 Renderer 接口）
+// 颜色（24 位 RGB int）在此拆解为 (r,g,b,a) 传给 sdl.myp。
+import sdl;
+
+class SdlRenderer {
+    interface class Renderer;
+
+    action:
+        @constructor SdlRenderer() {}
+
+        void fillRect(int x, int y, int w, int h, int color) {
+            SDL.drawRect(x, y, w, h,
+                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+        }
+
+        void fillRoundedRect(int x, int y, int w, int h, int radius, int color) {
+            SDL.drawRoundedRect(x, y, w, h, radius,
+                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+        }
+
+        void outlineRect(int x, int y, int w, int h, int color) {
+            SDL.drawOutline(x, y, w, h,
+                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+        }
+
+        void drawLine(int x1, int y1, int x2, int y2, int color) {
+            SDL.drawLine(x1, y1, x2, y2,
+                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+        }
+
+        void drawImage(int handle, int x, int y, int w, int h) {
+            if (handle >= 0) SDL.drawImage(handle, x, y, w, h);
+        }
+
+        void drawText(int x, int y, string text, int scale, int color) {
+            SDL.drawText(x, y, text, scale,
+                (color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 255);
+        }
+}

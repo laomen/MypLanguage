@@ -1,0 +1,85 @@
+// slider.myp — uikit 控件：Slider（滑块，拖拽/点击设定值）
+// ---------------------------------------------------------------------------
+// value 范围 [min,max]；onTouch(x,y) 按点击位置线性映射设定值，触发
+// ValueChanged(value)。纯逻辑 headless 可测。
+class Slider {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int min_;
+        int max_;
+        int value_;
+        int color_;
+
+    event:
+        ValueChanged(int value);
+
+    action:
+        @constructor Slider(int x, int y, int w, int h, int min, int max) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            min_ = min;
+            max_ = max;
+            value_ = min;
+            color_ = Color.blue();
+        }
+
+        void setValue(int v) {
+            if (v < min_) v = min_;
+            if (v > max_) v = max_;
+            value_ = v;
+        }
+        int getValue() { return value_; }
+        void setColor(int c) { color_ = c; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // 归一化位置 0..w-1（value → 像素）
+        int valueToX(int v) {
+            if (max_ <= min_) return x_;
+            return x_ + (v - min_) * (w_ - 1) / (max_ - min_);
+        }
+        // 像素 → value（clamp）
+        int xToValue(int px) {
+            if (max_ <= min_) return min_;
+            int v = min_ + (px - x_) * (max_ - min_) / (w_ - 1);
+            if (v < min_) v = min_;
+            if (v > max_) v = max_;
+            return v;
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 轨道
+            int ty = y_ + h_ / 2 - 2;
+            r.fillRect(x_, ty, w_, 4, Color.gray());
+            // 已填充段
+            int fx = valueToX(value_);
+            if (fx > x_) r.fillRect(x_, ty, fx - x_, 4, color_);
+            // 滑块圆点
+            r.fillRect(fx - 8, y_, 16, h_, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点击/拖拽：按 x 位置设定值
+        void onTouch(int x, int y) {
+            setValue(xToValue(x));
+            ValueChanged(value_);
+        }
+}

@@ -1,0 +1,57 @@
+// label.myp — uikit 控件：Label（文本，不可交互）
+// 注：5×7 位图字体，字符宽 6、高 8（含间距），textW = 字符数 × scale × 6。
+import text;
+
+class Label {
+    interface class View;
+
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int scale_;
+        int color_;
+
+    action:
+        @constructor Label(string text, int x, int y, int scale) {
+            text_ = text;
+            x_ = x;
+            y_ = y;
+            scale_ = scale;
+            color_ = Color.white();
+        }
+
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+        void setText(string t) { text_ = t; }
+        string getText() { return text_; }
+        int textW() { return Str.len(text_) * scale_ * 6; }
+        int textH() { return scale_ * 8; }
+
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "text") setText(value);
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // View 接口：Label 尺寸由文本决定，setFrame 只改位置（尺寸忽略）
+        int width() { return textW(); }
+        int height() { return textH(); }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+        }
+
+        void draw(Renderer r) {
+            r.drawText(x_, y_, text_, scale_, color_);
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + textW() && y >= y_ && y < y_ + textH()) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            // 文本不可交互
+        }
+}

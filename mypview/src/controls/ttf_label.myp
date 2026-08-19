@@ -1,0 +1,61 @@
+// ttf_label.myp — uikit 控件：TtfLabel（中文/Unicode 文本，SDL_ttf 渲染）
+// ---------------------------------------------------------------------------
+// 与 Label 同接口（实现 View），但用 stdlib/ttf.myp（SDL_ttf + Noto CJK 等系统
+// 字体）渲染 UTF-8 文本（含中文），替代 Label 的 5×7 位图（仅 ASCII）。
+//
+// 桥接链接由 mypc 通用桥接发现自动完成（无需改编译器）：myp_ttf_* 未定义符号
+// → stdlib/bridges/sdl_ttf_bridge.c（-lSDL2_ttf）→ 固定点迭代拉入依赖的
+// sdl_bridge.c（myp_sdl_get_renderer，-lSDL2）。
+import ttf;
+import text;
+
+class TtfLabel {
+    interface class View;
+
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int px_;          // 字号（像素）
+        int color_;
+
+    action:
+        @constructor TtfLabel(string text, int x, int y, int px) {
+            text_ = text;
+            x_ = x;
+            y_ = y;
+            px_ = px;
+            color_ = Color.white();
+            Ttf.init(px_);   // 幂等：桥内 g_font_loaded 防重复加载
+        }
+
+        void setColor(int c) { color_ = c; }
+        void setText(string t) { text_ = t; }
+        string getText() { return text_; }
+        // 近似宽度（UTF-8 字节数 × 字号；仅用于布局/命中，非精确排版）
+        int textW() { return Str.len(text_) * px_ / 2; }
+        int textH() { return px_; }
+
+        // View 接口：尺寸由文本决定，setFrame 只改位置
+        int width() { return textW(); }
+        int height() { return textH(); }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+        }
+
+        void draw(Renderer r) {
+            // 直接用 ttf 桥渲染到当前 SDL 渲染器（含中文/抗锯齿）
+            Ttf.drawText(x_, y_, text_, 1,
+                (color_ >> 16) & 0xFF, (color_ >> 8) & 0xFF, color_ & 0xFF, 255);
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + textW() && y >= y_ && y < y_ + textH()) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            // 文本不可交互
+        }
+}

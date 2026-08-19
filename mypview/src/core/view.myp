@@ -1,0 +1,37 @@
+// view.myp — uikit 核心：View 接口（控件 = 实现 View 的 class）
+// ---------------------------------------------------------------------------
+// 控件即语言组件：draw 绘制、hit 命中测试、onTouch 触摸回调（内部可 fire event，
+// 由应用层 mapping 绑定）。本文件不依赖 SDL。
+//
+// 接口方法带默认体（v3.9 trait 默认方法）：visible()/enabled() 提供通用能力，
+// 所有控件自动继承，需要定制的控件可覆盖（如 Panel 可管理子控件显隐）。
+interface View {
+    void draw(Renderer r);
+    int hit(int x, int y);        // 1 = 命中
+    void onTouch(int x, int y);
+    int width();                  // 内容/布局宽度（供布局系统查询）
+    int height();                 // 内容/布局高度（供布局系统查询）
+    void setFrame(int x, int y, int w, int h);   // 布局设置位置与尺寸
+
+    // ---- 通用能力（默认实现，控件可覆盖）----
+    // 是否可见（1=显示 0=隐藏）。容器（RootView/布局）绘制/命中时跳过隐藏控件。
+    // 注：默认恒可见；需要可隐藏的控件覆盖此方法返回自身状态字段。
+    int visible() { return 1; }
+    // 是否可用（1=可交互 0=禁用）。禁用控件不应响应触摸。
+    // 默认可用；需要禁用态的控件覆盖（如 Button 禁用置灰 + 不响应）。
+    int enabled() { return 1; }
+
+    // ---- 声明式引擎统一入口（UIX 框架底层支撑）----
+    // UixLoader 按属性名把字符串值写入控件。
+    // 默认无操作；需要声明式配置的控件覆写此方法解析 name/value。
+    // 支持值格式：字符串（text）、"#RRGGBB"（color/bg）、十进制数（padding 等）。
+    void setAttr(string name, string value) {}
+
+    // 容器接口：添加子控件（RootView/LinearLayout/Panel 覆写）。
+    // 默认无操作（叶子控件忽略）。UixLoader 用它统一构建树，无需类型下转。
+    void addChild(View v) {}
+
+    // 布局接口：容器内容变更后重新排布子控件（LinearLayout 覆写调 layout()）。
+    // 默认无操作；UixLoader 构建完树后统一调用。
+    void relayout() {}
+}

@@ -1,0 +1,114 @@
+// scroll_view.myp — uikit 控件：ScrollView（通用滚动容器）
+// ---------------------------------------------------------------------------
+// 持有任意内容 View，在固定视口内滚动查看（内容超出视口时可滚动）。
+// scrollTo/scrollBy 设置滚动偏移（clamp 到 [0, maxScroll]）；onTouch 将触摸
+// 平移后转给内容控件（滚动 + 命中）；hit 只响应视口内。
+// 纯逻辑不依赖 SDL，可 headless 测试（View 可替换为任意控件）。
+class ScrollView {
+    interface class View;
+
+    property:
+        View content_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int scrollX_;
+        int scrollY_;
+
+    action:
+        @constructor ScrollView(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            scrollX_ = 0;
+            scrollY_ = 0;
+        }
+
+        // 设置内容（布局系统在内容 frame 里排布子控件）
+        void setContent(View v) { content_ = v; }
+        View getContent() { return content_; }
+
+        // 内容总尺寸（供计算可滚动范围）
+        int contentWidth() {
+            if (content_ == null) return 0;
+            return content_.width();
+        }
+        int contentHeight() {
+            if (content_ == null) return 0;
+            return content_.height();
+        }
+
+        // 最大滚动偏移（内容超出视口的量，clamp >= 0）
+        int maxScrollX() {
+            int m = contentWidth() - w_;
+            if (m < 0) m = 0;
+            return m;
+        }
+        int maxScrollY() {
+            int m = contentHeight() - h_;
+            if (m < 0) m = 0;
+            return m;
+        }
+        int getScrollX() { return scrollX_; }
+        int getScrollY() { return scrollY_; }
+
+        void scrollBy(int dx, int dy) { scrollTo(scrollX_ + dx, scrollY_ + dy); }
+
+        // 设置滚动偏移（clamp）
+        void scrollTo(int x, int y) {
+            if (x < 0) x = 0;
+            if (x > maxScrollX()) x = maxScrollX();
+            if (y < 0) y = 0;
+            if (y > maxScrollY()) y = maxScrollY();
+            scrollX_ = x;
+            scrollY_ = y;
+        }
+
+        // 拖拽（触摸从 from 到 to 的位移，向上拖=内容上移=scroll 增大）
+        void dragTo(int fromX, int fromY, int toX, int toY) {
+            scrollBy(fromX - toX, fromY - toY);
+        }
+
+        // View 接口：固定尺寸容器
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 视口背景
+            r.fillRect(x_, y_, w_, h_, Color.dark());
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            if (content_ == null) return;
+            // 只绘制视口内内容（粗裁剪：内容整体相对视口偏移）
+            int cx = x_ - scrollX_;
+            int cy = y_ - scrollY_;
+            // 内容绘制到自身坐标（此处简化为：内容 frame 已含滚动，
+            // 通过内容自己的 frame 偏移实现；实际平移绘制由内容决定）
+            content_.draw(r);
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 触摸：平移坐标后转给内容控件（滚动感知命中）
+        void onTouch(int x, int y) {
+            if (content_ == null) return;
+            // 视口坐标 → 内容坐标（+滚动偏移）
+            int cx = x - x_ + scrollX_;
+            int cy = y - y_ + scrollY_;
+            // 内容控件 frame 起点 = 视口起点 - 滚动偏移
+            int ccx = x_ - scrollX_;
+            int ccy = y_ - scrollY_;
+            // 内容命中：用内容坐标
+            content_.onTouch(cx, cy);
+        }
+}

@@ -1,0 +1,99 @@
+// uix_logic.myp — UIX 声明式 UI 引擎 headless 测试
+// ---------------------------------------------------------------------------
+// 验证 UixLoader：.uix 解析构建 View 树 / .usp 样式应用 / VM 绑定 sync /
+// 命令分发（onCmd→cmdFor→runCmd）/ 类型化访问器（labelById 等）。
+// 预期输出（scripts/run_uix_logic.sh 校验）：
+//   uix nodes=5 binds=1 cmds=1 type(ok)=Button
+//   uix cmdFor(ok)=login
+//   uix style title=1C1C1E status=E74C3C ok=7AFF
+//   uix bind status=ready (init)
+//   uix runCmd status=ok-login (after)
+//   uix sync status=ok-login
+import env;
+import fmt;
+
+// 示例 VM：登录界面 ViewModel（组合 PropBag，实现 ViewModel 接口）
+class LoginVM {
+    interface class ViewModel;
+    property:
+        PropBag bag_;
+    action:
+        @constructor LoginVM() {
+            bag_ = new PropBag();
+            bag_.set("status", "ready");
+        }
+        string getProp(string name) { return bag_.get(name); }
+        void runCmd(string name) {
+            if (name == "login") bag_.set("status", "ok-login");
+        }
+}
+
+class Main {
+    action:
+        @constructor Main() {
+            // ---- .uix 界面描述（内嵌字符串，headless）----
+            string uix =
+                "{\"type\":\"Column\",\"id\":\"root\","
+                + "\"x\":60,\"y\":60,\"width\":520,\"height\":320,"
+                + "\"padding\":28,\"spacing\":18,\"children\":["
+                + "{\"type\":\"Label\",\"id\":\"title\",\"text\":\"MOS Login\","
+                + "\"scale\":3,\"class\":\"title\"},"
+                + "{\"type\":\"TextField\",\"id\":\"user\",\"text\":\"\",\"class\":\"input\"},"
+                + "{\"type\":\"Button\",\"id\":\"ok\",\"text\":\"Login\","
+                + "\"onCmd\":\"login\",\"class\":\"primary\"},"
+                + "{\"type\":\"Label\",\"id\":\"status\",\"text\":\"\","
+                + "\"bind\":\"status\",\"class\":\"status\"}"
+                + "]}";
+            // ---- .usp 样式表 ----
+            string usp =
+                "[{\"sel\":\"Label.title\",\"props\":[{\"k\":\"color\",\"v\":\"#1C1C1E\"}]},"
+                + "{\"sel\":\"TextField.input\",\"props\":[{\"k\":\"color\",\"v\":\"#E5E5EA\"}]},"
+                + "{\"sel\":\"Button.primary\",\"props\":[{\"k\":\"bg\",\"v\":\"#007AFF\"}]},"
+                + "{\"sel\":\"Label.status\",\"props\":[{\"k\":\"color\",\"v\":\"#E74C3C\"}]}]";
+
+            UixLoader loader = new UixLoader(uix, usp);
+            RootView rv = new RootView(16, 640, 480);
+            loader.buildInto(rv);
+            Console.writeLine("uix kids=" + Fmt.i(rv.childCount()));
+
+            // 构建：节点数（root/title/user/ok/status = 5）、绑定、命令
+            Console.writeLine("uix nodes=" + Fmt.i(loader.nodeCount())
+                              + " binds=" + Fmt.i(loader.bindCount())
+                              + " cmds=" + Fmt.i(loader.cmdCount())
+                              + " type(ok)=" + loader.typeOf("ok"));
+            // 命令表
+            Console.writeLine("uix cmdFor(ok)=" + loader.cmdFor("ok"));
+
+            // 样式应用：类型化访问器读回控件状态（MYP 无下转，用构建时保留的引用）
+            int ti = loader.labelIdxOf("title");
+            int si = loader.labelIdxOf("status");
+            int oi = loader.buttonIdxOf("ok");
+            string titleColor = Fmt.x(loader.labelAt(ti).getColor());
+            string statusColor = Fmt.x(loader.labelAt(si).getColor());
+            string okBg = Fmt.x(loader.buttonAt(oi).getColor());
+            Console.writeLine("uix style title=" + titleColor
+                              + " status=" + statusColor
+                              + " ok=" + okBg);
+
+            // 绑定初始同步：VM 值写入 status 控件
+            LoginVM vm = new LoginVM();
+            loader.sync(vm);
+            Console.writeLine("uix bind status=" + loader.labelAt(si).getText()
+                              + " (init)");
+
+            // 命令分发：模拟点击 ok → cmdFor → runCmd → sync
+            string cmd = loader.cmdFor("ok");
+            vm.runCmd(cmd);
+            Console.writeLine("uix runCmd status=" + vm.getProp("status"));
+            loader.sync(vm);
+            Console.writeLine("uix sync status=" + loader.labelAt(si).getText());
+
+            // 命中测试：ok 按钮中心 → hitId
+            Button ok = loader.buttonAt(oi);
+            string hitId = loader.hitId(ok.getX() + ok.width() / 2,
+                                        ok.getY() + ok.height() / 2);
+            Console.writeLine("uix hitId=" + hitId);
+        }
+}
+
+int main() { Main m = new Main(); return 0; }

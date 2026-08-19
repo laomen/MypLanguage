@@ -1,0 +1,62 @@
+// progress_bar.myp — uikit 控件：ProgressBar（进度条）
+// ---------------------------------------------------------------------------
+// value 范围 [min,max]；setProgress 设值（clamp），draw 按比例填充。
+// 纯逻辑 headless 可测（不交互，无事件）。
+class ProgressBar {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int min_;
+        int max_;
+        int value_;
+        int color_;
+
+    action:
+        @constructor ProgressBar(int x, int y, int w, int h, int min, int max) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            min_ = min;
+            max_ = max;
+            value_ = min;
+            color_ = Color.green();
+        }
+
+        void setProgress(int v) {
+            if (v < min_) v = min_;
+            if (v > max_) v = max_;
+            value_ = v;
+        }
+        int getValue() { return value_; }
+        // 填充比例 0..1（double）
+        double fraction() {
+            if (max_ <= min_) return 0.0;
+            return double(value_ - min_) / double(max_ - min_);
+        }
+        void setColor(int c) { color_ = c; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 背景槽
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            // 填充段
+            int fw = int(fraction() * double(w_));
+            if (fw > 0) r.fillRect(x_ + 1, y_ + 1, fw - 2 > 0 ? fw - 2 : fw, h_ - 2, color_);
+        }
+
+        int hit(int x, int y) { return 0; }
+        void onTouch(int x, int y) {}
+}

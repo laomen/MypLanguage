@@ -1,0 +1,106 @@
+// list.myp — uikit 控件：List（文本列表 + 垂直滚动）
+// ---------------------------------------------------------------------------
+// 持有字符串项；draw 按 scrollY 裁剪绘制可见项（只画视口内行）；onTouch 命中项
+// → ItemClicked(index, x, y) 事件（应用层 mapping 绑定）。滚动经 scrollBy /
+// dragTo 驱动（滚轮 / 触摸拖拽 / 测试均可），scrollY clamp 到 [0, 内容高-视口高]。
+// 纯逻辑，不依赖 SDL，可 headless 测试。
+class List {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        string[] items_;
+        int itemCount_;
+        int rowH_;        // 行高
+        int scrollY_;     // 垂直滚动偏移（像素，0=顶部）
+        int color_;
+
+    event:
+        ItemClicked(int index, int x, int y);
+
+    action:
+        @constructor List(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            items_ = new string[256];
+            itemCount_ = 0;
+            rowH_ = 20;
+            scrollY_ = 0;
+            color_ = Color.dark();
+        }
+
+        void setRowHeight(int rh) { rowH_ = rh; }
+        int getRowHeight() { return rowH_; }
+        void setColor(int c) { color_ = c; }
+
+        void addItem(string s) {
+            if (itemCount_ >= 256) return;
+            items_[itemCount_] = s;
+            itemCount_ = itemCount_ + 1;
+        }
+
+        void clear() { itemCount_ = 0; scrollY_ = 0; }
+        int itemCount() { return itemCount_; }
+        string getItem(int i) {
+            if (i < 0 || i >= itemCount_) return "";
+            return items_[i];
+        }
+
+        // 内容总高（决定最大滚动范围）
+        int contentHeight() { return itemCount_ * rowH_; }
+
+        // 滚动（clamp 到 [0, 内容高-视口高]，未超出则不滚）
+        void scrollBy(int dy) { setScroll(scrollY_ + dy); }
+        void setScroll(int y) {
+            int maxS = contentHeight() - h_;
+            if (maxS < 0) maxS = 0;
+            if (y < 0) y = 0;
+            if (y > maxS) y = maxS;
+            scrollY_ = y;
+        }
+        int getScroll() { return scrollY_; }
+
+        // 触摸拖拽：fromY → toY 的位移（向上拖=内容上移=scroll 增大）
+        void dragTo(int fromY, int toY) { scrollBy(toY - fromY); }
+
+        // View 接口：固定尺寸容器
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            // 只绘制视口内可见行（裁剪）
+            int first = scrollY_ / rowH_;
+            int count = h_ / rowH_ + 2;
+            for (int i = first; i < itemCount_ && i < first + count; i = i + 1) {
+                int iy = y_ + i * rowH_ - scrollY_;
+                r.drawText(x_ + 6, iy + 4, items_[i], 2, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 触摸：命中项（含滚动偏移换算）→ 触发 ItemClicked
+        void onTouch(int x, int y) {
+            int relY = y - y_ + scrollY_;   // 内容坐标
+            int idx = relY / rowH_;
+            if (idx >= 0 && idx < itemCount_) {
+                ItemClicked(idx, x, y);
+            }
+        }
+}

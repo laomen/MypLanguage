@@ -1,0 +1,67 @@
+// checkbox.myp — uikit 控件：Checkbox（复选框）
+// ---------------------------------------------------------------------------
+// 点击勾选/取消，触发 Changed(value)。纯逻辑 headless 可测。
+class Checkbox {
+    interface class View;
+
+    property:
+        string label_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int checked_;
+        int color_;
+
+    event:
+        Changed(int value);
+
+    action:
+        @constructor Checkbox(string label, int x, int y, int w, int h) {
+            label_ = label;
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            checked_ = 0;
+            color_ = Color.blue();
+        }
+
+        void setChecked(int v) { checked_ = v; }
+        int getChecked() { return checked_; }
+        void setColor(int c) { color_ = c; }
+        string getLabel() { return label_; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            // 方框
+            r.outlineRect(x_, y_, h_, h_, Color.white());
+            if (checked_ != 0) {
+                r.fillRect(x_ + 4, y_ + 4, h_ - 8, h_ - 8, color_);
+                // 勾号（两段线）
+                r.drawLine(x_ + 6, y_ + h_ / 2, x_ + h_ / 2, y_ + h_ - 6, Color.white());
+                r.drawLine(x_ + h_ / 2, y_ + h_ - 6, x_ + h_ - 6, y_ + 6, Color.white());
+            }
+            // 标签
+            r.drawText(x_ + h_ + 10, y_ + h_ / 2 - 16, label_, 2, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点击切换 + 触发 Changed
+        void onTouch(int x, int y) {
+            checked_ = checked_ == 0 ? 1 : 0;
+            Changed(checked_);
+        }
+}

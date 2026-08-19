@@ -1,0 +1,82 @@
+// notification_banner.myp — uikit 控件：通知横幅（顶部，自动消失 + 点击固定）
+// ---------------------------------------------------------------------------
+// 类 iOS 顶部通知横幅：post(text) 显示最新通知，tick(dt) 帧驱动倒计时自动消失；
+// onTouch 点击固定（fixed_=1，不消失）/再点取消。纯逻辑不依赖 SDL，可 headless
+// 测试（tests/launcher_logic.myp 断言 visible/frames/fixed）。
+class NotificationBanner {
+    interface class View;
+
+    property:
+        string text_;
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int visible_;     // 1=当前显示
+        int frames_;      // 剩余显示帧数（tick 递减，0 后消失）
+        int fixed_;       // 1=点击固定（不自动消失）
+        int color_;
+
+    event:
+        BannerClicked(int x, int y);
+
+    action:
+        @constructor NotificationBanner(int w, int h) {
+            text_ = "";
+            x_ = 0;
+            y_ = 0;
+            w_ = w;
+            h_ = h;
+            visible_ = 0;
+            frames_ = 0;
+            fixed_ = 0;
+            color_ = Color.dark();
+        }
+
+        // 显示一条通知（重置倒计时；固定状态取消——新通知重新可见）
+        void post(string text) {
+            text_ = text;
+            visible_ = 1;
+            frames_ = 120;    // 默认 120 帧自动消失
+            fixed_ = 0;
+        }
+
+        // 帧驱动：非固定时递减剩余帧数，耗尽后隐藏
+        void tick(int dt) {
+            if (visible_ == 0 || fixed_ != 0) return;
+            frames_ = frames_ - dt;
+            if (frames_ <= 0) { visible_ = 0; frames_ = 0; }
+        }
+
+        int visible() { return visible_; }
+        int frames() { return frames_; }
+        int fixed() { return fixed_; }
+        string text() { return text_; }
+        void setColor(int c) { color_ = c; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            if (visible_ == 0) return;
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            r.drawText(x_ + 10, y_ + h_ / 2 - 16, text_, 2, Color.white());
+        }
+
+        int hit(int x, int y) {
+            if (visible_ == 0) return 0;
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 点击：固定（暂停自动消失）/再点取消固定；触发 BannerClicked
+        void onTouch(int x, int y) {
+            fixed_ = fixed_ == 0 ? 1 : 0;
+            BannerClicked(x, y);
+        }
+}
