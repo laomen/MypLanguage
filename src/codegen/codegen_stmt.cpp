@@ -1176,6 +1176,21 @@ void CodeGen::emitFunctionReturn(llvm::Value* ret_val, const Expr* src) {
         // Cast the return value to the function's declared return type
         // (e.g. `return 0;` in a `long` function needs an int→long extend).
         if (ret_val) {
+            // BUG-034: 接口返回——具体类实例(ptr) → 接口 fat {data, vtable}。
+            // 此前无此包装：`View f() { return new Label(); }` 的 ret_val 是
+            // Label*（ptr），函数返回类型是接口 fat {ptr,ptr} → 落到下面
+            // struct-from-pointer 分支把 Label 对象内存当 fat load → LLVM
+            // verify 失败 / 段错误。返回的接口类型值必须由具体实例 + 接口名
+            // 构造完整 fat（data + vtable）。
+            if (current_ret_ti_.kind == TypeKind::Interface &&
+                !ret_val->getType()->isStructTy() && src) {
+                std::string cls = resolveArgClassName(*src);
+                std::string iface = current_ret_ti_.class_name;
+                if (!cls.empty() && !iface.empty()) {
+                    llvm::Value* fp = buildInterfaceFat(ret_val, iface, cls);
+                    if (fp && fp->getType()->isStructTy()) ret_val = fp;
+                }
+            }
             llvm::Type* rt = current_function_->getReturnType();
             if (ret_val->getType() != rt) {
                 if (rt->isStructTy() && ret_val->getType()->isStructTy()) {
@@ -1571,6 +1586,18 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                         for (auto& ifd : current_tu_->interfaces)
                                             if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                     arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                    // BUG-034: 接口属性字段——具体类实例(ptr) → 接口
+                                    // fat {data, vtable}（arcStoreRef 只按 data 做
+                                    // retain/release；不补 vtable 则 store 只存 data、
+                                    // vtable 槽留旧值 → 接口分发读垃圾 vtable → 段错误）
+                                    if (iface_prop && v && v->getType()->isPointerTy() && current_tu_) {
+                                        std::string cls_name = resolveArgClassName(*e.value);
+                                        std::string iface_name = prop_tn->class_name;
+                                        if (!cls_name.empty() && !iface_name.empty()) {
+                                            llvm::Value* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                            if (fp) v = fp;
+                                        }
+                                    }
                                     arcConsumeTemp(v);
                                 } else if (prop_tn && !prop_tn->class_name.empty() &&
                                            findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {
@@ -2209,6 +2236,15 @@ assign_gep:
                                             for (auto& ifd : current_tu_->interfaces)
                                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                                        // BUG-034: static 接口属性字段——具体类实例(ptr) → 接口 fat
+                                        if (iface_prop && v && v->getType()->isPointerTy() && current_tu_) {
+                                            std::string cls_name = resolveArgClassName(*e.value);
+                                            std::string iface_name = prop_tn->class_name;
+                                            if (!cls_name.empty() && !iface_name.empty()) {
+                                                llvm::Value* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                                if (fp) v = fp;
+                                            }
+                                        }
                                         arcConsumeTemp(v);
                                     } else if (prop_tn && !prop_tn->class_name.empty() &&
                                                findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {
@@ -2381,6 +2417,15 @@ assign_gep:
                             for (auto& ifd : current_tu_->interfaces)
                                 if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
                         arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
+                        // BUG-034: 同类实例的接口属性字段——具体类实例(ptr) → 接口 fat
+                        if (iface_prop && v && v->getType()->isPointerTy() && current_tu_) {
+                            std::string cls_name = resolveArgClassName(*e.value);
+                            std::string iface_name = prop_tn->class_name;
+                            if (!cls_name.empty() && !iface_name.empty()) {
+                                llvm::Value* fp = buildInterfaceFat(v, iface_name, cls_name);
+                                if (fp) v = fp;
+                            }
+                        }
                         arcConsumeTemp(v);
                     } else if (prop_tn && !prop_tn->class_name.empty() &&
                                findStruct(prop_tn->class_name) && isArcFieldType(*prop_tn)) {

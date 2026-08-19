@@ -779,6 +779,12 @@ private:
     // 把具体类实例(ptr) 构造成接口胖指针 {data, vtable}（接口参数 upcast 用）
     llvm::Value* buildInterfaceFat(llvm::Value* inst, const std::string& iface_name,
                                    const std::string& cls_name);
+    // BUG-034: 接口方法调用（vtable 动态分派）——接口形参的实参若为具体类实例
+    // (ptr)，构造接口 fat {data, vtable} 替换 call_args[1+ai]。此前直接传裸 ptr，
+    // 被调方法按 fat {ptr,ptr} 解释 → 参数错位/段错误。call_args[0] 为 this。
+    void upcastIfaceCallArgs(std::vector<llvm::Value*>& call_args,
+                             const CallExpr& e,
+                             const InterfaceMethodInfo* method);
     const InterfaceMethodInfo* findInterfaceMethod(const std::string& iface_name,
                                                    const std::string& method) const;
     // BUG-017: 接口动态分派的返回类型。关联类型方法（`Item getVal()`）的接口声明返回

@@ -1,0 +1,90 @@
+// BUG-034 复现：接口 fat pointer 构造在「函数返回 / 接口字段写 / 接口方法调用参数」
+// 三处缺失 → 段错误 / LLVM verify 失败（接口类型 = {ptr data, ptr vtable}）
+// ---------------------------------------------------------------------------
+// 修复前：
+//   p1 `View f() { return new Label(); }`——返回 Label*(ptr) 与函数返回类型（接口
+//      fat {ptr,ptr}）不匹配 → 落到 struct-from-pointer 分支把 Label 对象内存当 fat
+//      load → LLVM verify "Function return type does not match operand type" / 段错误。
+//   p2 `last_ = l`（last_ 为接口属性）——arcStoreRef 只按 data 做 retain/release，
+//      store 只存 data、vtable 槽留旧值 → 接口分派读垃圾 vtable → 段错误。
+//   p3 `parent.addChild(l)`（接口方法调用，addChild(View)）——接口 dispatch 实参
+//      直接传裸 ptr，被调方按 {ptr,ptr} fat 解释 → 参数错位 → 段错误。
+// 修复后：三处统一用 buildInterfaceFat（具体 ptr + 接口名 → {data, vtable}），
+//   getOrCreateVtable 建 __myp_vtable_<Iface>_<Class>。类方法调用参数 upcast
+//   早已覆盖（BUG-033），本 bug 只补接口 dispatch/返回/字段三路径。
+// 根因/修复见 tests/BUGLIST.md BUG-034。
+import test;
+import env;
+import fmt;
+
+interface View {
+    int width();
+}
+
+class Label {
+    interface class View;
+    action:
+        @constructor Label() {}
+        int width() { return 6; }
+}
+
+// 场景 1：函数返回接口——`View f() { return new Label(); }`
+class Maker {
+    action:
+        View makeLabel() { return new Label(); }
+}
+
+// 场景 2+3：接口属性字段写 + 接口方法调用传接口参数
+interface Host {
+    void addChild(View v);
+    int firstWidth();
+    int width();
+}
+
+class Panel {
+    interface class Host;
+    property:
+        View[] kids_;
+        int n_;
+        View last_;      // 接口属性字段（BUG-034 p2）
+    action:
+        @constructor Panel() {
+            kids_ = new View[8];
+            n_ = 0;
+        }
+        void addChild(View v) {
+            kids_[n_] = v;
+            n_ = n_ + 1;
+            last_ = v;        // 具体对象 → 接口属性字段
+        }
+        int count() { return n_; }
+        int firstWidth() { return kids_[0].width(); }
+        int lastWidth() { return last_.width(); }   // 读接口字段（vtable 分派）
+        int width() { return 1; }
+}
+
+class Builder {
+    action:
+        void buildInto(Host parent) {
+            Label l = new Label();
+            parent.addChild(l);   // 接口方法调用传具体对象（BUG-034 p3）
+        }
+}
+
+@test void t_return_interface() {
+    Maker m = new Maker();
+    View v = m.makeLabel();           // 函数返回接口
+    Test.assertEq(v.width(), 6, "return iface width");
+    Test.report("t_return_interface", true);
+}
+
+@test void t_iface_field_and_param() {
+    Panel p = new Panel();
+    Host h = p;
+    Builder b = new Builder();
+    b.buildInto(h);                   // 接口方法调用参数 + 接口字段写
+    Test.assertEq(p.count(), 1, "param child count");
+    Test.assertEq(p.firstWidth(), 6, "array elem width");
+    Test.assertEq(p.lastWidth(), 6, "iface field width");
+    Test.report("t_iface_field_and_param", true);
+}

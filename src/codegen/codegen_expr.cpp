@@ -1681,6 +1681,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    upcastIfaceCallArgs(call_args, e, method);   // BUG-034: 接口形参 → fat
                     std::vector<llvm::Type*> param_types;
                     param_types.push_back(ptr_ty);
                     for (size_t ai = 1; ai < call_args.size(); ai++)
@@ -1738,12 +1739,13 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                             call_args.push_back(data); // 'this' pointer
                             for (auto& arg : e.args)
                                 call_args.push_back(generateExpr(*arg));
+                            upcastIfaceCallArgs(call_args, e, method);   // BUG-034: 接口形参 → fat
 
                             // Build parameter types
                             std::vector<llvm::Type*> param_types;
                             param_types.push_back(ptr_ty);
-                            for (auto& arg : e.args)
-                                param_types.push_back(generateExpr(*arg)->getType());
+                            for (size_t ai = 1; ai < call_args.size(); ai++)
+                                param_types.push_back(call_args[ai]->getType());
 
                             auto* ft = llvm::FunctionType::get(ret_ty, param_types, false);
                             auto* result = builder_.CreateCall(ft, func_ptr, call_args);
@@ -1816,6 +1818,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     std::vector<llvm::Value*> call_args;
                     call_args.push_back(data);
                     for (auto& arg : e.args) call_args.push_back(generateExpr(*arg));
+                    upcastIfaceCallArgs(call_args, e, method);   // BUG-034: 接口形参 → fat
                     std::vector<llvm::Type*> param_types;
                     param_types.push_back(ptr_ty);
                     for (size_t ai = 1; ai < call_args.size(); ai++)

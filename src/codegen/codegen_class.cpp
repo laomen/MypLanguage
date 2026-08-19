@@ -611,6 +611,27 @@ llvm::Value* CodeGen::buildInterfaceFat(llvm::Value* inst,
     return builder_.CreateLoad(fat_ty, fat);
 }
 
+void CodeGen::upcastIfaceCallArgs(std::vector<llvm::Value*>& call_args,
+                                  const CallExpr& e,
+                                  const InterfaceMethodInfo* method) {
+    if (!method || !method->action || !current_tu_) return;
+    for (size_t ai = 0; ai < e.args.size() && ai < method->action->params.size(); ++ai) {
+        const TypeNode& ptn = method->action->params[ai].type;
+        bool is_iface = false;
+        for (auto& ifd : current_tu_->interfaces)
+            if (ifd.name == ptn.class_name) { is_iface = true; break; }
+        if (!is_iface) continue;
+        llvm::Value* a = call_args[1 + ai];   // [0] 是 this（接口 data）
+        if (a && a->getType()->isPointerTy()) {
+            std::string cls_name = resolveArgClassName(*e.args[ai]);
+            if (!cls_name.empty()) {
+                llvm::Value* fp = buildInterfaceFat(a, ptn.class_name, cls_name);
+                if (fp && fp->getType()->isStructTy()) call_args[1 + ai] = fp;
+            }
+        }
+    }
+}
+
 const CodeGen::InterfaceMethodInfo* CodeGen::findInterfaceMethod(
         const std::string& iface_name, const std::string& method) const {
     if (!iface_name.empty()) {

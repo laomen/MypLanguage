@@ -915,3 +915,51 @@
   / 关联类型，但**类属性数组元素**（SubscriptExpr + 属性名）是 BUG-029 家族
   的又一条路径——凡是 `View v = <表达式>` 需具体类名的，都要按表达式形态完整
   解析（new / Identifier / MemberAccess / Subscript 的局部与属性两种数组）。
+
+## BUG-034（已修复 ✅）：接口 fat pointer 构造在「函数返回 / 接口字段写 / 接口方法调用参数」三处缺失
+
+- **状态**：🟩 已修复（2026-08-19 发现+修复；MOS UIX 声明式框架暴露）
+- **复现**：`tests/bugs/b034_iface_fat_upcast.myp`（@test 断言，2 测试 4 断言：
+  返回接口 / 接口字段写 + 接口方法调用参数；双编译器 mypc + myp_self）。
+  修复前：mypc 编译 p1/p2/p3 段错误 139 或 LLVM verify "Function return type
+  does not match operand type"；myp_self 编译 opt failed。
+- **现象**（接口类型 = fat pointer `{ptr data, ptr vtable}`，具体类 = 裸 ptr）：
+  - p1 `View f() { return new Label(); }`——返回 Label*(ptr) 与返回类型（接口
+    fat {ptr,ptr}）不匹配 → 落到 struct-from-pointer 分支把 Label 对象内存当
+    fat load → verify 失败/段错误。
+  - p2 `last_ = l`（last_ 为**接口属性**）——arcStoreRef 只按 data 做
+    retain/release，store 只存 data、vtable 槽留旧值 → 接口分派读垃圾 vtable。
+  - p3 `parent.addChild(l)`（**接口方法调用**，addChild(View)）——interface
+    dispatch 实参直接传裸 ptr，被调方按 {ptr,ptr} 解释 → 参数错位 → 段错误。
+- **根因**：接口类型作为「函数返回值 / 类属性字段 / 接口方法调用实参」时，缺少
+  「具体类 ptr → 接口 fat {data, vtable}」的上转构造。类方法调用参数 upcast 与
+  接口变量/字段/数组元素转接口早已覆盖（BUG-033 的 buildInterfaceFat /
+  upcastIface + 类名解析），但这三条路径漏接入。
+- **修复**：
+  - C++（`src/codegen/codegen_stmt.cpp` + `codegen_expr.cpp`）：
+    - p1：`emitFunctionReturn` 在返回类型转换前，若 `current_ret_ti_.kind ==
+      Interface` 且 ret_val 是 ptr，用 `buildInterfaceFat`（接口名取
+      current_ret_ti_.class_name，具体类经 `resolveArgClassName(*src)`）包装成 fat。
+    - p2：三处属性赋值（this.prop / static / obj.prop 的 `arcStoreRef(iface_prop)`
+      分支）补 vtable——`buildInterfaceFat` 后 store 完整 fat（ARC 仍按 data）。
+    - p3：新增 `upcastIfaceCallArgs(call_args, e, method)`——接口方法（vtable
+      动态分派）的接口形参实参若为具体 ptr → buildInterfaceFat；接入 interface
+      dispatch 三处（广义 / 接口变量 / Subscript 数组元素），param_types 同步用
+      转换后类型。
+  - selfhost（`tools/selfhost/src/codegen.myp`）镜像：
+    - p1：函数头记录 `curRetIface_`（返回类型是接口时），`genReturnValue` 对
+      vt=="ptr" 时 `upcastIface` 成 fat（fresh new/call 的原始 temp consume 转移）；
+      返回语句 `{ptr,ptr}` 分支接口返回时按 New/Call/Lambda 判定 skip retain。
+    - p3：`genIfaceCall` 参数循环加 `ifaceParamIfaceName` 判定接口形参 →
+      upcastIface。
+    - 附带修复（同一家族）：**本类接口属性字段方法调用**（`last_.width()`，裸名
+      Identifier）`varAstType` 只查局部变量查不到属性 → 曾生成 `@<Iface>_<method>`
+      直接调用；加 `propAstType` 兜底走 vtable（genIfaceCall）。`exprLlvmType`
+      对接口字段未给 {ptr,ptr} 时用 `memberFieldAstType` 判定强制 vtable。
+- **验证**：b034 GREEN（mypc + myp_self，4 断言）；run_bugs.sh 10/10；
+  父仓库 311/311；selfhost 自举一致；最小复现 p1/p2/p3 均 w=6 正确。
+- **教训**：接口 fat pointer 的上转构造（buildInterfaceFat / upcastIface）是
+  统一模式，必须覆盖全部「具体 ptr 进入接口上下文」的路径——局部/字段/数组元素
+  转换（BUG-029/033 已修）、**函数返回 / 属性字段写 / 接口方法调用实参**（本 bug）。
+  C++ 与 selfhost 需同步镜像；selfhost 的接口对象方法调用（局部/属性/数组元素）
+  都要能识别「接口值」并走 vtable 分派。
