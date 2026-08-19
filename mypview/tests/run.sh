@@ -13,6 +13,7 @@ SRCS=(
     "$SRC/core/view.myp"
     "$SRC/core/root.myp"
     "$SRC/core/focus_manager.myp"
+    "$SRC/core/gesture.myp"
     "$SRC/controls/label.myp"
     "$SRC/controls/button.myp"
     "$SRC/controls/text_field.myp"
@@ -52,6 +53,7 @@ SRCS=(
     "$SRC/controls/page_view.myp"
     "$SRC/controls/popover.myp"
     "$SRC/controls/banner.myp"
+    "$SRC/controls/scroll_view.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"
@@ -120,7 +122,14 @@ if printf '%s' "$OUT" | grep -q "uix nodes=5 binds=1 cmds=1 type(ok)=Button" \
    && printf '%s' "$OUT" | grep -q "uix pop v=1->0" \
    && printf '%s' "$OUT" | grep -q "uix banner f=120->90 v=1" \
    && printf '%s' "$OUT" | grep -q "uix focus c1=0 b1=1 wrapA=1" \
-   && printf '%s' "$OUT" | grep -q "uix const c1=75/40 c2=155/75"; then
+   && printf '%s' "$OUT" | grep -q "uix const c1=75/40 c2=155/75" \
+   && printf '%s' "$OUT" | grep -q "uix gest probe p=1 m=2 r=1" \
+   && printf '%s' "$OUT" | grep -q "uix gest tap=1 x=12/11" \
+   && printf '%s' "$OUT" | grep -q "uix gest long=1 rel=2" \
+   && printf '%s' "$OUT" | grep -q "uix gest drag=1 dx=30/10" \
+   && printf '%s' "$OUT" | grep -q "uix gest drel=3" \
+   && printf '%s' "$OUT" | grep -q "uix gest svy=30" \
+   && printf '%s' "$OUT" | grep -q "uix gest sl=75"; then
     echo "MYPVIEW-UIX PASS"
 else
     echo "MYPVIEW-UIX FAIL"
@@ -134,6 +143,7 @@ PIPESRCS=(
     "$SRC/core/view.myp"
     "$SRC/core/root.myp"
     "$SRC/core/focus_manager.myp"
+    "$SRC/core/gesture.myp"
     "$SRC/controls/label.myp"
     "$SRC/controls/button.myp"
     "$SRC/controls/text_field.myp"
@@ -173,6 +183,7 @@ PIPESRCS=(
     "$SRC/controls/page_view.myp"
     "$SRC/controls/popover.myp"
     "$SRC/controls/banner.myp"
+    "$SRC/controls/scroll_view.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"

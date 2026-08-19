@@ -15,6 +15,9 @@ class ScrollView {
         int h_;
         int scrollX_;
         int scrollY_;
+        int dragging_;   // 1=拖拽中（onPress 置位，onRelease 清除）
+        int pressX_;     // 拖拽起点（增量滚动基准）
+        int pressY_;
 
     action:
         @constructor ScrollView(int x, int y, int w, int h) {
@@ -24,6 +27,9 @@ class ScrollView {
             h_ = h;
             scrollX_ = 0;
             scrollY_ = 0;
+            dragging_ = 0;
+            pressX_ = 0;
+            pressY_ = 0;
         }
 
         // 设置内容（布局系统在内容 frame 里排布子控件）
@@ -110,5 +116,23 @@ class ScrollView {
             int ccy = y_ - scrollY_;
             // 内容命中：用内容坐标
             content_.onTouch(cx, cy);
+        }
+
+        // ---- 拖拽（RootView 手势分发：按下锁定 → 移动增量滚动 → 抬起结束）----
+        // 注意：RootView 已在 onPress 前调过 onTouch（点击透传内容），
+        // 这里只负责记录拖拽起点，不再重复透传。
+        void onPress(int x, int y) {
+            dragging_ = 1;
+            pressX_ = x;
+            pressY_ = y;
+        }
+        void onMove(int x, int y) {
+            if (dragging_ == 0) return;
+            dragTo(pressX_, pressY_, x, y);   // 增量滚动（位移同窗口/内容坐标）
+            pressX_ = x;
+            pressY_ = y;
+        }
+        void onRelease(int x, int y) {
+            dragging_ = 0;
         }
 }

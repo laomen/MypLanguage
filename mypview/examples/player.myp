@@ -272,6 +272,7 @@ class Player {
             int seekVal = 0;
             int playing = 0;                            // 0=停 1=播（Play/Stop 驱动）
             int saved = -1;
+            int prevDown = 0;                           // 上一帧鼠标按下状态（拖拽事件流）
             Console.writeLine("player running (click Play, close window or ESC to exit)");
             while (SDL.running()) {
                 int key = SDL.getKey();
@@ -351,7 +352,7 @@ class Player {
                         quality.onTouch(mx, my); fl = 1;
                     }
                     if (fl == 0)
-                        rv.onTouch(mx, my);             // 正常分发
+                        rv.onPress(mx, my);             // 按下（命中锁定；默认控件=一次点击）
                     if (play.hit(mx, my) != 0) { playing = 1; status.setText("playing"); logArea.appendLine("> play"); }
                     else if (stop.hit(mx, my) != 0) { playing = 0; status.setText("stopped"); logArea.appendLine("> stop"); }
                     // IconButton：上一曲/下一曲 → 写日志
@@ -374,6 +375,23 @@ class Player {
                         logArea.appendLine("> nav " + bnav.labelAt(bnav.getCurrent()));
                     }
                 }
+
+                // ---- 拖拽事件流：按住移动 → onMove（ScrollView/Slider 拖动）；
+                //      抬起 → onRelease（结束拖拽，交给按下时锁定的控件）----
+                int mdown = SDL.getMouseDown();
+                // 复用上方 hover 块的 mpos（本帧鼠标位置）
+                if (mdown != 0 && prevDown != 0 && mpos >= 0) {
+                    rv.onMove(mpos & 0xFFFF, (mpos >> 16) & 0xFFFF);
+                } else if (mdown == 0 && prevDown != 0) {
+                    int rx = 0;
+                    int ry = 0;
+                    if (mpos >= 0) {
+                        rx = mpos & 0xFFFF;
+                        ry = (mpos >> 16) & 0xFFFF;
+                    }
+                    rv.onRelease(rx, ry);
+                }
+                prevDown = mdown;
 
                 // ---- 键盘文本输入 → 聚焦的 SearchBar（SDL.getChar 消费 UTF-8 队列）----
                 int c = SDL.getChar();

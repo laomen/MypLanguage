@@ -641,7 +641,98 @@ class Main {
             cst.layout();
             Console.writeLine("uix const c1=" + Fmt.i(cb1.getX()) + "/" + Fmt.i(cb1.getY())
                               + " c2=" + Fmt.i(cb2.getX()) + "/" + Fmt.i(cb2.getY()));
+
+            // ---- 手势：RootView 按下锁定 + move/release 持续分发 ----
+            RootView gv = new RootView(8, 200, 100);
+            GestureProbe gp = new GestureProbe(10, 10, 60, 40);
+            gv.add(gp);
+            gv.onPress(20, 20);          // 命中 gp → press 锁定
+            gv.onMove(40, 30);           // 持续发给 gp
+            gv.onMove(50, 35);
+            gv.onRelease(50, 35);        // 抬起 → gp.release
+            Console.writeLine("uix gest probe p=" + Fmt.i(gp.pressCount())
+                              + " m=" + Fmt.i(gp.moveCount())
+                              + " r=" + Fmt.i(gp.releaseCount()));
+
+            // ---- GestureDetector：Tap / LongPress / Drag 识别 ----
+            GestureDetector gd = new GestureDetector();
+            gd.press(10, 10);
+            gd.release(12, 11);                       // 位移小 → Tap
+            Console.writeLine("uix gest tap=" + Fmt.i(gd.tap())
+                              + " x=" + Fmt.i(gd.tapX()) + "/" + Fmt.i(gd.tapY()));
+            gd.press(30, 30);
+            for (int i = 0; i < 35; i = i + 1) gd.tick();   // 超过长按帧阈值
+            int glong = gd.longPressed();
+            int grel = gd.release(30, 30);
+            Console.writeLine("uix gest long=" + Fmt.i(glong)
+                              + " rel=" + Fmt.i(grel));     // 2=LongPress
+            gd.press(50, 50);
+            gd.move(80, 60);                          // 位移 40 > 6 → Drag
+            Console.writeLine("uix gest drag=" + Fmt.i(gd.dragging())
+                              + " dx=" + Fmt.i(gd.dragDx()) + "/" + Fmt.i(gd.dragDy()));
+            int gdrel = gd.release(80, 60);
+            Console.writeLine("uix gest drel=" + Fmt.i(gdrel));  // 3=Drag
+
+            // ---- ScrollView 拖拽：onPress→onMove 增量滚动（向上拖=scroll 增大）----
+            ScrollView sv = new ScrollView(0, 0, 100, 60);
+            Panel big = new Panel(0, 0, 100, 200);     // 内容高于视口
+            sv.setContent(big);
+            sv.onPress(10, 50);
+            sv.onMove(10, 30);                        // 上移 20 → scrollY 20
+            sv.onMove(10, 20);                        // 再上移 10 → scrollY 30
+            sv.onRelease(10, 20);
+            Console.writeLine("uix gest svy=" + Fmt.i(sv.getScrollY()));
+
+            // ---- Slider 拖拽：onPress/onMove 按 x 设值 ----
+            Slider sl = new Slider(0, 0, 100, 20, 0, 100);
+            sl.onPress(50, 10);                       // 中点 → ~50
+            sl.onMove(75, 10);                        // 拖到 75 → ~75
+            sl.onRelease(75, 10);
+            Console.writeLine("uix gest sl=" + Fmt.i(sl.getValue()));
         }
+}
+
+// ---- 手势探针：记录 onPress/onMove/onRelease 调用（RootView 分发断言）----
+class GestureProbe {
+    interface class View;
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int pc_;
+        int mc_;
+        int rc_;
+    action:
+        @constructor GestureProbe(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            pc_ = 0;
+            mc_ = 0;
+            rc_ = 0;
+        }
+        void draw(Renderer r) {}
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+        void onTouch(int x, int y) {}
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+        void onPress(int x, int y) { pc_ = pc_ + 1; }
+        void onMove(int x, int y) { mc_ = mc_ + 1; }
+        void onRelease(int x, int y) { rc_ = rc_ + 1; }
+        int pressCount() { return pc_; }
+        int moveCount() { return mc_; }
+        int releaseCount() { return rc_; }
 }
 
 // ---- 扩展点：自定义 CustomBadge 控件（实现 View 接口）----

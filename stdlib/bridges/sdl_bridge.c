@@ -406,6 +406,8 @@ static int g_mouse_y = -1;
 // 与点击坐标分离：点击是一次性消费，位置持续可查（hover 检测用）。
 static int g_hover_x = -1;
 static int g_hover_y = -1;
+// 左键当前是否按下（MOUSEBUTTONDOWN/UP 维护；拖拽 onMove 判定用）。
+static int g_mouse_down = 0;
 
 // ---- 文本输入队列（SDL_TEXTINPUT 的 UTF-8 字符 + 控制键码点）----
 // getChar 返回 Unicode 码点：普通字符=字符码点；退格=8；回车=13。无输入 -1。
@@ -513,10 +515,15 @@ int myp_sdl_has_quit_event(void) {
             if (e.key.keysym.sym == SDLK_BACKSPACE) input_enqueue_cp(8);
             else if (e.key.keysym.sym == SDLK_RETURN) input_enqueue_cp(13);
         }
-        // 鼠标左键按下 → 记录点击坐标（下一帧 MYP 侧 poll 消费）
+        // 鼠标左键按下 → 记录点击坐标（下一帧 MYP 侧 poll 消费）+ 置按下状态
         if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
             g_mouse_x = e.button.x;
             g_mouse_y = e.button.y;
+            g_mouse_down = 1;
+        }
+        // 鼠标左键抬起 → 清除按下状态（拖拽结束判定）
+        if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+            g_mouse_down = 0;
         }
         // 鼠标移动 → 常驻记录位置（hover 检测；坐标随窗口缩放自动映射）
         if (e.type == SDL_MOUSEMOTION) {
@@ -563,6 +570,12 @@ int myp_sdl_get_mouse_click(void) {
 int myp_sdl_get_mouse_pos(void) {
     if (g_hover_x < 0) return -1;
     return (g_hover_y << 16) | (g_hover_x & 0xFFFF);
+}
+
+// 取左键当前是否按下：1=按住 0=未按（由 DOWN/UP 事件维护，不消费）。
+// 配合 getMousePos 做拖拽（onPress→onMove→onRelease 事件流驱动）。
+int myp_sdl_get_mouse_down(void) {
+    return g_mouse_down;
 }
 
 // ═══════════════════════════════════════════

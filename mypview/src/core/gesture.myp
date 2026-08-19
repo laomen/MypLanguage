@@ -1,0 +1,134 @@
+// gesture.myp — uikit 框架：GestureDetector（手势识别状态机）
+// ---------------------------------------------------------------------------
+// 在「按下→移动→抬起」事件流上识别三类手势：
+//   Tap        — 按下后位移小且时间短即抬起（普通点击）
+//   LongPress  — 按住超过长按帧阈值（长按，可配菜单/删除）
+//   Drag       — 按住移动超过位移阈值（拖拽滚动/排序/拖动）
+// 纯逻辑、不依赖 SDL、headless 可测：调用方逐帧喂 press/move/release/tick，
+// 用 tap()/longPressed()/dragging() 查询当前手势状态（应用层帧循环轮询驱动）。
+//
+// 典型用法（配合 ScrollView/Slider 之外的自由手势识别）：
+//   GestureDetector g = new GestureDetector();
+//   帧循环: 按下边沿 → g.press(x,y)；按住 → g.tick() + g.move(x,y)；
+//           抬起 → g.release(x,y)；随后查 g.tap()/g.dragging() 驱动行为。
+class GestureDetector {
+    interface class View;   // 注册进类型表（跨文件可见）；无 UI
+
+    property:
+        int state_;          // 0=idle 1=pressed 2=longpress 3=dragging
+        int px_;             // 按下起点 x
+        int py_;             // 按下起点 y
+        int lx_;             // 最近点 x
+        int ly_;             // 最近点 y
+        int frames_;         // 按下累计帧数（tick 递增，长按判定）
+        int dragTh_;         // 拖拽位移阈值（曼哈顿距离，默认 6）
+        int longFrames_;     // 长按帧阈值（默认 30 ≈ 0.5s @60fps）
+        int tapped_;         // 1=最近一次 release 判定为 Tap
+        int tapX_;           // 最近 Tap 坐标
+        int tapY_;
+
+    action:
+        // View 接口空实现（GestureDetector 无 UI，仅注册用）
+        void draw(Renderer r) {}
+        int hit(int x, int y) { return 0; }
+        void onTouch(int x, int y) {}
+        int width() { return 0; }
+        int height() { return 0; }
+        void setFrame(int x, int y, int w, int h) {}
+
+        @constructor GestureDetector() {
+            state_ = 0;
+            px_ = 0;
+            py_ = 0;
+            lx_ = 0;
+            ly_ = 0;
+            frames_ = 0;
+            dragTh_ = 6;
+            longFrames_ = 30;
+            tapped_ = 0;
+            tapX_ = 0;
+            tapY_ = 0;
+        }
+
+        // 配置阈值：dragTh=拖拽位移阈值(px)，longFrames=长按帧数。
+        void setThresholds(int dragTh, int longFrames) {
+            if (dragTh > 0) dragTh_ = dragTh;
+            if (longFrames > 0) longFrames_ = longFrames;
+        }
+
+        // 按下：开始识别。返回当前状态（1=pressed）。
+        int press(int x, int y) {
+            state_ = 1;
+            px_ = x;
+            py_ = y;
+            lx_ = x;
+            ly_ = y;
+            frames_ = 0;
+            tapped_ = 0;
+            return 1;
+        }
+
+        // 按住期间的移动：位移超阈值 → 转 dragging；返回最新状态。
+        int move(int x, int y) {
+            lx_ = x;
+            ly_ = y;
+            if (state_ == 1) {
+                int dx = x - px_;
+                if (dx < 0) dx = -dx;
+                int dy = y - py_;
+                if (dy < 0) dy = -dy;
+                if (dx + dy >= dragTh_) state_ = 3;   // 位移足够 → 拖拽
+            }
+            return state_;
+        }
+
+        // 每帧调用（按住期间计时，长按判定）。返回最新状态。
+        int tick() {
+            if (state_ == 1) {
+                frames_ = frames_ + 1;
+                if (frames_ >= longFrames_) state_ = 2;   // 长按触发
+            }
+            return state_;
+        }
+
+        // 抬起：结束识别。返回手势类型（1=Tap 2=LongPress 3=Drag）。
+        int release(int x, int y) {
+            lx_ = x;
+            ly_ = y;
+            int r = state_;
+            if (state_ == 1) {
+                tapped_ = 1;         // 位移小 + 时间短 → Tap
+                tapX_ = x;
+                tapY_ = y;
+                r = 1;
+            }
+            state_ = 0;
+            frames_ = 0;
+            return r;
+        }
+
+        // ---- 查询 ----
+        int state() { return state_; }
+        // 1=最近一次 release 判定为 Tap（应用层在 release 后查询驱动点击行为）
+        int tap() { return tapped_; }
+        int tapX() { return tapX_; }
+        int tapY() { return tapY_; }
+        // 1=当前处于长按（按住期间）
+        int longPressed() { return state_ == 2 ? 1 : 0; }
+        // 1=当前处于拖拽（按住移动中）
+        int dragging() { return state_ == 3 ? 1 : 0; }
+        int px() { return px_; }
+        int py() { return py_; }
+        int lx() { return lx_; }
+        int ly() { return ly_; }
+        // 当前拖拽位移（lx-last? 用 lx-px）：应用层据此偏移内容
+        int dragDx() { return lx_ - px_; }
+        int dragDy() { return ly_ - py_; }
+
+        // 复位（取消当前手势，如控件隐藏/失焦）
+        void reset() {
+            state_ = 0;
+            frames_ = 0;
+            tapped_ = 0;
+        }
+}

@@ -83,6 +83,28 @@ loader.sync(vm);                               // 绑定：VM 状态 → 控件
 - **focus**：`FocusManager` 键盘导航（Tab/回车）时 `setFocus(1)` → 控件绘制高亮
   外框（Button=amber，TextField=green）。控件实现 `focusable()` 即可入导航。
 
+### 手势系统（按下→移动→抬起 连续事件流）
+
+把"一次性点击"升级为连续事件流，驱动**拖拽/长按**：
+
+- **View 接口**新增默认方法：`onPress(x,y)` / `onMove(x,y)` / `onRelease(x,y)`。
+  未覆写时点击行为不变（RootView 在 onPress 前先调 onTouch 兼容）。
+- **RootView 分发**：`onPress` 命中即锁定（activeIdx），`onMove`/`onRelease`
+  持续发给锁定控件 → 拖拽过程中不因鼠标移出控件而丢失。
+- **已接入拖拽的控件**：`ScrollView`（拖动滚动，`dragTo` 增量）、`Slider`（拖动设值）。
+- **GestureDetector**（`core/gesture.myp`）识别 **Tap / LongPress / Drag**：
+  ```myp
+  GestureDetector g = new GestureDetector();
+  g.press(x, y);                    // 按下
+  g.tick();                         // 每帧（长按计时）
+  g.move(x, y);                     // 按住移动（超位移阈值→Drag）
+  int type = g.release(x, y);       // 1=Tap 2=LongPress 3=Drag
+  if (g.tap() != 0) { ... }         // 或查询 g.dragging()/g.longPressed()
+  ```
+- **桌面驱动**：`SDL.getMouseDown()`（持续按下状态）+ `SDL.getMousePos()` 组合出
+  按下边沿 → `rv.onPress`、按住移动 → `rv.onMove`、抬起 → `rv.onRelease`
+  （player 帧循环已实现）。
+
 ## MVVM 分层
 
 - **View** = `.uix` 声明式描述（组件树 + 绑定 + 命令），无逻辑

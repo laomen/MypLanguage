@@ -92,4 +92,15 @@ class Slider {
             setValue(xToValue(x));
             ValueChanged(value_);
         }
+
+        // ---- 拖拽（RootView 手势分发：按下/按住移动按 x 设值，滑块跟手）----
+        void onPress(int x, int y) {
+            setValue(xToValue(x));
+            ValueChanged(value_);
+        }
+        void onMove(int x, int y) {
+            setValue(xToValue(x));   // 拖动过程实时更新
+            ValueChanged(value_);
+        }
+        void onRelease(int x, int y) {}
 }

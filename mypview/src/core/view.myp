@@ -40,4 +40,15 @@ interface View {
     // 当前是否聚焦（默认否；FocusManager 导航时置位）。
     int focused() { return 0; }
     // 设置聚焦状态（控件可据此绘制高亮边框）。
-    void setFocus(int on) {}}
+    void setFocus(int on) {}
+
+    // ---- 手势（框架级：按下→移动→抬起 连续事件流）----
+    // 由 RootView 分发（onPress 命中即锁定，onMove/onRelease 持续发给
+    // 锁定的控件，实现拖拽）。注意：RootView 会在 onPress 前先调 onTouch
+    // （点击兼容），故未覆写的控件点击行为不变；需要拖拽/长按的控件覆写
+    // onMove/onRelease（如 ScrollView 拖拽滚动、Slider 拖动、配合
+    // GestureDetector 识别手势）。
+    void onPress(int x, int y) {}
+    void onMove(int x, int y) {}
+    void onRelease(int x, int y) {}
+}
