@@ -13,6 +13,7 @@ ffi int  myp_sdl_has_quit_event();
 ffi int  myp_sdl_get_mouse_click();
 ffi int  myp_sdl_get_mouse_pos();
 ffi int  myp_sdl_get_mouse_down();
+ffi void myp_sdl_test_mouse(int down, int x, int y);
 ffi int  myp_sdl_get_char();
 ffi void myp_sdl_start_text_input();
 ffi void myp_sdl_stop_text_input();
@@ -67,8 +68,9 @@ class SDL {
         int getMousePos() { return myp_sdl_get_mouse_pos(); }
         // 取左键当前是否按下（1=按住 0=未按，不消费）。配合 getMousePos
         // 驱动拖拽事件流：按下边沿→onPress、按住移动→onMove、抬起→onRelease。
-        int getMouseDown() { return myp_sdl_get_mouse_down(); }
-        // 取一个输入字符码点（UTF-8 解码；8=退格 13=回车；无输入 -1）。
+        int getMouseDown() { return myp_sdl_get_mouse_down(); }        // 测试/自动化：注入合成鼠标事件（按下状态 + 位置 + 点击），驱动完整
+        // 手势链路（AppRunner 按下/移动/抬起分发）——无真实鼠标环境回归用。
+        void testMouse(int down, int x, int y) { myp_sdl_test_mouse(down, x, y); }        // 取一个输入字符码点（UTF-8 解码；8=退格 13=回车；无输入 -1）。
         // 用 Str.chr(cp) 转字符串喂给输入框。
         int getChar() { return myp_sdl_get_char(); }
         // 显式开关文本输入（open 已默认开启；临时禁用/恢复用）

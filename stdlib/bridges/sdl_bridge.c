@@ -589,6 +589,16 @@ int myp_sdl_width(void) { return g_width; }
 // 返回窗口高度
 int myp_sdl_height(void) { return g_height; }
 
+// 测试/自动化：注入合成鼠标事件（按下状态 + 位置 + 点击）。
+// 让 MYP 侧在无真实鼠标环境驱动完整手势链路（AppRunner 按下/移动/抬起分发）。
+void myp_sdl_test_mouse(int down, int x, int y) {
+    g_mouse_down = down;
+    g_hover_x = x;
+    g_hover_y = y;
+    g_mouse_x = x;
+    g_mouse_y = y;
+}
+
 // 延迟 (毫秒)
 void myp_sdl_delay(int ms) { SDL_Delay(ms); }
 

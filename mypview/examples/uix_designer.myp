@@ -691,6 +691,19 @@ class UixDesigner {
                     Console.writeLine("ds resize canvas=" + canvas_.width()
                                       + "x" + canvas_.height());
             }
+            // 拖拽链路自测（MYPVIEW_TEST_DRAG=1）：注入合成鼠标驱动 AppRunner
+            // 按下→移动→抬起 完整手势分发，验证真实窗口拖拽移动 ok 到 (100,140)
+            string td = Console.getEnv("MYPVIEW_TEST_DRAG");
+            if (td == "1") {
+                if (frame == 5) SDL.testMouse(1, 80, 190);    // 按下
+                if (frame == 8) SDL.testMouse(1, 120, 210);   // 按住移动
+                if (frame == 11) SDL.testMouse(0, 120, 210);  // 抬起
+                if (frame == 15)
+                    Console.writeLine("ds testdrag x100="
+                        + (Str.contains(serializeDesign(), "\"x\": 100") != 0 ? 1 : 0)
+                        + " y140="
+                        + (Str.contains(serializeDesign(), "\"y\": 140") != 0 ? 1 : 0));
+            }
             if (frame == 60) {
                 int s = SDL.saveBmp("/tmp/uix_designer.bmp");
                 Console.writeLine("ds ui saved=" + s);
@@ -707,12 +720,14 @@ class UixDesigner {
             // 命中：Button ok 设计局部 (60,120,140,44)，画布原点 (10,58)
             // → 窗口 (70,178,140,44)，点 (80,190) 内部
             Console.writeLine("ds hit=" + loader_.hitId(80, 190));
-            // 拖拽移动 ok：按下 (80,190) → 移动 (120,210) → 抬起（抓取偏移
-            // (10,12) → 新设计局部位置 (100,140)）
+            // 拖拽移动 ok：走【完整手势路由】root.onPress→mainRow→canvas→
+            // CanvasPress→onCanvasPress（验证容器手势链在真实窗口可用）。
+            // 按下 (80,190) → 移动 (120,210) → 抬起（抓取偏移 (10,12)
+            // → 新设计局部位置 (100,140)）
             selectId("ok");
-            onCanvasPress(80, 190);
-            onCanvasMove(120, 210);
-            onCanvasRelease(120, 210);
+            root_.onPress(80, 190);
+            root_.onMove(120, 210);
+            root_.onRelease(120, 210);
             string s3 = serializeDesign();
             Console.writeLine("ds drag x100=" + (Str.contains(s3, "\"x\": 100") != 0 ? 1 : 0)
                               + " y140=" + (Str.contains(s3, "\"y\": 140") != 0 ? 1 : 0)
