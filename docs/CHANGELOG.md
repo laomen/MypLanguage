@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.12.53 — bridge 机制支持预编译库（.so/.a）→ MYP 闭源分发
+
+**背景**：MYP 的 import 是「源码合并」模型，包分发必然含 `.myp` 源码，无法闭源。
+借鉴 Java（字节码 jar + 混淆 + JNI 下沉）/C（头文件 + 预编译库）模式，打通
+「预编译库 + FFI 封装」闭源路径。
+
+**实现**（`src/main.cpp` `linkObjects` bridge 逻辑）：
+- bridge 发现扩展：`MYP_BRIDGES` 目录除 `.c` 外，也收集预编译库 `.so`/`.a`
+  （新增 `listLibFiles`）。
+- 预编译库按「用户程序未定义符号 ∩ 库已定义符号」固定点匹配直接链接，无需
+  `.c` 源码（`selected_libs` + `bridge_obj_list` 直接带库路径）。
+- `.so` 用动态符号表匹配（新增 `nmDynSymbols`，`nm -D`——strip 过的共享库也能
+  读到导出符号）；`.a` 用普通 `nm`。
+- 现有 `.c` bridge（sdl/ttf 等）逻辑不动，回归全绿。
+
+**闭源分发闭环（端到端验证）**：
+- 核心算法 `secret.c` → `gcc -shared -fPIC` → `secret.so`（分发物，不含 `.c`）
+- 封装 `api.myp`：只 `ffi` 声明 + `static:` 薄封装类（核心实现不可见）
+- 包化：`package.myp` + `src/secretpkg.myp` + `lib/secret.so`，`myp install` 后
+  用户 `import secretpkg;`，编译时 `MYP_BRIDGES=<含 secret.so 的目录>` 自动链接
+- 运行：`pkg mul(5,6)=60` / `verify=1`（逻辑来自 .so）；`.so` 与 `.a` 两种形态均可
+
+**测试**：新增 `tests/test_closed_lib.sh`（6 断言：.so 链接/核心输出/闭源无 .c/
+.a 链接）接入 `run_tests.sh`；parent 313/313、bugs 11/11、bootstrap 16/16、
+mypview UIX/PIPE PASS。
+
 ### v3.12.52 — 点分模块名导入增强（a.b.c → 包内 src/ 子路径）+ mypview 子目录聚合
 
 **点分导入（对齐 `gpu.hal` 惯例）**：编译器 import 解析对点分模块名

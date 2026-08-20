@@ -287,6 +287,21 @@ if [ -f "$PROJ_ROOT/tests/test_package_path.sh" ]; then
     fi
 fi
 
+# 闭源分发回归（bridge 预编译库 .so/.a）：MYP_BRIDGES 目录放预编译库 +
+# ffi 封装 .myp，mypc 按符号自动链接，.c 源码不进入分发（2026-08-20）。
+if [ -f "$PROJ_ROOT/tests/test_closed_lib.sh" ]; then
+    cl_out=$(MYPCC="$MYPCC" bash "$PROJ_ROOT/tests/test_closed_lib.sh" 2>&1)
+    if echo "$cl_out" | grep -qE "closed-lib: [0-9]+ pass, 0 fail"; then
+        echo -e "${GREEN}PASS${NC} (闭源分发：bridge 预编译 .so/.a + FFI)"
+        TFPASS=$((TFPASS + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        echo "$cl_out" | grep -E "FAIL:|closed-lib:" | tail -10
+        TFFAIL=$((TFFAIL + 1))
+        FAILED_TESTS="$FAILED_TESTS closed-lib"
+    fi
+fi
+
 # 代码生成工具（tools/codegen，manual §13）：schema 驱动生成器 serde/ffi/
 # autodiff/idl/orm/embed/dsl/infer_ops —— 生成 → 编译 → round-trip 验证（BUG-027）。
 if [ -f "$PROJ_ROOT/tools/codegen/run_tests.sh" ]; then

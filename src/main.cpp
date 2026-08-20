@@ -87,6 +87,44 @@ static bool fileExists(const std::string& path) {
     return out;
 }
 
+// 列出目录下所有预编译库（.so / .a）——闭源分发：bridge 目录可放预编译库，
+// mypc 按符号匹配直接链接，无需 .c 源码（2026-08-20）。
+[[nodiscard]] static std::vector<std::string> listLibFiles(const std::string& dir) {
+    std::vector<std::string> out;
+    DIR* d = opendir(dir.c_str());
+    if (!d) return out;
+    struct dirent* e;
+    while ((e = readdir(d))) {
+        std::string n = e->d_name;
+        bool is_so = n.size() > 3 && n.compare(n.size() - 3, 3, ".so") == 0;
+        bool is_a  = n.size() > 2 && n.compare(n.size() - 2, 2, ".a") == 0;
+        if (is_so || is_a) out.push_back(dir + "/" + n);
+    }
+    closedir(d);
+    return out;
+}
+
+// 动态符号表（.so 用）：导出的全局符号可能只在 .dynsym，普通 nm 读不到
+// （尤其 strip 过的共享库）。对 .a 无动态表，仍用 nmSymbols。
+[[nodiscard]] static std::set<std::string> nmDynSymbols(const std::string& files, bool defined) {
+    std::set<std::string> out;
+    std::string cmd = "nm -D " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return out;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        std::string s(line);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        std::string::size_type sp = s.find_last_of(" \t");
+        if (sp == std::string::npos) continue;
+        std::string name = s.substr(sp + 1);
+        if (name.empty() || name == "C" || name[0] == '*') continue;  // nm 伪条目
+        out.insert(name);
+    }
+    pclose(fp);
+    return out;
+}
+
 // b 中是否有任一符号出现在 a 中
 static bool symbolsIntersect(const std::set<std::string>& a, const std::set<std::string>& b) {
     for (auto& s : b)
@@ -696,14 +734,19 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     }
     bridge_dirs.push_back(stdlib_path + "/bridges");
     std::vector<std::string> all_bridges;
-    for (auto& d : bridge_dirs)
+    std::vector<std::string> all_libs;   // 预编译库（.so/.a，闭源分发）
+    for (auto& d : bridge_dirs) {
         for (auto& c : listCFiles(d)) all_bridges.push_back(c);
+        for (auto& l : listLibFiles(d)) all_libs.push_back(l);
+    }
     std::sort(all_bridges.begin(), all_bridges.end());
+    std::sort(all_libs.begin(), all_libs.end());
     std::vector<std::string> bridge_objs;
     std::string bridge_libs;
     std::string bridge_obj_list;
     std::set<std::string> bridge_undef = nmSymbols(obj_list, false);
     std::set<std::string> selected_bridges;
+    std::set<std::string> selected_libs;
     bool changed = true;
     int guard = 0;
     while (changed && guard++ < 128) {
@@ -735,6 +778,26 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
                 for (auto& s : nmSymbols(obj, false)) bridge_undef.insert(s);
                 changed = true;
             }
+        }
+    }
+    // 预编译库（.so/.a）同款固定点：按符号匹配直接链接，无需 .c 源码——
+    // 闭源分发路径（分发 <secret.so + 封装 .myp>，用户 MYP_BRIDGES 指向库目录）。
+    // .so 用动态符号表（nm -D，strip 过也能读到导出符号），.a 用普通 nm。
+    changed = true;
+    while (changed && guard++ < 128) {
+        changed = false;
+        for (auto& l : all_libs) {
+            if (selected_libs.count(l)) continue;
+            bool is_so = l.size() > 3 && l.compare(l.size() - 3, 3, ".so") == 0;
+            auto def_syms = is_so ? nmDynSymbols(l, true) : nmSymbols(l, true);
+            if (!symbolsIntersect(bridge_undef, def_syms)) continue;
+            selected_libs.insert(l);
+            bridge_obj_list += " " + l;   // gcc 直接链接库路径
+            std::string blibs = readSidecar(l + ".libs");
+            if (!blibs.empty()) bridge_libs += " " + blibs;
+            auto undef_syms = is_so ? nmDynSymbols(l, false) : nmSymbols(l, false);
+            for (auto& s : undef_syms) bridge_undef.insert(s);
+            changed = true;
         }
     }
     phaseMark("bridges");
