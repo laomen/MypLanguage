@@ -235,6 +235,27 @@ class LoadedSet {
                         string pkgRoot = pp + "/" + slash + "/" + imp.name() + ".myp";
                         if (Fs.exists(pkgSrc) != 0) path = pkgSrc;
                         else if (Fs.exists(pkgRoot) != 0) path = pkgRoot;
+                        // 点分模块名（a.b.c）追加「首段=包名」解析：a.b.c →
+                        // <pp>/a/src/b/c.myp 或 <pp>/a/b/c.myp（对齐 C++ loadModule
+                        // 2026-08-20，支持 mypview.controls.app_icon 等）。向后兼容。
+                        if (Str.len(path) == 0 && Str.len(imp.name()) > 0) {
+                            int hasDot = 0;
+                            int dot = 0;
+                            for (int di = 0; di < Str.len(imp.name()); di = di + 1) {
+                                if (__myp_charcode(imp.name(), di) == 46) {
+                                    if (hasDot == 0) dot = di;
+                                    hasDot = 1;
+                                }
+                            }
+                            if (hasDot != 0) {
+                                string pkgName = Str.substring(imp.name(), 0, dot);
+                                string subSlash = Frontend.dotToSlash(Str.substring(imp.name(), dot + 1, Str.len(imp.name())));
+                                string pkgSrc2 = pp + "/" + pkgName + "/src/" + subSlash + ".myp";
+                                string pkgRoot2 = pp + "/" + pkgName + "/" + subSlash + ".myp";
+                                if (Fs.exists(pkgSrc2) != 0) path = pkgSrc2;
+                                else if (Fs.exists(pkgRoot2) != 0) path = pkgRoot2;
+                            }
+                        }
                     }
                     if (Str.len(path) == 0) path = p1;
                 }

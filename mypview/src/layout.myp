@@ -1,0 +1,12 @@
+// mypview 子模块聚合：layout
+//
+// 点分导入入口：import mypview.layout;（编译器按「首段=包名+src/子路径」解析）
+// 相对路径 import 聚合 src/layout/ 全部源文件；与多文件编译语义等价。
+// 依赖：./core
+//
+import "./core.myp";
+import "./layout/constraint_layout.myp";
+import "./layout/flow_layout.myp";
+import "./layout/grid_layout.myp";
+import "./layout/linear_layout.myp";
+import "./layout/stack_layout.myp";

@@ -14,7 +14,8 @@
 
 # Temp
 /tmp/
-core.*
+core
+core.[0-9]*
 *.o
 *.out
 test_io.txt

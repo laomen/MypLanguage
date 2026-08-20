@@ -27,6 +27,28 @@
 
 ## 编译器版本历史
 
+### v3.12.52 — 点分模块名导入增强（a.b.c → 包内 src/ 子路径）+ mypview 子目录聚合
+
+**点分导入（对齐 `gpu.hal` 惯例）**：编译器 import 解析对点分模块名
+`a.b.c` 追加「首段=包名」解析——在现有 `<pkg>/a/b/c/src/a.b.c.myp` 形态未命中
+后，尝试 `<pkg>/a/src/b/c.myp` 与 `<pkg>/a/b/c.myp`（向后兼容）。
+- mypc：`src/main.cpp` `loadModule`；myp_self：`tools/selfhost/src/main.myp`
+  `loadModule`（两编译器同步，bootstrap 16/16 不动点）。
+- 效果：`import mypview.controls.app_icon;` → `mypview/src/controls/app_icon.myp`。
+
+**mypview 子目录聚合**：新增 `src/core.myp` / `src/controls.myp` /
+`src/layout.myp` / `src/uix.myp` / `src/animation.myp`（相对路径 import 聚合各
+目录；controls/layout/uix/animation 内部 `import "./core.myp"` 自包含，
+uix 额外依赖 controls+layout）。点分粒度导入：
+- `import mypview.core;`（核心 6 文件）/ `import mypview.controls;`（49 控件）
+  / `import mypview.layout;` / `import mypview.uix;` / `import mypview.animation;`
+- 单文件：`import mypview.controls.app_icon;`（需补 `import mypview.core;`）
+
+**验证**：mypc + myp_self 对 `import mypview.core + mypview.controls.app_icon`、
+`import mypview.controls`（AppIcon/Button/NumberInput）、`import mypview.uix`
+（UixLoader）编译运行输出一致；parent 312/312、bugs 11/11、bootstrap 16/16、
+mypview UIX/PIPE PASS。
+
 ### v3.12.51 — mypview 打包为 MYP 标准包（`import mypview;`）+ BUG-044 修复
 
 **mypview 包化**：mypview 从「源码集合」升级为 MYP 标准包——

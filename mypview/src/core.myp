@@ -1,0 +1,11 @@
+// mypview 子模块聚合：core
+//
+// 点分导入入口：import mypview.core;（编译器按「首段=包名+src/子路径」解析）
+// 相对路径 import 聚合 src/core/ 全部源文件；与多文件编译语义等价。
+//
+import "./core/view.myp";
+import "./core/theme.myp";
+import "./core/renderer.myp";
+import "./core/gesture.myp";
+import "./core/focus_manager.myp";
+import "./core/root.myp";

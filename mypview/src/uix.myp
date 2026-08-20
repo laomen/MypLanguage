@@ -1,0 +1,11 @@
+// mypview 子模块聚合：uix（UIX 声明式引擎）
+//
+// 点分导入入口：import mypview.uix;
+// 依赖：core + controls + layout（UixLoader 构建控件树需控件类型）
+//
+import "./core.myp";
+import "./controls.myp";
+import "./layout.myp";
+import "./uix/expr.myp";
+import "./uix/prop_bag.myp";
+import "./uix/uix_loader.myp";

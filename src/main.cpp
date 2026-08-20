@@ -245,6 +245,21 @@ static bool loadModule(const std::string& module_name,
                     std::string pkg_root = seg + "/" + slash_name + "/" + module_name + ".myp";
                     if (fileExists(pkg_src))        { path = pkg_src; pkg_found = true; }
                     else if (fileExists(pkg_root))  { path = pkg_root; pkg_found = true; }
+                    // 点分模块名（a.b.c）追加「首段=包名」解析：a.b.c →
+                    // <seg>/a/src/b/c.myp 或 <seg>/a/b/c.myp（对齐 gpu.hal 的
+                    // 「目录/文件」惯例，支持 mypview.controls.app_icon 等）。
+                    // 仅在现有 <seg>/a/b/c/src/a.b.c.myp 形态未命中时尝试，向后兼容。
+                    if (!pkg_found && module_name.find('.') != std::string::npos) {
+                        size_t dot = module_name.find('.');
+                        std::string pkg_name = module_name.substr(0, dot);
+                        std::string sub = module_name.substr(dot + 1);
+                        std::string sub_slash;
+                        for (char c : sub) sub_slash += (c == '.') ? '/' : c;
+                        std::string pkg_src2 = seg + "/" + pkg_name + "/src/" + sub_slash + ".myp";
+                        std::string pkg_root2 = seg + "/" + pkg_name + "/" + sub_slash + ".myp";
+                        if (fileExists(pkg_src2))       { path = pkg_src2; pkg_found = true; }
+                        else if (fileExists(pkg_root2)) { path = pkg_root2; pkg_found = true; }
+                    }
                 }
                 if (pkg_found) break;
             }

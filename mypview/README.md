@@ -242,6 +242,27 @@ import mypview;
 `import mypview;` 与「方式一」语义完全等价（聚合主模块用相对路径 import
 递归合并整个源码集合；mypc 与 myp_self 均支持）。
 
+**方式三：点分导入（`import mypview.<子模块>;`，按需引入）** ✅ 2026-08-20
+
+编译器支持点分模块名「首段=包名」解析（`a.b.c` → `<pkg>/a/src/b/c.myp`，
+对齐 `gpu.hal` 的目录/文件惯例）。mypview 提供子目录聚合入口，可粒度化引入：
+
+```myp
+import mypview.core;      // 核心 6 文件：View/Color/Renderer/手势/焦点/RootView
+import mypview.controls;  // 全部 49 控件（自包含：内部 import core）
+import mypview.layout;    // 布局 5 文件（自包含 core）
+import mypview.uix;       // UIX 声明式引擎（自包含 core+controls+layout）
+import mypview.animation; // Tween/coro 动画（自包含 core）
+// 单个控件文件（需补 core）：
+import mypview.core;
+import mypview.controls.app_icon;   // 仅 AppIcon
+```
+
+子聚合文件位于 `src/core.myp`、`src/controls.myp`、`src/layout.myp`、
+`src/uix.myp`、`src/animation.myp`（相对路径 import 聚合各目录，等价于多文件
+编译）。`import mypview;` 仍一次引入全部；点分与整体两种粒度随意混用（递归
+合并去重，不重复加载）。
+
 ## 测试
 
 ```bash

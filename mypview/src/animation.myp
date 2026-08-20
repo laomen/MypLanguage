@@ -1,0 +1,9 @@
+// mypview 子模块聚合：animation
+//
+// 点分导入入口：import mypview.animation;（编译器按「首段=包名+src/子路径」解析）
+// 相对路径 import 聚合 src/animation/ 全部源文件；与多文件编译语义等价。
+// 依赖：./core
+//
+import "./core.myp";
+import "./animation/coro_anim.myp";
+import "./animation/tween.myp";

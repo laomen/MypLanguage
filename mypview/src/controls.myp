@@ -1,0 +1,55 @@
+// mypview 子模块聚合：controls
+//
+// 点分导入入口：import mypview.controls;（编译器按「首段=包名+src/子路径」解析）
+// 相对路径 import 聚合 src/controls/ 全部源文件；与多文件编译语义等价。
+// 依赖：./core
+//
+import "./core.myp";
+import "./controls/action_sheet.myp";
+import "./controls/app_icon.myp";
+import "./controls/avatar.myp";
+import "./controls/badge.myp";
+import "./controls/banner.myp";
+import "./controls/bottom_nav.myp";
+import "./controls/button.myp";
+import "./controls/checkbox.myp";
+import "./controls/chip.myp";
+import "./controls/color_picker.myp";
+import "./controls/context_menu.myp";
+import "./controls/data_grid.myp";
+import "./controls/date_picker.myp";
+import "./controls/dialog.myp";
+import "./controls/divider.myp";
+import "./controls/drawer.myp";
+import "./controls/dropdown.myp";
+import "./controls/icon_button.myp";
+import "./controls/image.myp";
+import "./controls/label.myp";
+import "./controls/list.myp";
+import "./controls/long_press_button.myp";
+import "./controls/notification_banner.myp";
+import "./controls/number_input.myp";
+import "./controls/page_view.myp";
+import "./controls/pagination.myp";
+import "./controls/panel.myp";
+import "./controls/popover.myp";
+import "./controls/progress_bar.myp";
+import "./controls/progress_spinner.myp";
+import "./controls/radio_button.myp";
+import "./controls/rating.myp";
+import "./controls/refresh_indicator.myp";
+import "./controls/scroll_view.myp";
+import "./controls/search_bar.myp";
+import "./controls/segmented_control.myp";
+import "./controls/slider.myp";
+import "./controls/sortable_list.myp";
+import "./controls/stepper.myp";
+import "./controls/switch.myp";
+import "./controls/tab_view.myp";
+import "./controls/text_area.myp";
+import "./controls/text_field.myp";
+import "./controls/time_picker.myp";
+import "./controls/toast.myp";
+import "./controls/tooltip.myp";
+import "./controls/tree_view.myp";
+import "./controls/ttf_label.myp";
