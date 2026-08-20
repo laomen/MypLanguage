@@ -24,6 +24,7 @@ import "./controls/drawer.myp";
 import "./controls/dropdown.myp";
 import "./controls/icon_button.myp";
 import "./controls/image.myp";
+import "./controls/json_editor.myp";
 import "./controls/label.myp";
 import "./controls/list.myp";
 import "./controls/long_press_button.myp";

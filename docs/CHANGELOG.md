@@ -27,6 +27,42 @@
 
 ## 编译器版本历史
 
+### v3.12.59 — JsonEditor：可视化 JSON 树编辑器 + json bridge 编辑支持
+
+**背景**：stdlib `json` 原本只读（parse + 按路径查询）。要给 mypview 做可视化
+JSON 编辑器，需补遍历/修改/序列化能力。
+
+**扩展 `stdlib/bridges/json_bridge.c` + `stdlib/json.myp`**（Json 类新方法）：
+- 遍历：`childCount(path)`、`childKey(path, i)`（对象键/数组空）、`scalar(path)`
+  （标量显示文本：字符串去引号、数字词法原文、bool/null 关键字）。
+- 修改：`setValue(path, raw)`（标量原地改，raw 解析为数字/布尔/null/字符串）、
+  `addChild(path, key, raw)`（对象加键/数组追加）、`remove(path)`（删子节点）。
+- 序列化：`serialize()`（美化打印，2 空格缩进，字符串转义 `"` `\` `\n` 等）。
+- 全部保持 M8 约定：返回 string 一律 `myp_strdup`（计数拷贝）。
+
+**新增控件 `mypview/src/controls/json_editor.myp`**：
+- `JsonEditor` 把 JSON 解析为可展开/折叠树行（键蓝色 + 类型着色值：string 绿/
+  number 琥珀/bool 青/null 灰/容器白），纯逻辑 headless 可测。
+- 编辑 API：`toggle(i)`（展开/折叠，跨编辑持久）、`setValueAt(i, raw)`、
+  `addChildAt(i, key, raw)`、`removeAt(i)`、`serialize()`、行查询
+  `rowCount/rowKeyAt/rowValueAt/rowLevelAt/rowTypeAt/rowHasKids`。
+- 自绘 + 命中（同 tree_view 范式）：点箭头展开折叠、点行选中触发 `Selected`。
+
+**示例 `examples/json_editor.myp`**（UiApp + AppRunner）：标题行 + JsonEditor 树
++ 操作栏（值 TextField + 设值/加键/删行/序列化 4 按钮）。`JSON_HEADLESS=1` headless
+断言：树行/改值/加键/删除/折叠往返/序列化。build.sh 的 backend target 加 json_editor；
+run.sh 新增 MYPVIEW-JSON 测试段（SRCS/PIPESRCS 亦补 json_editor.myp 依赖顺序项）。
+
+**踩坑**：
+- LinearLayout 的 kids_ 是接口数组不 retain——示例里控件必须**字段持有**（纯局部
+  控件出作用域即释放 → layout 时悬垂段错误）。bnct 同款规避。
+- **myp_self 对固定大数组字段缺陷**：`string[512]` 字段按 `[512 x ptr]` 布局，
+  `new string[512]` 返回 `ptr` → `store [512 x ptr]` verify 失败。改用**动态数组**
+  `string[]`（`new T[n]`）两编译器皆稳。
+
+**回归**：mypview UIX/BNCT/JSON/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；父套件
+313/313、bootstrap 16/16、bugs 11/11。
+
 ### v3.12.58 — mypview AppRunner：应用运行器框架化（帧循环不再手写）
 
 **背景**：此前每个窗口示例都要在 Boot 里手写 `while (SDL.running())` 帧循环

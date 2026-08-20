@@ -29,6 +29,7 @@ SRCS=(
     "$SRC/controls/rating.myp"
     "$SRC/controls/image.myp"
     "$SRC/controls/icon_button.myp"
+    "$SRC/controls/json_editor.myp"
     "$SRC/controls/divider.myp"
     "$SRC/controls/progress_spinner.myp"
     "$SRC/controls/text_area.myp"
@@ -168,6 +169,26 @@ else
 fi
 cd "$DIR"
 
+# ---- JsonEditor（可视化 JSON 编辑器）：树行/改值/加键/删除/折叠/序列化 ----
+# 在 examples/ 下编译运行（headless 断言输出 je ...）
+cd "$DIR/../examples"
+JSONSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp json_editor.myp)
+"$MYPCC" "${JSONSRCS[@]}" -o json_editor --stdlib "$STDLIB" || exit 1
+JSON=$(JSON_HEADLESS=1 ./json_editor 2>&1)
+echo "$JSON"
+echo "== JSON 结果 =="
+if printf '%s' "$JSON" | grep -q "je load=1 rows=4" \
+   && printf '%s' "$JSON" | grep -q "je fractions=12" \
+   && printf '%s' "$JSON" | grep -q "je toggle=9->11->9" \
+   && printf '%s' "$JSON" | grep -q "je has-probe=1 has-frac12=1" \
+   && printf '%s' "$JSON" | grep -q "je del-probe=0 rows=9"; then
+    echo "MYPVIEW-JSON PASS"
+else
+    echo "MYPVIEW-JSON FAIL"
+    exit 1
+fi
+cd "$DIR"
+
 # ---- 完整链路示例（pipeline）：load json → build → render → 交互 → 动画 ----
 # 在 examples/ 下编译运行（.uix/.usp 文件相对 cwd 打开）
 PIPESRCS=(
@@ -191,6 +212,7 @@ PIPESRCS=(
     "$SRC/controls/rating.myp"
     "$SRC/controls/image.myp"
     "$SRC/controls/icon_button.myp"
+    "$SRC/controls/json_editor.myp"
     "$SRC/controls/divider.myp"
     "$SRC/controls/progress_spinner.myp"
     "$SRC/controls/text_area.myp"

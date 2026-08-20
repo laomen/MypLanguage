@@ -19,6 +19,14 @@ ffi double myp_json_get_number(long handle, string path);
 ffi int myp_json_get_bool(long handle, string path);
 ffi int myp_json_array_length(long handle, string path);
 ffi void myp_json_free(long handle);
+// JsonEditor 编辑支持（v3.12.59）：遍历/修改/序列化
+ffi int myp_json_child_count(long handle, string path);
+ffi string myp_json_child_key(long handle, string path, int index);
+ffi string myp_json_scalar(long handle, string path);
+ffi int myp_json_set_value(long handle, string path, string raw);
+ffi int myp_json_add_child(long handle, string path, string key, string raw);
+ffi int myp_json_remove(long handle, string path);
+ffi string myp_json_serialize(long handle);
 
 // JSON 文档解析器
 class Json {
@@ -58,6 +66,36 @@ class Json {
 
         int arrayLen(string path) {
             return myp_json_array_length(handle_, path);
+        }
+
+        // ---- JsonEditor 编辑支持 ----
+        // 容器子节点数（对象键数 / 数组元素数；非容器返回 0）
+        int childCount(string path) {
+            return myp_json_child_count(handle_, path);
+        }
+        // 第 index 个子节点键名（对象返回键；数组返回 ""）
+        string childKey(string path, int index) {
+            return myp_json_child_key(handle_, path, index);
+        }
+        // 标量节点 → 显示/编辑文本（字符串去引号、数字原文、bool/null 关键字；容器返回 ""）
+        string scalar(string path) {
+            return myp_json_scalar(handle_, path);
+        }
+        // 把 path 标量改成 raw 解析出的值（数字/布尔/null/字符串）。返回 1=成功
+        int setValue(string path, string raw) {
+            return myp_json_set_value(handle_, path, raw);
+        }
+        // 容器 path 追加子节点：对象加 key=raw 标量，数组追加 raw 标量。返回 1=成功
+        int addChild(string path, string key, string raw) {
+            return myp_json_add_child(handle_, path, key, raw);
+        }
+        // 删除 path 指向的子节点（根不可删）。返回 1=成功
+        int remove(string path) {
+            return myp_json_remove(handle_, path);
+        }
+        // 整个文档美化序列化为字符串
+        string serialize() {
+            return myp_json_serialize(handle_);
         }
 
         void free() {

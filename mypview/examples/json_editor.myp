@@ -1,0 +1,267 @@
+// json_editor.myp — mypview 示例：可视化 JSON 编辑器
+// ---------------------------------------------------------------------------
+// 实现 UiApp 生命周期接口，由 AppRunner 框架运行：
+//   - onCreate：布局树（标题行 + JsonEditor 树 + 操作栏）
+//   - onResize：窗口/全屏自适应重排
+//   - onKeyChar：操作栏 TextField 聚焦后输入 → 设值
+//   - onFrame：离屏截图（预览渲染）
+// 交互：点 JsonEditor 行选中（箭头展开/折叠）；操作栏输入值后按「设值」改当前
+// 行标量，「加键」给选中对象加键/数组追加元素，「删行」删除选中行，「序列化」
+// 输出编辑结果 JSON。
+// 双模式：
+//   - 默认：SDL 窗口（bash build.sh json_editor，ESC/关窗退出）
+//   - JSON_HEADLESS=1：headless 逻辑验证（树行/改值/加键/删除/折叠/序列化断言）
+// 运行：bash build.sh json_editor（需 backend，build.sh 自动加）
+import env;
+import fmt;
+import sdl;
+
+// 事件绑定：编辑器行选中/结构变化 → 页面 handler；按钮点击 → 路由
+mapping() {
+    JsonEditor.Selected -> JsonPage.onSelect;
+    JsonEditor.StructureChanged -> JsonPage.onStructure;
+    Button.Clicked -> JsonPage.onButton;
+}
+
+class JsonPage {
+    interface class UiApp;
+
+    property:
+        // 控件（字段持有：LinearLayout 的 kids_ 是接口数组不 retain，
+        // 纯局部控件出作用域即释放 → 悬垂段错误；bnct 同款规避）
+        JsonEditor editor_;
+        LinearLayout root_;
+        Label status_;
+        Label title_;
+        LinearLayout headerRow_;
+        LinearLayout actionBar_;
+        TextField valueField_;
+        Button setBtn_;
+        Button addBtn_;
+        Button delBtn_;
+        Button serBtn_;
+        // 当前选中行（-1=无）
+        int selected_;
+
+    action:
+        @constructor JsonPage() {
+            selected_ = -1;
+            editor_ = new JsonEditor(0, 0, 100, 100);
+            status_ = new Label("就绪", 0, 0, 1);
+            valueField_ = new TextField("", 0, 0, 360, 34);
+            setBtn_ = new Button("设值", 0, 0, 86, 34);
+            addBtn_ = new Button("加键", 0, 0, 86, 34);
+            delBtn_ = new Button("删行", 0, 0, 86, 34);
+            serBtn_ = new Button("序列化", 0, 0, 110, 34);
+        }
+
+        // ---- 布局树 ----
+        void build(int W, int H) {
+            root_ = new LinearLayout(0, W, H);
+            root_.setPadding(16);
+            root_.setSpacing(10);
+
+            // 标题行（水平）：标题 + 状态
+            headerRow_ = new LinearLayout(1, W - 32, 44);
+            headerRow_.setPadding(0);
+            headerRow_.setSpacing(20);
+            title_ = new Label("JSON 编辑器", 0, 0, 2);
+            Label t = title_;
+            Label st = status_;
+            headerRow_.add(t);
+            headerRow_.add(st);
+            LinearLayout hr0 = headerRow_;
+            root_.add(hr0);
+
+            // 编辑器主体（行高随窗口）
+            int eh = H - 44 - 54 - 32 - 20;   // 标题 + 操作栏 + 上下 padding + spacing
+            if (eh < 200) eh = 200;
+            editor_.setFrame(0, 0, W - 32, eh);
+            JsonEditor ed = editor_;
+            root_.add(ed);
+
+            // 操作栏（水平）：值输入 + 4 按钮
+            actionBar_ = new LinearLayout(1, W - 32, 44);
+            actionBar_.setPadding(0);
+            actionBar_.setSpacing(10);
+            TextField vf = valueField_;
+            actionBar_.add(vf);
+            Button sb = setBtn_;
+            actionBar_.add(sb);
+            Button ab = addBtn_;
+            actionBar_.add(ab);
+            Button db = delBtn_;
+            actionBar_.add(db);
+            Button rb = serBtn_;
+            actionBar_.add(rb);
+            LinearLayout hr1 = actionBar_;
+            root_.add(hr1);
+        }
+
+        void relayout(int W, int H) {
+            root_.setFrame(0, 0, W, H);
+            int eh = H - 44 - 54 - 32 - 20;
+            if (eh < 200) eh = 200;
+            editor_.setFrame(0, 0, W - 32, eh);
+            root_.layout();
+        }
+
+        // ---- 事件 handler ----
+        void onSelect(int i) {
+            selected_ = i;
+            valueField_.setText(editor_.rowValueAt(i));
+            status_.setText("选中: " + editor_.rowKeyAt(i) + " = "
+                            + editor_.rowValueAt(i));
+        }
+        void onStructure() {
+            status_.setText("已更新，共 " + editor_.rowCount() + " 行");
+        }
+
+        void onButton(int x, int y) {
+            if (setBtn_.hit(x, y) != 0) { doSet(); return; }
+            if (addBtn_.hit(x, y) != 0) { doAdd(); return; }
+            if (delBtn_.hit(x, y) != 0) { doDelete(); return; }
+            if (serBtn_.hit(x, y) != 0) { doSerialize(); return; }
+        }
+
+        void doSet() {
+            if (selected_ < 0) { status_.setText("请先点选一行"); return; }
+            int ok = editor_.setValueAt(selected_, valueField_.getText());
+            status_.setText(ok != 0 ? "已设值" : "仅标量行可设值");
+        }
+        void doAdd() {
+            if (selected_ < 0) { status_.setText("请先选中对象/数组"); return; }
+            int t = editor_.rowTypeAt(selected_);
+            string key = valueField_.getText();
+            int ok;
+            if (t == 6) ok = editor_.addChildAt(selected_, key, "null");      // 对象加键
+            else if (t == 5) ok = editor_.addChildAt(selected_, "", key);      // 数组追加元素
+            else { status_.setText("需选中对象/数组"); return; }
+            status_.setText(ok != 0 ? "已加" : "加失败");
+        }
+        void doDelete() {
+            if (selected_ < 0) { status_.setText("请先选中一行"); return; }
+            int ok = editor_.removeAt(selected_);
+            status_.setText(ok != 0 ? "已删除" : "根不可删");
+        }
+        void doSerialize() {
+            string s = editor_.serialize();
+            Console.writeLine("je serialized len=" + Str.len(s));
+            SDL.saveBmp("/tmp/json_editor.bmp");
+            status_.setText("序列化完成");
+        }
+
+        // ---- UiApp 生命周期实现（AppRunner 框架调用）----
+        void onCreate(RootView rv, SdlRenderer r, int w, int h) {
+            build(w, h);
+            relayout(w, h);
+            // 加载示例 JSON（BNCT 配置）
+            string sample = "{\"plan\":{\"name\":\"BNCT Case-01\","
+                + "\"doseGy\":30.5,\"fractions\":10,"
+                + "\"targets\":[\"GTV\",\"CTV\"],\"active\":true},"
+                + "\"patient\":{\"id\":\"P-305891\",\"age\":58},"
+                + "\"settings\":{\"gpu\":false,\"threads\":8}}";
+            int ok = editor_.load(sample);
+            Console.writeLine("je ui running load=" + ok
+                              + " rows=" + editor_.rowCount());
+            editor_.toggle(1);   // 展开 plan，窗口里直接看到部分嵌套内容
+            LinearLayout root = root_;
+            rv.add(root);
+        }
+
+        void onResize(int w, int h) {
+            relayout(w, h);
+        }
+
+        void onKeyChar(int c) {
+            if (valueField_.focused() != 0) {
+                if (c == 8) valueField_.backspace();
+                else if (c == 13) { doSet(); valueField_.unfocus(); }
+                else if (c >= 32 && c != 127) valueField_.append(Str.chr(c));
+            }
+        }
+
+        void onFrame(int frame) {
+            if (frame == 60) {
+                int s = SDL.saveBmp("/tmp/json_editor.bmp");
+                Console.writeLine("je ui saved=" + s);
+            }
+        }
+
+        // ---- headless 验证：树行/改值/加键/删除/折叠/序列化断言 ----
+        void runHeadless() {
+            build(1200, 800);
+            relayout(1200, 800);
+            string sample = "{\"plan\":{\"name\":\"BNCT Case-01\","
+                + "\"doseGy\":30.5,\"fractions\":10,"
+                + "\"targets\":[\"GTV\",\"CTV\"],\"active\":true},"
+                + "\"patient\":{\"id\":\"P-305891\",\"age\":58},"
+                + "\"settings\":{\"gpu\":false,\"threads\":8}}";
+            int ok = editor_.load(sample);
+            Console.writeLine("je load=" + ok + " rows=" + editor_.rowCount());
+
+            // 行内容抽查（根展开；plan/patient/settings 容器默认折叠）
+            Console.writeLine("je row0=" + editor_.rowKeyAt(0)
+                              + " row1=" + editor_.rowKeyAt(1)
+                              + " row2=" + editor_.rowKeyAt(2)
+                              + " rows=" + editor_.rowCount());
+
+            // 展开 plan（index 1）→ plan 的 4 子可见
+            editor_.toggle(1);
+            Console.writeLine("je expand-plan rows=" + editor_.rowCount());
+
+            // 改值：fractions 10 → 12（plan 内）
+            int fi = -1;
+            for (int i = 0; i < editor_.rowCount(); i = i + 1)
+                if (editor_.rowKeyAt(i) == "fractions") { fi = i; break; }
+            editor_.setValueAt(fi, "12");
+            Console.writeLine("je fractions=" + editor_.rowValueAt(fi));
+
+            // 折叠 targets 数组（2 元素）：先展开再折叠往返
+            int ti = -1;
+            for (int i = 0; i < editor_.rowCount(); i = i + 1)
+                if (editor_.rowKeyAt(i) == "targets") { ti = i; break; }
+            int before = editor_.rowCount();
+            editor_.toggle(ti);
+            int expanded = editor_.rowCount();
+            editor_.toggle(ti);
+            int collapsed = editor_.rowCount();
+            Console.writeLine("je toggle=" + before + "->" + expanded + "->" + collapsed);
+
+            // 加键：root 加 probe:"ok"
+            editor_.addChildAt(0, "probe", "ok");
+            int pi = -1;
+            for (int i = 0; i < editor_.rowCount(); i = i + 1)
+                if (editor_.rowKeyAt(i) == "probe") { pi = i; break; }
+            Console.writeLine("je probe=" + editor_.rowValueAt(pi));
+
+            // 序列化应含 probe 且 fractions 已变
+            string s1 = editor_.serialize();
+            Console.writeLine("je has-probe=" + (Str.contains(s1, "\"probe\": \"ok\"") != 0 ? 1 : 0)
+                              + " has-frac12=" + (Str.contains(s1, "\"fractions\": 12") != 0 ? 1 : 0));
+
+            // 删除 probe → 序列化不再含
+            editor_.removeAt(pi);
+            string s2 = editor_.serialize();
+            Console.writeLine("je del-probe=" + (Str.contains(s2, "probe") != 0 ? 1 : 0)
+                              + " rows=" + editor_.rowCount());
+        }
+}
+
+class Boot {
+    action:
+        @constructor Boot() {
+            JsonPage a = new JsonPage();
+            string h = Console.getEnv("JSON_HEADLESS");
+            if (h == "1") a.runHeadless();
+            else {
+                AppRunner rn = new AppRunner();
+                rn.run(a, "JSON 编辑器", 1200, 800, 0x14141C);
+            }
+        }
+}
+
+int main() {
+    Boot b = new Boot();
+    return 0;
+}

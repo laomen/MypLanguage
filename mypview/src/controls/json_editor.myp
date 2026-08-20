@@ -1,0 +1,328 @@
+// json_editor.myp — uikit 控件：JsonEditor（可视化 JSON 树编辑器）
+// ---------------------------------------------------------------------------
+// 把 JSON 文本解析为可展开/折叠的树行（键 + 类型着色值），支持：
+//   - toggle(i)：展开/折叠容器行（展开状态跨编辑持久）
+//   - setValueAt(i, raw)：把标量行改值为 raw 解析出的标量（数字/布尔/null/字符串）
+//   - addChildAt(i, key, raw)：给对象行加键 / 数组行追加元素
+//   - removeAt(i)：删除行（根不可删）
+//   - serialize()：把当前编辑结果美化序列化为 JSON 文本
+// 底层依赖 stdlib json（bridge 扩展：遍历/修改/序列化）。纯逻辑可 headless 测试；
+// 绘制/命中自绘（同 tree_view 范式），点击箭头展开折叠、点行选中（Selected 事件）。
+import json;
+import text;
+import fmt;
+import error;
+
+class JsonEditor {
+    interface class View;
+
+    property:
+        // 当前编辑的 JSON 文档（null=未加载）
+        Json doc_;
+        // 可见行模型（DFS 展开序）。用动态数组（new T[n]）：固定大数组字段
+        // （如 string[512]）在 myp_self 按 [512 x ptr] 布局，new 返回 ptr →
+        // store 类型不匹配（opt verify 失败）。动态数组两编译器皆稳。
+        string[] rowKeys_;    // 行键：对象键 / [下标] / (root)
+        string[] rowVals_;    // 值预览（容器 "[n]"/"{n}"；标量实际文本）
+        int[] rowTypes_;      // JSON 类型：0null 1bool 2int 3double 4string 5array 6object
+        int[] rowLevels_;     // 缩进层级
+        int[] rowExpanded_;   // 1 展开 / 0 折叠 / -1 叶节点
+        string[] rowPaths_;   // 行 → 文档路径（改值/删除用）
+        int rowCount_;
+        // 展开路径集合（跨 refresh 持久）
+        string[] expandedPaths_;
+        int expandedCount_;
+        // 选中行（-1=无）
+        int selected_;
+        // 视图几何
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int rowH_;
+        int color_;
+
+    event:
+        Toggled(int index);
+        Selected(int index);
+        ValueEdited(int index);
+        StructureChanged();
+
+    action:
+        @constructor JsonEditor(int x, int y, int w, int h) {
+            rowKeys_ = new string[512];
+            rowVals_ = new string[512];
+            rowTypes_ = new int[512];
+            rowLevels_ = new int[512];
+            rowExpanded_ = new int[512];
+            rowPaths_ = new string[512];
+            expandedPaths_ = new string[256];
+            rowCount_ = 0;
+            expandedCount_ = 0;
+            selected_ = -1;
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            rowH_ = 24;
+            color_ = Color.dark();
+        }
+
+        // 加载 JSON 文本。成功返回 1 并重建树行；失败返回 0（旧文档保留）。
+        int load(string jsonText) {
+            try {
+                Json d = new Json(jsonText);
+                if (doc_ != null) doc_.free();
+                doc_ = d;
+            } catch (JsonError e) {
+                return 0;
+            }
+            expandedCount_ = 0;        // 复用构造器分配的 expandedPaths_（不重分配数组）
+            addExpandedPath("");       // 根默认展开
+            selected_ = -1;
+            refresh();
+            return 1;
+        }
+
+        // 序列化当前编辑结果
+        string serialize() {
+            if (doc_ == null) return "";
+            return doc_.serialize();
+        }
+
+        // ---- 展开/折叠 ----
+        void toggle(int i) {
+            if (i < 0 || i >= rowCount_) return;
+            if (rowExpanded_[i] < 0) return;   // 叶节点
+            string p = rowPaths_[i];
+            if (isExpandedPath(p) != 0) removeExpandedPath(p);
+            else addExpandedPath(p);
+            refresh();
+            Toggled(i);
+        }
+        int isExpanded(int i) {
+            if (i < 0 || i >= rowCount_) return 0;
+            return rowExpanded_[i] == 1 ? 1 : 0;
+        }
+
+        // ---- 编辑（改值/加子/删除），成功后重建行 ----
+        // 改标量行值为 raw（数字/布尔/null/字符串）。返回 1=成功
+        int setValueAt(int i, string raw) {
+            if (i < 0 || i >= rowCount_) return 0;
+            if (rowTypes_[i] == 5 || rowTypes_[i] == 6) return 0;   // 容器不可直接设值
+            int ok = doc_.setValue(rowPaths_[i], raw);
+            if (ok != 0) {
+                refresh();
+                ValueEdited(i);
+            }
+            return ok;
+        }
+        // 给容器行加子：对象加 key=raw 标量，数组追加 raw 标量。返回 1=成功
+        int addChildAt(int i, string key, string raw) {
+            if (i < 0 || i >= rowCount_) return 0;
+            if (rowTypes_[i] != 5 && rowTypes_[i] != 6) return 0;   // 需容器
+            int ok = doc_.addChild(rowPaths_[i], key, raw);
+            if (ok != 0) {
+                addExpandedPath(rowPaths_[i]);   // 新子可见：展开目标容器
+                refresh();
+                StructureChanged();
+            }
+            return ok;
+        }
+        // 删除行（根 "(root)" 不可删）。返回 1=成功
+        int removeAt(int i) {
+            if (i < 0 || i >= rowCount_) return 0;
+            string p = rowPaths_[i];
+            if (Str.len(p) == 0) return 0;       // 根不可删
+            int ok = doc_.remove(p);
+            if (ok != 0) {
+                refresh();
+                StructureChanged();
+            }
+            return ok;
+        }
+
+        // ---- 行查询（headless 断言 + 渲染） ----
+        int rowCount() { return rowCount_; }
+        string rowKeyAt(int i) {
+            if (i < 0 || i >= rowCount_) return "";
+            return rowKeys_[i];
+        }
+        string rowValueAt(int i) {
+            if (i < 0 || i >= rowCount_) return "";
+            return rowVals_[i];
+        }
+        int rowLevelAt(int i) {
+            if (i < 0 || i >= rowCount_) return 0;
+            return rowLevels_[i];
+        }
+        int rowTypeAt(int i) {
+            if (i < 0 || i >= rowCount_) return -1;
+            return rowTypes_[i];
+        }
+        int rowHasKids(int i) {
+            if (i < 0 || i >= rowCount_) return 0;
+            return rowExpanded_[i] >= 0 ? 1 : 0;
+        }
+        int selectedIndex() { return selected_; }
+        void select(int i) {
+            if (i < 0 || i >= rowCount_) { selected_ = -1; return; }
+            selected_ = i;
+        }
+
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        void setAttr(string name, string value) {
+            if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        // ---- 内部：重建可见行（DFS 展开序） ----
+        void refresh() {
+            rowCount_ = 0;
+            if (doc_ == null) return;
+            emitNode("", 0, -1);
+            if (selected_ >= rowCount_) selected_ = rowCount_ - 1;
+            if (selected_ < -1) selected_ = -1;
+        }
+
+        void emitNode(string path, int level, int parentType) {
+            int t = doc_.type(path);
+            if (t < 0) return;
+            string key;
+            if (parentType == 5) key = "[" + lastSegment(path) + "]";
+            else if (Str.len(path) == 0) key = "(root)";
+            else key = lastSegment(path);
+            int hasKids = (t == 5 || t == 6) ? 1 : 0;
+            string preview;
+            if (hasKids != 0) {
+                int n = doc_.childCount(path);
+                if (t == 5) preview = "[ " + Fmt.i(n) + " ]";
+                else preview = "{ " + Fmt.i(n) + " }";
+            } else {
+                preview = doc_.scalar(path);
+            }
+            int idx = rowCount_;
+            rowKeys_[idx] = key;
+            rowVals_[idx] = preview;
+            rowTypes_[idx] = t;
+            rowLevels_[idx] = level;
+            rowPaths_[idx] = path;
+            if (hasKids != 0) rowExpanded_[idx] = isExpandedPath(path) != 0 ? 1 : 0;
+            else rowExpanded_[idx] = -1;
+            rowCount_ = rowCount_ + 1;
+            if (hasKids != 0 && rowExpanded_[idx] == 1) {
+                int n = doc_.childCount(path);
+                for (int i = 0; i < n; i = i + 1)
+                    emitNode(childPathAt(path, i, t), level + 1, t);
+            }
+        }
+
+        string childPathAt(string path, int i, int t) {
+            if (t == 6) {   // object：子路径 = path.key
+                string key = doc_.childKey(path, i);
+                if (Str.len(path) == 0) return key;
+                return path + "." + key;
+            }
+            // array：子路径 = path.i
+            if (Str.len(path) == 0) return Fmt.i(i);
+            return path + "." + Fmt.i(i);
+        }
+
+        string lastSegment(string path) {
+            int n = Str.len(path);
+            if (n == 0) return "";
+            int dot = -1;
+            for (int i = 0; i < n; i = i + 1)
+                if (__myp_charcode(path, i) == 46) dot = i;
+            if (dot < 0) return path;
+            return Str.substring(path, dot + 1, n);
+        }
+
+        int isExpandedPath(string p) {
+            for (int i = 0; i < expandedCount_; i = i + 1)
+                if (expandedPaths_[i] == p) return 1;
+            return 0;
+        }
+        void addExpandedPath(string p) {
+            if (expandedCount_ >= 256) return;
+            expandedPaths_[expandedCount_] = p;
+            expandedCount_ = expandedCount_ + 1;
+        }
+        void removeExpandedPath(string p) {
+            for (int i = 0; i < expandedCount_; i = i + 1) {
+                if (expandedPaths_[i] == p) {
+                    for (int j = i; j < expandedCount_ - 1; j = j + 1)
+                        expandedPaths_[j] = expandedPaths_[j + 1];
+                    expandedCount_ = expandedCount_ - 1;
+                    return;
+                }
+            }
+        }
+
+        // 类型着色
+        int typeColor(int t) {
+            if (t == 4) return Color.green();       // string
+            if (t == 2 || t == 3) return Color.amber();  // number
+            if (t == 1) return Color.cyan();        // bool
+            if (t == 0) return Color.gray();        // null
+            return Color.white();                   // object/array
+        }
+
+        // ---- View 接口 ----
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            int textH = r.textH(1);
+            for (int i = 0; i < rowCount_; i = i + 1) {
+                int iy = y_ + 4 + i * rowH_;
+                if (iy + rowH_ > y_ + h_) break;
+                if (i == selected_) {
+                    r.fillRect(x_, y_ + 4 + i * rowH_, w_, rowH_,
+                               Color.lighten(color_, 16));
+                }
+                int indent = rowLevels_[i] * 14;
+                // 箭头（容器行）
+                if (rowExpanded_[i] >= 0) {
+                    int ax = x_ + 10 + indent;
+                    int ay = iy + rowH_ / 2;
+                    if (rowExpanded_[i] == 1) {
+                        r.drawLine(ax - 3, ay - 2, ax, ay + 2, Color.gray());
+                        r.drawLine(ax + 3, ay - 2, ax, ay + 2, Color.gray());
+                    } else {
+                        r.drawLine(ax - 2, ay - 3, ax + 2, ay, Color.gray());
+                        r.drawLine(ax - 2, ay + 3, ax + 2, ay, Color.gray());
+                    }
+                }
+                int tx = x_ + 24 + indent;
+                int ty = iy + (rowH_ - textH) / 2;
+                r.drawText(tx, ty, rowKeys_[i], 1, Color.blue());
+                int vx = tx + r.textWidth(rowKeys_[i], 1) + 8;
+                r.drawText(vx, ty, rowVals_[i], 1, typeColor(rowTypes_[i]));
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            int idx = (y - (y_ + 4)) / rowH_;
+            if (idx < 0 || idx >= rowCount_) return;
+            int indent = rowLevels_[idx] * 14;
+            // 点箭头（左侧）→ 展开/折叠；其余 → 选中
+            if (rowExpanded_[idx] >= 0 && x >= x_ + 4 + indent && x < x_ + 24 + indent) {
+                toggle(idx);
+            } else {
+                selected_ = idx;
+                Selected(idx);
+            }
+        }
+}

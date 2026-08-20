@@ -307,3 +307,275 @@ int32_t myp_json_array_length(int64_t handle, const char* path) {
 void myp_json_free(int64_t handle) {
     json_free_node((JsonNode*)(intptr_t)handle);
 }
+
+// ==================== 编辑支持（JsonEditor 控件用） ====================
+// 在只读查询之上补充：遍历（子节点计数/键名/标量文本）、原地修改（改值/加子/
+// 删除）、序列化（美化打印）。全部保持 M8 约定：返回 string 一律 myp_strdup。
+
+// 把用户输入的原始文本解析为标量节点（数字/布尔/null/字符串）。不做容器解析
+// （编辑器改值只针对标量；容器用 add_child 逐步构建）。
+static JsonNode* json_parse_scalar_text(const char* raw) {
+    if (!raw) return json_new_node(JSON_NULL, NULL);
+    const char* p = raw;
+    if (*p == 't' && strncmp(p, "true", 4) == 0 && p[4] == '\0') {
+        JsonNode* n = json_new_node(JSON_BOOL, NULL); n->bool_val = 1; return n;
+    }
+    if (*p == 'f' && strncmp(p, "false", 5) == 0 && p[5] == '\0') {
+        JsonNode* n = json_new_node(JSON_BOOL, NULL); n->bool_val = 0; return n;
+    }
+    if (*p == 'n' && strncmp(p, "null", 4) == 0 && p[4] == '\0') {
+        return json_new_node(JSON_NULL, NULL);
+    }
+    // 数字：strtod 必须消费整个串
+    char* end = NULL;
+    double d = strtod(p, &end);
+    if (end != p && *end == '\0') {
+        int is_int = 1;
+        for (const char* q = p; q < end; q++)
+            if (*q == '.' || *q == 'e' || *q == 'E') { is_int = 0; break; }
+        JsonNode* n = json_new_node(is_int ? JSON_INT : JSON_DOUBLE, NULL);
+        n->num_val = d;
+        n->str_val = strdup(p);
+        return n;
+    }
+    // 其余一律当字符串
+    JsonNode* n = json_new_node(JSON_STRING, NULL);
+    n->str_val = strdup(raw);
+    return n;
+}
+
+// 在 parent 下按 token 找子节点（对象按键名 / 数组按下标）
+static JsonNode* json_find_child(JsonNode* parent, const char* token) {
+    if (!parent) return NULL;
+    if (parent->type == JSON_OBJECT) {
+        for (int i = 0; i < parent->child_count; i++)
+            if (parent->children[i]->key && strcmp(parent->children[i]->key, token) == 0)
+                return parent->children[i];
+        return NULL;
+    }
+    if (parent->type == JSON_ARRAY) {
+        char* end = NULL;
+        long idx = strtol(token, &end, 10);
+        if (end == token || idx < 0 || idx >= parent->child_count) return NULL;
+        return parent->children[idx];
+    }
+    return NULL;
+}
+
+// ---- 遍历 ----
+int32_t myp_json_child_count(int64_t handle, const char* path) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    JsonNode* n = json_resolve_path(root, path);
+    if (!n || (n->type != JSON_OBJECT && n->type != JSON_ARRAY)) return 0;
+    return n->child_count;
+}
+
+const char* myp_json_child_key(int64_t handle, const char* path, int32_t index) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    JsonNode* n = json_resolve_path(root, path);
+    if (!n || (n->type != JSON_OBJECT && n->type != JSON_ARRAY)) return myp_strdup("");
+    if (index < 0 || index >= n->child_count) return myp_strdup("");
+    JsonNode* c = n->children[index];
+    if (c->key) return myp_strdup(c->key);
+    return myp_strdup("");
+}
+
+// 标量节点 → 显示/编辑用文本（字符串原样去引号；数字用词法原文；bool/null 关键字）
+const char* myp_json_scalar(int64_t handle, const char* path) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    JsonNode* n = json_resolve_path(root, path);
+    if (!n) return myp_strdup("");
+    switch (n->type) {
+        case JSON_STRING: return myp_strdup(n->str_val ? n->str_val : "");
+        case JSON_INT:
+        case JSON_DOUBLE: return myp_strdup(n->str_val ? n->str_val : "0");
+        case JSON_BOOL:   return myp_strdup(n->bool_val ? "true" : "false");
+        case JSON_NULL:   return myp_strdup("null");
+        default:          return myp_strdup("");   // 容器
+    }
+}
+
+// ---- 修改 ----
+// 把 path 指向的标量节点原地改成 raw 解析出的标量值。返回 1=成功。
+int32_t myp_json_set_value(int64_t handle, const char* path, const char* raw) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    if (!root || !path || !*path) return 0;
+    char pbuf[256];
+    JsonNode* parent = NULL;
+    const char* tok = path;
+    char* lastdot = strrchr(pbuf, '.');
+    // 先拷贝再定位
+    strncpy(pbuf, path, sizeof(pbuf) - 1); pbuf[sizeof(pbuf) - 1] = '\0';
+    lastdot = strrchr(pbuf, '.');
+    if (lastdot) {
+        *lastdot = '\0';
+        tok = lastdot + 1;
+        parent = json_resolve_path(root, pbuf);
+    } else {
+        parent = root;
+        tok = pbuf;
+    }
+    if (!parent) return 0;
+    JsonNode* target = json_find_child(parent, tok);
+    if (!target) return 0;
+    if (target->type == JSON_OBJECT || target->type == JSON_ARRAY) return 0;
+    JsonNode* val = json_parse_scalar_text(raw);
+    if (!val) return 0;
+    free(target->str_val);
+    target->type = val->type;
+    target->str_val = val->str_val;   // 转移所有权
+    target->num_val = val->num_val;
+    target->bool_val = val->bool_val;
+    free(val);
+    return 1;
+}
+
+// 给容器 path 追加一个子节点：对象加 key=raw 标量，数组追加 raw 标量。返回 1=成功。
+int32_t myp_json_add_child(int64_t handle, const char* path, const char* key, const char* raw) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    JsonNode* parent = json_resolve_path(root, path);
+    if (!parent || (parent->type != JSON_OBJECT && parent->type != JSON_ARRAY)) return 0;
+    JsonNode* val = json_parse_scalar_text(raw);
+    if (!val) return 0;
+    if (parent->type == JSON_OBJECT) {
+        val->key = strdup(key ? key : "newKey");
+    }
+    json_add_child(parent, val);
+    return 1;
+}
+
+// 删除 path 指向的子节点（根不可删）。返回 1=成功。
+int32_t myp_json_remove(int64_t handle, const char* path) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    if (!root || !path || !*path) return 0;
+    char pbuf[256];
+    strncpy(pbuf, path, sizeof(pbuf) - 1); pbuf[sizeof(pbuf) - 1] = '\0';
+    char* lastdot = strrchr(pbuf, '.');
+    JsonNode* parent = NULL;
+    const char* tok = pbuf;
+    if (lastdot) {
+        *lastdot = '\0';
+        tok = lastdot + 1;
+        parent = json_resolve_path(root, pbuf);
+    } else {
+        parent = root;
+        tok = pbuf;
+    }
+    if (!parent) return 0;
+    int found = -1;
+    if (parent->type == JSON_OBJECT) {
+        for (int i = 0; i < parent->child_count; i++)
+            if (parent->children[i]->key && strcmp(parent->children[i]->key, tok) == 0) { found = i; break; }
+    } else if (parent->type == JSON_ARRAY) {
+        char* end = NULL;
+        long idx = strtol(tok, &end, 10);
+        if (end != tok && idx >= 0 && idx < parent->child_count) found = (int)idx;
+    } else return 0;
+    if (found < 0) return 0;
+    JsonNode* victim = parent->children[found];
+    for (int i = found; i < parent->child_count - 1; i++)
+        parent->children[i] = parent->children[i + 1];
+    parent->child_count--;
+    json_free_node(victim);
+    return 1;
+}
+
+// ---- 序列化（美化打印，2 空格缩进） ----
+typedef struct { char* buf; size_t len; size_t cap; } JsonSb;
+
+static void jb_init(JsonSb* b) { b->buf = NULL; b->len = 0; b->cap = 0; }
+static void jb_ensure(JsonSb* b, size_t extra) {
+    if (b->len + extra + 1 <= b->cap) return;
+    size_t nc = b->cap ? b->cap : 64;
+    while (nc < b->len + extra + 1) nc *= 2;
+    b->buf = (char*)realloc(b->buf, nc);
+    b->cap = nc;
+}
+static void jb_str(JsonSb* b, const char* s) {
+    if (!s) return;
+    size_t l = strlen(s);
+    jb_ensure(b, l);
+    memcpy(b->buf + b->len, s, l);
+    b->len += l;
+    b->buf[b->len] = '\0';
+}
+static void jb_char(JsonSb* b, char c) {
+    jb_ensure(b, 1);
+    b->buf[b->len++] = c;
+    b->buf[b->len] = '\0';
+}
+static void jb_indent(JsonSb* b, int n) {
+    for (int i = 0; i < n; i++) jb_str(b, "  ");
+}
+
+static void jb_escaped(JsonSb* b, const char* s) {
+    jb_char(b, '"');
+    if (s) for (const char* p = s; *p; p++) {
+        switch (*p) {
+            case '"':  jb_str(b, "\\\""); break;
+            case '\\': jb_str(b, "\\\\"); break;
+            case '\n': jb_str(b, "\\n"); break;
+            case '\t': jb_str(b, "\\t"); break;
+            case '\r': jb_str(b, "\\r"); break;
+            default:
+                if ((unsigned char)*p < 0x20) {
+                    char tmp[8];
+                    snprintf(tmp, sizeof(tmp), "\\u%04x", (unsigned char)*p);
+                    jb_str(b, tmp);
+                } else jb_char(b, *p);
+        }
+    }
+    jb_char(b, '"');
+}
+
+static void json_serialize_node(JsonNode* n, int indent, JsonSb* b) {
+    if (!n) { jb_str(b, "null"); return; }
+    switch (n->type) {
+        case JSON_NULL:   jb_str(b, "null"); break;
+        case JSON_BOOL:   jb_str(b, n->bool_val ? "true" : "false"); break;
+        case JSON_INT:
+        case JSON_DOUBLE: jb_str(b, n->str_val ? n->str_val : "0"); break;
+        case JSON_STRING: jb_escaped(b, n->str_val ? n->str_val : ""); break;
+        case JSON_ARRAY: {
+            jb_char(b, '[');
+            if (n->child_count == 0) { jb_char(b, ']'); break; }
+            jb_char(b, '\n');
+            for (int i = 0; i < n->child_count; i++) {
+                jb_indent(b, indent + 1);
+                json_serialize_node(n->children[i], indent + 1, b);
+                if (i < n->child_count - 1) jb_char(b, ',');
+                jb_char(b, '\n');
+            }
+            jb_indent(b, indent);
+            jb_char(b, ']');
+            break;
+        }
+        case JSON_OBJECT: {
+            jb_char(b, '{');
+            if (n->child_count == 0) { jb_char(b, '}'); break; }
+            jb_char(b, '\n');
+            for (int i = 0; i < n->child_count; i++) {
+                jb_indent(b, indent + 1);
+                jb_escaped(b, n->children[i]->key ? n->children[i]->key : "");
+                jb_str(b, ": ");
+                json_serialize_node(n->children[i], indent + 1, b);
+                if (i < n->child_count - 1) jb_char(b, ',');
+                jb_char(b, '\n');
+            }
+            jb_indent(b, indent);
+            jb_char(b, '}');
+            break;
+        }
+    }
+}
+
+const char* myp_json_serialize(int64_t handle) {
+    JsonNode* root = (JsonNode*)(intptr_t)handle;
+    if (!root) return myp_strdup("null");
+    JsonSb b;
+    jb_init(&b);
+    json_serialize_node(root, 0, &b);
+    const char* out = myp_strdup(b.buf ? b.buf : "");
+    free(b.buf);
+    return out;
+}

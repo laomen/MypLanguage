@@ -286,6 +286,15 @@ rn.run(a, "标题", 1880, 956, 0x14141C);   // a 实现了 UiApp
 用源码集合编译：`build.sh <target>` 的 backend 目录通配会自动带上
 `sdl_renderer.myp` + `app_runner.myp`。
 
+**可视化 JSON 编辑器（`JsonEditor` 控件）** ✅ 2026-08-20
+
+`src/controls/json_editor.myp` 提供 JSON 树编辑器：解析 → 可展开/折叠树行（键 +
+类型着色值），支持改值（`setValueAt`）、给对象加键/数组追加（`addChildAt`）、删行
+（`removeAt`）、序列化（`serialize`）。底层依赖 stdlib `json` 的 bridge 编辑扩展
+（遍历/修改/序列化，纯 C，M8 计数约定）。示例：`examples/json_editor.myp`
+（UiApp + AppRunner，操作栏 设值/加键/删行/序列化），`JSON_HEADLESS=1` headless
+断言。依赖 stdlib json，可随包 `import mypview.controls;` 引入。
+
 ## 测试
 
 ```bash
