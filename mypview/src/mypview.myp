@@ -1,0 +1,80 @@
+// mypview — 聚合主模块（源码集合包入口）
+//
+// 通过相对路径 import 聚合 src/ 全部非 SDL 源文件；编译时合并为同一
+// TU，与「多文件源码集合」语义完全等价（见 examples/build.sh 的 SRCS）。
+// 顺序：core → controls → layout → uix → animation（mypc 依赖序最稳）。
+//
+// 可选 SDL 后端：src/backend/sdl_renderer.myp（需 stdlib sdl/ttf + 链接 SDL2），
+// 默认不引入；需要时把它加入编译列表即可。
+//
+// 用法（作为包）：
+//   myp install <mypview目录>   # 或 --package-path 指向其父目录
+//   import mypview;
+import "./core/view.myp";
+import "./core/theme.myp";
+import "./core/renderer.myp";
+import "./core/gesture.myp";
+import "./core/focus_manager.myp";
+import "./core/root.myp";
+// ---- controls ----
+import "./controls/action_sheet.myp";
+import "./controls/app_icon.myp";
+import "./controls/avatar.myp";
+import "./controls/badge.myp";
+import "./controls/banner.myp";
+import "./controls/bottom_nav.myp";
+import "./controls/button.myp";
+import "./controls/checkbox.myp";
+import "./controls/chip.myp";
+import "./controls/color_picker.myp";
+import "./controls/context_menu.myp";
+import "./controls/data_grid.myp";
+import "./controls/date_picker.myp";
+import "./controls/dialog.myp";
+import "./controls/divider.myp";
+import "./controls/drawer.myp";
+import "./controls/dropdown.myp";
+import "./controls/icon_button.myp";
+import "./controls/image.myp";
+import "./controls/label.myp";
+import "./controls/list.myp";
+import "./controls/long_press_button.myp";
+import "./controls/notification_banner.myp";
+import "./controls/number_input.myp";
+import "./controls/page_view.myp";
+import "./controls/pagination.myp";
+import "./controls/panel.myp";
+import "./controls/popover.myp";
+import "./controls/progress_bar.myp";
+import "./controls/progress_spinner.myp";
+import "./controls/radio_button.myp";
+import "./controls/rating.myp";
+import "./controls/refresh_indicator.myp";
+import "./controls/scroll_view.myp";
+import "./controls/search_bar.myp";
+import "./controls/segmented_control.myp";
+import "./controls/slider.myp";
+import "./controls/sortable_list.myp";
+import "./controls/stepper.myp";
+import "./controls/switch.myp";
+import "./controls/tab_view.myp";
+import "./controls/text_area.myp";
+import "./controls/text_field.myp";
+import "./controls/time_picker.myp";
+import "./controls/toast.myp";
+import "./controls/tooltip.myp";
+import "./controls/tree_view.myp";
+import "./controls/ttf_label.myp";
+// ---- layout ----
+import "./layout/constraint_layout.myp";
+import "./layout/flow_layout.myp";
+import "./layout/grid_layout.myp";
+import "./layout/linear_layout.myp";
+import "./layout/stack_layout.myp";
+// ---- uix ----
+import "./uix/expr.myp";
+import "./uix/prop_bag.myp";
+import "./uix/uix_loader.myp";
+// ---- animation ----
+import "./animation/coro_anim.myp";
+import "./animation/tween.myp";

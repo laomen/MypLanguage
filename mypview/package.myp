@@ -1,0 +1,10 @@
+# MYP Package
+# mypview — 纯 MYP UI 框架（源码集合包）
+#
+# 依赖说明：
+#   - 核心/控件/布局/UIX/动画：仅依赖 stdlib（text/fmt/env），编译时 --stdlib 即可。
+#   - 可选 SDL 后端 src/backend/sdl_renderer.myp 依赖 stdlib 的 sdl/ttf 模块，
+#     需链接 SDL2/ttf；默认聚合入口 mypview.myp 不含它（按需加入编译列表）。
+#   - depends 字段保留给外部包；当前无外部依赖。
+name: mypview
+version: 1.0.0

@@ -1172,3 +1172,24 @@
 - **修复方向（未做，暂缓）**：mypc 复用/合并 vtable（按「接口名_类名」去重，
   对齐 myp_self），可省 ~17KB。需改 src/codegen 的 vtable 生成/引用逻辑。
 - **验证**：`nm -S` 统计 vtable；`objdump -h` 看 .data.rel.ro。
+
+## BUG-044（已修复 🟩）：generateClassDefaultAction 漏设 current_ret_ti_ → 接口
+默认实现 stub 用「残留返回类型」生成 myp_retain(i32) → LLVM verify 失败
+
+- **症状**：把 mypview 作为包 `import mypview;`（聚合主模块相对路径递归加载
+  控件）编译时，LLVM verify 失败 `Call parameter type does not match ... call
+  void @myp_retain(i32 1)`。同一批文件**直接命令行多文件编译正常**。
+- **根因**：`CodeGen::generateClassDefaultAction`（生成接口默认实现
+  `__ifdef_View_<method>_<Class>` stub）**未设置 `current_ret_ti_`**（正常路径
+  generateClassAction/generateClassFunction 均设置）。stub 内有 `return` 语句
+  （如 `int enabled() { return 1; }`）时，emitFunctionReturn 用上一函数残留的
+  current_ret_ti_ 判断是否需 ARC retain——残留类型为 string/Interface 时错误
+  生成 `myp_retain(i32 1)`。之所以「直接编译正常 / import 聚合崩」：合并后类
+  的 codegen 顺序不同，恰好让 stub 前一个函数是对象返回类型。
+- **修复**：`generateClassDefaultAction` 补设
+  `current_ret_ti_ = typeNodeToCodegenType(action.return_type)`，并与
+  generateClassAction 对齐 `arc_skip_retain_return_ = false`、
+  `arc_pending_temps_.clear()`。
+- **验证**：mypc + myp_self 对 `import mypview;` 包消费者编译运行输出一致
+  （`pkg button=Login label=hello num=50 slider=60`）；parent 312/312、
+  bugs 11/11、mypview UIX/PIPE PASS。

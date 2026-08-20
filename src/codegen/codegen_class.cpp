@@ -756,6 +756,14 @@ void CodeGen::generateClassDefaultAction(const ClassDecl& cls, const InterfaceDe
     current_is_coro_ = false;
     finally_ret_slot_ = nullptr;
     finally_ctx_stack_.clear();
+    // 接口默认实现 stub 也必须设置返回类型：generateClassAction 等正常路径都
+    // 设置了 current_ret_ti_，这里漏设会导致 return 语句用「上一函数残留的
+    // 返回类型」判断是否需 ARC retain —— 例如 `int enabled() { return 1; }`
+    // 若残留类型为 string/Interface 会错误生成 myp_retain(i32 1) → LLVM
+    // verify 失败（2026-08-20 import 合并时类生成顺序不同暴露）。
+    current_ret_ti_ = typeNodeToCodegenType(action.return_type);
+    arc_skip_retain_return_ = false;
+    arc_pending_temps_.clear();
     stack_array_sizes_.clear();
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);

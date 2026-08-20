@@ -213,10 +213,34 @@ Ttf.cacheMisses()    // 未命中次数（新渲染）
 
 ## 在自己的项目里用 mypview
 
+**方式一：源码集合（直接加入编译列表）**
+
 1. 拷贝 `src/` 目录到你的项目（或直接引用）
 2. 把需要的文件加入 mypc 编译列表（见 `examples/build.sh` 的 `SRCS`）
 3. `--stdlib` 指向 MYP 标准库（mypc 通用桥接会自动链 SDL/ttf）
 4. 写你的 `.uix` + ViewModel + main
+
+**方式二：作为 MYP 包（`import mypview;`）** ✅ 2026-08-20
+
+mypview 已打包为 MYP 标准包（`package.myp` + 聚合主模块
+`src/mypview.myp`），可通过 `import mypview;` 一次引入全部 51 个非 SDL
+控件/布局/UIX/动画文件（`src/backend/sdl_renderer.myp` 需 SDL/ttf，默认不含）。
+
+```bash
+# 1. 安装（本仓库根目录即含该包；也可 install 到你的项目）
+myp install <path-to-mypview>        # → myp_packages/mypview/
+# 2. 编译时 --package-path 指向含 mypview 的目录
+mypc main.myp -o main --stdlib <myp-stdlib> --package-path myp_packages
+```
+
+```myp
+import mypview;
+// 之后直接使用所有控件：Button / Label / NumberInput / Slider / LinearLayout
+// / UixLoader / Tween ...（等价于把 src/ 全部加入编译列表）
+```
+
+`import mypview;` 与「方式一」语义完全等价（聚合主模块用相对路径 import
+递归合并整个源码集合；mypc 与 myp_self 均支持）。
 
 ## 测试
 
@@ -233,4 +257,4 @@ mypc --test tests/uix_logic.myp -o /tmp/uix_logic --stdlib ../stdlib && /tmp/uix
 - [x] 独立示例 + headless 回归
 - [x] UIX 控件注册扩展点（`ViewBuilder` + `registerControl`，见 `tests/uix_logic.myp` 的 Badge 示例）
 - [ ] 软件渲染后端（无 SDL 环境可跑）
-- [ ] 包化分发（MYP package-path 目录结构）
+- [x] 包化分发（MYP package-path 目录结构，`package.myp` + 聚合入口 `src/mypview.myp`，`myp install` / `import mypview;`）

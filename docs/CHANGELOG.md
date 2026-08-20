@@ -27,6 +27,32 @@
 
 ## 编译器版本历史
 
+### v3.12.51 — mypview 打包为 MYP 标准包（`import mypview;`）+ BUG-044 修复
+
+**mypview 包化**：mypview 从「源码集合」升级为 MYP 标准包——
+- 新增 `mypview/package.myp`（`name: mypview, version: 1.0.0`）。
+- 新增聚合主模块 `mypview/src/mypview.myp`：用相对路径 import 递归聚合
+  src/ 下全部 51 个非 SDL 源文件（core → controls → layout → uix → animation）。
+  借助 `loadModule` 的递归子 import 机制，`import mypview;` 一次合并整个框架，
+  与「多文件编译」语义完全等价；`src/backend/sdl_renderer.myp`（需 SDL/ttf）
+  默认不引入。
+- 全链路验证：`myp install <mypview>` → `myp_packages/mypview/` → 消费者
+  `import mypview;` + `mypc/myp_self --package-path` 编译运行输出一致
+  （`pkg button=Login label=hello num=50 slider=60`）。README 增「方式二：
+  作为 MYP 包」，路线图「包化分发」勾选。
+
+**BUG-044（mypc 接口默认实现 stub 用残留返回类型生成 myp_retain(i32)）**
+- 打包验证暴露：`import mypview;` 编译时 LLVM verify 失败
+  `call void @myp_retain(i32 1)`；同一批文件直接多文件编译正常——类 codegen
+  顺序不同暴露。
+- 根因：`CodeGen::generateClassDefaultAction`（生成 `__ifdef_View_<m>_<C>` 接口
+  默认实现 stub）**未设置 `current_ret_ti_`**，return 语句用上一函数残留类型判断
+  是否 ARC retain。
+- 修复：补设 `current_ret_ti_`，并与 generateClassAction 对齐
+  `arc_skip_retain_return_`/`arc_pending_temps_`。
+- 验证：parent 312/312、bugs 11/11、mypview UIX/PIPE PASS；双编译器 import 包
+  消费者输出一致。
+
 ### v3.12.50 — 文件顺序敏感修复（BUG-041）+ 自举内部符号改 internal（BUG-042）
 
 **背景**：对比 mypc 与自举编译器编译的 mypview 二进制时发现：
