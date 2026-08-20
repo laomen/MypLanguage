@@ -976,6 +976,9 @@ void CodeGen::generateClassAction(const ClassDecl& cls, const ActionDecl& action
     arc_pending_temps_.clear();
     // 固定数组栈变量表按函数隔离（否则不同函数同名变量互相污染）
     stack_array_sizes_.clear();
+    // 签名声明（无实现）：只保留外部声明、不生成 body/stub，链接器从预编译库
+    // （.so/.a，MYP_BRIDGES）解析——MYP 闭源分发（实现编译进 .so，分发签名 .myp）。
+    if (!action.body) return;
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -1181,6 +1184,8 @@ void CodeGen::generateStaticAction(const ClassDecl& cls, const ActionDecl& actio
     arc_pending_temps_.clear();
     // 固定数组栈变量表按函数隔离
     stack_array_sizes_.clear();
+    // 签名声明（无实现）：保持外部声明，链接预编译库（闭源分发，同 generateClassAction）
+    if (!action.body) return;
     auto* bb = llvm::BasicBlock::Create(ctx_, "entry", func);
     builder_.SetInsertPoint(bb);
     pushScope();
@@ -1510,6 +1515,19 @@ void CodeGen::generateClassFunction(const ClassDecl& cls, const FuncDecl& fn_dec
         ? constructorMangledName(cls.name, fn_decl.name, fn_decl.params)
         : cls.name + "_" + fn_decl.name;
     auto* existing = module_->getFunction(fn);
+    // 签名声明（无实现）：保持 ExternalLinkage 纯声明，链接器从预编译库解析
+    // （闭源分发）。声明由 createClassFunctionDecl 预创建；无则补建外部声明。
+    if (!fn_decl.body) {
+        if (!existing) {
+            std::vector<llvm::Type*> pts0 = {llvm::PointerType::get(ctx_, 0)};
+            for (auto& p : fn_decl.params)
+                pts0.push_back(getLLVMType(typeNodeToCodegenType(p.type)));
+            auto* ft0 = llvm::FunctionType::get(
+                getLLVMType(typeNodeToCodegenType(fn_decl.return_type)), pts0, false);
+            llvm::Function::Create(ft0, llvm::Function::ExternalLinkage, fn, module_.get());
+        }
+        return;
+    }
     if (existing) existing->deleteBody();
 
     std::vector<llvm::Type*> pts = {llvm::PointerType::get(ctx_, 0)};

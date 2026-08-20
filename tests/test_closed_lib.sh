@@ -91,5 +91,57 @@ else
     bad ".a 链接失败: $OUT2"
 fi
 
+# ---- 7. MYP 源码闭源：secret.myp → mypc --shared → .so + 签名分发 ----
+# 核心算法本身用 MYP 写，编译成 .so；分发「签名 .myp（无 body）+ .so」，
+# 用户 import 签名，MYP_BRIDGES 链接 .so。签名方法生成外部声明（codegen
+# 对无 body 方法不再生成 stub），链接器从 .so 解析。
+MDIST="$TMP/mdist"
+mkdir -p "$MDIST"
+cat > "$TMP/secret.myp" <<'EOF'
+class Secret {
+    static:
+        int mul(int a, int b) { return a * b * 2; }
+        int verify(int key) { return key == 12345 ? 1 : 0; }
+        string greet(string name) { return "hi " + name; }
+}
+EOF
+"$MYPCC" "$TMP/secret.myp" --shared -o "$MDIST/libmypsecret.so" \
+    --stdlib "$(cd "$(dirname "$MYPCC")/../stdlib" 2>/dev/null && pwd || echo stdlib)" >/dev/null 2>&1 \
+    && ok "MYP 源码编译 .so（mypc --shared）" || bad "MYP .so 编译失败"
+cat > "$MDIST/sig.myp" <<'EOF'
+class Secret {
+    static:
+        int mul(int a, int b);
+        int verify(int key);
+        string greet(string name);
+}
+EOF
+cat > "$MDIST/mmain.myp" <<'EOF'
+import env;
+import "./sig.myp";
+
+class App {
+    action:
+        @constructor App() {
+            Console.writeLine("m-mul=" + Secret.mul(3, 4));
+            Console.writeLine("m-verify=" + Secret.verify(12345));
+            Console.writeLine("m-greet=" + Secret.greet("Bob"));
+        }
+}
+int main() { App a = new App(); return 0; }
+EOF
+MOUT="$(MYP_BRIDGES="$MDIST" "$MYPCC" "$MDIST/mmain.myp" -o "$TMP/mmain" \
+       --stdlib "$(cd "$(dirname "$MYPCC")/../stdlib" 2>/dev/null && pwd || echo stdlib)" 2>&1)"
+if echo "$MOUT" | grep -q "Link OK"; then ok "MYP 签名 + MYP_BRIDGES 链接 .so"; else bad "MYP 链接失败: $MOUT"; fi
+MRUN="$("$TMP/mmain" 2>&1)"
+echo "$MRUN" | grep -q "m-mul=24" && ok "MYP .so 核心 mul=24" || bad "m-mul: $MRUN"
+echo "$MRUN" | grep -q "m-verify=1" && ok "MYP .so 核心 verify=1" || bad "m-verify: $MRUN"
+echo "$MRUN" | grep -q "m-greet=hi Bob" && ok "MYP .so 核心 greet=hi Bob" || bad "m-greet: $MRUN"
+if [ ! -f "$MDIST/secret.myp" ]; then
+    ok "MYP 闭源：分发目录无实现 secret.myp（仅签名 sig.myp + .so）"
+else
+    bad "MYP 泄露：分发目录含实现 secret.myp"
+fi
+
 echo "closed-lib: $PASS pass, $FAIL fail"
 [ "$FAIL" -eq 0 ]

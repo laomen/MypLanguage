@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.12.54 — MYP 源码闭源：签名声明（无 body 方法→外部声明）+ 预编译库链接
+
+**背景**：v3.12.53 打通了「C 下沉 + bridge 预编译 .so」闭源。但核心算法若本身
+用 MYP 写（而非 C），`import` 是源码合并、分发必含 `.myp` 源码。本版本让
+**MYP 源码也能闭源**：实现编译成 `.so`（`mypc --shared` 已有），分发「签名
+`.myp`（只声明无 body）+ `.so`」。
+
+**修复**（`src/codegen/codegen_class.cpp`）：类方法生成器（`generateClassAction`/
+`generateStaticAction`/`generateClassFunction`）对**无 body 方法**不再生成
+`ret 默认值` 的 internal stub，而是保持**外部声明**（ExternalLinkage、无 body）
+——调用方生成对 `Class_method` 的 undefined 引用，链接器经 `MYP_BRIDGES`
+从预编译 `.so`/`.a` 解析（配合 v3.12.53 的 bridge 预编译库支持）。
+`markNonMainFunctionsInternal` 已跳过声明（`isDeclaration()`），无冲突。
+
+**闭源分发闭环（MYP 源码）**：
+- 实现 `secret.myp`（class Secret { static: mul/verify/greet }）→
+  `mypc secret.myp --shared -o libsecret.so`（导出 `Secret_mul` 等符号）
+- 分发：签名 `sig.myp`（`static: int mul(int a,int b);` 无 body）+ `libsecret.so`
+- 用户：`import "./sig.myp";` 调 `Secret.mul(...)`，编译时
+  `MYP_BRIDGES=<含 libsecret.so 目录>` → 自动链接
+- 运行：`mul=24` / `verify=1` / `greet=hi Bob`（含字符串返回与 ARC，均正常）
+
+**测试**：`tests/test_closed_lib.sh` 扩展第 7 节（MYP 源码闭源，6 断言），现
+12 断言全过；parent 313/313、bugs 11/11、bootstrap 16/16、mypview UIX/PIPE PASS。
+
 ### v3.12.53 — bridge 机制支持预编译库（.so/.a）→ MYP 闭源分发
 
 **背景**：MYP 的 import 是「源码合并」模型，包分发必然含 `.myp` 源码，无法闭源。
