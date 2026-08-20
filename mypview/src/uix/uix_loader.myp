@@ -884,6 +884,13 @@ class UixLoader {
             return -1;
         }
         StackLayout stackAt(int i) { return stacks_[i]; }
+        int panelIdxOf(string id) {
+            for (int i = 0; i < panelCount_; i = i + 1) {
+                if (panelIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        Panel panelAt(int i) { return panels_[i]; }
 
         // 按 id 查命令名（未注册返回空串）
         string cmdFor(string id) {

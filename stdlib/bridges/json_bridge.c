@@ -430,12 +430,23 @@ int32_t myp_json_set_value(int64_t handle, const char* path, const char* raw) {
     return 1;
 }
 
-// 给容器 path 追加一个子节点：对象加 key=raw 标量，数组追加 raw 标量。返回 1=成功。
+// 给容器 path 追加一个子节点：对象加 key=raw，数组追加 raw。raw 优先按完整
+// JSON 值解析（对象/数组/标量——设计器注入控件节点用），裸文本（非 { [ 开头）
+// 回退按标量解析（数字/布尔/null/字符串，JsonEditor 用）。返回 1=成功。
 int32_t myp_json_add_child(int64_t handle, const char* path, const char* key, const char* raw) {
     JsonNode* root = (JsonNode*)(intptr_t)handle;
     JsonNode* parent = json_resolve_path(root, path);
     if (!parent || (parent->type != JSON_OBJECT && parent->type != JSON_ARRAY)) return 0;
-    JsonNode* val = json_parse_scalar_text(raw);
+    JsonNode* val = NULL;
+    if (raw && (raw[0] == '{' || raw[0] == '[')) {
+        const char* p0 = raw;
+        val = json_parse_value(&p0);
+        if (!val || *p0 != '\0') {
+            if (val) json_free_node(val);
+            val = NULL;
+        }
+    }
+    if (!val) val = json_parse_scalar_text(raw);
     if (!val) return 0;
     if (parent->type == JSON_OBJECT) {
         val->key = strdup(key ? key : "newKey");

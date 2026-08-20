@@ -27,7 +27,7 @@ MODE="${2:-}"
 #     main 丢失（undefined main）。
 # 故按编译器分支：myp_self → 目录通配；mypc → 依赖顺序固定列表。新增控件按依赖追加。
 EXTRA=()
-if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ] || [ "$TARGET" = "json_editor" ]; then
+if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ] || [ "$TARGET" = "json_editor" ] || [ "$TARGET" = "uix_designer" ]; then
     EXTRA+=( "$SRC/backend/"*.myp )
 fi
 
@@ -46,11 +46,13 @@ if [ "$MODE" = "both" ]; then
         out="$TARGET.$name"
         echo "--- $name: $cc ---"
         "$cc" "${SRCS[@]}" -o "$out" --stdlib "$STDLIB"
-        # bnct_cases / json_editor：both 对比走 headless（不开 SDL 窗口）；player 用限帧退出
+        # bnct_cases / json_editor / uix_designer：both 对比走 headless（不开 SDL 窗口）；player 用限帧退出
         if [ "$TARGET" = "bnct_cases" ]; then
             BNCT_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         elif [ "$TARGET" = "json_editor" ]; then
             JSON_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+        elif [ "$TARGET" = "uix_designer" ]; then
+            DESIGN_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         else
             ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         fi

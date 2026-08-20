@@ -1,0 +1,574 @@
+// uix_designer.myp — mypview 可视化界面设计器（所见即所得，对标 Qt Design Studio）
+// ---------------------------------------------------------------------------
+// 直接在画布上设计 mypview 界面：.uix 声明文档为源（可编辑 Json），UixLoader 实时
+// 渲染画布（WYSIWYG），点选控件 → 属性面板改属性 → 重建画布即见效果；调色板
+// 一键添加控件；保存输出 .uix 文档（可再被 buildInto 加载）。
+//
+//   .uix 文档 = 设计的唯一真源（Json，可 setValue/addChild/remove/serialize）
+//   画布     = UixLoader.buildInto 渲染（所见即所得）
+//   选中     = 画布点击 → loader.hitId(x,y) → 高亮框 + 属性面板回填
+//   属性     = text/color/x/y/width/height → 写回文档 → 重建画布
+//   调色板   = Label/Button/TextField/Switch/Slider/Panel 一键添加（addChild 注入）
+//   保存     = serialize 输出 .uix JSON（打印 + 截图）
+//
+// 双模式：
+//   - 默认：SDL 窗口（bash build.sh uix_designer，ESC/关窗退出）
+//   - DESIGN_HEADLESS=1：headless 逻辑验证（命中/改属性/加控件/删除/序列化断言）
+import env;
+import fmt;
+import sdl;
+import json;
+
+// 事件绑定：画布点击 → 选中；按钮点击 → 路由
+mapping() {
+    DesignCanvas.CanvasClick -> UixDesigner.onCanvasClick;
+    Button.Clicked -> UixDesigner.onButton;
+}
+
+// ---- 选中框（琥珀色描边，绘制在画布设计之上）----
+class SelBox {
+    interface class View;
+    property:
+        int x_; int y_; int w_; int h_;
+    action:
+        @constructor SelBox() {
+            x_ = 0; y_ = 0; w_ = 0; h_ = 0;
+        }
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+        void draw(Renderer r) {
+            if (w_ <= 0 || h_ <= 0) return;
+            r.outlineRect(x_ - 3, y_ - 3, w_ + 6, h_ + 6, Color.amber());
+        }
+        int hit(int x, int y) { return 0; }
+        void onTouch(int x, int y) {}
+}
+
+// ---- 设计画布：只渲染设计树，点击不派发给控件（仅上报 CanvasClick 供选中）----
+class DesignCanvas {
+    interface class View;
+    property:
+        RootView inner_;
+        int x_; int y_; int w_; int h_;
+        int color_;
+    event:
+        CanvasClick(int x, int y);
+    action:
+        @constructor DesignCanvas(int x, int y, int w, int h) {
+            inner_ = new RootView(64, w, h);
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            color_ = Color.dark();
+        }
+        // 重建设计后替换内层渲染树
+        void setRoot(RootView rv) { inner_ = rv; }
+        int getX() { return x_; }
+        int getY() { return y_; }
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+            inner_.setFrame(x, y, w, h);
+        }
+        void draw(Renderer r) {
+            r.fillRect(x_, y_, w_, h_, color_);
+            inner_.draw(r);
+        }
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+        void onTouch(int x, int y) { CanvasClick(x, y); }   // 只选中，不派发给设计
+}
+
+class UixDesigner {
+    interface class UiApp;
+
+    property:
+        // ---- chrome 布局（字段持有，规避接口数组不 retain）----
+        LinearLayout root_;
+        LinearLayout toolbar_;
+        LinearLayout mainRow_;
+        LinearLayout propPanel_;
+        DesignCanvas canvas_;
+        SelBox selBox_;
+        Label status_;
+        // 工具栏按钮
+        Button loadBtn_;
+        Button saveBtn_;
+        Button addLabelBtn_;
+        Button addButtonBtn_;
+        Button addFieldBtn_;
+        Button addSwitchBtn_;
+        Button addSliderBtn_;
+        Button addPanelBtn_;
+        Button delBtn_;
+        // 属性面板
+        Label propTitle_;
+        Label propInfo_;
+        Label textLabel_;
+        Label colorLabel_;
+        Label xLabel_;
+        Label yLabel_;
+        Label wLabel_;
+        Label hLabel_;
+        TextField textF_;
+        TextField colorF_;
+        TextField xF_;
+        TextField yF_;
+        TextField wF_;
+        TextField hF_;
+        Button applyBtn_;
+        // ---- 设计状态 ----
+        Json design_;          // .uix 文档（唯一真源）
+        UixLoader loader_;     // 当前渲染
+        string uixText_;
+        RootView canvasRoot_;
+        string selectedId_;
+        int nextId_;
+        // id → 文档路径（对象路径，如 "children.2"；根为 ""）
+        string[] pathIds_;
+        string[] pathVals_;
+        int pathCount_;
+        int canvasW_;
+        int canvasH_;
+
+    action:
+        @constructor UixDesigner() {
+            selBox_ = new SelBox();
+            canvas_ = new DesignCanvas(0, 0, 900, 600);
+            canvasRoot_ = null;
+            selectedId_ = "";
+            nextId_ = 100;
+            pathIds_ = new string[512];
+            pathVals_ = new string[512];
+            pathCount_ = 0;
+            canvasW_ = 900;
+            canvasH_ = 600;
+        }
+
+        // ---- 布局树 ----
+        void build(int W, int H) {
+            root_ = new LinearLayout(0, W, H);
+            root_.setPadding(10);
+            root_.setSpacing(8);
+
+            // 工具栏（水平）
+            toolbar_ = new LinearLayout(1, W - 20, 40);
+            toolbar_.setPadding(0);
+            toolbar_.setSpacing(8);
+            loadBtn_ = new Button("载入示例", 0, 0, 90, 36);
+            saveBtn_ = new Button("保存 .uix", 0, 0, 96, 36);
+            addLabelBtn_ = new Button("+ Label", 0, 0, 84, 36);
+            addButtonBtn_ = new Button("+ Button", 0, 0, 90, 36);
+            addFieldBtn_ = new Button("+ TextField", 0, 0, 108, 36);
+            addSwitchBtn_ = new Button("+ Switch", 0, 0, 90, 36);
+            addSliderBtn_ = new Button("+ Slider", 0, 0, 90, 36);
+            addPanelBtn_ = new Button("+ Panel", 0, 0, 84, 36);
+            delBtn_ = new Button("删除选中", 0, 0, 96, 36);
+            Button lb = loadBtn_;  toolbar_.add(lb);
+            Button sb = saveBtn_;  toolbar_.add(sb);
+            Button ab = addLabelBtn_;  toolbar_.add(ab);
+            Button bb = addButtonBtn_; toolbar_.add(bb);
+            Button fb = addFieldBtn_;  toolbar_.add(fb);
+            Button swb = addSwitchBtn_; toolbar_.add(swb);
+            Button slb = addSliderBtn_; toolbar_.add(slb);
+            Button pb = addPanelBtn_;  toolbar_.add(pb);
+            Button db = delBtn_;  toolbar_.add(db);
+            LinearLayout tb = toolbar_;
+            root_.add(tb);
+
+            // 主行（水平）：画布 + 属性面板
+            mainRow_ = new LinearLayout(1, W - 20, H - 40 - 8 - 20);
+            mainRow_.setPadding(0);
+            mainRow_.setSpacing(8);
+            int cw = W - 20 - 320 - 8;
+            int ch = H - 40 - 8 - 20;
+            canvas_ = new DesignCanvas(0, 0, cw, ch);
+            canvas_.setFrame(0, 0, cw, ch);
+            DesignCanvas cd = canvas_;
+            mainRow_.add(cd);
+
+            // 属性面板（垂直）
+            propPanel_ = new LinearLayout(0, 320, ch);
+            propPanel_.setPadding(10);
+            propPanel_.setSpacing(6);
+            propTitle_ = new Label("属性面板", 0, 0, 2);
+            propInfo_ = new Label("未选中控件", 0, 0, 1);
+            textF_ = new TextField("", 0, 0, 290, 30);
+            colorF_ = new TextField("", 0, 0, 290, 30);
+            xF_ = new TextField("", 0, 0, 140, 30);
+            yF_ = new TextField("", 0, 0, 140, 30);
+            wF_ = new TextField("", 0, 0, 140, 30);
+            hF_ = new TextField("", 0, 0, 140, 30);
+            applyBtn_ = new Button("应用属性", 0, 0, 290, 36);
+            Label pt = propTitle_;  propPanel_.add(pt);
+            Label pi = propInfo_;   propPanel_.add(pi);
+            textLabel_ = new Label("text", 0, 0, 1);
+            Label l1 = textLabel_;
+            TextField t1 = textF_;
+            propPanel_.add(l1);  propPanel_.add(t1);
+            colorLabel_ = new Label("color (#RRGGBB)", 0, 0, 1);
+            Label l2 = colorLabel_;
+            TextField t2 = colorF_;
+            propPanel_.add(l2);  propPanel_.add(t2);
+            xLabel_ = new Label("x", 0, 0, 1);
+            Label l3 = xLabel_;
+            TextField t3 = xF_;
+            propPanel_.add(l3);  propPanel_.add(t3);
+            yLabel_ = new Label("y", 0, 0, 1);
+            Label l4 = yLabel_;
+            TextField t4 = yF_;
+            propPanel_.add(l4);  propPanel_.add(t4);
+            wLabel_ = new Label("width", 0, 0, 1);
+            Label l5 = wLabel_;
+            TextField t5 = wF_;
+            propPanel_.add(l5);  propPanel_.add(t5);
+            hLabel_ = new Label("height", 0, 0, 1);
+            Label l6 = hLabel_;
+            TextField t6 = hF_;
+            propPanel_.add(l6);  propPanel_.add(t6);
+            Button ap = applyBtn_;
+            propPanel_.add(ap);
+            LinearLayout pp = propPanel_;
+            mainRow_.add(pp);
+
+            LinearLayout mr = mainRow_;
+            root_.add(mr);
+
+            status_ = new Label("就绪", 0, 0, 1);
+        }
+
+        void relayout(int W, int H) {
+            root_.setFrame(0, 0, W, H);
+            int cw = W - 20 - 320 - 8;
+            int ch = H - 40 - 8 - 20;
+            canvas_.setFrame(0, 0, cw, ch);
+            root_.layout();
+        }
+
+        // ---- 设计文档操作（唯一真源 design_）----
+        // 载入默认示例设计
+        void loadDefault() {
+            string uix = "{\"type\":\"Panel\",\"id\":\"root\",\"x\":0,\"y\":0,"
+                + "\"width\":900,\"height\":600,\"children\":["
+                + "{\"type\":\"Label\",\"id\":\"title\",\"text\":\"BNCT 欢迎页\","
+                + "\"x\":40,\"y\":30,\"scale\":3},"
+                + "{\"type\":\"Button\",\"id\":\"ok\",\"text\":\"确定\","
+                + "\"x\":60,\"y\":120,\"width\":140,\"height\":44},"
+                + "{\"type\":\"TextField\",\"id\":\"user\",\"text\":\"用户名\","
+                + "\"x\":60,\"y\":190,\"width\":240,\"height\":36},"
+                + "{\"type\":\"Slider\",\"id\":\"vol\",\"x\":60,\"y\":250,"
+                + "\"width\":200,\"height\":24,\"min\":0,\"max\":100},"
+                + "{\"type\":\"Switch\",\"id\":\"sw\",\"x\":60,\"y\":300,"
+                + "\"width\":60,\"height\":32}]}";
+            design_ = new Json(uix);
+            uixText_ = uix;
+            nextId_ = 100;
+            selectedId_ = "";
+            rebuildDesign();
+        }
+
+        // 重建画布：design_ 序列化 → 新 loader 渲染 → 重选中
+        void rebuildDesign() {
+            uixText_ = design_.serialize();
+            canvasW_ = design_.type("width") >= 0 ? design_.getInt("width") : 900;
+            canvasH_ = design_.type("height") >= 0 ? design_.getInt("height") : 600;
+            canvasRoot_ = new RootView(64, canvasW_, canvasH_);
+            loader_ = new UixLoader(uixText_, "");
+            loader_.buildInto(canvasRoot_);
+            canvasRoot_.add(selBox_);      // 选中框绘制在设计之上
+            canvas_.setRoot(canvasRoot_);
+            indexPaths();
+            if (Str.len(selectedId_) > 0) {
+                if (loader_.idxOf(selectedId_) >= 0) updateSelBox();
+                else { selectedId_ = ""; hideSelBox(); }
+            }
+        }
+
+        string serializeDesign() { return design_.serialize(); }
+        int loaderNodeCount() { return loader_.nodeCount(); }
+        string hitId(int x, int y) { return loader_.hitId(x, y); }
+
+        // 构建 id → 文档路径映射（对象路径如 "children.2"，根为 ""；去尾点——
+        // 带尾点会让 remove 的 strrchr 末段为空 token 删除失败）
+        void indexPaths() {
+            pathIds_ = new string[512];
+            pathVals_ = new string[512];
+            pathCount_ = 0;
+            indexNode(design_, "");
+        }
+        void indexNode(Json doc, string prefix) {
+            if (doc.type(prefix + "id") >= 0) {
+                pathIds_[pathCount_] = doc.getString(prefix + "id");
+                pathVals_[pathCount_] = stripDot(prefix);
+                pathCount_ = pathCount_ + 1;
+            }
+            int n = doc.arrayLen(prefix + "children");
+            for (int i = 0; i < n; i = i + 1)
+                indexNode(doc, prefix + "children." + Fmt.i(i) + ".");
+        }
+        string stripDot(string p) {
+            int n = Str.len(p);
+            if (n > 0 && __myp_charcode(p, n - 1) == 46)
+                return Str.substring(p, 0, n - 1);
+            return p;
+        }
+        string pathOf(string id) {
+            for (int i = 0; i < pathCount_; i = i + 1)
+                if (pathIds_[i] == id) return pathVals_[i];
+            return "";
+        }
+
+        // ---- 选中 / 属性 ----
+        void selectId(string id) {
+            selectedId_ = id;
+            populateProps(id);
+            updateSelBox();
+        }
+        void onCanvasClick(int x, int y) {
+            // 窗口坐标 → 画布局部坐标
+            int lx = x - canvas_.getX();
+            int ly = y - canvas_.getY();
+            string id = loader_.hitId(lx, ly);
+            if (Str.len(id) > 0) selectId(id);
+            else { selectedId_ = ""; hideSelBox(); propInfo_.setText("未选中控件"); }
+        }
+
+        // 属性面板：编辑 → 写回文档 → 重建
+        void setPropText(string v) { textF_.setText(v); }
+        void setPropX(string v) { xF_.setText(v); }
+        void applyProps() {
+            if (Str.len(selectedId_) == 0) return;
+            string p = pathOf(selectedId_);
+            if (p == "" && selectedId_ != design_.getString("id")) return;
+            setAttrIf(p, "text", textF_.getText());
+            setAttrIf(p, "color", colorF_.getText());
+            setAttrIf(p, "x", xF_.getText());
+            setAttrIf(p, "y", yF_.getText());
+            setAttrIf(p, "width", wF_.getText());
+            setAttrIf(p, "height", hF_.getText());
+            rebuildDesign();
+            propInfo_.setText("已应用: " + selectedId_);
+        }
+        // 把 name=value 写入文档（已存在则改，否则新增键）
+        void setAttrIf(string prefix, string name, string value) {
+            string full;
+            if (Str.len(prefix) == 0) full = name;
+            else full = prefix + "." + name;
+            if (design_.type(full) >= 0) design_.setValue(full, value);
+            else design_.addChild(prefix, name, value);
+        }
+
+        void populateProps(string id) {
+            string p = pathOf(id);
+            textF_.setText(design_.type(p + ".text") >= 0 ? design_.getString(p + ".text") : "");
+            colorF_.setText(design_.type(p + ".color") >= 0 ? design_.getString(p + ".color") : "");
+            xF_.setText(design_.type(p + ".x") >= 0 ? Fmt.i(design_.getInt(p + ".x")) : "0");
+            yF_.setText(design_.type(p + ".y") >= 0 ? Fmt.i(design_.getInt(p + ".y")) : "0");
+            wF_.setText(design_.type(p + ".width") >= 0 ? Fmt.i(design_.getInt(p + ".width")) : "");
+            hF_.setText(design_.type(p + ".height") >= 0 ? Fmt.i(design_.getInt(p + ".height")) : "");
+            propInfo_.setText("选中: " + id + " (" + loader_.typeOf(id) + ")");
+        }
+
+        void updateSelBox() {
+            if (Str.len(selectedId_) == 0) { hideSelBox(); return; }
+            string p = pathOf(selectedId_);
+            int sx = design_.type(p + ".x") >= 0 ? design_.getInt(p + ".x") : 0;
+            int sy = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
+            int sw = nodeW(selectedId_);
+            int sh = nodeH(selectedId_);
+            selBox_.setFrame(sx, sy, sw, sh);
+        }
+        void hideSelBox() {
+            selBox_.setFrame(0, 0, 0, 0);
+        }
+        // 从 loader 具体类型数组取节点实际宽高
+        int nodeW(string id) {
+            int i = loader_.labelIdxOf(id);
+            if (i >= 0) return loader_.labelAt(i).width();
+            i = loader_.buttonIdxOf(id);
+            if (i >= 0) return loader_.buttonAt(i).width();
+            i = loader_.fieldIdxOf(id);
+            if (i >= 0) return loader_.fieldAt(i).width();
+            i = loader_.switchIdxOf(id);
+            if (i >= 0) return loader_.switchAt(i).width();
+            i = loader_.sliderIdxOf(id);
+            if (i >= 0) return loader_.sliderAt(i).width();
+            i = loader_.progressbarIdxOf(id);
+            if (i >= 0) return loader_.progressbarAt(i).width();
+            i = loader_.panelIdxOf(id);
+            if (i >= 0) return loader_.panelAt(i).width();
+            return 0;
+        }
+        int nodeH(string id) {
+            int i = loader_.labelIdxOf(id);
+            if (i >= 0) return loader_.labelAt(i).height();
+            i = loader_.buttonIdxOf(id);
+            if (i >= 0) return loader_.buttonAt(i).height();
+            i = loader_.fieldIdxOf(id);
+            if (i >= 0) return loader_.fieldAt(i).height();
+            i = loader_.switchIdxOf(id);
+            if (i >= 0) return loader_.switchAt(i).height();
+            i = loader_.sliderIdxOf(id);
+            if (i >= 0) return loader_.sliderAt(i).height();
+            i = loader_.progressbarIdxOf(id);
+            if (i >= 0) return loader_.progressbarAt(i).height();
+            i = loader_.panelIdxOf(id);
+            if (i >= 0) return loader_.panelAt(i).height();
+            return 0;
+        }
+
+        // ---- 调色板：添加控件 ----
+        void addControl(string type) {
+            string id = type + "_" + Fmt.i(nextId_);
+            nextId_ = nextId_ + 1;
+            string json;
+            if (type == "Label")
+                json = "{\"type\":\"Label\",\"id\":\"" + id
+                    + "\",\"text\":\"新标签\",\"x\":40,\"y\":40,\"scale\":2}";
+            else if (type == "TextField")
+                json = "{\"type\":\"TextField\",\"id\":\"" + id
+                    + "\",\"text\":\"\",\"x\":40,\"y\":40,\"width\":240,\"height\":36}";
+            else if (type == "Switch")
+                json = "{\"type\":\"Switch\",\"id\":\"" + id
+                    + "\",\"x\":40,\"y\":40,\"width\":60,\"height\":32}";
+            else if (type == "Slider")
+                json = "{\"type\":\"Slider\",\"id\":\"" + id
+                    + "\",\"x\":40,\"y\":40,\"width\":200,\"height\":24}";
+            else if (type == "Panel")
+                json = "{\"type\":\"Panel\",\"id\":\"" + id
+                    + "\",\"x\":40,\"y\":40,\"width\":160,\"height\":120}";
+            else
+                json = "{\"type\":\"Button\",\"id\":\"" + id
+                    + "\",\"text\":\"按钮\",\"x\":40,\"y\":40,\"width\":140,\"height\":44}";
+            if (design_.type("children") >= 0) design_.addChild("children", "", json);
+            else design_.addChild("", "children", "[" + json + "]");
+            selectedId_ = id;
+            rebuildDesign();
+            propInfo_.setText("已添加: " + id);
+        }
+
+        void removeSelected() {
+            if (Str.len(selectedId_) == 0) return;
+            string p = pathOf(selectedId_);
+            if (p == "") { propInfo_.setText("根不可删"); return; }
+            design_.remove(p);
+            selectedId_ = "";
+            rebuildDesign();
+            propInfo_.setText("已删除");
+        }
+
+        void saveUix() {
+            string s = design_.serialize();
+            Console.writeLine("ds saved len=" + Str.len(s));
+            SDL.saveBmp("/tmp/uix_designer.bmp");
+            propInfo_.setText("已保存 .uix");
+        }
+
+        // ---- 按钮路由 ----
+        void onButton(int x, int y) {
+            if (loadBtn_.hit(x, y) != 0) { loadDefault(); return; }
+            if (saveBtn_.hit(x, y) != 0) { saveUix(); return; }
+            if (addLabelBtn_.hit(x, y) != 0) { addControl("Label"); return; }
+            if (addButtonBtn_.hit(x, y) != 0) { addControl("Button"); return; }
+            if (addFieldBtn_.hit(x, y) != 0) { addControl("TextField"); return; }
+            if (addSwitchBtn_.hit(x, y) != 0) { addControl("Switch"); return; }
+            if (addSliderBtn_.hit(x, y) != 0) { addControl("Slider"); return; }
+            if (addPanelBtn_.hit(x, y) != 0) { addControl("Panel"); return; }
+            if (delBtn_.hit(x, y) != 0) { removeSelected(); return; }
+            if (applyBtn_.hit(x, y) != 0) { applyProps(); return; }
+        }
+
+        // ---- UiApp 生命周期（AppRunner 框架调用）----
+        void onCreate(RootView rv, SdlRenderer r, int w, int h) {
+            build(w, h);
+            relayout(w, h);
+            loadDefault();
+            Console.writeLine("ds ui running nodes=" + loader_.nodeCount());
+            LinearLayout root = root_;
+            rv.add(root);
+            Label st = status_;
+            rv.add(st);
+        }
+
+        void onResize(int w, int h) {
+            relayout(w, h);
+        }
+
+        void onKeyChar(int c) {
+            // 属性面板聚焦字段输入
+            if (textF_.focused() != 0 || colorF_.focused() != 0
+                || xF_.focused() != 0 || yF_.focused() != 0
+                || wF_.focused() != 0 || hF_.focused() != 0) {
+                TextField f = focusedField();
+                if (c == 8) f.backspace();
+                else if (c == 13) { applyProps(); f.unfocus(); }
+                else if (c >= 32 && c != 127) f.append(Str.chr(c));
+            }
+        }
+        TextField focusedField() {
+            if (textF_.focused() != 0) return textF_;
+            if (colorF_.focused() != 0) return colorF_;
+            if (xF_.focused() != 0) return xF_;
+            if (yF_.focused() != 0) return yF_;
+            if (wF_.focused() != 0) return wF_;
+            return hF_;
+        }
+
+        void onFrame(int frame) {
+            if (frame == 60) {
+                int s = SDL.saveBmp("/tmp/uix_designer.bmp");
+                Console.writeLine("ds ui saved=" + s);
+            }
+        }
+
+        // ---- headless 验证 ----
+        void runHeadless() {
+            build(1400, 900);
+            relayout(1400, 900);
+            loadDefault();
+            // 节点数：根 Panel + 5 子 = 6
+            Console.writeLine("ds nodes=" + loader_.nodeCount());
+            // 命中：Button ok 在 (60,120,140,44)，点 (70,140) 内部
+            Console.writeLine("ds hit=" + loader_.hitId(70, 140));
+            // 选 ok → 改 text/x → 应用
+            selectId("ok");
+            setPropText("Login");
+            setPropX("120");
+            applyProps();
+            string s1 = serializeDesign();
+            Console.writeLine("ds text=" + (Str.contains(s1, "\"text\": \"Login\"") != 0 ? 1 : 0)
+                              + " x120=" + (Str.contains(s1, "\"x\": 120") != 0 ? 1 : 0));
+            // 加控件
+            addControl("Button");
+            Console.writeLine("ds nodes2=" + loader_.nodeCount());
+            Console.writeLine("ds added-id=" + (loader_.idxOf(selectedId_) >= 0 ? 1 : 0));
+            // 删选中
+            removeSelected();
+            string s2 = serializeDesign();
+            Console.writeLine("ds nodes3=" + loader_.nodeCount()
+                              + " no-ok=" + (Str.contains(s2, "\"id\": \"ok\"") != 0 ? 0 : 1));
+            Console.writeLine("ds done");
+        }
+}
+
+class Boot {
+    action:
+        @constructor Boot() {
+            UixDesigner a = new UixDesigner();
+            string h = Console.getEnv("DESIGN_HEADLESS");
+            if (h == "1") a.runHeadless();
+            else {
+                AppRunner rn = new AppRunner();
+                rn.run(a, "mypview UI 设计器", 1400, 900, 0x14141C);
+            }
+        }
+}
+
+int main() {
+    Boot b = new Boot();
+    return 0;
+}

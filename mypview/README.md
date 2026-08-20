@@ -295,6 +295,15 @@ rn.run(a, "标题", 1880, 956, 0x14141C);   // a 实现了 UiApp
 （UiApp + AppRunner，操作栏 设值/加键/删行/序列化），`JSON_HEADLESS=1` headless
 断言。依赖 stdlib json，可随包 `import mypview.controls;` 引入。
 
+**可视化界面设计器（`UixDesigner`，所见即所得，对标 Qt Design Studio）** ✅ 2026-08-20
+
+`examples/uix_designer.myp` 是 mypview 自己的 UI 设计工具：`.uix` 声明文档为唯一
+真源，`UixLoader` 实时渲染画布（WYSIWYG）——点选控件、属性面板改 text/color/
+x/y/width/height 即见效果、调色板一键添加 Label/Button/TextField/Switch/Slider/
+Panel、删除选中、保存输出 `.uix`（可再被 buildInto 加载运行）。`DESIGN_HEADLESS=1`
+headless 断言命中/改属性/加控件/删除/序列化。底层复用 json bridge 编辑 API
+（`addChild` 已支持注入完整 `{...}` 对象节点）。
+
 ## 测试
 
 ```bash

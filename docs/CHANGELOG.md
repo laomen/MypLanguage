@@ -27,6 +27,40 @@
 
 ## 编译器版本历史
 
+### v3.12.60 — UixDesigner：mypview 可视化界面设计器（所见即所得，对标 Qt Design Studio）
+
+**背景**：把 mypview 做成可用「界面设计工具」直接设计 UI——画布实时渲染、点选控件、
+属性面板改属性即见效果、调色板一键添加、保存 `.uix` 声明文档（可再被 UixLoader 加载）。
+
+**架构**（`examples/uix_designer.myp`，UiApp + AppRunner）：
+- `.uix` 文档 = 设计的**唯一真源**（Json，用 v3.12.59 的编辑 API setValue/addChild/remove）。
+- 画布 = `UixLoader.buildInto` 实时渲染（所见即所得）。`DesignCanvas`（自定义 View）
+  持有设计渲染树、点击只上报 `CanvasClick`（不派发给控件 → 点选而非触发）。
+- 选中 = 画布点击 → `loader.hitId(x,y)`（已存在的命中最上层 API）→ 琥珀 `SelBox`
+  描边 + 属性面板回填（text/color/x/y/width/height）。
+- 属性 = 编辑 → `Json.setValue`/`addChild` 写回文档 → 重建画布即见效果。
+- 调色板 = Label/Button/TextField/Switch/Slider/Panel 一键添加（`Json.addChild` 注入
+  `{...}` 对象节点）。
+- 删除/保存：`Json.remove` 删节点；`serialize()` 输出 `.uix`（打印 + 截图）。
+- headless（`DESIGN_HEADLESS=1`）断言：命中/改属性/加控件/删除/序列化。
+
+**桥扩展**：`myp_json_add_child` 支持**完整 JSON 值**（raw 以 `{`/`[` 开头走完整解析
+器 → 可注入对象/数组节点；否则回退标量——JsonEditor 行为不变）。
+
+**UixLoader 补充**：补 `panelIdxOf`/`panelAt` 访问器（与其他控件类型一致，设计器
+取节点实际宽高用）。
+
+**踩坑**：
+- **`Json.remove` 对带尾点路径失败**：`myp_json_remove` 用 `strrchr('.')` 取末段，
+  路径 `children.5.`（尾点）→ 末段空 token → 删除失败。设计器 id→路径映射存对象
+  路径时**必须去尾点**（`children.5`）。setValue 因 strrchr 取最后一个点恰好能扛。
+- 属性面板行标签**纯局部**（`Label l1 = new Label(...)`）→ 出 build() 释放 → 容器
+  悬垂 → 窗口模式绘制时 `myp_ttf_draw_text` strlen 崩（headless 不绘制不触发）。
+  同 json_editor：控件一律字段持有。
+
+**回归**：mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；
+父套件 313/313、bootstrap 16/16、bugs 11/11。
+
 ### v3.12.59 — JsonEditor：可视化 JSON 树编辑器 + json bridge 编辑支持
 
 **背景**：stdlib `json` 原本只读（parse + 按路径查询）。要给 mypview 做可视化

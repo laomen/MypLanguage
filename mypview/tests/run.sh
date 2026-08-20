@@ -189,6 +189,25 @@ else
 fi
 cd "$DIR"
 
+# ---- UixDesigner（所见即所得 UI 设计器）：命中/改属性/加控件/删除/序列化 ----
+cd "$DIR/../examples"
+DESIGNSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp uix_designer.myp)
+"$MYPCC" "${DESIGNSRCS[@]}" -o uix_designer --stdlib "$STDLIB" || exit 1
+DSGN=$(DESIGN_HEADLESS=1 ./uix_designer 2>&1)
+echo "$DSGN"
+echo "== DESIGN 结果 =="
+if printf '%s' "$DSGN" | grep -q "ds nodes=6" \
+   && printf '%s' "$DSGN" | grep -q "ds hit=ok" \
+   && printf '%s' "$DSGN" | grep -q "ds text=1 x120=1" \
+   && printf '%s' "$DSGN" | grep -q "ds nodes2=7" \
+   && printf '%s' "$DSGN" | grep -q "ds nodes3=6 no-ok=0"; then
+    echo "MYPVIEW-DESIGN PASS"
+else
+    echo "MYPVIEW-DESIGN FAIL"
+    exit 1
+fi
+cd "$DIR"
+
 # ---- 完整链路示例（pipeline）：load json → build → render → 交互 → 动画 ----
 # 在 examples/ 下编译运行（.uix/.usp 文件相对 cwd 打开）
 PIPESRCS=(
