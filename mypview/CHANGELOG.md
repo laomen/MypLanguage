@@ -7,6 +7,27 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.63 — 修复设计器工具栏按钮不显示（嵌套 LinearLayout 未布局）
+
+**症状**：设计器窗口里工具栏 11 个按钮全部看不到，只看到属性面板的「应用属性」
+一个蓝按钮。
+
+**根因**：`LinearLayout.layout()` **不递归子容器**——只对直接子控件 `setFrame`。
+设计器 `relayout()` 只调 `root_.layout()`，漏了 `toolbar_/mainRow_/propPanel_` 的
+`layout()` → 工具栏按钮、属性面板字段全部停留在构造位置 (0,0) 重叠；最上层恰好是
+后加入的「应用属性」（propPanel_ 最后 add）→ 窗口里只露出它一个蓝按钮。
+bnct_cases 对每个嵌套容器都显式 `layout()`，设计器漏了。
+
+**修复**（`examples/uix_designer.myp`）：`relayout()` 依次调
+`root_.layout(); toolbar_.layout(); mainRow_.layout(); propPanel_.layout();`。
+
+**连带**：布局修正后画布原点从 (0,0) 变为 (10,58)（工具栏 + padding），headless
+命中/拖拽坐标相应更新（ok 按钮窗口位置 (70,178)，按压 (80,190) 拖到 (120,210) →
+设计局部 (100,140)，断言不变）。
+
+**验证**：窗口截图工具栏 11 个按钮正确铺开；mypview UIX/BNCT/JSON/DESIGN/PIPE
+全 PASS（未改编译器，不跑父全量）。
+
 ## v3.12.62 — 设计器亮色主题 + 画布偏移 + 文件操作 + save_bmp 颜色修复
 
 **背景**：设计器此前整体深色（"界面都是黑的"）；且设计控件按设计局部坐标 (0,0)
