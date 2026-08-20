@@ -95,6 +95,32 @@ class DesignCanvas {
         void onRelease(int x, int y) { CanvasRelease(x, y); }
 }
 
+// ---- 拖拽幽灵：调色板拖入画布时的预览框（琥珀描边 + 类型名）----
+class DragGhost {
+    interface class View;
+    property:
+        int x_; int y_; int w_; int h_;
+        string label_;
+    action:
+        @constructor DragGhost() {
+            x_ = 0; y_ = 0; w_ = 0; h_ = 0;
+            label_ = "";
+        }
+        void setLabel(string t) { label_ = t; }
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+        void draw(Renderer r) {
+            if (w_ <= 0 || h_ <= 0) return;
+            r.outlineRect(x_, y_, w_, h_, Color.amber());
+            r.drawText(x_ + 4, y_ + 4, label_, 1, Color.amber());
+        }
+        int hit(int x, int y) { return 0; }
+        void onTouch(int x, int y) {}
+}
+
 class UixDesigner {
     interface class UiApp;
 
@@ -106,7 +132,12 @@ class UixDesigner {
         LinearLayout propPanel_;
         DesignCanvas canvas_;
         SelBox selBox_;
+        DragGhost ghost_;
         Label status_;
+        // 调色板拖放状态
+        string paletteDrag_;   // 当前拖拽的调色板类型（""=无）
+        int ghostW_;
+        int ghostH_;
         // 工具栏按钮
         Button newBtn_;
         Button openBtn_;
@@ -157,6 +188,10 @@ class UixDesigner {
     action:
         @constructor UixDesigner() {
             selBox_ = new SelBox();
+            ghost_ = new DragGhost();
+            paletteDrag_ = "";
+            ghostW_ = 0;
+            ghostH_ = 0;
             canvas_ = new DesignCanvas(0, 0, 900, 600);
             canvasRoot_ = null;
             selectedId_ = "";
@@ -329,6 +364,7 @@ class UixDesigner {
             loader_ = new UixLoader(uixText_, "");
             loader_.buildInto(canvasRoot_);
             canvasRoot_.add(selBox_);      // 选中框绘制在设计之上
+            canvasRoot_.add(ghost_);       // 拖拽幽灵（调色板拖入预览）
             canvas_.setRoot(canvasRoot_);
             indexPaths();
             applyOffsetAll();              // 设计控件整体平移到画布原点（窗口坐标）
@@ -441,6 +477,61 @@ class UixDesigner {
             if (Str.len(selectedId_) > 0) populateProps(selectedId_);
         }
 
+        // ---- 调色板拖放（窗口级手势：UiApp onPress/onMove/onRelease）----
+        // 按调色板 +xxx 按钮 → 拖到画布 → 松开在该位置添加控件（Qt Design Studio 式）
+        void onPress(int x, int y) {
+            string t = paletteTypeAt(x, y);
+            if (t != "") {
+                paletteDrag_ = t;
+                ghostW_ = defaultW(t);
+                ghostH_ = defaultH(t);
+                ghost_.setLabel("+" + t);
+                ghost_.setFrame(x, y, ghostW_, ghostH_);
+            }
+        }
+        void onMove(int x, int y) {
+            if (paletteDrag_ != "")
+                ghost_.setFrame(x, y, ghostW_, ghostH_);   // 幽灵跟随光标
+        }
+        void onRelease(int x, int y) {
+            if (paletteDrag_ == "") return;
+            string t = paletteDrag_;
+            paletteDrag_ = "";
+            ghost_.setFrame(0, 0, 0, 0);   // 隐藏幽灵
+            if (canvas_.hit(x, y) != 0) {
+                int lx = x - canvas_.getX();
+                int ly = y - canvas_.getY();
+                addControl(t, lx, ly);     // 落到画布内 → 落下位置添加
+            } else {
+                addControl(t, 40, 40);     // 简单点击（未拖到画布）→ 默认位置
+            }
+        }
+        string paletteTypeAt(int x, int y) {
+            if (addLabelBtn_.hit(x, y) != 0) return "Label";
+            if (addButtonBtn_.hit(x, y) != 0) return "Button";
+            if (addFieldBtn_.hit(x, y) != 0) return "TextField";
+            if (addSwitchBtn_.hit(x, y) != 0) return "Switch";
+            if (addSliderBtn_.hit(x, y) != 0) return "Slider";
+            if (addPanelBtn_.hit(x, y) != 0) return "Panel";
+            return "";
+        }
+        int defaultW(string t) {
+            if (t == "Label") return 80;
+            if (t == "TextField") return 240;
+            if (t == "Switch") return 60;
+            if (t == "Slider") return 200;
+            if (t == "Panel") return 160;
+            return 140;
+        }
+        int defaultH(string t) {
+            if (t == "Label") return 24;
+            if (t == "TextField") return 36;
+            if (t == "Switch") return 32;
+            if (t == "Slider") return 24;
+            if (t == "Panel") return 120;
+            return 44;
+        }
+
         // 属性面板：编辑 → 写回文档 → 重建
         void setPropText(string v) { textF_.setText(v); }
         void setPropX(string v) { xF_.setText(v); }
@@ -525,29 +616,35 @@ class UixDesigner {
             return 0;
         }
 
-        // ---- 调色板：添加控件 ----
-        void addControl(string type) {
+        // ---- 调色板：添加控件（x,y = 画布局部坐标；调色板拖放落下位置）----
+        void addControl(string type, int x, int y) {
             string id = type + "_" + Fmt.i(nextId_);
             nextId_ = nextId_ + 1;
             string json;
             if (type == "Label")
                 json = "{\"type\":\"Label\",\"id\":\"" + id
-                    + "\",\"text\":\"新标签\",\"x\":40,\"y\":40,\"scale\":2,\"color\":\"#1F1F1F\"}";
+                    + "\",\"text\":\"新标签\",\"x\":" + Fmt.i(x)
+                    + ",\"y\":" + Fmt.i(y) + ",\"scale\":2,\"color\":\"#1F1F1F\"}";
             else if (type == "TextField")
                 json = "{\"type\":\"TextField\",\"id\":\"" + id
-                    + "\",\"text\":\"\",\"x\":40,\"y\":40,\"width\":240,\"height\":36}";
+                    + "\",\"text\":\"\",\"x\":" + Fmt.i(x)
+                    + ",\"y\":" + Fmt.i(y) + ",\"width\":240,\"height\":36}";
             else if (type == "Switch")
                 json = "{\"type\":\"Switch\",\"id\":\"" + id
-                    + "\",\"x\":40,\"y\":40,\"width\":60,\"height\":32}";
+                    + "\",\"x\":" + Fmt.i(x) + ",\"y\":" + Fmt.i(y)
+                    + ",\"width\":60,\"height\":32}";
             else if (type == "Slider")
                 json = "{\"type\":\"Slider\",\"id\":\"" + id
-                    + "\",\"x\":40,\"y\":40,\"width\":200,\"height\":24}";
+                    + "\",\"x\":" + Fmt.i(x) + ",\"y\":" + Fmt.i(y)
+                    + ",\"width\":200,\"height\":24}";
             else if (type == "Panel")
                 json = "{\"type\":\"Panel\",\"id\":\"" + id
-                    + "\",\"x\":40,\"y\":40,\"width\":160,\"height\":120}";
+                    + "\",\"x\":" + Fmt.i(x) + ",\"y\":" + Fmt.i(y)
+                    + ",\"width\":160,\"height\":120}";
             else
                 json = "{\"type\":\"Button\",\"id\":\"" + id
-                    + "\",\"text\":\"按钮\",\"x\":40,\"y\":40,\"width\":140,\"height\":44}";
+                    + "\",\"text\":\"按钮\",\"x\":" + Fmt.i(x)
+                    + ",\"y\":" + Fmt.i(y) + ",\"width\":140,\"height\":44}";
             if (design_.type("children") >= 0) design_.addChild("children", "", json);
             else design_.addChild("", "children", "[" + json + "]");
             selectedId_ = id;
@@ -623,18 +720,12 @@ class UixDesigner {
             if (h != "1") SDL.saveBmp("/tmp/uix_designer.bmp");
         }
 
-        // ---- 按钮路由 ----
+        // ---- 按钮路由（调色板 +xxx 按钮改由窗口级 onPress/onRelease 拖放处理）----
         void onButton(int x, int y) {
             if (newBtn_.hit(x, y) != 0) { newDesign(); return; }
             if (openBtn_.hit(x, y) != 0) { openUix(); return; }
             if (loadBtn_.hit(x, y) != 0) { loadDefault(); return; }
             if (saveBtn_.hit(x, y) != 0) { saveUix(); return; }
-            if (addLabelBtn_.hit(x, y) != 0) { addControl("Label"); return; }
-            if (addButtonBtn_.hit(x, y) != 0) { addControl("Button"); return; }
-            if (addFieldBtn_.hit(x, y) != 0) { addControl("TextField"); return; }
-            if (addSwitchBtn_.hit(x, y) != 0) { addControl("Switch"); return; }
-            if (addSliderBtn_.hit(x, y) != 0) { addControl("Slider"); return; }
-            if (addPanelBtn_.hit(x, y) != 0) { addControl("Panel"); return; }
             if (delBtn_.hit(x, y) != 0) { removeSelected(); return; }
             if (fsBtn_.hit(x, y) != 0) { SDL.setFullscreen(1); return; }
             if (applyBtn_.hit(x, y) != 0) { applyProps(); return; }
@@ -740,15 +831,26 @@ class UixDesigner {
             string s1 = serializeDesign();
             Console.writeLine("ds text=" + (Str.contains(s1, "\"text\": \"Login\"") != 0 ? 1 : 0)
                               + " x120=" + (Str.contains(s1, "\"x\": 120") != 0 ? 1 : 0));
-            // 加控件
-            addControl("Button");
+            // 加控件（默认位置）
+            addControl("Button", 40, 40);
             Console.writeLine("ds nodes2=" + loader_.nodeCount());
             Console.writeLine("ds added-id=" + (loader_.idxOf(selectedId_) >= 0 ? 1 : 0));
             // 删选中
             removeSelected();
             string s2 = serializeDesign();
             Console.writeLine("ds nodes3=" + loader_.nodeCount()
-                              + " no-ok=" + (Str.contains(s2, "\"id\": \"ok\"") != 0 ? 0 : 1));            // 文件保存 → 打开 往返（MYPVIEW_UIX_FILE 由测试脚本设为 /tmp 路径）
+                              + " no-ok=" + (Str.contains(s2, "\"id\": \"ok\"") != 0 ? 0 : 1));
+            // 调色板拖放：按 +Button → 拖到画布 (150,250) → 落下 → 画布局部
+            // (140,192) 添加（窗口级 onPress/onMove/onRelease）
+            int bx = addButtonBtn_.getX() + 45;
+            int by = addButtonBtn_.getY() + 20;
+            onPress(bx, by);
+            onMove(150, 250);
+            onRelease(150, 250);
+            string s4 = serializeDesign();
+            Console.writeLine("ds palette x140=" + (Str.contains(s4, "\"x\": 140") != 0 ? 1 : 0)
+                              + " y192=" + (Str.contains(s4, "\"y\": 192") != 0 ? 1 : 0)
+                              + " nodes=" + loader_.nodeCount());            // 文件保存 → 打开 往返（MYPVIEW_UIX_FILE 由测试脚本设为 /tmp 路径）
             saveUix();
             openUix();
             Console.writeLine("ds file roundtrip nodes=" + loader_.nodeCount());            Console.writeLine("ds done");

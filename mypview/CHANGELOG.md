@@ -7,6 +7,41 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.66 — 设计器调色板拖放（从外部拖控件进画布，Qt Design Studio 式）
+
+**需求**：从外部（调色板）把控件拖进画布——按调色板 `+xxx` 按钮 → 拖到画布 →
+松开在该位置添加控件，而非此前「点击固定加到 (40,40)」。
+
+**AppRunner 窗口级手势回调**（`src/backend/app_runner.myp`）：
+- `UiApp` 接口新增 `onPress(x,y)`/`onMove(x,y)`/`onRelease(x,y)`（默认空体，既有
+  应用不受影响）。
+- 帧循环手势分发在树内路由（`rv.onPress/onMove/onRelease`，命中控件拖拽）之外，
+  **同时调 `app.onPress/onMove/onRelease`**——窗口级回调，供应用做跨控件拖放
+  （调色板→画布）。两者并存：树路由给命中控件做控件内拖拽，窗口级给应用拖放。
+
+**设计器调色板拖放**（`examples/uix_designer.myp`）：
+- `DragGhost`（琥珀描边 + 类型名的预览框）加入画布渲染树，跟随光标显示拖拽目标。
+- `UiApp.onPress`：按在 `+xxx` 调色板按钮上 → 记录 `paletteDrag_` 类型 + 显示幽灵
+  （尺寸按类型默认）。
+- `onMove`：幽灵跟随光标。
+- `onRelease`：落到画布内 → `addControl(type, 画布局部坐标)` 在该位置添加；未落到
+  画布（简单点击）→ 默认 (40,40)。
+- 调色板按钮移出 `onButton` 路由（改由窗口级手势处理），避免点击重复添加。
+- `addControl` 改为接受 (type, x, y)。
+
+**验证**：headless 新增调色板拖放断言——按 `+Button`（窗口坐标）→ 拖到画布
+(150,250) → 松开 → 画布局部 (140,192) 添加（`ds palette x140=1 y192=1 nodes=7`）；
+mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS（未改编译器，不跑父全量）。
+
+## v3.12.65 — 拖拽手势全链路验证钩子（合成鼠标注入）
+
+- bridge 加 `myp_sdl_test_mouse(down,x,y)`：注入合成鼠标事件（按下状态+位置+点击），
+  无真实鼠标环境驱动 AppRunner 完整手势分发；stdlib `SDL.testMouse` 包装。
+- 设计器 headless 拖拽测试改走完整手势路由（root.onPress→mainRow→canvas→事件→
+  handler）；`MYPVIEW_TEST_DRAG=1` 注入合成鼠标验证真实窗口拖拽
+  （`ds testdrag x100=1 y140=1`）。
+- 确认拖拽（含容器手势链、AppRunner 分发）全链路可用。
+
 ## v3.12.64 — 设计器全屏 + 窗口缩放后画布/控件自适应（resize 修复）
 
 **症状**：窗口全屏（或拖拽缩放）后，画布等控件不随窗口变大——只有宽度变，高度

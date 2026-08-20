@@ -34,6 +34,12 @@ interface UiApp {
     void onFrame(int frame);
     // 键盘字符事件（可选；如聚焦控件接收输入）
     void onKeyChar(int c);
+    // ---- 窗口级手势（可选；默认空体）----
+    // 与树内手势路由（onPress/onMove/onRelease 逐层命中锁定）并存：树路由给命中
+    // 控件做控件内拖拽；窗口级回调给应用做跨控件拖放（如调色板→画布拖入新控件）。
+    void onPress(int x, int y) {}
+    void onMove(int x, int y) {}
+    void onRelease(int x, int y) {}
 }
 
 class AppRunner {
@@ -73,6 +79,7 @@ class AppRunner {
                 rv.onTouch(mx, my);
             }
             // 鼠标手势 → 根拖拽分发（按下/按住移动/抬起；容器逐层路由到命中控件）
+            // + 窗口级回调（应用跨控件拖放，如调色板→画布）
             int down = SDL.getMouseDown();
             int gpos = SDL.getMousePos();
             if (gpos >= 0) {
@@ -80,10 +87,13 @@ class AppRunner {
                 int gy = (gpos >> 16) & 0xFFFF;
                 if (down != 0 && prevDown == 0) {
                     rv.onPress(gx, gy);          // 按下边沿 → 拖拽开始（RootView 命中锁定）
+                    app.onPress(gx, gy);         // 窗口级：应用拖放起点
                 } else if (down != 0) {
                     rv.onMove(gx, gy);           // 按住移动 → 持续拖拽
+                    app.onMove(gx, gy);
                 } else if (prevDown != 0) {
                     rv.onRelease(gx, gy);        // 抬起 → 拖拽结束
+                    app.onRelease(gx, gy);
                 }
             }
             prevDown = down;
