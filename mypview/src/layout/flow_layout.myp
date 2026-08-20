@@ -43,6 +43,11 @@ class FlowLayout {
 
         int childCount() { return kidCount_; }
 
+        // 清空子控件（动态重建场景：搜索过滤后重新填充）
+        void clear() {
+            kidCount_ = 0;
+        }
+
         // 布局：从左到右排布，超过右边界则换行。
         // 注意：interface 数组元素经局部变量再调（安全模式）。
         void layout() {

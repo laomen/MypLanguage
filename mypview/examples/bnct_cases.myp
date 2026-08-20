@@ -1,11 +1,12 @@
 // bnct_cases.myp — BNCT 治疗计划系统：病例管理页（复刻 Web dashboard 结构）
 // ---------------------------------------------------------------------------
-// 结构（对应截图）：
-//   Header：系统标题「BNCT 治疗计划系统」+ 页面标题「病例管理」+ 用户区
-//   搜索/筛选区：SearchBar（患者名/ID）+ 排序/来源 Dropdown + 操作按钮行
-//   病例/序列选择：Dropdown（病例+序列）+「进入勾画」按钮
-//   病例卡片网格：Card 列表（患者名/ID/元信息/详情/进入）
-//   dark blue 主题（SDL.clear 深蓝背景 + Card 深色表面 + accent）
+// 结构（对应截图）：用 mypview 布局控件组织（LinearLayout 行 + FlowLayout 卡片区）
+//   root(垂直) ─ headerRow(水平：系统标题/页面标题)
+//             ─ searchRow(水平：SearchBar + 排序/来源 Dropdown)
+//             ─ actionRow(水平：新建/删除/PACS 按钮)
+//             ─ selectRow(水平：病例/序列 Dropdown + 进入勾画)
+//             ─ cardArea(FlowLayout：Card 卡片网格，宽度自适应换行)
+//   用户区（头像/姓名）右上角绝对定位
 // 双模式：
 //   - 默认：SDL 窗口界面（bash build.sh bnct_cases，ESC/关窗退出）
 //   - BNCT_HEADLESS=1：headless 逻辑验证（搜索过滤/卡片事件输出断言）
@@ -28,7 +29,7 @@ class BnctCases {
         string[8] ids_;
         string[8] metas_;
         int caseCount_;
-        // 卡片网格
+        // 卡片
         Card[8] cards_;
         int cardCount_;        // 当前显示卡片数（搜索过滤后）
         int selected_;         // 选中病例索引（进入勾画）
@@ -44,11 +45,18 @@ class BnctCases {
         Button deleteBtn_;
         Button pacsBtn_;
         string userName_;
-        // Header 控件（字段：relayout 需要引用）
+        // Header 控件
         Label headerTitle_;
         Label pageTitle_;
         Avatar userAv_;
         Label userLabel_;
+        // 布局树（relayout 需要引用）
+        LinearLayout root_;
+        LinearLayout headerRow_;
+        LinearLayout searchRow_;
+        LinearLayout actionRow_;
+        LinearLayout selectRow_;
+        FlowLayout cardArea_;
 
     action:
         @constructor BnctCases() {
@@ -63,40 +71,104 @@ class BnctCases {
             enterPatient_ = "";
             userName_ = "Doctor demo";
             for (int i = 0; i < 8; i = i + 1) {
-                cards_[i] = new Card("", 0, 0, 300, 140);
+                cards_[i] = new Card("", 0, 0, 412, 170);   // 期望尺寸（FlowLayout 用）
                 cards_[i].setActions("详情", "进入");
             }
         }
 
-        // ---- 构建页面（控件 + 布局）----
-        void build() {
-            // 搜索/筛选区（对齐 ref 截图：1880x956 逻辑尺寸）
-            search_ = new SearchBar(28, 84, 440, 42);
-            sortDrop_ = new Dropdown(488, 84, 180, 42);
+        // ---- 构建页面：布局树（LinearLayout 行 + FlowLayout 卡片区）----
+        void build(int W, int H) {
+            // 根垂直布局
+            root_ = new LinearLayout(0, W, H);
+            root_.setPadding(20);
+            root_.setSpacing(12);
+
+            // Header 行（水平）：系统标题 + 页面标题
+            headerRow_ = new LinearLayout(1, W - 40, 60);
+            headerRow_.setPadding(0);
+            headerRow_.setSpacing(24);
+            headerTitle_ = new Label("BNCT 治疗计划系统", 0, 0, 3);
+            pageTitle_ = new Label("病例管理", 0, 0, 2);
+            Label ht = headerTitle_;
+            Label pt = pageTitle_;
+            headerRow_.add(ht);
+            headerRow_.add(pt);
+            LinearLayout hr0 = headerRow_;
+            root_.add(hr0);
+
+            // 搜索行（水平）：SearchBar + 排序/来源
+            searchRow_ = new LinearLayout(1, W - 40, 44);
+            searchRow_.setPadding(0);
+            searchRow_.setSpacing(16);
+            search_ = new SearchBar(0, 0, 440, 42);
+            sortDrop_ = new Dropdown(0, 0, 180, 42);
             sortDrop_.addItem("最近更新");
             sortDrop_.addItem("患者姓名");
             sortDrop_.setSelected(0);
-            sourceDrop_ = new Dropdown(688, 84, 140, 42);
+            sourceDrop_ = new Dropdown(0, 0, 140, 42);
             sourceDrop_.addItem("全部");
             sourceDrop_.addItem("DICOM");
             sourceDrop_.setSelected(0);
-            // 操作按钮行
-            newBtn_ = new Button("+ 新建病例", 28, 146, 140, 38);
-            deleteBtn_ = new Button("X 删除病例", 184, 146, 140, 38);
-            pacsBtn_ = new Button("PACS 查询", 340, 146, 140, 38);
-            // 病例/序列选择 + 进入勾画
-            caseDrop_ = new Dropdown(28, 204, 360, 40);
+            SearchBar sb = search_;
+            Dropdown sd = sortDrop_;
+            Dropdown srd = sourceDrop_;
+            searchRow_.add(sb);
+            searchRow_.add(sd);
+            searchRow_.add(srd);
+            LinearLayout hr1 = searchRow_;
+            root_.add(hr1);
+
+            // 操作按钮行（水平）
+            actionRow_ = new LinearLayout(1, W - 40, 40);
+            actionRow_.setPadding(0);
+            actionRow_.setSpacing(16);
+            newBtn_ = new Button("+ 新建病例", 0, 0, 140, 38);
+            deleteBtn_ = new Button("X 删除病例", 0, 0, 140, 38);
+            pacsBtn_ = new Button("PACS 查询", 0, 0, 140, 38);
+            Button nb = newBtn_;
+            Button db = deleteBtn_;
+            Button pb = pacsBtn_;
+            actionRow_.add(nb);
+            actionRow_.add(db);
+            actionRow_.add(pb);
+            LinearLayout hr2 = actionRow_;
+            root_.add(hr2);
+
+            // 病例/序列选择行（水平）
+            selectRow_ = new LinearLayout(1, W - 40, 42);
+            selectRow_.setPadding(0);
+            selectRow_.setSpacing(16);
+            caseDrop_ = new Dropdown(0, 0, 340, 40);
             caseDrop_.addItem("Patient-305891 (ID-21F0)");
             caseDrop_.setSelected(0);
-            seqDrop_ = new Dropdown(408, 204, 620, 40);
+            seqDrop_ = new Dropdown(0, 0, 600, 40);
             seqDrop_.addItem("RTSTRUCT - Imported RT-STRUCT (254 slices)");
             seqDrop_.setSelected(0);
-            enterBtn_ = new Button("进入勾画", 1050, 204, 130, 40);
-            // 卡片网格
+            enterBtn_ = new Button("进入勾画", 0, 0, 130, 40);
+            Dropdown cd = caseDrop_;
+            Dropdown qd = seqDrop_;
+            Button eb = enterBtn_;
+            selectRow_.add(cd);
+            selectRow_.add(qd);
+            selectRow_.add(eb);
+            LinearLayout hr3 = selectRow_;
+            root_.add(hr3);
+
+            // 卡片区（流式换行，宽度自适应列数）
+            cardArea_ = new FlowLayout(W - 40, 420);
+            cardArea_.setPadding(0);
+            cardArea_.setSpacing(20);
+            cardArea_.setRowGap(16);
+
+            // 用户区（右上角，绝对定位；LinearLayout 无右对齐）
+            userAv_ = new Avatar("D", W - 320, 18, 44);
+            userLabel_ = new Label(userName_, 0, 0, 2);
+
+            // 初始化卡片内容
             filterCards("");
         }
 
-        // ---- 搜索过滤：按患者名 / ID 过滤，重排卡片 ----
+        // ---- 搜索过滤：按患者名 / ID 过滤（只更新内容/计数，布局重排由 refresh 做）----
         void filterCards(string kw) {
             int n = 0;
             for (int i = 0; i < caseCount_; i = i + 1) {
@@ -108,17 +180,43 @@ class BnctCases {
                     cards_[n].setTitle(pids_[i]);
                     cards_[n].setSubtitle(ids_[i]);
                     cards_[n].setMeta(metas_[i]);
-                    cards_[n].setFrame(28 + (n % 2) * 432, 276 + (n / 2) * 190,
-                                       412, 170);
                     n = n + 1;
                 }
             }
             cardCount_ = n;
         }
 
+        // ---- 卡片区重排：重建子控件 + 流式布局 ----
+        void refreshCards() {
+            if (cardArea_ == null) return;
+            cardArea_.clear();
+            for (int i = 0; i < cardCount_; i = i + 1) {
+                Card c = cards_[i];
+                cardArea_.add(c);
+            }
+            cardArea_.layout();
+        }
+
+        // ---- 布局：设置布局树 frame + 全量 layout（初始 / 窗口 resize 共用）----
+        void relayout(int W, int H) {
+            root_.setFrame(0, 0, W, H);
+            headerRow_.setFrame(0, 0, W - 40, 60);
+            searchRow_.setFrame(0, 0, W - 40, 44);
+            actionRow_.setFrame(0, 0, W - 40, 40);
+            selectRow_.setFrame(0, 0, W - 40, 42);
+            cardArea_.setFrame(0, 0, W - 40, 420);
+            userAv_.setFrame(W - 320, 18, 44, 44);
+            userLabel_.setFrame(W - 262, 30, 0, 0);
+            root_.layout();
+            headerRow_.layout();
+            searchRow_.layout();
+            actionRow_.layout();
+            selectRow_.layout();
+            refreshCards();
+        }
+
         // ---- 事件：卡片主操作（进入）/ 次操作（详情）----
         void onCardPrimary(int x, int y) {
-            // 反查命中卡片（headless：由调用方传入卡片坐标）
             for (int i = 0; i < cardCount_; i = i + 1) {
                 if (cards_[i].hit(x, y) != 0) {
                     selected_ = i;
@@ -139,15 +237,17 @@ class BnctCases {
             }
         }
 
-        // 事件：搜索框编辑 → 过滤卡片
+        // 事件：搜索框编辑 → 过滤 + 卡片区重排
         void onSearch(string text) {
             filterCards(text);
+            refreshCards();
             Console.writeLine("bnct search '" + text + "' shown=" + cardCount_);
         }
 
         // ---- headless 验证：构建 + 模拟交互 ----
         void runHeadless() {
-            build();
+            build(1880, 956);
+            relayout(1880, 956);   // 布局确定坐标
             // 页面结构
             Console.writeLine("bnct header=BNCT 治疗计划系统 / 病例管理 / "
                               + userName_);
@@ -167,28 +267,12 @@ class BnctCases {
             search_.setText("");
             onSearch("");
 
-            // 模拟点卡片主操作「进入」：命中第 0 张卡主按钮区域
+            // 模拟点卡片主操作「进入」：命中第 0 张卡主按钮区域（布局后坐标）
             cards_[0].onTouch(cards_[0].primaryX() + 5,
                               cards_[0].btnY() + 5);
             // 模拟点卡片次操作「详情」
             cards_[1].onTouch(cards_[1].secondaryX() + 5,
                               cards_[1].btnY() + 5);
-        }
-        // 窗口尺寸变化（全屏/最大化）→ 1:1 逻辑尺寸 + 重新布局（防拉伸模糊）
-        void relayout(int W, int H) {
-            userLabel_.setFrame(W - 262, 30, 0, 0);
-            userAv_.setFrame(W - 320, 18, 44, 44);
-            enterBtn_.setFrame(W - 158, 204, 130, 40);
-            // 卡片网格：按窗口宽度排多列
-            int cw = 412;
-            int gap = 20;
-            int cols = 1;
-            if (W >= 3 * cw + 4 * gap + 28) cols = 3;
-            else if (W >= 2 * cw + 3 * gap + 28) cols = 2;
-            for (int i = 0; i < cardCount_; i = i + 1) {
-                cards_[i].setFrame(28 + (i % cols) * (cw + gap),
-                                   276 + (i / cols) * 190, cw, 170);
-            }
         }
 
         // ---- SDL 窗口界面（复刻截图，窗口尺寸对齐 ref 参考图比例）----
@@ -203,34 +287,16 @@ class BnctCases {
             SDL.setLogicalSize(W, H);
             SdlRenderer r = new SdlRenderer();
             RootView rv = new RootView(16, W, H);
-            build();
+            build(W, H);
+            relayout(W, H);
 
-            // Header：标题 + 用户区（右上角，对齐截图）
-            headerTitle_ = new Label("BNCT 治疗计划系统", 28, 16, 3);
-            pageTitle_ = new Label("病例管理", 28, 52, 3);
-            userAv_ = new Avatar("D", W - 320, 18, 44);
-            userLabel_ = new Label(userName_, 0, 0, 2);
-            userLabel_.setFrame(W - 262, 30, 0, 0);
-            rv.add(headerTitle_);
-            rv.add(pageTitle_);
-            rv.add(userAv_);
-            rv.add(userLabel_);
-
-            // 搜索/筛选区 + 操作按钮 + 病例选择 + 卡片
-            rv.add(search_);
-            rv.add(sortDrop_);
-            rv.add(sourceDrop_);
-            rv.add(newBtn_);
-            rv.add(deleteBtn_);
-            rv.add(pacsBtn_);
-            rv.add(caseDrop_);
-            rv.add(seqDrop_);
-            rv.add(enterBtn_);
-            // 数组元素 → 接口参数需局部变量中转（mypc 对数组元素不自动接口上转）
-            for (int i = 0; i < cardCount_; i = i + 1) {
-                Card c = cards_[i];
-                rv.add(c);
-            }
+            // 布局树 + 用户区挂到 RootView
+            LinearLayout root = root_;
+            rv.add(root);
+            Avatar av = userAv_;
+            Label ul = userLabel_;
+            rv.add(av);
+            rv.add(ul);
 
             Console.writeLine("bnct ui running cards=" + Fmt.i(cardCount_));
             string mf = Console.getEnv("MYP_PLAYER_MAXFRAME");
@@ -279,7 +345,7 @@ class BnctCases {
                         cards_[i].setHovered(cards_[i].hit(hx, hy));
                 }
 
-                // 窗口自适应：全屏/最大化 → 1:1 逻辑尺寸 + 重排（不缩放不模糊）
+                // 窗口自适应：全屏/最大化 → 1:1 逻辑尺寸 + 布局重排（不缩放不模糊）
                 int curW = SDL.width();
                 int curH = SDL.height();
                 if (curW != W || curH != H) {
