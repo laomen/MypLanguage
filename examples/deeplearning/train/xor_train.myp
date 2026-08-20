@@ -1,0 +1,173 @@
+// xor_train.myp — 阶段0：XOR 手写反向传播（MLP 2-4-1 sigmoid）冒烟
+//
+// 验证 MYP 里「前向 + 反向 + SGD」训练闭环可跑，作为后续 MNIST MLP /
+// Graph IR 反向 pass 的可行性基准。
+//
+// 结构：
+//   x(2) → W1[4x2]+b1[4] → sigmoid → h(4) → W2[1x4]+b2[1] → sigmoid → out(1)
+//   损失：MSE = 0.5*(out-t)^2；优化：逐样本 SGD（lr=0.5）
+//   XOR 真值表：00→0, 01→1, 10→1, 11→0
+//
+// 运行（仓库根）：
+//   ./build/mypc examples/deeplearning/train/xor_train.myp -o /tmp/xor_train --stdlib stdlib && /tmp/xor_train
+//   → 期望：loss 降到 <0.02，4 样本预测与目标误差 <0.1，打印 "XOR TRAIN OK"
+
+import env;
+import math;
+
+class XorTrain {
+    action:
+        @constructor XorTrain() {
+            int N = 4;         // 样本数
+            int IN = 2;        // 输入维
+            int H = 4;         // 隐层
+            int OUT = 1;       // 输出维
+
+            // 训练数据（XOR 真值表）
+            double[] x = new double[N * IN];
+            double[] t = new double[N * OUT];
+            x[0] = 0.0; x[1] = 0.0; t[0] = 0.0;
+            x[2] = 0.0; x[3] = 1.0; t[1] = 1.0;
+            x[4] = 1.0; x[5] = 0.0; t[2] = 1.0;
+            x[6] = 1.0; x[7] = 1.0; t[3] = 0.0;
+
+            // 参数（确定性伪随机小初始化 [-0.3, 0.3]）
+            double[] w1 = new double[H * IN];
+            double[] b1 = new double[H];
+            double[] w2 = new double[OUT * H];
+            double[] b2 = new double[OUT];
+            int i = 0;
+            while (i < H * IN) { w1[i] = rnd(); i = i + 1; }
+            i = 0; while (i < H) { b1[i] = rnd(); i = i + 1; }
+            i = 0; while (i < OUT * H) { w2[i] = rnd(); i = i + 1; }
+            i = 0; while (i < OUT) { b2[i] = rnd(); i = i + 1; }
+
+            double lr = 0.5;
+            int EPOCHS = 4000;
+            int epoch = 0;
+            double avgLoss = 0.0;
+            while (epoch < EPOCHS) {
+                double totalLoss = 0.0;
+                int s = 0;
+                while (s < N) {
+                    // ---- 前向 ----
+                    double[] h = new double[H];
+                    int j = 0;
+                    while (j < H) {
+                        double z = b1[j];
+                        int k = 0;
+                        while (k < IN) { z = z + w1[j * IN + k] * x[s * IN + k]; k = k + 1; }
+                        h[j] = sig(z);
+                        j = j + 1;
+                    }
+                    double z2 = b2[0];
+                    j = 0;
+                    while (j < H) { z2 = z2 + w2[j] * h[j]; j = j + 1; }
+                    double out = sig(z2);
+
+                    double diff = out - t[s];
+                    double loss = 0.5 * diff * diff;
+                    totalLoss = totalLoss + loss;
+
+                    // ---- 反向（链式法则）----
+                    double dOut = diff;                       // dL/dout
+                    double dz2 = dOut * out * (1.0 - out);    // out=sigmoid(z2) → *out(1-out)
+                    double[] dh = new double[H];
+                    double[] dz1 = new double[H];
+                    j = 0;
+                    while (j < H) {
+                        double dw2 = dz2 * h[j];              // dW2
+                        dh[j] = dz2 * w2[j];                  // dh[j]
+                        w2[j] = w2[j] - lr * dw2;             // SGD 更新 W2
+                        j = j + 1;
+                    }
+                    b2[0] = b2[0] - lr * dz2;                 // 更新 b2
+
+                    j = 0;
+                    while (j < H) {
+                        dz1[j] = dh[j] * h[j] * (1.0 - h[j]); // h=sigmoid(z1) → *h(1-h)
+                        int k = 0;
+                        while (k < IN) {
+                            double dw1 = dz1[j] * x[s * IN + k];
+                            w1[j * IN + k] = w1[j * IN + k] - lr * dw1;
+                            k = k + 1;
+                        }
+                        b1[j] = b1[j] - lr * dz1[j];
+                        j = j + 1;
+                    }
+                    s = s + 1;
+                }
+                avgLoss = totalLoss / N;
+                if (epoch % 1000 == 0) {
+                    Console.writeString("epoch ");
+                    Console.write(epoch);
+                    Console.writeString(" loss=");
+                    Console.writeFloat(avgLoss);
+                    Console.writeLine("");
+                }
+                epoch = epoch + 1;
+            }
+
+            // ---- 验证 ----
+            int bad = 0;
+            int s2 = 0;
+            while (s2 < N) {
+                double o = predict(x, w1, b1, w2, b2, IN, H, OUT, s2);
+                double want = t[s2];
+                Console.writeString("x=(");
+                Console.writeFloat(x[s2 * IN]);
+                Console.writeString(",");
+                Console.writeFloat(x[s2 * IN + 1]);
+                Console.writeString(") -> out=");
+                Console.writeFloat(o);
+                Console.writeString(" target=");
+                Console.writeFloat(want);
+                Console.writeLine("");
+                if (Math.abs(o - want) > 0.1) bad = bad + 1;
+                s2 = s2 + 1;
+            }
+            Console.writeString("final loss=");
+            Console.writeFloat(avgLoss);
+            Console.writeLine("");
+            if (bad == 0 && avgLoss < 0.02) Console.writeLine("XOR TRAIN OK");
+            else Console.writeLine("XOR TRAIN FAIL");
+        }
+
+        double sig(double z) {
+            double e = Math.exp(0.0 - z);
+            return 1.0 / (1.0 + e);
+        }
+
+        // 确定性伪随机（LCG）→ [-0.3, 0.3)
+        double rnd() {
+            seed_ = (seed_ * 1103515245L + 12345L) % 2147483648L;
+            double v = float(seed_ % 10000) / 10000.0;
+            return v * 0.6 - 0.3;
+        }
+
+        // 推理：给定样本下标返回网络输出
+        double predict(double[] x, double[] w1, double[] b1, double[] w2, double[] b2,
+                       int IN, int H, int OUT, int s) {
+            double[] h = new double[H];
+            int j = 0;
+            while (j < H) {
+                double z = b1[j];
+                int k = 0;
+                while (k < IN) { z = z + w1[j * IN + k] * x[s * IN + k]; k = k + 1; }
+                h[j] = sig(z);
+                j = j + 1;
+            }
+            double z2 = b2[0];
+            j = 0;
+            while (j < H) { z2 = z2 + w2[j] * h[j]; j = j + 1; }
+            return sig(z2);
+        }
+
+    property:
+        long seed_ = 1234567;
+}
+
+int main() {
+    XorTrain t = new XorTrain();
+    return 0;
+}

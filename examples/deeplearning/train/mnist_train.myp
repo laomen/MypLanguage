@@ -1,0 +1,290 @@
+// mnist_train.myp — 阶段1：MNIST MLP 训练（手写反向 + 动量 SGD）
+//
+// 架构 784→64→10（ReLU 隐层 + SoftmaxCrossEntropy），与 make_mnist_mlp_onnx.py
+// 导出的 ONNX 完全一致（wh[64,784]/wo[10,64]/bh[74]），保证闭环验证：
+//   训练 → 导出 mnist_weights.bin → make_mnist_mlp_onnx.py → mnist_mlp.onnx
+//   → onnx_main.myp（纯 MYP 推理）精度应与训练器一致（目标 ~97%，远高于旧 78%）。
+//
+// 训练：动量 SGD（lr=0.1 → 0.03 → 0.01，momentum=0.9，batch=128，15 epochs），
+//   逐样本前向+反向、批内累积梯度、批末更新。权重 He 初始化。
+//
+// 运行（仓库根）：
+//   ./build/mypc examples/deeplearning/train/mnist_train.myp -o /tmp/mnist_train --stdlib stdlib && /tmp/mnist_train
+
+import env;
+import math;
+import "./mnist_reader.myp";
+
+class MnistTrain {
+    action:
+        @constructor MnistTrain() {
+            int NIN = 784;
+            int NH = 64;
+            int NOUT = 10;
+            int NTRAIN = 30000;
+            int NTEST = 10000;
+            int BATCH = 128;
+
+            // ---- 加载数据 ----
+            float[] x = new float[NTRAIN * NIN];
+            int[] y = new int[NTRAIN];
+            int ntr = MnistReader.loadImages("./deeplearning/data/train-images-idx3-ubyte/train-images.idx3-ubyte", x, NTRAIN);
+            int ntrl = MnistReader.loadLabels("./deeplearning/data/train-labels-idx1-ubyte/train-labels.idx1-ubyte", y, NTRAIN);
+            float[] xt = new float[NTEST * NIN];
+            int[] yt = new int[NTEST];
+            int nte = MnistReader.loadImages("./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", xt, NTEST);
+            int ntel = MnistReader.loadLabels("./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte", yt, NTEST);
+            if (ntr < 1000 || ntrl < 1000 || nte < 1000 || ntel < 1000) {
+                Console.writeLine("MNIST data missing");
+                return;
+            }
+
+            // ---- 参数（He 初始化）----
+            double[] W1 = new double[NH * NIN];
+            double[] b1 = new double[NH];
+            double[] W2 = new double[NOUT * NH];
+            double[] b2 = new double[NOUT];
+            initWeights(W1, b1, W2, b2, NIN, NH, NOUT);
+
+            // 动量缓冲
+            double[] vW1 = new double[NH * NIN];
+            double[] vb1 = new double[NH];
+            double[] vW2 = new double[NOUT * NH];
+            double[] vb2 = new double[NOUT];
+
+            // 梯度累积器（批内）
+            double[] dW1 = new double[NH * NIN];
+            double[] db1 = new double[NH];
+            double[] dW2 = new double[NOUT * NH];
+            double[] db2 = new double[NOUT];
+
+            double lr = 0.1;
+            double mom = 0.9;
+            int EPOCHS = 15;
+            int epoch = 0;
+            int bestAcc = 0;
+            while (epoch < EPOCHS) {
+                if (epoch == 8) lr = 0.03;
+                if (epoch == 12) lr = 0.01;
+                // 一个 epoch：批内累积梯度 → 动量更新
+                int nbatches = ntr / BATCH;
+                int bi = 0;
+                while (bi < nbatches) {
+                    int s0 = bi * BATCH;
+                    // 清梯度
+                    int k = 0;
+                    while (k < NH * NIN) { dW1[k] = 0.0; k = k + 1; }
+                    k = 0; while (k < NH) { db1[k] = 0.0; k = k + 1; }
+                    k = 0; while (k < NOUT * NH) { dW2[k] = 0.0; k = k + 1; }
+                    k = 0; while (k < NOUT) { db2[k] = 0.0; k = k + 1; }
+                    int si = 0;
+                    while (si < BATCH) {
+                        int s = s0 + si;
+                        accumulateGrads(x, y, W1, b1, W2, b2, dW1, db1, dW2, db2, NIN, NH, NOUT, s);
+                        si = si + 1;
+                    }
+                    // 动量更新（梯度取均值 /BATCH）
+                    int inv = BATCH;
+                    k = 0;
+                    while (k < NH * NIN) {
+                        vW1[k] = mom * vW1[k] + dW1[k] / inv;
+                        W1[k] = W1[k] - lr * vW1[k];
+                        k = k + 1;
+                    }
+                    k = 0; while (k < NH) { vb1[k] = mom * vb1[k] + db1[k] / inv; b1[k] = b1[k] - lr * vb1[k]; k = k + 1; }
+                    k = 0; while (k < NOUT * NH) { vW2[k] = mom * vW2[k] + dW2[k] / inv; W2[k] = W2[k] - lr * vW2[k]; k = k + 1; }
+                    k = 0; while (k < NOUT) { vb2[k] = mom * vb2[k] + db2[k] / inv; b2[k] = b2[k] - lr * vb2[k]; k = k + 1; }
+                    bi = bi + 1;
+                }
+                int acc = testAccuracy(xt, yt, W1, b1, W2, b2, NIN, NH, NOUT, nte);
+                if (acc > bestAcc) bestAcc = acc;
+                Console.writeString("epoch ");
+                Console.write(epoch);
+                Console.writeString(" acc=");
+                Console.write(acc);
+                Console.writeString("%");
+                Console.writeLine("");
+                epoch = epoch + 1;
+            }
+
+            // ---- 导出 weights.bin（对接 make_mnist_mlp_onnx.py）----
+            saveWeights(W1, b1, W2, b2, NIN, NH, NOUT);
+
+            Console.writeString("MNIST best acc=");
+            Console.write(bestAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+            if (bestAcc >= 95) Console.writeLine("MNIST TRAIN OK");
+            else Console.writeLine("MNIST TRAIN FAIL");
+        }
+
+        // 单样本前向 + 反向，把梯度累积进 dW1/db1/dW2/db2
+        void accumulateGrads(float[] x, int[] y,
+                             double[] W1, double[] b1, double[] W2, double[] b2,
+                             double[] dW1, double[] db1, double[] dW2, double[] db2,
+                             int NIN, int NH, int NOUT, int s) {
+            // 前向
+            double[] z1 = new double[NH];
+            double[] h1 = new double[NH];
+            int j = 0;
+            while (j < NH) {
+                double z = b1[j];
+                int k = 0;
+                while (k < NIN) { z = z + W1[j * NIN + k] * x[s * NIN + k]; k = k + 1; }
+                z1[j] = z;
+                if (z > 0.0) h1[j] = z;
+                else h1[j] = 0.0;
+                j = j + 1;
+            }
+            double[] logit = new double[NOUT];
+            double[] prob = new double[NOUT];
+            int o = 0;
+            while (o < NOUT) {
+                double z = b2[o];
+                j = 0;
+                while (j < NH) { z = z + W2[o * NH + j] * h1[j]; j = j + 1; }
+                logit[o] = z;
+                o = o + 1;
+            }
+            // softmax（减 max 稳定）
+            double mx = logit[0];
+            o = 1;
+            while (o < NOUT) { if (logit[o] > mx) mx = logit[o]; o = o + 1; }
+            double sum = 0.0;
+            o = 0;
+            while (o < NOUT) {
+                double e = Math.exp(logit[o] - mx);
+                prob[o] = e;
+                sum = sum + e;
+                o = o + 1;
+            }
+            o = 0;
+            while (o < NOUT) { prob[o] = prob[o] / sum; o = o + 1; }
+
+            // softmax+CE 对 logit 的梯度 = prob - onehot
+            double[] dlogit = new double[NOUT];
+            int target = y[s];
+            o = 0;
+            while (o < NOUT) {
+                double d = prob[o];
+                if (o == target) d = d - 1.0;
+                dlogit[o] = d;
+                o = o + 1;
+            }
+
+            // 输出层：dW2[o,j] += dlogit[o]*h1[j]; db2[o] += dlogit[o]
+            o = 0;
+            while (o < NOUT) {
+                double d = dlogit[o];
+                db2[o] = db2[o] + d;
+                j = 0;
+                while (j < NH) {
+                    dW2[o * NH + j] = dW2[o * NH + j] + d * h1[j];
+                    j = j + 1;
+                }
+                o = o + 1;
+            }
+
+            // 隐层：dh1[j] = Σ_o dlogit[o]*W2[o,j]; dz1[j] = dh1[j] * (z1[j]>0)
+            // dW1[j,k] += dz1[j]*x[k]; db1[j] += dz1[j]
+            j = 0;
+            while (j < NH) {
+                double dh = 0.0;
+                o = 0;
+                while (o < NOUT) { dh = dh + dlogit[o] * W2[o * NH + j]; o = o + 1; }
+                double dz = 0.0;
+                if (z1[j] > 0.0) dz = dh;
+                db1[j] = db1[j] + dz;
+                int k = 0;
+                while (k < NIN) {
+                    dW1[j * NIN + k] = dW1[j * NIN + k] + dz * x[s * NIN + k];
+                    k = k + 1;
+                }
+                j = j + 1;
+            }
+        }
+
+        // 测试集精度（%）
+        int testAccuracy(float[] xt, int[] yt, double[] W1, double[] b1, double[] W2, double[] b2,
+                         int NIN, int NH, int NOUT, int n) {
+            int correct = 0;
+            int s = 0;
+            while (s < n) {
+                int pred = predict(xt, W1, b1, W2, b2, NIN, NH, NOUT, s);
+                if (pred == yt[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct * 100 / n;
+        }
+
+        // 单样本 argmax 预测
+        int predict(float[] x, double[] W1, double[] b1, double[] W2, double[] b2,
+                    int NIN, int NH, int NOUT, int s) {
+            double[] logit = new double[NOUT];
+            int j = 0;
+            while (j < NH) {
+                double z = b1[j];
+                int k = 0;
+                while (k < NIN) { z = z + W1[j * NIN + k] * x[s * NIN + k]; k = k + 1; }
+                if (z < 0.0) z = 0.0;   // ReLU
+                hbuf[j] = z;           // 隐层输出暂存（类字段，避免额外数组）
+                j = j + 1;
+            }
+            int o = 0;
+            int best = 0;
+            double bestv = -1.0e30;
+            while (o < NOUT) {
+                double z = b2[o];
+                j = 0;
+                while (j < NH) { z = z + W2[o * NH + j] * hbuf[j]; j = j + 1; }
+                if (z > bestv) { bestv = z; best = o; }
+                o = o + 1;
+            }
+            return best;
+        }
+
+        // He 初始化：w ~ U[-std, std], std = sqrt(2/fanIn)；b1=0.1, b2=0
+        void initWeights(double[] W1, double[] b1, double[] W2, double[] b2,
+                         int NIN, int NH, int NOUT) {
+            double std1 = Math.sqrt(2.0 / NIN);
+            double std2 = Math.sqrt(2.0 / NH);
+            int k = 0;
+            while (k < NH * NIN) { W1[k] = (rnd() * 2.0 - 1.0) * std1; k = k + 1; }
+            k = 0; while (k < NH) { b1[k] = 0.1; k = k + 1; }
+            k = 0; while (k < NOUT * NH) { W2[k] = (rnd() * 2.0 - 1.0) * std2; k = k + 1; }
+            k = 0; while (k < NOUT) { b2[k] = 0.0; k = k + 1; }
+        }
+
+        // 确定性伪随机 [0,1)
+        double rnd() {
+            seed_ = (seed_ * 1103515245L + 12345L) % 2147483648L;
+            double v = float(seed_ % 1000000) / 1000000.0;
+            return v;
+        }
+
+        // 导出 weights.bin：3×int32 大端头 + wh/wo/bh 小端 double（对接导出器）
+        void saveWeights(double[] W1, double[] b1, double[] W2, double[] b2,
+                         int NIN, int NH, int NOUT) {
+            int fd = __myp_io_fopen("./deeplearning/data/mnist_weights.bin", "wb");
+            if (fd < 0) { Console.writeLine("save weights: open failed"); return; }
+            __myp_io_write_i32be(NIN * NH);
+            __myp_io_write_i32be(NH * NOUT);
+            __myp_io_write_i32be(NH + NOUT);
+            int k = 0;
+            while (k < NH * NIN) { __myp_io_write_double(W1[k]); k = k + 1; }
+            k = 0; while (k < NOUT * NH) { __myp_io_write_double(W2[k]); k = k + 1; }
+            k = 0; while (k < NH) { __myp_io_write_double(b1[k]); k = k + 1; }
+            k = 0; while (k < NOUT) { __myp_io_write_double(b2[k]); k = k + 1; }
+            __myp_io_fclose();
+            Console.writeLine("weights saved to deeplearning/data/mnist_weights.bin");
+        }
+
+    property:
+        long seed_ = 20260820;
+        double[64] hbuf;   // predict 用隐层暂存
+}
+
+int main() {
+    MnistTrain t = new MnistTrain();
+    return 0;
+}

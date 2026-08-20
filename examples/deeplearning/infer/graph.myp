@@ -20,6 +20,7 @@ class Kind {
         int CNN_W() { return 4; }     // Conv 权重
         int CNN_B() { return 5; }     // Conv 偏置
         int FC_C() { return 6; }      // G2：折叠常量（直接拷贝，不转置）
+        int FC_G() { return 7; }      // 阶段2：权重梯度（布局镜像基底权重，含 transB）
 }
 
 class NodeField {
@@ -307,7 +308,9 @@ class Graph {
             }
             __myp_io_fclose();
         }
-        int optimize(InferenceRuntime rt) {
+        // 公共 pass 管线（fold→inferShapes→classify→fusion→DCE→layout→topoSort）。
+        // optimize（推理）与 optimizeTrain（训练）共用；返回 1=成功。
+        int runPassPipeline() {
             if (Console.getEnv("MYP_NO_REUSE") == "1") noReuse_ = 1;
             foldShapeChains();            // P3：先折叠输入形状已知的 Resize sizes 链
             foldConstants();
@@ -321,12 +324,253 @@ class Graph {
             eliminateDeadNodes();
             if (doNHWC_ == 1) { if (layoutNHWC() == 0) { Console.writeLine("DBG fail layoutNHWC"); return 0; } }
             if (topoSort() == 0) { Console.writeLine("DBG fail topoSort"); return 0; }
+            return 1;
+        }
+
+        int optimize(InferenceRuntime rt) {
+            if (runPassPipeline() == 0) return 0;
             int peak = planMemory();
             if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
             rt.resizeArena(peak);
             if (buildRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
             if (Console.getEnv("MYP_RSZ_DBG") == "1") dumpResizeSizes();
             return 1;
+        }
+
+        // 训练版管线：公共 pass → buildReverseGraph（追加反向/更新节点）→ 重排/重规划 → 构建。
+        int optimizeTrain(InferenceRuntime rt) {
+            if (runPassPipeline() == 0) return 0;
+            if (buildReverseGraph() == 0) { Console.writeLine("DBG fail buildReverseGraph"); return 0; }
+            if (topoSort() == 0) { Console.writeLine("DBG fail topoSort(reverse)"); return 0; }
+            int peak = planMemory();
+            if (peak <= 0) { Console.writeLine("DBG fail planMemory"); return 0; }
+            rt.resizeArena(peak);
+            if (buildRuntime(rt) == 0) { Console.writeLine("DBG fail buildRuntime"); return 0; }
+            return 1;
+        }
+
+        // ---- 阶段2：图级反向 pass（reverse-mode AD）----
+        // 前向图已跑完 pass + topoSort；本方法反向拓扑遍历，为每个可训算子追加
+        // backward 节点 + 梯度张量，末尾为权重追加 Update 节点，最后 Softmax 输出
+        // 处接 SoftmaxCE(logits, label) → (dlogits, loss)。
+        // 梯度张量命名：X#g（形状 = X）。反向节点消费前向激活 → planMemory 的
+        // lastUse 自动延长这些激活的存活（不覆盖），无需显式 persist。
+        int buildReverseGraph() {
+            // 1) 定位「输出是图输出的 Softmax」节点 → logits = 其输入
+            int smNode = -1;
+            int i = 0;
+            while (i < nCount_) {
+                if (nType_[i] == "Softmax" && isGraphOutput(nOut0_[i]) == 1) { smNode = i; i = nCount_; }
+                i = i + 1;
+            }
+            if (smNode < 0) {
+                Console.writeLine("buildReverseGraph: no Softmax graph output");
+                return 0;
+            }
+            string logits = nIn0_[smNode];
+            int ls = shapeIdx(logits);
+            if (ls < 0) return 0;
+
+            // 2) label / loss / dlogits 张量（label 由训练循环灌 one-hot）
+            addShapeD4("label", shD0_[ls], shD1_[ls], shD2_[ls], shD3_[ls]);
+            setShapeKind("label", Kind.FC_ACT());
+            addShapeD4("loss", 1, 1, 1, 1);
+            setShapeKind("loss", Kind.FC_ACT());
+            ensureGrad(logits);
+
+            // 3) SoftmaxCE(logits, label) → (dlogits, loss)
+            int nid = nCount_;
+            beginNode();
+            nodeType(nid, "SoftmaxCE");
+            nodeIn(nid, 0, logits);
+            nodeIn(nid, 1, "label");
+            nodeOut(nid, gradName(logits));
+            nodeOut(nid, "loss");
+            endNode();
+
+            // 4) 反向拓扑遍历（planOrder_ 逆序）：输出梯度已知 → 按算子类型追加 backward
+            int oi = planOrderCount_ - 1;
+            while (oi >= 0) {
+                int ni = planOrder_[oi];
+                string t = nType_[ni];
+                if (t != "") {
+                    string y = nOut0_[ni];
+                    if (shapeIdx(gradName(y)) >= 0) {
+                        // 确保该节点各输入/输出的梯度张量形状都登记（否则 buildRuntime 注册不到）
+                        ensureGrad(nIn0_[ni]);
+                        ensureGrad(nIn1_[ni]);
+                        ensureGrad(nIn2_[ni]);
+                        ensureGrad(nIn3_[ni]);
+                        if (t == "Gemm") {
+                            // BwdDense(dy, x, w) → (dx, dw, db)
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdDense");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, gradName(nIn2_[ni]));
+                            endNode();
+                        } else if (t == "MatMul") {
+                            // 无偏置：db 输出用 0 占位（runtime 忽略）
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdDense");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, "");
+                            endNode();
+                        } else if (t == "Relu") {
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdRelu");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            endNode();
+                        } else if (t == "Sigmoid") {
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdSigmoid");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, y);              // 用前向输出 y
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            endNode();
+                        } else if (t == "Add") {
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdAdd");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            endNode();
+                        } else if (t == "Conv") {
+                            // BwdConv(dy, x, w) → (dx, dw, db)；复制卷积参数
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdConv");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, gradName(nIn2_[ni]));   // 无偏置 → "" → runtime db=-1
+                            endNode();
+                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPT_[bd] = nPT_[ni]; nPL_[bd] = nPL_[ni];
+                            nDH_[bd] = nDH_[ni]; nDW_[bd] = nDW_[ni]; nGroup_[bd] = nGroup_[ni];
+                        } else if (t == "MaxPool") {
+                            // BwdMaxPool(dy, x) → (dx)；复制池化参数
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdMaxPool");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            endNode();
+                            nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
+                            nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPT_[bd] = nPT_[ni]; nPL_[bd] = nPL_[ni];
+                        } else if (t == "Conv3D") {
+                            // 阶段4：BwdConv3D(dy, x, w) → (dx, dw, db)；复制 3D 卷积参数
+                            // （kd/kh/kw 与 group 由 w 张量形状给出；dd/dh/dw 假定 1）
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdConv3D");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeIn(bd, 2, nIn1_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            nodeOut(bd, gradName(nIn1_[ni]));
+                            nodeOut(bd, gradName(nIn2_[ni]));   // 无偏置 → "" → runtime db=-1
+                            endNode();
+                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
+                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
+                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                        } else if (t == "MaxPool3D") {
+                            // 阶段4：BwdMaxPool3D(dy, x) → (dx)；复制 3D 池化参数
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdMaxPool3D");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            endNode();
+                            nKD3_[bd] = nKD3_[ni]; nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
+                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
+                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
+                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                        } else if (t == "AveragePool3D") {
+                            // 阶段4：BwdAvgPool3D(dy, x) → (dx)；复制 3D 池化参数 + cip
+                            int bd = nCount_;
+                            beginNode();
+                            nodeType(bd, "BwdAvgPool3D");
+                            nodeIn(bd, 0, gradName(y));
+                            nodeIn(bd, 1, nIn0_[ni]);
+                            nodeOut(bd, gradName(nIn0_[ni]));
+                            endNode();
+                            nKD3_[bd] = nKD3_[ni]; nKH_[bd] = nKH_[ni]; nKW_[bd] = nKW_[ni];
+                            nSD3_[bd] = nSD3_[ni]; nSH_[bd] = nSH_[ni]; nSW_[bd] = nSW_[ni];
+                            nPDT_[bd] = nPDT_[ni]; nPDB_[bd] = nPDB_[ni];
+                            nPT_[bd] = nPT_[ni]; nPB_[bd] = nPB_[ni];
+                            nPL_[bd] = nPL_[ni]; nPR_[bd] = nPR_[ni];
+                            nCip_[bd] = nCip_[ni];
+                        }
+                        // Softmax 由 CE 处理；Conv3D/池化等暂不支持（梯度 0，跳过）
+                    }
+                }
+                oi = oi - 1;
+            }
+
+            // 5) 权重/偏置追加 Update(W, W#g)（可训参数：FC_W/FC_B/CNN_W/CNN_B）
+            int wi = 0;
+            while (wi < wCount_) {
+                string nm = wName_[wi];
+                int role = wRole_[wi];
+                if ((role == 0 || role == 1 || role == 2 || role == 3) && shapeIdx(gradName(nm)) >= 0) {
+                    int uid = nCount_;
+                    // 输出用独立 dummy 标量（不能复用权重名——那会让 producerIdx(权重)=Update，
+                    // 权重"被产出"→ 前向消费权重 + Update 依赖梯度 → 环）
+                    string dummy = "upd" + Fmt.i(uid);
+                    addShapeD4(dummy, 1, 1, 1, 1);
+                    setShapeKind(dummy, Kind.FC_ACT());
+                    beginNode();
+                    nodeType(uid, "Update");
+                    nodeIn(uid, 0, nm);
+                    nodeIn(uid, 1, gradName(nm));
+                    nodeOut(uid, dummy);
+                    endNode();
+                }
+                wi = wi + 1;
+            }
+            return 1;
+        }
+        // 梯度张量名（同形状）
+        string gradName(string nm) { return nm + "#g"; }
+        // 梯度张量去 #g 后缀还原基底名
+        string stripGrad(string nm) {
+            int L = Str.len(nm);
+            if (L >= 2) return Str.substring(nm, 0, L - 2);
+            return nm;
+        }
+        // 确保前向张量 nm 的梯度张量形状已登记（同形状；权重梯度用 FC_G 镜像基底布局）
+        void ensureGrad(string nm) {
+            if (nm == "") return;
+            string gn = gradName(nm);
+            if (shapeIdx(gn) >= 0) return;
+            int s = shapeIdx(nm);
+            if (s < 0) return;
+            if (shR5_[s] == 1) addShapeD5(gn, shD0_[s], shD1_[s], shD2_[s], shD3_[s], shD4_[s]);
+            else addShapeD4(gn, shD0_[s], shD1_[s], shD2_[s], shD3_[s]);
+            if (initIdx(nm) >= 0) setShapeKind(gn, Kind.FC_G());   // 权重：镜像基底（含 transB）
+            else setShapeKind(gn, shKind_[s]);                     // 激活：同基底
         }
 
     function:
@@ -561,8 +805,13 @@ class Graph {
                 if (t == "") { i = i + 1; continue; }   // 死节点（折叠/融合消掉）跳过
                 // P3：形状链节点（Shape/Constant/Cast/ReduceProd/Unsqueeze/Gather）由
                 // foldShapeChains 折叠；仍活着则先尝试折叠（形状随 inferShapes 推进逐步已知）
+                // Slice/Concat 仅当「数据输入」是 int64 形状链时才按形状链处理（float 数据
+                // Slice/Concat 是运行时算子）：Slice 判 nIn0_（数据），不能看 nIn1_（starts
+                // 恒为 int64 初始器，会把数据 Slice 误当形状链跳过 → 输出形状不登记 → 下游
+                // Concat shapeIdx 失败 "DBG fail inferShapes"）。
                 if (t == "Shape" || t == "Constant" || t == "Cast" || t == "ReduceProd" || t == "Unsqueeze" || t == "Gather" ||
-                    ((t == "Slice" || t == "Concat") && (i64Count(nIn0_[i]) > 0 || i64Count(nIn1_[i]) > 0))) {
+                    (t == "Slice" && (i64Count(nIn0_[i]) > 0 || i64ChainAlive(nIn0_[i]) == 1)) ||
+                    (t == "Concat" && (i64Count(nIn0_[i]) > 0 || i64Count(nIn1_[i]) > 0))) {
                     foldShapeChains();
                     if (nType_[i] != "") { i = i + 1; continue; }   // 仍未折叠：跳过
                     t = "";
@@ -707,7 +956,9 @@ class Graph {
                     addShapeD4(nOut0_[i], shD0_[a], shD1_[a], 1, 1);
                 } else if (t == "Flatten") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
+                    // F8 3D：5D 输入（NCDHW）须连深度维一起拍平（shD1*shD2*shD3*shD4）
                     int f = shD1_[a] * shD2_[a] * shD3_[a];
+                    if (shR5_[a] == 1) f = f * shD4_[a];
                     addShapeD4(nOut0_[i], shD0_[a], f, 1, 1);
                 } else if (t == "Gemm") {
                     int a = shapeIdx(nIn0_[i]); if (a < 0) return 0;
@@ -1644,11 +1895,29 @@ class Graph {
                     if (nType_[i] != "" && indeg[i] == 0) { picked = i; i = nCount_; }
                     i = i + 1;
                 }
-                if (picked < 0) return 0;   // 有环
+                if (picked < 0) {
+                    if (Console.getEnv("MYP_GR_DBG") == "1") {
+                        Console.writeString("topoSort stuck remaining=" + Fmt.i(remaining) + " indeg[0..]:");
+                        Console.writeLine("");
+                        int d = 0;
+                        while (d < nCount_) {
+                            if (nType_[d] != "" && indeg[d] > 0) {
+                                Console.writeString("  n" + Fmt.i(d) + " type=" + nType_[d] + " indeg=" + Fmt.i(indeg[d]) + " in0=" + nIn0_[d] + " in1=" + nIn1_[d] + " in2=" + nIn2_[d]);
+                                Console.writeLine("");
+                            }
+                            d = d + 1;
+                        }
+                    }
+                    return 0;   // 有环
+                }
                 planOrder_[planOrderCount_] = picked;
                 planOrderCount_ = planOrderCount_ + 1;
                 indeg[picked] = -1;
+                // 多输出（Split/BwdDense/SoftmaxCE）：递减所有输出（out0..out3）的消费者
                 string out = effectiveOut(picked);
+                string o1 = nOut1_[picked];
+                string o2 = nOut2_[picked];
+                string o3 = nOut3_[picked];
                 int j = 0;
                 while (j < nCount_) {
                     if (nType_[j] == "" || indeg[j] < 0) { j = j + 1; continue; }
@@ -1657,6 +1926,15 @@ class Graph {
                     if (nIn0_[j] == out) dec = dec + 1;
                     if (nIn1_[j] == out) dec = dec + 1;
                     if (nIn2_[j] == out) dec = dec + 1;
+                    if (o1 != "" && nIn0_[j] == o1) dec = dec + 1;
+                    if (o1 != "" && nIn1_[j] == o1) dec = dec + 1;
+                    if (o1 != "" && nIn2_[j] == o1) dec = dec + 1;
+                    if (o2 != "" && nIn0_[j] == o2) dec = dec + 1;
+                    if (o2 != "" && nIn1_[j] == o2) dec = dec + 1;
+                    if (o2 != "" && nIn2_[j] == o2) dec = dec + 1;
+                    if (o3 != "" && nIn0_[j] == o3) dec = dec + 1;
+                    if (o3 != "" && nIn1_[j] == o3) dec = dec + 1;
+                    if (o3 != "" && nIn2_[j] == o3) dec = dec + 1;
                     indeg[j] = indeg[j] - dec;
                     j = j + 1;
                 }
@@ -1664,10 +1942,12 @@ class Graph {
             return 1;
         }
         int producerIdx(string name) {
+            if (name == "") return -1;   // 空输入槽不算入度（nOut1_=="" 会误匹配）
             int i = 0;
             while (i < nCount_) {
                 if (nType_[i] == "") { i = i + 1; continue; }
                 if (effectiveOut(i) == name) return i;
+                if (nOut1_[i] == name || nOut2_[i] == name || nOut3_[i] == name) return i;   // 多输出
                 i = i + 1;
             }
             return -1;
@@ -1756,6 +2036,12 @@ class Graph {
                     tid = rt.addTensorPlanned2(d0, 1, off);             // [Cout] → [Cout,1]
                 } else if (kind == Kind.FC_C()) {
                     tid = rt.addTensorPlanned2(d0, d1, off);            // G2：折叠常量，直接拷贝 [d0,d1]
+                } else if (kind == Kind.FC_G()) {
+                    // 阶段2：权重梯度——布局镜像基底权重（含 transB，保证 Update 对齐）
+                    string base = stripGrad(nm);
+                    int ii = initIdx(base);
+                    if (ii >= 0 && wTrans_[ii] == 1) tid = rt.addTensorPlanned2(d0, d1, off);
+                    else tid = rt.addTensorPlanned2(d1, d0, off);
                 } else if (shR5_[si] == 1) {
                     tid = rt.addTensorPlanned5(d0, d1, d2, d3, shD4_[si], off);  // 3D：CNN 权重/激活 NCDHW
                 } else if (shNHWC_[si] == 1) {
@@ -1786,7 +2072,13 @@ class Graph {
                 if (t == "") { oi = oi + 1; continue; }   // 死节点跳过
                 int a = tensorId(nIn0_[ni]);
                 int out = tensorId(effectiveOut(ni));     // G2：融合节点用有效输出（nFusedOut_）
-                if (a < 0 || out < 0) return 0;
+                if (a < 0 || out < 0) {
+                    if (Console.getEnv("MYP_GR_DBG") == "1") {
+                        Console.writeString("buildRuntime wire fail type=" + t + " in0=" + nIn0_[ni] + "(" + Fmt.i(a) + ") out=" + effectiveOut(ni) + "(" + Fmt.i(out) + ")");
+                        Console.writeLine("");
+                    }
+                    return 0;
+                }
                 if (t == "Gemm") {
                     int w = tensorId(nIn1_[ni]);
                     int b = tensorId(nIn2_[ni]);
@@ -1803,6 +2095,93 @@ class Graph {
                     rt.addSigmoid(a, out);
                 } else if (t == "Softmax") {
                     rt.addSoftmax(a, out);
+                } else if (t == "BwdDense") {
+                    // 阶段2：dense 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int w = tensorId(nIn2_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    int dw = tensorId(nOut1_[ni]);
+                    int db = -1;
+                    if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
+                    rt.addBwdDense(dy, x, w, dx, dw, db);
+                } else if (t == "BwdRelu") {
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    rt.addBwdRelu(dy, x, dx);
+                } else if (t == "BwdSigmoid") {
+                    int dy = tensorId(nIn0_[ni]);
+                    int y = tensorId(nIn1_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    rt.addBwdSigmoid(dy, y, dx);
+                } else if (t == "BwdAdd") {
+                    int dy = tensorId(nIn0_[ni]);
+                    int da = tensorId(nOut0_[ni]);
+                    int db = tensorId(nOut1_[ni]);
+                    rt.addBwdAdd(dy, da, db);
+                } else if (t == "BwdConv") {
+                    // 阶段3：conv 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int w = tensorId(nIn2_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    int dw = tensorId(nOut1_[ni]);
+                    int db = -1;
+                    if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
+                    rt.addBwdConv(dy, x, w, dx, dw, db,
+                                  nSH_[ni], nSW_[ni], nPT_[ni], nPL_[ni], nDH_[ni], nDW_[ni], nGroup_[ni]);
+                } else if (t == "BwdMaxPool") {
+                    // 阶段3：maxpool 反向。dy=in0, x=in1; out0=dx
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    rt.addBwdMaxPool(dy, x, dx, nKH_[ni], nKW_[ni], nSH_[ni], nSW_[ni], nPT_[ni], nPL_[ni]);
+                } else if (t == "BwdConv3D") {
+                    // 阶段4：Conv3D 反向。dy=in0, x=in1, w=in2; out0=dx, out1=dw, out2=db
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int w = tensorId(nIn2_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    int dw = tensorId(nOut1_[ni]);
+                    int db = -1;
+                    if (nOut2_[ni] != "") db = tensorId(nOut2_[ni]);
+                    rt.addBwdConv3D(dy, x, w, dx, dw, db,
+                                    nSD3_[ni], nSH_[ni], nSW_[ni],
+                                    nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
+                                    nPL_[ni], nPR_[ni]);
+                } else if (t == "BwdMaxPool3D") {
+                    // 阶段4：MaxPool3D 反向。dy=in0, x=in1; out0=dx
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    rt.addBwdMaxPool3D(dy, x, dx,
+                                       nKD3_[ni], nKH_[ni], nKW_[ni],
+                                       nSD3_[ni], nSH_[ni], nSW_[ni],
+                                       nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
+                                       nPL_[ni], nPR_[ni]);
+                } else if (t == "BwdAvgPool3D") {
+                    // 阶段4：AveragePool3D 反向。dy=in0, x=in1; out0=dx
+                    int dy = tensorId(nIn0_[ni]);
+                    int x = tensorId(nIn1_[ni]);
+                    int dx = tensorId(nOut0_[ni]);
+                    rt.addBwdAvgPool3D(dy, x, dx,
+                                       nKD3_[ni], nKH_[ni], nKW_[ni],
+                                       nSD3_[ni], nSH_[ni], nSW_[ni],
+                                       nPDT_[ni], nPDB_[ni], nPT_[ni], nPB_[ni],
+                                       nPL_[ni], nPR_[ni], nCip_[ni]);
+                } else if (t == "SoftmaxCE") {
+                    // 阶段2：Softmax+CE。in0=logits, in1=label; out0=dlogits, out1=loss
+                    int lg = tensorId(nIn0_[ni]);
+                    int lb = tensorId(nIn1_[ni]);
+                    int dl = tensorId(nOut0_[ni]);
+                    int lo = tensorId(nOut1_[ni]);
+                    rt.addSoftmaxCE(lg, lb, dl, lo);
+                } else if (t == "Update") {
+                    // 阶段2：参数更新。in0=权重, in1=梯度；输出=权重本身（原地）
+                    int w = tensorId(nIn0_[ni]);
+                    int g = tensorId(nIn1_[ni]);
+                    rt.addUpdate(w, g);
                 } else if (t == "ReLU6") {
                     rt.addReLU6(a, out);
                 } else if (t == "LeakyRelu") {
@@ -2026,6 +2405,10 @@ class Graph {
                         rt.addResize2d(a, out, N, C, inH, inW, outH, outW, nMode_[ni], nTransform_[ni]);
                     }
                 } else {
+                    if (Console.getEnv("MYP_GR_DBG") == "1") {
+                        Console.writeString("buildRuntime unsupported node type=" + t);
+                        Console.writeLine("");
+                    }
                     return 0;
                 }
                 oi = oi + 1;

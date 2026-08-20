@@ -1,0 +1,111 @@
+// rmsnorm_main.myp — 通用 RMSNorm GPU 算子验证（gpu_ops.myp 新增 rmsnorm）
+//
+// 固化 LLM GPU 优化验证的「rstd 独立小核」模式：rstd 由独立 grid=N 小核预计算，
+// 归一化核 thread-per-element 只读一次（无每线程冗余重算）。
+// 本测试：确定性填充 x/gamma → GPU rmsnorm → D2H → 与 host 同公式参考对比。
+// 同时测 N=4（batch）与 N=1（单向量）—— 布局/统计量在两种形状下都必须一致
+// （教训：batch=1 会掩盖布局 bug，通用算子必须多形状回归）。
+//
+// 运行：./build/mypc examples/deeplearning/infer_tests/rmsnorm_main.myp -o /tmp/rms --stdlib stdlib
+//       cd examples && MYP_GPU=1 /tmp/rms   （无 GPU 自动回退 CPU，结果应一致）
+
+import env;
+import cuda;
+import gpu;
+import "../infer/gpu_ops.myp";
+
+class RmsTest {
+    action:
+        @constructor RmsTest() {
+            int D = 896;
+            int N = 4;
+            double eps = 0.000001;
+            int xOff = 0;
+            int gOff = D * N;
+            int yOff = gOff + D;
+            int stOff = yOff + D * N;
+            int CAP = stOff + N + 16;
+            float[] a = new float[CAP];
+
+            // ---- 确定性填充（非平凡数值，避免退化）----
+            int d = 0;
+            while (d < D * N) {
+                a[xOff + d] = float(Math.sin(double(d) * 0.0314)) * float((d % 7) + 1);
+                d = d + 1;
+            }
+            d = 0;
+            while (d < D) {
+                a[gOff + d] = float(Math.cos(double(d) * 0.021)) + float(1.0);
+                d = d + 1;
+            }
+
+            // ---- host 参考（同公式，双精度累加）----
+            float[] yref = new float[D * N];
+            rmsnormRef(a, xOff, gOff, yref, D, N, eps);
+
+            // ---- GPU ----
+            if (Cuda.available() == 1) {
+                GpuBufferF buf = new GpuBufferF(a, CAP);
+                long dev = buf.devicePtr();
+                if (dev == 0L) { Console.writeLine("RMSNORM GPU SKIP (alloc fail)"); return; }
+                GpuInferOps.rmsnorm(a, D * N, xOff, gOff, yOff, D, N, eps, dev, stOff);
+                buf.copyToHost(a, yOff, yOff, D * N);
+                check(a, yOff, yref, D * N, "N=4");
+                // ---- N=1 形状回归（重填 x 后须重新 H2D——GPU 操作的是设备内存）----
+                int d2 = 0;
+                while (d2 < D) {
+                    a[xOff + d2] = float(Math.sin(double(d2) * 0.041)) * float((d2 % 5) + 1);
+                    d2 = d2 + 1;
+                }
+                buf.copyFromHost(a, xOff, xOff, D);
+                float[] yref1 = new float[D];
+                rmsnormRef(a, xOff, gOff, yref1, D, 1, eps);
+                GpuInferOps.rmsnorm(a, D, xOff, gOff, yOff, D, 1, eps, dev, stOff);
+                buf.copyToHost(a, yOff, yOff, D);
+                check(a, yOff, yref1, D, "N=1");
+                buf.free();
+            } else {
+                Console.writeLine("RMSNORM GPU SKIP (no CUDA)");
+            }
+        }
+
+        // host 参考：y[d*N+s] = x[d*N+s] * rstd[s] * gamma[d]
+        void rmsnormRef(float[] a, int xOff, int gOff, float[] yref, int D, int N, double eps) {
+            int s = 0;
+            while (s < N) {
+                double sum2 = 0.0;
+                int d = 0;
+                while (d < D) { double xv = double(a[xOff + d * N + s]); sum2 = sum2 + xv * xv; d = d + 1; }
+                double rstd = 1.0 / Math.sqrt(sum2 / double(D) + eps);
+                d = 0;
+                while (d < D) {
+                    yref[d * N + s] = float(double(a[xOff + d * N + s]) * rstd * double(a[gOff + d]));
+                    d = d + 1;
+                }
+                s = s + 1;
+            }
+        }
+
+        void check(float[] a, int yOff, float[] yref, int n, string tag) {
+            double mx = 0.0;
+            int i = 0;
+            while (i < n) {
+                double dd = double(a[yOff + i]) - double(yref[i]);
+                if (dd < 0.0) dd = 0.0 - dd;
+                if (dd > mx) mx = dd;
+                i = i + 1;
+            }
+            if (mx < 0.00001) {
+                Console.writeString("RMSNORM GPU " + tag + " OK (maxDiff=");
+            } else {
+                Console.writeString("RMSNORM GPU " + tag + " MISMATCH (maxDiff=");
+            }
+            Console.writeFloat(mx);
+            Console.writeLine(")");
+        }
+}
+
+int main() {
+    RmsTest t = new RmsTest();
+    return 0;
+}

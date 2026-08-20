@@ -1,0 +1,179 @@
+// 3d_cnn_train.myp — 阶段4：3D CNN 端到端训练（验证 bwdConv3D/bwdMaxPool3D 图接线）
+//
+// 模型：deeplearning/data/onnx/3d_cnn.onnx
+//   Conv3D(1→4,k3,p1)→ReLU→MaxPool3D(k2,s2)→Flatten(256)→Gemm(256→2)→Softmax
+// 数据：合成 8³ 体积，2 分类——类0=中心高亮块、类1=角落高亮块（含噪声）。
+// 训练：batch=1 纯 SGD，CPU run()（3D GPU backward 在阶段4b，届时切 runGpu）。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/infer/tools/make_3d_cnn_onnx.py
+//   ./build/mypc examples/deeplearning/train/3d_cnn_train.myp -o /tmp/3d_train --stdlib stdlib && cd examples && /tmp/3d_train
+
+import env;
+import fmt;
+import text;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+
+class Cnn3DTrain {
+    action:
+        @constructor Cnn3DTrain() {
+            seed_ = 20260820.0;
+            int NIN = 512;          // 8*8*8
+            int NTRAIN = 400;
+            int NTEST = 100;
+            int EPOCHS = 40;
+            float[] x = new float[NTRAIN * NIN];
+            int[] y = new int[NTRAIN];
+            genData(x, y, NTRAIN, NIN, 1);
+            float[] xt = new float[NTEST * NIN];
+            int[] yt = new int[NTEST];
+            genData(xt, yt, NTEST, NIN, 2);   // 不同种子 → 测试样本位置不同（泛化）
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(2000000);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.loadTrain("./deeplearning/data/onnx/3d_cnn.onnx", rt);
+            if (ok == 0) { Console.writeLine("loadTrain failed"); return; }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            int probTid = loader.tensorId("prob");
+            if (dataTid < 0 || labelTid < 0 || lossTid < 0 || probTid < 0) {
+                Console.writeLine("tensor not found: d=" + Fmt.i(dataTid) + " l=" + Fmt.i(labelTid) + " loss=" + Fmt.i(lossTid) + " p=" + Fmt.i(probTid));
+                return;
+            }
+
+            int preAcc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, NTEST);
+            Console.writeString("PRE-TRAIN acc=");
+            Console.write(preAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+
+            // 调试：MYP_DUMP_OPS=1 打印运行时 op 清单（确认反向图接线）
+            if (Console.getEnv("MYP_DUMP_OPS") == "1") {
+                int oi = 0;
+                while (oi < rt.opCountDebug()) {
+                    Console.writeLine("op " + Fmt.i(oi) + " kind=" + Fmt.i(rt.opKindDebug(oi)) +
+                                      " A=" + Fmt.i(rt.opATDebug(oi)) + " B=" + Fmt.i(rt.opBTDebug(oi)) +
+                                      " C=" + Fmt.i(rt.opCDebug(oi)) + " D=" + Fmt.i(rt.opDDebug(oi)));
+                    oi = oi + 1;
+                }
+                Console.writeLine("lossTid=" + Fmt.i(lossTid) + " dataTid=" + Fmt.i(dataTid) + " labelTid=" + Fmt.i(labelTid));
+                oi = 0;
+                while (oi < rt.tensorCountDebug()) {
+                    Console.writeLine("tensor " + Fmt.i(oi) + " off=" + Fmt.i(rt.tensorOffDebug(oi)) + " size=" + Fmt.i(rt.tensorSizeDebug(oi)));
+                    oi = oi + 1;
+                }
+            }
+
+            double lr = 0.02;
+            int bestAcc = 0;
+            int epoch = 0;
+            int dbg = 0;
+            if (Console.getEnv("MYP_DUMP_OPS") == "1") dbg = 1;
+            while (epoch < EPOCHS) {
+                if (epoch == 25) lr = 0.005;
+                rt.setLr(lr);
+                rt.setTrain(1);
+                double lossSum = 0.0;
+                int s = 0;
+                while (s < NTRAIN) {
+                    int j = 0;
+                    while (j < NIN) { rt.setFlat(dataTid, j, double(x[s * NIN + j])); j = j + 1; }
+                    j = 0; while (j < 2) { rt.setFlat(labelTid, j, 0.0); j = j + 1; }
+                    rt.setFlat(labelTid, y[s], 1.0);
+                    if (dbg == 1 && epoch == 0 && s == 0) {
+                        Console.writeLine("BEFORE-run label=[" + Fmt.f(rt.getFlat(labelTid, 0), 3) + "," + Fmt.f(rt.getFlat(labelTid, 1), 3) + "]");
+                    }
+                    rt.run();          // CPU（3D GPU backward 阶段4b 接 runGpu）
+                    if (dbg == 1 && epoch == 0 && s == 0) {
+                        int probTid2 = probTid;
+                        Console.writeLine("sample0 y=" + Fmt.i(y[0]) +
+                                          " label=[" + Fmt.f(rt.getFlat(labelTid, 0), 3) + "," + Fmt.f(rt.getFlat(labelTid, 1), 3) + "]" +
+                                          " prob=[" + Fmt.f(rt.getFlat(probTid2, 0), 4) + "," + Fmt.f(rt.getFlat(probTid2, 1), 4) + "]" +
+                                          " loss=" + Fmt.f(rt.getFlat(lossTid, 0), 6));
+                    }
+                    lossSum = lossSum + rt.getFlat(lossTid, 0);
+                    s = s + 1;
+                }
+                int acc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, NTEST);
+                if (acc > bestAcc) bestAcc = acc;
+                Console.writeString("epoch ");
+                Console.write(epoch);
+                Console.writeString(" loss=");
+                Console.writeFloat(lossSum / NTRAIN);
+                Console.writeString(" acc=");
+                Console.write(acc);
+                Console.writeString("%");
+                Console.writeLine("");
+                epoch = epoch + 1;
+            }
+
+            Console.writeString("3D-CNN best acc=");
+            Console.write(bestAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+            if (bestAcc >= 90) Console.writeLine("3D CNN TRAIN OK");
+            else Console.writeLine("3D CNN TRAIN FAIL");
+        }
+
+        // 合成 3D 数据：类0=中心 2³ 高亮块（中心随机偏移），类1=角落 2³ 高亮块
+        void genData(float[] out, int[] lab, int n, int NIN, int seedTag) {
+            int D = 8; int H = 8; int W = 8;
+            int s = 0;
+            while (s < n) {
+                int cls = s % 2;
+                int c0 = 2 + int(rnd() * 2.0);   // 中心块起点 [2,3]
+                int d0 = c0; int h0 = c0; int w0 = c0;
+                if (cls == 1) { d0 = 0; h0 = 0; w0 = 0; }   // 角落块
+                int base = s * NIN;
+                int d = 0;
+                while (d < D) {
+                    int h = 0;
+                    while (h < H) {
+                        int w = 0;
+                        while (w < W) {
+                            float v = 0.05f;
+                            if (d >= d0 && d < d0 + 2 && h >= h0 && h < h0 + 2 && w >= w0 && w < w0 + 2) v = 1.0f;
+                            v = v + float(rnd() * 0.02);
+                            out[base + d * H * W + h * W + w] = v;
+                            w = w + 1;
+                        }
+                        h = h + 1;
+                    }
+                    d = d + 1;
+                }
+                lab[s] = cls;
+                s = s + 1;
+            }
+        }
+
+        int testAccuracy(InferenceRuntime rt, int probTid, int dataTid, float[] xt, int[] yt, int NIN, int n) {
+            rt.setTrain(0);
+            int correct = 0;
+            int s = 0;
+            while (s < n) {
+                int j = 0;
+                while (j < NIN) { rt.setFlat(dataTid, j, double(xt[s * NIN + j])); j = j + 1; }
+                rt.run();
+                int pred = rt.argmax1d(probTid);
+                if (pred == yt[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct * 100 / n;
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    Cnn3DTrain t = new Cnn3DTrain();
+    return 0;
+}

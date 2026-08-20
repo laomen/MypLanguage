@@ -1,0 +1,413 @@
+// qwen2_talk_gpu.myp — 交互式多轮对话（GPU 端到端，resident + 异步流）—— Qwen2-0.5B-Instruct
+//
+// 与 qwen2_talk.myp 同流程（文本 → MYP 分词 → 采样生成 → 解码 → 多轮历史），但 24 层 +
+// lm_head 全在 GPU 上跑：
+//   · 权重加载时转置为 [xRows,outDim]（GEMV 合并访存；lm_head 另存转置 wte）；
+//   · 整块 arena 一次 H2D（~0.4s）；每 step 用 GpuStream 异步流排队全部 kernel，
+//     步末 copyToHostAsync(logits) + gs.sync() 一次，再 host 采样；
+//   · 每轮重置 KV cache（重新处理全历史，同 CPU talk）。
+//
+// 采样参数可用环境变量覆盖：MYP_Q2_TEMP / MYP_Q2_TOPK / MYP_Q2_PEN。
+// 需 GPU（RTX 2070 SUPER 8GB；MYP_GPU=1）。编译+运行（须在 examples/ 下，权重 ~19s）：
+//   ./build/mypc examples/deeplearning/llm/qwen2_talk_gpu.myp -o /tmp/q2tg --stdlib stdlib
+//   cd examples && MYP_GPU=1 /tmp/q2tg
+//   echo -e "Hello!\nWhat is the capital of France?\nquit" | MYP_GPU=1 /tmp/q2tg
+
+import env;
+import fmt;
+import text;
+import math;
+import random;
+import gpu;
+import gpu.stream;
+import cuda;
+import "../infer/ops.myp";
+import "../infer/pb.myp";
+import "gpu_llm_ops.myp";
+import "qwen2_tokenizer.myp";
+
+class Qwen2TalkGpu {
+    action:
+        @constructor Qwen2TalkGpu() {
+            int V = 151936; int H = 896; int L = 24; int QH = 14; int KVH = 2; int HD = 64;
+            int FFN = 4864; int POS = 32768; int W = 2048; int groups = QH / KVH;
+            int kvD = KVH * HD;
+            int MAXGEN = 128;
+            double EPS = 0.000001;
+            int H2 = H * H;
+            int KV = KVH * HD * H;
+            int KB = KVH * HD;
+            int F = FFN * H;
+            int per = H + H2 + H + KV + KB + KV + KB + H2 + H + 3 * F;   // 14912384
+            int half = HD / 2;
+
+            int wteOff = 0;
+            int base0 = V * H;
+            int weightsEnd = base0 + L * per + H;
+            int lnfOff = weightsEnd - H;
+            int tokOff = weightsEnd;
+            int xOff = tokOff + 1;
+            int xnOff = xOff + H;
+            int qOff = xnOff + H;
+            int kOff = qOff + H;
+            int vOff = kOff + KV;
+            int ctxOff = vOff + KV;
+            int gOff = ctxOff + H;
+            int uOff = gOff + FFN;
+            int hOff = uOff + FFN;
+            int scOff = hOff + H;              // [QH*W]（GPU attention 每头独立分数）
+            int logOff = scOff + QH * W;       // [V]
+            int fullCosOff = logOff + V;       // [half, POS]
+            int fullSinOff = fullCosOff + half * POS;
+            int kcBase = fullSinOff + half * POS;
+            int lmOff = kcBase + L * 2 * kvD * W;      // 转置 wte [H,V]（lm_head 用）
+            int partOff = lmOff + V * H;               // K 分块 GEMM partial[work,chunks]
+            int paramTokOff = partOff + 2 * FFN * 8;   // 设备参数槽：tok
+            int paramPosOff = paramTokOff + 1;         // 设备参数槽：pos=cacheLen
+            int CAP = paramPosOff + 8;
+            float[] arena = new float[CAP];
+
+            // ---- 加载权重（转置）+ RoPE 表 + 分词器 + 解码表 ----
+            int fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_weights.bin", "rb");
+            if (fd < 0) { Console.writeLine("weights file missing"); return; }
+            loadBlock(arena, fd, wteOff, weightsEnd);
+            __myp_io_fclose();
+            float[] tmpW = new float[FFN * H];
+            int lti = 0;
+            while (lti < L) {
+                int base = base0 + lti * per;
+                int bq = base + H;
+                int bk = base + H + H2 + H;
+                int bv = bk + KV + KB;
+                int bo = bv + KV + KB;
+                int bln2 = bo + H2;
+                int bgate = bln2 + H;
+                int bup = bgate + F;
+                int bdown = bup + F;
+                transposeW(arena, tmpW, bq, bq, H, H);
+                transposeW(arena, tmpW, bk, bk, KB, H);
+                transposeW(arena, tmpW, bv, bv, KB, H);
+                transposeW(arena, tmpW, bo, bo, H, H);
+                transposeW(arena, tmpW, bgate, bgate, FFN, H);
+                transposeW(arena, tmpW, bup, bup, FFN, H);
+                transposeW(arena, tmpW, bdown, bdown, H, FFN);
+                lti = lti + 1;
+            }
+            int lmR = 0;
+            while (lmR < H) {
+                int lmC = 0;
+                while (lmC < V) { arena[lmOff + lmR * V + lmC] = arena[wteOff + lmC * H + lmR]; lmC = lmC + 1; }
+                lmR = lmR + 1;
+            }
+            int fd0 = __myp_io_fopen("./deeplearning/data/llm/qwen2_cossin.bin", "rb");
+            if (fd0 < 0) { Console.writeLine("cossin file missing"); return; }
+            loadBlock(arena, fd0, fullCosOff, half * POS);
+            loadBlock(arena, fd0, fullSinOff, half * POS);
+            __myp_io_fclose();
+            Qwen2Tokenizer tk = new Qwen2Tokenizer();
+            if (tk.load() < 0) { Console.writeLine("tokenizer load failed"); return; }
+            int[] decOff = new int[151647];
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_dec_offs.bin", "rb");
+            if (fd < 0) { Console.writeLine("dec offs missing"); return; }
+            int vi = 0;
+            while (vi <= 151646) { decOff[vi] = readI32(); vi = vi + 1; }
+            __myp_io_fclose();
+            int[] decData = new int[1000000];
+            int decLen = 0;
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_dec_data.bin", "rb");
+            if (fd < 0) { Console.writeLine("dec data missing"); return; }
+            int vb = __myp_io_read_byte();
+            while (vb >= 0) { decData[decLen] = vb; decLen = decLen + 1; vb = __myp_io_read_byte(); }
+            __myp_io_fclose();
+
+            // ---- 采样参数（环境变量可覆盖）----
+            double temp = 0.8;
+            int topK = 40;
+            double penRep = 1.15;
+            string te = Console.getEnv("MYP_Q2_TEMP");
+            if (te != "") temp = double(Str.toInt(te)) / 100.0;
+            string tk2 = Console.getEnv("MYP_Q2_TOPK");
+            if (tk2 != "") topK = Str.toInt(tk2);
+            string pe = Console.getEnv("MYP_Q2_PEN");
+            if (pe != "") penRep = double(Str.toInt(pe)) / 100.0;
+            long sd = __myp_now_ms() & 2147483647L;
+            Random.init(int(sd));
+
+            // ---- GPU 初始化：整块 arena 一次 H2D ----
+            long t0 = __myp_now_ms();
+            if (Cuda.available() != 1) {
+                Console.writeLine("GPU unavailable (Cuda.available()!=1)");
+                return;
+            }
+            GpuBufferF arenaBuf = new GpuBufferF(arena, CAP);
+            long dev = arenaBuf.devicePtr();
+            if (dev == 0L) { Console.writeLine("GPU buffer alloc failed"); return; }
+            GpuStream gs = new GpuStream();
+            long t1 = __myp_now_ms();
+            Console.writeString("GPU arena H2D in " + Fmt.i(t1 - t0) + "ms");
+            Console.writeLine("");
+
+            // ---- 对话历史（UTF-8 字节缓冲）----
+            int[] histText = new int[16384];
+            int nHist = 0;
+            int[] promptIds = new int[8192];
+            int[] replyTokens = new int[MAXGEN + 64];
+            int[] replyText = new int[4096];
+
+            Console.writeLine("=== Qwen2-0.5B-Instruct talk (GPU, all-in-MYP) — type 'exit' to quit ===");
+            Console.writeString("system: You are a helpful assistant.");
+            Console.writeLine("");
+            while (1 == 1) {
+                Console.writeString("You: ");
+                string input = Console.readString();
+                if (input == "exit" || input == "quit" || input == "q") break;
+                if (input == "") break;
+
+                if (nHist == 0) {
+                    appendStr(histText, nHist, "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n");
+                    nHist = nHist + 58;
+                }
+                appendStr(histText, nHist, "<|im_start|>user\n");
+                nHist = nHist + 17;
+                appendStr(histText, nHist, input);
+                nHist = nHist + Str.len(input);
+                appendStr(histText, nHist, "<|im_end|>\n");
+                nHist = nHist + 11;
+                appendStr(histText, nHist, "<|im_start|>assistant\n");
+                nHist = nHist + 22;
+
+                int nPrompt = tk.encode(histText, 0, nHist, promptIds);
+                Console.writeString("  [ctx " + Fmt.i(nHist) + " bytes -> " + Fmt.i(nPrompt) + " tokens]");
+                Console.writeLine("");
+
+                // GPU KV-cache 生成回复（采样；遇 EOS=151645 停）
+                int nGen = generateGpu(arena, arenaBuf, gs, dev, promptIds, nPrompt, replyTokens, MAXGEN, temp, topK, penRep,
+                                       wteOff, lmOff, base0, per, lnfOff, xOff, xnOff, qOff, kOff, vOff, ctxOff,
+                                       gOff, uOff, hOff, scOff, logOff, fullCosOff, fullSinOff, kcBase, partOff,
+                                       paramTokOff, paramPosOff,
+                                       W, H, QH, KVH, HD, FFN, groups, kvD, V, L, POS, EPS);
+
+                Console.writeString("Assistant: ");
+                int[] outBytes = new int[2048];
+                int nOutBytes = 0;
+                int nReply = 0;
+                int gi = 0;
+                while (gi < nGen) {
+                    int tid = replyTokens[gi];
+                    int a = decOff[tid];
+                    int b = decOff[tid + 1];
+                    int j = a;
+                    while (j < b) {
+                        int byt = decData[j];
+                        if (byt < 0) byt = byt + 256;
+                        outBytes[nOutBytes] = byt;
+                        nOutBytes = nOutBytes + 1;
+                        replyText[nReply] = byt;
+                        nReply = nReply + 1;
+                        j = j + 1;
+                    }
+                    gi = gi + 1;
+                }
+                ubyte[] ob = new ubyte[nOutBytes];
+                int oi = 0;
+                while (oi < nOutBytes) { ob[oi] = ubyte(outBytes[oi]); oi = oi + 1; }
+                Console.writeString(str(ob));
+                Console.writeLine("");
+
+                // 回复文本 + "<|im_end|>\n" 追加回历史
+                int ri = 0;
+                while (ri < nReply) { histText[nHist + ri] = replyText[ri]; ri = ri + 1; }
+                nHist = nHist + nReply;
+                appendStr(histText, nHist, "<|im_end|>\n");
+                nHist = nHist + 11;
+            }
+            Console.writeLine("bye");
+            if (gs != null) gs.destroy();
+            if (arenaBuf != null) arenaBuf.free();
+        }
+
+        // GPU KV-cache 生成：promptIds → 采样生成至多 nGen 个（EOS 停）；返回生成 token 数
+        int generateGpu(float[] arena, GpuBufferF arenaBuf, GpuStream gs, long dev,
+                        int[] promptIds, int nPrompt, int[] out, int nGen,
+                        double temp, int topK, double penRep,
+                        int wteOff, int lmOff, int base0, int per, int lnfOff, int xOff, int xnOff, int qOff, int kOff, int vOff, int ctxOff,
+                        int gOff, int uOff, int hOff, int scOff, int logOff, int fullCosOff, int fullSinOff, int kcBase, int partOff,
+                        int paramTokOff, int paramPosOff,
+                        int W, int H, int QH, int KVH, int HD, int FFN, int groups, int kvD, int V, int L, int POS, double eps) {
+            int cacheLen = 0;
+            int nGenOut = 0;
+            int total = nPrompt + nGen;
+            int step = 0;
+            int eosTok = 151645;
+            int[] seen = new int[256];
+            int nSeen = 0;
+            int nSeenMax = topK;
+            if (nSeenMax > 256) nSeenMax = 256;
+            while (step < total) {
+                int tok = 0;
+                if (step < nPrompt) tok = promptIds[step];
+                else {
+                    // 上一轮 logits 已 D2H，host 采样
+                    int s = sampleToken(arena, logOff, V, temp, topK, seen, nSeen, penRep);
+                    tok = s;
+                    out[nGenOut] = s;
+                    nGenOut = nGenOut + 1;
+                    if (nSeen < nSeenMax) { seen[nSeen] = s; nSeen = nSeen + 1; }
+                }
+                // 写设备参数槽（tok/pos）→ H2D（内核从设备内存读逐 step 标量）
+                arena[paramTokOff] = float(tok);
+                arena[paramPosOff] = float(cacheLen);
+                arenaBuf.copyFromHostAsync(arena, paramTokOff, paramTokOff, 2, gs);
+                // GPU 前向一步
+                GpuLLMOps.gatherRows(arena, wteOff, paramTokOff, xOff, V, H, dev, gs);
+                int li = 0;
+                while (li < L) {
+                    int base = base0 + li * per;
+                    layerDecode(arena, dev, gs, base, paramPosOff, xOff, xnOff, qOff, kOff, vOff, ctxOff, gOff, uOff, hOff, scOff,
+                                fullCosOff, fullSinOff, kcBase + li * 2 * kvD * W, partOff, W, H, QH, KVH, HD, FFN, groups, kvD, eps);
+                    li = li + 1;
+                }
+                GpuLLMOps.rmsNorm(arena, xOff, lnfOff, xOff, H, 1, eps, dev, gs);
+                GpuLLMOps.matmul(arena, V, xOff, H, lmOff, V, 1, logOff, dev, gs);
+                arenaBuf.copyToHostAsync(arena, logOff, logOff, V, gs);
+                gs.sync();
+                cacheLen = cacheLen + 1;
+                step = step + 1;
+                if (step > nPrompt && tok == eosTok) break;
+            }
+            return nGenOut;
+        }
+
+        // Qwen2 单层 GPU decode：全 resident(a=dev)，同流异步排队
+        // cacheLen/pos 由各内核从设备参数槽 paramPosOff 读（CUDA Graph 兼容）
+        void layerDecode(float[] arena, long dev, GpuStream s, int base, int paramPosOff,
+                         int xOff, int xnOff, int qOff, int kOff, int vOff, int ctxOff, int gOff, int uOff, int hOff, int scOff,
+                         int fullCosOff, int fullSinOff, int kcOff, int partOff, int W, int H, int QH, int KVH, int HD, int FFN,
+                         int groups, int kvD, double eps) {
+            int ln1 = base;
+            int q = base + H;
+            int qb = base + H + H * H;
+            int k = base + H + H * H + H;
+            int kb = base + H + H * H + H + KVH * HD * H;
+            int v = kb + KVH * HD;
+            int vb = v + KVH * HD * H;
+            int o = vb + KVH * HD;
+            int ln2 = o + H * H;
+            int gate = ln2 + H;
+            int up = gate + FFN * H;
+            int down = up + FFN * H;
+            int ch = 8;
+
+            GpuLLMOps.qkvC(arena, xOff, ln1, eps, q, qb, k, kb, v, vb, qOff, kOff, vOff, H, KVH * HD, dev, s, ch, partOff, kcOff, paramPosOff, kvD, W);
+            GpuLLMOps.ropeFused(arena, qOff, kOff, fullCosOff, fullSinOff, H, KVH * HD, QH, KVH, 32768, dev, s, kcOff, paramPosOff, kvD, W);
+            GpuLLMOps.attentionCached(arena, qOff, kcOff, kcOff + kvD * W, ctxOff, scOff,
+                                      H, W, paramPosOff, QH, groups, dev, s);
+            GpuLLMOps.matmulCAdd(arena, H, ctxOff, H, o, H, 1, hOff, dev, s, ch, partOff, xOff);
+            GpuLLMOps.gateupC(arena, xOff, ln2, eps, gate, up, gOff, uOff, FFN, H, dev, s, ch, partOff);
+            GpuLLMOps.matmulCAdd(arena, H, gOff, FFN, down, H, 1, hOff, dev, s, ch, partOff, xOff);
+        }
+
+        // 温度 + top-k 采样 + 重复惩罚
+        int sampleToken(float[] arena, int logOff, int V, double temp, int topK,
+                        int[] seen, int nSeen, double penRep) {
+            double[] kv = new double[64];
+            int[] ki = new int[64];
+            int k = topK;
+            if (k > 64) k = 64;
+            if (k < 1) k = 1;
+            int j = 0;
+            while (j < 64) { kv[j] = -1.0e30; ki[j] = 0; j = j + 1; }
+            int i = 0;
+            while (i < V) {
+                double x = double(arena[logOff + i]);
+                if (penRep != 1.0 && seenContains(seen, nSeen, i) == 1) x = x / penRep;
+                if (x > kv[k - 1]) {
+                    int p = k - 2;
+                    while (p >= 0 && kv[p] < x) {
+                        kv[p + 1] = kv[p];
+                        ki[p + 1] = ki[p];
+                        p = p - 1;
+                    }
+                    kv[p + 1] = x;
+                    ki[p + 1] = i;
+                }
+                i = i + 1;
+            }
+            double[] e = new double[64];
+            double sum = 0.0;
+            j = 0;
+            while (j < k) {
+                double v = Math.exp((kv[j] - kv[0]) / temp);
+                e[j] = v;
+                sum = sum + v;
+                j = j + 1;
+            }
+            double u = Random.uniform() * sum;
+            double cum = 0.0;
+            j = 0;
+            while (j < k) {
+                cum = cum + e[j];
+                if (cum >= u) return ki[j];
+                j = j + 1;
+            }
+            return ki[0];
+        }
+
+        int seenContains(int[] seen, int n, int v) {
+            int i = 0;
+            while (i < n) { if (seen[i] == v) return 1; i = i + 1; }
+            return 0;
+        }
+
+        void appendStr(int[] buf, int off, string s) {
+            ubyte[] b = bytes(s);
+            int n = Str.len(s);
+            int i = 0;
+            while (i < n) { buf[off + i] = int(b[i]); i = i + 1; }
+        }
+
+        // 权重矩阵转置：[rows, cols]@srcOff → [cols, rows]@dstOff（用 tmp 缓冲；就地转置 srcOff==dstOff）
+        void transposeW(float[] a, float[] tmp, int srcOff, int dstOff, int rows, int cols) {
+            int r = 0;
+            while (r < rows) {
+                int c = 0;
+                while (c < cols) { tmp[c * rows + r] = a[srcOff + r * cols + c]; c = c + 1; }
+                r = r + 1;
+            }
+            int n = rows * cols;
+            int i = 0;
+            while (i < n) { a[dstOff + i] = tmp[i]; i = i + 1; }
+        }
+
+        void loadBlock(float[] arena, int fd, int off, int n) {
+            int i = 0;
+            while (i < n) { arena[off + i] = float(readF32()); i = i + 1; }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+
+int main() {
+    Qwen2TalkGpu t = new Qwen2TalkGpu();
+    return 0;
+}

@@ -14,6 +14,10 @@ class InferenceRuntime {
             arenaTop_ = 0;
             tensorCount_ = 0;
             opCount_ = 0;
+            trainMode_ = 0;
+            lr_ = 0.1;
+            gpuPersist_ = 0;   // 阶段3d：持久化设备 arena 默认关闭
+            gpuSyncN_ = 0;
             statsOff_ = arenaCapacity;
             arenaCap_ = arenaCapacity + statsSize();
             if (arenaCap_ < 1) arenaCap_ = 1;
@@ -34,6 +38,8 @@ class InferenceRuntime {
         // 边界转换：调用方仍传 double，内部以 float（FP32）存储
         void setFlat(int tid, int index, double v) {
             arena[tOff_[tid] + index] = float(v);
+            // 阶段3d：持久化 arena 模式下标记该张量脏（runGpu 只增量上传脏张量）
+            if (gpuPersist_ == 1) dirtyTid_[tid] = 1;
         }
 
         double getFlat(int tid, int index) {
@@ -182,6 +188,188 @@ class InferenceRuntime {
             opD_[id] = 0;
             opCount_ = opCount_ + 1;
         }
+
+        // ---- 训练（阶段2）：反向/更新算子注册 ----
+        // opKind 50-55；trainMode_=1 时 run() 才执行（eval 跳过）
+        void addBwdDense(int dyT, int xT, int wT, int dxT, int dwT, int dbT) {
+            int id = opCount_;
+            opKind_[id] = 50;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = wT; opD_[id] = dxT;
+            opP0_[id] = dwT; opP1_[id] = dbT;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdRelu(int dyT, int xT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 51;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdSigmoid(int dyT, int yT, int dxT) {
+            int id = opCount_;
+            opKind_[id] = 52;
+            opA_[id] = dyT; opB_[id] = yT; opC_[id] = dxT;
+            opCount_ = opCount_ + 1;
+        }
+        void addBwdAdd(int dyT, int daT, int dbT) {
+            int id = opCount_;
+            opKind_[id] = 53;
+            opA_[id] = dyT; opB_[id] = daT; opC_[id] = dbT;
+            opCount_ = opCount_ + 1;
+        }
+        // Softmax+CE 合并：输入 logits + 标签(one-hot)，输出 dlogits + loss
+        void addSoftmaxCE(int logitT, int labelT, int dlogitT, int lossT) {
+            int id = opCount_;
+            opKind_[id] = 54;
+            opA_[id] = logitT; opB_[id] = labelT; opC_[id] = dlogitT; opD_[id] = lossT;
+            opCount_ = opCount_ + 1;
+        }
+        void addUpdate(int wT, int gradT) {
+            int id = opCount_;
+            opKind_[id] = 55;
+            opA_[id] = wT; opB_[id] = gradT;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段3：卷积反向（opKind 56）。dy=opA, x=opB, w=opC, dx=opD;
+        // dw=opP0, db=opP1, sh=opP2, sw=opP3, pt=opP4, pl=opP5, dh=opP6, dw=opP7, group=opP8
+        void addBwdConv(int dyT, int xT, int wT, int dxT, int dwT, int dbT,
+                        int sh, int sw, int pt, int pl, int dh, int dw, int group) {
+            int id = opCount_;
+            opKind_[id] = 56;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = wT; opD_[id] = dxT;
+            opP0_[id] = dwT; opP1_[id] = dbT;
+            opP2_[id] = sh; opP3_[id] = sw; opP4_[id] = pt; opP5_[id] = pl;
+            opP6_[id] = dh; opP7_[id] = dw; opP8_[id] = group;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段3：MaxPool 反向（opKind 57）。dy=opA, x=opB, dx=opC;
+        // kh=opP0, kw=opP1, sh=opP2, sw=opP3, pt=opP4, pl=opP5
+        void addBwdMaxPool(int dyT, int xT, int dxT,
+                           int kh, int kw, int sh, int sw, int pt, int pl) {
+            int id = opCount_;
+            opKind_[id] = 57;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = kh; opP1_[id] = kw; opP2_[id] = sh; opP3_[id] = sw;
+            opP4_[id] = pt; opP5_[id] = pl;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段4：Conv3D 反向（opKind 58）。dy=opA, x=opB, w=opC, dx=opD;
+        // dw=opP0, db=opP1; sd=opP2, sh=opP3, sw=opP4, pdt=opP5, pdb=opP6,
+        // pt=opP7, pb=opP8; pl=opX0, pr=opX1。
+        // 假设膨胀 dd=dh=dw=1、group=1（3D U-Net 常用；需膨胀/分组时再扩槽）。
+        // kd/kh/kw 从 w 张量形状取（w=[yC,C/group,kd,kh,kw] → tD_/tH_/tW_）。
+        void addBwdConv3D(int dyT, int xT, int wT, int dxT, int dwT, int dbT,
+                          int sd, int sh, int sw, int pdt, int pdb, int pt, int pb,
+                          int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 58;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = wT; opD_[id] = dxT;
+            opP0_[id] = dwT; opP1_[id] = dbT;
+            opP2_[id] = sd; opP3_[id] = sh; opP4_[id] = sw;
+            opP5_[id] = pdt; opP6_[id] = pdb; opP7_[id] = pt; opP8_[id] = pb;
+            opX_[id * 4 + 0] = pl; opX_[id * 4 + 1] = pr;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段4：MaxPool3D 反向（opKind 59）。dy=opA, x=opB, dx=opC;
+        // kd=opP0, kh=opP1, kw=opP2, sd=opP3, sh=opP4, sw=opP5,
+        // pdt=opP6, pdb=opP7, pt=opP8, pb=opX0, pl=opX1, pr=opX2
+        void addBwdMaxPool3D(int dyT, int xT, int dxT,
+                             int kd, int kh, int kw, int sd, int sh, int sw,
+                             int pdt, int pdb, int pt, int pb, int pl, int pr) {
+            int id = opCount_;
+            opKind_[id] = 59;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = kd; opP1_[id] = kh; opP2_[id] = kw;
+            opP3_[id] = sd; opP4_[id] = sh; opP5_[id] = sw;
+            opP6_[id] = pdt; opP7_[id] = pdb; opP8_[id] = pt;
+            opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段4：AveragePool3D 反向（opKind 60）。dy=opA, x=opB, dx=opC;
+        // kd=opP0, kh=opP1, kw=opP2, sd=opP3, sh=opP4, sw=opP5,
+        // pdt=opP6, pdb=opP7, pt=opP8, pb=opX0, pl=opX1, pr=opX2, cip=opX3
+        void addBwdAvgPool3D(int dyT, int xT, int dxT,
+                             int kd, int kh, int kw, int sd, int sh, int sw,
+                             int pdt, int pdb, int pt, int pb, int pl, int pr, int cip) {
+            int id = opCount_;
+            opKind_[id] = 60;
+            opA_[id] = dyT; opB_[id] = xT; opC_[id] = dxT;
+            opP0_[id] = kd; opP1_[id] = kh; opP2_[id] = kw;
+            opP3_[id] = sd; opP4_[id] = sh; opP5_[id] = sw;
+            opP6_[id] = pdt; opP7_[id] = pdb; opP8_[id] = pt;
+            opX_[id * 4 + 0] = pb; opX_[id * 4 + 1] = pl; opX_[id * 4 + 2] = pr; opX_[id * 4 + 3] = cip;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：RMSNorm（opKind 61）。in=opA, gamma=opB, out=opC; D=opP0, S=opP1, eps=opP2(位型)
+        void addRmsNorm(int inT, int gT, int outT, int D, int S, double eps) {
+            int id = opCount_;
+            opKind_[id] = 61;
+            opA_[id] = inT; opB_[id] = gT; opC_[id] = outT;
+            opP0_[id] = D; opP1_[id] = S; opP2_[id] = F32.toBits(eps);
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：缩放点积注意力（opKind 62）。q=opA, k=opB, v=opC, out=opD, sc=opP0(暂存 tid);
+        // D=opP1, S=opP2, heads=opP3, causal=opP4, groups=opP5（GQA：Q 头数/KV 头数，MHA=1）
+        void addAttention(int qT, int kT, int vT, int outT, int scT, int D, int S, int heads, int causal, int groups) {
+            int id = opCount_;
+            opKind_[id] = 62;
+            opA_[id] = qT; opB_[id] = kT; opC_[id] = vT; opD_[id] = outT;
+            opP0_[id] = scT; opP1_[id] = D; opP2_[id] = S; opP3_[id] = heads; opP4_[id] = causal; opP5_[id] = groups;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：embedding 查表（opKind 63）。e=opA, ids=opB, out=opC; vocab=opP0, D=opP1, S=opP2
+        void addGatherRows(int eT, int idT, int outT, int vocab, int D, int S) {
+            int id = opCount_;
+            opKind_[id] = 63;
+            opA_[id] = eT; opB_[id] = idT; opC_[id] = outT;
+            opP0_[id] = vocab; opP1_[id] = D; opP2_[id] = S;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：LayerNorm（opKind 64）。in=opA, gamma=opB, beta=opC, out=opD; D=opP0, S=opP1, eps=opP2(位型)
+        void addLayerNorm(int inT, int gT, int bT, int outT, int D, int S, double eps) {
+            int id = opCount_;
+            opKind_[id] = 64;
+            opA_[id] = inT; opB_[id] = gT; opC_[id] = bT; opD_[id] = outT;
+            opP0_[id] = D; opP1_[id] = S; opP2_[id] = F32.toBits(eps);
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：GELU（opKind 65）。in=opA, out=opB; n=opP0
+        void addGelu(int inT, int outT, int n) {
+            int id = opCount_;
+            opKind_[id] = 65;
+            opA_[id] = inT; opB_[id] = outT;
+            opP0_[id] = n;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：RoPE（opKind 66）。in/out=opA（原地）, cos=opB, sin=opC; D=opP0, S=opP1, heads=opP2
+        void addRope(int xT, int cosT, int sinT, int D, int S, int heads) {
+            int id = opCount_;
+            opKind_[id] = 66;
+            opA_[id] = xT; opB_[id] = cosT; opC_[id] = sinT;
+            opP0_[id] = D; opP1_[id] = S; opP2_[id] = heads;
+            opCount_ = opCount_ + 1;
+        }
+        // 阶段5：KV cache 增量注意力（opKind 67）。q=opA, kcache=opB, vcache=opC, out=opD, sc=opP0;
+        // D=opP1, stride=opP2（缓存容量/行步长）, len=opP3（参与注意力列数）, heads=opP4, groups=opP5
+        void addAttentionCached(int qT, int kcT, int vcT, int outT, int scT, int D, int stride, int len, int heads, int groups) {
+            int id = opCount_;
+            opKind_[id] = 67;
+            opA_[id] = qT; opB_[id] = kcT; opC_[id] = vcT; opD_[id] = outT;
+            opP0_[id] = scT; opP1_[id] = D; opP2_[id] = stride; opP3_[id] = len; opP4_[id] = heads; opP5_[id] = groups;
+            opCount_ = opCount_ + 1;
+        }
+        void setTrain(int v) { trainMode_ = v; }
+        void setLr(double v) { lr_ = v; }
+        double lr() { return lr_; }
+        // 调试访问器（MYP_DUMP_OPS=1 时训练入口打印 op 清单）
+        int opCountDebug() { return opCount_; }
+        int opKindDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opKind_[i]; }
+        int opATDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opA_[i]; }
+        int opBTDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opB_[i]; }
+        int opCDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opC_[i]; }
+        int opDDebug(int i) { if (i < 0 || i >= opCount_) return -1; return opD_[i]; }
+        int tensorCountDebug() { return tensorCount_; }
+        int tensorOffDebug(int tid) { if (tid < 0 || tid >= tensorCount_) return -1; return tOff_[tid]; }
+        int tensorSizeDebug(int tid) { if (tid < 0 || tid >= tensorCount_) return -1; return tRows_[tid] * tCols_[tid]; }
 
         void addSigmoid(int inputTid, int outputTid) {
             int id = opCount_;
@@ -955,6 +1143,128 @@ class InferenceRuntime {
                     if (opP4_[i] == 1) eps = F32.toDouble(opP3_[i]);
                     InferOps.instancenorm(arena, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
                                           opP0_[i], opP1_[i], opP2_[i], eps, opRelu_[i]);
+                } else if (opKind_[i] == 50) {
+                    // 训练：dense 反向（仅 trainMode）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        InferOps.bwdDense(arena, tOff_[dy], tOff_[x], tRows_[x], tCols_[x], tOff_[w], tRows_[w],
+                                          tOff_[dx], tOff_[dw], tOff_[db]);
+                    }
+                } else if (opKind_[i] == 51) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        InferOps.bwdRelu(arena, tOff_[dy], tOff_[x], tOff_[dx], tRows_[x] * tCols_[x]);
+                    }
+                } else if (opKind_[i] == 52) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int y = opB_[i]; int dx = opC_[i];
+                        InferOps.bwdSigmoid(arena, tOff_[dy], tOff_[y], tOff_[dx], tRows_[y] * tCols_[y]);
+                    }
+                } else if (opKind_[i] == 53) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int da = opB_[i]; int db = opC_[i];
+                        InferOps.bwdAdd(arena, tOff_[dy], tOff_[da], tOff_[db], tRows_[dy] * tCols_[dy]);
+                    }
+                } else if (opKind_[i] == 54) {
+                    // 训练：Softmax+CE 合并（loss + dlogits）
+                    if (trainMode_ == 1) {
+                        int lg = opA_[i]; int lb = opB_[i]; int dl = opC_[i]; int lo = opD_[i];
+                        InferOps.softmaxCE(arena, tOff_[lg], tOff_[lb], tRows_[lg], tCols_[lg], tOff_[dl], tOff_[lo]);
+                    }
+                } else if (opKind_[i] == 55) {
+                    // 训练：参数更新 W -= lr·grad
+                    if (trainMode_ == 1) {
+                        int w = opA_[i]; int g = opB_[i];
+                        InferOps.update(arena, tOff_[w], tOff_[g], tRows_[w] * tCols_[w], lr_);
+                    }
+                } else if (opKind_[i] == 56) {
+                    // 阶段3：conv 反向（db=-1 表示无偏置卷积）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1;
+                        if (db >= 0) dbOff = tOff_[db];
+                        InferOps.bwdConv(arena, tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                                         tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                                         tC_[dy], tH_[dy], tW_[dy],
+                                         tH_[w], tW_[w],
+                                         opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
+                    }
+                } else if (opKind_[i] == 57) {
+                    // 阶段3：maxpool 反向
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        InferOps.bwdMaxPool(arena, tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                                            tOff_[dx], tH_[dy], tW_[dy],
+                                            opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
+                    }
+                } else if (opKind_[i] == 58) {
+                    // 阶段4：Conv3D 反向（膨胀 dd=dh=dw=1、group=1；kd/kh/kw 取 w 形状）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1;
+                        if (db >= 0) dbOff = tOff_[db];
+                        InferOps.bwdConv3D(arena, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                           tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                                           tC_[dy], tD_[dy], tH_[dy], tW_[dy],
+                                           tD_[w], tH_[w], tW_[w],
+                                           opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i],
+                                           opX_[i * 4 + 0], opX_[i * 4 + 1], 1, 1, 1, 1);
+                    }
+                } else if (opKind_[i] == 59) {
+                    // 阶段4：MaxPool3D 反向
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        InferOps.bwdMaxPool3D(arena, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                              tOff_[dx], tD_[dy], tH_[dy], tW_[dy],
+                                              opP0_[i], opP1_[i], opP2_[i],
+                                              opP3_[i], opP4_[i], opP5_[i],
+                                              opP6_[i], opP7_[i], opP8_[i],
+                                              opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2]);
+                    }
+                } else if (opKind_[i] == 60) {
+                    // 阶段4：AveragePool3D 反向
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        InferOps.bwdAvgPool3D(arena, tOff_[dy], tOff_[x], tN_[x], tC_[x], tD_[x], tH_[x], tW_[x],
+                                              tOff_[dx], tD_[dy], tH_[dy], tW_[dy],
+                                              opP0_[i], opP1_[i], opP2_[i],
+                                              opP3_[i], opP4_[i], opP5_[i],
+                                              opP6_[i], opP7_[i], opP8_[i],
+                                              opX_[i * 4 + 0], opX_[i * 4 + 1], opX_[i * 4 + 2], opX_[i * 4 + 3]);
+                    }
+                } else if (opKind_[i] == 61) {
+                    // 阶段5：RMSNorm
+                    int in = opA_[i]; int g = opB_[i]; int out = opC_[i];
+                    InferOps.rmsNorm(arena, tOff_[in], tOff_[g], tOff_[out], opP0_[i], opP1_[i], F32.toDouble(opP2_[i]));
+                } else if (opKind_[i] == 62) {
+                    // 阶段5：缩放点积注意力（因果掩码；groups=1 即 MHA）
+                    int q = opA_[i]; int k = opB_[i]; int v = opC_[i]; int out = opD_[i]; int sc = opP0_[i];
+                    InferOps.attention(arena, tOff_[q], tOff_[k], tOff_[v], tOff_[out], tOff_[sc],
+                                       opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
+                } else if (opKind_[i] == 63) {
+                    // 阶段5：embedding 查表
+                    int e = opA_[i]; int ids = opB_[i]; int out = opC_[i];
+                    InferOps.gatherRows(arena, tOff_[e], tOff_[ids], tOff_[out], opP0_[i], opP1_[i], opP2_[i]);
+                } else if (opKind_[i] == 64) {
+                    // 阶段5：LayerNorm（GPT-2）
+                    int in = opA_[i]; int g = opB_[i]; int b = opC_[i]; int out = opD_[i];
+                    InferOps.layerNorm(arena, tOff_[in], tOff_[g], tOff_[b], tOff_[out], opP0_[i], opP1_[i], F32.toDouble(opP2_[i]));
+                } else if (opKind_[i] == 65) {
+                    // 阶段5：GELU（GPT-2 精确 erf 版）
+                    int in = opA_[i]; int out = opB_[i];
+                    InferOps.gelu(arena, tOff_[in], tOff_[out], opP0_[i]);
+                } else if (opKind_[i] == 66) {
+                    // 阶段5：RoPE（Llama 逐头半旋转，原地）
+                    int x = opA_[i]; int cos = opB_[i]; int sin = opC_[i];
+                    InferOps.rope(arena, tOff_[x], tOff_[cos], tOff_[sin], opP0_[i], opP1_[i], opP2_[i]);
+                } else if (opKind_[i] == 67) {
+                    // 阶段5：KV cache 增量注意力
+                    int q = opA_[i]; int kc = opB_[i]; int vc = opC_[i]; int out = opD_[i]; int sc = opP0_[i];
+                    InferOps.attentionCached(arena, tOff_[q], tOff_[kc], tOff_[vc], tOff_[out], tOff_[sc],
+                                             opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
                 }
                 if (prof == 1) {
                     int k = opKind_[i];
@@ -1008,11 +1318,53 @@ class InferenceRuntime {
             return s;
         }
 
+        // ==================== M3 持久化设备 arena（阶段3d 优化） ====================
+        // 背景：旧 runGpu 每次调用都整块 16MB arena H2D→算子→整块 D2H→释放。训练
+        // 每样本调用一次（batch=1），12k 样本 = 12k 次 32MB 往返 ≈ 384GB PCIe 传输
+        // → GPU 训练反而比 CPU 慢 ~5 倍（实测 23s vs ~120s）。
+        // 方案：训练期间 arena 一次性驻留显存（gpuPersistentStart），每次 runGpu 只
+        // 增量上传 setFlat 置脏的输入张量（data/label），只下载宿主要读的输出张量
+        // （markGpuSync 标记的 loss/prob）；gpuPersistentEnd 整块 D2H 一次取回最终
+        // 权重并释放。非持久化调用方（推理 run_onnx 等）行为不变。
+        int gpuPersistentStart() {
+            if (GpuBackend.available() != 1) return 0;
+            if (gpuPersist_ == 1) return 1;   // 已在持久化模式
+            gpuArena_ = new GpuBufferF(arena, arenaCap_);
+            if (gpuArena_.valid() != 1) return 0;
+            gpuPersist_ = 1;
+            int t = 0;
+            while (t < tensorCount_) { dirtyTid_[t] = 0; t = t + 1; }
+            return 1;
+        }
+
+        // 结束持久化：整块 D2H 取回最终宿主状态（权重等）+ 释放设备 arena。
+        // 训练中若宿主中途要读权重，须先调用本方法（或改用 getFlat 已 sync 的张量）。
+        void gpuPersistentEnd() {
+            if (gpuPersist_ == 1) {
+                gpuArena_.copyToHost(arena, 0, 0, arenaCap_);
+                gpuArena_.free();
+                gpuPersist_ = 0;
+            }
+        }
+
+        // 标记某张量在每次 runGpu 后需 D2H 回宿主（宿主在 step 后要读：loss/prob）。
+        void markGpuSync(int tid) {
+            if (gpuSyncN_ >= 32) return;
+            int i = 0;
+            while (i < gpuSyncN_) {
+                if (gpuSyncTids_[i] == tid) return;
+                i = i + 1;
+            }
+            gpuSyncTids_[gpuSyncN_] = tid;
+            gpuSyncN_ = gpuSyncN_ + 1;
+        }
+
         // GPU 执行：M3 设备驻留。
         // 整块 arena 一次 H2D 到设备（GpuBufferF），各算子 resident(a=dev) 直接
         // 操作设备内存（零逐算子传输），最后一次 D2H 取回。
         // GPU 不可用时 dev=0，@gpu for 自动回退 CPU（结果一致，arenaBuf no-op）。
         // MYP_PROF_GPU=1 时按算子类型统计耗时（H2D/算子循环/D2H 三段 + 分型汇总）。
+        // 持久化模式（gpuPersist_==1）：复用 gpuArena_，只增量 H2D 脏输入 + 增量 D2H sync 输出。
         void runGpu() {
             long dev = 0L;
             GpuBufferF arenaBuf = null;
@@ -1021,9 +1373,24 @@ class InferenceRuntime {
             if (Console.getEnv("MYP_PROF_GPU") == "1") prof = 1;
             long tH2D0 = __myp_now_ms();
             if (GpuBackend.available() == 1) {
-                arenaBuf = new GpuBufferF(arena, arenaCap_);
-                dev = arenaBuf.devicePtr();
-                gpuActive = 1;
+                if (gpuPersist_ == 1) {
+                    // 持久化：复用常驻设备 arena，只上传 setFlat 置脏的输入张量
+                    arenaBuf = gpuArena_;
+                    dev = arenaBuf.devicePtr();
+                    gpuActive = 1;
+                    int t = 0;
+                    while (t < tensorCount_) {
+                        if (dirtyTid_[t] == 1) {
+                            arenaBuf.copyFromHost(arena, tOff_[t], tOff_[t], tensorSize(t));
+                            dirtyTid_[t] = 0;
+                        }
+                        t = t + 1;
+                    }
+                } else {
+                    arenaBuf = new GpuBufferF(arena, arenaCap_);
+                    dev = arenaBuf.devicePtr();
+                    gpuActive = 1;
+                }
             }
             long tH2D1 = __myp_now_ms();
             long tLoop0 = __myp_now_ms();
@@ -1353,6 +1720,60 @@ class InferenceRuntime {
                     int work = opP0_[i] * opP1_[i];
                     GpuInferOps.instancenorm(arena, work, tOff_[xa], tOff_[sT], tOff_[bT], tOff_[yd],
                                              opP0_[i], opP1_[i], opP2_[i], eps, dev, statsOff_, opRelu_[i]);
+                } else if (opKind_[i] == 50) {
+                    // 阶段2：dense 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        GpuInferOps.bwdDense(arena, dev, tOff_[dy], tOff_[x], tRows_[x], tCols_[x],
+                                             tOff_[w], tRows_[w], tOff_[dx], tOff_[dw], tOff_[db]);
+                    }
+                } else if (opKind_[i] == 51) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        GpuInferOps.bwdRelu(arena, dev, tOff_[dy], tOff_[x], tOff_[dx], tRows_[x] * tCols_[x]);
+                    }
+                } else if (opKind_[i] == 52) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int y = opB_[i]; int dx = opC_[i];
+                        GpuInferOps.bwdSigmoid(arena, dev, tOff_[dy], tOff_[y], tOff_[dx], tRows_[y] * tCols_[y]);
+                    }
+                } else if (opKind_[i] == 53) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int da = opB_[i]; int db = opC_[i];
+                        GpuInferOps.bwdAdd(arena, dev, tOff_[dy], tOff_[da], tOff_[db], tRows_[dy] * tCols_[dy]);
+                    }
+                } else if (opKind_[i] == 54) {
+                    if (trainMode_ == 1) {
+                        int lg = opA_[i]; int lb = opB_[i]; int dl = opC_[i]; int lo = opD_[i];
+                        GpuInferOps.softmaxCE(arena, dev, tOff_[lg], tOff_[lb], tRows_[lg], tCols_[lg],
+                                              tOff_[dl], tOff_[lo]);
+                    }
+                } else if (opKind_[i] == 55) {
+                    if (trainMode_ == 1) {
+                        int w = opA_[i]; int g = opB_[i];
+                        GpuInferOps.update(arena, dev, tOff_[w], tOff_[g], tRows_[w] * tCols_[w], lr_);
+                    }
+                } else if (opKind_[i] == 56) {
+                    // 阶段3：conv 反向（GPU）
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int w = opC_[i]; int dx = opD_[i];
+                        int dw = opP0_[i]; int db = opP1_[i];
+                        int dbOff = -1;
+                        if (db >= 0) dbOff = tOff_[db];
+                        GpuInferOps.bwdConv(arena, dev, tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                                            tOff_[w], tOff_[dx], tOff_[dw], dbOff,
+                                            tC_[dy], tH_[dy], tW_[dy],
+                                            tH_[w], tW_[w],
+                                            opP2_[i], opP3_[i], opP4_[i], opP5_[i], opP6_[i], opP7_[i], opP8_[i]);
+                    }
+                } else if (opKind_[i] == 57) {
+                    if (trainMode_ == 1) {
+                        int dy = opA_[i]; int x = opB_[i]; int dx = opC_[i];
+                        GpuInferOps.bwdMaxPool(arena, dev, tOff_[dy], tOff_[x], tN_[x], tC_[x], tH_[x], tW_[x],
+                                               tOff_[dx], tH_[dy], tW_[dy],
+                                               opP0_[i], opP1_[i], opP2_[i], opP3_[i], opP4_[i], opP5_[i]);
+                    }
                 }
                 string dumpOpStr = Console.getEnv("MYP_DUMP_OP");
                 int dumpOp = -1;
@@ -1401,8 +1822,20 @@ class InferenceRuntime {
             // 可能为 0，MYP 的 long 比较会误判为相等）。
             long tD2H0 = __myp_now_ms();
             if (gpuActive == 1) {
-                arenaBuf.copyToHost(arena, 0, 0, arenaCap_);
-                arenaBuf.free();
+                if (gpuPersist_ == 1) {
+                    // 持久化：只下载宿主要读的输出张量（markGpuSync 标记的 loss/prob）
+                    int s = 0;
+                    while (s < gpuSyncN_) {
+                        int st = gpuSyncTids_[s];
+                        if (st >= 0 && st < tensorCount_) {
+                            arenaBuf.copyToHost(arena, tOff_[st], tOff_[st], tensorSize(st));
+                        }
+                        s = s + 1;
+                    }
+                } else {
+                    arenaBuf.copyToHost(arena, 0, 0, arenaCap_);
+                    arenaBuf.free();
+                }
             }
             long tD2H1 = __myp_now_ms();
             if (prof == 1) {
@@ -1601,4 +2034,11 @@ class InferenceRuntime {
         int arenaTop_;
         int tensorCount_;
         int opCount_;
+        int trainMode_;      // 阶段2：1 = 执行反向/更新算子（eval=0 跳过）
+        double lr_;          // 阶段2：SGD 学习率（Update 用）
+        GpuBufferF gpuArena_;      // 阶段3d：持久化设备 arena（gpuPersist_=1 时有效）
+        int gpuPersist_;           // 阶段3d：持久化 arena 模式激活标志
+        int[512] dirtyTid_;        // 阶段3d：setFlat 置脏的张量（runGpu 增量 H2D）
+        int[32] gpuSyncTids_;      // 阶段3d：runGpu 后需 D2H 的张量（宿主要读：loss/prob）
+        int gpuSyncN_;
 }

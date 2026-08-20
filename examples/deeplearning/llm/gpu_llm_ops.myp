@@ -1,0 +1,582 @@
+// gpu_llm_ops.myp — Qwen2 GPU 内核（resident 设备驻留，一次 H2D 整块 arena）
+//
+// 与 ops.myp 的 InferOps 语义一致（LLM 算子），kernel 用 @gpu for resident(a=dev)，
+// 直接操作设备内存（arena 已由调用方 GpuBufferF 一次 H2D）。缺的 4 个 LLM 算子
+// （rmsNorm/rope/attentionCached/mul）+ gatherRows；dense/matmul/add/silu 复用
+// gpu_ops.myp 的 GpuInferOps（同样 resident）。
+//
+// 约定：
+//   - work 参数省略——循环上界直接用实际量（resident 传输已跳过）。
+//   - 内核内用 long 索引 + long() 显式转（GPU codegen 要求）。
+//   - Math.sqrt/exp 在 @gpu for 内映射 libdevice（同 gpu_ops.myp）。
+//   - rope 直接读完整 cos/sin 表（fullCos/fullSin [half,POS]）按位置 pos 取，
+//     免去逐 step 填工作表。
+//   - attentionCached 的 scOff 为 [heads, len]（每头独立分数/softmax，head 并行）。
+
+import env;
+import math;
+import atomic;
+import gpu;
+import gpu.stream;
+
+class GpuLLMOps {
+    static:
+        // RMSNorm：y[d,s] = x[d,s]/sqrt(mean_d(x[:,s]^2)+eps)*g[d]；每 token 一个线程
+        void rmsNorm(float[] a, int xOff, int gOff, int yOff, int D, int S, double eps, long dev, GpuStream s) {
+            @gpu for (long ss = 0L; ss < long(S); ss = ss + 1L) resident(a = dev) stream(s) {
+                if (ss < long(S)) {
+                    int st = int(ss);
+                    double sum = 0.0;
+                    int d = 0;
+                    while (d < D) { double v = double(a[xOff + d * S + st]); sum = sum + v * v; d = d + 1; }
+                    double rstd = 1.0 / Math.sqrt(sum / double(D) + eps);
+                    d = 0;
+                    while (d < D) {
+                        a[yOff + d * S + st] = float(double(a[xOff + d * S + st]) * rstd * double(a[gOff + d]));
+                        d = d + 1;
+                    }
+                }
+            }
+        }
+
+        // RoPE（decode S=1）：[D] 向量按头内半配对旋转；cos/sin 直接读完整表按位置 pos。
+        // xOff 的 D = heads*dh（q:896/14头, k:128/2头）。
+        void rope(float[] a, int xOff, int fullCosOff, int fullSinOff, int pos,
+                  int D, int heads, int POS, long dev, GpuStream s) {
+            int dh = D / heads;
+            int half = dh / 2;
+            @gpu for (long p = 0L; p < long(D / 2); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(D / 2)) {
+                    int h = int(p) / half;
+                    int a2 = int(p) % half;
+                    int i0 = h * dh + a2;
+                    int i1 = h * dh + half + a2;
+                    double x0 = double(a[xOff + i0]);
+                    double x1 = double(a[xOff + i1]);
+                    double c = double(a[fullCosOff + a2 * POS + pos]);
+                    double si = double(a[fullSinOff + a2 * POS + pos]);
+                    a[xOff + i0] = float(x0 * c - x1 * si);
+                    a[xOff + i1] = float(x0 * si + x1 * c);
+                }
+            }
+        }
+
+        // ropeFused：q 与 k 的 rope 合一核（q: H 元素/QH 头，k: KV 元素/KVH 头；
+        // 二者 dh=HD=64 相同，无跨线程依赖）。grid = (H+KV)/2。k 分支顺手写 cache
+        // （rope 线程同时持有 pair 两个已旋转值 → 无竞争），省去独立 cachePut 核。
+        // pos（=cacheLen）从设备参数槽 paramPosOff 读（CUDA Graph 重放用）。
+        void ropeFused(float[] a, int qOff, int kOff, int fullCosOff, int fullSinOff,
+                       int H, int KV, int QH, int KVH, int POS, long dev, GpuStream s,
+                       int kcOff, int paramPosOff, int kvD, int W) {
+            int dhq = H / QH;        // 64
+            int dhk = KV / KVH;      // 64
+            int halfq = dhq / 2;
+            int halfk = dhk / 2;
+            int hq = H / 2;
+            int hk = KV / 2;
+            @gpu for (long p = 0L; p < long(hq + hk); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(hq + hk)) {
+                    int pi = int(p);
+                    int pos = int(a[paramPosOff]);
+                    if (pi < hq) {
+                        int h = pi / halfq;
+                        int a2 = pi % halfq;
+                        int i0 = h * dhq + a2;
+                        int i1 = h * dhq + halfq + a2;
+                        double x0 = double(a[qOff + i0]);
+                        double x1 = double(a[qOff + i1]);
+                        double c = double(a[fullCosOff + a2 * POS + pos]);
+                        double si = double(a[fullSinOff + a2 * POS + pos]);
+                        a[qOff + i0] = float(x0 * c - x1 * si);
+                        a[qOff + i1] = float(x0 * si + x1 * c);
+                    } else {
+                        int kp = pi - hq;
+                        int h = kp / halfk;
+                        int a2 = kp % halfk;
+                        int i0 = h * dhk + a2;
+                        int i1 = h * dhk + halfk + a2;
+                        double x0 = double(a[kOff + i0]);
+                        double x1 = double(a[kOff + i1]);
+                        double c = double(a[fullCosOff + a2 * POS + pos]);
+                        double si = double(a[fullSinOff + a2 * POS + pos]);
+                        float r0 = float(x0 * c - x1 * si);
+                        float r1 = float(x0 * si + x1 * c);
+                        a[kOff + i0] = r0;
+                        a[kOff + i1] = r1;
+                        a[kcOff + i0 * W + pos] = r0;      // cachePut K（rope 后）
+                        a[kcOff + i1 * W + pos] = r1;
+                    }
+                }
+            }
+        }
+
+        // KV cache 增量注意力（decode 单 token）：q[D]，K/V 缓存 [kvD, stride]（len 列参与），
+        // GQA groups（kvh = b/groups）。scOff 为 [heads, len]（每头独立分数）。每头一个线程。
+        // len = pos+1 从设备参数槽 paramPosOff 读（CUDA Graph 重放用）。
+        void attentionCached(float[] a, int qOff, int kcOff, int vcOff, int outOff, int scOff,
+                             int D, int stride, int paramPosOff, int heads, int groups, long dev, GpuStream s) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            @gpu for (long b = 0L; b < long(heads); b = b + 1L) resident(a = dev) stream(s) {
+                if (b < long(heads)) {
+                    int kvh = int(b) / groups;
+                    int pos = int(a[paramPosOff]);
+                    int len = pos + 1;
+                    int i = 0;
+                    while (i < len) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(a[qOff + int(b) * dh + d]) * double(a[kcOff + (kvh * dh + d) * stride + i]);
+                            d = d + 1;
+                        }
+                        a[scOff + int(b) * len + i] = float(sum * scale);
+                        i = i + 1;
+                    }
+                    float maxv = a[scOff + int(b) * len + 0];
+                    i = 1;
+                    while (i < len) {
+                        if (a[scOff + int(b) * len + i] > maxv) maxv = a[scOff + int(b) * len + i];
+                        i = i + 1;
+                    }
+                    double sumE = 0.0;
+                    i = 0;
+                    while (i < len) {
+                        double e = Math.exp(double(a[scOff + int(b) * len + i]) - double(maxv));
+                        a[scOff + int(b) * len + i] = float(e);
+                        sumE = sumE + e;
+                        i = i + 1;
+                    }
+                    i = 0;
+                    while (i < len) {
+                        a[scOff + int(b) * len + i] = float(double(a[scOff + int(b) * len + i]) / sumE);
+                        i = i + 1;
+                    }
+                    int d = 0;
+                    while (d < dh) {
+                        double sum = 0.0;
+                        int i2 = 0;
+                        while (i2 < len) {
+                            sum = sum + double(a[scOff + int(b) * len + i2]) * double(a[vcOff + (kvh * dh + d) * stride + i2]);
+                            i2 = i2 + 1;
+                        }
+                        a[outOff + int(b) * dh + d] = float(sum);
+                        d = d + 1;
+                    }
+                }
+            }
+        }
+
+        // 满序列注意力（对齐 ops.myp InferOps.attention；GPT-2 等 forward）：q/k/v [D,S]
+        // （行=特征，列=token），causal 时 j>i → -1e30。out [D,S]。
+        // scOff 须 [heads*S*S]（每 (head,i) 独立 score 行，多 head/query 并行不竞争）。
+        // thread = (head, i)：算第 i 个 query 的 score 行 → softmax → output 行。
+        void attention(float[] a, int qOff, int kOff, int vOff, int outOff, int scOff,
+                       int D, int S, int heads, int causal, int groups, long dev, GpuStream s) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            @gpu for (long p = 0L; p < long(heads) * long(S); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(heads) * long(S)) {
+                    int bh = int(p / long(S));
+                    int i = int(p % long(S));
+                    int kvh = bh / groups;
+                    int sb = (bh * S + i) * S;
+                    int j = 0;
+                    while (j < S) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(a[qOff + (bh * dh + d) * S + i]) * double(a[kOff + (kvh * dh + d) * S + j]);
+                            d = d + 1;
+                        }
+                        double sc = sum * scale;
+                        if (causal == 1 && j > i) sc = -1.0e30;
+                        a[scOff + sb + j] = float(sc);
+                        j = j + 1;
+                    }
+                    float maxv = a[scOff + sb + 0];
+                    j = 1;
+                    while (j < S) { if (a[scOff + sb + j] > maxv) maxv = a[scOff + sb + j]; j = j + 1; }
+                    double sumE = 0.0;
+                    j = 0;
+                    while (j < S) {
+                        double e = Math.exp(double(a[scOff + sb + j]) - double(maxv));
+                        a[scOff + sb + j] = float(e);
+                        sumE = sumE + e;
+                        j = j + 1;
+                    }
+                    j = 0;
+                    while (j < S) { a[scOff + sb + j] = float(double(a[scOff + sb + j]) / sumE); j = j + 1; }
+                    int d = 0;
+                    while (d < dh) {
+                        double sum = 0.0;
+                        int j2 = 0;
+                        while (j2 < S) {
+                            sum = sum + double(a[scOff + sb + j2]) * double(a[vOff + (kvh * dh + d) * S + j2]);
+                            j2 = j2 + 1;
+                        }
+                        a[outOff + (bh * dh + d) * S + i] = float(sum);
+                        d = d + 1;
+                    }
+                }
+            }
+        }
+
+        // 逐元素乘：out = a·b
+        void mul(float[] a, int aOff, int bOff, int outOff, int n, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(n)) {
+                    a[outOff + int(p)] = a[aOff + int(p)] * a[bOff + int(p)];
+                }
+            }
+        }
+
+        // KV 缓存写入：K/V 追加到缓存列 cacheLen
+        void cachePut(float[] a, int kOff, int vOff, int kcOff, int kvD, int W, int cacheLen, long dev, GpuStream s) {
+            @gpu for (long r = 0L; r < long(kvD); r = r + 1L) resident(a = dev) stream(s) {
+                if (r < long(kvD)) {
+                    a[kcOff + int(r) * W + cacheLen] = a[kOff + int(r)];
+                    a[kcOff + kvD * W + int(r) * W + cacheLen] = a[vOff + int(r)];
+                }
+            }
+        }
+
+        // embedding 查表（decode）：x[d] = wte[tok*D + d]；tok 从设备参数槽 paramTokOff 读
+        // （CUDA Graph 重放要求：逐 step 变化的标量不能作为捕获常量，须读设备内存）。
+        void gatherRows(float[] a, int eOff, int paramTokOff, int xOff, int vocab, int D, long dev, GpuStream s) {
+            @gpu for (long d = 0L; d < long(D); d = d + 1L) resident(a = dev) stream(s) {
+                if (d < long(D)) {
+                    int id = int(a[paramTokOff]);
+                    if (id < 0) id = 0;
+                    if (id >= vocab) id = vocab - 1;
+                    a[xOff + int(d)] = a[eOff + id * D + int(d)];
+                }
+            }
+        }
+
+        // ---- 流版 GEMM / 逐元素（simple kernel，与 gpu_ops.myp 的 GpuInferOps 语义一致）----
+        // 权重按 [xRows, outDim] 转置存放（加载时已转置；线程=输出，warp 连续读 → 合并访存）。
+
+        // y = W x + b（batch 沿列；每线程算一个输出元素 + 串行归约 j；W' 存 [xRows,outDim]）
+        void dense(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < work) {
+                    long i = p / batch;
+                    long k = p % batch;
+                    float sum = a[bOff + i];
+                    long j = 0L;
+                    while (j < xRows) {
+                        sum = sum + a[wOff + j * outDim + i] * a[xOff + j * batch + k];
+                        j = j + 1L;
+                    }
+                    a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // y = W x（无偏置；batch 沿列；W' 存 [xRows,outDim]）
+        void matmul(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < work) {
+                    long i = p / batch;
+                    long k = p % batch;
+                    float sum = 0.0f;
+                    long j = 0L;
+                    while (j < xRows) {
+                        sum = sum + a[wOff + j * outDim + i] * a[xOff + j * batch + k];
+                        j = j + 1L;
+                    }
+                    a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
+        // ---- K 分块 GEMM（小 grid 延迟受限时提并行）：partial[work,chunks]@partOff + reduce ----
+        // kernel1: 每个 (output, chunk) 一个线程，算 K/chunks 段部分和 → partial[p*chunks+c]；
+        // kernel2: 每输出归并 chunks 个部分和（dense 加偏置）。比单线程整行更多 block → 隐藏访存延迟。
+
+        // y = W x + b（分块版）
+        void denseC(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev, GpuStream s, int chunks, int partOff) {
+            @gpu for (long p = 0L; p < long(work) * long(chunks); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(work) * long(chunks)) {
+                    long c = p / long(work);
+                    long o = p % long(work);
+                    long i = o / batch;
+                    long k = o % batch;
+                    long xr = long(xRows);
+                    long j0 = (c * xr) / long(chunks);
+                    long j1 = ((c + 1L) * xr) / long(chunks);
+                    float sum = 0.0f;
+                    long j = j0;
+                    while (j < j1) {
+                        sum = sum + a[wOff + j * long(outDim) + i] * a[xOff + j * long(batch) + k];
+                        j = j + 1L;
+                    }
+                    a[partOff + o * long(chunks) + c] = sum;
+                }
+            }
+            @gpu for (long q = 0L; q < long(work); q = q + 1L) resident(a = dev) stream(s) {
+                if (q < long(work)) {
+                    float sum = a[bOff + q / batch];
+                    long c = 0L;
+                    while (c < long(chunks)) { sum = sum + a[partOff + q * long(chunks) + c]; c = c + 1L; }
+                    a[yOff + q] = sum;
+                }
+            }
+        }
+
+        // y = W x（无偏置，分块版）
+        void matmulC(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev, GpuStream s, int chunks, int partOff) {
+            @gpu for (long p = 0L; p < long(work) * long(chunks); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(work) * long(chunks)) {
+                    long c = p / long(work);
+                    long o = p % long(work);
+                    long i = o / batch;
+                    long k = o % batch;
+                    long xr = long(xRows);
+                    long j0 = (c * xr) / long(chunks);
+                    long j1 = ((c + 1L) * xr) / long(chunks);
+                    float sum = 0.0f;
+                    long j = j0;
+                    while (j < j1) {
+                        sum = sum + a[wOff + j * long(outDim) + i] * a[xOff + j * long(batch) + k];
+                        j = j + 1L;
+                    }
+                    a[partOff + o * long(chunks) + c] = sum;
+                }
+            }
+            @gpu for (long q = 0L; q < long(work); q = q + 1L) resident(a = dev) stream(s) {
+                if (q < long(work)) {
+                    float sum = 0.0f;
+                    long c = 0L;
+                    while (c < long(chunks)) { sum = sum + a[partOff + q * long(chunks) + c]; c = c + 1L; }
+                    a[yOff + q] = sum;
+                }
+            }
+        }
+
+        // matmulC 变体：归约时把结果同时加进残差 resOff（a[resOff+q] += sum），省去单独 add 核
+        void matmulCAdd(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev, GpuStream s, int chunks, int partOff, int resOff) {
+            @gpu for (long p = 0L; p < long(work) * long(chunks); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(work) * long(chunks)) {
+                    long c = p / long(work);
+                    long o = p % long(work);
+                    long i = o / batch;
+                    long k = o % batch;
+                    long xr = long(xRows);
+                    long j0 = (c * xr) / long(chunks);
+                    long j1 = ((c + 1L) * xr) / long(chunks);
+                    float sum = 0.0f;
+                    long j = j0;
+                    while (j < j1) {
+                        sum = sum + a[wOff + j * long(outDim) + i] * a[xOff + j * long(batch) + k];
+                        j = j + 1L;
+                    }
+                    a[partOff + o * long(chunks) + c] = sum;
+                }
+            }
+            @gpu for (long q = 0L; q < long(work); q = q + 1L) resident(a = dev) stream(s) {
+                if (q < long(work)) {
+                    float sum = 0.0f;
+                    long c = 0L;
+                    while (c < long(chunks)) { sum = sum + a[partOff + q * long(chunks) + c]; c = c + 1L; }
+                    a[yOff + q] = sum;
+                    a[resOff + q] = a[resOff + q] + sum;
+                }
+            }
+        }
+
+        // q/k/v 三投影一核（xn 由调用方 rmsNorm 先算好；W 转置 [xRows,outDim] 合并访存）：
+        //   o < H         → q[o] = bq[o] + sum_j Wq'[j*H+o]*xn[j]
+        //   H ≤ o < H+KV  → k[idx]（KV = KVH*HD）
+        //   o ≥ H+KV      → v[idx]
+        void qkv(float[] a, int xOff, int qw, int qb, int kw, int kb, int vw, int vb,
+                 int qOff, int kOff, int vOff, int H, int KV, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(H + 2 * KV); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(H + 2 * KV)) {
+                    int o = int(p);
+                    if (o < H) {
+                        float acc = a[qb + o];
+                        int j = 0;
+                        while (j < H) { acc = acc + a[qw + j * H + o] * a[xOff + j]; j = j + 1; }
+                        a[qOff + o] = acc;
+                    } else if (o < H + KV) {
+                        int idx = o - H;
+                        float acc = a[kb + idx];
+                        int j = 0;
+                        while (j < H) { acc = acc + a[kw + j * KV + idx] * a[xOff + j]; j = j + 1; }
+                        a[kOff + idx] = acc;
+                    } else {
+                        int idx = o - H - KV;
+                        float acc = a[vb + idx];
+                        int j = 0;
+                        while (j < H) { acc = acc + a[vw + j * KV + idx] * a[xOff + j]; j = j + 1; }
+                        a[vOff + idx] = acc;
+                    }
+                }
+            }
+        }
+
+        // gate/up 两投影一核（xn 先算好）：g[o<FFN], u[o-FFN]
+        void gateup(float[] a, int xOff, int gw, int uw, int gOff, int uOff, int FFN, int H, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(2 * FFN); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(2 * FFN)) {
+                    int o = int(p);
+                    if (o < FFN) {
+                        float acc = 0.0f;
+                        int j = 0;
+                        while (j < H) { acc = acc + a[gw + j * FFN + o] * a[xOff + j]; j = j + 1; }
+                        a[gOff + o] = acc;
+                    } else {
+                        int idx = o - FFN;
+                        float acc = 0.0f;
+                        int j = 0;
+                        while (j < H) { acc = acc + a[uw + j * FFN + idx] * a[xOff + j]; j = j + 1; }
+                        a[uOff + idx] = acc;
+                    }
+                }
+            }
+        }
+
+        // qkvC：q/k/v 三投影分块版（chunk+reduce 2 核；reduce 顺带 cachePut V）。
+        // chunk 核内联 float RMSNorm（每线程重算 rstd，消除独立 rmsNorm 核）；
+        // xOff 为原始 x，gammaOff 为 ln1 权重。stride = KV cache 行距（=W=2048）。
+        // pos（=cacheLen）从设备参数槽 paramPosOff 读（CUDA Graph 重放用）。
+        void qkvC(float[] a, int xOff, int gammaOff, double eps, int qw, int qb, int kw, int kb, int vw, int vb,
+                  int qOff, int kOff, int vOff, int H, int KV, long dev, GpuStream s, int chunks, int partOff,
+                  int kcOff, int paramPosOff, int kvD, int stride) {
+            int nOut = H + 2 * KV;
+            @gpu for (long p = 0L; p < long(nOut) * long(chunks); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(nOut) * long(chunks)) {
+                    long c = p / long(nOut);
+                    long o = p % long(nOut);
+                    long xr = long(H);
+                    long j0 = (c * xr) / long(chunks);
+                    long j1 = ((c + 1L) * xr) / long(chunks);
+                    // 内联 float RMSNorm：rstd（每线程重算，省独立核）
+                    float sum2 = 0.0f;
+                    int dd = 0;
+                    while (dd < H) { float xv = a[xOff + dd]; sum2 = sum2 + xv * xv; dd = dd + 1; }
+                    double sd = double(sum2) / double(H) + eps;
+                    float rstd = float(1.0) / float(Math.sqrt(sd));
+                    float sum = 0.0f;
+                    long j = j0;
+                    int oi = int(o);
+                    if (oi < H) {
+                        while (j < j1) { sum = sum + a[qw + j * long(H) + oi] * (a[xOff + j] * rstd * a[gammaOff + j]); j = j + 1; }
+                    } else if (oi < H + KV) {
+                        int idx = oi - H;
+                        while (j < j1) { sum = sum + a[kw + j * long(KV) + idx] * (a[xOff + j] * rstd * a[gammaOff + j]); j = j + 1; }
+                    } else {
+                        int idx = oi - H - KV;
+                        while (j < j1) { sum = sum + a[vw + j * long(KV) + idx] * (a[xOff + j] * rstd * a[gammaOff + j]); j = j + 1; }
+                    }
+                    a[partOff + o * long(chunks) + c] = sum;
+                }
+            }
+            @gpu for (long q = 0L; q < long(nOut); q = q + 1L) resident(a = dev) stream(s) {
+                if (q < long(nOut)) {
+                    int oi = int(q);
+                    float sum = 0.0f;
+                    long c = 0L;
+                    while (c < long(chunks)) { sum = sum + a[partOff + q * long(chunks) + c]; c = c + 1L; }
+                    if (oi < H) { sum = sum + a[qb + oi]; a[qOff + oi] = sum; }
+                    else if (oi < H + KV) {
+                        int idx = oi - H;
+                        sum = sum + a[kb + idx];
+                        a[kOff + idx] = sum;      // K 不在此写 cache（须 rope 后，见 ropeFused）
+                    } else {
+                        int idx = oi - H - KV;
+                        int pos = int(a[paramPosOff]);
+                        sum = sum + a[vb + idx];
+                        a[vOff + idx] = sum;
+                        a[kcOff + kvD * stride + idx * stride + pos] = sum;   // cachePut V（V 不 rope，可先写）
+                    }
+                }
+            }
+        }
+
+        // gateupC：gate/up 两投影分块版（chunk+reduce 2 核；chunk 内联 float RMSNorm；
+        // reduce 线程同时归约 gate[o] 与 up[o] 的部分和 → 无竞争内联 swiglu，省独立核）
+        void gateupC(float[] a, int xOff, int gammaOff, double eps, int gw, int uw, int gOff, int uOff, int FFN, int H, long dev, GpuStream s, int chunks, int partOff) {
+            int W = 2 * FFN;
+            @gpu for (long p = 0L; p < long(W) * long(chunks); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(W) * long(chunks)) {
+                    long c = p / long(W);
+                    long o = p % long(W);
+                    long xr = long(H);
+                    long j0 = (c * xr) / long(chunks);
+                    long j1 = ((c + 1L) * xr) / long(chunks);
+                    float sum2 = 0.0f;
+                    int dd = 0;
+                    while (dd < H) { float xv = a[xOff + dd]; sum2 = sum2 + xv * xv; dd = dd + 1; }
+                    double sd = double(sum2) / double(H) + eps;
+                    float rstd = float(1.0) / float(Math.sqrt(sd));
+                    float sum = 0.0f;
+                    long j = j0;
+                    int oi = int(o);
+                    if (oi < FFN) {
+                        while (j < j1) { sum = sum + a[gw + j * long(FFN) + oi] * (a[xOff + j] * rstd * a[gammaOff + j]); j = j + 1; }
+                    } else {
+                        int idx = oi - FFN;
+                        while (j < j1) { sum = sum + a[uw + j * long(FFN) + idx] * (a[xOff + j] * rstd * a[gammaOff + j]); j = j + 1; }
+                    }
+                    a[partOff + o * long(chunks) + c] = sum;
+                }
+            }
+            // reduce：grid=FFN，每线程归约 gate[o] 与 up[o] 两部分和，内联 swiglu → g[o]=silu(gate)*up
+            @gpu for (long q = 0L; q < long(FFN); q = q + 1L) resident(a = dev) stream(s) {
+                if (q < long(FFN)) {
+                    int oi = int(q);
+                    float gs = 0.0f;
+                    float us = 0.0f;
+                    long c = 0L;
+                    while (c < long(chunks)) {
+                        gs = gs + a[partOff + q * long(chunks) + c];
+                        us = us + a[partOff + (long(FFN) + q) * long(chunks) + c];
+                        c = c + 1L;
+                    }
+                    double gd = double(gs);
+                    float act = float(gd / (1.0 + Math.exp(0.0 - gd)));
+                    a[gOff + oi] = act * us;
+                }
+            }
+        }
+
+        // 逐元素相加（doRelu=1：输出直接过 ReLU）
+        void add(float[] a, int work, int aOff, int bOff, int outOff, long dev, int doRelu, GpuStream s) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < work) {
+                    if (doRelu == 1) {
+                        float v = a[aOff + p] + a[bOff + p];
+                        if (v < 0.0f) v = 0.0f;
+                        a[outOff + p] = v;
+                    } else {
+                        a[outOff + p] = a[aOff + p] + a[bOff + p];
+                    }
+                }
+            }
+        }
+
+        // SiLU / Swish：y = x * sigmoid(x) = x / (1 + exp(-x))
+        void silu(float[] a, int work, int inOff, int outOff, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < work) {
+                    float x = a[inOff + p];
+                    float ss = x / float(1.0 + Math.exp(0.0f - x));
+                    a[outOff + p] = ss;
+                }
+            }
+        }
+
+        // SwiGLU 融合：out = silu(g) * u（silu+mul 一次 kernel，省一次发射）
+        void swiglu(float[] a, int gOff, int uOff, int outOff, int n, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(n)) {
+                    float x = a[gOff + int(p)];
+                    float act = x / float(1.0 + Math.exp(0.0f - x));
+                    a[outOff + int(p)] = act * a[uOff + int(p)];
+                }
+            }
+        }
+}

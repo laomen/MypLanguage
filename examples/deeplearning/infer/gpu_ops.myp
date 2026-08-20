@@ -36,6 +36,30 @@ class GpuInferOps {
             }
         }
 
+        // dense/matmul 转置布局版（访存合并，2026-08-21，固化 LLM 验证的规律）：
+        // 权重存 [xRows, outDim]（转置），线程=输出行 i，j 循环读 a[wOff + j*outDim + i] →
+        // warp 内 i 连续 → 合并访存。对比现 dense（[outDim,xRows]，a[wOff+i*xRows+j] 线程读
+        // 整行、warp 跨行 → 非合并），在 **batch=1（GEMV/单样本推理）** 场景收益最大
+        // （LLM 实测 lm_head 转置 12→1.6ms，7.5x；batch>1 时现 dense 靠"同 i 广播"已 OK）。
+        // 数学语义与 dense 相同：y = W x (+b)，y[i*batch+k]、x[j*batch+k] 批内布局不变，
+        // 仅权重布局不同。bOff<0 表示无 bias（matmul 复用）。
+        void denseTr(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int bOff, int yOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    long i = p / batch;
+                    long k = p % batch;
+                    float sum = 0.0f;
+                    if (bOff >= 0) sum = a[bOff + i];
+                    long j = 0L;
+                    while (j < xRows) {
+                        sum = sum + a[wOff + j * outDim + i] * a[xOff + j * batch + k];
+                        j = j + 1L;
+                    }
+                    a[yOff + i * batch + k] = sum;
+                }
+            }
+        }
+
         // y = W x（无偏置；batch 沿列）
         void matmul(float[] a, int work, int xOff, int xRows, int wOff, int outDim, int batch, int yOff, long dev) {
             if (outDim >= 32 && batch >= 32 && long(outDim) * long(batch) >= 4096L) {
@@ -254,6 +278,271 @@ class GpuInferOps {
                         ic = ic + 1;
                     }
                     a[yOff + p] = sum;
+                }
+            }
+        }
+
+        // ---- 训练：反向内核（阶段3d，GPU；thread-per-gradient-element + 内层归约，无原子）----
+
+        // 反向 dense：db[o]=Σb dY[o,b]；dW[o,i]=Σb dY[o,b]·x[i,b]；dX[i,b]=Σo dY[o,b]·W[o,i]
+        void bwdDense(float[] a, long dev,
+                      int dyOff, int xOff, int inDim, int batch, int wOff, int outDim,
+                      int dxOff, int dwOff, int dbOff) {
+            @gpu for (long p = 0L; p < long(outDim); p = p + 1L) resident(a = dev) {
+                if (p < long(outDim)) {
+                    long o = p;
+                    float s = 0.0f;
+                    long k = 0L;
+                    while (k < long(batch)) { s = s + a[dyOff + o * long(batch) + k]; k = k + 1L; }
+                    a[dbOff + o] = s;
+                }
+            }
+            @gpu for (long p = 0L; p < long(outDim) * long(inDim); p = p + 1L) resident(a = dev) {
+                if (p < long(outDim) * long(inDim)) {
+                    long o = p / long(inDim);
+                    long i = p % long(inDim);
+                    float s = 0.0f;
+                    long k = 0L;
+                    while (k < long(batch)) { s = s + a[dyOff + o * long(batch) + k] * a[xOff + i * long(batch) + k]; k = k + 1L; }
+                    a[dwOff + o * long(inDim) + i] = s;
+                }
+            }
+            @gpu for (long p = 0L; p < long(inDim) * long(batch); p = p + 1L) resident(a = dev) {
+                if (p < long(inDim) * long(batch)) {
+                    long i = p / long(batch);
+                    long k = p % long(batch);
+                    float s = 0.0f;
+                    long o = 0L;
+                    while (o < long(outDim)) { s = s + a[dyOff + o * long(batch) + k] * a[wOff + o * long(inDim) + i]; o = o + 1L; }
+                    a[dxOff + i * long(batch) + k] = s;
+                }
+            }
+        }
+
+        void bwdRelu(float[] a, long dev, int dyOff, int xOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float xv = a[xOff + i];
+                    if (xv > 0.0f) a[dxOff + i] = a[dyOff + i];
+                    else a[dxOff + i] = 0.0f;
+                }
+            }
+        }
+
+        void bwdSigmoid(float[] a, long dev, int dyOff, int yOff, int dxOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float y = a[yOff + i];
+                    a[dxOff + i] = a[dyOff + i] * y * (1.0f - y);
+                }
+            }
+        }
+
+        void bwdAdd(float[] a, long dev, int dyOff, int daOff, int dbOff, int n) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    float d = a[dyOff + i];
+                    a[daOff + i] = d;
+                    a[dbOff + i] = d;
+                }
+            }
+        }
+
+        // Softmax+CE 合并：thread-per-column；dlogit = softmax - onehot；loss = -log(p[label])
+        void softmaxCE(float[] a, long dev, int logitOff, int labelOff, int rows, int cols,
+                       int dlogitOff, int lossOff) {
+            @gpu for (long p = 0L; p < long(cols); p = p + 1L) resident(a = dev) {
+                if (p < long(cols)) {
+                    long b = p;
+                    float maxv = a[logitOff + 0L * long(cols) + b];
+                    long r = 1L;
+                    while (r < long(rows)) {
+                        float v = a[logitOff + r * long(cols) + b];
+                        if (v > maxv) maxv = v;
+                        r = r + 1L;
+                    }
+                    float sum = 0.0f;
+                    r = 0L;
+                    while (r < long(rows)) {
+                        float e = Math.exp(a[logitOff + r * long(cols) + b] - maxv);
+                        a[dlogitOff + r * long(cols) + b] = e;
+                        sum = sum + e;
+                        r = r + 1L;
+                    }
+                    float lossb = 0.0f;
+                    r = 0L;
+                    while (r < long(rows)) {
+                        float pv = a[dlogitOff + r * long(cols) + b] / sum;
+                        a[dlogitOff + r * long(cols) + b] = pv - a[labelOff + r * long(cols) + b];
+                        if (a[labelOff + r * long(cols) + b] > 0.5f) {
+                            lossb = 0.0f - Math.log(pv);
+                        }
+                        r = r + 1L;
+                    }
+                    a[lossOff + b] = lossb;
+                }
+            }
+        }
+
+        // SGD 更新：W -= lr·grad（lr 位型存于调用方，经 long 传）
+        void update(float[] a, long dev, int wOff, int gradOff, int n, double lr) {
+            @gpu for (long p = 0L; p < long(n); p = p + 1L) resident(a = dev) {
+                if (p < long(n)) {
+                    long i = p;
+                    a[wOff + i] = a[wOff + i] - float(lr) * a[gradOff + i];
+                }
+            }
+        }
+
+        // 反向 conv：db[oc]=ΣdY；dW[oc,ic,ky,kx]=Σ dY·x；dX[n,cIn,iy,ix]=Σ dY·w
+        // 三个 @gpu for，thread-per-gradient-element + 内层串行归约（无原子）。
+        void bwdConv(float[] a, long dev,
+                     int dyOff, int xOff, int xN, int xC, int xH, int xW,
+                     int wOff, int dxOff, int dwOff, int dbOff,
+                     int yC, int yH, int yW,
+                     int kh, int kw, int sh, int sw, int pt, int pl,
+                     int dh, int dw, int group) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int wc = cpg * kh * kw;
+            // db[oc]
+            if (dbOff >= 0) {
+                @gpu for (long p = 0L; p < long(yC); p = p + 1L) resident(a = dev) {
+                    if (p < long(yC)) {
+                        long oc = p;
+                        float s = 0.0f;
+                        long n = 0L;
+                        while (n < long(xN)) {
+                            long oy = 0L;
+                            while (oy < long(yH)) {
+                                long ox = 0L;
+                                while (ox < long(yW)) {
+                                    s = s + a[dyOff + n * long(yC) * long(yH) * long(yW) + oc * long(yH) * long(yW) + oy * long(yW) + ox];
+                                    ox = ox + 1L;
+                                }
+                                oy = oy + 1L;
+                            }
+                            n = n + 1L;
+                        }
+                        a[dbOff + oc] = s;
+                    }
+                }
+            }
+            // dW[oc,ic,ky,kx]
+            @gpu for (long p = 0L; p < long(yC) * long(wc); p = p + 1L) resident(a = dev) {
+                if (p < long(yC) * long(wc)) {
+                    long oc = p / long(wc);
+                    long rr = p % long(wc);
+                    long ic = rr / long(kh * kw);
+                    long ky = (rr % long(kh * kw)) / long(kw);
+                    long kx = rr % long(kw);
+                    long g = oc / long(ocpg);
+                    long cIn = g * long(cpg) + ic;
+                    float s = 0.0f;
+                    long n = 0L;
+                    while (n < long(xN)) {
+                        long oy = 0L;
+                        while (oy < long(yH)) {
+                            long iy = oy * long(sh) - long(pt) + ky * long(dh);
+                            if (iy >= 0L && iy < long(xH)) {
+                                long ox = 0L;
+                                while (ox < long(yW)) {
+                                    long ix = ox * long(sw) - long(pl) + kx * long(dw);
+                                    if (ix >= 0L && ix < long(xW)) {
+                                        s = s + a[dyOff + n * long(yC) * long(yH) * long(yW) + oc * long(yH) * long(yW) + oy * long(yW) + ox]
+                                                 * a[xOff + n * long(xC) * long(xH) * long(xW) + cIn * long(xH) * long(xW) + iy * long(xW) + ix];
+                                    }
+                                    ox = ox + 1L;
+                                }
+                            }
+                            oy = oy + 1L;
+                        }
+                        n = n + 1L;
+                    }
+                    a[dwOff + p] = s;
+                }
+            }
+            // dX[n,cIn,iy,ix]
+            @gpu for (long p = 0L; p < long(xN) * long(xC) * long(xH) * long(xW); p = p + 1L) resident(a = dev) {
+                if (p < long(xN) * long(xC) * long(xH) * long(xW)) {
+                    long xS = long(xC) * long(xH) * long(xW);
+                    long nn = p / xS;
+                    long rem = p % xS;
+                    long cIn = rem / long(xH * xW);
+                    long iy = (rem % long(xH * xW)) / long(xW);
+                    long ix = rem % long(xW);
+                    long g = cIn / long(cpg);
+                    long ic = cIn % long(cpg);
+                    float s = 0.0f;
+                    long oc0 = g * long(ocpg);
+                    long oc = 0L;
+                    while (oc < long(ocpg)) {
+                        long ocabs = oc0 + oc;
+                        long ky = 0L;
+                        while (ky < long(kh)) {
+                            long num = iy + long(pt) - ky * long(dh);
+                            if (num >= 0L && num % long(sh) == 0L) {
+                                long oy = num / long(sh);
+                                if (oy >= 0L && oy < long(yH)) {
+                                    long kx = 0L;
+                                    while (kx < long(kw)) {
+                                        long wnum = ix + long(pl) - kx * long(dw);
+                                        if (wnum >= 0L && wnum % long(sw) == 0L) {
+                                            long ox = wnum / long(sw);
+                                            if (ox >= 0L && ox < long(yW)) {
+                                                s = s + a[dyOff + nn * long(yC) * long(yH) * long(yW) + ocabs * long(yH) * long(yW) + oy * long(yW) + ox]
+                                                         * a[wOff + ocabs * long(wc) + ic * long(kh * kw) + ky * long(kw) + kx];
+                                            }
+                                        }
+                                        kx = kx + 1L;
+                                    }
+                                }
+                            }
+                            ky = ky + 1L;
+                        }
+                        oc = oc + 1L;
+                    }
+                    a[dxOff + p] = s;
+                }
+            }
+        }
+
+        // 反向 maxpool：thread-per-output，重算 argmax 并路由 dY（假定 stride≥kernel 无重叠）
+        void bwdMaxPool(float[] a, long dev,
+                        int dyOff, int xOff, int xN, int xC, int xH, int xW,
+                        int dxOff, int yH, int yW,
+                        int kh, int kw, int sh, int sw, int pt, int pl) {
+            @gpu for (long p = 0L; p < long(xN) * long(xC) * long(yH) * long(yW); p = p + 1L) resident(a = dev) {
+                if (p < long(xN) * long(xC) * long(yH) * long(yW)) {
+                    long yS = long(yH) * long(yW);
+                    long nn = p / (long(xC) * yS);
+                    long cc = (p / yS) % long(xC);
+                    long oy = (p % yS) / long(yW);
+                    long ox = p % long(yW);
+                    float best = 0.0f - 1.0e30f;
+                    long biy = 0L;
+                    long bix = 0L;
+                    long ky = 0L;
+                    while (ky < long(kh)) {
+                        long iy = oy * long(sh) - long(pt) + ky;
+                        if (iy >= 0L && iy < long(xH)) {
+                            long kx = 0L;
+                            while (kx < long(kw)) {
+                                long ix = ox * long(sw) - long(pl) + kx;
+                                if (ix >= 0L && ix < long(xW)) {
+                                    float v = a[xOff + nn * long(xC) * long(xH) * long(xW) + cc * long(xH) * long(xW) + iy * long(xW) + ix];
+                                    if (v > best) { best = v; biy = iy; bix = ix; }
+                                }
+                                kx = kx + 1L;
+                            }
+                        }
+                        ky = ky + 1L;
+                    }
+                    float dy = a[dyOff + p];
+                    a[dxOff + nn * long(xC) * long(xH) * long(xW) + cc * long(xH) * long(xW) + biy * long(xW) + bix] = dy;
                 }
             }
         }
@@ -1557,6 +1846,97 @@ class GpuInferOps {
                             q5 = q5 + long(pt5);
                         }
                     }
+                }
+            }
+        }
+        // RMSNorm（通用，2026-08-21）：现代 LLM 标准归一化。
+        // 固化 LLM GPU 优化验证的「rstd 独立小核」模式（gpu_llm_ops_batch.rstdBatch）：
+        //   K1：rstd[N] 独立 grid=N 小核 —— 统计量只算一次，避免"每元素线程冗余重算
+        //       mean(x²)"（batch/维度大时这是隐藏热点；LLM 实测 gateup 2.4x）。
+        //   K2：thread-per-element 满并行归一化（instancenorm K5 同款）。
+        // 布局：x/y 按 [D, N] feature-major（x[d*N+s]，LLM 批量布局约定；N=1 即单向量）。
+        //   y[d*N+s] = x[d*N+s] * rstd[s] * gamma[d]，rstd[s] = 1/sqrt(mean_d x²+eps)。
+        // gOff<0 表示无 gamma（y = x*rstd）。stats 写 stOff（须 N 个 float 预留，arena 尾部）。
+        void rmsnorm(float[] a, int work, int xOff, int gOff, int yOff, int D, int N, double eps, long dev, int stOff) {
+            // K1：rstd[N] 独立小核（grid=N）—— 统计量预计算一次，消除冗余重算
+            @gpu for (long si = 0L; si < long(N); si = si + 1L) resident(a = dev) {
+                if (si < long(N)) {
+                    int st = int(si);
+                    double sum2 = 0.0;
+                    int dd = 0;
+                    while (dd < D) {
+                        double xv = a[xOff + dd * N + st];
+                        sum2 = sum2 + xv * xv;
+                        dd = dd + 1;
+                    }
+                    a[stOff + st] = float(1.0 / Math.sqrt(sum2 / double(D) + eps));
+                }
+            }
+            // K2：thread-per-element 归一化（满并行；每线程只读一次 rstd，无除法）
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int dd = int(p / long(N));
+                    int ss = int(p % long(N));
+                    float rstd = a[stOff + ss];
+                    float gv = 1.0f;
+                    if (gOff >= 0) gv = a[gOff + dd];
+                    a[yOff + p] = a[xOff + p] * rstd * gv;
+                }
+            }
+        }
+        // LayerNorm（通用，2026-08-21）：与 rmsnorm 同构的「统计量独立小核」模式，但带
+        // mean/var（每 token 一次两趟归约）+ gamma/beta[D]（GPT-2 等使用）。
+        //   y[d*N+s] = (x[d*N+s]-mean[s]) * invStd[s] * gamma[d] + beta[d]
+        // K1：mean[s]/invStd[s] 独立 grid=N 小核（统计量只算一次）；K2：thread-per-element。
+        // stOff 须 2*N 个 float（mean、invStd 交错）。gOff<0 无 gamma，bOff<0 无 beta。
+        void layernorm(float[] a, int work, int xOff, int gOff, int bOff, int yOff, int D, int N, double eps, long dev, int stOff) {
+            // K1：mean/invStd 独立小核（grid=N）
+            @gpu for (long si = 0L; si < long(N); si = si + 1L) resident(a = dev) {
+                if (si < long(N)) {
+                    int st = int(si);
+                    double sum = 0.0;
+                    int dd = 0;
+                    while (dd < D) { sum = sum + double(a[xOff + dd * N + st]); dd = dd + 1; }
+                    double mean = sum / double(D);
+                    double ss = 0.0;
+                    dd = 0;
+                    while (dd < D) {
+                        double dv = double(a[xOff + dd * N + st]) - mean;
+                        ss = ss + dv * dv;
+                        dd = dd + 1;
+                    }
+                    a[stOff + st * 2] = float(mean);
+                    a[stOff + st * 2 + 1] = float(1.0 / Math.sqrt(ss / double(D) + eps));
+                }
+            }
+            // K2：thread-per-element 归一化（每线程只读一次 mean/invStd）
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    int dd = int(p / long(N));
+                    int ss = int(p % long(N));
+                    float mean = a[stOff + ss * 2];
+                    float iv = a[stOff + ss * 2 + 1];
+                    float gv = 1.0f;
+                    float bv = 0.0f;
+                    if (gOff >= 0) gv = a[gOff + dd];
+                    if (bOff >= 0) bv = a[bOff + dd];
+                    a[yOff + p] = (a[xOff + p] - mean) * iv * gv + bv;
+                }
+            }
+        }
+        // GELU（通用，element-wise，2026-08-21）：y = 0.5*x*(1+erf(x/√2))。
+        // 内联 Abramowitz-Stegun 7.1.26 erf 近似（与 ops.myp InferOps.gelu 同实现，误差<1.5e-7）。
+        void gelu(float[] a, int work, int inOff, int outOff, long dev) {
+            @gpu for (long p = 0L; p < long(work); p = p + 1L) resident(a = dev) {
+                if (p < work) {
+                    double x = double(a[inOff + p]);
+                    double z = x / 1.4142135623730951;
+                    double az = Math.abs(z);
+                    double t = 1.0 / (1.0 + 0.3275911 * az);
+                    double y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(0.0 - az * az);
+                    double erf = y;
+                    if (z < 0.0) erf = 0.0 - y;
+                    a[outOff + p] = float(0.5 * x * (1.0 + erf));
                 }
             }
         }

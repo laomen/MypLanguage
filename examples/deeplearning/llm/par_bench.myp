@@ -1,0 +1,82 @@
+// par_bench.myp — ParOps（@parallel）vs InferOps（串行）对拍 + 计时
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/llm/par_bench.myp -o /tmp/parb --stdlib stdlib
+//   /tmp/parb
+
+import env;
+import fmt;
+import math;
+import "../infer/ops.myp";
+import "par_ops.myp";
+
+class ParBench {
+    action:
+        @constructor ParBench() {
+            // ---- 正确性：小尺寸对拍 ----
+            Console.writeLine("start");
+            int inD = 256; int outD = 4096; int batch = 1; int n = 100;
+            float[] a = new float[inD + outD * inD + 2 * outD];
+            int xOff = 0;
+            int wOff = inD;
+            int y1 = wOff + outD * inD;
+            int y2 = y1 + outD;
+            int i = 0;
+            while (i < inD) { a[xOff + i] = float(i % 7) / 100.0f; i = i + 1; }
+            i = 0;
+            while (i < outD * inD) { a[wOff + i] = float(i % 13) / 100.0f; i = i + 1; }
+            Console.writeLine("filled");
+            InferOps.matmul(a, xOff, inD, batch, wOff, outD, y1);
+            Console.writeLine("serial done");
+            ParOps.matmul(a, xOff, inD, batch, wOff, outD, y2);
+            Console.writeLine("parallel done");
+            double maxd = 0.0;
+            i = 0;
+            while (i < outD) {
+                double d = Math.abs(double(a[y1 + i]) - double(a[y2 + i]));
+                if (d > maxd) maxd = d;
+                i = i + 1;
+            }
+            Console.writeString("correctness maxdiff: ");
+            Console.writeFloat(maxd);
+            Console.writeLine("");
+
+            // ---- 计时：lm_head 尺寸（outD=151936, inD=896, batch=1）----
+            int H = 896; int V = 151936;
+            float[] b = new float[H + V * H + 2 * V];
+            int bx = 0;
+            int bw = H;
+            int by1 = bw + V * H;
+            int by2 = by1 + V;
+            i = 0;
+            while (i < H) { b[bx + i] = float(i % 11) / 1000.0f; i = i + 1; }
+            i = 0;
+            while (i < V * H) { b[bw + i] = float(i % 17) / 1000.0f; i = i + 1; }
+            // 串行
+            long t0 = __myp_now_ms();
+            InferOps.matmul(b, bx, H, batch, bw, V, by1);
+            long t1 = __myp_now_ms();
+            // 并行
+            long t2 = __myp_now_ms();
+            ParOps.matmul(b, bx, H, batch, bw, V, by2);
+            long t3 = __myp_now_ms();
+            Console.writeString("lm_head matmul serial=" + Fmt.i(t1 - t0) + "ms  parallel=" + Fmt.i(t3 - t2) + "ms");
+            Console.writeLine("");
+            // 并行 vs 串行一致性
+            double md2 = 0.0;
+            i = 0;
+            while (i < V) {
+                double d = Math.abs(double(b[by1 + i]) - double(b[by2 + i]));
+                if (d > md2) md2 = d;
+                i = i + 1;
+            }
+            Console.writeString("lm_head consistency maxdiff: ");
+            Console.writeFloat(md2);
+            Console.writeLine("");
+        }
+}
+
+int main() {
+    ParBench p = new ParBench();
+    return 0;
+}

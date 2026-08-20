@@ -1,0 +1,90 @@
+// dice_grad_check.myp — 阶段4：diceLoss 数值梯度对拍（独立内核测试，不经图）
+//
+// 小规模：C=3 类、S=20 空间位置，p∈(0,1) 随机、y one-hot（每位置一个类别）。
+// 中心差分 (L(p±eps)-L(p∓eps))/2eps vs diceLoss 解析梯度 dp。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/dice_grad_check.myp -o /tmp/dice_gc --stdlib stdlib && /tmp/dice_gc
+
+import env;
+import math;
+import fmt;
+import "../infer/ops.myp";
+
+class DiceGradCheck {
+    action:
+        @constructor DiceGradCheck() {
+            seed_ = 12345.0;
+            int C = 3; int S = 20;
+            int pOff = 0;       // [3,20]=60
+            int yOff = 60;      // 60
+            int dpOff = 120;    // 60
+            int lossOff = 180;  // 1
+            int scratch = 181;  // fd 中心差分用临时 dp 缓冲（60）
+            int CAP = 250;
+            float[] arena = new float[CAP];
+            int i = 0;
+            while (i < C * S) { arena[pOff + i] = float(rnd() * 0.9 + 0.05); i = i + 1; }
+            i = 0;
+            while (i < C * S) { arena[yOff + i] = 0.0f; i = i + 1; }
+            // one-hot：每个空间位置随机一个类别
+            int s = 0;
+            while (s < S) {
+                int cls = int(rnd() * 3.0);
+                if (cls > 2) cls = 2;
+                arena[yOff + cls * S + s] = 1.0f;
+                s = s + 1;
+            }
+
+            double eps = 1.0e-3;
+            InferOps.diceLoss(arena, pOff, yOff, dpOff, lossOff, C, S, 1.0e-7);
+            Console.writeString("loss=");
+            Console.writeFloat(arena[lossOff]);
+            Console.writeLine("");
+
+            int fails = 0;
+            int[] idx = new int[6]; idx[0] = 0; idx[1] = 1; idx[2] = 25; idx[3] = 40; idx[4] = 59; idx[5] = 13;
+            int k = 0;
+            while (k < 6) {
+                int j = idx[k];
+                double a = arena[dpOff + j];
+                double num = fd(arena, pOff, yOff, lossOff, scratch, C, S, j, eps);
+                Console.writeString("dp[" + Fmt.i(j) + "] analytic=");
+                Console.writeFloat(a);
+                Console.writeString(" numeric=");
+                Console.writeFloat(num);
+                Console.writeLine("");
+                if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                k = k + 1;
+            }
+
+            if (fails == 0) Console.writeLine("DICE GRAD CHECK OK");
+            else Console.writeLine("DICE GRAD CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        // L(p) = diceLoss，对 p[j] 中心差分（scratch 为临时 dp 缓冲）
+        double fd(float[] arena, int pOff, int yOff, int lossOff, int scratch, int C, int S, int j, double eps) {
+            double pp = arena[pOff + j];
+            arena[pOff + j] = float(pp + eps);
+            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 1.0e-7);
+            double Lp = arena[lossOff];
+            arena[pOff + j] = float(pp - eps);
+            InferOps.diceLoss(arena, pOff, yOff, scratch, lossOff, C, S, 1.0e-7);
+            double Lm = arena[lossOff];
+            arena[pOff + j] = float(pp);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245.0 + 12345.0) % 2147483648.0;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    DiceGradCheck c = new DiceGradCheck();
+    return 0;
+}

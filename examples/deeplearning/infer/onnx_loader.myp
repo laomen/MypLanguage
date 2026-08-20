@@ -17,6 +17,14 @@ class OnnxLoader {
 
         // 从 .onnx 加载到运行时。成功返回 1，失败返回 0。
         int load(string path, InferenceRuntime rt) {
+            return loadCommon(path, rt, 0);
+        }
+        // 阶段2：从 .onnx 加载并构建「训练运行时」（前向+反向+更新节点）。
+        int loadTrain(string path, InferenceRuntime rt) {
+            return loadCommon(path, rt, 1);
+        }
+        // 从 .onnx 加载到运行时。成功返回 1，失败返回 0。
+        int loadCommon(string path, InferenceRuntime rt, int train) {
             if (readFile(path) == 0) return 0;
             if (fileLen_ <= 0) return 0;
             g_ = new Graph();
@@ -30,6 +38,7 @@ class OnnxLoader {
                 g_.setShape(inpName_[k], inpD0_[k], inpD1_[k], inpD2_[k], inpD3_[k], inpD4_[k], inpR5_[k]);
                 k = k + 1;
             }
+            if (train == 1) return g_.optimizeTrain(rt);
             return g_.optimize(rt);
         }
         // P3：加载前声明输入形状（动态维度模型；rank5=1 表示 5D NCDHW）

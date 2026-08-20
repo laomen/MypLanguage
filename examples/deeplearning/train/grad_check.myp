@@ -1,0 +1,142 @@
+// grad_check.myp — 阶段2：数值梯度对拍（验证图级 backward 正确性）
+//
+// 对单个样本，用中心差分计算 dLoss/dW 的数值梯度，与图反向 pass 产生的
+// 解析梯度（W#g）对比。若匹配 → backward 正确；否则定位错误算子。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/grad_check.myp -o /tmp/grad_check --stdlib stdlib && /tmp/grad_check
+
+import env;
+import math;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+import "./mnist_reader.myp";
+
+class GradCheck {
+    action:
+        @constructor GradCheck() {
+            int NIN = 784;
+            float[] x = new float[784];
+            int[] y = new int[1];
+            int n = MnistReader.loadImages("./deeplearning/data/train-images-idx3-ubyte/train-images.idx3-ubyte", x, 1);
+            int nl = MnistReader.loadLabels("./deeplearning/data/train-labels-idx1-ubyte/train-labels.idx1-ubyte", y, 1);
+            if (n < 1 || nl < 1) { Console.writeLine("data missing"); return; }
+
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(300000);
+            OnnxLoader loader = new OnnxLoader();
+            if (loader.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx", rt) == 0) {
+                Console.writeLine("loadTrain failed");
+                return;
+            }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            int w1Tid = loader.tensorId("W1");
+            int w2Tid = loader.tensorId("W2");
+            int w1gTid = loader.tensorId("W1#g");
+            int w2gTid = loader.tensorId("W2#g");
+            if (w1gTid < 0 || w2gTid < 0) { Console.writeLine("grad tensor not found"); return; }
+
+            // 随机初始化 → 保证梯度非零（数值对拍才有效）
+            randomize(rt, w1Tid, w2Tid, 64, 10);
+
+            // lr=0 → update 是 no-op（不破坏权重），同时 loss/梯度照常计算
+            rt.setLr(0.0);
+            rt.setTrain(1);
+            setInput(rt, dataTid, labelTid, x, y[0], NIN);
+
+            // 解析梯度（当前权重的一次 forward+backward）
+            rt.run();
+            double L0 = rt.getFlat(lossTid, 0);
+
+            // 中心差分对拍多元素
+            double eps = 1.0e-3;
+            int fails = 0;
+            int[] idxW1 = new int[3]; idxW1[0] = 0; idxW1[1] = 1; idxW1[2] = 784;
+            int[] idxW2 = new int[3]; idxW2[0] = 0; idxW2[1] = 1; idxW2[2] = 63;
+            int k = 0;
+            while (k < 3) {
+                double ok1 = checkElem(rt, lossTid, w1Tid, w1gTid, idxW1[k], eps);
+                if (ok1 < 0.0) fails = fails + 1;
+                k = k + 1;
+            }
+            k = 0;
+            while (k < 3) {
+                double ok2 = checkElem(rt, lossTid, w2Tid, w2gTid, idxW2[k], eps);
+                if (ok2 < 0.0) fails = fails + 1;
+                k = k + 1;
+            }
+
+            Console.writeString("L0=");
+            Console.writeFloat(L0);
+            Console.writeLine("");
+            // Update 验证：lr=0.5 跑一次，W2[1] 应减少 0.5*analytic
+            double w2b = rt.getFlat(w2Tid, 1);
+            rt.setLr(0.5);
+            rt.run();   // 用当前梯度更新一次
+            double w2a = rt.getFlat(w2Tid, 1);
+            double aW2_1 = rt.getFlat(w2gTid, 1);   // 本次 run 的梯度
+            Console.writeString("update: W2[1] before=");
+            Console.writeFloat(w2b);
+            Console.writeString(" after=");
+            Console.writeFloat(w2a);
+            Console.writeString(" grad=");
+            Console.writeFloat(aW2_1);
+            Console.writeLine("");
+            if (fails == 0) Console.writeLine("GRAD CHECK OK");
+            else Console.writeLine("GRAD CHECK FAIL");
+        }
+
+        // 对单个权重元素：解析 vs 中心差分，返回 1=匹配 / -1=不匹配
+        double checkElem(InferenceRuntime rt, int lossTid, int wTid, int wgTid, int idx, double eps) {
+            double w = rt.getFlat(wTid, idx);
+            double a = rt.getFlat(wgTid, idx);   // 解析（当前权重上一次 forward 的结果）
+            rt.setFlat(wTid, idx, w + eps);
+            rt.run();
+            double Lp = rt.getFlat(lossTid, 0);
+            rt.setFlat(wTid, idx, w - eps);
+            rt.run();
+            double Lm = rt.getFlat(lossTid, 0);
+            rt.setFlat(wTid, idx, w);            // 恢复
+            double num = (Lp - Lm) / (2.0 * eps);
+            Console.writeString("idx=");
+            Console.write(idx);
+            Console.writeString(" analytic=");
+            Console.writeFloat(a);
+            Console.writeString(" numeric=");
+            Console.writeFloat(num);
+            Console.writeLine("");
+            if (Math.abs(a - num) < 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) return 1.0;
+            return -1.0;
+        }
+
+        void setInput(InferenceRuntime rt, int dataTid, int labelTid, float[] x, int label, int NIN) {
+            int j = 0;
+            while (j < NIN) { rt.setFlat(dataTid, j, x[j]); j = j + 1; }
+            j = 0; while (j < 10) { rt.setFlat(labelTid, j, 0.0); j = j + 1; }
+            rt.setFlat(labelTid, label, 1.0);
+        }
+
+        void randomize(InferenceRuntime rt, int w1Tid, int w2Tid, int NH, int NOUT) {
+            double std1 = Math.sqrt(2.0 / 784.0);
+            double std2 = Math.sqrt(2.0 / double(NH));
+            int k = 0;
+            while (k < NH * 784) { rt.setFlat(w1Tid, k, (rnd() * 2.0 - 1.0) * std1); k = k + 1; }
+            k = 0; while (k < NOUT * NH) { rt.setFlat(w2Tid, k, (rnd() * 2.0 - 1.0) * std2); k = k + 1; }
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245L + 12345L) % 2147483648L;
+            double v = float(seed_ % 1000000) / 1000000.0;
+            return v;
+        }
+
+    property:
+        long seed_ = 20260820;
+}
+
+int main() {
+    GradCheck g = new GradCheck();
+    return 0;
+}

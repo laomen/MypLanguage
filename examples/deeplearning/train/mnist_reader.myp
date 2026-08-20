@@ -1,0 +1,58 @@
+// mnist_reader.myp — 纯 MYP 的 MNIST idx 文件读取器（训练/测试共用）
+//
+// idx 格式（images）：magic u32be | count u32be | rows u32be | cols u32be | 每像素 1 字节
+// idx 格式（labels）：magic u32be | count u32be | 每标签 1 字节
+// 像素归一化到 [0,1]（float 精度存储，省一半内存）。
+//
+// 用法：
+//   int n = MnistReader.loadImages(path, pixels, maxCount);
+//   int n = MnistReader.loadLabels(path, labels, maxCount);
+
+import env;
+
+class MnistReader {
+    static:
+        // 读取 images 前 maxCount 张到 out（float 归一化 /255），返回实际张数。
+        // out 须足够大（至少 maxCount*784）。
+        int loadImages(string path, float[] out, int maxCount) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            int rows = __myp_io_read_i32be();
+            int cols = __myp_io_read_i32be();
+            if (count > maxCount) count = maxCount;
+            float inv255 = 1.0f / 255.0f;
+            int i = 0;
+            while (i < count) {
+                int j = 0;
+                while (j < 784) {
+                    int b = __myp_io_read_byte();
+                    if (b < 0) { __myp_io_fclose(); return i; }
+                    out[i * 784 + j] = float(b) * inv255;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            return count;
+        }
+
+        // 读取 labels 前 maxCount 个到 out，返回实际个数。
+        int loadLabels(string path, int[] out, int maxCount) {
+            int fd = __myp_io_fopen(path, "rb");
+            if (fd < 0) return 0;
+            int magic = __myp_io_read_i32be();
+            int count = __myp_io_read_i32be();
+            if (count > maxCount) count = maxCount;
+            int i = 0;
+            while (i < count) {
+                int b = __myp_io_read_byte();
+                if (b < 0) { __myp_io_fclose(); return i; }
+                out[i] = b;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            return count;
+        }
+}

@@ -1,0 +1,145 @@
+// cnn_train.myp — 阶段3：小 CNN 图级训练（Conv/MaxPool 反向验证）
+//
+// 结构：Conv(1→8,k3,p1)→ReLU→MaxPool(2)→Conv(8→16,k3,p1)→ReLU→MaxPool(2)
+//       →Flatten(784)→Gemm(784→10)→Softmax（cnn_mnist.onnx，随机初始权重）。
+// 从零训练 28×28 MNIST（batch=1 纯 SGD，lr 需小），验证 bwdConv/bwdMaxPool
+// 端到端正确（能从 ~10% 收敛到 ~90%+）。
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/cnn_train.myp -o /tmp/cnn_train --stdlib stdlib && /tmp/cnn_train
+
+import env;
+import math;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+import "./mnist_reader.myp";
+
+class CnnTrain {
+    action:
+        @constructor CnnTrain() {
+            int NIN = 784;   // 28*28
+            int NTRAIN = 30000;
+            int NTEST = 10000;
+
+            // ---- 加载数据 ----
+            float[] x = new float[NTRAIN * NIN];
+            int[] y = new int[NTRAIN];
+            int ntr = MnistReader.loadImages("./deeplearning/data/train-images-idx3-ubyte/train-images.idx3-ubyte", x, NTRAIN);
+            int ntrl = MnistReader.loadLabels("./deeplearning/data/train-labels-idx1-ubyte/train-labels.idx1-ubyte", y, NTRAIN);
+            // MYP_SAMPLES：缩小训练集（GPU 每样本整块 H2D/D2H 很慢，用小子集对拍正确性）
+            if (Console.getEnv("MYP_SAMPLES") != "") {
+                int cap = Str.toInt(Console.getEnv("MYP_SAMPLES"));
+                if (cap > 0 && cap < ntr) ntr = cap;
+            }
+            float[] xt = new float[NTEST * NIN];
+            int[] yt = new int[NTEST];
+            int nte = MnistReader.loadImages("./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", xt, NTEST);
+            int ntel = MnistReader.loadLabels("./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte", yt, NTEST);
+            if (ntr < 1000 || nte < 1000) {
+                Console.writeLine("MNIST data missing");
+                return;
+            }
+
+            // ---- 图级训练运行时 ----
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(4000000);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.loadTrain("./deeplearning/data/onnx/cnn_mnist.onnx", rt);
+            if (ok == 0) {
+                Console.writeLine("loadTrain failed");
+                return;
+            }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            int probTid = loader.tensorId("prob");
+            if (dataTid < 0 || labelTid < 0 || lossTid < 0 || probTid < 0) {
+                Console.writeLine("tensor not found");
+                return;
+            }
+
+            // 阶段3d：GPU 持久化 arena（MYP_GPU=1 且 GPU 可用时；否则 no-op 回退）。
+            // arena 一次驻留显存，训练循环内只增量传输入(data/label)、下载 loss/prob，
+            // 不再每样本整块 16MB H2D/D2H（旧版 GPU 训练比 CPU 慢 ~5 倍）。
+            if (rt.gpuPersistentStart() == 1) {
+                rt.markGpuSync(lossTid);
+                rt.markGpuSync(probTid);
+            }
+
+            int preAcc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, nte);
+            Console.writeString("PRE-TRAIN acc=");
+            Console.write(preAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+
+            // ---- 训练（batch=1 纯 SGD；CNN 梯度尺度大，lr 要更小）----
+            double lr = 0.01;
+            int EPOCHS = 12;
+            int epoch = 0;
+            int bestAcc = 0;
+            while (epoch < EPOCHS) {
+                if (epoch == 8) lr = 0.003;
+                rt.setLr(lr);
+                rt.setTrain(1);
+                double lossSum = 0.0;
+                int s = 0;
+                while (s < ntr) {
+                    int j = 0;
+                    while (j < NIN) { rt.setFlat(dataTid, j, x[s * NIN + j]); j = j + 1; }
+                    j = 0;
+                    while (j < 10) { rt.setFlat(labelTid, j, 0.0); j = j + 1; }
+                    rt.setFlat(labelTid, y[s], 1.0);   // one-hot
+                    step(rt);
+                    lossSum = lossSum + rt.getFlat(lossTid, 0);
+                    s = s + 1;
+                }
+                int acc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, nte);
+                if (acc > bestAcc) bestAcc = acc;
+                Console.writeString("epoch ");
+                Console.write(epoch);
+                Console.writeString(" loss=");
+                Console.writeFloat(lossSum / ntr);
+                Console.writeString(" acc=");
+                Console.write(acc);
+                Console.writeString("%");
+                Console.writeLine("");
+                epoch = epoch + 1;
+            }
+
+            Console.writeString("CNN GRAPH-TRAIN best acc=");
+            Console.write(bestAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+            if (bestAcc >= 90) Console.writeLine("CNN TRAIN OK");
+            else Console.writeLine("CNN TRAIN FAIL");
+            rt.gpuPersistentEnd();   // 取回最终权重到宿主 + 释放设备 arena
+        }
+
+        // eval：setTrain(0) → 只跑前向 → argmax(prob) 与标签比对
+        int testAccuracy(InferenceRuntime rt, int probTid, int dataTid, float[] xt, int[] yt, int NIN, int n) {
+            rt.setTrain(0);
+            int correct = 0;
+            int s = 0;
+            while (s < n) {
+                int j = 0;
+                while (j < NIN) { rt.setFlat(dataTid, j, xt[s * NIN + j]); j = j + 1; }
+                step(rt);
+                int pred = rt.argmax1d(probTid);
+                if (pred == yt[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct * 100 / n;
+        }
+
+        // 前向+（训练时）反向+更新一步：MYP_GPU=1 走 runGpu（整块 arena 驻留 + @gpu for），
+        // 否则 run()（纯 CPU）。runGpu 无 GPU 时 @gpu for 自动回退 CPU（结果一致）。
+        void step(InferenceRuntime rt) {
+            if (Console.getEnv("MYP_GPU") == "1") rt.runGpu();
+            else rt.run();
+        }
+}
+
+int main() {
+    CnnTrain t = new CnnTrain();
+    return 0;
+}

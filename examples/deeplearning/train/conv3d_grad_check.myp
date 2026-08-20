@@ -1,0 +1,246 @@
+// conv3d_grad_check.myp — 阶段4：bwdConv3D / bwdMaxPool3D / bwdAvgPool3D 数值对拍
+// （独立内核测试，不经图；镜像 conv_grad_check 的 2D 做法）
+//
+// 运行（须在 examples/ 下）：
+//   ./build/mypc examples/deeplearning/train/conv3d_grad_check.myp -o /tmp/conv3d_gc --stdlib stdlib && /tmp/conv3d_gc
+
+import env;
+import math;
+import fmt;
+import "../infer/ops.myp";
+
+class Conv3DGradCheck {
+    action:
+        @constructor Conv3DGradCheck() {
+            int fails = 0;
+            seed_ = 881726454.0;   // 固定种子（可复现）
+            // ============ 1) bwdConv3D：有限差分对拍 dw/dx + db 直接对拍 ============
+            int CAP = 1100;
+            float[] arena = new float[CAP];
+            int xOff = 0;     // [1,1,5,5,5]=125
+            int wOff = 125;   // [2,1,3,3,3]=54
+            int bOff = 179;   // [2]
+            int yOff = 181;   // [1,2,3,3,3]=54（yD=3,yH=3,yW=3）
+            int dyOff = 235;  // 54
+            int dxOff = 289;  // 125
+            int dwOff = 414;  // 54
+            int dbOff = 468;  // 2
+            int xN = 1; int xC = 1; int xD = 5; int xH = 5; int xW = 5;
+            int yC = 2;
+            int kd = 3; int kh = 3; int kw = 3;
+            int sd = 1; int sh = 1; int sw = 1;
+            int pdt = 1; int pdb = 0; int pt = 0; int pb = 1; int pl = 1; int pr = 0;   // 非对称 padding
+            int dd = 1; int dh = 1; int dw = 1; int group = 1;
+            int yD = 3; int yH = 3; int yW = 3;
+
+            int i = 0;
+            while (i < 125) { arena[xOff + i] = float(rnd() * 0.5); i = i + 1; }
+            i = 0; while (i < 54) { arena[wOff + i] = float((rnd() * 2.0 - 1.0) * 0.5); i = i + 1; }
+            i = 0; while (i < 2) { arena[bOff + i] = float((rnd() * 2.0 - 1.0) * 0.1); i = i + 1; }
+
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            int di = 0;
+            while (di < xN * yC * yD * yH * yW) { arena[dyOff + di] = 1.0f; di = di + 1; }
+            InferOps.bwdConv3D(arena, dyOff, xOff, xN, xC, xD, xH, xW, wOff,
+                               dxOff, dwOff, dbOff, yC, yD, yH, yW,
+                               kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+
+            double eps = 1.0e-3;
+            int[] dwIdx = new int[4]; dwIdx[0] = 0; dwIdx[1] = 1; dwIdx[2] = 26; dwIdx[3] = 53;
+            int k = 0;
+            while (k < 4) {
+                int j = dwIdx[k];
+                double a = arena[dwOff + j];
+                double num = fdW3D(arena, xOff, wOff, bOff, yOff, xN, xC, xD, xH, xW, yC, yD, yH, yW,
+                                   kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group, j, eps);
+                Console.writeString("dw3d[" + Fmt.i(j) + "] analytic=");
+                Console.writeFloat(a);
+                Console.writeString(" numeric=");
+                Console.writeFloat(num);
+                Console.writeLine("");
+                if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                k = k + 1;
+            }
+            int[] dxIdx = new int[4]; dxIdx[0] = 0; dxIdx[1] = 1; dxIdx[2] = 62; dxIdx[3] = 124;
+            k = 0;
+            while (k < 4) {
+                int j = dxIdx[k];
+                double a = arena[dxOff + j];
+                double num = fdX3D(arena, xOff, wOff, bOff, yOff, xN, xC, xD, xH, xW, yC, yD, yH, yW,
+                                   kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group, j, eps);
+                Console.writeString("dx3d[" + Fmt.i(j) + "] analytic=");
+                Console.writeFloat(a);
+                Console.writeString(" numeric=");
+                Console.writeFloat(num);
+                Console.writeLine("");
+                if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                k = k + 1;
+            }
+            Console.writeString("db3d[0]=");
+            Console.writeFloat(arena[dbOff + 0]);
+            Console.writeString(" db3d[1]=");
+            Console.writeFloat(arena[dbOff + 1]);
+            Console.writeLine("");
+
+            // ============ 2) bwdMaxPool3D：重建检查（无重叠 k=s=2，dY=全1） ============
+            // 每个输入位置至多属于一个输出窗口 → dX ∈ {0,1}，且 Σ dX = 输出数；
+            // 重建性质：Σ x*dX = Σ y（每个输出把值全给其 argmax 位置）。
+            int xMOff = 470;    // x[1,1,5,5,5]=125
+            int yMOff = 595;    // y[1,1,2,2,2]=8
+            int dyMOff = 603;   // 8
+            int dxMOff = 611;   // 125
+            if (CAP >= xMOff + 125) {
+                int jj = 0;
+                while (jj < 125) { arena[xMOff + jj] = float(rnd()); jj = jj + 1; }
+                InferOps.maxpool3d(arena, xMOff, 1, 1, 5, 5, 5, yMOff, 2, 2, 2, 2, 2, 2,
+                                   2, 2, 2, 0, 0, 0, 0, 0, 0);
+                jj = 0; while (jj < 8) { arena[dyMOff + jj] = 1.0f; jj = jj + 1; }
+                InferOps.bwdMaxPool3D(arena, dyMOff, xMOff, 1, 1, 5, 5, 5, dxMOff, 2, 2, 2,
+                                      2, 2, 2, 2, 2, 2, 0, 0, 0, 0, 0, 0);
+                double sumDX = 0.0;
+                double sumXDX = 0.0;
+                double sumY = 0.0;
+                int oneHot = 0;
+                int bad = 0;
+                jj = 0;
+                while (jj < 125) {
+                    double v = arena[dxMOff + jj];
+                    sumDX = sumDX + v;
+                    sumXDX = sumXDX + double(arena[xMOff + jj]) * v;
+                    if (v == 0.0 || v == 1.0) oneHot = oneHot + 1; else bad = bad + 1;
+                    jj = jj + 1;
+                }
+                jj = 0; while (jj < 8) { sumY = sumY + double(arena[yMOff + jj]); jj = jj + 1; }
+                Console.writeString("maxpool3d: sumDX=");
+                Console.writeFloat(sumDX);
+                Console.writeString(" (expect 8)  sumXDX=");
+                Console.writeFloat(sumXDX);
+                Console.writeString(" sumY=");
+                Console.writeFloat(sumY);
+                Console.writeString(" non01=");
+                Console.write(bad);
+                Console.writeLine("");
+                if (Math.abs(sumDX - 8.0) > 1.0e-6 || Math.abs(sumXDX - sumY) > 1.0e-3 * (1.0 + sumY) || bad != 0) fails = fails + 1;
+            }
+
+            // ============ 3) bwdAvgPool3D：有限差分对拍（cip=0 带 padding） ============
+            // x[1,1,5,5,5] → k=2,s=2,p=1（一侧）→ yD=3,yH=3,yW=3；部分窗口 cnt<8
+            int xAOff = 736;    // 125
+            int yAOff = 861;    // [1,1,3,3,3]=27
+            int dyAOff = 888;   // 27
+            int dxAOff = 915;   // 125
+            if (CAP >= xAOff + 125) {
+                int jj = 0;
+                while (jj < 125) { arena[xAOff + jj] = float(rnd() * 0.8); jj = jj + 1; }
+                InferOps.avgpool3d(arena, xAOff, 1, 1, 5, 5, 5, yAOff, 3, 3, 3,
+                                   2, 2, 2, 2, 2, 2, 1, 0, 1, 0, 1, 0, 0);
+                jj = 0; while (jj < 27) { arena[dyAOff + jj] = 1.0f; jj = jj + 1; }
+                InferOps.bwdAvgPool3D(arena, dyAOff, xAOff, 1, 1, 5, 5, 5, dxAOff, 3, 3, 3,
+                                      2, 2, 2, 2, 2, 2, 1, 0, 1, 0, 1, 0, 0);
+                int[] aIdx = new int[4]; aIdx[0] = 0; aIdx[1] = 1; aIdx[2] = 62; aIdx[3] = 124;
+                k = 0;
+                while (k < 4) {
+                    int j = aIdx[k];
+                    double a = arena[dxAOff + j];
+                    double num = fdAvg3D(arena, xAOff, yAOff, 1, 1, 5, 5, 5, 3, 3, 3,
+                                         2, 2, 2, 2, 2, 2, 1, 0, 1, 0, 1, 0, 0, j, eps);
+                    Console.writeString("avg3d dx[" + Fmt.i(j) + "] analytic=");
+                    Console.writeFloat(a);
+                    Console.writeString(" numeric=");
+                    Console.writeFloat(num);
+                    Console.writeLine("");
+                    if (Math.abs(a - num) > 1.0e-2 * (1.0 + Math.abs(a) + Math.abs(num))) fails = fails + 1;
+                    k = k + 1;
+                }
+            }
+
+            if (fails == 0) Console.writeLine("CONV3D GRAD CHECK OK");
+            else Console.writeLine("CONV3D GRAD CHECK FAIL (" + Fmt.i(fails) + ")");
+        }
+
+        // L(w)=Σy，对 w[j] 中心差分（3D）
+        double fdW3D(float[] arena, int xOff, int wOff, int bOff, int yOff,
+                     int xN, int xC, int xD, int xH, int xW, int yC, int yD, int yH, int yW,
+                     int kd, int kh, int kw, int sd, int sh, int sw,
+                     int pdt, int pdb, int pt, int pb, int pl, int pr,
+                     int dd, int dh, int dw, int group, int j, double eps) {
+            double wp = arena[wOff + j];
+            arena[wOff + j] = float(wp + eps);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            double Lp = sumY(arena, yOff, xN, yC, yD, yH, yW);
+            arena[wOff + j] = float(wp - eps);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            double Lm = sumY(arena, yOff, xN, yC, yD, yH, yW);
+            arena[wOff + j] = float(wp);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        // L(x)=Σy，对 x[j] 中心差分（3D）
+        double fdX3D(float[] arena, int xOff, int wOff, int bOff, int yOff,
+                     int xN, int xC, int xD, int xH, int xW, int yC, int yD, int yH, int yW,
+                     int kd, int kh, int kw, int sd, int sh, int sw,
+                     int pdt, int pdb, int pt, int pb, int pl, int pr,
+                     int dd, int dh, int dw, int group, int j, double eps) {
+            double xp = arena[xOff + j];
+            arena[xOff + j] = float(xp + eps);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            double Lp = sumY(arena, yOff, xN, yC, yD, yH, yW);
+            arena[xOff + j] = float(xp - eps);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            double Lm = sumY(arena, yOff, xN, yC, yD, yH, yW);
+            arena[xOff + j] = float(xp);
+            InferOps.conv3d(arena, xOff, xN, xC, xD, xH, xW, wOff, bOff, yOff, yC, yD, yH, yW,
+                            kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, dd, dh, dw, group);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        // L(x)=Σy，对 x[j] 中心差分（avgpool3d）
+        double fdAvg3D(float[] arena, int xOff, int yOff,
+                       int xN, int xC, int xD, int xH, int xW, int yD, int yH, int yW,
+                       int kd, int kh, int kw, int sd, int sh, int sw,
+                       int pdt, int pdb, int pt, int pb, int pl, int pr, int cip,
+                       int j, double eps) {
+            double xp = arena[xOff + j];
+            arena[xOff + j] = float(xp + eps);
+            InferOps.avgpool3d(arena, xOff, xN, xC, xD, xH, xW, yOff, yD, yH, yW,
+                               kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, cip);
+            double Lp = sumY(arena, yOff, xN, xC, yD, yH, yW);
+            arena[xOff + j] = float(xp - eps);
+            InferOps.avgpool3d(arena, xOff, xN, xC, xD, xH, xW, yOff, yD, yH, yW,
+                               kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, cip);
+            double Lm = sumY(arena, yOff, xN, xC, yD, yH, yW);
+            arena[xOff + j] = float(xp);
+            InferOps.avgpool3d(arena, xOff, xN, xC, xD, xH, xW, yOff, yD, yH, yW,
+                               kd, kh, kw, sd, sh, sw, pdt, pdb, pt, pb, pl, pr, cip);
+            return (Lp - Lm) / (2.0 * eps);
+        }
+
+        // Σ y（N,C,D,H,W 通用，C 传参不同语义处由调用方保证一致）
+        double sumY(float[] arena, int yOff, int n, int c, int d, int h, int w) {
+            double s = 0.0;
+            int total = n * c * d * h * w;
+            int i = 0;
+            while (i < total) { s = s + double(arena[yOff + i]); i = i + 1; }
+            return s;
+        }
+
+        double rnd() {
+            seed_ = (seed_ * 1103515245L + 12345L) % 2147483648L;
+            return float(seed_ % 1000000) / 1000000.0;
+        }
+
+    property:
+        double seed_;
+}
+
+int main() {
+    Conv3DGradCheck c = new Conv3DGradCheck();
+    return 0;
+}

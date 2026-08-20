@@ -106,7 +106,8 @@ class R18InferApp {
             }
         }
 
-        void loadLabels() {            int fd = __myp_io_fopen("./deeplearning/data/imagenet/classes.txt", "r");
+        void loadLabels() {            
+            int fd = __myp_io_fopen("./deeplearning/data/imagenet/classes.txt", "r");
             if (fd < 0) { labelCount_ = 0; return; }
             labelCount_ = 0;
             while (labelCount_ < 1000) {

@@ -1,0 +1,391 @@
+// qwen2_gpu_batch.myp — Qwen2-0.5B-Instruct GPU 批量推理（N 路并发对话，同步 batch）
+//
+// 权重共享：每 step 读一遍权重（1.98GB）同时推进 N 条序列 → 聚合吞吐 ≈ N × 单序列。
+// 本测试用 N 份相同 prompt，验证 N 路输出逐 token 一致（证明 batch 内核正确），并报每步
+// 耗时与聚合 tok/s。
+//
+// 实测（RTX 2070S，CUDA Graph 默认开）：
+//   BN=1: 11ms/step  90 tok/s     BN=2: 12ms/step 166 tok/s
+//   BN=4: 16ms/step 250 tok/s（单路 2.75x，33 步 EOS，mismatch=0）
+// 关键优化（gpu_llm_ops_batch.myp）：rstdBatch 单独小核预计算 rstd（去 batch 每线程冗余
+// 896 sum2）→ gateup 2.4x 快；matmul 写 logits 是 vocab-major（logOff[o*BN+s]），argmax
+// 必须按 stride=BN 读（BN=1 时两种布局重合，这是 BN>1 曾 mismatch=384 的根因）。
+//
+// 布局：激活 [D, N]（feature×seq），KV cache [L][N][2*kvD*W]，logits [V, N]。
+// 需 GPU（MYP_GPU=1）。batch 数用 MYP_Q2G_BATCH 覆盖（默认 4；MYP_Q2G_GRAPH=0 关图）。
+//
+//   ./build/mypc examples/deeplearning/llm/qwen2_gpu_batch.myp -o /tmp/q2gb --stdlib stdlib
+//   cd examples && MYP_GPU=1 MYP_Q2G_BATCH=4 /tmp/q2gb
+
+import env;
+import fmt;
+import text;
+import math;
+import gpu;
+import gpu.stream;
+import gpu.graph;
+import cuda;
+import "../infer/ops.myp";
+import "../infer/pb.myp";
+import "gpu_llm_ops.myp";
+import "gpu_llm_ops_batch.myp";
+import "qwen2_tokenizer.myp";
+
+class Qwen2GpuBatch {
+    action:
+        @constructor Qwen2GpuBatch() {
+            int V = 151936; int H = 896; int L = 24; int QH = 14; int KVH = 2; int HD = 64;
+            int FFN = 4864; int POS = 32768; int W = 2048; int groups = QH / KVH;
+            int kvD = KVH * HD;
+            int MAXGEN = 128;
+            double EPS = 0.000001;
+            int H2 = H * H;
+            int KV = KVH * HD * H;
+            int KB = KVH * HD;
+            int F = FFN * H;
+            int per = H + H2 + H + KV + KB + KV + KB + H2 + H + 3 * F;
+            int half = HD / 2;
+            int BN = 4;
+            string be = Console.getEnv("MYP_Q2G_BATCH");
+            if (be != "") BN = Str.toInt(be);
+            if (BN < 1) BN = 1;
+            if (BN > 16) BN = 16;
+
+            int wteOff = 0;
+            int base0 = V * H;
+            int weightsEnd = base0 + L * per + H;
+            int lnfOff = weightsEnd - H;
+            int paramTokOff = weightsEnd;            // [BN] tok 参数槽（紧随权重后）
+            int xOff = paramTokOff + BN;             // [H,BN]
+            int xnOff = xOff + H * BN;               // 占位（对齐单序列布局，rmsNorm 已内联）
+            int qOff = xnOff + H * BN;               // [H,BN]
+            int kOff = qOff + H * BN;                // [KV,BN]
+            int vOff = kOff + KV * BN;
+            int ctxOff = vOff + KV * BN;
+            int gOff = ctxOff + H * BN;
+            int uOff = gOff + FFN * BN;
+            int hOff = uOff + FFN * BN;
+            int scOff = hOff + H * BN;               // [BN, QH*W]
+            int logOff = scOff + QH * W * BN;        // [V,BN]
+            int fullCosOff = logOff + V * BN;
+            int fullSinOff = fullCosOff + half * POS;
+            int kcL = BN * 2 * kvD * W;              // 每层 cache 区（N 序列）
+            int kcBase = fullSinOff + half * POS;    // [L][BN][2*kvD*W]
+            int lmOff = kcBase + L * kcL;            // 转置 wte [H,V]
+            int partOff = lmOff + V * H;             // partial [2*FFN*BN*8]
+            int paramPosOff = partOff + 2 * FFN * BN * 8;   // pos 槽放 arena 末尾（勿与 x 重叠）
+            int rstdOff = paramPosOff + 8;           // [BN] 每序列 rstd（rstdBatch 写）
+            int CAP = paramPosOff + 16;
+            float[] arena = new float[CAP];
+
+            // ---- 加载权重（转置）+ RoPE 表 + 分词器 + 解码表 ----
+            int fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_weights.bin", "rb");
+            if (fd < 0) { Console.writeLine("weights file missing"); return; }
+            loadBlock(arena, fd, wteOff, weightsEnd);
+            __myp_io_fclose();
+            float[] tmpW = new float[FFN * H];
+            int lti = 0;
+            while (lti < L) {
+                int base = base0 + lti * per;
+                int bq = base + H;
+                int bk = base + H + H2 + H;
+                int bv = bk + KV + KB;
+                int bo = bv + KV + KB;
+                int bln2 = bo + H2;
+                int bgate = bln2 + H;
+                int bup = bgate + F;
+                int bdown = bup + F;
+                transposeW(arena, tmpW, bq, bq, H, H);
+                transposeW(arena, tmpW, bk, bk, KB, H);
+                transposeW(arena, tmpW, bv, bv, KB, H);
+                transposeW(arena, tmpW, bo, bo, H, H);
+                transposeW(arena, tmpW, bgate, bgate, FFN, H);
+                transposeW(arena, tmpW, bup, bup, FFN, H);
+                transposeW(arena, tmpW, bdown, bdown, H, FFN);
+                lti = lti + 1;
+            }
+            int lmR = 0;
+            while (lmR < H) {
+                int lmC = 0;
+                while (lmC < V) { arena[lmOff + lmR * V + lmC] = arena[wteOff + lmC * H + lmR]; lmC = lmC + 1; }
+                lmR = lmR + 1;
+            }
+            int fd0 = __myp_io_fopen("./deeplearning/data/llm/qwen2_cossin.bin", "rb");
+            if (fd0 < 0) { Console.writeLine("cossin file missing"); return; }
+            loadBlock(arena, fd0, fullCosOff, half * POS);
+            loadBlock(arena, fd0, fullSinOff, half * POS);
+            __myp_io_fclose();
+            Qwen2Tokenizer tk = new Qwen2Tokenizer();
+            if (tk.load() < 0) { Console.writeLine("tokenizer load failed"); return; }
+            int[] decOff = new int[151647];
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_dec_offs.bin", "rb");
+            if (fd < 0) { Console.writeLine("dec offs missing"); return; }
+            int vi = 0;
+            while (vi <= 151646) { decOff[vi] = readI32(); vi = vi + 1; }
+            __myp_io_fclose();
+            int[] decData = new int[1000000];
+            int decLen = 0;
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_dec_data.bin", "rb");
+            if (fd < 0) { Console.writeLine("dec data missing"); return; }
+            int vb = __myp_io_read_byte();
+            while (vb >= 0) { decData[decLen] = vb; decLen = decLen + 1; vb = __myp_io_read_byte(); }
+            __myp_io_fclose();
+
+            // ---- prompt（BN 份相同 → 验证输出一致）----
+            int[] text = new int[4096];
+            int nText = 0;
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_prompt.txt", "rb");
+            if (fd < 0) { Console.writeLine("qwen2_prompt.txt missing"); return; }
+            int ch = __myp_io_read_byte();
+            while (ch >= 0 && nText < 4096) { text[nText] = ch; nText = nText + 1; ch = __myp_io_read_byte(); }
+            __myp_io_fclose();
+            int[] chat = new int[8192];
+            int nChat = 0;
+            appendStr(chat, nChat, "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n");
+            nChat = nChat + 58;
+            appendStr(chat, nChat, "<|im_start|>user\n");
+            nChat = nChat + 17;
+            int uj = 0;
+            while (uj < nText) { chat[nChat + uj] = text[uj]; uj = uj + 1; }
+            nChat = nChat + nText;
+            appendStr(chat, nChat, "<|im_end|>\n");
+            nChat = nChat + 11;
+            appendStr(chat, nChat, "<|im_start|>assistant\n");
+            nChat = nChat + 22;
+            int[] prompt = new int[4096];
+            int nPrompt = tk.encode(chat, 0, nChat, prompt);
+            Console.writeString("MYP tokenize: " + Fmt.i(nChat) + " bytes -> " + Fmt.i(nPrompt) + " tokens, batch=" + Fmt.i(BN));
+            Console.writeLine("");
+
+            // ---- GPU 初始化：整块 arena 一次 H2D ----
+            long t0 = __myp_now_ms();
+            if (Cuda.available() != 1) { Console.writeLine("GPU unavailable"); return; }
+            GpuBufferF arenaBuf = new GpuBufferF(arena, CAP);
+            long dev = arenaBuf.devicePtr();
+            if (dev == 0L) { Console.writeLine("GPU buffer alloc failed"); return; }
+            GpuStream gs = new GpuStream();
+            long t1 = __myp_now_ms();
+            Console.writeString("GPU arena H2D in " + Fmt.i(t1 - t0) + "ms");
+            Console.writeLine("");
+
+            // ---- batch 生成循环（贪心 argmax，同步 batch）----
+            int[] toks = new int[BN];       // 本步输入 token
+            int[] nextToks = new int[BN];   // 上步 argmax（生成阶段用）
+            int[] winHist = new int[BN * 512];
+            int[] nDone = new int[BN];
+            int i = 0;
+            while (i < BN) { toks[i] = prompt[0]; nextToks[i] = prompt[0]; nDone[i] = 0; i = i + 1; }
+            int cacheLen = 0;
+            int step = 0;
+            int eos = 151645;
+            int done = 0;
+            GpuGraph gg = new GpuGraph();
+            GpuGraphExec gexec = null;
+            int useGraph = 0;
+            int capPending = 0;
+            int wantGraph = 1;
+            if (Console.getEnv("MYP_Q2G_GRAPH") == "0") wantGraph = 0;
+            long tGen0 = __myp_now_ms();
+            while (done == 0) {
+                // 本步输入：prefill 用 prompt[step]，生成阶段用上步 argmax
+                i = 0;
+                while (i < BN) {
+                    if (step < nPrompt) toks[i] = prompt[step];
+                    else toks[i] = nextToks[i];
+                    i = i + 1;
+                }
+                // 参数槽：tok[s] + 共享 pos（分两次 H2D，pos 槽在 arena 末尾）
+                i = 0;
+                while (i < BN) { arena[paramTokOff + i] = float(toks[i]); i = i + 1; }
+                arena[paramPosOff] = float(cacheLen);
+                arenaBuf.copyFromHostAsync(arena, paramTokOff, paramTokOff, BN, gs);
+                arenaBuf.copyFromHostAsync(arena, paramPosOff, paramPosOff, 1, gs);
+                if (step == 0 && wantGraph == 1) {
+                    gs.sync();
+                    gg.captureBegin(gs);
+                    capPending = 1;
+                }
+                if (useGraph == 1) {
+                    gexec.launch(gs);
+                } else {
+                    GpuLLMOpsBatch.gatherRows(arena, wteOff, paramTokOff, xOff, V, H, BN, dev, gs);
+                    int li = 0;
+                    while (li < L) {
+                        int base = base0 + li * per;
+                        layerDecodeBatch(arena, dev, gs, base, kcBase + li * kcL, BN, paramPosOff, partOff, rstdOff,
+                                         xOff, qOff, kOff, vOff, ctxOff, gOff, uOff, hOff, scOff,
+                                         fullCosOff, fullSinOff, W, H, QH, KVH, HD, FFN, groups, kvD, EPS);
+                        li = li + 1;
+                    }
+                    GpuLLMOps.rmsNorm(arena, xOff, lnfOff, xOff, H, BN, EPS, dev, gs);
+                    GpuLLMOps.matmul(arena, V * BN, xOff, H, lmOff, V, BN, logOff, dev, gs);
+                }
+                if (capPending == 1) {
+                    int ce = gg.captureEnd(gs);
+                    gexec = gg.instantiate();
+                    useGraph = (ce == 1 && gexec.valid() == 1) ? 1 : 0;
+                    capPending = 0;
+                    if (useGraph == 0) { Console.writeLine("WARN: graph capture failed — per-kernel"); }
+                }
+                arenaBuf.copyToHostAsync(arena, logOff, logOff, V * BN, gs);
+                gs.sync();
+                // per-seq argmax → nextToks + winHist（记本步输入 token，含 prompt）
+                // logits 布局：matmul 写 logOff[o*BN + s]（vocab-major, batch 内层）
+                i = 0;
+                while (i < BN) {
+                    int nxt = argmaxBatch(arena, logOff, V, BN, i);
+                    nextToks[i] = nxt;
+                    winHist[i * 512 + step] = toks[i];
+                    if (step >= nPrompt && nxt == eos) nDone[i] = 1;
+                    i = i + 1;
+                }
+                cacheLen = cacheLen + 1;
+                step = step + 1;
+                // 全部序列 EOS 或超长才停
+                int allDone = 1;
+                i = 0;
+                while (i < BN) {
+                    if (nDone[i] == 0 && step < nPrompt + MAXGEN) allDone = 0;
+                    i = i + 1;
+                }
+                if (allDone == 1) done = 1;
+            }
+            long tGen1 = __myp_now_ms();
+            Console.writeString("batch=" + Fmt.i(BN) + " generate " + Fmt.i(step) + " steps in " + Fmt.i(tGen1 - tGen0) + "ms (" + Fmt.i((tGen1 - tGen0) / step) + "ms/step, aggregate " + Fmt.i(BN * 1000 / ((tGen1 - tGen0) / step)) + " tok/s)");
+            Console.writeLine("");
+
+            // ---- 验证：N 路输出逐 token 一致 + 解码 ----
+            int bad = 0;
+            int s2 = 1;
+            while (s2 < BN) {
+                int st = 0;
+                while (st < step) {
+                    if (winHist[s2 * 512 + st] != winHist[st]) bad = bad + 1;
+                    st = st + 1;
+                }
+                s2 = s2 + 1;
+            }
+            Console.writeString("BATCH 一致性（seq0 vs 其余） mismatch=" + Fmt.i(bad) + " " + (bad == 0 ? "OK" : "FAIL"));
+            Console.writeLine("");
+            Console.writeString("seq0 输出: ");
+            int totBytes = 0;
+            int t2 = 0;
+            while (t2 < step) {
+                int id = winHist[t2];
+                if (id >= 0 && id <= 151645) totBytes = totBytes + (decOff[id + 1] - decOff[id]);
+                t2 = t2 + 1;
+            }
+            ubyte[] outBytes = new ubyte[totBytes];
+            int oi = 0;
+            t2 = 0;
+            while (t2 < step) {
+                int id = winHist[t2];
+                if (id >= 0 && id <= 151645) {
+                    int j = decOff[id];
+                    while (j < decOff[id + 1]) { outBytes[oi] = ubyte(decData[j]); oi = oi + 1; j = j + 1; }
+                }
+                t2 = t2 + 1;
+            }
+            Console.writeString(str(outBytes));
+            Console.writeLine("");
+
+            if (gexec != null) gexec.destroy();
+            gg.destroy();
+            if (gs != null) gs.destroy();
+            if (arenaBuf != null) arenaBuf.free();
+        }
+
+        // 单层 batch decode（rstd 用 rstdBatch 预计算 → qkvC/gateupC 只读不重算）
+        void layerDecodeBatch(float[] arena, long dev, GpuStream s, int base, int kcOff, int N, int paramPosOff, int partOff, int rstdOff,
+                              int xOff, int qOff, int kOff, int vOff, int ctxOff, int gOff, int uOff, int hOff, int scOff,
+                              int fullCosOff, int fullSinOff, int W, int H, int QH, int KVH, int HD, int FFN, int groups, int kvD, double eps) {
+            int ln1 = base;
+            int q = base + H;
+            int qb = base + H + H * H;
+            int k = base + H + H * H + H;
+            int kb = base + H + H * H + H + KVH * HD * H;
+            int v = kb + KVH * HD;
+            int vb = v + KVH * HD * H;
+            int o = vb + KVH * HD;
+            int ln2 = o + H * H;
+            int gate = ln2 + H;
+            int up = gate + FFN * H;
+            int down = up + FFN * H;
+            int ch = 8;
+            int KV = KVH * HD;
+
+            // rstd 单独小核预计算（batch4 下避免每 chunk 线程冗余 896 次 sum2），
+            // qkvC/gateupC 只读 rstdOff[si] 一次再内联归一化。
+            GpuLLMOpsBatch.rstdBatch(arena, xOff, ln1, eps, H, N, rstdOff, dev, s);
+            GpuLLMOpsBatch.qkvC(arena, xOff, ln1, eps, q, qb, k, kb, v, vb, qOff, kOff, vOff, H, KV, N, dev, s, ch, partOff, kcOff, paramPosOff, kvD, W, rstdOff);
+            GpuLLMOpsBatch.ropeFused(arena, qOff, kOff, fullCosOff, fullSinOff, H, KV, QH, KVH, 32768, N, dev, s, kcOff, paramPosOff, kvD, W);
+            GpuLLMOpsBatch.attentionCached(arena, qOff, kcOff, kcOff + kvD * W, ctxOff, scOff,
+                                            H, W, paramPosOff, QH, groups, kvD, N, dev, s);
+            GpuLLMOps.matmulCAdd(arena, H * N, ctxOff, H, o, H, N, hOff, dev, s, ch, partOff, xOff);
+            GpuLLMOpsBatch.rstdBatch(arena, xOff, ln2, eps, H, N, rstdOff, dev, s);
+            GpuLLMOpsBatch.gateupC(arena, xOff, ln2, eps, gate, up, gOff, uOff, FFN, H, N, dev, s, ch, partOff, rstdOff);
+            GpuLLMOps.matmulCAdd(arena, H * N, gOff, FFN, down, H, N, hOff, dev, s, ch, partOff, xOff);
+        }
+
+        void appendStr(int[] buf, int off, string s) {
+            ubyte[] b = bytes(s);
+            int n = Str.len(s);
+            int i = 0;
+            while (i < n) { buf[off + i] = int(b[i]); i = i + 1; }
+        }
+
+        void transposeW(float[] a, float[] tmp, int srcOff, int dstOff, int rows, int cols) {
+            int r = 0;
+            while (r < rows) {
+                int c = 0;
+                while (c < cols) { tmp[c * rows + r] = a[srcOff + r * cols + c]; c = c + 1; }
+                r = r + 1;
+            }
+            int n = rows * cols;
+            int i = 0;
+            while (i < n) { a[dstOff + i] = tmp[i]; i = i + 1; }
+        }
+
+        int argmaxBatch(float[] arena, int logOff, int V, int BN, int s) {
+            int bi = 0;
+            float bv = arena[logOff + 0 * BN + s];
+            int i = 1;
+            while (i < V) {
+                if (arena[logOff + i * BN + s] > bv) { bv = arena[logOff + i * BN + s]; bi = i; }
+                i = i + 1;
+            }
+            return bi;
+        }
+
+        void loadBlock(float[] arena, int fd, int off, int n) {
+            int i = 0;
+            while (i < n) { arena[off + i] = float(readF32()); i = i + 1; }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+
+int main() {
+    Qwen2GpuBatch t = new Qwen2GpuBatch();
+    return 0;
+}

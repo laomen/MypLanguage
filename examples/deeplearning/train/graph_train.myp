@@ -1,0 +1,162 @@
+// graph_train.myp — 阶段2：图级反向训练（mnist_mlp.onnx 回归）
+//
+// 用「通用反向 pass」（Graph.buildReverseGraph）从 ONNX 图直接训练，不手写 backprop：
+//   loadTrain(mnist_mlp.onnx) → 图自动附加 BwdDense/BwdRelu/SoftmaxCE/Update 节点
+//   → 每个样本 run() 一次跑完 前向+反向+参数更新（batch=1 SGD）
+//   → eval 时 setTrain(0) 只跑前向算精度
+//
+// 回归基准：精度应 ≈ 阶段1 手写版（~97%），证明「图级反向 == 手写反向」。
+//
+// 运行（须在 examples/ 下，数据路径相对 examples/）：
+//   cd examples && /tmp/graph_train
+
+import env;
+import math;
+import "../infer/runtime.myp";
+import "../infer/onnx_loader.myp";
+import "./mnist_reader.myp";
+
+class GraphTrain {
+    action:
+        @constructor GraphTrain() {
+            int NIN = 784;
+            int NTRAIN = 30000;
+            int NTEST = 10000;
+
+            // ---- 加载数据 ----
+            float[] x = new float[NTRAIN * NIN];
+            int[] y = new int[NTRAIN];
+            int ntr = MnistReader.loadImages("./deeplearning/data/train-images-idx3-ubyte/train-images.idx3-ubyte", x, NTRAIN);
+            int ntrl = MnistReader.loadLabels("./deeplearning/data/train-labels-idx1-ubyte/train-labels.idx1-ubyte", y, NTRAIN);
+            float[] xt = new float[NTEST * NIN];
+            int[] yt = new int[NTEST];
+            int nte = MnistReader.loadImages("./deeplearning/data/t10k-images-idx3-ubyte/t10k-images.idx3-ubyte", xt, NTEST);
+            int ntel = MnistReader.loadLabels("./deeplearning/data/t10k-labels-idx1-ubyte/t10k-labels.idx1-ubyte", yt, NTEST);
+            if (ntr < 1000 || nte < 1000) {
+                Console.writeLine("MNIST data missing");
+                return;
+            }
+
+            // ---- 图级训练运行时（自动附加反向节点）----
+            InferenceRuntime rt = new InferenceRuntime();
+            rt.init(300000);
+            OnnxLoader loader = new OnnxLoader();
+            int ok = loader.loadTrain("./deeplearning/data/onnx/mnist_mlp.onnx", rt);
+            if (ok == 0) {
+                Console.writeLine("loadTrain failed");
+                return;
+            }
+            int dataTid = loader.tensorId("data");
+            int labelTid = loader.tensorId("label");
+            int lossTid = loader.tensorId("loss");
+            int probTid = loader.tensorId("prob");
+            int w1Tid = loader.tensorId("W1");
+            int w2Tid = loader.tensorId("W2");
+            int w2gTid = loader.tensorId("W2#g");
+            int b1Tid = loader.tensorId("B1");
+            int b2Tid = loader.tensorId("B2");
+            if (dataTid < 0 || labelTid < 0 || lossTid < 0 || probTid < 0 || w1Tid < 0 || w2Tid < 0) {
+                Console.writeLine("tensor not found");
+                return;
+            }
+            // 默认装载的是阶段1训练好的权重（97%）。MYP_RANDOM_INIT=1 → 随机初始化从零训练，
+            // 验证图级 backward 是否正确（能从 ~10% 收敛到 ~95% 即证明）。
+            int randomInit = 0;
+            if (Console.getEnv("MYP_RANDOM_INIT") == "1") randomInit = 1;
+            if (randomInit == 1) {
+                randomizeWeights(rt, w1Tid, b1Tid, w2Tid, b2Tid, 64, 10);
+                Console.writeLine("random init weights");
+            }
+
+            // ---- 训练前 eval（默认装载阶段1训练好的权重 → ~97%；随机初始化 → ~10%）----
+            int preAcc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, nte);
+            Console.writeString("PRE-TRAIN acc=");
+            Console.write(preAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+
+            // ---- 训练（batch=1 纯 SGD；lr 需小——batch=1 下 lr=0.5 会因单个难样本
+            //      大梯度摧毁模型；0.01 稳妥，配合衰减）----
+            double lr = 0.01;
+            int EPOCHS = 15;
+            int epoch = 0;
+            int bestAcc = 0;
+            while (epoch < EPOCHS) {
+                if (epoch == 10) lr = 0.003;
+                rt.setLr(lr);
+                rt.setTrain(1);
+                double lossSum = 0.0;
+                int s = 0;
+                while (s < ntr) {
+                    int j = 0;
+                    while (j < NIN) { rt.setFlat(dataTid, j, x[s * NIN + j]); j = j + 1; }
+                    j = 0;
+                    while (j < 10) { rt.setFlat(labelTid, j, 0.0); j = j + 1; }
+                    rt.setFlat(labelTid, y[s], 1.0);   // one-hot
+                    rt.run();
+                    lossSum = lossSum + rt.getFlat(lossTid, 0);
+                    s = s + 1;
+                }
+                int acc = testAccuracy(rt, probTid, dataTid, xt, yt, NIN, nte);
+                if (acc > bestAcc) bestAcc = acc;
+                Console.writeString("epoch ");
+                Console.write(epoch);
+                Console.writeString(" loss=");
+                Console.writeFloat(lossSum / ntr);
+                Console.writeString(" acc=");
+                Console.write(acc);
+                Console.writeString("%");
+                Console.writeLine("");
+                epoch = epoch + 1;
+            }
+
+            Console.writeString("MNIST GRAPH-TRAIN best acc=");
+            Console.write(bestAcc);
+            Console.writeString("%");
+            Console.writeLine("");
+            if (bestAcc >= 95) Console.writeLine("GRAPH TRAIN OK");
+            else Console.writeLine("GRAPH TRAIN FAIL");
+        }
+
+        // eval：setTrain(0) → 只跑前向 → argmax(prob) 与标签比对
+        int testAccuracy(InferenceRuntime rt, int probTid, int dataTid, float[] xt, int[] yt, int NIN, int n) {
+            rt.setTrain(0);
+            int correct = 0;
+            int s = 0;
+            while (s < n) {
+                int j = 0;
+                while (j < NIN) { rt.setFlat(dataTid, j, xt[s * NIN + j]); j = j + 1; }
+                rt.run();
+                int pred = rt.argmax1d(probTid);
+                if (pred == yt[s]) correct = correct + 1;
+                s = s + 1;
+            }
+            return correct * 100 / n;
+        }
+
+        // He 随机初始化权重（from-scratch 训练用）
+        void randomizeWeights(InferenceRuntime rt, int w1Tid, int b1Tid, int w2Tid, int b2Tid, int NH, int NOUT) {
+            double std1 = Math.sqrt(2.0 / 784.0);
+            double std2 = Math.sqrt(2.0 / double(NH));
+            int k = 0;
+            while (k < NH * 784) { rt.setFlat(w1Tid, k, (rnd() * 2.0 - 1.0) * std1); k = k + 1; }
+            k = 0; while (k < NH) { rt.setFlat(b1Tid, k, 0.1); k = k + 1; }
+            k = 0; while (k < NOUT * NH) { rt.setFlat(w2Tid, k, (rnd() * 2.0 - 1.0) * std2); k = k + 1; }
+            k = 0; while (k < NOUT) { rt.setFlat(b2Tid, k, 0.0); k = k + 1; }
+        }
+
+        // 确定性伪随机 [0,1)
+        double rnd() {
+            seed_ = (seed_ * 1103515245L + 12345L) % 2147483648L;
+            double v = float(seed_ % 1000000) / 1000000.0;
+            return v;
+        }
+
+    property:
+        long seed_ = 20260820;
+}
+
+int main() {
+    GraphTrain t = new GraphTrain();
+    return 0;
+}

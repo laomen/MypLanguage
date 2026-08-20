@@ -1,0 +1,101 @@
+// bpe_encode_test.myp — MYP 端 BPE 编码器 vs GPT2Tokenizer 对拍
+//
+// 读 bpe_ref_texts.bin（测试文本）+ bpe_ref_encode.bin（transformers 编码的参考 id），
+// 用 Bpe.encode 编码每个文本并与参考对拍。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/llm/make_bpe_tables.py
+//   ./build/mypc examples/deeplearning/llm/bpe_encode_test.myp -o /tmp/bpe_test --stdlib stdlib && /tmp/bpe_test
+
+import env;
+import fmt;
+import "bpe.myp";
+
+class BpeEncodeTest {
+    action:
+        @constructor BpeEncodeTest() {
+            Bpe bpe = new Bpe();
+            if (bpe.load() < 0) { Console.writeLine("bpe load failed"); return; }
+
+            // ---- 读测试文本 ----
+            int[] tFlat = new int[2048];
+            int[] tOff = new int[16];
+            int[] tLen = new int[16];
+            int nP = 0;
+            int fd = __myp_io_fopen("./deeplearning/data/llm/bpe_ref_texts.bin", "rb");
+            if (fd < 0) { Console.writeLine("texts file missing"); return; }
+            nP = readI32();
+            int toff = 0;
+            int ta = 0;
+            while (ta < nP) {
+                int tl = readI32();
+                tOff[ta] = toff;
+                tLen[ta] = tl;
+                int j = 0;
+                while (j < tl) { tFlat[toff + j] = __myp_io_read_byte(); j = j + 1; }
+                toff = toff + tl;
+                ta = ta + 1;
+            }
+            __myp_io_fclose();
+
+            // ---- 读参考编码 ----
+            int[] rFlat = new int[2048];
+            int[] rOff = new int[16];
+            int[] rCnt = new int[16];
+            fd = __myp_io_fopen("./deeplearning/data/llm/bpe_ref_encode.bin", "rb");
+            if (fd < 0) { Console.writeLine("ref file missing"); return; }
+            int nP2 = 0;
+            nP2 = readI32();
+            int roff = 0;
+            int rb = 0;
+            while (rb < nP2) {
+                int cnt = 0;
+                cnt = readI32();
+                rOff[rb] = roff;
+                rCnt[rb] = cnt;
+                int j = 0;
+                while (j < cnt) { rFlat[roff + j] = readI32(); j = j + 1; }
+                roff = roff + cnt;
+                rb = rb + 1;
+            }
+            __myp_io_fclose();
+
+            // ---- 编码并对拍 ----
+            int[] outIds = new int[1024];
+            int nFail = 0;
+            int rc = 0;
+            while (rc < nP) {
+                int nOut = bpe.encode(tFlat, tOff[rc], tLen[rc], outIds);
+                int bad = 0;
+                int k = 0;
+                while (k < rCnt[rc]) {
+                    if (outIds[k] != rFlat[rOff[rc] + k]) bad = bad + 1;
+                    k = k + 1;
+                }
+                Console.writeString("prompt " + Fmt.i(rc) + ": encode=" + Fmt.i(nOut) + " ref=" + Fmt.i(rCnt[rc]) + " mismatch=" + Fmt.i(bad));
+                Console.writeLine("");
+                if (bad > 0 || nOut != rCnt[rc]) nFail = nFail + 1;
+                rc = rc + 1;
+            }
+            Console.writeString("BPE ENCODE ");
+            if (nFail == 0) Console.writeLine("OK");
+            else Console.writeLine("FAIL (" + Fmt.i(nFail) + " prompts)");
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+
+int main() {
+    BpeEncodeTest t = new BpeEncodeTest();
+    return 0;
+}

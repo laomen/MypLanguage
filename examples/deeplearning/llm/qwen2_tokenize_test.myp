@@ -1,0 +1,152 @@
+// qwen2_tokenize_test.myp — MYP 端 Qwen2 分词器 vs transformers(tiktoken) 对拍
+//
+// 读 qwen2_ref_texts.bin（测试文本）+ qwen2_ref_encode.bin（tiktoken 参考 id），
+// 用 Qwen2Tokenizer.encode 编码每个文本并与参考对拍；再读 qwen2_ref_chat.bin
+// （含 3 个特殊 token 的 chat 模板文本 + 参考 id）验证特殊 token 切分；最后验证
+// decode 往返（encode→decode == 原字节）。
+//
+// 运行（须在 examples/ 下）：
+//   deeplearning/infer/tools/onnxvenv/bin/python deeplearning/llm/make_qwen2_tiktoken_tables.py
+//   ./build/mypc examples/deeplearning/llm/qwen2_tokenize_test.myp -o /tmp/q2tok --stdlib stdlib && /tmp/q2tok
+
+import env;
+import fmt;
+import "qwen2_tokenizer.myp";
+
+class Qwen2TokenizeTest {
+    action:
+        @constructor Qwen2TokenizeTest() {
+            Qwen2Tokenizer t = new Qwen2Tokenizer();
+            if (t.load() < 0) { Console.writeLine("qwen2 tokenizer load failed"); return; }
+
+            // ---- 读测试文本 ----
+            int[] tFlat = new int[4096];
+            int[] tOff = new int[16];
+            int[] tLen = new int[16];
+            int nP = 0;
+            int fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_ref_texts.bin", "rb");
+            if (fd < 0) { Console.writeLine("texts file missing"); return; }
+            nP = readI32();
+            int toff = 0;
+            int ta = 0;
+            while (ta < nP) {
+                int tl = readI32();
+                tOff[ta] = toff;
+                tLen[ta] = tl;
+                int j = 0;
+                while (j < tl) { tFlat[toff + j] = __myp_io_read_byte(); j = j + 1; }
+                toff = toff + tl;
+                ta = ta + 1;
+            }
+            __myp_io_fclose();
+
+            // ---- 读参考编码 ----
+            int[] rFlat = new int[4096];
+            int[] rOff = new int[16];
+            int[] rCnt = new int[16];
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_ref_encode.bin", "rb");
+            if (fd < 0) { Console.writeLine("ref file missing"); return; }
+            int nP2 = readI32();
+            int roff = 0;
+            int rb = 0;
+            while (rb < nP2) {
+                int cnt = readI32();
+                rOff[rb] = roff;
+                rCnt[rb] = cnt;
+                int j = 0;
+                while (j < cnt) { rFlat[roff + j] = readI32(); j = j + 1; }
+                roff = roff + cnt;
+                rb = rb + 1;
+            }
+            __myp_io_fclose();
+
+            // ---- 编码并对拍 ----
+            int[] outIds = new int[2048];
+            int nFail = 0;
+            int rc = 0;
+            while (rc < nP) {
+                int nOut = t.encode(tFlat, tOff[rc], tLen[rc], outIds);
+                int bad = 0;
+                int k = 0;
+                while (k < rCnt[rc]) {
+                    if (outIds[k] != rFlat[rOff[rc] + k]) bad = bad + 1;
+                    k = k + 1;
+                }
+                Console.writeString("prompt " + Fmt.i(rc) + ": encode=" + Fmt.i(nOut) + " ref=" + Fmt.i(rCnt[rc]) + " mismatch=" + Fmt.i(bad));
+                Console.writeLine("");
+                if (bad > 0 || nOut != rCnt[rc]) nFail = nFail + 1;
+                rc = rc + 1;
+            }
+
+            // ---- 特殊 token chat 模板对拍 ----
+            int[] chatText = new int[512];
+            int[] chatRef = new int[512];
+            int chatN = 0;
+            int chatRefN = 0;
+            fd = __myp_io_fopen("./deeplearning/data/llm/qwen2_ref_chat.bin", "rb");
+            if (fd >= 0) {
+                int clen = readI32();
+                chatN = clen;
+                int j = 0;
+                while (j < clen) { chatText[j] = __myp_io_read_byte(); j = j + 1; }
+                int cidn = readI32();
+                chatRefN = cidn;
+                j = 0;
+                while (j < cidn) { chatRef[j] = readI32(); j = j + 1; }
+                __myp_io_fclose();
+                int nOut = t.encode(chatText, 0, chatN, outIds);
+                int bad = 0;
+                int k = 0;
+                while (k < chatRefN) {
+                    if (outIds[k] != chatRef[k]) bad = bad + 1;
+                    k = k + 1;
+                }
+                Console.writeString("chat-template: encode=" + Fmt.i(nOut) + " ref=" + Fmt.i(chatRefN) + " mismatch=" + Fmt.i(bad));
+                Console.writeLine("");
+                if (bad > 0 || nOut != chatRefN) nFail = nFail + 1;
+            } else {
+                Console.writeLine("chat ref missing (skip)");
+            }
+
+            // ---- decode 往返：对 10 个测试文本 encode→decode 对比原字节 ----
+            int dFail = 0;
+            int dt = 0;
+            while (dt < nP) {
+                int nOut = t.encode(tFlat, tOff[dt], tLen[dt], outIds);
+                ubyte[] dec = new ubyte[4096];
+                int m = t.decode(outIds, nOut, dec);
+                int same = 1;
+                if (m != tLen[dt]) same = 0;
+                int j = 0;
+                while (j < tLen[dt] && j < m) {
+                    if (int(dec[j]) != tFlat[tOff[dt] + j]) same = 0;
+                    j = j + 1;
+                }
+                if (same == 0) dFail = dFail + 1;
+                dt = dt + 1;
+            }
+            Console.writeString("decode round-trip fails: " + Fmt.i(dFail));
+            Console.writeLine("");
+
+            Console.writeString("QWEN2 TOKENIZE ");
+            if (nFail == 0 && dFail == 0) Console.writeLine("OK");
+            else Console.writeLine("FAIL");
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+
+int main() {
+    Qwen2TokenizeTest t = new Qwen2TokenizeTest();
+    return 0;
+}

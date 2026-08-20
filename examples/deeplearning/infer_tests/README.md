@@ -20,6 +20,8 @@
 | `tensorops_main.myp` | **F8** | 张量操作端到端（Concat/Reshape/Transpose vs ORT，位精确） | `data/onnx/tensorops_test.onnx`（`tools/make_tensorops_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `slice_main.myp` | **F8** | Slice 端到端（正区间/负索引/负 step/INT64_MAX vs ORT，位精确） | `data/onnx/slice_test.onnx`（`tools/make_slice_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `ops2d_main.myp` | **F8** | 2D 通用算子端到端（Sub/Div/Mul/Sqrt/ReduceMean/InstanceNorm/Resize vs ORT） | `data/onnx/ops2d_test.onnx`（`tools/make_2dops_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
+| `rmsnorm_main.myp` | LLM | 通用 RMSNorm GPU 算子（`gpu_ops.rmsnorm`，rstd 独立小核模式）：host 参考对比 + N=4/N=1 多形状回归 | 无文件（确定性填充） |
+| `dense_tr_main.myp` | 通用 | 通用 dense 转置布局版（`gpu_ops.denseTr`，访存合并，GEMV/batch=1 适用）：与现有 `dense` 位级一致（maxDiff=0）+ N=4/N=1 | 无文件（确定性填充） |
 | `avgpool_main.myp` | **F8** | AveragePool 端到端（count_include_pad 0/1 + 下采样 vs ORT） | `data/onnx/avgpool_test.onnx`（`tools/make_avgpool_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `pad_main.myp` | **F8** | Pad 端到端（constant/edge/reflect + value vs ORT，位精确） | `data/onnx/pad_test.onnx`（`tools/make_pad_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |
 | `convt_main.myp` | **F8** | ConvTranspose 端到端（strides=2/pads/output_padding/bias vs ORT） | `data/onnx/convt_test.onnx`（`tools/make_convt_onnx.py` 生成，含 .f32 + ORT 参考 .bin） |

@@ -1,0 +1,255 @@
+# DeepLearning 训练/推理框架 变更日志（examples/deeplearning）
+
+> 本文件记录 **deeplearning 分项目**（`examples/deeplearning/`）的独立变更，
+> 与主仓库编译器 `docs/CHANGELOG.md` 分离（主 changelog 只记编译器/运行时/stdlib）。
+> 分项目内的跨分项目运行时配合改动（如 GPU 运行时泄漏修复）也在此记录上下文。
+
+---
+
+## 2026-08-20 — GPU 批量推理（qwen2 batch=4 250 tok/s）+ 通用算子库 + distilgpt2 GPU 前向
+
+### 多序列批量推理（`llm/qwen2_gpu_batch.myp`）
+- N 路同步批量（权重共享、pos 同步）：BN=1 11ms/90 tok/s → BN=2 12ms/166 →
+  **BN=4 16ms/250 tok/s**（mismatch=0，33 步 EOS）。CUDA Graph 默认 ON。
+- **关键修正（mismatch=384 根因）**：matmul 写 `logOff[o*BN+s]`（vocab-major、
+  batch 内序），argmax 原先按 seq-major 读 → 批量错位；**BN=1 掩盖布局 bug**。
+  fix：argmaxBatch 按 stride=BN 读。
+- **rstdBatch 独立小 kernel**（`gpu_llm_ops_batch.myp`）：原来每个 chunk 线程
+  冗余重算 896-sum²（同 seq ~9728 线程）→ 拆成 grid=N 独立 kernel → gateup
+  **2.4x**（0.416→0.170ms/layer）。
+- **amortized 内核否决**：seq-in-thread（4 标量累加器）→ 2x 更慢（并行度损失 >
+  带宽节省）。GPU batch GEMM 是**延迟受限**非 DRAM 受限。
+
+### 通用 GPU 算子库（`infer/gpu_ops.myp`）
+- 新增：`rmsnorm`（独立小 kernel 算 rstd + thread-per-element）、`layernorm`
+  （mean/invStd 独立 kernel，g/b 可选）、`gelu`（erf inline）、`denseTr`
+  （转置权重 [xRows,outDim]，thread=输出行，bOff<0 无 bias）。既有 bwdDense/
+  bwdConv/bwdConv3D/bwdMaxPool/bwdAvgPool/bwdRelu/bwdSigmoid/bwdAdd/softmaxCE/
+  update(SGD) + instancenorm（stats 独立 kernel 模式）。
+- 测试：`infer_tests/rmsnorm_main.myp`（N=4/N=1 多形状 host 对拍）、
+  `infer_tests/dense_tr_main.myp`（dense vs denseTr **bit-identical**，maxDiff=0）。
+- `llm/gpu_llm_ops.myp` 新增 `attention`（全序列因果：thread=(head,i)，scOff
+  [heads*S*S]，j>i → -1e30）。
+
+### distilgpt2 GPU 前向（`llm/distilgpt2_gpu.myp`）
+- 82M GPT-2 全 GPU：LayerNorm/GELU/MHA + **非转置权重**（与 Qwen2 转置布局不同）
+  → 证明 GPU 框架不绑定 Qwen2 架构。结果 argmax=464='The'，maxRelDiff=4.2e-4。
+- 复用 `GpuInferOps.layernorm/dense/gelu/add` + `GpuLLMOps.attention` +
+  `GpuLLMOpsBatch.gatherRows`。坑：GPU dense 10 参（a,work,xOff,xRows,wOff,outDim,
+  batch,bOff,yOff,dev）vs CPU 8 参。
+
+### 通用优化模式（GPU 算子设计可复用）
+1. **stats 独立小 kernel**（rstd/mean 用 N 线程网格单独算）——避免每个数据线程
+   冗余重算（rstdBatch 2.4x）。
+2. **thread 映射按输出布局选最快维度**（denseTr thread=输出行对 batch=1 GEMV
+   最优；qkvC `r=o*N+ss` seq-fastest）。
+3. **输出布局与 host 读一致**（vocab-major vs seq-major）——BN=1 会掩盖。
+4. **带宽 vs 并行度权衡**：LLM decode 延迟受限，amortized/向量化收益为负。
+5. **transposed vs 非转置权重**：两种都要支持（GPT-2 vs Qwen2），denseTr 新增
+   转置变体而非改原 dense。
+
+---
+
+## 2026-08-21 — 交互式多轮对话（5c4，--talk）
+
+- **`llm/distilgpt2_talk.myp`**：交互式 REPL，全链路 MYP。`You:` 读 stdin 一行 →
+  拼 `User: <输入>\nAssistant:` 到对话历史（int[] 字节缓冲）→ MYP BPE 编码 → KV-cache
+  生成（遇 EOS=50256 停）→ 解码打印回复 → 回复文本追加回历史 → 下一轮。输入 exit/quit
+  退出。上下文跨轮累积（实测 11→62 tokens）。
+- 驱动 `run_distilgpt2_chat.py` 加 `--talk [n_tokens]` 模式（编译+运行 talk 程序）。
+- **说明**：distilgpt2 是 base 模型（非指令微调），贪心 argmax 会重复/复读（"I'm a
+  freelance writer..."），属正常现象。对话机制（多轮+上下文记忆）完整可用；要自然对话
+  需指令微调模型 + 温度/top-k 采样（下一阶段）。
+
+---
+
+## 2026-08-21 — BPE 编码搬进 MYP + 端到端 chat（5c2/5c3）
+
+### 纯 MYP GPT-2 ByteLevel BPE 编码器（`llm/bpe.myp`）
+- 三阶段全在 MYP：字节编码（bytes_to_unicode，`b2c_` 表运行时生成）→ 预分词（ASCII 等价
+  扫描器复现 GPT-2 正则 `'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+`）
+  → BPE 合并（merges 开放寻址哈希，pair 元素可多字符）→ vocab 查表（开放寻址哈希）。
+- 表由 `llm/make_bpe_tables.py` 从 tokenizer.json 生成（FNV-1a，T=2^17，key=int16 LE
+  每码点，merge pair 用 0xFFFF 分隔）：`bpe_merges_*.bin` + `bpe_vocab_*.bin`。
+- **验证**：`llm/bpe_encode_test.myp` vs GPT2Tokenizer，7 个测试文本逐 token 一致 →
+  `BPE ENCODE OK`（含撇号缩写、标点、重复词等）。
+
+### 端到端 chat（`llm/distilgpt2_chat.myp`）
+- 全链路 MYP：读 `distilgpt2_prompt.txt`（UTF-8）→ **MYP BPE 编码** → KV-cache 推理 →
+  **MYP 字节级解码** → 文本输出。Python 只做数据准备 + transformers 参考生成。
+- 驱动 `run_distilgpt2_chat.py` 改跑 chat 程序：`prompt.txt` → 编译 → 运行；输出
+  `BPE ENCODE OK`（vs prompt_ids.bin）+ `DISTILGPT2 GENERATE OK`（vs ref_gen_ids.bin）。
+- **实测**：`Once upon a time`/32 → BPE 4 tokens 一致、生成 mismatch=0；`The secret of
+  happiness is`/40（--no-ref）正常输出。
+- **坑**：MYP 类属性必须在 `property:` 段（类顶部放属性是解析错误，且错误行号错位到
+  导入方）；预分词是 re 交替"首个匹配"非最长（`'s!` → `'s`+`!`）；FNV-1a 用 long 防
+  int32 溢出。
+
+---
+
+## 2026-08-21 — 阶段5c：distilgpt2 真实权重导入 + 前向装配 + KV-cache 真实文本生成
+
+### 权重提取与参考（`llm/extract_distilgpt2.py`）
+- 从用户导出的 ONNX（`data/llm/distilgpt2_onnx/model.onnx`，unfused 1599 节点）提取
+  权重 → `data/llm/distilgpt2_weights.bin`（328MB，f32 LE）：wte[50257,768](=lm_head tied)
+  + wpe[1024,768] + 6 层各 12 数组 + **最终 `transformer.ln_f`（w+b，1536 floats）**。
+- 参考 logits 改用 **numpy 复刻前向（含 ln_f）** 生成（已与 transformers GPT2LMHeadModel
+  权威输出验证一致），不再信任 unfused ONNX 图的计算结果（其 KV-cache 处理有 bug：
+  onnxruntime argmax=464 ≠ 真实；权重本身 bit 级一致）。
+
+### 前向装配（`llm/distilgpt2_forward.myp`）
+- 6 层 GPT-2 前向：LayerNorm → c_attn(dense) → attention(12头,因果) → c_proj → 残差 →
+  LayerNorm → c_fc → gelu(erf) → mlp_c_proj → 残差；最后 **ln_f → lm_head(wte tied)**。
+- **`DISTILGPT2 FORWARD OK`**：argmax MYP=464 == 参考=464（'The'），maxRelDiff=4.2e-4，
+  与 transformers 一致。
+- **根因（本次核心 bug）**：MYP forward 与旧 numpy 参考都**漏了 lm_head 前的最终
+  LayerNorm ln_f** → logits 量级爆炸（+134~+277，argmax=262）≠ 真值（argmax=464）。
+  加 ln_f 后 MYP=numpy=onnxruntime=transformers 全一致。权重文件同步补上 ln_f（1536
+  floats，原缺）。
+
+### 真实文本生成（`llm/prep_distilgpt2_gen.py` + `llm/distilgpt2_generate.myp`）
+- `prep_distilgpt2_gen.py`（onnxvenv，torch+transformers）：GPT2Tokenizer 编码 prompt →
+  `distilgpt2_prompt_ids.bin`；构建 id→字节 查表（`vocab_offs.bin` + `vocab_data.bin`，
+  字节级解码后的 UTF-8）；transformers 贪心生成 → `distilgpt2_ref_gen_ids.bin`。
+- `distilgpt2_generate.myp`：KV-cache 增量 decode（GPT-2：LayerNorm+GELU、wte+wpe、
+  最终 ln_f、MHA 12 头、argmax），W=128 滑窗；MYP 内 **BPE 字节级解码**（ubyte[] →
+  `str()`），直接输出可读文本。
+- **`DISTILGPT2 GENERATE OK`，token mismatch=0**：与 transformers 贪心逐 token 完全一致。
+  生成文本：`Once upon a time of war, the United States was the only country in the
+  world to have a military presence. ...`（贪心退化重复是 GPT-2 已知现象）。
+- **CPU 推理一键工具**（通用化）：`run_distilgpt2_chat.py "任意 prompt" [n_tokens] [--no-ref]`
+  一键在 CPU 上跑 distilgpt2（编码 → 编译 → KV-cache 推理 → 解码文本）。`prep` 脚本支持
+  CLI 参数 + 写 gen_cfg.bin（生成数）；MYP 生成数从 cfg 读、参考文件存在才对拍、prompt/
+  generated ids 打印移到 `MYP_DG2_DBG=1`。验证：`The quick brown fox jumps` 32 token
+  mismatch=0 / GENERATE OK；`In a world where machines think`（--no-ref）输出正常。
+
+### 踩坑（写入 llm/README.md）
+- **对拍必须用同一 prompt**：S=6（无 EOS）transformers argmax=198、S=8（含 2 EOS）
+  argmax=464——prompt 不同会得假"分歧"。
+- **`__myp_io_write_byte` 写当前文件句柄，不是 stdout**（无打开文件返回 -1）。stdout
+  输出原始字节：收集进 `ubyte[]`（`out[i] = ubyte(v)`）→ `Console.writeString(str(b))`。
+- MYP `ubyte(int)` 显式强转可用（numeric→numeric）；`b[i]=<int>` 无隐式转换会报错。
+
+---
+
+## 2026-08-20 — 阶段5b：KV cache 增量 decode（滑动窗口生成）
+
+- `infer/ops.myp` 新增 `attentionCached`（KV cache 增量注意力：单 token Q [D] vs 历史
+  K/V 缓存 [kvD,stride]，softmax 后 Σp·v；**stride（缓存容量/行步长）与 len（参与注意力
+  列数）分开传**）。runtime opKind 67 + run() 分发。
+- `llm/gpt_generate.myp`：逐 token 增量前向（每层 QKV → 追加 K/V 到缓存 →
+  attentionCached → 残差 → FFN → LM head → argmax），缓存满 W 左移（滑动窗口）。
+  每一步与整窗重算（forwardFull，全序列 attention）对拍。
+- **验证**：`GPT GENERATE OK`（双编译器）——**填充阶段（step<W）增量与整窗重算精确
+  一致（maxd=0）**，证明 KV cache 机制正确；滑窗阶段（step≥W）为标准滑动窗口近似
+  （丢弃最旧 token 改变余下 token 上下文，Mistral 同款，只统计不判失败）。
+- **两个坑**：
+  1. `attentionCached` 初版用 `W`（当前长度）当缓存行步长 → 与固定容量 Wmax 布局冲突
+     → 改为 stride/len 分开（隔离测试 W=1 时 stride==len 不暴露，填充多 token 才出错）；
+  2. 滑动窗口 shift 后增量 ≠ 整窗重算是**固有近似**（上下文变化），不是 bug。
+- 待续：5c distilgpt2 转 ONNX + 图路径 + tokenizer → 5e GPU attention。
+
+---
+
+## 2026-08-20 — 阶段5a2：LayerNorm/GELU/RoPE/GQA 算子 + distilgpt2 权重下载
+
+### 算子补齐（`infer/ops.myp` + `infer/runtime.myp`，CPU）
+- `layerNorm`（GPT-2：y=(x-mean)/√(var+eps)·γ+β，按特征维/每 token）；
+- `gelu`（GPT-2 精确 erf 版 0.5x(1+erf(x/√2))，MYP 无 erf → 内联 Abramowitz-Stegun 近似）；
+- `rope`（Llama 真实约定：**逐头**、head_dim 内半配对，cos/sin 表 [dh/2,S] 共享）；
+- `attention` 增加 **GQA groups** 参数（Q 头 b 共享 KV 头 b/groups，MHA=1 不变）。
+- runtime opKind 64/65/66（LayerNorm/GELU/RoPE）+ attention opP5=groups。
+
+### 验证
+- `llm/make_llm_ops_ref.py`（numpy）+ `llm/llm_ops_check.myp` → `LLM OPS CHECK OK`：
+  LayerNorm maxDiff=0（精确）、GELU/RoPE/GQA-attn ≈2.4e-07；双编译器一致。
+- RoPE 坑：初版用「全特征半旋转」，与真实 Llama「逐头 head_dim 内配对」不符 → 修正为逐头约定。
+
+### distilgpt2 权重下载
+- `data/llm/distilgpt2/`（340MB）：`pytorch_model.bin`（352,833,716B）+ config +
+  BPE tokenizer（vocab.json/merges.txt/tokenizer.json）。
+- **下载坑**：huggingface.co 连不通；`hf-mirror.com` 镜像可用，但 `snapshot_download` 的
+  大 LFS 文件走 xethub CAS 报 401 → 改用 `/resolve/main/<file>` 直连镜像下载。
+
+---
+
+## 2026-08-20 — 阶段5a：Transformer 推理算子 + 小 GPT 前向对拍
+
+### 阶段5a：Transformer 核心算子（CPU）
+- `infer/ops.myp` 新增 3 个 Transformer 算子：
+  - `gatherRows`（embedding 查表，token id → 词向量行）；
+  - `rmsNorm`（RMSNorm，`y = x/sqrt(mean(x²)+eps)·γ`，按特征维/序列列）；
+  - `attention`（缩放点积注意力：`score=Σ q·k/√dh` + 因果掩码 → softmax(j) →
+    `out=Σ p·v`；独立 `scOff` 暂存 [S,S] 分数；全序列、无 KV cache）。
+- `infer/runtime.myp` 新增 opKind 61/62/63（RMSNorm/Attention/GatherRows）
+  + `add*` 方法 + `run()` 分发（eps 以 F32 位型存 opP2_）。
+- 新目录 `llm/`：`llm/make_gpt_smoke_ref.py`（numpy 参考）+ `llm/transformer_smoke.myp`。
+
+### 验证：小 GPT 前向与 numpy 参考精确对拍
+- 2 层小 GPT（V=32, D=64, H=4, dh=16, S=16, ffn=128，随机权重）：
+  Embedding → [RMSNorm → QKV → attention(因果) → 残差 → RMSNorm → FFN(silu)
+  → 残差]×2 → LM head → logits[V,S]。
+- `transformer_smoke.myp` 用 `InferOps` 直连内核拼装（不经图），与
+  `make_gpt_smoke_ref.py` 导出的参考 logits 逐元素对拍：
+  **max diff = 1.49e-07（float32 级精确）→ `TRANSFORMER SMOKE OK`**，
+  双编译器（mypc/myp_self）一致。
+- 布局约定：激活 [特征, 序列]（行=特征，列=token），dense/attention/rmsNorm 一致；
+  QKV 用单个 [3D,D] Gemm，q/k/v 按行偏移取 [0,D)/[D,2D)/[2D,3D)。
+
+### 后续（待续）
+- 5b：KV cache 增量 decode（滑动窗口）→ 真生成文本；
+- 5c：真实小模型权重（GPT-2 等转 ONNX）+ tokenizer；
+- 5d：ONNX 图路径接入（inferShapes/buildRuntime 的 RMSNorm/Attention/Gather 节点）；
+- 5e：GPU attention 内核。
+
+---
+
+## 2026-08-20 — 阶段3d + 阶段4a/4c：GPU 训练闭环 + 3D 反向 + Dice loss
+
+### 阶段3d：GPU 训练（backward 内核 + 显存泄漏修复 + 持久化 arena）
+- `infer/gpu_ops.myp` 新增 8 个 GPU backward 内核：`bwdDense`(3 内核)/`bwdRelu`/
+  `bwdSigmoid`/`bwdAdd`/`softmaxCE`/`update`/`bwdConv`(db/dW/dX 3 内核，dX 逆映射
+  公式)/`bwdMaxPool`(重算 argmax)。线程逐元素 + 串行归约、**无原子**。
+  `runtime.myp` `runGpu()` 反向分发（opKind 50-57，trainMode 门控）。
+- **显存泄漏根因（跨分项目，`src/runtime/runtime_gpu.c`）**：`myp_gpu_destroy_kernel`
+  只 free 宿主结构、**从不 `cuModuleUnload`**，每次 launch 的模块显存永不回收 →
+  训练显存线性暴涨。修复：按 (PTX,name) 缓存 kernel 模块（进程生命周期只加载一次）
+  + 未缓存路径 `cuModuleUnload` + load 入口 `cuCtxSetCurrent`。复现/回归
+  `train/gpu_leak_test.myp`（9000 launch 显存平台化）。
+- **持久化设备 arena**（`infer/runtime.myp` + `train/cnn_train.myp`）：
+  `gpuPersistentStart()/gpuPersistentEnd()/markGpuSync(tid)`——arena 一次驻留显存，
+  每步只增量上传 `setFlat` 置脏输入（data/label）+ 下载标记输出（loss/prob）。
+  旧 runGpu 每样本整块 16MB H2D/D2H → GPU 训练比 CPU 慢 ~5 倍；修复后
+  **GPU 120s→13.4s**，反超 CPU（23.2s）~1.7×，loss 轨迹与 CPU 完全一致，
+  acc 88%（1000 样本子集）/ 96%（全量 30000）。
+- 详细：`train/README.md` 阶段3d 章节。
+
+### 阶段4a：3D 反向（CPU）
+- `infer/ops.myp` 新增 `bwdConv3D`（9 重循环一次累加 dW/dX + db，非对称 padding
+  pdt/pdb/pt/pb/pl/pr + 膨胀 dd/dh/dw）、`bwdMaxPool3D`（重算 argmax 路由）、
+  `bwdAvgPool3D`（cip 分母均摊）。
+- `infer/runtime.myp` opKind 58/59/60 + `run()` CPU 分发（Conv3D 假定膨胀=1、
+  group=1，kd/kh/kw 取 w 张量形状）；`infer/graph.myp` `buildReverseGraph`/
+  `buildRuntime` 支持 Conv3D/MaxPool3D/AveragePool3D 反向节点（复制 3D 参数）。
+- **数值对拍** `train/conv3d_grad_check.myp` → `CONV3D GRAD CHECK OK`
+  （bwdConv3D 有限差分 + bwdMaxPool3D 重建 Σx·dX=Σy + bwdAvgPool3D 差分）。
+- **端到端** `train/3d_cnn_train.myp` + `tools/make_3d_cnn_onnx.py`（合成 8³ 两分类）
+  → loss 0.159→0.003、**acc 100%**（双编译器 mypc/myp_self 均 `3D CNN TRAIN OK`）。
+- **框架 BUG 修复**：`graph.myp` Flatten 5D 形状推断漏乘深度维 `shD4`（5D 输入被
+  拍成 3 维 → 下游 Gemm 读越界、label/loss 区被覆盖 → loss 恒 0）。修复按 `shR5_`
+  连乘 `shD4`。
+
+### 阶段4c：Dice loss（分割）
+- `infer/ops.myp` `diceLoss`：`L = 1-(1/C)Σ_c 2Σ(p·y)/(Σp+Σy+eps)`，反向
+  `dp = -(2/rows)(y·B-A)/B²`。
+- **数值对拍** `train/dice_grad_check.myp` → `DICE GRAD CHECK OK`（~1e-5 吻合）。
+
+### 回归
+- 2D CNN 训练 88% 不变；GPU 推理 `bn_main`（MYP_GPU=1）BN OK 无回归；
+  自举编译 3D 训练跑通（acc 100%）。
+
+---
+
+## 历史阶段（0–3）
+- 阶段0/1/2/3 的变更记录见 `train/README.md`（XOR → MNIST MLP → Graph IR 反向
+  → CNN 反向）与 `docs/`（设计/GPU 范式）。

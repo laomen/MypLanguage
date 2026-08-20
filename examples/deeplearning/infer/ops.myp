@@ -101,6 +101,243 @@ class InferOps {
             }
         }
 
+        // ---- 阶段5：Transformer 算子（CPU）----
+
+        // embedding 查表：eOff:[vocab,D]，idOff: 浮点编码的 token id [S]，xOff:[D,S]（行=特征，列=序列）。
+        // x[d,s] = e[id[s]*D + d]。
+        void gatherRows(float[] arena, int eOff, int idOff, int xOff, int vocab, int D, int S) {
+            int s = 0;
+            while (s < S) {
+                int id = int(arena[idOff + s]);
+                if (id < 0) id = 0;
+                if (id >= vocab) id = vocab - 1;
+                int d = 0;
+                while (d < D) {
+                    arena[xOff + d * S + s] = arena[eOff + id * D + d];
+                    d = d + 1;
+                }
+                s = s + 1;
+            }
+        }
+
+        // RMSNorm：xOff:[D,S]（行=特征，列=token），gOff:[D]，yOff:[D,S]。
+        // y[d,s] = x[d,s] / sqrt(mean_d(x[:,s]^2) + eps) * g[d]
+        void rmsNorm(float[] arena, int xOff, int gOff, int yOff, int D, int S, double eps) {
+            int s = 0;
+            while (s < S) {
+                double sum = 0.0;
+                int d = 0;
+                while (d < D) { double v = arena[xOff + d * S + s]; sum = sum + v * v; d = d + 1; }
+                double rstd = 1.0 / Math.sqrt(sum / double(D) + eps);
+                d = 0;
+                while (d < D) {
+                    arena[yOff + d * S + s] = float(double(arena[xOff + d * S + s]) * rstd * double(arena[gOff + d]));
+                    d = d + 1;
+                }
+                s = s + 1;
+            }
+        }
+
+        // 缩放点积注意力（全序列，无 KV cache；可选因果掩码）。
+        // q,k,v,out:[D,S]（行=heads*dh 特征，列=token）。score[b,i,j]=Σ_dh q·k/√dh；causal 时 j>i → -inf；
+        // softmax(j)；out[b,dh,i]=Σ_j p[b,i,j]·v[b,dh,j]。scOff 为 S*S 暂存（分数/softmax）。
+        // GQA：groups = H / num_kv_heads（Q 头 b 共享 KV 头 b/groups）；groups=1 即标准 MHA。
+        void attention(float[] arena, int qOff, int kOff, int vOff, int outOff, int scOff,
+                       int D, int S, int heads, int causal, int groups) {
+            int dh = D / heads;
+            int kvHeads = heads / groups;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            int b = 0;
+            while (b < heads) {
+                int kvh = b / groups;   // GQA：该 Q 头共享的 KV 头
+                int i = 0;
+                while (i < S) {
+                    int j = 0;
+                    while (j < S) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(arena[qOff + (b * dh + d) * S + i]) * double(arena[kOff + (kvh * dh + d) * S + j]);
+                            d = d + 1;
+                        }
+                        double sc = sum * scale;
+                        if (causal == 1 && j > i) sc = -1.0e30;
+                        arena[scOff + i * S + j] = float(sc);
+                        j = j + 1;
+                    }
+                    // softmax over j
+                    float maxv = arena[scOff + i * S];
+                    j = 1;
+                    while (j < S) {
+                        if (arena[scOff + i * S + j] > maxv) maxv = arena[scOff + i * S + j];
+                        j = j + 1;
+                    }
+                    double sumE = 0.0;
+                    j = 0;
+                    while (j < S) {
+                        double e = Math.exp(double(arena[scOff + i * S + j]) - double(maxv));
+                        arena[scOff + i * S + j] = float(e);
+                        sumE = sumE + e;
+                        j = j + 1;
+                    }
+                    j = 0;
+                    while (j < S) {
+                        arena[scOff + i * S + j] = float(double(arena[scOff + i * S + j]) / sumE);
+                        j = j + 1;
+                    }
+                    i = i + 1;
+                }
+                // out[b,dh,i] = Σ_j p[b,i,j]·v[kvh,dh,j]
+                int d = 0;
+                while (d < dh) {
+                    int i2 = 0;
+                    while (i2 < S) {
+                        double sum = 0.0;
+                        int j = 0;
+                        while (j < S) {
+                            sum = sum + double(arena[scOff + i2 * S + j]) * double(arena[vOff + (kvh * dh + d) * S + j]);
+                            j = j + 1;
+                        }
+                        arena[outOff + (b * dh + d) * S + i2] = float(sum);
+                        i2 = i2 + 1;
+                    }
+                    d = d + 1;
+                }
+                b = b + 1;
+            }
+        }
+
+        // 阶段5：LayerNorm（GPT-2）。xOff:[D,S]（行=特征，列=token），gamma/beta:[D]，yOff:[D,S]。
+        // y[d,s] = (x[d,s]-mean_s)/sqrt(var_s+eps)*gamma[d]+beta[d]（mean/var 按特征维、每 token）。
+        void layerNorm(float[] arena, int xOff, int gOff, int bOff, int yOff, int D, int S, double eps) {
+            int s = 0;
+            while (s < S) {
+                double mean = 0.0;
+                int d = 0;
+                while (d < D) { mean = mean + double(arena[xOff + d * S + s]); d = d + 1; }
+                mean = mean / double(D);
+                double vsum = 0.0;
+                d = 0;
+                while (d < D) {
+                    double v = double(arena[xOff + d * S + s]) - mean;
+                    vsum = vsum + v * v;
+                    d = d + 1;
+                }
+                double rstd = 1.0 / Math.sqrt(vsum / double(D) + eps);
+                d = 0;
+                while (d < D) {
+                    double v = (double(arena[xOff + d * S + s]) - mean) * rstd;
+                    arena[yOff + d * S + s] = float(v * double(arena[gOff + d]) + double(arena[bOff + d]));
+                    d = d + 1;
+                }
+                s = s + 1;
+            }
+        }
+
+        // 阶段5：GELU（GPT-2 精确版）：0.5*x*(1+erf(x/√2))。MYP Math 无 erf，内联 Abramowitz-Stegun 7.1.26 近似（误差 <1.5e-7）。
+        void gelu(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                double x = double(arena[inOff + i]);
+                double z = x / 1.4142135623730951;
+                double a = Math.abs(z);
+                double t = 1.0 / (1.0 + 0.3275911 * a);
+                double y = 1.0 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(0.0 - a * a);
+                double erf = y;
+                if (z < 0.0) erf = 0.0 - y;
+                arena[outOff + i] = float(0.5 * x * (1.0 + erf));
+                i = i + 1;
+            }
+        }
+
+        // 阶段5：RoPE（Llama 真实约定：**逐头**、head_dim 内半配对）。xOff:[D,S]（行=heads*dh 特征，列=token），
+        // cosOff/sinOff:[dh/2,S]（按 dim-pair 行 × 位置列；所有头共享同一张表）。
+        // 对每头 h、dim-pair a∈[0,dh/2)：旋转行 (h*dh+a) 与 (h*dh+dh/2+a)：
+        //   x' = x0*c - x1*s；x1' = x0*s + x1*c
+        void rope(float[] arena, int xOff, int cosOff, int sinOff, int D, int S, int heads) {
+            int dh = D / heads;
+            int half = dh / 2;
+            int h = 0;
+            while (h < heads) {
+                int s = 0;
+                while (s < S) {
+                    int a = 0;
+                    while (a < half) {
+                        int i0 = (h * dh + a) * S + s;
+                        int i1 = (h * dh + half + a) * S + s;
+                        double x0 = double(arena[xOff + i0]);
+                        double x1 = double(arena[xOff + i1]);
+                        double c = double(arena[cosOff + a * S + s]);
+                        double si = double(arena[sinOff + a * S + s]);
+                        arena[xOff + i0] = float(x0 * c - x1 * si);
+                        arena[xOff + i1] = float(x0 * si + x1 * c);
+                        a = a + 1;
+                    }
+                    s = s + 1;
+                }
+                h = h + 1;
+            }
+        }
+
+        // 阶段5：KV cache 增量注意力（decode 每步一个 token）。qOff:[D]（当前 token 的 Q，D=heads*dh），
+        // kcOff/vcOff:[kvD, stride]（历史 K/V 缓存，kvD=num_kv*dh，stride=缓存容量 Wmax，位置沿列），
+        // 参与注意力的是前 len 列。outOff:[D]，scOff:[len]。
+        // score[b,i] = Σ_dh q[b,dh]·kcache[kvh(b),dh,i] / √dh；softmax(i)；out[b,dh] = Σ_i p[i]·vcache[kvh(b),dh,i]。
+        // GQA：kvh = b/groups。因果天然满足（缓存只有历史位置）。
+        void attentionCached(float[] arena, int qOff, int kcOff, int vcOff, int outOff, int scOff,
+                             int D, int stride, int len, int heads, int groups) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            int b = 0;
+            while (b < heads) {
+                int kvh = b / groups;
+                int i = 0;
+                while (i < len) {
+                    double sum = 0.0;
+                    int d = 0;
+                    while (d < dh) {
+                        sum = sum + double(arena[qOff + (b * dh + d)]) * double(arena[kcOff + (kvh * dh + d) * stride + i]);
+                        d = d + 1;
+                    }
+                    arena[scOff + i] = float(sum * scale);
+                    i = i + 1;
+                }
+                // softmax over i
+                float maxv = arena[scOff + 0];
+                i = 1;
+                while (i < len) {
+                    if (arena[scOff + i] > maxv) maxv = arena[scOff + i];
+                    i = i + 1;
+                }
+                double sumE = 0.0;
+                i = 0;
+                while (i < len) {
+                    double e = Math.exp(double(arena[scOff + i]) - double(maxv));
+                    arena[scOff + i] = float(e);
+                    sumE = sumE + e;
+                    i = i + 1;
+                }
+                i = 0;
+                while (i < len) {
+                    arena[scOff + i] = float(double(arena[scOff + i]) / sumE);
+                    i = i + 1;
+                }
+                // out[b,dh] = Σ_i p[i]·vcache[kvh,dh,i]
+                int d = 0;
+                while (d < dh) {
+                    double sum = 0.0;
+                    int i2 = 0;
+                    while (i2 < len) {
+                        sum = sum + double(arena[scOff + i2]) * double(arena[vcOff + (kvh * dh + d) * stride + i2]);
+                        i2 = i2 + 1;
+                    }
+                    arena[outOff + (b * dh + d)] = float(sum);
+                    d = d + 1;
+                }
+                b = b + 1;
+            }
+        }
+
         void add(float[] arena, int aOff, int bOff, int outOff, int n, int doRelu) {
             int i = 0;
             if (doRelu == 1) {
@@ -115,6 +352,558 @@ class InferOps {
                     arena[outOff + i] = arena[aOff + i] + arena[bOff + i];
                     i = i + 1;
                 }
+            }
+        }
+
+        // ---- 训练：反向内核（阶段2，CPU；供图级反向 pass 用）----
+
+        // 反向：y = W x + b；给定上游梯度 dY[outDim,batch]
+        //   dW[o,i] = Σ_b dY[o,b]·x[i,b]；dX[i,b] = Σ_o dY[o,b]·W[o,i]；db[o] = Σ_b dY[o,b]
+        void bwdDense(float[] arena,
+                      int dyOff, int xOff, int inDim, int batch,
+                      int wOff, int outDim,
+                      int dxOff, int dwOff, int dbOff) {
+            // db[o] = Σ_b dY[o,b]
+            int i = 0;
+            while (i < outDim) {
+                float s = 0.0f;
+                int k = 0;
+                while (k < batch) { s = s + arena[dyOff + i * batch + k]; k = k + 1; }
+                arena[dbOff + i] = s;
+                i = i + 1;
+            }
+            // dW[o,i] = Σ_b dY[o,b]·x[i,b]
+            i = 0;
+            while (i < outDim) {
+                int j = 0;
+                while (j < inDim) {
+                    float s = 0.0f;
+                    int k = 0;
+                    while (k < batch) { s = s + arena[dyOff + i * batch + k] * arena[xOff + j * batch + k]; k = k + 1; }
+                    arena[dwOff + i * inDim + j] = s;
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            // dX[i,b] = Σ_o dY[o,b]·W[o,i]
+            int j = 0;
+            while (j < inDim) {
+                int k = 0;
+                while (k < batch) {
+                    float s = 0.0f;
+                    int o = 0;
+                    while (o < outDim) { s = s + arena[dyOff + o * batch + k] * arena[wOff + o * inDim + j]; o = o + 1; }
+                    arena[dxOff + j * batch + k] = s;
+                    k = k + 1;
+                }
+                j = j + 1;
+            }
+        }
+
+        // 反向：y = relu(x)；dX[i] = dY[i]·(x[i]>0)
+        void bwdRelu(float[] arena, int dyOff, int xOff, int dxOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float x = arena[xOff + i];
+                if (x > 0.0f) arena[dxOff + i] = arena[dyOff + i];
+                else arena[dxOff + i] = 0.0f;
+                i = i + 1;
+            }
+        }
+
+        // 反向：y = sigmoid(x)；dX[i] = dY[i]·y[i]·(1-y[i])（用前向输出 y）
+        void bwdSigmoid(float[] arena, int dyOff, int yOff, int dxOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float y = arena[yOff + i];
+                arena[dxOff + i] = arena[dyOff + i] * y * (1.0f - y);
+                i = i + 1;
+            }
+        }
+
+        // 反向：y = a + b；dA = dY, dB = dY
+        void bwdAdd(float[] arena, int dyOff, int daOff, int dbOff, int n) {
+            int i = 0;
+            while (i < n) {
+                float d = arena[dyOff + i];
+                arena[daOff + i] = d;
+                arena[dbOff + i] = d;
+                i = i + 1;
+            }
+        }
+
+        // Softmax + CrossEntropy 合并（batch=cols；标签 one-hot [rows,cols]）
+        // 前向：probs = softmax(logits)；loss[每样本] = -log(probs[label])
+        // 反向：dlogit[r,b] = probs[r,b] - label[r,b]
+        void softmaxCE(float[] arena, int logitOff, int labelOff, int rows, int cols,
+                       int dlogitOff, int lossOff) {
+            int b = 0;
+            while (b < cols) {
+                float maxv = arena[logitOff + 0 * cols + b];
+                int r = 1;
+                while (r < rows) {
+                    float v = arena[logitOff + r * cols + b];
+                    if (v > maxv) maxv = v;
+                    r = r + 1;
+                }
+                float sum = 0.0f;
+                r = 0;
+                while (r < rows) {
+                    float e = Math.exp(arena[logitOff + r * cols + b] - maxv);
+                    arena[dlogitOff + r * cols + b] = e;   // 先存 exp
+                    sum = sum + e;
+                    r = r + 1;
+                }
+                float lossb = 0.0f;
+                r = 0;
+                while (r < rows) {
+                    float p = arena[dlogitOff + r * cols + b] / sum;
+                    arena[dlogitOff + r * cols + b] = p - arena[labelOff + r * cols + b];   // dlogit
+                    if (arena[labelOff + r * cols + b] > 0.5f) {
+                        lossb = 0.0f - Math.log(p);
+                    }
+                    r = r + 1;
+                }
+                arena[lossOff + b] = lossb;
+                b = b + 1;
+            }
+        }
+
+        // SGD 更新：W -= lr·grad（lr 由调用方传 double，内部转 float）
+        void update(float[] arena, int wOff, int gradOff, int n, double lr) {
+            int i = 0;
+            while (i < n) {
+                float g = arena[gradOff + i];
+                arena[wOff + i] = arena[wOff + i] - float(lr) * g;
+                i = i + 1;
+            }
+        }
+
+        // Dice 损失（阶段4，分割）：L = 1 - (1/C)·Σ_c 2·Σ_s(p·y) / (Σp + Σy + eps)。
+        // p,y: [rows=C 类别, cols=S 空间]，y 为 one-hot。
+        // 反向：dp[c,s] = -(2/rows)·(y[c,s]·B_c - A_c)/B_c²（B_c=Σp+Σy+eps，A_c=Σp·y）。
+        void diceLoss(float[] arena, int pOff, int yOff, int dpOff, int lossOff,
+                      int rows, int cols, double eps) {
+            double sumLoss = 0.0;
+            int c = 0;
+            while (c < rows) {
+                double sumP = 0.0;
+                double sumY = 0.0;
+                double sumPY = 0.0;
+                int s = 0;
+                while (s < cols) {
+                    double p = arena[pOff + c * cols + s];
+                    double y = arena[yOff + c * cols + s];
+                    sumP = sumP + p;
+                    sumY = sumY + y;
+                    sumPY = sumPY + p * y;
+                    s = s + 1;
+                }
+                double B = sumP + sumY + eps;
+                double dice = 2.0 * sumPY / B;
+                sumLoss = sumLoss + dice;
+                // 梯度（含 1/rows 归一化）
+                double denom = 2.0 / double(rows) / (B * B);
+                s = 0;
+                while (s < cols) {
+                    double yv = arena[yOff + c * cols + s];
+                    double g = 0.0 - denom * (yv * B - sumPY);
+                    arena[dpOff + c * cols + s] = float(g);
+                    s = s + 1;
+                }
+                c = c + 1;
+            }
+            arena[lossOff] = float(1.0 - sumLoss / double(rows));
+        }
+
+        // ---- 训练：卷积/池化反向（阶段3，CPU）----
+
+        // 反向：y = conv(x, w)；给定 dY[N,yC,yH,yW]
+        //   db[oc] = Σ_{n,oy,ox} dY
+        //   dW[oc,ic,ky,kx] = Σ_{n,oy,ox} dY·x[n,cIn,iy,ix]   (iy=oy*sh-pt+ky*dh, ix=ox*sw-pl+kx*dw 在界内)
+        //   dX[n,cIn,iy,ix] = Σ_{oc,oy,ox} dY·w[oc,ic,ky,kx]  （同 iy/ix 约束）
+        // 与 forward conv 同索引（7 重循环一次同时累加 dW/dX）。dW/dX 先清零再累加。
+        void bwdConv(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xH, int xW,
+            int wOff,
+            int dxOff, int dwOff, int dbOff,
+            int yC, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pl,
+            int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int wc = cpg * kh * kw;
+            // 清 dW / dX
+            int i = 0;
+            while (i < yC * wc) { arena[dwOff + i] = 0.0f; i = i + 1; }
+            i = 0;
+            while (i < xN * xC * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            int oc = 0;
+            // db[oc] = Σ_{n,oy,ox} dY[n,oc,oy,ox]（无偏置卷积 dbOff=-1 → 跳过）
+            if (dbOff >= 0) {
+                oc = 0;
+                while (oc < yC) {
+                    float s = 0.0f;
+                    int n = 0;
+                    while (n < xN) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                s = s + arena[dyOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox];
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        n = n + 1;
+                    }
+                    arena[dbOff + oc] = s;
+                    oc = oc + 1;
+                }
+            }
+            // dW + dX（一次 7 重循环）
+            int n = 0;
+            while (n < xN) {
+                oc = 0;
+                while (oc < yC) {
+                    int g = oc / ocpg;
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float dy = arena[dyOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox];
+                            int ic = 0;
+                            while (ic < cpg) {
+                                int cIn = g * cpg + ic;
+                                int ky = 0;
+                                while (ky < kh) {
+                                    int iy = oy * sh - pt + ky * dh;
+                                    if (iy >= 0 && iy < xH) {
+                                        int kx = 0;
+                                        while (kx < kw) {
+                                            int ix = ox * sw - pl + kx * dw;
+                                            if (ix >= 0 && ix < xW) {
+                                                float xv = arena[xOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix];
+                                                float wv = arena[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                                arena[dwOff + oc * wc + ic * kh * kw + ky * kw + kx] = arena[dwOff + oc * wc + ic * kh * kw + ky * kw + kx] + dy * xv;
+                                                arena[dxOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix] = arena[dxOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix] + dy * wv;
+                                            }
+                                            kx = kx + 1;
+                                        }
+                                    }
+                                    ky = ky + 1;
+                                }
+                                ic = ic + 1;
+                            }
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 反向：y = maxpool(x)；给定 dY[N,C,yH,yW]。
+        // 重算每个输出的 argmax 位置（与 forward 同扫描序），把 dY 路由到该位置。
+        void bwdMaxPool(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xH, int xW,
+            int dxOff, int yH, int yW,
+            int kh, int kw, int sh, int sw, int pt, int pl
+        ) {
+            int i = 0;
+            while (i < xN * xC * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oy = 0;
+                    while (oy < yH) {
+                        int ox = 0;
+                        while (ox < yW) {
+                            float best = 0.0f - 1.0e30f;
+                            int biy = 0;
+                            int bix = 0;
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx;
+                                        if (ix >= 0 && ix < xW) {
+                                            float v = arena[xOff + n * xC * xH * xW + c * xH * xW + iy * xW + ix];
+                                            if (v > best) { best = v; biy = iy; bix = ix; }
+                                        }
+                                        kx = kx + 1;
+                                    }
+                                }
+                                ky = ky + 1;
+                            }
+                            float dy = arena[dyOff + n * xC * yH * yW + c * yH * yW + oy * yW + ox];
+                            arena[dxOff + n * xC * xH * xW + c * xH * xW + biy * xW + bix] = arena[dxOff + n * xC * xH * xW + c * xH * xW + biy * xW + bix] + dy;
+                            ox = ox + 1;
+                        }
+                        oy = oy + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // ---- CNN 3D 反向（阶段4）：x[N,C,D,H,W]，y[N,yC,yD,yH,yW] ----
+
+        // 反向：y = conv3d(x, w, b)。给定 dY[N,yC,yD,yH,yW] → dW（累加）、dX（累加）、db。
+        // 参数与 conv3d 前向一致：非对称 padding（pdt/pdb、pt/pb、pl/pr）+ 膨胀（dd/dh/dw）。
+        // 命名：dwOff = 权重梯度偏移；dw = 膨胀-宽（同 conv3d 前向）。
+        void bwdConv3D(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xD, int xH, int xW,
+            int wOff,
+            int dxOff, int dwOff, int dbOff,
+            int yC, int yD, int yH, int yW,
+            int kd, int kh, int kw,
+            int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+            int dd, int dh, int dw, int group
+        ) {
+            int cpg = xC / group;
+            int ocpg = yC / group;
+            int wc = cpg * kd * kh * kw;
+            // 清 dW / dX
+            int i = 0;
+            while (i < yC * wc) { arena[dwOff + i] = 0.0f; i = i + 1; }
+            i = 0;
+            while (i < xN * xC * xD * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            int oc = 0;
+            // db[oc] = Σ_{n,oz,oy,ox} dY[n,oc,oz,oy,ox]（无偏置 dbOff=-1 → 跳过）
+            if (dbOff >= 0) {
+                oc = 0;
+                while (oc < yC) {
+                    float s = 0.0f;
+                    int n = 0;
+                    while (n < xN) {
+                        int oz = 0;
+                        while (oz < yD) {
+                            int oy = 0;
+                            while (oy < yH) {
+                                int ox = 0;
+                                while (ox < yW) {
+                                    s = s + arena[dyOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox];
+                                    ox = ox + 1;
+                                }
+                                oy = oy + 1;
+                            }
+                            oz = oz + 1;
+                        }
+                        n = n + 1;
+                    }
+                    arena[dbOff + oc] = s;
+                    oc = oc + 1;
+                }
+            }
+            // dW + dX（一次 9 重循环：n,oc,oz,oy,ox,ic,kz,ky,kx）
+            int n = 0;
+            while (n < xN) {
+                oc = 0;
+                while (oc < yC) {
+                    int g = oc / ocpg;
+                    int oz = 0;
+                    while (oz < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                float dy = arena[dyOff + n * yC * yD * yH * yW + oc * yD * yH * yW + oz * yH * yW + oy * yW + ox];
+                                int ic = 0;
+                                while (ic < cpg) {
+                                    int cIn = g * cpg + ic;
+                                    int kz = 0;
+                                    while (kz < kd) {
+                                        int iz = oz * sd - pdt + kz * dd;
+                                        if (iz >= 0 && iz < xD) {
+                                            int ky = 0;
+                                            while (ky < kh) {
+                                                int iy = oy * sh - pt + ky * dh;
+                                                if (iy >= 0 && iy < xH) {
+                                                    int kx = 0;
+                                                    while (kx < kw) {
+                                                        int ix = ox * sw - pl + kx * dw;
+                                                        if (ix >= 0 && ix < xW) {
+                                                            float xv = arena[xOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                            float wv = arena[wOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx];
+                                                            arena[dwOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx] = arena[dwOff + oc * wc + ic * kd * kh * kw + kz * kh * kw + ky * kw + kx] + dy * xv;
+                                                            arena[dxOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix] = arena[dxOff + n * xC * xD * xH * xW + cIn * xD * xH * xW + iz * xH * xW + iy * xW + ix] + dy * wv;
+                                                        }
+                                                        kx = kx + 1;
+                                                    }
+                                                }
+                                                ky = ky + 1;
+                                            }
+                                        }
+                                        kz = kz + 1;
+                                    }
+                                    ic = ic + 1;
+                                }
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        oz = oz + 1;
+                    }
+                    oc = oc + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 反向：y = maxpool3d(x)；给定 dY[N,C,yD,yH,yW]。
+        // 重算每个输出的 argmax 位置（与 forward 同扫描序），把 dY 路由到该位置。
+        void bwdMaxPool3D(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xD, int xH, int xW,
+            int dxOff, int yD, int yH, int yW,
+            int kd, int kh, int kw,
+            int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr
+        ) {
+            int i = 0;
+            while (i < xN * xC * xD * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oz = 0;
+                    while (oz < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                float best = 0.0f - 1.0e30f;
+                                int biz = 0;
+                                int biy = 0;
+                                int bix = 0;
+                                int kz = 0;
+                                while (kz < kd) {
+                                    int iz = oz * sd - pdt + kz;
+                                    if (iz >= 0 && iz < xD) {
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy * sh - pt + ky;
+                                            if (iy >= 0 && iy < xH) {
+                                                int kx = 0;
+                                                while (kx < kw) {
+                                                    int ix = ox * sw - pl + kx;
+                                                    if (ix >= 0 && ix < xW) {
+                                                        float v = arena[xOff + n * xC * xD * xH * xW + c * xD * xH * xW + iz * xH * xW + iy * xW + ix];
+                                                        if (v > best) { best = v; biz = iz; biy = iy; bix = ix; }
+                                                    }
+                                                    kx = kx + 1;
+                                                }
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                    }
+                                    kz = kz + 1;
+                                }
+                                float dy = arena[dyOff + n * xC * yD * yH * yW + c * yD * yH * yW + oz * yH * yW + oy * yW + ox];
+                                arena[dxOff + n * xC * xD * xH * xW + c * xD * xH * xW + biz * xH * xW + biy * xW + bix] = arena[dxOff + n * xC * xD * xH * xW + c * xD * xH * xW + biz * xH * xW + biy * xW + bix] + dy;
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        oz = oz + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
+            }
+        }
+
+        // 反向：y = avgpool3d(x)；给定 dY[N,C,yD,yH,yW]。
+        // 前向 y[o] = Σ_{有效 k} x[i(k)] / div，div = cnt（cip=0）或 kd*kh*kw（cip=1）。
+        // 反向：对每个输出 o，其覆盖的每个有效输入 i(k) 累加 dY[o]/div(o)。
+        void bwdAvgPool3D(
+            float[] arena,
+            int dyOff, int xOff, int xN, int xC, int xD, int xH, int xW,
+            int dxOff, int yD, int yH, int yW,
+            int kd, int kh, int kw,
+            int sd, int sh, int sw, int pdt, int pdb, int pt, int pb, int pl, int pr,
+            int cip
+        ) {
+            int i = 0;
+            while (i < xN * xC * xD * xH * xW) { arena[dxOff + i] = 0.0f; i = i + 1; }
+            int n = 0;
+            while (n < xN) {
+                int c = 0;
+                while (c < xC) {
+                    int oz = 0;
+                    while (oz < yD) {
+                        int oy = 0;
+                        while (oy < yH) {
+                            int ox = 0;
+                            while (ox < yW) {
+                                // 该窗口有效元素数（与 forward 同公式）
+                                int cnt = 0;
+                                int kz = 0;
+                                while (kz < kd) {
+                                    int iz = oz * sd - pdt + kz;
+                                    if (iz >= 0 && iz < xD) {
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy * sh - pt + ky;
+                                            if (iy >= 0 && iy < xH) {
+                                                int kx = 0;
+                                                while (kx < kw) {
+                                                    int ix = ox * sw - pl + kx;
+                                                    if (ix >= 0 && ix < xW) cnt = cnt + 1;
+                                                    kx = kx + 1;
+                                                }
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                    }
+                                    kz = kz + 1;
+                                }
+                                int div = cnt;
+                                if (cip == 1) div = kd * kh * kw;
+                                if (div < 1) div = 1;
+                                float dy = arena[dyOff + n * xC * yD * yH * yW + c * yD * yH * yW + oz * yH * yW + oy * yW + ox];
+                                float d = float(dy) / float(div);
+                                kz = 0;
+                                while (kz < kd) {
+                                    int iz = oz * sd - pdt + kz;
+                                    if (iz >= 0 && iz < xD) {
+                                        int ky = 0;
+                                        while (ky < kh) {
+                                            int iy = oy * sh - pt + ky;
+                                            if (iy >= 0 && iy < xH) {
+                                                int kx = 0;
+                                                while (kx < kw) {
+                                                    int ix = ox * sw - pl + kx;
+                                                    if (ix >= 0 && ix < xW) {
+                                                        arena[dxOff + n * xC * xD * xH * xW + c * xD * xH * xW + iz * xH * xW + iy * xW + ix] = arena[dxOff + n * xC * xD * xH * xW + c * xD * xH * xW + iz * xH * xW + iy * xW + ix] + d;
+                                                    }
+                                                    kx = kx + 1;
+                                                }
+                                            }
+                                            ky = ky + 1;
+                                        }
+                                    }
+                                    kz = kz + 1;
+                                }
+                                ox = ox + 1;
+                            }
+                            oy = oy + 1;
+                        }
+                        oz = oz + 1;
+                    }
+                    c = c + 1;
+                }
+                n = n + 1;
             }
         }
 

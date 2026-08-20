@@ -1,0 +1,193 @@
+// distilgpt2_gpu.myp — distilgpt2（82M GPT-2）GPU 前向验证
+//
+// 目标：验证 GPU 框架**不绑定 Qwen2 架构**——GPT-2 用 LayerNorm/GELU（非 RMSNorm/SiLU）、
+// 无 RoPE/GQA（12 头普通 MHA + 因果掩码），权重非转置 [outDim,xRows]。全部算子换 GPU：
+//   · GpuInferOps.layernorm/gelu/dense/matmul/add（gpu_ops.myp，新增通用 layernorm/gelu）
+//   · GpuLLMOps.attention（gpu_llm_ops.myp，新增满序列因果注意力）
+//   · GpuLLMOpsBatch.gatherRows（多 token 查表）
+// 与 data/llm/distilgpt2_ref_logits.bin（numpy 复刻 + transformers 验证）对拍，判据
+// 同 CPU 版 distilgpt2_forward.myp（maxRelDiff<2e-2、argmax 一致）。
+//
+// 运行：./build/mypc examples/deeplearning/llm/distilgpt2_gpu.myp -o /tmp/dg2g --stdlib stdlib
+//       cd examples && MYP_GPU=1 /tmp/dg2g
+
+import env;
+import fmt;
+import text;
+import math;
+import gpu;
+import gpu.stream;
+import "../infer/pb.myp";
+import "gpu_llm_ops.myp";
+import "gpu_llm_ops_batch.myp";
+import "../infer/gpu_ops.myp";
+
+class Distilgpt2Gpu {
+    action:
+        @constructor Distilgpt2Gpu() {
+            int V = 50257; int D = 768; int L = 6; int S = 8; int H = 12; int POS = 1024;
+            int perLayer = 7087872;
+
+            int wteOff = 0;
+            int wpeOff = wteOff + V * D;
+            int weightsEnd = wpeOff + POS * D + L * perLayer + 1536;
+            int lnfw = weightsEnd - 1536;
+            int lnfb = lnfw + 768;
+            int xOff = weightsEnd;
+            int xnOff = xOff + D * S;
+            int qkvOff = xnOff + D * S;
+            int attOff = qkvOff + 3 * D * S;
+            int hOff = attOff + D * S;
+            int h2Off = hOff + 4 * D * S;
+            int scOff = h2Off + D * S;             // [heads*S*S]（每 head 独立）
+            int idOff = scOff + H * S * S;
+            int logOff = idOff + S;
+            int xLastOff = logOff + V;
+            int refOff = xLastOff + D;
+            int stOff = refOff + V;                // layernorm stats [2*S]
+            int CAP = stOff + 2 * S + 16;
+            float[] arena = new float[CAP];
+
+            // ---- 加载权重（327MB）+ 参考 logits ----
+            int fd = __myp_io_fopen("./deeplearning/data/llm/distilgpt2_weights.bin", "rb");
+            if (fd < 0) { Console.writeLine("weights file missing"); return; }
+            loadBlock(arena, fd, wteOff, weightsEnd);
+            __myp_io_fclose();
+            fd = __myp_io_fopen("./deeplearning/data/llm/distilgpt2_ref_logits.bin", "rb");
+            if (fd < 0) { Console.writeLine("ref file missing"); return; }
+            loadBlock(arena, fd, refOff, V);
+            __myp_io_fclose();
+
+            // ---- prompt（与 extract 脚本/CPU forward 一致）----
+            int[] ids = new int[8];
+            ids[0] = 15496; ids[1] = 11; ids[2] = 318; ids[3] = 257;
+            ids[4] = 2051; ids[5] = 13; ids[6] = 50256; ids[7] = 50256;
+            int p = 0;
+            while (p < S) { arena[idOff + p] = float(ids[p]); p = p + 1; }
+
+            // ---- GPU：整块 arena 一次 H2D，异步流前向 ----
+            if (Cuda.available() != 1) { Console.writeLine("DISTILGPT2 GPU SKIP (no CUDA)"); return; }
+            GpuBufferF buf = new GpuBufferF(arena, CAP);
+            long dev = buf.devicePtr();
+            if (dev == 0L) { Console.writeLine("DISTILGPT2 GPU SKIP (alloc fail)"); return; }
+            GpuStream gs = new GpuStream();
+            double eps = 0.00001;
+
+            GpuLLMOpsBatch.gatherRows(arena, wteOff, idOff, xOff, V, D, S, dev, gs);
+            embedAdd(arena, xOff, wpeOff, D, S, dev, gs);
+            int li = 0;
+            while (li < L) {
+                int base = wpeOff + POS * D + li * perLayer;
+                layerGpu(arena, dev, gs, base, xOff, xnOff, qkvOff, attOff, hOff, h2Off, scOff,
+                         D, S, H, eps, stOff);
+                li = li + 1;
+            }
+            extractCol(arena, xOff, xLastOff, D, S, dev, gs);
+            GpuInferOps.layernorm(arena, D, xLastOff, lnfw, lnfb, xLastOff, D, 1, eps, dev, stOff);
+            GpuInferOps.matmul(arena, V, xLastOff, D, wteOff, V, 1, logOff, dev);
+            buf.copyToHostAsync(arena, logOff, logOff, V, gs);
+            gs.sync();
+
+            // ---- 对拍参考 logits（判据同 CPU 版）----
+            double maxAbs = 0.0;
+            double maxRel = 0.0;
+            int argmaxA = 0; int argmaxB = 0;
+            double bv = arena[logOff + 0]; double rv = arena[refOff + 0];
+            int i = 1;
+            while (i < V) {
+                double a2 = arena[logOff + i]; double r = arena[refOff + i];
+                if (a2 > bv) { bv = a2; argmaxA = i; }
+                if (r > rv) { rv = r; argmaxB = i; }
+                double ad = Math.abs(a2 - r);
+                if (ad > maxAbs) maxAbs = ad;
+                double rd = ad / (1.0 + Math.abs(r));
+                if (rd > maxRel) maxRel = rd;
+                i = i + 1;
+            }
+            Console.writeString("logits maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeString("  maxRelDiff=");
+            Console.writeFloat(maxRel);
+            Console.writeLine("");
+            Console.writeString("argmax GPU=");
+            Console.write(argmaxA);
+            Console.writeString("  ref=");
+            Console.write(argmaxB);
+            Console.writeLine("");
+            if (maxRel < 2.0e-2) Console.writeLine("DISTILGPT2 GPU OK");
+            else Console.writeLine("DISTILGPT2 GPU FAIL");
+
+            gs.destroy();
+            buf.free();
+        }
+
+        // 一层 GPT-2（GPU）：LayerNorm → c_attn → attention(12头,因果) → c_proj → 残差 →
+        // LayerNorm → c_fc(gelu) → mlp_c_proj → 残差
+        void layerGpu(float[] a, long dev, GpuStream s, int base, int xOff, int xnOff, int qkvOff, int attOff,
+                      int hOff, int h2Off, int scOff, int D, int S, int H, double eps, int stOff) {
+            int ln1w = base;
+            int ln1b = base + 768;
+            int cattn_w = base + 1536;
+            int cattn_b = base + 1771008;
+            int cproj_w = base + 1773312;
+            int cproj_b = base + 2363136;
+            int ln2w = base + 2363904;
+            int ln2b = base + 2364672;
+            int cfc_w = base + 2365440;
+            int cfc_b = base + 4724736;
+            int mcproj_w = base + 4727808;
+            int mcproj_b = base + 7087104;
+
+            GpuInferOps.layernorm(a, D * S, xOff, ln1w, ln1b, xnOff, D, S, eps, dev, stOff);
+            GpuInferOps.dense(a, 3 * D * S, xnOff, D, cattn_w, 3 * D, S, cattn_b, qkvOff, dev);
+            GpuLLMOps.attention(a, qkvOff, qkvOff + D * S, qkvOff + 2 * D * S, attOff, scOff,
+                                D, S, H, 1, 1, dev, s);
+            GpuInferOps.dense(a, D * S, attOff, D, cproj_w, D, S, cproj_b, h2Off, dev);
+            GpuInferOps.add(a, D * S, xOff, h2Off, xOff, dev, 0);
+            GpuInferOps.layernorm(a, D * S, xOff, ln2w, ln2b, xnOff, D, S, eps, dev, stOff);
+            GpuInferOps.dense(a, 4 * D * S, xnOff, D, cfc_w, 4 * D, S, cfc_b, hOff, dev);
+            GpuInferOps.gelu(a, 4 * D * S, hOff, hOff, dev);
+            GpuInferOps.dense(a, D * S, hOff, 4 * D, mcproj_w, D, S, mcproj_b, h2Off, dev);
+            GpuInferOps.add(a, D * S, xOff, h2Off, xOff, dev, 0);
+        }
+
+        // 位置编码加：x[d*S+pp] += wpe[pp*D+d]（wpe 按 [pos,D]，x 按 [D,S] → 转置加）
+        void embedAdd(float[] a, int xOff, int wpeOff, int D, int S, long dev, GpuStream s) {
+            @gpu for (long p = 0L; p < long(D) * long(S); p = p + 1L) resident(a = dev) stream(s) {
+                if (p < long(D) * long(S)) {
+                    int dd = int(p % long(D));
+                    int pp = int(p / long(D));
+                    a[xOff + dd * S + pp] = a[xOff + dd * S + pp] + a[wpeOff + pp * D + dd];
+                }
+            }
+        }
+
+        // 取末列：xLast[c] = x[c*S + (S-1)]（lm_head 用最后 token）
+        void extractCol(float[] a, int xOff, int xLastOff, int D, int S, long dev, GpuStream s) {
+            @gpu for (long c = 0L; c < long(D); c = c + 1L) resident(a = dev) stream(s) {
+                if (c < long(D)) {
+                    a[xLastOff + int(c)] = a[xOff + int(c) * S + (S - 1)];
+                }
+            }
+        }
+
+        void loadBlock(float[] a, int fd, int off, int n) {
+            int i = 0;
+            while (i < n) { a[off + i] = float(readF32()); i = i + 1; }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+}
+
+int main() {
+    Distilgpt2Gpu t = new Distilgpt2Gpu();
+    return 0;
+}
