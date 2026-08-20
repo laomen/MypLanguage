@@ -7,6 +7,38 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.68 — 设计器「运行」按钮：把当前设计直接跑成独立程序窗口
+
+**需求**：在编辑器加「运行」按钮，直接运行已经修改的程序。
+
+**`examples/uix_designer.myp` 新增运行模式（Run 预览）**：
+- 工具栏「保存 .uix」右侧新增「运行」按钮（`runBtn_`）。
+- 点击运行 → `enterRunMode()`：
+  - 先 `saveUix()` 持久化当前（已修改）设计；
+  - 隐藏设计 chrome（工具栏/画布/属性面板），只把设计树（`UixLoader` 重建）
+    渲染到全窗口并**居中**；
+  - 输入真实路由到控件：点击聚焦 TextField、按钮 Clicked、滑块/开关拖拽交互
+    （AppRunner 树内手势分发自动生效）；
+  - 右上角「← 退出」按钮（`runExitBtn_`，运行树最上层）→ `exitRunMode()` 恢复
+    设计器。
+- 键盘在运行模式路由到运行树聚焦的 TextField（`runKey(c)`）；设计器属性面板
+  聚焦字段输入不受影响。
+- 运行模式屏蔽设计器窗口级手势（调色板拖放）与按钮路由（只响应「← 退出」）。
+
+**`src/core/root.myp`**：
+- `RootView` 声明 `interface class View`（补齐接口契约，使 RootView 可作为
+  子视图嵌套——运行模式把运行树塞进 AppRunner 的 rv）。
+- `onTouch/onPress` 返回类型 `int` → `void`（对齐 View 接口；所有调用处
+  均忽略返回值）。
+
+**`src/uix/uix_loader.myp`**：新增 `fieldCount()`（运行模式键盘路由遍历字段）。
+
+**测试**：
+- headless：`ds run nodes=7 exit-hit=1` / `ds run type=1` / `ds run exit back=1` ✓
+- 真实窗口（`MYPVIEW_TEST_RUN=1`）：frame 5 进入运行 → frame 60 截图（只见
+  设计树居中 + 右上角退出钮）→ frame 70 退出返回设计 ✓
+- 套件 6 段全 PASS。
+
 ## v3.12.67 — UixRun：用 UixLoader 直接运行 .uix 设计（设计即开即跑）
 
 **需求**：能不能根据设计器保存的 `design.uix` 生成程序，直接用 UixLoader 跑起来？

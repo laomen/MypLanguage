@@ -5,6 +5,8 @@
 //   - onTouch(x,y)：从后往前命中测试（后加入者在上层），命中则回调
 // 纯逻辑，不依赖 SDL，可 headless 测试。
 class RootView {
+    interface class View;
+
     property:
         View[] children_;
         int count_;
@@ -66,23 +68,22 @@ class RootView {
             }
         }
 
-        // 触摸分发：从后往前命中测试，命中则回调；返回 1=已分发
-        int onTouch(int x, int y) {
+        // 触摸分发：从后往前命中测试，命中则回调
+        void onTouch(int x, int y) {
             for (int i = count_ - 1; i >= 0; i = i - 1) {
                 View child = children_[i];
                 if (child.visible() == 0) continue;          // 跳过隐藏
                 if (child.hit(x, y) != 0) {
                     child.onTouch(x, y);
-                    return 1;
+                    return;
                 }
             }
-            return 0;
         }
 
         // 手势分发：按下 → 命中锁定；移动/抬起 → 持续发给锁定控件（拖拽）。
         // 兼容点击：命中先调 onTouch（一次性点击语义），再调 onPress（拖拽
         // 开始，控件覆写才有行为；未覆写控件点击行为不变）。
-        int onPress(int x, int y) {
+        void onPress(int x, int y) {
             for (int i = count_ - 1; i >= 0; i = i - 1) {
                 View child = children_[i];
                 if (child.visible() == 0) continue;
@@ -90,11 +91,10 @@ class RootView {
                     activeIdx_ = i;
                     child.onTouch(x, y);
                     child.onPress(x, y);
-                    return 1;
+                    return;
                 }
             }
             activeIdx_ = -1;
-            return 0;
         }
         void onMove(int x, int y) {
             if (activeIdx_ >= 0) children_[activeIdx_].onMove(x, y);

@@ -203,7 +203,10 @@ if printf '%s' "$DSGN" | grep -q "ds nodes=6" \
    && printf '%s' "$DSGN" | grep -q "ds nodes2=7" \
    && printf '%s' "$DSGN" | grep -q "ds nodes3=6 no-ok=0" \
    && printf '%s' "$DSGN" | grep -q "ds palette x140=1 y192=1 nodes=7" \
-   && printf '%s' "$DSGN" | grep -q "ds file roundtrip nodes=7"; then
+   && printf '%s' "$DSGN" | grep -q "ds file roundtrip nodes=7" \
+   && printf '%s' "$DSGN" | grep -q "ds run nodes=7 exit-hit=1" \
+   && printf '%s' "$DSGN" | grep -q "ds run type=1" \
+   && printf '%s' "$DSGN" | grep -q "ds run exit back=1"; then
     echo "MYPVIEW-DESIGN PASS"
 else
     echo "MYPVIEW-DESIGN FAIL"

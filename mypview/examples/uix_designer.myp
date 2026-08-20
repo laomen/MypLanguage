@@ -151,6 +151,15 @@ class UixDesigner {
         Button addPanelBtn_;
         Button delBtn_;
         Button fsBtn_;          // 全屏切换（F11 亦可）
+        Button runBtn_;         // 运行：把当前设计直接跑成独立程序窗口
+        // ---- 运行模式（Run 预览：隐藏设计 chrome，只渲染设计树 + 真实输入）----
+        int runMode_;           // 1=运行中
+        RootView runView_;      // 运行模式根（设计树 + 右上角退出钮）
+        UixLoader runLoader_;   // 运行模式加载器（键盘路由到聚焦字段）
+        Button runExitBtn_;     // 运行模式右上角「← 退出」
+        RootView appRv_;        // AppRunner 传入的 rv（运行/设计视图互换）
+        int winW_;
+        int winH_;
         // 属性面板
         Label propTitle_;
         Label propInfo_;
@@ -199,6 +208,13 @@ class UixDesigner {
             dragActive_ = 0;
             dragOffX_ = 0;
             dragOffY_ = 0;
+            runMode_ = 0;
+            runView_ = null;
+            runLoader_ = null;
+            runExitBtn_ = null;
+            appRv_ = null;
+            winW_ = 1400;
+            winH_ = 900;
             pathIds_ = new string[512];
             pathVals_ = new string[512];
             pathCount_ = 0;
@@ -220,6 +236,7 @@ class UixDesigner {
             openBtn_ = new Button("打开文件", 0, 0, 96, 36);
             loadBtn_ = new Button("载入示例", 0, 0, 90, 36);
             saveBtn_ = new Button("保存 .uix", 0, 0, 96, 36);
+            runBtn_ = new Button("运行", 0, 0, 72, 36);
             addLabelBtn_ = new Button("+ Label", 0, 0, 84, 36);
             addButtonBtn_ = new Button("+ Button", 0, 0, 90, 36);
             addFieldBtn_ = new Button("+ TextField", 0, 0, 108, 36);
@@ -232,6 +249,7 @@ class UixDesigner {
             Button ob = openBtn_; toolbar_.add(ob);
             Button lb = loadBtn_;  toolbar_.add(lb);
             Button sb = saveBtn_;  toolbar_.add(sb);
+            Button rb = runBtn_;   toolbar_.add(rb);
             Button ab = addLabelBtn_;  toolbar_.add(ab);
             Button bb = addButtonBtn_; toolbar_.add(bb);
             Button fb = addFieldBtn_;  toolbar_.add(fb);
@@ -480,6 +498,7 @@ class UixDesigner {
         // ---- 调色板拖放（窗口级手势：UiApp onPress/onMove/onRelease）----
         // 按调色板 +xxx 按钮 → 拖到画布 → 松开在该位置添加控件（Qt Design Studio 式）
         void onPress(int x, int y) {
+            if (runMode_ == 1) return;   // 运行模式：无调色板拖放
             string t = paletteTypeAt(x, y);
             if (t != "") {
                 paletteDrag_ = t;
@@ -490,10 +509,12 @@ class UixDesigner {
             }
         }
         void onMove(int x, int y) {
+            if (runMode_ == 1) return;
             if (paletteDrag_ != "")
                 ghost_.setFrame(x, y, ghostW_, ghostH_);   // 幽灵跟随光标
         }
         void onRelease(int x, int y) {
+            if (runMode_ == 1) return;
             if (paletteDrag_ == "") return;
             string t = paletteDrag_;
             paletteDrag_ = "";
@@ -720,12 +741,72 @@ class UixDesigner {
             if (h != "1") SDL.saveBmp("/tmp/uix_designer.bmp");
         }
 
+        // ---- 运行模式：把当前（已修改）设计直接跑成独立程序窗口 ----
+        // 隐藏设计 chrome（工具栏/画布/属性面板），只渲染设计树到全窗口并居中，
+        // 输入真实路由到控件（点击/拖拽/键盘）；右上角「← 退出」返回设计器。
+        void enterRunMode() {
+            if (runMode_ == 1) return;
+            saveUix();   // 先持久化修改后的设计（MYPVIEW_UIX_FILE / design.uix）
+            runMode_ = 1;
+            runView_ = new RootView(64, canvasW_, canvasH_);
+            runLoader_ = new UixLoader(design_.serialize(), "");
+            runLoader_.buildInto(runView_);
+            // 设计树整体居中显示（相对当前窗口）
+            int ox = (winW_ - canvasW_) / 2;
+            int oy = (winH_ - canvasH_) / 2;
+            if (ox < 0) ox = 0;
+            if (oy < 0) oy = 0;
+            runLoader_.setOffset(ox, oy);
+            for (int i = 0; i < runLoader_.nodeCount(); i = i + 1) {
+                string id = runLoader_.idAt(i);
+                string p = pathOf(id);
+                int dx = design_.type(p + ".x") >= 0 ? design_.getInt(p + ".x") : 0;
+                int dy = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
+                runLoader_.moveNode(id, dx, dy);
+            }
+            // 右上角「← 退出」钮（后加 → 运行树最上层，优先命中）
+            runExitBtn_ = new Button("← 退出", winW_ - 116, 8, 108, 36);
+            Button rb = runExitBtn_;
+            runView_.add(rb);
+            if (appRv_ != null) appRv_.replace(root_, runView_);   // 隐藏 chrome
+            status_.setText("运行中 — 点「← 退出」返回设计");
+            Console.writeLine("ds run enter nodes=" + runLoader_.nodeCount());
+        }
+
+        void exitRunMode() {
+            if (runMode_ == 0) return;
+            runMode_ = 0;
+            if (appRv_ != null) appRv_.replace(runView_, root_);   // 恢复 chrome
+            status_.setText("就绪");
+            Console.writeLine("ds run exit back=" + (runMode_ == 0 ? 1 : 0));
+        }
+
+        // 运行模式键盘：路由到运行树里聚焦的 TextField（点击即聚焦）
+        void runKey(int c) {
+            if (runLoader_ == null) return;
+            int n = runLoader_.fieldCount();
+            for (int i = 0; i < n; i = i + 1) {
+                TextField f = runLoader_.fieldAt(i);
+                if (f.focused() != 0) {
+                    if (c == 8) f.backspace();
+                    else if (c == 13) f.unfocus();
+                    else if (c >= 32 && c != 127) f.append(Str.chr(c));
+                    return;
+                }
+            }
+        }
+
         // ---- 按钮路由（调色板 +xxx 按钮改由窗口级 onPress/onRelease 拖放处理）----
         void onButton(int x, int y) {
+            if (runMode_ == 1) {   // 运行模式：只响应「← 退出」
+                if (runExitBtn_.hit(x, y) != 0) exitRunMode();
+                return;
+            }
             if (newBtn_.hit(x, y) != 0) { newDesign(); return; }
             if (openBtn_.hit(x, y) != 0) { openUix(); return; }
             if (loadBtn_.hit(x, y) != 0) { loadDefault(); return; }
             if (saveBtn_.hit(x, y) != 0) { saveUix(); return; }
+            if (runBtn_.hit(x, y) != 0) { enterRunMode(); return; }
             if (delBtn_.hit(x, y) != 0) { removeSelected(); return; }
             if (fsBtn_.hit(x, y) != 0) { SDL.setFullscreen(1); return; }
             if (applyBtn_.hit(x, y) != 0) { applyProps(); return; }
@@ -733,6 +814,9 @@ class UixDesigner {
 
         // ---- UiApp 生命周期（AppRunner 框架调用）----
         void onCreate(RootView rv, SdlRenderer r, int w, int h) {
+            appRv_ = rv;
+            winW_ = w;
+            winH_ = h;
             build(w, h);
             relayout(w, h);
             loadDefault();
@@ -744,6 +828,8 @@ class UixDesigner {
         }
 
         void onResize(int w, int h) {
+            winW_ = w;
+            winH_ = h;
             string tr = Console.getEnv("MYPVIEW_TEST_RESIZE");
             if (tr == "1")
                 Console.writeLine("ds onResize " + w + "x" + h + " sdl="
@@ -752,6 +838,7 @@ class UixDesigner {
         }
 
         void onKeyChar(int c) {
+            if (runMode_ == 1) { runKey(c); return; }   // 运行模式：输入进设计控件
             // 属性面板聚焦字段输入
             if (textF_.focused() != 0 || colorF_.focused() != 0
                 || xF_.focused() != 0 || yF_.focused() != 0
@@ -798,6 +885,19 @@ class UixDesigner {
             if (frame == 60) {
                 int s = SDL.saveBmp("/tmp/uix_designer.bmp");
                 Console.writeLine("ds ui saved=" + s);
+            }
+            // 运行模式自测（MYPVIEW_TEST_RUN=1）：frame 5 进入运行 → frame 60
+            // 截图 → frame 70 退出返回设计（真实窗口全链路）
+            string tr2 = Console.getEnv("MYPVIEW_TEST_RUN");
+            if (tr2 == "1") {
+                if (frame == 5) enterRunMode();
+                if (frame == 60) {
+                    int s2 = SDL.saveBmp("/tmp/uix_run_mode.bmp");
+                    Console.writeLine("ds run-mode saved=" + s2);
+                }
+                if (frame == 70) exitRunMode();
+                if (frame == 80)
+                    Console.writeLine("ds run-mode back=" + (runMode_ == 0 ? 1 : 0));
             }
         }
 
@@ -853,7 +953,23 @@ class UixDesigner {
                               + " nodes=" + loader_.nodeCount());            // 文件保存 → 打开 往返（MYPVIEW_UIX_FILE 由测试脚本设为 /tmp 路径）
             saveUix();
             openUix();
-            Console.writeLine("ds file roundtrip nodes=" + loader_.nodeCount());            Console.writeLine("ds done");
+            Console.writeLine("ds file roundtrip nodes=" + loader_.nodeCount());            // 运行模式：进入 → 运行树 = 当前设计（7 节点）；右上角退出钮命中；
+            // 聚焦 user 字段 → runKey 输入 'A''B' → 文本变 "用户名AB"
+            enterRunMode();
+            Console.writeLine("ds run nodes=" + runLoader_.nodeCount()
+                + " exit-hit=" + runExitBtn_.hit(runExitBtn_.getX() + 50,
+                                                 runExitBtn_.getY() + 18));
+            int fi = runLoader_.fieldIdxOf("user");
+            if (fi >= 0) {
+                TextField rf = runLoader_.fieldAt(fi);
+                rf.setFocus(1);
+                runKey(65);   // 'A'
+                runKey(66);   // 'B'
+                Console.writeLine("ds run type="
+                    + (Str.contains(rf.getText(), "AB") != 0 ? 1 : 0));
+            }
+            exitRunMode();
+            Console.writeLine("ds done");
         }
 }
 
