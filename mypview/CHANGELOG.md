@@ -7,6 +7,33 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.69 — 修复 AppRunner 按钮点击双触发（click+press 双路由）
+
+**问题**：一次鼠标按下（SDL MOUSEBUTTONDOWN）在 bridge 里同时置
+`getMouseClick`（g_mouse_x/y）与 `getMouseDown`（g_mouse_down）。AppRunner 帧循环
+两路都派发：
+1. `getMouseClick` → `rv.onTouch` → 控件 `Clicked`（#1）
+2. 手势按下边沿 → `rv.onPress` → `RootView.onPress` 先调 `child.onTouch` →
+   控件 `Clicked`（#2）
+
+→ 每次真实按钮点击 `Clicked` **双触发**（幂等控件被掩盖；v3.12.68 运行按钮一按
+开 3 个窗口即此根因 + release 合成 click）。
+
+**修复（`src/backend/app_runner.myp`）**：
+- 有手势路径（`getMousePos >= 0`）时，按下边沿的 `onPress→onTouch` 已派发点击，
+  不再走 `getMouseClick` 分发；
+- 仅无手势路径的「静止点击」（从未移动、`getMousePos=-1`）走 click 一次性分发；
+- `getMouseClick` 每帧照常调用以消费（清残留），避免陈旧点击后续误触发。
+
+**`examples/uix_designer.myp`**：移除运行按钮的 spawn 防抖（根因已修，防抖的
+「0.5s 内快速重开被忽略」副作用随之消除）。
+
+**验证**：
+- 真实窗口合成鼠标点「运行」：`ds run spawn=0` **恰好一次**（修复前 3 次）✓
+- 拖拽/静止点击两条路径都正常：设计器拖拽（testMouse 手势）与按钮点击都只
+  派发一次 ✓
+- 套件 6 段全 PASS（UIX/BNCT/JSON/DESIGN/UIXRUN/PIPE）。
+
 ## v3.12.68 — 设计器「运行」按钮：保存设计 → 弹 uix_run 独立新窗口跑当前 uix
 
 **需求**：在编辑器加「运行」按钮，点一下弹出新的对话框（独立窗口）直接运行

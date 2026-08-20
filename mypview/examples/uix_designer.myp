@@ -153,8 +153,6 @@ class UixDesigner {
         Button delBtn_;
         Button fsBtn_;          // 全屏切换（F11 亦可）
         Button runBtn_;         // 运行：保存设计 → 弹 uix_run 独立新窗口跑当前 uix
-        int curFrame_;          // 当前帧号（onFrame 记录，spawn 防抖用）
-        int lastSpawnFrame_;    // 上次启动预览的帧号（AppRunner click+press 双路由防抖）
         // 属性面板
         Label propTitle_;
         Label propInfo_;
@@ -203,8 +201,6 @@ class UixDesigner {
             dragActive_ = 0;
             dragOffX_ = 0;
             dragOffY_ = 0;
-            curFrame_ = 0;
-            lastSpawnFrame_ = -100;
             pathIds_ = new string[512];
             pathVals_ = new string[512];
             pathCount_ = 0;
@@ -732,15 +728,9 @@ class UixDesigner {
         // 点「运行」→ saveUix() 持久化当前（已修改）设计 → Process.spawn 后台
         // 启动 uix_run（MYPVIEW_UIX_FILE 指向刚保存的文件）→ 弹出新窗口跑当前
         // uix；设计器保持响应（双击 fork 分离子进程，不阻塞主循环）。
-        // 防抖：AppRunner 对一次按下会 click+press 双路由（既有行为），再加
-        // release 合成的 click → 一按可能触发 3 次；30 帧（≈0.5s）内只开一次。
+        // 注：AppRunner 已修复一次按下 click+press 双路由（v3.12.69），
+        // 单次点击只派发一次 Clicked → 只 spawn 一次。
         void enterRunMode() {
-            int df = curFrame_ - lastSpawnFrame_;
-            if (df < 30) {
-                Console.writeLine("ds run debounce skip=" + df);
-                return;
-            }
-            lastSpawnFrame_ = curFrame_;
             saveUix();
             // 显式 MYP_PLAYER_MAXFRAME=0：预览窗口跑到自己被关闭，不受设计器
             // 进程环境里的限帧变量影响（uix_run 0=不限帧）
@@ -811,7 +801,6 @@ class UixDesigner {
         }
 
         void onFrame(int frame) {
-            curFrame_ = frame;
             // resize 链路自测（MYPVIEW_TEST_RESIZE=1）：frame 5 自缩放窗口 →
             // AppRunner 检测到尺寸变化 → onResize → relayout → 画布变大
             string tr = Console.getEnv("MYPVIEW_TEST_RESIZE");

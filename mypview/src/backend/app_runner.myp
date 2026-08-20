@@ -71,13 +71,15 @@ class AppRunner {
                 fs = fs == 0 ? 1 : 0;
                 SDL.setFullscreen(fs);
             }
-            // 鼠标点击 → 根命中分发（一次性点击：onTouch → 控件 Clicked 等）
+            // 鼠标点击 → 根命中分发。
+            // 注意：一次按下（SDL MOUSEBUTTONDOWN）会同时置 click（getMouseClick）
+            // 与 down 边沿（getMouseDown）——而手势按下路径 onPress→onTouch 已
+            // 派发一次点击。若两路都派发 → 按钮 Clicked 双触发（v3.12.68 运行
+            // 按钮一按开 3 个窗口的根因）。修复：有手势路径（gpos>=0）时按下
+            // 边沿即派发点击，不再走 click 分发；仅无手势路径的「静止点击」
+            // （从未移动，getMousePos=-1）才走 click 一次性分发。getMouseClick
+            // 每帧都调用以消费（清残留），避免陈旧点击在后续帧误触发。
             int click = SDL.getMouseClick();
-            if (click >= 0) {
-                int mx = click & 0xFFFF;
-                int my = (click >> 16) & 0xFFFF;
-                rv.onTouch(mx, my);
-            }
             // 鼠标手势 → 根拖拽分发（按下/按住移动/抬起；容器逐层路由到命中控件）
             // + 窗口级回调（应用跨控件拖放，如调色板→画布）
             int down = SDL.getMouseDown();
@@ -86,7 +88,7 @@ class AppRunner {
                 int gx = gpos & 0xFFFF;
                 int gy = (gpos >> 16) & 0xFFFF;
                 if (down != 0 && prevDown == 0) {
-                    rv.onPress(gx, gy);          // 按下边沿 → 拖拽开始（RootView 命中锁定）
+                    rv.onPress(gx, gy);          // 按下边沿 → 命中路由（onPress→onTouch 派发点击）
                     app.onPress(gx, gy);         // 窗口级：应用拖放起点
                 } else if (down != 0) {
                     rv.onMove(gx, gy);           // 按住移动 → 持续拖拽
@@ -95,6 +97,11 @@ class AppRunner {
                     rv.onRelease(gx, gy);        // 抬起 → 拖拽结束
                     app.onRelease(gx, gy);
                 }
+            } else if (click >= 0) {
+                // 静止点击（无手势路径）：一次性点击分发（onTouch → 控件 Clicked 等）
+                int mx = click & 0xFFFF;
+                int my = (click >> 16) & 0xFFFF;
+                rv.onTouch(mx, my);
             }
             prevDown = down;
             // 字符输入 → 应用
