@@ -44,6 +44,11 @@ class BnctCases {
         Button deleteBtn_;
         Button pacsBtn_;
         string userName_;
+        // Header 控件（字段：relayout 需要引用）
+        Label headerTitle_;
+        Label pageTitle_;
+        Avatar userAv_;
+        Label userLabel_;
 
     action:
         @constructor BnctCases() {
@@ -169,6 +174,23 @@ class BnctCases {
             cards_[1].onTouch(cards_[1].secondaryX() + 5,
                               cards_[1].btnY() + 5);
         }
+        // 窗口尺寸变化（全屏/最大化）→ 1:1 逻辑尺寸 + 重新布局（防拉伸模糊）
+        void relayout(int W, int H) {
+            userLabel_.setFrame(W - 262, 30, 0, 0);
+            userAv_.setFrame(W - 320, 18, 44, 44);
+            enterBtn_.setFrame(W - 158, 204, 130, 40);
+            // 卡片网格：按窗口宽度排多列
+            int cw = 412;
+            int gap = 20;
+            int cols = 1;
+            if (W >= 3 * cw + 4 * gap + 28) cols = 3;
+            else if (W >= 2 * cw + 3 * gap + 28) cols = 2;
+            for (int i = 0; i < cardCount_; i = i + 1) {
+                cards_[i].setFrame(28 + (i % cols) * (cw + gap),
+                                   276 + (i / cols) * 190, cw, 170);
+            }
+        }
+
         // ---- SDL 窗口界面（复刻截图，窗口尺寸对齐 ref 参考图比例）----
         void runUi() {
             int W = 1880;   // 对齐 mypview/ref/粘贴的图像.png 逻辑尺寸（2x DPI 还原）
@@ -184,15 +206,15 @@ class BnctCases {
             build();
 
             // Header：标题 + 用户区（右上角，对齐截图）
-            Label headerTitle = new Label("BNCT 治疗计划系统", 28, 16, 3);
-            Label pageTitle = new Label("病例管理", 28, 52, 3);
-            Avatar userAv = new Avatar("D", W - 320, 18, 44);
-            Label userLabel = new Label(userName_, 0, 0, 2);
-            userLabel.setFrame(W - 262, 30, 0, 0);
-            rv.add(headerTitle);
-            rv.add(pageTitle);
-            rv.add(userAv);
-            rv.add(userLabel);
+            headerTitle_ = new Label("BNCT 治疗计划系统", 28, 16, 3);
+            pageTitle_ = new Label("病例管理", 28, 52, 3);
+            userAv_ = new Avatar("D", W - 320, 18, 44);
+            userLabel_ = new Label(userName_, 0, 0, 2);
+            userLabel_.setFrame(W - 262, 30, 0, 0);
+            rv.add(headerTitle_);
+            rv.add(pageTitle_);
+            rv.add(userAv_);
+            rv.add(userLabel_);
 
             // 搜索/筛选区 + 操作按钮 + 病例选择 + 卡片
             rv.add(search_);
@@ -255,6 +277,16 @@ class BnctCases {
                     int hy = (mpos >> 16) & 0xFFFF;
                     for (int i = 0; i < cardCount_; i = i + 1)
                         cards_[i].setHovered(cards_[i].hit(hx, hy));
+                }
+
+                // 窗口自适应：全屏/最大化 → 1:1 逻辑尺寸 + 重排（不缩放不模糊）
+                int curW = SDL.width();
+                int curH = SDL.height();
+                if (curW != W || curH != H) {
+                    W = curW;
+                    H = curH;
+                    SDL.setLogicalSize(W, H);
+                    relayout(W, H);
                 }
 
                 // 绘制（dark blue 背景）
