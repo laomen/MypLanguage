@@ -27,106 +27,13 @@
 
 ## 编译器版本历史
 
-### v3.12.60 — UixDesigner：mypview 可视化界面设计器（所见即所得，对标 Qt Design Studio）
+### mypview 框架变更 → 见 `mypview/CHANGELOG.md`
 
-**背景**：把 mypview 做成可用「界面设计工具」直接设计 UI——画布实时渲染、点选控件、
-属性面板改属性即见效果、调色板一键添加、保存 `.uix` 声明文档（可再被 UixLoader 加载）。
-
-**架构**（`examples/uix_designer.myp`，UiApp + AppRunner）：
-- `.uix` 文档 = 设计的**唯一真源**（Json，用 v3.12.59 的编辑 API setValue/addChild/remove）。
-- 画布 = `UixLoader.buildInto` 实时渲染（所见即所得）。`DesignCanvas`（自定义 View）
-  持有设计渲染树、点击只上报 `CanvasClick`（不派发给控件 → 点选而非触发）。
-- 选中 = 画布点击 → `loader.hitId(x,y)`（已存在的命中最上层 API）→ 琥珀 `SelBox`
-  描边 + 属性面板回填（text/color/x/y/width/height）。
-- 属性 = 编辑 → `Json.setValue`/`addChild` 写回文档 → 重建画布即见效果。
-- 调色板 = Label/Button/TextField/Switch/Slider/Panel 一键添加（`Json.addChild` 注入
-  `{...}` 对象节点）。
-- 删除/保存：`Json.remove` 删节点；`serialize()` 输出 `.uix`（打印 + 截图）。
-- headless（`DESIGN_HEADLESS=1`）断言：命中/改属性/加控件/删除/序列化。
-
-**桥扩展**：`myp_json_add_child` 支持**完整 JSON 值**（raw 以 `{`/`[` 开头走完整解析
-器 → 可注入对象/数组节点；否则回退标量——JsonEditor 行为不变）。
-
-**UixLoader 补充**：补 `panelIdxOf`/`panelAt` 访问器（与其他控件类型一致，设计器
-取节点实际宽高用）。
-
-**踩坑**：
-- **`Json.remove` 对带尾点路径失败**：`myp_json_remove` 用 `strrchr('.')` 取末段，
-  路径 `children.5.`（尾点）→ 末段空 token → 删除失败。设计器 id→路径映射存对象
-  路径时**必须去尾点**（`children.5`）。setValue 因 strrchr 取最后一个点恰好能扛。
-- 属性面板行标签**纯局部**（`Label l1 = new Label(...)`）→ 出 build() 释放 → 容器
-  悬垂 → 窗口模式绘制时 `myp_ttf_draw_text` strlen 崩（headless 不绘制不触发）。
-  同 json_editor：控件一律字段持有。
-
-**回归**：mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；
-父套件 313/313、bootstrap 16/16、bugs 11/11。
-
-### v3.12.59 — JsonEditor：可视化 JSON 树编辑器 + json bridge 编辑支持
-
-**背景**：stdlib `json` 原本只读（parse + 按路径查询）。要给 mypview 做可视化
-JSON 编辑器，需补遍历/修改/序列化能力。
-
-**扩展 `stdlib/bridges/json_bridge.c` + `stdlib/json.myp`**（Json 类新方法）：
-- 遍历：`childCount(path)`、`childKey(path, i)`（对象键/数组空）、`scalar(path)`
-  （标量显示文本：字符串去引号、数字词法原文、bool/null 关键字）。
-- 修改：`setValue(path, raw)`（标量原地改，raw 解析为数字/布尔/null/字符串）、
-  `addChild(path, key, raw)`（对象加键/数组追加）、`remove(path)`（删子节点）。
-- 序列化：`serialize()`（美化打印，2 空格缩进，字符串转义 `"` `\` `\n` 等）。
-- 全部保持 M8 约定：返回 string 一律 `myp_strdup`（计数拷贝）。
-
-**新增控件 `mypview/src/controls/json_editor.myp`**：
-- `JsonEditor` 把 JSON 解析为可展开/折叠树行（键蓝色 + 类型着色值：string 绿/
-  number 琥珀/bool 青/null 灰/容器白），纯逻辑 headless 可测。
-- 编辑 API：`toggle(i)`（展开/折叠，跨编辑持久）、`setValueAt(i, raw)`、
-  `addChildAt(i, key, raw)`、`removeAt(i)`、`serialize()`、行查询
-  `rowCount/rowKeyAt/rowValueAt/rowLevelAt/rowTypeAt/rowHasKids`。
-- 自绘 + 命中（同 tree_view 范式）：点箭头展开折叠、点行选中触发 `Selected`。
-
-**示例 `examples/json_editor.myp`**（UiApp + AppRunner）：标题行 + JsonEditor 树
-+ 操作栏（值 TextField + 设值/加键/删行/序列化 4 按钮）。`JSON_HEADLESS=1` headless
-断言：树行/改值/加键/删除/折叠往返/序列化。build.sh 的 backend target 加 json_editor；
-run.sh 新增 MYPVIEW-JSON 测试段（SRCS/PIPESRCS 亦补 json_editor.myp 依赖顺序项）。
-
-**踩坑**：
-- LinearLayout 的 kids_ 是接口数组不 retain——示例里控件必须**字段持有**（纯局部
-  控件出作用域即释放 → layout 时悬垂段错误）。bnct 同款规避。
-- **myp_self 对固定大数组字段缺陷**：`string[512]` 字段按 `[512 x ptr]` 布局，
-  `new string[512]` 返回 `ptr` → `store [512 x ptr]` verify 失败。改用**动态数组**
-  `string[]`（`new T[n]`）两编译器皆稳。
-
-**回归**：mypview UIX/BNCT/JSON/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；父套件
-313/313、bootstrap 16/16、bugs 11/11。
-
-### v3.12.58 — mypview AppRunner：应用运行器框架化（帧循环不再手写）
-
-**背景**：此前每个窗口示例都要在 Boot 里手写 `while (SDL.running())` 帧循环
-（窗口事件/鼠标命中/hover 遍历/绘制/协程调度/退出条件）。把这段样板收敛进框架，
-应用只需实现 UiApp 生命周期接口。
-
-**新增 `mypview/src/backend/app_runner.myp`**：
-- `interface UiApp`：应用生命周期接口——`onCreate(rv, r, w, h)`（构建界面树）、
-  `onResize(w, h)`（窗口尺寸变化，框架已 setLogicalSize 1:1）、
-  `onFrame(frame)`（每帧业务更新）、`onKeyChar(c)`（输入字符）。
-- `class AppRunner`：`int run(UiApp app, string title, w, h, bgColor)`——创建
-  SDL 窗口 + SdlRenderer + RootView，驱动帧循环直到退出（ESC/关窗/
-  `MYP_PLAYER_MAXFRAME`）。框架内完成：鼠标点击→`rv.onTouch` 命中分发、
-  输入字符→`app.onKeyChar`、鼠标位置→`rv.updateHover` 悬停遍历、窗口尺寸变化
-  →`setLogicalSize` + `app.onResize`、`app.onFrame` + `Coro.scheduler()`、
-  清屏→`rv.draw`→present、16ms 帧间隔。
-- **放置 backend/**：AppRunner 强依赖 SDL 窗口 + SdlRenderer（具体后端类），
-  放 core 会迫使所有示例（含 headless/纯逻辑）链接 SDL；放 backend 后仅运行
-  SDL 窗口的 target（build.sh 显式加 backend）才编译它。
-- **hover 框架化**：View 接口新增 `setHovered(on)`/`updateHover(x, y)`（默认
-  按自身 hit 设置）；RootView 与 LinearLayout/FlowLayout/GridLayout/StackLayout/
-  Panel 覆写 `updateHover` 为从后往前递归子控件。AppRunner 每帧自动遍历，控件
-  只需覆写 `setHovered` 做悬停视觉（如 Card/Button 提亮）。
-
-**示例迁移**：`examples/bnct_cases.myp` 由手写帧循环改为实现 `UiApp`（Boot 仅
-三行：`AppRunner rn = new AppRunner(); rn.run(a, "标题", 1880, 956, 0x14141C);`），
-headless 断言不变。build.sh 的 backend 包含改为目录通配（sdl_renderer + app_runner）。
-
-**回归**：mypview UIX/BNCT/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；父套件
-313/313、bootstrap 16/16、bugs 11/11。
+mypview 框架（控件/布局/UIX/AppRunner/示例/测试）的变更记录迁移到
+`mypview/CHANGELOG.md`（v3.12.58 AppRunner 框架化 / v3.12.59 JsonEditor /
+v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编译器/运行时/stdlib
+变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
+mypview changelog 双向引用。
 
 ### v3.12.57 — 再剥离 6 组 FFI 出 runtime（net/process/regex/base64/date/hash）
 
