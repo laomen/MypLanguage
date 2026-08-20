@@ -1,0 +1,17 @@
+// EXPECT ERROR: duplicate static action 'foo' in class 'Dup' (different signature)
+//
+// BUG-046 回归（负测试）：类内两个同名 static 方法（**签名不同**）此前静默通过 →
+// codegen 用同一个 LLVM 函数 `Class_foo` 生成不同签名的 body → func->getArg(i) 越界 →
+// `Function::getArg() out of range` 崩溃（sema 的 static action 注册
+// `symbol_table_.declare("Class.foo", ...)` 返回值未检查，无重复检测）。应报错拒绝。
+// 注意：**签名相同**的重复（如 cuda.myp Vectors 的 CPU/GPU 版 max/min）保持历史静默
+// 合并行为，不报错。触发本源：ops.myp 本就有 8 参 `mul`，再加 5 参 `mul` 即触发
+// （与名字本身无关）。
+
+class Dup {
+    static:
+        void foo(float[] a, int x) { Console.write(x); }
+        void foo(float[] a, int x, int y, int z) { Console.write(x); }
+}
+
+int main() { return 0; }

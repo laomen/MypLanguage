@@ -17,6 +17,7 @@ typedef struct CUfunc_st* CUfunction;
 typedef int (*cuInit_t)(unsigned int);
 typedef int (*cuCtxCreate_t)(CUcontext*, unsigned int, int);
 typedef int (*cuModuleLoadData_t)(CUmodule*, const void*);
+typedef int (*cuModuleUnload_t)(CUmodule);
 typedef int (*cuModuleGetFunction_t)(CUfunction*, CUmodule, const char*);
 typedef int (*cuModuleGetGlobal_t)(unsigned long long*, size_t*, CUmodule, const char*);
 typedef int (*cuLaunchKernel_t)(CUfunction, unsigned int,unsigned int,unsigned int,
@@ -64,6 +65,7 @@ static void* lib = NULL;
 static cuInit_t p_cuInit = NULL;
 static cuCtxCreate_t p_cuCtxCreate = NULL;
 static cuModuleLoadData_t p_cuModuleLoadData = NULL;
+static cuModuleUnload_t p_cuModuleUnload = NULL;
 static cuModuleGetFunction_t p_cuModuleGetFunction = NULL;
 static cuModuleGetGlobal_t p_cuModuleGetGlobal = NULL;
 static cuLaunchKernel_t p_cuLaunchKernel = NULL;
@@ -160,6 +162,7 @@ int myp_gpu_init(void) {
     p_cuInit = (cuInit_t)dlsym(lib,"cuInit");
     p_cuCtxCreate = (cuCtxCreate_t)dlsym(lib,"cuCtxCreate_v2");
     p_cuModuleLoadData = (cuModuleLoadData_t)dlsym(lib,"cuModuleLoadData");
+    p_cuModuleUnload = (cuModuleUnload_t)dlsym(lib,"cuModuleUnload");
     p_cuModuleGetFunction = (cuModuleGetFunction_t)dlsym(lib,"cuModuleGetFunction");
     p_cuModuleGetGlobal = (cuModuleGetGlobal_t)dlsym(lib,"cuModuleGetGlobal");
     p_cuLaunchKernel = (cuLaunchKernel_t)dlsym(lib,"cuLaunchKernel");
@@ -340,8 +343,32 @@ void myp_gpu_to_host(void* d,const void* s,size_t sz) { if(avail) p_cuMemcpyDtoH
 // Search: $MYP_CUDA_LIBDEVICE, then common CUDA toolkit install paths.
 typedef struct { CUmodule mod; CUfunction fn; } kernel_t;
 
+// Kernel 缓存：每个唯一的 (PTX, name) 只在首次 launch 时 cuModuleLoadData 一次，
+// 之后复用同一模块/函数句柄。
+// 背景：编译器为每个 @gpu for 的每次执行都调用 myp_gpu_load_kernel。若每次 launch
+// 都新加载模块且从不 cuModuleUnload，设备端模块内存（kernel 代码）会逐次累积——
+// 推理只启动几次无感，但训练每样本启动 ~13 个 kernel × 数十万样本 = 数百万次模块
+// 加载且永不卸载 → 显存持续暴涨直至 OOM（"显存一直在涨"）。
+// 方案：按 (ptx, name) 指针身份缓存（嵌入 PTX 为程序常量，地址稳定），命中即复用；
+// 缓存满则回退为「加载 + 用完即卸」，保证不泄漏。缓存条目在进程生命周期内保持有效。
+#define MYP_GPU_KERNEL_CACHE_MAX 128
+typedef struct { const char* ptx; const char* name; kernel_t* k; } kernel_cache_entry_t;
+static kernel_cache_entry_t g_kcache[MYP_GPU_KERNEL_CACHE_MAX];
+static int g_kcache_n = 0;
+
 void* myp_gpu_load_kernel(const char* ptx, const char* name) {
     if (!avail) return NULL;
+    // cuModuleLoadData 依赖当前线程上下文 TLS；@thread/协程上下文可能因 cuCtxCreate
+    // 所在线程而异——强制把 ctx 置为当前（同 cuModuleGetGlobal / cuGraphInstantiate
+    // 教训：避免依赖隐式当前上下文）。
+    if (p_cuCtxSetCurrent) p_cuCtxSetCurrent(ctx);
+    // 缓存命中：嵌入 PTX/name 均为全局常量，指针身份比较即可；strcmp 复核防同址误配。
+    for (int i = 0; i < g_kcache_n; i++) {
+        if (g_kcache[i].ptx == ptx && g_kcache[i].name == name &&
+            strcmp(g_kcache[i].name, name) == 0) {
+            return g_kcache[i].k;
+        }
+    }
     kernel_t* k = (kernel_t*)malloc(sizeof(kernel_t));
     if (!k) return NULL;
 
@@ -357,7 +384,15 @@ void* myp_gpu_load_kernel(const char* ptx, const char* name) {
     if (fr != 0) {
         fprintf(stderr, "[myp GPU] kernel function '%s' not found in module: %s — "
                         "falling back to CPU\n", name, gpu_err_str(fr));
+        p_cuModuleUnload(k->mod);
         free(k); return NULL;
+    }
+    // 插入缓存（满了则本 kernel 走「用完即卸」路径，destroy 时 unload）。
+    if (g_kcache_n < MYP_GPU_KERNEL_CACHE_MAX) {
+        g_kcache[g_kcache_n].ptx = ptx;
+        g_kcache[g_kcache_n].name = name;
+        g_kcache[g_kcache_n].k = k;
+        g_kcache_n++;
     }
     return (void*)k;
 }
@@ -373,23 +408,27 @@ int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, un
     // stream==0 同步路径 launch 阻塞到完成，host 时钟已足够精确）。
     static int prof = -1;
     if (prof == -1) { const char* e = getenv("MYP_PROF_GPU"); prof = (e && e[0]=='1') ? 1 : 0; }
+    // 逐 kernel 日志默认静默（异步流模式 216 kernel/步，打印会成为 host 瓶颈）；
+    // MYP_GPU_LOG=1 时输出，供调试。
+    static int logv = -1;
+    if (logv == -1) { const char* e = getenv("MYP_GPU_LOG"); logv = (e && e[0]=='1') ? 1 : 0; }
     struct timespec t0, t1;
     if (prof && stream == 0) clock_gettime(CLOCK_MONOTONIC, &t0);
-    fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u stream=%ld\n", gx, bx, stream);
+    if (logv) fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u stream=%ld\n", gx, bx, stream);
     int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0, (CUstream)(intptr_t)stream, args, NULL);
-    if (r!=0) { fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %s\n", gpu_err_str(r)); return 0; }
+    if (r!=0) { if (logv) fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %s\n", gpu_err_str(r)); return 0; }
     if (stream == 0) {
         r = p_cuCtxSynchronize();
-        if (r!=0) { fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %s\n", gpu_err_str(r)); return 0; }
+        if (r!=0) { if (logv) fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %s\n", gpu_err_str(r)); return 0; }
         if (prof) {
             clock_gettime(CLOCK_MONOTONIC, &t1);
             double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +
                         (double)(t1.tv_nsec - t0.tv_nsec) / 1e6;
-            fprintf(stderr, "[myp GPU] kernel done: %.3f ms\n", ms);
-        } else {
+            if (logv) fprintf(stderr, "[myp GPU] kernel done: %.3f ms\n", ms);
+        } else if (logv) {
             fprintf(stderr, "[myp GPU] kernel done\n");
         }
-    } else {
+    } else if (logv) {
         fprintf(stderr, "[myp GPU] kernel queued async on stream\n");
     }
     return 1;
@@ -405,6 +444,13 @@ void myp_gpu_to_host_async(void* d, const void* s, size_t sz, long stream) {
 void myp_gpu_destroy_kernel(void* kctx) {
     if (!avail||!kctx) return;
     kernel_t* k = (kernel_t*)kctx;
+    // 缓存条目进程生命周期内保持有效（复用同一模块，避免重复加载与泄漏）。
+    for (int i = 0; i < g_kcache_n; i++) {
+        if (g_kcache[i].k == k) return;
+    }
+    // 未缓存（缓存满的回退路径）：必须 cuModuleUnload 释放设备模块内存，
+    // 否则每次 launch 都泄漏模块显存（旧版只 free 宿主结构 → 训练显存暴涨）。
+    if (p_cuModuleUnload) p_cuModuleUnload(k->mod);
     free(k);
 }
 

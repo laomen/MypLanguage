@@ -1,0 +1,32 @@
+// 对拍语料：参数窄化诊断（narrowing conversion warning）。
+// 用途：test_myp_self.sh 的 SEMA_SAMPLES 语料——C++ mypc 与 myp_self 的
+// --frontend-dump sema 必须字节一致（含 Diagnostics 段的 narrowing warning）。
+// 覆盖：long→int 窄化、double→float 窄化（应报 warning）；int→long、int→double、
+// float→double 提升（不报）；函数值调用窄化（无参名，文本仍一致）。
+
+class NarrowSema {
+    static:
+        void f(int a, long b, double c) { }
+        void h(float f) { }
+    action:
+        void g(int x) { }
+}
+
+class Runner {
+    action:
+        @constructor
+        Runner() {
+            long L = 5L;
+            double D = 3.0;
+            float F = 1.5f;
+            NarrowSema.f(1, 2, 3);        // 提升：int→int / int→long / int→double（不报）
+            NarrowSema.f(L, L, D);        // 窄化：long→int（报）；long→long / double→double（不报）
+            NarrowSema.f(1, 2, F);        // 提升：int→int / int→long / float→double（不报）
+            NarrowSema.f(L, 2, F);        // 窄化：long→int（报）；int→long；float→double 提升
+            NarrowSema.h(D);              // double→float 非隐式 → error（typesCompatible 拒绝）
+            (int) -> int lam = (int x) => { return x + 1; };
+            int r = lam(L);               // 窄化：long→int（函数值调用，报）
+        }
+}
+
+int main() { Runner r = new Runner(); return 0; }

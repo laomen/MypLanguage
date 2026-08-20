@@ -43,6 +43,7 @@
 | BUG-025 | 🟩 | 多文件编译 `mypc a.myp b.myp` **只合并第一个文件的 imports**——合并循环漏了 imports/structs/bitfields/enums/ffis/macros/type_aliases（只合并 classes/interfaces/mappings/functions）→ 第二个文件的 `import env` 静默丢弃 → `Console` 未定义 | 回归 `tests/test_multifile.sh` |
 | BUG-026 | 🟩 | `mypc --test` + 源码含用户 `int main()` → 用户 main 空块**无 terminator**（`LLVM verify failed: Basic Block in function 'main' does not have terminator!`），且残留占位使测试运行器 main 被改名为 `main.1` → 测试**静默不跑**（exit 0 全假过） | 回归 `tests/test_multifile.sh`（BUG-026 用例） |
 | BUG-027 | 🟩 | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
+| BUG-046 | � | 类内同名 **static 方法**（签名不同）无重复检测 → codegen 用同一 LLVM 函数生成不同签名 body → `Function::getArg() out of range` 崩溃（static action 注册 `declare("Class.name")` 返回值未检查；properties/actions/functions/events 都有查重唯独 static 漏） | 负测试 `tests/negative/duplicate_static_action.myp`（编译拒绝） |
 
 ---
 
@@ -1193,3 +1194,62 @@
 - **验证**：mypc + myp_self 对 `import mypview;` 包消费者编译运行输出一致
   （`pkg button=Login label=hello num=50 slider=60`）；parent 312/312、
   bugs 11/11、mypview UIX/PIPE PASS。
+
+## BUG-045（已修复 🟩）：selfhost `@parallel for` 把 float[] 参数当 i32[] 处理 →
+3D Conv3D/MaxPool3D/AveragePool3D 输出全 0（deeplearning 框架自举编译数值偏差）
+
+- **症状**：自举编译器 `myp_self` 编译 `examples/deeplearning/infer_tests/` 的
+  `conv3d_main`/`coarselike`/`coarselike32`/`pad3d_avgpool3d`，产物 MISMATCH：
+  Conv3D 输出（`cv`）全 0 → InstanceNorm/ReLU/MaxPool 塌缩成常量（全 0.05）。
+  oracle `mypc` 全 OK。输入 x / 权重 w3d / 偏置 b3d 与 oracle 逐元素一致（张量
+  布局 LAYOUTS IDENTICAL），唯 conv 输出全 0。
+- **根因**：`tools/selfhost/src/codegen.myp` `genParallelFor` 收集捕获时，**参数
+  一律传 `elem=""`**（只有局部变量带元素类型）→ 并行 body 内 `float[] arena`
+  参数被当 `i32[]`：GEP 用 i32 元素类型 + `store i32`（fptosi float→i32）。
+  i32 1 = 0x00000001 当 float ≈ 1.4e-45（denormal）→ 浮点显示 0。3D 算子
+  `InferOps.conv3d`/`maxpool3d`/`avgpool3d`（ops.myp）都用
+  `@parallel for` 写 arena（float[] 参数）→ 全 0。（2D 算子 dense/relu 等
+  不用 @parallel → 不受影响，故 2D/F8/BN/r18 自举结果正常。）
+- **修复**：`genParallelFor` 参数捕获从 `paramAstTypes_.get(i)` 算元素类型：
+  slice → `sliceElemType` + slice 标记；数组 → `pt.element() → llvmType`，
+  与 `varElemType` / `isSliceVar` 对齐。
+- **验证**：`tests/bugs/b045_parallel_float_array.myp`（4 断言）mypc + myp_self
+  均 PASS；deeplearning infer_tests 全 18 入口（含 3D 四用例）自举产物与 oracle
+  一致（conv3d/coarselike/coarselike32/pad3d_avgpool3d 全 OK）。
+
+## BUG-046（已修复 🟩）：类内同名 static 方法（签名不同）无重复检测 → CodeGen 崩溃
+
+- **症状**：类内两个同名 static 方法（不同签名）→ mypc 编译在 CodeGen 阶段崩溃：
+  ```
+  mypc: /usr/lib/llvm-21/include/llvm/IR/Function.h:885:
+  llvm::Argument* llvm::Function::getArg(unsigned int) const:
+  Assertion `i < NumArgs && "getArg() out of range!"' failed.
+  ```
+- **发现（2026-08-20，Qwen2-0.5B 导入时误判为 `mul` 特殊名）**：给
+  `examples/deeplearning/infer/ops.myp` 加一个 5 参 `mul` 方法即崩溃——但那是**误导**：
+  ops.myp **本来就有一个 8 参 `mul`**（F8 广播算子，`(arena,aOff,bOff,outOff,n,bSize,C,S)`），
+  加 5 参的造成同名重复。最小复现（任意名字都崩）：
+  ```
+  class Dup { static:
+      void foo(float[] a, int x) { }
+      void foo(float[] a, int x, int y, int z) { }   // 同名不同签名
+  }
+  ```
+- **根因（gdb 定位 + 读码确认）**：`src/sema/sema.cpp` visitClassDecl 的 static action
+  注册：
+  ```
+  std::string static_name = cls_name + "." + action.name;
+  symbol_table_.declare(static_name, func_type);   // 返回值未检查！
+  ```
+  **唯一漏查重复的方法类别**——properties（"duplicate member"）、actions（"duplicate
+  action"）、functions（"duplicate function"）、events（"duplicate event"）都检查了
+  `declare`/`lookup` 返回值，唯独 static actions 没查。同名 static 方法静默注册两次 →
+  codegen `module_->getFunction("Class_foo")` 返回第一个定义创建的 LLVM 函数（5 参），
+  `generateStaticAction` 却按第二个 action 的 8 参数迭代 `func->getArg(i)` → 越界。
+- **修复**：`src/sema/sema.cpp` static action 注册处检查 `declare` 返回值，重复时报
+  `duplicate static action '<name>' in class '<cls>'`（与其它方法类一致）。
+- **验证**：负测试 `tests/negative/duplicate_static_action.myp`（编译拒绝）；
+  干净 ops.myp（单一 8 参 mul）编译无回归。
+- **备注**：曾经的「import ops.myp + 调 Math.cos 崩溃」也是本 bug 的下游症状
+  （当时 ops.myp 里带着重复 mul）。Qwen2 已采用的规避（silu/mul 定义在各 .myp 类内
+  私有方法）仍成立，且现在若真往 ops.myp 加同名方法会得到清晰报错。

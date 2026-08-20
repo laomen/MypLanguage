@@ -2233,6 +2233,29 @@ class Sema {
             if (a == "interface" && b == "class") return 1;
             return 0;
         }
+        // C++ Sema::isNarrowing 等价（kind 字符串版）：实参 from → 形参 to 有损窄化。
+        // typesCompat 已放行 Int↔Long 双向 / int→double 提升；此处捕获位宽收窄
+        // （Long→Int/Double→Float）或浮点→整型，供参数传递处发「narrowing」warning。
+        int isNarrowingKind(string from, string to) {
+            int fb = numericBitsOf(from);
+            int tb = numericBitsOf(to);
+            if (fb == 0 || tb == 0) return 0;
+            if (from == to) return 0;
+            if (fb > tb) return 1;
+            if (isFloatKindOf(from) != 0 && isFloatKindOf(to) == 0) return 1;
+            return 0;
+        }
+        int numericBitsOf(string k) {
+            if (k == "byte" || k == "char" || k == "ubyte") return 8;
+            if (k == "short" || k == "ushort") return 16;
+            if (k == "int" || k == "uint" || k == "float") return 32;
+            if (k == "long" || k == "ulong" || k == "double") return 64;
+            return 0;
+        }
+        int isFloatKindOf(string k) {
+            if (k == "float" || k == "double") return 1;
+            return 0;
+        }
         // 构造器实参兼容：actual 只能提升到 parameter，禁止 double→int 等收窄。
         int ctorArgCompat(string parameter, string actual) {
             if (parameter == actual) return 1;
@@ -4623,6 +4646,12 @@ class Sema {
                                 int al = argi != null ? argi.line() : 0;
                                 int ac = argi != null ? argi.col() : 0;
                                 diag_.error(al, ac, "argument " + (i + 1) + ": expected '" + pt + "', got '" + at + "'");
+                            } else if (Str.len(at) != 0 && Str.len(pt) != 0 && isNarrowingKind(at, pt) != 0) {
+                                // C++ visitCall 的 narrowing warning 等价（selfhost 无参名
+                                // 元数据 → 不带形参名；仅比 dump 不比 stderr，不影响对拍）。
+                                int al = argi != null ? argi.line() : 0;
+                                int ac = argi != null ? argi.col() : 0;
+                                diag_.warn(al, ac, "argument " + (i + 1) + ": passing '" + at + "' to parameter of type '" + pt + "' is a narrowing conversion; if this is a misplaced/missed argument, fix the call, otherwise use convert<" + pt + ">(...) to make it explicit");
                             }
                         }
                     }
@@ -5622,13 +5651,18 @@ class Sema {
             for (int ni = 0; ni < namedNames.size(); ni = ni + 1)
                 for (int pi = 0; pi < nparam; pi = pi + 1)
                     if (params.get(pi).name() == namedNames.get(ni)) provided.set(pi, 1);
-            for (int pi = 0; pi < nparam; pi = pi + 1) {
-                if (provided.get(pi) == 0 && params.get(pi).defaultExpr() == null) {
-                    diag_.error(e.line(), e.col(), "missing required argument '" + params.get(pi).name() + "'");
-                    for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
-                    e.setArgsVisited(1);
-                    return 0;
-                }
+            ArrayList<string> missing = new ArrayList<string>();
+            for (int pi = 0; pi < nparam; pi = pi + 1)
+                if (provided.get(pi) == 0 && params.get(pi).defaultExpr() == null) missing.add(params.get(pi).name());
+            if (missing.size() != 0) {
+                string msg = "missing required argument(s)";
+                for (int mi = 0; mi < missing.size(); mi = mi + 1) msg = msg + " '" + missing.get(mi) + "'";
+                msg = msg + " — expected " + nparam + " arguments, got " + positional;
+                if (anyNamed != 0) msg = msg + " + " + namedNames.size() + " named";
+                diag_.error(e.line(), e.col(), msg);
+                for (int ai = 0; ai < args.size(); ai = ai + 1) markAllExpr(args.get(ai));
+                e.setArgsVisited(1);
+                return 0;
             }
             // 成功：位置实参 + 命名实参按形参序重排 + 缺省补全
             ArrayList<AstExpr> posArgs = new ArrayList<AstExpr>();

@@ -35,6 +35,92 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.13.0 — 自举编译器 GPU 真机加速：resident 直传 + Device./Atomic 映射（BUG-045）
+
+> 编译器版本序列自本条目起与 mypview 分离：**编译器/自举/运行时版本独立计数**
+> （主 changelog 最后编译器条目 v3.12.57；v3.12.58–69 为 mypview 框架独占里程碑，
+> 记于 `mypview/CHANGELOG.md`）。本文件后续编译器条目从 v3.13.0 起单独递增。
+
+**背景**：自举编译器（`tools/selfhost/src/codegen.myp`）编译 deeplearning 框架时，
+GPU kernel 对 `resident` 一律回退 CPU、`Device.*`/`Atomic.*` 设备调用发 undefined
+符号（llc 拒 → 全量 GPU CPU 回退）。本次补齐，使自举产物在真机（RTX 2070 SUPER，
+CUDA 13.2，`MYP_GPU=1`）真正发射 kernel。
+
+**修复内容**（全部在 `tools/selfhost/src/codegen.myp`）：
+- **resident 设备驻留直传**：`genGpuKernel`/`genGpuTileKernel` 不再拒绝 resident
+  数组；新增 `gpuResidentDev(st, arr)` 从 `st.resident()` 解析 devVar，设备指针用
+  `inttoptr(load devVar)`，跳过 H2D/D2H/free。
+- **`gpuKernelMode_` 标志**：kernel 模块 body 生成期间置 1，区分 NVPTX kernel 与
+  CPU 回退串行 codegen。
+- **`genKernelDeviceCall(e, rfn)`**（对应 C++ oracle 的 `emitKernelExpr` 特判）：
+  - `Device.sqrt/exp/log/sin/cos/pow/abs/floor/ceil/trunc` → `llvm.*` intrinsic
+    （f32/f64 仅 intrinsic 名后缀，LLVM 类型用 float/double）；
+  - `Atomic.addDouble/addFloat` → `atomicrmw fadd`、`addInt/addLong` →
+    `atomicrmw add`（`getelementptr <elemT>, ptr, i64 idx`）。
+- 两处拦截：resolved 分支 + member 调用路径（后者处理不走 `e.resolved()` 的
+  `Device_*`/`Atomic_*` 静态调用）。
+- 两个 kernel 模块前言（`emitGpuKernelModule`/`emitGpuTileModule`）补
+  `llvm.exp/log/sin/cos/pow.f32/f64` intrinsic 声明。
+
+**效果**：
+- kernel 未定义符号 **21 → 1**（仅剩未用的 `Device_tan`——LLVM 无 tan intrinsic，
+  回退 CPU 可接受）。
+- GPU 重模型真发射且结果正确：`conv3d_main`/`coarselike`/`coarselike32`/
+  `pad3d_avgpool3d` 全「GPU OK」（nonzero-grid launch 7/21/21/3 次）。
+- r18 的 40 个 kernel 全 `grid=0 → cuLaunchKernel failed` 为**框架层预先存在 bug**
+  （oracle 的 r18 GPU 同样 40 个 grid=0，行为一致），非编译器问题。
+
+**BUG-045（🟩）——自举 `@parallel for` 数组参数元素类型缺失**：`genParallelFor`
+捕获参数传 `elem=""` → 并行体内 `float[] arena` 被当 `i32[]`（GEP/store 用 i32）→
+3D Conv3D/MaxPool3D/AveragePool3D 输出全 0。修复：参数捕获按 `paramAstTypes_`
+取元素类型（slice→`sliceElemType`+slice 标记，数组→`llvmType(element())`），与
+`varElemType`/`isSliceVar` 对齐。回归：`tests/bugs/b045_parallel_float_array.myp`
+（4 断言双编译器通过）；infer_tests 18 入口自举与 oracle 一致。
+
+**回归**：CPU 11 入口 0 mismatch；`tests/test_myp_self.sh` PASS=92/2（2 个 sema
+对拍失败为预先存在：`mega/test.myp`、`@test/function.myp`）；`run_bugs.sh`
+12 green 0 red。
+
+### v3.13.1 — 编译器 DX：漏参/窄化诊断 + GPU fast-math + 自举 UTF-8 修复（95/95）
+
+**1. 参数缺失报错改进**（`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
+- 漏参数时一次性列出**全部**缺失形参（而非只报尾部一个），并附期望/实得数量：
+  `missing required argument(s) 'batch' 'dev' — expected 10 arguments, got 8`。
+- 修复场景：GPU 算子调用漏 batch 时之前只报 `'dev'`（误导性极强），现能看出是
+  中间漏参导致后续错位。C++ 报错文本已同步 selfhost（sema.myp）。
+
+**2. 参数窄化诊断（narrowing warning）**（`include/mylang/Sema.h` +
+`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
+- 新增 `Sema::isNarrowing`：实参→形参「兼容但有损窄化」时发 warning——
+  `argument 1: passing 'long' to parameter of type 'int' is a narrowing
+  conversion; ... use convert<int>(...) to make it explicit`。
+- **为什么只有 Long→Int 命中**：MYP 数字隐式只允许 Int↔Long 双向 + 同符号拓宽 +
+  f32→f64；`double→float`、`double→int`、`long→short` 等本就在 `typesCompatible`
+  层报 error（`expected 'float', got 'double'`）。故「兼容但窄化」实际只有
+  Long→Int 一种——正是漏参/换位时最常见的错位源（如 GPU dense 的 `dev`/`yOff`）。
+- **warning 而非 error**：现有代码大量合法 long→int（ARC 计数断言
+  `Test.assertEq(long,0,..)`、`Fmt.i(long ms)`），error 会破坏回归。
+- **对拍约束**：`--frontend-dump sema` 输出含 Diagnostics 段，任何新诊断必须
+  C++/selfhost **逐字节一致**（selfhost 无 param_names 元数据 → 诊断文本不带
+  形参名）。新增对拍语料 `tests/narrow_sema.myp`（3 warning + 1 error，两编译器
+  dump 字节一致）。
+
+**3. GPU fast-math（opt-in）**（`src/codegen/codegen_gpu.cpp`）
+- `MYP_FAST_MATH=1` 时给 GPU 内核 IRBuilder 打 fast flags（reassoc/contract/nnan/
+  ninf/nsz/arcp），默认 OFF（不改变现有数值行为）。
+- 实测 Qwen2 batch=4 LLM 反而变慢（21 vs 16 ms/step）——LLM decode 带宽受限，
+  计算优化无益；保留 opt-in 供纯计算型内核（卷积/归约）使用。
+
+**4. 自举 UTF-8 修复（Dump.esc，区别于 v3.12.48 词法器 BUG-039）**
+  （`tools/selfhost/src/ast.myp`）
+- `Dump.esc` 用 `__myp_charcode`+`__myp_chr` 逐字符 → 字节被当码点再 UTF-8 编码
+  （双重编码，`"多参"`→`"å¤å"`）。改用 `Str.substring(s,i,i+1)` **原样字节透传**
+  （与 C++ `escapeDumpString` 逐字节一致）。lexer 层本就正确（tokens 对拍已 PASS），
+  无需改动。
+- 自举 sema 对拍 **92/94 → 94/94**（+本次窄化语料 = **95/95**）。
+
+**回归**：全量 `tests/run_tests.sh` **314/314**；`tests/test_myp_self.sh` **95/95**。
+
 ### v3.12.57 — 再剥离 6 组 FFI 出 runtime（net/process/regex/base64/date/hash）
 
 **背景**：继 JSON 之后，继续审计 `src/runtime/runtime.c`——凡是「只被单个 stdlib

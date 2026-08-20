@@ -182,6 +182,7 @@ SEMA_SAMPLES=(
     "tests/@test/function.myp"
     "tests/@test/man_or_boy.myp"
     "tests/@test/nonlocal.myp"
+    "tests/narrow_sema.myp"
 )
 for f in "${SEMA_SAMPLES[@]}"; do
     if [ ! -f "$f" ]; then bad "[sema对拍] 语料缺失: $f"; continue; fi

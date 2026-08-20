@@ -22,7 +22,11 @@ import fmt;
                 else if (c == 34) sb.append("\\\"");
                 else if (c == 92) sb.append("\\\\");
                 else if (c == 1) sb.append("\\0");
-                else sb.append(__myp_chr(c));
+                // 非转义字符原样字节透传（不用 __myp_chr 重新编码）——MYP string 是
+                // 字节串，__myp_charcode 返回字节（如 0xE5），__myp_chr(0xE5) 会再
+                // UTF-8 编码成 2 字节（"å"）→ 多字节中文双重编码（与 C++
+                // escapeDumpString 逐字节原样一致）。
+                else sb.append(Str.substring(s, i, i + 1));
             }
             return sb.toString();
         }

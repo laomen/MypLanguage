@@ -1001,7 +1001,18 @@ void Sema::visitClassDecl(TranslationUnit& tu, size_t ci) {
         populateFuncTypeMeta(func_type, action.params);
         // Register as ClassName.methodName in global scope
         std::string static_name = cls_name + "." + action.name;
-        symbol_table_.declare(static_name, func_type);
+        // BUG-046：同名 static 方法——**签名不同**才报错（此前无条件忽略 declare
+        // 返回值 → 同名不同签名静默注册 → codegen 用同一 LLVM 函数生成不同签名 body
+        // → func->getArg() out of range 崩溃）。签名相同（如 cuda.myp Vectors 的
+        // CPU/GPU 版 max/min）保持历史静默合并行为（不重复注册）。
+        if (const TypeInfo* existing = symbol_table_.lookup(static_name)) {
+            if (!(*existing == func_type)) {
+                error(action.range, "duplicate static action '" + action.name +
+                      "' in class '" + cls_name + "' (different signature)");
+            }
+        } else {
+            symbol_table_.declare(static_name, func_type);
+        }
         // Also register bare name for direct calls from any context
         if (!symbol_table_.lookup(action.name)) {
             symbol_table_.declare(action.name, func_type);

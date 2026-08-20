@@ -1472,17 +1472,27 @@ bool Sema::normalizeArgsToParamDecls(std::vector<std::unique_ptr<Expr>>& args,
                     }
                 }
             }
-            // 必填缺失
+            // 必填缺失：一次列出全部缺失形参（而非只报第一个），并附总数，
+            // 避免「漏一个位置参数导致后续错位」时只看到 `missing required
+            // argument 'xxx'`（xxx 是尾部形参，误导性极强——本会话 dense 漏 batch
+            // 就报了 'dev'）。
             std::vector<bool> provided(nparam, false);
             for (size_t i = 0; i < positional && i < nparam; i++) provided[i] = true;
             for (auto& np : named)
                 for (size_t i = 0; i < nparam; i++)
                     if (params[i].name == np.first) provided[i] = true;
-            for (size_t i = 0; i < nparam; i++) {
-                if (!provided[i] && !params[i].default_expr) {
-                    error(call_range, "missing required argument '" + params[i].name + "'");
-                    return false;
-                }
+            std::vector<std::string> missing;
+            for (size_t i = 0; i < nparam; i++)
+                if (!provided[i] && !params[i].default_expr)
+                    missing.push_back(params[i].name);
+            if (!missing.empty()) {
+                std::string msg = "missing required argument(s)";
+                for (auto& mn : missing) msg += " '" + mn + "'";
+                msg += " — expected " + std::to_string(nparam) + " arguments, got " +
+                       std::to_string(positional) +
+                       (any_named ? (" + " + std::to_string(named.size()) + " named") : "");
+                error(call_range, msg);
+                return false;
             }
             if (!any_named)
                 error(call_range, "expected " + std::to_string(nparam) +
@@ -1842,10 +1852,24 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
         } else {
             arg_type = visitExpr(*expr.args[i]);
         }
-        if (!typesCompatible(callee_type.param_types[i], arg_type)) {
+        const TypeInfo& pt = callee_type.param_types[i];
+        if (!typesCompatible(pt, arg_type)) {
             error(expr.args[i]->range, "argument " + std::to_string(i + 1) +
-                  ": expected '" + typeName(callee_type.param_types[i]) +
+                  ": expected '" + typeName(pt) +
                   "', got '" + typeName(arg_type) + "'");
+        } else if (isNarrowing(arg_type, pt)) {
+            // 类型兼容但有损窄化（Long→Int、Double→Float 等）——通常是漏参/换位
+            // 导致的错位。MYP 语义允许 Int↔Long 双向（现有代码大量依赖，如 ARC
+            // 计数断言），故用 warning 明确指出「第 k 个实参是 long 但形参是 int」，
+            // 不阻断编译（error 会破坏合法窄化用法）。
+            // 注意：文本不带形参名——与 selfhost sema.myp 逐字节一致（test_myp_self.sh
+            // 对拍 sema dump 含 Diagnostics 段，任何文本差异都会导致对拍 FAIL）。
+            std::string msg = "argument " + std::to_string(i + 1) +
+                   ": passing '" + typeName(arg_type) + "' to parameter of type '" +
+                   typeName(pt) + "' is a narrowing conversion; if this is a "
+                   "misplaced/missed argument, fix the call, otherwise use convert<" +
+                   typeName(pt) + ">(...) to make it explicit";
+            diag_.warn(expr.args[i]->range, msg);
         }
     }
 
@@ -3035,6 +3059,31 @@ bool Sema::typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const {
         }
     };
     return promotes(rhs.kind, lhs.kind);
+}
+
+// 数值标量类型位宽（用于窄化判定）；非数值返回 0。
+static int numericBits(TypeKind k) {
+    switch (k) {
+        case TypeKind::Byte: case TypeKind::Char: case TypeKind::UByte: return 8;
+        case TypeKind::Short: case TypeKind::UShort: return 16;
+        case TypeKind::Int: case TypeKind::UInt: case TypeKind::Float: return 32;
+        case TypeKind::Long: case TypeKind::ULong: case TypeKind::Double: return 64;
+        default: return 0;
+    }
+}
+static bool numericIsFloat(TypeKind k) {
+    return k == TypeKind::Float || k == TypeKind::Double;
+}
+
+bool Sema::isNarrowing(const TypeInfo& from, const TypeInfo& to) const {
+    int fb = numericBits(from.kind);
+    int tb = numericBits(to.kind);
+    if (fb == 0 || tb == 0) return false;      // 非数值标量不参与
+    if (from.kind == to.kind) return false;    // 同类型无损
+    if (fb > tb) return true;                  // 位宽收窄：Long→Int/Short/Byte、Double→Float/Int 等
+    // 浮点 → 整型（同宽或窄，如 Float→Int 32→32 有损取整）
+    if (numericIsFloat(from.kind) && !numericIsFloat(to.kind)) return true;
+    return false;
 }
 
 void Sema::collectExprLocals(Expr& e, std::set<std::string>& locals) {

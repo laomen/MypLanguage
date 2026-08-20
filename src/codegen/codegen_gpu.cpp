@@ -146,6 +146,16 @@ static llvm::AllocaInst* createKernelAlloca(llvm::IRBuilder<>& kb, llvm::Type* t
     unsigned as = gpuTargetAmd() ? 5 : 0;
     return kb.CreateAlloca(ty, as, array_size, name);
 }
+// §3.5 MYP_FAST_MATH=1 时给 GPU 内核 IRBuilder 打 fast-math flags（reassoc/contract/
+// nnan/ninf 等），让 LLVM 优化管线（O2/O3）能对内核 FP 做 FMA 融合/重排/向量化。
+// 与 host 侧 codegen.cpp 的 fast-math 开关对齐；默认 OFF 保持严格 IEEE（与回归基线一致）。
+static void setGpuFastMath(llvm::IRBuilder<>& kb) {
+    if (const char* fm = getenv("MYP_FAST_MATH"); fm && fm[0] == '1') {
+        llvm::FastMathFlags fmf;
+        fmf.setFast();
+        kb.setFastMathFlags(fmf);
+    }
+}
 // §7.7 GpuCompiler 发射：NVPTX → PTX 文本（AssemblyFile）；AMD → GCN ELF code
 // object（ObjectFile，供 hipModuleLoadData 加载）。返回空 = 失败。
 static std::string emitGpuModule(llvm::Module* mod, llvm::TargetMachine* tm,
@@ -4975,6 +4985,7 @@ bool CodeGen::generateGpuKernel(const ForStmt& s) {
     // Build kernel body
     auto* entry_bb = llvm::BasicBlock::Create(ctx_, "entry", kernel_func);
     llvm::IRBuilder<> kb(entry_bb);
+    setGpuFastMath(kb);
 
     // Compute tid = blockIdx.x * blockDim.x + threadIdx.x（§7.7 跨厂商 intrinsic）
     auto* tid_x = kb.CreateIntCast(emitGpuThreadIdx(kb), i64_ty, false, "tid_x");

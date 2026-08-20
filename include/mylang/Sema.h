@@ -169,6 +169,10 @@ private:
                                   const std::vector<TypeInfo>& type_args);
     std::string typeName(const TypeInfo& type) const;
     bool typesCompatible(const TypeInfo& lhs, const TypeInfo& rhs) const;
+    // 实参类型 from → 形参类型 to 是否为「有损窄化」（typesCompatible 已通过前提下）：
+    // Long→Int、Double→Float、Double→Int、Long→Short 等位宽收窄，或浮点→整型。
+    // 用于参数传递处报「第 k 个实参是 long 但形参是 int」类错误，捕获漏参/换位。
+    bool isNarrowing(const TypeInfo& from, const TypeInfo& to) const;
     bool isNumericKind(TypeKind k) const;
     bool isUnsignedKind(TypeKind k) const;
     TypeKind commonNumericKind(TypeKind a, TypeKind b) const;

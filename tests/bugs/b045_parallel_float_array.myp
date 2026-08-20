@@ -1,0 +1,39 @@
+// BUG-045 复现：selfhost @parallel for 把 float[] 参数当 i32[] 处理 → 浮点写 0
+// ---------------------------------------------------------------------------
+// 修复前（仅 selfhost myp_self；oracle mypc 正确）：
+//   tools/selfhost/src/codegen.myp genParallelFor 捕获「参数」时 elem 传 ""（只
+//   有局部变量带元素类型）→ 并行 body 内 float[] 数组被当 i32[]：
+//   GEP 用 i32 元素类型 + store i32（fptosi float→i32）→ 浮点值按 i32 位型写入
+//   （i32 1 = 0x00000001 当 float ≈ 1.4e-45）→ 显示为 0。
+//   影响：examples/deeplearning/infer/ops.myp InferOps.conv3d / maxpool3d /
+//   avgpool3d 的 @parallel for 写 arena（float[] 参数）→ 3D Conv3D 输出全 0，
+//   下游塌缩成常量（coarselike/conv3d/pad3d_avgpool3d 全 MISMATCH）。
+// 修复：genParallelFor 参数捕获从 paramAstTypes_.get(i).element() 算元素类型
+//   （含 slice 参数），与 varElemType / isSliceVar 对齐。
+// @test 断言功能正确性（双编译器 mypc + myp_self 编译运行均通过）。
+import test;
+import env;
+
+class K {
+    static:
+        // 模拟 InferOps.conv3d 的 @parallel 模式：并行 body 写 float[] 参数数组
+        void run(float[] a, int base, int n) {
+            @parallel for (int p = 0; p < n; p = p + 1) {
+                a[base + p] = float(p) * 0.5f + 1.0f;
+            }
+        }
+}
+
+@test void t_parallel_float_param() {
+    float[] a = new float[16];
+    int i = 0;
+    while (i < 16) { a[i] = 0.0f; i = i + 1; }
+    K.run(a, 1, 8);
+    // a[1+p] = p*0.5 + 1.0：p=0→1.0, p=3→2.5, p=7→4.5（0.5 增量浮点精确）
+    Test.assertFloatEq(a[1], 1.0, 1.0e-6, "p=0 -> 1.0");
+    Test.assertFloatEq(a[4], 2.5, 1.0e-6, "p=3 -> 2.5");
+    Test.assertFloatEq(a[8], 4.5, 1.0e-6, "p=7 -> 4.5");
+    // 未写入区保持 0（证明并行体确实按正确索引写，而非全写 0 到 a[0]）
+    Test.assertFloatEq(a[9], 0.0, 1.0e-6, "beyond -> 0");
+    Test.report("t_parallel_float_param", true);
+}
