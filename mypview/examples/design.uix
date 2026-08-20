@@ -1,0 +1,46 @@
+{
+  "type": "Panel",
+  "id": "root",
+  "x": 0,
+  "y": 0,
+  "width": 900,
+  "height": 600,
+  "children": [
+    {
+      "type": "Label",
+      "id": "title",
+      "text": "BNCT 欢迎页",
+      "x": 40,
+      "y": 30,
+      "scale": 3,
+      "color": "#1F1F1F"
+    },
+    {
+      "type": "TextField",
+      "id": "user",
+      "text": "用户名",
+      "x": 60,
+      "y": 190,
+      "width": 240,
+      "height": 36
+    },
+    {
+      "type": "Slider",
+      "id": "vol",
+      "x": 60,
+      "y": 250,
+      "width": 200,
+      "height": 24,
+      "min": 0,
+      "max": 100
+    },
+    {
+      "type": "Switch",
+      "id": "sw",
+      "x": 60,
+      "y": 300,
+      "width": 60,
+      "height": 32
+    }
+  ]
+}

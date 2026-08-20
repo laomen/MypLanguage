@@ -1,0 +1,37 @@
+{
+  "type": "Panel",
+  "id": "root",
+  "x": 0,
+  "y": 0,
+  "width": 900,
+  "height": 600,
+  "children": [
+    {
+      "type": "Label",
+      "id": "title",
+      "text": "Sample UI",
+      "x": 40,
+      "y": 30,
+      "scale": 3,
+      "color": "#1F1F1F"
+    },
+    {
+      "type": "Button",
+      "id": "ok",
+      "text": "确定",
+      "x": 60,
+      "y": 120,
+      "width": 140,
+      "height": 44
+    },
+    {
+      "type": "TextField",
+      "id": "user",
+      "text": "用户名",
+      "x": 60,
+      "y": 190,
+      "width": 240,
+      "height": 36
+    }
+  ]
+}

@@ -7,6 +7,30 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.67 — UixRun：用 UixLoader 直接运行 .uix 设计（设计即开即跑）
+
+**需求**：能不能根据设计器保存的 `design.uix` 生成程序，直接用 UixLoader 跑起来？
+
+**`examples/uix_run.myp`**（通用 .uix 运行器，AppRunner 应用）：
+- 读 `.uix` 文件（`MYPVIEW_UIX_FILE` 环境变量指定，缺省 `design.uix`）→
+  `UixLoader` 解析 → `buildInto(RootView)` → 渲染成真实窗口，即「设计即程序」。
+- 窗口尺寸取自设计根节点 Json 的 width/height（默认 900x600），背景 `0xD8D8D8`。
+- F11 全屏、`MYP_PLAYER_MAXFRAME` 退出帧、frame==60 存 `uix_run.bmp` 截图
+  （与 AppRunner 一致）。
+- headless 验证模式（`MYPVIEW_RUN_HEADLESS=1`）：构建 + `nodeCount()` +
+  `hitId()` 断言，供测试。
+
+**build.sh / run.sh**：
+- `build.sh uix_run` 后端 target；both 模式 headless 跑 `examples/design.uix`。
+- `tests/run.sh` 新增 MYPVIEW-UIXRUN 段（用 `tests/uix_sample.uix` 夹具断言
+  `nodes=4` / `hit=ok`）。
+
+**验证**：
+- `tests/uix_sample.uix`：`uixrun headless nodes=4` / `uixrun hit=ok` ✓
+- 设计器保存的 `examples/design.uix`（BNCT 欢迎页：Label 标题 + TextField 用户名 +
+  Slider + Switch）：headless `nodes=5`；窗口模式渲染正常（截图见 v3.12.67 提交）✓
+- 套件 6 段全 PASS（UIX/BNCT/JSON/DESIGN/UIXRUN/PIPE）。
+
 ## v3.12.66 — 设计器调色板拖放（从外部拖控件进画布，Qt Design Studio 式）
 
 **需求**：从外部（调色板）把控件拖进画布——按调色板 `+xxx` 按钮 → 拖到画布 →

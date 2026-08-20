@@ -5,6 +5,9 @@ counter
 player
 dashboard
 pipeline
+json_editor
+uix_designer
+uix_run
 # 编译器中间产物（根 .gitignore 已含 *.o/*.ll，此处列明）
 *.o
 *.ll

@@ -211,6 +211,22 @@ else
 fi
 cd "$DIR"
 
+# ---- UixRun（用 UixLoader 运行 .uix 设计）：加载 .uix → buildInto → 节点/命中 ----
+cd "$DIR/../examples"
+RUNSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp uix_run.myp)
+"$MYPCC" "${RUNSRCS[@]}" -o uix_run --stdlib "$STDLIB" || exit 1
+RUN=$(MYPVIEW_UIX_FILE="$DIR/uix_sample.uix" MYPVIEW_RUN_HEADLESS=1 ./uix_run 2>&1)
+echo "$RUN"
+echo "== UIXRUN 结果 =="
+if printf '%s' "$RUN" | grep -q "uixrun headless nodes=4" \
+   && printf '%s' "$RUN" | grep -q "uixrun hit=ok"; then
+    echo "MYPVIEW-UIXRUN PASS"
+else
+    echo "MYPVIEW-UIXRUN FAIL"
+    exit 1
+fi
+cd "$DIR"
+
 # ---- 完整链路示例（pipeline）：load json → build → render → 交互 → 动画 ----
 # 在 examples/ 下编译运行（.uix/.usp 文件相对 cwd 打开）
 PIPESRCS=(

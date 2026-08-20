@@ -1,0 +1,105 @@
+// uix_run.myp — 用 UixLoader 运行一个 .uix 设计（设计器保存的界面即开即跑）
+// ---------------------------------------------------------------------------
+// 读取 .uix 文件（MYPVIEW_UIX_FILE 环境变量指定，或默认 design.uix）→
+// UixLoader.buildInto 渲染 → AppRunner 窗口运行。设计器里保存的界面，跑起来
+// 就是真实应用（所见即所得→即开即跑）。
+//
+// 运行：
+//   bash build.sh uix_run                          # 默认 ./design.uix
+//   MYPVIEW_UIX_FILE=/path/x.uix bash build.sh uix_run
+// headless 验证：
+//   MYPVIEW_RUN_HEADLESS=1 MYPVIEW_UIX_FILE=... ./uix_run
+import env;
+import fmt;
+import io;
+import error;
+import json;
+import sdl;
+
+// 读取 .uix 文件文本（MYPVIEW_UIX_FILE 或默认 design.uix；失败返回 ""）
+class UixFile {
+    static:
+        string read() {
+            string path = Console.getEnv("MYPVIEW_UIX_FILE");
+            if (Str.len(path) == 0) path = "design.uix";
+            try {
+                File f = new File();
+                f.open(path, "r");
+                string c = f.readAll();
+                f.close();
+                return c;
+            } catch (Error e) {
+                Console.writeLine("uixrun open fail: " + path);
+                return "";
+            }
+        }
+}
+
+// 运行器应用：把 .uix 用 UixLoader 构建进 AppRunner 根，渲染为真实窗口
+class UixRunApp {
+    interface class UiApp;
+
+    property:
+        string uix_;
+        UixLoader loader_;
+        string hitInfo_;
+
+    action:
+        @constructor UixRunApp(string uix) {
+            uix_ = uix;
+            hitInfo_ = "";
+        }
+
+        void onCreate(RootView rv, SdlRenderer r, int w, int h) {
+            loader_ = new UixLoader(uix_, "");
+            loader_.buildInto(rv);
+            Console.writeLine("uixrun running nodes=" + loader_.nodeCount());
+        }
+        void onResize(int w, int h) {
+            // 设计为绝对定位（Panel 根），窗口即设计尺寸，无需重排
+        }
+        void onFrame(int frame) {
+            if (frame == 60) {
+                int s = SDL.saveBmp("/tmp/uix_run.bmp");
+                Console.writeLine("uixrun saved=" + s);
+            }
+        }
+        void onKeyChar(int c) {
+            // 设计内控件自行响应（输入框/按钮等）
+        }
+
+        // headless 验证：构建 + 命中断言
+        void runHeadless() {
+            RootView rv = new RootView(64, 900, 600);
+            loader_ = new UixLoader(uix_, "");
+            loader_.buildInto(rv);
+            Console.writeLine("uixrun headless nodes=" + loader_.nodeCount());
+            Console.writeLine("uixrun hit=" + loader_.hitId(80, 140));
+            Console.writeLine("uixrun done");
+        }
+}
+
+class Boot {
+    action:
+        @constructor Boot() {
+            string uix = UixFile.read();
+            if (Str.len(uix) == 0) return;
+            UixRunApp a = new UixRunApp(uix);
+            string h = Console.getEnv("MYPVIEW_RUN_HEADLESS");
+            if (h == "1") {
+                a.runHeadless();
+                return;
+            }
+            // 窗口尺寸取设计根尺寸（Panel 900x600 → 900x600 窗口，1:1 渲染）
+            Json doc = new Json(uix);
+            int w = doc.type("width") >= 0 ? doc.getInt("width") : 900;
+            int hh = doc.type("height") >= 0 ? doc.getInt("height") : 600;
+            AppRunner rn = new AppRunner();
+            rn.run(a, "UIX 预览", w, hh, 0xD8D8D8);
+        }
+}
+
+int main() {
+    Boot b = new Boot();
+    return 0;
+}

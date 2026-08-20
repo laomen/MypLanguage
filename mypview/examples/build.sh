@@ -27,7 +27,7 @@ MODE="${2:-}"
 #     main 丢失（undefined main）。
 # 故按编译器分支：myp_self → 目录通配；mypc → 依赖顺序固定列表。新增控件按依赖追加。
 EXTRA=()
-if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ] || [ "$TARGET" = "json_editor" ] || [ "$TARGET" = "uix_designer" ]; then
+if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ] || [ "$TARGET" = "json_editor" ] || [ "$TARGET" = "uix_designer" ] || [ "$TARGET" = "uix_run" ]; then
     EXTRA+=( "$SRC/backend/"*.myp )
 fi
 
@@ -53,6 +53,8 @@ if [ "$MODE" = "both" ]; then
             JSON_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         elif [ "$TARGET" = "uix_designer" ]; then
             MYPVIEW_UIX_FILE=/tmp/ds_design.uix DESIGN_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+        elif [ "$TARGET" = "uix_run" ]; then
+            MYPVIEW_UIX_FILE=$DIR/design.uix MYPVIEW_RUN_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         else
             ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         fi
