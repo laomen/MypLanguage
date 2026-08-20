@@ -1,0 +1,155 @@
+// card.myp — uikit 控件：Card（圆角信息卡片：标题/副标题/元信息/双操作按钮）
+// ---------------------------------------------------------------------------
+// 复刻 Web dashboard 卡片（BNCT 病例管理页）：深色表面 + 圆角 + hover 提亮 +
+// 选中描边 + 底部「详情/进入」操作按钮。事件：Clicked（整卡）/ PrimaryAction
+// （主操作）/ SecondaryAction（次操作）。纯逻辑 headless 可测。
+import text;
+
+class Card {
+    interface class View;
+
+    property:
+        string title_;         // 主标题（如 Patient-305891）
+        string subtitle_;      // 副标题（如 ID-21F0）
+        string meta_;          // 元信息行（如 1 个序列 · DICOM · 更新于 …）
+        string primaryAction_; // 主操作文字（如 进入）
+        string secondaryAction_;// 次操作文字（如 详情）
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int color_;            // 卡片表面色
+        int accent_;           // 主按钮/选中强调色
+        int hovered_;          // 1=悬停（提亮，提示可交互）
+        int selected_;         // 1=选中（accent 描边）
+
+    event:
+        Clicked(int x, int y);
+        PrimaryAction(int x, int y);
+        SecondaryAction(int x, int y);
+
+    action:
+        @constructor Card(string title, int x, int y, int w, int h) {
+            title_ = title;
+            subtitle_ = "";
+            meta_ = "";
+            primaryAction_ = "";
+            secondaryAction_ = "";
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            color_ = 0x1E1E2E;      // 深色表面（对齐 Theme.surfaceColor）
+            accent_ = 0x3A78DC;     // 蓝强调（对齐 Theme.accentColor）
+            hovered_ = 0;
+            selected_ = 0;
+        }
+
+        void setTitle(string t) { title_ = t; }
+        string getTitle() { return title_; }
+        void setSubtitle(string t) { subtitle_ = t; }
+        string getSubtitle() { return subtitle_; }
+        void setMeta(string t) { meta_ = t; }
+        string getMeta() { return meta_; }
+        void setActions(string secondary, string primary) {
+            secondaryAction_ = secondary;
+            primaryAction_ = primary;
+        }
+        void setColor(int c) { color_ = c; }
+        void setAccent(int c) { accent_ = c; }
+        void setHovered(int on) { hovered_ = on; }
+        int getHovered() { return hovered_; }
+        void setSelected(int on) { selected_ = on; }
+        int getSelected() { return selected_; }
+
+        // 声明式属性入口（UixLoader 调用）
+        void setAttr(string name, string value) {
+            if (name == "title") setTitle(value);
+            else if (name == "subtitle") setSubtitle(value);
+            else if (name == "meta") setMeta(value);
+            else if (name == "primary") primaryAction_ = value;
+            else if (name == "secondary") secondaryAction_ = value;
+            else if (name == "color" || name == "bg") setColor(Color.fromHex(value));
+            else if (name == "accent") setAccent(Color.fromHex(value));
+        }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+        }
+
+        // 底部操作按钮矩形（primary 右、secondary 左），按钮高 28
+        int btnH() { return 28; }
+        int btnGap() { return 10; }
+        int btnY() { return y_ + h_ - btnH() - 14; }
+        int primaryW() { return Str.len(primaryAction_) * 14 + 24; }
+        int secondaryW() { return Str.len(secondaryAction_) * 14 + 24; }
+        int primaryX() { return x_ + w_ - primaryW() - 14; }
+        int secondaryX() { return primaryX() - btnGap() - secondaryW(); }
+
+        void draw(Renderer r) {
+            // 表面：hover 提亮 / 正常；选中 accent 描边
+            int c = color_;
+            if (hovered_ != 0) c = Color.lighten(color_, 14);
+            r.fillRoundedRect(x_, y_, w_, h_, 12, c);
+            if (selected_ != 0)
+                r.outlineRect(x_, y_, w_, h_, accent_);
+            else
+                r.outlineRect(x_, y_, w_, h_, Color.dark());
+
+            // 标题（scale 2 白）+ 副标题（scale 1 浅灰）同行，副标题靠右
+            r.drawText(x_ + 16, y_ + 16, title_, 2, Color.white());
+            if (Str.len(subtitle_) != 0) {
+                int sw = r.textWidth(subtitle_, 1);
+                r.drawText(x_ + w_ - sw - 16, y_ + 20, subtitle_, 1, Color.light());
+            }
+            // 元信息（scale 1 弱灰）
+            if (Str.len(meta_) != 0)
+                r.drawText(x_ + 16, y_ + 48, meta_, 1, Color.gray());
+
+            // 底部操作按钮：secondary（深色圆角）/ primary（accent 圆角）
+            if (Str.len(primaryAction_) != 0) {
+                int px = primaryX();
+                int py = btnY();
+                r.fillRoundedRect(px, py, primaryW(), btnH(), 8, accent_);
+                r.drawText(px + primaryW() / 2 - r.textWidth(primaryAction_, 1) / 2,
+                           py + btnH() / 2 - r.textH(1) / 2,
+                           primaryAction_, 1, Color.white());
+            }
+            if (Str.len(secondaryAction_) != 0) {
+                int sx = secondaryX();
+                int sy = btnY();
+                r.fillRoundedRect(sx, sy, secondaryW(), btnH(), 8, Color.darken(color_, 35));
+                r.drawText(sx + secondaryW() / 2 - r.textWidth(secondaryAction_, 1) / 2,
+                           sy + btnH() / 2 - r.textH(1) / 2,
+                           secondaryAction_, 1, Color.white());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        // 命中操作按钮：优先 primary/secondary，否则整卡 Clicked
+        int onButton(string which, int x, int y) {
+            if (Str.len(which) == 0) return 0;
+            int bx, bw;
+            if (which == "primary") { bx = primaryX(); bw = primaryW(); }
+            else { bx = secondaryX(); bw = secondaryW(); }
+            int by = btnY();
+            if (x >= bx && x < bx + bw && y >= by && y < by + btnH()) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (onButton("primary", x, y) != 0) { PrimaryAction(x, y); return; }
+            if (onButton("secondary", x, y) != 0) { SecondaryAction(x, y); return; }
+            Clicked(x, y);
+        }
+}

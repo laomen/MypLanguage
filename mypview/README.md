@@ -36,7 +36,7 @@ CMake 或任何系统服务。**
 **依赖边界**：`src/` 全部文件只 `import` MYP 标准库（env/text/json/fmt/coro/sdl/ttf），
 **零 MOS 内部依赖**。UIX 引擎（uix/）纯 headless——不依赖 SDL，可在任何环境测逻辑。
 
-## 控件速查表（52 控件）
+## 控件速查表（53 控件）
 
 > 构造参数统一 `(x, y, w, h)` 省略为 `(x,y,w,h)`。**声明式属性** = 控件 `setAttr`
 > 支持的名字（`.uix` 里 `"prop":"值"` 或 `.usp` 里 `props`），值可为字符串 / `#RRGGBB` / 数字。
@@ -61,7 +61,7 @@ CMake 或任何系统服务。**
 | SegmentedControl | `SegmentedControl(x,y,w,h)` | selected, color | `Selected(idx)` | addSegment |
 | Stepper | `Stepper(x,y,w,h)` | value,min,max,step,color | `Changed(v)` | +/− 步进 |
 
-### 显示类（19）
+### 显示类（20）
 
 | 控件 | 构造 | 声明式属性 | 事件 | 说明 |
 |---|---|---|---|---|
@@ -75,6 +75,7 @@ CMake 或任何系统服务。**
 | List | `List(x,y,w,h)` | — | `ItemClicked(idx,x,y)` | addItem / itemCount / 可见窗口渲染 / 拖拽滚动 |
 | SortableList | `SortableList(x,y,w,h)` | — | `Reordered(from,to)` | 长按拖拽换位排序 / getItem / lastFrom/dragLast |
 | Panel | `Panel(x,y,w,h)` | color, bg | — | 容器卡片 |
+| Card | `Card(title,x,y,w,h)` | title, subtitle, meta, primary, secondary, color, accent | `Clicked(x,y)` / `PrimaryAction(x,y)` / `SecondaryAction(x,y)` | 圆角信息卡片：标题/副标题/元信息/底部双操作按钮 + hover 提亮 + 选中描边（BNCT 病例卡片） |
 | TabView | `TabView(x,y,w,h)` | current, color | `TabChanged(idx)` | addTab / 分页容器 |
 | Dialog | `Dialog(title,msg,screenW,screenH)` | — | `Confirm()` / `Cancel()` | show/hide |
 | ScrollView | `ScrollView(x,y,w,h)` | — | — | setContent / scrollTo / 拖拽滚动 |

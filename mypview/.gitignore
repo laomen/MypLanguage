@@ -3,5 +3,6 @@ examples/counter
 examples/dashboard
 examples/pipeline
 examples/player
+examples/bnct_cases
 *.o
 *.ll

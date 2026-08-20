@@ -27,6 +27,30 @@
 
 ## 编译器版本历史
 
+### v3.12.55 — mypview 新增 Card 控件 + BNCT 病例管理页示例
+
+**Card 控件**（`mypview/src/controls/card.myp`，第 53 个控件）：圆角信息卡片——
+标题/副标题/元信息 + 底部「详情/进入」双操作按钮，hover 提亮、选中 accent 描边。
+事件：`Clicked`（整卡）/ `PrimaryAction` / `SecondaryAction`；声明式属性
+title/subtitle/meta/primary/secondary/color/accent。适配 Web dashboard 卡片
+（对齐 Theme 深色表面 + accent）。
+
+**BNCT 病例管理页示例**（`mypview/examples/bnct_cases.myp`）：复刻 BNCT 治疗
+计划系统病例管理页结构——Header（系统标题/页面标题/用户区）+ SearchBar +
+排序/来源 Dropdown + 操作按钮行 + 病例/序列 Dropdown +「进入勾画」+ Card 卡片
+网格（搜索过滤联动 + 卡片详情/进入事件）。headless 可测：
+```
+bnct header=BNCT 治疗计划系统 / 病例管理 / Doctor demo
+bnct cards=2 first=Patient-7736D7 (ID-C4A0)
+bnct search '305891' shown=1        ← 搜索过滤
+bnct enter=Patient-7736D7 (ID-C4A0) ← 点卡片「进入」
+bnct detail=Patient-305891          ← 点卡片「详情」
+```
+
+**测试**：`mypview/tests/run.sh` 两个 SRCS 列表加 `card.myp`，新增
+`MYPVIEW-BNCT PASS` 节（7 断言）。mypc 与 myp_self both 输出一致；parent
+313/313、bootstrap 16/16、bugs 11/11、mypview UIX/BNCT/PIPE 全 PASS。
+
 ### v3.12.54 — MYP 源码闭源：签名声明（无 body 方法→外部声明）+ 预编译库链接
 
 **背景**：v3.12.53 打通了「C 下沉 + bridge 预编译 .so」闭源。但核心算法若本身

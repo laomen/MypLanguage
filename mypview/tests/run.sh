@@ -57,6 +57,7 @@ SRCS=(
     "$SRC/controls/sortable_list.myp"
     "$SRC/controls/long_press_button.myp"
     "$SRC/controls/number_input.myp"
+    "$SRC/controls/card.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"
@@ -144,6 +145,29 @@ else
     exit 1
 fi
 
+# ---- BNCT 病例管理页（Card 控件）：搜索过滤 + 卡片事件（详情/进入）----
+# 在 examples/ 下编译运行；SRCS 去掉末尾的 uix_logic.myp（tests/ 相对路径），
+# 追加 bnct_cases.myp（examples/ 相对路径）。
+cd "$DIR/../examples"
+BNCTSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}")
+"$MYPCC" "${BNCTSRCS[@]}" bnct_cases.myp -o bnct_cases --stdlib "$STDLIB" || exit 1
+BNCT=$(./bnct_cases 2>&1)
+echo "$BNCT"
+echo "== BNCT 结果 =="
+if printf '%s' "$BNCT" | grep -q "bnct header=BNCT 治疗计划系统 / 病例管理 / Doctor demo" \
+   && printf '%s' "$BNCT" | grep -q "bnct cards=2 first=Patient-7736D7 (ID-C4A0)" \
+   && printf '%s' "$BNCT" | grep -q "bnct sort=最近更新 source=全部" \
+   && printf '%s' "$BNCT" | grep -q "bnct case=Patient-305891 (ID-21F0)" \
+   && printf '%s' "$BNCT" | grep -q "bnct search '305891' shown=1" \
+   && printf '%s' "$BNCT" | grep -q "bnct enter=Patient-7736D7 (ID-C4A0)" \
+   && printf '%s' "$BNCT" | grep -q "bnct detail=Patient-305891"; then
+    echo "MYPVIEW-BNCT PASS"
+else
+    echo "MYPVIEW-BNCT FAIL"
+    exit 1
+fi
+cd "$DIR"
+
 # ---- 完整链路示例（pipeline）：load json → build → render → 交互 → 动画 ----
 # 在 examples/ 下编译运行（.uix/.usp 文件相对 cwd 打开）
 PIPESRCS=(
@@ -195,6 +219,7 @@ PIPESRCS=(
     "$SRC/controls/sortable_list.myp"
     "$SRC/controls/long_press_button.myp"
     "$SRC/controls/number_input.myp"
+    "$SRC/controls/card.myp"
     "$SRC/layout/linear_layout.myp"
     "$SRC/layout/constraint_layout.myp"
     "$SRC/layout/flow_layout.myp"
