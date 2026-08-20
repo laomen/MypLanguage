@@ -7,6 +7,35 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.64 — 设计器全屏 + 窗口缩放后画布/控件自适应（resize 修复）
+
+**症状**：窗口全屏（或拖拽缩放）后，画布等控件不随窗口变大——只有宽度变，高度
+被压住。
+
+**根因**：嵌套容器的宽/高是**构造时定死的**（LinearLayout 的 `w_/h_` 由构造参数
+决定）。设计器 `relayout()` 只重设了 `root_` 和 `canvas_`，没重设
+`toolbar_/mainRow_/propPanel_` → `mainRow_` 高度停在构造值（如 832），其
+`layout()` 把 `canvas_` 高度也压回 832。宽度之所以能变，是横向 layout 用子控件
+自己的 `width()`（relayout 已更新）。
+
+**修复**（`examples/uix_designer.myp`）：`relayout()` 显式 `setFrame` 重设全部
+容器（root_/toolbar_/mainRow_/propPanel_/canvas_）到按新 W/H 计算的尺寸，再逐个
+`layout()`。
+
+**全屏入口**：
+- `AppRunner` 帧循环支持 **F11 全屏切换**（`SDL.setFullscreen`），所有窗口应用
+  通用；bridge `myp_sdl_get_key` 补返回 `SDL_SCANCODE_F11`。
+- 设计器工具栏加 **「全屏」按钮**。
+- 全屏/缩放 → `SDL_WINDOWEVENT_SIZE_CHANGED` → `g_width/height` 更新 →
+  AppRunner 检测到尺寸变化 → `app.onResize` → `relayout` 重排。
+
+**resize 链路自测**：设计器 `onFrame` 支持 `MYPVIEW_TEST_RESIZE=1`——frame 5 自
+缩放窗口（+200,+150），frame 12 打印画布尺寸断言变大（如 1052x832 →
+1252x982）。headless 可回归 resize 链路。
+
+**验证**：mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS（未改编译器，不跑父全量）；
+resize 自测画布 1052x832 → 1252x982。
+
 ## v3.12.63 — 修复设计器工具栏按钮不显示（嵌套 LinearLayout 未布局）
 
 **症状**：设计器窗口里工具栏 11 个按钮全部看不到，只看到属性面板的「应用属性」

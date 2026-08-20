@@ -485,6 +485,7 @@ int myp_sdl_get_key(void) {
     if (keys[SDL_SCANCODE_DOWN])    return SDL_SCANCODE_DOWN;
     if (keys[SDL_SCANCODE_LEFT])    return SDL_SCANCODE_LEFT;
     if (keys[SDL_SCANCODE_RIGHT])   return SDL_SCANCODE_RIGHT;
+    if (keys[SDL_SCANCODE_F11])     return SDL_SCANCODE_F11;   // 全屏切换
     return 0;
 }
 

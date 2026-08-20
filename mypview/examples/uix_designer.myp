@@ -119,6 +119,7 @@ class UixDesigner {
         Button addSliderBtn_;
         Button addPanelBtn_;
         Button delBtn_;
+        Button fsBtn_;          // 全屏切换（F11 亦可）
         // 属性面板
         Label propTitle_;
         Label propInfo_;
@@ -191,6 +192,7 @@ class UixDesigner {
             addSliderBtn_ = new Button("+ Slider", 0, 0, 90, 36);
             addPanelBtn_ = new Button("+ Panel", 0, 0, 84, 36);
             delBtn_ = new Button("删除选中", 0, 0, 96, 36);
+            fsBtn_ = new Button("全屏", 0, 0, 72, 36);
             Button nb = newBtn_;  toolbar_.add(nb);
             Button ob = openBtn_; toolbar_.add(ob);
             Button lb = loadBtn_;  toolbar_.add(lb);
@@ -202,6 +204,7 @@ class UixDesigner {
             Button slb = addSliderBtn_; toolbar_.add(slb);
             Button pb = addPanelBtn_;  toolbar_.add(pb);
             Button db = delBtn_;  toolbar_.add(db);
+            Button fbb = fsBtn_; toolbar_.add(fbb);
             LinearLayout tb = toolbar_;
             root_.add(tb);
 
@@ -276,9 +279,14 @@ class UixDesigner {
         }
 
         void relayout(int W, int H) {
-            root_.setFrame(0, 0, W, H);
+            // 重设所有容器尺寸（LinearLayout 的高度/宽度是构造时定死的，
+            // 窗口缩放后必须显式 setFrame 更新，否则子控件被旧尺寸压住）
             int cw = W - 20 - 320 - 8;
             int ch = H - 40 - 8 - 20;
+            root_.setFrame(0, 0, W, H);
+            toolbar_.setFrame(0, 0, W - 20, 40);
+            mainRow_.setFrame(0, 0, W - 20, ch);
+            propPanel_.setFrame(0, 0, 320, ch);
             canvas_.setFrame(0, 0, cw, ch);
             // LinearLayout.layout() 不递归子容器：每个嵌套容器都要显式 layout()
             //（bnct 同款）。否则工具栏按钮/属性面板字段全叠在 (0,0) → 看不到。
@@ -628,6 +636,7 @@ class UixDesigner {
             if (addSliderBtn_.hit(x, y) != 0) { addControl("Slider"); return; }
             if (addPanelBtn_.hit(x, y) != 0) { addControl("Panel"); return; }
             if (delBtn_.hit(x, y) != 0) { removeSelected(); return; }
+            if (fsBtn_.hit(x, y) != 0) { SDL.setFullscreen(1); return; }
             if (applyBtn_.hit(x, y) != 0) { applyProps(); return; }
         }
 
@@ -644,6 +653,10 @@ class UixDesigner {
         }
 
         void onResize(int w, int h) {
+            string tr = Console.getEnv("MYPVIEW_TEST_RESIZE");
+            if (tr == "1")
+                Console.writeLine("ds onResize " + w + "x" + h + " sdl="
+                                  + SDL.width() + "x" + SDL.height());
             relayout(w, h);
         }
 
@@ -668,6 +681,16 @@ class UixDesigner {
         }
 
         void onFrame(int frame) {
+            // resize 链路自测（MYPVIEW_TEST_RESIZE=1）：frame 5 自缩放窗口 →
+            // AppRunner 检测到尺寸变化 → onResize → relayout → 画布变大
+            string tr = Console.getEnv("MYPVIEW_TEST_RESIZE");
+            if (tr == "1") {
+                if (frame == 5)
+                    SDL.setWindowSize(SDL.width() + 200, SDL.height() + 150);
+                if (frame == 12)
+                    Console.writeLine("ds resize canvas=" + canvas_.width()
+                                      + "x" + canvas_.height());
+            }
             if (frame == 60) {
                 int s = SDL.saveBmp("/tmp/uix_designer.bmp");
                 Console.writeLine("ds ui saved=" + s);
