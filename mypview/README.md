@@ -264,6 +264,28 @@ import mypview.controls.app_icon;   // 仅 AppIcon
 编译）。`import mypview;` 仍一次引入全部；点分与整体两种粒度随意混用（递归
 合并去重，不重复加载）。
 
+**方式四：AppRunner 窗口运行器（SDL 应用，`src/backend/`）** ✅ 2026-08-22
+
+窗口应用无需再手写 `while (SDL.running())` 帧循环。实现 `UiApp` 生命周期接口，
+交给 `AppRunner` 驱动（窗口创建/事件分发/hover/绘制/协程调度/退出）：
+
+```myp
+class MyApp {
+    interface class UiApp;
+    void onCreate(RootView rv, SdlRenderer r, int w, int h) { /* 构建界面树 */ }
+    void onResize(int w, int h) { /* 重排布局 */ }
+    void onFrame(int frame) { /* 每帧业务 */ }
+    void onKeyChar(int c) { /* 键盘输入 */ }
+}
+// Boot：
+AppRunner rn = new AppRunner();
+rn.run(a, "标题", 1880, 956, 0x14141C);   // a 实现了 UiApp
+```
+
+`UiApp`/`AppRunner` 在 `src/backend/app_runner.myp`（强依赖 SDL，不随包聚合）。
+用源码集合编译：`build.sh <target>` 的 backend 目录通配会自动带上
+`sdl_renderer.myp` + `app_runner.myp`。
+
 ## 测试
 
 ```bash

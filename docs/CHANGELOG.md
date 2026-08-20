@@ -27,6 +27,37 @@
 
 ## 编译器版本历史
 
+### v3.12.58 — mypview AppRunner：应用运行器框架化（帧循环不再手写）
+
+**背景**：此前每个窗口示例都要在 Boot 里手写 `while (SDL.running())` 帧循环
+（窗口事件/鼠标命中/hover 遍历/绘制/协程调度/退出条件）。把这段样板收敛进框架，
+应用只需实现 UiApp 生命周期接口。
+
+**新增 `mypview/src/backend/app_runner.myp`**：
+- `interface UiApp`：应用生命周期接口——`onCreate(rv, r, w, h)`（构建界面树）、
+  `onResize(w, h)`（窗口尺寸变化，框架已 setLogicalSize 1:1）、
+  `onFrame(frame)`（每帧业务更新）、`onKeyChar(c)`（输入字符）。
+- `class AppRunner`：`int run(UiApp app, string title, w, h, bgColor)`——创建
+  SDL 窗口 + SdlRenderer + RootView，驱动帧循环直到退出（ESC/关窗/
+  `MYP_PLAYER_MAXFRAME`）。框架内完成：鼠标点击→`rv.onTouch` 命中分发、
+  输入字符→`app.onKeyChar`、鼠标位置→`rv.updateHover` 悬停遍历、窗口尺寸变化
+  →`setLogicalSize` + `app.onResize`、`app.onFrame` + `Coro.scheduler()`、
+  清屏→`rv.draw`→present、16ms 帧间隔。
+- **放置 backend/**：AppRunner 强依赖 SDL 窗口 + SdlRenderer（具体后端类），
+  放 core 会迫使所有示例（含 headless/纯逻辑）链接 SDL；放 backend 后仅运行
+  SDL 窗口的 target（build.sh 显式加 backend）才编译它。
+- **hover 框架化**：View 接口新增 `setHovered(on)`/`updateHover(x, y)`（默认
+  按自身 hit 设置）；RootView 与 LinearLayout/FlowLayout/GridLayout/StackLayout/
+  Panel 覆写 `updateHover` 为从后往前递归子控件。AppRunner 每帧自动遍历，控件
+  只需覆写 `setHovered` 做悬停视觉（如 Card/Button 提亮）。
+
+**示例迁移**：`examples/bnct_cases.myp` 由手写帧循环改为实现 `UiApp`（Boot 仅
+三行：`AppRunner rn = new AppRunner(); rn.run(a, "标题", 1880, 956, 0x14141C);`），
+headless 断言不变。build.sh 的 backend 包含改为目录通配（sdl_renderer + app_runner）。
+
+**回归**：mypview UIX/BNCT/PIPE 全 PASS；mypc 与 myp_self 输出完全一致；父套件
+313/313、bootstrap 16/16、bugs 11/11。
+
 ### v3.12.57 — 再剥离 6 组 FFI 出 runtime（net/process/regex/base64/date/hash）
 
 **背景**：继 JSON 之后，继续审计 `src/runtime/runtime.c`——凡是「只被单个 stdlib

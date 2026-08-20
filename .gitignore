@@ -16,6 +16,8 @@
 /tmp/
 core
 core.[0-9]*
+# 豁免：mypview 的核心代码目录（core 规则本意只忽略 core dump 文件）
+!/mypview/src/core/
 *.o
 *.out
 test_io.txt

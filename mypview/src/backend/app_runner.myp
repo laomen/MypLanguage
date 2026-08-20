@@ -1,0 +1,98 @@
+// app_runner.myp — mypview 应用运行器（SDL 后端）
+// ---------------------------------------------------------------------------
+// 框架化帧循环：应用（示例/产品页）只实现 UiApp 生命周期接口，其余
+// （窗口创建、RootView 构建、事件分发、hover 遍历、绘制、协程调度、帧率）
+// 全部由 AppRunner 完成。应用侧不再手写 while(SDL.running()) 循环。
+//
+// 为什么放在 backend/ 而非 core/：AppRunner 强依赖 SDL 窗口 + SdlRenderer
+// （具体后端类）。core/ 是纯逻辑（不依赖 SDL，可 headless 测试）；把
+// AppRunner 放 core 会迫使所有示例编译链接 SDL。放 backend 后，仅真正
+// 运行 SDL 窗口的 app（build.sh 显式加 backend 的 target）才编译它。
+//
+// 使用（示例 Boot）：
+//   AppRunner rn = new AppRunner();
+//   rn.run(a, "窗口标题", 1880, 956, 0x14141C);   // a 实现了 UiApp
+//
+// 生命周期（框架调用）：
+//   onCreate(rv, r, w, h)   — 构建界面树（把根布局 add 到 rv）
+//   onResize(w, h)          — 窗口尺寸变化（框架已 setLogicalSize 1:1）
+//   onFrame(frame)          — 每帧业务更新（帧计数从 0 递增）
+//   onKeyChar(c)            — 输入字符（8=退格 13=回车；无输入不回调）
+//
+// 退出：ESC、窗口关闭、或 runtime 层 MYP_PLAYER_MAXFRAME 达上限。
+import env;
+import sdl;
+import coro;
+
+// ---- 应用生命周期接口：应用用 `interface class UiApp;` 实现，框架调用 ----
+interface UiApp {
+    // 构建界面树（add 到 rv；框架随后每帧绘制/分发事件）。r 可做离屏截图。
+    void onCreate(RootView rv, SdlRenderer r, int w, int h);
+    // 窗口尺寸变化（框架已 setLogicalSize 1:1；app 重排自己的布局树）
+    void onResize(int w, int h);
+    // 每帧业务更新（可选；不更新业务可留空体）
+    void onFrame(int frame);
+    // 键盘字符事件（可选；如聚焦控件接收输入）
+    void onKeyChar(int c);
+}
+
+class AppRunner {
+    action:
+    // 运行一个 UiApp 应用：创建 SDL 窗口 + RootView，驱动帧循环直到退出。
+    // 返回运行帧数。bgColor 为 24 位 RGB 背景色（0xRRGGBB）。
+    int run(UiApp app, string title, int w, int h, int bgColor) {
+        int rc = SDL.open(title, w, h);
+        if (rc != 0) {
+            Console.writeLine("AppRunner: SDL.open failed");
+            return 0;
+        }
+        SDL.setLogicalSize(w, h);
+        SdlRenderer r = new SdlRenderer();
+        RootView rv = new RootView(64, w, h);
+        app.onCreate(rv, r, w, h);
+        int frame = 0;
+        while (SDL.running()) {
+            // 按键：ESC 退出
+            int key = SDL.getKey();
+            if (key == 27) break;
+            // 鼠标点击 → 根命中分发（点击事件：onTouch→onPress→onRelease）
+            int click = SDL.getMouseClick();
+            if (click >= 0) {
+                int mx = click & 0xFFFF;
+                int my = (click >> 16) & 0xFFFF;
+                rv.onTouch(mx, my);
+            }
+            // 字符输入 → 应用
+            int c = SDL.getChar();
+            if (c >= 0) app.onKeyChar(c);
+            // hover 遍历（鼠标位置持续更新控件悬停态）
+            int pos = SDL.getMousePos();
+            if (pos >= 0) {
+                int px = pos & 0xFFFF;
+                int py = (pos >> 16) & 0xFFFF;
+                rv.updateHover(px, py);
+            }
+            // 窗口尺寸变化 → 1:1 逻辑尺寸 + 应用重排
+            int cw = SDL.width();
+            int ch = SDL.height();
+            if (cw != w || ch != h) {
+                SDL.setLogicalSize(cw, ch);
+                app.onResize(cw, ch);
+                w = cw;
+                h = ch;
+            }
+            // 业务帧 + 协程调度
+            app.onFrame(frame);
+            Coro.scheduler();
+            // 绘制：清屏 → 组件树 → 呈现
+            SDL.clear((bgColor >> 16) & 0xFF, (bgColor >> 8) & 0xFF,
+                bgColor & 0xFF, 255);
+            rv.draw(r);
+            SDL.present();
+            SDL.delay(16);
+            frame = frame + 1;
+        }
+        SDL.close();
+        return frame;
+    }
+}

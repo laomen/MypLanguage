@@ -43,6 +43,15 @@ class FlowLayout {
 
         int childCount() { return kidCount_; }
 
+        // hover：框架级遍历（AppRunner 每帧调用）——递归子控件
+        void updateHover(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                kid.updateHover(x, y);
+            }
+        }
+
         // 清空子控件（动态重建场景：搜索过滤后重新填充）
         void clear() {
             kidCount_ = 0;

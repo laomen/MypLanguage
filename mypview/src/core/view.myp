@@ -21,6 +21,13 @@ interface View {
     // 默认可用；需要禁用态的控件覆盖（如 Button 禁用置灰 + 不响应）。
     int enabled() { return 1; }
 
+    // ---- hover（框架级：鼠标悬停提亮，AppRunner 每帧自动遍历）----
+    // AppRunner 每帧调 updateHover 遍历整树：默认按自身 hit 设置悬停；
+    // 容器覆写为递归子控件。需要 hover 视觉的控件覆写 setHovered
+    // （如 Button/Card 悬停提亮），默认无操作。
+    void setHovered(int on) {}
+    void updateHover(int x, int y) { setHovered(hit(x, y)); }
+
     // ---- 声明式引擎统一入口（UIX 框架底层支撑）----
     // UixLoader 按属性名把字符串值写入控件。
     // 默认无操作；需要声明式配置的控件覆写此方法解析 name/value。

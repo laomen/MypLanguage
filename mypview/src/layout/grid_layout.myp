@@ -62,6 +62,15 @@ class GridLayout {
         }
 
         int childCount() { return kidCount_; }
+
+        // hover：框架级遍历（AppRunner 每帧调用）——递归子控件
+        void updateHover(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                kid.updateHover(x, y);
+            }
+        }
         int colCount() { return cols_; }
         // 行数（按子控件数向上取整，至少 1）
         int rowCount() {

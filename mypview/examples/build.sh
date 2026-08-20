@@ -28,7 +28,7 @@ MODE="${2:-}"
 # 故按编译器分支：myp_self → 目录通配；mypc → 依赖顺序固定列表。新增控件按依赖追加。
 EXTRA=()
 if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ]; then
-    EXTRA+=("$SRC/backend/sdl_renderer.myp")
+    EXTRA+=( "$SRC/backend/"*.myp )
 fi
 
 # 统一源码列表（目录通配 + 相对路径）。BUG-041 根治后 mypc 对字母序通配符也

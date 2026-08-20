@@ -41,6 +41,15 @@ class RootView {
         int width()  { return width_; }
         int height() { return height_; }
 
+        // hover：框架级遍历（AppRunner 每帧调用）——递归子控件
+        void updateHover(int x, int y) {
+            for (int i = count_ - 1; i >= 0; i = i - 1) {
+                View child = children_[i];
+                if (child.visible() == 0) continue;
+                child.updateHover(x, y);
+            }
+        }
+
         // View 接口补齐：根全屏命中（分发交给 onTouch）；setFrame 更新尺寸；
         // addChild 供 UIX 声明式引擎统一构建（根也是容器）。
         int hit(int x, int y) { return 1; }

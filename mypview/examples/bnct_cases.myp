@@ -1,14 +1,14 @@
 // bnct_cases.myp — BNCT 治疗计划系统：病例管理页（复刻 Web dashboard 结构）
 // ---------------------------------------------------------------------------
-// 结构（对应截图）：用 mypview 布局控件组织（LinearLayout 行 + FlowLayout 卡片区）
-//   root(垂直) ─ headerRow(水平：系统标题/页面标题)
-//             ─ searchRow(水平：SearchBar + 排序/来源 Dropdown)
-//             ─ actionRow(水平：新建/删除/PACS 按钮)
-//             ─ selectRow(水平：病例/序列 Dropdown + 进入勾画)
-//             ─ cardArea(FlowLayout：Card 卡片网格，宽度自适应换行)
-//   用户区（头像/姓名）右上角绝对定位
+// 结构（对应截图）：mypview 布局控件组织（LinearLayout 行 + FlowLayout 卡片区）
+//   root(垂直) ─ headerRow / searchRow / actionRow / selectRow / cardArea
+// 本示例实现 UiApp 生命周期接口，由 AppRunner 框架运行：
+//   - onCreate：构建布局树 + 用户区
+//   - onResize：窗口/全屏自适应（框架已 setLogicalSize 1:1，这里重排布局）
+//   - onKeyChar：SearchBar 聚焦后键盘输入 → 实时过滤
+//   - onFrame：离屏截图（预览渲染）
 // 双模式：
-//   - 默认：SDL 窗口界面（bash build.sh bnct_cases，ESC/关窗退出）
+//   - 默认：SDL 窗口（bash build.sh bnct_cases，ESC/关窗退出）
 //   - BNCT_HEADLESS=1：headless 逻辑验证（搜索过滤/卡片事件输出断言）
 // 运行：bash build.sh bnct_cases（需 backend/sdl_renderer.myp，build.sh 自动加）
 import env;
@@ -23,6 +23,8 @@ mapping() {
 }
 
 class BnctCases {
+    interface class UiApp;
+
     property:
         // 病例数据（mock，对齐截图）
         string[8] pids_;
@@ -50,7 +52,7 @@ class BnctCases {
         Label pageTitle_;
         Avatar userAv_;
         Label userLabel_;
-        // 布局树（relayout 需要引用）
+        // 布局树（resize 需要引用）
         LinearLayout root_;
         LinearLayout headerRow_;
         LinearLayout searchRow_;
@@ -78,7 +80,6 @@ class BnctCases {
 
         // ---- 构建页面：布局树（LinearLayout 行 + FlowLayout 卡片区）----
         void build(int W, int H) {
-            // 根垂直布局
             root_ = new LinearLayout(0, W, H);
             root_.setPadding(20);
             root_.setSpacing(12);
@@ -159,6 +160,8 @@ class BnctCases {
             cardArea_.setPadding(0);
             cardArea_.setSpacing(20);
             cardArea_.setRowGap(16);
+            FlowLayout ca = cardArea_;
+            root_.add(ca);
 
             // 用户区（右上角，绝对定位；LinearLayout 无右对齐）
             userAv_ = new Avatar("D", W - 320, 18, 44);
@@ -168,7 +171,7 @@ class BnctCases {
             filterCards("");
         }
 
-        // ---- 搜索过滤：按患者名 / ID 过滤（只更新内容/计数，布局重排由 refresh 做）----
+        // ---- 搜索过滤：按患者名 / ID 过滤（布局重排由 refresh 做）----
         void filterCards(string kw) {
             int n = 0;
             for (int i = 0; i < caseCount_; i = i + 1) {
@@ -244,11 +247,45 @@ class BnctCases {
             Console.writeLine("bnct search '" + text + "' shown=" + cardCount_);
         }
 
+        // ---- UiApp 生命周期实现（AppRunner 框架调用）----
+        void onCreate(RootView rv, SdlRenderer r, int w, int h) {
+            build(w, h);
+            relayout(w, h);
+            LinearLayout root = root_;
+            rv.add(root);
+            Avatar av = userAv_;
+            Label ul = userLabel_;
+            rv.add(av);
+            rv.add(ul);
+            Console.writeLine("bnct ui running cards=" + Fmt.i(cardCount_));
+        }
+
+        // 窗口/全屏自适应：框架已 setLogicalSize 1:1，这里重排布局树
+        void onResize(int w, int h) {
+            relayout(w, h);
+        }
+
+        // 键盘字符：SearchBar 聚焦后输入 → 实时过滤
+        void onKeyChar(int c) {
+            if (search_.focused() != 0) {
+                if (c == 8) search_.backspace();
+                else if (c == 13) { onSearch(search_.getText()); search_.unfocus(); }
+                else if (c >= 32 && c != 127) search_.append(Str.chr(c));
+            }
+        }
+
+        // 每帧：离屏截图（预览渲染，headless 环境可见）
+        void onFrame(int frame) {
+            if (frame == 60) {
+                int s = SDL.saveBmp("/tmp/bnct_cases.bmp");
+                Console.writeLine("bnct ui saved=" + Fmt.i(s));
+            }
+        }
+
         // ---- headless 验证：构建 + 模拟交互 ----
         void runHeadless() {
             build(1880, 956);
             relayout(1880, 956);   // 布局确定坐标
-            // 页面结构
             Console.writeLine("bnct header=BNCT 治疗计划系统 / 病例管理 / "
                               + userName_);
             Console.writeLine("bnct cards=" + cardCount_
@@ -259,117 +296,15 @@ class BnctCases {
             Console.writeLine("bnct case=" + caseDrop_.getItem(0)
                               + " seq=" + seqDrop_.getItem(0));
 
-            // 搜索过滤：输入 ID 片段 → 只剩 1 张卡
             onSearch("305891");
             Console.writeLine("bnct filtered_first=" + cards_[0].getTitle());
-
-            // 清除搜索 → 恢复 2 张
             search_.setText("");
             onSearch("");
 
-            // 模拟点卡片主操作「进入」：命中第 0 张卡主按钮区域（布局后坐标）
             cards_[0].onTouch(cards_[0].primaryX() + 5,
                               cards_[0].btnY() + 5);
-            // 模拟点卡片次操作「详情」
             cards_[1].onTouch(cards_[1].secondaryX() + 5,
                               cards_[1].btnY() + 5);
-        }
-
-        // ---- SDL 窗口界面（复刻截图，窗口尺寸对齐 ref 参考图比例）----
-        void runUi() {
-            int W = 1880;   // 对齐 mypview/ref/粘贴的图像.png 逻辑尺寸（2x DPI 还原）
-            int H = 956;
-            int open = SDL.open("BNCT 病例管理", W, H);
-            if (open != 0) {
-                Console.writeLine("bnct ui sdl-open-fail=" + Fmt.i(open));
-                return;
-            }
-            SDL.setLogicalSize(W, H);
-            SdlRenderer r = new SdlRenderer();
-            RootView rv = new RootView(16, W, H);
-            build(W, H);
-            relayout(W, H);
-
-            // 布局树 + 用户区挂到 RootView
-            LinearLayout root = root_;
-            rv.add(root);
-            Avatar av = userAv_;
-            Label ul = userLabel_;
-            rv.add(av);
-            rv.add(ul);
-
-            Console.writeLine("bnct ui running cards=" + Fmt.i(cardCount_));
-            string mf = Console.getEnv("MYP_PLAYER_MAXFRAME");
-            int maxFrame = mf == "" ? 0 : Str.toInt(mf);
-            int frame = 0;
-            int saved = -1;
-            while (SDL.running()) {
-                int key = SDL.getKey();
-                if (key == 41) break;                       // ESC 退出
-                if (maxFrame > 0 && frame >= maxFrame) break;
-
-                // 点击：分发 + 卡片事件 + 进入按钮
-                int mclick = SDL.getMouseClick();
-                if (mclick >= 0) {
-                    int mx = mclick & 0xFFFF;
-                    int my = (mclick >> 16) & 0xFFFF;
-                    rv.onPress(mx, my);
-                    for (int i = 0; i < cardCount_; i = i + 1)
-                        if (cards_[i].hit(mx, my) != 0) cards_[i].onTouch(mx, my);
-                    if (enterBtn_.hit(mx, my) != 0) {
-                        if (cardCount_ > 0) {
-                            selected_ = 0;
-                            enterPatient_ = cards_[0].getTitle();
-                            Console.writeLine("bnct ui enter=" + enterPatient_);
-                        }
-                    }
-                }
-
-                // 键盘搜索：点击 SearchBar 聚焦后输入 → 实时过滤
-                int c = SDL.getChar();
-                while (c >= 0) {
-                    if (search_.focused() != 0) {
-                        if (c == 8) search_.backspace();
-                        else if (c == 13) { onSearch(search_.getText()); search_.unfocus(); }
-                        else if (c >= 32 && c != 127) search_.append(Str.chr(c));
-                    }
-                    c = SDL.getChar();
-                }
-
-                // hover：鼠标位置 → 卡片提亮
-                int mpos = SDL.getMousePos();
-                if (mpos >= 0) {
-                    int hx = mpos & 0xFFFF;
-                    int hy = (mpos >> 16) & 0xFFFF;
-                    for (int i = 0; i < cardCount_; i = i + 1)
-                        cards_[i].setHovered(cards_[i].hit(hx, hy));
-                }
-
-                // 窗口自适应：全屏/最大化 → 1:1 逻辑尺寸 + 布局重排（不缩放不模糊）
-                int curW = SDL.width();
-                int curH = SDL.height();
-                if (curW != W || curH != H) {
-                    W = curW;
-                    H = curH;
-                    SDL.setLogicalSize(W, H);
-                    relayout(W, H);
-                }
-
-                // 绘制（dark blue 背景）
-                SDL.clear(20, 24, 40, 255);
-                rv.draw(r);
-                SDL.present();
-                // 离屏截图（预览渲染结果，headless 环境可见）
-                if (frame == 60) {
-                    saved = SDL.saveBmp("/tmp/bnct_cases.bmp");
-                    Console.writeLine("bnct ui saved=" + Fmt.i(saved));
-                }
-                SDL.delay(16);
-                frame = frame + 1;
-            }
-            SDL.close();
-            Console.writeLine("bnct ui done frame=" + Fmt.i(frame)
-                              + " saved=" + Fmt.i(saved));
         }
 }
 
@@ -379,7 +314,10 @@ class Boot {
             BnctCases a = new BnctCases();
             string h = Console.getEnv("BNCT_HEADLESS");
             if (h == "1") a.runHeadless();
-            else a.runUi();
+            else {
+                AppRunner rn = new AppRunner();
+                rn.run(a, "BNCT 病例管理", 1880, 956, 0x14141C);
+            }
         }
 }
 
