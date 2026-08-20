@@ -119,6 +119,9 @@ class UixLoader {
         string[] initStId_;
         string[] initStName_;
         int initStCount_;
+        // 设计器基准偏移（设计控件平移到窗口 (offX_,offY_)）
+        int offX_;
+        int offY_;
 
     action:
         @constructor UixLoader(string uixJson, string uspJson) {
@@ -127,6 +130,8 @@ class UixLoader {
                 usp_ = new Json(uspJson);
             else
                 usp_ = null;
+            offX_ = 0;
+            offY_ = 0;
             nodes_ = new View[1024];
             ids_ = new string[1024];
             types_ = new string[1024];
@@ -870,6 +875,13 @@ class UixLoader {
             return -1;
         }
         ProgressBar progressbarAt(int i) { return progressbars_[i]; }
+        int colIdxOf(string id) {
+            for (int i = 0; i < colCount_; i = i + 1) {
+                if (colIds_[i] == id) return i;
+            }
+            return -1;
+        }
+        LinearLayout colAt(int i) { return cols_[i]; }
         int flowIdxOf(string id) {
             for (int i = 0; i < flowCount_; i = i + 1) {
                 if (flowIds_[i] == id) return i;
@@ -894,23 +906,40 @@ class UixLoader {
 
         // 设计器用：实时移动节点到 (x,y)（保持宽高；拖拽时避免整树重建）。
         // 返回 1=成功。仅移动「构造参数含 x/y 的控件」；容器类固定 (0,0) 不动。
+        // x,y 为设计局部坐标；加上 offX_/offY_（设计器把设计平移到画布原点）。
         int moveNode(string id, int x, int y) {
+            int fx = x + offX_;
+            int fy = y + offY_;
             int i = labelIdxOf(id);
-            if (i >= 0) { Label l = labels_[i]; l.setFrame(x, y, l.width(), l.height()); return 1; }
+            if (i >= 0) { Label l = labels_[i]; l.setFrame(fx, fy, l.width(), l.height()); return 1; }
             i = buttonIdxOf(id);
-            if (i >= 0) { Button b = buttons_[i]; b.setFrame(x, y, b.width(), b.height()); return 1; }
+            if (i >= 0) { Button b = buttons_[i]; b.setFrame(fx, fy, b.width(), b.height()); return 1; }
             i = fieldIdxOf(id);
-            if (i >= 0) { TextField f = fields_[i]; f.setFrame(x, y, f.width(), f.height()); return 1; }
+            if (i >= 0) { TextField f = fields_[i]; f.setFrame(fx, fy, f.width(), f.height()); return 1; }
             i = switchIdxOf(id);
-            if (i >= 0) { Switch s = switches_[i]; s.setFrame(x, y, s.width(), s.height()); return 1; }
+            if (i >= 0) { Switch s = switches_[i]; s.setFrame(fx, fy, s.width(), s.height()); return 1; }
             i = checkboxIdxOf(id);
-            if (i >= 0) { Checkbox c = checkboxes_[i]; c.setFrame(x, y, c.width(), c.height()); return 1; }
+            if (i >= 0) { Checkbox c = checkboxes_[i]; c.setFrame(fx, fy, c.width(), c.height()); return 1; }
             i = sliderIdxOf(id);
-            if (i >= 0) { Slider s = sliders_[i]; s.setFrame(x, y, s.width(), s.height()); return 1; }
+            if (i >= 0) { Slider s = sliders_[i]; s.setFrame(fx, fy, s.width(), s.height()); return 1; }
             i = progressbarIdxOf(id);
-            if (i >= 0) { ProgressBar p = progressbars_[i]; p.setFrame(x, y, p.width(), p.height()); return 1; }
+            if (i >= 0) { ProgressBar p = progressbars_[i]; p.setFrame(fx, fy, p.width(), p.height()); return 1; }
+            i = panelIdxOf(id);
+            if (i >= 0) { Panel p = panels_[i]; p.setFrame(fx, fy, p.width(), p.height()); return 1; }
+            i = flowIdxOf(id);
+            if (i >= 0) { FlowLayout f = flows_[i]; f.setFrame(fx, fy, f.width(), f.height()); return 1; }
+            i = stackIdxOf(id);
+            if (i >= 0) { StackLayout s = stacks_[i]; s.setFrame(fx, fy, s.width(), s.height()); return 1; }
+            i = colIdxOf(id);
+            if (i >= 0) { LinearLayout c = cols_[i]; c.setFrame(fx, fy, c.width(), c.height()); return 1; }
             return 0;
         }
+
+        // 设计器基准偏移：设计控件（0,0 局部坐标）整体平移到窗口 (offX_, offY_)。
+        // 命中/绘制/拖拽都基于窗口绝对坐标（设计控件 setFrame 后即窗口坐标）。
+        void setOffset(int dx, int dy) { offX_ = dx; offY_ = dy; }
+        int offsetX() { return offX_; }
+        int offsetY() { return offY_; }
 
         // 按 id 查命令名（未注册返回空串）
         string cmdFor(string id) {

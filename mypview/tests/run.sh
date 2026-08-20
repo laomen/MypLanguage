@@ -193,7 +193,7 @@ cd "$DIR"
 cd "$DIR/../examples"
 DESIGNSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp uix_designer.myp)
 "$MYPCC" "${DESIGNSRCS[@]}" -o uix_designer --stdlib "$STDLIB" || exit 1
-DSGN=$(DESIGN_HEADLESS=1 ./uix_designer 2>&1)
+DSGN=$(MYPVIEW_UIX_FILE=/tmp/ds_design.uix DESIGN_HEADLESS=1 ./uix_designer 2>&1)
 echo "$DSGN"
 echo "== DESIGN 结果 =="
 if printf '%s' "$DSGN" | grep -q "ds nodes=6" \
@@ -201,7 +201,8 @@ if printf '%s' "$DSGN" | grep -q "ds nodes=6" \
    && printf '%s' "$DSGN" | grep -q "ds drag x100=1 y140=1 sel=ok" \
    && printf '%s' "$DSGN" | grep -q "ds text=1 x120=1" \
    && printf '%s' "$DSGN" | grep -q "ds nodes2=7" \
-   && printf '%s' "$DSGN" | grep -q "ds nodes3=6 no-ok=0"; then
+   && printf '%s' "$DSGN" | grep -q "ds nodes3=6 no-ok=0" \
+   && printf '%s' "$DSGN" | grep -q "ds file roundtrip nodes=6"; then
     echo "MYPVIEW-DESIGN PASS"
 else
     echo "MYPVIEW-DESIGN FAIL"

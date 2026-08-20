@@ -52,7 +52,7 @@ if [ "$MODE" = "both" ]; then
         elif [ "$TARGET" = "json_editor" ]; then
             JSON_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         elif [ "$TARGET" = "uix_designer" ]; then
-            DESIGN_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+            MYPVIEW_UIX_FILE=/tmp/ds_design.uix DESIGN_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         else
             ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
         fi

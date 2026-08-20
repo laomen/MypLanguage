@@ -51,8 +51,12 @@ class AppRunner {
         RootView rv = new RootView(64, w, h);
         app.onCreate(rv, r, w, h);
         int frame = 0;
+        // 自动化/冒烟测试：MYP_PLAYER_MAXFRAME 达上限退出（对齐 player.myp）
+        string mf = Console.getEnv("MYP_PLAYER_MAXFRAME");
+        int maxFrame = mf == "" ? 0 : Str.toInt(mf);
         int prevDown = 0;   // 上一帧鼠标左键状态（拖拽边沿检测）
         while (SDL.running()) {
+            if (maxFrame > 0 && frame >= maxFrame) break;
             // 按键：ESC 退出
             int key = SDL.getKey();
             if (key == 27) break;

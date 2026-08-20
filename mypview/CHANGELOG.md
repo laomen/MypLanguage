@@ -7,6 +7,46 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.62 — 设计器亮色主题 + 画布偏移 + 文件操作 + save_bmp 颜色修复
+
+**背景**：设计器此前整体深色（"界面都是黑的"）；且设计控件按设计局部坐标 (0,0)
+渲染在窗口绝对位置（压到工具栏、挤在画布左上角，观感"设计不在画布里"）；缺文件
+打开/保存；`SDL.saveBmp` 截图 R/B 交换误导调试。
+
+**UixDesigner 亮色主题**（`examples/uix_designer.myp`）：
+- 画布 `DesignCanvas` 背景改亮灰 `Color.rgb(200,200,200)`（设计表面）；窗口背景
+  `0xD8D8D8`。
+- chrome 文字（属性面板标签/状态）改深色 `Color.dark()`（亮底上可见）。
+- 示例设计标题 Label 显式 `"color":"#1F1F1F"`（亮画布上可见）；调色板新增 Label
+  同样带深色。
+
+**画布基准偏移（设计正确落在画布内）**：
+- `UixLoader` 新增 `offX_/offY_` + `setOffset/getOffsetX/getOffsetY`；`moveNode`
+  按 `offX_+x` 定位（设计局部坐标 → 窗口坐标）；`moveNode` 扩到 Panel/Column/
+  Flow/Stack 容器。
+- 设计器 `applyOffsetAll()`：buildInto 后按画布原点 `setOffset` 并把全部控件
+  `moveNode` 平移；命中/拖拽/选中框全部改用窗口坐标。`relayout` 时画布位置变化
+  重新平移。修复"设计栏不显示/设计挤在左上角"。
+
+**文件操作**（`import io/error`，File stdlib）：
+- 工具栏加 **新建 / 打开文件 / 保存 .uix**：`newDesign()` 空设计、`openUix()`
+  （读 `.uix` 文件 → 重新构建，路径 `MYPVIEW_UIX_FILE` 环境变量或默认 `design.uix`）、
+  `saveUix()`（写 `.uix` 文件）。headless 断言文件保存→打开往返。
+
+**save_bmp 颜色修复**（`stdlib/bridges/sdl_bridge.c`）：
+- `myp_sdl_save_bmp` 的 `SDL_CreateRGBSurface` 掩码写成 RGBA 序，而
+  `RenderReadPixels` 填 ARGB8888（小端字节 = B,G,R,A）→ SDL 把 B/R 解释反 →
+  保存的 BMP 蓝变橙（仅截图，实际窗口一直正确）。改掩码 `R=0x00ff0000/G=0x0000ff00/
+  B=0x000000ff/A=0xff000000`。
+
+**AppRunner 补 `MYP_PLAYER_MAXFRAME` 退出**（`src/backend/app_runner.myp`）：
+- 此前 AppRunner 的 `while(SDL.running())` 只认 ESC/QUIT，窗口应用跑自动化/冒烟
+  一直挂着（`MYP_PLAYER_MAXFRAME` 只在 player.myp 处理）。补 `frame >= maxFrame`
+  break（对齐 player），窗口应用现在可限帧自动退出。
+
+**回归**：mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS（仅改 mypview 框架与
+sdl_bridge，未改编译器，不跑父套件全量）。
+
 ## v3.12.61 — 框架手势路由 + 设计器拖拽移动控件
 
 **背景**：RootView 原支持 onPress/onMove/onRelease 手势锁定（直接子控件），但

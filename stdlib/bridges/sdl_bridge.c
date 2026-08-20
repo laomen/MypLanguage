@@ -727,8 +727,12 @@ int myp_sdl_save_bmp(const char* path) {
     if (!g_renderer || !g_window) { fprintf(stderr, "save_bmp: no renderer/window\n"); return -1; }
     int w, h;
     SDL_GetWindowSize(g_window, &w, &h);
+    // RenderReadPixels 填 ARGB8888（小端字节序 = 内存里 B,G,R,A）。
+    // 表面掩码必须与之一致：byte0=B, byte1=G, byte2=R, byte3=A。
+    // 此前掩码写成 byte0=R（RGBA 序）→ SDL 把 B/R 解释反了 → BMP 保存后
+    // 蓝变橙/红（仅影响 save_bmp 截图，实际窗口渲染一直正确）。
     SDL_Surface* s = SDL_CreateRGBSurface(
-        0, w, h, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+        0, w, h, 32, 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000);
     if (!s) { fprintf(stderr, "save_bmp: CreateRGBSurface: %s\n", SDL_GetError()); return -1; }
     if (SDL_RenderReadPixels(g_renderer, NULL, SDL_PIXELFORMAT_ARGB8888,
                              s->pixels, s->pitch) != 0) {

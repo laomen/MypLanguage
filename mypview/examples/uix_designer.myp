@@ -18,6 +18,8 @@ import env;
 import fmt;
 import sdl;
 import json;
+import io;
+import error;
 
 // 事件绑定：画布点击/拖拽 → 选中/移动；按钮点击 → 路由
 mapping() {
@@ -66,7 +68,7 @@ class DesignCanvas {
         @constructor DesignCanvas(int x, int y, int w, int h) {
             inner_ = new RootView(64, w, h);
             x_ = x; y_ = y; w_ = w; h_ = h;
-            color_ = Color.dark();
+            color_ = Color.rgb(200, 200, 200);   // 亮色设计画布
         }
         // 重建设计后替换内层渲染树
         void setRoot(RootView rv) { inner_ = rv; }
@@ -106,6 +108,8 @@ class UixDesigner {
         SelBox selBox_;
         Label status_;
         // 工具栏按钮
+        Button newBtn_;
+        Button openBtn_;
         Button loadBtn_;
         Button saveBtn_;
         Button addLabelBtn_;
@@ -176,6 +180,8 @@ class UixDesigner {
             toolbar_ = new LinearLayout(1, W - 20, 40);
             toolbar_.setPadding(0);
             toolbar_.setSpacing(8);
+            newBtn_ = new Button("新建", 0, 0, 72, 36);
+            openBtn_ = new Button("打开文件", 0, 0, 96, 36);
             loadBtn_ = new Button("载入示例", 0, 0, 90, 36);
             saveBtn_ = new Button("保存 .uix", 0, 0, 96, 36);
             addLabelBtn_ = new Button("+ Label", 0, 0, 84, 36);
@@ -185,6 +191,8 @@ class UixDesigner {
             addSliderBtn_ = new Button("+ Slider", 0, 0, 90, 36);
             addPanelBtn_ = new Button("+ Panel", 0, 0, 84, 36);
             delBtn_ = new Button("删除选中", 0, 0, 96, 36);
+            Button nb = newBtn_;  toolbar_.add(nb);
+            Button ob = openBtn_; toolbar_.add(ob);
             Button lb = loadBtn_;  toolbar_.add(lb);
             Button sb = saveBtn_;  toolbar_.add(sb);
             Button ab = addLabelBtn_;  toolbar_.add(ab);
@@ -213,7 +221,9 @@ class UixDesigner {
             propPanel_.setPadding(10);
             propPanel_.setSpacing(6);
             propTitle_ = new Label("属性面板", 0, 0, 2);
+            propTitle_.setColor(Color.dark());
             propInfo_ = new Label("未选中控件", 0, 0, 1);
+            propInfo_.setColor(Color.dark());
             textF_ = new TextField("", 0, 0, 290, 30);
             colorF_ = new TextField("", 0, 0, 290, 30);
             xF_ = new TextField("", 0, 0, 140, 30);
@@ -224,26 +234,32 @@ class UixDesigner {
             Label pt = propTitle_;  propPanel_.add(pt);
             Label pi = propInfo_;   propPanel_.add(pi);
             textLabel_ = new Label("text", 0, 0, 1);
+            textLabel_.setColor(Color.dark());
             Label l1 = textLabel_;
             TextField t1 = textF_;
             propPanel_.add(l1);  propPanel_.add(t1);
             colorLabel_ = new Label("color (#RRGGBB)", 0, 0, 1);
+            colorLabel_.setColor(Color.dark());
             Label l2 = colorLabel_;
             TextField t2 = colorF_;
             propPanel_.add(l2);  propPanel_.add(t2);
             xLabel_ = new Label("x", 0, 0, 1);
+            xLabel_.setColor(Color.dark());
             Label l3 = xLabel_;
             TextField t3 = xF_;
             propPanel_.add(l3);  propPanel_.add(t3);
             yLabel_ = new Label("y", 0, 0, 1);
+            yLabel_.setColor(Color.dark());
             Label l4 = yLabel_;
             TextField t4 = yF_;
             propPanel_.add(l4);  propPanel_.add(t4);
             wLabel_ = new Label("width", 0, 0, 1);
+            wLabel_.setColor(Color.dark());
             Label l5 = wLabel_;
             TextField t5 = wF_;
             propPanel_.add(l5);  propPanel_.add(t5);
             hLabel_ = new Label("height", 0, 0, 1);
+            hLabel_.setColor(Color.dark());
             Label l6 = hLabel_;
             TextField t6 = hF_;
             propPanel_.add(l6);  propPanel_.add(t6);
@@ -256,6 +272,7 @@ class UixDesigner {
             root_.add(mr);
 
             status_ = new Label("就绪", 0, 0, 1);
+            status_.setColor(Color.dark());
         }
 
         void relayout(int W, int H) {
@@ -264,6 +281,8 @@ class UixDesigner {
             int ch = H - 40 - 8 - 20;
             canvas_.setFrame(0, 0, cw, ch);
             root_.layout();
+            if (loader_ != null) applyOffsetAll();   // 画布位置变化 → 设计重新平移
+            updateSelBox();
         }
 
         // ---- 设计文档操作（唯一真源 design_）----
@@ -272,7 +291,7 @@ class UixDesigner {
             string uix = "{\"type\":\"Panel\",\"id\":\"root\",\"x\":0,\"y\":0,"
                 + "\"width\":900,\"height\":600,\"children\":["
                 + "{\"type\":\"Label\",\"id\":\"title\",\"text\":\"BNCT 欢迎页\","
-                + "\"x\":40,\"y\":30,\"scale\":3},"
+                + "\"x\":40,\"y\":30,\"scale\":3,\"color\":\"#1F1F1F\"},"
                 + "{\"type\":\"Button\",\"id\":\"ok\",\"text\":\"确定\","
                 + "\"x\":60,\"y\":120,\"width\":140,\"height\":44},"
                 + "{\"type\":\"TextField\",\"id\":\"user\",\"text\":\"用户名\","
@@ -288,7 +307,7 @@ class UixDesigner {
             rebuildDesign();
         }
 
-        // 重建画布：design_ 序列化 → 新 loader 渲染 → 重选中
+        // 重建画布：design_ 序列化 → 新 loader 渲染 → 平移到画布原点 → 重选中
         void rebuildDesign() {
             uixText_ = design_.serialize();
             canvasW_ = design_.type("width") >= 0 ? design_.getInt("width") : 900;
@@ -299,9 +318,24 @@ class UixDesigner {
             canvasRoot_.add(selBox_);      // 选中框绘制在设计之上
             canvas_.setRoot(canvasRoot_);
             indexPaths();
+            applyOffsetAll();              // 设计控件整体平移到画布原点（窗口坐标）
             if (Str.len(selectedId_) > 0) {
                 if (loader_.idxOf(selectedId_) >= 0) updateSelBox();
                 else { selectedId_ = ""; hideSelBox(); }
+            }
+        }
+
+        // 把设计全部控件（设计局部坐标 0,0 基准）平移到画布原点，绘制在画布内
+        void applyOffsetAll() {
+            int ox = canvas_.getX();
+            int oy = canvas_.getY();
+            loader_.setOffset(ox, oy);
+            for (int i = 0; i < loader_.nodeCount(); i = i + 1) {
+                string id = loader_.idAt(i);
+                string p = pathOf(id);
+                int dx = design_.type(p + ".x") >= 0 ? design_.getInt(p + ".x") : 0;
+                int dy = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
+                loader_.moveNode(id, dx, dy);
             }
         }
 
@@ -346,28 +380,24 @@ class UixDesigner {
             updateSelBox();
         }
         void onCanvasClick(int x, int y) {
-            // 窗口坐标 → 画布局部坐标
-            int lx = x - canvas_.getX();
-            int ly = y - canvas_.getY();
-            string id = loader_.hitId(lx, ly);
+            // 控件已平移到画布原点 → 命中用窗口坐标
+            string id = loader_.hitId(x, y);
             if (Str.len(id) > 0) selectId(id);
             else { selectedId_ = ""; hideSelBox(); propInfo_.setText("未选中控件"); }
         }
 
         // ---- 拖拽移动控件（Qt Design Studio 式：按住拖动即移动）----
-        // 按下：命中选中 + 记录抓取偏移
+        // 按下：命中选中 + 记录抓取偏移（窗口坐标）
         void onCanvasPress(int x, int y) {
-            int lx = x - canvas_.getX();
-            int ly = y - canvas_.getY();
-            string id = loader_.hitId(lx, ly);
+            string id = loader_.hitId(x, y);
             if (Str.len(id) > 0) {
                 selectId(id);
                 string p = pathOf(id);
                 int nx = design_.type(p + ".x") >= 0 ? design_.getInt(p + ".x") : 0;
                 int ny = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
                 dragActive_ = 1;
-                dragOffX_ = lx - nx;
-                dragOffY_ = ly - ny;
+                dragOffX_ = x - (loader_.offsetX() + nx);   // 抓取点相对控件左上角
+                dragOffY_ = y - (loader_.offsetY() + ny);
             } else {
                 selectedId_ = "";
                 hideSelBox();
@@ -378,16 +408,15 @@ class UixDesigner {
         // 移动：实时移动控件（不重建）+ 写回文档 + 选中框跟随
         void onCanvasMove(int x, int y) {
             if (dragActive_ == 0) return;
-            int lx = x - canvas_.getX();
-            int ly = y - canvas_.getY();
-            int nx = lx - dragOffX_;
-            int ny = ly - dragOffY_;
+            int nx = x - loader_.offsetX() - dragOffX_;   // 设计局部坐标
+            int ny = y - loader_.offsetY() - dragOffY_;
             string p = pathOf(selectedId_);
             if (p == "" && selectedId_ != design_.getString("id")) return;  // 根不可拖
             loader_.moveNode(selectedId_, nx, ny);
             setAttrIf(p, "x", Fmt.i(nx));
             setAttrIf(p, "y", Fmt.i(ny));
-            selBox_.setFrame(nx, ny, nodeW(selectedId_), nodeH(selectedId_));
+            selBox_.setFrame(loader_.offsetX() + nx, loader_.offsetY() + ny,
+                             nodeW(selectedId_), nodeH(selectedId_));
             propInfo_.setText("拖动: " + selectedId_ + " (" + Fmt.i(nx) + ","
                               + Fmt.i(ny) + ")");
         }
@@ -442,7 +471,7 @@ class UixDesigner {
             int sy = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
             int sw = nodeW(selectedId_);
             int sh = nodeH(selectedId_);
-            selBox_.setFrame(sx, sy, sw, sh);
+            selBox_.setFrame(loader_.offsetX() + sx, loader_.offsetY() + sy, sw, sh);
         }
         void hideSelBox() {
             selBox_.setFrame(0, 0, 0, 0);
@@ -490,7 +519,7 @@ class UixDesigner {
             string json;
             if (type == "Label")
                 json = "{\"type\":\"Label\",\"id\":\"" + id
-                    + "\",\"text\":\"新标签\",\"x\":40,\"y\":40,\"scale\":2}";
+                    + "\",\"text\":\"新标签\",\"x\":40,\"y\":40,\"scale\":2,\"color\":\"#1F1F1F\"}";
             else if (type == "TextField")
                 json = "{\"type\":\"TextField\",\"id\":\"" + id
                     + "\",\"text\":\"\",\"x\":40,\"y\":40,\"width\":240,\"height\":36}";
@@ -523,15 +552,68 @@ class UixDesigner {
             propInfo_.setText("已删除");
         }
 
+        // ---- 文件操作：新建 / 打开 .uix / 保存 .uix ----
+        string filePath() {
+            string p = Console.getEnv("MYPVIEW_UIX_FILE");
+            if (Str.len(p) > 0) return p;
+            return "design.uix";
+        }
+
+        void newDesign() {
+            string uix = "{\"type\":\"Panel\",\"id\":\"root\",\"x\":0,\"y\":0,"
+                + "\"width\":900,\"height\":600,\"children\":[]}";
+            design_ = new Json(uix);
+            uixText_ = uix;
+            nextId_ = 100;
+            selectedId_ = "";
+            rebuildDesign();
+            propInfo_.setText("新建空设计");
+        }
+
+        void openUix() {
+            string path = filePath();
+            try {
+                File f = new File();
+                f.open(path, "r");
+                string content = f.readAll();
+                f.close();
+                if (Str.len(content) == 0) {
+                    propInfo_.setText("文件为空: " + path);
+                    return;
+                }
+                design_ = new Json(content);       // 无效 JSON 抛 JsonError
+                uixText_ = content;
+                nextId_ = 100;
+                selectedId_ = "";
+                rebuildDesign();
+                propInfo_.setText("已打开: " + path);
+                Console.writeLine("ds opened nodes=" + loader_.nodeCount());
+            } catch (Error e) {
+                propInfo_.setText("打开失败: " + path);
+            }
+        }
+
         void saveUix() {
             string s = design_.serialize();
-            Console.writeLine("ds saved len=" + Str.len(s));
-            SDL.saveBmp("/tmp/uix_designer.bmp");
-            propInfo_.setText("已保存 .uix");
+            string path = filePath();
+            try {
+                File f = new File();
+                f.open(path, "w");
+                f.write(s);
+                f.close();
+                Console.writeLine("ds saved-file len=" + Str.len(s) + " path=" + path);
+                propInfo_.setText("已保存: " + path);
+            } catch (Error e) {
+                propInfo_.setText("保存失败: " + path);
+            }
+            string h = Console.getEnv("DESIGN_HEADLESS");
+            if (h != "1") SDL.saveBmp("/tmp/uix_designer.bmp");
         }
 
         // ---- 按钮路由 ----
         void onButton(int x, int y) {
+            if (newBtn_.hit(x, y) != 0) { newDesign(); return; }
+            if (openBtn_.hit(x, y) != 0) { openUix(); return; }
             if (loadBtn_.hit(x, y) != 0) { loadDefault(); return; }
             if (saveBtn_.hit(x, y) != 0) { saveUix(); return; }
             if (addLabelBtn_.hit(x, y) != 0) { addControl("Label"); return; }
@@ -622,8 +704,10 @@ class UixDesigner {
             removeSelected();
             string s2 = serializeDesign();
             Console.writeLine("ds nodes3=" + loader_.nodeCount()
-                              + " no-ok=" + (Str.contains(s2, "\"id\": \"ok\"") != 0 ? 0 : 1));
-            Console.writeLine("ds done");
+                              + " no-ok=" + (Str.contains(s2, "\"id\": \"ok\"") != 0 ? 0 : 1));            // 文件保存 → 打开 往返（MYPVIEW_UIX_FILE 由测试脚本设为 /tmp 路径）
+            saveUix();
+            openUix();
+            Console.writeLine("ds file roundtrip nodes=" + loader_.nodeCount());            Console.writeLine("ds done");
         }
 }
 
@@ -635,7 +719,7 @@ class Boot {
             if (h == "1") a.runHeadless();
             else {
                 AppRunner rn = new AppRunner();
-                rn.run(a, "mypview UI 设计器", 1400, 900, 0x14141C);
+                rn.run(a, "mypview UI 设计器", 1400, 900, 0xD8D8D8);
             }
         }
 }
