@@ -1,0 +1,187 @@
+// number_input.myp — uikit 控件：NumberInput（数字输入框）
+// ---------------------------------------------------------------------------
+// 数字值 + 范围/步进。左半区显示当前值（聚焦后可键盘直接输入数字），右半区
+// 上 ▲ 下 ▼ 箭头按钮按 step 增减。值钳制在 [min,max]。Changed(value) 事件。
+// 纯逻辑 headless 可测（键盘输入由应用层把按键转 append / commitEdit）。
+import text;
+import fmt;
+
+class NumberInput {
+    interface class View;
+
+    property:
+        int x_;
+        int y_;
+        int w_;
+        int h_;
+        int value_;
+        int min_;
+        int max_;
+        int step_;
+        int color_;
+        int focused_;
+        int enabled_;
+        int editing_;      // 1=正在键盘编辑（显示 editBuf_）
+        string editBuf_;
+
+    event:
+        Changed(int value);
+        Focused(int x, int y);
+
+    action:
+        @constructor NumberInput(int x, int y, int w, int h) {
+            x_ = x;
+            y_ = y;
+            w_ = w;
+            h_ = h;
+            value_ = 0;
+            min_ = 0;
+            max_ = 100;
+            step_ = 1;
+            color_ = Color.blue();
+            focused_ = 0;
+            enabled_ = 1;
+            editing_ = 0;
+            editBuf_ = "";
+        }
+
+        void setValue(int v) {
+            if (v < min_) v = min_;
+            if (v > max_) v = max_;
+            value_ = v;
+            editing_ = 0;
+            editBuf_ = "";
+        }
+        int getValue() { return value_; }
+        void setRange(int mn, int mx) {
+            min_ = mn; max_ = mx;
+            if (value_ < mn) value_ = mn;
+            if (value_ > mx) value_ = mx;
+        }
+        void setStep(int s) { if (s > 0) step_ = s; }
+        int getStep() { return step_; }
+        void setColor(int c) { color_ = c; }
+        int getColor() { return color_; }
+
+        // 加/减（按 step，钳制范围，变更触发 Changed）
+        void increment() {
+            int v = value_ + step_;
+            if (v > max_) v = max_;
+            if (v != value_) { value_ = v; editing_ = 0; editBuf_ = ""; Changed(value_); }
+        }
+        void decrement() {
+            int v = value_ - step_;
+            if (v < min_) v = min_;
+            if (v != value_) { value_ = v; editing_ = 0; editBuf_ = ""; Changed(value_); }
+        }
+
+        // 焦点（键盘导航 + 输入聚焦）
+        int focusable() { return 1; }
+        void setFocus(int on) { focused_ = on; if (on != 0) editing_ = 1; }
+        int focused() { return focused_; }
+        void unfocus() { commitEdit(); focused_ = 0; editing_ = 0; }
+
+        // 键盘输入：追加一个数字字符（进入编辑态）
+        void append(string ch) {
+            if (focused_ == 0) return;
+            if (editing_ == 0) { editBuf_ = ""; editing_ = 1; }
+            // 只接受 0-9 和开头负号
+            string b = editBuf_;
+            if (ch == "-") {
+                if (Str.len(b) == 0) editBuf_ = "-";
+            } else if (Str.len(ch) == 1 && ch == "0") editBuf_ = b + "0";
+            else if (Str.len(ch) == 1 && ch == "1") editBuf_ = b + "1";
+            else if (Str.len(ch) == 1 && ch == "2") editBuf_ = b + "2";
+            else if (Str.len(ch) == 1 && ch == "3") editBuf_ = b + "3";
+            else if (Str.len(ch) == 1 && ch == "4") editBuf_ = b + "4";
+            else if (Str.len(ch) == 1 && ch == "5") editBuf_ = b + "5";
+            else if (Str.len(ch) == 1 && ch == "6") editBuf_ = b + "6";
+            else if (Str.len(ch) == 1 && ch == "7") editBuf_ = b + "7";
+            else if (Str.len(ch) == 1 && ch == "8") editBuf_ = b + "8";
+            else if (Str.len(ch) == 1 && ch == "9") editBuf_ = b + "9";
+        }
+
+        // 退格：删编辑串末尾字符
+        void backspace() {
+            int n = Str.len(editBuf_);
+            if (n > 0) editBuf_ = Str.substring(editBuf_, 0, n - 1);
+        }
+
+        // 提交编辑：解析编辑串 → setValue（非法/空则保持原值），触发 Changed
+        void commitEdit() {
+            if (editing_ == 0) return;
+            editing_ = 0;
+            string s = editBuf_;
+            editBuf_ = "";
+            if (Str.len(s) == 0) return;
+            if (s == "-") return;
+            int nv = Str.toInt(s);
+            if (nv < min_) nv = min_;
+            if (nv > max_) nv = max_;
+            if (nv != value_) { value_ = nv; Changed(value_); }
+        }
+
+        void setAttr(string name, string value) {
+            if (name == "value") setValue(Str.toInt(value));
+            else if (name == "min") { min_ = Str.toInt(value); if (value_ < min_) value_ = min_; }
+            else if (name == "max") { max_ = Str.toInt(value); if (value_ > max_) value_ = max_; }
+            else if (name == "step") setStep(Str.toInt(value));
+            else if (name == "color") setColor(Color.fromHex(value));
+        }
+
+        int getX() { return x_; }
+        int getY() { return y_; }
+        void setEnabled(int on) { enabled_ = on; }
+        int enabled() { return enabled_; }
+
+        // View 接口
+        int width() { return w_; }
+        int height() { return h_; }
+        void setFrame(int x, int y, int w, int h) {
+            x_ = x; y_ = y; w_ = w; h_ = h;
+        }
+
+        void draw(Renderer r) {
+            r.outlineRect(x_, y_, w_, h_, Color.gray());
+            if (focused_ != 0) r.outlineRect(x_ - 1, y_ - 1, w_ + 2, h_ + 2, color_);
+            // 值文本（编辑中显示编辑串）
+            string vs = (editing_ != 0) ? editBuf_ : Fmt.i(value_);
+            int vsz = 2;
+            r.drawText(x_ + 6, y_ + h_ / 2 - r.textH(vsz) / 2, vs, vsz,
+                       (enabled_ == 0) ? Color.gray() : Color.white());
+            // 右上 ▲ / 右下 ▼（箭头按钮）
+            int arrowW = 16;
+            int ax = x_ + w_ - arrowW;
+            int half = h_ / 2;
+            if (enabled_ != 0) {
+                r.fillRect(ax, y_, arrowW, half, color_);
+                r.drawText(ax + arrowW / 2 - r.textWidth("▲", 1) / 2,
+                           y_ + half / 2 - r.textH(1) / 2, "▲", 1, Color.white());
+                r.fillRect(ax, y_ + half, arrowW, h_ - half, color_);
+                r.drawText(ax + arrowW / 2 - r.textWidth("▼", 1) / 2,
+                           y_ + half + (h_ - half) / 2 - r.textH(1) / 2, "▼", 1, Color.white());
+            } else {
+                r.fillRect(ax, y_, arrowW, h_, Color.dark());
+            }
+        }
+
+        int hit(int x, int y) {
+            if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
+            return 0;
+        }
+
+        void onTouch(int x, int y) {
+            if (enabled_ == 0) return;
+            int arrowW = 16;
+            int ax = x_ + w_ - arrowW;
+            int half = h_ / 2;
+            if (x >= ax) {
+                // 箭头区：上=加 下=减
+                if (y < y_ + half) increment();
+                else decrement();
+                return;
+            }
+            // 值区：聚焦进入编辑（可键盘输入）
+            if (focused_ == 0) { focused_ = 1; editing_ = 1; editBuf_ = ""; Focused(x_, y_); }
+        }
+}

@@ -715,6 +715,28 @@ class Main {
             Console.writeLine("uix lpb long=" + Fmt.i(lpb.lastGesture()));
             lpb.onRelease(10, 10);
             Console.writeLine("uix lpb after=" + Fmt.i(lpb.lastGesture()));  // 仍 2
+
+            // ---- NumberInput：数字输入框（值/范围钳制/步进/键盘编辑/声明式）----
+            NumberInput ni = new NumberInput(0, 0, 120, 36);
+            ni.setValue(42);
+            int nbase = ni.getValue();                 // 42
+            ni.setRange(0, 50);
+            ni.setValue(99);                           // 越界 → 钳制 50
+            int nclamp = ni.getValue();
+            ni.setStep(5);
+            ni.setValue(30);
+            ni.increment();                            // 35
+            ni.decrement();                            // 30
+            ni.setFocus(1);                            // 聚焦 → 编辑态
+            ni.append("1"); ni.append("2"); ni.commitEdit();   // 键盘输入 "12" → 12
+            ni.setFocus(1); ni.append("9"); ni.append("9"); ni.commitEdit();  // 99 → 钳制 50
+            int nedit = ni.getValue();
+            ni.setAttr("value", "7");                  // 声明式 → 7
+            Console.writeLine("uix num base=" + Fmt.i(nbase)
+                              + " clamp=" + Fmt.i(nclamp)
+                              + " v=" + Fmt.i(ni.getValue())
+                              + " edit=" + Fmt.i(nedit)
+                              + " attr=" + Fmt.i(ni.getValue()));
         }
 }
 
