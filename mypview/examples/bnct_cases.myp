@@ -65,29 +65,28 @@ class BnctCases {
 
         // ---- 构建页面（控件 + 布局）----
         void build() {
-            // Header（纯文本区；SDL 版由应用绘制标题栏）
-            // 搜索/筛选区
-            search_ = new SearchBar(16, 64, 320, 36);
-            sortDrop_ = new Dropdown(352, 64, 150, 36);
+            // 搜索/筛选区（对齐 ref 截图：1880x956 逻辑尺寸）
+            search_ = new SearchBar(28, 84, 440, 42);
+            sortDrop_ = new Dropdown(488, 84, 180, 42);
             sortDrop_.addItem("最近更新");
             sortDrop_.addItem("患者姓名");
             sortDrop_.setSelected(0);
-            sourceDrop_ = new Dropdown(518, 64, 120, 36);
+            sourceDrop_ = new Dropdown(688, 84, 140, 42);
             sourceDrop_.addItem("全部");
             sourceDrop_.addItem("DICOM");
             sourceDrop_.setSelected(0);
             // 操作按钮行
-            newBtn_ = new Button("+ 新建病例", 16, 112, 110, 32);
-            deleteBtn_ = new Button("X 删除病例", 136, 112, 110, 32);
-            pacsBtn_ = new Button("PACS 查询", 256, 112, 110, 32);
+            newBtn_ = new Button("+ 新建病例", 28, 146, 140, 38);
+            deleteBtn_ = new Button("X 删除病例", 184, 146, 140, 38);
+            pacsBtn_ = new Button("PACS 查询", 340, 146, 140, 38);
             // 病例/序列选择 + 进入勾画
-            caseDrop_ = new Dropdown(16, 160, 260, 36);
+            caseDrop_ = new Dropdown(28, 204, 360, 40);
             caseDrop_.addItem("Patient-305891 (ID-21F0)");
             caseDrop_.setSelected(0);
-            seqDrop_ = new Dropdown(292, 160, 420, 36);
+            seqDrop_ = new Dropdown(408, 204, 620, 40);
             seqDrop_.addItem("RTSTRUCT - Imported RT-STRUCT (254 slices)");
             seqDrop_.setSelected(0);
-            enterBtn_ = new Button("进入勾画", 728, 160, 110, 36);
+            enterBtn_ = new Button("进入勾画", 1050, 204, 130, 40);
             // 卡片网格
             filterCards("");
         }
@@ -104,8 +103,8 @@ class BnctCases {
                     cards_[n].setTitle(pids_[i]);
                     cards_[n].setSubtitle(ids_[i]);
                     cards_[n].setMeta(metas_[i]);
-                    cards_[n].setFrame(16 + (n % 2) * 316, 220 + (n / 2) * 160,
-                                       300, 140);
+                    cards_[n].setFrame(28 + (n % 2) * 432, 276 + (n / 2) * 190,
+                                       412, 170);
                     n = n + 1;
                 }
             }
@@ -170,10 +169,10 @@ class BnctCases {
             cards_[1].onTouch(cards_[1].secondaryX() + 5,
                               cards_[1].btnY() + 5);
         }
-        // ---- SDL 窗口界面（复刻截图）----
+        // ---- SDL 窗口界面（复刻截图，窗口尺寸对齐 ref 参考图比例）----
         void runUi() {
-            int W = 1100;
-            int H = 700;
+            int W = 1880;   // 对齐 mypview/ref/粘贴的图像.png 逻辑尺寸（2x DPI 还原）
+            int H = 956;
             int open = SDL.open("BNCT 病例管理", W, H);
             if (open != 0) {
                 Console.writeLine("bnct ui sdl-open-fail=" + Fmt.i(open));
@@ -184,12 +183,12 @@ class BnctCases {
             RootView rv = new RootView(16, W, H);
             build();
 
-            // Header：标题 + 用户区
-            Label headerTitle = new Label("BNCT 治疗计划系统", 20, 12, 2);
-            Label pageTitle = new Label("病例管理", 20, 38, 3);
-            Avatar userAv = new Avatar("D", W - 300, 14, 40);
+            // Header：标题 + 用户区（右上角，对齐截图）
+            Label headerTitle = new Label("BNCT 治疗计划系统", 28, 16, 3);
+            Label pageTitle = new Label("病例管理", 28, 52, 3);
+            Avatar userAv = new Avatar("D", W - 320, 18, 44);
             Label userLabel = new Label(userName_, 0, 0, 2);
-            userLabel.setFrame(W - 248, 24, 0, 0);
+            userLabel.setFrame(W - 262, 30, 0, 0);
             rv.add(headerTitle);
             rv.add(pageTitle);
             rv.add(userAv);
@@ -215,6 +214,7 @@ class BnctCases {
             string mf = Console.getEnv("MYP_PLAYER_MAXFRAME");
             int maxFrame = mf == "" ? 0 : Str.toInt(mf);
             int frame = 0;
+            int saved = -1;
             while (SDL.running()) {
                 int key = SDL.getKey();
                 if (key == 41) break;                       // ESC 退出
@@ -261,11 +261,17 @@ class BnctCases {
                 SDL.clear(20, 24, 40, 255);
                 rv.draw(r);
                 SDL.present();
+                // 离屏截图（预览渲染结果，headless 环境可见）
+                if (frame == 60) {
+                    saved = SDL.saveBmp("/tmp/bnct_cases.bmp");
+                    Console.writeLine("bnct ui saved=" + Fmt.i(saved));
+                }
                 SDL.delay(16);
                 frame = frame + 1;
             }
             SDL.close();
-            Console.writeLine("bnct ui done frame=" + Fmt.i(frame));
+            Console.writeLine("bnct ui done frame=" + Fmt.i(frame)
+                              + " saved=" + Fmt.i(saved));
         }
 }
 
