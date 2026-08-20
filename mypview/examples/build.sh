@@ -27,7 +27,7 @@ MODE="${2:-}"
 #     main 丢失（undefined main）。
 # 故按编译器分支：myp_self → 目录通配；mypc → 依赖顺序固定列表。新增控件按依赖追加。
 EXTRA=()
-if [ "$TARGET" = "player" ]; then
+if [ "$TARGET" = "player" ] || [ "$TARGET" = "bnct_cases" ]; then
     EXTRA+=("$SRC/backend/sdl_renderer.myp")
 fi
 
@@ -46,7 +46,12 @@ if [ "$MODE" = "both" ]; then
         out="$TARGET.$name"
         echo "--- $name: $cc ---"
         "$cc" "${SRCS[@]}" -o "$out" --stdlib "$STDLIB"
-        ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+        # bnct_cases：both 对比走 headless（不开 SDL 窗口）；player 用限帧退出
+        if [ "$TARGET" = "bnct_cases" ]; then
+            BNCT_HEADLESS=1 ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+        else
+            ./"$out" > "/tmp/${TARGET}_${name}.out" 2>&1
+        fi
         echo "OK → ./$out"
     done
     echo "=== 输出对比 ==="

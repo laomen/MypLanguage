@@ -38,7 +38,11 @@ title/subtitle/meta/primary/secondary/color/accent。适配 Web dashboard 卡片
 **BNCT 病例管理页示例**（`mypview/examples/bnct_cases.myp`）：复刻 BNCT 治疗
 计划系统病例管理页结构——Header（系统标题/页面标题/用户区）+ SearchBar +
 排序/来源 Dropdown + 操作按钮行 + 病例/序列 Dropdown +「进入勾画」+ Card 卡片
-网格（搜索过滤联动 + 卡片详情/进入事件）。headless 可测：
+网格（搜索过滤联动 + 卡片详情/进入事件）。**双模式**：
+- **默认 SDL 窗口界面**（`bash build.sh bnct_cases`）：1100×700 dark blue 窗口，
+  卡片渲染 + hover 提亮 + 点击事件（进入/详情）+ 键盘搜索实时过滤，ESC/关窗退出；
+  帧循环已验证（`bnct ui running cards=2` → `done frame=5`）。
+- **`BNCT_HEADLESS=1` headless 逻辑验证**：
 ```
 bnct header=BNCT 治疗计划系统 / 病例管理 / Doctor demo
 bnct cards=2 first=Patient-7736D7 (ID-C4A0)
@@ -46,10 +50,14 @@ bnct search '305891' shown=1        ← 搜索过滤
 bnct enter=Patient-7736D7 (ID-C4A0) ← 点卡片「进入」
 bnct detail=Patient-305891          ← 点卡片「详情」
 ```
+`build.sh` 对 `bnct_cases` 自动加入 `backend/sdl_renderer.myp`（同 player）；both
+对比模式走 headless。实现中修复：数组元素传接口参数（`RootView.add(cards_[i])`）
+不自动接口上转 → 局部变量中转（同 BUG-041 类别）。
 
-**测试**：`mypview/tests/run.sh` 两个 SRCS 列表加 `card.myp`，新增
-`MYPVIEW-BNCT PASS` 节（7 断言）。mypc 与 myp_self both 输出一致；parent
-313/313、bootstrap 16/16、bugs 11/11、mypview UIX/BNCT/PIPE 全 PASS。
+**测试**：`mypview/tests/run.sh` 两个 SRCS 列表加 `card.myp`，BNCT 节编译含
+`backend/sdl_renderer.myp`，新增 `MYPVIEW-BNCT PASS`（7 断言，`BNCT_HEADLESS=1`）。
+mypc 与 myp_self both 输出一致；parent 313/313、bootstrap 16/16、bugs 11/11、
+mypview UIX/BNCT/PIPE 全 PASS。
 
 ### v3.12.54 — MYP 源码闭源：签名声明（无 body 方法→外部声明）+ 预编译库链接
 

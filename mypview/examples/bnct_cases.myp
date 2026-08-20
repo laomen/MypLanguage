@@ -5,11 +5,14 @@
 //   搜索/筛选区：SearchBar（患者名/ID）+ 排序/来源 Dropdown + 操作按钮行
 //   病例/序列选择：Dropdown（病例+序列）+「进入勾画」按钮
 //   病例卡片网格：Card 列表（患者名/ID/元信息/详情/进入）
-//   dark blue 主题（Theme + Card 深色表面 + accent）
-// 纯逻辑 headless 可测：构建 → 搜索过滤 → 卡片事件（详情/进入）→ 输出断言。
-// 运行：bash build.sh bnct_cases（mypc 编译 mypview 源码集合）
+//   dark blue 主题（SDL.clear 深蓝背景 + Card 深色表面 + accent）
+// 双模式：
+//   - 默认：SDL 窗口界面（bash build.sh bnct_cases，ESC/关窗退出）
+//   - BNCT_HEADLESS=1：headless 逻辑验证（搜索过滤/卡片事件输出断言）
+// 运行：bash build.sh bnct_cases（需 backend/sdl_renderer.myp，build.sh 自动加）
 import env;
 import fmt;
+import sdl;
 
 // 事件绑定：卡片主/次操作 → 页面 handler
 mapping() {
@@ -139,7 +142,7 @@ class BnctCases {
         }
 
         // ---- headless 验证：构建 + 模拟交互 ----
-        void run() {
+        void runHeadless() {
             build();
             // 页面结构
             Console.writeLine("bnct header=BNCT 治疗计划系统 / 病例管理 / "
@@ -167,13 +170,112 @@ class BnctCases {
             cards_[1].onTouch(cards_[1].secondaryX() + 5,
                               cards_[1].btnY() + 5);
         }
+        // ---- SDL 窗口界面（复刻截图）----
+        void runUi() {
+            int W = 1100;
+            int H = 700;
+            int open = SDL.open("BNCT 病例管理", W, H);
+            if (open != 0) {
+                Console.writeLine("bnct ui sdl-open-fail=" + Fmt.i(open));
+                return;
+            }
+            SDL.setLogicalSize(W, H);
+            SdlRenderer r = new SdlRenderer();
+            RootView rv = new RootView(16, W, H);
+            build();
+
+            // Header：标题 + 用户区
+            Label headerTitle = new Label("BNCT 治疗计划系统", 20, 12, 2);
+            Label pageTitle = new Label("病例管理", 20, 38, 3);
+            Avatar userAv = new Avatar("D", W - 300, 14, 40);
+            Label userLabel = new Label(userName_, 0, 0, 2);
+            userLabel.setFrame(W - 248, 24, 0, 0);
+            rv.add(headerTitle);
+            rv.add(pageTitle);
+            rv.add(userAv);
+            rv.add(userLabel);
+
+            // 搜索/筛选区 + 操作按钮 + 病例选择 + 卡片
+            rv.add(search_);
+            rv.add(sortDrop_);
+            rv.add(sourceDrop_);
+            rv.add(newBtn_);
+            rv.add(deleteBtn_);
+            rv.add(pacsBtn_);
+            rv.add(caseDrop_);
+            rv.add(seqDrop_);
+            rv.add(enterBtn_);
+            // 数组元素 → 接口参数需局部变量中转（mypc 对数组元素不自动接口上转）
+            for (int i = 0; i < cardCount_; i = i + 1) {
+                Card c = cards_[i];
+                rv.add(c);
+            }
+
+            Console.writeLine("bnct ui running cards=" + Fmt.i(cardCount_));
+            string mf = Console.getEnv("MYP_PLAYER_MAXFRAME");
+            int maxFrame = mf == "" ? 0 : Str.toInt(mf);
+            int frame = 0;
+            while (SDL.running()) {
+                int key = SDL.getKey();
+                if (key == 41) break;                       // ESC 退出
+                if (maxFrame > 0 && frame >= maxFrame) break;
+
+                // 点击：分发 + 卡片事件 + 进入按钮
+                int mclick = SDL.getMouseClick();
+                if (mclick >= 0) {
+                    int mx = mclick & 0xFFFF;
+                    int my = (mclick >> 16) & 0xFFFF;
+                    rv.onPress(mx, my);
+                    for (int i = 0; i < cardCount_; i = i + 1)
+                        if (cards_[i].hit(mx, my) != 0) cards_[i].onTouch(mx, my);
+                    if (enterBtn_.hit(mx, my) != 0) {
+                        if (cardCount_ > 0) {
+                            selected_ = 0;
+                            enterPatient_ = cards_[0].getTitle();
+                            Console.writeLine("bnct ui enter=" + enterPatient_);
+                        }
+                    }
+                }
+
+                // 键盘搜索：点击 SearchBar 聚焦后输入 → 实时过滤
+                int c = SDL.getChar();
+                while (c >= 0) {
+                    if (search_.focused() != 0) {
+                        if (c == 8) search_.backspace();
+                        else if (c == 13) { onSearch(search_.getText()); search_.unfocus(); }
+                        else if (c >= 32 && c != 127) search_.append(Str.chr(c));
+                    }
+                    c = SDL.getChar();
+                }
+
+                // hover：鼠标位置 → 卡片提亮
+                int mpos = SDL.getMousePos();
+                if (mpos >= 0) {
+                    int hx = mpos & 0xFFFF;
+                    int hy = (mpos >> 16) & 0xFFFF;
+                    for (int i = 0; i < cardCount_; i = i + 1)
+                        cards_[i].setHovered(cards_[i].hit(hx, hy));
+                }
+
+                // 绘制（dark blue 背景）
+                SDL.clear(20, 24, 40, 255);
+                rv.draw(r);
+                SDL.present();
+                SDL.delay(16);
+                frame = frame + 1;
+            }
+            SDL.close();
+            Console.writeLine("bnct ui done frame=" + Fmt.i(frame));
+        }
 }
 
 class Boot {
     action:
         @constructor Boot() {
             BnctCases a = new BnctCases();
-            a.run();
+            string h = Console.getEnv("BNCT_HEADLESS");
+            if (h == "1") a.runHeadless();
+            else a.runUi();
         }
 }
 

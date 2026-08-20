@@ -149,9 +149,9 @@ fi
 # 在 examples/ 下编译运行；SRCS 去掉末尾的 uix_logic.myp（tests/ 相对路径），
 # 追加 bnct_cases.myp（examples/ 相对路径）。
 cd "$DIR/../examples"
-BNCTSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}")
+BNCTSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/sdl_renderer.myp")
 "$MYPCC" "${BNCTSRCS[@]}" bnct_cases.myp -o bnct_cases --stdlib "$STDLIB" || exit 1
-BNCT=$(./bnct_cases 2>&1)
+BNCT=$(BNCT_HEADLESS=1 ./bnct_cases 2>&1)
 echo "$BNCT"
 echo "== BNCT 结果 =="
 if printf '%s' "$BNCT" | grep -q "bnct header=BNCT 治疗计划系统 / 病例管理 / Doctor demo" \
