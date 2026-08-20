@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.12.56 — JSON 从 runtime.c 分离为独立 bridge（按需链接）
+
+**背景**：JSON 解析/查询 FFI 常驻 `src/runtime/runtime.c`（约 300 行），每个
+程序（无论用不用 JSON）都编译进运行时。JSON 仅在 `import json;` 时才有意义，
+不应是运行时基座。
+
+**分离**（对齐 sdl/ttf bridge 机制）：
+- JSON 段从 `src/runtime/runtime.c` 移出（-299 行，6247→5948），新建
+  `stdlib/bridges/json_bridge.c`（含 `myp_json_parse/get_type/get_string/
+  get_number/get_bool/array_length/free` + 递归下降解析器）。
+- 依赖 `myp_strdup`（runtime.h 声明，runtime 链接提供）。
+- `stdlib/json.myp` 的 ffi 声明不变（符号名 `myp_json_*` 由 bridge 按需提供）。
+- 效果：只有 `import json;`（调用 `myp_json_*`）的程序才链接 json_bridge.o，
+  不用 JSON 的程序运行时更小。
+
+**验证**：`import json` 程序编译链接运行正常
+（`json a=1 name=hi ok=1 arrlen=3`，`nm` 确认 json_bridge 按需链接）；
+parent 313/313、bootstrap 16/16、bugs 11/11、mypview UIX/BNCT/PIPE 全 PASS。
+
 ### v3.12.55 — mypview 新增 Card 控件 + BNCT 病例管理页示例
 
 **Card 控件**（`mypview/src/controls/card.myp`，第 53 个控件）：圆角信息卡片——
