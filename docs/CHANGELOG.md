@@ -27,6 +27,35 @@
 
 ## 编译器版本历史
 
+### v3.12.57 — 再剥离 6 组 FFI 出 runtime（net/process/regex/base64/date/hash）
+
+**背景**：继 JSON 之后，继续审计 `src/runtime/runtime.c`——凡是「只被单个 stdlib
+模块引用、不被核心运行时依赖」的函数组都移出为独立 bridge（按需链接）。
+
+**剥离 6 组**（runtime.c 5949→5436，-513 行）：
+| 组 | bridge | 对应 stdlib | 行 |
+|---|---|---|---|
+| `myp_net_*` | `net_bridge.c` | net | 106 |
+| `myp_process_*` | `process_bridge.c` | process | 63 |
+| `myp_regex_*` | `regex_bridge.c` | regex | 31 |
+| `myp_base64_*` | `base64_bridge.c` | base64 | 63 |
+| `myp_date_*` | `date_bridge.c` | date | 45 |
+| `myp_hash_*` (md5/sha) | `hash_bridge.c` | crypto | 205 |
+- 每个 bridge 头统一 `#include "mylang/runtime.h"`（`myp_alloc`）+ 标准头；
+  process 补 `<unistd.h>`（getpid/kill）。
+- 修复一处剥离边界：base64 段后无分隔线直接接 alloc 核心段，初版误吞
+  `myp_alloc` 核心 → 硬编码段边界重剥（base64 只到 decode 结束）。
+- 仅用到这些模块的程序才链接对应 bridge（同 sdl/ttf/json）。
+
+**保留核心基座**：ARC（alloc/retain/release）、GC pool、字符串、协程/事件、
+线程/并行原语、类型转换、异常、断言等——被编译器生成代码/语言特性直接依赖。
+
+**验证**：综合测试 `import regex/base64/date/crypto/process` 编译运行全对
+（`re=1 b64=aGk= md5=900150... pid=...`，bridge 按需链接）；parent 313/313、
+bootstrap 16/16、bugs 11/11、mypview UIX/BNCT/PIPE 全 PASS。
+**后续候选**：`myp_fs_*`（fs，独立但高频用）、`myp_math_*`（编译器 intrinsic，
+需专项验证）暂留 runtime。
+
 ### v3.12.56 — JSON 从 runtime.c 分离为独立 bridge（按需链接）
 
 **背景**：JSON 解析/查询 FFI 常驻 `src/runtime/runtime.c`（约 300 行），每个
