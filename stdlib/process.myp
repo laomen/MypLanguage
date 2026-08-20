@@ -15,6 +15,7 @@ ffi string myp_process_output(string cmd);
 ffi int myp_process_get_pid();
 ffi int myp_process_get_ppid();
 ffi int myp_process_is_running(int pid);
+ffi int myp_process_spawn(string cmd);
 
 class Process {
     static:
@@ -41,5 +42,11 @@ class Process {
         // 检查进程是否在运行
         int isRunning(int pid) {
             return myp_process_is_running(pid);
+        }
+
+        // 后台启动命令（新进程/新会话，不等待，调用方继续跑）。
+        // 返回 0=已启动，-1=失败。如设计器「运行」→ 弹 uix_run 独立预览窗口。
+        int spawn(string cmd) {
+            return myp_process_spawn(cmd);
         }
 }

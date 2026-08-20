@@ -73,3 +73,28 @@ int32_t myp_process_is_running(int32_t pid) {
     return kill(pid, 0) == 0 ? 1 : 0;
 }
 
+// Spawn a command detached (new process/session), do NOT wait for it.
+// Returns 0 on success, -1 on fork failure. The child keeps running after the
+// caller exits (double-fork → reparented to init, reaped by init, no zombie).
+// 用途：设计器「运行」按钮 → 后台启动 uix_run 弹独立预览窗口，设计器不阻塞。
+int32_t myp_process_spawn(const char* cmd) {
+    if (!cmd || cmd[0] == '\0') return -1;
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        // 中间子进程：再 fork 出真正的后台进程后立即退出，父进程 waitpid 回收
+        pid_t pid2 = fork();
+        if (pid2 < 0) _exit(1);
+        if (pid2 == 0) {
+            setsid();   // 脱离父进程会话/控制终端，独立存活
+            execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
+            _exit(127);
+        }
+        _exit(0);
+    }
+    // 父进程回收中间子进程（后台进程已被 init 收养，不会变僵尸）
+    int st;
+    waitpid(pid, &st, 0);
+    return 0;
+}
+

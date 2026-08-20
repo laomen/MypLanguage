@@ -69,6 +69,13 @@ if [ "$MODE" = "both" ]; then
     fi
 else
     echo "mypview 框架示例编译（$MYPCC）：$TARGET"
+    # uix_designer「运行」按钮用 Process.spawn 弹 uix_run 独立预览窗口 →
+    # 构建设计器时连带构建 uix_run（同一源码列表 + uix_run.myp）
+    if [ "$TARGET" = "uix_designer" ] && [ ! -x ./uix_run ]; then
+        echo "  （连带构建 uix_run 供运行按钮使用）"
+        "$MYPCC" "${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" uix_run.myp \
+            -o uix_run --stdlib "$STDLIB"
+    fi
     "$MYPCC" "${SRCS[@]}" -o "$TARGET" --stdlib "$STDLIB"
     echo "OK → ./$TARGET"
     echo "运行："
