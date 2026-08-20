@@ -7,6 +7,38 @@
 >
 > 版本号沿用主仓库编译器版本（mypc --version），标注 mypview 侧里程碑。
 
+## v3.12.61 — 框架手势路由 + 设计器拖拽移动控件
+
+**背景**：RootView 原支持 onPress/onMove/onRelease 手势锁定（直接子控件），但
+嵌套容器（LinearLayout/Panel/Flow/Grid/Stack）只转发 onTouch，不转发手势；且
+AppRunner 只分发鼠标点击。设计器要「按住拖动即移动控件」（Qt Design Studio 式），
+需打通整条手势链路。
+
+**AppRunner**（`src/backend/app_runner.myp`）：帧循环加鼠标左键**边沿检测**（
+`SDL.getMouseDown` 上一帧状态 prevDown）→ 按下 `rv.onPress` / 按住移动 `rv.onMove`
+/ 抬起 `rv.onRelease`，分发给根树（点击 onTouch 路径保留，两者并存）。
+
+**容器手势路由**：LinearLayout/FlowLayout/GridLayout/StackLayout/Panel 新增
+`activeKid_`（按下锁定的子控件下标）+ `onPress`（命中锁定并下发）/ `onMove` /
+`onRelease`（持续分发给锁定子）——与 onTouch/updateHover 同款「从后往前命中」模式。
+**拖拽从此对任意嵌套控件可用**（ScrollView/Slider 等可据此实现拖动）。
+
+**UixLoader**：补 `moveNode(id, x, y)`——设计器拖拽时对加载的控件实时 `setFrame`
+（不整树重建，平滑）；保持宽高。
+
+**UixDesigner**（`examples/uix_designer.myp`）：DesignCanvas 上报
+`CanvasPress/CanvasMove/CanvasRelease`；按下命中选中 + 记录抓取偏移，移动实时
+`loader_.moveNode` + 写回文档 x/y + 选中框跟随，抬起重建落定。headless 断言
+拖拽移动（ok 从 (60,120) → (100,140)）。
+
+**踩坑**：AppRunner 帧循环里 hover 段已声明 `int pos`，手势段再声明同名变量 →
+"duplicate variable 'pos'"（错误定位错乱到 focus_manager）。改手势段用 `gpos`。
+FlowLayout 构造有 `rowGap_` 字段，加 `activeKid_` 时替换串须含它（否则属性声明
+缺失，方法引用未定义符号，错误错乱到 focus_manager:132）。
+
+**回归**：mypview UIX/BNCT/JSON/DESIGN/PIPE 全 PASS；mypc 与 myp_self 输出完全
+一致；父套件 313/313、bootstrap 16/16、bugs 11/11。
+
 ## v3.12.60 — UixDesigner：所见即所得界面设计器（对标 Qt Design Studio）
 
 **背景**：把 mypview 做成可用「界面设计工具」直接设计 UI——画布实时渲染、点选控件、

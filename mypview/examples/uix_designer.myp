@@ -19,9 +19,12 @@ import fmt;
 import sdl;
 import json;
 
-// 事件绑定：画布点击 → 选中；按钮点击 → 路由
+// 事件绑定：画布点击/拖拽 → 选中/移动；按钮点击 → 路由
 mapping() {
     DesignCanvas.CanvasClick -> UixDesigner.onCanvasClick;
+    DesignCanvas.CanvasPress -> UixDesigner.onCanvasPress;
+    DesignCanvas.CanvasMove -> UixDesigner.onCanvasMove;
+    DesignCanvas.CanvasRelease -> UixDesigner.onCanvasRelease;
     Button.Clicked -> UixDesigner.onButton;
 }
 
@@ -47,7 +50,7 @@ class SelBox {
         void onTouch(int x, int y) {}
 }
 
-// ---- 设计画布：只渲染设计树，点击不派发给控件（仅上报 CanvasClick 供选中）----
+// ---- 设计画布：只渲染设计树，点击不派发给控件（仅上报选中/拖拽事件）----
 class DesignCanvas {
     interface class View;
     property:
@@ -56,6 +59,9 @@ class DesignCanvas {
         int color_;
     event:
         CanvasClick(int x, int y);
+        CanvasPress(int x, int y);
+        CanvasMove(int x, int y);
+        CanvasRelease(int x, int y);
     action:
         @constructor DesignCanvas(int x, int y, int w, int h) {
             inner_ = new RootView(64, w, h);
@@ -80,7 +86,11 @@ class DesignCanvas {
             if (x >= x_ && x < x_ + w_ && y >= y_ && y < y_ + h_) return 1;
             return 0;
         }
-        void onTouch(int x, int y) { CanvasClick(x, y); }   // 只选中，不派发给设计
+        void onTouch(int x, int y) { CanvasClick(x, y); }   // 点选（兼容）
+        // 拖拽：按下 → 选中+开始拖；移动 → 持续拖；抬起 → 结束
+        void onPress(int x, int y) { CanvasPress(x, y); }
+        void onMove(int x, int y) { CanvasMove(x, y); }
+        void onRelease(int x, int y) { CanvasRelease(x, y); }
 }
 
 class UixDesigner {
@@ -128,6 +138,10 @@ class UixDesigner {
         RootView canvasRoot_;
         string selectedId_;
         int nextId_;
+        // 拖拽状态
+        int dragActive_;
+        int dragOffX_;
+        int dragOffY_;
         // id → 文档路径（对象路径，如 "children.2"；根为 ""）
         string[] pathIds_;
         string[] pathVals_;
@@ -142,6 +156,9 @@ class UixDesigner {
             canvasRoot_ = null;
             selectedId_ = "";
             nextId_ = 100;
+            dragActive_ = 0;
+            dragOffX_ = 0;
+            dragOffY_ = 0;
             pathIds_ = new string[512];
             pathVals_ = new string[512];
             pathCount_ = 0;
@@ -335,6 +352,51 @@ class UixDesigner {
             string id = loader_.hitId(lx, ly);
             if (Str.len(id) > 0) selectId(id);
             else { selectedId_ = ""; hideSelBox(); propInfo_.setText("未选中控件"); }
+        }
+
+        // ---- 拖拽移动控件（Qt Design Studio 式：按住拖动即移动）----
+        // 按下：命中选中 + 记录抓取偏移
+        void onCanvasPress(int x, int y) {
+            int lx = x - canvas_.getX();
+            int ly = y - canvas_.getY();
+            string id = loader_.hitId(lx, ly);
+            if (Str.len(id) > 0) {
+                selectId(id);
+                string p = pathOf(id);
+                int nx = design_.type(p + ".x") >= 0 ? design_.getInt(p + ".x") : 0;
+                int ny = design_.type(p + ".y") >= 0 ? design_.getInt(p + ".y") : 0;
+                dragActive_ = 1;
+                dragOffX_ = lx - nx;
+                dragOffY_ = ly - ny;
+            } else {
+                selectedId_ = "";
+                hideSelBox();
+                propInfo_.setText("未选中控件");
+                dragActive_ = 0;
+            }
+        }
+        // 移动：实时移动控件（不重建）+ 写回文档 + 选中框跟随
+        void onCanvasMove(int x, int y) {
+            if (dragActive_ == 0) return;
+            int lx = x - canvas_.getX();
+            int ly = y - canvas_.getY();
+            int nx = lx - dragOffX_;
+            int ny = ly - dragOffY_;
+            string p = pathOf(selectedId_);
+            if (p == "" && selectedId_ != design_.getString("id")) return;  // 根不可拖
+            loader_.moveNode(selectedId_, nx, ny);
+            setAttrIf(p, "x", Fmt.i(nx));
+            setAttrIf(p, "y", Fmt.i(ny));
+            selBox_.setFrame(nx, ny, nodeW(selectedId_), nodeH(selectedId_));
+            propInfo_.setText("拖动: " + selectedId_ + " (" + Fmt.i(nx) + ","
+                              + Fmt.i(ny) + ")");
+        }
+        // 抬起：重建（树与文档一致）+ 属性面板回填
+        void onCanvasRelease(int x, int y) {
+            if (dragActive_ == 0) return;
+            dragActive_ = 0;
+            rebuildDesign();
+            if (Str.len(selectedId_) > 0) populateProps(selectedId_);
         }
 
         // 属性面板：编辑 → 写回文档 → 重建
@@ -534,6 +596,16 @@ class UixDesigner {
             Console.writeLine("ds nodes=" + loader_.nodeCount());
             // 命中：Button ok 在 (60,120,140,44)，点 (70,140) 内部
             Console.writeLine("ds hit=" + loader_.hitId(70, 140));
+            // 拖拽移动 ok：按下 (70,140) → 移动 (110,160) → 抬起（offset=(10,20)
+            // → 新位置 (100,140)）
+            selectId("ok");
+            onCanvasPress(70, 140);
+            onCanvasMove(110, 160);
+            onCanvasRelease(110, 160);
+            string s3 = serializeDesign();
+            Console.writeLine("ds drag x100=" + (Str.contains(s3, "\"x\": 100") != 0 ? 1 : 0)
+                              + " y140=" + (Str.contains(s3, "\"y\": 140") != 0 ? 1 : 0)
+                              + " sel=" + selectedId_);
             // 选 ok → 改 text/x → 应用
             selectId("ok");
             setPropText("Login");

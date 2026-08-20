@@ -16,6 +16,7 @@ class LinearLayout {
         int spacing_;
         View[] kids_;
         int kidCount_;
+        int activeKid_;        // 按下锁定的子控件下标（-1=无；onMove/onRelease 持续分发）
 
     action:
         @constructor LinearLayout(int orientation, int w, int h) {
@@ -26,6 +27,7 @@ class LinearLayout {
             spacing_ = 8;
             kids_ = new View[64];
             kidCount_ = 0;
+            activeKid_ = -1;
         }
 
         void setPadding(int p) { padding_ = p; }
@@ -101,6 +103,29 @@ class LinearLayout {
                     kid.onTouch(x, y);
                     return;
                 }
+            }
+        }
+
+        // 手势路由（拖拽）：按下命中锁定子控件，移动/抬起持续分发给它
+        void onPress(int x, int y) {
+            for (int i = kidCount_ - 1; i >= 0; i = i - 1) {
+                View kid = kids_[i];
+                if (kid.visible() == 0) continue;
+                if (kid.hit(x, y) != 0) {
+                    activeKid_ = i;
+                    kid.onPress(x, y);
+                    return;
+                }
+            }
+            activeKid_ = -1;
+        }
+        void onMove(int x, int y) {
+            if (activeKid_ >= 0) kids_[activeKid_].onMove(x, y);
+        }
+        void onRelease(int x, int y) {
+            if (activeKid_ >= 0) {
+                kids_[activeKid_].onRelease(x, y);
+                activeKid_ = -1;
             }
         }
 

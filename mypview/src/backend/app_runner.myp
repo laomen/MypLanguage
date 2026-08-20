@@ -51,17 +51,33 @@ class AppRunner {
         RootView rv = new RootView(64, w, h);
         app.onCreate(rv, r, w, h);
         int frame = 0;
+        int prevDown = 0;   // 上一帧鼠标左键状态（拖拽边沿检测）
         while (SDL.running()) {
             // 按键：ESC 退出
             int key = SDL.getKey();
             if (key == 27) break;
-            // 鼠标点击 → 根命中分发（点击事件：onTouch→onPress→onRelease）
+            // 鼠标点击 → 根命中分发（一次性点击：onTouch → 控件 Clicked 等）
             int click = SDL.getMouseClick();
             if (click >= 0) {
                 int mx = click & 0xFFFF;
                 int my = (click >> 16) & 0xFFFF;
                 rv.onTouch(mx, my);
             }
+            // 鼠标手势 → 根拖拽分发（按下/按住移动/抬起；容器逐层路由到命中控件）
+            int down = SDL.getMouseDown();
+            int gpos = SDL.getMousePos();
+            if (gpos >= 0) {
+                int gx = gpos & 0xFFFF;
+                int gy = (gpos >> 16) & 0xFFFF;
+                if (down != 0 && prevDown == 0) {
+                    rv.onPress(gx, gy);          // 按下边沿 → 拖拽开始（RootView 命中锁定）
+                } else if (down != 0) {
+                    rv.onMove(gx, gy);           // 按住移动 → 持续拖拽
+                } else if (prevDown != 0) {
+                    rv.onRelease(gx, gy);        // 抬起 → 拖拽结束
+                }
+            }
+            prevDown = down;
             // 字符输入 → 应用
             int c = SDL.getChar();
             if (c >= 0) app.onKeyChar(c);
