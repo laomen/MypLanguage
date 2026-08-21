@@ -14,8 +14,9 @@
 // ======================
 
 #if defined(_WIN32)
-/* Windows：POSIX ERE 迷你引擎（AST + 贪婪回溯），见 regex_win.c（被 include）。 */
-#include "regex_win.c"
+/* Windows：POSIX ERE 迷你引擎（AST + 贪婪回溯）。引擎在 stdlib/regex_win.c
+ * （mypc 只扫描 stdlib/bridges 目录，放外面避免被当作独立 bridge 重复链接）。 */
+#include "../regex_win.c"
 #else
 #include <regex.h>
 
