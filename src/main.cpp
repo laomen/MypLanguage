@@ -587,6 +587,21 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     else if (const char* env = getenv("MYP_SANITIZE_TSAN"); env && env[0] == '1')
         san_flags = " -fsanitize=thread -fno-omit-frame-pointer ";
 
+    // ---- 平台编译/链接配置（Linux vs Windows/MinGW-w64） ----
+    // 编译器本体跨平台（LLVM 支持 MSVC/MinGW），但「生成程序」的 C 编译/链接
+    // 命令按平台不同：Linux 用系统 gcc + -lm -ldl；Windows 用 MinGW gcc +
+    // ws2_32/winmm（Winsock/时间）；协程切换汇编也分平台（coro_ctx.S SysV /
+    // coro_ctx_win.S Win64）。
+#if defined(_WIN32)
+    const std::string kCC = "gcc";                       // MinGW-w64（PATH 中）
+    const std::string kPlatformLibs = " -lpthread -lws2_32 -lwinmm";
+    const std::string kCtxAsm = "coro_ctx_win.S";        // Win64 ABI
+#else
+    const std::string kCC = "gcc";
+    const std::string kPlatformLibs = " -lpthread -lm -ldl";
+    const std::string kCtxAsm = "coro_ctx.S";            // SysV ABI
+#endif
+
     // -ffunction-sections/-fdata-sections on every runtime C object plus
     // -Wl,--gc-sections at link time: only the runtime functions the program
     // actually references get linked in. Without this the WHOLE 6000-line
@@ -670,7 +685,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
             rt_obj = cached;  // cache hit — skip gcc
         } else {
             rt_obj = tmpObj("runtime");
-            std::string compile_rt = "gcc -I" + inc_path + " -fPIC " + rt_flags + san_flags + gc_compile + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+            std::string compile_rt = kCC + " -I" + inc_path + " -fPIC " + rt_flags + san_flags + gc_compile + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
             if (std::system(compile_rt.c_str()) != 0) {
                 std::cerr << "Failed to compile runtime\n";
                 return false;
@@ -685,7 +700,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         }
     } else {
         rt_obj = tmpObj("runtime");
-        std::string compile_rt = "gcc -I" + inc_path + " -fPIC" + trace_def + san_flags + gc_compile + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
+        std::string compile_rt = kCC + " -I" + inc_path + " -fPIC" + trace_def + san_flags + gc_compile + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
         if (std::system(compile_rt.c_str()) != 0) {
             std::cerr << "Failed to compile runtime\n";
             return false;
@@ -700,13 +715,13 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     std::string ctx_obj;
 #if defined(__x86_64__)
     std::string ctx_asm;
-    if (fileExists("src/runtime/coro_ctx.S"))
-        ctx_asm = "src/runtime/coro_ctx.S";
-    else if (fileExists(runtime_dir + "/src/runtime/coro_ctx.S"))
-        ctx_asm = runtime_dir + "/src/runtime/coro_ctx.S";
+    if (fileExists("src/runtime/" + kCtxAsm))
+        ctx_asm = "src/runtime/" + kCtxAsm;
+    else if (fileExists(runtime_dir + "/src/runtime/" + kCtxAsm))
+        ctx_asm = runtime_dir + "/src/runtime/" + kCtxAsm;
     if (!ctx_asm.empty()) {
         ctx_obj = tmpObj("rt_ctx");
-        std::string compile_ctx = "gcc -c " + ctx_asm + " -o " + ctx_obj + " 2>&1";
+        std::string compile_ctx = kCC + " -c " + ctx_asm + " -o " + ctx_obj + " 2>&1";
         if (std::system(compile_ctx.c_str()) != 0) {
             std::cerr << "Failed to compile coro_ctx.S\n";
             return false;
@@ -761,7 +776,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
                 obj = cached;  // 缓存命中，免编译直接查符号
             } else {
                 obj = tmpObj("bridge");
-                std::string compile_b = "gcc -I" + inc_path + " -fPIC -O2" + gc_compile + san_flags + " " + bflags + " -c " + c + " -o " + obj + " 2>&1";
+                std::string compile_b = kCC + " -I" + inc_path + " -fPIC -O2" + gc_compile + san_flags + " " + bflags + " -c " + c + " -o " + obj + " 2>&1";
                 if (std::system(compile_b.c_str()) != 0) {
                     std::cerr << "Failed to compile bridge: " << c << "\n";
                     return false;
@@ -817,7 +832,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
             gpu_obj = cached;
         } else {
             gpu_obj = tmpObj("gpu");
-            std::string compile_gpu = "gcc -I" + inc_path + " -fPIC -O2" + san_flags + gc_compile + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
+            std::string compile_gpu = kCC + " -I" + inc_path + " -fPIC -O2" + san_flags + gc_compile + " -c " + gpu_c + " -o " + gpu_obj + " 2>&1";
             if (std::system(compile_gpu.c_str()) != 0) {
                 std::cerr << "Failed to compile GPU runtime\n";
                 return false;
@@ -844,7 +859,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
             lib_obj = cached;
         } else {
             lib_obj = tmpObj("lib");
-            std::string compile_lib = "gcc -I" + inc_path + " -fPIC -O2" + san_flags + gc_compile + " -c " + lib_c + " -o " + lib_obj + " 2>&1";
+            std::string compile_lib = kCC + " -I" + inc_path + " -fPIC -O2" + san_flags + gc_compile + " -c " + lib_c + " -o " + lib_obj + " 2>&1";
             if (std::system(compile_lib.c_str()) != 0) {
                 std::cerr << "Failed to compile vendor-lib runtime\n";
                 return false;
@@ -858,8 +873,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
 
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = "gcc -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
-                 + " -o " + output_name + " -lpthread -lm -ldl " + bridge_libs + gc_link + " 2>&1";
+        link_cmd = kCC + " -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + " -o " + output_name + kPlatformLibs + " " + bridge_libs + gc_link + " 2>&1";
     } else if (static_lib) {
         std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
@@ -870,8 +885,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         std::cout << "Static lib OK: " << output_name << "\n";
         return true;
     } else {
-        link_cmd = "gcc -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
-                 + " -o " + output_name + " -lpthread -lm -ldl " + bridge_libs + gc_link + " 2>&1";
+        link_cmd = kCC + " -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + " -o " + output_name + kPlatformLibs + " " + bridge_libs + gc_link + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());
     if (link_result != 0) {

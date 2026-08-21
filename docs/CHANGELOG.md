@@ -105,7 +105,13 @@ mypview changelog 双向引用。
 - UDS→命名管道：MOS 用**多连接 + 多路复用**（`poll` 监听 fd + 多个客户端 fd），
   命名管道单实例模型不匹配，需 MYP 侧接口适配设计（涉及 MOS IPC）。
 - 编译器本体（LLVM）：需 Windows 版 LLVM 库（llvm-mingw 或 Windows 原生）。
-- 协程 Win64 汇编真机验证（xmm6-15 保护）需 Windows 实机。
+
+**编译器本体 Windows 化（`src/main.cpp`，LLVM 库之外的生成程序链接部分）**：
+- 新增平台配置：`_WIN32` 下生成程序用 MinGW gcc + `-lws2_32 -lwinmm`
+  （Linux 为 `-lm -ldl`）、协程汇编选 `coro_ctx_win.S`（Linux 为 `coro_ctx.S`）。
+- 8 处 runtime/bridges/GPU/链接的 gcc 命令全部改用 `kCC`/`kPlatformLibs`。
+- Linux 生成程序行为不变（`kCC=gcc`、`kPlatformLibs=-lpthread -lm -ldl`）；
+  全量回归确认。Windows 分支编译验证需 Windows LLVM（用户侧安装）。
 
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
