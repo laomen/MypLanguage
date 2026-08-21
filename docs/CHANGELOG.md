@@ -35,6 +35,44 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.14.0 — Windows 移植里程碑 1/2：运行时层交叉编译通过（MinGW-w64）
+
+**背景**：评估 MYP 全生态 Windows 适配可行性后，首个里程碑 = 让运行时层
+（`runtime.c` + stdlib bridges）能在 Windows 交叉编译通过，收敛 POSIX 依赖。
+
+**交叉编译验证工程**（新）：
+- `cmake/win64-mingw.toolchain.cmake`：MinGW-w64 toolchain（Linux host →
+  Windows x86_64）。注意 `CMAKE_TOOLCHAIN_FILE` 须用**绝对路径**（相对路径会被
+  CMake 相对源目录解析）。
+- `cmake/cross-runtime/CMakeLists.txt`：只编译 `runtime.c` + 无外部依赖 bridges
+  （不依赖 LLVM——编译器本体 mypc/myp_lsp 需 Windows 版 LLVM 库，属下一步，
+  可走 llvm-mingw 或 Windows/WSL2 原生构建）。
+
+**Windows 平台适配层 `src/runtime/platform_win.h`（新）**：
+- termios（raw 模式 → `GetConsoleMode`/`SetConsoleMode`；ICANON/ECHO/VMIN/VTIME）
+- ioctl + TIOCGWINSZ（终端尺寸 → `GetConsoleScreenBufferInfo`）
+- dirent（opendir/readdir/closedir → `FindFirstFile`/`FindNextFile`）
+- stat 宏 S_ISDIR/S_ISREG、`mkdir→_mkdir`、`lstat→stat`
+- `setenv/unsetenv → _putenv`、`sysconf(_SC_NPROCESSORS_ONLN) → GetSystemInfo`
+- `poll → WSAPoll`（复用 winsock2.h 的 `pollfd`；runtime 协程 fd 就绪检测用）
+- pthread/semaphore 由 MinGW 自带 winpthreads 提供（链接 -lpthread）
+
+**bridges Windows 移植**（`#if defined(_WIN32)` 分支）：
+- `net_bridge.c`：Winsock（winsock2.h + WSAStartup 一次性初始化 + closesocket
+  + ioctlsocket 非阻塞）。TCP 语义与 POSIX 1:1 兼容，是网络移植最顺的一块。
+- `process_bridge.c`：`system`/`_popen`/`_getpid` + `OpenProcess`（运行检测）+
+  `CreateProcess`（spawn 后台进程）。`getppid` 无对应 → 返回 -1。
+- `uds_bridge.c`：`_WIN32` 下 **stub**（UDS 在 Windows 用命名管道，属后续里程碑）。
+- `regex_bridge.c`：`_WIN32` 下 **stub**（POSIX regex 后续换 PCRE 或移植 mini 引擎）。
+
+**验证**：
+- 交叉编译：`libmyp_win_runtime.a`（PE/COFF 目标）构建 **100% 通过**——
+  runtime.c + net/uds/process/regex/json/base64/date/hash 全部 .obj 产出。
+- Linux 零回归：`mypc` 重建 OK；`hello`、`tests/async_socket`（协程+网络+超时）
+  实跑正常；coro_stack/async_socket/regex/process 编译 0 errors。
+- 遗留障碍（后续里程碑）：协程 Win64 汇编（`coro_ctx_win.S`，xmm6-15 保存）、
+  UDS→命名管道、regex→PCRE、`runtime_gpu.c` dlopen→LoadLibrary、`%zu` 格式串。
+
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
 **背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，

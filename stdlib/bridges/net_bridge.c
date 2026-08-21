@@ -13,15 +13,34 @@
 // Networking (TCP Sockets)
 // ======================
 
+#if !defined(_WIN32)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netdb.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
+#else
+#include <winsock2.h>
+#include <ws2tcpip.h>
+/* Winsock 一次性初始化（进程内只调一次） */
+static int myp_net_ws_init(void) {
+    static int inited = 0;
+    if (!inited) {
+        WSADATA wsa;
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+        inited = 1;
+    }
+    return 0;
+}
+#define close(fd) closesocket(fd)
+#endif
 
 // Returns: server socket fd on success, -1 on error
 int32_t myp_net_server(int32_t port) {
+#if defined(_WIN32)
+    if (myp_net_ws_init() != 0) return -1;
+#endif
     int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     int opt = 1;
@@ -40,8 +59,13 @@ int32_t myp_net_server(int32_t port) {
 // Returns: client fd on success, -1 on error
 int32_t myp_net_accept(int32_t server_fd) {
     struct sockaddr_in client_addr;
+#if defined(_WIN32)
+    int addr_len = (int)sizeof(client_addr);
+    int fd = (int)accept((SOCKET)server_fd, (struct sockaddr*)&client_addr, &addr_len);
+#else
     socklen_t addr_len = sizeof(client_addr);
     int fd = (int)accept(server_fd, (struct sockaddr*)&client_addr, &addr_len);
+#endif
     return fd;
 }
 
@@ -49,6 +73,9 @@ int32_t myp_net_accept(int32_t server_fd) {
 // Returns: socket fd on success, -1 on error
 int32_t myp_net_connect(const char* host, int32_t port) {
     if (!host) return -1;
+#if defined(_WIN32)
+    if (myp_net_ws_init() != 0) return -1;
+#endif
     int fd = (int)socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
     struct hostent* he = gethostbyname(host);
@@ -111,7 +138,12 @@ void myp_net_close(int32_t fd) {
 // IO completes without blocking after fd readiness).
 void myp_net_set_nonblock(int32_t fd) {
     if (fd < 0) return;
+#if defined(_WIN32)
+    u_long mode = 1;  /* FIONBIO */
+    ioctlsocket((SOCKET)fd, FIONBIO, &mode);
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags != -1) fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+#endif
 }
 

@@ -13,6 +13,12 @@
 // POSIX Regular Expressions
 // ======================
 
+#if defined(_WIN32)
+/* Windows：POSIX regex 暂不支持（后续换 PCRE 或移植 mini 引擎）。stub 全部失败。 */
+int64_t myp_regex_compile(const char* pattern) { (void)pattern; return 0; }
+int32_t myp_regex_match(int64_t handle, const char* s) { (void)handle; (void)s; return 0; }
+void myp_regex_free(int64_t handle) { (void)handle; }
+#else
 #include <regex.h>
 
 // Compile a regex pattern. Returns handle (>0) or 0 on error.
@@ -39,4 +45,5 @@ void myp_regex_free(int64_t handle) {
     regfree(re);
     free(re);
 }
+#endif /* !defined(_WIN32) */
 

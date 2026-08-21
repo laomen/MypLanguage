@@ -16,6 +16,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <time.h>
+#if defined(_WIN32)
+#include "platform_win.h"   /* Windows 平台适配层（termios/dirent/ioctl 等） */
+#else
 #include <termios.h>
 #include <unistd.h>
 #include <semaphore.h>
@@ -23,6 +26,7 @@
 #include <sys/select.h>
 #include <poll.h>
 #include <fcntl.h>
+#endif
 #include <stdatomic.h>
 #include <limits.h>
 
@@ -731,7 +735,11 @@ int32_t myp_str_hash(const char* s) {
 // File System Utilities
 // ======================
 
+#if defined(_WIN32)
+/* dirent/stat 已由 platform_win.h 提供（stat 宏 S_ISDIR/S_ISREG 亦在） */
+#else
 #include <dirent.h>
+#endif
 #include <sys/stat.h>
 
 int32_t myp_fs_exists(const char* path) {

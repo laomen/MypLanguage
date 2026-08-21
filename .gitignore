@@ -61,3 +61,6 @@ deeplearning/docs/infer_dx.md
 **/deeplearning/docs/infer_dx.md
 deeplearning/infer_tests/seg_liver_main.myp
 **/deeplearning/infer_tests/seg_liver_main.myp
+
+# Windows 交叉编译验证产物
+build-win-runtime/

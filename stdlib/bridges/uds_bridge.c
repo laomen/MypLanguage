@@ -4,13 +4,26 @@
 // 路径寻址 /tmp/xxx.sock）。send/recv/accept 语义与 TCP socket 一致。
 // 链接由 mypc 通用桥接发现自动完成（无需改编译器）：程序引用 myp_uds_* 未定义
 // 符号时自动编译+链接本文件；socket 为 libc，无需侧车 .libs。
+#include <string.h>
+#include <stdlib.h>
+#include "mylang/runtime.h"
+
+#if defined(_WIN32)
+/* Windows：Unix domain socket 暂不支持（后续里程碑用命名管道实现）。stub 返回错误。 */
+int32_t myp_uds_server(const char* path) { (void)path; return -1; }
+int32_t myp_uds_accept(int32_t server_fd) { (void)server_fd; return -1; }
+int32_t myp_uds_connect(const char* path) { (void)path; return -1; }
+int32_t myp_uds_send(int32_t fd, const char* data) { (void)fd; (void)data; return -1; }
+char* myp_uds_recv(int32_t fd, int32_t max_len) { (void)fd; (void)max_len; char* b = (char*)myp_alloc(1); if (b) b[0] = '\0'; return b; }
+char* myp_uds_recv_line(int32_t fd) { (void)fd; char* b = (char*)myp_alloc(1); if (b) b[0] = '\0'; return b; }
+void myp_uds_close(int32_t fd) { (void)fd; }
+int32_t myp_uds_poll(int32_t* fds, int32_t count, int32_t timeout_ms) { (void)fds; (void)count; (void)timeout_ms; return -1; }
+void myp_uds_unlink(const char* path) { (void)path; }
+#else
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <poll.h>
 #include <unistd.h>
-#include <string.h>
-#include <stdlib.h>
-#include "mylang/runtime.h"
 
 // 创建 AF_UNIX 监听 socket（bind+listen）。返回 fd；<0 失败（-2 bind, -3 listen）
 int32_t myp_uds_server(const char* path) {
@@ -113,3 +126,4 @@ int32_t myp_uds_poll(int32_t* fds, int32_t count, int32_t timeout_ms) {
 void myp_uds_unlink(const char* path) {
     if (path) unlink(path);
 }
+#endif /* !defined(_WIN32) */
