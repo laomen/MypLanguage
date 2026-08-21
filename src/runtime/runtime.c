@@ -4149,7 +4149,7 @@ static void __myp_coro_trampoline(void) {
 
 // Set up a fresh coroutine context so the first resume jumps into `entry` with
 // standard x86-64 function-entry stack alignment (rsp%16 == 8).
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(_WIN32)
 static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
                          void (*entry)(void)) {
     // 保存块 = 7 槽 [rsp..rsp+56]（rax=入口, r15..rbp=0）。加载时按序 pop：
@@ -4163,6 +4163,20 @@ static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
     frame[1] = 0; frame[2] = 0; frame[3] = 0;
     frame[4] = 0; frame[5] = 0; frame[6] = 0;  // r15..rbp（入口会立即改写）
     ctx->rsp = (void*)rsp;
+}
+#elif defined(_WIN32)
+static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,
+                         void (*entry)(void)) {
+    // Win64 保存块（布局见 coro_ctx_win.S）：256 字节基址、有效 248。
+    // base = top-256（top 16 对齐 → base%16==0，xmm movaps 对齐；恢复后
+    // rsp = base+248 = top-8，%16==8 满足 Win64 函数入口对齐）。
+    uintptr_t top = (uintptr_t)(stack + stack_size);
+    top &= ~(uintptr_t)15;
+    uintptr_t base = top - 256;
+    memset((void*)base, 0, 248);        // 清零整数区 + xmm 区 + rip 槽
+    void** frame = (void**)base;
+    frame[8] = (void*)entry;            // base+64 = rip（首次 resume 的 jmp 目标）
+    ctx->rsp = (void*)base;
 }
 #else
 static void myp_ctx_init(myp_ctx_t* ctx, char* stack, size_t stack_size,

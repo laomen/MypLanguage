@@ -9,7 +9,7 @@
 #   cmake --build build-win-runtime
 
 cmake_minimum_required(VERSION 3.16)
-project(myp_win_runtime LANGUAGES C)
+project(myp_win_runtime LANGUAGES C ASM)
 
 set(MYP_SRC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 
@@ -17,6 +17,11 @@ set(MYP_SRC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(MYP_RUNTIME_SRCS
     ${MYP_SRC_ROOT}/src/runtime/runtime.c
 )
+
+# ---- Windows 协程切换汇编（Win64 ABI；Linux 用 coro_ctx.S 由主构建提供）----
+if(MINGW OR MSVC)
+    list(APPEND MYP_RUNTIME_SRCS ${MYP_SRC_ROOT}/src/runtime/coro_ctx_win.S)
+endif()
 
 # ---- 无外部依赖的 stdlib bridges（net/uds/process/regex/json/base64/date/hash）
 set(MYP_BRIDGE_SRCS

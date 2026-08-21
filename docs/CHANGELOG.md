@@ -70,8 +70,24 @@ mypview changelog 双向引用。
   runtime.c + net/uds/process/regex/json/base64/date/hash 全部 .obj 产出。
 - Linux 零回归：`mypc` 重建 OK；`hello`、`tests/async_socket`（协程+网络+超时）
   实跑正常；coro_stack/async_socket/regex/process 编译 0 errors。
-- 遗留障碍（后续里程碑）：协程 Win64 汇编（`coro_ctx_win.S`，xmm6-15 保存）、
-  UDS→命名管道、regex→PCRE、`runtime_gpu.c` dlopen→LoadLibrary、`%zu` 格式串。
+
+**协程 Win64 汇编（`src/runtime/coro_ctx_win.S`，新）——里程碑 3**：
+- Win64 ABI 上下文切换：非易失寄存器 rbx/rbp/rsi/rdi/r12-r15 + **xmm6-xmm15**
+  （10 个。SysV 的 xmm 全是 caller-saved 不用存，但 **Win64 的 xmm6-15 是
+  callee-saved**——协程内大量 double，不保存必错乱）。
+- 保存块 256 字节基址/有效 248：`myp_ctx_init` 设 base=top-256（base%16==0 →
+  xmm `movaps` 对齐；恢复后 rsp=base+248，%16==8 满足 Win64 函数入口对齐）。
+- `runtime.c` 的 `myp_ctx_init` 改三态（Linux 7 槽 / Win64 256 块 / ucontext 回退）。
+- 交叉编译 + 链接验证：`coro_ctx_win.S.obj`（pe-x86-64）反汇编确认切换逻辑，
+  `myp_ctx_switch` 符号链接解析；Linux `coro_nest` 测试零回归。
+- 注：MinGW as（PE 目标）不支持 `.type`/`.size` 伪指令（ELF 专属）→ 已移除。
+- **真机验证（协程内 double 跨切换的 xmm 保护）需 Windows 实机**（里程碑 4）。
+
+**遗留障碍（后续里程碑）**：
+- UDS→命名管道、regex→PCRE 或 mini 引擎
+- `runtime_gpu.c`/rocm：dlopen→LoadLibrary
+- `%zu` 格式串（MinGW 报警，非阻断）；SOCKET(64位) vs int fd 截断（需 fd 表）
+- 编译器本体（LLVM）：需 Windows 版 LLVM 库（llvm-mingw 或 Windows 原生）
 
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
