@@ -28,10 +28,24 @@
 #include <vector>
 #include <unordered_set>
 
-#include <dirent.h>
-#include <sys/stat.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#if defined(_WIN32)
+    // Windows 构建：dirent 用模拟头（FindFirstFile）；sys/wait.h 在 MinGW 不存在。
+    // NOMINMAX 防止 MSVC windows.h 的 min/max 宏破坏 std::min/std::max
+    // （MinGW 的 libstdc++ os_defines.h 已自带，用 #ifndef 避免重定义警告）。
+    #ifndef NOMINMAX
+    #define NOMINMAX
+    #endif
+    #include "runtime/platform_win_dirent.h"
+    #include <windows.h>   /* CreateProcess / GetTempPathA / GetModuleFileNameA */
+    #include <process.h>   /* _getpid */
+    #include <direct.h>    /* _mkdir */
+    #include <sys/stat.h>  /* struct stat（fileExists） */
+#else
+    #include <dirent.h>
+    #include <sys/stat.h>
+    #include <sys/wait.h>
+    #include <unistd.h>
+#endif
 
 // Check if a file exists
 static bool fileExists(const std::string& path) {
@@ -39,11 +53,49 @@ static bool fileExists(const std::string& path) {
     return stat(path.c_str(), &st) == 0;
 }
 
+// ---- 跨平台小工具（Windows/MinGW 适配）----
+static bool mkdirPortable(const std::string& p) {
+#if defined(_WIN32)
+    return ::_mkdir(p.c_str()) == 0;
+#else
+    return ::mkdir(p.c_str(), 0755) == 0;
+#endif
+}
+static int pidPortable() {
+#if defined(_WIN32)
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
+// 临时目录：Windows 用系统 Temp（%TEMP%，路径可能带空格），Linux 用 /tmp。
+// 返回不含尾部分隔符。
+static std::string tempDir() {
+#if defined(_WIN32)
+    char buf[1024];
+    DWORD n = GetTempPathA(sizeof(buf), buf);
+    if (n > 0 && n < sizeof(buf)) {
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\\' || s.back() == '/')) s.pop_back();
+        return s;
+    }
+    return ".";
+#else
+    return "/tmp";
+#endif
+}
+
 // 运行 nm 并返回符号名集合（defined=true → --defined-only；false → -u 未定义）。
 // 解析：每行末列即符号名（地址/类型列用空白分隔）。
 [[nodiscard]] static std::set<std::string> nmSymbols(const std::string& files, bool defined) {
     std::set<std::string> out;
+#if defined(_WIN32)
+    // Windows：popen 走 cmd.exe，重定向语法是 2>NUL（非 /dev/null）；
+    // nm 来自 MinGW-w64 binutils（须在 PATH，与 gcc 同装）。
+    std::string cmd = "nm " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>NUL";
+#else
     std::string cmd = "nm " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+#endif
     FILE* fp = popen(cmd.c_str(), "r");
     if (!fp) return out;
     char line[1024];
@@ -108,7 +160,11 @@ static bool fileExists(const std::string& path) {
 // （尤其 strip 过的共享库）。对 .a 无动态表，仍用 nmSymbols。
 [[nodiscard]] static std::set<std::string> nmDynSymbols(const std::string& files, bool defined) {
     std::set<std::string> out;
+#if defined(_WIN32)
+    std::string cmd = "nm -D " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>NUL";
+#else
     std::string cmd = "nm -D " + std::string(defined ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+#endif
     FILE* fp = popen(cmd.c_str(), "r");
     if (!fp) return out;
     char line[1024];
@@ -213,11 +269,20 @@ static std::string dotToSlash(const std::string& name) {
 // Uses /proc/self/exe (Linux); falls back to argv[0] on failure (non-Linux).
 static std::string selfExeDir(const char* argv0) {
     char buf[4096];
+#if defined(_WIN32)
+    // Windows：GetModuleFileNameA 拿 mypc.exe 绝对路径（等价 /proc/self/exe）
+    DWORD n = GetModuleFileNameA(NULL, buf, sizeof(buf) - 1);
+    if (n > 0 && n < sizeof(buf)) {
+        buf[n] = '\0';
+        return getDir(std::string(buf));
+    }
+#else
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {
         buf[n] = '\0';
         return getDir(std::string(buf));
     }
+#endif
     return getDir(argv0);
 }
 
@@ -651,8 +716,8 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         for (char c : san_flags)    { h ^= (unsigned char)c; h *= 1099511628211ULL; }
         char hex[17];
         snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)h);
-        std::string dir = "/tmp/myp_rt_cache";
-        ::mkdir(dir.c_str(), 0755);
+        std::string dir = tempDir() + "/myp_rt_cache";
+        mkdirPortable(dir);
         return dir + "/myp_rt_" + hex + ".o";
     };
 
@@ -662,7 +727,7 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
     // parallel gcc writes clobbered each other. PID + rand + kind is
     // unique across concurrent compilers.
     auto tmpObj = [](const std::string& kind) {
-        return "/tmp/myp_" + kind + "_" + std::to_string(::getpid())
+        return tempDir() + "/myp_" + kind + "_" + std::to_string(pidPortable())
              + "_" + std::to_string(std::rand()) + ".o";
     };
 
@@ -1019,15 +1084,40 @@ static int runFile(int argc, char* argv[], int sub_idx, int opt_level) {
     if (obj.empty()) return 1;
 
     // 链接到临时二进制
-    std::string base = "/tmp/myp_run_" + std::to_string((long)::getpid()) + "_" +
+    std::string base = tempDir() + "/myp_run_" + std::to_string((long)pidPortable()) + "_" +
                        std::to_string(std::rand());
+#if defined(_WIN32)
+    base += ".exe";   // Windows：显式 .exe，CreateProcess 无扩展名歧义
+#endif
     if (!linkObjects({obj}, base, stdlib_path, false)) {
         std::remove(obj.c_str());
         return 1;
     }
     std::remove(obj.c_str());   // 清理 .o
 
-    // 执行
+    // 执行（透传子进程退出码；语义与 POSIX fork/execv/waitpid 一致）
+#if defined(_WIN32)
+    std::string cmdline = "\"" + base + "\"";
+    for (auto& a : prog_args) cmdline += " \"" + a + "\"";
+    STARTUPINFOA si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+    if (!CreateProcessA(NULL, cmdline.data(), NULL, NULL, FALSE, 0,
+                        NULL, NULL, &si, &pi)) {
+        std::cerr << "Error: failed to execute '" << base << "'\n";
+        std::remove(base.c_str());
+        return 1;
+    }
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD ec = 1;
+    GetExitCodeProcess(pi.hProcess, &ec);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    std::remove(base.c_str());  // 清理临时二进制
+    return (int)ec;
+#else
     std::vector<char*> exec_argv;
     exec_argv.push_back(const_cast<char*>(base.c_str()));
     for (auto& a : prog_args) exec_argv.push_back(const_cast<char*>(a.c_str()));
@@ -1048,6 +1138,7 @@ static int runFile(int argc, char* argv[], int sub_idx, int opt_level) {
     int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
     std::remove(base.c_str());  // 清理临时二进制
     return exit_code;
+#endif
 }
 
 // Forward declaration: real work of main() (defined after the wrapper).

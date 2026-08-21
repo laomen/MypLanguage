@@ -85,42 +85,10 @@ static inline int ioctl(int fd, unsigned long request, void* arg) {
     return -1;
 }
 
-/* ================= dirent（目录遍历） ================= */
-struct dirent { char d_name[260]; };
-typedef struct {
-    HANDLE h;
-    WIN32_FIND_DATAA fd;
-    struct dirent ent;
-    int first;
-} DIR;
-static inline DIR* opendir(const char* path) {
-    DIR* d = (DIR*)calloc(1, sizeof(DIR));
-    if (!d) return NULL;
-    char pattern[512];
-    _snprintf(pattern, sizeof(pattern), "%s\\*", (path && path[0]) ? path : ".");
-    d->h = FindFirstFileA(pattern, &d->fd);
-    d->first = 1;
-    if (d->h == INVALID_HANDLE_VALUE) { free(d); return NULL; }
-    return d;
-}
-static inline struct dirent* readdir(DIR* d) {
-    if (!d) return NULL;
-    for (;;) {
-        int ok = d->first ? (d->h != INVALID_HANDLE_VALUE) : FindNextFileA(d->h, &d->fd);
-        d->first = 0;
-        if (!ok) return NULL;
-        if (strcmp(d->fd.cFileName, ".") == 0 || strcmp(d->fd.cFileName, "..") == 0)
-            continue;
-        _snprintf(d->ent.d_name, sizeof(d->ent.d_name), "%s", d->fd.cFileName);
-        return &d->ent;
-    }
-}
-static inline int closedir(DIR* d) {
-    if (!d) return -1;
-    if (d->h != INVALID_HANDLE_VALUE) FindClose(d->h);
-    free(d);
-    return 0;
-}
+/* ================= dirent（目录遍历） =================
+ * 提取至 platform_win_dirent.h：编译器 mypc（src/main.cpp）也用它，
+ * 避免把 termios/ioctl/poll/mkdir 宏等运行时专属模拟拖进编译器 TU。 */
+#include "platform_win_dirent.h"
 
 /* ================= stat 宏（MinGW 缺失 S_ISDIR/S_ISREG） ================= */
 #ifndef S_ISDIR

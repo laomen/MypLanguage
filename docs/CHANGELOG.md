@@ -130,6 +130,22 @@ mypview changelog 双向引用。
 - 前提（Windows 侧）：Git Bash + Windows LLVM 构建 mypc.exe + MinGW gcc 在 PATH；
   mypc 在 Windows 仍按 `-o` 精确命名 `.out`（PE 文件，msys 运行时按魔数可直接执行）。
 
+**`mypc run` 子命令 POSIX 依赖清零（编译器本体可完整编译）**：
+- 头文件分平台：Windows 用 `runtime/platform_win_dirent.h`（新，dirent 模拟头，
+  从 platform_win.h 提取供编译器共用，避免把 termios/poll/mkdir 宏拖进编译器 TU）
+  + `windows.h`/`process.h`/`direct.h`；Linux 保持 `dirent.h`/`sys/wait.h`/`unistd.h`。
+- 新增 `mkdirPortable`/`pidPortable`/`tempDir` 跨平台工具：Windows 用 `_mkdir`/
+  `_getpid`/`GetTempPathA`（%TEMP%，替换硬编码 `/tmp`；runtime 缓存目录同改）。
+- `selfExeDir`：Linux `readlink(/proc/self/exe)` → Windows `GetModuleFileNameA`。
+- `nmSymbols`/`nmDynSymbols`：Windows 下 popen 走 cmd.exe，重定向 `2>/dev/null` →
+  `2>NUL`（nm 来自 MinGW binutils，须在 PATH）。
+- `mypc run` 执行：Windows 用 `CreateProcessA`（同步 + `GetExitCodeProcess` 透传
+  退出码，临时二进制显式 `.exe`）替代 `fork/execv/waitpid`；Linux 分支不变。
+- 验证：Linux 全量 314/314 + `mypc run` 8/8（含 args 透传、无残留）；
+  移植片段用 MinGW 交叉编译链接成 PE（0 error，仅 NOMINMAX 重定义已修）；
+  cross-runtime 交叉编译重构后仍通过。
+- ⚠️ main.cpp 的 `_WIN32` 分支整体编译验证仍需 Windows LLVM（M5 已知限制）。
+
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
 **背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，
