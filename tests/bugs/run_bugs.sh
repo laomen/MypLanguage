@@ -8,6 +8,8 @@
 set -u
 MYPCC="${MYPCC:-./build/mypc}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+# 跨平台移植层：Windows Git Bash 无 GNU timeout
+source "$DIR/../lib/portable.sh"
 GREEN=0
 RED=0
 REDLIST=()
@@ -19,6 +21,7 @@ for src in "$DIR"/*.myp; do
     [ -f "$src" ] || continue
     name=$(basename "$src" .myp)
     bin="${src%.myp}.out"
+    bin=$(myp_resolve_bin "$bin")
     printf "  %-32s " "$name"
 
     # 编译（--test 内建测试框架）
@@ -30,7 +33,7 @@ for src in "$DIR"/*.myp; do
     fi
 
     # 运行（@test 断言失败时进程退出码非 0，故先捕获输出再按内容分类）
-    rout=$(timeout 10 "$bin" 2>&1); rc=$?
+    rout=$(myp_timeout 10 "$bin" 2>&1); rc=$?
 
     # 断言失败判定（含 @test 汇总行 "tests: N, assertions: X passed, Y failed"）
     if echo "$rout" | grep -qE "FAIL:|ASSERTION FAILED|passed, [1-9][0-9]* failed"; then

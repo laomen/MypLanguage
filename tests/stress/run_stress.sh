@@ -14,6 +14,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"   # tests/stress
 cd "$SCRIPT_DIR/../.."                        # 仓库根
 STRESS_DIR="$SCRIPT_DIR"
+# 跨平台移植层：Windows Git Bash 无 GNU timeout
+source "$SCRIPT_DIR/../lib/portable.sh"
 MYPCC="${MYPCC:-./build/mypc}"
 TIMEOUT_COMPILE=120
 TIMEOUT_RUN=240
@@ -42,7 +44,7 @@ for t in $TESTS; do
     if ! env $SAN_ENV "$MYPCC" -O2 "$f" -o "/tmp/stress_$t" >/tmp/stress_${t}.compile 2>&1; then
         echo "COMPILE FAIL"; FAIL=$((FAIL+1)); FAILED="$FAILED $t(compile)"; continue
     fi
-    out=$(timeout $TIMEOUT_RUN env $SAN_ENV "/tmp/stress_$t" 2>&1)
+    out=$(myp_timeout $TIMEOUT_RUN env $SAN_ENV "$(myp_resolve_bin "/tmp/stress_$t")" 2>&1)
     rc=$?
     if [ $rc -ne 0 ]; then
         echo "RUNTIME FAIL (exit=$rc)"

@@ -17,6 +17,8 @@
 # 关联：tools/selfhost/format.md（契约）、roadmap.md F0、docs/self_hosting.md T5
 
 set -u
+# 跨平台移植层：Windows Git Bash 无 ulimit -v，myp_guard_ulimit 自动跳过
+source "$(dirname "$0")/lib/portable.sh"
 MYPCC="${MYPCC:-./build/mypc}"
 MYP_SELF="${MYP_SELF:-./build/myp_self}"
 PASS=0
@@ -30,9 +32,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # 防 OOM：自编译生成的 .ll 很大，llc/gcc 内存占用高（用户环境曾爆内存）。
-if ulimit -v >/dev/null 2>&1; then
-    ulimit -v 8388608 || true   # 8GB
-fi
+# Windows（Git Bash）无 ulimit -v，由 myp_guard_ulimit 静默跳过。
+myp_guard_ulimit 8388608
 
 # ---- 采样语料（F0-6）：覆盖纯函数/类/import/负例 ----
 SAMPLES_OK=(

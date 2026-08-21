@@ -11,6 +11,8 @@
 
 set -u
 cd "$(dirname "$0")/.."
+# 跨平台移植层：Windows Git Bash 无 GNU timeout，用 myp_timeout 等价替代
+source "$(dirname "$0")/lib/portable.sh"
 MYPCC="${MYPCC:-./build/mypc}"
 TIMEOUT_COMPILE=60
 TIMEOUT_RUN=30
@@ -35,7 +37,8 @@ for name in $TESTS; do
     printf "  %-22s " "$name"
 
     bin="/tmp/tsan_${name}.out"
-    compile_out=$(MYP_SANITIZE_TSAN=1 timeout $TIMEOUT_COMPILE "$MYPCC" "$test_file" -o "$bin" 2>&1)
+    bin=$(myp_resolve_bin "$bin")
+    compile_out=$(MYP_SANITIZE_TSAN=1 myp_timeout $TIMEOUT_COMPILE "$MYPCC" "$test_file" -o "$bin" 2>&1)
     if [ $? -ne 0 ]; then
         echo -e "COMPILE FAIL"
         echo "$compile_out" | head -4
@@ -43,7 +46,7 @@ for name in $TESTS; do
         continue
     fi
 
-    run_out=$(timeout $TIMEOUT_RUN "$bin" 2>&1)
+    run_out=$(myp_timeout $TIMEOUT_RUN "$bin" 2>&1)
     code=$?
     rm -f "$bin"
 

@@ -115,6 +115,21 @@ mypview changelog 双向引用。
   成功，仅卡在 `find_package(LLVM)`（装好 Windows LLVM 后 `-DLLVM_DIR` 指向即可）。
 - Windows 分支编译验证需 Windows LLVM（用户侧安装）。
 
+**测试套件 Windows 化（Git Bash 兼容层）**：
+- 新增 `tests/lib/portable.sh`（共享移植层，各测试脚本 source）：平台检测
+  （MINGW/MSYS/CYGWIN）+ `myp_timeout`（Linux 透传 GNU timeout；Windows 纯 bash
+  后台轮询超时强杀，退出码 124 语义一致）+ `myp_resolve_bin`（.exe 前向兼容，
+  仅 Windows 启用）+ `myp_guard_ulimit`（Linux 防 OOM；Windows 静默跳过）。
+- `run_tests.sh`（4 处 timeout → myp_timeout）、`run_tests_tsan.sh`、
+  `bugs/run_bugs.sh`、`stress/run_stress.sh`、`test_myp_self.sh` +
+  `test_myp_bootstrap.sh`（ulimit → myp_guard_ulimit）全部接入。
+- 新增 Windows 启动器 `tests/run_tests_win.bat`：自动定位 Git Bash/MSYS2
+  bash.exe（常见安装路径 + PATH 兜底），切到仓库根调用 run_tests.sh。
+- **Linux 全量回归确认**：run_tests 314/314、self 95/95、bootstrap 16/16、
+  bugs 12/12，行为零变化（Linux 走 GNU timeout/ulimit 原路径）。
+- 前提（Windows 侧）：Git Bash + Windows LLVM 构建 mypc.exe + MinGW gcc 在 PATH；
+  mypc 在 Windows 仍按 `-o` 精确命名 `.out`（PE 文件，msys 运行时按魔数可直接执行）。
+
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
 **背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，

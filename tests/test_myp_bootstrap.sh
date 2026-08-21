@@ -14,6 +14,8 @@
 # 关联：roadmap.md H1、design.md D8、docs/self_hosting.md
 
 set -u
+# 跨平台移植层：Windows Git Bash 无 ulimit -v，myp_guard_ulimit 自动跳过
+source "$(dirname "$0")/lib/portable.sh"
 MYPCC="${MYPCC:-./build/mypc}"
 STDLIB="$(dirname "$MYPCC")/../stdlib"
 PASS=0
@@ -27,9 +29,8 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # 防 OOM：自编译生成的 .ll 很大，llc/gcc 内存占用高（用户环境曾爆内存）。
-if ulimit -v >/dev/null 2>&1; then
-    ulimit -v 8388608 || true   # 8GB
-fi
+# Windows（Git Bash）无 ulimit -v，由 myp_guard_ulimit 静默跳过。
+myp_guard_ulimit 8388608
 
 SRC="tools/selfhost/src/main.myp"
 

@@ -44,6 +44,10 @@ fi
 cd "$(dirname "$0")/.."
 PROJ_ROOT=$(pwd)
 
+# 跨平台移植层（Linux 原样 / Windows Git Bash 提供 timeout、ulimit 等价物）
+# 必须在 PROJ_ROOT 确定后、任何使用 myp_timeout/myp_resolve_bin 之前 source。
+source "$PROJ_ROOT/tests/lib/portable.sh"
+
 echo ""
 echo "=========================================="
 echo "  MYP Language Test Suite"
@@ -67,6 +71,8 @@ for test_dir in tests/*/; do
     expected_file="tests/expected/${name}.expected"
     output_file="${test_dir}test.output"
     binary_file="${test_dir}test.out"
+    # Windows 下若产出 .exe 变体则用后者（mypc 现按 -o 精确命名，仅作前向兼容）
+    binary_file=$(myp_resolve_bin "$binary_file")
 
     [ ! -f "$test_file" ] && continue
 
@@ -84,7 +90,7 @@ for test_dir in tests/*/; do
 
     # 运行 —— 直接重定向到文件（字节级精确捕获）。此前用 $(...) 捕获会剥离
     # 程序输出的尾部换行、echo 再补一个，导致 expected 非字节精确（§二-1）。
-    timeout $TIMEOUT_SEC "$binary_file" > "$output_file" 2>&1
+    myp_timeout $TIMEOUT_SEC "$binary_file" > "$output_file" 2>&1
     if [ $? -ne 0 ]; then
         echo -e "${RED}RUNTIME FAIL${NC}"
         head -5 "$output_file"
@@ -183,10 +189,11 @@ if [ -f "$test_file" ]; then
         FAILED_TESTS="$FAILED_TESTS $name(test-compile)"
     else
         binary_file="${test_file%.myp}.out"
+        binary_file=$(myp_resolve_bin "$binary_file")
         if [ ! -f "$binary_file" ]; then
             binary_file="./a.out"
         fi
-        run_output=$(timeout $TIMEOUT_SEC "$binary_file" 2>&1)
+        run_output=$(myp_timeout $TIMEOUT_SEC "$binary_file" 2>&1)
         if [ $? -ne 0 ]; then
             echo -e "${RED}RUNTIME FAIL${NC}"
             echo "$run_output" | head -5
@@ -224,7 +231,8 @@ if [ -d "$ATEST_DIR" ]; then
             continue
         fi
         tbin="${tf%.myp}.out"
-        run_output=$(timeout $TIMEOUT_SEC "$tbin" 2>&1)
+        tbin=$(myp_resolve_bin "$tbin")
+        run_output=$(myp_timeout $TIMEOUT_SEC "$tbin" 2>&1)
         if [ $? -ne 0 ]; then
             echo -e "${RED}RUNTIME FAIL${NC}"
             echo "$run_output" | head -5
