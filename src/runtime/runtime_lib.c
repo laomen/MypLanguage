@@ -13,7 +13,19 @@
 //   int    myp_cublas_sgemm(long devA, long devB, long devC,
 //                           int m, int n, int k, double alpha, double beta)
 
+#if defined(_WIN32)
+/* dlfcn → LoadLibrary/GetProcAddress（cuBLAS = cublas64_*.dll） */
+#include <windows.h>
+#define RTLD_LAZY 0
+#define RTLD_LOCAL 0
+#define RTLD_NOW 0
+#define RTLD_GLOBAL 0
+#define dlopen(name, flags) ((void*)LoadLibraryA(name))
+#define dlsym(handle, sym) ((void*)GetProcAddress((HMODULE)(handle), (sym)))
+#define dlclose(handle) (FreeLibrary((HMODULE)(handle)) ? 0 : -1)
+#else
 #include <dlfcn.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,7 +54,11 @@ static int cublas_ensure(void) {
     if (g_cublas_avail != -1) return g_cublas_avail;
     g_cublas_avail = 0;
     const char* names[] = {
+#if defined(_WIN32)
+        "cublas64_12.dll", "cublas64_13.dll", "cublas64_11.dll", "cublas64.dll", NULL
+#else
         "libcublas.so.12", "libcublas.so.13", "libcublas.so", NULL
+#endif
     };
     for (int i = 0; names[i]; i++) {
         g_cublas_lib = dlopen(names[i], RTLD_LAZY | RTLD_LOCAL);

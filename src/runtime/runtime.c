@@ -898,6 +898,16 @@ static char** myp_saved_argv = NULL;
 // Reads /proc/self/cmdline (Linux-specific, no external dependencies).
 __attribute__((constructor))
 static void myp_capture_args(void) {
+#if defined(_WIN32)
+    // Windows：CRT 全局 __argc/__argv（MinGW 与 MSVC 均提供，stdlib.h 已声明；
+    // mainCRTStartup 在跑构造器之前已初始化）。等价 /proc/self/cmdline 的 argv
+    // 捕获。不重声明（避免 dllimport 属性被忽略的告警）。
+    myp_saved_argc = __argc;
+    if (myp_saved_argc <= 0) return;
+    myp_saved_argv = (char**)calloc((size_t)myp_saved_argc + 1, sizeof(char*));
+    for (int i = 0; i < myp_saved_argc; i++)
+        myp_saved_argv[i] = strdup(__argv[i]);
+#else
     FILE* fp = fopen("/proc/self/cmdline", "rb");
     if (!fp) return;
     char buf[4096];
@@ -917,6 +927,7 @@ static void myp_capture_args(void) {
             start = i + 1;
         }
     }
+#endif
 }
 
 int32_t myp_args_count(void) {

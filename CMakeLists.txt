@@ -141,8 +141,13 @@ include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
 add_executable(mypc ${SOURCES})
 
 # ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
-add_executable(myp_debug src/dap/dap_server.cpp)
-target_link_libraries(myp_debug PRIVATE ${MYP_THREAD_LIBS})
+# Windows：暂不构建 —— DAP 服务器用 fork/pipe/dup2/execlp/poll/read/write 编排
+# gdb MI 子进程（POSIX 专属）；Windows 移植（CreateProcess + 管道 + 等待）为后续
+# 里程碑。Windows 上调试（vscode-myp DAP）暂不可用，编译/运行不受影响。
+if(NOT WIN32)
+    add_executable(myp_debug src/dap/dap_server.cpp)
+    target_link_libraries(myp_debug PRIVATE ${MYP_THREAD_LIBS})
+endif()
 
 # Mapping visualizer tool (uses same parser)
 add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp

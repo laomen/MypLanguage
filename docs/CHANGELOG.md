@@ -146,6 +146,22 @@ mypview changelog 双向引用。
   cross-runtime 交叉编译重构后仍通过。
 - ⚠️ main.cpp 的 `_WIN32` 分支整体编译验证仍需 Windows LLVM（M5 已知限制）。
 
+**全仓 POSIX 依赖审计（编译器本体之外残留清零）**：
+- `src/runtime/runtime_lib.c`（cuBLAS hook）：补 `_WIN32` dlopen→LoadLibrary shim
+  （同 runtime_gpu/rocm，M3.5 模式）；库名 `libcublas.so.*`→`cublas64_*.dll`。
+  **此文件被 mypc 无条件编译，原裸 `dlfcn.h` 会让 Windows 每个生成程序编译失败**。
+- `src/runtime/runtime.c myp_capture_args`（程序 argv 捕获）：Windows 用 CRT
+  `__argc`/`__argv`（stdlib.h 已声明，构造期可用）替代 `read(/proc/self/cmdline)`，
+  否则 Windows 上 MYP `main(argc, argv)`/`args` 模块的 Argc 恒为 0。
+- `src/dap/dap_server.cpp`（myp_debug，DAP↔gdb MI）：fork/pipe/dup2/execlp/poll/
+  read/write/usleep 全套 POSIX 编排 → **Windows 暂不构建**（CMake `if(NOT WIN32)`，
+  Linux 保留）。Windows 版 DAP 调试（CreateProcess+管道+等待）为后续里程碑。
+- `cmake/cross-runtime/`：纳入 runtime_lib.c + runtime_rocm.c（与 gpu 同享 shim
+  cross 验证）。cross-runtime 构建 0 warning。
+- 审计结论：编译器本体可执行文件（mypc/myp_lsp/myp_fmt/myp_viz）POSIX 依赖已全
+  清零；tools/、mypview/ 全为 MYP 源码无原生代码。
+- 回归：Linux 314/314 + cross-runtime 交叉编译 0 warning（含新 args/runtime_lib）。
+
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
 **背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，
