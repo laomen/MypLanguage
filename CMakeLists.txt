@@ -8,6 +8,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# 平台线程库：Linux 用 pthread；Windows/MinGW 用 winpthreads（FindThreads 解析）。
+if(MINGW OR MSVC)
+    find_package(Threads REQUIRED)
+    set(MYP_THREAD_LIBS Threads::Threads)
+else()
+    set(MYP_THREAD_LIBS pthread)
+endif()
+
 # ---- Sanitizers (for compiler/runtime stability testing) ----
 # Usage: cmake -B build-asan -DMYP_SANITIZE=ON
 # Instruments mypc/lsp/fmt/viz/runtime with AddressSanitizer + UBSan.
@@ -134,7 +142,7 @@ add_executable(mypc ${SOURCES})
 
 # ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
 add_executable(myp_debug src/dap/dap_server.cpp)
-target_link_libraries(myp_debug PRIVATE pthread)
+target_link_libraries(myp_debug PRIVATE ${MYP_THREAD_LIBS})
 
 # Mapping visualizer tool (uses same parser)
 add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
@@ -165,12 +173,12 @@ target_include_directories(myp_lsp
     ${LLVM_INCLUDE_DIRS}
 )
 
-target_link_libraries(myp_lsp PRIVATE pthread)
+target_link_libraries(myp_lsp PRIVATE ${MYP_THREAD_LIBS})
 
 target_link_libraries(mypc
     PRIVATE
     ${myp_llvm_libs}
-    pthread
+    ${MYP_THREAD_LIBS}
 )
 
 target_include_directories(mypc
@@ -307,11 +315,16 @@ if(PkgConfig_FOUND)
 endif()
 set(MYP_RUNTIME_SRCS
     src/runtime/runtime.c
-    src/runtime/coro_ctx.S
     src/runtime/myp_stdlib.c
     src/runtime/runtime_gpu.c
     src/runtime/runtime_lib.c
 )
+# 协程切换汇编按平台：Linux coro_ctx.S（SysV）/ Windows coro_ctx_win.S（Win64）
+if(MINGW OR MSVC)
+    list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx_win.S)
+else()
+    list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx.S)
+endif()
 if(SDL2_FOUND)
     list(APPEND MYP_RUNTIME_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/bridges/sdl_bridge.c)
 endif()
