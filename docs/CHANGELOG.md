@@ -35,6 +35,35 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
+
+**背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，
+未实现 `semanticTokensProvider` —— MYP 文件在 VS Code 中只有 TextMate 基础
+高亮（关键字/类型/注释），函数名、方法、变量、属性等大量标识符是默认色，
+用户反馈「LSP 这块语法没有颜色和高亮」。
+
+**实现**（`src/lsp/lsp_server.cpp`）：
+- capabilities 声明 `semanticTokensProvider`（legend 19 类型：comment/keyword/
+  string/number/type/class/struct/interface/enum/function/method/property/
+  variable/parameter/operator/namespace/annotation/boolean/macro，`full:true`）。
+- 新增 `textDocument/semanticTokens/full` handler：注释扫描（正确跳过字符串/
+  字符字面量内的 `//` 与 `/* */`）+ lexer tokenize + 标识符语义分类：
+  - 关键字/类型/数字/字符串/操作符/注解 → 按 TokenKind 直接映射；
+  - 标识符：`.xxx(` → method、`.xxx` → property、`@xxx` → annotation、
+    大写开头 → type（类/struct/enum/interface 名）、`xxx(` → function、
+    `int x`/`Foo bar`（前一个是类型）→ variable。
+- UTF-16 偏移 delta 编码（`utf16CodeUnits` 处理多字节源文件）。
+- **lexer 坑**：单字符 operator 的 range 是 `[offset,offset)`（`currentRange()`
+  在 `advance()` 之后返回，len=0 且位置指向下一字符）→ 语义编码跳过空 token，
+  操作符颜色交给 TextMate（tmLanguage 已有 operators 规则）。
+- 扩展端无需改动（vscode-languageclient 自动请求 semantic tokens）。
+
+**验证**：`textDocument/semanticTokens/full` 对 `demo_model.myp` 返回 296 个
+语义 token（comment 10 / keyword 8 / string 4 / number 92 / type 23 /
+function 3 / method 46 / variable 110）；`tests/test_lsp.js` **14/14 PASS**。
+使用：VS Code 里 `MYP: Restart Language Server`（或重载窗口）让扩展加载新
+`myp_lsp`。
+
 ### v3.13.0 — 自举编译器 GPU 真机加速：resident 直传 + Device./Atomic 映射（BUG-045）
 
 > 编译器版本序列自本条目起与 mypview 分离：**编译器/自举/运行时版本独立计数**

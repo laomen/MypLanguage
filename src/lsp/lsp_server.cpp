@@ -291,7 +291,16 @@ void handleInitialize(const std::string& id, const std::string& /*params*/) {
     result += "\"hoverProvider\":true,";
     result += "\"definitionProvider\":true,";
     result += "\"documentSymbolProvider\":true,";
-    result += "\"referencesProvider\":true";
+    result += "\"referencesProvider\":true,";
+    // 语义高亮：类型索引与 semanticTypeIndex 一致
+    result += "\"semanticTokensProvider\":{\"legend\":{";
+    result += "\"tokenTypes\":[\"comment\",\"keyword\",\"string\",\"number\","
+              "\"type\",\"class\",\"struct\",\"interface\",\"enum\",\"function\","
+              "\"method\",\"property\",\"variable\",\"parameter\",\"operator\","
+              "\"namespace\",\"annotation\",\"boolean\",\"macro\"],";
+    result += "\"tokenModifiers\":[\"declaration\",\"static\",\"readonly\","
+              "\"defaultLibrary\"]";
+    result += "},\"full\":true}";
     result += "}";
     result += "}";
     sendResponse(id, result);
@@ -597,6 +606,276 @@ void handleReferences(const std::string& id, const std::string& /*params*/) {
     sendResponse(id, "[]");
 }
 
+// ---- Semantic tokens (syntax highlighting via LSP) ----
+// 类型索引与 handleInitialize 的 legend 顺序一致：
+//   0 comment 1 keyword 2 string 3 number 4 type 5 class 6 struct 7 interface
+//   8 enum 9 function 10 method 11 property 12 variable 13 parameter
+//   14 operator 15 namespace 16 annotation 17 boolean 18 macro
+static bool isUpperAscii(char c) { return c >= 'A' && c <= 'Z'; }
+
+// UTF-16 code units in s[begin,end)（LSP semantic tokens 用 utf-16 长度/偏移）
+static int utf16CodeUnits(const std::string& s, size_t begin, size_t end) {
+    int n = 0;
+    size_t i = begin;
+    while (i < end) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80) { n++; i++; }
+        else if ((c & 0xE0) == 0xC0) { n++; i += 2; }
+        else if ((c & 0xF0) == 0xE0) { n++; i += 3; }
+        else if ((c & 0xF8) == 0xF0) { n += 2; i += 4; } // surrogate pair
+        else { n++; i++; }
+    }
+    return n;
+}
+
+// 简单注释区间
+struct CommentRange { size_t begin = 0, end = 0; };
+
+// 扫描行注释 // 与块注释 /* */（正确跳过字符串/字符字面量内的 //）
+static std::vector<CommentRange> scanCommentRanges(const std::string& s) {
+    std::vector<CommentRange> out;
+    size_t i = 0, n = s.size();
+    bool in_str = false, in_char = false;
+    while (i < n) {
+        char c = s[i];
+        if (in_str) {
+            if (c == '\\') { i += 2; continue; }
+            if (c == '"') in_str = false;
+            i++; continue;
+        }
+        if (in_char) {
+            if (c == '\\') { i += 2; continue; }
+            if (c == '\'') in_char = false;
+            i++; continue;
+        }
+        if (c == '"') { in_str = true; i++; continue; }
+        if (c == '\'') { in_char = true; i++; continue; }
+        if (c == '/' && i + 1 < n && s[i + 1] == '/') {
+            size_t start = i;
+            while (i < n && s[i] != '\n') i++;
+            out.push_back({start, i});
+            continue;
+        }
+        if (c == '/' && i + 1 < n && s[i + 1] == '*') {
+            size_t start = i;
+            i += 2;
+            while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) i++;
+            if (i + 1 < n) i += 2; else i = n;
+            out.push_back({start, i});
+            continue;
+        }
+        i++;
+    }
+    return out;
+}
+
+// Token 是否为「类型」（内置类型或大写开头的类/struct/enum/interface 名）
+static bool isTypeLikeToken(const Token& t) {
+    if (t.kind >= TokenKind::Type_byte && t.kind <= TokenKind::Type_bitvector)
+        return true;
+    return t.kind == TokenKind::Identifier && !t.value.empty() &&
+           isUpperAscii(t.value[0]);
+}
+
+// 语义 token 类型索引；返回 -1 表示跳过（分隔符等）
+static int semanticTypeIndex(const Token& cur, const Token* prev, const Token* next) {
+    switch (cur.kind) {
+        case TokenKind::Keyword_class:
+        case TokenKind::Keyword_action:
+        case TokenKind::Keyword_event:
+        case TokenKind::Keyword_property:
+        case TokenKind::Keyword_interface:
+        case TokenKind::Keyword_import:
+        case TokenKind::Keyword_struct:
+        case TokenKind::Keyword_function:
+        case TokenKind::Keyword_static:
+        case TokenKind::Keyword_mapping:
+        case TokenKind::Keyword_if:
+        case TokenKind::Keyword_else:
+        case TokenKind::Keyword_while:
+        case TokenKind::Keyword_for:
+        case TokenKind::Keyword_return:
+        case TokenKind::Keyword_break:
+        case TokenKind::Keyword_continue:
+        case TokenKind::Keyword_true:
+        case TokenKind::Keyword_false:
+        case TokenKind::Keyword_null:
+        case TokenKind::Keyword_this:
+        case TokenKind::Keyword_new:
+        case TokenKind::Keyword_void:
+        case TokenKind::Keyword_var:
+        case TokenKind::Keyword_enum:
+        case TokenKind::Keyword_match:
+        case TokenKind::Keyword_ffi:
+        case TokenKind::Keyword_try:
+        case TokenKind::Keyword_catch:
+        case TokenKind::Keyword_finally:
+        case TokenKind::Keyword_throw:
+        case TokenKind::Keyword_where:
+        case TokenKind::Keyword_await:
+        case TokenKind::Keyword_const:
+        case TokenKind::Keyword_ref:
+        case TokenKind::Keyword_operator:
+        case TokenKind::Keyword_macro:
+        case TokenKind::Keyword_nonlocal:
+        case TokenKind::Keyword_bitfield:
+            return 1; // keyword
+        case TokenKind::Type_byte:
+        case TokenKind::Type_short:
+        case TokenKind::Type_int:
+        case TokenKind::Type_long:
+        case TokenKind::Type_ubyte:
+        case TokenKind::Type_ushort:
+        case TokenKind::Type_uint:
+        case TokenKind::Type_ulong:
+        case TokenKind::Type_uint8:
+        case TokenKind::Type_uint16:
+        case TokenKind::Type_uint32:
+        case TokenKind::Type_uint64:
+        case TokenKind::Type_int8:
+        case TokenKind::Type_int16:
+        case TokenKind::Type_int32:
+        case TokenKind::Type_int64:
+        case TokenKind::Type_char:
+        case TokenKind::Type_float:
+        case TokenKind::Type_double:
+        case TokenKind::Type_bool:
+        case TokenKind::Type_string:
+        case TokenKind::Type_bit:
+        case TokenKind::Type_float4:
+        case TokenKind::Type_double2:
+        case TokenKind::Type_int4:
+        case TokenKind::Type_bitvector:
+            return 4; // type
+        case TokenKind::IntegerLiteral:
+        case TokenKind::LongLiteral:
+        case TokenKind::UIntLiteral:
+        case TokenKind::FloatLiteral:
+        case TokenKind::FloatLiteral32:
+            return 3; // number
+        case TokenKind::StringLiteral:
+        case TokenKind::CharLiteral:
+            return 2; // string
+        case TokenKind::BoolLiteral:
+            return 17; // boolean
+        case TokenKind::NullLiteral:
+            return 1; // keyword
+        case TokenKind::Identifier: {
+            if (prev && prev->kind == TokenKind::Dot)
+                return (next && next->kind == TokenKind::LeftParen) ? 10 : 11; // method/property
+            if (prev && prev->kind == TokenKind::At)
+                return 16; // annotation
+            if (!cur.value.empty() && isUpperAscii(cur.value[0]))
+                return 4; // 类/struct/enum/interface 名 → type
+            if (next && next->kind == TokenKind::LeftParen)
+                return 9; // function（调用或定义）
+            if (prev && isTypeLikeToken(*prev))
+                return 12; // 变量声明（int x / Foo bar）
+            return 12; // variable
+        }
+        case TokenKind::Plus: case TokenKind::Minus:
+        case TokenKind::Star: case TokenKind::Slash:
+        case TokenKind::Percent: case TokenKind::PlusPlus:
+        case TokenKind::MinusMinus: case TokenKind::EqualEqual:
+        case TokenKind::NotEqual: case TokenKind::Less:
+        case TokenKind::Greater: case TokenKind::LessEqual:
+        case TokenKind::GreaterEqual: case TokenKind::LessLess:
+        case TokenKind::GreaterGreater: case TokenKind::Amp:
+        case TokenKind::Caret: case TokenKind::Pipe:
+        case TokenKind::Tilde: case TokenKind::AndAnd:
+        case TokenKind::OrOr: case TokenKind::Bang:
+        case TokenKind::Equal: case TokenKind::PlusEqual:
+        case TokenKind::MinusEqual: case TokenKind::StarEqual:
+        case TokenKind::SlashEqual: case TokenKind::PercentEqual:
+        case TokenKind::Arrow: case TokenKind::FatArrow:
+        case TokenKind::PipeForward: case TokenKind::DoubleColon:
+            return 14; // operator
+        case TokenKind::At:
+            return 16; // annotation 前缀 @
+        default:
+            return -1; // 分隔符等 → 跳过（交给 TextMate）
+    }
+}
+
+void handleSemanticTokensFull(const std::string& id, const std::string& params) {
+    try {
+        auto uri_start = params.find("\"uri\":\"");
+        std::string uri;
+        if (uri_start != std::string::npos) {
+            uri_start += 7;
+            auto uri_end = params.find("\"", uri_start);
+            if (uri_end != std::string::npos)
+                uri = params.substr(uri_start, uri_end - uri_start);
+        }
+        auto it = documents_.find(uri);
+        if (it == documents_.end()) { sendResponse(id, "{\"resultId\":\"1\",\"data\":[]}"); return; }
+        const std::string& text = it->second.text;
+
+        // 每行起始字节偏移（semantic token 需按行 delta 编码）
+        std::vector<size_t> line_offsets;
+        line_offsets.push_back(0);
+        for (size_t i = 0; i < text.size(); i++)
+            if (text[i] == '\n') line_offsets.push_back(i + 1);
+        auto lineOf = [&](size_t off) -> size_t {
+            size_t lo = 0, hi = line_offsets.size();
+            while (lo + 1 < hi) { size_t mid = (lo + hi) / 2; if (line_offsets[mid] <= off) lo = mid; else hi = mid; }
+            return lo;
+        };
+
+        // 收集语义 token：[begin, end, typeIndex]，按偏移排序
+        struct ST { size_t begin, end; int type; };
+        std::vector<ST> sts;
+
+        // 1) 注释
+        for (auto& c : scanCommentRanges(text))
+            sts.push_back({c.begin, c.end, 0});
+
+        // 2) lexer tokens
+        std::string filepath = uri;
+        if (filepath.find("file://") == 0) filepath = filepath.substr(7);
+        SourceManager src_mgr;
+        if (src_mgr.loadString(text, filepath)) {
+            DiagnosticEngine diag(src_mgr);
+            Lexer lex(src_mgr, diag);
+            auto toks = lex.tokenize();
+            for (size_t i = 0; i < toks.size(); i++) {
+                int type = semanticTypeIndex(toks[i],
+                    i > 0 ? &toks[i - 1] : nullptr,
+                    i + 1 < toks.size() ? &toks[i + 1] : nullptr);
+                if (type < 0) continue;
+                sts.push_back({toks[i].range.begin_offset, toks[i].range.end_offset, type});
+            }
+        }
+
+        std::sort(sts.begin(), sts.end(), [](const ST& a, const ST& b) {
+            return a.begin < b.begin;
+        });
+
+        // delta 编码（[deltaLine, deltaStartChar, length, tokenType, tokenModifiers]）
+        std::string data;
+        int prev_line = 0, prev_char = 0;
+        bool first = true;
+        for (auto& st : sts) {
+            // lexer 单字符 operator 的 range 是 [offset, offset)（currentRange），
+            // len=0 且位置指向 advance 之后——跳过，交给 TextMate 上色。
+            if (st.end <= st.begin) continue;
+            size_t line = lineOf(st.begin);
+            int start_char = utf16CodeUnits(text, line_offsets[line], st.begin);
+            int len = utf16CodeUnits(text, st.begin, st.end);
+            int dLine = (int)line - prev_line;
+            int dChar = (dLine == 0) ? (start_char - prev_char) : start_char;
+            if (!first) data += ",";
+            data += std::to_string(dLine) + "," + std::to_string(dChar) + "," +
+                    std::to_string(len) + "," + std::to_string(st.type) + ",0";
+            first = false;
+            prev_line = (int)line;
+            prev_char = start_char;
+        }
+
+        sendResponse(id, "{\"resultId\":\"1\",\"data\":[" + data + "]}");
+    } catch (...) { sendResponse(id, "{\"resultId\":\"1\",\"data\":[]}"); }
+}
+
 // ---- Type info helper (defined inside anonymous namespace) ----
 std::string typeToBasicTypeName(BuiltinType bt) {
     switch (bt) {
@@ -803,6 +1082,8 @@ int runLSPServer(int argc, char** argv) {
             handleDefinition(id, params);
         } else if (method == "textDocument/documentSymbol") {
             handleDocumentSymbol(id, params);
+        } else if (method == "textDocument/semanticTokens/full") {
+            handleSemanticTokensFull(id, params);
         } else if (method == "textDocument/references") {
             handleReferences(id, params);
         } else if (method == "textDocument/didClose") {
