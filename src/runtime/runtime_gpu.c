@@ -6,8 +6,22 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
+#if defined(_WIN32)
+/* dlfcn → LoadLibrary/GetProcAddress（CUDA driver = nvcuda.dll） */
+#include <windows.h>
+#include <malloc.h>   /* _alloca */
+#define RTLD_LAZY 0
+#define RTLD_LOCAL 0
+#define RTLD_NOW 0
+#define RTLD_GLOBAL 0
+#define dlopen(name, flags) ((void*)LoadLibraryA(name))
+#define dlsym(handle, sym) ((void*)GetProcAddress((HMODULE)(handle), (sym)))
+#define dlclose(handle) (FreeLibrary((HMODULE)(handle)) ? 0 : -1)
+#define dlerror() "LoadLibrary failed"
+#else
 #include <dlfcn.h>
 #include <alloca.h>
+#endif
 
 typedef int CUresult;
 typedef struct CUctx_st* CUcontext;
@@ -153,10 +167,17 @@ int myp_gpu_init(void) {
     }
     if (!check_env) return 0;
     // MYP_GPU=1 显式要求 GPU 但初始化失败 → 明确诊断（不再静默回退）。
-    lib = dlopen("libcuda.so.1", RTLD_LAZY|RTLD_LOCAL);
+#if defined(_WIN32)
+    const char* cuda_lib = "nvcuda.dll";
+    int dlflags = 0;
+#else
+    const char* cuda_lib = "libcuda.so.1";
+    int dlflags = RTLD_LAZY | RTLD_LOCAL;
+#endif
+    lib = dlopen(cuda_lib, dlflags);
     if (!lib) {
-        fprintf(stderr, "[myp GPU] MYP_GPU=1 but cannot load libcuda.so.1 "
-                        "(CUDA driver missing?) — falling back to CPU\n");
+        fprintf(stderr, "[myp GPU] MYP_GPU=1 but cannot load %s "
+                        "(CUDA driver missing?) — falling back to CPU\n", cuda_lib);
         return 0;
     }
     p_cuInit = (cuInit_t)dlsym(lib,"cuInit");

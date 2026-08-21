@@ -38,7 +38,9 @@
 // size that later writes out of bounds. realloc callers must keep the original
 // pointer until the new allocation succeeds (checked at each call site).
 static void myp_oom(size_t size) {
-    fprintf(stderr, "MYP runtime: out of memory / size overflow (%zu bytes)\n", size);
+    /* %llu+cast：MSVCRT printf 不支持 %zu（MinGW 报警），Linux 下也等价 */
+    fprintf(stderr, "MYP runtime: out of memory / size overflow (%llu bytes)\n",
+            (unsigned long long)size);
     abort();
 }
 static int myp_mul_overflow(size_t a, size_t b, size_t* out) {

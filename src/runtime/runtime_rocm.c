@@ -27,7 +27,19 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
+#if defined(_WIN32)
+#include <windows.h>
+#define RTLD_LAZY 0
+#define RTLD_LOCAL 0
+#define RTLD_NOW 0
+#define RTLD_GLOBAL 0
+#define dlopen(name, flags) ((void*)LoadLibraryA(name))
+#define dlsym(handle, sym) ((void*)GetProcAddress((HMODULE)(handle), (sym)))
+#define dlclose(handle) (FreeLibrary((HMODULE)(handle)) ? 0 : -1)
+#define dlerror() "LoadLibrary failed"
+#else
 #include <dlfcn.h>
+#endif
 
 // HIP 句柄类型（不依赖 hip_runtime.h，用前向声明 + 不透明指针）
 typedef struct hipCtx_t* hipContext;
@@ -107,7 +119,14 @@ static const char* rocm_err_str(int e) {
 int myp_gpu_init(void) {
     if (avail) return 1;
     if (getenv("MYP_GPU") && getenv("MYP_GPU")[0] != '1') return 0;  // 显式禁用
-    lib = dlopen("libamdhip64.so", RTLD_NOW | RTLD_GLOBAL);
+#if defined(_WIN32)
+    const char* hip_lib = "amdhip64.dll";
+    int dlflags = 0;
+#else
+    const char* hip_lib = "libamdhip64.so";
+    int dlflags = RTLD_NOW | RTLD_GLOBAL;
+#endif
+    lib = dlopen(hip_lib, dlflags);
     if (!lib) {
         fprintf(stderr, "[myp ROCm] MYP_GPU=1 but cannot load libamdhip64.so "
                 "(ROCm not installed) — falling back to CPU\n");

@@ -83,10 +83,17 @@ mypview changelog 双向引用。
 - 注：MinGW as（PE 目标）不支持 `.type`/`.size` 伪指令（ELF 专属）→ 已移除。
 - **真机验证（协程内 double 跨切换的 xmm 保护）需 Windows 实机**（里程碑 4）。
 
+**GPU 运行时交叉编译（`runtime_gpu.c` + `runtime_rocm.c`）**：
+- dlfcn → `LoadLibrary`/`GetProcAddress`（`_WIN32` 宏兼容层：RTLD_* 定 0、
+  dlsym→GetProcAddress、alloca.h→malloc.h）；`libcuda.so.1` → `nvcuda.dll`、
+  `libamdhip64.so` → `amdhip64.dll`。
+- CUDA driver API 类型由 runtime_gpu.c 自 typedef（无需 cuda.h）→ 交叉编译通过。
+- 顺带修：`net_bridge.c` Winsock `setsockopt` optval 是 `const char*`（cast）；
+  `runtime.c` `%zu` → `%llu`+cast（MSVCRT printf 不支持 %zu）。
+
 **遗留障碍（后续里程碑）**：
 - UDS→命名管道、regex→PCRE 或 mini 引擎
-- `runtime_gpu.c`/rocm：dlopen→LoadLibrary
-- `%zu` 格式串（MinGW 报警，非阻断）；SOCKET(64位) vs int fd 截断（需 fd 表）
+- SOCKET(64位) vs int fd 截断（需 fd 表）；剩余 warning 均非阻断
 - 编译器本体（LLVM）：需 Windows 版 LLVM 库（llvm-mingw 或 Windows 原生）
 
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色

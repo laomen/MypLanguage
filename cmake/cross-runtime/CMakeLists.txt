@@ -16,6 +16,7 @@ set(MYP_SRC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 # ---- 核心运行时 ----
 set(MYP_RUNTIME_SRCS
     ${MYP_SRC_ROOT}/src/runtime/runtime.c
+    ${MYP_SRC_ROOT}/src/runtime/runtime_gpu.c   # dlopen → LoadLibrary（_WIN32）
 )
 
 # ---- Windows 协程切换汇编（Win64 ABI；Linux 用 coro_ctx.S 由主构建提供）----
