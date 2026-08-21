@@ -91,10 +91,21 @@ mypview changelog 双向引用。
 - 顺带修：`net_bridge.c` Winsock `setsockopt` optval 是 `const char*`（cast）；
   `runtime.c` `%zu` → `%llu`+cast（MSVCRT printf 不支持 %zu）。
 
-**遗留障碍（后续里程碑）**：
-- UDS→命名管道、regex→PCRE 或 mini 引擎
-- SOCKET(64位) vs int fd 截断（需 fd 表）；剩余 warning 均非阻断
-- 编译器本体（LLVM）：需 Windows 版 LLVM 库（llvm-mingw 或 Windows 原生）
+**后续修复（M4）：SOCKET fd 表 + regex 迷你引擎 + warning 清零**：
+- **SOCKET fd 表**（`net_bridge.c` + `platform_win.h`）：64 位 SOCKET → 小整数
+  int fd（`myp_win_fd_alloc/lookup/free`，跨 TU），消除把 UINT_PTR SOCKET 塞进
+  int 的截断隐患；runtime 协程 `poll` 查表还原 SOCKET 再 `WSAPoll`。
+- **regex 迷你引擎**（`stdlib/bridges/regex_win.c`，新）：AST + 贪婪回溯 ERE 子集
+  （字面量/`.`/`[...]`范围与取反/`*+?`/`^$`/`()`/`|`/`\`转义），30 用例全对；
+  `regex_bridge.c` 的 `_WIN32` 分支改 include 此引擎（替代系统 `<regex.h>`）。
+- 交叉编译 warning 清零：删冗余变量、`(void)dlflags`、修 `json_bridge` `strrchr`
+  未初始化读（潜在 UB，顺带修 json 路径修改 bug）。
+
+**遗留障碍（后续专项，需设计或 Windows 工具链）**：
+- UDS→命名管道：MOS 用**多连接 + 多路复用**（`poll` 监听 fd + 多个客户端 fd），
+  命名管道单实例模型不匹配，需 MYP 侧接口适配设计（涉及 MOS IPC）。
+- 编译器本体（LLVM）：需 Windows 版 LLVM 库（llvm-mingw 或 Windows 原生）。
+- 协程 Win64 汇编真机验证（xmm6-15 保护）需 Windows 实机。
 
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 

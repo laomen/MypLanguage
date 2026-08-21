@@ -403,10 +403,9 @@ int32_t myp_json_set_value(int64_t handle, const char* path, const char* raw) {
     char pbuf[256];
     JsonNode* parent = NULL;
     const char* tok = path;
-    char* lastdot = strrchr(pbuf, '.');
-    // 先拷贝再定位
+    // 先拷贝再定位（注意：strrchr 必须在 strncpy 之后，pbuf 才能用）
     strncpy(pbuf, path, sizeof(pbuf) - 1); pbuf[sizeof(pbuf) - 1] = '\0';
-    lastdot = strrchr(pbuf, '.');
+    char* lastdot = strrchr(pbuf, '.');
     if (lastdot) {
         *lastdot = '\0';
         tok = lastdot + 1;

@@ -191,8 +191,22 @@ typedef unsigned int nfds_t;
 #ifndef POLLNVAL
 #define POLLNVAL 0x0004
 #endif
+/* SOCKET fd 表：64 位 SOCKET → 小整数 int fd（定义在 net_bridge.c，跨 TU 共享）。
+ * runtime 的协程 fd 等待用 int fd，poll 时查表还原 SOCKET，避免截断。 */
+SOCKET myp_win_fd_lookup(int fd);
 static inline int poll(struct pollfd* fds, nfds_t nfds, int timeout) {
-    return WSAPoll((WSAPOLLFD*)fds, (ULONG)nfds, timeout);
+    if (nfds == 0) return 0;
+    WSAPOLLFD* wfds = (WSAPOLLFD*)_alloca((size_t)nfds * sizeof(WSAPOLLFD));
+    for (nfds_t i = 0; i < nfds; i++) {
+        int fd = (int)(intptr_t)fds[i].fd;   /* pollfd.fd 是 SOCKET，存的是 int fd */
+        wfds[i].fd = (fd >= 0) ? myp_win_fd_lookup(fd) : INVALID_SOCKET;
+        wfds[i].events = fds[i].events;
+        wfds[i].revents = 0;
+    }
+    int r = WSAPoll(wfds, (ULONG)nfds, timeout);
+    if (r > 0)
+        for (nfds_t i = 0; i < nfds; i++) fds[i].revents = wfds[i].revents;
+    return r;
 }
 #endif /* _WIN32_POLL_DEFINED */
 

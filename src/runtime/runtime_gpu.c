@@ -170,6 +170,7 @@ int myp_gpu_init(void) {
 #if defined(_WIN32)
     const char* cuda_lib = "nvcuda.dll";
     int dlflags = 0;
+    (void)dlflags;   /* dlopen 宏忽略 flags */
 #else
     const char* cuda_lib = "libcuda.so.1";
     int dlflags = RTLD_LAZY | RTLD_LOCAL;

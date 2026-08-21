@@ -2013,7 +2013,6 @@ char* myp_str_append(char* s, const char* x) {
         myp_release(s);
         return r;
     }
-    char* base = (char*)s - MYP_OBJ_HEADER_SIZE;
     myp_obj_header_t* h = (myp_obj_header_t*)((char*)s - MYP_OBJ_HEADER_SIZE);
     size_t la = strlen(s), lb = strlen(x);
     // M6: atomic relaxed load of rc (unique counted string fast path).

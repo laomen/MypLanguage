@@ -122,6 +122,7 @@ int myp_gpu_init(void) {
 #if defined(_WIN32)
     const char* hip_lib = "amdhip64.dll";
     int dlflags = 0;
+    (void)dlflags;   /* dlopen 宏忽略 flags */
 #else
     const char* hip_lib = "libamdhip64.so";
     int dlflags = RTLD_NOW | RTLD_GLOBAL;
