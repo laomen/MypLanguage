@@ -1,0 +1,151 @@
+// unet_ops.myp — D3：SD1.5 UNet 新增算子（GroupNorm / 通用注意力 / GEGLU / nearest 上采样）
+//
+// 不动 infer/ops.myp（规避 BUG-046 同名方法注册坑），新类 UnetOps 独立提供 UNet 专属算子。
+// 已可复用 infer/ops.myp：conv（NCHW，权重 [out,in,kh,kw] 与 PyTorch 一致）、silu、
+// gelu、dense、layerNorm、add。
+import math;
+import "../infer/ops.myp";   // InferOps.gelu（GEGLU 复用）
+
+class UnetOps {
+    static:
+    // GroupNorm（SD1.5 norm_num_groups=32）：y[c,h,w] = (x[c,h,w]-mean_g)/sqrt(var_g+eps)*gamma[c]+beta[c]
+    // g = c / (C/groups)；mean/var 在该组所有通道×空间上统计（N=1）。gamma/beta:[C]。
+    void groupNorm(float[] arena, int xOff, int gOff, int bOff, int yOff,
+                   int C, int H, int W, int groups, double eps) {
+        int cpg = C / groups;
+        int hw = H * W;
+        int g = 0;
+        while (g < groups) {
+            int nch = cpg * hw;
+            double mean = 0.0;
+            int c = 0;
+            while (c < cpg) {
+                int p = 0;
+                while (p < hw) { mean = mean + double(arena[xOff + (g * cpg + c) * hw + p]); p = p + 1; }
+                c = c + 1;
+            }
+            mean = mean / double(nch);
+            double vsum = 0.0;
+            c = 0;
+            while (c < cpg) {
+                int p = 0;
+                while (p < hw) {
+                    double v = double(arena[xOff + (g * cpg + c) * hw + p]) - mean;
+                    vsum = vsum + v * v;
+                    p = p + 1;
+                }
+                c = c + 1;
+            }
+            double rstd = 1.0 / Math.sqrt(vsum / double(nch) + eps);
+            c = 0;
+            while (c < cpg) {
+                int cc = g * cpg + c;
+                int p = 0;
+                while (p < hw) {
+                    double v = (double(arena[xOff + cc * hw + p]) - mean) * rstd;
+                    arena[yOff + cc * hw + p] = float(v * double(arena[gOff + cc]) + double(arena[bOff + cc]));
+                    p = p + 1;
+                }
+                c = c + 1;
+            }
+            g = g + 1;
+        }
+    }
+
+    // 通用非因果注意力：q:[D,S]（查询 token），k/v:[D,kvS]（上下文 token）。
+    //   cross-attn：S=空间 token 数，kvS=77（CLIP context）；self-attn：kvS=S。
+    // score[b,i,j]=Σ_dh q·k/√dh（i∈S, j∈kvS）；softmax(j)；out[b,dh,i]=Σ_j p·v。
+    // scOff 需 S*kvS 暂存（分数/softmax）。
+    void attention2(float[] arena, int qOff, int kOff, int vOff, int outOff, int scOff,
+                    int D, int S, int kvS, int heads) {
+        int dh = D / heads;
+        double scale = 1.0 / Math.sqrt(double(dh));
+        int b = 0;
+        while (b < heads) {
+            int i = 0;
+            while (i < S) {
+                int j = 0;
+                while (j < kvS) {
+                    double sum = 0.0;
+                    int d = 0;
+                    while (d < dh) {
+                        sum = sum + double(arena[qOff + (b * dh + d) * S + i]) * double(arena[kOff + (b * dh + d) * kvS + j]);
+                        d = d + 1;
+                    }
+                    arena[scOff + i * kvS + j] = float(sum * scale);
+                    j = j + 1;
+                }
+                float maxv = arena[scOff + i * kvS];
+                j = 1;
+                while (j < kvS) {
+                    if (arena[scOff + i * kvS + j] > maxv) maxv = arena[scOff + i * kvS + j];
+                    j = j + 1;
+                }
+                double sumE = 0.0;
+                j = 0;
+                while (j < kvS) {
+                    double e = Math.exp(double(arena[scOff + i * kvS + j]) - double(maxv));
+                    arena[scOff + i * kvS + j] = float(e);
+                    sumE = sumE + e;
+                    j = j + 1;
+                }
+                j = 0;
+                while (j < kvS) {
+                    arena[scOff + i * kvS + j] = float(double(arena[scOff + i * kvS + j]) / sumE);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            int d = 0;
+            while (d < dh) {
+                int i2 = 0;
+                while (i2 < S) {
+                    double sum = 0.0;
+                    int j = 0;
+                    while (j < kvS) {
+                        sum = sum + double(arena[scOff + i2 * kvS + j]) * double(arena[vOff + (b * dh + d) * kvS + j]);
+                        j = j + 1;
+                    }
+                    arena[outOff + (b * dh + d) * S + i2] = float(sum);
+                    i2 = i2 + 1;
+                }
+                d = d + 1;
+            }
+            b = b + 1;
+        }
+    }
+
+    // GEGLU（SD Transformer FFN）：proj(x)[2n] → out[i] = a[i]·gelu(b[i])，a=前 n，b=后 n。
+    // gelu 复用 InferOps（erf 近似，与 torch nn.GELU 差 ~1e-7）。gscrOff 需 n 暂存（b 的 gelu）。
+    void geglu(float[] arena, int inOff, int outOff, int gscrOff, int n) {
+        int i = 0;
+        while (i < n) { arena[gscrOff + i] = arena[inOff + n + i]; i = i + 1; }
+        InferOps.gelu(arena, gscrOff, gscrOff, n);
+        i = 0;
+        while (i < n) {
+            arena[outOff + i] = float(double(arena[inOff + i]) * double(arena[gscrOff + i]));
+            i = i + 1;
+        }
+    }
+
+    // nearest 2x 上采样：y[c,2h+dy,2w+dx] = x[c,h,w]
+    void nearestUpsample2x(float[] arena, int xOff, int yOff, int C, int H, int W) {
+        int c = 0;
+        while (c < C) {
+            int h = 0;
+            while (h < H) {
+                int w = 0;
+                while (w < W) {
+                    float v = arena[xOff + c * H * W + h * W + w];
+                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w)] = v;
+                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w + 1)] = v;
+                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w)] = v;
+                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w + 1)] = v;
+                    w = w + 1;
+                }
+                h = h + 1;
+            }
+            c = c + 1;
+        }
+    }
+}

@@ -1,0 +1,68 @@
+// unet_ops_test.myp — D3a：UnetOps 四算子自测（读合成输入 → 跑算子 → 写输出，verify_unet_ops.py 对拍）
+//
+// 单一 arena 布局（与 verify_unet_ops.py 的 input/output 分区一致；MYP 方法参数上限 10）：
+//   输入区 0..1359（1360）：
+//     x_gn[512](C8 H8 W8) @0, g_gn[8]@512, b_gn[8]@520, q_cr[144](D16 S9)@528,
+//     k_cr[80]@672, v_cr[80]@752, q_sf[112](D16 S7)@832, k_sf[112]@944, v_sf[112]@1056,
+//     gg_in[128]@1168, up_x[64](C4 H4 W4)@1296
+//   输出区 1360..2447（1088）：y_gn@1360, ocr@1872, osf@2016, gg_out@2080, up_y@2144
+//   暂存区 2400..（sc_cross 45 + sc_self 49 + gscr 64）
+import env;
+import fmt;
+import math;
+import "unet_ops.myp";
+import "../infer/pb.myp";
+
+class UnetOpsTest {
+    property:
+        float[] a_;
+
+    action:
+        @constructor UnetOpsTest() {
+            int CAP = 4096;
+            a_ = new float[CAP];
+
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/opstest/input.bin", "rb");
+            if (fd < 0) { Console.writeLine("input.bin missing — 先跑 verify_unet_ops.py"); return; }
+            int i = 0;
+            while (i < 1360) { a_[i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+
+            // ---- groupNorm(C=8,H=8,W=8,groups=4,eps=1e-5)：x@0,g@512,b@520 → y@1360 ----
+            UnetOps.groupNorm(a_, 0, 512, 520, 1360, 8, 8, 8, 4, 1.0e-5);
+            // ---- attention2 cross(D=16,heads=4,S=9,kvS=5)：q@528,k@672,v@752 → out@1872, sc@2448 ----
+            UnetOps.attention2(a_, 528, 672, 752, 1872, 2448, 16, 9, 5, 4);
+            // ---- attention2 self(D=16,heads=4,S=7,kvS=7)：q@832,k@944,v@1056 → out@2016, sc@2493 ----
+            UnetOps.attention2(a_, 832, 944, 1056, 2016, 2493, 16, 7, 7, 4);
+            // ---- geglu(n=64)：in@1168 → out@2128, gscr@2542 ----
+            UnetOps.geglu(a_, 1168, 2128, 2542, 64);
+            // ---- nearestUpsample2x(C=4,H=4,W=4)：x@1296 → y@2192 ----
+            UnetOps.nearestUpsample2x(a_, 1296, 2192, 4, 4, 4);
+
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/opstest/output.bin", "wb");
+            if (fd2 >= 0) {
+                int j = 0;
+                while (j < 1088) {
+                    int bits = F32.toBits(a_[1360 + j]);
+                    __myp_io_write_byte(bits & 255);
+                    __myp_io_write_byte((bits >> 8) & 255);
+                    __myp_io_write_byte((bits >> 16) & 255);
+                    __myp_io_write_byte((bits >> 24) & 255);
+                    j = j + 1;
+                }
+                __myp_io_fclose();
+                Console.writeLine("output.bin written");
+            }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+}
+int main() { UnetOpsTest m = new UnetOpsTest(); return 0; }
