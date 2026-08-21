@@ -1,0 +1,251 @@
+// clip_encoder.myp — D2：CLIP 文本编码器前向 + 对拍 transformers（openai/clip-vit-large-patch14）
+//
+// 结构：wte[49408,768] → +wpe[77,768] → 12 层 → final_layer_norm → last_hidden_state[77,768]
+//   每层：LayerNorm(ln1) → q/k/v 拼接 dense[2304,768]（q/k/v 各 768 行，因果 attention）
+//        → out dense[768,768] → 残差 → LayerNorm(ln2) → fc1[3072,768] → quick_gelu
+//        → fc2[768,3072] → 残差
+//   **激活 = QuickGELU（x·sigmoid(1.702x)，非标准 GELU）**——CLIP 配置 hidden_act=quick_gelu，
+//   transformers 参考同此；因不动 ops.myp（规避 BUG-046），quick_gelu 为类内私有方法。
+// 权重布局 = distilgpt2 同款（D=768/FFN=3072/12 头，qkv 拼接 [2304,768] → per=7087872）。
+//
+// 运行（须在 examples/ 下；权重 492MB 加载 ~5s）：
+//   python deeplearning/diffusion/extract_sd15.py            # 生成权重+参考
+//   ../../build/mypc deeplearning/diffusion/clip_encoder.myp -o /tmp/clip --stdlib ../stdlib
+//   cd examples && /tmp/clip
+import env;
+import fmt;
+import math;
+import "../infer/ops.myp";
+import "../infer/pb.myp";   // F32
+
+class ClipMain {
+    property:
+        float[] arena;
+
+    action:
+        @constructor ClipMain() {
+            int V = 49408; int D = 768; int L = 12; int FFN = 3072; int MAX = 77;
+            int H = 12;
+            int per = 7087872;   // 与 distilgpt2 相同（D=768, FFN=3072, qkv 拼接 [2304,768]）
+
+            int wteOff = 0;
+            int wpeOff = V * D;
+            int base0 = wpeOff + MAX * D;
+            int weightsEnd = base0 + L * per + 2 * D;   // + final_ln(w,b)
+            int lnfw = weightsEnd - 2 * D;
+            int lnfb = lnfw + D;
+            int xOff = weightsEnd;
+            int xnOff = xOff + D * MAX;
+            int qkvOff = xnOff + D * MAX;
+            int attOff = qkvOff + 3 * D * MAX;
+            int hOff = attOff + D * MAX;
+            int h2Off = hOff + FFN * MAX;
+            int scOff = h2Off + D * MAX;
+            int refOff = scOff + MAX * MAX;
+            int idOff = refOff + D * MAX;
+            int maskOff = idOff + MAX;
+            int CAP = maskOff + MAX;
+            arena = new float[CAP];
+
+            // ---- 加载权重（492MB）----
+            long t0 = __myp_now_ms();
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/clip/weights.bin", "rb");
+            if (fd < 0) { Console.writeLine("weights.bin missing — 先跑 extract_sd15.py"); return; }
+            loadBlock(arena, fd, wteOff, weightsEnd);
+            __myp_io_fclose();
+            long t1 = __myp_now_ms();
+            Console.writeString("CLIP weights loaded in "); Console.writeLong(t1 - t0); Console.writeLine(" ms");
+
+            // ---- 参考 embedding（位置主序 [77,768]）+ prompt ids + mask ----
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/clip/ref_emb.bin", "rb");
+            if (fd2 < 0) { Console.writeLine("ref_emb.bin missing"); return; }
+            loadBlock(arena, fd2, refOff, D * MAX);
+            __myp_io_fclose();
+            int fd3 = __myp_io_fopen("./deeplearning/data/diffusion/clip/prompt_ids.bin", "rb");
+            int p = 0;
+            while (p < MAX) { arena[idOff + p] = float(readI32()); p = p + 1; }
+            __myp_io_fclose();
+            int fd4 = __myp_io_fopen("./deeplearning/data/diffusion/clip/prompt_mask.bin", "rb");
+            int nValid = 0;
+            int q = 0;
+            while (q < MAX) { int mv = readI32(); arena[maskOff + q] = float(mv); if (mv > 0) nValid = q + 1; q = q + 1; }
+            __myp_io_fclose();
+            Console.writeString("valid tokens="); Console.write(nValid); Console.writeLine("");
+
+            // ---- 前向：wte → +wpe → 12 层 → final_layer_norm ----
+            InferOps.gatherRows(arena, wteOff, idOff, xOff, V, D, MAX);
+            int pp = 0;
+            while (pp < MAX) {
+                int dd = 0;
+                while (dd < D) { arena[xOff + dd * MAX + pp] = arena[xOff + dd * MAX + pp] + arena[wpeOff + pp * D + dd]; dd = dd + 1; }
+                pp = pp + 1;
+            }
+            int li = 0;
+            while (li < L) {
+                int base = base0 + li * per;
+                layerForward(arena, base, xOff, xnOff, qkvOff, attOff, hOff, h2Off, scOff, D, MAX, H, nValid);
+                li = li + 1;
+            }
+            InferOps.layerNorm(arena, xOff, lnfw, lnfb, xOff, D, MAX, 1.0e-5);
+
+            // ---- 对拍：全部 MAX 位置（MYP 特征主序 [D,S]，参考位置主序 [S,D]）----
+            double maxAbs = 0.0;
+            int i = 0;
+            while (i < MAX) {
+                int d = 0;
+                while (d < D) {
+                    double a = double(arena[xOff + d * MAX + i]);
+                    double r = double(arena[refOff + i * D + d]);
+                    double ad = Math.abs(a - r);
+                    if (ad > maxAbs) maxAbs = ad;
+                    d = d + 1;
+                }
+                i = i + 1;
+            }
+            Console.writeString("CLIP embedding maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            // 冒烟：前 4 位置的前 4 维
+            i = 0;
+            while (i < 4) {
+                int d = 0;
+                while (d < 4) { Console.writeFloat(arena[xOff + d * MAX + i]); Console.writeString(" "); d = d + 1; }
+                Console.writeLine("");
+                i = i + 1;
+            }
+            if (maxAbs < 1.0e-3) Console.writeLine("CLIP ENCODER OK");
+            else Console.writeLine("CLIP ENCODER FAIL");
+        }
+
+        // 一层 CLIP：LayerNorm(ln1) → qkv dense[2304] → 带掩码 attention(12头,因果+padding)
+        // → out dense → 残差 → LayerNorm(ln2) → fc1(quick_gelu) → fc2 → 残差
+        void layerForward(float[] arena, int base, int xOff, int xnOff, int qkvOff, int attOff,
+                          int hOff, int h2Off, int scOff, int D, int S, int H, int nValid) {
+            int ln1w = base;
+            int ln1b = base + 768;
+            int qkv_w = base + 1536;
+            int qkv_b = base + 1771008;
+            int out_w = base + 1773312;
+            int out_b = base + 2363136;
+            int ln2w = base + 2363904;
+            int ln2b = base + 2364672;
+            int fc1_w = base + 2365440;
+            int fc1_b = base + 4724736;
+            int fc2_w = base + 4727808;
+            int fc2_b = base + 7087104;
+
+            InferOps.layerNorm(arena, xOff, ln1w, ln1b, xnOff, D, S, 1.0e-5);
+            InferOps.dense(arena, xnOff, D, S, qkv_w, 3 * D, qkv_b, qkvOff);
+            attentionMasked(arena, qkvOff, qkvOff + D * S, qkvOff + 2 * D * S, attOff, scOff, D, S, H, nValid);
+            InferOps.dense(arena, attOff, D, S, out_w, D, out_b, h2Off);
+            InferOps.add(arena, xOff, h2Off, xOff, D * S, 0);
+            InferOps.layerNorm(arena, xOff, ln2w, ln2b, xnOff, D, S, 1.0e-5);
+            InferOps.dense(arena, xnOff, D, S, fc1_w, 4 * D, fc1_b, hOff);
+            quickGelu(arena, hOff, hOff, 4 * D * S);
+            InferOps.dense(arena, hOff, 4 * D, S, fc2_w, D, fc2_b, h2Off);
+            InferOps.add(arena, xOff, h2Off, xOff, D * S, 0);
+        }
+
+        // 带 padding 掩码的缩放点积注意力（CLIP：因果 AND key 非 padding）。
+        // 不动 ops.myp（规避 BUG-046），类内私有实现（标准 MHA，groups=1）。
+        // nValid 个有效 token；key j>=nValid 视为 padding → -inf。
+        void attentionMasked(float[] arena, int qOff, int kOff, int vOff, int outOff, int scOff,
+                             int D, int S, int heads, int nValid) {
+            int dh = D / heads;
+            double scale = 1.0 / Math.sqrt(double(dh));
+            int b = 0;
+            while (b < heads) {
+                int i = 0;
+                while (i < S) {
+                    int j = 0;
+                    while (j < S) {
+                        double sum = 0.0;
+                        int d = 0;
+                        while (d < dh) {
+                            sum = sum + double(arena[qOff + (b * dh + d) * S + i]) * double(arena[kOff + (b * dh + d) * S + j]);
+                            d = d + 1;
+                        }
+                        double sc = sum * scale;
+                        if (j > i || j >= nValid) sc = -1.0e30;
+                        arena[scOff + i * S + j] = float(sc);
+                        j = j + 1;
+                    }
+                    float maxv = arena[scOff + i * S];
+                    j = 1;
+                    while (j < S) {
+                        if (arena[scOff + i * S + j] > maxv) maxv = arena[scOff + i * S + j];
+                        j = j + 1;
+                    }
+                    double sumE = 0.0;
+                    j = 0;
+                    while (j < S) {
+                        double e = Math.exp(double(arena[scOff + i * S + j]) - double(maxv));
+                        arena[scOff + i * S + j] = float(e);
+                        sumE = sumE + e;
+                        j = j + 1;
+                    }
+                    j = 0;
+                    while (j < S) {
+                        arena[scOff + i * S + j] = float(double(arena[scOff + i * S + j]) / sumE);
+                        j = j + 1;
+                    }
+                    i = i + 1;
+                }
+                int d = 0;
+                while (d < dh) {
+                    int i2 = 0;
+                    while (i2 < S) {
+                        double sum = 0.0;
+                        int j = 0;
+                        while (j < S) {
+                            sum = sum + double(arena[scOff + i2 * S + j]) * double(arena[vOff + (b * dh + d) * S + j]);
+                            j = j + 1;
+                        }
+                        arena[outOff + (b * dh + d) * S + i2] = float(sum);
+                        i2 = i2 + 1;
+                    }
+                    d = d + 1;
+                }
+                b = b + 1;
+            }
+        }
+
+        // QuickGELU：x·sigmoid(1.702·x)（CLIP hidden_act，非标准 GELU）
+        void quickGelu(float[] arena, int inOff, int outOff, int n) {
+            int i = 0;
+            while (i < n) {
+                double x = double(arena[inOff + i]);
+                double s = 1.0 / (1.0 + Math.exp(-1.702 * x));
+                arena[outOff + i] = float(x * s);
+                i = i + 1;
+            }
+        }
+
+        void loadBlock(float[] arena, int fd, int off, int n) {
+            int i = 0;
+            while (i < n) { arena[off + i] = float(readF32()); i = i + 1; }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+int main() { ClipMain m = new ClipMain(); return 0; }
