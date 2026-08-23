@@ -17,9 +17,13 @@
 import env;
 import fmt;
 import math;
+import gpu;
+import gpu.stream;
 import "../infer/ops.myp";
+import "../infer/gpu_ops.myp";
 import "../infer/pb.myp";
 import "unet_ops.myp";
+import "gpu_unet_ops.myp";
 
 class DDimSampler {
     property:
@@ -34,6 +38,7 @@ class DDimSampler {
         int rscr_;
         int tscr_;
         int ascr_;
+        int stOff_;
         string mode_;
         int wA0_;
         int wD0P0_;
@@ -107,6 +112,7 @@ class DDimSampler {
             rscr_ = FN_ + 16384;
             tscr_ = rscr_ + 6000000;
             ascr_ = tscr_ + 200000;
+            stOff_ = ascr_ + 55000000;          // GPU layernorm stats（attn 暂存最大 ~48.2M：320×4096 自注意力）
             // 存储工作区（供 unetForward 使用）
             wA0_ = A0; wD0P0_ = D0P0; wD0P1_ = D0P1; wD0DS_ = D0DS;
             wD1P0_ = D1P0; wD1P1_ = D1P1; wD1DS_ = D1DS;
@@ -134,14 +140,24 @@ class DDimSampler {
             __myp_io_fclose();
 
             mode_ = Console.getEnv("MYP_D5_MODE");
-            if (mode_ == "ddim") runDdim();
-            else runSingle();
+            int useGpu = 0;
+            if (Cuda.available() == 1) useGpu = 1;
+            Console.writeString("GPU available="); Console.write(useGpu); Console.writeLine("");
+            if (useGpu == 1) {
+                if (mode_ == "ddim") runDdimGpu();
+                else runSingleGpu();
+            } else {
+                if (mode_ == "ddim") runDdim();
+                else runSingle();
+            }
         }
 
         // ---- 单步 sanity：t=980 前向 vs ref_out.bin（验证重构未破坏 D3b 结果）----
         void runSingle() {
+            long t0 = __myp_now_ms();
             int tOff = teOff_ + 980 * 1280;
             unetForward(xOff_, tOff, FN_);
+            Console.writeString("CPU single forward in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
             double maxAbs = 0.0;
             int i = 0;
             while (i < 16384) {
@@ -220,7 +236,303 @@ class DDimSampler {
             }
         }
 
-        // ---- 可复用 UNet 前向（重构自 unet_forward.myp，无阶段检查）----
+        // ---- 单步 sanity（GPU）：t=980 前向 vs ref_out.bin（验证 GPU unetForward 与 CPU 一致）----
+        void runSingleGpu() {
+            int CAP = stOff_ + 200000;             // 设备驻留区（weights+表+工作区+stats）
+            GpuBufferF buf = new GpuBufferF(a_, CAP);
+            long dev = buf.devicePtr();
+            if (dev == 0L) { Console.writeLine("GPU alloc fail"); return; }
+            GpuStream gs = new GpuStream();
+            long t0 = __myp_now_ms();
+            int tOff = teOff_ + 980 * 1280;
+            unetForwardGpu(xOff_, tOff, FN_, dev);
+            buf.copyToHostAsync(a_, FN_, FN_, 16384, gs);
+            gs.sync();
+            Console.writeString("GPU single forward in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+            double maxAbs = 0.0;
+            int i = 0;
+            while (i < 16384) {
+                double ad = Math.abs(double(a_[FN_ + i]) - double(a_[refOff_ + i]));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            Console.writeString("GPU SINGLE FORWARD maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            if (maxAbs < 2.0e-3) Console.writeLine("GPU SINGLE FORWARD OK");
+            else Console.writeLine("GPU SINGLE FORWARD FAIL");
+            gs.destroy();
+            buf.free();
+        }
+
+        // ---- DDIM 循环（GPU）：H2D 整驻留区一次，每步 GPU unetForward → D2H ε →
+        //      host DDIM 更新 x → H2D x 回设备（ε 落盘对拍 d5_eps_<i>.bin）----
+        void runDdimGpu() {
+            // 读 alphas + 时间步（host）
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/d5/d5_alphas.bin", "rb");
+            if (fd < 0) { Console.writeLine("d5_alphas.bin missing"); return; }
+            int i = 0; while (i < 1000) { a_[alpOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/d5/d5_tsteps.bin", "rb");
+            if (fd2 < 0) { Console.writeLine("d5_tsteps.bin missing"); return; }
+            int n = readI32();
+            int[] ts = new int[200];
+            int k = 0;
+            while (k < n) { ts[k] = readI32(); k = k + 1; }
+            __myp_io_fclose();
+            Console.writeString("DDIM steps="); Console.write(n); Console.writeLine("");
+
+            // H2D 整驻留区（weights+表+初始 latent）
+            long tH = __myp_now_ms();
+            int CAP = stOff_ + 200000;
+            GpuBufferF buf = new GpuBufferF(a_, CAP);
+            long dev = buf.devicePtr();
+            if (dev == 0L) { Console.writeLine("GPU alloc fail"); return; }
+            GpuStream gs = new GpuStream();
+            Console.writeString("H2D arena in "); Console.writeLong(__myp_now_ms() - tH); Console.writeLine(" ms");
+
+            int step = 0;
+            while (step < n) {
+                int t = ts[step];
+                long t0 = __myp_now_ms();
+                unetForwardGpu(xOff_, teOff_ + t * 1280, FN_, dev);   // FN_ = ε_t（device）
+                buf.copyToHostAsync(a_, FN_, FN_, 16384, gs);          // D2H ε
+                gs.sync();
+                // DDIM η=0 更新（host，同 runDdim）
+                int prev_t = (step + 1 < n) ? ts[step + 1] : -1;
+                double at = double(a_[alpOff_ + t]);
+                double aPrev = (prev_t >= 0) ? double(a_[alpOff_ + prev_t]) : double(a_[alpOff_ + 0]);
+                double rAt = Math.sqrt(at);
+                double rBt = Math.sqrt(1.0 - at);
+                double rAp = Math.sqrt(aPrev);
+                double rBp = Math.sqrt(1.0 - aPrev);
+                int q = 0;
+                while (q < 16384) {
+                    double x = double(a_[xOff_ + q]);
+                    double eps = double(a_[FN_ + q]);
+                    double x0 = (x - rBt * eps) / rAt;
+                    a_[xOff_ + q] = float(rAp * x0 + rBp * eps);
+                    q = q + 1;
+                }
+                buf.copyFromHost(a_, xOff_, xOff_, 16384);             // H2D x 回设备
+                // 落盘 ε（逐步对拍 d5_eps_<i>.bin）
+                writeF32Buf(a_, FN_, 16384, "./deeplearning/data/diffusion/d5/myp_d5_eps_" + iStr(step) + ".bin");
+                Console.writeString("step "); Console.write(step); Console.writeString(" t="); Console.write(t);
+                Console.writeString(" in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+                step = step + 1;
+            }
+
+            // 写最终 latent → vae/latent_in.bin（x 已在 host 同步）
+            int fdo = __myp_io_fopen("./deeplearning/data/diffusion/vae/latent_in.bin", "wb");
+            if (fdo >= 0) {
+                int j = 0;
+                while (j < 16384) {
+                    int bits = F32.toBits(a_[xOff_ + j]);
+                    __myp_io_write_byte(bits & 255);
+                    __myp_io_write_byte((bits >> 8) & 255);
+                    __myp_io_write_byte((bits >> 16) & 255);
+                    __myp_io_write_byte((bits >> 24) & 255);
+                    j = j + 1;
+                }
+                __myp_io_fclose();
+                Console.writeLine("final latent -> vae/latent_in.bin");
+            }
+            gs.destroy();
+            buf.free();
+        }
+
+        // ---- 可复用 UNet 前向（GPU 版：GpuInferOps/GpuUnetOps，dev 驻留）----
+        void unetForwardGpu(int xOff, int tOff, int yOff, long dev) {
+            int A0 = wA0_; int D0P0 = wD0P0_; int D0P1 = wD0P1_; int D0DS = wD0DS_;
+            int D1P0 = wD1P0_; int D1P1 = wD1P1_; int D1DS = wD1DS_;
+            int D2P0 = wD2P0_; int D2P1 = wD2P1_; int D2DS = wD2DS_;
+            int D3R0 = wD3R0_; int D3R1 = wD3R1_; int MIDW = wMIDW_;
+            int U0 = wU0_; int U0US = wU0US_; int U1 = wU1_; int U1US = wU1US_;
+            int U2 = wU2_; int U2US = wU2US_; int U3 = wU3_;
+            int rscr = rscr_; int tscr = tscr_; int ascr = ascr_;
+
+            GpuInferOps.conv(a_, 320 * 64 * 64, xOff, 1, 4, 64, 64, 0, 4 * 320 * 9, A0, 320, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // down0
+            resnetOpGpu(a_, base_[1], A0, D0P0, tOff, rscr, 320, 320, 64, 64, dev);
+            attnBlockGpu(a_, base_[2], D0P0, D0P0, txtOff_, ascr, 320, 4096, 77, 8, dev);
+            resnetOpGpu(a_, base_[3], D0P0, D0P1, tOff, rscr, 320, 320, 64, 64, dev);
+            attnBlockGpu(a_, base_[4], D0P1, D0P1, txtOff_, ascr, 320, 4096, 77, 8, dev);
+            GpuInferOps.conv(a_, 320 * 32 * 32, D0P1, 1, 320, 64, 64, base_[5], base_[5] + 320 * 320 * 9, D0DS, 320, 32, 32, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, dev);
+            // down1
+            resnetOpGpu(a_, base_[6], D0DS, D1P0, tOff, rscr, 320, 640, 32, 32, dev);
+            attnBlockGpu(a_, base_[7], D1P0, D1P0, txtOff_, ascr, 640, 1024, 77, 8, dev);
+            resnetOpGpu(a_, base_[8], D1P0, D1P1, tOff, rscr, 640, 640, 32, 32, dev);
+            attnBlockGpu(a_, base_[9], D1P1, D1P1, txtOff_, ascr, 640, 1024, 77, 8, dev);
+            GpuInferOps.conv(a_, 640 * 16 * 16, D1P1, 1, 640, 32, 32, base_[10], base_[10] + 640 * 640 * 9, D1DS, 640, 16, 16, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, dev);
+            // down2
+            resnetOpGpu(a_, base_[11], D1DS, D2P0, tOff, rscr, 640, 1280, 16, 16, dev);
+            attnBlockGpu(a_, base_[12], D2P0, D2P0, txtOff_, ascr, 1280, 256, 77, 8, dev);
+            resnetOpGpu(a_, base_[13], D2P0, D2P1, tOff, rscr, 1280, 1280, 16, 16, dev);
+            attnBlockGpu(a_, base_[14], D2P1, D2P1, txtOff_, ascr, 1280, 256, 77, 8, dev);
+            GpuInferOps.conv(a_, 1280 * 8 * 8, D2P1, 1, 1280, 16, 16, base_[15], base_[15] + 1280 * 1280 * 9, D2DS, 1280, 8, 8, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, dev);
+            // down3
+            resnetOpGpu(a_, base_[16], D2DS, D3R0, tOff, rscr, 1280, 1280, 8, 8, dev);
+            resnetOpGpu(a_, base_[17], D3R0, D3R1, tOff, rscr, 1280, 1280, 8, 8, dev);
+            // mid
+            resnetOpGpu(a_, base_[18], D3R1, MIDW, tOff, rscr, 1280, 1280, 8, 8, dev);
+            attnBlockGpu(a_, base_[19], MIDW, MIDW, txtOff_, ascr, 1280, 64, 77, 8, dev);
+            resnetOpGpu(a_, base_[20], MIDW, MIDW, tOff, rscr, 1280, 1280, 8, 8, dev);
+            // up0
+            GpuUnetOps.concatCC(a_, MIDW, D3R1, tscr, 1280, 1280, 8, 8, dev);
+            resnetOpGpu(a_, base_[21], tscr, U0, tOff, rscr, 2560, 1280, 8, 8, dev);
+            GpuUnetOps.concatCC(a_, U0, D3R0, tscr, 1280, 1280, 8, 8, dev);
+            resnetOpGpu(a_, base_[22], tscr, U0, tOff, rscr, 2560, 1280, 8, 8, dev);
+            GpuUnetOps.concatCC(a_, U0, D2DS, tscr, 1280, 1280, 8, 8, dev);
+            resnetOpGpu(a_, base_[23], tscr, U0, tOff, rscr, 2560, 1280, 8, 8, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U0, tscr, 1280, 8, 8, dev);
+            GpuInferOps.conv(a_, 1280 * 16 * 16, tscr, 1, 1280, 16, 16, base_[24], base_[24] + 1280 * 1280 * 9, U0US, 1280, 16, 16, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up1
+            GpuUnetOps.concatCC(a_, U0US, D2P1, tscr, 1280, 1280, 16, 16, dev);
+            resnetOpGpu(a_, base_[25], tscr, U1, tOff, rscr, 2560, 1280, 16, 16, dev);
+            attnBlockGpu(a_, base_[26], U1, U1, txtOff_, ascr, 1280, 256, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U1, D2P0, tscr, 1280, 1280, 16, 16, dev);
+            resnetOpGpu(a_, base_[27], tscr, U1, tOff, rscr, 2560, 1280, 16, 16, dev);
+            attnBlockGpu(a_, base_[28], U1, U1, txtOff_, ascr, 1280, 256, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U1, D1DS, tscr, 1280, 640, 16, 16, dev);
+            resnetOpGpu(a_, base_[29], tscr, U1, tOff, rscr, 1920, 1280, 16, 16, dev);
+            attnBlockGpu(a_, base_[30], U1, U1, txtOff_, ascr, 1280, 256, 77, 8, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U1, tscr, 1280, 16, 16, dev);
+            GpuInferOps.conv(a_, 1280 * 32 * 32, tscr, 1, 1280, 32, 32, base_[31], base_[31] + 1280 * 1280 * 9, U1US, 1280, 32, 32, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up2
+            GpuUnetOps.concatCC(a_, U1US, D1P1, tscr, 1280, 640, 32, 32, dev);
+            resnetOpGpu(a_, base_[32], tscr, U2, tOff, rscr, 1920, 640, 32, 32, dev);
+            attnBlockGpu(a_, base_[33], U2, U2, txtOff_, ascr, 640, 1024, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U2, D1P0, tscr, 640, 640, 32, 32, dev);
+            resnetOpGpu(a_, base_[34], tscr, U2, tOff, rscr, 1280, 640, 32, 32, dev);
+            attnBlockGpu(a_, base_[35], U2, U2, txtOff_, ascr, 640, 1024, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U2, D0DS, tscr, 640, 320, 32, 32, dev);
+            resnetOpGpu(a_, base_[36], tscr, U2, tOff, rscr, 960, 640, 32, 32, dev);
+            attnBlockGpu(a_, base_[37], U2, U2, txtOff_, ascr, 640, 1024, 77, 8, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U2, tscr, 640, 32, 32, dev);
+            GpuInferOps.conv(a_, 640 * 64 * 64, tscr, 1, 640, 64, 64, base_[38], base_[38] + 640 * 640 * 9, U2US, 640, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up3
+            GpuUnetOps.concatCC(a_, U2US, D0P1, tscr, 640, 320, 64, 64, dev);
+            resnetOpGpu(a_, base_[39], tscr, U3, tOff, rscr, 960, 320, 64, 64, dev);
+            attnBlockGpu(a_, base_[40], U3, U3, txtOff_, ascr, 320, 4096, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U3, D0P0, tscr, 320, 320, 64, 64, dev);
+            resnetOpGpu(a_, base_[41], tscr, U3, tOff, rscr, 640, 320, 64, 64, dev);
+            attnBlockGpu(a_, base_[42], U3, U3, txtOff_, ascr, 320, 4096, 77, 8, dev);
+            GpuUnetOps.concatCC(a_, U3, A0, tscr, 320, 320, 64, 64, dev);
+            resnetOpGpu(a_, base_[43], tscr, U3, tOff, rscr, 640, 320, 64, 64, dev);
+            attnBlockGpu(a_, base_[44], U3, U3, txtOff_, ascr, 320, 4096, 77, 8, dev);
+            // conv_norm_out + silu + conv_out → yOff
+            GpuUnetOps.groupNorm(a_, U3, base_[45], base_[45] + 320, U3, 320, 64, 64, 32, 1.0e-5, dev);
+            GpuInferOps.silu(a_, 320 * 64 * 64, U3, U3, dev);
+            GpuInferOps.conv(a_, 4 * 64 * 64, U3, 1, 320, 64, 64, base_[46], base_[46] + 4 * 320 * 9, yOff, 4, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+        }
+
+        // ---- ResBlock（GPU 版）----
+        void resnetOpGpu(float[] a, int w, int x, int y, int t, int sc, int xC, int outC, int H, int W, long dev) {
+            int c1 = 2 * xC;
+            int c1b = c1 + outC * xC * 9;
+            int tpw = c1b + outC;
+            int tpb = tpw + outC * 1280;
+            int n2 = tpb + outC;
+            int n2b = n2 + outC;
+            int c2 = n2b + outC;
+            int c2b = c2 + outC * outC * 9;
+            int hw = H * W;
+            int n1 = sc;
+            int nm = sc + xC * hw;
+            int ts = sc + (xC + outC) * hw;
+            int tp = ts + 1280;
+            int xc = tp + outC;
+            int xin = x;
+            if (x == y) {
+                GpuUnetOps.copyFlat(a, xc, x, xC * hw, dev);
+                xin = xc;
+            }
+            GpuUnetOps.groupNorm(a, xin, w, w + xC, n1, xC, H, W, 32, 1.0e-5, dev);
+            GpuInferOps.silu(a, xC * hw, n1, n1, dev);
+            GpuInferOps.conv(a, outC * H * W, n1, 1, xC, H, W, w + c1, w + c1b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            GpuInferOps.silu(a, 1280, t, ts, dev);
+            GpuInferOps.dense(a, outC, ts, 1280, w + tpw, outC, 1, w + tpb, tp, dev);
+            GpuUnetOps.addChan(a, y, tp, outC, hw, dev);
+            GpuUnetOps.groupNorm(a, y, w + n2, w + n2b, nm, outC, H, W, 32, 1.0e-5, dev);
+            GpuInferOps.silu(a, outC * hw, nm, nm, dev);
+            GpuInferOps.conv(a, outC * H * W, nm, 1, outC, H, W, w + c2, w + c2b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            if (xC != outC) {
+                GpuInferOps.conv(a, outC * H * W, xin, 1, xC, H, W, w + c2b + outC, w + c2b + outC + outC * xC, nm, outC, H, W, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, dev);
+                GpuUnetOps.addFlat(a, y, nm, outC * hw, dev);
+            } else {
+                GpuUnetOps.addFlat(a, y, xin, outC * hw, dev);
+            }
+        }
+
+        // ---- Transformer2DModel（GPU 版）----
+        void attnBlockGpu(float[] a, int w, int x, int y, int ctx, int sc, int dim, int S, int kvS, int heads, long dev) {
+            int ff = dim * 4;
+            int piw = 2 * dim;
+            int pib = piw + dim * dim;
+            int n1w = pib + dim;
+            int n1b = n1w + dim;
+            int a1q = n1b + dim;
+            int a1k = a1q + dim * dim;
+            int a1v = a1k + dim * dim;
+            int a1o = a1v + dim * dim;
+            int a1ob = a1o + dim * dim;
+            int n2w = a1ob + dim;
+            int n2b = n2w + dim;
+            int a2q = n2b + dim;
+            int a2k = a2q + dim * dim;
+            int a2v = a2k + dim * 768;
+            int a2o = a2v + dim * 768;
+            int a2ob = a2o + dim * dim;
+            int n3w = a2ob + dim;
+            int n3b = n3w + dim;
+            int ffpw = n3b + dim;
+            int ffpb = ffpw + 2 * ff * dim;
+            int fflw = ffpb + 2 * ff;
+            int fflb = fflw + dim * ff;
+            int pow = fflb + dim;
+            int pob = pow + dim * dim;
+            int hw = dim * S;
+            int kvb = dim * kvS;
+            int bv = kvb > hw ? kvb : hw;
+            int g = sc;
+            int y1 = g + hw;
+            int ln = y1 + hw;
+            int q = ln + hw;
+            int k = q + bv;
+            int v = k + bv;
+            int at = v + bv;
+            int o = at + hw;
+            int ffp = o + hw;
+            int ffm = ffp + 2 * ff * S;
+            int ffs = ffm + ff * S;
+            int sco = ffs + ff * S;
+            int stOff = stOff_;
+            GpuUnetOps.groupNorm(a, x, w, w + dim, g, dim, 1, S, 32, 1.0e-5, dev);
+            GpuInferOps.dense(a, dim * S, g, dim, w + piw, dim, S, w + pib, y1, dev);
+            GpuInferOps.layernorm(a, dim * S, y1, w + n1w, w + n1b, ln, dim, S, 1.0e-5, dev, stOff);
+            GpuInferOps.matmul(a, dim * S, ln, dim, w + a1q, dim, S, q, dev);
+            GpuInferOps.matmul(a, dim * S, ln, dim, w + a1k, dim, S, k, dev);
+            GpuInferOps.matmul(a, dim * S, ln, dim, w + a1v, dim, S, v, dev);
+            GpuUnetOps.attention2(a, q, k, v, at, sco, dim, S, S, heads, dev);
+            GpuInferOps.dense(a, dim * S, at, dim, w + a1o, dim, S, w + a1ob, o, dev);
+            GpuUnetOps.addFlat(a, y1, o, hw, dev);
+            GpuInferOps.layernorm(a, dim * S, y1, w + n2w, w + n2b, ln, dim, S, 1.0e-5, dev, stOff);
+            GpuInferOps.matmul(a, dim * S, ln, dim, w + a2q, dim, S, q, dev);
+            GpuInferOps.matmul(a, dim * kvS, ctx, 768, w + a2k, dim, kvS, k, dev);
+            GpuInferOps.matmul(a, dim * kvS, ctx, 768, w + a2v, dim, kvS, v, dev);
+            GpuUnetOps.attention2(a, q, k, v, at, sco, dim, S, kvS, heads, dev);
+            GpuInferOps.dense(a, dim * S, at, dim, w + a2o, dim, S, w + a2ob, o, dev);
+            GpuUnetOps.addFlat(a, y1, o, hw, dev);
+            GpuInferOps.layernorm(a, dim * S, y1, w + n3w, w + n3b, ln, dim, S, 1.0e-5, dev, stOff);
+            GpuInferOps.dense(a, (2 * ff) * S, ln, dim, w + ffpw, 2 * ff, S, w + ffpb, ffp, dev);
+            GpuUnetOps.geglu(a, ffp, ffm, ff * S, dev);
+            GpuInferOps.dense(a, dim * S, ffm, ff, w + fflw, dim, S, w + fflb, o, dev);
+            GpuUnetOps.addFlat(a, y1, o, hw, dev);
+            GpuInferOps.dense(a, dim * S, y1, dim, w + pow, dim, S, w + pob, o, dev);
+            GpuUnetOps.addFlat(a, y, o, hw, dev);
+        }
+
+        // ---- 可复用 UNet 前向（CPU 版，重构自 unet_forward.myp，无阶段检查）----
         void unetForward(int xOff, int tOff, int yOff) {
             int A0 = wA0_; int D0P0 = wD0P0_; int D0P1 = wD0P1_; int D0DS = wD0DS_;
             int D1P0 = wD1P0_; int D1P1 = wD1P1_; int D1DS = wD1DS_;

@@ -14,7 +14,7 @@
 | D3b | UNet 全装配（unet_forward.myp） | ✅ **UNET out maxAbsDiff 1.29e-5（UNET FORWARD OK）** |
 | D4 | VAE 解码 | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
 | D5 | 端到端 DDIM 采样出图 | ✅ N=5 逐步 eps ~1e-4、最终 latent 2.2e-4、**D5 IMAGE OK（0.28%）**；N=50 采样中 |
-| D6 | @gpu for 加速 | 待做 |
+| D6 | @gpu for 加速 | ✅（12x UNet / 14x VAE） |
 
 ## D3b 关键文件
 - `extract_sd15_unet.py`：diffusers UNet 权重 → weights.bin(3.43GB) + bases.bin(47 逻辑块)
@@ -83,7 +83,9 @@ silu；unet_ops.myp 的 attention2（查询 i + 输出 (d,i2)）/groupNorm（组
 
 ## 下一步（D2b 后）
 - D2b：✅ 完成。任意 prompt 文本 → MYP tokenize+encode → text_emb → DDIM → 图像。
-- D6：@gpu for 加速（重点：conv/attention 的 CUDA kernel）。
+- D6：✅ 完成。GPU UNet ops（gpu_unet_ops.myp）7 算子对拍；ddim_sampler/vae_decode GPU 模式
+  （MYP_GPU=1 自动）；UNet 单步 4.65s vs CPU 55.5s（12x）、VAE 13.1s vs 184s（14x）；
+  端到端图像 4.1e-4。attention2 顺序头+3 核分相避免 536MB 自注意力暂存。
 - D2b 演示新 prompt：改 `d2b_prompt.txt` → `make_clip_bpe_tables.py "<prompt>"` 重生成参考
   → clip_tokenize + clip_encoder(MYP_CLIP_OUT=1) → ddim + decode 出图。
 - D4：✅ 完成。VAE 解码全链路数值验证通过（silu+conv_out 一并验证）。

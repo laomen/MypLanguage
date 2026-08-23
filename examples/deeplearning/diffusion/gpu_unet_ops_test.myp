@@ -1,0 +1,140 @@
+// gpu_unet_ops_test.myp — D6：GPU 算子逐个对拍 CPU，每个 op 独立区域，逐个报告。
+// 布局原则：GPU 输入区只放原始数据；CPU 参考输出全部写入 REF 区（100000+）；
+// H2D 快照整 arena（含原始输入+CPU 参考）；GPU 写 RES 区；copyToHost 拷 RES；对比 RES vs REF。
+import env;
+import fmt;
+import math;
+import "../infer/ops.myp";
+import "../infer/gpu_ops.myp";
+import "../infer/pb.myp";
+import "unet_ops.myp";
+import "gpu_unet_ops.myp";
+
+class G {
+    function:
+    // 报告一个区域 GPU vs CPU
+    void report(float[] a, int res, int refOff, int n, string name) {
+        double maxAbs = 0.0;
+        int bad = 0;
+        int i = 0;
+        while (i < n) {
+            double ad = Math.abs(double(a[res + i]) - double(a[refOff + i]));
+            if (ad > maxAbs) maxAbs = ad;
+            if (ad > 1.0e-4) bad = bad + 1;
+            i = i + 1;
+        }
+        Console.writeString(name + ": maxAbsDiff=");
+        Console.writeFloat(maxAbs);
+        Console.writeString(" bad="); Console.write(bad);
+        Console.writeLine("");
+    }
+
+    action:
+        @constructor G() {
+            int CAP = 2000000;
+            float[] a = new float[CAP];
+            int REF = 100000;
+            // GPU 输入区（原始数据）——与 RES 输出区互不重叠（groupNorm 输入 a[0..2047]，输出需 >2048）
+            int gnX = 0; int gnG = 15000; int gnB = 15500;
+            int atX = 20000;
+            int ggIn = 60000;
+            int nuX = 70000;
+            int afY = 80000; int afX = 81000;
+            int acY = 85000; int acTp = 86000;
+            int ccX = 90000; int ccZ = 91000;
+            // GPU 输出区（RES，全部 >2048 避免与 groupNorm 输入 a[0..2047] 重叠）
+            int rGn = 3000; int rAt = 6000; int rGg = 9000; int rNu = 10000;
+            int rAf = 12000; int rAc = 13000; int rCc = 14000;
+            // CPU 参考区（REF+）
+            int cGn = 0; int cAt = 3500; int cGg = 5500; int cNu = 7000;
+            int cAf = 9000; int cAc = 9500; int cCc = 10000;
+
+            int i = 0;
+            while (i < CAP / 2) { a[i] = float((i * 37) % 13 - 6); i = i + 1; }
+            i = 0;
+            while (i < 128) { a[gnG + i] = float(1.0 + (i % 3) * 0.1); a[gnB + i] = float(-0.5 + (i % 5) * 0.1); i = i + 1; }
+            // 原地算子输入：RES 区放原始操作数（H2D 快照），CPU 参考单独算到 REF
+            i = 0; while (i < 128) { a[rAf + i] = a[afY + i]; i = i + 1; }
+            i = 0; while (i < 64) { a[rAc + i] = a[acY + i]; i = i + 1; }
+
+            // ---- CPU 参考（全部写 REF 区，不碰 GPU 输入/输出区）----
+            UnetOps.groupNorm(a, gnX, gnG, gnB, REF + cGn, 128, 4, 4, 32, 1.0e-5);
+            UnetOps.attention2(a, atX, atX + 64 * 8, atX + 2 * 64 * 8, REF + cAt, REF + cAt + 1000, 64, 8, 6, 4);
+            UnetOps.geglu(a, ggIn, REF + cGg, REF + cGg + 500, 64);
+            int c = 0;
+            while (c < 4) {
+                int h = 0;
+                while (h < 4) {
+                    int w = 0;
+                    while (w < 4) {
+                        float v = a[nuX + c * 16 + h * 4 + w];
+                        a[REF + cNu + c * 64 + (2 * h) * 8 + (2 * w)] = v;
+                        a[REF + cNu + c * 64 + (2 * h) * 8 + (2 * w + 1)] = v;
+                        a[REF + cNu + c * 64 + (2 * h + 1) * 8 + (2 * w)] = v;
+                        a[REF + cNu + c * 64 + (2 * h + 1) * 8 + (2 * w + 1)] = v;
+                        w = w + 1;
+                    }
+                    h = h + 1;
+                }
+                c = c + 1;
+            }
+            i = 0; while (i < 128) { a[REF + cAf + i] = a[afY + i]; i = i + 1; }
+            i = 0; while (i < 128) { a[REF + cAf + i] = a[REF + cAf + i] + a[afX + i]; i = i + 1; }
+            i = 0; while (i < 64) { a[REF + cAc + i] = a[acY + i]; i = i + 1; }
+            i = 0; while (i < 64) { a[REF + cAc + i] = a[REF + cAc + i] + a[acTp + i / 16]; i = i + 1; }
+            int q = 0;
+            while (q < 8 * 16) {
+                int cq = q / 16;
+                int pq = q % 16;
+                if (cq < 4) a[REF + cCc + q] = a[ccX + cq * 16 + pq];
+                else a[REF + cCc + q] = a[ccZ + (cq - 4) * 16 + pq];
+                q = q + 1;
+            }
+
+            // ---- GPU ----
+            int gpu = 0;
+            if (Cuda.available() == 1) gpu = 1;
+            Console.writeString("GPU available="); Console.write(gpu); Console.writeLine("");
+            if (gpu == 1) {
+                GpuBufferF buf = new GpuBufferF(a, CAP);
+                long dev = buf.devicePtr();
+                if (dev != 0L) {
+                    GpuStream gs = new GpuStream();
+                    GpuUnetOps.groupNorm(a, gnX, gnG, gnB, rGn, 128, 4, 4, 32, 1.0e-5, dev);
+                    GpuUnetOps.attention2(a, atX, atX + 64 * 8, atX + 2 * 64 * 8, rAt, rAt + 2000, 64, 8, 6, 4, dev);
+                    GpuUnetOps.geglu(a, ggIn, rGg, 64, dev);
+                    GpuUnetOps.nearestUpsample2x(a, nuX, rNu, 4, 4, 4, dev);
+                    GpuUnetOps.addFlat(a, rAf, afX, 128, dev);
+                    GpuUnetOps.addChan(a, rAc, acTp, 4, 16, dev);
+                    GpuUnetOps.concatCC(a, ccX, ccZ, rCc, 4, 4, 4, 4, dev);
+                    buf.copyToHostAsync(a, rGn, rGn, 12000, gs);
+                    gs.sync();
+                }
+            }
+
+            // ---- 逐个报告 ----
+            report(a, rGn, REF, 2048, "groupNorm");
+            report(a, rAt, REF + cAt, 512, "attention2");
+            // geglu 用内联对拍（report() 对该调用误报 bad=15，扫描实测全等 0/0）
+            {
+                double ggMax = 0.0;
+                int ggBad = 0;
+                i = 0;
+                while (i < 64) {
+                    double ad = Math.abs(double(a[rGg + i]) - double(a[REF + cGg + i]));
+                    if (ad > ggMax) ggMax = ad;
+                    if (ad > 1.0e-4) ggBad = ggBad + 1;
+                    i = i + 1;
+                }
+                Console.writeString("geglu: maxAbsDiff=");
+                Console.writeFloat(ggMax);
+                Console.writeString(" bad="); Console.write(ggBad);
+                Console.writeLine("");
+            }
+            report(a, rNu, REF + cNu, 256, "nearestUpsample2x");
+            report(a, rAf, REF + cAf, 128, "addFlat");
+            report(a, rAc, REF + cAc, 64, "addChan");
+            report(a, rCc, REF + cCc, 128, "concatCC");
+        }
+}
+int main() { G g = new G(); return 0; }

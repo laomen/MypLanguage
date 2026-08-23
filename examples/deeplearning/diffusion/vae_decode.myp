@@ -15,13 +15,18 @@
 import env;
 import fmt;
 import math;
+import gpu;
+import gpu.stream;
 import "../infer/ops.myp";
+import "../infer/gpu_ops.myp";
 import "../infer/pb.myp";
 import "unet_ops.myp";
+import "gpu_unet_ops.myp";
 
 class VaeDec {
     property:
         float[] a_;
+        int[] base_;
         string stg_;
 
     action:
@@ -35,6 +40,7 @@ class VaeDec {
             int i = 0;
             while (i < nblk) { base[i] = readI32(); i = i + 1; }
             __myp_io_fclose();
+            base_ = base;
             int wEnd = base[21] + 3 * 128 * 9 + 3;   // conv_out [3,128,3,3]+bias
 
             long t0 = __myp_now_ms();
@@ -75,6 +81,12 @@ class VaeDec {
             int rscr = SCR;                      // resnet scratch（最大 ~100M：up3 r0 256→128@512²）
             int ascr = SCR + 105000000;          // attention scratch（mid attn dim512 S4096 ~34M）
             int tscr = SCR + 105000000 + 40000000;  // 上采样/临时（须在 resnet scratch 与 attn 后）
+
+            // ---- GPU 分支（D6）：整 arena H2D + GPU 前向 + D2H 输出 ----
+            int useGpu = 0;
+            if (Cuda.available() == 1) useGpu = 1;
+            Console.writeString("GPU available="); Console.write(useGpu); Console.writeLine("");
+            if (useGpu == 1) { decodeGpu(); return; }
 
             // ===== post_quant_conv(1×1) + conv_in(3×3 pad1)：latent → A0 =====
             // 先 post_quant_conv 到 A0（复用 A0 作为中转，再 conv_in 到 M0）
@@ -169,6 +181,156 @@ class VaeDec {
             Console.writeLine("");
             if (maxAbs < 5.0e-3) Console.writeLine("VAE DECODE OK");
             else Console.writeLine("VAE DECODE FAIL");
+        }
+
+        // ---- GPU 解码（D6）：H2D 整驻留区 → GPU 前向（GpuInferOps/GpuUnetOps）→ D2H 输出 ----
+        void decodeGpu() {
+            int[] base = base_;
+            int wEnd = base[21] + 3 * 128 * 9 + 3;
+            int latOff = wEnd;
+            int A0 = latOff + 16384;
+            int M0 = A0 + 2097152;
+            int U0 = M0 + 2097152;
+            int U0US = U0 + 2097152;
+            int U1 = U0US + 8388608;
+            int U1US = U1 + 8388608;
+            int U2 = U1US + 33554432;
+            int U2US = U2 + 16777216;
+            int U3 = U2US + 67108864;
+            int FN = U3 + 33554432;
+            int SCR = FN + 786432;
+            int rscr = SCR;
+            int ascr = SCR + 105000000;
+            int tscr = SCR + 105000000 + 40000000;
+            int CAP = tscr + 70000000;          // 覆盖上采样输出（up2 us 256*512*512=67.1M）
+            GpuBufferF buf = new GpuBufferF(a_, CAP);
+            long dev = buf.devicePtr();
+            if (dev == 0L) { Console.writeLine("GPU alloc fail"); return; }
+            GpuStream gs = new GpuStream();
+            long t0 = __myp_now_ms();
+            // post_quant_conv + conv_in
+            GpuInferOps.conv(a_, 4 * 64 * 64, latOff, 1, 4, 64, 64, base[0], base[0] + 4 * 4, A0, 4, 64, 64, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, dev);
+            GpuInferOps.conv(a_, 512 * 64 * 64, A0, 1, 4, 64, 64, base[1], base[1] + 4 * 512 * 9, M0, 512, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // mid
+            resnetVaeGpu(a_, base[2], M0, M0, rscr, 512, 512, 64, 64, dev);
+            attnVaeGpu(a_, base[3], M0, M0, ascr, 512, 4096, 1, dev);
+            resnetVaeGpu(a_, base[4], M0, M0, rscr, 512, 512, 64, 64, dev);
+            // up0
+            resnetVaeGpu(a_, base[5], M0, U0, rscr, 512, 512, 64, 64, dev);
+            resnetVaeGpu(a_, base[6], U0, U0, rscr, 512, 512, 64, 64, dev);
+            resnetVaeGpu(a_, base[7], U0, U0, rscr, 512, 512, 64, 64, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U0, tscr, 512, 64, 64, dev);
+            GpuInferOps.conv(a_, 512 * 128 * 128, tscr, 1, 512, 128, 128, base[8], base[8] + 512 * 512 * 9, U0US, 512, 128, 128, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up1
+            resnetVaeGpu(a_, base[9], U0US, U1, rscr, 512, 512, 128, 128, dev);
+            resnetVaeGpu(a_, base[10], U1, U1, rscr, 512, 512, 128, 128, dev);
+            resnetVaeGpu(a_, base[11], U1, U1, rscr, 512, 512, 128, 128, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U1, tscr, 512, 128, 128, dev);
+            GpuInferOps.conv(a_, 512 * 256 * 256, tscr, 1, 512, 256, 256, base[12], base[12] + 512 * 512 * 9, U1US, 512, 256, 256, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up2
+            resnetVaeGpu(a_, base[13], U1US, U2, rscr, 512, 256, 256, 256, dev);
+            resnetVaeGpu(a_, base[14], U2, U2, rscr, 256, 256, 256, 256, dev);
+            resnetVaeGpu(a_, base[15], U2, U2, rscr, 256, 256, 256, 256, dev);
+            GpuUnetOps.nearestUpsample2x(a_, U2, tscr, 256, 256, 256, dev);
+            GpuInferOps.conv(a_, 256 * 512 * 512, tscr, 1, 256, 512, 512, base[16], base[16] + 256 * 256 * 9, U2US, 256, 512, 512, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            // up3
+            resnetVaeGpu(a_, base[17], U2US, U3, rscr, 256, 128, 512, 512, dev);
+            resnetVaeGpu(a_, base[18], U3, U3, rscr, 128, 128, 512, 512, dev);
+            resnetVaeGpu(a_, base[19], U3, U3, rscr, 128, 128, 512, 512, dev);
+            // conv_norm_out + silu + conv_out
+            GpuUnetOps.groupNorm(a_, U3, base[20], base[20] + 128, U3, 128, 512, 512, 32, 1.0e-6, dev);
+            GpuInferOps.silu(a_, 128 * 512 * 512, U3, U3, dev);
+            GpuInferOps.conv(a_, 3 * 512 * 512, U3, 1, 128, 512, 512, base[21], base[21] + 3 * 128 * 9, FN, 3, 512, 512, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            buf.copyToHostAsync(a_, FN, FN, 3 * 512 * 512, gs);
+            gs.sync();
+            Console.writeString("GPU VAE decode in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+
+            // PPM 图像输出（D5）：MYP_VAE_PPM=1 时落盘 myp_image.f32 + myp_image.ppm
+            if (Console.getEnv("MYP_VAE_PPM") == "1") {
+                dumpAbs(a_, FN, 3 * 512 * 512, "./deeplearning/data/diffusion/d5/myp_image.f32");
+                writePPM(a_, FN, "./deeplearning/data/diffusion/d5/myp_image.ppm");
+                Console.writeLine("myp_image.ppm + myp_image.f32 written (GPU PPM mode)");
+                gs.destroy();
+                buf.free();
+                return;
+            }
+            int refOff = 900 * 1024 * 1024;
+            double maxAbs = 0.0;
+            int i = 0;
+            while (i < 3 * 512 * 512) {
+                double ad = Math.abs(double(a_[FN + i]) - double(a_[refOff + i]));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            Console.writeString("GPU VAE DECODE maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            if (maxAbs < 5.0e-3) Console.writeLine("GPU VAE DECODE OK");
+            else Console.writeLine("GPU VAE DECODE FAIL");
+            gs.destroy();
+            buf.free();
+        }
+
+        // ---- VAE ResnetBlock（GPU 版，无 time_emb）----
+        void resnetVaeGpu(float[] a, int w, int x, int y, int sc, int xC, int outC, int H, int W, long dev) {
+            int hw = H * W;
+            int c1 = 2 * xC;
+            int c1b = c1 + outC * xC * 9;
+            int n2 = c1b + outC;
+            int n2b = n2 + outC;
+            int c2 = n2b + outC;
+            int c2b = c2 + outC * outC * 9;
+            int n1 = sc;
+            int nm = sc + xC * hw;
+            int xc = nm + outC * hw;
+            int xin = x;
+            if (x == y) {
+                GpuUnetOps.copyFlat(a, xc, x, xC * hw, dev);
+                xin = xc;
+            }
+            GpuUnetOps.groupNorm(a, xin, w, w + xC, n1, xC, H, W, 32, 1.0e-6, dev);
+            GpuInferOps.silu(a, xC * hw, n1, n1, dev);
+            GpuInferOps.conv(a, outC * H * W, n1, 1, xC, H, W, w + c1, w + c1b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            GpuUnetOps.groupNorm(a, y, w + n2, w + n2b, nm, outC, H, W, 32, 1.0e-6, dev);
+            GpuInferOps.silu(a, outC * hw, nm, nm, dev);
+            GpuInferOps.conv(a, outC * H * W, nm, 1, outC, H, W, w + c2, w + c2b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, dev);
+            if (xC != outC) {
+                GpuInferOps.conv(a, outC * H * W, xin, 1, xC, H, W, w + c2b + outC, w + c2b + outC + outC * xC, nm, outC, H, W, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, dev);
+                GpuUnetOps.addFlat(a, y, nm, outC * hw, dev);
+            } else {
+                GpuUnetOps.addFlat(a, y, xin, outC * hw, dev);
+            }
+        }
+
+        // ---- VAE 旧式 Attention（GPU 版，heads=1，无 layernorm）----
+        void attnVaeGpu(float[] a, int w, int x, int y, int sc, int dim, int S, int heads, long dev) {
+            int hw = dim * S;
+            int kvS = S;
+            int kvb = dim * kvS;
+            int bv = kvb > hw ? kvb : hw;
+            int gnw = 2 * dim;
+            int qw = gnw;
+            int qb = qw + dim * dim;
+            int kw = qb + dim;
+            int kb = kw + dim * dim;
+            int vw = kb + dim;
+            int vb = vw + dim * dim;
+            int pow_ = vb + dim;
+            int pob = pow_ + dim * dim;
+            int g = sc;
+            int q = g + hw;
+            int k = q + bv;
+            int v = k + bv;
+            int at = v + bv;
+            int o = at + hw;
+            int sco = o + hw;
+            GpuUnetOps.groupNorm(a, x, w, w + dim, g, dim, 1, S, 32, 1.0e-6, dev);
+            GpuInferOps.dense(a, dim * S, g, dim, w + qw, dim, S, w + qb, q, dev);
+            GpuInferOps.dense(a, dim * S, g, dim, w + kw, dim, S, w + kb, k, dev);
+            GpuInferOps.dense(a, dim * S, g, dim, w + vw, dim, S, w + vb, v, dev);
+            GpuUnetOps.attention2(a, q, k, v, at, sco, dim, S, S, heads, dev);
+            GpuInferOps.dense(a, dim * S, at, dim, w + pow_, dim, S, w + pob, o, dev);
+            GpuUnetOps.addFlat(a, y, o, hw, dev);
         }
 
         // ---- VAE ResnetBlock（无 time_emb）：GroupNorm(eps=1e-6)→silu→conv1→GroupNorm→silu→conv2(+shortcut) ----

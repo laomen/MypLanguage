@@ -4,7 +4,7 @@
 Stable Diffusion 1.5 完整文生图管线：CLIP 文本编码 → DDIM 去噪（UNet）→ VAE 解码 → 图像。
 全程**不用 Python 推理**（Python 仅用于权重抽取与数值对拍参考）。
 
-硬件目标：RTX 2070 SUPER 8GB（sm_75）。当前 CPU 验证已全部通过，GPU 加速（D6）待做。
+硬件目标：RTX 2070 SUPER 8GB（sm_75）。CPU 验证全部通过 + GPU 加速（D6）✅。
 
 ## 里程碑状态
 
@@ -17,7 +17,7 @@ Stable Diffusion 1.5 完整文生图管线：CLIP 文本编码 → DDIM 去噪�
 | D3b | UNet 全装配 | `unet_forward.myp` | ✅ **UNET out maxAbsDiff 1.29e-5** |
 | D4 | VAE 解码 | `vae_decode.myp` | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
 | D5 | 端到端 DDIM 采样出图 | `ddim_sampler.myp` + `extract_d5_ref.py` | ✅ N=5 逐步 eps ~1e-4、最终 latent 2.2e-4、**D5 IMAGE OK（0.28%）**；N=50 采样中 |
-| D6 | @gpu for 加速 | 待做 | ⏳ |
+| D6 | @gpu for 加速 | `gpu_unet_ops.myp` + `ddim_sampler.myp`/`vae_decode.myp` GPU 模式 | ✅ 7 算子对拍 0/0；**UNet 单步 4.65s vs CPU 55.5s = 12x**；**VAE 13.1s vs 184s = 14x**；端到端图像 4.1e-4 |
 
 ## 目录结构
 
@@ -109,16 +109,21 @@ cd examples
 13. **时间步 = steps_offset=1**（PNDM config）→ N=50 为 [981,961,...,1]，非 `arange(N)[::-1]*(1000//N)`=[980,...,0]。MYP 直接读 `d5_tsteps.bin`（带计数前缀）。
 14. **vae/latent_in.bin 被 DDIM 覆盖**：ddim_sampler 写最终 latent 到该文件 → 之后 D4 阶段对拍全错（假报 9.6）。D4 对拍前须恢复 `vae/latent_in.bin = unet/latent_in.bin`。
 15. **@parallel for 并行化**：热点算子（2D conv 空间/attention2 查询/dense 输出行/groupNorm 组/silu）就地加 `@parallel for`（沿用 3D conv 先例；并行体只能访问函数参数规避 BUG-023）→ **~14x 加速**，数值与串行一致。
+16. **GPU 设备驻留（D6）**：整 arena 一次 H2D（UNet 3.65GB ~307ms；VAE 1.6GB），kernel 默认流 + legacy GpuStream 隐式同步；GpuBufferF H2D 是同步 cuMemcpyHtoD。
+17. **GPU 原地 resnet（x==y）拷贝须是设备-设备**：`a[xc]=a[x]` 直接写是 host 操作到不了设备 → 用 `GpuUnetOps.copyFlat`（@gpu for），否则残差加垃圾。
+18. **attention2 自注意力暂存**：heads*S*kvS 版在 320×4096 self-attn 需 536MB 爆 4GB arena → 改**顺序头 + 3 核分相**（score 每线程一个 (i,j)、softmax、output 每线程一个 (i,d)），scOff 只需 S*kvS；同时从 10.7s→4.6s/步。
+19. **GPU CAP 须覆盖全部设备写**：nearestUpsample 输出到 tscr，VAE up2 us 需 67.1M floats（tscr+70M）；CAP 太小 → kernel OOB 中止 → 输出全 0 级联（诊断：某 op 输出全 0 = OOB 中止而非算错）。
+20. **stOff（layernorm stats）须在最大 attn 暂存之后**：UNet 320×4096 self-attn 暂存到 ascr_+48.2M → stOff_=ascr_+55M，否则 OOB → cuModuleLoadData 报 illegal memory access（粘性错误，之后所有 kernel 加载失败）。
 
 ## 性能现状
 
-- UNet 完整前向：CPU -O3 权重加载 34s + 计算（`@parallel for` 后每步 ~30-60s）。
-- VAE 解码：512×512 卷积量大（完整 ~数百 GFLOPs），`@parallel for` 后 ~12 分钟（~14x 加速，user/real 比值）。
-- N=50 DDIM 全采样：~20-30 分钟（并行）。
-- 优化方向：AVX 向量化 ops、D6 `@gpu for`（RTX 2070 SUPER 百倍加速）。
+- UNet 完整前向：CPU -O3 权重加载 34s + 计算（`@parallel for` 后每步 ~30-60s）；**GPU（D6）每步 4.65s（H2D 3.65GB 一次性 307ms）≈ 12x**。
+- VAE 解码：`@parallel for` 后 ~12 分钟（~14x）；**GPU 13.1s（conv 512×512 是主体，thread-per-output 无 tile）≈ 14x**。
+- N=50 DDIM 全采样：CPU ~20-30 分钟；GPU ~5 分钟（50×4.65s + 34s 加载）。
+- 优化方向：AVX 向量化 ops、GPU tiled conv（512×512 大卷积）/ attention 进一步优化。
 
 ## 下一步
 
 - D2b：CLIP 分词器（GPT-2 字节级 BPE，复用 bpe.myp 机制）
 - D5：✅ 已完成（N=5 全链路验证 + N=50 采样）。
-- D6：@gpu for 加速（重点：conv/attention 的 CUDA kernel）
+- D6：✅ 已完成（GPU UNet ops 对拍 + DDIM/VAE GPU 模式，12x/14x 加速）。
