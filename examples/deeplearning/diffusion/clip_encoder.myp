@@ -115,6 +115,27 @@ class ClipMain {
             }
             if (maxAbs < 1.0e-3) Console.writeLine("CLIP ENCODER OK");
             else Console.writeLine("CLIP ENCODER FAIL");
+
+            // ---- 输出模式：MYP_CLIP_OUT=1 写嵌入到 unet/text_emb.bin（特征主序 [768,77]，D5 采样读）----
+            if (Console.getEnv("MYP_CLIP_OUT") == "1") {
+                dumpFloat(arena, xOff, D * MAX, "./deeplearning/data/diffusion/unet/text_emb.bin");
+                Console.writeLine("text_emb.bin written (feature-major [768,77])");
+            }
+        }
+
+        void dumpFloat(float[] a, int off, int n, string path) {
+            int fd = __myp_io_fopen(path, "wb");
+            if (fd < 0) { Console.writeLine("cannot write " + path); return; }
+            int i = 0;
+            while (i < n) {
+                int b = F32.toBits(a[off + i]);
+                __myp_io_write_byte(b & 255);
+                __myp_io_write_byte((b >> 8) & 255);
+                __myp_io_write_byte((b >> 16) & 255);
+                __myp_io_write_byte((b >> 24) & 255);
+                i = i + 1;
+            }
+            __myp_io_fclose();
         }
 
         // 一层 CLIP：LayerNorm(ln1) → qkv dense[2304] → 带掩码 attention(12头,因果+padding)

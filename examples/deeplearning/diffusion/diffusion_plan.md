@@ -9,7 +9,7 @@
 |------|------|------|
 | D1 | DDIM 调度器（scheduler.myp） | ✅ 字节精确（vs numpy float64），diffusers 交叉 3.5e-7 |
 | D2a | CLIP 文本编码器（clip_encoder.myp） | ✅ 77 位置 maxAbsDiff 2.7e-4 |
-| D2b | CLIP 分词器（GPT-2 BPE） | 待做 |
+| D2b | CLIP 分词器（GPT-2 `</w>` 式 BPE） | ✅ 文本→77 ids+mask **CLIP TOKENIZE OK**；接入编码器 ENCODER OK 2.7e-4；MYP text_emb==transformers |
 | D3a | UNet 算子（unet_ops.myp：GroupNorm/attention2/geglu/nearestUpsample2x） | ✅ vs numpy 0~1.8e-7 |
 | D3b | UNet 全装配（unet_forward.myp） | ✅ **UNET out maxAbsDiff 1.29e-5（UNET FORWARD OK）** |
 | D4 | VAE 解码 | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
@@ -47,6 +47,20 @@
 3. **refOff 与 A0 重叠**：refOff=latOff+16384 恰好是 A0 起点 → post_quant_conv 覆盖参考 →
    仅 FULL 最终比较读垃圾（14.23 FAIL），阶段对拍读磁盘不受影响。参考移到 arena 尾部 900MB。
 
+## D2b 关键文件
+- `make_clip_bpe_tables.py`：CLIP vocab(49408)/merges(48894) → MYP 表（llm/bpe.myp 同格式）；
+  参考 ids+mask（可传 prompt 参数）。
+- `llm/bpe.myp`：新增 `encodeClip`（CLIP 式：无空格前缀预分词 + 末 piece 追加 `</w>`）+
+  load 路径前缀默认参数 + mergesData_/vocabData_ 扩容（CLIP 表 932800/838140 B）。
+- `clip_tokenize.myp`：文本 → [sot]+ids+[eot] 补 77 + mask → 对拍 CLIPTokenizer → 写 prompt_ids/mask。
+- `clip_encoder.myp`：`MYP_CLIP_OUT=1` 写嵌入到 unet/text_emb.bin（特征主序 [768,77]）。
+
+## D2b 调试修掉的 2 个关键 bug
+1. **CLIP 分词 ≠ GPT-2 字节级**：CLIP 是 `word</w>` 词尾式 BPE（merges 34227/48894 含 `</w>`），
+   非 GPT-2 `Ġ` 前缀融合 → 需独立 encodeClip（预分词无空格前缀 + `</w>` 后缀）。
+2. **CLIP 表数据溢出 bpe.myp 数组**：`</w>` 使 token 更长 → mergesData 932800>900000、
+   vocabData 838140>700000 → 溢出致 vocabLookup 全失败（0 tokens）。扩容到 1M/900K。
+
 ## D5 关键文件
 - `extract_d5_ref.py`：diffusers DDIM N 步参考（d5_tsteps/alphas + 每步 eps/latent + d5_final
   + d5_ref_image.f32 + d5_image.ppm）。
@@ -67,7 +81,11 @@ silu；unet_ops.myp 的 attention2（查询 i + 输出 (d,i2)）/groupNorm（组
 - @parallel 体只能访问函数参数（规避 BUG-023 class 属性）；unet_ops.myp 需 import pool。
 - 验证：D4 全部阶段数值与串行一致；512×512 阶段 ~14.5x（user/real）。
 
-## 下一步（D5 后）
+## 下一步（D2b 后）
+- D2b：✅ 完成。任意 prompt 文本 → MYP tokenize+encode → text_emb → DDIM → 图像。
+- D6：@gpu for 加速（重点：conv/attention 的 CUDA kernel）。
+- D2b 演示新 prompt：改 `d2b_prompt.txt` → `make_clip_bpe_tables.py "<prompt>"` 重生成参考
+  → clip_tokenize + clip_encoder(MYP_CLIP_OUT=1) → ddim + decode 出图。
 - D4：✅ 完成。VAE 解码全链路数值验证通过（silu+conv_out 一并验证）。
 - D5：CLIP 文本 → UNet 去噪 50 步（DDIM，D1 已备）→ VAE 解码 → 图像；DDIM 时间步用
   `arange(N)[::-1]*(1000//N)`（diffusers 0.39）。

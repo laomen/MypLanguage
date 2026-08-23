@@ -12,7 +12,7 @@ Stable Diffusion 1.5 完整文生图管线：CLIP 文本编码 → DDIM 去噪�
 |------|------|------|------|
 | D1 | DDIM 调度器 | `scheduler.myp` | ✅ 字节精确（vs numpy float64）；diffusers 交叉 3.5e-7 |
 | D2a | CLIP 文本编码器 | `clip_encoder.myp` | ✅ 77 位置 maxAbsDiff 2.7e-4 |
-| D2b | CLIP 分词器（GPT-2 BPE） | 待做 | ⏳ |
+| D2b | CLIP 分词器（GPT-2 `</w>` 式 BPE） | `clip_tokenize.myp` + `make_clip_bpe_tables.py` | ✅ 文本→77 ids+mask **CLIP TOKENIZE OK**；接入 CLIP 编码器（ENCODER OK 2.7e-4）；MYP text_emb==transformers |
 | D3a | UNet 算子 | `unet_ops.myp` | ✅ vs numpy 0~1.8e-7 |
 | D3b | UNet 全装配 | `unet_forward.myp` | ✅ **UNET out maxAbsDiff 1.29e-5** |
 | D4 | VAE 解码 | `vae_decode.myp` | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
@@ -24,7 +24,8 @@ Stable Diffusion 1.5 完整文生图管线：CLIP 文本编码 → DDIM 去噪�
 ```
 examples/deeplearning/diffusion/
 ├── scheduler.myp / verify_scheduler.py      # D1 DDIM
-├── clip_encoder.myp / extract_sd15.py       # D2a CLIP 文本编码
+├── clip_encoder.myp / extract_sd15.py       # D2a CLIP 文本编码（MYP_CLIP_OUT=1 出 text_emb.bin）
+├── clip_tokenize.myp / make_clip_bpe_tables.py  # D2b CLIP 分词器（GPT-2 </w> 式 BPE，文本→77 ids+mask）
 ├── unet_ops.myp / unet_ops_test.myp         # D3a UNet 算子（GroupNorm/attention2/geglu/upsample）
 ├── unet_forward.myp / extract_sd15_unet.py  # D3b UNet 完整前向 + 权重抽取
 ├── vae_decode.myp / extract_sd15_vae.py     # D4 VAE decoder + 权重抽取
@@ -78,6 +79,12 @@ cd examples
 
 - `int main(){ X x = new X(); return 0; }`；类方法须在 `static:`/`action:` 段内；
   `ffi`/`fact`/`ref` 为保留字。
+- **CLIP 分词 ≠ GPT-2 字节级**：CLIP 是 `word</w>` 词尾标记式 BPE（非 GPT-2 `Ġ` 前缀融合）。
+  `bpe.myp` 新增 `encodeClip`（无空格前缀预分词 + 末 piece 追加 `</w>`）+ load 路径前缀参数；
+  CLIP 表数据 932800/838140 B 溢出原数组 → mergesData_/vocabData_ 扩到 1M/900K。
+- 文本→图像链路：`d2b_prompt.txt` → `clip_tokenize.myp`（ids+mask）→ `MYP_CLIP_OUT=1 clip_encoder.myp`
+  （写 `unet/text_emb.bin`）→ `ddim_sampler.myp`（DDIM）→ `MYP_VAE_PPM=1 vae_decode.myp`（PPM）。
+  换 prompt：改 `d2b_prompt.txt` 重跑 tokenizer+encoder；参考用 `make_clip_bpe_tables.py "<prompt>"` 重生成。
 - 权重加载：`__myp_io_fopen` + `F32.toDouble(bits)` 读 fp32（LE）；`F32.toBits` + 4×write_byte 写。
   注意 **`__myp_io` 无批量读**，per-byte 读 3.4GB ≈ 34s。
 - 大内存：`new float[1024*1024*1024]` 4GB arena，权重+激活+scratch 统一管理（块偏移由 bases.bin 提供）。
