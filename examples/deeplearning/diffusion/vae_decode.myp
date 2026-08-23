@@ -1,0 +1,323 @@
+// vae_decode.myp — D4：SD1.5 VAE（AutoencoderKL）decoder 完整前向（fp32）+ 分阶段对拍
+//
+// 输入：latent[4,64,64]（=UNet 输出 latent）；流程：×1/0.18215 → post_quant_conv(4→4)
+//   → conv_in(4→512) → mid(resnet512,attn512,resnet512) → up0/1(3resnet512+us)
+//   → up2(512→256×3+us) → up3(256→128×3，无 us) → conv_norm_out(GroupNorm32 eps=1e-6)
+//   → silu → conv_out(128→3)。输出 [3,512,512]。
+// 关键：VAE resnet **无 time_emb**；attention 旧式（group_norm eps=1e-6 + q/k/v/proj_attn
+//   全带 bias，heads=1）；GroupNorm 一律 eps=1e-6；**无 skip 连接**；上采样 conv 经 tscr
+//   中转避免原地卷积（D3b 教训）。
+// 对拍：stage_<block>.f32 参考；env MYP_VAE_STAGE=<名> 指定停靠。
+// 运行（须在 examples/ 下）：
+//   python deeplearning/diffusion/extract_sd15_vae.py
+//   ../../build/mypc -O3 deeplearning/diffusion/vae_decode.myp -o /tmp/vaedec --stdlib ../stdlib
+//   cd examples && /tmp/vaedec
+import env;
+import fmt;
+import math;
+import "../infer/ops.myp";
+import "../infer/pb.myp";
+import "unet_ops.myp";
+
+class VaeDec {
+    property:
+        float[] a_;
+        string stg_;
+
+    action:
+        @constructor VaeDec() {
+            // ---- 加载 bases + 权重 ----
+            a_ = new float[1024 * 1024 * 1024];   // 4GB arena（权重 198M + 激活 + scratch）
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/vae/bases.bin", "rb");
+            if (fd < 0) { Console.writeLine("vae bases.bin missing"); return; }
+            int nblk = 22;
+            int[] base = new int[32];
+            int i = 0;
+            while (i < nblk) { base[i] = readI32(); i = i + 1; }
+            __myp_io_fclose();
+            int wEnd = base[21] + 3 * 128 * 9 + 3;   // conv_out [3,128,3,3]+bias
+
+            long t0 = __myp_now_ms();
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/vae/vae_weights.bin", "rb");
+            if (fd2 < 0) { Console.writeLine("vae_weights.bin missing"); return; }
+            loadBlock(a_, 0, wEnd);
+            __myp_io_fclose();
+            Console.writeString("VAE weights loaded in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+
+            // ---- 输入 latent + 参考 ----
+            int latOff = wEnd;
+            int refOff = 900 * 1024 * 1024;      // 参考输出放 arena 尾部（勿用 latOff+16384——与 A0 重叠被覆盖！）
+            int fd3 = __myp_io_fopen("./deeplearning/data/diffusion/vae/latent_in.bin", "rb");
+            if (fd3 < 0) { Console.writeLine("latent_in.bin missing"); return; }
+            i = 0;
+            while (i < 16384) { a_[latOff + i] = float(double(readF32()) / 0.18215); i = i + 1; }  // ×1/scaling_factor
+            __myp_io_fclose();
+            int fd4 = __myp_io_fopen("./deeplearning/data/diffusion/vae/ref_out.f32", "rb");
+            if (fd4 < 0) { Console.writeLine("ref_out.f32 missing"); return; }
+            i = 0;
+            while (i < 3 * 512 * 512) { a_[refOff + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+
+            stg_ = Console.getEnv("MYP_VAE_STAGE");
+
+            // ---- 工作区偏移 ----
+            int A0 = latOff + 16384;             // conv_in out [512,64,64]
+            int M0 = A0 + 2097152;               // mid 工作 [512,64,64]
+            int U0 = M0 + 2097152;               // up0 工作 [512,64,64]
+            int U0US = U0 + 2097152;             // up0 上采样 [512,128,128]
+            int U1 = U0US + 8388608;             // up1 工作 [512,128,128]
+            int U1US = U1 + 8388608;             // up1 上采样 [512,256,256]
+            int U2 = U1US + 33554432;            // up2 工作 [256,256,256]
+            int U2US = U2 + 16777216;            // up2 上采样 [256,512,512]
+            int U3 = U2US + 67108864;            // up3 工作 [128,512,512]
+            int FN = U3 + 33554432;              // 输出 [3,512,512]
+            int SCR = FN + 786432;
+            int rscr = SCR;                      // resnet scratch（最大 ~100M：up3 r0 256→128@512²）
+            int ascr = SCR + 105000000;          // attention scratch（mid attn dim512 S4096 ~34M）
+            int tscr = SCR + 105000000 + 40000000;  // 上采样/临时（须在 resnet scratch 与 attn 后）
+
+            // ===== post_quant_conv(1×1) + conv_in(3×3 pad1)：latent → A0 =====
+            // 先 post_quant_conv 到 A0（复用 A0 作为中转，再 conv_in 到 M0）
+            InferOps.conv(a_, latOff, 1, 4, 64, 64, base[0], base[0] + 4 * 4, A0, 4, 64, 64, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1);
+            InferOps.conv(a_, A0, 1, 4, 64, 64, base[1], base[1] + 4 * 512 * 9, M0, 512, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (stageCheck(stg_, "conv_in", a_, M0, 512 * 64 * 64) == 1) return;
+
+            // ===== mid：resnet512 → attn512 → resnet512 =====
+            resnetVae(a_, base[2], M0, M0, rscr, 512, 512, 64, 64);      // 原地
+            if (stageCheck(stg_, "mid_r0", a_, M0, 512 * 64 * 64) == 1) return;
+            if (attnVae(a_, base[3], M0, M0, ascr, 512, 4096, 1) == 1) return;   // self-attn heads=1
+            if (stageCheck(stg_, "mid_a0", a_, M0, 512 * 64 * 64) == 1) return;
+            resnetVae(a_, base[4], M0, M0, rscr, 512, 512, 64, 64);
+            if (stageCheck(stg_, "mid_r1", a_, M0, 512 * 64 * 64) == 1) return;
+
+            // ===== up0（3×resnet512 + us）=====
+            resnetVae(a_, base[5], M0, U0, rscr, 512, 512, 64, 64);
+            if (stageCheck(stg_, "u0r0", a_, U0, 512 * 64 * 64) == 1) return;
+            resnetVae(a_, base[6], U0, U0, rscr, 512, 512, 64, 64);
+            if (stageCheck(stg_, "u0r1", a_, U0, 512 * 64 * 64) == 1) return;
+            resnetVae(a_, base[7], U0, U0, rscr, 512, 512, 64, 64);
+            if (stageCheck(stg_, "u0r2", a_, U0, 512 * 64 * 64) == 1) return;
+            UnetOps.nearestUpsample2x(a_, U0, tscr, 512, 64, 64);
+            InferOps.conv(a_, tscr, 1, 512, 128, 128, base[8], base[8] + 512 * 512 * 9, U0US, 512, 128, 128, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (stageCheck(stg_, "u0us", a_, U0US, 512 * 128 * 128) == 1) return;
+
+            // ===== up1（3×resnet512 + us）=====
+            resnetVae(a_, base[9], U0US, U1, rscr, 512, 512, 128, 128);
+            if (stageCheck(stg_, "u1r0", a_, U1, 512 * 128 * 128) == 1) return;
+            resnetVae(a_, base[10], U1, U1, rscr, 512, 512, 128, 128);
+            if (stageCheck(stg_, "u1r1", a_, U1, 512 * 128 * 128) == 1) return;
+            resnetVae(a_, base[11], U1, U1, rscr, 512, 512, 128, 128);
+            if (stageCheck(stg_, "u1r2", a_, U1, 512 * 128 * 128) == 1) return;
+            UnetOps.nearestUpsample2x(a_, U1, tscr, 512, 128, 128);
+            InferOps.conv(a_, tscr, 1, 512, 256, 256, base[12], base[12] + 512 * 512 * 9, U1US, 512, 256, 256, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (stageCheck(stg_, "u1us", a_, U1US, 512 * 256 * 256) == 1) return;
+
+            // ===== up2（512→256×3 + us）=====
+            resnetVae(a_, base[13], U1US, U2, rscr, 512, 256, 256, 256);
+            if (stageCheck(stg_, "u2r0", a_, U2, 256 * 256 * 256) == 1) return;
+            resnetVae(a_, base[14], U2, U2, rscr, 256, 256, 256, 256);
+            if (stageCheck(stg_, "u2r1", a_, U2, 256 * 256 * 256) == 1) return;
+            resnetVae(a_, base[15], U2, U2, rscr, 256, 256, 256, 256);
+            if (stageCheck(stg_, "u2r2", a_, U2, 256 * 256 * 256) == 1) return;
+            UnetOps.nearestUpsample2x(a_, U2, tscr, 256, 256, 256);
+            InferOps.conv(a_, tscr, 1, 256, 512, 512, base[16], base[16] + 256 * 256 * 9, U2US, 256, 512, 512, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (stageCheck(stg_, "u2us", a_, U2US, 256 * 512 * 512) == 1) return;
+
+            // ===== up3（256→128×3，无 us）=====
+            resnetVae(a_, base[17], U2US, U3, rscr, 256, 128, 512, 512);
+            if (stageCheck(stg_, "u3r0", a_, U3, 128 * 512 * 512) == 1) return;
+            resnetVae(a_, base[18], U3, U3, rscr, 128, 128, 512, 512);
+            if (stageCheck(stg_, "u3r1", a_, U3, 128 * 512 * 512) == 1) return;
+            resnetVae(a_, base[19], U3, U3, rscr, 128, 128, 512, 512);
+            if (stageCheck(stg_, "u3r2", a_, U3, 128 * 512 * 512) == 1) return;
+
+            // ===== conv_norm_out（GroupNorm32 eps=1e-6；参考只含 GroupNorm）+ silu + conv_out =====
+            UnetOps.groupNorm(a_, U3, base[20], base[20] + 128, U3, 128, 512, 512, 32, 1.0e-6);
+            if (stageCheck(stg_, "conv_norm_out", a_, U3, 128 * 512 * 512) == 1) return;
+            InferOps.silu(a_, U3, U3, 128 * 512 * 512);
+            InferOps.conv(a_, U3, 1, 128, 512, 512, base[21], base[21] + 3 * 128 * 9, FN, 3, 512, 512, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+
+            // ===== 对拍 ref_out =====
+            // dump_tail：落盘 U3(silu 后) + FN(conv_out 后) 供 numpy 定位尾部 bug
+            if (stg_ == "dump_tail") {
+                dumpBuf(a_, U3, 128 * 512 * 512, "myp_post_silu.f32");
+                dumpBuf(a_, FN, 3 * 512 * 512, "myp_final.f32");
+                Console.writeLine("dumped post_silu + final");
+                return;
+            }
+            double maxAbs = 0.0;
+            i = 0;
+            while (i < 3 * 512 * 512) {
+                double ad = Math.abs(double(a_[FN + i]) - double(a_[refOff + i]));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            Console.writeString("VAE DECODE maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            Console.writeString("MYP[0,0,0:4]=");
+            i = 0; while (i < 4) { Console.writeFloat(a_[FN + i]); Console.writeString(" "); i = i + 1; }
+            Console.writeLine("");
+            if (maxAbs < 5.0e-3) Console.writeLine("VAE DECODE OK");
+            else Console.writeLine("VAE DECODE FAIL");
+        }
+
+        // ---- VAE ResnetBlock（无 time_emb）：GroupNorm(eps=1e-6)→silu→conv1→GroupNorm→silu→conv2(+shortcut) ----
+        void resnetVae(float[] a, int w, int x, int y, int sc, int xC, int outC, int H, int W) {
+            int hw = H * W;
+            int c1 = 2 * xC;
+            int c1b = c1 + outC * xC * 9;
+            int n2 = c1b + outC;
+            int n2b = n2 + outC;
+            int c2 = n2b + outC;
+            int c2b = c2 + outC * outC * 9;
+            int n1 = sc;
+            int nm = sc + xC * hw;
+            int xc = nm + outC * hw;             // x 副本（原地 x==y 时残差需要原始 x）
+            int xin = x;
+            if (x == y) {
+                int ii = 0;
+                while (ii < xC * hw) { a[xc + ii] = a[x + ii]; ii = ii + 1; }
+                xin = xc;
+            }
+            UnetOps.groupNorm(a, xin, w, w + xC, n1, xC, H, W, 32, 1.0e-6);
+            InferOps.silu(a, n1, n1, xC * hw);
+            InferOps.conv(a, n1, 1, xC, H, W, w + c1, w + c1b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            UnetOps.groupNorm(a, y, w + n2, w + n2b, nm, outC, H, W, 32, 1.0e-6);
+            InferOps.silu(a, nm, nm, outC * hw);
+            InferOps.conv(a, nm, 1, outC, H, W, w + c2, w + c2b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (xC != outC) {
+                InferOps.conv(a, xin, 1, xC, H, W, w + c2b + outC, w + c2b + outC + outC * xC, nm, outC, H, W, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1);
+                addFlat(a, y, nm, outC * hw);
+            } else {
+                addFlat(a, y, xin, outC * hw);
+            }
+        }
+
+        // ---- VAE 旧式 Attention（self-attn，heads=1）：GroupNorm(eps=1e-6)→q/k/v(带bias)→attn→proj_attn→残差 ----
+        int attnVae(float[] a, int w, int x, int y, int sc, int dim, int S, int heads) {
+            int hw = dim * S;
+            int kvS = S;                         // self-attn
+            int kvb = dim * kvS;
+            int bv = kvb > hw ? kvb : hw;
+            int gnw = 2 * dim;                   // group_norm(w+b) 大小 = query_w 起始
+            int qw = gnw;                        // query_w（gnw 即其偏移，勿再加 dim*dim！）
+            int qb = qw + dim * dim;             // query_b [dim]
+            int kw = qb + dim;                   // key_w
+            int kb = kw + dim * dim;             // key_b
+            int vw = kb + dim;
+            int vb = vw + dim * dim;
+            int pow_ = vb + dim;                 // proj_attn_w
+            int pob = pow_ + dim * dim;          // proj_attn_b
+            int g = sc;
+            int q = g + hw;
+            int k = q + bv;
+            int v = k + bv;
+            int at = v + bv;
+            int o = at + hw;
+            int sco = o + hw;                    // S*S 分数
+            UnetOps.groupNorm(a, x, w, w + dim, g, dim, 1, S, 32, 1.0e-6);
+            if (dbgCheck("vae_gn", a, g, hw) == 1) return 1;
+            InferOps.dense(a, g, dim, S, w + qw, dim, w + qb, q);
+            if (stg_ == "vae_dumpq") {
+                dumpBuf(a, g, hw, "myp_dump_g.f32");
+                dumpBuf(a, q, hw, "myp_dump_q.f32");
+                Console.writeLine("dumped g/q");
+                return 1;
+            }
+            InferOps.dense(a, g, dim, S, w + kw, dim, w + kb, k);
+            InferOps.dense(a, g, dim, S, w + vw, dim, w + vb, v);
+            if (dbgCheck("vae_q", a, q, hw) == 1) return 1;
+            UnetOps.attention2(a, q, k, v, at, sco, dim, S, S, heads);
+            if (dbgCheck("vae_attn", a, at, hw) == 1) return 1;
+            InferOps.dense(a, at, dim, S, w + pow_, dim, w + pob, o);
+            if (dbgCheck("vae_proj", a, o, hw) == 1) return 1;
+            addFlat(a, y, o, hw);                // 残差
+            return 0;
+        }
+
+        // ---- 内部调试对拍：stg_==name 时读 myp_<name>.f32 比较，命中返回 1 ----
+        int dbgCheck(string name, float[] a, int off, int n) {
+            if (stg_ != name) return 0;
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/vae/myp_" + name + ".f32", "rb");
+            if (fd < 0) { Console.writeLine("dbg ref missing: myp_" + name); return 0; }
+            int i = 0;
+            double maxAbs = 0.0;
+            while (i < n) {
+                double ad = Math.abs(double(a[off + i]) - double(readF32()));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("DBG " + name + " maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            return 1;
+        }
+
+        // ---- 阶段对拍 ----
+        int stageCheck(string stage, string name, float[] a, int off, int n) {
+            if (stage != name) return 0;
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/vae/stage_" + name + ".f32", "rb");
+            if (fd < 0) { Console.writeLine("stage ref missing: " + name); return 0; }
+            int i = 0;
+            double maxAbs = 0.0;
+            while (i < n) {
+                double ad = Math.abs(double(a[off + i]) - double(readF32()));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            __myp_io_fclose();
+            Console.writeString("STAGE " + name + " maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            return 1;
+        }
+
+        void loadBlock(float[] a, int off, int n) {
+            int i = 0;
+            while (i < n) { a[off + i] = float(readF32()); i = i + 1; }
+        }
+
+        void dumpBuf(float[] a, int off, int n, string path) {
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/vae/" + path, "wb");
+            int i = 0;
+            while (i < n) {
+                int b = F32.toBits(a[off + i]);
+                __myp_io_write_byte(b & 255);
+                __myp_io_write_byte((b >> 8) & 255);
+                __myp_io_write_byte((b >> 16) & 255);
+                __myp_io_write_byte((b >> 24) & 255);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        void addFlat(float[] a, int y, int x, int n) {
+            int i = 0;
+            while (i < n) { a[y + i] = a[y + i] + a[x + i]; i = i + 1; }
+        }
+
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+}
+int main() { VaeDec v = new VaeDec(); return 0; }
