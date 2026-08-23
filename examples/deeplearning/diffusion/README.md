@@ -16,7 +16,7 @@ Stable Diffusion 1.5 完整文生图管线：CLIP 文本编码 → DDIM 去噪�
 | D3a | UNet 算子 | `unet_ops.myp` | ✅ vs numpy 0~1.8e-7 |
 | D3b | UNet 全装配 | `unet_forward.myp` | ✅ **UNET out maxAbsDiff 1.29e-5** |
 | D4 | VAE 解码 | `vae_decode.myp` | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
-| D5 | 端到端（出图 PPM/BMP/SDL） | 待做 | ⏳ |
+| D5 | 端到端 DDIM 采样出图 | `ddim_sampler.myp` + `extract_d5_ref.py` | ✅ N=5 逐步 eps ~1e-4、最终 latent 2.2e-4、**D5 IMAGE OK（0.28%）**；N=50 采样中 |
 | D6 | @gpu for 加速 | 待做 | ⏳ |
 
 ## 目录结构
@@ -28,6 +28,8 @@ examples/deeplearning/diffusion/
 ├── unet_ops.myp / unet_ops_test.myp         # D3a UNet 算子（GroupNorm/attention2/geglu/upsample）
 ├── unet_forward.myp / extract_sd15_unet.py  # D3b UNet 完整前向 + 权重抽取
 ├── vae_decode.myp / extract_sd15_vae.py     # D4 VAE decoder + 权重抽取
+├── ddim_sampler.myp / extract_d5_ref.py     # D5 DDIM 采样（可复用 unetForward + 循环）+ diffusers 参考
+├── compare_d5.py / analyze_d5.py            # D5 对拍（逐步 eps/latent/图像）
 ├── debug_*.py                               # 调试对拍脚本（numpy 逐步复算 / torch 真值）
 └── diffusion_plan.md                        # 路线图
 ```
@@ -96,16 +98,20 @@ cd examples
 9. **带 bias 的 Linear 权重偏移**：q/k/v/proj_attn 的 bias 是 [dim] 不是 [dim*dim]——offset 累加要按实际张量形状。
 10. GroupNorm eps：UNet=1e-5，VAE=1e-6；conv_norm_out 参考只含 GroupNorm（silu 前）。
 11. **参考区不得与工作区重叠**：`refOff=latOff+16384` 恰好等于 `A0` 起点 → post_quant_conv 覆盖参考 → 仅 FULL 最终比较读到垃圾（阶段对拍读磁盘不受影响）。参考放 arena 尾部（如 900MB）。
+12. **末步 DDIM α_prev**：SD1.5 `set_alpha_to_one=false` → diffusers 末步用 `alphas_cumprod[0]`（0.99915）非 1.0 → MYP 用 1.0 时最终 latent 错 4.2e-2。修复：`aPrev=alpha[0]`。
+13. **时间步 = steps_offset=1**（PNDM config）→ N=50 为 [981,961,...,1]，非 `arange(N)[::-1]*(1000//N)`=[980,...,0]。MYP 直接读 `d5_tsteps.bin`（带计数前缀）。
+14. **vae/latent_in.bin 被 DDIM 覆盖**：ddim_sampler 写最终 latent 到该文件 → 之后 D4 阶段对拍全错（假报 9.6）。D4 对拍前须恢复 `vae/latent_in.bin = unet/latent_in.bin`。
+15. **@parallel for 并行化**：热点算子（2D conv 空间/attention2 查询/dense 输出行/groupNorm 组/silu）就地加 `@parallel for`（沿用 3D conv 先例；并行体只能访问函数参数规避 BUG-023）→ **~14x 加速**，数值与串行一致。
 
 ## 性能现状
 
-- UNet 完整前向：CPU -O3 数分钟级（权重加载 34s + 计算）。
-- VAE 解码：512×512 分辨率卷积量大（完整 ~数百 GFLOPs），CPU 标量循环很慢（每阶段 1-2 分钟）。
-- 优化方向：`@parallel for`（多核）、AVX 向量化 ops、D6 `@gpu for`（RTX 2070 SUPER 百倍加速）。
+- UNet 完整前向：CPU -O3 权重加载 34s + 计算（`@parallel for` 后每步 ~30-60s）。
+- VAE 解码：512×512 卷积量大（完整 ~数百 GFLOPs），`@parallel for` 后 ~12 分钟（~14x 加速，user/real 比值）。
+- N=50 DDIM 全采样：~20-30 分钟（并行）。
+- 优化方向：AVX 向量化 ops、D6 `@gpu for`（RTX 2070 SUPER 百倍加速）。
 
 ## 下一步
 
 - D2b：CLIP 分词器（GPT-2 字节级 BPE，复用 bpe.myp 机制）
-- D5：端到端管线（CLIP→UNet 50 步 DDIM→VAE→图像输出 PPM/BMP/SDL saveBmp）
-  DDIM 时间步用 `arange(N)[::-1]*(1000//N)`（diffusers 0.39）。
+- D5：✅ 已完成（N=5 全链路验证 + N=50 采样）。
 - D6：@gpu for 加速（重点：conv/attention 的 CUDA kernel）

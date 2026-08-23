@@ -14,8 +14,7 @@ class InferOps {
             int bOff,
             int yOff
         ) {
-            int i = 0;
-            while (i < outDim) {
+            @parallel for (int i = 0; i < outDim; i = i + 1) {
                 int k = 0;
                 while (k < batch) {
                     float sum = arena[bOff + i];
@@ -27,15 +26,13 @@ class InferOps {
                     arena[yOff + i * batch + k] = sum;
                     k = k + 1;
                 }
-                i = i + 1;
             }
         }
 
         // y = W x（无偏置；batch 沿列）
         // x: [inDim, batch], W: [outDim, inDim], y: [outDim, batch]
         void matmul(float[] arena, int xOff, int inDim, int batch, int wOff, int outDim, int yOff) {
-            int i = 0;
-            while (i < outDim) {
+            @parallel for (int i = 0; i < outDim; i = i + 1) {
                 int k = 0;
                 while (k < batch) {
                     float sum = 0.0f;
@@ -47,7 +44,6 @@ class InferOps {
                     arena[yOff + i * batch + k] = sum;
                     k = k + 1;
                 }
-                i = i + 1;
             }
         }
 
@@ -925,43 +921,40 @@ class InferOps {
             int wc = cpg * kh * kw;         // 每个输出通道的权重数
             int n = 0;
             while (n < xN) {
-                int oc = 0;
-                while (oc < yC) {
-                    int g = oc / ocpg;
-                    int oy = 0;
-                    while (oy < yH) {
-                        int ox = 0;
-                        while (ox < yW) {
-                            float sum = 0.0f;
-                            if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
-                            int ic = 0;
-                            while (ic < cpg) {
-                                int cIn = g * cpg + ic;
-                                int ky = 0;
-                                while (ky < kh) {
-                                    int iy = oy * sh - pt + ky * dh;
-                                    if (iy >= 0 && iy < xH) {
-                                        int kx = 0;
-                                        while (kx < kw) {
-                                            int ix = ox * sw - pl + kx * dw;
-                                            if (ix >= 0 && ix < xW) {
-                                                float xv = arena[xOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix];
-                                                float wv = arena[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
-                                                sum = sum + xv * wv;
-                                            }
-                                            kx = kx + 1;
+                // 空间并行：每线程一个 (oy,ox) 遍历全部输出通道（输入窗口复用，参照 3D conv）
+                @parallel for (int p = 0; p < yH * yW; p = p + 1) {
+                    int oy = p / yW;
+                    int ox = p % yW;
+                    int oc = 0;
+                    while (oc < yC) {
+                        int g = oc / ocpg;
+                        float sum = 0.0f;
+                        if (bOff >= 0) sum = arena[bOff + oc];   // 无偏置卷积（bOff=-1）
+                        int ic = 0;
+                        while (ic < cpg) {
+                            int cIn = g * cpg + ic;
+                            int ky = 0;
+                            while (ky < kh) {
+                                int iy = oy * sh - pt + ky * dh;
+                                if (iy >= 0 && iy < xH) {
+                                    int kx = 0;
+                                    while (kx < kw) {
+                                        int ix = ox * sw - pl + kx * dw;
+                                        if (ix >= 0 && ix < xW) {
+                                            float xv = arena[xOff + n * xC * xH * xW + cIn * xH * xW + iy * xW + ix];
+                                            float wv = arena[wOff + oc * wc + ic * kh * kw + ky * kw + kx];
+                                            sum = sum + xv * wv;
                                         }
+                                        kx = kx + 1;
                                     }
-                                    ky = ky + 1;
                                 }
-                                ic = ic + 1;
+                                ky = ky + 1;
                             }
-                            arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
-                            ox = ox + 1;
+                            ic = ic + 1;
                         }
-                        oy = oy + 1;
+                        arena[yOff + n * yC * yH * yW + oc * yH * yW + oy * yW + ox] = sum;
+                        oc = oc + 1;
                     }
-                    oc = oc + 1;
                 }
                 n = n + 1;
             }
@@ -1964,12 +1957,10 @@ class InferOps {
         }
         // SiLU / Swish：y = x * sigmoid(x) = x / (1 + exp(-x))
         void silu(float[] arena, int inOff, int outOff, int n) {
-            int i = 0;
-            while (i < n) {
+            @parallel for (int i = 0; i < n; i = i + 1) {
                 double x = arena[inOff + i];
                 double s = x / (1.0 + Math.exp(0.0 - x));
                 arena[outOff + i] = float(s);
-                i = i + 1;
             }
         }
         // HardSwish：y = x * relu6(x+3) / 6

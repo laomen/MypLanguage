@@ -4,6 +4,7 @@
 // 已可复用 infer/ops.myp：conv（NCHW，权重 [out,in,kh,kw] 与 PyTorch 一致）、silu、
 // gelu、dense、layerNorm、add。
 import math;
+import pool;
 import "../infer/ops.myp";   // InferOps.gelu（GEGLU 复用）
 
 class UnetOps {
@@ -14,8 +15,7 @@ class UnetOps {
                    int C, int H, int W, int groups, double eps) {
         int cpg = C / groups;
         int hw = H * W;
-        int g = 0;
-        while (g < groups) {
+        @parallel for (int g = 0; g < groups; g = g + 1) {
             int nch = cpg * hw;
             double mean = 0.0;
             int c = 0;
@@ -48,7 +48,6 @@ class UnetOps {
                 }
                 c = c + 1;
             }
-            g = g + 1;
         }
     }
 
@@ -62,8 +61,8 @@ class UnetOps {
         double scale = 1.0 / Math.sqrt(double(dh));
         int b = 0;
         while (b < heads) {
-            int i = 0;
-            while (i < S) {
+            // 分数 + softmax：并行于查询位置 i（每行独立）
+            @parallel for (int i = 0; i < S; i = i + 1) {
                 int j = 0;
                 while (j < kvS) {
                     double sum = 0.0;
@@ -94,22 +93,18 @@ class UnetOps {
                     arena[scOff + i * kvS + j] = float(double(arena[scOff + i * kvS + j]) / sumE);
                     j = j + 1;
                 }
-                i = i + 1;
             }
-            int d = 0;
-            while (d < dh) {
-                int i2 = 0;
-                while (i2 < S) {
-                    double sum = 0.0;
-                    int j = 0;
-                    while (j < kvS) {
-                        sum = sum + double(arena[scOff + i2 * kvS + j]) * double(arena[vOff + (b * dh + d) * kvS + j]);
-                        j = j + 1;
-                    }
-                    arena[outOff + (b * dh + d) * S + i2] = float(sum);
-                    i2 = i2 + 1;
+            // 输出：并行于 (d,i2)
+            @parallel for (int q = 0; q < dh * S; q = q + 1) {
+                int d = q / S;
+                int i2 = q % S;
+                double sum = 0.0;
+                int j = 0;
+                while (j < kvS) {
+                    sum = sum + double(arena[scOff + i2 * kvS + j]) * double(arena[vOff + (b * dh + d) * kvS + j]);
+                    j = j + 1;
                 }
-                d = d + 1;
+                arena[outOff + (b * dh + d) * S + i2] = float(sum);
             }
             b = b + 1;
         }
@@ -130,22 +125,15 @@ class UnetOps {
 
     // nearest 2x 上采样：y[c,2h+dy,2w+dx] = x[c,h,w]
     void nearestUpsample2x(float[] arena, int xOff, int yOff, int C, int H, int W) {
-        int c = 0;
-        while (c < C) {
-            int h = 0;
-            while (h < H) {
-                int w = 0;
-                while (w < W) {
-                    float v = arena[xOff + c * H * W + h * W + w];
-                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w)] = v;
-                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w + 1)] = v;
-                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w)] = v;
-                    arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w + 1)] = v;
-                    w = w + 1;
-                }
-                h = h + 1;
-            }
-            c = c + 1;
+        @parallel for (int q = 0; q < C * H * W; q = q + 1) {
+            int c = q / (H * W);
+            int h = (q % (H * W)) / W;
+            int w = q % W;
+            float v = arena[xOff + c * H * W + h * W + w];
+            arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w)] = v;
+            arena[yOff + c * (2 * H) * (2 * W) + (2 * h) * (2 * W) + (2 * w + 1)] = v;
+            arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w)] = v;
+            arena[yOff + c * (2 * H) * (2 * W) + (2 * h + 1) * (2 * W) + (2 * w + 1)] = v;
         }
     }
 }

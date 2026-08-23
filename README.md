@@ -206,6 +206,34 @@ MYPLanguage/
 └── tests/            # 测试套件（含 tests/stress/ 压力测试：`bash tests/stress/run_stress.sh`）
 ```
 
+## 🧠 深度学习框架
+
+仓库自带一套**纯 MYP 实现的通用深度学习框架**（`examples/deeplearning/`，LLVM 后端）。
+运行期**零 Python / 零 onnxruntime 依赖**——Python 仅用于权重抽取与数值对拍参考：
+
+| 模块 | 内容 | 亮点 |
+|------|------|------|
+| `infer/` | 静态图推理框架核心 | **纯 MYP protobuf wire 读取器**直接解析真实 `.onnx`；图优化 pass 管线（常量折叠 / shape 推断 / Conv+BN+ReLU 融合 / GAP+Flatten / DCE / NHWC 布局变换 / 内存规划）；CPU + GPU 双后端（`@gpu for` 常驻内核，自动 CPU 回退）；批量感知算子（Gemm/MatMul/Conv/MaxPool/GAP/Softmax/BN/激活/张量操作…） |
+| `infer_tests/` | 端到端验证入口 | 20+ 个 `*_main.myp` 加载真实 ONNX 与 **onnxruntime 逐元素对拍**：ResNet18/50、BN 融合、激活、Concat/Reshape/Transpose/Slice/Pad/ConvTranspose/Split/AvgPool… |
+| `train/` | 训练 | XOR → MNIST MLP（97% → 推理 99%）→ **Graph IR 反向 pass**（任意 ONNX 图）→ CNN/3D 反向 + Dice loss；`@gpu for` backward 内核 |
+| `llm/` | Transformer / LLM | GPT-2 6 层完整前向 + **KV cache 增量生成**（与 transformers 逐 token 一致，token mismatch=0）；Qwen2 架构算子（RMSNorm/RoPE/GQA）；全算子 GPU 版 |
+| `diffusion/` | 文生图 | SD1.5 全管线：DDIM 调度器 → CLIP 文本编码 → UNet 去噪 → VAE 解码 → 出图。三大网络全部数值验证通过 |
+| `json_tool/` | 轻量演示 | JSON 图 + 通用 CLI（XOR/MNIST） |
+
+运行示例：
+
+```bash
+# ResNet18 推理（须在 examples/ 下）
+./build/mypc deeplearning/infer_tests/r18_main.myp -o /tmp/r18 --stdlib stdlib
+cd examples && /tmp/r18              # CPU
+MYP_GPU=1 /tmp/r18                   # GPU（无 GPU 自动回退 CPU）
+
+# distilgpt2 文生文（全链路 MYP，含 BPE 分词）
+deeplearning/infer/tools/onnxvenv/bin/python deeplearning/llm/run_distilgpt2_chat.py "Hello" 48
+
+# 详细文档：examples/deeplearning/{infer,llm,train,diffusion}/README.md
+```
+
 ## 🎯 BNCT Dose Engine
 
 仓库自带完整的[硼中子俘获治疗剂量模拟引擎](https://github.com/laomen/BNCTDoseEngine)：

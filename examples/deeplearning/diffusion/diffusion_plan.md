@@ -13,7 +13,7 @@
 | D3a | UNet 算子（unet_ops.myp：GroupNorm/attention2/geglu/nearestUpsample2x） | ✅ vs numpy 0~1.8e-7 |
 | D3b | UNet 全装配（unet_forward.myp） | ✅ **UNET out maxAbsDiff 1.29e-5（UNET FORWARD OK）** |
 | D4 | VAE 解码 | ✅ 全阶段 ~1e-3，**VAE DECODE OK（9e-6）** |
-| D5 | 端到端（latent→图像输出 PPM/BMP/SDL saveBmp） | 待做 |
+| D5 | 端到端 DDIM 采样出图 | ✅ N=5 逐步 eps ~1e-4、最终 latent 2.2e-4、**D5 IMAGE OK（0.28%）**；N=50 采样中 |
 | D6 | @gpu for 加速 | 待做 |
 
 ## D3b 关键文件
@@ -47,7 +47,27 @@
 3. **refOff 与 A0 重叠**：refOff=latOff+16384 恰好是 A0 起点 → post_quant_conv 覆盖参考 →
    仅 FULL 最终比较读垃圾（14.23 FAIL），阶段对拍读磁盘不受影响。参考移到 arena 尾部 900MB。
 
-## 下一步（D4/D5）
+## D5 关键文件
+- `extract_d5_ref.py`：diffusers DDIM N 步参考（d5_tsteps/alphas + 每步 eps/latent + d5_final
+  + d5_ref_image.f32 + d5_image.ppm）。
+- `ddim_sampler.myp`：可复用 `unetForward(xOff,tOff,yOff)` + DDIM η=0 循环，写 vae/latent_in.bin。
+- `vae_decode.myp`（MYP_VAE_PPM=1）：解码出 myp_image.ppm + myp_image.f32。
+- `compare_d5.py` / `analyze_d5.py`：逐步 eps/latent/图像对拍。
+
+## D5 调试修掉的 4 个关键 bug（详见 repo memory diffusion-project.md）
+1. **d5_tsteps.bin 缺计数前缀** → MYP 把首时间步当 n 读 → ts[] 溢出崩溃。加 i32 count 前缀。
+2. **末步 α_prev=1.0**（SD1.5 set_alpha_to_one=false → 应 alphas_cumprod[0]=0.99915）→
+   末步 latent 错 4.2e-2。修复：prev_t=-1 时 aPrev=alpha[0]。
+3. **vae/latent_in.bin 被 DDIM 覆盖** → D4 阶段对拍假报 9.6。D4 对拍前恢复原 latent。
+4. **dumpBuf 强制加 vae/ 前缀** → myp_image.f32 写到错路径。加 dumpAbs 直接写。
+
+## 并行化（@parallel for，~14x）
+- 热点算子就地加 `@parallel for`：ops.myp 的 dense/matmul（输出行）/2D conv（空间 p，oc 内层）/
+silu；unet_ops.myp 的 attention2（查询 i + 输出 (d,i2)）/groupNorm（组 g）/nearestUpsample2x。
+- @parallel 体只能访问函数参数（规避 BUG-023 class 属性）；unet_ops.myp 需 import pool。
+- 验证：D4 全部阶段数值与串行一致；512×512 阶段 ~14.5x（user/real）。
+
+## 下一步（D5 后）
 - D4：✅ 完成。VAE 解码全链路数值验证通过（silu+conv_out 一并验证）。
 - D5：CLIP 文本 → UNet 去噪 50 步（DDIM，D1 已备）→ VAE 解码 → 图像；DDIM 时间步用
   `arange(N)[::-1]*(1000//N)`（diffusers 0.39）。

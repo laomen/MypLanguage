@@ -1,0 +1,485 @@
+// ddim_sampler.myp — D5：端到端 DDIM 采样（UNet 去噪循环），纯 MYP fp32 前向 + double 调度簿记
+//
+// 输入（data/diffusion/unet/ + data/diffusion/d5/）：
+//   unet/weights.bin bases.bin time_emb.bin text_emb.bin latent_in.bin ref_out.bin
+//   d5/d5_tsteps.bin (i32×N)  d5/d5_alphas.bin (fp32×1000)
+// 流程：x_T=latent_in → 每步 unetForward(x,t) 得 ε → DDIM η=0 更新 → x_{t-1} → 循环 N 步
+//   → 最终 latent 写 data/diffusion/vae/latent_in.bin（供 vae_decode.myp 解码出图）
+// DDIM 公式（diffusers 0.39，η=0）：x0=(x_t−√(1−αt)·ε)/√αt；x_prev=√α_prev·x0+√(1−α_prev)·ε
+//   时间步直接读 d5_tsteps.bin（SD1.5 config steps_offset=1 → [981,961,...,1]，N=50）。
+//   末步（prev_t=-1）α_prev 用 alphas_cumprod[0]（SD1.5 set_alpha_to_one=false →
+//   diffusers final_alpha_cumprod=alphas_cumprod[0]=0.99915，非 1.0；用 1.0 末步错 4.2e-2）。
+//
+// 运行（须在 examples/ 下）：
+//   ../../build/mypc -O3 deeplearning/diffusion/ddim_sampler.myp -o /tmp/ddims --stdlib ../stdlib
+//   MYP_D5_MODE=single /tmp/ddims   # sanity：t=980 单步 vs ref_out.bin（应 SINGLE FORWARD OK）
+//   MYP_D5_MODE=ddim  /tmp/ddims    # 全 DDIM 循环 → vae/latent_in.bin（+ d5/myp_d5_eps_<i>.bin 逐步对拍）
+import env;
+import fmt;
+import math;
+import "../infer/ops.myp";
+import "../infer/pb.myp";
+import "unet_ops.myp";
+
+class DDimSampler {
+    property:
+        float[] a_;
+        int[] base_;
+        int teOff_;
+        int txtOff_;
+        int alpOff_;
+        int xOff_;
+        int refOff_;
+        int FN_;
+        int rscr_;
+        int tscr_;
+        int ascr_;
+        string mode_;
+        int wA0_;
+        int wD0P0_;
+        int wD0P1_;
+        int wD0DS_;
+        int wD1P0_;
+        int wD1P1_;
+        int wD1DS_;
+        int wD2P0_;
+        int wD2P1_;
+        int wD2DS_;
+        int wD3R0_;
+        int wD3R1_;
+        int wMIDW_;
+        int wU0_;
+        int wU0US_;
+        int wU1_;
+        int wU1US_;
+        int wU2_;
+        int wU2US_;
+        int wU3_;
+
+    action:
+        @constructor DDimSampler() {
+            a_ = new float[1024 * 1024 * 1024];   // 4GB arena
+            // ---- bases + 权重 ----
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/unet/bases.bin", "rb");
+            if (fd < 0) { Console.writeLine("bases.bin missing"); return; }
+            int nblk = 47;
+            base_ = new int[64];
+            int i = 0;
+            while (i < nblk) { base_[i] = readI32(); i = i + 1; }
+            __myp_io_fclose();
+            int wEnd = base_[46] + 4 * 320 * 9 + 4;   // conv_out [4,320,3,3]+bias
+            long t0 = __myp_now_ms();
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/unet/weights.bin", "rb");
+            if (fd2 < 0) { Console.writeLine("weights.bin missing"); return; }
+            loadBlock(a_, 0, wEnd);
+            __myp_io_fclose();
+            Console.writeString("UNet weights loaded in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+
+            // ---- 表 + 输入布局（单调）----
+            teOff_ = wEnd;                      // time_emb [1000,1280]
+            txtOff_ = teOff_ + 1000 * 1280;     // text_emb [768,77]
+            alpOff_ = txtOff_ + 768 * 77;       // alphas_cumprod [1000]
+            xOff_ = alpOff_ + 1000;             // x_T / DDIM 状态 [4,64,64]
+            refOff_ = xOff_ + 16384;            // ref_out.bin（single 模式用）[4,64,64]
+            int actOff = refOff_ + 16384;       // 工作区起点
+            // 工作区偏移（与 unet_forward.myp 完全一致）
+            int A0 = actOff;
+            int D0P0 = A0 + 1310720;
+            int D0P1 = D0P0 + 1310720;
+            int D0DS = D0P1 + 1310720;
+            int D1P0 = D0DS + 327680;
+            int D1P1 = D1P0 + 655360;
+            int D1DS = D1P1 + 655360;
+            int D2P0 = D1DS + 163840;
+            int D2P1 = D2P0 + 327680;
+            int D2DS = D2P1 + 327680;
+            int D3R0 = D2DS + 81920;
+            int D3R1 = D3R0 + 81920;
+            int MIDW = D3R1 + 81920;
+            int U0 = MIDW + 81920;
+            int U0US = U0 + 262144;
+            int U1 = U0US + 327680;
+            int U1US = U1 + 262144;
+            int U2 = U1US + 1310720;
+            int U2US = U2 + 655360;
+            int U3 = U2US + 2621440;
+            FN_ = U3 + 1310720;                  // 输出 [4,64,64]
+            rscr_ = FN_ + 16384;
+            tscr_ = rscr_ + 6000000;
+            ascr_ = tscr_ + 200000;
+            // 存储工作区（供 unetForward 使用）
+            wA0_ = A0; wD0P0_ = D0P0; wD0P1_ = D0P1; wD0DS_ = D0DS;
+            wD1P0_ = D1P0; wD1P1_ = D1P1; wD1DS_ = D1DS;
+            wD2P0_ = D2P0; wD2P1_ = D2P1; wD2DS_ = D2DS;
+            wD3R0_ = D3R0; wD3R1_ = D3R1; wMIDW_ = MIDW;
+            wU0_ = U0; wU0US_ = U0US; wU1_ = U1; wU1US_ = U1US;
+            wU2_ = U2; wU2US_ = U2US; wU3_ = U3;
+
+            // ---- 加载 time_emb / text_emb / latent / ref_out ----
+            int fd3 = __myp_io_fopen("./deeplearning/data/diffusion/unet/time_emb.bin", "rb");
+            if (fd3 < 0) { Console.writeLine("time_emb.bin missing"); return; }
+            i = 0; while (i < 1000 * 1280) { a_[teOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+            int fd4 = __myp_io_fopen("./deeplearning/data/diffusion/unet/text_emb.bin", "rb");
+            if (fd4 < 0) { Console.writeLine("text_emb.bin missing"); return; }
+            i = 0; while (i < 768 * 77) { a_[txtOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+            int fd5 = __myp_io_fopen("./deeplearning/data/diffusion/unet/latent_in.bin", "rb");
+            if (fd5 < 0) { Console.writeLine("latent_in.bin missing"); return; }
+            i = 0; while (i < 16384) { a_[xOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+            int fd6 = __myp_io_fopen("./deeplearning/data/diffusion/unet/ref_out.bin", "rb");
+            if (fd6 < 0) { Console.writeLine("ref_out.bin missing"); return; }
+            i = 0; while (i < 16384) { a_[refOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+
+            mode_ = Console.getEnv("MYP_D5_MODE");
+            if (mode_ == "ddim") runDdim();
+            else runSingle();
+        }
+
+        // ---- 单步 sanity：t=980 前向 vs ref_out.bin（验证重构未破坏 D3b 结果）----
+        void runSingle() {
+            int tOff = teOff_ + 980 * 1280;
+            unetForward(xOff_, tOff, FN_);
+            double maxAbs = 0.0;
+            int i = 0;
+            while (i < 16384) {
+                double ad = Math.abs(double(a_[FN_ + i]) - double(a_[refOff_ + i]));
+                if (ad > maxAbs || ad != ad) maxAbs = ad;
+                i = i + 1;
+            }
+            Console.writeString("SINGLE FORWARD maxAbsDiff=");
+            Console.writeFloat(maxAbs);
+            Console.writeLine("");
+            if (maxAbs < 2.0e-3) Console.writeLine("SINGLE FORWARD OK");
+            else Console.writeLine("SINGLE FORWARD FAIL");
+        }
+
+        // ---- DDIM 循环 ----
+        void runDdim() {
+            // 读 alphas + 时间步
+            int fd = __myp_io_fopen("./deeplearning/data/diffusion/d5/d5_alphas.bin", "rb");
+            if (fd < 0) { Console.writeLine("d5_alphas.bin missing"); return; }
+            int i = 0; while (i < 1000) { a_[alpOff_ + i] = float(readF32()); i = i + 1; }
+            __myp_io_fclose();
+            int fd2 = __myp_io_fopen("./deeplearning/data/diffusion/d5/d5_tsteps.bin", "rb");
+            if (fd2 < 0) { Console.writeLine("d5_tsteps.bin missing"); return; }
+            int n = readI32();
+            int[] ts = new int[200];
+            int k = 0;
+            while (k < n) { ts[k] = readI32(); k = k + 1; }
+            __myp_io_fclose();
+            Console.writeString("DDIM steps="); Console.write(n); Console.writeLine("");
+
+            int step = 0;
+            while (step < n) {
+                int t = ts[step];
+                long t0 = __myp_now_ms();
+                unetForward(xOff_, teOff_ + t * 1280, FN_);   // FN_ = ε_t
+                // 落盘 ε（逐步对拍 d5_eps_<i>.bin）
+                writeF32Buf(a_, FN_, 16384, "./deeplearning/data/diffusion/d5/myp_d5_eps_" + iStr(step) + ".bin");
+                // DDIM η=0 更新（double）
+                // 最后一步 prev_t=-1：aPrev 用 alphas_cumprod[0]（SD1.5 set_alpha_to_one=false
+                //   → diffusers final_alpha_cumprod = alphas_cumprod[0]=0.99915，非 1.0！
+                //   用 1.0 会让末步 eps 项系数 0.0292 变 0 → 最终 latent 错 4.2e-2）
+                int prev_t = (step + 1 < n) ? ts[step + 1] : -1;
+                double at = double(a_[alpOff_ + t]);
+                double aPrev = (prev_t >= 0) ? double(a_[alpOff_ + prev_t]) : double(a_[alpOff_ + 0]);
+                double rAt = Math.sqrt(at);
+                double rBt = Math.sqrt(1.0 - at);
+                double rAp = Math.sqrt(aPrev);
+                double rBp = Math.sqrt(1.0 - aPrev);
+                int q = 0;
+                while (q < 16384) {
+                    double x = double(a_[xOff_ + q]);
+                    double eps = double(a_[FN_ + q]);
+                    double x0 = (x - rBt * eps) / rAt;
+                    a_[xOff_ + q] = float(rAp * x0 + rBp * eps);
+                    q = q + 1;
+                }
+                Console.writeString("step "); Console.write(step); Console.writeString(" t="); Console.write(t);
+                Console.writeString(" in "); Console.writeLong(__myp_now_ms() - t0); Console.writeLine(" ms");
+                step = step + 1;
+            }
+
+            // 写最终 latent → vae/latent_in.bin（vae_decode.myp 直接读，内部 ×1/0.18215）
+            int fdo = __myp_io_fopen("./deeplearning/data/diffusion/vae/latent_in.bin", "wb");
+            if (fdo >= 0) {
+                int j = 0;
+                while (j < 16384) {
+                    int bits = F32.toBits(a_[xOff_ + j]);
+                    __myp_io_write_byte(bits & 255);
+                    __myp_io_write_byte((bits >> 8) & 255);
+                    __myp_io_write_byte((bits >> 16) & 255);
+                    __myp_io_write_byte((bits >> 24) & 255);
+                    j = j + 1;
+                }
+                __myp_io_fclose();
+                Console.writeLine("final latent -> vae/latent_in.bin");
+            }
+        }
+
+        // ---- 可复用 UNet 前向（重构自 unet_forward.myp，无阶段检查）----
+        void unetForward(int xOff, int tOff, int yOff) {
+            int A0 = wA0_; int D0P0 = wD0P0_; int D0P1 = wD0P1_; int D0DS = wD0DS_;
+            int D1P0 = wD1P0_; int D1P1 = wD1P1_; int D1DS = wD1DS_;
+            int D2P0 = wD2P0_; int D2P1 = wD2P1_; int D2DS = wD2DS_;
+            int D3R0 = wD3R0_; int D3R1 = wD3R1_; int MIDW = wMIDW_;
+            int U0 = wU0_; int U0US = wU0US_; int U1 = wU1_; int U1US = wU1US_;
+            int U2 = wU2_; int U2US = wU2US_; int U3 = wU3_;
+            int rscr = rscr_; int tscr = tscr_; int ascr = ascr_;
+
+            InferOps.conv(a_, xOff, 1, 4, 64, 64, 0, 4 * 320 * 9, A0, 320, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            // down0
+            resnetOp(a_, base_[1], A0, D0P0, tOff, rscr, 320, 320, 64, 64);
+            attnBlock(a_, base_[2], D0P0, D0P0, txtOff_, ascr, 320, 4096, 77, 8);
+            resnetOp(a_, base_[3], D0P0, D0P1, tOff, rscr, 320, 320, 64, 64);
+            attnBlock(a_, base_[4], D0P1, D0P1, txtOff_, ascr, 320, 4096, 77, 8);
+            InferOps.conv(a_, D0P1, 1, 320, 64, 64, base_[5], base_[5] + 320 * 320 * 9, D0DS, 320, 32, 32, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1);
+            // down1
+            resnetOp(a_, base_[6], D0DS, D1P0, tOff, rscr, 320, 640, 32, 32);
+            attnBlock(a_, base_[7], D1P0, D1P0, txtOff_, ascr, 640, 1024, 77, 8);
+            resnetOp(a_, base_[8], D1P0, D1P1, tOff, rscr, 640, 640, 32, 32);
+            attnBlock(a_, base_[9], D1P1, D1P1, txtOff_, ascr, 640, 1024, 77, 8);
+            InferOps.conv(a_, D1P1, 1, 640, 32, 32, base_[10], base_[10] + 640 * 640 * 9, D1DS, 640, 16, 16, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1);
+            // down2
+            resnetOp(a_, base_[11], D1DS, D2P0, tOff, rscr, 640, 1280, 16, 16);
+            attnBlock(a_, base_[12], D2P0, D2P0, txtOff_, ascr, 1280, 256, 77, 8);
+            resnetOp(a_, base_[13], D2P0, D2P1, tOff, rscr, 1280, 1280, 16, 16);
+            attnBlock(a_, base_[14], D2P1, D2P1, txtOff_, ascr, 1280, 256, 77, 8);
+            InferOps.conv(a_, D2P1, 1, 1280, 16, 16, base_[15], base_[15] + 1280 * 1280 * 9, D2DS, 1280, 8, 8, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1);
+            // down3
+            resnetOp(a_, base_[16], D2DS, D3R0, tOff, rscr, 1280, 1280, 8, 8);
+            resnetOp(a_, base_[17], D3R0, D3R1, tOff, rscr, 1280, 1280, 8, 8);
+            // mid
+            resnetOp(a_, base_[18], D3R1, MIDW, tOff, rscr, 1280, 1280, 8, 8);
+            attnBlock(a_, base_[19], MIDW, MIDW, txtOff_, ascr, 1280, 64, 77, 8);
+            resnetOp(a_, base_[20], MIDW, MIDW, tOff, rscr, 1280, 1280, 8, 8);
+            // up0
+            concatCC(a_, MIDW, D3R1, tscr, 1280, 1280, 8, 8);
+            resnetOp(a_, base_[21], tscr, U0, tOff, rscr, 2560, 1280, 8, 8);
+            concatCC(a_, U0, D3R0, tscr, 1280, 1280, 8, 8);
+            resnetOp(a_, base_[22], tscr, U0, tOff, rscr, 2560, 1280, 8, 8);
+            concatCC(a_, U0, D2DS, tscr, 1280, 1280, 8, 8);
+            resnetOp(a_, base_[23], tscr, U0, tOff, rscr, 2560, 1280, 8, 8);
+            UnetOps.nearestUpsample2x(a_, U0, tscr, 1280, 8, 8);
+            InferOps.conv(a_, tscr, 1, 1280, 16, 16, base_[24], base_[24] + 1280 * 1280 * 9, U0US, 1280, 16, 16, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            // up1
+            concatCC(a_, U0US, D2P1, tscr, 1280, 1280, 16, 16);
+            resnetOp(a_, base_[25], tscr, U1, tOff, rscr, 2560, 1280, 16, 16);
+            attnBlock(a_, base_[26], U1, U1, txtOff_, ascr, 1280, 256, 77, 8);
+            concatCC(a_, U1, D2P0, tscr, 1280, 1280, 16, 16);
+            resnetOp(a_, base_[27], tscr, U1, tOff, rscr, 2560, 1280, 16, 16);
+            attnBlock(a_, base_[28], U1, U1, txtOff_, ascr, 1280, 256, 77, 8);
+            concatCC(a_, U1, D1DS, tscr, 1280, 640, 16, 16);
+            resnetOp(a_, base_[29], tscr, U1, tOff, rscr, 1920, 1280, 16, 16);
+            attnBlock(a_, base_[30], U1, U1, txtOff_, ascr, 1280, 256, 77, 8);
+            UnetOps.nearestUpsample2x(a_, U1, tscr, 1280, 16, 16);
+            InferOps.conv(a_, tscr, 1, 1280, 32, 32, base_[31], base_[31] + 1280 * 1280 * 9, U1US, 1280, 32, 32, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            // up2
+            concatCC(a_, U1US, D1P1, tscr, 1280, 640, 32, 32);
+            resnetOp(a_, base_[32], tscr, U2, tOff, rscr, 1920, 640, 32, 32);
+            attnBlock(a_, base_[33], U2, U2, txtOff_, ascr, 640, 1024, 77, 8);
+            concatCC(a_, U2, D1P0, tscr, 640, 640, 32, 32);
+            resnetOp(a_, base_[34], tscr, U2, tOff, rscr, 1280, 640, 32, 32);
+            attnBlock(a_, base_[35], U2, U2, txtOff_, ascr, 640, 1024, 77, 8);
+            concatCC(a_, U2, D0DS, tscr, 640, 320, 32, 32);
+            resnetOp(a_, base_[36], tscr, U2, tOff, rscr, 960, 640, 32, 32);
+            attnBlock(a_, base_[37], U2, U2, txtOff_, ascr, 640, 1024, 77, 8);
+            UnetOps.nearestUpsample2x(a_, U2, tscr, 640, 32, 32);
+            InferOps.conv(a_, tscr, 1, 640, 64, 64, base_[38], base_[38] + 640 * 640 * 9, U2US, 640, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            // up3
+            concatCC(a_, U2US, D0P1, tscr, 640, 320, 64, 64);
+            resnetOp(a_, base_[39], tscr, U3, tOff, rscr, 960, 320, 64, 64);
+            attnBlock(a_, base_[40], U3, U3, txtOff_, ascr, 320, 4096, 77, 8);
+            concatCC(a_, U3, D0P0, tscr, 320, 320, 64, 64);
+            resnetOp(a_, base_[41], tscr, U3, tOff, rscr, 640, 320, 64, 64);
+            attnBlock(a_, base_[42], U3, U3, txtOff_, ascr, 320, 4096, 77, 8);
+            concatCC(a_, U3, A0, tscr, 320, 320, 64, 64);
+            resnetOp(a_, base_[43], tscr, U3, tOff, rscr, 640, 320, 64, 64);
+            attnBlock(a_, base_[44], U3, U3, txtOff_, ascr, 320, 4096, 77, 8);
+            // conv_norm_out + silu + conv_out → yOff
+            UnetOps.groupNorm(a_, U3, base_[45], base_[45] + 320, U3, 320, 64, 64, 32, 1.0e-5);
+            InferOps.silu(a_, U3, U3, 320 * 64 * 64);
+            InferOps.conv(a_, U3, 1, 320, 64, 64, base_[46], base_[46] + 4 * 320 * 9, yOff, 4, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+        }
+
+        // ---- ResBlock（同 unet_forward）----
+        void resnetOp(float[] a, int w, int x, int y, int t, int sc, int xC, int outC, int H, int W) {
+            int c1 = 2 * xC;
+            int c1b = c1 + outC * xC * 9;
+            int tpw = c1b + outC;
+            int tpb = tpw + outC * 1280;
+            int n2 = tpb + outC;
+            int n2b = n2 + outC;
+            int c2 = n2b + outC;
+            int c2b = c2 + outC * outC * 9;
+            int hw = H * W;
+            int n1 = sc;
+            int nm = sc + xC * hw;
+            int ts = sc + (xC + outC) * hw;
+            int tp = ts + 1280;
+            int xc = tp + outC;
+            int xin = x;
+            if (x == y) {
+                int ii = 0;
+                while (ii < xC * hw) { a[xc + ii] = a[x + ii]; ii = ii + 1; }
+                xin = xc;
+            }
+            UnetOps.groupNorm(a, xin, w, w + xC, n1, xC, H, W, 32, 1.0e-5);
+            InferOps.silu(a, n1, n1, xC * hw);
+            InferOps.conv(a, n1, 1, xC, H, W, w + c1, w + c1b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            InferOps.silu(a, t, ts, 1280);
+            InferOps.dense(a, ts, 1280, 1, w + tpw, outC, w + tpb, tp);
+            addChan(a, y, tp, outC, hw);
+            UnetOps.groupNorm(a, y, w + n2, w + n2b, nm, outC, H, W, 32, 1.0e-5);
+            InferOps.silu(a, nm, nm, outC * hw);
+            InferOps.conv(a, nm, 1, outC, H, W, w + c2, w + c2b, y, outC, H, W, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (xC != outC) {
+                InferOps.conv(a, xin, 1, xC, H, W, w + c2b + outC, w + c2b + outC + outC * xC, nm, outC, H, W, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1);
+                addFlat(a, y, nm, outC * hw);
+            } else {
+                addFlat(a, y, xin, outC * hw);
+            }
+        }
+
+        // ---- Transformer2DModel（无内部 dbgCheck）----
+        void attnBlock(float[] a, int w, int x, int y, int ctx, int sc, int dim, int S, int kvS, int heads) {
+            int ff = dim * 4;
+            int piw = 2 * dim;
+            int pib = piw + dim * dim;
+            int n1w = pib + dim;
+            int n1b = n1w + dim;
+            int a1q = n1b + dim;
+            int a1k = a1q + dim * dim;
+            int a1v = a1k + dim * dim;
+            int a1o = a1v + dim * dim;
+            int a1ob = a1o + dim * dim;
+            int n2w = a1ob + dim;
+            int n2b = n2w + dim;
+            int a2q = n2b + dim;
+            int a2k = a2q + dim * dim;
+            int a2v = a2k + dim * 768;
+            int a2o = a2v + dim * 768;
+            int a2ob = a2o + dim * dim;
+            int n3w = a2ob + dim;
+            int n3b = n3w + dim;
+            int ffpw = n3b + dim;
+            int ffpb = ffpw + 2 * ff * dim;
+            int fflw = ffpb + 2 * ff;
+            int fflb = fflw + dim * ff;
+            int pow = fflb + dim;
+            int pob = pow + dim * dim;
+            int hw = dim * S;
+            int kvb = dim * kvS;
+            int bv = kvb > hw ? kvb : hw;
+            int g = sc;
+            int y1 = g + hw;
+            int ln = y1 + hw;
+            int q = ln + hw;
+            int k = q + bv;
+            int v = k + bv;
+            int at = v + bv;
+            int o = at + hw;
+            int ffp = o + hw;
+            int ffm = ffp + 2 * ff * S;
+            int ffs = ffm + ff * S;
+            int sco = ffs + ff * S;
+            UnetOps.groupNorm(a, x, w, w + dim, g, dim, 1, S, 32, 1.0e-5);
+            InferOps.dense(a, g, dim, S, w + piw, dim, w + pib, y1);
+            InferOps.layerNorm(a, y1, w + n1w, w + n1b, ln, dim, S, 1.0e-5);
+            InferOps.matmul(a, ln, dim, S, w + a1q, dim, q);
+            InferOps.matmul(a, ln, dim, S, w + a1k, dim, k);
+            InferOps.matmul(a, ln, dim, S, w + a1v, dim, v);
+            UnetOps.attention2(a, q, k, v, at, sco, dim, S, S, heads);
+            InferOps.dense(a, at, dim, S, w + a1o, dim, w + a1ob, o);
+            addFlat(a, y1, o, hw);
+            InferOps.layerNorm(a, y1, w + n2w, w + n2b, ln, dim, S, 1.0e-5);
+            InferOps.matmul(a, ln, dim, S, w + a2q, dim, q);
+            InferOps.matmul(a, ctx, 768, kvS, w + a2k, dim, k);
+            InferOps.matmul(a, ctx, 768, kvS, w + a2v, dim, v);
+            UnetOps.attention2(a, q, k, v, at, sco, dim, S, kvS, heads);
+            InferOps.dense(a, at, dim, S, w + a2o, dim, w + a2ob, o);
+            addFlat(a, y1, o, hw);
+            InferOps.layerNorm(a, y1, w + n3w, w + n3b, ln, dim, S, 1.0e-5);
+            InferOps.dense(a, ln, dim, S, w + ffpw, 2 * ff, w + ffpb, ffp);
+            UnetOps.geglu(a, ffp, ffm, ffs, ff * S);
+            InferOps.dense(a, ffm, ff, S, w + fflw, dim, w + fflb, o);
+            addFlat(a, y1, o, hw);
+            InferOps.dense(a, y1, dim, S, w + pow, dim, w + pob, o);
+            addFlat(a, y, o, hw);
+        }
+
+        // ---- 工具 ----
+        void concatCC(float[] a, int x, int z, int out, int c1, int c2, int H, int W) {
+            int hw = H * W;
+            int c = 0;
+            while (c < c1) {
+                int p = 0;
+                while (p < hw) { a[out + c * hw + p] = a[x + c * hw + p]; p = p + 1; }
+                c = c + 1;
+            }
+            c = 0;
+            while (c < c2) {
+                int p = 0;
+                while (p < hw) { a[out + (c1 + c) * hw + p] = a[z + c * hw + p]; p = p + 1; }
+                c = c + 1;
+            }
+        }
+        void addChan(float[] a, int y, int tp, int C, int hw) {
+            int c = 0;
+            while (c < C) {
+                int p = 0;
+                while (p < hw) { a[y + c * hw + p] = a[y + c * hw + p] + a[tp + c]; p = p + 1; }
+                c = c + 1;
+            }
+        }
+        void addFlat(float[] a, int y, int x, int n) {
+            int i = 0;
+            while (i < n) { a[y + i] = a[y + i] + a[x + i]; i = i + 1; }
+        }
+        void loadBlock(float[] a, int off, int n) {
+            int i = 0;
+            while (i < n) { a[off + i] = float(readF32()); i = i + 1; }
+        }
+        void writeF32Buf(float[] a, int off, int n, string path) {
+            int fd = __myp_io_fopen(path, "wb");
+            if (fd < 0) { Console.writeLine("cannot write " + path); return; }
+            int i = 0;
+            while (i < n) {
+                int bits = F32.toBits(a[off + i]);
+                __myp_io_write_byte(bits & 255);
+                __myp_io_write_byte((bits >> 8) & 255);
+                __myp_io_write_byte((bits >> 16) & 255);
+                __myp_io_write_byte((bits >> 24) & 255);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+        string iStr(int v) {
+            return Fmt.i(v, 2, 48);   // 两位零填充
+        }
+        double readF32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0 || b1 < 0 || b2 < 0 || b3 < 0) return 0.0;
+            int bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+            return F32.toDouble(bits);
+        }
+        int readI32() {
+            int b0 = __myp_io_read_byte();
+            int b1 = __myp_io_read_byte();
+            int b2 = __myp_io_read_byte();
+            int b3 = __myp_io_read_byte();
+            if (b0 < 0) b0 = 0;
+            if (b1 < 0) b1 = 0;
+            if (b2 < 0) b2 = 0;
+            if (b3 < 0) b3 = 0;
+            return b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+        }
+
+}
+int main() { DDimSampler s = new DDimSampler(); return 0; }

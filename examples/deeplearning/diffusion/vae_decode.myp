@@ -79,7 +79,9 @@ class VaeDec {
             // ===== post_quant_conv(1×1) + conv_in(3×3 pad1)：latent → A0 =====
             // 先 post_quant_conv 到 A0（复用 A0 作为中转，再 conv_in 到 M0）
             InferOps.conv(a_, latOff, 1, 4, 64, 64, base[0], base[0] + 4 * 4, A0, 4, 64, 64, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1);
+            if (Console.getEnv("MYP_VAE_DUMP_CONV") == "1") dumpAbs(a_, A0, 4 * 64 * 64, "./deeplearning/data/diffusion/d5/myp_A0.f32");
             InferOps.conv(a_, A0, 1, 4, 64, 64, base[1], base[1] + 4 * 512 * 9, M0, 512, 64, 64, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1);
+            if (Console.getEnv("MYP_VAE_DUMP_CONV") == "1") dumpAbs(a_, M0, 512 * 64 * 64, "./deeplearning/data/diffusion/d5/myp_M0.f32");
             if (stageCheck(stg_, "conv_in", a_, M0, 512 * 64 * 64) == 1) return;
 
             // ===== mid：resnet512 → attn512 → resnet512 =====
@@ -143,6 +145,13 @@ class VaeDec {
                 dumpBuf(a_, U3, 128 * 512 * 512, "myp_post_silu.f32");
                 dumpBuf(a_, FN, 3 * 512 * 512, "myp_final.f32");
                 Console.writeLine("dumped post_silu + final");
+                return;
+            }
+            // PPM 图像输出（D5）：MYP_VAE_PPM=1 时落盘 myp_image.f32 + myp_image.ppm（跳过 ref 对拍）
+            if (Console.getEnv("MYP_VAE_PPM") == "1") {
+                dumpAbs(a_, FN, 3 * 512 * 512, "./deeplearning/data/diffusion/d5/myp_image.f32");
+                writePPM(a_, FN, "./deeplearning/data/diffusion/d5/myp_image.ppm");
+                Console.writeLine("myp_image.ppm + myp_image.f32 written (PPM mode)");
                 return;
             }
             double maxAbs = 0.0;
@@ -289,6 +298,50 @@ class VaeDec {
                 __myp_io_write_byte((b >> 16) & 255);
                 __myp_io_write_byte((b >> 24) & 255);
                 i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        // 直接写 f32 到给定路径（不带 vae/ 前缀）
+        void dumpAbs(float[] a, int off, int n, string path) {
+            int fd = __myp_io_fopen(path, "wb");
+            if (fd < 0) { Console.writeLine("cannot write " + path); return; }
+            int i = 0;
+            while (i < n) {
+                int b = F32.toBits(a[off + i]);
+                __myp_io_write_byte(b & 255);
+                __myp_io_write_byte((b >> 8) & 255);
+                __myp_io_write_byte((b >> 16) & 255);
+                __myp_io_write_byte((b >> 24) & 255);
+                i = i + 1;
+            }
+            __myp_io_fclose();
+        }
+
+        // ---- PPM P6 图像：a 为 [3,H,W] 通道主序，像素 = clamp((v/2+0.5)*255) ----
+        void writePPM(float[] a, int off, string path) {
+            int H = 512; int W = 512; int HW = H * W;
+            int fd = __myp_io_fopen(path, "wb");
+            if (fd < 0) { Console.writeLine("cannot write " + path); return; }
+            string hdr = "P6\n512 512\n255\n";
+            int ci = 0;
+            while (ci < Str.len(hdr)) { __myp_io_write_byte(__myp_charcode(hdr, ci)); ci = ci + 1; }
+            int h = 0;
+            while (h < H) {
+                int w = 0;
+                while (w < W) {
+                    int c = 0;
+                    while (c < 3) {
+                        double v = double(a[off + c * HW + h * W + w]);
+                        double p = (v / 2.0 + 0.5) * 255.0;
+                        if (p < 0.0) p = 0.0;
+                        if (p > 255.0) p = 255.0;
+                        __myp_io_write_byte(int(p));
+                        c = c + 1;
+                    }
+                    w = w + 1;
+                }
+                h = h + 1;
             }
             __myp_io_fclose();
         }
