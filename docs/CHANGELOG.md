@@ -40,7 +40,8 @@ mypview changelog 双向引用。
 **非破坏性（additive）语言特性**，oracle（mypc）与 selfhost 双端同步实现：
 
 1. **多行字符串 `"""..."""`**：三个连续引号开始，到下一个未转义三连引号结束；
-   内容可含换行与单个 `"`，`\` 转义与单行字符串一致。纯 lexer 改动。
+   内容可含换行与单个 `"`，`\` 转义与单行字符串一致。**raw 语义**：三引号串不做
+   `$name` 插值展开、保留字面 `$`（`Token.raw` 标记；parser 对 raw 串跳过插值）。
 
 2. **字符串插值**（两种形式）：
    - `${expr}` —— 任意表达式插值（lexer 在字符串内遇 `$` 后跟 `{` 时合成
@@ -60,6 +61,30 @@ mypview changelog 双向引用。
 **回归**：oracle 320/320、selfhost 320/320、自举不动点 16/16、tokens/ast/sema
 对拍 95/95、fmt/viz 对拍全绿。新正测试：`tests/@test/manual_lexer_triple_string.myp`、
 `manual_lexer_interp.myp`、`manual_null_safe.myp`。
+
+### v3.14.1 — 优化点推进：多文件并行编译 + GPU R0 止血 + parity 零差距
+
+「立即做」优化清单推进（多文件并行编译 ① / GPU R0 止血 ②）+ 前置两处修复：
+
+1. **`==`/`!=` 字符串比较类型检查（58def81）**：`bool == string` 应报错，此前静默
+   放行（oracle 与 selfhost 双端）。
+2. **selfhost parity 零差距（c3d88ac）**：补齐 4 项 parity 差距（`arc` / `arc_m2` /
+   `weak_cycle` / `closed-lib`），oracle 与 selfhost 同套 `tests/run_tests.sh`
+   315/315 零差距。
+3. **多文件并行编译（682ab9b）**：
+   - `@parallel for` CPU 并行体从纯数值内核切到完整 `generateStmt`（支持字符串 /
+     `new` / 方法调用 / 字段访问）；`@gpu for` 保持纯数值内核（NVPTX 无字符串/堆，
+     错误消息只提 `'@gpu for'`）。
+   - selfhost 前端多文件 lexer+parser 用 `@parallel for` 并行化 + 顺序合并。
+   - 打通自举约束：selfhost 源码可被 mypc 编译（bootstrap 种子不受限）。
+4. **GPU R0 止血（f803439）**：`gpu_check_err` 统一 CUDA 错误检查（失败记录 kernel
+   名 + 错误码、置 `g_force_cpu`、首错打印一次明确诊断）；kernel 名跟踪（launch
+   失败信息带 grid/block 定位 OOB）；全管线回退（`myp_gpu_init` 开头
+   `if (g_force_cpu) return 0`）；新 FFI `myp_gpu_force_cpu()` + `Cuda.forceCpu()`
+   （oracle/selfhost 双端注册）。
+
+**回归**：oracle 317/317、selfhost 317/317、GPU 回退 61/61、bootstrap 16/16
+不动点、parity 0 差距。
 
 ### v3.14.0 — Windows 移植里程碑 1/2：运行时层交叉编译通过（MinGW-w64）
 
