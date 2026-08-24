@@ -25,7 +25,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Derived Serialization** | `@derive(Json)` class annotation auto-generates toJson/fromJson (serde-style, zero runtime reflection) |
 | **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
-| **Zero-Dependency Stdlib** | 40 modules, pure MYP implementations |
+| **Zero-Dependency Stdlib** | 42 modules, pure MYP implementations |
 | **LSP Integration** | Completion, hover, go-to-definition, document symbols |
 
 ## 🚀 Quick Start
@@ -139,7 +139,7 @@ int main() { Main m = new Main() @thread; return 0; }
 
 See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/design.md) for full details.
 
-## 📦 Standard Library (40 Modules)
+## 📦 Standard Library (42 Modules)
 
 | Category | Modules |
 |----------|---------|
@@ -180,9 +180,20 @@ See the [Programming Manual](docs/manual_en.md) and [Design Document](docs/desig
 ```bash
 bash tests/run_tests.sh          # full regression (compile+run compare + negative + test-framework + self-hosted + LSP)
 # Regression tests: 110 passed, 0 failed
-# Negative tests:   74 passed, 0 failed
-# Total:            292 passed, 0 failed
+# Negative tests:   85 passed, 0 failed
+# Test framework:  117 passed, 0 failed
+# self-pm 2 / self-fmt 1 / self-viz 1 / mypc run 1 / LSP 1 / coro-stack-warn 1 / no-crash 1
+# Total:            322 passed, 0 failed
 bash tests/run_tests_asan.sh     # ASAN (AddressSanitizer) regression
+bash tests/run_tests_tsan.sh     # TSan (ThreadSanitizer) regression
+bash tests/run_tests_O2.sh       # -O2 optimized regression
+bash tests/test_myp_bootstrap.sh # self-hosting fixed point (myp_self2 == myp_self3 byte-identical, 16/16)
+bash tests/test_myp_self.sh      # selfhost cross-check (tokens/ast/sema byte-identical, 95/95)
+bash tests/test_myp_fmt.sh       # self-hosted formatter cross-check
+bash tests/test_myp_viz.sh       # self-hosted visualizer cross-check
+bash tests/test_myp_gpu.sh       # GPU CPU fallback (RUN_GPU_TESTS=1)
+bash tests/parity_matrix.sh      # dual-compiler parity matrix (oracle vs selfhost same-suite diff)
+bash tests/stress/run_stress.sh  # stress tests (memory/threads/coroutines/cross-thread ARC)
 ```
 
 ## 🏗️ Project Structure
@@ -192,19 +203,28 @@ MYPLanguage/
 ├── src/              # Compiler source (C++17)
 │   ├── lexer/        # Lexical analysis
 │   ├── parser/       # Syntax analysis (parser / parser_expr / parser_stmt)
-│   ├── sema/         # Semantic analysis (sema / sema_expr)
+│   ├── ast/          # AST definitions
+│   ├── sema/         # Semantic analysis (sema / sema_expr / symbol_table / type)
+│   ├── eval/         # @macro procedural-macro interpreter (compile-time execution)
 │   ├── codegen/      # LLVM code generation (codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu)
-│   ├── runtime/      # C runtime
+│   ├── macro/        # Macro expansion (M3 declarative + @derive)
+│   ├── runtime/      # C runtime (runtime.c / runtime_gpu.c / runtime_lib.c) + stdlib/bridges (on-demand: json/net/process/regex/base64/date/hash/sdl…)
 │   ├── lsp/          # Language server
+│   ├── dap/          # DAP debug adapter
 │   └── fmt/          # Formatter
 ├── include/mylang/   # Headers
-├── stdlib/           # Standard library (.myp)
-├── tools/            # Self-hosted toolchain (pm / fmt / viz / selfhost self-hosted compiler / codegen, in MYP)
-├── logo/             # Language logo
-├── BNCTDoseEngine/   # BNCT dose simulation engine (example)
+├── stdlib/           # Standard library (.myp, 42 modules)
+├── tools/            # Self-hosted toolchain (pm package manager / fmt formatter / viz visualizer / selfhost compiler / codegen, in MYP)
+├── examples/         # Examples (incl. BNCTDoseEngine dose engine, deeplearning framework)
+├── mypview/          # General UI framework (zero MOS deps, declarative UIX + MVVM)
+├── MOS/              # MYP native OS (kernel/services/apps, x86 Linux)
 ├── vscode-myp/       # VS Code extension
+├── bench/            # Benchmarks
+├── scripts/          # Build/tool scripts
+├── cmake/            # CMake config (incl. MinGW cross-compile toolchain)
+├── logo/             # Language logo
 ├── docs/             # Documentation
-└── tests/            # Test suite (incl. tests/stress/: `bash tests/stress/run_stress.sh`)
+└── tests/            # Test suite (incl. tests/stress/ stress tests)
 ```
 
 ## 🎯 BNCT Dose Engine

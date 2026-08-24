@@ -25,7 +25,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **派生序列化** | `@derive(Json)` 类注解自动生成 toJson/fromJson（serde 式，零运行时反射） |
 | **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道 |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
-| **零依赖标准库** | 40 个模块，纯 MYP 实现 |
+| **零依赖标准库** | 42 个模块，纯 MYP 实现 |
 | **LSP 集成** | 补全、悬停、跳转定义、文档符号 |
 
 ## 🚀 快速开始
@@ -139,7 +139,7 @@ int main() { Main m = new Main() @thread; return 0; }
 
 详细语法见 [编程手册](docs/manual.md) 和 [设计文档](docs/design.md)。
 
-## 📦 标准库（40 模块）
+## 📦 标准库（42 模块）
 
 | 类别 | 模块 |
 |------|------|
@@ -180,9 +180,20 @@ int main() { Main m = new Main() @thread; return 0; }
 ```bash
 bash tests/run_tests.sh          # 全量回归（编译+运行比对 + 负测试 + 测试框架 + 自举 + LSP）
 # 回归测试: 110 通过, 0 失败
-# 负测试:   74 通过, 0 失败
-# 总计:     292 通过, 0 失败
+# 负测试:   85 通过, 0 失败
+# 测试框架: 117 通过, 0 失败
+# 自举包管理 2 / 自举格式化 1 / 自举可视化 1 / mypc run 1 / LSP 1 / 协程栈警告 1 / 无崩溃 1
+# 总计:     322 通过, 0 失败
 bash tests/run_tests_asan.sh     # ASAN（AddressSanitizer）回归
+bash tests/run_tests_tsan.sh     # TSan（ThreadSanitizer）回归
+bash tests/run_tests_O2.sh       # -O2 优化回归
+bash tests/test_myp_bootstrap.sh # 自举不动点（myp_self2 == myp_self3 字节一致，16/16）
+bash tests/test_myp_self.sh      # selfhost 对拍（tokens/ast/sema 字节一致，95/95）
+bash tests/test_myp_fmt.sh       # 自举格式化器对拍
+bash tests/test_myp_viz.sh       # 自举可视化器对拍
+bash tests/test_myp_gpu.sh       # GPU CPU 回退（RUN_GPU_TESTS=1）
+bash tests/parity_matrix.sh      # 双编译器 parity 矩阵（oracle vs selfhost 同套差分）
+bash tests/stress/run_stress.sh  # 压力测试（内存/线程/协程/跨线程 ARC）
 ```
 
 ## 🏗️ 项目结构
@@ -192,19 +203,28 @@ MYPLanguage/
 ├── src/              # 编译器源码 (C++17)
 │   ├── lexer/        # 词法分析
 │   ├── parser/       # 语法分析（parser / parser_expr / parser_stmt）
-│   ├── sema/         # 语义分析（sema / sema_expr）
+│   ├── ast/          # AST 定义
+│   ├── sema/         # 语义分析（sema / sema_expr / symbol_table / type）
+│   ├── eval/         # @macro 过程宏解释器（编译期执行）
 │   ├── codegen/      # LLVM 代码生成（codegen / codegen_class / codegen_stmt / codegen_expr / codegen_gpu）
-│   ├── runtime/      # C 运行时
+│   ├── macro/        # 宏展开（M3 声明式 + @derive 派生）
+│   ├── runtime/      # C 运行时（runtime.c / runtime_gpu.c / runtime_lib.c）+ stdlib/bridges（按需链接：json/net/process/regex/base64/date/hash/sdl…）
 │   ├── lsp/          # 语言服务器
+│   ├── dap/          # DAP 调试适配器
 │   └── fmt/          # 格式化
 ├── include/mylang/   # 头文件
-├── stdlib/           # 标准库 (.myp)
-├── tools/            # 自举工具链 (pm / fmt / viz / selfhost 自举编译器 / codegen 代码生成，MYP 实现)
-├── logo/             # 语言 Logo
-├── BNCTDoseEngine/   # BNCT 剂量模拟引擎 (示例)
+├── stdlib/           # 标准库 (.myp，42 模块)
+├── tools/            # 自举工具链（pm 包管理 / fmt 格式化 / viz 可视化 / selfhost 自举编译器 / codegen 代码生成，MYP 实现）
+├── examples/         # 示例（含 BNCTDoseEngine 剂量引擎、deeplearning 深度学习框架）
+├── mypview/          # 通用 UI 框架（零 MOS 依赖，声明式 UIX + MVVM）
+├── MOS/              # MYP 原生操作系统（内核/服务/应用，x86 Linux）
 ├── vscode-myp/       # VS Code 扩展
+├── bench/            # 性能基准
+├── scripts/          # 构建/工具脚本
+├── cmake/            # CMake 配置（含 MinGW 交叉编译 toolchain）
+├── logo/             # 语言 Logo
 ├── docs/             # 文档
-└── tests/            # 测试套件（含 tests/stress/ 压力测试：`bash tests/stress/run_stress.sh`）
+└── tests/            # 测试套件（含 tests/stress/ 压力测试）
 ```
 
 ## 🧠 深度学习框架

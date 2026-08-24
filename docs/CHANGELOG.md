@@ -105,6 +105,26 @@ fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip
 **回归**：oracle 317/317、selfhost 317/317、GPU 回退 61/61、bootstrap 16/16
 不动点、parity 0 差距。
 
+### v3.14.2 — 深度学习框架：SD1.5 文生图全管线（D1–D6）
+
+纯 MYP 实现的通用深度学习框架（`examples/deeplearning/`，LLVM 后端）扩展出
+**SD1.5 文本→图像**全管线，三大网络全部数值验证通过：
+
+- **D1 DDIM 调度器**（`diffusion/`）：`DDIM(η=0)` 纯 MYP，vs numpy float64 字节
+  精确（diff==0）+ diffusers 0.39 交叉 3.5e-7。
+- **D2 CLIP 文本编码器**：QuickGELU + 因果/padding 掩码 attention（类内私有规避
+  BUG-046），77 位置 vs transformers maxAbsDiff=2.7e-4；D2b BPE 分词器（GPT-2
+  `</w>` 词尾式）。
+- **D3 UNet**：GroupNorm(32 组)/attention2(cross+self)/GEGLU/nearestUpsample2x，
+  vs numpy 0~1.8e-7；D3b 完整前向 maxAbsDiff 1.29e-5。
+- **D4 VAE decoder**：完整前向数值验证通过（VAE DECODE OK maxAbsDiff 9.4e-6）。
+- **D5 端到端**：CLIP→UNet 50 步→VAE→PPM 出图（IMAGE OK 0.11%）；热点算子
+  `@parallel for` ~14x。
+- **D6 GPU 加速 + 交互工具**：`@gpu for` 加速扩散管线；`tools/.../gen_image.py`
+  prompt → 分词/编码 → GPU DDIM → GPU VAE → PNG（交互循环/单次/--steps/--skip-ref）。
+
+附 `examples/deeplearning/README.md` 各子目录文档 + 里程碑计划 `diffusion_plan.md`。
+
 ### v3.14.0 — Windows 移植里程碑 1/2：运行时层交叉编译通过（MinGW-w64）
 
 **背景**：评估 MYP 全生态 Windows 适配可行性后，首个里程碑 = 让运行时层

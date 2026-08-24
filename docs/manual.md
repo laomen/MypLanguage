@@ -1,6 +1,6 @@
 # MYP 编程手册
 
-> 版本 3.12 | 事件驱动组件语言
+> 版本 3.15 | 事件驱动组件语言
 > 语言规格 v1.0（语法冻结）：正式 EBNF 见 [grammar.md](grammar.md)，版本策略见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
