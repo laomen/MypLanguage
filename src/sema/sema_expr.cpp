@@ -229,13 +229,13 @@ TypeInfo Sema::visitIdentifier(IdentifierExpr& expr) {
     if (type) return *type;
 
     // Check for @static class names — they're accessible as identifiers
+    // (O(1) 索引，P1 规模修复：原线性扫全部类——每裸属性读取 O(N)）。
     if (current_tu_) {
-        for (auto& cls : current_tu_->classes) {
-            if (cls.is_static && cls.name == expr.name) {
-                TypeInfo class_type(TypeKind::Class);
-                class_type.class_name = cls.name;
-                return class_type;
-            }
+        const ClassDecl* cls = findClassDecl(expr.name);
+        if (cls && cls->is_static) {
+            TypeInfo class_type(TypeKind::Class);
+            class_type.class_name = cls->name;
+            return class_type;
         }
     }
 
@@ -295,22 +295,26 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
             }
         }
         // 2) external @op function matching (lhs_type, rhs_type)
-        for (auto& f : current_tu_->functions) {
-            if (f.op_symbol != sym) continue;
-            if (f.params.size() != 2) continue;
-            auto p0 = typeNodeToTypeInfo(f.params[0].type);
-            auto p1 = typeNodeToTypeInfo(f.params[1].type);
-            if (typesCompatible(p0, lhs_type) && typesCompatible(p1, rhs_type)) {
-                expr.op_call = std::make_shared<OperatorCall>();
-                expr.op_call->kind = "function";
-                expr.op_call->func_name = f.name;
-                // BUG-006: main() 只做接线（mapping）——解析到外部 @op 函数的运算符
-                // 是直调旁路，应拒绝（struct 内部算子 kind=="struct_method" 放行）。
-                if (in_main_function_ && !in_struct_method_) {
-                    error(expr.range, "direct function call not allowed in main() — "
-                          "use mapping() instead (operator '@op(" + sym + ")')");
+        // O(1) 短路（P7 规模修复）：无任何 @op 函数时跳过线性扫全部函数
+        // （`s + 1` × N 次 × N 个单态化函数 = O(N²)）。
+        if (any_op_functions_) {
+            for (auto& f : current_tu_->functions) {
+                if (f.op_symbol != sym) continue;
+                if (f.params.size() != 2) continue;
+                auto p0 = typeNodeToTypeInfo(f.params[0].type);
+                auto p1 = typeNodeToTypeInfo(f.params[1].type);
+                if (typesCompatible(p0, lhs_type) && typesCompatible(p1, rhs_type)) {
+                    expr.op_call = std::make_shared<OperatorCall>();
+                    expr.op_call->kind = "function";
+                    expr.op_call->func_name = f.name;
+                    // BUG-006: main() 只做接线（mapping）——解析到外部 @op 函数的运算符
+                    // 是直调旁路，应拒绝（struct 内部算子 kind=="struct_method" 放行）。
+                    if (in_main_function_ && !in_struct_method_) {
+                        error(expr.range, "direct function call not allowed in main() — "
+                              "use mapping() instead (operator '@op(" + sym + ")')");
+                    }
+                    return typeNodeToTypeInfo(f.return_type);
                 }
-                return typeNodeToTypeInfo(f.return_type);
             }
         }
         return TypeInfo(TypeKind::Void);
@@ -984,6 +988,8 @@ TypeInfo Sema::resolveGenericCall(CallExpr& expr, const std::string& name, int t
         if (inst.body)
             annotateForInsInStmt(*inst.body, inst.params);
         current_tu_->functions.push_back(std::move(inst));
+        indexFunction(mangled, current_tu_->functions.size() - 1);   // O(1) 索引
+        indexFunction(mangled, current_tu_->functions.size() - 1);   // O(1) 索引
         inst_ptr = &current_tu_->functions.back();
     }
 
@@ -1083,9 +1089,7 @@ TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_n
     mangled += "_inst";
 
     // 4) Find or clone the instance.
-    const FuncDecl* inst_ptr = nullptr;
-    for (auto& f : current_tu_->functions)
-        if (f.name == mangled) { inst_ptr = &f; break; }
+    const FuncDecl* inst_ptr = findFunctionDecl(mangled);   // O(1)（P7 规模修复）
     if (!inst_ptr) {
         FuncDecl inst;
         inst.name = mangled;
@@ -1107,6 +1111,7 @@ TypeInfo Sema::resolveGenericStaticCall(CallExpr& expr, const std::string& cls_n
         }
         inst.body = std::static_pointer_cast<BlockStmt>(templ.body); // shared body (codegen resolves T per-inst)
         current_tu_->functions.push_back(std::move(inst));
+        indexFunction(mangled, current_tu_->functions.size() - 1);   // O(1) 索引
         inst_ptr = &current_tu_->functions.back();
     }
 
@@ -1889,7 +1894,7 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
     // not the function's declared return type (which is delivered via the
     // coroutine's result slot and read with Coro.result(handle)).
     auto* ident2 = dynamic_cast<IdentifierExpr*>(expr.callee.get());
-    if (ident2 && current_tu_) {
+    if (ident2 && any_coro_functions_) {
         for (auto& f : current_tu_->functions) {
             if (f.has_coro && f.name == ident2->name)
                 return TypeInfo(TypeKind::Long);
@@ -1901,24 +1906,10 @@ TypeInfo Sema::visitCall(CallExpr& expr) {
 }
 
 bool Sema::resolveStructConstruction(CallExpr& expr, const std::string& name) {
-    // 查找 struct（文件级或类内嵌套），取类型 key
-    const StructDecl* st = nullptr;
+    // 查找 struct（文件级或类内嵌套），取类型 key。O(1) 索引（P6 规模修复：
+    // 原线性扫全部类——每方法调用 O(N)，含无 struct 的程序也白扫 N 个类）。
     std::string type_key;
-    if (current_tu_) {
-        for (auto& s : current_tu_->structs) {
-            std::string key = s.parent_class.empty()
-                ? s.name : s.parent_class + "::" + s.name;
-            if (s.name == name) { st = &s; type_key = key; break; }
-        }
-        if (!st) {
-            for (auto& cls : current_tu_->classes) {
-                for (auto& s : cls.structs) {
-                    if (s.name == name) { st = &s; type_key = cls.name + "::" + s.name; break; }
-                }
-                if (st) break;
-            }
-        }
-    }
+    const StructDecl* st = findStructDecl(name, &type_key);
     if (!st) return false;
 
     // 收集构造器候选（struct 方法中 has_constructor）
@@ -2149,11 +2140,8 @@ TypeInfo Sema::visitMemberAccess(MemberAccessExpr& expr) {
             allow_property = true;
         } else if (expr.object->kind == ExprKind::Identifier) {
             auto& pid = static_cast<const IdentifierExpr&>(*expr.object);
-            if (current_tu_) {
-                for (auto& sc : current_tu_->classes) {
-                    if (sc.is_static && sc.name == pid.name) { allow_property = true; break; }
-                }
-            }
+            const ClassDecl* sc = findClassDecl(pid.name);   // O(1)（P6 规模修复）
+            if (sc && sc->is_static) allow_property = true;
         }
         for (auto& prop : cls.properties) {
             if (prop.name == expr.member_name) {
@@ -2311,12 +2299,7 @@ TypeInfo Sema::visitNewExpr(NewExpr& expr) {
         return inst_type;
     }
 
-    bool found = false;
-    if (current_tu_) {
-        for (auto& cls : current_tu_->classes) {
-            if (cls.name == expr.class_name) { found = true; break; }
-        }
-    }
+    bool found = findClassDecl(expr.class_name) != nullptr;   // O(1)（P6 规模修复）
     if (!found)
         error(expr.range, "unknown class '" + expr.class_name + "'");
 
@@ -2328,11 +2311,8 @@ TypeInfo Sema::visitNewExpr(NewExpr& expr) {
 }
 
 void Sema::resolveNewConstructor(NewExpr& expr, const std::string& cls_name) {
-    const ClassDecl* cls = nullptr;
-    if (current_tu_) {
-        for (auto& c : current_tu_->classes)
-            if (c.name == cls_name) { cls = &c; break; }
-    }
+    // O(1) 类查找（P6 规模修复：原线性扫全部类——每 new 调用 O(N)）。
+    const ClassDecl* cls = findClassDecl(cls_name);
     if (!cls) return;
 
     // 收集构造器候选（action: 与 function: 段）
@@ -2483,10 +2463,10 @@ TypeInfo Sema::visitAssignment(AssignmentExpr& expr) {
 
     // Check if target is a const property
     auto checkConstProperty = [&](const std::string& prop_name) {
-        if (!current_class_name_.empty() && current_tu_) {
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != current_class_name_) continue;
-                for (auto& p : cls.properties) {
+        if (!current_class_name_.empty()) {
+            const ClassDecl* cls = findClassDecl(current_class_name_);
+            if (cls) {
+                for (auto& p : cls->properties) {
                     if (p.name == prop_name && p.is_const) {
                         error(expr.range, "cannot assign to const property '" + prop_name + "'");
                         return true;
@@ -3237,8 +3217,7 @@ void Sema::collectLambdaLocals(Stmt& stmt, std::set<std::string>& locals) {
 bool Sema::isGlobalName(const std::string& name) const {
     if (generic_functions_.count(name)) return true;
     if (!current_tu_) return false;
-    for (auto& f : current_tu_->functions)
-        if (f.name == name) return true;
+    if (findFunctionDecl(name)) return true;   // O(1)（P7 规模修复）
     for (auto& c : current_tu_->classes)
         if (c.name == name) return true;
     for (auto& i : current_tu_->interfaces)
@@ -3254,27 +3233,28 @@ bool Sema::isAsyncCallee(const Expr* callee) const {
     if (!callee || !current_tu_) return false;
     if (callee->kind == ExprKind::Identifier) {
         auto& id = static_cast<const IdentifierExpr&>(*callee);
-        for (auto& f : current_tu_->functions)
-            if (f.name == id.name && f.has_async) return true;
-        return false;
+        const FuncDecl* f = findFunctionDecl(id.name);   // O(1)（P7 规模修复）
+        return f && f->has_async;
     }
     if (callee->kind == ExprKind::MemberAccess) {
         auto& ma = static_cast<const MemberAccessExpr&>(*callee);
         if (ma.object && ma.object->kind == ExprKind::Identifier) {
             auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != oid.name) continue;   // Class.method (static)
-                for (auto& a : cls.actions)
+            // Class.method（static）或实例方法：findClassDecl O(1)（P6 规模修复：
+            // 原线性扫全部类做字符串比较——每方法调用 O(N)）。
+            const ClassDecl* cls = findClassDecl(oid.name);
+            if (cls) {
+                for (auto& a : cls->actions)
                     if (a.name == ma.member_name && a.has_async) return true;
-                for (auto& a : cls.static_actions)
+                for (auto& a : cls->static_actions)
                     if (a.name == ma.member_name && a.has_async) return true;
             }
             // 实例接收者：obj.method — 解析变量的类类型后查该类 @async 方法
             const TypeInfo* t = symbol_table_.lookup(oid.name);
             if (t && t->kind == TypeKind::Class) {
-                for (auto& cls : current_tu_->classes) {
-                    if (cls.name != t->class_name) continue;
-                    for (auto& a : cls.actions)
+                const ClassDecl* icls = findClassDecl(t->class_name);
+                if (icls) {
+                    for (auto& a : icls->actions)
                         if (a.name == ma.member_name && a.has_async) return true;
                 }
             }

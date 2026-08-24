@@ -652,6 +652,8 @@ private:
     bool getPropertyIndex(const std::string& class_name, const std::string& prop_name, unsigned& idx);
     llvm::Type* getPropertyType(const ClassDecl& cls, const std::string& prop_name);
     const ClassDecl* findClass(const std::string& name);
+    const InterfaceDecl* findInterface(const std::string& name);
+    bool isInterfaceName(const std::string& name) const;
 
     // ---- Struct-related methods ----
     void buildStructTypes(TranslationUnit& tu);
@@ -976,6 +978,16 @@ private:
 
     DiagnosticEngine& diag_;
     TranslationUnit* current_tu_ = nullptr;
+
+    // ---- O(1) 声明索引（generate() 入口一次建全，避免热路径线性扫描类/接口/enum）----
+    // 指向 current_tu_ 内对象；codegen 期间 TU 不再增长（sema 已合并完成）→ 指针稳定。
+    std::unordered_map<std::string, const ClassDecl*> class_decls_;
+    std::unordered_map<std::string, const InterfaceDecl*> interface_decls_;
+    std::unordered_map<std::string, const EnumDecl*> enum_decls_;
+    std::unordered_map<std::string, const StructDecl*> struct_decls_;   // key: name 或 Parent::name
+    // 成员名 → 第一个定义它的类（按声明序；actions/static_actions/functions 合并）。
+    // 供方法调用 name-only 回退路径 O(1) 查——P6 规模 O(N²) 根因。
+    std::unordered_map<std::string, std::string> first_member_class_;
 
     // ---- Intrinsic name→function map ----
     std::unordered_map<std::string, llvm::Function*> intrinsic_map_;

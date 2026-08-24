@@ -283,18 +283,18 @@ llvm::Value* CodeGen::generateIdentifier(const IdentifierExpr& e) {
         if (runtime_ord_ && e.name == "__myp_ord") return runtime_ord_;
         if (runtime_atof_ && e.name == "__myp_atof") return runtime_atof_;
         // Try class property via 'this'
-        if (!current_class_name_.empty() && current_tu_) {
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != current_class_name_) continue;
+        if (!current_class_name_.empty()) {
+            const ClassDecl* cls = findClass(current_class_name_);
+            if (cls) {
                 unsigned pi;
-                if (getPropertyIndex(cls.name, e.name, pi)) {
+                if (getPropertyIndex(cls->name, e.name, pi)) {
                     auto* ta = getNamedValue("this");
                     if (ta) {
                         auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
-                        auto* st = getClassStruct(cls.name);
+                        auto* st = getClassStruct(cls->name);
                         if (st) {
                             auto* gep = builder_.CreateStructGEP(st, tp, pi);
-                            auto* pt = getPropertyType(cls, e.name);
+                            auto* pt = getPropertyType(*cls, e.name);
                             // Array-typed properties: return GEP pointer (cannot load array value)
                             if (pt->isArrayTy()) return gep;
                             return builder_.CreateLoad(pt, gep);
@@ -1133,21 +1133,17 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
         if (v != var_class_map_.end()) return v->second;
         auto s = var_struct_map_.find(oi.name);
         if (s != var_struct_map_.end()) return s->second;
-        if (current_tu_) {
-            for (auto& c : current_tu_->classes)
-                if (c.name == oi.name) return c.name;   // static call
-            // Bare property inside a method (`functions_` → `this.functions_`):
-            // resolve the property's concrete class (e.g. ArrayList_AstFunction_inst)
-            // so `functions_.get(i).dump(...)` chains dispatch to the property's
-            // element class instead of the name-only fallback.
-            if (!current_class_name_.empty()) {
-                for (auto& c : current_tu_->classes) {
-                    if (c.name != current_class_name_) continue;
-                    for (auto& p : c.properties) {
-                        if (p.name == oi.name && !p.type.class_name.empty())
-                            return mangleConcreteTypeNode(p.type);
-                    }
-                    break;
+        if (findClass(oi.name)) return oi.name;   // static call（O(1)）
+        // Bare property inside a method (`functions_` → `this.functions_`):
+        // resolve the property's concrete class (e.g. ArrayList_AstFunction_inst)
+        // so `functions_.get(i).dump(...)` chains dispatch to the property's
+        // element class instead of the name-only fallback.
+        if (!current_class_name_.empty()) {
+            const ClassDecl* c = findClass(current_class_name_);
+            if (c) {
+                for (auto& p : c->properties) {
+                    if (p.name == oi.name && !p.type.class_name.empty())
+                        return mangleConcreteTypeNode(p.type);
                 }
             }
         }
@@ -1188,9 +1184,7 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
             auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
             auto v = var_class_map_.find(oid.name);
             if (v != var_class_map_.end()) owner = v->second;
-            else if (current_tu_)
-                for (auto& c : current_tu_->classes)
-                    if (c.name == oid.name) { owner = c.name; break; }  // static
+            else if (findClass(oid.name)) owner = oid.name;   // static（O(1)）
         }
         // Struct field holding a class ref: `node.next.method()`. The object is
         // a struct local (no var_class_map_ entry), but sema recorded its type
@@ -1199,16 +1193,15 @@ std::string CodeGen::memberObjectClassName(const Expr& obj) {
         // template (BUG-004).
         if (owner.empty())
             owner = ma.resolved_object_class;
-        if (!owner.empty() && current_tu_) {
-            for (auto& c : current_tu_->classes) {
-                if (c.name != owner) continue;
-                for (auto& prop : c.properties) {
+        if (!owner.empty()) {
+            const ClassDecl* c = findClass(owner);
+            if (c) {
+                for (auto& prop : c->properties) {
                     if (prop.name == ma.member_name) {
                         if (prop.type.class_name.empty()) return "";
                         return mangleConcreteTypeNode(prop.type);
                     }
                 }
-                break;
             }
             // Struct field (public): `s.field` where field is a class ref.
             if (const StructDecl* sd = findStruct(owner)) {
@@ -1244,14 +1237,14 @@ const TypeNode* CodeGen::callReturnTypeNode(const CallExpr& e) {
         // var maps (flat, can be stale across scopes).
         std::string cls = !ma.resolved_object_class.empty()
             ? ma.resolved_object_class : memberObjectClassName(*ma.object);
-        if (cls.empty() || !current_tu_) return nullptr;
-        for (auto& c : current_tu_->classes) {
-            if (c.name != cls) continue;
-            for (auto& a : c.actions)
+        if (cls.empty()) return nullptr;
+        const ClassDecl* c = findClass(cls);   // O(1)
+        if (c) {
+            for (auto& a : c->actions)
                 if (a.name == ma.member_name) return &a.return_type;
-            for (auto& a : c.static_actions)
+            for (auto& a : c->static_actions)
                 if (a.name == ma.member_name) return &a.return_type;
-            for (auto& f : c.functions)
+            for (auto& f : c->functions)
                 if (f.name == ma.member_name) return &f.return_type;
         }
         // Struct method call: `h.getItems().size()` — resolve the struct
@@ -1606,17 +1599,14 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
         // Enum variant construction: Option.Some(42) → enum struct {disc, payload}
         if (ma.object->kind == ExprKind::Identifier) {
             auto& oi = static_cast<const IdentifierExpr&>(*ma.object);
-            if (current_tu_) {
-                for (auto& en : current_tu_->enums) {
-                    if (en.name == oi.name) {
-                        for (size_t vi = 0; vi < en.variants.size(); vi++) {
-                            if (en.variants[vi].name == ma.member_name) {
-                                std::vector<llvm::Value*> arg_vals;
-                                for (auto& a : e.args)
-                                    arg_vals.push_back(generateExpr(*a));
-                                return buildEnumVariant(en.name, vi, arg_vals);
-                            }
-                        }
+            const EnumDecl* en = findEnum(oi.name);   // O(1)
+            if (en) {
+                for (size_t vi = 0; vi < en->variants.size(); vi++) {
+                    if (en->variants[vi].name == ma.member_name) {
+                        std::vector<llvm::Value*> arg_vals;
+                        for (auto& a : e.args)
+                            arg_vals.push_back(generateExpr(*a));
+                        return buildEnumVariant(en->name, vi, arg_vals);
                     }
                 }
             }
@@ -1638,12 +1628,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             // 求值会报 undefined variable —— 跳过，交给下方静态解析路径。
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
-                bool is_class_name = false;
-                if (current_tu_) {
-                    for (auto& cls : current_tu_->classes)
-                        if (cls.name == oid.name) { is_class_name = true; break; }
-                }
-                if (is_class_name) goto skip_generalized_iface;
+                if (findClass(oid.name)) goto skip_generalized_iface;   // O(1)
             }
             auto* obj_val = generateExpr(*ma.object);
             if (obj_val && isInterfaceFatType(obj_val->getType())) {
@@ -1777,9 +1762,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                 // Button 属性）。此前只按方法名兜底匹配，Label/Button 同名方法
                 // （key/draw/layout）会解析到先声明的类 → 调错方法。按属性的
                 // 具体类解析。
-                for (auto& cls : current_tu_->classes) {
-                    if (cls.name != current_class_name_) continue;
-                    for (auto& p : cls.properties) {
+                const ClassDecl* cur = findClass(current_class_name_);   // O(1)
+                if (cur) {
+                    for (auto& p : cur->properties) {
                         if (p.name != oi.name || p.type.class_name.empty()) continue;
                         std::string cn = p.type.class_name;
                         if (!p.type.type_args.empty()) {
@@ -1797,7 +1782,6 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                             goto call_ready;
                         }
                     }
-                    break;
                 }
             }
         }
@@ -1907,14 +1891,18 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
 
         if (!callee && current_tu_) {
             size_t num_args = e.args.size();
-            // If the object is a known class name (static call like Vectors.min()),
-            // restrict the search to that class so method names that collide across
-            // classes (e.g. min/max in Math and Vectors) resolve to the right one.
+            // Resolve the object's class (O(1))：静态类名（Class.method）/ 局部实例
+            //（var_class_map_ 或 sema resolved_object_class）/ 非标识符对象（下标/
+            // new/调用/链式——resolved_object_class 或 memberObjectClassName）。
             std::string obj_cls;
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
-                for (auto& cls : current_tu_->classes) {
-                    if (cls.name == oid.name) { obj_cls = cls.name; break; }
+                if (findClass(oid.name)) {
+                    obj_cls = oid.name;   // Class.method（静态）
+                } else {
+                    auto vit = var_class_map_.find(oid.name);
+                    if (vit != var_class_map_.end()) obj_cls = vit->second;
+                    else if (!ma.resolved_object_class.empty()) obj_cls = ma.resolved_object_class;
                 }
             }
             // arr[i].method() / new Box<Node>().method() / f().method() — restrict
@@ -1926,42 +1914,50 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                      ma.object->kind == ExprKind::Call ||
                      ma.object->kind == ExprKind::MemberAccess) {
                 // BUG-041 根本修复：优先用 sema 的 resolved_object_class（静态
-                // 类型，与文件顺序无关）——类属性数组（如 cols_ 为 LinearLayout[]）
-                // 不在 array_elem_class_map_（只记录局部变量数组），此前 fallback
-                // 按类注册顺序选第一个同名方法（字母序下 ConstraintLayout 在
-                // LinearLayout 前 → cols_[i].layout() 错调 ConstraintLayout_layout
-                // → 运行崩溃）。resolved_object_class 由 sema 从元素类型解析。
+                // 类型，与文件顺序无关）。
                 obj_cls = !ma.resolved_object_class.empty()
                     ? ma.resolved_object_class : memberObjectClassName(*ma.object);
             }
-            for (auto& cls : current_tu_->classes) {
-                if (!obj_cls.empty() && cls.name != obj_cls) continue;
-                for (auto& a : cls.actions) {
-                    if (a.name == ma.member_name && a.params.size() == num_args) {
-                        auto fn = cls.name + "_" + a.name;
-                        if (module_->getFunction(fn)) {
-                            best_class = cls.name;
-                            goto found_method;
+            // 已知对象类 → O(1) 类查找 + O(methods) 方法名/参数匹配（P6 规模修复：
+            // 原无论是否已知类都线性扫全部类 × 全部方法 → 每方法调用 O(N×actions)）。
+            if (!obj_cls.empty()) {
+                const ClassDecl* cls = findClass(obj_cls);
+                if (cls) {
+                    for (auto& a : cls->actions)
+                        if (a.name == ma.member_name && a.params.size() == num_args) {
+                            auto fn = cls->name + "_" + a.name;
+                            if (module_->getFunction(fn)) { best_class = cls->name; goto found_method; }
+                        }
+                    for (auto& a : cls->static_actions)
+                        if (a.name == ma.member_name && a.params.size() == num_args) {
+                            auto fn = cls->name + "_" + a.name;
+                            if (module_->getFunction(fn)) { best_class = cls->name; goto found_method; }
+                        }
+                    for (auto& fn : cls->functions)
+                        if (fn.name == ma.member_name && fn.params.size() == num_args) {
+                            auto fn_name = cls->name + "_" + fn.name;
+                            if (module_->getFunction(fn_name)) { best_class = cls->name; goto found_method; }
+                        }
+                }
+            } else {
+                // 无解析类（罕见）——保留全类扫描回退。
+                for (auto& cls : current_tu_->classes) {
+                    for (auto& a : cls.actions) {
+                        if (a.name == ma.member_name && a.params.size() == num_args) {
+                            auto fn = cls.name + "_" + a.name;
+                            if (module_->getFunction(fn)) { best_class = cls.name; goto found_method; }
                         }
                     }
-                }
-                // Also check static actions
-                for (auto& a : cls.static_actions) {
-                    if (a.name == ma.member_name && a.params.size() == num_args) {
-                        auto fn = cls.name + "_" + a.name;
-                        if (module_->getFunction(fn)) {
-                            best_class = cls.name;
-                            goto found_method;
+                    for (auto& a : cls.static_actions) {
+                        if (a.name == ma.member_name && a.params.size() == num_args) {
+                            auto fn = cls.name + "_" + a.name;
+                            if (module_->getFunction(fn)) { best_class = cls.name; goto found_method; }
                         }
                     }
-                }
-                // Also check function: section
-                for (auto& fn : cls.functions) {
-                    if (fn.name == ma.member_name && fn.params.size() == num_args) {
-                        auto fn_name = cls.name + "_" + fn.name;
-                        if (module_->getFunction(fn_name)) {
-                            best_class = cls.name;
-                            goto found_method;
+                    for (auto& fn : cls.functions) {
+                        if (fn.name == ma.member_name && fn.params.size() == num_args) {
+                            auto fn_name = cls.name + "_" + fn.name;
+                            if (module_->getFunction(fn_name)) { best_class = cls.name; goto found_method; }
                         }
                     }
                 }
@@ -1976,8 +1972,7 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             std::string fb_obj_cls;
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oid2 = static_cast<const IdentifierExpr&>(*ma.object);
-                for (auto& cls : current_tu_->classes)
-                    if (cls.name == oid2.name) { fb_obj_cls = cls.name; break; }
+                if (findClass(oid2.name)) fb_obj_cls = oid2.name;   // O(1)
             } else if (ma.object->kind == ExprKind::Subscript ||
                        ma.object->kind == ExprKind::NewExpr ||
                        ma.object->kind == ExprKind::Call ||
@@ -1993,63 +1988,39 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             // resolve to the wrong class.
             if (ma.object->kind == ExprKind::Identifier) {
                 auto& oid = static_cast<const IdentifierExpr&>(*ma.object);
-                for (auto& cls : current_tu_->classes) {
-                    if (cls.name == oid.name) {
-                        // static actions
-                        for (auto& a : cls.static_actions) {
-                            if (a.name == ma.member_name) {
-                                auto fn = cls.name + "_" + a.name;
-                                if (module_->getFunction(fn)) {
-                                    best_class = cls.name;
-                                    goto found_method;
-                                }
+                const ClassDecl* scls = findClass(oid.name);   // O(1)
+                if (scls) {
+                    // static actions
+                    for (auto& a : scls->static_actions) {
+                        if (a.name == ma.member_name) {
+                            auto fn = scls->name + "_" + a.name;
+                            if (module_->getFunction(fn)) {
+                                best_class = scls->name;
+                                goto found_method;
                             }
                         }
-                        // function: section
-                        for (auto& fn : cls.functions) {
-                            if (fn.name == ma.member_name) {
-                                auto fn_name = cls.name + "_" + fn.name;
-                                if (module_->getFunction(fn_name)) {
-                                    best_class = cls.name;
-                                    goto found_method;
-                                }
+                    }
+                    // function: section
+                    for (auto& fn : scls->functions) {
+                        if (fn.name == ma.member_name) {
+                            auto fn_name = scls->name + "_" + fn.name;
+                            if (module_->getFunction(fn_name)) {
+                                best_class = scls->name;
+                                goto found_method;
                             }
                         }
-                        break;
                     }
                 }
             }
-            for (auto& cls : current_tu_->classes) {
-                if (!fb_obj_cls.empty() && cls.name != fb_obj_cls) continue;
-                for (auto& a : cls.actions) {
-                    if (a.name == ma.member_name) {
-                        auto fn = cls.name + "_" + a.name;
-                        if (module_->getFunction(fn)) {
-                            best_class = cls.name;
-                            goto found_method;
-                        }
-                    }
-                }
-                // Also check static actions
-                for (auto& a : cls.static_actions) {
-                    if (a.name == ma.member_name) {
-                        auto fn = cls.name + "_" + a.name;
-                        if (module_->getFunction(fn)) {
-                            best_class = cls.name;
-                            goto found_method;
-                        }
-                    }
-                }
-                // function: section fallback
-                for (auto& fn : cls.functions) {
-                    if (fn.name == ma.member_name) {
-                        auto fn_name = cls.name + "_" + fn.name;
-                        if (module_->getFunction(fn_name)) {
-                            best_class = cls.name;
-                            goto found_method;
-                        }
-                    }
-                }
+            // Name-only fallback：找第一个定义该成员名的类（O(1) 索引，P6 规模修复：
+            // 原线性扫全部类 × 全部方法——每调用 O(N×actions)）。
+            std::string fbcls = fb_obj_cls;
+            if (fbcls.empty()) {
+                auto mit = first_member_class_.find(ma.member_name);
+                if (mit != first_member_class_.end()) fbcls = mit->second;
+            }
+            if (!fbcls.empty() && module_->getFunction(fbcls + "_" + ma.member_name)) {
+                best_class = fbcls;
             }
         }
         found_method:
@@ -2283,13 +2254,13 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
             }
         }
         // Try current class method (bare name without this.)
-        if (!callee && !current_class_name_.empty() && current_tu_) {
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != current_class_name_) continue;
+        if (!callee && !current_class_name_.empty()) {
+            const ClassDecl* cls = findClass(current_class_name_);
+            if (cls) {
                 // Check actions
-                for (auto& a : cls.actions) {
+                for (auto& a : cls->actions) {
                     if (a.name == id.name) {
-                        auto fn = cls.name + "_" + a.name;
+                        auto fn = cls->name + "_" + a.name;
                         callee = module_->getFunction(fn);
                         if (callee) {
                             is_method = true;
@@ -2300,9 +2271,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     }
                 }
                 // Check function: section
-                for (auto& fn : cls.functions) {
+                for (auto& fn : cls->functions) {
                     if (fn.name == id.name) {
-                        auto fn_name = cls.name + "_" + fn.name;
+                        auto fn_name = cls->name + "_" + fn.name;
                         callee = module_->getFunction(fn_name);
                         if (callee) {
                             is_method = true;
@@ -2313,9 +2284,9 @@ llvm::Value* CodeGen::generateCallImpl(const CallExpr& e) {
                     }
                 }
                 // Check events
-                for (auto& ev : cls.events) {
+                for (auto& ev : cls->events) {
                     if (ev.name == id.name) {
-                        auto fn = "fire_" + cls.name + "_" + ev.name;
+                        auto fn = "fire_" + cls->name + "_" + ev.name;
                         callee = module_->getFunction(fn);
                         if (callee) {
                             is_method = true;
@@ -3060,15 +3031,15 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                 // "cap_i" are shared across lambda hidden classes, so the first
                 // match would be a different lambda's struct.
                 auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
-                if (tp && current_tu_ && !current_class_name_.empty()) {
-                    for (auto& cls : current_tu_->classes) {
-                        if (cls.name != current_class_name_) continue;
+                if (tp && !current_class_name_.empty()) {
+                    const ClassDecl* cls = findClass(current_class_name_);
+                    if (cls) {
                         unsigned pi;
-                        if (getPropertyIndex(cls.name, e.member_name, pi)) {
-                            auto* st = getClassStruct(cls.name);
+                        if (getPropertyIndex(cls->name, e.member_name, pi)) {
+                            auto* st = getClassStruct(cls->name);
                             if (st) {
                                 auto* gep = builder_.CreateStructGEP(st, tp, pi);
-                                return loadPropertyField(gep, cls, e.member_name);
+                                return loadPropertyField(gep, *cls, e.member_name);
                             }
                         }
                     }
@@ -3087,18 +3058,18 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
         if (vcit != var_class_map_.end()) obj_cls = vcit->second;
         if (obj_cls.empty() && !current_class_name_.empty() && oi.name == current_class_name_)
             obj_cls = current_class_name_;
-        if (!obj_cls.empty() && current_tu_) {
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != obj_cls) continue;
+        if (!obj_cls.empty()) {
+            const ClassDecl* cls = findClass(obj_cls);
+            if (cls) {
                 unsigned pi = 0;
-                if (getPropertyIndex(cls.name, e.member_name, pi)) {
+                if (getPropertyIndex(cls->name, e.member_name, pi)) {
                     auto* oa = getNamedValue(oi.name);
                     if (oa) {
                         auto* op = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), oa, oi.name);
-                        auto* st = getClassStruct(cls.name);
+                        auto* st = getClassStruct(cls->name);
                         if (st) {
                             auto* gep = builder_.CreateStructGEP(st, op, pi);
-                            return loadPropertyField(gep, cls, e.member_name);
+                            return loadPropertyField(gep, *cls, e.member_name);
                         }
                     }
                 }
@@ -3136,15 +3107,15 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
          e.object->kind == ExprKind::NewExpr) &&
         !e.resolved_object_class.empty()) {
         auto* op = generateExpr(*e.object);
-        if (op && current_tu_) {
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != e.resolved_object_class) continue;
+        if (op) {
+            const ClassDecl* cls = findClass(e.resolved_object_class);
+            if (cls) {
                 unsigned pi = 0;
-                if (getPropertyIndex(cls.name, e.member_name, pi)) {
-                    auto* st = getClassStruct(cls.name);
+                if (getPropertyIndex(cls->name, e.member_name, pi)) {
+                    auto* st = getClassStruct(cls->name);
                     if (st) {
                         auto* gep = builder_.CreateStructGEP(st, op, pi);
-                        return loadPropertyField(gep, cls, e.member_name);
+                        return loadPropertyField(gep, *cls, e.member_name);
                     }
                 }
             }
@@ -3157,22 +3128,22 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
     // (BUG-010: LLVM verify "Function return type does not match operand type
     // of return inst!" — `ret ptr`/struct where a scalar was expected).
     if (e.object->kind == ExprKind::Identifier &&
-        !current_class_name_.empty() && current_tu_) {
+        !current_class_name_.empty()) {
         auto& bi = static_cast<const IdentifierExpr&>(*e.object);
         if (!getNamedValue(bi.name)) {   // not a local — bare property name
-            for (auto& cls : current_tu_->classes) {
-                if (cls.name != current_class_name_) continue;
-                for (auto& p : cls.properties) {
+            const ClassDecl* cls = findClass(current_class_name_);
+            if (cls) {
+                for (auto& p : cls->properties) {
                     if (p.name != bi.name) continue;   // 属性不一定是第一个
                     const StructDecl* sd = findStruct(p.type.class_name);
                     if (!sd) break;
                     auto* ta = getNamedValue("this");
                     if (!ta) break;
                     unsigned pi = 0, fi = 0;
-                    auto* st = getClassStruct(cls.name);
+                    auto* st = getClassStruct(cls->name);
                     auto* stt = getStructType(sd->name);
                     if (!st || !stt) break;
-                    if (!getPropertyIndex(cls.name, p.name, pi) ||
+                    if (!getPropertyIndex(cls->name, p.name, pi) ||
                         !getStructFieldIndex(sd->name, e.member_name, fi)) break;
                     auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
                     auto* sgep = builder_.CreateStructGEP(st, tp, pi);
@@ -3181,7 +3152,6 @@ llvm::Value* CodeGen::generateMemberAccess(const MemberAccessExpr& e) {
                     if (ft->isArrayTy()) return fgep;
                     return builder_.CreateLoad(ft, fgep);
                 }
-                break;
             }
         }
     }
@@ -3526,13 +3496,11 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
     // `const double T = 0.0253;`). The allocator zero-inits; non-default
     // initializers are stored here on every new. Generic instances are skipped
     // (their template's defaults keep the zero value).
-    if (current_tu_) {
-        for (auto& cls : current_tu_->classes) {
-            if (cls.name != cls_name) continue;
-            auto* st2 = getClassStruct(cls.name);
-            if (!st2) continue;
-            for (size_t pi = 0; pi < cls.properties.size(); pi++) {
-                auto& prop = cls.properties[pi];
+    if (const ClassDecl* cls = findClass(cls_name)) {
+        auto* st2 = getClassStruct(cls->name);
+        if (st2) {
+            for (size_t pi = 0; pi < cls->properties.size(); pi++) {
+                auto& prop = cls->properties[pi];
                 if (!prop.init_expr) continue;
                 llvm::Value* v = generateExpr(*prop.init_expr);
                 auto* gep = builder_.CreateStructGEP(st2, obj, pi);
@@ -3543,10 +3511,7 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 // 与 `this.prop = value` 赋值路径同语义：alias retain、fresh consume。
                 bool fresh = isFreshArcExpr(*prop.init_expr);
                 if (isArcRefType(prop.type)) {
-                    bool iface_prop = false;
-                    if (current_tu_)
-                        for (auto& ifd : current_tu_->interfaces)
-                            if (ifd.name == prop.type.class_name) { iface_prop = true; break; }
+                    bool iface_prop = isInterfaceName(prop.type.class_name);
                     arcStoreRef(gep, v, iface_prop, fresh);
                     arcConsumeTemp(v);
                 } else if (isStringType(prop.type)) {
@@ -3561,7 +3526,6 @@ llvm::Value* CodeGen::generateNewExpr(const NewExpr& e) {
                 }
                 builder_.CreateStore(v, gep);
             }
-            break;
         }
     }
 

@@ -112,6 +112,37 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
 
     module_ = std::make_unique<llvm::Module>("myp_module", ctx_);
     current_tu_ = &tu;
+    // O(1) 声明索引（P1/P3 规模修复）：类/接口/enum 按名一次建全，热路径（裸属性
+    // 读、接口变量判定、enum 构造）不再线性扫描整个表（docs/testing_benchmark_roadmap
+    // §5.2 P1/P3/P5——8k 类 1.4s、8k 接口 2.2s 的 O(N²) 根因）。
+    class_decls_.clear();
+    for (auto& cls : tu.classes) class_decls_[cls.name] = &cls;
+    interface_decls_.clear();
+    for (auto& iface : tu.interfaces) interface_decls_[iface.name] = &iface;
+    enum_decls_.clear();
+    for (auto& en : tu.enums) enum_decls_[en.name] = &en;
+    struct_decls_.clear();
+    for (auto& st : tu.structs) {
+        std::string key = st.parent_class.empty()
+            ? st.name : st.parent_class + "::" + st.name;
+        struct_decls_[key] = &st;
+    }
+    for (auto& cls : tu.classes) {
+        for (auto& st : cls.structs) {
+            std::string key = st.parent_class.empty()
+                ? st.name : st.parent_class + "::" + st.name;
+            struct_decls_[key] = &st;
+        }
+    }
+    first_member_class_.clear();
+    for (auto& cls : tu.classes) {
+        auto add_member = [&](const std::string& m) {
+            if (!first_member_class_.count(m)) first_member_class_[m] = cls.name;
+        };
+        for (auto& a : cls.actions) add_member(a.name);
+        for (auto& a : cls.static_actions) add_member(a.name);
+        for (auto& f : cls.functions) add_member(f.name);
+    }
     interface_methods_.clear();
     interface_method_fallback_.clear();
     for (auto& iface : tu.interfaces) {
@@ -425,9 +456,8 @@ llvm::StructType* CodeGen::getEnumStructType(const std::string& name) {
 }
 
 const EnumDecl* CodeGen::findEnum(const std::string& name) const {
-    if (!current_tu_) return nullptr;
-    for (auto& e : current_tu_->enums)
-        if (e.name == name) return &e;
+    auto it = enum_decls_.find(name);
+    if (it != enum_decls_.end()) return it->second;
     return nullptr;
 }
 
@@ -496,20 +526,8 @@ llvm::Type* CodeGen::getStructFieldType(const StructDecl& st, const std::string&
 }
 
 const StructDecl* CodeGen::findStruct(const std::string& name) const {
-    if (!current_tu_) return nullptr;
-    for (auto& st : current_tu_->structs) {
-        std::string key = st.parent_class.empty()
-            ? st.name : st.parent_class + "::" + st.name;
-        if (key == name) return &st;
-    }
-    for (auto& cls : current_tu_->classes) {
-        for (auto& st : cls.structs) {
-            std::string key = st.parent_class.empty()
-                ? st.name : st.parent_class + "::" + st.name;
-            if (key == name) return &st;
-        }
-    }
-    return nullptr;
+    auto it = struct_decls_.find(name);   // O(1)（P7 规模修复：原线性扫全部 struct × 嵌套 struct）
+    return it != struct_decls_.end() ? it->second : nullptr;
 }
 
 llvm::StructType* CodeGen::getClassStruct(const std::string& n) {
@@ -635,8 +653,20 @@ llvm::Type* CodeGen::typeNodeToLLVMType(const TypeNode& tn) {
 
 const ClassDecl* CodeGen::findClass(const std::string& n) {
     if (!current_tu_) return nullptr;
-    for (auto& c : current_tu_->classes) if (c.name == n) return &c;
+    auto it = class_decls_.find(n);
+    if (it != class_decls_.end()) return it->second;
     return nullptr;
+}
+
+const InterfaceDecl* CodeGen::findInterface(const std::string& n) {
+    if (!current_tu_) return nullptr;
+    auto it = interface_decls_.find(n);
+    if (it != interface_decls_.end()) return it->second;
+    return nullptr;
+}
+
+bool CodeGen::isInterfaceName(const std::string& name) const {
+    return interface_decls_.count(name) != 0;
 }
 
 const TypeAliasDecl* CodeGen::findAlias(const std::string& name) const {

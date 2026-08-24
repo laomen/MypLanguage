@@ -195,6 +195,15 @@ private:
     // monomorphize (tu.classes reallocates) → a held reference would dangle.
     void buildCurrentClassMemberTypes(TranslationUnit& tu, size_t ci);
     ClassDecl* findClassDecl(const std::string& name);
+    const ClassDecl* findClassDecl(const std::string& name) const;
+    // O(1) 按名查顶层函数（含单态化实例；名称唯一）。避免 isGlobalName/isAsyncCallee/
+    // resolveGenericCall 每调用线性扫全部函数（P7 规模 O(N²) 根因）。
+    FuncDecl* findFunctionDecl(const std::string& name);
+    const FuncDecl* findFunctionDecl(const std::string& name) const;
+    // 顶层函数 push 后登记索引（findFunctionDecl 用）——供单态化/合成 main 调用。
+    void indexFunction(const std::string& name, size_t index);
+    // O(1) 按裸名查 struct（文件级优先，再嵌套）；type_key 输出限定 key（"S" 或 "C::S"）。
+    const StructDecl* findStructDecl(const std::string& name, std::string* type_key) const;
 
     // ---- Mapping cycle detection ----
     void checkMappingCycles(const MappingDecl& decl);
@@ -237,6 +246,14 @@ private:
     std::string current_class_name_;
     std::unordered_map<std::string, TypeInfo> current_class_member_types_;
     std::unordered_map<std::string, size_t> class_indices_;
+    // 顶层函数名 → 索引（含单态化实例）。functions 在 sema 期间会 push_back
+    // 单态化实例——vector 重分配不失效索引，但必须在每次 push 后登记新名。
+    std::unordered_map<std::string, size_t> function_indices_;
+    // 按裸名索引 struct（文件级优先，再嵌套），供 resolveStructConstruction 等
+    // O(1) 查找——避免每方法调用线性扫全部类（P6 规模 O(N²) 根因）。value =
+    // { StructDecl*, type_key }。struct 在 sema 期间不增长（仅 classes.push_back
+    // 单态化），analyze() 一次建全即可。
+    std::unordered_map<std::string, std::pair<const StructDecl*, std::string>> struct_by_name_;
     std::unordered_map<std::string, std::unordered_map<std::string, TypeInfo>>
         struct_member_types_;
     // ---- Bitfield tracking (§5.1) ----
@@ -267,6 +284,13 @@ private:
         int tu_index = -1; // index into current_tu_->functions
     };
     std::unordered_map<std::string, GenericFuncInfo> generic_functions_;
+    // 是否存在任何带 @op 的外部函数（analyze() 一次建好）。P7 规模修复：visitBinaryOp
+    // 对每个 `s + 1` 都线性扫全部函数找 @op 匹配（N 个单态化函数 → O(N²)）；
+    // 无 @op 函数时直接跳过。
+    bool any_op_functions_ = false;
+    // 是否存在任何带 @coro 的顶层函数（analyze() 一次建好）。P7 规模修复：visitCall
+    // 对每个标识符调用都线性扫全部函数找 @coro 返回长句柄（N 次调用 × N 个函数 = O(N²)）。
+    bool any_coro_functions_ = false;
     std::vector<std::string> current_func_type_params_; // type params of current top-level function
     TypeInfo resolveGenericCall(CallExpr& expr, const std::string& name, int tu_index);
 

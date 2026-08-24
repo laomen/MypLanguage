@@ -69,6 +69,51 @@ mypview changelog 双向引用。
 **回归**：oracle 323/323、selfhost 323/323（parity 0 差距）、bootstrap 16/16
 不动点（myp_self2 == myp_self3 md5 一致）。
 
+### v3.15.4 — 编译器缩放 P1：sema/codegen 热路径 O(N) 扫描 O(1) 索引化（P1–P6 线性化）
+
+**非破坏性（性能，行为不变）**，oracle（mypc）端。根因：sema/codegen 在**每个
+表达式/语句**的热路径里 `for (auto& cls : current_tu_->classes)` / `interfaces` /
+`structs` / `functions` 线性扫全表（方法解析、接口判定、enum 构造、struct 查找、
+@op/@coro/@async 函数查找、泛型实例复用查找），N 个类 × N 次调用 = O(N²)。
+对应 `bench/compiler/`（P1–P7，`docs/testing_benchmark_roadmap.md` §5）实测斜率：
+
+| 基准 | 修复前（16k 或 4k） | 修复后 | 现状 |
+|------|------|------|------|
+| P1 类×裸属性 | 10.26s@16k | 0.49s@16k | 线性（1.90x/2N） |
+| P3 接口×变量声明 | 8.27s@16k | 0.48s@16k | 近线性（2.74x/2N） |
+| P6 类×方法调用 fallback | 11.21s@16k | 4.67s@16k | 线性（1.92x/2N） |
+| P7 泛型实例 | 15.8s@4k | 10.5s@4k | 剩余超线性见下 |
+
+主要改动（`src/sema/*`、`src/codegen/*`、`include/mylang/*`）：
+
+1. **O(1) 声明索引**：codegen `generate()` 入口一次建全 `class_decls_`/
+   `interface_decls_`/`enum_decls_`/`struct_decls_`（key=name 或 `Parent::name`）/
+   `first_member_class_`（成员名→首个定义类）；sema `analyze()` 建 `class_indices_`
+   /`function_indices_`（含单态化后 `indexFunction` 增量登记）/`struct_by_name_`。
+   `findClass`/`findEnum`/`findStruct`/`findClassDecl`/`findFunctionDecl` 全部改
+   哈希查找，`isInterfaceName` 等新增辅助。
+
+2. **热路径扫描替换**（逐个 perf 定位）：
+   - `visitMemberAccess`：static 类判定、接口判定 → `findClassDecl`/`isInterfaceName`。
+   - `visitBinaryOp`：`@op` 函数扫描 → `any_op_functions_` 短路；`@coro` 返回句柄
+     扫描 → `any_coro_functions_` 短路。
+   - `visitCall`/`isAsyncCallee`：函数扫描 → `findFunctionDecl`。
+   - `resolveGenericCall`/`resolveGenericStaticCall`：实例复用线性扫函数 →
+     `findFunctionDecl`。
+   - `generateCallImpl`：接口 dispatch 的类名判定、enum variant 构造、静态类判定、
+     本类属性对象解析 → `findClass`/`findEnum`。
+   - `memberObjectClassName`/`callReturnTypeNode`/`generateNewExpr`/`generateIdentifier`
+     /`generateMemberAccess`/`generateAssignment` 等 15+ 处 → `findClass`/索引。
+
+3. **P7 剩余超线性说明**：sema 与 -O0 codegen 已降到斜率 <3.0（泛型实例查找/表扩容的
+   MYP 侧 O(N²) 已消除）；-O2 默认管道下 P7 仍 ~3.4–3.6x/2N，perf 归因为 **LLVM
+   SROA/mem2reg（`PromoteMem2Reg::run` 65%）**——N 个互异 struct 类型 + N 个泛型实例
+   全部内联进单个 `run()`（1 基本块、~4N alloca）后，LLVM O2 管道在单函数上呈超线性，
+   非 MYP 自身线性扫描。属 LLVM 内部成本，不阻塞其余基准线性化。
+
+**回归**：oracle 323/323、selfhost 323/323、bootstrap 16/16 不动点；bench P1–P6
+斜率全部 <3.0。
+
 ### v3.15.2 — 自举 link.myp 硬编码重构（P0 工具链探测 / P1 缓存路径 / P2 集中配置 / P3 平台）
 
 `tools/selfhost/src/link.myp`（自举编译器链接器）去硬编码：

@@ -21,6 +21,41 @@ ClassDecl* Sema::findClassDecl(const std::string& name) {
     return &current_tu_->classes[it->second];
 }
 
+const ClassDecl* Sema::findClassDecl(const std::string& name) const {
+    if (!current_tu_) return nullptr;
+    auto it = class_indices_.find(name);
+    if (it == class_indices_.end() || it->second >= current_tu_->classes.size())
+        return nullptr;
+    return &current_tu_->classes[it->second];
+}
+
+FuncDecl* Sema::findFunctionDecl(const std::string& name) {
+    if (!current_tu_) return nullptr;
+    auto it = function_indices_.find(name);
+    if (it == function_indices_.end() || it->second >= current_tu_->functions.size())
+        return nullptr;
+    return &current_tu_->functions[it->second];
+}
+
+const FuncDecl* Sema::findFunctionDecl(const std::string& name) const {
+    if (!current_tu_) return nullptr;
+    auto it = function_indices_.find(name);
+    if (it == function_indices_.end() || it->second >= current_tu_->functions.size())
+        return nullptr;
+    return &current_tu_->functions[it->second];
+}
+
+void Sema::indexFunction(const std::string& name, size_t index) {
+    function_indices_[name] = index;
+}
+
+const StructDecl* Sema::findStructDecl(const std::string& name, std::string* type_key) const {
+    auto it = struct_by_name_.find(name);
+    if (it == struct_by_name_.end()) return nullptr;
+    if (type_key) *type_key = it->second.second;
+    return it->second.first;
+}
+
 void Sema::buildCurrentClassMemberTypes(TranslationUnit& tu, size_t ci) {
     // ⚠ 悬垂引用（UAF）：解析泛型属性/返回类型时，typeNodeToTypeInfo 可能触发
     // monomorphization（current_tu_->classes.push_back → vector 重分配），使外部
@@ -81,9 +116,25 @@ bool Sema::analyze(TranslationUnit& tu) {
     current_tu_ = &tu;
     current_class_member_types_.clear();
     class_indices_.clear();
+    function_indices_.clear();
     struct_member_types_.clear();
     for (size_t i = 0; i < tu.classes.size(); i++)
         class_indices_.emplace(tu.classes[i].name, i);
+    for (size_t i = 0; i < tu.functions.size(); i++)
+        function_indices_.emplace(tu.functions[i].name, i);
+    // O(1) struct 裸名索引（P6 规模修复）：文件级优先，再嵌套；重复裸名取先出现者
+    //（与 resolveStructConstruction 原扫描顺序一致）。struct 在 sema 期间不增长。
+    struct_by_name_.clear();
+    for (auto& s : tu.structs) {
+        std::string key = s.parent_class.empty() ? s.name : s.parent_class + "::" + s.name;
+        struct_by_name_.emplace(s.name, std::make_pair(&s, key));
+    }
+    for (auto& cls : tu.classes) {
+        for (auto& s : cls.structs) {
+            if (struct_by_name_.count(s.name)) continue;   // 文件级优先
+            struct_by_name_.emplace(s.name, std::make_pair(&s, cls.name + "::" + s.name));
+        }
+    }
     diag_.reset();
 
     // Register intrinsic functions (for stdlib use)
@@ -491,7 +542,11 @@ void Sema::visitTranslationUnit(TranslationUnit& tu) {
     }
     // Register generic function templates (same reason: struct fields may carry
     // generic function types).
+    any_op_functions_ = false;
+    any_coro_functions_ = false;
     for (size_t i = 0; i < tu.functions.size(); i++) {
+        if (!tu.functions[i].op_symbol.empty()) any_op_functions_ = true;
+        if (tu.functions[i].has_coro) any_coro_functions_ = true;
         if (!tu.functions[i].type_params.empty()) {
             GenericFuncInfo info;
             info.tu_index = i;
@@ -625,6 +680,7 @@ void Sema::injectAutoMainIfNeeded(TranslationUnit& tu) {
     main_decl.is_auto_main = true;      // 豁免 main() 直接调用限制（编译器生成）
     main_decl.body = std::make_unique<BlockStmt>(std::move(stmts), r);
     tu.functions.push_back(std::move(main_decl));
+    indexFunction("main", tu.functions.size() - 1);   // O(1) 索引
 }
 
 void Sema::visitEnumDecl(EnumDecl& decl) {

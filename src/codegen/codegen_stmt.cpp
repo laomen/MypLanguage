@@ -336,12 +336,9 @@ void CodeGen::generateVarDecl(const VarDecl& d) {
     // Detect interface type
     bool is_interface = false;
     if (!dt.class_name.empty() && current_tu_) {
-        for (auto& ifd : current_tu_->interfaces) {
-            if (ifd.name == dt.class_name) {
-                vt = TypeInfo(TypeKind::Interface); vt.class_name = dt.class_name;
-                is_interface = true;
-                break;
-            }
+        if (isInterfaceName(dt.class_name)) {
+            vt = TypeInfo(TypeKind::Interface); vt.class_name = dt.class_name;
+            is_interface = true;
         }
     }
 
@@ -1551,29 +1548,29 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         auto* a = getNamedValue(id.name);
         if (!a) {
             // Try bare property assignment on 'this' (class field without this. prefix)
-            if (!current_class_name_.empty() && current_tu_) {
-                for (auto& cls : current_tu_->classes) {
-                    if (cls.name != current_class_name_) continue;
+            if (!current_class_name_.empty()) {
+                const ClassDecl* cls = findClass(current_class_name_);
+                if (cls) {
                     unsigned pi;
-                    if (getPropertyIndex(cls.name, id.name, pi)) {
+                    if (getPropertyIndex(cls->name, id.name, pi)) {
                         auto* ta = getNamedValue("this");
                         if (ta) {
                             auto* tp = builder_.CreateLoad(llvm::PointerType::get(ctx_, 0), ta);
-                            auto* st = getClassStruct(cls.name);
+                            auto* st = getClassStruct(cls->name);
                             if (st) {
                                 auto* gep = builder_.CreateStructGEP(st, tp, pi);
-                                auto* pt = getPropertyType(cls, id.name);
+                                auto* pt = getPropertyType(*cls, id.name);
                                 auto* v = generateExpr(*e.value);
                                 if (v->getType() != pt)
                                     v = convertIntegerValue(builder_, v, pt, e.value.get());
                                 // M7: weak field → myp_weak_store (no retain/release).
-                                if (storePropertyField(gep, v, cls, id.name)) {
+                                if (storePropertyField(gep, v, *cls, id.name)) {
                                     builder_.CreateStore(v, gep);
                                     return v;
                                 }
                                 // ARC: this.prop is a strong slot owned by the object.
                                 const TypeNode* prop_tn = nullptr;
-                                for (auto& p : cls.properties)
+                                for (auto& p : cls->properties)
                                     if (p.name == id.name) { prop_tn = &p.type; break; }
                                 if (prop_tn && (prop_tn->class_name == "slice" || isCountedArrayType(*prop_tn) || isStringType(*prop_tn))) {
                                     // M8: slice/array/string field — retain new
@@ -1585,10 +1582,7 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                                         arcConsumeTemp(v);
                                     }
                                 } else if (prop_tn && isArcRefType(*prop_tn)) {
-                                    bool iface_prop = false;
-                                    if (current_tu_)
-                                        for (auto& ifd : current_tu_->interfaces)
-                                            if (ifd.name == prop_tn->class_name) { iface_prop = true; break; }
+                                    bool iface_prop = isInterfaceName(prop_tn->class_name);
                                     arcStoreRef(gep, v, iface_prop, isFreshArcExpr(*e.value));
                                     // BUG-034: 接口属性字段——具体类实例(ptr) → 接口
                                     // fat {data, vtable}（arcStoreRef 只按 data 做
