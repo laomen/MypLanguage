@@ -1,4 +1,4 @@
-// EXPECT ERROR: interface signature-only method must be implemented (default body doesn't excuse it)
+// EXPECT ERROR: does not implement action
 interface I {
     int mustImplement();
     int optional() { return 1; }

@@ -1,4 +1,4 @@
-// EXPECT ERROR: 外部实例不能调用 function: 段内部方法
+// EXPECT ERROR: cannot access function
 // function: 段仅供类内调用（this.f()/同类 action 内复用）；
 // 外部 obj.f() → "cannot access function 'priv' from outside class 'C'"
 class C {

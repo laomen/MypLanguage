@@ -35,6 +35,40 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.3 — 借用 ARC 参数重赋值 UAF 修复 + 测试框架可信度（T1/T2）+ selfhost 诊断输出修复
+
+**非破坏性（bug 修复 + 测试基础设施）**，oracle（mypc）与 selfhost 双端同步：
+
+1. **借用 ARC 参数重赋值 UAF（P0）**：`string f(string s){ s = s + "a"; s = s + "b";
+   return s; }` —— 字符串/类参数是**借用**（非 ARC 槽），此前赋值路径要么走就地追加
+   `myp_str_append`（消费借用的入口值 → 改写/释放调用方字符串）、要么 fresh 临时在语句
+   末被 flush 释放 → 参数槽悬垂、链式重赋值读已释放内存。修复：借用参数**首次重赋值**
+   惰性提升为拥有槽（fresh 消费 / 别名 retain，不释放借用的入口值，注册到**函数作用域**
+   而非块作用域），后续重赋值走普通 owned-slot 路径。C++ `codegen_stmt.cpp` +
+   selfhost `codegen.myp`（`funcPtrSlots_` + `funcPtrSlotHas`）双端镜像。回归
+   `tests/@test/str_param_append.myp`（链式/循环/别名/类参数 7 断言，双编译器）。
+
+2. **测试框架可信度（T1/T2，`docs/testing_benchmark_roadmap.md` §二）**：
+   - **T1 缺失 expected 默认失败**：普通模式找不到 `tests/expected/*.expected` 不再
+     静默把输出当基线并计 PASS → 报 `MISSING BASELINE` 且计 FAIL；仅 `--update`
+     允许创建 baseline（漏提交测试资产 CI 必然失败）。
+   - **T2 负测试校验诊断原因**：解析 `// EXPECT ERROR: <substring>` 并按固定字符串
+     （`grep -F`）断言 stderr 含该子串；意外 SIGSEGV/SIGABRT/ASan 归类为 `CRASH`
+     而非负测试通过。同步修正 27 个历史漂移的 `EXPECT ERROR` 注释（此前是人工描述、
+     从未机器断言，与实际诊断不符）。
+
+3. **selfhost 诊断输出修复（T2 暴露的既有 parity 缺口）**：
+   - **UTF-8 双重编码**：`main.myp` `Frontend.escape`/`dotToSlash` 用 `__myp_chr(c)`
+     把 `myp_charcode` 返回的**字节**当**码点**再 UTF-8 编码（0xE5 → c3 a5，中文诊断
+     变 mojibake）→ 改用 `Str.substring(s, i, i+1)` 字节透传（对齐 `ast.myp Dump.esc`
+     与 C++ `escapeDumpString`）。
+   - **BUG-046 镜像**：selfhost 补同名 static 方法（签名不同）诊断
+     `duplicate static action '...' in class '...' (different signature)`（`sema.myp`
+     `staticActionSig` 签名串比较；签名相同保持历史静默合并）。
+
+**回归**：oracle 323/323、selfhost 323/323（parity 0 差距）、bootstrap 16/16
+不动点（myp_self2 == myp_self3 md5 一致）。
+
 ### v3.15.2 — 自举 link.myp 硬编码重构（P0 工具链探测 / P1 缓存路径 / P2 集中配置 / P3 平台）
 
 `tools/selfhost/src/link.myp`（自举编译器链接器）去硬编码：

@@ -1,3 +1,3 @@
-// EXPECT ERROR: expression is not callable
+// EXPECT ERROR: is not callable
 class M { action: @startup void run() { int x = 5; x(); } }
 int main(){M m=new M();return 0;}

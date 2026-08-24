@@ -1,4 +1,4 @@
-// EXPECT ERROR: interface 声明了关联类型，实现类必须绑定（type Item = ...）
+// EXPECT ERROR: does not bind associated type
 interface I {
     type Item;                    // 关联类型声明
     Item getVal();                // 方法引用关联类型

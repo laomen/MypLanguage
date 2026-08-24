@@ -376,6 +376,25 @@ class Sema {
         void addMethod(string c, string m, AstType r, int np, ArrayList<AstParam> ps, int cor) {
             methods_.add(new MethodSig(c, m, r != null ? typeToKind(r) : "void", np, ps, cor, r));
         }
+        // BUG-046 镜像：static 方法签名串（返回类型 + 参数类型 kind，数组含元素 kind）。
+        // 同名 static 方法：签名相同保持历史静默合并；签名不同报错（C++ 用 TypeInfo
+        // 相等性判定，这里用 kind 串等价）。
+        string staticActionSig(AstAction a) {
+            StringBuilder sb = new StringBuilder();
+            sb.append(typeToKind(a.ret()));
+            ArrayList<AstParam> ps = a.params();
+            for (int pi = 0; pi < ps.size(); pi = pi + 1) {
+                AstType pt = ps.get(pi).type();
+                sb.append("|");
+                sb.append(typeToKind(pt));
+                if (pt != null && pt.element() != null) {
+                    sb.append("[");
+                    sb.append(typeToKind(pt.element()));
+                    sb.append("]");
+                }
+            }
+            return sb.toString();
+        }
         // cls 的 function: 段是否含方法 meth（A2：外部 obj.f() 访问 function: 段
         // 方法应拒绝——function: 仅类内 this.f() 可调，镜像 C++ BUG-001 规则）。
         int isFuncSectionMethod(string cls, string meth) {
@@ -1799,6 +1818,20 @@ class Sema {
                 }
                 for (int j = 0; j < c.staticActions().size(); j = j + 1) {
                     AstAction a = c.staticActions().get(j);
+                    // BUG-046 镜像：同名 static 方法——签名不同才报错（签名相同
+                    // 保持历史静默合并，如 cuda.myp Vectors 的 CPU/GPU 版 max/min）。
+                    if (a.typeParams().size() == 0) {
+                        string sigA = staticActionSig(a);
+                        for (int pj = 0; pj < j; pj = pj + 1) {
+                            AstAction prev = c.staticActions().get(pj);
+                            if (prev.typeParams().size() != 0 || prev.name() != a.name()) continue;
+                            if (staticActionSig(prev) != sigA) {
+                                diag_.error(a.line(), a.col(), "duplicate static action '" + a.name()
+                                    + "' in class '" + c.name() + "' (different signature)");
+                                break;
+                            }
+                        }
+                    }
                     addMethod(c.name(), a.name(), a.ret(), a.params().size(), a.params(), a.coro());
                     // F4-G1：登记泛型静态方法模板（Class.method → 模板 AstAction）
                     if (a.typeParams().size() > 0) {

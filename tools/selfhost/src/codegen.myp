@@ -711,6 +711,12 @@ class CodeGen {
                 sb_.append("  " + old + " = load ptr, ptr " + arcSlotNames_.get(i) + "\n");
                 sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
             }
+            // 借用参数被重赋值后提升的拥有槽（kind 0：string/class，ptr-typed）。
+            for (int i = 0; i < funcPtrSlots_.size(); i = i + 1) {
+                string old = newTmp();
+                sb_.append("  " + old + " = load ptr, ptr " + funcPtrSlots_.get(i) + "\n");
+                sb_.append("  call i32 @myp_release(ptr " + old + ")\n");
+            }
             releaseSliceSlots();
         }
 
@@ -3601,6 +3607,7 @@ class CodeGen {
             pendingTemps_ = new ArrayList<string>();
             arcSlotNames_ = new ArrayList<string>();
             sliceSlotNames_ = new ArrayList<string>();
+            funcPtrSlots_ = new ArrayList<string>();
             finallyStack_ = new ArrayList<FinallyCtx>();
             finallyRetSlot_ = "";
             tryArcBases_ = new ArrayList<int>();
@@ -8576,6 +8583,10 @@ class CodeGen {
                     && rhs0.lhs() != null && rhs0.lhs().kind() == "Identifier"
                     && rhs0.lhs().name() == lhs0.name()
                     && hasVar(lhs0.name()) != 0
+                    // 仅限「拥有缓冲的字符串局部」（varIsArc=1）：字符串参数是
+                    // 借用（varIsArc=0），myp_str_append 消费首个操作数会
+                    // realloc/释放调用方字符串 → UAF，须回落普通 strcat 路径。
+                    && varIsArc(lhs0.name()) != 0
                     && exprIsString(lhs0) != 0 && exprIsString(rhs0.lhs()) != 0) {
                     string nm = lhs0.name();
                     string cur = newTmp();
@@ -8603,7 +8614,9 @@ class CodeGen {
                         rv = convertExpr(rv, rt, lt, e.rhs());
                         if (lt == "{ ptr, i64 }") {
                             storeSliceSlot(varAlloca(nm), rv, isFreshSliceExpr(e.rhs()));
-                        } else if (varIsArc(nm) != 0) {
+                        } else if (varIsArc(nm) != 0 || funcPtrSlotHas(varAlloca(nm)) != 0) {
+                            // 拥有槽（局部 / 已提升的借用参数）：retain 新值（除非
+                            // fresh）+ 释放旧值（已提升的参数此刻拥有旧值）+ store。
                             storeRef(varAlloca(nm), rv, isFreshTemp(rv));
                             // §五-1 收尾: 类局部赋值镜像进协程帧（覆盖旧对象，同 C++）
                             if (isCoroClassLocal(varAstType(nm)) != 0) {
@@ -8612,8 +8625,28 @@ class CodeGen {
                                 emitCoroFrameSet(varAlloca(nm), cv);
                             }
                         } else {
-                            int al = IrEmit.alignOf(lt);
-                            sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                            // 借用 ARC 参数重赋值（string/class）：参数是借用
+                            //（非 ARC 槽），赋值须转移新值所有权（fresh 消费 /
+                            // 别名 retain）且不释放借用的入口值（调用方仍持有），
+                            // 并把槽提升为函数末释放的拥有槽。此前 fresh temp
+                            // 在语句末被 flush 释放 → 参数槽悬垂、`s = s + x`
+                            // 链式重赋值读已释放内存（UAF）。
+                            string rk2 = e.rhs().resolvedKind();
+                            int isStr = (rk2 == "string") ? 1 : 0;
+                            int isCls = (rk2 == "class") ? 1 : 0;
+                            if (isStr != 0 || isCls != 0) {
+                                if (isFreshTemp(rv) != 0) {
+                                    consumeTemp(rv);
+                                } else {
+                                    sb_.append("  call void @myp_retain(ptr " + rv + ")\n");
+                                }
+                                int al = IrEmit.alignOf(lt);
+                                sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                                funcPtrSlots_.add(varAlloca(nm));
+                            } else {
+                                int al = IrEmit.alignOf(lt);
+                                sb_.append("  store " + lt + " " + rv + ", ptr " + varAlloca(nm) + ", align " + al + "\n");
+                            }
                         }
                     } else if (hasMember(nm) != 0) {
                         string gep = thisMemberAddr(nm);
@@ -10130,6 +10163,16 @@ class CodeGen {
             return 0;
         }
 
+        // 借用 ARC 参数是否已被重赋值提升为拥有槽（funcPtrSlots_ 含其 alloca）。
+        // 首次重赋值走 promotion 分支（不释放借用的入口值）；后续重赋值走
+        // storeRef（此时槽拥有旧值，须释放旧值，同 C++ arc_scope_slots_[0]）。
+        int funcPtrSlotHas(string va) {
+            for (int i = 0; i < funcPtrSlots_.size(); i = i + 1) {
+                if (funcPtrSlots_.get(i) == va) return 1;
+            }
+            return 0;
+        }
+
         // new slice<T>(n)：myp_alloc_slice_backing + 构造 {data, len} fat pointer。
         string genSliceNew(AstExpr e) {
             AstType et = e.typeArgs().size() > 0 ? e.typeArgs().get(0) : null;
@@ -11067,6 +11110,8 @@ class CodeGen {
         ArrayList<string> pendingTemps_;
         ArrayList<string> arcSlotNames_;
         ArrayList<string> sliceSlotNames_;
+        // 借用 ARC 参数重赋值后提升的「拥有槽」（函数末释放，不受块作用域影响）
+        ArrayList<string> funcPtrSlots_;
         StringBuilder entryAllocas_;
         ArrayList<int> localIsArc_;
         ArrayList<FinallyCtx> finallyStack_;

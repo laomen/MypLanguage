@@ -1,4 +1,4 @@
-// EXPECT ERROR: undefined struct member access
+// EXPECT ERROR: has no member
 struct S { int x; }
 class M { action: @startup void run() { S s; s.y = 1; } }
 int main(){M m=new M();return 0;}

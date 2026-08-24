@@ -1,4 +1,4 @@
-// EXPECT ERROR: no external @op for double[] + double[] (plain function is not an operator)
+// EXPECT ERROR: expected numeric type
 double[] add(double[] A, double[] B) { return A; }
 int main(){
     double[] A = new double[2];

@@ -128,10 +128,17 @@ for test_dir in tests/*/; do
             fi
         fi
     else
-        # 首次运行 — 保存为 expected
-        cp "$output_file" "$expected_file"
-        echo -e "${YELLOW}BASELINE${NC} (created expected)"
-        PASS=$((PASS + 1))
+        # 缺失 expected：仅 --update 允许创建 baseline；默认模式必须失败
+        #（漏提交 expected 时 CI 不能把错误输出静默当成新基线）。
+        if $UPDATE_MODE; then
+            cp "$output_file" "$expected_file"
+            echo -e "${YELLOW}UPDATED${NC} (created expected)"
+            PASS=$((PASS + 1))
+        else
+            echo -e "${RED}MISSING BASELINE${NC} (no expected file; run --update to bless)"
+            FAIL=$((FAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS $name(missing-expected)"
+        fi
     fi
 done
 
@@ -149,12 +156,29 @@ for test_file in tests/negative/*.myp; do
     [ ! -f "$test_file" ] && continue
     name=$(basename "$test_file" .myp)
 
+    # 机器断言期望诊断（可选）：`// EXPECT ERROR: <substring>`。固定字符串匹配
+    # （-F），诊断措辞调整不要求字节级一致；无注释则保持旧行为（仅判非零）。
+    expect_substr=$(grep -m1 -E '//[[:space:]]*EXPECT ERROR:' "$test_file" | sed -E 's|.*EXPECT ERROR:[[:space:]]*||' | tr -d '\r')
+
     printf "  %-25s " "$name"
 
     compile_output=$($MYPCC "$test_file" 2>&1)
-    if [ $? -ne 0 ]; then
-        echo -e "${GREEN}PASS${NC} (correctly rejected)"
-        NEG_PASS=$((NEG_PASS + 1))
+    rc=$?
+    if [ $rc -ne 0 ]; then
+        # 崩溃（段错误/abort/ASan）不是"干净拒绝"，必须判失败（T2：意外
+        # SIGSEGV/SIGABRT/ASan 报告归类为 CRASH 而非负测试通过）。
+        if echo "$compile_output" | grep -qE "AddressSanitizer|Segmentation fault|SIGSEGV|SIGABRT|core dumped"; then
+            echo -e "${RED}CRASH${NC} (compiler crashed, not a clean reject)"
+            NEG_FAIL=$((NEG_FAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS $name(negative-crash)"
+        elif [ -n "$expect_substr" ] && ! echo "$compile_output" | grep -qF "$expect_substr"; then
+            echo -e "${RED}FAIL${NC} (rejected, but missing '${expect_substr}')"
+            NEG_FAIL=$((NEG_FAIL + 1))
+            FAILED_TESTS="$FAILED_TESTS $name(negative-reason)"
+        else
+            echo -e "${GREEN}PASS${NC} (correctly rejected)"
+            NEG_PASS=$((NEG_PASS + 1))
+        fi
     else
         echo -e "${RED}FAIL${NC} (should have been rejected)"
         NEG_FAIL=$((NEG_FAIL + 1))

@@ -1,4 +1,4 @@
-// EXPECT ERROR: tuple arity mismatch — (int,int) initialized with 3 elements
+// EXPECT ERROR: cannot initialize variable
 import env;
 int pmRun() {
     (int, int) t = (1, 2, 3);

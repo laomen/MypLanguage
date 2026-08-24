@@ -1,4 +1,4 @@
-// EXPECT ERROR: destructure type mismatch — string var gets int element
+// EXPECT ERROR: destructure: cannot assign
 import env;
 int pmRun() {
     int a;

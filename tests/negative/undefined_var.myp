@@ -1,4 +1,4 @@
-// EXPECT ERROR: unknown identifier 'x'
+// EXPECT ERROR: undefined symbol 'x'
 class M {
     action: @startup void run() { int y = x; }
 }

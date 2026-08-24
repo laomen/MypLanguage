@@ -1626,10 +1626,15 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
         // M4: in-place string append — `s = s + x` reuses s's counted buffer
         // when it is unique (rc==1) via myp_str_append, turning O(n²) string
         // accumulation into O(1)-amortized appends (no full copy per step).
-        // Only when the target is a string local and the RHS is `s + x` with
-        // the SAME variable on the left (the common accumulation pattern).
+        // Only when the target is an OWNED string local (a kind-0 ARC slot) and
+        // the RHS is `s + x` with the SAME variable on the left (the common
+        // accumulation pattern). myp_str_append CONSUMES its first operand
+        // (realloc in place at rc==1, else strcat+release); a string PARAMETER
+        // is BORROWED (not an ARC slot) — consuming it would realloc/mutate the
+        // caller's string (rc==1) or steal the caller's ref (rc!=1) → UAF. Such
+        // assignments must fall through to the normal strcat path below.
         if (e.value && e.value->kind == ExprKind::BinaryOp &&
-            exprIsString(*e.target)) {
+            isArcClassLocal(a) && exprIsString(*e.target)) {
             auto& bin = static_cast<const BinaryOpExpr&>(*e.value);
             if (bin.op == BinaryOpKind::Add &&
                 bin.lhs->kind == ExprKind::Identifier &&
@@ -1706,6 +1711,44 @@ llvm::Value* CodeGen::generateAssignment(const AssignmentExpr& e) {
                 if (!isFreshArcExpr(*e.value))
                     emitArcFieldOp(builder_, v, sft->second, true);
                 arcConsumeTemp(v);
+            }
+            // Borrowed ARC parameter being reassigned (string / class / dynamic
+            // array / slice / interface / function value — an ARC-typed named
+            // value that is NOT a registered slot and NOT a struct field; the
+            // only such pointer/aggregate-typed names are parameters). A
+            // parameter is BORROWED on entry (not an ARC slot): assigning to it
+            // must transfer ownership of the NEW value WITHOUT releasing the
+            // borrowed entry value (the caller still owns it), and the slot
+            // must be promoted to scope-exit-released so the now-owned value is
+            // freed. Previously the fresh temp was flushed at statement end
+            // (dangling param slot) and `s = s + x` chained assignments read
+            // freed memory (UAF).
+            else {
+                TypeKind rk = e.value->resolved_kind;
+                int kind = -1;
+                if (rk == TypeKind::String || rk == TypeKind::Class) kind = 0;
+                else if (rk == TypeKind::Interface) kind = 1;
+                else if (rk == TypeKind::Function) kind = 2;
+                else if (rk == TypeKind::Slice) kind = 4;
+                if (kind >= 0) {
+                    if (isFreshArcExpr(*e.value)) {
+                        arcConsumeTemp(v);                 // fresh +1 → slot owns it
+                    } else if (v->getType()->isStructTy()) {
+                        // interface/function/slice fat pointer → retain data ptr
+                        emitRetain(builder_.CreateExtractValue(v, 0));
+                    } else {
+                        emitRetain(v);                     // class/string ref
+                    }
+                    // Register at the FUNCTION scope (index 0), NOT the current
+                    // block scope: a parameter outlives any nested block, so its
+                    // now-owned value must be released at function exit — a
+                    // block-scope registration would free it at block exit and
+                    // leave the slot dangling for the rest of the function.
+                    if (!arc_scope_slots_.empty())
+                        arc_scope_slots_[0].push_back({a, kind});
+                    if (current_is_coro_ && (kind == 0 || kind == 2))
+                        emitCoroFrameSet(a, v);
+                }
             }
         }
         builder_.CreateStore(v, a);

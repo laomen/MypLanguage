@@ -1,0 +1,61 @@
+import test;
+
+// 借用 ARC 参数重赋值的 ARC use-after-free 修复回归。
+// 修复前：`s = s + x`（字符串参数）走就地追加 myp_str_append（消费借用值）或
+// 普通路径（fresh 临时在语句末被 flush 释放）→ 参数槽悬垂 → 链式/循环重赋值
+// 读已释放内存，且就地追加会改写调用方字符串。修复：借用参数首次重赋值时惰性
+// 提升为「拥有槽」（fresh 消费 / 别名 retain，不释放借用的入口值，函数末释放）。
+
+string appendChain(string s) {
+    s = s + "a";
+    s = s + "b";
+    return s;
+}
+
+string appendLoop(string s) {
+    for (int i = 0; i < 3; i = i + 1) {
+        s = s + "x";
+    }
+    return s;
+}
+
+string aliasAssign(string s) {
+    string t = s + "!";
+    s = t;   // 别名赋值：借用参数 → 提升为拥有（retain t，不释放入口值）
+    return s;
+}
+
+class Box {
+    property:
+        int v;
+    action:
+        @constructor Box() { v = 0; }
+        int value() { return v; }
+}
+
+Box repoint(Box b) {
+    b = new Box();   // 类参数重赋值：fresh new → 提升为拥有
+    return b;
+}
+
+@test void t_str_param_append() {
+    string x = "h" + "i";
+    string y = appendChain(x);
+    Test.assertStrEq(y, "hiab", "append chain result");
+    Test.assertStrEq(x, "hi", "caller string untouched (chain)");
+
+    string x2 = "h" + "i";
+    string y2 = appendLoop(x2);
+    Test.assertStrEq(y2, "hixxx", "append loop result");
+    Test.assertStrEq(x2, "hi", "caller string untouched (loop)");
+
+    string x3 = "h" + "i";
+    string y3 = aliasAssign(x3);
+    Test.assertStrEq(y3, "hi!", "alias assign result");
+    Test.assertStrEq(x3, "hi", "caller string untouched (alias)");
+
+    Box b = new Box();
+    Box b2 = repoint(b);
+    Test.assertEq(b2.value(), 0, "repointed box value");
+    Test.report("t_str_param_append", true);
+}

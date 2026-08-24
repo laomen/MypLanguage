@@ -1,4 +1,4 @@
-// EXPECT ERROR: cannot assign int to string
+// EXPECT ERROR: cannot initialize variable
 class M {
     action: @startup void run() { string s = 42; }
 }

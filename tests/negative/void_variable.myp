@@ -1,3 +1,3 @@
-// EXPECT ERROR: cannot declare void variable
+// EXPECT ERROR: cannot declare variable of type 'void'
 class M { action: @startup void run() { void x; } }
 int main(){M m=new M();return 0;}

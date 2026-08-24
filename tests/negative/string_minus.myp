@@ -1,3 +1,3 @@
-// EXPECT ERROR: cannot subtract strings
+// EXPECT ERROR: expected numeric type, got 'string'
 class M { action: @startup void run() { string s = "a" - "b"; } }
 int main(){M m=new M();return 0;}

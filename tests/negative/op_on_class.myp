@@ -1,4 +1,4 @@
-// EXPECT ERROR: class does not support operator section (math operators are struct-only)
+// EXPECT ERROR: expected 'action:'
 class C {
     operator:
         @op("+") double add(double a, double b) { return a; }

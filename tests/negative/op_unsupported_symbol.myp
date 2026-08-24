@@ -1,3 +1,3 @@
-// EXPECT ERROR: unsupported operator symbol in @op
+// EXPECT ERROR: unsupported operator symbol
 @op("!") double neg(double x) { return -x; }
 int main(){return 0;}

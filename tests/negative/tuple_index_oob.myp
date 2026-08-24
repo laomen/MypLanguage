@@ -1,4 +1,4 @@
-// EXPECT ERROR: tuple index out of range — t.5 on a 2-element tuple
+// EXPECT ERROR: tuple index 5 out of range
 import env;
 int pmRun() {
     (int, int) t = (1, 2);

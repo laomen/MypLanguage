@@ -1,4 +1,4 @@
-// EXPECT ERROR: wrong number of arguments
+// EXPECT ERROR: too many arguments
 import env;
 import time;
 class M { action: @startup void run() { Time.sleep(10, 20); } }

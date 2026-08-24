@@ -65,7 +65,10 @@ class LoadedSet {
                 else if (c == 34) sb.append("\\\"");
                 else if (c == 92) sb.append("\\\\");
                 else if (c == 1) sb.append("\\0");  // 0x01 哨兵 → \0
-                else sb.append(__myp_chr(c));
+                // 非转义字节原样透传（同 ast.myp Dump.esc）：MYP string 是字节串，
+                // __myp_charcode 返回字节（如 0xE5），__myp_chr(0xE5) 会再 UTF-8
+                // 编码成 2 字节 → 多字节中文双重编码（与 C++ escapeDumpString 不一致）。
+                else sb.append(Str.substring(s, i, i + 1));
             }
             return sb.toString();
         }
@@ -153,7 +156,7 @@ class LoadedSet {
             for (int i = 0; i < Str.len(name); i = i + 1) {
                 int c = __myp_charcode(name, i);
                 if (c == 46) sb.append("/");
-                else sb.append(__myp_chr(c));
+                else sb.append(Str.substring(name, i, i + 1));  // 字节透传
             }
             return sb.toString();
         }
