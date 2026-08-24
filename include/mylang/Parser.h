@@ -112,6 +112,7 @@ private:
     std::unique_ptr<Expr> parseAssignment();
     std::unique_ptr<Expr> parsePipe();
     std::unique_ptr<Expr> parseConditional();
+    std::unique_ptr<Expr> parseCoalesce();   // a ?? b（脱糖为 (a != null ? a : b)）
     std::unique_ptr<Expr> parseLogicalOr();
     std::unique_ptr<Expr> parseLogicalAnd();
     std::unique_ptr<Expr> parseBitwiseOr();
@@ -140,6 +141,11 @@ private:
     // Helpers
     std::string parseIdentifier(const std::string& error_msg);
     SourceRange tokenRange(const Token& tok) const;
+    // 字符串 "$name" 插值：把 value 中每个 "$name" 展开为 Identifier 并与字面段
+    // 拼接（无 '$' 或 '$' 后无合法名时返回纯 StringLiteralExpr）。"${expr}" 插值
+    // 由 lexer 合成 InterpOpen/InterpClose 后在 parsePrimary 处理。
+    std::unique_ptr<Expr> expandDollarInterpolation(const std::string& value,
+                                                    SourceRange range);
     bool checkType() const;
     bool isTypeToken(TokenKind k) const;
     // 前瞻：当前是 struct 方法（type [<...>] name '('）还是属性（type name ';'）。

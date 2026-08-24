@@ -234,7 +234,7 @@ std::unique_ptr<Expr> Parser::parseAssignment() {
 }
 
 std::unique_ptr<Expr> Parser::parseConditional() {
-    auto expr = parseLogicalOr();
+    auto expr = parseCoalesce();
     if (match(TokenKind::Question)) {
         auto true_expr = parseExpr();
         consume(TokenKind::Colon, "expected ':' in ternary expression");
@@ -244,6 +244,21 @@ std::unique_ptr<Expr> Parser::parseConditional() {
             previous().range);
     }
     return expr;
+}
+
+// a ?? b  →  (a != null ? a : b)（右结合）。lhs 被求值两次（条件 + 真分支）——
+// 对变量/字段读取无副作用；副作用调用作 lhs 时需自行提临时变量。
+std::unique_ptr<Expr> Parser::parseCoalesce() {
+    auto lhs = parseLogicalOr();
+    if (match(TokenKind::QuestionQuestion)) {
+        auto rhs = parseCoalesce();
+        auto null_lit = std::make_unique<NullLiteralExpr>(previous().range);
+        auto cond = std::make_unique<BinaryOpExpr>(
+            cloneExpr(*lhs), BinaryOpKind::Ne, std::move(null_lit), previous().range);
+        return std::make_unique<TernaryExpr>(
+            std::move(cond), std::move(lhs), std::move(rhs), previous().range);
+    }
+    return lhs;
 }
 
 std::unique_ptr<Expr> Parser::parseLogicalOr() {
@@ -523,6 +538,24 @@ std::unique_ptr<Expr> Parser::parsePostfix() {
             expr = std::make_unique<MemberAccessExpr>(
                 std::move(expr), member, previous().range);
 
+        } else if (match(TokenKind::QuestionDot)) {
+            // Null-safe 访问：a?.f  →  (a != null ? a.f : null)；a?.m(args) 同理。
+            // 结果类型须可空（类字段/类返回的方法）。a 被求值两次（条件 + 真分支）。
+            std::string member = parseIdentifier("expected member name after '?.'");
+            std::unique_ptr<Expr> access = std::make_unique<MemberAccessExpr>(
+                cloneExpr(*expr), member, previous().range);
+            if (check(TokenKind::LeftParen)) {
+                auto args = parseCallArgs();
+                access = std::make_unique<CallExpr>(
+                    std::move(access), std::move(args), previous().range);
+            }
+            auto null_lit = std::make_unique<NullLiteralExpr>(previous().range);
+            auto cond = std::make_unique<BinaryOpExpr>(
+                cloneExpr(*expr), BinaryOpKind::Ne, std::move(null_lit), previous().range);
+            expr = std::make_unique<TernaryExpr>(
+                std::move(cond), std::move(access),
+                std::make_unique<NullLiteralExpr>(previous().range), previous().range);
+
         } else if (match(TokenKind::LeftBracket)) {
             auto index = parseExpr();
             consume(TokenKind::RightBracket, "expected ']' after index");
@@ -634,54 +667,25 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
         return std::make_unique<BoolLiteralExpr>(false, previous().range);
     }
     if (match(TokenKind::StringLiteral)) {
-        auto val = previous().value;
-        // Check for string interpolation: "Hello, $name"
-        auto dollar_pos = val.find('$');
-        if (dollar_pos != std::string::npos) {
-            // Expand into concatenation
-            std::unique_ptr<Expr> result;
-            size_t pos = 0;
-            while (pos < val.size()) {
-                auto dpos = val.find('$', pos);
-                if (dpos == std::string::npos) {
-                    // Remaining literal text
-                    auto part = val.substr(pos);
-                    auto lit = std::make_unique<StringLiteralExpr>(part, previous().range);
-                    if (result)
-                        result = std::make_unique<BinaryOpExpr>(
-                            std::move(result), BinaryOpKind::Add, std::move(lit), previous().range);
-                    else
-                        result = std::move(lit);
-                    break;
-                }
-                if (dpos > pos) {
-                    // Text before $
-                    auto part = val.substr(pos, dpos - pos);
-                    auto lit = std::make_unique<StringLiteralExpr>(part, previous().range);
-                    if (result)
-                        result = std::make_unique<BinaryOpExpr>(
-                            std::move(result), BinaryOpKind::Add, std::move(lit), previous().range);
-                    else
-                        result = std::move(lit);
-                }
-                // Variable name after $
-                pos = dpos + 1;
-                size_t end = pos;
-                while (end < val.size() && (std::isalnum(val[end]) || val[end] == '_')) end++;
-                if (end > pos) {
-                    auto var_name = val.substr(pos, end - pos);
-                    auto var_expr = std::make_unique<IdentifierExpr>(var_name, previous().range);
-                    if (result)
-                        result = std::make_unique<BinaryOpExpr>(
-                            std::move(result), BinaryOpKind::Add, std::move(var_expr), previous().range);
-                    else
-                        result = std::move(var_expr);
-                }
-                pos = end;
+        auto range = previous().range;
+        auto result = expandDollarInterpolation(previous().value, range);
+        // "${expr}" 插值：lexer 在字符串内遇 '$'+'{' 时合成
+        //   StringLiteral(prefix) InterpOpen <expr> InterpClose StringLiteral(suffix) ...
+        // 这里把它们折叠成 + 拼接（sema/codegen 复用 string + any → string）。
+        while (check(TokenKind::InterpOpen)) {
+            consume(TokenKind::InterpOpen, "expected interpolation start");
+            auto expr = parseExpr();
+            consume(TokenKind::InterpClose, "expected '}' to close string interpolation");
+            result = std::make_unique<BinaryOpExpr>(std::move(result), BinaryOpKind::Add,
+                                                    std::move(expr), previous().range);
+            if (check(TokenKind::StringLiteral)) {
+                auto tok = advance();
+                auto suffix = expandDollarInterpolation(tok.value, tok.range);
+                result = std::make_unique<BinaryOpExpr>(std::move(result), BinaryOpKind::Add,
+                                                        std::move(suffix), tok.range);
             }
-            if (result) return result;
         }
-        return std::make_unique<StringLiteralExpr>(previous().value, previous().range);
+        return result;
     }
     if (match(TokenKind::CharLiteral)) {
         // char literal value is a single-character string
@@ -1440,6 +1444,56 @@ std::unique_ptr<TypeAliasDecl> Parser::parseTypeAlias() {
     // Register for parse-time substitution (before subsequent decls).
     aliases_[decl->name] = decl->alias_type;
     return decl;
+}
+
+// "$name" 插值：把字符串值中每个 "$name" 展开为 Identifier，并与字面片段拼成
+// BinaryOp(+) 链。无 '$' 或 '$' 后无合法标识符名时返回纯 StringLiteralExpr。
+// （与 selfhost parser.myp 的字符串插值逐字节镜像。）
+std::unique_ptr<Expr> Parser::expandDollarInterpolation(const std::string& val,
+                                                        SourceRange range) {
+    if (val.find('$') == std::string::npos) {
+        return std::make_unique<StringLiteralExpr>(val, range);
+    }
+    std::unique_ptr<Expr> result;
+    size_t pos = 0;
+    while (pos < val.size()) {
+        auto dpos = val.find('$', pos);
+        if (dpos == std::string::npos) {
+            auto part = val.substr(pos);
+            auto lit = std::make_unique<StringLiteralExpr>(part, range);
+            if (result)
+                result = std::make_unique<BinaryOpExpr>(
+                    std::move(result), BinaryOpKind::Add, std::move(lit), range);
+            else
+                result = std::move(lit);
+            break;
+        }
+        if (dpos > pos) {
+            auto part = val.substr(pos, dpos - pos);
+            auto lit = std::make_unique<StringLiteralExpr>(part, range);
+            if (result)
+                result = std::make_unique<BinaryOpExpr>(
+                    std::move(result), BinaryOpKind::Add, std::move(lit), range);
+            else
+                result = std::move(lit);
+        }
+        pos = dpos + 1;
+        size_t end = pos;
+        while (end < val.size() && (std::isalnum(static_cast<unsigned char>(val[end]))
+                                    || val[end] == '_')) end++;
+        if (end > pos) {
+            auto var_name = val.substr(pos, end - pos);
+            auto var_expr = std::make_unique<IdentifierExpr>(var_name, range);
+            if (result)
+                result = std::make_unique<BinaryOpExpr>(
+                    std::move(result), BinaryOpKind::Add, std::move(var_expr), range);
+            else
+                result = std::move(var_expr);
+        }
+        pos = end;
+    }
+    if (result) return result;
+    return std::make_unique<StringLiteralExpr>(val, range);
 }
 
 }  // namespace {ns}

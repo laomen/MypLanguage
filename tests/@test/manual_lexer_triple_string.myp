@@ -1,0 +1,37 @@
+// manual_lexer_triple_string.myp — 多行字符串 """...""" 回归（表达力三小改）
+// ---------------------------------------------------------------------------
+// """...""" 为多行字符串字面量：内容可含换行与单个 "，到下一个未转义的三连引号
+// 结束；\ 转义与单行字符串一致。oracle 与 selfhost 双端同步实现。
+import test;
+import text;
+
+@test void t_triple_basic() {
+    string s = """hello
+world""";
+    Test.assertStrEq(s, "hello\nworld");
+}
+
+@test void t_triple_empty() {
+    string e = """""";
+    Test.assertEq(Str.len(e), 0);
+    Test.assertStrEq(e, "");
+}
+
+@test void t_triple_inner_quotes() {
+    string q = """a "b" c""";
+    Test.assertStrEq(q, "a \"b\" c");
+}
+
+@test void t_triple_escape() {
+    string esc = """tab\there""";
+    Test.assertStrEq(esc, "tab\there");
+    string nl = """a\nb""";
+    Test.assertStrEq(nl, "a\nb");
+}
+
+@test void t_triple_trailing_newline() {
+    string s = """line1
+line2
+""";
+    Test.assertStrEq(s, "line1\nline2\n");
+}

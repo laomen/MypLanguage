@@ -35,6 +35,32 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.0 — 表达力三小改：多行字符串 / 字符串插值 / 空安全 `?.` `??`
+
+**非破坏性（additive）语言特性**，oracle（mypc）与 selfhost 双端同步实现：
+
+1. **多行字符串 `"""..."""`**：三个连续引号开始，到下一个未转义三连引号结束；
+   内容可含换行与单个 `"`，`\` 转义与单行字符串一致。纯 lexer 改动。
+
+2. **字符串插值**（两种形式）：
+   - `${expr}` —— 任意表达式插值（lexer 在字符串内遇 `$` 后跟 `{` 时合成
+     `interp_open`/`interp_close` token，parser 折叠为 `+` 拼接）。
+   - `$name` —— 简单标识符插值（既有语法，保持不变）。
+   - 字面 `{` `}` 不受影响（无 `$` 前缀即字面，JSON 等字符串零冲突）；
+     多行 `"""..."""` 内不插值。
+
+3. **空安全 `?.` / `??`**（parser 脱糖，复用既有 `!= null` 与三元语义）：
+   - `a ?? b` → `(a != null ? a : b)`（右结合）。
+   - `a?.m(args)` → `(a != null ? a.m(args) : null)`；`a?.f` 同理。
+   - 结果须可空：类字段/类返回的方法可用；值类型成员（int）无法为 null，
+     报 `ternary branches have incompatible types`（需 Option<T> 或 `??` 默认值）。
+   - 注意：`a` 在脱糖后求值两次（条件 + 真分支），对变量/字段读取无副作用；
+     副作用调用作左操作数时请先提局部变量。
+
+**回归**：oracle 320/320、selfhost 320/320、自举不动点 16/16、tokens/ast/sema
+对拍 95/95、fmt/viz 对拍全绿。新正测试：`tests/@test/manual_lexer_triple_string.myp`、
+`manual_lexer_interp.myp`、`manual_null_safe.myp`。
+
 ### v3.14.0 — Windows 移植里程碑 1/2：运行时层交叉编译通过（MinGW-w64）
 
 **背景**：评估 MYP 全生态 Windows 适配可行性后，首个里程碑 = 让运行时层

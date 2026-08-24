@@ -1497,7 +1497,7 @@ class Parser {
         }
 
         AstExpr parseAssignment() {
-            AstExpr expr = parsePipe();
+            AstExpr expr = parseCoalesce();
             string k = curKind();
             if (k == "=") {
                 advance();
@@ -1547,6 +1547,25 @@ class Parser {
                 return t;
             }
             return expr;
+        }
+
+        // a ?? b  →  (a != null ? a : b)（右结合）。镜像 C++ parseCoalesce。
+        AstExpr parseCoalesce() {
+            AstExpr lhs = parsePipe();
+            if (curKind() == "??") {
+                advance();
+                AstExpr rhs = parseCoalesce();
+                AstExpr nul = new AstExpr();
+                nul.setKind("Null");
+                AstExpr cond = new AstExpr();
+                cond.setKind("Binary"); cond.setOp("!=");
+                cond.setLhs(lhs.cloneExpr()); cond.setRhs(nul);
+                AstExpr t = new AstExpr();
+                t.setKind("Ternary");
+                t.setCondition(cond); t.setTrueExpr(lhs); t.setFalseExpr(rhs);
+                return t;
+            }
+            return lhs;
         }
 
         AstExpr parsePipe() {
@@ -1803,6 +1822,41 @@ class Parser {
                     m.setArray(expr);
                     m.setMemberName(mem);
                     expr = m;
+                } else if (k == "?.") {
+                    // Null-safe 访问：a?.f → (a != null ? a.f : null)；a?.m(args) 同理。
+                    advance();
+                    string mem = parseIdentifier("expected member name after '?.'");
+                    AstExpr acc = new AstExpr();
+                    acc.setKind("Member");
+                    acc.setArray(expr.cloneExpr());
+                    acc.setMemberName(mem);
+                    if (curKind() == "(") {
+                        ArrayList<AstExpr> args = new ArrayList<AstExpr>();
+                        advance();
+                        if (curKind() != ")") {
+                            args.add(parseExpr());
+                            while (matchKind(",") != 0) args.add(parseExpr());
+                        }
+                        consume(")", "expected ')' after arguments");
+                        AstExpr c = new AstExpr();
+                        c.setKind("Call");
+                        c.setCallee(acc);
+                        for (int i = 0; i < args.size(); i = i + 1) c.args().add(args.get(i));
+                        acc = c;
+                    }
+                    AstExpr nul1 = new AstExpr();
+                    nul1.setKind("Null");
+                    AstExpr cond = new AstExpr();
+                    cond.setKind("Binary"); cond.setOp("!=");
+                    cond.setLhs(expr.cloneExpr()); cond.setRhs(nul1);
+                    AstExpr t = new AstExpr();
+                    t.setKind("Ternary");
+                    t.setCondition(cond);
+                    t.setTrueExpr(acc);
+                    AstExpr nul2 = new AstExpr();
+                    nul2.setKind("Null");
+                    t.setFalseExpr(nul2);
+                    expr = t;
                 } else if (k == "[") {
                     advance();
                     AstExpr idx = parseExpr();
@@ -1995,69 +2049,27 @@ class Parser {
             if (k == "string") {
                 string sval = curVal();
                 advance();
-                // 字符串插值："Hello, $name" → StringLiteral 与 Identifier 拼接。
-                // 镜像 C++：while (pos < size)；`$` 后无合法名则不动，result 为
-                // null 时返回原字符串（如 "$" / "$."）。
-                AstExpr result = null;
-                int pos = 0;
-                while (pos < Str.len(sval)) {
-                    int dpos = -1;
-                    for (int i = pos; i < Str.len(sval); i = i + 1) {
-                        if (__myp_charcode(sval, i) == 36) { dpos = i; break; }
+                AstExpr result = expandDollarInterp(sval);
+                // ${expr} 插值：lexer 在字符串内遇 '$'+'{' 时合成
+                //   string(prefix) "${" <expr> "}" string(suffix) ...
+                // 这里折叠成 + 拼接（sema/codegen 复用 string + any → string）。
+                while (curKind() == "interp_open") {
+                    advance();  // 消费 interp_open
+                    AstExpr ie = parseExpr();
+                    consume("interp_close", "expected '}' to close string interpolation");
+                    AstExpr b1 = new AstExpr();
+                    b1.setKind("Binary"); b1.setOp("+"); b1.setLhs(result); b1.setRhs(ie);
+                    result = b1;
+                    if (curKind() == "string") {
+                        string sfx = curVal();
+                        advance();
+                        AstExpr suffix = expandDollarInterp(sfx);
+                        AstExpr b2 = new AstExpr();
+                        b2.setKind("Binary"); b2.setOp("+"); b2.setLhs(result); b2.setRhs(suffix);
+                        result = b2;
                     }
-                    if (dpos < 0) {
-                        string part = Str.substring(sval, pos, Str.len(sval));
-                        AstExpr lit = new AstExpr();
-                        lit.setKind("String");
-                        lit.setStringValue(part);
-                        if (result != null) {
-                            AstExpr b = new AstExpr();
-                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
-                            result = b;
-                        } else {
-                            result = lit;
-                        }
-                        break;
-                    }
-                    if (dpos > pos) {
-                        string part = Str.substring(sval, pos, dpos);
-                        AstExpr lit = new AstExpr();
-                        lit.setKind("String");
-                        lit.setStringValue(part);
-                        if (result != null) {
-                            AstExpr b = new AstExpr();
-                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
-                            result = b;
-                        } else {
-                            result = lit;
-                        }
-                    }
-                    pos = dpos + 1;
-                    int e2 = pos;
-                    while (e2 < Str.len(sval)) {
-                        int c = __myp_charcode(sval, e2);
-                        if (Lex.isAlnum(c) != 0 || c == 95) e2 = e2 + 1; else break;
-                    }
-                    if (e2 > pos) {
-                        string vname = Str.substring(sval, pos, e2);
-                        AstExpr ident = new AstExpr();
-                        ident.setKind("Identifier");
-                        ident.setName(vname);
-                        if (result != null) {
-                            AstExpr b = new AstExpr();
-                            b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(ident);
-                            result = b;
-                        } else {
-                            result = ident;
-                        }
-                    }
-                    pos = e2;
                 }
-                if (result != null) return result;
-                AstExpr plain = new AstExpr();
-                plain.setKind("String");
-                plain.setStringValue(sval);
-                return plain;
+                return result;
             }
             if (k == "char") {
                 AstExpr e = new AstExpr();
@@ -2194,6 +2206,71 @@ class Parser {
             er.setName("__error__");
             advance();
             return er;
+        }
+
+        // "$name" 插值展开：value 中每个 "$name" → Identifier，与字面段拼成 + 链。
+        // 无 '$' 或 '$' 后无合法名时返回纯 String（镜像 C++ expandDollarInterpolation）。
+        AstExpr expandDollarInterp(string sval) {
+            AstExpr result = null;
+            int pos = 0;
+            while (pos < Str.len(sval)) {
+                int dpos = -1;
+                for (int i = pos; i < Str.len(sval); i = i + 1) {
+                    if (__myp_charcode(sval, i) == 36) { dpos = i; break; }
+                }
+                if (dpos < 0) {
+                    string part = Str.substring(sval, pos, Str.len(sval));
+                    AstExpr lit = new AstExpr();
+                    lit.setKind("String");
+                    lit.setStringValue(part);
+                    if (result != null) {
+                        AstExpr b = new AstExpr();
+                        b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
+                        result = b;
+                    } else {
+                        result = lit;
+                    }
+                    break;
+                }
+                if (dpos > pos) {
+                    string part = Str.substring(sval, pos, dpos);
+                    AstExpr lit = new AstExpr();
+                    lit.setKind("String");
+                    lit.setStringValue(part);
+                    if (result != null) {
+                        AstExpr b = new AstExpr();
+                        b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(lit);
+                        result = b;
+                    } else {
+                        result = lit;
+                    }
+                }
+                pos = dpos + 1;
+                int e2 = pos;
+                while (e2 < Str.len(sval)) {
+                    int c = __myp_charcode(sval, e2);
+                    if (Lex.isAlnum(c) != 0 || c == 95) e2 = e2 + 1; else break;
+                }
+                if (e2 > pos) {
+                    string vname = Str.substring(sval, pos, e2);
+                    AstExpr ident = new AstExpr();
+                    ident.setKind("Identifier");
+                    ident.setName(vname);
+                    if (result != null) {
+                        AstExpr b = new AstExpr();
+                        b.setKind("Binary"); b.setOp("+"); b.setLhs(result); b.setRhs(ident);
+                        result = b;
+                    } else {
+                        result = ident;
+                    }
+                }
+                pos = e2;
+            }
+            if (result != null) return result;
+            AstExpr plain = new AstExpr();
+            plain.setKind("String");
+            plain.setStringValue(sval);
+            return plain;
         }
 
         AstExpr parseNewExpr() {

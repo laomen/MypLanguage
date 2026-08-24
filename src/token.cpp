@@ -110,6 +110,8 @@ const char* Token::keywordString(TokenKind kind) {
         case TokenKind::Semicolon:          return ";";
         case TokenKind::Colon:              return ":";
         case TokenKind::Question:           return "?";
+        case TokenKind::QuestionDot:        return "?.";
+        case TokenKind::QuestionQuestion:   return "??";
         case TokenKind::Comma:              return ",";
         case TokenKind::Dot:                return ".";
         case TokenKind::DoubleDot:          return "..";

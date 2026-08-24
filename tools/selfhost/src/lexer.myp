@@ -46,6 +46,7 @@ class Lexer {
             col_ = 1;
             diag_ = new DiagEngine();
             valueLastC_ = 0;
+            interp_stack_ = new ArrayList<int>();
         }
 
         // 逐 token 扫描（跳过空白/注释），EOF 收尾。
@@ -103,6 +104,25 @@ class Lexer {
 
         void scanToken(ArrayList<Tok> out) {
             int c = advance();
+            // 插值表达式内的花括号平衡/终止（scanStringBody 遇 '${' 时推栈并返回）。
+            if (interp_stack_.size() > 0 && (c == 123 || c == 125)) {
+                if (c == 123) {
+                    int top = interp_stack_.size() - 1;
+                    interp_stack_.set(top, interp_stack_.get(top) + 1);
+                    out.add(new Tok("{", "", pos_, pos_));
+                } else {
+                    int top = interp_stack_.size() - 1;
+                    if (interp_stack_.get(top) > 0) {
+                        interp_stack_.set(top, interp_stack_.get(top) - 1);
+                        out.add(new Tok("}", "", pos_, pos_));
+                    } else {
+                        interp_stack_.remove(top);
+                        out.add(new Tok("interp_close", "", pos_, pos_));
+                        scanStringBody(out, pos_);   // 续扫字符串（无前导引号）
+                    }
+                }
+                return;
+            }
             if (c == 40) { out.add(new Tok("(", "", pos_, pos_)); }
             else if (c == 41) { out.add(new Tok(")", "", pos_, pos_)); }
             else if (c == 123) { out.add(new Tok("{", "", pos_, pos_)); }
@@ -121,7 +141,11 @@ class Lexer {
             }
             else if (c == 64) { out.add(new Tok("@", "", pos_, pos_)); }
             else if (c == 36) { out.add(new Tok("$", "", pos_, pos_)); }
-            else if (c == 63) { out.add(new Tok("?", "", pos_, pos_)); }
+            else if (c == 63) {
+                if (matchCh(46) != 0) out.add(new Tok("?.", "", pos_, pos_));
+                else if (matchCh(63) != 0) out.add(new Tok("??", "", pos_, pos_));
+                else out.add(new Tok("?", "", pos_, pos_));
+            }
             else if (c == 43) {
                 if (matchCh(43) != 0) out.add(new Tok("++", "", pos_, pos_));
                 else if (matchCh(61) != 0) out.add(new Tok("+=", "", pos_, pos_));
@@ -176,7 +200,10 @@ class Lexer {
             }
             else if (c == 94) { out.add(new Tok("^", "", pos_, pos_)); }
             else if (c == 126) { out.add(new Tok("~", "", pos_, pos_)); }
-            else if (c == 34) { scanString(out); }
+            else if (c == 34) {
+                if (peek() == 34 && ordAt(pos_ + 1) == 34) scanTripleString(out);
+                else scanStringBody(out, pos_ - 1);
+            }
             else if (c == 39) { scanChar(out); }
             else {
                 if (Lex.isAlpha(c) != 0 || c == 95) scanIdentifierOrKeyword(out);
@@ -206,13 +233,30 @@ class Lexer {
             }
         }
 
-        void scanString(ArrayList<Tok> out) {
-            int start_offset = pos_ - 1;
+        // 从当前 offset 扫描字符串体（前导引号已被消费）。遇结束引号发 string token
+        // 后返回；遇 '$' 后跟 '{'（插值）发前缀 string + "${"（interp_open），推插值
+        // 栈后返回主循环。续扫段（插值 '}' 后）无前导引号，start_offset = 当前 pos_。
+        void scanStringBody(ArrayList<Tok> out, int start_offset) {
             StringBuilder val = new StringBuilder();
-            while (isAtEnd() == 0 && peek() != 34) {
-                // 与 C++ 一致：多行字符串内换行的额外行计数。
-                if (peek() == 10) { line_ = line_ + 1; col_ = 0; }
-                if (peek() == 92) {
+            while (isAtEnd() == 0) {
+                int ch = peek();
+                if (ch == 34) {
+                    advance();
+                    out.add(new Tok("string", val.toString(), start_offset, pos_));
+                    return;
+                }
+                // 与 C++ 一致：字符串内换行的额外行计数（advance 也会 +1）。
+                if (ch == 10) { line_ = line_ + 1; col_ = 0; }
+                // 插值：'$' 后跟 '{'（36='$'，123='{'）。
+                if (ch == 36 && ordAt(pos_ + 1) == 123) {
+                    advance();  // $
+                    advance();  // {
+                    out.add(new Tok("string", val.toString(), start_offset, pos_));
+                    interp_stack_.add(0);
+                    out.add(new Tok("interp_open", "", pos_ - 2, pos_));
+                    return;
+                }
+                if (ch == 92) {
                     advance();
                     int e = peek();
                     if (e == 110) val.append("\n");
@@ -239,9 +283,49 @@ class Lexer {
                     }
                 }
             }
-            if (isAtEnd() != 0) diag_.error(line_, col_, "unterminated string literal");
-            else advance();
+            diag_.error(line_, col_, "unterminated string literal");
             out.add(new Tok("string", val.toString(), start_offset, pos_));
+        }
+
+        // 多行字符串 """..."""：内容可含换行与单个 "（不终止）；到下一个未转义的三连引号
+        // 结束。\ 转义与单行字符串一致。
+        void scanTripleString(ArrayList<Tok> out) {
+            int start_offset = pos_ - 1;  // 首个 "
+            advance();  // 第二个 "
+            advance();  // 第三个 "
+            StringBuilder val = new StringBuilder();
+            while (isAtEnd() == 0) {
+                // 终止：连续三个未转义引号（转义 \"\"\" 先被 \ 分支吃掉）。
+                if (peek() == 34 && ordAt(pos_ + 1) == 34 && ordAt(pos_ + 2) == 34) {
+                    advance(); advance(); advance();
+                    out.add(new Tok("string", val.toString(), start_offset, pos_));
+                    return;
+                }
+                if (peek() == 92) {
+                    advance();
+                    int e = peek();
+                    if (e == 110) val.append("\n");
+                    else if (e == 116) val.append("\t");
+                    else if (e == 114) val.append("\r");
+                    else if (e == 92) val.append("\\");
+                    else if (e == 34) val.append("\"");
+                    else if (e == 39) val.append("'");
+                    else if (e == 101) val.append(__myp_chr(27));
+                    // \0：MYP 串无法容 NUL → 0x01 哨兵（Frontend.escape 映射回 \0；T2 先例）。
+                    else if (e == 48) val.append(__myp_chr(1));
+                    else diag_.error(line_, col_, "unknown escape sequence");
+                    if (isAtEnd() == 0) advance();
+                } else {
+                    // UTF-8 多字节：原样保留源码字节（同 scanString）。
+                    int cc = advance();
+                    if (cc < 128) {
+                        val.append(__myp_chr(cc));
+                    } else {
+                        val.append(Str.substring(source_, pos_ - 1, pos_));
+                    }
+                }
+            }
+            diag_.error(line_, col_, "unterminated string literal");
         }
 
         void scanChar(ArrayList<Tok> out) {
@@ -408,5 +492,8 @@ class Lexer {
         int col_;
         int valueLastC_;
         DiagEngine diag_;
+        // 字符串插值 "${expr}" 状态：空栈 = 无插值；非空时栈顶 = 当前插值表达式内
+        // 未闭合的 '{' 深度（区分块/结构体花括号与结束 '}'）。
+        ArrayList<int> interp_stack_;
 }
 

@@ -65,6 +65,8 @@ std::string canonicalTokenKindName(TokenKind kind) {
         case TokenKind::BoolLiteral:      return "bool";
         case TokenKind::NullLiteral:      return "null";
         case TokenKind::Identifier:       return "identifier";
+        case TokenKind::InterpOpen:       return "interp_open";
+        case TokenKind::InterpClose:      return "interp_close";
         case TokenKind::EndOfFile:        return "eof";
         case TokenKind::Unknown:          return "unknown";
         default: {

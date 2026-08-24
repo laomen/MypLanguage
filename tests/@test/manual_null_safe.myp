@@ -1,0 +1,58 @@
+// manual_null_safe.myp — 空安全 `??` / `?.` 回归（表达力三小改）
+// ---------------------------------------------------------------------------
+//   a ?? b   → (a != null ? a : b)（右结合）
+//   a?.m()   → (a != null ? a.m() : null)
+//   a?.f     → (a != null ? a.f : null)
+// oracle 与 selfhost 双端同步（parser 脱糖，复用既有三元/!= null 语义）。
+import test;
+
+class Box {
+    action:
+        @constructor Box(int v) { val_ = v; }
+        void link(Box b) { next_ = b; }
+        Box next() { return next_; }
+        int val() { return val_; }
+        // 类内字段级 ?.：this?.next_（自身字段可访问）。
+        Box safeNextField() { return this?.next_; }
+    property:
+        int val_;
+        Box next_;
+}
+
+@test void t_coalesce() {
+    Box a = new Box(1);
+    Box b = new Box(2);
+    Box r1 = a ?? b;
+    Test.assertEq(r1.val(), 1);
+    Box n = null;
+    Box r2 = n ?? b;
+    Test.assertEq(r2.val(), 2);
+    Box r3 = n ?? n;
+    if (r3 == null) Test.assertEq(1, 1); else Test.assertEq(1, 0);
+    // 右结合：a ?? b ?? c == a ?? (b ?? c)
+    Box c = new Box(3);
+    Box r4 = n ?? b ?? c;
+    Test.assertEq(r4.val(), 2);
+}
+
+@test void t_null_safe_call() {
+    Box a = new Box(1);
+    Box b = new Box(2);
+    a.link(b);
+    Box r1 = a?.next();
+    Test.assertEq(r1.val(), 2);
+    Box n = null;
+    Box r2 = n?.next();
+    if (r2 == null) Test.assertEq(1, 1); else Test.assertEq(1, 0);
+}
+
+@test void t_null_safe_field() {
+    Box a = new Box(1);
+    Box b = new Box(2);
+    a.link(b);
+    Box r1 = a.safeNextField();
+    Test.assertEq(r1.val(), 2);
+    Box n = null;
+    Box r2 = n.safeNextField();
+    if (r2 == null) Test.assertEq(1, 1); else Test.assertEq(1, 0);
+}

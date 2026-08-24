@@ -142,6 +142,8 @@ enum class TokenKind : uint16_t {
     Colon,          // :
     DoubleColon,    // ::
     Question,       // ?
+    QuestionDot,    // ?. (null-safe member access)
+    QuestionQuestion, // ?? (null-coalescing)
     Comma,          // ,
     Dot,            // .
     DoubleDot,      // ..
@@ -152,6 +154,10 @@ enum class TokenKind : uint16_t {
     // Annotation
     At,             // @
     Dollar,         // $ (macro parameter marker, e.g. $a)
+
+    // String interpolation "${expr}"（lexer 在字符串内遇 '$' 后跟 '{' 时合成）
+    InterpOpen,     // ${ (插值表达式开始)
+    InterpClose,    // }  (插值表达式结束)
 
     // Special
     EndOfFile,

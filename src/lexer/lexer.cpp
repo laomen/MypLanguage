@@ -44,6 +44,25 @@ void Lexer::skipWhitespace() {
 void Lexer::scanToken() {
     char c = advance();
 
+    // 插值表达式内的花括号平衡/终止（字符串扫描器遇 '${' 时推栈并返回主循环）。
+    if (!interp_stack_.empty() && (c == '{' || c == '}')) {
+        if (c == '{') {
+            interp_stack_.back()++;
+            tokens_.emplace_back(TokenKind::LeftBrace, currentRange());
+        } else { // '}'
+            if (interp_stack_.back() > 0) {
+                interp_stack_.back()--;
+                tokens_.emplace_back(TokenKind::RightBrace, currentRange());
+            } else {
+                interp_stack_.pop_back();
+                tokens_.emplace_back(TokenKind::InterpClose, currentRange());
+                // 续扫字符串剩余部分（无前导引号）。
+                scanStringBody(offset_, currentPosition());
+            }
+        }
+        return;
+    }
+
     switch (c) {
         // Single-character tokens
         case '(': tokens_.emplace_back(TokenKind::LeftParen, currentRange()); break;
@@ -70,7 +89,15 @@ void Lexer::scanToken() {
             break;
         case '@': tokens_.emplace_back(TokenKind::At, currentRange()); break;
         case '$': tokens_.emplace_back(TokenKind::Dollar, currentRange()); break;
-        case '?': tokens_.emplace_back(TokenKind::Question, currentRange()); break;
+        case '?':
+            if (match('.')) {
+                tokens_.emplace_back(TokenKind::QuestionDot, currentRange());
+            } else if (match('?')) {
+                tokens_.emplace_back(TokenKind::QuestionQuestion, currentRange());
+            } else {
+                tokens_.emplace_back(TokenKind::Question, currentRange());
+            }
+            break;
 
         // Operators that could be multi-character
         case '+':
@@ -179,8 +206,13 @@ void Lexer::scanToken() {
 
         // String literals
         case '"': {
-            auto token = scanString();
-            tokens_.push_back(token);
+            // 多行字符串 """..."""：三个连续引号开始，到下一个三个连续引号结束。
+            if (peek() == '"' && offset_ + 1 < source_.size() && source_[offset_ + 1] == '"') {
+                tokens_.push_back(scanTripleString());
+            } else {
+                // 单行字符串（支持 ${expr} 插值）——scanStringBody 直接发 token。
+                scanStringBody(offset_ - 1, SourcePosition{line_, column_ - 1});
+            }
             break;
         }
 
@@ -242,19 +274,38 @@ void Lexer::scanToken() {
     }
 }
 
-Token Lexer::scanString() {
-    auto start_offset = offset_ - 1; // include opening "
-    auto start_line = line_;
-    auto start_col = column_;
-
+// 从当前 offset 扫描字符串体（前导引号已被消费）。遇结束引号发 StringLiteral 后
+// 返回；遇 '$' 后跟 '{'（插值）发前缀 StringLiteral + InterpOpen，推插值栈后返回
+// 主循环扫描表达式。续扫段（插值 '}' 后）无前导引号，start_offset = 当前 offset。
+void Lexer::scanStringBody(unsigned start_offset, SourcePosition start_pos) {
     std::string value;
 
-    while (!isAtEnd() && peek() != '"') {
-        if (peek() == '\n') {
+    while (!isAtEnd()) {
+        char ch = peek();
+        if (ch == '"') {
+            advance(); // closing "
+            tokens_.emplace_back(TokenKind::StringLiteral,
+                SourceRange{start_offset, offset_, {start_pos.line, start_pos.column}, {line_, column_}},
+                value);
+            return;
+        }
+        // 与旧 scanString 一致：字符串内换行的额外行计数（advance 也会 +1）。
+        if (ch == '\n') {
             ++line_;
             column_ = 0;
         }
-        if (peek() == '\\') {
+        if (ch == '$' && offset_ + 1 < source_.size() && source_[offset_ + 1] == '{') {
+            advance(); // $
+            advance(); // {
+            tokens_.emplace_back(TokenKind::StringLiteral,
+                SourceRange{start_offset, offset_, {start_pos.line, start_pos.column}, {line_, column_}},
+                value);
+            interp_stack_.push_back(0);
+            tokens_.emplace_back(TokenKind::InterpOpen,
+                SourceRange{offset_ - 2, offset_, {start_pos.line, start_pos.column}, {line_, column_}});
+            return;
+        }
+        if (ch == '\\') {
             advance();
             switch (peek()) {
                 case 'n':  value += '\n'; break;
@@ -277,12 +328,54 @@ Token Lexer::scanString() {
         }
     }
 
-    if (isAtEnd()) {
-        diag_.error(currentRange(), "unterminated string literal");
-    } else {
-        advance(); // consume closing "
+    diag_.error(currentRange(), "unterminated string literal");
+    tokens_.emplace_back(TokenKind::StringLiteral,
+        SourceRange{start_offset, offset_, {start_pos.line, start_pos.column}, {line_, column_}},
+        value);
+}
+
+// 多行字符串 """..."""：内容可含换行与单个 "（不终止）；到下一个未转义的三连引号
+// 结束。\ 转义与单行字符串一致。
+Token Lexer::scanTripleString() {
+    auto start_offset = offset_ - 1; // include first "
+    auto start_line = line_;
+    auto start_col = column_;
+
+    advance(); // second "
+    advance(); // third "
+
+    std::string value;
+    while (!isAtEnd()) {
+        // 终止：连续三个未转义引号（转义 \""" 先被 \ 分支吃掉）。
+        if (peek() == '"' && offset_ + 1 < source_.size() && source_[offset_ + 1] == '"'
+            && offset_ + 2 < source_.size() && source_[offset_ + 2] == '"') {
+            advance(); advance(); advance();
+            return Token(TokenKind::StringLiteral,
+                SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
+                value);
+        }
+        if (peek() == '\\') {
+            advance();
+            switch (peek()) {
+                case 'n':  value += '\n'; break;
+                case 't':  value += '\t'; break;
+                case 'r':  value += '\r'; break;
+                case '\\': value += '\\'; break;
+                case '"':  value += '"';  break;
+                case '\'': value += '\''; break;
+                case 'e':  value += '\x1B'; break;
+                case '0':  value += '\0'; break;
+                default:
+                    diag_.error(currentRange(), "unknown escape sequence");
+                    break;
+            }
+            if (!isAtEnd()) advance();
+        } else {
+            value += advance();   // advance() 处理 '\n' 行计数
+        }
     }
 
+    diag_.error(currentRange(), "unterminated string literal");
     return Token(TokenKind::StringLiteral,
         SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
         value);

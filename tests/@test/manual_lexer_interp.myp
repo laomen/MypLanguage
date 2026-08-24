@@ -1,0 +1,39 @@
+// manual_lexer_interp.myp — 字符串插值回归（表达力三小改）
+// ---------------------------------------------------------------------------
+// 两种插值（oracle 与 selfhost 双端同步）：
+//   "${expr}"  — 任意表达式（lexer 合成 interp_open/.../interp_close，parser 折叠为 +）
+//   "$name"    — 简单标识符（既有语法，parser 展开）
+// 字面 '{' '}' 不受影响（无 '$' 前缀即字面）；多行 """...""" 内不插值。
+import test;
+import text;
+
+@test void t_interp_expr() {
+    int x = 42;
+    Test.assertStrEq("x=${x}", "x=42");
+    Test.assertStrEq("a${x}b${x}c", "a42b42c");
+    Test.assertStrEq("${x + 1}", "43");
+    Test.assertStrEq("sum=${1 + 2 * 3}", "sum=7");
+}
+
+@test void t_interp_dollar_name() {
+    int n = 7;
+    Test.assertStrEq("n=$n", "n=7");
+    Test.assertStrEq("$n!", "7!");
+}
+
+@test void t_interp_mixed() {
+    int a = 1;
+    int b = 2;
+    Test.assertStrEq("$a+${b}=${a + b}", "1+2=3");
+}
+
+@test void t_interp_literal_braces() {
+    // 无 '$' 的 '{' '}' 是字面量（JSON 等不受影响）。
+    Test.assertStrEq("json={\"a\":1}", "json={\"a\":1}");
+    Test.assertStrEq("{x}", "{x}");
+}
+
+@test void t_interp_string_expr() {
+    string who = "myp";
+    Test.assertStrEq("hi ${who}!", "hi myp!");
+}
