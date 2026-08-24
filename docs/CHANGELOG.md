@@ -35,39 +35,48 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
-### v3.15.3 — 借用 ARC 参数重赋值 UAF 修复 + 测试框架可信度（T1/T2）+ selfhost 诊断输出修复
+### v3.15.5 — 自举编译器同步 P1 缩放：sema/codegen 热路径 O(N) 扫描 O(1) 索引化
 
-**非破坏性（bug 修复 + 测试基础设施）**，oracle（mypc）与 selfhost 双端同步：
+**非破坏性（性能，行为不变）**，自举（selfhost，`tools/selfhost/src/*.myp`）端
+同步 v3.15.4 的 O(1) 索引化（此前只修了 C++ oracle，自举端 P6 仍 O(N²) 37x/2N）。
 
-1. **借用 ARC 参数重赋值 UAF（P0）**：`string f(string s){ s = s + "a"; s = s + "b";
-   return s; }` —— 字符串/类参数是**借用**（非 ARC 槽），此前赋值路径要么走就地追加
-   `myp_str_append`（消费借用的入口值 → 改写/释放调用方字符串）、要么 fresh 临时在语句
-   末被 flush 释放 → 参数槽悬垂、链式重赋值读已释放内存。修复：借用参数**首次重赋值**
-   惰性提升为拥有槽（fresh 消费 / 别名 retain，不释放借用的入口值，注册到**函数作用域**
-   而非块作用域），后续重赋值走普通 owned-slot 路径。C++ `codegen_stmt.cpp` +
-   selfhost `codegen.myp`（`funcPtrSlots_` + `funcPtrSlotHas`）双端镜像。回归
-   `tests/@test/str_param_append.myp`（链式/循环/别名/类参数 7 断言，双编译器）。
+对照 `bench/compiler/`（N=1000，`myp_self2` 旧 vs 新）：
 
-2. **测试框架可信度（T1/T2，`docs/testing_benchmark_roadmap.md` §二）**：
-   - **T1 缺失 expected 默认失败**：普通模式找不到 `tests/expected/*.expected` 不再
-     静默把输出当基线并计 PASS → 报 `MISSING BASELINE` 且计 FAIL；仅 `--update`
-     允许创建 baseline（漏提交测试资产 CI 必然失败）。
-   - **T2 负测试校验诊断原因**：解析 `// EXPECT ERROR: <substring>` 并按固定字符串
-     （`grep -F`）断言 stderr 含该子串；意外 SIGSEGV/SIGABRT/ASan 归类为 `CRASH`
-     而非负测试通过。同步修正 27 个历史漂移的 `EXPECT ERROR` 注释（此前是人工描述、
-     从未机器断言，与实际诊断不符）。
+| 基准 | 旧 selfhost | 新 selfhost | 加速 |
+|------|------|------|------|
+| P1 类×裸属性 | 0.95s | 0.74s | 1.3x |
+| P2 接口×方法调用 | 0.90s | 0.50s | 1.8x |
+| P3 接口×变量声明 | 1.24s | 0.76s | 1.6x |
+| P4 struct×字段 | 0.84s | 0.51s | 1.6x |
+| P5 enum×variant | 0.71s | 0.44s | 1.6x |
+| P6 类×方法调用 | 11.95s | **0.76s** | **15.7x** |
+| P7 泛型实例 | 6.32s | 1.67s | 3.8x |
 
-3. **selfhost 诊断输出修复（T2 暴露的既有 parity 缺口）**：
-   - **UTF-8 双重编码**：`main.myp` `Frontend.escape`/`dotToSlash` 用 `__myp_chr(c)`
-     把 `myp_charcode` 返回的**字节**当**码点**再 UTF-8 编码（0xE5 → c3 a5，中文诊断
-     变 mojibake）→ 改用 `Str.substring(s, i, i+1)` 字节透传（对齐 `ast.myp Dump.esc`
-     与 C++ `escapeDumpString`）。
-   - **BUG-046 镜像**：selfhost 补同名 static 方法（签名不同）诊断
-     `duplicate static action '...' in class '...' (different signature)`（`sema.myp`
-     `staticActionSig` 签名串比较；签名相同保持历史静默合并）。
+主要改动（`codegen.myp` + `sema.myp`，`StrHashMap<int>` 索引）：
 
-**回归**：oracle 323/323、selfhost 323/323（parity 0 差距）、bootstrap 16/16
-不动点（myp_self2 == myp_self3 md5 一致）。
+1. **codegen**：`generate()` 入口一次建 `classIdx_`/`ifaceIdx_`/`enumIdx_`/
+   `structExist_`（裸名+`Parent::name`）/`topFunc_`（函数+FFI）/`typeIdNames_`+
+   `typeIdMap_`（type-id 表预计算，原 `classTypeId`/`classTypeNames`/`classTypeCount`
+   每调用 O(N²) seen 去重）。`isClassName`/`isInterfaceName`/`isEnumName`/
+   `isStructName`/`isTopLevelFunc`/`findAction`/`hasMethodInClass`/`hasEventInClass`/
+   `findEvent`/`isStaticAction`/`classImplements`/`methodParamLts`/`methodRetAstType`/
+   `methodParamAstType` 等改 O(1) `classIndex`/索引；`emitArcSupport` 的每类线性扫全类
+   改 `classIndex`。
+
+2. **sema**：`classIdx_`/`structIdx_`/`enumIdx_`/`ifaceIdx_`/`funcIdx_`/
+   `methodSigIdx_`（`"cls.meth"`→索引，注册点增量登记）并行维护；
+   `findClass`/`findStruct`/`findEnum`/`inInterface`/`isFuncName`/`isGenericClass`/
+   `resolveBase`（精确命中）/`findClassTypeParams` 及 `findMethodRet*`/
+   `findMethodParams`/`isMethodCoro`/`isFuncSectionMethod`/`hasMethod` 改 O(1)。
+
+3. **P6 残余说明**：P6 由 O(N²)（2.24→11.88→78.90s@500/1k/2k）降到近线性
+   （0.47→0.75→1.70→4.85s@500/1k/2k/4k，~2.3–2.9x/2N）；残余超线性为自举编译器
+   **字符串处理 ARC 开销**（perf：`myp_release`+`myp_retain` 32%、`strcmp`+`myp_str_eq`
+   14%——自举用字符串拼接生成 IR，每串引用计数），非线性扫描。
+
+**回归**：bootstrap 16/16 不动点（oracle↔selfhost token/ast/sema 三方字节一致、
+myp_self2==myp_self3）；selfhost 全量 323/323（`exception_thread` 为既有 @thread
+时序 flaky，复跑通过）。
 
 ### v3.15.4 — 编译器缩放 P1：sema/codegen 热路径 O(N) 扫描 O(1) 索引化（P1–P6 线性化）
 
@@ -114,48 +123,39 @@ mypview changelog 双向引用。
 **回归**：oracle 323/323、selfhost 323/323、bootstrap 16/16 不动点；bench P1–P6
 斜率全部 <3.0。
 
-### v3.15.5 — 自举编译器同步 P1 缩放：sema/codegen 热路径 O(N) 扫描 O(1) 索引化
+### v3.15.3 — 借用 ARC 参数重赋值 UAF 修复 + 测试框架可信度（T1/T2）+ selfhost 诊断输出修复
 
-**非破坏性（性能，行为不变）**，自举（selfhost，`tools/selfhost/src/*.myp`）端
-同步 v3.15.4 的 O(1) 索引化（此前只修了 C++ oracle，自举端 P6 仍 O(N²) 37x/2N）。
+**非破坏性（bug 修复 + 测试基础设施）**，oracle（mypc）与 selfhost 双端同步：
 
-对照 `bench/compiler/`（N=1000，`myp_self2` 旧 vs 新）：
+1. **借用 ARC 参数重赋值 UAF（P0）**：`string f(string s){ s = s + "a"; s = s + "b";
+   return s; }` —— 字符串/类参数是**借用**（非 ARC 槽），此前赋值路径要么走就地追加
+   `myp_str_append`（消费借用的入口值 → 改写/释放调用方字符串）、要么 fresh 临时在语句
+   末被 flush 释放 → 参数槽悬垂、链式重赋值读已释放内存。修复：借用参数**首次重赋值**
+   惰性提升为拥有槽（fresh 消费 / 别名 retain，不释放借用的入口值，注册到**函数作用域**
+   而非块作用域），后续重赋值走普通 owned-slot 路径。C++ `codegen_stmt.cpp` +
+   selfhost `codegen.myp`（`funcPtrSlots_` + `funcPtrSlotHas`）双端镜像。回归
+   `tests/@test/str_param_append.myp`（链式/循环/别名/类参数 7 断言，双编译器）。
 
-| 基准 | 旧 selfhost | 新 selfhost | 加速 |
-|------|------|------|------|
-| P1 类×裸属性 | 0.95s | 0.74s | 1.3x |
-| P2 接口×方法调用 | 0.90s | 0.50s | 1.8x |
-| P3 接口×变量声明 | 1.24s | 0.76s | 1.6x |
-| P4 struct×字段 | 0.84s | 0.51s | 1.6x |
-| P5 enum×variant | 0.71s | 0.44s | 1.6x |
-| P6 类×方法调用 | 11.95s | **0.76s** | **15.7x** |
-| P7 泛型实例 | 6.32s | 1.67s | 3.8x |
+2. **测试框架可信度（T1/T2，`docs/testing_benchmark_roadmap.md` §二）**：
+   - **T1 缺失 expected 默认失败**：普通模式找不到 `tests/expected/*.expected` 不再
+     静默把输出当基线并计 PASS → 报 `MISSING BASELINE` 且计 FAIL；仅 `--update`
+     允许创建 baseline（漏提交测试资产 CI 必然失败）。
+   - **T2 负测试校验诊断原因**：解析 `// EXPECT ERROR: <substring>` 并按固定字符串
+     （`grep -F`）断言 stderr 含该子串；意外 SIGSEGV/SIGABRT/ASan 归类为 `CRASH`
+     而非负测试通过。同步修正 27 个历史漂移的 `EXPECT ERROR` 注释（此前是人工描述、
+     从未机器断言，与实际诊断不符）。
 
-主要改动（`codegen.myp` + `sema.myp`，`StrHashMap<int>` 索引）：
+3. **selfhost 诊断输出修复（T2 暴露的既有 parity 缺口）**：
+   - **UTF-8 双重编码**：`main.myp` `Frontend.escape`/`dotToSlash` 用 `__myp_chr(c)`
+     把 `myp_charcode` 返回的**字节**当**码点**再 UTF-8 编码（0xE5 → c3 a5，中文诊断
+     变 mojibake）→ 改用 `Str.substring(s, i, i+1)` 字节透传（对齐 `ast.myp Dump.esc`
+     与 C++ `escapeDumpString`）。
+   - **BUG-046 镜像**：selfhost 补同名 static 方法（签名不同）诊断
+     `duplicate static action '...' in class '...' (different signature)`（`sema.myp`
+     `staticActionSig` 签名串比较；签名相同保持历史静默合并）。
 
-1. **codegen**：`generate()` 入口一次建 `classIdx_`/`ifaceIdx_`/`enumIdx_`/
-   `structExist_`（裸名+`Parent::name`）/`topFunc_`（函数+FFI）/`typeIdNames_`+
-   `typeIdMap_`（type-id 表预计算，原 `classTypeId`/`classTypeNames`/`classTypeCount`
-   每调用 O(N²) seen 去重）。`isClassName`/`isInterfaceName`/`isEnumName`/
-   `isStructName`/`isTopLevelFunc`/`findAction`/`hasMethodInClass`/`hasEventInClass`/
-   `findEvent`/`isStaticAction`/`classImplements`/`methodParamLts`/`methodRetAstType`/
-   `methodParamAstType` 等改 O(1) `classIndex`/索引；`emitArcSupport` 的每类线性扫全类
-   改 `classIndex`。
-
-2. **sema**：`classIdx_`/`structIdx_`/`enumIdx_`/`ifaceIdx_`/`funcIdx_`/
-   `methodSigIdx_`（`"cls.meth"`→索引，注册点增量登记）并行维护；
-   `findClass`/`findStruct`/`findEnum`/`inInterface`/`isFuncName`/`isGenericClass`/
-   `resolveBase`（精确命中）/`findClassTypeParams` 及 `findMethodRet*`/
-   `findMethodParams`/`isMethodCoro`/`isFuncSectionMethod`/`hasMethod` 改 O(1)。
-
-3. **P6 残余说明**：P6 由 O(N²)（2.24→11.88→78.90s@500/1k/2k）降到近线性
-   （0.47→0.75→1.70→4.85s@500/1k/2k/4k，~2.3–2.9x/2N）；残余超线性为自举编译器
-   **字符串处理 ARC 开销**（perf：`myp_release`+`myp_retain` 32%、`strcmp`+`myp_str_eq`
-   14%——自举用字符串拼接生成 IR，每串引用计数），非线性扫描。
-
-**回归**：bootstrap 16/16 不动点（oracle↔selfhost token/ast/sema 三方字节一致、
-myp_self2==myp_self3）；selfhost 全量 323/323（`exception_thread` 为既有 @thread
-时序 flaky，复跑通过）。
+**回归**：oracle 323/323、selfhost 323/323（parity 0 差距）、bootstrap 16/16
+不动点（myp_self2 == myp_self3 md5 一致）。
 
 ### v3.15.2 — 自举 link.myp 硬编码重构（P0 工具链探测 / P1 缓存路径 / P2 集中配置 / P3 平台）
 
@@ -224,6 +224,26 @@ fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip
 对拍 95/95、fmt/viz 对拍全绿。新正测试：`tests/@test/manual_lexer_triple_string.myp`、
 `manual_lexer_interp.myp`、`manual_null_safe.myp`。
 
+### v3.14.2 — 深度学习框架：SD1.5 文生图全管线（D1–D6）
+
+纯 MYP 实现的通用深度学习框架（`examples/deeplearning/`，LLVM 后端）扩展出
+**SD1.5 文本→图像**全管线，三大网络全部数值验证通过：
+
+- **D1 DDIM 调度器**（`diffusion/`）：`DDIM(η=0)` 纯 MYP，vs numpy float64 字节
+  精确（diff==0）+ diffusers 0.39 交叉 3.5e-7。
+- **D2 CLIP 文本编码器**：QuickGELU + 因果/padding 掩码 attention（类内私有规避
+  BUG-046），77 位置 vs transformers maxAbsDiff=2.7e-4；D2b BPE 分词器（GPT-2
+  `</w>` 词尾式）。
+- **D3 UNet**：GroupNorm(32 组)/attention2(cross+self)/GEGLU/nearestUpsample2x，
+  vs numpy 0~1.8e-7；D3b 完整前向 maxAbsDiff 1.29e-5。
+- **D4 VAE decoder**：完整前向数值验证通过（VAE DECODE OK maxAbsDiff 9.4e-6）。
+- **D5 端到端**：CLIP→UNet 50 步→VAE→PPM 出图（IMAGE OK 0.11%）；热点算子
+  `@parallel for` ~14x。
+- **D6 GPU 加速 + 交互工具**：`@gpu for` 加速扩散管线；`tools/.../gen_image.py`
+  prompt → 分词/编码 → GPU DDIM → GPU VAE → PNG（交互循环/单次/--steps/--skip-ref）。
+
+附 `examples/deeplearning/README.md` 各子目录文档 + 里程碑计划 `diffusion_plan.md`。
+
 ### v3.14.1 — 优化点推进：多文件并行编译 + GPU R0 止血 + parity 零差距
 
 优化清单推进（多文件并行编译 ① / GPU R0 止血 ②）+ 前置两处修复：
@@ -247,26 +267,6 @@ fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip
 
 **回归**：oracle 317/317、selfhost 317/317、GPU 回退 61/61、bootstrap 16/16
 不动点、parity 0 差距。
-
-### v3.14.2 — 深度学习框架：SD1.5 文生图全管线（D1–D6）
-
-纯 MYP 实现的通用深度学习框架（`examples/deeplearning/`，LLVM 后端）扩展出
-**SD1.5 文本→图像**全管线，三大网络全部数值验证通过：
-
-- **D1 DDIM 调度器**（`diffusion/`）：`DDIM(η=0)` 纯 MYP，vs numpy float64 字节
-  精确（diff==0）+ diffusers 0.39 交叉 3.5e-7。
-- **D2 CLIP 文本编码器**：QuickGELU + 因果/padding 掩码 attention（类内私有规避
-  BUG-046），77 位置 vs transformers maxAbsDiff=2.7e-4；D2b BPE 分词器（GPT-2
-  `</w>` 词尾式）。
-- **D3 UNet**：GroupNorm(32 组)/attention2(cross+self)/GEGLU/nearestUpsample2x，
-  vs numpy 0~1.8e-7；D3b 完整前向 maxAbsDiff 1.29e-5。
-- **D4 VAE decoder**：完整前向数值验证通过（VAE DECODE OK maxAbsDiff 9.4e-6）。
-- **D5 端到端**：CLIP→UNet 50 步→VAE→PPM 出图（IMAGE OK 0.11%）；热点算子
-  `@parallel for` ~14x。
-- **D6 GPU 加速 + 交互工具**：`@gpu for` 加速扩散管线；`tools/.../gen_image.py`
-  prompt → 分词/编码 → GPU DDIM → GPU VAE → PNG（交互循环/单次/--steps/--skip-ref）。
-
-附 `examples/deeplearning/README.md` 各子目录文档 + 里程碑计划 `diffusion_plan.md`。
 
 ### v3.14.0 — Windows 移植里程碑 1/2：运行时层交叉编译通过（MinGW-w64）
 
