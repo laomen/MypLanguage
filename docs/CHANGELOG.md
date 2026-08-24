@@ -114,6 +114,49 @@ mypview changelog 双向引用。
 **回归**：oracle 323/323、selfhost 323/323、bootstrap 16/16 不动点；bench P1–P6
 斜率全部 <3.0。
 
+### v3.15.5 — 自举编译器同步 P1 缩放：sema/codegen 热路径 O(N) 扫描 O(1) 索引化
+
+**非破坏性（性能，行为不变）**，自举（selfhost，`tools/selfhost/src/*.myp`）端
+同步 v3.15.4 的 O(1) 索引化（此前只修了 C++ oracle，自举端 P6 仍 O(N²) 37x/2N）。
+
+对照 `bench/compiler/`（N=1000，`myp_self2` 旧 vs 新）：
+
+| 基准 | 旧 selfhost | 新 selfhost | 加速 |
+|------|------|------|------|
+| P1 类×裸属性 | 0.95s | 0.74s | 1.3x |
+| P2 接口×方法调用 | 0.90s | 0.50s | 1.8x |
+| P3 接口×变量声明 | 1.24s | 0.76s | 1.6x |
+| P4 struct×字段 | 0.84s | 0.51s | 1.6x |
+| P5 enum×variant | 0.71s | 0.44s | 1.6x |
+| P6 类×方法调用 | 11.95s | **0.76s** | **15.7x** |
+| P7 泛型实例 | 6.32s | 1.67s | 3.8x |
+
+主要改动（`codegen.myp` + `sema.myp`，`StrHashMap<int>` 索引）：
+
+1. **codegen**：`generate()` 入口一次建 `classIdx_`/`ifaceIdx_`/`enumIdx_`/
+   `structExist_`（裸名+`Parent::name`）/`topFunc_`（函数+FFI）/`typeIdNames_`+
+   `typeIdMap_`（type-id 表预计算，原 `classTypeId`/`classTypeNames`/`classTypeCount`
+   每调用 O(N²) seen 去重）。`isClassName`/`isInterfaceName`/`isEnumName`/
+   `isStructName`/`isTopLevelFunc`/`findAction`/`hasMethodInClass`/`hasEventInClass`/
+   `findEvent`/`isStaticAction`/`classImplements`/`methodParamLts`/`methodRetAstType`/
+   `methodParamAstType` 等改 O(1) `classIndex`/索引；`emitArcSupport` 的每类线性扫全类
+   改 `classIndex`。
+
+2. **sema**：`classIdx_`/`structIdx_`/`enumIdx_`/`ifaceIdx_`/`funcIdx_`/
+   `methodSigIdx_`（`"cls.meth"`→索引，注册点增量登记）并行维护；
+   `findClass`/`findStruct`/`findEnum`/`inInterface`/`isFuncName`/`isGenericClass`/
+   `resolveBase`（精确命中）/`findClassTypeParams` 及 `findMethodRet*`/
+   `findMethodParams`/`isMethodCoro`/`isFuncSectionMethod`/`hasMethod` 改 O(1)。
+
+3. **P6 残余说明**：P6 由 O(N²)（2.24→11.88→78.90s@500/1k/2k）降到近线性
+   （0.47→0.75→1.70→4.85s@500/1k/2k/4k，~2.3–2.9x/2N）；残余超线性为自举编译器
+   **字符串处理 ARC 开销**（perf：`myp_release`+`myp_retain` 32%、`strcmp`+`myp_str_eq`
+   14%——自举用字符串拼接生成 IR，每串引用计数），非线性扫描。
+
+**回归**：bootstrap 16/16 不动点（oracle↔selfhost token/ast/sema 三方字节一致、
+myp_self2==myp_self3）；selfhost 全量 323/323（`exception_thread` 为既有 @thread
+时序 flaky，复跑通过）。
+
 ### v3.15.2 — 自举 link.myp 硬编码重构（P0 工具链探测 / P1 缓存路径 / P2 集中配置 / P3 平台）
 
 `tools/selfhost/src/link.myp`（自举编译器链接器）去硬编码：

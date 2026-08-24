@@ -2,6 +2,7 @@
 // 对拍基准: src/codegen/codegen.cpp（design.md §3 D4）。G1 只覆盖基本类型、
 // 函数定义/调用、return；类/ARC/异常/协程/泛型/mapping 留 G2/G3。
 
+import collections; // ArrayList / StrHashMap（O(1) 声明索引）
 import "./ast.myp";
 import "./ir_emit.myp";
 import "./link.myp";
@@ -1150,6 +1151,56 @@ class CodeGen {
         string generate(AstTU tu) {
             // 函数体写 sb_；字符串全局写 stringGlobals_（module 级，跨函数共享）。
             tu_ = tu;
+            // P1 缩放：O(1) 声明索引一次建全（codegen 期间 TU 不再增长）。
+            classIdx_ = new StrHashMap<int>();
+            ifaceIdx_ = new StrHashMap<int>();
+            enumIdx_ = new StrHashMap<int>();
+            structExist_ = new StrHashMap<int>();
+            topFunc_ = new StrHashMap<int>();
+            for (int i = 0; i < tu.classes().size(); i = i + 1) {
+                string cn = tu.classes().get(i).name();
+                if (classIdx_.contains(cn) == 0) classIdx_.put(cn, i);
+            }
+            for (int i = 0; i < tu.interfaces().size(); i = i + 1) {
+                ifaceIdx_.put(tu.interfaces().get(i).name(), i);
+            }
+            for (int i = 0; i < tu.enums().size(); i = i + 1) {
+                enumIdx_.put(tu.enums().get(i).name(), i);
+            }
+            for (int i = 0; i < tu.structs().size(); i = i + 1) {
+                AstStruct st = tu.structs().get(i);
+                string key = st.name();
+                if (Str.len(st.parent()) != 0) key = st.parent() + "::" + st.name();
+                structExist_.put(st.name(), 1);
+                structExist_.put(key, 1);
+            }
+            for (int ci = 0; ci < tu.classes().size(); ci = ci + 1) {
+                AstClass c = tu.classes().get(ci);
+                for (int si = 0; si < c.structs().size(); si = si + 1) {
+                    AstStruct st = c.structs().get(si);
+                    string key = c.name() + "::" + st.name();
+                    structExist_.put(st.name(), 1);
+                    structExist_.put(key, 1);
+                }
+            }
+            for (int i = 0; i < tu.functions().size(); i = i + 1) {
+                topFunc_.put(tu.functions().get(i).name(), 1);
+            }
+            for (int i = 0; i < tu.ffis().size(); i = i + 1) {
+                topFunc_.put(tu.ffis().get(i).name(), 1);
+            }
+            // type-id 表：按类序、泛型模板跳过、按名去重（与 C++ class_type_ids_ 一致）。
+            typeIdNames_ = new ArrayList<string>();
+            typeIdMap_ = new StrHashMap<int>();
+            int tid = 0;
+            for (int i = 0; i < tu.classes().size(); i = i + 1) {
+                AstClass c = tu.classes().get(i);
+                if (c.typeParams().size() != 0 && c.isGenericInst() == 0) continue;
+                if (typeIdMap_.contains(c.name()) != 0) continue;
+                tid = tid + 1;
+                typeIdNames_.add(c.name());
+                typeIdMap_.put(c.name(), tid);
+            }
             sb_ = new StringBuilder();
             stringGlobals_ = new StringBuilder();
             strCounter_ = 0;
@@ -2106,16 +2157,14 @@ class CodeGen {
 
         AstAction findAction(string cls, string name) {
             if (tu_ == null) return null;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name) return c.actions().get(ai);
-                }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai);
-                }
-                return null;
+            int ci = classIndex(cls);   // O(1)（P6 规模修复）
+            if (ci < 0) return null;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name) return c.actions().get(ai);
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai);
             }
             return null;
         }
@@ -2123,16 +2172,14 @@ class CodeGen {
         // 类方法是否 @coro。
         int isCoroMethod(string cls, string name) {
             if (tu_ == null) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name) return c.actions().get(ai).coro();
-                }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).coro();
-                }
-                return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name) return c.actions().get(ai).coro();
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).coro();
             }
             return 0;
         }
@@ -2140,16 +2187,14 @@ class CodeGen {
         // 类方法 @coro(stack=N) 栈大小（KB；0 = 默认 128KB）。
         int coroStackKb(string cls, string name) {
             if (tu_ == null) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name) return c.actions().get(ai).stack();
-                }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).stack();
-                }
-                return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name) return c.actions().get(ai).stack();
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).stack();
             }
             return 0;
         }
@@ -2168,31 +2213,29 @@ class CodeGen {
         ArrayList<string> methodParamLts(string cls, string name) {
             ArrayList<string> out = new ArrayList<string>();
             if (tu_ == null) return out;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    AstAction a = c.actions().get(ai);
-                    if (a.name() == name) {
-                        for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type()));
-                        return out;
-                    }
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return out;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                AstAction a = c.actions().get(ai);
+                if (a.name() == name) {
+                    for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type()));
+                    return out;
                 }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    AstAction a = c.staticActions().get(ai);
-                    if (a.name() == name) {
-                        for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type()));
-                        return out;
-                    }
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                AstAction a = c.staticActions().get(ai);
+                if (a.name() == name) {
+                    for (int pi = 0; pi < a.params().size(); pi = pi + 1) out.add(llvmType(a.params().get(pi).type()));
+                    return out;
                 }
-                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
-                    AstFunction f = c.funcs().get(fi);
-                    if (f.name() == name) {
-                        for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type()));
-                        return out;
-                    }
+            }
+            for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                AstFunction f = c.funcs().get(fi);
+                if (f.name() == name) {
+                    for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type()));
+                    return out;
                 }
-                return out;
             }
             return out;
         }
@@ -2200,19 +2243,17 @@ class CodeGen {
         // 类 cls 方法 name 的返回 AstType（null = 未找到）。
         AstType methodRetAstType(string cls, string name) {
             if (tu_ == null) return null;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name) return c.actions().get(ai).ret();
-                }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).ret();
-                }
-                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
-                    if (c.funcs().get(fi).name() == name) return c.funcs().get(fi).ret();
-                }
-                return null;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return null;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name) return c.actions().get(ai).ret();
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name) return c.staticActions().get(ai).ret();
+            }
+            for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                if (c.funcs().get(fi).name() == name) return c.funcs().get(fi).ret();
             }
             return null;
         }
@@ -2220,19 +2261,17 @@ class CodeGen {
         // 类 cls 方法 name 的第 idx 个形参 AstType（null = 未找到）。
         AstType methodParamAstType(string cls, string name, int idx) {
             if (tu_ == null) return null;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name && idx < c.actions().get(ai).params().size()) return c.actions().get(ai).params().get(idx).type();
-                }
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name && idx < c.staticActions().get(ai).params().size()) return c.staticActions().get(ai).params().get(idx).type();
-                }
-                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
-                    if (c.funcs().get(fi).name() == name && idx < c.funcs().get(fi).params().size()) return c.funcs().get(fi).params().get(idx).type();
-                }
-                return null;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return null;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name && idx < c.actions().get(ai).params().size()) return c.actions().get(ai).params().get(idx).type();
+            }
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name && idx < c.staticActions().get(ai).params().size()) return c.staticActions().get(ai).params().get(idx).type();
+            }
+            for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                if (c.funcs().get(fi).name() == name && idx < c.funcs().get(fi).params().size()) return c.funcs().get(fi).params().get(idx).type();
             }
             return null;
         }
@@ -10216,31 +10255,30 @@ class CodeGen {
 
         // name 是否为类名（@static 类方法调用判断）。
         int isClassName(string name) {
-            if (tu_ == null) return 0;
-            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                if (tu_.classes().get(i).name() == name) return 1;
-            }
-            return 0;
+            if (tu_ == null || Str.len(name) == 0) return 0;
+            return classIdx_.contains(name);   // O(1)（P6 规模修复）
+        }
+
+        // 类名 → 索引（-1 未找到；首次出现优先，与线性扫描语义一致）。
+        int classIndex(string name) {
+            if (tu_ == null || Str.len(name) == 0) return -1;
+            return classIdx_.get(name, -1);
         }
 
         // name 是否为接口名。
         int isInterfaceName(string name) {
             if (tu_ == null || Str.len(name) == 0) return 0;
-            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
-                if (tu_.interfaces().get(i).name() == name) return 1;
-            }
-            return 0;
+            return ifaceIdx_.contains(name);   // O(1)（P6 规模修复）
         }
 
         // 接口名 → 方法名 → vtable 索引（-1 未找到）。
         int interfaceMethodIndex(string ifaceName, string methodName) {
             if (tu_ == null) return -1;
-            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
-                AstInterface ifc = tu_.interfaces().get(i);
-                if (ifc.name() != ifaceName) continue;
-                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
-                    if (ifc.actions().get(ai).name() == methodName) return ai;
-                }
+            int ii = ifaceIdx_.get(ifaceName, -1);   // O(1)
+            if (ii < 0) return -1;
+            AstInterface ifc = tu_.interfaces().get(ii);
+            for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                if (ifc.actions().get(ai).name() == methodName) return ai;
             }
             return -1;
         }
@@ -10249,13 +10287,11 @@ class CodeGen {
         // 须以接口声明为准，同 C++ interface 方法返回类型）。
         AstType interfaceMethodRetAstType(string ifaceName, string methodName) {
             if (tu_ == null) return null;
-            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
-                AstInterface ifc = tu_.interfaces().get(i);
-                if (ifc.name() != ifaceName) continue;
-                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
-                    if (ifc.actions().get(ai).name() == methodName) return ifc.actions().get(ai).ret();
-                }
-                break;
+            int ii = ifaceIdx_.get(ifaceName, -1);   // O(1)
+            if (ii < 0) return null;
+            AstInterface ifc = tu_.interfaces().get(ii);
+            for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                if (ifc.actions().get(ai).name() == methodName) return ifc.actions().get(ai).ret();
             }
             return null;
         }
@@ -10263,19 +10299,17 @@ class CodeGen {
         // BUG-034: 接口方法第 idx 个形参的类型名（形参是接口时返回接口名，否则空串）。
         string ifaceParamIfaceName(string ifaceName, string methodName, int idx) {
             if (tu_ == null) return "";
-            for (int i = 0; i < tu_.interfaces().size(); i = i + 1) {
-                AstInterface ifc = tu_.interfaces().get(i);
-                if (ifc.name() != ifaceName) continue;
-                for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
-                    if (ifc.actions().get(ai).name() != methodName) continue;
-                    if (idx < ifc.actions().get(ai).params().size()) {
-                        AstType pt = ifc.actions().get(ai).params().get(idx).type();
-                        if (Str.len(pt.className()) != 0 && isInterfaceName(pt.className()) != 0)
-                            return pt.className();
-                    }
-                    return "";
+            int ii = ifaceIdx_.get(ifaceName, -1);   // O(1)
+            if (ii < 0) return "";
+            AstInterface ifc = tu_.interfaces().get(ii);
+            for (int ai = 0; ai < ifc.actions().size(); ai = ai + 1) {
+                if (ifc.actions().get(ai).name() != methodName) continue;
+                if (idx < ifc.actions().get(ai).params().size()) {
+                    AstType pt = ifc.actions().get(ai).params().get(idx).type();
+                    if (Str.len(pt.className()) != 0 && isInterfaceName(pt.className()) != 0)
+                        return pt.className();
                 }
-                break;
+                return "";
             }
             return "";
         }
@@ -10283,11 +10317,10 @@ class CodeGen {
         // cls 类是否实现了 iface 接口（AstClass.iface_）。
         int classImplements(string cls, string iface) {
             if (tu_ == null) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() == cls && c.iface() == iface) return 1;
-            }
-            return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            return c.iface() == iface ? 1 : 0;
         }
 
         // 接口名 → AstType（className 置为接口名，供 varAstType 识别接口局部）。
@@ -10300,36 +10333,18 @@ class CodeGen {
         // name 是否为枚举名。
         int isEnumName(string name) {
             if (tu_ == null || Str.len(name) == 0) return 0;
-            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
-                if (tu_.enums().get(i).name() == name) return 1;
-            }
-            return 0;
+            return enumIdx_.contains(name);   // O(1)（P6 规模修复）
         }
 
         // name 是否为 struct 名（顶层 + 类内嵌套）。
         int isStructName(string name) {
             if (tu_ == null || Str.len(name) == 0) return 0;
-            for (int i = 0; i < tu_.structs().size(); i = i + 1) {
-                if (tu_.structs().get(i).name() == name) return 1;
-            }
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
-                    if (tu_.classes().get(ci).structs().get(si).name() == name) return 1;
-                }
-            }
+            if (structExist_.contains(name) != 0) return 1;   // O(1)
             // 限定名 Sensor::Config / Device::Mode → 裸名回退（嵌套/文件级限定
-            // struct 以裸名注册，引用用限定名）。
+            // struct 以裸名注册，引用用限定名）。structExist_ 已含裸名与限定名，
+            // 此处兜底 structBareName 派生名（无 "::" 时 structBareName 返回 ""）。
             string bare = structBareName(name);
-            if (Str.len(bare) != 0) {
-                for (int i = 0; i < tu_.structs().size(); i = i + 1) {
-                    if (tu_.structs().get(i).name() == bare) return 1;
-                }
-                for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                    for (int si = 0; si < tu_.classes().get(ci).structs().size(); si = si + 1) {
-                        if (tu_.classes().get(ci).structs().get(si).name() == bare) return 1;
-                    }
-                }
-            }
+            if (Str.len(bare) != 0 && structExist_.contains(bare) != 0) return 1;
             return 0;
         }
 
@@ -10556,19 +10571,17 @@ class CodeGen {
         // 枚举最大载荷字节数（各 variant 参数字节和的最大值）。
         int enumMaxPayload(string name) {
             if (tu_ == null) return 0;
+            int ei = enumIdx_.get(name, -1);   // O(1)
+            if (ei < 0) return 0;
+            AstEnum en = tu_.enums().get(ei);
             int maxp = 0;
-            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
-                AstEnum en = tu_.enums().get(i);
-                if (en.name() != name) continue;
-                for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
-                    int sz = 0;
-                    AstEnumVariant v = en.variants().get(vi);
-                    for (int pi = 0; pi < v.params().size(); pi = pi + 1) {
-                        sz = sz + IrEmit.typeSize(llvmType(v.params().get(pi).type()));
-                    }
-                    if (sz > maxp) maxp = sz;
+            for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
+                int sz = 0;
+                AstEnumVariant v = en.variants().get(vi);
+                for (int pi = 0; pi < v.params().size(); pi = pi + 1) {
+                    sz = sz + IrEmit.typeSize(llvmType(v.params().get(pi).type()));
                 }
-                break;
+                if (sz > maxp) maxp = sz;
             }
             return maxp;
         }
@@ -10576,12 +10589,11 @@ class CodeGen {
         // 枚举 variant 名 → 索引（-1 未找到）。
         int enumVariantIndex(string enumName, string variantName) {
             if (tu_ == null) return -1;
-            for (int i = 0; i < tu_.enums().size(); i = i + 1) {
-                AstEnum en = tu_.enums().get(i);
-                if (en.name() != enumName) continue;
-                for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
-                    if (en.variants().get(vi).name() == variantName) return vi;
-                }
+            int ei = enumIdx_.get(enumName, -1);   // O(1)
+            if (ei < 0) return -1;
+            AstEnum en = tu_.enums().get(ei);
+            for (int vi = 0; vi < en.variants().size(); vi = vi + 1) {
+                if (en.variants().get(vi).name() == variantName) return vi;
             }
             return -1;
         }
@@ -10607,60 +10619,18 @@ class CodeGen {
         // 一致：按 tu.classes 顺序、泛型模板跳过、按名去重。
         int classTypeId(string name) {
             if (tu_ == null || Str.len(name) == 0) return 0;
-            int tid = 0;
-            ArrayList<string> seen = new ArrayList<string>();
-            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                AstClass c = tu_.classes().get(i);
-                if (c.typeParams().size() != 0 && c.isGenericInst() == 0) continue;
-                int dup = 0;
-                for (int di = 0; di < seen.size(); di = di + 1) {
-                    if (seen.get(di) == c.name()) { dup = 1; break; }
-                }
-                if (dup != 0) continue;
-                seen.add(c.name());
-                tid = tid + 1;
-                if (c.name() == name) return tid;
-            }
-            return 0;
+            return typeIdMap_.get(name, 0);   // O(1)（P6 规模修复：原 O(N²) seen 去重）
         }
 
         // 类名列表（type id 顺序，供 __myp_type_name_table / max_type_id）。
         ArrayList<string> classTypeNames() {
-            ArrayList<string> out = new ArrayList<string>();
-            if (tu_ == null) return out;
-            ArrayList<string> seen = new ArrayList<string>();
-            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                AstClass c = tu_.classes().get(i);
-                if (c.typeParams().size() != 0 && c.isGenericInst() == 0) continue;
-                int dup = 0;
-                for (int di = 0; di < seen.size(); di = di + 1) {
-                    if (seen.get(di) == c.name()) { dup = 1; break; }
-                }
-                if (dup != 0) continue;
-                seen.add(c.name());
-                out.add(c.name());
-            }
-            return out;
+            return typeIdNames_;   // 预计算（generate 入口）
         }
 
         // 类数量（type id 上限）。不经过 classTypeNames().size()（方法返回值
         // 上调用 .size() 会落到裸 ArrayList_size，见 §接口）；本地 seen.size() 正常。
         int classTypeCount() {
-            if (tu_ == null) return 0;
-            int n = 0;
-            ArrayList<string> seen = new ArrayList<string>();
-            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                AstClass c = tu_.classes().get(i);
-                if (c.typeParams().size() != 0 && c.isGenericInst() == 0) continue;
-                int dup = 0;
-                for (int di = 0; di < seen.size(); di = di + 1) {
-                    if (seen.get(di) == c.name()) { dup = 1; break; }
-                }
-                if (dup != 0) continue;
-                seen.add(c.name());
-                n = n + 1;
-            }
-            return n;
+            return typeIdNames_.size();   // 预计算
         }
 
         // 发射 __myp_release_table / __myp_max_type_id / __myp_type_name_table。
@@ -10697,10 +10667,7 @@ class CodeGen {
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < n; i = i + 1) {
                 string cls = names.get(i);
-                int ci = -1;
-                for (int cj = 0; cj < tu_.classes().size(); cj = cj + 1) {
-                    if (tu_.classes().get(cj).name() == cls) { ci = cj; break; }
-                }
+                int ci = classIndex(cls);   // O(1)（P6 规模修复：原线性扫全类）
                 if (ci < 0) continue;
                 AstClass c = tu_.classes().get(ci);
                 sb.append("define internal void @__myp_destroy_" + cls + "(ptr %self) {\nentry:\n");
@@ -10812,16 +10779,14 @@ class CodeGen {
         // cls 类是否存在名为 name 的方法（action 或 function 段）。
         int hasMethodInClass(string cls, string name) {
             if (tu_ == null || Str.len(cls) == 0) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
-                    if (c.actions().get(ai).name() == name) return 1;
-                }
-                for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
-                    if (c.funcs().get(fi).name() == name) return 1;
-                }
-                return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.actions().size(); ai = ai + 1) {
+                if (c.actions().get(ai).name() == name) return 1;
+            }
+            for (int fi = 0; fi < c.funcs().size(); fi = fi + 1) {
+                if (c.funcs().get(fi).name() == name) return 1;
             }
             return 0;
         }
@@ -10853,13 +10818,11 @@ class CodeGen {
         // cls 是否有名为 name 的事件。
         int hasEventInClass(string cls, string name) {
             if (tu_ == null || Str.len(cls) == 0) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
-                    if (c.events().get(ei).name() == name) return 1;
-                }
-                return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                if (c.events().get(ei).name() == name) return 1;
             }
             return 0;
         }
@@ -10911,13 +10874,11 @@ class CodeGen {
         // 事件参数列表（按类名 + 事件名）。
         AstEvent findEvent(string clsName, string evName) {
             if (tu_ == null) return null;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != clsName) continue;
-                for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
-                    if (c.events().get(ei).name() == evName) return c.events().get(ei);
-                }
-                return null;
+            int ci = classIndex(clsName);   // O(1)
+            if (ci < 0) return null;
+            AstClass c = tu_.classes().get(ci);
+            for (int ei = 0; ei < c.events().size(); ei = ei + 1) {
+                if (c.events().get(ei).name() == evName) return c.events().get(ei);
             }
             return null;
         }
@@ -10925,13 +10886,11 @@ class CodeGen {
         // 类是否有静态 action name（mapping 目标为静态方法时无需实例指针）。
         int isStaticAction(string cls, string name) {
             if (tu_ == null) return 0;
-            for (int ci = 0; ci < tu_.classes().size(); ci = ci + 1) {
-                AstClass c = tu_.classes().get(ci);
-                if (c.name() != cls) continue;
-                for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
-                    if (c.staticActions().get(ai).name() == name) return 1;
-                }
-                return 0;
+            int ci = classIndex(cls);   // O(1)
+            if (ci < 0) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int ai = 0; ai < c.staticActions().size(); ai = ai + 1) {
+                if (c.staticActions().get(ai).name() == name) return 1;
             }
             return 0;
         }
@@ -10939,13 +10898,7 @@ class CodeGen {
         // name 是否为顶层函数或 FFI。
         int isTopLevelFunc(string name) {
             if (tu_ == null) return 0;
-            for (int i = 0; i < tu_.functions().size(); i = i + 1) {
-                if (tu_.functions().get(i).name() == name) return 1;
-            }
-            for (int i = 0; i < tu_.ffis().size(); i = i + 1) {
-                if (tu_.ffis().get(i).name() == name) return 1;
-            }
-            return 0;
+            return topFunc_.contains(name);   // O(1)（P6 规模修复）
         }
 
         // name 是否为当前函数作用域内的变量（参数或局部）。
@@ -11152,4 +11105,15 @@ class CodeGen {
         // 当前是否在生成 NVPTX kernel 模块 body（区别于 CPU 回退串行 codegen；
         // kernel 内 Device./Math. 数学 → LLVM intrinsic、Atomic.* → atomicrmw 仅在此生效）。
         int gpuKernelMode_;
+        // P1 缩放：O(1) 声明索引（generate 入口一次建全，替代热路径线性扫
+        // classes/interfaces/enums/structs/functions/ffis——P6 方法调用 O(N²) 根因）。
+        StrHashMap<int> classIdx_;      // 类名 → 索引（首次出现优先）
+        StrHashMap<int> ifaceIdx_;      // 接口名 → 索引
+        StrHashMap<int> enumIdx_;       // 枚举名 → 索引
+        StrHashMap<int> structExist_;   // struct 名（裸名 + Parent::name）→ 1
+        StrHashMap<int> topFunc_;       // 顶层函数/FFI 名 → 1
+        // P1 缩放：type-id 表预计算（generate 入口一次建全；原 classTypeId/
+        // classTypeNames 每调用线性扫全类 + seen 去重 → O(N²)/O(N³)）。
+        ArrayList<string> typeIdNames_;     // type-id 顺序的类名（去重、跳过泛型模板）
+        StrHashMap<int> typeIdMap_;         // 类名 → type-id（1 起；0 = 非类/string）
 }

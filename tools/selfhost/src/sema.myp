@@ -322,6 +322,12 @@ class Sema {
             interfaceMethods_ = new ArrayList<MethodSig>();
             structNames_ = new ArrayList<string>();
             structProps_ = new ArrayList<ArrayList<AstProp>>();
+            classIdx_ = new StrHashMap<int>();
+            structIdx_ = new StrHashMap<int>();
+            enumIdx_ = new StrHashMap<int>();
+            ifaceIdx_ = new StrHashMap<int>();
+            funcIdx_ = new StrHashMap<int>();
+            methodSigIdx_ = new StrHashMap<int>();
             classTypeParams_ = new ArrayList<ArrayList<string>>();
             opSyms_ = new ArrayList<string>();
             opParams_ = new ArrayList<ArrayList<AstParam>>();
@@ -375,6 +381,8 @@ class Sema {
         }
         void addMethod(string c, string m, AstType r, int np, ArrayList<AstParam> ps, int cor) {
             methods_.add(new MethodSig(c, m, r != null ? typeToKind(r) : "void", np, ps, cor, r));
+            string key = c + "." + m;
+            if (methodSigIdx_.contains(key) == 0) methodSigIdx_.put(key, methods_.size() - 1);
         }
         // BUG-046 镜像：static 方法签名串（返回类型 + 参数类型 kind，数组含元素 kind）。
         // 同名 static 方法：签名相同保持历史静默合并；签名不同报错（C++ 用 TypeInfo
@@ -399,45 +407,37 @@ class Sema {
         // 方法应拒绝——function: 仅类内 this.f() 可调，镜像 C++ BUG-001 规则）。
         int isFuncSectionMethod(string cls, string meth) {
             if (tu_ == null || Str.len(cls) == 0) return 0;
-            for (int i = 0; i < tu_.classes().size(); i = i + 1) {
-                AstClass c = tu_.classes().get(i);
-                if (c.name() != cls) continue;
-                for (int j = 0; j < c.funcs().size(); j = j + 1) {
-                    if (c.funcs().get(j).name() == meth) return 1;
-                }
-                return 0;
+            int ci = classIdx_.get(cls, -1);   // O(1)（P6 规模修复：cls 为 base 名，类索引=tu.classes 索引）
+            if (ci < 0 || ci >= tu_.classes().size()) return 0;
+            AstClass c = tu_.classes().get(ci);
+            for (int j = 0; j < c.funcs().size(); j = j + 1) {
+                if (c.funcs().get(j).name() == meth) return 1;
             }
             return 0;
         }
         // 方法返回类型的具体类名（非类返回空）
         string findMethodRetClass(string cls, string meth) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) {
-                    AstType rt = s.retType();
-                    if (rt != null && Str.len(rt.className()) != 0) {
-                        if (rt.typeArgs().size() > 0) return instClassName(rt);
-                        return rt.className();
-                    }
-                    return "";
-                }
+            int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)（P6 规模修复）
+            if (mi < 0) return "";
+            MethodSig s = methods_.get(mi);
+            AstType rt = s.retType();
+            if (rt != null && Str.len(rt.className()) != 0) {
+                if (rt.typeArgs().size() > 0) return instClassName(rt);
+                return rt.className();
             }
             return "";
         }
         // 泛型类参数列表
         ArrayList<string> findClassTypeParams(string cls) {
-            for (int i = 0; i < classNames_.size(); i = i + 1) {
-                if (classNames_.get(i) == cls) return classTypeParams_.get(i);
-            }
-            return new ArrayList<string>();
+            int ci = classIdx_.get(cls, -1);   // O(1)（P6 规模修复）
+            if (ci < 0) return new ArrayList<string>();
+            return classTypeParams_.get(ci);
         }
         // 方法返回 AstType
         AstType findMethodRetAst(string cls, string meth) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) return s.retType();
-            }
-            return null;
+            int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
+            if (mi < 0) return null;
+            return methods_.get(mi).retType();
         }
         // 泛型方法返回类型替换：T → 实例类型参数（instArgs_）
         string substRet(string base, AstType rt, SymbolEntry en) {
@@ -495,40 +495,26 @@ class Sema {
         }
         // 类方法是否 @coro（调用返回协程句柄 long）
         int isMethodCoro(string cls, string meth) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) return s.coro();
-            }
-            return 0;
+            int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
+            if (mi < 0) return 0;
+            return methods_.get(mi).coro();
         }
         // 类方法形参列表（默认参数补全用）
         ArrayList<AstParam> findMethodParams(string cls, string meth) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) return s.params();
-            }
-            return null;
+            int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
+            if (mi < 0) return null;
+            return methods_.get(mi).params();
         }
         // 查找类方法返回类型（类名 + 方法名 + 参数个数）；未找到返回空。
         string findMethodRet(string cls, string meth, int np) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth && s.nparams() == np) return s.ret();
-            }
-            // 参数个数不匹配时退化为名字匹配
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) return s.ret();
-            }
-            return "";
+            int mi = methodSigIdx_.get(cls + "." + meth, -1);   // O(1)
+            if (mi < 0) return "";
+            return methods_.get(mi).ret();
         }
         // 类中是否存在方法（区分方法 vs 属性）
         int hasMethod(string cls, string meth) {
-            for (int i = 0; i < methods_.size(); i = i + 1) {
-                MethodSig s = methods_.get(i);
-                if (s.cls() == cls && s.meth() == meth) return 1;
-            }
-            return 0;
+            string key = cls + "." + meth;
+            return methodSigIdx_.contains(key) != 0 ? 1 : 0;   // O(1)（P6 规模修复）
         }
 
         void addIntr(string name, string ret) {
@@ -1566,6 +1552,7 @@ class Sema {
                 AstStruct st = tu.structs().get(si);
                 structNames_.add(st.name());
                 structProps_.add(st.props());
+                if (structIdx_.contains(st.name()) == 0) structIdx_.put(st.name(), structNames_.size() - 1);
                 for (int pi = 0; pi < st.props().size(); pi = pi + 1) {
                     AstProp prop = st.props().get(pi);
                     AstType embedded = prop.type();
@@ -1590,8 +1577,11 @@ class Sema {
                     funcNames_.add(f.name());
                     funcRet_.add(f.ret());
                     funcParams_.add(f.params());
+                    if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
                     if (f.coro() != 0) coroNames_.add(f.name());
                     methods_.add(new MethodSig(st.name(), f.name(), f.ret() != null ? typeToKind(f.ret()) : "void", f.params().size(), f.params(), f.coro() != 0 ? 1 : 0, f.ret()));
+                    string mkey = st.name() + "." + f.name();
+                    if (methodSigIdx_.contains(mkey) == 0) methodSigIdx_.put(mkey, methods_.size() - 1);
                 }
             }
             // 收集类内嵌套 struct（B4：Sensor::Config 以裸名 Config 注册）。须在
@@ -1608,6 +1598,7 @@ class Sema {
                     if (known2 == 0) {
                         structNames_.add(nst.name());
                         structProps_.add(nst.props());
+                        if (structIdx_.contains(nst.name()) == 0) structIdx_.put(nst.name(), structNames_.size() - 1);
                     }
                 }
             }
@@ -1615,6 +1606,7 @@ class Sema {
             for (int ii = 0; ii < tu.interfaces().size(); ii = ii + 1) {
                 AstInterface ifc = tu.interfaces().get(ii);
                 interfaceNames_.add(ifc.name());
+                if (ifaceIdx_.contains(ifc.name()) == 0) ifaceIdx_.put(ifc.name(), interfaceNames_.size() - 1);
                 ArrayList<AstAction> iacts = ifc.actions();
                 for (int j2 = 0; j2 < iacts.size(); j2 = j2 + 1) {
                     AstAction a2 = iacts.get(j2);
@@ -1731,6 +1723,7 @@ class Sema {
                     }
                 }
                 enumNames_.add(en.name());
+                if (enumIdx_.contains(en.name()) == 0) enumIdx_.put(en.name(), enumNames_.size() - 1);
                 ArrayList<string> vs = new ArrayList<string>();
                 ArrayList<AstEnumVariant> vv = en.variants();
                 for (int vi = 0; vi < vv.size(); vi = vi + 1) vs.add(vv.get(vi).name());
@@ -1747,6 +1740,7 @@ class Sema {
                 }
                 classTypeParams_.add(c.typeParams());
                 classNames_.add(c.name());
+                if (classIdx_.contains(c.name()) == 0) classIdx_.put(c.name(), classNames_.size() - 1);
                 classProps_.add(c.props());
                 classActions_.add(c.actions());
                 classFuncs_.add(c.funcs());
@@ -1852,6 +1846,8 @@ class Sema {
                     AstEvent ev = c.events().get(j);
                     methods_.add(new MethodSig(c.name(), ev.name(), "void", 0, new ArrayList<AstParam>(), 0, null));
                     eventPairs_.add(c.name() + "." + ev.name());
+                    string ekey = c.name() + "." + ev.name();
+                    if (methodSigIdx_.contains(ekey) == 0) methodSigIdx_.put(ekey, methods_.size() - 1);
                 }
             }
             // 收集顶层函数
@@ -1866,6 +1862,7 @@ class Sema {
                 funcNames_.add(f.name());
                 funcRet_.add(f.ret());
                 funcParams_.add(f.params());
+                if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
                 if (f.coro() != 0) coroNames_.add(f.name());
                 // 收集 @op 运算符重载函数
                 if (Str.len(f.op()) != 0) {
@@ -1881,6 +1878,7 @@ class Sema {
                 funcNames_.add(f.name());
                 funcRet_.add(f.ret());
                 funcParams_.add(f.params());
+                if (funcIdx_.contains(f.name()) == 0) funcIdx_.put(f.name(), funcNames_.size() - 1);
             }
             for (int i = 0; i < tu.macros().size(); i = i + 1) {
                 AstMacro m = tu.macros().get(i);
@@ -1964,6 +1962,7 @@ class Sema {
                     if (known == 0) {
                         structNames_.add(st.name());
                         structProps_.add(st.props());
+                        if (structIdx_.contains(st.name()) == 0) structIdx_.put(st.name(), structNames_.size() - 1);
                     }
                 }
                 currentClass_ = c.name();
@@ -2220,15 +2219,16 @@ class Sema {
             return n;
         }
         int findClass(string name) {
-            for (int i = 0; i < classNames_.size(); i = i + 1) {
-                if (classNames_.get(i) == name) return i;
-            }
-            return -1;
+            int ci = classIdx_.get(name, -1);   // O(1)（P6 规模修复）
+            return ci;
         }
         // @static class 判定（对拍 C++ sema：外部属性访问仅允许 this.prop / StaticClass.prop）。
         // 链式访问拆局部变量（自举 codegen 对 getter().method() 链有限制）。
+        // 注：保留线性扫描——classIdx_ 映射 classNames_（不含 _inst 克隆），而
+        // @static 判定需查 tu().classes()（含 _inst）；此路径仅属性访问时触发，非热路径。
         int isStaticClass(string name) {
             AstTU t = tu();
+            if (t == null) return 0;
             ArrayList<AstClass> cls = t.classes();
             for (int i = 0; i < cls.size(); i = i + 1) {
                 AstClass c = cls.get(i);
@@ -2237,10 +2237,7 @@ class Sema {
             return 0;
         }
         int isFuncName(string name) {
-            for (int i = 0; i < funcNames_.size(); i = i + 1) {
-                if (funcNames_.get(i) == name) return 1;
-            }
-            return 0;
+            return funcIdx_.contains(name) != 0 ? 1 : 0;   // O(1)
         }
         // AstType → TypeKind 字符串（typeKindToString），供符号表/返回类型用。
         int isNumKind(string k) {
@@ -2417,10 +2414,7 @@ class Sema {
             return "";
         }
         int inInterface(string n) {
-            for (int i = 0; i < interfaceNames_.size(); i = i + 1) {
-                if (interfaceNames_.get(i) == n) return 1;
-            }
-            return 0;
+            return ifaceIdx_.contains(n) != 0 ? 1 : 0;   // O(1)
         }
         int inStructName(string n) {
             return findStruct(n) >= 0 ? 1 : 0;
@@ -2450,9 +2444,7 @@ class Sema {
         }
         // 实例名 → 原始类名（ArrayList_string_inst → ArrayList）
         string resolveBase(string cn) {
-            for (int i = 0; i < classNames_.size(); i = i + 1) {
-                if (classNames_.get(i) == cn) return cn;
-            }
+            if (classIdx_.contains(cn) != 0) return cn;   // O(1) 精确命中
             for (int i = 0; i < classNames_.size(); i = i + 1) {
                 string base = classNames_.get(i);
                 if (Str.startsWith(cn, base + "_") != 0) return base;
@@ -2506,17 +2498,12 @@ class Sema {
             return null;
         }
         int findStruct(string name) {
-            for (int i = 0; i < structNames_.size(); i = i + 1) {
-                if (structNames_.get(i) == name) return i;
-            }
+            int si = structIdx_.get(name, -1);   // O(1)（P6 规模修复）
+            if (si >= 0) return si;
             // 限定名 Sensor::Config / Device::Mode → 裸名回退（嵌套/文件级限定
             // struct 以裸名注册，引用用限定名）。
             string bare = structBareName(name);
-            if (Str.len(bare) != 0) {
-                for (int i = 0; i < structNames_.size(); i = i + 1) {
-                    if (structNames_.get(i) == bare) return i;
-                }
-            }
+            if (Str.len(bare) != 0) return structIdx_.get(bare, -1);
             return -1;
         }
         // 当前 struct 内隐式 this 字段访问类型
@@ -2579,10 +2566,7 @@ class Sema {
         }
         // enum 查找
         int findEnum(string name) {
-            for (int i = 0; i < enumNames_.size(); i = i + 1) {
-                if (enumNames_.get(i) == name) return i;
-            }
-            return -1;
+            return enumIdx_.get(name, -1);   // O(1)（P6 规模修复）
         }
         int enumHasVariant(int ei, string name) {
             ArrayList<string> vs = enumVariants_.get(ei);
@@ -2606,13 +2590,9 @@ class Sema {
         }
         // 泛型类模板？
         int isGenericClass(string name) {
-            for (int i = 0; i < classNames_.size(); i = i + 1) {
-                if (classNames_.get(i) == name) {
-                    if (classTypeParams_.get(i).size() > 0) return 1;
-                    return 0;
-                }
-            }
-            return 0;
+            int ci = classIdx_.get(name, -1);   // O(1)
+            if (ci < 0) return 0;
+            return classTypeParams_.get(ci).size() > 0 ? 1 : 0;
         }
         // 类型替换：类型参数 T → 具体类型（C++ substituteTypeNode）
         AstType substituteType(AstType t, ArrayList<string> tps, ArrayList<AstType> concrete) {
@@ -5303,6 +5283,7 @@ class Sema {
                     // 登记类成员表（供 body 里 this.cap_i / 成员解析）
                     classNames_.add(cls);
                     classProps_.add(lc.props());
+                    if (classIdx_.contains(cls) == 0) classIdx_.put(cls, classNames_.size() - 1);
                 }
                 // 在 lambda 类上下文类型检查 __call body（对齐 C++ visitClassDecl）
                 string saveCls = currentClass_;
@@ -6087,6 +6068,14 @@ class Sema {
         ArrayList<MethodSig> interfaceMethods_;
         ArrayList<string> structNames_;
         ArrayList<ArrayList<AstProp>> structProps_;
+        // P1 缩放：O(1) 名称索引（与 classNames_/structNames_/enumNames_/
+        // interfaceNames_/funcNames_ 并行维护；首次出现优先，与线性扫描一致）。
+        StrHashMap<int> classIdx_;
+        StrHashMap<int> structIdx_;
+        StrHashMap<int> enumIdx_;
+        StrHashMap<int> ifaceIdx_;
+        StrHashMap<int> funcIdx_;
+        StrHashMap<int> methodSigIdx_;   // "cls.meth" → 1（hasMethod O(1)）
         ArrayList<ArrayList<string>> classTypeParams_;
         ArrayList<string> opSyms_;
         ArrayList<ArrayList<AstParam>> opParams_;
