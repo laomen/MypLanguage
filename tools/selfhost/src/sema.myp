@@ -3886,6 +3886,16 @@ class Sema {
                         if (l == "ulong" || r == "ulong") uc2 = 1;
                         e.setResultUnsigned(uc2);
                     }
+                    // 字符串比较（==/!= 与 </>/<=/>= 一致）：两边都须为字符串（或一方 null）。
+                    // 修复：bool==string / int==string 类型混合此前被放行，落到 codegen 的
+                    // inttoptr 兜底产出"恒 false"的非法 IR → 应为类型错误。
+                    if ((op == "==" || op == "!=") && (l == "string" || r == "string")) {
+                        if ((l != "string" || r != "string") && l != "null" && r != "null") {
+                            diag_.error(e.line(), e.col(), "string comparison requires both operands to be strings");
+                        }
+                        e.setResolvedKind("bool");
+                        return "bool";
+                    }
                     e.setResolvedKind("bool");
                     return "bool";
                 }

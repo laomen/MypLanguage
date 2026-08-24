@@ -358,6 +358,18 @@ TypeInfo Sema::visitBinaryOp(BinaryOpExpr& expr) {
                 }
                 return TypeInfo(TypeKind::Bool);
             }
+            // 字符串比较（==/!= 与 </>/<=/>= 一致）：两边都须为字符串（或一方 null）。
+            // 修复：此前 bool==string / int==string 等类型混合被放行，落到 codegen 的
+            // inttoptr 兜底产出"合法但语义错误"的 IR（bool==string 恒 false）——
+            // 应为类型错误，而非静默接受。
+            if (lhs_type.kind == TypeKind::String || rhs_type.kind == TypeKind::String) {
+                if (lhs_type.kind != TypeKind::String || rhs_type.kind != TypeKind::String) {
+                    if (lhs_type.kind != TypeKind::Null && rhs_type.kind != TypeKind::Null) {
+                        error(expr.range, "string comparison requires both operands to be strings");
+                    }
+                }
+                return TypeInfo(TypeKind::Bool);
+            }
             return TypeInfo(TypeKind::Bool);
         }
 

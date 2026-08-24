@@ -1,0 +1,11 @@
+// EXPECT ERROR: string comparison requires both operands to be strings
+// bool == string 类型混合应报错（此前被放行，落到 codegen inttoptr 兜底产出"恒 false"）
+import env;
+
+class F {
+    action:
+        @constructor F() {
+            bool b = ("a" == "b") == "c";
+        }
+}
+int main() { F f = new F(); return 0; }
