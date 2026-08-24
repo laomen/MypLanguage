@@ -22,6 +22,7 @@ MYP 是一门**事件驱动组件**编程语言，以 `class` + `action:` / `eve
 | **协程 + 异步 IO** | `@coro`/`await` 用户态协程 + `@async` 统一异步抽象（定时器/套接字/文件执行器）+ `Coro.waitAnyOf` 混等 |
 | **错误处理** | `Result<T,E>` / `Option<T>`/`T?` 容器 + `catch (Error)` 异常分层 |
 | **自动内存管理** | class 实例 ARC（自动引用计数，additive 无新语法） |
+| **派生序列化** | `@derive(Json)` 类注解自动生成 toJson/fromJson（serde 式，零运行时反射） |
 | **算子系统** | `operator:`/`@op("+")` 运算符重载 + `|>` 算子管道 |
 | **GPU 支持** | CUDA 后端，`MYP_GPU=1` 激活 |
 | **零依赖标准库** | 40 个模块，纯 MYP 实现 |

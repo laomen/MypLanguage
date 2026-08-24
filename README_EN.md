@@ -22,6 +22,7 @@ MYP is an **event-driven component** programming language built around `class` +
 | **Coroutines + Async I/O** | `@coro`/`await` user-space coroutines + `@async` unified async abstraction (timers/sockets/file executor) + `Coro.waitAnyOf` mixed waits |
 | **Error Handling** | `Result<T,E>` / `Option<T>`/`T?` containers + layered `catch (Error)` exceptions |
 | **Automatic Memory Mgmt** | ARC for class instances (automatic reference counting, additive, no new syntax) |
+| **Derived Serialization** | `@derive(Json)` class annotation auto-generates toJson/fromJson (serde-style, zero runtime reflection) |
 | **Operator System** | `operator:`/`@op("+")` overloading + `|>` operator pipe |
 | **GPU Support** | CUDA backend, activated with `MYP_GPU=1` |
 | **Zero-Dependency Stdlib** | 40 modules, pure MYP implementations |

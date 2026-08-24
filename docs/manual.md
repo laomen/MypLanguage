@@ -2678,6 +2678,35 @@ string g = doc.getString("a.b[0]");    // path 支持嵌套字段/下标
 doc.free();
 ```
 
+### `@derive(Json)` — 派生序列化（自动生成 toJson/fromJson）
+
+类级注解 `@derive(Json)` 修饰 class → 编译器自动注入 `toJson()` / `fromJson(string)`，
+免去手写序列化样板：
+
+```myp
+import json;   // 需要 Json.escape + Json 路径查询
+
+@derive(Json)
+class Player {
+    property:
+        string name;
+        int hp;
+        bool alive;
+}
+
+Player p = new Player();
+// p.name / p.hp / p.alive 赋值后：
+string j = p.toJson();          // {"name":"A","hp":100,"alive":true}（字符串转义）
+Player q = new Player();
+q.fromJson(j);                  // 按字段回填（round-trip 一致）
+```
+
+**v1 规则**：
+- 支持属性类型：`int/long/short/byte/uint/ulong/ushort/ubyte`、`double/float`、
+  `bool`、`string`；数组/类/struct/元组/函数属性 → 编译期诊断（不支持）。
+- 泛型类 `@derive` 暂不支持（编译期诊断）；非 `Json` 派生名 → 诊断。
+- 注入方法在类内生成，天然可访问私有属性。
+
 ### `import regex` — 正则表达式
 
 ```myp

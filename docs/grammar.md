@@ -200,7 +200,8 @@ ImportDecl       ::= 'import' ImportPath ';'
 ImportPath       ::= Identifier            // 标准库/包模块
                    | StringLiteral         // 相对/绝对路径文件
 
-ClassDecl        ::= 'class' Identifier GenericParamList? '{' ClassMember* '}'
+ClassDecl        ::= DeriveAnnot? 'class' Identifier GenericParamList? '{' ClassMember* '}'
+DeriveAnnot      ::= '@' 'derive' '(' Identifier ')'   // 类级派生注解：@derive(Json) → 自动生成 toJson()/fromJson()（additive，v3.15.1）
 GenericParamList ::= '<' Identifier (',' Identifier)* '>'
 
 StructDecl       ::= 'struct' (Identifier '::')? Identifier '{' StructField* '}'
@@ -330,6 +331,34 @@ int pmRun() {
     return 0;
 }
 ```
+
+### 3.4 `@derive(Json)` 派生序列化（additive，v3.15.1）
+
+类级注解 `@derive(Json)` 修饰 class → 编译器在 sema 前自动注入两个方法：
+
+```
+string toJson()            // 输出该类的 JSON 对象（属性 → 字段，转义正确）
+void fromJson(string j)    // 用 json.myp 路径查询回填各属性（round-trip）
+```
+
+```myp
+@derive(Json)
+class Player {
+    property:
+        string name;
+        int hp;
+        bool alive;
+}
+// 自动注入：string toJson() / void fromJson(string j)
+// 用法：player.toJson() → {"name":"A","hp":100,"alive":true}；q.fromJson(j) 还原。
+```
+
+**v1 规则**：
+- 支持属性类型：`int/long/short/byte/uint/ulong/ushort/ubyte`、`double/float`、
+  `bool`、`string`（字符串经 `Json.escape` 转义）。数组/类/struct/元组/函数属性 →
+  编译期诊断（不支持）。
+- 泛型类 `@derive` 暂不支持（编译期诊断）；非 `Json` 派生名 → 诊断。
+- 需要 `import json;`（`Json.escape` + `Json` 路径查询）。
 
 ---
 

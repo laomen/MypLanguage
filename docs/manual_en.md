@@ -2752,6 +2752,37 @@ string g = doc.getString("a.b[0]");    // path supports nested fields / indices
 doc.free();
 ```
 
+### `@derive(Json)` — Derived Serialization (auto toJson/fromJson)
+
+The class annotation `@derive(Json)` makes the compiler auto-inject
+`toJson()` / `fromJson(string)` methods, eliminating hand-written serialization:
+
+```myp
+import json;   // needs Json.escape + Json path queries
+
+@derive(Json)
+class Player {
+    property:
+        string name;
+        int hp;
+        bool alive;
+}
+
+Player p = new Player();
+// after assigning p.name / p.hp / p.alive:
+string j = p.toJson();          // {"name":"A","hp":100,"alive":true} (strings escaped)
+Player q = new Player();
+q.fromJson(j);                  // round-trips all fields
+```
+
+**v1 rules**:
+- Supported property types: `int/long/short/byte/uint/ulong/ushort/ubyte`,
+  `double/float`, `bool`, `string`; array/class/struct/tuple/function properties are
+  diagnosed at compile time (unsupported).
+- Generic classes with `@derive` are not yet supported (compile-time diagnostic);
+  non-`Json` derive names are diagnosed.
+- Injected methods live inside the class, so they can access private properties.
+
 ### `import regex` — Regular Expressions
 
 ```myp
