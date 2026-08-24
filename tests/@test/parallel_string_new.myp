@@ -1,0 +1,33 @@
+// parallel_string_new: @parallel for 支持字符串 + new（v3.13.2）
+// CPU @parallel for body 是普通 CPU 函数（完整 codegen），支持字符串运算、
+// class 实例化、方法调用、数组元素写。@gpu for 仍保持纯数值内核（拒绝字符串/new）。
+
+import test;
+import pool;
+
+class Node {
+    action:
+        void setVal(int v) { val = v; }
+        int getVal() { return val; }
+    property:
+        int val = 0;
+}
+
+@test void test_parallel_string_new() {
+    int n = 8;
+    string[] names = new string[n];
+    Node[] nodes = new Node[n];
+    @parallel for (int i = 0; i < n; i = i + 1) {
+        names[i] = "item " + i;      // 字符串拼接（此前被拒）
+        Node t = new Node();          // class 实例化（此前被拒）
+        t.setVal(i * 10);
+        nodes[i] = t;
+    }
+    long sum = 0;
+    for (int i = 0; i < n; i = i + 1) {
+        Test.assertEq(names[i] == "item " + i ? 1 : 0, 1, "name " + i);
+        sum = sum + nodes[i].getVal();
+    }
+    Test.assertEq(sum, 280, "sum");
+    Test.report("test_parallel_string_new", true);
+}

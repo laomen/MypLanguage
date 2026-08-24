@@ -1,15 +1,16 @@
-// Negative: string concatenation inside @parallel for body.
-// Previously emitted garbage pointer arithmetic → LLVM verify crash
-// ("Call parameter type does not match function signature!"). Rejected now.
+// Negative: string concatenation inside @gpu for body.
+// The GPU kernel path (NVPTX) has no string runtime — string literals and
+// string operations are rejected at compile time. (@parallel for, a CPU
+// thread-pool body, DOES support strings since v3.13.x.)
 import env;
-import pool;
+import gpu;
 
 class Main {
     action:
         @startup void run() {
             int n = 4;
-            @parallel for (int i = 0; i < n; i = i + 1) {
-                // ERROR: string operations not supported inside @parallel for body
+            @gpu for (int i = 0; i < n; i = i + 1) {
+                // ERROR: string operations not supported inside @gpu for body
                 string s = "iter " + i;
             }
         }

@@ -14,6 +14,7 @@ import io;
 import fs;
 import text;
 import process;
+import pool;
 import "./diag.myp";
 import "./token.myp";
 import "./lexer.myp";
@@ -394,12 +395,18 @@ class LoadedSet {
                     loaded.add(Frontend.normalizePath(fx));
                     loaded.add(fx);
                 }
-                // 附加输入文件：解析 + 全量合并（BUG-025 镜像 C++）。
-                for (int fi = 1; fi < files.size(); fi = fi + 1) {
+                // 附加输入文件：并行前端（lexer+parser 每文件独立）+ 顺序合并。
+                // @parallel for 是 CPU 线程池 body（v3.13.2 起支持字符串/new/
+                // 方法调用），可安全并行化前端；每线程写各自下标无竞争。
+                AstTU[] subUnits = new AstTU[files.size()];
+                int[] subOK = new int[files.size()];
+                string[] subMsgs = new string[files.size()];
+                int fileCount = files.size();
+                @parallel for (int fi = 1; fi < fileCount; fi = fi + 1) {
                     string extra = files.get(fi);
                     if (Fs.exists(extra) == 0) {
-                        diag.error(0, 0, "cannot open file '" + extra + "'");
-                        break;
+                        subMsgs[fi] = "cannot open file '" + extra + "'";
+                        continue;
                     }
                     string esrc = Frontend.readFile(extra);
                     Lexer elx = new Lexer(esrc);
@@ -408,9 +415,19 @@ class LoadedSet {
                     Parser epr = new Parser(etoks, ediag);
                     AstTU esub = epr.parse();
                     if (ediag.errorCount() != 0) {
-                        diag.error(0, 0, "errors in input file '" + extra + "'");
+                        subMsgs[fi] = "errors in input file '" + extra + "'";
+                        continue;
+                    }
+                    subUnits[fi] = esub;
+                    subOK[fi] = 1;
+                }
+                // 顺序合并（保持输入顺序；跨文件引用需完整 TU）。
+                for (int fi = 1; fi < files.size(); fi = fi + 1) {
+                    if (subOK[fi] == 0) {
+                        diag.error(0, 0, subMsgs[fi]);
                         break;
                     }
+                    AstTU esub = subUnits[fi];
                     for (int i = 0; i < esub.imports().size(); i = i + 1) tu.imports().add(esub.imports().get(i));
                     for (int i = 0; i < esub.structs().size(); i = i + 1) tu.structs().add(esub.structs().get(i));
                     for (int i = 0; i < esub.bitfields().size(); i = i + 1) tu.bitfields().add(esub.bitfields().get(i));

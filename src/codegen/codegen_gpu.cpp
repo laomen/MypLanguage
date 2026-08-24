@@ -532,7 +532,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
             if (e.lhs->resolved_kind == TypeKind::String ||
                 e.rhs->resolved_kind == TypeKind::String) {
                 diag_.error(expr.range,
-                    "string operations are not supported inside '@parallel for' / '@gpu for' bodies");
+                    "string operations are not supported inside '@gpu for' bodies");
                 return llvm::ConstantInt::get(i64_ty, 0);
             }
             auto* l = emitKernelExpr(*e.lhs, kb, kernel_vars, kernel_arg_values,
@@ -1496,7 +1496,7 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
                 auto& oid = static_cast<const IdentifierExpr&>(*e.object);
                 if (var_class_map_.count(oid.name)) {
                     diag_.error(expr.range,
-                        "class-instance field access is not supported inside '@parallel for' / '@gpu for' bodies");
+                        "class-instance field access is not supported inside '@gpu for' bodies");
                     return llvm::ConstantInt::get(i64_ty, 0);
                 }
             }
@@ -1871,11 +1871,11 @@ llvm::Value* CodeGen::emitKernelExpr(const Expr& expr, llvm::IRBuilder<>& kb,
         case ExprKind::NewExpr:
         case ExprKind::NewArrayExpr:
             diag_.error(expr.range,
-                "'new' inside '@parallel for' / '@gpu for' bodies is not supported — allocate before the loop and write into the captured variable");
+                "'new' inside '@gpu for' bodies is not supported — allocate before the loop and write into the captured variable");
             return llvm::ConstantInt::get(i64_ty, 0);
         case ExprKind::StringLiteral:
             diag_.error(expr.range,
-                "string literals are not supported inside '@parallel for' / '@gpu for' bodies");
+                "string literals are not supported inside '@gpu for' bodies");
             return llvm::ConstantInt::get(i64_ty, 0);
     }
     return llvm::ConstantInt::get(i64_ty, 0);
@@ -2197,11 +2197,9 @@ void CodeGen::generateParallelFor(const ForStmt& s) {
     auto* step_arg = body_fn->getArg(2);  step_arg->setName("step");
     auto* void_arg = body_fn->getArg(3);  void_arg->setName("arg");
     
-    // Build kernel_vars map for the body function
-    std::map<std::string, llvm::Value*> kernel_vars;
-    std::vector<llvm::Value*> empty_args;
-    
     // Unpack capture struct in body function
+    std::vector<llvm::AllocaInst*> cap_alloca_list;
+    cap_alloca_list.reserve(capture_names.size());
     if (cap_ty && cap_alloca) {
         auto* cap_ptr = pb.CreateBitCast(void_arg, llvm::PointerType::get(ctx_, 0), "cap_ptr");
         for (size_t ci = 0; ci < capture_names.size(); ci++) {
@@ -2210,18 +2208,18 @@ void CodeGen::generateParallelFor(const ForStmt& s) {
             // Create alloca in body function and store
             auto* body_alloca = pb.CreateAlloca(capture_types[ci], nullptr, capture_names[ci]);
             pb.CreateStore(loaded, body_alloca);
-            kernel_vars[capture_names[ci]] = body_alloca;
+            cap_alloca_list.push_back(body_alloca);
         }
     }
     
     // Create local alloca for loop variable, init to start
     auto* i_alloca = pb.CreateAlloca(i32_ty, nullptr, loop_var_name);
     pb.CreateStore(start_arg, i_alloca);
-    kernel_vars[loop_var_name] = i_alloca;
     
     // Chunk loop: for (i = start; i < end; i += step)
     auto* loop_cond = llvm::BasicBlock::Create(ctx_, "ploop.cond", body_fn);
     auto* loop_body = llvm::BasicBlock::Create(ctx_, "ploop.body", body_fn);
+    auto* loop_step = llvm::BasicBlock::Create(ctx_, "ploop.step", body_fn);
     auto* loop_end  = llvm::BasicBlock::Create(ctx_, "ploop.end", body_fn);
     pb.CreateBr(loop_cond);
     
@@ -2230,23 +2228,62 @@ void CodeGen::generateParallelFor(const ForStmt& s) {
     auto* loop_ok = pb.CreateICmpSLT(i_cur, end_arg, "ploop.cond");
     pb.CreateCondBr(loop_ok, loop_body, loop_end);
     
-    // Generate the user body inside the chunk loop
-    pb.SetInsertPoint(loop_body);
+    // ===== Generate the user body with the FULL codegen =====
+    // The CPU @parallel for body is a regular CPU function — it must support
+    // strings / `new` / method calls / field access (unlike the numeric-only
+    // emitKernelStmt path shared with @gpu for). Save the outer codegen state,
+    // switch to the body function, generate with generateStmt, then restore.
+    // (@gpu for keeps the numeric emitKernelStmt path via generateGpuFor.)
+    auto* saved_bb = builder_.GetInsertBlock();
+    llvm::Function* saved_func = current_function_;
+    TypeInfo saved_ret_ti = current_ret_ti_;
+    bool saved_coro = current_is_coro_;
+    std::vector<llvm::Value*> saved_temps = std::move(arc_pending_temps_);
+    arc_pending_temps_.clear();
+    bool saved_skip = arc_skip_retain_return_;
+    arc_skip_retain_return_ = false;
+    std::vector<FinallyCtx> saved_finally = std::move(finally_ctx_stack_);
+    finally_ctx_stack_.clear();
+    llvm::Value* saved_finally_ret = finally_ret_slot_;
+    finally_ret_slot_ = nullptr;
+    std::vector<LoopContext> saved_loop = std::move(loop_context_);
+    loop_context_.clear();
+
+    current_function_ = body_fn;
+    current_ret_ti_ = TypeInfo{TypeKind::Void};
+    current_is_coro_ = false;
+
     pushScope();
-    if (s.body) {
-        emitKernelStmt(*s.body, pb, kernel_vars, empty_args, loop_var_name, i_cur);
-        if (!pb.GetInsertBlock()->getTerminator()) {
-            auto* i_next = pb.CreateAdd(i_cur, step_arg, "i.next");
-            pb.CreateStore(i_next, i_alloca);
-            pb.CreateBr(loop_cond);
-        }
-    } else {
-        auto* i_next = pb.CreateAdd(i_cur, step_arg, "i.next");
-        pb.CreateStore(i_next, i_alloca);
-        pb.CreateBr(loop_cond);
-    }
+    for (size_t ci = 0; ci < capture_names.size(); ci++)
+        setNamedValue(capture_names[ci], cap_alloca_list[ci]);
+    setNamedValue(loop_var_name, i_alloca);
+
+    builder_.SetInsertPoint(loop_body);
+    loop_context_.push_back({loop_step, loop_end});
+    if (s.body) generateStmt(*s.body);
+    loop_context_.pop_back();
+    if (builder_.GetInsertBlock() && !builder_.GetInsertBlock()->getTerminator())
+        builder_.CreateBr(loop_step);
     popScope();
-    
+
+    // loop step block: i += step; br cond
+    builder_.SetInsertPoint(loop_step);
+    auto* i_step = builder_.CreateLoad(i32_ty, i_alloca, loop_var_name + ".step");
+    auto* i_next = builder_.CreateAdd(i_step, step_arg, "i.next");
+    builder_.CreateStore(i_next, i_alloca);
+    builder_.CreateBr(loop_cond);
+
+    // restore outer codegen state
+    builder_.SetInsertPoint(saved_bb);
+    current_function_ = saved_func;
+    current_ret_ti_ = saved_ret_ti;
+    current_is_coro_ = saved_coro;
+    arc_pending_temps_ = std::move(saved_temps);
+    arc_skip_retain_return_ = saved_skip;
+    finally_ctx_stack_ = std::move(saved_finally);
+    finally_ret_slot_ = saved_finally_ret;
+    loop_context_ = std::move(saved_loop);
+
     pb.SetInsertPoint(loop_end);
     pb.CreateRetVoid();
     

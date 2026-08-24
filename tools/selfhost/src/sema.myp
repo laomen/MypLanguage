@@ -364,6 +364,7 @@ class Sema {
             inClass_ = 0;
             inStruct_ = 0;
             inGpuFor_ = 0;
+            inGpuKernel_ = 0;
             inMain_ = 0;
             currentRet_ = "";
             loopDepth_ = 0;
@@ -3460,16 +3461,21 @@ class Sema {
                     }
                 }
                 int savedForGpu = inGpuFor_;
+                int savedForKernel = inGpuKernel_;
                 if (s.gpu() != 0 || s.parallel() != 0) {
                     if (s.stream() != null) visitExpr(s.stream());
                     inGpuFor_ = 1;
                 }
+                // 字符串仅 GPU 内核禁用（NVPTX 无 string runtime）；@parallel for
+                // 是 CPU 线程池 body（普通 CPU 函数，可安全用字符串/字面量）。
+                if (s.gpu() != 0) inGpuKernel_ = 1;
                 if (s.init() != null) visitStmt(s.init());                if (s.condition() != null) visitExpr(s.condition());
                 if (s.step() != null) visitExpr(s.step());
                 loopDepth_ = loopDepth_ + 1;
                 if (s.body() != null) visitStmt(s.body());
                 loopDepth_ = loopDepth_ - 1;
                 inGpuFor_ = savedForGpu;
+                inGpuKernel_ = savedForKernel;
             } else if (k == "Break" || k == "Continue") {
                 if (loopDepth_ == 0) {
                     diag_.error(s.line(), s.col(), "break/continue outside loop");
@@ -3693,7 +3699,9 @@ class Sema {
                 }
                 if (s.stream() != null) visitExpr(s.stream());
                 int savedTileGpu = inGpuFor_;
+                int savedTileKernel = inGpuKernel_;
                 inGpuFor_ = 1;
+                inGpuKernel_ = 1;
                 sym_.enterScope();
                 AstType sharedElem = s.sharedType();
                 while (sharedElem != null && sharedElem.element() != null) sharedElem = sharedElem.element();
@@ -3701,6 +3709,7 @@ class Sema {
                 if (s.body() != null) visitStmt(s.body());
                 sym_.leaveScope();
                 inGpuFor_ = savedTileGpu;
+                inGpuKernel_ = savedTileKernel;
             } else if (k == "GpuReduce" || k == "GpuScan") {
                 sym_.enterScope();
                 string opKind = s.initExpr() != null ? visitExpr(s.initExpr()) : "int";
@@ -3768,9 +3777,12 @@ class Sema {
                 if (s.body() != null) visitStmt(s.body());
             } else if (k == "GpuFor") {
                 int savedGpu = inGpuFor_;
+                int savedKernel = inGpuKernel_;
                 inGpuFor_ = 1;
+                inGpuKernel_ = 1;
                 if (s.body() != null) visitStmt(s.body());
                 inGpuFor_ = savedGpu;
+                inGpuKernel_ = savedKernel;
             } else {
                 if (s.expr() != null) visitExpr(s.expr());
             }
@@ -3806,8 +3818,8 @@ class Sema {
             }
             if (k == "Bool") { e.setResolvedKind("bool"); return "bool"; }
             if (k == "String") {
-                if (inGpuFor_ != 0) {
-                    diag_.error(e.line(), e.col(), "string literals are not supported inside '@parallel for' / '@gpu for' bodies");
+                if (inGpuKernel_ != 0) {
+                    diag_.error(e.line(), e.col(), "string literals are not supported inside '@gpu for' bodies");
                 }
                 e.setResolvedKind("string"); return "string";
             }
@@ -3858,8 +3870,8 @@ class Sema {
             if (k == "Binary") {
                 string l = visitExpr(e.lhs());
                 string r = visitExpr(e.rhs());
-                if (inGpuFor_ != 0 && (l == "string" || r == "string")) {
-                    diag_.error(e.line(), e.col(), "string operations are not supported inside '@parallel for' / '@gpu for' bodies");
+                if (inGpuKernel_ != 0 && (l == "string" || r == "string")) {
+                    diag_.error(e.line(), e.col(), "string operations are not supported inside '@gpu for' bodies");
                 }
                 string op = e.op();
                 if (op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
@@ -6024,6 +6036,7 @@ class Sema {
         int inClass_;
         int inStruct_;
         int inGpuFor_;
+        int inGpuKernel_;
         int inGpuDivergent_;
         int inMain_;
         int autoMain_;
