@@ -26,6 +26,7 @@ node_modules/
 *.bin
 deeplearning/data/
 **/deeplearning/data/
+examples/deeplearning/diffusion/bin/
 
 /go/
 
