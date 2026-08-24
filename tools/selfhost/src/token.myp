@@ -16,11 +16,14 @@ class Tok {
             value_ = v;
             begin_ = b;
             end_ = e;
+            raw_ = 0;
         }
         string kind() { return kind_; }
         string value() { return value_; }
         int begin() { return begin_; }
         int end() { return end_; }
+        int raw() { return raw_; }
+        void setRaw(int r) { raw_ = r; }
         void setLineCol(int l, int c) { line_ = l; col_ = c; }
         int line() { return line_; }
         int col() { return col_; }
@@ -31,6 +34,8 @@ class Tok {
         int end_;
         int line_;
         int col_;
+        // 三引号原始字符串标记（parser 不做 $name 展开）。
+        int raw_;
 }
 
 // 关键字/类型判定：命中则 canonical kind = 单词本身，否则 "identifier"。

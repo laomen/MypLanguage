@@ -668,7 +668,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
     }
     if (match(TokenKind::StringLiteral)) {
         auto range = previous().range;
-        auto result = expandDollarInterpolation(previous().value, range);
+        auto result = expandDollarInterpolation(previous().value, range, previous().raw);
         // "${expr}" 插值：lexer 在字符串内遇 '$'+'{' 时合成
         //   StringLiteral(prefix) InterpOpen <expr> InterpClose StringLiteral(suffix) ...
         // 这里把它们折叠成 + 拼接（sema/codegen 复用 string + any → string）。
@@ -680,7 +680,7 @@ std::unique_ptr<Expr> Parser::parsePrimary() {
                                                     std::move(expr), previous().range);
             if (check(TokenKind::StringLiteral)) {
                 auto tok = advance();
-                auto suffix = expandDollarInterpolation(tok.value, tok.range);
+                auto suffix = expandDollarInterpolation(tok.value, tok.range, tok.raw);
                 result = std::make_unique<BinaryOpExpr>(std::move(result), BinaryOpKind::Add,
                                                         std::move(suffix), tok.range);
             }
@@ -1450,8 +1450,9 @@ std::unique_ptr<TypeAliasDecl> Parser::parseTypeAlias() {
 // BinaryOp(+) 链。无 '$' 或 '$' 后无合法标识符名时返回纯 StringLiteralExpr。
 // （与 selfhost parser.myp 的字符串插值逐字节镜像。）
 std::unique_ptr<Expr> Parser::expandDollarInterpolation(const std::string& val,
-                                                        SourceRange range) {
-    if (val.find('$') == std::string::npos) {
+                                                        SourceRange range, bool raw) {
+    // 三引号原始字符串：$ 为字面量，不做 $name 展开。
+    if (raw || val.find('$') == std::string::npos) {
         return std::make_unique<StringLiteralExpr>(val, range);
     }
     std::unique_ptr<Expr> result;

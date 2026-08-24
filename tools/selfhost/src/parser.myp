@@ -2048,8 +2048,9 @@ class Parser {
             }
             if (k == "string") {
                 string sval = curVal();
+                int raw = tokAt(current_).raw();
                 advance();
-                AstExpr result = expandDollarInterp(sval);
+                AstExpr result = expandDollarInterp(sval, raw);
                 // ${expr} 插值：lexer 在字符串内遇 '$'+'{' 时合成
                 //   string(prefix) "${" <expr> "}" string(suffix) ...
                 // 这里折叠成 + 拼接（sema/codegen 复用 string + any → string）。
@@ -2062,8 +2063,9 @@ class Parser {
                     result = b1;
                     if (curKind() == "string") {
                         string sfx = curVal();
+                        int sraw = tokAt(current_).raw();
                         advance();
-                        AstExpr suffix = expandDollarInterp(sfx);
+                        AstExpr suffix = expandDollarInterp(sfx, sraw);
                         AstExpr b2 = new AstExpr();
                         b2.setKind("Binary"); b2.setOp("+"); b2.setLhs(result); b2.setRhs(suffix);
                         result = b2;
@@ -2209,9 +2211,15 @@ class Parser {
         }
 
         // "$name" 插值展开：value 中每个 "$name" → Identifier，与字面段拼成 + 链。
-        // 无 '$' 或 '$' 后无合法名时返回纯 String（镜像 C++ expandDollarInterpolation）。
-        AstExpr expandDollarInterp(string sval) {
+        // 无 '$' 或 '$' 后无合法名时返回纯 String；raw=1（三引号原始串）跳过展开。
+        AstExpr expandDollarInterp(string sval, int raw) {
             AstExpr result = null;
+            if (raw != 0) {
+                AstExpr plain = new AstExpr();
+                plain.setKind("String");
+                plain.setStringValue(sval);
+                return plain;
+            }
             int pos = 0;
             while (pos < Str.len(sval)) {
                 int dpos = -1;

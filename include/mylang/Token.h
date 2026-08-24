@@ -168,6 +168,7 @@ struct Token {
     TokenKind kind = TokenKind::Unknown;
     SourceRange range;
     std::string value;  // literal value or identifier name
+    bool raw = false;   // true = 三引号原始字符串（不做 $name 插值展开）
 
     Token() = default;
 

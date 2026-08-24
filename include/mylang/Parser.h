@@ -145,7 +145,7 @@ private:
     // 拼接（无 '$' 或 '$' 后无合法名时返回纯 StringLiteralExpr）。"${expr}" 插值
     // 由 lexer 合成 InterpOpen/InterpClose 后在 parsePrimary 处理。
     std::unique_ptr<Expr> expandDollarInterpolation(const std::string& value,
-                                                    SourceRange range);
+                                                    SourceRange range, bool raw);
     bool checkType() const;
     bool isTypeToken(TokenKind k) const;
     // 前瞻：当前是 struct 方法（type [<...>] name '('）还是属性（type name ';'）。

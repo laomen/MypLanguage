@@ -350,9 +350,11 @@ Token Lexer::scanTripleString() {
         if (peek() == '"' && offset_ + 1 < source_.size() && source_[offset_ + 1] == '"'
             && offset_ + 2 < source_.size() && source_[offset_ + 2] == '"') {
             advance(); advance(); advance();
-            return Token(TokenKind::StringLiteral,
+            Token tok(TokenKind::StringLiteral,
                 SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
                 value);
+            tok.raw = true;  // 原始字符串：parser 不做 $name 插值展开
+            return tok;
         }
         if (peek() == '\\') {
             advance();
@@ -376,9 +378,11 @@ Token Lexer::scanTripleString() {
     }
 
     diag_.error(currentRange(), "unterminated string literal");
-    return Token(TokenKind::StringLiteral,
+    Token tok2(TokenKind::StringLiteral,
         SourceRange{start_offset, offset_, {start_line, start_col}, {line_, column_}},
         value);
+    tok2.raw = true;
+    return tok2;
 }
 
 Token Lexer::scanNumber() {

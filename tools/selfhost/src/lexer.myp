@@ -298,7 +298,9 @@ class Lexer {
                 // 终止：连续三个未转义引号（转义 \"\"\" 先被 \ 分支吃掉）。
                 if (peek() == 34 && ordAt(pos_ + 1) == 34 && ordAt(pos_ + 2) == 34) {
                     advance(); advance(); advance();
-                    out.add(new Tok("string", val.toString(), start_offset, pos_));
+                    Tok rawTok = new Tok("string", val.toString(), start_offset, pos_);
+                    rawTok.setRaw(1);  // 原始字符串：parser 不做 $name 展开
+                    out.add(rawTok);
                     return;
                 }
                 if (peek() == 92) {
