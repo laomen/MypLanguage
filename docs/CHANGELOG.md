@@ -35,6 +35,27 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.2 — 自举 link.myp 硬编码重构（P0 工具链探测 / P1 缓存路径 / P2 集中配置 / P3 平台）
+
+`tools/selfhost/src/link.myp`（自举编译器链接器）去硬编码：
+
+- **P0 工具链探测**：`findLlc`/`findOpt`/`findHostTriple` 改为数据驱动——通用
+  `probeTool(name, env, versions)`：`MYP_*` 环境变量 → `command -v`（PATH 优先，含
+  `<name>-<ver>` 版本化命令）→ 版本绝对路径候选表（`/usr/bin/<name>-N`、
+  `/usr/lib/llvm-N/bin/<name>`）→ 回退裸命令名。`$CC` 环境变量优先 + `command -v
+  cc`/`gcc` 探测。
+- **P1 缓存路径**：固定 `/tmp/myp_self_*.o`（并发 myp_self 互相覆盖）→ 内容哈希缓存
+  `FNV-1a 64`（源码+标志 → `/tmp/myp_rt_cache/myp_rt_<hex>.o`，对齐 C++ `cacheObj`）：
+  runtime.c / coro_ctx.S / runtime_gpu.c / runtime_lib.c / 各 bridge 全部走哈希缓存，
+  跨进程共享复用、无并发覆盖；`myp_self2` 链接 ~0.35s（runtime.c 复用）。
+- **P2 集中 Toolchain 配置**：消灭 5 处重复 gcc flags——`findCc()`/`baseCflags(inc)`/
+  `ldLibs()` 单点维护。
+- **P3 平台基础**：`isWindows()`（`$OS`/`uname -s` → MinGW）+ 平台链接库
+  （`-lws2_32 -lwinmm`）+ 平台协程汇编（`coro_ctx_win.S`）选择，对齐 C++ 平台分支。
+
+**回归**：selfhost 322/322、bootstrap 16/16 不动点、selfhost 对拍 95/95；`$CC`/
+`MYP_LLC`/`MYP_OPT`/`MYP_LLVM_CONFIG` 环境覆盖验证通过。
+
 ### v3.15.1 — `@derive(Json)` 派生序列化（serde 式类级派生，P0 标量/string/bool）
 
 **非破坏性（additive）**，oracle（mypc）与 selfhost 双端同步实现：

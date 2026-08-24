@@ -9,46 +9,50 @@ import collections; // ArrayList
 
 @static class Link {
     static:
-        // 探测 llc：本机 llc 不在 PATH（llc-21 / /usr/lib/llvm-21/bin/llc）。
-        // MYP_LLC 环境变量显式指定路径/命令 → 优先（跨机器 / 任意 LLVM 版本）。
-        string findLlc() {
-            string e = Console.getEnv("MYP_LLC");
+        // 通用工具探测（P0 去硬编码）：<envKey> 环境变量 → `command -v`（PATH 优
+        // 先，含 <name>-<ver> 版本化命令）→ 版本绝对路径候选表 → 回退裸命令名。
+        // versions 为按新到旧排列的 LLVM 主版本候选（数据驱动，跨机可扩展）。
+        string probeTool(string name, string envKey, ArrayList<string> versions) {
+            string e = Console.getEnv(envKey);
             if (Str.len(e) != 0) return e;
-            if (Fs.isFile("/usr/bin/llc-21") != 0) return "/usr/bin/llc-21";
-            if (Fs.isFile("/usr/lib/llvm-21/bin/llc") != 0) return "/usr/lib/llvm-21/bin/llc";
-            if (Fs.isFile("/usr/bin/llc-20") != 0) return "/usr/bin/llc-20";
-            if (Fs.isFile("/usr/lib/llvm-20/bin/llc") != 0) return "/usr/lib/llvm-20/bin/llc";
-            return "llc";
+            string p0 = Str.trim(Process.output("command -v " + name + " 2>/dev/null"));
+            if (Str.len(p0) != 0) return p0;
+            for (int i = 0; i < versions.size(); i = i + 1) {
+                string p = Str.trim(Process.output("command -v " + name + "-" + versions.get(i) + " 2>/dev/null"));
+                if (Str.len(p) != 0) return p;
+            }
+            for (int i = 0; i < versions.size(); i = i + 1) {
+                if (Fs.isFile("/usr/bin/" + name + "-" + versions.get(i)) != 0) return "/usr/bin/" + name + "-" + versions.get(i);
+                if (Fs.isFile("/usr/lib/llvm-" + versions.get(i) + "/bin/" + name) != 0) return "/usr/lib/llvm-" + versions.get(i) + "/bin/" + name;
+            }
+            return name;
+        }
+
+        // 探测 llc / opt：版本候选表（新→旧；数据驱动，新增版本只改这里）。
+        string findLlc() {
+            ArrayList<string> v = new ArrayList<string>();
+            v.add("21"); v.add("20"); v.add("19"); v.add("18");
+            return Link.probeTool("llc", "MYP_LLC", v);
         }
 
         // 探测 opt（LLVM 中端优化器）：路径规则同 llc。MYP_OPT 环境变量优先。
         string findOpt() {
-            string e = Console.getEnv("MYP_OPT");
-            if (Str.len(e) != 0) return e;
-            if (Fs.isFile("/usr/bin/opt-21") != 0) return "/usr/bin/opt-21";
-            if (Fs.isFile("/usr/lib/llvm-21/bin/opt") != 0) return "/usr/lib/llvm-21/bin/opt";
-            if (Fs.isFile("/usr/bin/opt-20") != 0) return "/usr/bin/opt-20";
-            if (Fs.isFile("/usr/lib/llvm-20/bin/opt") != 0) return "/usr/lib/llvm-20/bin/opt";
-            return "opt";
+            ArrayList<string> v = new ArrayList<string>();
+            v.add("21"); v.add("20"); v.add("19"); v.add("18");
+            return Link.probeTool("opt", "MYP_OPT", v);
         }
 
         // 探测 host triple：opt 需要 `-mtriple` 才创建 TargetMachine 并注册
         // TargetIRAnalysis(TTI)——没有它 LoopVectorizer 无 cost model，所有循环
         // 保持标量（如 matmul ~2.5x 差距）。mypc 进程内管线正是给 PassBuilder
-        // 传 TargetMachine 才向量化。优先 llvm-config --host-target，回退 uname。
-        // MYP_LLVM_CONFIG 环境变量可显式指定 llvm-config。
+        // 传 TargetMachine 才向量化。优先 llvm-config --host-target（command -v
+        // + 版本候选），回退 uname。MYP_LLVM_CONFIG 环境变量可显式指定。
         string findHostTriple() {
-            string cfg = Console.getEnv("MYP_LLVM_CONFIG");
-            if (Str.len(cfg) != 0) {
-                string t0 = Str.trim(Process.output(cfg + " --host-target"));
-                if (Str.len(t0) != 0) return t0;
-            }
-            string t21 = Str.trim(Process.output("llvm-config-21 --host-target"));
-            if (Str.len(t21) != 0) return t21;
-            string t20 = Str.trim(Process.output("llvm-config-20 --host-target"));
-            if (Str.len(t20) != 0) return t20;
-            string tg = Str.trim(Process.output("llvm-config --host-target"));
-            if (Str.len(tg) != 0) return tg;
+            ArrayList<string> v = new ArrayList<string>();
+            v.add("21"); v.add("20"); v.add("19"); v.add("18");
+            string cfg = Link.probeTool("llvm-config", "MYP_LLVM_CONFIG", v);
+            string t0 = Str.trim(Process.output(cfg + " --host-target"));
+            if (Str.len(t0) != 0) return t0;
             string m = Str.trim(Process.output("uname -m"));
             if (m == "x86_64") return "x86_64-pc-linux-gnu";
             if (m == "aarch64" || m == "arm64") return "aarch64-unknown-linux-gnu";
@@ -64,12 +68,18 @@ import collections; // ArrayList
             return "src/runtime/runtime.c";
         }
 
-        // 定位 coro_ctx.S（x86-64 协程上下文切换汇编）。
+        // 定位 coro_ctx.S（x86-64 协程上下文切换汇编；平台相关，Win64 用
+        // coro_ctx_win.S）。优先 cwd，其次 stdlib 父目录。
         string findCoroCtx(string stdlib) {
-            if (Fs.isFile("src/runtime/coro_ctx.S") != 0) return "src/runtime/coro_ctx.S";
+            string asmName = Link.ctxAsmName();
+            if (Fs.isFile("src/runtime/" + asmName) != 0) return "src/runtime/" + asmName;
             string rtDir = Fs.dirname(stdlib);
-            string cand = rtDir + "/src/runtime/coro_ctx.S";
+            string cand = rtDir + "/src/runtime/" + asmName;
             if (Fs.isFile(cand) != 0) return cand;
+            // 回退非平台名（老布局 / 单平台镜像）
+            if (Fs.isFile("src/runtime/coro_ctx.S") != 0) return "src/runtime/coro_ctx.S";
+            string cand2 = rtDir + "/src/runtime/coro_ctx.S";
+            if (Fs.isFile(cand2) != 0) return cand2;
             return "";
         }
 
@@ -98,6 +108,84 @@ import collections; // ArrayList
             string rtDir = Fs.dirname(stdlib);
             if (Fs.isFile(rtDir + "/include/mylang/runtime.h") != 0) return rtDir + "/include";
             return "include";
+        }
+
+        // ---- P2 集中 Toolchain 配置：单点维护 CC / 编译标志 / 链接库 ----
+        // 消灭 5 处重复 gcc flags；$CC 环境变量优先（跨机交叉编译）。
+        string findCc() {
+            string e = Console.getEnv("CC");
+            if (Str.len(e) != 0) return e;
+            string c0 = Str.trim(Process.output("command -v cc 2>/dev/null"));
+            if (Str.len(c0) != 0) return c0;
+            string g0 = Str.trim(Process.output("command -v gcc 2>/dev/null"));
+            if (Str.len(g0) != 0) return g0;
+            return "gcc";
+        }
+
+        // 平台判定（P3 基础）：OS 环境变量（Windows → MinGW）或 uname -s。
+        int isWindows() {
+            string os = Console.getEnv("OS");
+            if (Str.toUpper(os) == "WINDOWS_NT") return 1;
+            string s = Str.trim(Process.output("uname -s 2>/dev/null"));
+            if (Str.startsWith(s, "MINGW") != 0 || Str.startsWith(s, "MSYS") != 0) return 1;
+            return 0;
+        }
+
+        // 基础编译标志（所有 runtime C 对象共用；-O 级别由调用点决定）。
+        string baseCflags(string inc) {
+            return " -I" + inc + " -fPIC -ffunction-sections -fdata-sections ";
+        }
+
+        // 平台链接库：Linux -lpthread -lm -ldl；Windows/MinGW ws2_32 + winmm。
+        string ldLibs() {
+            if (Link.isWindows() != 0) return " -lpthread -lws2_32 -lwinmm";
+            return " -lpthread -lm -ldl";
+        }
+
+        // 协程上下文汇编：平台相关（SysV coro_ctx.S / Win64 coro_ctx_win.S）。
+        string ctxAsmName() {
+            if (Link.isWindows() != 0) return "coro_ctx_win.S";
+            return "coro_ctx.S";
+        }
+
+        // ---- P1 缓存路径去硬编码：内容哈希（FNV-1a 64）+ 共享缓存目录 ----
+        // 对齐 C++ cacheObj：runtime/ctx/gpu/lib/bridge 源码 + 标志 → 缓存对象，
+        // 跨进程复用且无并发覆盖（同名 .o 只写一次，内容确定）。旧代码固定
+        // /tmp/myp_self_*.o：并发 myp_self（make -j / xargs -P）互相覆盖。
+        string fileContent(string path) {
+            File f = new File();
+            f.open(path, "r");
+            string s = f.readAll();
+            f.close();
+            return s;
+        }
+
+        // 64 位无符号整数 → 16 位小写十六进制。
+        string hexLong(long v) {
+            StringBuilder sb = new StringBuilder();
+            string ch = "0123456789abcdef";
+            for (int i = 15; i >= 0; i = i - 1) {
+                int digit = int((v >> (i * 4)) & 0xF);
+                sb.append(Str.substring(ch, digit, digit + 1));
+            }
+            return sb.toString();
+        }
+
+        // FNV-1a 64 内容哈希 → 共享缓存对象路径（源码/标志任一变化即新对象）。
+        string cacheObjPath(string srcPath, string extraFlags) {
+            if (Fs.isFile(srcPath) == 0) return "";
+            string content = Link.fileContent(srcPath);
+            long h = 1469598103934665603;
+            for (int i = 0; i < Str.len(content); i = i + 1) {
+                h = (h ^ __myp_charcode(content, i)) * 1099511628211;
+            }
+            for (int i = 0; i < Str.len(extraFlags); i = i + 1) {
+                h = (h ^ __myp_charcode(extraFlags, i)) * 1099511628211;
+            }
+            if (Fs.isDir("/tmp/myp_rt_cache") == 0) {
+                Process.run("mkdir -p /tmp/myp_rt_cache");
+            }
+            return "/tmp/myp_rt_cache/myp_rt_" + Link.hexLong(h) + ".o";
         }
 
         // ---- 通用桥接发现（对拍 src/main.cpp linkObjects；新增桥无需改编译器）----
@@ -201,24 +289,22 @@ import collections; // ArrayList
             return Str.trim(s);
         }
 
-        // 桥接缓存对象路径（按 basename，mtime 缓存复用）
-        string bridgeObjPath(string c) {
-            string base = Fs.basename(c);
-            int bl = Str.len(base);
-            if (bl > 2 && Str.substring(base, bl - 2, bl) == ".c")
-                base = Str.substring(base, 0, bl - 2);
-            return "/tmp/myp_self_bridge_" + base + ".o";
+        // 桥接缓存对象路径（内容哈希缓存，对齐 C++ cacheObj）。
+        string bridgeObjPath(string c, string bflags) {
+            return Link.cacheObjPath(c, "b" + bflags);
         }
 
-        // 编译桥接（mtime 缓存：源码未变则复用）；失败返回空串
+        // 编译桥接（内容哈希缓存：源码/标志未变则复用，跨进程共享安全）；
+        // 失败返回空串。
         string compileBridge(string c, string inc, string bflags) {
-            string bObj = Link.bridgeObjPath(c);
+            string bObj = Link.bridgeObjPath(c, bflags);
+            if (Str.len(bObj) == 0) return "";
             int need = 1;
             if (Fs.isFile(bObj) != 0 && Fs.isFile(c) != 0) {
                 if (Fs.modifiedTime(bObj) >= Fs.modifiedTime(c)) need = 0;
             }
             if (need != 0) {
-                string cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections " + bflags + " -c " + c + " -o " + bObj + " 2>&1";
+                string cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 " + bflags + " -c " + c + " -o " + bObj + " 2>&1";
                 if (Process.run(cmd) != 0) return "";
             }
             return bObj;
@@ -269,31 +355,32 @@ import collections; // ArrayList
                 return 1;
             }
             string inc = Link.findIncDir(stdlib);
-            string rtObj = "/tmp/myp_self_rt.o";
             string runtimeC = Link.findRuntimeC(stdlib);
             // runtime.c 约 6000 行，gcc -O2 每次编译 ~0.9s，占单文件编译总耗时
-            // 90%+。按 mtime 缓存：runtime.c 未变则复用 rtObj，跳过重编译。
+            // 90%+。内容哈希缓存（FNV-1a 源码+标志）：未变则复用，跨进程共享安全。
+            string rtObj = Link.cacheObjPath(runtimeC, "-O2");
             int needRt = 1;
-            if (Fs.isFile(rtObj) != 0 && Fs.isFile(runtimeC) != 0) {
+            if (Str.len(rtObj) != 0 && Fs.isFile(rtObj) != 0 && Fs.isFile(runtimeC) != 0) {
                 if (Fs.modifiedTime(rtObj) >= Fs.modifiedTime(runtimeC)) needRt = 0;
             }
             if (needRt != 0) {
-                cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + runtimeC + " -o " + rtObj + " 2>&1";
+                cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 -c " + runtimeC + " -o " + rtObj + " 2>&1";
                 if (Process.run(cmd) != 0) {
                     Console.writeLine("runtime compile failed");
                     return 1;
                 }
             }
-            string ctxObj = "/tmp/myp_self_ctx.o";
             string ctxAsm = Link.findCoroCtx(stdlib);
+            string ctxObj = "";
             if (Str.len(ctxAsm) != 0) {
-                // coro_ctx.S 小文件，同样按 mtime 缓存复用。
+                // coro_ctx.S 小文件，同样内容哈希缓存复用。
+                ctxObj = Link.cacheObjPath(ctxAsm, "-O2");
                 int needCtx = 1;
-                if (Fs.isFile(ctxObj) != 0 && Fs.isFile(ctxAsm) != 0) {
+                if (Str.len(ctxObj) != 0 && Fs.isFile(ctxObj) != 0 && Fs.isFile(ctxAsm) != 0) {
                     if (Fs.modifiedTime(ctxObj) >= Fs.modifiedTime(ctxAsm)) needCtx = 0;
                 }
                 if (needCtx != 0) {
-                    cmd = "gcc -c " + ctxAsm + " -o " + ctxObj + " 2>&1";
+                    cmd = Link.findCc() + " -c " + ctxAsm + " -o " + ctxObj + " 2>&1";
                     if (Process.run(cmd) != 0) {
                         Console.writeLine("coro_ctx compile failed");
                         return 1;
@@ -302,16 +389,17 @@ import collections; // ArrayList
             }
             // runtime_gpu.c（dlopen 胶水）：始终链接（同 mypc），否则 gpu/cuda
             // 内建（myp_gpu_init/myp_cuda_*）链接时报 undefined reference。
-            string gpuObj = "/tmp/myp_self_gpu.o";
             string gpuC = Link.findRuntimeGpu(stdlib);
+            string gpuObj = "";
             string gpuLinkObj = "";
             if (Str.len(gpuC) != 0) {
+                gpuObj = Link.cacheObjPath(gpuC, "-O2");
                 int needGpu = 1;
-                if (Fs.isFile(gpuObj) != 0 && Fs.isFile(gpuC) != 0) {
+                if (Str.len(gpuObj) != 0 && Fs.isFile(gpuObj) != 0 && Fs.isFile(gpuC) != 0) {
                     if (Fs.modifiedTime(gpuObj) >= Fs.modifiedTime(gpuC)) needGpu = 0;
                 }
                 if (needGpu != 0) {
-                    cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + gpuC + " -o " + gpuObj + " 2>&1";
+                    cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 -c " + gpuC + " -o " + gpuObj + " 2>&1";
                     if (Process.run(cmd) != 0) {
                         Console.writeLine("gpu runtime compile failed");
                         return 1;
@@ -320,16 +408,17 @@ import collections; // ArrayList
                 gpuLinkObj = " " + gpuObj;
             }
             // runtime_lib.c（cuBLAS 等厂商库钩子）：始终链接（同 mypc）。
-            string libObj = "/tmp/myp_self_lib.o";
             string libC = Link.findRuntimeLib(stdlib);
+            string libObj = "";
             string libLinkObj = "";
             if (Str.len(libC) != 0) {
+                libObj = Link.cacheObjPath(libC, "-O2");
                 int needLib = 1;
-                if (Fs.isFile(libObj) != 0 && Fs.isFile(libC) != 0) {
+                if (Str.len(libObj) != 0 && Fs.isFile(libObj) != 0 && Fs.isFile(libC) != 0) {
                     if (Fs.modifiedTime(libObj) >= Fs.modifiedTime(libC)) needLib = 0;
                 }
                 if (needLib != 0) {
-                    cmd = "gcc -I " + inc + " -fPIC -O2 -ffunction-sections -fdata-sections -c " + libC + " -o " + libObj + " 2>&1";
+                    cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 -c " + libC + " -o " + libObj + " 2>&1";
                     if (Process.run(cmd) != 0) {
                         Console.writeLine("vendor-lib runtime compile failed");
                         return 1;
@@ -402,13 +491,15 @@ import collections; // ArrayList
                     changed = 1;
                 }
             }
+            string cc = Link.findCc();
+            string libs = Link.ldLibs();
             if (shared != 0) {
-                cmd = "gcc -shared -fPIC " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
-                    + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
+                cmd = cc + " -shared -fPIC " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
+                    + bridgeObjList + " -o " + outPath + libs + bridgeLibs
                     + " -Wl,--gc-sections 2>&1";
             } else {
-                cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
-                    + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
+                cmd = cc + " " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
+                    + bridgeObjList + " -o " + outPath + libs + bridgeLibs
                     + " -Wl,--gc-sections 2>&1";
             }
             if (Process.run(cmd) != 0) {
