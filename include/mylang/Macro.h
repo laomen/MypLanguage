@@ -21,6 +21,12 @@ bool expandMacros(TranslationUnit& tu, DiagnosticEngine& diag);
 /// function / method body after expansion to stdout.
 void dumpMacroExpandedAST(TranslationUnit& tu);
 
+/// @derive(X) — class-level derive (v1: @derive(Json) → auto-generates
+/// toJson()/fromJson() methods into the class). Runs after expandMacros,
+/// before sema. Non-Json derive names and unsupported property types are
+/// diagnosed. Returns false if a diagnostic was reported.
+bool expandDerives(TranslationUnit& tu, DiagnosticEngine& diag);
+
 } // namespace mylang
 
 #endif // MYLANG_MACRO_H

@@ -525,6 +525,20 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
         if (macro_expand) mylang::dumpMacroExpandedAST(ast);
     }
 
+    // === Phase 3c: @derive(X) 类级派生（@derive(Json) → 注入 toJson/fromJson）===
+    bool has_any_derive = false;
+    for (auto& c : ast.classes)
+        if (!c.derive.empty()) { has_any_derive = true; break; }
+    if (has_any_derive) {
+        mylang::expandDerives(ast, diag);
+        phaseMark("derive");
+        if (diag.hasErrors()) {
+            std::cout << "Derive expansion failed (" << diag.errorCount() << " errors)\n";
+            return "";
+        }
+        std::cout << "Derive OK\n";
+    }
+
     // === Phase 4: Semantic Analysis ===
     mylang::Sema sema(diag);
     sema.setAutoMain(auto_main);   // `mypc run`: 单类文件自动 main

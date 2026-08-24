@@ -67,6 +67,23 @@ std::unique_ptr<TranslationUnit> Parser::parseProgram() {
                 advance(); advance(); advance(); // skip @static class
                 auto cls = parseClass();
                 if (cls) { cls->is_static = true; tu->classes.push_back(std::move(*cls)); }
+            } else if (n1.kind == TokenKind::Identifier && n1.value == "derive") {
+                // @derive(X) class — 类级派生注解（@derive(Json) → 自动生成 toJson/fromJson）
+                advance(); advance(); // @ derive
+                consume(TokenKind::LeftParen, "expected '(' after @derive");
+                std::string macro_name = parseIdentifier("expected derive macro name");
+                consume(TokenKind::RightParen, "expected ')' after @derive");
+                if (!check(TokenKind::Keyword_class)) {
+                    diag_.error(peek().range, "expected 'class' after @derive(...)");
+                    synchronize();
+                } else {
+                    advance(); // class
+                    auto cls = parseClass();
+                    if (cls) {
+                        cls->derive = macro_name;
+                        tu->classes.push_back(std::move(*cls));
+                    }
+                }
             } else {
                 // @ annotation at top level → parse as function (@test, @startup)
                 auto func = parseFunction();

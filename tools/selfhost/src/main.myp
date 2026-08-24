@@ -366,6 +366,96 @@ class LoadedSet {
             return 0;
         }
 
+        // @derive(X) 类级派生（v1：@derive(Json) → 注入 toJson/fromJson）。
+        // 镜像 C++ expandDerives：构造合成源码 → 复用本编译器 lexer+parser →
+        // 抽出生成的两个方法注入目标类。须在 sema 前调用。
+        void deriveAll(AstTU tu, DiagEngine diag) {
+            int n = tu.classes().size();
+            for (int ci = 0; ci < n; ci = ci + 1) {
+                AstClass cls = tu.classes().get(ci);
+                if (Str.len(cls.derive()) == 0) continue;
+                if (cls.derive() != "Json") {
+                    diag.error(cls.line(), cls.col(), "unsupported derive macro '@derive(" + cls.derive() + ")' (supported: Json)");
+                    cls.setDerive("");
+                    continue;
+                }
+                if (cls.typeParams().size() > 0) {
+                    diag.error(cls.line(), cls.col(), "@derive(Json) on generic classes is not yet supported (v1 supports non-generic classes)");
+                    cls.setDerive("");
+                    continue;
+                }
+                // 构造合成源码（与 C++ expandDerives 逐字节一致）。
+                StringBuilder sb = new StringBuilder();
+                sb.append("class __MYP_DERIVE_" + cls.name() + " {\n");
+                sb.append("    action:\n");
+                sb.append("        string toJson() {\n");
+                sb.append("            string s = \"{\";\n");
+                StringBuilder fromSb = new StringBuilder();
+                int np = cls.props().size();
+                int bad = 0;
+                for (int pi = 0; pi < np; pi = pi + 1) {
+                    AstProp p = cls.props().get(pi);
+                    AstType pt = p.type();
+                    string te = "";
+                    string fs = "";
+                    if (pt.element() != null || Str.len(pt.className()) != 0
+                        || pt.isTuple() != 0 || pt.funcReturn() != null) {
+                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (v1: int/long/double/float/bool/string)");
+                        bad = 1;
+                        break;
+                    }
+                    string bn = pt.basicName();
+                    if (bn == "int" || bn == "long" || bn == "short" || bn == "byte"
+                        || bn == "uint" || bn == "ulong" || bn == "ushort" || bn == "ubyte") {
+                        te = "\"\\\"" + p.name() + "\\\":\" + " + p.name();
+                        fs = p.name() + " = p.getInt(\"" + p.name() + "\");";
+                    } else if (bn == "double" || bn == "float") {
+                        te = "\"\\\"" + p.name() + "\\\":\" + " + p.name();
+                        fs = p.name() + " = p.getDouble(\"" + p.name() + "\");";
+                    } else if (bn == "bool") {
+                        te = "\"\\\"" + p.name() + "\\\":\" + (" + p.name() + " ? \"true\" : \"false\")";
+                        fs = p.name() + " = p.getBool(\"" + p.name() + "\") != 0;";
+                    } else if (bn == "string") {
+                        te = "\"\\\"" + p.name() + "\\\":\\\"\" + Json.escape(" + p.name() + ") + \"\\\"\"";
+                        fs = p.name() + " = p.getString(\"" + p.name() + "\");";
+                    } else {
+                        diag.error(p.line(), p.col(), "property '" + p.name() + "' of class '" + cls.name() + "' has a type not supported by @derive(Json) (v1: int/long/double/float/bool/string)");
+                        bad = 1;
+                        break;
+                    }
+                    sb.append("            s = s + " + te);
+                    if (pi + 1 < np) sb.append(" + \",\"");
+                    sb.append(";\n");
+                    fromSb.append("            " + fs + "\n");
+                }
+                if (bad != 0) { cls.setDerive(""); continue; }
+                sb.append("            s = s + \"}\";\n");
+                sb.append("            return s;\n");
+                sb.append("        }\n");
+                sb.append("        void fromJson(string j) {\n");
+                sb.append("            Json p = new Json(j);\n");
+                sb.append(fromSb.toString());
+                sb.append("            p.free();\n");
+                sb.append("        }\n");
+                sb.append("}\n");
+                // 重新 lex + parse 合成源码，抽出两个方法注入目标类。
+                Lexer dlx = new Lexer(sb.toString());
+                ArrayList<Tok> dtoks = dlx.tokenize();
+                DiagEngine ddiag = dlx.diags();
+                Parser dpr = new Parser(dtoks, ddiag);
+                AstTU dtu = dpr.parse();
+                if (ddiag.errorCount() != 0 || dtu.classes().size() == 0) {
+                    diag.error(cls.line(), cls.col(), "@derive(Json) failed to generate methods for class '" + cls.name() + "' (internal error)");
+                    cls.setDerive("");
+                    continue;
+                }
+                AstClass dcls = dtu.classes().get(0);
+                for (int di = 0; di < dcls.actions().size(); di = di + 1)
+                    cls.actions().add(dcls.actions().get(di));
+                cls.setDerive(""); // 已展开
+            }
+        }
+
         // G1：compile 模式——lexer→parser→import 合并→sema→codegen(.ll)→link。
         // 多文件（B5）：files[0] 为主文件，其余解析后全量合并进 TU（镜像 C++
         // multi-file：imports/structs/bitfields/classes/interfaces/mappings/
@@ -449,6 +539,12 @@ class LoadedSet {
             }
             // 语法/import 错误必须短路——之前 diag.reset() 把 parser 诊断清掉，
             // missing_semicolon 等负例被静默放行。
+            if (diag.errorCount() != 0) {
+                Frontend.printDiagnostics(diag);
+                return 1;
+            }
+            // @derive(X) 类级派生（@derive(Json) → 注入 toJson/fromJson；须在 sema 前）。
+            Frontend.deriveAll(tu, diag);
             if (diag.errorCount() != 0) {
                 Frontend.printDiagnostics(diag);
                 return 1;

@@ -77,6 +77,20 @@ class Parser {
                         advance(); advance(); advance();
                         AstClass c = parseClass();
                         if (c != null) { c.setIsStatic(1); tu.classes().add(c); }
+                    } else if (n1 == "identifier" && peekNextVal() == "derive") {
+                        // @derive(X) class — 类级派生注解（@derive(Json) → toJson/fromJson）
+                        advance(); advance(); // @ derive
+                        consume("(", "expected '(' after @derive");
+                        string macroName = parseIdentifier("expected derive macro name");
+                        consume(")", "expected ')' after @derive");
+                        if (curKind() != "class") {
+                            diag_.error(peekLine(), peekCol(), "expected 'class' after @derive(...)");
+                            synchronize();
+                        } else {
+                            advance(); // class
+                            AstClass c = parseClass();
+                            if (c != null) { c.setDerive(macroName); tu.classes().add(c); }
+                        }
                     } else {
                         AstFunction f = parseFunction();
                         if (f != null) tu.functions().add(f);

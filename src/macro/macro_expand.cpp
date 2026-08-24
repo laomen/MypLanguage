@@ -9,8 +9,12 @@
 #include "mylang/Macro.h"
 #include "mylang/DiagnosticEngine.h"
 #include "mylang/Eval.h"
+#include "mylang/Lexer.h"
+#include "mylang/Parser.h"
+#include "mylang/SourceLocation.h"
 
 #include <memory>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 
@@ -362,6 +366,126 @@ private:
 bool expandMacros(TranslationUnit& tu, DiagnosticEngine& diag) {
     MacroExpander expander(tu, diag);
     return expander.run();
+}
+
+// ==============================
+// @derive(X) — 类级派生（v1：@derive(Json) → 自动生成 toJson/fromJson）
+// ==============================
+
+namespace {
+
+// 属性类型 → JSON 字段的 toJson 表达式片段（MYP 源码文本）与 fromJson 赋值语句。
+// 返回 false = 类型不支持（err 填充原因）。
+bool jsonFieldExpr(const TypeNode& t, const std::string& name,
+                   std::string& to_expr, std::string& from_stmt, std::string& err) {
+    if (t.element_type || !t.class_name.empty() || t.is_tuple || t.isFunction()) {
+        err = "array/class/struct/tuple/function";
+        return false;
+    }
+    switch (t.basic_type) {
+        case BuiltinType::Int:
+        case BuiltinType::Long:
+        case BuiltinType::Short:
+        case BuiltinType::Byte:
+        case BuiltinType::UInt:
+        case BuiltinType::ULong:
+        case BuiltinType::UShort:
+        case BuiltinType::UByte:
+            to_expr = "\"\\\"" + name + "\\\":\" + " + name;
+            from_stmt = name + " = p.getInt(\"" + name + "\");";
+            return true;
+        case BuiltinType::Double:
+        case BuiltinType::Float:
+            to_expr = "\"\\\"" + name + "\\\":\" + " + name;
+            from_stmt = name + " = p.getDouble(\"" + name + "\");";
+            return true;
+        case BuiltinType::Bool:
+            to_expr = "\"\\\"" + name + "\\\":\" + (" + name + " ? \"true\" : \"false\")";
+            from_stmt = name + " = p.getBool(\"" + name + "\") != 0;";
+            return true;
+        case BuiltinType::String:
+            to_expr = "\"\\\"" + name + "\\\":\\\"\" + Json.escape(" + name + ") + \"\\\"\"";
+            from_stmt = name + " = p.getString(\"" + name + "\");";
+            return true;
+        default:
+            err = "type not supported";
+            return false;
+    }
+}
+
+} // namespace
+
+bool expandDerives(TranslationUnit& tu, DiagnosticEngine& diag) {
+    for (auto& cls : tu.classes) {
+        if (cls.derive.empty()) continue;
+        if (cls.derive != "Json") {
+            diag.error(cls.range, "unsupported derive macro '@derive(" + cls.derive +
+                                 ")' (supported: Json)");
+            cls.derive.clear();
+            continue;
+        }
+        if (!cls.type_params.empty()) {
+            diag.error(cls.range,
+                "@derive(Json) on generic classes is not yet supported "
+                "(v1 supports non-generic classes)");
+            cls.derive.clear();
+            continue;
+        }
+
+        // 构造合成源码（toJson / fromJson 两个方法，复用既有 MYP parser 生成 AST）。
+        std::ostringstream s;
+        s << "class __MYP_DERIVE_" << cls.name << " {\n"
+          << "    action:\n"
+          << "        string toJson() {\n"
+          << "            string s = \"{\";\n";
+        std::vector<std::string> from_stmts;
+        size_t n = cls.properties.size();
+        bool bad = false;
+        for (size_t i = 0; i < n; ++i) {
+            const auto& p = cls.properties[i];
+            std::string te, fs, err;
+            if (!jsonFieldExpr(p.type, p.name, te, fs, err)) {
+                diag.error(p.range, "property '" + p.name + "' of class '" + cls.name +
+                                    "' has a type not supported by @derive(Json) "
+                                    "(v1: int/long/double/float/bool/string)");
+                bad = true;
+                break;
+            }
+            s << "            s = s + " << te;
+            if (i + 1 < n) s << " + \",\"";
+            s << ";\n";
+            from_stmts.push_back(fs);
+        }
+        if (bad) { cls.derive.clear(); continue; }
+        s << "            s = s + \"}\";\n"
+          << "            return s;\n"
+          << "        }\n"
+          << "        void fromJson(string j) {\n"
+          << "            Json p = new Json(j);\n";
+        for (auto& fs : from_stmts) s << "            " << fs << "\n";
+        s << "            p.free();\n"
+          << "        }\n"
+          << "}\n";
+
+        // 重新 lex + parse 合成源码，抽出两个方法注入目标类。
+        SourceManager sm;
+        sm.loadString(s.str(), "<@derive>");
+        DiagnosticEngine sub_diag(sm);
+        Lexer lexer(sm, sub_diag);
+        auto toks = lexer.tokenize();
+        Parser parser(toks, sub_diag);
+        auto sub = parser.parse();
+        if (sub_diag.hasErrors() || !sub || sub->classes.empty()) {
+            diag.error(cls.range, "@derive(Json) failed to generate methods for class '" +
+                                  cls.name + "' (internal error)");
+            cls.derive.clear();
+            continue;
+        }
+        auto& sub_cls = sub->classes[0];
+        for (auto& a : sub_cls.actions) cls.actions.push_back(std::move(a));
+        cls.derive.clear(); // 已展开
+    }
+    return !diag.hasErrors();
 }
 
 // ---- Debug: compact AST dump after expansion (--macro-expand) ----

@@ -219,6 +219,9 @@ struct ClassDecl {
     std::vector<FuncDecl> functions; // internal methods (function: section)
     std::vector<StructDecl> structs; // nested structs
     bool is_static = false; // class has only static: methods
+    // @derive(X)：类级派生注解（@derive(Json) → 编译期自动生成 toJson/fromJson）。
+    // 派生宏名（X）；空 = 未声明。
+    std::string derive;
     bool is_generic_inst = false; // monomorphized instance of a generic template
     std::vector<TypeNode> inst_type_args; // concrete args of a generic instance
     std::string interface_class_name; // non-empty if "interface class X;" declared

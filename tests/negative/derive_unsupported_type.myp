@@ -1,0 +1,10 @@
+// EXPECT ERROR: has a type not supported by @derive(Json)
+// @derive(Json) v1 只支持标量/string/bool 属性；数组/类/struct 报编译期诊断。
+import json;
+
+@derive(Json)
+class Bad {
+    property:
+        int[] nums;
+}
+int main() { return 0; }

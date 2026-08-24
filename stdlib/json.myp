@@ -105,6 +105,19 @@ class Json {
             }
         }
 
+    static:
+        // 把字符串转义为 JSON 字符串字面量内容（引号/反斜杠/换行/回车/制表）。
+        // 供 @derive(Json) 生成的 toJson() 使用。
+        // 注：用局部变量 r 累积（参数连续重赋值有 ARC use-after-free 既有 bug）。
+        string escape(string s) {
+            string r = Str.replaceAll(s, "\\", "\\\\");
+            r = Str.replaceAll(r, "\"", "\\\"");
+            r = Str.replaceAll(r, "\n", "\\n");
+            r = Str.replaceAll(r, "\r", "\\r");
+            r = Str.replaceAll(r, "\t", "\\t");
+            return r;
+        }
+
     property:
         long handle_;
 }

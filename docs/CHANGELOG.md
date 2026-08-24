@@ -35,6 +35,25 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.1 — `@derive(Json)` 派生序列化（serde 式类级派生，P0 标量/string/bool）
+
+**非破坏性（additive）**，oracle（mypc）与 selfhost 双端同步实现：
+
+- **类级注解 `@derive(Json)`**：编译器在 sema 前为类自动注入 `string toJson()` 与
+  `void fromJson(string j)` 两个方法（合成源码 → 复用既有 parser → 注入类 action 段）。
+- **属性类型 v1**：int/long/short/byte/uint/ulong/ushort/ubyte、double/float、bool、
+  string。toJson 输出合法 JSON（`Json.escape` 转义字符串）；fromJson 用 `json.myp`
+  路径查询回填，round-trip 一致。数组/类/struct/元组/函数属性 → 编译期诊断（负测试）。
+- 泛型类 `@derive` 暂不支持（v1 诊断）；非 `Json` 派生名 → 诊断。
+- `json.myp` 新增 `Json.escape` 静态方法。
+
+**回归**：oracle 322/322、selfhost 322/322、bootstrap 16/16 不动点、dump 对拍 95/95、
+fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip + 合法 JSON）；
+负测试 `tests/negative/derive_unsupported_type.myp`。
+
+**附带发现**：字符串**参数**连续重赋值链有 ARC use-after-free 既有 bug（局部变量无碍，
+`Json.escape` 已用局部规避）；待单独修复。
+
 ### v3.15.0 — 表达力三小改：多行字符串 / 字符串插值 / 空安全 `?.` `??`
 
 **非破坏性（additive）语言特性**，oracle（mypc）与 selfhost 双端同步实现：
@@ -64,7 +83,7 @@ mypview changelog 双向引用。
 
 ### v3.14.1 — 优化点推进：多文件并行编译 + GPU R0 止血 + parity 零差距
 
-「立即做」优化清单推进（多文件并行编译 ① / GPU R0 止血 ②）+ 前置两处修复：
+优化清单推进（多文件并行编译 ① / GPU R0 止血 ②）+ 前置两处修复：
 
 1. **`==`/`!=` 字符串比较类型检查（58def81）**：`bool == string` 应报错，此前静默
    放行（oracle 与 selfhost 双端）。

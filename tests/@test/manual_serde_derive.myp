@@ -1,0 +1,46 @@
+// manual_serde_derive.myp — @derive(Json) 派生序列化回归（v1）
+// ---------------------------------------------------------------------------
+// @derive(Json) 类注解 → 编译期自动生成 toJson()/fromJson()（标量/string/bool）。
+// 需 import json（Json.escape + Json 路径查询）。oracle 与 selfhost 双端同步。
+import test;
+import json;
+import text;
+
+@derive(Json)
+class Player {
+    action:
+        @constructor Player(string n, int h, double sc, bool al) {
+            name = n; hp = h; score = sc; alive = al;
+        }
+        string getName() { return name; }
+        int getHp() { return hp; }
+        double getScore() { return score; }
+        bool getAlive() { return alive; }
+    property:
+        string name;
+        int hp;
+        double score;
+        bool alive;
+}
+
+@test void t_roundtrip() {
+    Player p = new Player("A\"B\n", 100, 3.5, true);
+    string j = p.toJson();
+    // 转义正确：引号→\"，换行→\n
+    Test.assertStrEq(j, "{\"name\":\"A\\\"B\\n\",\"hp\":100,\"score\":3.5,\"alive\":true}");
+    Player q = new Player("", 0, 0.0, false);
+    q.fromJson(j);
+    Test.assertStrEq(q.getName(), "A\"B\n");
+    Test.assertEq(q.getHp(), 100);
+    Test.assertTrue(q.getAlive());
+}
+
+@test void t_json_valid() {
+    Player p = new Player("plain", 7, 1.5, false);
+    // toJson 输出应能被 json.myp 解析（合法 JSON）。
+    Json doc = new Json(p.toJson());
+    Test.assertEq(doc.getInt("hp"), 7);
+    Test.assertStrEq(doc.getString("name"), "plain");
+    Test.assertEq(doc.getBool("alive"), 0);
+    doc.free();
+}
