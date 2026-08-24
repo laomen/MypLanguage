@@ -134,11 +134,49 @@ import collections; // ArrayList
             return out;
         }
 
+        // 目录下所有预编译库（.so / .a）——闭源分发：分发目录只有 <secret.so +
+        // 封装 .myp>（无 .c 源码），用户 MYP_BRIDGES 指向库目录，按符号匹配直接
+        // 链接（对齐 C++ listLibFiles）。
+        ArrayList<string> listLibFiles(string dir) {
+            ArrayList<string> out = new ArrayList<string>();
+            if (Fs.isDir(dir) == 0) return out;
+            int n = Fs.listCount(dir);
+            string[] files = Fs.listDir(dir);
+            for (int i = 0; i < n; i = i + 1) {
+                string f = files[i];
+                int fl = Str.len(f);
+                if ((fl > 3 && Str.substring(f, fl - 3, fl) == ".so")
+                    || (fl > 2 && Str.substring(f, fl - 2, fl) == ".a"))
+                    out.add(Fs.join(dir, f));
+            }
+            return out;
+        }
+
         // nm 输出 → 符号集合（defined=1 → --defined-only；0 → -u 未定义）。
         // 每行末列 = 符号名（地址/类型列用空白分隔）。
         ArrayList<string> nmSymbols(string files, int defined) {
             ArrayList<string> out = new ArrayList<string>();
             string cmd = "nm " + ((defined != 0) ? "--defined-only " : "-u ") + files + " 2>/dev/null";
+            string outp = Process.output(cmd);
+            int c = Str.splitCount(outp, "\n");
+            for (int i = 0; i < c; i = i + 1) {
+                string line = Str.trim(Str.splitGet(outp, "\n", i));
+                if (Str.len(line) == 0) continue;
+                int nw = Str.splitCount(line, " ");
+                string name = Str.trim(Str.splitGet(line, " ", nw - 1));
+                if (Str.len(name) == 0 || name == "C") continue;
+                if (Str.substring(name, 0, 1) == "*") continue;
+                out.add(name);
+            }
+            return out;
+        }
+
+        // 动态符号表（.so 用）：导出的全局符号可能只在 .dynsym，普通 nm 读不到
+        // （尤其 strip 过的共享库）。.a 无动态表，仍用 nmSymbols（对齐 C++
+        // nmDynSymbols）。
+        ArrayList<string> nmDynSymbols(string files, int defined) {
+            ArrayList<string> out = new ArrayList<string>();
+            string cmd = "nm -D " + ((defined != 0) ? "--defined-only " : "-u ") + files + " 2>/dev/null";
             string outp = Process.output(cmd);
             int c = Str.splitCount(outp, "\n");
             for (int i = 0; i < c; i = i + 1) {
@@ -204,7 +242,7 @@ import collections; // ArrayList
         // flag 的地址传给 myp_try_escape 无操作，使其成为逃逸内存，mem2reg/SROA 不
         // 提升、DSE 不删 store，-O2 下 arc_throw 15/15、全量 310/0）。optLevel>0 时
         // 跑 opt -O<level>；MYP_SELF_OPT=1 强制开启、=0 强制关闭（调试/对比）。
-        int link(string llPath, string outPath, string stdlib, int optLevel) {
+        int link(string llPath, string outPath, string stdlib, int optLevel, int shared) {
             string srcLl = llPath;
             string optEnv = Console.getEnv("MYP_SELF_OPT");
             int doOpt = (optLevel > 0) ? 1 : 0;
@@ -306,6 +344,12 @@ import collections; // ArrayList
                 ArrayList<string> cs = Link.listBridges(bdirs.get(bi));
                 for (int ci = 0; ci < cs.size(); ci = ci + 1) allB.add(cs.get(ci));
             }
+            // 预编译库（.so/.a，闭源分发）候选
+            ArrayList<string> allLibs = new ArrayList<string>();
+            for (int bi = 0; bi < bdirs.size(); bi = bi + 1) {
+                ArrayList<string> ls = Link.listLibFiles(bdirs.get(bi));
+                for (int li = 0; li < ls.size(); li = li + 1) allLibs.add(ls.get(li));
+            }
             string bridgeObjList = "";
             string bridgeLibs = "";
             ArrayList<string> undef = Link.nmSymbols(objPath, 0);
@@ -332,13 +376,46 @@ import collections; // ArrayList
                     }
                 }
             }
-            cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
-                + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
-                + " -Wl,--gc-sections 2>&1";
+            // 预编译库（.so/.a）同款固定点：按符号匹配直接链接，无需 .c 源码——
+            // 闭源分发路径（分发 <secret.so + 封装 .myp>，用户 MYP_BRIDGES 指向
+            // 库目录）。.so 用动态符号表（nm -D），.a 用普通 nm（对齐 C++）。
+            ArrayList<string> selLibs = new ArrayList<string>();
+            changed = 1;
+            guard = 0;
+            while (changed != 0 && guard < 128) {
+                changed = 0;
+                guard = guard + 1;
+                for (int i = 0; i < allLibs.size(); i = i + 1) {
+                    string l = allLibs.get(i);
+                    if (Link.symContains(selLibs, l) != 0) continue;
+                    int isSo = 0;
+                    int ll = Str.len(l);
+                    if (ll > 3 && Str.substring(l, ll - 3, ll) == ".so") isSo = 1;
+                    ArrayList<string> defSyms = (isSo != 0) ? Link.nmDynSymbols(l, 1) : Link.nmSymbols(l, 1);
+                    if (Link.symIntersect(undef, defSyms) == 0) continue;
+                    selLibs.add(l);
+                    bridgeObjList = bridgeObjList + " " + l;
+                    string blibs = Link.readSidecar(l + ".libs");
+                    if (Str.len(blibs) > 0) bridgeLibs = bridgeLibs + " " + blibs;
+                    ArrayList<string> uu = (isSo != 0) ? Link.nmDynSymbols(l, 0) : Link.nmSymbols(l, 0);
+                    for (int ui = 0; ui < uu.size(); ui = ui + 1) undef.add(uu.get(ui));
+                    changed = 1;
+                }
+            }
+            if (shared != 0) {
+                cmd = "gcc -shared -fPIC " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
+                    + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
+                    + " -Wl,--gc-sections 2>&1";
+            } else {
+                cmd = "gcc " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
+                    + bridgeObjList + " -o " + outPath + " -lpthread -lm -ldl " + bridgeLibs
+                    + " -Wl,--gc-sections 2>&1";
+            }
             if (Process.run(cmd) != 0) {
                 Console.writeLine("link failed");
                 return 1;
             }
+            Console.writeLine("Link OK: " + outPath);
             return 0;
         }
 }

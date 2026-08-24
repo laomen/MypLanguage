@@ -94,6 +94,7 @@ class CodeGen {
             mappingHandlerSeq_ = 0;
             warnings_ = new ArrayList<string>();
             testMode_ = 0;
+            libraryMode_ = 0;
             curFnCoro_ = 0;
             curFnIsCtor_ = 0;
             gpuCpuFallback_ = 0;
@@ -107,6 +108,8 @@ class CodeGen {
         }
 
         void setTestMode(int v) { testMode_ = v; }
+
+        void setLibraryMode(int v) { libraryMode_ = v; }
 
         string newTmp() {
             string t = "%t" + tmp_;
@@ -1306,7 +1309,12 @@ class CodeGen {
             out.append(sb_.toString());
             out.append("attributes #0 = { returns_twice }\n");
             out.append("attributes #1 = { noreturn }\n");
-            return out.toString();
+            string ir = out.toString();
+            // 库模式（--shared）：函数保持外部链接（define 而非 define internal），
+            // 使符号导出到 .so 动态符号表（对齐 C++ markNonMainFunctionsInternal
+            // 在 library_mode 下跳过）。全局仍 internal/private 不影响导出。
+            if (libraryMode_ != 0) ir = Str.replaceAll(ir, "define internal", "define");
+            return ir;
         }
 
         // 类结构体类型：%ClassName = type { <prop types> }（空类用 i8 占位）。
@@ -1857,10 +1865,28 @@ class CodeGen {
         void genStaticAction(string cls, AstAction a) {
             // Coro 静态内建：方法体空 → 直接发运行时调用（__myp_coro_* 隐藏）
             if (cls == "Coro") { genCoroBuiltin(cls, a); return; }
+            // 签名声明（无实现）：只发外部 declare、不生成 body/stub，链接器从
+            // 预编译库（.so/.a，MYP_BRIDGES）解析——MYP 闭源分发（实现编译进
+            // .so，分发签名 .myp；对齐 C++ generateClassAction 的 !body 提前返回）。
+            if (a.body() == null) {
+                genDeclare(cls + "_" + a.name(), a.params(), a.ret());
+                return;
+            }
             setupTypeParams(cls);
             curFnCoro_ = a.coro();
             curFnRegion_ = a.region();
             genFuncBody(cls + "_" + a.name(), a.params(), a.ret(), a.body());
+        }
+
+        // 签名/前置声明：declare <ret> @fn(<param types>)（无 this，静态/顶层用）。
+        void genDeclare(string fn, ArrayList<AstParam> params, AstType retT) {
+            string retLt = llvmType(retT);
+            StringBuilder ps = new StringBuilder();
+            for (int i = 0; i < params.size(); i = i + 1) {
+                if (i != 0) ps.append(", ");
+                ps.append(llvmType(params.get(i).type()));
+            }
+            sb_.append("declare " + retLt + " @" + fn + "(" + ps.toString() + ")\n");
         }
 
         // 泛型实例体内类型参数映射（typeParams → instTypeArgs）。
@@ -1912,6 +1938,19 @@ class CodeGen {
         }
 
         void genInstanceActionNamed(string fn, string cls, AstAction a) {
+            // 签名声明（无实现）→ 外部 declare（含 this 指针；MYP 闭源分发）。
+            if (a.body() == null) {
+                ArrayList<AstParam> ps = new ArrayList<AstParam>();
+                AstParam tp = new AstParam();
+                tp.setName("this");
+                AstType ptrT = new AstType();
+                ptrT.setClassName(cls);
+                tp.setType(ptrT);
+                ps.add(tp);
+                for (int i = 0; i < a.params().size(); i = i + 1) ps.add(a.params().get(i));
+                genDeclare(fn, ps, a.ret());
+                return;
+            }
             setupTypeParams(cls);
             ArrayList<AstParam> ps = new ArrayList<AstParam>();
             AstParam tp = new AstParam();
@@ -7946,8 +7985,9 @@ class CodeGen {
                     }
                     string t2 = newTmp();
                     sb_.append("  " + t2 + " = call " + retLt + " @" + direct + "(" + as.toString() + ")\n");
-                    // BUG-036: 接口方法/直接方法返回 ptr 为借用（字符串属性/成员），
-                    // 调用方不拥有 → 不 addFreshTemp（语句末释放借用 → 悬垂崩）。
+                    // 接口方法（devirt 直接调用）返回 ARC 引用同样转移 +1（被调方
+                    // retain-at-return）→ 入 fresh temp（同 genExpr Call 分支）。
+                    if (retLt == "ptr") addFreshTemp(t2);
                     return t2;
                 }
             }
@@ -7957,8 +7997,8 @@ class CodeGen {
             }
             string t = newTmp();
             sb_.append("  " + t + " = call " + retLt + " " + fnv + "(" + as.toString() + ")\n");
-            // BUG-036: 接口方法返回 ptr 为借用（如 getProp 返回 bag 属性字符串），
-            // 不 addFreshTemp（否则语句末释放借用 → 悬垂）。
+            // 接口 vtable 间接调用返回 ARC 引用同样转移 +1 → 入 fresh temp。
+            if (retLt == "ptr") addFreshTemp(t);
             return t;
         }
 
@@ -9610,11 +9650,12 @@ class CodeGen {
                 }
                 string t = newTmp();
                 sb_.append("  " + t + " = call " + retLt + " @" + fn + "(" + as.toString() + ")\n");
-                // BUG-036: 方法/函数调用返回 ptr 是**借用**（成员/数组元素/属性
-                // 字符串），调用方不拥有 → 不能 addFreshTemp（否则语句末 myp_release
-                // 释放数组成员等借用引用 → 悬垂/双释放段错误）。对齐 C++ oracle
-                // isFreshArcExpr（方法调用返回=false，不释放）。new 等 fresh 由
-                // storeNew/属性赋值 consumeTemp 单独处理。
+                // 调用返回 ARC 引用（类实例/字符串）——被调方 retain-at-return
+                // 已转移 +1（return 借用 retain / return fresh 转移），调用方拥有。
+                // 入 fresh temp：store 点 consume 转移、语句末 flush 释放被丢弃
+                // 的结果（对齐 C++ generateCall 的 arcPushTemp + isFreshArcExpr
+                // (Call)=fresh；BUG-036 曾误删此处致双重 retain 泄漏）。
+                if (retLt == "ptr") addFreshTemp(t);
                 return t;
             }
             if (k == "TryExpr") {
@@ -11041,6 +11082,7 @@ class CodeGen {
         // A4: 编译期警告收集（main 在 generate 后打印）
         ArrayList<string> warnings_;
         int testMode_;
+        int libraryMode_;
         int curFnCoro_;
         // BUG-030 镜像：当前函数是否为构造器（构造器入口把 this 注册进
         // __myp_inst_<Class>，使构造器内 mapping 事件派发到当前实例）。
