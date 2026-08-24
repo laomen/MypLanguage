@@ -395,6 +395,132 @@ fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip
   清零；tools/、mypview/ 全为 MYP 源码无原生代码。
 - 回归：Linux 314/314 + cross-runtime 交叉编译 0 warning（含新 args/runtime_lib）。
 
+### v3.13.8 — P6 ② 声明式 reduce/scan 块内并行（§8.2/8.3，用户选）
+- **reduce 块内并行 halving 树**（§8.6 规范树，`emitBlockSumTreePtx`）：2 的幂块
+  大小时 K1 改 ping-pong 共享内存树（每线程 1 元素，末块尾以 init 单位元填充），
+  CPU 镜像 `emitSeqBlockTreeReduce` 同树 → **位级一致**（`test_gpu_reduce_bit`
+  GPU==CPU==1177075682）；非 2 幂回退串行 K1（纯块和，修正 init 双计 bug）。
+- **reduce 表达式形式**（`GpuReduceExpr`）：`float s = @gpu reduce ... over
+  a[0..n);` 无 `-> out`，parser 3-token lookahead 区分 lambda，sema 合成
+  `__gpu_rdtmp_N` 临时，可嵌套/参与运算（`bench/rdexpr.myp` 双模式 PASS）。
+- **scan Hillis-Steele 块内并行**（`emitScanK2HsPtx`）：inclusive + 2 的幂块 →
+  K2 改 ping-pong 双缓冲 HS（d∈{1,2,4,…}，kernel 名 `myp_scan_k2_hs`）；launch
+  按 `use_hs` 选 kernel 名（否则静默回退 CPU）。
+- **scan exclusive 变体**：`@gpu scan(exclusive) ...`（K2 写前落盘 / CPU 写前
+  先存）；`test_gpu_scan.myp` 增 exclusive 全量/子区间/非零 init 三 case 双模式 PASS。
+- **CPU 回退权衡**：scan 回退统一串行 `emitSeqScan`（HS 位一致镜像
+  `emitSeqScanBlocked` 在串行 CPU 上慢 ~10× 不采用）→ GPU/CPU 浮点差几个 ulp
+  （容差内）；reduce 位级一致不受影响。
+- **性能验证**（`bench/gpu_reduce_scan.myp`，基线 `BASELINE_gpu_reduce_scan.md`）：
+  GPU reduce 1M 0.87–0.97→0.67–0.9、scan 1M 1.6–2.0→1.2、reduce 4M 2.9–3.2→2.07、
+  scan 4M 5.6–6.4→4.07 ms/op——**全面改善，无性能回退**；CPU 回退持平。
+- **坑**：树 kernel `src[tid+half]` 越界（tid≥half 线程）→ 非法内存访问，须
+  `select` 钳索引到 tid；scan j-loop 缺 j++ 回边 → partials 只算 block 0；offsets
+  循环须重绑 acc/x（步骤 4 恢复后步骤 5 复用未绑定 → "undefined variable acc/x"）。
+- 回归 266/266 + AMD 交叉编译 + GPU 双模式（reduce/scan/algo/reduce_bit）PASS。
+
+### v3.13.7 — P6 ② 图内存（CUDA Graph）+ P6 ③ BYOC（§9.7）
+  - **图内存**：`stdlib/gpu/graph.myp` 的 `GpuGraph`（captureBegin/captureEnd/
+    instantiate）与 `GpuGraphExec`（launch 重放/destroy）。宿主 FFI
+    `myp_gpu_graph_capture_begin/end/instantiate/launch/destroy/exec_destroy`
+    （`runtime_gpu.c`，dlopen libcuda）。机制：**流捕获**（`cuStreamBeginCapture`
+    THREAD_LOCAL → `cuStreamEndCapture` → `cuGraphInstantiate` → `cuGraphLaunch`
+    重放）。约束：内核须 `resident()` + `GpuBuffer`（持久 `devicePtr`），捕获段
+    只排内核。
+  - **关键坑**：`cuGraphInstantiate` 在 MYP 协程上下文段错误（同 cuModuleGetGlobal
+    的 TLS 问题）→ 所有图入口先 `cuCtxSetCurrent(ctx)` 强制上下文当前即修复。
+  - **BYOC 自定义 PTX**：`stdlib/gpu/byoc.myp` 的 `GpuByoc`（load/launch），宿主
+    FFI `myp_gpu_byoc_load/launch`（参数 `long[]`：指针放指针值、标量放数值、
+    double 放位型）；启动手写自包含 PTX（`tests/test_gpu_byoc.myp` 的 `dbl`）。
+  - **BYOC 厂商库 hook**：`runtime_lib.c`（独立编译，dlopen libcublas 惰性加载，
+    缺库回退）暴露 `myp_cublas_available/sgemm` → `GpuLib` 列主序 SGEMM；
+    测试与 host 参考误差 <1e-4。
+  - 注册：sema `add_intrinsic`/`add_gpu_arr` + codegen `declareRuntimeFunctions`
+    intrinsic_map（`__myp_gpu_graph_*`/`__myp_gpu_byoc_*`/`__myp_cublas_*`）。
+  - 测试 `test_gpu_graph.myp`（3 resident 内核捕获→重放逐位一致 + 二次重放幂等，
+    CPU 模式 no-op）、`test_gpu_byoc.myp`（PTX dbl 全 n 逐位 + cuBLAS SGEMM）。
+    回归 266/266 + AMD 交叉编译 + 既有 GPU 测试（algo/printk/query）GPU 模式无回归。
+  - 踩坑：range-for（`for k in 0..n`）解析提前 return，**不解析 resident/stream
+    子句**——`resident`+`stream` 必须配标准 `for(;;)`；`@gpu for` 内嵌 PTX 手写
+    时寄存器声明 `<N>` 含 %r0（用 %r4 须 `<5>`）；ptxas 拒绝 `[reg+reg]` 寻址
+    （改用 `add.u64` 合成地址）。
+
+### v3.13.6 — P5 ② kernel 内 printk/assert 调试（§9.6）
+  - **`kernel.printk(fmt, v...)` / `kernel.assert(cond, fmt, v...)`**（`@gpu for`
+    内核内；fmt 字符串字面量，值参 int/long/double/float ≤3）。
+  - **GPU staging**：runtime 分配设备缓冲/计数器（`myp_gpu_printf_buf/cnt/fail`）
+    + kernel 末尾 3 个附加 i64 参数传指针（**避开 cuModuleGetGlobal**——协程/
+    @thread 上下文下返回 CUDA_ERROR_INVALID_CONTEXT）；kernel 内 atomicrmw 领槽
+    （仅 printk/断言失败才领）+ 写 7×i64 记录；launch 后 `myp_gpu_flush_printf`
+    回读 mini-printf 打印、清零；assert 失败 exit(1)。
+  - **CPU 回退**：宿主 `myp_printf`/`myp_assert_abort`，前缀 `kernel[gid=<循环变量>] `
+    与 GPU 一致 → 单格式双模式输出逐字节相同。
+  - **格式**：值参类型匹配（int→%d、long→%ld、double→%g）；GPU 按 mask 宽容打印。
+    多格式记录顺序受 GPU 线程调度影响（非确定性，同 CUDA printf）。
+  - 测试 `test_gpu_printk.myp`（printk+assert 通过，双模式输出 IDENTICAL）、
+    `test_gpu_assert_fail.myp`（断言失败双模式 exit 1 + 消息一致）；负测试 3
+    （格式非字面量/参数过多/类型不符）。回归 266/266 + AMD 交叉编译无回归。
+  - 踩坑：O2 GlobalDCE 删只写不读的模块全局 → 改 runtime 缓冲 + 附加参数；
+    cuModuleGetGlobal 协程 201；领槽 atomicrmw 须 gate 在 do_write 内（否则通过
+    assert 也消耗槽位）；`@gpu for` 边界按 `<` 处理（`i<=n` GPU 只到 n-1）。
+
+### v3.13.5 — P5 ④ 并行算法库（stdlib/gpu/algo.myp，GpuAlgo）
+  - **compact**（流压缩）：keep 的 inclusive 前缀和（§8 scan）→ 目标位置
+    pos[i]=off[i]-keep[i]（exclusive）→ 条件写（@gpu for）；返回保留数。
+  - **unique**（相邻去重）：change[i]=(i==0 或 a[i]!=a[i-1]) → 对 change 做 compact。
+  - **histogram**：ones 数组 + `@gpu scatter(atomic_add)` → hist[idx[i]] += 1
+    （整数原子计数位一致；host 预扫越界自保，越界返回 0）。
+  - **sort**（原地升序）：确定性 odd-even 转置比较交换网络（每轮偶相+奇相两个
+    独立 kernel launch 提供隐式全局同步；n 轮有序；O(n²)，radix/bitonic 留后续）。
+  - **双实现位一致**：GPU 与 CPU 回退跑同一算法序列 → 输出逐字节相同。
+    `tests/test_gpu_algo.myp`（n=2048：质数 compact / i/8 unique / LCG 16 桶
+    histogram / 0..999 重复值 sort）MYP_GPU=0/1 双模式输出 IDENTICAL；AMD
+    交叉编译（MYP_GPU_TARGET=amdgcn）二进制 CPU 回退语义 PASS。回归 263/263。
+  - 踩坑记录：`@gpu scan` int init 须 `init int(0)`（字面量 0 为 byte）；`@gpu for`
+    假设循环从 0 起（非 0 起始在 GPU 下执行 p=0 分支 → 越界读，须体内处理边界）；
+    静态方法须类名限定调用。
+
+### v3.13.4 — P4 §9.5 ④ 厂商探测 + 能力查询（§7.4）落地
+  - **runtime_gpu.c 厂商探测**：`myp_gpu_vendor()` → "nvidia"/"cpu"（无 GPU），
+    `myp_gpu_gfx_arch()` → ""（NV 无此概念）；ROCm 版返回 "amd"。
+  - **runtime_gpu.c 能力查询**：`myp_gpu_shared_per_block/regs_per_block/
+    max_grid_dim/max_block_dim/clock_mhz/concurrent_kernels/mem_alignment/
+    double_precision/atomics64`，统一 `cuDeviceGetAttribute`（属性 ID 对齐
+    /usr/include/cuda.h：MAX_BLOCK_DIM_X=2、MAX_GRID_DIM_X=5、MAX_SHARED_MEMORY_
+    PER_BLOCK=8、MAX_REGISTERS_PER_BLOCK=12、CLOCK_RATE=13、CONCURRENT_KERNELS=31）。
+  - **runtime_rocm.c HIP 镜像**：`hipDeviceGetAttribute` 同 ABI 补全（vendor="amd"）。
+  - **codegen/sema**：注册 vendor-neutral intrinsic `__myp_gpu_vendor/gfx_arch/
+    shared_per_block/regs_per_block/max_grid_dim/max_block_dim/clock_mhz/
+    concurrent_kernels/mem_alignment/double_precision/atomics64`。
+  - **stdlib/gpu/device.myp**：`GpuDevice` 补齐 §7.4 全部字段（vendor/gfxArch/
+    sharedPerBlock/regsPerBlock/maxGridDim/maxBlockDim/clock/concurrentKernels/
+    memAlignment/doublePrecision/atomics64）；`GpuHAL.vendor()` 改真实设备探测。
+  - **实测 RTX 2070 SUPER**（`test_gpu_query.myp` 双模式 PASS）：vendor=nvidia、
+    capability=705、sharedPerBlock=49152、regsPerBlock=65536、maxGridDim=2147483647、
+    maxBlockDim=1024、clock=1815MHz、concurrent=1、atomics64=1（sm_60+）、
+    doublePrecision=0（sm_75 消费卡 FP64 1/32）。CPU 回退 vendor=cpu、能力全 0。
+  - 回归 263/263 + AMD 交叉编译（tests/cross_compile_amd.sh）无回归。
+
+### v3.13.3 — P4 跨厂商（AMD）编译期落地（无 AMD 硬件，交叉编译验证）
+  - **§9.5/§6.4 AMDGPU 后端 + GCN 交叉编译**：
+    - `MYP_GPU_TARGET=amdgcn` 让 `@gpu for`/reduce/scan 内核编译期发射
+      `amdgcn-amd-amdhsa` GCN ELF code object（`ObjectFile` 直接出 ELF，EM_AMDGPU，
+      含 `myp_kernel` 符号），写 `MYP_GPU_EMIT_FILE`（默认 /tmp/myp_kernel.gcn）；
+    - codegen 参数化：双后端 init（`ensureGpuTargetsInited`）、kernel CC
+      （NV PTX_Kernel / AMD AMDGPU_KERNEL）、线程索引（NVVM sreg ↔ AMDGCN
+      workitem/workgroup.id.x）、kernel alloca addrspace(5)（AMD private）、
+      blockDim = launch 常量、`kernel.sync()`（bar.sync 0 ↔ s_barrier）、
+      O2 管线消解 AMDGCN 无法选中的构造（声明式 kernel）。
+  - **§9.5 ③ runtime_rocm.c 骨架**（`-DMYP_ENABLE_ROCM=ON`）：dlopen
+    libamdhip64 + HIP 函数指针镜像 myp_gpu_* ABI（hipModuleLoadData/hipLaunchKernel/
+    hipMemcpy/stream/event），无 ROCm 不构建。
+  - **§9.5 ⑤ 交叉编译验证** `tests/cross_compile_amd.sh`（无硬件）：GCN ELF
+    magic + kernel 符号（llvm-readobj）+ AMD 二进制 CPU 回退语义 + NV PTX 无回归。
+  - **受限（无硬件留待）**：`@gpu stride`/scatter（gridDim 无 AMDGCN intrinsic）
+    AMD 回退 CPU；`@gpu tile` __shared__ 对象发射；数学 NV libdevice（AMD 走
+    LLVM intrinsic/ocml）。
+  - CMake：AMDGPU LLVM 组件；`MYP_ENABLE_ROCM` 选项。回归 263/263。
+
 ### v3.13.2 — LSP 语义高亮（semantic tokens）：MYP 文件通过 LSP 有语法颜色
 
 **背景**：vscode-myp 扩展的 LSP（`myp_lsp`）只提供诊断/补全/hover/文档符号，
@@ -423,6 +549,46 @@ fmt 对拍 5/5。新正测试 `tests/@test/manual_serde_derive.myp`（round-trip
 function 3 / method 46 / variable 110）；`tests/test_lsp.js` **14/14 PASS**。
 使用：VS Code 里 `MYP: Restart Language Server`（或重载窗口）让扩展加载新
 `myp_lsp`。
+
+### v3.13.1 — 编译器 DX：漏参/窄化诊断 + GPU fast-math + 自举 UTF-8 修复（95/95）
+
+**1. 参数缺失报错改进**（`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
+- 漏参数时一次性列出**全部**缺失形参（而非只报尾部一个），并附期望/实得数量：
+  `missing required argument(s) 'batch' 'dev' — expected 10 arguments, got 8`。
+- 修复场景：GPU 算子调用漏 batch 时之前只报 `'dev'`（误导性极强），现能看出是
+  中间漏参导致后续错位。C++ 报错文本已同步 selfhost（sema.myp）。
+
+**2. 参数窄化诊断（narrowing warning）**（`include/mylang/Sema.h` +
+`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
+- 新增 `Sema::isNarrowing`：实参→形参「兼容但有损窄化」时发 warning——
+  `argument 1: passing 'long' to parameter of type 'int' is a narrowing
+  conversion; ... use convert<int>(...) to make it explicit`。
+- **为什么只有 Long→Int 命中**：MYP 数字隐式只允许 Int↔Long 双向 + 同符号拓宽 +
+  f32→f64；`double→float`、`double→int`、`long→short` 等本就在 `typesCompatible`
+  层报 error（`expected 'float', got 'double'`）。故「兼容但窄化」实际只有
+  Long→Int 一种——正是漏参/换位时最常见的错位源（如 GPU dense 的 `dev`/`yOff`）。
+- **warning 而非 error**：现有代码大量合法 long→int（ARC 计数断言
+  `Test.assertEq(long,0,..)`、`Fmt.i(long ms)`），error 会破坏回归。
+- **对拍约束**：`--frontend-dump sema` 输出含 Diagnostics 段，任何新诊断必须
+  C++/selfhost **逐字节一致**（selfhost 无 param_names 元数据 → 诊断文本不带
+  形参名）。新增对拍语料 `tests/narrow_sema.myp`（3 warning + 1 error，两编译器
+  dump 字节一致）。
+
+**3. GPU fast-math（opt-in）**（`src/codegen/codegen_gpu.cpp`）
+- `MYP_FAST_MATH=1` 时给 GPU 内核 IRBuilder 打 fast flags（reassoc/contract/nnan/
+  ninf/nsz/arcp），默认 OFF（不改变现有数值行为）。
+- 实测 Qwen2 batch=4 LLM 反而变慢（21 vs 16 ms/step）——LLM decode 带宽受限，
+  计算优化无益；保留 opt-in 供纯计算型内核（卷积/归约）使用。
+
+**4. 自举 UTF-8 修复（Dump.esc，区别于 v3.12.48 词法器 BUG-039）**
+  （`tools/selfhost/src/ast.myp`）
+- `Dump.esc` 用 `__myp_charcode`+`__myp_chr` 逐字符 → 字节被当码点再 UTF-8 编码
+  （双重编码，`"多参"`→`"å¤å"`）。改用 `Str.substring(s,i,i+1)` **原样字节透传**
+  （与 C++ `escapeDumpString` 逐字节一致）。lexer 层本就正确（tokens 对拍已 PASS），
+  无需改动。
+- 自举 sema 对拍 **92/94 → 94/94**（+本次窄化语料 = **95/95**）。
+
+**回归**：全量 `tests/run_tests.sh` **314/314**；`tests/test_myp_self.sh` **95/95**。
 
 ### v3.13.0 — 自举编译器 GPU 真机加速：resident 直传 + Device./Atomic 映射（BUG-045）
 
@@ -469,46 +635,6 @@ CUDA 13.2，`MYP_GPU=1`）真正发射 kernel。
 **回归**：CPU 11 入口 0 mismatch；`tests/test_myp_self.sh` PASS=92/2（2 个 sema
 对拍失败为预先存在：`mega/test.myp`、`@test/function.myp`）；`run_bugs.sh`
 12 green 0 red。
-
-### v3.13.1 — 编译器 DX：漏参/窄化诊断 + GPU fast-math + 自举 UTF-8 修复（95/95）
-
-**1. 参数缺失报错改进**（`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
-- 漏参数时一次性列出**全部**缺失形参（而非只报尾部一个），并附期望/实得数量：
-  `missing required argument(s) 'batch' 'dev' — expected 10 arguments, got 8`。
-- 修复场景：GPU 算子调用漏 batch 时之前只报 `'dev'`（误导性极强），现能看出是
-  中间漏参导致后续错位。C++ 报错文本已同步 selfhost（sema.myp）。
-
-**2. 参数窄化诊断（narrowing warning）**（`include/mylang/Sema.h` +
-`src/sema/sema_expr.cpp` + `tools/selfhost/src/sema.myp`）
-- 新增 `Sema::isNarrowing`：实参→形参「兼容但有损窄化」时发 warning——
-  `argument 1: passing 'long' to parameter of type 'int' is a narrowing
-  conversion; ... use convert<int>(...) to make it explicit`。
-- **为什么只有 Long→Int 命中**：MYP 数字隐式只允许 Int↔Long 双向 + 同符号拓宽 +
-  f32→f64；`double→float`、`double→int`、`long→short` 等本就在 `typesCompatible`
-  层报 error（`expected 'float', got 'double'`）。故「兼容但窄化」实际只有
-  Long→Int 一种——正是漏参/换位时最常见的错位源（如 GPU dense 的 `dev`/`yOff`）。
-- **warning 而非 error**：现有代码大量合法 long→int（ARC 计数断言
-  `Test.assertEq(long,0,..)`、`Fmt.i(long ms)`），error 会破坏回归。
-- **对拍约束**：`--frontend-dump sema` 输出含 Diagnostics 段，任何新诊断必须
-  C++/selfhost **逐字节一致**（selfhost 无 param_names 元数据 → 诊断文本不带
-  形参名）。新增对拍语料 `tests/narrow_sema.myp`（3 warning + 1 error，两编译器
-  dump 字节一致）。
-
-**3. GPU fast-math（opt-in）**（`src/codegen/codegen_gpu.cpp`）
-- `MYP_FAST_MATH=1` 时给 GPU 内核 IRBuilder 打 fast flags（reassoc/contract/nnan/
-  ninf/nsz/arcp），默认 OFF（不改变现有数值行为）。
-- 实测 Qwen2 batch=4 LLM 反而变慢（21 vs 16 ms/step）——LLM decode 带宽受限，
-  计算优化无益；保留 opt-in 供纯计算型内核（卷积/归约）使用。
-
-**4. 自举 UTF-8 修复（Dump.esc，区别于 v3.12.48 词法器 BUG-039）**
-  （`tools/selfhost/src/ast.myp`）
-- `Dump.esc` 用 `__myp_charcode`+`__myp_chr` 逐字符 → 字节被当码点再 UTF-8 编码
-  （双重编码，`"多参"`→`"å¤å"`）。改用 `Str.substring(s,i,i+1)` **原样字节透传**
-  （与 C++ `escapeDumpString` 逐字节一致）。lexer 层本就正确（tokens 对拍已 PASS），
-  无需改动。
-- 自举 sema 对拍 **92/94 → 94/94**（+本次窄化语料 = **95/95**）。
-
-**回归**：全量 `tests/run_tests.sh` **314/314**；`tests/test_myp_self.sh` **95/95**。
 
 ### v3.12.57 — 再剥离 6 组 FFI 出 runtime（net/process/regex/base64/date/hash）
 
@@ -1941,132 +2067,6 @@ mypc 全工具链）。
     - §8.7 CPU 回退效率：L1 块部分和天然可并行（跨块并行不改变单块计算 → 位一致
       保持），@parallel for 接入留性能类（同 P2⑥/P1③④）。
     - 回归 109/109 + 负测试 65 + 框架 82（263/263）。
-
-### v3.13 — P4 跨厂商（AMD）编译期落地（无 AMD 硬件，交叉编译验证）
-  - **§9.5/§6.4 AMDGPU 后端 + GCN 交叉编译**：
-    - `MYP_GPU_TARGET=amdgcn` 让 `@gpu for`/reduce/scan 内核编译期发射
-      `amdgcn-amd-amdhsa` GCN ELF code object（`ObjectFile` 直接出 ELF，EM_AMDGPU，
-      含 `myp_kernel` 符号），写 `MYP_GPU_EMIT_FILE`（默认 /tmp/myp_kernel.gcn）；
-    - codegen 参数化：双后端 init（`ensureGpuTargetsInited`）、kernel CC
-      （NV PTX_Kernel / AMD AMDGPU_KERNEL）、线程索引（NVVM sreg ↔ AMDGCN
-      workitem/workgroup.id.x）、kernel alloca addrspace(5)（AMD private）、
-      blockDim = launch 常量、`kernel.sync()`（bar.sync 0 ↔ s_barrier）、
-      O2 管线消解 AMDGCN 无法选中的构造（声明式 kernel）。
-  - **§9.5 ③ runtime_rocm.c 骨架**（`-DMYP_ENABLE_ROCM=ON`）：dlopen
-    libamdhip64 + HIP 函数指针镜像 myp_gpu_* ABI（hipModuleLoadData/hipLaunchKernel/
-    hipMemcpy/stream/event），无 ROCm 不构建。
-  - **§9.5 ⑤ 交叉编译验证** `tests/cross_compile_amd.sh`（无硬件）：GCN ELF
-    magic + kernel 符号（llvm-readobj）+ AMD 二进制 CPU 回退语义 + NV PTX 无回归。
-  - **受限（无硬件留待）**：`@gpu stride`/scatter（gridDim 无 AMDGCN intrinsic）
-    AMD 回退 CPU；`@gpu tile` __shared__ 对象发射；数学 NV libdevice（AMD 走
-    LLVM intrinsic/ocml）。
-  - CMake：AMDGPU LLVM 组件；`MYP_ENABLE_ROCM` 选项。回归 263/263。
-
-### v3.13.1 — P4 §9.5 ④ 厂商探测 + 能力查询（§7.4）落地
-  - **runtime_gpu.c 厂商探测**：`myp_gpu_vendor()` → "nvidia"/"cpu"（无 GPU），
-    `myp_gpu_gfx_arch()` → ""（NV 无此概念）；ROCm 版返回 "amd"。
-  - **runtime_gpu.c 能力查询**：`myp_gpu_shared_per_block/regs_per_block/
-    max_grid_dim/max_block_dim/clock_mhz/concurrent_kernels/mem_alignment/
-    double_precision/atomics64`，统一 `cuDeviceGetAttribute`（属性 ID 对齐
-    /usr/include/cuda.h：MAX_BLOCK_DIM_X=2、MAX_GRID_DIM_X=5、MAX_SHARED_MEMORY_
-    PER_BLOCK=8、MAX_REGISTERS_PER_BLOCK=12、CLOCK_RATE=13、CONCURRENT_KERNELS=31）。
-  - **runtime_rocm.c HIP 镜像**：`hipDeviceGetAttribute` 同 ABI 补全（vendor="amd"）。
-  - **codegen/sema**：注册 vendor-neutral intrinsic `__myp_gpu_vendor/gfx_arch/
-    shared_per_block/regs_per_block/max_grid_dim/max_block_dim/clock_mhz/
-    concurrent_kernels/mem_alignment/double_precision/atomics64`。
-  - **stdlib/gpu/device.myp**：`GpuDevice` 补齐 §7.4 全部字段（vendor/gfxArch/
-    sharedPerBlock/regsPerBlock/maxGridDim/maxBlockDim/clock/concurrentKernels/
-    memAlignment/doublePrecision/atomics64）；`GpuHAL.vendor()` 改真实设备探测。
-  - **实测 RTX 2070 SUPER**（`test_gpu_query.myp` 双模式 PASS）：vendor=nvidia、
-    capability=705、sharedPerBlock=49152、regsPerBlock=65536、maxGridDim=2147483647、
-    maxBlockDim=1024、clock=1815MHz、concurrent=1、atomics64=1（sm_60+）、
-    doublePrecision=0（sm_75 消费卡 FP64 1/32）。CPU 回退 vendor=cpu、能力全 0。
-  - 回归 263/263 + AMD 交叉编译（tests/cross_compile_amd.sh）无回归。
-
-### v3.13.2 — P5 ④ 并行算法库（stdlib/gpu/algo.myp，GpuAlgo）
-  - **compact**（流压缩）：keep 的 inclusive 前缀和（§8 scan）→ 目标位置
-    pos[i]=off[i]-keep[i]（exclusive）→ 条件写（@gpu for）；返回保留数。
-  - **unique**（相邻去重）：change[i]=(i==0 或 a[i]!=a[i-1]) → 对 change 做 compact。
-  - **histogram**：ones 数组 + `@gpu scatter(atomic_add)` → hist[idx[i]] += 1
-    （整数原子计数位一致；host 预扫越界自保，越界返回 0）。
-  - **sort**（原地升序）：确定性 odd-even 转置比较交换网络（每轮偶相+奇相两个
-    独立 kernel launch 提供隐式全局同步；n 轮有序；O(n²)，radix/bitonic 留后续）。
-  - **双实现位一致**：GPU 与 CPU 回退跑同一算法序列 → 输出逐字节相同。
-    `tests/test_gpu_algo.myp`（n=2048：质数 compact / i/8 unique / LCG 16 桶
-    histogram / 0..999 重复值 sort）MYP_GPU=0/1 双模式输出 IDENTICAL；AMD
-    交叉编译（MYP_GPU_TARGET=amdgcn）二进制 CPU 回退语义 PASS。回归 263/263。
-  - 踩坑记录：`@gpu scan` int init 须 `init int(0)`（字面量 0 为 byte）；`@gpu for`
-    假设循环从 0 起（非 0 起始在 GPU 下执行 p=0 分支 → 越界读，须体内处理边界）；
-    静态方法须类名限定调用。
-
-### v3.13.3 — P5 ② kernel 内 printk/assert 调试（§9.6）
-  - **`kernel.printk(fmt, v...)` / `kernel.assert(cond, fmt, v...)`**（`@gpu for`
-    内核内；fmt 字符串字面量，值参 int/long/double/float ≤3）。
-  - **GPU staging**：runtime 分配设备缓冲/计数器（`myp_gpu_printf_buf/cnt/fail`）
-    + kernel 末尾 3 个附加 i64 参数传指针（**避开 cuModuleGetGlobal**——协程/
-    @thread 上下文下返回 CUDA_ERROR_INVALID_CONTEXT）；kernel 内 atomicrmw 领槽
-    （仅 printk/断言失败才领）+ 写 7×i64 记录；launch 后 `myp_gpu_flush_printf`
-    回读 mini-printf 打印、清零；assert 失败 exit(1)。
-  - **CPU 回退**：宿主 `myp_printf`/`myp_assert_abort`，前缀 `kernel[gid=<循环变量>] `
-    与 GPU 一致 → 单格式双模式输出逐字节相同。
-  - **格式**：值参类型匹配（int→%d、long→%ld、double→%g）；GPU 按 mask 宽容打印。
-    多格式记录顺序受 GPU 线程调度影响（非确定性，同 CUDA printf）。
-  - 测试 `test_gpu_printk.myp`（printk+assert 通过，双模式输出 IDENTICAL）、
-    `test_gpu_assert_fail.myp`（断言失败双模式 exit 1 + 消息一致）；负测试 3
-    （格式非字面量/参数过多/类型不符）。回归 266/266 + AMD 交叉编译无回归。
-  - 踩坑：O2 GlobalDCE 删只写不读的模块全局 → 改 runtime 缓冲 + 附加参数；
-    cuModuleGetGlobal 协程 201；领槽 atomicrmw 须 gate 在 do_write 内（否则通过
-    assert 也消耗槽位）；`@gpu for` 边界按 `<` 处理（`i<=n` GPU 只到 n-1）。
-
-### v3.13.4 — P6 ② 图内存（CUDA Graph）+ P6 ③ BYOC（§9.7）
-  - **图内存**：`stdlib/gpu/graph.myp` 的 `GpuGraph`（captureBegin/captureEnd/
-    instantiate）与 `GpuGraphExec`（launch 重放/destroy）。宿主 FFI
-    `myp_gpu_graph_capture_begin/end/instantiate/launch/destroy/exec_destroy`
-    （`runtime_gpu.c`，dlopen libcuda）。机制：**流捕获**（`cuStreamBeginCapture`
-    THREAD_LOCAL → `cuStreamEndCapture` → `cuGraphInstantiate` → `cuGraphLaunch`
-    重放）。约束：内核须 `resident()` + `GpuBuffer`（持久 `devicePtr`），捕获段
-    只排内核。
-  - **关键坑**：`cuGraphInstantiate` 在 MYP 协程上下文段错误（同 cuModuleGetGlobal
-    的 TLS 问题）→ 所有图入口先 `cuCtxSetCurrent(ctx)` 强制上下文当前即修复。
-  - **BYOC 自定义 PTX**：`stdlib/gpu/byoc.myp` 的 `GpuByoc`（load/launch），宿主
-    FFI `myp_gpu_byoc_load/launch`（参数 `long[]`：指针放指针值、标量放数值、
-    double 放位型）；启动手写自包含 PTX（`tests/test_gpu_byoc.myp` 的 `dbl`）。
-  - **BYOC 厂商库 hook**：`runtime_lib.c`（独立编译，dlopen libcublas 惰性加载，
-    缺库回退）暴露 `myp_cublas_available/sgemm` → `GpuLib` 列主序 SGEMM；
-    测试与 host 参考误差 <1e-4。
-  - 注册：sema `add_intrinsic`/`add_gpu_arr` + codegen `declareRuntimeFunctions`
-    intrinsic_map（`__myp_gpu_graph_*`/`__myp_gpu_byoc_*`/`__myp_cublas_*`）。
-  - 测试 `test_gpu_graph.myp`（3 resident 内核捕获→重放逐位一致 + 二次重放幂等，
-    CPU 模式 no-op）、`test_gpu_byoc.myp`（PTX dbl 全 n 逐位 + cuBLAS SGEMM）。
-    回归 266/266 + AMD 交叉编译 + 既有 GPU 测试（algo/printk/query）GPU 模式无回归。
-  - 踩坑：range-for（`for k in 0..n`）解析提前 return，**不解析 resident/stream
-    子句**——`resident`+`stream` 必须配标准 `for(;;)`；`@gpu for` 内嵌 PTX 手写
-    时寄存器声明 `<N>` 含 %r0（用 %r4 须 `<5>`）；ptxas 拒绝 `[reg+reg]` 寻址
-    （改用 `add.u64` 合成地址）。
-
-### v3.13.5 — P6 ② 声明式 reduce/scan 块内并行（§8.2/8.3，用户选）
-- **reduce 块内并行 halving 树**（§8.6 规范树，`emitBlockSumTreePtx`）：2 的幂块
-  大小时 K1 改 ping-pong 共享内存树（每线程 1 元素，末块尾以 init 单位元填充），
-  CPU 镜像 `emitSeqBlockTreeReduce` 同树 → **位级一致**（`test_gpu_reduce_bit`
-  GPU==CPU==1177075682）；非 2 幂回退串行 K1（纯块和，修正 init 双计 bug）。
-- **reduce 表达式形式**（`GpuReduceExpr`）：`float s = @gpu reduce ... over
-  a[0..n);` 无 `-> out`，parser 3-token lookahead 区分 lambda，sema 合成
-  `__gpu_rdtmp_N` 临时，可嵌套/参与运算（`bench/rdexpr.myp` 双模式 PASS）。
-- **scan Hillis-Steele 块内并行**（`emitScanK2HsPtx`）：inclusive + 2 的幂块 →
-  K2 改 ping-pong 双缓冲 HS（d∈{1,2,4,…}，kernel 名 `myp_scan_k2_hs`）；launch
-  按 `use_hs` 选 kernel 名（否则静默回退 CPU）。
-- **scan exclusive 变体**：`@gpu scan(exclusive) ...`（K2 写前落盘 / CPU 写前
-  先存）；`test_gpu_scan.myp` 增 exclusive 全量/子区间/非零 init 三 case 双模式 PASS。
-- **CPU 回退权衡**：scan 回退统一串行 `emitSeqScan`（HS 位一致镜像
-  `emitSeqScanBlocked` 在串行 CPU 上慢 ~10× 不采用）→ GPU/CPU 浮点差几个 ulp
-  （容差内）；reduce 位级一致不受影响。
-- **性能验证**（`bench/gpu_reduce_scan.myp`，基线 `BASELINE_gpu_reduce_scan.md`）：
-  GPU reduce 1M 0.87–0.97→0.67–0.9、scan 1M 1.6–2.0→1.2、reduce 4M 2.9–3.2→2.07、
-  scan 4M 5.6–6.4→4.07 ms/op——**全面改善，无性能回退**；CPU 回退持平。
-- **坑**：树 kernel `src[tid+half]` 越界（tid≥half 线程）→ 非法内存访问，须
-  `select` 钳索引到 tid；scan j-loop 缺 j++ 回边 → partials 只算 block 0；offsets
-  循环须重绑 acc/x（步骤 4 恢复后步骤 5 复用未绑定 → "undefined variable acc/x"）。
-- 回归 266/266 + AMD 交叉编译 + GPU 双模式（reduce/scan/algo/reduce_bit）PASS。
 
 ### v3.12.1 — 语言内建 @test 套件 + Man or Boy + lambda `nonlocal`
 - **语言内建测试套件（`@test`）**：`mypc --test file.myp` 生成测试运行器（主循环经
