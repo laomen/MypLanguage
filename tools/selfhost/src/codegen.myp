@@ -3475,6 +3475,7 @@ class CodeGen {
         // 错成不存在的 myp_cuda_* / 缺 _d/_h 后缀）。返回 "" 表示非 GPU 内建。
         string mapGpuIntrinsic(string fn) {
             if (fn == "__myp_cuda_available") return "myp_gpu_init";
+            if (fn == "__myp_cuda_force_cpu") return "myp_gpu_force_cpu";
             if (fn == "__myp_cuda_count") return "myp_gpu_device_count";
             if (fn == "__myp_cuda_name") return "myp_gpu_device_name";
             if (fn == "__myp_cuda_memory") return "myp_gpu_device_memory";

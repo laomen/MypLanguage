@@ -1,0 +1,31 @@
+// test_gpu_force_cpu: R0 运行时止血 OOB 回归（需 MYP_GPU=1 + 真实 GPU）。
+// kernel 越界访问触发 cuLaunchKernel/cuCtxSynchronize 失败 → runtime 记录
+// kernel 名 + 错误码 + 置 myp_gpu_force_cpu → 之后 Cuda.available() 返回 0
+// （myp_gpu_init 短路），整管线一致回退 CPU，而非静默混算。
+// 无 GPU 时打印 SKIP 并退出（CPU 回退模式无 kernel 启动，无法触发 OOB）。
+import env;
+import cuda;
+import gpu;
+
+class Main {
+    action:
+        @startup void run() {
+            if (Cuda.available() == 0) {
+                Console.writeString("SKIP no-gpu\n");
+                return;
+            }
+            // 数组 4 元素，循环上界 16 → kernel 越界写 a[4..15]（非法内存访问）
+            double[] a = new double[4];
+            @gpu for (int i = 0; i < 16; i = i + 1) {
+                a[i] = float(i);
+            }
+            int fc = Cuda.forceCpu();
+            int av = Cuda.available();
+            if (fc == 1 && av == 0) {
+                Console.writeString("PASS force-cpu after OOB\n");
+            } else {
+                Console.writeString("FAIL fc=" + fc + " av=" + av + "\n");
+            }
+        }
+}
+int main() { Main m = new Main() @thread; return 0; }

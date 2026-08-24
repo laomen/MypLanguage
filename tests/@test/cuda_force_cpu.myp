@@ -1,0 +1,15 @@
+// cuda_force_cpu: R0 运行时止血——Cuda.forceCpu() FFI 存在，且无 GPU 时为 0。
+// 运行期 kernel 越界/启动失败会置 forceCpu=1（见 tests/test_gpu_force_cpu.myp
+// 的 GPU-opt-in OOB 回归），本测试只验证 FFI 在 CPU 回退模式下的默认行为。
+
+import test;
+import cuda;
+
+@test void test_cuda_force_cpu() {
+    // 无 MYP_GPU=1 / 无 GPU 的测试环境：available 与 forceCpu 均为 0
+    int av = Cuda.available();
+    int fc = Cuda.forceCpu();
+    Test.assertEq(av, 0, "available=0 (no GPU in test env)");
+    Test.assertEq(fc, 0, "forceCpu=0 (no forced fallback)");
+    Test.report("test_cuda_force_cpu", true);
+}

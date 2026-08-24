@@ -156,7 +156,39 @@ static const char* gpu_err_str(CUresult r) {
     }
 }
 
+// §R0 GPU 运行时止血：全局「强制 CPU」标志 + 错误记录。
+// 任何 kernel 加载/启动失败（OOB、非法访问、launch 失败等）都会：
+//   1) 记录 kernel 名 + 错误码（g_fail_kernel / g_fail_code）；
+//   2) 置 g_force_cpu —— 之后 myp_gpu_init() 返回 0，整条管线一致回退 CPU；
+//   3) 打印明确诊断（不再静默混算）。
+static int g_force_cpu = 0;
+static char g_fail_kernel[128] = "";
+static int g_fail_code = 0;
+
+// 统一 CUDA 错误检查：r==0 返回 1；否则记录 + 打印 + 置 force_cpu，返回 0。
+static int gpu_check_err(CUresult r, const char* what, const char* kernel) {
+    if (r == 0) return 1;
+    g_fail_code = (int)r;
+    if (kernel && kernel[0]) {
+        strncpy(g_fail_kernel, kernel, sizeof(g_fail_kernel) - 1);
+        g_fail_kernel[sizeof(g_fail_kernel) - 1] = '\0';
+    }
+    if (!g_force_cpu) {
+        g_force_cpu = 1;
+        fprintf(stderr,
+                "[myp GPU] %s failed: %s (%d)%s%s — forcing CPU for the whole pipeline\n",
+                what, gpu_err_str(r), (int)r,
+                (kernel && kernel[0]) ? " kernel=" : "",
+                (kernel && kernel[0]) ? kernel : "");
+    }
+    return 0;
+}
+
+// 应用可查询：GPU 是否已在运行期失败（应整管线回退 CPU）。
+int myp_gpu_force_cpu(void) { return g_force_cpu; }
+
 int myp_gpu_init(void) {
+    if (g_force_cpu) return 0;
     if (avail) return 1;
     // GPU offload 默认关闭：须 MYP_GPU=1 环境变量显式启用（CPU 为一等后端，
     // 无 GPU 时正常回退；启用但失败时下方给出明确诊断）。
@@ -363,7 +395,7 @@ void myp_gpu_to_host(void* d,const void* s,size_t sz) { if(avail) p_cuMemcpyDtoH
 
 // Locate the CUDA libdevice bitcode file (provides __nv_* device math functions).
 // Search: $MYP_CUDA_LIBDEVICE, then common CUDA toolkit install paths.
-typedef struct { CUmodule mod; CUfunction fn; } kernel_t;
+typedef struct { CUmodule mod; CUfunction fn; const char* name; } kernel_t;
 
 // Kernel 缓存：每个唯一的 (PTX, name) 只在首次 launch 时 cuModuleLoadData 一次，
 // 之后复用同一模块/函数句柄。
@@ -393,19 +425,16 @@ void* myp_gpu_load_kernel(const char* ptx, const char* name) {
     }
     kernel_t* k = (kernel_t*)malloc(sizeof(kernel_t));
     if (!k) return NULL;
+    k->name = name;
 
     // The compiler JIT-links CUDA libdevice into the PTX at compile time, so the
     // PTX is fully self-contained (no external __nv_* references). Just load it.
     CUresult lr = p_cuModuleLoadData(&k->mod, ptx);
-    if (lr != 0) {
-        fprintf(stderr, "[myp GPU] PTX module load failed: %s — falling back to CPU\n",
-                gpu_err_str(lr));
+    if (!gpu_check_err(lr, "PTX module load", name)) {
         free(k); return NULL;
     }
     CUresult fr = p_cuModuleGetFunction(&k->fn, k->mod, name);
-    if (fr != 0) {
-        fprintf(stderr, "[myp GPU] kernel function '%s' not found in module: %s — "
-                        "falling back to CPU\n", name, gpu_err_str(fr));
+    if (!gpu_check_err(fr, "kernel function lookup", name)) {
         p_cuModuleUnload(k->mod);
         free(k); return NULL;
     }
@@ -438,10 +467,15 @@ int myp_gpu_launch(void* kctx, unsigned int gx, unsigned int bx, void** args, un
     if (prof && stream == 0) clock_gettime(CLOCK_MONOTONIC, &t0);
     if (logv) fprintf(stderr, "[myp GPU] launching kernel grid=%u block=%u stream=%ld\n", gx, bx, stream);
     int r = p_cuLaunchKernel(k->fn, gx,1,1, bx,1,1, 0, (CUstream)(intptr_t)stream, args, NULL);
-    if (r!=0) { if (logv) fprintf(stderr,"[myp GPU] cuLaunchKernel failed: %s\n", gpu_err_str(r)); return 0; }
+    if (r != 0) {
+        char what[96];
+        snprintf(what, sizeof(what), "cuLaunchKernel grid=%u block=%u", gx, bx);
+        gpu_check_err(r, what, k->name);
+        return 0;
+    }
     if (stream == 0) {
         r = p_cuCtxSynchronize();
-        if (r!=0) { if (logv) fprintf(stderr,"[myp GPU] cuCtxSynchronize failed: %s\n", gpu_err_str(r)); return 0; }
+        if (!gpu_check_err(r, "cuCtxSynchronize", k->name)) return 0;
         if (prof) {
             clock_gettime(CLOCK_MONOTONIC, &t1);
             double ms = (double)(t1.tv_sec - t0.tv_sec) * 1e3 +

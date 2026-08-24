@@ -213,6 +213,8 @@ void myp_flush(void);
 
 // ---- GPU / CUDA offload ----
 int   myp_gpu_init(void);
+// §R0 运行时止血：运行期 kernel 加载/启动失败后置 1（应用应整管线回退 CPU）。
+int   myp_gpu_force_cpu(void);
 void* myp_gpu_alloc(size_t size);
 void  myp_gpu_free(void* ptr);
 void  myp_gpu_to_device(void* dst, const void* src, size_t size);

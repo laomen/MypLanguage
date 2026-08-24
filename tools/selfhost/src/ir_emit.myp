@@ -518,6 +518,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare i32 @myp_gpu_init()\n");
             sb.append("\n");
+            sb.append("declare i32 @myp_gpu_force_cpu()\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_gpu_alloc(i64)\n");
             sb.append("\n");
             sb.append("declare void @myp_gpu_free(ptr)\n");

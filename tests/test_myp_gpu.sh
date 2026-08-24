@@ -75,7 +75,7 @@ else
 fi
 
 # 3) 无 GPU 设备测试：SKIP 输出不崩溃
-SKIP_TESTS="test_gpu_shfl test_gpu_stream test_gpu_byoc"
+SKIP_TESTS="test_gpu_shfl test_gpu_stream test_gpu_byoc test_gpu_force_cpu"
 for b in $SKIP_TESTS; do
     f="$PROJ_ROOT/tests/$b.myp"
     if [ ! -f "$f" ]; then continue; fi

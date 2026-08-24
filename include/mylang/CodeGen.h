@@ -356,6 +356,7 @@ private:
 
     // ---- GPU / CUDA runtime ----
     llvm::Function* runtime_gpu_init_ = nullptr;
+    llvm::Function* runtime_gpu_force_cpu_ = nullptr;
     llvm::Function* runtime_gpu_alloc_ = nullptr;
     llvm::Function* runtime_gpu_free_ = nullptr;
     llvm::Function* runtime_gpu_to_device_ = nullptr;

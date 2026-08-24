@@ -561,6 +561,7 @@ class Sema {
             addIntr("__myp_math_trunc", "double");
             addIntr("__myp_math_abs_int", "int");
             addIntr("__myp_cuda_available", "int");
+            addIntr("__myp_cuda_force_cpu", "int");
             addIntr("__myp_cuda_count", "int");
             addIntr("__myp_cuda_name", "string");
             addIntr("__myp_cuda_memory", "long");

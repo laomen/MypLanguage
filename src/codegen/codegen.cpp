@@ -2510,6 +2510,12 @@ void CodeGen::declareRuntimeFunctions() {
         llvm::Function::ExternalLinkage, "myp_gpu_init", module_.get());
     intrinsic_map_["__myp_cuda_available"] = runtime_gpu_init_;
 
+    // §R0 运行时止血：__myp_cuda_force_cpu → myp_gpu_force_cpu（运行期 GPU 失败
+    // 后置 1，应用据此整管线回退 CPU）。
+    runtime_gpu_force_cpu_ = llvm::Function::Create(gpu_init_ft,
+        llvm::Function::ExternalLinkage, "myp_gpu_force_cpu", module_.get());
+    intrinsic_map_["__myp_cuda_force_cpu"] = runtime_gpu_force_cpu_;
+
     auto* gpu_alloc_ft = llvm::FunctionType::get(p, {i64}, false);
     runtime_gpu_alloc_ = llvm::Function::Create(gpu_alloc_ft,
         llvm::Function::ExternalLinkage, "myp_gpu_alloc", module_.get());

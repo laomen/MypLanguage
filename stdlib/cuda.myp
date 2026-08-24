@@ -48,6 +48,12 @@ class Cuda {
             return __myp_cuda_available();
         }
 
+        // 运行期 GPU 是否已失败（kernel 加载/启动错误如 OOB）——返回 1 表示
+        // 应整管线一致回退 CPU（R0 运行时止血）。
+        int forceCpu() {
+            return __myp_cuda_force_cpu();
+        }
+
         // ---- 设备信息（GPU 不可用时返回 0 / 空字符串）----
 
         // CUDA 设备数量

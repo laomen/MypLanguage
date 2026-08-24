@@ -2658,6 +2658,8 @@ void Sema::registerIntrinsics() {
 
     // CUDA GPU availability (returns 1 if GPU offload usable, 0 otherwise)
     add_intrinsic("__myp_cuda_available", TypeKind::Int, {});
+    // §R0 运行时止血：运行期 GPU 失败后置 1（应用据此整管线回退 CPU）
+    add_intrinsic("__myp_cuda_force_cpu", TypeKind::Int, {});
 
     // CUDA device info (return 0/empty if GPU unavailable)
     add_intrinsic("__myp_cuda_count", TypeKind::Int, {});
