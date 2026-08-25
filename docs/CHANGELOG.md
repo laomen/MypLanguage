@@ -106,6 +106,36 @@ Phase C 切片）：
   shadow 链接**输出逐字一致**；bootstrap 16/16（fixpoint 不变）；全量 323/323。
 - **未做**：`myp_sem_getvalue` 等 C 内部 helper；future 已在 #38。
 
+### v3.15.44 — runtime myp化 #40：包 F `@parallel for` 线程池（pool.myp，futex 无 libc）
+
+**非破坏性**。`@parallel for` 线程池 MYP 化——shadow C 的 `myp_pool_*` 8 个核心
+API（`ensure_global`/`parallel_for`/`worker_id`/`thread_count`/`set_threads`/
+`worker_count`/`is_active`/`destroy`），**不依赖 pthread/libc**：
+
+- **全局单池** `@static PoolTab`（arena 缓冲字段 + 直接值字段分层；--shared
+  默认值不生效 → 显式 lazy 分配）。首次 `ensure_global` 建池：`sched_getaffinity`
+  （syscall 204）数硬件并发 → `myp_thread_spawn`（clone，#34）建 N worker。
+- **spawn 握手**：父设共享 `spawnTid` + 子读后写 `workerReady`（父轮询等 ready
+  才 spawn 下一个，无竞态）；worker_id 用 `gettid`（syscall 186）查表。
+- **parallel_for**：`[start,end)` 按 step 分 ≤ nThreads*4 块，round-robin 推入
+  各 worker 的 work-stealing deque（票号锁守护）→ `workSeq` futex 广播唤醒 →
+  barrier 等 `doneCount==totalChunks`（futex seq 字）。worker：pop 自家底部 →
+  steal 他人顶部 → 空则 futex 等 workSeq。
+- **并行 body 经 `__myp_indirect_void` 调用**（body 4 参 + fn 地址 = 5 实参），
+  arg = 捕获的局部变量结构体。⚠️ worker 并发跑 body——**body 不得分配 arena**
+  （thread.myp 同限制）；Atomic/数组读写安全。
+- **修复**：首版 `myp_pool_set_threads` 段错误（139）——`inited`/`nThreads` 等
+  标量**值字段**被 `__myp_mem_load_i32(field)` 当**地址**解引用（值为 0 → NULL）。
+  正解：值字段直接 `PoolTab.X` 访问；共享/原子字（running/spawnTid/workSeq/
+  barSeq/doneCount/totalChunks）arena 分配后经地址访问。
+- **验证**：新 `bench/freestanding/rt_pool_test.myp`（2 worker：int/long
+  @parallel 1000 累加=499500、10×100 累加、isActive/workerCount/threadCount）；
+  **shadow 29/29**；`tests/@test/manual_ch9_myp.myp`（含 @parallel for）用 MYP
+  shadow 链接 **3 tests / 11 assertions 全过**；bootstrap 16/16（fixpoint
+  `9f5cf25b` 不变，编译器未改）；全量 323/323（oracle + selfhost）。
+- **未做**：`@thread`/`@threadpool` 事件路由（event 10）、`myp_pool_create/once/
+  init_global` 等 C 内部旧 API、exec worker、任务队列。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

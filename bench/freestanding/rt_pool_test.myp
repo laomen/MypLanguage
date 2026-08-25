@@ -1,0 +1,54 @@
+// rt_pool_test.myp — @parallel for 线程池验证（runtime_myp/pool.myp，包 F，
+// clone + futex 无 libc）：int/long 循环变量 + Atomic.addInt、多批次（deque 复用 +
+// barrier 复位）、Parallel API。
+// 返回码：0 = 全过；N = 第 N 项失败。
+import pool;
+import atomic;
+
+class ParTest {
+    static:
+        int run() {
+            // 小池（2 worker）确定性快
+            Parallel.setThreads(2);
+
+            // 1) int @parallel for：tally[i] += i → sum = 0+..+999 = 499500
+            int[] tally = new int[1000];
+            @parallel for (int i = 0; i < 1000; i = i + 1) {
+                Atomic.addInt(tally, i, i);
+            }
+            int s = 0;
+            for (int j = 0; j < 1000; j = j + 1) s = s + tally[j];
+            if (s != 499500) return 1;
+
+            // 2) long @parallel for
+            int[] tally2 = new int[1000];
+            @parallel for (long i = 0L; i < 1000L; i = i + 1L) {
+                Atomic.addInt(tally2, int(i), int(i));
+            }
+            int s2 = 0;
+            for (int j = 0; j < 1000; j = j + 1) s2 = s2 + tally2[j];
+            if (s2 != 499500) return 2;
+
+            // 3) 多批次：10 × @parallel for(100) → 每槽 +1 ×10 → 1000
+            int[] tally3 = new int[100];
+            for (int b = 0; b < 10; b = b + 1) {
+                @parallel for (int i = 0; i < 100; i = i + 1) {
+                    Atomic.addInt(tally3, i, 1);
+                }
+            }
+            int s3 = 0;
+            for (int j = 0; j < 100; j = j + 1) s3 = s3 + tally3[j];
+            if (s3 != 1000) return 3;
+
+            // 4) Parallel API
+            if (Parallel.isActive() != 1) return 4;
+            if (Parallel.workerCount() != 2) return 5;
+            if (Parallel.threadCount() < 1) return 6;
+
+            return 0;
+        }
+}
+
+int main() {
+    return ParTest.run();
+}

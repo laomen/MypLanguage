@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 28/28）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 29/29）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#39 后重算） | **269**（~55%） |
-| 未 shadow（C runtime 剩余） | **221** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#40 后重算） | **277**（~57%） |
+| 未 shadow（C runtime 剩余） | **213** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -27,7 +27,10 @@ arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get
 args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 汇编原语 asm /
 诊断 diag(type_live + fail_alloc，#35) / **协程 coro 全生命周期（#36 Phase A 核心 +
 #37 Phase B 事件/等待层 + 帧表 + 诊断 + #38 Phase C channel/future）** /
-**同步原语 sync（#39 futex 无 libc：mutex/sem/cond/rwlock/once/barrier）**。
+**同步原语 sync（#39 futex 无 libc：mutex/sem/cond/rwlock/once/barrier）** /
+**线程池 pool（#40 clone worker + futex + work-stealing：`myp_pool_*` 8 个核心 API**
+（ensure_global/parallel_for/worker_id/thread_count/set_threads/worker_count/
+is_active/destroy）**）**。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -143,16 +146,22 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **难度**：中高（futex + 无 CAS 的 add/sub 设计；once 嵌套锁坑）。
 
 ### 包 F：并发/线程层（thread 11 + pool 11 + event 10 + work 5 + queue 7 = 44）
-- **✅ 地基已就绪（#34）**：`myp_thread_spawn`（`thread.myp`）—— clone syscall 直建
+- **✅ 地基（#34）**：`myp_thread_spawn`（`thread.myp`）—— clone syscall 直建
   线程（不保留 C/pthread），mmap 新栈 + CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM +
-  子跑共享入口后 syscall 60 退出。已验证：探针 + 3 并发子线程测试（8/8 稳定）。
-  关键：**子分支不声明局部**（子 RSP=新栈顶无 frame，正偏移栈写越界）→ 只传实参给
-  helper `myp_thread_child_entry` 建帧 + capture entry → `done_read=1` 确定性握手
-  （父等 done_read 才覆盖 entry，无竞态）。无 CLONE_SETTLS（共享父 TLS，符合 MYP
-  @static 非 TLS 模型）；无 join API（靠共享标志/未来 futex）。
-- **`@parallel for`**：`myp_pool_create/ensure_global/parallel_for/destroy/worker_id/
-  thread_count/set_threads/worker_count/is_active` + work-stealing 队列（work 5）+
-  任务队列（queue 7）。
+  子跑共享入口后 syscall 60 退出。关键：**子分支不声明局部**（子 RSP=新栈顶无
+  frame，正偏移栈写越界）→ 只传实参给 helper `myp_thread_child_entry` 建帧 +
+  capture entry → `done_read=1` 确定性握手。无 CLONE_SETTLS；无 join API。
+- **✅ `@parallel for` 已做（#40 pool.myp，futex 无 libc）**：全局单池 `@static
+  PoolTab`；ensure_global 首次建池（sched_getaffinity=204 数 CPU → clone N worker，
+  spawn 握手 = 父设共享 spawnTid + 子写 workerReady，gettid=186 查表得 worker_id）；
+  parallel_for 分 ≤nThreads*4 块入各 deque（票号锁）→ workSeq futex 广播唤醒 →
+  barrier 等 doneCount==totalChunks；worker pop 自家 → steal 他人 → 空则 futex 等。
+  8 个 `myp_pool_*` shadow C 版（ensure_global/parallel_for/worker_id/
+  thread_count/set_threads/worker_count/is_active/destroy）。worker 并发跑
+  parallel body（**body 不得分配 arena**，与 thread.myp 同限制）。
+- **测试**：`bench/freestanding/rt_pool_test.myp`（2 worker：int/long @parallel
+  1000 累加=499500、10×100 累加、isActive/workerCount/threadCount）；`tests/@test/
+  manual_ch9_myp.myp` 用 MYP shadow 链接 **3 tests / 11 assertions 全过**。
 - **`@thread`**：`myp_thread_create/self/stop/destroy/is_current/associate_instance/
   post_event/run_loop/entry/current/for_instance` + 事件路由（event 10：
   `myp_event_route_to_thread`、dispatch/fire/process_*/register/scope）。
@@ -199,10 +208,9 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 2. ✅ **包 B 诊断**（#35 diag.myp：type_live + fail_alloc；coro 诊断读协程状态待
    包 D）
 3. ✅ **包 C 异常机制**（#33 exception.myp，协程前置之一）
-4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪 + 异常边界已具备；线程创建已用 clone
-   直建 #34，不再依赖 pthread）
-5. **包 E 同步原语**（futex 或 pthread 间接调）
-6. **包 F 线程/pool**（pthread_create OS 边界，最难）
+4. ✅ **包 D 协程**（#36/#37/#38 coro.myp 全生命周期）
+5. ✅ **包 E 同步原语**（#39 sync.myp futex 无 libc）
+6. ✅ **包 F pool（`@parallel for`）**（#40 pool.myp；thread/event 路由仍待）
 7. **包 G GPU**（`__myp_indirect` 就绪，可并行推进）
 8. **包 H bridge**（按库分批）
 

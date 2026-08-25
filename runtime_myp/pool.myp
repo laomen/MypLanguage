@@ -1,0 +1,312 @@
+// runtime_myp/pool.myp — @parallel for 线程池 MYP 化（包 F pool，不依赖 libc）。
+// shadow C 的 myp_pool_*（9 个）——用 clone（thread.myp myp_thread_spawn）+ futex
+// syscall(202) + 原子（__myp_atomic_*_addr）实现，**不依赖 pthread/libc**。
+//
+// 机制：
+//   - 全局单池 @static PoolTab；ensure_global 首次建池：nThreads（默认硬件并发，
+//     经 sched_getaffinity(204) 数 CPU）+ spawn N 个 clone worker。
+//   - 每 worker 一个 work-stealing deque（票号锁 + chunk 扁平数组 + bottom/top）。
+//   - parallel_for：把 [start,end) 分成 ≤ nThreads*4 块推入各 deque → workSeq+1 广播
+//     唤醒 → barrier 等 doneCount==totalChunks。
+//   - worker：pop 自家 deque → 失败则 steal 他人 → 仍无则 futex 等 workSeq。
+//   - worker 索引：spawn 时经共享 spawnTid + per-worker ready 握手（父等 ready 才
+//     覆盖下一 spawn），worker_id 用 gettid(186) 查表（MYP 无 TLS）。
+//   - ⚠️ worker 并发运行 parallel body——body 不得分配 arena（thread.myp 限制）；
+//     Atomic/数组操作安全。
+
+ffi void myp_pause();
+ffi long myp_arena_alloc(long size);
+ffi void myp_thread_spawn(long entryAddr);
+
+// ---- 表（arena 缓冲地址；lazy 分配）----
+@static class PoolTab {
+    property:
+        long inited = 0;      // int
+        long running = 0;     // int
+        long nThreads = 0;    // int
+        long requestedThreads = 0;   // int（set_threads）
+        long workFn = 0;      // long：当前 body fn 地址
+        long workArg = 0;     // long：body arg
+        long spawnTid = 0;    // int：spawn 时待传的 worker 索引
+        long workSeq = 0;     // int：work 信号 futex 字
+        long barSeq = 0;      // int：barrier 完成 futex 字
+        long doneCount = 0;   // int
+        long totalChunks = 0; // int
+        // per-worker deque
+        long dqServing = 0;   // int[64]：票号锁 serving
+        long dqNext = 0;      // int[64]：票号锁 next
+        long dqBottom = 0;    // int[64]
+        long dqTop = 0;       // int[64]
+        long chStart = 0;     // int[64*256]：chunk 扁平存储
+        long chEnd = 0;       // int[64*256]
+        long chStep = 0;      // int[64*256]
+        long curStart = 0;    // int[64]：pop 结果（per-worker，防并发覆盖）
+        long curEnd = 0;      // int[64]
+        long curStep = 0;     // int[64]
+        long workerTid = 0;   // long[64]：worker index → tid（worker_id 查询）
+        long workerReady = 0; // int[64]：spawn 握手
+        long maskBuf = 0;     // sched_getaffinity 128B 缓冲
+}
+
+void poolInit() {
+    if (PoolTab.dqServing == 0) {
+        PoolTab.running = myp_arena_alloc(4);
+        PoolTab.spawnTid = myp_arena_alloc(4);
+        PoolTab.workSeq = myp_arena_alloc(4);
+        PoolTab.barSeq = myp_arena_alloc(4);
+        PoolTab.doneCount = myp_arena_alloc(4);
+        PoolTab.totalChunks = myp_arena_alloc(4);
+        PoolTab.dqServing = myp_arena_alloc(64 * 4);
+        PoolTab.dqNext = myp_arena_alloc(64 * 4);
+        PoolTab.dqBottom = myp_arena_alloc(64 * 4);
+        PoolTab.dqTop = myp_arena_alloc(64 * 4);
+        PoolTab.chStart = myp_arena_alloc(64 * 256 * 4);
+        PoolTab.chEnd = myp_arena_alloc(64 * 256 * 4);
+        PoolTab.chStep = myp_arena_alloc(64 * 256 * 4);
+        PoolTab.curStart = myp_arena_alloc(64 * 4);
+        PoolTab.curEnd = myp_arena_alloc(64 * 4);
+        PoolTab.curStep = myp_arena_alloc(64 * 4);
+        PoolTab.workerTid = myp_arena_alloc(64 * 8);
+        PoolTab.workerReady = myp_arena_alloc(64 * 4);
+        PoolTab.maskBuf = myp_arena_alloc(128);
+    }
+}
+
+// ---- 硬件并发数（sched_getaffinity=204，无 sysconf）----
+int poolCpuCount() {
+    long r = __myp_syscall(204, 0, 128, PoolTab.maskBuf, 0, 0, 0);
+    if (r < 0) return 4;
+    int n = 0;
+    for (int i = 0; i < 128; i = i + 1) {
+        int b = int(__myp_mem_load_i8(PoolTab.maskBuf + long(i)));
+        while (b != 0) {
+            if ((b & 1) != 0) n = n + 1;
+            b = b >> 1;
+        }
+    }
+    if (n < 1) n = 1;
+    return n;
+}
+
+// ---- deque 票号锁（per-worker）----
+void dqLock(int t) {
+    int tk = __myp_atomic_add_i32_addr(PoolTab.dqNext + long(t) * 4, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(PoolTab.dqServing + long(t) * 4);
+        if (s == tk) return;
+        __myp_syscall(202, PoolTab.dqServing + long(t) * 4, 128, s, 0, 0, 0);
+    }
+}
+void dqUnlock(int t) {
+    __myp_atomic_add_i32_addr(PoolTab.dqServing + long(t) * 4, 1);
+    __myp_syscall(202, PoolTab.dqServing + long(t) * 4, 129, 2147483647, 0, 0, 0);
+}
+void dqPush(int t, int st, int en, int sp) {
+    dqLock(t);
+    int b = __myp_mem_load_i32(PoolTab.dqBottom + long(t) * 4);
+    if (b < 256) {
+        long idx = long(t) * 256 + long(b);
+        __myp_mem_store_i32(PoolTab.chStart + idx * 4, st);
+        __myp_mem_store_i32(PoolTab.chEnd + idx * 4, en);
+        __myp_mem_store_i32(PoolTab.chStep + idx * 4, sp);
+        __myp_mem_store_i32(PoolTab.dqBottom + long(t) * 4, b + 1);
+    }
+    dqUnlock(t);
+}
+// pop 自家 deque 底部；成功写入 cur*[t]，返回 1
+int dqPop(int t) {
+    dqLock(t);
+    int b = __myp_mem_load_i32(PoolTab.dqBottom + long(t) * 4);
+    int tp = __myp_mem_load_i32(PoolTab.dqTop + long(t) * 4);
+    if (b <= tp) { dqUnlock(t); return 0; }
+    b = b - 1;
+    long idx = long(t) * 256 + long(b);
+    __myp_mem_store_i32(PoolTab.curStart + long(t) * 4, __myp_mem_load_i32(PoolTab.chStart + idx * 4));
+    __myp_mem_store_i32(PoolTab.curEnd + long(t) * 4, __myp_mem_load_i32(PoolTab.chEnd + idx * 4));
+    __myp_mem_store_i32(PoolTab.curStep + long(t) * 4, __myp_mem_load_i32(PoolTab.chStep + idx * 4));
+    __myp_mem_store_i32(PoolTab.dqBottom + long(t) * 4, b);
+    dqUnlock(t);
+    return 1;
+}
+// steal 他人 deque 顶部；成功写入 cur*[tid]，返回 1
+int dqSteal(int tid, int victim) {
+    dqLock(victim);
+    int tp = __myp_mem_load_i32(PoolTab.dqTop + long(victim) * 4);
+    int b = __myp_mem_load_i32(PoolTab.dqBottom + long(victim) * 4);
+    if (tp >= b) { dqUnlock(victim); return 0; }
+    long idx = long(victim) * 256 + long(tp);
+    __myp_mem_store_i32(PoolTab.curStart + long(tid) * 4, __myp_mem_load_i32(PoolTab.chStart + idx * 4));
+    __myp_mem_store_i32(PoolTab.curEnd + long(tid) * 4, __myp_mem_load_i32(PoolTab.chEnd + idx * 4));
+    __myp_mem_store_i32(PoolTab.curStep + long(tid) * 4, __myp_mem_load_i32(PoolTab.chStep + idx * 4));
+    __myp_mem_store_i32(PoolTab.dqTop + long(victim) * 4, tp + 1);
+    dqUnlock(victim);
+    return 1;
+}
+// 完成一个 chunk → doneCount++；全完成 → barSeq+1 唤醒 barrier
+void poolChunkDone() {
+    long dc = PoolTab.doneCount;
+    long tc = PoolTab.totalChunks;
+    __myp_atomic_add_i32_addr(dc, 1);
+    if (__myp_mem_load_i32(dc) >= __myp_mem_load_i32(tc)) {
+        __myp_atomic_add_i32_addr(PoolTab.barSeq, 1);
+        __myp_syscall(202, PoolTab.barSeq, 129, 2147483647, 0, 0, 0);
+    }
+}
+// 无工作 → futex 等 workSeq 变化
+void poolWorkWait() {
+    int s = __myp_atomic_load_i32_addr(PoolTab.workSeq);
+    __myp_syscall(202, PoolTab.workSeq, 128, s, 0, 0, 0);
+}
+
+// ---- worker 入口（clone 子线程；spawn 前父设 spawnTid + 等 ready 握手）----
+void poolWorkerEntry() {
+    int tid = int(__myp_mem_load_i32(PoolTab.spawnTid));
+    __myp_mem_store_i64(PoolTab.workerTid + long(tid) * 8, __myp_syscall(186, 0, 0, 0, 0, 0, 0));
+    __myp_mem_store_i32(PoolTab.workerReady + long(tid) * 4, 1);   // 握手：已读 spawnTid
+    while (__myp_mem_load_i32(PoolTab.running) != 0) {
+        int got = dqPop(tid);
+        if (got == 0) {
+            int nt = int(PoolTab.nThreads);
+            for (int k = 1; k < nt && got == 0; k = k + 1) {
+                int victim = (tid + k) % nt;
+                got = dqSteal(tid, victim);
+            }
+        }
+        if (got != 0) {
+            __myp_indirect_void(PoolTab.workFn,
+                __myp_mem_load_i32(PoolTab.curStart + long(tid) * 4),
+                __myp_mem_load_i32(PoolTab.curEnd + long(tid) * 4),
+                __myp_mem_load_i32(PoolTab.curStep + long(tid) * 4),
+                PoolTab.workArg);
+            poolChunkDone();
+        } else {
+            poolWorkWait();
+        }
+    }
+    __myp_syscall(60, 0);   // 池销毁 → 退出本线程
+}
+
+// ---- C: myp_pool_t* myp_pool_ensure_global(void) ----
+long myp_pool_ensure_global() {
+    poolInit();
+    if (PoolTab.inited == 0) {
+        int nt = int(PoolTab.requestedThreads);
+        if (nt <= 0) nt = poolCpuCount();
+        if (nt < 1) nt = 1;
+        if (nt > 64) nt = 64;
+        PoolTab.nThreads = long(nt);
+        __myp_mem_store_i32(PoolTab.running, 1);
+        PoolTab.inited = 1;
+        __myp_mem_store_i32(PoolTab.doneCount, 0);
+        __myp_mem_store_i32(PoolTab.totalChunks, 0);
+        __myp_mem_store_i32(PoolTab.workSeq, 0);
+        __myp_mem_store_i32(PoolTab.barSeq, 0);
+        for (int i = 0; i < 64; i = i + 1) {
+            __myp_mem_store_i64(PoolTab.workerTid + long(i) * 8, -1);
+            __myp_mem_store_i32(PoolTab.workerReady + long(i) * 4, 0);
+            __myp_mem_store_i32(PoolTab.dqServing + long(i) * 4, 0);
+            __myp_mem_store_i32(PoolTab.dqNext + long(i) * 4, 0);
+            __myp_mem_store_i32(PoolTab.dqBottom + long(i) * 4, 0);
+            __myp_mem_store_i32(PoolTab.dqTop + long(i) * 4, 0);
+        }
+        // spawn N workers（父设 spawnTid → spawn → 等 ready 握手）
+        for (int i = 0; i < nt; i = i + 1) {
+            __myp_mem_store_i32(PoolTab.spawnTid, i);
+            __myp_mem_store_i32(PoolTab.workerReady + long(i) * 4, 0);
+            myp_thread_spawn(__myp_fn_addr("poolWorkerEntry"));
+            long guard = 0;
+            while (__myp_mem_load_i32(PoolTab.workerReady + long(i) * 4) == 0) {
+                guard = guard + 1;
+                if (guard > 100000000) break;
+                myp_pause();
+            }
+        }
+    }
+    return 1;   // 池句柄（单全局池，不透明）
+}
+
+// ---- C: void myp_pool_parallel_for(pool, start, end, step, fn, arg) ----
+void myp_pool_parallel_for(long pool, int start, int end, int step, long fn, long arg) {
+    poolInit();
+    int nt = int(PoolTab.nThreads);
+    if (nt <= 0) { myp_pool_ensure_global(); nt = int(PoolTab.nThreads); }
+    int n = (end - start + step - 1) / step;
+    if (n <= 0) return;
+    PoolTab.workFn = fn;
+    PoolTab.workArg = arg;
+    int maxChunks = nt * 4;
+    if (maxChunks > n) maxChunks = n;
+    if (maxChunks < 1) maxChunks = 1;
+    int chunkSize = n / maxChunks;
+    if (chunkSize < 1) chunkSize = 1;
+    int remainder = n % maxChunks;
+    // 复位 barrier + 清空 deque（在发布 chunk 前）
+    __myp_mem_store_i32(PoolTab.doneCount, 0);
+    __myp_mem_store_i32(PoolTab.totalChunks, 0);
+    for (int t = 0; t < nt; t = t + 1) {
+        __myp_mem_store_i32(PoolTab.dqBottom + long(t) * 4, 0);
+        __myp_mem_store_i32(PoolTab.dqTop + long(t) * 4, 0);
+    }
+    int iter = start;
+    int actual = 0;
+    for (int c = 0; c < maxChunks && iter < end; c = c + 1) {
+        int sz = chunkSize + (c < remainder ? 1 : 0);
+        int ce = iter + sz;
+        if (ce > end) ce = end;
+        int td = c % nt;
+        dqPush(td, iter, ce, step);
+        iter = ce;
+        actual = actual + 1;
+    }
+    __myp_mem_store_i32(PoolTab.totalChunks, actual);
+    // 唤醒 workers
+    __myp_atomic_add_i32_addr(PoolTab.workSeq, 1);
+    __myp_syscall(202, PoolTab.workSeq, 129, 2147483647, 0, 0, 0);
+    // 等完成
+    int s = __myp_atomic_load_i32_addr(PoolTab.barSeq);
+    while (__myp_mem_load_i32(PoolTab.doneCount) < __myp_mem_load_i32(PoolTab.totalChunks)) {
+        __myp_syscall(202, PoolTab.barSeq, 128, s, 0, 0, 0);
+    }
+}
+
+// ---- C: int32_t myp_pool_worker_id(void) ----
+int myp_pool_worker_id() {
+    poolInit();
+    long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
+    int nt = int(PoolTab.nThreads);
+    for (int i = 0; i < nt; i = i + 1) {
+        if (__myp_mem_load_i64(PoolTab.workerTid + long(i) * 8) == my) return i;
+    }
+    return -1;
+}
+// ---- C: int32_t myp_pool_thread_count(void) —— 硬件并发数 ----
+int myp_pool_thread_count() {
+    poolInit();
+    return poolCpuCount();
+}
+// ---- C: void myp_pool_set_threads(int n) —— 首次创建前生效 ----
+void myp_pool_set_threads(int n) {
+    poolInit();
+    if (PoolTab.inited != 0) return;   // 池已建 → no-op
+    if (n < 0) n = 0;
+    PoolTab.requestedThreads = long(n);
+}
+// ---- C: int32_t myp_pool_worker_count(void) ----
+int myp_pool_worker_count() {
+    poolInit();
+    if (PoolTab.inited == 0) return 0;
+    return int(PoolTab.nThreads);
+}
+// ---- C: int32_t myp_pool_is_active(void) ----
+int myp_pool_is_active() {
+    poolInit();
+    return PoolTab.inited != 0 ? 1 : 0;
+}
+// ---- C: void myp_pool_destroy(pool) ----
+void myp_pool_destroy(long pool) {
+    poolInit();
+    __myp_mem_store_i32(PoolTab.running, 0);
+    __myp_atomic_add_i32_addr(PoolTab.workSeq, 1);   // 唤醒所有 worker 让它们退出
+    __myp_syscall(202, PoolTab.workSeq, 129, 2147483647, 0, 0, 0);
+    // worker 各自 syscall 60 退出；无 join API（clone THREAD 不可 waitpid）
+}
