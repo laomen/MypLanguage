@@ -294,3 +294,25 @@ void myp_free_all() {
     myp_region_free_all();
     myp_arena_free_all();
 }
+
+// ---- #47：C runtime 残留的 2 个纯逻辑函数（防御性平价；selfhost 不发射）----
+// C: void myp_free(void* ptr) —— libc free。仅用于非 arena 指针（selfhost 不发射
+// myp_free，MYP 分配走 arena/myp_alloc；防御性 shadow，同 C 语义）。
+// ffi 名称即链接符号 → 用 libc 的 `free`。
+ffi void free(long ptr);
+void myp_free(long ptr) {
+    if (ptr != 0) free(ptr);
+}
+
+// C: void myp_release_fixed_class_array(void* data, uint64_t count) —— 释放固定
+// （栈）类数组的 count 个元素强引用槽；backing 栈缓冲不释放（同 C）。
+// selfhost 不发射（固定类数组 ARC 由 generateArcSupport 内联）；防御性平价。
+void myp_release_fixed_class_array(long data, long count) {
+    if (data == 0) return;
+    long i = 0;
+    while (i < count) {
+        long p = __myp_mem_load_i64(data + i * 8);
+        if (p != 0) myp_release(__myp_addr_to_str(p));
+        i = i + 1;
+    }
+}

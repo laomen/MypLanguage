@@ -1,0 +1,17 @@
+// rt_bounds_fail_test.myp — 数组越界负例（runtime_myp/diag.myp：#47 myp_bounds_error）：
+// slice<int> 下标越界 → selfhost codegen 发射 myp_bounds_error → stderr 诊断 +
+// SIGABRT（exit 134）。本测试为「应失败」用例：build.sh 以 expected=134 特判。
+import env;
+
+class BoundsFail {
+    static:
+        int run() {
+            slice<int> s = new slice<int>(4);
+            int x = s[10];   // 越界 → myp_bounds_error → abort(134)
+            Console.writeString("SHOULD NOT REACH x=");
+            Console.write(x);
+            Console.writeString("\n");
+            return 0;
+        }
+}
+int main() { return BoundsFail.run(); }

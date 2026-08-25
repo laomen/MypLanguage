@@ -1,0 +1,40 @@
+// runtime_myp/rtti.myp — RTTI 类型名 MYP 化（shadow C runtime 的 myp_type_name /
+// myp_obj_type_name）。§五-4：从对象头 type_id → __myp_type_name_table[type_id]
+// 类名字符串。
+//
+// 对象头：8B { rc:u32, type_id:u32 } 在 data-8/data-4；type_id 读 (addr-4)。
+// __myp_type_name_table：selfhost codegen 始终发射（无类程序也 [1 x ptr]），
+// 经 __myp_fn_addr("__myp_type_name_table") 取址（ptrtoint 全局常量）。
+// 表内字符串为 static data（无 ARC 头）→ 返回前 myp_alloc 计数拷贝（同 C
+// myp_strdup，M8：reflection 结果流入 string 槽）。
+
+ffi string myp_alloc(long size);
+
+// C: const char* myp_type_name(int type_id) —— "" 对 0/未知（计数拷贝）。
+string myp_type_name(int tid) {
+    if (tid <= 0) return rttiStrDup(0);
+    long tab = __myp_fn_addr("__myp_type_name_table");
+    if (tab == 0) return rttiStrDup(0);
+    long name = __myp_mem_load_i64(tab + long(tid) * 8);
+    return rttiStrDup(name);
+}
+
+// C: const char* myp_obj_type_name(void* obj) —— 实例类型名（"" 对 null/非类）。
+string myp_obj_type_name(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return rttiStrDup(0);
+    int tid = __myp_mem_load_i32(addr - 4);
+    return myp_type_name(tid);
+}
+
+// C 串（char*，NUL 结尾）→ 计数拷贝（myp_alloc；len=0 → 空串）
+string rttiStrDup(long name) {
+    long len = 0;
+    if (name != 0) {
+        while (__myp_mem_load_i8(name + len) != 0) len = len + 1;
+    }
+    string s = myp_alloc(len + 1);
+    if (len > 0) __myp_memcpy(__myp_str_ptr(s), name, len);
+    __myp_mem_store_i8(__myp_str_ptr(s) + len, 0);
+    return s;
+}

@@ -1,0 +1,52 @@
+// rt_rtti_test.myp — RTTI 类型名验证（runtime_myp/rtti.myp，#47）：
+// shadow C 的 myp_type_name / myp_obj_type_name —— 经 stdlib Rtti.typeOf/typeId
+// （__myp_type_name/__myp_type_id 内建 → myp_obj_type_name(myp_type_name)）触发。
+// 覆盖：类实例类型名、typeId 非 0、sameType、null → ""。
+import env;
+import rtti;
+
+ffi long myp_obj_type_id(string obj);
+
+class Person {
+    property:
+        int age = 0;
+    function:
+        int getAge() { return age; }
+}
+class Employee {
+    property:
+        int level = 0;
+}
+
+class RttiTest {
+    static:
+        int run() {
+            Person p = new Person();
+            Person p2 = new Person();
+            Employee e = new Employee();
+
+            string n = Rtti.typeOf<Person>(p);
+            if (n != "Person") { Console.writeString("FAIL typeOf Person: " + n + "\n"); return 1; }
+
+            int id = Rtti.typeId<Person>(p);
+            if (id == 0) { Console.writeString("FAIL typeId 0\n"); return 2; }
+            int id2 = Rtti.typeId<Person>(p2);
+            if (id != id2) { Console.writeString("FAIL typeId 不稳定\n"); return 3; }
+            int idE = Rtti.typeId<Employee>(e);
+            if (idE == id) { Console.writeString("FAIL 跨类 typeId 相同\n"); return 4; }
+
+            int same = Rtti.sameType<Person, Person>(p, p2);
+            if (same != 1) { Console.writeString("FAIL sameType\n"); return 5; }
+
+            string n0 = Rtti.typeOf<Person>(null);
+            if (n0 != "") { Console.writeString("FAIL null typeOf\n"); return 6; }
+
+            // 对象头 type_id 直读（同 C myp_obj_type_id）：addr-4
+            int rawId = myp_obj_type_id(p);
+            if (rawId != id) { Console.writeString("FAIL 头 type_id 不一致\n"); return 7; }
+
+            Console.writeString("RTTI OK\n");
+            return 0;
+        }
+}
+int main() { return RttiTest.run(); }

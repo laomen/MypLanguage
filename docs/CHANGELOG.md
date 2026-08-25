@@ -359,6 +359,31 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.53 — runtime myp化 #47：codegen 契约 5 个（bounds_error / RTTI 类型名 / free / 固定类数组释放）
+
+**非破坏性**。把编译器依赖的 C runtime 函数继续清零——5 个 codegen 契约 MYP 化
+（零编译器改动）：
+
+- **`myp_bounds_error`（diag.myp）**：`slice<T>` 下标越界 → stderr
+  `"MYP runtime error: slice index N out of bounds (length M)"` + `kill(SIGABRT)`
+  /`exit(134)`（同 C abort()）。新 `bench/freestanding/rt_bounds_fail_test.myp`
+  （应失败用例，build.sh `expected=134` 特判）：`slice<int>(4)[10]` → stderr 诊断
+  + exit 134。
+- **RTTI 类型名（rtti.myp 新增）**：`myp_obj_type_name`/`myp_type_name` ——
+  `__myp_fn_addr("__myp_type_name_table")` 取 **selfhost 恒发射**的类型名表
+  （无类程序也 `[1 x ptr]`，故无需编译器改动）+ 对象头 type_id（`addr-4`）→
+  `myp_alloc` 计数拷贝（同 C myp_strdup；表内字符串无 ARC 头）。新
+  `bench/freestanding/rt_rtti_test.myp`：`Rtti.typeOf`=Person / `typeId` 非 0 且
+  跨类不同 / `sameType`=1 / null→"" / 头 type_id 直读一致。
+- **`myp_free`（alloc.myp）**：libc `free`（`ffi void free(long)` 直调）。
+- **`myp_release_fixed_class_array`（alloc.myp）**：固定类数组 count 个元素强引用
+  槽循环 `myp_release`（backing 栈缓冲不释放，同 C）。
+- **审计更新**：codegen 契约 C-only **仅剩 `myp_printf` 保留 C**（varargs 不便
+  shadow；selfhost 只 `declare` 从不调用）+ `cublas` 2 钩子。shadow 375→380
+  （~78%）；runtime_myp 模块 21→22。
+- **验证**：shadow 36/36（34 + rt_rtti + rt_bounds_fail）；bootstrap 16/16
+  fixpoint 不变（md5 9f5cf25b）；oracle + selfhost 全量 323/323（编译器未动）。
+
 ### v3.15.52 — runtime myp化 #46：协程动态表（解除 1024 上限）+ Go 式动态栈 + 栈池
 
 **非破坏性**。coro.myp 两项结构性升级（包 D 收尾）：

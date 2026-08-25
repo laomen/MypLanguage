@@ -13,6 +13,7 @@
 ffi string myp_env_get(string name);
 ffi long myp_str_to_long(string s);
 ffi string myp_to_string_u64(long val);
+ffi string myp_to_string_i64(long val);
 ffi int myp_strlen(string s);
 
 @static class TLive {
@@ -85,4 +86,28 @@ void myp_fail_alloc_check() {
         __myp_syscall(62, pid, 6, 0, 0, 0, 0);            // kill(pid, SIGABRT)
         __myp_syscall(60, 134, 0, 0, 0, 0, 0);            // 兜底 exit(134)
     }
+}
+
+// ---- 数组越界错误（#47：slice 下标检查失败 → stderr + abort，shadow C）----
+// C: void myp_bounds_error(int64_t idx, int64_t len)（noreturn）——codegen 对
+// slice/数组下标发射越界分支调用。SIGABRT（kill pid 6）+ exit(134) 兜底，同
+// myp_fail_alloc_check / C abort()。
+void diagCStr(long s) {
+    long n = 0;
+    while (__myp_mem_load_i8(s + n) != 0) n = n + 1;
+    __myp_syscall(1, 2, s, n, 0, 0, 0);
+}
+void diagI64(long v) {
+    string s = myp_to_string_i64(v);
+    diagCStr(__myp_str_ptr(s));
+}
+void myp_bounds_error(long idx, long len) {
+    diagCStr(__myp_str_ptr("MYP runtime error: slice index "));
+    diagI64(idx);
+    diagCStr(__myp_str_ptr(" out of bounds (length "));
+    diagI64(len);
+    diagCStr(__myp_str_ptr(")\n"));
+    long pid = __myp_syscall(39);
+    __myp_syscall(62, pid, 6, 0, 0, 0, 0);   // kill(pid, SIGABRT)
+    __myp_syscall(60, 134, 0, 0, 0, 0, 0);   // 兜底 exit(134)
 }

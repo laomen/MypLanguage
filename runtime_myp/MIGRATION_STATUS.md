@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 34/34）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 36/36）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,10 +16,10 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#45 补后重算） | **375**（~77%） |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#47 补后重算） | **380**（~78%） |
 | 未 shadow（C runtime 剩余） | **115** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
-| runtime_myp 模块 | **21** 个 |
+| runtime_myp 模块 | **22** 个 |
 
 已完成的层（#1–#37 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
 long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_diag_arena_*`，#31）+
@@ -78,6 +78,17 @@ STREAM_CAPTURE_INVALIDATED；capture 期间不可 cuCtxSetCurrent（同 400）�
 C 平价实现（返回 1，忽略 CUresult），数据迁移不可验；事件/图真实路径全通过。
 rt_gpu_test 双模式 + Stage C 探针验证。shadow 358→375。包 G 三 Stage 全完成。
 
+**#47 codegen 契约（v3.15.53）**：5 个编译器依赖的 C runtime 函数 MYP 化——
+`myp_bounds_error`（diag.myp：`slice<T>` 下标越界 → stderr `"MYP runtime error:
+slice index N out of bounds (length M)"` + kill(SIGABRT)/exit 134，负例
+`rt_bounds_fail_test` expected=134）/ `myp_obj_type_name` + `myp_type_name`
+（**rtti.myp 新增**：`__myp_fn_addr("__myp_type_name_table")` 取 selfhost 恒发射的
+类型名表 + 对象头 type_id (addr-4) → myp_alloc 计数拷贝，正例 `rt_rtti_test`
+typeOf=Person/typeId 非 0/sameType/null→""）/ `myp_free`（alloc.myp，ffi 直调 libc
+`free`）/ `myp_release_fixed_class_array`（alloc.myp：data+i*8 槽 → myp_release）。
+shadow 375→380；**codegen 契约仅剩 `myp_printf` 保留 C**（varargs，selfhost 只
+declare 不调用）。shadow 36/36。
+
 **#42 残留 C 边界（更新：io_cur 已 MYP 化；constructor 已被 lld 剥离）**：
 - **C TLS 当前句柄已解决（#42 补）**：`myp_io_cur_get/set` → MYP IoCur 表（gettid
   键控，append-only + 票号锁）。⚠️ 原 C `__thread myp_io_cur` 对 MYP clone @thread
@@ -114,6 +125,13 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   仅失败消费。
 - **`print` 族**：✅ 全影（output.myp；`myp_print_float` 已在 float.myp 走
   `__myp_print` 自动接捕获）。`myp_printf`（varargs）保留 C（MYP 程序不调用）。
+- **#47 codegen 契约（5 个）**：`myp_bounds_error`（diag.myp：slice 下标越界 →
+  stderr 诊断 + SIGABRT/134，负例 rt_bounds_fail_test）/ `myp_obj_type_name` +
+  `myp_type_name`（rtti.myp 新增：经 `__myp_fn_addr("__myp_type_name_table")`
+  取 selfhost 恒发射的类型名表 → 计数拷贝，正例 rt_rtti_test）/ `myp_free` +
+  `myp_release_fixed_class_array`（alloc.myp，防御性平价——selfhost 不发射）。
+  `myp_printf` 仍是**唯一保留 C 的 codegen 契约**（varargs 不便 shadow，selfhost
+  仅 declare 从不调用）。
 - **`str` 残留**：`myp_str_to_bytes` 已影（bytes.myp）；`myp_str_cat/cpy/fmt/len`
   **无 MYP 调用方**（C 内部/死代码，不影）。
 - **`io` 残留(6)**：`myp_io_cur_get/set`（**保留 C TLS**，io_thread 每线程句柄）、
