@@ -1,0 +1,67 @@
+// rt_thread_probe.myp — MYP 线程创建探针（不保留 C：clone syscall 直建线程）。
+// clone=56，CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM；子线程在新栈（mmap 1MB）
+// 跑共享入口（@static Thr.entry，父设子读——**父栈局部在子线程新栈不可见**），
+// 写完共享标志后 syscall 60 退出本线程。父自旋（pause）等待。
+// 关键：子分支只依赖 RAX(=0) 判定 + 共享全局，不用父栈局部（clone 后 RSP 指向
+// 新栈，父的 alloca 局部读不到）。
+
+ffi long myp_arena_alloc(long size);
+ffi void myp_pause();
+
+@static class Thr {
+    property:
+        long entry = 0;    // 子线程入口地址（父设置，子读取）
+}
+@static class Flag {
+    property:
+        long base = 0;     // 共享标志槽基址（flag@0, value@8）
+}
+
+// 子线程入口：写共享标志 + 值（不分配/不 I/O/不读父栈）
+void childEntry() {
+    long b = Flag.base;
+    __myp_mem_store_i64(b, 0x12345678);
+    __myp_mem_store_i64(b + 8, 99);
+    __myp_syscall(60, 0);   // 退出本线程
+}
+
+// clone 建线程：mmap 1MB 栈 + clone；子线程跑 entry，父返回（无 join，靠共享标志）
+long myp_thread_spawn(long entryAddr) {
+    Thr.entry = entryAddr;
+    long stack = __myp_syscall(9, 0, 1048576, 3, 0x22, -1, 0);  // mmap 1MB 匿名 RW
+    if (stack == -1 || stack == 0) return -1;
+    long top = stack + 1048576;
+    top = top - (top % 16);   // 栈顶 16 对齐
+    // CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+    if (__myp_syscall(56, flags, top, 0, 0, 0, 0) == 0) {
+        // 子线程分支：只依赖 RAX(0) + 共享全局（父栈局部在新栈不可见）
+        __myp_indirect_void(Thr.entry);
+        __myp_syscall(60, 0);   // 退出本线程
+    }
+    return 0;
+}
+
+class ThreadProbe {
+    static:
+        int run() {
+            long b = myp_arena_alloc(16);
+            if (b == 0) return 1;
+            Flag.base = b;
+            if (myp_thread_spawn(__myp_fn_addr("childEntry")) != 0) return 2;
+            // 自旋等待子线程写标志（带超时）
+            long spins = 0;
+            while (__myp_mem_load_i64(b) != 0x12345678) {
+                spins = spins + 1;
+                if (spins > 500000000) return 3;   // 超时
+                myp_pause();
+            }
+            long v = __myp_mem_load_i64(b + 8);
+            if (v != 99) return 4;
+            return 0;
+        }
+}
+
+int main() {
+    return ThreadProbe.run();
+}

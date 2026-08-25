@@ -1,0 +1,67 @@
+// rt_thread_test.myp — 线程层验证（runtime_myp/thread.myp，clone 直建，不保留 C）：
+// 3 个并发子线程各写独立 @static 共享槽（各自计算值），父自旋等待全部完成并校验。
+// 纯 @static 全局槽（不依赖 arena/mmapped 区域）——验证 clone 线程 + 共享全局机制。
+import text;
+
+ffi void myp_pause();
+ffi void myp_thread_spawn(long entryAddr);
+
+@static class TFlag {
+    property:
+        long f0 = 0; long v0 = 0;
+        long f1 = 0; long v1 = 0;
+        long f2 = 0; long v2 = 0;
+}
+
+// 每个线程独立入口函数（编号硬编码，无父设子读竞态）；写完即 syscall 60 退出本线程
+void writeSlot0() {
+    TFlag.f0 = 0x5A5A0000;
+    TFlag.v0 = 7;
+    __myp_syscall(60, 0);
+}
+void writeSlot1() {
+    TFlag.f1 = 0x5A5A0001;
+    TFlag.v1 = 1007;
+    __myp_syscall(60, 0);
+}
+void writeSlot2() {
+    TFlag.f2 = 0x5A5A0002;
+    TFlag.v2 = 2007;
+    __myp_syscall(60, 0);
+}
+
+class ThreadTest {
+    static:
+        int run() {
+            // 依次 spawn 3 个线程（各自独立入口）
+            myp_thread_spawn(__myp_fn_addr("writeSlot0"));
+            myp_thread_spawn(__myp_fn_addr("writeSlot1"));
+            myp_thread_spawn(__myp_fn_addr("writeSlot2"));
+            // 自旋等待全部 3 个 flag（超时保护）。
+            // ⚠️ 勿用 while(cond && cond && cond)：bool 临时量 RSP 泄漏 32B/轮
+            //（自举 codegen 隐患，见 MIGRATION_STATUS 线程层备注）→ 用 int done 累积。
+            long spins = 0;
+            while (1) {
+                int done = 1;
+                if (TFlag.f0 == 0) done = 0;
+                if (TFlag.f1 == 0) done = 0;
+                if (TFlag.f2 == 0) done = 0;
+                if (done != 0) break;
+                spins = spins + 1;
+                if (spins > 100000000) return 2;   // 超时
+                myp_pause();
+            }
+            // 校验各值
+            if (TFlag.f0 != 0x5A5A0000) return 3;
+            if (TFlag.v0 != 7) return 4;
+            if (TFlag.f1 != 0x5A5A0001) return 5;
+            if (TFlag.v1 != 1007) return 6;
+            if (TFlag.f2 != 0x5A5A0002) return 7;
+            if (TFlag.v2 != 2007) return 8;
+            return 0;
+        }
+}
+
+int main() {
+    return ThreadTest.run();
+}

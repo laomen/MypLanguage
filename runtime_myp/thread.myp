@@ -1,0 +1,56 @@
+// runtime_myp/thread.myp — 线程创建 MYP 化（不保留 C：clone syscall 直建线程）。
+// clone=56 + CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM；
+// 子线程在新栈（mmap 1MB）跑共享入口（@static Thr.entry，父设子读——**父栈局部在
+// 子线程新栈不可见**，子分支只依赖 RAX(=0) 判定 + 共享全局）。
+//
+// ⚠️ 设计限制（当前）：
+//   - **无 CLONE_SETTLS** → 子线程共享父 TLS（MYP @static 全局本就共享，符合当前
+//     "非 TLS" 模型）；C TLS 变量（myp_io_cur 等）未为子线程建立——子线程勿调依赖
+//     C TLS 的代码。MYP 状态（@static 全局）共享但**非线程安全**（arena bump 无锁，
+//     子线程勿并发分配）。
+//   - 子线程经 syscall 60 退出自身；父无 join API（靠共享标志/未来 futex）。
+//   - 这是 @thread / @parallel for / 协程线程边界（包 F）的**地基原语**；C runtime
+//     的 myp_thread_*（事件循环语义）后续再逐个影。
+
+ffi void myp_pause();
+
+@static class Thr {
+    property:
+        long entry = 0;       // 子线程入口地址（父设置，子读取）
+        long started = 0;     // 握手：子已读 entry（防多 spawn 覆盖 entry 竞态）
+        long stackSize = 1048576;
+}
+
+// C 侧无同名函数——MYP 新建原语。mmap 栈 + clone；子线程跑 entry 后 exit 自身。
+// ⚠️ @static 类属性初始化器在 --shared 模块下不生效 → stackSize 须**显式设置**
+// （实测 1048576 默认值读出为 0，被钳到 65536）。
+// ⚠️ entry 是共享槽：多个 spawn 复用会竞态（子未读父就覆盖）→ 握手：子先读 entry
+// 到局部再置 started=1，父等 started 再返回。子线程仍并发（started 之后继续跑）。
+long myp_thread_spawn(long entryAddr) {
+    Thr.entry = entryAddr;
+    Thr.started = 0;          // 握手清零（父设子读）
+    Thr.stackSize = 1048576;  // 显式设置（@static 初始化器不生效）
+    long size = Thr.stackSize;
+    if (size < 65536) size = 65536;
+    long stack = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);   // mmap 匿名 RW
+    if (stack == -1 || stack == 0) return -1;
+    long top = stack + size;
+    top = top - (top % 16);   // 栈顶 16 对齐（ABI 调用点要求）
+    // CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
+    if (__myp_syscall(56, flags, top, 0, 0, 0, 0) == 0) {
+        // 子线程分支：只依赖 RAX(0) + 共享全局（父栈局部在新栈不可见）
+        long e = Thr.entry;   // 先读 entry 到局部
+        Thr.started = 1;      // 握手：告诉父已读（之后父才可覆盖 entry）
+        __myp_indirect_void(e);
+        __myp_syscall(60, 0); // 退出本线程
+    }
+    // 父分支：等子已读 entry（否则下一 spawn 覆盖 entry 竞态）
+    long guard = 0;
+    while (Thr.started == 0) {
+        guard = guard + 1;
+        if (guard > 100000000) return -2;
+        myp_pause();
+    }
+    return 0;
+}

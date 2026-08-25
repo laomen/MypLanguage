@@ -27,6 +27,34 @@
 
 ## 编译器版本历史
 
+### v3.15.37 — runtime myp化 #34：线程创建 clone 直建（thread.myp，不保留 C）
+
+**非破坏性**。线程创建 MYP 化——**不保留 C/pthread**：`myp_thread_spawn` 用
+clone syscall 直建线程，是**包 F 线程/pool 的地基原语**（用户指令"不保留 C"，
+与既有"不要留胶水"策略一致）：
+
+- **`thread.myp`**：`myp_thread_spawn(entryAddr)` —— mmap 1MB 新栈（16 对齐栈顶）
+  + clone=56（CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM）+ 子线程跑共享入口后
+  syscall 60 退出本线程。
+- **关键机制/技巧**（探针 + 3 线程测试反复验证）：
+  - **子线程只依赖 RAX(=0) 判定 + 共享全局**：父栈局部（alloca）在新栈不可见；
+    entry 经 `@static Thr` 全局传（`__myp_indirect_void(e)` 间接调用）。
+  - **entry 共享槽竞态修复**：多 spawn 复用同一 `Thr.entry` 会竞态（子未读父就
+    覆盖 → 3 线程全跑最后一个 entry）→ **握手**：子先读 entry 到局部再置
+    `Thr.started=1`，父自旋等 `started` 才返回；子线程仍并发。
+  - **@static 类属性初始化器在 --shared 模块下不生效**（`stackSize=1048576` 读出
+    为 0 被钳到 65536）→ spawn 内**显式设置** `Thr.stackSize`。
+  - **无 CLONE_SETTLS** → 子线程共享父 TLS（MYP @static 全局本就共享，符合当前
+    "非 TLS"模型）；C TLS 变量未为子线程建立，子线程勿调依赖 C TLS 的代码。
+  - 无 join API（靠共享标志/未来 futex）；arena bump 无锁，子线程勿并发分配。
+- **验证**：`rt_thread_test`——3 并发子线程各写独立 @static 共享槽（独立入口函数
+  消除编号竞态），父自旋校验全部完成且值正确。shadow **24 项**（23 exit0 + fail
+  探针 exit1）、bootstrap 16/16（fixpoint `c998455d` 不变，编译器未改）、全量
+  323/323。
+- **顺带发现（自举编译器 codegen 隐患，待修）**：`while(1)` 内 `&&` 的 bool 临时量
+  每轮 `sub rsp,16`×2 不恢复 → 无限循环 RSP 跌破栈底崩溃（探针单条件 spin 无此
+  问题）。本次用 int `done` 累积规避；修 codegen 另行里程碑。
+
 ### v3.15.36 — runtime myp化 #33：包 C 异常机制（exception.myp）
 
 **非破坏性**。异常运行时（try/catch/throw 的 jmp_buf 处理栈 + 错误消息 + 类型化

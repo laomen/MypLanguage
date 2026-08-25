@@ -94,13 +94,18 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **难度**：中高。依赖包 D（future 联动）。
 
 ### 包 F：并发/线程层（thread 11 + pool 11 + event 10 + work 5 + queue 7 = 44）
+- **✅ 地基已就绪（#34）**：`myp_thread_spawn`（`thread.myp`）—— clone syscall 直建
+  线程（不保留 C/pthread），mmap 新栈 + CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM +
+  子跑共享入口后 syscall 60 退出。已验证：探针 + 3 并发子线程测试（独立入口函数 +
+  entry 握手防共享槽竞态 + 显式 stackSize）。无 CLONE_SETTLS（共享父 TLS，符合 MYP
+  @static 非 TLS 模型）；无 join API（靠共享标志/未来 futex）。
 - **`@parallel for`**：`myp_pool_create/ensure_global/parallel_for/destroy/worker_id/
   thread_count/set_threads/worker_count/is_active` + work-stealing 队列（work 5）+
   任务队列（queue 7）。
 - **`@thread`**：`myp_thread_create/self/stop/destroy/is_current/associate_instance/
   post_event/run_loop/entry/current/for_instance` + 事件路由（event 10：
   `myp_event_route_to_thread`、dispatch/fire/process_*/register/scope）。
-- **难点**：pthread_create 是 OS 边界（clone + TLS）；事件路由深耦合 C 的
+- **难点**：pthread_create 已替换为 clone 原语；事件路由深耦合 C 的
   myp_handlers。依赖包 D/E。
 - **难度**：最高。做完才能真正 de-gcc 掉并发层。
 
@@ -143,8 +148,8 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 2. **包 B 剩余诊断**（`myp_fail_alloc_*` 注入 + alloc 接入；diag_coro/stack 等读协程
    状态 → 待包 D）
 3. ✅ **包 C 异常机制**（#33 exception.myp，协程前置之一）
-4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪 + 异常边界已具备；剩余前置 = 线程
-   创建 pthread）
+4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪 + 异常边界已具备；线程创建已用 clone
+   直建 #34，不再依赖 pthread）
 5. **包 E 同步原语**（futex 或 pthread 间接调）
 6. **包 F 线程/pool**（pthread_create OS 边界，最难）
 7. **包 G GPU**（`__myp_indirect` 就绪，可并行推进）
