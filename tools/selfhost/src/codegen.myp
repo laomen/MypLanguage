@@ -9346,6 +9346,17 @@ class CodeGen {
                     sb_.append("  " + t + " = load i32, ptr " + p + ", align 4\n");
                     return t;
                 }
+                // __myp_mem_load_i8(long addr) → int（0 扩展）
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_i8") {
+                    string av = genExpr(e.args().get(0));
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    string v = newTmp();
+                    sb_.append("  " + v + " = load i8, ptr " + p + ", align 1\n");
+                    string t = newTmp();
+                    sb_.append("  " + t + " = zext i8 " + v + " to i32\n");
+                    return t;
+                }
                 // __myp_mem_load_i64(long addr) → long
                 if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_load_i64") {
                     string av = genExpr(e.args().get(0));
@@ -9384,6 +9395,17 @@ class CodeGen {
                     string p = newTmp();
                     sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
                     sb_.append("  store i32 " + vv + ", ptr " + p + ", align 4\n");
+                    return "0";
+                }
+                // __myp_mem_store_i8(long addr, int v)
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_mem_store_i8") {
+                    string av = genExpr(e.args().get(0));
+                    string vv = genExpr(e.args().get(1));
+                    string vt = exprLlvmType(e.args().get(1));
+                    vv = convertValue(vv, vt, "i8");
+                    string p = newTmp();
+                    sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                    sb_.append("  store i8 " + vv + ", ptr " + p + ", align 1\n");
                     return "0";
                 }
                 // __myp_mem_store_i64(long addr, long v)

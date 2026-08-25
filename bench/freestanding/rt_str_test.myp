@@ -1,6 +1,6 @@
 // rt_str_test.myp — MYP 运行时字符串层验证（runtime_myp/str.myp shadow C runtime）。
-// 通过原生 == / != / < / Str.len 触发 myp_str_eq / myp_str_cmp / myp_strlen，
-// 链接时 MYP 版本优先（--allow-multiple-definition）。期望与 C 版本一致。
+// 通过 text.myp 的 Str 方法触发 myp_str_* FFI，链接时 MYP 版本优先
+//（--allow-multiple-definition）。期望与 C 版本一致。
 import text;
 
 int main() {
@@ -16,10 +16,47 @@ int main() {
     if ("abd" < "abc") return 13;
     if ("abc" < "abc") return 14;
     if ("ab" > "abc") return 15;
-    if ("abc" != "abc") return 16;
     // Str.len → myp_strlen
     if (Str.len("hello") != 5) return 21;
     if (Str.len("") != 0) return 22;
     if (Str.len("MYP") != 3) return 23;
+    // contains → myp_str_contains
+    if (!Str.contains("hello world", "world")) return 31;
+    if (Str.contains("hello", "xyz")) return 32;
+    if (!Str.contains("hello", "")) return 33;
+    if (Str.contains("ab", "abc")) return 34;
+    // indexOf → myp_str_index_of
+    if (Str.indexOf("hello", "ll") != 2) return 41;
+    if (Str.indexOf("hello", "x") != -1) return 42;
+    if (Str.indexOf("hello", "") != 0) return 43;
+    // startsWith / endsWith
+    if (!Str.startsWith("hello", "he")) return 51;
+    if (Str.startsWith("hello", "lo")) return 52;
+    if (!Str.endsWith("hello", "llo")) return 53;
+    if (Str.endsWith("hello", "hel")) return 54;
+    if (Str.startsWith("a", "ab")) return 55;
+    // substring → myp_str_substring
+    if (Str.substring("hello", 1, 4) != "ell") return 61;
+    if (Str.substring("hello", 2, 2) != "") return 62;
+    if (Str.substring("hello", 0, 99) != "hello") return 63;
+    if (Str.substring("hello", -3, 2) != "he") return 64;
+    // toUpper / toLower
+    if (Str.toUpper("Hello") != "HELLO") return 71;
+    if (Str.toLower("HeLLo") != "hello") return 72;
+    if (Str.toUpper("a1B") != "A1B") return 73;
+    // trim
+    if (Str.trim("  hi  ") != "hi") return 81;
+    if (Str.trim("\t\n hi \r") != "hi") return 82;
+    if (Str.trim("plain") != "plain") return 83;
+    // toInt → myp_str_to_int
+    if (Str.toInt("123") != 123) return 91;
+    if (Str.toInt("  -42 ") != -42) return 92;
+    if (Str.toInt("abc") != 0) return 93;
+    if (Str.toInt("0") != 0) return 94;
+    // splitCount → myp_str_split_count
+    if (Str.splitCount("a,b,c", ",") != 3) return 101;
+    if (Str.splitCount("abc", ",") != 1) return 102;
+    if (Str.splitCount("", ",") != 0) return 103;
+    if (Str.splitCount("a,,b", ",") != 3) return 104;
     return 0;
 }

@@ -610,10 +610,12 @@ class Sema {
             // 传，经 inttoptr 访问。自举独有，mypc 无：MYP 运行时模块用它实现
             // 分配器/字节操作，避免改 mypc）。
             addIntr("__myp_mem_load_i32", "int");
+            addIntr("__myp_mem_load_i8", "int");
             addIntr("__myp_mem_load_i64", "long");
             addIntr("__myp_mem_load_double", "double");
             addIntr("__myp_mem_load_ptr", "long");
             addIntr("__myp_mem_store_i32", "void");
+            addIntr("__myp_mem_store_i8", "void");
             addIntr("__myp_mem_store_i64", "void");
             addIntr("__myp_mem_store_double", "void");
             addIntr("__myp_memcpy", "void");
