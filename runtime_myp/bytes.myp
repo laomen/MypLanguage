@@ -1,0 +1,54 @@
+// runtime_myp/bytes.myp — runtime.c bytes 层 myp化（自举编译器编译，MYP 实现）。
+// 符号名与 C runtime 一致；shadow 机制同 str.myp（链接置于 libmyp_rt.a 之前
+// + --allow-multiple-definition → MYP 定义优先）。验证见 runtime_myp/build.sh。
+//
+// 覆盖 codegen 直接发射的三个 bytes 转换：
+//   bytes(s)  → myp_str_to_bytes（string → ubyte[] backing）
+//   str(bytes) → myp_bytes_to_str（ubyte[] backing → string）
+//   bytesOf(bitvector) → myp_uint_to_bytes（位向量按小端 → ubyte[] backing）
+//
+// 数组 ABI：new ubyte[n] 返回 backing 数据指针（同 myp_alloc_slice_backing），
+// count 字段在 data - MYP_ARR_HEADER_SIZE（=24）处（uint64 小端）。
+//
+// 注意：函数体内不得用字符串 == / < / Str.len（会递归调用自身/运行时）。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// C: void* myp_str_to_bytes(const char* s) —— 字符串字节拷进计数 ubyte[] backing，
+// 返回 data 指针。codegen 的 bytes(s) 发射 `call ptr @myp_str_to_bytes(ptr)`，
+// 返回类型用 ubyte[]（LLVM ptr）正好匹配。
+ubyte[] myp_str_to_bytes(string s) {
+    int len = myp_strlen(s);
+    ubyte[] arr = new ubyte[len];
+    for (int i = 0; i < len; i = i + 1) {
+        arr[i] = ubyte(__myp_charcode(s, i));
+    }
+    return arr;
+}
+
+// C: void* myp_uint_to_bytes(uint64_t v, int32_t nbytes) —— 位向量值按小端写进
+// nbytes 字节的 ubyte[] backing（§5.1 bytesOf）。nbytes 钳制 1..8。
+ubyte[] myp_uint_to_bytes(long v, int nbytes) {
+    if (nbytes <= 0) nbytes = 1;
+    if (nbytes > 8) nbytes = 8;
+    ubyte[] arr = new ubyte[nbytes];
+    for (int i = 0; i < nbytes; i = i + 1) {
+        arr[i] = ubyte(int(v & 255));
+        v = v >> 8;
+    }
+    return arr;
+}
+
+// C: char* myp_bytes_to_str(const void* data) —— 从 ubyte[] backing（count 在
+// data-24）构造计数字符串（rc=1）。codegen 的 str(bytes) 发射
+// `call ptr @myp_bytes_to_str(ptr)`，参数用 ubyte[]（LLVM ptr）。
+// __myp_str_ptr(数组值) = ptrtoint（对任意 ptr 值成立，含数组 backing）。
+string myp_bytes_to_str(ubyte[] data) {
+    long p = __myp_str_ptr(data);
+    int count = int(__myp_mem_load_i64(p - 24));
+    string r = myp_alloc(count + 1);
+    __myp_memcpy(__myp_str_ptr(r), p, count);
+    __myp_mem_store_i8(__myp_str_ptr(r) + count, 0);
+    return r;
+}

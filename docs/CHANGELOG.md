@@ -35,6 +35,23 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.10 — runtime myp化 #7：bytes 层（bytes()/str(bytes)/bytesOf 三转换）
+
+**非破坏性**。`runtime_myp/bytes.myp` 新增（codegen 直接发射的三个 bytes 转换，
+shadow C runtime 验证）：
+
+- **`myp_str_to_bytes`**：string → `ubyte[]` backing（`new ubyte[n]` + 逐字节拷贝，
+  返回类型 `ubyte[]` 即 LLVM ptr，匹配 codegen `call ptr`）。
+- **`myp_bytes_to_str`**：`ubyte[]` backing → string（count 在 data-24 头字段读长度）。
+- **`myp_uint_to_bytes`**：位向量按小端 → `ubyte[]`（§5.1 `bytesOf`，nbytes 钳 1..8）。
+
+**技巧**：`__myp_str_ptr(数组值)` 内部就是 `ptrtoint ptr %x to i64`，对任意 ptr 值
+（含数组 backing）成立——拿数组地址无需新内建。`bitcast` 内建**不能** ptr→i64
+（LLVM 需 ptrtoint）。
+
+验证：runtime_myp shadow PASS（rt_num_test 加 7 条 bytes 断言：round-trip
+`str(bytes("hello"))`=="hello"、空串、`bytesOf(0x1234)`→[52,18,0,0] 小端）。
+
 ### v3.15.9 — runtime myp化 #6：浮点位型 myp_f64_bits_hex / myp_f32_bits_hex
 
 **非破坏性**。`runtime_myp/num.myp` 补浮点位型十六进制——自举 codegen 发射 double

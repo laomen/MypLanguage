@@ -70,5 +70,14 @@ int main() {
     if (myp_f64_bits_hex(-1.5) != "0xBFF8000000000000") return 125;
     if (myp_f32_bits_hex(1.0f) != "0x3FF0000000000000") return 126;   // float 先拓宽 double
     if (myp_f32_bits_hex(-0.0f) != "0x8000000000000000") return 127;
+    // bytes 层 → myp_str_to_bytes / myp_bytes_to_str / myp_uint_to_bytes
+    if (str(bytes("hello")) != "hello") return 131;
+    if (str(bytes("")) != "") return 132;
+    if (str(bytes("MYP")) != "MYP") return 133;
+    ubyte[] bo = bytesOf(0x1234);
+    if (int(bo[0]) != 52) return 134;    // 0x34 小端低位
+    if (int(bo[1]) != 18) return 135;    // 0x12
+    if (int(bo[2]) != 0) return 136;
+    if (int(bo[3]) != 0) return 137;
     return 0;
 }
