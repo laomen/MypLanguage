@@ -35,6 +35,25 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.20 — runtime myp化 #17：异步文件读接管（myp_coro_file_read_line/all 同步读）
+
+**非破坏性**。`runtime_myp/io.myp` 接管 C 的协程文件读入口
+（`File.readLineAsync/readAllAsync` → `myp_coro_file_read_line/all`）：
+
+- **修复 readAll shadow 破坏**：C 版 `myp_coro_file_read_all` 经
+  `myp_io_lock_handle(io_handle)` 读 C 的 `FILE*` 表——MYP 表接管后该表恒空，
+  shadow 下 readAll 返回空串（自举编译器 `tools/selfhost/src/link.myp`、
+  `main.myp` 都依赖 readAll）。
+- `myp_io_read_line` 重构为 handle 参数化 `ioReadLineHandle(handle)`（pending
+  字节优先 + 逐字节到 \n/EOF + arena 4096 scratch），当前句柄读变包装。
+- 新增 `ioReadAllHandle(handle)`：lseek(SEEK_CUR/SEEK_END) 取大小后回位分块读，
+  lseek 失败（流式）自动退化为逐字节；字节级保真（含 \n，不剥）。
+- **已知限制**：MYP 版为**同步**读（数据正确）；C 版协程 parking + exec
+  worker 的非阻塞 await 语义未 MYP 化（依赖 C FILE* 表，shadow 后不适用）。
+  323 套件的 `async_file` 测试走 C runtime 不受影响。
+- 验证：bootstrap 16/16，全量 323/323，`rt_io_test` 新增 readAll 全文件读用例
+  全部 exit=0。
+
 ### v3.15.19 — runtime myp化 #16：文件 I/O 层（myp_io_* raw syscall 实现）
 
 **非破坏性**。`runtime_myp/io.myp` shadow C runtime 的整个文件 I/O 层

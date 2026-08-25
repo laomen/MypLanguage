@@ -146,21 +146,19 @@ void myp_io_fclose() {
     if (fd != -1) __myp_syscall(3, fd, 0, 0, 0, 0, 0);
 }
 
-// C: const char* myp_io_read_line(void) —— 读到 \n 或 EOF，剥 \n，返回新串
-string myp_io_read_line() {
-    int handle = myp_io_cur_get();
+// 空串（fresh rc=1，EOF/错误返回值；codegen retain-on-return 会把 myp_alloc 的
+// rc=0 补成 1，与 C 的 myp_strdup("") 一致）
+string ioEmptyStr() {
+    string e = myp_alloc(1);
+    __myp_mem_store_i8(__myp_str_ptr(e), 0);
+    return e;
+}
+// 指定句柄读一行（含 pending 处理）；供当前句柄与 coro 读共用
+string ioReadLineHandle(int handle) {
     long t = Io.table;
-    if (t == 0 || handle < 1 || handle >= 64) {
-        string e = myp_alloc(1);
-        __myp_mem_store_i8(__myp_str_ptr(e), 0);
-        return e;
-    }
+    if (t == 0 || handle < 1 || handle >= 64) return ioEmptyStr();
     long fd = __myp_mem_load_i64(t + handle * 16);
-    if (fd == -1) {
-        string e = myp_alloc(1);
-        __myp_mem_store_i8(__myp_str_ptr(e), 0);
-        return e;
-    }
+    if (fd == -1) return ioEmptyStr();
     long buf = myp_arena_alloc(4096);
     long n = 0;
     long pend = __myp_mem_load_i64(t + handle * 16 + 8);
@@ -180,6 +178,56 @@ string myp_io_read_line() {
     __myp_memcpy(dp, buf, n);
     __myp_mem_store_i8(dp + n, 0);
     return s;
+}
+// 指定句柄读全文件（从当前位置到 EOF，字节级；lseek 取大小后分块读）
+string ioReadAllHandle(int handle) {
+    long t = Io.table;
+    if (t == 0 || handle < 1 || handle >= 64) return ioEmptyStr();
+    long fd = __myp_mem_load_i64(t + handle * 16);
+    if (fd == -1) return ioEmptyStr();
+    // pending 先消费
+    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
+    __myp_mem_store_i64(t + handle * 16 + 8, -1);
+    // 当前位置 → 文件尾 → 回当前位置
+    long cur = __myp_syscall(8, fd, 0, 1, 0, 0, 0);    // SEEK_CUR
+    long end = __myp_syscall(8, fd, 0, 2, 0, 0, 0);    // SEEK_END
+    if (end < 0 || cur < 0) {
+        // 流式（lseek 失败）：逐字节
+        long buf = myp_arena_alloc(4096);
+        long n = 0;
+        if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
+        while (n < 4096) {
+            long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
+            if (r <= 0) break;
+            n = n + 1;
+        }
+        string s = myp_alloc(n + 1);
+        __myp_memcpy(__myp_str_ptr(s), buf, n);
+        __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+        return s;
+    }
+    __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
+    long remaining = end - cur;
+    if (remaining < 0) remaining = 0;
+    long cap = remaining + 1;
+    if (pend >= 0) cap = cap + 1;
+    long buf = myp_arena_alloc(cap);
+    long n = 0;
+    if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
+    while (n < remaining + 1) {
+        long r = __myp_syscall(0, fd, buf + n, cap - n, 0, 0, 0);
+        if (r <= 0) break;
+        n = n + r;
+    }
+    __myp_mem_store_i8(buf + n, 0);
+    string s = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(s), buf, n);
+    __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+    return s;
+}
+// C: const char* myp_io_read_line(void) —— 当前句柄读一行
+string myp_io_read_line() {
+    return ioReadLineHandle(myp_io_cur_get());
 }
 
 // C: void myp_io_write(const char* text)
@@ -307,4 +355,17 @@ int myp_io_seek(int offset, int whence) {
     __myp_mem_store_i64(t + handle * 16 + 8, -1);   // seek 后清 pending
     long r = __myp_syscall(8, fd, offset, whence, 0, 0, 0);   // lseek
     return r < 0 ? -1 : 0;
+}
+
+// ---- 协程异步文件读（§五-5 P3）----
+// C: char* myp_coro_file_read_line(int io_handle) / myp_coro_file_read_all(int)
+// MYP 版：经 MYP fd 表做**同步**读（数据正确）。C 版的协程 parking + exec worker
+// 依赖 C FILE* 表（MYP shadow 后恒空 → readAll 返回空串）——此处接管为 fd 读。
+// 已知限制：@async 非阻塞语义（await 期间线程推进）未 MYP 化，读时阻塞；
+// 323 套件的 async_file 测试走 C runtime 不受影响。
+string myp_coro_file_read_line(int io_handle) {
+    return ioReadLineHandle(io_handle);
+}
+string myp_coro_file_read_all(int io_handle) {
+    return ioReadAllHandle(io_handle);
 }

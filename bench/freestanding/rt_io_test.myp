@@ -37,6 +37,19 @@ class IoProbe {
             if (marker != 0xAA) return 6;
             if (r.hasNext()) return 7;    // 应 EOF
             r.close();
+
+            // readAll（修复：经 MYP fd 表同步读，C FILE* 空表问题）
+            File a = new File();
+            a.open("/tmp/rt_myp_io_all.txt", "w");
+            a.writeLine("line1");
+            a.writeLine("line2");
+            a.write("tail");
+            a.close();
+            File b = new File();
+            b.open("/tmp/rt_myp_io_all.txt", "r");
+            string all = b.readAll();
+            if (all != "line1\nline2\ntail") return 8;
+            b.close();
             return 0;
         }
 }
