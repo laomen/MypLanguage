@@ -8487,8 +8487,11 @@ class CodeGen {
                     int scbefore = pendingTemps_.size();
                     string c = toI1(genExpr(e.lhs()), exprLlvmType(e.lhs()));
                     flushTempsFrom(scbefore);
-                    string resAlloca = newTmp() + ".res";
-                    sb_.append("  " + resAlloca + " = alloca i1\n");
+                    // ★ BUG-049：结果槽必须提升到 entry 块（entryAlloca）——原来内联
+                    // `alloca i1` 在循环体内每轮执行，LLVM 发射动态 `mov rsp; lea; mov
+                    // rsp` 不恢复 → 无限循环 RSP 跌破栈底崩溃。entryAlloca 零初始化
+                    // 且只执行一次；&& 默认 false 即零值，|| 需显式 store true。
+                    string resAlloca = entryAlloca("i1");
                     if (isAnd != 0) sb_.append("  store i1 false, ptr " + resAlloca + "\n");
                     else sb_.append("  store i1 true, ptr " + resAlloca + "\n");
                     string rhsB = newBlock(isAnd != 0 ? "land.rhs" : "lor.rhs");

@@ -38,15 +38,10 @@ class ThreadTest {
             myp_thread_spawn(__myp_fn_addr("writeSlot1"));
             myp_thread_spawn(__myp_fn_addr("writeSlot2"));
             // 自旋等待全部 3 个 flag（超时保护）。
-            // ⚠️ 勿用 while(cond && cond && cond)：bool 临时量 RSP 泄漏 32B/轮
-            //（自举 codegen 隐患，见 MIGRATION_STATUS 线程层备注）→ 用 int done 累积。
+            // ★ BUG-049 回归：&& 结果槽须提升到 entry 块（修复前循环体内 alloca i1
+            // 每轮 -16B RSP → 无限循环跌破栈底；修复后可用 && 直写）。
             long spins = 0;
-            while (1) {
-                int done = 1;
-                if (TFlag.f0 == 0) done = 0;
-                if (TFlag.f1 == 0) done = 0;
-                if (TFlag.f2 == 0) done = 0;
-                if (done != 0) break;
+            while (TFlag.f0 == 0 || TFlag.f1 == 0 || TFlag.f2 == 0) {
                 spins = spins + 1;
                 if (spins > 100000000) return 2;   // 超时
                 myp_pause();

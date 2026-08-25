@@ -96,8 +96,10 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 ### 包 F：并发/线程层（thread 11 + pool 11 + event 10 + work 5 + queue 7 = 44）
 - **✅ 地基已就绪（#34）**：`myp_thread_spawn`（`thread.myp`）—— clone syscall 直建
   线程（不保留 C/pthread），mmap 新栈 + CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM +
-  子跑共享入口后 syscall 60 退出。已验证：探针 + 3 并发子线程测试（独立入口函数 +
-  entry 握手防共享槽竞态 + 显式 stackSize）。无 CLONE_SETTLS（共享父 TLS，符合 MYP
+  子跑共享入口后 syscall 60 退出。已验证：探针 + 3 并发子线程测试（8/8 稳定）。
+  关键：**子分支不声明局部**（子 RSP=新栈顶无 frame，正偏移栈写越界）→ 只传实参给
+  helper `myp_thread_child_entry` 建帧 + capture entry → `done_read=1` 确定性握手
+  （父等 done_read 才覆盖 entry，无竞态）。无 CLONE_SETTLS（共享父 TLS，符合 MYP
   @static 非 TLS 模型）；无 join API（靠共享标志/未来 futex）。
 - **`@parallel for`**：`myp_pool_create/ensure_global/parallel_for/destroy/worker_id/
   thread_count/set_threads/worker_count/is_active` + work-stealing 队列（work 5）+

@@ -17,19 +17,28 @@ ffi void myp_pause();
 @static class Thr {
     property:
         long entry = 0;       // 子线程入口地址（父设置，子读取）
-        long started = 0;     // 握手：子已读 entry（防多 spawn 覆盖 entry 竞态）
+        long done_read = 0;   // 握手：子已 capture entry（父覆盖 entry 前的屏障）
         long stackSize = 1048576;
+}
+
+// 子线程入口 helper：普通函数（有完整栈帧）——**子分支不能声明局部**（子 RSP=新栈
+// 顶、无 prologue 帧，codegen 的 `0x28(%rsp)` 正偏移在栈顶之上越界 → 段错误），
+// 故 child branch 只把 entry 经实参（rdi 寄存器）传进 helper，由 helper 建帧后再
+// 用。entry 先被 helper 参数 capture，再置 done_read=1 → 父覆盖 Thr.entry 时子已
+// 持有（确定性握手，无竞态）。
+void myp_thread_child_entry(long entryAddr) {
+    Thr.done_read = 1;                    // 已 capture（entryAddr 在本函数参数/帧内）
+    __myp_indirect_void(entryAddr);       // 跑用户入口
+    __myp_syscall(60, 0);                 // 入口若返回则退出本线程
 }
 
 // C 侧无同名函数——MYP 新建原语。mmap 栈 + clone；子线程跑 entry 后 exit 自身。
 // ⚠️ @static 类属性初始化器在 --shared 模块下不生效 → stackSize 须**显式设置**
 // （实测 1048576 默认值读出为 0，被钳到 65536）。
-// ⚠️ entry 是共享槽：多个 spawn 复用会竞态（子未读父就覆盖）→ 握手：子先读 entry
-// 到局部再置 started=1，父等 started 再返回。子线程仍并发（started 之后继续跑）。
 long myp_thread_spawn(long entryAddr) {
     Thr.entry = entryAddr;
-    Thr.started = 0;          // 握手清零（父设子读）
-    Thr.stackSize = 1048576;  // 显式设置（@static 初始化器不生效）
+    Thr.done_read = 0;          // 握手清零（父设子读）
+    Thr.stackSize = 1048576;    // 显式设置（@static 初始化器不生效）
     long size = Thr.stackSize;
     if (size < 65536) size = 65536;
     long stack = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);   // mmap 匿名 RW
@@ -39,15 +48,15 @@ long myp_thread_spawn(long entryAddr) {
     // CLONE_VM|FS|FILES|SIGHAND|THREAD|SYSVSEM
     long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000;
     if (__myp_syscall(56, flags, top, 0, 0, 0, 0) == 0) {
-        // 子线程分支：只依赖 RAX(0) + 共享全局（父栈局部在新栈不可见）
-        long e = Thr.entry;   // 先读 entry 到局部
-        Thr.started = 1;      // 握手：告诉父已读（之后父才可覆盖 entry）
-        __myp_indirect_void(e);
+        // 子线程分支：只依赖 RAX(0) + 共享全局（父栈局部在新栈不可见）。
+        // 不声明局部（无 frame，正偏移栈写越界）→ 直接调 helper，实参经 rdi。
+        myp_thread_child_entry(Thr.entry);
         __myp_syscall(60, 0); // 退出本线程
     }
-    // 父分支：等子已读 entry（否则下一 spawn 覆盖 entry 竞态）
+    // 父分支：确定性握手——等子已 capture entry（done_read=1）才返回，之后
+    // 下一 spawn 覆盖 Thr.entry 时子已持有自己的 entry（无竞态）。
     long guard = 0;
-    while (Thr.started == 0) {
+    while (Thr.done_read == 0) {
         guard = guard + 1;
         if (guard > 100000000) return -2;
         myp_pause();
