@@ -636,6 +636,15 @@ class Sema {
             addIntr("__myp_asm", "void");
             addIntr("__myp_asm_r", "long");
             addIntr("__myp_fn_addr", "long");
+            // 通用间接调用内建（2026-08-25，#30）：__myp_indirect_<RET>(addr, ...args)
+            // → 发射 inttoptr i64 addr to ptr + `call RET %fn(<实参 LLVM 类型>)`。返回
+            // 类型按后缀定（i32→int / i64→long / double→double / void），实参类型由
+            // 调用点 MYP 实参推断（long 承载指针）。供运行时 dlopen+dlsym 后调用
+            // CUDA/LLVM C API 等任意签名函数（GPU 迁移地基）。自举独有（同 __myp_asm）。
+            addIntr("__myp_indirect_i32", "int");
+            addIntr("__myp_indirect_i64", "long");
+            addIntr("__myp_indirect_double", "double");
+            addIntr("__myp_indirect_void", "void");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");

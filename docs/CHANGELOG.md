@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.15.33 — runtime myp化 #30：通用间接调用内建 `__myp_indirect_*`（GPU 迁移地基）
+
+**非破坏性**。自举编译器新增**通用间接调用内建**（自举独有，同 `__myp_asm`/
+`__myp_call_ptr`/`__myp_rtable_addr` 模式）——运行时 `dlopen`+`dlsym` 解析函数
+地址后，按**任意签名**间接调用 C API（CUDA 驱动 / LLVM C API 绑定地基）：
+
+- **sema/codegen**：`__myp_indirect_i32(addr, ...args)` → int / `_i64` → long /
+  `_double` → double / `_void` → void。addr 是 i64 函数指针地址（dlsym /
+  `__myp_fn_addr` 所得）；实参按调用点 MYP 实参的 LLVM 类型原样传（long 承载
+  指针）。发射 `inttoptr i64 addr to ptr` + `call RET %fn(<类型化实参>)`。
+- **用途**：GPU 层（`runtime_gpu.c` 65 个 `myp_gpu_*`）迁移的关键使能——CUDA
+  是运行时 dlopen（`libcuda.so` 可能不存在、MYP_GPU 未设时 CPU 回退），不能
+  静态 ffi 链 cu* 符号；44 个 `cu*` 函数指针签名各异（cuLaunchKernel 11 参等），
+  现可经 `__myp_indirect_*` 调用。也为将来绑 LLVM C API 等复用。
+- **验证**：`rt_indirect_test` 覆盖 i32/i64/double/void 四种返回 + 0/1/2/3 实参
+  + 混合类型 ABI——i32(`myp_strlen` 1 个 ptr 实参)、i64(`myp_now_ms` 0 实参)、
+  double(`myp_math_pow` 2 个 double / `myp_math_sqrt` 1 个)、void(用户 `myNop`)、
+  用户函数 `myAdd`(2 个 i32)、`myMix`(i64+i32+double 混合) 全对。shadow **18/18**、
+  bootstrap 16/16（新 fixpoint `c998455d`）、全量 323/323。IR 确认：`inttoptr
+  i64 → to ptr` + `call <RET> %fn(<类型>)` 正确发射。
+- **注意**：`__myp_fn_addr("name")` 只对**已声明/已定义**符号有效（preamble 里的
+  runtime 函数或模块内定义；`myp_mfence` 等 runtime_myp 模块函数未在 preamble
+  声明会报 "use of undefined value"）——CUDA 地址来自 dlsym（运行时 long），不
+  受影响。
+
 ### v3.15.32 — runtime myp化 #29：math 层补齐（pow/atan2/sinh/cosh/tanh）
 
 **非破坏性**。把 #28 遗留的 5 个 math 函数全部 MYP 化，`myp_math_*` 达 **19/19**

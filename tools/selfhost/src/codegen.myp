@@ -9568,6 +9568,35 @@ class CodeGen {
                     sb_.append("  call void " + fn + "(ptr " + ov + ")\n");
                     return "0";
                 }
+                // 通用间接调用内建（#30）：__myp_indirect_<RET>(addr, ...args)。
+                // addr = i64 函数指针地址（dlopen/dlsym 或 __myp_fn_addr 所得）；
+                // 返回类型按后缀（i32/i64/double/void），实参按调用点 MYP 实参的
+                // LLVM 类型原样传（long 承载指针）。GPU/CUDA/LLVM C API 绑定地基。
+                if (callee != null && callee.kind() == "Identifier"
+                    && (callee.name() == "__myp_indirect_i32" || callee.name() == "__myp_indirect_i64"
+                        || callee.name() == "__myp_indirect_double" || callee.name() == "__myp_indirect_void")) {
+                    string retT = "i32";
+                    if (callee.name() == "__myp_indirect_i64") retT = "i64";
+                    else if (callee.name() == "__myp_indirect_double") retT = "double";
+                    else if (callee.name() == "__myp_indirect_void") retT = "void";
+                    string av = genExpr(e.args().get(0));
+                    string fn = newTmp();
+                    sb_.append("  " + fn + " = inttoptr i64 " + av + " to ptr\n");
+                    StringBuilder as = new StringBuilder();
+                    for (int ai = 1; ai < e.args().size(); ai = ai + 1) {
+                        if (ai > 1) as.append(", ");
+                        string v = genExpr(e.args().get(ai));
+                        string t = exprLlvmType(e.args().get(ai));
+                        as.append(t + " " + v);
+                    }
+                    if (retT == "void") {
+                        sb_.append("  call void " + fn + "(" + as.toString() + ")\n");
+                        return "0";
+                    }
+                    string r = newTmp();
+                    sb_.append("  " + r + " = call " + retT + " " + fn + "(" + as.toString() + ")\n");
+                    return r;
+                }
                 // __myp_fn_addr("name") → long：发射 ptrtoint ptr @name to i64（取
                 // 函数地址，供协程入口帧/探针构造——同 coro_set_entry 的 ptrtoint
                 // 模式）。自举独有。

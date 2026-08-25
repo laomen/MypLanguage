@@ -1,0 +1,42 @@
+// rt_indirect_test.myp — 通用间接调用内建验证（__myp_indirect_*，#30）：
+// 经 __myp_fn_addr 取函数地址 + __myp_indirect_<RET>(addr, ...args) 间接调用。
+// 覆盖 i32/i64/double/void 四种返回、0/1/2/3 实参、混合类型（i64+i32+double）
+// ABI 传参。这是 GPU/CUDA/LLVM C API 绑定（dlopen+dlsym 后调任意签名函数）的
+// 地基验证。
+
+// 用户定义函数（验证同模块内间接调用 + 混合实参 ABI）
+int myAdd(int a, int b) { return a + b; }
+double myMix(long a, int b, double c) { return double(a) + double(b) + c; }
+void myNop() { }
+
+class IndirectProbe {
+    static:
+        int run() {
+            // --- i32 返回 + 1 个 ptr(string) 实参：myp_strlen("hello") = 5 ---
+            string hello = "hello";
+            int ln = __myp_indirect_i32(__myp_fn_addr("myp_strlen"), hello);
+            if (ln != 5) return 1;
+            // --- i64 返回 + 0 实参：myp_now_ms() > 0（单调毫秒）---
+            long ms = __myp_indirect_i64(__myp_fn_addr("myp_now_ms"));
+            if (ms <= 0) return 2;
+            // --- double 返回 + 2 个 double 实参：myp_math_pow(2.0,10.0)=1024 ---
+            double pw = __myp_indirect_double(__myp_fn_addr("myp_math_pow"), 2.0, 10.0);
+            if (pw != 1024.0) return 3;
+            // --- double 返回 + 1 个 double：myp_math_sqrt(4.0)=2 ---
+            double sq = __myp_indirect_double(__myp_fn_addr("myp_math_sqrt"), 4.0);
+            if (sq < 1.999 || sq > 2.001) return 4;
+            // --- void 返回 + 0 实参：myNop()（执行不崩溃）---
+            __myp_indirect_void(__myp_fn_addr("myNop"));
+            // --- i32 返回 + 2 个 i32 实参：用户函数 myAdd(3,4)=7 ---
+            int s = __myp_indirect_i32(__myp_fn_addr("myAdd"), 3, 4);
+            if (s != 7) return 5;
+            // --- double 返回 + 混合实参（i64,i32,double）：myMix=121.5 ---
+            double mv = __myp_indirect_double(__myp_fn_addr("myMix"), 100L, 20, 1.5);
+            if (mv != 121.5) return 6;
+            return 0;
+        }
+}
+
+int main() {
+    return IndirectProbe.run();
+}
