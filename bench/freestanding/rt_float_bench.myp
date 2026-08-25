@@ -1,0 +1,76 @@
+// rt_float_bench.myp — 浮点层性能基准（runtime_myp/float.myp shadow C runtime 对比）。
+// 测 myp_atof（strtod 解析）+ myp_to_string_double（%g）+ myp_fmt_double_f/e/g。
+// 两种运行模式，输出 + checksum 应一致：
+//   C runtime（glibc strtod/snprintf）：./build/myp_self2 rt_float_bench --emit-llvm ... 链 libmyp_rt.a
+//   MYP shadow（float.myp）：          链 /tmp/rt_myp_*.o + libmyp_rt.a（--allow-multiple-definition）
+// psum/fsum 作位一致校验（两模式相同 → 实现逐位等价）。
+// main 内禁语句级具名调用/类方法 → FFI 放赋值 RHS，输出用 __myp_print（__myp_ 放行）。
+import text;
+
+ffi double myp_atof(string s);
+ffi string myp_to_string_double(double v);
+ffi string myp_fmt_double_f(double v, int prec);
+ffi string myp_fmt_double_e(double v, int prec);
+ffi string myp_fmt_double_g(double v, int prec);
+ffi int myp_strlen(string s);
+
+int main() {
+    // ---- 正确性预检（与 rt_float_test 同源，快速失败）----
+    if (myp_to_string_double(myp_atof("3.75")) != "3.75") return 1;
+    if (myp_to_string_double(myp_atof("0x1p3")) != "8") return 2;
+    if (myp_to_string_double(myp_atof("1e100")) != "1e+100") return 3;
+    if (myp_to_string_double(0.00001) != "1e-05") return 4;
+    if (myp_to_string_double(1234567.0) != "1.23457e+06") return 5;
+    if (myp_fmt_double_f(12345.678, 2) != "12345.68") return 6;
+    if (myp_fmt_double_e(12345.678, 2) != "1.23e+04") return 7;
+    if (myp_fmt_double_g(0.000012345, 3) != "1.23e-05") return 8;
+
+    int rounds = 200000;
+
+    // ---- 解析基准（8 种格式 × rounds，含 0x 浮点/inf/小数/指数/极大极小）----
+    long t0 = __myp_now_ms();
+    double psum = 0.0;
+    int r = 0;
+    while (r < rounds) {
+        psum = psum + myp_atof("3.75");
+        psum = psum + myp_atof("0x1p3");
+        psum = psum + myp_atof("-2.5e-3");
+        psum = psum + myp_atof("1e100");
+        psum = psum + myp_atof("0.1");
+        psum = psum + myp_atof("6.022e23");
+        psum = psum + myp_atof("1e-308");
+        psum = psum + myp_atof("123.456e-2");
+        r = r + 1;
+    }
+    long t1 = __myp_now_ms();
+    long pn = rounds * 8;
+    __myp_print("atof x" + pn + ": " + (t1 - t0) + " ms");
+    __myp_print("  per-op ");
+    __myp_print("" + ((t1 - t0) * 1000000 / pn));
+    __myp_print(" ns\n");
+    __myp_print("  psum=" + myp_to_string_double(psum) + "\n");
+
+    // ---- 格式化基准（%g + %f + %e + %g 各 2 种 × rounds）----
+    long t2 = __myp_now_ms();
+    long fsum = 0;
+    int r2 = 0;
+    while (r2 < rounds) {
+        fsum = fsum + myp_strlen(myp_to_string_double(3.141592653589793));
+        fsum = fsum + myp_strlen(myp_to_string_double(0.00001));
+        fsum = fsum + myp_strlen(myp_to_string_double(1234567.0));
+        fsum = fsum + myp_strlen(myp_to_string_double(999999.0));
+        fsum = fsum + myp_strlen(myp_to_string_double(-0.00001));
+        fsum = fsum + myp_strlen(myp_fmt_double_f(12345.678, 2));
+        fsum = fsum + myp_strlen(myp_fmt_double_e(12345.678, 2));
+        fsum = fsum + myp_strlen(myp_fmt_double_g(0.000012345, 3));
+        r2 = r2 + 1;
+    }
+    long t3 = __myp_now_ms();
+    long fn = rounds * 8;
+    __myp_print("fmt  x" + fn + ": " + (t3 - t2) + " ms");
+    __myp_print("  per-op ");
+    __myp_print("" + ((t3 - t2) * 1000000 / fn));
+    __myp_print(" ns\n");
+    __myp_print("  fsum=" + fsum + "\n");
+    return 0;
+}

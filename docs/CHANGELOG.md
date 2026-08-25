@@ -35,6 +35,24 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.23 — 浮点层性能基准（MYP shadow vs libc，~1.1-1.26x）
+
+**非破坏性**。新增 `bench/freestanding/rt_float_bench.myp` + `run_float_bench.sh`
+复现脚本：`myp_atof`（strtod 解析）+ `myp_to_string_double`/`myp_fmt_double_f/e/g`
+（%g/%e/%f 格式化）各 160 万次，C runtime（libc）vs MYP shadow（float.myp）对比，
+`psum`/`fsum` 作位一致校验。实测（rounds=200000，8 操作/轮）：
+
+| 操作 | C runtime (libc) | MYP shadow (float.myp) | 倍数 |
+|------|------------------|------------------------|------|
+| atof 解析 | ~30 ns/op | ~33-35 ns/op | **~1.1-1.17x** |
+| fmt 格式化 | ~94-95 ns/op | ~117-118 ns/op | **~1.23-1.26x** |
+
+- **位精确等价**：`psum=2e+105`、`fsum=11800000` 两模式完全一致。
+- 反汇编确认 shadow 生效：shadow 二进制含 `myp_pow10`/`myp_math_pow`
+  （MYP float.myp 特有符号），C 二进制无（`myp_atof` 直接 libc `atof`）。
+- 结论：纯 MYP 重实现 strtod + %g 距 glibc 高度优化版仅 ~10-26%（`__myp_math_pow`
+  小整数指数有 glibc 快路径 + LLVM 原生代码）；checksum 一致性同时佐证 #19 位精确。
+
 ### v3.15.22 — runtime myp化 #19：浮点层（strtod 解析 + %g/%e/%f 格式化）
 
 **非破坏性**。新增 `runtime_myp/float.myp` shadow C runtime 的浮点解析与格式化
