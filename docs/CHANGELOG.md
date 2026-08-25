@@ -35,6 +35,21 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.11 — runtime myp化 #8：热字符串助手 myp_ord/charcode/chr/strdup
+
+**非破坏性**。`runtime_myp/str.myp` 补 4 个高频小函数（shadow C runtime 验证，
+rt_str_test 扩 9 断言）：
+
+- `myp_ord` / `myp_charcode`：O(1) 取字符码（自举 lexer 等按字符扫描热路径）。
+- `myp_chr`：码点 → 1-4 字节 UTF-8 计数字符串（非法码点 → 0xFFFD 替换符）。
+- `myp_strdup`：拷贝计数串（含 NUL）。
+
+**性能剖析结论（perf 自举编译自身）**：myp_* 函数自身耗时很小（最高 myp_release
+1.25%）；真正的性能大头是 **`__strlen_evex` 67%**（libc strlen）——字符串无长度
+字段，每次操作 O(n) 重扫。根治 = 字符串头加 len 字段（另立任务，影响 runtime 布局
++ 两编译器字面量 GEP）。**按静态调用点，剩余最多的是分配器/ARC
+（myp_release 22k / retain 4k / alloc_object 862）——最难且 self 耗时小，另评。**
+
 ### v3.15.10 — runtime myp化 #7：bytes 层（bytes()/str(bytes)/bytesOf 三转换）
 
 **非破坏性**。`runtime_myp/bytes.myp` 新增（codegen 直接发射的三个 bytes 转换，

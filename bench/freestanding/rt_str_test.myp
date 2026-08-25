@@ -3,6 +3,10 @@
 //（--allow-multiple-definition）。期望与 C 版本一致。
 import text;
 
+// 直接调 ord/charcode/chr/strdup（Str.ord/chr 走 __myp_* 内建发射同名 runtime 调用）
+ffi int myp_charcode(string s, int i);
+ffi string myp_strdup(string s);
+
 // StringBuilder 实例方法不能在 main() 里直接调（direct call 限制）→ 包进 @static 方法。
 class RtJoinProbe {
     static:
@@ -123,5 +127,15 @@ int main() {
     if ("abc" + "" != "abc") return 194;
     if ("a" + "b" + "c" + "d" + "e" != "abcde") return 195;
     if (("pre" + "fix") + "ed" != "prefixed") return 196;
+    // ord / charcode / chr / strdup
+    if (Str.ord("A") != 65) return 201;
+    if (Str.ord("") != 0) return 202;
+    if (myp_charcode("abc", 1) != 98) return 203;
+    if (myp_charcode("abc", -1) != 0) return 204;
+    if (Str.chr(65) != "A") return 205;
+    if (Str.chr(0x4E2D) != "中") return 206;      // 3 字节 UTF-8（U+4E2D）
+    if (Str.chr(-1) != "�") return 207;           // 非法码点 → 0xFFFD 替换符
+    if (myp_strdup("hello") != "hello") return 208;
+    if (myp_strdup("") != "") return 209;
     return 0;
 }

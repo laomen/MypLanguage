@@ -466,6 +466,48 @@ string myp_strcat(string a, string b) {
     return r;
 }
 
+// C: char* myp_strdup(const char* s) —— 拷贝计数字符串（含 NUL）
+string myp_strdup(string s) {
+    int len = myp_strlen(s);
+    string r = myp_alloc(len + 1);
+    __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), len + 1);
+    return r;
+}
+
+// C: int32_t myp_ord(const char* s) —— 首字符 ASCII 码（空回 0）
+int myp_ord(string s) {
+    return __myp_charcode(s, 0);
+}
+
+// C: int32_t myp_charcode(const char* s, int32_t i) —— O(1) 第 i 字符码（i<0 回 0）
+int myp_charcode(string s, int i) {
+    if (i < 0) return 0;
+    return __myp_charcode(s, i);
+}
+
+// C: const char* myp_chr(int32_t code) —— 码点 → 1-4 字节 UTF-8 计数字符串
+//（非法码点 → 0xFFFD 替换符）
+string myp_chr(int code) {
+    if (code < 0 || code > 1114111) code = 65533;   // 0xFFFD
+    int c0 = 0;
+    int c1 = 0;
+    int c2 = 0;
+    int c3 = 0;
+    int n = 0;
+    if (code < 128) { c0 = code; n = 1; }
+    else if (code < 2048) { c0 = 192 | (code >> 6); c1 = 128 | (code & 63); n = 2; }
+    else if (code < 65536) { c0 = 224 | (code >> 12); c1 = 128 | ((code >> 6) & 63); c2 = 128 | (code & 63); n = 3; }
+    else { c0 = 240 | (code >> 18); c1 = 128 | ((code >> 12) & 63); c2 = 128 | ((code >> 6) & 63); c3 = 128 | (code & 63); n = 4; }
+    string r = myp_alloc(n + 1);
+    long dp = __myp_str_ptr(r);
+    __myp_mem_store_i8(dp, c0);
+    if (n > 1) __myp_mem_store_i8(dp + 1, c1);
+    if (n > 2) __myp_mem_store_i8(dp + 2, c2);
+    if (n > 3) __myp_mem_store_i8(dp + 3, c3);
+    __myp_mem_store_i8(dp + n, 0);
+    return r;
+}
+
 // C: int32_t myp_str_hash(const char* s) —— djb2（uint32 回绕，掩 0x7FFFFFFF）
 //（0xFFFFFFFF 超 int32 字面量 MYP 不解析 → 用 % 4294967296 做 32 位回绕）
 int myp_str_hash(string s) {
