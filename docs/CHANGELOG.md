@@ -27,6 +27,36 @@
 
 ## 编译器版本历史
 
+### v3.15.38 — runtime myp化 #35：包 B 诊断/统计（diag.myp：type_live + fail_alloc）
+
+**非破坏性**。诊断/统计层 MYP 化——`Memory.liveObjectCountByType` 的 per-type
+计数 + `Memory.failAlloc*` 确定性分配失败注入：
+
+- **`diag.myp`**：
+  - **type_live per-type 计数**：`myp_type_live_inc/dec`（挂 MYP alloc/free：
+    `myp_alloc_object` inc + `myp_free_object` dec，按对象头 type_id 索引
+    `@static TLive.counts[1024]` 定长数组）+ `myp_live_object_count_by_type`。
+    替代 C 的 TLS 每线程数组（MYP 版进程级共享，非 TLS——符合 @static 模型）。
+  - **fail_alloc 注入**：`myp_fail_alloc_enable/disable/get` + `myp_fail_alloc_check`
+    （挂 `myp_arena_alloc_ex` 顶部注入点）。支持 `Memory.failAllocEnable(N)` 与
+    `MYP_FAIL_ALLOC=N` 环境变量（首次检查读一次，经 `myp_env_get` + `myp_str_to_long`）。
+    第 N 次分配到达 → stderr 稳定诊断 + `kill(pid,SIGABRT)`（同 C abort()）。
+- **关键技巧**：
+  - **注入 fire 前必须先禁用**（`FailA.at=0`）：fire 分支构造消息（
+    `myp_to_string_u64`/`+` concat）会分配 → `myp_arena_alloc_ex` → 本 check 再
+    触发 → seen 已 >= at → 无限递归栈溢出 139。C 版 fprintf 不经 MYP 分配器无此
+    问题。
+  - **MYP 版 vs C 版计数差异**：C 的 type_live 是 TLS 每线程；MYP 版全进程累计
+    （文档化限制）。C 版 `myp_live_object_count_by_type` 因 MYP `myp_alloc_object`
+    shadow 了 C 的分配路径而恒 0 → per-type 计数必须 MYP 侧自持（inc/dec 挂点）。
+- **验证**：`rt_diag_test`（Node 对象按 type 计数增/减/回零、live 计数 churn 回基线、
+  arena 诊断非负、fail_alloc 启→读→禁）；注入探针（`enable(1)`→`#1`+SIGABRT、
+  `MYP_FAIL_ALLOC=3` 纯 env→`#3`+SIGABRT、极大 N 不误触发）。shadow **25 项**（24
+  exit0 + fail 探针 exit1）、bootstrap 16/16（fixpoint `1e6d4f7` 不变，编译器未改）、
+  全量 323/323。
+- **未做（依赖包 D）**：`myp_diag_coro_*`/`stack_pool_*`/`retired_*` 读协程运行时
+  状态 → 包 D 协程迁移后影。
+
 ### v3.15.37 — runtime myp化 #34：线程创建 clone 直建（thread.myp，不保留 C）
 
 **非破坏性**。线程创建 MYP 化——**不保留 C/pthread**：`myp_thread_spawn` 用

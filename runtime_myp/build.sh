@@ -36,7 +36,8 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_env_test.myp bench/freestanding/rt_math_test.myp \
          bench/freestanding/rt_indirect_test.myp bench/freestanding/rt_pkgA_test.myp \
          bench/freestanding/rt_pkgA2_test.myp bench/freestanding/rt_pkgA_fail_test.myp \
-         bench/freestanding/rt_exception_test.myp bench/freestanding/rt_thread_test.myp; do
+         bench/freestanding/rt_exception_test.myp bench/freestanding/rt_thread_test.myp \
+         bench/freestanding/rt_diag_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"

@@ -16,16 +16,16 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **137**（~28%） |
-| 未 shadow（C runtime 剩余） | **353** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **141**（~29%） |
+| 未 shadow（C runtime 剩余） | **349** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
-| runtime_myp 模块 | **20** 个 |
+| runtime_myp 模块 | **21** 个 |
 
-已完成的层（#1–#31 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
+已完成的层（#1–#35 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
 long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_diag_arena_*`，#31）+
 arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get / 命令行参数
 args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 协程上下文
-切换 coro(myp_ctx_switch) / 汇编原语 asm。
+切换 coro(myp_ctx_switch) / 汇编原语 asm / 诊断 diag(type_live + fail_alloc，#35)。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -63,12 +63,17 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   依赖。
 
 ### 包 B：诊断/内存统计（~20 个，读已迁移内部状态）
-- **`diag`(13)**：`myp_diag_arena_reserved/used`、`myp_diag_coro_slots/...`、
-  `myp_diag_stack_pool_*`、`myp_diag_retired_*`、`myp_diag_get/set_strict`。
-- **`live`(1)**：`myp_live_object_count_by_type`。
-- 内部 `alloc_list`/`free_*`/`type_live`/`make_*`/`arr_*`（~20）：分配器/数组/类型计数
-  内部 helper——多数可并入 alloc.myp/region.myp 内部重构。
-- **难度**：中低。读 arena/region/coro 内部计数（MYP 已管），重写为 MYP 状态读取。
+- ✅ **已做（#35 diag.myp）**：`myp_live_object_count_by_type` + `myp_type_live_inc/dec`
+  （per-type 计数，挂 MYP alloc/free）+ `myp_fail_alloc_enable/disable/get/check`
+  （确定性注入，enable/env 双路径）。`myp_diag_arena_reserved/used`（#31）、
+  `myp_diag_get/set_strict`（#33）、`myp_diag_region_reserved/used`（region.myp）。
+- **`diag` 剩余(10)**：`myp_diag_coro_slots/capacity/free_slots`、
+  `myp_diag_stack_pool_count/capacity/bytes/max_bytes`、`myp_diag_retired_count/bytes`
+  ——**读协程运行时状态 → 依赖包 D**，协程迁移后影（C 版仍生效）。
+- 内部 `alloc_list`/`free_*`/`make_*`/`arr_*`（~20）：分配器/数组内部 helper——C 的
+  侵入链表 node 本就被 MYP 跳过（alloc.myp 注），其余可随 alloc/region 内部重构移除或
+  MYP 化。
+- **难度**：中低。验证：rt_diag_test + 注入探针（enable/env 双路径 SIGABRT）。
 
 ### 包 C：异常机制（exception 5 + throw 2 + error 3 + strict 2 = 12）
 - ✅ **已做（#33 exception.myp）**：`myp_throw`/`myp_throw_object`/`myp_get_error`/
@@ -147,8 +152,8 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 ## 四、建议推进顺序
 
 1. ✅ **包 A 残留薄层**（#31/#32：str_parse_int_opt / diag_arena / console+test）
-2. **包 B 剩余诊断**（`myp_fail_alloc_*` 注入 + alloc 接入；diag_coro/stack 等读协程
-   状态 → 待包 D）
+2. ✅ **包 B 诊断**（#35 diag.myp：type_live + fail_alloc；coro 诊断读协程状态待
+   包 D）
 3. ✅ **包 C 异常机制**（#33 exception.myp，协程前置之一）
 4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪 + 异常边界已具备；线程创建已用 clone
    直建 #34，不再依赖 pthread）

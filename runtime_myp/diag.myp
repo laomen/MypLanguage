@@ -1,0 +1,88 @@
+// runtime_myp/diag.myp — 诊断/统计 MYP 化（包 B）：
+// ① type_live per-type 计数（挂 MYP alloc/free，MYP_OBJ type_id 索引）——
+//    供 Memory.liveObjectCountByType（stdlib/memory.myp 公开 API）；
+// ② fail_alloc 确定性分配失败注入（Memory.failAllocEnable/Disable/Get +
+//    MYP_FAIL_ALLOC 环境变量；挂 MYP arena alloc 注入点）。
+//
+// C 版用 __thread TLS（每线程数组/注入状态）；MYP 版用 @static 全局（进程级共享，
+// 非 TLS——已文档化限制，与 MYP @static 模型一致；跨线程计数为全进程累计）。
+// coro 诊断（myp_diag_coro_*/stack_pool_*/retired_*）读协程运行时状态 → 依赖
+// 包 D，暂不影（C 版仍生效，Memory.coro* 返回 C 值）。
+
+// 跨模块辅助（--shared 链接按名解析到各 runtime_myp 模块的 MYP 定义）
+ffi string myp_env_get(string name);
+ffi long myp_str_to_long(string s);
+ffi string myp_to_string_u64(long val);
+ffi int myp_strlen(string s);
+
+@static class TLive {
+    property:
+        long[1024] counts;   // 按 type_id 的 live 类对象计数（MYP_OBJ type_id>0）
+}
+@static class FailA {
+    property:
+        long at = 0;      // 第 nth 次分配注入失败（0=关闭）
+        long seen = 0;    // 已到达分配器的分配计数
+        int envRead = 0;  // 是否已读 MYP_FAIL_ALLOC 环境变量
+}
+
+// ---- type_live per-type 计数 ----
+// C: static void myp_type_live_inc(int tid) —— myp_alloc_object 挂点。
+// 类对象 type_id>0 才计数（数组/字符串 type_id 为 -1/-2 不计）。
+void myp_type_live_inc(int tid) {
+    if (tid <= 0) return;
+    if (tid < 1024) {
+        TLive.counts[tid] = TLive.counts[tid] + 1;
+    }
+}
+// C: static void myp_type_live_dec(int tid) —— myp_free_object 挂点。
+void myp_type_live_dec(int tid) {
+    if (tid <= 0) return;
+    if (tid < 1024 && TLive.counts[tid] > 0) {
+        TLive.counts[tid] = TLive.counts[tid] - 1;
+    }
+}
+// C: int64_t myp_live_object_count_by_type(int64_t type_id)
+long myp_live_object_count_by_type(long type_id) {
+    if (type_id <= 0 || type_id >= 1024) return 0;
+    return TLive.counts[int(type_id)];
+}
+
+// ---- fail_alloc 确定性注入 ----
+// C: void myp_fail_alloc_enable(int64_t nth)
+void myp_fail_alloc_enable(long nth) {
+    if (nth > 0) FailA.at = nth; else FailA.at = 0;
+    FailA.seen = 0;
+}
+// C: void myp_fail_alloc_disable(void)
+void myp_fail_alloc_disable() { FailA.at = 0; }
+// C: int64_t myp_fail_alloc_get(void)
+long myp_fail_alloc_get() { return FailA.at; }
+
+// C: static void myp_fail_alloc_check(void) —— myp_arena_alloc_ex 顶部挂点。
+// 第 at 次分配到达时 stderr 打印稳定诊断 + abort（SIGABRT，同 C abort()）。
+// 环境变量 MYP_FAIL_ALLOC=N 首次检查时读取一次（同 C env_read 门控）。
+void myp_fail_alloc_check() {
+    if (FailA.envRead == 0) {
+        FailA.envRead = 1;
+        string v = myp_env_get("MYP_FAIL_ALLOC");
+        if (myp_strlen(v) > 0) {
+            FailA.at = myp_str_to_long(v);
+            FailA.seen = 0;
+        }
+    }
+    if (FailA.at <= 0) return;
+    FailA.seen = FailA.seen + 1;
+    if (FailA.seen >= FailA.at) {
+        FailA.at = 0;   // ★ 先禁用注入：msg 构造会分配（myp_to_string_u64/concat
+                        // → myp_arena_alloc_ex → 本 check 再触发）→ 已 >= at →
+                        // 无限递归栈溢出 139。禁用后一次触发即止（同 C fprintf 不
+                        // 经 MYP 分配器）。
+        string msg = "MYP runtime: injected allocation failure (allocation #"
+                   + myp_to_string_u64(FailA.seen) + ")\n";
+        __myp_syscall(1, 2, __myp_str_ptr(msg), myp_strlen(msg), 0, 0, 0);  // fd=2
+        long pid = __myp_syscall(39);                     // getpid
+        __myp_syscall(62, pid, 6, 0, 0, 0, 0);            // kill(pid, SIGABRT)
+        __myp_syscall(60, 134, 0, 0, 0, 0, 0);            // 兜底 exit(134)
+    }
+}

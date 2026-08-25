@@ -1,0 +1,65 @@
+// rt_diag_test.myp — 诊断层验证（runtime_myp/diag.myp，包 B）：
+// type_live per-type 计数（挂 MYP alloc/free）+ fail_alloc 注入 API + live 计数。
+import rtti;
+
+ffi long myp_live_object_count();
+ffi long myp_live_string_count();
+ffi long myp_live_array_count();
+ffi long myp_live_object_count_by_type(long typeId);
+ffi long myp_diag_arena_reserved();
+ffi long myp_diag_arena_used();
+ffi void myp_fail_alloc_enable(long nth);
+ffi void myp_fail_alloc_disable();
+ffi long myp_fail_alloc_get();
+
+class Node {
+    property:
+        int val = 0;
+}
+
+class DiagTest {
+    static:
+        int run() {
+            long baseTotal = myp_live_object_count();
+            int tid = 0;
+            {
+                Node probe = new Node();
+                tid = Rtti.typeId<Node>(probe);
+                long bt = myp_live_object_count_by_type(tid);
+                if (bt < 1L) return 1;
+                {
+                    Node inner = new Node();
+                    long bt2 = myp_live_object_count_by_type(tid);
+                    if (bt2 != bt + 1L) return 2;   // probe + inner
+                }
+                long bt3 = myp_live_object_count_by_type(tid);
+                if (bt3 != bt) return 3;            // inner 已释放
+                if (myp_live_object_count() != baseTotal + 1L) return 4;
+            }
+            if (myp_live_object_count_by_type(tid) != 0L) return 5;   // probe 已释放
+            if (myp_live_object_count() != baseTotal) return 6;
+
+            // live 计数：字符串/对象 churn 后回到基线（泄漏检测）
+            long sb = myp_live_string_count();
+            long tb = myp_live_object_count();
+            for (int i = 0; i < 100; i = i + 1) {
+                string s = "s" + i;                 // 计数 string（concat）
+                Node n = new Node();
+            }
+            if (myp_live_string_count() != sb) return 7;
+            if (myp_live_object_count() != tb) return 8;
+
+            // arena 诊断非负
+            if (myp_diag_arena_reserved() < 0L) return 9;
+            if (myp_diag_arena_used() < 0L) return 10;
+
+            // fail_alloc 注入 API：启→读→禁（极大 N，不触发 abort）
+            myp_fail_alloc_enable(1000000000L);
+            if (myp_fail_alloc_get() != 1000000000L) return 11;
+            myp_fail_alloc_disable();
+            if (myp_fail_alloc_get() != 0L) return 12;
+            return 0;
+        }
+}
+
+int main() { return DiagTest.run(); }
