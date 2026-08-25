@@ -128,6 +128,11 @@ int myp_str_split_count(string s, string delim) {
     return count;
 }
 
+// TODO(性能): myp_str_split_get 尚未 MYP 化（仍走 C runtime.c，每次调用从头 strstr
+// 数到 index → 逐行循环 O(N²)，link.myp/codegen.myp 曾踩）。MYP 化时建议新增带偏移
+// 的变体（从上次找到的分隔符继续，O(段)）或 split_all 一次返回 string[]（O(N)），
+// 让所有"按行循环"调用方改 O(N)。
+
 // C: int32_t myp_str_to_int(const char* s) —— 十进制 strtol(10)，无有效数字回 0
 int myp_str_to_int(string s) {
     int sl = myp_strlen(s);

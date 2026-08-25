@@ -240,15 +240,34 @@ import collections; // ArrayList
             return out;
         }
 
+        // 单遍行切分：一次扫描 s 按 '\n' 分段，只留非空段。
+        // 不用 splitGet 逐行 —— splitGet 每次从串头 strstr 数到 index（O(len)），
+        // 循环 N 行 = O(N²)（同 codegen 的 preamble 修复）。
+        ArrayList<string> splitLines(string s) {
+            ArrayList<string> out = new ArrayList<string>();
+            int n = Str.len(s);
+            int start = 0;
+            int i = 0;
+            while (i <= n) {
+                if (i == n || __myp_charcode(s, i) == 10) {  // '\n'
+                    if (i > start) out.add(Str.substring(s, start, i));
+                    start = i + 1;
+                }
+                i = i + 1;
+            }
+            return out;
+        }
+
         // nm 输出 → 符号集合（defined=1 → --defined-only；0 → -u 未定义）。
         // 每行末列 = 符号名（地址/类型列用空白分隔）。
         ArrayList<string> nmSymbols(string files, int defined) {
             ArrayList<string> out = new ArrayList<string>();
             string cmd = "nm " + ((defined != 0) ? "--defined-only " : "-u ") + files + " 2>/dev/null";
             string outp = Process.output(cmd);
-            int c = Str.splitCount(outp, "\n");
+            ArrayList<string> lines = Link.splitLines(outp);
+            int c = lines.size();
             for (int i = 0; i < c; i = i + 1) {
-                string line = Str.trim(Str.splitGet(outp, "\n", i));
+                string line = Str.trim(lines.get(i));
                 if (Str.len(line) == 0) continue;
                 int nw = Str.splitCount(line, " ");
                 string name = Str.trim(Str.splitGet(line, " ", nw - 1));
@@ -266,9 +285,10 @@ import collections; // ArrayList
             ArrayList<string> out = new ArrayList<string>();
             string cmd = "nm -D " + ((defined != 0) ? "--defined-only " : "-u ") + files + " 2>/dev/null";
             string outp = Process.output(cmd);
-            int c = Str.splitCount(outp, "\n");
+            ArrayList<string> lines = Link.splitLines(outp);
+            int c = lines.size();
             for (int i = 0; i < c; i = i + 1) {
-                string line = Str.trim(Str.splitGet(outp, "\n", i));
+                string line = Str.trim(lines.get(i));
                 if (Str.len(line) == 0) continue;
                 int nw = Str.splitCount(line, " ");
                 string name = Str.trim(Str.splitGet(line, " ", nw - 1));
