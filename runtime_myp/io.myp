@@ -305,6 +305,101 @@ string ioReadAllHandle(int handle) {
     __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
     return s;
 }
+
+// ---- 协程异步文件读（§五-5 P3）——raw addr 变体（供 coro.myp exec worker 用）----
+// worker 线程做阻塞读，结果经 coro execResult 跨线程投递。**不落 string 局部**
+// （worker 函数退出会 release → 悬垂）；直接建 12B 头 {len,rc=0,type_id} + 字节，
+// 返回 data 地址（long）。协程侧 __myp_addr_to_str(r) return retain(+1) → rc=1。
+long ioAllocRaw(int n) {
+    long base = myp_arena_alloc(12 + n + 1);
+    if (base == 0) return 0;
+    __myp_mem_store_i32(base, n);        // len（不含 NUL）
+    __myp_mem_store_i32(base + 4, 0);    // rc=0
+    __myp_mem_store_i32(base + 8, -2);   // type_id STR（0xFFFFFFFE）
+    return base + 12;
+}
+long execIoReadLineRaw(int handle) {
+    long t = Io.table;
+    if (t == 0 || handle < 1 || handle >= 64) return 0;
+    long fd = __myp_mem_load_i64(t + handle * 16);
+    if (fd == -1) return 0;
+    long buf = myp_arena_alloc(4096);
+    long n = 0;
+    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
+    if (pend >= 0) {
+        __myp_mem_store_i64(t + handle * 16 + 8, -1);
+        if (pend != 10) { __myp_mem_store_i8(buf, pend); n = 1; }
+    }
+    while (n < 4096) {
+        long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
+        if (r <= 0) {
+            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+            break;          // EOF / 错误
+        }
+        int c = __myp_mem_load_i8(buf + n);
+        if (c == 10) break;          // \n 不包含
+        n = n + 1;
+    }
+    long dp = ioAllocRaw(int(n));
+    if (dp == 0) return 0;
+    __myp_memcpy(dp, buf, n);
+    __myp_mem_store_i8(dp + n, 0);
+    return dp;
+}
+long execIoReadAllRaw(int handle) {
+    long t = Io.table;
+    if (t == 0 || handle < 1 || handle >= 64) return 0;
+    long fd = __myp_mem_load_i64(t + handle * 16);
+    if (fd == -1) return 0;
+    // pending 先消费
+    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
+    __myp_mem_store_i64(t + handle * 16 + 8, -1);
+    // 当前位置 → 文件尾 → 回当前位置
+    long cur = __myp_syscall(8, fd, 0, 1, 0, 0, 0);    // SEEK_CUR
+    long end = __myp_syscall(8, fd, 0, 2, 0, 0, 0);    // SEEK_END
+    if (end < 0 || cur < 0) {
+        // 流式（lseek 失败）：逐字节
+        long buf = myp_arena_alloc(4096);
+        long n = 0;
+        if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
+        while (n < 4096) {
+            long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
+            if (r <= 0) {
+                if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+                break;
+            }
+            n = n + 1;
+        }
+        long dp = ioAllocRaw(int(n));
+        if (dp == 0) return 0;
+        __myp_memcpy(dp, buf, n);
+        __myp_mem_store_i8(dp + n, 0);
+        return dp;
+    }
+    __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
+    long remaining = end - cur;
+    if (remaining < 0) remaining = 0;
+    long cap = remaining + 1;
+    if (pend >= 0) cap = cap + 1;
+    long buf = myp_arena_alloc(cap);
+    long n = 0;
+    if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
+    while (n < remaining + 1) {
+        long r = __myp_syscall(0, fd, buf + n, cap - n, 0, 0, 0);
+        if (r <= 0) {
+            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+            break;
+        }
+        n = n + r;
+    }
+    __myp_mem_store_i8(buf + n, 0);
+    long dp = ioAllocRaw(int(n));
+    if (dp == 0) return 0;
+    __myp_memcpy(dp, buf, n);
+    __myp_mem_store_i8(dp + n, 0);
+    return dp;
+}
+
 // C: const char* myp_io_read_line(void) —— 当前句柄读一行
 string myp_io_read_line() {
     return ioReadLineHandle(myp_io_cur_get());
@@ -437,16 +532,8 @@ int myp_io_seek(int offset, int whence) {
 
 // ---- 协程异步文件读（§五-5 P3）----
 // C: char* myp_coro_file_read_line(int io_handle) / myp_coro_file_read_all(int)
-// MYP 版：经 MYP fd 表做**同步**读（数据正确）。C 版的协程 parking + exec worker
-// 依赖 C FILE* 表（MYP shadow 后恒空 → readAll 返回空串）——此处接管为 fd 读。
-// 已知限制：@async 非阻塞语义（await 期间线程推进）未 MYP 化，读时阻塞；
-// 323 套件的 async_file 测试走 C runtime 不受影响。
-string myp_coro_file_read_line(int io_handle) {
-    return ioReadLineHandle(io_handle);
-}
-string myp_coro_file_read_all(int io_handle) {
-    return ioReadAllHandle(io_handle);
-}
+// **定义在 coro.myp**（async exec worker：park + worker 线程读 + resume；非协程
+// 同步回退）。此处不定义——io.myp 只提供 raw 读原语（execIoReadLineRaw/AllRaw）。
 
 // ---- stdin 读一行（#42 薄层：shadow C myp_read_line；codegen 内建 __myp_read_line）----
 // C: const char* myp_read_line(void) —— 读 fd 0 至 '\n' 或 EOF（上限 255），返回

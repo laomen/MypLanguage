@@ -305,13 +305,14 @@ add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 find_package(PkgConfig REQUIRED)
 # SDL2 可选：mypc 本体不依赖 SDL（不链接 myp_runtime，只链 LLVM+pthread）；
 # 生成程序通过通用桥接发现自动链接（src/main.cpp linkObjects：bridges 目录 +
-# nm 符号检测，新增 bridge 无需改编译器）。此处只影响 myp_runtime 静态库
-# （供测试/工具）是否编译 sdl_bridge.c —— 没装 SDL2 的环境也能构建 mypc 全工具链。
+# nm 符号检测，新增 bridge 无需改编译器）。v3.15.62 sdl/ttf 外部化后
+# sdl_bridge.c 移至 libs/sdl/bridges/，不再编入 myp_runtime（生成程序按需链接
+# 外部 SDL）。
 pkg_check_modules(SDL2 QUIET sdl2)
 if(SDL2_FOUND)
-    message(STATUS "SDL2 found (${SDL2_VERSION}) — myp_runtime 含 sdl_bridge.c")
+    message(STATUS "SDL2 found (${SDL2_VERSION}) — 外部 SDL 桥接 libs/sdl，不编入 myp_runtime")
 else()
-    message(STATUS "SDL2 NOT found — myp_runtime 不含 sdl_bridge.c；生成程序按需链接 SDL 仍可用")
+    message(STATUS "SDL2 NOT found — myp_runtime 不含 SDL 桥接；生成程序按需链接 SDL 仍可用")
 endif()
 
 find_package(PkgConfig)
@@ -329,9 +330,6 @@ if(MINGW OR MSVC)
     list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx_win.S)
 else()
     list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx.S)
-endif()
-if(SDL2_FOUND)
-    list(APPEND MYP_RUNTIME_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/stdlib/bridges/sdl_bridge.c)
 endif()
 if(MYP_ENABLE_ROCM)
     list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)

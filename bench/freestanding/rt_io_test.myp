@@ -35,7 +35,11 @@ class IoProbe {
             if (diff > 0.0001) return 5;
             int marker = r.readByte();
             if (marker != 0xAA) return 6;
-            if (r.hasNext()) return 7;    // 应 EOF
+            // hasNext 是 C `!feof` 语义：读走最后字节后 feof 尚未置位，须先越界
+            // 读（撞 EOF 置 feof）再查 hasNext（read_byte 撞 EOF 返回 -1）。
+            int eofProbe = r.readByte();
+            if (eofProbe != -1) return 7;    // 应 EOF（-1）
+            if (r.hasNext()) return 7;       // 应 EOF
             r.close();
 
             // readAll（修复：经 MYP fd 表同步读，C FILE* 空表问题）

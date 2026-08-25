@@ -294,6 +294,8 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("declare void @myp_io_select(i32)\n");
             sb.append("\n");
+            sb.append("declare ptr @__myp_build_argv()\n");
+            sb.append("\n");
             sb.append("declare ptr @myp_read_line()\n");
             sb.append("\n");
             sb.append("declare i32 @myp_str_eq(ptr, ptr)\n");

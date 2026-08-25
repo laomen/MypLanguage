@@ -3923,6 +3923,22 @@ class CodeGen {
                 int al = IrEmit.alignOf(lt);
                 sb_.append("  store " + lt + " %" + paramNames_.get(i) + ", ptr %" + paramNames_.get(i) + ".addr, align " + al + "\n");
             }
+            // main 入口：argv（C runtime 透传 raw char**，元素是裸 C 串、无 MYP
+            // 12B 头）重建为真 MYP string[]。C 版字符串函数 strlen 容忍裸串；MYP
+            // 版 myp_strlen 读 data-12 头 → 裸串崩溃（myp_run 归档下段错误根因）。
+            // 经 __myp_build_argv()（C/MYP runtime 都提供同名符号）替换参数。
+            if (isMainFunc_ != 0) {
+                for (int ai = 0; ai < paramNames_.size(); ai = ai + 1) {
+                    AstType pt = paramAstTypes_.get(ai);
+                    if (pt.element() != null && pt.arraySize() == 0
+                        && pt.element().str() == "string") {
+                        string alt = paramTypes_.get(ai);
+                        string tmp = newTmp();
+                        sb_.append("  " + tmp + " = call ptr @__myp_build_argv()\n");
+                        sb_.append("  store " + alt + " " + tmp + ", ptr %" + paramNames_.get(ai) + ".addr, align 8\n");
+                    }
+                }
+            }
             // BUG-030 镜像：构造器入口把 this 注册进 __myp_inst_<Class>（mapping
             // 目标存在时），使构造器内触发的 mapping 事件派发到当前实例；随后
             // 复位标志，避免嵌套 lambda 体继承（普通 action 恒 0）。

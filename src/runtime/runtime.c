@@ -955,6 +955,24 @@ char* myp_args_get(int32_t index) {
     return myp_strdup(myp_saved_argv[index]);
 }
 
+// Build a proper MYP string[] for main's argv parameter. The C runtime passes
+// raw char** (and raw C strings) to main; MYP header-based myp_strlen reads the
+// 12-byte header at data-12 and crashes on raw strings (C strlen tolerates
+// them). The selfhost codegen emits a call to this at main entry for the
+// string[] argv param so argv elements are real counted strings on both
+// runtimes. Mirrors runtime_myp/args.myp __myp_build_argv.
+char** __myp_build_argv(void) {
+    int32_t n = myp_args_count();
+    if (n < 0) n = 0;
+    char** arr = (char**)myp_alloc_class_array((uint64_t)n, (uint32_t)sizeof(char*));
+    if (!arr) return NULL;
+    for (int32_t i = 0; i < n; i++) {
+        char* s = myp_args_get(i);   // fresh counted string (rc=1)
+        arr[i] = s ? s : myp_strdup("");
+    }
+    return arr;
+}
+
 // ======================
 // Environment Variables
 // ======================

@@ -422,17 +422,25 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
     晚初始化票号锁=垃圾 → 死锁；修 struct_arc/io_thread/myp_fmt）。
   - alloc.myp arena futex 票号锁（全局 bump 无锁，@parallel 并发分配竞态；修
     @test/parallel_string_new）。
-- **⚠️ 剩余 3 个失败（架构级，需编译器/运行时大改）**：
-  - **coro_thread**（~80% 崩）：MYP coro 表非 TLS（@static 全局），两个 @thread
-    并发 create/schedule 竞态损坏；C 用 `__thread` TLS 天然隔离。修 = per-thread
-    coro 表（gettid 键控，大重构）或协程 API 加锁（yield 跨 ctx_switch，难）。
-  - **myp_run**（args 透传段错误）：main 的 `string[] argv` 被 codegen **透传
-    raw char\*\***（两个编译器都如此），`av[1]` 是裸 C 串无 MYP 头 → MYP
-    myp_strlen 读头（data-12）得垃圾。C 运行时 myp_strlen 用 strlen 兼容。修 =
-    codegen 建真正的 MYP string[] argv（双编译器 + selfhost 重建）。
-  - **async_file**（输出顺序）：异步 exec worker 投递节奏与 C 不同（期望 R/B 交
-    错，实际 R 全在前）。时序敏感测试，需 MYP async 投递匹配 C 节奏或测试改确定
-    性。
+- **✅ v3.15.65 已修剩余 3 个架构级 bug（归档下 selfhost 323/323 全绿）**：
+  - **coro_thread**（~80% 段错误）：MYP coro 表非 TLS（@static 全局），两个
+    @thread 并发操作竞态损坏。修 = **全局递归锁** `CoroLock`（owner gettid +
+    depth）包住全部公共协程 API；resume 持锁跨 ctx_switch（协程一步独占全局），
+    yield **不再加锁**（否则每次 yield 泄漏一层深度——单线程递归无感，跨线程
+    worker 的 coroLock 永远等不到释放 → 死锁，async_file 的隐藏根因）；调度器
+    事件处理在锁外（避免 coro→ev 与 ev→coro 锁序反转）。coro_thread 20/20 稳。
+  - **myp_run**（args 透传段错误）：main 的 `string[] argv` 被 codegen 透传
+    raw char**（元素裸 C 串无 MYP 头 → MYP myp_strlen 读头垃圾；C 版 strlen 容
+    忍）。修 = selfhost codegen 在 main 入口对 string[] argv 参数调
+    `__myp_build_argv()`（C runtime.c + MYP args.myp 都提供同名符号）重建真
+    MYP string[]。oracle 冻结不动；bootstrap 16/16 不动点不变。
+  - **async_file**（输出顺序）：MYP io.myp 的 `myp_coro_file_read_line/all` 原
+    为**同步读**（C worker 读 C FILE* 表，MYP shadow 后恒空）→ await 阻塞协程
+    线程 → R 全在前。修 = coro.myp 新增 **MYP 版 async exec worker**：park
+    （EXEC wait）+ clone worker（thread.myp myp_thread_spawn，共享任务槽 capture
+    握手）+ worker 阻塞读（io.myp `execIoReadLineRaw/AllRaw` 返回 raw addr，
+    不落 string 局部避免 ARC release）+ coroLock 内写 execResult/ready + resume。
+    输出与 C runtime 逐字一致（R/B 交错）。
 - **`myp_printf`（varargs）**：唯一保留 C 的 codegen 契约。MYP 程序不调用
   （`Console.*`/`__myp_print*` 走独立路径）；若未来需要可加 `__myp_printf_va`
   变长参数包装（低优先）。

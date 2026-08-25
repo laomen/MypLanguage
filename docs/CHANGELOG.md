@@ -27,6 +27,48 @@
 
 ## 编译器版本历史
 
+### v3.15.65 — 修复剩余 3 个架构级 MYP 运行时 bug（归档下 selfhost 323/323 全绿）
+
+**非破坏性**。归档（`MYP_MAKE_ARCHIVE=1`）下最后 3 个架构级失败全部修复——
+**归档下 selfhost 全量 323/323**（de-gcc 关键里程碑）：
+
+- **coro_thread**（~80% 段错误）：MYP coro 表非 TLS（@static 全局），两个
+  @thread 并发 create/schedule 竞态损坏。修 = coro.myp 新增**全局递归锁**
+  `CoroLock`（owner gettid + depth）包住全部公共协程 API：
+  - resume 持锁跨 ctx_switch（协程一步独占全局；yield 递归重入由 resume 统一
+    释放）；**yield 不再加锁**——这是跨线程死锁的隐藏根因：yield 加锁后每次
+    yield 泄漏一层深度（单线程递归无感；跨线程 worker 的 coroLock 永远等不到
+    释放）。
+  - scheduler 事件处理（`myp_event_process_all`）移出锁外（避免 coro→ev 与
+    ev→coro 锁序反转）。
+  - 验证：coro_thread 隔离 20/20 稳定；rt_coro/wait/chan_future/thread 冒烟全过。
+- **myp_run**（args 透传段错误）：main 的 `string[] argv` 被 codegen 透传 raw
+  char**（元素裸 C 串无 MYP 12B 头 → MYP myp_strlen 读头垃圾；C 版 strlen 容
+  忍）。修 = **selfhost codegen** 在 main 入口对 `string[] argv` 参数调
+  `__myp_build_argv()` 重建真 MYP string[]（读 /proc/self/cmdline）。C runtime
+  （runtime.c）与 MYP args.myp 都提供同名符号（非归档路径走 C 版）。oracle 冻结
+  不动。bootstrap 16/16 不动点不变（selfhost 编译器自身 main 无 argv）。
+- **async_file**（输出顺序）：MYP io.myp 的 `myp_coro_file_read_line/all` 原为
+  **同步读**（C exec worker 读 C FILE* 表，MYP shadow 后恒空 → 曾停用 worker）
+  → await 阻塞协程线程 → R 全在前。修 = coro.myp 新增 **MYP 版 async exec
+  worker**：
+  - park（EXEC wait）+ clone worker（thread.myp myp_thread_spawn，共享任务槽
+    capture 握手防覆盖）+ worker 独立线程阻塞读 + coroLock 内写 execResult/ready
+    + resume 取结果。
+  - io.myp 新增 `execIoReadLineRaw/AllRaw`：返回 **raw addr**（直接建 12B 头
+    {len,rc=0,type_id}，不落 string 局部——worker 函数退出会 release → 悬垂）；
+    协程侧 `__myp_addr_to_str` return retain(+1) → rc=1 干净。
+  - 输出与 C runtime **逐字一致**（R/B 交错）。
+- **rt_io_test hasNext 门禁**：测试按 peek 语义断言（读走最后字节后 hasNext=假），
+  与 `!feof` 语义不符（C/MYP 双 runtime 都 exit 7）——测试改为先越界读触发 EOF
+  再查 hasNext（build.sh shadow 冒烟门禁恢复全绿）。
+- **CMakeLists sdl 遗留**：sdl/ttf 外部化后 `stdlib/bridges/sdl_bridge.c` 已移到
+  `libs/sdl/bridges/`，CMake 仍引用旧路径（SDL2 检测到即编译失败）——移除过时
+  引用（外部库由生成程序按需链接）。
+- 验证：**归档下 selfhost 323/323** + 默认态 selfhost 323/323 + oracle 323/323
+  + bootstrap 16/16（myp_self2==myp_self3 字节相同）+ shadow 冒烟 exit 0 +
+  coro_thread 20/20 + async_file 输出与 C 逐字一致。
+
 ### v3.15.64 — 修复 7 个 MYP 运行时 bug（归档默认化推进，selfhost 320/323）
 
 **非破坏性**。归档（`MYP_MAKE_ARCHIVE=1`）被 selfhost 拾取后暴露的 MYP 运行时

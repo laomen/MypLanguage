@@ -75,3 +75,16 @@ string myp_args_get(int index) {
     __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
     return s;
 }
+
+// C: char** __myp_build_argv(void) —— 构造 main 的 argv 参数（真 MYP string[]，
+// 元素为计数字符串）。C runtime 透传 raw char**（无 MYP 12B 头）→ MYP
+// myp_strlen 读 data-12 头崩溃（C 版 strlen 容忍裸串）。selfhost codegen 在
+// main 入口对 string[] argv 参数调此函数重建（双编译器 + C/MYP runtime 都
+// 提供同名符号，非归档路径走 C 版）。
+string[] __myp_build_argv() {
+    int n = myp_args_count();
+    if (n < 0) n = 0;
+    string[] av = new string[n];
+    for (int i = 0; i < n; i = i + 1) av[i] = myp_args_get(i);
+    return av;
+}
