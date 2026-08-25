@@ -13,6 +13,7 @@ ffi string myp_to_string_bool(int v);
 ffi string myp_f64_bits_hex(double v);
 ffi string myp_f32_bits_hex(float v);
 ffi int myp_crc32(string s);
+ffi string myp_hash_sha256(string s);
 
 int main() {
     // parseLong（strtoll base-0：十进制/hex/八进制/负/空白/非法/空）
@@ -93,5 +94,10 @@ int main() {
     if (myp_to_string_i64(-1) != "-1") return 155;
     if (myp_to_string_u64(long(1) << 63) != "9223372036854775808") return 156;  // u64 2^63
     if (myp_to_string_u32(2147483647) != "2147483647") return 157;
+    // sha256 → myp_hash_sha256（标准向量）
+    if (myp_hash_sha256("") != "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") return 161;
+    if (myp_hash_sha256("abc") != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") return 162;
+    if (myp_hash_sha256("hello") != "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824") return 163;
+    if (myp_hash_sha256("The quick brown fox jumps over the lazy dog") != "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592") return 164;
     return 0;
 }

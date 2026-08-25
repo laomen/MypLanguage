@@ -35,6 +35,17 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.14 — runtime myp化 #11：SHA-256 摘要
+
+**非破坏性**。`runtime_myp/hash.myp` 新增 `myp_hash_sha256`（bridge hash_bridge.c
+纯函数，返回 64 位小写 hex）。全 `uint`（i32）算术——加法自然回绕、`uint >>` 发射
+逻辑右移（SHA-256 的 Σ/σ 用 `>>>` 语义）、`rotr` 内建。K/H 常量用 `uint(0x…)`（hex
+大字面量解析为 long 再截断）。固定数组 `uint[64] w/K`、`uint[8] hv` 作局部（传参会
+触发 GEP 类型错，仅局部可用）。
+
+标准向量全过：`""`→e3b0c442…b855、`"abc"`→ba7816bf…15ad、`"hello"`→2cf24dba…9824、
+`"The quick brown fox…"`→d7a8fbb3…e592。验证：runtime_myp shadow PASS。
+
 ### v3.15.13 — runtime myp化 #10：CRC-32 校验和 + shadow 加固边缘测试
 
 **非破坏性**。`runtime_myp/crc.myp` 新增 `myp_crc32`（zlib CRC-32，位运算法无查表，

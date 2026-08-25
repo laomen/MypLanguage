@@ -1,0 +1,114 @@
+// runtime_myp/hash.myp — SHA-256 摘要 myp化（bridge hash_bridge.c 纯函数）。
+// shadow 机制同 str.myp（--shared 外部符号，置于 libmyp_rt.a 之前 + allow-multiple）。
+// 全 uint（i32）算术：加法回绕、>> 逻辑右移、rotr 内建。返回 64 位小写 hex。
+// 标准向量：""→e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855、
+// "abc"→ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// C: char* myp_hash_sha256(const char* msg)
+string myp_hash_sha256(string s) {
+    int len = myp_strlen(s);
+    int newlen = ((len + 8) / 64 + 1) * 64;
+    ubyte[] buf = new ubyte[newlen];
+    for (int i = 0; i < len; i = i + 1) buf[i] = ubyte(__myp_charcode(s, i));
+    buf[len] = ubyte(128);                       // 0x80
+    long bitlen = long(len) * 8;                 // 64 位大端位长
+    for (int i = 0; i < 8; i = i + 1) {
+        buf[newlen - 1 - i] = ubyte(int(bitlen >> (8 * i)) & 255);
+    }
+    // 初始 H（前 8 素数平方根小数部分 ×2^32）
+    uint[8] hv;
+    hv[0] = uint(0x6a09e667);
+    hv[1] = uint(0xbb67ae85);
+    hv[2] = uint(0x3c6ef372);
+    hv[3] = uint(0xa54ff53a);
+    hv[4] = uint(0x510e527f);
+    hv[5] = uint(0x9b05688c);
+    hv[6] = uint(0x1f83d9ab);
+    hv[7] = uint(0x5be0cd19);
+    // 轮常量 K（前 64 素数立方根小数部分 ×2^32）
+    uint[64] K;
+    K[0] = uint(0x428a2f98); K[1] = uint(0x71374491); K[2] = uint(0xb5c0fbcf); K[3] = uint(0xe9b5dba5);
+    K[4] = uint(0x3956c25b); K[5] = uint(0x59f111f1); K[6] = uint(0x923f82a4); K[7] = uint(0xab1c5ed5);
+    K[8] = uint(0xd807aa98); K[9] = uint(0x12835b01); K[10] = uint(0x243185be); K[11] = uint(0x550c7dc3);
+    K[12] = uint(0x72be5d74); K[13] = uint(0x80deb1fe); K[14] = uint(0x9bdc06a7); K[15] = uint(0xc19bf174);
+    K[16] = uint(0xe49b69c1); K[17] = uint(0xefbe4786); K[18] = uint(0x0fc19dc6); K[19] = uint(0x240ca1cc);
+    K[20] = uint(0x2de92c6f); K[21] = uint(0x4a7484aa); K[22] = uint(0x5cb0a9dc); K[23] = uint(0x76f988da);
+    K[24] = uint(0x983e5152); K[25] = uint(0xa831c66d); K[26] = uint(0xb00327c8); K[27] = uint(0xbf597fc7);
+    K[28] = uint(0xc6e00bf3); K[29] = uint(0xd5a79147); K[30] = uint(0x06ca6351); K[31] = uint(0x14292967);
+    K[32] = uint(0x27b70a85); K[33] = uint(0x2e1b2138); K[34] = uint(0x4d2c6dfc); K[35] = uint(0x53380d13);
+    K[36] = uint(0x650a7354); K[37] = uint(0x766a0abb); K[38] = uint(0x81c2c92e); K[39] = uint(0x92722c85);
+    K[40] = uint(0xa2bfe8a1); K[41] = uint(0xa81a664b); K[42] = uint(0xc24b8b70); K[43] = uint(0xc76c51a3);
+    K[44] = uint(0xd192e819); K[45] = uint(0xd6990624); K[46] = uint(0xf40e3585); K[47] = uint(0x106aa070);
+    K[48] = uint(0x19a4c116); K[49] = uint(0x1e376c08); K[50] = uint(0x2748774c); K[51] = uint(0x34b0bcb5);
+    K[52] = uint(0x391c0cb3); K[53] = uint(0x4ed8aa4a); K[54] = uint(0x5b9cca4f); K[55] = uint(0x682e6ff3);
+    K[56] = uint(0x748f82ee); K[57] = uint(0x78a5636f); K[58] = uint(0x84c87814); K[59] = uint(0x8cc70208);
+    K[60] = uint(0x90befffa); K[61] = uint(0xa4506ceb); K[62] = uint(0xbef9a3f7); K[63] = uint(0xc67178f2);
+    // 逐 64 字节块
+    uint[64] w;
+    for (int blk = 0; blk < newlen / 64; blk = blk + 1) {
+        int base = blk * 64;
+        for (int i = 0; i < 16; i = i + 1) {
+            uint b0 = uint(int(buf[base + i * 4]));
+            uint b1 = uint(int(buf[base + i * 4 + 1]));
+            uint b2 = uint(int(buf[base + i * 4 + 2]));
+            uint b3 = uint(int(buf[base + i * 4 + 3]));
+            w[i] = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+        }
+        for (int i = 16; i < 64; i = i + 1) {
+            uint s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3);
+            uint s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint a = hv[0];
+        uint b = hv[1];
+        uint c = hv[2];
+        uint d = hv[3];
+        uint e = hv[4];
+        uint f = hv[5];
+        uint g = hv[6];
+        uint h = hv[7];
+        for (int i = 0; i < 64; i = i + 1) {
+            uint S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+            uint ch = (e & f) ^ ((e ^ uint(0xFFFFFFFF)) & g);
+            uint t1 = h + S1 + ch + K[i] + w[i];
+            uint S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+            uint maj = (a & b) ^ (a & c) ^ (b & c);
+            uint t2 = S0 + maj;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
+        }
+        hv[0] = hv[0] + a;
+        hv[1] = hv[1] + b;
+        hv[2] = hv[2] + c;
+        hv[3] = hv[3] + d;
+        hv[4] = hv[4] + e;
+        hv[5] = hv[5] + f;
+        hv[6] = hv[6] + g;
+        hv[7] = hv[7] + h;
+    }
+    // 输出 64 位小写 hex（每字 8 nibble 大端）
+    string r = myp_alloc(65);
+    long dp = __myp_str_ptr(r);
+    int o = 0;
+    for (int wi = 0; wi < 8; wi = wi + 1) {
+        uint wv = hv[wi];
+        for (int j = 0; j < 8; j = j + 1) {
+            int shift = 28 - 4 * j;
+            int nib = int((wv >> uint(shift)) & uint(15));
+            if (nib < 10) __myp_mem_store_i8(dp + o, 48 + nib);
+            else __myp_mem_store_i8(dp + o, 87 + nib);
+            o = o + 1;
+        }
+    }
+    __myp_mem_store_i8(dp + 64, 0);
+    return r;
+}
