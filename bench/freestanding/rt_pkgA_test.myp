@@ -1,0 +1,65 @@
+// rt_pkgA_test.myp — 包 A（残留薄层）验证：
+//  1) myp_str_parse_int_opt（num.myp，long 参数 ABI 兼容 shadow 编译器
+//     `parseIntOpt(s)` 内建的 `(ptr,ptr)` 调用）——base-0 解析 + 有效性。
+//  2) myp_diag_arena_reserved/used（alloc.myp，遍历 arena chunk 链）——
+//     Memory.arenaReserved/Used 诊断。
+
+ffi long myp_arena_alloc(long size);
+ffi long myp_diag_arena_reserved();
+ffi long myp_diag_arena_used();
+ffi int myp_str_parse_int_opt(long s, long ok);
+
+class PkgAProbe {
+    static:
+        int run() {
+            long okSlot = myp_arena_alloc(8);
+            if (okSlot == 0) return 1;
+            // --- myp_str_parse_int_opt ---
+            // "123" → 123, ok=1
+            int v = myp_str_parse_int_opt(__myp_str_ptr("123"), okSlot);
+            if (v != 123 || __myp_mem_load_i8(okSlot) != 1) return 2;
+            // "0" → 0, ok=1（合法零，与失败区分）
+            v = myp_str_parse_int_opt(__myp_str_ptr("0"), okSlot);
+            if (v != 0 || __myp_mem_load_i8(okSlot) != 1) return 3;
+            // "-42" → -42, ok=1
+            v = myp_str_parse_int_opt(__myp_str_ptr("-42"), okSlot);
+            if (v != -42 || __myp_mem_load_i8(okSlot) != 1) return 4;
+            // "+7" → 7, ok=1
+            v = myp_str_parse_int_opt(__myp_str_ptr("+7"), okSlot);
+            if (v != 7 || __myp_mem_load_i8(okSlot) != 1) return 5;
+            // "0x10" → 16, ok=1（十六进制）
+            v = myp_str_parse_int_opt(__myp_str_ptr("0x10"), okSlot);
+            if (v != 16 || __myp_mem_load_i8(okSlot) != 1) return 6;
+            // "077" → 63, ok=1（前导 0 → 八进制）
+            v = myp_str_parse_int_opt(__myp_str_ptr("077"), okSlot);
+            if (v != 63 || __myp_mem_load_i8(okSlot) != 1) return 7;
+            // "abc" → 0, ok=0（无有效数字）
+            v = myp_str_parse_int_opt(__myp_str_ptr("abc"), okSlot);
+            if (v != 0 || __myp_mem_load_i8(okSlot) != 0) return 8;
+            // "" → 0, ok=0
+            v = myp_str_parse_int_opt(__myp_str_ptr(""), okSlot);
+            if (v != 0 || __myp_mem_load_i8(okSlot) != 0) return 9;
+            // "  42" → 42, ok=1（前导空白）
+            v = myp_str_parse_int_opt(__myp_str_ptr("  42"), okSlot);
+            if (v != 42 || __myp_mem_load_i8(okSlot) != 1) return 10;
+            // "12abc" → 12, ok=1（在 'a' 处停止）
+            v = myp_str_parse_int_opt(__myp_str_ptr("12abc"), okSlot);
+            if (v != 12 || __myp_mem_load_i8(okSlot) != 1) return 11;
+            // --- myp_diag_arena_* ---
+            long r0 = myp_diag_arena_reserved();
+            long u0 = myp_diag_arena_used();
+            if (r0 < 0 || u0 < 0 || u0 > r0) return 12;
+            long b = myp_arena_alloc(1000);
+            if (b == 0) return 13;
+            long u1 = myp_diag_arena_used();
+            long r1 = myp_diag_arena_reserved();
+            if (u1 <= u0) return 14;     // used 应增长
+            if (r1 < r0) return 15;      // reserved 不降
+            if (u1 > r1) return 16;      // used <= reserved
+            return 0;
+        }
+}
+
+int main() {
+    return PkgAProbe.run();
+}

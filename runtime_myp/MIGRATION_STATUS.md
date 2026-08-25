@@ -15,31 +15,42 @@
 
 | 项 | 数量 |
 |---|---|
-| C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **489** |
-| 已 shadow（runtime_myp 定义，含部分内部 helper） | **132**（~27%） |
-| 未 shadow（C runtime 剩余） | **357** |
+| C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **137**（~28%） |
+| 未 shadow（C runtime 剩余） | **353** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **20** 个 |
 
-已完成的层（#1–#30 里程碑）：字符串 str / 整数 num / 浮点 float（解析+格式化+精确路径）/
-内存核心 alloc+arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get /
-命令行参数 args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes /
-协程上下文切换 coro(myp_ctx_switch) / 汇编原语 asm。
+已完成的层（#1–#31 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
+long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_diag_arena_*`，#31）+
+arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get / 命令行参数
+args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 协程上下文
+切换 coro(myp_ctx_switch) / 汇编原语 asm。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
 数学（`__myp_math_*` → `llvm.*` 标量 intrinsic）、通用间接调用 `__myp_indirect_*`（#30）。
+
+**审计注意（2026-08-25 修正）**：数字按"返回类型含 `[]`/`*` 也计入"重算；`myp_str_
+to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**（C 内部/
+死代码，不影）；**print 层与 @test 捕获耦合**（见包 A）。
 
 ---
 
 ## 二、剩余工作包（按依赖与建议顺序）
 
 ### 包 A：残留薄层（~30 个，快赢，无前置）
-- **`print`(4)**：`myp_print`/`myp_print_bool`/`myp_print_int`/`myp_print_long`（
-  `__myp_print*` 内建 → Console 输出路径，fputs 薄包装）。
-- **`str` 残留(6)**：`myp_str_cat`/`myp_str_cpy`/`myp_str_fmt`/`myp_str_len`/
-  `myp_str_to_bytes`；`myp_str_parse_int_opt`（编译器 `i32(ptr,ptr)` 内建调用，
-  **需 MYP `ptr` 参数类型**——mypc 已未冻结，可加）。
+- ✅ **已做（#31）**：`myp_str_parse_int_opt`（num.myp，**long 参数 ABI 兼容**
+  shadow 编译器 `(ptr,ptr)` 调用，无需改编译器）；`myp_diag_arena_reserved/used`
+  （alloc.myp，新增 `Arena.total_used` 计数器）。
+- **`print`(4+println+printf)**：`myp_print`/`myp_print_bool`/`myp_print_int`/
+  `myp_print_long`/`myp_print_float`/`myp_println`/`myp_printf`（`__myp_print*`
+  内建 → Console 输出）。**⚠️ 与 @test 捕获耦合**：C 内部 `myp_out_write` →
+  `myp_capture_write`（static，不可影），且被 `myp_printf`/`myp_assert_*` 调用；
+  只影 print 会导致 MYP print 与 C 捕获缓冲不一致。**须连 `myp_test_capture_*`+
+  assert+test 一起影**（归入"console+test 框架"包），文档化推迟。
+- **`str` 残留**：`myp_str_to_bytes` 已影（bytes.myp）；`myp_str_cat/cpy/fmt/len`
+  **无 MYP 调用方**（C 内部/死代码，不影）。
 - **`io` 残留(6)**：`myp_io_cur_get/set`（**保留 C TLS**，io_thread 每线程句柄）、
   `myp_io_init`、`myp_io_lock_current/handle`、`myp_io_unlock_handle`。
 - **`env`(2)**：`myp_env_set/unset`——**保留 C**（setenv/unsetenv 无 syscall 等价物，

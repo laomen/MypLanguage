@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.15.34 — runtime myp化 #31：包 A 残留薄层（str_parse_int_opt + diag_arena）
+
+**非破坏性**。包 A 第一批（无前置快赢），新增 3 个 MYP shadow + 审计修正：
+
+- **`myp_str_parse_int_opt`**（num.myp）：编译器内建 `parseIntOpt(s)` 发射
+  `call i32 @myp_str_parse_int_opt(ptr, ptr)`——MYP 版用 **long 参数**（指针地址
+  承载）**ABI 兼容 shadow**（ptr 与 i64 同为 64 位、rdi/rsi 传参，链接按名解析），
+  **无需改编译器**。base-0 语义（空白/符号/0x 十六进制/前导 0 八进制/十进制）+
+  有效性 `*ok`（区分合法 0 与失败；前导 '0' 八进制时 '0' 本身算数字 → "0"/"077"
+  判有效）。
+- **`myp_diag_arena_reserved/used`**（alloc.myp）：诊断读 arena。**发现**：MYP
+  alloc.myp 只维护 `Arena.cur_used`（当前 chunk）+ 新增 **`Arena.total_used` 累计
+  bump 计数器**（不写每 chunk 头 `used@16`，C 版逐 chunk 读字段不适用）→
+  `myp_diag_arena_reserved` 遍历 chunk 链（next@0→cap@8）累加，`used` 直接返回
+  total_used。bump 永不归还，total_used 即当前已用。
+- **验证**：`rt_pkgA_test`——str_parse_int_opt 11 项（"123"/"0"合法零/"-42"/"+7"/
+  "0x10"/"077"八进制/"abc"失败/""失败/"  42"前导空白/"12abc"截断）；diag_arena
+  （分配后 used 增、reserved≥used）。shadow **19/19**、bootstrap 16/16（fixpoint
+  `c998455d` 不变，编译器未改）、全量 323/323。
+- **审计修正（MIGRATION_STATUS.md）**：正则漏 `ubyte[]` 等返回类型 → 实为 C 490
+  个、已影 **137**、未影 353；`myp_str_to_bytes` 早已在 bytes.myp 迁移；`myp_str_
+  cat/cpy/fmt/len` **无 MYP 调用方**（C 内部/死代码，无需影）；**print 层与 @test
+  捕获（myp_capture_*）耦合**（C 内部 myp_capture_write 被 printf/assert 调用，
+  迁移须连 test 框架一起，归入"console+test 框架"包，文档化推迟）。
+
 ### v3.15.33 — runtime myp化 #30：通用间接调用内建 `__myp_indirect_*`（GPU 迁移地基）
 
 **非破坏性**。自举编译器新增**通用间接调用内建**（自举独有，同 `__myp_asm`/
