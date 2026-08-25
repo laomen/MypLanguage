@@ -147,6 +147,26 @@ void evInit() {
         EvTab.tCount = myp_arena_alloc(4);
         EvTab.tPval = myp_arena_alloc(64 * 8);
         EvTab.tTimespec = myp_arena_alloc(64 * 16);
+        // ⚠️ arena 非零初始化——锁/计数/队列头尾必须显式清零，否则继承垃圾
+        // （struct_arc 等重分配程序：evInit 晚跑时 lockServing 为垃圾 → 票号锁
+        // futex WAIT 永不等到 → 死锁）。缓冲（qEid/qData/cur*）写前必读，可不零。
+        __myp_mem_store_i32(EvTab.lockServing, 0);
+        __myp_mem_store_i32(EvTab.lockNext, 0);
+        __myp_mem_store_i32(EvTab.thrCount, 0);
+        __myp_mem_store_i32(EvTab.spawnSlot, 0);
+        __myp_mem_store_i32(EvTab.mapCount, 0);
+        __myp_mem_store_i32(EvTab.hCount, 0);
+        __myp_mem_store_i32(EvTab.scDepth, 0);
+        __myp_mem_store_i32(EvTab.tCount, 0);
+        for (int zi = 0; zi < 64; zi = zi + 1) {
+            __myp_mem_store_i32(EvTab.qHead + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.qTail + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.qSeq + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.qLockServing + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.qLockNext + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.thrDone + long(zi) * 4, 0);
+            __myp_mem_store_i32(EvTab.ready + long(zi) * 4, 0);
+        }
     }
 }
 

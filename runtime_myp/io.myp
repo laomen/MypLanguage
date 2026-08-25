@@ -22,6 +22,7 @@ ffi int myp_strlen(string s);
     property:
         long table = 0;    // fd 表基址（arena 64*16，0=未初始化）
         long lock = 0;     // 自旋锁字地址（arena）
+        long feof = 0;     // int[64] feof 标志（0=未撞 EOF，1=已撞；C !feof 语义）
 }
 
 // ---- 每线程当前句柄（MYP 无 TLS → gettid 键控表）----
@@ -40,6 +41,10 @@ void ioCurInit() {
         IoCur.count = myp_arena_alloc(4);
         IoCur.lockS = myp_arena_alloc(4);
         IoCur.lockN = myp_arena_alloc(4);
+        // ⚠️ arena 非零初始化——计数/票号锁必须清零（同 event.myp evInit 教训）
+        __myp_mem_store_i32(IoCur.count, 0);
+        __myp_mem_store_i32(IoCur.lockS, 0);
+        __myp_mem_store_i32(IoCur.lockN, 0);
     }
 }
 // 当前线程在表中的槽（未登记 → -1）；gettid 表 append-only → 无锁扫描安全
@@ -113,6 +118,11 @@ long ioTable() {
             __myp_mem_store_i64(p + i * 16 + 8, -1);
         }
         Io.table = p;
+        long f = myp_arena_alloc(64 * 4);
+        if (f != 0) {
+            for (int i = 0; i < 64; i = i + 1) __myp_mem_store_i32(f + i * 4, 0);
+        }
+        Io.feof = f;
     }
     return Io.table;
 }
@@ -169,6 +179,7 @@ int myp_io_fopen(string path, string mode) {
     if (slot < 0) { __myp_syscall(3, fd, 0, 0, 0, 0, 0); ioUnlock(); return -1; }
     __myp_mem_store_i64(t + slot * 16, fd);
     __myp_mem_store_i64(t + slot * 16 + 8, -1);
+    if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(slot) * 4, 0);   // 新开清 feof
     ioUnlock();
     myp_io_cur_set(slot);
     return 0;
@@ -228,7 +239,10 @@ string ioReadLineHandle(int handle) {
     }
     while (n < 4096) {
         long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-        if (r <= 0) break;          // EOF / 错误
+        if (r <= 0) {
+            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);   // 撞 EOF
+            break;          // EOF / 错误
+        }
         int c = __myp_mem_load_i8(buf + n);
         if (c == 10) break;          // \n 不包含
         n = n + 1;
@@ -258,7 +272,10 @@ string ioReadAllHandle(int handle) {
         if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
         while (n < 4096) {
             long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-            if (r <= 0) break;
+            if (r <= 0) {
+                if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+                break;
+            }
             n = n + 1;
         }
         string s = myp_alloc(n + 1);
@@ -276,7 +293,10 @@ string ioReadAllHandle(int handle) {
     if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
     while (n < remaining + 1) {
         long r = __myp_syscall(0, fd, buf + n, cap - n, 0, 0, 0);
-        if (r <= 0) break;
+        if (r <= 0) {
+            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+            break;
+        }
         n = n + r;
     }
     __myp_mem_store_i8(buf + n, 0);
@@ -309,20 +329,15 @@ void myp_io_write_line(string text) {
     ioWriteN(fd, buf, len + 1);
 }
 
-// C: int32_t myp_io_has_next(void) —— feof 语义（预读 1 字节存 pending）
+// C: int32_t myp_io_has_next(void) —— feof 语义（C：!feof，不探测；读操作撞 EOF 置 feof）
 int myp_io_has_next() {
     int handle = myp_io_cur_get();
     long t = Io.table;
     if (t == 0 || handle < 1 || handle >= 64) return 0;
     long fd = __myp_mem_load_i64(t + handle * 16);
     if (fd == -1) return 0;
-    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
-    if (pend >= 0) return 1;
-    long scratch = myp_arena_alloc(1);
-    long r = __myp_syscall(0, fd, scratch, 1, 0, 0, 0);
-    if (r <= 0) return 0;
-    __myp_mem_store_i64(t + handle * 16 + 8, __myp_mem_load_i8(scratch));
-    return 1;
+    if (Io.feof == 0) return 1;   // 无 feof 表 → 视为未 EOF（保守）
+    return __myp_mem_load_i32(Io.feof + long(handle) * 4) == 0 ? 1 : 0;
 }
 
 // C: int32_t myp_io_read_byte(void) —— 含 pending
@@ -339,7 +354,10 @@ int myp_io_read_byte() {
     }
     long scratch = myp_arena_alloc(1);
     long r = __myp_syscall(0, fd, scratch, 1, 0, 0, 0);
-    if (r <= 0) return -1;
+    if (r <= 0) {
+        if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);   // 撞 EOF
+        return -1;
+    }
     return int(__myp_mem_load_i8(scratch));
 }
 

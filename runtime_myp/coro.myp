@@ -115,9 +115,19 @@ int[] coroGrowInt(int[] src, int old, int nc) {
 }
 @static class CoroRetired {
     property:
-        long[256] ptrs;
-        long[256] sizes;
+        long[] ptrs;     // 动态扩容（同 C realloc；退役栈只在安全点 drain 时释放）
+        long[] sizes;
         int count = 0;
+        int cap = 0;
+}
+void coroRetiredEnsure(int n) {
+    if (CoroRetired.cap >= n) return;
+    int nc = CoroRetired.cap == 0 ? 256 : CoroRetired.cap * 2;
+    while (nc < n) nc = nc * 2;
+    int old = CoroRetired.cap;
+    CoroRetired.ptrs = coroGrowLong(CoroRetired.ptrs, old, nc);
+    CoroRetired.sizes = coroGrowLong(CoroRetired.sizes, old, nc);
+    CoroRetired.cap = nc;
 }
 
 // ---- 一次性状态初始化 ----
@@ -296,6 +306,7 @@ long coroStackTake(long reserve) {
 }
 // 回池（有界：64 项 / VA 128MB）或 munmap（含守护页）
 void coroStackReturn(long ptr, long reserve) {
+    // DEBUG: __myp_syscall(1,2,"SR",2)
     if (CoroStackPool.count < 64 && CoroStackPool.total + reserve <= 134217728) {
         CoroStackPool.ptrs[CoroStackPool.count] = ptr;
         CoroStackPool.sizes[CoroStackPool.count] = reserve;
@@ -306,12 +317,11 @@ void coroStackReturn(long ptr, long reserve) {
     __myp_syscall(11, ptr - 4096, reserve + 4096, 0, 0, 0, 0);  // munmap 含守护页
 }
 // 退役栈：trampoline 完成时登记（不能就地 munmap，正运行其上）→ 下次 create/
-// scheduler drain 时回池/munmap。
+// scheduler drain 时回池/munmap。列表动态扩容（同 C realloc）——**绝不在 add
+// 时释放栈**（trampoline 尚在该栈上运行；满时直接释放会被池复用 → 双重使用
+// 损坏栈，coro_capacity 1500 驱动崩溃即此）。
 void coroRetiredAdd(long ptr, long size) {
-    if (CoroRetired.count >= 256) {
-        coroStackReturn(ptr, size);   // 列表满 → 直接回池/munmap
-        return;
-    }
+    if (CoroRetired.count >= CoroRetired.cap) coroRetiredEnsure(CoroRetired.count + 1);
     CoroRetired.ptrs[CoroRetired.count] = ptr;
     CoroRetired.sizes[CoroRetired.count] = size;
     CoroRetired.count = CoroRetired.count + 1;
