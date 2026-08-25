@@ -309,7 +309,9 @@ add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 set(MYP_RT_MYP_OUT ${CMAKE_BINARY_DIR}/libmyp_rt_myp.a)
 add_custom_command(
     OUTPUT ${MYP_RT_MYP_OUT}
-    COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 SELF=$<TARGET_FILE:myp_self> bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh
+    # myp_self 是自定义目标（无 TARGET_FILE 生成表达式）；SELF 作为位置参数 $1
+    # 传入 build.sh（build.sh 内部 cd 到仓库根，绝对路径安全）。
+    COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh ${MYP_SELF_OUT}
     DEPENDS myp_self
     COMMENT "Building MYP runtime archive (runtime_myp/*.myp -> libmyp_rt_myp.a)"
     VERBATIM
