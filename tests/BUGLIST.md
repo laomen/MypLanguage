@@ -45,6 +45,10 @@
 | BUG-027 | 🟩 | `tools/codegen` 代码生成工具**未迁移到 BUG-001 属性私有规则**——模型类（`Expr`/`Field`/`TypeDecl`/`ServiceDecl`/`DslOp`/`Resource` 等 15 类）的 `property:` 被生成器跨类读取 → 301 个编译错误（`cannot access property ... from outside the class`），框架（serde/ffi/autodiff/idl/orm/embed/dsl/infer_ops）整体不可用 | 回归 `tools/codegen/run_tests.sh`（已接入 `tests/run_tests.sh`，全绿） |
 | BUG-046 | � | 类内同名 **static 方法**（签名不同）无重复检测 → codegen 用同一 LLVM 函数生成不同签名 body → `Function::getArg() out of range` 崩溃（static action 注册 `declare("Class.name")` 返回值未检查；properties/actions/functions/events 都有查重唯独 static 漏） | 负测试 `tests/negative/duplicate_static_action.myp`（编译拒绝） |
 
+| BUG-047 | 🟩 | selfhost ARC 调用返回值**双重 retain 泄漏**——BUG-036 误删 Call/genIfaceCall 的 `addFreshTemp` → 方法调用返回每次泄漏 +1（parity arc/arc_m2/weak_cycle 根因） | 回归 parity arc/arc_m2/weak_cycle |
+| BUG-048 | 🟩 | selfhost 闭源分发/链接缺口——无预编译库(.so/.a)发现 / 无 `--shared` 库模式 / 链接成功不打印 "Link OK"（parity closed-lib 根因） | 回归 `tests/test_closed_lib.sh`（closed-lib 12/12） |
+| BUG-049 | 🟩 | selfhost codegen `&&`/`||` 结果槽栈泄漏——短路降级内联 `alloca i1` 循环体内每轮执行 RSP 不恢复 → 无限循环跌破栈底崩溃（rt_thread_test 自旋暴露） | 回归 `bench/freestanding/rt_thread_test.myp`（自旋 `||` 直写，8/8 稳定） |
+
 ---
 
 ## BUG-001（已修复）：链式类字段访问产生垃圾值 / 崩溃
@@ -1253,3 +1257,62 @@
 - **备注**：曾经的「import ops.myp + 调 Math.cos 崩溃」也是本 bug 的下游症状
   （当时 ops.myp 里带着重复 mul）。Qwen2 已采用的规避（silu/mul 定义在各 .myp 类内
   私有方法）仍成立，且现在若真往 ops.myp 加同名方法会得到清晰报错。
+
+---
+
+## BUG-047（已修复 🟩）：selfhost ARC 调用返回值双重 retain 泄漏
+
+- **状态**：🟩 已修复（2026-08-24）
+- **复现/回归**：parity arc / arc_m2 / weak_cycle（`tests/parity_matrix.sh`），0 差距
+- **现象**：selfhost 编译器产物每次方法/接口方法调用返回 ptr 泄漏 +1 引用，parity
+  arc 系列计数不符；循环场景内存线性增长。
+- **根因**（tools/selfhost/src/codegen.myp）：被调方 retain-at-return 已转移 +1，但
+  BUG-036 曾误删 genExpr Call / genIfaceCall 的 `addFreshTemp(t)` → 调用方 store 点
+  `isFreshTemp(v)==0` 再 retain 一次 → 每次调用返回泄漏 +1。
+- **修复**：三处（genExpr Call、genIfaceCall direct/vtable）对 `retLt=="ptr"` 恢复
+  addFreshTemp（对齐 C++ generateCall 的 arcPushTemp + isFreshArcExpr(Call)=fresh）。
+- **验证**：arc/arc_m2/weak_cycle 全绿 + parity 0 差距 + bootstrap 16/16。
+- **教训**：BUG-036「方法返回借用」的判断错误——MYP 所有 ptr 返回都 retain-at-return
+  （+1），调用方必拥有；接口 fat 返回同理。
+
+## BUG-048（已修复 🟩）：selfhost 闭源分发/链接缺口
+
+- **状态**：🟩 已修复（2026-08-24）
+- **复现/回归**：`tests/test_closed_lib.sh`（closed-lib 12/12）
+- **现象**：selfhost 链接器无法消费预编译闭源库（.so/.a）：`cannot find import` /
+  undefined symbol；无 `--shared` 库模式；链接成功不打印 "Link OK"（测试 grep 判据）。
+- **根因**（tools/selfhost/src/link.myp + codegen.myp）：①link.myp 无预编译库发现；
+  ②codegen 无库模式导出符号；③无成功打印。
+- **修复**：三处——①link.myp 增 listLibFiles + nmDynSymbols（nm -D，strip 过的 .so
+  导出符号在 .dynsym）+ 固定点符号匹配直接链接；②codegen 库模式把 `define internal`
+  →`define`（Str.replaceAll 后处理）导出符号、无 body 签名方法发 declare 而非空 stub
+  （genStaticAction/genInstanceActionNamed 的 `a.body()==null` 分支 + genDeclare 助手）、
+  link 用 `-shared -fPIC`；③链接成功补打印 "Link OK"。
+- **验证**：closed-lib 12/12。
+- **教训**：闭源分发 = 签名 .myp（无 body 发 declare）+ .so（库模式导出符号）+
+  MYP_BRIDGES 自动链。
+
+## BUG-049（已修复 🟩）：selfhost codegen `&&`/`||` 结果槽栈泄漏 → 无限循环 RSP 崩溃
+
+- **状态**：🟩 已修复（2026-08-26）
+- **复现/回归**：`bench/freestanding/rt_thread_test.myp`（3 并发子线程自旋 `while
+  (f0==0 || f1==0 || f2==0)` 用 `||` 直写，8/8 稳定；修复前 `||`/`&&` 自旋必崩 139）
+- **现象**：`while(1){ if (a && b && c) break; ... }` 类**无限循环**段错误 139——
+  崩溃点 PC 落在循环体内 `call`（压栈时）/ `movb`（栈写时），gdb 反汇编见循环体内
+  `mov %rsp,%rdx; lea -0x10(%rdx),%rax; mov %rax,%rsp` 每轮执行且无配对恢复 → 主栈
+  8MB 约 26 万轮 RSP 跌破栈底。单条件自旋（`while (x != 0)`）无此问题（探针验证）。
+- **根因**（tools/selfhost/src/codegen.myp `&&`/`||` 短路降级）：结果槽每次求值内联
+  发射 `alloca i1`（唯一 tmp 名 `.res`）——在循环体内每轮执行，LLVM 对非 entry 块的
+  alloca 生成动态栈增长指令不恢复。C++ oracle 的 `generateShortCircuitLogic` 用
+  **PHI** 无 alloca，本就正确。
+- **修复**：结果槽改 `entryAlloca("i1")`（提升到 entry 块、零初始化；`||` 默认 true
+  显式 store 保留）。IR 复核：alloca 在 entry 块、循环体内仅普通 store。
+- **附带发现（同一里程碑 #34）**：clone 子线程分支不能声明局部——子 RSP=新栈顶无
+  prologue 帧，codegen 的 `0x28(%rsp)` 正偏移在栈顶之上越界 → 子分支只把 entry 经
+  实参（rdi）传进 helper `myp_thread_child_entry` 建帧 + capture 后置 `done_read=1`
+  确定性握手。
+- **验证**：shadow 24/24（thread 8/8 稳定）；bootstrap 16/16（新 fixpoint `1e6d4f7`，
+  编译器改）；全量 323/323。
+- **教训**：自举 codegen 任何「每次求值分配的临时槽」都必须进 entryAllocas_（entry
+  块 alloca），否则在循环体内泄漏 RSP；oracle 与 selfhost 的短路降级实现（PHI vs
+  alloca）需保持行为等价。
