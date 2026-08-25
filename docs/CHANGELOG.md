@@ -35,6 +35,23 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.29 — runtime myp化 #26：通用内联汇编内建 + 标准库封装 myp_ctx_switch
+
+**非破坏性**。把 #25 的硬编码 `__myp_ctx_switch` builtin 重构为「**通用内联汇编内建 +
+标准库抽象**」（用户建议）：
+
+- **通用内建**（自举 codegen/sema）：`__myp_asm(asmStr, consStr, ...args)` → void /
+  `__myp_asm_r(...)` → long——asm/constraints 为编译期常量串（`constStrVal` 递归求
+  字面量/拼接），后续实参按各自 LLVM 类型作 asm 操作数，发射 `call asm sideeffect`。
+  具体汇编用途**不再在 codegen 写死**。`__myp_fn_addr` 保留。
+- **标准库封装**：新建 `runtime_myp/coro.myp`，`myp_ctx_switch(save, load)` 用通用
+  `__myp_asm` 实现（配方同 §8：`;` 分隔 / `{rdi}{rsi}` / caller-saved clobber /
+  `1f` 数字标签落空 epilogue / 不发 ret）。
+- 删除硬编码 `__myp_ctx_switch` builtin（sema/codegen）；`rt_ctx_probe` 改调标准库
+  `myp_ctx_switch`（FFI）。
+- 验证：shadow **11/11**（rt_ctx_probe 走标准库）、bootstrap 16/16（新 fixpoint
+  `dfe0f3b6…`）、全量 323/323。`CORO_DESIGN §8.1` 更新架构说明。
+
 ### v3.15.28 — runtime myp化 #25：`__myp_ctx_switch` 内联汇编上下文切换探针通过
 
 **非破坏性**。协程核心可行性验证：自举编译器新增两个内建——`__myp_fn_addr("name")`

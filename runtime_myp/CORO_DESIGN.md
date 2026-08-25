@@ -256,11 +256,15 @@ rt_ctx_probe.myp`，main→worker→main 双切换 + entryHit 标记）。**协�
 ### 8.1 自举内联汇编能力（实测结论）
 
 - **有**：自举 codegen 经 LLVM IR `call ... asm sideeffect "..."` 发射内联汇编
-  （`__myp_syscall` 先例）。**没有源级通用内联汇编**——每条 asm 是 codegen 里写死的
-  builtin。
-- 新增 builtin（自举独有，mypc 无）：`__myp_fn_addr("name")` → `ptrtoint ptr @name
-  to i64`（取函数地址，设协程入口帧）；`__myp_ctx_switch(save, load)` → 内联汇编
-  上下文切换。
+  （`__myp_syscall` 先例）。**没有源级通用内联汇编**——但已抽象为**通用内建 + 标准库**：
+  - 通用内建（自举新增，mypc 无）：
+    - `__myp_asm(asmStr, consStr, ...args)` → void / `__myp_asm_r(...)` → long：
+      编译期常量 asm/constraints 串（`constStrVal` 递归求字面量/拼接）+ 后续操作数按
+      各自 LLVM 类型作实参，发射 `call asm sideeffect`。**具体汇编用途不再在 codegen
+      写死**。
+    - `__myp_fn_addr("name")` → `ptrtoint ptr @name to i64`（取函数地址，设协程入口帧）。
+  - 标准库封装：`runtime_myp/coro.myp` 的 `myp_ctx_switch(save, load)` 经 `__myp_asm`
+    实现（`;` 分隔、`{rdi}/{rsi}`、caller-saved clobber、`1f/1:` 数字标签落空 epilogue）。
 
 ### 8.2 内联汇编配方（实测踩坑，全部已验证）
 

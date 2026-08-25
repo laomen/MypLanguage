@@ -628,11 +628,14 @@ class Sema {
             //（runtime_myp 模块由自举编译；mypc 已用 ExternalLinkage 发射同名表）。
             addIntr("__myp_rtable_addr", "long");
             addIntr("__myp_call_ptr", "void");
-            // 协程核心内建（2026-08-25 探针）：__myp_fn_addr("name") 取函数地址
-            //（ptrtoint ptr @name to i64，设置协程入口帧用）；__myp_ctx_switch
-            // 内联汇编上下文切换（保存/恢复 callee-saved + 换 rsp，零 syscall）。
+            // 通用内联汇编内建（2026-08-25）：__myp_asm(asmStr, consStr, ...args)
+            // → void / __myp_asm_r(asmStr, consStr, ...args) → long。asm/constraints
+            // 是字符串字面量，后续实参按各自 LLVM 类型作 asm 操作数。具体汇编用途
+            //（如协程 myp_ctx_switch）封装成标准库函数，不再在 codegen 写死。
+            // __myp_fn_addr("name") 取函数地址（ptrtoint ptr @name to i64，协程入口帧用）。
+            addIntr("__myp_asm", "void");
+            addIntr("__myp_asm_r", "long");
             addIntr("__myp_fn_addr", "long");
-            addIntr("__myp_ctx_switch", "void");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");

@@ -1,0 +1,25 @@
+// runtime_myp/coro.myp — 协程层（起点）：myp_ctx_switch 内联汇编上下文切换。
+// 通用 __myp_asm 内建（自举新增）封装成标准库函数——codegen 不再写死具体 asm，
+// 具体汇编用途抽象到 MYP 模块。镜像 coro_ctx.S 的 myp_ctx_switch，零 syscall。
+//
+// 签名：save/load 是 8B 上下文槽地址（myp_ctx_t = { rsp }）——asm 把 7 值推上当前
+// 栈并保存 rsp 到 [save]，再换 rsp 到 [load] 指向的目标块（目标块 = 栈顶 56B，
+// [0]=入口地址，[8..56]=0）。注意：此签名 (long,long) 与 C 版 (ptr,ptr) 不同，
+// 不 shadow coro_ctx.S 版本——协程运行时 MYP 化后调用方同为 MYP，签名一致。
+//
+// 内联汇编配方（CORO_DESIGN §8 已验证）：
+//   - 指令分隔 `;`（LLVM 内联 asm 不解析 \n 转义）；
+//   - 寄存器 `%reg`；操作数 `{rdi}/{rsi}` 硬编码约束（避免 $ 插值冲突）；
+//   - 恢复地址 leaq 1f(%rip) + jmp *%rax + 数字标签 1: 落 asm 块末尾 →
+//     resume 落空到 LLVM epilogue 正常返回（不发 ret）；
+//   - clobber 列全部 caller-saved（上下文切换只存/复 callee-saved）。
+void myp_ctx_switch(long save, long load) {
+    __myp_asm(
+        "pushq %rbp; pushq %rbx; pushq %r12; pushq %r13; pushq %r14; pushq %r15; "
+        + "leaq 1f(%rip), %rax; pushq %rax; movq %rsp, (%rdi); movq (%rsi), %rsp; "
+        + "popq %rax; popq %r15; popq %r14; popq %r13; popq %r12; popq %rbx; popq %rbp; "
+        + "jmpq *%rax; 1:",
+        "{rdi},{rsi},~{rax},~{rbx},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11},~{r12},"
+        + "~{r13},~{r14},~{r15},~{rbp},~{memory}",
+        save, load);
+}
