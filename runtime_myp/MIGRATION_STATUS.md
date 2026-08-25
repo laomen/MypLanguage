@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#44 补后重算） | **358**（~73%） |
-| 未 shadow（C runtime 剩余） | **132** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#45 补后重算） | **375**（~77%） |
+| 未 shadow（C runtime 剩余） | **115** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -66,6 +66,17 @@ load/launch 统一状态）；oracle/deeplearning 用 C runtime，不受影响�
 shadow 后，`@gpu for` 在 MYP_GPU=1 下走**真实 GPU**（不再是 CPU 回退）。
 rt_gpu_test 双模式 + manual_ch9 MYP_GPU=1 真 GPU 3 tests/11 assertions 全过；
 直接探针 `kctx=1356287584 launch=1` 确凿证明 PTX 加载 + cuLaunchKernel。
+
+**#45 包 G 收官（Stage C 流/事件/图）**：`myp_gpu_copy_h2d/d2h_async_d/f` +
+`d2d_async`（cuMemcpy*Async，入口 cuCtxSetCurrent）+ 事件 6（cuEventCreate/Record/
+StreamWaitEvent/Synchronize/ElapsedTime/Destroy，elapsed 用 float 出参
+`__myp_mem_load_i32`+`bitcast<float>`）+ CUDA Graph 6（cuStreamBeginCapture(
+THREAD_LOCAL=1)/EndCapture/Instantiate/Launch/Destroy/ExecDestroy）。**发现并修复**：
+`cuStreamEndCapture(CUstream, CUgraph*)` 参数顺序（stream 在前），曾 400
+STREAM_CAPTURE_INVALIDATED；capture 期间不可 cuCtxSetCurrent（同 400）。
+**⚠️ 本机驱动 595.84 上 cuMemcpy*Async 恒 201（纯 C 复现）** → 异步拷贝为
+C 平价实现（返回 1，忽略 CUresult），数据迁移不可验；事件/图真实路径全通过。
+rt_gpu_test 双模式 + Stage C 探针验证。shadow 358→375。包 G 三 Stage 全完成。
 
 **#42 残留 C 边界（更新：io_cur 已 MYP 化；constructor 已被 lld 剥离）**：
 - **C TLS 当前句柄已解决（#42 补）**：`myp_io_cur_get/set` → MYP IoCur 表（gettid
@@ -245,21 +256,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   pool.myp 取代，gc-sections 剥离，无程序引用）。
 - **难度**：最高（TLS 缺失 + 事件路由耦合 myp_handlers）。包 F 并发层已全 de-gcc。
 
-### 包 G：GPU 层（`runtime_gpu.c` 63 + `cublas` 2 = 65）
-- **✅ Stage A 已做（#43 gpu.myp，35 个 shadow）**：init（dlopen+dlsym 17 个
-  `cu*` + cuInit/cuCtxCreate_v2/cuCtxSetCurrent）/ 设备查询 19 / 内存+handle 12 /
-  流 3。`@static Gpu` 表 + `__myp_indirect_*` 调 cu*。rt_gpu_test 双模式验证。
-- **✅ Stage B 已做（#44，11 个 shadow）**：`myp_gpu_load_kernel`（内核缓存
-  kcPtx/kcName/kcRec 128 槽按指针身份复用；记录 {mod,fn,name} 24B arena，句柄=记录
-  地址；入口显式 cuCtxSetCurrent）/ `myp_gpu_launch`（cuLaunchKernel 11 参数
-  `__myp_indirect_i32` 编组，stream==0 同步）/ `myp_gpu_destroy_kernel`（缓存命中
-  保持不 unload，未缓存 cuModuleUnload）/ `myp_gpu_to_host_async`（cuMemcpyDtoHAsync）/
-  `myp_gpu_byoc_load`+`byoc_launch`（long[]→void** arena 临时编组）/ `myp_gpu_printf_buf/
-  cnt/fail`+`flush_printf`（设备 staging 回读 + mini-printf：% 转换消费 int/double
-  由 mask 定，直接写 fd=1）+ `myp_gpu_scatter_check_fail`（stderr+exit 1）。
-  **@gpu for 真实 GPU 在 shadow 下可用**（状态分裂已统一）。
-- **剩余 Stage C（流/事件/图）**：cuStream*/cuEvent*/cuGraph*（deeplearning）。
-- **使能已就绪**：`__myp_indirect_*`（#30）+ `ffi long dlopen/dlsym`（libc 导出）。
+### 包 G：GPU 层（`runtime_gpu.c` 63 + `cublas` 2 = 65）✅ 已完成（#43/#44/#45）
+- **✅ Stage A 已做（#43，35 个 shadow）**：init（dlopen+dlsym 17 个 `cu*` +
+  cuInit/cuCtxCreate_v2/cuCtxSetCurrent）/ 设备查询 19 / 内存+handle 12 / 流 3。
+- **✅ Stage B 已做（#44，11 个 shadow）**：load_kernel（内核缓存 kcPtx/kcName/
+  kcRec 128 槽指针身份复用；记录 {mod,fn,name} 24B arena）/ launch（cuLaunchKernel
+  11 参数编组）/ destroy_kernel / to_host_async / byoc_load+launch（long[]→void**）/
+  printf_buf·cnt·fail+flush_printf / scatter_check_fail。**@gpu for 真实 GPU**。
+- **✅ Stage C 已做（#45，17 个 shadow）**：异步拷贝 5（cuMemcpy*Async）+ 事件 6
+  （cuEvent*）+ CUDA Graph 6（cuStream*Capture/cuGraph*）。包 G 全 63 个 shadow。
+- **⚠️ 驱动怪癖**：595.84 上 cuMemcpy*Async 恒 201（纯 C 复现）→ 异步拷贝仅
+  C 平价；capture 期间禁 cuCtxSetCurrent（400）；cuStreamEndCapture 参数顺序。
+- **cublas 2 未影**（myp_cublas_available/sgemm）：厂商库 hook，保留 C 或经
+  `__myp_indirect` 绑 cuBLAS（future）。
 - **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）。改动记
   `examples/deeplearning/CHANGELOG.md`（独立分项目）。
 
@@ -297,7 +306,7 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 5. ✅ **包 E 同步原语**（#39 sync.myp futex 无 libc）
 6. ✅ **包 F pool + @thread + 事件系统**（#40 pool.myp；#41 event.myp
    thread/event 路由全做；剩余 work/queue/exec worker 小项）
-7. **包 G GPU**（`__myp_indirect` 就绪，可并行推进）
+7. ✅ **包 G GPU 已完成**（#43/#44/#45：init/查询/内存/流 → 内核 load/launch/byoc/printf → 流/事件/图，63 个 shadow）
 8. **包 H bridge**（按库分批）
 
 > 注：包 A–C 无硬前置可立即做；包 D–F 相互依赖（D→E→F）；G 独立可随时做；

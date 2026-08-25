@@ -318,6 +318,47 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：Stage C 流/事件/图（cuStream*/cuEvent*/cuGraph*，deeplearning 分项目
   changelog）。
 
+### v3.15.51 — runtime myp化 #45：包 G GPU Stage C（gpu.myp 异步拷贝/事件/CUDA Graph，包 G 收官）
+
+**非破坏性**。GPU 流/事件/图层 MYP 化——shadow C `runtime_gpu.c` 剩余 17 个
+`myp_gpu_*`，**包 G 三 Stage 全部完成（63 个 shadow）**：
+
+- **gpu.myp 新增**：
+  - **异步拷贝 5**：`myp_gpu_copy_h2d/d2h_async_d/f`（cuMemcpyHtoDAsync/
+    cuMemcpyDtoHAsync）+ `d2d_async`（cuMemcpyDtoDAsync）——入口显式 `cuCtxSetCurrent`
+    （201 INVALID_CONTEXT 教训）。
+  - **事件 6**：`myp_gpu_event_create_h`（cuEventCreate，flags=0 计时）/ `record_h`
+    （cuEventRecord）/ `wait_h`（cuStreamWaitEvent 跨流依赖）/ `sync_h`（cuEventSync）/
+    `elapsed_ms`（cuEventElapsedTime，**float 出参 → `__myp_mem_load_i32` +
+    `bitcast<float>` 位型重释**）/ `destroy_h`（cuEventDestroy）。
+  - **CUDA Graph 6**：`myp_gpu_graph_capture_begin`（cuStreamBeginCapture THREAD_LOCAL=1）/
+    `capture_end`（cuStreamEndCapture）/ `instantiate`（cuGraphInstantiate）/
+    `launch`（cuGraphLaunch）/ `destroy`+`exec_destroy`。
+- **发现并修复两个 400 STREAM_CAPTURE_INVALIDATED 根因**：
+  - **`cuStreamEndCapture(CUstream, CUgraph*)` 参数顺序**：MYP 曾传
+    `(Gpu.graphVal, stream)`（交换）→ 驱动返回 400、graph=0。改为
+    `(stream, Gpu.graphVal)`。
+  - **capture 期间禁 `cuCtxSetCurrent`**：捕获入口设当前上下文会使 EndCapture 返回
+    400（纯 C 也不调用）→ 移除 capture_begin/end 的 setCurrent（cuGraphInstantiate
+    仍保留，已验）。
+- **⚠️ 本机驱动 595.84 怪癖（纯 C 复现，非迁移问题）**：`cuMemcpy*Async` 恒 201
+  INVALID_CONTEXT（cuCtxGetCurrent 确认上下文已当前仍 201）→ 异步拷贝实现与 C
+  runtime **平价**（返回 1，忽略 CUresult），数据迁移在本机不可验；事件/图真实路径
+  全部正常。cuStreamEndCapture 修复前 capture 期间调 setCurrent 曾加剧（已去掉）。
+- **rt_gpu_test.myp 扩展**：GPU 分支新增 `runStageC()`——流 create/sync/destroy +
+  事件 create/record/sync/elapsed/destroy + 异步拷贝 C 平价（返回 1）+ CUDA Graph
+  空捕获→instantiate→launch→destroy（新流避免失败 async 污染）。
+- **验证**：
+  - rt_gpu_test 双模式：fallback `GPU CPU-FALLBACK OK`；真 GPU `GPU OK`（含 Stage C
+    流/事件/图）exit 0。
+  - Stage C 探针（`/tmp/rt_gpu_stagec_probe`）：`STREAM OK / ASYNC-CALL OK /
+    EVENT OK（elapsed≈0.002ms）/ GRAPH OK（graph+exec 非 0，instantiate/launch 全
+    过）` exit 0。
+  - **shadow 34/34**；bootstrap fixpoint 不变；全量 323/323（oracle + selfhost）。
+    shadow 计数 358 → **375**（~77%）。**包 G 收官**（cublas 2 个厂商 hook 保留 C）。
+- **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
+  本机驱动下不可验（595.84 201 怪癖）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

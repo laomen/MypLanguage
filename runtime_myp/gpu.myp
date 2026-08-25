@@ -52,6 +52,21 @@ ffi string myp_fmt_double_g(double v, int prec);  // float.myp（%g 语义）
         long fModuleUnload = 0;       // cuModuleUnload
         long fLaunchKernel = 0;       // cuLaunchKernel
         long fMemcpyDtoHAsync = 0;    // cuMemcpyDtoHAsync
+        // Stage C：流/事件/图/异步拷贝 cu* 函数指针
+        long fMemcpyHtoDAsync = 0;    // cuMemcpyHtoDAsync
+        long fMemcpyDtoDAsync = 0;    // cuMemcpyDtoDAsync
+        long fEventCreate = 0;        // cuEventCreate
+        long fEventRecord = 0;        // cuEventRecord
+        long fEventSync = 0;          // cuEventSynchronize
+        long fEventElapsedTime = 0;   // cuEventElapsedTime
+        long fEventDestroy = 0;       // cuEventDestroy
+        long fStreamWaitEvent = 0;    // cuStreamWaitEvent
+        long fStreamBeginCapture = 0; // cuStreamBeginCapture
+        long fStreamEndCapture = 0;   // cuStreamEndCapture
+        long fGraphInstantiate = 0;   // cuGraphInstantiate
+        long fGraphLaunch = 0;        // cuGraphLaunch
+        long fGraphDestroy = 0;       // cuGraphDestroy
+        long fGraphExecDestroy = 0;   // cuGraphExecDestroy
         // arena 出参缓冲（地址）
         long devVal = 0;    // int: &dev
         long ctxVal = 0;    // long: &ctx
@@ -63,6 +78,10 @@ ffi string myp_fmt_double_g(double v, int prec);  // float.myp（%g 语义）
         long streamVal = 0; // long: cuStreamCreate 结果
         long modVal = 0;    // long: cuModuleLoadData 结果
         long fnVal = 0;     // long: cuModuleGetFunction 结果
+        long eventVal = 0;  // long: cuEventCreate 结果
+        long graphVal = 0;  // long: cuStreamEndCapture 结果
+        long execVal = 0;   // long: cuGraphInstantiate 结果
+        long msVal = 0;     // float: cuEventElapsedTime 结果
         // 内核缓存（按 (ptx,name) 指针身份；复用模块避免逐次 load 显存暴涨）
         long kcPtx = 0;     // long[128]: ptx 指针
         long kcName = 0;    // long[128]: name 指针
@@ -93,6 +112,10 @@ void gpuTab() {
         Gpu.streamVal = myp_arena_alloc(8);
         Gpu.modVal = myp_arena_alloc(8);
         Gpu.fnVal = myp_arena_alloc(8);
+        Gpu.eventVal = myp_arena_alloc(8);
+        Gpu.graphVal = myp_arena_alloc(8);
+        Gpu.execVal = myp_arena_alloc(8);
+        Gpu.msVal = myp_arena_alloc(4);
         Gpu.kcPtx = myp_arena_alloc(128 * 8);
         Gpu.kcName = myp_arena_alloc(128 * 8);
         Gpu.kcRec = myp_arena_alloc(128 * 8);
@@ -135,6 +158,20 @@ int myp_gpu_init() {
     Gpu.fModuleUnload = dlsym(lib, __myp_str_ptr("cuModuleUnload"));
     Gpu.fLaunchKernel = dlsym(lib, __myp_str_ptr("cuLaunchKernel"));
     Gpu.fMemcpyDtoHAsync = dlsym(lib, __myp_str_ptr("cuMemcpyDtoHAsync"));
+    Gpu.fMemcpyHtoDAsync = dlsym(lib, __myp_str_ptr("cuMemcpyHtoDAsync"));
+    Gpu.fMemcpyDtoDAsync = dlsym(lib, __myp_str_ptr("cuMemcpyDtoDAsync"));
+    Gpu.fEventCreate = dlsym(lib, __myp_str_ptr("cuEventCreate"));
+    Gpu.fEventRecord = dlsym(lib, __myp_str_ptr("cuEventRecord"));
+    Gpu.fEventSync = dlsym(lib, __myp_str_ptr("cuEventSynchronize"));
+    Gpu.fEventElapsedTime = dlsym(lib, __myp_str_ptr("cuEventElapsedTime"));
+    Gpu.fEventDestroy = dlsym(lib, __myp_str_ptr("cuEventDestroy"));
+    Gpu.fStreamWaitEvent = dlsym(lib, __myp_str_ptr("cuStreamWaitEvent"));
+    Gpu.fStreamBeginCapture = dlsym(lib, __myp_str_ptr("cuStreamBeginCapture"));
+    Gpu.fStreamEndCapture = dlsym(lib, __myp_str_ptr("cuStreamEndCapture"));
+    Gpu.fGraphInstantiate = dlsym(lib, __myp_str_ptr("cuGraphInstantiate"));
+    Gpu.fGraphLaunch = dlsym(lib, __myp_str_ptr("cuGraphLaunch"));
+    Gpu.fGraphDestroy = dlsym(lib, __myp_str_ptr("cuGraphDestroy"));
+    Gpu.fGraphExecDestroy = dlsym(lib, __myp_str_ptr("cuGraphExecDestroy"));
     if (Gpu.fCuInit == 0 || Gpu.fCtxCreate == 0 || Gpu.fDeviceGet == 0 ||
         Gpu.fDeviceGetCount == 0 || Gpu.fMemAlloc == 0 || Gpu.fMemFree == 0 ||
         Gpu.fMemcpyHtoD == 0 || Gpu.fMemcpyDtoH == 0 || Gpu.fCtxSynchronize == 0 ||
@@ -299,7 +336,8 @@ int myp_gpu_sync_all() {
 long myp_gpu_stream_create_h() {
     myp_gpu_init();
     if (Gpu.availFlag == 0 || Gpu.fStreamCreate == 0) return 0;
-    if (__myp_indirect_i32(Gpu.fStreamCreate, Gpu.streamVal, 0) == 0)
+    int cr = __myp_indirect_i32(Gpu.fStreamCreate, Gpu.streamVal, 0);
+    if (cr == 0)
         return __myp_mem_load_i64(Gpu.streamVal);
     return 0;
 }
@@ -450,6 +488,10 @@ void pfWriteCStr(long s) {
 void pfWriteErrCStr(long s) {
     __myp_syscall(1, 2, s, pfStrLen(s), 0, 0, 0);
 }
+void pfWriteErrI64(long v) {
+    string s = myp_to_string_i64(v);
+    __myp_syscall(1, 2, __myp_str_ptr(s), pfStrLen(__myp_str_ptr(s)), 0, 0, 0);
+}
 void pfWriteI64(long v) {
     string s = myp_to_string_i64(v);
     pfWrite(__myp_str_ptr(s), pfStrLen(__myp_str_ptr(s)));
@@ -552,4 +594,167 @@ void myp_gpu_scatter_check_fail(long msg) {
     }
     __myp_syscall(1, 2, __myp_str_ptr("\n"), 1);
     __myp_syscall(60, 1, 0, 0, 0, 0, 0);   // exit(1)；永不返回
+}
+
+// ============================================================================
+// Stage C（#45）：异步拷贝 / 事件 / CUDA Graph（范式库 stdlib/gpu 使用）
+// ============================================================================
+
+// ---- M2 异步拷贝（排队到流；须 streamSync 后取回）----
+// C: int myp_gpu_copy_h2d_async_d(long dev, const double* host, int srcOff, int dstOff, int len, long stream)
+int myp_gpu_copy_h2d_async_d(long dev, long host, int srcOff, int dstOff, int len, long stream) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0 || Gpu.fMemcpyHtoDAsync == 0) return 0;
+    // 异步拷贝依赖当前线程上下文 TLS（201 INVALID_CONTEXT 教训）→ 显式 setCurrent。
+    // ⚠️ 注意：本机驱动 595.84 上 cuMemcpy*Async 恒 201（纯 C 复现，非迁移问题）；
+    // 实现与 C runtime 平价（返回 1，忽略 CUresult）。
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fMemcpyHtoDAsync, dev + long(dstOff) * 8, host + long(srcOff) * 8,
+                       long(len) * 8, stream);
+    return 1;
+}
+// C: int myp_gpu_copy_d2h_async_d(double* host, long dev, int srcOff, int dstOff, int len, long stream)
+int myp_gpu_copy_d2h_async_d(long host, long dev, int srcOff, int dstOff, int len, long stream) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0 || Gpu.fMemcpyDtoHAsync == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fMemcpyDtoHAsync, host + long(dstOff) * 8, dev + long(srcOff) * 8,
+                       long(len) * 8, stream);
+    return 1;
+}
+// C: int myp_gpu_copy_h2d_async_f(long dev, const float* host, int srcOff, int dstOff, int len, long stream)
+int myp_gpu_copy_h2d_async_f(long dev, long host, int srcOff, int dstOff, int len, long stream) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0 || Gpu.fMemcpyHtoDAsync == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fMemcpyHtoDAsync, dev + long(dstOff) * 4, host + long(srcOff) * 4,
+                       long(len) * 4, stream);
+    return 1;
+}
+// C: int myp_gpu_copy_d2h_async_f(float* host, long dev, int srcOff, int dstOff, int len, long stream)
+int myp_gpu_copy_d2h_async_f(long host, long dev, int srcOff, int dstOff, int len, long stream) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0 || Gpu.fMemcpyDtoHAsync == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fMemcpyDtoHAsync, host + long(dstOff) * 4, dev + long(srcOff) * 4,
+                       long(len) * 4, stream);
+    return 1;
+}
+// C: int myp_gpu_copy_d2d_async(long dst, long dstOff, long src, long srcOff, long bytes, long stream)
+int myp_gpu_copy_d2d_async(long dst, long dstOff, long src, long srcOff, long bytes, long stream) {
+    if (Gpu.availFlag == 0 || dst == 0 || src == 0 || bytes <= 0 || Gpu.fMemcpyDtoDAsync == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fMemcpyDtoDAsync, dst + dstOff, src + srcOff, bytes, stream);
+    return 1;
+}
+
+// ---- 事件（计时/跨流依赖）----
+// C: long myp_gpu_event_create_h(void)
+long myp_gpu_event_create_h() {
+    if (Gpu.availFlag == 0 || Gpu.fEventCreate == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    if (__myp_indirect_i32(Gpu.fEventCreate, Gpu.eventVal, 0) == 0)
+        return __myp_mem_load_i64(Gpu.eventVal);
+    return 0;
+}
+// C: int myp_gpu_event_record_h(long ev, long stream)
+int myp_gpu_event_record_h(long ev, long stream) {
+    if (Gpu.availFlag == 0 || ev == 0 || Gpu.fEventRecord == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    return __myp_indirect_i32(Gpu.fEventRecord, ev, stream) == 0 ? 1 : 0;
+}
+// C: int myp_gpu_event_wait_h(long ev, long stream) —— 流等待事件（跨流依赖）
+int myp_gpu_event_wait_h(long ev, long stream) {
+    if (Gpu.availFlag == 0 || ev == 0 || stream == 0 || Gpu.fStreamWaitEvent == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    return __myp_indirect_i32(Gpu.fStreamWaitEvent, stream, ev, 0) == 0 ? 1 : 0;
+}
+// C: int myp_gpu_event_sync_h(long ev)
+int myp_gpu_event_sync_h(long ev) {
+    if (Gpu.availFlag == 0 || ev == 0 || Gpu.fEventSync == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    return __myp_indirect_i32(Gpu.fEventSync, ev) == 0 ? 1 : 0;
+}
+// C: double myp_gpu_event_elapsed_ms(long evStart, long evEnd) —— float 出参 + bitcast
+ double myp_gpu_event_elapsed_ms(long evStart, long evEnd) {
+    if (Gpu.availFlag == 0 || evStart == 0 || evEnd == 0 || Gpu.fEventElapsedTime == 0) return 0.0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    if (__myp_indirect_i32(Gpu.fEventElapsedTime, Gpu.msVal, evStart, evEnd) != 0) return 0.0;
+    int bits = __myp_mem_load_i32(Gpu.msVal);
+    float ms = bitcast<float>(bits);
+    return double(ms);
+}
+// C: int myp_gpu_event_destroy_h(long ev)
+int myp_gpu_event_destroy_h(long ev) {
+    if (Gpu.availFlag == 0 || ev == 0 || Gpu.fEventDestroy == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    __myp_indirect_i32(Gpu.fEventDestroy, ev);
+    return 1;
+}
+
+// ---- §P6 ② CUDA Graph（流捕获 → 图 → 实例化 → 重放）----
+// 捕获模式 THREAD_LOCAL(1)，与 @thread/协程上下文兼容；入口显式 cuCtxSetCurrent
+// （cuGraphInstantiate 依赖上下文 TLS 的教训）。
+// C: int myp_gpu_graph_capture_begin(long stream)
+int myp_gpu_graph_capture_begin(long stream) {
+    if (Gpu.availFlag == 0 || stream == 0 || Gpu.fStreamBeginCapture == 0) return 0;
+    // ⚠️ 不在 capture 入口调 cuCtxSetCurrent：捕获期间切换上下文会使
+    // cuStreamEndCapture 返回 400（STREAM_CAPTURE_INVALIDATED），纯 C 也不调用。
+    return __myp_indirect_i32(Gpu.fStreamBeginCapture, stream, 1) == 0 ? 1 : 0;  // THREAD_LOCAL
+}
+// C: long myp_gpu_graph_capture_end(long stream)
+long myp_gpu_graph_capture_end(long stream) {
+    if (Gpu.availFlag == 0 || stream == 0 || Gpu.fStreamEndCapture == 0) return 0;
+    // cuStreamEndCapture(CUstream hStream, CUgraph* phGraph) —— stream 在前、图出参在后
+    int r = __myp_indirect_i32(Gpu.fStreamEndCapture, stream, Gpu.graphVal);
+    if (r != 0) {
+        pfWriteErrCStr(__myp_str_ptr("[myp GPU] cuStreamEndCapture failed: "));
+        pfWriteErrI64(r);
+        pfWriteErrCStr(__myp_str_ptr("\n"));
+        return 0;
+    }
+    long g = __myp_mem_load_i64(Gpu.graphVal);
+    if (g == 0) {
+        pfWriteErrCStr(__myp_str_ptr("[myp GPU] cuStreamEndCapture returned null graph\n"));
+        return 0;
+    }
+    return g;
+}
+// C: long myp_gpu_graph_instantiate(long graph)
+long myp_gpu_graph_instantiate(long graph) {
+    if (Gpu.availFlag == 0 || graph == 0 || Gpu.fGraphInstantiate == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    int r = __myp_indirect_i32(Gpu.fGraphInstantiate, Gpu.execVal, graph, 0);
+    if (r != 0) {
+        pfWriteErrCStr(__myp_str_ptr("[myp GPU] cuGraphInstantiate failed: "));
+        pfWriteErrI64(r);
+        pfWriteErrCStr(__myp_str_ptr("\n"));
+        return 0;
+    }
+    return __myp_mem_load_i64(Gpu.execVal);
+}
+// C: int myp_gpu_graph_launch(long exec, long stream)
+int myp_gpu_graph_launch(long exec, long stream) {
+    if (Gpu.availFlag == 0 || exec == 0 || Gpu.fGraphLaunch == 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    return __myp_indirect_i32(Gpu.fGraphLaunch, exec, stream) == 0 ? 1 : 0;
+}
+// C: void myp_gpu_graph_destroy(long graph) —— 重复调用安全
+void myp_gpu_graph_destroy(long graph) {
+    if (graph == 0 || Gpu.fGraphDestroy == 0) return;
+    __myp_indirect_i32(Gpu.fGraphDestroy, graph);
+}
+// C: void myp_gpu_graph_exec_destroy(long exec) —— 重复调用安全
+void myp_gpu_graph_exec_destroy(long exec) {
+    if (exec == 0 || Gpu.fGraphExecDestroy == 0) return;
+    __myp_indirect_i32(Gpu.fGraphExecDestroy, exec);
 }

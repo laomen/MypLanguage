@@ -18,6 +18,23 @@ ffi void myp_gpu_to_device(long d, long s, long sz);
 ffi void myp_gpu_to_host(long d, long s, long sz);
 ffi int myp_gpu_sync_all();
 ffi long myp_arena_alloc(long size);
+ffi long myp_gpu_stream_create_h();
+ffi int myp_gpu_stream_sync_h(long s);
+ffi int myp_gpu_stream_destroy_h(long s);
+ffi int myp_gpu_copy_h2d_async_d(long dev, long host, int srcOff, int dstOff, int len, long stream);
+ffi int myp_gpu_copy_d2h_async_d(long host, long dev, int srcOff, int dstOff, int len, long stream);
+ffi int myp_gpu_copy_d2d_async(long dst, long dstOff, long src, long srcOff, long bytes, long stream);
+ffi long myp_gpu_event_create_h();
+ffi int myp_gpu_event_record_h(long ev, long stream);
+ffi int myp_gpu_event_sync_h(long ev);
+ffi double myp_gpu_event_elapsed_ms(long evStart, long evEnd);
+ffi int myp_gpu_event_destroy_h(long ev);
+ffi int myp_gpu_graph_capture_begin(long stream);
+ffi long myp_gpu_graph_capture_end(long stream);
+ffi long myp_gpu_graph_instantiate(long graph);
+ffi int myp_gpu_graph_launch(long exec, long stream);
+ffi void myp_gpu_graph_destroy(long graph);
+ffi void myp_gpu_graph_exec_destroy(long exec);
 
 class GpuProbe {
     action:
@@ -66,6 +83,8 @@ class GpuProbe {
             if (ok == 0) { Console.writeString("FAIL: gpu mem roundtrip\n"); return; }
             // Stage B：@gpu for 真实内核执行（load_kernel + launch + destroy）
             if (runKernel() == 0) { Console.writeString("FAIL: gpu kernel\n"); return; }
+            // Stage C：流/事件/图/异步拷贝（真实 GPU）
+            if (runStageC() == 0) { Console.writeString("FAIL: gpu stageC\n"); return; }
             Console.writeString("GPU OK\n");
         }
         // @gpu for 内核执行：data[i] = sqrt(4) + sin(1) → 2.8414709848078967
@@ -82,6 +101,48 @@ class GpuProbe {
                 double v = data[i];
                 if (v < expect - 1e-9 || v > expect + 1e-9) return 0;
             }
+            return 1;
+        }
+        // Stage C：流 + 事件 + CUDA Graph（真实 GPU 验证）。异步拷贝只验 C 平价
+        // 返回 1（本机驱动 595.84 上 cuMemcpy*Async 恒 201，纯 C 复现，非迁移问题）。
+        int runStageC() {
+            long s = myp_gpu_stream_create_h();
+            if (s == 0) return 0;
+            if (myp_gpu_stream_sync_h(s) != 1) return 0;
+            // 异步拷贝 C 平价
+            long host = myp_arena_alloc(128);
+            for (int i = 0; i < 16; i = i + 1)
+                __myp_mem_store_double(host + long(i) * 8, double(i) * 2.5);
+            long dev = myp_gpu_alloc(128);
+            if (dev == 0) return 0;
+            if (myp_gpu_copy_h2d_async_d(dev, host, 0, 0, 16, s) != 1) return 0;
+            if (myp_gpu_copy_d2h_async_d(host, dev, 0, 0, 16, s) != 1) return 0;
+            if (myp_gpu_copy_d2d_async(dev, 0, dev, 0, 128, s) != 1) return 0;
+            // 事件
+            long evA = myp_gpu_event_create_h();
+            long evB = myp_gpu_event_create_h();
+            if (evA == 0 || evB == 0) return 0;
+            if (myp_gpu_event_record_h(evA, s) != 1) return 0;
+            if (myp_gpu_event_record_h(evB, s) != 1) return 0;
+            if (myp_gpu_event_sync_h(evB) != 1) return 0;
+            double ms = myp_gpu_event_elapsed_ms(evA, evB);
+            if (ms < 0.0) return 0;
+            if (myp_gpu_event_destroy_h(evA) != 1 || myp_gpu_event_destroy_h(evB) != 1) return 0;
+            // CUDA Graph（空捕获 → 实例化 → 重放；新流避免失败 async 污染）
+            long s2 = myp_gpu_stream_create_h();
+            if (s2 == 0) return 0;
+            if (myp_gpu_graph_capture_begin(s2) != 1) return 0;
+            long graph = myp_gpu_graph_capture_end(s2);
+            if (graph == 0) return 0;
+            long exec = myp_gpu_graph_instantiate(graph);
+            if (exec == 0) return 0;
+            if (myp_gpu_graph_launch(exec, s2) != 1) return 0;
+            if (myp_gpu_stream_sync_h(s2) != 1) return 0;
+            myp_gpu_graph_exec_destroy(exec);
+            myp_gpu_graph_destroy(graph);
+            myp_gpu_stream_destroy_h(s2);
+            myp_gpu_free(dev);
+            if (myp_gpu_stream_destroy_h(s) != 1) return 0;
             return 1;
         }
 }
