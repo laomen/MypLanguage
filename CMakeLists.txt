@@ -149,11 +149,10 @@ if(NOT WIN32)
     target_link_libraries(myp_debug PRIVATE ${MYP_THREAD_LIBS})
 endif()
 
-# Mapping visualizer tool (uses same parser)
+# Mapping visualizer tool (uses same parser; 不依赖 LLVM，无需链接）
 add_executable(myp_viz src/myp_viz.cpp src/token.cpp src/lexer/lexer.cpp
     src/ast/ast.cpp src/parser/parser.cpp src/parser/parser_stmt.cpp src/parser/parser_expr.cpp
     src/SourceLocation.cpp)
-target_link_libraries(myp_viz PRIVATE ${LLVM_LIBS})
 
 # ---- LSP Server ----
 add_executable(myp_lsp
@@ -319,37 +318,10 @@ add_custom_command(
 )
 add_custom_target(myp_rt_myp ALL DEPENDS ${MYP_RT_MYP_OUT})
 
-# ---- Runtime Library (C) ----
-# SDL 桥接已外部化（v3.15.62 移至 libs/sdl/bridges/）；HDF5 由示例项目
-# （examples/BNCTDoseEngine）自行 find_package 探测——顶层构建不再需要
-# PkgConfig / pkg_check_modules。
-set(MYP_RUNTIME_SRCS
-    src/runtime/runtime.c
-    src/runtime/myp_stdlib.c
-    src/runtime/runtime_gpu.c
-    src/runtime/runtime_lib.c
-)
-# 协程切换汇编按平台：Linux coro_ctx.S（SysV）/ Windows coro_ctx_win.S（Win64）
-if(MINGW OR MSVC)
-    list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx_win.S)
-else()
-    list(APPEND MYP_RUNTIME_SRCS src/runtime/coro_ctx.S)
-endif()
-if(MYP_ENABLE_ROCM)
-    list(APPEND MYP_RUNTIME_SRCS src/runtime/runtime_rocm.c)
-endif()
-add_library(myp_runtime STATIC ${MYP_RUNTIME_SRCS})
-
-target_include_directories(myp_runtime
-    PUBLIC
-    ${CMAKE_SOURCE_DIR}/include
-)
-target_link_libraries(myp_runtime PUBLIC ${CMAKE_DL_LIBS})
-
-# ---- 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）----
+# ---- 预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）----
 # 生成程序链接时直接使用（免 C 编译器——gcc 只剩 user bridge 的 C 编译职责）。
-# 与 myp_runtime（含 ROCM 条件、供 C 工具/示例链接）分开：纯核心运行时，
-# PIC + function-sections + O2，使链接的 --gc-sections 能裁剪未用符号。
+# 源码含 ROCM 条件（MYP_ENABLE_ROCM）。PIC + function-sections + O2，
+# 使链接的 --gc-sections 能裁剪未用符号。
 # 产物在 <build>/libmyp_rt.a，与 mypc/myp_self 同目录，编译器按 <exe_dir>/libmyp_rt.a
 # 定位（MYP_RT_LIB 可显式覆盖）。
 set(MYP_RT_PREBUILT_SRCS
