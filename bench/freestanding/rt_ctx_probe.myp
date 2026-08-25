@@ -1,0 +1,43 @@
+// __myp_ctx_switch 内联汇编探针：最小双上下文切换验证
+//（保存/恢复 callee-saved + 换栈 + jmp 恢复地址，零 syscall，不发 ret）。
+// save/load 是 8B 槽（存 rsp 指针）；worker 块 = 栈顶 56B（[0]=入口, 其余 0）。
+import text;
+ffi long myp_arena_alloc(long size);
+
+@static class Probe {
+    property:
+        long mainSave = 0;   // main 上下文槽（8B，存 run 的 rsp）
+        long workCtx = 0;    // worker 上下文槽（8B，存 worker 保存块基址）
+        int entryHit = 0;    // worker 入口执行标记
+}
+
+// worker 入口：跑在切换后的栈上，写标记后切回 main（此函数从不被正常调用）。
+void workerEntry() {
+    Probe.entryHit = 1;
+    __myp_ctx_switch(Probe.workCtx, Probe.mainSave);
+}
+
+class CtxProbe {
+    static:
+        int run() {
+            Probe.mainSave = myp_arena_alloc(8);   // 8B 槽
+            Probe.workCtx = myp_arena_alloc(8);    // 8B 槽
+            long stack = myp_arena_alloc(4096);
+            long block = stack + 4096 - 64;        // 7 槽保存块在栈顶
+            __myp_mem_store_i64(Probe.workCtx, block);   // [workCtx] = 块基址（目标 rsp）
+            __myp_mem_store_i64(block, __myp_fn_addr("workerEntry"));  // 块[0] = 入口
+            for (int i = 1; i < 7; i = i + 1) {
+                __myp_mem_store_i64(block + long(i) * 8, 0);   // 块[8..56] = 0
+            }
+            // 切到 worker（保存 run 的 rsp 到 mainSave，切到 [workCtx] 指向的块）
+            __myp_ctx_switch(Probe.mainSave, Probe.workCtx);
+            // worker 切回来 → 检查标记
+            if (Probe.entryHit != 1) return 1;
+            return 0;
+        }
+}
+
+int main() {
+    int r = CtxProbe.run();
+    return r;
+}

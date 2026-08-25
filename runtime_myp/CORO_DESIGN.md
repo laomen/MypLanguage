@@ -247,6 +247,50 @@
 
 ---
 
+## 8. 内联汇编探针结论（2026-08-25 已验证 ✅）
+
+`__myp_ctx_switch(save, load)` 内联汇编上下文切换**探针通过**（`bench/freestanding/
+rt_ctx_probe.myp`，main→worker→main 双切换 + entryHit 标记）。**协程核心的上下文切换
+可用 MYP 内联汇编实现，消除 coro_ctx.S 依赖。**
+
+### 8.1 自举内联汇编能力（实测结论）
+
+- **有**：自举 codegen 经 LLVM IR `call ... asm sideeffect "..."` 发射内联汇编
+  （`__myp_syscall` 先例）。**没有源级通用内联汇编**——每条 asm 是 codegen 里写死的
+  builtin。
+- 新增 builtin（自举独有，mypc 无）：`__myp_fn_addr("name")` → `ptrtoint ptr @name
+  to i64`（取函数地址，设协程入口帧）；`__myp_ctx_switch(save, load)` → 内联汇编
+  上下文切换。
+
+### 8.2 内联汇编配方（实测踩坑，全部已验证）
+
+| 项 | 结论 |
+|----|------|
+| 指令分隔 | **`;`**（`\n` 不被 LLVM 内联 asm 解析——实测报 unknown token；`%=` 唯一标签也不被该版本处理） |
+| 寄存器 | **`%reg`**（`%rbp`/`%rsp` 合法；**`%0` 报 invalid register name**） |
+| 操作数 | **`{rdi}`/`{rsi}` 硬编码约束**（同 `__myp_syscall` 风格）。**不能用 `$0`/`$1`**——MYP 字符串里 `$` 是插值前缀，`$0` 报 undefined symbol '0' |
+| 恢复地址 | `leaq 1f(%rip), %rax` + `jmpq *%rax` + **数字局部标签 `1:` 落在 asm 块末尾** → resume 时 jmp 1: 落空到 LLVM 后续 epilogue → 正常返回调用者。**不发 `ret`**（内联 asm 的 ret 会从被内联函数错误返回） |
+| clobber | **必须列全部 caller-saved**：`~{rax},~{rbx},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11},~{r12},~{r13},~{r14},~{r15},~{rbp},~{memory}`——上下文切换只保存/恢复 callee-saved，worker 执行会破坏 caller-saved；不列则 LLVM 以为保留、不 spill，resume 读垃圾（实测 run() 的 rdx 活值被破坏 → 段错误） |
+| ctx 布局 | save/load 是 **8B 槽**（myp_ctx_t = {rsp}）；asm 把 7 值推上栈并把 rsp 写进 `[save]`；目标块 = 栈顶 56B，`[0]=入口`、`[8..56]=0`（**入口不是 rsp**——实测把入口当 rsp 会跳到代码段崩溃） |
+| 双 push | LLVM 函数 prologue 已 push callee-saved + asm 再 push → 保存块捕获「prologue 后栈态」；resume 时 jmp 1: = LLVM epilogue 首 pop → 正确返回调用者（对称往返，LLVM 帧假设成立） |
+
+### 8.3 探针设计（rt_ctx_probe.myp）
+
+- `workerEntry` 顶层函数（`@workerEntry`，internal 同模块可 `ptrtoint`）跑在切换后的
+  栈上，写 `Probe.entryHit` 后 `__myp_ctx_switch(workCtx, mainSave)` 切回。
+- 验证：main→worker→main 往返，entryHit 检查；worker 栈 4KB（arena 分配）。
+- 运行：`bash runtime_myp/build.sh`（shadow 11/11）。
+
+### 8.4 对协程核心 MYP 化的意义
+
+- `__myp_ctx_switch` 已可用 → 协程 yield/resume/调度可全 MYP 化（§2 可行性表中
+  「上下文切换 = 内联汇编内建」从「需探针」升为「已验证」）。
+- 剩余前置仍为**异常边界 setjmp**（trampoline）与**线程创建**（clone/pthread，
+  OS 边界）。
+- 性能参考：C coro_ctx.S 单次切换 ~20-40ns（零 syscall）；内联 asm 同构，预计同级。
+
+---
+
 ## 6. 参考（符号/位置）
 
 - `src/runtime/coro_ctx.S`：`myp_ctx_switch`（7 槽保存块，零 syscall）。

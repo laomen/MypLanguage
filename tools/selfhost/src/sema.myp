@@ -628,6 +628,11 @@ class Sema {
             //（runtime_myp 模块由自举编译；mypc 已用 ExternalLinkage 发射同名表）。
             addIntr("__myp_rtable_addr", "long");
             addIntr("__myp_call_ptr", "void");
+            // 协程核心内建（2026-08-25 探针）：__myp_fn_addr("name") 取函数地址
+            //（ptrtoint ptr @name to i64，设置协程入口帧用）；__myp_ctx_switch
+            // 内联汇编上下文切换（保存/恢复 callee-saved + 换 rsp，零 syscall）。
+            addIntr("__myp_fn_addr", "long");
+            addIntr("__myp_ctx_switch", "void");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");

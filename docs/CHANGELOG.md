@@ -35,6 +35,26 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.28 — runtime myp化 #25：`__myp_ctx_switch` 内联汇编上下文切换探针通过
+
+**非破坏性**。协程核心可行性验证：自举编译器新增两个内建——`__myp_fn_addr("name")`
+（`ptrtoint ptr @name to i64` 取函数地址，设协程入口帧用）与 `__myp_ctx_switch(save,
+load)`（内联汇编上下文切换，镜像 `coro_ctx.S myp_ctx_switch`，零 syscall）：
+
+- **内联汇编配方（实测踩坑记录）**：指令分隔用 `;`（`\n` 不被 LLVM 内联 asm 解析、
+  `%=` 标签不被该版本处理）；寄存器用 `%reg`（`%0` 报 invalid register name）；
+  操作数用 `{rdi}/{rsi}` 硬编码约束（不能 `$0/$1`——MYP 字符串里 `$` 是插值前缀）；
+  恢复地址 `leaq 1f(%rip), %rax` + `jmpq *%rax` + 数字标签 `1:` 落在 asm 块末尾 →
+  resume 落空到 LLVM epilogue 正常返回（**不发 ret**）；**clobber 必须列全部
+  caller-saved**（上下文切换只保存 callee-saved，worker 破坏 caller-saved 如 run()
+  的 rdx 活值 → 不列会段错误）；ctx 是 8B 槽（存 rsp），入口地址≠rsp（实测把入口当
+  rsp 会跳进代码段崩溃）。
+- **探针通过**（`bench/freestanding/rt_ctx_probe.myp`）：main→worker（4KB arena 栈）→
+  main 双切换 + entryHit 标记，exit=0。**协程 yield/resume/调度可全 MYP 化，消除
+  coro_ctx.S 依赖**；剩余前置 = 异常边界 setjmp + 线程创建（OS 边界）。
+- 验证：shadow **11/11**（新增 rt_ctx_probe）、bootstrap 16/16（新 fixpoint
+  `5f8fe4db…`）、全量 323/323。`CORO_DESIGN.md §8` 记录探针结论与内联汇编配方。
+
 ### v3.15.27 — runtime myp化 #24：类对象 release 分发全 MYP 化（无 C 胶水）
 
 **非破坏性**。**策略变更（用户定）**：mypc 不再冻结、**不留 C 胶水**——运行时↔程序生成

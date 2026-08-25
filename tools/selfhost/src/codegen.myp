@@ -9522,6 +9522,35 @@ class CodeGen {
                     sb_.append("  call void " + fn + "(ptr " + ov + ")\n");
                     return "0";
                 }
+                // __myp_fn_addr("name") → long：发射 ptrtoint ptr @name to i64（取
+                // 函数地址，供协程入口帧/探针构造——同 coro_set_entry 的 ptrtoint
+                // 模式）。自举独有。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_fn_addr") {
+                    string nm = e.args().get(0).stringValue();
+                    string t = newTmp();
+                    sb_.append("  " + t + " = ptrtoint ptr @" + nm + " to i64\n");
+                    return t;
+                }
+                // __myp_ctx_switch(long save, long load)：协程上下文切换（内联汇编
+                // 探针/协程核心用）。save/load = 56B 保存块地址 {rip, r15, r14, r13,
+                // r12, rbx, rbp}（rsp 指向块基址）。镜像 coro_ctx.S myp_ctx_switch：
+                // push 6 callee-saved + lea 恢复地址 → 存 rsp → 换 rsp → pop 目标
+                // 7 槽 → jmp 恢复地址。恢复地址用 lea 1%=f(%rip) + 标签落空到 asm
+                // 块末尾 → 继续执行 LLVM 后续 epilogue（不发 ret——内联 asm 的 ret
+                // 会从被内联函数错误返回）。零 syscall；%= 保证标签唯一。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_ctx_switch") {
+                    string sv = genExpr(e.args().get(0));
+                    string lv = genExpr(e.args().get(1));
+                    // 内联 asm：`;` 分隔（LLVM 内联 asm 不解析 \n 转义，实测）；
+                    // 寄存器名用 %（LLVM 内联 asm 实测 %reg 合法、%0 非法）；
+                    // 操作数用 {rdi}/{rsi} 硬编码约束（同 __myp_syscall 风格——
+                    // 避免 `$0`，因 MYP 字符串里 $ 是插值前缀，会报 undefined
+                    // symbol '0'）；数字局部标签 1f/1:（%= 不被该版本处理）。
+                    // 1: 落在 asm 块末尾 → resume 时 jmp 1: 落空到 LLVM epilogue →
+                    // 正常返回调用者（不发 ret）。零 syscall。
+                    sb_.append("  call void asm sideeffect \"pushq %rbp; pushq %rbx; pushq %r12; pushq %r13; pushq %r14; pushq %r15; leaq 1f(%rip), %rax; pushq %rax; movq %rsp, (%rdi); movq (%rsi), %rsp; popq %rax; popq %r15; popq %r14; popq %r13; popq %r12; popq %rbx; popq %rbp; jmpq *%rax; 1:\", \"{rdi},{rsi},~{rax},~{rbx},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11},~{r12},~{r13},~{r14},~{r15},~{rbp},~{memory}\"(i64 " + sv + ", i64 " + lv + ")\n");
+                    return "0";
+                }
                 // __myp_timer_create("eventName", delay[, interval]) → 解析事件名
                 // 为 event_id + myp_timer_create（同 C++ 内联特判）
                 if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_timer_create") {
