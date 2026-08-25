@@ -148,3 +148,36 @@ string myp_to_string_bool(int val) {
     __myp_mem_store_i8(__myp_str_ptr(r) + l, 0);
     return r;
 }
+
+// C: char* myp_fmt_u64_base(int32_t v, int32_t base, int32_t upper)
+//    —— v 的 32 位位型按无符号在给定进制(2..16)输出；upper=1 用大写 hex 数字。
+//    Fmt.u/x/X/o/b 均走这里（0xFFFFFFFF → "ffffffff"）。
+string myp_fmt_u64_base(int v, int base, int upper) {
+    if (base < 2 || base > 16) base = 10;
+    long a = long(v);
+    ulong u;
+    if (a < 0) u = ulong(myp_two_32() + a);
+    else u = ulong(a);
+    if (u == 0) {
+        string r = myp_alloc(2);
+        __myp_mem_store_i8(__myp_str_ptr(r), 48);
+        __myp_mem_store_i8(__myp_str_ptr(r) + 1, 0);
+        return r;
+    }
+    string tmp = myp_alloc(40);          // 32 位二进制最多 32 位 + 终止
+    long tp = __myp_str_ptr(tmp);
+    int pos = 39;
+    int n = 0;
+    while (u != 0) {
+        int d = int(u % ulong(base));
+        u = u / ulong(base);
+        pos = pos - 1;
+        if (d < 10) __myp_mem_store_i8(tp + pos, 48 + d);
+        else __myp_mem_store_i8(tp + pos, (upper != 0 ? 65 : 97) + d - 10);
+        n = n + 1;
+    }
+    string r = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(r), tp + long(pos), n);
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}

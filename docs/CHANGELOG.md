@@ -35,6 +35,18 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.8 — runtime myp化 #5：通用拼接 myp_strcat + 进制格式化 myp_fmt_u64_base
+
+**非破坏性**。补两个自包含转换（shadow C runtime 验证，str+num 测试扩断言）：
+
+- `myp_strcat`（str.myp）：通用字符串拼接——自举 codegen 对 `s + t` 发射
+  `@myp_strcat`（非 `s=s+x` 快路径），MYP 化后所有拼接走 MYP 版本。
+- `myp_fmt_u64_base`（num.myp）：32 位位型按无符号在 2..16 进制输出（upper 控制
+  hex 大小写），`Fmt.u/x/X/o/b` 全部走这里（`Fmt.x(-1)`→"ffffffff"）。
+
+float/double 解析（strtod/atof）与格式化（%g、myp_fmt_double_f/e/g）依赖 libc，
+另立里程碑（TODO）。验证：runtime_myp shadow PASS（str+num 全断言）。
+
 ### v3.15.7 — runtime myp化 #4：数字层（整数解析+格式化，9 函数）+ 自举 FFI 实参转换修复
 
 **非破坏性**。`runtime_myp/num.myp` 新增（shadow C runtime 验证，`runtime_myp/build.sh`

@@ -116,5 +116,12 @@ int main() {
     // join → myp_str_join（经 StringBuilder.toString，静态方法包装）
     int jr = RtJoinProbe.testJoin();
     if (jr != 0) return 180 + jr;
+    // concat → myp_strcat（codegen 对 s+t 发射；非 `s=s+x` 快路径）
+    if ("ab" + "cd" != "abcd") return 191;
+    if ("x" + "y" + "z" != "xyz") return 192;
+    if ("" + "abc" != "abc") return 193;
+    if ("abc" + "" != "abc") return 194;
+    if ("a" + "b" + "c" + "d" + "e" != "abcde") return 195;
+    if (("pre" + "fix") + "ed" != "prefixed") return 196;
     return 0;
 }

@@ -453,6 +453,19 @@ string myp_str_join(string[] data, int n) {
     return r;
 }
 
+// C: char* myp_strcat(const char* a, const char* b) —— 通用拼接（codegen 对 s+t
+// 发射 @myp_strcat；自举编译的程序里所有非 `s=s+x` 快路径拼接都走这里）。
+string myp_strcat(string a, string b) {
+    int la = myp_strlen(a);
+    int lb = myp_strlen(b);
+    string r = myp_alloc(la + lb + 1);
+    long dp = __myp_str_ptr(r);
+    __myp_memcpy(dp, __myp_str_ptr(a), la);
+    __myp_memcpy(dp + long(la), __myp_str_ptr(b), lb);
+    __myp_mem_store_i8(dp + long(la) + lb, 0);
+    return r;
+}
+
 // C: int32_t myp_str_hash(const char* s) —— djb2（uint32 回绕，掩 0x7FFFFFFF）
 //（0xFFFFFFFF 超 int32 字面量 MYP 不解析 → 用 % 4294967296 做 32 位回绕）
 int myp_str_hash(string s) {

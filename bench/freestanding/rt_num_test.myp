@@ -2,6 +2,7 @@
 // 通过 parse* 内建 + to_string_* FFI 触发 num.myp 的符号，链接时 MYP 版本优先。
 // 期望与 C 版本（strtoll/strtoull base-0 + itoa）一致。
 import text;
+import fmt;
 
 // 直接调 to_string_*（精确验证边界，含 INT32/64_MIN、u32/u64 最大值）
 ffi string myp_to_string_i32(int v);
@@ -46,5 +47,18 @@ int main() {
     if ("" + 42 != "42") return 91;
     if ("" + 7 + "x" != "7x") return 92;
     if ("n=" + (-3) != "n=-3") return 93;
+    // fmt 进制 → myp_fmt_u64_base（Fmt.u/x/X/o/b 位型无符号）
+    if (Fmt.x(-1) != "ffffffff") return 101;
+    if (Fmt.X(-1) != "FFFFFFFF") return 102;
+    if (Fmt.o(-1) != "37777777777") return 103;
+    if (Fmt.b(-1) != "11111111111111111111111111111111") return 104;
+    if (Fmt.u(-1) != "4294967295") return 105;
+    if (Fmt.x(0) != "0") return 106;
+    if (Fmt.x(255) != "ff") return 107;
+    if (Fmt.x(0x1F) != "1f") return 108;
+    if (Fmt.X(0xABCD) != "ABCD") return 109;
+    if (Fmt.u(42) != "42") return 110;
+    if (Fmt.o(8) != "10") return 111;
+    if (Fmt.b(5) != "101") return 112;
     return 0;
 }
