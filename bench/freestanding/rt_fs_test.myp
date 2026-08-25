@@ -1,0 +1,80 @@
+// rt_fs_test.myp — 文件系统层验证（runtime_myp/fs.myp shadow C runtime）：
+// exists/is_dir/is_file/file_size/modified_time/list_count/list_get/
+// dirname/basename/join/mkdir_p/remove_recursive。用 /tmp 临时目录（自清理）。
+import text;
+
+ffi int myp_fs_exists(string path);
+ffi int myp_fs_is_dir(string path);
+ffi int myp_fs_is_file(string path);
+ffi long myp_fs_file_size(string path);
+ffi long myp_fs_modified_time(string path);
+ffi int myp_fs_list_count(string path);
+ffi string myp_fs_list_get(string path, int index);
+ffi string myp_fs_dirname(string path);
+ffi string myp_fs_basename(string path);
+ffi string myp_fs_join(string dir, string file);
+ffi int myp_fs_mkdir_p(string path);
+ffi int myp_fs_remove_recursive(string path);
+
+class FsProbe {
+    static:
+        int run() {
+            // --- 纯字符串路径操作 ---
+            if (myp_fs_dirname("/a/b/c.txt") != "/a/b") return 1;
+            if (myp_fs_dirname("c.txt") != ".") return 2;
+            if (myp_fs_dirname("/a") != "/") return 3;
+            if (myp_fs_basename("/a/b/c.txt") != "c.txt") return 4;
+            if (myp_fs_basename("c.txt") != "c.txt") return 5;
+            if (myp_fs_join("/a/b", "c.txt") != "/a/b/c.txt") return 6;
+            if (myp_fs_join("/a/b/", "c.txt") != "/a/b/c.txt") return 7;
+            if (myp_fs_join("", "c.txt") != "c.txt") return 8;
+
+            // --- 目录创建/删除/属性 ---
+            string base = "/tmp/myp_fs_test";
+            myp_fs_remove_recursive(base);                 // 清理残留（可不存在）
+            string dir = myp_fs_join(myp_fs_join(base, "x"), "y");
+            if (myp_fs_exists(base) != 0) return 9;        // 清理后应不存在
+            if (myp_fs_mkdir_p(myp_fs_join(dir, "z")) != 0) return 10;
+            if (myp_fs_exists(dir) != 1) return 11;
+            if (myp_fs_is_dir(dir) != 1) return 12;
+            if (myp_fs_is_file(dir) != 0) return 13;
+            if (myp_fs_exists("/tmp") != 1) return 14;
+            if (myp_fs_is_dir("/tmp") != 1) return 15;
+
+            // --- 创建文件（raw syscall open/write/close，经 __myp_syscall）---
+            string file = myp_fs_join(dir, "data.txt");
+            long fd = __myp_syscall(2, __myp_str_ptr(file), 0x241, 420, 0, 0, 0);  // O_WRONLY|O_CREAT|O_TRUNC
+            if (fd < 0) return 16;
+            long wr = __myp_syscall(1, fd, __myp_str_ptr("hello"), 5, 0, 0, 0);
+            __myp_syscall(3, fd, 0, 0, 0, 0, 0);
+            if (wr != 5) return 17;
+            if (myp_fs_exists(file) != 1) return 18;
+            if (myp_fs_is_file(file) != 1) return 19;
+            if (myp_fs_is_dir(file) != 0) return 20;
+            if (myp_fs_file_size(file) != 5) return 21;
+            long mt = myp_fs_modified_time(file);
+            if (mt < 1000000000000) return 22;             // 毫秒 epoch，2001+ 量级
+
+            // --- 目录列表 ---
+            int cnt = myp_fs_list_count(dir);
+            if (cnt < 2) return 23;                        // data.txt + z
+            string e0 = myp_fs_list_get(dir, 0);
+            if (Str.len(e0) == 0) return 24;
+            string e1 = myp_fs_list_get(dir, 1);
+            if (Str.len(e1) == 0) return 25;
+            string oob = myp_fs_list_get(dir, 999);
+            if (Str.len(oob) != 0) return 26;              // 越界 → 空串
+            if (myp_fs_list_count("/tmp/definitely_no_such_dir_xyz") != 0) return 27;
+
+            // --- 递归删除 ---
+            if (myp_fs_remove_recursive(base) != 0) return 28;
+            if (myp_fs_exists(base) != 0) return 29;
+            // 删除不存在的路径 → 成功（ENOENT 视为成功）
+            if (myp_fs_remove_recursive(base) != 0) return 30;
+            return 0;
+        }
+}
+
+int main() {
+    return FsProbe.run();
+}

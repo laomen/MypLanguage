@@ -1,0 +1,46 @@
+// runtime_myp/term.myp — 终端层 MYP 化（raw syscall）：shadow C runtime 的
+// myp_term_width / myp_term_height（TUI 渲染尺寸）。符号名与 C 一致，--shared
+// + 前置链接 → MYP 定义优先。
+//
+// 设计：
+//   - ioctl = x86-64 syscall 16；TIOCGWINSZ = 0x5413，struct winsize 8B：
+//     {ws_row:u16@0, ws_col:u16@2, ws_xpixel:u16@4, ws_ypixel:u16@6}。
+//   - STDOUT_FILENO=1；非 tty（管道/无终端）ioctl 失败 → 回退 80x24（同 C）。
+//   - 缓冲 arena 一次性分配 + @static 缓存（同 time.myp/io.myp 模式；非 TLS，
+//     多线程共享缓冲极小竞态，文档化限制）。
+
+ffi long myp_arena_alloc(long size);
+
+@static class TermBuf {
+    property:
+        long addr = 0;   // winsize 缓冲（arena 8B，0=未初始化）
+}
+
+long termBufAddr() {
+    if (TermBuf.addr == 0) {
+        long p = myp_arena_alloc(8);
+        if (p == 0) return 0;   // OOM
+        TermBuf.addr = p;
+    }
+    return TermBuf.addr;
+}
+
+// C: int32_t myp_term_width(void) —— 终端列数（ioctl TIOCGWINSZ ws_col，失败 80）
+int myp_term_width() {
+    long w = termBufAddr();
+    if (w == 0) return 80;
+    __myp_syscall(16, 1, 0x5413, w, 0, 0, 0);   // ioctl(STDOUT_FILENO, TIOCGWINSZ, &w)
+    int col = (__myp_mem_load_i8(w + 2) & 0xFF) | ((__myp_mem_load_i8(w + 3) & 0xFF) << 8);
+    if (col > 0) return col;
+    return 80;
+}
+
+// C: int32_t myp_term_height(void) —— 终端行数（ioctl TIOCGWINSZ ws_row，失败 24）
+int myp_term_height() {
+    long w = termBufAddr();
+    if (w == 0) return 24;
+    __myp_syscall(16, 1, 0x5413, w, 0, 0, 0);   // ioctl(STDOUT_FILENO, TIOCGWINSZ, &w)
+    int row = (__myp_mem_load_i8(w) & 0xFF) | ((__myp_mem_load_i8(w + 1) & 0xFF) << 8);
+    if (row > 0) return row;
+    return 24;
+}

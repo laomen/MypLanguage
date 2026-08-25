@@ -27,6 +27,48 @@
 
 ## 编译器版本历史
 
+### v3.15.31 — runtime myp化 #28：fs/env/args/term/math 薄层迁移
+
+**非破坏性**。把五组"薄层" C runtime 符号 MYP 化（shadow 机制），新增 5 个
+`runtime_myp` 模块 + 5 个验证程序：
+
+- **`term.myp`**（2/2）：`myp_term_width/height`——`ioctl=16`(TIOCGWINSZ=0x5413)
+  写 8B winsize 缓冲（ws_row@0/ws_col@2 u16），失败回退 80x24（同 C）。
+- **`fs.myp`**（12/12）：`exists/is_dir/is_file/file_size/modified_time` 用
+  `newfstatat=262`（AT_FDCWD=-100；内核 struct stat 144B：st_mode@24、
+  st_size@48、st_mtime@88；S_IFDIR=0x4000/S_IFREG=0x8000）；`list_count/
+  list_get` 用 `getdents64=217`（linux_dirent64：d_reclen@16 u16、d_name@19，
+  跳过 . / ..）；`mkdir_p`（mkdir=83，0755=493，EEXIST=17 忽略，逐前缀）；
+  `remove_recursive`（lstat=newfstatat+AT_SYMLINK_NOFOLLOW=0x100，getdents64
+  递归 + rmdir=84/unlink=87，ENOENT 视为成功）；`dirname/basename/join` 纯字节
+  操作。
+- **`args.myp`**（2/2）：`myp_args_count/get` **惰性**读 `/proc/self/cmdline`
+  （NUL 分隔，argc=NUL 数），@static 8B argc+8192B 原始缓冲缓存——免 C 构造器
+  全局依赖。越界返回空串。
+- **`env.myp`**（get 迁移；set/unset 保留 C）：**关键发现**——`/proc/self/
+  environ` 只反映进程**启动时**的环境内存区（内核 mm->env_start），libc setenv
+  使 environ 缓冲 realloc 移动后**看不到**新变量（实测：export 后 grep 不到）。
+  正解：MYP `myp_env_get` 直接**遍历 libc 的 `environ` 弱符号**（char**，
+  `environ@@GLIBC_2.2.5`）：`__myp_fn_addr("environ")` 发射 `ptrtoint ptr
+  @environ to i64` 取址（复用 #25 内建），**自举 ir_emit preamble 加一行
+  `@environ = external global ptr`**（声明非定义，未引用无害）→ 与 C getenv
+  完全一致（含 setenv/unsetenv 实时修改）。`myp_env_set/unset` 无 syscall 等价
+  物（libc 进程级 environ 操作）→ 保留 C，文档化。
+- **`math.myp`**（14/19）：一元实数（sqrt/abs/floor/ceil/trunc/sin/cos/tan/
+  asin/acos/atan/exp/log）+ `abs_int`——经 `__myp_math_*` 内建 → 自举 codegen
+  发 **LLVM 标量 intrinsic**（llvm.sqrt.f64 等，与 libm 位级一致、不递归）。
+  **未影（保留 C，另立里程碑）**：`myp_math_pow/atan2`（二元无对应一元 llvm
+  直发路径，自举 `__myp_math_pow` 发射 `call @myp_math_pow` 会自递归）、
+  `myp_math_sinh/cosh/tanh`（LLVM 无对应 intrinsic，需 exp 组合 + 大参数特殊
+  处理 + 精度对拍）。
+- **验证**：shadow **17/17**（新增 rt_term/rt_fs/rt_args/rt_env/rt_math；args 特例
+  以 `alpha beta gamma` 运行验 argc=4；env 用 C setenv→MYP get 一致性验同 environ
+  源）、bootstrap 16/16（新 fixpoint `7f88f563…`，ir_emit 改）、全量 323/323。
+  反汇编确认：fs.o 定义 12 个 `myp_fs_*` T 符号；env.o `myp_env_get` 有
+  `R_X86_64_REX_GOTPCRELX environ` 重定位（真走 libc environ）。
+- **工程修复**：`build.sh` 测试循环 `set -e` 会在二进制返回非 0 时**静默退出**
+  （`exit=$code` 打印前被 errexit 杀死）→ 用 `set +e` 包运行取退出码再 `set -e`。
+
 ### v3.15.30 — runtime myp化 #27：精选汇编原语标准库 `runtime_myp/asm.myp`
 
 **非破坏性**。在 #26 通用 `__myp_asm` 内建之上，封装**精选 x86-64 汇编原语**为

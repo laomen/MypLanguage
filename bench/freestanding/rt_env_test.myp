@@ -1,0 +1,35 @@
+// rt_env_test.myp — 环境变量层验证：MYP myp_env_get（/proc/self/environ）与
+// 保留 C 的 myp_env_set/unset（setenv/unsetenv）一致性。关键：MYP get 必须看到
+// C set 的值（/proc/self/environ 反映真实环境缓冲）。
+import text;
+
+ffi string myp_env_get(string name);
+ffi int myp_env_set(string name, string value);    // C（未影）
+ffi int myp_env_unset(string name);                // C（未影）
+
+class EnvProbe {
+    static:
+        int run() {
+            // PATH 恒存在 → 非空
+            string path = myp_env_get("PATH");
+            if (Str.len(path) == 0) return 1;
+            // 不存在的变量 → 空串
+            string missing = myp_env_get("MYP_ENV_TEST_DOES_NOT_EXIST_12345");
+            if (Str.len(missing) != 0) return 2;
+            // C setenv → MYP get 应读到（/proc/self/environ 反映真实环境）
+            if (myp_env_set("MYPTEST_ENV", "hello-world") != 0) return 3;
+            string got = myp_env_get("MYPTEST_ENV");
+            if (got != "hello-world") return 4;
+            // 同名覆盖
+            if (myp_env_set("MYPTEST_ENV", "second") != 0) return 5;
+            if (myp_env_get("MYPTEST_ENV") != "second") return 6;
+            // C unsetenv → MYP get 变空
+            if (myp_env_unset("MYPTEST_ENV") != 0) return 7;
+            if (Str.len(myp_env_get("MYPTEST_ENV")) != 0) return 8;
+            return 0;
+        }
+}
+
+int main() {
+    return EnvProbe.run();
+}

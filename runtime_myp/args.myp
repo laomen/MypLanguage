@@ -1,0 +1,77 @@
+// runtime_myp/args.myp — 命令行参数层 MYP 化：shadow C runtime 的 myp_args_count /
+// myp_args_get。C 版用 @constructor 读 /proc/self/cmdline 存全局；MYP 版**惰性**
+// 首次调用时读 /proc/self/cmdline 并缓存（无需 C 全局，天然免构造器依赖）。
+//
+// 设计：
+//   - /proc/self/cmdline = NUL 分隔的 argv（含 argv[0]；末项也以 NUL 结尾）。
+//     argc = 文件内 NUL 字节数。读取 open=2/read=0/close=3。
+//   - 缓存：@static 8B argc(i64) + 8192B 原始字节（arena 一次性分配）。非 TLS，
+//     参数进程级固定，无并发问题。
+//   - myp_args_get(i) 定位第 i 个 NUL 段 → 计数字符串（myp_alloc 模式）。
+
+ffi long myp_arena_alloc(long size);
+ffi string myp_alloc(long size);
+
+@static class Args {
+    property:
+        long buf = 0;   // arena：头 8B argc，随后原始 cmdline 字节（0=未初始化）
+}
+
+long argsBuf() {
+    if (Args.buf == 0) {
+        long p = myp_arena_alloc(8 + 8192);
+        if (p == 0) return 0;   // OOM
+        string path = "/proc/self/cmdline";
+        long fd = __myp_syscall(2, __myp_str_ptr(path), 0, 0, 0, 0, 0);   // open O_RDONLY
+        long argc = 0;
+        if (fd >= 0) {
+            long n = __myp_syscall(0, fd, p + 8, 8192, 0, 0, 0);          // read
+            if (n < 0) n = 0;
+            for (long i = 0; i < n; i = i + 1) {
+                if (__myp_mem_load_i8(p + 8 + i) == 0) argc = argc + 1;
+            }
+            __myp_mem_store_i8(p + 8 + n, 0);   // 保证结尾 NUL（防 8192 截断）
+            __myp_syscall(3, fd, 0, 0, 0, 0, 0);                          // close
+        }
+        __myp_mem_store_i64(p, argc);
+        Args.buf = p;
+    }
+    return Args.buf;
+}
+
+// C: int32_t myp_args_count(void)
+int myp_args_count() {
+    long p = argsBuf();
+    if (p == 0) return 0;
+    return int(__myp_mem_load_i64(p));
+}
+
+// C: char* myp_args_get(int32_t index) —— 越界返回空串
+string myp_args_get(int index) {
+    long p = argsBuf();
+    if (p == 0) {
+        string e = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(e), 0);
+        return e;
+    }
+    int argc = int(__myp_mem_load_i64(p));
+    if (index < 0 || index >= argc) {
+        string e = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(e), 0);
+        return e;
+    }
+    // 定位第 index 个 NUL 段的起点
+    long off = 8;
+    int cur = 0;
+    while (cur < index) {
+        if (__myp_mem_load_i8(p + off) == 0) cur = cur + 1;
+        off = off + 1;
+    }
+    long start = off;
+    long n = 0;
+    while (__myp_mem_load_i8(p + start + n) != 0) n = n + 1;
+    string s = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(s), p + start, n);
+    __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+    return s;
+}

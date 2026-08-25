@@ -1,0 +1,22 @@
+// rt_term_test.myp — 终端层验证（runtime_myp/term.myp shadow C runtime）：
+// myp_term_width / myp_term_height 返回合理尺寸（tty 实际值 / 非 tty 回退 80x24）。
+ffi int myp_term_width();
+ffi int myp_term_height();
+
+class TermProbe {
+    static:
+        int run() {
+            int w = myp_term_width();
+            int h = myp_term_height();
+            if (w < 1 || w > 500) return 1;
+            if (h < 1 || h > 200) return 2;
+            // 常见取值：tty 任意合理值；非 tty 回退 80x24
+            if (w == 80 && h == 24) return 0;
+            if (w >= 1 && h >= 1) return 0;
+            return 3;
+        }
+}
+
+int main() {
+    return TermProbe.run();
+}

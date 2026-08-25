@@ -31,7 +31,9 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_weak_test.myp bench/freestanding/rt_io_test.myp \
          bench/freestanding/rt_float_test.myp bench/freestanding/rt_float_prec_test.myp \
          bench/freestanding/rt_time_test.myp bench/freestanding/rt_cls_release_test.myp bench/freestanding/rt_ctx_probe.myp \
-         bench/freestanding/rt_asm_test.myp; do
+         bench/freestanding/rt_asm_test.myp bench/freestanding/rt_term_test.myp \
+         bench/freestanding/rt_fs_test.myp bench/freestanding/rt_args_test.myp \
+         bench/freestanding/rt_env_test.myp bench/freestanding/rt_math_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
@@ -42,9 +44,16 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
         "$CRT"/crtn.o --gc-sections
 
     echo "== 运行（MYP 运行时 shadow C 版本）: ${tb} =="
-    "/tmp/rt_${tb}_bin"
+    # 二进制可能返回非 0（断言失败）——set -e 下须先关闭再取退出码（否则脚本
+    # 在运行处静默退出，看不到 exit=N 与 FAIL 定位）。
+    set +e
+    case "$tb" in
+        rt_args_test) "/tmp/rt_${tb}_bin" alpha beta gamma ;;
+        *)            "/tmp/rt_${tb}_bin" ;;
+    esac
     code=$?
+    set -e
     echo "exit=$code"
     [ "$code" = 0 ] || { echo "FAIL: ${tb} 期望 0"; exit 1; }
 done
-echo "PASS: MYP 运行时 shadow 验证通过（str + num）"
+echo "PASS: MYP 运行时 shadow 验证通过（str + num + fs + env + args + term + math）"

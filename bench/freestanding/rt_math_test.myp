@@ -1,0 +1,53 @@
+// rt_math_test.myp — 数学层（可薄影部分）验证（runtime_myp/math.myp shadow
+// C runtime）：13 个一元 myp_math_* + myp_math_abs_int。MYP 实现经 __myp_math_*
+// 内建 → LLVM 标量 intrinsic（同 libm），与已知值对拍。
+
+ffi double myp_math_sqrt(double v);
+ffi double myp_math_abs(double v);
+ffi double myp_math_floor(double v);
+ffi double myp_math_ceil(double v);
+ffi double myp_math_trunc(double v);
+ffi double myp_math_sin(double v);
+ffi double myp_math_cos(double v);
+ffi double myp_math_tan(double v);
+ffi double myp_math_asin(double v);
+ffi double myp_math_acos(double v);
+ffi double myp_math_atan(double v);
+ffi double myp_math_exp(double v);
+ffi double myp_math_log(double v);
+ffi int myp_math_abs_int(int v);
+
+class MathProbe {
+    static:
+        int run() {
+            double s = myp_math_sqrt(2.0);
+            if (s < 1.4142 || s > 1.4143) return 1;
+            if (myp_math_floor(3.7) != 3.0) return 2;
+            if (myp_math_floor(-3.7) != -4.0) return 3;
+            if (myp_math_ceil(3.2) != 4.0) return 4;
+            if (myp_math_ceil(-3.2) != -3.0) return 5;
+            if (myp_math_trunc(3.7) != 3.0) return 6;
+            if (myp_math_trunc(-3.7) != -3.0) return 7;
+            if (myp_math_sin(0.0) != 0.0) return 8;
+            if (myp_math_cos(0.0) != 1.0) return 9;
+            if (myp_math_tan(0.0) != 0.0) return 10;
+            double as = myp_math_asin(1.0);          // π/2 ≈ 1.5707963
+            if (as < 1.57079 || as > 1.5708) return 11;
+            if (myp_math_acos(1.0) != 0.0) return 12;
+            if (myp_math_atan(0.0) != 0.0) return 13;
+            if (myp_math_atan(1.0) < 0.7853 || myp_math_atan(1.0) > 0.7855) return 14;
+            if (myp_math_abs(-4.5) != 4.5) return 15;
+            if (myp_math_abs(3.25) != 3.25) return 16;
+            if (myp_math_exp(0.0) != 1.0) return 17;
+            if (myp_math_log(1.0) != 0.0) return 18;
+            double lnE = myp_math_log(2.718281828459045);
+            if (lnE < 0.9999 || lnE > 1.0001) return 19;
+            if (myp_math_abs_int(-7) != 7) return 20;
+            if (myp_math_abs_int(42) != 42) return 21;
+            return 0;
+        }
+}
+
+int main() {
+    return MathProbe.run();
+}

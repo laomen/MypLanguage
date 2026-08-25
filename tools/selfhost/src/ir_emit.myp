@@ -187,6 +187,11 @@ import "./ast.myp";
             sb.append("\n");
             sb.append("@__myp_jmpbuf = internal global %myp_jmp_buf zeroinitializer\n");
             sb.append("\n");
+            // libc 导出的弱数据符号 environ（char**，进程环境指针）——运行时模块
+            // 经 __myp_fn_addr("environ") 取址遍历（env.myp），链接解析到 libc。
+            // 声明（非定义），未被引用时无害。
+            sb.append("@environ = external global ptr\n");
+            sb.append("\n");
             sb.append("declare void @myp_print(ptr)\n");
             sb.append("\n");
             sb.append("declare void @myp_println(ptr)\n");

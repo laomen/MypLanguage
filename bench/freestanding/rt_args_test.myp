@@ -1,0 +1,32 @@
+// rt_args_test.myp — 命令行参数层验证（runtime_myp/args.myp shadow C runtime）：
+// myp_args_count / myp_args_get 读 /proc/self/cmdline。harness 以额外参数
+// `alpha beta gamma` 运行本程序（build.sh 特例）→ argc=4。
+import text;
+
+ffi int myp_args_count();
+ffi string myp_args_get(int index);
+
+class ArgsProbe {
+    static:
+        int run() {
+            int n = myp_args_count();
+            if (n < 1) return 1;                     // 至少 argv[0]（程序路径）
+            string p0 = myp_args_get(0);
+            if (Str.len(p0) == 0) return 2;          // 路径非空
+            // harness 以 3 个额外参数运行 → n==4，逐项校验 NUL 分段
+            if (n == 4) {
+                if (myp_args_get(1) != "alpha") return 3;
+                if (myp_args_get(2) != "beta") return 4;
+                if (myp_args_get(3) != "gamma") return 5;
+            }
+            // 越界 → 空串
+            string oob = myp_args_get(999);
+            if (Str.len(oob) != 0) return 6;
+            if (myp_args_get(-1) != "") return 7;
+            return 0;
+        }
+}
+
+int main() {
+    return ArgsProbe.run();
+}
