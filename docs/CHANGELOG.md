@@ -35,6 +35,28 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.24 — 浮点精确路径：%.f 大数 / %g·%e 高精度（uint32 大整数精确十进制展开）
+
+**非破坏性**。`runtime_myp/float.myp` 新增**精确十进制展开**（uint32 小端词大整数，
+≤40 词覆盖 subnormal 1074 位），解除 #19 的精度上限：
+
+- **%.f |v|>=2^53**：double 反复 /10 会丢低位 → 改用大整数 `m<<e` 反复 /10 出
+  精确整数位（2^63、1e100 等逐位正确）。
+- **%.f prec>15**：精确小数展开 `rem/2^r`（分母仅 2 因子 → 十进制有限），每步
+  **先 rem*=10 再取高 r 位**（digit=floor(rem*10/2^r)）——%.60f 的 0.1 给出完整
+  55 位精确展开。
+- **%g/%e P>15**：精确 P 位有效数字 + round-half-even（%g 仍去尾零），支持到
+  prec=60。
+- **发现 C runtime 缺陷**：`myp_fmt_double_f` 用 `char buf[160]` + snprintf →
+  %.f 大数（如 1e308，309 位）被**截断到 159 位**；MYP 精确路径给出**完整精确值**
+  （与 Python `format(1e308,'.0f')` 逐位一致）——**MYP 更正确**。
+- 重构：`fmtSciBody`/`fmtFixedG` 尾部抽为 `assembleSci`/`assembleFixed`（快/精两
+  路径共用），dispatch：%.f 在 `expf>=1076`（|v|≥2^53）或 prec>15、%g 在 prec>15、
+  %e 在 prec>14 走精确路径。
+- 验证：`rt_float_prec_test.myp` 24 断言（大整数 9 + 高精度小数 5 + %g P>15 7 +
+  %e 4）C/shadow 双跑全过；次正规数 5e-324（r=1074）对拍一致；shadow 8/8、
+  bootstrap 16/16、全量 323/323。
+
 ### v3.15.23 — 浮点层性能基准（MYP shadow vs libc，~1.1-1.26x）
 
 **非破坏性**。新增 `bench/freestanding/rt_float_bench.myp` + `run_float_bench.sh`

@@ -23,10 +23,22 @@
 //
 // 注意：函数体内不用字符串 == / < / Str.len（避免经 str.myp 的间接依赖与潜在
 // 递归）；字符访问用 __myp_charcode，字符串构建用 myp_alloc + __myp_mem*。
-// 精度上限：%g/%e 有效数字 P 截到 15（超过则近似；实际极少用）。
+// 精度：%g/%e 有效数字 P<=15 走 double 缩放快路径；P>15 与 %.f |v|>=2^53 走
+// 大整数精确十进制展开（下方 exactDigits 区段）。
 
 ffi string myp_alloc(long size);
 ffi int myp_strlen(string s);
+
+// ---- 精确十进制展开的状态（大整数区段）----
+@static class ExDig {
+    property:
+        int intLen = 0;    // 整数部分位数（a<1 时为 0）
+        int fracLen = 0;   // 小数部分位数（精确展开总位数）
+}
+@static class ExSig {
+    property:
+        int X = 0;         // 十进制指数（exactSigDigits 输出）
+}
 
 // ---- 辅助 ----
 // 10^k（double）
@@ -265,47 +277,7 @@ string fmtSciBody(double a, int X, int P, int neg, int strip) {
     long q = long(myp_round_half_even(scaled));
     if (q >= long(myp_pow10(P))) { q = q / 10; X = X + 1; }   // 舍入进位
     string digs = digitsOf(q, P);
-    int Peff = P;
-    if (strip != 0) {
-        // 去尾零：从最后一位起找第一个非 '0'
-        int z = P - 1;
-        while (z > 0) {
-            if (__myp_charcode(digs, z) != 48) break;
-            z = z - 1;
-        }
-        Peff = z + 1;   // z==0 时 Peff=1（全部为 0 → 仅首位，不可能因 m>=1）
-    }
-    string out = myp_alloc(48);
-    long op = __myp_str_ptr(out);
-    int oi = 0;
-    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
-    __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, 0)); oi = oi + 1;
-    if (Peff > 1) {
-        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
-        for (int k = 1; k < Peff; k = k + 1) {
-            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
-        }
-    }
-    __myp_mem_store_i8(op + long(oi), 101); oi = oi + 1;      // 'e'
-    int xa = X;
-    if (xa < 0) { __myp_mem_store_i8(op + long(oi), 45); xa = -xa; oi = oi + 1; }
-    else { __myp_mem_store_i8(op + long(oi), 43); oi = oi + 1; }
-    if (xa < 10) {   // 指数至少 2 位：十位补 '0'
-        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
-        __myp_mem_store_i8(op + long(oi), 48 + xa); oi = oi + 1;
-    } else if (xa < 100) {
-        __myp_mem_store_i8(op + long(oi), 48 + xa / 10); oi = oi + 1;
-        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
-    } else {
-        __myp_mem_store_i8(op + long(oi), 48 + xa / 100); oi = oi + 1;
-        __myp_mem_store_i8(op + long(oi), 48 + (xa / 10) % 10); oi = oi + 1;
-        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
-    }
-    __myp_mem_store_i8(op + long(oi), 0);
-    string r = myp_alloc(oi + 1);
-    __myp_memcpy(__myp_str_ptr(r), op, oi);
-    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
-    return r;
+    return assembleSci(digs, P, X, neg, strip);
 }
 
 // %f 风格（%g 用）：P 位有效数字，按 X 摆小数点，去尾零/尾点。
@@ -316,53 +288,7 @@ string fmtFixedG(double a, int X, int P, int neg) {
     long q = long(myp_round_half_even(scaled));
     if (q >= long(myp_pow10(P))) { q = q / 10; X = X + 1; }
     string digs = digitsOf(q, P);
-    string out = myp_alloc(48);
-    long op = __myp_str_ptr(out);
-    int oi = 0;
-    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
-    int hasDot = 0;
-    if (X >= 0) {
-        int ip = X + 1;
-        if (ip > P) ip = P;
-        int k = 0;
-        while (k < ip) {
-            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
-            k = k + 1;
-        }
-        if (ip < P) {
-            __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
-            hasDot = 1;
-            while (k < P) {
-                __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
-                k = k + 1;
-            }
-        }
-    } else {
-        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;   // '0'
-        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;   // '.'
-        hasDot = 1;
-        int nz = -X - 1;
-        int k = 0;
-        while (k < nz) { __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1; k = k + 1; }
-        k = 0;
-        while (k < P) {
-            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
-            k = k + 1;
-        }
-    }
-    if (hasDot != 0) {   // %g 去尾零；有小数点才去（整数部分尾 0 保留）
-        while (oi > 0) {
-            int c = __myp_mem_load_i8(op + long(oi - 1));
-            if (c == 48) oi = oi - 1;
-            else break;
-        }
-        if (oi > 0 && __myp_mem_load_i8(op + long(oi - 1)) == 46) oi = oi - 1;
-    }
-    __myp_mem_store_i8(op + long(oi), 0);
-    string r = myp_alloc(oi + 1);
-    __myp_memcpy(__myp_str_ptr(r), op, oi);
-    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
-    return r;
+    return assembleFixed(digs, P, X, neg);
 }
 
 // C: char* myp_to_string_double(double val) —— %g（默认精度 6）
@@ -399,6 +325,7 @@ string myp_fmt_double_g(double v, int prec) {
     double a = v;
     if (a < 0) a = -a;
     if (a == 0) return neg != 0 ? "-0" : "0";
+    if (prec > 15) return fmtGExact(a, prec, neg);   // 高精度 → 大整数精确路径
     int X = expBase10(a);
     if (X < -4 || X >= prec) return fmtSciBody(a, X, prec, neg, 1);
     return fmtFixedG(a, X, prec, neg);
@@ -436,6 +363,7 @@ string myp_fmt_double_e(double v, int prec) {
         __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
         return r;
     }
+    if (prec > 14) return fmtESciExact(a, prec, neg);   // prec+1>15 → 精确路径
     int X = expBase10(a);
     return fmtSciBody(a, X, prec + 1, neg, 0);
 }
@@ -452,6 +380,9 @@ string myp_fmt_double_f(double v, int prec) {
     if (k == 1) return neg != 0 ? "-inf" : "inf";
     double a = v;
     if (a < 0) a = -a;
+    // |v|>=2^53（expf>=1076）整数部分 double /10 丢位；prec>15 双精度不足 → 精确路径
+    long ef = (bits >> 52) & 0x7FF;
+    if (ef >= 1076 || prec > 15) return fmtFExact(v, prec);
     // 整数部分（double，反复 /10 取数字，<2^53 精确）
     double ip = __myp_math_floor(a);
     double fp = a - ip;
@@ -542,6 +473,444 @@ string myp_fmt_double_f(double v, int prec) {
         while (f2 < prec) {
             __myp_mem_store_i8(op + long(oi), __myp_mem_load_i8(fpb + long(f2))); oi = oi + 1;
             f2 = f2 + 1;
+        }
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// ==================== 精确十进制展开（%.f 大数 / %g·%e 高精度）====================
+// double a>0 的精确值 = m×2^e（m=53bit 尾数，e=去偏指数）。用 uint32 大整数
+// （小端词，≤40 词覆盖 subnormal 1074 位）展开精确十进制数字，支持：
+//   - %.f |v|>=2^53 的整数部分（double 反复 /10 会丢低位）
+//   - %.f / %g / %e 精度 >15（double 双精度不足以给第 16+ 位）
+// 数字提取：e>=0 → m<<e 反复 /10；e<0 → int_part=m>>r、rem=m&(2^r-1)，
+// 小数位每步 rem*10 取高 r 位（rem/2^r 十进制精确有限——分母只有 2 因子）。
+
+// m（≤53 位）→ 大整数（2 词小端），返回有效词数
+int bigInitM(uint[] w, long m) {
+    w[0] = uint(m & 0xFFFFFFFF);
+    if (m >= 4294967296) { w[1] = uint((m >> 32) & 0x1FFFFF); return 2; }
+    return 1;
+}
+
+// w *= 10，返回新 len
+int bigMul10(uint[] w, int len) {
+    long carry = 0;
+    for (int i = 0; i < len; i = i + 1) {
+        long v = long(w[i]) * 10 + carry;
+        w[i] = uint(v & 0xFFFFFFFF);
+        carry = v >> 32;
+    }
+    if (carry != 0) { w[len] = uint(carry); len = len + 1; }
+    return len;
+}
+
+// w /= 10（long division），返回余数 0..9；调用方自行收缩 len（顶词可能变 0）
+int bigDiv10(uint[] w, int len) {
+    long rem = 0;
+    for (int i = len - 1; i >= 0; i = i - 1) {
+        long cur = (rem << 32) | long(w[i]);
+        w[i] = uint(cur / 10);
+        rem = cur % 10;
+    }
+    return int(rem);
+}
+
+// w <<= bits（0..~1000），返回新 len
+int bigShl(uint[] w, int len, int bits) {
+    if (bits >= 32) {
+        int ws = bits / 32;
+        for (int i = len - 1; i >= 0; i = i - 1) w[i + ws] = w[i];
+        for (int i = 0; i < ws; i = i + 1) w[i] = uint(0);
+        len = len + ws;
+        bits = bits % 32;
+    }
+    if (bits > 0) {
+        long carry = 0;
+        for (int i = 0; i < len; i = i + 1) {
+            long v = (long(w[i]) << bits) | carry;
+            w[i] = uint(v & 0xFFFFFFFF);
+            carry = v >> 32;
+        }
+        if (carry != 0) { w[len] = uint(carry); len = len + 1; }
+    }
+    return len;
+}
+
+// w >>= bits（0..~1000），返回新 len（顶词变 0 收缩）
+int bigShr(uint[] w, int len, int bits) {
+    if (bits >= 32) {
+        int ws = bits / 32;
+        if (ws >= len) { len = 1; w[0] = uint(0); bits = 0; }
+        else {
+            for (int i = 0; i < len - ws; i = i + 1) w[i] = w[i + ws];
+            for (int i = len - ws; i < len; i = i + 1) w[i] = uint(0);
+            len = len - ws;
+            bits = bits % 32;
+        }
+    }
+    if (bits > 0) {
+        for (int i = len - 1; i >= 0; i = i - 1) {
+            uint hi = uint(0);
+            if (i + 1 < len) hi = w[i + 1];
+            w[i] = (w[i] >> bits) | (hi << (32 - bits));
+        }
+    }
+    while (len > 1 && w[len - 1] == 0) len = len - 1;
+    return len;
+}
+
+// w &= (2^r - 1)（保留低 r 位），返回新 len
+int bigMaskLow(uint[] w, int len, int r) {
+    int wi = 0;
+    while (wi < len) {
+        int bitLow = wi * 32;
+        if (bitLow >= r) { w[wi] = uint(0); }
+        else if (bitLow + 32 > r) {
+            int keep = r - bitLow;   // 1..31
+            uint mask = uint(0);
+            for (int b = 0; b < keep; b = b + 1) mask = mask | (uint(1) << b);
+            w[wi] = w[wi] & mask;
+        }
+        wi = wi + 1;
+    }
+    while (len > 1 && w[len - 1] == 0) len = len - 1;
+    return len;
+}
+
+// 精确十进制展开 a>0 → 返回 整数位+小数位 拼接数字串（无小数点）；
+// ExDig.intLen/fracLen 记录位数。
+string exactDigits(double a) {
+    long bits = bitcast<long>(a);
+    long expf = (bits >> 52) & 0x7FF;
+    long mf = bits & 0xFFFFFFFFFFFFF;
+    long m;
+    long e;
+    if (expf == 0) { m = mf; e = -1074; }
+    else { m = mf | 0x10000000000000; e = expf - 1075; }
+    string buf = myp_alloc(1300);
+    long bp = __myp_str_ptr(buf);
+    int bl = 0;
+    ExDig.intLen = 0;
+    ExDig.fracLen = 0;
+    uint[] w = new uint[40];
+    uint[] w2 = new uint[40];
+    if (e >= 0) {
+        // 整数 a = m << e：反复 /10 出数字（反向暂存后反转）
+        int len = bigInitM(w, m);
+        len = bigShl(w, len, int(e));
+        int ds = bl;
+        while (!(len == 1 && w[0] == 0)) {
+            int d = bigDiv10(w, len);
+            while (len > 1 && w[len - 1] == 0) len = len - 1;
+            __myp_mem_store_i8(bp + long(bl), 48 + d); bl = bl + 1;
+        }
+        if (bl == ds) { __myp_mem_store_i8(bp + long(bl), 48); bl = bl + 1; }   // a==0 不会到，防御
+        int lo = ds;
+        int hi2 = bl - 1;
+        while (lo < hi2) {
+            int c = __myp_mem_load_i8(bp + long(lo));
+            __myp_mem_store_i8(bp + long(lo), __myp_mem_load_i8(bp + long(hi2)));
+            __myp_mem_store_i8(bp + long(hi2), c);
+            lo = lo + 1; hi2 = hi2 - 1;
+        }
+        ExDig.intLen = bl - ds;
+        ExDig.fracLen = 0;
+        string r = myp_alloc(bl + 1);
+        __myp_memcpy(__myp_str_ptr(r), bp, bl);
+        __myp_mem_store_i8(__myp_str_ptr(r) + bl, 0);
+        return r;
+    }
+    // e < 0：int_part = m>>r，rem = m&(2^r-1)（r<53 时两者都是 long）
+    long rl = -e;
+    long intPart = 0;
+    long remLong = m;
+    if (rl < 53) {
+        intPart = m >> int(rl);
+        remLong = m & ((long(1) << int(rl)) - 1);
+    }
+    int is = bl;
+    if (intPart != 0) {
+        while (intPart > 0) {
+            __myp_mem_store_i8(bp + long(bl), 48 + int(intPart % 10)); bl = bl + 1;
+            intPart = intPart / 10;
+        }
+        int lo2 = is;
+        int hi3 = bl - 1;
+        while (lo2 < hi3) {
+            int c = __myp_mem_load_i8(bp + long(lo2));
+            __myp_mem_store_i8(bp + long(lo2), __myp_mem_load_i8(bp + long(hi3)));
+            __myp_mem_store_i8(bp + long(hi3), c);
+            lo2 = lo2 + 1; hi3 = hi3 - 1;
+        }
+        ExDig.intLen = bl - is;
+    } else {
+        ExDig.intLen = 0;
+    }
+    // 小数位：rem/2^r 精确有限展开——先 rem*=10 再取高 r 位（digit=floor(rem*10/2^r)）
+    int len = bigInitM(w, remLong);
+    while (1) {
+        len = bigMul10(w, len);          // rem *= 10
+        for (int ci = 0; ci < len; ci = ci + 1) w2[ci] = w[ci];
+        int len2 = bigShr(w2, len, int(rl));
+        int digit = int(w2[0]);
+        __myp_mem_store_i8(bp + long(bl), 48 + digit); bl = bl + 1;
+        ExDig.fracLen = ExDig.fracLen + 1;
+        len = bigMaskLow(w, len, int(rl));   // newrem = rem & (2^r-1)
+        if (len == 1 && w[0] == 0) break;    // rem==0 → 展开终止
+    }
+    string r2 = myp_alloc(bl + 1);
+    __myp_memcpy(__myp_str_ptr(r2), bp, bl);
+    __myp_mem_store_i8(__myp_str_ptr(r2) + bl, 0);
+    return r2;
+}
+
+// 精确 P 位有效数字（round-half-even）+ 十进制指数 ExSig.X（a>0，P>=1）
+string exactSigDigits(double a, int P) {
+    string digs = exactDigits(a);
+    int intLen = ExDig.intLen;
+    int fracLen = ExDig.fracLen;
+    int total = intLen + fracLen;
+    int fs = 0;
+    int X = 0;
+    if (intLen > 0) { X = intLen - 1; fs = 0; }
+    else {
+        int z = 0;
+        while (z < total && __myp_charcode(digs, z) == 48) z = z + 1;
+        X = -z - 1;
+        fs = z;
+    }
+    string out = myp_alloc(P + 2);
+    long op = __myp_str_ptr(out);
+    int k = 0;
+    while (k < P) {
+        int c = 48;
+        if (fs + k < total) c = __myp_charcode(digs, fs + k);
+        __myp_mem_store_i8(op + long(k), c);
+        k = k + 1;
+    }
+    // 舍入（half-even）：第 P+1 位
+    int roundUp = 0;
+    if (fs + P < total) {
+        int rd = __myp_charcode(digs, fs + P);
+        if (rd > 53) roundUp = 1;
+        else if (rd == 53) {
+            if (fs + P + 1 < total) roundUp = 1;
+            else if ((__myp_mem_load_i8(op + long(P - 1)) - 48) % 2 == 1) roundUp = 1;
+        }
+    }
+    if (roundUp != 0) {
+        int j = P - 1;
+        int carry = 1;
+        while (j >= 0 && carry != 0) {
+            int c = __myp_mem_load_i8(op + long(j));
+            if (c == 57) { __myp_mem_store_i8(op + long(j), 48); j = j - 1; }
+            else { __myp_mem_store_i8(op + long(j), c + 1); carry = 0; }
+        }
+        if (carry != 0) {
+            __myp_mem_store_i8(op, 49);
+            for (int z2 = 1; z2 < P; z2 = z2 + 1) __myp_mem_store_i8(op + long(z2), 48);
+            ExSig.X = X + 1;
+        } else {
+            ExSig.X = X;
+        }
+    } else {
+        ExSig.X = X;
+    }
+    __myp_mem_store_i8(op + long(P), 0);
+    return out;
+}
+
+// %e 组装：digs 为 P 位有效数字，X 十进制指数，neg 符号，strip 去尾零（%g）
+string assembleSci(string digs, int P, int X, int neg, int strip) {
+    int Peff = P;
+    if (strip != 0) {
+        int z = P - 1;
+        while (z > 0) {
+            if (__myp_charcode(digs, z) != 48) break;
+            z = z - 1;
+        }
+        Peff = z + 1;
+    }
+    string out = myp_alloc(P + 20);
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, 0)); oi = oi + 1;
+    if (Peff > 1) {
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+        for (int k = 1; k < Peff; k = k + 1) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+        }
+    }
+    __myp_mem_store_i8(op + long(oi), 101); oi = oi + 1;   // 'e'
+    int xa = X;
+    if (xa < 0) { __myp_mem_store_i8(op + long(oi), 45); xa = -xa; oi = oi + 1; }
+    else { __myp_mem_store_i8(op + long(oi), 43); oi = oi + 1; }
+    if (xa < 10) {
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa); oi = oi + 1;
+    } else if (xa < 100) {
+        __myp_mem_store_i8(op + long(oi), 48 + xa / 10); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
+    } else {
+        __myp_mem_store_i8(op + long(oi), 48 + xa / 100); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + (xa / 10) % 10); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 48 + xa % 10); oi = oi + 1;
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// %f 组装（%g 的 %f 分支）：digs 为 P 位有效数字，X 十进制指数，按 X 摆小数点去尾零
+string assembleFixed(string digs, int P, int X, int neg) {
+    string out = myp_alloc(P + 20);
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    int hasDot = 0;
+    if (X >= 0) {
+        int ip = X + 1;
+        if (ip > P) ip = P;
+        int k = 0;
+        while (k < ip) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+            k = k + 1;
+        }
+        if (ip < P) {
+            __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+            hasDot = 1;
+            while (k < P) {
+                __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+                k = k + 1;
+            }
+        }
+    } else {
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+        hasDot = 1;
+        int nz = -X - 1;
+        int k = 0;
+        while (k < nz) { __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1; k = k + 1; }
+        k = 0;
+        while (k < P) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+            k = k + 1;
+        }
+    }
+    if (hasDot != 0) {
+        while (oi > 0) {
+            int c = __myp_mem_load_i8(op + long(oi - 1));
+            if (c == 48) oi = oi - 1;
+            else break;
+        }
+        if (oi > 0 && __myp_mem_load_i8(op + long(oi - 1)) == 46) oi = oi - 1;
+    }
+    __myp_mem_store_i8(op + long(oi), 0);
+    string r = myp_alloc(oi + 1);
+    __myp_memcpy(__myp_str_ptr(r), op, oi);
+    __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+    return r;
+}
+
+// %g 精确路径（P>15）：P 位有效数字 + 分支 %e/%f
+string fmtGExact(double a, int P, int neg) {
+    string digs = exactSigDigits(a, P);
+    int X = ExSig.X;
+    if (X < -4 || X >= P) return assembleSci(digs, P, X, neg, 1);
+    return assembleFixed(digs, P, X, neg);
+}
+
+// %e 精确路径（prec+1>15）：小数点后 prec 位
+string fmtESciExact(double a, int prec, int neg) {
+    string digs = exactSigDigits(a, prec + 1);
+    return assembleSci(digs, prec + 1, ExSig.X, neg, 0);
+}
+
+// %.*f 精确路径（|v|>=2^53 或 prec>15）
+string fmtFExact(double v, int prec) {
+    long bits = bitcast<long>(v);
+    int neg = 0;
+    if (bits < 0) neg = 1;
+    double a = v;
+    if (a < 0) a = -a;
+    if (a == 0) {
+        string out = myp_alloc(prec + 4);
+        long op = __myp_str_ptr(out);
+        int oi = 0;
+        if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
+        if (prec > 0) {
+            __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+            for (int j = 0; j < prec; j = j + 1) { __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1; }
+        }
+        __myp_mem_store_i8(op + long(oi), 0);
+        string r = myp_alloc(oi + 1);
+        __myp_memcpy(__myp_str_ptr(r), op, oi);
+        __myp_mem_store_i8(__myp_str_ptr(r) + oi, 0);
+        return r;
+    }
+    string digs = exactDigits(a);
+    int intLen = ExDig.intLen;
+    int fracLen = ExDig.fracLen;
+    int total = intLen + fracLen;
+    string out = myp_alloc(420 + prec);
+    long op = __myp_str_ptr(out);
+    int oi = 0;
+    if (neg != 0) { __myp_mem_store_i8(op, 45); oi = 1; }
+    int intStart = oi;
+    if (intLen > 0) {
+        for (int k = 0; k < intLen; k = k + 1) {
+            __myp_mem_store_i8(op + long(oi), __myp_charcode(digs, k)); oi = oi + 1;
+        }
+    } else {
+        __myp_mem_store_i8(op + long(oi), 48); oi = oi + 1;
+    }
+    // 舍入判定（half-even）：第 prec+1 个小数位
+    int roundUp = 0;
+    if (prec < fracLen) {
+        int rd = __myp_charcode(digs, intLen + prec);
+        if (rd > 53) roundUp = 1;
+        else if (rd == 53) {
+            if (intLen + prec + 1 < total) roundUp = 1;
+            else if ((__myp_mem_load_i8(op + long(oi - 1)) - 48) % 2 == 1) roundUp = 1;
+        }
+    }
+    // 写小数（prec 位，不足补零）
+    if (prec > 0) {
+        __myp_mem_store_i8(op + long(oi), 46); oi = oi + 1;
+        int fi = 0;
+        while (fi < prec) {
+            int c = 48;
+            if (intLen + fi < total) c = __myp_charcode(digs, intLen + fi);
+            __myp_mem_store_i8(op + long(oi), c); oi = oi + 1;
+            fi = fi + 1;
+        }
+    }
+    // 进位
+    if (roundUp != 0) {
+        int ci = oi - 1;
+        int done = 0;
+        while (ci >= intStart && done == 0) {
+            int c = __myp_mem_load_i8(op + long(ci));
+            if (c == 57) { __myp_mem_store_i8(op + long(ci), 48); ci = ci - 1; }
+            else { __myp_mem_store_i8(op + long(ci), c + 1); done = 1; }
+        }
+        if (done == 0) {
+            int idx = oi - 1;
+            while (idx >= intStart) {
+                __myp_mem_store_i8(op + long(idx + 1), __myp_mem_load_i8(op + long(idx)));
+                idx = idx - 1;
+            }
+            __myp_mem_store_i8(op + long(intStart), 49);
+            oi = oi + 1;
         }
     }
     __myp_mem_store_i8(op + long(oi), 0);

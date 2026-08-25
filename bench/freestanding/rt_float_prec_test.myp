@@ -1,0 +1,40 @@
+// rt_float_prec_test.myp — 浮点层精确路径验证（runtime_myp/float.myp 大整数展开）。
+// 覆盖：%.f |v|>=2^53（整数部分精确）、%.f prec>15（精确小数展开）、%g/%e P>15。
+// 期望值 = glibc（C runtime 下亦须全过）；注意 C 的 myp_fmt_double_f 用 buf[160]
+// 对 >159 位的 %.f 会截断（1e308），此处用 1e100 以内保证可比。
+import text;
+ffi string myp_fmt_double_f(double v, int prec);
+ffi string myp_fmt_double_e(double v, int prec);
+ffi string myp_fmt_double_g(double v, int prec);
+int main() {
+    // ---- %.f 大整数（|v|>=2^53）----
+    if (myp_fmt_double_f(9007199254740992.0, 0) != "9007199254740992") return 11;
+    if (myp_fmt_double_f(9007199254740994.0, 0) != "9007199254740994") return 12;
+    if (myp_fmt_double_f(1e16, 0) != "10000000000000000") return 13;
+    if (myp_fmt_double_f(1e20, 0) != "100000000000000000000") return 14;
+    if (myp_fmt_double_f(1234567890123456789012345.0, 0) != "1234567890123456824475648") return 15;
+    if (myp_fmt_double_f(9223372036854775808.0, 0) != "9223372036854775808") return 16;
+    if (myp_fmt_double_f(-9007199254740992.0, 0) != "-9007199254740992") return 17;
+    if (myp_fmt_double_f(1e100, 0) != "10000000000000000159028911097599180468360808563945281389781327557747838772170381060813469985856815104") return 18;
+    if (myp_fmt_double_f(123456789.0, 0) != "123456789") return 19;
+    // ---- %.f 高精度小数（prec>15）----
+    if (myp_fmt_double_f(0.1, 60) != "0.100000000000000005551115123125782702118158340454101562500000") return 21;
+    if (myp_fmt_double_f(1.0 / 3.0, 30) != "0.333333333333333314829616256247") return 22;
+    if (myp_fmt_double_f(2.5, 30) != "2.500000000000000000000000000000") return 23;
+    if (myp_fmt_double_f(-0.1, 20) != "-0.10000000000000000555") return 24;
+    if (myp_fmt_double_f(0.0001, 25) != "0.0001000000000000000047922") return 25;
+    // ---- %g P>15 ----
+    if (myp_fmt_double_g(0.1, 20) != "0.10000000000000000555") return 31;
+    if (myp_fmt_double_g(1.0 / 3.0, 20) != "0.33333333333333331483") return 32;
+    if (myp_fmt_double_g(1e100, 20) != "1.0000000000000000159e+100") return 33;
+    if (myp_fmt_double_g(123456789.123456789, 20) != "123456789.12345679104") return 34;
+    if (myp_fmt_double_g(2.5, 20) != "2.5") return 35;
+    if (myp_fmt_double_g(123.456, 18) != "123.456000000000003") return 36;
+    if (myp_fmt_double_g(1.5, 20) != "1.5") return 37;
+    // ---- %e prec>14 ----
+    if (myp_fmt_double_e(0.1, 20) != "1.00000000000000005551e-01") return 41;
+    if (myp_fmt_double_e(1.0 / 3.0, 20) != "3.33333333333333314830e-01") return 42;
+    if (myp_fmt_double_e(123.456, 20) != "1.23456000000000003070e+02") return 43;
+    if (myp_fmt_double_e(1e100, 20) != "1.00000000000000001590e+100") return 44;
+    return 0;
+}

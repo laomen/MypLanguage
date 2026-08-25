@@ -29,7 +29,7 @@ done
 for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_alloc_test.myp bench/freestanding/rt_region_test.myp \
          bench/freestanding/rt_weak_test.myp bench/freestanding/rt_io_test.myp \
-         bench/freestanding/rt_float_test.myp; do
+         bench/freestanding/rt_float_test.myp bench/freestanding/rt_float_prec_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
