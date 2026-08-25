@@ -14,35 +14,35 @@ long base64_bench(int n, int seed) {
         i = i + 1;
     }
     int outn = (n / 3) * 4;
-    int[] out = new int[outn];
-    // Base64 字母表 ASCII 码（int[] 避免窄类型赋值限制）
-    int[] B64 = new int[64];
+    uint8[] out = new uint8[outn];
+    // Base64 字母表（uint8[] 与 C++ 的 unsigned char 同宽；显式强转赋值）
+    uint8[] B64 = new uint8[64];
     i = 0;
-    while (i < 26) { B64[i] = 65 + i; i = i + 1; }
-    while (i < 52) { B64[i] = 97 + i - 26; i = i + 1; }
-    while (i < 62) { B64[i] = 48 + i - 52; i = i + 1; }
-    B64[62] = 43;
-    B64[63] = 47;
+    while (i < 26) { B64[i] = uint8(65 + i); i = i + 1; }
+    while (i < 52) { B64[i] = uint8(97 + i - 26); i = i + 1; }
+    while (i < 62) { B64[i] = uint8(48 + i - 52); i = i + 1; }
+    B64[62] = uint8(43);
+    B64[63] = uint8(47);
     int j = 0;
     i = 0;
     while (i + 2 < n) {
-        int b0 = in[i];
-        int b1 = in[i + 1];
-        int b2 = in[i + 2];
-        out[j] = B64[b0 >> 2];
-        out[j + 1] = B64[((b0 & 3) << 4) | (b1 >> 4)];
-        out[j + 2] = B64[((b1 & 15) << 2) | (b2 >> 6)];
-        out[j + 3] = B64[b2 & 63];
+        int b0 = int(in[i]);
+        int b1 = int(in[i + 1]);
+        int b2 = int(in[i + 2]);
+        out[j] = uint8(B64[b0 >> 2]);
+        out[j + 1] = uint8(B64[((b0 & 3) << 4) | (b1 >> 4)]);
+        out[j + 2] = uint8(B64[((b1 & 15) << 2) | (b2 >> 6)]);
+        out[j + 3] = uint8(B64[b2 & 63]);
         i = i + 3;
         j = j + 4;
     }
     long sum = 0;
     i = 0;
     while (i < outn) {
-        sum = sum + out[i];
+        sum = sum + long(out[i]);
         i = i + 1;
     }
-    return sum + out[123456] * 1000003L;
+    return sum + long(out[123456]) * 1000003L;
 }
 
 class Bench {

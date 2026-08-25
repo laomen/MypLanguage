@@ -481,6 +481,12 @@ import collections; // ArrayList
                 string mt = Link.findHostTriple();
                 string optCmd = opt + " " + llPath + " -O" + optLevel;
                 if (Str.len(mt) > 0) optCmd = optCmd + " -mtriple=" + mt;
+                // v3.15.73: 显式 -mcpu=generic 让 opt 建立带 CPU 子目标的
+                // TargetMachine，补全 LoopUnroll/LoopVectorize 的指令·寄存器成本
+                // 模型——否则串行进位链循环不展开（bigint 74→62ms、floyd 69→57ms、
+                // sha256 17→15ms；与 oracle 进程内 createTargetMachine("generic")
+                // 对齐）。仅 -mtriple 不足（opt 缺 CPU 子目标时成本模型仍保守）。
+                optCmd = optCmd + " -mcpu=generic";
                 optCmd = optCmd + " -o " + optPath + " 2>&1";
                 if (Process.run(optCmd) != 0) {
                     Console.writeLine("opt failed");

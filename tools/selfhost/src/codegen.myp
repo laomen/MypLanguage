@@ -4447,32 +4447,65 @@ class CodeGen {
                     if (at == "float") ty = "f32";
                     else if (at == "double") ty = "f64";
                 }
+            } else if (Str.startsWith(rfn, "Math_") != 0) {
+                // 非泛型 Math 方法（如 double pow(double,double)，rfn=Math_pow
+                // 非 __gs_..._inst）：同 Device_ 按后缀名分派 → llvm intrinsic /
+                // __nv_* libdevice。泛型 Math.sqrt 走上方 __gs_Math_ 分支。
+                meth = Str.substring(rfn, 5, Str.len(rfn));
+                if (e.args().size() > 0) {
+                    string at = exprLlvmType(e.args().get(0));
+                    if (at == "float") ty = "f32";
+                    else if (at == "double") ty = "f64";
+                }
             }
+            // §9.5 NVPTX 原生指令数学（sqrt/fabs/floor/ceil/trunc）→ LLVM intrinsic
+            //（NVPTX 直接 select，无需 libdevice）。其余超越函数（sin/cos/tan/exp/
+            // log/asin/acos/atan/sinh/cosh/tanh/pow/atan2）NVPTX 无指令，llvm.* 会
+            // 降为 fsin/fexp 等 libcall——NVPTX 无法选择（llc 致命 "Cannot select"
+            // → abort，自举收到 uncaught exception）→ 必须走 __nv_* libdevice 外部
+            // 调用（声明即可让 llc 通过；真 GPU 运行期由 libdevice 链接解析）。
+            // 同 C++ oracle emit_math_gpu（native vs 超越分派）。
             string intr = "";
             if (meth == "sqrt") intr = "llvm.sqrt";
-            else if (meth == "exp") intr = "llvm.exp";
-            else if (meth == "log") intr = "llvm.log";
-            else if (meth == "sin") intr = "llvm.sin";
-            else if (meth == "cos") intr = "llvm.cos";
-            else if (meth == "pow") intr = "llvm.pow";
             else if (meth == "abs") intr = "llvm.fabs";
             else if (meth == "floor") intr = "llvm.floor";
             else if (meth == "ceil") intr = "llvm.ceil";
             else if (meth == "trunc") intr = "llvm.trunc";
-            if (Str.len(intr) != 0 && Str.len(ty) != 0) {
-                // LLVM 类型是 float/double（f32/f64 仅 intrinsic 名后缀）
-                string llvmTy = (ty == "f32") ? "float" : "double";
-                if (meth == "pow" && e.args().size() >= 2) {
+            string llvmTy = (ty == "f32") ? "float" : "double";
+            if (Str.len(intr) != 0 && Str.len(ty) != 0 && e.args().size() >= 1) {
+                string a0 = genExpr(e.args().get(0));
+                string t = newTmp();
+                sb_.append("  " + t + " = call " + llvmTy + " @" + intr + "." + ty + "(" + llvmTy + " " + a0 + ")\n");
+                return t;
+            }
+            // 超越 → __nv_*（双精度无后缀；单精度加 f）
+            string nv = "";
+            if (meth == "sin") nv = "sin";
+            else if (meth == "cos") nv = "cos";
+            else if (meth == "tan") nv = "tan";
+            else if (meth == "exp") nv = "exp";
+            else if (meth == "log") nv = "log";
+            else if (meth == "asin") nv = "asin";
+            else if (meth == "acos") nv = "acos";
+            else if (meth == "atan") nv = "atan";
+            else if (meth == "sinh") nv = "sinh";
+            else if (meth == "cosh") nv = "cosh";
+            else if (meth == "tanh") nv = "tanh";
+            else if (meth == "pow") nv = "pow";
+            else if (meth == "atan2") nv = "atan2";
+            if (Str.len(nv) != 0 && Str.len(ty) != 0) {
+                string nvname = "__nv_" + nv + ((ty == "f32") ? "f" : "");
+                if ((nv == "pow" || nv == "atan2") && e.args().size() >= 2) {
                     string a0 = genExpr(e.args().get(0));
                     string a1 = genExpr(e.args().get(1));
                     string t = newTmp();
-                    sb_.append("  " + t + " = call " + llvmTy + " @" + intr + "." + ty + "(" + llvmTy + " " + a0 + ", " + llvmTy + " " + a1 + ")\n");
+                    sb_.append("  " + t + " = call " + llvmTy + " @" + nvname + "(" + llvmTy + " " + a0 + ", " + llvmTy + " " + a1 + ")\n");
                     return t;
                 }
                 if (e.args().size() >= 1) {
                     string a0 = genExpr(e.args().get(0));
                     string t = newTmp();
-                    sb_.append("  " + t + " = call " + llvmTy + " @" + intr + "." + ty + "(" + llvmTy + " " + a0 + ")\n");
+                    sb_.append("  " + t + " = call " + llvmTy + " @" + nvname + "(" + llvmTy + " " + a0 + ")\n");
                     return t;
                 }
             }
@@ -5208,17 +5241,35 @@ class CodeGen {
             kb.append("declare double @llvm.fma.f64(double, double, double) nounwind readnone\n");
             kb.append("declare double @llvm.minnum.f64(double, double) nounwind readnone\n");
             kb.append("declare double @llvm.maxnum.f64(double, double) nounwind readnone\n");
-            // kernel 内 Device./Math 泛型实例额外 intrinsic（exp/log/sin/cos/pow）
-            kb.append("declare float @llvm.exp.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.exp.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.log.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.log.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.sin.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.sin.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.cos.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.cos.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.pow.f32(float, float) nounwind readnone\n");
-            kb.append("declare double @llvm.pow.f64(double, double) nounwind readnone\n");
+            // kernel 内 Device./Math 超越函数 → CUDA libdevice __nv_* 外部调用
+            //（llvm.* 超越在 NVPTX 无法 select → llc 致命 "Cannot select"，见
+            // genKernelDeviceCall；声明即让 llc 通过，真 GPU 由 libdevice 解析）
+            kb.append("declare float @__nv_sinf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_sin(double) nounwind readnone\n");
+            kb.append("declare float @__nv_cosf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_cos(double) nounwind readnone\n");
+            kb.append("declare float @__nv_tanf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_tan(double) nounwind readnone\n");
+            kb.append("declare float @__nv_expf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_exp(double) nounwind readnone\n");
+            kb.append("declare float @__nv_logf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_log(double) nounwind readnone\n");
+            kb.append("declare float @__nv_asinf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_asin(double) nounwind readnone\n");
+            kb.append("declare float @__nv_acosf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_acos(double) nounwind readnone\n");
+            kb.append("declare float @__nv_atanf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_atan(double) nounwind readnone\n");
+            kb.append("declare float @__nv_sinhf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_sinh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_coshf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_cosh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_tanhf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_tanh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_powf(float, float) nounwind readnone\n");
+            kb.append("declare double @__nv_pow(double, double) nounwind readnone\n");
+            kb.append("declare float @__nv_atan2f(float, float) nounwind readnone\n");
+            kb.append("declare double @__nv_atan2(double, double) nounwind readnone\n");
             kb.append("\n");
             // kernel 签名：(lvLt %n, <scalar> %s0..., ptr %a0...)
             StringBuilder sig = new StringBuilder();
@@ -5702,17 +5753,35 @@ class CodeGen {
             kb.append("declare double @llvm.fma.f64(double, double, double) nounwind readnone\n");
             kb.append("declare double @llvm.minnum.f64(double, double) nounwind readnone\n");
             kb.append("declare double @llvm.maxnum.f64(double, double) nounwind readnone\n");
-            // kernel 内 Device./Math 泛型实例额外 intrinsic（exp/log/sin/cos/pow）
-            kb.append("declare float @llvm.exp.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.exp.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.log.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.log.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.sin.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.sin.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.cos.f32(float) nounwind readnone\n");
-            kb.append("declare double @llvm.cos.f64(double) nounwind readnone\n");
-            kb.append("declare float @llvm.pow.f32(float, float) nounwind readnone\n");
-            kb.append("declare double @llvm.pow.f64(double, double) nounwind readnone\n");
+            // kernel 内 Device./Math 超越函数 → CUDA libdevice __nv_* 外部调用
+            //（llvm.* 超越在 NVPTX 无法 select → llc 致命 "Cannot select"，见
+            // genKernelDeviceCall；声明即让 llc 通过，真 GPU 由 libdevice 解析）
+            kb.append("declare float @__nv_sinf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_sin(double) nounwind readnone\n");
+            kb.append("declare float @__nv_cosf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_cos(double) nounwind readnone\n");
+            kb.append("declare float @__nv_tanf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_tan(double) nounwind readnone\n");
+            kb.append("declare float @__nv_expf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_exp(double) nounwind readnone\n");
+            kb.append("declare float @__nv_logf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_log(double) nounwind readnone\n");
+            kb.append("declare float @__nv_asinf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_asin(double) nounwind readnone\n");
+            kb.append("declare float @__nv_acosf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_acos(double) nounwind readnone\n");
+            kb.append("declare float @__nv_atanf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_atan(double) nounwind readnone\n");
+            kb.append("declare float @__nv_sinhf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_sinh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_coshf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_cosh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_tanhf(float) nounwind readnone\n");
+            kb.append("declare double @__nv_tanh(double) nounwind readnone\n");
+            kb.append("declare float @__nv_powf(float, float) nounwind readnone\n");
+            kb.append("declare double @__nv_pow(double, double) nounwind readnone\n");
+            kb.append("declare float @__nv_atan2f(float, float) nounwind readnone\n");
+            kb.append("declare double @__nv_atan2(double, double) nounwind readnone\n");
             kb.append("\n");
             // __shared__ smem（模块 addrspace(3) 静态数组）
             string smemG = "@smem_shared";

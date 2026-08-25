@@ -374,7 +374,9 @@ void myp_io_fclose() {
     long t = Io.table;
     long fd = -1;
     if (t != 0 && handle >= 1 && handle < 64) {
-        fd = __myp_mem_load_i64(t + handle * 16);        ioFlush(handle, fd);                    // close 前冲刷写缓冲        __myp_mem_store_i64(t + handle * 16, -1);
+        fd = __myp_mem_load_i64(t + handle * 16);
+        ioFlush(handle, fd);
+        __myp_mem_store_i64(t + handle * 16, -1);
         __myp_mem_store_i64(t + handle * 16 + 8, -1);
         ioBufReset(handle);
     }

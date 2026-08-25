@@ -27,6 +27,26 @@
 
 ## 编译器版本历史
 
+### v3.15.73 — GPU 数学走 __nv_* libdevice + opt -mcpu=generic + 修 io 归档致 GPU 测试挂起
+
+**非破坏性**。续 v3.15.71/72 性能与运行时工作；本次修复 324 测试中 GPU @test 的挂起（回归）根因。
+
+1. **自举 GPU 数学函数映射 __nv_* libdevice**（`tools/selfhost/src/codegen.myp`）：
+   - `genKernelDeviceCall`：sqrt/abs/floor/ceil/trunc → LLVM intrinsic（NVPTX 原生指令）；sin/cos/tan/exp/log/asin/acos/atan/sinh/cosh/tanh/pow/atan2 → CUDA libdevice `__nv_*` 外部调用（double 无后缀、float 加 `f`，pow/atan2 双参）。
+   - 原因：NVPTX 无法 select `llvm.sin.f64` 等超越 intrinsic → llc 致命 "Cannot select" abort → 自举收到 uncaught exception 崩溃。声明即可让 llc 通过，真 GPU 由 libdevice 解析。
+   - 两处 kernel preamble（main @gpu + tile）同步把 `llvm.exp/sin/cos/pow...` 声明替换为 `__nv_*`。
+   - **修复非泛型 Math 方法（`Math.pow`，rfn=`Math_pow`）内核漏映射**：`genKernelDeviceCall` 增 `Math_` 前缀分支（原只识别 `__gs_Math_*_inst` 泛型实例与 `Device_*`）→ kernel 内 `Math.pow` 现走 `__nv_pow`，不再生成未声明的 `@Math_pow` 调用（此前静默 CPU 回退，llc 报 undefined value）。
+2. **opt 加 `-mcpu=generic`**（`tools/selfhost/src/link.myp`）：此前裸 `opt -O2 -mtriple=X` 无 CPU sub-target → TargetMachine cost model 失效 → 进位链循环不展开（bigint 74→62ms、floyd 69→57、sha256 17→15，与 seed/clang 持平）。
+3. **修 GPU 测试挂起根因：io 归档过时**（`runtime_myp/io.myp` + 构建流程）：
+   - build 里 `libmyp_rt_myp.a` 是旧版（io 槽泄漏：fclose 不清槽 → open 递增槽 1..63，64 次后耗尽 → FileError 异常崩溃），且 `mypc` 链接的是编译时的归档 → 编译 `import cuda`（43 个 @gpu 内核、大量 File 写）触发槽耗尽 + 崩溃变僵尸进程（表面"挂起"，伴随残留子进程）。
+   - 修复：重建归档（`runtime_myp/build.sh`）+ 重连 `mypc`（bootstrap MD5 门禁验证）；`import cuda`/`gpu_paradigm`/`manual_ch9`/`cuda_force_cpu` 全部恢复通过。
+   - 顺带把 `myp_io_fclose` 压缩成一行（多语句）展开为多行（语义不变，可读性）。
+   - ⚠️ 构建注意：`myp_rt_myp` 的 CMake 依赖未覆盖 `runtime_myp/*.myp` 源变化，改 runtime 后须手动 `bash runtime_myp/build.sh` 重建归档，再 `cmake --build build --target mypc` 重连编译器。
+4. **base64 用 `uint8[]`**（`bench/myp/base64.myp`）：`int[]`→`uint8[]` + 显式 `uint8()` 强转 → 17→12-13ms（与 clang++ -O2 持平），verify=1036217148 不变。
+5. **run_compare.sh 方法论加固**（`bench/run_compare.sh`）：taskset 核绑定 + MYP/C++ 交错测量（best_pair 轮换顺序）+ warmup + 频率/governor 检查 + clang++ 缺失警告；CXXFLAGS 统一 `-O2`（与 LLVM `-O2` 对称，避免 g++ `-O3` 向量化 fdiv 造成 false 加速）。
+
+验证：完整测试套件 **324 通过 / 0 失败**（含 GPU 测试）；bootstrap 2 级 MD5 门禁通过。
+
 ### v3.15.72 — MYP 运行时 file_io 写缓冲 + myp_io_cur_get 单线程快路径（396→89ms）
 
 **非破坏性**。续 v3.15.71 读缓冲，继续消除 file_io 剩余瓶颈：
