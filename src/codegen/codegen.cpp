@@ -182,6 +182,13 @@ std::string CodeGen::generate(TranslationUnit& tu, const std::string& output_fn,
         markNonMainFunctionsInternal();
     }
 
+    // --freestanding：发射 _start 入口（call main → exit syscall）。放在
+    // markNonMainFunctionsInternal 之后 → _start 保持 external，供
+    // `ld -nostdlib -static -e _start` 作 ELF 入口（无 CRT、无 libc、无 gcc）。
+    if (freestanding_mode_ && !test_mode_) {
+        emitFreestandingStart();
+    }
+
     finalizeDebugInfo();
 
     // If codegen-level semantic errors were emitted (e.g. "undefined variable"
@@ -1772,6 +1779,32 @@ void CodeGen::markNonMainFunctionsInternal() {
         // address valid; only symbol visibility changes. Safe for callbacks.
         fn.setLinkage(llvm::GlobalValue::InternalLinkage);
     }
+}
+
+void CodeGen::emitFreestandingStart() {
+    // _start: call i32 @main() → exit syscall(60, eax)（与 __myp_syscall 同款内联
+    // 汇编：rax=号 rdi=arg0，结果回 rax，破坏 rcx/r11/memory）。exit 不返回。
+    auto* main_fn = module_->getFunction("main");
+    if (!main_fn) return;
+    auto* i64 = llvm::Type::getInt64Ty(ctx_);
+    auto* ft = llvm::FunctionType::get(llvm::Type::getVoidTy(ctx_), {}, false);
+    auto* start = llvm::Function::Create(ft, llvm::Function::ExternalLinkage,
+                                         "_start", module_.get());
+    auto* bb = llvm::BasicBlock::Create(ctx_, "entry", start);
+    builder_.SetInsertPoint(bb);
+    auto* r = builder_.CreateCall(main_fn);                 // i32 main()
+    auto* r64 = builder_.CreateZExt(r, i64);                // exit status
+    auto* asm_ft = llvm::FunctionType::get(i64,
+        std::vector<llvm::Type*>(7, i64), false);
+    auto* ia = llvm::InlineAsm::get(asm_ft, "syscall",
+        "={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},"
+        "~{rcx},~{r11},~{memory}",
+        true, false, llvm::InlineAsm::AD_ATT);
+    auto* zero = llvm::ConstantInt::get(i64, 0);
+    auto* sixty = llvm::ConstantInt::get(i64, 60);
+    builder_.CreateCall(asm_ft, ia,
+        {sixty, r64, zero, zero, zero, zero, zero});
+    builder_.CreateUnreachable();
 }
 
 // -- Statements --

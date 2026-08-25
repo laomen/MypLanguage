@@ -656,8 +656,27 @@ static int runFrontendDump(const std::string& mode, const std::string& filename,
                                        const std::string& stdlib_path,
                                        bool trace_enabled,
                                        bool shared_lib = false,
-                                       bool static_lib = false) {
+                                       bool static_lib = false,
+                                       bool freestanding = false) {
     if (obj_files.empty()) return false;
+
+    // ---- --freestanding（档B）：无 CRT / runtime.c / libc / gcc ----
+    // codegen 已发射 _start 入口（call main → exit syscall）。这里直接静态链接：
+    // `ld -nostdlib -static -e _start`。MYP_LD 环境变量可覆盖链接器（如 ld.lld）。
+    if (freestanding) {
+        std::string obj_list;
+        for (auto& o : obj_files) obj_list += " " + o;
+        const char* ld_env = getenv("MYP_LD");
+        std::string ld = (ld_env && ld_env[0]) ? ld_env : "ld";
+        std::string cmd = ld + " -nostdlib -static -e _start -o " + output_name
+                        + obj_list + " 2>&1";
+        if (std::system(cmd.c_str()) != 0) {
+            std::cerr << "Freestanding link failed\n";
+            return false;
+        }
+        std::cout << "Link OK: " << output_name << " (freestanding, no libc)\n";
+        return true;
+    }
 
     // When MYP_SANITIZE=1, also instrument the generated program so the test
     // suite can run entirely under ASan/UBSan (catches runtime memory bugs).
@@ -1356,7 +1375,7 @@ static int realMain(int argc, char* argv[]) {
         // Single file: use simple compile + link
         auto obj = compileSingle(filenames[0], stdlib_path, package_path, opt_level, trace_enabled, false, library_mode, test_mode, debug_mode, passes, macro_expand, false, freestanding);
         if (obj.empty()) return 1;
-        if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib))
+        if (!linkObjects({obj}, output_name_v, stdlib_path, trace_enabled, shared_lib, static_lib, freestanding))
             return 1;
         return 0;
     }

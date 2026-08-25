@@ -835,6 +835,8 @@ private:
     // called with constant args), which unlocks unrolling/vectorization.
     // Skipped in library mode (--shared/--static) where symbols are an API.
     void markNonMainFunctionsInternal();
+    // --freestanding：发射 _start 入口（call main → exit syscall），无 CRT/libc。
+    void emitFreestandingStart();
 
     // ---- Statement generation ----
     void generateBlock(const BlockStmt& stmt);
