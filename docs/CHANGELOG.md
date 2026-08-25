@@ -27,6 +27,31 @@
 
 ## 编译器版本历史
 
+### v3.15.66 — 整体 runtime myp化：MYP 运行时默认 + 仅 MYP 归档链接（去 C runtime）
+
+**非破坏性**。de-gcc 收官：MYP 运行时从"opt-in 归档"升级为**默认工具链**——
+生成程序**优先仅链接 MYP 运行时归档**（完全绕开 C runtime / libmyp_rt.a / gcc），
+实测常见语料 0 未定义符号。
+
+- **link.myp 仅 MYP 归档链接**：归档存在时优先链接 `libmyp_rt_myp.a`（无
+  `libmyp_rt.a` / runtime.c / C bridge 编译）；仅当链接失败（符号只有 C runtime
+  提供，如 `myp_printf` varargs / cuBLAS 钩子）才回退 shadow（MYP 定义优先 + C
+  runtime 后备，行为不变）。输出标记 `(MYP runtime only)`。
+- **可行性实测**：hello/fib/io/process/json/coro_event/async_file/struct_arc/
+  exception/regex + 真实工具（myp_fmt/myp_viz/myp_pm）**仅 MYP 归档链接全部成功、
+  链接后 0 未定义非 libc 符号**。
+- **编译器自身 MYP-only**：myp_self2 / myp_self3 均以 `(MYP runtime only)` 链接
+  并正常运行（编译器本身不再依赖 C runtime）；bootstrap 不动点成立
+  （myp_self2 == myp_self3 字节相同）。
+- **归档默认产出**：`runtime_myp/build.sh` 默认 `MYP_MAKE_ARCHIVE=1`（显式
+  `=0` 关闭）；新增 CMake 目标 `myp_rt_myp`（默认 ALL，依赖 myp_self，
+  `MYP_SKIP_SMOKE=1` 跳过冒烟加速标准构建）——`cmake --build build` 即产出
+  `build/libmyp_rt_myp.a`（36 模块 / 667 符号）。
+- 验证：**仅 MYP 归档链接下 selfhost 全量 323/323** + coro_thread 10/10 +
+  async_file 与 C 逐字一致 + bootstrap 16/16 + oracle 默认态 323/323 +
+  shadow 冒烟 exit 0。剩余 C 边界仅 `myp_printf`（varargs，MYP 程序不调用）与
+  cuBLAS 钩子（无调用方）——由回退路径兜底，不需迁移。
+
 ### v3.15.65 — 修复剩余 3 个架构级 MYP 运行时 bug（归档下 selfhost 323/323 全绿）
 
 **非破坏性**。归档（`MYP_MAKE_ARCHIVE=1`）下最后 3 个架构级失败全部修复——

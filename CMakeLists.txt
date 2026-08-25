@@ -301,6 +301,21 @@ add_custom_command(
 )
 add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
 
+# ---- MYP 运行时归档（libmyp_rt_myp.a，de-gcc 默认）----
+# runtime_myp/*.myp（--shared）由 myp_self 编译 → 归档。selfhost 链接程序时经
+# mypRtLib() 在 <编译器二进制旁>/build/ 找到 → **优先仅 MYP 归档链接**（无 C
+# runtime / gcc），失败才回退 shadow。v3.15.65 起 MYP 运行时全绿（归档下
+# selfhost 323/323），默认产出；MYP_SKIP_SMOKE=1 跳过冒烟测试（加速 CMake）。
+set(MYP_RT_MYP_OUT ${CMAKE_BINARY_DIR}/libmyp_rt_myp.a)
+add_custom_command(
+    OUTPUT ${MYP_RT_MYP_OUT}
+    COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 SELF=$<TARGET_FILE:myp_self> bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh
+    DEPENDS myp_self
+    COMMENT "Building MYP runtime archive (runtime_myp/*.myp -> libmyp_rt_myp.a)"
+    VERBATIM
+)
+add_custom_target(myp_rt_myp ALL DEPENDS ${MYP_RT_MYP_OUT})
+
 # ---- Runtime Library (C) ----
 find_package(PkgConfig REQUIRED)
 # SDL2 可选：mypc 本体不依赖 SDL（不链接 myp_runtime，只链 LLVM+pthread）；

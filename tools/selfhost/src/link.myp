@@ -685,14 +685,37 @@ import collections; // ArrayList
                 // → MYP 定义优先（shadow 机制），提供被跳过的 MYP 化 bridge 符号。
                 string mypRtObj = (Str.len(mypRt) > 0) ? " " + mypRt : "";
                 string amd = (Str.len(mypRt) > 0) ? " --allow-multiple-definition" : "";
-                cmd = ld + " " + pieFlag + "--dynamic-linker " + dynl + " -o " + outPath
+                string common = ld + " " + pieFlag + "--dynamic-linker " + dynl + " -o " + outPath
                     + " " + start + " " + crt + "/crti.o"
-                    + " " + objPath + mypRtObj + runtimeObjs
+                    + " " + objPath + mypRtObj
                     + bridgeObjList
                     + " -L" + crt
                     + " -lc -lm -lpthread -ldl"
                     + " " + bridgeLibs + " " + crt + "/crtn.o"
-                    + " --gc-sections" + amd + " 2>&1";
+                    + " --gc-sections" + amd;
+                // 整体 myp化（de-gcc）：归档存在时**优先仅链接 MYP 运行时归档**
+                // （无 libmyp_rt.a / runtime.c / gcc——C runtime 完全绕开；实测
+                // 常见语料 0 未定义符号）。仅当链接失败（有符号只有 C runtime
+                // 提供，如 myp_printf varargs / cuBLAS 钩子）才回退 shadow
+                // （MYP 定义优先 + C runtime 后备，行为不变）。
+                int linked = 0;
+                if (Str.len(mypRt) > 0 && Str.len(runtimeObjs) > 0) {
+                    if (Process.run(common + " 2>&1") == 0) {
+                        linked = 1;
+                        Console.writeLine("Link OK: " + outPath + " (MYP runtime only)");
+                    }
+                }
+                if (linked == 0) {
+                    if (Process.run(common + runtimeObjs + " 2>&1") == 0) {
+                        linked = 1;
+                        Console.writeLine("Link OK: " + outPath);
+                    }
+                }
+                if (linked == 0) {
+                    Console.writeLine("link failed");
+                    return 1;
+                }
+                return 0;
             } else if (shared != 0) {
                 cmd = cc + " -shared -fPIC " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
                     + bridgeObjList + " -o " + outPath + libs + bridgeLibs

@@ -451,7 +451,17 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   （free_alloc_list_global/coro_cleanup_all）等——随各公共 API 的 MYP 化已无
   外部引用，`--gc-sections` 在未引用时剥离。如需彻底归零 C 面，只能逐层把
   公共 API 内部也 MYP 化（非 de-gcc 收益，工作量/风险不成比例）。
-- **de-gcc 工具链验证（显式归档）**：`MYP_MAKE_ARCHIVE=1 bash runtime_myp/
-  build.sh` 产出归档 → `MYP_RT_MYP=build/libmyp_rt_myp.a` + 假 gcc + `myp_self2`
-  编译链接覆盖 hash/json/regex/date/process/net/uds 的综合程序全过（gcc 完全
-  绕过）。归档默认不进 build/（避免破坏默认 selfhost 全量）。
+- **✅ v3.15.66 整体 myp化（归档默认 + 仅 MYP 归档链接）**：
+  - link.myp 归档存在时**优先仅链接 `libmyp_rt_myp.a`**（无 libmyp_rt.a /
+    runtime.c / gcc），失败才回退 shadow（MYP 优先 + C runtime 后备）。
+    输出 `(MYP runtime only)` 标记。
+  - 实测：hello/fib/io/process/json/coro_event/async_file/struct_arc/exception/
+    regex + myp_fmt/myp_viz/myp_pm 全 MYP-only 链接，0 未定义非 libc 符号；
+    **编译器自身（myp_self2/myp_self3）也 MYP-only 链接并正常运行**。
+  - 归档默认产出：build.sh 默认 MYP_MAKE_ARCHIVE=1（=0 关闭）；CMake 目标
+    `myp_rt_myp`（默认 ALL，依赖 myp_self，MYP_SKIP_SMOKE=1 跳冒烟）。
+  - 验证：仅 MYP 链接 selfhost 全量 **323/323** + bootstrap 16/16 不动点 +
+    coro_thread 10/10 + async_file 逐字一致 + oracle 默认态 323/323。
+  - 剩余 C 边界仅 `myp_printf`（varargs，MYP 程序不调用）与 cuBLAS 钩子（无
+    调用方）——由回退路径兜底，无需迁移。
+

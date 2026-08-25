@@ -29,21 +29,22 @@ done
 # 归档（OPT-IN，MYP_MAKE_ARCHIVE=1 才产出 build/libmyp_rt_myp.a）：
 # de-gcc 关键——selfhost 链接程序时经 mypRtLib() 在 <编译器二进制旁>/build/ 找到
 # 它 → 跳过 MYP 化 bridge 的 gcc 编译 + 置于 libmyp_rt.a 前 + --allow-multiple-
-# definition（MYP 定义优先）。
-# ⚠️ 默认关闭：MYP 运行时（coro.myp 栈池 / io / struct_arc 等）在全量 323 套件
-# 的某些模式（如 1500 协程驱动）下有真实 bug，归档被 selfhost 自动拾取会导致
-# selfhost 全量变红（见 MIGRATION_STATUS 收尾结论）。缺省保持 C 运行时；显式
-# MYP_MAKE_ARCHIVE=1 产出归档后，用 MYP_RT_MYP=<path> 显式验证 de-gcc。
-if [ "${MYP_MAKE_ARCHIVE:-0}" = "1" ]; then
+# definition（MYP 定义优先）；v3.15.65 起 link.myp 优先**仅 MYP 归档**链接
+# （无 C runtime），失败才回退 shadow。
+# ✅ 默认产出（MYP_MAKE_ARCHIVE=0 显式关闭）：v3.15.65 归档下 selfhost 全量
+# 323/323 + coro_thread 20/20 + async_file 与 C 逐字一致——MYP 运行时已可默认分发。
+if [ "${MYP_MAKE_ARCHIVE:-1}" = "1" ]; then
     rm -f build/libmyp_rt_myp.a
     ar rcs build/libmyp_rt_myp.a $RT_OBJS
     echo "== 归档 build/libmyp_rt_myp.a （$(echo $RT_OBJS | wc -w) 个模块对象）=="
 else
     rm -f build/libmyp_rt_myp.a
-    echo "== 跳过归档产出（MYP_MAKE_ARCHIVE=1 启用；MYP 运行时 bug 未清前勿自动分发）=="
+    echo "== 跳过归档产出（MYP_MAKE_ARCHIVE=0 显式关闭）=="
 fi
 
 # 每个 shadow 验证程序单独链接+运行（都有各自 main()）
+# CMake 标准构建只产归档（MYP_SKIP_SMOKE=1 跳过冒烟，加速；冒烟由 build.sh 单独跑）。
+if [ "${MYP_SKIP_SMOKE:-0}" != "1" ]; then
 for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_alloc_test.myp bench/freestanding/rt_region_test.myp \
          bench/freestanding/rt_weak_test.myp bench/freestanding/rt_io_test.myp \
@@ -94,3 +95,4 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
     [ "$code" = "$expected" ] || { echo "FAIL: ${tb} 期望 $expected"; exit 1; }
 done
 echo "PASS: MYP 运行时 shadow 验证通过（str + num + fs + env + args + term + math）"
+fi
