@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **141**（~29%） |
-| 未 shadow（C runtime 剩余） | **349** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper） | **161**（~33%） |
+| 未 shadow（C runtime 剩余） | **329** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -85,13 +85,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **`error`(3)**：`myp_error_setup/is_active/clear` 已影（#33）；`myp_get_error` 已影。
 
 ### 包 D：协程运行时（`__myp_coro_*` 49 + `channel` 13 = 62）
-- **coro**：create/set_entry/yield/resume/result/is_active/request_cancel/destroy/
-  status/scheduler/wait_event(_timeout)/wait_any(_of)/sleep/wait_fd/frame_set/clear/
-  release_frame/current_handle/count/trampoline/cleanup/... + 栈池/退役/槽位代际。
+- ✅ **已做（#36，Phase A 生命周期核心）**：create/set_entry/yield/resume/set_result/
+  result/status/is_active/count/current_handle/request_cancel/cancel_requested/
+  cancel_clear/destroy/scheduler/trampoline/frame_set/clear(stub) + set_entry_arg/
+  get_entry_arg（20 个）。协程表 @static 并行数组 + 代际句柄 + 空闲槽复用；栈 mmap
+  + 退役列表；trampoline 异常边界 = MYP try/catch；scheduler 合作式推进 ready。
+  `myp_ctx_switch`（#25/#26）保留。
+- **剩余（Phase B/C）**：wait_event(_timeout)/wait_any(_of)/sleep/wait_fd（事件层 +
+  等待表）、frame_set/clear 补 ARC 镜像、release_frame/cleanup/thread_cleanup、
+  栈池、`myp_coro_wait_future/wake_future`、`myp_coro_am_i_coro`、exec worker
+  （myp_coro_file_*）。
 - **channel**：create/send/recv/try_send/try_recv/close/destroy/size/wake_one/...
-- **策略**：CORO_DESIGN Phase A 已规划。`myp_ctx_switch`（#25/#26）就绪。前置 =
-  **包 C 异常边界** + **线程创建**。
-- **难度**：高。并发层地基。
+  （Phase B 之后）。
+- **难度**：高（已突破核心，剩事件/通道/栈检测）。
 
 ### 包 E：同步原语（mutex 7 + cond 6 + sem 6 + rwlock 8 + once 5 + barrier 3 + future 4 = 39）
 - **策略**：futex syscall(202) 实现互斥/条件变量；或 `__myp_indirect` 调 pthread。

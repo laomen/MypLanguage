@@ -27,6 +27,43 @@
 
 ## 编译器版本历史
 
+### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
+
+**非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20
+个（CORO_DESIGN Phase A 切片：单线程生命周期核心）：
+
+- **coro.myp**：`__myp_coro_create` / `set_entry` / `set_entry_arg` /
+  `get_entry_arg` / `yield` / `resume` / `set_result` / `result` / `status` /
+  `is_active` / `count` / `current_handle` / `request_cancel` /
+  `cancel_requested` / `cancel_clear` / `destroy` / `scheduler` / `trampoline`
+  （+ `frame_set`/`frame_clear` stub）。
+- **关键机制**：
+  - **协程表** `@static CoroT` 并行数组（ctx/retCtx 是**裸 arena 缓冲** `base+slot*8`
+    ——ctx_switch 需要槽的**地址**写入保存的 rsp）；槽/代际句柄
+    `{generation<<32|slot}`（陈旧句柄失效）+ 空闲槽复用。
+  - **栈**：mmap 每协程；trampoline 完成 → 退役列表（不能就地 munmap，正运行其
+    上）→ 下次 create/scheduler drain munmap。无栈池（Phase C）。
+  - **trampoline 异常边界 = MYP try/catch**（编译器发射 setjmp + myp_exception_push，
+    每协程进入 push 自己的 jb；单线程同时只跑一个协程 → LIFO 栈顶恒为当前协程
+    边界）。
+  - **scheduler**：合作式——每个 ready 协程推进一步（plain `await` = yield 且
+    ready 保持）。
+  - **entry args**：`@static long[16]` 共享槽（同 C 线程本地共享，只在 entry 读
+    一次）。
+- **两个编译器/语法发现（顺带规避）**：
+  - MYP 顶层 `const int X = N;` 在 selfhost 下把 X 解析成 function 类型 → 常量
+    内联字面量。
+  - selfhost 模块内**直接调用 `__myp_*` 前缀函数**会丢 `__` 前缀 + 字面量参数
+    错型（IR `call @myp_coro_resume(i32 0)`）→ 抽非 `__myp_` 前缀的
+    `coroResumeIdx` helper 供内部调用。
+- **验证**：`rt_coro_test`（eager 完成 20000 次槽复用 + 代际句柄失效 +
+  status/is_active/count + 多参数 entry + await+scheduler 推进）。shadow **26 项**
+  （25 exit0 + fail 探针 exit1）、bootstrap 16/16（fixpoint `1e6d4f7` 不变，编译器
+  未改）、全量 323/323。
+- **未做（Phase B/C，回落 C runtime 或 stub）**：`wait_event`/`sleep`/`wait_fd`/
+  `wait_any`/`wait_any_of`（事件层）、`frame_set/clear`（ARC 帧表镜像 stub）、通道/
+  未来、exec worker、栈池。
+
 ### v3.15.38 — runtime myp化 #35：包 B 诊断/统计（diag.myp：type_live + fail_alloc）
 
 **非破坏性**。诊断/统计层 MYP 化——`Memory.liveObjectCountByType` 的 per-type

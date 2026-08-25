@@ -1,18 +1,71 @@
-// runtime_myp/coro.myp — 协程层（起点）：myp_ctx_switch 内联汇编上下文切换。
-// 通用 __myp_asm 内建（自举新增）封装成标准库函数——codegen 不再写死具体 asm，
-// 具体汇编用途抽象到 MYP 模块。镜像 coro_ctx.S 的 myp_ctx_switch，零 syscall。
+// runtime_myp/coro.myp — 协程核心 MYP 化（包 D Phase A 切片：单线程生命周期核心）。
+// shadow C runtime 的 __myp_coro_*（编译器契约 27 个函数，见 CORO_DESIGN §2）。
+// C 版用 __thread TLS（槽表/当前协程/entry args 均线程本地）；MYP 版用 @static
+// 全局（进程级共享，非 TLS——已文档化限制，与 MYP @static 模型一致；多线程协程表
+// 共享需自旋锁，见 CORO_DESIGN §5-6）。
 //
-// 签名：save/load 是 8B 上下文槽地址（myp_ctx_t = { rsp }）——asm 把 7 值推上当前
-// 栈并保存 rsp 到 [save]，再换 rsp 到 [load] 指向的目标块（目标块 = 栈顶 56B，
-// [0]=入口地址，[8..56]=0）。注意：此签名 (long,long) 与 C 版 (ptr,ptr) 不同，
-// 不 shadow coro_ctx.S 版本——协程运行时 MYP 化后调用方同为 MYP，签名一致。
+// 本切片实现（生命周期核心）：
+//   create / set_entry / set_entry_arg / get_entry_arg / yield / resume /
+//   set_result / result / status / is_active / count / current_handle /
+//   request_cancel / cancel_requested / cancel_clear / destroy / scheduler
+//   （retired drain）+ trampoline（MYP try/catch 异常边界）。
+// 未实现（Phase B/C，回落 C runtime 或 stub）：wait_event/sleep/wait_fd/wait_any/
+//   wait_any_of（事件层）、frame_set/clear（ARC 帧表镜像，stub 空操作）、通道/未来、
+//   exec worker。__myp_coro_* 若 MYP 未定义 → 链接回落 C runtime。
 //
-// 内联汇编配方（CORO_DESIGN §8 已验证）：
-//   - 指令分隔 `;`（LLVM 内联 asm 不解析 \n 转义）；
-//   - 寄存器 `%reg`；操作数 `{rdi}/{rsi}` 硬编码约束（避免 $ 插值冲突）；
-//   - 恢复地址 leaq 1f(%rip) + jmp *%rax + 数字标签 1: 落 asm 块末尾 →
-//     resume 落空到 LLVM epilogue 正常返回（不发 ret）；
-//   - clobber 列全部 caller-saved（上下文切换只存/复 callee-saved）。
+// 关键机制：
+//   - myp_ctx_switch(save, load) 存/换 rsp —— ctx/retCtx 槽是**裸 arena 缓冲**
+//     （base + slot*8），因为 ctx_switch 需要槽的**地址**（写入保存的 rsp）。
+//   - 句柄 = {generation<<32 | slot}（代际防陈旧句柄别名新协程）。
+//   - 栈：mmap 每协程；完成（trampoline）→ 退役列表（不能就地 munmap，正运行其
+//     上）→ 下次 create/scheduler drain（munmap）。无栈池（Phase C）。
+//   - trampoline 异常边界 = MYP try/catch（编译器发射 setjmp + myp_exception_push，
+//     每协程进入时 push 自己的 jb；单线程同时只跑一个协程 → LIFO 栈顶恒为当前
+//     协程边界）。
+//   - entry args：@static long[16] 共享槽（同 C 线程本地共享；只在 entry 读一次）。
+
+ffi long myp_arena_alloc(long size);
+ffi int myp_strlen(string s);
+ffi string myp_alloc(long size);
+
+// ---- 协程表（进程级 @static；C 为 TLS）----
+// 常量内联（MYP 无顶层 const；字面量）
+
+@static class CoroT {
+    property:
+        long ctxBase = 0;       // ctx 槽裸缓冲（arena，CORO_CAP*8；延迟初始化）
+        long retCtxBase = 0;    // retCtx 槽裸缓冲
+        long[1024] stack;       // 栈基址（mmap）
+        long[1024] stackSize;
+        long[1024] fn;          // entry 函数地址
+        long[1024] result;
+        long[1024] yieldVal;
+        long[1024] resumeVal;
+        int[1024] active;
+        int[1024] ready;
+        int[1024] generation;
+        int[1024] resultPending;
+        int[1024] onFreeList;
+        int[1024] discardResult;
+        int[1024] cancelRequested;
+        int count = 0;
+        int current = -1;
+        // 空闲槽复用列表
+        int[1024] freeSlots;
+        int freeCount = 0;
+}
+@static class CoroArgs {
+    property:
+        long[16] args;    // entry 参数（this@0 + params@1..；共享槽，同 C 线程本地）
+}
+@static class CoroRetired {
+    property:
+        long[256] ptrs;
+        long[256] sizes;
+        int count = 0;
+}
+
+// ---- myp_ctx_switch（内联汇编上下文切换，保留原实现）----
 void myp_ctx_switch(long save, long load) {
     __myp_asm(
         "pushq %rbp; pushq %rbx; pushq %r12; pushq %r13; pushq %r14; pushq %r15; "
@@ -22,4 +75,307 @@ void myp_ctx_switch(long save, long load) {
         "{rdi},{rsi},~{rax},~{rbx},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11},~{r12},"
         + "~{r13},~{r14},~{r15},~{rbp},~{memory}",
         save, load);
+}
+
+// ---- 内部辅助 ----
+long coroCtxBase() {
+    if (CoroT.ctxBase == 0) CoroT.ctxBase = myp_arena_alloc(1024 * 8);
+    return CoroT.ctxBase;
+}
+long coroRetCtxBase() {
+    if (CoroT.retCtxBase == 0) CoroT.retCtxBase = myp_arena_alloc(1024 * 8);
+    return CoroT.retCtxBase;
+}
+int coroSlotOf(long h) { return int(h & 0xFFFFFFFF); }
+int coroGenOf(long h) { return int(h >> 32); }
+int coroHandleValid(long h) {
+    int slot = coroSlotOf(h);
+    int gen = coroGenOf(h);
+    if (slot < 0 || slot >= CoroT.count) return 0;
+    if (CoroT.generation[slot] != gen) return 0;
+    return 1;
+}
+long coroMakeHandle(int slot) {
+    if (slot < 0 || slot >= CoroT.count) return -1;
+    return (long(CoroT.generation[slot]) << 32) | long(slot);
+}
+// 槽可复用：不活跃 且 无未读结果 且 不在列表 → 入空闲列表（M1）
+void coroTryRecycle(int slot) {
+    if (slot < 0 || slot >= CoroT.count) return;
+    if (CoroT.active[slot] == 0 && CoroT.resultPending[slot] == 0 &&
+        CoroT.onFreeList[slot] == 0) {
+        CoroT.onFreeList[slot] = 1;
+        if (CoroT.freeCount < 1024) {
+            CoroT.freeSlots[CoroT.freeCount] = slot;
+            CoroT.freeCount = CoroT.freeCount + 1;
+        }
+    }
+}
+int coroPopFree() {
+    if (CoroT.freeCount <= 0) return -1;
+    CoroT.freeCount = CoroT.freeCount - 1;
+    int s = CoroT.freeSlots[CoroT.freeCount];
+    if (s >= 0 && s < CoroT.count) CoroT.onFreeList[s] = 0;
+    return s;
+}
+// 栈分配：mmap 匿名 RW（同 thread.myp）
+long coroStackAlloc(long size) {
+    long p = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);
+    if (p == -1 || p == 0) return 0;
+    return p;
+}
+// 退役栈：trampoline 完成时登记（不能就地 munmap，正运行其上）→ 下次 create/
+// scheduler drain 时 munmap。
+void coroRetiredAdd(long ptr, long size) {
+    if (CoroRetired.count >= 256) {
+        __myp_syscall(11, ptr, size, 0, 0, 0, 0);  // munmap 兜底（列表满）
+        return;
+    }
+    CoroRetired.ptrs[CoroRetired.count] = ptr;
+    CoroRetired.sizes[CoroRetired.count] = size;
+    CoroRetired.count = CoroRetired.count + 1;
+}
+void coroRetiredDrain() {
+    int i = 0;
+    while (i < CoroRetired.count) {
+        __myp_syscall(11, CoroRetired.ptrs[i], CoroRetired.sizes[i], 0, 0, 0, 0);
+        i = i + 1;
+    }
+    CoroRetired.count = 0;
+}
+// ctx 初始化：top-64 保存块 [entry, 0,0,0,0,0,0]；入口 rsp%16==8（同 C myp_ctx_init）
+void coroCtxInit(int slot) {
+    long top = CoroT.stack[slot] + CoroT.stackSize[slot];
+    top = top - (top % 16);
+    long rsp = top - 64;
+    long entry = __myp_fn_addr("__myp_coro_trampoline");
+    __myp_mem_store_i64(rsp, entry);
+    for (long i = 8; i <= 56; i = i + 8) __myp_mem_store_i64(rsp + i, 0);
+    __myp_mem_store_i64(coroCtxBase() + long(slot) * 8, rsp);
+}
+
+// ---- 生命周期 ----
+// C: int64_t __myp_coro_create(int64_t stack_bytes)
+long __myp_coro_create(long stack_bytes) {
+    coroRetiredDrain();
+    long size = stack_bytes > 0 ? stack_bytes : 131072;
+    int idx = coroPopFree();
+    if (idx < 0) {
+        if (CoroT.count >= 1024) return -1;
+        idx = CoroT.count;
+        CoroT.count = CoroT.count + 1;
+    }
+    CoroT.generation[idx] = CoroT.generation[idx] + 1;
+    long st = coroStackAlloc(size);
+    if (st == 0) return -1;
+    CoroT.stack[idx] = st;
+    CoroT.stackSize[idx] = size;
+    coroCtxInit(idx);
+    CoroT.active[idx] = 1;
+    CoroT.ready[idx] = 1;
+    CoroT.result[idx] = 0;
+    CoroT.resultPending[idx] = 0;
+    CoroT.onFreeList[idx] = 0;
+    CoroT.discardResult[idx] = 0;
+    CoroT.cancelRequested[idx] = 0;
+    CoroT.yieldVal[idx] = 0;
+    CoroT.resumeVal[idx] = 0;
+    return coroMakeHandle(idx);
+}
+
+// C: void __myp_coro_set_entry(int64_t handle, int64_t fn_ptr)
+void __myp_coro_set_entry(long handle, long fn_ptr) {
+    if (coroHandleValid(handle) == 0) return;
+    int idx = coroSlotOf(handle);
+    CoroT.fn[idx] = fn_ptr;
+}
+
+// C: void __myp_coro_set_entry_arg(int64_t idx, int64_t val)
+void __myp_coro_set_entry_arg(long idx, long val) {
+    if (idx >= 0 && idx < 16) CoroArgs.args[int(idx)] = val;
+}
+// C: int64_t __myp_coro_get_entry_arg(int64_t idx)
+long __myp_coro_get_entry_arg(long idx) {
+    if (idx >= 0 && idx < 16) return CoroArgs.args[int(idx)];
+    return 0;
+}
+
+// C: int64_t __myp_coro_yield(int64_t val) —— 挂起当前协程，切回调用者
+long __myp_coro_yield(long val) {
+    if (CoroT.current < 0) return 0;
+    int saved = CoroT.current;
+    CoroT.yieldVal[saved] = val;
+    CoroT.current = -1;
+    myp_ctx_switch(coroCtxBase() + long(saved) * 8,
+                   coroRetCtxBase() + long(saved) * 8);
+    CoroT.current = saved;
+    return CoroT.resumeVal[saved];
+}
+
+// 内部恢复助手（非 __myp_ 前缀——编译器对模块内直接调用 __myp_* 会丢前缀 +
+// 字面量 i32 错型，见 IR `call @myp_coro_resume(i32 0)` bug）。校验在调用方。
+long coroResumeIdx(int idx, long val) {
+    CoroT.resumeVal[idx] = val;
+    int saved = CoroT.current;
+    CoroT.current = idx;
+    myp_ctx_switch(coroRetCtxBase() + long(idx) * 8,
+                   coroCtxBase() + long(idx) * 8);
+    CoroT.current = saved;
+    return CoroT.yieldVal[idx];
+}
+
+// C: int64_t __myp_coro_resume(int64_t handle, int64_t val) —— 恢复协程
+long __myp_coro_resume(long handle, long val) {
+    if (coroHandleValid(handle) == 0) return -1;
+    int idx = coroSlotOf(handle);
+    if (CoroT.active[idx] == 0) return -1;
+    return coroResumeIdx(idx, val);
+}
+
+// C: void __myp_coro_set_result(int64_t val) —— @coro 方法 return 存结果
+void __myp_coro_set_result(long val) {
+    if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
+        CoroT.result[CoroT.current] = val;
+    }
+}
+
+// C: int64_t __myp_coro_result(int64_t handle)
+long __myp_coro_result(long handle) {
+    if (coroHandleValid(handle) == 0) return 0;
+    int idx = coroSlotOf(handle);
+    long r = CoroT.result[idx];
+    CoroT.resultPending[idx] = 0;
+    coroTryRecycle(idx);
+    return r;
+}
+
+// C: int64_t __myp_coro_is_active(int64_t handle)
+long __myp_coro_is_active(long handle) {
+    if (coroHandleValid(handle) == 0) return 0;
+    int idx = coroSlotOf(handle);
+    return CoroT.active[idx] != 0 ? 1 : 0;
+}
+
+// C: int64_t __myp_coro_status(int64_t handle) —— -1 无效 / 0 完成 / 1 ready / 2 阻塞
+long __myp_coro_status(long handle) {
+    if (coroHandleValid(handle) == 0) return -1;
+    int idx = coroSlotOf(handle);
+    if (CoroT.active[idx] == 0) return 0;
+    return CoroT.ready[idx] != 0 ? 1 : 2;
+}
+
+// C: int64_t __myp_coro_count(void) —— 活跃协程数
+long __myp_coro_count() {
+    int n = 0;
+    for (int i = 0; i < CoroT.count; i = i + 1) {
+        if (CoroT.active[i] != 0) n = n + 1;
+    }
+    return n;
+}
+
+// C: int64_t __myp_coro_current_handle(void)
+long __myp_coro_current_handle() {
+    return coroMakeHandle(CoroT.current);
+}
+
+// ---- 协作式取消 ----
+// C: void __myp_coro_request_cancel(int64_t handle)
+void __myp_coro_request_cancel(long handle) {
+    if (coroHandleValid(handle) == 0) return;
+    int idx = coroSlotOf(handle);
+    CoroT.cancelRequested[idx] = 1;
+}
+// C: int64_t __myp_coro_cancel_requested(void)
+long __myp_coro_cancel_requested() {
+    if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
+        return CoroT.cancelRequested[CoroT.current] != 0 ? 1 : 0;
+    }
+    return 0;
+}
+// C: void __myp_coro_cancel_clear(void)
+void __myp_coro_cancel_clear() {
+    if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
+        CoroT.cancelRequested[CoroT.current] = 0;
+    }
+}
+
+// C: void __myp_coro_destroy(int64_t handle)
+void __myp_coro_destroy(long handle) {
+    if (coroHandleValid(handle) == 0) return;
+    int idx = coroSlotOf(handle);
+    if (CoroT.stack[idx] == 0) {
+        // 已完成（栈已退役）：丢弃结果，槽可复用
+        CoroT.resultPending[idx] = 0;
+        coroTryRecycle(idx);
+        return;
+    }
+    if (idx == CoroT.current) {
+        // 不能释放当前运行协程的栈：标记 discard，trampoline 收尾时处理
+        CoroT.active[idx] = 0;
+        CoroT.ready[idx] = 0;
+        CoroT.discardResult[idx] = 1;
+        return;
+    }
+    // 强制销毁挂起/活跃协程：释放栈（退役列表，延迟 munmap）
+    CoroT.active[idx] = 0;
+    CoroT.ready[idx] = 0;
+    coroRetiredAdd(CoroT.stack[idx], CoroT.stackSize[idx]);
+    CoroT.stack[idx] = 0;
+    CoroT.stackSize[idx] = 0;
+    CoroT.resultPending[idx] = 0;
+    coroTryRecycle(idx);
+}
+
+// C: void __myp_coro_scheduler(void) —— 合作式调度：每个 ready 协程推进一步。
+// plain `await` = yield 且 ready 保持 → 每次 scheduler() 让每个活跃 ready 协程
+// 前进一个 await。事件等待（wait_*）/ exec pump 属 Phase B（届时 ready 门控 + 等待
+// 表）。含退役回收安全点。
+void __myp_coro_scheduler() {
+    coroRetiredDrain();
+    // 快照语义：遍历槽位，对 active && ready 的 resume 一步（新协程高槽位本趟
+    // 不访问）。resume 内上下文切到协程，yield/完成切回本函数继续循环。
+    for (int i = 0; i < CoroT.count; i = i + 1) {
+        if (CoroT.active[i] != 0 && CoroT.ready[i] != 0) {
+            coroResumeIdx(i, 0L);
+        }
+    }
+}
+
+// ---- 帧表（ARC 镜像；Phase A 切片 stub 空操作——@coro 函数 epilogue 正常释放，
+// 仅在 destroy/未捕获异常路径会泄漏；Phase B 补）----
+void __myp_coro_frame_set(long slot_id, long obj) { }
+void __myp_coro_frame_clear(long slot_id) { }
+
+// ---- trampoline：协程栈首次进入的入口 ----
+void __myp_coro_trampoline() {
+    int id = CoroT.current;
+    // 异常边界：MYP try/catch（编译器发射 setjmp + myp_exception_push/pop）。
+    // 每协程进入时 push 自己的 jb → 单线程同时只跑一个协程 → LIFO 栈顶恒为
+    // 当前协程边界（同 C trampoline 语义）。
+    try {
+        if (id >= 0 && id < CoroT.count && CoroT.fn[id] != 0) {
+            __myp_indirect_void(CoroT.fn[id]);
+        }
+    } catch (string e) {
+        // 未捕获异常：报告后正常收尾（不 abort 进程，同 C）
+        string m = "uncaught exception in coroutine: " + e + "\n";
+        __myp_syscall(1, 2, __myp_str_ptr(m), myp_strlen(m), 0, 0, 0);
+    }
+    // 收尾：退役栈（不能就地 munmap，正运行其上）→ 标记完成 → 切回调用者
+    if (id >= 0 && id < CoroT.count) {
+        coroRetiredAdd(CoroT.stack[id], CoroT.stackSize[id]);
+        CoroT.stack[id] = 0;
+        CoroT.active[id] = 0;
+        CoroT.ready[id] = 0;
+        if (CoroT.discardResult[id] != 0) {
+            CoroT.discardResult[id] = 0;
+            CoroT.resultPending[id] = 0;
+        } else {
+            CoroT.resultPending[id] = 1;
+        }
+        coroTryRecycle(id);
+        CoroT.current = -1;
+        myp_ctx_switch(coroCtxBase() + long(id) * 8,
+                       coroRetCtxBase() + long(id) * 8);
+    }
 }

@@ -1,6 +1,10 @@
 # runtime myp化 · 协程层设计与栈增长模型
 
-> 状态：**设计稿（2026-08-25）** —— 尚未实施。
+> 状态：**设计稿 + Phase A 生命周期核心已实施（2026-08-25 #36）**。
+> 已 MYP 化：create/set_entry/yield/resume/set_result/result/status/is_active/
+> count/current_handle/cancel*/destroy/scheduler/trampoline + 表/代际/栈/退役。
+> 待实施：事件层（wait_*/sleep/wait_fd）、帧表 ARC 镜像、通道/未来、exec worker、
+> 栈池（Phase B/C，见 §4）。
 > 目标：把 C 协程运行时（`@coro`/通道/未来/调度泵）MYP 化进 `runtime_myp/`（shadow
 > 机制：`--shared` 外部符号 + 前置链接 + `--allow-multiple-definition` → MYP 定义优先），
 > 并在写 MYP 协程运行时期间**同步设计栈增长模型**（避免 retrofit 成本）。

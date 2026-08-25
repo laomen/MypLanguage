@@ -1,0 +1,66 @@
+// rt_coro_test.myp — 协程核心验证（runtime_myp/coro.myp，包 D Phase A 切片）：
+// eager 完成生命周期（create→set_entry→resume→完成→result）+ 槽复用 + 代际句柄
+// 失效 + status/is_active/count + 多参数 entry + yield 往返。
+import coro;
+
+class Worker {
+    action:
+        @coro(stack=64) long run(long x) { return x + 1; }
+        @coro(stack=64) long add(long a, long b) { return a + b; }
+        // 含 await：resume 后先 yield，再 resume 继续，最终返回
+        @coro(stack=64) long twoStep(long x) {
+            await;
+            return x * 2;
+        }
+}
+
+class CoroTest {
+    static:
+        int run() {
+            // 1) eager 完成 + 槽复用：20000 次 create→complete→result（循环复用槽）
+            Worker w = new Worker();
+            long acc = 0;
+            for (int i = 0; i < 20000; i = i + 1) {
+                long h = w.run(i);
+                long r = Coro.result(h);
+                if (r != long(i) + 1L) return 1;
+                acc = acc + r;
+            }
+            // sum_{i=0}^{19999} (i+1) = 20000*20001/2 = 200010000
+            if (acc != 200010000L) return 2;
+
+            // 2) 多参数 entry（this + 2 参数）
+            long h2 = w.add(10, 20);
+            if (Coro.result(h2) != 30L) return 3;
+
+            // 3) status/is_active：完成后 status=0, isActive=0
+            long h3 = w.run(5);
+            if (Coro.result(h3) != 6L) return 4;
+            if (Coro.status(h3) != 0L) return 5;
+            if (Coro.isActive(h3) != 0L) return 6;
+
+            // 4) 代际句柄失效：槽复用后旧句柄不别名新协程
+            long hA = w.run(7);
+            long rA = Coro.result(hA);   // 读结果 → 槽回收
+            long hB = w.run(9);          // 复用槽，generation++
+            if (rA != 8L) return 7;
+            if (Coro.isActive(hA) != 0L) return 8;   // 旧句柄失效
+            if (Coro.status(hA) != -1L) return 9;
+            if (Coro.result(hA) != 0L) return 10;     // 不指向新协程
+            if (Coro.result(hB) != 10L) return 11;
+
+            // 5) count：完成并读结果后活跃协程数归 0
+            if (Coro.count() != 0L) return 12;
+
+            // 6) await + scheduler 推进：twoStep 先 yield（await），scheduler
+            // 恢复它 → 完成 → 结果 42
+            long ht = w.twoStep(21);
+            Coro.scheduler();      // 推进 ready 协程（twoStep 完成）
+            long rt = Coro.result(ht);
+            if (rt != 42L) return 13;
+            if (Coro.status(ht) != 0L) return 14;
+            return 0;
+        }
+}
+
+int main() { return CoroTest.run(); }
