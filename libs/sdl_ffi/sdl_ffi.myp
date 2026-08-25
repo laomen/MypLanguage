@@ -1,0 +1,61 @@
+// libs/sdl/sdl_ffi.myp — SDL2 纯接口薄 ffi（1:1 导出 SDL_*，无业务逻辑）。
+// 业务逻辑（事件循环/绘图/状态管理）由用户自写——这是"薄接口"方向的推荐用法。
+// 依赖：SDL2 系统库（本文件旁 .myp.libs = -lSDL2 侧车，纯 ffi 自动注入）。
+//
+// 约定：
+//   - 不透明句柄（SDL_Window*/SDL_Renderer*/SDL_Texture*）→ long
+//   - SDL_Rect/SDL_Event 等结构 → 用户分配缓冲（见下）
+//   - SDL_Event 布局：type:u32@0（SDL_QUIT=0x100 / SDL_KEYDOWN=0x300 /
+//     SDL_MOUSEBUTTONDOWN=0x401 / SDL_MOUSEMOTION=0x400 ...）
+//   - 返回计数串（myp_alloc）——无 char* 返回的 SDL 函数则不需要
+
+// libc / 分配
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// ---- 初始化/生命周期 ----
+ffi int  SDL_Init(int flags);                      // SDL_INIT_VIDEO=0x20
+ffi void SDL_Quit();
+ffi int  SDL_GetTicks();
+
+// ---- 窗口 ----
+ffi long SDL_CreateWindow(string title, int x, int y, int w, int h, int flags);
+ffi void SDL_DestroyWindow(long win);
+ffi void SDL_GetWindowSize(long win, long w, long h);   // int* 出参缓冲
+ffi void SDL_SetWindowTitle(long win, string title);
+ffi int  SDL_SetWindowFullscreen(long win, int flags);
+
+// ---- 渲染器 ----
+ffi long SDL_CreateRenderer(long win, int index, int flags);   // SDL_RENDERER_ACCELERATED=2
+ffi void SDL_DestroyRenderer(long ren);
+ffi int  SDL_RenderClear(long ren);
+ffi void SDL_RenderPresent(long ren);
+ffi int  SDL_SetRenderDrawColor(long ren, int r, int g, int b, int a);
+ffi int  SDL_RenderFillRect(long ren, long rect);   // SDL_Rect*
+ffi int  SDL_RenderDrawRect(long ren, long rect);
+ffi int  SDL_RenderDrawLine(long ren, int x1, int y1, int x2, int y2);
+ffi int  SDL_RenderCopy(long ren, long tex, long srcrect, long dstrect);
+
+// ---- 纹理/表面 ----
+ffi long SDL_CreateTextureFromSurface(long ren, long surf);
+ffi long SDL_CreateRGBSurfaceWithFormatFrom(long pixels, int w, int h, int depth,
+                                            int pitch, int format);
+ffi void SDL_DestroyTexture(long tex);
+ffi void SDL_FreeSurface(long surf);
+
+// ---- 事件 ----
+ffi int SDL_PollEvent(long evt);   // SDL_Event*（用户缓冲，>=128B；type@0 读 u32）
+ffi int SDL_Delay(int ms);
+
+// ---- 常量（常用；完整见 SDL_*.h）----
+@static class SDLC {
+    property:
+        int INIT_VIDEO = 0x20;
+        int WINDOW_SHOWN = 4;
+        int RENDERER_ACCELERATED = 2;
+        int QUIT = 0x100;
+        int KEYDOWN = 0x300;
+        int MOUSEMOTION = 0x400;
+        int MOUSEBUTTONDOWN = 0x401;
+        int MOUSEBUTTONUP = 0x402;
+}

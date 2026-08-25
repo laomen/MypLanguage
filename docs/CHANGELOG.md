@@ -385,6 +385,34 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
   未动、编译器未改 codegen，确认为时序 flake 而非回归（oracle 版同样 3 行）。
 - **未做**：sdl/ttf 侧车模式（薄 ffi 接口，下批）。
 
+### v3.15.62 — sdl/ttf 移出标准库为外部库（libs/，薄接口 + `.myp.libs` 侧车）
+
+**非破坏性**。架构分层落地：**GPU 是语言能力**（`@gpu for` 绑定 → 留在运行时），
+**SDL/TTF 是纯绑定**（业务逻辑由用户写）→ 移出 `stdlib/` 到 `libs/` 外部库，
+通过 `--package-path` + `MYP_BRIDGES` 解析、`MYP_BRIDGES` 扫描桥目录，不占
+运行时、不进编译器桥计数：
+
+- **`libs/sdl/sdl.myp`**（原 `stdlib/sdl.myp`，git mv）：`import sdl` 便利层——
+  仅导出接口 + SDL_* 常量，不含业务逻辑（薄接口原则）。
+- **`libs/sdl/bridges/sdl_bridge.c` + `.cflags` + `.libs`**（git mv）：MYP_BRIDGES
+  扫描路径解析到桥 .c 自动编译 + 追加 `-lSDL2`。
+- **`libs/ttf/ttf.myp` + `libs/ttf/bridges/sdl_ttf_bridge.c(+cflags+libs)`**：同上
+  （`import ttf`）。
+- **`libs/sdl_ffi/sdl_ffi.myp`（新）**：`@static class SDLC` 常量的 SDL_* 1:1 薄
+  ffi 接口（纯 `SDL_*` 调用，无包装逻辑）；`sdl_ffi.myp.libs` = `-lSDL2`——纯 ffi
+  外部库**无需 gcc 桥文件**，编译期读取 `<模块>.libs` 侧车注入链接 flag（v3.15.58
+  机制），仅 `--package-path libs` 即可。
+- **构建入口**：`mypc|myp_self2 <src> --stdlib ./stdlib --package-path libs` +
+  `MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges"`。`mypview/tests/run.sh`（6 处
+  MYPCC 调用）与 `MOS/CMakeLists.txt`（`myp_add_executable`）已加 `--package-path
+  ${MOS_PKG}` + `MYP_BRIDGES=${MOS_BRIDGES}`。
+- **验证**：`import sdl_ffi` + 侧车在**假 gcc** 下 `SDL_Init=0`（证明纯 ffi 免
+  gcc）；mypview 回归 UIX/BNCT/JSON/DESIGN/UIXRUN/PIPE 全 PASS；MOS `mos_ui_demo`
+  /`mos_ttf_demo`/`mos_desktop_launch` 链接 OK；oracle 323/323、selfhost 323/323、
+  bootstrap 16/16（fixpoint 稳定）。tests/bench 源无 sdl/ttf 依赖。
+- **stdlib 精简**：删 `stdlib/sdl.myp`、`stdlib/ttf.myp`、`stdlib/bridges/sdl_bridge.c*`、
+  `sdl_ttf_bridge.c*`。桥计数维持 **75**（sdl/ttf 不计入运行时桥）。
+
 ### v3.15.60 — bridge 包 H 第四批：uds 全 9 个 MYP 化（AF_UNIX socket 纯 syscall）
 
 **非破坏性**。Unix domain socket bridge MYP 化——shadow C `uds_bridge.c` 的 9 个

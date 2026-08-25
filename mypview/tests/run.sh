@@ -6,6 +6,8 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 MYPCC="${MYPCC:-../../build/mypc}"
 STDLIB="${STDLIB:-../../stdlib}"
+PKG="${PKG:-../../libs}"
+export MYP_BRIDGES="${MYP_BRIDGES:-../../libs/sdl/bridges:../../libs/ttf/bridges}"
 SRC="$DIR/../src"
 
 SRCS=(
@@ -68,7 +70,7 @@ SRCS=(
     "$SRC/uix/uix_loader.myp"
     "uix_logic.myp"
 )
-"$MYPCC" "${SRCS[@]}" -o uix_logic --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${SRCS[@]}" -o uix_logic --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 OUT=$(./uix_logic 2>&1)
 echo "$OUT"
 echo "== 结果 =="
@@ -151,7 +153,7 @@ fi
 # 追加 bnct_cases.myp（examples/ 相对路径）。
 cd "$DIR/../examples"
 BNCTSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp)
-"$MYPCC" "${BNCTSRCS[@]}" bnct_cases.myp -o bnct_cases --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${BNCTSRCS[@]}" bnct_cases.myp -o bnct_cases --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 BNCT=$(BNCT_HEADLESS=1 ./bnct_cases 2>&1)
 echo "$BNCT"
 echo "== BNCT 结果 =="
@@ -173,7 +175,7 @@ cd "$DIR"
 # 在 examples/ 下编译运行（headless 断言输出 je ...）
 cd "$DIR/../examples"
 JSONSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp json_editor.myp)
-"$MYPCC" "${JSONSRCS[@]}" -o json_editor --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${JSONSRCS[@]}" -o json_editor --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 JSON=$(JSON_HEADLESS=1 ./json_editor 2>&1)
 echo "$JSON"
 echo "== JSON 结果 =="
@@ -192,7 +194,7 @@ cd "$DIR"
 # ---- UixDesigner（所见即所得 UI 设计器）：命中/改属性/加控件/删除/序列化 ----
 cd "$DIR/../examples"
 DESIGNSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp uix_designer.myp)
-"$MYPCC" "${DESIGNSRCS[@]}" -o uix_designer --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${DESIGNSRCS[@]}" -o uix_designer --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 DSGN=$(MYPVIEW_UIX_FILE=/tmp/ds_design.uix DESIGN_HEADLESS=1 ./uix_designer 2>&1)
 echo "$DSGN"
 echo "== DESIGN 结果 =="
@@ -216,7 +218,7 @@ cd "$DIR"
 # ---- UixRun（用 UixLoader 运行 .uix 设计）：加载 .uix → buildInto → 节点/命中 ----
 cd "$DIR/../examples"
 RUNSRCS=("${SRCS[@]:0:$(( ${#SRCS[@]} - 1 ))}" "$SRC/backend/"*.myp uix_run.myp)
-"$MYPCC" "${RUNSRCS[@]}" -o uix_run --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${RUNSRCS[@]}" -o uix_run --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 RUN=$(MYPVIEW_UIX_FILE="$DIR/uix_sample.uix" MYPVIEW_RUN_HEADLESS=1 ./uix_run 2>&1)
 echo "$RUN"
 echo "== UIXRUN 结果 =="
@@ -294,7 +296,7 @@ PIPESRCS=(
     "../examples/pipeline.myp"
 )
 cd "$DIR/../examples"
-"$MYPCC" "${PIPESRCS[@]}" -o pipeline --stdlib "$STDLIB" || exit 1
+"$MYPCC" "${PIPESRCS[@]}" -o pipeline --stdlib "$STDLIB" --package-path "$PKG" || exit 1
 PIPE=$(./pipeline 2>&1)
 echo "$PIPE"
 cd "$DIR"

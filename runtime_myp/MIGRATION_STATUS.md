@@ -18,7 +18,8 @@
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
 | 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#47 补后重算） | **380**（~78%） |
 | 未 shadow（C runtime 剩余） | **115** |
-| bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
+| bridge C 文件剩余 `myp_*`（json/net/uds/process/regex/date/hash-md5-sha1） | **75** |
+| 已移出为外部库（libs/，v3.15.62：sdl 40 / ttf 10） | **50** |
 | runtime_myp 模块 | **22** 个 |
 
 已完成的层（#1–#37 里程碑）：字符串 str / 整数 num（含 `myp_str_parse_int_opt`
@@ -346,10 +347,16 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   加 net_bridge.c。rt_net_test 一次通过；shadow 43/43；bootstrap 16/16；oracle
   323/323（⚠️ 预存在 flaky tests/exception_thread 线程输出竞态，非本批回归）。
   bridge 83 → **75**。
-- 剩余：sdl(40)/ttf(10)（侧车模式：薄 ffi 接口 + .myp.libs）。部分纯 MYP 可实现
-  （date 格式化、regex 引擎、json 解析器、process 的 fork/exec 可经
-  `__myp_syscall` 的 clone/execve）；sdl/ttf 需 C 库（SDL2），MYP 只能经
-  `__myp_indirect` 绑 SDL2 或保留 bridge。
+- ✅ **已做（v3.15.62，sdl/ttf 移出外部库）**：**sdl**(40)/**ttf**(10) 不再属于运行时
+  桥——移出 `stdlib/` 到 `libs/`（`libs/sdl/sdl.myp` + `bridges/sdl_bridge.c*`、
+  `libs/ttf/ttf.myp` + `bridges/sdl_ttf_bridge.c*`），经 `--package-path libs` +
+  `MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges"` 解析。**新增纯 ffi 薄接口
+  `libs/sdl_ffi/sdl_ffi.myp`**（`@static class SDLC` 常量 + SDL_* 1:1 调用）+ 侧车
+  `sdl_ffi.myp.libs`=`-lSDL2` → 假 gcc 下 `SDL_Init=0` 证明免 gcc 免桥文件。
+  mypview 回归全 PASS + MOS `mos_ui_demo`/`mos_ttf_demo` 链接 OK；oracle+selfhost
+  323/323、bootstrap 16/16。**桥计数维持 75**（sdl/ttf 不计入运行时桥）。
+- 剩余：**0**（stdlib/bridges 的 json/net/uds/process/regex/date/hash .c 均已 MYP 化，
+  `MYP_RT_MYP` 归档存在时跳过其 gcc 编译）。
 - **难度**：视库而异（纯算法类中低，SDL 类需绑定策略）。
 - ✅ **编译器 bridge 跳过机制（v3.15.57，de-gcc 第二步）**：`tools/selfhost/src/
   link.myp` 新增 `mypRtLib()`（定位 `libmyp_rt_myp.a`，`MYP_RT_MYP` env 覆盖）+
