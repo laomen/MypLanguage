@@ -359,6 +359,29 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：cublas hook（myp_cublas_available/sgemm）；Stage C 的 async 数据路径在
   本机驱动下不可验（595.84 201 怪癖）。
 
+### v3.15.54 — de-gcc 第一步：自举链接路径剥离 libgcc（lld 无 gcc 链接）
+
+**非破坏性**。从自举编译器（`tools/selfhost`）链接路径彻底移除 gcc 的
+`libgcc`/`libgcc_s` 依赖（工具链去 gcc 化的链接层收尾；编译层 bridge C 编译留待
+包 H）：
+
+- **`tools/selfhost/src/link.myp`**：删除 `gccLibDir()` 探测（`/usr/lib/gcc/
+  <arch>/<ver>/libgcc.a` 扫描）与 lld 档A 链接命令里的 `-L<gccd> -lgcc -lgcc_s`
+  （libc 两侧共 4 项）——现为 `-L<crt> -lc -lm -lpthread -ldl` + CRT，**纯 lld
+  无 gcc**。依据：`myp_self2` 未定义符号审计为零 libgcc 风格（`__div*`/`__mod*`/
+  `__multi3` 等），只拉 glibc（`__fprintf_chk`/`__stack_chk_fail`/`__isoc23_strtoll`）。
+- **`runtime_myp/build.sh`** + **`bench/freestanding/run_float_bench.sh`**：同步移除
+  `GCCD`（libgcc.a 目录）探测与链接命令里的 `-lgcc -lgcc_s`。
+- **验证**：
+  - 重建 stage0 `myp_self`（mypc 编译改后 link.myp）→ stage1 `myp_self2` → stage2
+    `myp_self3`，**新 fixpoint 达成**：`myp_self2 == myp_self3` 字节相同（md5
+    `5fe0a993`，旧 `9f5cf25b` 因 link.myp 内容变更而更新，属预期）。新 myp_self2
+    `nm` 无 libgcc 符号。
+  - **shadow 36/36**（`rt_bounds_fail_test`=134 / `rt_pkgA_fail_test`=1 均符合预期，
+    全程无 `-lgcc` 链接）；**bootstrap 16/16**；**selfhost 全量 323/323**。
+- **未做（编译层，包 H）**：`findCc()`（gcc）仍用于 bridge .c 编译（json/net/uds/
+  sdl 等 122 个）与 shared/回退路径；bridge 包 H MYP 化后默认工具链可完全无 gcc。
+
 ### v3.15.53 — runtime myp化 #47：codegen 契约 5 个（bounds_error / RTTI 类型名 / free / 固定类数组释放）
 
 **非破坏性**。把编译器依赖的 C runtime 函数继续清零——5 个 codegen 契约 MYP 化

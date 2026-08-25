@@ -9,7 +9,6 @@ SELF="${1:-./build/myp_self}"
 LLC="${LLC:-llc-21}"
 OUT="${OUT:-/tmp/rt_myp_out}"
 CRT=/usr/lib/x86_64-linux-gnu
-GCCD="$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/libgcc.a 2>/dev/null | sort | tail -1 | xargs dirname)"
 DL=/lib64/ld-linux-x86-64.so.2
 
 rm -f "$OUT" "$OUT".o
@@ -50,7 +49,7 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
 
     /usr/bin/ld.lld-21 --allow-multiple-definition -pie --dynamic-linker "$DL" -o "/tmp/rt_${tb}_bin" \
         "$CRT"/Scrt1.o "$CRT"/crti.o "/tmp/rt_${tb}.o" $RT_OBJS build/libmyp_rt.a \
-        -L"$GCCD" -L"$CRT" -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s \
+        -L"$CRT" -lc -lm -lpthread -ldl \
         "$CRT"/crtn.o --gc-sections
 
     echo "== 运行（MYP 运行时 shadow C 版本）: ${tb} =="

@@ -8,7 +8,6 @@ cd "$(dirname "$0")/../.."
 SELF="${1:-./build/myp_self2}"
 LLC="${LLC:-llc-21}"
 CRT=/usr/lib/x86_64-linux-gnu
-GCCD="$(ls -d /usr/lib/gcc/x86_64-linux-gnu/*/libgcc.a | sort | tail -1 | xargs dirname)"
 DL=/lib64/ld-linux-x86-64.so.2
 
 RT_OBJS=""
@@ -25,7 +24,7 @@ done
 ld_runtime() {   # $1=obj $2=out $3=extra-flags $4=extra-objs
     /usr/bin/ld.lld-21 ${3:-} -pie --dynamic-linker "$DL" -o "$2" \
         "$CRT"/Scrt1.o "$CRT"/crti.o "$1" ${4:-} build/libmyp_rt.a \
-        -L"$GCCD" -L"$CRT" -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s \
+        -L"$CRT" -lc -lm -lpthread -ldl \
         "$CRT"/crtn.o --gc-sections
 }
 
