@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 27/27）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 28/28）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#38 后重算） | **239**（~49%） |
-| 未 shadow（C runtime 剩余） | **251** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#39 后重算） | **269**（~55%） |
+| 未 shadow（C runtime 剩余） | **221** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -26,7 +26,8 @@ long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_di
 arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get / 命令行参数
 args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 汇编原语 asm /
 诊断 diag(type_live + fail_alloc，#35) / **协程 coro 全生命周期（#36 Phase A 核心 +
-#37 Phase B 事件/等待层 + 帧表 + 诊断 + #38 Phase C channel/future）**。
+#37 Phase B 事件/等待层 + 帧表 + 诊断 + #38 Phase C channel/future）** /
+**同步原语 sync（#39 futex 无 libc：mutex/sem/cond/rwlock/once/barrier）**。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -127,10 +128,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   `myp_coro_file_*` 非阻塞 exec worker。
 - **难度**：高（已突破核心+事件层+通道/未来，剩栈池/cleanup/非阻塞 exec）。
 
-### 包 E：同步原语（mutex 7 + cond 6 + sem 6 + rwlock 8 + once 5 + barrier 3 + future 4 = 39）
-- **策略**：futex syscall(202) 实现互斥/条件变量；或 `__myp_indirect` 调 pthread。
-  `future` 与协程 wait/wake 联动（`myp_coro_wait_future`）。
-- **难度**：中高。依赖包 D（future 联动）。
+### 包 E：同步原语（mutex + cond + sem + rwlock + once + barrier = 30；future 已在 #38）
+- ✅ **已做（#39 sync.myp，futex 无 libc）**：Mutex（票号锁 serving/next + futex，
+  recursive 用 owner(tid)+depth 由票号锁守护）/ Semaphore（原子计数可负 + futex）/ 
+  CondVar（waiters 计数 + seq，wait 释放关联 Mutex、唤醒后重取）/ RWLock（state：
+  0 空闲 / >0 读者 / <0 写者）/ Once（done + 自带票号锁，**不复用 Mutex 表**——
+  once_create 在全局分配锁临界区内调 myp_mutex_create 会自死锁，曾踩）/ Barrier
+  （arrived 计数 + seq）。全部 futex syscall(202)（WAIT=128/WAKE=129）+ 原子
+  `__myp_atomic_*_addr`，**不依赖 libc/pthread**；表 @static 进程级（clone 线程共享
+  地址空间 → futex 跨线程有效）。⚠️ once_create 嵌套分配锁自死锁是首版 bug。
+- **测试**：`bench/freestanding/rt_sync_test.myp`（单线程 API 全 + 2 worker 跨线程
+  互斥累加 200）；`tests/sync`（4 @thread worker mutex_count=400 + condvar=42 +
+  各 API）用 MYP shadow 链接**输出逐字一致**。
+- **难度**：中高（futex + 无 CAS 的 add/sub 设计；once 嵌套锁坑）。
 
 ### 包 F：并发/线程层（thread 11 + pool 11 + event 10 + work 5 + queue 7 = 44）
 - **✅ 地基已就绪（#34）**：`myp_thread_spawn`（`thread.myp`）—— clone syscall 直建

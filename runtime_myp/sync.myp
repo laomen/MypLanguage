@@ -1,0 +1,536 @@
+// runtime_myp/sync.myp — 同步原语 MYP 化（包 E）：Mutex/RWLock/CondVar/Semaphore/
+// Once/Barrier。
+// **不依赖 libc/pthread**：全部用 futex syscall(202)（FUTEX_WAIT=0/WAKE=1 +
+// PRIVATE=128 → 128/129）+ 原子内建（__myp_atomic_add/sub/load/store_i32_addr，
+// atomicrmw/atomic load-store seq_cst）。clone 线程共享地址空间（CLONE_VM）→
+// @static 表 + futex 跨线程有效。
+// 设计（仅 add/sub/load/store，无 CAS）：
+//   - Mutex：票号锁（serving/next 两字）+ futex；unlock 广播唤醒（正确性优先）。
+//     recursive：owner(tid)+depth 由票号锁内守护。
+//   - Semaphore：原子计数（可负=等待者数）+ futex wait/wake。
+//   - CondVar：waiters 计数 + seq（futex 上的经典 seq 条件变量），wait 释放关联
+//     Mutex、唤醒后重取。
+//   - RWLock：state（0 空闲 / >0 读者 / <0 写者）+ futex。
+//   - Once：done + 复用 Mutex 槽。
+//   - Barrier：arrived 计数 + seq + futex。
+// 表：@static 进程级；每字段是 arena 缓冲地址（long），经 raw 原子/内存访问。
+// ⚠️ --shared 下 @static 默认值不生效 → 所有非零默认靠 syncInit() 显式置。
+
+ffi long myp_arena_alloc(long size);
+
+// ---- 表基址（arena 缓冲；lazy 分配）----
+@static class SyncMtx {
+    property:
+        long serving = 0;   // 票号锁：当前服务票号 int[64]
+        long next = 0;      // 票号锁：下一票号 int[64]
+        long used = 0;      // int[64]
+        long recursive = 0; // int[64]
+        long owner = 0;     // recursive 持有者 tid long[64]
+        long depth = 0;     // recursive 重入深度 int[64]
+}
+@static class SyncRw {
+    property:
+        long state = 0;     // int[64]：0 空闲 / >0 读者 / <0 写者
+        long used = 0;
+}
+@static class SyncCv {
+    property:
+        long waiters = 0;   // int[64]
+        long seq = 0;       // int[64]
+        long used = 0;
+}
+@static class SyncSem {
+    property:
+        long count = 0;     // int[64]（可负）
+        long used = 0;
+}
+@static class SyncOnc {
+    property:
+        long done = 0;      // int[64]
+        long lockServing = 0;   // 自带票号锁（不复用 Mutex 表——once_create 在全局
+        long lockNext = 0;      // 分配锁临界区内，再调 myp_mutex_create 会自死锁）
+        long used = 0;
+}
+@static class SyncBar {
+    property:
+        long total = 0;     // int[64]
+        long arrived = 0;   // int[64]
+        long seq = 0;       // int[64]
+        long used = 0;
+}
+@static class SyncAlloc {
+    property:
+        long serving = 0;   // 全局槽分配票号锁 int
+        long next = 0;
+}
+
+// ---- 一次性初始化（--shared 默认值不生效 → 显式分配表缓冲 + 全局锁）----
+void syncInit() {
+    if (SyncMtx.serving == 0) {
+        SyncMtx.serving = myp_arena_alloc(64 * 4);
+        SyncMtx.next = myp_arena_alloc(64 * 4);
+        SyncMtx.used = myp_arena_alloc(64 * 4);
+        SyncMtx.recursive = myp_arena_alloc(64 * 4);
+        SyncMtx.owner = myp_arena_alloc(64 * 8);
+        SyncMtx.depth = myp_arena_alloc(64 * 4);
+        SyncRw.state = myp_arena_alloc(64 * 4);
+        SyncRw.used = myp_arena_alloc(64 * 4);
+        SyncCv.waiters = myp_arena_alloc(64 * 4);
+        SyncCv.seq = myp_arena_alloc(64 * 4);
+        SyncCv.used = myp_arena_alloc(64 * 4);
+        SyncSem.count = myp_arena_alloc(64 * 4);
+        SyncSem.used = myp_arena_alloc(64 * 4);
+        SyncOnc.done = myp_arena_alloc(64 * 4);
+        SyncOnc.lockServing = myp_arena_alloc(64 * 4);
+        SyncOnc.lockNext = myp_arena_alloc(64 * 4);
+        SyncOnc.used = myp_arena_alloc(64 * 4);
+        SyncBar.total = myp_arena_alloc(64 * 4);
+        SyncBar.arrived = myp_arena_alloc(64 * 4);
+        SyncBar.seq = myp_arena_alloc(64 * 4);
+        SyncBar.used = myp_arena_alloc(64 * 4);
+        SyncAlloc.serving = myp_arena_alloc(4);
+        SyncAlloc.next = myp_arena_alloc(4);
+    }
+}
+
+// ---- 全局槽分配锁（票号锁 + futex；create 时互斥扫描空闲槽）----
+void syncAllocLock() {
+    int t = __myp_atomic_add_i32_addr(SyncAlloc.next, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(SyncAlloc.serving);
+        if (s == t) return;
+        __myp_syscall(202, SyncAlloc.serving, 128, s, 0, 0, 0);   // FUTEX_WAIT_PRIVATE
+    }
+}
+void syncAllocUnlock() {
+    __myp_atomic_add_i32_addr(SyncAlloc.serving, 1);
+    __myp_syscall(202, SyncAlloc.serving, 129, 2147483647, 0, 0, 0);   // FUTEX_WAKE_PRIVATE, INT_MAX
+}
+
+// ============================================================
+// Mutex（票号锁；C myp_mutex_*）
+// ============================================================
+int myp_mutex_create() {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncMtx.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncMtx.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncMtx.recursive + long(i) * 4, 0);
+            __myp_mem_store_i64(SyncMtx.owner + long(i) * 8, -1);
+            __myp_mem_store_i32(SyncMtx.depth + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+int myp_mutex_create_recursive() {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncMtx.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncMtx.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncMtx.recursive + long(i) * 4, 1);
+            __myp_mem_store_i64(SyncMtx.owner + long(i) * 8, -1);
+            __myp_mem_store_i32(SyncMtx.depth + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+// 票号锁核心：t = add(&next,1)（旧值=我的票号）；等 serving 轮到我
+void mtxTicketLock(int h) {
+    long nx = SyncMtx.next + long(h) * 4;
+    long sv = SyncMtx.serving + long(h) * 4;
+    int t = __myp_atomic_add_i32_addr(nx, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(sv);
+        if (s == t) return;
+        __myp_syscall(202, sv, 128, s, 0, 0, 0);
+    }
+}
+void mtxTicketUnlock(int h) {
+    long sv = SyncMtx.serving + long(h) * 4;
+    __myp_atomic_add_i32_addr(sv, 1);
+    __myp_syscall(202, sv, 129, 2147483647, 0, 0, 0);
+}
+// 票号锁 trylock：claim 票号；轮到我→成功；否则归还（next 回退）并失败。
+// 归还安全：未持有的票号 serving 不会越过它（serving 只随持有者 unlock 前进）。
+int mtxTicketTryLock(int h) {
+    long nx = SyncMtx.next + long(h) * 4;
+    long sv = SyncMtx.serving + long(h) * 4;
+    int t = __myp_atomic_add_i32_addr(nx, 1);
+    int s = __myp_atomic_load_i32_addr(sv);
+    if (s == t) return 1;
+    __myp_atomic_add_i32_addr(nx, -1);   // 归还
+    return 0;
+}
+
+void myp_mutex_lock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    if (__myp_mem_load_i32(SyncMtx.used + long(h) * 4) == 0) return;
+    if (__myp_mem_load_i32(SyncMtx.recursive + long(h) * 4) != 0) {
+        // recursive：inner 票号锁守护 owner/depth
+        mtxTicketLock(h);
+        long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);   // gettid
+        if (__myp_mem_load_i64(SyncMtx.owner + long(h) * 8) == my) {
+            int d = __myp_mem_load_i32(SyncMtx.depth + long(h) * 4);
+            __myp_mem_store_i32(SyncMtx.depth + long(h) * 4, d + 1);
+            mtxTicketUnlock(h);
+            return;
+        }
+        __myp_mem_store_i64(SyncMtx.owner + long(h) * 8, my);
+        __myp_mem_store_i32(SyncMtx.depth + long(h) * 4, 1);
+        mtxTicketUnlock(h);
+        return;
+    }
+    mtxTicketLock(h);
+}
+int myp_mutex_trylock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return -1;
+    if (__myp_mem_load_i32(SyncMtx.used + long(h) * 4) == 0) return -1;
+    if (__myp_mem_load_i32(SyncMtx.recursive + long(h) * 4) != 0) {
+        if (mtxTicketTryLock(h) == 0) return 0;
+        long my = __myp_syscall(186, 0, 0, 0, 0, 0, 0);
+        if (__myp_mem_load_i64(SyncMtx.owner + long(h) * 8) == my) {
+            int d = __myp_mem_load_i32(SyncMtx.depth + long(h) * 4);
+            __myp_mem_store_i32(SyncMtx.depth + long(h) * 4, d + 1);
+        } else {
+            __myp_mem_store_i64(SyncMtx.owner + long(h) * 8, my);
+            __myp_mem_store_i32(SyncMtx.depth + long(h) * 4, 1);
+        }
+        mtxTicketUnlock(h);
+        return 1;
+    }
+    return mtxTicketTryLock(h);
+}
+void myp_mutex_unlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    if (__myp_mem_load_i32(SyncMtx.used + long(h) * 4) == 0) return;
+    if (__myp_mem_load_i32(SyncMtx.recursive + long(h) * 4) != 0) {
+        mtxTicketLock(h);
+        int d = __myp_mem_load_i32(SyncMtx.depth + long(h) * 4);
+        d = d - 1;
+        if (d <= 0) {
+            d = 0;
+            __myp_mem_store_i64(SyncMtx.owner + long(h) * 8, -1);
+        }
+        __myp_mem_store_i32(SyncMtx.depth + long(h) * 4, d);
+        mtxTicketUnlock(h);
+        return;
+    }
+    mtxTicketUnlock(h);
+}
+void myp_mutex_destroy(int h) {
+    syncInit();
+    if (h >= 0 && h < 64)
+        __myp_mem_store_i32(SyncMtx.used + long(h) * 4, 0);
+}
+
+// ============================================================
+// Semaphore（原子计数 + futex；C myp_sem_*）
+// ============================================================
+int myp_sem_create(int initial) {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncSem.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncSem.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncSem.count + long(i) * 4, initial);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+void myp_sem_wait(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    long cnt = SyncSem.count + long(h) * 4;
+    for (;;) {
+        int old = __myp_atomic_add_i32_addr(cnt, -1);
+        if (old > 0) return;               // 获取成功（原计数 ≥1）
+        // old <= 0：计数降至 old-1（可能为负）→ 等它不再是 old-1
+        __myp_syscall(202, cnt, 128, old - 1, 0, 0, 0);
+    }
+}
+int myp_sem_trywait(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return -1;
+    long cnt = SyncSem.count + long(h) * 4;
+    int old = __myp_atomic_add_i32_addr(cnt, -1);
+    if (old > 0) return 1;
+    __myp_atomic_add_i32_addr(cnt, 1);   // 归还
+    return 0;
+}
+void myp_sem_post(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    long cnt = SyncSem.count + long(h) * 4;
+    __myp_atomic_add_i32_addr(cnt, 1);
+    __myp_syscall(202, cnt, 129, 1, 0, 0, 0);   // 唤醒一个等待者
+}
+void myp_sem_destroy(int h) {
+    syncInit();
+    if (h >= 0 && h < 64)
+        __myp_mem_store_i32(SyncSem.used + long(h) * 4, 0);
+}
+
+// ============================================================
+// CondVar（waiters 计数 + seq；C myp_cond_*）
+// ============================================================
+int myp_cond_create() {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncCv.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncCv.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncCv.waiters + long(i) * 4, 0);
+            __myp_mem_store_i32(SyncCv.seq + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+void myp_cond_wait(int ch, int mh) {
+    syncInit();
+    if (ch < 0 || ch >= 64) return;
+    long wc = SyncCv.waiters + long(ch) * 4;
+    long sq = SyncCv.seq + long(ch) * 4;
+    __myp_atomic_add_i32_addr(wc, 1);
+    int s = __myp_atomic_load_i32_addr(sq);
+    myp_mutex_unlock(mh);                 // 释放关联 Mutex
+    __myp_syscall(202, sq, 128, s, 0, 0, 0);   // 等 seq 变化
+    __myp_atomic_add_i32_addr(wc, -1);
+    myp_mutex_lock(mh);                   // 重新持有
+}
+void myp_cond_signal(int ch) {
+    syncInit();
+    if (ch < 0 || ch >= 64) return;
+    long wc = SyncCv.waiters + long(ch) * 4;
+    long sq = SyncCv.seq + long(ch) * 4;
+    if (__myp_atomic_load_i32_addr(wc) > 0) {
+        __myp_atomic_add_i32_addr(sq, 1);
+        __myp_syscall(202, sq, 129, 1, 0, 0, 0);
+    }
+}
+void myp_cond_broadcast(int ch) {
+    syncInit();
+    if (ch < 0 || ch >= 64) return;
+    long wc = SyncCv.waiters + long(ch) * 4;
+    long sq = SyncCv.seq + long(ch) * 4;
+    if (__myp_atomic_load_i32_addr(wc) > 0) {
+        __myp_atomic_add_i32_addr(sq, 1);
+        __myp_syscall(202, sq, 129, 2147483647, 0, 0, 0);
+    }
+}
+void myp_cond_destroy(int ch) {
+    syncInit();
+    if (ch >= 0 && ch < 64)
+        __myp_mem_store_i32(SyncCv.used + long(ch) * 4, 0);
+}
+
+// ============================================================
+// RWLock（state：0 空闲 / >0 读者 / <0 写者；C myp_rwlock_*）
+// ============================================================
+int myp_rwlock_create() {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncRw.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncRw.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncRw.state + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+void myp_rwlock_rdlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    long st = SyncRw.state + long(h) * 4;
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(st);
+        if (s >= 0) {
+            int old = __myp_atomic_add_i32_addr(st, 1);
+            if (old >= 0) return;         // 获得读锁（无写者）
+            __myp_atomic_add_i32_addr(st, -1);   // 写者抢先 → 归还
+        }
+        __myp_syscall(202, st, 128, __myp_atomic_load_i32_addr(st), 0, 0, 0);
+    }
+}
+void myp_rwlock_wrlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    long st = SyncRw.state + long(h) * 4;
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(st);
+        if (s == 0) {
+            int old = __myp_atomic_add_i32_addr(st, -1);   // 0 → -1
+            if (old == 0) return;         // 获得写锁
+            __myp_atomic_add_i32_addr(st, 1);   // 归还
+        }
+        __myp_syscall(202, st, 128, __myp_atomic_load_i32_addr(st), 0, 0, 0);
+    }
+}
+int myp_rwlock_tryrdlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return -1;
+    long st = SyncRw.state + long(h) * 4;
+    int old = __myp_atomic_add_i32_addr(st, 1);
+    if (old >= 0) return 1;
+    __myp_atomic_add_i32_addr(st, -1);
+    return 0;
+}
+int myp_rwlock_trywrlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return -1;
+    long st = SyncRw.state + long(h) * 4;
+    int old = __myp_atomic_add_i32_addr(st, -1);
+    if (old == 0) return 1;
+    __myp_atomic_add_i32_addr(st, 1);
+    return 0;
+}
+void myp_rwlock_unlock(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    long st = SyncRw.state + long(h) * 4;
+    int s = __myp_atomic_load_i32_addr(st);
+    if (s < 0) {
+        // 写者释放
+        __myp_mem_store_i32(st, 0);
+        __myp_syscall(202, st, 129, 2147483647, 0, 0, 0);
+    } else {
+        int old = __myp_atomic_add_i32_addr(st, -1);
+        if (old == 1) {   // 最后读者离开
+            __myp_syscall(202, st, 129, 2147483647, 0, 0, 0);
+        }
+    }
+}
+void myp_rwlock_destroy(int h) {
+    syncInit();
+    if (h >= 0 && h < 64)
+        __myp_mem_store_i32(SyncRw.used + long(h) * 4, 0);
+}
+
+// ============================================================
+// Once（done + 自带票号锁；C myp_once_*）
+// ============================================================
+int myp_once_create() {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncOnc.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncOnc.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncOnc.done + long(i) * 4, 0);
+            __myp_mem_store_i32(SyncOnc.lockServing + long(i) * 4, 0);
+            __myp_mem_store_i32(SyncOnc.lockNext + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+// 自带票号锁（同 Mutex 语义；不复用 myp_mutex_* 避免嵌套分配锁）
+void oncTicketLock(int h) {
+    long nx = SyncOnc.lockNext + long(h) * 4;
+    long sv = SyncOnc.lockServing + long(h) * 4;
+    int t = __myp_atomic_add_i32_addr(nx, 1);
+    for (;;) {
+        int s = __myp_atomic_load_i32_addr(sv);
+        if (s == t) return;
+        __myp_syscall(202, sv, 128, s, 0, 0, 0);
+    }
+}
+void oncTicketUnlock(int h) {
+    long sv = SyncOnc.lockServing + long(h) * 4;
+    __myp_atomic_add_i32_addr(sv, 1);
+    __myp_syscall(202, sv, 129, 2147483647, 0, 0, 0);
+}
+int myp_once_enter(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return 0;
+    if (__myp_mem_load_i32(SyncOnc.used + long(h) * 4) == 0) return 0;
+    if (__myp_mem_load_i32(SyncOnc.done + long(h) * 4) != 0) return 0;
+    oncTicketLock(h);
+    if (__myp_mem_load_i32(SyncOnc.done + long(h) * 4) != 0) {
+        oncTicketUnlock(h);
+        return 0;
+    }
+    return 1;   // 持锁；调用方执行 init 后调 done
+}
+void myp_once_done(int h) {
+    syncInit();
+    if (h < 0 || h >= 64) return;
+    if (__myp_mem_load_i32(SyncOnc.used + long(h) * 4) == 0) return;
+    __myp_mem_store_i32(SyncOnc.done + long(h) * 4, 1);
+    oncTicketUnlock(h);
+}
+void myp_once_destroy(int h) {
+    syncInit();
+    if (h >= 0 && h < 64)
+        __myp_mem_store_i32(SyncOnc.used + long(h) * 4, 0);
+}
+
+// ============================================================
+// Barrier（arrived 计数 + seq + futex；C myp_barrier_*）
+// ============================================================
+int myp_barrier_create(int count) {
+    syncInit();
+    int h = -1;
+    syncAllocLock();
+    for (int i = 0; i < 64; i = i + 1) {
+        if (__myp_mem_load_i32(SyncBar.used + long(i) * 4) == 0) {
+            __myp_mem_store_i32(SyncBar.used + long(i) * 4, 1);
+            __myp_mem_store_i32(SyncBar.total + long(i) * 4, count);
+            __myp_mem_store_i32(SyncBar.arrived + long(i) * 4, 0);
+            __myp_mem_store_i32(SyncBar.seq + long(i) * 4, 0);
+            h = i;
+            break;
+        }
+    }
+    syncAllocUnlock();
+    return h;
+}
+int myp_barrier_wait(int handle) {
+    syncInit();
+    if (handle < 0 || handle >= 64) return -1;
+    long ar = SyncBar.arrived + long(handle) * 4;
+    long sq = SyncBar.seq + long(handle) * 4;
+    int total = __myp_mem_load_i32(SyncBar.total + long(handle) * 4);
+    int a = __myp_atomic_add_i32_addr(ar, 1);   // 旧值
+    if (a + 1 >= total) {
+        // 最后到达：复位 + 换代 + 唤醒所有
+        __myp_mem_store_i32(ar, 0);
+        __myp_atomic_add_i32_addr(sq, 1);
+        __myp_syscall(202, sq, 129, 2147483647, 0, 0, 0);
+        return 0;
+    }
+    int s = __myp_atomic_load_i32_addr(sq);
+    __myp_syscall(202, sq, 128, s, 0, 0, 0);
+    return 0;
+}
+void myp_barrier_destroy(int handle) {
+    syncInit();
+    if (handle >= 0 && handle < 64)
+        __myp_mem_store_i32(SyncBar.used + long(handle) * 4, 0);
+}

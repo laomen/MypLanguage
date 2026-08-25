@@ -82,6 +82,30 @@ Phase C 切片）：
   （fixpoint 不变）；全量 323/323。
 - **未做（Phase C 尾）**：非阻塞 exec worker、栈池、cleanup_all/thread_cleanup。
 
+### v3.15.43 — runtime myp化 #39：包 E 同步原语（sync.myp，futex 无 libc）
+
+**非破坏性**。同步原语 MYP 化——shadow C 的 `myp_mutex_*`/`myp_sem_*`/`myp_cond_*`/
+`myp_rwlock_*`/`myp_once_*`/`myp_barrier_*`（30 个），**不依赖 libc/pthread**：
+
+- **futex 实现**（syscall 202，FUTEX_WAIT=128/WAKE=129 PRIVATE）+ 原子
+  `__myp_atomic_add/sub/load/store_i32_addr`（atomicrmw，无 CAS）。
+- **Mutex**：票号锁（serving/next 两字）+ futex；unlock 广播唤醒。recursive 用
+  owner(tid via gettid 186) + depth，由票号锁守护。tryLock 用票号归还（安全：
+  未持有票号 serving 不会越过）。
+- **Semaphore**：原子计数（可负=等待者数）+ futex wait/wake；tryWait 归还。
+- **CondVar**：waiters 计数 + seq（经典 futex seq 条件变量）；wait 释放关联
+  Mutex、唤醒后重取；`while(!cond) wait()` 模式安全。
+- **RWLock**：state（0 空闲 / >0 读者 / <0 写者）+ futex；tryRead/WriteLock 原子尝试。
+- **Once**：done + **自带票号锁**（不复用 Mutex 表——once_create 在全局分配锁
+  临界区内调 myp_mutex_create 会**嵌套分配锁自死锁**，首版 bug 已修）。
+- **Barrier**：arrived 计数 + seq + futex（可复用，最后到达者换代唤醒全部）。
+- **全局槽分配锁**：所有 create 用单一把 futex 票号锁互斥扫描空闲槽。
+- **验证**：新 `bench/freestanding/rt_sync_test.myp`（单线程 API 全 + 2 worker
+  跨线程互斥累加 200）；**shadow 28/28**；`tests/sync`（4 @thread worker
+  mutex_count=400 + condvar=42 + tryLock/recursive/rwlock/sem/once API）用 MYP
+  shadow 链接**输出逐字一致**；bootstrap 16/16（fixpoint 不变）；全量 323/323。
+- **未做**：`myp_sem_getvalue` 等 C 内部 helper；future 已在 #38。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

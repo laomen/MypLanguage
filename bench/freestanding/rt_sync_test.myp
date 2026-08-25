@@ -1,0 +1,120 @@
+// rt_sync_test.myp — 同步原语验证（runtime_myp/sync.myp，包 E，futex 无 libc）：
+// 单线程 API（Mutex lock/tryLock/recursive、Semaphore wait/tryWait/post、
+// RWLock read/write/try、Once 1000 次仅 1 init、Barrier self）+ 跨线程（2 worker
+// 各 100 次互斥累加 → 200）。
+// 返回码：0 = 全过；N = 第 N 项失败。
+import sync;
+import barrier;
+
+ffi void myp_pause();
+ffi void myp_thread_spawn(long entryAddr);
+
+@static class S {
+    property:
+        int m = 0;        // 跨线程 Mutex handle
+        int counter = 0;  // 共享计数
+        long f0 = 0;
+        long f1 = 0;
+}
+
+// 两个 worker：各自 100 次互斥累加（Mutex 保护）
+void worker0() {
+    int i = 0;
+    while (i < 100) {
+        Mutex.lock(S.m);
+        S.counter = S.counter + 1;
+        Mutex.unlock(S.m);
+        i = i + 1;
+    }
+    S.f0 = 1;
+    __myp_syscall(60, 0);
+}
+void worker1() {
+    int i = 0;
+    while (i < 100) {
+        Mutex.lock(S.m);
+        S.counter = S.counter + 1;
+        Mutex.unlock(S.m);
+        i = i + 1;
+    }
+    S.f1 = 1;
+    __myp_syscall(60, 0);
+}
+
+class SyncTest {
+    static:
+        int run() {
+            // 1) Mutex 单线程 API
+            int m = Mutex.create();
+            Mutex.lock(m);
+            if (Mutex.tryLock(m) != 0) return 1;   // 已持有 → 0
+            Mutex.unlock(m);
+            if (Mutex.tryLock(m) != 1) return 2;   // 空闲 → 1
+            Mutex.unlock(m);
+            Mutex.destroy(m);
+
+            // 2) recursive mutex
+            int rm = Mutex.createRecursive();
+            Mutex.lock(rm); Mutex.lock(rm); Mutex.lock(rm);
+            Mutex.unlock(rm); Mutex.unlock(rm); Mutex.unlock(rm);
+            Mutex.destroy(rm);
+
+            // 3) Semaphore
+            int s = Semaphore.create(2);
+            Semaphore.wait(s); Semaphore.wait(s);
+            if (Semaphore.tryWait(s) != 0) return 3;   // 空 → 0
+            Semaphore.post(s);
+            if (Semaphore.tryWait(s) != 1) return 4;   // 有 → 1
+            Semaphore.destroy(s);
+
+            // 4) RWLock
+            int rw = RWLock.create();
+            RWLock.readLock(rw); RWLock.readLock(rw);
+            RWLock.unlock(rw); RWLock.unlock(rw);
+            if (RWLock.tryReadLock(rw) != 1) return 5;
+            RWLock.unlock(rw);
+            RWLock.writeLock(rw);
+            RWLock.unlock(rw);
+            if (RWLock.tryWriteLock(rw) != 1) return 6;
+            RWLock.unlock(rw);
+            RWLock.destroy(rw);
+
+            // 5) Once：1000 次 enter 仅 1 次 init
+            int o = Once.create();
+            int inits = 0;
+            for (int i = 0; i < 1000; i = i + 1) {
+                if (Once.enter(o) == 1) {
+                    inits = inits + 1;
+                    Once.done(o);
+                }
+            }
+            if (inits != 1) return 7;
+            Once.destroy(o);
+
+            // 6) Barrier（self-only）
+            int b = Barrier.create(1);
+            if (Barrier.wait(b) != 0) return 8;
+            if (Barrier.wait(b) != 0) return 9;
+            Barrier.destroy(b);
+
+            // 7) 跨线程：2 worker × 100 次互斥累加 → 200
+            S.m = Mutex.create();
+            S.counter = 0;
+            S.f0 = 0;
+            S.f1 = 0;
+            myp_thread_spawn(__myp_fn_addr("worker0"));
+            myp_thread_spawn(__myp_fn_addr("worker1"));
+            long spins = 0;
+            while (S.f0 == 0 || S.f1 == 0) {
+                spins = spins + 1;
+                if (spins > 100000000) return 10;   // 超时
+                myp_pause();
+            }
+            if (S.counter != 200) return 11;
+            return 0;
+        }
+}
+
+int main() {
+    return SyncTest.run();
+}
