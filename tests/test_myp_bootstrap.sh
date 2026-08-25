@@ -2,21 +2,22 @@
 # test_myp_bootstrap.sh — 全自举编译器两级自举验证（design.md D8 / roadmap H1）
 #
 # 验证自举成立：
-#   stage0: C++ mypc 编译 tools/selfhost/src/main.myp → myp_self   （第一代）
+#   stage0: C++ mypc-seed（oracle 种子）编译 tools/selfhost/src/main.myp → myp_self
 #   stage1: myp_self 编译同样源码 → myp_self2                    （自编译）
 #   stage2: myp_self2 编译同样源码 → myp_self3                    （再自编译）
 #   判定：myp_self2 与 myp_self3 对同一语料行为一致
 #         （--frontend-dump 三模式字节一致 + 产物运行输出/退出码一致）
 #
 # 用法：bash tests/test_myp_bootstrap.sh
-#       MYPCC=/path/to/mypc  bash tests/test_myp_bootstrap.sh（默认 ./build/mypc）
+#       MYPCC=/path/to/seed bash tests/test_myp_bootstrap.sh
+#       （v3.15.66 起 build/mypc = 自举不动点编译器，stage0 种子用 mypc-seed（oracle））
 #
 # 关联：roadmap.md H1、design.md D8、docs/self_hosting.md
 
 set -u
 # 跨平台移植层：Windows Git Bash 无 ulimit -v，myp_guard_ulimit 自动跳过
 source "$(dirname "$0")/lib/portable.sh"
-MYPCC="${MYPCC:-./build/mypc}"
+MYPCC="${MYPCC:-./build/mypc-seed}"
 STDLIB="$(dirname "$MYPCC")/../stdlib"
 PASS=0
 FAIL=0

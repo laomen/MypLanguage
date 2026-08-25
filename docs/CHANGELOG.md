@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.67 — 自举编译器即 mypc：oracle 降为种子 + 自举 2 级 MD5 门禁命令
+
+**非破坏性**。工具链角色反转：**用户级 `mypc` 现在是自举不动点编译器**
+（selfhost myp_self2 的副本，仅 MYP 归档链接）；原 C++ oracle 改名 `mypc-seed`
+降为**种子编译器**（只负责编译 tools/selfhost → myp_self，stage0）。
+
+- **CMake 自举链**：`mypc_seed → myp_self（stage0）→ myp_self2（stage1）→
+  myp_self3（stage2）→ mypc`。`mypc` 目标带**自举 MD5 门禁**（
+  `scripts/bootstrap_install.sh`）：只有 myp_self2 与 myp_self3 字节一致
+  （MD5 相同，自举成立）才安装 myp_self2 为 `build/mypc`；不一致 → 构建失败
+  （"只有自举 2 级 MD5 一致才编译成功"）。myp_self2/3 依赖 myp_rt_myp（归档）
+  保证以同一链接方式产出，MD5 比较确定。
+- **`mypc --bootstrap` 自举命令**（类 gcc）：当前编译器编译 tools/selfhost 源码
+  → stage1，stage1 再编译 → stage2，比较 MD5；一致 → 0，不一致 → 1（编译失败）。
+  stage 输出放 `<repo>/build/`（非 /tmp——mypRtLib 首个候选是
+  `<exe_dir>/libmyp_rt_myp.a`，/tmp 下陈旧归档会先被拾取，曾致 process 未定义）。
+- **测试适配**：`tests/test_myp_bootstrap.sh` stage0 默认改为 `./build/mypc-seed`
+  （oracle 种子）；工具（myp_pm/myp_fmt2/myp_viz2）保持 seed 编译（被测者不被
+  被测对象编译，稳健）。
+- 验证：**全量 323/323（默认 mypc = selfhost）** + bootstrap 16/16（stage0=seed，
+  myp_self2 == myp_self3 md5 一致）+ `mypc --bootstrap` 2 级 MD5 一致 +
+  `mypc hello` MYP-only 链接 exit 42。
+
 ### v3.15.66 — 整体 runtime myp化：MYP 运行时默认 + 仅 MYP 归档链接（去 C runtime）
 
 **非破坏性**。de-gcc 收官：MYP 运行时从"opt-in 归档"升级为**默认工具链**——

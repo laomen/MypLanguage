@@ -678,6 +678,61 @@ class LoadedSet {
             return Process.run(cmd.toString());
         }
 
+        // myp_self --bootstrap —— 自举 2 级校验（类 gcc 自举命令）：
+        // 当前编译器编译 tools/selfhost 源码 → stage1；stage1 再编译 → stage2；
+        // 两者 MD5 一致（自举成立）→ 返回 0；不一致 → 返回 1（编译失败）。
+        // ⚠️ stage 输出放 <repo>/build/（非 /tmp）：mypRtLib 首个候选是
+        // <exe_dir>/libmyp_rt_myp.a——/tmp 下若有陈旧归档会先被拾取（缺符号，
+        // 曾致 process 未定义）。
+        int bootstrap() {
+            string stdlib = Cli.selfStdlib();
+            string src = "tools/selfhost/src/main.myp";
+            if (Fs.exists(src) == 0) {
+                Console.writeLine("myp_self --bootstrap: 找不到自举源码 '" + src + "'（须在仓库根运行）");
+                return 1;
+            }
+            string s1 = "build/bootstrap_s1";
+            string s2 = "build/bootstrap_s2";
+            ArrayList<string> f1 = new ArrayList<string>();
+            f1.add(src);
+            int rc1 = Frontend.compile(f1, s1, stdlib, "", 0, 0, 0, 2, 0, 0);
+            if (rc1 != 0) {
+                Console.writeLine("myp_self --bootstrap: stage1 编译失败（rc=" + rc1 + "）");
+                return rc1;
+            }
+            StringBuilder c2 = new StringBuilder();
+            c2.append(Cli.quoteShell(s1));
+            c2.append(" " + Cli.quoteShell(src));
+            c2.append(" -o " + Cli.quoteShell(s2));
+            c2.append(" --stdlib " + Cli.quoteShell(stdlib));
+            int rc2 = Process.run(c2.toString());
+            if (rc2 != 0) {
+                Console.writeLine("myp_self --bootstrap: stage2 编译失败（rc=" + rc2 + "）");
+                return rc2;
+            }
+            // 清理源码旁产物（Frontend.compile 会在源码旁生成 main.myp.o）
+            Fs.removeRecursive("tools/selfhost/src/main.myp.o");
+            // 注：MYP 字符串里 $1 会被当宏引用 → 用 cut（无 $）取 md5sum 首列。
+            string h1 = Process.output("md5sum " + Cli.quoteShell(s1) + " | cut -d' ' -f1");
+            string h2 = Process.output("md5sum " + Cli.quoteShell(s2) + " | cut -d' ' -f1");
+            Console.writeLine("bootstrap stage1 md5=" + h1);
+            Console.writeLine("bootstrap stage2 md5=" + h2);
+            if (h1 != h2) {
+                Console.writeLine("ERROR: 自举不动点 MD5 不一致——编译失败（stage1 != stage2）");
+                return 1;
+            }
+            Console.writeLine("OK: 自举成立（2 级 MD5 一致）");
+            Fs.removeRecursive(s1);
+            Fs.removeRecursive(s2);
+            Fs.removeRecursive(s1 + ".o");
+            Fs.removeRecursive(s1 + ".ll");
+            Fs.removeRecursive(s1 + ".opt.ll");
+            Fs.removeRecursive(s2 + ".o");
+            Fs.removeRecursive(s2 + ".ll");
+            Fs.removeRecursive(s2 + ".opt.ll");
+            return 0;
+        }
+
         int run() {
             int argc = Args.count();
             if (argc < 2) {
@@ -702,6 +757,9 @@ class LoadedSet {
             }
             if (arg == "fmt") {
                 return Cli.fmt();
+            }
+            if (arg == "--bootstrap") {
+                return Cli.bootstrap();
             }
             if (arg == "--frontend-dump") {
                 if (argc < 4) {
@@ -794,6 +852,7 @@ class LoadedSet {
             Console.writeLine("       myp_self --frontend-dump <tokens|ast|sema> <file.myp>");
             Console.writeLine("       myp_self run <file.myp> [args...]");
             Console.writeLine("       myp_self fmt [--check] <file.myp> ...");
+            Console.writeLine("       myp_self --bootstrap    Self-host 2-level bootstrap check (MD5 gate)");
             Console.writeLine("Options:");
             Console.writeLine("  -o <out>        Output executable path (default <file>.out)");
             Console.writeLine("  --emit-llvm     Save LLVM IR to <out>.ll and skip linking");

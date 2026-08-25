@@ -137,8 +137,11 @@ set(HEADERS
 
 include_directories(BEFORE ${CMAKE_SOURCE_DIR}/include)
 
-# ---- Compiler Executable ----
-add_executable(mypc ${SOURCES})
+# ---- Compiler Executable（seed/oracle，C++；仅用于自举 stage0）----
+# v3.15.66 起用户级 mypc = 自举不动点编译器（myp_self2 副本，见下方 mypc 目标）；
+# 原 C++ oracle 改名为 mypc-seed，只负责编译 tools/selfhost/src/main.myp → myp_self。
+add_executable(mypc_seed ${SOURCES})
+set_target_properties(mypc_seed PROPERTIES OUTPUT_NAME mypc-seed)
 
 # ---- DAP debug adapter (bridges VS Code DAP <-> gdb MI) ----
 # Windows：暂不构建 —— DAP 服务器用 fork/pipe/dup2/execlp/poll/read/write 编排
@@ -179,13 +182,13 @@ target_include_directories(myp_lsp
 
 target_link_libraries(myp_lsp PRIVATE ${MYP_THREAD_LIBS})
 
-target_link_libraries(mypc
+target_link_libraries(mypc_seed
     PRIVATE
     ${myp_llvm_libs}
     ${MYP_THREAD_LIBS}
 )
 
-target_include_directories(mypc
+target_include_directories(mypc_seed
     PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${LLVM_INCLUDE_DIRS}
@@ -216,11 +219,11 @@ set(MYP_PM_OUT ${CMAKE_BINARY_DIR}/myp)
 
 add_custom_command(
     OUTPUT ${MYP_PM_OUT}
-    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
-    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_PM_SRC} -o ${MYP_PM_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
-    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    # ASAN 版 mypc_seed 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc_seed> ${MYP_PM_SRC} -o ${MYP_PM_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc_seed 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/pm/main.myp.o
-    DEPENDS ${MYP_PM_SRC} ${MYP_PM_MODULES} mypc
+    DEPENDS ${MYP_PM_SRC} ${MYP_PM_MODULES} mypc_seed
     COMMENT "Building self-hosted package manager (tools/pm -> myp)"
     VERBATIM
 )
@@ -238,11 +241,11 @@ set(MYP_FMT_OUT ${CMAKE_BINARY_DIR}/myp_fmt2)
 
 add_custom_command(
     OUTPUT ${MYP_FMT_OUT}
-    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
-    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_FMT_SRC} -o ${MYP_FMT_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
-    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    # ASAN 版 mypc_seed 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc_seed> ${MYP_FMT_SRC} -o ${MYP_FMT_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc_seed 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/fmt/main.myp.o
-    DEPENDS ${MYP_FMT_SRC} ${MYP_FMT_MODULES} mypc
+    DEPENDS ${MYP_FMT_SRC} ${MYP_FMT_MODULES} mypc_seed
     COMMENT "Building self-hosted formatter (tools/fmt -> myp_fmt2)"
     VERBATIM
 )
@@ -260,20 +263,20 @@ set(MYP_VIZ_OUT ${CMAKE_BINARY_DIR}/myp_viz2)
 
 add_custom_command(
     OUTPUT ${MYP_VIZ_OUT}
-    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
-    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_VIZ_SRC} -o ${MYP_VIZ_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
-    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    # ASAN 版 mypc_seed 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc_seed> ${MYP_VIZ_SRC} -o ${MYP_VIZ_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc_seed 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/viz/main.myp.o
-    DEPENDS ${MYP_VIZ_SRC} ${MYP_VIZ_MODULES} mypc
+    DEPENDS ${MYP_VIZ_SRC} ${MYP_VIZ_MODULES} mypc_seed
     COMMENT "Building self-hosted mapping visualizer (tools/viz -> myp_viz2)"
     VERBATIM
 )
 add_custom_target(myp_viz2 ALL DEPENDS ${MYP_VIZ_OUT})
 
-# ---- Self-Hosted Compiler skeleton (tools/selfhost, built with mypc) ----
+# ---- Self-Hosted Compiler skeleton (tools/selfhost, built with mypc_seed) ----
 # 全自举编译器（T5，非 GPU）：CLI 骨架。见 tools/selfhost/design.md + roadmap.md。
 # F0 仅构建骨架（main.myp）；F1+ 把实现的模块加入 MYP_SELF_MODULES 随构建。
-# 依赖 mypc（C++ 编译器作为 stage0 编译本自举编译器）。
+# 依赖 mypc_seed（C++ oracle 种子编译器作为 stage0 编译本自举编译器）。
 set(MYP_SELF_SRC ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp)
 set(MYP_SELF_MODULES
     ${CMAKE_SOURCE_DIR}/tools/selfhost/src/token.myp
@@ -290,15 +293,55 @@ set(MYP_SELF_OUT ${CMAKE_BINARY_DIR}/myp_self)
 
 add_custom_command(
     OUTPUT ${MYP_SELF_OUT}
-    # ASAN 版 mypc 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
-    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc> ${MYP_SELF_SRC} -o ${MYP_SELF_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
-    # mypc 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
+    # ASAN 版 mypc_seed 的 arena 分配会触发泄漏检测 → 显式关闭（与测试套件一致）
+    COMMAND ${CMAKE_COMMAND} -E env ASAN_OPTIONS=detect_leaks=0 $<TARGET_FILE:mypc_seed> ${MYP_SELF_SRC} -o ${MYP_SELF_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    # mypc_seed 会在源码旁生成 main.myp.o，构建后清理保持源码树干净
     COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
-    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} mypc
-    COMMENT "Building self-hosted compiler skeleton (tools/selfhost -> myp_self)"
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} mypc_seed
+    COMMENT "Building self-hosted compiler stage-0 (mypc_seed -> myp_self)"
     VERBATIM
 )
 add_custom_target(myp_self ALL DEPENDS ${MYP_SELF_OUT})
+
+# ---- 自举不动点：myp_self2（stage1）/ myp_self3（stage2）----
+# stage1：myp_self 编译同样源码 → myp_self2；stage2：myp_self2 再编译 → myp_self3。
+# 自举成立 ⟺ myp_self2 == myp_self3（字节一致，MD5 相同）。依赖 myp_rt_myp（归档）
+# 确保两者都以同一链接方式（仅 MYP 归档）产出，MD5 比较确定。
+set(MYP_SELF2_OUT ${CMAKE_BINARY_DIR}/myp_self2)
+add_custom_command(
+    OUTPUT ${MYP_SELF2_OUT}
+    COMMAND ${MYP_SELF_OUT} ${MYP_SELF_SRC} -o ${MYP_SELF2_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self myp_rt_myp
+    COMMENT "Building self-hosted compiler stage-1 (myp_self -> myp_self2)"
+    VERBATIM
+)
+add_custom_target(myp_self2 ALL DEPENDS ${MYP_SELF2_OUT})
+
+set(MYP_SELF3_OUT ${CMAKE_BINARY_DIR}/myp_self3)
+add_custom_command(
+    OUTPUT ${MYP_SELF3_OUT}
+    COMMAND ${MYP_SELF2_OUT} ${MYP_SELF_SRC} -o ${MYP_SELF3_OUT} --stdlib ${CMAKE_SOURCE_DIR}/stdlib
+    COMMAND ${CMAKE_COMMAND} -E remove -f ${CMAKE_SOURCE_DIR}/tools/selfhost/src/main.myp.o
+    DEPENDS ${MYP_SELF_SRC} ${MYP_SELF_MODULES} myp_self2 myp_rt_myp
+    COMMENT "Building self-hosted compiler stage-2 (myp_self2 -> myp_self3, fixed-point)"
+    VERBATIM
+)
+add_custom_target(myp_self3 ALL DEPENDS ${MYP_SELF3_OUT})
+
+# ---- mypc = 自举不动点编译器（用户级），MD5 门禁 ----
+# 只有 stage1（myp_self2）与 stage2（myp_self3）MD5 一致（自举成立）才安装
+# myp_self2 为 build/mypc；不一致 → 构建失败（"只有自举2级MD5一致才编译成功"）。
+# 生成的 build/mypc 即 selfhost 编译器（链接 MYP 运行时归档，de-gcc）。
+set(MYP_MYPC_OUT ${CMAKE_BINARY_DIR}/mypc)
+add_custom_command(
+    OUTPUT ${MYP_MYPC_OUT}
+    COMMAND ${CMAKE_COMMAND} -E env MYPC_S2=${MYP_SELF2_OUT} MYPC_S3=${MYP_SELF3_OUT} MYPC_OUT=${MYP_MYPC_OUT} bash ${CMAKE_SOURCE_DIR}/scripts/bootstrap_install.sh
+    DEPENDS myp_self2 myp_self3
+    COMMENT "Installing self-hosted fixed-point compiler as mypc (bootstrap MD5 gate)"
+    VERBATIM
+)
+add_custom_target(mypc ALL DEPENDS ${MYP_MYPC_OUT})
 
 # ---- MYP 运行时归档（libmyp_rt_myp.a，de-gcc 默认）----
 # runtime_myp/*.myp（--shared）由 myp_self 编译 → 归档。selfhost 链接程序时经
