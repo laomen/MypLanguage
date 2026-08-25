@@ -27,6 +27,33 @@
 
 ## 编译器版本历史
 
+### v3.15.36 — runtime myp化 #33：包 C 异常机制（exception.myp）
+
+**非破坏性**。异常运行时（try/catch/throw 的 jmp_buf 处理栈 + 错误消息 + 类型化
+载体 + release_slot）MYP 化——**协程 Phase A 的 setjmp 异常边界前置之一**：
+
+- **`exception.myp`**：`myp_throw`/`myp_throw_object`（记录消息/对象+类型）、
+  `myp_get_error`（catch (string e) 取消息）、`myp_error_setup/is_active/clear`、
+  `myp_exception_push/pop/get_jmpbuf/get_type/get_object`（处理栈）、`myp_try_escape`
+  （IR 逃逸屏障）、`myp_release_slot`（异常 longjmp 路径释放 ARC 槽物理内存）、
+  `__myp_longjmp`（ASan 感知包装，MYP 版跳过 ASan hook 直接调 libc longjmp）、
+  `myp_diag_get/set_strict`（strict 标志 API）。
+- **关键语义/技巧**：
+  - **`setjmp` 用 libc**（生成代码发射 `call i32 @setjmp(ptr)` + ReturnsTwice，非
+    myp_* 符号不影）；`__myp_longjmp` 经 ffi 调 libc `longjmp`（i64/i32 与
+    ptr/i32 ABI 兼容，链接按名解析）。
+  - 处理栈 @static Exc.handlerBufs（arena 64×8）+ depth；`myp_exception_get_jmpbuf`
+    无 handler 时 stderr 打印未捕获 + exit(134)（abort 语义）。
+  - 错误消息拷贝到 arena 缓冲（C 用静态 buf；MYP 拷贝保证抛出的字符串释放后仍可
+    读）。
+  - `myp_release_slot`：读 ARC 槽首 8 字节（类 ptr / 接口·函数胖指针 data 都是
+    槽首）→ `myp_release(__myp_addr_to_str(obj))`（`__myp_addr_to_str` 是
+    inttoptr 地址→ptr 重解释，非拷贝）。
+- **验证**：`rt_exception_test`——字符串异常 catch 绑定消息 / 正常 try / 嵌套
+  （内层捕获+外层捕获）/ 类型化（throw new MyErr + catch (MyErr e)）/ finally
+  正常 + 异常路径。shadow **22 项**（21 exit0 + fail 探针 exit1）、bootstrap
+  16/16（fixpoint `c998455d` 不变，编译器未改）、全量 323/323。
+
 ### v3.15.35 — runtime myp化 #32：console+test 框架包（print + @test 捕获/断言/报告）
 
 **非破坏性**。包 A 收官：把 print 输出路径与 @test 框架（捕获/断言/报告）一起 MYP

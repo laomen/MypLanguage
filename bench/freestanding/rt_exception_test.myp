@@ -1,0 +1,54 @@
+// rt_exception_test.myp — 异常机制层验证（runtime_myp/exception.myp shadow C）：
+// try/catch/throw 全路径——字符串异常、正常路径、嵌套、类型化、finally。生成代码
+// 的 setjmp/longjmp + myp_throw/myp_exception_*/myp_get_error 解析到 MYP 版。
+
+interface Error {
+    string message();
+}
+class MyErr {
+    interface class Error;
+    action:
+        string message() { return "myerr"; }
+}
+
+class ExcProbe {
+    static:
+        int run() {
+            // 1. 字符串异常 catch 绑定消息
+            string caught = "";
+            try { throw "boom"; } catch (string e) { caught = e; }
+            if (caught != "boom") return 1;
+            // 2. 正常 try（不抛，catch 不执行）
+            int ok = 0;
+            try { ok = 5; } catch (string e) { ok = -1; }
+            if (ok != 5) return 2;
+            // 3. 嵌套 try：内层捕获 inner，外层捕获 outer
+            int inner = 0;
+            try {
+                try { throw "inner"; } catch (string e) { inner = 1; }
+                throw "outer";
+            } catch (string e) {
+                if (e != "outer") return 4;
+            }
+            if (inner != 1) return 3;
+            // 4. 类型化异常（throw_object / get_type / get_object）
+            int typed = 0;
+            try { throw new MyErr(); } catch (MyErr e) { typed = 1; }
+            if (typed != 1) return 5;
+            // 5. finally 正常执行
+            int fin = 0;
+            try { fin = 1; } finally { fin = fin + 10; }
+            if (fin != 11) return 6;
+            // 6. 异常路径 finally（异常被 finally 外捕获，finally 仍执行）
+            int fin2 = 0;
+            try {
+                try { throw "x"; } finally { fin2 = fin2 + 7; }
+            } catch (string e) { fin2 = fin2 + 100; }
+            if (fin2 != 107) return 7;
+            return 0;
+        }
+}
+
+int main() {
+    return ExcProbe.run();
+}

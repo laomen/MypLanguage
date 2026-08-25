@@ -71,12 +71,13 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **难度**：中低。读 arena/region/coro 内部计数（MYP 已管），重写为 MYP 状态读取。
 
 ### 包 C：异常机制（exception 5 + throw 2 + error 3 + strict 2 = 12）
-- **`exception`(5)**：`myp_exception_push/pop/get_jmpbuf/get_object/get_type`；
-  `throw`(2)：`myp_throw`/`myp_throw_object`；`error`(3)：`myp_error_setup/
-  is_active/clear`；`strict`(2)：`myp_strict_abort_*`。
-- **策略**：setjmp/longjmp 异常边界——自举已有 `%myp_jmp_buf` + `__myp_longjmp`
-  （ir_emit 声明）。MYP 化需 MYP 侧 setjmp（寄存器保存）或保留 C jmp_buf 栈。
-- **难度**：中高。**这是协程 Phase A 的前置**（异常不跨协程边界需要边界处理）。
+- ✅ **已做（#33 exception.myp）**：`myp_throw`/`myp_throw_object`/`myp_get_error`/
+  `myp_error_setup/is_active/clear`/`myp_exception_push/pop/get_jmpbuf/get_type/
+  get_object`/`myp_try_escape`/`myp_release_slot`/`__myp_longjmp`/`myp_diag_get/
+  set_strict`。**setjmp 用 libc**（`call @setjmp`，非 myp_* 不影）；`__myp_longjmp`
+  经 ffi 调 libc longjmp（ABI 兼容）。**协程 Phase A 的异常边界前置已具备**（剩余
+  前置 = 线程创建 pthread）。验证：rt_exception_test（字符串/嵌套/类型化/finally）。
+- **`error`(3)**：`myp_error_setup/is_active/clear` 已影（#33）；`myp_get_error` 已影。
 
 ### 包 D：协程运行时（`__myp_coro_*` 49 + `channel` 13 = 62）
 - **coro**：create/set_entry/yield/resume/result/is_active/request_cancel/destroy/
@@ -138,10 +139,12 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 
 ## 四、建议推进顺序
 
-1. **包 A 残留薄层**（print/str/io 残留，快赢，无前置）
-2. **包 B 诊断**（读已迁移状态，中低）
-3. **包 C 异常机制**（协程前置之一）
-4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪；前置 = C + 线程创建）
+1. ✅ **包 A 残留薄层**（#31/#32：str_parse_int_opt / diag_arena / console+test）
+2. **包 B 剩余诊断**（`myp_fail_alloc_*` 注入 + alloc 接入；diag_coro/stack 等读协程
+   状态 → 待包 D）
+3. ✅ **包 C 异常机制**（#33 exception.myp，协程前置之一）
+4. **包 D 协程 Phase A**（`myp_ctx_switch` 就绪 + 异常边界已具备；剩余前置 = 线程
+   创建 pthread）
 5. **包 E 同步原语**（futex 或 pthread 间接调）
 6. **包 F 线程/pool**（pthread_create OS 边界，最难）
 7. **包 G GPU**（`__myp_indirect` 就绪，可并行推进）

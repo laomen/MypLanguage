@@ -1,0 +1,154 @@
+// runtime_myp/exception.myp — 异常机制层 MYP 化：shadow C runtime 的异常运行时
+//（try/catch/throw 的 jmp_buf 处理栈 + 错误消息 + 类型化异常载体 + release_slot）。
+// 符号名与 C 一致，--shared + 前置链接 → MYP 定义优先。
+//
+// 设计（镜像 C 语义）：
+//   - `setjmp` 用 libc（生成代码发射 `call i32 @setjmp(ptr)`，ReturnsTwice）——
+//     非 myp_* 符号，不影。`__myp_longjmp`（ASan 感知包装）MYP 化：经 ffi 调
+//     libc `longjmp`（i64/i32 与 ptr/i32 ABI 兼容）。
+//   - 处理栈：@static Exc.handlerBufs（arena 64*8）+ depth——try 块 push 自身
+//     jmp_buf，结束 pop；`myp_throw` longjmp 到**栈顶**（最内层存活 handler）。
+//   - 错误消息：Exc.errBuf（arena 256B）拷贝（C 用静态 buf，MYP 拷贝到 arena 保
+//     证抛出的字符串释放后仍可读）。myp_get_error 返回其内容（catch (string e)）。
+//   - 类型化异常：Exc.curObj（对象地址 long）/ curType（类型 ID 0=字符串消息）。
+//   - myp_release_slot：异常 longjmp 路径上读 ARC 槽**物理内存**（LLVM 在 -O2 下
+//     折叠为 undef），读对象地址 → myp_release（经 __myp_addr_to_str 重解释）。
+//   - myp_exception_get_jmpbuf 无 handler 时：stderr 打印未捕获 + exit(134)（abort
+//     语义）。myp_try_escape 空操作（IR 逃逸屏障）。
+
+ffi long myp_arena_alloc(long size);
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+ffi int myp_release(string obj);
+ffi string myp_to_string_i32(int val);
+ffi void longjmp(long jb, int val);   // libc（jmp_buf 指针 / 64 位）
+
+@static class Exc {
+    property:
+        long handlerBufs = 0;   // 处理栈（arena 64*8 jmp_buf* 槽，0=未初始化）
+        int depth = 0;
+        long errBuf = 0;        // 错误消息缓冲（arena 256B，0=未初始化）
+        int errActive = 0;
+        long curObj = 0;        // 当前异常对象（地址）
+        int curType = 0;        // 类型 ID（0=字符串消息异常）
+        int strict = 0;
+}
+
+// ---- stderr 输出（未捕获异常报告用）----
+void writeErrS(string s) {
+    __myp_syscall(1, 2, __myp_str_ptr(s), myp_strlen(s), 0, 0, 0);
+}
+
+// ---- 错误消息缓冲 ----
+long errBufAddr() {
+    if (Exc.errBuf == 0) {
+        long b = myp_arena_alloc(256);
+        if (b == 0) return 0;
+        Exc.errBuf = b;
+    }
+    return Exc.errBuf;
+}
+
+// C: void __myp_longjmp(void* jb, int val) —— ASan 感知包装（MYP 版跳过 ASan
+// hook，直接调 libc longjmp；ASan 构建走 C runtime 不受影响）。noreturn。
+void __myp_longjmp(long jb, int val) {
+    longjmp(jb, val);
+}
+
+void myp_error_setup() { Exc.errActive = 1; }
+int myp_error_is_active() { return Exc.errActive; }
+void myp_error_clear() { Exc.errActive = 0; }
+
+// C: void myp_throw(const char* msg) —— 记录字符串异常（消息拷贝到缓冲，类型 0）
+void myp_throw(string msg) {
+    long buf = errBufAddr();
+    if (buf == 0) return;
+    int len = myp_strlen(msg);
+    if (len > 255) len = 255;
+    __myp_memcpy(buf, __myp_str_ptr(msg), len);
+    __myp_mem_store_i8(buf + len, 0);
+    Exc.curObj = 0;
+    Exc.curType = 0;
+}
+
+// C: void myp_throw_object(void* obj, int type_id) —— 类型化异常（对象 + 类型）
+void myp_throw_object(long obj, int typeId) {
+    long buf = errBufAddr();
+    if (buf == 0) return;
+    Exc.curObj = obj;
+    Exc.curType = typeId;
+    // 通用消息（catch-all 字符串 handler 仍能拿到东西）
+    __myp_memcpy(buf, __myp_str_ptr("exception"), 9);
+    __myp_mem_store_i8(buf + 9, 0);
+}
+
+// C: const char* myp_get_error(void) —— 返回错误消息（catch (string e) 用）
+string myp_get_error() {
+    if (Exc.errBuf == 0) {
+        string e = myp_alloc(1);
+        __myp_mem_store_i8(__myp_str_ptr(e), 0);
+        return e;
+    }
+    int len = 0;
+    while (__myp_mem_load_i8(Exc.errBuf + len) != 0) len = len + 1;
+    string s = myp_alloc(len + 1);
+    __myp_memcpy(__myp_str_ptr(s), Exc.errBuf, len);
+    __myp_mem_store_i8(__myp_str_ptr(s) + len, 0);
+    return s;
+}
+
+int myp_exception_get_type() { return Exc.curType; }
+long myp_exception_get_object() { return Exc.curObj; }
+
+// ---- 处理栈 ----
+void myp_exception_push(long jmpbuf) {
+    if (Exc.handlerBufs == 0) {
+        long b = myp_arena_alloc(64 * 8);
+        if (b == 0) return;
+        Exc.handlerBufs = b;
+    }
+    if (Exc.depth < 64) {
+        __myp_mem_store_i64(Exc.handlerBufs + Exc.depth * 8, jmpbuf);
+        Exc.depth = Exc.depth + 1;
+    }
+}
+void myp_exception_pop() {
+    if (Exc.depth > 0) Exc.depth = Exc.depth - 1;
+}
+long myp_exception_get_jmpbuf() {
+    if (Exc.depth > 0) {
+        return __myp_mem_load_i64(Exc.handlerBufs + (Exc.depth - 1) * 8);
+    }
+    // 未捕获异常：stderr 清晰消息 + abort（exit 134 = 128+SIGABRT）
+    if (Exc.curType > 0) {
+        writeErrS("uncaught exception (object, type " + myp_to_string_i32(Exc.curType) + ")\n");
+    } else {
+        string m = myp_get_error();
+        if (myp_strlen(m) != 0) {
+            writeErrS("uncaught exception: ");
+            writeErrS(m);
+            writeErrS("\n");
+        } else {
+            writeErrS("uncaught exception\n");
+        }
+    }
+    __myp_syscall(60, 134, 0, 0, 0, 0, 0);   // exit(134)
+    return 0;
+}
+
+// C: void myp_try_escape(void* p) —— IR 逃逸屏障（空操作；LLVM -O 认为 p 逃逸）
+void myp_try_escape(long p) { }
+
+// C: void myp_release_slot(void* slot_addr, int kind) —— 异常 longjmp 路径读 ARC
+// 槽物理内存（LLVM 折叠为 undef）→ 释放对象。kind 0=类 ptr / 1·2=接口·函数胖指针
+//（对象都是槽首 8 字节）。
+void myp_release_slot(long slotAddr, int kind) {
+    if (slotAddr == 0) return;
+    long obj = __myp_mem_load_i64(slotAddr);
+    if (obj != 0) myp_release(__myp_addr_to_str(obj));
+}
+
+// ---- 严格检查诊断（allocator strict 模式开关；MYP alloc 当前不执行 strict 检查，
+// 仅 API 一致 + 供未来 alloc.myp 接入）----
+int myp_diag_get_strict() { return Exc.strict; }
+void myp_diag_set_strict(long on) { Exc.strict = on != 0 ? 1 : 0; }
