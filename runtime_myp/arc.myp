@@ -1,0 +1,23 @@
+// runtime_myp/arc.myp — 核心 ARC/分配器层第一步：myp_retain + myp_obj_type_id。
+// shadow 机制同 str.myp（--shared 外部符号）。raw-address 原子内建
+//（__myp_atomic_*_addr，自举新增）unblocks 分配器/ARC 的 rc 字段操作。
+// 对象头统一布局：{ _Atomic uint32_t rc; uint32_t type_id; } 在 data-8/data-4。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// C: void myp_retain(void* obj) —— atomic rc++ at (obj-8)。C 用 relaxed；MYP 内建
+// 用 seq_cst（单线程一致，多线程语义仍正确——原子性一致）。
+void myp_retain(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return;
+    __myp_atomic_add_i32_addr(addr - 8, 1);
+}
+
+// C: int myp_obj_type_id(void* obj) —— 读 (obj-4) type_id（0 = null/非类对象）。
+// 字符串 MYP_STR_TYPE_ID = 0xFFFFFFFE（int -2）。
+int myp_obj_type_id(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return 0;
+    return __myp_mem_load_i32(addr - 4);
+}

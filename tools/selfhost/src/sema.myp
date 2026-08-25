@@ -650,6 +650,12 @@ class Sema {
             addIntr("__myp_atomic_add_f64", "double");
             addIntr("__myp_atomic_load_i32", "int");
             addIntr("__myp_atomic_store_i32", "void");
+            // raw-address 原子变体（long 地址）：分配器/ARC 的 rc 字段（obj-8）用——
+            // 数组下标寻址不适用任意地址。
+            addIntr("__myp_atomic_add_i32_addr", "int");
+            addIntr("__myp_atomic_sub_i32_addr", "int");
+            addIntr("__myp_atomic_load_i32_addr", "int");
+            addIntr("__myp_atomic_store_i32_addr", "void");
             addIntr("__myp_gpu_alloc", "long");
             addIntr("__myp_gpu_free", "int");
             addIntr("__myp_gpu_copy_d2d", "int");

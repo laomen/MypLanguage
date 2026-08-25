@@ -7,6 +7,22 @@ import base64;
 // 直接调 ord/charcode/chr/strdup（Str.ord/chr 走 __myp_* 内建发射同名 runtime 调用）
 ffi int myp_charcode(string s, int i);
 ffi string myp_strdup(string s);
+ffi void myp_retain(string s);
+ffi int myp_obj_type_id(string s);
+
+// ARC/核心层探针：retain 增量 + 对象 type_id 读取（shadow 真生效验证）
+class ArcProbe {
+    static:
+        int run() {
+            string s = myp_strdup("hi");
+            int rc0 = __myp_mem_load_i32(__myp_str_ptr(s) - 8);
+            myp_retain(s);
+            int rc1 = __myp_mem_load_i32(__myp_str_ptr(s) - 8);
+            if (rc1 != rc0 + 1) return 1;                 // retain → rc+1
+            if (myp_obj_type_id(s) != -2) return 2;        // MYP_STR_TYPE_ID=0xFFFFFFFE
+            return 0;
+        }
+}
 
 // StringBuilder 实例方法不能在 main() 里直接调（direct call 限制）→ 包进 @static 方法。
 class RtJoinProbe {
@@ -162,5 +178,8 @@ int main() {
     if (Str.endsWith("abc", "") != 1) return 259;
     if (Str.contains("abc", "") != 1) return 260;
     if (Str.cmp("abc", "abd") != -1) return 261;
+    // 核心层 ARC 探针（raw-address 原子内建 + myp_retain/myp_obj_type_id）
+    int arc = ArcProbe.run();
+    if (arc != 0) return 270 + arc;
     return 0;
 }

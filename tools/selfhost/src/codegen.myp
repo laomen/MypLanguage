@@ -9546,6 +9546,33 @@ class CodeGen {
                         return t;
                     }
                 }
+                // __myp_atomic_*_addr 变体：raw-address 原子（long 地址 inttoptr）。
+                // 分配器/ARC 的 rc 字段（obj-8）用——数组下标寻址不适用任意地址。
+                if (callee != null && callee.kind() == "Identifier") {
+                    string an = callee.name();
+                    if (an == "__myp_atomic_add_i32_addr" || an == "__myp_atomic_sub_i32_addr"
+                        || an == "__myp_atomic_load_i32_addr" || an == "__myp_atomic_store_i32_addr") {
+                        string av = genExpr(e.args().get(0));
+                        string p = newTmp();
+                        sb_.append("  " + p + " = inttoptr i64 " + av + " to ptr\n");
+                        if (an == "__myp_atomic_load_i32_addr") {
+                            string tl = newTmp();
+                            sb_.append("  " + tl + " = load atomic i32, ptr " + p + " seq_cst, align 4\n");
+                            return tl;
+                        }
+                        string vv = genExpr(e.args().get(1));
+                        string vt = exprLlvmType(e.args().get(1));
+                        vv = convertValue(vv, vt, "i32");
+                        if (an == "__myp_atomic_store_i32_addr") {
+                            sb_.append("  store atomic i32 " + vv + ", ptr " + p + " seq_cst, align 4\n");
+                            return "0";
+                        }
+                        string op = (an == "__myp_atomic_add_i32_addr") ? "add" : "sub";
+                        string ta = newTmp();
+                        sb_.append("  " + ta + " = atomicrmw " + op + " ptr " + p + ", i32 " + vv + " seq_cst\n");
+                        return ta;
+                    }
+                }
                 // P2 §5.3 位操作原语：popcount/clz/ctz/bitreverse/rotl/rotr
                 // → LLVM intrinsic（返回类型 = 实参 LLVM 宽度）。
                 if (callee != null && callee.kind() == "Identifier") {

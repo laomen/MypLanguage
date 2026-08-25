@@ -35,6 +35,31 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.15 — runtime myp化 #12：核心 ARC/分配器层第一步（raw-address 原子内建 + myp_retain + myp_obj_type_id）
+
+**非破坏性**。核心层（分配器/ARC）最难的障碍之一是**任意地址原子操作**——现有
+`__myp_atomic_*` 内建是数组+下标寻址（GEP），不适用 rc 字段。自举新增 4 个
+**raw-address 原子内建**（long 地址 → inttoptr → `atomicrmw`/`load atomic`/`store
+atomic` seq_cst）：
+
+- `__myp_atomic_add_i32_addr` / `__myp_atomic_sub_i32_addr` /
+  `__myp_atomic_load_i32_addr` / `__myp_atomic_store_i32_addr`（sema + codegen）。
+
+`runtime_myp/arc.myp` 迁移核心层第一步：
+
+- **`myp_retain`**：对象头 `{_Atomic rc; type_id}` 在 data-8/data-4，`atomicrmw add`
+  at (obj-8)。
+- **`myp_obj_type_id`**：读 (obj-4)（RTTI，字符串=0xFFFFFFFE/-2）。
+
+**核心层完整迁移的障碍评估**（`myp_release`）：rc→0 后按 type_id 分发——数组逐元素
+release + `myp_free_class_array`、字符串 unlink 侵入分配链表 + free、类对象走
+**每程序生成的 `__myp_release_table[tid]`**（codegen 产物，MYP 模块无法引用程序全局）
++ weak 表通知。完整 MYP 化需：raw-address 原子（本轮已加）+ mmap 自建分配器 +
+程序全局访问机制——另立里程碑。
+
+验证：bootstrap 16/16、全量 323/323、runtime_myp shadow PASS（ArcProbe：retain→rc+1、
+type_id=-2）。
+
 ### v3.15.14 — runtime myp化 #11：SHA-256 摘要
 
 **非破坏性**。`runtime_myp/hash.myp` 新增 `myp_hash_sha256`（bridge hash_bridge.c
