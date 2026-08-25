@@ -130,7 +130,9 @@ void myp_assert_abort(string msg) {
     writeErr("[myp] kernel.assert FAILED: ");
     writeErr(msg);
     writeErr("\n");
-    __myp_syscall(60, 1, 0, 0, 0, 0, 0);   // exit(1)
+    // exit_group(231) 而非 exit(60)：@thread 子线程里 syscall 60 只退当前线程
+    // （CLONE_THREAD），进程继续 main return 0 → 误报 exit 0。硬失败必须终止整个进程。
+    __myp_syscall(231, 1, 0, 0, 0, 0, 0);   // exit_group(1)
 }
 
 // ---- 测试报告 ----

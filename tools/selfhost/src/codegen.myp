@@ -5490,7 +5490,10 @@ class CodeGen {
             string llPath = "/tmp/myp_gpu_k" + kname + ".ll";
             string ptxPath = "/tmp/myp_gpu_k" + kname + ".ptx";
             writeGpuFile(llPath, kernelLl);
-            string cmd = llc + " " + llPath + " -mtriple=nvptx64-nvidia-cuda -O2 -o " + ptxPath + " 2>&1";
+            // -mcpu=sm_75（与 C++ oracle gpuTargetArch() 一致）：不指定时 NVPTX
+            // 默认老架构不支持 double 原子 → atomicrmw fadd 降级成 atom.cas 循环
+            // （高竞争下重试风暴，sum 1M 元素 25s vs sm_75 直加 4ms）。
+            string cmd = llc + " " + llPath + " -mtriple=nvptx64-nvidia-cuda -mcpu=sm_75 -O2 -o " + ptxPath + " 2>&1";
             string ptx = "";
             if (Process.run(cmd) == 0 && Fs.isFile(ptxPath) != 0) {
                 ptx = readGpuFile(ptxPath);

@@ -132,7 +132,7 @@ long myp_exception_get_jmpbuf() {
             writeErrS("uncaught exception\n");
         }
     }
-    __myp_syscall(60, 134, 0, 0, 0, 0, 0);   // exit(134)
+    __myp_syscall(231, 134, 0, 0, 0, 0, 0);   // exit_group(134)，@thread 下也终止整个进程
     return 0;
 }
 

@@ -27,6 +27,29 @@
 
 ## 编译器版本历史
 
+### v3.15.74 — 自举 GPU 原子加直降 atom.add.f64（sm_75）+ @thread 硬失败 exit_group
+
+**非破坏性**。续 v3.15.73；真 GPU（RTX 2070 SUPER）验证发现并修复两个问题：
+
+1. **自举 GPU kernel llc 加 `-mcpu=sm_75`**（`tools/selfhost/src/codegen.myp` `gpuPtxFromLl`）：
+   - 此前 llc 未指定 `-mcpu` → NVPTX 默认老架构不支持 double 原子 → `atomicrmw fadd`
+     降级成 `atom.global.cas` 循环。高竞争（1M 线程同抢 `acc[0]`）下 CAS 重试风暴
+     → `Vectors.sum` 1M 元素 **25 秒**。
+   - 加 `-mcpu=sm_75`（与 C++ oracle `gpuTargetArch()` 一致）→ 直降
+     `atom.global.add.f64` → sum 1M 元素 **3ms**（与 seed 4ms 持平）。
+   - 实测：`gpu_buffer_demo` L1（add+sum+max+argmax）25455ms → 26ms；PTX 从
+     `atom.global.cas.b`（13 处）变为 `atom.global.add.f`（13 处）+ `atom.global.add.u`。
+2. **`@thread` 下硬失败改用 `exit_group`**（`runtime_myp/test.myp` `myp_assert_abort` +
+   `runtime_myp/exception.myp` 未捕获异常）：
+   - `@thread` 子线程用 `CLONE_THREAD` + syscall 60（`exit`）只终止**当前线程**；
+     此前 `myp_assert_abort` 的 `exit(1)` 在子线程里只退线程 → main 继续 `return 0`
+     → `kernel.assert` 失败误报退出码 0（`test_gpu_assert_fail` FAIL）。
+   - 改用 syscall 231（`exit_group`）终止整个进程 → 硬失败契约成立（退出码 1）。
+   - 无 @thread 场景行为不变（main 线程 exit/exit_group 等价）。
+
+验证：完整测试套件 **325 通过 / 0 失败**（含 `RUN_GPU_TESTS=1` GPU CPU 回退 61/0）；
+真 GPU 下 backend=CUDA、`Vectors.sum`/`gpu_buffer_demo` 性能恢复正常；bootstrap MD5 门禁通过。
+
 ### v3.15.73 — GPU 数学走 __nv_* libdevice + opt -mcpu=generic + 修 io 归档致 GPU 测试挂起
 
 **非破坏性**。续 v3.15.71/72 性能与运行时工作；本次修复 324 测试中 GPU @test 的挂起（回归）根因。
