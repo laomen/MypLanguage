@@ -9,15 +9,16 @@
 //     rc:u32, type_id:u32 }，rc/type_id 仍在 data-8/-4
 //   - MYP_ARR_TYPE_ID=0xFFFFFFFF（int -1）；MYP_STR_TYPE_ID=0xFFFFFFFE（int -2）
 //
-// 类对象分支（weak 通知 + 每程序 __myp_release_table 分发）委托 C helper
-// myp_release_class_obj_ex——weak 注册表是 C 静态全局、release 表是生成代码
-// 产物，MYP 模块无法触及。
+// 类对象分支（weak 通知 + 每程序 __myp_release_table 分发）已全 MYP 化（2026-08-25）：
+// `myp_release_class_obj_ex` 本模块实现——经 `__myp_rtable_addr`（取程序生成的
+// @__myp_release_table 基址，外部引用 + 程序 .o 在前 → 程序表胜出）+
+// `__myp_call_ptr`（间接调用表里的 destroy stub）绕过「MYP 无 extern 全局/裸函数指针
+// 调用」缺口。weak 通知走 weak.myp（myp_weak_notify_death）。
 
 // ---- mmap bump arena ----
 // chunk 头 32B：[next:i64 @0][cap:i64 @8][used:i64 @16][pad @24]，data 从 +32
 //（16 对齐）。mmap 页对齐 → data 16 对齐；每次分配再对齐到 16。超大分配独占
 // 一块；bump 永不归还内存（进程退出由 OS 回收）——与 C 的 arena 模型一致。
-ffi void myp_release_class_obj_ex(string obj);
 // 跨模块调用：weak.myp 的死亡通知（null 观察此对象的弱槽）
 ffi int myp_weak_notify_death(string obj);
 
@@ -183,9 +184,9 @@ int myp_release(string obj) {
     } else if (tid == -2) {
         if (Live.strings > 0) Live.strings = Live.strings - 1;
     } else {
-        // 类对象：先 MYP 弱通知（null 本注册表弱槽；C helper 会对 C 注册表做冗余
-        // notify——MYP shadow 全部弱入口后 C 注册表恒空，不干扰）。并发 weak_load
-        // 在锁内重新 bump rc → 返回 0（对象存活，新持有者负责释放）。
+        // 类对象：先 MYP 弱通知（null 本注册表弱槽）。并发 weak_load 在锁内重新
+        // bump rc → 返回 0（对象存活，新持有者负责释放）。存活则移交
+        // myp_release_class_obj_ex 继续分发（其内部会再次 weak 通知，同 C 版语义）。
         if (myp_weak_notify_death(obj) == 0) {
             return __myp_atomic_load_i32_addr(addr - 8);
         }
@@ -200,6 +201,27 @@ void myp_free_object(string obj) {
     long addr = __myp_str_ptr(obj);
     if (addr == 0) return;
     if (Live.objects > 0) Live.objects = Live.objects - 1;
+}
+
+// C: void myp_release_class_obj_ex(void* obj) —— 类对象 rc→0 后的分发（原 C helper，
+// 2026-08-25 全 MYP 化，不再委托 C）：weak 通知 → 查程序生成的 __myp_release_table
+// [tid]（经 __myp_rtable_addr 外部引用）→ __myp_call_ptr 间接调 destroy stub（级联
+// 释放引用字段 + 调 myp_free_object）；无 stub（tid<=0）→ 直接 myp_free_object。
+// 并发 weak_load 在锁内重新 bump rc → 返回 0（对象存活，新持有者负责释放）。
+void myp_release_class_obj_ex(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return;
+    if (myp_weak_notify_death(obj) == 0) return;   // 弱观察者存活 → 不释放
+    int tid = __myp_mem_load_i32(addr - 4);
+    if (tid > 0) {
+        long table = __myp_rtable_addr();
+        long stub = __myp_mem_load_i64(table + long(tid) * 8);
+        if (stub != 0) {
+            __myp_call_ptr(stub, obj);   // destroy stub（级联释放 + myp_free_object）
+            return;
+        }
+    }
+    myp_free_object(obj);
 }
 
 // ---- M9 诊断计数（进程级，替代 C TLS；仅计数，无 per-type）----

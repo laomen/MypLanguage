@@ -9502,6 +9502,26 @@ class CodeGen {
                     sb_.append("  " + t + " = inttoptr i64 " + av + " to ptr\n");
                     return t;
                 }
+                // __myp_rtable_addr() → long：程序生成的 @__myp_release_table 基址。
+                // 运行时模块（--shared）自身也定义同名表，但链接时程序 .o 在前 +
+                // --allow-multiple-definition → 程序定义胜出，本引用解析到程序表
+                //（含真实 destroy stub 地址）。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_rtable_addr") {
+                    string t = newTmp();
+                    sb_.append("  " + t + " = ptrtoint ptr @__myp_release_table to i64\n");
+                    return t;
+                }
+                // __myp_call_ptr(long addr, string obj)：间接调用 destroy stub。
+                // addr = 表里读出的函数指针地址（i64）；发射 inttoptr + 间接 call
+                //（LLVM 21 opaque ptr 下 `call void %fn(ptr %obj)` 合法）。自举独有。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_call_ptr") {
+                    string av = genExpr(e.args().get(0));
+                    string ov = genExpr(e.args().get(1));
+                    string fn = newTmp();
+                    sb_.append("  " + fn + " = inttoptr i64 " + av + " to ptr\n");
+                    sb_.append("  call void " + fn + "(ptr " + ov + ")\n");
+                    return "0";
+                }
                 // __myp_timer_create("eventName", delay[, interval]) → 解析事件名
                 // 为 event_id + myp_timer_create（同 C++ 内联特判）
                 if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_timer_create") {

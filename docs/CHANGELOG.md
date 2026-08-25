@@ -35,6 +35,29 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.27 — runtime myp化 #24：类对象 release 分发全 MYP 化（无 C 胶水）
+
+**非破坏性**。**策略变更（用户定）**：mypc 不再冻结、**不留 C 胶水**——运行时↔程序生成
+代码的硬边界也要全 MYP 化。`myp_release_class_obj_ex`（类对象 rc→0 后查程序生成的
+`__myp_release_table` 分发 destroy stub）不再委托 C helper：
+
+- **自举编译器新增两个内建**（runtime_myp 模块由自举编译；mypc 不用改——它已用
+  `ExternalLinkage` 发射同名 `@__myp_release_table`）：
+  - `__myp_rtable_addr()` → long：发射 `ptrtoint ptr @__myp_release_table to i64`。
+    运行时模块自身也定义同名表，但**程序 .o 链接在前 + `--allow-multiple-definition`
+    → 程序表胜出**，引用解析到程序真实表（含 destroy stub 地址）。
+  - `__myp_call_ptr(long addr, string obj)` → void：发射 `inttoptr` + 间接
+    `call void %fn(ptr %obj)`（LLVM 21 opaque ptr 下合法）。
+- **`runtime_myp/alloc.myp` 实现 MYP `myp_release_class_obj_ex`**：weak 通知 →
+  `__myp_rtable_addr` 取表 → `__myp_mem_load_i64(table + tid*8)` 读 stub →
+  `__myp_call_ptr` 间接调 destroy stub（级联释放引用字段 + `myp_free_object`）；
+  无 stub（tid<=0）→ 直接 `myp_free_object`。删除原 `ffi` 委托。
+- 验证：新增 `bench/freestanding/rt_cls_release_test.myp`（Outer 强持 Inner 字段，
+  释放 Outer → destroy stub 级联释放 Inner，Live 对象计数回基线；200 轮循环无泄漏）。
+  shadow **10/10**、bootstrap 16/16（新 fixpoint `8eca1f53…`，编译器源码变更）、
+  全量 323/323。反汇编确认 MYP 分发（`lea @__myp_release_table` + `call *reg` 间接
+  调用 destroy stub）。
+
 ### v3.15.26 — runtime myp化 #23：时间层 myp_now_ms / myp_now_realtime_ms / myp_sleep_ms
 
 **非破坏性**。新增 `runtime_myp/time.myp` shadow C runtime 时间函数（Time.nowMs /

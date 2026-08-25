@@ -1,0 +1,61 @@
+// rt_cls_release_test.myp — 类对象 release 分发全 MYP 化验证：
+// myp_release_class_obj_ex 经 __myp_rtable_addr + __myp_call_ptr 调程序生成的
+// destroy stub，级联释放引用字段。核心断言：Outer 释放后 Inner 也被级联释放
+//（Live 对象计数回基线）——若分发失败（表未解析/stub==0 → 直接 free 不级联），
+// Inner 泄漏 → 计数不归零，测试失败。
+import text;
+
+ffi long myp_live_object_count();
+
+class Inner {
+    property:
+        string name;
+    action:
+        void setName(string v) { name = v; }
+        string getName() { return name; }
+}
+class Outer {
+    property:
+        string tag;
+        Inner child;
+    action:
+        void setTag(string v) { tag = v; }
+        void setChild(Inner c) { child = c; }
+        Inner getChild() { return child; }
+}
+
+class ClsReleaseProbe {
+    static:
+        // 创建 Outer（强持有 Inner 字段）→ 作用域退出释放 Outer → destroy stub
+        // 级联释放 child（Inner）→ 各 myp_free_object。
+        int makeAndDrop() {
+            Inner i = new Inner();
+            Outer o = new Outer();
+            o.setTag("hello");
+            o.setChild(i);
+            i.setName("world");
+            if (o.getChild().getName() != "world") return 10;
+            return 0;
+        }
+        int run() {
+            long o0 = myp_live_object_count();
+            int r = ClsReleaseProbe.makeAndDrop();
+            if (r != 0) return r;
+            long o1 = myp_live_object_count();
+            if (o1 != o0) return 20;   // Outer + Inner 都释放（级联成功）
+            // 循环压力：反复创建+释放，Live 应稳定不回涨（无泄漏）
+            long base = myp_live_object_count();
+            for (int i = 0; i < 200; i = i + 1) {
+                int r2 = ClsReleaseProbe.makeAndDrop();
+                if (r2 != 0) return 30 + r2;
+            }
+            long o2 = myp_live_object_count();
+            if (o2 != base) return 40;   // 200 轮后计数稳定
+            return 0;
+        }
+}
+
+int main() {
+    int r = ClsReleaseProbe.run();
+    return r;
+}

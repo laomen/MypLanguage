@@ -621,6 +621,13 @@ class Sema {
             addIntr("__myp_memcpy", "void");
             addIntr("__myp_memset", "void");
             addIntr("__myp_addr_to_str", "string");
+            // 运行时↔程序生成代码边界内建（2026-08-25，release_table 全 MYP 化）：
+            // __myp_rtable_addr() → 程序生成的 @__myp_release_table 基址（外部引用，
+            // 链接时程序 .o 在前 → 程序表胜出）；__myp_call_ptr(addr,obj) → 间接调用
+            // 该表里的 destroy stub（call void %fn(ptr %obj)）。自举独有，mypc 无
+            //（runtime_myp 模块由自举编译；mypc 已用 ExternalLinkage 发射同名表）。
+            addIntr("__myp_rtable_addr", "long");
+            addIntr("__myp_call_ptr", "void");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");
