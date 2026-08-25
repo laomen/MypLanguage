@@ -27,6 +27,24 @@
 
 ## 编译器版本历史
 
+### v3.15.71 — MYP 运行时 file_io 读缓冲：readLine/read_byte/readAll 不再逐字节 syscall
+
+**非破坏性**。性能回归分析定位 file_io 落后主因（MYP 396ms vs C 26ms，15 倍）：
+`ioReadLineHandle`/`myp_io_read_byte`/流式 readAll 每字节一次 `read()` syscall
+（200K 行 ≈ 160 万次）。新增**每句柄 4KB 读缓冲**（`IoBuf` @static 表，与 Io.table
+同构；惰性分配、进程级复用）：
+
+- `ioReadLineHandle`/`execIoReadLineRaw`（async worker）→ `ioReadLineInto`：先消费
+  缓冲、耗尽才批量 read 4096。
+- `myp_io_read_byte` → 缓冲取字节（read_i32be/read_double 自动受益）。
+- `ioReadAllHandle`/`execIoReadAllRaw`：并入缓冲未消费字节（read ahead 已把 OS 位置
+  推前）+ lseek 定位剩余批量读；流式路径用 `ioBufReadN`（上限 64KB）。
+- `fopen`/`fclose`/`seek` 复位句柄缓冲；`ioBufInit` 全表显式清零（arena 非零初始化）。
+
+**验证**：file_io 基准 **396ms → 168ms**（2.4 倍），行数/内容与 C 一致（200001）；
+RSS 不变（每句柄 +4KB）。全量 **324/324**、shadow 冒烟通过（io/io_multi/io_thread/
+async_file/async_sleep/stream 全过）。写侧（每行 1 write + 分配）仍是后续可优化点。
+
 ### v3.15.70 — BUG-051 收尾：回滚 @static 默认值 workaround + BUGLIST 标记已修复
 
 **非破坏性**。v3.15.69 根因修复（@static 默认值显式常量初始化器）后，回滚因

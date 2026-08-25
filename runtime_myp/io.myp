@@ -109,6 +109,106 @@ void ioUnlock() {
     long l = Io.lock;
     if (l != 0) __myp_atomic_store_i32_addr(l, 0);
 }
+// ---- 每句柄读缓冲（file_io 性能：readLine/read_byte 不再逐字节 syscall）----
+// 每句柄 4096B arena 缓冲（惰性分配、进程级复用）；readLine/read_byte/readAll
+// 先消费缓冲，耗尽才批量 read（1 次 syscall 读 4096）。IoBuf 表 @static 进程级
+//（与 Io.table 同构）。⚠️ 依赖 Io.feof（ioTable 分配）；arena 非零初始化→全表清零。
+@static class IoBuf {
+    property:
+        long base = 0;   // long[64]: 每句柄读缓冲地址（arena 4096B，0=未分配）
+        long pos = 0;    // long[64]: 缓冲内位置
+        long len = 0;    // long[64]: 缓冲内有效字节数
+}
+void ioBufInit() {
+    if (IoBuf.base == 0) {
+        IoBuf.base = myp_arena_alloc(64 * 8);
+        IoBuf.pos = myp_arena_alloc(64 * 8);
+        IoBuf.len = myp_arena_alloc(64 * 8);
+        for (int i = 0; i < 64; i = i + 1) {
+            __myp_mem_store_i64(IoBuf.base + long(i) * 8, 0);
+            __myp_mem_store_i64(IoBuf.pos + long(i) * 8, 0);
+            __myp_mem_store_i64(IoBuf.len + long(i) * 8, 0);
+        }
+    }
+}
+// 确保句柄读缓冲存在（惰性分配 4096B，进程级复用），返回地址。
+long ioBufEnsure(int handle) {
+    ioBufInit();
+    long b = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+    if (b == 0) {
+        b = myp_arena_alloc(4096);
+        if (b != 0) __myp_mem_store_i64(IoBuf.base + long(handle) * 8, b);
+    }
+    return b;
+}
+// 填满句柄缓冲；返回本次读入字节数（0 = EOF/错误，feof 置位）。
+int ioBufFill(int handle, long fd) {
+    long b = ioBufEnsure(handle);
+    if (b == 0) return 0;
+    long r = __myp_syscall(0, fd, b, 4096, 0, 0, 0);
+    if (r <= 0) {
+        if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
+        return 0;
+    }
+    __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, 0);
+    __myp_mem_store_i64(IoBuf.len + long(handle) * 8, r);
+    return int(r);
+}
+// 复位句柄读缓冲（fopen/fclose/seek 后缓冲失效）
+void ioBufReset(int handle) {
+    ioBufInit();
+    __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, 0);
+    __myp_mem_store_i64(IoBuf.len + long(handle) * 8, 0);
+}
+// 从缓冲读一行到 scratch（cap 容量上限），返回长度 n（0 = EOF）。EOF 置 feof。
+long ioReadLineInto(int handle, long fd, long scratch, long cap) {
+    ioBufInit();
+    long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+    long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    long n = 0;
+    for (;;) {
+        if (pos >= blen) {
+            if (ioBufFill(handle, fd) == 0) break;   // EOF/错误
+            pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+            blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+        }
+        long b = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+        int c = __myp_mem_load_i8(b + pos);
+        pos = pos + 1;
+        if (c == 10) break;          // \n 不包含
+        if (n >= cap) break;         // 行上限（对齐旧 4096）
+        __myp_mem_store_i8(scratch + n, c);
+        n = n + 1;
+    }
+    __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, pos);
+    __myp_mem_store_i64(IoBuf.len + long(handle) * 8, blen);
+    return n;
+}
+// 从缓冲连续读 max 字节到 dst（必要时填充；pend 已由调用方消费）。返回读入数。
+long ioBufReadN(int handle, long fd, long dst, long max, long pend) {
+    ioBufInit();
+    long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+    long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    long n = 0;
+    if (pend >= 0) { __myp_mem_store_i8(dst, int(pend)); n = 1; }
+    while (n < max) {
+        if (pos >= blen) {
+            if (ioBufFill(handle, fd) == 0) break;
+            pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+            blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+        }
+        long b = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+        long take = blen - pos;
+        if (take > max - n) take = max - n;
+        __myp_memcpy(dst + n, b + pos, take);
+        pos = pos + take;
+        n = n + take;
+    }
+    __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, pos);
+    __myp_mem_store_i64(IoBuf.len + long(handle) * 8, blen);
+    return n;
+}
+
 // 初始化 fd 表（全 -1）
 long ioTable() {
     if (Io.table == 0) {
@@ -181,6 +281,7 @@ int myp_io_fopen(string path, string mode) {
     __myp_mem_store_i64(t + slot * 16, fd);
     __myp_mem_store_i64(t + slot * 16 + 8, -1);
     if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(slot) * 4, 0);   // 新开清 feof
+    ioBufReset(slot);   // 新开句柄清读缓冲状态（复用旧 4KB 块）
     ioUnlock();
     myp_io_cur_set(slot);
     return 0;
@@ -213,6 +314,7 @@ void myp_io_fclose() {
         fd = __myp_mem_load_i64(t + handle * 16);
         __myp_mem_store_i64(t + handle * 16, -1);
         __myp_mem_store_i64(t + handle * 16 + 8, -1);
+        ioBufReset(handle);
     }
     ioUnlock();
     if (fd != -1) __myp_syscall(3, fd, 0, 0, 0, 0, 0);
@@ -231,23 +333,12 @@ string ioReadLineHandle(int handle) {
     if (t == 0 || handle < 1 || handle >= 64) return ioEmptyStr();
     long fd = __myp_mem_load_i64(t + handle * 16);
     if (fd == -1) return ioEmptyStr();
+    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
+    __myp_mem_store_i64(t + handle * 16 + 8, -1);
     long buf = myp_arena_alloc(4096);
     long n = 0;
-    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
-    if (pend >= 0) {
-        __myp_mem_store_i64(t + handle * 16 + 8, -1);
-        if (pend != 10) { __myp_mem_store_i8(buf, pend); n = 1; }
-    }
-    while (n < 4096) {
-        long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-        if (r <= 0) {
-            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);   // 撞 EOF
-            break;          // EOF / 错误
-        }
-        int c = __myp_mem_load_i8(buf + n);
-        if (c == 10) break;          // \n 不包含
-        n = n + 1;
-    }
+    if (pend >= 0 && pend != 10) { __myp_mem_store_i8(buf, int(pend)); n = 1; }
+    n = n + ioReadLineInto(handle, fd, buf + n, 4096 - n);   // 缓冲读（耗尽才批量 syscall）
     string s = myp_alloc(n + 1);
     long dp = __myp_str_ptr(s);
     __myp_memcpy(dp, buf, n);
@@ -264,22 +355,21 @@ string ioReadAllHandle(int handle) {
     // pending 先消费
     long pend = __myp_mem_load_i64(t + handle * 16 + 8);
     __myp_mem_store_i64(t + handle * 16 + 8, -1);
+    // 缓冲中未消费字节（read ahead 已把 OS 位置推前）——读全文件必须先并入
+    ioBufInit();
+    long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+    long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    long buffered = blen - pos;
+    if (buffered < 0) buffered = 0;
     // 当前位置 → 文件尾 → 回当前位置
     long cur = __myp_syscall(8, fd, 0, 1, 0, 0, 0);    // SEEK_CUR
     long end = __myp_syscall(8, fd, 0, 2, 0, 0, 0);    // SEEK_END
     if (end < 0 || cur < 0) {
-        // 流式（lseek 失败）：逐字节
-        long buf = myp_arena_alloc(4096);
-        long n = 0;
-        if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
-        while (n < 4096) {
-            long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-            if (r <= 0) {
-                if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
-                break;
-            }
-            n = n + 1;
-        }
+        // 流式（lseek 失败）：缓冲 + 连续读（上限 64KB）
+        long cap = 65536;
+        long buf = myp_arena_alloc(cap + 1);
+        long n = ioBufReadN(handle, fd, buf, cap, pend);
+        __myp_mem_store_i8(buf + n, 0);
         string s = myp_alloc(n + 1);
         __myp_memcpy(__myp_str_ptr(s), buf, n);
         __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
@@ -289,13 +379,20 @@ string ioReadAllHandle(int handle) {
     __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
     long remaining = end - cur;
     if (remaining < 0) remaining = 0;
-    long cap = remaining + 1;
+    long cap = buffered + remaining + 1;
     if (pend >= 0) cap = cap + 1;
-    long buf = myp_arena_alloc(cap);
+    long buf = myp_arena_alloc(cap + 1);
     long n = 0;
-    if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
-    while (n < remaining + 1) {
-        long r = __myp_syscall(0, fd, buf + n, cap - n, 0, 0, 0);
+    if (pend >= 0) { __myp_mem_store_i8(buf, int(pend)); n = 1; }
+    if (buffered > 0) {
+        long bb = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+        __myp_memcpy(buf + n, bb + pos, buffered);
+        n = n + buffered;
+        __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, 0);   // 缓冲已消费
+        __myp_mem_store_i64(IoBuf.len + long(handle) * 8, 0);
+    }
+    while (n < cap - 1) {
+        long r = __myp_syscall(0, fd, buf + n, cap - 1 - n, 0, 0, 0);
         if (r <= 0) {
             if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
             break;
@@ -327,23 +424,12 @@ long execIoReadLineRaw(int handle) {
     if (t == 0 || handle < 1 || handle >= 64) return 0;
     long fd = __myp_mem_load_i64(t + handle * 16);
     if (fd == -1) return 0;
+    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
+    __myp_mem_store_i64(t + handle * 16 + 8, -1);
     long buf = myp_arena_alloc(4096);
     long n = 0;
-    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
-    if (pend >= 0) {
-        __myp_mem_store_i64(t + handle * 16 + 8, -1);
-        if (pend != 10) { __myp_mem_store_i8(buf, pend); n = 1; }
-    }
-    while (n < 4096) {
-        long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-        if (r <= 0) {
-            if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
-            break;          // EOF / 错误
-        }
-        int c = __myp_mem_load_i8(buf + n);
-        if (c == 10) break;          // \n 不包含
-        n = n + 1;
-    }
+    if (pend >= 0 && pend != 10) { __myp_mem_store_i8(buf, int(pend)); n = 1; }
+    n = n + ioReadLineInto(handle, fd, buf + n, 4096 - n);   // 缓冲读
     long dp = ioAllocRaw(int(n));
     if (dp == 0) return 0;
     __myp_memcpy(dp, buf, n);
@@ -359,22 +445,21 @@ long execIoReadAllRaw(int handle) {
     // pending 先消费
     long pend = __myp_mem_load_i64(t + handle * 16 + 8);
     __myp_mem_store_i64(t + handle * 16 + 8, -1);
+    // 缓冲中未消费字节（read ahead）——读全文件必须先并入
+    ioBufInit();
+    long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+    long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    long buffered = blen - pos;
+    if (buffered < 0) buffered = 0;
     // 当前位置 → 文件尾 → 回当前位置
     long cur = __myp_syscall(8, fd, 0, 1, 0, 0, 0);    // SEEK_CUR
     long end = __myp_syscall(8, fd, 0, 2, 0, 0, 0);    // SEEK_END
     if (end < 0 || cur < 0) {
-        // 流式（lseek 失败）：逐字节
-        long buf = myp_arena_alloc(4096);
-        long n = 0;
-        if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
-        while (n < 4096) {
-            long r = __myp_syscall(0, fd, buf + n, 1, 0, 0, 0);
-            if (r <= 0) {
-                if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
-                break;
-            }
-            n = n + 1;
-        }
+        // 流式：缓冲 + 连续读（上限 64KB）
+        long cap = 65536;
+        long buf = myp_arena_alloc(cap + 1);
+        long n = ioBufReadN(handle, fd, buf, cap, pend);
+        __myp_mem_store_i8(buf + n, 0);
         long dp = ioAllocRaw(int(n));
         if (dp == 0) return 0;
         __myp_memcpy(dp, buf, n);
@@ -385,13 +470,20 @@ long execIoReadAllRaw(int handle) {
     __myp_syscall(8, fd, cur, 0, 0, 0, 0);             // 回当前位置
     long remaining = end - cur;
     if (remaining < 0) remaining = 0;
-    long cap = remaining + 1;
+    long cap = buffered + remaining + 1;
     if (pend >= 0) cap = cap + 1;
-    long buf = myp_arena_alloc(cap);
+    long buf = myp_arena_alloc(cap + 1);
     long n = 0;
-    if (pend >= 0) { __myp_mem_store_i8(buf, pend); n = 1; }
-    while (n < remaining + 1) {
-        long r = __myp_syscall(0, fd, buf + n, cap - n, 0, 0, 0);
+    if (pend >= 0) { __myp_mem_store_i8(buf, int(pend)); n = 1; }
+    if (buffered > 0) {
+        long bb = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+        __myp_memcpy(buf + n, bb + pos, buffered);
+        n = n + buffered;
+        __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, 0);
+        __myp_mem_store_i64(IoBuf.len + long(handle) * 8, 0);
+    }
+    while (n < cap - 1) {
+        long r = __myp_syscall(0, fd, buf + n, cap - 1 - n, 0, 0, 0);
         if (r <= 0) {
             if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);
             break;
@@ -455,16 +547,23 @@ int myp_io_read_byte() {
         __myp_mem_store_i64(t + handle * 16 + 8, -1);
         return int(pend);
     }
-    long scratch = myp_arena_alloc(1);
-    long r = __myp_syscall(0, fd, scratch, 1, 0, 0, 0);
-    if (r <= 0) {
-        if (Io.feof != 0) __myp_mem_store_i32(Io.feof + long(handle) * 4, 1);   // 撞 EOF
-        myp_arena_reclaim_raw(scratch);
-        return -1;
+    // 每句柄缓冲取字节（耗尽才批量 read）
+    ioBufInit();
+    long pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+    long blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+    for (;;) {
+        if (pos >= blen) {
+            if (ioBufFill(handle, fd) == 0) return -1;   // EOF（feof 已置）
+            pos = __myp_mem_load_i64(IoBuf.pos + long(handle) * 8);
+            blen = __myp_mem_load_i64(IoBuf.len + long(handle) * 8);
+        }
+        long b = __myp_mem_load_i64(IoBuf.base + long(handle) * 8);
+        int c = __myp_mem_load_i8(b + pos);
+        pos = pos + 1;
+        __myp_mem_store_i64(IoBuf.pos + long(handle) * 8, pos);
+        __myp_mem_store_i64(IoBuf.len + long(handle) * 8, blen);
+        return c;
     }
-    int v = int(__myp_mem_load_i8(scratch));
-    myp_arena_reclaim_raw(scratch);
-    return v;
 }
 
 // C: int32_t myp_io_read_i32be(void) —— 大端 4 字节
@@ -513,25 +612,16 @@ int myp_io_write_double(double val) {
     return r;
 }
 
-// C: double myp_io_read_double(void)
+// C: double myp_io_read_double(void) —— 经缓冲 read_byte 逐字节（大端序拼接原语保持）
 double myp_io_read_double() {
-    int handle = myp_io_cur_get();
-    long t = Io.table;
-    if (t == 0 || handle < 1 || handle >= 64) return 0.0;
-    long fd = __myp_mem_load_i64(t + handle * 16);
-    if (fd == -1) return 0.0;
     long scratch = myp_arena_alloc(8);
-    long pend = __myp_mem_load_i64(t + handle * 16 + 8);
-    long r = 0;
-    if (pend >= 0) {
-        __myp_mem_store_i64(t + handle * 16 + 8, -1);
-        __myp_mem_store_i8(scratch, pend);
-        r = __myp_syscall(0, fd, scratch + 1, 7, 0, 0, 0);
-        if (r == 7) r = 8;
-    } else {
-        r = __myp_syscall(0, fd, scratch, 8, 0, 0, 0);
+    int ok = 1;
+    for (int i = 0; i < 8; i = i + 1) {
+        int b = myp_io_read_byte();
+        if (b < 0) { ok = 0; break; }
+        __myp_mem_store_i8(scratch + i, b);
     }
-    if (r != 8) { myp_arena_reclaim_raw(scratch); return 0.0; }
+    if (ok == 0) { myp_arena_reclaim_raw(scratch); return 0.0; }
     double v = __myp_mem_load_double(scratch);
     myp_arena_reclaim_raw(scratch);
     return v;
@@ -545,6 +635,7 @@ int myp_io_seek(int offset, int whence) {
     long fd = __myp_mem_load_i64(t + handle * 16);
     if (fd == -1) return -1;
     __myp_mem_store_i64(t + handle * 16 + 8, -1);   // seek 后清 pending
+    ioBufReset(handle);                              // seek 后缓冲失效 → 复位
     long r = __myp_syscall(8, fd, offset, whence, 0, 0, 0);   // lseek
     return r < 0 ? -1 : 0;
 }
