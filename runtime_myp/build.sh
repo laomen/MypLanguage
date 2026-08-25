@@ -26,19 +26,21 @@ for m in runtime_myp/*.myp; do
     RT_OBJS="$RT_OBJS /tmp/rt_myp_${base}.o"
 done
 
-# 归档（OPT-IN，MYP_MAKE_ARCHIVE=1 才产出 build/libmyp_rt_myp.a）：
+# 归档（默认产出，MYP_MAKE_ARCHIVE=0 显式关闭）：
 # de-gcc 关键——selfhost 链接程序时经 mypRtLib() 在 <编译器二进制旁>/build/ 找到
 # 它 → 跳过 MYP 化 bridge 的 gcc 编译 + 置于 libmyp_rt.a 前 + --allow-multiple-
 # definition（MYP 定义优先）；v3.15.65 起 link.myp 优先**仅 MYP 归档**链接
 # （无 C runtime），失败才回退 shadow。
-# ✅ 默认产出（MYP_MAKE_ARCHIVE=0 显式关闭）：v3.15.65 归档下 selfhost 全量
-# 323/323 + coro_thread 20/20 + async_file 与 C 逐字一致——MYP 运行时已可默认分发。
+# ✅ v3.15.65 归档下 selfhost 全量 323/323 + coro_thread 20/20 + async_file 与 C
+# 逐字一致——MYP 运行时已可默认分发。归档路径可用 MYP_RT_MYP_OUT 覆盖
+# （默认 <repo>/build/libmyp_rt_myp.a；CMake out-of-source 构建传各自 build 目录）。
+MYP_RT_MYP_OUT="${MYP_RT_MYP_OUT:-build/libmyp_rt_myp.a}"
 if [ "${MYP_MAKE_ARCHIVE:-1}" = "1" ]; then
-    rm -f build/libmyp_rt_myp.a
-    ar rcs build/libmyp_rt_myp.a $RT_OBJS
-    echo "== 归档 build/libmyp_rt_myp.a （$(echo $RT_OBJS | wc -w) 个模块对象）=="
+    rm -f "$MYP_RT_MYP_OUT"
+    ar rcs "$MYP_RT_MYP_OUT" $RT_OBJS
+    echo "== 归档 $MYP_RT_MYP_OUT （$(echo $RT_OBJS | wc -w) 个模块对象）=="
 else
-    rm -f build/libmyp_rt_myp.a
+    rm -f "$MYP_RT_MYP_OUT"
     echo "== 跳过归档产出（MYP_MAKE_ARCHIVE=0 显式关闭）=="
 fi
 

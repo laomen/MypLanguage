@@ -310,8 +310,9 @@ set(MYP_RT_MYP_OUT ${CMAKE_BINARY_DIR}/libmyp_rt_myp.a)
 add_custom_command(
     OUTPUT ${MYP_RT_MYP_OUT}
     # myp_self 是自定义目标（无 TARGET_FILE 生成表达式）；SELF 作为位置参数 $1
-    # 传入 build.sh（build.sh 内部 cd 到仓库根，绝对路径安全）。
-    COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh ${MYP_SELF_OUT}
+    # 传入 build.sh（build.sh 内部 cd 到仓库根，绝对路径安全）；MYP_RT_MYP_OUT
+    # 使 out-of-source 构建（build-asan/ 等）把归档写到各自 build 目录。
+    COMMAND ${CMAKE_COMMAND} -E env MYP_MAKE_ARCHIVE=1 MYP_SKIP_SMOKE=1 MYP_RT_MYP_OUT=${MYP_RT_MYP_OUT} bash ${CMAKE_SOURCE_DIR}/runtime_myp/build.sh ${MYP_SELF_OUT}
     DEPENDS myp_self
     COMMENT "Building MYP runtime archive (runtime_myp/*.myp -> libmyp_rt_myp.a)"
     VERBATIM
@@ -319,23 +320,9 @@ add_custom_command(
 add_custom_target(myp_rt_myp ALL DEPENDS ${MYP_RT_MYP_OUT})
 
 # ---- Runtime Library (C) ----
-find_package(PkgConfig REQUIRED)
-# SDL2 可选：mypc 本体不依赖 SDL（不链接 myp_runtime，只链 LLVM+pthread）；
-# 生成程序通过通用桥接发现自动链接（src/main.cpp linkObjects：bridges 目录 +
-# nm 符号检测，新增 bridge 无需改编译器）。v3.15.62 sdl/ttf 外部化后
-# sdl_bridge.c 移至 libs/sdl/bridges/，不再编入 myp_runtime（生成程序按需链接
-# 外部 SDL）。
-pkg_check_modules(SDL2 QUIET sdl2)
-if(SDL2_FOUND)
-    message(STATUS "SDL2 found (${SDL2_VERSION}) — 外部 SDL 桥接 libs/sdl，不编入 myp_runtime")
-else()
-    message(STATUS "SDL2 NOT found — myp_runtime 不含 SDL 桥接；生成程序按需链接 SDL 仍可用")
-endif()
-
-find_package(PkgConfig)
-if(PkgConfig_FOUND)
-    pkg_check_modules(HDF5 hdf5)
-endif()
+# SDL 桥接已外部化（v3.15.62 移至 libs/sdl/bridges/）；HDF5 由示例项目
+# （examples/BNCTDoseEngine）自行 find_package 探测——顶层构建不再需要
+# PkgConfig / pkg_check_modules。
 set(MYP_RUNTIME_SRCS
     src/runtime/runtime.c
     src/runtime/myp_stdlib.c
@@ -357,15 +344,11 @@ target_include_directories(myp_runtime
     PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
-if(SDL2_FOUND)
-    target_include_directories(myp_runtime PUBLIC ${SDL2_INCLUDE_DIRS})
-    target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES})
-endif()
 target_link_libraries(myp_runtime PUBLIC ${CMAKE_DL_LIBS})
 
 # ---- 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）----
 # 生成程序链接时直接使用（免 C 编译器——gcc 只剩 user bridge 的 C 编译职责）。
-# 与 myp_runtime（含 SDL/ROCM 条件、供 C 工具/示例链接）分开：纯核心运行时，
+# 与 myp_runtime（含 ROCM 条件、供 C 工具/示例链接）分开：纯核心运行时，
 # PIC + function-sections + O2，使链接的 --gc-sections 能裁剪未用符号。
 # 产物在 <build>/libmyp_rt.a，与 mypc/myp_self 同目录，编译器按 <exe_dir>/libmyp_rt.a
 # 定位（MYP_RT_LIB 可显式覆盖）。
@@ -387,9 +370,6 @@ target_include_directories(myp_rt_prebuilt PRIVATE ${CMAKE_SOURCE_DIR}/include)
 # （实测 252KB vs 20KB）。-g0 去掉 DWARF，gc 才能裁剪未用符号。
 target_compile_options(myp_rt_prebuilt PRIVATE -g0 -O2 -fPIC -ffunction-sections -fdata-sections)
 set_target_properties(myp_rt_prebuilt PROPERTIES OUTPUT_NAME myp_rt)
-
-# ---- Tests (optional, requires GoogleTest) ----
-option(MYP_BUILD_TESTS "Build unit tests" OFF)
 
 # ---- Tests (optional, requires GoogleTest) ----
 option(MYP_BUILD_TESTS "Build unit tests" OFF)
