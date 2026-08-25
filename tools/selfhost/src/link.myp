@@ -392,6 +392,25 @@ import collections; // ArrayList
             return "/lib64/ld-linux-x86-64.so.2";
         }
 
+        // 档A 收尾：定位预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）。
+        // MYP_RT_LIB 显式覆盖；默认取编译器二进制旁（Args.get(0) 目录 → build/）。
+        // 找不到返回 ""（回退 gcc 编译缓存）。
+        string prebuiltRt() {
+            string e = Console.getEnv("MYP_RT_LIB");
+            if (Str.len(e) > 0 && Fs.isFile(e) != 0) return e;
+            ArrayList<string> cands = new ArrayList<string>();
+            if (Args.count() > 0) {
+                cands.add(Fs.join(Fs.dirname(Args.get(0)), "libmyp_rt.a"));
+            }
+            cands.add("build/libmyp_rt.a");
+            cands.add("./build/libmyp_rt.a");
+            cands.add("libmyp_rt.a");
+            for (int i = 0; i < cands.size(); i = i + 1) {
+                if (Fs.isFile(cands.get(i)) != 0) return cands.get(i);
+            }
+            return "";
+        }
+
         // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
         // 默认 **-O2**（CLI 默认 optLevel=2；v3.12.44 修复 opt -O2 跨 setjmp/longjmp
         // 的 finally 语义破坏根因——codegen 在 try 入口把全部在作用域局部 + finally
@@ -438,25 +457,31 @@ import collections; // ArrayList
                 Console.writeLine("Link OK: " + outPath);
                 return 0;
             }
+            // 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）。
+            // 找到时直接链接（免 C 编译器——gcc 只剩 bridge 的 C 编译职责）。
+            string prebuiltRt = Link.prebuiltRt();
             string inc = Link.findIncDir(stdlib);
             string runtimeC = Link.findRuntimeC(stdlib);
             // runtime.c 约 6000 行，gcc -O2 每次编译 ~0.9s，占单文件编译总耗时
             // 90%+。内容哈希缓存（FNV-1a 源码+标志）：未变则复用，跨进程共享安全。
-            string rtObj = Link.cacheObjPath(runtimeC, "-O2");
-            int needRt = 1;
-            if (Str.len(rtObj) != 0 && Fs.isFile(rtObj) != 0 && Fs.isFile(runtimeC) != 0) {
-                if (Fs.modifiedTime(rtObj) >= Fs.modifiedTime(runtimeC)) needRt = 0;
-            }
-            if (needRt != 0) {
-                cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 -c " + runtimeC + " -o " + rtObj + " 2>&1";
-                if (Process.run(cmd) != 0) {
-                    Console.writeLine("runtime compile failed");
-                    return 1;
+            string rtObj = "";
+            if (Str.len(prebuiltRt) == 0) {
+                rtObj = Link.cacheObjPath(runtimeC, "-O2");
+                int needRt = 1;
+                if (Str.len(rtObj) != 0 && Fs.isFile(rtObj) != 0 && Fs.isFile(runtimeC) != 0) {
+                    if (Fs.modifiedTime(rtObj) >= Fs.modifiedTime(runtimeC)) needRt = 0;
+                }
+                if (needRt != 0) {
+                    cmd = Link.findCc() + Link.baseCflags(inc) + " -O2 -c " + runtimeC + " -o " + rtObj + " 2>&1";
+                    if (Process.run(cmd) != 0) {
+                        Console.writeLine("runtime compile failed");
+                        return 1;
+                    }
                 }
             }
             string ctxAsm = Link.findCoroCtx(stdlib);
             string ctxObj = "";
-            if (Str.len(ctxAsm) != 0) {
+            if (Str.len(ctxAsm) != 0 && Str.len(prebuiltRt) == 0) {
                 // coro_ctx.S 小文件，同样内容哈希缓存复用。
                 ctxObj = Link.cacheObjPath(ctxAsm, "-O2");
                 int needCtx = 1;
@@ -476,7 +501,7 @@ import collections; // ArrayList
             string gpuC = Link.findRuntimeGpu(stdlib);
             string gpuObj = "";
             string gpuLinkObj = "";
-            if (Str.len(gpuC) != 0) {
+            if (Str.len(gpuC) != 0 && Str.len(prebuiltRt) == 0) {
                 gpuObj = Link.cacheObjPath(gpuC, "-O2");
                 int needGpu = 1;
                 if (Str.len(gpuObj) != 0 && Fs.isFile(gpuObj) != 0 && Fs.isFile(gpuC) != 0) {
@@ -495,7 +520,7 @@ import collections; // ArrayList
             string libC = Link.findRuntimeLib(stdlib);
             string libObj = "";
             string libLinkObj = "";
-            if (Str.len(libC) != 0) {
+            if (Str.len(libC) != 0 && Str.len(prebuiltRt) == 0) {
                 libObj = Link.cacheObjPath(libC, "-O2");
                 int needLib = 1;
                 if (Str.len(libObj) != 0 && Fs.isFile(libObj) != 0 && Fs.isFile(libC) != 0) {
@@ -577,6 +602,10 @@ import collections; // ArrayList
             }
             string cc = Link.findCc();
             string libs = Link.ldLibs();
+            // runtime 对象列表：预编译归档优先（免 C 编译），否则单个对象。
+            string runtimeObjs = (Str.len(prebuiltRt) > 0)
+                ? " " + prebuiltRt
+                : " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj;
             // 档A：非 shared 默认 ld.lld 链接（去 gcc 的链接职责，保留 libc）；
             // MYP_LINKER=gcc 或未找到 lld 时回退 gcc。
             int useLld = 0;
@@ -595,7 +624,7 @@ import collections; // ArrayList
                 string pieFlag = (pie != 0) ? "-pie " : "";
                 cmd = ld + " " + pieFlag + "--dynamic-linker " + dynl + " -o " + outPath
                     + " " + start + " " + crt + "/crti.o"
-                    + " " + objPath + " " + rtObj + " " + ctxObj + gpuLinkObj + libLinkObj
+                    + " " + objPath + runtimeObjs
                     + bridgeObjList
                     + " -L" + gccd + " -L" + crt
                     + " -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s"

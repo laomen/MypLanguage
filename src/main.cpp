@@ -845,12 +845,27 @@ static std::string findDynLinker() {
              + "_" + std::to_string(std::rand()) + ".o";
     };
 
+    // ---- 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）----
+    // 找到且非 sanitizer/非 trace 时直接链接（免 C 编译器——gcc 只剩 user bridge
+    // 的 C 编译职责）；否则回退 gcc 编译缓存。MYP_RT_LIB 显式覆盖；默认取
+    // <编译器二进制目录>/libmyp_rt.a（Linux /proc/self/exe）。
+    std::string prebuilt_rt;
+    if (san_flags.empty() && !trace_enabled) {
+        if (const char* rl = getenv("MYP_RT_LIB"); rl && rl[0]) {
+            if (fileExists(rl)) prebuilt_rt = rl;
+        } else {
+            std::string cand = selfExeDir("") + "/libmyp_rt.a";
+            if (fileExists(cand)) prebuilt_rt = cand;
+        }
+    }
+
     // Build runtime object. IMPORTANT: the C runtime is compiled fresh for
-    // EVERY generated program. It MUST be optimized — gcc's default is -O0,
-    // which leaves every runtime function unoptimized (no inlining, all
-    // locals spilled to the stack), dominating hot loops (channel sync
-    // handoff, coroutine yield/resume, string/ARC ops). -O2 is folded into
-    // the cache hash so old -O0 cached objects are never reused.
+    // EVERY generated program (unless the prebuilt libmyp_rt.a is used). It
+    // MUST be optimized — gcc's default is -O0, which leaves every runtime
+    // function unoptimized (no inlining, all locals spilled to the stack),
+    // dominating hot loops (channel sync handoff, coroutine yield/resume,
+    // string/ARC ops). -O2 is folded into the cache hash so old -O0 cached
+    // objects are never reused.
     std::string rt_obj;
     const char* rt_opt = "-O2";
     std::string trace_def = trace_enabled ? " -DTRACE_ENABLED" : "";
@@ -858,7 +873,7 @@ static std::string findDynLinker() {
     // -ffunction-sections cannot be trimmed by --gc-sections, so it must never
     // be reused from cache.
     std::string rt_flags = std::string(rt_opt) + trace_def + gc_compile;
-    if (fileExists(runtime_c)) {
+    if (prebuilt_rt.empty() && fileExists(runtime_c)) {
         std::string cached = cacheObj(runtime_c, rt_flags);
         if (!cached.empty() && fileExists(cached)) {
             rt_obj = cached;  // cache hit — skip gcc
@@ -877,7 +892,7 @@ static std::string findDynLinker() {
                     rt_obj = cached;  // link from the installed cache path
             }
         }
-    } else {
+    } else if (prebuilt_rt.empty()) {
         rt_obj = tmpObj("runtime");
         std::string compile_rt = kCC + " -I" + inc_path + " -fPIC" + trace_def + san_flags + gc_compile + " -c " + runtime_c + " -o " + rt_obj + " 2>&1";
         if (std::system(compile_rt.c_str()) != 0) {
@@ -898,7 +913,7 @@ static std::string findDynLinker() {
         ctx_asm = "src/runtime/" + kCtxAsm;
     else if (fileExists(runtime_dir + "/src/runtime/" + kCtxAsm))
         ctx_asm = runtime_dir + "/src/runtime/" + kCtxAsm;
-    if (!ctx_asm.empty()) {
+    if (!ctx_asm.empty() && prebuilt_rt.empty()) {
         ctx_obj = tmpObj("rt_ctx");
         std::string compile_ctx = kCC + " -c " + ctx_asm + " -o " + ctx_obj + " 2>&1";
         if (std::system(compile_ctx.c_str()) != 0) {
@@ -1004,7 +1019,7 @@ static std::string findDynLinker() {
     else if (fileExists(runtime_dir + "/src/runtime/runtime_gpu.c"))
         gpu_c = runtime_dir + "/src/runtime/runtime_gpu.c";
     std::string gpu_obj;
-    if (!gpu_c.empty()) {
+    if (!gpu_c.empty() && prebuilt_rt.empty()) {
         gpu_obj = "";
         std::string cached = cacheObj(gpu_c, "-O2" + gc_compile);
         if (!cached.empty() && fileExists(cached)) {
@@ -1031,7 +1046,7 @@ static std::string findDynLinker() {
     else if (fileExists(runtime_dir + "/src/runtime/runtime_lib.c"))
         lib_c = runtime_dir + "/src/runtime/runtime_lib.c";
     std::string lib_obj;
-    if (!lib_c.empty()) {
+    if (!lib_c.empty() && prebuilt_rt.empty()) {
         lib_obj = "";
         std::string cached = cacheObj(lib_c, "-O2" + gc_compile);
         if (!cached.empty() && fileExists(cached)) {
@@ -1058,12 +1073,17 @@ static std::string findDynLinker() {
     std::string lld = want_lld ? findLld() : "";
     bool use_lld = want_lld && !lld.empty();
 
+    // runtime 对象列表：预编译归档优先（免 C 编译），否则单个 runtime 对象。
+    std::string runtime_objs = prebuilt_rt.empty()
+        ? (" " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj)
+        : (" " + prebuilt_rt);
+
     std::string link_cmd;
     if (shared_lib) {
-        link_cmd = kCC + " -shared -fPIC -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+        link_cmd = kCC + " -shared -fPIC -I" + inc_path + san_flags + obj_list + runtime_objs + bridge_obj_list
                  + " -o " + output_name + kPlatformLibs + " " + bridge_libs + gc_link + " 2>&1";
     } else if (static_lib) {
-        std::string ar_cmd = "ar rcs " + output_name + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list + " 2>&1";
+        std::string ar_cmd = "ar rcs " + output_name + obj_list + runtime_objs + bridge_obj_list + " 2>&1";
         int ar_result = std::system(ar_cmd.c_str());
         if (ar_result != 0) {
             std::cerr << "Static library creation failed\n";
@@ -1082,13 +1102,13 @@ static std::string findDynLinker() {
         std::string start = pie_start ? crt + "/Scrt1.o" : crt + "/crt1.o";
         link_cmd = lld + " " + pie_flag + "--dynamic-linker " + dynl + " -o " + output_name
                  + " " + start + " " + crt + "/crti.o"
-                 + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+                 + obj_list + runtime_objs + bridge_obj_list
                  + " -L" + gccd + " -L" + crt
                  + " -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s"
                  + " " + bridge_libs + " " + crt + "/crtn.o"
                  + " --gc-sections 2>&1";
     } else {
-        link_cmd = kCC + " -I" + inc_path + san_flags + obj_list + " " + rt_obj + " " + ctx_obj + " " + gpu_obj + " " + lib_obj + bridge_obj_list
+        link_cmd = kCC + " -I" + inc_path + san_flags + obj_list + runtime_objs + bridge_obj_list
                  + " -o " + output_name + kPlatformLibs + " " + bridge_libs + gc_link + " 2>&1";
     }
     int link_result = std::system(link_cmd.c_str());

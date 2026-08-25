@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 project(myp-compiler
     VERSION 0.1.0
-    LANGUAGES C CXX
+    LANGUAGES C CXX ASM
 )
 
 set(CMAKE_CXX_STANDARD 17)
@@ -347,6 +347,31 @@ if(SDL2_FOUND)
     target_link_libraries(myp_runtime PUBLIC ${SDL2_LINK_LIBRARIES})
 endif()
 target_link_libraries(myp_runtime PUBLIC ${CMAKE_DL_LIBS})
+
+# ---- 档A 收尾：预编译核心 runtime 归档（libmyp_rt.a，随编译器分发）----
+# 生成程序链接时直接使用（免 C 编译器——gcc 只剩 user bridge 的 C 编译职责）。
+# 与 myp_runtime（含 SDL/ROCM 条件、供 C 工具/示例链接）分开：纯核心运行时，
+# PIC + function-sections + O2，使链接的 --gc-sections 能裁剪未用符号。
+# 产物在 <build>/libmyp_rt.a，与 mypc/myp_self 同目录，编译器按 <exe_dir>/libmyp_rt.a
+# 定位（MYP_RT_LIB 可显式覆盖）。
+set(MYP_RT_PREBUILT_SRCS
+    src/runtime/runtime.c
+    src/runtime/myp_stdlib.c
+    src/runtime/runtime_gpu.c
+    src/runtime/runtime_lib.c
+)
+if(MINGW OR MSVC)
+    list(APPEND MYP_RT_PREBUILT_SRCS src/runtime/coro_ctx_win.S)
+else()
+    list(APPEND MYP_RT_PREBUILT_SRCS src/runtime/coro_ctx.S)
+endif()
+add_library(myp_rt_prebuilt STATIC ${MYP_RT_PREBUILT_SRCS})
+target_include_directories(myp_rt_prebuilt PRIVATE ${CMAKE_SOURCE_DIR}/include)
+# -g0 关键：CMake 默认可能带 -g（Debug 信息），其 .debug_* 节的重定位会让
+# ld.lld --gc-sections 把所有 .text.* 视为可达 → 整个 6000 行 runtime 全链进
+# （实测 252KB vs 20KB）。-g0 去掉 DWARF，gc 才能裁剪未用符号。
+target_compile_options(myp_rt_prebuilt PRIVATE -g0 -O2 -fPIC -ffunction-sections -fdata-sections)
+set_target_properties(myp_rt_prebuilt PROPERTIES OUTPUT_NAME myp_rt)
 
 # ---- Tests (optional, requires GoogleTest) ----
 option(MYP_BUILD_TESTS "Build unit tests" OFF)
