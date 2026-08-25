@@ -27,6 +27,21 @@
 
 ## 编译器版本历史
 
+### v3.15.70 — BUG-051 收尾：回滚 @static 默认值 workaround + BUGLIST 标记已修复
+
+**非破坏性**。v3.15.69 根因修复（@static 默认值显式常量初始化器）后，回滚因
+"`--shared` 默认值不生效" 做的**显式初始化 workaround**（现在靠默认值初始化器生效）：
+
+- `coro.myp`：`coroEnsureInit()` 不再显式 `CoroT.current = -1`（靠 `= -1` 初始值；
+  BUG-051 的协程 0 误判根因）。
+- `thread.myp`：`myp_thread_spawn` 不再显式 `Thr.stackSize = 1048576`（靠初始值）。
+- `sync.myp`/`MIGRATION_STATUS.md`/`coro.myp` 注释修正：默认值已生效；syncInit 的
+  arena **表内容**清零保留（`myp_arena_alloc` 非零初始化，与默认值无关）。
+- `tests/BUGLIST.md`：**BUG-051 🟨 → 🟩 已修复**（含修复细节 + 回滚记录）。
+
+**验证**：coro/coro_thread/threadpool/thread_atomic 全过；全量 **324/324**、shadow
+冒烟通过（无行为变化，仅移除冗余显式初始化）。
+
 ### v3.15.69 — 根因修复：`@static class` 属性默认值真正生效（显式常量初始化器）
 
 **非破坏性**。此前 `@static class` 全局一律发 `zeroinitializer`，**属性默认值被丢弃**

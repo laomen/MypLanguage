@@ -14,7 +14,9 @@
 //   - Once：done + 复用 Mutex 槽。
 //   - Barrier：arrived 计数 + seq + futex。
 // 表：@static 进程级；每字段是 arena 缓冲地址（long），经 raw 原子/内存访问。
-// ⚠️ --shared 下 @static 默认值不生效 → 所有非零默认靠 syncInit() 显式置。
+// ⚠️ @static 默认值（v3.15.69 修复后生效）只覆盖**字段指针槽**（`= 0`）；arena 表
+// **内容**（myp_arena_alloc 的 int[64]）非零初始化（空闲链表复用旧块）→ 须 syncInit()
+// 显式清零（旧 bump-only 时代 mmap 零页掩盖此依赖）。
 
 ffi long myp_arena_alloc(long size);
 
@@ -64,7 +66,7 @@ ffi long myp_arena_alloc(long size);
         long next = 0;
 }
 
-// ---- 一次性初始化（--shared 默认值不生效 → 显式分配表缓冲 + 全局锁）----
+// ---- 一次性初始化（lazy 分配 arena 表缓冲 + 全局锁；arena 内容非零初始化 → 清零）----
 void syncZeroInt(long base, int n) {
     for (int i = 0; i < n; i = i + 1) __myp_mem_store_i32(base + long(i) * 4, 0);
 }

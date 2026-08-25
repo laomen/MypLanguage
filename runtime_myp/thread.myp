@@ -33,12 +33,11 @@ void myp_thread_child_entry(long entryAddr) {
 }
 
 // C 侧无同名函数——MYP 新建原语。mmap 栈 + clone；子线程跑 entry 后 exit 自身。
-// ⚠️ @static 类属性初始化器在 --shared 模块下不生效 → stackSize 须**显式设置**
-// （实测 1048576 默认值读出为 0，被钳到 65536）。
+// ⚠️ 曾因 @static 属性默认值不生效（--shared，v3.15.69 已修复）→ stackSize
+// `= 1048576` 读出 0 被钳到 65536，须显式设置；现默认值由初始化器生效，已回滚。
 long myp_thread_spawn(long entryAddr) {
     Thr.entry = entryAddr;
     Thr.done_read = 0;          // 握手清零（父设子读）
-    Thr.stackSize = 1048576;    // 显式设置（@static 初始化器不生效）
     long size = Thr.stackSize;
     if (size < 65536) size = 65536;
     long stack = __myp_syscall(9, 0, size, 3, 0x22, -1, 0);   // mmap 匿名 RW

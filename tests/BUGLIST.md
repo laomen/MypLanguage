@@ -49,7 +49,7 @@
 | BUG-048 | 🟩 | selfhost 闭源分发/链接缺口——无预编译库(.so/.a)发现 / 无 `--shared` 库模式 / 链接成功不打印 "Link OK"（parity closed-lib 根因） | 回归 `tests/test_closed_lib.sh`（closed-lib 12/12） |
 | BUG-049 | 🟩 | selfhost codegen `&&`/`||` 结果槽栈泄漏——短路降级内联 `alloca i1` 循环体内每轮执行 RSP 不恢复 → 无限循环跌破栈底崩溃（rt_thread_test 自旋暴露） | 回归 `bench/freestanding/rt_thread_test.myp`（自旋 `||` 直写，8/8 稳定） |
 | BUG-050 | 🟩 | 两个编译期解析缺口：(1) **裸 const 标识符不折叠**——顶层 `const int CAP=1024` 被两个编译器都解析成零参 const-decl **函数**类型，裸引用 `CAP`（非 `CAP()`）报 `expected numeric type, got 'function'/'() -> int'`；(2) **selfhost 对 `__myp_*` 盲目去前缀**——通用 Identifier callee 路径把真 `__myp_coro_*`/`__myp_destroy_*` 符号去前缀成 `myp_coro_resume`（未定义符号），且去前缀后函数类型解析失败 → 字面量实参 `0` 不提升成 i64 | 回归 裸 const（`CAP*8` 折叠 + `CAP()` 显式调用双编译）+ shadow `rt_coro_test`（IR `call i64 @__myp_coro_resume(i64, i64 0)`）+ 全量 323 |
-| BUG-051 | 🟨 | **@static 类属性默认值不生效**——@static 实例全局恒 `zeroinitializer`（C++ codegen.cpp:1549 `ConstantAggregateZero` / selfhost codegen.myp:1509 `zeroinitializer`），属性默认值（`int x = 5;`/`= -1`）只在 `new` 路径应用（generateNewExpr:3560），@static 全局从不 `new` → 非零默认值静默变 0。手册 manual.md:167 写明「默认值在 new 时生效」→ 文档化但坑（手册又推荐 @static 类做类级共享常量）。**运行时已规避**（coroEnsureInit 显式置 current=-1） | 复现 `/tmp/static_default.myp`（`@static S { int x=5; int y=-1; }` 双模式 IR 均 zeroinitializer，读得 0） |
+| BUG-051 | � | **@static 类属性默认值不生效**——@static 实例全局恒 `zeroinitializer`（C++ codegen.cpp:1549 `ConstantAggregateZero` / selfhost codegen.myp:1509 `zeroinitializer`），属性默认值（`int x = 5;`/`= -1`）只在 `new` 路径应用（generateNewExpr:3560），@static 全局从不 `new` → 非零默认值静默变 0。手册 manual.md:167 写明「默认值在 new 时生效」→ 文档化但坑（手册又推荐 @static 类做类级共享常量）。**v3.15.69 selfhost codegen 已修复**（显式常量初始化器，含常量折叠）；oracle 冻结不改。**运行时 workaround 已回滚**（coroEnsureInit 显式置 current=-1、thread stackSize 显式置 1048576） | 回归 `tests/@test/manual_static_defaults.myp`（int/long 折叠/一元浮点/bool/字符串/int 除法，7 断言） |
 
 ---
 
@@ -1359,10 +1359,11 @@
   前缀——中间路线是**按真符号族豁免**（coro/destroy），且编译器内建调用的字面量实参
   提升依赖「函数名能解析」这一前提，被去前缀破坏。
 
-## BUG-051（待修 🟨）：@static 类属性默认值不生效（全局恒 zeroinitializer）
+## BUG-051（已修复 🟩，v3.15.69）：@static 类属性默认值不生效（全局恒 zeroinitializer）
 
 - **状态**：🟨 已定位待修（2026-08-25，runtime myp化 #38 协程 Phase C 暴露；
-  编译器未修，运行时已规避）
+  编译器未修，运行时已规避）→ **🟩 已修复（2026-08-26，v3.15.69 selfhost
+  codegen 显式常量初始化器）**。
 - **复现**：`/tmp/static_default.myp`——`@static class S { property: int x = 5;
   int y = -1; int z = 0; }`；`int main(){ return (S.x-5)+(S.y+1); }`。
   双编译器、**非 shared 与 --shared 均**：IR `@__myp_static_S = global %S
@@ -1370,10 +1371,11 @@
 - **现象**：@static 类属性带**非零默认值**（`= 5`/`= -1`）时静默变 0；`= 0` 恰好匹配
   zeroinit 不受影响。手写 `CoroT.current = -1`（协程表当前槽）从 0 起 → 恰等于首个
   协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→ channel/wait 走协程
-  分支（内联 resume 改变输出时序 / 误 park）。
+  分支（内联 resume 改变输出时序 / 误 park）。thread.myp `Thr.stackSize = 1048576`
+  读出 0 被钳到 65536（栈过小）。
 - **根因（双编译器一致）**：
   1. @static 实例全局创建处**无条件零初始化**：C++ `src/codegen/codegen.cpp:1549`
-     `ConstantAggregateZero::get(st)`；selfhost `tools/selfhost/src/codegen.myp:1509`
+     `ConstantAggregateZero::get(st)`；selfhost `tools/selfhost/src/codegen.myp`
      `" = global %" + c.name() + " zeroinitializer\n"`。
   2. 属性默认值（`PropertyDecl.init_expr`）**只在 `new` 路径应用**：C++
      `src/codegen/codegen_expr.cpp:3560-3588`（generateNewExpr 逐属性 store）。
@@ -1381,12 +1383,18 @@
   3. 手册 `docs/manual.md:167` 明写「属性默认值在 new 时生效」→ 技术上文档化，但
      与手册同段推荐的「@static 类做类级共享常量」自相矛盾（`@static class C {
      int K=1024; }` 实际 K=0）。
-- **运行时规避（coro.myp #38 已做）**：`coroEnsureInit()` 一次性显式置
-  `CoroT.current = -1`，挂全部公共 API 入口（26 处）。workaround 正确、与编译器
-  行为无关，保留。
-- **修复方向（编译器级，未做）**：把 @static 属性的**常量** `init_expr` 折叠进全局
-  initializer（`global %S { i32 5, i32 -1, i32 0, ... }`）；非常量默认值（如
-  `= someCall()`）需启动期初始化函数。改动涉及两编译器 + bootstrap 重验。
+- **修复（v3.15.69，仅 selfhost codegen，oracle 冻结不改）**：
+  `emitStaticClassGlobals` 存在**可折叠非零默认值** → 发显式结构体常量初始化器
+  `global %S { i32 5, i32 -1, ... }`；否则保持 zeroinitializer（零改动保护既有模块）。
+  支持：字面量（int/float/bool/null/string）+ 一元负号 + Convert 透传 + 二元整数/
+  浮点常量折叠（`constIntEval` 递归处理 `2*3+1` 嵌套）；数组/结构体/向量元素 →
+  `ft zeroinitializer`；字符串默认 → `@str` 常量 GEP；double/float 十六进制位型。
+- **运行时 workaround 已回滚（2026-08-26）**：coroEnsureInit 不再显式置
+  `CoroT.current = -1`（靠初始值）；thread myp_thread_spawn 不再显式置
+  `Thr.stackSize = 1048576`（靠初始值）。sync.myp 的 arena **表内容**清零保留
+  （myp_arena_alloc 非零初始化，与默认值无关）。
+- **回归**：`tests/@test/manual_static_defaults.myp`（7 断言）；全量 324/324、
+  自举 16/16 不动点。
 - **教训**：`--shared` 模式背锅了——实际是**任何模式**下 @static 全局都不应用默认值
   （之前记的「static-init 不适用于 --shared」是误判）；@static 类非零默认值必须
   运行时显式初始化或避免依赖。

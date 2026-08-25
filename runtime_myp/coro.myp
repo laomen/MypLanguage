@@ -177,10 +177,10 @@ void coroRetiredEnsure(int n) {
 }
 
 // ---- 一次性状态初始化 ----
-// ⚠️ --shared 库模式下 @static 属性默认值**不生效**（全局 zeroinitializer）——
-// CoroT.current 声明 `= -1` 实际从 0 起。0 恰等于首个协程槽号 → main（非协程）
-// 在 spawn 后被误判为「在协程 0」→ channel/wait 走协程分支（内联 resume/误 park）。
-// 所有公共入口先 coroEnsureInit() 把 current 显式置 -1。
+// ⚠️ 曾因 @static 属性默认值不生效（全局 zeroinitializer，v3.15.69 已修复）→
+// CoroT.current `= -1` 从 0 起，0 恰等于首个协程槽号 → main（非协程）在 spawn 后
+// 被误判为「在协程 0」→ 需 coroEnsureInit() 显式置 -1。现默认值由显式初始化器
+// 生效，`CoroT.current = -1` 已回滚（初始值即 -1），仅保留惰性表分配。
 @static class CoroInit {
     property:
         int done = 0;
@@ -245,7 +245,7 @@ void coroWEnsure(int n) {
 void coroEnsureInit() {
     if (CoroInit.done == 0) {
         CoroInit.done = 1;
-        CoroT.current = -1;
+        // CoroT.current 初始值 = -1 由 @static 默认值初始化器生效（v3.15.69 修复）。
     }
     coroTEnsure(64);   // 惰性分配协程/等待/帧表（初始 64，同 C MYP_CORO_INITIAL_CAPACITY）
 }

@@ -209,11 +209,12 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   - **Future**：`myp_future_create/set/get/destroy` + `myp_coro_wait_future/wake_future/
     am_i_coro`。协程 get 未 ready → park（不阻塞线程）；同线程 set 唤醒。非协程未
     ready → 自旋 + sleep 回退（MYP 无 pthread_cond；主用例 set 先于 get）。
-  - **⚠️ CoroT.current 初始化 bug（#38 发现+修复）**：`--shared` 模式下 @static 属性
-    默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1` 实际从 0 起，恰等于
-    首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→ channel/wait 走
-    协程分支（内联 resume/误 park）。修复：`coroEnsureInit()` 一次性显式置
-    current=-1，挂在全部公共 API 入口（26 处）。
+  - **⚠️ CoroT.current 初始化 bug（#38 发现+修复，v3.15.69 根因修复）**：`--shared`
+    模式下 @static 属性默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1`
+    实际从 0 起，恰等于首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程
+    0」→ channel/wait 走协程分支（内联 resume/误 park）。曾修复：`coroEnsureInit()`
+    一次性显式置 current=-1（挂全部公共 API 入口）；**v3.15.69 根因修复**（@static
+    默认值显式常量初始化器）后已回滚显式置，靠 `CoroT.current = -1` 初始值。
   - **exec worker**：`myp_coro_file_read_line/all` 已 #17 同步化（io.myp）——保留
     （同步读语义，非阻塞 await 未做）。
   - **测试**：`bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/

@@ -1493,7 +1493,7 @@ class CodeGen {
         // @static class：为每个带属性的静态类发射全局结构体实例
         // `@__myp_static_<Cls> = global %<Cls> zeroinitializer`（默认），属性访问
         // ClassName.prop → GEP 进该全局（同 C++ static_property_globals_）。
-        // **根因修复（v3.15.68）**：属性默认值此前被 zeroinitializer 丢弃（非零默认
+        // **根因修复（v3.15.69）**：属性默认值此前被 zeroinitializer 丢弃（非零默认
         // 如 `int a = 42` 实际得 0），runtime 被迫用 syncInit/evInit 显式补零/置值。
         // 现在：存在**可折叠的非零默认值** → 发射显式结构体常量初始化器
         // `{ i32 42, i64 7, ... }`（数组/结构体元素用零初始化器，字符串默认用 @str
