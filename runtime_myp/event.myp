@@ -402,6 +402,27 @@ void myp_event_route_to_instance(long instance, int event_id, long data, int dat
     evRouteToThread(thr, event_id, instance, data, data_size, 0);
 }
 
+// ---- 动态事件名查表（codegen 对 `__myp_timer_create(<运行时 string>, ...)` 生成）----
+// C: int32_t myp_event_id_by_name(const char* name, char* const* names,
+//      const int32_t* ids, int32_t count) —— names[i] 是 char*（i64 数组元素），
+//     ids[i] 是 i32；按字节 strcmp（MYP string = 以 '\0' 结尾的 char*）。
+int myp_event_id_by_name(long name, long names, long ids, int count) {
+    if (name == 0 || names == 0 || ids == 0) return -1;
+    for (int i = 0; i < count; i = i + 1) {
+        long ns = __myp_mem_load_i64(names + long(i) * 8);
+        if (ns == 0) continue;
+        int j = 0;
+        for (;;) {
+            int a = int(__myp_mem_load_i8(name + long(j)));
+            int b = int(__myp_mem_load_i8(ns + long(j)));
+            if (a != b) break;
+            if (a == 0) return __myp_mem_load_i32(ids + long(i) * 4);   // 相等
+            j = j + 1;
+        }
+    }
+    return -1;
+}
+
 // ---- 定时器 ----
 int myp_timer_create(int event_id, long instance, long delay_ms, long param, long interval_ms) {
     evInit();

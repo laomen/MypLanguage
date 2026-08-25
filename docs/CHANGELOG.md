@@ -171,6 +171,27 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：`myp_event_id_by_name`（纯字符串查表，保留 C）、work 任务队列 / exec
   worker、@thread 子线程共享 arena 并发分配（文档化限制）。
 
+### v3.15.46 — runtime myp化 #41 收尾：包 F 全链路零 C 依赖（不保留 C）
+
+**非破坏性**。#41 补完 `myp_event_id_by_name`（codegen 对 `__myp_timer_create(
+<运行时 string>, ...)` 生成调用的动态事件名查表），使包 F（`@thread`/`@threadpool`/
+事件系统/定时器/每线程队列）**不再保留任何 C 实现**：
+
+- **event.myp 新增** `myp_event_id_by_name(name, names, ids, count)`——逐字节
+  strcmp（MYP string = `'\0'` 结尾 char*；names 是 char* 的 i64 数组，ids 是 i32
+  数组），未命中/空名/count=0 → -1。
+- **零 C 依赖证明**：`nm` 审计 6 个 shadow 链接二进制（threadpool / sync /
+  coro_timer / coro_event / multi_event / mapping_chain），包 F 域（event/thread/
+  timer/queue/work/handler/id_by_name）C-only 符号均为 **0**——`--gc-sections` 下
+  C 的 myp_work_deque_*/myp_queue_*/myp_timer_wake_target 等内部静态函数无引用被
+  剥离，不进入二进制。
+- **验证**：新 `bench/freestanding/rt_evname_test.myp`（命中 beta=20/gamma=30、
+  未命中 nope=-1、空名 -1、count=0 -1）；**shadow 31/31**；6 个 pkg F 测试二进制
+  shadow 链接**逐字一致**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
+  （oracle + selfhost）。
+- **未做**：@thread 子线程共享 arena 并发分配（文档化限制）；C 内部静态
+  work/queue/exec worker（无程序引用，已死代码）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

@@ -1,0 +1,50 @@
+// rt_evname_test.myp — myp_event_id_by_name shadow 验证（包 F #41 收尾：不保留 C）。
+// codegen 对 `__myp_timer_create(<运行时 string>, ...)` 生成对该函数的调用（动态
+// 事件名查全局事件表）。这里直接以 ffi 构造 names[i]=char* / ids[i]=i32 表调用，
+// 验证逐字节 strcmp 语义（MYP string = '\0' 结尾 char*）。exit 0 = 通过。
+import env;
+
+ffi long myp_arena_alloc(long size);
+ffi int myp_event_id_by_name(long name, long names, long ids, int count);
+ffi long __myp_str_ptr(string s);
+
+class EvNameProbe {
+    action:
+        @constructor EvNameProbe() {
+            long names = myp_arena_alloc(3 * 8);   // char*[3]
+            long ids = myp_arena_alloc(3 * 4);     // int32[3]
+            long a = __myp_str_ptr("alpha");
+            long b = __myp_str_ptr("beta");
+            long c = __myp_str_ptr("gamma");
+            __myp_mem_store_i64(names, a);
+            __myp_mem_store_i64(names + 8, b);
+            __myp_mem_store_i64(names + 16, c);
+            __myp_mem_store_i32(ids, 10);
+            __myp_mem_store_i32(ids + 4, 20);
+            __myp_mem_store_i32(ids + 8, 30);
+            int r1 = myp_event_id_by_name(__myp_str_ptr("beta"), names, ids, 3);
+            int r2 = myp_event_id_by_name(__myp_str_ptr("gamma"), names, ids, 3);
+            int r3 = myp_event_id_by_name(__myp_str_ptr("nope"), names, ids, 3);
+            int r4 = myp_event_id_by_name(__myp_str_ptr(""), names, ids, 3);   // 空名 → -1
+            int r5 = myp_event_id_by_name(__myp_str_ptr("alpha"), names, ids, 0); // count=0 → -1
+            Console.writeString("beta=");
+            Console.write(r1);
+            Console.writeString(" gamma=");
+            Console.write(r2);
+            Console.writeString(" nope=");
+            Console.write(r3);
+            Console.writeString(" empty=");
+            Console.write(r4);
+            Console.writeString(" count0=");
+            Console.write(r5);
+            Console.writeString("\n");
+            if (r1 != 20 || r2 != 30 || r3 != -1 || r4 != -1 || r5 != -1) {
+                Console.writeString("FAIL: evname lookup\n");
+            }
+        }
+}
+
+int main() {
+    EvNameProbe p = new EvNameProbe();
+    return 0;
+}

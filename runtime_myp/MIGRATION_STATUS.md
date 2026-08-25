@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 30/30）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 31/31）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#41 后重算） | **299**（~61%） |
-| 未 shadow（C runtime 剩余） | **191** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#41 补后重算） | **300**（~61%） |
+| 未 shadow（C runtime 剩余） | **190** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -32,7 +32,9 @@ args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 汇�
 （ensure_global/parallel_for/worker_id/thread_count/set_threads/worker_count/
 is_active/destroy）**）** /
 **@thread 生命周期 + 事件系统（#41 event.myp：`myp_thread_*` 8 + `myp_event_*` 7 +
-`myp_timer_*` 3 + C 内部 helper 4；每线程 futex 队列 + 跨线程路由深拷贝）**。
+`myp_timer_*` 3 + C 内部 helper 4 + `myp_event_id_by_name`；每线程 futex 队列 +
+跨线程路由深拷贝）——包 F 全链路 **零 C 依赖**（nm 审计 threadpool/sync/coro_timer/
+coro_event/multi_event/mapping_chain 二进制 C-only pkgF=0）**。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -184,12 +186,19 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
   @threadpool 打印 "wwww"）；`tests/threadpool` 与 `tests/sync`（4 @thread worker
   mutex_count=400）shadow 链接**逐字一致**；coro_event/coro_timer/startup/
   multi_event/mapping_chain/scope_mapping/lambda_mapping shadow 逐字一致。
+- **补（#41 follow-up，不保留 C）**：`myp_event_id_by_name`（动态事件名查表，codegen
+  对 `__myp_timer_create(<运行时 string>)` 生成）——纯逐字节 strcmp，MYP string =
+  `'\0'` 结尾 char*。新 `bench/freestanding/rt_evname_test.myp`（5 用例：命中/
+  未命中/空名/count=0）exit 0。**包 F 全链路零 C 依赖**：nm 审计 threadpool/sync/
+  coro_timer/coro_event/multi_event/mapping_chain 六个 shadow 二进制，pkg F 域
+  （event/thread/timer/queue/work/handler/id_by_name）C-only 符号 = 0。
 - **顺带修复**：alloc.myp `myp_diag_arena_reserved` 潜伏 bug——从 `Arena.head`
   （最旧 chunk）正向走链只统计首 chunk；evInit 一次 ~550KB 大分配首暴。改为从
   `Arena.cur`（最新）走 next 链（与 C 版一致）。
 - **`@thread` 剩余**：`myp_thread_entry/current/for_instance` 已由 MYP 内部 helper
-  覆盖；`myp_thread_post_event` 已做；work 任务队列 / exec worker 未做。
-- **难度**：最高（TLS 缺失 + 事件路由耦合 myp_handlers）。做完后并发层基本 de-gcc。
+  覆盖；`myp_thread_post_event` 已做；work/queue/exec worker 为 C 内部静态（已被
+  pool.myp 取代，gc-sections 剥离，无程序引用）。
+- **难度**：最高（TLS 缺失 + 事件路由耦合 myp_handlers）。包 F 并发层已全 de-gcc。
 
 ### 包 G：GPU 层（`runtime_gpu.c` 63 + `cublas` 2 = 65）
 - init（dlopen+dlsym 44 个 `cu*` 指针）/ 设备查询 13 / 内存+handle / 内核
