@@ -96,6 +96,7 @@ class CodeGen {
             warnings_ = new ArrayList<string>();
             testMode_ = 0;
             libraryMode_ = 0;
+            freestanding_ = 0;
             curFnCoro_ = 0;
             curFnIsCtor_ = 0;
             gpuCpuFallback_ = 0;
@@ -111,6 +112,9 @@ class CodeGen {
         void setTestMode(int v) { testMode_ = v; }
 
         void setLibraryMode(int v) { libraryMode_ = v; }
+
+        // --freestanding（档B）：跳过 main 收尾 runtime 清理 + 发射 _start 入口。
+        void setFreestanding(int v) { freestanding_ = v; }
 
         string newTmp() {
             string t = "%t" + tmp_;
@@ -1364,6 +1368,17 @@ class CodeGen {
             out.append(pre);
             out.append(stringGlobals_.toString());
             out.append(sb_.toString());
+            // --freestanding：发射 _start 入口（call main → exit syscall），
+            // 无 CRT / runtime.c / libc。main 已外部链接（isMainFunc → define）。
+            if (freestanding_ != 0) {
+                out.append("define void @_start() {\n");
+                out.append("entry:\n");
+                out.append("  %fs.r = call i32 @main()\n");
+                out.append("  %fs.r64 = zext i32 %fs.r to i64\n");
+                out.append("  %fs.s = call i64 asm sideeffect \"syscall\", \"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\"(i64 60, i64 %fs.r64, i64 0, i64 0, i64 0, i64 0, i64 0)\n");
+                out.append("  unreachable\n");
+                out.append("}\n\n");
+            }
             out.append("attributes #0 = { returns_twice }\n");
             out.append("attributes #1 = { noreturn }\n");
             string ir = out.toString();
@@ -7046,8 +7061,11 @@ class CodeGen {
                         sb_.append("  " + t + " = load ptr, ptr " + threadHandles_.get(hi) + "\n");
                         sb_.append("  call void @myp_thread_destroy(ptr " + t + ")\n");
                     }
-                    sb_.append("  call void @myp_event_process_all()\n");
-                    sb_.append("  call void @myp_free_all()\n");
+                    // --freestanding：无 runtime.c → main 收尾跳过事件处理与整块释放
+                    if (freestanding_ == 0) {
+                        sb_.append("  call void @myp_event_process_all()\n");
+                        sb_.append("  call void @myp_free_all()\n");
+                    }
                 }
                 if (st.value() != null) {
                     string v = genReturnValue(st.value());
@@ -9237,6 +9255,42 @@ class CodeGen {
                     emitLongjmpOuter();
                     return "0";
                 }
+                // __myp_syscall(n, a0..a5) → long：x86-64 原始 syscall 内联汇编
+                //（镜像 C++；rax=号 rdi/rsi/rdx/r10/r8/r9=参，破坏 rcx/r11/memory）。
+                // freestanding/libmyp 探针——不经 runtime/libc。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_syscall") {
+                    StringBuilder a = new StringBuilder();
+                    for (int ai = 0; ai < 7; ai = ai + 1) {
+                        if (ai > 0) a.append(", ");
+                        string v = "0";
+                        if (ai < e.args().size()) {
+                            v = genExpr(e.args().get(ai));
+                            string lt = exprLlvmType(e.args().get(ai));
+                            if (lt == "ptr") {
+                                string t = newTmp();
+                                sb_.append("  " + t + " = ptrtoint ptr " + v + " to i64\n");
+                                v = t;
+                            } else if (lt != "i64") {
+                                v = convertValue(v, lt, "i64");
+                            }
+                        }
+                        // LLVM IR 文本要求每个实参带类型前缀（i64 %tN）
+                        a.append("i64 " + v);
+                    }
+                    string t = newTmp();
+                    sb_.append("  " + t + " = call i64 asm sideeffect \"syscall\", \"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\"(" + a.toString() + ")\n");
+                    return t;
+                }
+                // __myp_str_ptr(s) → long：返回字符串数据指针地址（String 值即数据指针）。
+                if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_str_ptr") {
+                    if (e.args().size() > 0) {
+                        string sv = genExpr(e.args().get(0));
+                        string st = newTmp();
+                        sb_.append("  " + st + " = ptrtoint ptr " + sv + " to i64\n");
+                        return st;
+                    }
+                    return "0";
+                }
                 // __myp_timer_create("eventName", delay[, interval]) → 解析事件名
                 // 为 event_id + myp_timer_create（同 C++ 内联特判）
                 if (callee != null && callee.kind() == "Identifier" && callee.name() == "__myp_timer_create") {
@@ -11082,6 +11136,7 @@ class CodeGen {
         ArrayList<string> warnings_;
         int testMode_;
         int libraryMode_;
+        int freestanding_;
         int curFnCoro_;
         // BUG-030 镜像：当前函数是否为构造器（构造器入口把 this 注册进
         // __myp_inst_<Class>，使构造器内 mapping 事件派发到当前实例）。

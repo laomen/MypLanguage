@@ -322,13 +322,22 @@ import collections; // ArrayList
             return 0;
         }
 
+        // 探测链接器（--freestanding）：MYP_LD 环境变量优先，其次 ld.lld → ld。
+        string findLd() {
+            string e = Console.getEnv("MYP_LD");
+            if (Str.len(e) != 0) return e;
+            string l0 = Str.trim(Process.output("command -v ld.lld 2>/dev/null"));
+            if (Str.len(l0) != 0) return l0;
+            return "ld";
+        }
+
         // llPath(.ll) → [opt -O<level>] → llc → obj → gcc 链接 runtime → outPath 可执行。
         // 默认 **-O2**（CLI 默认 optLevel=2；v3.12.44 修复 opt -O2 跨 setjmp/longjmp
         // 的 finally 语义破坏根因——codegen 在 try 入口把全部在作用域局部 + finally
         // flag 的地址传给 myp_try_escape 无操作，使其成为逃逸内存，mem2reg/SROA 不
         // 提升、DSE 不删 store，-O2 下 arc_throw 15/15、全量 310/0）。optLevel>0 时
         // 跑 opt -O<level>；MYP_SELF_OPT=1 强制开启、=0 强制关闭（调试/对比）。
-        int link(string llPath, string outPath, string stdlib, int optLevel, int shared) {
+        int link(string llPath, string outPath, string stdlib, int optLevel, int shared, int freestanding) {
             string srcLl = llPath;
             string optEnv = Console.getEnv("MYP_SELF_OPT");
             int doOpt = (optLevel > 0) ? 1 : 0;
@@ -349,10 +358,24 @@ import collections; // ArrayList
             }
             string llc = Link.findLlc();
             string objPath = outPath + ".o";
-            string cmd = llc + " " + srcLl + " -filetype=obj -relocation-model=pic -o " + objPath + " 2>&1";
+            // --freestanding：静态重定位模型（匹配无 PIE 的裸静态链接）；常规 PIC。
+            string reloc = (freestanding != 0) ? "-relocation-model=static" : "-relocation-model=pic";
+            string cmd = llc + " " + srcLl + " -filetype=obj " + reloc + " -o " + objPath + " 2>&1";
             if (Process.run(cmd) != 0) {
                 Console.writeLine("llc failed");
                 return 1;
+            }
+            // --freestanding（档B）：无 CRT / runtime.c / libc / gcc —— codegen 已
+            // 发射 _start（call main → exit syscall），这里直接静态链接。
+            if (freestanding != 0) {
+                string ld = Link.findLd();
+                string lcmd = ld + " -nostdlib -static -e _start -o " + outPath + " " + objPath + " 2>&1";
+                if (Process.run(lcmd) != 0) {
+                    Console.writeLine("freestanding link failed");
+                    return 1;
+                }
+                Console.writeLine("Link OK: " + outPath);
+                return 0;
             }
             string inc = Link.findIncDir(stdlib);
             string runtimeC = Link.findRuntimeC(stdlib);

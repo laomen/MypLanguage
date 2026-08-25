@@ -603,6 +603,9 @@ class Sema {
             addIntr("__myp_read_line", "string");
             addIntr("__myp_flush", "void");
             addIntr("__myp_atof", "double");
+            // libmyp/freestanding 探针（档B，镜像 C++）：原始 syscall + 字符串数据指针。
+            addIntr("__myp_syscall", "long");
+            addIntr("__myp_str_ptr", "long");
             addIntr("__myp_kbhit", "int");
             addIntr("__myp_getch", "int");
             addIntr("__myp_throw", "void");
@@ -3235,16 +3238,26 @@ class Sema {
                     if (inMain_ != 0 && xe.kind() == "Call") {
                         AstExpr clx = xe.callee();
                         if (clx != null && (clx.kind() == "Identifier" || clx.kind() == "Member")) {
-                            if (clx.kind() == "Member" && clx.array() != null) visitExpr(clx.array());
-                            int ml = xe.line();
-                            int mc = xe.col();
-                            diag_.error(ml, mc, "direct function call not allowed in main() — use mapping() instead");
-                            xe.setResolvedKind("int");
-                            clx.setResolvedKind("int");
-                            // args 不 visit，标记 int（C++ 默认 Int）
-                            ArrayList<AstExpr> xa = xe.args();
-                            for (int xi = 0; xi < xa.size(); xi = xi + 1) {
-                                markAllExpr(xa.get(xi));
+                            // __myp_* 编译器内建（内联汇编/直发 LLVM，不经 runtime 与
+                            // mapping）：允许 main() 内直调——freestanding/libmyp 探针
+                            //（档B；镜像 C++ sema 豁免）。
+                            if (clx.kind() == "Identifier" && Str.startsWith(clx.name(), "__myp_") != 0) {
+                                int savedDiscard = inDiscardStmt_;
+                                if (xe.kind() == "Call") inDiscardStmt_ = 1;
+                                visitExpr(xe);
+                                inDiscardStmt_ = savedDiscard;
+                            } else {
+                                if (clx.kind() == "Member" && clx.array() != null) visitExpr(clx.array());
+                                int ml = xe.line();
+                                int mc = xe.col();
+                                diag_.error(ml, mc, "direct function call not allowed in main() — use mapping() instead");
+                                xe.setResolvedKind("int");
+                                clx.setResolvedKind("int");
+                                // args 不 visit，标记 int（C++ 默认 Int）
+                                ArrayList<AstExpr> xa = xe.args();
+                                for (int xi = 0; xi < xa.size(); xi = xi + 1) {
+                                    markAllExpr(xa.get(xi));
+                                }
                             }
                         } else {
                             visitExpr(xe);
