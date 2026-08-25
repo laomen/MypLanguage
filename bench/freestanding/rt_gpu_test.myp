@@ -1,0 +1,71 @@
+// rt_gpu_test.myp — GPU 层 Stage A shadow 验证（#43：init + 设备查询 + 内存/handle）。
+// 双模式：
+//   - 无 MYP_GPU（shadow 套件默认）→ CPU 回退：vendor="cpu"、查询全 0。
+//   - MYP_GPU=1（有 CUDA 驱动）→ 真 GPU：vendor="nvidia"、device_count>=1、
+//     设备名/算力/显存 + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存往返。
+// exit 0 = 通过（两种模式各自断言一致）。
+import env;
+
+ffi int myp_gpu_device_count();
+ffi long myp_gpu_device_memory();
+ffi int myp_gpu_compute_capability();
+ffi string myp_gpu_device_name();
+ffi long myp_gpu_alloc(long sz);
+ffi void myp_gpu_free(long p);
+ffi void myp_gpu_to_device(long d, long s, long sz);
+ffi void myp_gpu_to_host(long d, long s, long sz);
+ffi int myp_gpu_sync_all();
+ffi long myp_arena_alloc(long size);
+
+class GpuProbe {
+    action:
+        @constructor GpuProbe() {
+            string vendor = __myp_gpu_vendor();
+            int devs = myp_gpu_device_count();
+            Console.writeString("vendor=" + vendor + " devs=");
+            Console.write(devs);
+            Console.writeString("\n");
+            if (vendor == "cpu") {
+                // CPU 回退：查询全 0
+                if (devs != 0) { Console.writeString("FAIL: cpu fallback devs\n"); return; }
+                if (myp_gpu_device_memory() != 0) { Console.writeString("FAIL: cpu mem\n"); return; }
+                if (myp_gpu_compute_capability() != 0) { Console.writeString("FAIL: cpu cap\n"); return; }
+                if (__myp_gpu_mem_alignment() != 16) { Console.writeString("FAIL: align\n"); return; }
+                Console.writeString("GPU CPU-FALLBACK OK\n");
+                return;
+            }
+            // 真 GPU：设备查询
+            string name = myp_gpu_device_name();
+            int cap = myp_gpu_compute_capability();
+            long mem = myp_gpu_device_memory();
+            Console.writeString("name=" + name + " cap=");
+            Console.write(cap);
+            Console.writeString(" memMB=");
+            Console.write(int(mem / 1048576));
+            Console.writeString("\n");
+            if (devs < 1 || cap < 100 || mem <= 0 || name == "") { Console.writeString("FAIL: gpu query\n"); return; }
+            // 内存往返：host buffer(arena) → device → host，验证内容
+            long host = myp_arena_alloc(64);
+            for (int i = 0; i < 16; i = i + 1)
+                __myp_mem_store_i32(host + long(i) * 4, i * 3);
+            long dev = myp_gpu_alloc(64);
+            if (dev == 0) { Console.writeString("FAIL: gpu alloc\n"); return; }
+            myp_gpu_to_device(dev, host, 64);
+            long host2 = myp_arena_alloc(64);
+            for (int i = 0; i < 16; i = i + 1) __myp_mem_store_i32(host2 + long(i) * 4, -1);
+            myp_gpu_to_host(host2, dev, 64);
+            myp_gpu_sync_all();
+            int ok = 1;
+            for (int i = 0; i < 16; i = i + 1) {
+                if (__myp_mem_load_i32(host2 + long(i) * 4) != i * 3) { ok = 0; break; }
+            }
+            myp_gpu_free(dev);
+            if (ok == 0) { Console.writeString("FAIL: gpu mem roundtrip\n"); return; }
+            Console.writeString("GPU OK\n");
+        }
+}
+
+int main() {
+    GpuProbe p = new GpuProbe();
+    return 0;
+}

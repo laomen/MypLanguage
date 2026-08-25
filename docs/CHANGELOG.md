@@ -240,6 +240,42 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
   selfhost）。
 - **未做**：GPU/bridges（包 G/H，功能层仍 C）。
 
+### v3.15.49 — runtime myp化 #43：包 G GPU Stage A（gpu.myp，init/设备查询/内存/流）
+
+**非破坏性**。GPU 运行时 MYP 化第一片——shadow C `runtime_gpu.c` 的初始化/设备
+查询/内存+handle/流 35 个 `myp_gpu_*`：
+
+- **runtime_myp/gpu.myp 新增**（`@static Gpu` 表）：
+  - **init**：`myp_gpu_init` → `ffi long dlopen("libcuda.so.1", 1)` + dlsym 17 个
+    `cu*` 函数指针（存 @static 字段）→ `__myp_indirect_*` 调用 cuInit(0) /
+    cuDeviceGetCount / cuDeviceGet / cuCtxCreate_v2 / cuCtxSetCurrent（CUDA TLS
+    修复：接触上下文的入口显式 setCurrent）。`MYP_GPU=1` env gate（无则 CPU
+    回退）。
+  - **设备查询 19**：`gpuAttr(id)` helper 走 `__myp_indirect_i32(fDeviceGetAttribute,
+    attrVal, id, dev)`，out-param 用 arena 缓冲；name/cap/多处理器/时钟/内存等。
+  - **内存+handle 12**：cuMemAlloc_v2 / cuMemFree / cuMemcpyHtoD_v2 / cuMemcpyDtoH_v2
+    + 类型化 copy（h2d/d2h × double/float）+ d2d + alloc_handle/free_handle +
+    sync_all。
+  - **流 3**：cuStreamCreate / StreamSynchronize / StreamDestroy。
+  - ⚠️ `@static Gpu` 访问约定：state 字段（initFlag/availFlag/devInit/devCount）
+    直接值访问；arena address 字段经 `__myp_mem_load/store_*`（勿把值字段当地址
+    解引用）。
+- **新测试** `bench/freestanding/rt_gpu_test.myp` 双模式：
+  - 无 MYP_GPU → CPU fallback（vendor="cpu"、devs=0、queries=0）exit 0。
+  - MYP_GPU=1 → 真实 RTX 2070 SUPER：`name=NVIDIA GeForce RTX 2070 SUPER
+    cap=705 memMB=7752` + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存
+    roundtrip（host buffer i*3 校验）exit 0。
+- **GPU MYP/C 状态分裂边界（已确认安全）**：MYP init 只设 MYP `Gpu.availFlag`；C
+  `myp_gpu_load_kernel`/`launch`（Stage B 未 shadow）见 C static `avail`=0 →
+  load_kernel 返回 NULL → codegen `@gpu for` 发射 `CreateCondBr(k_ok, launch_bb,
+  cpu_bb)` → **CPU 回退**（不产生垃圾数据）。manual_ch9 shadow 链接 MYP_GPU=1
+  → 3 tests/11 assertions 全过。shadow 二进制中 @gpu for 真实 GPU 需待 Stage B
+  shadow load/launch 统一状态；oracle/deeplearning 用 C runtime 不受影响。
+- **验证**：**shadow 34/34**；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323
+  （oracle + selfhost）。shadow 计数 312 → **347**（~71%）。
+- **未做**：Stage B 内核（cuModuleLoadDataEx + cuLaunchKernel 12-arg 编组 + byoc/
+  printf）与 Stage C 流/事件/图（deeplearning 分项目 changelog）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

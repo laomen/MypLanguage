@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 33/33）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 34/34）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#42 补后重算） | **312**（~64%） |
-| 未 shadow（C runtime 剩余） | **178** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#43 补后重算） | **347**（~71%） |
+| 未 shadow（C runtime 剩余） | **143** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -40,6 +40,27 @@ coro_event/multi_event/mapping_chain 二进制 C-only pkgF=0）** /
 setenv/unsetenv）/`myp_read_line`（io）/`myp_enable_raw`+`myp_restore_term`+
 `myp_getch`+`myp_kbhit`（term，termios ioctl）——hello 二进制 C 拉取 10→5、
 sync 16→7**。
+
+**包 G Stage A（#43，GPU init/查询/内存/流）**：`runtime_myp/gpu.myp` 新增，35 个
+`myp_gpu_*` shadow C 版：init（`myp_gpu_init`：dlopen("libcuda.so.1")+dlsym 17 个
+`cu*` 指针 → `__myp_indirect_*` 调用 → cuInit/cuDeviceGetCount/cuDeviceGet/
+cuCtxCreate_v2/cuCtxSetCurrent；MYP_GPU=1 env gate）/ 设备查询 19（gpuAttr helper
+走 `__myp_indirect_i32(fDeviceGetAttribute, attrVal, id, dev)`，out-param 用 arena
+缓冲 / 内存+handle 12（cuMemAlloc_v2/cuMemcpyHtoD_v2/cuMemcpyDtoH_v2 等）/ 流 3
+（cuStreamCreate/StreamSynchronize/StreamDestroy）。`@static Gpu` 表：state 字段
+（initFlag/availFlag/devInit/devCount）**直接值**访问，cu* 函数指针 17 个字段 +
+arena out-param 缓冲字段。验证：`bench/freestanding/rt_gpu_test.myp` 双模式
+（无 MYP_GPU → CPU fallback exit 0；MYP_GPU=1 真实 RTX 2070 SUPER：name=…/
+cap=705/memMB=7752 + cuMemAlloc/cuMemcpyHtoD/cuMemcpyDtoH/cuMemFree 内存
+roundtrip，host buffer i*3 校验）。
+
+**#43 GPU MYP/C 状态分裂边界（重要）**：MYP 的 `myp_gpu_init` 只设置 MYP
+`Gpu.availFlag`；C 的 `myp_gpu_load_kernel`/`myp_gpu_launch`（Stage B 未 shadow）
+检查 C static `avail`（恒 0）→ load_kernel 返回 NULL。codegen `@gpu for` 发射
+`CreateCondBr(k_ok, launch_bb, cpu_bb)`：load_kernel==NULL → **CPU 回退**（安全，
+不产生垃圾数据）。manual_ch9 shadow 链接 MYP_GPU=1 → 3 tests/11 assertions 全过。
+即：shadow 二进制中 @gpu for 即使 MYP_GPU=1 也 CPU 回退（直到 Stage B shadow
+load/launch 统一状态）；oracle/deeplearning 用 C runtime，不受影响。
 
 **#42 残留 C 边界（更新：io_cur 已 MYP 化；constructor 已被 lld 剥离）**：
 - **C TLS 当前句柄已解决（#42 补）**：`myp_io_cur_get/set` → MYP IoCur 表（gettid
@@ -220,13 +241,18 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
 - **难度**：最高（TLS 缺失 + 事件路由耦合 myp_handlers）。包 F 并发层已全 de-gcc。
 
 ### 包 G：GPU 层（`runtime_gpu.c` 63 + `cublas` 2 = 65）
-- init（dlopen+dlsym 44 个 `cu*` 指针）/ 设备查询 13 / 内存+handle / 内核
-  load+launch+byoc / printf / 流/事件/图（cuStream*/cuEvent*/cuGraph*）。
+- **✅ Stage A 已做（#43 gpu.myp，35 个 shadow）**：init（dlopen+dlsym 17 个
+  `cu*` + cuInit/cuCtxCreate_v2/cuCtxSetCurrent）/ 设备查询 19 / 内存+handle 12 /
+  流 3。`@static Gpu` 表 + `__myp_indirect_*` 调 cu*。rt_gpu_test 双模式验证。
+- **剩余 Stage B（内核）**：cuModuleLoadDataEx + PTX 缓存 + cuLaunchKernel 12-arg
+  编组 + byoc + printf —— 使 @gpu for 真实 GPU 在 shadow 下可用（当前 load_kernel==
+  NULL → CPU 回退，安全）。
+- **剩余 Stage C（流/事件/图）**：cuStream*/cuEvent*/cuGraph*（deeplearning）。
 - **使能已就绪**：`__myp_indirect_*`（#30）+ `ffi long dlopen/dlsym`（libc 导出）。
-- **Stage**：A 查询/内存/handle → B 内核（cuModuleLoadDataEx+PTX 缓存+launch 参数
-  编组）→ C 流/事件/图（deeplearning）。无卡环境只验「初始化失败→CPU 回退」。
-- **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）；改动记
-  `examples/deeplearning/CHANGELOG.md`（独立分项目）。
+- **⚠️**：CUDA TLS（接触上下文的入口显式 `cuCtxSetCurrent`）；**状态分裂边界**：
+  MYP init 只设 MYP avail，C load_kernel 仍见 avail=0 → @gpu for CPU 回退（安全），
+  Stage B 统一后才真实 GPU。改动记 `examples/deeplearning/CHANGELOG.md`
+  （独立分项目）。
 
 ### 包 H：bridge 层（122）
 - **json**(14) / **net**(14) / **uds**(18) / **process**(12) / **sdl**(40) /

@@ -1,0 +1,274 @@
+// runtime_myp/gpu.myp — GPU 层 Stage A（#43）：CUDA 初始化 + 设备查询 + 内存/handle/流
+// MYP 化。shadow C runtime_gpu.c 的 myp_gpu_init / 设备查询 / 内存 / handle / 流函数。
+// 机制：
+//   - dlopen("libcuda.so.1") + dlsym 18 个 cu* 函数指针（ffi 直调 libc dlopen/dlsym；
+//     RTLD_LAZY=1）。dlopen/dlsym 无 syscall 等价 → 用 libc（同 env setenv 策略）。
+//   - cu* 调用经 __myp_indirect_i32（CUresult=int 返回；出参用 arena 缓冲传址）。
+//   - 状态 @static Gpu：直接值字段（initFlag/availFlag/devInit/devCount）+ arena
+//     出参缓冲（devVal/ctxVal/attrVal/...）。init 单线程（main/首个 @gpu 前）。
+//   - MYP_GPU=1 才启用（myp_env_get）；失败/未启用 → avail=0 → 各查询回退 0/"cpu"
+//     （CPU 一等后端）。cuCtxSetCurrent 在 init 后显式设当前（@thread/协程上下文
+//     TLS 教训：避免依赖隐式当前上下文）。
+// ⚠️ 本文件只覆盖 Stage A；内核 load/launch/byoc + printf + 事件/图（Stage B/C）留
+// runtime_gpu.c。
+
+ffi long dlopen(long name, long flags);   // libc
+ffi long dlsym(long lib, long name);      // libc
+ffi int dlclose(long lib);                // libc
+ffi string myp_env_get(string name);      // env.myp
+ffi long myp_arena_alloc(long size);      // alloc.myp
+ffi string myp_alloc(long size);          // alloc.myp
+
+@static class Gpu {
+    property:
+        // 状态（直接值字段；init 单线程）
+        long initFlag = 0;   // 已尝试初始化
+        long availFlag = 0;  // CUDA 可用
+        long devInit = 0;    // 设备已初始化
+        long devCount = 0;   // 设备数
+        // cu* 函数指针（dlsym 结果，直接值）
+        long fCuInit = 0;
+        long fCtxCreate = 0;
+        long fCtxSetCurrent = 0;
+        long fCtxSynchronize = 0;
+        long fDeviceGet = 0;
+        long fDeviceGetCount = 0;
+        long fDeviceGetName = 0;
+        long fDeviceGetAttribute = 0;
+        long fDeviceTotalMem = 0;
+        long fMemAlloc = 0;
+        long fMemFree = 0;
+        long fMemcpyHtoD = 0;
+        long fMemcpyDtoH = 0;
+        long fMemcpyDtoD = 0;
+        long fStreamCreate = 0;
+        long fStreamSync = 0;
+        long fStreamDestroy = 0;
+        // arena 出参缓冲（地址）
+        long devVal = 0;    // int: &dev
+        long ctxVal = 0;    // long: &ctx
+        long cntVal = 0;    // int: &count
+        long attrVal = 0;   // int: attribute 结果
+        long memVal = 0;    // long: total mem 结果
+        long allocVal = 0;  // long: cuMemAlloc 结果
+        long nameBuf = 0;   // char[256]: 设备名缓冲
+        long streamVal = 0; // long: cuStreamCreate 结果
+}
+
+void gpuTab() {
+    if (Gpu.devVal == 0) {
+        Gpu.devVal = myp_arena_alloc(4);
+        Gpu.ctxVal = myp_arena_alloc(8);
+        Gpu.cntVal = myp_arena_alloc(4);
+        Gpu.attrVal = myp_arena_alloc(4);
+        Gpu.memVal = myp_arena_alloc(8);
+        Gpu.allocVal = myp_arena_alloc(8);
+        Gpu.nameBuf = myp_arena_alloc(256);
+        Gpu.streamVal = myp_arena_alloc(8);
+    }
+}
+
+// C: int myp_gpu_init(void) —— 幂等；MYP_GPU=1 才加载 libcuda，失败回退 CPU
+int myp_gpu_init() {
+    if (Gpu.initFlag != 0) return int(Gpu.availFlag);
+    Gpu.initFlag = 1;
+    string env = myp_env_get("MYP_GPU");
+    if (env != "1") return 0;
+    gpuTab();
+    long lib = dlopen(__myp_str_ptr("libcuda.so.1"), 1);   // RTLD_LAZY=1
+    if (lib == 0) return 0;
+    Gpu.fCuInit = dlsym(lib, __myp_str_ptr("cuInit"));
+    Gpu.fCtxCreate = dlsym(lib, __myp_str_ptr("cuCtxCreate_v2"));
+    Gpu.fCtxSetCurrent = dlsym(lib, __myp_str_ptr("cuCtxSetCurrent"));
+    Gpu.fCtxSynchronize = dlsym(lib, __myp_str_ptr("cuCtxSynchronize"));
+    Gpu.fDeviceGet = dlsym(lib, __myp_str_ptr("cuDeviceGet"));
+    Gpu.fDeviceGetCount = dlsym(lib, __myp_str_ptr("cuDeviceGetCount"));
+    Gpu.fDeviceGetName = dlsym(lib, __myp_str_ptr("cuDeviceGetName"));
+    Gpu.fDeviceGetAttribute = dlsym(lib, __myp_str_ptr("cuDeviceGetAttribute"));
+    Gpu.fDeviceTotalMem = dlsym(lib, __myp_str_ptr("cuDeviceTotalMem_v2"));
+    Gpu.fMemAlloc = dlsym(lib, __myp_str_ptr("cuMemAlloc_v2"));
+    Gpu.fMemFree = dlsym(lib, __myp_str_ptr("cuMemFree_v2"));
+    Gpu.fMemcpyHtoD = dlsym(lib, __myp_str_ptr("cuMemcpyHtoD_v2"));
+    Gpu.fMemcpyDtoH = dlsym(lib, __myp_str_ptr("cuMemcpyDtoH_v2"));
+    Gpu.fMemcpyDtoD = dlsym(lib, __myp_str_ptr("cuMemcpyDtoD_v2"));
+    Gpu.fStreamCreate = dlsym(lib, __myp_str_ptr("cuStreamCreate"));
+    Gpu.fStreamSync = dlsym(lib, __myp_str_ptr("cuStreamSynchronize"));
+    Gpu.fStreamDestroy = dlsym(lib, __myp_str_ptr("cuStreamDestroy"));
+    if (Gpu.fCuInit == 0 || Gpu.fCtxCreate == 0 || Gpu.fDeviceGet == 0 ||
+        Gpu.fDeviceGetCount == 0 || Gpu.fMemAlloc == 0 || Gpu.fMemFree == 0 ||
+        Gpu.fMemcpyHtoD == 0 || Gpu.fMemcpyDtoH == 0 || Gpu.fCtxSynchronize == 0) {
+        return 0;
+    }
+    if (__myp_indirect_i32(Gpu.fCuInit, 0) != 0) return 0;   // cuInit(0)
+    if (__myp_indirect_i32(Gpu.fDeviceGetCount, Gpu.cntVal) != 0) return 0;
+    int nd = __myp_mem_load_i32(Gpu.cntVal);
+    if (nd <= 0) return 0;
+    if (__myp_indirect_i32(Gpu.fDeviceGet, Gpu.devVal, 0) != 0) return 0;   // dev=0
+    int dev = __myp_mem_load_i32(Gpu.devVal);
+    if (__myp_indirect_i32(Gpu.fCtxCreate, Gpu.ctxVal, 0, dev) != 0) return 0;
+    if (Gpu.fCtxSetCurrent != 0)
+        __myp_indirect_i32(Gpu.fCtxSetCurrent, __myp_mem_load_i64(Gpu.ctxVal));
+    Gpu.availFlag = 1;
+    Gpu.devInit = 1;
+    Gpu.devCount = long(nd);
+    return 1;
+}
+
+// C: int myp_gpu_force_cpu(void) —— shadow 默认不强制（CPU 由 MYP_GPU 未设/失败自然回退）
+int myp_gpu_force_cpu() { return 0; }
+
+// ---- 设备查询 ----
+// C: int myp_gpu_device_count(void)
+int myp_gpu_device_count() {
+    myp_gpu_init();
+    return int(Gpu.devCount);
+}
+// C: long myp_gpu_device_memory(void) —— 总显存字节
+long myp_gpu_device_memory() {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0 || Gpu.fDeviceTotalMem == 0) return 0;
+    if (__myp_indirect_i32(Gpu.fDeviceTotalMem, Gpu.memVal, __myp_mem_load_i32(Gpu.devVal)) == 0)
+        return __myp_mem_load_i64(Gpu.memVal);
+    return 0;
+}
+// C: int myp_gpu_compute_capability(void) —— major*100+minor（如 7.5 → 750）
+int myp_gpu_compute_capability() {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0 || Gpu.fDeviceGetAttribute == 0) return 0;
+    int dev = __myp_mem_load_i32(Gpu.devVal);
+    __myp_indirect_i32(Gpu.fDeviceGetAttribute, Gpu.attrVal, 75, dev);   // MAJOR
+    int major = __myp_mem_load_i32(Gpu.attrVal);
+    __myp_indirect_i32(Gpu.fDeviceGetAttribute, Gpu.attrVal, 76, dev);   // MINOR
+    int minor = __myp_mem_load_i32(Gpu.attrVal);
+    return major * 100 + minor;
+}
+// 通用属性查询（CU_DEVICE_ATTRIBUTE_* ID；无 GPU/失败 → 0）
+int gpuAttr(int id) {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0 || Gpu.fDeviceGetAttribute == 0) return 0;
+    if (__myp_indirect_i32(Gpu.fDeviceGetAttribute, Gpu.attrVal, id, __myp_mem_load_i32(Gpu.devVal)) == 0)
+        return __myp_mem_load_i32(Gpu.attrVal);
+    return 0;
+}
+int myp_gpu_multi_processors() { return gpuAttr(16); }
+int myp_gpu_max_threads_per_block() { return gpuAttr(1); }
+int myp_gpu_warp_size() { return gpuAttr(10); }
+int myp_gpu_shared_per_block() { return gpuAttr(8); }
+int myp_gpu_regs_per_block() { return gpuAttr(12); }
+int myp_gpu_max_grid_dim() { return gpuAttr(5); }
+int myp_gpu_max_block_dim() { return gpuAttr(2); }
+int myp_gpu_clock_mhz() { return gpuAttr(13) / 1000; }
+int myp_gpu_concurrent_kernels() { return gpuAttr(31); }
+int myp_gpu_mem_alignment() { return 16; }
+int myp_gpu_double_precision() { return myp_gpu_compute_capability() >= 800 ? 1 : 0; }
+int myp_gpu_atomics64() { return myp_gpu_compute_capability() >= 600 ? 1 : 0; }
+// C: const char* myp_gpu_vendor(void) —— "nvidia" / CPU 回退 "cpu"
+string myp_gpu_vendor() {
+    myp_gpu_init();
+    return (Gpu.availFlag != 0) ? "nvidia" : "cpu";
+}
+// C: const char* myp_gpu_gfx_arch(void) —— CUDA 无 GCN 概念 → 空串
+string myp_gpu_gfx_arch() { return ""; }
+// C: const char* myp_gpu_device_name(void) —— 计数副本（M8：MYP 侧会 release）
+string myp_gpu_device_name() {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0 || Gpu.fDeviceGetName == 0) return "";
+    __myp_mem_store_i8(Gpu.nameBuf, 0);
+    __myp_indirect_i32(Gpu.fDeviceGetName, Gpu.nameBuf, 256, __myp_mem_load_i32(Gpu.devVal));
+    long len = 0;
+    while (__myp_mem_load_i8(Gpu.nameBuf + len) != 0) len = len + 1;
+    string s = myp_alloc(len + 1);
+    __myp_memcpy(__myp_str_ptr(s), Gpu.nameBuf, len);
+    __myp_mem_store_i8(__myp_str_ptr(s) + len, 0);
+    return s;
+}
+
+// ---- 内存 / handle ----
+// C: void* myp_gpu_alloc(size_t sz)
+long myp_gpu_alloc(long sz) {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0) return 0;
+    if (__myp_indirect_i32(Gpu.fMemAlloc, Gpu.allocVal, sz) == 0)
+        return __myp_mem_load_i64(Gpu.allocVal);
+    return 0;
+}
+// C: void myp_gpu_free(void* p)
+void myp_gpu_free(long p) {
+    if (Gpu.availFlag != 0 && p != 0) __myp_indirect_i32(Gpu.fMemFree, p);
+}
+// C: void myp_gpu_to_device(void* d, const void* s, size_t sz) —— host → device
+void myp_gpu_to_device(long d, long s, long sz) {
+    if (Gpu.availFlag != 0) __myp_indirect_i32(Gpu.fMemcpyHtoD, d, s, sz);
+}
+// C: void myp_gpu_to_host(void* d, const void* s, size_t sz) —— device → host
+void myp_gpu_to_host(long d, long s, long sz) {
+    if (Gpu.availFlag != 0) __myp_indirect_i32(Gpu.fMemcpyDtoH, d, s, sz);
+}
+// C: long myp_gpu_alloc_handle(long bytes) —— 设备内存句柄（0=失败）
+long myp_gpu_alloc_handle(long bytes) {
+    if (Gpu.availFlag == 0 || bytes <= 0) return 0;
+    return myp_gpu_alloc(bytes);
+}
+// C: int myp_gpu_free_handle(long dev)
+int myp_gpu_free_handle(long dev) {
+    if (Gpu.availFlag == 0 || dev == 0) return 0;
+    __myp_indirect_i32(Gpu.fMemFree, dev);
+    return 1;
+}
+// C: int myp_gpu_copy_h2d_d(long dev, const double* host, int srcOff, int dstOff, int len)
+int myp_gpu_copy_h2d_d(long dev, long host, int srcOff, int dstOff, int len) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0) return 0;
+    __myp_indirect_i32(Gpu.fMemcpyHtoD, dev + long(dstOff) * 8, host + long(srcOff) * 8, long(len) * 8);
+    return 1;
+}
+// C: int myp_gpu_copy_d2h_d(double* host, long dev, int srcOff, int dstOff, int len)
+int myp_gpu_copy_d2h_d(long host, long dev, int srcOff, int dstOff, int len) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0) return 0;
+    __myp_indirect_i32(Gpu.fMemcpyDtoH, host + long(dstOff) * 8, dev + long(srcOff) * 8, long(len) * 8);
+    return 1;
+}
+// C: int myp_gpu_copy_h2d_f(long dev, const float* host, int srcOff, int dstOff, int len)
+int myp_gpu_copy_h2d_f(long dev, long host, int srcOff, int dstOff, int len) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0) return 0;
+    __myp_indirect_i32(Gpu.fMemcpyHtoD, dev + long(dstOff) * 4, host + long(srcOff) * 4, long(len) * 4);
+    return 1;
+}
+// C: int myp_gpu_copy_d2h_f(float* host, long dev, int srcOff, int dstOff, int len)
+int myp_gpu_copy_d2h_f(long host, long dev, int srcOff, int dstOff, int len) {
+    if (Gpu.availFlag == 0 || dev == 0 || host == 0 || len <= 0) return 0;
+    __myp_indirect_i32(Gpu.fMemcpyDtoH, host + long(dstOff) * 4, dev + long(srcOff) * 4, long(len) * 4);
+    return 1;
+}
+// C: int myp_gpu_copy_d2d(long dst, long dstOff, long src, long srcOff, long bytes)
+int myp_gpu_copy_d2d(long dst, long dstOff, long src, long srcOff, long bytes) {
+    if (Gpu.availFlag == 0 || dst == 0 || src == 0 || bytes <= 0) return 0;
+    if (Gpu.fMemcpyDtoD == 0) return 0;
+    __myp_indirect_i32(Gpu.fMemcpyDtoD, dst + dstOff, src + srcOff, bytes);
+    return 1;
+}
+// C: int myp_gpu_sync_all(void) —— 阻塞直到所有内核完成
+int myp_gpu_sync_all() {
+    if (Gpu.availFlag == 0) return 0;
+    return __myp_indirect_i32(Gpu.fCtxSynchronize) == 0 ? 1 : 0;
+}
+
+// ---- 流（Stage A 基础；异步拷贝/事件/图 Stage C）----
+// C: long myp_gpu_stream_create_h(void)
+long myp_gpu_stream_create_h() {
+    myp_gpu_init();
+    if (Gpu.availFlag == 0 || Gpu.fStreamCreate == 0) return 0;
+    if (__myp_indirect_i32(Gpu.fStreamCreate, Gpu.streamVal, 0) == 0)
+        return __myp_mem_load_i64(Gpu.streamVal);
+    return 0;
+}
+// C: int myp_gpu_stream_sync_h(long s)
+int myp_gpu_stream_sync_h(long s) {
+    if (Gpu.availFlag == 0 || s == 0 || Gpu.fStreamSync == 0) return 0;
+    return __myp_indirect_i32(Gpu.fStreamSync, s) == 0 ? 1 : 0;
+}
+// C: int myp_gpu_stream_destroy_h(long s)
+int myp_gpu_stream_destroy_h(long s) {
+    if (Gpu.availFlag == 0 || s == 0 || Gpu.fStreamDestroy == 0) return 0;
+    __myp_indirect_i32(Gpu.fStreamDestroy, s);
+    return 1;
+}
