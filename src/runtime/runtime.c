@@ -1632,6 +1632,26 @@ void myp_free_object(void* obj) {
     free(node);
 }
 
+// Exported helper for the MYP shadow of myp_release (runtime_myp/alloc.myp):
+// handles the class-object branch MYP cannot reach — the weak registry is a
+// C-global static and __myp_release_table is defined per-program by generated
+// code. Assumes rc already hit 0 (the MYP myp_release did the fetch_sub).
+// With the runtime_myp shadow linked first (--allow-multiple-definition),
+// `myp_free_object` here interposes to the MYP version, so the destroy stub
+// still decrements the MYP live-object count; otherwise it stays on this TU's.
+void myp_release_class_obj_ex(void* obj) {
+    if (!obj) return;
+    // M7: null weak observers BEFORE freeing. If a concurrent weak_load
+    // re-bumped rc under the weak lock, the object lives (new owner frees it).
+    if (!myp_weak_notify_death(obj)) return;
+    myp_obj_header_t* h = (myp_obj_header_t*)((char*)obj - MYP_OBJ_HEADER_SIZE);
+    uint32_t tid = h->type_id;
+    if (tid > 0 && __myp_release_table[tid])
+        __myp_release_table[tid](obj);
+    else
+        myp_free_object(obj);
+}
+
 // ---- Ref-counted class arrays (§五-1): allocation + element release ----
 void* myp_alloc_class_array(uint64_t count, uint32_t elem_size) {
     size_t data_bytes, total;

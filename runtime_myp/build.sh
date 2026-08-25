@@ -26,7 +26,8 @@ for m in runtime_myp/*.myp; do
 done
 
 # 每个 shadow 验证程序单独链接+运行（都有各自 main()）
-for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp; do
+for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
+         bench/freestanding/rt_alloc_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"

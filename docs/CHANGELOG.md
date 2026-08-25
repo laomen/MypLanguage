@@ -35,6 +35,36 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.16 — runtime myp化 #13：内存核心——mmap bump arena + 分配/释放集群全量 MYP 化
+
+**非破坏性**。核心分配器/ARC 层完整 MYP 化（`runtime_myp/alloc.myp` shadow C
+runtime 的 `myp_alloc`/`myp_alloc_object`/`myp_alloc_class_array`/
+`myp_alloc_slice_backing`/`myp_release`/`myp_free_object` + M9 存活计数）：
+
+- **mmap bump arena**：`myp_arena_alloc` 用 `__myp_syscall`(mmap) 取块，16 对齐，
+  chunk 头 32B（next/cap/used），超大分配独占块，bump 不归还（进程退出 OS 回收）。
+  状态存 `@static class Arena` 全局（--shared 库模式验证可用）。
+- **对象头布局与 C 一致**：字符串/类对象 8B 头 `{rc,type_id}` 在 data-8/-4；数组
+  24B 头 `{count:u64,elem_size:u32,pad:u32,rc:u32,type_id:u32}`，rc/type_id 仍
+  data-8/-4。跳过 C 的 16B 侵入链表 node（C 链表恒空，exit 清理无害）。
+- **关键修复（ARC ABI 对齐）**：自举 codegen 对 `return __myp_addr_to_str(...)`
+  （非 fresh 内建）发射 retain-on-return(+1)。MYP 分配器内部 rc 须设 **0**，让该
+  retain 补成 1（等价正常代码 new 后 return 的净 rc=1）。此前设 1 → 返回 rc=2 →
+  调用方 release 到 1 不归零 = 每字符串泄漏 1 引用，并引发巨型 main() 的
+  `!= ""` 槽装载错乱（live 计数失控 → 内存布局偏移）。
+- **myp_release 全分发**：rc→0 按 type_id——数组（pad 0=类逐元素 release / 2=slice
+  胖指针逐元素）、字符串（计数-1）、类对象委托新增 C helper
+  **`myp_release_class_obj_ex`**（weak 通知 + 每程序 `__myp_release_table` 分发 +
+  `myp_free_object`——weak 注册表是 C 静态、release 表是生成代码产物，MYP 无法
+  触及）。`myp_free_object` 经 --allow-multiple-definition interpose 回 MYP。
+- **计数**：`Live.strings/objects/arrays` @static 全局（替代 C TLS），shadow
+  `myp_live_*_count`。
+- 已知限制：strict 头校验/逐类型计数/mmap 块 exit 回收未迁移（诊断性，非正确性）。
+
+验证：**rt_str_test（260 字符串检查+ArcProbe）exit=0**、**rt_num_test exit=0**、
+**新增 rt_alloc_test（字符串/数组/类对象/大块分配+release+计数）exit=0**；
+bootstrap 16/16、全量 323/323。build.sh 循环新增 rt_alloc_test。
+
 ### v3.15.15 — runtime myp化 #12：核心 ARC/分配器层第一步（raw-address 原子内建 + myp_retain + myp_obj_type_id）
 
 **非破坏性**。核心层（分配器/ARC）最难的障碍之一是**任意地址原子操作**——现有

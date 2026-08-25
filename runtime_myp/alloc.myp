@@ -1,0 +1,164 @@
+// runtime_myp/alloc.myp — 内存核心 MYP 化（#13）：
+// mmap bump arena + 分配/释放集群 shadow C runtime。shadow 机制同 str.myp
+//（--shared 外部符号，链接时置于 libmyp_rt.a 前 → 定义优先）。
+//
+// MYP 对象布局与 C 一致（C 另有 16B 侵入链表 node——本模块跳过，C 链表恒空，
+// 进程退出 myp_free_alloc_list_global 只清自己的空链表，无副作用）：
+//   - 字符串/类对象：8B 头 { rc:u32, type_id:u32 } 在 data-8/data-4
+//   - 数组/切片 backing：24B 头 { count:u64, elem_size:u32, pad:u32,
+//     rc:u32, type_id:u32 }，rc/type_id 仍在 data-8/-4
+//   - MYP_ARR_TYPE_ID=0xFFFFFFFF（int -1）；MYP_STR_TYPE_ID=0xFFFFFFFE（int -2）
+//
+// 类对象分支（weak 通知 + 每程序 __myp_release_table 分发）委托 C helper
+// myp_release_class_obj_ex——weak 注册表是 C 静态全局、release 表是生成代码
+// 产物，MYP 模块无法触及。
+
+// ---- mmap bump arena ----
+// chunk 头 32B：[next:i64 @0][cap:i64 @8][used:i64 @16][pad @24]，data 从 +32
+//（16 对齐）。mmap 页对齐 → data 16 对齐；每次分配再对齐到 16。超大分配独占
+// 一块；bump 永不归还内存（进程退出由 OS 回收）——与 C 的 arena 模型一致。
+ffi void myp_release_class_obj_ex(string obj);
+
+@static class Arena {
+    property:
+        long cur = 0;      // 当前 chunk 头地址（0 = 未初始化）
+        long head = 0;     // 首个 chunk（未来 bulk munmap）
+        long cur_used = 0;
+        long cur_cap = 0;
+}
+@static class Live {
+    property:
+        long strings = 0;
+        long objects = 0;
+        long arrays = 0;
+}
+
+// C: myp_arena_bump_alloc —— 从 mmap bump arena 取 size 字节，返回 16 对齐地址。
+// 失败（mmap 错误）返回 0。
+long myp_arena_alloc(long size) {
+    if (size < 1) size = 1;
+    long a = size + 15;
+    a = a - (a % 16);                    // 向上取整到 16
+    if (Arena.cur == 0 || Arena.cur_used + a > Arena.cur_cap) {
+        long cap = a;
+        if (cap < 65536) cap = 65536;
+        long c = __myp_syscall(9, 0, 32 + cap, 3, 0x22, -1, 0);  // mmap
+        if (c == -1 || c == 0) return 0;  // OOM
+        __myp_mem_store_i64(c, Arena.cur);     // next
+        __myp_mem_store_i64(c + 8, cap);
+        __myp_mem_store_i64(c + 16, 0);        // used
+        if (Arena.cur == 0) Arena.head = c;
+        Arena.cur = c;
+        Arena.cur_used = 0;
+        Arena.cur_cap = cap;
+    }
+    long p = Arena.cur + 32 + Arena.cur_used;
+    Arena.cur_used = Arena.cur_used + a;
+    return p;
+}
+
+// ---- 分配器集群 ----
+// C: void* myp_alloc(size_t size) —— 计数字符串 {rc=1, type_id=STR} + 字节
+// 注意：MYP 分配器须符合自举 ARC 返回约定——`return __myp_addr_to_str(...)`
+// 不是 fresh（内建不加 fresh temp）→ codegen 对 return 发射 retain-on-return
+// (+1)。因此内部 rc 设 0，让该 retain 补成 1（等价正常代码 new 后 return 的净
+// rc=1）。若设 1 会被 return 再 +1 → 净 rc=2（调用方 release 到 1 不归零=泄漏）。
+string myp_alloc(long size) {
+    long base = myp_arena_alloc(8 + size);
+    if (base == 0) return "";   // OOM（MYP 惯例：空串替代 NULL）
+    __myp_mem_store_i32(base, 0);        // rc=0（return 时 retain-on-return → 1）
+    __myp_mem_store_i32(base + 4, -2);   // type_id = 0xFFFFFFFE
+    Live.strings = Live.strings + 1;
+    return __myp_addr_to_str(base + 8);  // data
+}
+
+// C: void* myp_alloc_object(size_t size, uint32_t type_id)
+string myp_alloc_object(long size, int type_id) {
+    long base = myp_arena_alloc(8 + size);
+    if (base == 0) return "";   // OOM
+    __myp_mem_store_i32(base, 0);          // rc=0（return retain-on-return → 1）
+    __myp_mem_store_i32(base + 4, type_id);
+    Live.objects = Live.objects + 1;
+    return __myp_addr_to_str(base + 8);
+}
+
+// C: void* myp_alloc_class_array(uint64_t count, uint32_t elem_size)
+string myp_alloc_class_array(long count, int elem_size) {
+    long bytes = count * elem_size;
+    long base = myp_arena_alloc(24 + bytes);
+    if (base == 0) return "";   // OOM
+    __myp_mem_store_i64(base, count);
+    __myp_mem_store_i32(base + 8, elem_size);
+    __myp_mem_store_i32(base + 12, 0);   // pad = CLASS（逐元素 release）
+    __myp_mem_store_i32(base + 16, 0);   // rc=0（return retain-on-return → 1）
+    __myp_mem_store_i32(base + 20, -1);  // type_id = 0xFFFFFFFF (ARR)
+    Live.arrays = Live.arrays + 1;
+    return __myp_addr_to_str(base + 24);
+}
+
+// C: void* myp_alloc_slice_backing(uint64_t count, uint32_t elem_size,
+//                                  uint32_t elem_kind)
+string myp_alloc_slice_backing(long count, int elem_size, int elem_kind) {
+    long bytes = count * elem_size;
+    long base = myp_arena_alloc(24 + bytes);
+    if (base == 0) return "";   // OOM
+    __myp_mem_store_i64(base, count);
+    __myp_mem_store_i32(base + 8, elem_size);
+    __myp_mem_store_i32(base + 12, elem_kind);   // pad = elem_kind
+    __myp_mem_store_i32(base + 16, 0);   // rc=0（return retain-on-return → 1）
+    __myp_mem_store_i32(base + 20, -1);
+    Live.arrays = Live.arrays + 1;
+    return __myp_addr_to_str(base + 24);
+}
+
+// ---- 释放 ----
+// C: uint32_t myp_release(void* obj) —— fetch_sub 返回旧值；rc→0 按 type_id 分发。
+// 类对象分支委托 C helper（weak 通知 + release_table + myp_free_object，
+// myp_free_object 经 --allow-multiple-definition interpose 回本模块）。
+int myp_release(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return 0;
+    int old = __myp_atomic_sub_i32_addr(addr - 8, 1);  // fetch_sub
+    if (old == 0) { __myp_atomic_store_i32_addr(addr - 8, 0); return 0; }  // underflow 安全
+    int nv = old - 1;
+    if (nv != 0) return nv;
+    int tid = __myp_mem_load_i32(addr - 4);
+    if (tid == -1) {
+        // 数组/切片 backing：count@-24, elem_size@-20, pad@-16
+        long count = __myp_mem_load_i64(addr - 24);
+        int elem_size = __myp_mem_load_i32(addr - 20);
+        int pad = __myp_mem_load_i32(addr - 16);
+        if (pad == 2) {   // 元素 = slice 胖指针 {data,len} → 释放 data
+            for (long i = 0; i < count; i = i + 1) {
+                long inner = __myp_mem_load_i64(addr + i * elem_size);
+                myp_release(__myp_addr_to_str(inner));
+            }
+        } else if (pad == 0) {   // 元素 = 类引用 → 逐元素 release
+            for (long i = 0; i < count; i = i + 1) {
+                long inner = __myp_mem_load_i64(addr + i * 8);
+                myp_release(__myp_addr_to_str(inner));
+            }
+        }
+        // MYP_ARR_ELEM_SCALAR(pad==1)：无逐元素释放
+        if (Live.arrays > 0) Live.arrays = Live.arrays - 1;
+    } else if (tid == -2) {
+        if (Live.strings > 0) Live.strings = Live.strings - 1;
+    } else {
+        myp_release_class_obj_ex(obj);   // 类对象（weak + 表分发 + free）
+    }
+    return 0;
+}
+
+// C: void myp_free_object(void* obj) —— destroy stub 最终调用（interpose 到本
+// 模块）。bump arena 不归还内存，仅维护存活计数。
+void myp_free_object(string obj) {
+    long addr = __myp_str_ptr(obj);
+    if (addr == 0) return;
+    if (Live.objects > 0) Live.objects = Live.objects - 1;
+}
+
+// ---- M9 诊断计数（进程级，替代 C TLS；仅计数，无 per-type）----
+long myp_live_string_count() { return Live.strings; }
+long myp_live_object_count() { return Live.objects; }
+long myp_live_array_count() { return Live.arrays; }
+long myp_live_total_count() { return Live.strings + Live.objects + Live.arrays; }

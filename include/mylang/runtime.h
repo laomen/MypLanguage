@@ -34,6 +34,10 @@ void* myp_alloc_object(size_t size, uint32_t type_id);
 void myp_retain(void* obj);
 uint32_t myp_release(void* obj);
 void myp_free_object(void* obj);
+// Exported for the MYP shadow of myp_release (runtime_myp/alloc.myp): handles
+// the class-object branch (weak notify + per-TU release-table dispatch) that
+// MYP cannot reach. Assumes rc already hit 0.
+void myp_release_class_obj_ex(void* obj);
 // M7 weak references: a `@weak` class field stores a plain pointer to its
 // target (no retain) in a slot whose ADDRESS is registered in a global weak
 // registry. myp_weak_store sets the slot + updates the registry; myp_weak_load

@@ -1,0 +1,99 @@
+// rt_alloc_test.myp — 内存核心（#13）确定性验证：MYP 分配器/释放集群。
+// shadow 机制同 rt_str_test：链接时 alloc.myp/str.myp 等 MYP 符号优先。
+// 核心路径（字符串/类对象/数组 backing 分配 + 头部布局 + release + 计数）。
+import text;
+
+ffi string myp_strdup(string s);
+ffi int myp_strlen(string s);
+ffi int myp_release(string s);
+ffi long myp_live_string_count();
+ffi long myp_live_object_count();
+ffi long myp_live_array_count();
+
+class CoreObj {
+    // 空类——destroy stub 无字段级联，仅 myp_free_object
+}
+
+// 字符串：分配 → 头部 {rc=1, type_id=STR} → 计数+1 → 手动 release → 计数回退。
+// （作用域退出再 release 触发 underflow 保护，不重复计数。）
+int testString() {
+    long n0 = myp_live_string_count();
+    string s = myp_strdup("alloc-core");
+    long sp = __myp_str_ptr(s);
+    int rc = __myp_mem_load_i32(sp - 8);
+    int tid = __myp_mem_load_i32(sp - 4);
+    if (sp == 0) return 1;
+    if (rc != 1) return 2;                 // 分配后 rc=1（retain-on-return 已校正）
+    if (tid != -2) return 3;               // MYP_STR_TYPE_ID=0xFFFFFFFE
+    if (myp_strlen(s) != 10) return 4;
+    long n1 = myp_live_string_count();
+    if (n1 != n0 + 1) return 5;            // 分配 → +1
+    myp_release(s);                         // rc→0
+    long n2 = myp_live_string_count();
+    if (n2 != n0) return 6;                // 释放 → 回退
+    return 0;
+}
+
+// 数组 backing：new int[n] → myp_alloc_slice_backing(5,4,SCALAR)。
+// 头部相对 data：count@-24, elem_size@-16, pad@-12, rc@-8, type_id@-4。
+int testArray() {
+    long a0 = myp_live_array_count();
+    int[] arr = new int[5];
+    long ap = __myp_str_ptr(arr);
+    long cnt = __myp_mem_load_i64(ap - 24);
+    int pad = __myp_mem_load_i32(ap - 12);
+    int tid = __myp_mem_load_i32(ap - 4);
+    if (cnt != 5) return 1;
+    if (pad != 1) return 2;
+    if (tid != -1) return 3;
+    arr[0] = 42;
+    arr[4] = -7;
+    if (arr[0] != 42) return 4;
+    if (arr[4] != -7) return 5;
+    long a1 = myp_live_array_count();
+    if (a1 != a0 + 1) return 6;
+    myp_release(arr);
+    long a2 = myp_live_array_count();
+    if (a2 != a0) return 7;
+    return 0;
+}
+
+// 类对象：new CoreObj() → myp_alloc_object → 头部 rc/type_id 正 → 计数+1。
+// 手动 release → C helper → destroy stub → myp_free_object → 计数回退。
+int testObject() {
+    long o0 = myp_live_object_count();
+    CoreObj o = new CoreObj();
+    long op = __myp_str_ptr(o);
+    int rc = __myp_mem_load_i32(op - 8);
+    int tid = __myp_mem_load_i32(op - 4);
+    if (rc != 1) return 1;
+    if (tid <= 0) return 2;                // 类 type_id 为正
+    long o1 = myp_live_object_count();
+    if (o1 != o0 + 1) return 3;
+    myp_release(o);
+    long o2 = myp_live_object_count();
+    if (o2 != o0) return 4;
+    return 0;
+}
+
+// 大字符串：>64KB 触发新 arena chunk（mmap 超大块路径）。
+int testBig() {
+    long n0 = myp_live_string_count();
+    string big = Str.repeat("a", 70000);
+    if (myp_strlen(big) != 70000) return 1;
+    long n1 = myp_live_string_count();
+    if (n1 != n0 + 1) return 2;
+    myp_release(big);
+    long n2 = myp_live_string_count();
+    if (n2 != n0) return 3;
+    return 0;
+}
+
+int main() {
+    int r;
+    r = testString();  if (r != 0) return 100 + r;
+    r = testArray();   if (r != 0) return 200 + r;
+    r = testObject();  if (r != 0) return 300 + r;
+    r = testBig();     if (r != 0) return 400 + r;
+    return 0;
+}
