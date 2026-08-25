@@ -11,7 +11,6 @@
 ```
 libs/sdl/
   sdl.myp          # 便利层薄 ffi：myp_sdl_*（窗口/渲染器/事件/绘图/图像，由 sdl_bridge.c 实现）
-  sdl_ffi.myp      # 纯接口薄 ffi：SDL_* 1:1（用户自己写业务逻辑）
   bridges/
     sdl_bridge.c         # 便利层实现（C，预编译成 .a/.so 免 gcc，或按需 gcc 编译）
     sdl_bridge.c.cflags
@@ -21,6 +20,9 @@ libs/ttf/
   bridges/
     sdl_ttf_bridge.c
     sdl_ttf_bridge.c.libs # -lSDL2_ttf
+libs/sdl_ffi/      # 纯接口薄 ffi：SDL_* 1:1（用户自己写业务逻辑）
+  sdl_ffi.myp
+  sdl_ffi.myp.libs # -lSDL2（.myp.libs 侧车：纯 ffi 免 gcc 免桥文件）
 ```
 
 ## 用法
@@ -29,6 +31,9 @@ libs/ttf/
 # import sdl / import ttf 经包路径解析到 libs/；桥经 MYP_BRIDGES 发现
 MYP_BRIDGES="libs/sdl/bridges:libs/ttf/bridges" \
   mypc app.myp --package-path libs --stdlib ../stdlib -o app
+
+# import sdl_ffi 纯 ffi：仅包路径 + 侧车（-lSDL2 由 .myp.libs 注入，免 gcc）
+mypc app.myp --package-path libs --stdlib ../stdlib -o app
 ```
 
 ```myp
