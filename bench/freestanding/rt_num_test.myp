@@ -1,0 +1,50 @@
+// rt_num_test.myp — MYP 运行时数字层验证（runtime_myp/num.myp shadow C runtime）。
+// 通过 parse* 内建 + to_string_* FFI 触发 num.myp 的符号，链接时 MYP 版本优先。
+// 期望与 C 版本（strtoll/strtoull base-0 + itoa）一致。
+import text;
+
+// 直接调 to_string_*（精确验证边界，含 INT32/64_MIN、u32/u64 最大值）
+ffi string myp_to_string_i32(int v);
+ffi string myp_to_string_i64(long v);
+ffi string myp_to_string_u32(int v);
+ffi string myp_to_string_u64(long v);
+ffi string myp_to_string_bool(int v);
+
+int main() {
+    // parseLong（strtoll base-0：十进制/hex/八进制/负/空白/非法/空）
+    if (parseLong("123") != 123) return 11;
+    if (parseLong("0x1F") != 31) return 12;
+    if (parseLong("0755") != 493) return 13;
+    if (parseLong("-42") != -42) return 14;
+    if (parseLong("  +7") != 7) return 15;
+    if (parseLong("abc") != 0) return 16;
+    if (parseLong("") != 0) return 17;
+    if (parseLong("0x") != 0) return 18;
+    // parseInt（strtoll base-0，截 i32）
+    if (parseInt("0xFFFFFFFF") != -1) return 21;
+    if (parseInt("1234567890") != 1234567890) return 22;
+    // parseUint（strtoull base-0，截 i32）
+    if (parseUint("0xFFFFFFFF") != -1) return 31;
+    if (parseUint("42") != 42) return 32;
+    // parseUlong（strtoull base-0）
+    if (parseUlong("0xFFFFFFFF") != 4294967295) return 41;
+    if (parseUlong("18446744073709551615") != -1) return 42;   // u64 最大值 → 位 -1
+    // to_string_*（含边界）
+    if (myp_to_string_i32(42) != "42") return 51;
+    if (myp_to_string_i32(-42) != "-42") return 52;
+    if (myp_to_string_i32(int(1) << 31) != "-2147483648") return 53;   // INT32_MIN
+    if (myp_to_string_i64(0) != "0") return 61;
+    if (myp_to_string_i64(-123) != "-123") return 62;
+    if (myp_to_string_i64(long(1) << 63) != "-9223372036854775808") return 63;   // INT64_MIN
+    if (myp_to_string_u32(-1) != "4294967295") return 71;   // u32 最大值
+    if (myp_to_string_u32(0) != "0") return 72;
+    if (myp_to_string_u64(-1) != "18446744073709551615") return 73;   // u64 最大值
+    if (myp_to_string_u64(0) != "0") return 74;
+    if (myp_to_string_bool(1) != "true") return 81;
+    if (myp_to_string_bool(0) != "false") return 82;
+    // 字符串拼接路径（真实用法：codegen 发射 myp_to_string_*）
+    if ("" + 42 != "42") return 91;
+    if ("" + 7 + "x" != "7x") return 92;
+    if ("n=" + (-3) != "n=-3") return 93;
+    return 0;
+}

@@ -21,17 +21,21 @@ for m in runtime_myp/*.myp; do
     RT_OBJS="$RT_OBJS /tmp/rt_myp_m.o"
 done
 
-"$SELF" bench/freestanding/rt_str_test.myp --emit-llvm -o /tmp/rt_myp_t >/dev/null 2>&1
-"$LLC" /tmp/rt_myp_t.ll -filetype=obj -relocation-model=pic -o /tmp/rt_myp_t.o
+# 每个 shadow 验证程序单独链接+运行（都有各自 main()）
+for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp; do
+    tb="$(basename "$t" .myp)"
+    "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
+    "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
 
-/usr/bin/ld.lld-21 --allow-multiple-definition -pie --dynamic-linker "$DL" -o "$OUT" \
-    "$CRT"/Scrt1.o "$CRT"/crti.o /tmp/rt_myp_t.o $RT_OBJS build/libmyp_rt.a \
-    -L"$GCCD" -L"$CRT" -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s \
-    "$CRT"/crtn.o --gc-sections
+    /usr/bin/ld.lld-21 --allow-multiple-definition -pie --dynamic-linker "$DL" -o "/tmp/rt_${tb}_bin" \
+        "$CRT"/Scrt1.o "$CRT"/crti.o "/tmp/rt_${tb}.o" $RT_OBJS build/libmyp_rt.a \
+        -L"$GCCD" -L"$CRT" -lgcc -lgcc_s -lc -lm -lpthread -ldl -lgcc -lgcc_s \
+        "$CRT"/crtn.o --gc-sections
 
-echo "== 运行（MYP 运行时 shadow C 版本）=="
-"$OUT"
-code=$?
-echo "exit=$code"
-[ "$code" = 0 ] || { echo "FAIL: rt_str_test 期望 0"; exit 1; }
-echo "PASS: MYP 运行时字符串层 shadow 验证通过"
+    echo "== 运行（MYP 运行时 shadow C 版本）: ${tb} =="
+    "/tmp/rt_${tb}_bin"
+    code=$?
+    echo "exit=$code"
+    [ "$code" = 0 ] || { echo "FAIL: ${tb} 期望 0"; exit 1; }
+done
+echo "PASS: MYP 运行时 shadow 验证通过（str + num）"

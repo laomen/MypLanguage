@@ -1,0 +1,150 @@
+// runtime_myp/num.myp — runtime.c 数字层 myp化（自举编译器编译，MYP 实现）。
+// 符号名与 C runtime 一致；shadow 机制同 str.myp（链接时置于 libmyp_rt.a 之前
+// + --allow-multiple-definition → MYP 定义优先）。验证见 runtime_myp/build.sh
+// + rt_num_test.myp。
+//
+// 覆盖：整数解析（strtoll/strtoull base-0 语义：跳过空白、可选符号、0x 十六进制 /
+// 0 八进制 / 十进制）+ 整数/布尔格式化（itoa，INT32/64_MIN、u32/u64 最大值安全）。
+// float/double 解析（strtod/atof）与格式化（%g）依赖 libc，另立里程碑（TODO）。
+//
+// 注意：函数体内不得用字符串 == / < / Str.len（会递归调用自身/运行时）。
+
+ffi string myp_alloc(long size);
+ffi int myp_strlen(string s);
+
+// strtoll/strtoull base-0 解析：跳过空白、可选符号、0x 十六进制 / 0 八进制 / 十进制。
+// 返回 i64 位模式；无有效数字回 0。溢出按 i64 回绕（= strtoull 位语义；strtoll
+// 超范围 C 会饱和——自举/常规输入都在范围内，差异可接受）。
+long myp_parse_base0(string s) {
+    int len = myp_strlen(s);
+    int i = 0;
+    while (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12) i = i + 1;
+        else break;
+    }
+    int neg = 0;
+    if (i < len) {
+        int c = __myp_charcode(s, i);
+        if (c == 45) { neg = 1; i = i + 1; }     // '-'
+        else if (c == 43) i = i + 1;             // '+'
+    }
+    int base = 10;
+    if (i + 1 < len) {
+        int c0 = __myp_charcode(s, i);
+        int c1 = __myp_charcode(s, i + 1);
+        if (c0 == 48 && (c1 == 120 || c1 == 88)) { base = 16; i = i + 2; }  // 0x/0X
+        else if (c0 == 48) { base = 8; i = i + 1; }                          // 前导 0 → 八进制
+    } else if (i < len && __myp_charcode(s, i) == 48) {
+        base = 8;
+        i = i + 1;
+    }
+    long v = 0;
+    int any = 0;
+    while (i < len) {
+        int c = __myp_charcode(s, i);
+        int d = -1;
+        if (c >= 48 && c <= 57) d = c - 48;
+        else if (base == 16 && c >= 97 && c <= 102) d = c - 87;   // a-f
+        else if (base == 16 && c >= 65 && c <= 70) d = c - 55;    // A-F
+        if (d < 0 || d >= base) break;
+        v = v * base + d;
+        any = 1;
+        i = i + 1;
+    }
+    if (any == 0) return 0;
+    if (neg != 0) v = -v;
+    return v;
+}
+
+// C: int64_t myp_str_to_long(const char* s) —— strtoll base-0
+long myp_str_to_long(string s) {
+    return myp_parse_base0(s);
+}
+
+// C: int32_t myp_str_parse_int(const char* s) —— strtoll base-0，截 i32
+int myp_str_parse_int(string s) {
+    return int(myp_parse_base0(s));
+}
+
+// C: uint32_t myp_str_to_uint(const char* s) —— strtoull base-0，截 i32
+int myp_str_to_uint(string s) {
+    return int(myp_parse_base0(s));
+}
+
+// C: uint64_t myp_str_to_ulong(const char* s) —— strtoull base-0
+long myp_str_to_ulong(string s) {
+    return myp_parse_base0(s);
+}
+
+// ---- 格式化（itoa，2 位查表法；mirror runtime.c myp_itoa_common）----
+// u 为无符号幅值（ulong 运算 → udiv/urem，INT64_MIN 位模式也能正确出数字）。
+string myp_itoa_common(ulong u, int neg) {
+    string tmp = myp_alloc(25);          // 最多 20 位 + 负号 + 终止
+    long tp = __myp_str_ptr(tmp);
+    int pos = 23;
+    int n = 0;
+    while (1) {
+        ulong d = u % 100;
+        u = u / 100;
+        pos = pos - 1;
+        __myp_mem_store_i8(tp + pos, 48 + int(d % 10));
+        pos = pos - 1;
+        __myp_mem_store_i8(tp + pos, 48 + int(d / 10));
+        n = n + 2;
+        if (u == 0) break;
+    }
+    if (__myp_mem_load_i8(tp + pos) == 48 && n > 1) { pos = pos + 1; n = n - 1; }
+    if (neg != 0) {
+        pos = pos - 1;
+        __myp_mem_store_i8(tp + pos, 45);
+        n = n + 1;
+    }
+    string r = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(r), tp + long(pos), n);
+    __myp_mem_store_i8(__myp_str_ptr(r) + n, 0);
+    return r;
+}
+
+// C: char* myp_to_string_i32(int32_t val)
+string myp_to_string_i32(int val) {
+    long a = long(val);
+    int neg = 0;
+    if (a < 0) { neg = 1; a = -a; }
+    return myp_itoa_common(ulong(a), neg);
+}
+
+// C: char* myp_to_string_i64(int64_t val) —— INT64_MIN 安全（-a 回绕后按位重释为幅值）
+string myp_to_string_i64(long val) {
+    int neg = 0;
+    long a = val;
+    if (a < 0) { neg = 1; a = -a; }
+    return myp_itoa_common(ulong(a), neg);
+}
+
+long myp_two_32() { return long(1) << 32; }
+
+// C: char* myp_to_string_u32(uint32_t val) —— 位模式按无符号十进制
+string myp_to_string_u32(int val) {
+    long a = long(val);
+    ulong u;
+    if (a < 0) u = ulong(myp_two_32() + a);
+    else u = ulong(a);
+    return myp_itoa_common(u, 0);
+}
+
+// C: char* myp_to_string_u64(uint64_t val) —— 位模式按无符号十进制
+string myp_to_string_u64(long val) {
+    return myp_itoa_common(ulong(val), 0);
+}
+
+// C: char* myp_to_string_bool(int32_t val) —— "true"/"false"
+string myp_to_string_bool(int val) {
+    string s = "true";
+    int l = 4;
+    if (val == 0) { s = "false"; l = 5; }
+    string r = myp_alloc(l + 1);
+    __myp_memcpy(__myp_str_ptr(r), __myp_str_ptr(s), l);
+    __myp_mem_store_i8(__myp_str_ptr(r) + l, 0);
+    return r;
+}

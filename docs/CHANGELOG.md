@@ -35,6 +35,24 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.7 — runtime myp化 #4：数字层（整数解析+格式化，9 函数）+ 自举 FFI 实参转换修复
+
+**非破坏性**。`runtime_myp/num.myp` 新增（shadow C runtime 验证，`runtime_myp/build.sh`
+现在同时运行 rt_str_test + rt_num_test）：
+
+- **整数解析**（strtoll/strtoull base-0：空白/符号/0x 十六进制/0 八进制/十进制）：
+  `myp_str_to_long` / `myp_str_parse_int` / `myp_str_to_uint` / `myp_str_to_ulong`。
+- **整数/布尔格式化**（itoa 2 位查表法，INT32/64_MIN、u32/u64 最大值安全）：
+  `myp_to_string_i32` / `myp_to_string_i64` / `myp_to_string_u32` /
+  `myp_to_string_u64` / `myp_to_string_bool`。`ulong` 除法发 udiv/urem 处理位模式。
+- float/double 解析（strtod/atof）与格式化（%g）依赖 libc，另立里程碑（TODO）。
+
+**自举编译器 bug 修复（对拍 parity）**：`funcParamLts` 只查顶层函数、不查 FFI 声明
+→ FFI 调用整数实参不提升（`myp_to_string_i64(0)` 传 `i32 0` 进 `i64` 参数，高 32 位
+垃圾；oracle mypc 正确 sext）。补 FFI 分支后实参经 `convertValueU` 正确提升。此缺陷
+此前被 ABI"低 32 位恰好在低位"掩盖（小值侥幸正确）。验证：bootstrap 16/16、
+全量 323/323、runtime_myp shadow PASS。
+
 ### v3.15.6 — runtime myp化 #3：字符串层全部 MYP 化（22 个函数）+ 自举 O(N²) 修复
 
 **非破坏性**。自举编译器（`tools/selfhost/src/*.myp`，mypc 冻结）推进运行时 MYP 化——

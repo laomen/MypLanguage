@@ -2496,8 +2496,23 @@ class CodeGen {
         ArrayList<string> funcParamLts(string name) {
             ArrayList<string> out = new ArrayList<string>();
             AstFunction f = findFunc(name);
-            if (f == null) return out;
-            for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type()));
+            if (f != null) {
+                for (int pi = 0; pi < f.params().size(); pi = pi + 1) out.add(llvmType(f.params().get(pi).type()));
+                return out;
+            }
+            // FFI 声明也提供期望形参类型——否则实参不提升（i32→i64 等错位，
+            // 如 myp_to_string_i64(0) 传 i32 0 进 i64 参数，高 32 位垃圾）。
+            // 对齐 C++ oracle generateCall 的 FFI 参数转换（convertValueU）。
+            if (tu_ != null) {
+                for (int fi = 0; fi < tu_.ffis().size(); fi = fi + 1) {
+                    AstFFI ff = tu_.ffis().get(fi);
+                    if (ff.name() == name) {
+                        for (int pi = 0; pi < ff.params().size(); pi = pi + 1)
+                            out.add(llvmType(ff.params().get(pi).type()));
+                        return out;
+                    }
+                }
+            }
             return out;
         }
 
