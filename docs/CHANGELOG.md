@@ -35,6 +35,30 @@ v3.12.60 UixDesigner 所见即所得设计器等）。本文件继续记录编�
 变更；mypview 专用 stdlib 扩展（如 json bridge 编辑 API）在主 changelog 与
 mypview changelog 双向引用。
 
+### v3.15.17 — runtime myp化 #14：@region 层（myp_region_alloc + mark/release + 诊断）+ 修复 #13 类数组级联 bug
+
+**非破坏性**。`runtime_myp/region.myp` shadow C runtime 的 @region 两级内存 region
+层：
+
+- **`myp_region_alloc`**：depth>0 用 MYP region bump，否则落到 MYP 进程 arena
+  （`myp_arena_alloc`）。当前自举 codegen/stdlib 无调用方（slice/数组 backing 全走
+  ref-counted `myp_alloc_slice_backing`），shadow 以完整覆盖。
+- **`myp_arena_mark`/`myp_arena_release`**（codegen 在 @region 出入口发射）：mmap
+  chunk 水位跟踪——mark materialize 一个 64KB chunk 并返回水位，release munmap 比
+  水位新的 chunk 并回卷 used；嵌套 depth 计数。`myp_region_free_all` + region 字节
+  诊断。
+- **状态存 `@static class Region` 全局**（非 C 的 TLS）：@region 多线程并发会共享
+  region 状态——现有测试全部单线程 @region，多线程场景暂未使用（文档化限制）。
+- **修复 #13 潜伏 bug（alloc.myp `myp_release` 数组分支偏移）**：`pad` 应在
+  **data-12**（非 -16，-16 是 elem_size）、`elem_size` 在 data-16（非 -20）。此前
+  pad 读成 elem_size → `slice<Node>`（elem_size=8）pad 读 8 → CLASS/SLICE 逐元素
+  级联永不执行 → 类数组/类 slice 元素泄漏。region_slice_class_arc 的 `live=128`
+  暴露。rt_alloc_test 新增 **testClassArray** 级联回归。
+
+验证：shadow 测试 rt_str_test/rt_num_test/rt_alloc_test/rt_region_test 全 exit=0；
+region_slice_class_arc（live=0）与 region/test.myp 用 MYP shadow 输出正确；
+bootstrap 16/16、全量 323/323。build.sh 循环新增 rt_region_test。
+
 ### v3.15.16 — runtime myp化 #13：内存核心——mmap bump arena + 分配/释放集群全量 MYP 化
 
 **非破坏性**。核心分配器/ARC 层完整 MYP 化（`runtime_myp/alloc.myp` shadow C

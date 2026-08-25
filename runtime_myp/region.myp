@@ -1,0 +1,132 @@
+// runtime_myp/region.myp — @region 两级内存的 region 层 MYP 化（#14）。
+// shadow C runtime 的 myp_region_alloc / myp_arena_mark / myp_arena_release /
+// myp_region_free_all + region 字节诊断。
+//
+// 现状：自举 codegen 对 @region 函数入口发射 myp_arena_mark()、出口发射
+// myp_arena_release(mark)；slice/数组 backing 实际走 ref-counted
+// myp_alloc_slice_backing（进程 arena），region 层主要做 mark/release 水位跟踪
+// + 字节诊断（mem_diag 断言入口 materialize >=64KB chunk、出口 used 回落、复用
+// 单一 chunk）。myp_region_alloc 当前无 codegen/stdlib 调用方（死符号，仍 shadow
+// 以完整覆盖：depth>0 时用 region bump，否则落到 MYP 进程 arena）。
+//
+// 与 C 版差异：状态用 @static class Region 全局（进程级，非 TLS）——@region 在
+// 多线程并发时共享同一 region 状态（C 版是每线程）。现有测试全部单线程 @region，
+// 多线程 region 目前无使用场景；若未来需要，再引入 TLS。
+//
+// chunk 头 32B：[next:i64 @0][cap:i64 @8][used:i64 @16][pad:i64 @24]，data @+32
+//（16 对齐）。mmap 独立分配，release 时 munmap 新 chunk（回卷到 mark 水位）。
+
+@static class Region {
+    property:
+        long cur = 0;      // 当前（最新）chunk 头地址
+        long cur_used = 0;
+        long cur_cap = 0;
+        long depth = 0;    // 嵌套深度
+}
+
+// 跨模块调用：alloc.myp 的 mmap bump 进程 arena（--shared 外部符号）
+ffi long myp_arena_alloc(long size);
+
+// C: myp_region_bump_alloc —— region bump 分配。失败（mmap 错）返回 0。
+long myp_region_bump(long size) {
+    if (size < 1) size = 1;
+    long a = size + 15;
+    a = a - (a % 16);
+    if (Region.cur == 0 || Region.cur_used + a > Region.cur_cap) {
+        long cap = a;
+        if (cap < 65536) cap = 65536;
+        long c = __myp_syscall(9, 0, 32 + cap, 3, 0x22, -1, 0);   // mmap
+        if (c == -1 || c == 0) return 0;
+        __myp_mem_store_i64(c, Region.cur);      // next
+        __myp_mem_store_i64(c + 8, cap);
+        __myp_mem_store_i64(c + 16, 0);          // used
+        Region.cur = c;
+        Region.cur_used = 0;
+        Region.cur_cap = cap;
+    }
+    long p = Region.cur + 32 + Region.cur_used;
+    Region.cur_used = Region.cur_used + a;
+    return p;
+}
+
+// C: void* myp_region_alloc(size_t) —— depth>0 用 region arena，否则进程 arena。
+long myp_region_alloc(long size) {
+    if (Region.depth > 0) return myp_region_bump(size);
+    return myp_arena_alloc(size);   // alloc.myp 的 mmap bump 进程 arena
+}
+
+// C: void* myp_arena_mark(void) —— 进入 region：materialize 一个 chunk 并返回
+// 水位指针（编码当前 chunk + used 偏移；嵌套 region 无需独立 mark 对象）。
+long myp_arena_mark() {
+    if (Region.cur == 0) {
+        long cap = 65536;
+        long c = __myp_syscall(9, 0, 32 + cap, 3, 0x22, -1, 0);
+        if (c == -1 || c == 0) return 0;
+        __myp_mem_store_i64(c, 0);
+        __myp_mem_store_i64(c + 8, cap);
+        __myp_mem_store_i64(c + 16, 0);
+        Region.cur = c;
+        Region.cur_used = 0;
+        Region.cur_cap = cap;
+    }
+    Region.depth = Region.depth + 1;
+    return Region.cur + 32 + Region.cur_used;
+}
+
+// C: void myp_arena_release(void* mark) —— 离开 region：munmap 比 mark 更新的
+// chunk，回卷 mark 所在 chunk 的 used 到水位，depth-1。
+void myp_arena_release(long mark) {
+    long target = mark;
+    long chunk = Region.cur;
+    while (chunk != 0) {
+        long begin = chunk + 32;
+        long cap = __myp_mem_load_i64(chunk + 8);
+        long end = begin + cap;
+        if (target >= begin && target <= end) {
+            // munmap 从 cur 到（不含）该 chunk 的所有更新 chunk
+            long head = Region.cur;
+            while (head != chunk) {
+                long next = __myp_mem_load_i64(head);
+                long hcap = __myp_mem_load_i64(head + 8);
+                __myp_syscall(11, head, 32 + hcap, 0, 0, 0, 0);   // munmap
+                head = next;
+            }
+            long used = target - begin;
+            __myp_mem_store_i64(chunk + 16, used);
+            Region.cur = chunk;
+            Region.cur_used = used;
+            break;
+        }
+        chunk = __myp_mem_load_i64(chunk);
+    }
+    if (Region.depth > 0) Region.depth = Region.depth - 1;
+}
+
+// C: void myp_region_free_all(void) —— munmap 全部 region chunk 并复位。
+void myp_region_free_all() {
+    long chunk = Region.cur;
+    while (chunk != 0) {
+        long next = __myp_mem_load_i64(chunk);
+        long cap = __myp_mem_load_i64(chunk + 8);
+        __myp_syscall(11, chunk, 32 + cap, 0, 0, 0, 0);
+        chunk = next;
+    }
+    Region.cur = 0;
+    Region.cur_used = 0;
+    Region.cur_cap = 0;
+    Region.depth = 0;
+}
+
+// ---- M9: region 字节诊断（reserved/used）----
+long myp_diag_region_reserved() {
+    long n = 0;
+    long c = Region.cur;
+    while (c != 0) { n = n + __myp_mem_load_i64(c + 8); c = __myp_mem_load_i64(c); }
+    return n;
+}
+long myp_diag_region_used() {
+    long n = 0;
+    long c = Region.cur;
+    while (c != 0) { n = n + __myp_mem_load_i64(c + 16); c = __myp_mem_load_i64(c); }
+    return n;
+}

@@ -1,0 +1,43 @@
+// rt_region_test.myp — @region 层 MYP 化（#14）验证：
+// mark/release 水位跟踪 + region 字节诊断 + 功能正确性。
+// @region 函数经自举 codegen 发射 myp_arena_mark/release → 链接时 region.myp
+// shadow C 版本。slice backing 走 ref-counted 进程 arena，region 层做水位/diag。
+ffi long myp_diag_region_reserved();
+ffi long myp_diag_region_used();
+
+@region int regionWork(int seed) {
+    slice<int> s = new slice<int>(100);
+    s[0] = seed + 1;
+    s[99] = seed + 2;
+    return s[0] + s[99];
+}
+
+@region long regionPeak() {
+    // 入口已 materialize 一个 64KB chunk → reserved >= 65536
+    return myp_diag_region_reserved();
+}
+
+int main() {
+    // 功能：slice 值正确（ref-counted backing）
+    int r = regionWork(10);
+    if (r != 23) return 1;             // 11 + 12
+
+    // diag：region 内 reserved >= 65536；出口 used 回落基线；reserved 有界复用
+    long ub = myp_diag_region_used();
+    long rb = myp_diag_region_reserved();
+    long peak = regionPeak();
+    if (peak < 65536) return 2;
+    if (myp_diag_region_used() != ub) return 3;
+    if (myp_diag_region_reserved() < rb) return 4;
+
+    // 反复调用复用单一 chunk（reserved 不无限增长）
+    long k = 0;
+    while (k < 50) {
+        int x = regionWork(k);
+        if (x != (k + 1) + (k + 2)) return 5;
+        k = k + 1;
+    }
+    if (myp_diag_region_reserved() > rb + 65536) return 6;
+
+    return 0;
+}

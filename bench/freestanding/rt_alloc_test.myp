@@ -76,6 +76,30 @@ int testObject() {
     return 0;
 }
 
+// 类数组：new CoreObj[n] → myp_alloc_class_array(pad=CLASS)。
+// 释放数组 → myp_release 数组分支级联每个元素（回归：pad 偏移必须 -12）。
+int testClassArray() {
+    long o0 = myp_live_object_count();
+    long a0 = myp_live_array_count();
+    CoreObj[] arr = new CoreObj[3];
+    arr[0] = new CoreObj();
+    arr[1] = new CoreObj();
+    arr[2] = new CoreObj();
+    long ap = __myp_str_ptr(arr);
+    int pad = __myp_mem_load_i32(ap - 12);
+    if (pad != 0) return 1;                // CLASS
+    long o1 = myp_live_object_count();
+    if (o1 != o0 + 3) return 2;
+    long a1 = myp_live_array_count();
+    if (a1 != a0 + 1) return 3;
+    myp_release(arr);                       // 释放 backing → 级联 3 个元素
+    long o2 = myp_live_object_count();
+    if (o2 != o0) return 4;
+    long a2 = myp_live_array_count();
+    if (a2 != a0) return 5;
+    return 0;
+}
+
 // 大字符串：>64KB 触发新 arena chunk（mmap 超大块路径）。
 int testBig() {
     long n0 = myp_live_string_count();
@@ -91,9 +115,10 @@ int testBig() {
 
 int main() {
     int r;
-    r = testString();  if (r != 0) return 100 + r;
-    r = testArray();   if (r != 0) return 200 + r;
-    r = testObject();  if (r != 0) return 300 + r;
-    r = testBig();     if (r != 0) return 400 + r;
+    r = testString();     if (r != 0) return 100 + r;
+    r = testArray();      if (r != 0) return 200 + r;
+    r = testObject();     if (r != 0) return 300 + r;
+    r = testClassArray(); if (r != 0) return 400 + r;
+    r = testBig();        if (r != 0) return 500 + r;
     return 0;
 }

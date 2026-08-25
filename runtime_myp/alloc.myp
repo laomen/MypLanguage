@@ -124,10 +124,11 @@ int myp_release(string obj) {
     if (nv != 0) return nv;
     int tid = __myp_mem_load_i32(addr - 4);
     if (tid == -1) {
-        // 数组/切片 backing：count@-24, elem_size@-20, pad@-16
+        // 数组/切片 backing 头（data 相对偏移）：count@-24, elem_size@-16,
+        // pad@-12, rc@-8, type_id@-4（pad 是 -12 非 -16，-16 是 elem_size！）
         long count = __myp_mem_load_i64(addr - 24);
-        int elem_size = __myp_mem_load_i32(addr - 20);
-        int pad = __myp_mem_load_i32(addr - 16);
+        int elem_size = __myp_mem_load_i32(addr - 16);
+        int pad = __myp_mem_load_i32(addr - 12);
         if (pad == 2) {   // 元素 = slice 胖指针 {data,len} → 释放 data
             for (long i = 0; i < count; i = i + 1) {
                 long inner = __myp_mem_load_i64(addr + i * elem_size);
