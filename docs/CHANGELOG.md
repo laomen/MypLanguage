@@ -27,6 +27,25 @@
 
 ## 编译器版本历史
 
+### v3.15.72 — MYP 运行时 file_io 写缓冲 + myp_io_cur_get 单线程快路径（396→89ms）
+
+**非破坏性**。续 v3.15.71 读缓冲，继续消除 file_io 剩余瓶颈：
+
+1. **写侧缓冲（每句柄 4KB）**：`myp_io_write/write_line/write_byte/write_i32be/
+   write_double` 改为追加到写缓冲（`ioWriteBuf`/`ioWriteByte`），满才 `ioFlush`
+   批量 write——不再每行 1 次 write syscall + 1 次分配拷贝。flush 时机：缓冲满 /
+   `fclose` / `seek` 前 / 同句柄读前（`ioFlush` 无 wpos 时零开销）。
+2. **`myp_io_cur_get` 单线程快路径**：仅 1 个已登记线程时免 `gettid` syscall
+   （File API 每次操作先 select→cur_set 登记，count==1 ⟹ 唯一登记线程即调用者）。
+   此前 gettid 占全部 syscall 的 **99.8%**（200K 行 ≈ 200 万次）——现在每行仅
+   select 的 cur_set 1 次 gettid。
+
+**验证**：file_io 基准 **396→168（读缓冲）→116（写缓冲）→89ms（cur_get 快路径）**
+（4.5 倍），行数/内容与 C 一致（200001）；RSS ~41.8MB（每句柄 +8KB 读写缓冲）。
+全量 **324/324**、shadow 冒烟通过（io/io_thread/async_file/coro_thread/threadpool
+全过）。剩余差距（C 26ms）主要来自 select 每行 1 次 gettid——彻底消除需 TLS 线程
+身份或接受多线程边界情况，暂留。
+
 ### v3.15.71 — MYP 运行时 file_io 读缓冲：readLine/read_byte/readAll 不再逐字节 syscall
 
 **非破坏性**。性能回归分析定位 file_io 落后主因（MYP 396ms vs C 26ms，15 倍）：
