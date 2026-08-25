@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 26/26）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 27/27）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#37 后重算） | **224**（~46%） |
-| 未 shadow（C runtime 剩余） | **266** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#38 后重算） | **239**（~49%） |
+| 未 shadow（C runtime 剩余） | **251** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -26,7 +26,7 @@ long-参数 ABI shadow，#31）/ 浮点 float / 内存核心 alloc（含 `myp_di
 arc+region+weak / 文件 I/O io / 时间 time / 文件系统 fs(12) / 环境 get / 命令行参数
 args / 终端 term / 数学 math(19) / base64 / crc / hash-sha256 / bytes / 汇编原语 asm /
 诊断 diag(type_live + fail_alloc，#35) / **协程 coro 全生命周期（#36 Phase A 核心 +
-#37 Phase B 事件/等待层 + 帧表 + 诊断）**。
+#37 Phase B 事件/等待层 + 帧表 + 诊断 + #38 Phase C channel/future）**。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
@@ -106,12 +106,26 @@ to_bytes` 早已在 bytes.myp；`myp_str_cat/cpy/fmt/len` **无 MYP 调用方**�
     （栈池无 → 恒 0，Phase C）。
   - **测试**：`bench/freestanding/rt_coro_wait_test.myp`（事件到达/超时/waitAny/
     sleep/waitAnyOf 总体超时/waitFd-pipe，6 项）。
-- **剩余（Phase B/C）**：release_frame/cleanup/thread_cleanup、栈池、
-  `myp_coro_wait_future/wake_future`、`myp_coro_am_i_coro`、exec worker
-  （myp_coro_file_*）。
-- **channel**：create/send/recv/try_send/try_recv/close/destroy/size/wake_one/...
-  （Phase C）。
-- **难度**：高（已突破核心+事件层，剩通道/未来/exec worker/栈池）。
+- ✅ **已做（#38，Phase C channel + future）**：
+  - **Channel**：`myp_channel_create/destroy/send/recv/try_send/try_recv/size/close`
+    + 内部 wake_one（同步交接）/wake_ready（close/try 只 ready）。`@static Chan` 并行
+    数组（buf 环形缓冲/head/count/capacity/closed + 256×256 recvW/sendW FIFO waiter）。
+    同步交接：协程调用方内联 resume 对端一步（深度守卫 64）；非协程只 ready=1。
+  - **Future**：`myp_future_create/set/get/destroy` + `myp_coro_wait_future/wake_future/
+    am_i_coro`。协程 get 未 ready → park（不阻塞线程）；同线程 set 唤醒。非协程未
+    ready → 自旋 + sleep 回退（MYP 无 pthread_cond；主用例 set 先于 get）。
+  - **⚠️ CoroT.current 初始化 bug（#38 发现+修复）**：`--shared` 模式下 @static 属性
+    默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1` 实际从 0 起，恰等于
+    首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→ channel/wait 走
+    协程分支（内联 resume/误 park）。修复：`coroEnsureInit()` 一次性显式置
+    current=-1，挂在全部公共 API 入口（26 处）。
+  - **exec worker**：`myp_coro_file_read_line/all` 已 #17 同步化（io.myp）——保留
+    （同步读语义，非阻塞 await 未做）。
+  - **测试**：`bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/
+    producer park/consumer park/close + future ready/协程 park，6 项）。
+- **剩余（Phase C）**：release_frame/cleanup/thread_cleanup、栈池、
+  `myp_coro_file_*` 非阻塞 exec worker。
+- **难度**：高（已突破核心+事件层+通道/未来，剩栈池/cleanup/非阻塞 exec）。
 
 ### 包 E：同步原语（mutex 7 + cond 6 + sem 6 + rwlock 8 + once 5 + barrier 3 + future 4 = 39）
 - **策略**：futex syscall(202) 实现互斥/条件变量；或 `__myp_indirect` 调 pthread。

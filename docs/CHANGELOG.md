@@ -54,6 +54,34 @@
 - **未做（Phase C）**：通道、future（wait/wake_future）、exec worker、栈池、
   thread_cleanup/cleanup_all。
 
+### v3.15.42 — runtime myp化 #38：包 D 协程 Phase C（channel + future + current 初始化修复）
+
+**非破坏性**。协程 Channel + Future MYP 化——shadow C 的 `myp_channel_*`/
+`myp_future_*`/`myp_coro_{wait,wake}_future`/`myp_coro_am_i_coro`（CORO_DESIGN
+Phase C 切片）：
+
+- **Channel**：`myp_channel_create/destroy/send/recv/try_send/try_recv/size/close`
+  + 内部 `wake_one`（同步交接：协程调用方内联 resume 对端一步，深度守卫 64）/
+  `wake_ready`（close/try 只 ready）。`@static Chan` 并行数组（环形缓冲
+  head/count/capacity/closed + 256×256 recvW/sendW FIFO waiter）。协程 send 满/
+  recv 空 → park；非协程满/空 → -1（不挂起）。
+- **Future**：`myp_future_create/set/get/destroy` + `myp_coro_wait_future/
+  wake_future`/`am_i_coro`。协程 get 未 ready → park（不阻塞线程）；同线程 set
+  唤醒；非协程未 ready → 自旋 + sleep 回退（MYP 无 pthread_cond）。
+- **⚠️ CoroT.current 初始化 bug（本里程碑发现+修复）**：`--shared` 库模式下
+  @static 属性默认值不生效（全局 zeroinitializer）→ `CoroT.current = -1` 实际从
+  0 起，恰等于首个协程槽号 → main（非协程）在 spawn 后被误判为「在协程 0」→
+  channel/wait 走协程分支（内联 resume 改变输出时序/误 park）。修复：
+  `coroEnsureInit()` 一次性显式置 current=-1，挂在全部公共 API 入口（26 处）。
+  该 bug 亦影响此前 Phase A/B（被「首协程恰为槽 0」掩盖）。
+- **验证**：新 `bench/freestanding/rt_coro_chan_future_test.myp`（channel 基本/
+  producer park/consumer park/close + future ready/协程 park，6 项 exit=0）；
+  **shadow 27/27**；`tests/coro_channel`/`coro_future`/`future`/
+  `channel_multi_consumer` 用 MYP shadow 链接**输出逐字一致**；
+  `tests/stress/channel_stress`（cap=1/8，sum=199990000）PASS；bootstrap 16/16
+  （fixpoint 不变）；全量 323/323。
+- **未做（Phase C 尾）**：非阻塞 exec worker、栈池、cleanup_all/thread_cleanup。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

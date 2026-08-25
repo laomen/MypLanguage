@@ -103,6 +103,22 @@ ffi int myp_release(string obj);    // alloc.myp（帧表 release；经 __myp_ad
         int count = 0;
 }
 
+// ---- 一次性状态初始化 ----
+// ⚠️ --shared 库模式下 @static 属性默认值**不生效**（全局 zeroinitializer）——
+// CoroT.current 声明 `= -1` 实际从 0 起。0 恰等于首个协程槽号 → main（非协程）
+// 在 spawn 后被误判为「在协程 0」→ channel/wait 走协程分支（内联 resume/误 park）。
+// 所有公共入口先 coroEnsureInit() 把 current 显式置 -1。
+@static class CoroInit {
+    property:
+        int done = 0;
+}
+void coroEnsureInit() {
+    if (CoroInit.done == 0) {
+        CoroInit.done = 1;
+        CoroT.current = -1;
+    }
+}
+
 // ---- myp_ctx_switch（内联汇编上下文切换，保留原实现）----
 void myp_ctx_switch(long save, long load) {
     __myp_asm(
@@ -195,6 +211,7 @@ void coroCtxInit(int slot) {
 // ---- 生命周期 ----
 // C: int64_t __myp_coro_create(int64_t stack_bytes)
 long __myp_coro_create(long stack_bytes) {
+    coroEnsureInit();
     coroRetiredDrain();
     long size = stack_bytes > 0 ? stack_bytes : 131072;
     int idx = coroPopFree();
@@ -244,6 +261,7 @@ long __myp_coro_get_entry_arg(long idx) {
 
 // C: int64_t __myp_coro_yield(int64_t val) —— 挂起当前协程，切回调用者
 long __myp_coro_yield(long val) {
+    coroEnsureInit();
     if (CoroT.current < 0) return 0;
     int saved = CoroT.current;
     CoroT.yieldVal[saved] = val;
@@ -256,6 +274,7 @@ long __myp_coro_yield(long val) {
 
 // C: int64_t __myp_coro_resume(int64_t handle, int64_t val) —— 恢复协程
 long __myp_coro_resume(long handle, long val) {
+    coroEnsureInit();
     if (coroHandleValid(handle) == 0) return -1;
     int idx = coroSlotOf(handle);
     if (CoroT.active[idx] == 0) return -1;
@@ -270,6 +289,7 @@ long __myp_coro_resume(long handle, long val) {
 
 // C: void __myp_coro_set_result(int64_t val) —— @coro 方法 return 存结果
 void __myp_coro_set_result(long val) {
+    coroEnsureInit();
     if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
         CoroT.result[CoroT.current] = val;
     }
@@ -311,6 +331,7 @@ long __myp_coro_count() {
 
 // C: int64_t __myp_coro_current_handle(void)
 long __myp_coro_current_handle() {
+    coroEnsureInit();
     return coroMakeHandle(CoroT.current);
 }
 
@@ -323,6 +344,7 @@ void __myp_coro_request_cancel(long handle) {
 }
 // C: int64_t __myp_coro_cancel_requested(void)
 long __myp_coro_cancel_requested() {
+    coroEnsureInit();
     if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
         return CoroT.cancelRequested[CoroT.current] != 0 ? 1 : 0;
     }
@@ -330,6 +352,7 @@ long __myp_coro_cancel_requested() {
 }
 // C: void __myp_coro_cancel_clear(void)
 void __myp_coro_cancel_clear() {
+    coroEnsureInit();
     if (CoroT.current >= 0 && CoroT.current < CoroT.count) {
         CoroT.cancelRequested[CoroT.current] = 0;
     }
@@ -337,6 +360,7 @@ void __myp_coro_cancel_clear() {
 
 // C: void __myp_coro_destroy(int64_t handle)
 void __myp_coro_destroy(long handle) {
+    coroEnsureInit();
     if (coroHandleValid(handle) == 0) return;
     int idx = coroSlotOf(handle);
     if (CoroT.stack[idx] == 0) {
@@ -374,6 +398,7 @@ void __myp_coro_destroy(long handle) {
 // 未捕获异常路径（跳过了 epilogue 的释放）→ release 仍在表的 obj（堆指针，栈已
 // 展开也安全）。每协程 ≤32 槽（满则放弃跟踪——同 C OOM 语义，防泄漏不防 UAF）。
 void __myp_coro_frame_set(long slot_id, long obj) {
+    coroEnsureInit();
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return;
     if (slot_id == 0) return;
@@ -390,6 +415,7 @@ void __myp_coro_frame_set(long slot_id, long obj) {
     CoroF.count[cur] = CoroF.count[cur] + 1;
 }
 void __myp_coro_frame_clear(long slot_id) {
+    coroEnsureInit();
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return;
     if (slot_id == 0) return;
@@ -499,6 +525,7 @@ void coroPollFds() {
 // C: void __myp_coro_scheduler(void) —— 合作式调度（Phase B：事件/截止期/fd 就绪
 // 推进 + ready 快照 resume 一步）。
 void __myp_coro_scheduler() {
+    coroEnsureInit();
     coroRetiredDrain();
     // 压缩等待表：drop inactive（fd-poll/截止期/事件唤醒过的记录不再累积）
     if (CoroW.count > 0) {
@@ -601,6 +628,7 @@ void __myp_coro_trampoline() {
 // 阻塞至 event_id 触发（返回 resume 传入值）或 timeout_ms 超时（返回 -1）。
 // 调度器驱动截止期；不调 scheduler 则定时等待表现为无限等待（同 C）。
 long __myp_coro_wait_event_timeout(long event_id, long timeout_ms, long val) {
+    coroEnsureInit();
     long deadline = 0;
     if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
     int cur = CoroT.current;
@@ -628,6 +656,7 @@ long __myp_coro_wait_event(long event_id, long val) {
 //                                timeout_ms, int64_t val)
 // 等任一事件触发：返回唤醒的事件 id，超时 -1。ids = 数组 data 指针（long）。
 long __myp_coro_wait_any(long ids, long count, long timeout_ms, long val) {
+    coroEnsureInit();
     long deadline = 0;
     if (timeout_ms > 0) deadline = myp_now_ms() + timeout_ms;
     int cur = CoroT.current;
@@ -659,6 +688,7 @@ long __myp_coro_wait_any(long ids, long count, long timeout_ms, long val) {
 // 统一 waitAny：spec = 扁平 long[]（count*3 项）[kind,id,flag]；返回触发的 spec
 // 下标（0 起），总体超时 -1，非协程 -2。
 long __myp_coro_wait_any_of(long spec, long count, long timeout_ms, long val) {
+    coroEnsureInit();
     if (spec == 0 || count <= 0) return -2;
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return -2;   // 非协程
@@ -697,6 +727,7 @@ long __myp_coro_wait_any_of(long spec, long count, long timeout_ms, long val) {
 // C: int64_t __myp_coro_sleep(int64_t ms) —— 协程内定时挂起（不阻塞线程）；非协程
 // 回退阻塞 myp_sleep_ms。
 long __myp_coro_sleep(long ms) {
+    coroEnsureInit();
     if (ms <= 0) return 0;
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) {
@@ -715,6 +746,7 @@ long __myp_coro_sleep(long ms) {
 // C: int64_t __myp_coro_wait_fd(int64_t fd, int64_t want_read, int64_t want_write,
 //                               int64_t timeout_ms) —— 就绪返回 1，超时 -1，非协程 0。
 long __myp_coro_wait_fd(long fd, long want_read, long want_write, long timeout_ms) {
+    coroEnsureInit();
     int cur = CoroT.current;
     if (cur < 0 || cur >= CoroT.count) return 0;   // 非协程
     long deadline = 0;
@@ -766,4 +798,291 @@ long myp_diag_retired_bytes() {
     long s = 0;
     for (int i = 0; i < CoroRetired.count; i = i + 1) s = s + CoroRetired.sizes[i];
     return s;
+}
+
+// ============================================================
+// Phase C：Channel（Go 风格有缓冲通道；C myp_channel_*，见 runtime.c §channel）
+// 语义：协程内 send 缓冲满 → 挂起；recv 缓冲空 → 挂起；非协程满/空 → -1（不挂起）。
+// 同步交接（rendezvous）：send/recv 完成后若调用方是协程 → 内联 resume 对端一步
+// （省 scheduler 往返；深度守卫防递归失控）；否则只 ready=1 等下一轮调度。
+// 表：@static 进程级（C 为 TLS——文档化限制，同协程表；多线程通道共享需自旋锁）。
+// ============================================================
+@static class Chan {
+    property:
+        long[256] buf;        // 环形缓冲基址（arena，capacity*8；0=未分配）
+        int[256] capacity;
+        int[256] head;
+        int[256] count;
+        int[256] closed;
+        long[65536] recvW;    // 256 chan × 256 recv waiter（FIFO，扁平 [h*256+i]）
+        int[256] recvWc;
+        long[65536] sendW;
+        int[256] sendWc;
+        int wakeDepth = 0;    // 同步交接递归深度守卫（同 C MYP_CHANNEL_WAKE_DEPTH_MAX=64）
+        int used = 0;         // 已分配通道数
+}
+
+// pop first（FIFO）
+long chanPopRecv(int h) {
+    if (Chan.recvWc[h] <= 0) return -1;
+    long v = Chan.recvW[h * 256];
+    for (int i = 1; i < Chan.recvWc[h]; i = i + 1)
+        Chan.recvW[h * 256 + i - 1] = Chan.recvW[h * 256 + i];
+    Chan.recvWc[h] = Chan.recvWc[h] - 1;
+    return v;
+}
+long chanPopSend(int h) {
+    if (Chan.sendWc[h] <= 0) return -1;
+    long v = Chan.sendW[h * 256];
+    for (int i = 1; i < Chan.sendWc[h]; i = i + 1)
+        Chan.sendW[h * 256 + i - 1] = Chan.sendW[h * 256 + i];
+    Chan.sendWc[h] = Chan.sendWc[h] - 1;
+    return v;
+}
+// 唤醒一个对端等待者；isRecv=1 唤醒 recv waiter（由 send 调），0 唤醒 send waiter。
+// 同步交接：调用方是协程 → 内联 resume 对端一步；否则 ready=1 等 scheduler。
+long chanWakeOne(int h, int isRecv) {
+    long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
+    if (sl < 0) return -1;
+    int hs = int(sl);
+    if (hs < 0 || hs >= CoroT.count || CoroT.active[hs] == 0) return sl;
+    if (CoroT.current >= 0 && Chan.wakeDepth < 64) {
+        Chan.wakeDepth = Chan.wakeDepth + 1;
+        __myp_coro_resume(coroMakeHandle(hs), 0L);
+        Chan.wakeDepth = Chan.wakeDepth - 1;
+    } else {
+        CoroT.ready[hs] = 1;
+    }
+    return sl;
+}
+// 只 ready（不内联 resume）——close/try 用：内联 resume 可能在关闭通道上跑无界
+// 循环挂起调用者。
+long chanWakeReady(int h, int isRecv) {
+    long sl = isRecv != 0 ? chanPopRecv(h) : chanPopSend(h);
+    if (sl >= 0 && int(sl) < CoroT.count && CoroT.active[int(sl)] != 0)
+        CoroT.ready[int(sl)] = 1;
+    return sl;
+}
+
+// C: int64_t myp_channel_create(int64_t capacity)
+long myp_channel_create(int capacity) {
+    int cap = capacity > 0 ? capacity : 1;
+    for (int i = 0; i < 256; i = i + 1) {
+        if (Chan.buf[i] == 0) {
+            Chan.buf[i] = myp_arena_alloc(long(cap) * 8);
+            if (Chan.buf[i] == 0) return -1;
+            Chan.capacity[i] = cap;
+            Chan.head[i] = 0;
+            Chan.count[i] = 0;
+            Chan.closed[i] = 0;
+            Chan.recvWc[i] = 0;
+            Chan.sendWc[i] = 0;
+            if (i >= Chan.used) Chan.used = i + 1;
+            return long(i);
+        }
+    }
+    return -1;
+}
+// C: void myp_channel_destroy(int64_t handle)
+void myp_channel_destroy(long handle) {
+    int h = int(handle);
+    if (h < 0 || h >= 256) return;
+    if (Chan.buf[h] == 0) return;
+    Chan.buf[h] = 0;          // arena 不真 free；标记槽可复用
+    Chan.capacity[h] = 0;
+    Chan.count[h] = 0;
+    Chan.closed[h] = 1;
+    Chan.recvWc[h] = 0;
+    Chan.sendWc[h] = 0;
+}
+// C: int64_t myp_channel_send(int64_t handle, int64_t val) —— 0 成功；协程满挂起
+int myp_channel_send(long handle, long val) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256) return -1;
+    if (Chan.buf[h] == 0 || Chan.closed[h] != 0) return -1;
+    for (;;) {
+        if (Chan.count[h] < Chan.capacity[h]) {
+            int wpos = Chan.head[h] + Chan.count[h];
+            if (wpos >= Chan.capacity[h]) wpos = wpos - Chan.capacity[h];
+            __myp_mem_store_i64(Chan.buf[h] + long(wpos) * 8, val);
+            Chan.count[h] = Chan.count[h] + 1;
+            chanWakeOne(h, 1);   // 唤醒一个 recv waiter
+            return 0;
+        }
+        int cur = CoroT.current;
+        if (cur >= 0 && cur < CoroT.count && CoroT.active[cur] != 0) {
+            if (Chan.sendWc[h] < 256) {
+                Chan.sendW[h * 256 + Chan.sendWc[h]] = long(cur);
+                Chan.sendWc[h] = Chan.sendWc[h] + 1;
+                CoroT.ready[cur] = 0;   // park
+            }
+            __myp_coro_yield(val);
+            if (Chan.closed[h] != 0) return -1;
+            // loop：重新校验（多生产者，空位可能被先 resume 者占用）
+        } else {
+            return -1;   // 非协程满缓冲
+        }
+    }
+}
+// C: int64_t myp_channel_recv(int64_t handle) —— 取出值；协程空挂起，非协程空 -1
+long myp_channel_recv(long handle) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256) return -1;
+    if (Chan.buf[h] == 0) return -1;
+    for (;;) {
+        if (Chan.count[h] > 0) {
+            long v = __myp_mem_load_i64(Chan.buf[h] + long(Chan.head[h]) * 8);
+            int nh = Chan.head[h] + 1;
+            if (nh >= Chan.capacity[h]) nh = 0;
+            Chan.head[h] = nh;
+            Chan.count[h] = Chan.count[h] - 1;
+            chanWakeOne(h, 0);   // 唤醒一个 send waiter
+            return v;
+        }
+        if (Chan.closed[h] != 0) return -1;
+        int cur = CoroT.current;
+        if (cur >= 0 && cur < CoroT.count && CoroT.active[cur] != 0) {
+            if (Chan.recvWc[h] < 256) {
+                Chan.recvW[h * 256 + Chan.recvWc[h]] = long(cur);
+                Chan.recvWc[h] = Chan.recvWc[h] + 1;
+                CoroT.ready[cur] = 0;   // park
+            }
+            __myp_coro_yield(0);
+            if (Chan.closed[h] != 0) return -1;
+            // loop：重新校验（多消费者）
+        } else {
+            return -1;   // 非协程空缓冲
+        }
+    }
+}
+// C: int64_t myp_channel_try_send —— 非阻塞：0 成功，-1 满/关闭
+int myp_channel_try_send(long handle, long val) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256 || Chan.buf[h] == 0) return -1;
+    if (Chan.closed[h] != 0 || Chan.count[h] >= Chan.capacity[h]) return -1;
+    int wpos = Chan.head[h] + Chan.count[h];
+    if (wpos >= Chan.capacity[h]) wpos = wpos - Chan.capacity[h];
+    __myp_mem_store_i64(Chan.buf[h] + long(wpos) * 8, val);
+    Chan.count[h] = Chan.count[h] + 1;
+    chanWakeReady(h, 1);
+    return 0;
+}
+// C: int64_t myp_channel_try_recv —— 非阻塞：取出值，-1 空/关闭
+long myp_channel_try_recv(long handle) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256 || Chan.buf[h] == 0) return -1;
+    if (Chan.count[h] <= 0) return -1;
+    long v = __myp_mem_load_i64(Chan.buf[h] + long(Chan.head[h]) * 8);
+    int nh = Chan.head[h] + 1;
+    if (nh >= Chan.capacity[h]) nh = 0;
+    Chan.head[h] = nh;
+    Chan.count[h] = Chan.count[h] - 1;
+    chanWakeReady(h, 0);
+    return v;
+}
+// C: int64_t myp_channel_size
+int myp_channel_size(long handle) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256 || Chan.buf[h] == 0) return -1;
+    return Chan.count[h];
+}
+// C: void myp_channel_close —— 唤醒所有等待者（看到关闭状态）；只 ready 不内联
+void myp_channel_close(long handle) {
+    coroEnsureInit();
+    int h = int(handle);
+    if (h < 0 || h >= 256) return;
+    if (Chan.buf[h] == 0) return;
+    Chan.closed[h] = 1;
+    while (Chan.sendWc[h] > 0) chanWakeReady(h, 0);
+    while (Chan.recvWc[h] > 0) chanWakeReady(h, 1);
+}
+
+// ============================================================
+// Phase C：Future/Promise（协程感知；C myp_future_* + myp_coro_{wait,wake}_future）
+// 协程内 Future.get() 未 ready → park 协程（不阻塞线程）；同线程 set() 唤醒。
+// 非协程未 ready → 自旋 + sleep 回退（MYP 无 pthread_cond；主用例 set 先于 get）。
+// ============================================================
+@static class Fut {
+    property:
+        int[64] used;
+        int[64] ready;
+        long[64] value;
+        long[4096] coroW;    // 64 future × 64 coroutine waiter（扁平 [h*64+i]）
+        int[64] coroWc;
+}
+
+// C: int myp_coro_am_i_coro(void)
+int myp_coro_am_i_coro() {
+    coroEnsureInit();
+    return CoroT.current >= 0 ? 1 : 0;
+}
+// C: void myp_coro_wait_future(int32_t handle) —— park 当前协程直至 future ready
+void myp_coro_wait_future(int handle) {
+    coroEnsureInit();
+    if (CoroT.current < 0) return;
+    if (handle < 0 || handle >= 64 || Fut.used[handle] == 0) return;
+    if (Fut.ready[handle] != 0) return;
+    int cur = CoroT.current;
+    if (Fut.coroWc[handle] < 64) {
+        Fut.coroW[handle * 64 + Fut.coroWc[handle]] = long(cur);
+        Fut.coroWc[handle] = Fut.coroWc[handle] + 1;
+        CoroT.ready[cur] = 0;   // park
+    }
+    __myp_coro_yield(0);
+}
+// C: void myp_coro_wake_future(int32_t handle) —— re-ready 同线程等待者
+void myp_coro_wake_future(int handle) {
+    coroEnsureInit();
+    if (handle < 0 || handle >= 64) return;
+    for (int i = 0; i < Fut.coroWc[handle]; i = i + 1) {
+        int hs = int(Fut.coroW[handle * 64 + i]);
+        if (hs >= 0 && hs < CoroT.count && CoroT.active[hs] != 0)
+            CoroT.ready[hs] = 1;
+    }
+    Fut.coroWc[handle] = 0;
+}
+// C: int32_t myp_future_create
+int myp_future_create() {
+    for (int i = 0; i < 64; i = i + 1) {
+        if (Fut.used[i] == 0) {
+            Fut.used[i] = 1;
+            Fut.ready[i] = 0;
+            Fut.value[i] = 0;
+            Fut.coroWc[i] = 0;
+            return i;
+        }
+    }
+    return -1;
+}
+// C: void myp_future_set(int32_t handle, int32_t value)
+void myp_future_set(int handle, int value) {
+    if (handle < 0 || handle >= 64 || Fut.used[handle] == 0) return;
+    Fut.value[handle] = long(value);
+    Fut.ready[handle] = 1;
+    myp_coro_wake_future(handle);   // 唤醒同线程协程等待者
+}
+// C: int32_t myp_future_get(int32_t handle)
+int myp_future_get(int handle) {
+    coroEnsureInit();
+    if (handle < 0 || handle >= 64 || Fut.used[handle] == 0) return 0;
+    if (Fut.ready[handle] != 0) return int(Fut.value[handle]);
+    if (CoroT.current >= 0) {
+        myp_coro_wait_future(handle);   // park；同线程 set 唤醒后 value 已就绪
+        while (Fut.ready[handle] == 0) myp_sleep_ms(1);   // 防御
+        return int(Fut.value[handle]);
+    }
+    // 非协程：自旋 + sleep 回退（MYP 无 pthread_cond）
+    while (Fut.ready[handle] == 0) myp_sleep_ms(1);
+    return int(Fut.value[handle]);
+}
+// C: void myp_future_destroy(int32_t handle)
+void myp_future_destroy(int handle) {
+    if (handle >= 0 && handle < 64 && Fut.used[handle] != 0) {
+        Fut.used[handle] = 0;
+    }
 }

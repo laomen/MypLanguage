@@ -1,0 +1,99 @@
+// rt_coro_chan_future_test.myp — 协程 Channel + Future 验证（runtime_myp/coro.myp，
+// 包 D Phase C）：channel 基本 send/recv/size/try + 协程 send 满挂起（腾空恢复）+
+// recv 空挂起（送入恢复）+ close 唤醒 + Future ready / 协程 park + 同线程 set 唤醒。
+// 返回码：0 = 全过；N = 第 N 项失败。
+import env;
+import coro;
+import channel;
+import future;
+
+class ChanWorker {
+    action:
+        // producer：send 满缓冲(容量2)挂起 → 腾空后恢复，返回第三次 send 结果
+        @coro(stack=64) int produce(Channel ch) {
+            ch.send(10);
+            ch.send(20);
+            int r3 = ch.send(30);
+            return r3;
+        }
+        // consumer：recv 空缓冲挂起 → 送入后恢复，返回取到的值（close 时 -1）
+        @coro(stack=64) long consume(Channel ch) {
+            long v = ch.recv();
+            return v;
+        }
+        // future 协程：get 未 ready → park；set 唤醒后返回值
+        @coro(stack=64) long futureGet(int fh) {
+            int v = Future.get(fh);
+            return long(v);
+        }
+}
+
+class ChanFutureTest {
+    static:
+        int run() {
+            ChanWorker w = new ChanWorker();
+
+            // 1) 基本（非协程）：send/recv/size/trySend/tryRecv
+            Channel ch = new Channel();
+            ch.init(2);
+            ch.send(1);
+            ch.send(2);
+            if (ch.size() != 2) return 1;
+            if (ch.recv() != 1L) return 2;
+            if (ch.recv() != 2L) return 3;
+            if (ch.tryRecv() != -1L) return 4;      // 空 → -1
+            if (ch.trySend(99) != 0) return 5;      // 有空间 → 0
+            if (ch.tryRecv() != 99L) return 6;
+
+            // 2) producer park：send 满缓冲挂起 → main recv 腾空 → 唤醒恢复
+            long hp = w.produce(ch);
+            Coro.scheduler();
+            if (ch.size() != 2) return 7;           // producer 已 park，缓冲=[10,20]
+            long v1 = ch.recv();                    // 10；main 非协程 → 只 ready P
+            if (v1 != 10L) return 8;
+            Coro.scheduler();                       // P 恢复 send(30) → r3=0 → 完成
+            if (Coro.result(hp) != 0L) return 9;
+            long v2 = ch.recv();
+            long v3 = ch.recv();
+            if (v2 != 20L || v3 != 30L) return 10;
+
+            // 3) consumer park：recv 空缓冲挂起 → main send → 唤醒恢复
+            Channel ch2 = new Channel();
+            ch2.init(1);
+            long hc = w.consume(ch2);
+            Coro.scheduler();                       // C park（空缓冲）
+            ch2.send(99);
+            Coro.scheduler();                       // 唤醒 → got 99
+            if (Coro.result(hc) != 99L) return 11;
+
+            // 4) close 唤醒等待者：recv 空 + close → -1
+            Channel ch3 = new Channel();
+            ch3.init(1);
+            long h3 = w.consume(ch3);
+            Coro.scheduler();                       // park
+            ch3.close();
+            Coro.scheduler();                       // 唤醒 → 看到 closed → -1
+            if (Coro.result(h3) != -1L) return 12;
+
+            // 5) Future ready：set 先于 get
+            int fh = Future.create();
+            Future.set(fh, 42);
+            if (Future.get(fh) != 42) return 13;
+            Future.destroy(fh);
+
+            // 6) Future 协程 park + 同线程 set 唤醒
+            int fh2 = Future.create();
+            long hf = w.futureGet(fh2);
+            Coro.scheduler();                       // W park（未 ready）
+            Future.set(fh2, 7);
+            Coro.scheduler();                       // 唤醒 → got 7
+            if (Coro.result(hf) != 7L) return 14;
+            Future.destroy(fh2);
+
+            return 0;
+        }
+}
+
+int main() {
+    return ChanFutureTest.run();
+}
