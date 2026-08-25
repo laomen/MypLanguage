@@ -159,3 +159,11 @@ int myp_weak_notify_death(string obj) {
     weakUnlock();
     return 1;
 }
+
+// ---- 进程退出清理（#42 薄层：shadow C myp_weak_free_all）。MYP 弱注册表是
+// arena 链表（@static Weak.head），节点随 myp_free_all 的 bump munmap 统一回收
+// → 只需复位链表头。----
+// C: void myp_weak_free_all(void)
+void myp_weak_free_all() {
+    Weak.head = 0;
+}

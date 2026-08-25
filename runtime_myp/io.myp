@@ -369,3 +369,23 @@ string myp_coro_file_read_line(int io_handle) {
 string myp_coro_file_read_all(int io_handle) {
     return ioReadAllHandle(io_handle);
 }
+
+// ---- stdin 读一行（#42 薄层：shadow C myp_read_line；codegen 内建 __myp_read_line）----
+// C: const char* myp_read_line(void) —— 读 fd 0 至 '\n' 或 EOF（上限 255），返回
+//    计数串（EOF 空行也返回空串；MYP 用空串替代 C NULL）。
+string myp_read_line() {
+    long buf = myp_arena_alloc(256);
+    long n = 0;
+    for (;;) {
+        long r = __myp_syscall(0, 0, buf + n, 1, 0, 0, 0);   // read(fd0, &c, 1)
+        if (r <= 0) break;                                    // EOF/错误
+        int b = int(__myp_mem_load_i8(buf + n));
+        if (b == 10) break;                                   // '\n'
+        n = n + 1;
+        if (n >= 255) break;
+    }
+    string s = myp_alloc(n + 1);
+    __myp_memcpy(__myp_str_ptr(s), buf, n);
+    __myp_mem_store_i8(__myp_str_ptr(s) + n, 0);
+    return s;
+}

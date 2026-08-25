@@ -40,7 +40,8 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
          bench/freestanding/rt_diag_test.myp bench/freestanding/rt_coro_test.myp \
          bench/freestanding/rt_coro_wait_test.myp bench/freestanding/rt_coro_chan_future_test.myp \
          bench/freestanding/rt_sync_test.myp bench/freestanding/rt_pool_test.myp \
-         bench/freestanding/rt_threadpool_test.myp bench/freestanding/rt_evname_test.myp; do
+         bench/freestanding/rt_threadpool_test.myp bench/freestanding/rt_evname_test.myp \
+         bench/freestanding/rt_thin_test.myp; do
     tb="$(basename "$t" .myp)"
     "$SELF" "$t" --emit-llvm -o "/tmp/rt_${tb}" >/dev/null 2>&1
     "$LLC" "/tmp/rt_${tb}.ll" -filetype=obj -relocation-model=pic -o "/tmp/rt_${tb}.o"
@@ -57,6 +58,7 @@ for t in bench/freestanding/rt_str_test.myp bench/freestanding/rt_num_test.myp \
     set +e
     case "$tb" in
         rt_args_test)         "/tmp/rt_${tb}_bin" alpha beta gamma ;;
+        rt_thin_test)         printf 'hello thin\n' | "/tmp/rt_${tb}_bin" ;;   # stdin 管道喂 readLine
         rt_pkgA_fail_test)    expected=1; "/tmp/rt_${tb}_bin" ;;   # 故意失败 → 期望 exit 1
         *)                    "/tmp/rt_${tb}_bin" ;;
     esac

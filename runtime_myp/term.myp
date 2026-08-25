@@ -44,3 +44,68 @@ int myp_term_height() {
     if (row > 0) return row;
     return 24;
 }
+
+// ---- 终端 raw 模式 + getch/kbhit（#42 薄层：shadow C myp_enable_raw/restore_term/
+// getch/kbhit；ioctl=16, TCGETS=0x5401, TCSETS=0x5402；termios 布局：c_iflag@0
+// c_oflag@4 c_cflag@8 c_lflag@12 c_line@16 c_cc@17..48，共 ~60B）----
+@static class TermRaw {
+    property:
+        long buf = 0;    // arena 64B termios 缓冲地址
+        long orig = 0;   // arena 64B 原始 termios 保存
+        long raw = 0;    // int：raw 模式标志（arena 字）
+        long pfd = 0;    // arena 8B pollfd
+        long cbuf = 0;   // arena 1B 单字符
+}
+long termRawBuf() {
+    if (TermRaw.buf == 0) {
+        TermRaw.buf = myp_arena_alloc(64);
+        TermRaw.orig = myp_arena_alloc(64);
+        TermRaw.raw = myp_arena_alloc(4);
+        TermRaw.pfd = myp_arena_alloc(8);
+        TermRaw.cbuf = myp_arena_alloc(1);
+    }
+    return TermRaw.buf;
+}
+// C: void myp_enable_raw(void)
+void myp_enable_raw() {
+    long buf = termRawBuf();
+    if (__myp_mem_load_i32(TermRaw.raw) != 0) return;
+    if (__myp_syscall(16, 0, 0x5401, buf, 0, 0, 0) != 0) return;   // tcgetattr 失败（非 tty/管道）
+    __myp_memcpy(TermRaw.orig, buf, 60);                          // 保存原始 termios
+    int lf = __myp_mem_load_i32(buf + 12);                        // c_lflag
+    __myp_mem_store_i32(buf + 12, lf & ~10);                      // ~(ICANON=0x2|ECHO=0x8)
+    __myp_mem_store_i8(buf + 17, 0);                              // c_cc[VMIN]=0
+    __myp_mem_store_i8(buf + 18, 0);                              // c_cc[VTIME]=0
+    __myp_syscall(16, 0, 0x5402, buf, 0, 0, 0);                   // tcsetattr(TCSANOW)
+    __myp_mem_store_i32(TermRaw.raw, 1);
+}
+// C: void myp_restore_term(void)
+void myp_restore_term() {
+    long buf = termRawBuf();
+    if (__myp_mem_load_i32(TermRaw.raw) == 0) return;
+    __myp_memcpy(buf, TermRaw.orig, 60);
+    __myp_syscall(16, 0, 0x5402, buf, 0, 0, 0);
+    __myp_mem_store_i32(TermRaw.raw, 0);
+}
+// C: int32_t myp_kbhit(void) —— poll(fd=0, POLLIN=1, 0ms) 非阻塞；>0 = 可读
+int myp_kbhit() {
+    myp_enable_raw();
+    termRawBuf();
+    long pfd = TermRaw.pfd;
+    __myp_mem_store_i32(pfd, 0);        // fd=0
+    __myp_mem_store_i8(pfd + 4, 1);     // events=POLLIN
+    __myp_mem_store_i8(pfd + 5, 0);
+    __myp_mem_store_i8(pfd + 6, 0);     // revents
+    __myp_mem_store_i8(pfd + 7, 0);
+    long r = __myp_syscall(7, pfd, 1, 0, 0, 0, 0);   // poll(1 fd, 0ms)
+    return r > 0 ? 1 : 0;
+}
+// C: int32_t myp_getch(void) —— raw 模式读 1 字节（无按键返回 0）
+int myp_getch() {
+    myp_enable_raw();
+    long c = termRawBuf();
+    c = TermRaw.cbuf;
+    long n = __myp_syscall(0, 0, c, 1, 0, 0, 0);     // read(0, &c, 1)
+    if (n > 0) return int(__myp_mem_load_i8(c));
+    return 0;
+}

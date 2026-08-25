@@ -192,6 +192,34 @@ timer_next_delay_ms/thread_current），**不依赖 pthread/TLS/libc**：
 - **未做**：@thread 子线程共享 arena 并发分配（文档化限制）；C 内部静态
   work/queue/exec worker（无程序引用，已死代码）。
 
+### v3.15.47 — runtime myp化 #42：薄层收尾（10 个残留 C 函数 → MYP，去 C runtime 清理链）
+
+**非破坏性**。按 #41 审计，shadow 掉程序**实际拉取**的残留 C 函数（hello 10 个、
+@thread 程序 16 个）中的可 shadow 部分（10 个），使 hello 二进制 C 拉取 10→**5**、
+`tests/sync` 16→**7**：
+
+- **alloc.myp**：`myp_free_all`（codegen 在 main 退出调用；MYP 版 = restore_term +
+  级联释放 class slice + region_free_all + arena_free_all）+ `myp_arena_free_all`。
+  ⚠️ **只复位不 munmap**——MYP arena 进程级 mmap，退出时 OS 回收；显式 munmap 与
+  main epilogue 的 ARC release / C atexit 产生 UAF（rt_str_test 段错误 139 实测）。
+- **weak.myp**：`myp_weak_free_all`（MYP 弱表复位；节点随 arena 回收）。
+- **env.myp**：`myp_env_set`/`myp_env_unset`——setenv/unsetenv 无 syscall 等价物
+  → **ffi 直调 libc**（去掉 C runtime 包装，仍用 libc；与读侧 myp_env_get 走同一
+  environ 一致）。
+- **io.myp**：`myp_read_line`（read syscall 逐字节读 fd 0 至 '\n'，计数串）。
+- **term.myp**：`myp_enable_raw`/`myp_restore_term`（termios ioctl=16，TCGETS/
+  TCSETS）+ `myp_kbhit`（poll syscall）+ `myp_getch`（raw 读 1 字节）。
+- **残留边界（shadow 无法消除）**：static constructor `myp_capture_args`（→fopen/
+  fread）+ `__myp_coro_register_cleanup`（atexit 3 个清理）共 5 个——`.init_array`
+  直指局部符号，需改 runtime.c 才能移除；`myp_io_cur_get/set`（C TLS 当前句柄，
+  MYP 无 TLS）2 个。
+- **验证**：新 `bench/freestanding/rt_thin_test.myp`（env set/get/unset 往返 +
+  readLine，build.sh 管道喂 `hello thin`）；**shadow 32/32**；hello/sync 二进制
+  C 拉取确认降至 5/7；bootstrap fixpoint `9f5cf25b` 不变；全量 323/323（oracle +
+  selfhost）。
+- **未做**：static constructor / C TLS 残留（需改 runtime.c 或留 TLS，见
+  MIGRATION_STATUS 边界说明）。
+
 ### v3.15.39 — runtime myp化 #36：包 D 协程核心（coro.myp，Phase A 生命周期切片）
 
 **非破坏性**。协程运行时核心 MYP 化——shadow C 的 `__myp_coro_*` 编译器契约 20

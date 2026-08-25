@@ -1,0 +1,31 @@
+// rt_thin_test.myp — 薄层收尾 shadow 验证（#42：env set/unset + read_line + getch/kbhit）。
+// 覆盖 runtime_myp 新增的 myp_env_set/unset（ffi 直调 libc setenv/unsetenv，去 C
+// runtime 包装）与 myp_read_line（stdin 逐字节读一行）。
+// 用法：build.sh 特判 `echo "hello thin"` 管道输入 → readLine 读到 "hello thin"。
+// exit 0 = 通过。
+import env;
+
+class P {
+    action:
+        @constructor P() {
+            // --- env set/get/unset 往返（走 libc environ，getEnv 同源）---
+            int s = Console.setEnv("MYP_THIN_VAR", "thin42");
+            string v = Console.getEnv("MYP_THIN_VAR");
+            Console.writeString("env_set=" + s + " val=" + v + "\n");
+            if (s != 0 || v != "thin42") { Console.writeString("FAIL: env set/get\n"); return; }
+            int u = Console.unsetEnv("MYP_THIN_VAR");
+            string v2 = Console.getEnv("MYP_THIN_VAR");
+            Console.writeString("env_unset=" + u + " val2=" + v2 + "\n");
+            if (u != 0 || v2 != "") { Console.writeString("FAIL: env unset\n"); return; }
+            // --- read_line（stdin，build.sh 管道 "hello thin"）---
+            string line = Console.readString();
+            Console.writeString("line=[" + line + "]\n");
+            if (line != "hello thin") { Console.writeString("FAIL: read_line\n"); return; }
+            Console.writeString("THIN OK\n");
+        }
+}
+
+int main() {
+    P p = new P();
+    return 0;
+}

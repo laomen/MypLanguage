@@ -262,3 +262,35 @@ long myp_live_string_count() { return Live.strings; }
 long myp_live_object_count() { return Live.objects; }
 long myp_live_array_count() { return Live.arrays; }
 long myp_live_total_count() { return Live.strings + Live.objects + Live.arrays; }
+
+// ---- 进程退出清理（#42 薄层：shadow C myp_free_all 链，去掉 C 清理依赖）----
+// C: void myp_arena_free_all(void) —— munmap 全部 bump arena chunk 并复位。
+//    MYP 版**只复位 Arena 状态、不 munmap**：MYP arena 是进程级 mmap，进程退出时
+//    OS 自动回收；退出时显式 munmap 会与 main epilogue 的 ARC release（codegen 在
+//    myp_free_all 之后仍有释放）以及 C atexit 产生 UAF（实测 rt_str_test 段错误
+//    139）。C 版对 C arena 的时序有 pthread-key 析构保证，MYP 无此保证 → reset-only。
+void myp_arena_free_all() {
+    Arena.cur = 0;
+    Arena.head = 0;
+    Arena.cur_used = 0;
+    Arena.cur_cap = 0;
+    Arena.total_used = 0;
+    Arena.last_base = 0;
+    Arena.last_aligned = 0;
+}
+
+// C: void myp_free_all(void) —— codegen 在 main() 退出 epilogue 调用；释放进程级
+//    资源。MYP 版：级联释放 class slice backing → 释放 region chunk → munmap
+//    bump arena。MYP 无 C 的 alloc 跟踪链表/weak 表/capture 缓冲 → 无需对应清理；
+//    C 的 myp_restore_term/myp_arena_free_all/myp_free_alloc_list_global/
+//    myp_weak_free_all/__myp_coro_cleanup_all 等只剩本函数调用 → 变死代码被
+//    --gc-sections 剥离。
+ffi void myp_release_class_slices_from_depth(long depth);   // region.myp
+ffi void myp_region_free_all();                             // region.myp
+ffi void myp_restore_term();                                // term.myp（raw 模式还原）
+void myp_free_all() {
+    myp_restore_term();
+    myp_release_class_slices_from_depth(0);
+    myp_region_free_all();
+    myp_arena_free_all();
+}

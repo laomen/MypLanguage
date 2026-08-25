@@ -6,7 +6,7 @@
 >
 > **迁移机制**：MYP 模块 `--shared` 编译（函数外部链接 `define`）→ `.o` 置于
 > `libmyp_rt.a` 之前 + `--allow-multiple-definition` → **MYP 定义优先**（shadow）。
-> 验证 `runtime_myp/build.sh`（shadow 31/31）；每批跑 bootstrap 16/16 + 全量
+> 验证 `runtime_myp/build.sh`（shadow 32/32）；每批跑 bootstrap 16/16 + 全量
 > 323/323。
 
 ---
@@ -16,8 +16,8 @@
 | 项 | 数量 |
 |---|---|
 | C runtime 顶层 `__?myp_*` 函数（runtime.c 415 + gpu 63 + stdlib 10 + lib 2） | **490** |
-| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#41 补后重算） | **300**（~61%） |
-| 未 shadow（C runtime 剩余） | **190** |
+| 已 shadow（runtime_myp 定义 ∩ C，含部分内部 helper；#42 薄层后重算） | **310**（~63%） |
+| 未 shadow（C runtime 剩余） | **180** |
 | bridge C 文件剩余 `myp_*`（json/net/uds/sdl/ttf/process/regex/date/hash-md5-sha1） | **122** |
 | runtime_myp 模块 | **21** 个 |
 
@@ -34,7 +34,23 @@ is_active/destroy）**）** /
 **@thread 生命周期 + 事件系统（#41 event.myp：`myp_thread_*` 8 + `myp_event_*` 7 +
 `myp_timer_*` 3 + C 内部 helper 4 + `myp_event_id_by_name`；每线程 futex 队列 +
 跨线程路由深拷贝）——包 F 全链路 **零 C 依赖**（nm 审计 threadpool/sync/coro_timer/
-coro_event/multi_event/mapping_chain 二进制 C-only pkgF=0）**。
+coro_event/multi_event/mapping_chain 二进制 C-only pkgF=0）** /
+**薄层收尾（#42，10 个残留 C 函数）：`myp_free_all`+`myp_arena_free_all`（alloc）/
+`myp_weak_free_all`（weak）/`myp_env_set`+`myp_env_unset`（env，ffi 直调 libc
+setenv/unsetenv）/`myp_read_line`（io）/`myp_enable_raw`+`myp_restore_term`+
+`myp_getch`+`myp_kbhit`（term，termios ioctl）——hello 二进制 C 拉取 10→5、
+sync 16→7**。
+
+**#42 残留 C 边界（shadow 无法消除，需改 runtime.c 或留 TLS）**：
+- **static constructor**（`.init_array` 直指局部符号，shadow 无法按名拦截）：
+  `myp_capture_args`（读 /proc/self/cmdline → fopen/fread）+ `__myp_coro_register_cleanup`
+  （atexit 注册 free_alloc_list_global / __myp_coro_cleanup_all → +alloc_lock_init）。
+  共 5 个（hello 剩余）。移除需改 runtime.c（args 改惰性 + 去掉 atexit 清理）。
+- **C TLS 当前句柄**：`myp_io_cur_get/set`（io.myp 依赖每线程当前文件句柄，MYP
+  无 TLS → 保留 C helper）。共 2 个（sync 等用 io 的程序才拉）。
+- ⚠️ `myp_arena_free_all` **只复位不 munmap**：MYP arena 进程级 mmap，退出时 OS
+  回收；显式 munmap 与 main epilogue 的 ARC release / C atexit 产生 UAF（rt_str
+  segfault 139 已实测）。
 
 **编译器内建层（无需 shadow，编译器直发 LLVM）**：Atomic（`__myp_atomic_*` →
 `atomicrmw`/load/store）、raw-memory（`__myp_mem_*`/`__myp_syscall`/`__myp_memcpy`）、
